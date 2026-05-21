@@ -1,0 +1,66 @@
+version: "2"
+run:
+  tests: true
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - importas
+    - ineffassign
+    - modernize
+    - staticcheck
+    - testifylint
+    - unused
+  settings:
+    errcheck:
+      check-type-assertions: false
+      check-blank: false
+    importas:
+      no-unaliased: true
+      alias:
+        - pkg: github.com/kenn-io/kit/git/cmd
+          alias: gitcmd
+        - pkg: github.com/kenn-io/kit/git/env
+          alias: gitenv
+        - pkg: github.com/kenn-io/kit/git/lock
+          alias: gitlock
+        - pkg: github.com/kenn-io/kit/git/remote
+          alias: gitremote
+        - pkg: github.com/kenn-io/kit/git/repo
+          alias: gitrepo
+        - pkg: github.com/kenn-io/kit/git/test
+          alias: gittest
+        - pkg: github.com/kenn-io/kit/git/worktree
+          alias: gitworktree
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - errcheck
+        path: _test\.go
+      - linters:
+          - modernize
+        text: "omitzero:"
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
