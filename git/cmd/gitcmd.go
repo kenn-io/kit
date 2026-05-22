@@ -18,7 +18,7 @@ import (
 	"os/exec"
 	"strings"
 
-	gitenv "github.com/kenn-io/kit/git/env"
+	gitenv "go.kenn.io/kit/git/env"
 )
 
 // Config is one temporary git config entry injected through GIT_CONFIG_* env.

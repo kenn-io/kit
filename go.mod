@@ -1,4 +1,4 @@
-module github.com/kenn-io/kit
+module go.kenn.io/kit
 
 go 1.26.3
 

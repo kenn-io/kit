@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	gitcmd "github.com/kenn-io/kit/git/cmd"
+	gitcmd "go.kenn.io/kit/git/cmd"
 )
 
 const (

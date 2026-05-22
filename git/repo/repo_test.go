@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	gittest "github.com/kenn-io/kit/git/test"
+	gittest "go.kenn.io/kit/git/test"
 )
 
 func TestIsUnbornHead(t *testing.T) {

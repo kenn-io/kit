@@ -16,7 +16,7 @@ import (
 	"strconv"
 	"strings"
 
-	gitcmd "github.com/kenn-io/kit/git/cmd"
+	gitcmd "go.kenn.io/kit/git/cmd"
 )
 
 // Worktree is a temporary linked worktree. Call Close when finished.

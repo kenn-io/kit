@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	gitcmd "github.com/kenn-io/kit/git/cmd"
+	gitcmd "go.kenn.io/kit/git/cmd"
 )
 
 var runner = gitcmd.New()

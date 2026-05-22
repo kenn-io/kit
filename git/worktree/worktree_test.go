@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	gittest "github.com/kenn-io/kit/git/test"
+	gittest "go.kenn.io/kit/git/test"
 )
 
 func TestCreateCaptureAndApplyPatch(t *testing.T) {
