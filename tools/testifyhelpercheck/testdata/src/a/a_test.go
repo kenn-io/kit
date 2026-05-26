@@ -31,6 +31,17 @@ func TestSubtestNeedsHelper(t *testing.T) {
 	})
 }
 
+func TestNestedSubtestNeedsHelper(t *testing.T) {
+	t.Run("outer", func(t *testing.T) {
+		t.Run("inner", func(t *testing.T) {
+			Require.NoError(t, nil)
+			Require.NotNil(t, &struct{}{}) // want "test has 4 direct testify package calls; create a local require helper with require := require.New\\(t\\) and use it for repeated checks"
+			Assert.Equal(t, 1, 1)
+			Assert.True(t, true) // want "test has 4 direct testify package calls; create a local assert helper with assert := Assert.New\\(t\\) and use it for repeated checks"
+		})
+	})
+}
+
 func TestNeedsRequireHelper(t *testing.T) {
 	Require.NoError(t, nil)
 	Require.NotNil(t, &struct{}{})

@@ -41,7 +41,7 @@ func run(pass *analysis.Pass) (any, error) {
 			}
 			paramName := lit.Type.Params.List[0].Names[0].Name
 			analyzeBody(pass, lit.Body, paramName, imports)
-			return false
+			return true
 		})
 	}
 
