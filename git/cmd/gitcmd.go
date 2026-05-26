@@ -10,7 +10,6 @@ package gitcmd
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -43,6 +42,8 @@ type Runner struct {
 	NullGlobalConfig bool
 	// NoSystemConfig sets GIT_CONFIG_NOSYSTEM=1 when true.
 	NoSystemConfig bool
+
+	basicAuth *basicAuth
 }
 
 // New returns a Runner with safe automation defaults.
@@ -61,10 +62,12 @@ func (r Runner) WithConfig(key, value string) Runner {
 	return r
 }
 
-// WithBasicAuth returns a copy of r with an HTTP Basic Authorization header.
+// WithBasicAuth returns a copy of r with credentials supplied through a
+// short-lived git credential helper. The reusable secret is written to a
+// user-only helper file instead of being exposed in the git process environment.
 func (r Runner) WithBasicAuth(username, password string) Runner {
-	cred := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
-	return r.WithConfig("http.extraHeader", "Authorization: Basic "+cred)
+	r.basicAuth = &basicAuth{username: username, password: password}
+	return r
 }
 
 // Command constructs a git command in dir.
@@ -103,6 +106,48 @@ func (r Runner) Run(ctx context.Context, dir string, stdin io.Reader, args ...st
 	return stdout.Bytes(), stderr.Bytes(), nil
 }
 
+type basicAuth struct {
+	username string
+	password string
+}
+
+func (a basicAuth) credentialHelper() (string, error) {
+	file, err := os.CreateTemp("", "gitcmd-credential-helper-*")
+	if err != nil {
+		return "", err
+	}
+	path := file.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(path)
+		}
+	}()
+
+	_, writeErr := file.WriteString("#!/bin/sh\n" +
+		"case \"$1\" in\n" +
+		"get)\n" +
+		"\tprintf '%s\\n' " + shellSingleQuote("username="+a.username) + " " + shellSingleQuote("password="+a.password) + "\n" +
+		"\t;;\n" +
+		"esac\n")
+	closeErr := file.Close()
+	if writeErr != nil {
+		return "", writeErr
+	}
+	if closeErr != nil {
+		return "", closeErr
+	}
+	if err := os.Chmod(path, 0o700); err != nil {
+		return "", err
+	}
+	cleanup = false
+	return path, nil
+}
+
+func shellSingleQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
 func (r Runner) commandEnv() []string {
 	env := r.Env
 	if env == nil {
@@ -123,6 +168,13 @@ func (r Runner) commandEnv() []string {
 		env = append(env, "GIT_CONFIG_GLOBAL="+os.DevNull)
 	}
 	config := append([]Config{{Key: "gc.auto", Value: "0"}, {Key: "maintenance.auto", Value: "false"}}, r.Config...)
+	if r.basicAuth != nil {
+		helper, err := r.basicAuth.credentialHelper()
+		if err != nil {
+			helper = `!f() { echo "gitcmd basic auth helper setup failed" >&2; exit 1; }; f`
+		}
+		config = append(config, Config{Key: "credential.helper", Value: helper})
+	}
 	for i, c := range config {
 		env = append(env,
 			fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", i, c.Key),

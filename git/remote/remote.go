@@ -29,10 +29,10 @@ type Identity struct {
 // ClonePath returns {baseDir}/{host}/{owner}/{name}.git after validating every
 // segment against absolute paths, traversal, empty path parts, and backslashes.
 func ClonePath(baseDir string, id Identity) (string, error) {
-	if err := validatePathValue("host", id.Host, false, true); err != nil {
+	if err := validatePathValue("host", id.Host, false, false); err != nil {
 		return "", err
 	}
-	if err := validatePathValue("owner", id.Owner, true, true); err != nil {
+	if err := validatePathValue("owner", id.Owner, true, false); err != nil {
 		return "", err
 	}
 	if err := validatePathValue("name", id.Name, false, false); err != nil {

@@ -7,6 +7,8 @@ import (
 
 func TestClonePathRejectsTraversalAndSeparators(t *testing.T) {
 	tests := []Identity{
+		{Host: "", Owner: "acme", Name: "widget"},
+		{Host: "github.com", Owner: "", Name: "widget"},
 		{Host: "github.com", Owner: "acme/../evil", Name: "widget"},
 		{Host: "github.com", Owner: "/acme", Name: "widget"},
 		{Host: "github.com", Owner: `acme\evil`, Name: "widget"},
