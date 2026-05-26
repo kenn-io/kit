@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kenn-io/kit/telemetry"
+	"go.kenn.io/kit/telemetry"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
