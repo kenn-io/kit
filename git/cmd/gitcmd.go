@@ -74,7 +74,7 @@ func (r Runner) WithBasicAuth(username, password string) Runner {
 func (r Runner) Command(ctx context.Context, dir string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env = r.commandEnv()
+	cmd.Env, _ = r.commandEnv()
 	return cmd
 }
 
@@ -86,7 +86,11 @@ func (r Runner) Output(ctx context.Context, dir string, args ...string) ([]byte,
 
 // Run runs git and returns stdout, stderr, and a *GitError on failure.
 func (r Runner) Run(ctx context.Context, dir string, stdin io.Reader, args ...string) ([]byte, []byte, error) {
-	cmd := r.Command(ctx, dir, args...)
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	var cleanup func()
+	cmd.Env, cleanup = r.commandEnv()
+	defer cleanup()
 	cmd.Stdin = stdin
 
 	var stdout bytes.Buffer
@@ -111,18 +115,15 @@ type basicAuth struct {
 	password string
 }
 
-func (a basicAuth) credentialHelper() (string, error) {
+func (a basicAuth) credentialHelper() (string, func(), error) {
 	file, err := os.CreateTemp("", "gitcmd-credential-helper-*")
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	path := file.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(path)
-		}
-	}()
+	cleanup := func() {
+		_ = os.Remove(path)
+	}
 
 	_, writeErr := file.WriteString("#!/bin/sh\n" +
 		"case \"$1\" in\n" +
@@ -132,23 +133,26 @@ func (a basicAuth) credentialHelper() (string, error) {
 		"esac\n")
 	closeErr := file.Close()
 	if writeErr != nil {
-		return "", writeErr
+		cleanup()
+		return "", nil, writeErr
 	}
 	if closeErr != nil {
-		return "", closeErr
+		cleanup()
+		return "", nil, closeErr
 	}
 	if err := os.Chmod(path, 0o700); err != nil {
-		return "", err
+		cleanup()
+		return "", nil, err
 	}
-	cleanup = false
-	return path, nil
+	return path, cleanup, nil
 }
 
 func shellSingleQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
-func (r Runner) commandEnv() []string {
+func (r Runner) commandEnv() ([]string, func()) {
+	cleanup := func() {}
 	env := r.Env
 	if env == nil {
 		env = os.Environ()
@@ -169,9 +173,11 @@ func (r Runner) commandEnv() []string {
 	}
 	config := append([]Config{{Key: "gc.auto", Value: "0"}, {Key: "maintenance.auto", Value: "false"}}, r.Config...)
 	if r.basicAuth != nil {
-		helper, err := r.basicAuth.credentialHelper()
+		helper, cleanupHelper, err := r.basicAuth.credentialHelper()
 		if err != nil {
 			helper = `!f() { echo "gitcmd basic auth helper setup failed" >&2; exit 1; }; f`
+		} else {
+			cleanup = cleanupHelper
 		}
 		config = append(config, Config{Key: "credential.helper", Value: helper})
 	}
@@ -182,7 +188,7 @@ func (r Runner) commandEnv() []string {
 		)
 	}
 	env = append(env, fmt.Sprintf("GIT_CONFIG_COUNT=%d", len(config)))
-	return env
+	return env, cleanup
 }
 
 // GitError wraps a failed git command with stderr.

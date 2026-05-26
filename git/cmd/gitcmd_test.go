@@ -3,6 +3,8 @@ package gitcmd
 import (
 	"context"
 	"encoding/base64"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -57,6 +59,58 @@ func TestWithBasicAuthKeepsSecretOutOfCommandEnvironment(t *testing.T) {
 	if !strings.Contains(env, "credential.helper") {
 		t.Fatalf("basic auth should be supplied through a credential helper: %#v", cmd.Env)
 	}
+}
+
+func TestWithBasicAuthRemovesCredentialHelperAfterRun(t *testing.T) {
+	binDir := t.TempDir()
+	envPath := filepath.Join(t.TempDir(), "env")
+	gitPath := filepath.Join(binDir, "git")
+	if err := os.WriteFile(gitPath, []byte("#!/bin/sh\nenv > "+shellSingleQuote(envPath)+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	pathEnv := binDir + string(os.PathListSeparator) + os.Getenv("PATH")
+	t.Setenv("PATH", pathEnv)
+	runner := New().WithBasicAuth("alice", "secret-token")
+	runner.Env = []string{"PATH=" + pathEnv}
+	if _, _, err := runner.Run(context.Background(), "", nil, "version"); err != nil {
+		t.Fatal(err)
+	}
+
+	envBytes, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	helper := gitConfigValue(string(envBytes), "credential.helper")
+	if helper == "" {
+		t.Fatalf("credential.helper not found in env:\n%s", envBytes)
+	}
+	if _, err := os.Stat(helper); !os.IsNotExist(err) {
+		t.Fatalf("credential helper file still exists after Run: stat err = %v", err)
+	}
+}
+
+func gitConfigValue(env, key string) string {
+	values := map[string]string{}
+	keys := map[string]string{}
+	for line := range strings.SplitSeq(env, "\n") {
+		name, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		if index, ok := strings.CutPrefix(name, "GIT_CONFIG_KEY_"); ok {
+			keys[index] = value
+		}
+		if index, ok := strings.CutPrefix(name, "GIT_CONFIG_VALUE_"); ok {
+			values[index] = value
+		}
+	}
+	for index, gotKey := range keys {
+		if gotKey == key {
+			return values[index]
+		}
+	}
+	return ""
 }
 
 func containsPrefix(values []string, prefix string) bool {

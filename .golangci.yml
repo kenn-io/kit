@@ -19,19 +19,19 @@ linters:
     importas:
       no-unaliased: true
       alias:
-        - pkg: github.com/kenn-io/kit/git/cmd
+        - pkg: go.kenn.io/kit/git/cmd
           alias: gitcmd
-        - pkg: github.com/kenn-io/kit/git/env
+        - pkg: go.kenn.io/kit/git/env
           alias: gitenv
-        - pkg: github.com/kenn-io/kit/git/lock
+        - pkg: go.kenn.io/kit/git/lock
           alias: gitlock
-        - pkg: github.com/kenn-io/kit/git/remote
+        - pkg: go.kenn.io/kit/git/remote
           alias: gitremote
-        - pkg: github.com/kenn-io/kit/git/repo
+        - pkg: go.kenn.io/kit/git/repo
           alias: gitrepo
-        - pkg: github.com/kenn-io/kit/git/test
+        - pkg: go.kenn.io/kit/git/test
           alias: gittest
-        - pkg: github.com/kenn-io/kit/git/worktree
+        - pkg: go.kenn.io/kit/git/worktree
           alias: gitworktree
   exclusions:
     generated: lax
