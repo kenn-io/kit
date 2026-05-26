@@ -39,11 +39,7 @@ func TestRunnerCommandUsesDefensiveEnvironment(t *testing.T) {
 }
 
 func TestWithBasicAuthKeepsSecretOutOfCommandEnvironment(t *testing.T) {
-	runner := New().WithBasicAuth("alice", "secret-token")
-	runner.Env = []string{"PATH=/bin"}
-
-	cmd := runner.Command(context.Background(), "", "ls-remote", "https://github.com/acme/widget.git")
-	env := strings.Join(cmd.Env, "\n")
+	env := captureGitEnv(t, New().WithBasicAuth("alice", "secret-token"))
 
 	for _, secret := range []string{
 		"alice",
@@ -53,15 +49,44 @@ func TestWithBasicAuthKeepsSecretOutOfCommandEnvironment(t *testing.T) {
 		"http.extraHeader",
 	} {
 		if strings.Contains(env, secret) {
-			t.Fatalf("command environment leaked %q: %#v", secret, cmd.Env)
+			t.Fatalf("command environment leaked %q:\n%s", secret, env)
 		}
 	}
 	if !strings.Contains(env, "credential.helper") {
-		t.Fatalf("basic auth should be supplied through a credential helper: %#v", cmd.Env)
+		t.Fatalf("basic auth should be supplied through a credential helper:\n%s", env)
 	}
 }
 
+func TestWithBasicAuthRejectsCommand(t *testing.T) {
+	defer func() {
+		got := recover()
+		if got == nil {
+			t.Fatal("Command with basic auth did not panic")
+		}
+		message := got.(string)
+		for _, secret := range []string{"alice", "secret-token", base64.StdEncoding.EncodeToString([]byte("alice:secret-token"))} {
+			if strings.Contains(message, secret) {
+				t.Fatalf("panic leaked %q: %s", secret, message)
+			}
+		}
+	}()
+
+	New().WithBasicAuth("alice", "secret-token").Command(context.Background(), "", "status")
+}
+
 func TestWithBasicAuthRemovesCredentialHelperAfterRun(t *testing.T) {
+	env := captureGitEnv(t, New().WithBasicAuth("alice", "secret-token"))
+	helper := gitConfigValue(env, "credential.helper")
+	if helper == "" {
+		t.Fatalf("credential.helper not found in env:\n%s", env)
+	}
+	if _, err := os.Stat(helper); !os.IsNotExist(err) {
+		t.Fatalf("credential helper file still exists after Run: stat err = %v", err)
+	}
+}
+
+func captureGitEnv(t *testing.T, runner Runner) string {
+	t.Helper()
 	binDir := t.TempDir()
 	envPath := filepath.Join(t.TempDir(), "env")
 	gitPath := filepath.Join(binDir, "git")
@@ -71,23 +96,15 @@ func TestWithBasicAuthRemovesCredentialHelperAfterRun(t *testing.T) {
 
 	pathEnv := binDir + string(os.PathListSeparator) + os.Getenv("PATH")
 	t.Setenv("PATH", pathEnv)
-	runner := New().WithBasicAuth("alice", "secret-token")
 	runner.Env = []string{"PATH=" + pathEnv}
 	if _, _, err := runner.Run(context.Background(), "", nil, "version"); err != nil {
 		t.Fatal(err)
 	}
-
 	envBytes, err := os.ReadFile(envPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	helper := gitConfigValue(string(envBytes), "credential.helper")
-	if helper == "" {
-		t.Fatalf("credential.helper not found in env:\n%s", envBytes)
-	}
-	if _, err := os.Stat(helper); !os.IsNotExist(err) {
-		t.Fatalf("credential helper file still exists after Run: stat err = %v", err)
-	}
+	return string(envBytes)
 }
 
 func gitConfigValue(env, key string) string {

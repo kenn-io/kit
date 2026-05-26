@@ -71,7 +71,13 @@ func (r Runner) WithBasicAuth(username, password string) Runner {
 }
 
 // Command constructs a git command in dir.
+//
+// Command cannot be used with WithBasicAuth because callers would not have a
+// way to clean up the temporary credential helper. Use Run or Output instead.
 func (r Runner) Command(ctx context.Context, dir string, args ...string) *exec.Cmd {
+	if r.basicAuth != nil {
+		panic("gitcmd: Command cannot be used with WithBasicAuth; use Run or Output so credentials can be cleaned up")
+	}
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	cmd.Env, _ = r.commandEnv()
