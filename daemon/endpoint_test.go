@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -31,6 +32,10 @@ func TestParseEndpointRejectsPublicTCPWhenPolicyRequiresNonPublic(t *testing.T) 
 		TCPPolicy: daemon.RequireNonPublic,
 	})
 	require.Error(t, err)
+}
+
+func TestRequireNonPublicAllowsCGNAT(t *testing.T) {
+	require.NoError(t, daemon.RequireNonPublic("100.64.0.1:7777"))
 }
 
 func TestParseEndpointUnixDefault(t *testing.T) {
@@ -66,4 +71,22 @@ func TestUnixHTTPClientDialsSocket(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestDefaultSocketPathCreatesPrivateTempFallback(t *testing.T) {
+	service := fmt.Sprintf("kitdtest%d", os.Getpid())
+	t.Setenv("TMPDIR", "/tmp")
+	t.Setenv("XDG_RUNTIME_DIR", "")
+
+	socketPath := daemon.DefaultSocketPath(service)
+	require.NotEmpty(t, socketPath)
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(socketPath)) })
+	assert.Equal(t, filepath.Join(filepath.Dir(socketPath), "daemon.sock"), socketPath)
+
+	info, err := os.Stat(filepath.Dir(socketPath))
+	require.NoError(t, err)
+	assert.True(t, info.IsDir())
+	if runtime.GOOS != "windows" {
+		assert.Zero(t, info.Mode().Perm()&0o077)
+	}
 }

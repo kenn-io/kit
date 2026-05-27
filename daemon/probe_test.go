@@ -126,6 +126,43 @@ func TestDiscoverPropagatesContextCancellation(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 }
 
+func TestDiscoverSkipsPerProbeTimeouts(t *testing.T) {
+	slowServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(50 * time.Millisecond)
+		_, _ = fmt.Fprint(w, `{"ok":true,"service":"kata","version":"slow"}`)
+	}))
+	defer slowServer.Close()
+	fastServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, `{"ok":true,"service":"kata","version":"fast"}`)
+	}))
+	defer fastServer.Close()
+
+	store := daemon.RuntimeStore{Dir: t.TempDir()}
+	_, err := store.Write(daemon.RuntimeRecord{
+		PID:       os.Getpid(),
+		Network:   daemon.NetworkTCP,
+		Address:   listenerAddr(t, slowServer),
+		Service:   "kata",
+		StartedAt: time.Now().Add(-time.Minute),
+	})
+	require.NoError(t, err)
+	_, err = store.Write(daemon.RuntimeRecord{
+		PID:       os.Getpid() + 1,
+		Network:   daemon.NetworkTCP,
+		Address:   listenerAddr(t, fastServer),
+		Service:   "kata",
+		StartedAt: time.Now(),
+	})
+	require.NoError(t, err)
+
+	_, info, ok, err := daemon.Discover(context.Background(), store, daemon.DiscoverOptions{
+		Probe: daemon.ProbeOptions{ExpectedService: "kata", Timeout: time.Millisecond},
+	})
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, "fast", info.Version)
+}
+
 func TestProbeDialsUnixEndpoint(t *testing.T) {
 	socketDir, err := os.MkdirTemp("", "kitd")
 	require.NoError(t, err)

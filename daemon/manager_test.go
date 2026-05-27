@@ -6,11 +6,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/gofrs/flock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/daemon"
@@ -153,18 +153,39 @@ func TestManagerEnsureSerializesConcurrentStarts(t *testing.T) {
 		},
 	}
 
-	var wg sync.WaitGroup
 	errs := make(chan error, 2)
 	for range 2 {
-		wg.Go(func() {
+		go func() {
 			_, _, err := manager.Ensure(context.Background(), time.Second)
 			errs <- err
-		})
+		}()
 	}
-	wg.Wait()
-	close(errs)
-	for err := range errs {
+	for range 2 {
+		err := <-errs
 		require.NoError(t, err)
 	}
 	assert.Equal(t, int32(1), starts.Load())
+}
+
+func TestManagerEnsureAppliesTimeoutToStartLock(t *testing.T) {
+	store := daemon.RuntimeStore{Dir: t.TempDir()}
+	lockPath, err := store.LockPath()
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(store.Dir, 0o700))
+	lock := flock.New(lockPath)
+	require.NoError(t, lock.Lock())
+	defer func() { _ = lock.Unlock() }()
+
+	manager := daemon.Manager{
+		Store: store,
+		Start: func(context.Context) error {
+			t.Fatal("start should not run while lock is held")
+			return nil
+		},
+	}
+
+	startedAt := time.Now()
+	_, _, err = manager.Ensure(context.Background(), 50*time.Millisecond)
+	require.Error(t, err)
+	assert.Less(t, time.Since(startedAt), 500*time.Millisecond)
 }

@@ -49,6 +49,13 @@ func (m Manager) Find(ctx context.Context) (RuntimeRecord, PingInfo, bool, error
 
 // Ensure returns a live compatible daemon, starting one when necessary.
 func (m Manager) Ensure(ctx context.Context, timeout time.Duration) (RuntimeRecord, PingInfo, error) {
+	if timeout == 0 {
+		timeout = 5 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
+	ctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+
 	if rec, info, ok, err := m.Find(ctx); err != nil || ok {
 		return rec, info, err
 	}
@@ -67,10 +74,6 @@ func (m Manager) Ensure(ctx context.Context, timeout time.Duration) (RuntimeReco
 	if err := m.Start(ctx); err != nil {
 		return RuntimeRecord{}, PingInfo{}, err
 	}
-	if timeout == 0 {
-		timeout = 5 * time.Second
-	}
-	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
 		rec, info, ok, err := m.Find(ctx)

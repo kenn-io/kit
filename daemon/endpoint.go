@@ -143,7 +143,7 @@ func RequireNonPublic(addr string) error {
 }
 
 var cgnatBlock = &net.IPNet{
-	IP:   net.IPv4(100, 64, 0, 0),
+	IP:   net.IPv4(100, 64, 0, 0).To4(),
 	Mask: net.CIDRMask(10, 32),
 }
 
@@ -231,7 +231,7 @@ func (e Endpoint) HTTPClient(opts HTTPClientOptions) *http.Client {
 }
 
 // DefaultSocketPath returns a per-user socket path under XDG_RUNTIME_DIR when
-// available, otherwise under os.TempDir().
+// available, otherwise under a private directory in os.TempDir().
 func DefaultSocketPath(service string) string {
 	if service == "" {
 		service = "daemon"
@@ -244,5 +244,13 @@ func DefaultSocketPath(service string) string {
 			}
 		}
 	}
-	return filepath.Join(os.TempDir(), fmt.Sprintf("%s-%s", service, runtimeUID()), "daemon.sock")
+	parent := filepath.Join(os.TempDir(), fmt.Sprintf("%s-%s", service, runtimeUID()))
+	if err := ensurePrivateRuntimeDir(parent); err != nil {
+		return ""
+	}
+	path := filepath.Join(parent, "daemon.sock")
+	if len(path) >= MaxUnixPathLen {
+		return ""
+	}
+	return path
 }

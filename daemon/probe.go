@@ -138,9 +138,6 @@ func Discover(ctx context.Context, store RuntimeStore, opts DiscoverOptions) (Ru
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return RuntimeRecord{}, PingInfo{}, false, ctxErr
 			}
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return RuntimeRecord{}, PingInfo{}, false, err
-			}
 			continue
 		}
 		if opts.Accept != nil && !opts.Accept(rec, info) {
