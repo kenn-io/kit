@@ -168,6 +168,9 @@ func (s RuntimeStore) Read(path string) (RuntimeRecord, error) {
 	if err := s.prepareDir(); err != nil {
 		return RuntimeRecord{}, err
 	}
+	if err := validateRuntimeFileOwner(path); err != nil {
+		return RuntimeRecord{}, err
+	}
 	body, err := os.ReadFile(path)
 	if err != nil {
 		return RuntimeRecord{}, fmt.Errorf("read runtime file %s: %w", path, err)

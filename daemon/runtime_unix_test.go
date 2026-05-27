@@ -66,3 +66,18 @@ func TestRuntimeStoreRejectsSymlinkDir(t *testing.T) {
 	_, err = store.CleanupDead()
 	require.Error(t, err)
 }
+
+func TestRuntimeStoreRejectsSymlinkRecord(t *testing.T) {
+	dir := filepath.Join("/tmp", fmt.Sprintf("kit-runtime-record-symlink-%d", os.Getpid()))
+	target := filepath.Join(dir, "target.json")
+	link := filepath.Join(dir, "daemon.1.json")
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	require.NoError(t, os.RemoveAll(dir))
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	require.NoError(t, os.WriteFile(target, []byte(`{"pid":1,"address":"127.0.0.1:7474"}`), 0o644))
+	require.NoError(t, os.Symlink(target, link))
+
+	store := daemon.RuntimeStore{Dir: dir}
+	_, err := store.Read(link)
+	require.Error(t, err)
+}
