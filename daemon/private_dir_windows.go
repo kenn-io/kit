@@ -5,6 +5,7 @@ package daemon
 import (
 	"fmt"
 	"os"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -101,6 +102,7 @@ func verifyWindowsRuntimeDirHandle(path string, handle windows.Handle, userSID *
 	if err != nil {
 		return err
 	}
+	defer func() { _, _ = windows.LocalFree(windows.Handle(unsafe.Pointer(descriptor))) }()
 	owner, _, err := descriptor.Owner()
 	if err != nil {
 		return err
@@ -137,6 +139,7 @@ func restrictWindowsRuntimeDir(handle windows.Handle, userSID *windows.SID) erro
 	if err != nil {
 		return err
 	}
+	defer func() { _, _ = windows.LocalFree(windows.Handle(unsafe.Pointer(acl))) }()
 	return windows.SetSecurityInfo(
 		handle,
 		windows.SE_FILE_OBJECT,

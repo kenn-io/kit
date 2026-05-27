@@ -40,6 +40,21 @@ func TestRuntimeStoreRepairsPublicDir(t *testing.T) {
 	require.Zero(t, info.Mode().Perm()&0o077)
 }
 
+func TestRuntimeStoreRepairsPrivateUnusableDir(t *testing.T) {
+	dir := filepath.Join("/tmp", fmt.Sprintf("kit-runtime-unusable-%d", os.Getpid()))
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	require.NoError(t, os.RemoveAll(dir))
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	require.NoError(t, os.Chmod(dir, 0o500))
+
+	store := daemon.RuntimeStore{Dir: dir}
+	_, err := store.LockPath()
+	require.NoError(t, err)
+	info, err := os.Stat(dir)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+}
+
 func TestRuntimeStoreRejectsSymlinkDir(t *testing.T) {
 	base := filepath.Join("/tmp", fmt.Sprintf("kit-runtime-symlink-%d", os.Getpid()))
 	target := base + "-target"
