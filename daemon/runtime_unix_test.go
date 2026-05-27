@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -94,5 +95,18 @@ func TestRuntimeStoreRejectsSymlinkRecord(t *testing.T) {
 
 	store := daemon.RuntimeStore{Dir: dir}
 	_, err := store.Read(link)
+	require.Error(t, err)
+}
+
+func TestRuntimeStoreRejectsNonRegularRecord(t *testing.T) {
+	dir := filepath.Join("/tmp", fmt.Sprintf("kit-runtime-fifo-%d", os.Getpid()))
+	record := filepath.Join(dir, "daemon.1.json")
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	require.NoError(t, os.RemoveAll(dir))
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	require.NoError(t, syscall.Mkfifo(record, 0o600))
+
+	store := daemon.RuntimeStore{Dir: dir}
+	_, err := store.Read(record)
 	require.Error(t, err)
 }

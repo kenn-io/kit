@@ -5,7 +5,6 @@ package daemon
 import (
 	"fmt"
 	"os"
-	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -21,6 +20,9 @@ func validateRuntimeFileOwner(path string) error {
 	if info.IsDir() {
 		return fmt.Errorf("%s is a directory", path)
 	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", path)
+	}
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
 		return err
@@ -33,7 +35,6 @@ func validateRuntimeFileOwner(path string) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _, _ = windows.LocalFree(windows.Handle(unsafe.Pointer(descriptor))) }()
 	owner, _, err := descriptor.Owner()
 	if err != nil {
 		return err

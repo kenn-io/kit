@@ -19,6 +19,9 @@ func validateRuntimeFileOwner(path string) error {
 	if info.IsDir() {
 		return fmt.Errorf("%s is a directory", path)
 	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", path)
+	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
 		return fmt.Errorf("stat %s: missing owner information", path)

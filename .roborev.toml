@@ -1,0 +1,16 @@
+review_guidelines = """
+## Compilation, imports, and build errors
+
+Reviewer agents are not in the business of checking whether this repository
+compiles. That is the compiler's job, and local validation runs `go test`,
+`go vet`, `golangci-lint`, and Windows compile checks where relevant.
+
+Do not flag suspected compile errors, missing imports, undeclared identifiers,
+type mismatches, wrong function signatures, or other build-level issues. Review
+agents often see only a diff and can easily miss package-level declarations,
+pinned dependency APIs, build tags, or generated/platform-specific code. If the
+code actually does not compile, the toolchain will fail before the PR can land.
+
+Focus reviews on logic, architecture, behavior, security boundaries, and test
+coverage for behavior. Trust the build for compilability.
+"""
