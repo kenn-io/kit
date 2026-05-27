@@ -88,6 +88,8 @@ func Probe(ctx context.Context, ep Endpoint, opts ProbeOptions) (PingInfo, error
 
 // ProbeHTTP checks that baseURL answers its ping endpoint.
 func ProbeHTTP(ctx context.Context, client *http.Client, baseURL string, opts ProbeOptions) (PingInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, opts.timeout())
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+opts.path(), nil)
 	if err != nil {
 		return PingInfo{}, err

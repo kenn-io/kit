@@ -218,6 +218,7 @@ func (e Endpoint) HTTPClient(opts HTTPClientOptions) *http.Client {
 	}
 	base, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
+		client.Transport = &http.Transport{Proxy: nil}
 		return client
 	}
 	transport := base.Clone()

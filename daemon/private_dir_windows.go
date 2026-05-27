@@ -107,6 +107,9 @@ func verifyWindowsRuntimeDirHandle(path string, handle windows.Handle, userSID *
 	if err != nil {
 		return err
 	}
+	if owner == nil {
+		return fmt.Errorf("%s owner is missing", path)
+	}
 	if !owner.Equals(userSID) {
 		return fmt.Errorf("%s is not owned by current user", path)
 	}

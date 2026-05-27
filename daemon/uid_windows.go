@@ -12,6 +12,7 @@ func runtimeUID() string {
 	if err != nil {
 		return "unknown"
 	}
-	sum := sha256.Sum256([]byte(sid.String()))
+	sidText := sid.String()
+	sum := sha256.Sum256([]byte(sidText))
 	return "sid-" + hex.EncodeToString(sum[:8])
 }

@@ -38,6 +38,9 @@ func validateRuntimeFileOwner(path string) error {
 	if err != nil {
 		return err
 	}
+	if owner == nil {
+		return fmt.Errorf("%s owner is missing", path)
+	}
 	if !owner.Equals(user.User.Sid) {
 		return fmt.Errorf("%s is not owned by current user", path)
 	}

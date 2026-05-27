@@ -90,6 +90,19 @@ func TestProbeHTTPRejectsOKFalse(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestProbeHTTPAppliesTimeoutOption(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(50 * time.Millisecond)
+		_, _ = fmt.Fprint(w, `{"ok":true,"service":"kata"}`)
+	}))
+	defer server.Close()
+
+	_, err := daemon.ProbeHTTP(context.Background(), server.Client(), server.URL, daemon.ProbeOptions{
+		Timeout: time.Millisecond,
+	})
+	require.Error(t, err)
+}
+
 func TestDiscoverFindsResponsiveRuntime(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprint(w, `{"ok":true,"service":"kata","version":"v1"}`)
