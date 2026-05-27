@@ -73,6 +73,16 @@ func TestUnixHTTPClientDialsSocket(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
+func TestTCPHTTPClientBypassesEnvironmentProxy(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+
+	ep := daemon.Endpoint{Network: daemon.NetworkTCP, Address: "10.0.0.1:7373"}
+	client := ep.HTTPClient(daemon.HTTPClientOptions{})
+	transport, ok := client.Transport.(*http.Transport)
+	require.True(t, ok)
+	assert.Nil(t, transport.Proxy)
+}
+
 func TestDefaultSocketPathCreatesPrivateTempFallback(t *testing.T) {
 	service := fmt.Sprintf("kitdtest%d", os.Getpid())
 	t.Setenv("TMPDIR", "/tmp")

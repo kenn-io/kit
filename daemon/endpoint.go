@@ -216,14 +216,12 @@ func (e Endpoint) HTTPClient(opts HTTPClientOptions) *http.Client {
 		}
 		return client
 	}
-	if opts.ResponseHeaderTimeout == 0 && !opts.DisableKeepAlives {
-		return client
-	}
 	base, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
 		return client
 	}
 	transport := base.Clone()
+	transport.Proxy = nil
 	transport.ResponseHeaderTimeout = opts.ResponseHeaderTimeout
 	transport.DisableKeepAlives = opts.DisableKeepAlives
 	client.Transport = transport
