@@ -1,0 +1,69 @@
+package daemon_test
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.kenn.io/kit/daemon"
+)
+
+func TestParseEndpointDefaultTCP(t *testing.T) {
+	ep, err := daemon.ParseEndpoint("", daemon.ParseEndpointOptions{
+		DefaultTCPAddress: "127.0.0.1:7373",
+		TCPPolicy:         daemon.RequireLoopback,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, daemon.NetworkTCP, ep.Network)
+	assert.Equal(t, "127.0.0.1:7373", ep.Address)
+	assert.Equal(t, "http://127.0.0.1:7373", ep.BaseURL())
+	assert.Equal(t, 7373, ep.Port())
+}
+
+func TestParseEndpointRejectsPublicTCPWhenPolicyRequiresNonPublic(t *testing.T) {
+	_, err := daemon.ParseEndpoint("8.8.8.8:80", daemon.ParseEndpointOptions{
+		TCPPolicy: daemon.RequireNonPublic,
+	})
+	require.Error(t, err)
+}
+
+func TestParseEndpointUnixDefault(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "daemon.sock")
+	ep, err := daemon.ParseEndpoint("unix://", daemon.ParseEndpointOptions{
+		DefaultUnixPath: socketPath,
+	})
+	require.NoError(t, err)
+	assert.True(t, ep.IsUnix())
+	assert.Equal(t, "unix://"+socketPath, ep.ConfigAddress())
+}
+
+func TestUnixHTTPClientDialsSocket(t *testing.T) {
+	socketDir, err := os.MkdirTemp("", "kitd")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	socketPath := filepath.Join(socketDir, "daemon.sock")
+	listener, err := net.Listen("unix", socketPath)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = listener.Close()
+		_ = os.Remove(socketPath)
+	})
+
+	server := http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, "ok")
+	})}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() { _ = server.Shutdown(context.Background()) })
+
+	ep := daemon.Endpoint{Network: daemon.NetworkUnix, Address: socketPath}
+	resp, err := ep.HTTPClient(daemon.HTTPClientOptions{}).Get(ep.BaseURL())
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
