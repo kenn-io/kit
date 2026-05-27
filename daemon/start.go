@@ -61,5 +61,10 @@ func StartDetached(ctx context.Context, opts StartDetachedOptions) error {
 // binary that should not be used as a long-lived daemon.
 func IsEphemeralExecutable(exe string) bool {
 	base := filepath.Base(exe)
-	return strings.HasSuffix(base, ".test") || strings.Contains(exe, string(filepath.Separator)+"go-build")
+	lowerBase := strings.ToLower(base)
+	if withoutExe, ok := strings.CutSuffix(lowerBase, ".exe"); ok {
+		lowerBase = withoutExe
+	}
+	normalized := strings.ReplaceAll(exe, `\`, `/`)
+	return strings.HasSuffix(lowerBase, ".test") || strings.Contains(normalized, "/go-build")
 }
