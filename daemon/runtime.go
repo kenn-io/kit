@@ -168,6 +168,10 @@ func (s RuntimeStore) Read(path string) (RuntimeRecord, error) {
 	if err := s.prepareDir(); err != nil {
 		return RuntimeRecord{}, err
 	}
+	return s.readPrepared(path)
+}
+
+func (s RuntimeStore) readPrepared(path string) (RuntimeRecord, error) {
 	if err := validateRuntimeFileOwner(path); err != nil {
 		return RuntimeRecord{}, err
 	}
@@ -211,7 +215,7 @@ func (s RuntimeStore) List() ([]RuntimeRecord, error) {
 			continue
 		}
 		path := filepath.Join(s.Dir, name)
-		rec, err := s.Read(path)
+		rec, err := s.readPrepared(path)
 		if err != nil || rec.PID != filenamePID || rec.Address == "" {
 			continue
 		}
@@ -255,7 +259,7 @@ func (s RuntimeStore) CleanupDead() (int, error) {
 			continue
 		}
 		path := filepath.Join(s.Dir, name)
-		rec, err := s.Read(path)
+		rec, err := s.readPrepared(path)
 		if err != nil || rec.PID != filenamePID || ProcessAlive(filenamePID) {
 			continue
 		}
