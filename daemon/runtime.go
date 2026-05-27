@@ -3,6 +3,7 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -172,10 +173,12 @@ func (s RuntimeStore) Read(path string) (RuntimeRecord, error) {
 }
 
 func (s RuntimeStore) readPrepared(path string) (RuntimeRecord, error) {
-	if err := validateRuntimeFileOwner(path); err != nil {
+	file, err := openRuntimeFile(path)
+	if err != nil {
 		return RuntimeRecord{}, err
 	}
-	body, err := os.ReadFile(path)
+	defer func() { _ = file.Close() }()
+	body, err := io.ReadAll(file)
 	if err != nil {
 		return RuntimeRecord{}, fmt.Errorf("read runtime file %s: %w", path, err)
 	}

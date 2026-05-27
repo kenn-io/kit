@@ -1,6 +1,6 @@
 //go:build windows
 
-package daemon
+package safefileio
 
 import (
 	"os"
@@ -11,10 +11,10 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func TestEnsurePrivateRuntimeDirCreatesOwnedDirectory(t *testing.T) {
+func TestEnsurePrivateDirCreatesOwnedDirectory(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "runtime")
 
-	require.NoError(t, ensurePrivateRuntimeDir(dir))
+	require.NoError(t, EnsurePrivateDir(dir))
 
 	userSID, err := currentWindowsUserSID()
 	require.NoError(t, err)
@@ -30,7 +30,11 @@ func TestEnsurePrivateRuntimeDirCreatesOwnedDirectory(t *testing.T) {
 	require.True(t, owner.Equals(userSID))
 }
 
-func TestEnsurePrivateRuntimeDirRejectsSymlink(t *testing.T) {
+func TestEnsurePrivateDirRejectsEmptyPath(t *testing.T) {
+	require.Error(t, EnsurePrivateDir(""))
+}
+
+func TestEnsurePrivateDirRejectsSymlink(t *testing.T) {
 	base := t.TempDir()
 	target := filepath.Join(base, "target")
 	link := filepath.Join(base, "link")
@@ -39,11 +43,19 @@ func TestEnsurePrivateRuntimeDirRejectsSymlink(t *testing.T) {
 		t.Skipf("symlink unavailable: %v", err)
 	}
 
-	require.Error(t, ensurePrivateRuntimeDir(link))
+	require.Error(t, EnsurePrivateDir(link))
 }
 
-func TestRuntimeUIDIsPerUser(t *testing.T) {
-	require.NotEmpty(t, runtimeUID())
-	require.NotEqual(t, "user", runtimeUID())
-	require.Contains(t, runtimeUID(), "sid-")
+func TestOpenCurrentUserFileRejectsEmptyPath(t *testing.T) {
+	file, err := OpenCurrentUserFile("")
+	require.Error(t, err)
+	require.Nil(t, file)
+}
+
+func TestCurrentUserIDIsPerUser(t *testing.T) {
+	id, err := CurrentUserID()
+	require.NoError(t, err)
+	require.NotEmpty(t, id)
+	require.NotEqual(t, "user", id)
+	require.Contains(t, id, "sid-")
 }

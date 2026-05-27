@@ -1,6 +1,6 @@
 //go:build !windows
 
-package daemon
+package safefileio
 
 import (
 	"fmt"
@@ -8,7 +8,12 @@ import (
 	"syscall"
 )
 
-func ensurePrivateRuntimeDir(path string) error {
+// EnsurePrivateDir creates path when needed and verifies it is a non-symlink
+// directory owned by the current user with mode 0700.
+func EnsurePrivateDir(path string) error {
+	if path == "" {
+		return fmt.Errorf("path is empty")
+	}
 	if info, err := os.Lstat(path); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("%s is a symlink", path)
@@ -39,11 +44,11 @@ func ensurePrivateRuntimeDir(path string) error {
 	if info.Mode().Perm() != 0o700 {
 		dir, err := os.OpenFile(path, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
 		if err != nil {
-			return fmt.Errorf("open private runtime dir: %w", err)
+			return fmt.Errorf("open private dir: %w", err)
 		}
 		defer func() { _ = dir.Close() }()
 		if err := dir.Chmod(0o700); err != nil {
-			return fmt.Errorf("chmod private runtime dir: %w", err)
+			return fmt.Errorf("chmod private dir: %w", err)
 		}
 		info, err = dir.Stat()
 		if err != nil {

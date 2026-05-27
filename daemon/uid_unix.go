@@ -2,11 +2,12 @@
 
 package daemon
 
-import (
-	"os"
-	"strconv"
-)
+import "go.kenn.io/kit/safefileio"
 
 func runtimeUID() string {
-	return strconv.Itoa(os.Getuid())
+	id, err := safefileio.CurrentUserID()
+	if err != nil {
+		return "unknown"
+	}
+	return id
 }

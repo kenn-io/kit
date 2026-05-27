@@ -2,17 +2,12 @@
 
 package daemon
 
-import (
-	"crypto/sha256"
-	"encoding/hex"
-)
+import "go.kenn.io/kit/safefileio"
 
 func runtimeUID() string {
-	sid, err := currentWindowsUserSID()
+	id, err := safefileio.CurrentUserID()
 	if err != nil {
 		return "unknown"
 	}
-	sidText := sid.String()
-	sum := sha256.Sum256([]byte(sidText))
-	return "sid-" + hex.EncodeToString(sum[:8])
+	return id
 }

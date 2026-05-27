@@ -1,15 +1,22 @@
 //go:build windows
 
-package daemon
+package safefileio
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 
 	"golang.org/x/sys/windows"
 )
 
-func ensurePrivateRuntimeDir(path string) error {
+// EnsurePrivateDir creates path when needed and verifies it is a non-reparse
+// directory owned by the current user with an owner/system/admin-only DACL.
+func EnsurePrivateDir(path string) error {
+	if path == "" {
+		return fmt.Errorf("path is empty")
+	}
 	if err := rejectWindowsReparsePoint(path); err != nil {
 		return err
 	}
@@ -26,7 +33,7 @@ func ensurePrivateRuntimeDir(path string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("%s is not a directory", path)
 	}
-	handle, err := openWindowsRuntimeDir(path)
+	handle, err := openWindowsDir(path)
 	if err != nil {
 		return err
 	}
@@ -35,10 +42,21 @@ func ensurePrivateRuntimeDir(path string) error {
 	if err != nil {
 		return err
 	}
-	if err := verifyWindowsRuntimeDirHandle(path, handle, userSID); err != nil {
+	if err := verifyWindowsDirHandle(path, handle, userSID); err != nil {
 		return err
 	}
-	return restrictWindowsRuntimeDir(handle, userSID)
+	return restrictWindowsDir(handle, userSID)
+}
+
+// CurrentUserID returns a stable filesystem-safe identifier for the current
+// Windows account.
+func CurrentUserID() (string, error) {
+	sid, err := currentWindowsUserSID()
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte(sid.String()))
+	return "sid-" + hex.EncodeToString(sum[:8]), nil
 }
 
 func rejectWindowsReparsePoint(path string) error {
@@ -66,7 +84,7 @@ func rejectWindowsReparsePoint(path string) error {
 	return nil
 }
 
-func openWindowsRuntimeDir(path string) (windows.Handle, error) {
+func openWindowsDir(path string) (windows.Handle, error) {
 	path16, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		return 0, err
@@ -82,7 +100,7 @@ func openWindowsRuntimeDir(path string) (windows.Handle, error) {
 	)
 }
 
-func verifyWindowsRuntimeDirHandle(path string, handle windows.Handle, userSID *windows.SID) error {
+func verifyWindowsDirHandle(path string, handle windows.Handle, userSID *windows.SID) error {
 	var info windows.ByHandleFileInformation
 	if err := windows.GetFileInformationByHandle(handle, &info); err != nil {
 		return err
@@ -122,7 +140,7 @@ func currentWindowsUserSID() (*windows.SID, error) {
 	return user.User.Sid, nil
 }
 
-func restrictWindowsRuntimeDir(handle windows.Handle, userSID *windows.SID) error {
+func restrictWindowsDir(handle windows.Handle, userSID *windows.SID) error {
 	system, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
 	if err != nil {
 		return err
