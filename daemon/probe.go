@@ -114,20 +114,36 @@ func ProbeHTTP(ctx context.Context, client *http.Client, baseURL string, opts Pr
 type DiscoverOptions struct {
 	Probe           ProbeOptions
 	RequirePIDAlive bool
+	Accept          func(RuntimeRecord, PingInfo) bool
 }
 
 // Discover scans runtime records and returns the first live daemon.
 func Discover(ctx context.Context, store RuntimeStore, opts DiscoverOptions) (RuntimeRecord, PingInfo, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return RuntimeRecord{}, PingInfo{}, false, err
+	}
 	records, err := store.List()
 	if err != nil {
 		return RuntimeRecord{}, PingInfo{}, false, err
 	}
 	for _, rec := range records {
+		if err := ctx.Err(); err != nil {
+			return RuntimeRecord{}, PingInfo{}, false, err
+		}
 		if opts.RequirePIDAlive && !ProcessAlive(rec.PID) {
 			continue
 		}
 		info, err := Probe(ctx, rec.Endpoint(), opts.Probe)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return RuntimeRecord{}, PingInfo{}, false, ctxErr
+			}
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return RuntimeRecord{}, PingInfo{}, false, err
+			}
+			continue
+		}
+		if opts.Accept != nil && !opts.Accept(rec, info) {
 			continue
 		}
 		return rec, info, true, nil

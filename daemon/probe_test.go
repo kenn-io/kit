@@ -118,6 +118,14 @@ func TestDiscoverFindsResponsiveRuntime(t *testing.T) {
 	assert.Equal(t, "kata", info.Service)
 }
 
+func TestDiscoverPropagatesContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _, _, err := daemon.Discover(ctx, daemon.RuntimeStore{Dir: t.TempDir()}, daemon.DiscoverOptions{})
+	require.ErrorIs(t, err, context.Canceled)
+}
+
 func TestProbeDialsUnixEndpoint(t *testing.T) {
 	socketDir, err := os.MkdirTemp("", "kitd")
 	require.NoError(t, err)

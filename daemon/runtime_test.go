@@ -50,15 +50,35 @@ func TestRuntimeStoreCleanupDeadLeavesMismatchedFiles(t *testing.T) {
 	_, err := store.Write(dead)
 	require.NoError(t, err)
 
-	mismatchPath := store.Path(deadPID + 1)
+	mismatchPath, err := store.Path(deadPID + 1)
+	require.NoError(t, err)
 	err = os.WriteFile(mismatchPath, []byte(`{"pid":999999,"address":"127.0.0.1:7475"}`), 0o644)
 	require.NoError(t, err)
 
 	removed, err := store.CleanupDead()
 	require.NoError(t, err)
 	assert.Equal(t, 1, removed)
-	_, err = os.Stat(store.Path(deadPID))
+	deadPath, err := store.Path(deadPID)
+	require.NoError(t, err)
+	_, err = os.Stat(deadPath)
 	assert.True(t, os.IsNotExist(err), "dead runtime still exists or unexpected stat error: %v", err)
 	_, err = os.Stat(mismatchPath)
 	require.NoError(t, err)
+}
+
+func TestRuntimeStoreRejectsPrefixTraversal(t *testing.T) {
+	store := daemon.RuntimeStore{Dir: t.TempDir(), Prefix: "../escape"}
+
+	_, err := store.Path(123)
+	require.Error(t, err)
+	_, err = store.Write(daemon.RuntimeRecord{
+		PID:     123,
+		Network: daemon.NetworkTCP,
+		Address: "127.0.0.1:7474",
+	})
+	require.Error(t, err)
+	_, err = store.List()
+	require.Error(t, err)
+	_, err = store.CleanupDead()
+	require.Error(t, err)
 }

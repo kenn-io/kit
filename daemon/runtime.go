@@ -64,9 +64,38 @@ func (s RuntimeStore) prefix() string {
 	return s.Prefix
 }
 
+func (s RuntimeStore) validatePrefix() (string, error) {
+	prefix := s.prefix()
+	if prefix == "." || prefix == ".." ||
+		strings.ContainsAny(prefix, `/\`) ||
+		filepath.Base(prefix) != prefix {
+		return "", fmt.Errorf("runtime prefix %q must be a basename", prefix)
+	}
+	return prefix, nil
+}
+
 // Path returns the runtime file path for pid.
-func (s RuntimeStore) Path(pid int) string {
-	return filepath.Join(s.Dir, fmt.Sprintf("%s.%d.json", s.prefix(), pid))
+func (s RuntimeStore) Path(pid int) (string, error) {
+	prefix, err := s.validatePrefix()
+	if err != nil {
+		return "", err
+	}
+	if pid <= 0 {
+		return "", fmt.Errorf("pid must be > 0")
+	}
+	return filepath.Join(s.Dir, fmt.Sprintf("%s.%d.json", prefix, pid)), nil
+}
+
+// LockPath returns the path used to serialize daemon auto-starts for the store.
+func (s RuntimeStore) LockPath() (string, error) {
+	prefix, err := s.validatePrefix()
+	if err != nil {
+		return "", err
+	}
+	if s.Dir == "" {
+		return "", fmt.Errorf("runtime dir is empty")
+	}
+	return filepath.Join(s.Dir, prefix+".lock"), nil
 }
 
 // Write saves rec atomically and returns the final path.
@@ -83,15 +112,22 @@ func (s RuntimeStore) Write(rec RuntimeRecord) (string, error) {
 	if rec.StartedAt.IsZero() {
 		rec.StartedAt = time.Now().UTC()
 	}
+	prefix, err := s.validatePrefix()
+	if err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
 		return "", fmt.Errorf("mkdir runtime dir: %w", err)
 	}
-	final := s.Path(rec.PID)
+	final, err := s.Path(rec.PID)
+	if err != nil {
+		return "", err
+	}
 	body, err := json.MarshalIndent(rec, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("marshal runtime record: %w", err)
 	}
-	tmp, err := os.CreateTemp(s.Dir, fmt.Sprintf("%s.%d.*.json.tmp", s.prefix(), rec.PID))
+	tmp, err := os.CreateTemp(s.Dir, fmt.Sprintf("%s.%d.*.json.tmp", prefix, rec.PID))
 	if err != nil {
 		return "", fmt.Errorf("create runtime temp file: %w", err)
 	}
@@ -137,6 +173,10 @@ func (s RuntimeStore) Read(path string) (RuntimeRecord, error) {
 // List returns valid runtime records in deterministic order. Malformed files
 // and temp files are ignored.
 func (s RuntimeStore) List() ([]RuntimeRecord, error) {
+	prefix, err := s.validatePrefix()
+	if err != nil {
+		return nil, err
+	}
 	entries, err := os.ReadDir(s.Dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -150,7 +190,7 @@ func (s RuntimeStore) List() ([]RuntimeRecord, error) {
 			continue
 		}
 		name := entry.Name()
-		filenamePID, ok := s.pidFromName(name)
+		filenamePID, ok := pidFromName(prefix, name)
 		if !ok {
 			continue
 		}
@@ -174,6 +214,10 @@ func (s RuntimeStore) List() ([]RuntimeRecord, error) {
 // and the process is no longer alive. Malformed and PID-mismatched files are
 // left in place for human inspection.
 func (s RuntimeStore) CleanupDead() (int, error) {
+	prefix, err := s.validatePrefix()
+	if err != nil {
+		return 0, err
+	}
 	entries, err := os.ReadDir(s.Dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -187,7 +231,7 @@ func (s RuntimeStore) CleanupDead() (int, error) {
 			continue
 		}
 		name := entry.Name()
-		filenamePID, ok := s.pidFromName(name)
+		filenamePID, ok := pidFromName(prefix, name)
 		if !ok {
 			continue
 		}
@@ -203,12 +247,12 @@ func (s RuntimeStore) CleanupDead() (int, error) {
 	return removed, nil
 }
 
-func (s RuntimeStore) pidFromName(name string) (int, bool) {
-	prefix := s.prefix() + "."
-	if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ".json") {
+func pidFromName(prefix, name string) (int, bool) {
+	filePrefix := prefix + "."
+	if !strings.HasPrefix(name, filePrefix) || !strings.HasSuffix(name, ".json") {
 		return 0, false
 	}
-	mid := strings.TrimSuffix(strings.TrimPrefix(name, prefix), ".json")
+	mid := strings.TrimSuffix(strings.TrimPrefix(name, filePrefix), ".json")
 	pid, err := strconv.Atoi(mid)
 	if err != nil || pid <= 0 {
 		return 0, false
