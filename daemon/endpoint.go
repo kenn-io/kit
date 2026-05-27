@@ -129,6 +129,9 @@ func RequireNonPublic(addr string) error {
 	if err != nil {
 		return fmt.Errorf("parse host:port: %w", err)
 	}
+	if host == "localhost" {
+		return nil
+	}
 	ip := net.ParseIP(host)
 	if ip == nil {
 		return fmt.Errorf("address %q is not a literal IP", addr)

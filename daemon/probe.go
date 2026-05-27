@@ -145,6 +145,9 @@ func Discover(ctx context.Context, store RuntimeStore, opts DiscoverOptions) (Ru
 			}
 			continue
 		}
+		if opts.RequirePIDAlive && info.PID != rec.PID {
+			continue
+		}
 		if opts.Accept != nil && !opts.Accept(rec, info) {
 			continue
 		}

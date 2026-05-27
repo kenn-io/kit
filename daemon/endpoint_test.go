@@ -38,6 +38,10 @@ func TestRequireNonPublicAllowsCGNAT(t *testing.T) {
 	require.NoError(t, daemon.RequireNonPublic("100.64.0.1:7777"))
 }
 
+func TestRequireNonPublicAllowsLocalhost(t *testing.T) {
+	require.NoError(t, daemon.RequireNonPublic("localhost:7777"))
+}
+
 func TestParseEndpointUnixDefault(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "daemon.sock")
 	ep, err := daemon.ParseEndpoint("unix://", daemon.ParseEndpointOptions{

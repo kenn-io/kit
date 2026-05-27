@@ -105,7 +105,7 @@ func TestProbeHTTPAppliesTimeoutOption(t *testing.T) {
 
 func TestDiscoverFindsResponsiveRuntime(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = fmt.Fprint(w, `{"ok":true,"service":"kata","version":"v1"}`)
+		_, _ = fmt.Fprintf(w, `{"ok":true,"service":"kata","version":"v1","pid":%d}`, os.Getpid())
 	}))
 	defer server.Close()
 
@@ -129,6 +129,30 @@ func TestDiscoverFindsResponsiveRuntime(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, addr, rec.Address)
 	assert.Equal(t, "kata", info.Service)
+}
+
+func TestDiscoverRejectsPIDMismatchWhenRequiringLivePID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprintf(w, `{"ok":true,"service":"kata","pid":%d}`, os.Getpid()+1)
+	}))
+	defer server.Close()
+
+	store := daemon.RuntimeStore{Dir: t.TempDir()}
+	_, err := store.Write(daemon.RuntimeRecord{
+		PID:       os.Getpid(),
+		Network:   daemon.NetworkTCP,
+		Address:   listenerAddr(t, server),
+		Service:   "kata",
+		StartedAt: time.Now(),
+	})
+	require.NoError(t, err)
+
+	_, _, ok, err := daemon.Discover(context.Background(), store, daemon.DiscoverOptions{
+		Probe:           daemon.ProbeOptions{ExpectedService: "kata"},
+		RequirePIDAlive: true,
+	})
+	require.NoError(t, err)
+	assert.False(t, ok)
 }
 
 func TestDiscoverPropagatesContextCancellation(t *testing.T) {
