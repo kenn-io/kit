@@ -13,7 +13,7 @@ import (
 	"go.kenn.io/kit/daemon"
 )
 
-func TestDefaultSocketPathRejectsPublicTempFallback(t *testing.T) {
+func TestDefaultSocketPathRepairsPublicTempFallback(t *testing.T) {
 	tempDir := "/tmp"
 	service := fmt.Sprintf("kitdpublic%d", os.Getpid())
 	t.Setenv("TMPDIR", tempDir)
@@ -23,7 +23,12 @@ func TestDefaultSocketPathRejectsPublicTempFallback(t *testing.T) {
 	require.NoError(t, os.MkdirAll(parent, 0o700))
 	require.NoError(t, os.Chmod(parent, 0o777))
 
-	assert.Empty(t, daemon.DefaultSocketPath(service))
+	socketPath := daemon.DefaultSocketPath(service)
+	require.NotEmpty(t, socketPath)
+	assert.Equal(t, filepath.Join(parent, "daemon.sock"), socketPath)
+	info, err := os.Stat(parent)
+	require.NoError(t, err)
+	assert.Zero(t, info.Mode().Perm()&0o077)
 }
 
 func TestDefaultSocketPathCreatesPrivateXDGRuntimeDir(t *testing.T) {

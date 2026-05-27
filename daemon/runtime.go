@@ -74,6 +74,16 @@ func (s RuntimeStore) validatePrefix() (string, error) {
 	return prefix, nil
 }
 
+func (s RuntimeStore) prepareDir() error {
+	if s.Dir == "" {
+		return fmt.Errorf("runtime dir is empty")
+	}
+	if err := ensurePrivateRuntimeDir(s.Dir); err != nil {
+		return fmt.Errorf("prepare runtime dir: %w", err)
+	}
+	return nil
+}
+
 // Path returns the runtime file path for pid.
 func (s RuntimeStore) Path(pid int) (string, error) {
 	prefix, err := s.validatePrefix()
@@ -92,16 +102,16 @@ func (s RuntimeStore) LockPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if s.Dir == "" {
-		return "", fmt.Errorf("runtime dir is empty")
+	if err := s.prepareDir(); err != nil {
+		return "", err
 	}
 	return filepath.Join(s.Dir, prefix+".lock"), nil
 }
 
 // Write saves rec atomically and returns the final path.
 func (s RuntimeStore) Write(rec RuntimeRecord) (string, error) {
-	if s.Dir == "" {
-		return "", fmt.Errorf("runtime dir is empty")
+	if err := s.prepareDir(); err != nil {
+		return "", err
 	}
 	if rec.PID <= 0 {
 		return "", fmt.Errorf("pid must be > 0")
@@ -115,9 +125,6 @@ func (s RuntimeStore) Write(rec RuntimeRecord) (string, error) {
 	prefix, err := s.validatePrefix()
 	if err != nil {
 		return "", err
-	}
-	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
-		return "", fmt.Errorf("mkdir runtime dir: %w", err)
 	}
 	final, err := s.Path(rec.PID)
 	if err != nil {
@@ -158,6 +165,9 @@ func (s RuntimeStore) Write(rec RuntimeRecord) (string, error) {
 
 // Read parses one runtime file.
 func (s RuntimeStore) Read(path string) (RuntimeRecord, error) {
+	if err := s.prepareDir(); err != nil {
+		return RuntimeRecord{}, err
+	}
 	body, err := os.ReadFile(path)
 	if err != nil {
 		return RuntimeRecord{}, fmt.Errorf("read runtime file %s: %w", path, err)
@@ -175,6 +185,9 @@ func (s RuntimeStore) Read(path string) (RuntimeRecord, error) {
 func (s RuntimeStore) List() ([]RuntimeRecord, error) {
 	prefix, err := s.validatePrefix()
 	if err != nil {
+		return nil, err
+	}
+	if err := s.prepareDir(); err != nil {
 		return nil, err
 	}
 	entries, err := os.ReadDir(s.Dir)
@@ -216,6 +229,9 @@ func (s RuntimeStore) List() ([]RuntimeRecord, error) {
 func (s RuntimeStore) CleanupDead() (int, error) {
 	prefix, err := s.validatePrefix()
 	if err != nil {
+		return 0, err
+	}
+	if err := s.prepareDir(); err != nil {
 		return 0, err
 	}
 	entries, err := os.ReadDir(s.Dir)
