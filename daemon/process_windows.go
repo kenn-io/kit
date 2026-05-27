@@ -2,7 +2,10 @@
 
 package daemon
 
-import "syscall"
+import (
+	"errors"
+	"syscall"
+)
 
 // ProcessAlive reports whether pid appears to name a live process.
 func ProcessAlive(pid int) bool {
@@ -12,7 +15,7 @@ func ProcessAlive(pid int) bool {
 	const processQueryLimitedInformation = 0x1000
 	handle, err := syscall.OpenProcess(processQueryLimitedInformation, false, uint32(pid))
 	if err != nil {
-		return false
+		return errors.Is(err, syscall.ERROR_ACCESS_DENIED)
 	}
 	_ = syscall.CloseHandle(handle)
 	return true
