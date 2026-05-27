@@ -231,16 +231,24 @@ func (e Endpoint) HTTPClient(opts HTTPClientOptions) *http.Client {
 }
 
 // DefaultSocketPath returns a per-user socket path under XDG_RUNTIME_DIR when
-// available, otherwise under a private directory in os.TempDir().
+// available, otherwise under a private directory in os.TempDir(). It returns
+// an empty string when service is not a single path component or no private
+// socket path can be prepared within the platform path limit.
 func DefaultSocketPath(service string) string {
 	if service == "" {
 		service = "daemon"
 	}
+	if !validSocketService(service) {
+		return ""
+	}
 	if xdg := os.Getenv("XDG_RUNTIME_DIR"); xdg != "" && filepath.IsAbs(xdg) {
 		if info, err := os.Stat(xdg); err == nil && info.IsDir() {
-			path := filepath.Join(xdg, service, "daemon.sock")
-			if len(path) < MaxUnixPathLen {
-				return path
+			parent := filepath.Join(xdg, service)
+			if err := ensurePrivateRuntimeDir(parent); err == nil {
+				path := filepath.Join(parent, "daemon.sock")
+				if len(path) < MaxUnixPathLen {
+					return path
+				}
 			}
 		}
 	}
@@ -253,4 +261,26 @@ func DefaultSocketPath(service string) string {
 		return ""
 	}
 	return path
+}
+
+func validSocketService(service string) bool {
+	if service == "" || service == "." || service == ".." || strings.ContainsRune(service, 0) {
+		return false
+	}
+	if filepath.Base(service) != service {
+		return false
+	}
+	if strings.ContainsAny(service, `/\`) {
+		return false
+	}
+	for _, r := range service {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		if r == '-' || r == '_' || r == '.' {
+			continue
+		}
+		return false
+	}
+	return true
 }

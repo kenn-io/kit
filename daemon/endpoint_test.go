@@ -90,3 +90,20 @@ func TestDefaultSocketPathCreatesPrivateTempFallback(t *testing.T) {
 		assert.Zero(t, info.Mode().Perm()&0o077)
 	}
 }
+
+func TestDefaultSocketPathRejectsPathLikeServiceNames(t *testing.T) {
+	cases := map[string]string{
+		"current-directory": ".",
+		"parent-directory":  "..",
+		"slash":             "bad/service",
+		"backslash":         `bad\service`,
+		"colon":             "bad:service",
+		"space":             "bad service",
+		"null":              string([]byte{'b', 0, 'd'}),
+	}
+	for name, service := range cases {
+		t.Run(name, func(t *testing.T) {
+			assert.Empty(t, daemon.DefaultSocketPath(service))
+		})
+	}
+}

@@ -79,7 +79,10 @@ func Probe(ctx context.Context, ep Endpoint, opts ProbeOptions) (PingInfo, error
 	if ep.Address == "" {
 		return PingInfo{}, fmt.Errorf("empty daemon endpoint address")
 	}
-	client := ep.HTTPClient(HTTPClientOptions{Timeout: opts.timeout()})
+	client := ep.HTTPClient(HTTPClientOptions{
+		Timeout:           opts.timeout(),
+		DisableKeepAlives: true,
+	})
 	return ProbeHTTP(ctx, client, ep.BaseURL(), opts)
 }
 
