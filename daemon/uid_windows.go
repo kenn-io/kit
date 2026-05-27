@@ -5,15 +5,13 @@ package daemon
 import (
 	"crypto/sha256"
 	"encoding/hex"
-
-	"golang.org/x/sys/windows"
 )
 
 func runtimeUID() string {
-	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	sid, err := currentWindowsUserSID()
 	if err != nil {
 		return "unknown"
 	}
-	sum := sha256.Sum256([]byte(user.User.Sid.String()))
+	sum := sha256.Sum256([]byte(sid.String()))
 	return "sid-" + hex.EncodeToString(sum[:8])
 }

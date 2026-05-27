@@ -26,7 +26,19 @@ func ensurePrivateRuntimeDir(path string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("%s is not a directory", path)
 	}
-	return restrictWindowsRuntimeDir(path)
+	handle, err := openWindowsRuntimeDir(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = windows.CloseHandle(handle) }()
+	userSID, err := currentWindowsUserSID()
+	if err != nil {
+		return err
+	}
+	if err := verifyWindowsRuntimeDirHandle(path, handle, userSID); err != nil {
+		return err
+	}
+	return restrictWindowsRuntimeDir(handle, userSID)
 }
 
 func rejectWindowsReparsePoint(path string) error {
@@ -54,11 +66,60 @@ func rejectWindowsReparsePoint(path string) error {
 	return nil
 }
 
-func restrictWindowsRuntimeDir(path string) error {
-	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+func openWindowsRuntimeDir(path string) (windows.Handle, error) {
+	path16, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return 0, err
+	}
+	return windows.CreateFile(
+		path16,
+		windows.READ_CONTROL|windows.WRITE_DAC,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil,
+		windows.OPEN_EXISTING,
+		windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT,
+		0,
+	)
+}
+
+func verifyWindowsRuntimeDirHandle(path string, handle windows.Handle, userSID *windows.SID) error {
+	var info windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(handle, &info); err != nil {
+		return err
+	}
+	if info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		return fmt.Errorf("%s is a reparse point", path)
+	}
+	if info.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY == 0 {
+		return fmt.Errorf("%s is not a directory", path)
+	}
+	descriptor, err := windows.GetSecurityInfo(
+		handle,
+		windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION,
+	)
 	if err != nil {
 		return err
 	}
+	owner, _, err := descriptor.Owner()
+	if err != nil {
+		return err
+	}
+	if !owner.Equals(userSID) {
+		return fmt.Errorf("%s is not owned by current user", path)
+	}
+	return nil
+}
+
+func currentWindowsUserSID() (*windows.SID, error) {
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return nil, err
+	}
+	return user.User.Sid, nil
+}
+
+func restrictWindowsRuntimeDir(handle windows.Handle, userSID *windows.SID) error {
 	system, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
 	if err != nil {
 		return err
@@ -68,7 +129,7 @@ func restrictWindowsRuntimeDir(path string) error {
 		return err
 	}
 	entries := []windows.EXPLICIT_ACCESS{
-		allowFullControl(user.User.Sid, windows.TRUSTEE_IS_USER),
+		allowFullControl(userSID, windows.TRUSTEE_IS_USER),
 		allowFullControl(system, windows.TRUSTEE_IS_USER),
 		allowFullControl(admins, windows.TRUSTEE_IS_GROUP),
 	}
@@ -76,8 +137,8 @@ func restrictWindowsRuntimeDir(path string) error {
 	if err != nil {
 		return err
 	}
-	return windows.SetNamedSecurityInfo(
-		path,
+	return windows.SetSecurityInfo(
+		handle,
 		windows.SE_FILE_OBJECT,
 		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
 		nil,
