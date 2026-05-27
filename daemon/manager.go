@@ -15,6 +15,9 @@ import (
 
 var startLocks sync.Map
 
+// startLockRetryDelay is the poll interval; the caller context bounds total wait.
+const startLockRetryDelay = 50 * time.Millisecond
+
 type startLock struct {
 	local *semaphore.Weighted
 	file  *flock.Flock
@@ -110,7 +113,7 @@ func (m Manager) lockStart(ctx context.Context) (func(), error) {
 	if err := lock.local.Acquire(ctx, 1); err != nil {
 		return nil, fmt.Errorf("acquire daemon start lock: %w", err)
 	}
-	locked, err := lock.file.TryLockContext(ctx, 50*time.Millisecond)
+	locked, err := lock.file.TryLockContext(ctx, startLockRetryDelay)
 	if err != nil {
 		lock.local.Release(1)
 		return nil, fmt.Errorf("acquire daemon start lock: %w", err)

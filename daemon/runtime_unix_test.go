@@ -39,3 +39,30 @@ func TestRuntimeStoreRepairsPublicDir(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, info.Mode().Perm()&0o077)
 }
+
+func TestRuntimeStoreRejectsSymlinkDir(t *testing.T) {
+	base := filepath.Join("/tmp", fmt.Sprintf("kit-runtime-symlink-%d", os.Getpid()))
+	target := base + "-target"
+	t.Cleanup(func() {
+		_ = os.Remove(base)
+		_ = os.RemoveAll(target)
+	})
+	require.NoError(t, os.RemoveAll(base))
+	require.NoError(t, os.RemoveAll(target))
+	require.NoError(t, os.MkdirAll(target, 0o700))
+	require.NoError(t, os.Symlink(target, base))
+
+	store := daemon.RuntimeStore{Dir: base}
+	_, err := store.LockPath()
+	require.Error(t, err)
+	_, err = store.Write(daemon.RuntimeRecord{
+		PID:     os.Getpid(),
+		Network: daemon.NetworkTCP,
+		Address: "127.0.0.1:7474",
+	})
+	require.Error(t, err)
+	_, err = store.List()
+	require.Error(t, err)
+	_, err = store.CleanupDead()
+	require.Error(t, err)
+}

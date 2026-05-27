@@ -31,6 +31,23 @@ func TestDefaultSocketPathRepairsPublicTempFallback(t *testing.T) {
 	assert.Zero(t, info.Mode().Perm()&0o077)
 }
 
+func TestDefaultSocketPathRejectsSymlinkedTempFallback(t *testing.T) {
+	tempDir := "/tmp"
+	service := fmt.Sprintf("kitdsymlink%d", os.Getpid())
+	t.Setenv("TMPDIR", tempDir)
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	parent := filepath.Join(tempDir, fmt.Sprintf("%s-%d", service, os.Getuid()))
+	target := filepath.Join(tempDir, service+"-target")
+	t.Cleanup(func() {
+		_ = os.Remove(parent)
+		_ = os.RemoveAll(target)
+	})
+	require.NoError(t, os.MkdirAll(target, 0o700))
+	require.NoError(t, os.Symlink(target, parent))
+
+	assert.Empty(t, daemon.DefaultSocketPath(service))
+}
+
 func TestDefaultSocketPathCreatesPrivateXDGRuntimeDir(t *testing.T) {
 	xdg := filepath.Join("/tmp", fmt.Sprintf("kitdxdg%d", os.Getpid()))
 	service := "svc"
