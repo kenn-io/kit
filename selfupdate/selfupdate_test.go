@@ -339,6 +339,23 @@ func TestInstallRefusesUnverifiedOrCachedInfo(t *testing.T) {
 	}
 }
 
+func TestInstallRejectsUnsafeAssetName(t *testing.T) {
+	t.Parallel()
+
+	c := Client{
+		BinaryName:             "tool",
+		AllowUnsignedChecksums: true,
+	}
+	err := c.Install(context.Background(), &Info{
+		DownloadURL: "https://example.invalid/archive",
+		AssetName:   "../outside.tar.gz",
+		Checksum:    strings.Repeat("0", 64),
+	}, InstallOptions{DestinationPath: filepath.Join(t.TempDir(), "tool")})
+	if err == nil || !strings.Contains(err.Error(), "invalid asset name") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestInstallArchive(t *testing.T) {
 	t.Parallel()
 

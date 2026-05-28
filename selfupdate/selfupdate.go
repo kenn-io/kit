@@ -199,6 +199,10 @@ func (c Client) Install(ctx context.Context, info *Info, opts InstallOptions) er
 	if info.DownloadURL == "" {
 		return fmt.Errorf("install: download URL is empty")
 	}
+	assetName, err := safeAssetFileName(info.AssetName)
+	if err != nil {
+		return err
+	}
 
 	tempDir, err := os.MkdirTemp(opts.TempDir, c.tempPrefix("update"))
 	if err != nil {
@@ -206,7 +210,7 @@ func (c Client) Install(ctx context.Context, info *Info, opts InstallOptions) er
 	}
 	defer os.RemoveAll(tempDir)
 
-	archivePath := filepath.Join(tempDir, info.AssetName)
+	archivePath := filepath.Join(tempDir, assetName)
 	downloadChecksum, err := c.downloadFile(ctx, info.DownloadURL, archivePath, info.Size, opts.Progress)
 	if err != nil {
 		return fmt.Errorf("download: %w", err)
@@ -1164,6 +1168,16 @@ func readLimited(r io.Reader, max int64) ([]byte, error) {
 		return nil, fmt.Errorf("response exceeds %d byte limit", max)
 	}
 	return data, nil
+}
+
+func safeAssetFileName(name string) (string, error) {
+	if name == "" {
+		return "", fmt.Errorf("install: asset name is empty")
+	}
+	if filepath.IsAbs(name) || filepath.Base(name) != name || filepath.Clean(name) != name || name == "." || name == ".." {
+		return "", fmt.Errorf("install: invalid asset name %q", name)
+	}
+	return name, nil
 }
 
 func copyFile(src, dst string) error {
