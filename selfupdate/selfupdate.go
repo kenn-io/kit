@@ -828,7 +828,6 @@ func (c Client) downloadFile(ctx context.Context, url, dest string, totalSize in
 	if err != nil {
 		return "", err
 	}
-	defer out.Close()
 
 	hasher := sha256.New()
 	writer := io.MultiWriter(out, hasher)
@@ -838,6 +837,7 @@ func (c Client) downloadFile(ctx context.Context, url, dest string, totalSize in
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
 			if _, err := writer.Write(buf[:n]); err != nil {
+				_ = out.Close()
 				return "", err
 			}
 			downloaded += int64(n)
@@ -849,8 +849,12 @@ func (c Client) downloadFile(ctx context.Context, url, dest string, totalSize in
 			break
 		}
 		if readErr != nil {
+			_ = out.Close()
 			return "", readErr
 		}
+	}
+	if err := out.Close(); err != nil {
+		return "", err
 	}
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
