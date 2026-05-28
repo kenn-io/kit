@@ -327,6 +327,11 @@ func TestInstallRefusesUnverifiedOrCachedInfo(t *testing.T) {
 	if err := c.Install(context.Background(), &Info{cacheOnly: true}, InstallOptions{}); err == nil {
 		t.Fatal("expected cache-only error")
 	}
+}
+
+func TestInstallArchiveAllowsUnsignedChecksumByDefault(t *testing.T) {
+	t.Parallel()
+
 	tmpDir := t.TempDir()
 	archivePath := filepath.Join(tmpDir, "tool.tar.gz")
 	createTarGz(t, archivePath, []archiveEntry{{Name: "tool", Content: "content", Mode: 0o755}})
@@ -334,24 +339,87 @@ func TestInstallRefusesUnverifiedOrCachedInfo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := InstallArchive(archivePath, checksum, filepath.Join(tmpDir, "tool"), InstallArchiveOptions{}); err == nil {
-		t.Fatal("expected unsigned checksum error")
+	dstPath := filepath.Join(tmpDir, "dest", "tool")
+	if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := InstallArchive(archivePath, checksum, dstPath, InstallArchiveOptions{}); err != nil {
+		t.Fatalf("InstallArchive: %v", err)
 	}
 }
 
 func TestInstallRejectsUnsafeAssetName(t *testing.T) {
 	t.Parallel()
 
-	c := Client{
-		BinaryName:             "tool",
-		AllowUnsignedChecksums: true,
-	}
+	c := Client{BinaryName: "tool"}
 	err := c.Install(context.Background(), &Info{
 		DownloadURL: "https://example.invalid/archive",
 		AssetName:   "../outside.tar.gz",
 		Checksum:    strings.Repeat("0", 64),
 	}, InstallOptions{DestinationPath: filepath.Join(t.TempDir(), "tool")})
 	if err == nil || !strings.Contains(err.Error(), "invalid asset name") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestInstallVerifiesSignatureBeforeArchiveDownload(t *testing.T) {
+	t.Parallel()
+
+	var archiveRequests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/archive":
+			archiveRequests.Add(1)
+			_, _ = w.Write([]byte("archive"))
+		case "/archive.sig":
+			_, _ = w.Write([]byte("not-a-signature"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := Client{
+		Owner:             "kenn",
+		Repo:              "tool",
+		BinaryName:        "tool",
+		TrustedPublicKeys: []ed25519.PublicKey{publicKey},
+	}
+	err = c.Install(context.Background(), &Info{
+		LatestVersion: "v1.0.0",
+		DownloadURL:   server.URL + "/archive",
+		SignatureURL:  server.URL + "/archive.sig",
+		AssetName:     "tool.tar.gz",
+		Checksum:      strings.Repeat("0", 64),
+	}, InstallOptions{DestinationPath: filepath.Join(t.TempDir(), "tool")})
+	if err == nil || !strings.Contains(err.Error(), "invalid format") {
+		t.Fatalf("error = %v", err)
+	}
+	if archiveRequests.Load() != 0 {
+		t.Fatalf("archive was downloaded before signature verification")
+	}
+}
+
+func TestInstallRejectsDownloadLargerThanExpected(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("too large"))
+	}))
+	defer server.Close()
+
+	c := Client{BinaryName: "tool"}
+	err := c.Install(context.Background(), &Info{
+		DownloadURL: server.URL,
+		AssetName:   "tool.tar.gz",
+		Size:        3,
+		Checksum:    strings.Repeat("0", 64),
+	}, InstallOptions{DestinationPath: filepath.Join(t.TempDir(), "tool")})
+	if err == nil || !strings.Contains(err.Error(), "exceeded expected size") {
 		t.Fatalf("error = %v", err)
 	}
 }

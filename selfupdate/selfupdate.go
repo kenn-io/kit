@@ -82,8 +82,8 @@ type Client struct {
 	AssetName          AssetNamer
 	ChecksumAssetNames []string
 
-	TrustedPublicKeys      []ed25519.PublicKey
-	AllowUnsignedChecksums bool
+	TrustedPublicKeys []ed25519.PublicKey
+	RequireSignature  bool
 }
 
 // CheckOptions controls update discovery.
@@ -204,6 +204,17 @@ func (c Client) Install(ctx context.Context, info *Info, opts InstallOptions) er
 		return err
 	}
 
+	var checksumSignature []byte
+	if c.signatureVerificationEnabled() {
+		checksumSignature, err = c.downloadChecksumSignature(ctx, info)
+		if err != nil {
+			return err
+		}
+		if err := verifyChecksumTrust(c.signaturePayload(info), checksumSignature, c.TrustedPublicKeys, true); err != nil {
+			return err
+		}
+	}
+
 	tempDir, err := os.MkdirTemp(opts.TempDir, c.tempPrefix("update"))
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
@@ -214,11 +225,6 @@ func (c Client) Install(ctx context.Context, info *Info, opts InstallOptions) er
 	downloadChecksum, err := c.downloadFile(ctx, info.DownloadURL, archivePath, info.Size, opts.Progress)
 	if err != nil {
 		return fmt.Errorf("download: %w", err)
-	}
-
-	checksumSignature, err := c.downloadChecksumSignature(ctx, info)
-	if err != nil {
-		return err
 	}
 
 	dstPath := opts.DestinationPath
@@ -234,25 +240,25 @@ func (c Client) Install(ctx context.Context, info *Info, opts InstallOptions) er
 	}
 
 	return InstallArchive(archivePath, info.Checksum, dstPath, InstallArchiveOptions{
-		ArchiveBinaryName:      archiveBinaryName,
-		PrecomputedChecksum:    downloadChecksum,
-		TempDir:                opts.TempDir,
-		TrustedPublicKeys:      c.TrustedPublicKeys,
-		ChecksumSignature:      checksumSignature,
-		SignaturePayload:       c.signaturePayload(info),
-		AllowUnsignedChecksums: c.AllowUnsignedChecksums,
+		ArchiveBinaryName:   archiveBinaryName,
+		PrecomputedChecksum: downloadChecksum,
+		TempDir:             opts.TempDir,
+		TrustedPublicKeys:   c.TrustedPublicKeys,
+		ChecksumSignature:   checksumSignature,
+		SignaturePayload:    c.signaturePayload(info),
+		RequireSignature:    c.signatureVerificationEnabled(),
 	})
 }
 
 // InstallArchiveOptions controls installing an already downloaded archive.
 type InstallArchiveOptions struct {
-	ArchiveBinaryName      string
-	PrecomputedChecksum    string
-	TempDir                string
-	TrustedPublicKeys      []ed25519.PublicKey
-	ChecksumSignature      []byte
-	SignaturePayload       []byte
-	AllowUnsignedChecksums bool
+	ArchiveBinaryName   string
+	PrecomputedChecksum string
+	TempDir             string
+	TrustedPublicKeys   []ed25519.PublicKey
+	ChecksumSignature   []byte
+	SignaturePayload    []byte
+	RequireSignature    bool
 }
 
 // InstallArchive verifies archivePath, extracts it, and installs the target
@@ -276,7 +282,7 @@ func InstallArchive(archivePath, expectedChecksum, dstPath string, opts InstallA
 	if !strings.EqualFold(checksum, expectedChecksum) {
 		return fmt.Errorf("checksum mismatch: expected %s, got %s", expectedChecksum, checksum)
 	}
-	if err := verifyChecksumTrust(opts.SignaturePayload, opts.ChecksumSignature, opts.TrustedPublicKeys, opts.AllowUnsignedChecksums); err != nil {
+	if err := verifyChecksumTrust(opts.SignaturePayload, opts.ChecksumSignature, opts.TrustedPublicKeys, opts.RequireSignature || len(opts.TrustedPublicKeys) > 0); err != nil {
 		return err
 	}
 
@@ -845,6 +851,10 @@ func (c Client) downloadFile(ctx context.Context, url, dest string, totalSize in
 				return "", err
 			}
 			downloaded += int64(n)
+			if totalSize > 0 && downloaded > totalSize {
+				_ = out.Close()
+				return "", fmt.Errorf("download exceeded expected size %d", totalSize)
+			}
 			if progress != nil {
 				progress(downloaded, totalSize)
 			}
@@ -864,9 +874,6 @@ func (c Client) downloadFile(ctx context.Context, url, dest string, totalSize in
 }
 
 func (c Client) downloadChecksumSignature(ctx context.Context, info *Info) ([]byte, error) {
-	if c.AllowUnsignedChecksums {
-		return nil, nil
-	}
 	if len(c.TrustedPublicKeys) == 0 {
 		return nil, fmt.Errorf("install: trusted public key is required to verify checksum provenance")
 	}
@@ -890,6 +897,10 @@ func (c Client) downloadChecksumSignature(ctx context.Context, info *Info) ([]by
 		return nil, fmt.Errorf("failed to fetch checksum signature: %s", resp.Status)
 	}
 	return readLimited(resp.Body, maxSignatureBytes)
+}
+
+func (c Client) signatureVerificationEnabled() bool {
+	return c.RequireSignature || len(c.TrustedPublicKeys) > 0
 }
 
 func (c Client) platformAssetName(release *Release, version string, opts CheckOptions) string {
@@ -1048,8 +1059,8 @@ func movePreviousAside(dstPath, backupPath string) (bool, error) {
 	return true, nil
 }
 
-func verifyChecksumTrust(payload, signature []byte, publicKeys []ed25519.PublicKey, allowUnsigned bool) error {
-	if allowUnsigned {
+func verifyChecksumTrust(payload, signature []byte, publicKeys []ed25519.PublicKey, required bool) error {
+	if !required {
 		return nil
 	}
 	if len(publicKeys) == 0 {

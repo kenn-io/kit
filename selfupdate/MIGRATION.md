@@ -14,9 +14,6 @@ client := selfupdate.Client{
 	BinaryName:     "agentsview", // or "msgvault"
 	CurrentVersion: version,
 	CacheDir:       appCacheDir,
-	TrustedPublicKeys: []ed25519.PublicKey{
-		releaseSigningPublicKey,
-	},
 }
 ```
 
@@ -29,14 +26,14 @@ Use `client.Install(ctx, info, selfupdate.InstallOptions{Progress: progress})`
 where the current command calls `PerformUpdate`. CLI output, config loading,
 confirmation prompts, and command wiring should stay in the application.
 
-Install verification is fail-closed by default. Publish a detached Ed25519
-signature asset named `<asset>.sha256.sig` or `<asset>.sig`; it must sign the
-canonical `selfupdate.SignaturePayload` metadata for the archive, including
-owner, repo, version, asset name, target platform, and lowercase SHA-256
-checksum. The existing binary should pin the trusted public key in
-`Client.TrustedPublicKeys`. Existing unsigned release flows can temporarily set
-`AllowUnsignedChecksums`, but that keeps checksums as corruption checks rather
-than publisher authentication.
+The current agentsview and msgvault CLI release workflows publish archives plus
+`SHA256SUMS`, so the minimal migration keeps that checksum-based integrity
+check. Repos that already publish signed update metadata, or add it later, can
+also configure `TrustedPublicKeys` or `RequireSignature`. Signed releases should
+publish a detached Ed25519 signature asset named `<asset>.sha256.sig` or
+`<asset>.sig`; it must sign the canonical `selfupdate.SignaturePayload`
+metadata for the archive, including owner, repo, version, asset name, target
+platform, and lowercase SHA-256 checksum.
 
 ## App-Specific Details
 
