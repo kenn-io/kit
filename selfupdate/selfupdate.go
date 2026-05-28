@@ -344,10 +344,6 @@ func InstallBinary(srcPath, dstPath string) error {
 		return fmt.Errorf("stage: %w", err)
 	}
 	tmpPath := tmpFile.Name()
-	if err := tmpFile.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("stage: %w", err)
-	}
 
 	installed := false
 	defer func() {
@@ -356,11 +352,20 @@ func InstallBinary(srcPath, dstPath string) error {
 		}
 	}()
 
-	if err := copyFile(srcPath, tmpPath); err != nil {
+	if err := copyFileTo(srcPath, tmpFile); err != nil {
+		_ = tmpFile.Close()
 		return fmt.Errorf("install: %w", err)
 	}
-	if err := os.Chmod(tmpPath, 0o755); err != nil {
+	if err := tmpFile.Chmod(0o755); err != nil {
+		_ = tmpFile.Close()
 		return fmt.Errorf("chmod: %w", err)
+	}
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("sync: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("stage: %w", err)
 	}
 
 	movedAside := false
@@ -1211,23 +1216,17 @@ func safeAssetFileName(name string) (string, error) {
 	return name, nil
 }
 
-func copyFile(src, dst string) error {
+func copyFileTo(src string, out *os.File) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
 
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
 	if _, err := io.Copy(out, in); err != nil {
 		return err
 	}
-	return out.Close()
+	return nil
 }
 
 func extractBaseSemver(v string) string {
