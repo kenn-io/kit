@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -39,6 +41,7 @@ func TestCheckFindsUpdateAndChecksumAsset(t *testing.T) {
 				Assets: []Asset{
 					{Name: "tool_1.2.0_linux_amd64.tar.gz", Size: 123, BrowserDownloadURL: "https://example.invalid/tool"},
 					{Name: "SHA256SUMS", BrowserDownloadURL: "http://" + r.Host + "/SHA256SUMS"},
+					{Name: "tool_1.2.0_linux_amd64.tar.gz.sha256.sig", BrowserDownloadURL: "https://example.invalid/tool.sig"},
 				},
 			})
 		case "/SHA256SUMS":
@@ -72,6 +75,9 @@ func TestCheckFindsUpdateAndChecksumAsset(t *testing.T) {
 	}
 	if info.AssetName != "tool_1.2.0_linux_amd64.tar.gz" {
 		t.Fatalf("asset = %q", info.AssetName)
+	}
+	if info.SignatureURL != "https://example.invalid/tool.sig" {
+		t.Fatalf("signature URL = %q", info.SignatureURL)
 	}
 	if info.Checksum != testHash64 {
 		t.Fatalf("checksum = %q", info.Checksum)
@@ -157,6 +163,14 @@ func TestCheckCache(t *testing.T) {
 			wantCacheOnly:  true,
 		},
 		{
+			name:           "parseable dev build at cached release does not downgrade",
+			currentVersion: "v1.0.0-2-g75d300a",
+			isDevBuild:     true,
+			cachedVersion:  "v1.0.0",
+			cacheAge:       5 * time.Minute,
+			wantDone:       true,
+		},
+		{
 			name:           "expired cache",
 			currentVersion: "v1.0.0",
 			cachedVersion:  "v1.0.0",
@@ -237,24 +251,33 @@ func TestInstallDownloadsVerifiesAndInstalls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	publicKey, signature := signChecksum(t, checksum)
 	archiveBytes, err := os.ReadFile(archivePath)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write(archiveBytes)
+		switch r.URL.Path {
+		case "/archive":
+			_, _ = w.Write(archiveBytes)
+		case "/archive.sig":
+			_, _ = w.Write(signature)
+		default:
+			http.NotFound(w, r)
+		}
 	}))
 	defer server.Close()
 
 	dstPath := filepath.Join(tmpDir, binaryName)
 	var lastProgress int64
-	c := Client{BinaryName: "tool"}
+	c := Client{BinaryName: "tool", TrustedPublicKeys: []ed25519.PublicKey{publicKey}}
 	err = c.Install(context.Background(), &Info{
-		DownloadURL: server.URL,
-		AssetName:   filepath.Base(archivePath),
-		Size:        int64(len(archiveBytes)),
-		Checksum:    checksum,
+		DownloadURL:  server.URL + "/archive",
+		SignatureURL: server.URL + "/archive.sig",
+		AssetName:    filepath.Base(archivePath),
+		Size:         int64(len(archiveBytes)),
+		Checksum:     checksum,
 	}, InstallOptions{
 		DestinationPath: dstPath,
 		Progress: func(downloaded, total int64) {
@@ -289,6 +312,16 @@ func TestInstallRefusesUnverifiedOrCachedInfo(t *testing.T) {
 	if err := c.Install(context.Background(), &Info{cacheOnly: true}, InstallOptions{}); err == nil {
 		t.Fatal("expected cache-only error")
 	}
+	tmpDir := t.TempDir()
+	archivePath := filepath.Join(tmpDir, "tool.tar.gz")
+	createTarGz(t, archivePath, []archiveEntry{{Name: "tool", Content: "content", Mode: 0o755}})
+	checksum, err := HashFile(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := InstallArchive(archivePath, checksum, filepath.Join(tmpDir, "tool"), InstallArchiveOptions{}); err == nil {
+		t.Fatal("expected unsigned checksum error")
+	}
 }
 
 func TestInstallArchive(t *testing.T) {
@@ -306,12 +339,17 @@ func TestInstallArchive(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		publicKey, signature := signChecksum(t, checksum)
 
 		dstPath := filepath.Join(tmpDir, "dest", "tool")
 		if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := InstallArchive(archivePath, checksum, dstPath, InstallArchiveOptions{ArchiveBinaryName: "tool"}); err != nil {
+		if err := InstallArchive(archivePath, checksum, dstPath, InstallArchiveOptions{
+			ArchiveBinaryName: "tool",
+			TrustedPublicKeys: []ed25519.PublicKey{publicKey},
+			ChecksumSignature: signature,
+		}); err != nil {
 			t.Fatalf("InstallArchive: %v", err)
 		}
 		got, err := os.ReadFile(dstPath)
@@ -382,6 +420,47 @@ func TestExtractTarGzSkipsSymlink(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(extractDir, "evil-link")); !os.IsNotExist(err) {
 		t.Fatalf("symlink exists or stat failed unexpectedly: %v", err)
+	}
+}
+
+func TestExtractTarGzMasksDangerousModeBits(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix mode bits not meaningful on Windows")
+	}
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	archivePath := filepath.Join(tmpDir, "modes.tar.gz")
+	createTarGz(t, archivePath, []archiveEntry{
+		{Name: "tool", Content: "ok", Mode: 0o4755},
+	})
+	extractDir := filepath.Join(tmpDir, "extract")
+	if err := ExtractTarGz(archivePath, extractDir); err != nil {
+		t.Fatalf("ExtractTarGz: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(extractDir, "tool"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode(); got&os.ModeSetuid != 0 {
+		t.Fatalf("setuid bit preserved: mode=%v", got)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Fatalf("permission bits = %04o, want 0755", got)
+	}
+}
+
+func TestFetchChecksumFromFileLimitsResponseSize(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(w, io.LimitReader(strings.NewReader(strings.Repeat("x", maxChecksumBytes+1)), maxChecksumBytes+1))
+	}))
+	defer server.Close()
+
+	c := Client{BinaryName: "tool"}
+	if _, err := c.fetchChecksumFromFile(context.Background(), server.URL, "tool.tar.gz"); err == nil {
+		t.Fatal("expected oversized checksum response error")
 	}
 }
 
@@ -702,4 +781,13 @@ func createZip(t *testing.T, path string, entries []archiveEntry) {
 			t.Fatal(err)
 		}
 	}
+}
+
+func signChecksum(t *testing.T, checksum string) (ed25519.PublicKey, []byte) {
+	t.Helper()
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return publicKey, ed25519.Sign(privateKey, []byte(strings.ToLower(checksum)))
 }

@@ -7,6 +7,7 @@ import (
 	"archive/zip"
 	"compress/gzip"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -29,6 +30,8 @@ const (
 	defaultCacheDuration    = time.Hour
 	defaultDevCacheDuration = 15 * time.Minute
 	defaultHTTPTimeout      = 30 * time.Second
+	maxChecksumBytes        = 1 << 20
+	maxSignatureBytes       = 64 << 10
 )
 
 // Release represents the subset of a GitHub release response used by Client.
@@ -78,6 +81,9 @@ type Client struct {
 
 	AssetName          AssetNamer
 	ChecksumAssetNames []string
+
+	TrustedPublicKeys      []ed25519.PublicKey
+	AllowUnsignedChecksums bool
 }
 
 // CheckOptions controls update discovery.
@@ -93,6 +99,7 @@ type Info struct {
 	LatestVersion  string
 	DownloadURL    string
 	AssetName      string
+	SignatureURL   string
 	Size           int64
 	Checksum       string
 	IsDevBuild     bool
@@ -139,12 +146,12 @@ func (c Client) Check(ctx context.Context, opts CheckOptions) (*Info, error) {
 	_ = c.saveCache(release.TagName)
 
 	latestVersion := strings.TrimPrefix(release.TagName, "v")
-	if !isDevBuild && !IsNewer(latestVersion, cleanVersion) {
+	if !shouldOfferUpdate(latestVersion, cleanVersion, isDevBuild) {
 		return nil, nil
 	}
 
 	assetName := c.platformAssetName(release, latestVersion, opts)
-	asset, checksumsAsset := c.findAssets(release.Assets, assetName)
+	asset, checksumsAsset, signatureAsset := c.findAssets(release.Assets, assetName)
 	if asset == nil {
 		goos, goarch := platform(opts)
 		return nil, fmt.Errorf("no release asset for %s/%s", goos, goarch)
@@ -163,6 +170,7 @@ func (c Client) Check(ctx context.Context, opts CheckOptions) (*Info, error) {
 		LatestVersion:  release.TagName,
 		DownloadURL:    asset.BrowserDownloadURL,
 		AssetName:      asset.Name,
+		SignatureURL:   assetURL(signatureAsset),
 		Size:           asset.Size,
 		Checksum:       checksum,
 		IsDevBuild:     isDevBuild,
@@ -196,6 +204,11 @@ func (c Client) Install(ctx context.Context, info *Info, opts InstallOptions) er
 		return fmt.Errorf("download: %w", err)
 	}
 
+	checksumSignature, err := c.downloadChecksumSignature(ctx, info)
+	if err != nil {
+		return err
+	}
+
 	dstPath := opts.DestinationPath
 	if dstPath == "" {
 		dstPath, err = c.defaultDestinationPath()
@@ -209,17 +222,23 @@ func (c Client) Install(ctx context.Context, info *Info, opts InstallOptions) er
 	}
 
 	return InstallArchive(archivePath, info.Checksum, dstPath, InstallArchiveOptions{
-		ArchiveBinaryName:   archiveBinaryName,
-		PrecomputedChecksum: downloadChecksum,
-		TempDir:             opts.TempDir,
+		ArchiveBinaryName:      archiveBinaryName,
+		PrecomputedChecksum:    downloadChecksum,
+		TempDir:                opts.TempDir,
+		TrustedPublicKeys:      c.TrustedPublicKeys,
+		ChecksumSignature:      checksumSignature,
+		AllowUnsignedChecksums: c.AllowUnsignedChecksums,
 	})
 }
 
 // InstallArchiveOptions controls installing an already downloaded archive.
 type InstallArchiveOptions struct {
-	ArchiveBinaryName   string
-	PrecomputedChecksum string
-	TempDir             string
+	ArchiveBinaryName      string
+	PrecomputedChecksum    string
+	TempDir                string
+	TrustedPublicKeys      []ed25519.PublicKey
+	ChecksumSignature      []byte
+	AllowUnsignedChecksums bool
 }
 
 // InstallArchive verifies archivePath, extracts it, and installs the target
@@ -242,6 +261,9 @@ func InstallArchive(archivePath, expectedChecksum, dstPath string, opts InstallA
 	}
 	if !strings.EqualFold(checksum, expectedChecksum) {
 		return fmt.Errorf("checksum mismatch: expected %s, got %s", expectedChecksum, checksum)
+	}
+	if err := verifyChecksumTrust(expectedChecksum, opts.ChecksumSignature, opts.TrustedPublicKeys, opts.AllowUnsignedChecksums); err != nil {
+		return err
 	}
 
 	extractDir, err := os.MkdirTemp(opts.TempDir, "selfupdate-extract-*")
@@ -288,11 +310,18 @@ func HashFile(path string) (string, error) {
 
 // InstallBinary replaces dstPath with srcPath using a staged sibling file.
 func InstallBinary(srcPath, dstPath string) error {
-	backupPath := dstPath + ".old"
-	tmpPath := dstPath + ".new"
+	dstDir := filepath.Dir(dstPath)
+	dstBase := filepath.Base(dstPath)
 
-	_ = os.Remove(backupPath)
-	_ = os.Remove(tmpPath)
+	tmpFile, err := os.CreateTemp(dstDir, "."+dstBase+".*.new")
+	if err != nil {
+		return fmt.Errorf("stage: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("stage: %w", err)
+	}
 
 	installed := false
 	defer func() {
@@ -309,7 +338,20 @@ func InstallBinary(srcPath, dstPath string) error {
 	}
 
 	movedAside := false
+	backupPath := ""
 	if runtime.GOOS == "windows" {
+		backupFile, err := os.CreateTemp(dstDir, "."+dstBase+".*.old")
+		if err != nil {
+			return fmt.Errorf("backup: %w", err)
+		}
+		backupPath = backupFile.Name()
+		if err := backupFile.Close(); err != nil {
+			_ = os.Remove(backupPath)
+			return fmt.Errorf("backup: %w", err)
+		}
+		if err := os.Remove(backupPath); err != nil {
+			return fmt.Errorf("backup: %w", err)
+		}
 		aside, err := movePreviousAside(dstPath, backupPath)
 		if err != nil {
 			return err
@@ -327,7 +369,9 @@ func InstallBinary(srcPath, dstPath string) error {
 	}
 
 	installed = true
-	_ = os.Remove(backupPath)
+	if backupPath != "" {
+		_ = os.Remove(backupPath)
+	}
 	return nil
 }
 
@@ -393,7 +437,7 @@ func ExtractTarGz(archivePath, destDir string) error {
 			if err := outFile.Close(); err != nil {
 				return err
 			}
-			if err := os.Chmod(target, os.FileMode(header.Mode)); err != nil {
+			if err := os.Chmod(target, os.FileMode(header.Mode)&os.ModePerm); err != nil {
 				return err
 			}
 		}
@@ -681,6 +725,9 @@ func (c Client) checkCache(currentVersion, cleanVersion string, isDevBuild bool)
 
 	latestVersion := strings.TrimPrefix(cached.Version, "v")
 	if isDevBuild {
+		if !shouldOfferUpdate(latestVersion, cleanVersion, true) {
+			return nil, true
+		}
 		return &Info{
 			CurrentVersion: currentVersion,
 			LatestVersion:  cached.Version,
@@ -737,7 +784,7 @@ func (c Client) fetchChecksumFromFile(ctx context.Context, url, assetName string
 		return "", fmt.Errorf("failed to fetch checksums: %s", resp.Status)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readLimited(resp.Body, maxChecksumBytes)
 	if err != nil {
 		return "", err
 	}
@@ -792,6 +839,35 @@ func (c Client) downloadFile(ctx context.Context, url, dest string, totalSize in
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
+func (c Client) downloadChecksumSignature(ctx context.Context, info *Info) ([]byte, error) {
+	if c.AllowUnsignedChecksums {
+		return nil, nil
+	}
+	if len(c.TrustedPublicKeys) == 0 {
+		return nil, fmt.Errorf("install: trusted public key is required to verify checksum provenance")
+	}
+	if info.SignatureURL == "" {
+		return nil, fmt.Errorf("install: checksum signature for %s is missing", info.AssetName)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, info.SignatureURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", c.userAgent())
+
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to fetch checksum signature: %s", resp.Status)
+	}
+	return readLimited(resp.Body, maxSignatureBytes)
+}
+
 func (c Client) platformAssetName(release *Release, version string, opts CheckOptions) string {
 	goos, goarch := platform(opts)
 	ext := ".tar.gz"
@@ -812,10 +888,14 @@ func (c Client) platformAssetName(release *Release, version string, opts CheckOp
 	return DefaultAssetName(req)
 }
 
-func (c Client) findAssets(assets []Asset, assetName string) (asset *Asset, checksumsAsset *Asset) {
+func (c Client) findAssets(assets []Asset, assetName string) (asset *Asset, checksumsAsset *Asset, signatureAsset *Asset) {
 	checksumNames := map[string]struct{}{}
 	for _, name := range c.checksumAssetNames() {
 		checksumNames[name] = struct{}{}
+	}
+	signatureNames := map[string]struct{}{
+		assetName + ".sha256.sig": {},
+		assetName + ".sig":        {},
 	}
 	for i := range assets {
 		a := &assets[i]
@@ -825,8 +905,18 @@ func (c Client) findAssets(assets []Asset, assetName string) (asset *Asset, chec
 		if _, ok := checksumNames[a.Name]; ok {
 			checksumsAsset = a
 		}
+		if _, ok := signatureNames[a.Name]; ok {
+			signatureAsset = a
+		}
 	}
-	return asset, checksumsAsset
+	return asset, checksumsAsset, signatureAsset
+}
+
+func assetURL(asset *Asset) string {
+	if asset == nil {
+		return ""
+	}
+	return asset.BrowserDownloadURL
 }
 
 func (c Client) defaultDestinationPath() (string, error) {
@@ -906,6 +996,49 @@ func movePreviousAside(dstPath, backupPath string) (bool, error) {
 	return true, nil
 }
 
+func verifyChecksumTrust(expectedChecksum string, signature []byte, publicKeys []ed25519.PublicKey, allowUnsigned bool) error {
+	if allowUnsigned {
+		return nil
+	}
+	if len(publicKeys) == 0 {
+		return fmt.Errorf("checksum signature verification requires a trusted public key")
+	}
+
+	sig, err := parseSignature(signature)
+	if err != nil {
+		return err
+	}
+	message := []byte(strings.ToLower(expectedChecksum))
+	for _, publicKey := range publicKeys {
+		if len(publicKey) == ed25519.PublicKeySize && ed25519.Verify(publicKey, message, sig) {
+			return nil
+		}
+	}
+	return fmt.Errorf("checksum signature verification failed")
+}
+
+func parseSignature(data []byte) ([]byte, error) {
+	if len(data) == ed25519.SignatureSize {
+		return data, nil
+	}
+	text := strings.TrimSpace(string(data))
+	if decoded, err := hex.DecodeString(text); err == nil && len(decoded) == ed25519.SignatureSize {
+		return decoded, nil
+	}
+	return nil, fmt.Errorf("checksum signature has invalid format")
+}
+
+func readLimited(r io.Reader, max int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > max {
+		return nil, fmt.Errorf("response exceeds %d byte limit", max)
+	}
+	return data, nil
+}
+
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -937,6 +1070,16 @@ func extractBaseSemver(v string) string {
 		v = v[:idx]
 	}
 	return v
+}
+
+func shouldOfferUpdate(latestVersion, currentVersion string, isDevBuild bool) bool {
+	if !isDevBuild {
+		return IsNewer(latestVersion, currentVersion)
+	}
+	if extractBaseSemver(currentVersion) == "" {
+		return true
+	}
+	return IsNewer(latestVersion, currentVersion)
 }
 
 var gitDescribePattern = regexp.MustCompile(`-\d+-g[0-9a-f]+(-dirty)?$`)
