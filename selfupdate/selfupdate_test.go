@@ -329,7 +329,7 @@ func TestInstallRefusesUnverifiedOrCachedInfo(t *testing.T) {
 	}
 }
 
-func TestInstallArchiveAllowsUnsignedChecksumByDefault(t *testing.T) {
+func TestInstallArchiveRequiresSignatureByDefault(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
@@ -344,7 +344,39 @@ func TestInstallArchiveAllowsUnsignedChecksumByDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := InstallArchive(archivePath, checksum, dstPath, InstallArchiveOptions{}); err != nil {
+		if !strings.Contains(err.Error(), "requires a trusted public key") {
+			t.Fatalf("error = %v", err)
+		}
+	} else {
+		t.Fatal("expected missing signature verification error")
+	}
+	if err := InstallArchive(archivePath, checksum, dstPath, InstallArchiveOptions{AllowUnsignedChecksums: true}); err != nil {
 		t.Fatalf("InstallArchive: %v", err)
+	}
+}
+
+func TestInstallRequiresSignatureBeforeArchiveDownloadByDefault(t *testing.T) {
+	t.Parallel()
+
+	var archiveRequests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		archiveRequests.Add(1)
+		_, _ = w.Write([]byte("archive"))
+	}))
+	defer server.Close()
+
+	c := Client{BinaryName: "tool"}
+	err := c.Install(context.Background(), &Info{
+		LatestVersion: "v1.0.0",
+		DownloadURL:   server.URL,
+		AssetName:     "tool.tar.gz",
+		Checksum:      strings.Repeat("0", 64),
+	}, InstallOptions{DestinationPath: filepath.Join(t.TempDir(), "tool")})
+	if err == nil || !strings.Contains(err.Error(), "trusted public key is required") {
+		t.Fatalf("error = %v", err)
+	}
+	if archiveRequests.Load() != 0 {
+		t.Fatalf("archive was downloaded before signature verification")
 	}
 }
 
@@ -432,7 +464,7 @@ func TestInstallRejectsDownloadLargerThanExpected(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := Client{BinaryName: "tool"}
+	c := Client{BinaryName: "tool", AllowUnsignedChecksums: true}
 	err := c.Install(context.Background(), &Info{
 		DownloadURL: server.URL,
 		AssetName:   "tool.tar.gz",
@@ -514,7 +546,10 @@ func TestInstallArchive(t *testing.T) {
 		if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := InstallArchive(archivePath, checksum, dstPath, InstallArchiveOptions{ArchiveBinaryName: "tool"}); err != nil {
+		if err := InstallArchive(archivePath, checksum, dstPath, InstallArchiveOptions{
+			ArchiveBinaryName:      "tool",
+			AllowUnsignedChecksums: true,
+		}); err != nil {
 			t.Fatalf("InstallArchive: %v", err)
 		}
 		got, err := os.ReadFile(dstPath)
@@ -697,6 +732,27 @@ func TestExtractTarGzMasksDangerousModeBits(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0o755 {
 		t.Fatalf("permission bits = %04o, want 0755", got)
+	}
+}
+
+func TestExtractTarGzExtractsLegacyRegularFiles(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	archivePath := filepath.Join(tmpDir, "legacy-regular.tar.gz")
+	createTarGz(t, archivePath, []archiveEntry{
+		{Name: "tool", Content: "legacy", Mode: 0o755, TypeFlag: tar.TypeRegA},
+	})
+	extractDir := filepath.Join(tmpDir, "extract")
+	if err := ExtractTarGz(archivePath, extractDir); err != nil {
+		t.Fatalf("ExtractTarGz: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(extractDir, "tool"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "legacy" {
+		t.Fatalf("content = %q", got)
 	}
 }
 
@@ -992,13 +1048,13 @@ func createTarGz(t *testing.T, path string, entries []archiveEntry) {
 			Typeflag: typeFlag,
 			Linkname: entry.LinkName,
 		}
-		if typeFlag != tar.TypeReg {
+		if typeFlag != tar.TypeReg && typeFlag != tar.TypeRegA {
 			header.Size = 0
 		}
 		if err := tw.WriteHeader(header); err != nil {
 			t.Fatal(err)
 		}
-		if typeFlag == tar.TypeReg {
+		if typeFlag == tar.TypeReg || typeFlag == tar.TypeRegA {
 			if _, err := tw.Write(data); err != nil {
 				t.Fatal(err)
 			}

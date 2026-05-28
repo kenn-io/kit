@@ -82,8 +82,9 @@ type Client struct {
 	AssetName          AssetNamer
 	ChecksumAssetNames []string
 
-	TrustedPublicKeys []ed25519.PublicKey
-	RequireSignature  bool
+	TrustedPublicKeys      []ed25519.PublicKey
+	RequireSignature       bool
+	AllowUnsignedChecksums bool
 }
 
 // CheckOptions controls update discovery.
@@ -243,25 +244,27 @@ func (c Client) Install(ctx context.Context, info *Info, opts InstallOptions) er
 	}
 
 	return InstallArchive(archivePath, info.Checksum, dstPath, InstallArchiveOptions{
-		ArchiveBinaryName:   archiveBinaryName,
-		PrecomputedChecksum: downloadChecksum,
-		TempDir:             opts.TempDir,
-		TrustedPublicKeys:   c.TrustedPublicKeys,
-		ChecksumSignature:   checksumSignature,
-		SignaturePayload:    c.signaturePayload(info),
-		RequireSignature:    c.signatureVerificationEnabled(),
+		ArchiveBinaryName:      archiveBinaryName,
+		PrecomputedChecksum:    downloadChecksum,
+		TempDir:                opts.TempDir,
+		TrustedPublicKeys:      c.TrustedPublicKeys,
+		ChecksumSignature:      checksumSignature,
+		SignaturePayload:       c.signaturePayload(info),
+		RequireSignature:       c.signatureVerificationEnabled(),
+		AllowUnsignedChecksums: c.AllowUnsignedChecksums,
 	})
 }
 
 // InstallArchiveOptions controls installing an already downloaded archive.
 type InstallArchiveOptions struct {
-	ArchiveBinaryName   string
-	PrecomputedChecksum string
-	TempDir             string
-	TrustedPublicKeys   []ed25519.PublicKey
-	ChecksumSignature   []byte
-	SignaturePayload    []byte
-	RequireSignature    bool
+	ArchiveBinaryName      string
+	PrecomputedChecksum    string
+	TempDir                string
+	TrustedPublicKeys      []ed25519.PublicKey
+	ChecksumSignature      []byte
+	SignaturePayload       []byte
+	RequireSignature       bool
+	AllowUnsignedChecksums bool
 }
 
 // InstallArchive verifies archivePath, extracts it, and installs the target
@@ -285,7 +288,7 @@ func InstallArchive(archivePath, expectedChecksum, dstPath string, opts InstallA
 	if !strings.EqualFold(checksum, expectedChecksum) {
 		return fmt.Errorf("checksum mismatch: expected %s, got %s", expectedChecksum, checksum)
 	}
-	if err := verifyChecksumTrust(opts.SignaturePayload, opts.ChecksumSignature, opts.TrustedPublicKeys, opts.RequireSignature || len(opts.TrustedPublicKeys) > 0); err != nil {
+	if err := verifyChecksumTrust(opts.SignaturePayload, opts.ChecksumSignature, opts.TrustedPublicKeys, opts.RequireSignature || len(opts.TrustedPublicKeys) > 0 || !opts.AllowUnsignedChecksums); err != nil {
 		return err
 	}
 
@@ -451,7 +454,7 @@ func ExtractTarGz(archivePath, destDir string) error {
 			if err := ensureNoSymlinkPath(absDestDir, target); err != nil {
 				return err
 			}
-		case tar.TypeReg:
+		case tar.TypeReg, tar.TypeRegA:
 			outFile, err := createArchiveFile(absDestDir, target)
 			if err != nil {
 				return err
@@ -903,7 +906,7 @@ func (c Client) downloadChecksumSignature(ctx context.Context, info *Info) ([]by
 }
 
 func (c Client) signatureVerificationEnabled() bool {
-	return c.RequireSignature || len(c.TrustedPublicKeys) > 0
+	return c.RequireSignature || len(c.TrustedPublicKeys) > 0 || !c.AllowUnsignedChecksums
 }
 
 func (c Client) platformAssetName(release *Release, version string, opts CheckOptions) string {
