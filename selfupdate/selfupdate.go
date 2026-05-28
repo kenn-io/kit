@@ -199,6 +199,9 @@ func (c Client) Install(ctx context.Context, info *Info, opts InstallOptions) er
 	if info.DownloadURL == "" {
 		return fmt.Errorf("install: download URL is empty")
 	}
+	if err := c.validateInfoMetadata(info); err != nil {
+		return err
+	}
 	assetName, err := safeAssetFileName(info.AssetName)
 	if err != nil {
 		return err
@@ -948,13 +951,13 @@ func (c Client) findAssets(assets []Asset, assetName string) (asset *Asset, chec
 }
 
 func (c Client) signaturePayload(info *Info) []byte {
-	owner := info.Owner
+	owner := c.Owner
 	if owner == "" {
-		owner = c.Owner
+		owner = info.Owner
 	}
-	repo := info.Repo
+	repo := c.Repo
 	if repo == "" {
-		repo = c.Repo
+		repo = info.Repo
 	}
 	goos := info.GOOS
 	if goos == "" {
@@ -973,6 +976,16 @@ func (c Client) signaturePayload(info *Info) []byte {
 		GOARCH:   goarch,
 		Checksum: info.Checksum,
 	})
+}
+
+func (c Client) validateInfoMetadata(info *Info) error {
+	if c.Owner != "" && info.Owner != "" && info.Owner != c.Owner {
+		return fmt.Errorf("install: update owner %q does not match client owner %q", info.Owner, c.Owner)
+	}
+	if c.Repo != "" && info.Repo != "" && info.Repo != c.Repo {
+		return fmt.Errorf("install: update repo %q does not match client repo %q", info.Repo, c.Repo)
+	}
+	return nil
 }
 
 func assetURL(asset *Asset) string {
