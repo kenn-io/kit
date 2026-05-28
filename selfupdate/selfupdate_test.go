@@ -499,6 +499,32 @@ func TestInstallArchive(t *testing.T) {
 			t.Fatalf("error = %v", err)
 		}
 	})
+
+	t.Run("walks past top-level directory named binary", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		archivePath := filepath.Join(tmpDir, "nested.tar.gz")
+		createTarGz(t, archivePath, []archiveEntry{{Name: "tool/tool", Content: "nested-binary", Mode: 0o755}})
+		checksum, err := HashFile(archivePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		dstPath := filepath.Join(tmpDir, "dest", "tool")
+		if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := InstallArchive(archivePath, checksum, dstPath, InstallArchiveOptions{ArchiveBinaryName: "tool"}); err != nil {
+			t.Fatalf("InstallArchive: %v", err)
+		}
+		got, err := os.ReadFile(dstPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != "nested-binary" {
+			t.Fatalf("content = %q", got)
+		}
+	})
 }
 
 func TestInstallArchiveRejectsReplaySignature(t *testing.T) {

@@ -1035,8 +1035,12 @@ func executableName(binaryName string) string {
 
 func findExtractedBinary(root, binaryName string) (string, error) {
 	rootCandidate := filepath.Join(root, binaryName)
-	if _, err := os.Stat(rootCandidate); err == nil {
-		return rootCandidate, nil
+	if info, err := os.Stat(rootCandidate); err == nil {
+		if !info.IsDir() {
+			return rootCandidate, nil
+		}
+	} else if !os.IsNotExist(err) {
+		return "", err
 	}
 
 	var found string
