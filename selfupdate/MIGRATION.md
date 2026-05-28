@@ -31,10 +31,12 @@ confirmation prompts, and command wiring should stay in the application.
 
 Install verification is fail-closed by default. Publish a detached Ed25519
 signature asset named `<asset>.sha256.sig` or `<asset>.sig`; it must sign the
-lowercase SHA-256 checksum string for the archive, and the existing binary
-should pin the trusted public key in `Client.TrustedPublicKeys`. Existing
-unsigned release flows can temporarily set `AllowUnsignedChecksums`, but that
-keeps checksums as corruption checks rather than publisher authentication.
+canonical `selfupdate.SignaturePayload` metadata for the archive, including
+owner, repo, version, asset name, target platform, and lowercase SHA-256
+checksum. The existing binary should pin the trusted public key in
+`Client.TrustedPublicKeys`. Existing unsigned release flows can temporarily set
+`AllowUnsignedChecksums`, but that keeps checksums as corruption checks rather
+than publisher authentication.
 
 ## App-Specific Details
 

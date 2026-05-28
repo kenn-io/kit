@@ -251,7 +251,16 @@ func TestInstallDownloadsVerifiesAndInstalls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	publicKey, signature := signChecksum(t, checksum)
+	payload := SignaturePayload(SignatureMetadata{
+		Owner:    "kenn",
+		Repo:     "tool",
+		Version:  "v1.2.0",
+		Asset:    filepath.Base(archivePath),
+		GOOS:     runtime.GOOS,
+		GOARCH:   runtime.GOARCH,
+		Checksum: checksum,
+	})
+	publicKey, signature := signPayload(t, payload)
 	archiveBytes, err := os.ReadFile(archivePath)
 	if err != nil {
 		t.Fatal(err)
@@ -271,13 +280,19 @@ func TestInstallDownloadsVerifiesAndInstalls(t *testing.T) {
 
 	dstPath := filepath.Join(tmpDir, binaryName)
 	var lastProgress int64
-	c := Client{BinaryName: "tool", TrustedPublicKeys: []ed25519.PublicKey{publicKey}}
+	c := Client{
+		Owner:             "kenn",
+		Repo:              "tool",
+		BinaryName:        "tool",
+		TrustedPublicKeys: []ed25519.PublicKey{publicKey},
+	}
 	err = c.Install(context.Background(), &Info{
-		DownloadURL:  server.URL + "/archive",
-		SignatureURL: server.URL + "/archive.sig",
-		AssetName:    filepath.Base(archivePath),
-		Size:         int64(len(archiveBytes)),
-		Checksum:     checksum,
+		DownloadURL:   server.URL + "/archive",
+		SignatureURL:  server.URL + "/archive.sig",
+		AssetName:     filepath.Base(archivePath),
+		LatestVersion: "v1.2.0",
+		Size:          int64(len(archiveBytes)),
+		Checksum:      checksum,
 	}, InstallOptions{
 		DestinationPath: dstPath,
 		Progress: func(downloaded, total int64) {
@@ -339,7 +354,14 @@ func TestInstallArchive(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		publicKey, signature := signChecksum(t, checksum)
+		payload := SignaturePayload(SignatureMetadata{
+			Version:  "v1.0.0",
+			Asset:    "tool",
+			GOOS:     runtime.GOOS,
+			GOARCH:   runtime.GOARCH,
+			Checksum: checksum,
+		})
+		publicKey, signature := signPayload(t, payload)
 
 		dstPath := filepath.Join(tmpDir, "dest", "tool")
 		if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
@@ -349,6 +371,7 @@ func TestInstallArchive(t *testing.T) {
 			ArchiveBinaryName: "tool",
 			TrustedPublicKeys: []ed25519.PublicKey{publicKey},
 			ChecksumSignature: signature,
+			SignaturePayload:  payload,
 		}); err != nil {
 			t.Fatalf("InstallArchive: %v", err)
 		}
@@ -371,6 +394,47 @@ func TestInstallArchive(t *testing.T) {
 			t.Fatalf("error = %v", err)
 		}
 	})
+}
+
+func TestInstallArchiveRejectsReplaySignature(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	archivePath := filepath.Join(tmpDir, "test.zip")
+	createZip(t, archivePath, []archiveEntry{{Name: "tool", Content: "content", Mode: 0o755}})
+	checksum, err := HashFile(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	oldPayload := SignaturePayload(SignatureMetadata{
+		Owner:    "kenn",
+		Repo:     "tool",
+		Version:  "v1.0.0",
+		Asset:    "tool",
+		GOOS:     runtime.GOOS,
+		GOARCH:   runtime.GOARCH,
+		Checksum: checksum,
+	})
+	newPayload := SignaturePayload(SignatureMetadata{
+		Owner:    "kenn",
+		Repo:     "tool",
+		Version:  "v1.1.0",
+		Asset:    "tool",
+		GOOS:     runtime.GOOS,
+		GOARCH:   runtime.GOARCH,
+		Checksum: checksum,
+	})
+	publicKey, signature := signPayload(t, oldPayload)
+
+	err = InstallArchive(archivePath, checksum, filepath.Join(tmpDir, "tool"), InstallArchiveOptions{
+		ArchiveBinaryName: "tool",
+		TrustedPublicKeys: []ed25519.PublicKey{publicKey},
+		ChecksumSignature: signature,
+		SignaturePayload:  newPayload,
+	})
+	if err == nil || !strings.Contains(err.Error(), "signature verification failed") {
+		t.Fatalf("error = %v", err)
+	}
 }
 
 func TestExtractTarGzAndZipRejectTraversal(t *testing.T) {
@@ -400,6 +464,61 @@ func TestExtractTarGzAndZipRejectTraversal(t *testing.T) {
 			t.Fatal("expected traversal error")
 		}
 		if _, err := os.Stat(filepath.Join(tmpDir, "pwned")); !os.IsNotExist(err) {
+			t.Fatalf("outside file exists or stat failed unexpectedly: %v", err)
+		}
+	})
+}
+
+func TestExtractArchivesRejectPreexistingSymlinkPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation needs elevated privileges on Windows")
+	}
+	t.Parallel()
+
+	t.Run("tar.gz", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		archivePath := filepath.Join(tmpDir, "symlink-path.tar.gz")
+		createTarGz(t, archivePath, []archiveEntry{{Name: "link/payload", Content: "owned", Mode: 0o644}})
+		extractDir := filepath.Join(tmpDir, "extract")
+		outsideDir := filepath.Join(tmpDir, "outside")
+		if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(extractDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outsideDir, filepath.Join(extractDir, "link")); err != nil {
+			t.Fatal(err)
+		}
+		if err := ExtractTarGz(archivePath, extractDir); err == nil {
+			t.Fatal("expected symlink path error")
+		}
+		if _, err := os.Stat(filepath.Join(outsideDir, "payload")); !os.IsNotExist(err) {
+			t.Fatalf("outside file exists or stat failed unexpectedly: %v", err)
+		}
+	})
+
+	t.Run("zip", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		archivePath := filepath.Join(tmpDir, "symlink-path.zip")
+		createZip(t, archivePath, []archiveEntry{{Name: "link/payload", Content: "owned", Mode: 0o644}})
+		extractDir := filepath.Join(tmpDir, "extract")
+		outsideDir := filepath.Join(tmpDir, "outside")
+		if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(extractDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outsideDir, filepath.Join(extractDir, "link")); err != nil {
+			t.Fatal(err)
+		}
+		if err := ExtractZip(archivePath, extractDir); err == nil {
+			t.Fatal("expected symlink path error")
+		}
+		if _, err := os.Stat(filepath.Join(outsideDir, "payload")); !os.IsNotExist(err) {
 			t.Fatalf("outside file exists or stat failed unexpectedly: %v", err)
 		}
 	})
@@ -783,11 +902,11 @@ func createZip(t *testing.T, path string, entries []archiveEntry) {
 	}
 }
 
-func signChecksum(t *testing.T, checksum string) (ed25519.PublicKey, []byte) {
+func signPayload(t *testing.T, payload []byte) (ed25519.PublicKey, []byte) {
 	t.Helper()
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return publicKey, ed25519.Sign(privateKey, []byte(strings.ToLower(checksum)))
+	return publicKey, ed25519.Sign(privateKey, payload)
 }

@@ -95,11 +95,15 @@ type CheckOptions struct {
 
 // Info contains information about an available update.
 type Info struct {
+	Owner          string
+	Repo           string
 	CurrentVersion string
 	LatestVersion  string
 	DownloadURL    string
 	AssetName      string
 	SignatureURL   string
+	GOOS           string
+	GOARCH         string
 	Size           int64
 	Checksum       string
 	IsDevBuild     bool
@@ -150,10 +154,10 @@ func (c Client) Check(ctx context.Context, opts CheckOptions) (*Info, error) {
 		return nil, nil
 	}
 
+	goos, goarch := platform(opts)
 	assetName := c.platformAssetName(release, latestVersion, opts)
 	asset, checksumsAsset, signatureAsset := c.findAssets(release.Assets, assetName)
 	if asset == nil {
-		goos, goarch := platform(opts)
 		return nil, fmt.Errorf("no release asset for %s/%s", goos, goarch)
 	}
 
@@ -171,6 +175,10 @@ func (c Client) Check(ctx context.Context, opts CheckOptions) (*Info, error) {
 		DownloadURL:    asset.BrowserDownloadURL,
 		AssetName:      asset.Name,
 		SignatureURL:   assetURL(signatureAsset),
+		Owner:          c.Owner,
+		Repo:           c.Repo,
+		GOOS:           goos,
+		GOARCH:         goarch,
 		Size:           asset.Size,
 		Checksum:       checksum,
 		IsDevBuild:     isDevBuild,
@@ -227,6 +235,7 @@ func (c Client) Install(ctx context.Context, info *Info, opts InstallOptions) er
 		TempDir:                opts.TempDir,
 		TrustedPublicKeys:      c.TrustedPublicKeys,
 		ChecksumSignature:      checksumSignature,
+		SignaturePayload:       c.signaturePayload(info),
 		AllowUnsignedChecksums: c.AllowUnsignedChecksums,
 	})
 }
@@ -238,6 +247,7 @@ type InstallArchiveOptions struct {
 	TempDir                string
 	TrustedPublicKeys      []ed25519.PublicKey
 	ChecksumSignature      []byte
+	SignaturePayload       []byte
 	AllowUnsignedChecksums bool
 }
 
@@ -262,7 +272,7 @@ func InstallArchive(archivePath, expectedChecksum, dstPath string, opts InstallA
 	if !strings.EqualFold(checksum, expectedChecksum) {
 		return fmt.Errorf("checksum mismatch: expected %s, got %s", expectedChecksum, checksum)
 	}
-	if err := verifyChecksumTrust(expectedChecksum, opts.ChecksumSignature, opts.TrustedPublicKeys, opts.AllowUnsignedChecksums); err != nil {
+	if err := verifyChecksumTrust(opts.SignaturePayload, opts.ChecksumSignature, opts.TrustedPublicKeys, opts.AllowUnsignedChecksums); err != nil {
 		return err
 	}
 
@@ -419,14 +429,17 @@ func ExtractTarGz(archivePath, destDir string) error {
 
 		switch header.Typeflag {
 		case tar.TypeDir:
+			if err := ensureNoSymlinkPath(absDestDir, target); err != nil {
+				return err
+			}
 			if err := os.MkdirAll(target, 0o755); err != nil {
 				return err
 			}
-		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			if err := ensureNoSymlinkPath(absDestDir, target); err != nil {
 				return err
 			}
-			outFile, err := os.Create(target)
+		case tar.TypeReg:
+			outFile, err := createArchiveFile(absDestDir, target)
 			if err != nil {
 				return err
 			}
@@ -469,20 +482,23 @@ func ExtractZip(archivePath, destDir string) error {
 			return fmt.Errorf("invalid zip entry %q: %w", f.Name, err)
 		}
 		if f.FileInfo().IsDir() {
+			if err := ensureNoSymlinkPath(absDestDir, target); err != nil {
+				return err
+			}
 			if err := os.MkdirAll(target, 0o755); err != nil {
 				return err
 			}
+			if err := ensureNoSymlinkPath(absDestDir, target); err != nil {
+				return err
+			}
 			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return err
 		}
 
 		rc, err := f.Open()
 		if err != nil {
 			return err
 		}
-		outFile, err := os.Create(target)
+		outFile, err := createArchiveFile(absDestDir, target)
 		if err != nil {
 			_ = rc.Close()
 			return err
@@ -912,6 +928,34 @@ func (c Client) findAssets(assets []Asset, assetName string) (asset *Asset, chec
 	return asset, checksumsAsset, signatureAsset
 }
 
+func (c Client) signaturePayload(info *Info) []byte {
+	owner := info.Owner
+	if owner == "" {
+		owner = c.Owner
+	}
+	repo := info.Repo
+	if repo == "" {
+		repo = c.Repo
+	}
+	goos := info.GOOS
+	if goos == "" {
+		goos = runtime.GOOS
+	}
+	goarch := info.GOARCH
+	if goarch == "" {
+		goarch = runtime.GOARCH
+	}
+	return SignaturePayload(SignatureMetadata{
+		Owner:    owner,
+		Repo:     repo,
+		Version:  info.LatestVersion,
+		Asset:    info.AssetName,
+		GOOS:     goos,
+		GOARCH:   goarch,
+		Checksum: info.Checksum,
+	})
+}
+
 func assetURL(asset *Asset) string {
 	if asset == nil {
 		return ""
@@ -996,25 +1040,104 @@ func movePreviousAside(dstPath, backupPath string) (bool, error) {
 	return true, nil
 }
 
-func verifyChecksumTrust(expectedChecksum string, signature []byte, publicKeys []ed25519.PublicKey, allowUnsigned bool) error {
+func verifyChecksumTrust(payload, signature []byte, publicKeys []ed25519.PublicKey, allowUnsigned bool) error {
 	if allowUnsigned {
 		return nil
 	}
 	if len(publicKeys) == 0 {
 		return fmt.Errorf("checksum signature verification requires a trusted public key")
 	}
+	if len(payload) == 0 {
+		return fmt.Errorf("checksum signature payload is empty")
+	}
 
 	sig, err := parseSignature(signature)
 	if err != nil {
 		return err
 	}
-	message := []byte(strings.ToLower(expectedChecksum))
 	for _, publicKey := range publicKeys {
-		if len(publicKey) == ed25519.PublicKeySize && ed25519.Verify(publicKey, message, sig) {
+		if len(publicKey) == ed25519.PublicKeySize && ed25519.Verify(publicKey, payload, sig) {
 			return nil
 		}
 	}
 	return fmt.Errorf("checksum signature verification failed")
+}
+
+// SignatureMetadata is the update metadata covered by a release signature.
+type SignatureMetadata struct {
+	Owner    string
+	Repo     string
+	Version  string
+	Asset    string
+	GOOS     string
+	GOARCH   string
+	Checksum string
+}
+
+// SignaturePayload returns the canonical payload that release signatures cover.
+func SignaturePayload(m SignatureMetadata) []byte {
+	lines := []string{
+		"go.kenn.io/kit/selfupdate/v1",
+		"owner=" + m.Owner,
+		"repo=" + m.Repo,
+		"version=" + m.Version,
+		"asset=" + m.Asset,
+		"goos=" + m.GOOS,
+		"goarch=" + m.GOARCH,
+		"sha256=" + strings.ToLower(m.Checksum),
+	}
+	return []byte(strings.Join(lines, "\n") + "\n")
+}
+
+func createArchiveFile(absDestDir, target string) (*os.File, error) {
+	parent := filepath.Dir(target)
+	if err := ensureNoSymlinkPath(absDestDir, parent); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return nil, err
+	}
+	if err := ensureNoSymlinkPath(absDestDir, parent); err != nil {
+		return nil, err
+	}
+	if info, err := os.Lstat(target); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("archive entry target is a symlink: %s", target)
+	} else if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	return os.Create(target)
+}
+
+func ensureNoSymlinkPath(absDestDir, target string) error {
+	rel, err := filepath.Rel(absDestDir, target)
+	if err != nil {
+		return err
+	}
+	if rel == "." {
+		return nil
+	}
+	if strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." || filepath.IsAbs(rel) {
+		return fmt.Errorf("path escapes destination directory")
+	}
+
+	current := absDestDir
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		if part == "." || part == "" {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("archive path contains symlink: %s", current)
+		}
+	}
+	return nil
 }
 
 func parseSignature(data []byte) ([]byte, error) {
