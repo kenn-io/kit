@@ -285,13 +285,53 @@ func TestFileLoggingFailureDegradesToStderrOnly(t *testing.T) {
 	if res.FilePath != "" || res.FileHandler != nil {
 		t.Fatalf("file logging should be unavailable, got path %q handler %T", res.FilePath, res.FileHandler)
 	}
-	if !strings.Contains(stderr.String(), "warning: could not prepare log file") {
+	if !strings.Contains(stderr.String(), "could not prepare log file") {
 		t.Fatalf("stderr missing degradation warning: %q", stderr.String())
 	}
 
 	logger.Info("still-visible")
 	if !strings.Contains(stderr.String(), "still-visible") {
 		t.Fatalf("stderr-only handler did not log: %q", stderr.String())
+	}
+}
+
+func TestFileLoggingFailureUsesConfiguredFormat(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	notDir := filepath.Join(dir, "not-dir")
+	writeFile(t, notDir, "plain file")
+
+	var stderr bytes.Buffer
+	_, res, err := NewLogger(Options{
+		Stderr: &stderr,
+		Format: FormatJSON,
+		Level:  "info",
+		File: FileOptions{
+			Enabled: true,
+			Dir:     filepath.Join(notDir, "logs"),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Close() }()
+
+	var record map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(stderr.Bytes()), &record); err != nil {
+		t.Fatalf("warning should use JSON format: %v\n%s", err, stderr.String())
+	}
+	if record["level"] != "WARN" {
+		t.Fatalf("level = %v, want WARN", record["level"])
+	}
+	if record["msg"] != "could not prepare log file" {
+		t.Fatalf("msg = %v, want file warning", record["msg"])
+	}
+	if record["fallback"] != "stderr-only" {
+		t.Fatalf("fallback = %v, want stderr-only", record["fallback"])
+	}
+	if _, ok := record["error"].(string); !ok {
+		t.Fatalf("error attr missing from warning: %#v", record)
 	}
 }
 

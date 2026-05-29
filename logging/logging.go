@@ -235,12 +235,7 @@ func BuildHandler(opts Options) (*Result, error) {
 			if target == "" {
 				target = "log file"
 			}
-			_, _ = fmt.Fprintf(
-				stderr,
-				"warning: could not prepare log file %s: %v (continuing with stderr-only logging)\n",
-				target,
-				err,
-			)
+			emitFileLoggingWarning(stderrHandler, target, err)
 		} else {
 			handlers = append(handlers, fileHandler)
 			res.FileHandler = fileHandler
@@ -313,6 +308,19 @@ func newHandler(w io.Writer, format Format, opts *slog.HandlerOptions) slog.Hand
 		return slog.NewJSONHandler(w, opts)
 	}
 	return slog.NewTextHandler(w, opts)
+}
+
+func emitFileLoggingWarning(handler slog.Handler, target string, err error) {
+	ctx := context.Background()
+	record := slog.NewRecord(time.Now(), slog.LevelWarn, "could not prepare log file", 0)
+	record.AddAttrs(
+		slog.String("path", target),
+		slog.String("error", err.Error()),
+		slog.String("fallback", "stderr-only"),
+	)
+	if handler.Enabled(ctx, record.Level) {
+		_ = handler.Handle(ctx, record)
+	}
 }
 
 func buildFileHandler(
