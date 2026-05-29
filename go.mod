@@ -8,6 +8,7 @@ require (
 	go.opentelemetry.io/otel/metric v1.43.0
 	go.opentelemetry.io/otel/sdk/metric v1.43.0
 	golang.org/x/sync v0.20.0
+	golang.org/x/term v0.43.0
 	golang.org/x/tools v0.45.0
 )
 
