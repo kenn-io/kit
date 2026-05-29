@@ -318,9 +318,7 @@ func emitFileLoggingWarning(handler slog.Handler, target string, err error) {
 		slog.String("error", err.Error()),
 		slog.String("fallback", "stderr-only"),
 	)
-	if handler.Enabled(ctx, record.Level) {
-		_ = handler.Handle(ctx, record)
-	}
+	_ = handler.Handle(ctx, record)
 }
 
 func buildFileHandler(

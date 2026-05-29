@@ -306,7 +306,7 @@ func TestFileLoggingFailureUsesConfiguredFormat(t *testing.T) {
 	_, res, err := NewLogger(Options{
 		Stderr: &stderr,
 		Format: FormatJSON,
-		Level:  "info",
+		Level:  "error",
 		File: FileOptions{
 			Enabled: true,
 			Dir:     filepath.Join(notDir, "logs"),
