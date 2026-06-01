@@ -16,7 +16,7 @@ func TestEnsurePrivateDirCreatesOwnedDirectory(t *testing.T) {
 
 	require.NoError(t, EnsurePrivateDir(dir))
 
-	userSID, err := currentWindowsUserSID()
+	ownerSID, err := currentWindowsOwnerSID()
 	require.NoError(t, err)
 	descriptor, err := windows.GetNamedSecurityInfo(
 		dir,
@@ -27,7 +27,7 @@ func TestEnsurePrivateDirCreatesOwnedDirectory(t *testing.T) {
 	owner, _, err := descriptor.Owner()
 	require.NoError(t, err)
 	require.NotNil(t, owner)
-	require.True(t, owner.Equals(userSID))
+	require.True(t, owner.Equals(ownerSID))
 }
 
 func TestEnsurePrivateDirRejectsEmptyPath(t *testing.T) {
@@ -52,10 +52,26 @@ func TestOpenCurrentUserFileRejectsEmptyPath(t *testing.T) {
 	require.Nil(t, file)
 }
 
+func TestOpenCurrentUserFileAcceptsCurrentTokenOwner(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "record.json")
+	require.NoError(t, os.WriteFile(path, []byte("{}"), 0o600))
+
+	file, err := OpenCurrentUserFile(path)
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
+}
+
 func TestCurrentUserIDIsPerUser(t *testing.T) {
 	id, err := CurrentUserID()
 	require.NoError(t, err)
 	require.NotEmpty(t, id)
 	require.NotEqual(t, "user", id)
 	require.Contains(t, id, "sid-")
+}
+
+func TestCurrentWindowsOwnerSIDIsAvailable(t *testing.T) {
+	ownerSID, err := currentWindowsOwnerSID()
+	require.NoError(t, err)
+	require.NotNil(t, ownerSID)
+	require.NotEmpty(t, ownerSID.String())
 }
