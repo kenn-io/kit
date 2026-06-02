@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -26,6 +27,7 @@ import (
 
 const (
 	defaultGitHubAPIBaseURL = "https://api.github.com"
+	defaultGitHubWebBaseURL = "https://github.com"
 	defaultCacheFileName    = "update_check.json"
 	defaultCacheDuration    = time.Hour
 	defaultDevCacheDuration = 15 * time.Minute
@@ -74,7 +76,10 @@ type Client struct {
 	Clock      func() time.Time
 
 	GitHubAPIBaseURL string
+	GitHubWebBaseURL string
 	UserAgent        string
+
+	UseGitHubLatestRedirect bool
 
 	CacheFileName    string
 	CacheDuration    time.Duration
@@ -158,6 +163,30 @@ func (c Client) Check(ctx context.Context, opts CheckOptions) (*Info, error) {
 
 	goos, goarch := platform(opts)
 	assetName := c.platformAssetName(release, latestVersion, opts)
+	if c.UseGitHubLatestRedirect {
+		downloadURL := c.githubReleaseDownloadURL(release.TagName, assetName)
+		size, err := c.fetchAssetContentLength(ctx, downloadURL)
+		if err != nil {
+			return nil, fmt.Errorf("no release asset for %s/%s: %w", goos, goarch, err)
+		}
+
+		checksum := c.fetchChecksumFromDownloadAssets(ctx, release.TagName, assetName)
+		return &Info{
+			CurrentVersion: currentVersion,
+			LatestVersion:  release.TagName,
+			DownloadURL:    downloadURL,
+			AssetName:      assetName,
+			SignatureURL:   c.findSignatureDownloadURL(ctx, release.TagName, assetName),
+			Owner:          c.Owner,
+			Repo:           c.Repo,
+			GOOS:           goos,
+			GOARCH:         goarch,
+			Size:           size,
+			Checksum:       checksum,
+			IsDevBuild:     isDevBuild,
+		}, nil
+	}
+
 	asset, checksumsAsset, signatureAsset := c.findAssets(release.Assets, assetName)
 	if asset == nil {
 		return nil, fmt.Errorf("no release asset for %s/%s", goos, goarch)
@@ -575,7 +604,17 @@ func ExtractChecksum(body, assetName string) string {
 	lines := strings.Split(body, "\n")
 	re := regexp.MustCompile(`(?i)[a-f0-9]{64}`)
 	for _, line := range lines {
-		fields := strings.Fields(strings.TrimSpace(line))
+		line = strings.TrimSpace(line)
+		if name, value, ok := strings.Cut(line, ":"); ok {
+			fname := strings.TrimPrefix(strings.TrimSpace(name), "*")
+			if fname == assetName {
+				if match := re.FindString(value); match != "" {
+					return strings.ToLower(match)
+				}
+			}
+		}
+
+		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue
 		}
@@ -593,6 +632,12 @@ func ExtractChecksum(body, assetName string) string {
 // kenn-io CLIs: binary_version_goos_goarch.tar.gz, or .zip on Windows.
 func DefaultAssetName(req AssetRequest) string {
 	return fmt.Sprintf("%s_%s_%s_%s%s", req.BinaryName, req.Version, req.GOOS, req.GOARCH, req.Extension)
+}
+
+// TarGzAssetName returns binary_version_goos_goarch.tar.gz for every platform.
+func TarGzAssetName(req AssetRequest) string {
+	req.Extension = ".tar.gz"
+	return DefaultAssetName(req)
 }
 
 // IsDevBuildVersion reports whether v is a non-release or git-describe build.
@@ -665,6 +710,13 @@ func (c Client) apiBaseURL() string {
 		return strings.TrimRight(c.GitHubAPIBaseURL, "/")
 	}
 	return defaultGitHubAPIBaseURL
+}
+
+func (c Client) githubWebBaseURL() string {
+	if c.GitHubWebBaseURL != "" {
+		return strings.TrimRight(c.GitHubWebBaseURL, "/")
+	}
+	return defaultGitHubWebBaseURL
 }
 
 func (c Client) userAgent() string {
@@ -780,6 +832,10 @@ func (c Client) checkCache(currentVersion, cleanVersion string, isDevBuild bool)
 }
 
 func (c Client) fetchLatestRelease(ctx context.Context) (*Release, error) {
+	if c.UseGitHubLatestRedirect {
+		return c.fetchLatestReleaseByRedirect(ctx)
+	}
+
 	url := fmt.Sprintf("%s/repos/%s/%s/releases/latest", c.apiBaseURL(), c.Owner, c.Repo)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -805,6 +861,40 @@ func (c Client) fetchLatestRelease(ctx context.Context) (*Release, error) {
 	return &release, nil
 }
 
+func (c Client) fetchLatestReleaseByRedirect(ctx context.Context) (*Release, error) {
+	url := fmt.Sprintf("%s/%s/%s/releases/latest", c.githubWebBaseURL(), c.Owner, c.Repo)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", c.userAgent())
+
+	baseClient := c.httpClient()
+	client := *baseClient
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 300 || resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("expected redirect from %s, got %s", url, resp.Status)
+	}
+
+	loc, err := resp.Location()
+	if err != nil {
+		return nil, fmt.Errorf("read Location header: %w", err)
+	}
+	tag, err := releaseTagFromRedirect(loc)
+	if err != nil {
+		return nil, err
+	}
+	return &Release{TagName: tag}, nil
+}
+
 func (c Client) fetchChecksumFromFile(ctx context.Context, url, assetName string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -827,6 +917,51 @@ func (c Client) fetchChecksumFromFile(ctx context.Context, url, assetName string
 		return "", err
 	}
 	return ExtractChecksum(string(body), assetName), nil
+}
+
+func (c Client) fetchAssetContentLength(ctx context.Context, url string) (int64, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("User-Agent", c.userAgent())
+
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("HEAD %s returned %s", url, resp.Status)
+	}
+	if resp.ContentLength < 0 {
+		return 0, nil
+	}
+	return resp.ContentLength, nil
+}
+
+func (c Client) fetchChecksumFromDownloadAssets(ctx context.Context, tag, assetName string) string {
+	for _, checksumAssetName := range c.checksumAssetNames() {
+		checksum, err := c.fetchChecksumFromFile(ctx, c.githubReleaseDownloadURL(tag, checksumAssetName), assetName)
+		if err == nil && checksum != "" {
+			return checksum
+		}
+	}
+	return ""
+}
+
+func (c Client) findSignatureDownloadURL(ctx context.Context, tag, assetName string) string {
+	if !c.RequireSignature && len(c.TrustedPublicKeys) == 0 {
+		return ""
+	}
+	for _, signatureAssetName := range []string{assetName + ".sha256.sig", assetName + ".sig"} {
+		url := c.githubReleaseDownloadURL(tag, signatureAssetName)
+		if _, err := c.fetchAssetContentLength(ctx, url); err == nil {
+			return url
+		}
+	}
+	return ""
 }
 
 func (c Client) downloadFile(ctx context.Context, url, dest string, totalSize int64, progress func(downloaded, total int64)) (string, error) {
@@ -995,6 +1130,23 @@ func (c Client) validateInfoMetadata(info *Info) error {
 		return fmt.Errorf("install: update repo %q does not match client repo %q", info.Repo, c.Repo)
 	}
 	return nil
+}
+
+func (c Client) githubReleaseDownloadURL(tag, assetName string) string {
+	return fmt.Sprintf("%s/%s/%s/releases/download/%s/%s", c.githubWebBaseURL(), c.Owner, c.Repo, tag, assetName)
+}
+
+func releaseTagFromRedirect(loc *url.URL) (string, error) {
+	const marker = "/releases/tag/"
+	idx := strings.Index(loc.Path, marker)
+	if idx < 0 {
+		return "", fmt.Errorf("unexpected redirect target %q", loc.String())
+	}
+	tag := loc.Path[idx+len(marker):]
+	if tag == "" {
+		return "", fmt.Errorf("empty tag in redirect target %q", loc.String())
+	}
+	return tag, nil
 }
 
 func assetURL(asset *Asset) string {

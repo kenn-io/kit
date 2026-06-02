@@ -20,6 +20,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -125,6 +128,98 @@ func TestCheckUsesReleaseBodyChecksumFallback(t *testing.T) {
 	if !info.IsDevBuild {
 		t.Fatal("expected dev build")
 	}
+}
+
+func TestCheckUsesGitHubLatestRedirectDiscovery(t *testing.T) {
+	t.Parallel()
+
+	const (
+		releaseTag = "v1.2.0"
+		assetName  = "tool_1.2.0_linux_amd64.tar.gz"
+	)
+
+	var headRequests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/kenn/tool/releases/latest":
+			if r.Method != http.MethodGet {
+				http.Error(w, "expected GET", http.StatusMethodNotAllowed)
+				return
+			}
+			http.Redirect(w, r, "/kenn/tool/releases/tag/"+releaseTag, http.StatusFound)
+		case "/kenn/tool/releases/download/" + releaseTag + "/" + assetName:
+			if r.Method != http.MethodHead {
+				http.Error(w, "expected HEAD", http.StatusMethodNotAllowed)
+				return
+			}
+			headRequests.Add(1)
+			w.Header().Set("Content-Length", "123")
+		case "/kenn/tool/releases/download/" + releaseTag + "/SHA256SUMS":
+			if r.Method != http.MethodGet {
+				http.Error(w, "expected GET", http.StatusMethodNotAllowed)
+				return
+			}
+			_, _ = fmt.Fprintf(w, "%s  %s\n", testHash64, assetName)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := Client{
+		Owner:                   "kenn",
+		Repo:                    "tool",
+		BinaryName:              "tool",
+		CurrentVersion:          "v1.1.0",
+		CacheDir:                t.TempDir(),
+		GitHubWebBaseURL:        server.URL,
+		UseGitHubLatestRedirect: true,
+		AllowUnsignedChecksums:  true,
+	}
+
+	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	require := require.New(t)
+	require.NoError(err)
+	require.NotNil(info)
+
+	assert := assert.New(t)
+	assert.Equal("v1.1.0", info.CurrentVersion)
+	assert.Equal(releaseTag, info.LatestVersion)
+	assert.Equal(assetName, info.AssetName)
+	assert.Equal(server.URL+"/kenn/tool/releases/download/"+releaseTag+"/"+assetName, info.DownloadURL)
+	assert.Equal(int64(123), info.Size)
+	assert.Equal(testHash64, info.Checksum)
+	assert.Equal(int64(1), headRequests.Load())
+}
+
+func TestCheckGitHubLatestRedirectDiscoveryRequiresAsset(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/kenn/tool/releases/latest":
+			http.Redirect(w, r, "/kenn/tool/releases/tag/v1.2.0", http.StatusFound)
+		case "/kenn/tool/releases/download/v1.2.0/tool_1.2.0_linux_arm64.tar.gz":
+			http.NotFound(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := Client{
+		Owner:                   "kenn",
+		Repo:                    "tool",
+		BinaryName:              "tool",
+		CurrentVersion:          "v1.1.0",
+		GitHubWebBaseURL:        server.URL,
+		UseGitHubLatestRedirect: true,
+	}
+
+	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "arm64"})
+	require.Error(t, err)
+	assert.Nil(t, info)
+	assert.Contains(t, err.Error(), "no release asset for linux/arm64")
 }
 
 func TestCheckCache(t *testing.T) {
@@ -884,11 +979,11 @@ func TestInstallBinary(t *testing.T) {
 			}
 		}()
 
-		for i := range 1000 {
+		for range 1000 {
 			if err := InstallBinary(srcPath, dstPath); err != nil {
 				close(stop)
 				<-done
-				t.Fatalf("iteration %d: %v", i, err)
+				t.Fatalf("install iteration: %v", err)
 			}
 		}
 		close(stop)
@@ -919,6 +1014,7 @@ func TestExtractChecksum(t *testing.T) {
 		{"substring filename", fmt.Sprintf("%s  tool_darwin_arm64.tar.gz.sig", testHash64), "tool_darwin_arm64.tar.gz", ""},
 		{"binary star", fmt.Sprintf("%s *tool_darwin_arm64.tar.gz", testHash64), "tool_darwin_arm64.tar.gz", testHash64},
 		{"trailing comment", fmt.Sprintf("%s  tool_darwin_arm64.tar.gz  # comment", testHash64), "tool_darwin_arm64.tar.gz", testHash64},
+		{"colon", fmt.Sprintf("tool_darwin_arm64.tar.gz: %s", testHash64), "tool_darwin_arm64.tar.gz", testHash64},
 	}
 
 	for _, tt := range tests {
@@ -980,7 +1076,7 @@ func TestVersionHelpers(t *testing.T) {
 	}
 }
 
-func TestDefaultAssetNameAndFormatSize(t *testing.T) {
+func TestAssetNamesAndFormatSize(t *testing.T) {
 	t.Parallel()
 
 	name := DefaultAssetName(AssetRequest{
@@ -992,6 +1088,17 @@ func TestDefaultAssetNameAndFormatSize(t *testing.T) {
 	})
 	if name != "tool_1.2.3_linux_amd64.tar.gz" {
 		t.Fatalf("asset name = %q", name)
+	}
+
+	name = TarGzAssetName(AssetRequest{
+		BinaryName: "roborev",
+		Version:    "0.56.0",
+		GOOS:       "windows",
+		GOARCH:     "amd64",
+		Extension:  ".zip",
+	})
+	if name != "roborev_0.56.0_windows_amd64.tar.gz" {
+		t.Fatalf("tar.gz asset name = %q", name)
 	}
 
 	tests := []struct {
