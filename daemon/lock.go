@@ -26,6 +26,9 @@ func acquireDaemonLock(ctx context.Context, lockPath, action string) (func(), er
 	if lockPath == "" {
 		return nil, fmt.Errorf("%s: empty daemon lock path", action)
 	}
+	if !filepath.IsAbs(lockPath) {
+		return nil, fmt.Errorf("%s: daemon lock path %q must be absolute", action, lockPath)
+	}
 	if err := ensurePrivateRuntimeDir(filepath.Dir(lockPath)); err != nil {
 		return nil, fmt.Errorf("prepare daemon lock dir: %w", err)
 	}

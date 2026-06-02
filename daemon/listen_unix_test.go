@@ -168,6 +168,30 @@ func TestListenUnixRejectsUnsafeLockDirectory(t *testing.T) {
 	require.NoError(t, statErr, "stale socket should not be touched when lock dir is unsafe")
 }
 
+func TestListenUnixRejectsRelativeLockPaths(t *testing.T) {
+	cases := map[string]struct {
+		ep   daemon.Endpoint
+		opts daemon.ListenOptions
+	}{
+		"explicit lock path": {
+			ep:   daemon.Endpoint{Network: daemon.NetworkUnix, Address: unixSocketPath(t)},
+			opts: daemon.ListenOptions{LockPath: "daemon.lock"},
+		},
+		"derived lock path": {
+			ep: daemon.Endpoint{Network: daemon.NetworkUnix, Address: "daemon.sock"},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			listener, err := daemon.Listen(context.Background(), tc.ep, tc.opts)
+
+			require.Error(t, err)
+			assert.Nil(t, listener)
+			assert.Contains(t, err.Error(), "must be absolute")
+		})
+	}
+}
+
 type listenResult struct {
 	listener net.Listener
 	err      error
