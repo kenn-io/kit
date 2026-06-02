@@ -13,18 +13,43 @@ import (
 
 const defaultStaleSocketProbeTimeout = 500 * time.Millisecond
 
-// ListenOptions configures Listen.
-type ListenOptions struct {
+type listenOptions struct {
 	// Store provides the daemon runtime listen lock used to serialize Unix
 	// socket stale cleanup and bind. Ignored when LockPath is set.
-	Store RuntimeStore
+	store RuntimeStore
 
 	// LockPath overrides the lock file used for Unix socket startup.
-	LockPath string
+	lockPath string
 
 	// StaleSocketProbeTimeout bounds the local dial used to prove that an
 	// existing Unix socket path is stale before removing it.
-	StaleSocketProbeTimeout time.Duration
+	staleSocketProbeTimeout time.Duration
+}
+
+// ListenOption configures Listen.
+type ListenOption func(*listenOptions)
+
+// WithRuntimeStore uses store's daemon listen lock to serialize Unix socket
+// stale cleanup and bind. Ignored when WithListenLockPath is also supplied.
+func WithRuntimeStore(store RuntimeStore) ListenOption {
+	return func(opts *listenOptions) {
+		opts.store = store
+	}
+}
+
+// WithListenLockPath overrides the lock file used for Unix socket startup.
+func WithListenLockPath(lockPath string) ListenOption {
+	return func(opts *listenOptions) {
+		opts.lockPath = lockPath
+	}
+}
+
+// WithStaleSocketProbeTimeout bounds the local dial used to prove that an
+// existing Unix socket path is stale before removing it.
+func WithStaleSocketProbeTimeout(timeout time.Duration) ListenOption {
+	return func(opts *listenOptions) {
+		opts.staleSocketProbeTimeout = timeout
+	}
 }
 
 // Listen binds ep for daemon serving.
@@ -33,9 +58,13 @@ type ListenOptions struct {
 // subsequent bind under an inter-process lock. Existing live sockets and
 // non-socket paths are rejected. TCP endpoints and Windows retain Endpoint's
 // normal Listen behavior.
-func Listen(ctx context.Context, ep Endpoint, opts ListenOptions) (net.Listener, error) {
+func Listen(ctx context.Context, ep Endpoint, options ...ListenOption) (net.Listener, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	opts := listenOptions{}
+	for _, option := range options {
+		option(&opts)
 	}
 	if !ep.IsUnix() || runtime.GOOS == "windows" {
 		return ep.Listen()
@@ -71,12 +100,12 @@ func prepareUnixListenEndpoint(ep Endpoint) error {
 	return nil
 }
 
-func (opts ListenOptions) listenLockPath(ep Endpoint) (string, error) {
-	if opts.LockPath != "" {
-		return opts.LockPath, nil
+func (opts listenOptions) listenLockPath(ep Endpoint) (string, error) {
+	if opts.lockPath != "" {
+		return opts.lockPath, nil
 	}
-	if opts.Store.Dir != "" {
-		return opts.Store.ListenLockPath()
+	if opts.store.Dir != "" {
+		return opts.store.ListenLockPath()
 	}
 	if ep.Address == "" {
 		return "", fmt.Errorf("empty daemon endpoint address")
@@ -84,14 +113,14 @@ func (opts ListenOptions) listenLockPath(ep Endpoint) (string, error) {
 	return ep.Address + ".lock", nil
 }
 
-func (opts ListenOptions) staleSocketProbeTimeout() time.Duration {
-	if opts.StaleSocketProbeTimeout > 0 {
-		return opts.StaleSocketProbeTimeout
+func (opts listenOptions) staleProbeTimeout() time.Duration {
+	if opts.staleSocketProbeTimeout > 0 {
+		return opts.staleSocketProbeTimeout
 	}
 	return defaultStaleSocketProbeTimeout
 }
 
-func removeStaleUnixSocket(ctx context.Context, ep Endpoint, opts ListenOptions) error {
+func removeStaleUnixSocket(ctx context.Context, ep Endpoint, opts listenOptions) error {
 	if ep.Address == "" {
 		return fmt.Errorf("empty daemon endpoint address")
 	}
@@ -105,7 +134,7 @@ func removeStaleUnixSocket(ctx context.Context, ep Endpoint, opts ListenOptions)
 	if info.Mode()&os.ModeSocket == 0 {
 		return fmt.Errorf("refusing to remove non-socket path %s", ep.Address)
 	}
-	stale, err := unixSocketStale(ctx, ep.Address, opts.staleSocketProbeTimeout())
+	stale, err := unixSocketStale(ctx, ep.Address, opts.staleProbeTimeout())
 	if err != nil {
 		return err
 	}
