@@ -17,6 +17,8 @@ import (
 )
 
 func TestManagerEnsureStartsAndPollsForCompatibleDaemon(t *testing.T) {
+	assert := assert.New(t)
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprint(w, `{"ok":true,"service":"tool","version":"v2"}`)
 	}))
@@ -48,9 +50,9 @@ func TestManagerEnsureStartsAndPollsForCompatibleDaemon(t *testing.T) {
 
 	rec, info, err := manager.Ensure(context.Background(), time.Second)
 	require.NoError(t, err)
-	assert.True(t, started)
-	assert.Equal(t, "tool", rec.Service)
-	assert.Equal(t, "v2", info.Version)
+	assert.True(started)
+	assert.Equal("tool", rec.Service)
+	assert.Equal("v2", info.Version)
 }
 
 func TestManagerFindSkipsIncompatibleDaemon(t *testing.T) {
@@ -83,6 +85,9 @@ func TestManagerFindSkipsIncompatibleDaemon(t *testing.T) {
 }
 
 func TestManagerFindScansPastIncompatibleDaemon(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+
 	oldServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprint(w, `{"ok":true,"service":"tool","version":"old"}`)
 	}))
@@ -101,7 +106,7 @@ func TestManagerFindScansPastIncompatibleDaemon(t *testing.T) {
 		Version:   "old",
 		StartedAt: time.Now().Add(-time.Minute),
 	})
-	require.NoError(t, err)
+	require.NoError(err)
 	_, err = store.Write(daemon.RuntimeRecord{
 		PID:       os.Getpid() + 1,
 		Network:   daemon.NetworkTCP,
@@ -110,7 +115,7 @@ func TestManagerFindScansPastIncompatibleDaemon(t *testing.T) {
 		Version:   "new",
 		StartedAt: time.Now(),
 	})
-	require.NoError(t, err)
+	require.NoError(err)
 
 	manager := daemon.Manager{
 		Store:    store,
@@ -121,10 +126,10 @@ func TestManagerFindScansPastIncompatibleDaemon(t *testing.T) {
 	}
 
 	rec, info, ok, err := manager.Find(context.Background())
-	require.NoError(t, err)
-	require.True(t, ok)
-	assert.Equal(t, listenerAddr(t, newServer), rec.Address)
-	assert.Equal(t, "new", info.Version)
+	require.NoError(err)
+	require.True(ok)
+	assert.Equal(listenerAddr(t, newServer), rec.Address)
+	assert.Equal("new", info.Version)
 }
 
 func TestManagerEnsureSerializesConcurrentStarts(t *testing.T) {
@@ -168,12 +173,14 @@ func TestManagerEnsureSerializesConcurrentStarts(t *testing.T) {
 }
 
 func TestManagerEnsureAppliesTimeoutToStartLock(t *testing.T) {
+	require := require.New(t)
+
 	store := daemon.RuntimeStore{Dir: t.TempDir()}
 	lockPath, err := store.LockPath()
-	require.NoError(t, err)
-	require.NoError(t, os.MkdirAll(store.Dir, 0o700))
+	require.NoError(err)
+	require.NoError(os.MkdirAll(store.Dir, 0o700))
 	lock := flock.New(lockPath)
-	require.NoError(t, lock.Lock())
+	require.NoError(lock.Lock())
 	defer func() { _ = lock.Unlock() }()
 
 	manager := daemon.Manager{
@@ -186,6 +193,6 @@ func TestManagerEnsureAppliesTimeoutToStartLock(t *testing.T) {
 
 	startedAt := time.Now()
 	_, _, err = manager.Ensure(context.Background(), 50*time.Millisecond)
-	require.Error(t, err)
+	require.Error(err)
 	assert.Less(t, time.Since(startedAt), 500*time.Millisecond)
 }

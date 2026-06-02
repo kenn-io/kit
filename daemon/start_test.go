@@ -8,10 +8,12 @@ import (
 )
 
 func TestIsEphemeralExecutableDetectsTestBinaries(t *testing.T) {
-	assert.True(t, daemon.IsEphemeralExecutable("/tmp/tool.test"))
-	assert.True(t, daemon.IsEphemeralExecutable(`C:\Temp\tool.test.exe`))
-	assert.True(t, daemon.IsEphemeralExecutable(`C:\Temp\tool.TEST.EXE`))
-	assert.False(t, daemon.IsEphemeralExecutable("/usr/local/bin/tool"))
+	assert := assert.New(t)
+
+	assert.True(daemon.IsEphemeralExecutable("/tmp/tool.test"))
+	assert.True(daemon.IsEphemeralExecutable(`C:\Temp\tool.test.exe`))
+	assert.True(daemon.IsEphemeralExecutable(`C:\Temp\tool.TEST.EXE`))
+	assert.False(daemon.IsEphemeralExecutable("/usr/local/bin/tool"))
 }
 
 func TestIsEphemeralExecutableDetectsGoBuildPaths(t *testing.T) {

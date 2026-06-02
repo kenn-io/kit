@@ -14,31 +14,35 @@ import (
 )
 
 func TestEnsurePrivateDirRepairsPublicDir(t *testing.T) {
+	require := require.New(t)
+
 	dir := filepath.Join("/tmp", fmt.Sprintf("kit-safefileio-public-%d", os.Getpid()))
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	require.NoError(t, os.RemoveAll(dir))
-	require.NoError(t, os.MkdirAll(dir, 0o700))
-	require.NoError(t, os.Chmod(dir, 0o777))
+	require.NoError(os.RemoveAll(dir))
+	require.NoError(os.MkdirAll(dir, 0o700))
+	require.NoError(os.Chmod(dir, 0o777))
 
-	require.NoError(t, safefileio.EnsurePrivateDir(dir))
+	require.NoError(safefileio.EnsurePrivateDir(dir))
 
 	info, err := os.Stat(dir)
-	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+	require.NoError(err)
+	require.Equal(os.FileMode(0o700), info.Mode().Perm())
 }
 
 func TestValidatePrivateDirRejectsWithoutRepairingPublicDir(t *testing.T) {
+	require := require.New(t)
+
 	dir := filepath.Join("/tmp", fmt.Sprintf("kit-safefileio-validate-public-%d", os.Getpid()))
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	require.NoError(t, os.RemoveAll(dir))
-	require.NoError(t, os.MkdirAll(dir, 0o700))
-	require.NoError(t, os.Chmod(dir, 0o777))
+	require.NoError(os.RemoveAll(dir))
+	require.NoError(os.MkdirAll(dir, 0o700))
+	require.NoError(os.Chmod(dir, 0o777))
 
-	require.Error(t, safefileio.ValidatePrivateDir(dir))
+	require.Error(safefileio.ValidatePrivateDir(dir))
 
 	info, err := os.Stat(dir)
-	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0o777), info.Mode().Perm())
+	require.NoError(err)
+	require.Equal(os.FileMode(0o777), info.Mode().Perm())
 }
 
 func TestValidatePrivateDirAcceptsPrivateDir(t *testing.T) {
@@ -55,18 +59,20 @@ func TestEnsurePrivateDirRejectsEmptyPath(t *testing.T) {
 }
 
 func TestEnsurePrivateDirRejectsSymlink(t *testing.T) {
+	require := require.New(t)
+
 	base := filepath.Join("/tmp", fmt.Sprintf("kit-safefileio-symlink-%d", os.Getpid()))
 	target := base + "-target"
 	t.Cleanup(func() {
 		_ = os.Remove(base)
 		_ = os.RemoveAll(target)
 	})
-	require.NoError(t, os.RemoveAll(base))
-	require.NoError(t, os.RemoveAll(target))
-	require.NoError(t, os.MkdirAll(target, 0o700))
-	require.NoError(t, os.Symlink(target, base))
+	require.NoError(os.RemoveAll(base))
+	require.NoError(os.RemoveAll(target))
+	require.NoError(os.MkdirAll(target, 0o700))
+	require.NoError(os.Symlink(target, base))
 
-	require.Error(t, safefileio.EnsurePrivateDir(base))
+	require.Error(safefileio.EnsurePrivateDir(base))
 }
 
 func TestOpenCurrentUserFileRejectsEmptyPath(t *testing.T) {
@@ -76,14 +82,16 @@ func TestOpenCurrentUserFileRejectsEmptyPath(t *testing.T) {
 }
 
 func TestOpenCurrentUserFileRejectsNonRegularFile(t *testing.T) {
+	require := require.New(t)
+
 	dir := filepath.Join("/tmp", fmt.Sprintf("kit-safefileio-fifo-%d", os.Getpid()))
 	path := filepath.Join(dir, "record.json")
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	require.NoError(t, os.RemoveAll(dir))
-	require.NoError(t, os.MkdirAll(dir, 0o700))
-	require.NoError(t, syscall.Mkfifo(path, 0o600))
+	require.NoError(os.RemoveAll(dir))
+	require.NoError(os.MkdirAll(dir, 0o700))
+	require.NoError(syscall.Mkfifo(path, 0o600))
 
 	file, err := safefileio.OpenCurrentUserFile(path)
-	require.Error(t, err)
-	require.Nil(t, file)
+	require.Error(err)
+	require.Nil(file)
 }

@@ -16,15 +16,17 @@ import (
 )
 
 func TestParseEndpointDefaultTCP(t *testing.T) {
+	assert := assert.New(t)
+
 	ep, err := daemon.ParseEndpoint("", daemon.ParseEndpointOptions{
 		DefaultTCPAddress: "127.0.0.1:7373",
 		TCPPolicy:         daemon.RequireLoopback,
 	})
 	require.NoError(t, err)
-	assert.Equal(t, daemon.NetworkTCP, ep.Network)
-	assert.Equal(t, "127.0.0.1:7373", ep.Address)
-	assert.Equal(t, "http://127.0.0.1:7373", ep.BaseURL())
-	assert.Equal(t, 7373, ep.Port())
+	assert.Equal(daemon.NetworkTCP, ep.Network)
+	assert.Equal("127.0.0.1:7373", ep.Address)
+	assert.Equal("http://127.0.0.1:7373", ep.BaseURL())
+	assert.Equal(7373, ep.Port())
 }
 
 func TestParseEndpointRejectsPublicTCPWhenPolicyRequiresNonPublic(t *testing.T) {
@@ -53,12 +55,14 @@ func TestParseEndpointUnixDefault(t *testing.T) {
 }
 
 func TestUnixHTTPClientDialsSocket(t *testing.T) {
+	require := require.New(t)
+
 	socketDir, err := os.MkdirTemp("", "kitd")
-	require.NoError(t, err)
+	require.NoError(err)
 	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
 	socketPath := filepath.Join(socketDir, "daemon.sock")
 	listener, err := net.Listen("unix", socketPath)
-	require.NoError(t, err)
+	require.NoError(err)
 	t.Cleanup(func() {
 		_ = listener.Close()
 		_ = os.Remove(socketPath)
@@ -72,7 +76,7 @@ func TestUnixHTTPClientDialsSocket(t *testing.T) {
 
 	ep := daemon.Endpoint{Network: daemon.NetworkUnix, Address: socketPath}
 	resp, err := ep.HTTPClient(daemon.HTTPClientOptions{}).Get(ep.BaseURL())
-	require.NoError(t, err)
+	require.NoError(err)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
@@ -88,20 +92,23 @@ func TestTCPHTTPClientBypassesEnvironmentProxy(t *testing.T) {
 }
 
 func TestDefaultSocketPathCreatesPrivateTempFallback(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+
 	service := fmt.Sprintf("kitdtest%d", os.Getpid())
 	t.Setenv("TMPDIR", "/tmp")
 	t.Setenv("XDG_RUNTIME_DIR", "")
 
 	socketPath := daemon.DefaultSocketPath(service)
-	require.NotEmpty(t, socketPath)
+	require.NotEmpty(socketPath)
 	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(socketPath)) })
-	assert.Equal(t, filepath.Join(filepath.Dir(socketPath), "daemon.sock"), socketPath)
+	assert.Equal(filepath.Join(filepath.Dir(socketPath), "daemon.sock"), socketPath)
 
 	info, err := os.Stat(filepath.Dir(socketPath))
-	require.NoError(t, err)
-	assert.True(t, info.IsDir())
+	require.NoError(err)
+	assert.True(info.IsDir())
 	if runtime.GOOS != "windows" {
-		assert.Zero(t, info.Mode().Perm()&0o077)
+		assert.Zero(info.Mode().Perm() & 0o077)
 	}
 }
 

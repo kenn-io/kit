@@ -32,38 +32,47 @@ func TestListenUnixRemovesStaleSocketAndBinds(t *testing.T) {
 }
 
 func TestListenUnixRejectsNonSocketPath(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+
 	socketPath := unixSocketPath(t)
-	require.NoError(t, os.WriteFile(socketPath, []byte("not a socket"), 0o600))
+	require.NoError(os.WriteFile(socketPath, []byte("not a socket"), 0o600))
 	ep := daemon.Endpoint{Network: daemon.NetworkUnix, Address: socketPath}
 
 	listener, err := daemon.Listen(context.Background(), ep)
-	require.Error(t, err)
-	assert.Nil(t, listener)
-	assert.Contains(t, err.Error(), "refusing to remove non-socket path")
+	require.Error(err)
+	assert.Nil(listener)
+	assert.Contains(err.Error(), "refusing to remove non-socket path")
 
 	body, readErr := os.ReadFile(socketPath)
-	require.NoError(t, readErr)
-	assert.Equal(t, "not a socket", string(body))
+	require.NoError(readErr)
+	assert.Equal("not a socket", string(body))
 }
 
 func TestListenUnixRejectsLiveSocket(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+
 	socketPath := unixSocketPath(t)
 	live, err := net.Listen(daemon.NetworkUnix, socketPath)
-	require.NoError(t, err)
+	require.NoError(err)
 	t.Cleanup(func() { _ = live.Close() })
 	ep := daemon.Endpoint{Network: daemon.NetworkUnix, Address: socketPath}
 
 	listener, err := daemon.Listen(context.Background(), ep)
-	require.Error(t, err)
-	assert.Nil(t, listener)
-	assert.Contains(t, err.Error(), "daemon already listening")
+	require.Error(err)
+	assert.Nil(listener)
+	assert.Contains(err.Error(), "daemon already listening")
 
 	conn, err := net.DialTimeout(daemon.NetworkUnix, socketPath, time.Second)
-	require.NoError(t, err)
+	require.NoError(err)
 	_ = conn.Close()
 }
 
 func TestListenUnixSerializesConcurrentStaleSocketStartup(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+
 	socketPath := staleUnixSocket(t)
 	lockPath := filepath.Join(filepath.Dir(socketPath), "daemon.lock")
 	ep := daemon.Endpoint{Network: daemon.NetworkUnix, Address: socketPath}
@@ -86,32 +95,35 @@ func TestListenUnixSerializesConcurrentStaleSocketStartup(t *testing.T) {
 	for range starters {
 		result := <-results
 		if result.err == nil {
-			require.Nil(t, winner, "only one daemon start should bind the socket")
+			require.Nil(winner, "only one daemon start should bind the socket")
 			winner = result.listener
 			continue
 		}
 		errors = append(errors, result.err)
 	}
-	require.NotNil(t, winner)
+	require.NotNil(winner)
 	t.Cleanup(func() { _ = winner.Close() })
-	require.Len(t, errors, starters-1)
+	require.Len(errors, starters-1)
 	for _, err := range errors {
-		assert.True(t,
+		assert.True(
 			strings.Contains(err.Error(), "daemon already listening") ||
 				strings.Contains(err.Error(), "bind: address already in use"),
 			"unexpected listen error: %v", err)
 	}
 
 	conn, err := net.DialTimeout(daemon.NetworkUnix, socketPath, time.Second)
-	require.NoError(t, err)
+	require.NoError(err)
 	_ = conn.Close()
 }
 
 func TestListenUnixProbesAfterAcquiringLock(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+
 	socketPath := staleUnixSocket(t)
 	lockPath := filepath.Join(filepath.Dir(socketPath), "daemon.lock")
 	heldLock := flock.New(lockPath)
-	require.NoError(t, heldLock.Lock())
+	require.NoError(heldLock.Lock())
 	locked := true
 	t.Cleanup(func() {
 		if locked {
@@ -128,76 +140,85 @@ func TestListenUnixProbesAfterAcquiringLock(t *testing.T) {
 		resultCh <- listenResult{listener: listener, err: err}
 	}()
 
-	require.NoError(t, os.Remove(socketPath))
+	require.NoError(os.Remove(socketPath))
 	live, err := net.Listen(daemon.NetworkUnix, socketPath)
-	require.NoError(t, err)
+	require.NoError(err)
 	t.Cleanup(func() { _ = live.Close() })
 
-	require.NoError(t, heldLock.Unlock())
+	require.NoError(heldLock.Unlock())
 	locked = false
 	result := <-resultCh
-	require.Error(t, result.err)
-	assert.Nil(t, result.listener)
-	assert.Contains(t, result.err.Error(), "daemon already listening")
+	require.Error(result.err)
+	assert.Nil(result.listener)
+	assert.Contains(result.err.Error(), "daemon already listening")
 
 	conn, err := net.DialTimeout(daemon.NetworkUnix, socketPath, time.Second)
-	require.NoError(t, err)
+	require.NoError(err)
 	_ = conn.Close()
 }
 
 func TestListenUnixRejectsUnsafeLockDirectory(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+
 	socketPath := staleUnixSocket(t)
 	base, err := os.MkdirTemp("/tmp", "kitd-lock")
-	require.NoError(t, err)
+	require.NoError(err)
 	t.Cleanup(func() { _ = os.RemoveAll(base) })
 	target := filepath.Join(base, "target")
 	link := filepath.Join(base, "link")
-	require.NoError(t, os.MkdirAll(target, 0o700))
-	require.NoError(t, os.Symlink(target, link))
+	require.NoError(os.MkdirAll(target, 0o700))
+	require.NoError(os.Symlink(target, link))
 
 	ep := daemon.Endpoint{Network: daemon.NetworkUnix, Address: socketPath}
 	listener, err := daemon.Listen(context.Background(), ep, daemon.WithListenLockPath(filepath.Join(link, "daemon.lock")))
 
-	require.Error(t, err)
-	assert.Nil(t, listener)
-	assert.Contains(t, err.Error(), "prepare daemon lock dir")
-	assert.Contains(t, err.Error(), "symlink")
+	require.Error(err)
+	assert.Nil(listener)
+	assert.Contains(err.Error(), "prepare daemon lock dir")
+	assert.Contains(err.Error(), "symlink")
 	_, statErr := os.Lstat(socketPath)
-	require.NoError(t, statErr, "stale socket should not be touched when lock dir is unsafe")
+	require.NoError(statErr, "stale socket should not be touched when lock dir is unsafe")
 }
 
 func TestListenUnixRejectsRelativeLockPath(t *testing.T) {
+	assert := assert.New(t)
+
 	ep := daemon.Endpoint{Network: daemon.NetworkUnix, Address: unixSocketPath(t)}
 	listener, err := daemon.Listen(context.Background(), ep, daemon.WithListenLockPath("daemon.lock"))
 
 	require.Error(t, err)
-	assert.Nil(t, listener)
-	assert.Contains(t, err.Error(), "daemon lock path")
-	assert.Contains(t, err.Error(), "must be absolute")
+	assert.Nil(listener)
+	assert.Contains(err.Error(), "daemon lock path")
+	assert.Contains(err.Error(), "must be absolute")
 }
 
 func TestListenUnixRejectsRelativeSocketPath(t *testing.T) {
+	assert := assert.New(t)
+
 	lockPath := filepath.Join(t.TempDir(), "daemon.lock")
 	ep := daemon.Endpoint{Network: daemon.NetworkUnix, Address: "daemon.sock"}
 	listener, err := daemon.Listen(context.Background(), ep, daemon.WithListenLockPath(lockPath))
 
 	require.Error(t, err)
-	assert.Nil(t, listener)
-	assert.Contains(t, err.Error(), "unix socket path")
-	assert.Contains(t, err.Error(), "must be absolute")
+	assert.Nil(listener)
+	assert.Contains(err.Error(), "unix socket path")
+	assert.Contains(err.Error(), "must be absolute")
 }
 
 func TestListenUnixRejectsSharedSocketDirectoryEvenWithStoreLock(t *testing.T) {
+	assert := assert.New(t)
+
 	socketPath := filepath.Join("/tmp", "kitd-shared-socket.sock")
 	t.Cleanup(func() { _ = os.Remove(socketPath) })
 	ep := daemon.Endpoint{Network: daemon.NetworkUnix, Address: socketPath}
 	listener, err := daemon.Listen(context.Background(), ep, daemon.WithRuntimeStore(daemon.RuntimeStore{Dir: t.TempDir()}))
 
 	require.Error(t, err)
-	assert.Nil(t, listener)
-	assert.Contains(t, err.Error(), "validate unix socket dir")
+	assert.Nil(listener)
+	assert.Contains(err.Error(), "validate unix socket dir")
 	_, statErr := os.Lstat(socketPath)
-	assert.True(t, os.IsNotExist(statErr), "socket in shared dir should not be created: %v", statErr)
+	assert.True(os.IsNotExist(statErr), "socket in shared dir should not be created: %v", statErr)
 }
 
 type listenResult struct {

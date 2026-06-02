@@ -13,6 +13,9 @@ import (
 )
 
 func TestRuntimeStoreWriteListAndRead(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+
 	store := daemon.RuntimeStore{Dir: t.TempDir()}
 	ep := daemon.Endpoint{Network: daemon.NetworkTCP, Address: "127.0.0.1:7474"}
 	rec := daemon.NewRuntimeRecord("kata", "v1", ep)
@@ -20,22 +23,25 @@ func TestRuntimeStoreWriteListAndRead(t *testing.T) {
 	rec.Metadata = map[string]string{"db_path": "/tmp/kata.db"}
 
 	path, err := store.Write(rec)
-	require.NoError(t, err)
-	assert.Equal(t, "daemon."+strconv.Itoa(os.Getpid())+".json", filepath.Base(path))
+	require.NoError(err)
+	assert.Equal("daemon."+strconv.Itoa(os.Getpid())+".json", filepath.Base(path))
 
 	records, err := store.List()
-	require.NoError(t, err)
-	require.Len(t, records, 1)
+	require.NoError(err)
+	require.Len(records, 1)
 	got := records[0]
-	assert.Equal(t, os.Getpid(), got.PID)
-	assert.Equal(t, "kata", got.Service)
-	assert.Equal(t, "v1", got.Version)
-	assert.Equal(t, ep, got.Endpoint())
-	assert.Equal(t, path, got.SourcePath)
-	assert.Equal(t, "/tmp/kata.db", got.Metadata["db_path"])
+	assert.Equal(os.Getpid(), got.PID)
+	assert.Equal("kata", got.Service)
+	assert.Equal("v1", got.Version)
+	assert.Equal(ep, got.Endpoint())
+	assert.Equal(path, got.SourcePath)
+	assert.Equal("/tmp/kata.db", got.Metadata["db_path"])
 }
 
 func TestRuntimeStoreCleanupDeadLeavesMismatchedFiles(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+
 	store := daemon.RuntimeStore{Dir: t.TempDir()}
 	deadPID := 999999
 	if daemon.ProcessAlive(deadPID) {
@@ -48,60 +54,67 @@ func TestRuntimeStoreCleanupDeadLeavesMismatchedFiles(t *testing.T) {
 		StartedAt: time.Now(),
 	}
 	_, err := store.Write(dead)
-	require.NoError(t, err)
+	require.NoError(err)
 
 	mismatchPath, err := store.Path(deadPID + 1)
-	require.NoError(t, err)
+	require.NoError(err)
 	err = os.WriteFile(mismatchPath, []byte(`{"pid":999999,"address":"127.0.0.1:7475"}`), 0o644)
-	require.NoError(t, err)
+	require.NoError(err)
 
 	removed, err := store.CleanupDead()
-	require.NoError(t, err)
-	assert.Equal(t, 1, removed)
+	require.NoError(err)
+	assert.Equal(1, removed)
 	deadPath, err := store.Path(deadPID)
-	require.NoError(t, err)
+	require.NoError(err)
 	_, err = os.Stat(deadPath)
-	assert.True(t, os.IsNotExist(err), "dead runtime still exists or unexpected stat error: %v", err)
+	assert.True(os.IsNotExist(err), "dead runtime still exists or unexpected stat error: %v", err)
 	_, err = os.Stat(mismatchPath)
-	require.NoError(t, err)
+	require.NoError(err)
 }
 
 func TestRuntimeStoreRejectsPrefixTraversal(t *testing.T) {
+	require := require.New(t)
+
 	store := daemon.RuntimeStore{Dir: t.TempDir(), Prefix: "../escape"}
 
 	_, err := store.Path(123)
-	require.Error(t, err)
+	require.Error(err)
 	_, err = store.Write(daemon.RuntimeRecord{
 		PID:     123,
 		Network: daemon.NetworkTCP,
 		Address: "127.0.0.1:7474",
 	})
-	require.Error(t, err)
+	require.Error(err)
 	_, err = store.List()
-	require.Error(t, err)
+	require.Error(err)
 	_, err = store.CleanupDead()
-	require.Error(t, err)
+	require.Error(err)
 }
 
 func TestRuntimeStoreRejectsRelativeDirBeforePreparing(t *testing.T) {
+	assert := assert.New(t)
+
 	store := daemon.RuntimeStore{Dir: "relative-runtime"}
 
 	_, err := store.LockPath()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "must be absolute")
+	assert.Contains(err.Error(), "must be absolute")
 
 	_, statErr := os.Stat("relative-runtime")
-	assert.True(t, os.IsNotExist(statErr), "relative runtime dir should not be created: %v", statErr)
+	assert.True(os.IsNotExist(statErr), "relative runtime dir should not be created: %v", statErr)
 }
 
 func TestRuntimeStoreListenLockPathIsSeparateFromStartLock(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+
 	store := daemon.RuntimeStore{Dir: t.TempDir(), Prefix: "kata"}
 
 	startLock, err := store.LockPath()
-	require.NoError(t, err)
+	require.NoError(err)
 	listenLock, err := store.ListenLockPath()
-	require.NoError(t, err)
+	require.NoError(err)
 
-	assert.Equal(t, filepath.Join(store.Dir, "kata.lock"), startLock)
-	assert.Equal(t, filepath.Join(store.Dir, "kata.listen.lock"), listenLock)
+	assert.Equal(filepath.Join(store.Dir, "kata.lock"), startLock)
+	assert.Equal(filepath.Join(store.Dir, "kata.listen.lock"), listenLock)
 }
