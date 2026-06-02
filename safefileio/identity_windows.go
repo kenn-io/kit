@@ -42,3 +42,15 @@ func currentWindowsOwnerSID() (*windows.SID, error) {
 		}
 	}
 }
+
+func windowsOwnerMatches(owner *windows.SID, allowed ...*windows.SID) bool {
+	if owner == nil {
+		return false
+	}
+	for _, sid := range allowed {
+		if sid != nil && owner.Equals(sid) {
+			return true
+		}
+	}
+	return false
+}

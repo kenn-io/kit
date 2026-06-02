@@ -61,6 +61,17 @@ func TestOpenCurrentUserFileAcceptsCurrentTokenOwner(t *testing.T) {
 	require.NoError(t, file.Close())
 }
 
+func TestWindowsOwnerMatchesCurrentUserAndTokenOwner(t *testing.T) {
+	userSID, err := currentWindowsUserSID()
+	require.NoError(t, err)
+	ownerSID, err := currentWindowsOwnerSID()
+	require.NoError(t, err)
+
+	require.True(t, windowsOwnerMatches(userSID, userSID, ownerSID))
+	require.True(t, windowsOwnerMatches(ownerSID, userSID, ownerSID))
+	require.False(t, windowsOwnerMatches(nil, userSID, ownerSID))
+}
+
 func TestCurrentUserIDIsPerUser(t *testing.T) {
 	id, err := CurrentUserID()
 	require.NoError(t, err)

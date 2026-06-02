@@ -12,7 +12,8 @@ import (
 )
 
 // EnsurePrivateDir creates path when needed and verifies it is a non-reparse
-// directory owned by the current token owner with a user/system/admin-only DACL.
+// directory owned by the current token user or token owner with a
+// user/system/admin-only DACL.
 func EnsurePrivateDir(path string) error {
 	if path == "" {
 		return fmt.Errorf("path is empty")
@@ -46,7 +47,7 @@ func EnsurePrivateDir(path string) error {
 	if err != nil {
 		return err
 	}
-	if err := verifyWindowsDirHandle(path, handle, ownerSID); err != nil {
+	if err := verifyWindowsDirHandle(path, handle, userSID, ownerSID); err != nil {
 		return err
 	}
 	return restrictWindowsDir(handle, userSID)
@@ -104,7 +105,7 @@ func openWindowsDir(path string) (windows.Handle, error) {
 	)
 }
 
-func verifyWindowsDirHandle(path string, handle windows.Handle, ownerSID *windows.SID) error {
+func verifyWindowsDirHandle(path string, handle windows.Handle, userSID, ownerSID *windows.SID) error {
 	var info windows.ByHandleFileInformation
 	if err := windows.GetFileInformationByHandle(handle, &info); err != nil {
 		return err
@@ -130,8 +131,8 @@ func verifyWindowsDirHandle(path string, handle windows.Handle, ownerSID *window
 	if owner == nil {
 		return fmt.Errorf("%s owner is missing", path)
 	}
-	if !owner.Equals(ownerSID) {
-		return fmt.Errorf("%s is not owned by current token owner", path)
+	if !windowsOwnerMatches(owner, userSID, ownerSID) {
+		return fmt.Errorf("%s is not owned by current user or token owner", path)
 	}
 	return nil
 }
