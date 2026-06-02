@@ -37,6 +37,34 @@ func TestValidatePrivateDirAcceptsPrivateDir(t *testing.T) {
 	require.NoError(t, ValidatePrivateDir(dir))
 }
 
+func TestValidatePrivateDirRejectsBroadDACL(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "runtime")
+	require.NoError(t, EnsurePrivateDir(dir))
+	handle, err := openWindowsDir(dir)
+	require.NoError(t, err)
+	defer func() { _ = windows.CloseHandle(handle) }()
+	userSID, err := currentWindowsUserSID()
+	require.NoError(t, err)
+	world, err := windows.CreateWellKnownSid(windows.WinWorldSid)
+	require.NoError(t, err)
+	acl, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{
+		allowFullControl(userSID, windows.TRUSTEE_IS_USER),
+		allowFullControl(world, windows.TRUSTEE_IS_WELL_KNOWN_GROUP),
+	}, nil)
+	require.NoError(t, err)
+	require.NoError(t, windows.SetSecurityInfo(
+		handle,
+		windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		nil,
+		nil,
+		acl,
+		nil,
+	))
+
+	require.Error(t, ValidatePrivateDir(dir))
+}
+
 func TestEnsurePrivateDirRejectsEmptyPath(t *testing.T) {
 	require.Error(t, EnsurePrivateDir(""))
 }
