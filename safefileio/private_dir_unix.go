@@ -70,3 +70,32 @@ func EnsurePrivateDir(path string) error {
 	}
 	return nil
 }
+
+// ValidatePrivateDir verifies path is a non-symlink directory owned by the
+// current user with mode 0700. It never creates or chmods the directory.
+func ValidatePrivateDir(path string) error {
+	if path == "" {
+		return fmt.Errorf("path is empty")
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symlink", path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", path)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("stat %s: missing owner information", path)
+	}
+	if stat.Uid != uint32(os.Getuid()) {
+		return fmt.Errorf("%s is not owned by current user", path)
+	}
+	if info.Mode().Perm() != 0o700 {
+		return fmt.Errorf("%s is not mode 0700", path)
+	}
+	return nil
+}

@@ -203,7 +203,7 @@ func TestListenUnixRejectsSharedSocketDirectoryEvenWithStoreLock(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, listener)
-	assert.Contains(t, err.Error(), "prepare unix socket dir")
+	assert.Contains(t, err.Error(), "validate unix socket dir")
 	_, statErr := os.Lstat(socketPath)
 	assert.True(t, os.IsNotExist(statErr), "socket in shared dir should not be created: %v", statErr)
 }

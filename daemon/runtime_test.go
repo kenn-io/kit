@@ -83,6 +83,17 @@ func TestRuntimeStoreRejectsPrefixTraversal(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestRuntimeStoreRejectsRelativeDirBeforePreparing(t *testing.T) {
+	store := daemon.RuntimeStore{Dir: "relative-runtime"}
+
+	_, err := store.LockPath()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be absolute")
+
+	_, statErr := os.Stat("relative-runtime")
+	assert.True(t, os.IsNotExist(statErr), "relative runtime dir should not be created: %v", statErr)
+}
+
 func TestRuntimeStoreListenLockPathIsSeparateFromStartLock(t *testing.T) {
 	store := daemon.RuntimeStore{Dir: t.TempDir(), Prefix: "kata"}
 

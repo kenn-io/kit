@@ -79,6 +79,9 @@ func (s RuntimeStore) prepareDir() error {
 	if s.Dir == "" {
 		return fmt.Errorf("runtime dir is empty")
 	}
+	if !filepath.IsAbs(s.Dir) {
+		return fmt.Errorf("runtime dir %q must be absolute", s.Dir)
+	}
 	if err := ensurePrivateRuntimeDir(s.Dir); err != nil {
 		return fmt.Errorf("prepare runtime dir: %w", err)
 	}

@@ -65,8 +65,8 @@ func prepareUnixListenEndpoint(ep Endpoint) error {
 	if !filepath.IsAbs(ep.Address) {
 		return fmt.Errorf("unix socket path %q must be absolute", ep.Address)
 	}
-	if err := ensurePrivateRuntimeDir(filepath.Dir(ep.Address)); err != nil {
-		return fmt.Errorf("prepare unix socket dir: %w", err)
+	if err := validatePrivateRuntimeDir(filepath.Dir(ep.Address)); err != nil {
+		return fmt.Errorf("validate unix socket dir: %w", err)
 	}
 	return nil
 }

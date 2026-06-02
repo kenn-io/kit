@@ -53,6 +53,38 @@ func EnsurePrivateDir(path string) error {
 	return restrictWindowsDir(handle, userSID)
 }
 
+// ValidatePrivateDir verifies path is a non-reparse directory owned by the
+// current token user or token owner. It never creates or changes the directory.
+func ValidatePrivateDir(path string) error {
+	if path == "" {
+		return fmt.Errorf("path is empty")
+	}
+	if err := rejectWindowsReparsePoint(path); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", path)
+	}
+	handle, err := openWindowsDir(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = windows.CloseHandle(handle) }()
+	userSID, err := currentWindowsUserSID()
+	if err != nil {
+		return err
+	}
+	ownerSID, err := currentWindowsOwnerSID()
+	if err != nil {
+		return err
+	}
+	return verifyWindowsDirHandle(path, handle, userSID, ownerSID)
+}
+
 // CurrentUserID returns a stable filesystem-safe identifier for the current
 // Windows account.
 func CurrentUserID() (string, error) {

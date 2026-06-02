@@ -30,6 +30,13 @@ func TestEnsurePrivateDirCreatesOwnedDirectory(t *testing.T) {
 	require.True(t, owner.Equals(ownerSID))
 }
 
+func TestValidatePrivateDirAcceptsPrivateDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "runtime")
+	require.NoError(t, EnsurePrivateDir(dir))
+
+	require.NoError(t, ValidatePrivateDir(dir))
+}
+
 func TestEnsurePrivateDirRejectsEmptyPath(t *testing.T) {
 	require.Error(t, EnsurePrivateDir(""))
 }
