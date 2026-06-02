@@ -168,28 +168,44 @@ func TestListenUnixRejectsUnsafeLockDirectory(t *testing.T) {
 	require.NoError(t, statErr, "stale socket should not be touched when lock dir is unsafe")
 }
 
-func TestListenUnixRejectsRelativeLockPaths(t *testing.T) {
-	cases := map[string]struct {
-		ep   daemon.Endpoint
-		opts daemon.ListenOptions
-	}{
-		"explicit lock path": {
-			ep:   daemon.Endpoint{Network: daemon.NetworkUnix, Address: unixSocketPath(t)},
-			opts: daemon.ListenOptions{LockPath: "daemon.lock"},
-		},
-		"derived lock path": {
-			ep: daemon.Endpoint{Network: daemon.NetworkUnix, Address: "daemon.sock"},
-		},
-	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			listener, err := daemon.Listen(context.Background(), tc.ep, tc.opts)
+func TestListenUnixRejectsRelativeLockPath(t *testing.T) {
+	ep := daemon.Endpoint{Network: daemon.NetworkUnix, Address: unixSocketPath(t)}
+	listener, err := daemon.Listen(context.Background(), ep, daemon.ListenOptions{
+		LockPath: "daemon.lock",
+	})
 
-			require.Error(t, err)
-			assert.Nil(t, listener)
-			assert.Contains(t, err.Error(), "must be absolute")
-		})
-	}
+	require.Error(t, err)
+	assert.Nil(t, listener)
+	assert.Contains(t, err.Error(), "daemon lock path")
+	assert.Contains(t, err.Error(), "must be absolute")
+}
+
+func TestListenUnixRejectsRelativeSocketPath(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "daemon.lock")
+	ep := daemon.Endpoint{Network: daemon.NetworkUnix, Address: "daemon.sock"}
+	listener, err := daemon.Listen(context.Background(), ep, daemon.ListenOptions{
+		LockPath: lockPath,
+	})
+
+	require.Error(t, err)
+	assert.Nil(t, listener)
+	assert.Contains(t, err.Error(), "unix socket path")
+	assert.Contains(t, err.Error(), "must be absolute")
+}
+
+func TestListenUnixRejectsSharedSocketDirectoryEvenWithStoreLock(t *testing.T) {
+	socketPath := filepath.Join("/tmp", "kitd-shared-socket.sock")
+	t.Cleanup(func() { _ = os.Remove(socketPath) })
+	ep := daemon.Endpoint{Network: daemon.NetworkUnix, Address: socketPath}
+	listener, err := daemon.Listen(context.Background(), ep, daemon.ListenOptions{
+		Store: daemon.RuntimeStore{Dir: t.TempDir()},
+	})
+
+	require.Error(t, err)
+	assert.Nil(t, listener)
+	assert.Contains(t, err.Error(), "prepare unix socket dir")
+	_, statErr := os.Lstat(socketPath)
+	assert.True(t, os.IsNotExist(statErr), "socket in shared dir should not be created: %v", statErr)
 }
 
 type listenResult struct {

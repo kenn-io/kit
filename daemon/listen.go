@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"runtime"
 	"time"
 )
@@ -39,6 +40,9 @@ func Listen(ctx context.Context, ep Endpoint, opts ListenOptions) (net.Listener,
 	if !ep.IsUnix() || runtime.GOOS == "windows" {
 		return ep.Listen()
 	}
+	if err := prepareUnixListenEndpoint(ep); err != nil {
+		return nil, err
+	}
 	lockPath, err := opts.listenLockPath(ep)
 	if err != nil {
 		return nil, err
@@ -52,6 +56,19 @@ func Listen(ctx context.Context, ep Endpoint, opts ListenOptions) (net.Listener,
 		return nil, err
 	}
 	return ep.Listen()
+}
+
+func prepareUnixListenEndpoint(ep Endpoint) error {
+	if ep.Address == "" {
+		return fmt.Errorf("empty daemon endpoint address")
+	}
+	if !filepath.IsAbs(ep.Address) {
+		return fmt.Errorf("unix socket path %q must be absolute", ep.Address)
+	}
+	if err := ensurePrivateRuntimeDir(filepath.Dir(ep.Address)); err != nil {
+		return fmt.Errorf("prepare unix socket dir: %w", err)
+	}
+	return nil
 }
 
 func (opts ListenOptions) listenLockPath(ep Endpoint) (string, error) {
