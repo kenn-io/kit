@@ -19,32 +19,9 @@ provider workflows to this repo unless the package already owns that concern.
   paths, or process behavior differ.
 - When behavior changes, update the package-level `AGENTS.md` nearest the change
   if it captures an invariant future agents need to preserve.
-
-## Development Commands
-
-Use the commands that match the repository's CI and lint configuration:
-
-```bash
-go mod tidy
-git diff --exit-code -- go.mod go.sum
-go build ./...
-go tool gotestsum --format pkgname-and-test-fails -- ./...
-go vet ./...
-golangci-lint run
-```
-
-When invoking `go test` directly, prefer shuffled execution so hidden
-test-to-test coupling is easier to catch:
-
-```bash
-go test ./... -shuffle=on
-```
-
-Do not pass `-count=1`; it is the default and disables useful cache behavior.
-Use `-count=N` only when `N > 1`, such as when chasing a suspected flake.
-
-If a sandboxed tool runner cannot write the default Go cache, set `GOCACHE` to a
-temporary directory for that command.
+- Let CI, `go.mod`, and tool config files define the exact verification
+  commands. Do not duplicate command recipes here unless the command carries a
+  repo-specific intent that is not encoded elsewhere.
 
 ## Go Conventions
 
@@ -80,10 +57,8 @@ temporary directory for that command.
 
 ## Linting
 
-`.golangci.yml` enables `errcheck`, `govet`, `importas`, `ineffassign`,
-`modernize`, `staticcheck`, `testifylint`, and `unused`. Treat its findings as
-the active style contract. In particular, follow the configured import aliases
-instead of inventing new aliases for kit packages.
+Treat `.golangci.yml` as the active style contract. Follow its configured
+linters, formatters, and import aliases instead of repeating those rules here.
 
 ## Git Workflow
 
