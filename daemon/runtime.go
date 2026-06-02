@@ -109,6 +109,19 @@ func (s RuntimeStore) LockPath() (string, error) {
 	return filepath.Join(s.Dir, prefix+".lock"), nil
 }
 
+// ListenLockPath returns the path used to serialize daemon server listen setup
+// for the store.
+func (s RuntimeStore) ListenLockPath() (string, error) {
+	prefix, err := s.validatePrefix()
+	if err != nil {
+		return "", err
+	}
+	if err := s.prepareDir(); err != nil {
+		return "", err
+	}
+	return filepath.Join(s.Dir, prefix+".listen.lock"), nil
+}
+
 // Write saves rec atomically and returns the final path.
 func (s RuntimeStore) Write(rec RuntimeRecord) (string, error) {
 	if err := s.prepareDir(); err != nil {

@@ -82,3 +82,15 @@ func TestRuntimeStoreRejectsPrefixTraversal(t *testing.T) {
 	_, err = store.CleanupDead()
 	require.Error(t, err)
 }
+
+func TestRuntimeStoreListenLockPathIsSeparateFromStartLock(t *testing.T) {
+	store := daemon.RuntimeStore{Dir: t.TempDir(), Prefix: "kata"}
+
+	startLock, err := store.LockPath()
+	require.NoError(t, err)
+	listenLock, err := store.ListenLockPath()
+	require.NoError(t, err)
+
+	assert.Equal(t, filepath.Join(store.Dir, "kata.lock"), startLock)
+	assert.Equal(t, filepath.Join(store.Dir, "kata.listen.lock"), listenLock)
+}
