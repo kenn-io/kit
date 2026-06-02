@@ -165,8 +165,7 @@ func TestDiscoverPropagatesContextCancellation(t *testing.T) {
 
 func TestDiscoverSkipsPerProbeTimeouts(t *testing.T) {
 	slowServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(50 * time.Millisecond)
-		_, _ = fmt.Fprint(w, `{"ok":true,"service":"kata","version":"slow"}`)
+		<-r.Context().Done()
 	}))
 	defer slowServer.Close()
 	fastServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -193,7 +192,7 @@ func TestDiscoverSkipsPerProbeTimeouts(t *testing.T) {
 	require.NoError(t, err)
 
 	_, info, ok, err := daemon.Discover(context.Background(), store, daemon.DiscoverOptions{
-		Probe: daemon.ProbeOptions{ExpectedService: "kata", Timeout: time.Millisecond},
+		Probe: daemon.ProbeOptions{ExpectedService: "kata", Timeout: 100 * time.Millisecond},
 	})
 	require.NoError(t, err)
 	require.True(t, ok)
