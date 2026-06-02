@@ -30,7 +30,7 @@ func TestRunnerCommandUsesDefensiveEnvironment(t *testing.T) {
 	if !slices.Contains(cmd.Env, "GIT_TERMINAL_PROMPT=0") {
 		t.Fatalf("terminal prompts should be disabled: %#v", cmd.Env)
 	}
-	if !slices.Contains(cmd.Env, "GIT_CONFIG_GLOBAL=/dev/null") {
+	if !slices.Contains(cmd.Env, "GIT_CONFIG_GLOBAL="+os.DevNull) {
 		t.Fatalf("global config should be nulled: %#v", cmd.Env)
 	}
 	if !containsPrefix(cmd.Env, "GIT_CONFIG_COUNT=") {
@@ -90,7 +90,12 @@ func captureGitEnv(t *testing.T, runner Runner) string {
 	binDir := t.TempDir()
 	envPath := filepath.Join(t.TempDir(), "env")
 	gitPath := filepath.Join(binDir, "git")
-	if err := os.WriteFile(gitPath, []byte("#!/bin/sh\nenv > "+shellSingleQuote(envPath)+"\n"), 0o700); err != nil {
+	script := "#!/bin/sh\nenv > " + shellSingleQuote(envPath) + "\n"
+	if os.PathSeparator == '\\' {
+		gitPath += ".bat"
+		script = "@echo off\r\nset > " + shellDoubleQuote(envPath) + "\r\n"
+	}
+	if err := os.WriteFile(gitPath, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 
@@ -115,6 +120,7 @@ func gitConfigValue(env, key string) string {
 		if !ok {
 			continue
 		}
+		value = strings.TrimSuffix(value, "\r")
 		if index, ok := strings.CutPrefix(name, "GIT_CONFIG_KEY_"); ok {
 			keys[index] = value
 		}
@@ -134,4 +140,8 @@ func containsPrefix(values []string, prefix string) bool {
 	return slices.ContainsFunc(values, func(value string) bool {
 		return strings.HasPrefix(value, prefix)
 	})
+}
+
+func shellDoubleQuote(value string) string {
+	return `"` + strings.ReplaceAll(value, `"`, `\"`) + `"`
 }
