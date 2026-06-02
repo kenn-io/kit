@@ -27,7 +27,6 @@ provider workflows to this repo unless the package already owns that concern.
 
 - Use standard library APIs first and add dependencies only when they pay for
   themselves.
-- Run `gofmt` and `goimports` on edited Go files.
 - Keep public package APIs narrow and app-neutral. Callers should not need to
   import unrelated kit packages to use one package correctly.
 - Surface errors with enough context for callers to act on them. Do not turn
@@ -55,16 +54,9 @@ provider workflows to this repo unless the package already owns that concern.
 - Tests must not depend on the user's git config, global credentials, real
   repositories, home directory state, or live provider availability.
 
-## Linting
-
-Treat `.golangci.yml` as the active style contract. Follow its configured
-linters, formatters, and import aliases instead of repeating those rules here.
-
 ## Git Workflow
 
 - Do not change branches unless the user explicitly asks.
 - Do not amend commits unless the user explicitly asks.
 - Never revert user changes. If existing edits touch the same files, read them
   and work with them.
-- Run the relevant build, test, vet, and lint commands before claiming a Go
-  change is complete.
