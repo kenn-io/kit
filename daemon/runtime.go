@@ -79,6 +79,9 @@ func (s RuntimeStore) prepareDir() error {
 	if s.Dir == "" {
 		return fmt.Errorf("runtime dir is empty")
 	}
+	if !filepath.IsAbs(s.Dir) {
+		return fmt.Errorf("runtime dir %q must be absolute", s.Dir)
+	}
 	if err := ensurePrivateRuntimeDir(s.Dir); err != nil {
 		return fmt.Errorf("prepare runtime dir: %w", err)
 	}
@@ -107,6 +110,19 @@ func (s RuntimeStore) LockPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(s.Dir, prefix+".lock"), nil
+}
+
+// ListenLockPath returns the path used to serialize daemon server listen setup
+// for the store.
+func (s RuntimeStore) ListenLockPath() (string, error) {
+	prefix, err := s.validatePrefix()
+	if err != nil {
+		return "", err
+	}
+	if err := s.prepareDir(); err != nil {
+		return "", err
+	}
+	return filepath.Join(s.Dir, prefix+".listen.lock"), nil
 }
 
 // Write saves rec atomically and returns the final path.

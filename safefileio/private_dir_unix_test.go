@@ -27,6 +27,29 @@ func TestEnsurePrivateDirRepairsPublicDir(t *testing.T) {
 	require.Equal(t, os.FileMode(0o700), info.Mode().Perm())
 }
 
+func TestValidatePrivateDirRejectsWithoutRepairingPublicDir(t *testing.T) {
+	dir := filepath.Join("/tmp", fmt.Sprintf("kit-safefileio-validate-public-%d", os.Getpid()))
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	require.NoError(t, os.RemoveAll(dir))
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	require.NoError(t, os.Chmod(dir, 0o777))
+
+	require.Error(t, safefileio.ValidatePrivateDir(dir))
+
+	info, err := os.Stat(dir)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o777), info.Mode().Perm())
+}
+
+func TestValidatePrivateDirAcceptsPrivateDir(t *testing.T) {
+	dir := filepath.Join("/tmp", fmt.Sprintf("kit-safefileio-validate-private-%d", os.Getpid()))
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	require.NoError(t, os.RemoveAll(dir))
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+
+	require.NoError(t, safefileio.ValidatePrivateDir(dir))
+}
+
 func TestEnsurePrivateDirRejectsEmptyPath(t *testing.T) {
 	require.Error(t, safefileio.EnsurePrivateDir(""))
 }

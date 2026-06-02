@@ -4,24 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
-	"sync"
 	"time"
-
-	"github.com/gofrs/flock"
-	"golang.org/x/sync/semaphore"
 )
-
-var startLocks sync.Map
-
-// startLockRetryDelay is the poll interval; the caller context bounds total wait.
-const startLockRetryDelay = 50 * time.Millisecond
-
-type startLock struct {
-	local *semaphore.Weighted
-	file  *flock.Flock
-}
 
 // CompatibleFunc returns true when a discovered daemon can serve this client.
 type CompatibleFunc func(RuntimeRecord, PingInfo) bool
@@ -102,31 +86,5 @@ func (m Manager) lockStart(ctx context.Context) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
-		return nil, fmt.Errorf("mkdir daemon lock dir: %w", err)
-	}
-	value, _ := startLocks.LoadOrStore(lockPath, &startLock{
-		local: semaphore.NewWeighted(1),
-		file:  flock.New(lockPath),
-	})
-	lock := value.(*startLock)
-	if err := lock.local.Acquire(ctx, 1); err != nil {
-		return nil, fmt.Errorf("acquire daemon start lock: %w", err)
-	}
-	locked, err := lock.file.TryLockContext(ctx, startLockRetryDelay)
-	if err != nil {
-		lock.local.Release(1)
-		return nil, fmt.Errorf("acquire daemon start lock: %w", err)
-	}
-	if !locked {
-		lock.local.Release(1)
-		if err := ctx.Err(); err != nil {
-			return nil, fmt.Errorf("acquire daemon start lock: %w", err)
-		}
-		return nil, errors.New("daemon start lock not acquired")
-	}
-	return func() {
-		_ = lock.file.Unlock()
-		lock.local.Release(1)
-	}, nil
+	return acquireDaemonLock(ctx, lockPath, "acquire daemon start lock")
 }

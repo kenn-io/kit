@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -51,6 +52,41 @@ func EnsurePrivateDir(path string) error {
 		return err
 	}
 	return restrictWindowsDir(handle, userSID)
+}
+
+// ValidatePrivateDir verifies path is a non-reparse directory owned by the
+// current token user or token owner. It never creates or changes the directory.
+func ValidatePrivateDir(path string) error {
+	if path == "" {
+		return fmt.Errorf("path is empty")
+	}
+	if err := rejectWindowsReparsePoint(path); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", path)
+	}
+	handle, err := openWindowsDir(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = windows.CloseHandle(handle) }()
+	userSID, err := currentWindowsUserSID()
+	if err != nil {
+		return err
+	}
+	ownerSID, err := currentWindowsOwnerSID()
+	if err != nil {
+		return err
+	}
+	if err := verifyWindowsDirHandle(path, handle, userSID, ownerSID); err != nil {
+		return err
+	}
+	return verifyWindowsDirDACL(path, handle, userSID, ownerSID)
 }
 
 // CurrentUserID returns a stable filesystem-safe identifier for the current
@@ -135,6 +171,63 @@ func verifyWindowsDirHandle(path string, handle windows.Handle, userSID, ownerSI
 		return fmt.Errorf("%s is not owned by current user or token owner", path)
 	}
 	return nil
+}
+
+func verifyWindowsDirDACL(path string, handle windows.Handle, userSID, ownerSID *windows.SID) error {
+	descriptor, err := windows.GetSecurityInfo(
+		handle,
+		windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION,
+	)
+	if err != nil {
+		return err
+	}
+	control, _, err := descriptor.Control()
+	if err != nil {
+		return err
+	}
+	if control&windows.SE_DACL_PROTECTED == 0 {
+		return fmt.Errorf("%s DACL is not protected", path)
+	}
+	dacl, _, err := descriptor.DACL()
+	if err != nil {
+		return err
+	}
+	if dacl == nil {
+		return fmt.Errorf("%s DACL is empty", path)
+	}
+	system, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
+	if err != nil {
+		return err
+	}
+	admins, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+	if err != nil {
+		return err
+	}
+	allowed := []*windows.SID{userSID, ownerSID, system, admins}
+	for i := uint16(0); i < dacl.AceCount; i++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(dacl, uint32(i), &ace); err != nil {
+			return err
+		}
+		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
+			return fmt.Errorf("%s DACL contains non-allow ACE", path)
+		}
+		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
+		if !windowsAnyOwnerMatches(sid, allowed) {
+			return fmt.Errorf("%s DACL grants access to unexpected principal", path)
+		}
+	}
+	return nil
+}
+
+func windowsAnyOwnerMatches(owner *windows.SID, allowed []*windows.SID) bool {
+	for _, sid := range allowed {
+		if sid != nil && owner != nil && owner.Equals(sid) {
+			return true
+		}
+	}
+	return false
 }
 
 func restrictWindowsDir(handle windows.Handle, userSID *windows.SID) error {
