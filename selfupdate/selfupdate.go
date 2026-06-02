@@ -32,6 +32,7 @@ const (
 	defaultHTTPTimeout      = 30 * time.Second
 	maxChecksumBytes        = 1 << 20
 	maxSignatureBytes       = 64 << 10
+	legacyTarRegularType    = byte(0)
 )
 
 // Release represents the subset of a GitHub release response used by Client.
@@ -459,7 +460,7 @@ func ExtractTarGz(archivePath, destDir string) error {
 			if err := ensureNoSymlinkPath(absDestDir, target); err != nil {
 				return err
 			}
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg, legacyTarRegularType:
 			outFile, err := createArchiveFile(absDestDir, target)
 			if err != nil {
 				return err
@@ -1165,7 +1166,7 @@ func ensureNoSymlinkPath(absDestDir, target string) error {
 	}
 
 	current := absDestDir
-	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+	for part := range strings.SplitSeq(rel, string(filepath.Separator)) {
 		if part == "." || part == "" {
 			continue
 		}

@@ -116,6 +116,9 @@ func TestCheckUsesReleaseBodyChecksumFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
+	if info == nil {
+		t.Fatal("expected update info")
+	}
 	if info.Checksum != testHashAAAA {
 		t.Fatalf("checksum = %q", info.Checksum)
 	}
@@ -741,7 +744,7 @@ func TestExtractTarGzExtractsLegacyRegularFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 	archivePath := filepath.Join(tmpDir, "legacy-regular.tar.gz")
 	createTarGz(t, archivePath, []archiveEntry{
-		{Name: "tool", Content: "legacy", Mode: 0o755, TypeFlag: tar.TypeRegA},
+		{Name: "tool", Content: "legacy", Mode: 0o755, TypeFlag: legacyTarRegularType, TypeFlagSet: true},
 	})
 	extractDir := filepath.Join(tmpDir, "extract")
 	if err := ExtractTarGz(archivePath, extractDir); err != nil {
@@ -881,7 +884,7 @@ func TestInstallBinary(t *testing.T) {
 			}
 		}()
 
-		for i := 0; i < 1000; i++ {
+		for i := range 1000 {
 			if err := InstallBinary(srcPath, dstPath); err != nil {
 				close(stop)
 				<-done
@@ -1012,11 +1015,12 @@ func TestDefaultAssetNameAndFormatSize(t *testing.T) {
 }
 
 type archiveEntry struct {
-	Name     string
-	Content  string
-	Mode     int64
-	TypeFlag byte
-	LinkName string
+	Name        string
+	Content     string
+	Mode        int64
+	TypeFlag    byte
+	TypeFlagSet bool
+	LinkName    string
 }
 
 func createTarGz(t *testing.T, path string, entries []archiveEntry) {
@@ -1037,7 +1041,7 @@ func createTarGz(t *testing.T, path string, entries []archiveEntry) {
 			mode = 0o644
 		}
 		typeFlag := entry.TypeFlag
-		if typeFlag == 0 {
+		if typeFlag == 0 && !entry.TypeFlagSet {
 			typeFlag = tar.TypeReg
 		}
 		data := []byte(entry.Content)
@@ -1048,13 +1052,13 @@ func createTarGz(t *testing.T, path string, entries []archiveEntry) {
 			Typeflag: typeFlag,
 			Linkname: entry.LinkName,
 		}
-		if typeFlag != tar.TypeReg && typeFlag != tar.TypeRegA {
+		if typeFlag != tar.TypeReg && typeFlag != legacyTarRegularType {
 			header.Size = 0
 		}
 		if err := tw.WriteHeader(header); err != nil {
 			t.Fatal(err)
 		}
-		if typeFlag == tar.TypeReg || typeFlag == tar.TypeRegA {
+		if typeFlag == tar.TypeReg || typeFlag == legacyTarRegularType {
 			if _, err := tw.Write(data); err != nil {
 				t.Fatal(err)
 			}

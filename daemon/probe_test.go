@@ -18,6 +18,9 @@ import (
 )
 
 func TestNewPingHandlerEmitsRequiredPingInfo(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+
 	server := httptest.NewServer(daemon.NewPingHandler(daemon.PingHandlerOptions{
 		Service: "roborev",
 		Version: "dev",
@@ -26,16 +29,16 @@ func TestNewPingHandlerEmitsRequiredPingInfo(t *testing.T) {
 	defer server.Close()
 
 	resp, err := server.Client().Get(server.URL)
-	require.NoError(t, err)
+	require.NoError(err)
 	defer func() { _ = resp.Body.Close() }()
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+	assert.Equal(http.StatusOK, resp.StatusCode)
+	assert.Equal("application/json", resp.Header.Get("Content-Type"))
 	var info daemon.PingInfo
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&info))
-	assert.True(t, info.OK)
-	assert.Equal(t, "roborev", info.Service)
-	assert.Equal(t, "dev", info.Version)
-	assert.Equal(t, 123, info.PID)
+	require.NoError(json.NewDecoder(resp.Body).Decode(&info))
+	assert.True(info.OK)
+	assert.Equal("roborev", info.Service)
+	assert.Equal("dev", info.Version)
+	assert.Equal(123, info.PID)
 }
 
 func TestNewPingHandlerRejectsNonGET(t *testing.T) {
@@ -50,8 +53,10 @@ func TestNewPingHandlerRejectsNonGET(t *testing.T) {
 }
 
 func TestProbeHTTPRequiresOKTrue(t *testing.T) {
+	assert := assert.New(t)
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, daemon.DefaultPingPath, r.URL.Path)
+		assert.Equal(daemon.DefaultPingPath, r.URL.Path)
 		_, _ = fmt.Fprint(w, `{"ok":true,"service":"roborev","version":"dev","pid":123}`)
 	}))
 	defer server.Close()
@@ -60,10 +65,10 @@ func TestProbeHTTPRequiresOKTrue(t *testing.T) {
 		ExpectedService: "roborev",
 	})
 	require.NoError(t, err)
-	assert.True(t, info.OK)
-	assert.Equal(t, "roborev", info.Service)
-	assert.Equal(t, "dev", info.Version)
-	assert.Equal(t, 123, info.PID)
+	assert.True(info.OK)
+	assert.Equal("roborev", info.Service)
+	assert.Equal("dev", info.Version)
+	assert.Equal(123, info.PID)
 }
 
 func TestProbeHTTPRejectsOKOmitted(t *testing.T) {
@@ -104,6 +109,9 @@ func TestProbeHTTPAppliesTimeoutOption(t *testing.T) {
 }
 
 func TestDiscoverFindsResponsiveRuntime(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintf(w, `{"ok":true,"service":"kata","version":"v1","pid":%d}`, os.Getpid())
 	}))
@@ -119,16 +127,16 @@ func TestDiscoverFindsResponsiveRuntime(t *testing.T) {
 		Version:   "v1",
 		StartedAt: time.Now(),
 	})
-	require.NoError(t, err)
+	require.NoError(err)
 
 	rec, info, ok, err := daemon.Discover(context.Background(), store, daemon.DiscoverOptions{
 		Probe:           daemon.ProbeOptions{ExpectedService: "kata"},
 		RequirePIDAlive: true,
 	})
-	require.NoError(t, err)
-	require.True(t, ok)
-	assert.Equal(t, addr, rec.Address)
-	assert.Equal(t, "kata", info.Service)
+	require.NoError(err)
+	require.True(ok)
+	assert.Equal(addr, rec.Address)
+	assert.Equal("kata", info.Service)
 }
 
 func TestDiscoverRejectsPIDMismatchWhenRequiringLivePID(t *testing.T) {
@@ -164,6 +172,8 @@ func TestDiscoverPropagatesContextCancellation(t *testing.T) {
 }
 
 func TestDiscoverSkipsPerProbeTimeouts(t *testing.T) {
+	require := require.New(t)
+
 	slowServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()
 	}))
@@ -181,7 +191,7 @@ func TestDiscoverSkipsPerProbeTimeouts(t *testing.T) {
 		Service:   "kata",
 		StartedAt: time.Now().Add(-time.Minute),
 	})
-	require.NoError(t, err)
+	require.NoError(err)
 	_, err = store.Write(daemon.RuntimeRecord{
 		PID:       os.Getpid() + 1,
 		Network:   daemon.NetworkTCP,
@@ -189,23 +199,25 @@ func TestDiscoverSkipsPerProbeTimeouts(t *testing.T) {
 		Service:   "kata",
 		StartedAt: time.Now(),
 	})
-	require.NoError(t, err)
+	require.NoError(err)
 
 	_, info, ok, err := daemon.Discover(context.Background(), store, daemon.DiscoverOptions{
 		Probe: daemon.ProbeOptions{ExpectedService: "kata", Timeout: 100 * time.Millisecond},
 	})
-	require.NoError(t, err)
-	require.True(t, ok)
+	require.NoError(err)
+	require.True(ok)
 	assert.Equal(t, "fast", info.Version)
 }
 
 func TestProbeDialsUnixEndpoint(t *testing.T) {
+	require := require.New(t)
+
 	socketDir, err := os.MkdirTemp("", "kitd")
-	require.NoError(t, err)
+	require.NoError(err)
 	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
 	socketPath := filepath.Join(socketDir, "daemon.sock")
 	listener, err := net.Listen("unix", socketPath)
-	require.NoError(t, err)
+	require.NoError(err)
 	t.Cleanup(func() {
 		_ = listener.Close()
 		_ = os.Remove(socketPath)
@@ -221,7 +233,7 @@ func TestProbeDialsUnixEndpoint(t *testing.T) {
 		Network: daemon.NetworkUnix,
 		Address: socketPath,
 	}, daemon.ProbeOptions{ExpectedService: "kata"})
-	require.NoError(t, err)
+	require.NoError(err)
 }
 
 func listenerAddr(t *testing.T, server *httptest.Server) string {

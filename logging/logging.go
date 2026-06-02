@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -294,8 +295,8 @@ func (r *Result) Close() error {
 	}
 
 	var err error
-	for i := len(r.closers) - 1; i >= 0; i-- {
-		if closeErr := r.closers[i](); closeErr != nil {
+	for _, closer := range slices.Backward(r.closers) {
+		if closeErr := closer(); closeErr != nil {
 			err = errors.Join(err, closeErr)
 		}
 	}

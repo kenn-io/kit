@@ -1,0 +1,99 @@
+default_install_hook_types = ["pre-commit", "pre-push"]
+default_stages = ["pre-commit"]
+
+[[repos]]
+repo = "builtin"
+
+[[repos.hooks]]
+id = "check-case-conflict"
+
+[[repos.hooks]]
+id = "check-merge-conflict"
+args = ["--assume-in-merge"]
+
+[[repos.hooks]]
+id = "detect-private-key"
+
+[[repos.hooks]]
+id = "no-commit-to-branch"
+
+[[repos.hooks]]
+id = "check-added-large-files"
+args = ["--maxkb=1024"]
+
+[[repos.hooks]]
+id = "trailing-whitespace"
+args = ["--markdown-linebreak-ext=md"]
+
+[[repos.hooks]]
+id = "end-of-file-fixer"
+
+[[repos.hooks]]
+id = "check-json"
+
+[[repos.hooks]]
+id = "check-toml"
+
+[[repos.hooks]]
+id = "check-yaml"
+
+[[repos]]
+repo = "local"
+
+[[repos.hooks]]
+id = "gofmt"
+name = "gofmt"
+language = "system"
+entry = "gofmt -w"
+files = "\\.go$"
+priority = 0
+
+[[repos.hooks]]
+id = "golangci-lint"
+name = "golangci-lint"
+language = "system"
+entry = "golangci-lint run"
+files = "^(go\\.mod|go\\.sum|.*\\.go)$"
+pass_filenames = false
+require_serial = true
+priority = 10
+
+[[repos.hooks]]
+id = "testify-helper-check"
+name = "testify helper check"
+language = "system"
+entry = "go run ./cmd/testify-helper-check ./..."
+files = "^(go\\.mod|go\\.sum|.*_test\\.go|tools/testifyhelpercheck/.*\\.go|cmd/testify-helper-check/.*\\.go)$"
+pass_filenames = false
+require_serial = true
+priority = 15
+
+[[repos.hooks]]
+id = "nilaway"
+name = "nilaway"
+language = "system"
+entry = "go tool nilaway -include-pkgs=go.kenn.io/kit ./..."
+stages = ["pre-push"]
+files = "^(go\\.mod|go\\.sum|.*\\.go)$"
+pass_filenames = false
+require_serial = true
+priority = 20
+
+[[repos.hooks]]
+id = "go-test"
+name = "go test"
+language = "system"
+entry = "go tool gotestsum --format pkgname-and-test-fails -- ./..."
+files = "^(go\\.mod|go\\.sum|.*\\.go)$"
+pass_filenames = false
+require_serial = true
+priority = 25
+
+[[repos]]
+repo = "meta"
+
+[[repos.hooks]]
+id = "check-hooks-apply"
+
+[[repos.hooks]]
+id = "check-useless-excludes"

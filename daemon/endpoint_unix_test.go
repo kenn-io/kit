@@ -14,21 +14,24 @@ import (
 )
 
 func TestDefaultSocketPathRepairsPublicTempFallback(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+
 	tempDir := "/tmp"
 	service := fmt.Sprintf("kitdpublic%d", os.Getpid())
 	t.Setenv("TMPDIR", tempDir)
 	t.Setenv("XDG_RUNTIME_DIR", "")
 	parent := filepath.Join(tempDir, fmt.Sprintf("%s-%d", service, os.Getuid()))
 	t.Cleanup(func() { _ = os.RemoveAll(parent) })
-	require.NoError(t, os.MkdirAll(parent, 0o700))
-	require.NoError(t, os.Chmod(parent, 0o777))
+	require.NoError(os.MkdirAll(parent, 0o700))
+	require.NoError(os.Chmod(parent, 0o777))
 
 	socketPath := daemon.DefaultSocketPath(service)
-	require.NotEmpty(t, socketPath)
-	assert.Equal(t, filepath.Join(parent, "daemon.sock"), socketPath)
+	require.NotEmpty(socketPath)
+	assert.Equal(filepath.Join(parent, "daemon.sock"), socketPath)
 	info, err := os.Stat(parent)
-	require.NoError(t, err)
-	assert.Zero(t, info.Mode().Perm()&0o077)
+	require.NoError(err)
+	assert.Zero(info.Mode().Perm() & 0o077)
 }
 
 func TestDefaultSocketPathRejectsSymlinkedTempFallback(t *testing.T) {
@@ -49,20 +52,23 @@ func TestDefaultSocketPathRejectsSymlinkedTempFallback(t *testing.T) {
 }
 
 func TestDefaultSocketPathCreatesPrivateXDGRuntimeDir(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+
 	xdg := filepath.Join("/tmp", fmt.Sprintf("kitdxdg%d", os.Getpid()))
 	service := "svc"
 	t.Cleanup(func() { _ = os.RemoveAll(xdg) })
-	require.NoError(t, os.MkdirAll(xdg, 0o700))
-	require.NoError(t, os.Chmod(xdg, 0o700))
+	require.NoError(os.MkdirAll(xdg, 0o700))
+	require.NoError(os.Chmod(xdg, 0o700))
 	t.Setenv("XDG_RUNTIME_DIR", xdg)
 
 	socketPath := daemon.DefaultSocketPath(service)
-	require.NotEmpty(t, socketPath)
+	require.NotEmpty(socketPath)
 	parent := filepath.Join(xdg, service)
-	assert.Equal(t, filepath.Join(parent, "daemon.sock"), socketPath)
+	assert.Equal(filepath.Join(parent, "daemon.sock"), socketPath)
 
 	info, err := os.Stat(parent)
-	require.NoError(t, err)
-	assert.True(t, info.IsDir())
-	assert.Zero(t, info.Mode().Perm()&0o077)
+	require.NoError(err)
+	assert.True(info.IsDir())
+	assert.Zero(info.Mode().Perm() & 0o077)
 }
