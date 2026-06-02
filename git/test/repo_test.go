@@ -1,6 +1,9 @@
 package gittest
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 func TestNewRepoIgnoresPollutedGitEnvironment(t *testing.T) {
 	parent := NewRepoWithCommit(t)
@@ -18,7 +21,7 @@ func TestNewRepoIgnoresPollutedGitEnvironment(t *testing.T) {
 	if got := repo.Run("config", "user.name"); got != UserName {
 		t.Fatalf("user.name = %q, want %q", got, UserName)
 	}
-	if got := repo.Run("rev-parse", "--show-toplevel"); got != repo.Root {
+	if got := filepath.Clean(repo.Run("rev-parse", "--show-toplevel")); got != filepath.Clean(repo.Root) {
 		t.Fatalf("show-toplevel = %q, want %q", got, repo.Root)
 	}
 }

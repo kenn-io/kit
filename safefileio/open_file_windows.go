@@ -10,7 +10,8 @@ import (
 )
 
 // OpenCurrentUserFile opens path without following reparse points and verifies
-// the opened handle is a regular file owned by the current user.
+// the opened handle is a regular file owned by the current token user or token
+// owner.
 func OpenCurrentUserFile(path string) (*os.File, error) {
 	if path == "" {
 		return nil, fmt.Errorf("path is empty")
@@ -71,12 +72,16 @@ func validateWindowsFileHandle(path string, handle windows.Handle) error {
 	if owner == nil {
 		return fmt.Errorf("%s owner is missing", path)
 	}
-	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	userSID, err := currentWindowsUserSID()
 	if err != nil {
 		return err
 	}
-	if !owner.Equals(user.User.Sid) {
-		return fmt.Errorf("%s is not owned by current user", path)
+	ownerSID, err := currentWindowsOwnerSID()
+	if err != nil {
+		return err
+	}
+	if !windowsOwnerMatches(owner, userSID, ownerSID) {
+		return fmt.Errorf("%s is not owned by current user or token owner", path)
 	}
 	return nil
 }

@@ -172,7 +172,7 @@ func WorktreePathForBranch(ctx context.Context, repoPath, branch string) (string
 	for line := range strings.SplitSeq(string(out), "\n") {
 		line = strings.TrimSpace(line)
 		if path, ok := strings.CutPrefix(line, "worktree "); ok {
-			currentPath = path
+			currentPath = NormalizePath(path)
 			currentBranch = ""
 		} else if ref, ok := strings.CutPrefix(line, "branch "); ok {
 			currentBranch = strings.TrimPrefix(ref, "refs/heads/")
