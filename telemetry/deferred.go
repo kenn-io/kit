@@ -1,4 +1,5 @@
-// Package telemetry provides small utilities around OpenTelemetry.
+// Package telemetry provides small utilities around OpenTelemetry and anonymous
+// application telemetry.
 package telemetry
 
 import (
