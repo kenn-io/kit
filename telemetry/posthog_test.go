@@ -199,6 +199,45 @@ func TestPostHogReporterCaptureDropsUnsafePropertyValues(t *testing.T) {
 	assert.NotContains(capture.Properties, "view")
 }
 
+func TestPostHogReporterAllowsDefaultPropertiesOnlyEvents(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+
+	enablePostHogTelemetryForTest()
+	t.Cleanup(enablePostHogTelemetryForTest)
+	t.Setenv(GenericTelemetryEnabledEnv, "1")
+	t.Setenv("KATA_TELEMETRY_ENABLED", "1")
+
+	client := &fakePostHogClient{}
+	reporter, err := newPostHogReporter(PostHogOptions{
+		APIKey:      "caller-owned-key",
+		Application: "kata",
+		EnvPrefix:   "KATA",
+		DistinctID:  "anonymous-instance-id",
+		Version:     "v-test",
+		Commit:      "abc123",
+	}, func(string, posthog.Config) (postHogEnqueueCloser, error) {
+		return client, nil
+	}, WithAllowedEvent("event_without_properties"))
+	require.NoError(err)
+
+	err = reporter.Capture("event_without_properties", map[string]any{
+		"private_path": "/Users/example/private",
+	})
+	require.NoError(err)
+
+	capture, ok := client.message.(posthog.Capture)
+	require.True(ok)
+	assert.Equal("event_without_properties", capture.Event)
+	assert.NotContains(capture.Properties, "private_path")
+	assert.Equal("kata", capture.Properties["application"])
+	assert.Equal("daemon", capture.Properties["source"])
+	assert.Equal("v-test", capture.Properties["version"])
+	assert.Equal("abc123", capture.Properties["commit"])
+	assert.False(capture.Properties["$process_person_profile"].(bool))
+	assert.True(capture.Properties["$geoip_disable"].(bool))
+}
+
 func TestAllowTelemetryToken(t *testing.T) {
 	value, ok := AllowTelemetryToken("pulls.list")
 	require.True(t, ok)

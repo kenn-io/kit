@@ -386,9 +386,6 @@ func cloneAllowedTelemetryEvents(events map[string]map[string]TelemetryPropertyF
 			}
 			clonedProperties[property] = filter
 		}
-		if len(clonedProperties) == 0 {
-			continue
-		}
 		cloned[event] = clonedProperties
 	}
 	return cloned
