@@ -7,6 +7,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -74,6 +75,7 @@ type PostHogOptions struct {
 
 // PostHogReporter sanitizes and submits anonymous telemetry events to PostHog.
 type PostHogReporter struct {
+	mu            sync.Mutex
 	client        postHogEnqueueCloser
 	distinctID    string
 	version       string
@@ -253,7 +255,12 @@ func DisabledPostHogReporter() *PostHogReporter {
 
 // Enabled reports whether the reporter can submit telemetry events.
 func (r *PostHogReporter) Enabled() bool {
-	return r.active() && !PostHogTelemetryDisabled()
+	if r == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.activeLocked() && !PostHogTelemetryDisabled()
 }
 
 // EventAllowed reports whether event is included in the reporter's allowlist.
@@ -292,7 +299,12 @@ func (r *PostHogReporter) SanitizeProperties(event string, properties map[string
 
 // Capture sanitizes and queues an anonymous telemetry event.
 func (r *PostHogReporter) Capture(event string, properties map[string]any) error {
-	if !r.Enabled() {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.activeLocked() || PostHogTelemetryDisabled() {
 		return nil
 	}
 	event = strings.TrimSpace(event)
@@ -317,24 +329,32 @@ func (r *PostHogReporter) Capture(event string, properties map[string]any) error
 // telemetry has been disabled for the process, Close discards the local client
 // reference without asking PostHog to flush queued events.
 func (r *PostHogReporter) Close() error {
-	if !r.active() {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.activeLocked() {
 		return nil
 	}
 	if PostHogTelemetryDisabled() {
-		r.enabled = false
-		r.client = nil
+		r.deactivateLocked()
 		return nil
 	}
 	if err := r.client.Close(); err != nil {
 		return err
 	}
-	r.enabled = false
-	r.client = nil
+	r.deactivateLocked()
 	return nil
 }
 
-func (r *PostHogReporter) active() bool {
-	return r != nil && r.enabled && r.client != nil
+func (r *PostHogReporter) activeLocked() bool {
+	return r.enabled && r.client != nil
+}
+
+func (r *PostHogReporter) deactivateLocked() {
+	r.enabled = false
+	r.client = nil
 }
 
 type postHogDisableTransport struct {

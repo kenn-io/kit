@@ -4,7 +4,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/posthog/posthog-go"
 	"github.com/stretchr/testify/assert"
@@ -23,6 +25,25 @@ func (f *fakePostHogClient) Enqueue(message posthog.Message) error {
 
 func (f *fakePostHogClient) Close() error {
 	f.closed = true
+	return nil
+}
+
+type blockingPostHogClient struct {
+	message        posthog.Message
+	enqueueStarted chan struct{}
+	unblockEnqueue chan struct{}
+	closeCalled    atomic.Bool
+}
+
+func (b *blockingPostHogClient) Enqueue(message posthog.Message) error {
+	b.message = message
+	close(b.enqueueStarted)
+	<-b.unblockEnqueue
+	return nil
+}
+
+func (b *blockingPostHogClient) Close() error {
+	b.closeCalled.Store(true)
 	return nil
 }
 
@@ -316,6 +337,42 @@ func TestPostHogReporterCloseAfterProcessDisableDoesNotFlushQueuedEvent(t *testi
 
 	require.NoError(reporter.Close())
 	assert.False(client.closed)
+	assert.False(reporter.Enabled())
+}
+
+func TestPostHogReporterCloseWaitsForInFlightCapture(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+
+	client := &blockingPostHogClient{
+		enqueueStarted: make(chan struct{}),
+		unblockEnqueue: make(chan struct{}),
+	}
+	reporter := &PostHogReporter{
+		client:        client,
+		distinctID:    "anonymous-instance-id",
+		application:   "kata",
+		allowedEvents: testAllowedTelemetryEvents(),
+		enabled:       true,
+	}
+
+	captureErr := make(chan error, 1)
+	go func() {
+		captureErr <- reporter.Capture("daemon_active", map[string]any{"project_count": 1})
+	}()
+	<-client.enqueueStarted
+
+	closeErr := make(chan error, 1)
+	go func() {
+		closeErr <- reporter.Close()
+	}()
+
+	assert.Never(client.closeCalled.Load, 50*time.Millisecond, 5*time.Millisecond)
+
+	close(client.unblockEnqueue)
+	require.NoError(<-captureErr)
+	require.NoError(<-closeErr)
+	assert.True(client.closeCalled.Load())
 	assert.False(reporter.Enabled())
 }
 
