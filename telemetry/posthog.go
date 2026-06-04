@@ -26,10 +26,6 @@ const (
 // event allowlist.
 var ErrUnsupportedTelemetryEvent = errors.New("unsupported telemetry event")
 
-// ErrPostHogTelemetryDisabled is returned by the PostHog transport when a
-// process-level disable happens after a reporter was created.
-var ErrPostHogTelemetryDisabled = errors.New("posthog telemetry disabled")
-
 var postHogTelemetryDisabled atomic.Bool
 
 // TelemetryPropertyFilter validates and returns a safe event property value.
@@ -325,9 +321,10 @@ func (r *PostHogReporter) Capture(event string, properties map[string]any) error
 	})
 }
 
-// Close flushes pending telemetry events when the reporter is enabled. When
-// telemetry has been disabled for the process, Close discards the local client
-// reference without asking PostHog to flush queued events.
+// Close stops the underlying telemetry client when the reporter is enabled.
+// Reporter-created PostHog clients use a process-disable-aware transport, so
+// Close can drain the SDK locally without network sends after telemetry is
+// disabled for the process.
 func (r *PostHogReporter) Close() error {
 	if r == nil {
 		return nil
@@ -335,10 +332,6 @@ func (r *PostHogReporter) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if !r.activeLocked() {
-		return nil
-	}
-	if PostHogTelemetryDisabled() {
-		r.deactivateLocked()
 		return nil
 	}
 	if err := r.client.Close(); err != nil {
@@ -363,7 +356,13 @@ type postHogDisableTransport struct {
 
 func (t postHogDisableTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if PostHogTelemetryDisabled() {
-		return nil, ErrPostHogTelemetryDisabled
+		return &http.Response{
+			StatusCode: http.StatusNoContent,
+			Status:     "204 " + http.StatusText(http.StatusNoContent),
+			Header:     make(http.Header),
+			Body:       http.NoBody,
+			Request:    req,
+		}, nil
 	}
 	base := t.base
 	if base == nil {
@@ -409,23 +408,26 @@ func AllowTelemetryBool(value any) (any, bool) {
 	return v, ok
 }
 
-// AllowTelemetryToken accepts short identifier-like string values.
-func AllowTelemetryToken(value any) (any, bool) {
-	v, ok := value.(string)
-	if !ok {
-		return nil, false
-	}
-	v = strings.TrimSpace(v)
-	if v == "" || len(v) > 64 {
-		return nil, false
-	}
-	for _, r := range v {
-		if ('a' <= r && r <= 'z') || ('A' <= r && r <= 'Z') || ('0' <= r && r <= '9') || r == '_' || r == '-' || r == '.' {
-			continue
+// AllowTelemetryStringValues accepts only the listed string values.
+func AllowTelemetryStringValues(values ...string) TelemetryPropertyFilter {
+	allowed := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			allowed[value] = struct{}{}
 		}
-		return nil, false
 	}
-	return v, true
+	return func(value any) (any, bool) {
+		v, ok := value.(string)
+		if !ok {
+			return nil, false
+		}
+		v = strings.TrimSpace(v)
+		if _, ok := allowed[v]; !ok {
+			return nil, false
+		}
+		return v, true
+	}
 }
 
 func cloneAllowedTelemetryEvents(events map[string]map[string]TelemetryPropertyFilter) map[string]map[string]TelemetryPropertyFilter {

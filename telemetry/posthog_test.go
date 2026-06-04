@@ -288,11 +288,11 @@ func TestPostHogReporterCaptureHonorsProcessDisableAfterCreation(t *testing.T) {
 	assert.Nil(client.message)
 
 	require.NoError(reporter.Close())
-	assert.False(client.closed)
+	assert.True(client.closed)
 	assert.False(reporter.Enabled())
 }
 
-func TestPostHogDisableTransportRejectsRequestsAfterProcessDisable(t *testing.T) {
+func TestPostHogDisableTransportNoOpsRequestsAfterProcessDisable(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
 
@@ -311,8 +311,9 @@ func TestPostHogDisableTransportRejectsRequestsAfterProcessDisable(t *testing.T)
 
 	resp, err := transport.RoundTrip(httptest.NewRequest(http.MethodPost, "https://posthog.example.test/batch", nil))
 
-	require.ErrorIs(err, ErrPostHogTelemetryDisabled)
-	assert.Nil(resp)
+	require.NoError(err)
+	require.NotNil(resp)
+	assert.Equal(http.StatusNoContent, resp.StatusCode)
 	assert.False(baseCalled)
 }
 
@@ -336,7 +337,7 @@ func TestPostHogReporterCloseAfterProcessDisableDoesNotFlushQueuedEvent(t *testi
 	t.Cleanup(enablePostHogTelemetryForTest)
 
 	require.NoError(reporter.Close())
-	assert.False(client.closed)
+	assert.True(client.closed)
 	assert.False(reporter.Enabled())
 }
 
@@ -376,12 +377,14 @@ func TestPostHogReporterCloseWaitsForInFlightCapture(t *testing.T) {
 	assert.False(reporter.Enabled())
 }
 
-func TestAllowTelemetryToken(t *testing.T) {
-	value, ok := AllowTelemetryToken("pulls.list")
+func TestAllowTelemetryStringValues(t *testing.T) {
+	filter := AllowTelemetryStringValues("pulls.list")
+
+	value, ok := filter(" pulls.list ")
 	require.True(t, ok)
 	assert.Equal(t, "pulls.list", value)
 
-	_, ok = AllowTelemetryToken("private/path")
+	_, ok = filter("private-project-name")
 	assert.False(t, ok)
 }
 
@@ -390,7 +393,7 @@ func testAllowedTelemetryOptions() []PostHogOption {
 		WithAllowedEvent("daemon_active",
 			AllowTelemetryProperty("project_count", AllowTelemetryNumber),
 			AllowTelemetryProperty("sync_enabled", AllowTelemetryBool),
-			AllowTelemetryProperty("view", AllowTelemetryToken),
+			AllowTelemetryProperty("view", AllowTelemetryStringValues("dashboard", "summary")),
 		),
 		WithAllowedEvent("daemon_started",
 			AllowTelemetryProperty("project_count", AllowTelemetryNumber),
@@ -404,7 +407,7 @@ func testAllowedTelemetryEvents() map[string]map[string]TelemetryPropertyFilter 
 		"daemon_active": {
 			"project_count": AllowTelemetryNumber,
 			"sync_enabled":  AllowTelemetryBool,
-			"view":          AllowTelemetryToken,
+			"view":          AllowTelemetryStringValues("dashboard", "summary"),
 		},
 		"daemon_started": {
 			"project_count": AllowTelemetryNumber,
