@@ -1,6 +1,8 @@
 package telemetry
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"runtime"
 	"testing"
 
@@ -265,7 +267,31 @@ func TestPostHogReporterCaptureHonorsProcessDisableAfterCreation(t *testing.T) {
 	assert.Nil(client.message)
 
 	require.NoError(reporter.Close())
-	assert.False(client.closed)
+	assert.True(client.closed)
+}
+
+func TestPostHogDisableTransportRejectsRequestsAfterProcessDisable(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+
+	enablePostHogTelemetryForTest()
+	t.Cleanup(enablePostHogTelemetryForTest)
+
+	baseCalled := false
+	transport := postHogDisableTransport{
+		base: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			baseCalled = true
+			return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
+		}),
+	}
+
+	DisablePostHogTelemetry()
+
+	resp, err := transport.RoundTrip(httptest.NewRequest(http.MethodPost, "https://posthog.example.test/batch", nil))
+
+	require.ErrorIs(err, ErrPostHogTelemetryDisabled)
+	assert.Nil(resp)
+	assert.False(baseCalled)
 }
 
 func TestAllowTelemetryToken(t *testing.T) {
@@ -307,4 +333,10 @@ func testAllowedTelemetryEvents() map[string]map[string]TelemetryPropertyFilter 
 
 func enablePostHogTelemetryForTest() {
 	postHogTelemetryDisabled.Store(false)
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }

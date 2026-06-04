@@ -3,6 +3,7 @@ package telemetry
 import (
 	"errors"
 	"math"
+	"net/http"
 	"os"
 	"runtime"
 	"strings"
@@ -23,6 +24,10 @@ const (
 // ErrUnsupportedTelemetryEvent is returned when an event is not in a reporter's
 // event allowlist.
 var ErrUnsupportedTelemetryEvent = errors.New("unsupported telemetry event")
+
+// ErrPostHogTelemetryDisabled is returned by the PostHog transport when a
+// process-level disable happens after a reporter was created.
+var ErrPostHogTelemetryDisabled = errors.New("posthog telemetry disabled")
 
 var postHogTelemetryDisabled atomic.Bool
 
@@ -223,6 +228,7 @@ func newPostHogReporter(opts PostHogOptions, newClient postHogClientFactory, opt
 	client, err := newClient(strings.TrimSpace(opts.APIKey), posthog.Config{
 		Endpoint:     endpoint,
 		DisableGeoIP: &disableGeoIP,
+		Transport:    postHogDisableTransport{},
 	})
 	if err != nil {
 		return nil, err
@@ -309,7 +315,7 @@ func (r *PostHogReporter) Capture(event string, properties map[string]any) error
 
 // Close flushes pending telemetry events when the reporter is enabled.
 func (r *PostHogReporter) Close() error {
-	if !r.Enabled() {
+	if !r.active() {
 		return nil
 	}
 	return r.client.Close()
@@ -317,6 +323,21 @@ func (r *PostHogReporter) Close() error {
 
 func (r *PostHogReporter) active() bool {
 	return r != nil && r.enabled && r.client != nil
+}
+
+type postHogDisableTransport struct {
+	base http.RoundTripper
+}
+
+func (t postHogDisableTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if PostHogTelemetryDisabled() {
+		return nil, ErrPostHogTelemetryDisabled
+	}
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return base.RoundTrip(req)
 }
 
 func (r *PostHogReporter) addDefaultProperties(props map[string]any) {
