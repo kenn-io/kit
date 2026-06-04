@@ -313,12 +313,24 @@ func (r *PostHogReporter) Capture(event string, properties map[string]any) error
 	})
 }
 
-// Close flushes pending telemetry events when the reporter is enabled.
+// Close flushes pending telemetry events when the reporter is enabled. When
+// telemetry has been disabled for the process, Close discards the local client
+// reference without asking PostHog to flush queued events.
 func (r *PostHogReporter) Close() error {
 	if !r.active() {
 		return nil
 	}
-	return r.client.Close()
+	if PostHogTelemetryDisabled() {
+		r.enabled = false
+		r.client = nil
+		return nil
+	}
+	if err := r.client.Close(); err != nil {
+		return err
+	}
+	r.enabled = false
+	r.client = nil
+	return nil
 }
 
 func (r *PostHogReporter) active() bool {

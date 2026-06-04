@@ -267,7 +267,8 @@ func TestPostHogReporterCaptureHonorsProcessDisableAfterCreation(t *testing.T) {
 	assert.Nil(client.message)
 
 	require.NoError(reporter.Close())
-	assert.True(client.closed)
+	assert.False(client.closed)
+	assert.False(reporter.Enabled())
 }
 
 func TestPostHogDisableTransportRejectsRequestsAfterProcessDisable(t *testing.T) {
@@ -292,6 +293,30 @@ func TestPostHogDisableTransportRejectsRequestsAfterProcessDisable(t *testing.T)
 	require.ErrorIs(err, ErrPostHogTelemetryDisabled)
 	assert.Nil(resp)
 	assert.False(baseCalled)
+}
+
+func TestPostHogReporterCloseAfterProcessDisableDoesNotFlushQueuedEvent(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+
+	client := &fakePostHogClient{}
+	reporter := &PostHogReporter{
+		client:        client,
+		distinctID:    "anonymous-instance-id",
+		application:   "kata",
+		allowedEvents: testAllowedTelemetryEvents(),
+		enabled:       true,
+	}
+
+	require.NoError(reporter.Capture("daemon_active", map[string]any{"project_count": 1}))
+	require.NotNil(client.message)
+
+	DisablePostHogTelemetry()
+	t.Cleanup(enablePostHogTelemetryForTest)
+
+	require.NoError(reporter.Close())
+	assert.False(client.closed)
+	assert.False(reporter.Enabled())
 }
 
 func TestAllowTelemetryToken(t *testing.T) {
