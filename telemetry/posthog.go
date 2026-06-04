@@ -247,7 +247,7 @@ func DisabledPostHogReporter() *PostHogReporter {
 
 // Enabled reports whether the reporter can submit telemetry events.
 func (r *PostHogReporter) Enabled() bool {
-	return r != nil && r.enabled && r.client != nil
+	return r.active() && !PostHogTelemetryDisabled()
 }
 
 // EventAllowed reports whether event is included in the reporter's allowlist.
@@ -309,10 +309,14 @@ func (r *PostHogReporter) Capture(event string, properties map[string]any) error
 
 // Close flushes pending telemetry events when the reporter is enabled.
 func (r *PostHogReporter) Close() error {
-	if !r.Enabled() {
+	if !r.active() {
 		return nil
 	}
 	return r.client.Close()
+}
+
+func (r *PostHogReporter) active() bool {
+	return r != nil && r.enabled && r.client != nil
 }
 
 func (r *PostHogReporter) addDefaultProperties(props map[string]any) {

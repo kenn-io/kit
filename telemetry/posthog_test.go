@@ -11,6 +11,7 @@ import (
 
 type fakePostHogClient struct {
 	message posthog.Message
+	closed  bool
 }
 
 func (f *fakePostHogClient) Enqueue(message posthog.Message) error {
@@ -18,7 +19,10 @@ func (f *fakePostHogClient) Enqueue(message posthog.Message) error {
 	return nil
 }
 
-func (f *fakePostHogClient) Close() error { return nil }
+func (f *fakePostHogClient) Close() error {
+	f.closed = true
+	return nil
+}
 
 func TestPrefixedTelemetryEnabledEnv(t *testing.T) {
 	assert.Equal(t, "KATA_TELEMETRY_ENABLED", PrefixedTelemetryEnabledEnv(" kata "))
@@ -236,6 +240,32 @@ func TestPostHogReporterAllowsDefaultPropertiesOnlyEvents(t *testing.T) {
 	assert.Equal("abc123", capture.Properties["commit"])
 	assert.False(capture.Properties["$process_person_profile"].(bool))
 	assert.True(capture.Properties["$geoip_disable"].(bool))
+}
+
+func TestPostHogReporterCaptureHonorsProcessDisableAfterCreation(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+
+	client := &fakePostHogClient{}
+	reporter := &PostHogReporter{
+		client:        client,
+		distinctID:    "anonymous-instance-id",
+		application:   "kata",
+		allowedEvents: testAllowedTelemetryEvents(),
+		enabled:       true,
+	}
+	require.True(reporter.Enabled())
+
+	DisablePostHogTelemetry()
+	t.Cleanup(enablePostHogTelemetryForTest)
+
+	assert.False(reporter.Enabled())
+	err := reporter.Capture("daemon_active", map[string]any{"project_count": 1})
+	require.NoError(err)
+	assert.Nil(client.message)
+
+	require.NoError(reporter.Close())
+	assert.True(client.closed)
 }
 
 func TestAllowTelemetryToken(t *testing.T) {
