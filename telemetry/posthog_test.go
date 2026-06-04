@@ -265,7 +265,7 @@ func TestPostHogReporterCaptureHonorsProcessDisableAfterCreation(t *testing.T) {
 	assert.Nil(client.message)
 
 	require.NoError(reporter.Close())
-	assert.True(client.closed)
+	assert.False(client.closed)
 }
 
 func TestAllowTelemetryToken(t *testing.T) {

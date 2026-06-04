@@ -309,7 +309,7 @@ func (r *PostHogReporter) Capture(event string, properties map[string]any) error
 
 // Close flushes pending telemetry events when the reporter is enabled.
 func (r *PostHogReporter) Close() error {
-	if !r.active() {
+	if !r.Enabled() {
 		return nil
 	}
 	return r.client.Close()
