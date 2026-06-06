@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 
 	gitenv "go.kenn.io/kit/git/env"
 )
@@ -38,7 +39,9 @@ type Runner struct {
 	StripEnv bool
 	// TerminalPrompt allows interactive git prompts when true.
 	TerminalPrompt bool
-	// NullGlobalConfig points GIT_CONFIG_GLOBAL at os.DevNull when true.
+	// NullGlobalConfig makes git read an empty global config when true, by
+	// pointing GIT_CONFIG_GLOBAL at an empty file (not os.DevNull, which is the
+	// unreadable "NUL" device on some Windows builds).
 	NullGlobalConfig bool
 	// NoSystemConfig sets GIT_CONFIG_NOSYSTEM=1 when true.
 	NoSystemConfig bool
@@ -157,6 +160,36 @@ func shellSingleQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
+var (
+	emptyGlobalConfigOnce sync.Once
+	emptyGlobalConfigPath string
+)
+
+// nullGlobalConfigPath returns a path suitable for GIT_CONFIG_GLOBAL that makes
+// git read an empty (no-op) global config.
+//
+// It must not be os.DevNull. On Windows os.DevNull is "NUL", the null device,
+// and some Git for Windows builds — notably on ARM64 — fail with
+// "fatal: unable to access 'NUL': Invalid argument" when told to read their
+// global config from that device, which breaks every git invocation. An empty
+// regular file is an equivalent no-op global config on every platform. The file
+// is created once per process and reused; it is intentionally not removed so the
+// path stays valid for the process lifetime (the OS reclaims the temp dir). If
+// the file cannot be created, fall back to os.DevNull, which still works on
+// platforms where the device is readable.
+func nullGlobalConfigPath() string {
+	emptyGlobalConfigOnce.Do(func() {
+		f, err := os.CreateTemp("", "gitcmd-empty-global-*.gitconfig")
+		if err != nil {
+			emptyGlobalConfigPath = os.DevNull
+			return
+		}
+		emptyGlobalConfigPath = f.Name()
+		_ = f.Close()
+	})
+	return emptyGlobalConfigPath
+}
+
 func (r Runner) commandEnv() ([]string, func()) {
 	cleanup := func() {}
 	env := r.Env
@@ -175,7 +208,7 @@ func (r Runner) commandEnv() ([]string, func()) {
 		env = append(env, "GIT_CONFIG_NOSYSTEM=1")
 	}
 	if r.NullGlobalConfig {
-		env = append(env, "GIT_CONFIG_GLOBAL="+os.DevNull)
+		env = append(env, "GIT_CONFIG_GLOBAL="+nullGlobalConfigPath())
 	}
 	config := append([]Config{{Key: "gc.auto", Value: "0"}, {Key: "maintenance.auto", Value: "false"}}, r.Config...)
 	if r.basicAuth != nil {
