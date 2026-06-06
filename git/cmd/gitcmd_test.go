@@ -30,11 +30,29 @@ func TestRunnerCommandUsesDefensiveEnvironment(t *testing.T) {
 	if !slices.Contains(cmd.Env, "GIT_TERMINAL_PROMPT=0") {
 		t.Fatalf("terminal prompts should be disabled: %#v", cmd.Env)
 	}
-	if !slices.Contains(cmd.Env, "GIT_CONFIG_GLOBAL="+os.DevNull) {
+	if !slices.Contains(cmd.Env, "GIT_CONFIG_GLOBAL="+nullGlobalConfigPath()) {
 		t.Fatalf("global config should be nulled: %#v", cmd.Env)
 	}
 	if !containsPrefix(cmd.Env, "GIT_CONFIG_COUNT=") {
 		t.Fatalf("temporary git config should be injected: %#v", cmd.Env)
+	}
+}
+
+func TestNullGlobalConfigPathIsReadableEmptyFile(t *testing.T) {
+	// Regression test: GIT_CONFIG_GLOBAL must point at a real, readable, empty
+	// file rather than os.DevNull. On Windows os.DevNull is "NUL", which some
+	// Git for Windows builds (notably ARM64) refuse to read as global config,
+	// failing every git command with "unable to access 'NUL'".
+	p := nullGlobalConfigPath()
+	info, err := os.Stat(p)
+	if err != nil {
+		t.Fatalf("GIT_CONFIG_GLOBAL path %q must be accessible: %v", p, err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("GIT_CONFIG_GLOBAL path %q must be a regular file, not a device: %v", p, info.Mode())
+	}
+	if info.Size() != 0 {
+		t.Fatalf("GIT_CONFIG_GLOBAL file %q should be empty, got %d bytes", p, info.Size())
 	}
 }
 
