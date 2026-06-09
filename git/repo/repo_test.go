@@ -3,6 +3,7 @@ package gitrepo
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 
 	gittest "go.kenn.io/kit/git/test"
@@ -58,6 +59,32 @@ func TestWorktreePathForBranchSkipsStalePaths(t *testing.T) {
 	}
 	if ok || path != repo.Root {
 		t.Fatalf("stale worktree should fall back to repo root false, got %q %v", path, ok)
+	}
+}
+
+func TestMainRootReturnsCheckoutRootForBareBackedWorktree(t *testing.T) {
+	ctx := context.Background()
+	bareRepo := gittest.NewBareRepo(t)
+	seedRepo := gittest.NewRepoWithCommit(t)
+	seedRepo.Run("remote", "add", "origin", bareRepo.Root)
+	seedRepo.Run("push", "origin", "HEAD:main")
+
+	worktreeDir := filepath.Join(t.TempDir(), "worktree")
+	bareRepo.Run("worktree", "add", worktreeDir, "main")
+	t.Cleanup(func() {
+		_, _, _ = bareRepo.Runner.Run(ctx, bareRepo.Root, nil, "worktree", "remove", "--force", worktreeDir)
+	})
+
+	got, err := MainRoot(ctx, worktreeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := Root(ctx, worktreeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("MainRoot() = %q, want checkout root %q", got, want)
 	}
 }
 
