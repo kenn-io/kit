@@ -70,6 +70,10 @@ func MainRoot(ctx context.Context, path string) (string, error) {
 	gitDir := absGitPath(path, NormalizePath(string(gitDirOut)))
 	commonDir := absGitPath(path, NormalizePath(string(commonDirOut)))
 	if gitDir != commonDir {
+		bareOut, err := runner.Output(ctx, "", "config", "--file", filepath.Join(commonDir, "config"), "--bool", "core.bare")
+		if err == nil && strings.TrimSpace(string(bareOut)) == "true" {
+			return Root(ctx, path)
+		}
 		if filepath.Base(commonDir) == ".git" {
 			return filepath.Dir(commonDir), nil
 		}
