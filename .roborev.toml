@@ -13,4 +13,29 @@ code actually does not compile, the toolchain will fail before the PR can land.
 
 Focus reviews on logic, architecture, behavior, security boundaries, and test
 coverage for behavior. Trust the build for compilability.
+
+## gitcmd config isolation and safe.directory forwarding
+
+`gitcmd.Runner`'s isolation flags (`StripEnv`, `NullGlobalConfig`,
+`NoSystemConfig`) exist for reproducibility: they keep ambient git config and
+environment from changing automation behavior. They are not a security
+boundary against the host's own admin-controlled configuration, and reviews
+must not treat them as one.
+
+Forwarding the user's `safe.directory` entries from system and global config
+into the sanitized command environment is intentional and required, including
+when `NoSystemConfig` is set (which is the default). git only honors
+`safe.directory` from protected scopes, so without forwarding the isolation
+flags make every command on a repository owned by another user fail with
+"detected dubious ownership" even though plain `git` works for the same user.
+Forwarding never widens trust beyond what the user's own `git` already honors
+in the same environment.
+
+Do not flag `safe.directory` forwarding as bypassing `NoSystemConfig`,
+`NullGlobalConfig`, or dubious-ownership protection, and do not suggest
+skipping the system scope when the runner sets `NoSystemConfig`. That
+suggestion regresses the bug the forwarding exists to fix. The forwarding
+deliberately reads the runner's pre-strip base environment and honors a
+`GIT_CONFIG_NOSYSTEM` set there, because that reflects what the user's git
+would trust.
 """
