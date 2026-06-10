@@ -19,6 +19,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -202,19 +203,29 @@ func nullGlobalConfigPath() string {
 }
 
 var (
-	safeDirectoriesOnce sync.Once
-	safeDirectoriesList []string
+	safeDirectoriesMu    sync.Mutex
+	safeDirectoriesCache = map[string][]string{}
 )
 
-// safeDirectories returns the safe.directory entries from the user's protected
-// git config, cached for the process lifetime. git only honors safe.directory
-// from protected configuration (system, global, and command scope), so these
-// are the entries the sanitized environment would otherwise hide.
-func safeDirectories() []string {
-	safeDirectoriesOnce.Do(func() {
-		safeDirectoriesList = readSafeDirectories(os.Environ())
-	})
-	return safeDirectoriesList
+// safeDirectories returns the safe.directory entries from the protected git
+// config visible to env, cached per distinct environment so one runner's
+// trust entries never leak into a runner with a different environment. git
+// only honors safe.directory from protected configuration (system, global,
+// and command scope), so these are the entries the sanitized environment
+// would otherwise hide.
+func safeDirectories(env []string) []string {
+	key := strings.Join(env, "\x00")
+	safeDirectoriesMu.Lock()
+	dirs, ok := safeDirectoriesCache[key]
+	safeDirectoriesMu.Unlock()
+	if ok {
+		return dirs
+	}
+	dirs = readSafeDirectories(env)
+	safeDirectoriesMu.Lock()
+	safeDirectoriesCache[key] = dirs
+	safeDirectoriesMu.Unlock()
+	return dirs
 }
 
 // readSafeDirectories reads safe.directory entries from system and global git
@@ -222,9 +233,18 @@ func safeDirectories() []string {
 // unset or unreadable contribute nothing. Empty values are kept because an
 // empty safe.directory resets the list, and replaying entries in order
 // preserves that semantic at command scope.
+//
+// "git config --system" reads the system file even when GIT_CONFIG_NOSYSTEM
+// is set (the variable only affects git's default config sequence), so the
+// system scope is skipped here explicitly: git running with this env would
+// not honor those entries, and they must not be forwarded on its behalf.
 func readSafeDirectories(env []string) []string {
+	scopes := []string{"--system", "--global"}
+	if gitEnvBool(env, "GIT_CONFIG_NOSYSTEM") {
+		scopes = scopes[1:]
+	}
 	var dirs []string
-	for _, scope := range []string{"--system", "--global"} {
+	for _, scope := range scopes {
 		cmd := exec.Command("git", "config", scope, "-z", "--get-all", "safe.directory")
 		cmd.Env = env
 		out, err := cmd.Output()
@@ -236,12 +256,43 @@ func readSafeDirectories(env []string) []string {
 	return dirs
 }
 
+// gitEnvBool reports whether env sets key to a value git's boolean parsing
+// treats as true. An empty value is false, matching git's handling of boolean
+// environment variables (unlike valueless config keys, which are true).
+func gitEnvBool(env []string, key string) bool {
+	value, ok := envValue(env, key)
+	if !ok {
+		return false
+	}
+	switch strings.ToLower(value) {
+	case "true", "yes", "on":
+		return true
+	case "", "false", "no", "off":
+		return false
+	}
+	n, err := strconv.Atoi(value)
+	return err == nil && n != 0
+}
+
+// envValue returns the value of key in env, honoring exec.Cmd semantics where
+// the last duplicate entry wins.
+func envValue(env []string, key string) (string, bool) {
+	for i := len(env) - 1; i >= 0; i-- {
+		k, v, ok := strings.Cut(env[i], "=")
+		if ok && k == key {
+			return v, true
+		}
+	}
+	return "", false
+}
+
 func (r Runner) commandEnv() ([]string, func()) {
 	cleanup := func() {}
-	env := r.Env
-	if env == nil {
-		env = os.Environ()
+	base := r.Env
+	if base == nil {
+		base = os.Environ()
 	}
+	env := base
 	if r.StripEnv {
 		env = gitenv.StripAll(env)
 	} else {
@@ -258,7 +309,10 @@ func (r Runner) commandEnv() ([]string, func()) {
 	}
 	config := []Config{{Key: "gc.auto", Value: "0"}, {Key: "maintenance.auto", Value: "false"}}
 	if r.ForwardSafeDirectory {
-		for _, dir := range safeDirectories() {
+		// Read from the runner's base env before stripping, so the entries come
+		// from the configuration this runner's environment would see, not from
+		// the process environment.
+		for _, dir := range safeDirectories(base) {
 			config = append(config, Config{Key: "safe.directory", Value: dir})
 		}
 	}
