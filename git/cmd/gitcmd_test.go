@@ -78,7 +78,7 @@ func TestReadSafeDirectories(t *testing.T) {
 	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
 	require.NoError(t, os.WriteFile(globalConfig, []byte("[safe]\n\tdirectory = *\n\tdirectory = /srv/repo\n"), 0o600))
 
-	got := readSafeDirectories(safeDirectoryTestEnv(t, globalConfig), "")
+	got := readSafeDirectories(context.Background(), safeDirectoryTestEnv(t, globalConfig), "")
 
 	assert.Equal(t, []string{"*", "/srv/repo"}, got)
 }
@@ -87,7 +87,7 @@ func TestReadSafeDirectoriesUnset(t *testing.T) {
 	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
 	require.NoError(t, os.WriteFile(globalConfig, nil, 0o600))
 
-	assert.Empty(t, readSafeDirectories(safeDirectoryTestEnv(t, globalConfig), ""))
+	assert.Empty(t, readSafeDirectories(context.Background(), safeDirectoryTestEnv(t, globalConfig), ""))
 }
 
 func TestReadSafeDirectoriesSystemScope(t *testing.T) {
@@ -102,7 +102,7 @@ func TestReadSafeDirectoriesSystemScope(t *testing.T) {
 		"GIT_CONFIG_NOSYSTEM=0",
 	)
 
-	got := readSafeDirectories(env, "")
+	got := readSafeDirectories(context.Background(), env, "")
 
 	assert.Equal(t, []string{"/etc/repo", "/home/repo"}, got, "system entries must come before global entries")
 }
@@ -123,7 +123,7 @@ func TestReadSafeDirectoriesHonorsNoSystem(t *testing.T) {
 		"GIT_CONFIG_NOSYSTEM=1",
 	)
 
-	got := readSafeDirectories(env, "")
+	got := readSafeDirectories(context.Background(), env, "")
 
 	assert.Equal(t, []string{"/home/repo"}, got)
 }
@@ -152,9 +152,9 @@ func TestReadSafeDirectoriesConditionalInclude(t *testing.T) {
 	_, _, err = runner.Run(context.Background(), repo, nil, "init")
 	require.NoError(t, err)
 
-	assert.Equal(t, []string{"/srv/conditional"}, readSafeDirectories(env, repo),
+	assert.Equal(t, []string{"/srv/conditional"}, readSafeDirectories(context.Background(), env, repo),
 		"include conditional on the target repo must apply")
-	assert.Empty(t, readSafeDirectories(env, dir),
+	assert.Empty(t, readSafeDirectories(context.Background(), env, dir),
 		"include conditional on another repo must not apply")
 }
 
