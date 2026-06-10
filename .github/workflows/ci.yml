@@ -9,11 +9,12 @@ on:
 permissions:
   contents: read
 
-# ref_name (not ref) so workflow_dispatch, push, and pull_request runs on the
-# same branch share one group: a dispatched run must be cancelled when a push
-# supersedes it, and vice versa.
+# PR runs are keyed by PR number (repo-assigned, so a fork branch named "main"
+# cannot collide with and cancel trusted runs on this repo's main). Push and
+# workflow_dispatch runs share a group per ref_name so a dispatched run is
+# cancelled when a push supersedes it, and vice versa.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
