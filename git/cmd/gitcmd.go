@@ -95,7 +95,7 @@ func (r Runner) Command(ctx context.Context, dir string, args ...string) *exec.C
 	}
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env, _ = r.commandEnv()
+	cmd.Env, _ = r.commandEnv(dir)
 	return cmd
 }
 
@@ -110,7 +110,7 @@ func (r Runner) Run(ctx context.Context, dir string, stdin io.Reader, args ...st
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	var cleanup func()
-	cmd.Env, cleanup = r.commandEnv()
+	cmd.Env, cleanup = r.commandEnv(dir)
 	defer cleanup()
 	cmd.Stdin = stdin
 
@@ -213,18 +213,26 @@ func nullGlobalConfigPath() string {
 // safe.directory resets the list, and replaying entries in order preserves
 // that semantic at command scope.
 //
+// The probes run in dir, the same directory as the git command being built,
+// so conditional includes (includeIf "gitdir:...") resolve exactly as they
+// would for that command rather than against the calling process's working
+// directory.
+//
 // "git config --system" reads the system file even when GIT_CONFIG_NOSYSTEM
 // is set (the variable only affects git's default config sequence), so the
 // system scope is skipped here explicitly: git running with this env would
 // not honor those entries, and they must not be forwarded on its behalf.
-func readSafeDirectories(env []string) []string {
+func readSafeDirectories(env []string, dir string) []string {
 	scopes := []string{"--system", "--global"}
 	if gitEnvBool(env, "GIT_CONFIG_NOSYSTEM") {
 		scopes = scopes[1:]
 	}
 	var dirs []string
 	for _, scope := range scopes {
-		cmd := exec.Command("git", "config", scope, "-z", "--get-all", "safe.directory")
+		// --includes is required for explicit-scope reads to honor include.path
+		// and includeIf directives the way git's default config sequence does.
+		cmd := exec.Command("git", "config", scope, "--includes", "-z", "--get-all", "safe.directory")
+		cmd.Dir = dir
 		cmd.Env = env
 		out, err := cmd.Output()
 		if err != nil || len(out) == 0 {
@@ -265,7 +273,7 @@ func envValue(env []string, key string) (string, bool) {
 	return "", false
 }
 
-func (r Runner) commandEnv() ([]string, func()) {
+func (r Runner) commandEnv(dir string) ([]string, func()) {
 	cleanup := func() {}
 	base := r.Env
 	if base == nil {
@@ -291,8 +299,8 @@ func (r Runner) commandEnv() ([]string, func()) {
 		// Read from the runner's base env before stripping, so the entries come
 		// from the configuration this runner's environment would see, not from
 		// the process environment.
-		for _, dir := range readSafeDirectories(base) {
-			config = append(config, Config{Key: "safe.directory", Value: dir})
+		for _, trusted := range readSafeDirectories(base, dir) {
+			config = append(config, Config{Key: "safe.directory", Value: trusted})
 		}
 	}
 	config = append(config, r.Config...)
