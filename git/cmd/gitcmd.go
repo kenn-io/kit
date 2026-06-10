@@ -202,37 +202,16 @@ func nullGlobalConfigPath() string {
 	return emptyGlobalConfigPath
 }
 
-var (
-	safeDirectoriesMu    sync.Mutex
-	safeDirectoriesCache = map[string][]string{}
-)
-
-// safeDirectories returns the safe.directory entries from the protected git
-// config visible to env, cached per distinct environment so one runner's
-// trust entries never leak into a runner with a different environment. git
-// only honors safe.directory from protected configuration (system, global,
-// and command scope), so these are the entries the sanitized environment
-// would otherwise hide.
-func safeDirectories(env []string) []string {
-	key := strings.Join(env, "\x00")
-	safeDirectoriesMu.Lock()
-	dirs, ok := safeDirectoriesCache[key]
-	safeDirectoriesMu.Unlock()
-	if ok {
-		return dirs
-	}
-	dirs = readSafeDirectories(env)
-	safeDirectoriesMu.Lock()
-	safeDirectoriesCache[key] = dirs
-	safeDirectoriesMu.Unlock()
-	return dirs
-}
-
 // readSafeDirectories reads safe.directory entries from system and global git
-// config using env, in git's evaluation order. Best effort: scopes that are
-// unset or unreadable contribute nothing. Empty values are kept because an
-// empty safe.directory resets the list, and replaying entries in order
-// preserves that semantic at command scope.
+// config using env, in git's evaluation order. git only honors safe.directory
+// from protected configuration (system, global, and command scope), so these
+// are the entries the sanitized environment would otherwise hide. Entries are
+// read fresh on every call, like git itself reads config on every invocation:
+// no cache means no stale trust entries in long-lived processes and no
+// retained copies of caller environments. Best effort: scopes that are unset
+// or unreadable contribute nothing. Empty values are kept because an empty
+// safe.directory resets the list, and replaying entries in order preserves
+// that semantic at command scope.
 //
 // "git config --system" reads the system file even when GIT_CONFIG_NOSYSTEM
 // is set (the variable only affects git's default config sequence), so the
@@ -312,7 +291,7 @@ func (r Runner) commandEnv() ([]string, func()) {
 		// Read from the runner's base env before stripping, so the entries come
 		// from the configuration this runner's environment would see, not from
 		// the process environment.
-		for _, dir := range safeDirectories(base) {
+		for _, dir := range readSafeDirectories(base) {
 			config = append(config, Config{Key: "safe.directory", Value: dir})
 		}
 	}

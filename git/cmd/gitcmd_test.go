@@ -163,7 +163,7 @@ func TestCommandEnvForwardsSafeDirectoryForRunnerLiterals(t *testing.T) {
 func TestCommandEnvReadsSafeDirectoryFromRunnerEnv(t *testing.T) {
 	// The forwarded entries must come from the runner's configured Env, not
 	// from the process environment, and one runner's entries must not leak
-	// into a runner with a different environment through the cache.
+	// into a runner with a different environment.
 	dir := t.TempDir()
 	trusted := filepath.Join(dir, "trusted-gitconfig")
 	require.NoError(t, os.WriteFile(trusted, []byte("[safe]\n\tdirectory = /trusted/repo\n"), 0o600))
