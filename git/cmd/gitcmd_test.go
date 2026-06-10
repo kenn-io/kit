@@ -142,6 +142,24 @@ func TestCommandEnvForwardsSafeDirectory(t *testing.T) {
 	assert.Contains(t, cmd.Env, "GIT_CONFIG_GLOBAL="+nullGlobalConfigPath())
 }
 
+func TestCommandEnvForwardsSafeDirectoryForRunnerLiterals(t *testing.T) {
+	// Forwarding must be on by default for callers that build a Runner
+	// literal instead of using New(); a zero DisableSafeDirectoryForward
+	// keeps isolation flags from silently dropping the user's trust entries.
+	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
+	require.NoError(t, os.WriteFile(globalConfig, []byte("[safe]\n\tdirectory = /srv/repo\n"), 0o600))
+
+	runner := Runner{
+		Env:              safeDirectoryTestEnv(t, globalConfig),
+		StripEnv:         true,
+		NullGlobalConfig: true,
+		NoSystemConfig:   true,
+	}
+	cmd := runner.Command(context.Background(), "", "status")
+
+	assert.Equal(t, "/srv/repo", gitConfigValue(strings.Join(cmd.Env, "\n"), "safe.directory"))
+}
+
 func TestCommandEnvReadsSafeDirectoryFromRunnerEnv(t *testing.T) {
 	// The forwarded entries must come from the runner's configured Env, not
 	// from the process environment, and one runner's entries must not leak
@@ -170,7 +188,7 @@ func TestCommandEnvSkipsSafeDirectoryWhenDisabled(t *testing.T) {
 
 	runner := New()
 	runner.Env = safeDirectoryTestEnv(t, globalConfig)
-	runner.ForwardSafeDirectory = false
+	runner.DisableSafeDirectoryForward = true
 	cmd := runner.Command(context.Background(), "", "status")
 
 	assert.Empty(t, gitConfigValue(strings.Join(cmd.Env, "\n"), "safe.directory"))

@@ -50,12 +50,13 @@ type Runner struct {
 	NullGlobalConfig bool
 	// NoSystemConfig sets GIT_CONFIG_NOSYSTEM=1 when true.
 	NoSystemConfig bool
-	// ForwardSafeDirectory re-injects the user's safe.directory entries from
-	// system and global git config as command-scope config. Without this,
-	// NullGlobalConfig and NoSystemConfig hide those entries and git refuses
-	// to operate on repositories owned by another user ("detected dubious
-	// ownership"), even though plain git works for the same user.
-	ForwardSafeDirectory bool
+	// DisableSafeDirectoryForward turns off re-injecting the user's
+	// safe.directory entries from system and global git config as
+	// command-scope config. Forwarding is the default because NullGlobalConfig
+	// and NoSystemConfig hide those entries and git then refuses to operate on
+	// repositories owned by another user ("detected dubious ownership"), even
+	// though plain git works for the same user.
+	DisableSafeDirectoryForward bool
 
 	basicAuth *basicAuth
 }
@@ -63,11 +64,10 @@ type Runner struct {
 // New returns a Runner with safe automation defaults.
 func New() Runner {
 	return Runner{
-		Env:                  os.Environ(),
-		StripEnv:             true,
-		NullGlobalConfig:     true,
-		NoSystemConfig:       true,
-		ForwardSafeDirectory: true,
+		Env:              os.Environ(),
+		StripEnv:         true,
+		NullGlobalConfig: true,
+		NoSystemConfig:   true,
 	}
 }
 
@@ -308,7 +308,7 @@ func (r Runner) commandEnv() ([]string, func()) {
 		env = append(env, "GIT_CONFIG_GLOBAL="+nullGlobalConfigPath())
 	}
 	config := []Config{{Key: "gc.auto", Value: "0"}, {Key: "maintenance.auto", Value: "false"}}
-	if r.ForwardSafeDirectory {
+	if !r.DisableSafeDirectoryForward {
 		// Read from the runner's base env before stripping, so the entries come
 		// from the configuration this runner's environment would see, not from
 		// the process environment.
