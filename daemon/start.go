@@ -23,7 +23,9 @@ type StartDetachedOptions struct {
 }
 
 // StartDetached starts a child process detached from the caller's process
-// group where the platform supports it.
+// group where the platform supports it. On Windows the child runs on its own
+// hidden console so neither it nor its console-subsystem descendants open
+// visible console windows.
 func StartDetached(ctx context.Context, opts StartDetachedOptions) error {
 	if err := ctx.Err(); err != nil {
 		return err

@@ -23,6 +23,9 @@ databases, command parsing, and shutdown policy belong to the caller.
   process checks, or permissions differ.
 - Auto-start goes through the caller-provided `StartFunc`; this package must not
   invent application launch commands.
+- Windows detached children run on a hidden console (`CREATE_NO_WINDOW`), never
+  `DETACHED_PROCESS`. A console-less child makes every console-subsystem
+  descendant (git, taskkill, agent CLIs) open a visible console window.
 
 ## Tests
 
