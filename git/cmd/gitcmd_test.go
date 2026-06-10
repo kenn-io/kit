@@ -8,6 +8,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRunnerCommandUsesDefensiveEnvironment(t *testing.T) {
@@ -54,6 +57,171 @@ func TestNullGlobalConfigPathIsReadableEmptyFile(t *testing.T) {
 	if info.Size() != 0 {
 		t.Fatalf("GIT_CONFIG_GLOBAL file %q should be empty, got %d bytes", p, info.Size())
 	}
+}
+
+// safeDirectoryTestEnv builds a hermetic environment for safe.directory
+// reads: global config comes from the given file and the system scope is
+// pinned to an empty file so entries baked into the host's real system config
+// (for example "safe.directory = *" on GitHub-hosted runners) cannot leak in.
+func safeDirectoryTestEnv(t *testing.T, globalConfig string) []string {
+	t.Helper()
+	emptySystemConfig := filepath.Join(t.TempDir(), "system-gitconfig")
+	require.NoError(t, os.WriteFile(emptySystemConfig, nil, 0o600))
+	return append(os.Environ(),
+		"GIT_CONFIG_GLOBAL="+globalConfig,
+		"GIT_CONFIG_SYSTEM="+emptySystemConfig,
+		"GIT_CONFIG_NOSYSTEM=0",
+	)
+}
+
+func TestReadSafeDirectories(t *testing.T) {
+	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
+	require.NoError(t, os.WriteFile(globalConfig, []byte("[safe]\n\tdirectory = *\n\tdirectory = /srv/repo\n"), 0o600))
+
+	got := readSafeDirectories(context.Background(), safeDirectoryTestEnv(t, globalConfig), "")
+
+	assert.Equal(t, []string{"*", "/srv/repo"}, got)
+}
+
+func TestReadSafeDirectoriesUnset(t *testing.T) {
+	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
+	require.NoError(t, os.WriteFile(globalConfig, nil, 0o600))
+
+	assert.Empty(t, readSafeDirectories(context.Background(), safeDirectoryTestEnv(t, globalConfig), ""))
+}
+
+func TestReadSafeDirectoriesSystemScope(t *testing.T) {
+	dir := t.TempDir()
+	systemConfig := filepath.Join(dir, "system-gitconfig")
+	require.NoError(t, os.WriteFile(systemConfig, []byte("[safe]\n\tdirectory = /etc/repo\n"), 0o600))
+	globalConfig := filepath.Join(dir, "gitconfig")
+	require.NoError(t, os.WriteFile(globalConfig, []byte("[safe]\n\tdirectory = /home/repo\n"), 0o600))
+	env := append(os.Environ(),
+		"GIT_CONFIG_GLOBAL="+globalConfig,
+		"GIT_CONFIG_SYSTEM="+systemConfig,
+		"GIT_CONFIG_NOSYSTEM=0",
+	)
+
+	got := readSafeDirectories(context.Background(), env, "")
+
+	assert.Equal(t, []string{"/etc/repo", "/home/repo"}, got, "system entries must come before global entries")
+}
+
+func TestReadSafeDirectoriesHonorsNoSystem(t *testing.T) {
+	// Regression test: "git config --system" reads the system file even when
+	// GIT_CONFIG_NOSYSTEM is set, so readSafeDirectories must skip the system
+	// scope itself. Without that, entries git would never honor (for example
+	// "safe.directory = *" baked into CI runner images) get forwarded.
+	dir := t.TempDir()
+	systemConfig := filepath.Join(dir, "system-gitconfig")
+	require.NoError(t, os.WriteFile(systemConfig, []byte("[safe]\n\tdirectory = /etc/repo\n"), 0o600))
+	globalConfig := filepath.Join(dir, "gitconfig")
+	require.NoError(t, os.WriteFile(globalConfig, []byte("[safe]\n\tdirectory = /home/repo\n"), 0o600))
+	env := append(os.Environ(),
+		"GIT_CONFIG_GLOBAL="+globalConfig,
+		"GIT_CONFIG_SYSTEM="+systemConfig,
+		"GIT_CONFIG_NOSYSTEM=1",
+	)
+
+	got := readSafeDirectories(context.Background(), env, "")
+
+	assert.Equal(t, []string{"/home/repo"}, got)
+}
+
+func TestReadSafeDirectoriesConditionalInclude(t *testing.T) {
+	// Regression test: the probes must run in the command's directory with
+	// --includes so includeIf "gitdir:..." entries resolve for the repository
+	// the command targets, not for the calling process's working directory.
+	dir := t.TempDir()
+	repo := filepath.Join(dir, "repo")
+	require.NoError(t, os.Mkdir(repo, 0o755))
+	// git matches gitdir patterns against resolved paths, so the pattern must
+	// use the symlink-free form (t.TempDir is a symlink on macOS).
+	realRepo, err := filepath.EvalSymlinks(repo)
+	require.NoError(t, err)
+
+	included := filepath.Join(dir, "trusted-gitconfig")
+	require.NoError(t, os.WriteFile(included, []byte("[safe]\n\tdirectory = /srv/conditional\n"), 0o600))
+	globalConfig := filepath.Join(dir, "gitconfig")
+	require.NoError(t, os.WriteFile(globalConfig, []byte(
+		"[includeIf \"gitdir:"+filepath.ToSlash(realRepo)+"/\"]\n\tpath = "+filepath.ToSlash(included)+"\n"), 0o600))
+	env := safeDirectoryTestEnv(t, globalConfig)
+
+	runner := New()
+	runner.Env = env
+	_, _, err = runner.Run(context.Background(), repo, nil, "init")
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"/srv/conditional"}, readSafeDirectories(context.Background(), env, repo),
+		"include conditional on the target repo must apply")
+	assert.Empty(t, readSafeDirectories(context.Background(), env, dir),
+		"include conditional on another repo must not apply")
+}
+
+func TestCommandEnvForwardsSafeDirectory(t *testing.T) {
+	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
+	require.NoError(t, os.WriteFile(globalConfig, []byte("[safe]\n\tdirectory = *\n"), 0o600))
+
+	runner := New()
+	runner.Env = safeDirectoryTestEnv(t, globalConfig)
+	cmd := runner.Command(context.Background(), "", "status")
+
+	assert.Equal(t, "*", gitConfigValue(strings.Join(cmd.Env, "\n"), "safe.directory"))
+	// The sanitized environment must still hide the user's global config from
+	// everything except the forwarded safe.directory entries.
+	assert.Contains(t, cmd.Env, "GIT_CONFIG_GLOBAL="+nullGlobalConfigPath())
+}
+
+func TestCommandEnvForwardsSafeDirectoryForRunnerLiterals(t *testing.T) {
+	// Forwarding must be on by default for callers that build a Runner
+	// literal instead of using New(); a zero DisableSafeDirectoryForward
+	// keeps isolation flags from silently dropping the user's trust entries.
+	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
+	require.NoError(t, os.WriteFile(globalConfig, []byte("[safe]\n\tdirectory = /srv/repo\n"), 0o600))
+
+	runner := Runner{
+		Env:              safeDirectoryTestEnv(t, globalConfig),
+		StripEnv:         true,
+		NullGlobalConfig: true,
+		NoSystemConfig:   true,
+	}
+	cmd := runner.Command(context.Background(), "", "status")
+
+	assert.Equal(t, "/srv/repo", gitConfigValue(strings.Join(cmd.Env, "\n"), "safe.directory"))
+}
+
+func TestCommandEnvReadsSafeDirectoryFromRunnerEnv(t *testing.T) {
+	// The forwarded entries must come from the runner's configured Env, not
+	// from the process environment, and one runner's entries must not leak
+	// into a runner with a different environment.
+	dir := t.TempDir()
+	trusted := filepath.Join(dir, "trusted-gitconfig")
+	require.NoError(t, os.WriteFile(trusted, []byte("[safe]\n\tdirectory = /trusted/repo\n"), 0o600))
+	empty := filepath.Join(dir, "empty-gitconfig")
+	require.NoError(t, os.WriteFile(empty, nil, 0o600))
+
+	trustedRunner := New()
+	trustedRunner.Env = safeDirectoryTestEnv(t, trusted)
+	emptyRunner := New()
+	emptyRunner.Env = safeDirectoryTestEnv(t, empty)
+
+	trustedCmd := trustedRunner.Command(context.Background(), "", "status")
+	emptyCmd := emptyRunner.Command(context.Background(), "", "status")
+
+	assert.Equal(t, "/trusted/repo", gitConfigValue(strings.Join(trustedCmd.Env, "\n"), "safe.directory"))
+	assert.Empty(t, gitConfigValue(strings.Join(emptyCmd.Env, "\n"), "safe.directory"))
+}
+
+func TestCommandEnvSkipsSafeDirectoryWhenDisabled(t *testing.T) {
+	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
+	require.NoError(t, os.WriteFile(globalConfig, []byte("[safe]\n\tdirectory = *\n"), 0o600))
+
+	runner := New()
+	runner.Env = safeDirectoryTestEnv(t, globalConfig)
+	runner.DisableSafeDirectoryForward = true
+	cmd := runner.Command(context.Background(), "", "status")
+
+	assert.Empty(t, gitConfigValue(strings.Join(cmd.Env, "\n"), "safe.directory"))
 }
 
 func TestWithBasicAuthKeepsSecretOutOfCommandEnvironment(t *testing.T) {
