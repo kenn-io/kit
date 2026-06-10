@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -54,6 +55,90 @@ func TestNullGlobalConfigPathIsReadableEmptyFile(t *testing.T) {
 	if info.Size() != 0 {
 		t.Fatalf("GIT_CONFIG_GLOBAL file %q should be empty, got %d bytes", p, info.Size())
 	}
+}
+
+func TestReadSafeDirectories(t *testing.T) {
+	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(globalConfig, []byte("[safe]\n\tdirectory = *\n\tdirectory = /srv/repo\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := append(os.Environ(),
+		"GIT_CONFIG_GLOBAL="+globalConfig,
+		"GIT_CONFIG_NOSYSTEM=1",
+	)
+
+	got := readSafeDirectories(env)
+
+	want := []string{"*", "/srv/repo"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("readSafeDirectories = %#v, want %#v", got, want)
+	}
+}
+
+func TestReadSafeDirectoriesUnset(t *testing.T) {
+	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(globalConfig, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := append(os.Environ(),
+		"GIT_CONFIG_GLOBAL="+globalConfig,
+		"GIT_CONFIG_NOSYSTEM=1",
+	)
+
+	if got := readSafeDirectories(env); len(got) != 0 {
+		t.Fatalf("readSafeDirectories = %#v, want empty", got)
+	}
+}
+
+func TestCommandEnvForwardsSafeDirectory(t *testing.T) {
+	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(globalConfig, []byte("[safe]\n\tdirectory = *\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	resetSafeDirectoriesCache(t)
+
+	cmd := New().Command(context.Background(), "", "status")
+
+	if got := gitConfigValue(strings.Join(cmd.Env, "\n"), "safe.directory"); got != "*" {
+		t.Fatalf("safe.directory = %q in command env, want %q: %#v", got, "*", cmd.Env)
+	}
+	// The sanitized environment must still hide the user's global config from
+	// everything except the forwarded safe.directory entries.
+	if !slices.Contains(cmd.Env, "GIT_CONFIG_GLOBAL="+nullGlobalConfigPath()) {
+		t.Fatalf("global config should still be nulled: %#v", cmd.Env)
+	}
+}
+
+func TestCommandEnvSkipsSafeDirectoryWhenDisabled(t *testing.T) {
+	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(globalConfig, []byte("[safe]\n\tdirectory = *\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	resetSafeDirectoriesCache(t)
+
+	runner := New()
+	runner.ForwardSafeDirectory = false
+	cmd := runner.Command(context.Background(), "", "status")
+
+	if got := gitConfigValue(strings.Join(cmd.Env, "\n"), "safe.directory"); got != "" {
+		t.Fatalf("safe.directory = %q in command env, want none: %#v", got, cmd.Env)
+	}
+}
+
+// resetSafeDirectoriesCache clears the process-lifetime safe.directory cache
+// so a test can prime it from its own environment, restoring it afterwards.
+func resetSafeDirectoriesCache(t *testing.T) {
+	t.Helper()
+	safeDirectoriesOnce = sync.Once{}
+	safeDirectoriesList = nil
+	t.Cleanup(func() {
+		safeDirectoriesOnce = sync.Once{}
+		safeDirectoriesList = nil
+	})
 }
 
 func TestWithBasicAuthKeepsSecretOutOfCommandEnvironment(t *testing.T) {

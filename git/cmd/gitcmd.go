@@ -4,7 +4,11 @@
 // interactive prompts, ignores global and system git config, and injects
 // temporary config through GIT_CONFIG_* variables. This prevents child git
 // commands from accidentally binding to a parent repository or writing into a
-// developer's global config during automation and tests.
+// developer's global config during automation and tests. The user's
+// safe.directory entries are forwarded into the sanitized environment so
+// config isolation does not make git reject repositories the user already
+// trusts (for example root-squashed or container-mounted checkouts owned by
+// another user).
 package gitcmd
 
 import (
@@ -45,6 +49,12 @@ type Runner struct {
 	NullGlobalConfig bool
 	// NoSystemConfig sets GIT_CONFIG_NOSYSTEM=1 when true.
 	NoSystemConfig bool
+	// ForwardSafeDirectory re-injects the user's safe.directory entries from
+	// system and global git config as command-scope config. Without this,
+	// NullGlobalConfig and NoSystemConfig hide those entries and git refuses
+	// to operate on repositories owned by another user ("detected dubious
+	// ownership"), even though plain git works for the same user.
+	ForwardSafeDirectory bool
 
 	basicAuth *basicAuth
 }
@@ -52,10 +62,11 @@ type Runner struct {
 // New returns a Runner with safe automation defaults.
 func New() Runner {
 	return Runner{
-		Env:              os.Environ(),
-		StripEnv:         true,
-		NullGlobalConfig: true,
-		NoSystemConfig:   true,
+		Env:                  os.Environ(),
+		StripEnv:             true,
+		NullGlobalConfig:     true,
+		NoSystemConfig:       true,
+		ForwardSafeDirectory: true,
 	}
 }
 
@@ -190,6 +201,41 @@ func nullGlobalConfigPath() string {
 	return emptyGlobalConfigPath
 }
 
+var (
+	safeDirectoriesOnce sync.Once
+	safeDirectoriesList []string
+)
+
+// safeDirectories returns the safe.directory entries from the user's protected
+// git config, cached for the process lifetime. git only honors safe.directory
+// from protected configuration (system, global, and command scope), so these
+// are the entries the sanitized environment would otherwise hide.
+func safeDirectories() []string {
+	safeDirectoriesOnce.Do(func() {
+		safeDirectoriesList = readSafeDirectories(os.Environ())
+	})
+	return safeDirectoriesList
+}
+
+// readSafeDirectories reads safe.directory entries from system and global git
+// config using env, in git's evaluation order. Best effort: scopes that are
+// unset or unreadable contribute nothing. Empty values are kept because an
+// empty safe.directory resets the list, and replaying entries in order
+// preserves that semantic at command scope.
+func readSafeDirectories(env []string) []string {
+	var dirs []string
+	for _, scope := range []string{"--system", "--global"} {
+		cmd := exec.Command("git", "config", scope, "-z", "--get-all", "safe.directory")
+		cmd.Env = env
+		out, err := cmd.Output()
+		if err != nil || len(out) == 0 {
+			continue
+		}
+		dirs = append(dirs, strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00")...)
+	}
+	return dirs
+}
+
 func (r Runner) commandEnv() ([]string, func()) {
 	cleanup := func() {}
 	env := r.Env
@@ -210,7 +256,13 @@ func (r Runner) commandEnv() ([]string, func()) {
 	if r.NullGlobalConfig {
 		env = append(env, "GIT_CONFIG_GLOBAL="+nullGlobalConfigPath())
 	}
-	config := append([]Config{{Key: "gc.auto", Value: "0"}, {Key: "maintenance.auto", Value: "false"}}, r.Config...)
+	config := []Config{{Key: "gc.auto", Value: "0"}, {Key: "maintenance.auto", Value: "false"}}
+	if r.ForwardSafeDirectory {
+		for _, dir := range safeDirectories() {
+			config = append(config, Config{Key: "safe.directory", Value: dir})
+		}
+	}
+	config = append(config, r.Config...)
 	if r.basicAuth != nil {
 		helper, cleanupHelper, err := r.basicAuth.credentialHelper()
 		if err != nil {
