@@ -6,16 +6,25 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/windows"
 )
 
-func TestRunnerCommandHidesGitConsoleWindowOnWindows(t *testing.T) {
+func TestRunnerCommandHidesGitConsoleWindow(t *testing.T) {
 	cmd := New().Command(context.Background(), "", "status")
 
-	if cmd.SysProcAttr == nil {
-		t.Fatal("git command SysProcAttr is nil")
-	}
-	if cmd.SysProcAttr.CreationFlags&windows.CREATE_NO_WINDOW == 0 {
-		t.Fatalf("git command creation flags = %#x, want CREATE_NO_WINDOW", cmd.SysProcAttr.CreationFlags)
+	require.NotNil(t, cmd.SysProcAttr)
+	assert.NotZero(t, cmd.SysProcAttr.CreationFlags&windows.CREATE_NO_WINDOW, "git subprocesses must not flash console windows")
+}
+
+func TestRunnerCommandAllowsConsoleWindowForTerminalPrompts(t *testing.T) {
+	runner := New()
+	runner.TerminalPrompt = true
+
+	cmd := runner.Command(context.Background(), "", "fetch")
+
+	if cmd.SysProcAttr != nil {
+		assert.Zero(t, cmd.SysProcAttr.CreationFlags&windows.CREATE_NO_WINDOW, "interactive git prompts should be able to use the console")
 	}
 }

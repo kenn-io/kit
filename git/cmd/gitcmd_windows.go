@@ -9,7 +9,10 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func prepareGitCommand(cmd *exec.Cmd) {
+func prepareGitCommand(cmd *exec.Cmd, hideConsoleWindow bool) {
+	if !hideConsoleWindow {
+		return
+	}
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
