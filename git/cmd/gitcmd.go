@@ -93,7 +93,7 @@ func (r Runner) Command(ctx context.Context, dir string, args ...string) *exec.C
 	if r.basicAuth != nil {
 		panic("gitcmd: Command cannot be used with WithBasicAuth; use Run or Output so credentials can be cleaned up")
 	}
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := gitCommand(ctx, args...)
 	cmd.Dir = dir
 	cmd.Env, _ = r.commandEnv(ctx, dir)
 	return cmd
@@ -107,7 +107,7 @@ func (r Runner) Output(ctx context.Context, dir string, args ...string) ([]byte,
 
 // Run runs git and returns stdout, stderr, and a *GitError on failure.
 func (r Runner) Run(ctx context.Context, dir string, stdin io.Reader, args ...string) ([]byte, []byte, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := gitCommand(ctx, args...)
 	cmd.Dir = dir
 	var cleanup func()
 	cmd.Env, cleanup = r.commandEnv(ctx, dir)
@@ -129,6 +129,12 @@ func (r Runner) Run(ctx context.Context, dir string, stdin io.Reader, args ...st
 		}
 	}
 	return stdout.Bytes(), stderr.Bytes(), nil
+}
+
+func gitCommand(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	prepareGitCommand(cmd)
+	return cmd
 }
 
 type basicAuth struct {
