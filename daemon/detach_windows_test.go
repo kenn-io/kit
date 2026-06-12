@@ -10,12 +10,12 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// detachedProcess (DETACHED_PROCESS) must never come back: it is mutually
-// exclusive with CREATE_NO_WINDOW, and a child with no console makes every
-// console-subsystem descendant open a visible console window.
-const detachedProcess = 0x00000008
+const (
+	detachedProcess = 0x00000008
+	createNoWindow  = 0x08000000
+)
 
-func TestDetachChildUsesHiddenConsole(t *testing.T) {
+func TestDetachChildDetachesWithoutConsole(t *testing.T) {
 	assert := assert.New(t)
 
 	cmd := exec.Command("cmd.exe")
@@ -23,8 +23,8 @@ func TestDetachChildUsesHiddenConsole(t *testing.T) {
 
 	flags := cmd.SysProcAttr.CreationFlags
 	assert.NotZero(flags&syscall.CREATE_NEW_PROCESS_GROUP, "child must run in its own process group")
-	assert.NotZero(flags&createNoWindow, "child must run on a hidden console")
-	assert.Zero(flags&detachedProcess, "DETACHED_PROCESS would make console descendants open visible windows")
+	assert.NotZero(flags&detachedProcess, "child must start without an attached console")
+	assert.Zero(flags&createNoWindow, "hidden consoles expose CONIN$ and can block terminal probes")
 }
 
 func TestDetachChildPreservesExistingSysProcAttr(t *testing.T) {
@@ -37,5 +37,5 @@ func TestDetachChildPreservesExistingSysProcAttr(t *testing.T) {
 
 	flags := cmd.SysProcAttr.CreationFlags
 	assert.NotZero(flags&createSuspended, "caller-set creation flags must be preserved")
-	assert.NotZero(flags & createNoWindow)
+	assert.NotZero(flags & detachedProcess)
 }
