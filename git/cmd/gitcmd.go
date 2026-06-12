@@ -237,7 +237,7 @@ func readSafeDirectories(ctx context.Context, env []string, dir string) []string
 	for _, scope := range scopes {
 		// --includes is required for explicit-scope reads to honor include.path
 		// and includeIf directives the way git's default config sequence does.
-		cmd := exec.CommandContext(ctx, "git", "config", scope, "--includes", "-z", "--get-all", "safe.directory")
+		cmd := gitCommand(ctx, "config", scope, "--includes", "-z", "--get-all", "safe.directory")
 		cmd.Dir = dir
 		cmd.Env = env
 		out, err := cmd.Output()
