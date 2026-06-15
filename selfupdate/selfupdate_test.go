@@ -506,6 +506,62 @@ func TestCheckFallsBackToAPIWhenWebConventionalReleaseHasNoChecksum(t *testing.T
 	assert.Equal(int64(1), apiRequests.Load())
 }
 
+func TestCheckRejectsHTTPWebBaseWhenUnsignedChecksumsAllowed(t *testing.T) {
+	t.Parallel()
+
+	client := Client{
+		Owner:                  "kenn",
+		Repo:                   "tool",
+		BinaryName:             "tool",
+		CurrentVersion:         "v1.1.0",
+		GitHubWebBaseURL:       "http://example.invalid",
+		AllowUnsignedChecksums: true,
+	}
+
+	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	require.Error(t, err)
+	assert.Nil(t, info)
+	assert.Contains(t, err.Error(), "GitHub web base URL must use https")
+}
+
+func TestCheckRejectsWebChecksumHTTPRedirectWhenUnsignedChecksumsAllowed(t *testing.T) {
+	t.Parallel()
+
+	assetName := "tool_1.2.0_linux_amd64.tar.gz"
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "GET /kenn/tool/releases/latest":
+			http.Redirect(w, r, "/kenn/tool/releases/tag/v1.2.0", http.StatusFound)
+		case "GET /kenn/tool/releases/tag/v1.2.0":
+			_, _ = w.Write([]byte("release page"))
+		case "HEAD /kenn/tool/releases/download/v1.2.0/" + assetName:
+			w.Header().Set("Content-Length", "123")
+			w.WriteHeader(http.StatusOK)
+		case "GET /kenn/tool/releases/download/v1.2.0/SHA256SUMS":
+			http.Redirect(w, r, "http://example.invalid/SHA256SUMS", http.StatusFound)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := Client{
+		Owner:                  "kenn",
+		Repo:                   "tool",
+		BinaryName:             "tool",
+		CurrentVersion:         "v1.1.0",
+		GitHubAPIBaseURL:       server.URL,
+		GitHubWebBaseURL:       server.URL,
+		HTTPClient:             server.Client(),
+		AllowUnsignedChecksums: true,
+	}
+
+	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	require.Error(t, err)
+	assert.Nil(t, info)
+	assert.Contains(t, err.Error(), "redirect to non-HTTPS URL")
+}
+
 func TestCheckSendsTokenOnlyToAPIFallback(t *testing.T) {
 	t.Parallel()
 
@@ -1006,12 +1062,12 @@ func TestInstallRejectsMismatchedInfoRepository(t *testing.T) {
 func TestInstallRejectsDownloadLargerThanExpected(t *testing.T) {
 	t.Parallel()
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("too large"))
 	}))
 	defer server.Close()
 
-	c := Client{BinaryName: "tool", AllowUnsignedChecksums: true}
+	c := Client{BinaryName: "tool", HTTPClient: server.Client(), AllowUnsignedChecksums: true}
 	err := c.Install(context.Background(), &Info{
 		DownloadURL: server.URL,
 		AssetName:   "tool.tar.gz",
@@ -1023,7 +1079,7 @@ func TestInstallRejectsDownloadLargerThanExpected(t *testing.T) {
 	}
 }
 
-func TestInstallRejectsManifestArchiveHTTPRedirectWhenUnsignedChecksumsAllowed(t *testing.T) {
+func TestInstallRejectsArchiveHTTPRedirectWhenUnsignedChecksumsAllowed(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1033,10 +1089,9 @@ func TestInstallRejectsManifestArchiveHTTPRedirectWhenUnsignedChecksumsAllowed(t
 
 	c := Client{BinaryName: "tool", HTTPClient: server.Client(), AllowUnsignedChecksums: true}
 	err := c.Install(context.Background(), &Info{
-		DownloadURL:     server.URL + "/archive.tar.gz",
-		AssetName:       "tool.tar.gz",
-		Checksum:        strings.Repeat("0", 64),
-		manifestDerived: true,
+		DownloadURL: server.URL + "/archive.tar.gz",
+		AssetName:   "tool.tar.gz",
+		Checksum:    strings.Repeat("0", 64),
 	}, InstallOptions{DestinationPath: filepath.Join(t.TempDir(), "tool")})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "redirect to non-HTTPS URL")

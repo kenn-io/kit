@@ -118,8 +118,7 @@ type Info struct {
 	Checksum       string
 	IsDevBuild     bool
 
-	cacheOnly       bool
-	manifestDerived bool
+	cacheOnly bool
 }
 
 // NeedsRefetch reports whether Info came from cache and lacks download
@@ -142,8 +141,8 @@ func (c Client) Check(ctx context.Context, opts CheckOptions) (*Info, error) {
 	if err := c.validateCheckConfig(); err != nil {
 		return nil, err
 	}
-	if c.ReleaseManifestURL != "" && c.unsignedChecksumsAllowed() {
-		if err := requireHTTPSURL(c.ReleaseManifestURL, "release manifest URL"); err != nil {
+	if c.unsignedChecksumsAllowed() {
+		if err := c.validateUnsignedBaseURLs(); err != nil {
 			return nil, fmt.Errorf("check for updates: %w", err)
 		}
 	}
@@ -162,7 +161,7 @@ func (c Client) Check(ctx context.Context, opts CheckOptions) (*Info, error) {
 	if err != nil {
 		return nil, fmt.Errorf("check for updates: %w", err)
 	}
-	if err := c.validateUnsignedManifestSource(release); err != nil {
+	if err := c.validateUnsignedReleaseSource(release); err != nil {
 		return nil, fmt.Errorf("check for updates: %w", err)
 	}
 
@@ -189,7 +188,7 @@ func (c Client) Check(ctx context.Context, opts CheckOptions) (*Info, error) {
 				return nil, nil
 			}
 		}
-		if err := c.validateUnsignedManifestAssetURLs(release.Assets); err != nil {
+		if err := c.validateUnsignedAssetURLs(release.Assets); err != nil {
 			return nil, fmt.Errorf("check for updates: %w", err)
 		}
 	}
@@ -239,19 +238,18 @@ func (c Client) Check(ctx context.Context, opts CheckOptions) (*Info, error) {
 	}
 
 	return &Info{
-		CurrentVersion:  currentVersion,
-		LatestVersion:   release.TagName,
-		DownloadURL:     asset.BrowserDownloadURL,
-		AssetName:       asset.Name,
-		SignatureURL:    assetURL(signatureAsset),
-		Owner:           c.Owner,
-		Repo:            c.Repo,
-		GOOS:            goos,
-		GOARCH:          goarch,
-		Size:            asset.Size,
-		Checksum:        checksum,
-		IsDevBuild:      isDevBuild,
-		manifestDerived: c.ReleaseManifestURL != "",
+		CurrentVersion: currentVersion,
+		LatestVersion:  release.TagName,
+		DownloadURL:    asset.BrowserDownloadURL,
+		AssetName:      asset.Name,
+		SignatureURL:   assetURL(signatureAsset),
+		Owner:          c.Owner,
+		Repo:           c.Repo,
+		GOOS:           goos,
+		GOARCH:         goarch,
+		Size:           asset.Size,
+		Checksum:       checksum,
+		IsDevBuild:     isDevBuild,
 	}, nil
 }
 
@@ -295,7 +293,7 @@ func (c Client) Install(ctx context.Context, info *Info, opts InstallOptions) er
 	defer os.RemoveAll(tempDir)
 
 	archivePath := filepath.Join(tempDir, assetName)
-	downloadChecksum, err := c.downloadFile(ctx, info.DownloadURL, archivePath, info.Size, info.manifestDerived && c.unsignedChecksumsAllowed(), opts.Progress)
+	downloadChecksum, err := c.downloadFile(ctx, info.DownloadURL, archivePath, info.Size, c.unsignedChecksumsAllowed(), opts.Progress)
 	if err != nil {
 		return fmt.Errorf("download: %w", err)
 	}
@@ -927,23 +925,35 @@ func (c Client) fetchLatestRelease(ctx context.Context) (*Release, error) {
 	return apiRelease, nil
 }
 
-func (c Client) validateUnsignedManifestSource(release *Release) error {
-	if c.ReleaseManifestURL == "" || !c.unsignedChecksumsAllowed() {
-		return nil
-	}
-	if err := requireHTTPSURL(c.ReleaseManifestURL, "release manifest URL"); err != nil {
+func (c Client) validateUnsignedBaseURLs() error {
+	if err := requireHTTPSURL(c.webBaseURL(), "GitHub web base URL"); err != nil {
 		return err
+	}
+	if err := requireHTTPSURL(c.apiBaseURL(), "GitHub API base URL"); err != nil {
+		return err
+	}
+	if c.ReleaseManifestURL != "" {
+		if err := requireHTTPSURL(c.ReleaseManifestURL, "release manifest URL"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c Client) validateUnsignedReleaseSource(release *Release) error {
+	if !c.unsignedChecksumsAllowed() {
+		return nil
 	}
 	if len(release.Assets) == 0 {
 		if err := requireHTTPSURL(c.webBaseURL(), "GitHub web base URL"); err != nil {
 			return err
 		}
 	}
-	return c.validateUnsignedManifestAssetURLs(release.Assets)
+	return c.validateUnsignedAssetURLs(release.Assets)
 }
 
-func (c Client) validateUnsignedManifestAssetURLs(assets []Asset) error {
-	if c.ReleaseManifestURL == "" || !c.unsignedChecksumsAllowed() {
+func (c Client) validateUnsignedAssetURLs(assets []Asset) error {
+	if !c.unsignedChecksumsAllowed() {
 		return nil
 	}
 	for _, asset := range assets {
@@ -961,8 +971,8 @@ func (c Client) unsignedChecksumsAllowed() bool {
 	return c.AllowUnsignedChecksums && !c.RequireSignature && len(c.TrustedPublicKeys) == 0
 }
 
-func (c Client) requireHTTPSForUnsignedManifest() bool {
-	return c.ReleaseManifestURL != "" && c.unsignedChecksumsAllowed()
+func (c Client) requireHTTPSForUnsignedChecksums() bool {
+	return c.unsignedChecksumsAllowed()
 }
 
 func requireHTTPSURL(rawURL, label string) error {
@@ -983,7 +993,7 @@ func (c Client) fetchReleaseManifest(ctx context.Context) (*Release, error) {
 	}
 	req.Header.Set("User-Agent", c.userAgent())
 
-	resp, err := c.doHTTPRequest(req, c.requireHTTPSForUnsignedManifest())
+	resp, err := c.doHTTPRequest(req, c.requireHTTPSForUnsignedChecksums())
 	if err != nil {
 		return nil, err
 	}
@@ -1104,7 +1114,7 @@ func (c Client) fetchContentLength(ctx context.Context, rawURL string) (int64, e
 	}
 	req.Header.Set("User-Agent", c.userAgent())
 
-	resp, err := c.doHTTPRequest(req, c.requireHTTPSForUnsignedManifest())
+	resp, err := c.doHTTPRequest(req, c.requireHTTPSForUnsignedChecksums())
 	if err != nil {
 		return 0, err
 	}
@@ -1126,7 +1136,7 @@ func (c Client) releaseAssetExists(ctx context.Context, rawURL string) bool {
 	}
 	req.Header.Set("User-Agent", c.userAgent())
 
-	resp, err := c.doHTTPRequest(req, c.requireHTTPSForUnsignedManifest())
+	resp, err := c.doHTTPRequest(req, c.requireHTTPSForUnsignedChecksums())
 	if err != nil {
 		return false
 	}
@@ -1155,7 +1165,7 @@ func (c Client) fetchChecksumFromFile(ctx context.Context, url, assetName string
 	}
 	req.Header.Set("User-Agent", c.userAgent())
 
-	resp, err := c.doHTTPRequest(req, c.requireHTTPSForUnsignedManifest())
+	resp, err := c.doHTTPRequest(req, c.requireHTTPSForUnsignedChecksums())
 	if err != nil {
 		return "", err
 	}
