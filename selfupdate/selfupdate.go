@@ -149,29 +149,44 @@ func (c Client) Check(ctx context.Context, opts CheckOptions) (*Info, error) {
 		}
 	}
 
-	release, err := c.fetchLatestRelease(ctx, opts)
+	release, err := c.fetchLatestRelease(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("check for updates: %w", err)
 	}
 
-	_ = c.saveCache(release.TagName)
-
 	latestVersion := strings.TrimPrefix(release.TagName, "v")
 	if !shouldOfferUpdate(latestVersion, cleanVersion, isDevBuild) {
+		_ = c.saveCache(release.TagName)
 		return nil, nil
 	}
 
+	if len(release.Assets) == 0 {
+		if err := c.addConventionalAssets(ctx, release, opts); err != nil {
+			if c.ReleaseManifestURL != "" {
+				return nil, fmt.Errorf("check for updates: %w", err)
+			}
+			apiRelease, apiErr := c.fetchLatestReleaseFromAPI(ctx)
+			if apiErr != nil {
+				return nil, fmt.Errorf("check for updates: %w (GitHub API fallback also failed: %w)", err, apiErr)
+			}
+			release = apiRelease
+			latestVersion = strings.TrimPrefix(release.TagName, "v")
+			if !shouldOfferUpdate(latestVersion, cleanVersion, isDevBuild) {
+				_ = c.saveCache(release.TagName)
+				return nil, nil
+			}
+		}
+	}
+	_ = c.saveCache(release.TagName)
+
 	goos, goarch := platform(opts)
 	assetName := c.platformAssetName(release, latestVersion, opts)
-	asset, checksumsAsset, signatureAsset := c.findAssets(release.Assets, assetName)
+	asset, checksumsAssets, signatureAsset := c.findAssets(release.Assets, assetName)
 	if asset == nil {
 		return nil, fmt.Errorf("no release asset for %s/%s", goos, goarch)
 	}
 
-	var checksum string
-	if checksumsAsset != nil {
-		checksum, _ = c.fetchChecksumFromFile(ctx, checksumsAsset.BrowserDownloadURL, assetName)
-	}
+	checksum := c.fetchChecksumFromAssets(ctx, checksumsAssets, assetName)
 	if checksum == "" {
 		checksum = ExtractChecksum(release.Body, assetName)
 	}
@@ -814,11 +829,11 @@ func (c Client) checkCache(currentVersion, cleanVersion string, isDevBuild bool)
 	return nil, false
 }
 
-func (c Client) fetchLatestRelease(ctx context.Context, opts CheckOptions) (*Release, error) {
+func (c Client) fetchLatestRelease(ctx context.Context) (*Release, error) {
 	if c.ReleaseManifestURL != "" {
-		return c.fetchReleaseManifest(ctx, opts)
+		return c.fetchReleaseManifest(ctx)
 	}
-	release, err := c.fetchLatestReleaseFromWeb(ctx, opts)
+	release, err := c.fetchLatestReleaseFromWeb(ctx)
 	if err == nil {
 		return release, nil
 	}
@@ -829,7 +844,7 @@ func (c Client) fetchLatestRelease(ctx context.Context, opts CheckOptions) (*Rel
 	return apiRelease, nil
 }
 
-func (c Client) fetchReleaseManifest(ctx context.Context, opts CheckOptions) (*Release, error) {
+func (c Client) fetchReleaseManifest(ctx context.Context) (*Release, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.ReleaseManifestURL, nil)
 	if err != nil {
 		return nil, err
@@ -853,15 +868,10 @@ func (c Client) fetchReleaseManifest(ctx context.Context, opts CheckOptions) (*R
 	if release.TagName == "" {
 		return nil, fmt.Errorf("release manifest missing tag_name")
 	}
-	if len(release.Assets) == 0 {
-		if err := c.addConventionalAssets(ctx, &release, opts); err != nil {
-			return nil, err
-		}
-	}
 	return &release, nil
 }
 
-func (c Client) fetchLatestReleaseFromWeb(ctx context.Context, opts CheckOptions) (*Release, error) {
+func (c Client) fetchLatestReleaseFromWeb(ctx context.Context) (*Release, error) {
 	pageURL := fmt.Sprintf("%s/%s/%s/releases/latest", c.webBaseURL(), c.Owner, c.Repo)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
 	if err != nil {
@@ -891,11 +901,7 @@ func (c Client) fetchLatestReleaseFromWeb(ctx context.Context, opts CheckOptions
 	if err != nil {
 		return nil, err
 	}
-	release := &Release{TagName: tag}
-	if err := c.addConventionalAssets(ctx, release, opts); err != nil {
-		return nil, err
-	}
-	return release, nil
+	return &Release{TagName: tag}, nil
 }
 
 func (c Client) addConventionalAssets(ctx context.Context, release *Release, opts CheckOptions) error {
@@ -908,12 +914,19 @@ func (c Client) addConventionalAssets(ctx context.Context, release *Release, opt
 		return err
 	}
 
-	checksumAssetName := c.checksumAssetNames()[0]
-	release.Assets = []Asset{
+	assets := []Asset{
 		{Name: assetName, Size: size, BrowserDownloadURL: assetDownloadURL},
-		{Name: checksumAssetName, BrowserDownloadURL: downloadBase + "/" + checksumAssetName},
-		{Name: assetName + ".sha256.sig", BrowserDownloadURL: assetDownloadURL + ".sha256.sig"},
 	}
+	for _, checksumAssetName := range c.checksumAssetNames() {
+		assets = append(assets, Asset{Name: checksumAssetName, BrowserDownloadURL: downloadBase + "/" + checksumAssetName})
+	}
+	for _, signatureAssetName := range signatureAssetNames(assetName) {
+		signatureURL := downloadBase + "/" + signatureAssetName
+		if c.releaseAssetExists(ctx, signatureURL) {
+			assets = append(assets, Asset{Name: signatureAssetName, BrowserDownloadURL: signatureURL})
+		}
+	}
+	release.Assets = assets
 	return nil
 }
 
@@ -968,6 +981,22 @@ func (c Client) fetchContentLength(ctx context.Context, rawURL string) (int64, e
 	return resp.ContentLength, nil
 }
 
+func (c Client) releaseAssetExists(ctx context.Context, rawURL string) bool {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, rawURL, nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("User-Agent", c.userAgent())
+
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	return resp.StatusCode == http.StatusOK
+}
+
 func releaseTagFromURL(u *url.URL) (string, error) {
 	const marker = "/releases/tag/"
 	idx := strings.Index(u.Path, marker)
@@ -1003,6 +1032,16 @@ func (c Client) fetchChecksumFromFile(ctx context.Context, url, assetName string
 		return "", err
 	}
 	return ExtractChecksum(string(body), assetName), nil
+}
+
+func (c Client) fetchChecksumFromAssets(ctx context.Context, checksumsAssets []*Asset, assetName string) string {
+	for _, checksumsAsset := range checksumsAssets {
+		checksum, _ := c.fetchChecksumFromFile(ctx, checksumsAsset.BrowserDownloadURL, assetName)
+		if checksum != "" {
+			return checksum
+		}
+	}
+	return ""
 }
 
 func (c Client) downloadFile(ctx context.Context, url, dest string, totalSize int64, progress func(downloaded, total int64)) (string, error) {
@@ -1111,28 +1150,39 @@ func (c Client) platformAssetName(release *Release, version string, opts CheckOp
 	return DefaultAssetName(req)
 }
 
-func (c Client) findAssets(assets []Asset, assetName string) (asset *Asset, checksumsAsset *Asset, signatureAsset *Asset) {
-	checksumNames := map[string]struct{}{}
-	for _, name := range c.checksumAssetNames() {
-		checksumNames[name] = struct{}{}
-	}
-	signatureNames := map[string]struct{}{
-		assetName + ".sha256.sig": {},
-		assetName + ".sig":        {},
-	}
+func (c Client) findAssets(assets []Asset, assetName string) (asset *Asset, checksumsAssets []*Asset, signatureAsset *Asset) {
+	checksumAssetsByName := map[string]*Asset{}
+	signatureAssetsByName := map[string]*Asset{}
 	for i := range assets {
 		a := &assets[i]
 		if a.Name == assetName {
 			asset = a
 		}
-		if _, ok := checksumNames[a.Name]; ok {
-			checksumsAsset = a
+		if _, ok := checksumAssetsByName[a.Name]; !ok {
+			checksumAssetsByName[a.Name] = a
 		}
-		if _, ok := signatureNames[a.Name]; ok {
-			signatureAsset = a
+		if _, ok := signatureAssetsByName[a.Name]; !ok {
+			signatureAssetsByName[a.Name] = a
 		}
 	}
-	return asset, checksumsAsset, signatureAsset
+	for _, checksumAssetName := range c.checksumAssetNames() {
+		if checksumsAsset := checksumAssetsByName[checksumAssetName]; checksumsAsset != nil {
+			checksumsAssets = append(checksumsAssets, checksumsAsset)
+		}
+	}
+	for _, signatureAssetName := range signatureAssetNames(assetName) {
+		if signatureAsset = signatureAssetsByName[signatureAssetName]; signatureAsset != nil {
+			break
+		}
+	}
+	return asset, checksumsAssets, signatureAsset
+}
+
+func signatureAssetNames(assetName string) []string {
+	return []string{
+		assetName + ".sha256.sig",
+		assetName + ".sig",
+	}
 }
 
 func (c Client) signaturePayload(info *Info) []byte {

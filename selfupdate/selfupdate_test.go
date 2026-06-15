@@ -146,6 +146,45 @@ func TestCheckDiscoversReleaseThroughWebRedirectByDefault(t *testing.T) {
 	assert.Equal(int64(1), checksumRequests.Load())
 }
 
+func TestCheckSkipsConventionalAssetProbeWhenWebTagIsCurrent(t *testing.T) {
+	t.Parallel()
+
+	assert := assert.New(t)
+	require := require.New(t)
+	var assetProbeRequests atomic.Int64
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "GET /kenn/tool/releases/latest":
+			http.Redirect(w, r, "/kenn/tool/releases/tag/v1.2.0", http.StatusFound)
+		case "GET /kenn/tool/releases/tag/v1.2.0":
+			_, _ = w.Write([]byte("release page"))
+		case "HEAD /kenn/tool/releases/download/v1.2.0/tool_1.2.0_linux_amd64.tar.gz":
+			assetProbeRequests.Add(1)
+			http.Error(w, "already-current checks should not probe assets", http.StatusInternalServerError)
+		case "GET /repos/kenn/tool/releases/latest":
+			http.Error(w, "api fallback should not be needed", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := Client{
+		Owner:            "kenn",
+		Repo:             "tool",
+		BinaryName:       "tool",
+		CurrentVersion:   "v1.2.0",
+		GitHubAPIBaseURL: server.URL,
+		GitHubWebBaseURL: server.URL,
+	}
+
+	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	require.NoError(err)
+	assert.Nil(info)
+	assert.Zero(assetProbeRequests.Load())
+}
+
 func TestCheckUsesReleaseManifestBeforeNetworkDiscovery(t *testing.T) {
 	t.Parallel()
 
@@ -241,6 +280,57 @@ func TestCheckUsesManifestTagWithConventionalAssets(t *testing.T) {
 	assert.Equal(server.URL+"/kenn/tool/releases/download/v1.2.0/"+assetName, info.DownloadURL)
 	assert.Equal(testHash64, info.Checksum)
 	assert.Equal(int64(123), info.Size)
+}
+
+func TestCheckUsesConventionalChecksumAndSignatureFallbacks(t *testing.T) {
+	t.Parallel()
+
+	assert := assert.New(t)
+	require := require.New(t)
+	assetName := "tool_1.2.0_linux_amd64.tar.gz"
+	var primaryChecksumRequests atomic.Int64
+	var fallbackChecksumRequests atomic.Int64
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "GET /latest.json":
+			_ = json.NewEncoder(w).Encode(Release{TagName: "v1.2.0"})
+		case "HEAD /kenn/tool/releases/download/v1.2.0/" + assetName:
+			w.Header().Set("Content-Length", "123")
+			w.WriteHeader(http.StatusOK)
+		case "HEAD /kenn/tool/releases/download/v1.2.0/" + assetName + ".sha256.sig":
+			http.NotFound(w, r)
+		case "HEAD /kenn/tool/releases/download/v1.2.0/" + assetName + ".sig":
+			w.WriteHeader(http.StatusOK)
+		case "GET /kenn/tool/releases/download/v1.2.0/SHA256SUMS":
+			primaryChecksumRequests.Add(1)
+			http.NotFound(w, r)
+		case "GET /kenn/tool/releases/download/v1.2.0/checksums.txt":
+			fallbackChecksumRequests.Add(1)
+			_, _ = fmt.Fprintf(w, "%s  %s\n", testHash64, assetName)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := Client{
+		Owner:              "kenn",
+		Repo:               "tool",
+		BinaryName:         "tool",
+		CurrentVersion:     "v1.1.0",
+		ReleaseManifestURL: server.URL + "/latest.json",
+		GitHubAPIBaseURL:   server.URL,
+		GitHubWebBaseURL:   server.URL,
+	}
+
+	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	require.NoError(err)
+	require.NotNil(info)
+	assert.Equal(testHash64, info.Checksum)
+	assert.Equal(server.URL+"/kenn/tool/releases/download/v1.2.0/"+assetName+".sig", info.SignatureURL)
+	assert.Equal(int64(1), primaryChecksumRequests.Load())
+	assert.Equal(int64(1), fallbackChecksumRequests.Load())
 }
 
 func TestCheckSendsTokenOnlyToAPIFallback(t *testing.T) {
