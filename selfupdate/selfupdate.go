@@ -219,6 +219,9 @@ func (c Client) Check(ctx context.Context, opts CheckOptions) (*Info, error) {
 			_ = c.saveCache(release.TagName)
 			return nil, nil
 		}
+		if err := c.validateUnsignedReleaseSource(release); err != nil {
+			return nil, fmt.Errorf("check for updates: %w", err)
+		}
 		_ = c.saveCache(release.TagName)
 		assetName = c.platformAssetName(release, latestVersion, opts)
 		asset, checksumsAssets, signatureAsset = c.findAssets(release.Assets, assetName)
@@ -733,6 +736,13 @@ func (c Client) httpClient() *http.Client {
 func (c Client) doHTTPRequest(req *http.Request, requireHTTPSRedirects bool) (*http.Response, error) {
 	client := c.httpClient()
 	if requireHTTPSRedirects {
+		if req.URL == nil || req.URL.Scheme != "https" {
+			rawURL := "<nil>"
+			if req.URL != nil {
+				rawURL = req.URL.Redacted()
+			}
+			return nil, fmt.Errorf("%w: %s", errNonHTTPSRedirect, rawURL)
+		}
 		client = c.httpClientRejectingHTTPSDowngrades()
 	}
 	resp, err := client.Do(req)
@@ -1021,16 +1031,7 @@ func (c Client) fetchLatestReleaseFromWeb(ctx context.Context) (*Release, error)
 	}
 	req.Header.Set("User-Agent", c.userAgent())
 
-	finalURL := req.URL
-	client := *c.httpClient()
-	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if len(via) >= 10 {
-			return fmt.Errorf("stopped after 10 redirects")
-		}
-		finalURL = req.URL
-		return nil
-	}
-	resp, err := client.Do(req)
+	resp, err := c.doHTTPRequest(req, c.requireHTTPSForUnsignedChecksums())
 	if err != nil {
 		return nil, fmt.Errorf("fetch latest release page: %w", err)
 	}
@@ -1039,6 +1040,10 @@ func (c Client) fetchLatestReleaseFromWeb(ctx context.Context) (*Release, error)
 		return nil, fmt.Errorf("latest release page returned %s", resp.Status)
 	}
 
+	finalURL := req.URL
+	if resp.Request != nil && resp.Request.URL != nil {
+		finalURL = resp.Request.URL
+	}
 	tag, err := releaseTagFromURL(finalURL)
 	if err != nil {
 		return nil, err
@@ -1090,7 +1095,7 @@ func (c Client) fetchLatestReleaseFromAPI(ctx context.Context) (*Release, error)
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
-	resp, err := c.doHTTPRequest(req, token != "")
+	resp, err := c.doHTTPRequest(req, token != "" || c.requireHTTPSForUnsignedChecksums())
 	if err != nil {
 		return nil, err
 	}

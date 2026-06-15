@@ -506,6 +506,56 @@ func TestCheckFallsBackToAPIWhenWebConventionalReleaseHasNoChecksum(t *testing.T
 	assert.Equal(int64(1), apiRequests.Load())
 }
 
+func TestCheckRejectsHTTPAPIAssetAfterWebChecksumFallbackWhenUnsignedChecksumsAllowed(t *testing.T) {
+	t.Parallel()
+
+	assetName := "tool_1.2.0_linux_amd64.tar.gz"
+	var apiRequests atomic.Int64
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "GET /kenn/tool/releases/latest":
+			http.Redirect(w, r, "/kenn/tool/releases/tag/v1.2.0", http.StatusFound)
+		case "GET /kenn/tool/releases/tag/v1.2.0":
+			_, _ = w.Write([]byte("release page"))
+		case "HEAD /kenn/tool/releases/download/v1.2.0/" + assetName:
+			w.Header().Set("Content-Length", "123")
+			w.WriteHeader(http.StatusOK)
+		case "GET /kenn/tool/releases/download/v1.2.0/SHA256SUMS", "GET /kenn/tool/releases/download/v1.2.0/checksums.txt":
+			http.NotFound(w, r)
+		case "GET /repos/kenn/tool/releases/latest":
+			apiRequests.Add(1)
+			_ = json.NewEncoder(w).Encode(Release{
+				TagName: "v1.2.0",
+				Body:    fmt.Sprintf("%s  %s\n", testHash64, assetName),
+				Assets: []Asset{
+					{Name: assetName, Size: 456, BrowserDownloadURL: "http://example.invalid/tool"},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := Client{
+		Owner:                  "kenn",
+		Repo:                   "tool",
+		BinaryName:             "tool",
+		CurrentVersion:         "v1.1.0",
+		GitHubAPIBaseURL:       server.URL,
+		GitHubWebBaseURL:       server.URL,
+		HTTPClient:             server.Client(),
+		AllowUnsignedChecksums: true,
+	}
+
+	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	require.Error(t, err)
+	assert.Nil(t, info)
+	assert.Contains(t, err.Error(), "release asset URL for "+assetName+" must use https")
+	assert.Equal(t, int64(1), apiRequests.Load())
+}
+
 func TestCheckRejectsHTTPWebBaseWhenUnsignedChecksumsAllowed(t *testing.T) {
 	t.Parallel()
 
@@ -539,6 +589,36 @@ func TestCheckRejectsWebChecksumHTTPRedirectWhenUnsignedChecksumsAllowed(t *test
 			w.WriteHeader(http.StatusOK)
 		case "GET /kenn/tool/releases/download/v1.2.0/SHA256SUMS":
 			http.Redirect(w, r, "http://example.invalid/SHA256SUMS", http.StatusFound)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := Client{
+		Owner:                  "kenn",
+		Repo:                   "tool",
+		BinaryName:             "tool",
+		CurrentVersion:         "v1.1.0",
+		GitHubAPIBaseURL:       server.URL,
+		GitHubWebBaseURL:       server.URL,
+		HTTPClient:             server.Client(),
+		AllowUnsignedChecksums: true,
+	}
+
+	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	require.Error(t, err)
+	assert.Nil(t, info)
+	assert.Contains(t, err.Error(), "redirect to non-HTTPS URL")
+}
+
+func TestCheckRejectsWebLatestHTTPRedirectWhenUnsignedChecksumsAllowed(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "GET /kenn/tool/releases/latest":
+			http.Redirect(w, r, "http://example.invalid/kenn/tool/releases/tag/v1.2.0", http.StatusFound)
 		default:
 			http.NotFound(w, r)
 		}
@@ -665,6 +745,38 @@ func TestCheckRejectsTokenAPIHTTPRedirect(t *testing.T) {
 		GitHubAPIBaseURL: server.URL,
 		HTTPClient:       server.Client(),
 		GitHubToken:      "test-token",
+	}
+
+	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	require.Error(t, err)
+	assert.Nil(t, info)
+	assert.Contains(t, err.Error(), "redirect to non-HTTPS URL")
+}
+
+func TestCheckRejectsUnsignedAPIHTTPRedirectWithoutToken(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "GET /kenn/tool/releases/latest":
+			http.NotFound(w, r)
+		case "GET /repos/kenn/tool/releases/latest":
+			http.Redirect(w, r, "http://example.invalid/repos/kenn/tool/releases/latest", http.StatusFound)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := Client{
+		Owner:                  "kenn",
+		Repo:                   "tool",
+		BinaryName:             "tool",
+		CurrentVersion:         "v1.1.0",
+		GitHubAPIBaseURL:       server.URL,
+		GitHubWebBaseURL:       server.URL,
+		HTTPClient:             server.Client(),
+		AllowUnsignedChecksums: true,
 	}
 
 	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
@@ -1095,6 +1207,27 @@ func TestInstallRejectsArchiveHTTPRedirectWhenUnsignedChecksumsAllowed(t *testin
 	}, InstallOptions{DestinationPath: filepath.Join(t.TempDir(), "tool")})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "redirect to non-HTTPS URL")
+}
+
+func TestInstallRejectsHTTPArchiveBeforeRequestWhenUnsignedChecksumsAllowed(t *testing.T) {
+	t.Parallel()
+
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		_, _ = w.Write([]byte("archive"))
+	}))
+	defer server.Close()
+
+	c := Client{BinaryName: "tool", AllowUnsignedChecksums: true}
+	err := c.Install(context.Background(), &Info{
+		DownloadURL: server.URL + "/archive.tar.gz",
+		AssetName:   "tool.tar.gz",
+		Checksum:    strings.Repeat("0", 64),
+	}, InstallOptions{DestinationPath: filepath.Join(t.TempDir(), "tool")})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "redirect to non-HTTPS URL")
+	assert.Equal(t, int64(0), requests.Load())
 }
 
 func TestInstallArchive(t *testing.T) {
