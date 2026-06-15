@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -36,6 +37,8 @@ const (
 	maxSignatureBytes       = 64 << 10
 	legacyTarRegularType    = byte(0)
 )
+
+var errNonHTTPSRedirect = errors.New("redirect to non-HTTPS URL")
 
 // Release represents the subset of a GitHub release response used by Client.
 type Release struct {
@@ -115,7 +118,8 @@ type Info struct {
 	Checksum       string
 	IsDevBuild     bool
 
-	cacheOnly bool
+	cacheOnly       bool
+	manifestDerived bool
 }
 
 // NeedsRefetch reports whether Info came from cache and lacks download
@@ -198,7 +202,10 @@ func (c Client) Check(ctx context.Context, opts CheckOptions) (*Info, error) {
 		return nil, fmt.Errorf("no release asset for %s/%s", goos, goarch)
 	}
 
-	checksum := c.fetchChecksumFromAssets(ctx, checksumsAssets, assetName)
+	checksum, err := c.fetchChecksumFromAssets(ctx, checksumsAssets, assetName)
+	if err != nil {
+		return nil, fmt.Errorf("check for updates: %w", err)
+	}
 	if checksum == "" {
 		checksum = ExtractChecksum(release.Body, assetName)
 	}
@@ -219,7 +226,10 @@ func (c Client) Check(ctx context.Context, opts CheckOptions) (*Info, error) {
 		if asset == nil {
 			return nil, fmt.Errorf("no release asset for %s/%s", goos, goarch)
 		}
-		checksum = c.fetchChecksumFromAssets(ctx, checksumsAssets, assetName)
+		checksum, err = c.fetchChecksumFromAssets(ctx, checksumsAssets, assetName)
+		if err != nil {
+			return nil, fmt.Errorf("check for updates: %w", err)
+		}
 		if checksum == "" {
 			checksum = ExtractChecksum(release.Body, assetName)
 		}
@@ -229,18 +239,19 @@ func (c Client) Check(ctx context.Context, opts CheckOptions) (*Info, error) {
 	}
 
 	return &Info{
-		CurrentVersion: currentVersion,
-		LatestVersion:  release.TagName,
-		DownloadURL:    asset.BrowserDownloadURL,
-		AssetName:      asset.Name,
-		SignatureURL:   assetURL(signatureAsset),
-		Owner:          c.Owner,
-		Repo:           c.Repo,
-		GOOS:           goos,
-		GOARCH:         goarch,
-		Size:           asset.Size,
-		Checksum:       checksum,
-		IsDevBuild:     isDevBuild,
+		CurrentVersion:  currentVersion,
+		LatestVersion:   release.TagName,
+		DownloadURL:     asset.BrowserDownloadURL,
+		AssetName:       asset.Name,
+		SignatureURL:    assetURL(signatureAsset),
+		Owner:           c.Owner,
+		Repo:            c.Repo,
+		GOOS:            goos,
+		GOARCH:          goarch,
+		Size:            asset.Size,
+		Checksum:        checksum,
+		IsDevBuild:      isDevBuild,
+		manifestDerived: c.ReleaseManifestURL != "",
 	}, nil
 }
 
@@ -284,7 +295,7 @@ func (c Client) Install(ctx context.Context, info *Info, opts InstallOptions) er
 	defer os.RemoveAll(tempDir)
 
 	archivePath := filepath.Join(tempDir, assetName)
-	downloadChecksum, err := c.downloadFile(ctx, info.DownloadURL, archivePath, info.Size, opts.Progress)
+	downloadChecksum, err := c.downloadFile(ctx, info.DownloadURL, archivePath, info.Size, info.manifestDerived && c.unsignedChecksumsAllowed(), opts.Progress)
 	if err != nil {
 		return fmt.Errorf("download: %w", err)
 	}
@@ -721,6 +732,41 @@ func (c Client) httpClient() *http.Client {
 	return &http.Client{Timeout: defaultHTTPTimeout}
 }
 
+func (c Client) doHTTPRequest(req *http.Request, requireHTTPSRedirects bool) (*http.Response, error) {
+	client := c.httpClient()
+	if requireHTTPSRedirects {
+		client = c.httpClientRejectingHTTPSDowngrades()
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if requireHTTPSRedirects && resp.Request != nil && resp.Request.URL != nil && resp.Request.URL.Scheme != "https" {
+		resp.Body.Close()
+		return nil, fmt.Errorf("%w: %s", errNonHTTPSRedirect, resp.Request.URL.Redacted())
+	}
+	return resp, nil
+}
+
+func (c Client) httpClientRejectingHTTPSDowngrades() *http.Client {
+	base := c.httpClient()
+	client := *base
+	originalCheckRedirect := client.CheckRedirect
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if req.URL.Scheme != "https" {
+			return fmt.Errorf("%w: %s", errNonHTTPSRedirect, req.URL.Redacted())
+		}
+		if originalCheckRedirect != nil {
+			return originalCheckRedirect(req, via)
+		}
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 redirects")
+		}
+		return nil
+	}
+	return &client
+}
+
 func (c Client) now() time.Time {
 	if c.Clock != nil {
 		return c.Clock()
@@ -915,6 +961,10 @@ func (c Client) unsignedChecksumsAllowed() bool {
 	return c.AllowUnsignedChecksums && !c.RequireSignature && len(c.TrustedPublicKeys) == 0
 }
 
+func (c Client) requireHTTPSForUnsignedManifest() bool {
+	return c.ReleaseManifestURL != "" && c.unsignedChecksumsAllowed()
+}
+
 func requireHTTPSURL(rawURL, label string) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -933,7 +983,7 @@ func (c Client) fetchReleaseManifest(ctx context.Context) (*Release, error) {
 	}
 	req.Header.Set("User-Agent", c.userAgent())
 
-	resp, err := c.httpClient().Do(req)
+	resp, err := c.doHTTPRequest(req, c.requireHTTPSForUnsignedManifest())
 	if err != nil {
 		return nil, err
 	}
@@ -1014,17 +1064,23 @@ func (c Client) addConventionalAssets(ctx context.Context, release *Release, opt
 
 func (c Client) fetchLatestReleaseFromAPI(ctx context.Context) (*Release, error) {
 	url := fmt.Sprintf("%s/repos/%s/%s/releases/latest", c.apiBaseURL(), c.Owner, c.Repo)
+	token := strings.TrimSpace(c.GitHubToken)
+	if token != "" {
+		if err := requireHTTPSURL(c.apiBaseURL(), "GitHub API base URL"); err != nil {
+			return nil, err
+		}
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 	req.Header.Set("User-Agent", c.userAgent())
-	if token := strings.TrimSpace(c.GitHubToken); token != "" {
+	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
-	resp, err := c.httpClient().Do(req)
+	resp, err := c.doHTTPRequest(req, token != "")
 	if err != nil {
 		return nil, err
 	}
@@ -1048,7 +1104,7 @@ func (c Client) fetchContentLength(ctx context.Context, rawURL string) (int64, e
 	}
 	req.Header.Set("User-Agent", c.userAgent())
 
-	resp, err := c.httpClient().Do(req)
+	resp, err := c.doHTTPRequest(req, c.requireHTTPSForUnsignedManifest())
 	if err != nil {
 		return 0, err
 	}
@@ -1070,7 +1126,7 @@ func (c Client) releaseAssetExists(ctx context.Context, rawURL string) bool {
 	}
 	req.Header.Set("User-Agent", c.userAgent())
 
-	resp, err := c.httpClient().Do(req)
+	resp, err := c.doHTTPRequest(req, c.requireHTTPSForUnsignedManifest())
 	if err != nil {
 		return false
 	}
@@ -1099,7 +1155,7 @@ func (c Client) fetchChecksumFromFile(ctx context.Context, url, assetName string
 	}
 	req.Header.Set("User-Agent", c.userAgent())
 
-	resp, err := c.httpClient().Do(req)
+	resp, err := c.doHTTPRequest(req, c.requireHTTPSForUnsignedManifest())
 	if err != nil {
 		return "", err
 	}
@@ -1116,24 +1172,27 @@ func (c Client) fetchChecksumFromFile(ctx context.Context, url, assetName string
 	return ExtractChecksum(string(body), assetName), nil
 }
 
-func (c Client) fetchChecksumFromAssets(ctx context.Context, checksumsAssets []*Asset, assetName string) string {
+func (c Client) fetchChecksumFromAssets(ctx context.Context, checksumsAssets []*Asset, assetName string) (string, error) {
 	for _, checksumsAsset := range checksumsAssets {
-		checksum, _ := c.fetchChecksumFromFile(ctx, checksumsAsset.BrowserDownloadURL, assetName)
+		checksum, err := c.fetchChecksumFromFile(ctx, checksumsAsset.BrowserDownloadURL, assetName)
+		if errors.Is(err, errNonHTTPSRedirect) {
+			return "", err
+		}
 		if checksum != "" {
-			return checksum
+			return checksum, nil
 		}
 	}
-	return ""
+	return "", nil
 }
 
-func (c Client) downloadFile(ctx context.Context, url, dest string, totalSize int64, progress func(downloaded, total int64)) (string, error) {
+func (c Client) downloadFile(ctx context.Context, url, dest string, totalSize int64, requireHTTPSRedirects bool, progress func(downloaded, total int64)) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("User-Agent", c.userAgent())
 
-	resp, err := c.httpClient().Do(req)
+	resp, err := c.doHTTPRequest(req, requireHTTPSRedirects)
 	if err != nil {
 		return "", err
 	}
