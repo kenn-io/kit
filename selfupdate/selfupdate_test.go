@@ -20,6 +20,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -85,6 +88,219 @@ func TestCheckFindsUpdateAndChecksumAsset(t *testing.T) {
 	if checksumRequests.Load() != 1 {
 		t.Fatalf("checksum requests = %d", checksumRequests.Load())
 	}
+}
+
+func TestCheckDiscoversReleaseThroughWebRedirectByDefault(t *testing.T) {
+	t.Parallel()
+
+	assert := assert.New(t)
+	require := require.New(t)
+	var apiRequests atomic.Int64
+	var latestPageRequests atomic.Int64
+	var checksumRequests atomic.Int64
+	assetName := "tool_1.2.0_linux_amd64.tar.gz"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "GET /repos/kenn/tool/releases/latest":
+			apiRequests.Add(1)
+			http.Error(w, "api should not be used before web discovery", http.StatusInternalServerError)
+		case "GET /kenn/tool/releases/latest":
+			latestPageRequests.Add(1)
+			http.Redirect(w, r, "/kenn/tool/releases/tag/v1.2.0", http.StatusFound)
+		case "GET /kenn/tool/releases/tag/v1.2.0":
+			_, _ = w.Write([]byte("release page"))
+		case "HEAD /kenn/tool/releases/download/v1.2.0/" + assetName:
+			w.Header().Set("Content-Length", "123")
+			w.WriteHeader(http.StatusOK)
+		case "GET /kenn/tool/releases/download/v1.2.0/SHA256SUMS":
+			checksumRequests.Add(1)
+			_, _ = fmt.Fprintf(w, "%s  %s\n", testHash64, assetName)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := Client{
+		Owner:            "kenn",
+		Repo:             "tool",
+		BinaryName:       "tool",
+		CurrentVersion:   "v1.1.0",
+		CacheDir:         t.TempDir(),
+		GitHubAPIBaseURL: server.URL,
+		GitHubWebBaseURL: server.URL,
+		Clock:            func() time.Time { return time.Unix(100, 0) },
+	}
+
+	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	require.NoError(err)
+	require.NotNil(info)
+	assert.Equal("v1.2.0", info.LatestVersion)
+	assert.Equal(assetName, info.AssetName)
+	assert.Equal(server.URL+"/kenn/tool/releases/download/v1.2.0/"+assetName, info.DownloadURL)
+	assert.Equal(testHash64, info.Checksum)
+	assert.Equal(int64(123), info.Size)
+	assert.Zero(apiRequests.Load())
+	assert.Equal(int64(1), latestPageRequests.Load())
+	assert.Equal(int64(1), checksumRequests.Load())
+}
+
+func TestCheckUsesReleaseManifestBeforeNetworkDiscovery(t *testing.T) {
+	t.Parallel()
+
+	assert := assert.New(t)
+	require := require.New(t)
+	var apiRequests atomic.Int64
+	var latestPageRequests atomic.Int64
+	assetName := "tool_1.2.0_linux_amd64.tar.gz"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/latest.json":
+			_ = json.NewEncoder(w).Encode(Release{
+				TagName: "v1.2.0",
+				Assets: []Asset{
+					{Name: assetName, Size: 123, BrowserDownloadURL: "https://example.invalid/tool"},
+					{Name: "SHA256SUMS", BrowserDownloadURL: "http://" + r.Host + "/SHA256SUMS"},
+				},
+			})
+		case "/SHA256SUMS":
+			_, _ = fmt.Fprintf(w, "%s  %s\n", testHash64, assetName)
+		case "/repos/kenn/tool/releases/latest":
+			apiRequests.Add(1)
+			http.Error(w, "api should not be used when manifest is configured", http.StatusInternalServerError)
+		case "/kenn/tool/releases/latest":
+			latestPageRequests.Add(1)
+			http.Error(w, "web discovery should not be used when manifest is configured", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := Client{
+		Owner:              "kenn",
+		Repo:               "tool",
+		BinaryName:         "tool",
+		CurrentVersion:     "v1.1.0",
+		ReleaseManifestURL: server.URL + "/latest.json",
+		GitHubAPIBaseURL:   server.URL,
+		GitHubWebBaseURL:   server.URL,
+	}
+
+	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	require.NoError(err)
+	require.NotNil(info)
+	assert.Equal("v1.2.0", info.LatestVersion)
+	assert.Equal(assetName, info.AssetName)
+	assert.Equal("https://example.invalid/tool", info.DownloadURL)
+	assert.Equal(testHash64, info.Checksum)
+	assert.Zero(apiRequests.Load())
+	assert.Zero(latestPageRequests.Load())
+}
+
+func TestCheckUsesManifestTagWithConventionalAssets(t *testing.T) {
+	t.Parallel()
+
+	assert := assert.New(t)
+	require := require.New(t)
+	assetName := "tool_1.2.0_linux_amd64.tar.gz"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "GET /latest.json":
+			_ = json.NewEncoder(w).Encode(Release{TagName: "v1.2.0"})
+		case "HEAD /kenn/tool/releases/download/v1.2.0/" + assetName:
+			w.Header().Set("Content-Length", "123")
+			w.WriteHeader(http.StatusOK)
+		case "GET /kenn/tool/releases/download/v1.2.0/SHA256SUMS":
+			_, _ = fmt.Fprintf(w, "%s  %s\n", testHash64, assetName)
+		case "GET /repos/kenn/tool/releases/latest", "GET /kenn/tool/releases/latest":
+			http.Error(w, "manifest should be enough", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := Client{
+		Owner:              "kenn",
+		Repo:               "tool",
+		BinaryName:         "tool",
+		CurrentVersion:     "v1.1.0",
+		ReleaseManifestURL: server.URL + "/latest.json",
+		GitHubAPIBaseURL:   server.URL,
+		GitHubWebBaseURL:   server.URL,
+	}
+
+	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	require.NoError(err)
+	require.NotNil(info)
+	assert.Equal(assetName, info.AssetName)
+	assert.Equal(server.URL+"/kenn/tool/releases/download/v1.2.0/"+assetName, info.DownloadURL)
+	assert.Equal(testHash64, info.Checksum)
+	assert.Equal(int64(123), info.Size)
+}
+
+func TestCheckSendsTokenOnlyToAPIFallback(t *testing.T) {
+	t.Parallel()
+
+	assert := assert.New(t)
+	require := require.New(t)
+	assetName := "tool_1.2.0_linux_amd64.tar.gz"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "GET /kenn/tool/releases/latest":
+			assert.Empty(r.Header.Get("Authorization"))
+			http.Error(w, "web discovery unavailable", http.StatusInternalServerError)
+		case "GET /repos/kenn/tool/releases/latest":
+			assert.Equal("Bearer test-token", r.Header.Get("Authorization"))
+			_ = json.NewEncoder(w).Encode(Release{
+				TagName: "v1.2.0",
+				Assets: []Asset{
+					{Name: assetName, Size: 123, BrowserDownloadURL: "https://example.invalid/tool"},
+					{Name: "SHA256SUMS", BrowserDownloadURL: "http://" + r.Host + "/SHA256SUMS"},
+				},
+			})
+		case "GET /SHA256SUMS":
+			assert.Empty(r.Header.Get("Authorization"))
+			_, _ = fmt.Fprintf(w, "%s  %s\n", testHash64, assetName)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := Client{
+		Owner:            "kenn",
+		Repo:             "tool",
+		BinaryName:       "tool",
+		CurrentVersion:   "v1.1.0",
+		GitHubAPIBaseURL: server.URL,
+		GitHubWebBaseURL: server.URL,
+		GitHubToken:      "test-token",
+	}
+
+	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	require.NoError(err)
+	require.NotNil(info)
+	assert.Equal(testHash64, info.Checksum)
+}
+
+func TestEnvironmentGitHubToken(t *testing.T) {
+	assert := assert.New(t)
+
+	t.Setenv("GH_TOKEN", "primary")
+	t.Setenv("GITHUB_TOKEN", "fallback")
+	assert.Equal("primary", EnvironmentGitHubToken())
+
+	t.Setenv("GH_TOKEN", "")
+	assert.Equal("fallback", EnvironmentGitHubToken())
+
+	t.Setenv("GITHUB_TOKEN", "")
+	assert.Empty(EnvironmentGitHubToken())
 }
 
 func TestCheckUsesReleaseBodyChecksumFallback(t *testing.T) {

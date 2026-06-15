@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -26,6 +27,7 @@ import (
 
 const (
 	defaultGitHubAPIBaseURL = "https://api.github.com"
+	defaultGitHubWebBaseURL = "https://github.com"
 	defaultCacheFileName    = "update_check.json"
 	defaultCacheDuration    = time.Hour
 	defaultDevCacheDuration = 15 * time.Minute
@@ -73,8 +75,11 @@ type Client struct {
 	HTTPClient *http.Client
 	Clock      func() time.Time
 
-	GitHubAPIBaseURL string
-	UserAgent        string
+	GitHubAPIBaseURL   string
+	GitHubWebBaseURL   string
+	ReleaseManifestURL string
+	GitHubToken        string
+	UserAgent          string
 
 	CacheFileName    string
 	CacheDuration    time.Duration
@@ -144,7 +149,7 @@ func (c Client) Check(ctx context.Context, opts CheckOptions) (*Info, error) {
 		}
 	}
 
-	release, err := c.fetchLatestRelease(ctx)
+	release, err := c.fetchLatestRelease(ctx, opts)
 	if err != nil {
 		return nil, fmt.Errorf("check for updates: %w", err)
 	}
@@ -628,6 +633,17 @@ func FormatSize(bytes int64) string {
 	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
+// EnvironmentGitHubToken returns a GitHub API token from GH_TOKEN or
+// GITHUB_TOKEN, using the same precedence as the gh CLI.
+func EnvironmentGitHubToken() string {
+	for _, key := range []string{"GH_TOKEN", "GITHUB_TOKEN"} {
+		if token := strings.TrimSpace(os.Getenv(key)); token != "" {
+			return token
+		}
+	}
+	return ""
+}
+
 type cachedCheck struct {
 	CheckedAt time.Time `json:"checked_at"`
 	Version   string    `json:"version"`
@@ -665,6 +681,25 @@ func (c Client) apiBaseURL() string {
 		return strings.TrimRight(c.GitHubAPIBaseURL, "/")
 	}
 	return defaultGitHubAPIBaseURL
+}
+
+func (c Client) webBaseURL() string {
+	if c.GitHubWebBaseURL != "" {
+		return strings.TrimRight(c.GitHubWebBaseURL, "/")
+	}
+	apiBase := c.apiBaseURL()
+	parsed, err := url.Parse(apiBase)
+	if err != nil || parsed.Host == "" {
+		return defaultGitHubWebBaseURL
+	}
+	if strings.EqualFold(parsed.Hostname(), "api.github.com") {
+		parsed.Host = "github.com"
+	}
+	parsed.Path = ""
+	parsed.RawPath = ""
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return strings.TrimRight(parsed.String(), "/")
 }
 
 func (c Client) userAgent() string {
@@ -779,7 +814,110 @@ func (c Client) checkCache(currentVersion, cleanVersion string, isDevBuild bool)
 	return nil, false
 }
 
-func (c Client) fetchLatestRelease(ctx context.Context) (*Release, error) {
+func (c Client) fetchLatestRelease(ctx context.Context, opts CheckOptions) (*Release, error) {
+	if c.ReleaseManifestURL != "" {
+		return c.fetchReleaseManifest(ctx, opts)
+	}
+	release, err := c.fetchLatestReleaseFromWeb(ctx, opts)
+	if err == nil {
+		return release, nil
+	}
+	apiRelease, apiErr := c.fetchLatestReleaseFromAPI(ctx)
+	if apiErr != nil {
+		return nil, fmt.Errorf("%w (GitHub API fallback also failed: %w)", err, apiErr)
+	}
+	return apiRelease, nil
+}
+
+func (c Client) fetchReleaseManifest(ctx context.Context, opts CheckOptions) (*Release, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.ReleaseManifestURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", c.userAgent())
+
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("release manifest returned %s", resp.Status)
+	}
+
+	var release Release
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return nil, err
+	}
+	if release.TagName == "" {
+		return nil, fmt.Errorf("release manifest missing tag_name")
+	}
+	if len(release.Assets) == 0 {
+		if err := c.addConventionalAssets(ctx, &release, opts); err != nil {
+			return nil, err
+		}
+	}
+	return &release, nil
+}
+
+func (c Client) fetchLatestReleaseFromWeb(ctx context.Context, opts CheckOptions) (*Release, error) {
+	pageURL := fmt.Sprintf("%s/%s/%s/releases/latest", c.webBaseURL(), c.Owner, c.Repo)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", c.userAgent())
+
+	finalURL := req.URL
+	client := *c.httpClient()
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 redirects")
+		}
+		finalURL = req.URL
+		return nil
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch latest release page: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("latest release page returned %s", resp.Status)
+	}
+
+	tag, err := releaseTagFromURL(finalURL)
+	if err != nil {
+		return nil, err
+	}
+	release := &Release{TagName: tag}
+	if err := c.addConventionalAssets(ctx, release, opts); err != nil {
+		return nil, err
+	}
+	return release, nil
+}
+
+func (c Client) addConventionalAssets(ctx context.Context, release *Release, opts CheckOptions) error {
+	latestVersion := strings.TrimPrefix(release.TagName, "v")
+	assetName := c.platformAssetName(release, latestVersion, opts)
+	downloadBase := fmt.Sprintf("%s/%s/%s/releases/download/%s", c.webBaseURL(), c.Owner, c.Repo, release.TagName)
+	assetDownloadURL := downloadBase + "/" + assetName
+	size, err := c.fetchContentLength(ctx, assetDownloadURL)
+	if err != nil {
+		return err
+	}
+
+	checksumAssetName := c.checksumAssetNames()[0]
+	release.Assets = []Asset{
+		{Name: assetName, Size: size, BrowserDownloadURL: assetDownloadURL},
+		{Name: checksumAssetName, BrowserDownloadURL: downloadBase + "/" + checksumAssetName},
+		{Name: assetName + ".sha256.sig", BrowserDownloadURL: assetDownloadURL + ".sha256.sig"},
+	}
+	return nil
+}
+
+func (c Client) fetchLatestReleaseFromAPI(ctx context.Context) (*Release, error) {
 	url := fmt.Sprintf("%s/repos/%s/%s/releases/latest", c.apiBaseURL(), c.Owner, c.Repo)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -787,6 +925,9 @@ func (c Client) fetchLatestRelease(ctx context.Context) (*Release, error) {
 	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 	req.Header.Set("User-Agent", c.userAgent())
+	if token := strings.TrimSpace(c.GitHubToken); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 
 	resp, err := c.httpClient().Do(req)
 	if err != nil {
@@ -803,6 +944,41 @@ func (c Client) fetchLatestRelease(ctx context.Context) (*Release, error) {
 		return nil, err
 	}
 	return &release, nil
+}
+
+func (c Client) fetchContentLength(ctx context.Context, rawURL string) (int64, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, rawURL, nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("User-Agent", c.userAgent())
+
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("release asset returned %s", resp.Status)
+	}
+	if resp.ContentLength < 0 {
+		return 0, nil
+	}
+	return resp.ContentLength, nil
+}
+
+func releaseTagFromURL(u *url.URL) (string, error) {
+	const marker = "/releases/tag/"
+	idx := strings.Index(u.Path, marker)
+	if idx < 0 {
+		return "", fmt.Errorf("latest release did not redirect to a tag (got %s)", u)
+	}
+	tag := u.Path[idx+len(marker):]
+	if tag == "" {
+		return "", fmt.Errorf("empty release tag in %s", u)
+	}
+	return tag, nil
 }
 
 func (c Client) fetchChecksumFromFile(ctx context.Context, url, assetName string) (string, error) {
