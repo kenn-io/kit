@@ -38,7 +38,10 @@ const (
 	legacyTarRegularType    = byte(0)
 )
 
-var errNonHTTPSRedirect = errors.New("redirect to non-HTTPS URL")
+var (
+	errNonHTTPSRedirect      = errors.New("redirect to non-HTTPS URL")
+	errChecksumAssetNotFound = errors.New("checksum asset not found")
+)
 
 // Release represents the subset of a GitHub release response used by Client.
 type Release struct {
@@ -140,6 +143,11 @@ type InstallOptions struct {
 func (c Client) Check(ctx context.Context, opts CheckOptions) (*Info, error) {
 	if err := c.validateCheckConfig(); err != nil {
 		return nil, err
+	}
+	if c.ReleaseManifestURL != "" {
+		if err := requireHTTPSURL(c.ReleaseManifestURL, "release manifest URL"); err != nil {
+			return nil, fmt.Errorf("check for updates: %w", err)
+		}
 	}
 	if c.unsignedChecksumsAllowed() {
 		if err := c.validateUnsignedBaseURLs(); err != nil {
@@ -1003,7 +1011,7 @@ func (c Client) fetchReleaseManifest(ctx context.Context) (*Release, error) {
 	}
 	req.Header.Set("User-Agent", c.userAgent())
 
-	resp, err := c.doHTTPRequest(req, c.requireHTTPSForUnsignedChecksums())
+	resp, err := c.doHTTPRequest(req, true)
 	if err != nil {
 		return nil, err
 	}
@@ -1177,6 +1185,9 @@ func (c Client) fetchChecksumFromFile(ctx context.Context, url, assetName string
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusNotFound {
+			return "", fmt.Errorf("%w: %s", errChecksumAssetNotFound, resp.Status)
+		}
 		return "", fmt.Errorf("failed to fetch checksums: %s", resp.Status)
 	}
 
@@ -1191,6 +1202,12 @@ func (c Client) fetchChecksumFromAssets(ctx context.Context, checksumsAssets []*
 	for _, checksumsAsset := range checksumsAssets {
 		checksum, err := c.fetchChecksumFromFile(ctx, checksumsAsset.BrowserDownloadURL, assetName)
 		if errors.Is(err, errNonHTTPSRedirect) {
+			return "", err
+		}
+		if errors.Is(err, errChecksumAssetNotFound) {
+			continue
+		}
+		if err != nil {
 			return "", err
 		}
 		if checksum != "" {

@@ -194,14 +194,14 @@ func TestCheckUsesReleaseManifestBeforeNetworkDiscovery(t *testing.T) {
 	var latestPageRequests atomic.Int64
 	assetName := "tool_1.2.0_linux_amd64.tar.gz"
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/latest.json":
 			_ = json.NewEncoder(w).Encode(Release{
 				TagName: "v1.2.0",
 				Assets: []Asset{
 					{Name: assetName, Size: 123, BrowserDownloadURL: "https://example.invalid/tool"},
-					{Name: "SHA256SUMS", BrowserDownloadURL: "http://" + r.Host + "/SHA256SUMS"},
+					{Name: "SHA256SUMS", BrowserDownloadURL: "https://" + r.Host + "/SHA256SUMS"},
 				},
 			})
 		case "/SHA256SUMS":
@@ -226,6 +226,7 @@ func TestCheckUsesReleaseManifestBeforeNetworkDiscovery(t *testing.T) {
 		ReleaseManifestURL: server.URL + "/latest.json",
 		GitHubAPIBaseURL:   server.URL,
 		GitHubWebBaseURL:   server.URL,
+		HTTPClient:         server.Client(),
 	}
 
 	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
@@ -246,7 +247,7 @@ func TestCheckUsesManifestTagWithConventionalAssets(t *testing.T) {
 	require := require.New(t)
 	assetName := "tool_1.2.0_linux_amd64.tar.gz"
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method + " " + r.URL.Path {
 		case "GET /latest.json":
 			_ = json.NewEncoder(w).Encode(Release{TagName: "v1.2.0"})
@@ -271,6 +272,7 @@ func TestCheckUsesManifestTagWithConventionalAssets(t *testing.T) {
 		ReleaseManifestURL: server.URL + "/latest.json",
 		GitHubAPIBaseURL:   server.URL,
 		GitHubWebBaseURL:   server.URL,
+		HTTPClient:         server.Client(),
 	}
 
 	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
@@ -297,6 +299,28 @@ func TestCheckRejectsHTTPManifestWhenUnsignedChecksumsAllowed(t *testing.T) {
 		CurrentVersion:         "v1.1.0",
 		ReleaseManifestURL:     server.URL + "/latest.json",
 		AllowUnsignedChecksums: true,
+	}
+
+	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	require.Error(t, err)
+	assert.Nil(t, info)
+	assert.Contains(t, err.Error(), "release manifest URL must use https")
+}
+
+func TestCheckRejectsHTTPManifest(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("insecure manifest URL should be rejected before fetch")
+	}))
+	defer server.Close()
+
+	client := Client{
+		Owner:              "kenn",
+		Repo:               "tool",
+		BinaryName:         "tool",
+		CurrentVersion:     "v1.1.0",
+		ReleaseManifestURL: server.URL + "/latest.json",
 	}
 
 	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
@@ -365,6 +389,29 @@ func TestCheckRejectsHTTPSManifestRedirectToHTTPWhenUnsignedChecksumsAllowed(t *
 	assert.Contains(t, err.Error(), "redirect to non-HTTPS URL")
 }
 
+func TestCheckRejectsHTTPSManifestRedirectToHTTP(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://example.invalid/latest.json", http.StatusFound)
+	}))
+	defer server.Close()
+
+	client := Client{
+		Owner:              "kenn",
+		Repo:               "tool",
+		BinaryName:         "tool",
+		CurrentVersion:     "v1.1.0",
+		ReleaseManifestURL: server.URL + "/latest.json",
+		HTTPClient:         server.Client(),
+	}
+
+	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	require.Error(t, err)
+	assert.Nil(t, info)
+	assert.Contains(t, err.Error(), "redirect to non-HTTPS URL")
+}
+
 func TestCheckRejectsHTTPSChecksumRedirectToHTTPWhenUnsignedChecksumsAllowed(t *testing.T) {
 	t.Parallel()
 
@@ -412,7 +459,7 @@ func TestCheckUsesConventionalChecksumAndSignatureFallbacks(t *testing.T) {
 	var primaryChecksumRequests atomic.Int64
 	var fallbackChecksumRequests atomic.Int64
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method + " " + r.URL.Path {
 		case "GET /latest.json":
 			_ = json.NewEncoder(w).Encode(Release{TagName: "v1.2.0"})
@@ -443,6 +490,7 @@ func TestCheckUsesConventionalChecksumAndSignatureFallbacks(t *testing.T) {
 		ReleaseManifestURL: server.URL + "/latest.json",
 		GitHubAPIBaseURL:   server.URL,
 		GitHubWebBaseURL:   server.URL,
+		HTTPClient:         server.Client(),
 	}
 
 	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
@@ -1522,6 +1570,74 @@ func TestFetchChecksumFromFileLimitsResponseSize(t *testing.T) {
 	if _, err := c.fetchChecksumFromFile(context.Background(), server.URL, "tool.tar.gz"); err == nil {
 		t.Fatal("expected oversized checksum response error")
 	}
+}
+
+func TestFetchChecksumFromAssetsPropagatesCanceledContext(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("canceled checksum request should not reach server")
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	c := Client{BinaryName: "tool"}
+	checksum, err := c.fetchChecksumFromAssets(ctx, []*Asset{
+		{Name: "SHA256SUMS", BrowserDownloadURL: server.URL + "/SHA256SUMS"},
+	}, "tool.tar.gz")
+	require.Error(t, err)
+	assert.Empty(t, checksum)
+	assert.ErrorIs(t, err, context.Canceled)
+}
+
+func TestFetchChecksumFromAssetsPropagatesOversizedChecksum(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/SHA256SUMS":
+			_, _ = io.Copy(w, io.LimitReader(strings.NewReader(strings.Repeat("x", maxChecksumBytes+1)), maxChecksumBytes+1))
+		case "/checksums.txt":
+			_, _ = fmt.Fprintf(w, "%s  tool.tar.gz\n", testHash64)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	c := Client{BinaryName: "tool"}
+	checksum, err := c.fetchChecksumFromAssets(context.Background(), []*Asset{
+		{Name: "SHA256SUMS", BrowserDownloadURL: server.URL + "/SHA256SUMS"},
+		{Name: "checksums.txt", BrowserDownloadURL: server.URL + "/checksums.txt"},
+	}, "tool.tar.gz")
+	require.Error(t, err)
+	assert.Empty(t, checksum)
+}
+
+func TestFetchChecksumFromAssetsFallsBackAfterMissingAsset(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/SHA256SUMS":
+			http.NotFound(w, r)
+		case "/checksums.txt":
+			_, _ = fmt.Fprintf(w, "%s  tool.tar.gz\n", testHash64)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	c := Client{BinaryName: "tool"}
+	checksum, err := c.fetchChecksumFromAssets(context.Background(), []*Asset{
+		{Name: "SHA256SUMS", BrowserDownloadURL: server.URL + "/SHA256SUMS"},
+		{Name: "checksums.txt", BrowserDownloadURL: server.URL + "/checksums.txt"},
+	}, "tool.tar.gz")
+	require.NoError(t, err)
+	assert.Equal(t, testHash64, checksum)
 }
 
 func TestSanitizeArchivePath(t *testing.T) {
