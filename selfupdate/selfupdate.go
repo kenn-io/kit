@@ -160,6 +160,7 @@ func (c Client) Check(ctx context.Context, opts CheckOptions) (*Info, error) {
 		return nil, nil
 	}
 
+	webConventionalRelease := c.ReleaseManifestURL == "" && len(release.Assets) == 0
 	if len(release.Assets) == 0 {
 		if err := c.addConventionalAssets(ctx, release, opts); err != nil {
 			if c.ReleaseManifestURL != "" {
@@ -189,6 +190,31 @@ func (c Client) Check(ctx context.Context, opts CheckOptions) (*Info, error) {
 	checksum := c.fetchChecksumFromAssets(ctx, checksumsAssets, assetName)
 	if checksum == "" {
 		checksum = ExtractChecksum(release.Body, assetName)
+	}
+	if checksum == "" && webConventionalRelease {
+		apiRelease, apiErr := c.fetchLatestReleaseFromAPI(ctx)
+		if apiErr != nil {
+			return nil, fmt.Errorf("check for updates: conventional release missing checksum for %s (GitHub API fallback also failed: %w)", assetName, apiErr)
+		}
+		release = apiRelease
+		latestVersion = strings.TrimPrefix(release.TagName, "v")
+		if !shouldOfferUpdate(latestVersion, cleanVersion, isDevBuild) {
+			_ = c.saveCache(release.TagName)
+			return nil, nil
+		}
+		_ = c.saveCache(release.TagName)
+		assetName = c.platformAssetName(release, latestVersion, opts)
+		asset, checksumsAssets, signatureAsset = c.findAssets(release.Assets, assetName)
+		if asset == nil {
+			return nil, fmt.Errorf("no release asset for %s/%s", goos, goarch)
+		}
+		checksum = c.fetchChecksumFromAssets(ctx, checksumsAssets, assetName)
+		if checksum == "" {
+			checksum = ExtractChecksum(release.Body, assetName)
+		}
+		if checksum == "" {
+			return nil, fmt.Errorf("check for updates: no checksum for %s", assetName)
+		}
 	}
 
 	return &Info{

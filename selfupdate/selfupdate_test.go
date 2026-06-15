@@ -333,6 +333,58 @@ func TestCheckUsesConventionalChecksumAndSignatureFallbacks(t *testing.T) {
 	assert.Equal(int64(1), fallbackChecksumRequests.Load())
 }
 
+func TestCheckFallsBackToAPIWhenWebConventionalReleaseHasNoChecksum(t *testing.T) {
+	t.Parallel()
+
+	assert := assert.New(t)
+	require := require.New(t)
+	assetName := "tool_1.2.0_linux_amd64.tar.gz"
+	var apiRequests atomic.Int64
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "GET /kenn/tool/releases/latest":
+			http.Redirect(w, r, "/kenn/tool/releases/tag/v1.2.0", http.StatusFound)
+		case "GET /kenn/tool/releases/tag/v1.2.0":
+			_, _ = w.Write([]byte("release page"))
+		case "HEAD /kenn/tool/releases/download/v1.2.0/" + assetName:
+			w.Header().Set("Content-Length", "123")
+			w.WriteHeader(http.StatusOK)
+		case "GET /kenn/tool/releases/download/v1.2.0/SHA256SUMS", "GET /kenn/tool/releases/download/v1.2.0/checksums.txt":
+			http.NotFound(w, r)
+		case "GET /repos/kenn/tool/releases/latest":
+			apiRequests.Add(1)
+			_ = json.NewEncoder(w).Encode(Release{
+				TagName: "v1.2.0",
+				Body:    fmt.Sprintf("%s  %s\n", testHash64, assetName),
+				Assets: []Asset{
+					{Name: assetName, Size: 456, BrowserDownloadURL: "https://example.invalid/tool"},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := Client{
+		Owner:            "kenn",
+		Repo:             "tool",
+		BinaryName:       "tool",
+		CurrentVersion:   "v1.1.0",
+		GitHubAPIBaseURL: server.URL,
+		GitHubWebBaseURL: server.URL,
+	}
+
+	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	require.NoError(err)
+	require.NotNil(info)
+	assert.Equal(testHash64, info.Checksum)
+	assert.Equal("https://example.invalid/tool", info.DownloadURL)
+	assert.Equal(int64(456), info.Size)
+	assert.Equal(int64(1), apiRequests.Load())
+}
+
 func TestCheckSendsTokenOnlyToAPIFallback(t *testing.T) {
 	t.Parallel()
 
