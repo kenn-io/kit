@@ -138,6 +138,11 @@ func (c Client) Check(ctx context.Context, opts CheckOptions) (*Info, error) {
 	if err := c.validateCheckConfig(); err != nil {
 		return nil, err
 	}
+	if c.ReleaseManifestURL != "" && c.unsignedChecksumsAllowed() {
+		if err := requireHTTPSURL(c.ReleaseManifestURL, "release manifest URL"); err != nil {
+			return nil, fmt.Errorf("check for updates: %w", err)
+		}
+	}
 
 	currentVersion := c.CurrentVersion
 	cleanVersion := strings.TrimPrefix(currentVersion, "v")
@@ -151,6 +156,9 @@ func (c Client) Check(ctx context.Context, opts CheckOptions) (*Info, error) {
 
 	release, err := c.fetchLatestRelease(ctx)
 	if err != nil {
+		return nil, fmt.Errorf("check for updates: %w", err)
+	}
+	if err := c.validateUnsignedManifestSource(release); err != nil {
 		return nil, fmt.Errorf("check for updates: %w", err)
 	}
 
@@ -176,6 +184,9 @@ func (c Client) Check(ctx context.Context, opts CheckOptions) (*Info, error) {
 				_ = c.saveCache(release.TagName)
 				return nil, nil
 			}
+		}
+		if err := c.validateUnsignedManifestAssetURLs(release.Assets); err != nil {
+			return nil, fmt.Errorf("check for updates: %w", err)
 		}
 	}
 	_ = c.saveCache(release.TagName)
@@ -868,6 +879,51 @@ func (c Client) fetchLatestRelease(ctx context.Context) (*Release, error) {
 		return nil, fmt.Errorf("%w (GitHub API fallback also failed: %w)", err, apiErr)
 	}
 	return apiRelease, nil
+}
+
+func (c Client) validateUnsignedManifestSource(release *Release) error {
+	if c.ReleaseManifestURL == "" || !c.unsignedChecksumsAllowed() {
+		return nil
+	}
+	if err := requireHTTPSURL(c.ReleaseManifestURL, "release manifest URL"); err != nil {
+		return err
+	}
+	if len(release.Assets) == 0 {
+		if err := requireHTTPSURL(c.webBaseURL(), "GitHub web base URL"); err != nil {
+			return err
+		}
+	}
+	return c.validateUnsignedManifestAssetURLs(release.Assets)
+}
+
+func (c Client) validateUnsignedManifestAssetURLs(assets []Asset) error {
+	if c.ReleaseManifestURL == "" || !c.unsignedChecksumsAllowed() {
+		return nil
+	}
+	for _, asset := range assets {
+		if asset.BrowserDownloadURL == "" {
+			continue
+		}
+		if err := requireHTTPSURL(asset.BrowserDownloadURL, "release asset URL for "+asset.Name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c Client) unsignedChecksumsAllowed() bool {
+	return c.AllowUnsignedChecksums && !c.RequireSignature && len(c.TrustedPublicKeys) == 0
+}
+
+func requireHTTPSURL(rawURL, label string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("%s is invalid: %w", label, err)
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("%s must use https", label)
+	}
+	return nil
 }
 
 func (c Client) fetchReleaseManifest(ctx context.Context) (*Release, error) {

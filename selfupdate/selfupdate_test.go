@@ -282,6 +282,65 @@ func TestCheckUsesManifestTagWithConventionalAssets(t *testing.T) {
 	assert.Equal(int64(123), info.Size)
 }
 
+func TestCheckRejectsHTTPManifestWhenUnsignedChecksumsAllowed(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("insecure manifest URL should be rejected before fetch")
+	}))
+	defer server.Close()
+
+	client := Client{
+		Owner:                  "kenn",
+		Repo:                   "tool",
+		BinaryName:             "tool",
+		CurrentVersion:         "v1.1.0",
+		ReleaseManifestURL:     server.URL + "/latest.json",
+		AllowUnsignedChecksums: true,
+	}
+
+	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	require.Error(t, err)
+	assert.Nil(t, info)
+	assert.Contains(t, err.Error(), "release manifest URL must use https")
+}
+
+func TestCheckRejectsHTTPManifestAssetWhenUnsignedChecksumsAllowed(t *testing.T) {
+	t.Parallel()
+
+	assetName := "tool_1.2.0_linux_amd64.tar.gz"
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/latest.json":
+			_ = json.NewEncoder(w).Encode(Release{
+				TagName: "v1.2.0",
+				Assets: []Asset{
+					{Name: assetName, Size: 123, BrowserDownloadURL: "http://example.invalid/tool"},
+					{Name: "SHA256SUMS", BrowserDownloadURL: "https://example.invalid/SHA256SUMS"},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := Client{
+		Owner:                  "kenn",
+		Repo:                   "tool",
+		BinaryName:             "tool",
+		CurrentVersion:         "v1.1.0",
+		ReleaseManifestURL:     server.URL + "/latest.json",
+		HTTPClient:             server.Client(),
+		AllowUnsignedChecksums: true,
+	}
+
+	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	require.Error(t, err)
+	assert.Nil(t, info)
+	assert.Contains(t, err.Error(), "release asset URL for "+assetName+" must use https")
+}
+
 func TestCheckUsesConventionalChecksumAndSignatureFallbacks(t *testing.T) {
 	t.Parallel()
 
