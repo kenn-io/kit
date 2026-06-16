@@ -11,9 +11,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -26,6 +28,7 @@ import (
 
 const (
 	defaultGitHubAPIBaseURL = "https://api.github.com"
+	defaultGitHubWebBaseURL = "https://github.com"
 	defaultCacheFileName    = "update_check.json"
 	defaultCacheDuration    = time.Hour
 	defaultDevCacheDuration = 15 * time.Minute
@@ -33,6 +36,11 @@ const (
 	maxChecksumBytes        = 1 << 20
 	maxSignatureBytes       = 64 << 10
 	legacyTarRegularType    = byte(0)
+)
+
+var (
+	errNonHTTPSRedirect      = errors.New("redirect to non-HTTPS URL")
+	errChecksumAssetNotFound = errors.New("checksum asset not found")
 )
 
 // Release represents the subset of a GitHub release response used by Client.
@@ -73,8 +81,11 @@ type Client struct {
 	HTTPClient *http.Client
 	Clock      func() time.Time
 
-	GitHubAPIBaseURL string
-	UserAgent        string
+	GitHubAPIBaseURL   string
+	GitHubWebBaseURL   string
+	ReleaseManifestURL string
+	GitHubToken        string
+	UserAgent          string
 
 	CacheFileName    string
 	CacheDuration    time.Duration
@@ -133,6 +144,16 @@ func (c Client) Check(ctx context.Context, opts CheckOptions) (*Info, error) {
 	if err := c.validateCheckConfig(); err != nil {
 		return nil, err
 	}
+	if c.ReleaseManifestURL != "" {
+		if err := requireHTTPSURL(c.ReleaseManifestURL, "release manifest URL"); err != nil {
+			return nil, fmt.Errorf("check for updates: %w", err)
+		}
+	}
+	if c.unsignedChecksumsAllowed() {
+		if err := c.validateUnsignedBaseURLs(); err != nil {
+			return nil, fmt.Errorf("check for updates: %w", err)
+		}
+	}
 
 	currentVersion := c.CurrentVersion
 	cleanVersion := strings.TrimPrefix(currentVersion, "v")
@@ -148,27 +169,83 @@ func (c Client) Check(ctx context.Context, opts CheckOptions) (*Info, error) {
 	if err != nil {
 		return nil, fmt.Errorf("check for updates: %w", err)
 	}
-
-	_ = c.saveCache(release.TagName)
+	if err := c.validateUnsignedReleaseSource(release); err != nil {
+		return nil, fmt.Errorf("check for updates: %w", err)
+	}
 
 	latestVersion := strings.TrimPrefix(release.TagName, "v")
 	if !shouldOfferUpdate(latestVersion, cleanVersion, isDevBuild) {
+		_ = c.saveCache(release.TagName)
 		return nil, nil
 	}
 
+	webConventionalRelease := c.ReleaseManifestURL == "" && len(release.Assets) == 0
+	if len(release.Assets) == 0 {
+		if err := c.addConventionalAssets(ctx, release, opts); err != nil {
+			if c.ReleaseManifestURL != "" {
+				return nil, fmt.Errorf("check for updates: %w", err)
+			}
+			apiRelease, apiErr := c.fetchLatestReleaseFromAPI(ctx)
+			if apiErr != nil {
+				return nil, fmt.Errorf("check for updates: %w (GitHub API fallback also failed: %w)", err, apiErr)
+			}
+			release = apiRelease
+			latestVersion = strings.TrimPrefix(release.TagName, "v")
+			if !shouldOfferUpdate(latestVersion, cleanVersion, isDevBuild) {
+				_ = c.saveCache(release.TagName)
+				return nil, nil
+			}
+		}
+		if err := c.validateUnsignedAssetURLs(release.Assets); err != nil {
+			return nil, fmt.Errorf("check for updates: %w", err)
+		}
+	}
+	_ = c.saveCache(release.TagName)
+
 	goos, goarch := platform(opts)
 	assetName := c.platformAssetName(release, latestVersion, opts)
-	asset, checksumsAsset, signatureAsset := c.findAssets(release.Assets, assetName)
+	asset, checksumsAssets, signatureAsset := c.findAssets(release.Assets, assetName)
 	if asset == nil {
 		return nil, fmt.Errorf("no release asset for %s/%s", goos, goarch)
 	}
 
-	var checksum string
-	if checksumsAsset != nil {
-		checksum, _ = c.fetchChecksumFromFile(ctx, checksumsAsset.BrowserDownloadURL, assetName)
+	checksum, err := c.fetchChecksumFromAssets(ctx, checksumsAssets, assetName)
+	if err != nil {
+		return nil, fmt.Errorf("check for updates: %w", err)
 	}
 	if checksum == "" {
 		checksum = ExtractChecksum(release.Body, assetName)
+	}
+	if checksum == "" && webConventionalRelease {
+		apiRelease, apiErr := c.fetchLatestReleaseFromAPI(ctx)
+		if apiErr != nil {
+			return nil, fmt.Errorf("check for updates: conventional release missing checksum for %s (GitHub API fallback also failed: %w)", assetName, apiErr)
+		}
+		release = apiRelease
+		latestVersion = strings.TrimPrefix(release.TagName, "v")
+		if !shouldOfferUpdate(latestVersion, cleanVersion, isDevBuild) {
+			_ = c.saveCache(release.TagName)
+			return nil, nil
+		}
+		if err := c.validateUnsignedReleaseSource(release); err != nil {
+			return nil, fmt.Errorf("check for updates: %w", err)
+		}
+		_ = c.saveCache(release.TagName)
+		assetName = c.platformAssetName(release, latestVersion, opts)
+		asset, checksumsAssets, signatureAsset = c.findAssets(release.Assets, assetName)
+		if asset == nil {
+			return nil, fmt.Errorf("no release asset for %s/%s", goos, goarch)
+		}
+		checksum, err = c.fetchChecksumFromAssets(ctx, checksumsAssets, assetName)
+		if err != nil {
+			return nil, fmt.Errorf("check for updates: %w", err)
+		}
+		if checksum == "" {
+			checksum = ExtractChecksum(release.Body, assetName)
+		}
+		if checksum == "" {
+			return nil, fmt.Errorf("check for updates: no checksum for %s", assetName)
+		}
 	}
 
 	return &Info{
@@ -227,7 +304,7 @@ func (c Client) Install(ctx context.Context, info *Info, opts InstallOptions) er
 	defer os.RemoveAll(tempDir)
 
 	archivePath := filepath.Join(tempDir, assetName)
-	downloadChecksum, err := c.downloadFile(ctx, info.DownloadURL, archivePath, info.Size, opts.Progress)
+	downloadChecksum, err := c.downloadFile(ctx, info.DownloadURL, archivePath, info.Size, c.unsignedChecksumsAllowed(), opts.Progress)
 	if err != nil {
 		return fmt.Errorf("download: %w", err)
 	}
@@ -628,6 +705,17 @@ func FormatSize(bytes int64) string {
 	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
+// EnvironmentGitHubToken returns a GitHub API token from GH_TOKEN or
+// GITHUB_TOKEN, using the same precedence as the gh CLI.
+func EnvironmentGitHubToken() string {
+	for _, key := range []string{"GH_TOKEN", "GITHUB_TOKEN"} {
+		if token := strings.TrimSpace(os.Getenv(key)); token != "" {
+			return token
+		}
+	}
+	return ""
+}
+
 type cachedCheck struct {
 	CheckedAt time.Time `json:"checked_at"`
 	Version   string    `json:"version"`
@@ -653,6 +741,48 @@ func (c Client) httpClient() *http.Client {
 	return &http.Client{Timeout: defaultHTTPTimeout}
 }
 
+func (c Client) doHTTPRequest(req *http.Request, requireHTTPSRedirects bool) (*http.Response, error) {
+	client := c.httpClient()
+	if requireHTTPSRedirects {
+		if req.URL == nil || req.URL.Scheme != "https" {
+			rawURL := "<nil>"
+			if req.URL != nil {
+				rawURL = req.URL.Redacted()
+			}
+			return nil, fmt.Errorf("%w: %s", errNonHTTPSRedirect, rawURL)
+		}
+		client = c.httpClientRejectingHTTPSDowngrades()
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if requireHTTPSRedirects && resp.Request != nil && resp.Request.URL != nil && resp.Request.URL.Scheme != "https" {
+		resp.Body.Close()
+		return nil, fmt.Errorf("%w: %s", errNonHTTPSRedirect, resp.Request.URL.Redacted())
+	}
+	return resp, nil
+}
+
+func (c Client) httpClientRejectingHTTPSDowngrades() *http.Client {
+	base := c.httpClient()
+	client := *base
+	originalCheckRedirect := client.CheckRedirect
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if req.URL.Scheme != "https" {
+			return fmt.Errorf("%w: %s", errNonHTTPSRedirect, req.URL.Redacted())
+		}
+		if originalCheckRedirect != nil {
+			return originalCheckRedirect(req, via)
+		}
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 redirects")
+		}
+		return nil
+	}
+	return &client
+}
+
 func (c Client) now() time.Time {
 	if c.Clock != nil {
 		return c.Clock()
@@ -665,6 +795,25 @@ func (c Client) apiBaseURL() string {
 		return strings.TrimRight(c.GitHubAPIBaseURL, "/")
 	}
 	return defaultGitHubAPIBaseURL
+}
+
+func (c Client) webBaseURL() string {
+	if c.GitHubWebBaseURL != "" {
+		return strings.TrimRight(c.GitHubWebBaseURL, "/")
+	}
+	apiBase := c.apiBaseURL()
+	parsed, err := url.Parse(apiBase)
+	if err != nil || parsed.Host == "" {
+		return defaultGitHubWebBaseURL
+	}
+	if strings.EqualFold(parsed.Hostname(), "api.github.com") {
+		parsed.Host = "github.com"
+	}
+	parsed.Path = ""
+	parsed.RawPath = ""
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return strings.TrimRight(parsed.String(), "/")
 }
 
 func (c Client) userAgent() string {
@@ -780,15 +929,181 @@ func (c Client) checkCache(currentVersion, cleanVersion string, isDevBuild bool)
 }
 
 func (c Client) fetchLatestRelease(ctx context.Context) (*Release, error) {
+	if c.ReleaseManifestURL != "" {
+		return c.fetchReleaseManifest(ctx)
+	}
+	release, err := c.fetchLatestReleaseFromWeb(ctx)
+	if err == nil {
+		return release, nil
+	}
+	apiRelease, apiErr := c.fetchLatestReleaseFromAPI(ctx)
+	if apiErr != nil {
+		return nil, fmt.Errorf("%w (GitHub API fallback also failed: %w)", err, apiErr)
+	}
+	return apiRelease, nil
+}
+
+func (c Client) validateUnsignedBaseURLs() error {
+	if err := requireHTTPSURL(c.webBaseURL(), "GitHub web base URL"); err != nil {
+		return err
+	}
+	if err := requireHTTPSURL(c.apiBaseURL(), "GitHub API base URL"); err != nil {
+		return err
+	}
+	if c.ReleaseManifestURL != "" {
+		if err := requireHTTPSURL(c.ReleaseManifestURL, "release manifest URL"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c Client) validateUnsignedReleaseSource(release *Release) error {
+	if !c.unsignedChecksumsAllowed() {
+		return nil
+	}
+	if len(release.Assets) == 0 {
+		if err := requireHTTPSURL(c.webBaseURL(), "GitHub web base URL"); err != nil {
+			return err
+		}
+	}
+	return c.validateUnsignedAssetURLs(release.Assets)
+}
+
+func (c Client) validateUnsignedAssetURLs(assets []Asset) error {
+	if !c.unsignedChecksumsAllowed() {
+		return nil
+	}
+	for _, asset := range assets {
+		if asset.BrowserDownloadURL == "" {
+			continue
+		}
+		if err := requireHTTPSURL(asset.BrowserDownloadURL, "release asset URL for "+asset.Name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c Client) unsignedChecksumsAllowed() bool {
+	return c.AllowUnsignedChecksums && !c.RequireSignature && len(c.TrustedPublicKeys) == 0
+}
+
+func (c Client) requireHTTPSForUnsignedChecksums() bool {
+	return c.unsignedChecksumsAllowed()
+}
+
+func requireHTTPSURL(rawURL, label string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("%s is invalid: %w", label, err)
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("%s must use https", label)
+	}
+	return nil
+}
+
+func (c Client) fetchReleaseManifest(ctx context.Context) (*Release, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.ReleaseManifestURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", c.userAgent())
+
+	resp, err := c.doHTTPRequest(req, true)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("release manifest returned %s", resp.Status)
+	}
+
+	var release Release
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return nil, err
+	}
+	if release.TagName == "" {
+		return nil, fmt.Errorf("release manifest missing tag_name")
+	}
+	return &release, nil
+}
+
+func (c Client) fetchLatestReleaseFromWeb(ctx context.Context) (*Release, error) {
+	pageURL := fmt.Sprintf("%s/%s/%s/releases/latest", c.webBaseURL(), c.Owner, c.Repo)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", c.userAgent())
+
+	resp, err := c.doHTTPRequest(req, c.requireHTTPSForUnsignedChecksums())
+	if err != nil {
+		return nil, fmt.Errorf("fetch latest release page: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("latest release page returned %s", resp.Status)
+	}
+
+	finalURL := req.URL
+	if resp.Request != nil && resp.Request.URL != nil {
+		finalURL = resp.Request.URL
+	}
+	tag, err := releaseTagFromURL(finalURL)
+	if err != nil {
+		return nil, err
+	}
+	return &Release{TagName: tag}, nil
+}
+
+func (c Client) addConventionalAssets(ctx context.Context, release *Release, opts CheckOptions) error {
+	latestVersion := strings.TrimPrefix(release.TagName, "v")
+	assetName := c.platformAssetName(release, latestVersion, opts)
+	downloadBase := fmt.Sprintf("%s/%s/%s/releases/download/%s", c.webBaseURL(), c.Owner, c.Repo, release.TagName)
+	assetDownloadURL := downloadBase + "/" + assetName
+	size, err := c.fetchContentLength(ctx, assetDownloadURL)
+	if err != nil {
+		return err
+	}
+
+	assets := []Asset{
+		{Name: assetName, Size: size, BrowserDownloadURL: assetDownloadURL},
+	}
+	for _, checksumAssetName := range c.checksumAssetNames() {
+		assets = append(assets, Asset{Name: checksumAssetName, BrowserDownloadURL: downloadBase + "/" + checksumAssetName})
+	}
+	for _, signatureAssetName := range signatureAssetNames(assetName) {
+		signatureURL := downloadBase + "/" + signatureAssetName
+		if c.releaseAssetExists(ctx, signatureURL) {
+			assets = append(assets, Asset{Name: signatureAssetName, BrowserDownloadURL: signatureURL})
+		}
+	}
+	release.Assets = assets
+	return nil
+}
+
+func (c Client) fetchLatestReleaseFromAPI(ctx context.Context) (*Release, error) {
 	url := fmt.Sprintf("%s/repos/%s/%s/releases/latest", c.apiBaseURL(), c.Owner, c.Repo)
+	token := strings.TrimSpace(c.GitHubToken)
+	if token != "" {
+		if err := requireHTTPSURL(c.apiBaseURL(), "GitHub API base URL"); err != nil {
+			return nil, err
+		}
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 	req.Header.Set("User-Agent", c.userAgent())
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 
-	resp, err := c.httpClient().Do(req)
+	resp, err := c.doHTTPRequest(req, token != "" || c.requireHTTPSForUnsignedChecksums())
 	if err != nil {
 		return nil, err
 	}
@@ -805,6 +1120,57 @@ func (c Client) fetchLatestRelease(ctx context.Context) (*Release, error) {
 	return &release, nil
 }
 
+func (c Client) fetchContentLength(ctx context.Context, rawURL string) (int64, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, rawURL, nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("User-Agent", c.userAgent())
+
+	resp, err := c.doHTTPRequest(req, c.requireHTTPSForUnsignedChecksums())
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("release asset returned %s", resp.Status)
+	}
+	if resp.ContentLength < 0 {
+		return 0, nil
+	}
+	return resp.ContentLength, nil
+}
+
+func (c Client) releaseAssetExists(ctx context.Context, rawURL string) bool {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, rawURL, nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("User-Agent", c.userAgent())
+
+	resp, err := c.doHTTPRequest(req, c.requireHTTPSForUnsignedChecksums())
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	return resp.StatusCode == http.StatusOK
+}
+
+func releaseTagFromURL(u *url.URL) (string, error) {
+	const marker = "/releases/tag/"
+	idx := strings.Index(u.Path, marker)
+	if idx < 0 {
+		return "", fmt.Errorf("latest release did not redirect to a tag (got %s)", u)
+	}
+	tag := u.Path[idx+len(marker):]
+	if tag == "" {
+		return "", fmt.Errorf("empty release tag in %s", u)
+	}
+	return tag, nil
+}
+
 func (c Client) fetchChecksumFromFile(ctx context.Context, url, assetName string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -812,13 +1178,16 @@ func (c Client) fetchChecksumFromFile(ctx context.Context, url, assetName string
 	}
 	req.Header.Set("User-Agent", c.userAgent())
 
-	resp, err := c.httpClient().Do(req)
+	resp, err := c.doHTTPRequest(req, c.requireHTTPSForUnsignedChecksums())
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusNotFound {
+			return "", fmt.Errorf("%w: %s", errChecksumAssetNotFound, resp.Status)
+		}
 		return "", fmt.Errorf("failed to fetch checksums: %s", resp.Status)
 	}
 
@@ -829,14 +1198,33 @@ func (c Client) fetchChecksumFromFile(ctx context.Context, url, assetName string
 	return ExtractChecksum(string(body), assetName), nil
 }
 
-func (c Client) downloadFile(ctx context.Context, url, dest string, totalSize int64, progress func(downloaded, total int64)) (string, error) {
+func (c Client) fetchChecksumFromAssets(ctx context.Context, checksumsAssets []*Asset, assetName string) (string, error) {
+	for _, checksumsAsset := range checksumsAssets {
+		checksum, err := c.fetchChecksumFromFile(ctx, checksumsAsset.BrowserDownloadURL, assetName)
+		if errors.Is(err, errNonHTTPSRedirect) {
+			return "", err
+		}
+		if errors.Is(err, errChecksumAssetNotFound) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if checksum != "" {
+			return checksum, nil
+		}
+	}
+	return "", nil
+}
+
+func (c Client) downloadFile(ctx context.Context, url, dest string, totalSize int64, requireHTTPSRedirects bool, progress func(downloaded, total int64)) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("User-Agent", c.userAgent())
 
-	resp, err := c.httpClient().Do(req)
+	resp, err := c.doHTTPRequest(req, requireHTTPSRedirects)
 	if err != nil {
 		return "", err
 	}
@@ -935,28 +1323,39 @@ func (c Client) platformAssetName(release *Release, version string, opts CheckOp
 	return DefaultAssetName(req)
 }
 
-func (c Client) findAssets(assets []Asset, assetName string) (asset *Asset, checksumsAsset *Asset, signatureAsset *Asset) {
-	checksumNames := map[string]struct{}{}
-	for _, name := range c.checksumAssetNames() {
-		checksumNames[name] = struct{}{}
-	}
-	signatureNames := map[string]struct{}{
-		assetName + ".sha256.sig": {},
-		assetName + ".sig":        {},
-	}
+func (c Client) findAssets(assets []Asset, assetName string) (asset *Asset, checksumsAssets []*Asset, signatureAsset *Asset) {
+	checksumAssetsByName := map[string]*Asset{}
+	signatureAssetsByName := map[string]*Asset{}
 	for i := range assets {
 		a := &assets[i]
 		if a.Name == assetName {
 			asset = a
 		}
-		if _, ok := checksumNames[a.Name]; ok {
-			checksumsAsset = a
+		if _, ok := checksumAssetsByName[a.Name]; !ok {
+			checksumAssetsByName[a.Name] = a
 		}
-		if _, ok := signatureNames[a.Name]; ok {
-			signatureAsset = a
+		if _, ok := signatureAssetsByName[a.Name]; !ok {
+			signatureAssetsByName[a.Name] = a
 		}
 	}
-	return asset, checksumsAsset, signatureAsset
+	for _, checksumAssetName := range c.checksumAssetNames() {
+		if checksumsAsset := checksumAssetsByName[checksumAssetName]; checksumsAsset != nil {
+			checksumsAssets = append(checksumsAssets, checksumsAsset)
+		}
+	}
+	for _, signatureAssetName := range signatureAssetNames(assetName) {
+		if signatureAsset = signatureAssetsByName[signatureAssetName]; signatureAsset != nil {
+			break
+		}
+	}
+	return asset, checksumsAssets, signatureAsset
+}
+
+func signatureAssetNames(assetName string) []string {
+	return []string{
+		assetName + ".sha256.sig",
+		assetName + ".sig",
+	}
 }
 
 func (c Client) signaturePayload(info *Info) []byte {
