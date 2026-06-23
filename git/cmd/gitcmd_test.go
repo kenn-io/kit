@@ -137,10 +137,9 @@ func TestReadSafeDirectoriesBoundsProbeRuntime(t *testing.T) {
 	t.Cleanup(func() { safeDirectoryProbeTimeout = origTimeout })
 
 	binDir := buildSleepingGit(t)
-	env := append(os.Environ(),
-		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
-		"GIT_CONFIG_NOSYSTEM=0",
-	)
+	pathEnv := binDir + string(os.PathListSeparator) + os.Getenv("PATH")
+	t.Setenv("PATH", pathEnv)
+	env := append(os.Environ(), "PATH="+pathEnv, "GIT_CONFIG_NOSYSTEM=0")
 
 	start := time.Now()
 	got := readSafeDirectories(context.Background(), env, "")
