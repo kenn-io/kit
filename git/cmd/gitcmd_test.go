@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/base64"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -126,6 +129,24 @@ func TestReadSafeDirectoriesHonorsNoSystem(t *testing.T) {
 	got := readSafeDirectories(context.Background(), env, "")
 
 	assert.Equal(t, []string{"/home/repo"}, got)
+}
+
+func TestReadSafeDirectoriesBoundsProbeRuntime(t *testing.T) {
+	origTimeout := safeDirectoryProbeTimeout
+	safeDirectoryProbeTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { safeDirectoryProbeTimeout = origTimeout })
+
+	binDir := buildSleepingGit(t)
+	env := append(os.Environ(),
+		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"GIT_CONFIG_NOSYSTEM=0",
+	)
+
+	start := time.Now()
+	got := readSafeDirectories(context.Background(), env, "")
+
+	assert.Empty(t, got)
+	assert.Less(t, time.Since(start), time.Second, "safe.directory probes are best-effort and must not stall git commands")
 }
 
 func TestReadSafeDirectoriesConditionalInclude(t *testing.T) {
@@ -296,6 +317,29 @@ func captureGitEnv(t *testing.T, runner Runner) string {
 		t.Fatal(err)
 	}
 	return string(envBytes)
+}
+
+func buildSleepingGit(t *testing.T) string {
+	t.Helper()
+	binDir := t.TempDir()
+	exeName := "git"
+	if runtime.GOOS == "windows" {
+		exeName += ".exe"
+	}
+	exePath := filepath.Join(binDir, exeName)
+	srcPath := filepath.Join(t.TempDir(), "main.go")
+	require.NoError(t, os.WriteFile(srcPath, []byte(`package main
+
+import "time"
+
+func main() {
+	time.Sleep(10 * time.Second)
+}
+`), 0o600))
+	cmd := exec.Command("go", "build", "-o", exePath, srcPath)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	return binDir
 }
 
 func gitConfigValue(env, key string) string {

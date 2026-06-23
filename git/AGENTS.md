@@ -13,6 +13,8 @@ not about one product's workflow.
 - Do not call `exec.Command("git", ...)` directly in package code unless the
   direct call is the behavior being tested.
 - Pass `context.Context` through git operations that can block.
+- Keep best-effort helper probes bounded; they must not stall the caller's real
+  git command when optional ambient state is slow or broken.
 - Return git failures with captured stderr. Do not hide git's message behind a
   generic error.
 - Use `gitlock` around mutations that can race with another process touching

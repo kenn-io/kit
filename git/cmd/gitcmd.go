@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	gitenv "go.kenn.io/kit/git/env"
 )
@@ -183,6 +184,8 @@ var (
 	emptyGlobalConfigPath string
 )
 
+var safeDirectoryProbeTimeout = 2 * time.Second
+
 // nullGlobalConfigPath returns a path suitable for GIT_CONFIG_GLOBAL that makes
 // git read an empty (no-op) global config.
 //
@@ -237,10 +240,12 @@ func readSafeDirectories(ctx context.Context, env []string, dir string) []string
 	for _, scope := range scopes {
 		// --includes is required for explicit-scope reads to honor include.path
 		// and includeIf directives the way git's default config sequence does.
-		cmd := gitCommand(ctx, true, "config", scope, "--includes", "-z", "--get-all", "safe.directory")
+		probeCtx, cancel := context.WithTimeout(ctx, safeDirectoryProbeTimeout)
+		cmd := gitCommand(probeCtx, true, "config", scope, "--includes", "-z", "--get-all", "safe.directory")
 		cmd.Dir = dir
 		cmd.Env = env
 		out, err := cmd.Output()
+		cancel()
 		if err != nil || len(out) == 0 {
 			continue
 		}
