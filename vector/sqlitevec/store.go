@@ -90,10 +90,21 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, vectors []v
 		}
 	}
 
-	if _, err := tx.ExecContext(ctx,
+	res, err := tx.ExecContext(ctx,
 		fmt.Sprintf(`UPDATE %s SET %s = ? WHERE %s = ?`, s.schema.DocsTable, s.schema.EmbedGenColumn, s.schema.IDColumn),
-		gen, doc); err != nil {
+		gen, doc)
+	if err != nil {
 		return fmt.Errorf("stamp embed generation: %w", err)
+	}
+	stamped, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("stamp embed generation rows: %w", err)
+	}
+	if stamped == 0 {
+		// The source row vanished between scan and save (or the key is
+		// wrong). Roll back rather than commit vectors with no document,
+		// which QueryGeneration would otherwise surface as orphan hits.
+		return fmt.Errorf("document %v not present in %s; vectors not persisted", doc, s.schema.DocsTable)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit save vectors: %w", err)

@@ -133,6 +133,22 @@ func TestStoreSearchUnionsLiveGenerations(t *testing.T) {
 	assert.True(found[2], "active-only doc is not dropped mid-migration (union coverage)")
 }
 
+func TestStoreSaveVectorsRejectsMissingDocument(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	ctx := context.Background()
+	_, store := setup(t)
+
+	require.NoError(store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
+
+	err := store.SaveVectors(ctx, 1, 999, []vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{1, 0, 0}}})
+	require.Error(err, "saving vectors for a document not in the source table fails")
+
+	hits, err := store.QueryGeneration(ctx, 1, vector.Vector{1, 0, 0}, 10)
+	require.NoError(err)
+	assert.Empty(hits, "no orphan vectors are committed when the source row is missing")
+}
+
 func TestNewRejectsUnsafeIdentifiers(t *testing.T) {
 	_, err := sqlitevec.New[int64, int64](context.Background(), nil, sqlitevec.Schema{
 		DocsTable: "messages; DROP TABLE messages",

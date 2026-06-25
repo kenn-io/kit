@@ -25,6 +25,17 @@ func TestGenerationFingerprintIsStableAndOrderIndependent(t *testing.T) {
 	assert.Equal(a.Fingerprint(), b.Fingerprint(), "map order does not change fingerprint")
 }
 
+func TestGenerationFingerprintIsNotAmbiguousAcrossParams(t *testing.T) {
+	assert := assert.New(t)
+	// Two params vs a single param whose value embeds what used to be the
+	// key/value separator. A naive "key=value\n" join hashes both the
+	// same; the JSON encoding keeps them distinct.
+	two := vector.Generation{Model: "m", Dimensions: 3, Params: map[string]string{"pooling": "mean", "prompt": "x"}}
+	one := vector.Generation{Model: "m", Dimensions: 3, Params: map[string]string{"pooling": "mean\nprompt=x"}}
+
+	assert.NotEqual(two.Fingerprint(), one.Fingerprint())
+}
+
 func TestGenerationFingerprintChangesWithSpace(t *testing.T) {
 	assert := assert.New(t)
 	base := vector.Generation{Model: "m", Dimensions: 768, Params: map[string]string{"pooling": "mean"}}
