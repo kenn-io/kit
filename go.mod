@@ -3,7 +3,9 @@ module go.kenn.io/kit
 go 1.26.3
 
 require (
+	github.com/asg017/sqlite-vec-go-bindings v0.1.6
 	github.com/gofrs/flock v0.13.0
+	github.com/mattn/go-sqlite3 v1.14.44
 	github.com/posthog/posthog-go v1.12.6
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/otel v1.43.0
@@ -32,7 +34,6 @@ require (
 	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
-	github.com/mattn/go-sqlite3 v1.14.44 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/sdk v1.43.0 // indirect

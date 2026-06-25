@@ -1,0 +1,141 @@
+package sqlitevec_test
+
+import (
+	"context"
+	"database/sql"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	_ "github.com/mattn/go-sqlite3"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"go.kenn.io/kit/vector"
+	"go.kenn.io/kit/vector/sqlitevec"
+)
+
+// topicEncoder maps text to a one-hot 3-D vector by keyword, so queries
+// match documents deterministically.
+func topicEncoder() vector.EncodeFunc {
+	return func(_ context.Context, texts []string) ([][]float32, error) {
+		out := make([][]float32, len(texts))
+		for i, text := range texts {
+			switch {
+			case strings.Contains(text, "cat"):
+				out[i] = []float32{1, 0, 0}
+			case strings.Contains(text, "dog"):
+				out[i] = []float32{0, 1, 0}
+			default:
+				out[i] = []float32{0, 0, 1}
+			}
+		}
+		return out, nil
+	}
+}
+
+func setup(t *testing.T) (*sql.DB, *sqlitevec.Store[int64, int64]) {
+	t.Helper()
+	sqlitevec.Register()
+
+	db, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "vec.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+
+	_, err = db.Exec(`CREATE TABLE messages (id INTEGER PRIMARY KEY, body TEXT, embed_gen INTEGER)`)
+	require.NoError(t, err)
+
+	store, err := sqlitevec.New[int64, int64](context.Background(), db, sqlitevec.Schema{
+		DocsTable:      "messages",
+		IDColumn:       "id",
+		ContentColumn:  "body",
+		EmbedGenColumn: "embed_gen",
+		VectorsPrefix:  "message_vectors",
+	})
+	require.NoError(t, err)
+	return db, store
+}
+
+func TestStoreFillThenSearch(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	ctx := context.Background()
+	db, store := setup(t)
+
+	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (1, 'a cat sat'), (2, 'a dog ran')`)
+	require.NoError(err)
+	require.NoError(store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
+
+	stats, err := vector.Fill(ctx, store, 1, topicEncoder(), vector.FillOptions{})
+	require.NoError(err)
+	assert.Equal(2, stats.Documents)
+
+	pending, err := store.PendingForGeneration(ctx, 1, 10)
+	require.NoError(err)
+	assert.Empty(pending, "nothing pending once every document is stamped")
+
+	enc := func(int64) vector.EncodeFunc { return topicEncoder() }
+	hits, err := vector.Search(ctx, store, "a cat", enc, vector.SearchOptions{})
+	require.NoError(err)
+	require.NotEmpty(hits)
+	assert.Equal(int64(1), hits[0].Doc, "the cat query ranks the cat document first")
+}
+
+func TestStoreReembeddingReplacesVectors(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	ctx := context.Background()
+	db, store := setup(t)
+
+	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (1, 'a cat sat')`)
+	require.NoError(err)
+	require.NoError(store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
+
+	require.NoError(store.SaveVectors(ctx, 1, 1, []vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{1, 0, 0}}}))
+	require.NoError(store.SaveVectors(ctx, 1, 1, []vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{0, 1, 0}}}))
+
+	hits, err := store.QueryGeneration(ctx, 1, vector.Vector{0, 1, 0}, 10)
+	require.NoError(err)
+	require.Len(hits, 1, "re-embedding replaces the prior vector rather than duplicating it")
+	assert.InDelta(1.0, hits[0].Score, 1e-6, "stored vector now matches the new query")
+}
+
+func TestStoreSearchUnionsLiveGenerations(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	ctx := context.Background()
+	db, store := setup(t)
+
+	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (1, 'a cat'), (2, 'a dog')`)
+	require.NoError(err)
+
+	require.NoError(store.EnsureGeneration(ctx, 1, vector.Generation{Model: "v1", Dimensions: 3}, sqlitevec.StateActive))
+	_, err = vector.Fill(ctx, store, 1, topicEncoder(), vector.FillOptions{})
+	require.NoError(err)
+
+	// The building generation has covered only doc 1 so far.
+	require.NoError(store.EnsureGeneration(ctx, 2, vector.Generation{Model: "v2", Dimensions: 3}, sqlitevec.StateBuilding))
+	require.NoError(store.SaveVectors(ctx, 2, 1, []vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{1, 0, 0}}}))
+
+	gens, err := store.LiveGenerations(ctx)
+	require.NoError(err)
+	assert.Equal([]int64{2, 1}, gens, "building precedes active in preference order")
+
+	enc := func(int64) vector.EncodeFunc { return topicEncoder() }
+	hits, err := vector.Search(ctx, store, "a cat", enc, vector.SearchOptions{})
+	require.NoError(err)
+
+	found := map[int64]bool{}
+	for _, h := range hits {
+		found[h.Doc] = true
+	}
+	assert.True(found[1], "shared doc is searchable")
+	assert.True(found[2], "active-only doc is not dropped mid-migration (union coverage)")
+}
+
+func TestNewRejectsUnsafeIdentifiers(t *testing.T) {
+	_, err := sqlitevec.New[int64, int64](context.Background(), nil, sqlitevec.Schema{
+		DocsTable: "messages; DROP TABLE messages",
+	})
+	require.Error(t, err)
+}
