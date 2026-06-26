@@ -1,12 +1,17 @@
 // Package sqlitevec implements vector.Store on top of SQLite with the
 // sqlite-vec extension. It is a reference backend: a worked example of the
-// storage contract the vector flows depend on, built against the same
-// sqlite-vec binding msgvault uses.
+// storage contract the vector flows depend on, built against sqlite-vec.
 //
-// Callers must register the extension once before opening their database:
+// On Unix platforms with cgo, call Register before opening a mattn/go-sqlite3
+// database:
 //
+//	import _ "github.com/mattn/go-sqlite3"
 //	sqlitevec.Register()
 //	db, _ := sql.Open("sqlite3", path)
+//
+// On Windows or without cgo, import modernc.org/sqlite and open databases with
+// the "sqlite" driver. The sqlite-vec extension is registered during package
+// initialization in that build.
 //
 // The caller owns the documents table; this package owns a small set of
 // vector tables derived from VectorsPrefix. Each generation gets its own
@@ -20,15 +25,8 @@ import (
 	"fmt"
 	"regexp"
 
-	vecext "github.com/asg017/sqlite-vec-go-bindings/cgo"
-
 	"go.kenn.io/kit/vector"
 )
-
-// Register loads the sqlite-vec extension into every SQLite connection
-// opened afterwards in this process. It must be called before opening the
-// database the store will use.
-func Register() { vecext.Auto() }
 
 var identifierPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 

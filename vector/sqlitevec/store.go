@@ -5,8 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 
-	vecext "github.com/asg017/sqlite-vec-go-bindings/cgo"
-
 	"go.kenn.io/kit/vector"
 )
 
@@ -71,11 +69,11 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, vectors []v
 	}
 
 	for _, cv := range vectors {
-		blob, err := vecext.SerializeFloat32(cv.Vector)
+		expr, value, err := vectorValue(cv.Vector)
 		if err != nil {
 			return fmt.Errorf("serialize vector: %w", err)
 		}
-		res, err := tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (embedding) VALUES (?)`, s.vecTable(ordinal)), blob)
+		res, err := tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (embedding) VALUES (%s)`, s.vecTable(ordinal), expr), value)
 		if err != nil {
 			return fmt.Errorf("insert vector: %w", err)
 		}
@@ -166,21 +164,20 @@ func (s *Store[K, G]) QueryGeneration(ctx context.Context, gen G, query vector.V
 	if len(query) != dimension {
 		return nil, fmt.Errorf("query has %d dimensions, generation expects %d", len(query), dimension)
 	}
-	blob, err := vecext.SerializeFloat32(query)
+	expr, value, err := vectorValue(query)
 	if err != nil {
 		return nil, fmt.Errorf("serialize query: %w", err)
 	}
-
 	// The KNN runs against the vec0 table alone (its required form), then
 	// joins to the chunk map to recover document keys.
 	sqlText := fmt.Sprintf(`
 WITH knn AS (
-    SELECT rowid, distance FROM %s WHERE embedding MATCH ? ORDER BY distance LIMIT ?
+    SELECT rowid, distance FROM %s WHERE embedding MATCH %s ORDER BY distance LIMIT ?
 )
 SELECT c.doc_key, c.chunk_index, knn.distance
   FROM knn JOIN %s c ON c.ordinal = ? AND c.vec_rowid = knn.rowid
- ORDER BY knn.distance`, s.vecTable(ordinal), s.chunksTable())
-	rows, err := s.db.QueryContext(ctx, sqlText, blob, limit, ordinal)
+ ORDER BY knn.distance`, s.vecTable(ordinal), expr, s.chunksTable())
+	rows, err := s.db.QueryContext(ctx, sqlText, value, limit, ordinal)
 	if err != nil {
 		return nil, fmt.Errorf("query generation: %w", err)
 	}

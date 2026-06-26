@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	_ "github.com/mattn/go-sqlite3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -36,9 +35,7 @@ func topicEncoder() vector.EncodeFunc {
 
 func setup(t *testing.T) (*sql.DB, *sqlitevec.Store[int64, int64]) {
 	t.Helper()
-	sqlitevec.Register()
-
-	db, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "vec.db"))
+	db, err := openSQLiteTestDB(t, filepath.Join(t.TempDir(), "vec.db"))
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 
