@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
+	"fmt"
 	"io"
 	"path/filepath"
 	"strings"
@@ -229,6 +230,31 @@ func TestStoreEnsureGenerationRejectsChangedFingerprint(t *testing.T) {
 	err = db.QueryRowContext(ctx, `SELECT state FROM message_vectors_generations WHERE gen_key = ?`, 1).Scan(&state)
 	require.NoError(err)
 	assert.Equal(string(sqlitevec.StateBuilding), state, "mismatched ensure does not change the existing generation state")
+}
+
+func TestNewCreatesChunkLookupIndexes(t *testing.T) {
+	assert := assert.New(t)
+	db, _ := setup(t)
+
+	assert.Equal([]string{"ordinal", "vec_rowid"}, indexColumns(t, db, "message_vectors_chunks_by_vector"))
+	assert.Equal([]string{"doc_key", "ordinal", "vec_rowid"}, indexColumns(t, db, "message_vectors_chunks_by_doc"))
+}
+
+func indexColumns(t *testing.T, db *sql.DB, index string) []string {
+	t.Helper()
+	rows, err := db.QueryContext(context.Background(), fmt.Sprintf(`PRAGMA index_info(%s)`, index))
+	require.NoError(t, err)
+	defer func() { require.NoError(t, rows.Close()) }()
+
+	var columns []string
+	for rows.Next() {
+		var seqno, cid int
+		var name string
+		require.NoError(t, rows.Scan(&seqno, &cid, &name))
+		columns = append(columns, name)
+	}
+	require.NoError(t, rows.Err())
+	return columns
 }
 
 func TestStoreSaveVectorsRejectsMissingDocument(t *testing.T) {
