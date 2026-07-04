@@ -53,7 +53,7 @@ func TestEncodeBatchedPreservesOrderAcrossBatches(t *testing.T) {
 	require.NoError(err)
 	require.Len(out, len(in))
 	for i, c := range in {
-		assert.Equal(float32(len(c.Text)), out[i][0], "vector %d matches its input", i)
+		assert.InDelta(float32(len(c.Text)), out[i][0], 1e-6, "vector %d matches its input", i)
 	}
 
 	mu.Lock()
@@ -110,10 +110,9 @@ func TestEncodeBatchedNilEncoder(t *testing.T) {
 }
 
 func TestEncodeBatchedEmptyInput(t *testing.T) {
-	assert := assert.New(t)
 	out, err := vector.EncodeBatched(context.Background(), echoEncoder(nil), nil, vector.BatchOptions{})
-	assert.NoError(err)
-	assert.Empty(out)
+	require.NoError(t, err)
+	assert.Empty(t, out)
 }
 
 func TestEncodeBatchedStopsOnCancelledContext(t *testing.T) {

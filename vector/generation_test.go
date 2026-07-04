@@ -25,8 +25,9 @@ func TestGenerationFingerprintIsStableAndOrderIndependent(t *testing.T) {
 		Params:     map[string]string{"prompt": "search", "pooling": "mean"},
 	}
 
-	assert.Equal(a.Fingerprint(), a.Fingerprint(), "same value fingerprints identically")
-	assert.Equal(a.Fingerprint(), b.Fingerprint(), "map order does not change fingerprint")
+	fp := a.Fingerprint()
+	assert.Equal(fp, a.Fingerprint(), "same value fingerprints identically")
+	assert.Equal(fp, b.Fingerprint(), "map order does not change fingerprint")
 }
 
 func TestGenerationFingerprintIsNotAmbiguousAcrossParams(t *testing.T) {
