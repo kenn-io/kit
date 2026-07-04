@@ -67,7 +67,7 @@ func BenchmarkSQLiteDriverSaveVectors(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				doc := int64(i%documents + 1)
-				err := store.SaveVectors(ctx, int64(1), doc, []vector.ChunkVector{{ChunkIndex: 0, Vector: benchVector(i, 16)}})
+				err := store.SaveVectors(ctx, int64(1), doc, nil, []vector.ChunkVector{{ChunkIndex: 0, Vector: benchVector(i, 16)}})
 				if err != nil {
 					b.StopTimer()
 					require.NoError(err)
@@ -115,7 +115,7 @@ func setupBenchmarkStore(b *testing.B, driver sqliteDriverBench, documents, dime
 	require.NoError(store.EnsureGeneration(ctx, int64(1), vector.Generation{Model: "bench", Dimensions: dimensions}, sqlitevec.StateActive))
 
 	for i := 1; i <= documents; i++ {
-		err = store.SaveVectors(ctx, int64(1), int64(i), []vector.ChunkVector{{ChunkIndex: 0, Vector: benchVector(i, dimensions)}})
+		err = store.SaveVectors(ctx, int64(1), int64(i), nil, []vector.ChunkVector{{ChunkIndex: 0, Vector: benchVector(i, dimensions)}})
 		require.NoError(err)
 	}
 	return db, store

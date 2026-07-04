@@ -10,10 +10,16 @@ import (
 
 // PendingForGeneration scans the caller's documents table for rows whose
 // stamp does not yet match gen, ordered by primary key for stable paging.
+// When the schema names a revision column, each row's revision is returned
+// so SaveVectors can stamp optimistically.
 func (s *Store[K, G]) PendingForGeneration(ctx context.Context, gen G, limit int) ([]vector.Pending[K], error) {
+	columns := fmt.Sprintf("%s, %s", s.schema.IDColumn, s.schema.ContentColumn)
+	if s.schema.RevisionColumn != "" {
+		columns += ", " + s.schema.RevisionColumn
+	}
 	query := fmt.Sprintf(
-		`SELECT %s, %s FROM %s WHERE %s IS NULL OR %s <> ? ORDER BY %s LIMIT ?`,
-		s.schema.IDColumn, s.schema.ContentColumn, s.schema.DocsTable,
+		`SELECT %s FROM %s WHERE %s IS NULL OR %s <> ? ORDER BY %s LIMIT ?`,
+		columns, s.schema.DocsTable,
 		s.schema.EmbedGenColumn, s.schema.EmbedGenColumn, s.schema.IDColumn)
 	rows, err := s.db.QueryContext(ctx, query, gen, limit)
 	if err != nil {
@@ -24,7 +30,11 @@ func (s *Store[K, G]) PendingForGeneration(ctx context.Context, gen G, limit int
 	var pending []vector.Pending[K]
 	for rows.Next() {
 		var p vector.Pending[K]
-		if err := rows.Scan(&p.Doc, &p.Content); err != nil {
+		dest := []any{&p.Doc, &p.Content}
+		if s.schema.RevisionColumn != "" {
+			dest = append(dest, &p.Revision)
+		}
+		if err := rows.Scan(dest...); err != nil {
 			return nil, fmt.Errorf("scan pending row: %w", err)
 		}
 		pending = append(pending, p)
@@ -36,8 +46,14 @@ func (s *Store[K, G]) PendingForGeneration(ctx context.Context, gen G, limit int
 }
 
 // SaveVectors replaces doc's chunk vectors for gen and stamps the document
-// as embedded for gen, all in one transaction.
-func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, vectors []vector.ChunkVector) error {
+// as embedded for gen, all in one transaction. When the schema names a
+// revision column, the stamp is conditional on revision still matching the
+// document's current value; on a mismatch nothing is persisted and the
+// returned error wraps vector.ErrStale.
+func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision any, vectors []vector.ChunkVector) error {
+	if revision != nil && s.schema.RevisionColumn == "" {
+		return fmt.Errorf("revision given for document %v but schema names no revision column", doc)
+	}
 	ordinal, dimension, err := s.lookupGeneration(ctx, gen)
 	if err != nil {
 		return err
@@ -88,9 +104,18 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, vectors []v
 		}
 	}
 
-	res, err := tx.ExecContext(ctx,
-		fmt.Sprintf(`UPDATE %s SET %s = ? WHERE %s = ?`, s.schema.DocsTable, s.schema.EmbedGenColumn, s.schema.IDColumn),
-		gen, doc)
+	var res sql.Result
+	if s.schema.RevisionColumn != "" {
+		// IS rather than = so a NULL revision still matches NULL.
+		res, err = tx.ExecContext(ctx,
+			fmt.Sprintf(`UPDATE %s SET %s = ? WHERE %s = ? AND %s IS ?`,
+				s.schema.DocsTable, s.schema.EmbedGenColumn, s.schema.IDColumn, s.schema.RevisionColumn),
+			gen, doc, revision)
+	} else {
+		res, err = tx.ExecContext(ctx,
+			fmt.Sprintf(`UPDATE %s SET %s = ? WHERE %s = ?`, s.schema.DocsTable, s.schema.EmbedGenColumn, s.schema.IDColumn),
+			gen, doc)
+	}
 	if err != nil {
 		return fmt.Errorf("stamp embed generation: %w", err)
 	}
@@ -99,6 +124,18 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, vectors []v
 		return fmt.Errorf("stamp embed generation rows: %w", err)
 	}
 	if stamped == 0 {
+		if s.schema.RevisionColumn != "" {
+			exists, err := s.docExists(ctx, tx, doc)
+			if err != nil {
+				return err
+			}
+			if exists {
+				// The document changed between scan and save. Roll back so
+				// the stale vectors are not stamped over the newer content;
+				// the document stays pending and is re-read next run.
+				return fmt.Errorf("document %v: %w", doc, vector.ErrStale)
+			}
+		}
 		// The source row vanished between scan and save (or the key is
 		// wrong). Roll back rather than commit vectors with no document,
 		// which QueryGeneration would otherwise surface as orphan hits.
@@ -108,6 +145,19 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, vectors []v
 		return fmt.Errorf("commit save vectors: %w", err)
 	}
 	return nil
+}
+
+func (s *Store[K, G]) docExists(ctx context.Context, tx *sql.Tx, doc K) (bool, error) {
+	var one int
+	err := tx.QueryRowContext(ctx,
+		fmt.Sprintf(`SELECT 1 FROM %s WHERE %s = ?`, s.schema.DocsTable, s.schema.IDColumn), doc).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("check document %v: %w", doc, err)
+	}
+	return true, nil
 }
 
 func (s *Store[K, G]) docRowids(ctx context.Context, tx txQuerier, ordinal int64, doc K) ([]int64, error) {

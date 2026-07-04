@@ -2,11 +2,13 @@ package vector
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
-// FillOptions configures Fill.
-type FillOptions struct {
+// FillOptions configures Fill. K is the document key type of the Store the
+// fill runs over.
+type FillOptions[K comparable] struct {
 	// ScanBatch is the number of pending documents fetched per scan.
 	// Values <= 0 use 128.
 	ScanBatch int
@@ -14,12 +16,28 @@ type FillOptions struct {
 	Split SplitOptions
 	// Batch controls how chunks are batched into encode calls.
 	Batch BatchOptions
+	// OnEncodeError, if non-nil, is consulted when encoding a document
+	// fails. Returning true skips the document: it is stamped for the
+	// generation with no vectors so it stops being pending, and the fill
+	// continues (the treatment for inputs a model permanently rejects).
+	// Returning false — or leaving OnEncodeError nil — aborts the fill
+	// with the error, which is the right default for transient failures.
+	OnEncodeError func(doc K, err error) bool
 }
 
 // FillStats reports what a Fill run embedded.
 type FillStats struct {
+	// Documents is the number of documents embedded and stamped.
 	Documents int
-	Chunks    int
+	// Chunks is the total chunk vectors saved across Documents.
+	Chunks int
+	// Skipped counts documents stamped without vectors because
+	// OnEncodeError elected to skip them.
+	Skipped int
+	// Stale counts documents left pending because they changed between
+	// scan and save (SaveVectors returned ErrStale). A later run retries
+	// them at their new revision.
+	Stale int
 }
 
 // Fill embeds every document that still needs the target generation: it
@@ -27,40 +45,72 @@ type FillStats struct {
 // saves the resulting vectors, repeating until no documents remain. It is
 // the generic scan-and-fill loop; the store decides what counts as
 // pending and persists the results.
-func Fill[K, G comparable](ctx context.Context, store Store[K, G], gen G, enc EncodeFunc, o FillOptions) (FillStats, error) {
+//
+// A document that changes mid-run (ErrStale from SaveVectors) is left
+// pending and not retried until the next Fill call, so an actively edited
+// document cannot starve the loop.
+func Fill[K, G comparable](ctx context.Context, store Store[K, G], gen G, enc EncodeFunc, o FillOptions[K]) (FillStats, error) {
 	scanBatch := o.ScanBatch
 	if scanBatch <= 0 {
 		scanBatch = 128
 	}
 
 	var stats FillStats
+	stale := make(map[K]struct{})
 	for {
 		if err := ctx.Err(); err != nil {
 			return stats, err
 		}
-		pending, err := store.PendingForGeneration(ctx, gen, scanBatch)
+		// Stale documents remain pending and occupy scan slots; widening
+		// the limit keeps fresh documents visible past them.
+		pending, err := store.PendingForGeneration(ctx, gen, scanBatch+len(stale))
 		if err != nil {
 			return stats, fmt.Errorf("scan pending: %w", err)
 		}
-		if len(pending) == 0 {
-			return stats, nil
-		}
 
+		attempted := false
 		for _, p := range pending {
+			if _, ok := stale[p.Doc]; ok {
+				continue
+			}
+			attempted = true
+
 			chunks := Split(p.Content, o.Split)
 			vectors, err := EncodeBatched(ctx, enc, chunks, o.Batch)
+			skipped := false
 			if err != nil {
-				return stats, fmt.Errorf("encode document %v: %w", p.Doc, err)
+				if o.OnEncodeError == nil || !o.OnEncodeError(p.Doc, err) {
+					return stats, fmt.Errorf("encode document %v: %w", p.Doc, err)
+				}
+				skipped = true
 			}
-			cvs := make([]ChunkVector, len(chunks))
-			for i, c := range chunks {
-				cvs[i] = ChunkVector{ChunkIndex: c.Index, Vector: vectors[i]}
+
+			var cvs []ChunkVector
+			if !skipped {
+				cvs = make([]ChunkVector, len(chunks))
+				for i, c := range chunks {
+					cvs[i] = ChunkVector{ChunkIndex: c.Index, Vector: vectors[i]}
+				}
 			}
-			if err := store.SaveVectors(ctx, gen, p.Doc, cvs); err != nil {
+			if err := store.SaveVectors(ctx, gen, p.Doc, p.Revision, cvs); err != nil {
+				if errors.Is(err, ErrStale) {
+					stale[p.Doc] = struct{}{}
+					stats.Stale++
+					continue
+				}
 				return stats, fmt.Errorf("save document %v: %w", p.Doc, err)
+			}
+			if skipped {
+				stats.Skipped++
+				continue
 			}
 			stats.Documents++
 			stats.Chunks += len(cvs)
+		}
+		if !attempted {
+			// Nothing left, or only stale documents remain pending; either
+			// way this run is done.
+			return stats, nil
 		}
 	}
 }

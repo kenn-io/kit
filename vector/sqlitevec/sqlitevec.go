@@ -51,6 +51,14 @@ type Schema struct {
 	ContentColumn  string // text to embed, e.g. "body"
 	EmbedGenColumn string // nullable generation stamp, e.g. "embed_gen"
 	VectorsPrefix  string // prefix for managed tables, e.g. "message_vectors"
+
+	// RevisionColumn optionally names a column that changes whenever the
+	// content changes, e.g. "last_modified". When set, SaveVectors stamps
+	// a document only if its revision still matches the value read by
+	// PendingForGeneration, and returns vector.ErrStale otherwise, so a
+	// concurrent edit is never overwritten by a stale stamp. Leave it
+	// empty only when documents are immutable while a fill runs.
+	RevisionColumn string
 }
 
 func (s Schema) validate() error {
@@ -64,6 +72,9 @@ func (s Schema) validate() error {
 		if !identifierPattern.MatchString(value) {
 			return fmt.Errorf("invalid %s %q", name, value)
 		}
+	}
+	if s.RevisionColumn != "" && !identifierPattern.MatchString(s.RevisionColumn) {
+		return fmt.Errorf("invalid revision column %q", s.RevisionColumn)
 	}
 	return nil
 }

@@ -24,6 +24,23 @@ pipeline. Preserve these invariants when changing it.
   ordering. Backends additionally require `K`/`G` to be types
   `database/sql` can bind and scan.
 
+## The stamp is conditional
+
+- `SaveVectors` receives the `Pending.Revision` token read with the
+  content. A store that tracks revisions must persist nothing and return
+  an error wrapping `ErrStale` when the document's revision has changed
+  since the scan — never stamp stale vectors over a concurrent edit. The
+  document stays pending and the next fill re-reads it.
+- `Fill` treats `ErrStale` as "leave it for the next run", not a failure:
+  the document is excluded for the rest of the run so an actively edited
+  document cannot starve the loop, and the scan limit is widened past
+  excluded documents so fresh work stays visible.
+- An empty vectors slice is a stamp-only save: the document is marked
+  handled for the generation without storing vectors. Fill relies on this
+  both for empty content and for documents `OnEncodeError` elects to
+  skip after a permanent encode failure — without it, one poison document
+  would wedge every future fill.
+
 ## Merge semantics
 
 - `Merge` takes per-generation lists in descending preference and keeps
