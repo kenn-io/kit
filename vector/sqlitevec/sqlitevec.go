@@ -113,9 +113,15 @@ CREATE TABLE IF NOT EXISTS %s (
     vec_rowid   INTEGER NOT NULL,
     PRIMARY KEY (ordinal, doc_key, chunk_index)
 );
+CREATE TABLE IF NOT EXISTS %s (
+    ordinal  INTEGER NOT NULL,
+    doc_key  NOT NULL,
+    revision,
+    PRIMARY KEY (ordinal, doc_key)
+);
 CREATE INDEX IF NOT EXISTS %s ON %s (ordinal, vec_rowid);
 CREATE INDEX IF NOT EXISTS %s ON %s (doc_key, ordinal, vec_rowid);`,
-		s.generationsTable(), s.chunksTable(),
+		s.generationsTable(), s.chunksTable(), s.stampsTable(),
 		s.chunksByVectorIndex(), s.chunksTable(),
 		s.chunksByDocIndex(), s.chunksTable())); err != nil {
 		return nil, fmt.Errorf("create bookkeeping tables: %w", err)
@@ -125,6 +131,7 @@ CREATE INDEX IF NOT EXISTS %s ON %s (doc_key, ordinal, vec_rowid);`,
 
 func (s *Store[K, G]) generationsTable() string { return s.schema.VectorsPrefix + "_generations" }
 func (s *Store[K, G]) chunksTable() string      { return s.schema.VectorsPrefix + "_chunks" }
+func (s *Store[K, G]) stampsTable() string      { return s.schema.VectorsPrefix + "_stamps" }
 func (s *Store[K, G]) chunksByVectorIndex() string {
 	return s.schema.VectorsPrefix + "_chunks_by_vector"
 }

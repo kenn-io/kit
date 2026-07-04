@@ -336,6 +336,37 @@ func TestStoreStaleRevisionLeavesDocumentPending(t *testing.T) {
 	assert.Empty(pending)
 }
 
+func TestStorePendingForGenerationDetectsRevisionEditAfterStamp(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	ctx := context.Background()
+	db, store := setupWithRevision(t)
+
+	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body, last_modified) VALUES (1, 'a cat sat', 1)`)
+	require.NoError(err)
+	require.NoError(store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
+
+	pending, err := store.PendingForGeneration(ctx, 1, 10)
+	require.NoError(err)
+	require.Len(pending, 1)
+	require.NoError(store.SaveVectors(ctx, 1, pending[0].Doc, pending[0].Revision,
+		[]vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{1, 0, 0}}}))
+
+	pending, err = store.PendingForGeneration(ctx, 1, 10)
+	require.NoError(err)
+	require.Empty(pending)
+
+	_, err = db.ExecContext(ctx, `UPDATE messages SET body = 'a cat jumped', last_modified = 2 WHERE id = 1`)
+	require.NoError(err)
+
+	pending, err = store.PendingForGeneration(ctx, 1, 10)
+	require.NoError(err)
+	require.Len(pending, 1, "a revision-only edit makes the document pending again")
+	assert.Equal(int64(1), pending[0].Doc)
+	assert.Equal("a cat jumped", pending[0].Content)
+	assert.Equal(int64(2), pending[0].Revision)
+}
+
 func TestStoreFillWithRevisionColumn(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)

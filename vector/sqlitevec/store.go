@@ -14,14 +14,16 @@ import (
 // so SaveVectors can stamp optimistically.
 func (s *Store[K, G]) PendingForGeneration(ctx context.Context, gen G, limit int) ([]vector.Pending[K], error) {
 	columns := fmt.Sprintf("%s, %s", s.schema.IDColumn, s.schema.ContentColumn)
+	args := []any{gen, limit}
 	if s.schema.RevisionColumn != "" {
-		columns += ", " + s.schema.RevisionColumn
+		ordinal, _, err := s.lookupGeneration(ctx, gen)
+		if err != nil {
+			return nil, err
+		}
+		columns = fmt.Sprintf("d.%s, d.%s, d.%s", s.schema.IDColumn, s.schema.ContentColumn, s.schema.RevisionColumn)
+		args = []any{ordinal, gen, limit}
 	}
-	query := fmt.Sprintf(
-		`SELECT %s FROM %s WHERE %s IS NULL OR %s <> ? ORDER BY %s LIMIT ?`,
-		columns, s.schema.DocsTable,
-		s.schema.EmbedGenColumn, s.schema.EmbedGenColumn, s.schema.IDColumn)
-	rows, err := s.db.QueryContext(ctx, query, gen, limit)
+	rows, err := s.db.QueryContext(ctx, s.pendingQuery(columns), args...)
 	if err != nil {
 		return nil, fmt.Errorf("scan pending: %w", err)
 	}
@@ -45,6 +47,27 @@ func (s *Store[K, G]) PendingForGeneration(ctx context.Context, gen G, limit int
 		return nil, fmt.Errorf("scan pending rows: %w", err)
 	}
 	return pending, nil
+}
+
+func (s *Store[K, G]) pendingQuery(columns string) string {
+	if s.schema.RevisionColumn != "" {
+		return fmt.Sprintf(`
+SELECT %s
+  FROM %s d
+  LEFT JOIN %s stamp ON stamp.ordinal = ? AND stamp.doc_key = d.%s
+ WHERE d.%s IS NULL
+    OR d.%s <> ?
+    OR stamp.doc_key IS NULL
+    OR NOT (d.%s IS stamp.revision)
+ ORDER BY d.%s LIMIT ?`,
+			columns, s.schema.DocsTable, s.stampsTable(), s.schema.IDColumn,
+			s.schema.EmbedGenColumn, s.schema.EmbedGenColumn,
+			s.schema.RevisionColumn, s.schema.IDColumn)
+	}
+	return fmt.Sprintf(
+		`SELECT %s FROM %s WHERE %s IS NULL OR %s <> ? ORDER BY %s LIMIT ?`,
+		columns, s.schema.DocsTable,
+		s.schema.EmbedGenColumn, s.schema.EmbedGenColumn, s.schema.IDColumn)
 }
 
 // SaveVectors replaces doc's chunk vectors for gen and stamps the document
@@ -143,6 +166,12 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision an
 		// which QueryGeneration would otherwise surface as orphan hits.
 		return fmt.Errorf("document %v not present in %s; vectors not persisted", doc, s.schema.DocsTable)
 	}
+	if _, err := tx.ExecContext(ctx,
+		fmt.Sprintf(`INSERT INTO %s (ordinal, doc_key, revision) VALUES (?, ?, ?)
+ON CONFLICT(ordinal, doc_key) DO UPDATE SET revision = excluded.revision`, s.stampsTable()),
+		ordinal, doc, revision); err != nil {
+		return fmt.Errorf("stamp revision: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit save vectors: %w", err)
 	}
@@ -192,6 +221,10 @@ func (s *Store[K, G]) DeleteVectors(ctx context.Context, doc K) error {
 	if _, err := tx.ExecContext(ctx,
 		fmt.Sprintf(`DELETE FROM %s WHERE doc_key = ?`, s.chunksTable()), doc); err != nil {
 		return fmt.Errorf("delete chunk map: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		fmt.Sprintf(`DELETE FROM %s WHERE doc_key = ?`, s.stampsTable()), doc); err != nil {
+		return fmt.Errorf("delete revision stamps: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit delete vectors: %w", err)
