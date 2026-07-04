@@ -173,6 +173,10 @@ func (s *Store[K, G]) DeleteVectors(ctx context.Context, doc K) error {
 		}
 		refs = append(refs, ref)
 	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("read chunk map: %w", err)
+	}
 	if err := rows.Close(); err != nil {
 		return fmt.Errorf("read chunk map: %w", err)
 	}

@@ -65,6 +65,7 @@ func EncodeBatched(ctx context.Context, enc EncodeFunc, chunks []Chunk, o BatchO
 		mu.Unlock()
 	}
 
+launch:
 	for start := 0; start < len(chunks); start += batchSize {
 		if ctx.Err() != nil {
 			setErr(ctx.Err())
@@ -74,13 +75,28 @@ func EncodeBatched(ctx context.Context, enc EncodeFunc, chunks []Chunk, o BatchO
 			break
 		}
 
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			setErr(ctx.Err())
+			break launch
+		}
+		if ctx.Err() != nil {
+			<-sem
+			setErr(ctx.Err())
+			break
+		}
+		if failed() {
+			<-sem
+			break
+		}
+
 		end := min(start+batchSize, len(chunks))
 		texts := make([]string, end-start)
 		for i, c := range chunks[start:end] {
 			texts[i] = c.Text
 		}
 
-		sem <- struct{}{}
 		wg.Add(1)
 		go func(start int, texts []string) {
 			defer wg.Done()

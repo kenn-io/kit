@@ -3,6 +3,7 @@ package vector_test
 import (
 	"context"
 	"errors"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -92,6 +93,44 @@ func TestEncodeBatchedSurfacesEncodeError(t *testing.T) {
 
 	_, err := vector.EncodeBatched(context.Background(), enc, chunks("a", "b"), vector.BatchOptions{BatchSize: 1})
 	assert.ErrorIs(err, sentinel)
+}
+
+func TestEncodeBatchedDoesNotLaunchBatchAfterBlockedDispatchSeesError(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+
+	sentinel := errors.New("boom")
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var calls atomic.Int64
+	enc := func(_ context.Context, texts []string) ([][]float32, error) {
+		call := calls.Add(1)
+		if call == 1 {
+			close(firstStarted)
+			<-releaseFirst
+			return nil, sentinel
+		}
+		return make([][]float32, len(texts)), nil
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := vector.EncodeBatched(context.Background(), enc, chunks("a", "b", "c"), vector.BatchOptions{
+			BatchSize:   1,
+			Concurrency: 1,
+		})
+		done <- err
+	}()
+
+	<-firstStarted
+	for range 1000 {
+		runtime.Gosched()
+	}
+	close(releaseFirst)
+
+	err := <-done
+	require.ErrorIs(err, sentinel)
+	assert.Equal(int64(1), calls.Load(), "no later batch is launched after the blocked dispatch observes the first error")
 }
 
 func TestEncodeBatchedRejectsCountMismatch(t *testing.T) {

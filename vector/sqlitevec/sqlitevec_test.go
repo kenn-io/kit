@@ -3,8 +3,12 @@ package sqlitevec_test
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
+	"errors"
+	"io"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,6 +17,81 @@ import (
 	"go.kenn.io/kit/vector"
 	"go.kenn.io/kit/vector/sqlitevec"
 )
+
+const rowsErrDriverName = "sqlitevec_rows_err"
+
+var rowsErrDeleteCount atomic.Int64
+
+func init() {
+	sql.Register(rowsErrDriverName, rowsErrDriver{})
+}
+
+type rowsErrDriver struct{}
+
+func (rowsErrDriver) Open(_ string) (driver.Conn, error) {
+	return rowsErrConn{}, nil
+}
+
+type rowsErrConn struct{}
+
+func (rowsErrConn) Prepare(_ string) (driver.Stmt, error) {
+	return nil, errors.New("prepare not implemented")
+}
+
+func (rowsErrConn) Close() error {
+	return nil
+}
+
+func (rowsErrConn) Begin() (driver.Tx, error) {
+	return rowsErrTx{}, nil
+}
+
+func (rowsErrConn) BeginTx(context.Context, driver.TxOptions) (driver.Tx, error) {
+	return rowsErrTx{}, nil
+}
+
+func (rowsErrConn) ExecContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Result, error) {
+	if strings.Contains(query, "DELETE FROM") {
+		rowsErrDeleteCount.Add(1)
+	}
+	return driver.RowsAffected(0), nil
+}
+
+func (rowsErrConn) QueryContext(_ context.Context, _ string, _ []driver.NamedValue) (driver.Rows, error) {
+	return &rowsErrRows{}, nil
+}
+
+type rowsErrTx struct{}
+
+func (rowsErrTx) Commit() error {
+	return nil
+}
+
+func (rowsErrTx) Rollback() error {
+	return nil
+}
+
+type rowsErrRows struct {
+	returned bool
+}
+
+func (rows *rowsErrRows) Columns() []string {
+	return []string{"ordinal", "vec_rowid"}
+}
+
+func (rows *rowsErrRows) Close() error {
+	return nil
+}
+
+func (rows *rowsErrRows) Next(dest []driver.Value) error {
+	if !rows.returned {
+		rows.returned = true
+		dest[0] = int64(1)
+		dest[1] = int64(42)
+		return nil
+	}
+	return io.ErrUnexpectedEOF
+}
 
 // topicEncoder maps text to a one-hot 3-D vector by keyword, so queries
 // match documents deterministically.
@@ -312,6 +391,31 @@ func TestStoreDeleteVectorsRemovesAllGenerations(t *testing.T) {
 
 	// Deleting a document with no vectors is a no-op, not an error.
 	require.NoError(store.DeleteVectors(ctx, 999))
+}
+
+func TestStoreDeleteVectorsStopsBeforeMutationWhenChunkScanFails(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	ctx := context.Background()
+	rowsErrDeleteCount.Store(0)
+
+	db, err := sql.Open(rowsErrDriverName, "")
+	require.NoError(err)
+	t.Cleanup(func() { require.NoError(db.Close()) })
+
+	store, err := sqlitevec.New[int64, int64](ctx, db, sqlitevec.Schema{
+		DocsTable:      "messages",
+		IDColumn:       "id",
+		ContentColumn:  "body",
+		EmbedGenColumn: "embed_gen",
+		VectorsPrefix:  "message_vectors",
+	})
+	require.NoError(err)
+
+	err = store.DeleteVectors(ctx, 1)
+	require.Error(err)
+	assert.ErrorIs(err, io.ErrUnexpectedEOF)
+	assert.Equal(int64(0), rowsErrDeleteCount.Load(), "no vector or chunk rows are deleted after a partial chunk-map scan")
 }
 
 func TestNewRejectsUnsafeIdentifiers(t *testing.T) {
