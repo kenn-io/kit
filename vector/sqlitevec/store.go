@@ -97,16 +97,12 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision an
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if s.schema.RevisionColumn == "" {
-		invalidated, err := s.docInvalidated(ctx, tx, doc)
-		if err != nil {
-			return err
-		}
-		if invalidated {
-			if err := s.deleteDocumentVectors(ctx, tx, doc); err != nil {
-				return err
-			}
-		} else if err := s.deleteGenerationVectors(ctx, tx, ordinal, doc); err != nil {
+	invalidated, err := s.docInvalidated(ctx, tx, doc)
+	if err != nil {
+		return err
+	}
+	if invalidated {
+		if err := s.deleteDocumentVectors(ctx, tx, doc); err != nil {
 			return err
 		}
 	} else if err := s.deleteGenerationVectors(ctx, tx, ordinal, doc); err != nil {

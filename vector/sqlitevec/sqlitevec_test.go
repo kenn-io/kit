@@ -481,6 +481,43 @@ INSERT INTO messages (id, body, last_modified) VALUES (1, 'a cat sat', 1);`)
 	require.Empty(pending, "saving another generation with a stamp-only revision bump does not stale covered generations")
 }
 
+func TestStoreSaveVectorsClearsAllGenerationsAfterRevisionInvalidation(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	ctx := context.Background()
+	db, store := setupWithRevision(t)
+
+	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body, last_modified) VALUES (1, 'a cat', 1)`)
+	require.NoError(err)
+	require.NoError(store.EnsureGeneration(ctx, 1, vector.Generation{Model: "v1", Dimensions: 3}, sqlitevec.StateActive))
+	require.NoError(store.EnsureGeneration(ctx, 2, vector.Generation{Model: "v2", Dimensions: 3}, sqlitevec.StateBuilding))
+	require.NoError(store.SaveVectors(ctx, 1, 1, int64(1), []vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{1, 0, 0}}}))
+	require.NoError(store.SaveVectors(ctx, 2, 1, int64(1), []vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{1, 0, 0}}}))
+
+	_, err = db.ExecContext(ctx, `UPDATE messages SET body = 'a dog', last_modified = 2, embed_gen = NULL WHERE id = 1`)
+	require.NoError(err)
+	pending, err := store.PendingForGeneration(ctx, 2, 10)
+	require.NoError(err)
+	require.Len(pending, 1)
+	require.NoError(store.SaveVectors(ctx, 2, pending[0].Doc, pending[0].Revision,
+		[]vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{0, 1, 0}}}))
+
+	pending, err = store.PendingForGeneration(ctx, 1, 10)
+	require.NoError(err)
+	require.Len(pending, 1, "the older generation stays pending after another generation refreshes an invalidated revisioned row")
+	assert.Equal("a dog", pending[0].Content)
+	assert.Equal(int64(2), pending[0].Revision)
+
+	hits, err := store.QueryGeneration(ctx, 1, vector.Vector{1, 0, 0}, 10)
+	require.NoError(err)
+	assert.Empty(hits, "stale older-generation vectors are removed after revisioned document-wide invalidation")
+
+	hits, err = store.QueryGeneration(ctx, 2, vector.Vector{0, 1, 0}, 10)
+	require.NoError(err)
+	require.Len(hits, 1)
+	assert.Equal(int64(1), hits[0].Doc)
+}
+
 func TestStoreFillWithRevisionColumn(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
