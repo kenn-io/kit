@@ -263,6 +263,57 @@ func TestStoreStampOnlySaveDropsDocumentFromPending(t *testing.T) {
 	assert.Empty(hits)
 }
 
+func TestStoreQueryGenerationExcludesDeletedDocuments(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	ctx := context.Background()
+	db, store := setup(t)
+
+	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (1, 'a cat sat'), (2, 'a dog ran')`)
+	require.NoError(err)
+	require.NoError(store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
+	_, err = vector.Fill(ctx, store, 1, topicEncoder(), vector.FillOptions[int64]{})
+	require.NoError(err)
+
+	// The caller deletes a source row without telling the store.
+	_, err = db.ExecContext(ctx, `DELETE FROM messages WHERE id = 1`)
+	require.NoError(err)
+
+	hits, err := store.QueryGeneration(ctx, 1, vector.Vector{1, 0, 0}, 10)
+	require.NoError(err)
+	docs := map[int64]bool{}
+	for _, h := range hits {
+		docs[h.Doc] = true
+	}
+	assert.False(docs[1], "a deleted document's vectors are not returned as hits")
+	assert.True(docs[2], "surviving documents still match")
+}
+
+func TestStoreDeleteVectorsRemovesAllGenerations(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	ctx := context.Background()
+	db, store := setup(t)
+
+	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (1, 'a cat')`)
+	require.NoError(err)
+	require.NoError(store.EnsureGeneration(ctx, 1, vector.Generation{Model: "v1", Dimensions: 3}, sqlitevec.StateActive))
+	require.NoError(store.EnsureGeneration(ctx, 2, vector.Generation{Model: "v2", Dimensions: 3}, sqlitevec.StateBuilding))
+	require.NoError(store.SaveVectors(ctx, 1, 1, nil, []vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{1, 0, 0}}}))
+	require.NoError(store.SaveVectors(ctx, 2, 1, nil, []vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{1, 0, 0}}}))
+
+	require.NoError(store.DeleteVectors(ctx, 1))
+
+	for _, gen := range []int64{1, 2} {
+		hits, err := store.QueryGeneration(ctx, gen, vector.Vector{1, 0, 0}, 10)
+		require.NoError(err)
+		assert.Empty(hits, "generation %d holds no vectors after delete", gen)
+	}
+
+	// Deleting a document with no vectors is a no-op, not an error.
+	require.NoError(store.DeleteVectors(ctx, 999))
+}
+
 func TestNewRejectsUnsafeIdentifiers(t *testing.T) {
 	_, err := sqlitevec.New[int64, int64](context.Background(), nil, sqlitevec.Schema{
 		DocsTable: "messages; DROP TABLE messages",

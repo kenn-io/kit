@@ -56,3 +56,16 @@ pipeline. Preserve these invariants when changing it.
   building generation while the active generation still serves the bulk.
   `Search` must keep querying every generation `LiveGenerations` returns,
   in the order it returns them.
+
+## Hits come from live documents
+
+- Backends must not return hits whose source row no longer exists; the
+  caller may delete documents without telling the store, so
+  `QueryGeneration` joins back to the documents table for existence.
+- That join checks existence only — never stamp equality. The embed-gen
+  column records just the newest generation, so filtering the active
+  generation's hits by `embed_gen = active` would wrongly hide documents
+  already re-embedded for the building generation and break the union.
+- Existence filtering hides orphan hits but the vectors still occupy KNN
+  slots; deletion cleanup (`sqlitevec.DeleteVectors`) is the caller's
+  responsibility when removing documents.

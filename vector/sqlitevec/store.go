@@ -147,6 +147,52 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision an
 	return nil
 }
 
+// DeleteVectors removes doc's vectors and chunk mappings from every
+// generation. Callers invoke it when deleting a source document; without
+// it the orphaned vectors keep occupying KNN result slots even though
+// QueryGeneration filters them out of hits.
+func (s *Store[K, G]) DeleteVectors(ctx context.Context, doc K) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin delete vectors: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	rows, err := tx.QueryContext(ctx,
+		fmt.Sprintf(`SELECT ordinal, vec_rowid FROM %s WHERE doc_key = ?`, s.chunksTable()), doc)
+	if err != nil {
+		return fmt.Errorf("read chunk map: %w", err)
+	}
+	type chunkRef struct{ ordinal, rowid int64 }
+	var refs []chunkRef
+	for rows.Next() {
+		var ref chunkRef
+		if err := rows.Scan(&ref.ordinal, &ref.rowid); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan chunk rowid: %w", err)
+		}
+		refs = append(refs, ref)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("read chunk map: %w", err)
+	}
+
+	for _, ref := range refs {
+		if _, err := tx.ExecContext(ctx,
+			fmt.Sprintf(`DELETE FROM %s WHERE rowid = ?`, s.vecTable(ref.ordinal)), ref.rowid); err != nil {
+			return fmt.Errorf("delete vector: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		fmt.Sprintf(`DELETE FROM %s WHERE doc_key = ?`, s.chunksTable()), doc); err != nil {
+		return fmt.Errorf("delete chunk map: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit delete vectors: %w", err)
+	}
+	return nil
+}
+
 func (s *Store[K, G]) docExists(ctx context.Context, tx *sql.Tx, doc K) (bool, error) {
 	var one int
 	err := tx.QueryRowContext(ctx,
@@ -206,6 +252,13 @@ SELECT gen_key FROM %s
 // QueryGeneration runs a cosine KNN search within gen's vec0 table and
 // maps each neighbor back to its document and chunk. Score is the cosine
 // similarity (1 - cosine distance), so higher is more similar.
+//
+// Hits are joined back to the documents table, so vectors whose source
+// row has been deleted are never returned. The join checks existence
+// only — never the generation stamp, which records just the newest
+// generation and would wrongly hide the active generation's valid
+// vectors mid-migration. Orphaned vectors still occupy KNN slots inside
+// limit until DeleteVectors removes them.
 func (s *Store[K, G]) QueryGeneration(ctx context.Context, gen G, query vector.Vector, limit int) ([]vector.Hit[K], error) {
 	ordinal, dimension, err := s.lookupGeneration(ctx, gen)
 	if err != nil {
@@ -219,14 +272,17 @@ func (s *Store[K, G]) QueryGeneration(ctx context.Context, gen G, query vector.V
 		return nil, fmt.Errorf("serialize query: %w", err)
 	}
 	// The KNN runs against the vec0 table alone (its required form), then
-	// joins to the chunk map to recover document keys.
+	// joins to the chunk map to recover document keys and to the source
+	// table to drop vectors for deleted documents.
 	sqlText := fmt.Sprintf(`
 WITH knn AS (
     SELECT rowid, distance FROM %s WHERE embedding MATCH %s ORDER BY distance LIMIT ?
 )
 SELECT c.doc_key, c.chunk_index, knn.distance
-  FROM knn JOIN %s c ON c.ordinal = ? AND c.vec_rowid = knn.rowid
- ORDER BY knn.distance`, s.vecTable(ordinal), expr, s.chunksTable())
+  FROM knn
+  JOIN %s c ON c.ordinal = ? AND c.vec_rowid = knn.rowid
+  JOIN %s d ON d.%s = c.doc_key
+ ORDER BY knn.distance`, s.vecTable(ordinal), expr, s.chunksTable(), s.schema.DocsTable, s.schema.IDColumn)
 	rows, err := s.db.QueryContext(ctx, sqlText, value, limit, ordinal)
 	if err != nil {
 		return nil, fmt.Errorf("query generation: %w", err)
