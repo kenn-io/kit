@@ -16,7 +16,7 @@
 // The caller owns the documents table; this package owns a small set of
 // vector tables derived from VectorsPrefix. Each generation gets its own
 // vec0 virtual table sized to that generation's dimension, so generations
-// with different model dimensions coexist during a migration.
+// with different model dimensions coexist while generations overlap.
 package sqlitevec
 
 import (

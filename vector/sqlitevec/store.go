@@ -212,16 +212,33 @@ func (s *Store[K, G]) DeleteVectors(ctx context.Context, doc K) error {
 }
 
 func (s *Store[K, G]) docInvalidated(ctx context.Context, tx *sql.Tx, doc K) (bool, error) {
-	var embedGen any
-	err := tx.QueryRowContext(ctx,
-		fmt.Sprintf(`SELECT %s FROM %s WHERE %s = ?`, s.schema.EmbedGenColumn, s.schema.DocsTable, s.schema.IDColumn), doc).Scan(&embedGen)
+	query := fmt.Sprintf(`SELECT CASE WHEN %s IS NULL THEN 1 ELSE 0 END FROM %s WHERE %s = ?`,
+		s.schema.EmbedGenColumn, s.schema.DocsTable, s.schema.IDColumn)
+	if s.schema.RevisionColumn != "" {
+		query = fmt.Sprintf(`
+SELECT CASE
+       WHEN d.%s IS NULL THEN 1
+       WHEN stamp.doc_key IS NULL THEN 1
+       WHEN NOT (d.%s IS stamp.revision) THEN 1
+       ELSE 0
+       END
+  FROM %s d
+  LEFT JOIN %s gen ON gen.gen_key = d.%s
+  LEFT JOIN %s stamp ON stamp.ordinal = gen.ordinal AND stamp.doc_key = d.%s
+ WHERE d.%s = ?`,
+			s.schema.EmbedGenColumn, s.schema.RevisionColumn,
+			s.schema.DocsTable, s.generationsTable(), s.schema.EmbedGenColumn,
+			s.stampsTable(), s.schema.IDColumn, s.schema.IDColumn)
+	}
+	var invalidated int
+	err := tx.QueryRowContext(ctx, query, doc).Scan(&invalidated)
 	if err == sql.ErrNoRows {
 		return false, fmt.Errorf("document %v not present in %s; vectors not persisted", doc, s.schema.DocsTable)
 	}
 	if err != nil {
 		return false, fmt.Errorf("read embed generation: %w", err)
 	}
-	return embedGen == nil, nil
+	return invalidated != 0, nil
 }
 
 func (s *Store[K, G]) deleteGenerationVectors(ctx context.Context, tx *sql.Tx, ordinal int64, doc K) error {
@@ -345,8 +362,8 @@ SELECT gen_key FROM %s
 // row has been deleted are never returned. The join checks existence
 // only — never the generation stamp, which records just the newest
 // generation and would wrongly hide the active generation's valid
-// vectors mid-migration. Orphaned vectors still occupy KNN slots inside
-// limit until DeleteVectors removes them.
+// vectors while generations overlap. Orphaned vectors still occupy KNN
+// slots inside limit until DeleteVectors removes them.
 func (s *Store[K, G]) QueryGeneration(ctx context.Context, gen G, query vector.Vector, limit int) ([]vector.Hit[K], error) {
 	ordinal, dimension, err := s.lookupGeneration(ctx, gen)
 	if err != nil {
