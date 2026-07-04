@@ -120,10 +120,12 @@ CREATE TABLE IF NOT EXISTS %s (
     PRIMARY KEY (ordinal, doc_key)
 );
 CREATE INDEX IF NOT EXISTS %s ON %s (ordinal, vec_rowid);
-CREATE INDEX IF NOT EXISTS %s ON %s (doc_key, ordinal, vec_rowid);`,
+CREATE INDEX IF NOT EXISTS %s ON %s (doc_key, ordinal, vec_rowid);
+CREATE INDEX IF NOT EXISTS %s ON %s (doc_key, revision);`,
 		s.generationsTable(), s.chunksTable(), s.stampsTable(),
 		s.chunksByVectorIndex(), s.chunksTable(),
-		s.chunksByDocIndex(), s.chunksTable())); err != nil {
+		s.chunksByDocIndex(), s.chunksTable(),
+		s.stampsByDocRevisionIndex(), s.stampsTable())); err != nil {
 		return nil, fmt.Errorf("create bookkeeping tables: %w", err)
 	}
 	return s, nil
@@ -136,6 +138,9 @@ func (s *Store[K, G]) chunksByVectorIndex() string {
 	return s.schema.VectorsPrefix + "_chunks_by_vector"
 }
 func (s *Store[K, G]) chunksByDocIndex() string { return s.schema.VectorsPrefix + "_chunks_by_doc" }
+func (s *Store[K, G]) stampsByDocRevisionIndex() string {
+	return s.schema.VectorsPrefix + "_stamps_by_doc_revision"
+}
 func (s *Store[K, G]) vecTable(ordinal int64) string {
 	return fmt.Sprintf("%s_v%d", s.schema.VectorsPrefix, ordinal)
 }

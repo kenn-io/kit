@@ -256,6 +256,7 @@ func TestNewCreatesChunkLookupIndexes(t *testing.T) {
 
 	assert.Equal([]string{"ordinal", "vec_rowid"}, indexColumns(t, db, "message_vectors_chunks_by_vector"))
 	assert.Equal([]string{"doc_key", "ordinal", "vec_rowid"}, indexColumns(t, db, "message_vectors_chunks_by_doc"))
+	assert.Equal([]string{"doc_key", "revision"}, indexColumns(t, db, "message_vectors_stamps_by_doc_revision"))
 }
 
 func indexColumns(t *testing.T, db *sql.DB, index string) []string {
