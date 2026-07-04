@@ -652,6 +652,65 @@ func TestStoreQueryGenerationExcludesDeletedDocuments(t *testing.T) {
 	assert.True(docs[2], "surviving documents still match")
 }
 
+func TestStoreQueryGenerationExcludesEditedDocumentUntilReembedded(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	ctx := context.Background()
+	db, store := setupWithRevision(t)
+
+	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body, last_modified) VALUES (1, 'a cat sat', 1)`)
+	require.NoError(err)
+	require.NoError(store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
+	_, err = vector.Fill(ctx, store, 1, topicEncoder(), vector.FillOptions[int64]{})
+	require.NoError(err)
+
+	// The caller redacts the content, bumping the revision.
+	_, err = db.ExecContext(ctx, `UPDATE messages SET body = 'a dog ran', last_modified = 2 WHERE id = 1`)
+	require.NoError(err)
+
+	hits, err := store.QueryGeneration(ctx, 1, vector.Vector{1, 0, 0}, 10)
+	require.NoError(err)
+	assert.Empty(hits, "the pre-edit vector never surfaces after the revision changes")
+
+	_, err = vector.Fill(ctx, store, 1, topicEncoder(), vector.FillOptions[int64]{})
+	require.NoError(err)
+
+	hits, err = store.QueryGeneration(ctx, 1, vector.Vector{0, 1, 0}, 10)
+	require.NoError(err)
+	require.Len(hits, 1, "the re-embedded content is searchable again")
+	assert.Equal(int64(1), hits[0].Doc)
+}
+
+func TestStoreQueryGenerationExcludesInvalidatedDocumentUntilReembedded(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	ctx := context.Background()
+	db, store := setup(t)
+
+	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (1, 'a cat sat')`)
+	require.NoError(err)
+	require.NoError(store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
+	_, err = vector.Fill(ctx, store, 1, topicEncoder(), vector.FillOptions[int64]{})
+	require.NoError(err)
+
+	// Without a revision column, the caller signals an edit by clearing
+	// the embed-gen stamp.
+	_, err = db.ExecContext(ctx, `UPDATE messages SET body = 'a dog ran', embed_gen = NULL WHERE id = 1`)
+	require.NoError(err)
+
+	hits, err := store.QueryGeneration(ctx, 1, vector.Vector{1, 0, 0}, 10)
+	require.NoError(err)
+	assert.Empty(hits, "the pre-invalidation vector never surfaces while the document is pending")
+
+	_, err = vector.Fill(ctx, store, 1, topicEncoder(), vector.FillOptions[int64]{})
+	require.NoError(err)
+
+	hits, err = store.QueryGeneration(ctx, 1, vector.Vector{0, 1, 0}, 10)
+	require.NoError(err)
+	require.Len(hits, 1, "the re-embedded content is searchable again")
+	assert.Equal(int64(1), hits[0].Doc)
+}
+
 func TestStoreDeleteVectorsRemovesAllGenerations(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)

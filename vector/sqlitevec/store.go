@@ -48,28 +48,36 @@ func (s *Store[K, G]) PendingForGeneration(ctx context.Context, gen G, limit int
 	return pending, nil
 }
 
-func (s *Store[K, G]) pendingQuery(columns string) string {
+// coveredPredicate returns the SQL predicate that holds when the document
+// row aliased docAlias has current coverage in the generation whose stamps
+// row is LEFT JOINed as stampAlias: the document is not invalidated, the
+// generation has stamped it, and (with a revision column) the stamped
+// revision still matches. Every term is two-valued even across the LEFT
+// JOIN, so callers may negate it directly.
+//
+// This is the single definition of freshness. PendingForGeneration selects
+// NOT covered, QueryGeneration returns only covered hits, and docInvalidated
+// checks NOT covered for the document's own newest generation — so a
+// document is exactly one of pending or searchable for a generation, never
+// both and never neither. Do not fork a new freshness expression.
+func (s *Store[K, G]) coveredPredicate(docAlias, stampAlias string) string {
+	predicate := fmt.Sprintf("%s.%s IS NOT NULL AND %s.doc_key IS NOT NULL",
+		docAlias, s.schema.EmbedGenColumn, stampAlias)
 	if s.schema.RevisionColumn != "" {
-		return fmt.Sprintf(`
+		predicate += fmt.Sprintf(" AND (%s.%s IS %s.revision)", docAlias, s.schema.RevisionColumn, stampAlias)
+	}
+	return "(" + predicate + ")"
+}
+
+func (s *Store[K, G]) pendingQuery(columns string) string {
+	return fmt.Sprintf(`
 SELECT %s
   FROM %s d
   LEFT JOIN %s stamp ON stamp.ordinal = ? AND stamp.doc_key = d.%s
- WHERE d.%s IS NULL
-    OR stamp.doc_key IS NULL
-    OR NOT (d.%s IS stamp.revision)
- ORDER BY d.%s LIMIT ?`,
-			columns, s.schema.DocsTable, s.stampsTable(), s.schema.IDColumn,
-			s.schema.EmbedGenColumn, s.schema.RevisionColumn, s.schema.IDColumn)
-	}
-	return fmt.Sprintf(
-		`SELECT %s
-  FROM %s d
-  LEFT JOIN %s stamp ON stamp.ordinal = ? AND stamp.doc_key = d.%s
- WHERE d.%s IS NULL
-    OR stamp.doc_key IS NULL
+ WHERE NOT %s
  ORDER BY d.%s LIMIT ?`,
 		columns, s.schema.DocsTable, s.stampsTable(), s.schema.IDColumn,
-		s.schema.EmbedGenColumn, s.schema.IDColumn)
+		s.coveredPredicate("d", "stamp"), s.schema.IDColumn)
 }
 
 // SaveVectors replaces doc's chunk vectors for gen and stamps the document
@@ -212,24 +220,15 @@ func (s *Store[K, G]) DeleteVectors(ctx context.Context, doc K) error {
 }
 
 func (s *Store[K, G]) docInvalidated(ctx context.Context, tx *sql.Tx, doc K) (bool, error) {
-	query := fmt.Sprintf(`SELECT CASE WHEN %s IS NULL THEN 1 ELSE 0 END FROM %s WHERE %s = ?`,
-		s.schema.EmbedGenColumn, s.schema.DocsTable, s.schema.IDColumn)
-	if s.schema.RevisionColumn != "" {
-		query = fmt.Sprintf(`
-SELECT CASE
-       WHEN d.%s IS NULL THEN 1
-       WHEN stamp.doc_key IS NULL THEN 1
-       WHEN NOT (d.%s IS stamp.revision) THEN 1
-       ELSE 0
-       END
+	query := fmt.Sprintf(`
+SELECT CASE WHEN %s THEN 0 ELSE 1 END
   FROM %s d
   LEFT JOIN %s gen ON gen.gen_key = d.%s
   LEFT JOIN %s stamp ON stamp.ordinal = gen.ordinal AND stamp.doc_key = d.%s
  WHERE d.%s = ?`,
-			s.schema.EmbedGenColumn, s.schema.RevisionColumn,
-			s.schema.DocsTable, s.generationsTable(), s.schema.EmbedGenColumn,
-			s.stampsTable(), s.schema.IDColumn, s.schema.IDColumn)
-	}
+		s.coveredPredicate("d", "stamp"),
+		s.schema.DocsTable, s.generationsTable(), s.schema.EmbedGenColumn,
+		s.stampsTable(), s.schema.IDColumn, s.schema.IDColumn)
 	var invalidated int
 	err := tx.QueryRowContext(ctx, query, doc).Scan(&invalidated)
 	if err == sql.ErrNoRows {
@@ -358,12 +357,15 @@ SELECT gen_key FROM %s
 // maps each neighbor back to its document and chunk. Score is the cosine
 // similarity (1 - cosine distance), so higher is more similar.
 //
-// Hits are joined back to the documents table, so vectors whose source
-// row has been deleted are never returned. The join checks existence
-// only — never the generation stamp, which records just the newest
-// generation and would wrongly hide the active generation's valid
-// vectors while generations overlap. Orphaned vectors still occupy KNN
-// slots inside limit until DeleteVectors removes them.
+// A hit is returned only when its source row still exists and gen's
+// coverage of that row is current — the same coveredPredicate that drives
+// PendingForGeneration — so deleted rows and stale vectors for edited or
+// invalidated documents never surface, even before the next fill replaces
+// them. Freshness is per generation via the stamps table; the filter never
+// compares the embed-gen column to gen, which records only the newest
+// generation and would wrongly hide valid hits while generations overlap.
+// Filtered vectors still occupy KNN slots inside limit until SaveVectors
+// or DeleteVectors removes them.
 func (s *Store[K, G]) QueryGeneration(ctx context.Context, gen G, query vector.Vector, limit int) ([]vector.Hit[K], error) {
 	ordinal, dimension, err := s.lookupGeneration(ctx, gen)
 	if err != nil {
@@ -378,7 +380,7 @@ func (s *Store[K, G]) QueryGeneration(ctx context.Context, gen G, query vector.V
 	}
 	// The KNN runs against the vec0 table alone (its required form), then
 	// joins to the chunk map to recover document keys and to the source
-	// table to drop vectors for deleted documents.
+	// and stamps tables to keep only covered documents.
 	sqlText := fmt.Sprintf(`
 WITH knn AS (
     SELECT rowid, distance FROM %s WHERE embedding MATCH %s ORDER BY distance LIMIT ?
@@ -387,7 +389,10 @@ SELECT c.doc_key, c.chunk_index, knn.distance
   FROM knn
   JOIN %s c ON c.ordinal = ? AND c.vec_rowid = knn.rowid
   JOIN %s d ON d.%s = c.doc_key
- ORDER BY knn.distance`, s.vecTable(ordinal), expr, s.chunksTable(), s.schema.DocsTable, s.schema.IDColumn)
+  LEFT JOIN %s stamp ON stamp.ordinal = c.ordinal AND stamp.doc_key = c.doc_key
+ WHERE %s
+ ORDER BY knn.distance`, s.vecTable(ordinal), expr, s.chunksTable(), s.schema.DocsTable, s.schema.IDColumn,
+		s.stampsTable(), s.coveredPredicate("d", "stamp"))
 	rows, err := s.db.QueryContext(ctx, sqlText, value, limit, ordinal)
 	if err != nil {
 		return nil, fmt.Errorf("query generation: %w", err)

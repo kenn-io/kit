@@ -57,15 +57,24 @@ pipeline. Preserve these invariants when changing it.
   `Search` must keep querying every generation `LiveGenerations` returns,
   in the order it returns them.
 
-## Hits come from live documents
+## Hits come from live, current documents
 
 - Backends must not return hits whose source row no longer exists; the
   caller may delete documents without telling the store, so
-  `QueryGeneration` joins back to the documents table for existence.
-- That join checks existence only — never stamp equality. The embed-gen
-  column records just the newest generation, so filtering the active
-  generation's hits by `embed_gen = active` would wrongly hide documents
-  already re-embedded for the building generation and break the union.
-- Existence filtering hides orphan hits but the vectors still occupy KNN
-  slots; deletion cleanup (`sqlitevec.DeleteVectors`) is the caller's
-  responsibility when removing documents.
+  `QueryGeneration` joins back to the documents table.
+- Hits must also be current for the searched generation: stale vectors
+  for an edited or invalidated document must never surface between the
+  edit and the next fill, or a search can leak removed or redacted text.
+  In sqlitevec, searchable and pending are exact complements of one
+  shared freshness predicate (`coveredPredicate`) used by
+  `PendingForGeneration`, `QueryGeneration`, and invalidation checks —
+  never fork a new freshness expression for one read path.
+- Freshness is per generation (sqlitevec: the stamps table), never
+  `embed_gen = searched generation`. The embed-gen column records just
+  the newest generation, so comparing it to the searched generation
+  would wrongly hide the active generation's valid hits while
+  generations overlap and break the union.
+- Filtering hides stale and orphan hits but the vectors still occupy
+  KNN slots; replacement happens at the next `SaveVectors`, and deletion
+  cleanup (`sqlitevec.DeleteVectors`) is the caller's responsibility
+  when removing documents.
