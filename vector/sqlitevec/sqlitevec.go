@@ -100,10 +100,11 @@ func New[K, G comparable](ctx context.Context, db *sql.DB, schema Schema) (*Stor
 	s := &Store[K, G]{db: db, schema: schema}
 	if _, err := db.ExecContext(ctx, fmt.Sprintf(`
 CREATE TABLE IF NOT EXISTS %s (
-    ordinal   INTEGER PRIMARY KEY,
-    gen_key   UNIQUE,
-    dimension INTEGER NOT NULL,
-    state     TEXT NOT NULL
+    ordinal     INTEGER PRIMARY KEY,
+    gen_key     UNIQUE,
+    fingerprint TEXT NOT NULL,
+    dimension   INTEGER NOT NULL,
+    state       TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS %s (
     ordinal     INTEGER NOT NULL,
@@ -123,24 +124,33 @@ func (s *Store[K, G]) vecTable(ordinal int64) string {
 	return fmt.Sprintf("%s_v%d", s.schema.VectorsPrefix, ordinal)
 }
 
-// EnsureGeneration registers gen with model's dimension and the given
-// state, creating its vec0 table on first use. Calling it again updates
-// only the state; a generation's dimension is fixed once created.
+// EnsureGeneration registers gen with model's vector-space fingerprint,
+// dimension, and the given state, creating its vec0 table on first use.
+// Calling it again updates only the state; a generation's vector space is
+// fixed once created.
 func (s *Store[K, G]) EnsureGeneration(ctx context.Context, gen G, model vector.Generation, state State) error {
 	if model.Dimensions <= 0 {
 		return fmt.Errorf("generation dimension must be positive, got %d", model.Dimensions)
 	}
+	fingerprint := model.Fingerprint()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin ensure generation: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
-INSERT INTO %s (gen_key, dimension, state) VALUES (?, ?, ?)
-ON CONFLICT(gen_key) DO UPDATE SET state = excluded.state`, s.generationsTable()),
-		gen, model.Dimensions, string(state)); err != nil {
+	res, err := tx.ExecContext(ctx, fmt.Sprintf(`
+INSERT INTO %s (gen_key, fingerprint, dimension, state) VALUES (?, ?, ?, ?)
+ON CONFLICT(gen_key) DO UPDATE SET state = excluded.state
+WHERE fingerprint = excluded.fingerprint AND dimension = excluded.dimension`, s.generationsTable()),
+		gen, fingerprint, model.Dimensions, string(state))
+	if err != nil {
 		return fmt.Errorf("upsert generation: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("upsert generation rows: %w", err)
+	} else if n == 0 {
+		return fmt.Errorf("generation %v already exists with different model fingerprint or dimension", gen)
 	}
 
 	ordinal, dimension, err := s.lookupGenerationTx(ctx, tx, gen)

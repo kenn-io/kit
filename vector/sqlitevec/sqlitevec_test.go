@@ -209,6 +209,28 @@ func TestStoreSearchUnionsLiveGenerations(t *testing.T) {
 	assert.True(found[2], "active-only doc is not dropped mid-migration (union coverage)")
 }
 
+func TestStoreEnsureGenerationRejectsChangedFingerprint(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	ctx := context.Background()
+	db, store := setup(t)
+
+	require.NoError(store.EnsureGeneration(ctx, 1,
+		vector.Generation{Model: "m1", Dimensions: 3, Params: map[string]string{"pooling": "mean"}},
+		sqlitevec.StateBuilding))
+
+	err := store.EnsureGeneration(ctx, 1,
+		vector.Generation{Model: "m2", Dimensions: 3, Params: map[string]string{"pooling": "mean"}},
+		sqlitevec.StateActive)
+	require.Error(err)
+	assert.ErrorContains(err, "different model")
+
+	var state string
+	err = db.QueryRowContext(ctx, `SELECT state FROM message_vectors_generations WHERE gen_key = ?`, 1).Scan(&state)
+	require.NoError(err)
+	assert.Equal(string(sqlitevec.StateBuilding), state, "mismatched ensure does not change the existing generation state")
+}
+
 func TestStoreSaveVectorsRejectsMissingDocument(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
