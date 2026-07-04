@@ -224,6 +224,29 @@ func TestFillEncodeErrorAbortsWithoutSkip(t *testing.T) {
 	assert.False(store.embedded[1][7], "an aborted doc is neither embedded nor stamped")
 }
 
+func TestFillDoesNotSkipCancelledEncode(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	ctx := context.Background()
+
+	store := newMemStore()
+	store.content[1] = "alpha"
+
+	called := false
+	enc := func(context.Context, []string) ([][]float32, error) {
+		return nil, context.Canceled
+	}
+	_, err := vector.Fill(ctx, store, 7, enc, vector.FillOptions[int64]{
+		OnEncodeError: func(int64, error) bool {
+			called = true
+			return true
+		},
+	})
+	require.ErrorIs(err, context.Canceled)
+	assert.False(called, "cancellation bypasses the permanent-error skip hook")
+	assert.False(store.embedded[1][7], "a cancelled document is not stamped as handled")
+}
+
 // poisonEncoder fails any batch containing the text "poison".
 func poisonEncoder() vector.EncodeFunc {
 	return func(_ context.Context, texts []string) ([][]float32, error) {

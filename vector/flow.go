@@ -79,6 +79,12 @@ func Fill[K, G comparable](ctx context.Context, store Store[K, G], gen G, enc En
 			vectors, err := EncodeBatched(ctx, enc, chunks, o.Batch)
 			skipped := false
 			if err != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return stats, ctxErr
+				}
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return stats, fmt.Errorf("encode document %v: %w", p.Doc, err)
+				}
 				if o.OnEncodeError == nil || !o.OnEncodeError(p.Doc, err) {
 					return stats, fmt.Errorf("encode document %v: %w", p.Doc, err)
 				}

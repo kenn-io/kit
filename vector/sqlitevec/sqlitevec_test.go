@@ -329,6 +329,22 @@ func TestStoreFillWithRevisionColumn(t *testing.T) {
 	assert.Empty(pending)
 }
 
+func TestStorePendingForGenerationTreatsNullContentAsEmpty(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	ctx := context.Background()
+	db, store := setup(t)
+
+	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (1, NULL)`)
+	require.NoError(err)
+
+	pending, err := store.PendingForGeneration(ctx, 1, 10)
+	require.NoError(err)
+	require.Len(pending, 1)
+	assert.Equal(int64(1), pending[0].Doc)
+	assert.Empty(pending[0].Content)
+}
+
 func TestStoreSaveVectorsRevisionRequiresColumn(t *testing.T) {
 	require := require.New(t)
 	ctx := context.Background()

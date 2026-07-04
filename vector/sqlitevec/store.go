@@ -30,13 +30,15 @@ func (s *Store[K, G]) PendingForGeneration(ctx context.Context, gen G, limit int
 	var pending []vector.Pending[K]
 	for rows.Next() {
 		var p vector.Pending[K]
-		dest := []any{&p.Doc, &p.Content}
+		var content sql.NullString
+		dest := []any{&p.Doc, &content}
 		if s.schema.RevisionColumn != "" {
 			dest = append(dest, &p.Revision)
 		}
 		if err := rows.Scan(dest...); err != nil {
 			return nil, fmt.Errorf("scan pending row: %w", err)
 		}
+		p.Content = content.String
 		pending = append(pending, p)
 	}
 	if err := rows.Err(); err != nil {
