@@ -210,6 +210,24 @@ func TestStoreSearchUnionsLiveGenerations(t *testing.T) {
 	assert.True(found[2], "active-only doc is not dropped mid-migration (union coverage)")
 }
 
+func TestStorePendingForGenerationUsesPerGenerationStampCoverage(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	ctx := context.Background()
+	db, store := setup(t)
+
+	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (1, 'a cat')`)
+	require.NoError(err)
+	require.NoError(store.EnsureGeneration(ctx, 1, vector.Generation{Model: "v1", Dimensions: 3}, sqlitevec.StateActive))
+	require.NoError(store.EnsureGeneration(ctx, 2, vector.Generation{Model: "v2", Dimensions: 3}, sqlitevec.StateBuilding))
+	require.NoError(store.SaveVectors(ctx, 1, 1, nil, []vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{1, 0, 0}}}))
+	require.NoError(store.SaveVectors(ctx, 2, 1, nil, []vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{1, 0, 0}}}))
+
+	pending, err := store.PendingForGeneration(ctx, 1, 10)
+	require.NoError(err)
+	assert.Empty(pending, "an older live generation with its own stamp is not refilled after the doc is stamped for a newer generation")
+}
+
 func TestStoreEnsureGenerationRejectsChangedFingerprint(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
@@ -367,6 +385,32 @@ func TestStorePendingForGenerationDetectsRevisionEditAfterStamp(t *testing.T) {
 	assert.Equal(int64(2), pending[0].Revision)
 }
 
+func TestStoreSaveVectorsStoresRevisionAfterStampTriggers(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	db, store := setupWithRevision(t)
+
+	_, err := db.ExecContext(ctx, `
+CREATE TRIGGER bump_revision_after_embed_stamp
+AFTER UPDATE OF embed_gen ON messages
+BEGIN
+    UPDATE messages SET last_modified = last_modified + 1 WHERE id = NEW.id;
+END;
+INSERT INTO messages (id, body, last_modified) VALUES (1, 'a cat sat', 1);`)
+	require.NoError(err)
+	require.NoError(store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
+
+	pending, err := store.PendingForGeneration(ctx, 1, 10)
+	require.NoError(err)
+	require.Len(pending, 1)
+	require.NoError(store.SaveVectors(ctx, 1, pending[0].Doc, pending[0].Revision,
+		[]vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{1, 0, 0}}}))
+
+	pending, err = store.PendingForGeneration(ctx, 1, 10)
+	require.NoError(err)
+	require.Empty(pending, "the stamp stores the revision after embed_gen triggers run")
+}
+
 func TestStoreFillWithRevisionColumn(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
@@ -394,6 +438,7 @@ func TestStorePendingForGenerationTreatsNullContentAsEmpty(t *testing.T) {
 
 	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (1, NULL)`)
 	require.NoError(err)
+	require.NoError(store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
 
 	pending, err := store.PendingForGeneration(ctx, 1, 10)
 	require.NoError(err)
