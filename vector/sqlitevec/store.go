@@ -97,18 +97,20 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision an
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Drop any prior vectors for this document so re-embedding is clean.
-	rowids, err := s.docRowids(ctx, tx, ordinal, doc)
-	if err != nil {
-		return err
-	}
-	for _, rowid := range rowids {
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s WHERE rowid = ?`, s.vecTable(ordinal)), rowid); err != nil {
-			return fmt.Errorf("delete stale vector: %w", err)
+	if s.schema.RevisionColumn == "" {
+		invalidated, err := s.docInvalidated(ctx, tx, doc)
+		if err != nil {
+			return err
 		}
-	}
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s WHERE ordinal = ? AND doc_key = ?`, s.chunksTable()), ordinal, doc); err != nil {
-		return fmt.Errorf("delete stale chunk map: %w", err)
+		if invalidated {
+			if err := s.deleteDocumentVectors(ctx, tx, doc); err != nil {
+				return err
+			}
+		} else if err := s.deleteGenerationVectors(ctx, tx, ordinal, doc); err != nil {
+			return err
+		}
+	} else if err := s.deleteGenerationVectors(ctx, tx, ordinal, doc); err != nil {
+		return err
 	}
 
 	for _, cv := range vectors {
@@ -204,6 +206,45 @@ func (s *Store[K, G]) DeleteVectors(ctx context.Context, doc K) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	if err := s.deleteDocumentVectors(ctx, tx, doc); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit delete vectors: %w", err)
+	}
+	return nil
+}
+
+func (s *Store[K, G]) docInvalidated(ctx context.Context, tx *sql.Tx, doc K) (bool, error) {
+	var embedGen any
+	err := tx.QueryRowContext(ctx,
+		fmt.Sprintf(`SELECT %s FROM %s WHERE %s = ?`, s.schema.EmbedGenColumn, s.schema.DocsTable, s.schema.IDColumn), doc).Scan(&embedGen)
+	if err == sql.ErrNoRows {
+		return false, fmt.Errorf("document %v not present in %s; vectors not persisted", doc, s.schema.DocsTable)
+	}
+	if err != nil {
+		return false, fmt.Errorf("read embed generation: %w", err)
+	}
+	return embedGen == nil, nil
+}
+
+func (s *Store[K, G]) deleteGenerationVectors(ctx context.Context, tx *sql.Tx, ordinal int64, doc K) error {
+	rowids, err := s.docRowids(ctx, tx, ordinal, doc)
+	if err != nil {
+		return err
+	}
+	for _, rowid := range rowids {
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s WHERE rowid = ?`, s.vecTable(ordinal)), rowid); err != nil {
+			return fmt.Errorf("delete stale vector: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s WHERE ordinal = ? AND doc_key = ?`, s.chunksTable()), ordinal, doc); err != nil {
+		return fmt.Errorf("delete stale chunk map: %w", err)
+	}
+	return nil
+}
+
+func (s *Store[K, G]) deleteDocumentVectors(ctx context.Context, tx *sql.Tx, doc K) error {
 	rows, err := tx.QueryContext(ctx,
 		fmt.Sprintf(`SELECT ordinal, vec_rowid FROM %s WHERE doc_key = ?`, s.chunksTable()), doc)
 	if err != nil {
@@ -240,9 +281,6 @@ func (s *Store[K, G]) DeleteVectors(ctx context.Context, doc K) error {
 	if _, err := tx.ExecContext(ctx,
 		fmt.Sprintf(`DELETE FROM %s WHERE doc_key = ?`, s.stampsTable()), doc); err != nil {
 		return fmt.Errorf("delete revision stamps: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit delete vectors: %w", err)
 	}
 	return nil
 }

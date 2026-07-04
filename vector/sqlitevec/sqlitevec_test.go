@@ -228,6 +228,42 @@ func TestStorePendingForGenerationUsesPerGenerationStampCoverage(t *testing.T) {
 	assert.Empty(pending, "an older live generation with its own stamp is not refilled after the doc is stamped for a newer generation")
 }
 
+func TestStoreSaveVectorsClearsAllGenerationsAfterNonRevisionInvalidation(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	ctx := context.Background()
+	db, store := setup(t)
+
+	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (1, 'a cat')`)
+	require.NoError(err)
+	require.NoError(store.EnsureGeneration(ctx, 1, vector.Generation{Model: "v1", Dimensions: 3}, sqlitevec.StateActive))
+	require.NoError(store.EnsureGeneration(ctx, 2, vector.Generation{Model: "v2", Dimensions: 3}, sqlitevec.StateBuilding))
+	require.NoError(store.SaveVectors(ctx, 1, 1, nil, []vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{1, 0, 0}}}))
+	require.NoError(store.SaveVectors(ctx, 2, 1, nil, []vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{1, 0, 0}}}))
+
+	_, err = db.ExecContext(ctx, `UPDATE messages SET body = 'a dog', embed_gen = NULL WHERE id = 1`)
+	require.NoError(err)
+	pending, err := store.PendingForGeneration(ctx, 2, 10)
+	require.NoError(err)
+	require.Len(pending, 1)
+	require.NoError(store.SaveVectors(ctx, 2, pending[0].Doc, nil,
+		[]vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{0, 1, 0}}}))
+
+	pending, err = store.PendingForGeneration(ctx, 1, 10)
+	require.NoError(err)
+	require.Len(pending, 1, "the older generation stays pending after another generation refreshes an invalidated row")
+	assert.Equal("a dog", pending[0].Content)
+
+	hits, err := store.QueryGeneration(ctx, 1, vector.Vector{1, 0, 0}, 10)
+	require.NoError(err)
+	assert.Empty(hits, "stale older-generation vectors are removed after document-wide invalidation")
+
+	hits, err = store.QueryGeneration(ctx, 2, vector.Vector{0, 1, 0}, 10)
+	require.NoError(err)
+	require.Len(hits, 1)
+	assert.Equal(int64(1), hits[0].Doc)
+}
+
 func TestStoreEnsureGenerationRejectsChangedFingerprint(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
