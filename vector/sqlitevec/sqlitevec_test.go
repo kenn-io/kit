@@ -411,6 +411,39 @@ INSERT INTO messages (id, body, last_modified) VALUES (1, 'a cat sat', 1);`)
 	require.Empty(pending, "the stamp stores the revision after embed_gen triggers run")
 }
 
+func TestStoreSaveVectorsAdvancesCoveredGenerationStampsAfterStampTriggers(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	db, store := setupWithRevision(t)
+
+	_, err := db.ExecContext(ctx, `
+CREATE TRIGGER bump_revision_after_embed_stamp
+AFTER UPDATE OF embed_gen ON messages
+BEGIN
+    UPDATE messages SET last_modified = last_modified + 1 WHERE id = NEW.id;
+END;
+INSERT INTO messages (id, body, last_modified) VALUES (1, 'a cat sat', 1);`)
+	require.NoError(err)
+	require.NoError(store.EnsureGeneration(ctx, 1, vector.Generation{Model: "v1", Dimensions: 3}, sqlitevec.StateActive))
+	require.NoError(store.EnsureGeneration(ctx, 2, vector.Generation{Model: "v2", Dimensions: 3}, sqlitevec.StateBuilding))
+
+	pending, err := store.PendingForGeneration(ctx, 1, 10)
+	require.NoError(err)
+	require.Len(pending, 1)
+	require.NoError(store.SaveVectors(ctx, 1, pending[0].Doc, pending[0].Revision,
+		[]vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{1, 0, 0}}}))
+
+	pending, err = store.PendingForGeneration(ctx, 2, 10)
+	require.NoError(err)
+	require.Len(pending, 1)
+	require.NoError(store.SaveVectors(ctx, 2, pending[0].Doc, pending[0].Revision,
+		[]vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{1, 0, 0}}}))
+
+	pending, err = store.PendingForGeneration(ctx, 1, 10)
+	require.NoError(err)
+	require.Empty(pending, "saving another generation with a stamp-only revision bump does not stale covered generations")
+}
+
 func TestStoreFillWithRevisionColumn(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)

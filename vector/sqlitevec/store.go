@@ -175,6 +175,11 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision an
 			doc).Scan(&stampRevision); err != nil {
 			return fmt.Errorf("read stamped revision: %w", err)
 		}
+		if _, err := tx.ExecContext(ctx,
+			fmt.Sprintf(`UPDATE %s SET revision = ? WHERE doc_key = ? AND revision IS ?`, s.stampsTable()),
+			stampRevision, doc, revision); err != nil {
+			return fmt.Errorf("advance revision stamps: %w", err)
+		}
 	}
 	if _, err := tx.ExecContext(ctx,
 		fmt.Sprintf(`INSERT INTO %s (ordinal, doc_key, revision) VALUES (?, ?, ?)
