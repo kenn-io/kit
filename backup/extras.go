@@ -147,35 +147,40 @@ func CaptureExtras(opts ExtrasOptions, appender *PackAppender) (pack.BlobID, boo
 			return pack.BlobID{}, false, err
 		}
 	}
-	// The glob only makes sense with a confined root to read through: with no
-	// DataDir it would scan the process's cwd, and addFile would nil-deref on
-	// the absent dataRoot.
+	// Matching client-secret files only makes sense with a confined root to read
+	// through: with no DataDir there would be nothing to scan, and addFile would
+	// nil-deref on the absent dataRoot.
 	if opts.IncludeTokens && dataRoot != nil {
 		if err := addDir("tokens"); err != nil {
 			return pack.BlobID{}, false, err
 		}
-		secrets, err := filepath.Glob(filepath.Join(opts.DataDir, "client_secret*.json"))
+		// Match by basename through the confined root instead of
+		// filepath.Glob(filepath.Join(DataDir, ...)): a DataDir path containing
+		// glob metacharacters ([, *, ?) would otherwise make Glob silently skip
+		// real matches or pull in siblings. The pattern is a pure basename with
+		// no directory part, so it never interacts with the data dir path.
+		dirEntries, err := fs.ReadDir(dataRoot.FS(), ".")
 		if err != nil {
-			return pack.BlobID{}, false, fmt.Errorf("backup: globbing client secrets: %w", err)
+			return pack.BlobID{}, false, fmt.Errorf("backup: reading data dir for client secrets: %w", err)
 		}
-		for _, s := range secrets {
-			rel, err := filepath.Rel(opts.DataDir, s)
+		for _, e := range dirEntries {
+			name := e.Name()
+			match, err := filepath.Match("client_secret*.json", name)
 			if err != nil {
-				return pack.BlobID{}, false, err
+				return pack.BlobID{}, false, fmt.Errorf("backup: matching client secrets: %w", err)
 			}
-			// filepath.Glob doesn't walk a directory tree, so it bypasses
-			// addDir's symlink rejection. Lstat (not Stat) reports the link
-			// itself for a friendly early error; the confined read through
+			if !match {
+				continue
+			}
+			// ReadDir reports the entry's own type (Lstat semantics, not
+			// followed), so a symlink or non-regular file named like a client
+			// secret yields a friendly early error; the confined read through
 			// dataRoot below is the authoritative guard against a symlink raced
 			// in after this check.
-			info, err := os.Lstat(s)
-			if err != nil {
-				return pack.BlobID{}, false, fmt.Errorf("backup: stat extras file %s: %w", rel, err)
+			if !e.Type().IsRegular() {
+				return pack.BlobID{}, false, fmt.Errorf("extras: %s is not a regular file", name)
 			}
-			if !info.Mode().IsRegular() {
-				return pack.BlobID{}, false, fmt.Errorf("extras: %s is not a regular file", filepath.ToSlash(rel))
-			}
-			if err := addFile(dataRoot, rel, rel); err != nil {
+			if err := addFile(dataRoot, name, name); err != nil {
 				return pack.BlobID{}, false, err
 			}
 		}

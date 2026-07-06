@@ -342,8 +342,21 @@ func nextCreatedAt(now time.Time, parent *Manifest) (time.Time, error) {
 	return now, nil
 }
 
-// loadParentHashMap prefers the local cache when it matches the parent
-// snapshot, else materializes the chain from the repo.
+// loadParentHashMap returns the parent snapshot's page-hash map, used as the
+// baseline the dirty-page scan compares live pages against. It prefers the
+// local cache only when the cache can be fully authenticated against the
+// parent manifest (parentCacheAuthentic); otherwise it materializes the map
+// from the repository's page-hash-map chain, which is authenticated end to end
+// by blob content addresses.
+//
+// The rebuild is cheap relative to the work Create already does: the dirty-page
+// scan reads and hashes the entire live database, so reading the parent chain
+// (a keyframe map is PageCount×pageHashSize bytes plus a bounded number of
+// deltas) is modest by comparison. Rebuilding also re-anchors authentication
+// on every snapshot instead of only keyframe-parented ones. The cache write
+// path stays as is: the cache still serves the common keyframe-parent case
+// (chain starts plus roughly one snapshot in keyframeChainMax) and stays warm
+// for whenever the parent is itself a keyframe.
 func loadParentHashMap(r *Repo, parent *Manifest, cacheDir string, fetch func(pack.BlobID) ([]byte, error)) (*PageHashMap, error) {
 	if parent == nil {
 		return nil, nil //nolint:nilnil // no parent snapshot -> no parent hash map, not an error
@@ -370,29 +383,25 @@ func loadParentHashMap(r *Repo, parent *Manifest, cacheDir string, fetch func(pa
 // LoadHashMapCache) yet describing the wrong page hashes. Trusting such a map
 // would make the dirty-page scan compare live pages against wrong parent
 // hashes and silently drop changed pages from the delta — corrupting the
-// snapshot chain while Create reports success. Two authoritative cross-checks
-// against the parent manifest — which is bound to its own content by the
-// snapshot ID — close that hole at no I/O cost:
+// snapshot chain while Create reports success.
 //
-//   - The manifest records the parent DB's page size and page count. A cache
-//     disagreeing on either describes a different database state.
-//   - When the parent stored its hash map as a keyframe (chain depth 0), the
-//     manifest's PageHashMap is the content address of that keyframe object:
-//     the blob ID of EncodeHashKeyframe(full map). Recomputing that blob ID
-//     from the cache and requiring equality fully authenticates every cached
-//     hash.
-//
-// A delta-chained parent carries no full-map digest in the frozen wire format,
-// so it is accepted on the geometry cross-check plus the cache's own trailer;
-// any mismatch demotes to a repository rebuild, which is always correct.
+// Only a keyframe parent (chain depth 0) can be authenticated: its manifest
+// PageHashMap is the content address of the keyframe object — the blob ID of
+// EncodeHashKeyframe(full map) — so recomputing that blob ID from the cache and
+// requiring equality authenticates every cached hash. A delta-chained parent
+// carries no full-map digest in the frozen wire format, so its cache cannot be
+// authenticated end to end and is never trusted; loadParentHashMap rebuilds
+// such parents from the repository chain instead. The geometry cross-check
+// (page size and count) stays as a cheap early reject on the authenticated
+// path.
 func parentCacheAuthentic(cached *PageHashMap, parent *Manifest) bool {
+	if parent.DB.MapChainDepth != 0 {
+		return false
+	}
 	if cached.PageSize != parent.DB.PageSize || cached.PageCount != parent.DB.PageCount {
 		return false
 	}
-	if parent.DB.MapChainDepth == 0 {
-		return pack.ComputeBlobID(EncodeHashKeyframe(cached)).String() == parent.DB.PageHashMap
-	}
-	return true
+	return pack.ComputeBlobID(EncodeHashKeyframe(cached)).String() == parent.DB.PageHashMap
 }
 
 // parentUnionShrank reports whether any hash the parent's attachment lists

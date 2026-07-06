@@ -488,6 +488,61 @@ func TestCreateRejectsForgedParentHashCache(t *testing.T) {
 		"the forged parent cache must be rejected so the child snapshot captures the edit")
 }
 
+// TestCreateRejectsForgedDeltaParentHashCache pins the delta-parent half of
+// the same contract: a delta-chained parent (MapChainDepth > 0) carries no
+// full-map digest in the frozen format, so its local hash-map cache cannot be
+// authenticated end to end and must be ignored in favor of a repository
+// rebuild. Here the parent snapshot is a delta, and the forged cache holds the
+// CURRENT database's hashes; trusting it would make the dirty scan see every
+// page as unchanged and drop the edit from the child's delta. The repository
+// chain rebuild recovers the true parent hashes and captures the edit.
+func TestCreateRejectsForgedDeltaParentHashCache(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, db := seedBackupFixture(t)
+	cacheDir := t.TempDir()
+
+	m1, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
+	require.NoError(err)
+	require.Zero(m1.DB.MapChainDepth, "the first snapshot is a keyframe")
+
+	// A first in-place edit produces a delta child so the next parent is a
+	// delta, not a keyframe.
+	_, err = db.Exec(`UPDATE notes SET created_at = '2098-08-08T08:08:08Z' WHERE id = 1`)
+	require.NoError(err)
+	_, err = db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
+	require.NoError(err)
+	m2, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
+	require.NoError(err)
+	require.Positive(m2.DB.MapChainDepth, "the parent of the forged run must be a delta")
+
+	// A second in-place edit is the change the forged cache would hide.
+	_, err = db.Exec(`UPDATE notes SET created_at = '2099-09-09T09:09:09Z' WHERE id = 1`)
+	require.NoError(err)
+	_, err = db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
+	require.NoError(err)
+
+	forged := computeFileHashMap(t, dbPath, m2.DB.PageSize)
+	require.Equal(m2.DB.PageCount, forged.PageCount,
+		"the in-place edit must not change the page count, so geometry alone cannot reject the cache")
+	require.NoError(SaveHashMapCache(cacheDir, r.Config().RepoID, m2.SnapshotID, forged))
+
+	m3, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
+	require.NoError(err)
+	require.Equal(m2.SnapshotID, m3.ParentID)
+	dbAtSnap3, err := os.ReadFile(dbPath)
+	require.NoError(err)
+
+	target := filepath.Join(t.TempDir(), "restore")
+	_, err = Restore(ctx, r, newTestApp(), RestoreOptions{SnapshotID: m3.SnapshotID, TargetDir: target})
+	require.NoError(err)
+	restored, err := os.ReadFile(filepath.Join(target, "app.db"))
+	require.NoError(err)
+	require.True(bytes.Equal(dbAtSnap3, restored),
+		"the forged delta-parent cache must be ignored so the child snapshot captures the edit")
+}
+
 func TestCreateNoChanges(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)

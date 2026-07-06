@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"testing"
 	"time"
 
@@ -224,8 +225,83 @@ func TestRestoreRejectsCollidingAttachmentPaths(t *testing.T) {
 	_, err = Restore(ctx, r, collidingContentPathApp{App: newTestApp()}, RestoreOptions{
 		TargetDir: filepath.Join(t.TempDir(), "restore"),
 	})
-	require.ErrorContains(err, "claimed by two different attachments")
+	require.ErrorContains(err, "two different attachments")
 	require.ErrorContains(err, "shared/collision")
+}
+
+// caseFoldingContentPathApp assigns two distinct content hashes to restore
+// paths that differ only in case ("A/b" and "a/b"). The assignment is keyed on
+// sorted hash order so it is stable across the randomized map iteration.
+type caseFoldingContentPathApp struct{ App }
+
+func (a caseFoldingContentPathApp) RestoredContentPaths(ctx context.Context, db *sql.DB) (map[string][]string, error) {
+	paths, err := a.App.RestoredContentPaths(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	hashes := make([]string, 0, len(paths))
+	for hash := range paths {
+		hashes = append(hashes, hash)
+	}
+	sort.Strings(hashes)
+	rels := []string{"A/b", "a/b"}
+	out := make(map[string][]string, len(paths))
+	for i, hash := range hashes {
+		out[hash] = []string{rels[i%len(rels)]}
+	}
+	return out, nil
+}
+
+// TestRestoreRejectsCaseFoldingAttachmentPaths pins that two distinct blobs
+// whose restore paths differ only in case collide on every platform: a
+// case-insensitive filesystem would clobber one with the other, so restore
+// rejects the pair up front rather than reporting a lossy success.
+func TestRestoreRejectsCaseFoldingAttachmentPaths(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
+	require.NoError(err)
+
+	_, err = Restore(ctx, r, caseFoldingContentPathApp{App: newTestApp()}, RestoreOptions{
+		TargetDir: filepath.Join(t.TempDir(), "restore"),
+	})
+	require.ErrorContains(err, "case-folded key")
+	require.ErrorContains(err, "two different attachments")
+}
+
+// trailingDotContentPathApp maps every content hash to a restore path with a
+// component ending in a dot.
+type trailingDotContentPathApp struct{ App }
+
+func (a trailingDotContentPathApp) RestoredContentPaths(ctx context.Context, db *sql.DB) (map[string][]string, error) {
+	paths, err := a.App.RestoredContentPaths(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string][]string, len(paths))
+	for hash := range paths {
+		out[hash] = []string{"blobs./file"}
+	}
+	return out, nil
+}
+
+// TestRestoreRejectsTrailingDotAttachmentPath pins that a restore path whose
+// component ends in a dot (which Windows trims, aliasing a different name) is
+// rejected on every platform.
+func TestRestoreRejectsTrailingDotAttachmentPath(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
+	require.NoError(err)
+
+	_, err = Restore(ctx, r, trailingDotContentPathApp{App: newTestApp()}, RestoreOptions{
+		TargetDir: filepath.Join(t.TempDir(), "restore"),
+	})
+	require.ErrorContains(err, "ending in a dot or space")
 }
 
 // TestRestoreRefusesSymlinkTarget pins that a restore target whose final

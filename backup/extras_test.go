@@ -252,3 +252,42 @@ func TestCaptureExtrasRejectsGlobbedSymlinks(t *testing.T) {
 		assert.NotContains(string(content), "secret content")
 	}
 }
+
+// TestCaptureExtrasTokensDataDirWithGlobMetacharacters pins that client-secret
+// capture works when DataDir's path contains glob metacharacters. The old
+// filepath.Glob(filepath.Join(DataDir, "client_secret*.json")) treated the
+// bracket in "data[1]" as a character class, so the join never matched and the
+// secret was silently dropped from the backup. Matching by basename through the
+// confined root captures it.
+func TestCaptureExtrasTokensDataDirWithGlobMetacharacters(t *testing.T) {
+	require := require.New(t)
+	r := initTestRepo(t)
+	// "data[1]" is a legal directory name on every platform but a glob
+	// character class as a pattern prefix.
+	dataDir := filepath.Join(t.TempDir(), "data[1]")
+	require.NoError(os.MkdirAll(dataDir, 0o700))
+	require.NoError(os.WriteFile(filepath.Join(dataDir, "client_secret_web.json"), []byte("{}"), 0o600))
+
+	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
+	treeID, hasTree, err := CaptureExtras(ExtrasOptions{
+		DataDir: dataDir, IncludeTokens: true, AllowPlaintextSecrets: true,
+	}, appender)
+	require.NoError(err)
+	require.True(hasTree)
+
+	_, entries, err := appender.Finish()
+	require.NoError(err)
+	known := map[pack.BlobID]IndexEntry{}
+	for _, e := range entries {
+		known[e.Blob] = e
+	}
+	treeData, err := r.ReadBlob(known, treeID, nil, testPackExt)
+	require.NoError(err)
+	var tree ExtrasTree
+	require.NoError(json.Unmarshal(treeData, &tree))
+	var paths []string
+	for _, e := range tree.Entries {
+		paths = append(paths, e.Path)
+	}
+	require.Equal([]string{"client_secret_web.json"}, paths)
+}

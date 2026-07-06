@@ -262,7 +262,7 @@ func prepareRestoreTarget(target string, overwrite bool, dbFileName string) (*os
 	// (<db>.restore-<ulid>, restoreDB) at the target root; a later overwrite
 	// rerun would otherwise ignore it forever. Sweep only that exact
 	// top-level shape — never a broad glob.
-	if err := removeRestoreTempFiles(target, dbFileName); err != nil {
+	if err := removeRestoreTempFiles(root, dbFileName); err != nil {
 		_ = root.Close()
 		return nil, err
 	}
@@ -270,11 +270,14 @@ func prepareRestoreTarget(target string, overwrite bool, dbFileName string) (*os
 }
 
 // removeRestoreTempFiles deletes the database staging temp files a crashed
-// restore may have left at target's top level. The name shape is exactly
-// restoreDB's: dbFileName + ".restore-" + a 26-char lowercase ULID.
-func removeRestoreTempFiles(target, dbFileName string) error {
+// restore may have left at the target's top level. The name shape is exactly
+// restoreDB's: dbFileName + ".restore-" + a 26-char lowercase ULID. The sweep
+// runs entirely through the already-verified root — never a fresh pathname
+// resolution of target — so a symlink swapped in at target after openRestoreRoot
+// proved it cannot redirect the list or the removals outside the restore tree.
+func removeRestoreTempFiles(root *os.Root, dbFileName string) error {
 	prefix := dbFileName + ".restore-"
-	entries, err := os.ReadDir(target)
+	entries, err := fs.ReadDir(root.FS(), ".")
 	if err != nil {
 		return fmt.Errorf("backup: scanning restore target for stale temp files: %w", err)
 	}
@@ -286,7 +289,7 @@ func removeRestoreTempFiles(target, dbFileName string) error {
 		if !ok || !pack.IsValidPackID(id) {
 			continue
 		}
-		if err := os.Remove(filepath.Join(target, e.Name())); err != nil &&
+		if err := root.Remove(e.Name()); err != nil &&
 			!errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("backup: removing stale restore temp %s: %w", e.Name(), err)
 		}
@@ -624,6 +627,15 @@ func (s *restoreState) restoreAttachments(ctx context.Context, app App, m *Manif
 	// front. The same path repeated under one hash is harmless (identical
 	// writes), so key the check on the cleaned path and only fail on a
 	// conflicting owner.
+	//
+	// The collision key is deliberately conservative: it case-folds the cleaned
+	// path (the same folding restoreExtrasEntry's reserved-name guard uses)
+	// because case-insensitive filesystems (default macOS, Windows) alias "A/b"
+	// and "a/b" onto one file, and it rejects any component ending in a dot or
+	// space (which Windows trims). This also makes restore stricter on
+	// case-sensitive filesystems — two paths differing only by case now collide
+	// — which is the intended contract: a snapshot that only restores correctly
+	// on a case-sensitive host is not safe to call restorable.
 	pathOwner := make(map[string]string)
 	for hash, rels := range paths {
 		for _, rel := range rels {
@@ -634,10 +646,15 @@ func (s *restoreState) restoreAttachments(ctx context.Context, app App, m *Manif
 				return 0, 0, fmt.Errorf(
 					"backup: attachment %s restore path %q escapes the content directory", hash, rel)
 			}
-			key := filepath.Clean(filepath.FromSlash(rel))
+			if bad := trailingDotOrSpaceComponent(rel); bad != "" {
+				return 0, 0, fmt.Errorf(
+					"backup: attachment %s restore path %q has component %q ending in a dot or space", hash, rel, bad)
+			}
+			key := strings.ToLower(filepath.Clean(filepath.FromSlash(rel)))
 			if other, ok := pathOwner[key]; ok && other != hash {
 				return 0, 0, fmt.Errorf(
-					"backup: restore path %q is claimed by two different attachments %s and %s", rel, other, hash)
+					"backup: restore path %q collides under case-folded key %q with two different attachments %s and %s",
+					rel, key, other, hash)
 			}
 			pathOwner[key] = hash
 		}
@@ -821,6 +838,21 @@ func (s *restoreState) restoreExtras(app App, m *Manifest) (int, error) {
 	return len(tree.Entries), nil
 }
 
+// trailingDotOrSpaceComponent returns the first component of rel (a relative
+// path in slash or OS-separator form) that ends in a dot or space, or "" when
+// none does. Windows resolves such a component to its trimmed name, so two
+// distinct-looking archive paths can alias the same file; restore rejects them
+// on every platform to keep its reserved-name and path-collision guards sound
+// regardless of the restoring host's OS.
+func trailingDotOrSpaceComponent(rel string) string {
+	for comp := range strings.SplitSeq(filepath.ToSlash(rel), "/") {
+		if strings.TrimRight(comp, ". ") != comp {
+			return comp
+		}
+	}
+	return ""
+}
+
 // restoreExtrasEntry validates and writes one extras file. Entry paths come
 // from a decoded tree blob, so they are re-validated here: only local,
 // relative, traversal-free paths may be written under the target, and never
@@ -838,10 +870,8 @@ func (s *restoreState) restoreExtrasEntry(app App, entry ExtrasEntry) error {
 	// dir and slip past the folded comparison below. Reject such components on
 	// every platform: they are pathological in archives everywhere and the
 	// rejection keeps the reserved-name guard sound regardless of OS.
-	for comp := range strings.SplitSeq(filepath.ToSlash(rel), "/") {
-		if strings.TrimRight(comp, ". ") != comp {
-			return fmt.Errorf("backup: extras entry path %q has a component ending in a dot or space", entry.Path)
-		}
+	if trailingDotOrSpaceComponent(rel) != "" {
+		return fmt.Errorf("backup: extras entry path %q has a component ending in a dot or space", entry.Path)
 	}
 	// Capture never records archive content as an extra, so an entry naming
 	// the restored database, its SQLite sidecars, or the content tree can only
