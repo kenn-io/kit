@@ -147,7 +147,10 @@ func CaptureExtras(opts ExtrasOptions, appender *PackAppender) (pack.BlobID, boo
 			return pack.BlobID{}, false, err
 		}
 	}
-	if opts.IncludeTokens {
+	// The glob only makes sense with a confined root to read through: with no
+	// DataDir it would scan the process's cwd, and addFile would nil-deref on
+	// the absent dataRoot.
+	if opts.IncludeTokens && dataRoot != nil {
 		if err := addDir("tokens"); err != nil {
 			return pack.BlobID{}, false, err
 		}

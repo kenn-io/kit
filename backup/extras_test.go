@@ -64,6 +64,22 @@ func TestCaptureExtrasEmpty(t *testing.T) {
 	require.False(hasTree)
 }
 
+func TestCaptureExtrasTokensWithoutDataDir(t *testing.T) {
+	require := require.New(t)
+	r := initTestRepo(t)
+	// A client_secret file in the process's cwd must not be globbed (and the
+	// absent data root must not be dereferenced) when no DataDir is set.
+	cwd := t.TempDir()
+	require.NoError(os.WriteFile(filepath.Join(cwd, "client_secret_x.json"), []byte("{}"), 0o600))
+	t.Chdir(cwd)
+	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
+	_, hasTree, err := CaptureExtras(ExtrasOptions{
+		IncludeTokens: true, AllowPlaintextSecrets: true,
+	}, appender)
+	require.NoError(err)
+	require.False(hasTree)
+}
+
 func TestCaptureExtrasTokensGuard(t *testing.T) {
 	require := require.New(t)
 	r := initTestRepo(t)

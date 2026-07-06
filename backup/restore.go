@@ -239,21 +239,6 @@ func prepareRestoreTarget(target string, overwrite bool, dbFileName string) (*os
 	case len(entries) > 0 && !overwrite:
 		return nil, fmt.Errorf("backup: restore target %s is not empty (use --overwrite to restore into it anyway)", target)
 	}
-	// The target's final component must be a real directory, never a symlink.
-	// os.ReadDir and os.OpenRoot both follow a final-component symlink, so a
-	// symlink planted at the target — before this run, or raced in between the
-	// existence check and the MkdirAll above — would redirect the entire restore
-	// under its link target. Ancestor symlinks stay allowed (the path is
-	// user-supplied and resolved once); only the leaf is checked, with Lstat,
-	// which reports the link itself rather than its target.
-	info, err := os.Lstat(target)
-	if err != nil {
-		return nil, fmt.Errorf("backup: checking restore target: %w", err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf(
-			"backup: restore target %s is a symlink; pass the real directory path", target)
-	}
 	root, err := openRestoreRoot(target)
 	if err != nil {
 		return nil, err
@@ -309,11 +294,39 @@ func removeRestoreTempFiles(target, dbFileName string) error {
 	return nil
 }
 
-// openRestoreRoot opens a root confined to the restore target directory.
+// openRestoreRoot opens a root confined to the restore target directory and
+// proves the descriptor it holds is the real (non-symlink) directory at
+// target. os.OpenRoot follows a final-component symlink, so a link planted at
+// the target — before this run, or raced in against prepareRestoreTarget's
+// MkdirAll — would otherwise redirect the entire restore under its link
+// target. Checking AFTER the open closes the check-then-open race: Lstat
+// reports a swapped-in link itself, and SameFile ties the lstat'd directory
+// to the descriptor the root actually holds. Ancestor symlinks stay allowed
+// (the path is user-supplied and resolved once); only the leaf is verified.
 func openRestoreRoot(target string) (*os.Root, error) {
 	root, err := os.OpenRoot(target)
 	if err != nil {
 		return nil, fmt.Errorf("backup: opening restore target: %w", err)
+	}
+	leaf, err := os.Lstat(target)
+	if err != nil {
+		_ = root.Close()
+		return nil, fmt.Errorf("backup: checking restore target: %w", err)
+	}
+	if leaf.Mode()&os.ModeSymlink != 0 {
+		_ = root.Close()
+		return nil, fmt.Errorf(
+			"backup: restore target %s is a symlink; pass the real directory path", target)
+	}
+	held, err := root.Stat(".")
+	if err != nil {
+		_ = root.Close()
+		return nil, fmt.Errorf("backup: checking restore target: %w", err)
+	}
+	if !os.SameFile(leaf, held) {
+		_ = root.Close()
+		return nil, fmt.Errorf(
+			"backup: restore target %s was replaced while opening it", target)
 	}
 	return root, nil
 }
