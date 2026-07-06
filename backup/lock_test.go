@@ -276,6 +276,48 @@ func TestReleaseDoesNotRemoveReplantedLock(t *testing.T) {
 	require.NoError(b.Release())
 }
 
+// TestReleaseRestoresForeignLockFile pins the rename-to-claim release
+// protocol's restore step. When the lock file at the holder's path carries a
+// different holder's LockInfo (this stale holder was reaped and a successor
+// replanted), Release must claim the file, observe it is not ours, and put it
+// back — never delete a live successor's lock, and never leave a stray
+// releasing-*.json claim file behind. The interleaving is simulated directly
+// on the filesystem by overwriting the lock body between acquire and release.
+func TestReleaseRestoresForeignLockFile(t *testing.T) {
+	require := require.New(t)
+	r := initTestRepo(t)
+
+	l, err := r.AcquireExclusiveLock("create", false)
+	require.NoError(err)
+	l.stopHeartbeat()
+
+	successor := LockInfo{
+		Hostname:   "successor-host",
+		PID:        4242,
+		Operation:  "prune",
+		AcquiredAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	body, err := json.Marshal(successor)
+	require.NoError(err)
+	require.NoError(os.WriteFile(l.path, body, 0o600))
+
+	require.NoError(l.Release(), "releasing a foreign lock is not an error for us")
+
+	data, statErr := os.ReadFile(l.path)
+	require.NoError(statErr, "the successor's lock must survive our release")
+	var got LockInfo
+	require.NoError(json.Unmarshal(data, &got))
+	assert.Equal(t, successor, got)
+
+	entries, err := os.ReadDir(r.Path("locks"))
+	require.NoError(err)
+	for _, e := range entries {
+		require.False(strings.HasPrefix(e.Name(), "releasing-"),
+			"stray claim file left behind: %s", e.Name())
+	}
+	require.NoError(os.Remove(l.path))
+}
+
 // TestReleaseReturnsErrorOnUnreadableLockFile pins the distinction in
 // Release's ownership re-read: os.ErrNotExist means the lock is already
 // gone (not our error), but any other read failure must surface as an

@@ -87,9 +87,11 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (*Resto
 	// target: it marks the deepest directory that already existed, so the
 	// final durability pass knows which ancestors gained new entries.
 	syncCeiling := restoreSyncCeiling(opts.TargetDir)
-	if err := prepareRestoreTarget(opts.TargetDir, opts.Overwrite, app.DBFileName()); err != nil {
+	root, err := prepareRestoreTarget(opts.TargetDir, opts.Overwrite, app.DBFileName())
+	if err != nil {
 		return nil, err
 	}
+	defer func() { _ = root.Close() }()
 	known, err := r.LoadBlobIndex()
 	if err != nil {
 		return nil, err
@@ -104,6 +106,7 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (*Resto
 		known:    known,
 		jobs:     jobs,
 		progress: newProgressEmitter(opts.Progress),
+		root:     root,
 	}
 
 	hm, pm, err := st.materializeMaps(m)
@@ -115,15 +118,15 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (*Resto
 		DBPath:     filepath.Join(opts.TargetDir, app.DBFileName()),
 		DBBytes:    int64(pm.PageCount * uint64(pm.PageSize)), //nolint:gosec // geometry checked against the manifest
 	}
-	if err := st.restoreDB(ctx, res.DBPath, pm, hm); err != nil {
+	if err := st.restoreDB(ctx, app.DBFileName(), pm, hm); err != nil {
 		return nil, err
 	}
 	res.AttachmentBlobs, res.AttachmentBytes, err = st.restoreAttachments(
-		ctx, app, m, res.DBPath, filepath.Join(opts.TargetDir, app.ContentDirName()))
+		ctx, app, m, res.DBPath, app.ContentDirName())
 	if err != nil {
 		return nil, err
 	}
-	if res.ExtrasFiles, err = st.restoreExtras(app, m, opts.TargetDir); err != nil {
+	if res.ExtrasFiles, err = st.restoreExtras(app, m); err != nil {
 		return nil, err
 	}
 
@@ -215,33 +218,52 @@ func syncRestoredTree(target, ceiling string) error {
 }
 
 // prepareRestoreTarget creates TargetDir, refusing a non-empty existing
-// directory unless overwrite is set (FORMAT.md, Restore).
-func prepareRestoreTarget(target string, overwrite bool, dbFileName string) error {
+// directory unless overwrite is set (FORMAT.md, Restore), and returns a root
+// confined to it. Every subsequent restore write goes through that root, which
+// refuses symlink escapes at the OS level, so a preexisting or raced symlink
+// in the tree cannot redirect a write outside TargetDir.
+func prepareRestoreTarget(target string, overwrite bool, dbFileName string) (*os.Root, error) {
 	if target == "" {
-		return errors.New("backup: restore target directory is required")
+		return nil, errors.New("backup: restore target directory is required")
 	}
 	entries, err := os.ReadDir(target)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		if err := os.MkdirAll(target, 0o700); err != nil {
-			return fmt.Errorf("backup: creating restore target: %w", err)
+			return nil, fmt.Errorf("backup: creating restore target: %w", err)
 		}
-		return nil
+		return openRestoreRoot(target)
 	case err != nil:
-		return fmt.Errorf("backup: reading restore target: %w", err)
+		return nil, fmt.Errorf("backup: reading restore target: %w", err)
 	case len(entries) > 0 && !overwrite:
-		return fmt.Errorf("backup: restore target %s is not empty (use --overwrite to restore into it anyway)", target)
+		return nil, fmt.Errorf("backup: restore target %s is not empty (use --overwrite to restore into it anyway)", target)
+	}
+	root, err := openRestoreRoot(target)
+	if err != nil {
+		return nil, err
 	}
 	// Overwrite merges rather than clearing the tree, but the database and
 	// its SQLite sidecars must not survive: restoreDB rewrites the database
 	// file, and a stale -wal/-shm pair next to it would be replayed over the
-	// proven bytes on the file's first normal (non-immutable) open.
+	// proven bytes on the file's first normal (non-immutable) open. Remove
+	// them through the root so a symlink at any of those names is unlinked,
+	// never followed.
 	for _, name := range []string{dbFileName, dbFileName + "-wal", dbFileName + "-shm"} {
-		if err := os.Remove(filepath.Join(target, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("backup: removing stale %s from restore target: %w", name, err)
+		if err := root.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
+			_ = root.Close()
+			return nil, fmt.Errorf("backup: removing stale %s from restore target: %w", name, err)
 		}
 	}
-	return nil
+	return root, nil
+}
+
+// openRestoreRoot opens a root confined to the restore target directory.
+func openRestoreRoot(target string) (*os.Root, error) {
+	root, err := os.OpenRoot(target)
+	if err != nil {
+		return nil, fmt.Errorf("backup: opening restore target: %w", err)
+	}
+	return root, nil
 }
 
 // restoreState carries the shared read machinery for one Restore run. mu
@@ -252,6 +274,9 @@ type restoreState struct {
 	known    map[pack.BlobID]IndexEntry
 	jobs     int
 	progress *progressEmitter
+	// root confines every restore write beneath the verified target directory;
+	// its methods refuse any path that escapes via symlink.
+	root *os.Root
 
 	mu       sync.Mutex
 	firstErr error
@@ -325,12 +350,23 @@ type blobRuns struct {
 // page*page_size, and every page is hash-verified against the page-hash map
 // while its blob is still in memory. Work is grouped by pack, s.jobs packs
 // in flight; the file writes are disjoint pwrite calls, safe concurrently.
-func (s *restoreState) restoreDB(ctx context.Context, dbPath string, pm *PageMap, hm *PageHashMap) error {
-	f, err := os.OpenFile(dbPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600)
+func (s *restoreState) restoreDB(ctx context.Context, dbRel string, pm *PageMap, hm *PageHashMap) error {
+	// Write into a fresh, unpredictably named temp inside the root, then rename
+	// it over dbRel: a preexisting symlink at dbRel is replaced rather than
+	// followed, and the concurrent pwrite workers below never touch dbRel
+	// itself until the proven bytes are complete.
+	tmpRel := dbRel + ".restore-" + pack.NewPackID()
+	f, err := s.root.OpenFile(tmpRel, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return fmt.Errorf("backup: creating restored database: %w", err)
 	}
-	defer func() { _ = f.Close() }()
+	committed := false
+	defer func() {
+		_ = f.Close()
+		if !committed {
+			_ = s.root.Remove(tmpRel)
+		}
+	}()
 	size := int64(pm.PageCount * uint64(pm.PageSize)) //nolint:gosec // geometry checked against the manifest
 	if err := f.Truncate(size); err != nil {
 		return fmt.Errorf("backup: sizing restored database: %w", err)
@@ -366,6 +402,13 @@ func (s *restoreState) restoreDB(ctx context.Context, dbPath string, pm *PageMap
 	if err := f.Sync(); err != nil {
 		return fmt.Errorf("backup: syncing restored database: %w", err)
 	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("backup: closing restored database: %w", err)
+	}
+	if err := s.root.Rename(tmpRel, dbRel); err != nil {
+		return fmt.Errorf("backup: publishing restored database: %w", err)
+	}
+	committed = true
 	s.progress.emit(ProgressEvent{
 		Stage: ProgressStageRestoreDB, Done: int64(pm.PageCount), Total: int64(pm.PageCount), //nolint:gosec // page counts fit int64
 		BytesDone: size, BytesTotal: size, Final: true,
@@ -480,7 +523,7 @@ func (s *restoreState) writeRun(f *os.File, raw []byte, id pack.BlobID, run Page
 // namespace paths beyond the plain <hash[:2]>/<hash> layout), reading blobs
 // grouped by pack. Every blob read re-derives its SHA-256 identity before
 // any file is written.
-func (s *restoreState) restoreAttachments(ctx context.Context, app App, m *Manifest, dbPath, dir string) (int64, int64, error) {
+func (s *restoreState) restoreAttachments(ctx context.Context, app App, m *Manifest, dbPath, contentDir string) (int64, int64, error) {
 	refs, _, err := LoadListRefs(s.repo, s.known, m.Attachments.Lists, nil, app.PackFileExtension())
 	if err != nil {
 		return 0, 0, err
@@ -515,7 +558,7 @@ func (s *restoreState) restoreAttachments(ctx context.Context, app App, m *Manif
 		Stage: ProgressStageAttachments, Total: int64(len(refs)), BytesTotal: m.Attachments.BlobBytes,
 	})
 	err = s.runPackGroups(ctx, order, func(packID string) {
-		s.restorePackAttachments(dir, packID, groups[packID], paths, int64(len(refs)), m.Attachments.BlobBytes)
+		s.restorePackAttachments(contentDir, packID, groups[packID], paths, int64(len(refs)), m.Attachments.BlobBytes)
 	})
 	if err != nil {
 		return 0, 0, err
@@ -573,7 +616,7 @@ func restoredContentPaths(ctx context.Context, app App, dbPath string) (map[stri
 // restorePackAttachments writes one pack's attachment blobs to their
 // recorded storage paths under dir.
 func (s *restoreState) restorePackAttachments(
-	dir, packID string, refs []ContentRef, paths map[string][]string, total, totalBytes int64,
+	contentDir, packID string, refs []ContentRef, paths map[string][]string, total, totalBytes int64,
 ) {
 	pr, err := pack.OpenReader(s.repo.packPath(packID, s.app.PackFileExtension()), nil)
 	if err != nil {
@@ -625,7 +668,7 @@ func (s *restoreState) restorePackAttachments(
 					"backup: attachment %s restore path %q escapes the content directory", ref.Hash, rel))
 				return
 			}
-			if err := writeRestoredFile(filepath.Join(dir, rel), content, 0o600); err != nil {
+			if err := s.writeRootFile(filepath.Join(contentDir, rel), content, 0o600); err != nil {
 				s.fail(err)
 				return
 			}
@@ -643,7 +686,7 @@ func (s *restoreState) restorePackAttachments(
 
 // restoreExtras lays out the snapshot's captured extras files (deletions,
 // config, tokens) under the target, preserving their recorded modes.
-func (s *restoreState) restoreExtras(app App, m *Manifest, target string) (int, error) {
+func (s *restoreState) restoreExtras(app App, m *Manifest) (int, error) {
 	if m.Extras.Tree == "" {
 		return 0, nil
 	}
@@ -661,7 +704,7 @@ func (s *restoreState) restoreExtras(app App, m *Manifest, target string) (int, 
 	}
 	s.progress.emit(ProgressEvent{Stage: ProgressStageExtras, Total: int64(len(tree.Entries))})
 	for i, entry := range tree.Entries {
-		if err := s.restoreExtrasEntry(app, entry, target); err != nil {
+		if err := s.restoreExtrasEntry(app, entry); err != nil {
 			return 0, err
 		}
 		s.progress.emit(ProgressEvent{
@@ -676,13 +719,23 @@ func (s *restoreState) restoreExtras(app App, m *Manifest, target string) (int, 
 // from a decoded tree blob, so they are re-validated here: only local,
 // relative, traversal-free paths may be written under the target, and never
 // paths that overlap the database or attachments restore already produced.
-func (s *restoreState) restoreExtrasEntry(app App, entry ExtrasEntry, target string) error {
+func (s *restoreState) restoreExtrasEntry(app App, entry ExtrasEntry) error {
 	// Clean before validating: the final filepath.Join cleans the path
 	// anyway, so validating the raw form would let "safe/../app.db"
 	// pass the reserved-name check below yet still land on a reserved path.
 	rel := filepath.Clean(filepath.FromSlash(entry.Path))
 	if entry.Path == "" || rel == "." || filepath.IsAbs(rel) || !filepath.IsLocal(rel) {
 		return fmt.Errorf("backup: extras entry path %q escapes the restore target", entry.Path)
+	}
+	// A component ending in a dot or space resolves to the trimmed name on
+	// Windows, so "content." or "content " would alias the reserved content
+	// dir and slip past the folded comparison below. Reject such components on
+	// every platform: they are pathological in archives everywhere and the
+	// rejection keeps the reserved-name guard sound regardless of OS.
+	for comp := range strings.SplitSeq(filepath.ToSlash(rel), "/") {
+		if strings.TrimRight(comp, ". ") != comp {
+			return fmt.Errorf("backup: extras entry path %q has a component ending in a dot or space", entry.Path)
+		}
 	}
 	// Capture never records archive content as an extra, so an entry naming
 	// the restored database, its SQLite sidecars, or the content tree can only
@@ -715,36 +768,54 @@ func (s *restoreState) restoreExtrasEntry(app App, entry ExtrasEntry, target str
 	if mode == 0 {
 		mode = 0o600
 	}
-	return writeRestoredFile(filepath.Join(target, rel), content, mode)
+	return s.writeRootFile(rel, content, mode)
 }
 
-// writeRestoredFile writes one restored file durably: parents created, the
-// file written and fsynced before close.
-func writeRestoredFile(path string, content []byte, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("backup: creating restore directory for %s: %w", path, err)
+// writeRootFile writes one restored file durably beneath the confined root:
+// parents are created, then the bytes are written to a fresh, unpredictably
+// named temp in the leaf's directory, fsynced, and renamed over rel. Routing
+// every write through the root refuses any symlink in rel's parents at the OS
+// level, and the temp-then-rename replaces a preexisting symlink at rel rather
+// than following it. rel is relative to the root (the restore target).
+func (s *restoreState) writeRootFile(rel string, content []byte, mode os.FileMode) error {
+	dir := filepath.Dir(rel)
+	if dir != "." {
+		if err := s.root.MkdirAll(dir, 0o700); err != nil {
+			return fmt.Errorf("backup: creating restore directory for %s: %w", rel, err)
+		}
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+	tmp := filepath.Join(dir, ".restore-"+pack.NewPackID())
+	f, err := s.root.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
-		return fmt.Errorf("backup: creating restored file %s: %w", path, err)
+		return fmt.Errorf("backup: creating restored file %s: %w", rel, err)
 	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = s.root.Remove(tmp)
+		}
+	}()
 	// O_CREATE's mode is filtered through the umask; restore must reproduce
 	// the captured mode exactly.
 	if err := f.Chmod(mode); err != nil {
 		_ = f.Close()
-		return fmt.Errorf("backup: setting mode on restored file %s: %w", path, err)
+		return fmt.Errorf("backup: setting mode on restored file %s: %w", rel, err)
 	}
 	if _, err := f.Write(content); err != nil {
 		_ = f.Close()
-		return fmt.Errorf("backup: writing restored file %s: %w", path, err)
+		return fmt.Errorf("backup: writing restored file %s: %w", rel, err)
 	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
-		return fmt.Errorf("backup: syncing restored file %s: %w", path, err)
+		return fmt.Errorf("backup: syncing restored file %s: %w", rel, err)
 	}
 	if err := f.Close(); err != nil {
-		return fmt.Errorf("backup: closing restored file %s: %w", path, err)
+		return fmt.Errorf("backup: closing restored file %s: %w", rel, err)
 	}
+	if err := s.root.Rename(tmp, rel); err != nil {
+		return fmt.Errorf("backup: publishing restored file %s: %w", rel, err)
+	}
+	committed = true
 	return nil
 }
 

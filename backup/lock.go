@@ -130,15 +130,15 @@ func clearConflicting(path string, force bool) error {
 		)
 	}
 	if force || time.Since(info.ModTime()) > lockStaleAfter {
-		if err := os.Remove(path); err != nil &&
-			!errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf(
-				"backup: removing lock %s: %w",
-				filepath.Base(path),
-				err,
-			)
+		removed, err := reapLock(path, force)
+		if err != nil {
+			return err
 		}
-		return nil
+		if removed {
+			return nil
+		}
+		// A live holder refreshed or replanted between our staleness check and
+		// the claim: fall through and report the repository as locked.
 	}
 	return fmt.Errorf(
 		"%w: %s held by %s",
@@ -164,12 +164,101 @@ func (r *Repo) freshSharedLocks(force bool) ([]string, error) {
 			continue // lock vanished between readdir and stat
 		}
 		if force || time.Since(info.ModTime()) > lockStaleAfter {
-			_ = os.Remove(path)
-			continue
+			if removed, _ := reapLock(path, force); removed {
+				continue
+			}
+			// Still fresh after the claim: count it as a live holder below.
 		}
 		holders = append(holders, describeLock(path))
 	}
 	return holders, nil
+}
+
+// claimLockFile atomically claims the lock file at path by renaming it to a
+// unique sibling, so at most one caller can win the claim of a given file: the
+// winner receives the file, everyone else sees os.ErrNotExist. The returned
+// claim path names the file the caller now solely owns. An os.ErrNotExist
+// error means the lock was already gone — reaped, released, or claimed by
+// someone else — which callers treat as "not ours to act on".
+func claimLockFile(path string) (string, error) {
+	claim := filepath.Join(
+		filepath.Dir(path),
+		"releasing-"+pack.NewPackID()+".json",
+	)
+	if err := os.Rename(path, claim); err != nil {
+		return "", err
+	}
+	return claim, nil
+}
+
+// returnClaimedLock puts a claimed lock file back at path without clobbering a
+// lock planted there since the claim. restored is true when the file was
+// linked back into place, and false when a newer lock already occupies path
+// (the claimed copy is then dropped). Reapers treat both outcomes as "a live
+// lock remains"; Release surfaces the false case as an anomaly. os.Link is
+// used rather than os.Rename because it refuses to overwrite an existing path,
+// so a lock planted at path during the claim window is preserved.
+func returnClaimedLock(path, claim string) (restored bool, err error) {
+	if linkErr := os.Link(claim, path); linkErr != nil {
+		_ = os.Remove(claim)
+		if errors.Is(linkErr, os.ErrExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf(
+			"backup: restoring claimed lock %s: %w",
+			filepath.Base(path),
+			linkErr,
+		)
+	}
+	if err := os.Remove(claim); err != nil &&
+		!errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf(
+			"backup: cleaning up claimed lock %s: %w",
+			filepath.Base(path),
+			err,
+		)
+	}
+	return true, nil
+}
+
+// reapLock removes the lock at path when force is set or it is still stale
+// after being claimed, closing the check-then-remove window a plain os.Remove
+// leaves open: a lock refreshed by its holder's heartbeat, or reaped and
+// replanted by a successor, between the staleness check and the removal would
+// otherwise be deleted out from under a live holder. Claiming by rename first
+// means the file re-evaluated and removed is the one this call solely owns.
+// removed reports whether the conflicting lock is gone afterward.
+func reapLock(path string, force bool) (removed bool, err error) {
+	claim, err := claimLockFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return true, nil // already gone
+	}
+	if err != nil {
+		return false, fmt.Errorf(
+			"backup: claiming lock %s: %w",
+			filepath.Base(path),
+			err,
+		)
+	}
+	if !force {
+		if info, statErr := os.Stat(claim); statErr == nil &&
+			time.Since(info.ModTime()) <= lockStaleAfter {
+			// Refreshed or replanted since we judged it stale: put it back.
+			if _, err := returnClaimedLock(path, claim); err != nil {
+				return false, err
+			}
+			return false, nil
+		}
+	}
+	if err := os.Remove(claim); err != nil &&
+		!errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf(
+			"backup: removing lock %s: %w",
+			filepath.Base(path),
+			err,
+		)
+	}
+	return true, nil
 }
 
 func plantLock(path, operation string) (*RepoLock, error) {
@@ -280,33 +369,59 @@ func currentLockInfo(path string) (info LockInfo, ok bool, err error) {
 	return info, true, nil
 }
 
-// Release stops the heartbeat and removes the lock file, but only if the
-// file still holds the LockInfo this RepoLock planted. If this holder was
-// slow enough to be reaped as stale, another holder may have replanted the
-// same path with its own live lock; removing unconditionally would delete
-// that lock out from under it. When the contents don't match ours (or can't
-// be read), our lock is already gone, which is not an error for the
-// releaser. This ownership check is itself a read-compare-remove window: a
-// replant landing between our read and our remove is not observable here.
+// Release stops the heartbeat and removes the lock file, but only if the file
+// still holds the LockInfo this RepoLock planted. If this holder was slow
+// enough to be reaped as stale, another holder may have replanted the same
+// path with its own live lock; removing it would delete that lock out from
+// under its owner. Removal is made atomic against that race by claiming the
+// file with a rename first: only one caller can win the rename, so the file
+// this Release inspects and deletes is one it solely owns. When the claimed
+// file is not ours it is restored to its path (without clobbering any newer
+// lock), and — because our lock is already gone — Release reports no error.
 func (l *RepoLock) Release() error {
 	l.stopHeartbeat()
-	current, ok, err := currentLockInfo(l.path)
+	claim, err := claimLockFile(l.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil // reaped, released, or claimed elsewhere: our lock is gone
+	}
 	if err != nil {
 		return fmt.Errorf(
-			"backup: could not verify lock %s for removal: %w",
+			"backup: claiming lock %s for release: %w",
 			filepath.Base(l.path),
 			err,
 		)
 	}
-	if !ok || current != l.info {
-		return nil // gone, unparsable, or replanted: our lock is already gone
+	current, ok, readErr := currentLockInfo(claim)
+	if readErr == nil && ok && current == l.info {
+		if err := os.Remove(claim); err != nil &&
+			!errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf(
+				"backup: releasing lock %s: %w",
+				filepath.Base(l.path),
+				err,
+			)
+		}
+		return nil
 	}
-	if err := os.Remove(l.path); err != nil &&
-		!errors.Is(err, os.ErrNotExist) {
+	// The claimed file is not provably ours: a successor reaped our stale lock
+	// and replanted before we claimed, or its body could not be read. Put it
+	// back without clobbering any newer lock rather than delete a live holder's
+	// file out from under it.
+	restored, err := returnClaimedLock(l.path, claim)
+	if err != nil {
+		return err
+	}
+	if readErr != nil {
 		return fmt.Errorf(
-			"backup: releasing lock %s: %w",
+			"backup: could not verify lock %s for removal: %w",
 			filepath.Base(l.path),
-			err,
+			readErr,
+		)
+	}
+	if !restored {
+		return fmt.Errorf(
+			"backup: lock %s was replanted during release; claimed foreign lock could not be restored",
+			filepath.Base(l.path),
 		)
 	}
 	return nil

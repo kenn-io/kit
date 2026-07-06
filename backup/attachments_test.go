@@ -327,6 +327,37 @@ func TestCaptureAttachmentsRejectsEscapingStoragePath(t *testing.T) {
 	}
 }
 
+// TestCaptureAttachmentsRefusesSymlinkEscape pins that capture never reads an
+// attachment through a symlink that escapes the attachments directory: a
+// tampered DB row pointing at such a symlink (whose recorded hash matches the
+// outside file, so a symlink-following read would pass the integrity check)
+// must fail rather than pull the host file into the backup.
+func TestCaptureAttachmentsRefusesSymlinkEscape(t *testing.T) {
+	require := require.New(t)
+	r := initTestRepo(t)
+	dir := t.TempDir()
+
+	outside := t.TempDir()
+	secret := []byte("host secret that must never enter a backup")
+	secretPath := filepath.Join(outside, "secret.txt")
+	require.NoError(os.WriteFile(secretPath, secret, 0o600))
+
+	sum := sha256.Sum256(secret)
+	hash := hex.EncodeToString(sum[:])
+	require.NoError(os.MkdirAll(filepath.Join(dir, hash[:2]), 0o700))
+	if err := os.Symlink(secretPath, filepath.Join(dir, hash[:2], hash)); err != nil {
+		t.Skip("symlinks not supported on this platform")
+	}
+
+	ref := ContentRef{Hash: hash, Size: int64(len(secret))}
+	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
+	defer appender.Abort()
+	_, err := CaptureAttachments(
+		context.Background(), dir, []ContentRef{ref}, map[string]bool{}, appender, CaptureOptions{})
+	require.ErrorContains(err, "reading attachment",
+		"capture must refuse a symlinked attachment escaping the attachments dir")
+}
+
 func TestCaptureAttachmentsNoNewList(t *testing.T) {
 	require := require.New(t)
 	r := initTestRepo(t)

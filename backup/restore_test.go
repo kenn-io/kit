@@ -400,13 +400,64 @@ func TestWriteRunRejectsOverflowingBlobOffset(t *testing.T) {
 	}
 }
 
+// TestRestoreRefusesSymlinkEscapeInTarget pins that restore never writes
+// through a symlink planted inside the target: with Overwrite set, a symlink at
+// a restored extras path that points outside the target must be replaced, not
+// followed, so a file outside the target is never truncated or rewritten.
+func TestRestoreRefusesSymlinkEscapeInTarget(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+	cacheDir := t.TempDir()
+
+	// An extras file rides along in the snapshot (the deletions dir is captured).
+	extrasBody := []byte(`{"id":"manifest-1"}`)
+	deletionsPath := filepath.Join(dataDir, "deletions", "manifest-1.json")
+	require.NoError(os.MkdirAll(filepath.Dir(deletionsPath), 0o700))
+	require.NoError(os.WriteFile(deletionsPath, extrasBody, 0o600))
+
+	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
+	require.NoError(err)
+
+	// A victim file outside the restore target.
+	outside := t.TempDir()
+	victim := filepath.Join(outside, "victim.txt")
+	sentinel := []byte("must survive the restore untouched")
+	require.NoError(os.WriteFile(victim, sentinel, 0o600))
+
+	// Pre-plant, inside the target, a symlink at the extras path that points at
+	// the victim; restore runs with Overwrite so the preexisting tree is merged.
+	target := filepath.Join(t.TempDir(), "restore")
+	require.NoError(os.MkdirAll(filepath.Join(target, "deletions"), 0o700))
+	link := filepath.Join(target, "deletions", "manifest-1.json")
+	if err := os.Symlink(victim, link); err != nil {
+		t.Skip("symlinks not supported on this platform")
+	}
+
+	_, err = Restore(ctx, r, newTestApp(), RestoreOptions{TargetDir: target, Overwrite: true})
+	require.NoError(err)
+
+	got, err := os.ReadFile(victim)
+	require.NoError(err)
+	require.Equal(sentinel, got,
+		"a file outside the target must never be written through a symlink")
+
+	info, err := os.Lstat(link)
+	require.NoError(err)
+	require.Equal(os.FileMode(0), info.Mode()&os.ModeSymlink,
+		"the planted symlink must have been replaced by a real file")
+	restored, err := os.ReadFile(link)
+	require.NoError(err)
+	require.Equal(extrasBody, restored)
+}
+
 func TestRestoreExtrasEntryRejectsEscapingPaths(t *testing.T) {
 	require := require.New(t)
 	st := &restoreState{}
-	target := t.TempDir()
 
 	for _, path := range []string{"", "/etc/passwd", "../outside", "a/../../outside", ".."} {
-		err := st.restoreExtrasEntry(newTestApp(), ExtrasEntry{Path: path, Blob: blobID("x").String()}, target)
+		err := st.restoreExtrasEntry(newTestApp(), ExtrasEntry{Path: path, Blob: blobID("x").String()})
 		require.ErrorContains(err, "escapes the restore target", "path %q", path)
 	}
 }
@@ -418,13 +469,12 @@ func TestRestoreExtrasEntryRejectsEscapingPaths(t *testing.T) {
 func TestRestoreExtrasEntryRejectsArchiveOverlap(t *testing.T) {
 	require := require.New(t)
 	st := &restoreState{}
-	target := t.TempDir()
 
 	for _, path := range []string{
 		"app.db", "APP.DB", "app.db-wal", "app.db-shm",
 		"content/aa/aa11", "Content/aa/aa11", "content",
 	} {
-		err := st.restoreExtrasEntry(newTestApp(), ExtrasEntry{Path: path, Blob: blobID("x").String()}, target)
+		err := st.restoreExtrasEntry(newTestApp(), ExtrasEntry{Path: path, Blob: blobID("x").String()})
 		require.ErrorContains(err, "overlaps restored archive content", "path %q", path)
 	}
 
@@ -434,17 +484,29 @@ func TestRestoreExtrasEntryRejectsArchiveOverlap(t *testing.T) {
 	for _, path := range []string{
 		"safe/../app.db", "safe/../APP.DB-wal", "safe/../content/aa/aa11",
 	} {
-		err := st.restoreExtrasEntry(newTestApp(), ExtrasEntry{Path: path, Blob: blobID("x").String()}, target)
+		err := st.restoreExtrasEntry(newTestApp(), ExtrasEntry{Path: path, Blob: blobID("x").String()})
 		require.ErrorContains(err, "overlaps restored archive content", "path %q", path)
 	}
 
+	// Components ending in a dot or space are rejected outright: on Windows
+	// "content." and "content " resolve to the reserved content dir, aliasing
+	// it past the folded comparison, and such names are pathological on every
+	// platform. The guard fires for the first component and for nested ones.
+	for _, path := range []string{
+		"content.", "content ", "content./aa/aa11", "app.db.", "app.db ",
+		"safe/dir./file", "safe/dir /file",
+	} {
+		err := st.restoreExtrasEntry(newTestApp(), ExtrasEntry{Path: path, Blob: blobID("x").String()})
+		require.ErrorContains(err, "component ending in a dot or space", "path %q", path)
+	}
+
 	// A path that cleans to the target directory itself is rejected outright.
-	err := st.restoreExtrasEntry(newTestApp(), ExtrasEntry{Path: "safe/..", Blob: blobID("x").String()}, target)
+	err := st.restoreExtrasEntry(newTestApp(), ExtrasEntry{Path: "safe/..", Blob: blobID("x").String()})
 	require.ErrorContains(err, "escapes the restore target")
 
 	// Legitimate extras still restore fine (proven end-to-end elsewhere);
 	// here just confirm the reserved-name check does not reject them.
-	err = st.restoreExtrasEntry(newTestApp(), ExtrasEntry{Path: "deletions/manifest-1.json", Blob: "not-a-blob"}, target)
+	err = st.restoreExtrasEntry(newTestApp(), ExtrasEntry{Path: "deletions/manifest-1.json", Blob: "not-a-blob"})
 	require.NotContains(err.Error(), "overlaps restored archive content")
 }
 

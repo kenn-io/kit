@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -219,6 +220,17 @@ func captureContents(
 	if len(refs) == 0 {
 		return nil
 	}
+	// Read every attachment through a root confined to attachmentsDir: a
+	// tampered DB row whose storage path resolves through a symlink to a file
+	// (or parent directory) outside the attachments tree must not be able to
+	// pull arbitrary host files into the backup. os.Root refuses any symlink
+	// that escapes the root, and captureRef additionally requires a regular
+	// file. os.Root is safe for concurrent use by the workers below.
+	root, err := os.OpenRoot(attachmentsDir)
+	if err != nil {
+		return fmt.Errorf("backup: opening attachments directory: %w", err)
+	}
+	defer func() { _ = root.Close() }()
 	workers := opts.Jobs
 	if workers <= 0 {
 		workers = runtime.GOMAXPROCS(0)
@@ -251,7 +263,7 @@ func captureContents(
 		defer close(work)
 		for i := range refs {
 			if rel, err := captureRelPath(refs[i]); err == nil {
-				if info, err := os.Stat(filepath.Join(attachmentsDir, rel)); err == nil {
+				if info, err := root.Stat(rel); err == nil {
 					weights[i] = info.Size()
 				}
 				// A stat failure dispatches at weight zero; captureRef
@@ -282,7 +294,7 @@ func captureContents(
 	for range workers {
 		wg.Go(func() {
 			for i := range work {
-				results <- captureRef(attachmentsDir, refs[i], i, preKnown, level)
+				results <- captureRef(root, refs[i], i, preKnown, level)
 			}
 		})
 	}
@@ -358,9 +370,11 @@ func captureRelPath(ref ContentRef) (string, error) {
 }
 
 // captureRef reads, hash-verifies, and (for blobs the repository does not
-// already hold) trial-compresses one attachment file. Runs on a worker.
+// already hold) trial-compresses one attachment file. Runs on a worker. Reads
+// go through root, confined to the attachments directory, so a storage path
+// resolving through a symlink outside the tree is refused rather than read.
 func captureRef(
-	attachmentsDir string, ref ContentRef, index int, preKnown map[pack.BlobID]struct{}, level int,
+	root *os.Root, ref ContentRef, index int, preKnown map[pack.BlobID]struct{}, level int,
 ) captureResult {
 	// Failing validation here (not in an upfront sweep) keeps error reporting
 	// in strict ref order: the collector surfaces whichever failure a serial
@@ -369,7 +383,7 @@ func captureRef(
 	if err != nil {
 		return captureResult{index: index, err: err}
 	}
-	content, err := os.ReadFile(filepath.Join(attachmentsDir, rel))
+	content, err := readRegularFile(root, rel)
 	if err != nil {
 		return captureResult{index: index, err: fmt.Errorf("backup: reading attachment %s: %w", rel, err)}
 	}
@@ -387,6 +401,26 @@ func captureRef(
 	}
 	res.frame, res.compressed = pack.EncodeFrame(content, level)
 	return res
+}
+
+// readRegularFile reads rel through root and requires it to be a regular file.
+// os.Root already refuses any symlink escaping the root; the regular-file
+// check additionally rejects fifos, device nodes, and directories a tampered
+// DB row might point at within the tree.
+func readRegularFile(root *os.Root, rel string) ([]byte, error) {
+	f, err := root.Open(rel)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%q is not a regular file", rel)
+	}
+	return io.ReadAll(f)
 }
 
 // recordCapture applies one worker result in ref order: append the frame
