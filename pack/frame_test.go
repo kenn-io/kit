@@ -13,7 +13,7 @@ func TestEncodeFrameCompressible(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
 
-	raw := bytes.Repeat([]byte("msgvault backup substrate "), 4096)
+	raw := bytes.Repeat([]byte("compressible substrate text "), 4096)
 	stored, compressed := encodeFrame(raw, DefaultZstdLevel)
 	require.True(compressed, "repetitive text must compress")
 	require.Less(len(stored), len(raw))

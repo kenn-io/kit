@@ -1,8 +1,7 @@
-// Package pack implements the shared blob/pack container format used by the
-// msgvault backup repository and the packed live attachment store. See
-// docs/architecture/backup-format.md (Pack Files). Packs are
-// sealed-immutable: they are written once via Writer and
-// never mutated afterward.
+// Package pack implements a content-addressed blob/pack container format
+// for archive and backup tools: blobs are stored in sealed-immutable pack
+// files, written once via Writer and never mutated afterward, with optional
+// zstd compression and XChaCha20-Poly1305 encryption.
 package pack
 
 import "errors"

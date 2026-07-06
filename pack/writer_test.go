@@ -22,7 +22,7 @@ func TestWriterLifecycle(t *testing.T) {
 	require.NoError(err)
 	assert.True(IsValidPackID(w.ID()))
 
-	compressible := bytes.Repeat([]byte("hello msgvault "), 1000)
+	compressible := bytes.Repeat([]byte("hello pack file "), 1000)
 	e1, err := w.Append(compressible)
 	require.NoError(err)
 	assert.Equal(ComputeBlobID(compressible), e1.ID)
@@ -70,7 +70,7 @@ func TestWriterAppendEncodedMatchesAppend(t *testing.T) {
 	staging := filepath.Join(dir, "staging")
 	require.NoError(os.MkdirAll(staging, 0o700))
 
-	compressible := bytes.Repeat([]byte("hello msgvault "), 1000)
+	compressible := bytes.Repeat([]byte("hello pack file "), 1000)
 	incompressible := []byte{0xFF, 0x00, 0xAB, 0x17, 0x99}
 
 	wa, err := NewWriter(staging, WriterOptions{})
