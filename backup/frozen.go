@@ -7,8 +7,9 @@ import (
 	"fmt"
 	"time"
 
-	// The sqlite3 driver is registered by internal/store in production; the
-	// blank import keeps internal/backup usable standalone (tests, restore).
+	// The embedding application typically registers the sqlite3 driver
+	// itself; the blank import keeps this package usable standalone (tests,
+	// restore).
 	_ "github.com/mattn/go-sqlite3"
 )
 

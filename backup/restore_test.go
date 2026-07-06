@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"io/fs"
 	"math"
@@ -445,4 +446,46 @@ func TestRestoreExtrasEntryRejectsArchiveOverlap(t *testing.T) {
 	// here just confirm the reserved-name check does not reject them.
 	err = st.restoreExtrasEntry(newTestApp(), ExtrasEntry{Path: "deletions/manifest-1.json", Blob: "not-a-blob"}, target)
 	require.NotContains(err.Error(), "overlaps restored archive content")
+}
+
+// escapingContentPathApp wraps another App but rewrites every path
+// RestoredContentPaths reports to a traversal path, modeling an App
+// implementation whose own derivation does not validate what it returns
+// (unlike testApp, which does) so this test exercises the engine's own guard
+// directly, regardless of which attachment the engine happens to process
+// first.
+type escapingContentPathApp struct{ App }
+
+func (a escapingContentPathApp) RestoredContentPaths(ctx context.Context, db *sql.DB) (map[string][]string, error) {
+	paths, err := a.App.RestoredContentPaths(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string][]string, len(paths))
+	for hash := range paths {
+		out[hash] = []string{"../escape"}
+	}
+	return out, nil
+}
+
+// TestRestoreAttachmentsRejectsEscapingContentPath pins the engine-side guard
+// on App.RestoredContentPaths: a path with the same untrusted, restored-DB
+// provenance as extras tree entries must be rejected before it is joined
+// into the content directory, even when nothing else about the snapshot is
+// invalid.
+func TestRestoreAttachmentsRejectsEscapingContentPath(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+	cacheDir := t.TempDir()
+
+	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
+	require.NoError(err)
+
+	_, err = Restore(ctx, r, escapingContentPathApp{App: newTestApp()}, RestoreOptions{
+		TargetDir: filepath.Join(t.TempDir(), "restore"),
+	})
+	require.ErrorContains(err, "escapes the content directory")
+	require.ErrorContains(err, "../escape")
 }

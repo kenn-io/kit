@@ -32,7 +32,10 @@ type App interface {
 	DBFileName() string     // e.g. "app.db"
 	ContentDirName() string // e.g. "content"
 	// RestoredContentPaths re-derives hash → relative paths from a restored
-	// DB so restore can materialize and verify every referenced file.
+	// DB so restore can materialize and verify every referenced file. Returned
+	// paths must be relative and local to the content directory (no absolute
+	// paths, no ".." escapes); the engine also rejects any non-local path at
+	// restore time.
 	RestoredContentPaths(ctx context.Context, db *sql.DB) (map[string][]string, error)
 	// RestoredStats recomputes stats from a restored DB for the fidelity proof.
 	RestoredStats(ctx context.Context, db *sql.DB) (json.RawMessage, error)

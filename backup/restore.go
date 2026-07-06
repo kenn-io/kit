@@ -614,6 +614,15 @@ func (s *restoreState) restorePackAttachments(
 			return
 		}
 		for _, rel := range rels {
+			// rel comes from the restored database via App.RestoredContentPaths,
+			// so it is re-validated here before being joined into dir — the same
+			// untrusted provenance restoreExtrasEntry guards against for extras
+			// tree paths.
+			if !filepath.IsLocal(rel) {
+				s.fail(fmt.Errorf(
+					"backup: attachment %s restore path %q escapes the content directory", ref.Hash, rel))
+				return
+			}
 			if err := writeRestoredFile(filepath.Join(dir, rel), content, 0o600); err != nil {
 				s.fail(err)
 				return
