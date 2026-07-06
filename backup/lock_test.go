@@ -276,14 +276,15 @@ func TestReleaseDoesNotRemoveReplantedLock(t *testing.T) {
 	require.NoError(b.Release())
 }
 
-// TestReleaseRestoresForeignLockFile pins the rename-to-claim release
-// protocol's restore step. When the lock file at the holder's path carries a
-// different holder's LockInfo (this stale holder was reaped and a successor
-// replanted), Release must claim the file, observe it is not ours, and put it
-// back — never delete a live successor's lock, and never leave a stray
-// releasing-*.json claim file behind. The interleaving is simulated directly
-// on the filesystem by overwriting the lock body between acquire and release.
-func TestReleaseRestoresForeignLockFile(t *testing.T) {
+// TestReleaseLeavesForeignLockUntouched pins Release's pre-read guard. When
+// the lock file at the holder's path carries a different holder's LockInfo
+// (this stale holder was reaped and a successor replanted), Release must
+// detect the foreign body up front and return without claiming — leaving the
+// live successor's lock intact and creating no releasing-*.json claim file, so
+// no third acquirer can plant into a rename-away vacancy. The interleaving is
+// simulated directly on the filesystem by overwriting the lock body between
+// acquire and release.
+func TestReleaseLeavesForeignLockUntouched(t *testing.T) {
 	require := require.New(t)
 	r := initTestRepo(t)
 
@@ -318,11 +319,39 @@ func TestReleaseRestoresForeignLockFile(t *testing.T) {
 	require.NoError(os.Remove(l.path))
 }
 
+// TestAcquireReapsStaleReleasingClaims pins the sweep of orphaned
+// releasing-*.json claim files: a crash between claimLockFile and the matching
+// remove/restore would otherwise leak one forever. Acquisition removes stale
+// claims but leaves fresh ones (an in-progress reap/release) alone.
+func TestAcquireReapsStaleReleasingClaims(t *testing.T) {
+	require := require.New(t)
+	r := initTestRepo(t)
+
+	staleClaim := r.Path("locks", "releasing-stale.json")
+	freshClaim := r.Path("locks", "releasing-fresh.json")
+	require.NoError(os.WriteFile(staleClaim, []byte("{}"), 0o600))
+	require.NoError(os.WriteFile(freshClaim, []byte("{}"), 0o600))
+	stale := time.Now().Add(-lockStaleAfter - time.Minute)
+	require.NoError(os.Chtimes(staleClaim, stale, stale))
+
+	l, err := r.AcquireExclusiveLock("create", false)
+	require.NoError(err)
+	defer func() { require.NoError(l.Release()) }()
+
+	_, statErr := os.Stat(staleClaim)
+	require.True(os.IsNotExist(statErr), "a stale claim file must be reaped on acquisition")
+	_, statErr = os.Stat(freshClaim)
+	require.NoError(statErr, "a fresh claim file must survive acquisition")
+}
+
 // TestReleaseReturnsErrorOnUnreadableLockFile pins the distinction in
 // Release's ownership re-read: os.ErrNotExist means the lock is already
 // gone (not our error), but any other read failure must surface as an
 // error instead of being swallowed, since we cannot tell whether we still
-// own the lock.
+// own the lock. It also pins the rename fallback in returnClaimedLock: the
+// lock path is made un-linkable (a directory, so os.Link fails EPERM the way
+// it does on filesystems without hard-link support), and Release must restore
+// the claimed file to its path via os.Rename rather than delete it.
 func TestReleaseReturnsErrorOnUnreadableLockFile(t *testing.T) {
 	require := require.New(t)
 	r := initTestRepo(t)
@@ -338,4 +367,18 @@ func TestReleaseReturnsErrorOnUnreadableLockFile(t *testing.T) {
 	err = l.Release()
 	require.Error(err)
 	require.NotErrorIs(err, os.ErrNotExist)
+
+	// The un-linkable "lock" must be restored to its path by the rename
+	// fallback, never deleted out from under a live holder.
+	info, statErr := os.Stat(l.path)
+	require.NoError(statErr, "the claimed lock must be restored to its path, not removed")
+	require.True(info.IsDir())
+
+	// And the restore must leave no stray claim file behind.
+	entries, err := os.ReadDir(r.Path("locks"))
+	require.NoError(err)
+	for _, e := range entries {
+		require.False(strings.HasPrefix(e.Name(), "releasing-"),
+			"stray claim file left behind: %s", e.Name())
+	}
 }

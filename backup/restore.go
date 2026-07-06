@@ -254,7 +254,40 @@ func prepareRestoreTarget(target string, overwrite bool, dbFileName string) (*os
 			return nil, fmt.Errorf("backup: removing stale %s from restore target: %w", name, err)
 		}
 	}
+	// A restore killed mid-run leaves the database's staging temp
+	// (<db>.restore-<ulid>, restoreDB) at the target root; a later overwrite
+	// rerun would otherwise ignore it forever. Sweep only that exact
+	// top-level shape — never a broad glob.
+	if err := removeRestoreTempFiles(target, dbFileName); err != nil {
+		_ = root.Close()
+		return nil, err
+	}
 	return root, nil
+}
+
+// removeRestoreTempFiles deletes the database staging temp files a crashed
+// restore may have left at target's top level. The name shape is exactly
+// restoreDB's: dbFileName + ".restore-" + a 26-char lowercase ULID.
+func removeRestoreTempFiles(target, dbFileName string) error {
+	prefix := dbFileName + ".restore-"
+	entries, err := os.ReadDir(target)
+	if err != nil {
+		return fmt.Errorf("backup: scanning restore target for stale temp files: %w", err)
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		id, ok := strings.CutPrefix(e.Name(), prefix)
+		if !ok || !pack.IsValidPackID(id) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(target, e.Name())); err != nil &&
+			!errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("backup: removing stale restore temp %s: %w", e.Name(), err)
+		}
+	}
+	return nil
 }
 
 // openRestoreRoot opens a root confined to the restore target directory.
@@ -535,6 +568,22 @@ func (s *restoreState) restoreAttachments(ctx context.Context, app App, m *Manif
 	paths, err := restoredContentPaths(ctx, app, dbPath)
 	if err != nil {
 		return 0, 0, err
+	}
+	// The materialization loop below iterates listed refs only, so a hash the
+	// restored database references but no attachment list carries would never
+	// be written, yet restore would still report success. Prove full coverage
+	// of the DB's content references up front: every path key must trace back
+	// to a listed blob. The complementary direction (listed hash with no DB
+	// path) is caught per-blob in restorePackAttachments.
+	listed := make(map[string]struct{}, len(refs))
+	for _, ref := range refs {
+		listed[ref.Hash] = struct{}{}
+	}
+	for hash := range paths {
+		if _, ok := listed[hash]; !ok {
+			return 0, 0, fmt.Errorf(
+				"backup: restored database references attachment %s that appears in no attachment list", hash)
+		}
 	}
 	groups := map[string][]ContentRef{}
 	var order []string

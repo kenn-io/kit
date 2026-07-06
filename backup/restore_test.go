@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"io/fs"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
@@ -238,6 +239,35 @@ func TestRestoreOverwriteRemovesStaleDBSidecars(t *testing.T) {
 		"the stale database must be fully replaced, not merged")
 	_, err = os.Stat(unrelated)
 	require.NoError(err, "overwrite merges: unrelated files stay in place")
+}
+
+// TestRestoreOverwriteSweepsOrphanedTempFiles pins the crash-recovery sweep: a
+// restore killed mid-run leaves a <db>.restore-<ulid> staging temp at the
+// target root, and a later --overwrite rerun must remove it rather than leave
+// it to accumulate.
+func TestRestoreOverwriteSweepsOrphanedTempFiles(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
+	require.NoError(err)
+
+	target := t.TempDir()
+	orphan := filepath.Join(target, "app.db.restore-"+pack.NewPackID())
+	require.NoError(os.WriteFile(orphan, []byte("half-written restore"), 0o600))
+	// A file that merely shares the prefix but is not a valid temp name must
+	// survive: the sweep is scoped to the exact <db>.restore-<ulid> shape.
+	bystander := filepath.Join(target, "app.db.restore-not-a-ulid")
+	require.NoError(os.WriteFile(bystander, []byte("keep me"), 0o600))
+
+	_, err = Restore(ctx, r, newTestApp(), RestoreOptions{TargetDir: target, Overwrite: true})
+	require.NoError(err)
+
+	_, statErr := os.Stat(orphan)
+	require.ErrorIs(statErr, os.ErrNotExist, "orphaned restore temp must be swept on overwrite")
+	_, statErr = os.Stat(bystander)
+	require.NoError(statErr, "a non-temp file sharing the prefix must survive")
 }
 
 // TestRestoreTargetPathWithURISyntax pins the proof DSN construction: a
@@ -550,4 +580,43 @@ func TestRestoreAttachmentsRejectsEscapingContentPath(t *testing.T) {
 	})
 	require.ErrorContains(err, "escapes the content directory")
 	require.ErrorContains(err, "../escape")
+}
+
+// extraContentPathApp wraps another App but reports one content hash beyond
+// those the snapshot's attachment lists carry, modeling a restored database
+// that references a blob no attachment list names.
+type extraContentPathApp struct{ App }
+
+func (a extraContentPathApp) RestoredContentPaths(ctx context.Context, db *sql.DB) (map[string][]string, error) {
+	paths, err := a.App.RestoredContentPaths(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string][]string, len(paths)+1)
+	maps.Copy(out, paths)
+	out["deadbeefunlisted"] = []string{"de/deadbeefunlisted"}
+	return out, nil
+}
+
+// TestRestoreRejectsDBHashAbsentFromLists pins the coverage guard: a restored
+// database that references a content hash appearing in no attachment list must
+// fail the restore rather than silently skip materializing it. Without the
+// guard the materialization loop, which iterates listed refs only, would never
+// notice the extra reference and restore would report success over a database
+// pointing at a missing content file.
+func TestRestoreRejectsDBHashAbsentFromLists(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+	cacheDir := t.TempDir()
+
+	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
+	require.NoError(err)
+
+	_, err = Restore(ctx, r, extraContentPathApp{App: newTestApp()}, RestoreOptions{
+		TargetDir: filepath.Join(t.TempDir(), "restore"),
+	})
+	require.ErrorContains(err, "appears in no attachment list")
+	require.ErrorContains(err, "deadbeefunlisted")
 }

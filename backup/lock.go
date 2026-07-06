@@ -25,6 +25,11 @@ var (
 
 const exclusiveLockName = "exclusive.json"
 
+// releasingClaimPrefix names the transient files claimLockFile renames a lock
+// to while a reaper or Release inspects it. A crash between claim and
+// remove/restore leaves one behind; reapStaleClaims sweeps stale ones.
+const releasingClaimPrefix = "releasing-"
+
 // sharedLockPostPlantHook runs between planting a shared lock file and the
 // exclusive re-check; tests use it to open the race window deterministically.
 var sharedLockPostPlantHook = func() {}
@@ -55,6 +60,7 @@ type RepoLock struct {
 // planting the exclusive file waits out fresh shared locks (releasing and
 // failing if they persist past sharedWaitTimeout).
 func (r *Repo) AcquireExclusiveLock(operation string, force bool) (*RepoLock, error) {
+	r.reapStaleClaims()
 	path := r.Path(locksDirName, exclusiveLockName)
 	if err := clearConflicting(path, force); err != nil {
 		return nil, err
@@ -98,6 +104,7 @@ func (r *Repo) AcquireExclusiveLock(operation string, force bool) (*RepoLock, er
 // AcquireExclusiveLock's freshSharedLocks scan (which always runs after its
 // own plant) will see it and wait.
 func (r *Repo) AcquireSharedLock(operation string, force bool) (*RepoLock, error) {
+	r.reapStaleClaims()
 	exclusive := r.Path(locksDirName, exclusiveLockName)
 	if err := clearConflicting(exclusive, force); err != nil {
 		return nil, err
@@ -115,6 +122,37 @@ func (r *Repo) AcquireSharedLock(operation string, force bool) (*RepoLock, error
 	return lock, nil
 }
 
+// lockIsFresh reports whether a lock file's mtime is recent enough that its
+// holder is presumed alive (refreshed within lockStaleAfter of now). Every
+// reaper judges staleness through this one helper so the threshold stays
+// consistent.
+func lockIsFresh(info os.FileInfo) bool {
+	return time.Since(info.ModTime()) <= lockStaleAfter
+}
+
+// reapStaleClaims removes orphaned releasing-*.json claim files left by a
+// crash between claimLockFile and the matching remove/restore. Fresh claims
+// belong to an in-progress reap or release and are left alone. Best-effort:
+// a failed scan or remove leaves the sweep for a later acquisition.
+func (r *Repo) reapStaleClaims() {
+	entries, err := os.ReadDir(r.Path(locksDirName))
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), releasingClaimPrefix) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue // vanished between readdir and stat
+		}
+		if !lockIsFresh(info) {
+			_ = os.Remove(r.Path(locksDirName, e.Name()))
+		}
+	}
+}
+
 // clearConflicting removes path if it is stale (or force is set); it returns
 // ErrRepoLocked if a fresh lock remains.
 func clearConflicting(path string, force bool) error {
@@ -129,7 +167,7 @@ func clearConflicting(path string, force bool) error {
 			err,
 		)
 	}
-	if force || time.Since(info.ModTime()) > lockStaleAfter {
+	if force || !lockIsFresh(info) {
 		removed, err := reapLock(path, force)
 		if err != nil {
 			return err
@@ -163,7 +201,7 @@ func (r *Repo) freshSharedLocks(force bool) ([]string, error) {
 		if err != nil {
 			continue // lock vanished between readdir and stat
 		}
-		if force || time.Since(info.ModTime()) > lockStaleAfter {
+		if force || !lockIsFresh(info) {
 			if removed, _ := reapLock(path, force); removed {
 				continue
 			}
@@ -183,7 +221,7 @@ func (r *Repo) freshSharedLocks(force bool) ([]string, error) {
 func claimLockFile(path string) (string, error) {
 	claim := filepath.Join(
 		filepath.Dir(path),
-		"releasing-"+pack.NewPackID()+".json",
+		releasingClaimPrefix+pack.NewPackID()+".json",
 	)
 	if err := os.Rename(path, claim); err != nil {
 		return "", err
@@ -192,30 +230,45 @@ func claimLockFile(path string) (string, error) {
 }
 
 // returnClaimedLock puts a claimed lock file back at path without clobbering a
-// lock planted there since the claim. restored is true when the file was
-// linked back into place, and false when a newer lock already occupies path
-// (the claimed copy is then dropped). Reapers treat both outcomes as "a live
-// lock remains"; Release surfaces the false case as an anomaly. os.Link is
-// used rather than os.Rename because it refuses to overwrite an existing path,
-// so a lock planted at path during the claim window is preserved.
+// lock planted there since the claim. restored is true when the claimed file
+// is back at path, and false only when a newer lock already occupies path (the
+// claimed copy is then dropped). Reapers treat both outcomes as "a live lock
+// remains"; Release surfaces the false case as an anomaly.
+//
+// The restore is attempted with os.Link first: link is atomic and refuses to
+// overwrite an existing path, so a lock planted at path during the claim window
+// is preserved (EEXIST -> drop the now-stale claim). But os.Link is unavailable
+// or unreliable on exFAT, FAT32, and many SMB/NFS mounts — exactly where backup
+// repositories often live — so any other link failure falls back to os.Rename.
+// Rename can clobber, but its window is microseconds and restoring a live
+// holder's lock is strictly better than deleting it; only a failed rename is an
+// error.
 func returnClaimedLock(path, claim string) (restored bool, err error) {
-	if linkErr := os.Link(claim, path); linkErr != nil {
-		_ = os.Remove(claim)
-		if errors.Is(linkErr, os.ErrExist) {
-			return false, nil
+	linkErr := os.Link(claim, path)
+	if linkErr == nil {
+		if err := os.Remove(claim); err != nil &&
+			!errors.Is(err, os.ErrNotExist) {
+			return false, fmt.Errorf(
+				"backup: cleaning up claimed lock %s: %w",
+				filepath.Base(path),
+				err,
+			)
 		}
+		return true, nil
+	}
+	if errors.Is(linkErr, os.ErrExist) {
+		// A newer lock was planted at path during the claim window; the claimed
+		// copy is stale and must go rather than overwrite the live lock.
+		_ = os.Remove(claim)
+		return false, nil
+	}
+	// Link is unsupported or unreliable on this filesystem: fall back to a
+	// best-effort rename so a live holder's lock is restored rather than lost.
+	if renameErr := os.Rename(claim, path); renameErr != nil {
 		return false, fmt.Errorf(
 			"backup: restoring claimed lock %s: %w",
 			filepath.Base(path),
-			linkErr,
-		)
-	}
-	if err := os.Remove(claim); err != nil &&
-		!errors.Is(err, os.ErrNotExist) {
-		return false, fmt.Errorf(
-			"backup: cleaning up claimed lock %s: %w",
-			filepath.Base(path),
-			err,
+			renameErr,
 		)
 	}
 	return true, nil
@@ -242,7 +295,7 @@ func reapLock(path string, force bool) (removed bool, err error) {
 	}
 	if !force {
 		if info, statErr := os.Stat(claim); statErr == nil &&
-			time.Since(info.ModTime()) <= lockStaleAfter {
+			lockIsFresh(info) {
 			// Refreshed or replanted since we judged it stale: put it back.
 			if _, err := returnClaimedLock(path, claim); err != nil {
 				return false, err
@@ -378,8 +431,19 @@ func currentLockInfo(path string) (info LockInfo, ok bool, err error) {
 // this Release inspects and deletes is one it solely owns. When the claimed
 // file is not ours it is restored to its path (without clobbering any newer
 // lock), and — because our lock is already gone — Release reports no error.
+//
+// A cheap pre-read confines the claim protocol to the only case that needs it.
+// If the file at l.path already, provably, holds a different holder's LockInfo,
+// it belongs to a successor and Release returns without claiming: the old
+// behavior of never touching a file whose body is not ours. This avoids the
+// claim's momentary rename-away vacancy — into which a third acquirer could
+// plant a lock that the return step then drops — in the common replanted case.
+// Only an ours-looking or unreadable lock proceeds to the claim handshake.
 func (l *RepoLock) Release() error {
 	l.stopHeartbeat()
+	if current, ok, readErr := currentLockInfo(l.path); readErr == nil && ok && current != l.info {
+		return nil // the lock at our path belongs to a successor: leave it be
+	}
 	claim, err := claimLockFile(l.path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil // reaped, released, or claimed elsewhere: our lock is gone
