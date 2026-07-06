@@ -20,7 +20,7 @@ type WriterOptions struct {
 }
 
 // Writer builds one pack file in a staging directory and moves it to its
-// final path on Seal, following the durability discipline (docs/architecture/backup-format.md, Crash Consistency):
+// final path on Seal, following the durability discipline (backup/FORMAT.md, Crash Consistency):
 // write -> fsync file -> rename -> fsync directory.
 type Writer struct {
 	id      string

@@ -11,7 +11,7 @@ import (
 
 const (
 	// runBlobMinPages: dirty ranges at least this long become dedicated run
-	// blobs; shorter ranges are grouped into delta-group blobs (docs/architecture/backup-format.md, Page-Map Objects).
+	// blobs; shorter ranges are grouped into delta-group blobs (FORMAT.md, Page-Map Objects).
 	runBlobMinPages = 256
 	// blobMaxPages caps any page blob at 4 MiB of 4 KB pages.
 	blobMaxPages = 1024
@@ -66,7 +66,7 @@ type scanChunkDone struct {
 }
 
 // ScanPages hashes every page and diffs against the parent hash map. The
-// full scan is the honest cost of on-demand backup (docs/architecture/backup-format.md, Page-Map Objects); it doubles
+// full scan is the honest cost of on-demand backup (FORMAT.md, Page-Map Objects); it doubles
 // as live-DB bitrot detection. progress, if non-nil, is called once per
 // chunk with the page count scanned so far and the total page count; it
 // does not otherwise affect scan behavior.

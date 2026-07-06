@@ -169,7 +169,7 @@ func (a *PackAppender) Finish() ([]string, []IndexEntry, error) {
 }
 
 // Abort discards the open pack; already-sealed packs remain (they are
-// unreferenced without a manifest and get ignored, see docs/architecture/backup-format.md, Crash Consistency).
+// unreferenced without a manifest and get ignored, see FORMAT.md, Crash Consistency).
 func (a *PackAppender) Abort() {
 	if a.w != nil {
 		_ = a.w.Abort()

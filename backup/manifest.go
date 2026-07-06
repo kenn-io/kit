@@ -14,7 +14,7 @@ import (
 	"go.kenn.io/kit/pack"
 )
 
-// Manifest types (docs/architecture/backup-format.md)
+// Manifest types (FORMAT.md)
 
 type Manifest struct {
 	FormatVersion    int `json:"format_version"`
@@ -72,7 +72,7 @@ type ManifestExtras struct {
 const manifestExt = ".mvmanifest"
 
 // ComputeSnapshotID derives the time-ordered, content-derived snapshot ID
-// (docs/architecture/backup-format.md): UTC timestamp plus the first 32 hex
+// (FORMAT.md): UTC timestamp plus the first 32 hex
 // chars (128 bits) of the SHA-256 of the manifest JSON with snapshot_id
 // blanked. The digest must be long enough that crafting a different
 // manifest with the same ID is infeasible: LoadManifest's recompute check

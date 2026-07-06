@@ -39,7 +39,7 @@ type CreateOptions struct {
 }
 
 // Create captures one snapshot: freeze -> scan -> pack -> index -> manifest
-// (written last). See docs/architecture/backup-format.md.
+// (written last). See FORMAT.md.
 func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifest, error) {
 	start := time.Now()
 	pr := newProgressEmitter(opts.Progress)
@@ -319,7 +319,7 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 
 // nextCreatedAt returns the timestamp to record as this snapshot's
 // CreatedAt. Snapshot IDs embed CreatedAt truncated to 1-second resolution
-// (docs/architecture/backup-format.md), and ListSnapshots/LatestSnapshot rely on lexicographic ID
+// (FORMAT.md), and ListSnapshots/LatestSnapshot rely on lexicographic ID
 // order matching chronological order. Create holds the repo's exclusive
 // lock for its entire run, so it can safely enforce that invariant here: if
 // the parent's timestamp (truncated to seconds) is not strictly before
@@ -561,7 +561,7 @@ func recordPageBlob(
 	return nil
 }
 
-// decideKeyframe applies the keyframe cadence (docs/architecture/backup-format.md, Page-Map Objects): keyframe when
+// decideKeyframe applies the keyframe cadence (FORMAT.md, Page-Map Objects): keyframe when
 // there is no usable parent, the chain would reach keyframeChainMax, or the
 // chain's stored delta bytes exceed the keyframe's stored bytes.
 func decideKeyframe(r *Repo, parent *Manifest, parentHash *PageHashMap, known map[pack.BlobID]IndexEntry) (bool, int, error) {

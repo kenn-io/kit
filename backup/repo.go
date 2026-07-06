@@ -61,7 +61,7 @@ const (
 	keysDirName      = "keys"
 )
 
-// RepoConfig is the plaintext repository descriptor (docs/architecture/backup-format.md). It stays
+// RepoConfig is the plaintext repository descriptor (FORMAT.md). It stays
 // unencrypted even in encrypted repos because it bootstraps everything else.
 type RepoConfig struct {
 	RepoID           string `toml:"repo_id"`

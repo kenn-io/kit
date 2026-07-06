@@ -11,7 +11,7 @@ import (
 	"go.kenn.io/kit/pack"
 )
 
-// VerifyOptions parameterizes one integrity check run (docs/architecture/backup-format.md, Verification Model).
+// VerifyOptions parameterizes one integrity check run (FORMAT.md, Verification Model).
 type VerifyOptions struct {
 	SnapshotID  string // empty: latest
 	All         bool
@@ -30,7 +30,7 @@ type VerifyOptions struct {
 	Progress func(ProgressEvent)
 }
 
-// Problem names one verification failure precisely (docs/architecture/backup-format.md, Verification Model).
+// Problem names one verification failure precisely (FORMAT.md, Verification Model).
 type Problem struct {
 	SnapshotID string
 	Detail     string
@@ -50,7 +50,7 @@ type VerifyResult struct {
 // less specific Problem for the same underlying blob.
 var errBlobUnreadable = errors.New("backup: referenced blob failed verification")
 
-// Verify checks a backup repository's integrity (docs/architecture/backup-format.md, Verification Model). It takes
+// Verify checks a backup repository's integrity (FORMAT.md, Verification Model). It takes
 // a SHARED repo lock (released on return): concurrent verifies and restores
 // are safe, but a running create/prune (exclusive) is not.
 //
@@ -551,7 +551,7 @@ func (s *verifyState) fetcher(snapshotID string) func(pack.BlobID) ([]byte, erro
 }
 
 // verifySnapshot enumerates and checks every blob one manifest references
-// (docs/architecture/backup-format.md, Verification Model): the page-hash-map and page-map chains, the materialized page
+// (FORMAT.md, Verification Model): the page-hash-map and page-map chains, the materialized page
 // map's blob table, attachment lists and the content blobs they name, and
 // the extras tree and the blobs it names.
 func (s *verifyState) verifySnapshot(m *Manifest) {
@@ -675,7 +675,7 @@ func (s *verifyState) checkAttachmentLists(m *Manifest) []ContentRef {
 }
 
 // checkAttachmentConsistency cross-checks the union of decoded attachment
-// list refs against the manifest's own attachment totals (docs/architecture/backup-format.md, Verification Model).
+// list refs against the manifest's own attachment totals (FORMAT.md, Verification Model).
 func (s *verifyState) checkAttachmentConsistency(m *Manifest, refs []ContentRef) {
 	var sizeSum int64
 	for _, ref := range refs {

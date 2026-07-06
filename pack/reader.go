@@ -75,7 +75,7 @@ func newReader(f *os.File, id string, crypter *Crypter) (*Reader, error) {
 // readFooterRegion locates and reads the footer via two pread calls instead
 // of loading a bounded-but-still-huge (up to ~1GiB) tail window: a fixed
 // plainTrailerSize-byte read of the very end of the file is always enough to
-// hold either trailer form (docs/architecture/backup-format.md, Pack Files) and yields the footer's exact
+// hold either trailer form (backup/FORMAT.md, Pack Files) and yields the footer's exact
 // offset and length, so the second read fetches only the footer region
 // itself. This keeps OpenReader's memory use independent of both pack size
 // and footer size for the common case, unlike reading a fixed fraction of

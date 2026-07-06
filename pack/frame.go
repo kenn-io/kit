@@ -50,7 +50,7 @@ func minCompressionSavings(rawLen int) int {
 }
 
 // encodeFrame trial-compresses raw. It returns the compressed frame only when
-// zstd saves at least 3% (docs/architecture/backup-format.md, Pack Files); otherwise it returns raw as-is.
+// zstd saves at least 3% (backup/FORMAT.md, Pack Files); otherwise it returns raw as-is.
 func encodeFrame(raw []byte, level int) (stored []byte, compressed bool) {
 	if len(raw) == 0 {
 		return raw, false

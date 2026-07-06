@@ -13,7 +13,7 @@ const (
 	encTrailerSize   = 20 // footer_offset(8) + footer_stored_len(8) + magic(4)
 )
 
-// Entry describes one blob within a pack (docs/architecture/backup-format.md, Pack Files). Offset and
+// Entry describes one blob within a pack (backup/FORMAT.md, Pack Files). Offset and
 // StoredLen locate the stored (possibly compressed and encrypted) bytes;
 // CRC32C covers exactly those stored bytes so integrity can be scanned
 // without keys.
@@ -88,7 +88,7 @@ func appendPlainTrailer(region []byte) []byte {
 	return append(out, trailerMagic...)
 }
 
-// parsePlainTrailer parses the plain-pack trailer (docs/architecture/backup-format.md, Pack Files) out of
+// parsePlainTrailer parses the plain-pack trailer (backup/FORMAT.md, Pack Files) out of
 // its fixed-size tail and validates footer_len against maxFooterLen and
 // fileSize. It returns the footer length and the trailer's stored checksum
 // without requiring the footer region bytes themselves to be present in
@@ -144,7 +144,7 @@ func extractPlainFooterRegion(file []byte) ([]byte, error) {
 
 // appendEncryptedTrailer appends the encrypted-pack trailer: the sealed footer
 // followed by footer_offset(u64 LE) || footer_stored_len(u64 LE) || "KPVM"
-// (docs/architecture/backup-format.md, Pack Files). The trailer is plaintext by necessity; tampering is
+// (backup/FORMAT.md, Pack Files). The trailer is plaintext by necessity; tampering is
 // caught because the footer's AEAD open fails.
 func appendEncryptedTrailer(sealedFooter []byte,
 	footerOffset uint64) []byte {
@@ -155,7 +155,7 @@ func appendEncryptedTrailer(sealedFooter []byte,
 	return append(out, trailerMagic...)
 }
 
-// parseEncryptedTrailer parses the encrypted-pack trailer (docs/architecture/backup-format.md, Pack Files)
+// parseEncryptedTrailer parses the encrypted-pack trailer (backup/FORMAT.md, Pack Files)
 // out of its fixed-size tail and validates footer_offset/footer_stored_len
 // against fileSize. It returns the sealed footer's file offset and length
 // without requiring the footer bytes themselves to be present in trailer, so

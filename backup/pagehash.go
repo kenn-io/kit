@@ -21,7 +21,7 @@ const (
 )
 
 // PageHashMap holds the truncated SHA-256 of every DB page. It is the input
-// to incremental change detection (docs/architecture/backup-format.md, Page-Map Objects).
+// to incremental change detection (FORMAT.md, Page-Map Objects).
 type PageHashMap struct {
 	PageSize  uint32
 	PageCount uint64

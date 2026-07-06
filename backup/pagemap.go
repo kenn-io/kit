@@ -24,7 +24,7 @@ type PageRun struct {
 }
 
 // PageMap is the run-length-encoded page -> (blob, offset) mapping
-// (docs/architecture/backup-format.md, Page-Map Objects). A keyframe covers every page exactly once; a delta covers
+// (FORMAT.md, Page-Map Objects). A keyframe covers every page exactly once; a delta covers
 // only the ranges it replaces.
 type PageMap struct {
 	PageSize  uint32

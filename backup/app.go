@@ -30,7 +30,7 @@ type FrozenView interface {
 type App interface {
 	FrozenView(s *FrozenSession) FrozenView
 	DBFileName() string     // e.g. "app.db"
-	ContentDirName() string // e.g. "attachments"
+	ContentDirName() string // e.g. "content"
 	// RestoredContentPaths re-derives hash → relative paths from a restored
 	// DB so restore can materialize and verify every referenced file.
 	RestoredContentPaths(ctx context.Context, db *sql.DB) (map[string][]string, error)

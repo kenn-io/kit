@@ -13,7 +13,7 @@ import (
 )
 
 // FreezeCoordinator brackets the freeze window: Begin drains and holds the
-// daemon's operation gate, End releases it (docs/architecture/backup-format.md, Freeze Protocol). The pinned read
+// daemon's operation gate, End releases it (FORMAT.md, Freeze Protocol). The pinned read
 // transaction — which keeps the main DB file frozen afterwards — is owned by
 // FrozenSession, not the coordinator.
 type FreezeCoordinator interface {
@@ -61,7 +61,7 @@ type FrozenSession struct {
 // references. That backup fails loudly (read or hash error) and is
 // retryable; holding the gate through the whole capture window would block
 // every daemon write for minutes instead. Accepted limitation — see
-// docs/architecture/backup-format.md, Current Limitations.
+// FORMAT.md, Current Limitations.
 func OpenFrozenSession(ctx context.Context, dbPath string, fc FreezeCoordinator) (*FrozenSession, error) {
 	if err := fc.Begin(ctx); err != nil {
 		return nil, fmt.Errorf("backup: freeze begin: %w", err)

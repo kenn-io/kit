@@ -10,7 +10,7 @@ import (
 )
 
 // Crypter seals and opens pack content with XChaCha20-Poly1305 under a single
-// repo key (docs/architecture/backup-format.md, Pack Files). The AAD binds every ciphertext to its identity:
+// repo key (backup/FORMAT.md, Pack Files). The AAD binds every ciphertext to its identity:
 // blob ID for blob frames, role plus object ID for metadata objects.
 type Crypter struct {
 	aead cipher.AEAD

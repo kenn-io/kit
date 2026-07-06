@@ -7,13 +7,13 @@ package pack
 import "errors"
 
 const (
-	// FormatVersion is the pack container format version (docs/architecture/backup-format.md, Pack Files).
+	// FormatVersion is the pack container format version (backup/FORMAT.md, Pack Files).
 	FormatVersion = 1
 
 	// DefaultTargetSize is the advisory pack size at which callers seal.
 	DefaultTargetSize = 32 << 20
 
-	// DefaultZstdLevel is the default zstd compression level (docs/architecture/backup-format.md, Pack Files).
+	// DefaultZstdLevel is the default zstd compression level (backup/FORMAT.md, Pack Files).
 	DefaultZstdLevel = 3
 
 	headerMagic  = "MVPK"

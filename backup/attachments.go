@@ -173,7 +173,7 @@ func (g *byteGate) stop() {
 }
 
 // CaptureAttachments stores every referenced attachment content blob,
-// re-hashing each file as it goes (docs/architecture/backup-format.md, Attachment Lists: backup verifies the live store).
+// re-hashing each file as it goes (FORMAT.md, Attachment Lists: backup verifies the live store).
 // Refs not present in parentSeen become the snapshot's new list segment.
 //
 // Reading, hashing, and trial compression fan out to opts.Jobs workers;

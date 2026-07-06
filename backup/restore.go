@@ -20,7 +20,7 @@ import (
 	"go.kenn.io/kit/pack"
 )
 
-// RestoreOptions parameterizes one restore run (docs/architecture/backup-format.md, Restore).
+// RestoreOptions parameterizes one restore run (FORMAT.md, Restore).
 type RestoreOptions struct {
 	SnapshotID string // empty: latest
 	// TargetDir receives the restored archive: the database file, content dir,
@@ -54,7 +54,7 @@ type RestoreResult struct {
 }
 
 // Restore materializes one snapshot into TargetDir and then proves the
-// result (docs/architecture/backup-format.md, Restore): every database page
+// result (FORMAT.md, Restore): every database page
 // is hash-verified against the snapshot's page-hash map as it is written,
 // every blob read re-derives its SHA-256 identity, and the restored database
 // must pass PRAGMA integrity_check and reproduce the manifest's recorded
@@ -214,7 +214,7 @@ func syncRestoredTree(target, ceiling string) error {
 }
 
 // prepareRestoreTarget creates TargetDir, refusing a non-empty existing
-// directory unless overwrite is set (docs/architecture/backup-format.md, Restore).
+// directory unless overwrite is set (FORMAT.md, Restore).
 func prepareRestoreTarget(target string, overwrite bool, dbFileName string) error {
 	if target == "" {
 		return errors.New("backup: restore target directory is required")
@@ -737,7 +737,7 @@ func writeRestoredFile(path string, content []byte, mode os.FileMode) error {
 	return nil
 }
 
-// proveRestoredDB is the restore proof (docs/architecture/backup-format.md,
+// proveRestoredDB is the restore proof (FORMAT.md,
 // Restore): the restored database must pass PRAGMA integrity_check and
 // reproduce the manifest's recorded stats through exactly the queries
 // capture ran inside the freeze. Page-level identity was already proven
