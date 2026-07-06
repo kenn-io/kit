@@ -2,6 +2,7 @@ package backup
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -344,15 +345,13 @@ func TestAcquireReapsStaleReleasingClaims(t *testing.T) {
 	require.NoError(statErr, "a fresh claim file must survive acquisition")
 }
 
-// TestReleaseReturnsErrorOnUnreadableLockFile pins the distinction in
-// Release's ownership re-read: os.ErrNotExist means the lock is already
-// gone (not our error), but any other read failure must surface as an
-// error instead of being swallowed, since we cannot tell whether we still
-// own the lock. It also pins the rename fallback in returnClaimedLock: the
-// lock path is made un-linkable (a directory, so os.Link fails EPERM the way
-// it does on filesystems without hard-link support), and Release must restore
-// the claimed file to its path via os.Rename rather than delete it.
-func TestReleaseReturnsErrorOnUnreadableLockFile(t *testing.T) {
+// TestReleaseSurfacesUnverifiableLockError pins the distinction in Release's
+// ownership re-read: os.ErrNotExist means the lock is already gone (not our
+// error), but a lock that can neither be verified as ours nor restored must
+// surface an error instead of being swallowed. The lock path is made a
+// directory, which fails both the ownership re-read (EISDIR) and the
+// copy-based restore, so Release must report a non-ErrNotExist error.
+func TestReleaseSurfacesUnverifiableLockError(t *testing.T) {
 	require := require.New(t)
 	r := initTestRepo(t)
 
@@ -362,23 +361,63 @@ func TestReleaseReturnsErrorOnUnreadableLockFile(t *testing.T) {
 
 	require.NoError(os.Remove(l.path))
 	require.NoError(os.Mkdir(l.path, 0o700))
-	t.Cleanup(func() { _ = os.Remove(l.path) })
+	t.Cleanup(func() { _ = os.RemoveAll(r.Path("locks")) })
 
 	err = l.Release()
 	require.Error(err)
 	require.NotErrorIs(err, os.ErrNotExist)
+}
 
-	// The un-linkable "lock" must be restored to its path by the rename
-	// fallback, never deleted out from under a live holder.
-	info, statErr := os.Stat(l.path)
-	require.NoError(statErr, "the claimed lock must be restored to its path, not removed")
-	require.True(info.IsDir())
+// TestReturnClaimedLockCopyFallbackRestores pins the no-hardlink fallback: when
+// osLink is unavailable (exFAT/FAT32/SMB/NFS), returnClaimedLock must reproduce
+// the claimed lock at its path by copying, not by a clobbering rename.
+func TestReturnClaimedLockCopyFallbackRestores(t *testing.T) {
+	require := require.New(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, exclusiveLockName)
+	claim := filepath.Join(dir, releasingClaimPrefix+"restore.json")
+	body := []byte(`{"pid":1234,"operation":"create"}`)
+	require.NoError(os.WriteFile(claim, body, 0o600))
 
-	// And the restore must leave no stray claim file behind.
-	entries, err := os.ReadDir(r.Path("locks"))
+	old := osLink
+	osLink = func(string, string) error { return errors.New("no hard links on this filesystem") }
+	t.Cleanup(func() { osLink = old })
+
+	restored, err := returnClaimedLock(path, claim)
 	require.NoError(err)
-	for _, e := range entries {
-		require.False(strings.HasPrefix(e.Name(), "releasing-"),
-			"stray claim file left behind: %s", e.Name())
-	}
+	require.True(restored)
+
+	got, err := os.ReadFile(path)
+	require.NoError(err)
+	require.Equal(body, got, "the claimed lock's contents must be restored at path via the copy fallback")
+	_, statErr := os.Stat(claim)
+	require.True(os.IsNotExist(statErr), "the claim must be removed after a successful restore")
+}
+
+// TestReturnClaimedLockCopyFallbackDoesNotClobber pins the mutual-exclusion
+// guarantee the copy fallback restores: a lock planted at the path during the
+// claim window must survive, matching the os.Link-EEXIST branch. The old rename
+// fallback would have overwritten it.
+func TestReturnClaimedLockCopyFallbackDoesNotClobber(t *testing.T) {
+	require := require.New(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, exclusiveLockName)
+	claim := filepath.Join(dir, releasingClaimPrefix+"clobber.json")
+	require.NoError(os.WriteFile(claim, []byte("stale claimed copy"), 0o600))
+	live := []byte(`{"pid":9999,"operation":"prune"}`)
+	require.NoError(os.WriteFile(path, live, 0o600))
+
+	old := osLink
+	osLink = func(string, string) error { return errors.New("no hard links on this filesystem") }
+	t.Cleanup(func() { osLink = old })
+
+	restored, err := returnClaimedLock(path, claim)
+	require.NoError(err)
+	require.False(restored, "a lock already at path is a live replacement, not our restore")
+
+	got, err := os.ReadFile(path)
+	require.NoError(err)
+	require.Equal(live, got, "the copy fallback must never clobber a lock planted during the claim window")
+	_, statErr := os.Stat(claim)
+	require.True(os.IsNotExist(statErr), "the stale claim must be dropped, not left behind")
 }

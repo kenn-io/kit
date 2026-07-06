@@ -109,6 +109,20 @@ func TestFrozenSessionOpensPathWithQueryChars(t *testing.T) {
 		"the session must pin the file at the odd path, not an empty side database")
 }
 
+// TestFrozenSessionRefusesMissingDatabase pins the mode=rw open: a missing or
+// typo'd DBPath must fail the capture loudly, never have SQLite's default rwc
+// create an empty database that capture would then "succeed" over.
+func TestFrozenSessionRefusesMissingDatabase(t *testing.T) {
+	require := require.New(t)
+	path := filepath.Join(t.TempDir(), "does-not-exist.db")
+
+	_, err := OpenFrozenSession(context.Background(), path, NoopFreezeCoordinator{})
+	require.Error(err)
+
+	_, statErr := os.Stat(path)
+	require.True(os.IsNotExist(statErr), "capture must not create the missing database file")
+}
+
 func TestFrozenSessionCoordinatorErrors(t *testing.T) {
 	require := require.New(t)
 	path, _ := newFrozenTestDB(t)

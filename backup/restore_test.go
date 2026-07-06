@@ -192,6 +192,67 @@ func TestRestoreReproducesArchiveByteForByte(t *testing.T) {
 	}
 }
 
+// collidingContentPathApp maps every content hash to one shared restore path,
+// modeling an App whose derivation returns distinct blobs at the same relative
+// path.
+type collidingContentPathApp struct{ App }
+
+func (a collidingContentPathApp) RestoredContentPaths(ctx context.Context, db *sql.DB) (map[string][]string, error) {
+	paths, err := a.App.RestoredContentPaths(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string][]string, len(paths))
+	for hash := range paths {
+		out[hash] = []string{"shared/collision"}
+	}
+	return out, nil
+}
+
+// TestRestoreRejectsCollidingAttachmentPaths pins the path-collision guard: two
+// different content hashes claiming the same restore path must fail the restore
+// rather than have the parallel writer's temp-then-rename clobber one blob with
+// the other and still report success.
+func TestRestoreRejectsCollidingAttachmentPaths(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
+	require.NoError(err)
+
+	_, err = Restore(ctx, r, collidingContentPathApp{App: newTestApp()}, RestoreOptions{
+		TargetDir: filepath.Join(t.TempDir(), "restore"),
+	})
+	require.ErrorContains(err, "claimed by two different attachments")
+	require.ErrorContains(err, "shared/collision")
+}
+
+// TestRestoreRefusesSymlinkTarget pins that a restore target whose final
+// component is a symlink is refused: os.ReadDir and os.OpenRoot both follow it,
+// so restore would otherwise materialize the archive under the link's target.
+func TestRestoreRefusesSymlinkTarget(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
+	require.NoError(err)
+
+	realDir := t.TempDir()
+	link := filepath.Join(t.TempDir(), "target-link")
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Skip("symlinks not supported on this platform")
+	}
+
+	_, err = Restore(ctx, r, newTestApp(), RestoreOptions{TargetDir: link})
+	require.ErrorContains(err, "is a symlink")
+
+	entries, err := os.ReadDir(realDir)
+	require.NoError(err)
+	require.Empty(entries, "restore must refuse before writing anything under the symlink's target")
+}
+
 func TestRestoreRefusesNonEmptyTargetWithoutOverwrite(t *testing.T) {
 	require := require.New(t)
 	ctx := context.Background()

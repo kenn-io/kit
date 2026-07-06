@@ -426,6 +426,68 @@ func TestNextCreatedAt(t *testing.T) {
 	})
 }
 
+// computeFileHashMap builds a full page-hash map directly from a database
+// file, for constructing a self-consistent but wrong parent cache.
+func computeFileHashMap(t *testing.T, path string, pageSize uint32) *PageHashMap {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Zero(t, len(data)%int(pageSize), "db file must be a whole number of pages")
+	count := uint64(len(data)) / uint64(pageSize)
+	hashes := make([]byte, count*pageHashSize)
+	for p := range count {
+		h := PageHash(data[p*uint64(pageSize) : (p+1)*uint64(pageSize)])
+		copy(hashes[p*pageHashSize:], h[:])
+	}
+	return &PageHashMap{PageSize: pageSize, PageCount: count, Hashes: hashes}
+}
+
+// TestCreateRejectsForgedParentHashCache pins the parent-cache authentication:
+// a self-consistent local hash-map cache keyed to the true parent snapshot ID
+// but carrying the wrong page hashes must not be trusted on the ID match alone.
+// Here the forged cache holds the CURRENT database's hashes, so trusting it
+// would make the dirty scan see every page as unchanged and silently drop the
+// edit from the child's delta — the child would then restore to the parent,
+// losing data. The keyframe parent's page-hash-map blob ID authenticates the
+// cache and forces a repository rebuild instead.
+func TestCreateRejectsForgedParentHashCache(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, db := seedBackupFixture(t)
+	cacheDir := t.TempDir()
+
+	m1, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
+	require.NoError(err)
+	require.Zero(m1.DB.MapChainDepth, "the first snapshot is a keyframe")
+
+	// Edit an existing row in place (same-length value) so page content changes
+	// but the page count does not, then flush the WAL into the main file.
+	_, err = db.Exec(`UPDATE notes SET created_at = '2099-09-09T09:09:09Z' WHERE id = 1`)
+	require.NoError(err)
+	_, err = db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
+	require.NoError(err)
+
+	forged := computeFileHashMap(t, dbPath, m1.DB.PageSize)
+	require.Equal(m1.DB.PageCount, forged.PageCount,
+		"the in-place edit must not change the page count, so geometry alone cannot reject the cache")
+	require.NoError(SaveHashMapCache(cacheDir, r.Config().RepoID, m1.SnapshotID, forged))
+
+	m2, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
+	require.NoError(err)
+	require.Equal(m1.SnapshotID, m2.ParentID)
+	dbAtSnap2, err := os.ReadFile(dbPath)
+	require.NoError(err)
+
+	target := filepath.Join(t.TempDir(), "restore")
+	_, err = Restore(ctx, r, newTestApp(), RestoreOptions{SnapshotID: m2.SnapshotID, TargetDir: target})
+	require.NoError(err)
+	restored, err := os.ReadFile(filepath.Join(target, "app.db"))
+	require.NoError(err)
+	require.True(bytes.Equal(dbAtSnap2, restored),
+		"the forged parent cache must be rejected so the child snapshot captures the edit")
+}
+
 func TestCreateNoChanges(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)

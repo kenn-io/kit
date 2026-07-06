@@ -350,7 +350,8 @@ func loadParentHashMap(r *Repo, parent *Manifest, cacheDir string, fetch func(pa
 	}
 	if cacheDir != "" {
 		snapID, cached, err := LoadHashMapCache(cacheDir, r.Config().RepoID)
-		if err == nil && cached != nil && snapID == parent.SnapshotID {
+		if err == nil && cached != nil && snapID == parent.SnapshotID &&
+			parentCacheAuthentic(cached, parent) {
 			return cached, nil
 		}
 	}
@@ -359,6 +360,39 @@ func loadParentHashMap(r *Repo, parent *Manifest, cacheDir string, fetch func(pa
 		return nil, err
 	}
 	return MaterializeHashMap(fetch, chain)
+}
+
+// parentCacheAuthentic reports whether a cached parent page-hash map can be
+// trusted as the parent snapshot's map without rematerializing it from the
+// repository. A snapshot-ID match alone is not enough: the cache is a local,
+// disposable sidecar that a bug, a stale write, or on-disk corruption could
+// leave self-consistent (its own SHA-256 trailer intact, already verified in
+// LoadHashMapCache) yet describing the wrong page hashes. Trusting such a map
+// would make the dirty-page scan compare live pages against wrong parent
+// hashes and silently drop changed pages from the delta — corrupting the
+// snapshot chain while Create reports success. Two authoritative cross-checks
+// against the parent manifest — which is bound to its own content by the
+// snapshot ID — close that hole at no I/O cost:
+//
+//   - The manifest records the parent DB's page size and page count. A cache
+//     disagreeing on either describes a different database state.
+//   - When the parent stored its hash map as a keyframe (chain depth 0), the
+//     manifest's PageHashMap is the content address of that keyframe object:
+//     the blob ID of EncodeHashKeyframe(full map). Recomputing that blob ID
+//     from the cache and requiring equality fully authenticates every cached
+//     hash.
+//
+// A delta-chained parent carries no full-map digest in the frozen wire format,
+// so it is accepted on the geometry cross-check plus the cache's own trailer;
+// any mismatch demotes to a repository rebuild, which is always correct.
+func parentCacheAuthentic(cached *PageHashMap, parent *Manifest) bool {
+	if cached.PageSize != parent.DB.PageSize || cached.PageCount != parent.DB.PageCount {
+		return false
+	}
+	if parent.DB.MapChainDepth == 0 {
+		return pack.ComputeBlobID(EncodeHashKeyframe(cached)).String() == parent.DB.PageHashMap
+	}
+	return true
 }
 
 // parentUnionShrank reports whether any hash the parent's attachment lists

@@ -227,20 +227,39 @@ func prepareRestoreTarget(target string, overwrite bool, dbFileName string) (*os
 		return nil, errors.New("backup: restore target directory is required")
 	}
 	entries, err := os.ReadDir(target)
+	existed := true
 	switch {
 	case errors.Is(err, os.ErrNotExist):
+		existed = false
 		if err := os.MkdirAll(target, 0o700); err != nil {
 			return nil, fmt.Errorf("backup: creating restore target: %w", err)
 		}
-		return openRestoreRoot(target)
 	case err != nil:
 		return nil, fmt.Errorf("backup: reading restore target: %w", err)
 	case len(entries) > 0 && !overwrite:
 		return nil, fmt.Errorf("backup: restore target %s is not empty (use --overwrite to restore into it anyway)", target)
 	}
+	// The target's final component must be a real directory, never a symlink.
+	// os.ReadDir and os.OpenRoot both follow a final-component symlink, so a
+	// symlink planted at the target — before this run, or raced in between the
+	// existence check and the MkdirAll above — would redirect the entire restore
+	// under its link target. Ancestor symlinks stay allowed (the path is
+	// user-supplied and resolved once); only the leaf is checked, with Lstat,
+	// which reports the link itself rather than its target.
+	info, err := os.Lstat(target)
+	if err != nil {
+		return nil, fmt.Errorf("backup: checking restore target: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf(
+			"backup: restore target %s is a symlink; pass the real directory path", target)
+	}
 	root, err := openRestoreRoot(target)
 	if err != nil {
 		return nil, err
+	}
+	if !existed {
+		return root, nil
 	}
 	// Overwrite merges rather than clearing the tree, but the database and
 	// its SQLite sidecars must not survive: restoreDB rewrites the database
@@ -583,6 +602,31 @@ func (s *restoreState) restoreAttachments(ctx context.Context, app App, m *Manif
 		if _, ok := listed[hash]; !ok {
 			return 0, 0, fmt.Errorf(
 				"backup: restored database references attachment %s that appears in no attachment list", hash)
+		}
+	}
+	// Two different content hashes must never claim the same restore path: the
+	// attachment writer publishes each blob with a temp-then-rename that
+	// clobbers, so a shared path would silently leave whichever blob finished
+	// last and discard the other while restore still reported success. Reject up
+	// front. The same path repeated under one hash is harmless (identical
+	// writes), so key the check on the cleaned path and only fail on a
+	// conflicting owner.
+	pathOwner := make(map[string]string)
+	for hash, rels := range paths {
+		for _, rel := range rels {
+			// A non-local path is a more fundamental error than a collision and
+			// has no meaningful normalized key; reject it first (the per-write
+			// path below re-checks as defense in depth).
+			if !filepath.IsLocal(rel) {
+				return 0, 0, fmt.Errorf(
+					"backup: attachment %s restore path %q escapes the content directory", hash, rel)
+			}
+			key := filepath.Clean(filepath.FromSlash(rel))
+			if other, ok := pathOwner[key]; ok && other != hash {
+				return 0, 0, fmt.Errorf(
+					"backup: restore path %q is claimed by two different attachments %s and %s", rel, other, hash)
+			}
+			pathOwner[key] = hash
 		}
 	}
 	groups := map[string][]ContentRef{}

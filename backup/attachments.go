@@ -383,7 +383,7 @@ func captureRef(
 	if err != nil {
 		return captureResult{index: index, err: err}
 	}
-	content, err := readRegularFile(root, rel)
+	content, _, err := readRegularFile(root, rel)
 	if err != nil {
 		return captureResult{index: index, err: fmt.Errorf("backup: reading attachment %s: %w", rel, err)}
 	}
@@ -403,24 +403,31 @@ func captureRef(
 	return res
 }
 
-// readRegularFile reads rel through root and requires it to be a regular file.
-// os.Root already refuses any symlink escaping the root; the regular-file
-// check additionally rejects fifos, device nodes, and directories a tampered
-// DB row might point at within the tree.
-func readRegularFile(root *os.Root, rel string) ([]byte, error) {
+// readRegularFile reads rel through root and requires it to be a regular file,
+// returning its content and stat info. os.Root refuses any path that escapes
+// the root through a symlink, and the fstat is taken on the opened descriptor,
+// so the regular-file check and the returned bytes describe the same file the
+// read yielded — no separate lstat/open the tree could be swapped under. The
+// regular-file check additionally rejects fifos, device nodes, and directories
+// a tampered DB row or a raced tree might point at within the root.
+func readRegularFile(root *os.Root, rel string) ([]byte, os.FileInfo, error) {
 	f, err := root.Open(rel)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("%q is not a regular file", rel)
+		return nil, nil, fmt.Errorf("%q is not a regular file", rel)
 	}
-	return io.ReadAll(f)
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, nil, err
+	}
+	return data, info, nil
 }
 
 // recordCapture applies one worker result in ref order: append the frame

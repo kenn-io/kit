@@ -34,6 +34,12 @@ const releasingClaimPrefix = "releasing-"
 // exclusive re-check; tests use it to open the race window deterministically.
 var sharedLockPostPlantHook = func() {}
 
+// osLink is the hard-link primitive returnClaimedLock uses to restore a claimed
+// lock without clobbering. It is a var so tests can simulate the filesystems
+// (exFAT, FAT32, many SMB/NFS mounts) where os.Link is unavailable and the
+// no-clobber copy fallback must take over.
+var osLink = os.Link
+
 // LockInfo is the JSON body of a repo lock file. Freshness is carried by the
 // file's mtime (heartbeat), not by fields, so observers need no clock sync.
 type LockInfo struct {
@@ -239,12 +245,12 @@ func claimLockFile(path string) (string, error) {
 // overwrite an existing path, so a lock planted at path during the claim window
 // is preserved (EEXIST -> drop the now-stale claim). But os.Link is unavailable
 // or unreliable on exFAT, FAT32, and many SMB/NFS mounts — exactly where backup
-// repositories often live — so any other link failure falls back to os.Rename.
-// Rename can clobber, but its window is microseconds and restoring a live
-// holder's lock is strictly better than deleting it; only a failed rename is an
-// error.
+// repositories often live — so any other link failure falls back to
+// restoreClaimByCopy, which reproduces link's no-clobber semantics with an
+// O_EXCL create so the fallback can never overwrite a lock planted during the
+// claim window either.
 func returnClaimedLock(path, claim string) (restored bool, err error) {
-	linkErr := os.Link(claim, path)
+	linkErr := osLink(claim, path)
 	if linkErr == nil {
 		if err := os.Remove(claim); err != nil &&
 			!errors.Is(err, os.ErrNotExist) {
@@ -263,13 +269,56 @@ func returnClaimedLock(path, claim string) (restored bool, err error) {
 		return false, nil
 	}
 	// Link is unsupported or unreliable on this filesystem: fall back to a
-	// best-effort rename so a live holder's lock is restored rather than lost.
-	if renameErr := os.Rename(claim, path); renameErr != nil {
+	// no-clobber copy so a live holder's lock is restored without ever
+	// overwriting a lock planted at path during the claim window.
+	return restoreClaimByCopy(path, claim)
+}
+
+// restoreClaimByCopy restores a claimed lock file's contents to path when
+// os.Link is unavailable, matching the link path's mutual-exclusion semantics:
+// the destination is created with O_CREATE|O_EXCL so a lock planted at path
+// during the claim window is never clobbered. On EEXIST the existing file is a
+// live replacement lock, so — exactly as the link-EEXIST branch does — the
+// stale claim is dropped and restored is false. On success the copied bytes are
+// fsynced before the claim is removed.
+func restoreClaimByCopy(path, claim string) (restored bool, err error) {
+	data, err := os.ReadFile(claim)
+	if err != nil {
 		return false, fmt.Errorf(
-			"backup: restoring claimed lock %s: %w",
-			filepath.Base(path),
-			renameErr,
-		)
+			"backup: reading claimed lock %s for restore: %w",
+			filepath.Base(path), err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			// A newer lock occupies path (same as the link-EEXIST case): drop the
+			// now-stale claim rather than overwrite the live lock.
+			_ = os.Remove(claim)
+			return false, nil
+		}
+		return false, fmt.Errorf(
+			"backup: restoring claimed lock %s: %w", filepath.Base(path), err)
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return false, fmt.Errorf(
+			"backup: writing restored lock %s: %w", filepath.Base(path), err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return false, fmt.Errorf(
+			"backup: syncing restored lock %s: %w", filepath.Base(path), err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(path)
+		return false, fmt.Errorf(
+			"backup: closing restored lock %s: %w", filepath.Base(path), err)
+	}
+	if err := os.Remove(claim); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf(
+			"backup: cleaning up claimed lock %s: %w", filepath.Base(path), err)
 	}
 	return true, nil
 }

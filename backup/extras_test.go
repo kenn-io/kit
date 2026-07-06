@@ -113,6 +113,45 @@ func TestCaptureExtrasTokensGuard(t *testing.T) {
 	require.Equal([]string{"client_secret_web.json", "tokens/t.json"}, paths)
 }
 
+// TestCaptureExtrasConfigSymlinkEscapeRefused pins the confined read for the
+// config file: config.toml is read through a root at its own directory, so a
+// symlink swapped in at ConfigPath that points outside that directory is
+// refused rather than followed to an arbitrary host file. Before the fix the
+// plain os.ReadFile followed it and embedded the target's bytes.
+func TestCaptureExtrasConfigSymlinkEscapeRefused(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	r := initTestRepo(t)
+
+	dataDir := t.TempDir()
+	outsideDir := t.TempDir()
+	secret := filepath.Join(outsideDir, "secret.txt")
+	require.NoError(os.WriteFile(secret, []byte("TOP SECRET config"), 0o600))
+
+	cfgPath := filepath.Join(dataDir, "config.toml")
+	if err := os.Symlink(secret, cfgPath); err != nil {
+		t.Skip("symlinks not supported on this platform")
+	}
+
+	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
+	defer appender.Abort()
+	_, _, err := CaptureExtras(ExtrasOptions{
+		DataDir: dataDir, ConfigPath: cfgPath, IncludeConfig: true, AllowPlaintextSecrets: true,
+	}, appender)
+	require.Error(err)
+
+	_, entries, errFinish := appender.Finish()
+	require.NoError(errFinish)
+	known := map[pack.BlobID]IndexEntry{}
+	for _, e := range entries {
+		known[e.Blob] = e
+	}
+	for _, e := range entries {
+		content, _ := r.ReadBlob(known, e.Blob, nil, testPackExt)
+		assert.NotContains(string(content), "TOP SECRET config")
+	}
+}
+
 func TestCaptureExtrasRejectsSymlinks(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)

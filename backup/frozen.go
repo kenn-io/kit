@@ -88,7 +88,12 @@ func OpenFrozenSession(ctx context.Context, dbPath string, fc FreezeCoordinator)
 }
 
 func openPinnedSession(ctx context.Context, dbPath string) (*FrozenSession, error) {
-	db, err := sql.Open("sqlite3", sqliteURIDSN(dbPath, "_busy_timeout=5000"))
+	// mode=rw opens the live database read-write but never creates it: a typo'd
+	// or missing DBPath must fail loudly, not have SQLite's default rwc create
+	// an empty database that capture would then "succeed" over. mode is only
+	// permitted to make the open more restrictive than the driver's flags
+	// (which include create), so rw is accepted and drops create.
+	db, err := sql.Open("sqlite3", sqliteURIDSN(dbPath, "_busy_timeout=5000&mode=rw"))
 	if err != nil {
 		return nil, fmt.Errorf("backup: opening DB %s: %w", dbPath, err)
 	}
