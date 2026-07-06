@@ -17,6 +17,7 @@ type PackAppender struct {
 	known      map[pack.BlobID]IndexEntry
 	zstdLevel  int
 	crypter    *pack.Crypter
+	ext        string
 	targetSize int64
 
 	w          *pack.Writer
@@ -27,13 +28,15 @@ type PackAppender struct {
 }
 
 // NewPackAppender creates an appender. known is mutated: added blobs join it
-// so later Adds in the same run dedup against them.
-func NewPackAppender(r *Repo, known map[pack.BlobID]IndexEntry, zstdLevel int, crypter *pack.Crypter) *PackAppender {
+// so later Adds in the same run dedup against them. ext is the pack file
+// extension (App.PackFileExtension) new packs are sealed with.
+func NewPackAppender(r *Repo, known map[pack.BlobID]IndexEntry, zstdLevel int, crypter *pack.Crypter, ext string) *PackAppender {
 	return &PackAppender{
 		repo:       r,
 		known:      known,
 		zstdLevel:  zstdLevel,
 		crypter:    crypter,
+		ext:        ext,
 		targetSize: pack.DefaultTargetSize,
 	}
 }
@@ -132,7 +135,7 @@ func (a *PackAppender) sealOpen() error {
 		return nil
 	}
 	id := a.w.ID()
-	final := a.repo.Path(packsDirName, id[:2], id+".mvpack")
+	final := a.repo.packPath(id, a.ext)
 	if _, err := a.w.Seal(final); err != nil {
 		// Poison the appender: abort the writer and mark it as dead so
 		// subsequent Add/Finish calls fail immediately. Abort is safe even
@@ -178,13 +181,14 @@ func (a *PackAppender) Abort() {
 }
 
 // ReadBlob fetches one blob by resolving its pack through the index map. The
-// pack footer is authoritative for the entry's RawLen and CRC.
-func (r *Repo) ReadBlob(known map[pack.BlobID]IndexEntry, id pack.BlobID, crypter *pack.Crypter) ([]byte, error) {
+// pack footer is authoritative for the entry's RawLen and CRC. ext is the
+// pack file extension (App.PackFileExtension).
+func (r *Repo) ReadBlob(known map[pack.BlobID]IndexEntry, id pack.BlobID, crypter *pack.Crypter, ext string) ([]byte, error) {
 	ie, ok := known[id]
 	if !ok {
 		return nil, fmt.Errorf("backup: blob %s not present in any index", id)
 	}
-	pr, err := pack.OpenReader(r.Path(packsDirName, ie.PackID[:2], ie.PackID+".mvpack"), crypter)
+	pr, err := pack.OpenReader(r.packPath(ie.PackID, ext), crypter)
 	if err != nil {
 		return nil, fmt.Errorf("backup: opening pack %s for blob %s: %w", ie.PackID, id, err)
 	}

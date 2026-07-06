@@ -63,7 +63,7 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 	if err != nil {
 		return nil, err
 	}
-	fetch := func(id pack.BlobID) ([]byte, error) { return r.ReadBlob(known, id, nil) }
+	fetch := func(id pack.BlobID) ([]byte, error) { return r.ReadBlob(known, id, nil, app.PackFileExtension()) }
 
 	parent, err := r.LatestSnapshot()
 	if err != nil {
@@ -130,7 +130,7 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 		BytesDone: dbBytes, BytesTotal: dbBytes, Final: true,
 	})
 
-	appender := NewPackAppender(r, known, opts.ZstdLevel, nil)
+	appender := NewPackAppender(r, known, opts.ZstdLevel, nil, app.PackFileExtension())
 	ok := false
 	defer func() {
 		if !ok {
@@ -168,7 +168,7 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 
 	parentSeen := map[string]bool{}
 	if parent != nil {
-		_, parentSeen, err = LoadListRefs(r, known, parent.Attachments.Lists, nil)
+		_, parentSeen, err = LoadListRefs(r, known, parent.Attachments.Lists, nil, app.PackFileExtension())
 		if err != nil {
 			return nil, err
 		}

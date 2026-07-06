@@ -100,6 +100,7 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (*Resto
 	}
 	st := &restoreState{
 		repo:     r,
+		app:      app,
 		known:    known,
 		jobs:     jobs,
 		progress: newProgressEmitter(opts.Progress),
@@ -247,6 +248,7 @@ func prepareRestoreTarget(target string, overwrite bool, dbFileName string) erro
 // guards progress counters and the first-error slot while pack workers run.
 type restoreState struct {
 	repo     *Repo
+	app      App
 	known    map[pack.BlobID]IndexEntry
 	jobs     int
 	progress *progressEmitter
@@ -274,7 +276,7 @@ func (s *restoreState) failed() bool {
 
 // fetch reads one metadata blob through the repository index.
 func (s *restoreState) fetch(id pack.BlobID) ([]byte, error) {
-	return s.repo.ReadBlob(s.known, id, nil)
+	return s.repo.ReadBlob(s.known, id, nil, s.app.PackFileExtension())
 }
 
 // materializeMaps walks and materializes the snapshot's hash-map and
@@ -406,7 +408,7 @@ func (s *restoreState) runPackGroups(ctx context.Context, packIDs []string, work
 
 // restorePackPages writes one pack's page blobs into the database file.
 func (s *restoreState) restorePackPages(f *os.File, packID string, blobs []blobRuns, pageSize uint32, hm *PageHashMap) {
-	pr, err := pack.OpenReader(s.repo.Path(packsDirName, packID[:2], packID+".mvpack"), nil)
+	pr, err := pack.OpenReader(s.repo.packPath(packID, s.app.PackFileExtension()), nil)
 	if err != nil {
 		s.fail(fmt.Errorf("backup: opening pack %s: %w", packID, err))
 		return
@@ -479,7 +481,7 @@ func (s *restoreState) writeRun(f *os.File, raw []byte, id pack.BlobID, run Page
 // grouped by pack. Every blob read re-derives its SHA-256 identity before
 // any file is written.
 func (s *restoreState) restoreAttachments(ctx context.Context, app App, m *Manifest, dbPath, dir string) (int64, int64, error) {
-	refs, _, err := LoadListRefs(s.repo, s.known, m.Attachments.Lists, nil)
+	refs, _, err := LoadListRefs(s.repo, s.known, m.Attachments.Lists, nil, app.PackFileExtension())
 	if err != nil {
 		return 0, 0, err
 	}
@@ -573,7 +575,7 @@ func restoredContentPaths(ctx context.Context, app App, dbPath string) (map[stri
 func (s *restoreState) restorePackAttachments(
 	dir, packID string, refs []ContentRef, paths map[string][]string, total, totalBytes int64,
 ) {
-	pr, err := pack.OpenReader(s.repo.Path(packsDirName, packID[:2], packID+".mvpack"), nil)
+	pr, err := pack.OpenReader(s.repo.packPath(packID, s.app.PackFileExtension()), nil)
 	if err != nil {
 		s.fail(fmt.Errorf("backup: opening pack %s: %w", packID, err))
 		return

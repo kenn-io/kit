@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -59,6 +60,27 @@ func TestReaderRoundTripPlain(t *testing.T) {
 		require.NoError(err)
 		assert.Equal(blobs[i], got, "blob %d", i)
 		require.NoError(r.VerifyStored(e))
+	}
+}
+
+func TestReaderIDIgnoresExtension(t *testing.T) {
+	// OpenReader derives the pack ID from the filename minus its extension, so
+	// any extension works: the same sealed pack copied under a ".mvpack" name
+	// and a ".kpack" name must both open and report the same ID.
+	require := require.New(t)
+	assert := assert.New(t)
+	path, _ := buildTestPack(t, testBlobs(t), nil)
+	id := strings.TrimSuffix(filepath.Base(path), ".mvpack")
+	data, err := os.ReadFile(path)
+	require.NoError(err)
+
+	for _, ext := range []string{".mvpack", ".kpack"} {
+		renamed := filepath.Join(t.TempDir(), id+ext)
+		require.NoError(os.WriteFile(renamed, data, 0o600))
+		r, err := OpenReader(renamed, nil)
+		require.NoError(err, "extension %s", ext)
+		assert.Equal(id, r.ID(), "extension %s", ext)
+		require.NoError(r.Close())
 	}
 }
 

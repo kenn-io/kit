@@ -24,7 +24,7 @@ func TestCaptureExtrasDeletionsAndConfig(t *testing.T) {
 	cfgPath := filepath.Join(dataDir, "config.toml")
 	require.NoError(os.WriteFile(cfgPath, []byte("x = 1\n"), 0o600))
 
-	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil)
+	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	treeID, hasTree, err := CaptureExtras(ExtrasOptions{
 		DataDir: dataDir, ConfigPath: cfgPath, IncludeConfig: true, AllowPlaintextSecrets: true,
 	}, appender)
@@ -38,7 +38,7 @@ func TestCaptureExtrasDeletionsAndConfig(t *testing.T) {
 	for _, e := range entries {
 		known[e.Blob] = e
 	}
-	treeData, err := r.ReadBlob(known, treeID, nil)
+	treeData, err := r.ReadBlob(known, treeID, nil, testPackExt)
 	require.NoError(err)
 	var tree ExtrasTree
 	require.NoError(json.Unmarshal(treeData, &tree))
@@ -49,7 +49,7 @@ func TestCaptureExtrasDeletionsAndConfig(t *testing.T) {
 	for _, e := range tree.Entries {
 		blob, parseErr := pack.ParseBlobID(e.Blob)
 		require.NoError(parseErr)
-		content, readErr := r.ReadBlob(known, blob, nil)
+		content, readErr := r.ReadBlob(known, blob, nil, testPackExt)
 		require.NoError(readErr)
 		assert.Equal(e.Size, int64(len(content)), e.Path)
 	}
@@ -58,7 +58,7 @@ func TestCaptureExtrasDeletionsAndConfig(t *testing.T) {
 func TestCaptureExtrasEmpty(t *testing.T) {
 	require := require.New(t)
 	r := initTestRepo(t)
-	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil)
+	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	_, hasTree, err := CaptureExtras(ExtrasOptions{DataDir: t.TempDir()}, appender)
 	require.NoError(err)
 	require.False(hasTree)
@@ -72,7 +72,7 @@ func TestCaptureExtrasTokensGuard(t *testing.T) {
 	require.NoError(os.WriteFile(filepath.Join(dataDir, "tokens", "t.json"), []byte("{}"), 0o600))
 	require.NoError(os.WriteFile(filepath.Join(dataDir, "client_secret_web.json"), []byte("{}"), 0o600))
 
-	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil)
+	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	_, _, err := CaptureExtras(ExtrasOptions{DataDir: dataDir, IncludeTokens: true}, appender)
 	require.ErrorContains(err, "encrypted repository")
 	require.ErrorContains(err, "--include-tokens")
@@ -102,7 +102,7 @@ func TestCaptureExtrasTokensGuard(t *testing.T) {
 	for _, e := range entries {
 		known[e.Blob] = e
 	}
-	treeData, err := r.ReadBlob(known, treeID, nil)
+	treeData, err := r.ReadBlob(known, treeID, nil, testPackExt)
 	require.NoError(err)
 	var tree ExtrasTree
 	require.NoError(json.Unmarshal(treeData, &tree))
@@ -135,7 +135,7 @@ func TestCaptureExtrasRejectsSymlinks(t *testing.T) {
 		t.Skip("symlinks not supported on this platform")
 	}
 
-	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil)
+	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	_, _, err = CaptureExtras(ExtrasOptions{DataDir: dataDir}, appender)
 	require.Error(err)
 	assert.Contains(err.Error(), "deletions/link.txt")
@@ -149,7 +149,7 @@ func TestCaptureExtrasRejectsSymlinks(t *testing.T) {
 		known[e.Blob] = e
 	}
 	for _, e := range entries {
-		content, _ := r.ReadBlob(known, e.Blob, nil)
+		content, _ := r.ReadBlob(known, e.Blob, nil, testPackExt)
 		assert.NotContains(string(content), "secret content")
 	}
 }
@@ -176,7 +176,7 @@ func TestCaptureExtrasRejectsGlobbedSymlinks(t *testing.T) {
 		t.Skip("symlinks not supported on this platform")
 	}
 
-	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil)
+	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	defer appender.Abort()
 	_, _, err = CaptureExtras(ExtrasOptions{
 		DataDir: dataDir, IncludeTokens: true, AllowPlaintextSecrets: true,
@@ -193,7 +193,7 @@ func TestCaptureExtrasRejectsGlobbedSymlinks(t *testing.T) {
 		known[e.Blob] = e
 	}
 	for _, e := range entries {
-		content, _ := r.ReadBlob(known, e.Blob, nil)
+		content, _ := r.ReadBlob(known, e.Blob, nil, testPackExt)
 		assert.NotContains(string(content), "secret content")
 	}
 }

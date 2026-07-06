@@ -133,7 +133,7 @@ func TestStorePageBlobsJobsSerialMatchesParallel(t *testing.T) {
 
 	run := func(jobs int) (*PageMap, *Repo, []IndexEntry) {
 		r := initTestRepo(t)
-		appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil)
+		appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 		delta, err := storePageBlobs(context.Background(), f, scan, appender, jobs, newProgressEmitter(nil))
 		require.NoError(err)
 		_, entries, err := appender.Finish()
@@ -153,7 +153,7 @@ func TestStorePageBlobsJobsSerialMatchesParallel(t *testing.T) {
 		known[e.Blob] = e
 	}
 	for _, id := range parallel.Blobs {
-		blob, err := parallelRepo.ReadBlob(known, id, nil)
+		blob, err := parallelRepo.ReadBlob(known, id, nil, testPackExt)
 		require.NoError(err)
 		require.Equal(id, pack.ComputeBlobID(blob))
 	}
@@ -307,7 +307,7 @@ func listUnion(t *testing.T, r *Repo, m *Manifest) []ContentRef {
 	t.Helper()
 	known, err := r.LoadBlobIndex()
 	require.NoError(t, err)
-	refs, _, err := LoadListRefs(r, known, m.Attachments.Lists, nil)
+	refs, _, err := LoadListRefs(r, known, m.Attachments.Lists, nil, testPackExt)
 	require.NoError(t, err)
 	return refs
 }
@@ -471,7 +471,7 @@ func TestCreatePageSizeChangeForcesFullRecapture(t *testing.T) {
 	// with no parent chain involved still has to cover every page.
 	known, err := r.LoadBlobIndex()
 	require.NoError(err)
-	fetch := func(id pack.BlobID) ([]byte, error) { return r.ReadBlob(known, id, nil) }
+	fetch := func(id pack.BlobID) ([]byte, error) { return r.ReadBlob(known, id, nil, testPackExt) }
 	loaded, err := r.LoadManifest(m2.SnapshotID)
 	require.NoError(err)
 	chain, err := r.PageMapChain(loaded)
@@ -540,14 +540,14 @@ func TestCreatePhasesHonorCancellation(t *testing.T) {
 	defer func() { _ = f.Close() }()
 	scan := &ScanResult{PageSize: pageSize, PageCount: 64, Dirty: []PageRange{{Start: 0, Count: 64}}}
 	r := initTestRepo(t)
-	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil)
+	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	defer appender.Abort()
 	_, err = storePageBlobs(canceled, f, scan, appender, 4, newProgressEmitter(nil))
 	require.ErrorIs(err, context.Canceled, "storePageBlobs")
 
 	dir := t.TempDir()
 	ref := writeLooseAttachment(t, dir, []byte("attachment content"))
-	capAppender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil)
+	capAppender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	defer capAppender.Abort()
 	_, err = CaptureAttachments(canceled, dir, []ContentRef{ref}, map[string]bool{}, capAppender, CaptureOptions{Jobs: 4})
 	require.ErrorIs(err, context.Canceled, "CaptureAttachments")

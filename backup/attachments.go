@@ -414,8 +414,9 @@ func recordCapture(
 	return nil
 }
 
-// LoadListRefs fetches and decodes a manifest's attachment list blobs.
-func LoadListRefs(r *Repo, known map[pack.BlobID]IndexEntry, listBlobIDs []string, crypter *pack.Crypter) ([]ContentRef, map[string]bool, error) {
+// LoadListRefs fetches and decodes a manifest's attachment list blobs. ext is
+// the pack file extension (App.PackFileExtension).
+func LoadListRefs(r *Repo, known map[pack.BlobID]IndexEntry, listBlobIDs []string, crypter *pack.Crypter, ext string) ([]ContentRef, map[string]bool, error) {
 	var refs []ContentRef
 	seen := map[string]bool{}
 	for _, s := range listBlobIDs {
@@ -423,7 +424,7 @@ func LoadListRefs(r *Repo, known map[pack.BlobID]IndexEntry, listBlobIDs []strin
 		if err != nil {
 			return nil, nil, fmt.Errorf("backup: attachment list blob id %q: %w", s, err)
 		}
-		data, err := r.ReadBlob(known, id, crypter)
+		data, err := r.ReadBlob(known, id, crypter, ext)
 		if err != nil {
 			return nil, nil, err
 		}

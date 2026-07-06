@@ -18,7 +18,7 @@ func TestPackAppenderAddSealsAndIndexes(t *testing.T) {
 	assert := assert.New(t)
 	r := initTestRepo(t)
 
-	a := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil)
+	a := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	blobA := bytes.Repeat([]byte("attachment-bytes-"), 100)
 	blobB := []byte("tiny")
 
@@ -42,14 +42,14 @@ func TestPackAppenderAddSealsAndIndexes(t *testing.T) {
 	require.Len(entries, 2)
 
 	// The sealed pack exists at its sharded path and blobs read back.
-	packPath := r.Path("packs", packs[0][:2], packs[0]+".mvpack")
+	packPath := r.Path("packs", packs[0][:2], packs[0]+testPackExt)
 	_, statErr := os.Stat(packPath)
 	require.NoError(statErr)
 	known := map[pack.BlobID]IndexEntry{}
 	for _, e := range entries {
 		known[e.Blob] = e
 	}
-	got, err := r.ReadBlob(known, idA, nil)
+	got, err := r.ReadBlob(known, idA, nil, testPackExt)
 	require.NoError(err)
 	assert.Equal(blobA, got)
 }
@@ -62,7 +62,7 @@ func TestPackAppenderDedupsAgainstKnown(t *testing.T) {
 	known := map[pack.BlobID]IndexEntry{
 		pack.ComputeBlobID(blob): {Blob: pack.ComputeBlobID(blob), PackID: pack.NewPackID()},
 	}
-	a := NewPackAppender(r, known, pack.DefaultZstdLevel, nil)
+	a := NewPackAppender(r, known, pack.DefaultZstdLevel, nil, testPackExt)
 	_, added, err := a.Add(blob)
 	require.NoError(err)
 	require.False(added)
@@ -77,7 +77,7 @@ func TestPackAppenderRotatesAtTargetSize(t *testing.T) {
 	require := require.New(t)
 	r := initTestRepo(t)
 
-	a := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil)
+	a := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	a.targetSize = 1 << 16 // shrink for the test
 
 	// Incompressible blobs: use cryptographically random bytes.
@@ -104,7 +104,7 @@ func TestPackAppenderPoisonsOnSealFailure(t *testing.T) {
 	assert := assert.New(t)
 	r := initTestRepo(t)
 
-	a := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil)
+	a := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	blob := []byte("test data")
 
 	// Add one blob to the open pack.
@@ -138,7 +138,7 @@ func TestPackAppenderPoisonsOnSealFailure(t *testing.T) {
 	// The rename to the final path must have already succeeded: this proves
 	// the injected failure fired on the post-rename directory sync, not a
 	// pre-rename mkdir failure (which would have left no pack file behind).
-	_, statErr := os.Stat(r.Path(packsDirName, packID[:2], packID+".mvpack"))
+	_, statErr := os.Stat(r.Path(packsDirName, packID[:2], packID+testPackExt))
 	require.NoError(statErr, "pack must be renamed to its final path despite the post-rename sync failure")
 
 	// Restore SyncDir so we can test the poisoned state.

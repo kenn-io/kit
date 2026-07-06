@@ -31,6 +31,11 @@ type App interface {
 	FrozenView(s *FrozenSession) FrozenView
 	DBFileName() string     // e.g. "app.db"
 	ContentDirName() string // e.g. "content"
+	// PackFileExtension returns the file extension for pack files, including
+	// the leading dot (e.g. ".kpack"). Like the other layout names it must
+	// remain fixed for the life of a repository: packs are located by
+	// <packID><ext>, so changing it strands previously written packs.
+	PackFileExtension() string
 	// RestoredContentPaths re-derives hash → relative paths from a restored
 	// DB so restore can materialize and verify every referenced file. Returned
 	// paths must be relative and local to the content directory (no absolute

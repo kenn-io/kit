@@ -70,7 +70,7 @@ func TestCaptureAttachments(t *testing.T) {
 	thumb := writeLooseAttachment(t, dir, []byte("thumbnail bytes"))
 	thumb.Size = -1 // thumbnails arrive with unknown size
 
-	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil)
+	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	parentSeen := map[string]bool{refA.Hash: true} // A already listed by the parent
 
 	cap1, err := CaptureAttachments(context.Background(), dir, []ContentRef{refA, refB, thumb}, parentSeen, appender, CaptureOptions{})
@@ -92,14 +92,14 @@ func TestCaptureAttachments(t *testing.T) {
 	for _, e := range entries {
 		known[e.Blob] = e
 	}
-	listData, err := r.ReadBlob(known, cap1.NewListBlob, nil)
+	listData, err := r.ReadBlob(known, cap1.NewListBlob, nil, testPackExt)
 	require.NoError(err)
 	gotRefs, err := DecodeAttachmentList(listData)
 	require.NoError(err)
 	assert.Equal(cap1.NewList, gotRefs)
 
 	// LoadListRefs round-trips through the repo.
-	refs, seen, err := LoadListRefs(r, known, []string{cap1.NewListBlob.String()}, nil)
+	refs, seen, err := LoadListRefs(r, known, []string{cap1.NewListBlob.String()}, nil, testPackExt)
 	require.NoError(err)
 	assert.Equal(cap1.NewList, refs)
 	assert.True(seen[refB.Hash])
@@ -124,7 +124,7 @@ func TestCaptureAttachmentsParallelMatchesSerial(t *testing.T) {
 
 	run := func(jobs int) (*AttachmentCapture, []int, *Repo, map[pack.BlobID]IndexEntry) {
 		r := initTestRepo(t)
-		appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil)
+		appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 		// Pre-store two blobs so the known-snapshot skip path is exercised.
 		for _, i := range []int{5, 29} {
 			content, err := os.ReadFile(filepath.Join(dir, refs[i].Hash[:2], refs[i].Hash))
@@ -163,7 +163,7 @@ func TestCaptureAttachmentsParallelMatchesSerial(t *testing.T) {
 	for _, ref := range refs {
 		id, err := pack.ParseBlobID(ref.Hash)
 		require.NoError(err)
-		content, err := parallelRepo.ReadBlob(parallelKnown, id, nil)
+		content, err := parallelRepo.ReadBlob(parallelKnown, id, nil, testPackExt)
 		require.NoError(err)
 		sum := sha256.Sum256(content)
 		assert.Equal(ref.Hash, hex.EncodeToString(sum[:]))
@@ -180,7 +180,7 @@ func TestCaptureAttachmentsRejectsCorruptFile(t *testing.T) {
 	path := filepath.Join(dir, ref.Hash[:2], ref.Hash)
 	require.NoError(os.WriteFile(path, []byte("tampered"), 0o600))
 
-	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil)
+	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	_, err := CaptureAttachments(context.Background(), dir, []ContentRef{ref}, map[string]bool{}, appender, CaptureOptions{})
 	require.ErrorContains(err, ref.Hash[:2])
 }
@@ -204,7 +204,7 @@ func TestCaptureAttachmentsParallelReportsFirstErrorInRefOrder(t *testing.T) {
 		filepath.Join(dir, refs[corruptAt].Hash[:2], refs[corruptAt].Hash), []byte("tampered"), 0o600))
 	require.NoError(os.Remove(filepath.Join(dir, refs[missingAt].Hash[:2], refs[missingAt].Hash)))
 
-	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil)
+	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	defer appender.Abort()
 	_, err := CaptureAttachments(context.Background(), dir, refs, map[string]bool{}, appender, CaptureOptions{Jobs: 8})
 	require.ErrorContains(err, refs[corruptAt].Hash,
@@ -226,7 +226,7 @@ func TestCaptureAttachmentsRejectsMalformedHash(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			require := require.New(t)
-			appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil)
+			appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 			_, err := CaptureAttachments(context.Background(), dir, []ContentRef{{Hash: tc.hash, Size: 1}}, map[string]bool{}, appender, CaptureOptions{})
 			require.ErrorContains(err, "too short")
 		})
@@ -239,7 +239,7 @@ func TestCaptureAttachmentsRejectsMalformedHash(t *testing.T) {
 		require := require.New(t)
 		missing := writeLooseAttachment(t, dir, []byte("goes missing"))
 		require.NoError(os.Remove(filepath.Join(dir, missing.Hash[:2], missing.Hash)))
-		appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil)
+		appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 		defer appender.Abort()
 		_, err := CaptureAttachments(context.Background(), dir,
 			[]ContentRef{missing, {Hash: "a", Size: 1}},
@@ -267,7 +267,7 @@ func TestCaptureAttachmentsMemoryBudget(t *testing.T) {
 	}
 
 	r := initTestRepo(t)
-	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil)
+	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	got, err := CaptureAttachments(context.Background(), dir, append([]ContentRef{}, refs...), map[string]bool{}, appender, CaptureOptions{Jobs: 8})
 	require.NoError(err)
 	require.Equal(int64(len(refs)), got.Blobs)
@@ -278,7 +278,7 @@ func TestCaptureAttachmentsMemoryBudget(t *testing.T) {
 	// (in ref order) instead of hanging.
 	missingAt := 12
 	require.NoError(os.Remove(filepath.Join(dir, refs[missingAt].Hash[:2], refs[missingAt].Hash)))
-	failAppender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil)
+	failAppender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	defer failAppender.Abort()
 	_, err = CaptureAttachments(context.Background(), dir, append([]ContentRef{}, refs...), map[string]bool{}, failAppender, CaptureOptions{Jobs: 8})
 	require.ErrorContains(err, refs[missingAt].Hash)
@@ -294,7 +294,7 @@ func TestCaptureAttachmentsReadsRecordedStoragePath(t *testing.T) {
 	dir := t.TempDir()
 	ref := writeNamespacedAttachment(t, dir, "ns-source", []byte("namespaced attachment content"))
 
-	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil)
+	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	got, err := CaptureAttachments(context.Background(), dir, []ContentRef{ref}, map[string]bool{}, appender, CaptureOptions{})
 	require.NoError(err)
 	require.Equal(int64(1), got.Blobs)
@@ -307,7 +307,7 @@ func TestCaptureAttachmentsReadsRecordedStoragePath(t *testing.T) {
 	for _, e := range entries {
 		known[e.Blob] = e
 	}
-	content, err := r.ReadBlob(known, id, nil)
+	content, err := r.ReadBlob(known, id, nil, testPackExt)
 	require.NoError(err)
 	require.Equal([]byte("namespaced attachment content"), content)
 }
@@ -320,7 +320,7 @@ func TestCaptureAttachmentsRejectsEscapingStoragePath(t *testing.T) {
 
 	for _, p := range []string{"../outside", "/etc/passwd", "a/../../outside"} {
 		ref.StoragePath = p
-		appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil)
+		appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 		_, err := CaptureAttachments(context.Background(), dir, []ContentRef{ref}, map[string]bool{}, appender, CaptureOptions{})
 		require.ErrorContains(err, "escapes the attachments directory", "path %q", p)
 		appender.Abort()
@@ -333,7 +333,7 @@ func TestCaptureAttachmentsNoNewList(t *testing.T) {
 	dir := t.TempDir()
 	ref := writeLooseAttachment(t, dir, []byte("stable content"))
 
-	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil)
+	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	defer appender.Abort()
 	got, err := CaptureAttachments(context.Background(), dir, []ContentRef{ref}, map[string]bool{ref.Hash: true}, appender, CaptureOptions{})
 	require.NoError(err)

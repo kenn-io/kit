@@ -148,6 +148,13 @@ func (r *Repo) Path(parts ...string) string {
 	return filepath.Join(append([]string{r.root}, parts...)...)
 }
 
+// packPath returns the sharded on-disk path for pack id, using ext (the
+// application's App.PackFileExtension) as the file extension. It is the
+// single place in the engine that assembles a pack's location.
+func (r *Repo) packPath(id, ext string) string {
+	return r.Path(packsDirName, id[:2], id+ext)
+}
+
 // SetPageSize records the DB page size after the first backup.
 func (r *Repo) SetPageSize(pageSize int) error {
 	if r.cfg.PageSize == pageSize {

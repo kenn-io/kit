@@ -27,11 +27,17 @@ var _ App = (*testApp)(nil)
 // newTestApp returns the App the engine tests pass to Create/Restore/Verify.
 func newTestApp() App { return &testApp{version: "test"} }
 
+// testPackExt is the pack file extension these tests use, both through
+// testApp and at call sites that build a PackAppender or read a blob
+// directly without an App in hand.
+const testPackExt = ".kpack"
+
 func (a *testApp) FrozenView(s *FrozenSession) FrozenView { return &testFrozenView{tx: s.Tx()} }
 
-func (a *testApp) DBFileName() string     { return "app.db" }
-func (a *testApp) ContentDirName() string { return "content" }
-func (a *testApp) Version() string        { return a.version }
+func (a *testApp) DBFileName() string        { return "app.db" }
+func (a *testApp) ContentDirName() string    { return "content" }
+func (a *testApp) PackFileExtension() string { return testPackExt }
+func (a *testApp) Version() string           { return a.version }
 
 func (a *testApp) ExcludedPaths() []string {
 	return []string{"scratch.db", "cache/", "logs/", "imports/", "tmp/", "locks"}

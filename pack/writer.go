@@ -39,7 +39,7 @@ func NewWriter(stagingDir string, opts WriterOptions) (*Writer, error) {
 		opts.TargetSize = DefaultTargetSize
 	}
 	id := NewPackID()
-	staging := filepath.Join(stagingDir, id+".mvpack.staging")
+	staging := filepath.Join(stagingDir, id+".staging")
 	f, err := os.OpenFile(staging, os.O_CREATE|os.O_EXCL|os.O_WRONLY,
 		0o600)
 	if err != nil {

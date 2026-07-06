@@ -243,7 +243,7 @@ func (s *verifyState) reader(packID string) (*pack.Reader, error) {
 	if err, ok := s.readerErrs[packID]; ok {
 		return nil, err
 	}
-	pr, err := pack.OpenReader(s.repo.Path(packsDirName, packID[:2], packID+".mvpack"), nil)
+	pr, err := pack.OpenReader(s.repo.packPath(packID, s.app.PackFileExtension()), nil)
 	if err != nil {
 		s.readerErrs[packID] = err
 		return nil, err
@@ -468,7 +468,7 @@ func (s *verifyState) openGroupReader(packID string) (*pack.Reader, error) {
 		return nil, err
 	}
 	s.mu.Unlock()
-	pr, err := pack.OpenReader(s.repo.Path(packsDirName, packID[:2], packID+".mvpack"), nil)
+	pr, err := pack.OpenReader(s.repo.packPath(packID, s.app.PackFileExtension()), nil)
 	if err != nil {
 		s.mu.Lock()
 		s.readerErrs[packID] = err

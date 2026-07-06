@@ -351,7 +351,7 @@ func TestRestoreDetectsCorruptPack(t *testing.T) {
 	require.NoError(err)
 
 	packID := m.NewPacks[0]
-	path := r.Path("packs", packID[:2], packID+".mvpack")
+	path := r.Path("packs", packID[:2], packID+testPackExt)
 	data, err := os.ReadFile(path)
 	require.NoError(err)
 	data[len(data)/3] ^= 0x01

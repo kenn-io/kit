@@ -97,7 +97,7 @@ func TestVerifyNamesCorruptBlob(t *testing.T) {
 
 	// Corrupt one byte in the middle of a pack's blob region.
 	packID := m.NewPacks[0]
-	path := r.Path("packs", packID[:2], packID+".mvpack")
+	path := r.Path("packs", packID[:2], packID+testPackExt)
 	data, err := os.ReadFile(path)
 	require.NoError(err)
 	data[len(data)/3] ^= 0x01
@@ -137,7 +137,7 @@ func TestVerifyJobsSerialMatchesParallel(t *testing.T) {
 	assert.Equal(serial.BytesRead, parallel.BytesRead)
 
 	packID := m.NewPacks[0]
-	path := r.Path("packs", packID[:2], packID+".mvpack")
+	path := r.Path("packs", packID[:2], packID+testPackExt)
 	data, err := os.ReadFile(path)
 	require.NoError(err)
 	data[len(data)/3] ^= 0x01
@@ -236,7 +236,7 @@ func TestVerifyQuickCatchesMissingPack(t *testing.T) {
 	r, m := buildVerifyFixture(t)
 
 	packID := m.NewPacks[0]
-	require.NoError(os.Remove(r.Path("packs", packID[:2], packID+".mvpack")))
+	require.NoError(os.Remove(r.Path("packs", packID[:2], packID+testPackExt)))
 
 	res, err := Verify(context.Background(), r, newTestApp(), VerifyOptions{Quick: true})
 	require.NoError(err)

@@ -45,11 +45,16 @@ func TestEncryptedPackAccessControl(t *testing.T) {
 	_, err = OpenReader(path, wrong)
 	assert.ErrorIs(err, ErrDecrypt) //nolint:testifylint // independent non-blocking check
 
-	// Renaming an encrypted pack breaks the footer AAD (pack-swap detection).
-	renamed := filepath.Join(filepath.Dir(path), NewPackID()+".mvpack")
-	require.NoError(os.Rename(path, renamed))
-	_, err = OpenReader(renamed, c)
-	assert.ErrorIs(err, ErrDecrypt)
+	// Renaming an encrypted pack to a different basename ID breaks the footer
+	// AAD (pack-swap detection), regardless of the extension used.
+	for _, ext := range []string{".mvpack", ".kpack"} {
+		renamed := filepath.Join(t.TempDir(), NewPackID()+ext)
+		data, err := os.ReadFile(path)
+		require.NoError(err)
+		require.NoError(os.WriteFile(renamed, data, 0o600))
+		_, err = OpenReader(renamed, c)
+		assert.ErrorIs(err, ErrDecrypt, "extension %s", ext) //nolint:testifylint // independent non-blocking check
+	}
 }
 
 func TestPlainPackIgnoresCrypter(t *testing.T) {

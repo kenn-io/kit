@@ -21,8 +21,9 @@ type fakeApp struct{}
 func (fakeApp) FrozenView(s *backup.FrozenSession) backup.FrozenView {
 	return fakeView{tx: s.Tx()}
 }
-func (fakeApp) DBFileName() string     { return "fake.db" }
-func (fakeApp) ContentDirName() string { return "content" }
+func (fakeApp) DBFileName() string        { return "fake.db" }
+func (fakeApp) ContentDirName() string    { return "content" }
+func (fakeApp) PackFileExtension() string { return ".kpack" }
 func (fakeApp) RestoredContentPaths(context.Context, *sql.DB) (map[string][]string, error) {
 	return nil, nil
 }

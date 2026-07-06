@@ -28,7 +28,8 @@ applies uniformly to every application built on this engine.
   snapshots/
     <snapshot-id>.mvmanifest   # JSON manifest, written LAST
   packs/
-    <aa>/<ulid>.mvpack     # sealed blob containers (~32 MB target), aa = first ID byte
+    <aa>/<ulid><ext>       # sealed blob containers (~32 MB target), aa = first ID byte;
+                           # ext is the application-chosen extension (App.PackFileExtension)
   indexes/
     <ulid>.mvidx           # immutable blob -> (pack, offset) indexes
   locks/                   # exclusive.json / shared-<ulid>.json
@@ -55,9 +56,16 @@ BlobID = SHA-256(plaintext content)
 
 The ID is always computed over the raw content — before compression, before any future encryption. Compression and encryption are storage transforms recorded per-entry in the pack; they never change identity. This is what makes deduplication stable across compression-level changes and future format evolution.
 
-## Pack Files (`.mvpack`)
+## Pack Files
 
 Blobs are appended into pack files sealed at a ~32 MB target. A sealed pack is never modified.
+
+The pack file format is identified by its `MVPK` header magic, not by the file's name: the
+file extension is application-chosen (`App.PackFileExtension`), and `.kpack` is the
+recommended convention. An application must keep its chosen extension fixed for the life of a
+repository — packs are located by `<packID><ext>`, so changing it strands previously written
+packs — and, for encrypted repositories, renaming a pack file also breaks it: the pack ID
+derived from the filename (basename minus extension) participates in the footer's AAD.
 
 ```
 header:   "MVPK" | version u8 (=1) | flags u8

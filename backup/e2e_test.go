@@ -17,7 +17,7 @@ func materializeDB(t *testing.T, r *Repo, m *Manifest) []byte {
 	t.Helper()
 	known, err := r.LoadBlobIndex()
 	require.NoError(t, err)
-	fetch := func(id pack.BlobID) ([]byte, error) { return r.ReadBlob(known, id, nil) }
+	fetch := func(id pack.BlobID) ([]byte, error) { return r.ReadBlob(known, id, nil, testPackExt) }
 	chain, err := r.PageMapChain(m)
 	require.NoError(t, err)
 	pm, err := MaterializePageMap(fetch, chain)
@@ -94,7 +94,7 @@ func TestBackupChainEndToEnd(t *testing.T) {
 	require.NoError(err)
 	blobID, err := pack.ParseBlobID(refC.Hash)
 	require.NoError(err)
-	content, err := r.ReadBlob(known, blobID, nil)
+	content, err := r.ReadBlob(known, blobID, nil, testPackExt)
 	require.NoError(err)
 	assert.Equal([]byte("post-snapshot attachment"), content)
 
@@ -114,7 +114,7 @@ func TestBackupChainEndToEnd(t *testing.T) {
 	// Create itself — Create reads parent list/map blobs from packs.)
 	require.NotEmpty(m2.NewPacks)
 	packID := m2.NewPacks[0]
-	packPath := r.Path("packs", packID[:2], packID+".mvpack")
+	packPath := r.Path("packs", packID[:2], packID+testPackExt)
 	data, err := os.ReadFile(packPath)
 	require.NoError(err)
 	data[len(data)/2] ^= 0x01

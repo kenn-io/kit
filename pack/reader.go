@@ -18,11 +18,12 @@ type Reader struct {
 	entries []Entry
 }
 
-// OpenReader opens a sealed pack. The pack ID is derived from the filename;
-// for encrypted packs it participates in the footer's AAD, so a renamed pack
-// fails to open. A crypter passed for a plain pack is ignored.
+// OpenReader opens a sealed pack. The pack ID is the filename minus its
+// extension; for encrypted packs it participates in the footer's AAD, so a
+// renamed pack fails to open. A crypter passed for a plain pack is ignored.
 func OpenReader(path string, crypter *Crypter) (*Reader, error) {
-	id := strings.TrimSuffix(filepath.Base(path), ".mvpack")
+	base := filepath.Base(path)
+	id := strings.TrimSuffix(base, filepath.Ext(base))
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("pack: opening %s: %w", path, err)
