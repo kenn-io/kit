@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -111,8 +112,21 @@ func (r *Repo) WriteManifest(m *Manifest) (string, error) {
 	return id, nil
 }
 
+// snapshotIDPattern is the exact shape ComputeSnapshotID generates: a UTC
+// second timestamp plus 32 lowercase-hex digest chars.
+var snapshotIDPattern = regexp.MustCompile(`^\d{8}T\d{6}Z-[0-9a-f]{32}$`)
+
 // LoadManifest reads one manifest by snapshot ID.
 func (r *Repo) LoadManifest(id string) (*Manifest, error) {
+	// The ID becomes a filename under snapshots/, and it arrives from
+	// untrusted places — a caller's RestoreOptions.SnapshotID, or the
+	// parent_id of a manifest in a synced-in repository — so anything but
+	// the generated shape is refused before it touches a path. Without this,
+	// an ID carrying "../" would read *.mvmanifest paths outside the
+	// repository before the content-derived ID check could fail it.
+	if !snapshotIDPattern.MatchString(id) {
+		return nil, fmt.Errorf("backup: snapshot id %q is not a valid snapshot ID", id)
+	}
 	data, err := os.ReadFile(r.Path(snapshotsDirName, id+manifestExt))
 	if err != nil {
 		return nil, fmt.Errorf("backup: loading snapshot %s: %w", id, err)

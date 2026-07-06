@@ -619,6 +619,58 @@ func TestRestoreRefusesSymlinkEscapeInTarget(t *testing.T) {
 	require.Equal(extrasBody, restored)
 }
 
+// TestRestoreRefusesSymlinkTargetWithTrailingSeparator pins that the
+// symlinked-target guard cannot be sidestepped by addressing the link with a
+// trailing separator: POSIX resolves "link/" and "link/." through the symlink
+// before lstat, so without normalization the leaf check would report a real
+// directory and the whole restore would be redirected into the link's
+// destination.
+func TestRestoreRefusesSymlinkTargetWithTrailingSeparator(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
+	require.NoError(err)
+
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	require.NoError(os.Mkdir(real, 0o700))
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skip("symlinks not supported on this platform")
+	}
+
+	for _, target := range []string{link, link + "/", link + "/."} {
+		_, err := Restore(ctx, r, newTestApp(), RestoreOptions{TargetDir: target})
+		require.ErrorContains(err, "is a symlink", "target %q", target)
+	}
+	entries, err := os.ReadDir(real)
+	require.NoError(err)
+	require.Empty(entries, "nothing may be restored through the symlink")
+}
+
+// TestCheckExtrasCollisionsRejectsAliasingPaths pins the extras pre-pass:
+// two entries that resolve to one file — an exact duplicate, a case-folded
+// alias, or a lexically distinct spelling of the same cleaned path — must
+// fail the restore before anything is written, on every platform.
+func TestCheckExtrasCollisionsRejectsAliasingPaths(t *testing.T) {
+	require := require.New(t)
+
+	require.NoError(checkExtrasCollisions([]ExtrasEntry{
+		{Path: "tokens/a.json"}, {Path: "config.toml"}, {Path: "deletions/x.json"},
+	}))
+
+	err := checkExtrasCollisions([]ExtrasEntry{{Path: "tokens/A"}, {Path: "tokens/a"}})
+	require.ErrorContains(err, "collide under case-folded key")
+
+	err = checkExtrasCollisions([]ExtrasEntry{{Path: "tokens/a"}, {Path: "tokens/a"}})
+	require.ErrorContains(err, `lists path "tokens/a" twice`)
+
+	err = checkExtrasCollisions([]ExtrasEntry{{Path: "tokens/./a"}, {Path: "tokens/a"}})
+	require.ErrorContains(err, "collide under case-folded key")
+}
+
 // TestVerifyHeldTargetDetectsReplacedTarget pins the re-verification that
 // guards the proof's path-based SQLite opens: once the target directory is
 // renamed aside and an impostor directory (with its own database file) is

@@ -129,8 +129,8 @@ func TestMapChainCycleRejectedAtLoad(t *testing.T) {
 	r := initTestRepo(t)
 
 	m := testManifest("2026-07-01T00:00:00Z", "", 0)
-	m.SnapshotID = "self-cycle-20260701-abcd1234"
-	m.ParentID = "self-cycle-20260701-abcd1234"
+	m.SnapshotID = "20260701T000000Z-abcd1234abcd1234abcd1234abcd1234"
+	m.ParentID = m.SnapshotID
 	m.DB.MapChainDepth = 1
 
 	data, err := json.MarshalIndent(m, "", "  ")
@@ -225,7 +225,7 @@ func TestLoadManifestRejectsCorruptedOrRenamedManifest(t *testing.T) {
 
 	// Rename: the pristine manifest body under a different snapshot ID.
 	require.NoError(os.WriteFile(path, original, 0o600))
-	renamed := "20260703T123015Z-deadbeef"
+	renamed := "20260703T123015Z-deadbeefdeadbeefdeadbeefdeadbeef"
 	require.NoError(os.Rename(path, repo.Path(snapshotsDirName, renamed+manifestExt)))
 	_, err = repo.LoadManifest(renamed)
 	require.ErrorContains(err, "content-derived ID check")
@@ -239,6 +239,25 @@ func TestLoadManifestRejectsCorruptedOrRenamedManifest(t *testing.T) {
 	require.NoError(os.WriteFile(path, data, 0o600))
 	_, err = repo.LoadManifest(id)
 	require.ErrorContains(err, "created_at")
+}
+
+// TestLoadManifestRejectsMalformedSnapshotID pins that LoadManifest refuses
+// an ID that is not the generated shape before joining it into a path: the
+// ID arrives from callers (RestoreOptions.SnapshotID) and from manifests'
+// parent_id fields, so a traversal value could otherwise read *.mvmanifest
+// paths outside the repository.
+func TestLoadManifestRejectsMalformedSnapshotID(t *testing.T) {
+	require := require.New(t)
+	repo := initTestRepo(t)
+
+	for _, id := range []string{
+		"../../../outside/snap", "..", "", "sub/dir",
+		"20260703T123015Z-DEADBEEFDEADBEEFDEADBEEFDEADBEEF", // uppercase digest
+		"20260703T123015Z-deadbeef",                         // truncated digest
+	} {
+		_, err := repo.LoadManifest(id)
+		require.ErrorContains(err, "not a valid snapshot ID", "id %q", id)
+	}
 }
 
 // TestLoadManifestRecomputesIDWithRawStats guards the json.RawMessage

@@ -64,6 +64,17 @@ type RestoreResult struct {
 // safe, a running create is not.
 func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (*RestoreResult, error) {
 	start := time.Now()
+	if opts.TargetDir == "" {
+		return nil, errors.New("backup: restore target directory is required")
+	}
+	// Normalize the target once, before anything resolves it: with a trailing
+	// separator ("link/", "link/.") POSIX resolves a final-component symlink
+	// during lstat, so openRestoreRoot's leaf check — and verifyHeldTarget's
+	// re-checks — would pass on a symlinked target addressed that way and
+	// redirect every restore write into the link's destination. Cleaning here
+	// also keeps every downstream consumer of the path (sync ceiling, DBPath,
+	// the held-target re-verification) on one canonical spelling.
+	opts.TargetDir = filepath.Clean(opts.TargetDir)
 	lock, err := r.AcquireSharedLock("restore", opts.ForceUnlock)
 	if err != nil {
 		return nil, err
@@ -654,7 +665,7 @@ func (s *restoreState) restoreAttachments(ctx context.Context, app App, m *Manif
 				return 0, 0, fmt.Errorf(
 					"backup: attachment %s restore path %q has component %q ending in a dot or space", hash, rel, bad)
 			}
-			key := strings.ToLower(filepath.Clean(filepath.FromSlash(rel)))
+			key := foldedPathKey(rel)
 			if other, ok := pathOwner[key]; ok && other != hash {
 				return 0, 0, fmt.Errorf(
 					"backup: restore path %q collides under case-folded key %q with two different attachments %s and %s",
@@ -903,6 +914,9 @@ func (s *restoreState) restoreExtras(app App, m *Manifest) (int, error) {
 	if err := json.Unmarshal(raw, &tree); err != nil {
 		return 0, fmt.Errorf("backup: extras tree %s: %w", id, err)
 	}
+	if err := checkExtrasCollisions(tree.Entries); err != nil {
+		return 0, err
+	}
 	s.progress.emit(ProgressEvent{Stage: ProgressStageExtras, Total: int64(len(tree.Entries))})
 	for i, entry := range tree.Entries {
 		if err := s.restoreExtrasEntry(app, entry); err != nil {
@@ -914,6 +928,42 @@ func (s *restoreState) restoreExtras(app App, m *Manifest) (int, error) {
 		})
 	}
 	return len(tree.Entries), nil
+}
+
+// foldedPathKey is the collision key restore uses to detect distinct archive
+// paths that alias one file on the restoring host: case-insensitive
+// filesystems (default macOS, Windows) fold "A/b" and "a/b" onto one file, so
+// the key case-folds the cleaned OS form of the path. Both the attachment and
+// extras collision checks must use this same key.
+func foldedPathKey(rel string) string {
+	return strings.ToLower(filepath.Clean(filepath.FromSlash(rel)))
+}
+
+// checkExtrasCollisions rejects an extras tree in which two entries resolve
+// to one file. writeRootFile publishes each entry with a clobbering rename,
+// so a duplicate path — or two paths differing only by case, which alias one
+// file on case-insensitive filesystems — would silently keep whichever entry
+// restored last while restore still reported every entry as written. As with
+// the attachment check, this deliberately also rejects such trees on
+// case-sensitive hosts: a snapshot that only restores correctly on a
+// case-sensitive filesystem is not safe to call restorable.
+func checkExtrasCollisions(entries []ExtrasEntry) error {
+	owner := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		key := foldedPathKey(entry.Path)
+		other, ok := owner[key]
+		switch {
+		case !ok:
+			owner[key] = entry.Path
+		case other == entry.Path:
+			return fmt.Errorf("backup: extras tree lists path %q twice", entry.Path)
+		default:
+			return fmt.Errorf(
+				"backup: extras entries %q and %q collide under case-folded key %q",
+				other, entry.Path, key)
+		}
+	}
+	return nil
 }
 
 // trailingDotOrSpaceComponent returns the first component of rel (a relative
