@@ -72,6 +72,32 @@ func replaceInTOML(content, key, value string) string {
 	return re.ReplaceAllString(content, key+` = `+value)
 }
 
+// TestOpenRejectsNonCanonicalRepoID pins that Open refuses a config.toml
+// whose repo_id is not the canonical generated UUID: the ID is joined into
+// cache filenames, so a tampered value carrying path separators could
+// otherwise address files outside the cache directory.
+func TestOpenRejectsNonCanonicalRepoID(t *testing.T) {
+	require := require.New(t)
+	root := filepath.Join(t.TempDir(), "repo")
+	_, err := Init(root)
+	require.NoError(err)
+
+	cfgPath := filepath.Join(root, "config.toml")
+	data, err := os.ReadFile(cfgPath)
+	require.NoError(err)
+	re := regexp.MustCompile(`repo_id = "[^"]*"`)
+
+	for _, id := range []string{
+		`../../../home/user/.ssh/authorized_keys`,
+		`sub/dir`, ``, `AAAAAAAA-0000-4000-8000-000000000000`,
+	} {
+		munged := re.ReplaceAllString(string(data), `repo_id = "`+id+`"`)
+		require.NoError(os.WriteFile(cfgPath, []byte(munged), 0o600))
+		_, err = Open(root)
+		require.ErrorContains(err, "not the canonical UUID", "repo_id %q", id)
+	}
+}
+
 func TestCleanStaging(t *testing.T) {
 	require := require.New(t)
 	root := filepath.Join(t.TempDir(), "repo")

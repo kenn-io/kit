@@ -619,6 +619,46 @@ func TestRestoreRefusesSymlinkEscapeInTarget(t *testing.T) {
 	require.Equal(extrasBody, restored)
 }
 
+// TestVerifyHeldTargetDetectsReplacedTarget pins the re-verification that
+// guards the proof's path-based SQLite opens: once the target directory is
+// renamed aside and an impostor directory (with its own database file) is
+// planted at the same path, verifyHeldTarget must fail rather than let the
+// proof run against a database the held root does not contain.
+func TestVerifyHeldTargetDetectsReplacedTarget(t *testing.T) {
+	require := require.New(t)
+	base := t.TempDir()
+	target := filepath.Join(base, "restore")
+	require.NoError(os.Mkdir(target, 0o700))
+	require.NoError(os.WriteFile(filepath.Join(target, "app.db"), []byte("real"), 0o600))
+
+	root, err := openRestoreRoot(target)
+	require.NoError(err)
+	defer func() { _ = root.Close() }()
+	st := &restoreState{root: root, target: target}
+
+	require.NoError(st.verifyHeldTarget("app.db"),
+		"the untouched target must verify against its own root")
+
+	if err := os.Rename(target, filepath.Join(base, "moved-aside")); err != nil {
+		// Windows refuses to rename a directory somebody holds open, which
+		// also forecloses the replacement this guard detects.
+		t.Skip("cannot rename a directory with an open handle on this platform")
+	}
+	require.NoError(os.Mkdir(target, 0o700))
+	require.NoError(os.WriteFile(filepath.Join(target, "app.db"), []byte("impostor"), 0o600))
+
+	err = st.verifyHeldTarget("app.db")
+	require.ErrorContains(err, "replaced during restore")
+
+	// A symlink swapped in at the target path must be named as such.
+	require.NoError(os.RemoveAll(target))
+	if err := os.Symlink(filepath.Join(base, "moved-aside"), target); err != nil {
+		t.Skip("symlinks not supported on this platform")
+	}
+	err = st.verifyHeldTarget("app.db")
+	require.ErrorContains(err, "replaced with a symlink")
+}
+
 func TestRestoreExtrasEntryRejectsEscapingPaths(t *testing.T) {
 	require := require.New(t)
 	st := &restoreState{}

@@ -9,8 +9,14 @@ import (
 
 // LoadHashMapCache reads the disposable local hash-map cache. Any read or
 // parse failure returns empty results, never an error: the cache is rebuilt
-// from the repository when unusable.
+// from the repository when unusable. A repoID that is not a canonical
+// generated ID is an error, not a miss — it is joined into cacheDir as a
+// filename, so anything else could address a file outside the cache.
 func LoadHashMapCache(cacheDir, repoID string) (string, *PageHashMap, error) {
+	if !validRepoID(repoID) {
+		return "", nil, fmt.Errorf(
+			"backup: cache key %q is not a canonical repository ID", repoID)
+	}
 	data, err := os.ReadFile(filepath.Join(cacheDir, repoID+".hashmap"))
 	if err != nil {
 		return "", nil, nil //nolint:nilerr // absent/unreadable cache is a cache miss by design
@@ -30,8 +36,14 @@ func LoadHashMapCache(cacheDir, repoID string) (string, *PageHashMap, error) {
 	return snapshotID, m, nil
 }
 
-// SaveHashMapCache atomically replaces the local hash-map cache.
+// SaveHashMapCache atomically replaces the local hash-map cache. repoID must
+// be a canonical generated repository ID: it becomes a filename under
+// cacheDir, so any other value could write outside the cache.
 func SaveHashMapCache(cacheDir, repoID, snapshotID string, m *PageHashMap) error {
+	if !validRepoID(repoID) {
+		return fmt.Errorf(
+			"backup: cache key %q is not a canonical repository ID", repoID)
+	}
 	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
 		return fmt.Errorf("backup: creating cache dir: %w", err)
 	}

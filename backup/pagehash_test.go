@@ -218,15 +218,17 @@ func TestHashMapCacheRoundTrip(t *testing.T) {
 	assert := assert.New(t)
 	dir := t.TempDir()
 
+	// Cache keys must be canonical generated repository IDs (validRepoID).
+	repoID := newRepoID()
 	m := hashMapOf(t, 4096, "a", "b")
-	require.NoError(SaveHashMapCache(dir, "repo-1", "snap-1", m))
-	snap, got, err := LoadHashMapCache(dir, "repo-1")
+	require.NoError(SaveHashMapCache(dir, repoID, "snap-1", m))
+	snap, got, err := LoadHashMapCache(dir, repoID)
 	require.NoError(err)
 	assert.Equal("snap-1", snap)
 	assert.Equal(m, got)
 
 	// Absent and corrupt caches are non-errors: disposable.
-	snap, got, err = LoadHashMapCache(dir, "missing")
+	snap, got, err = LoadHashMapCache(dir, newRepoID())
 	require.NoError(err)
 	assert.Empty(snap)
 	assert.Nil(got)

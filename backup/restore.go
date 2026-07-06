@@ -107,6 +107,7 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (*Resto
 		jobs:     jobs,
 		progress: newProgressEmitter(opts.Progress),
 		root:     root,
+		target:   opts.TargetDir,
 	}
 
 	hm, pm, err := st.materializeMaps(m)
@@ -122,7 +123,7 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (*Resto
 		return nil, err
 	}
 	res.AttachmentBlobs, res.AttachmentBytes, err = st.restoreAttachments(
-		ctx, app, m, res.DBPath, app.ContentDirName())
+		ctx, app, m, app.ContentDirName())
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +135,7 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (*Resto
 	// whole restored database inside SQLite and dominates on large
 	// archives) and the manifest stats comparison.
 	st.progress.emit(ProgressEvent{Stage: ProgressStageProof, Total: 2})
-	if err := proveRestoredDB(ctx, app, res.DBPath, m, func() {
+	if err := st.proveRestoredDB(ctx, m, func() {
 		st.progress.emit(ProgressEvent{Stage: ProgressStageProof, Done: 1, Total: 2})
 	}); err != nil {
 		return nil, err
@@ -343,8 +344,11 @@ type restoreState struct {
 	jobs     int
 	progress *progressEmitter
 	// root confines every restore write beneath the verified target directory;
-	// its methods refuse any path that escapes via symlink.
-	root *os.Root
+	// its methods refuse any path that escapes via symlink. target is the
+	// caller-supplied path root was opened at; SQLite opens must go by path,
+	// so verifyHeldTarget re-ties that path to root around each one.
+	root   *os.Root
+	target string
 
 	mu       sync.Mutex
 	firstErr error
@@ -591,7 +595,7 @@ func (s *restoreState) writeRun(f *os.File, raw []byte, id pack.BlobID, run Page
 // namespace paths beyond the plain <hash[:2]>/<hash> layout), reading blobs
 // grouped by pack. Every blob read re-derives its SHA-256 identity before
 // any file is written.
-func (s *restoreState) restoreAttachments(ctx context.Context, app App, m *Manifest, dbPath, contentDir string) (int64, int64, error) {
+func (s *restoreState) restoreAttachments(ctx context.Context, app App, m *Manifest, contentDir string) (int64, int64, error) {
 	refs, _, err := LoadListRefs(s.repo, s.known, m.Attachments.Lists, nil, app.PackFileExtension())
 	if err != nil {
 		return 0, 0, err
@@ -600,7 +604,7 @@ func (s *restoreState) restoreAttachments(ctx context.Context, app App, m *Manif
 		return 0, 0, fmt.Errorf(
 			"backup: attachment lists name %d blobs but manifest reports %d", len(refs), m.Attachments.Blobs)
 	}
-	paths, err := restoredContentPaths(ctx, app, dbPath)
+	paths, err := s.restoredContentPaths(ctx)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -724,16 +728,90 @@ func restoredDBDSN(dbPath string) string {
 	return sqliteURIDSN(dbPath, "immutable=1&mode=ro")
 }
 
+// verifyHeldTarget re-proves that the caller-supplied target path still
+// resolves to the directory the held root descriptor pins, and that the
+// database file inside it is the same file the root sees. openRestoreRoot
+// proved this once; SQLite opens re-resolve the path, so an actor who can
+// rename the target in its parent could otherwise point them at a different
+// database than the one restore wrote and hash-verified through the root.
+func (s *restoreState) verifyHeldTarget(dbRel string) error {
+	leaf, err := os.Lstat(s.target)
+	if err != nil {
+		return fmt.Errorf("backup: re-checking restore target: %w", err)
+	}
+	if leaf.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf(
+			"backup: restore target %s was replaced with a symlink during restore", s.target)
+	}
+	held, err := s.root.Stat(".")
+	if err != nil {
+		return fmt.Errorf("backup: re-checking restore target: %w", err)
+	}
+	if !os.SameFile(leaf, held) {
+		return fmt.Errorf(
+			"backup: restore target %s was replaced during restore", s.target)
+	}
+	byPath, err := os.Stat(filepath.Join(s.target, dbRel))
+	if err != nil {
+		return fmt.Errorf("backup: re-checking restored database: %w", err)
+	}
+	byRoot, err := s.root.Stat(dbRel)
+	if err != nil {
+		return fmt.Errorf("backup: re-checking restored database: %w", err)
+	}
+	if !os.SameFile(byPath, byRoot) {
+		return fmt.Errorf(
+			"backup: restored database %s was replaced during restore",
+			filepath.Join(s.target, dbRel))
+	}
+	return nil
+}
+
+// openRestoredDB opens the restored database read-only for the proof queries.
+// SQLite can only open by path, which re-resolves the target directory, so
+// after forcing the first connection open this re-verifies that the path
+// still leads to the directory and database file the held root pins, and the
+// callers verify once more after their queries complete. A replacement that
+// persists at either check fails the restore; only a replace-and-restore
+// race timed exactly around a connection's own open remains outside what a
+// path-based open can detect.
+func (s *restoreState) openRestoredDB(ctx context.Context) (*sql.DB, error) {
+	dbRel := s.app.DBFileName()
+	db, err := sql.Open("sqlite3", restoredDBDSN(filepath.Join(s.target, dbRel)))
+	if err != nil {
+		return nil, fmt.Errorf("backup: opening restored database: %w", err)
+	}
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("backup: opening restored database: %w", err)
+	}
+	if err := s.verifyHeldTarget(dbRel); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
 // restoredContentPaths opens the restored database read-only and asks the app
 // to re-derive hash → relative content paths from it, so restore can
 // materialize and verify every referenced file at the paths the app records.
-func restoredContentPaths(ctx context.Context, app App, dbPath string) (map[string][]string, error) {
-	db, err := sql.Open("sqlite3", restoredDBDSN(dbPath))
+func (s *restoreState) restoredContentPaths(ctx context.Context) (map[string][]string, error) {
+	db, err := s.openRestoredDB(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("backup: opening restored database for content paths: %w", err)
+		return nil, err
 	}
 	defer func() { _ = db.Close() }()
-	return app.RestoredContentPaths(ctx, db)
+	paths, err := s.app.RestoredContentPaths(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	// The derived paths decide where attachment bytes land inside the root;
+	// fail closed if the database they came from is no longer the one the
+	// root holds.
+	if err := s.verifyHeldTarget(s.app.DBFileName()); err != nil {
+		return nil, err
+	}
+	return paths, nil
 }
 
 // restorePackAttachments writes one pack's attachment blobs to their
@@ -962,10 +1040,10 @@ func (s *restoreState) writeRootFile(rel string, content []byte, mode os.FileMod
 // against the page-hash map during materialization.
 // checked is called after integrity_check passes, before the stats
 // comparison, so callers can report sub-step progress.
-func proveRestoredDB(ctx context.Context, app App, dbPath string, m *Manifest, checked func()) error {
-	db, err := sql.Open("sqlite3", restoredDBDSN(dbPath))
+func (s *restoreState) proveRestoredDB(ctx context.Context, m *Manifest, checked func()) error {
+	db, err := s.openRestoredDB(ctx)
 	if err != nil {
-		return fmt.Errorf("backup: opening restored database for proof: %w", err)
+		return err
 	}
 	defer func() { _ = db.Close() }()
 
@@ -992,8 +1070,13 @@ func proveRestoredDB(ctx context.Context, app App, dbPath string, m *Manifest, c
 		checked()
 	}
 
-	restoredStats, err := app.RestoredStats(ctx, db)
+	restoredStats, err := s.app.RestoredStats(ctx, db)
 	if err != nil {
+		return err
+	}
+	// The proof is only about the database the root holds; fail closed if the
+	// path the queries ran against no longer resolves to it.
+	if err := s.verifyHeldTarget(s.app.DBFileName()); err != nil {
 		return err
 	}
 	if !bytes.Equal(compactJSON(restoredStats), compactJSON(m.Stats)) {

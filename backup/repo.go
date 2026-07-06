@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -134,6 +135,16 @@ func Open(root string) (*Repo, error) {
 			"backup: encrypted repositories are not supported yet "+
 				"(encryption=%q)", cfg.Encryption)
 	}
+	// The repo ID is used verbatim as a filename component (the local
+	// hash-map cache), so a tampered config.toml carrying path separators or
+	// traversal sequences must be refused here, before any caller joins it
+	// into a path.
+	if !validRepoID(cfg.RepoID) {
+		return nil, fmt.Errorf(
+			"backup: repository config repo_id %q is not the canonical UUID "+
+				"form; refusing a tampered or hand-edited config.toml",
+			cfg.RepoID)
+	}
 	return &Repo{root: root, cfg: cfg}, nil
 }
 
@@ -201,6 +212,15 @@ func (r *Repo) CleanStaging() error {
 	}
 	return nil
 }
+
+// repoIDPattern is the exact shape newRepoID generates: a lowercase-hex
+// UUID. Anything else in a config.toml is tampering or hand-editing.
+var repoIDPattern = regexp.MustCompile(
+	`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// validRepoID reports whether id is a canonical generated repository ID and
+// therefore safe to embed in filenames.
+func validRepoID(id string) bool { return repoIDPattern.MatchString(id) }
 
 func newRepoID() string {
 	var b [16]byte
