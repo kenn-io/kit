@@ -67,6 +67,9 @@ var errBlobUnreadable = errors.New("backup: referenced blob failed verification"
 // snapshot, blob, and pack; Verify keeps going so every affected snapshot is
 // named, rather than stopping at the first Problem.
 func Verify(ctx context.Context, r *Repo, app App, opts VerifyOptions) (*VerifyResult, error) {
+	if err := validatePackExtension(app.PackFileExtension()); err != nil {
+		return nil, err
+	}
 	lock, err := r.AcquireSharedLock("verify", opts.ForceUnlock)
 	if err != nil {
 		return nil, err

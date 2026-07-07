@@ -569,6 +569,37 @@ func TestCreateRejectsForgedDeltaParentHashCache(t *testing.T) {
 		"the forged delta-parent cache must be ignored so the child snapshot captures the edit")
 }
 
+// badPackExtApp overrides the pack file extension, for exercising the
+// validation at each flow's entry.
+type badPackExtApp struct {
+	App
+	ext string
+}
+
+func (a badPackExtApp) PackFileExtension() string { return a.ext }
+
+// TestFlowsRejectBadPackExtension pins validatePackExtension at every flow
+// entry: packPath concatenates the extension straight into a path component,
+// so a separator- or traversal-carrying extension must fail loudly before
+// any pack is written or read, and a multi-dot extension would make
+// pack.OpenReader derive the wrong pack ID once packs are encrypted.
+func TestFlowsRejectBadPackExtension(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+
+	for _, ext := range []string{"", ".", "kpack", ".k/pack", `.k\pack`, "../evil", ".backup.pack", ".k:pack"} {
+		app := badPackExtApp{App: newTestApp(), ext: ext}
+		_, err := Create(ctx, r, app, createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
+		require.ErrorContains(err, "pack file extension", "Create ext %q", ext)
+		_, err = Verify(ctx, r, app, VerifyOptions{})
+		require.ErrorContains(err, "pack file extension", "Verify ext %q", ext)
+		_, err = Restore(ctx, r, app, RestoreOptions{TargetDir: filepath.Join(t.TempDir(), "x")})
+		require.ErrorContains(err, "pack file extension", "Restore ext %q", ext)
+	}
+}
+
 // TestCreateHonorsCancellationAfterAttachments pins that Create keeps
 // watching ctx once attachment capture — the last inherently ctx-aware stage
 // — completes: a cancellation landing there must stop the backup before

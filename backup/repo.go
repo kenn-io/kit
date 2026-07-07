@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -162,9 +163,32 @@ func (r *Repo) Path(parts ...string) string {
 
 // packPath returns the sharded on-disk path for pack id, using ext (the
 // application's App.PackFileExtension) as the file extension. It is the
-// single place in the engine that assembles a pack's location.
+// single place in the engine that assembles a pack's location; ext is
+// validated at each flow's entry (validatePackExtension) before any path is
+// built from it.
 func (r *Repo) packPath(id, ext string) string {
 	return r.Path(packsDirName, id[:2], id+ext)
+}
+
+// validatePackExtension rejects an App.PackFileExtension the pack layout
+// cannot host safely: anything but a leading dot followed by dot-free,
+// separator-free characters. packPath concatenates the extension straight
+// into a path component, so a separator or ".." would place packs outside
+// the repository's packs tree; an extra dot would make pack.OpenReader
+// derive the wrong pack ID (it strips only the final filepath.Ext), which
+// for encrypted packs breaks the footer's AAD binding to the ID. Create,
+// Verify, and Restore each check this once up front, so a misconfigured
+// application fails loudly before any pack is written or read.
+func validatePackExtension(ext string) error {
+	if len(ext) < 2 || ext[0] != '.' {
+		return fmt.Errorf(
+			"backup: pack file extension %q must be a leading dot followed by a suffix (e.g. %q)", ext, ".kpack")
+	}
+	if strings.ContainsAny(ext[1:], `./\:`) {
+		return fmt.Errorf(
+			"backup: pack file extension %q must not contain dots, path separators, or colons after the leading dot", ext)
+	}
+	return nil
 }
 
 // SetPageSize records the DB page size after the first backup.

@@ -142,6 +142,35 @@ func TestCaptureExtrasRejectsCaseCollidingPaths(t *testing.T) {
 	require.ErrorContains(err, "selected more than once")
 }
 
+// TestCaptureExtrasRejectsReservedRecordPaths pins capture/restore parity
+// for the reserved and Windows-aliasing path rules: restore refuses extras
+// entries naming the database, its SQLite sidecars, the content tree, or any
+// component ending in a dot or space, so capture must refuse to record such
+// paths rather than publish a snapshot verify and restore then reject.
+func TestCaptureExtrasRejectsReservedRecordPaths(t *testing.T) {
+	require := require.New(t)
+	r := initTestRepo(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.json")
+	require.NoError(os.WriteFile(src, []byte("{}"), 0o600))
+
+	for path, wantErr := range map[string]string{
+		"app.db":         "overlaps restored archive content",
+		"APP.DB-journal": "overlaps restored archive content",
+		"content/x.json": "overlaps restored archive content",
+		"safe./x.json":   "component ending in a dot or space",
+	} {
+		appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
+		_, _, err := CaptureExtras(context.Background(), ExtrasOptions{
+			Spec:           ExtrasSpec{Files: []ExtrasFileSpec{{Path: src, RecordAs: path}}},
+			ContentDirName: "content",
+			DBFileName:     "app.db",
+		}, appender)
+		appender.Abort()
+		require.ErrorContains(err, wantErr, "record path %q", path)
+	}
+}
+
 // TestCaptureExtrasRejectsOversizedFile pins the same fstat guard on the
 // extras leaf reader: extras files share the pack layer's per-blob raw limit
 // and must be rejected before capture buffers the content.

@@ -48,6 +48,9 @@ type CreateOptions struct {
 // Create captures one snapshot: freeze -> scan -> pack -> index -> manifest
 // (written last). See FORMAT.md.
 func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifest, error) {
+	if err := validatePackExtension(app.PackFileExtension()); err != nil {
+		return nil, err
+	}
 	start := time.Now()
 	pr := newProgressEmitter(opts.Progress)
 	if opts.ZstdLevel == 0 {
@@ -248,6 +251,8 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 		Spec:                  opts.Extras,
 		AllowPlaintextSecrets: opts.AllowPlaintextSecrets,
 		Encrypted:             false,
+		ContentDirName:        app.ContentDirName(),
+		DBFileName:            app.DBFileName(),
 	}, appender)
 	if err != nil {
 		return nil, err

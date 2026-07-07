@@ -64,6 +64,9 @@ type RestoreResult struct {
 // safe, a running create is not.
 func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (*RestoreResult, error) {
 	start := time.Now()
+	if err := validatePackExtension(app.PackFileExtension()); err != nil {
+		return nil, err
+	}
 	if opts.TargetDir == "" {
 		return nil, errors.New("backup: restore target directory is required")
 	}

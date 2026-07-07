@@ -90,6 +90,15 @@ type ExtrasOptions struct {
 	Spec                  ExtrasSpec
 	AllowPlaintextSecrets bool
 	Encrypted             bool
+	// ContentDirName/DBFileName name the restore-layout paths an extras
+	// record path may never claim — the database, its SQLite sidecars, and
+	// the attachments tree — so capture refuses them with the same rules
+	// restore enforces (validateExtrasEntryPath) instead of publishing a
+	// snapshot restore and verify then reject. Create fills them from the
+	// App; a caller leaving them empty skips only the reserved-name rule
+	// (locality and Windows-safe component rules always apply).
+	ContentDirName string
+	DBFileName     string
 }
 
 // ExtrasEntry is one captured file in the extras tree.
@@ -262,6 +271,13 @@ func CaptureExtras(ctx context.Context, opts ExtrasOptions, appender *PackAppend
 	// capturing one would produce an unrestorable snapshot.
 	addFile := func(readRoot *os.Root, readRel, recordPath string) error {
 		if err := ctx.Err(); err != nil {
+			return err
+		}
+		// Every record path is held to restore's rules at capture time:
+		// restore and verify reject escaping, reserved-overlapping, and
+		// Windows-aliasing paths, so recording one would publish a snapshot
+		// that can never be restored.
+		if _, err := validateExtrasEntryPath(recordPath, opts.ContentDirName, opts.DBFileName); err != nil {
 			return err
 		}
 		key := foldedPathKey(recordPath)
