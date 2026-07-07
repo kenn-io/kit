@@ -31,9 +31,10 @@ type RestoreOptions struct {
 	// sidecars survive until the replacement database is fully materialized,
 	// every attachment and extras blob has been read and verified, and the
 	// replacement has passed the restore proof — only then are the sidecars
-	// removed (a stale -wal, -shm, or -journal would otherwise be replayed
-	// over the restored file on its first normal open) and the database
-	// renamed into place.
+	// set aside (a stale -wal, -shm, or -journal would otherwise be replayed
+	// over the restored file on its first normal open), the database renamed
+	// into place, and the set-aside sidecars removed. A failed rename puts
+	// the sidecars back.
 	TargetDir string
 	Overwrite bool
 	// Jobs is the number of concurrent pack-read workers. Zero or negative
@@ -174,9 +175,23 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (*Resto
 	if err != nil {
 		return nil, err
 	}
-	if res.ExtrasFiles, err = st.restoreExtras(ctx, app, m); err != nil {
+	// Extras are staged, not published: each entry's blob is fetched,
+	// hash-verified, and written to a temp sibling of its final path, but
+	// the temps are renamed into place only after the proof passes, just
+	// before the database publish. Extras overwrite live operational files
+	// in an Overwrite target, so any failure up to and including the proof
+	// must leave every one of them untouched — unlike attachments, whose
+	// content-addressed paths make partial writes benign.
+	extras, err := st.stageExtras(ctx, app, m)
+	if err != nil {
 		return nil, err
 	}
+	res.ExtrasFiles = len(extras)
+	defer func() {
+		if !published {
+			st.removeStagedFiles(extras)
+		}
+	}()
 
 	// The proof runs against the staging temp, BEFORE the database is
 	// published: an integrity_check failure, a stats mismatch, or a late
@@ -193,6 +208,9 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (*Resto
 	}
 	st.progress.emit(ProgressEvent{Stage: ProgressStageProof, Done: 2, Total: 2, Final: true})
 	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := st.promoteExtras(extras); err != nil {
 		return nil, err
 	}
 	if err := st.publishRestoredDB(tmpRel, app.DBFileName()); err != nil {
@@ -280,29 +298,48 @@ func syncRestoredTree(target, ceiling string) error {
 // database: the WAL and its shared-memory index, and the rollback journal. A
 // stale sidecar next to a restored database would be replayed or reused on
 // the file's first normal open, silently altering the proven bytes — so
-// overwrite restores remove them and extras entries may never plant one.
+// overwrite restores set them aside before publishing the database
+// (publishRestoredDB) and extras entries may never plant one.
 func sqliteSidecarNames(dbFileName string) []string {
 	return []string{dbFileName + "-wal", dbFileName + "-shm", dbFileName + "-journal"}
 }
 
-// removeStaleDBSidecars removes any SQLite sidecar files sitting next to the
-// target database. publishRestoredDB calls it immediately before renaming
-// the fully materialized replacement into place — after every content blob
-// (pages, attachments, extras) has been read and verified — so a repository
-// whose content turns out to be missing or corrupt fails while an Overwrite
-// target's live database AND its sidecars are still intact. The removal must
-// precede the rename, not follow it: a stale -wal/-shm pair or hot -journal
-// next to the restored database would be replayed over the proven bytes on
-// its first normal (non-immutable) open, so a crash between the two steps
-// must not leave both the new database and an old sidecar behind. Removing
-// through the root unlinks, never follows, a symlink planted at those names.
-func removeStaleDBSidecars(root *os.Root, dbFileName string) error {
+// setAsideDBSidecars renames each SQLite sidecar file sitting next to the
+// target database to a single-run staging name (<sidecar>.restore-<ulid>)
+// and returns original name → aside name for the ones that existed. Renaming
+// rather than removing keeps publication rollbackable: a publish that then
+// fails renames the asides back (putBackDBSidecars), so the target's live
+// database never loses the -wal frames or hot -journal it needs to open
+// correctly to a restore that did not replace it. Renaming through the root
+// moves a symlink planted at those names, never follows it.
+func setAsideDBSidecars(root *os.Root, dbFileName string) (map[string]string, error) {
+	asides := make(map[string]string)
 	for _, name := range sqliteSidecarNames(dbFileName) {
-		if err := root.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("backup: removing stale %s from restore target: %w", name, err)
+		aside := name + ".restore-" + pack.NewPackID()
+		if err := root.Rename(name, aside); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return asides, fmt.Errorf(
+				"backup: setting aside stale %s in restore target: %w", name, err)
+		}
+		asides[name] = aside
+	}
+	return asides, nil
+}
+
+// putBackDBSidecars renames set-aside sidecar files back to their original
+// names after a failed publish, joining every failure so the caller reports
+// exactly which files did not come back and where their bytes remain.
+func putBackDBSidecars(root *os.Root, asides map[string]string) error {
+	var errs []error
+	for name, aside := range asides {
+		if err := root.Rename(aside, name); err != nil {
+			errs = append(errs, fmt.Errorf(
+				"backup: restoring set-aside %s (bytes remain at %s): %w", name, aside, err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // prepareRestoreTarget creates TargetDir, refusing a non-empty existing
@@ -340,9 +377,11 @@ func prepareRestoreTarget(target string, overwrite bool, dbFileName string) (*os
 	// so a source failure mid-restore leaves the live database usable.
 	//
 	// A restore killed mid-run leaves the database's staging temp
-	// (<db>.restore-<ulid>, restoreDB) at the target root; a later overwrite
-	// rerun would otherwise ignore it forever. Sweep only that exact
-	// top-level shape — never a broad glob.
+	// (<db>.restore-<ulid>, restoreDB) at the target root, and one killed
+	// mid-publish leaves sidecar asides (<db>-wal.restore-<ulid>,
+	// setAsideDBSidecars) too; a later overwrite rerun would otherwise
+	// ignore them forever. Sweep only those exact top-level shapes — never
+	// a broad glob.
 	if err := removeRestoreTempFiles(root, dbFileName); err != nil {
 		_ = root.Close()
 		return nil, err
@@ -350,14 +389,20 @@ func prepareRestoreTarget(target string, overwrite bool, dbFileName string) (*os
 	return root, nil
 }
 
-// removeRestoreTempFiles deletes the database staging temp files a crashed
-// restore may have left at the target's top level. The name shape is exactly
-// restoreDB's: dbFileName + ".restore-" + a 26-char lowercase ULID. The sweep
-// runs entirely through the already-verified root — never a fresh pathname
-// resolution of target — so a symlink swapped in at target after openRestoreRoot
-// proved it cannot redirect the list or the removals outside the restore tree.
+// removeRestoreTempFiles deletes the staging temp files a crashed restore
+// may have left at the target's top level: the database staging temp
+// (restoreDB) and sidecar asides (setAsideDBSidecars). The name shapes are
+// exact — dbFileName or a sidecar name, then ".restore-" and a 26-char
+// lowercase ULID. The sweep runs entirely through the already-verified root
+// — never a fresh pathname resolution of target — so a symlink swapped in
+// at target after openRestoreRoot proved it cannot redirect the list or the
+// removals outside the restore tree.
 func removeRestoreTempFiles(root *os.Root, dbFileName string) error {
-	prefix := dbFileName + ".restore-"
+	names := append([]string{dbFileName}, sqliteSidecarNames(dbFileName)...)
+	prefixes := make([]string, 0, len(names))
+	for _, name := range names {
+		prefixes = append(prefixes, name+".restore-")
+	}
 	entries, err := fs.ReadDir(root.FS(), ".")
 	if err != nil {
 		return fmt.Errorf("backup: scanning restore target for stale temp files: %w", err)
@@ -366,13 +411,16 @@ func removeRestoreTempFiles(root *os.Root, dbFileName string) error {
 		if e.IsDir() {
 			continue
 		}
-		id, ok := strings.CutPrefix(e.Name(), prefix)
-		if !ok || !pack.IsValidPackID(id) {
-			continue
-		}
-		if err := root.Remove(e.Name()); err != nil &&
-			!errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("backup: removing stale restore temp %s: %w", e.Name(), err)
+		for _, prefix := range prefixes {
+			id, ok := strings.CutPrefix(e.Name(), prefix)
+			if !ok || !pack.IsValidPackID(id) {
+				continue
+			}
+			if err := root.Remove(e.Name()); err != nil &&
+				!errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("backup: removing stale restore temp %s: %w", e.Name(), err)
+			}
+			break
 		}
 	}
 	return nil
@@ -542,7 +590,7 @@ func (s *restoreState) preflightSnapshotBlobs(m *Manifest, pm *PageMap) error {
 	if err := json.Unmarshal(raw, &tree); err != nil {
 		return fmt.Errorf("backup: extras tree %s: %w", treeID, err)
 	}
-	// The tree is decoded here anyway, so the path rules restoreExtrasEntry
+	// The tree is decoded here anyway, so the path rules stageExtrasEntry
 	// enforces per entry run now too: a tampered tree whose paths escape,
 	// collide, or overlap archive content must fail while the target is
 	// still untouched, not after the database has been replaced.
@@ -645,21 +693,36 @@ func (s *restoreState) restoreDB(ctx context.Context, dbRel string, pm *PageMap,
 }
 
 // publishRestoredDB swaps the fully materialized staging temp into place:
-// stale SQLite sidecars are removed and the temp renamed over dbRel. It runs
-// only after every content blob the snapshot references — pages, attachments,
-// extras — has been read and verified AND the staging database has passed
-// the restore proof (integrity_check plus the manifest stats comparison), so
-// this is the single point where an Overwrite restore becomes destructive. Sidecar removal must precede the
-// rename: a crash between the two steps must never leave the new database
-// next to an old -wal/-shm pair or hot -journal that SQLite would replay
-// over the proven bytes on its first normal open. The rename replaces a
-// preexisting symlink at dbRel rather than following it.
+// stale SQLite sidecars are set aside, the temp is renamed over dbRel, and
+// the asides are then removed. It runs only after every content blob the
+// snapshot references — pages, attachments, extras — has been read and
+// verified AND the staging database has passed the restore proof
+// (integrity_check plus the manifest stats comparison), so this is the
+// single point where an Overwrite restore becomes destructive.
+//
+// The sidecar set-aside must precede the rename: a crash between the two
+// steps must never leave the new database next to an old -wal/-shm pair or
+// hot -journal that SQLite would replay over the proven bytes on its first
+// normal open. Setting sidecars aside instead of removing them keeps a
+// FAILED rename rollbackable — the asides are renamed back, so the target's
+// live database keeps the WAL frames it needs — while a crashed publish
+// leaves the aside bytes on disk for manual recovery (a later overwrite
+// rerun sweeps them, removeRestoreTempFiles, because it replaces the
+// database anyway). The final rename replaces a preexisting symlink at
+// dbRel rather than following it.
 func (s *restoreState) publishRestoredDB(tmpRel, dbRel string) error {
-	if err := removeStaleDBSidecars(s.root, dbRel); err != nil {
-		return err
+	asides, err := setAsideDBSidecars(s.root, dbRel)
+	if err != nil {
+		return errors.Join(err, putBackDBSidecars(s.root, asides))
 	}
 	if err := s.root.Rename(tmpRel, dbRel); err != nil {
-		return fmt.Errorf("backup: publishing restored database: %w", err)
+		err = fmt.Errorf("backup: publishing restored database: %w", err)
+		return errors.Join(err, putBackDBSidecars(s.root, asides))
+	}
+	for _, aside := range asides {
+		if err := s.root.Remove(aside); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("backup: removing set-aside sidecar %s: %w", aside, err)
+		}
 	}
 	return nil
 }
@@ -786,13 +849,21 @@ func (s *restoreState) restoreAttachments(ctx context.Context, app App, m *Manif
 	}
 	// The materialization loop below iterates listed refs only, so a hash the
 	// restored database references but no attachment list carries would never
-	// be written, yet restore would still report success. Prove full coverage
-	// of the DB's content references up front: every path key must trace back
-	// to a listed blob. The complementary direction (listed hash with no DB
-	// path) is caught per-blob in restorePackAttachments.
+	// be written, yet restore would still report success. Prove the two sets
+	// coincide up front, in both directions, before any pack worker writes a
+	// file: every path key must trace back to a listed blob, and every listed
+	// blob must have at least one recorded path — the manifest's stats proof
+	// pins list count == DB blob count, so a listed hash with no DB path means
+	// the sets diverge and must fail before the workers start publishing
+	// content files into the target.
 	listed := make(map[string]struct{}, len(refs))
 	for _, ref := range refs {
 		listed[ref.Hash] = struct{}{}
+		if len(paths[ref.Hash]) == 0 {
+			return 0, 0, fmt.Errorf(
+				"backup: attachment blob %s is in the snapshot's lists but the restored database records no path for it",
+				ref.Hash)
+		}
 	}
 	for hash := range paths {
 		if _, ok := listed[hash]; !ok {
@@ -809,7 +880,7 @@ func (s *restoreState) restoreAttachments(ctx context.Context, app App, m *Manif
 	// conflicting owner.
 	//
 	// The collision key is deliberately conservative: it case-folds the cleaned
-	// path (the same folding restoreExtrasEntry's reserved-name guard uses)
+	// path (the same folding stageExtrasEntry's reserved-name guard uses)
 	// because case-insensitive filesystems (default macOS, Windows) alias "A/b"
 	// and "a/b" onto one file, and it rejects any component ending in a dot or
 	// space (which Windows trims). This also makes restore stricter on
@@ -1026,19 +1097,12 @@ func (s *restoreState) restorePackAttachments(
 				"backup: attachment %s is %d bytes but its list records %d", ref.Hash, len(content), ref.Size))
 			return
 		}
-		rels := paths[ref.Hash]
-		if len(rels) == 0 {
-			// The manifest's stats proof pins list count == DB blob count, so
-			// a listed hash with no DB path means the two sets diverge.
-			s.fail(fmt.Errorf(
-				"backup: attachment blob %s is in the snapshot's lists but the restored database records no path for it",
-				ref.Hash))
-			return
-		}
-		for _, rel := range rels {
+		// Every listed hash was proven to have at least one path before the
+		// workers were dispatched (restoreAttachments' coverage check).
+		for _, rel := range paths[ref.Hash] {
 			// rel comes from the restored database via App.RestoredContentPaths,
 			// so it is re-validated here before being joined into dir — the same
-			// untrusted provenance restoreExtrasEntry guards against for extras
+			// untrusted provenance stageExtrasEntry guards against for extras
 			// tree paths.
 			if !filepath.IsLocal(rel) {
 				s.fail(fmt.Errorf(
@@ -1061,47 +1125,100 @@ func (s *restoreState) restorePackAttachments(
 	}
 }
 
-// restoreExtras lays out the snapshot's captured extras files (the
-// application-selected operational files, ExtrasSpec) under the target,
-// preserving their recorded modes.
-func (s *restoreState) restoreExtras(ctx context.Context, app App, m *Manifest) (int, error) {
+// stagedFile records one extras file staged next to its final path: rel is
+// where the file belongs, tmpRel the verified temp holding its bytes until
+// promoteExtras renames it into place.
+type stagedFile struct {
+	rel    string
+	tmpRel string
+}
+
+// stageExtras fetches, hash-verifies, and writes every extras file in the
+// snapshot (the application-selected operational files, ExtrasSpec) to a
+// temp sibling of its final path under the target, preserving recorded
+// modes, and returns the staged set for promoteExtras. Nothing is renamed
+// into place here: extras overwrite live operational files in an Overwrite
+// target, so an unreadable blob — or any later failure up to the restore
+// proof — must leave all of them untouched. On error the temps staged so
+// far are removed.
+func (s *restoreState) stageExtras(ctx context.Context, app App, m *Manifest) ([]stagedFile, error) {
 	if m.Extras.Tree == "" {
-		return 0, nil
+		return nil, nil
 	}
 	if err := ctx.Err(); err != nil {
-		return 0, err
+		return nil, err
 	}
 	id, err := pack.ParseBlobID(m.Extras.Tree)
 	if err != nil {
-		return 0, fmt.Errorf("backup: extras tree blob id %q: %w", m.Extras.Tree, err)
+		return nil, fmt.Errorf("backup: extras tree blob id %q: %w", m.Extras.Tree, err)
 	}
 	raw, err := s.fetch(id)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	var tree ExtrasTree
 	if err := json.Unmarshal(raw, &tree); err != nil {
-		return 0, fmt.Errorf("backup: extras tree %s: %w", id, err)
+		return nil, fmt.Errorf("backup: extras tree %s: %w", id, err)
 	}
 	if err := checkExtrasCollisions(tree.Entries); err != nil {
-		return 0, err
+		return nil, err
 	}
 	s.progress.emit(ProgressEvent{Stage: ProgressStageExtras, Total: int64(len(tree.Entries))})
+	staged := make([]stagedFile, 0, len(tree.Entries))
+	ok := false
+	defer func() {
+		if !ok {
+			s.removeStagedFiles(staged)
+		}
+	}()
 	for i, entry := range tree.Entries {
-		// Checked per entry: extras restore is a serial blob-fetch-and-write
+		// Checked per entry: extras staging is a serial blob-fetch-and-write
 		// loop, so this is its only cancellation point.
 		if err := ctx.Err(); err != nil {
-			return 0, err
+			return nil, err
 		}
-		if err := s.restoreExtrasEntry(app, entry); err != nil {
-			return 0, err
+		sf, err := s.stageExtrasEntry(app, entry)
+		if err != nil {
+			return nil, err
 		}
+		staged = append(staged, sf)
 		s.progress.emit(ProgressEvent{
 			Stage: ProgressStageExtras, Done: int64(i + 1), Total: int64(len(tree.Entries)),
-			Final: i == len(tree.Entries)-1,
 		})
 	}
-	return len(tree.Entries), nil
+	ok = true
+	return staged, nil
+}
+
+// promoteExtras renames every staged extras temp over its final path. It
+// runs after the restore proof and immediately before publishRestoredDB, so
+// the window in which an Overwrite target can hold new extras next to its
+// old database is a short run of renames that no blob read or proof query
+// can widen. A partial failure leaves the already-promoted files in place —
+// their bytes were verified at staging time — and the caller removes the
+// remaining temps.
+func (s *restoreState) promoteExtras(staged []stagedFile) error {
+	for _, sf := range staged {
+		if err := s.promoteRootFile(sf.tmpRel, sf.rel); err != nil {
+			return err
+		}
+	}
+	if len(staged) > 0 {
+		s.progress.emit(ProgressEvent{
+			Stage: ProgressStageExtras, Done: int64(len(staged)), Total: int64(len(staged)),
+			Final: true,
+		})
+	}
+	return nil
+}
+
+// removeStagedFiles removes staged temps after a failed restore. Temps a
+// promotion already renamed away are simply gone; removal is best-effort
+// because it runs on paths this restore itself created.
+func (s *restoreState) removeStagedFiles(staged []stagedFile) {
+	for _, sf := range staged {
+		_ = s.root.Remove(sf.tmpRel)
+	}
 }
 
 // foldedPathKey is the collision key restore uses to detect distinct archive
@@ -1190,33 +1307,38 @@ func validateExtrasEntryPath(path, contentDirName, dbFileName string) (string, e
 	return rel, nil
 }
 
-// restoreExtrasEntry validates and writes one extras file. Capture never
-// records archive content as an extra, so an entry naming the restored
-// database, its SQLite sidecars, or the content tree can only come from a
-// tampered tree blob trying to overwrite already-proven outputs
-// (validateExtrasEntryPath).
-func (s *restoreState) restoreExtrasEntry(app App, entry ExtrasEntry) error {
+// stageExtrasEntry validates one extras entry and stages its verified bytes
+// next to the final path. Capture never records archive content as an
+// extra, so an entry naming the restored database, its SQLite sidecars, or
+// the content tree can only come from a tampered tree blob trying to
+// overwrite already-proven outputs (validateExtrasEntryPath).
+func (s *restoreState) stageExtrasEntry(app App, entry ExtrasEntry) (stagedFile, error) {
 	rel, err := validateExtrasEntryPath(entry.Path, app.ContentDirName(), app.DBFileName())
 	if err != nil {
-		return err
+		return stagedFile{}, err
 	}
 	id, err := pack.ParseBlobID(entry.Blob)
 	if err != nil {
-		return fmt.Errorf("backup: extras entry %s blob id %q: %w", entry.Path, entry.Blob, err)
+		return stagedFile{}, fmt.Errorf(
+			"backup: extras entry %s blob id %q: %w", entry.Path, entry.Blob, err)
 	}
 	content, err := s.fetch(id)
 	if err != nil {
-		return err
+		return stagedFile{}, err
 	}
 	if int64(len(content)) != entry.Size {
-		return fmt.Errorf("backup: extras entry %s is %d bytes but its tree records %d",
+		return stagedFile{}, fmt.Errorf("backup: extras entry %s is %d bytes but its tree records %d",
 			entry.Path, len(content), entry.Size)
 	}
 	mode := os.FileMode(entry.Mode).Perm()
 	if mode == 0 {
 		mode = 0o600
 	}
-	return s.writeRootFile(rel, content, mode)
+	tmpRel, err := s.stageRootFile(rel, content, mode)
+	if err != nil {
+		return stagedFile{}, err
+	}
+	return stagedFile{rel: rel, tmpRel: tmpRel}, nil
 }
 
 // enterRestoreDir opens one directory component beneath cur as its own root,
@@ -1258,41 +1380,69 @@ func enterRestoreDir(cur *os.Root, comp string) (*os.Root, error) {
 	return sub, nil
 }
 
-// writeRootFile writes one restored file durably beneath the confined root:
-// parents are created and entered one verified component at a time
-// (enterRestoreDir — no symlink is ever followed, even one resolving inside
-// the root), then the bytes are written to a fresh, unpredictably named temp
-// in the leaf's directory and renamed over the leaf name within that held
-// directory descriptor. The temp-then-rename replaces a preexisting symlink
-// at rel rather than following it. rel is relative to the root (the restore
-// target).
-func (s *restoreState) writeRootFile(rel string, content []byte, mode os.FileMode) error {
+// openLeafDir walks rel's parent components beneath the confined root,
+// creating and verifying each one (enterRestoreDir — no symlink is ever
+// followed, even one resolving inside the root), and returns the held
+// directory root plus rel's leaf name. The caller must release the returned
+// root with closeLeafDir.
+func (s *restoreState) openLeafDir(rel string) (*os.Root, string, error) {
 	dir := s.root
-	defer func() {
-		if dir != s.root {
-			_ = dir.Close()
-		}
-	}()
 	comps := strings.Split(filepath.ToSlash(filepath.Clean(rel)), "/")
 	for _, comp := range comps[:len(comps)-1] {
 		sub, err := enterRestoreDir(dir, comp)
+		s.closeLeafDir(dir)
 		if err != nil {
-			return fmt.Errorf("backup: creating restore directory for %s: %w", rel, err)
-		}
-		if dir != s.root {
-			_ = dir.Close()
+			return nil, "", fmt.Errorf("backup: creating restore directory for %s: %w", rel, err)
 		}
 		dir = sub
 	}
-	name := comps[len(comps)-1]
+	return dir, comps[len(comps)-1], nil
+}
+
+// closeLeafDir releases a root returned by openLeafDir; the target root
+// itself (a single-component rel) is left open for the rest of the restore.
+func (s *restoreState) closeLeafDir(dir *os.Root) {
+	if dir != s.root {
+		_ = dir.Close()
+	}
+}
+
+// writeRootFile writes one restored file durably beneath the confined root:
+// the bytes are staged as a fresh, unpredictably named temp in rel's
+// directory and immediately renamed over the leaf name. The temp-then-rename
+// replaces a preexisting symlink at rel rather than following it. rel is
+// relative to the root (the restore target).
+func (s *restoreState) writeRootFile(rel string, content []byte, mode os.FileMode) error {
+	tmpRel, err := s.stageRootFile(rel, content, mode)
+	if err != nil {
+		return err
+	}
+	if err := s.promoteRootFile(tmpRel, rel); err != nil {
+		_ = s.root.Remove(tmpRel)
+		return err
+	}
+	return nil
+}
+
+// stageRootFile writes content to a fresh, unpredictably named temp in rel's
+// directory — created and entered one verified component at a time — and
+// returns the temp's root-relative path. The temp is synced before the
+// function returns, so promoting it later is a pure rename. On error the
+// temp is removed.
+func (s *restoreState) stageRootFile(rel string, content []byte, mode os.FileMode) (string, error) {
+	dir, _, err := s.openLeafDir(rel)
+	if err != nil {
+		return "", err
+	}
+	defer s.closeLeafDir(dir)
 	tmp := ".restore-" + pack.NewPackID()
 	f, err := dir.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
-		return fmt.Errorf("backup: creating restored file %s: %w", rel, err)
+		return "", fmt.Errorf("backup: creating restored file %s: %w", rel, err)
 	}
-	committed := false
+	staged := false
 	defer func() {
-		if !committed {
+		if !staged {
 			_ = dir.Remove(tmp)
 		}
 	}()
@@ -1300,23 +1450,36 @@ func (s *restoreState) writeRootFile(rel string, content []byte, mode os.FileMod
 	// the captured mode exactly.
 	if err := f.Chmod(mode); err != nil {
 		_ = f.Close()
-		return fmt.Errorf("backup: setting mode on restored file %s: %w", rel, err)
+		return "", fmt.Errorf("backup: setting mode on restored file %s: %w", rel, err)
 	}
 	if _, err := f.Write(content); err != nil {
 		_ = f.Close()
-		return fmt.Errorf("backup: writing restored file %s: %w", rel, err)
+		return "", fmt.Errorf("backup: writing restored file %s: %w", rel, err)
 	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
-		return fmt.Errorf("backup: syncing restored file %s: %w", rel, err)
+		return "", fmt.Errorf("backup: syncing restored file %s: %w", rel, err)
 	}
 	if err := f.Close(); err != nil {
-		return fmt.Errorf("backup: closing restored file %s: %w", rel, err)
+		return "", fmt.Errorf("backup: closing restored file %s: %w", rel, err)
 	}
-	if err := dir.Rename(tmp, name); err != nil {
+	staged = true
+	return filepath.Join(filepath.Dir(filepath.Clean(filepath.FromSlash(rel))), tmp), nil
+}
+
+// promoteRootFile renames a staged temp over its final leaf name. The leaf
+// directory is re-entered component by component (enterRestoreDir), so a
+// symlink raced into the path between staging and promotion still fails
+// closed, and the rename happens within the held directory descriptor.
+func (s *restoreState) promoteRootFile(tmpRel, rel string) error {
+	dir, name, err := s.openLeafDir(rel)
+	if err != nil {
+		return err
+	}
+	defer s.closeLeafDir(dir)
+	if err := dir.Rename(filepath.Base(tmpRel), name); err != nil {
 		return fmt.Errorf("backup: publishing restored file %s: %w", rel, err)
 	}
-	committed = true
 	return nil
 }
 

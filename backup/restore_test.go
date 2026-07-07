@@ -389,8 +389,9 @@ func TestRestoreOverwriteRemovesStaleDBSidecars(t *testing.T) {
 
 // TestRestoreOverwriteSweepsOrphanedTempFiles pins the crash-recovery sweep: a
 // restore killed mid-run leaves a <db>.restore-<ulid> staging temp at the
-// target root, and a later --overwrite rerun must remove it rather than leave
-// it to accumulate.
+// target root — and one killed mid-publish leaves <sidecar>.restore-<ulid>
+// asides too — and a later --overwrite rerun must remove them rather than
+// leave them to accumulate.
 func TestRestoreOverwriteSweepsOrphanedTempFiles(t *testing.T) {
 	require := require.New(t)
 	ctx := context.Background()
@@ -400,19 +401,28 @@ func TestRestoreOverwriteSweepsOrphanedTempFiles(t *testing.T) {
 	require.NoError(err)
 
 	target := t.TempDir()
-	orphan := filepath.Join(target, "app.db.restore-"+pack.NewPackID())
-	require.NoError(os.WriteFile(orphan, []byte("half-written restore"), 0o600))
+	orphans := []string{
+		filepath.Join(target, "app.db.restore-"+pack.NewPackID()),
+		filepath.Join(target, "app.db-wal.restore-"+pack.NewPackID()),
+		filepath.Join(target, "app.db-journal.restore-"+pack.NewPackID()),
+	}
+	for _, orphan := range orphans {
+		require.NoError(os.WriteFile(orphan, []byte("half-written restore"), 0o600))
+	}
 	// A file that merely shares the prefix but is not a valid temp name must
-	// survive: the sweep is scoped to the exact <db>.restore-<ulid> shape.
+	// survive: the sweep is scoped to the exact <name>.restore-<ulid> shapes.
 	bystander := filepath.Join(target, "app.db.restore-not-a-ulid")
 	require.NoError(os.WriteFile(bystander, []byte("keep me"), 0o600))
 
 	_, err = Restore(ctx, r, newTestApp(), RestoreOptions{TargetDir: target, Overwrite: true})
 	require.NoError(err)
 
-	_, statErr := os.Stat(orphan)
-	require.ErrorIs(statErr, os.ErrNotExist, "orphaned restore temp must be swept on overwrite")
-	_, statErr = os.Stat(bystander)
+	for _, orphan := range orphans {
+		_, statErr := os.Stat(orphan)
+		require.ErrorIs(statErr, os.ErrNotExist,
+			"orphaned restore temp %s must be swept on overwrite", filepath.Base(orphan))
+	}
+	_, statErr := os.Stat(bystander)
 	require.NoError(statErr, "a non-temp file sharing the prefix must survive")
 }
 
@@ -760,7 +770,7 @@ func TestPreflightSnapshotBlobsChecksAllReferences(t *testing.T) {
 }
 
 // TestPreflightSnapshotBlobsRejectsBadExtrasPaths pins that the preflight
-// applies the extras path rules restoreExtrasEntry enforces: a tampered tree
+// applies the extras path rules stageExtrasEntry enforces: a tampered tree
 // whose paths escape, overlap archive content, or collide must fail before
 // the target is touched, not after the database has already been replaced.
 func TestPreflightSnapshotBlobsRejectsBadExtrasPaths(t *testing.T) {
@@ -959,11 +969,140 @@ func TestRestoreOverwritePreservesTargetOnProofFailure(t *testing.T) {
 	require.ErrorContains(err, "do not match manifest stats")
 }
 
+// TestRestoreOverwritePreservesSidecarsOnFailedPublish pins the publish
+// rollback: the sidecars next to an Overwrite target's live database are set
+// aside, not removed, before the final database rename, so a rename that
+// fails must put them back — the old database keeps the WAL frames it needs
+// — and leave no set-aside debris behind.
+func TestRestoreOverwritePreservesSidecarsOnFailedPublish(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
+	require.NoError(err)
+
+	// A directory at the database name makes only the final rename fail (a
+	// file cannot replace a directory): every earlier step targets the
+	// staging temp, so the restore reaches publishRestoredDB with the
+	// sidecars already set aside.
+	target := t.TempDir()
+	require.NoError(os.Mkdir(filepath.Join(target, "app.db"), 0o700))
+	walBody := []byte("live wal bytes")
+	require.NoError(os.WriteFile(filepath.Join(target, "app.db-wal"), walBody, 0o600))
+
+	_, err = Restore(ctx, r, newTestApp(), RestoreOptions{TargetDir: target, Overwrite: true})
+	require.ErrorContains(err, "publishing restored database")
+
+	got, err := os.ReadFile(filepath.Join(target, "app.db-wal"))
+	require.NoError(err, "the WAL must be renamed back after a failed publish")
+	require.Equal(walBody, got, "the WAL must be byte-identical after the rollback")
+	entries, err := os.ReadDir(target)
+	require.NoError(err)
+	for _, e := range entries {
+		require.NotContains(e.Name(), ".restore-",
+			"a failed publish must leave no staging or set-aside debris")
+	}
+}
+
+// TestRestoreOverwritePreservesExtrasOnUnreadableExtrasBlob pins extras
+// staging: every extras blob is fetched and verified into a temp before any
+// extras file is renamed over the target's live one, so a corrupt blob
+// discovered on a LATER entry must leave the earlier entries' live files
+// untouched too — not just the database.
+func TestRestoreOverwritePreservesExtrasOnUnreadableExtrasBlob(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+	require.NoError(os.MkdirAll(filepath.Join(dataDir, "deletions"), 0o700))
+	require.NoError(os.WriteFile(
+		filepath.Join(dataDir, "deletions", "a.json"), []byte(`{"new":"a"}`), 0o600))
+	require.NoError(os.WriteFile(
+		filepath.Join(dataDir, "deletions", "b.json"), []byte(`{"new":"b"}`), 0o600))
+	m, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
+	require.NoError(err)
+
+	known, err := r.LoadBlobIndex()
+	require.NoError(err)
+	treeID, err := pack.ParseBlobID(m.Extras.Tree)
+	require.NoError(err)
+	raw, err := r.ReadBlob(known, treeID, nil, testPackExt)
+	require.NoError(err)
+	var tree ExtrasTree
+	require.NoError(json.Unmarshal(raw, &tree))
+	require.Len(tree.Entries, 2, "fixture must stage one entry before the corrupt one")
+	last := tree.Entries[len(tree.Entries)-1]
+	lastID, err := pack.ParseBlobID(last.Blob)
+	require.NoError(err)
+	corruptStoredBlob(t, r, known, lastID)
+
+	target, checkIntact := seedLiveOverwriteTarget(t)
+	first := tree.Entries[0]
+	oldBody := []byte(`{"old":"live"}`)
+	require.NoError(os.MkdirAll(filepath.Dir(filepath.Join(target, first.Path)), 0o700))
+	require.NoError(os.WriteFile(filepath.Join(target, first.Path), oldBody, 0o600))
+
+	_, err = Restore(ctx, r, newTestApp(), RestoreOptions{TargetDir: target, Overwrite: true})
+	require.Error(err)
+	checkIntact()
+	got, err := os.ReadFile(filepath.Join(target, first.Path))
+	require.NoError(err)
+	require.Equal(oldBody, got,
+		"an extras entry staged before the corrupt one must not replace the live file")
+	require.NoFileExists(filepath.Join(target, last.Path))
+	entries, err := os.ReadDir(filepath.Dir(filepath.Join(target, first.Path)))
+	require.NoError(err)
+	for _, e := range entries {
+		require.NotContains(e.Name(), ".restore-",
+			"a failed extras stage must remove its staged temps")
+	}
+}
+
+// droppedPathApp removes one hash from the restored database's derived
+// content paths, modeling list/DB divergence that the coverage check must
+// catch before the attachment writers run.
+type droppedPathApp struct{ App }
+
+func (a droppedPathApp) RestoredContentPaths(ctx context.Context, db *sql.DB) (map[string][]string, error) {
+	paths, err := a.App.RestoredContentPaths(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	for hash := range paths {
+		delete(paths, hash)
+		break
+	}
+	return paths, nil
+}
+
+// TestRestoreRejectsListedRefWithoutPathBeforeWriting pins that the
+// listed-blob coverage check runs before any pack worker is dispatched: a
+// listed attachment the restored database records no path for must fail the
+// restore before a single content file lands in the target, not from inside
+// a worker whose siblings have already published their blobs.
+func TestRestoreRejectsListedRefWithoutPathBeforeWriting(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
+	require.NoError(err)
+
+	target, checkIntact := seedLiveOverwriteTarget(t)
+	_, err = Restore(ctx, r, droppedPathApp{App: newTestApp()},
+		RestoreOptions{TargetDir: target, Overwrite: true})
+	require.ErrorContains(err, "records no path for it")
+	checkIntact()
+	require.NoDirExists(filepath.Join(target, "content"),
+		"the coverage check must fail before any attachment write")
+}
+
 // TestRestoreHonorsCancellationDuringExtras pins the extras stage's
 // cancellation point and its ordering against publication: a context
-// canceled while extras restore must stop the run with context.Canceled
+// canceled while extras are staging must stop the run with context.Canceled
 // before publishRestoredDB, leaving an Overwrite target's live database and
-// WAL untouched.
+// WAL untouched and staging nothing further.
 func TestRestoreHonorsCancellationDuringExtras(t *testing.T) {
 	require := require.New(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -977,22 +1116,33 @@ func TestRestoreHonorsCancellationDuringExtras(t *testing.T) {
 	require.NoError(err)
 
 	target, checkIntact := seedLiveOverwriteTarget(t)
+	// The staging loop's per-entry check is what stops the stage promptly:
+	// without it, extras would keep fetching and staging blobs until some
+	// later cancellation point noticed. Staged temps never reach their final
+	// paths regardless, so promptness is observed through progress — no
+	// entry may report staged after the cancellation the first extras event
+	// triggered.
+	canceled := false
+	stagedAfterCancel := 0
 	_, err = Restore(ctx, r, newTestApp(), RestoreOptions{
 		TargetDir: target, Overwrite: true,
 		Progress: func(ev ProgressEvent) {
-			if ev.Stage == ProgressStageExtras {
-				cancel()
+			if ev.Stage != ProgressStageExtras {
+				return
 			}
+			if canceled && ev.Done > 0 {
+				stagedAfterCancel++
+			}
+			canceled = true
+			cancel()
 		},
 	})
 	require.ErrorIs(err, context.Canceled)
 	checkIntact()
-	// The per-entry check is what stops the stage: without it, extras would
-	// keep fetching blobs and writing files until some later cancellation
-	// point noticed. The entry announced by the canceled-at event must not
-	// have been written.
+	require.Zero(stagedAfterCancel,
+		"no extras entry may be staged after cancellation")
 	require.NoFileExists(filepath.Join(target, "deletions", "a.json"),
-		"no extras entry may be written after cancellation")
+		"no extras entry may reach its final path after cancellation")
 }
 
 // TestRestoreOverwriteReplacesSymlinkedDB pins that a symlink planted at the
@@ -1160,7 +1310,7 @@ func TestRestoreExtrasEntryRejectsEscapingPaths(t *testing.T) {
 	st := &restoreState{}
 
 	for _, path := range []string{"", "/etc/passwd", "../outside", "a/../../outside", ".."} {
-		err := st.restoreExtrasEntry(newTestApp(), ExtrasEntry{Path: path, Blob: blobID("x").String()})
+		_, err := st.stageExtrasEntry(newTestApp(), ExtrasEntry{Path: path, Blob: blobID("x").String()})
 		require.ErrorContains(err, "escapes the restore target", "path %q", path)
 	}
 }
@@ -1177,7 +1327,7 @@ func TestRestoreExtrasEntryRejectsArchiveOverlap(t *testing.T) {
 		"app.db", "APP.DB", "app.db-wal", "app.db-shm", "app.db-journal",
 		"content/aa/aa11", "Content/aa/aa11", "content",
 	} {
-		err := st.restoreExtrasEntry(newTestApp(), ExtrasEntry{Path: path, Blob: blobID("x").String()})
+		_, err := st.stageExtrasEntry(newTestApp(), ExtrasEntry{Path: path, Blob: blobID("x").String()})
 		require.ErrorContains(err, "overlaps restored archive content", "path %q", path)
 	}
 
@@ -1187,7 +1337,7 @@ func TestRestoreExtrasEntryRejectsArchiveOverlap(t *testing.T) {
 	for _, path := range []string{
 		"safe/../app.db", "safe/../APP.DB-wal", "safe/../content/aa/aa11",
 	} {
-		err := st.restoreExtrasEntry(newTestApp(), ExtrasEntry{Path: path, Blob: blobID("x").String()})
+		_, err := st.stageExtrasEntry(newTestApp(), ExtrasEntry{Path: path, Blob: blobID("x").String()})
 		require.ErrorContains(err, "overlaps restored archive content", "path %q", path)
 	}
 
@@ -1199,17 +1349,17 @@ func TestRestoreExtrasEntryRejectsArchiveOverlap(t *testing.T) {
 		"content.", "content ", "content./aa/aa11", "app.db.", "app.db ",
 		"safe/dir./file", "safe/dir /file",
 	} {
-		err := st.restoreExtrasEntry(newTestApp(), ExtrasEntry{Path: path, Blob: blobID("x").String()})
+		_, err := st.stageExtrasEntry(newTestApp(), ExtrasEntry{Path: path, Blob: blobID("x").String()})
 		require.ErrorContains(err, "component ending in a dot or space", "path %q", path)
 	}
 
 	// A path that cleans to the target directory itself is rejected outright.
-	err := st.restoreExtrasEntry(newTestApp(), ExtrasEntry{Path: "safe/..", Blob: blobID("x").String()})
+	_, err := st.stageExtrasEntry(newTestApp(), ExtrasEntry{Path: "safe/..", Blob: blobID("x").String()})
 	require.ErrorContains(err, "escapes the restore target")
 
 	// Legitimate extras still restore fine (proven end-to-end elsewhere);
 	// here just confirm the reserved-name check does not reject them.
-	err = st.restoreExtrasEntry(newTestApp(), ExtrasEntry{Path: "deletions/manifest-1.json", Blob: "not-a-blob"})
+	_, err = st.stageExtrasEntry(newTestApp(), ExtrasEntry{Path: "deletions/manifest-1.json", Blob: "not-a-blob"})
 	require.NotContains(err.Error(), "overlaps restored archive content")
 }
 
