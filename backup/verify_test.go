@@ -20,19 +20,20 @@ func newTestVerifyState(t *testing.T, r *Repo, quick bool) *verifyState {
 	known, err := r.LoadBlobIndex()
 	require.NoError(t, err)
 	st := &verifyState{
-		app:         newTestApp(),
-		repo:        r,
-		known:       known,
-		quick:       quick,
-		jobs:        2,
-		readers:     map[string]*pack.Reader{},
-		readerErrs:  map[string]error{},
-		checked:     map[pack.BlobID]bool{},
-		readDone:    map[pack.BlobID]bool{},
-		readVerdict: map[pack.BlobID]string{},
-		readLen:     map[pack.BlobID]int64{},
-		pendingSet:  map[pack.BlobID]bool{},
-		result:      &VerifyResult{},
+		app:              newTestApp(),
+		repo:             r,
+		known:            known,
+		quick:            quick,
+		jobs:             2,
+		readers:          map[string]*pack.Reader{},
+		readerErrs:       map[string]error{},
+		checked:          map[pack.BlobID]bool{},
+		readDone:         map[pack.BlobID]bool{},
+		readVerdict:      map[pack.BlobID]string{},
+		readLen:          map[pack.BlobID]int64{},
+		pendingSet:       map[pack.BlobID]bool{},
+		pendingRunChecks: map[pack.BlobID][]pageRunCheck{},
+		result:           &VerifyResult{},
 	}
 	t.Cleanup(st.closeReaders)
 	return st
@@ -447,7 +448,7 @@ func TestVerifyFlagsBadExtrasTree(t *testing.T) {
 // its blob, so verify must flag such a run instead of passing a snapshot that
 // fails mid-restore. The forged run is injected at the state level (a real
 // forgery would require recomputing map, index, and manifest identities);
-// queuePageRunBounds over honest snapshots is exercised by every clean full
+// queuePageRunChecks over honest snapshots is exercised by every clean full
 // verify. The huge-offset case pins the overflow-safe comparison.
 func TestVerifyFlagsOverrunningPageRun(t *testing.T) {
 	require := require.New(t)
@@ -458,7 +459,7 @@ func TestVerifyFlagsOverrunningPageRun(t *testing.T) {
 	st.verifySnapshot(m)
 	require.NoError(st.drainContentReads(ctx))
 	st.checkListedSizes()
-	st.checkPageRunBounds()
+	st.checkPageRuns()
 	require.Empty(st.result.Problems, "an honest snapshot's runs must verify cleanly")
 
 	pm := st.checkPageMapChain(m)
@@ -466,15 +467,68 @@ func TestVerifyFlagsOverrunningPageRun(t *testing.T) {
 	require.NotEmpty(pm.Runs)
 	blob := pm.Blobs[pm.Runs[0].BlobIndex]
 	for _, offset := range []uint64{uint64(st.readLen[blob]) + 1, math.MaxUint64 - 100} {
-		st.pendingRunChecks = append(st.pendingRunChecks, pageRunCheck{
-			id: blob, snapshotID: m.SnapshotID, pageSize: pm.PageSize,
+		st.pendingRunChecks[blob] = append(st.pendingRunChecks[blob], pageRunCheck{
+			snapshotID: m.SnapshotID, pageSize: pm.PageSize,
 			run: PageRun{StartPage: 0, PageCount: 1, BlobOffset: offset},
 		})
-		st.checkPageRunBounds()
+		st.checkPageRuns()
 		require.NotEmpty(st.result.Problems, "offset %d", offset)
 		require.Contains(st.result.Problems[len(st.result.Problems)-1].Detail, "overruns blob")
 		require.Empty(st.pendingRunChecks)
 	}
+}
+
+// TestVerifyFlagsPageHashMapMismatch pins restore/verify parity for page
+// content: restore's writeRun hash-verifies every materialized page against
+// the snapshot's page-hash map and refuses on mismatch, so a snapshot whose
+// hash map disagrees with its page-map bytes (a forged hash-map object, or a
+// buggy writer) must not verify cleanly and then fail restore. The forged
+// hashes are injected at the state level, as in the overrun test, and both
+// check paths are exercised: the drain (bytes in hand) and the post-drain
+// sweep (memoized blob re-read).
+func TestVerifyFlagsPageHashMapMismatch(t *testing.T) {
+	require := require.New(t)
+	r, m := buildVerifyFixture(t)
+	ctx := context.Background()
+
+	st := newTestVerifyState(t, r, false)
+	hm := st.checkHashMapChain(m)
+	require.NotNil(hm)
+	pm := st.checkPageMapChain(m)
+	require.NotNil(pm)
+	require.NotEmpty(pm.Runs)
+	require.Empty(st.result.Problems)
+	run := pm.Runs[0]
+	blob := pm.Blobs[run.BlobIndex]
+	forged := append([]byte(nil), hm.Hashes...)
+	forged[run.StartPage*pageHashSize] ^= 0xff
+
+	// Drain path: the check is queued before the blob's first read, so
+	// verifyGroupBlob pops it while the bytes are in memory.
+	st.pendingRunChecks[blob] = append(st.pendingRunChecks[blob], pageRunCheck{
+		snapshotID: m.SnapshotID, run: run, pageSize: pm.PageSize, hashes: forged,
+	})
+	st.verifyContentBlob(blob, m.SnapshotID)
+	require.NoError(st.drainContentReads(ctx))
+	require.Len(st.result.Problems, 1)
+	require.Contains(st.result.Problems[0].Detail, "does not match the snapshot's page hash map")
+
+	// Sweep path: the blob is already memoized, so checkPageRuns must re-read
+	// it and reach the same verdict a later snapshot's restore would.
+	st.pendingRunChecks[blob] = append(st.pendingRunChecks[blob], pageRunCheck{
+		snapshotID: m.SnapshotID, run: run, pageSize: pm.PageSize, hashes: forged,
+	})
+	st.checkPageRuns()
+	require.Len(st.result.Problems, 2)
+	require.Contains(st.result.Problems[1].Detail, "does not match the snapshot's page hash map")
+	require.Empty(st.pendingRunChecks)
+
+	// The honest hashes must still pass through both paths.
+	st.pendingRunChecks[blob] = append(st.pendingRunChecks[blob], pageRunCheck{
+		snapshotID: m.SnapshotID, run: run, pageSize: pm.PageSize, hashes: hm.Hashes,
+	})
+	st.checkPageRuns()
+	require.Len(st.result.Problems, 2, "honest page hashes must not be flagged")
 }
 
 // TestVerifyDetectsHashMapGeometryMismatch pins Minor 11: full verify compares

@@ -368,6 +368,54 @@ func TestReleaseSurfacesUnverifiableLockError(t *testing.T) {
 	require.NotErrorIs(err, os.ErrNotExist)
 }
 
+// TestReturnClaimedLockRefusesSymlinkClaim pins the lock-restore exposure: a
+// locks/ writer can plant a symlink as a lock file, and the claim rename
+// preserves it. Restoring it would follow the link — link(2) follows the
+// source on some platforms, and the copy fallback reads through it — copying
+// an arbitrary readable host file into the repository under a lock file's
+// name. The claim must be refused and removed instead.
+func TestReturnClaimedLockRefusesSymlinkClaim(t *testing.T) {
+	require := require.New(t)
+	dir := t.TempDir()
+	secret := filepath.Join(dir, "secret")
+	require.NoError(os.WriteFile(secret, []byte("private key bytes"), 0o600))
+	path := filepath.Join(dir, exclusiveLockName)
+	claim := filepath.Join(dir, releasingClaimPrefix+"symlink.json")
+	if err := os.Symlink(secret, claim); err != nil {
+		t.Skip("symlinks not supported on this platform")
+	}
+
+	restored, err := returnClaimedLock(path, claim)
+	require.ErrorContains(err, "not a regular file")
+	require.False(restored)
+	_, statErr := os.Lstat(claim)
+	require.ErrorIs(statErr, os.ErrNotExist, "the symlink debris must be removed")
+	_, statErr = os.Stat(path)
+	require.ErrorIs(statErr, os.ErrNotExist, "nothing must be planted at the lock path from a symlink claim")
+}
+
+// TestRestoreClaimByCopyRefusesReplacedClaim pins the copy fallback's identity
+// check: the descriptor it reads must be the same file returnClaimedLock's
+// regular-file check lstated, so a claim swapped between the two (for a
+// symlink, say) is refused rather than read through.
+func TestRestoreClaimByCopyRefusesReplacedClaim(t *testing.T) {
+	require := require.New(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, exclusiveLockName)
+	claim := filepath.Join(dir, releasingClaimPrefix+"swapped.json")
+	require.NoError(os.WriteFile(claim, []byte(`{"pid":1}`), 0o600))
+	other := filepath.Join(dir, "other.json")
+	require.NoError(os.WriteFile(other, []byte(`{"pid":2}`), 0o600))
+	otherInfo, err := os.Lstat(other)
+	require.NoError(err)
+
+	restored, err := restoreClaimByCopy(path, claim, otherInfo)
+	require.ErrorContains(err, "replaced during restore")
+	require.False(restored)
+	_, statErr := os.Stat(path)
+	require.ErrorIs(statErr, os.ErrNotExist, "nothing must be planted from an unverified claim")
+}
+
 // TestReturnClaimedLockCopyFallbackRestores pins the no-hardlink fallback: when
 // osLink is unavailable (exFAT/FAT32/SMB/NFS), returnClaimedLock must reproduce
 // the claimed lock at its path by copying, not by a clobbering rename.

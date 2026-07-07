@@ -245,19 +245,27 @@ func CaptureExtras(opts ExtrasOptions, appender *PackAppender) (pack.BlobID, boo
 		}
 	}
 	var entries []ExtrasEntry
-	seen := map[string]struct{}{}
+	seen := map[string]string{}
 	// addFile reads recordPath's bytes through readRoot with no symlink
 	// resolution at any component (readExtrasNoFollow) and records the tree
 	// entry under recordPath. readRel is recordPath's location relative to
 	// readRoot. A record path selected twice (overlapping globs, a Files spec
-	// duplicating a walk) is refused: restore rejects trees with duplicate
-	// paths, so capturing one would produce an unrestorable snapshot.
+	// duplicating a walk), or two paths that fold to one file on a
+	// case-insensitive filesystem, are refused with the same folded key
+	// restore's checkExtrasCollisions uses: restore rejects such trees, so
+	// capturing one would produce an unrestorable snapshot.
 	addFile := func(readRoot *os.Root, readRel, recordPath string) error {
-		key := filepath.ToSlash(recordPath)
-		if _, dup := seen[key]; dup {
-			return fmt.Errorf("backup: extras record path %q is selected more than once", key)
+		key := foldedPathKey(recordPath)
+		slashPath := filepath.ToSlash(recordPath)
+		if other, dup := seen[key]; dup {
+			if other == slashPath {
+				return fmt.Errorf("backup: extras record path %q is selected more than once", slashPath)
+			}
+			return fmt.Errorf(
+				"backup: extras record paths %q and %q would collide on a case-insensitive filesystem; restore refuses such snapshots",
+				other, slashPath)
 		}
-		seen[key] = struct{}{}
+		seen[key] = slashPath
 		content, info, err := readExtrasNoFollow(readRoot, readRel)
 		if err != nil {
 			return fmt.Errorf("backup: reading extras file %s: %w", recordPath, err)

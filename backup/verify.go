@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -86,21 +87,22 @@ func Verify(ctx context.Context, r *Repo, app App, opts VerifyOptions) (*VerifyR
 		jobs = runtime.GOMAXPROCS(0)
 	}
 	st := &verifyState{
-		app:           app,
-		repo:          r,
-		known:         known,
-		quick:         opts.Quick,
-		jobs:          jobs,
-		readers:       map[string]*pack.Reader{},
-		readerErrs:    map[string]error{},
-		checked:       map[pack.BlobID]bool{},
-		readDone:      map[pack.BlobID]bool{},
-		readVerdict:   map[pack.BlobID]string{},
-		readLen:       map[pack.BlobID]int64{},
-		pendingSet:    map[pack.BlobID]bool{},
-		result:        &VerifyResult{},
-		progress:      newProgressEmitter(opts.Progress),
-		snapshotTotal: len(manifests),
+		app:              app,
+		repo:             r,
+		known:            known,
+		quick:            opts.Quick,
+		jobs:             jobs,
+		readers:          map[string]*pack.Reader{},
+		readerErrs:       map[string]error{},
+		checked:          map[pack.BlobID]bool{},
+		readDone:         map[pack.BlobID]bool{},
+		readVerdict:      map[pack.BlobID]string{},
+		readLen:          map[pack.BlobID]int64{},
+		pendingSet:       map[pack.BlobID]bool{},
+		pendingRunChecks: map[pack.BlobID][]pageRunCheck{},
+		result:           &VerifyResult{},
+		progress:         newProgressEmitter(opts.Progress),
+		snapshotTotal:    len(manifests),
 	}
 	defer st.closeReaders()
 
@@ -124,9 +126,9 @@ func Verify(ctx context.Context, r *Repo, app App, opts VerifyOptions) (*VerifyR
 		}
 		// These run after the drain even when it queued nothing: blobs
 		// verified by an earlier snapshot are memoized, but this snapshot's
-		// recorded sizes and run bounds still need checking against them.
+		// recorded sizes and page-map runs still need checking against them.
 		st.checkListedSizes()
-		st.checkPageRunBounds()
+		st.checkPageRuns()
 	}
 	// Full mode's final tick closes out the same cumulative drain counters
 	// the bar advanced with; BlobsChecked dedupes blobs shared across
@@ -219,9 +221,13 @@ type verifyState struct {
 	// snapshot's recorded sizes must be checked against the blob it
 	// references.
 	pendingSizeChecks []listedSizeCheck
-	// pendingRunChecks queues the current snapshot's page-map run bounds for
-	// comparison against the drained page blobs' actual lengths.
-	pendingRunChecks []pageRunCheck
+	// pendingRunChecks queues the current snapshot's page-map runs, keyed by
+	// the page blob backing them, for comparison against the drained blobs'
+	// actual bytes: run bounds and per-page hashes against the snapshot's
+	// page-hash map. Keying by blob lets the drain run a blob's checks while
+	// its bytes are still in memory; leftovers (blobs memoized by an earlier
+	// snapshot's drain) are re-read afterward by checkPageRuns.
+	pendingRunChecks map[pack.BlobID][]pageRunCheck
 	// drainDone/drainTotal drive full-mode progress: blobs processed and
 	// blobs queued, cumulative across every drain in the run so a multi-
 	// snapshot verify never moves backward. Guarded by mu while workers run.
@@ -251,13 +257,16 @@ type listedSizeCheck struct {
 	source     string // where the size is recorded: "list" or "tree"
 }
 
-// pageRunCheck is one page-map run whose blob-bounds requirement is checked
-// against the referenced page blob's actual length after the drain.
+// pageRunCheck is one page-map run checked against the referenced page blob's
+// actual bytes: the run must fit inside the blob, and every page it maps must
+// hash to the snapshot's page-hash map entry. hashes is the snapshot's
+// materialized page-hash table; nil (hash-map chain failed, already a Problem)
+// skips the per-page comparison and checks bounds only.
 type pageRunCheck struct {
-	id         pack.BlobID
 	snapshotID string
 	run        PageRun
 	pageSize   uint32
+	hashes     []byte
 }
 
 func (s *verifyState) closeReaders() {
@@ -554,7 +563,6 @@ func (s *verifyState) verifyGroupBlob(
 		return
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if !s.readDone[rd.id] {
 		s.readDone[rd.id] = true
 		s.result.BytesRead += int64(entry.RawLen) //nolint:gosec // raw lengths fit int64
@@ -565,6 +573,22 @@ func (s *verifyState) verifyGroupBlob(
 	// sizes against it.
 	s.readLen[rd.id] = int64(len(raw))
 	s.contentReads++
+	// Run this blob's queued page-map run checks now, while its bytes are in
+	// hand, so page blobs are not re-read after the drain just to hash their
+	// pages. Popped under the lock, hashed outside it.
+	checks := s.pendingRunChecks[rd.id]
+	delete(s.pendingRunChecks, rd.id)
+	s.mu.Unlock()
+
+	var details []string
+	for _, c := range checks {
+		details = append(details, pageRunProblems(rd.id, raw, c)...)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, detail := range details {
+		s.problem(rd.snapshotID, detail)
+	}
 	s.drainDone++
 	s.emitDrainProgressLocked()
 }
@@ -593,39 +617,91 @@ func (s *verifyState) checkListedSizes() {
 	s.pendingSizeChecks = s.pendingSizeChecks[:0]
 }
 
-// queuePageRunBounds queues every page-map run's blob-bounds requirement for
-// the post-drain comparison. Restore's writeRun refuses a run whose
-// offset+length overruns its blob, so a forged or corrupted page map must
-// not verify cleanly and then fail restore mid-materialization. Run blob
-// indexes were already validated against the blob table during decode.
-func (s *verifyState) queuePageRunBounds(m *Manifest, pm *PageMap) {
+// queuePageRunChecks queues every page-map run for comparison against its
+// page blob's actual bytes. Restore's writeRun refuses a run whose
+// offset+length overruns its blob and any page whose bytes disagree with the
+// snapshot's page-hash map, so a forged or corrupted page map or hash map
+// must not verify cleanly and then fail restore mid-materialization. Run blob
+// indexes were already validated against the blob table during decode. hm is
+// nil when the hash-map chain failed (already a Problem); bounds are still
+// checked.
+func (s *verifyState) queuePageRunChecks(m *Manifest, pm *PageMap, hm *PageHashMap) {
+	var hashes []byte
+	if hm != nil {
+		hashes = hm.Hashes
+	}
 	for _, run := range pm.Runs {
-		s.pendingRunChecks = append(s.pendingRunChecks, pageRunCheck{
-			id: pm.Blobs[run.BlobIndex], snapshotID: m.SnapshotID, run: run, pageSize: pm.PageSize,
+		id := pm.Blobs[run.BlobIndex]
+		s.pendingRunChecks[id] = append(s.pendingRunChecks[id], pageRunCheck{
+			snapshotID: m.SnapshotID, run: run, pageSize: pm.PageSize, hashes: hashes,
 		})
 	}
 }
 
-// checkPageRunBounds compares queued page-map runs against the drained page
-// blobs' actual, hash-authenticated lengths, using the same subtraction-based
-// overflow-safe comparison as restore's writeRun. Blobs whose read failed (or
-// never ran, on a canceled drain) are skipped: their read problem is the more
-// fundamental report.
-func (s *verifyState) checkPageRunBounds() {
-	for _, c := range s.pendingRunChecks {
-		verdict, read := s.readVerdict[c.id]
+// pageRunProblems validates one queued run against its blob's actual,
+// hash-authenticated bytes, mirroring restore's writeRun exactly: the same
+// subtraction-based overflow-safe bounds comparison, then each mapped page's
+// hash against the snapshot's page-hash map. It returns problem details
+// rather than recording them, so drain workers can call it without holding
+// the state lock.
+func pageRunProblems(id pack.BlobID, raw []byte, c pageRunCheck) []string {
+	length := uint64(c.run.PageCount) * uint64(c.pageSize)
+	blobLen := uint64(len(raw))
+	if c.run.BlobOffset > blobLen || length > blobLen-c.run.BlobOffset {
+		return []string{fmt.Sprintf(
+			"page map run (pages %d..%d) overruns blob %s (%d bytes at offset %d); restore would refuse this snapshot",
+			c.run.StartPage, c.run.StartPage+uint64(c.run.PageCount)-1, id, blobLen, c.run.BlobOffset)}
+	}
+	if c.hashes == nil {
+		return nil
+	}
+	segment := raw[c.run.BlobOffset : c.run.BlobOffset+length]
+	var problems []string
+	for i := range uint64(c.run.PageCount) {
+		p := c.run.StartPage + i
+		// A run reaching past the hash table means the two maps disagree on
+		// geometry, which checkPageMapCoverage/checkHashMapChain already
+		// flagged against the manifest; there is no hash to compare here.
+		if (p+1)*pageHashSize > uint64(len(c.hashes)) {
+			break
+		}
+		h := PageHash(segment[i*uint64(c.pageSize) : (i+1)*uint64(c.pageSize)])
+		if !bytes.Equal(h[:], c.hashes[p*pageHashSize:(p+1)*pageHashSize]) {
+			problems = append(problems, fmt.Sprintf(
+				"page %d from blob %s does not match the snapshot's page hash map; restore would refuse this snapshot",
+				p, id))
+			// One mismatched page proves the forgery; reporting every page of
+			// a large run would bury the signal.
+			break
+		}
+	}
+	return problems
+}
+
+// checkPageRuns runs the queued page-run checks that the drain did not
+// already handle: runs backed by blobs whose bytes were memoized by an
+// earlier snapshot's drain and therefore not re-read this time. Those blobs
+// are re-read here (cheap relative to the drain, and only shared blobs under
+// --all reach this path). Blobs whose read failed (or never ran, on a
+// canceled drain) are skipped: their read problem is the more fundamental
+// report.
+func (s *verifyState) checkPageRuns() {
+	for id, checks := range s.pendingRunChecks {
+		verdict, read := s.readVerdict[id]
 		if !read || verdict != "" {
 			continue
 		}
-		blobLen := uint64(s.readLen[c.id]) //nolint:gosec // lengths are non-negative
-		length := uint64(c.run.PageCount) * uint64(c.pageSize)
-		if c.run.BlobOffset > blobLen || length > blobLen-c.run.BlobOffset {
-			s.problem(c.snapshotID, fmt.Sprintf(
-				"page map run (pages %d..%d) overruns blob %s (%d bytes at offset %d); restore would refuse this snapshot",
-				c.run.StartPage, c.run.StartPage+uint64(c.run.PageCount)-1, c.id, blobLen, c.run.BlobOffset))
+		raw, ok := s.blob(id, checks[0].snapshotID, true)
+		if !ok {
+			continue
+		}
+		for _, c := range checks {
+			for _, detail := range pageRunProblems(id, raw, c) {
+				s.problem(c.snapshotID, detail)
+			}
 		}
 	}
-	s.pendingRunChecks = s.pendingRunChecks[:0]
+	clear(s.pendingRunChecks)
 }
 
 // emitDrainProgressLocked reports the current drain's blob progress and
@@ -657,14 +733,14 @@ func (s *verifyState) fetcher(snapshotID string) func(pack.BlobID) ([]byte, erro
 // map's blob table, attachment lists and the content blobs they name, and
 // the extras tree and the blobs it names.
 func (s *verifyState) verifySnapshot(m *Manifest) {
-	s.checkHashMapChain(m)
+	hashMap := s.checkHashMapChain(m)
 
 	pageMap := s.checkPageMapChain(m)
 	if pageMap != nil {
 		s.checkPageMapBlobs(m, pageMap)
 		if !s.quick {
 			s.checkPageMapCoverage(m, pageMap)
-			s.queuePageRunBounds(m, pageMap)
+			s.queuePageRunChecks(m, pageMap, hashMap)
 		}
 	}
 
@@ -676,21 +752,24 @@ func (s *verifyState) verifySnapshot(m *Manifest) {
 	s.checkExtrasTree(m)
 }
 
-func (s *verifyState) checkHashMapChain(m *Manifest) {
+// checkHashMapChain enumerates, decodes, and geometry-checks the page-hash-map
+// chain, returning the materialized map so queuePageRunChecks can compare page
+// blob bytes against it, or nil when the chain failed.
+func (s *verifyState) checkHashMapChain(m *Manifest) *PageHashMap {
 	chain, err := s.repo.HashMapChain(m)
 	if err != nil {
 		s.problem(m.SnapshotID, fmt.Sprintf("page-hash-map chain: %v", err))
-		return
+		return nil
 	}
 	hm, err := MaterializeHashMap(s.fetcher(m.SnapshotID), chain)
 	if err != nil {
 		if !errors.Is(err, errBlobUnreadable) {
 			s.problem(m.SnapshotID, fmt.Sprintf("page-hash-map chain: %v", err))
 		}
-		return
+		return nil
 	}
 	if s.quick {
-		return
+		return hm
 	}
 	if hm.PageCount != m.DB.PageCount {
 		s.problem(m.SnapshotID, fmt.Sprintf(
@@ -700,6 +779,7 @@ func (s *verifyState) checkHashMapChain(m *Manifest) {
 		s.problem(m.SnapshotID, fmt.Sprintf(
 			"page hash map page_size %d disagrees with manifest page_size %d", hm.PageSize, m.DB.PageSize))
 	}
+	return hm
 }
 
 // checkPageMapChain enumerates and decodes the page-map chain, returning the

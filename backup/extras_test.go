@@ -106,6 +106,41 @@ func TestReadExtrasNoFollowRejectsSymlinks(t *testing.T) {
 	require.ErrorContains(err, "not a real directory")
 }
 
+// TestCaptureExtrasRejectsCaseCollidingPaths pins capture/restore parity for
+// record paths: restore refuses trees whose entries fold to one file on a
+// case-insensitive filesystem (checkExtrasCollisions), so capture must refuse
+// to produce such a tree rather than write a snapshot that verifies its way
+// into an unrestorable archive. Files specs carry arbitrary record paths, so
+// the collision is provoked without needing a case-sensitive filesystem.
+func TestCaptureExtrasRejectsCaseCollidingPaths(t *testing.T) {
+	require := require.New(t)
+	r := initTestRepo(t)
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.toml")
+	b := filepath.Join(dir, "b.toml")
+	require.NoError(os.WriteFile(a, []byte("x = 1\n"), 0o600))
+	require.NoError(os.WriteFile(b, []byte("x = 2\n"), 0o600))
+
+	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
+	defer appender.Abort()
+	_, _, err := CaptureExtras(ExtrasOptions{
+		Spec: ExtrasSpec{Files: []ExtrasFileSpec{
+			{Path: a, RecordAs: "config.toml"},
+			{Path: b, RecordAs: "Config.TOML"},
+		}},
+	}, appender)
+	require.ErrorContains(err, "collide")
+
+	// An exact duplicate keeps its own, more precise message.
+	_, _, err = CaptureExtras(ExtrasOptions{
+		Spec: ExtrasSpec{Files: []ExtrasFileSpec{
+			{Path: a, RecordAs: "config.toml"},
+			{Path: b, RecordAs: "config.toml"},
+		}},
+	}, appender)
+	require.ErrorContains(err, "selected more than once")
+}
+
 // TestCaptureExtrasRejectsOversizedFile pins the same fstat guard on the
 // extras leaf reader: extras files share the pack layer's per-blob raw limit
 // and must be rejected before capture buffers the content.

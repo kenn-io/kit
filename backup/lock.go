@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -250,6 +251,24 @@ func claimLockFile(path string) (string, error) {
 // O_EXCL create so the fallback can never overwrite a lock planted during the
 // claim window either.
 func returnClaimedLock(path, claim string) (restored bool, err error) {
+	// plantLock only ever creates plain regular files, so anything else at the
+	// claim is foreign debris from another locks/ writer — most dangerously a
+	// symlink planted as a lock file, which the claim rename preserves. It must
+	// not be restored: link(2) follows a symlink source on some platforms
+	// (macOS), and the copy fallback reads through one, either of which would
+	// pull an arbitrary readable host file into the repository under a lock
+	// file's name. Refuse and remove the debris instead.
+	claimed, err := os.Lstat(claim)
+	if err != nil {
+		return false, fmt.Errorf(
+			"backup: checking claimed lock %s: %w", filepath.Base(path), err)
+	}
+	if !claimed.Mode().IsRegular() {
+		_ = os.Remove(claim)
+		return false, fmt.Errorf(
+			"backup: claimed lock %s was not a regular file; removed it instead of restoring",
+			filepath.Base(path))
+	}
 	linkErr := osLink(claim, path)
 	if linkErr == nil {
 		if err := os.Remove(claim); err != nil &&
@@ -271,7 +290,7 @@ func returnClaimedLock(path, claim string) (restored bool, err error) {
 	// Link is unsupported or unreliable on this filesystem: fall back to a
 	// no-clobber copy so a live holder's lock is restored without ever
 	// overwriting a lock planted at path during the claim window.
-	return restoreClaimByCopy(path, claim)
+	return restoreClaimByCopy(path, claim, claimed)
 }
 
 // restoreClaimByCopy restores a claimed lock file's contents to path when
@@ -281,8 +300,32 @@ func returnClaimedLock(path, claim string) (restored bool, err error) {
 // live replacement lock, so — exactly as the link-EEXIST branch does — the
 // stale claim is dropped and restored is false. On success the copied bytes are
 // fsynced before the claim is removed.
-func restoreClaimByCopy(path, claim string) (restored bool, err error) {
-	data, err := os.ReadFile(claim)
+//
+// claimed is the claim's Lstat result from returnClaimedLock's regular-file
+// check; the descriptor actually read is tied to it with SameFile so a symlink
+// swapped in at the claim after that check is refused rather than followed —
+// an os.ReadFile here would copy whatever readable file the link points at
+// into the repository.
+func restoreClaimByCopy(path, claim string, claimed os.FileInfo) (restored bool, err error) {
+	cf, err := os.Open(claim)
+	if err != nil {
+		return false, fmt.Errorf(
+			"backup: opening claimed lock %s for restore: %w",
+			filepath.Base(path), err)
+	}
+	defer func() { _ = cf.Close() }()
+	held, err := cf.Stat()
+	if err != nil {
+		return false, fmt.Errorf(
+			"backup: checking claimed lock %s for restore: %w",
+			filepath.Base(path), err)
+	}
+	if !os.SameFile(claimed, held) {
+		return false, fmt.Errorf(
+			"backup: claimed lock %s was replaced during restore",
+			filepath.Base(path))
+	}
+	data, err := io.ReadAll(cf)
 	if err != nil {
 		return false, fmt.Errorf(
 			"backup: reading claimed lock %s for restore: %w",
