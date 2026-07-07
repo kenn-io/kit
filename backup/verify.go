@@ -122,10 +122,11 @@ func Verify(ctx context.Context, r *Repo, app App, opts VerifyOptions) (*VerifyR
 		if err := st.drainContentReads(ctx); err != nil {
 			return nil, err
 		}
-		// Runs after the drain even when it queued nothing: blobs verified by
-		// an earlier snapshot are memoized, but this snapshot's recorded
-		// sizes still need checking against them.
+		// These run after the drain even when it queued nothing: blobs
+		// verified by an earlier snapshot are memoized, but this snapshot's
+		// recorded sizes and run bounds still need checking against them.
 		st.checkListedSizes()
+		st.checkPageRunBounds()
 	}
 	// Full mode's final tick closes out the same cumulative drain counters
 	// the bar advanced with; BlobsChecked dedupes blobs shared across
@@ -218,6 +219,9 @@ type verifyState struct {
 	// snapshot's recorded sizes must be checked against the blob it
 	// references.
 	pendingSizeChecks []listedSizeCheck
+	// pendingRunChecks queues the current snapshot's page-map run bounds for
+	// comparison against the drained page blobs' actual lengths.
+	pendingRunChecks []pageRunCheck
 	// drainDone/drainTotal drive full-mode progress: blobs processed and
 	// blobs queued, cumulative across every drain in the run so a multi-
 	// snapshot verify never moves backward. Guarded by mu while workers run.
@@ -245,6 +249,15 @@ type listedSizeCheck struct {
 	want       int64
 	what       string // the referencing record, e.g. `attachment blob <id>`
 	source     string // where the size is recorded: "list" or "tree"
+}
+
+// pageRunCheck is one page-map run whose blob-bounds requirement is checked
+// against the referenced page blob's actual length after the drain.
+type pageRunCheck struct {
+	id         pack.BlobID
+	snapshotID string
+	run        PageRun
+	pageSize   uint32
 }
 
 func (s *verifyState) closeReaders() {
@@ -580,6 +593,41 @@ func (s *verifyState) checkListedSizes() {
 	s.pendingSizeChecks = s.pendingSizeChecks[:0]
 }
 
+// queuePageRunBounds queues every page-map run's blob-bounds requirement for
+// the post-drain comparison. Restore's writeRun refuses a run whose
+// offset+length overruns its blob, so a forged or corrupted page map must
+// not verify cleanly and then fail restore mid-materialization. Run blob
+// indexes were already validated against the blob table during decode.
+func (s *verifyState) queuePageRunBounds(m *Manifest, pm *PageMap) {
+	for _, run := range pm.Runs {
+		s.pendingRunChecks = append(s.pendingRunChecks, pageRunCheck{
+			id: pm.Blobs[run.BlobIndex], snapshotID: m.SnapshotID, run: run, pageSize: pm.PageSize,
+		})
+	}
+}
+
+// checkPageRunBounds compares queued page-map runs against the drained page
+// blobs' actual, hash-authenticated lengths, using the same subtraction-based
+// overflow-safe comparison as restore's writeRun. Blobs whose read failed (or
+// never ran, on a canceled drain) are skipped: their read problem is the more
+// fundamental report.
+func (s *verifyState) checkPageRunBounds() {
+	for _, c := range s.pendingRunChecks {
+		verdict, read := s.readVerdict[c.id]
+		if !read || verdict != "" {
+			continue
+		}
+		blobLen := uint64(s.readLen[c.id]) //nolint:gosec // lengths are non-negative
+		length := uint64(c.run.PageCount) * uint64(c.pageSize)
+		if c.run.BlobOffset > blobLen || length > blobLen-c.run.BlobOffset {
+			s.problem(c.snapshotID, fmt.Sprintf(
+				"page map run (pages %d..%d) overruns blob %s (%d bytes at offset %d); restore would refuse this snapshot",
+				c.run.StartPage, c.run.StartPage+uint64(c.run.PageCount)-1, c.id, blobLen, c.run.BlobOffset))
+		}
+	}
+	s.pendingRunChecks = s.pendingRunChecks[:0]
+}
+
 // emitDrainProgressLocked reports the current drain's blob progress and
 // cumulative bytes read. Callers must hold s.mu.
 func (s *verifyState) emitDrainProgressLocked() {
@@ -616,6 +664,7 @@ func (s *verifyState) verifySnapshot(m *Manifest) {
 		s.checkPageMapBlobs(m, pageMap)
 		if !s.quick {
 			s.checkPageMapCoverage(m, pageMap)
+			s.queuePageRunBounds(m, pageMap)
 		}
 	}
 

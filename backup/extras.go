@@ -14,13 +14,79 @@ import (
 	"go.kenn.io/kit/pack"
 )
 
-// ExtrasOptions selects which operational files ride along with a snapshot
-// (docs/usage/backup.md, Extras).
+// ExtrasDirSpec walks one DataDir-relative directory recursively; every
+// regular file found is recorded under its DataDir-relative path. A missing
+// directory is skipped, not an error: operational directories often appear
+// only once the application has something to put in them.
+type ExtrasDirSpec struct {
+	Name string
+	// Sensitive marks the directory as carrying secrets (see ExtrasSpec).
+	Sensitive bool
+}
+
+// ExtrasGlobSpec matches file basenames at DataDir's top level. The pattern
+// must be a pure basename (no separators); matching happens against directory
+// entries, so a DataDir path containing glob metacharacters cannot corrupt it.
+type ExtrasGlobSpec struct {
+	Pattern   string
+	Sensitive bool
+}
+
+// ExtrasFileSpec captures one file, which may live outside DataDir, recorded
+// in the tree under RecordAs (a slash-separated relative path). Unlike dir
+// walks, a missing file is an error: naming a specific file is an explicit
+// request that must not silently produce a snapshot without it.
+type ExtrasFileSpec struct {
+	Path      string
+	RecordAs  string
+	Sensitive bool
+}
+
+// ExtrasSpec declares which operational files ride along with a snapshot.
+// The engine imposes no default set: the application decides what its
+// snapshots carry. Sources marked Sensitive are refused on an unencrypted
+// repository unless the caller sets AllowPlaintextSecrets, so secrets never
+// land in plaintext packs by accident.
+type ExtrasSpec struct {
+	Dirs  []ExtrasDirSpec
+	Globs []ExtrasGlobSpec
+	Files []ExtrasFileSpec
+}
+
+// empty reports whether the spec selects nothing.
+func (s ExtrasSpec) empty() bool {
+	return len(s.Dirs) == 0 && len(s.Globs) == 0 && len(s.Files) == 0
+}
+
+// sensitiveSources lists the human-readable names of every source marked
+// Sensitive, for the plaintext-repository refusal message.
+func (s ExtrasSpec) sensitiveSources() []string {
+	var names []string
+	for _, d := range s.Dirs {
+		if d.Sensitive {
+			names = append(names, d.Name+string(filepath.Separator))
+		}
+	}
+	for _, g := range s.Globs {
+		if g.Sensitive {
+			names = append(names, g.Pattern)
+		}
+	}
+	for _, f := range s.Files {
+		if f.Sensitive {
+			names = append(names, f.RecordAs)
+		}
+	}
+	return names
+}
+
+// ExtrasOptions parameterizes one extras capture (docs/usage/backup.md,
+// Extras).
 type ExtrasOptions struct {
+	// DataDir anchors the spec's Dirs walks and Globs matches. Empty means
+	// no directory- or glob-based extras are captured.
 	DataDir               string
-	ConfigPath            string
-	IncludeConfig         bool
-	IncludeTokens         bool
+	Spec                  ExtrasSpec
 	AllowPlaintextSecrets bool
 	Encrypted             bool
 }
@@ -134,24 +200,20 @@ func readExtrasNoFollow(root *os.Root, rel string) ([]byte, os.FileInfo, error) 
 
 // CaptureExtras stores extras file blobs and the tree object.
 func CaptureExtras(opts ExtrasOptions, appender *PackAppender) (pack.BlobID, bool, error) {
-	// config.toml carries API keys (server.api_key) verbatim and the tokens
-	// directory holds OAuth secrets, so either flag on an unencrypted repo
-	// needs the explicit plaintext override. Fail safe by naming the flag(s)
-	// that triggered the guard.
-	if (opts.IncludeConfig || opts.IncludeTokens) && !opts.Encrypted && !opts.AllowPlaintextSecrets {
-		var flag string
-		switch {
-		case opts.IncludeConfig && opts.IncludeTokens:
-			flag = "--include-config/--include-tokens"
-		case opts.IncludeConfig:
-			flag = "--include-config"
-		default:
-			flag = "--include-tokens"
-		}
-		return pack.BlobID{}, false, fmt.Errorf(
-			"backup: %s requires an encrypted repository (use --allow-plaintext-secrets to override)", flag)
+	if opts.Spec.empty() {
+		return pack.BlobID{}, false, nil
 	}
-	// The deletions/tokens walks and the client-secret glob all read files under
+	// Sensitive sources (application secrets: tokens, credentials, config
+	// files carrying API keys) on an unencrypted repository need the explicit
+	// plaintext override. Fail safe by naming what triggered the guard.
+	if sensitive := opts.Spec.sensitiveSources(); len(sensitive) > 0 &&
+		!opts.Encrypted && !opts.AllowPlaintextSecrets {
+		return pack.BlobID{}, false, fmt.Errorf(
+			"backup: capturing %s requires an encrypted repository "+
+				"(set AllowPlaintextSecrets to override)",
+			strings.Join(sensitive, ", "))
+	}
+	// The spec's directory walks and glob matches all read files under
 	// DataDir; route every read through one root confined to it so a regular
 	// file swapped for a symlink between the walk/glob check and the read (a
 	// TOCTOU the plain os.ReadFile below used to lose) cannot pull a host file
@@ -173,11 +235,19 @@ func CaptureExtras(opts ExtrasOptions, appender *PackAppender) (pack.BlobID, boo
 		}
 	}
 	var entries []ExtrasEntry
+	seen := map[string]struct{}{}
 	// addFile reads recordPath's bytes through readRoot with no symlink
 	// resolution at any component (readExtrasNoFollow) and records the tree
 	// entry under recordPath. readRel is recordPath's location relative to
-	// readRoot.
+	// readRoot. A record path selected twice (overlapping globs, a Files spec
+	// duplicating a walk) is refused: restore rejects trees with duplicate
+	// paths, so capturing one would produce an unrestorable snapshot.
 	addFile := func(readRoot *os.Root, readRel, recordPath string) error {
+		key := filepath.ToSlash(recordPath)
+		if _, dup := seen[key]; dup {
+			return fmt.Errorf("backup: extras record path %q is selected more than once", key)
+		}
+		seen[key] = struct{}{}
 		content, info, err := readExtrasNoFollow(readRoot, readRel)
 		if err != nil {
 			return fmt.Errorf("backup: reading extras file %s: %w", recordPath, err)
@@ -229,58 +299,67 @@ func CaptureExtras(opts ExtrasOptions, appender *PackAppender) (pack.BlobID, boo
 			return addFile(dataRoot, rel, rel)
 		})
 	}
-	if err := addDir("deletions"); err != nil {
-		return pack.BlobID{}, false, err
+	for _, d := range opts.Spec.Dirs {
+		if err := addDir(d.Name); err != nil {
+			return pack.BlobID{}, false, err
+		}
 	}
-	if opts.IncludeConfig && opts.ConfigPath != "" {
-		// config.toml may live outside DataDir, so confine the read to its own
-		// parent directory: a symlink swapped in at ConfigPath is then refused
+	for _, f := range opts.Spec.Files {
+		if !filepath.IsLocal(filepath.FromSlash(f.RecordAs)) {
+			return pack.BlobID{}, false, fmt.Errorf(
+				"backup: extras file record path %q is not a local relative path", f.RecordAs)
+		}
+		// The file may live outside DataDir, so confine the read to its own
+		// parent directory: a symlink swapped in at the path is then refused
 		// rather than followed to an arbitrary host file.
-		cfgRoot, err := os.OpenRoot(filepath.Dir(opts.ConfigPath))
+		fileRoot, err := os.OpenRoot(filepath.Dir(f.Path))
 		if err != nil {
-			return pack.BlobID{}, false, fmt.Errorf("backup: opening config dir for extras: %w", err)
+			return pack.BlobID{}, false, fmt.Errorf("backup: opening extras file dir for %s: %w", f.RecordAs, err)
 		}
-		err = addFile(cfgRoot, filepath.Base(opts.ConfigPath), "config.toml")
-		_ = cfgRoot.Close()
+		err = addFile(fileRoot, filepath.Base(f.Path), f.RecordAs)
+		_ = fileRoot.Close()
 		if err != nil {
 			return pack.BlobID{}, false, err
 		}
 	}
-	// Matching client-secret files only makes sense with a confined root to read
-	// through: with no DataDir there would be nothing to scan, and addFile would
-	// nil-deref on the absent dataRoot.
-	if opts.IncludeTokens && dataRoot != nil {
-		if err := addDir("tokens"); err != nil {
-			return pack.BlobID{}, false, err
-		}
+	// Glob matching only makes sense with a confined root to read through:
+	// with no DataDir there is nothing to scan, and addFile would nil-deref
+	// on the absent dataRoot.
+	if len(opts.Spec.Globs) > 0 && dataRoot != nil {
 		// Match by basename through the confined root instead of
 		// filepath.Glob(filepath.Join(DataDir, ...)): a DataDir path containing
 		// glob metacharacters ([, *, ?) would otherwise make Glob silently skip
-		// real matches or pull in siblings. The pattern is a pure basename with
-		// no directory part, so it never interacts with the data dir path.
+		// real matches or pull in siblings. Patterns are pure basenames with
+		// no directory part, so they never interact with the data dir path.
 		dirEntries, err := fs.ReadDir(dataRoot.FS(), ".")
 		if err != nil {
-			return pack.BlobID{}, false, fmt.Errorf("backup: reading data dir for client secrets: %w", err)
+			return pack.BlobID{}, false, fmt.Errorf("backup: reading data dir for extras globs: %w", err)
 		}
-		for _, e := range dirEntries {
-			name := e.Name()
-			match, err := filepath.Match("client_secret*.json", name)
-			if err != nil {
-				return pack.BlobID{}, false, fmt.Errorf("backup: matching client secrets: %w", err)
+		for _, g := range opts.Spec.Globs {
+			if strings.ContainsAny(g.Pattern, `/\`) {
+				return pack.BlobID{}, false, fmt.Errorf(
+					"backup: extras glob pattern %q must be a pure basename", g.Pattern)
 			}
-			if !match {
-				continue
-			}
-			// ReadDir reports the entry's own type (Lstat semantics, not
-			// followed), so a symlink or non-regular file named like a client
-			// secret yields a friendly early error; the confined read through
-			// dataRoot below is the authoritative guard against a symlink raced
-			// in after this check.
-			if !e.Type().IsRegular() {
-				return pack.BlobID{}, false, fmt.Errorf("extras: %s is not a regular file", name)
-			}
-			if err := addFile(dataRoot, name, name); err != nil {
-				return pack.BlobID{}, false, err
+			for _, e := range dirEntries {
+				name := e.Name()
+				match, err := filepath.Match(g.Pattern, name)
+				if err != nil {
+					return pack.BlobID{}, false, fmt.Errorf("backup: extras glob %q: %w", g.Pattern, err)
+				}
+				if !match {
+					continue
+				}
+				// ReadDir reports the entry's own type (Lstat semantics, not
+				// followed), so a symlink or non-regular file matching the
+				// pattern yields a friendly early error; the no-follow read
+				// through dataRoot is the authoritative guard against a
+				// symlink raced in after this check.
+				if !e.Type().IsRegular() {
+					return pack.BlobID{}, false, fmt.Errorf("extras: %s is not a regular file", name)
+				}
+				if err := addFile(dataRoot, name, name); err != nil {
+					return pack.BlobID{}, false, err
+				}
 			}
 		}
 	}

@@ -14,18 +14,25 @@ import (
 
 // CreateOptions parameterizes one snapshot capture.
 type CreateOptions struct {
-	DBPath                string
-	ContentDir            string
-	DataDir               string
-	ConfigPath            string
-	IncludeConfig         bool
-	IncludeTokens         bool
+	DBPath     string
+	ContentDir string
+	// DataDir anchors the Extras spec's directory walks and glob matches.
+	DataDir string
+	// Extras selects the operational files that ride along with the
+	// snapshot. The engine imposes no default set; the application supplies
+	// an explicit spec (ExtrasSpec).
+	Extras                ExtrasSpec
 	AllowPlaintextSecrets bool
-	Tag                   string
-	ZstdLevel             int
-	CacheDir              string
-	Freezer               FreezeCoordinator
-	ForceUnlock           bool
+	// IncludeConfig/IncludeTokens are recorded verbatim into the manifest's
+	// options (wire-frozen fields, FORMAT.md); they select nothing by
+	// themselves — the Extras spec does.
+	IncludeConfig bool
+	IncludeTokens bool
+	Tag           string
+	ZstdLevel     int
+	CacheDir      string
+	Freezer       FreezeCoordinator
+	ForceUnlock   bool
 	// Jobs is the number of concurrent attachment read+compress workers.
 	// Zero or negative selects one per CPU. Use 1 for strictly serial file
 	// reads when the live archive sits on a spinning disk or NAS share. The
@@ -228,9 +235,7 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 
 	treeBlob, hasTree, err := CaptureExtras(ExtrasOptions{
 		DataDir:               opts.DataDir,
-		ConfigPath:            opts.ConfigPath,
-		IncludeConfig:         opts.IncludeConfig,
-		IncludeTokens:         opts.IncludeTokens,
+		Spec:                  opts.Extras,
 		AllowPlaintextSecrets: opts.AllowPlaintextSecrets,
 		Encrypted:             false,
 	}, appender)

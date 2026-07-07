@@ -3,6 +3,7 @@ package backup
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"os"
 	"strings"
 	"testing"
@@ -439,6 +440,41 @@ func TestVerifyFlagsBadExtrasTree(t *testing.T) {
 	require.Contains(joined, "collide under case-folded key")
 	require.Contains(joined, `extras entry "ok/file.json"`)
 	require.Contains(joined, "but its tree records")
+}
+
+// TestVerifyFlagsOverrunningPageRun pins restore/verify parity for page-map
+// run bounds: restore's writeRun refuses a run whose offset+length overruns
+// its blob, so verify must flag such a run instead of passing a snapshot that
+// fails mid-restore. The forged run is injected at the state level (a real
+// forgery would require recomputing map, index, and manifest identities);
+// queuePageRunBounds over honest snapshots is exercised by every clean full
+// verify. The huge-offset case pins the overflow-safe comparison.
+func TestVerifyFlagsOverrunningPageRun(t *testing.T) {
+	require := require.New(t)
+	r, m := buildVerifyFixture(t)
+
+	ctx := context.Background()
+	st := newTestVerifyState(t, r, false)
+	st.verifySnapshot(m)
+	require.NoError(st.drainContentReads(ctx))
+	st.checkListedSizes()
+	st.checkPageRunBounds()
+	require.Empty(st.result.Problems, "an honest snapshot's runs must verify cleanly")
+
+	pm := st.checkPageMapChain(m)
+	require.NotNil(pm)
+	require.NotEmpty(pm.Runs)
+	blob := pm.Blobs[pm.Runs[0].BlobIndex]
+	for _, offset := range []uint64{uint64(st.readLen[blob]) + 1, math.MaxUint64 - 100} {
+		st.pendingRunChecks = append(st.pendingRunChecks, pageRunCheck{
+			id: blob, snapshotID: m.SnapshotID, pageSize: pm.PageSize,
+			run: PageRun{StartPage: 0, PageCount: 1, BlobOffset: offset},
+		})
+		st.checkPageRunBounds()
+		require.NotEmpty(st.result.Problems, "offset %d", offset)
+		require.Contains(st.result.Problems[len(st.result.Problems)-1].Detail, "overruns blob")
+		require.Empty(st.pendingRunChecks)
+	}
 }
 
 // TestVerifyDetectsHashMapGeometryMismatch pins Minor 11: full verify compares

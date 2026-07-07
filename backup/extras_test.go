@@ -12,6 +12,15 @@ import (
 	"go.kenn.io/kit/pack"
 )
 
+// msgvaultTokensSpec mirrors the token-capture layout the msgvault
+// application uses, exercising the sensitive-dir and sensitive-glob paths.
+func msgvaultTokensSpec() ExtrasSpec {
+	return ExtrasSpec{
+		Dirs:  []ExtrasDirSpec{{Name: "tokens", Sensitive: true}},
+		Globs: []ExtrasGlobSpec{{Pattern: "client_secret*.json", Sensitive: true}},
+	}
+}
+
 func TestCaptureExtrasDeletionsAndConfig(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
@@ -26,7 +35,12 @@ func TestCaptureExtrasDeletionsAndConfig(t *testing.T) {
 
 	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	treeID, hasTree, err := CaptureExtras(ExtrasOptions{
-		DataDir: dataDir, ConfigPath: cfgPath, IncludeConfig: true, AllowPlaintextSecrets: true,
+		DataDir: dataDir,
+		Spec: ExtrasSpec{
+			Dirs:  []ExtrasDirSpec{{Name: "deletions"}},
+			Files: []ExtrasFileSpec{{Path: cfgPath, RecordAs: "config.toml", Sensitive: true}},
+		},
+		AllowPlaintextSecrets: true,
 	}, appender)
 	require.NoError(err)
 	require.True(hasTree)
@@ -95,7 +109,14 @@ func TestCaptureExtrasEmpty(t *testing.T) {
 	require := require.New(t)
 	r := initTestRepo(t)
 	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
-	_, hasTree, err := CaptureExtras(ExtrasOptions{DataDir: t.TempDir()}, appender)
+	_, hasTree, err := CaptureExtras(ExtrasOptions{
+		DataDir: t.TempDir(), Spec: ExtrasSpec{Dirs: []ExtrasDirSpec{{Name: "deletions"}}},
+	}, appender)
+	require.NoError(err)
+	require.False(hasTree)
+
+	// An empty spec selects nothing, whatever DataDir holds.
+	_, hasTree, err = CaptureExtras(ExtrasOptions{DataDir: t.TempDir()}, appender)
 	require.NoError(err)
 	require.False(hasTree)
 }
@@ -110,7 +131,8 @@ func TestCaptureExtrasTokensWithoutDataDir(t *testing.T) {
 	t.Chdir(cwd)
 	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	_, hasTree, err := CaptureExtras(ExtrasOptions{
-		IncludeTokens: true, AllowPlaintextSecrets: true,
+		Spec:                  msgvaultTokensSpec(),
+		AllowPlaintextSecrets: true,
 	}, appender)
 	require.NoError(err)
 	require.False(hasTree)
@@ -125,25 +147,26 @@ func TestCaptureExtrasTokensGuard(t *testing.T) {
 	require.NoError(os.WriteFile(filepath.Join(dataDir, "client_secret_web.json"), []byte("{}"), 0o600))
 
 	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
-	_, _, err := CaptureExtras(ExtrasOptions{DataDir: dataDir, IncludeTokens: true}, appender)
+	_, _, err := CaptureExtras(ExtrasOptions{DataDir: dataDir, Spec: msgvaultTokensSpec()}, appender)
 	require.ErrorContains(err, "encrypted repository")
-	require.ErrorContains(err, "--include-tokens")
+	require.ErrorContains(err, "tokens")
 
-	// --include-config is just as sensitive: config.toml carries API keys, so
-	// it fires the same guard and names the flag it tripped on.
+	// A sensitive Files spec (config.toml carries API keys) fires the same
+	// guard and names the record path it tripped on.
 	cfgPath := filepath.Join(dataDir, "config.toml")
 	require.NoError(os.WriteFile(cfgPath, []byte("[server]\napi_key = \"secret\"\n"), 0o600))
-	_, _, err = CaptureExtras(ExtrasOptions{DataDir: dataDir, ConfigPath: cfgPath, IncludeConfig: true}, appender)
+	cfgSpec := ExtrasSpec{Files: []ExtrasFileSpec{{Path: cfgPath, RecordAs: "config.toml", Sensitive: true}}}
+	_, _, err = CaptureExtras(ExtrasOptions{DataDir: dataDir, Spec: cfgSpec}, appender)
 	require.ErrorContains(err, "encrypted repository")
-	require.ErrorContains(err, "--include-config")
+	require.ErrorContains(err, "config.toml")
 
 	_, _, err = CaptureExtras(ExtrasOptions{
-		DataDir: dataDir, ConfigPath: cfgPath, IncludeConfig: true, AllowPlaintextSecrets: true,
+		DataDir: dataDir, Spec: cfgSpec, AllowPlaintextSecrets: true,
 	}, appender)
 	require.NoError(err)
 
 	treeID, hasTree, err := CaptureExtras(ExtrasOptions{
-		DataDir: dataDir, IncludeTokens: true, AllowPlaintextSecrets: true,
+		DataDir: dataDir, Spec: msgvaultTokensSpec(), AllowPlaintextSecrets: true,
 	}, appender)
 	require.NoError(err)
 	require.True(hasTree)
@@ -188,7 +211,9 @@ func TestCaptureExtrasConfigSymlinkEscapeRefused(t *testing.T) {
 	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	defer appender.Abort()
 	_, _, err := CaptureExtras(ExtrasOptions{
-		DataDir: dataDir, ConfigPath: cfgPath, IncludeConfig: true, AllowPlaintextSecrets: true,
+		DataDir:               dataDir,
+		Spec:                  ExtrasSpec{Files: []ExtrasFileSpec{{Path: cfgPath, RecordAs: "config.toml", Sensitive: true}}},
+		AllowPlaintextSecrets: true,
 	}, appender)
 	require.Error(err)
 
@@ -227,7 +252,9 @@ func TestCaptureExtrasRejectsSymlinks(t *testing.T) {
 	}
 
 	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
-	_, _, err = CaptureExtras(ExtrasOptions{DataDir: dataDir}, appender)
+	_, _, err = CaptureExtras(ExtrasOptions{
+		DataDir: dataDir, Spec: ExtrasSpec{Dirs: []ExtrasDirSpec{{Name: "deletions"}}},
+	}, appender)
 	require.Error(err)
 	assert.Contains(err.Error(), "deletions/link.txt")
 	assert.Contains(err.Error(), "not a regular file")
@@ -270,7 +297,7 @@ func TestCaptureExtrasRejectsGlobbedSymlinks(t *testing.T) {
 	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	defer appender.Abort()
 	_, _, err = CaptureExtras(ExtrasOptions{
-		DataDir: dataDir, IncludeTokens: true, AllowPlaintextSecrets: true,
+		DataDir: dataDir, Spec: msgvaultTokensSpec(), AllowPlaintextSecrets: true,
 	}, appender)
 	require.Error(err)
 	assert.Contains(err.Error(), "client_secret_evil.json")
@@ -306,7 +333,7 @@ func TestCaptureExtrasTokensDataDirWithGlobMetacharacters(t *testing.T) {
 
 	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	treeID, hasTree, err := CaptureExtras(ExtrasOptions{
-		DataDir: dataDir, IncludeTokens: true, AllowPlaintextSecrets: true,
+		DataDir: dataDir, Spec: msgvaultTokensSpec(), AllowPlaintextSecrets: true,
 	}, appender)
 	require.NoError(err)
 	require.True(hasTree)

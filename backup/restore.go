@@ -896,8 +896,9 @@ func (s *restoreState) restorePackAttachments(
 	}
 }
 
-// restoreExtras lays out the snapshot's captured extras files (deletions,
-// config, tokens) under the target, preserving their recorded modes.
+// restoreExtras lays out the snapshot's captured extras files (the
+// application-selected operational files, ExtrasSpec) under the target,
+// preserving their recorded modes.
 func (s *restoreState) restoreExtras(app App, m *Manifest) (int, error) {
 	if m.Extras.Tree == "" {
 		return 0, nil

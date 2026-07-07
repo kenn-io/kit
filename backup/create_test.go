@@ -50,6 +50,7 @@ func createOpts(dbPath, attachmentsDir, dataDir string, cacheDir string) CreateO
 		DBPath:     dbPath,
 		ContentDir: attachmentsDir,
 		DataDir:    dataDir,
+		Extras:     ExtrasSpec{Dirs: []ExtrasDirSpec{{Name: "deletions"}}},
 		CacheDir:   cacheDir,
 	}
 }
@@ -255,7 +256,11 @@ func TestVerifyScanFileIdentityDetectsReplacement(t *testing.T) {
 
 	impostor := filepath.Join(dir, "impostor.db")
 	require.NoError(os.WriteFile(impostor, []byte("fake"), 0o600))
-	require.NoError(os.Rename(impostor, path))
+	if err := os.Rename(impostor, path); err != nil {
+		// Windows refuses to rename over a file with an open handle, which
+		// also forecloses the replacement this guard detects.
+		t.Skip("cannot replace an open file on this platform")
+	}
 	require.ErrorContains(verifyScanFileIdentity(f, path), "was replaced")
 }
 
