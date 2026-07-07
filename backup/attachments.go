@@ -425,13 +425,25 @@ func captureRef(
 var maxCaptureRawLen int64 = pack.MaxRawLen
 
 // readRegularFile reads rel through root and requires it to be a regular file,
-// returning its content and stat info. os.Root refuses any path that escapes
-// the root through a symlink, and the fstat is taken on the opened descriptor,
-// so the regular-file check and the returned bytes describe the same file the
-// read yielded — no separate lstat/open the tree could be swapped under. The
-// regular-file check additionally rejects fifos, device nodes, and directories
-// a tampered DB row or a raced tree might point at within the root.
+// returning its content and stat info. The regular-file check runs BEFORE the
+// open: opening a fifo blocks until a writer appears and opening a device
+// node can have side effects, so a non-regular file a tampered DB row points
+// at must be rejected without ever being opened. Stat (not lstat) is used so
+// an in-root symlink to a regular file stays capturable — attachment bytes
+// are hash-verified afterward, unlike extras. SameFile then ties the checked
+// file to the opened descriptor, so the returned bytes describe the file the
+// check approved; os.Root refuses any path that escapes the root through a
+// symlink. A fifo raced in between the stat and the open can still block the
+// open — closing that needs a platform-specific nonblocking open, and the
+// extras leaf read accepts the same residual.
 func readRegularFile(root *os.Root, rel string) ([]byte, os.FileInfo, error) {
+	pre, err := root.Stat(rel)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !pre.Mode().IsRegular() {
+		return nil, nil, fmt.Errorf("%q is not a regular file", rel)
+	}
 	f, err := root.Open(rel)
 	if err != nil {
 		return nil, nil, err
@@ -441,8 +453,8 @@ func readRegularFile(root *os.Root, rel string) ([]byte, os.FileInfo, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	if !info.Mode().IsRegular() {
-		return nil, nil, fmt.Errorf("%q is not a regular file", rel)
+	if !os.SameFile(pre, info) {
+		return nil, nil, fmt.Errorf("%q changed during capture", rel)
 	}
 	if info.Size() > maxCaptureRawLen {
 		return nil, nil, fmt.Errorf("%q is %d bytes, larger than the maximum blob size %d",
