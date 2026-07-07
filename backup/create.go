@@ -74,12 +74,30 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 		return nil, err
 	}
 
+	// The scan handle opens BEFORE the freeze, and its identity is re-proven
+	// against the path after the frozen session is established: SQLite
+	// resolves DBPath on its own inside OpenFrozenSession, so a path swapped
+	// between the two opens would freeze one file while the scanner captures
+	// another — storing a different file's bytes as page blobs while the
+	// manifest records the frozen database's stats. Anchoring the handle
+	// first and re-checking after fails closed on any replacement that
+	// persists; only a swap-in/swap-out timed exactly around SQLite's own
+	// open remains outside what path-based opens can detect.
+	dbFile, err := os.Open(opts.DBPath)
+	if err != nil {
+		return nil, fmt.Errorf("backup: opening DB for scan: %w", err)
+	}
+	defer func() { _ = dbFile.Close() }()
+
 	pr.emit(ProgressEvent{Stage: ProgressStageFreeze, Total: 1})
 	session, err := OpenFrozenSession(ctx, opts.DBPath, opts.Freezer)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = session.Close() }()
+	if err := verifyScanFileIdentity(dbFile, opts.DBPath); err != nil {
+		return nil, err
+	}
 	dbBytes := int64(session.PageCount * uint64(session.PageSize)) //nolint:gosec // page-count*page-size fits int64 for real databases
 	pr.emit(ProgressEvent{
 		Stage: ProgressStageFreeze, Done: 1, Total: 1,
@@ -95,12 +113,6 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 	if err != nil {
 		return nil, err
 	}
-
-	dbFile, err := os.Open(opts.DBPath)
-	if err != nil {
-		return nil, fmt.Errorf("backup: opening DB for scan: %w", err)
-	}
-	defer func() { _ = dbFile.Close() }()
 
 	if parentHash != nil && parentHash.PageSize != session.PageSize {
 		parentHash = nil // page size changed (e.g. VACUUM INTO); full re-capture
@@ -315,6 +327,26 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 	fullHash := &PageHashMap{PageSize: scan.PageSize, PageCount: scan.PageCount, Hashes: scan.Hashes}
 	_ = SaveHashMapCache(opts.CacheDir, r.Config().RepoID, id, fullHash)
 	return m, nil
+}
+
+// verifyScanFileIdentity requires that path still resolves to the already-open
+// scan handle's file, tying the file the page scan will read to the file the
+// frozen SQLite session opened by the same path moments earlier. See the
+// comment at the os.Open in Create for the race this closes.
+func verifyScanFileIdentity(f *os.File, path string) error {
+	held, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("backup: checking scan handle: %w", err)
+	}
+	byPath, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("backup: re-checking database path: %w", err)
+	}
+	if !os.SameFile(held, byPath) {
+		return fmt.Errorf(
+			"backup: database at %s was replaced while opening the freeze; retry the backup", path)
+	}
+	return nil
 }
 
 // nextCreatedAt returns the timestamp to record as this snapshot's

@@ -175,7 +175,7 @@ Restore is self-proving, in layers. During materialization every blob read re-de
 
 ## Verification Model
 
-`verify` enumerates every blob a manifest can reach — page-map chains and their blob tables, hash-map chains, attachment lists and every listed content hash, the extras tree and its entries — and checks each against the index and packs. Quick mode proves structure (references resolve, objects decode, packs exist); full mode additionally reads every referenced blob and re-derives its SHA-256 identity, and confirms materialized page/hash maps match the manifest's recorded geometry with full coverage. Problems are collected, not fail-fast, and each names the snapshot, blob, and pack involved.
+`verify` enumerates every blob a manifest can reach — page-map chains and their blob tables, hash-map chains, attachment lists and every listed content hash, the extras tree and its entries — and checks each against the index and packs. Quick mode proves structure (references resolve, objects decode, packs exist); full mode additionally reads every referenced blob and re-derives its SHA-256 identity, compares each attachment list entry's recorded size against the blob's actual content length (restore refuses a mismatch, so verify must flag it), and confirms materialized page/hash maps match the manifest's recorded geometry with full coverage. Problems are collected, not fail-fast, and each names the snapshot, blob, and pack involved.
 
 ## Current Limitations
 

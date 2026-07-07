@@ -263,25 +263,36 @@ func TestLoadManifestRejectsMalformedSnapshotID(t *testing.T) {
 // TestLoadManifestRecomputesIDWithRawStats guards the json.RawMessage
 // transition: manifests are stored indented, RawMessage preserves captured
 // formatting, and the snapshot-ID recompute in LoadManifest must still
-// match. encoding/json compacts RawMessage during Marshal, which is what
-// makes this hold — this test is the proof.
+// match. encoding/json compacts (and HTML-escapes) RawMessage during
+// Marshal — at write time and at recompute time alike — which is what makes
+// this hold regardless of how MarshalIndent formatted the payload on disk.
+// The nested-object case pins that: its stats gain internal indentation in
+// the stored file, and the recompute must still reproduce the ID.
 func TestLoadManifestRecomputesIDWithRawStats(t *testing.T) {
+	require := require.New(t)
 	r, err := Init(filepath.Join(t.TempDir(), "repo"))
-	require.NoError(t, err)
-	m := &Manifest{
-		FormatVersion:    FormatVersion,
-		MinReaderVersion: MinReaderVersion,
-		AppVersion:       "raw-stats-test",
-		CreatedAt:        "2026-01-02T03:04:05Z",
-		DB:               ManifestDB{Engine: "sqlite", PageSize: 4096, PageCount: 1},
-		Attachments:      ManifestAttachments{Layout: []string{"loose"}, Recipes: []string{}},
-		Excluded:         []string{},
-		Stats: json.RawMessage(`{"notes":1,"blob_rows":0,"blob_files":0,` +
-			`"date_range":["",""]}`),
+	require.NoError(err)
+
+	for name, stats := range map[string]string{
+		"flat":   `{"notes":1,"blob_rows":0,"blob_files":0,"date_range":["",""]}`,
+		"nested": `{"accounts":{"a":{"n":1},"b":{"n":2}},"tags":[["x","y"],[]]}`,
+		"html":   `{"query":"a<b && c>d","path":"x&y"}`,
+	} {
+		createdAt := "2026-01-02T03:04:05Z"
+		m := &Manifest{
+			FormatVersion:    FormatVersion,
+			MinReaderVersion: MinReaderVersion,
+			AppVersion:       "raw-stats-test-" + name,
+			CreatedAt:        createdAt,
+			DB:               ManifestDB{Engine: "sqlite", PageSize: 4096, PageCount: 1},
+			Attachments:      ManifestAttachments{Layout: []string{"loose"}, Recipes: []string{}},
+			Excluded:         []string{},
+			Stats:            json.RawMessage(stats),
+		}
+		id, err := r.WriteManifest(m)
+		require.NoError(err, name)
+		loaded, err := r.LoadManifest(id) // internal ID recompute IS the assertion
+		require.NoError(err, name)
+		assert.Equal(t, id, loaded.SnapshotID, name)
 	}
-	id, err := r.WriteManifest(m)
-	require.NoError(t, err)
-	loaded, err := r.LoadManifest(id) // internal ID recompute IS the assertion
-	require.NoError(t, err)
-	assert.Equal(t, id, loaded.SnapshotID)
 }

@@ -238,6 +238,27 @@ func TestCreateIncrementalSnapshot(t *testing.T) {
 	assert.Equal(m2.DB.PageCount, cached.PageCount)
 }
 
+// TestVerifyScanFileIdentityDetectsReplacement pins the freeze/scan identity
+// check: the page scanner must read the same file the frozen SQLite session
+// opened by path, so a database replaced at its path between the two opens
+// fails the capture instead of storing a different file's bytes as page blobs.
+func TestVerifyScanFileIdentityDetectsReplacement(t *testing.T) {
+	require := require.New(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.db")
+	require.NoError(os.WriteFile(path, []byte("real"), 0o600))
+	f, err := os.Open(path)
+	require.NoError(err)
+	defer func() { _ = f.Close() }()
+
+	require.NoError(verifyScanFileIdentity(f, path))
+
+	impostor := filepath.Join(dir, "impostor.db")
+	require.NoError(os.WriteFile(impostor, []byte("fake"), 0o600))
+	require.NoError(os.Rename(impostor, path))
+	require.ErrorContains(verifyScanFileIdentity(f, path), "was replaced")
+}
+
 // TestCreateSameSecondChainOrder covers the bug where two Create calls
 // landing in the same wall-clock second produce snapshot IDs whose
 // timestamp prefixes tie, leaving lexicographic order (what

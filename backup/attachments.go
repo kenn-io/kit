@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -48,8 +49,12 @@ func EncodeAttachmentList(refs []ContentRef) ([]byte, error) {
 		if err != nil || len(raw) != 32 {
 			return nil, fmt.Errorf("backup: attachment list: bad content hash %q", ref.Hash)
 		}
+		if ref.Size < 0 {
+			return nil, fmt.Errorf(
+				"backup: attachment list: negative size %d for content hash %s", ref.Size, ref.Hash)
+		}
 		buf = append(buf, raw...)
-		buf = binary.LittleEndian.AppendUint64(buf, uint64(ref.Size)) //nolint:gosec // sizes are non-negative at encode time
+		buf = binary.LittleEndian.AppendUint64(buf, uint64(ref.Size))
 	}
 	sum := sha256.Sum256(buf)
 	return append(buf, sum[:]...), nil
@@ -80,9 +85,18 @@ func DecodeAttachmentList(data []byte) ([]ContentRef, error) {
 	refs := make([]ContentRef, 0, count)
 	off := header
 	for range count {
+		size := binary.LittleEndian.Uint64(body[off+32 : off+40])
+		// Sizes are non-negative at encode time, so a stored value with the
+		// high bit set is forgery or corruption; letting it through would
+		// wrap negative through int64 and poison every downstream size sum
+		// and comparison.
+		if size > math.MaxInt64 {
+			return nil, fmt.Errorf(
+				"backup: attachment list entry size %d overflows int64", size)
+		}
 		refs = append(refs, ContentRef{
 			Hash: hex.EncodeToString(body[off : off+32]),
-			Size: int64(binary.LittleEndian.Uint64(body[off+32 : off+40])), //nolint:gosec // sizes fit int64
+			Size: int64(size),
 		})
 		off += attachmentEntrySize
 	}

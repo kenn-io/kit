@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"os"
 	"path/filepath"
@@ -57,6 +58,28 @@ func TestAttachmentListRoundTrip(t *testing.T) {
 	}
 	_, err = EncodeAttachmentList([]ContentRef{{Hash: "nothex", Size: 1}})
 	require.Error(err)
+}
+
+// TestAttachmentListRejectsBadSizes pins the size-field guards: encode
+// refuses a negative size outright, and decode refuses a stored size with the
+// high bit set, which would otherwise wrap negative through int64 and poison
+// every downstream size sum and comparison.
+func TestAttachmentListRejectsBadSizes(t *testing.T) {
+	require := require.New(t)
+
+	_, err := EncodeAttachmentList([]ContentRef{{Hash: blobID("a").String(), Size: -1}})
+	require.ErrorContains(err, "negative size")
+
+	data, err := EncodeAttachmentList([]ContentRef{{Hash: blobID("a").String(), Size: 1}})
+	require.NoError(err)
+	// Forge the stored size to 2^63 and re-seal the integrity trailer, so
+	// only the size guard itself can reject the list.
+	body := append([]byte{}, data[:len(data)-trailerHashLen]...)
+	const header = 4 + 2 + 4
+	binary.LittleEndian.PutUint64(body[header+32:header+40], 1<<63)
+	sum := sha256.Sum256(body)
+	_, err = DecodeAttachmentList(append(body, sum[:]...))
+	require.ErrorContains(err, "overflows int64")
 }
 
 func TestCaptureAttachments(t *testing.T) {

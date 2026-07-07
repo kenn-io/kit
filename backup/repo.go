@@ -22,6 +22,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -200,12 +201,31 @@ func (r *Repo) CleanStaging() error {
 		// points.
 		return fmt.Errorf("backup: staging path %s is not a directory; refusing to clean it", staging)
 	}
-	entries, err := os.ReadDir(staging)
+	// The enumeration and removals must not resolve the staging path again: a
+	// symlink swapped in after the Lstat above would send them into its
+	// target. Hold a descriptor-confined root, prove it is the same directory
+	// the Lstat saw (OpenRoot follows a final-component symlink; SameFile
+	// against the lstat'd inode closes that race), and remove entries through
+	// the root only.
+	root, err := os.OpenRoot(staging)
+	if err != nil {
+		return fmt.Errorf("backup: opening staging dir: %w", err)
+	}
+	defer func() { _ = root.Close() }()
+	held, err := root.Stat(".")
+	if err != nil {
+		return fmt.Errorf("backup: checking staging dir: %w", err)
+	}
+	if !os.SameFile(info, held) {
+		return fmt.Errorf(
+			"backup: staging path %s was replaced while opening it; refusing to clean it", staging)
+	}
+	entries, err := fs.ReadDir(root.FS(), ".")
 	if err != nil {
 		return fmt.Errorf("backup: reading staging dir: %w", err)
 	}
 	for _, e := range entries {
-		if err := os.RemoveAll(r.Path(stagingDirName, e.Name())); err != nil {
+		if err := root.RemoveAll(e.Name()); err != nil {
 			return fmt.Errorf("backup: cleaning staging entry %s: %w",
 				e.Name(), err)
 		}

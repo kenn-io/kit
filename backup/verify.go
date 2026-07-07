@@ -95,6 +95,7 @@ func Verify(ctx context.Context, r *Repo, app App, opts VerifyOptions) (*VerifyR
 		checked:       map[pack.BlobID]bool{},
 		readDone:      map[pack.BlobID]bool{},
 		readVerdict:   map[pack.BlobID]string{},
+		readLen:       map[pack.BlobID]int64{},
 		pendingSet:    map[pack.BlobID]bool{},
 		result:        &VerifyResult{},
 		progress:      newProgressEmitter(opts.Progress),
@@ -120,6 +121,10 @@ func Verify(ctx context.Context, r *Repo, app App, opts VerifyOptions) (*VerifyR
 		if err := st.drainContentReads(ctx); err != nil {
 			return nil, err
 		}
+		// Runs after the drain even when it queued nothing: blobs verified by
+		// an earlier snapshot are memoized, but this snapshot's listed sizes
+		// still need checking against them.
+		st.checkAttachmentSizes()
 	}
 	// Full mode's final tick closes out the same cumulative drain counters
 	// the bar advanced with; BlobsChecked dedupes blobs shared across
@@ -196,6 +201,7 @@ type verifyState struct {
 	checked      map[pack.BlobID]bool
 	readDone     map[pack.BlobID]bool
 	readVerdict  map[pack.BlobID]string // "" ok, else the cached problem detail
+	readLen      map[pack.BlobID]int64  // actual content length of cleanly read blobs
 	contentReads int
 	result       *VerifyResult
 	progress     *progressEmitter
@@ -204,6 +210,12 @@ type verifyState struct {
 	// the drain; pendingSet dedupes repeat references within one snapshot.
 	pendingReads []pendingRead
 	pendingSet   map[pack.BlobID]bool
+	// pendingSizeChecks queues the current snapshot's listed attachment sizes
+	// for comparison against the drained blobs' actual lengths. It is kept
+	// separate from pendingReads because reads are memoized across snapshots
+	// while every snapshot's listed sizes must be checked against the blob it
+	// references.
+	pendingSizeChecks []attachmentSizeCheck
 	// drainDone/drainTotal drive full-mode progress: blobs processed and
 	// blobs queued, cumulative across every drain in the run so a multi-
 	// snapshot verify never moves backward. Guarded by mu while workers run.
@@ -220,6 +232,14 @@ type verifyState struct {
 type pendingRead struct {
 	id         pack.BlobID
 	snapshotID string
+}
+
+// attachmentSizeCheck is one attachment-list entry's recorded size, checked
+// against the referenced blob's actual content length after the drain.
+type attachmentSizeCheck struct {
+	id         pack.BlobID
+	snapshotID string
+	want       int64
 }
 
 func (s *verifyState) closeReaders() {
@@ -510,7 +530,8 @@ func (s *verifyState) verifyGroupBlob(
 		s.result.BlobsChecked++
 	}
 	s.mu.Unlock()
-	if _, err := pr.ReadBlob(*entry); err != nil {
+	raw, err := pr.ReadBlob(*entry)
+	if err != nil {
 		fail(fmt.Sprintf("reading blob %s from pack %s: %v", rd.id, packID, err))
 		return
 	}
@@ -521,9 +542,36 @@ func (s *verifyState) verifyGroupBlob(
 		s.result.BytesRead += int64(entry.RawLen) //nolint:gosec // raw lengths fit int64
 	}
 	s.readVerdict[rd.id] = ""
+	// The read re-derived the blob's SHA-256 identity, so this length is the
+	// authenticated content length; checkAttachmentSizes compares listed
+	// sizes against it.
+	s.readLen[rd.id] = int64(len(raw))
 	s.contentReads++
 	s.drainDone++
 	s.emitDrainProgressLocked()
+}
+
+// checkAttachmentSizes compares every listed attachment size the current
+// snapshot queued against the referenced blob's actual, hash-authenticated
+// content length. Restore refuses a blob whose length disagrees with its
+// list entry, so verify must flag the same forgery — a list and manifest
+// whose sizes are wrong but internally consistent would otherwise verify
+// cleanly and still be unrestorable. Runs after drainContentReads; blobs
+// whose read already failed (or never ran, on a canceled drain) are skipped
+// because their read problem is the more fundamental report.
+func (s *verifyState) checkAttachmentSizes() {
+	for _, c := range s.pendingSizeChecks {
+		verdict, read := s.readVerdict[c.id]
+		if !read || verdict != "" {
+			continue
+		}
+		if got := s.readLen[c.id]; got != c.want {
+			s.problem(c.snapshotID, fmt.Sprintf(
+				"attachment blob %s is %d bytes but its list records %d; restore would refuse this snapshot",
+				c.id, got, c.want))
+		}
+	}
+	s.pendingSizeChecks = s.pendingSizeChecks[:0]
 }
 
 // emitDrainProgressLocked reports the current drain's blob progress and
@@ -669,6 +717,11 @@ func (s *verifyState) checkAttachmentLists(m *Manifest) []ContentRef {
 				continue
 			}
 			s.verifyContentBlob(contentID, m.SnapshotID)
+			if !s.quick {
+				s.pendingSizeChecks = append(s.pendingSizeChecks, attachmentSizeCheck{
+					id: contentID, snapshotID: m.SnapshotID, want: ref.Size,
+				})
+			}
 		}
 	}
 	return refs

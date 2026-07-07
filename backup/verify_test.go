@@ -29,6 +29,7 @@ func newTestVerifyState(t *testing.T, r *Repo, quick bool) *verifyState {
 		checked:     map[pack.BlobID]bool{},
 		readDone:    map[pack.BlobID]bool{},
 		readVerdict: map[pack.BlobID]string{},
+		readLen:     map[pack.BlobID]int64{},
 		pendingSet:  map[pack.BlobID]bool{},
 		result:      &VerifyResult{},
 	}
@@ -357,6 +358,39 @@ func TestVerifyMemoizesSharedContentReads(t *testing.T) {
 	require.Empty(st2.result.Problems)
 	assert.Equal(st1.contentReads, st2.contentReads,
 		"snapshot 2 shares all content, so memoization adds no new full reads")
+}
+
+// TestVerifyFlagsForgedAttachmentListSize pins that full verify compares each
+// listed attachment size against the blob's hash-authenticated content
+// length: restore refuses a size mismatch, so a forged-but-internally-
+// consistent list must not verify cleanly. The forged size check is injected
+// at the state level because a real forgery would require recomputing pack,
+// index, and manifest identities wholesale.
+func TestVerifyFlagsForgedAttachmentListSize(t *testing.T) {
+	require := require.New(t)
+	r, m := buildVerifyFixture(t)
+	known, err := r.LoadBlobIndex()
+	require.NoError(err)
+	refs, _, err := LoadListRefs(r, known, m.Attachments.Lists, nil, newTestApp().PackFileExtension())
+	require.NoError(err)
+	require.NotEmpty(refs)
+
+	ctx := context.Background()
+	st := newTestVerifyState(t, r, false)
+	st.verifySnapshot(m)
+	require.NoError(st.drainContentReads(ctx))
+	st.checkAttachmentSizes()
+	require.Empty(st.result.Problems, "honest sizes must verify cleanly")
+
+	id, err := pack.ParseBlobID(refs[0].Hash)
+	require.NoError(err)
+	st.pendingSizeChecks = append(st.pendingSizeChecks, attachmentSizeCheck{
+		id: id, snapshotID: m.SnapshotID, want: refs[0].Size + 1,
+	})
+	st.checkAttachmentSizes()
+	require.Len(st.result.Problems, 1)
+	require.Contains(st.result.Problems[0].Detail, "but its list records")
+	require.Empty(st.pendingSizeChecks, "processed checks must not leak into the next snapshot")
 }
 
 // TestVerifyDetectsHashMapGeometryMismatch pins Minor 11: full verify compares
