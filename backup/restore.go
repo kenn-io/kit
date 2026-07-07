@@ -17,6 +17,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/text/unicode/norm"
+
 	"go.kenn.io/kit/pack"
 )
 
@@ -1223,11 +1225,13 @@ func (s *restoreState) removeStagedFiles(staged []stagedFile) {
 
 // foldedPathKey is the collision key restore uses to detect distinct archive
 // paths that alias one file on the restoring host: case-insensitive
-// filesystems (default macOS, Windows) fold "A/b" and "a/b" onto one file, so
-// the key case-folds the cleaned OS form of the path. Both the attachment and
-// extras collision checks must use this same key.
+// filesystems (default macOS, Windows) fold "A/b" and "a/b" onto one file,
+// and normalization-insensitive ones (APFS, HFS+) additionally resolve the
+// NFC and NFD spellings of a name to one file — so the key Unicode-normalizes
+// the cleaned OS form of the path before case-folding it. Both the attachment
+// and extras collision checks must use this same key.
 func foldedPathKey(rel string) string {
-	return strings.ToLower(filepath.Clean(filepath.FromSlash(rel)))
+	return strings.ToLower(norm.NFC.String(filepath.Clean(filepath.FromSlash(rel))))
 }
 
 // checkExtrasCollisions rejects an extras tree in which two entries resolve

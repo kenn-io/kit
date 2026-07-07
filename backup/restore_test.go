@@ -1263,6 +1263,14 @@ func TestCheckExtrasCollisionsRejectsAliasingPaths(t *testing.T) {
 
 	err = checkExtrasCollisions([]ExtrasEntry{{Path: "tokens/./a"}, {Path: "tokens/a"}})
 	require.ErrorContains(err, "collide under case-folded key")
+
+	// Unicode-normalization aliases: APFS and HFS+ resolve the NFC ("é") and
+	// NFD ("e" + combining acute) spellings of a name to one file, so the two
+	// must collide under the key even though they differ byte-for-byte.
+	err = checkExtrasCollisions([]ExtrasEntry{
+		{Path: "tokens/caf\u00e9.json"}, {Path: "tokens/cafe\u0301.json"},
+	})
+	require.ErrorContains(err, "collide under case-folded key")
 }
 
 // TestVerifyHeldTargetDetectsReplacedTarget pins the re-verification that
