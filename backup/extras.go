@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"go.kenn.io/kit/pack"
 )
@@ -36,6 +38,100 @@ type ExtrasTree struct {
 	Entries []ExtrasEntry `json:"entries"`
 }
 
+// enterExtrasDir opens one directory component beneath cur as its own root,
+// refusing symlinks: the component must lstat as a real directory and the
+// opened descriptor must be that same inode, so a symlink present before the
+// lstat and one raced in before the open both fail instead of being followed.
+func enterExtrasDir(cur *os.Root, comp string) (*os.Root, error) {
+	li, err := cur.Lstat(comp)
+	if err != nil {
+		return nil, err
+	}
+	if li.Mode()&os.ModeSymlink != 0 || !li.IsDir() {
+		return nil, fmt.Errorf("path component %q is not a real directory", comp)
+	}
+	sub, err := cur.OpenRoot(comp)
+	if err != nil {
+		return nil, err
+	}
+	held, err := sub.Stat(".")
+	if err != nil {
+		_ = sub.Close()
+		return nil, err
+	}
+	if !os.SameFile(li, held) {
+		_ = sub.Close()
+		return nil, fmt.Errorf("path component %q changed during capture", comp)
+	}
+	return sub, nil
+}
+
+// readExtrasLeafNoFollow reads one file directly inside dir, refusing a
+// symlink at the name: the lstat rejects one present up front, and SameFile
+// against the opened descriptor rejects one raced in between lstat and open.
+func readExtrasLeafNoFollow(dir *os.Root, name string) ([]byte, os.FileInfo, error) {
+	li, err := dir.Lstat(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !li.Mode().IsRegular() {
+		return nil, nil, fmt.Errorf("%q is not a regular file", name)
+	}
+	f, err := dir.Open(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	if !os.SameFile(li, info) {
+		return nil, nil, fmt.Errorf("%q changed during capture", name)
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, nil, err
+	}
+	return data, info, nil
+}
+
+// readExtrasNoFollow reads rel beneath root with symlink resolution refused
+// at every path component. Unlike attachment reads — whose bytes are
+// hash-verified against the database's recorded content hash, so a raced-in
+// symlink yields a loud mismatch — extras have no expected hash: a symlink
+// swapped in after the capture walk's lstat check could silently pull other
+// in-DataDir files (tokens, client secrets) into the snapshot under a
+// deletions path even when their capture is disabled. os.Root only refuses
+// symlinks that escape the root, so each directory component is entered
+// through its own verified sub-root and the leaf is tied to its lstat by
+// descriptor identity; a swap at any component fails closed instead of being
+// followed.
+func readExtrasNoFollow(root *os.Root, rel string) ([]byte, os.FileInfo, error) {
+	rel = filepath.Clean(rel)
+	if !filepath.IsLocal(rel) {
+		return nil, nil, fmt.Errorf("extras path %q is not local", rel)
+	}
+	cur := root
+	defer func() {
+		if cur != root {
+			_ = cur.Close()
+		}
+	}()
+	comps := strings.Split(filepath.ToSlash(rel), "/")
+	for _, comp := range comps[:len(comps)-1] {
+		sub, err := enterExtrasDir(cur, comp)
+		if err != nil {
+			return nil, nil, err
+		}
+		if cur != root {
+			_ = cur.Close()
+		}
+		cur = sub
+	}
+	return readExtrasLeafNoFollow(cur, comps[len(comps)-1])
+}
+
 // CaptureExtras stores extras file blobs and the tree object.
 func CaptureExtras(opts ExtrasOptions, appender *PackAppender) (pack.BlobID, bool, error) {
 	// config.toml carries API keys (server.api_key) verbatim and the tokens
@@ -60,8 +156,11 @@ func CaptureExtras(opts ExtrasOptions, appender *PackAppender) (pack.BlobID, boo
 	// file swapped for a symlink between the walk/glob check and the read (a
 	// TOCTOU the plain os.ReadFile below used to lose) cannot pull a host file
 	// from outside DataDir into the extras blob. os.Root refuses any path that
-	// escapes the root, and readRegularFile fstats the opened descriptor. This
-	// mirrors the attachment capture confinement.
+	// escapes the root, and readExtrasNoFollow additionally refuses symlink
+	// resolution at every path component, so a raced-in symlink cannot
+	// redirect the read even to a target still inside DataDir — extras bytes
+	// carry no expected hash, so unlike attachment reads a redirect would be
+	// silent.
 	var dataRoot *os.Root
 	if opts.DataDir != "" {
 		dr, err := os.OpenRoot(opts.DataDir)
@@ -74,12 +173,12 @@ func CaptureExtras(opts ExtrasOptions, appender *PackAppender) (pack.BlobID, boo
 		}
 	}
 	var entries []ExtrasEntry
-	// addFile reads recordPath's bytes through readRoot (confined so a symlink
-	// swapped in for a checked regular file cannot escape it) and records the
-	// tree entry under recordPath. readRel is recordPath's location relative to
+	// addFile reads recordPath's bytes through readRoot with no symlink
+	// resolution at any component (readExtrasNoFollow) and records the tree
+	// entry under recordPath. readRel is recordPath's location relative to
 	// readRoot.
 	addFile := func(readRoot *os.Root, readRel, recordPath string) error {
-		content, info, err := readRegularFile(readRoot, readRel)
+		content, info, err := readExtrasNoFollow(readRoot, readRel)
 		if err != nil {
 			return fmt.Errorf("backup: reading extras file %s: %w", recordPath, err)
 		}

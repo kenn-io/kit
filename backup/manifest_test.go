@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -258,6 +259,29 @@ func TestLoadManifestRejectsMalformedSnapshotID(t *testing.T) {
 		_, err := repo.LoadManifest(id)
 		require.ErrorContains(err, "not a valid snapshot ID", "id %q", id)
 	}
+}
+
+// TestLoadManifestRejectsUnknownFields pins the fixed-field contract: the
+// snapshot-ID recompute hashes only the fields this reader knows, so an
+// unknown field added to a stored manifest would ride along without
+// affecting the ID — smuggling data into a file that still authenticates,
+// where a newer reader that does know the field would trust it. A manifest
+// claiming a readable min_reader_version must therefore contain only known
+// fields.
+func TestLoadManifestRejectsUnknownFields(t *testing.T) {
+	require := require.New(t)
+	repo := initTestRepo(t)
+
+	id, err := repo.WriteManifest(testManifest("2026-07-03T12:30:15Z", "", 0))
+	require.NoError(err)
+	path := repo.Path(snapshotsDirName, id+manifestExt)
+	data, err := os.ReadFile(path)
+	require.NoError(err)
+
+	doctored := bytes.Replace(data, []byte("{"), []byte(`{"smuggled_field": "x",`), 1)
+	require.NoError(os.WriteFile(path, doctored, 0o600))
+	_, err = repo.LoadManifest(id)
+	require.ErrorContains(err, "fields this reader does not know")
 }
 
 // TestLoadManifestRecomputesIDWithRawStats guards the json.RawMessage

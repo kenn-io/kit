@@ -981,40 +981,51 @@ func trailingDotOrSpaceComponent(rel string) string {
 	return ""
 }
 
-// restoreExtrasEntry validates and writes one extras file. Entry paths come
-// from a decoded tree blob, so they are re-validated here: only local,
-// relative, traversal-free paths may be written under the target, and never
-// paths that overlap the database or attachments restore already produced.
-func (s *restoreState) restoreExtrasEntry(app App, entry ExtrasEntry) error {
-	// Clean before validating: the final filepath.Join cleans the path
-	// anyway, so validating the raw form would let "safe/../app.db"
-	// pass the reserved-name check below yet still land on a reserved path.
-	rel := filepath.Clean(filepath.FromSlash(entry.Path))
-	if entry.Path == "" || rel == "." || filepath.IsAbs(rel) || !filepath.IsLocal(rel) {
-		return fmt.Errorf("backup: extras entry path %q escapes the restore target", entry.Path)
+// validateExtrasEntryPath checks one extras entry path against the rules
+// restore enforces before writing, returning the cleaned OS-form path the
+// entry restores to. Entry paths come from a decoded tree blob, so they are
+// re-validated: only local, relative, traversal-free paths may be written
+// under the target, and never paths that overlap the database or attachments
+// restore already produced. Verify runs the same checks so a snapshot that
+// restore would refuse cannot verify cleanly.
+//
+// The path is cleaned before validating: the final filepath.Join cleans it
+// anyway, so validating the raw form would let "safe/../app.db" pass the
+// reserved-name check yet still land on a reserved path. Components ending
+// in a dot or space resolve to the trimmed name on Windows, so "content."
+// would alias the reserved content dir past the folded comparison; they are
+// rejected on every platform to keep the guard sound regardless of OS. The
+// reserved names come from the app so a generic application's extras can
+// never overwrite its restored DB or content tree; the comparison is folded
+// because the default macOS filesystem is case-insensitive.
+func validateExtrasEntryPath(path, contentDirName, dbFileName string) (string, error) {
+	rel := filepath.Clean(filepath.FromSlash(path))
+	if path == "" || rel == "." || filepath.IsAbs(rel) || !filepath.IsLocal(rel) {
+		return "", fmt.Errorf("backup: extras entry path %q escapes the restore target", path)
 	}
-	// A component ending in a dot or space resolves to the trimmed name on
-	// Windows, so "content." or "content " would alias the reserved content
-	// dir and slip past the folded comparison below. Reject such components on
-	// every platform: they are pathological in archives everywhere and the
-	// rejection keeps the reserved-name guard sound regardless of OS.
 	if trailingDotOrSpaceComponent(rel) != "" {
-		return fmt.Errorf("backup: extras entry path %q has a component ending in a dot or space", entry.Path)
+		return "", fmt.Errorf("backup: extras entry path %q has a component ending in a dot or space", path)
 	}
-	// Capture never records archive content as an extra, so an entry naming
-	// the restored database, its SQLite sidecars, or the content tree can only
-	// come from a tampered tree blob trying to overwrite already-proven
-	// outputs. The reserved names come from the app so a generic application's
-	// extras can never overwrite its restored DB or content tree. Folded
-	// comparison: the default macOS filesystem is case-insensitive.
-	dbName := app.DBFileName()
 	first, _, _ := strings.Cut(filepath.ToSlash(rel), "/")
 	for _, reserved := range []string{
-		app.ContentDirName(), dbName, dbName + "-wal", dbName + "-shm",
+		contentDirName, dbFileName, dbFileName + "-wal", dbFileName + "-shm",
 	} {
 		if strings.EqualFold(first, reserved) {
-			return fmt.Errorf("backup: extras entry path %q overlaps restored archive content", entry.Path)
+			return "", fmt.Errorf("backup: extras entry path %q overlaps restored archive content", path)
 		}
+	}
+	return rel, nil
+}
+
+// restoreExtrasEntry validates and writes one extras file. Capture never
+// records archive content as an extra, so an entry naming the restored
+// database, its SQLite sidecars, or the content tree can only come from a
+// tampered tree blob trying to overwrite already-proven outputs
+// (validateExtrasEntryPath).
+func (s *restoreState) restoreExtrasEntry(app App, entry ExtrasEntry) error {
+	rel, err := validateExtrasEntryPath(entry.Path, app.ContentDirName(), app.DBFileName())
+	if err != nil {
+		return err
 	}
 	id, err := pack.ParseBlobID(entry.Blob)
 	if err != nil {

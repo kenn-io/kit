@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -139,14 +140,33 @@ func (r *Repo) LoadManifest(id string) (*Manifest, error) {
 	// by a newer format could otherwise be misread as current (e.g. an
 	// encrypted snapshot treated as plaintext). The per-snapshot
 	// min_reader_version gate turns that into an explicit refusal. It must
-	// run before the ID check below: a newer manifest's dropped fields would
-	// fail the ID recomputation with a misleading corruption error.
+	// run before the strict re-decode and the ID check below: a newer
+	// manifest must produce the actionable "upgrade the reader" error, not
+	// an unknown-field or corruption one.
 	if m.MinReaderVersion > SupportedReaderVersion {
 		return nil, fmt.Errorf(
 			"backup: snapshot %s requires reader version %d but this "+
 				"reader supports %d; upgrade the reader",
 			id, m.MinReaderVersion, SupportedReaderVersion)
 	}
+	// A manifest claiming to be readable by this version must contain only
+	// fields this version knows: the ID recompute below hashes the parsed
+	// struct, so an unknown field would ride along in the file without
+	// affecting the ID — letting arbitrary data be smuggled into a manifest
+	// that still authenticates, where a newer reader (which does know the
+	// field) would trust it. Unknown fields inside the opaque Stats payload
+	// stay allowed: RawMessage captures them verbatim and the ID covers them.
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	var strict Manifest
+	if err := dec.Decode(&strict); err != nil {
+		return nil, fmt.Errorf(
+			"backup: snapshot %s carries fields this reader does not know "+
+				"but claims min_reader_version %d; the manifest is forged or "+
+				"its writer failed to bump the version: %w",
+			id, m.MinReaderVersion, err)
+	}
+	m = strict
 	// The snapshot ID is content-derived, so recomputing it authenticates
 	// every manifest field against the filename. Without this, corrupted or
 	// hand-edited manifest metadata would be accepted by list, latest, and

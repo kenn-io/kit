@@ -55,6 +55,42 @@ func TestCaptureExtrasDeletionsAndConfig(t *testing.T) {
 	}
 }
 
+// TestReadExtrasNoFollowRejectsSymlinks pins that extras reads never resolve
+// a symlink at any path component, even one whose target stays inside the
+// root: extras bytes carry no expected hash, so a followed link would
+// silently capture another in-DataDir file (tokens, client secrets) under a
+// deletions path. The capture walk rejects pre-existing links; this reader
+// is the guard for links raced in after the walk, so it must reject them
+// independently.
+func TestReadExtrasNoFollowRejectsSymlinks(t *testing.T) {
+	require := require.New(t)
+	dir := t.TempDir()
+	require.NoError(os.MkdirAll(filepath.Join(dir, "real"), 0o700))
+	require.NoError(os.WriteFile(filepath.Join(dir, "real", "f.json"), []byte("ok"), 0o600))
+	require.NoError(os.WriteFile(filepath.Join(dir, "secret.json"), []byte("token bytes"), 0o600))
+	if err := os.Symlink(filepath.Join(dir, "secret.json"), filepath.Join(dir, "real", "link.json")); err != nil {
+		t.Skip("symlinks not supported on this platform")
+	}
+	require.NoError(os.Symlink(filepath.Join(dir, "real"), filepath.Join(dir, "dirlink")))
+
+	root, err := os.OpenRoot(dir)
+	require.NoError(err)
+	defer func() { _ = root.Close() }()
+
+	content, _, err := readExtrasNoFollow(root, filepath.Join("real", "f.json"))
+	require.NoError(err)
+	require.Equal([]byte("ok"), content)
+
+	// A symlink leaf inside the root must be refused, not followed to its
+	// in-root target.
+	_, _, err = readExtrasNoFollow(root, filepath.Join("real", "link.json"))
+	require.ErrorContains(err, "not a regular file")
+
+	// A symlinked directory component inside the root must be refused too.
+	_, _, err = readExtrasNoFollow(root, filepath.Join("dirlink", "f.json"))
+	require.ErrorContains(err, "not a real directory")
+}
+
 func TestCaptureExtrasEmpty(t *testing.T) {
 	require := require.New(t)
 	r := initTestRepo(t)

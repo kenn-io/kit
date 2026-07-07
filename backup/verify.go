@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"strings"
 	"sync"
 
 	"go.kenn.io/kit/pack"
@@ -122,9 +123,9 @@ func Verify(ctx context.Context, r *Repo, app App, opts VerifyOptions) (*VerifyR
 			return nil, err
 		}
 		// Runs after the drain even when it queued nothing: blobs verified by
-		// an earlier snapshot are memoized, but this snapshot's listed sizes
-		// still need checking against them.
-		st.checkAttachmentSizes()
+		// an earlier snapshot are memoized, but this snapshot's recorded
+		// sizes still need checking against them.
+		st.checkListedSizes()
 	}
 	// Full mode's final tick closes out the same cumulative drain counters
 	// the bar advanced with; BlobsChecked dedupes blobs shared across
@@ -210,12 +211,13 @@ type verifyState struct {
 	// the drain; pendingSet dedupes repeat references within one snapshot.
 	pendingReads []pendingRead
 	pendingSet   map[pack.BlobID]bool
-	// pendingSizeChecks queues the current snapshot's listed attachment sizes
-	// for comparison against the drained blobs' actual lengths. It is kept
-	// separate from pendingReads because reads are memoized across snapshots
-	// while every snapshot's listed sizes must be checked against the blob it
+	// pendingSizeChecks queues the current snapshot's recorded sizes
+	// (attachment list entries and extras tree entries) for comparison
+	// against the drained blobs' actual lengths. It is kept separate from
+	// pendingReads because reads are memoized across snapshots while every
+	// snapshot's recorded sizes must be checked against the blob it
 	// references.
-	pendingSizeChecks []attachmentSizeCheck
+	pendingSizeChecks []listedSizeCheck
 	// drainDone/drainTotal drive full-mode progress: blobs processed and
 	// blobs queued, cumulative across every drain in the run so a multi-
 	// snapshot verify never moves backward. Guarded by mu while workers run.
@@ -234,12 +236,15 @@ type pendingRead struct {
 	snapshotID string
 }
 
-// attachmentSizeCheck is one attachment-list entry's recorded size, checked
-// against the referenced blob's actual content length after the drain.
-type attachmentSizeCheck struct {
+// listedSizeCheck is one recorded size — an attachment list entry's or an
+// extras tree entry's — checked against the referenced blob's actual content
+// length after the drain.
+type listedSizeCheck struct {
 	id         pack.BlobID
 	snapshotID string
 	want       int64
+	what       string // the referencing record, e.g. `attachment blob <id>`
+	source     string // where the size is recorded: "list" or "tree"
 }
 
 func (s *verifyState) closeReaders() {
@@ -551,15 +556,16 @@ func (s *verifyState) verifyGroupBlob(
 	s.emitDrainProgressLocked()
 }
 
-// checkAttachmentSizes compares every listed attachment size the current
-// snapshot queued against the referenced blob's actual, hash-authenticated
-// content length. Restore refuses a blob whose length disagrees with its
-// list entry, so verify must flag the same forgery — a list and manifest
-// whose sizes are wrong but internally consistent would otherwise verify
-// cleanly and still be unrestorable. Runs after drainContentReads; blobs
-// whose read already failed (or never ran, on a canceled drain) are skipped
-// because their read problem is the more fundamental report.
-func (s *verifyState) checkAttachmentSizes() {
+// checkListedSizes compares every recorded size the current snapshot queued
+// (attachment list entries, extras tree entries) against the referenced
+// blob's actual, hash-authenticated content length. Restore refuses a blob
+// whose length disagrees with its record, so verify must flag the same
+// forgery — a record and manifest whose sizes are wrong but internally
+// consistent would otherwise verify cleanly and still be unrestorable. Runs
+// after drainContentReads; blobs whose read already failed (or never ran, on
+// a canceled drain) are skipped because their read problem is the more
+// fundamental report.
+func (s *verifyState) checkListedSizes() {
 	for _, c := range s.pendingSizeChecks {
 		verdict, read := s.readVerdict[c.id]
 		if !read || verdict != "" {
@@ -567,8 +573,8 @@ func (s *verifyState) checkAttachmentSizes() {
 		}
 		if got := s.readLen[c.id]; got != c.want {
 			s.problem(c.snapshotID, fmt.Sprintf(
-				"attachment blob %s is %d bytes but its list records %d; restore would refuse this snapshot",
-				c.id, got, c.want))
+				"%s is %d bytes but its %s records %d; restore would refuse this snapshot",
+				c.what, got, c.source, c.want))
 		}
 	}
 	s.pendingSizeChecks = s.pendingSizeChecks[:0]
@@ -718,8 +724,9 @@ func (s *verifyState) checkAttachmentLists(m *Manifest) []ContentRef {
 			}
 			s.verifyContentBlob(contentID, m.SnapshotID)
 			if !s.quick {
-				s.pendingSizeChecks = append(s.pendingSizeChecks, attachmentSizeCheck{
+				s.pendingSizeChecks = append(s.pendingSizeChecks, listedSizeCheck{
 					id: contentID, snapshotID: m.SnapshotID, want: ref.Size,
+					what: fmt.Sprintf("attachment blob %s", contentID), source: "list",
 				})
 			}
 		}
@@ -769,12 +776,31 @@ func (s *verifyState) checkExtrasTree(m *Manifest) {
 		s.problem(m.SnapshotID, fmt.Sprintf("extras tree %s: %v", id, err))
 		return
 	}
+	// Restore refuses escaping, reserved-overlapping, and colliding extras
+	// paths and any size mismatch, so verify must flag the same trees — a
+	// tampered tree would otherwise verify cleanly and fail restore, possibly
+	// after partial materialization. Path and collision checks are structural
+	// and run in both modes; sizes are checked against hash-authenticated
+	// content lengths in full mode (checkListedSizes).
+	if err := checkExtrasCollisions(tree.Entries); err != nil {
+		s.problem(m.SnapshotID, strings.TrimPrefix(err.Error(), "backup: "))
+	}
 	for _, entry := range tree.Entries {
+		if _, err := validateExtrasEntryPath(entry.Path, s.app.ContentDirName(), s.app.DBFileName()); err != nil {
+			s.problem(m.SnapshotID, strings.TrimPrefix(err.Error(), "backup: "))
+		}
 		blobID, err := pack.ParseBlobID(entry.Blob)
 		if err != nil {
 			s.problem(m.SnapshotID, fmt.Sprintf("extras entry %s blob id %q: %v", entry.Path, entry.Blob, err))
 			continue
 		}
 		s.verifyContentBlob(blobID, m.SnapshotID)
+		if !s.quick {
+			s.pendingSizeChecks = append(s.pendingSizeChecks, listedSizeCheck{
+				id: blobID, snapshotID: m.SnapshotID, want: entry.Size,
+				what:   fmt.Sprintf("extras entry %q blob %s", entry.Path, blobID),
+				source: "tree",
+			})
+		}
 	}
 }

@@ -379,18 +379,66 @@ func TestVerifyFlagsForgedAttachmentListSize(t *testing.T) {
 	st := newTestVerifyState(t, r, false)
 	st.verifySnapshot(m)
 	require.NoError(st.drainContentReads(ctx))
-	st.checkAttachmentSizes()
+	st.checkListedSizes()
 	require.Empty(st.result.Problems, "honest sizes must verify cleanly")
 
 	id, err := pack.ParseBlobID(refs[0].Hash)
 	require.NoError(err)
-	st.pendingSizeChecks = append(st.pendingSizeChecks, attachmentSizeCheck{
+	st.pendingSizeChecks = append(st.pendingSizeChecks, listedSizeCheck{
 		id: id, snapshotID: m.SnapshotID, want: refs[0].Size + 1,
+		what: "attachment blob " + id.String(), source: "list",
 	})
-	st.checkAttachmentSizes()
+	st.checkListedSizes()
 	require.Len(st.result.Problems, 1)
 	require.Contains(st.result.Problems[0].Detail, "but its list records")
 	require.Empty(st.pendingSizeChecks, "processed checks must not leak into the next snapshot")
+}
+
+// TestVerifyFlagsBadExtrasTree pins restore/verify parity for extras trees:
+// escaping paths, reserved-name overlaps, case-folded path collisions, and
+// recorded sizes that disagree with the blob's actual content length all
+// make restore refuse the snapshot, so verify must flag each of them rather
+// than pass a tree that later fails restore after partial materialization.
+func TestVerifyFlagsBadExtrasTree(t *testing.T) {
+	require := require.New(t)
+	r := initTestRepo(t)
+
+	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
+	payload := []byte("payload")
+	blob, _, err := appender.Add(payload)
+	require.NoError(err)
+	tree := ExtrasTree{Entries: []ExtrasEntry{
+		{Path: "../escape", Blob: blob.String(), Size: int64(len(payload))},
+		{Path: "app.db", Blob: blob.String(), Size: int64(len(payload))},
+		{Path: "tokens/A", Blob: blob.String(), Size: int64(len(payload))},
+		{Path: "tokens/a", Blob: blob.String(), Size: int64(len(payload))},
+		{Path: "ok/file.json", Blob: blob.String(), Size: int64(len(payload)) + 1},
+	}}
+	raw, err := json.Marshal(&tree)
+	require.NoError(err)
+	treeID, _, err := appender.Add(raw)
+	require.NoError(err)
+	_, entries, err := appender.Finish()
+	require.NoError(err)
+	_, err = r.WriteIndex(entries)
+	require.NoError(err)
+
+	st := newTestVerifyState(t, r, false)
+	m := &Manifest{SnapshotID: "test-snapshot", Extras: ManifestExtras{Tree: treeID.String()}}
+	st.checkExtrasTree(m)
+	require.NoError(st.drainContentReads(context.Background()))
+	st.checkListedSizes()
+
+	var details []string
+	for _, p := range st.result.Problems {
+		details = append(details, p.Detail)
+	}
+	joined := strings.Join(details, "\n")
+	require.Contains(joined, "escapes the restore target")
+	require.Contains(joined, "overlaps restored archive content")
+	require.Contains(joined, "collide under case-folded key")
+	require.Contains(joined, `extras entry "ok/file.json"`)
+	require.Contains(joined, "but its tree records")
 }
 
 // TestVerifyDetectsHashMapGeometryMismatch pins Minor 11: full verify compares
