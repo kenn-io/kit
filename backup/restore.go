@@ -29,9 +29,10 @@ type RestoreOptions struct {
 	// restored files replace same-named ones, files the snapshot does not
 	// carry are left in place, and the existing database and its SQLite
 	// sidecars survive until the replacement database is fully materialized
-	// and page-verified — only then are the sidecars removed (a stale -wal,
-	// -shm, or -journal would otherwise be replayed over the restored file on
-	// its first normal open) and the database renamed into place.
+	// and every attachment and extras blob has been read and verified — only
+	// then are the sidecars removed (a stale -wal, -shm, or -journal would
+	// otherwise be replayed over the restored file on its first normal open)
+	// and the database renamed into place.
 	TargetDir string
 	Overwrite bool
 	// Jobs is the number of concurrent pack-read workers. Zero or negative
@@ -122,8 +123,9 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (*Resto
 	// through the index and that the extras tree's paths are restorable, so
 	// a corrupt repository or missing index fails here. Failures the index
 	// cannot reveal (unreadable pack bytes) are covered by ordering instead:
-	// restoreDB touches the target's database and sidecars only after every
-	// page has been read, hash-verified, and written to its staging temp.
+	// the target's database and sidecars are touched only after every
+	// content blob — pages, attachments, extras — has been read and
+	// verified (publishRestoredDB).
 	hm, pm, err := st.materializeMaps(m)
 	if err != nil {
 		return nil, err
@@ -150,9 +152,22 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (*Resto
 		DBPath:     filepath.Join(opts.TargetDir, app.DBFileName()),
 		DBBytes:    int64(pm.PageCount * uint64(pm.PageSize)), //nolint:gosec // geometry checked against the manifest
 	}
-	if err := st.restoreDB(ctx, app.DBFileName(), pm, hm); err != nil {
+	// The database stays in its staging temp until attachments and extras
+	// have fully materialized: every one of those reads re-derives its
+	// blob's SHA-256, so an unreadable or corrupt content pack — which the
+	// index-membership preflight cannot see — fails the restore before
+	// publishRestoredDB touches an Overwrite target's existing database.
+	tmpRel, err := st.restoreDB(ctx, app.DBFileName(), pm, hm)
+	if err != nil {
 		return nil, err
 	}
+	st.dbRead = tmpRel
+	published := false
+	defer func() {
+		if !published {
+			_ = st.root.Remove(tmpRel)
+		}
+	}()
 	res.AttachmentBlobs, res.AttachmentBytes, err = st.restoreAttachments(
 		ctx, app, m, app.ContentDirName())
 	if err != nil {
@@ -161,6 +176,11 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (*Resto
 	if res.ExtrasFiles, err = st.restoreExtras(app, m); err != nil {
 		return nil, err
 	}
+	if err := st.publishRestoredDB(tmpRel, app.DBFileName()); err != nil {
+		return nil, err
+	}
+	published = true
+	st.dbRead = app.DBFileName()
 
 	// The proof has two visible steps: integrity_check (which reads the
 	// whole restored database inside SQLite and dominates on large
@@ -259,16 +279,16 @@ func sqliteSidecarNames(dbFileName string) []string {
 }
 
 // removeStaleDBSidecars removes any SQLite sidecar files sitting next to the
-// target database. restoreDB calls it immediately before renaming the fully
-// materialized replacement into place — after every page blob has been read,
-// hash-verified, and written — so a repository whose content turns out to be
-// missing or corrupt fails while an Overwrite target's live database AND its
-// sidecars are still intact. The removal must precede the rename, not follow
-// it: a stale -wal/-shm pair or hot -journal next to the restored database
-// would be replayed over the proven bytes on its first normal (non-immutable)
-// open, so a crash between the two steps must not leave both the new database
-// and an old sidecar behind. Removing through the root unlinks, never
-// follows, a symlink planted at those names.
+// target database. publishRestoredDB calls it immediately before renaming
+// the fully materialized replacement into place — after every content blob
+// (pages, attachments, extras) has been read and verified — so a repository
+// whose content turns out to be missing or corrupt fails while an Overwrite
+// target's live database AND its sidecars are still intact. The removal must
+// precede the rename, not follow it: a stale -wal/-shm pair or hot -journal
+// next to the restored database would be replayed over the proven bytes on
+// its first normal (non-immutable) open, so a crash between the two steps
+// must not leave both the new database and an old sidecar behind. Removing
+// through the root unlinks, never follows, a symlink planted at those names.
 func removeStaleDBSidecars(root *os.Root, dbFileName string) error {
 	for _, name := range sqliteSidecarNames(dbFileName) {
 		if err := root.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -308,9 +328,9 @@ func prepareRestoreTarget(target string, overwrite bool, dbFileName string) (*os
 		return root, nil
 	}
 	// Overwrite merges rather than clearing the tree; even the existing
-	// database and its SQLite sidecars survive until restoreDB has fully
-	// materialized and verified the replacement (removeStaleDBSidecars), so
-	// a source failure mid-restore leaves the live database usable.
+	// database and its SQLite sidecars survive until every content blob has
+	// been read and verified and publishRestoredDB swaps the replacement in,
+	// so a source failure mid-restore leaves the live database usable.
 	//
 	// A restore killed mid-run leaves the database's staging temp
 	// (<db>.restore-<ulid>, restoreDB) at the target root; a later overwrite
@@ -402,6 +422,11 @@ type restoreState struct {
 	// so verifyHeldTarget re-ties that path to root around each one.
 	root   *os.Root
 	target string
+	// dbRead is the relative name read-only database opens use: the staging
+	// temp while the restored database awaits publication (content-path
+	// derivation during restoreAttachments), the final database name after
+	// publishRestoredDB (the proof queries).
+	dbRead string
 
 	mu       sync.Mutex
 	firstErr error
@@ -538,30 +563,35 @@ type blobRuns struct {
 	runs []PageRun
 }
 
-// restoreDB materializes the database file: every page-map run is written at
+// restoreDB materializes the database file into a staging temp inside the
+// root and returns the temp's name: every page-map run is written at
 // page*page_size, and every page is hash-verified against the page-hash map
 // while its blob is still in memory. Work is grouped by pack, s.jobs packs
 // in flight; the file writes are disjoint pwrite calls, safe concurrently.
-func (s *restoreState) restoreDB(ctx context.Context, dbRel string, pm *PageMap, hm *PageHashMap) error {
-	// Write into a fresh, unpredictably named temp inside the root, then rename
-	// it over dbRel: a preexisting symlink at dbRel is replaced rather than
-	// followed, and the concurrent pwrite workers below never touch dbRel
-	// itself until the proven bytes are complete.
+// The temp is NOT renamed over dbRel here — publishRestoredDB does that
+// only after the snapshot's attachment and extras content has also been
+// read and verified, so any unreadable content blob fails the restore
+// while an Overwrite target's existing database is still intact. On error
+// the temp is removed; on success the caller owns it.
+func (s *restoreState) restoreDB(ctx context.Context, dbRel string, pm *PageMap, hm *PageHashMap) (string, error) {
+	// A fresh, unpredictably named temp inside the root: a preexisting
+	// symlink at dbRel is never opened, and the concurrent pwrite workers
+	// below never touch dbRel itself.
 	tmpRel := dbRel + ".restore-" + pack.NewPackID()
 	f, err := s.root.OpenFile(tmpRel, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		return fmt.Errorf("backup: creating restored database: %w", err)
+		return "", fmt.Errorf("backup: creating restored database: %w", err)
 	}
-	committed := false
+	materialized := false
 	defer func() {
 		_ = f.Close()
-		if !committed {
+		if !materialized {
 			_ = s.root.Remove(tmpRel)
 		}
 	}()
 	size := int64(pm.PageCount * uint64(pm.PageSize)) //nolint:gosec // geometry checked against the manifest
 	if err := f.Truncate(size); err != nil {
-		return fmt.Errorf("backup: sizing restored database: %w", err)
+		return "", fmt.Errorf("backup: sizing restored database: %w", err)
 	}
 
 	runsByBlob := make(map[uint32][]PageRun)
@@ -573,7 +603,7 @@ func (s *restoreState) restoreDB(ctx context.Context, dbRel string, pm *PageMap,
 	for i, id := range pm.Blobs {
 		ie, ok := s.known[id]
 		if !ok {
-			return fmt.Errorf("backup: page blob %s not present in any index", id)
+			return "", fmt.Errorf("backup: page blob %s not present in any index", id)
 		}
 		if _, seen := groups[ie.PackID]; !seen {
 			order = append(order, ie.PackID)
@@ -589,25 +619,38 @@ func (s *restoreState) restoreDB(ctx context.Context, dbRel string, pm *PageMap,
 		s.restorePackPages(f, packID, groups[packID], pm.PageSize, hm)
 	})
 	if err != nil {
-		return err
+		return "", err
 	}
 	if err := f.Sync(); err != nil {
-		return fmt.Errorf("backup: syncing restored database: %w", err)
+		return "", fmt.Errorf("backup: syncing restored database: %w", err)
 	}
 	if err := f.Close(); err != nil {
-		return fmt.Errorf("backup: closing restored database: %w", err)
+		return "", fmt.Errorf("backup: closing restored database: %w", err)
 	}
+	materialized = true
+	s.progress.emit(ProgressEvent{
+		Stage: ProgressStageRestoreDB, Done: int64(pm.PageCount), Total: int64(pm.PageCount), //nolint:gosec // page counts fit int64
+		BytesDone: size, BytesTotal: size, Final: true,
+	})
+	return tmpRel, nil
+}
+
+// publishRestoredDB swaps the fully materialized staging temp into place:
+// stale SQLite sidecars are removed and the temp renamed over dbRel. It runs
+// only after every content blob the snapshot references — pages, attachments,
+// extras — has been read and verified, so this is the single point where an
+// Overwrite restore becomes destructive. Sidecar removal must precede the
+// rename: a crash between the two steps must never leave the new database
+// next to an old -wal/-shm pair or hot -journal that SQLite would replay
+// over the proven bytes on its first normal open. The rename replaces a
+// preexisting symlink at dbRel rather than following it.
+func (s *restoreState) publishRestoredDB(tmpRel, dbRel string) error {
 	if err := removeStaleDBSidecars(s.root, dbRel); err != nil {
 		return err
 	}
 	if err := s.root.Rename(tmpRel, dbRel); err != nil {
 		return fmt.Errorf("backup: publishing restored database: %w", err)
 	}
-	committed = true
-	s.progress.emit(ProgressEvent{
-		Stage: ProgressStageRestoreDB, Done: int64(pm.PageCount), Total: int64(pm.PageCount), //nolint:gosec // page counts fit int64
-		BytesDone: size, BytesTotal: size, Final: true,
-	})
 	return nil
 }
 
@@ -899,7 +942,7 @@ func (s *restoreState) verifyHeldTarget(dbRel string) error {
 // race timed exactly around a connection's own open remains outside what a
 // path-based open can detect.
 func (s *restoreState) openRestoredDB(ctx context.Context) (*sql.DB, error) {
-	dbRel := s.app.DBFileName()
+	dbRel := s.dbRead
 	db, err := sql.Open("sqlite3", restoredDBDSN(filepath.Join(s.target, dbRel)))
 	if err != nil {
 		return nil, fmt.Errorf("backup: opening restored database: %w", err)
@@ -931,7 +974,7 @@ func (s *restoreState) restoredContentPaths(ctx context.Context) (map[string][]s
 	// The derived paths decide where attachment bytes land inside the root;
 	// fail closed if the database they came from is no longer the one the
 	// root holds.
-	if err := s.verifyHeldTarget(s.app.DBFileName()); err != nil {
+	if err := s.verifyHeldTarget(s.dbRead); err != nil {
 		return nil, err
 	}
 	return paths, nil
@@ -1302,7 +1345,7 @@ func (s *restoreState) proveRestoredDB(ctx context.Context, m *Manifest, checked
 	}
 	// The proof is only about the database the root holds; fail closed if the
 	// path the queries ran against no longer resolves to it.
-	if err := s.verifyHeldTarget(s.app.DBFileName()); err != nil {
+	if err := s.verifyHeldTarget(s.dbRead); err != nil {
 		return err
 	}
 	if !bytes.Equal(compactJSON(restoredStats), compactJSON(m.Stats)) {

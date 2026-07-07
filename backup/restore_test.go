@@ -803,36 +803,28 @@ func TestPreflightSnapshotBlobsRejectsBadExtrasPaths(t *testing.T) {
 	}
 }
 
-// TestRestoreOverwritePreservesTargetOnUnreadablePageBlob pins the deferred
-// destruction: the index-membership preflight cannot see corrupt pack bytes,
-// so a page blob that fails to read mid-materialization must surface before
-// removeStaleDBSidecars and the database rename run — leaving the Overwrite
-// target's live database and WAL exactly as they were.
-func TestRestoreOverwritePreservesTargetOnUnreadablePageBlob(t *testing.T) {
+// corruptStoredBlob flips one byte inside a blob's stored bytes in its pack
+// file, leaving every other blob in the pack readable and the index intact —
+// so the index-membership preflight passes and the failure surfaces only
+// when restore actually reads the blob.
+func corruptStoredBlob(t *testing.T, r *Repo, known map[pack.BlobID]IndexEntry, id pack.BlobID) {
+	t.Helper()
 	require := require.New(t)
-	ctx := context.Background()
-	r := initTestRepo(t)
-	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
-	m, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
-	require.NoError(err)
-
-	// Corrupt the stored bytes of one page blob only: every metadata blob
-	// (maps, lists, tree) stays readable and the index still lists the blob,
-	// so materializeMaps and the preflight both pass and the failure fires
-	// while restoreDB reads pages.
-	known, err := r.LoadBlobIndex()
-	require.NoError(err)
-	st := &restoreState{repo: r, app: newTestApp(), known: known}
-	_, pm, err := st.materializeMaps(m)
-	require.NoError(err)
-	ie, ok := known[pm.Blobs[0]]
-	require.True(ok)
+	ie, ok := known[id]
+	require.True(ok, "blob %s must be indexed", id)
 	packPath := r.Path("packs", ie.PackID[:2], ie.PackID+testPackExt)
 	data, err := os.ReadFile(packPath)
 	require.NoError(err)
 	data[ie.Offset+ie.StoredLen/2] ^= 0x01
 	require.NoError(os.WriteFile(packPath, data, 0o600))
+}
 
+// requireOverwriteRestorePreservesTarget seeds an overwrite target with a
+// live database and WAL, runs a restore expected to fail, and requires both
+// files byte-identical afterward.
+func requireOverwriteRestorePreservesTarget(t *testing.T, r *Repo) {
+	t.Helper()
+	require := require.New(t)
 	target := t.TempDir()
 	existing := map[string][]byte{
 		"app.db":     []byte("live database bytes"),
@@ -841,13 +833,90 @@ func TestRestoreOverwritePreservesTargetOnUnreadablePageBlob(t *testing.T) {
 	for name, body := range existing {
 		require.NoError(os.WriteFile(filepath.Join(target, name), body, 0o600))
 	}
-
-	_, err = Restore(ctx, r, newTestApp(), RestoreOptions{TargetDir: target, Overwrite: true})
+	_, err := Restore(context.Background(), r, newTestApp(),
+		RestoreOptions{TargetDir: target, Overwrite: true})
 	require.Error(err)
 	for name, body := range existing {
 		got, rerr := os.ReadFile(filepath.Join(target, name))
-		require.NoError(rerr, "%s must survive a mid-materialization failure", name)
+		require.NoError(rerr, "%s must survive a failed restore", name)
 		require.Equal(body, got, "%s must be untouched", name)
+	}
+}
+
+// TestRestoreOverwritePreservesTargetOnUnreadablePageBlob pins the deferred
+// destruction: the index-membership preflight cannot see corrupt pack bytes,
+// so a page blob that fails to read mid-materialization must surface before
+// publishRestoredDB runs — leaving the Overwrite target's live database and
+// WAL exactly as they were.
+func TestRestoreOverwritePreservesTargetOnUnreadablePageBlob(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+	m, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
+	require.NoError(err)
+
+	known, err := r.LoadBlobIndex()
+	require.NoError(err)
+	st := &restoreState{repo: r, app: newTestApp(), known: known}
+	_, pm, err := st.materializeMaps(m)
+	require.NoError(err)
+	corruptStoredBlob(t, r, known, pm.Blobs[0])
+	requireOverwriteRestorePreservesTarget(t, r)
+}
+
+// TestRestoreOverwritePreservesTargetOnUnreadableContentBlob pins that the
+// database publish waits for the snapshot's content: an attachment or extras
+// blob whose pack bytes are corrupt passes the index-membership preflight
+// and fails only when read, and that failure must leave an Overwrite
+// target's live database and WAL untouched — the restored database must
+// never be published ahead of the content it belongs with.
+func TestRestoreOverwritePreservesTargetOnUnreadableContentBlob(t *testing.T) {
+	for name, pick := range map[string]func(t *testing.T, r *Repo, m *Manifest,
+		known map[pack.BlobID]IndexEntry) pack.BlobID{
+		"attachment": func(t *testing.T, r *Repo, m *Manifest,
+			known map[pack.BlobID]IndexEntry) pack.BlobID {
+			t.Helper()
+			refs, _, err := LoadListRefs(r, known, m.Attachments.Lists, nil, testPackExt)
+			require.NoError(t, err)
+			require.NotEmpty(t, refs)
+			id, err := pack.ParseBlobID(refs[0].Hash)
+			require.NoError(t, err)
+			return id
+		},
+		"extras": func(t *testing.T, r *Repo, m *Manifest,
+			known map[pack.BlobID]IndexEntry) pack.BlobID {
+			t.Helper()
+			require.NotEmpty(t, m.Extras.Tree, "fixture must carry an extras tree")
+			treeID, err := pack.ParseBlobID(m.Extras.Tree)
+			require.NoError(t, err)
+			raw, err := r.ReadBlob(known, treeID, nil, testPackExt)
+			require.NoError(t, err)
+			var tree ExtrasTree
+			require.NoError(t, json.Unmarshal(raw, &tree))
+			require.NotEmpty(t, tree.Entries)
+			id, err := pack.ParseBlobID(tree.Entries[0].Blob)
+			require.NoError(t, err)
+			return id
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			require := require.New(t)
+			ctx := context.Background()
+			r := initTestRepo(t)
+			dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+			require.NoError(os.MkdirAll(filepath.Join(dataDir, "deletions"), 0o700))
+			require.NoError(os.WriteFile(
+				filepath.Join(dataDir, "deletions", "a.json"), []byte(`{"x":1}`), 0o600))
+			m, err := Create(ctx, r, newTestApp(),
+				createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
+			require.NoError(err)
+
+			known, err := r.LoadBlobIndex()
+			require.NoError(err)
+			corruptStoredBlob(t, r, known, pick(t, r, m, known))
+			requireOverwriteRestorePreservesTarget(t, r)
+		})
 	}
 }
 

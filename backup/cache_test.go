@@ -29,3 +29,27 @@ func TestHashMapCacheRejectsNonCanonicalRepoID(t *testing.T) {
 	_, err := os.Stat(cacheDir)
 	require.True(os.IsNotExist(err), "rejected saves must not create the cache dir")
 }
+
+// TestSaveHashMapCacheEmptyDirIsDisabled pins the disabled-cache convention:
+// an empty cacheDir means "no cache" for loading, and saving must be a
+// successful no-op that writes nothing — in particular no temp file in the
+// system temp directory and no <repoID>.hashmap relative to the working
+// directory, which naive empty-path handling would produce.
+func TestSaveHashMapCacheEmptyDirIsDisabled(t *testing.T) {
+	require := require.New(t)
+	repoID := "01234567-89ab-4cde-8f01-23456789abcd"
+	require.True(validRepoID(repoID), "test repoID must be canonical")
+
+	t.Chdir(t.TempDir())
+	m := &PageHashMap{PageSize: 4096, PageCount: 0}
+	require.NoError(SaveHashMapCache("", repoID, "snap", m))
+
+	entries, err := os.ReadDir(".")
+	require.NoError(err)
+	require.Empty(entries, "a disabled cache save must write nothing")
+
+	snap, loaded, err := LoadHashMapCache("", repoID)
+	require.NoError(err)
+	require.Empty(snap)
+	require.Nil(loaded, "a disabled cache must always miss")
+}

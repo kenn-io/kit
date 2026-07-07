@@ -38,8 +38,14 @@ func LoadHashMapCache(cacheDir, repoID string) (string, *PageHashMap, error) {
 
 // SaveHashMapCache atomically replaces the local hash-map cache. repoID must
 // be a canonical generated repository ID: it becomes a filename under
-// cacheDir, so any other value could write outside the cache.
+// cacheDir, so any other value could write outside the cache. An empty
+// cacheDir means the cache is disabled — the convention loading already
+// uses — so saving is an explicit successful no-op rather than an accident
+// of empty-path handling (MkdirAll("") happens to fail).
 func SaveHashMapCache(cacheDir, repoID, snapshotID string, m *PageHashMap) error {
+	if cacheDir == "" {
+		return nil
+	}
 	if !validRepoID(repoID) {
 		return fmt.Errorf(
 			"backup: cache key %q is not a canonical repository ID", repoID)
