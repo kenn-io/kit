@@ -1055,28 +1055,81 @@ func (s *restoreState) restoreExtrasEntry(app App, entry ExtrasEntry) error {
 	return s.writeRootFile(rel, content, mode)
 }
 
+// enterRestoreDir opens one directory component beneath cur as its own root,
+// creating it if missing and refusing symlinks: os.Root only refuses symlinks
+// that escape the root, so without this check a preexisting in-root symlink
+// (overwrite mode merges into an existing tree) would silently redirect
+// restored writes elsewhere inside the target — e.g. "deletions -> content"
+// would land extras files in the already-proven content tree. The component
+// must lstat as a real directory and the opened descriptor must be that same
+// inode, so a symlink present up front and one raced in before the open both
+// fail closed. Mirrors the capture-side enterExtrasDir.
+func enterRestoreDir(cur *os.Root, comp string) (*os.Root, error) {
+	li, err := cur.Lstat(comp)
+	if errors.Is(err, os.ErrNotExist) {
+		if mkErr := cur.Mkdir(comp, 0o700); mkErr != nil && !errors.Is(mkErr, os.ErrExist) {
+			return nil, mkErr
+		}
+		li, err = cur.Lstat(comp)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if li.Mode()&os.ModeSymlink != 0 || !li.IsDir() {
+		return nil, fmt.Errorf("path component %q is not a real directory", comp)
+	}
+	sub, err := cur.OpenRoot(comp)
+	if err != nil {
+		return nil, err
+	}
+	held, err := sub.Stat(".")
+	if err != nil {
+		_ = sub.Close()
+		return nil, err
+	}
+	if !os.SameFile(li, held) {
+		_ = sub.Close()
+		return nil, fmt.Errorf("path component %q changed during restore", comp)
+	}
+	return sub, nil
+}
+
 // writeRootFile writes one restored file durably beneath the confined root:
-// parents are created, then the bytes are written to a fresh, unpredictably
-// named temp in the leaf's directory, fsynced, and renamed over rel. Routing
-// every write through the root refuses any symlink in rel's parents at the OS
-// level, and the temp-then-rename replaces a preexisting symlink at rel rather
-// than following it. rel is relative to the root (the restore target).
+// parents are created and entered one verified component at a time
+// (enterRestoreDir — no symlink is ever followed, even one resolving inside
+// the root), then the bytes are written to a fresh, unpredictably named temp
+// in the leaf's directory and renamed over the leaf name within that held
+// directory descriptor. The temp-then-rename replaces a preexisting symlink
+// at rel rather than following it. rel is relative to the root (the restore
+// target).
 func (s *restoreState) writeRootFile(rel string, content []byte, mode os.FileMode) error {
-	dir := filepath.Dir(rel)
-	if dir != "." {
-		if err := s.root.MkdirAll(dir, 0o700); err != nil {
+	dir := s.root
+	defer func() {
+		if dir != s.root {
+			_ = dir.Close()
+		}
+	}()
+	comps := strings.Split(filepath.ToSlash(filepath.Clean(rel)), "/")
+	for _, comp := range comps[:len(comps)-1] {
+		sub, err := enterRestoreDir(dir, comp)
+		if err != nil {
 			return fmt.Errorf("backup: creating restore directory for %s: %w", rel, err)
 		}
+		if dir != s.root {
+			_ = dir.Close()
+		}
+		dir = sub
 	}
-	tmp := filepath.Join(dir, ".restore-"+pack.NewPackID())
-	f, err := s.root.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	name := comps[len(comps)-1]
+	tmp := ".restore-" + pack.NewPackID()
+	f, err := dir.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
 		return fmt.Errorf("backup: creating restored file %s: %w", rel, err)
 	}
 	committed := false
 	defer func() {
 		if !committed {
-			_ = s.root.Remove(tmp)
+			_ = dir.Remove(tmp)
 		}
 	}()
 	// O_CREATE's mode is filtered through the umask; restore must reproduce
@@ -1096,7 +1149,7 @@ func (s *restoreState) writeRootFile(rel string, content []byte, mode os.FileMod
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("backup: closing restored file %s: %w", rel, err)
 	}
-	if err := s.root.Rename(tmp, rel); err != nil {
+	if err := dir.Rename(tmp, name); err != nil {
 		return fmt.Errorf("backup: publishing restored file %s: %w", rel, err)
 	}
 	committed = true

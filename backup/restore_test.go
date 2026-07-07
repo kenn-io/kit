@@ -628,6 +628,40 @@ func TestRestoreRefusesSymlinkEscapeInTarget(t *testing.T) {
 	require.Equal(extrasBody, restored)
 }
 
+// TestRestoreOverwriteRefusesSymlinkedParentDir pins the in-root symlink
+// hazard writeRootFile's verified descent closes: os.Root follows symlinks
+// that resolve inside the root, so in overwrite mode a preexisting
+// "deletions -> content" link would silently land extras files in the
+// already-proven content tree — and the final DB proof never re-hashes
+// content files. Every parent component must be a real directory, so the
+// restore must fail instead and the content tree stay untouched.
+func TestRestoreOverwriteRefusesSymlinkedParentDir(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+
+	deletionsPath := filepath.Join(dataDir, "deletions", "manifest-1.json")
+	require.NoError(os.MkdirAll(filepath.Dir(deletionsPath), 0o700))
+	require.NoError(os.WriteFile(deletionsPath, []byte(`{"id":"manifest-1"}`), 0o600))
+
+	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
+	require.NoError(err)
+
+	target := filepath.Join(t.TempDir(), "restore")
+	require.NoError(os.MkdirAll(filepath.Join(target, "content"), 0o700))
+	if err := os.Symlink(filepath.Join(target, "content"), filepath.Join(target, "deletions")); err != nil {
+		t.Skip("symlinks not supported on this platform")
+	}
+
+	_, err = Restore(ctx, r, newTestApp(), RestoreOptions{TargetDir: target, Overwrite: true})
+	require.ErrorContains(err, "not a real directory")
+
+	_, statErr := os.Lstat(filepath.Join(target, "content", "manifest-1.json"))
+	require.ErrorIs(statErr, os.ErrNotExist,
+		"the extras file must not be written through the symlinked directory into the content tree")
+}
+
 // TestRestoreRefusesSymlinkTargetWithTrailingSeparator pins that the
 // symlinked-target guard cannot be sidestepped by addressing the link with a
 // trailing separator: POSIX resolves "link/" and "link/." through the symlink

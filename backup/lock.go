@@ -307,29 +307,9 @@ func returnClaimedLock(path, claim string) (restored bool, err error) {
 // an os.ReadFile here would copy whatever readable file the link points at
 // into the repository.
 func restoreClaimByCopy(path, claim string, claimed os.FileInfo) (restored bool, err error) {
-	cf, err := os.Open(claim)
+	data, err := readClaimForRestore(path, claim, claimed)
 	if err != nil {
-		return false, fmt.Errorf(
-			"backup: opening claimed lock %s for restore: %w",
-			filepath.Base(path), err)
-	}
-	defer func() { _ = cf.Close() }()
-	held, err := cf.Stat()
-	if err != nil {
-		return false, fmt.Errorf(
-			"backup: checking claimed lock %s for restore: %w",
-			filepath.Base(path), err)
-	}
-	if !os.SameFile(claimed, held) {
-		return false, fmt.Errorf(
-			"backup: claimed lock %s was replaced during restore",
-			filepath.Base(path))
-	}
-	data, err := io.ReadAll(cf)
-	if err != nil {
-		return false, fmt.Errorf(
-			"backup: reading claimed lock %s for restore: %w",
-			filepath.Base(path), err)
+		return false, err
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -364,6 +344,39 @@ func restoreClaimByCopy(path, claim string, claimed os.FileInfo) (restored bool,
 			"backup: cleaning up claimed lock %s: %w", filepath.Base(path), err)
 	}
 	return true, nil
+}
+
+// readClaimForRestore reads the claimed lock's bytes through a descriptor
+// tied by SameFile to the Lstat identity returnClaimedLock verified. The
+// handle is closed before this returns — not deferred to the caller's scope —
+// because Windows refuses to remove a file that is still open, and every path
+// out of restoreClaimByCopy removes the claim.
+func readClaimForRestore(path, claim string, claimed os.FileInfo) ([]byte, error) {
+	cf, err := os.Open(claim)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"backup: opening claimed lock %s for restore: %w",
+			filepath.Base(path), err)
+	}
+	defer func() { _ = cf.Close() }()
+	held, err := cf.Stat()
+	if err != nil {
+		return nil, fmt.Errorf(
+			"backup: checking claimed lock %s for restore: %w",
+			filepath.Base(path), err)
+	}
+	if !os.SameFile(claimed, held) {
+		return nil, fmt.Errorf(
+			"backup: claimed lock %s was replaced during restore",
+			filepath.Base(path))
+	}
+	data, err := io.ReadAll(cf)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"backup: reading claimed lock %s for restore: %w",
+			filepath.Base(path), err)
+	}
+	return data, nil
 }
 
 // reapLock removes the lock at path when force is set or it is still stale
