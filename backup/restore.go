@@ -25,11 +25,13 @@ type RestoreOptions struct {
 	SnapshotID string // empty: latest
 	// TargetDir receives the restored archive: the database file, content dir,
 	// and any captured extras. It must not exist, or be an empty directory,
-	// unless Overwrite is set. Overwrite merges into the existing tree: the
-	// database and its SQLite sidecars are removed first (a stale -wal, -shm,
-	// or -journal would otherwise be replayed over the restored file on its
-	// first normal open), restored files replace same-named ones, and files
-	// the snapshot does not carry are left in place.
+	// unless Overwrite is set. Overwrite merges into the existing tree:
+	// restored files replace same-named ones, files the snapshot does not
+	// carry are left in place, and the existing database and its SQLite
+	// sidecars survive until the replacement database is fully materialized
+	// and page-verified — only then are the sidecars removed (a stale -wal,
+	// -shm, or -journal would otherwise be replayed over the restored file on
+	// its first normal open) and the database renamed into place.
 	TargetDir string
 	Overwrite bool
 	// Jobs is the number of concurrent pack-read workers. Zero or negative
@@ -117,9 +119,11 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (*Resto
 	// Source preflight runs BEFORE the target is touched: materializing the
 	// maps proves the manifest's chains resolve and decode, and the blob
 	// pass proves every content blob the snapshot references resolves
-	// through the index, so a corrupt repository or missing index fails here
-	// — while an Overwrite target's existing database and sidecars are still
-	// intact — rather than after prepareRestoreTarget has removed them.
+	// through the index and that the extras tree's paths are restorable, so
+	// a corrupt repository or missing index fails here. Failures the index
+	// cannot reveal (unreadable pack bytes) are covered by ordering instead:
+	// restoreDB touches the target's database and sidecars only after every
+	// page has been read, hash-verified, and written to its staging temp.
 	hm, pm, err := st.materializeMaps(m)
 	if err != nil {
 		return nil, err
@@ -254,6 +258,26 @@ func sqliteSidecarNames(dbFileName string) []string {
 	return []string{dbFileName + "-wal", dbFileName + "-shm", dbFileName + "-journal"}
 }
 
+// removeStaleDBSidecars removes any SQLite sidecar files sitting next to the
+// target database. restoreDB calls it immediately before renaming the fully
+// materialized replacement into place — after every page blob has been read,
+// hash-verified, and written — so a repository whose content turns out to be
+// missing or corrupt fails while an Overwrite target's live database AND its
+// sidecars are still intact. The removal must precede the rename, not follow
+// it: a stale -wal/-shm pair or hot -journal next to the restored database
+// would be replayed over the proven bytes on its first normal (non-immutable)
+// open, so a crash between the two steps must not leave both the new database
+// and an old sidecar behind. Removing through the root unlinks, never
+// follows, a symlink planted at those names.
+func removeStaleDBSidecars(root *os.Root, dbFileName string) error {
+	for _, name := range sqliteSidecarNames(dbFileName) {
+		if err := root.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("backup: removing stale %s from restore target: %w", name, err)
+		}
+	}
+	return nil
+}
+
 // prepareRestoreTarget creates TargetDir, refusing a non-empty existing
 // directory unless overwrite is set (FORMAT.md, Restore), and returns a root
 // confined to it. Every subsequent restore write goes through that root, which
@@ -283,18 +307,11 @@ func prepareRestoreTarget(target string, overwrite bool, dbFileName string) (*os
 	if !existed {
 		return root, nil
 	}
-	// Overwrite merges rather than clearing the tree, but the database and
-	// its SQLite sidecars must not survive: restoreDB rewrites the database
-	// file, and a stale -wal/-shm pair or hot -journal next to it would be
-	// replayed over the proven bytes on the file's first normal
-	// (non-immutable) open. Remove them through the root so a symlink at any
-	// of those names is unlinked, never followed.
-	for _, name := range append([]string{dbFileName}, sqliteSidecarNames(dbFileName)...) {
-		if err := root.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
-			_ = root.Close()
-			return nil, fmt.Errorf("backup: removing stale %s from restore target: %w", name, err)
-		}
-	}
+	// Overwrite merges rather than clearing the tree; even the existing
+	// database and its SQLite sidecars survive until restoreDB has fully
+	// materialized and verified the replacement (removeStaleDBSidecars), so
+	// a source failure mid-restore leaves the live database usable.
+	//
 	// A restore killed mid-run leaves the database's staging temp
 	// (<db>.restore-<ulid>, restoreDB) at the target root; a later overwrite
 	// rerun would otherwise ignore it forever. Sweep only that exact
@@ -449,11 +466,12 @@ func (s *restoreState) materializeMaps(m *Manifest) (*PageHashMap, *PageMap, err
 }
 
 // preflightSnapshotBlobs proves every content blob the snapshot references —
-// page data, attachments, extras files — resolves through the blob index,
-// before restore touches the target. materializeMaps already proved the
-// metadata chains decode; without this pass a repository missing a content
-// blob would fail mid-restore, after Overwrite's cleanup has removed the
-// target's live database. Blob contents are not read here (the drain reads
+// page data, attachments, extras files — resolves through the blob index, and
+// that the extras tree's paths obey the rules restore enforces, before restore
+// touches the target. materializeMaps already proved the metadata chains
+// decode; without this pass a repository missing a content blob would fail
+// mid-restore, after the target's database has been replaced and its sidecars
+// removed. Blob contents are not read here (the drain reads
 // and hash-verifies them as they are written); the small metadata blobs the
 // pass re-reads — attachment lists and the extras tree — are cheap next to
 // the content reads restore performs anyway.
@@ -491,7 +509,18 @@ func (s *restoreState) preflightSnapshotBlobs(m *Manifest, pm *PageMap) error {
 	if err := json.Unmarshal(raw, &tree); err != nil {
 		return fmt.Errorf("backup: extras tree %s: %w", treeID, err)
 	}
+	// The tree is decoded here anyway, so the path rules restoreExtrasEntry
+	// enforces per entry run now too: a tampered tree whose paths escape,
+	// collide, or overlap archive content must fail while the target is
+	// still untouched, not after the database has been replaced.
+	if err := checkExtrasCollisions(tree.Entries); err != nil {
+		return err
+	}
 	for _, entry := range tree.Entries {
+		if _, err := validateExtrasEntryPath(
+			entry.Path, s.app.ContentDirName(), s.app.DBFileName()); err != nil {
+			return err
+		}
 		id, err := pack.ParseBlobID(entry.Blob)
 		if err != nil {
 			return fmt.Errorf("backup: extras entry %s blob id %q: %w", entry.Path, entry.Blob, err)
@@ -567,6 +596,9 @@ func (s *restoreState) restoreDB(ctx context.Context, dbRel string, pm *PageMap,
 	}
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("backup: closing restored database: %w", err)
+	}
+	if err := removeStaleDBSidecars(s.root, dbRel); err != nil {
+		return err
 	}
 	if err := s.root.Rename(tmpRel, dbRel); err != nil {
 		return fmt.Errorf("backup: publishing restored database: %w", err)

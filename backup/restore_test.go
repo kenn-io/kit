@@ -759,6 +759,132 @@ func TestPreflightSnapshotBlobsChecksAllReferences(t *testing.T) {
 	}
 }
 
+// TestPreflightSnapshotBlobsRejectsBadExtrasPaths pins that the preflight
+// applies the extras path rules restoreExtrasEntry enforces: a tampered tree
+// whose paths escape, overlap archive content, or collide must fail before
+// the target is touched, not after the database has already been replaced.
+func TestPreflightSnapshotBlobsRejectsBadExtrasPaths(t *testing.T) {
+	require := require.New(t)
+	r := initTestRepo(t)
+	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
+	payload := []byte("payload")
+	blob, _, err := appender.Add(payload)
+	require.NoError(err)
+	entry := func(path string) ExtrasEntry {
+		return ExtrasEntry{Path: path, Blob: blob.String(), Size: int64(len(payload))}
+	}
+
+	cases := map[string][]ExtrasEntry{
+		"escapes the restore target":        {entry("../escape")},
+		"overlaps restored archive content": {entry("app.db-wal")},
+		"collide under case-folded key":     {entry("tokens/A"), entry("tokens/a")},
+		"twice":                             {entry("tokens/a"), entry("tokens/a")},
+	}
+	trees := make(map[string]pack.BlobID, len(cases))
+	for want, entries := range cases {
+		raw, err := json.Marshal(&ExtrasTree{Entries: entries})
+		require.NoError(err)
+		treeID, _, err := appender.Add(raw)
+		require.NoError(err)
+		trees[want] = treeID
+	}
+	_, indexEntries, err := appender.Finish()
+	require.NoError(err)
+	_, err = r.WriteIndex(indexEntries)
+	require.NoError(err)
+
+	known, err := r.LoadBlobIndex()
+	require.NoError(err)
+	for want, treeID := range trees {
+		st := &restoreState{repo: r, app: newTestApp(), known: known}
+		m := &Manifest{Extras: ManifestExtras{Tree: treeID.String()}}
+		err := st.preflightSnapshotBlobs(m, &PageMap{})
+		require.ErrorContains(err, want, "tree with %s path must fail preflight", want)
+	}
+}
+
+// TestRestoreOverwritePreservesTargetOnUnreadablePageBlob pins the deferred
+// destruction: the index-membership preflight cannot see corrupt pack bytes,
+// so a page blob that fails to read mid-materialization must surface before
+// removeStaleDBSidecars and the database rename run — leaving the Overwrite
+// target's live database and WAL exactly as they were.
+func TestRestoreOverwritePreservesTargetOnUnreadablePageBlob(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+	m, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
+	require.NoError(err)
+
+	// Corrupt the stored bytes of one page blob only: every metadata blob
+	// (maps, lists, tree) stays readable and the index still lists the blob,
+	// so materializeMaps and the preflight both pass and the failure fires
+	// while restoreDB reads pages.
+	known, err := r.LoadBlobIndex()
+	require.NoError(err)
+	st := &restoreState{repo: r, app: newTestApp(), known: known}
+	_, pm, err := st.materializeMaps(m)
+	require.NoError(err)
+	ie, ok := known[pm.Blobs[0]]
+	require.True(ok)
+	packPath := r.Path("packs", ie.PackID[:2], ie.PackID+testPackExt)
+	data, err := os.ReadFile(packPath)
+	require.NoError(err)
+	data[ie.Offset+ie.StoredLen/2] ^= 0x01
+	require.NoError(os.WriteFile(packPath, data, 0o600))
+
+	target := t.TempDir()
+	existing := map[string][]byte{
+		"app.db":     []byte("live database bytes"),
+		"app.db-wal": []byte("live wal bytes"),
+	}
+	for name, body := range existing {
+		require.NoError(os.WriteFile(filepath.Join(target, name), body, 0o600))
+	}
+
+	_, err = Restore(ctx, r, newTestApp(), RestoreOptions{TargetDir: target, Overwrite: true})
+	require.Error(err)
+	for name, body := range existing {
+		got, rerr := os.ReadFile(filepath.Join(target, name))
+		require.NoError(rerr, "%s must survive a mid-materialization failure", name)
+		require.Equal(body, got, "%s must be untouched", name)
+	}
+}
+
+// TestRestoreOverwriteReplacesSymlinkedDB pins that a symlink planted at the
+// database name is replaced by the rename, never followed: with the stale-db
+// removal deferred to just before the rename, the link now survives until
+// that point, and the atomic rename must swap in the real file without ever
+// writing through the link.
+func TestRestoreOverwriteReplacesSymlinkedDB(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
+	require.NoError(err)
+
+	victim := filepath.Join(t.TempDir(), "victim.db")
+	sentinel := []byte("must never be written through the link")
+	require.NoError(os.WriteFile(victim, sentinel, 0o600))
+	target := t.TempDir()
+	if err := os.Symlink(victim, filepath.Join(target, "app.db")); err != nil {
+		t.Skip("symlinks not supported on this platform")
+	}
+
+	res, err := Restore(ctx, r, newTestApp(), RestoreOptions{TargetDir: target, Overwrite: true})
+	require.NoError(err)
+
+	got, err := os.ReadFile(victim)
+	require.NoError(err)
+	require.Equal(sentinel, got, "the symlink's destination must be untouched")
+	info, err := os.Lstat(res.DBPath)
+	require.NoError(err)
+	require.Equal(os.FileMode(0), info.Mode()&os.ModeSymlink,
+		"the planted symlink must have been replaced by a real file")
+	require.Equal(fileSHA256(t, dbPath), fileSHA256(t, res.DBPath))
+}
+
 // TestRestoreOverwriteRefusesSymlinkedParentDir pins the in-root symlink
 // hazard writeRootFile's verified descent closes: os.Root follows symlinks
 // that resolve inside the root, so in overwrite mode a preexisting
