@@ -819,28 +819,42 @@ func corruptStoredBlob(t *testing.T, r *Repo, known map[pack.BlobID]IndexEntry, 
 	require.NoError(os.WriteFile(packPath, data, 0o600))
 }
 
-// requireOverwriteRestorePreservesTarget seeds an overwrite target with a
-// live database and WAL, runs a restore expected to fail, and requires both
-// files byte-identical afterward.
-func requireOverwriteRestorePreservesTarget(t *testing.T, r *Repo) {
+// seedLiveOverwriteTarget seeds a restore target with a live database and
+// WAL and returns the target path plus a check requiring both files
+// byte-identical — the assertion every preserves-target test ends with.
+func seedLiveOverwriteTarget(t *testing.T) (string, func()) {
 	t.Helper()
-	require := require.New(t)
 	target := t.TempDir()
 	existing := map[string][]byte{
 		"app.db":     []byte("live database bytes"),
 		"app.db-wal": []byte("live wal bytes"),
 	}
 	for name, body := range existing {
-		require.NoError(os.WriteFile(filepath.Join(target, name), body, 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(target, name), body, 0o600))
 	}
-	_, err := Restore(context.Background(), r, newTestApp(),
+	checkIntact := func() {
+		t.Helper()
+		for name, body := range existing {
+			got, err := os.ReadFile(filepath.Join(target, name))
+			require.NoError(t, err, "%s must survive a failed restore", name)
+			require.Equal(t, body, got, "%s must be untouched", name)
+		}
+	}
+	return target, checkIntact
+}
+
+// requireOverwriteRestorePreservesTarget seeds an overwrite target with a
+// live database and WAL, runs a restore expected to fail, requires both
+// files byte-identical afterward, and returns the restore error for
+// message assertions.
+func requireOverwriteRestorePreservesTarget(t *testing.T, r *Repo, app App) error {
+	t.Helper()
+	target, checkIntact := seedLiveOverwriteTarget(t)
+	_, err := Restore(context.Background(), r, app,
 		RestoreOptions{TargetDir: target, Overwrite: true})
-	require.Error(err)
-	for name, body := range existing {
-		got, rerr := os.ReadFile(filepath.Join(target, name))
-		require.NoError(rerr, "%s must survive a failed restore", name)
-		require.Equal(body, got, "%s must be untouched", name)
-	}
+	require.Error(t, err)
+	checkIntact()
+	return err
 }
 
 // TestRestoreOverwritePreservesTargetOnUnreadablePageBlob pins the deferred
@@ -862,7 +876,7 @@ func TestRestoreOverwritePreservesTargetOnUnreadablePageBlob(t *testing.T) {
 	_, pm, err := st.materializeMaps(m)
 	require.NoError(err)
 	corruptStoredBlob(t, r, known, pm.Blobs[0])
-	requireOverwriteRestorePreservesTarget(t, r)
+	requireOverwriteRestorePreservesTarget(t, r, newTestApp())
 }
 
 // TestRestoreOverwritePreservesTargetOnUnreadableContentBlob pins that the
@@ -915,9 +929,70 @@ func TestRestoreOverwritePreservesTargetOnUnreadableContentBlob(t *testing.T) {
 			known, err := r.LoadBlobIndex()
 			require.NoError(err)
 			corruptStoredBlob(t, r, known, pick(t, r, m, known))
-			requireOverwriteRestorePreservesTarget(t, r)
+			requireOverwriteRestorePreservesTarget(t, r, newTestApp())
 		})
 	}
+}
+
+// badStatsApp returns restore-time stats that cannot match any manifest, so
+// the restore proof's stats comparison always fails.
+type badStatsApp struct{ App }
+
+func (a badStatsApp) RestoredStats(ctx context.Context, db *sql.DB) (json.RawMessage, error) {
+	return json.RawMessage(`{"forged":"stats"}`), nil
+}
+
+// TestRestoreOverwritePreservesTargetOnProofFailure pins that the restore
+// proof runs against the staging temp BEFORE the database is published: a
+// proof failure (here a stats mismatch; integrity_check failures take the
+// same path) must leave an Overwrite target's live database and WAL
+// untouched, not surface after the swap has already happened.
+func TestRestoreOverwritePreservesTargetOnProofFailure(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
+	require.NoError(err)
+
+	err = requireOverwriteRestorePreservesTarget(t, r, badStatsApp{App: newTestApp()})
+	require.ErrorContains(err, "do not match manifest stats")
+}
+
+// TestRestoreHonorsCancellationDuringExtras pins the extras stage's
+// cancellation point and its ordering against publication: a context
+// canceled while extras restore must stop the run with context.Canceled
+// before publishRestoredDB, leaving an Overwrite target's live database and
+// WAL untouched.
+func TestRestoreHonorsCancellationDuringExtras(t *testing.T) {
+	require := require.New(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+	require.NoError(os.MkdirAll(filepath.Join(dataDir, "deletions"), 0o700))
+	require.NoError(os.WriteFile(
+		filepath.Join(dataDir, "deletions", "a.json"), []byte(`{"x":1}`), 0o600))
+	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
+	require.NoError(err)
+
+	target, checkIntact := seedLiveOverwriteTarget(t)
+	_, err = Restore(ctx, r, newTestApp(), RestoreOptions{
+		TargetDir: target, Overwrite: true,
+		Progress: func(ev ProgressEvent) {
+			if ev.Stage == ProgressStageExtras {
+				cancel()
+			}
+		},
+	})
+	require.ErrorIs(err, context.Canceled)
+	checkIntact()
+	// The per-entry check is what stops the stage: without it, extras would
+	// keep fetching blobs and writing files until some later cancellation
+	// point noticed. The entry announced by the canceled-at event must not
+	// have been written.
+	require.NoFileExists(filepath.Join(target, "deletions", "a.json"),
+		"no extras entry may be written after cancellation")
 }
 
 // TestRestoreOverwriteReplacesSymlinkedDB pins that a symlink planted at the

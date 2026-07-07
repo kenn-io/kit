@@ -28,11 +28,12 @@ type RestoreOptions struct {
 	// unless Overwrite is set. Overwrite merges into the existing tree:
 	// restored files replace same-named ones, files the snapshot does not
 	// carry are left in place, and the existing database and its SQLite
-	// sidecars survive until the replacement database is fully materialized
-	// and every attachment and extras blob has been read and verified — only
-	// then are the sidecars removed (a stale -wal, -shm, or -journal would
-	// otherwise be replayed over the restored file on its first normal open)
-	// and the database renamed into place.
+	// sidecars survive until the replacement database is fully materialized,
+	// every attachment and extras blob has been read and verified, and the
+	// replacement has passed the restore proof — only then are the sidecars
+	// removed (a stale -wal, -shm, or -journal would otherwise be replayed
+	// over the restored file on its first normal open) and the database
+	// renamed into place.
 	TargetDir string
 	Overwrite bool
 	// Jobs is the number of concurrent pack-read workers. Zero or negative
@@ -173,18 +174,17 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (*Resto
 	if err != nil {
 		return nil, err
 	}
-	if res.ExtrasFiles, err = st.restoreExtras(app, m); err != nil {
+	if res.ExtrasFiles, err = st.restoreExtras(ctx, app, m); err != nil {
 		return nil, err
 	}
-	if err := st.publishRestoredDB(tmpRel, app.DBFileName()); err != nil {
-		return nil, err
-	}
-	published = true
-	st.dbRead = app.DBFileName()
 
-	// The proof has two visible steps: integrity_check (which reads the
-	// whole restored database inside SQLite and dominates on large
-	// archives) and the manifest stats comparison.
+	// The proof runs against the staging temp, BEFORE the database is
+	// published: an integrity_check failure, a stats mismatch, or a late
+	// cancellation must fail the restore while an Overwrite target's
+	// existing database is still intact. The proof has two visible steps:
+	// integrity_check (which reads the whole restored database inside
+	// SQLite and dominates on large archives) and the manifest stats
+	// comparison.
 	st.progress.emit(ProgressEvent{Stage: ProgressStageProof, Total: 2})
 	if err := st.proveRestoredDB(ctx, m, func() {
 		st.progress.emit(ProgressEvent{Stage: ProgressStageProof, Done: 1, Total: 2})
@@ -192,6 +192,13 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (*Resto
 		return nil, err
 	}
 	st.progress.emit(ProgressEvent{Stage: ProgressStageProof, Done: 2, Total: 2, Final: true})
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := st.publishRestoredDB(tmpRel, app.DBFileName()); err != nil {
+		return nil, err
+	}
+	published = true
 
 	if err := syncRestoredTree(opts.TargetDir, syncCeiling); err != nil {
 		return nil, err
@@ -423,9 +430,10 @@ type restoreState struct {
 	root   *os.Root
 	target string
 	// dbRead is the relative name read-only database opens use: the staging
-	// temp while the restored database awaits publication (content-path
-	// derivation during restoreAttachments), the final database name after
-	// publishRestoredDB (the proof queries).
+	// temp, which both content-path derivation (restoreAttachments) and the
+	// restore proof (proveRestoredDB) read — the database is published only
+	// after every read and the proof have succeeded, and nothing opens it
+	// afterward.
 	dbRead string
 
 	mu       sync.Mutex
@@ -570,9 +578,10 @@ type blobRuns struct {
 // in flight; the file writes are disjoint pwrite calls, safe concurrently.
 // The temp is NOT renamed over dbRel here — publishRestoredDB does that
 // only after the snapshot's attachment and extras content has also been
-// read and verified, so any unreadable content blob fails the restore
-// while an Overwrite target's existing database is still intact. On error
-// the temp is removed; on success the caller owns it.
+// read and verified and the database proof has passed, so any unreadable
+// content blob or failed proof fails the restore while an Overwrite
+// target's existing database is still intact. On error the temp is
+// removed; on success the caller owns it.
 func (s *restoreState) restoreDB(ctx context.Context, dbRel string, pm *PageMap, hm *PageHashMap) (string, error) {
 	// A fresh, unpredictably named temp inside the root: a preexisting
 	// symlink at dbRel is never opened, and the concurrent pwrite workers
@@ -638,8 +647,9 @@ func (s *restoreState) restoreDB(ctx context.Context, dbRel string, pm *PageMap,
 // publishRestoredDB swaps the fully materialized staging temp into place:
 // stale SQLite sidecars are removed and the temp renamed over dbRel. It runs
 // only after every content blob the snapshot references — pages, attachments,
-// extras — has been read and verified, so this is the single point where an
-// Overwrite restore becomes destructive. Sidecar removal must precede the
+// extras — has been read and verified AND the staging database has passed
+// the restore proof (integrity_check plus the manifest stats comparison), so
+// this is the single point where an Overwrite restore becomes destructive. Sidecar removal must precede the
 // rename: a crash between the two steps must never leave the new database
 // next to an old -wal/-shm pair or hot -journal that SQLite would replay
 // over the proven bytes on its first normal open. The rename replaces a
@@ -1054,9 +1064,12 @@ func (s *restoreState) restorePackAttachments(
 // restoreExtras lays out the snapshot's captured extras files (the
 // application-selected operational files, ExtrasSpec) under the target,
 // preserving their recorded modes.
-func (s *restoreState) restoreExtras(app App, m *Manifest) (int, error) {
+func (s *restoreState) restoreExtras(ctx context.Context, app App, m *Manifest) (int, error) {
 	if m.Extras.Tree == "" {
 		return 0, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
 	}
 	id, err := pack.ParseBlobID(m.Extras.Tree)
 	if err != nil {
@@ -1075,6 +1088,11 @@ func (s *restoreState) restoreExtras(app App, m *Manifest) (int, error) {
 	}
 	s.progress.emit(ProgressEvent{Stage: ProgressStageExtras, Total: int64(len(tree.Entries))})
 	for i, entry := range tree.Entries {
+		// Checked per entry: extras restore is a serial blob-fetch-and-write
+		// loop, so this is its only cancellation point.
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
 		if err := s.restoreExtrasEntry(app, entry); err != nil {
 			return 0, err
 		}
@@ -1306,7 +1324,9 @@ func (s *restoreState) writeRootFile(rel string, content []byte, mode os.FileMod
 // Restore): the restored database must pass PRAGMA integrity_check and
 // reproduce the manifest's recorded stats through exactly the queries
 // capture ran inside the freeze. Page-level identity was already proven
-// against the page-hash map during materialization.
+// against the page-hash map during materialization. The proof reads the
+// staging temp (s.dbRead): it runs BEFORE publishRestoredDB, so a failed
+// proof leaves an Overwrite target's existing database untouched.
 // checked is called after integrity_check passes, before the stats
 // comparison, so callers can report sub-step progress.
 func (s *restoreState) proveRestoredDB(ctx context.Context, m *Manifest, checked func()) error {
