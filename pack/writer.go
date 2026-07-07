@@ -1,11 +1,18 @@
 package pack
 
 import (
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"os"
 	"path/filepath"
 )
+
+// osLink is the hard-link primitive publishNoClobber uses. It is a var so
+// tests can simulate the filesystems (exFAT, FAT32, many SMB/NFS mounts)
+// where os.Link is unavailable and the check-then-rename fallback must take
+// over.
+var osLink = os.Link
 
 var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
 
@@ -193,8 +200,8 @@ func (w *Writer) Seal(finalPath string) ([]Entry, error) {
 	if err := MkdirAllSynced(filepath.Dir(finalPath)); err != nil {
 		return nil, err
 	}
-	if err := os.Rename(w.staging, finalPath); err != nil {
-		return nil, fmt.Errorf("pack: publishing pack: %w", err)
+	if err := publishNoClobber(w.staging, finalPath); err != nil {
+		return nil, fmt.Errorf("pack: publishing pack %s: %w", w.id, err)
 	}
 	// The pack is published as of this point: mark the writer done before
 	// attempting the directory sync so a failure below doesn't leave the
@@ -207,6 +214,38 @@ func (w *Writer) Seal(finalPath string) ([]Entry, error) {
 			finalPath, err)
 	}
 	return w.entries, nil
+}
+
+// publishNoClobber moves staging to finalPath, refusing to replace an
+// existing file: sealed packs are immutable and located by ID, so a name
+// collision — duplicate-ID debris from a cloning bug, or a file planted at
+// the final path — must fail the seal rather than silently destroy a pack
+// existing snapshots may reference. A plain os.Rename overwrites on Unix.
+// The primary path is a hard link (atomic, EEXIST on collision) followed by
+// removing the staging name; where links are unavailable (exFAT, FAT32, many
+// SMB/NFS mounts) it falls back to an existence check plus rename — not
+// atomic, but the check catches the realistic hazard (a preexisting file),
+// and random ULID pack IDs leave no plausible same-name race inside the
+// window.
+func publishNoClobber(staging, finalPath string) error {
+	linkErr := osLink(staging, finalPath)
+	if linkErr == nil {
+		if err := os.Remove(staging); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("removing staging name after publish: %w", err)
+		}
+		return nil
+	}
+	if errors.Is(linkErr, os.ErrExist) {
+		return fmt.Errorf("a pack already exists at %s; refusing to overwrite it", finalPath)
+	}
+	// Link is unsupported or unreliable on this filesystem: fall back to
+	// check-then-rename.
+	if _, err := os.Lstat(finalPath); err == nil {
+		return fmt.Errorf("a pack already exists at %s; refusing to overwrite it", finalPath)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("checking final path: %w", err)
+	}
+	return os.Rename(staging, finalPath)
 }
 
 // Abort discards the staging file. Safe to call after a failed Seal.

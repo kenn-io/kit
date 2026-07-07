@@ -628,6 +628,54 @@ func TestRestoreRefusesSymlinkEscapeInTarget(t *testing.T) {
 	require.Equal(extrasBody, restored)
 }
 
+// TestRestoreOverwritePreflightPreservesTarget pins the destructive-cleanup
+// ordering: Overwrite removes the target's database and SQLite sidecars, so
+// restore must first prove the source can be materialized (index loads, map
+// chains resolve) and the context is live. A broken repository or an
+// already-canceled restore must fail with the existing target intact, not
+// after its database is already gone.
+func TestRestoreOverwritePreflightPreservesTarget(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
+	require.NoError(err)
+
+	target := t.TempDir()
+	existing := map[string][]byte{
+		"app.db":     []byte("live database bytes"),
+		"app.db-wal": []byte("live wal bytes"),
+	}
+	for name, body := range existing {
+		require.NoError(os.WriteFile(filepath.Join(target, name), body, 0o600))
+	}
+	checkIntact := func() {
+		t.Helper()
+		for name, body := range existing {
+			got, err := os.ReadFile(filepath.Join(target, name))
+			require.NoError(err, "%s must survive a failed preflight", name)
+			require.Equal(body, got, "%s must be untouched", name)
+		}
+	}
+
+	// An already-canceled context must stop before the cleanup.
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	_, err = Restore(canceled, r, newTestApp(), RestoreOptions{TargetDir: target, Overwrite: true})
+	require.ErrorIs(err, context.Canceled)
+	checkIntact()
+
+	// A repository whose blob index is gone must fail preflight the same way.
+	indexes := r.Path("indexes")
+	trashed := indexes + ".trashed"
+	require.NoError(os.Rename(indexes, trashed))
+	t.Cleanup(func() { _ = os.Rename(trashed, indexes) })
+	_, err = Restore(ctx, r, newTestApp(), RestoreOptions{TargetDir: target, Overwrite: true})
+	require.Error(err)
+	checkIntact()
+}
+
 // TestRestoreOverwriteRefusesSymlinkedParentDir pins the in-root symlink
 // hazard writeRootFile's verified descent closes: os.Root follows symlinks
 // that resolve inside the root, so in overwrite mode a preexisting

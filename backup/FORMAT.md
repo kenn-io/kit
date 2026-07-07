@@ -147,7 +147,7 @@ Manifests hash Go's canonical struct-order JSON encoding, and the manifest conta
 
 ## Crash Consistency
 
-Every repository file is published atomically: written to `staging/`, fsynced, renamed into place, parent directory synced. Within one `create`, the write order is:
+Every repository file is published atomically: written to `staging/`, fsynced, renamed into place, parent directory synced. Pack publication additionally refuses to replace an existing file (sealed packs are immutable and located by ID, so a name collision must fail the seal, never overwrite a pack existing snapshots reference). Within one `create`, the write order is:
 
 1. Pack files sealed (durable),
 2. Index object written,

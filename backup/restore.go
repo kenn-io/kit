@@ -97,15 +97,6 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (*Resto
 			return nil, errors.New("backup: repository has no snapshots to restore")
 		}
 	}
-	// The ceiling must be observed BEFORE prepareRestoreTarget creates the
-	// target: it marks the deepest directory that already existed, so the
-	// final durability pass knows which ancestors gained new entries.
-	syncCeiling := restoreSyncCeiling(opts.TargetDir)
-	root, err := prepareRestoreTarget(opts.TargetDir, opts.Overwrite, app.DBFileName())
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = root.Close() }()
 	known, err := r.LoadBlobIndex()
 	if err != nil {
 		return nil, err
@@ -120,14 +111,32 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (*Resto
 		known:    known,
 		jobs:     jobs,
 		progress: newProgressEmitter(opts.Progress),
-		root:     root,
 		target:   opts.TargetDir,
 	}
 
+	// Source preflight runs BEFORE the target is touched: materializing the
+	// maps proves the manifest's chains resolve and decode, so a corrupt
+	// repository or missing index fails here — while an Overwrite target's
+	// existing database and sidecars are still intact — rather than after
+	// prepareRestoreTarget has removed them.
 	hm, pm, err := st.materializeMaps(m)
 	if err != nil {
 		return nil, err
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	// The ceiling must be observed BEFORE prepareRestoreTarget creates the
+	// target: it marks the deepest directory that already existed, so the
+	// final durability pass knows which ancestors gained new entries.
+	syncCeiling := restoreSyncCeiling(opts.TargetDir)
+	root, err := prepareRestoreTarget(opts.TargetDir, opts.Overwrite, app.DBFileName())
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	st.root = root
+
 	res := &RestoreResult{
 		SnapshotID: m.SnapshotID,
 		DBPath:     filepath.Join(opts.TargetDir, app.DBFileName()),

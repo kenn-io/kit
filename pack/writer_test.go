@@ -188,6 +188,76 @@ func TestWriterSealDirSyncFailureKeepsPackPublished(t *testing.T) {
 	assert.ErrorIs(err, ErrSealed)
 }
 
+// TestSealRefusesExistingDestination pins the sealed-immutable invariant:
+// packs are located by ID and never rewritten, so a file already at the
+// final path — duplicate-ID debris or a planted file — must fail the seal
+// with the existing bytes intact, on both the hard-link path and the
+// check-then-rename fallback for filesystems without links.
+func TestSealRefusesExistingDestination(t *testing.T) {
+	for _, linkless := range []bool{false, true} {
+		t.Run(map[bool]string{false: "link", true: "fallback"}[linkless], func(t *testing.T) {
+			require := require.New(t)
+			dir := t.TempDir()
+			staging := filepath.Join(dir, "staging")
+			require.NoError(os.MkdirAll(staging, 0o700))
+
+			if linkless {
+				old := osLink
+				osLink = func(string, string) error { return errors.New("no hard links on this filesystem") }
+				t.Cleanup(func() { osLink = old })
+			}
+
+			w, err := NewWriter(staging, WriterOptions{})
+			require.NoError(err)
+			_, err = w.Append([]byte("new pack contents"))
+			require.NoError(err)
+
+			final := filepath.Join(dir, "packs", w.ID()[:2], w.ID()+".mvpack")
+			existing := []byte("an already published, referenced pack")
+			require.NoError(os.MkdirAll(filepath.Dir(final), 0o700))
+			require.NoError(os.WriteFile(final, existing, 0o600))
+
+			_, err = w.Seal(final)
+			require.ErrorContains(err, "refusing to overwrite")
+
+			got, err := os.ReadFile(final)
+			require.NoError(err)
+			require.Equal(existing, got, "the existing pack must survive the refused seal")
+			require.NoError(w.Abort(), "the staging file is still the writer's to discard")
+		})
+	}
+}
+
+// TestSealFallbackPublishesWithoutLinks pins the linkless fallback's happy
+// path: with no file at the final path, check-then-rename publishes the pack
+// and it reads back normally.
+func TestSealFallbackPublishesWithoutLinks(t *testing.T) {
+	require := require.New(t)
+	dir := t.TempDir()
+	staging := filepath.Join(dir, "staging")
+	require.NoError(os.MkdirAll(staging, 0o700))
+
+	old := osLink
+	osLink = func(string, string) error { return errors.New("no hard links on this filesystem") }
+	t.Cleanup(func() { osLink = old })
+
+	w, err := NewWriter(staging, WriterOptions{})
+	require.NoError(err)
+	raw := []byte("fallback-published contents")
+	entry, err := w.Append(raw)
+	require.NoError(err)
+	final := filepath.Join(dir, "packs", w.ID()[:2], w.ID()+".mvpack")
+	_, err = w.Seal(final)
+	require.NoError(err)
+
+	r, err := OpenReader(final, nil)
+	require.NoError(err)
+	defer func() { _ = r.Close() }()
+	got, err := r.ReadBlob(entry)
+	require.NoError(err)
+	require.Equal(raw, got)
+}
+
 func TestWriterAppendPoisonsOnWriteFailure(t *testing.T) {
 	// A write failure partway through Append (for example ENOSPC) can leave
 	// the fd position past w.off if the write was partial, so every following
