@@ -366,6 +366,34 @@ SELECT gen_key FROM %s
 // generation and would wrongly hide valid hits while generations overlap.
 // Filtered vectors still occupy KNN slots inside limit until SaveVectors
 // or DeleteVectors removes them.
+// queryGenerationSQL builds QueryGeneration's statement: the KNN runs
+// against the vec0 table alone (its required form), then joins to the chunk
+// map to recover document keys and to the source and stamps tables to keep
+// only covered documents. expr is the placeholder expression for the query
+// vector; the statement binds (query vector, limit, ordinal) in that order.
+//
+// MATERIALIZED and CROSS JOIN are load-bearing, not style. Without them
+// SQLite is free to plan the CTE as a co-routine on the inner side of the
+// join, re-running the entire brute-force vec0 scan once per chunk-map row —
+// observed as a >9-minute query over a 116k x 2560-dim generation whose
+// single scan takes ~300ms. MATERIALIZED forces one evaluation of the KNN,
+// and CROSS JOIN pins knn as the outermost loop so the chunk map is probed
+// by its (ordinal, vec_rowid) index limit times, never the reverse.
+func (s *Store[K, G]) queryGenerationSQL(ordinal int64, expr string) string {
+	return fmt.Sprintf(`
+WITH knn AS MATERIALIZED (
+    SELECT rowid, distance FROM %s WHERE embedding MATCH %s ORDER BY distance LIMIT ?
+)
+SELECT c.doc_key, c.chunk_index, knn.distance
+  FROM knn
+  CROSS JOIN %s c ON c.ordinal = ? AND c.vec_rowid = knn.rowid
+  JOIN %s d ON d.%s = c.doc_key
+  LEFT JOIN %s stamp ON stamp.ordinal = c.ordinal AND stamp.doc_key = c.doc_key
+ WHERE %s
+ ORDER BY knn.distance`, s.vecTable(ordinal), expr, s.chunksTable(), s.schema.DocsTable, s.schema.IDColumn,
+		s.stampsTable(), s.coveredPredicate("d", "stamp"))
+}
+
 func (s *Store[K, G]) QueryGeneration(ctx context.Context, gen G, query vector.Vector, limit int) ([]vector.Hit[K], error) {
 	ordinal, dimension, err := s.lookupGeneration(ctx, gen)
 	if err != nil {
@@ -378,22 +406,7 @@ func (s *Store[K, G]) QueryGeneration(ctx context.Context, gen G, query vector.V
 	if err != nil {
 		return nil, fmt.Errorf("serialize query: %w", err)
 	}
-	// The KNN runs against the vec0 table alone (its required form), then
-	// joins to the chunk map to recover document keys and to the source
-	// and stamps tables to keep only covered documents.
-	sqlText := fmt.Sprintf(`
-WITH knn AS (
-    SELECT rowid, distance FROM %s WHERE embedding MATCH %s ORDER BY distance LIMIT ?
-)
-SELECT c.doc_key, c.chunk_index, knn.distance
-  FROM knn
-  JOIN %s c ON c.ordinal = ? AND c.vec_rowid = knn.rowid
-  JOIN %s d ON d.%s = c.doc_key
-  LEFT JOIN %s stamp ON stamp.ordinal = c.ordinal AND stamp.doc_key = c.doc_key
- WHERE %s
- ORDER BY knn.distance`, s.vecTable(ordinal), expr, s.chunksTable(), s.schema.DocsTable, s.schema.IDColumn,
-		s.stampsTable(), s.coveredPredicate("d", "stamp"))
-	rows, err := s.db.QueryContext(ctx, sqlText, value, limit, ordinal)
+	rows, err := s.db.QueryContext(ctx, s.queryGenerationSQL(ordinal, expr), value, limit, ordinal)
 	if err != nil {
 		return nil, fmt.Errorf("query generation: %w", err)
 	}
