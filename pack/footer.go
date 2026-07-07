@@ -68,6 +68,17 @@ func parseFooterRegion(region []byte, footerStart uint64) ([]Entry, error) {
 				"%w: entry %d stored length %d exceeds max %d",
 				ErrCorrupt, i, e.StoredLen, uint64(maxStoredLen))
 		}
+		// RawLen needs its own bound: maxStoredLen exceeds MaxRawLen by the
+		// compression/seal overhead allowances, so an uncompressed entry
+		// could otherwise claim a raw length past the documented blob limit
+		// — decodeFrame's compressed-frame check never sees it, and readers
+		// would allocate and return an oversized blob no writer can produce
+		// (Append rejects raw input above MaxRawLen).
+		if e.RawLen > MaxRawLen {
+			return nil, fmt.Errorf(
+				"%w: entry %d raw length %d exceeds max %d",
+				ErrCorrupt, i, e.RawLen, uint64(MaxRawLen))
+		}
 		end := e.Offset + e.StoredLen
 		if e.Offset < headerSize || end < e.Offset || end > footerStart {
 			return nil, fmt.Errorf("%w: entry %d spans [%d,%d) outside data region [%d,%d)",

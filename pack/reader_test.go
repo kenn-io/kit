@@ -162,34 +162,48 @@ func TestReaderRoundTripLargePack(t *testing.T) {
 
 func TestReaderRejectsForgedHugeRawLen(t *testing.T) {
 	// A forger who can rewrite pack bytes can also recompute the plain
-	// trailer's SHA-256 over the rewritten footer region, so the footer opens
-	// cleanly and only the entry's RawLen is a lie. decodeFrame must reject an
-	// absurd RawLen before trusting it to size a preallocation, rather than
-	// panicking with "makeslice: cap out of range" or attempting a
-	// terabyte-scale allocation.
+	// trailer's SHA-256 over the rewritten footer region, so the footer
+	// checksum passes and only the entry's RawLen is a lie. The bound is
+	// enforced at footer parse time — before any blob byte is read or any
+	// buffer sized from the untrusted value — for compressed and uncompressed
+	// entries alike: maxStoredLen exceeds MaxRawLen by the compression/seal
+	// allowances, so an uncompressed entry could otherwise claim a raw length
+	// just past the documented blob limit.
 	require := require.New(t)
 	compressible := bytes.Repeat([]byte("forge me some zstd bytes "), 4096)
 	path, entries := buildTestPack(t, [][]byte{compressible}, nil)
-	require.Equal(BlobCompressed, entries[0].Flags,
-		"fixture must compress so decodeFrame reaches the zstd path")
 
-	forged := entries[0]
-	forged.RawLen = 1 << 50
+	for name, forge := range map[string]func(*Entry){
+		"absurd":        func(e *Entry) { e.RawLen = 1 << 50 },
+		"just-over-max": func(e *Entry) { e.RawLen = MaxRawLen + 1; e.Flags &^= BlobCompressed },
+	} {
+		forged := entries[0]
+		forge(&forged)
 
-	data, err := os.ReadFile(path)
-	require.NoError(err)
-	footerStart := int(entries[0].Offset + entries[0].StoredLen)
-	rebuilt := append([]byte{}, data[:footerStart]...)
-	rebuilt = append(rebuilt, appendPlainTrailer(encodeFooterRegion([]Entry{forged}))...)
-	forgedPath := filepath.Join(t.TempDir(), filepath.Base(path))
-	require.NoError(os.WriteFile(forgedPath, rebuilt, 0o600))
+		data, err := os.ReadFile(path)
+		require.NoError(err)
+		footerStart := int(entries[0].Offset + entries[0].StoredLen)
+		rebuilt := append([]byte{}, data[:footerStart]...)
+		rebuilt = append(rebuilt, appendPlainTrailer(encodeFooterRegion([]Entry{forged}))...)
+		forgedPath := filepath.Join(t.TempDir(), filepath.Base(path))
+		require.NoError(os.WriteFile(forgedPath, rebuilt, 0o600))
 
-	r, err := OpenReader(forgedPath, nil)
-	require.NoError(err, "footer is well-formed; only the entry's RawLen is forged")
-	defer func() { _ = r.Close() }()
+		_, err = OpenReader(forgedPath, nil)
+		require.ErrorIs(err, ErrCorrupt, "case %s", name)
+		require.ErrorContains(err, "raw length", "case %s", name)
+	}
+}
 
-	_, err = r.ReadBlob(r.Entries()[0])
-	require.ErrorIs(err, ErrCorrupt)
+// TestDecodeFrameRejectsOversizedRawLen pins decodeFrame's own backstop for
+// entries that never passed footer parsing: the MaxRawLen bound applies to
+// uncompressed frames too, not only the zstd preallocation path.
+func TestDecodeFrameRejectsOversizedRawLen(t *testing.T) {
+	require := require.New(t)
+	for _, compressed := range []bool{true, false} {
+		_, err := decodeFrame([]byte("stored"), compressed, MaxRawLen+1)
+		require.ErrorIs(err, ErrCorrupt, "compressed=%v", compressed)
+		require.ErrorContains(err, "raw length", "compressed=%v", compressed)
+	}
 }
 
 func TestReaderRejectsEncryptedFlagInPlainPack(t *testing.T) {

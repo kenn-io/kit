@@ -115,12 +115,16 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (*Resto
 	}
 
 	// Source preflight runs BEFORE the target is touched: materializing the
-	// maps proves the manifest's chains resolve and decode, so a corrupt
-	// repository or missing index fails here — while an Overwrite target's
-	// existing database and sidecars are still intact — rather than after
-	// prepareRestoreTarget has removed them.
+	// maps proves the manifest's chains resolve and decode, and the blob
+	// pass proves every content blob the snapshot references resolves
+	// through the index, so a corrupt repository or missing index fails here
+	// — while an Overwrite target's existing database and sidecars are still
+	// intact — rather than after prepareRestoreTarget has removed them.
 	hm, pm, err := st.materializeMaps(m)
 	if err != nil {
+		return nil, err
+	}
+	if err := st.preflightSnapshotBlobs(m, pm); err != nil {
 		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
@@ -442,6 +446,61 @@ func (s *restoreState) materializeMaps(m *Manifest) (*PageHashMap, *PageMap, err
 			hm.PageCount, hm.PageSize, m.DB.PageCount, m.DB.PageSize)
 	}
 	return hm, pm, nil
+}
+
+// preflightSnapshotBlobs proves every content blob the snapshot references —
+// page data, attachments, extras files — resolves through the blob index,
+// before restore touches the target. materializeMaps already proved the
+// metadata chains decode; without this pass a repository missing a content
+// blob would fail mid-restore, after Overwrite's cleanup has removed the
+// target's live database. Blob contents are not read here (the drain reads
+// and hash-verifies them as they are written); the small metadata blobs the
+// pass re-reads — attachment lists and the extras tree — are cheap next to
+// the content reads restore performs anyway.
+func (s *restoreState) preflightSnapshotBlobs(m *Manifest, pm *PageMap) error {
+	for _, id := range pm.Blobs {
+		if _, ok := s.known[id]; !ok {
+			return fmt.Errorf("backup: page blob %s not present in any index", id)
+		}
+	}
+	refs, _, err := LoadListRefs(s.repo, s.known, m.Attachments.Lists, nil, s.app.PackFileExtension())
+	if err != nil {
+		return err
+	}
+	for _, ref := range refs {
+		id, err := pack.ParseBlobID(ref.Hash)
+		if err != nil {
+			return fmt.Errorf("backup: attachment content hash %q: %w", ref.Hash, err)
+		}
+		if _, ok := s.known[id]; !ok {
+			return fmt.Errorf("backup: attachment blob %s not present in any index", ref.Hash)
+		}
+	}
+	if m.Extras.Tree == "" {
+		return nil
+	}
+	treeID, err := pack.ParseBlobID(m.Extras.Tree)
+	if err != nil {
+		return fmt.Errorf("backup: extras tree blob id %q: %w", m.Extras.Tree, err)
+	}
+	raw, err := s.fetch(treeID)
+	if err != nil {
+		return err
+	}
+	var tree ExtrasTree
+	if err := json.Unmarshal(raw, &tree); err != nil {
+		return fmt.Errorf("backup: extras tree %s: %w", treeID, err)
+	}
+	for _, entry := range tree.Entries {
+		id, err := pack.ParseBlobID(entry.Blob)
+		if err != nil {
+			return fmt.Errorf("backup: extras entry %s blob id %q: %w", entry.Path, entry.Blob, err)
+		}
+		if _, ok := s.known[id]; !ok {
+			return fmt.Errorf("backup: extras blob %s not present in any index", entry.Blob)
+		}
+	}
+	return nil
 }
 
 // blobRuns is one page blob and every page-map run it backs.

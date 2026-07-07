@@ -670,10 +670,93 @@ func TestRestoreOverwritePreflightPreservesTarget(t *testing.T) {
 	indexes := r.Path("indexes")
 	trashed := indexes + ".trashed"
 	require.NoError(os.Rename(indexes, trashed))
-	t.Cleanup(func() { _ = os.Rename(trashed, indexes) })
 	_, err = Restore(ctx, r, newTestApp(), RestoreOptions{TargetDir: target, Overwrite: true})
 	require.Error(err)
 	checkIntact()
+	require.NoError(os.Rename(trashed, indexes))
+
+	// A repository whose index no longer lists one of the snapshot's page
+	// blobs must fail the preflight blob pass — the maps still materialize
+	// (their chain blobs are intact), so only the dedicated pass catches it
+	// before cleanup.
+	known, err := r.LoadBlobIndex()
+	require.NoError(err)
+	st := &restoreState{repo: r, app: newTestApp(), known: known}
+	m, err := r.LatestSnapshot()
+	require.NoError(err)
+	_, pm, err := st.materializeMaps(m)
+	require.NoError(err)
+	var remaining []IndexEntry
+	for id, e := range known {
+		if id != pm.Blobs[0] {
+			remaining = append(remaining, e)
+		}
+	}
+	old, err := os.ReadDir(indexes)
+	require.NoError(err)
+	for _, e := range old {
+		require.NoError(os.Remove(filepath.Join(indexes, e.Name())))
+	}
+	_, err = r.WriteIndex(remaining)
+	require.NoError(err)
+	_, err = Restore(ctx, r, newTestApp(), RestoreOptions{TargetDir: target, Overwrite: true})
+	require.ErrorContains(err, "not present in any index")
+	checkIntact()
+}
+
+// TestPreflightSnapshotBlobsChecksAllReferences pins the preflight's
+// coverage: page blobs, attachment content blobs, and extras file blobs must
+// each fail the pass when missing from the index, and an intact snapshot
+// must pass cleanly.
+func TestPreflightSnapshotBlobsChecksAllReferences(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+	require.NoError(os.MkdirAll(filepath.Join(dataDir, "deletions"), 0o700))
+	require.NoError(os.WriteFile(filepath.Join(dataDir, "deletions", "a.json"), []byte(`{"x":1}`), 0o600))
+	m, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
+	require.NoError(err)
+	require.NotEmpty(m.Extras.Tree, "fixture must carry an extras tree")
+
+	known, err := r.LoadBlobIndex()
+	require.NoError(err)
+	newState := func() *restoreState {
+		return &restoreState{repo: r, app: newTestApp(), known: maps.Clone(known)}
+	}
+
+	st := newState()
+	_, pm, err := st.materializeMaps(m)
+	require.NoError(err)
+	require.NoError(st.preflightSnapshotBlobs(m, pm), "an intact snapshot must preflight cleanly")
+
+	refs, _, err := LoadListRefs(r, known, m.Attachments.Lists, nil, testPackExt)
+	require.NoError(err)
+	require.NotEmpty(refs)
+	attachmentID, err := pack.ParseBlobID(refs[0].Hash)
+	require.NoError(err)
+
+	treeID, err := pack.ParseBlobID(m.Extras.Tree)
+	require.NoError(err)
+	rawTree, err := r.ReadBlob(known, treeID, nil, testPackExt)
+	require.NoError(err)
+	var tree ExtrasTree
+	require.NoError(json.Unmarshal(rawTree, &tree))
+	require.NotEmpty(tree.Entries)
+	extrasID, err := pack.ParseBlobID(tree.Entries[0].Blob)
+	require.NoError(err)
+
+	for what, missing := range map[string]pack.BlobID{
+		"page blob":       pm.Blobs[0],
+		"attachment blob": attachmentID,
+		"extras blob":     extrasID,
+	} {
+		st := newState()
+		delete(st.known, missing)
+		err := st.preflightSnapshotBlobs(m, pm)
+		require.ErrorContains(err, what, "missing %s must fail preflight", what)
+		require.ErrorContains(err, "not present in any index")
+	}
 }
 
 // TestRestoreOverwriteRefusesSymlinkedParentDir pins the in-root symlink

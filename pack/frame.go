@@ -78,9 +78,13 @@ func EncodeFrame(raw []byte, level int) (stored []byte, compressed bool) {
 const maxFramePrealloc = 4 << 20
 
 // decodeFrame reverses encodeFrame and validates the expected raw length.
+// The MaxRawLen bound applies to every frame, not only compressed ones:
+// parseFooterRegion already rejects oversized entries at footer parse time,
+// and this check backstops any caller that constructs an Entry some other
+// way.
 func decodeFrame(stored []byte, compressed bool, rawLen uint64) ([]byte, error) {
-	if compressed && rawLen > MaxRawLen {
-		return nil, fmt.Errorf("%w: raw length %d exceeds decoder maximum %d",
+	if rawLen > MaxRawLen {
+		return nil, fmt.Errorf("%w: raw length %d exceeds maximum %d",
 			ErrCorrupt, rawLen, uint64(MaxRawLen))
 	}
 	raw := stored
