@@ -113,8 +113,21 @@ func fillPage[K, G comparable](
 	o FillOptions[K], docs []Pending[K], stale map[K]struct{}, stats *FillStats,
 ) error {
 	workers := min(o.Concurrency, len(docs))
-	if workers < 1 {
-		workers = 1
+	if workers <= 1 {
+		// Concurrency <= 1 promises strictly sequential behavior: encode,
+		// then save, then take up the next document. The worker pipeline
+		// below would keep one encode in flight while the caller saves — an
+		// extra encoder/API call the options said would not be made, issued
+		// even as a failing save is about to abort the fill.
+		for _, p := range docs {
+			chunks := Split(p.Content, o.Split)
+			vectors, err := EncodeBatched(ctx, enc, chunks, o.Batch)
+			r := fillEncoded[K]{doc: p, chunks: chunks, vectors: vectors, err: err}
+			if err := saveEncoded(ctx, store, gen, o, r, stale, stats); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 
 	encCtx, cancel := context.WithCancel(ctx)
@@ -124,9 +137,7 @@ func fillPage[K, G comparable](
 	results := make(chan fillEncoded[K])
 	var wg sync.WaitGroup
 	for range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for p := range jobs {
 				chunks := Split(p.Content, o.Split)
 				vectors, err := EncodeBatched(encCtx, enc, chunks, o.Batch)
@@ -136,7 +147,7 @@ func fillPage[K, G comparable](
 					return
 				}
 			}
-		}()
+		})
 	}
 	go func() {
 		defer close(jobs)

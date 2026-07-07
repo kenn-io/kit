@@ -296,6 +296,55 @@ func TestFillConcurrencyEncodesDocumentsInParallel(t *testing.T) {
 	}
 }
 
+// saveHookStore runs hook before delegating each SaveVectors to memStore,
+// so a test can observe or stretch the save window.
+type saveHookStore struct {
+	*memStore
+	hook func()
+}
+
+func (s *saveHookStore) SaveVectors(ctx context.Context, gen int, doc int64, revision any, vecs []vector.ChunkVector) error {
+	s.hook()
+	return s.memStore.SaveVectors(ctx, gen, doc, revision, vecs)
+}
+
+// TestFillDefaultConcurrencyIsSequential pins the Concurrency <= 0 contract:
+// the next document's encode must not begin until the previous document's
+// save has returned, so no encoder/API call is ever made ahead of a save
+// that may abort the fill. The save window is stretched slightly so a
+// pipelined implementation (one encode kept in flight during the save)
+// reliably trips the overlap flag; a sequential one runs encode and save on
+// one goroutine and can never overlap.
+func TestFillDefaultConcurrencyIsSequential(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+
+	store := newMemStore()
+	for doc := int64(1); doc <= 6; doc++ {
+		store.content[doc] = strings.Repeat("x", int(doc))
+	}
+
+	var inSave atomic.Bool
+	var overlapped atomic.Bool
+	enc := func(ctx context.Context, texts []string) ([][]float32, error) {
+		if inSave.Load() {
+			overlapped.Store(true)
+		}
+		return lenEncoder()(ctx, texts)
+	}
+	hooked := &saveHookStore{memStore: store, hook: func() {
+		inSave.Store(true)
+		time.Sleep(5 * time.Millisecond)
+		inSave.Store(false)
+	}}
+
+	stats, err := vector.Fill(ctx, hooked, 7, enc, vector.FillOptions[int64]{})
+	require.NoError(err)
+	require.Equal(6, stats.Documents)
+	require.False(overlapped.Load(),
+		"an encode began while a save was still running: Concurrency <= 0 must be strictly sequential")
+}
+
 func TestFillConcurrencySkipHookStampsFailedDocument(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
