@@ -79,9 +79,9 @@ const maxFramePrealloc = 4 << 20
 
 // decodeFrame reverses encodeFrame and validates the expected raw length.
 func decodeFrame(stored []byte, compressed bool, rawLen uint64) ([]byte, error) {
-	if compressed && rawLen > maxRawLen {
+	if compressed && rawLen > MaxRawLen {
 		return nil, fmt.Errorf("%w: raw length %d exceeds decoder maximum %d",
-			ErrCorrupt, rawLen, uint64(maxRawLen))
+			ErrCorrupt, rawLen, uint64(MaxRawLen))
 	}
 	raw := stored
 	if compressed {

@@ -33,7 +33,7 @@ func NewCrypter(key [32]byte) (*Crypter, error) {
 func (c *Crypter) seal(aad, plain []byte) ([]byte, error) {
 	// Guard the capacity arithmetic below against int overflow for
 	// pathologically large plaintexts (callers are bounded far under this by
-	// maxRawLen, but the allocation math must not be able to wrap).
+	// MaxRawLen, but the allocation math must not be able to wrap).
 	if len(plain) > math.MaxInt-maxSealOverhead {
 		return nil, fmt.Errorf("pack: plaintext too large to seal (%d bytes)", len(plain))
 	}

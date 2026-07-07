@@ -26,10 +26,10 @@ type RestoreOptions struct {
 	// TargetDir receives the restored archive: the database file, content dir,
 	// and any captured extras. It must not exist, or be an empty directory,
 	// unless Overwrite is set. Overwrite merges into the existing tree: the
-	// database and its SQLite sidecars are removed first (a stale -wal or
-	// -shm would otherwise be replayed over the restored file on its first
-	// normal open), restored files replace same-named ones, and files the
-	// snapshot does not carry are left in place.
+	// database and its SQLite sidecars are removed first (a stale -wal, -shm,
+	// or -journal would otherwise be replayed over the restored file on its
+	// first normal open), restored files replace same-named ones, and files
+	// the snapshot does not carry are left in place.
 	TargetDir string
 	Overwrite bool
 	// Jobs is the number of concurrent pack-read workers. Zero or negative
@@ -229,6 +229,15 @@ func syncRestoredTree(target, ceiling string) error {
 	}
 }
 
+// sqliteSidecarNames lists the sidecar files SQLite may create next to a
+// database: the WAL and its shared-memory index, and the rollback journal. A
+// stale sidecar next to a restored database would be replayed or reused on
+// the file's first normal open, silently altering the proven bytes — so
+// overwrite restores remove them and extras entries may never plant one.
+func sqliteSidecarNames(dbFileName string) []string {
+	return []string{dbFileName + "-wal", dbFileName + "-shm", dbFileName + "-journal"}
+}
+
 // prepareRestoreTarget creates TargetDir, refusing a non-empty existing
 // directory unless overwrite is set (FORMAT.md, Restore), and returns a root
 // confined to it. Every subsequent restore write goes through that root, which
@@ -260,11 +269,11 @@ func prepareRestoreTarget(target string, overwrite bool, dbFileName string) (*os
 	}
 	// Overwrite merges rather than clearing the tree, but the database and
 	// its SQLite sidecars must not survive: restoreDB rewrites the database
-	// file, and a stale -wal/-shm pair next to it would be replayed over the
-	// proven bytes on the file's first normal (non-immutable) open. Remove
-	// them through the root so a symlink at any of those names is unlinked,
-	// never followed.
-	for _, name := range []string{dbFileName, dbFileName + "-wal", dbFileName + "-shm"} {
+	// file, and a stale -wal/-shm pair or hot -journal next to it would be
+	// replayed over the proven bytes on the file's first normal
+	// (non-immutable) open. Remove them through the root so a symlink at any
+	// of those names is unlinked, never followed.
+	for _, name := range append([]string{dbFileName}, sqliteSidecarNames(dbFileName)...) {
 		if err := root.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
 			_ = root.Close()
 			return nil, fmt.Errorf("backup: removing stale %s from restore target: %w", name, err)
@@ -1008,9 +1017,8 @@ func validateExtrasEntryPath(path, contentDirName, dbFileName string) (string, e
 		return "", fmt.Errorf("backup: extras entry path %q has a component ending in a dot or space", path)
 	}
 	first, _, _ := strings.Cut(filepath.ToSlash(rel), "/")
-	for _, reserved := range []string{
-		contentDirName, dbFileName, dbFileName + "-wal", dbFileName + "-shm",
-	} {
+	for _, reserved := range append(
+		[]string{contentDirName, dbFileName}, sqliteSidecarNames(dbFileName)...) {
 		if strings.EqualFold(first, reserved) {
 			return "", fmt.Errorf("backup: extras entry path %q overlaps restored archive content", path)
 		}

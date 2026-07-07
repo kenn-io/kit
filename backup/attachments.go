@@ -417,6 +417,13 @@ func captureRef(
 	return res
 }
 
+// maxCaptureRawLen bounds the bytes capture will buffer for one file. It is
+// the pack layer's per-blob raw limit, which Append would enforce anyway —
+// but only after the whole file had been read and trial-compressed, so an
+// oversized referenced file must be rejected from the cheap fstat before it
+// can exhaust memory. It is a var, not a const, only so tests can lower it.
+var maxCaptureRawLen int64 = pack.MaxRawLen
+
 // readRegularFile reads rel through root and requires it to be a regular file,
 // returning its content and stat info. os.Root refuses any path that escapes
 // the root through a symlink, and the fstat is taken on the opened descriptor,
@@ -437,9 +444,19 @@ func readRegularFile(root *os.Root, rel string) ([]byte, os.FileInfo, error) {
 	if !info.Mode().IsRegular() {
 		return nil, nil, fmt.Errorf("%q is not a regular file", rel)
 	}
-	data, err := io.ReadAll(f)
+	if info.Size() > maxCaptureRawLen {
+		return nil, nil, fmt.Errorf("%q is %d bytes, larger than the maximum blob size %d",
+			rel, info.Size(), maxCaptureRawLen)
+	}
+	// The stat bound is advisory (the file can grow between fstat and read);
+	// the limited read is the guarantee the buffer cannot exceed the cap.
+	data, err := io.ReadAll(io.LimitReader(f, maxCaptureRawLen+1))
 	if err != nil {
 		return nil, nil, err
+	}
+	if int64(len(data)) > maxCaptureRawLen {
+		return nil, nil, fmt.Errorf("%q grew past the maximum blob size %d during capture",
+			rel, maxCaptureRawLen)
 	}
 	return data, info, nil
 }

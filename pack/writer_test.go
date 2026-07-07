@@ -118,7 +118,7 @@ func TestWriterAppendEncodedRejectsBadInput(t *testing.T) {
 	require.ErrorContains(err, "claims raw length")
 
 	// Raw lengths beyond the decoder maximum are rejected like Append does.
-	_, err = w.AppendEncoded(ComputeBlobID(raw), raw, maxRawLen+1, true)
+	_, err = w.AppendEncoded(ComputeBlobID(raw), raw, MaxRawLen+1, true)
 	require.ErrorContains(err, "exceeds max")
 }
 

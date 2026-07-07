@@ -348,9 +348,9 @@ func TestRestoreRefusesNonEmptyTargetWithoutOverwrite(t *testing.T) {
 }
 
 // TestRestoreOverwriteRemovesStaleDBSidecars pins the --overwrite hazard: a
-// stale -wal/-shm pair left next to the restored database would be replayed
-// over the proven bytes on its first normal SQLite open, so overwrite must
-// remove them even though it merges the rest of the tree.
+// stale -wal/-shm pair or rollback journal left next to the restored database
+// would be replayed over the proven bytes on its first normal SQLite open, so
+// overwrite must remove them even though it merges the rest of the tree.
 func TestRestoreOverwriteRemovesStaleDBSidecars(t *testing.T) {
 	require := require.New(t)
 	ctx := context.Background()
@@ -360,7 +360,7 @@ func TestRestoreOverwriteRemovesStaleDBSidecars(t *testing.T) {
 	require.NoError(err)
 
 	target := t.TempDir()
-	for _, name := range []string{"app.db", "app.db-wal", "app.db-shm"} {
+	for _, name := range []string{"app.db", "app.db-wal", "app.db-shm", "app.db-journal"} {
 		require.NoError(os.WriteFile(filepath.Join(target, name), []byte("stale "+name), 0o600))
 	}
 	unrelated := filepath.Join(target, "keep-me.txt")
@@ -368,7 +368,7 @@ func TestRestoreOverwriteRemovesStaleDBSidecars(t *testing.T) {
 
 	res, err := Restore(ctx, r, newTestApp(), RestoreOptions{TargetDir: target, Overwrite: true})
 	require.NoError(err)
-	for _, name := range []string{"app.db-wal", "app.db-shm"} {
+	for _, name := range []string{"app.db-wal", "app.db-shm", "app.db-journal"} {
 		_, err := os.Stat(filepath.Join(target, name))
 		require.ErrorIs(err, os.ErrNotExist, "stale sidecar %s must not survive an overwrite restore", name)
 	}
@@ -730,7 +730,7 @@ func TestRestoreExtrasEntryRejectsArchiveOverlap(t *testing.T) {
 	st := &restoreState{}
 
 	for _, path := range []string{
-		"app.db", "APP.DB", "app.db-wal", "app.db-shm",
+		"app.db", "APP.DB", "app.db-wal", "app.db-shm", "app.db-journal",
 		"content/aa/aa11", "Content/aa/aa11", "content",
 	} {
 		err := st.restoreExtrasEntry(newTestApp(), ExtrasEntry{Path: path, Blob: blobID("x").String()})

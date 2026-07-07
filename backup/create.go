@@ -161,6 +161,16 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 	if err != nil {
 		return nil, err
 	}
+	// The page scan is done: release the frozen session's pinned read
+	// transaction now so the live database can checkpoint its WAL again,
+	// instead of holding the pin through attachment capture and pack sealing.
+	// Everything below reads only values already copied out of the session
+	// (PageSize, statsRaw, info). Close is idempotent, so the deferred close
+	// above remains correct for earlier error paths.
+	if err := session.Close(); err != nil {
+		return nil, fmt.Errorf("backup: releasing frozen session: %w", err)
+	}
+	_ = dbFile.Close()
 
 	keyframe, chainDepth, err := decideKeyframe(r, parent, parentHash, known)
 	if err != nil {

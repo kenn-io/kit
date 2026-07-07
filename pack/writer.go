@@ -69,7 +69,7 @@ func (w *Writer) StoredSize() int64 { return w.off }
 func (w *Writer) Full() bool { return w.off >= w.opts.TargetSize }
 
 // Append stores one blob and returns its entry. Dedup is the caller's job.
-// raw must be at most maxRawLen bytes: a compressed frame recording a larger
+// raw must be at most MaxRawLen bytes: a compressed frame recording a larger
 // raw length could never be read back, since decodeFrame rejects it to match
 // the zstd decoder's memory limit, so Append rejects the input up front.
 //
@@ -86,9 +86,9 @@ func (w *Writer) Append(raw []byte) (Entry, error) {
 	if w.err != nil {
 		return Entry{}, w.err
 	}
-	if uint64(len(raw)) > maxRawLen {
+	if uint64(len(raw)) > MaxRawLen {
 		return Entry{}, fmt.Errorf("pack: raw blob length %d exceeds max %d bytes",
-			len(raw), uint64(maxRawLen))
+			len(raw), uint64(MaxRawLen))
 	}
 	id := ComputeBlobID(raw)
 	stored, compressed := encodeFrame(raw, w.opts.ZstdLevel)
@@ -109,9 +109,9 @@ func (w *Writer) AppendEncoded(id BlobID, frame []byte, rawLen uint64, compresse
 	if w.err != nil {
 		return Entry{}, w.err
 	}
-	if rawLen > maxRawLen {
+	if rawLen > MaxRawLen {
 		return Entry{}, fmt.Errorf("pack: raw blob length %d exceeds max %d bytes",
-			rawLen, uint64(maxRawLen))
+			rawLen, uint64(MaxRawLen))
 	}
 	if !compressed && uint64(len(frame)) != rawLen {
 		return Entry{}, fmt.Errorf("pack: uncompressed frame for blob %s is %d bytes but claims raw length %d",

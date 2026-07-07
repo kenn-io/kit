@@ -208,6 +208,27 @@ func TestCaptureAttachmentsRejectsCorruptFile(t *testing.T) {
 	require.ErrorContains(err, ref.Hash[:2])
 }
 
+// TestCaptureAttachmentsRejectsOversizedFile pins the fstat size guard: a
+// referenced file larger than the pack layer's per-blob raw limit must be
+// rejected from the cheap stat, before capture buffers the whole file — the
+// pack writer would refuse it anyway, but only after the memory was spent.
+func TestCaptureAttachmentsRejectsOversizedFile(t *testing.T) {
+	require := require.New(t)
+	r := initTestRepo(t)
+	dir := t.TempDir()
+
+	old := maxCaptureRawLen
+	maxCaptureRawLen = 16
+	t.Cleanup(func() { maxCaptureRawLen = old })
+
+	ref := writeLooseAttachment(t, dir, bytes.Repeat([]byte("x"), 17))
+
+	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
+	defer appender.Abort()
+	_, err := CaptureAttachments(context.Background(), dir, []ContentRef{ref}, map[string]bool{}, appender, CaptureOptions{})
+	require.ErrorContains(err, "larger than the maximum blob size")
+}
+
 // TestCaptureAttachmentsParallelReportsFirstErrorInRefOrder pins error
 // determinism: with several failing refs and a parallel pipeline that may
 // hit a later failure first, the reported error is still the one a serial

@@ -155,9 +155,19 @@ func readExtrasLeafNoFollow(dir *os.Root, name string) ([]byte, os.FileInfo, err
 	if !os.SameFile(li, info) {
 		return nil, nil, fmt.Errorf("%q changed during capture", name)
 	}
-	data, err := io.ReadAll(f)
+	if info.Size() > maxCaptureRawLen {
+		return nil, nil, fmt.Errorf("%q is %d bytes, larger than the maximum blob size %d",
+			name, info.Size(), maxCaptureRawLen)
+	}
+	// As in readRegularFile: the stat bound is advisory, the limited read is
+	// the guarantee the buffer cannot exceed the cap.
+	data, err := io.ReadAll(io.LimitReader(f, maxCaptureRawLen+1))
 	if err != nil {
 		return nil, nil, err
+	}
+	if int64(len(data)) > maxCaptureRawLen {
+		return nil, nil, fmt.Errorf("%q grew past the maximum blob size %d during capture",
+			name, maxCaptureRawLen)
 	}
 	return data, info, nil
 }

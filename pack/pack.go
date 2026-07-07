@@ -21,19 +21,22 @@ const (
 	headerSize   = 6
 	maxFooterLen = 1 << 30
 
-	// maxRawLen bounds the raw (decompressed) length a footer entry may claim.
-	// It matches the zstd decoder's WithDecoderMaxMemory(1<<32) limit in
-	// frame.go: a compressed frame whose entry claims a larger raw length can
-	// never decode successfully, so decodeFrame rejects it before trusting the
+	// MaxRawLen bounds the raw (decompressed) length of one blob. It matches
+	// the zstd decoder's WithDecoderMaxMemory(1<<32) limit in frame.go: a
+	// compressed frame whose entry claims a larger raw length can never
+	// decode successfully, so decodeFrame rejects it before trusting the
 	// value to size a preallocation. Append enforces the same bound on raw
 	// input so every pack Append writes can produce is guaranteed readable.
-	maxRawLen = 1 << 32
+	// Exported so callers that buffer whole files before appending can reject
+	// oversized input from a cheap stat instead of reading it into memory
+	// first.
+	MaxRawLen = 1 << 32
 
 	// maxStoredLen bounds StoredLen, the number of bytes a footer entry claims
 	// occupy the pack's data region: readStored preallocates a buffer of this
 	// size before any integrity check runs, so an untrusted footer entry must
 	// not be able to claim an arbitrarily large StoredLen (bounded only by
-	// file size otherwise). The legitimate maximum is maxRawLen inflated by
+	// file size otherwise). The legitimate maximum is MaxRawLen inflated by
 	// the worst-case expansion a frame can add on top of the raw bytes:
 	//   - zstd's documented worst case for incompressible input is
 	//     input + (input >> 8) + a small fixed number of frame/block header
@@ -44,7 +47,7 @@ const (
 	//     maxSealOverhead in crypter.go).
 	// Both allowances can apply to the same entry (compress then seal), so
 	// they're additive.
-	maxStoredLen = maxRawLen + maxRawLen>>8 + maxZstdFrameOverhead + maxSealOverhead
+	maxStoredLen = MaxRawLen + MaxRawLen>>8 + maxZstdFrameOverhead + maxSealOverhead
 
 	// maxZstdFrameOverhead is the conservative fixed-byte allowance in
 	// maxStoredLen for zstd frame/block headers, on top of the input+input>>8

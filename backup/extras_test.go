@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -103,6 +104,30 @@ func TestReadExtrasNoFollowRejectsSymlinks(t *testing.T) {
 	// A symlinked directory component inside the root must be refused too.
 	_, _, err = readExtrasNoFollow(root, filepath.Join("dirlink", "f.json"))
 	require.ErrorContains(err, "not a real directory")
+}
+
+// TestCaptureExtrasRejectsOversizedFile pins the same fstat guard on the
+// extras leaf reader: extras files share the pack layer's per-blob raw limit
+// and must be rejected before capture buffers the content.
+func TestCaptureExtrasRejectsOversizedFile(t *testing.T) {
+	require := require.New(t)
+	r := initTestRepo(t)
+	dataDir := t.TempDir()
+	require.NoError(os.MkdirAll(filepath.Join(dataDir, "deletions"), 0o700))
+	require.NoError(os.WriteFile(
+		filepath.Join(dataDir, "deletions", "big.json"), bytes.Repeat([]byte("x"), 17), 0o600))
+
+	old := maxCaptureRawLen
+	maxCaptureRawLen = 16
+	t.Cleanup(func() { maxCaptureRawLen = old })
+
+	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
+	defer appender.Abort()
+	_, _, err := CaptureExtras(ExtrasOptions{
+		DataDir: dataDir,
+		Spec:    ExtrasSpec{Dirs: []ExtrasDirSpec{{Name: "deletions"}}},
+	}, appender)
+	require.ErrorContains(err, "larger than the maximum blob size")
 }
 
 func TestCaptureExtrasEmpty(t *testing.T) {
