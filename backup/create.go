@@ -243,7 +243,7 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 		}
 	}
 
-	treeBlob, hasTree, err := CaptureExtras(ExtrasOptions{
+	treeBlob, hasTree, err := CaptureExtras(ctx, ExtrasOptions{
 		DataDir:               opts.DataDir,
 		Spec:                  opts.Extras,
 		AllowPlaintextSecrets: opts.AllowPlaintextSecrets,
@@ -253,6 +253,13 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 		return nil, err
 	}
 
+	// Attachment capture was the last stage that watched ctx itself; nothing
+	// below may run under a canceled context — sealing publishes the packs
+	// and the manifest write publishes the snapshot, and a canceled backup
+	// must not report success.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	pr.emit(ProgressEvent{Stage: ProgressStageSeal, Total: 1})
 	newPacks, newEntries, err := appender.Finish()
 	if err != nil {
@@ -331,6 +338,12 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 	}
 	if hasTree {
 		m.Extras.Tree = treeBlob.String()
+	}
+	// Final gate: packs and index are durable at this point (harmless
+	// unreferenced data if abandoned, like a crash here), but the manifest is
+	// what makes the snapshot exist. Never publish one after cancellation.
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	id, err := r.WriteManifest(m)
 	if err != nil {

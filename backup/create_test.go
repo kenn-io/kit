@@ -569,6 +569,34 @@ func TestCreateRejectsForgedDeltaParentHashCache(t *testing.T) {
 		"the forged delta-parent cache must be ignored so the child snapshot captures the edit")
 }
 
+// TestCreateHonorsCancellationAfterAttachments pins that Create keeps
+// watching ctx once attachment capture — the last inherently ctx-aware stage
+// — completes: a cancellation landing there must stop the backup before
+// extras capture and sealing, and above all must not publish a manifest for
+// a backup the caller canceled.
+func TestCreateHonorsCancellationAfterAttachments(t *testing.T) {
+	require := require.New(t)
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+	require.NoError(os.MkdirAll(filepath.Join(dataDir, "deletions"), 0o700))
+	require.NoError(os.WriteFile(filepath.Join(dataDir, "deletions", "a.json"), []byte("{}"), 0o600))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	opts := createOpts(dbPath, attachmentsDir, dataDir, t.TempDir())
+	opts.Progress = func(ev ProgressEvent) {
+		if ev.Stage == ProgressStageAttachments && ev.Final {
+			cancel()
+		}
+	}
+	_, err := Create(ctx, r, newTestApp(), opts)
+	require.ErrorIs(err, context.Canceled)
+
+	latest, err := r.LatestSnapshot()
+	require.NoError(err)
+	require.Nil(latest, "no snapshot may be published after cancellation")
+}
+
 func TestCreateNoChanges(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)

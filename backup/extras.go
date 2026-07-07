@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -208,8 +209,13 @@ func readExtrasNoFollow(root *os.Root, rel string) ([]byte, os.FileInfo, error) 
 	return readExtrasLeafNoFollow(cur, comps[len(comps)-1])
 }
 
-// CaptureExtras stores extras file blobs and the tree object.
-func CaptureExtras(opts ExtrasOptions, appender *PackAppender) (pack.BlobID, bool, error) {
+// CaptureExtras stores extras file blobs and the tree object. ctx is checked
+// before each file read, so a canceled backup stops within one file instead
+// of walking and reading every remaining extras source.
+func CaptureExtras(ctx context.Context, opts ExtrasOptions, appender *PackAppender) (pack.BlobID, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return pack.BlobID{}, false, err
+	}
 	if opts.Spec.empty() {
 		return pack.BlobID{}, false, nil
 	}
@@ -255,6 +261,9 @@ func CaptureExtras(opts ExtrasOptions, appender *PackAppender) (pack.BlobID, boo
 	// restore's checkExtrasCollisions uses: restore rejects such trees, so
 	// capturing one would produce an unrestorable snapshot.
 	addFile := func(readRoot *os.Root, readRel, recordPath string) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		key := foldedPathKey(recordPath)
 		slashPath := filepath.ToSlash(recordPath)
 		if other, dup := seen[key]; dup {
