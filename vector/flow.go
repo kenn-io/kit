@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 )
 
 // FillOptions configures Fill. K is the document key type of the Store the
@@ -16,6 +17,13 @@ type FillOptions[K comparable] struct {
 	Split SplitOptions
 	// Batch controls how chunks are batched into encode calls.
 	Batch BatchOptions
+	// Concurrency is the number of documents split and encoded in parallel
+	// within each scan page. Values <= 0 use 1 (sequential). SaveVectors
+	// and OnEncodeError stay serialized on the calling goroutine regardless,
+	// so stores and hooks need no extra locking. It composes with
+	// Batch.Concurrency, which parallelizes encode calls within a single
+	// document's chunks.
+	Concurrency int
 	// OnEncodeError, if non-nil, is consulted when encoding a document
 	// fails. Returning true skips the document: it is stamped for the
 	// generation with no vectors so it stops being pending, and the fill
@@ -68,57 +76,140 @@ func Fill[K, G comparable](ctx context.Context, store Store[K, G], gen G, enc En
 			return stats, fmt.Errorf("scan pending: %w", err)
 		}
 
-		attempted := false
+		docs := make([]Pending[K], 0, len(pending))
 		for _, p := range pending {
-			if _, ok := stale[p.Doc]; ok {
-				continue
+			if _, ok := stale[p.Doc]; !ok {
+				docs = append(docs, p)
 			}
-			attempted = true
-
-			chunks := Split(p.Content, o.Split)
-			vectors, err := EncodeBatched(ctx, enc, chunks, o.Batch)
-			skipped := false
-			if err != nil {
-				if ctxErr := ctx.Err(); ctxErr != nil {
-					return stats, ctxErr
-				}
-				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-					return stats, fmt.Errorf("encode document %v: %w", p.Doc, err)
-				}
-				if o.OnEncodeError == nil || !o.OnEncodeError(p.Doc, err) {
-					return stats, fmt.Errorf("encode document %v: %w", p.Doc, err)
-				}
-				skipped = true
-			}
-
-			var cvs []ChunkVector
-			if !skipped {
-				cvs = make([]ChunkVector, len(chunks))
-				for i, c := range chunks {
-					cvs[i] = ChunkVector{ChunkIndex: c.Index, Vector: vectors[i]}
-				}
-			}
-			if err := store.SaveVectors(ctx, gen, p.Doc, p.Revision, cvs); err != nil {
-				if errors.Is(err, ErrStale) {
-					stale[p.Doc] = struct{}{}
-					stats.Stale++
-					continue
-				}
-				return stats, fmt.Errorf("save document %v: %w", p.Doc, err)
-			}
-			if skipped {
-				stats.Skipped++
-				continue
-			}
-			stats.Documents++
-			stats.Chunks += len(cvs)
 		}
-		if !attempted {
+		if len(docs) == 0 {
 			// Nothing left, or only stale documents remain pending; either
 			// way this run is done.
 			return stats, nil
 		}
+		if err := fillPage(ctx, store, gen, enc, o, docs, stale, &stats); err != nil {
+			return stats, err
+		}
 	}
+}
+
+// fillEncoded carries one document's encode outcome from a worker to the
+// collecting goroutine.
+type fillEncoded[K comparable] struct {
+	doc     Pending[K]
+	chunks  []Chunk
+	vectors []Vector
+	err     error
+}
+
+// fillPage embeds one scan page of pending documents: workers split and
+// encode up to o.Concurrency documents in parallel while the calling
+// goroutine saves each result as it completes. The first save-side failure
+// cancels the in-flight encodes, drains the workers, and is returned;
+// results still in flight at that point are discarded and their documents
+// stay pending for the next run.
+func fillPage[K, G comparable](
+	ctx context.Context, store Store[K, G], gen G, enc EncodeFunc,
+	o FillOptions[K], docs []Pending[K], stale map[K]struct{}, stats *FillStats,
+) error {
+	workers := min(o.Concurrency, len(docs))
+	if workers < 1 {
+		workers = 1
+	}
+
+	encCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	jobs := make(chan Pending[K])
+	results := make(chan fillEncoded[K])
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for p := range jobs {
+				chunks := Split(p.Content, o.Split)
+				vectors, err := EncodeBatched(encCtx, enc, chunks, o.Batch)
+				select {
+				case results <- fillEncoded[K]{doc: p, chunks: chunks, vectors: vectors, err: err}:
+				case <-encCtx.Done():
+					return
+				}
+			}
+		}()
+	}
+	go func() {
+		defer close(jobs)
+		for _, p := range docs {
+			select {
+			case jobs <- p:
+			case <-encCtx.Done():
+				return
+			}
+		}
+	}()
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	var pageErr error
+	for r := range results {
+		if pageErr != nil {
+			continue // draining after cancel
+		}
+		if err := saveEncoded(ctx, store, gen, o, r, stale, stats); err != nil {
+			pageErr = err
+			cancel()
+		}
+	}
+	return pageErr
+}
+
+// saveEncoded applies one document's encode outcome: it consults
+// OnEncodeError for failures, stamps skips, saves vectors, and records
+// stale revisions, updating stats to match. It runs on Fill's calling
+// goroutine only.
+func saveEncoded[K, G comparable](
+	ctx context.Context, store Store[K, G], gen G, o FillOptions[K],
+	r fillEncoded[K], stale map[K]struct{}, stats *FillStats,
+) error {
+	skipped := false
+	if r.err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		if errors.Is(r.err, context.Canceled) || errors.Is(r.err, context.DeadlineExceeded) {
+			return fmt.Errorf("encode document %v: %w", r.doc.Doc, r.err)
+		}
+		if o.OnEncodeError == nil || !o.OnEncodeError(r.doc.Doc, r.err) {
+			return fmt.Errorf("encode document %v: %w", r.doc.Doc, r.err)
+		}
+		skipped = true
+	}
+
+	var cvs []ChunkVector
+	if !skipped {
+		cvs = make([]ChunkVector, len(r.chunks))
+		for i, c := range r.chunks {
+			cvs[i] = ChunkVector{ChunkIndex: c.Index, Vector: r.vectors[i]}
+		}
+	}
+	if err := store.SaveVectors(ctx, gen, r.doc.Doc, r.doc.Revision, cvs); err != nil {
+		if errors.Is(err, ErrStale) {
+			stale[r.doc.Doc] = struct{}{}
+			stats.Stale++
+			return nil
+		}
+		return fmt.Errorf("save document %v: %w", r.doc.Doc, err)
+	}
+	if skipped {
+		stats.Skipped++
+		return nil
+	}
+	stats.Documents++
+	stats.Chunks += len(cvs)
+	return nil
 }
 
 // SearchOptions configures Search.

@@ -7,7 +7,9 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -245,6 +247,108 @@ func TestFillDoesNotSkipCancelledEncode(t *testing.T) {
 	require.ErrorIs(err, context.Canceled)
 	assert.False(called, "cancellation bypasses the permanent-error skip hook")
 	assert.False(store.embedded[1][7], "a cancelled document is not stamped as handled")
+}
+
+func TestFillConcurrencyEncodesDocumentsInParallel(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	ctx := context.Background()
+
+	const workers = 4
+	store := newMemStore()
+	for doc := int64(1); doc <= workers; doc++ {
+		store.content[doc] = strings.Repeat("x", int(doc))
+	}
+
+	// Barrier encoder: every call parks until all four documents are in
+	// flight at once, so the test fails with the timeout error below
+	// (instead of hanging) if Fill regresses to sequential encodes.
+	release := make(chan struct{})
+	var arrived atomic.Int32
+	enc := func(_ context.Context, texts []string) ([][]float32, error) {
+		if arrived.Add(1) == workers {
+			close(release)
+		}
+		select {
+		case <-release:
+		case <-time.After(5 * time.Second):
+			return nil, errors.New("barrier timed out: encodes did not overlap")
+		}
+		out := make([][]float32, len(texts))
+		for i, txt := range texts {
+			out[i] = []float32{float32(len([]rune(txt)))}
+		}
+		return out, nil
+	}
+
+	stats, err := vector.Fill(ctx, store, 7, enc, vector.FillOptions[int64]{
+		Concurrency: workers,
+	})
+	require.NoError(err)
+
+	assert.Equal(workers, stats.Documents)
+	assert.Equal(workers, stats.Chunks)
+	for doc := int64(1); doc <= workers; doc++ {
+		require.True(store.embedded[doc][7], "doc %d stamped", doc)
+		require.Len(store.vectors[7][doc], 1)
+		assert.InDelta(float64(doc), float64(store.vectors[7][doc][0].Vector[0]), 1e-6,
+			"doc %d keeps its own vector under concurrent encodes", doc)
+	}
+}
+
+func TestFillConcurrencySkipHookStampsFailedDocument(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	ctx := context.Background()
+
+	store := newMemStore()
+	store.content[1] = "poison"
+	store.content[2] = "fine"
+	store.content[3] = "also fine"
+
+	var skipped []int64
+	stats, err := vector.Fill(ctx, store, 7, poisonEncoder(), vector.FillOptions[int64]{
+		Concurrency: 3,
+		OnEncodeError: func(doc int64, err error) bool {
+			skipped = append(skipped, doc)
+			return true
+		},
+	})
+	require.NoError(err)
+	assert.Equal(2, stats.Documents)
+	assert.Equal(1, stats.Skipped)
+	assert.Equal([]int64{1}, skipped)
+	assert.True(store.embedded[1][7], "skipped doc is stamped so it stops being pending")
+	assert.Empty(store.vectors[7][1], "skipped doc has no vectors")
+	assert.True(store.embedded[2][7])
+	assert.True(store.embedded[3][7])
+}
+
+func TestFillConcurrencyEncodeErrorAborts(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	ctx := context.Background()
+
+	store := newMemStore()
+	store.content[1] = "poison"
+	for doc := int64(2); doc <= 8; doc++ {
+		store.content[doc] = "fine"
+	}
+
+	_, err := vector.Fill(ctx, store, 7, poisonEncoder(), vector.FillOptions[int64]{
+		Concurrency: 4,
+	})
+	require.ErrorContains(err, "encode document")
+	assert.False(store.embedded[1][7], "the failed doc is neither embedded nor stamped")
+
+	// The failed document stays pending: a later run with a working encoder
+	// picks up everything the aborted page left behind.
+	again, err := vector.Fill(ctx, store, 7, lenEncoder(), vector.FillOptions[int64]{
+		Concurrency: 4,
+	})
+	require.NoError(err)
+	assert.True(store.embedded[1][7])
+	assert.Equal(0, again.Stale)
 }
 
 // poisonEncoder fails any batch containing the text "poison".
