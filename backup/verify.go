@@ -467,10 +467,21 @@ func (s *verifyState) drainContentReads(ctx context.Context) error {
 		if ctxErr = ctx.Err(); ctxErr != nil {
 			break
 		}
-		packs <- packID
+		// A blocking send would pin a canceled dispatch until a worker frees
+		// up; on cancellation the next iteration's check breaks the loop.
+		select {
+		case packs <- packID:
+		case <-ctx.Done():
+		}
 	}
 	close(packs)
 	wg.Wait()
+	if ctxErr == nil {
+		// A cancellation arriving after the last pack was dispatched, while
+		// workers were still reading, must surface too: a canceled verify
+		// must never report clean success.
+		ctxErr = ctx.Err()
+	}
 	return ctxErr
 }
 

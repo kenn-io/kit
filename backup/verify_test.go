@@ -478,6 +478,33 @@ func TestVerifyFlagsOverrunningPageRun(t *testing.T) {
 	}
 }
 
+// TestVerifyDrainSurfacesLateCancellation pins the drain's cancellation
+// contract: a context canceled after the last pack was dispatched, while a
+// worker is still reading, must surface from drainContentReads — a canceled
+// single-snapshot verify would otherwise return clean success. One queued
+// blob makes the timing deterministic: dispatch has necessarily finished
+// before the worker's per-blob progress event (Done > 0) triggers the cancel.
+func TestVerifyDrainSurfacesLateCancellation(t *testing.T) {
+	require := require.New(t)
+	r, m := buildVerifyFixture(t)
+
+	st := newTestVerifyState(t, r, false)
+	pm := st.checkPageMapChain(m)
+	require.NotNil(pm)
+	require.NotEmpty(pm.Blobs)
+	require.Empty(st.result.Problems)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	st.progress = newProgressEmitter(func(ev ProgressEvent) {
+		if ev.Done > 0 {
+			cancel()
+		}
+	})
+	st.verifyContentBlob(pm.Blobs[0], m.SnapshotID)
+	require.ErrorIs(st.drainContentReads(ctx), context.Canceled)
+}
+
 // TestVerifyFlagsPageHashMapMismatch pins restore/verify parity for page
 // content: restore's writeRun hash-verifies every materialized page against
 // the snapshot's page-hash map and refuses on mismatch, so a snapshot whose

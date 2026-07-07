@@ -271,26 +271,33 @@ func TestRestoreRejectsCaseFoldingAttachmentPaths(t *testing.T) {
 	require.ErrorContains(err, "two different attachments")
 }
 
-// trailingDotContentPathApp maps every content hash to a restore path with a
-// component ending in a dot.
-type trailingDotContentPathApp struct{ App }
+// badContentPathApp maps every content hash to one fixed restore path, for
+// exercising restore's validation of paths the restored database records.
+type badContentPathApp struct {
+	App
+	path string
+}
 
-func (a trailingDotContentPathApp) RestoredContentPaths(ctx context.Context, db *sql.DB) (map[string][]string, error) {
+func (a badContentPathApp) RestoredContentPaths(ctx context.Context, db *sql.DB) (map[string][]string, error) {
 	paths, err := a.App.RestoredContentPaths(ctx, db)
 	if err != nil {
 		return nil, err
 	}
 	out := make(map[string][]string, len(paths))
 	for hash := range paths {
-		out[hash] = []string{"blobs./file"}
+		out[hash] = []string{a.path}
 	}
 	return out, nil
 }
 
-// TestRestoreRejectsTrailingDotAttachmentPath pins that a restore path whose
-// component ends in a dot (which Windows trims, aliasing a different name) is
-// rejected on every platform.
-func TestRestoreRejectsTrailingDotAttachmentPath(t *testing.T) {
+// TestRestoreRejectsBadAttachmentPaths pins that restore refuses attachment
+// paths a tampered or buggy database could record: a component ending in a
+// dot or space (which Windows trims, aliasing a different name), and any "."
+// or ".." component — including paths like "." or "safe/.." that pass
+// filepath.IsLocal yet clean to the content directory itself, which restore
+// must never write as a file. All are rejected on every platform before any
+// write.
+func TestRestoreRejectsBadAttachmentPaths(t *testing.T) {
 	require := require.New(t)
 	ctx := context.Background()
 	r := initTestRepo(t)
@@ -298,10 +305,12 @@ func TestRestoreRejectsTrailingDotAttachmentPath(t *testing.T) {
 	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
 	require.NoError(err)
 
-	_, err = Restore(ctx, r, trailingDotContentPathApp{App: newTestApp()}, RestoreOptions{
-		TargetDir: filepath.Join(t.TempDir(), "restore"),
-	})
-	require.ErrorContains(err, "ending in a dot or space")
+	for _, path := range []string{"blobs./file", ".", "safe/..", "safe/../x"} {
+		_, err = Restore(ctx, r, badContentPathApp{App: newTestApp(), path: path}, RestoreOptions{
+			TargetDir: filepath.Join(t.TempDir(), "restore"),
+		})
+		require.ErrorContains(err, "ending in a dot or space", "path %q", path)
+	}
 }
 
 // TestRestoreRefusesSymlinkTarget pins that a restore target whose final
