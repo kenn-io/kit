@@ -126,7 +126,7 @@ entries: content SHA-256 [32] | size u64   (40 bytes, first-seen order)
 SHA-256 trailer
 ```
 
-A snapshot's manifest references one or more list blobs whose union is exactly the attachment population of that snapshot. In the common append-only case, a snapshot inherits its parent's list blobs and adds one new segment; when the live set has shrunk (attachments were deleted), the snapshot writes one fresh full list instead, so the union invariant holds in both directions. Attachment content is re-read and re-hashed from disk at every capture — a file whose bytes no longer match its recorded hash fails the backup rather than being stored wrong.
+A snapshot's manifest references one or more list blobs whose union is exactly the attachment population of that snapshot. In the common append-only case, a snapshot inherits its parent's list blobs and adds one new segment; when the live set has shrunk (attachments were deleted), the snapshot writes one fresh full list instead, so the union invariant holds in both directions. Attachment content is re-read and re-hashed at every capture — from the attachments directory, or from an application-supplied `ContentSource` when `CreateOptions.ContentSource` is set — and content whose bytes no longer match the recorded hash fails the backup rather than being stored wrong. The wire format is identical either way; the source only changes where capture acquires bytes.
 
 ## Snapshot Manifests
 
