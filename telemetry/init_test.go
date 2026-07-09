@@ -3,11 +3,12 @@ package telemetry
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	otelmetric "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
@@ -26,7 +27,26 @@ func TestInitAppliesNativeOptionsAndRegistersGlobals(t *testing.T) {
 
 	spanRecorder := tracetest.NewSpanRecorder()
 	metricReader := metric.NewManualReader()
-	shutdown, err := Init(context.Background(),
+	var tracerProvider oteltrace.TracerProvider
+	var meterProvider otelmetric.MeterProvider
+	var textMapPropagator propagation.TextMapPropagator
+	shutdown, err := initWithDependencies(context.Background(), initDependencies{
+		newSpanExporter: func(context.Context) (trace.SpanExporter, error) {
+			return nil, nil
+		},
+		newMetricReader: func(context.Context) (metric.Reader, error) {
+			return nil, nil
+		},
+		setTracerProvider: func(provider oteltrace.TracerProvider) {
+			tracerProvider = provider
+		},
+		setMeterProvider: func(provider otelmetric.MeterProvider) {
+			meterProvider = provider
+		},
+		setTextMapPropagator: func(propagator propagation.TextMapPropagator) {
+			textMapPropagator = propagator
+		},
+	},
 		WithResourceOptions(resource.WithAttributes(attribute.String("test.resource", "configured"))),
 		WithTracerProviderOptions(trace.WithSpanProcessor(spanRecorder)),
 		WithMeterProviderOptions(metric.WithReader(metricReader)),
@@ -38,7 +58,8 @@ func TestInitAppliesNativeOptionsAndRegistersGlobals(t *testing.T) {
 		assert.NoError(t, shutdown(context.Background()))
 	})
 
-	_, span := otel.Tracer("go.kenn.io/kit/telemetry/init_test").Start(context.Background(), "test")
+	require.NotNil(t, tracerProvider)
+	_, span := tracerProvider.Tracer("go.kenn.io/kit/telemetry/init_test").Start(context.Background(), "test")
 	span.End()
 	spans := spanRecorder.Ended()
 	require.Len(t, spans, 1)
@@ -46,14 +67,16 @@ func TestInitAppliesNativeOptionsAndRegistersGlobals(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "configured", value.AsString())
 
-	counter, err := otel.Meter("go.kenn.io/kit/telemetry/init_test").Int64Counter("test.counter")
+	require.NotNil(t, meterProvider)
+	counter, err := meterProvider.Meter("go.kenn.io/kit/telemetry/init_test").Int64Counter("test.counter")
 	require.NoError(t, err)
 	counter.Add(context.Background(), 1)
 
 	var metrics metricdata.ResourceMetrics
 	require.NoError(t, metricReader.Collect(context.Background(), &metrics))
 	require.NotEmpty(t, metrics.ScopeMetrics)
-	assert.Equal(t, []string{"test-propagator"}, otel.GetTextMapPropagator().Fields())
+	require.NotNil(t, textMapPropagator)
+	assert.Equal(t, []string{"test-propagator"}, textMapPropagator.Fields())
 }
 
 func TestNewResourceAppliesEnvironmentBeforeCallerOptions(t *testing.T) {
@@ -70,6 +93,37 @@ func TestNewResourceAppliesEnvironmentBeforeCallerOptions(t *testing.T) {
 	precedenceValue, ok := res.Set().Value("test.precedence")
 	require.True(t, ok)
 	assert.Equal(t, "caller", precedenceValue.AsString())
+}
+
+func TestNewResourceDoesNotRetainRemovedEnvironmentAttributes(t *testing.T) {
+	const helperEnv = "KIT_TEST_RESOURCE_ENV_REMOVAL"
+	if os.Getenv(helperEnv) == "1" {
+		t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "test.stale=present")
+		_, err := newResource(context.Background())
+		require.NoError(t, err)
+		require.NoError(t, os.Unsetenv("OTEL_RESOURCE_ATTRIBUTES"))
+
+		res, err := newResource(context.Background())
+		require.NoError(t, err)
+		_, ok := res.Set().Value("test.stale")
+		assert.False(t, ok)
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestNewResourceDoesNotRetainRemovedEnvironmentAttributes$")
+	cmd.Env = append(os.Environ(), helperEnv+"=1")
+	output, err := cmd.CombinedOutput()
+	require.NoErrorf(t, err, "helper test failed:\n%s", output)
+}
+
+func TestNewResourceRetainsValidAttributesFromPartialEnvironment(t *testing.T) {
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "test.valid=value,invalid")
+
+	res, err := newResource(context.Background())
+	require.NoError(t, err)
+	value, ok := res.Set().Value("test.valid")
+	require.True(t, ok)
+	assert.Equal(t, "value", value.AsString())
 }
 
 func TestDefaultExporterFactoriesDisableEmptySelectors(t *testing.T) {

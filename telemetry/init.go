@@ -50,22 +50,30 @@ var defaultInitDependencies = initDependencies{
 	setTextMapPropagator: otel.SetTextMapPropagator,
 }
 
-// WithResourceOptions adds resource options to the resource shared by the
-// tracer and meter providers.
+// WithResourceOptions adds resource options to the default resource shared by
+// the tracer and meter providers. A provider-specific resource supplied through
+// WithTracerProviderOptions or WithMeterProviderOptions overrides this default
+// for that provider.
 func WithResourceOptions(options ...resource.Option) Option {
 	return optionFunc(func(config *initConfig) {
 		config.resourceOptions = append(config.resourceOptions, options...)
 	})
 }
 
-// WithTracerProviderOptions adds options to the tracer provider.
+// WithTracerProviderOptions adds options to the tracer provider after its
+// environment-configured exporter and shared default resource. Options are
+// additive; a caller-supplied span processor can export alongside the exporter
+// selected by OTEL_TRACES_EXPORTER.
 func WithTracerProviderOptions(options ...trace.TracerProviderOption) Option {
 	return optionFunc(func(config *initConfig) {
 		config.tracerProviderOptions = append(config.tracerProviderOptions, options...)
 	})
 }
 
-// WithMeterProviderOptions adds options to the meter provider.
+// WithMeterProviderOptions adds options to the meter provider after its
+// environment-configured reader and shared default resource. Options are
+// additive; a caller-supplied reader can export alongside the reader selected
+// by OTEL_METRICS_EXPORTER.
 func WithMeterProviderOptions(options ...metric.Option) Option {
 	return optionFunc(func(config *initConfig) {
 		config.meterProviderOptions = append(config.meterProviderOptions, options...)
@@ -80,8 +88,19 @@ func WithPropagators(propagators ...propagation.TextMapPropagator) Option {
 }
 
 // Init configures and globally registers OpenTelemetry tracing, metrics, and
-// context propagation. Trace and metric export default to disabled; set
-// OTEL_TRACES_EXPORTER or OTEL_METRICS_EXPORTER to enable an exporter.
+// context propagation. It does not configure OpenTelemetry logging.
+//
+// Init is a process-wide startup helper. Call it once, before concurrent use of
+// the OpenTelemetry globals. It replaces the current global providers and
+// propagator; the returned shutdown function does not restore them and should
+// be called during process shutdown.
+//
+// Trace and metric export default to disabled; set OTEL_TRACES_EXPORTER or
+// OTEL_METRICS_EXPORTER to enable an exporter. Environment-selected pipelines
+// and caller-supplied provider options are additive. Invalid exporter
+// environment configuration causes Init to fail even when caller options add a
+// separate pipeline. Malformed OTEL_RESOURCE_ATTRIBUTES entries are reported
+// through the OpenTelemetry error handler while valid entries are retained.
 func Init(ctx context.Context, options ...Option) (func(context.Context) error, error) {
 	return initWithDependencies(ctx, defaultInitDependencies, options...)
 }
@@ -144,12 +163,20 @@ func initWithDependencies(
 }
 
 func newResource(ctx context.Context, options ...resource.Option) (*resource.Resource, error) {
-	options = append([]resource.Option{resource.WithFromEnv()}, options...)
+	options = append([]resource.Option{
+		resource.WithService(),
+		resource.WithFromEnv(),
+		resource.WithTelemetrySDK(),
+	}, options...)
 	configuredResource, err := resource.New(ctx, options...)
-	if err != nil {
+	if errors.Is(err, resource.ErrSchemaURLConflict) {
 		return nil, err
 	}
-	return resource.Merge(resource.Default(), configuredResource)
+	if errors.Is(err, resource.ErrPartialResource) {
+		otel.Handle(err)
+		return configuredResource, nil
+	}
+	return configuredResource, err
 }
 
 func shutdownAll(ctx context.Context, shutdowns ...func(context.Context) error) error {
