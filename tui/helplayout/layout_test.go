@@ -187,3 +187,33 @@ func TestColumnWidths(t *testing.T) {
 		})
 	}
 }
+
+func TestItemWidth(t *testing.T) {
+	tests := []struct {
+		name   string
+		item   HelpItem
+		wanted int
+	}{
+		{
+			name:   "key only",
+			item:   HelpItem{Key: "enter"},
+			wanted: 5,
+		},
+		{
+			name:   "description includes separator",
+			item:   HelpItem{Key: "a", Description: "one"},
+			wanted: 5,
+		},
+		{
+			name:   "wide unicode uses terminal cells",
+			item:   HelpItem{Key: "界", Description: "go"},
+			wanted: 5,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert.Equal(t, test.wanted, ItemWidth(test.item))
+		})
+	}
+}

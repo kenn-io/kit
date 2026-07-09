@@ -13,7 +13,8 @@ type HelpItem struct {
 // rows. Empty rows do not add columns.
 //
 // Callers rendering an aligned table from ReflowRows output should use these
-// widths rather than independently measuring item text.
+// widths with ItemWidth to calculate cell padding rather than independently
+// measuring item text.
 func ColumnWidths(rows [][]HelpItem) []int {
 	maxColumns := 0
 	for _, row := range rows {
@@ -26,7 +27,7 @@ func ColumnWidths(rows [][]HelpItem) []int {
 	widths := make([]int, maxColumns)
 	for _, row := range rows {
 		for column, item := range row {
-			widths[column] = max(widths[column], itemWidth(item))
+			widths[column] = max(widths[column], ItemWidth(item))
 		}
 	}
 	return widths
@@ -77,7 +78,9 @@ func ReflowRows(rows [][]HelpItem, availableWidth, columnGap int) [][]HelpItem {
 	return chunkRows(rows, 1)
 }
 
-func itemWidth(item HelpItem) int {
+// ItemWidth returns the terminal-cell width occupied by item before column
+// alignment or inter-column gap is applied.
+func ItemWidth(item HelpItem) int {
 	width := runewidth.StringWidth(item.Key)
 	if item.Description != "" {
 		width += 1 + runewidth.StringWidth(item.Description)

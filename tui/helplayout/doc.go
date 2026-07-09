@@ -11,9 +11,10 @@
 // model because their rendered width depends on terminal state. Styling should
 // be applied after reflow and should not change the visible item text.
 //
-// ReflowRows measures item text in terminal cells, and ColumnWidths exposes the
-// same measurements for aligned rendering. Callers pass the complete visible
-// width inserted between columns, including borders, separators, or leading
-// padding. Alignment fill that expands a shorter cell to its column width is
-// already represented by ColumnWidths and is not part of the gap.
+// ReflowRows measures item text in terminal cells. ItemWidth and ColumnWidths
+// expose the same measurements so callers can add alignment fill without
+// remeasuring styled text. Callers pass the complete visible width inserted
+// between columns, including borders, separators, or leading padding.
+// Alignment fill that expands a shorter cell to its column width is already
+// represented by ColumnWidths and is not part of the gap.
 package helplayout
