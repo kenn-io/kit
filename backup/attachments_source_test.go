@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -20,13 +21,13 @@ import (
 // return fs-agnostic errNotInSource.
 type mapSource struct {
 	blobs map[string][]byte
-	opens int
+	opens atomic.Int64
 }
 
 var errNotInSource = errors.New("blob not in source")
 
 func (s *mapSource) Open(_ context.Context, ref ContentRef) (io.ReadCloser, error) {
-	s.opens++
+	s.opens.Add(1)
 	b, ok := s.blobs[ref.Hash]
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", errNotInSource, ref.Hash)
@@ -88,7 +89,7 @@ func TestCaptureAttachmentsFromSource(t *testing.T) {
 	assert.Equal(int64(len(a)+len(b)), out.BlobBytes)
 	assert.Len(out.NewList, 2)
 	assert.Equal(hashA, out.NewList[0].Hash)
-	assert.Equal(2, src.opens)
+	assert.Equal(int64(2), src.opens.Load())
 	assertRepoHoldsBlob(t, repo, known, hashA, a)
 	assertRepoHoldsBlob(t, repo, known, hashB, b)
 }
