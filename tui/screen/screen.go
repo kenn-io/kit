@@ -17,17 +17,22 @@ func Splice(background, replacement string, column, replaceWidth int) string {
 	visibleWidth := replaceWidth - leftClip
 
 	left, leftWidth := Prefix(background, start)
-	replacement = Suffix(replacement, leftClip)
+	var replacementSkipped int
+	replacement, replacementSkipped = suffixWithWidth(replacement, leftClip)
+	replacement = strings.Repeat(" ", max(0, replacementSkipped-leftClip)) + replacement
 	replacement = Truncate(replacement, visibleWidth)
 	replacementWidth := Width(replacement)
-	right := Suffix(background, column+replaceWidth)
+	rightStart := column + replaceWidth
+	right, backgroundSkipped := suffixWithWidth(background, rightStart)
+	rightPadding := max(0, backgroundSkipped-rightStart)
 
 	var result strings.Builder
-	result.Grow(len(left) + len(replacement) + len(right) + start - leftWidth + visibleWidth - replacementWidth)
+	result.Grow(len(left) + len(replacement) + len(right) + start - leftWidth + visibleWidth - replacementWidth + rightPadding)
 	result.WriteString(left)
 	result.WriteString(strings.Repeat(" ", start-leftWidth))
 	result.WriteString(replacement)
 	result.WriteString(strings.Repeat(" ", visibleWidth-replacementWidth))
+	result.WriteString(strings.Repeat(" ", rightPadding))
 	result.WriteString(right)
 	return result.String()
 }
@@ -63,7 +68,8 @@ func OverlayAt(background, panel string, width, height, row, column int) string 
 		if backgroundRow < 0 || backgroundRow >= height {
 			continue
 		}
-		visibleLine := Suffix(panelLine, leftClip)
+		visibleLine, panelSkipped := suffixWithWidth(panelLine, leftClip)
+		visibleLine = strings.Repeat(" ", max(0, panelSkipped-leftClip)) + visibleLine
 		visibleLine = Truncate(visibleLine, visibleWidth)
 		backgroundLines[backgroundRow] = Splice(
 			backgroundLines[backgroundRow], visibleLine, visibleStart, visibleWidth,

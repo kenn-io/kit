@@ -43,8 +43,13 @@ func Truncate(line string, maxWidth int) string {
 // crosses a wide grapheme, the complete grapheme is skipped. A non-positive
 // skipWidth returns line unchanged.
 func Suffix(line string, skipWidth int) string {
+	suffix, _ := suffixWithWidth(line, skipWidth)
+	return suffix
+}
+
+func suffixWithWidth(line string, skipWidth int) (suffix string, skippedWidth int) {
 	if line == "" || skipWidth <= 0 {
-		return line
+		return line, 0
 	}
 
 	var carried strings.Builder
@@ -56,7 +61,7 @@ func Suffix(line string, skipWidth int) string {
 		if bytesRead == 0 {
 			// Invalid UTF-8 cannot advance the decoder. Preserve the remaining
 			// input rather than looping or silently dropping bytes.
-			return carried.String() + line[offset:]
+			return carried.String() + line[offset:], used
 		}
 		if width == 0 {
 			carried.WriteString(sequence)
@@ -66,7 +71,7 @@ func Suffix(line string, skipWidth int) string {
 		state = nextState
 	}
 	if offset >= len(line) {
-		return ""
+		return "", used
 	}
-	return carried.String() + line[offset:]
+	return carried.String() + line[offset:], used
 }

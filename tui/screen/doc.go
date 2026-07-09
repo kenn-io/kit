@@ -11,14 +11,22 @@
 //
 // Width is measured in grapheme clusters using github.com/charmbracelet/x/ansi.
 // A wide grapheme is atomic: if a cut crosses it, the complete grapheme is
-// omitted and Splice pads any uncovered cells with spaces. This package uses
-// the dependency's ANSI state machine instead of a smaller CSI/OSC-only parser
-// so that CSI, OSC, DCS, APC, C1 controls, and modern Unicode width rules share
-// one implementation. Inputs must contain valid UTF-8 and complete ANSI
-// sequences. The helpers preserve, but do not validate or sanitize, control
-// sequences; an incomplete or malformed sequence can cause following bytes to
-// be interpreted as part of that sequence and measured as zero-width.
-// Cursor-moving, cursor-saving, and erasing controls are likewise preserved as
-// zero-width bytes, but their terminal side effects are not modeled; screen
-// geometry is intended for line-local styling and hyperlink sequences.
+// omitted and Splice pads any uncovered cells with spaces. The dependency's
+// state machine recognizes CSI, OSC, DCS, APC, C1 controls, and modern Unicode
+// width rules more completely than a small CSI/OSC-only parser.
+//
+// Screen geometry supports printable graphemes plus line-local SGR styling and
+// OSC hyperlinks. OverlayAt splits inputs at newlines, so every input line must
+// independently balance its ANSI state; opening a style or hyperlink on one
+// line and closing it on another is unsupported. Tabs, carriage returns,
+// backspaces, cursor movement or save/restore, erasing, clipboard operations,
+// DCS, and APC are preserved as zero-width bytes, but their position-dependent
+// or side-effecting behavior is not modeled. Suffix may replay zero-width
+// controls encountered before a cut, so such controls can execute more than
+// once. Callers must sanitize untrusted terminal content before composition.
+//
+// Inputs must contain valid UTF-8 and complete ANSI sequences. The helpers
+// preserve, but do not validate or sanitize, control sequences; an incomplete
+// or malformed sequence can cause following bytes to be interpreted as part of
+// that sequence and measured as zero-width.
 package screen
