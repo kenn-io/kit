@@ -10,6 +10,7 @@ import (
 
 const (
 	red          = "\x1b[31m"
+	redBG        = "\x1b[41m"
 	blue         = "\x1b[34m"
 	reset        = "\x1b[0m"
 	hideCursor   = "\x1b[?25l"
@@ -138,6 +139,38 @@ func TestSplice(t *testing.T) {
 		{name: "right cut through wide background preserves cell", background: "A界BC", replacement: "X", column: 1, width: 1, want: "AX BC"},
 		{name: "both cuts through wide background preserve cells", background: "界A界B", replacement: "XYZ", column: 1, width: 3, want: " XYZ B"},
 		{
+			name:        "left clipped wide replacement styles synthetic cell",
+			background:  "....",
+			replacement: redBG + "界X" + reset,
+			column:      -1,
+			width:       3,
+			want:        redBG + " X" + reset + "..",
+		},
+		{
+			name:        "right cut through wide background styles synthetic cell",
+			background:  redBG + "A界BC" + reset,
+			replacement: "X",
+			column:      1,
+			width:       1,
+			want:        redBG + "A" + reset + "X" + redBG + " BC" + reset,
+		},
+		{
+			name:        "left cut through wide background styles synthetic cell",
+			background:  redBG + "界BC" + reset,
+			replacement: "X",
+			column:      1,
+			width:       1,
+			want:        redBG + " " + reset + "X" + redBG + "BC" + reset,
+		},
+		{
+			name:        "right clipped wide replacement styles synthetic cell",
+			background:  "....",
+			replacement: redBG + "A界" + reset,
+			column:      0,
+			width:       2,
+			want:        redBG + "A " + reset + "..",
+		},
+		{
 			name:        "styled background state is replayed after replacement",
 			background:  red + "012345" + reset,
 			replacement: blue + "X" + reset,
@@ -250,6 +283,16 @@ func TestOverlayAt(t *testing.T) {
 			want:       " X..",
 		},
 		{
+			name:       "left clipped wide panel styles synthetic cell",
+			background: "....",
+			panel:      redBG + "界X" + reset,
+			width:      4,
+			height:     1,
+			row:        0,
+			column:     -1,
+			want:       redBG + " X" + reset + "..",
+		},
+		{
 			name:       "both viewport cuts through wide panel preserve cells",
 			background: "....",
 			panel:      "界A界",
@@ -268,6 +311,16 @@ func TestOverlayAt(t *testing.T) {
 			row:        0,
 			column:     0,
 			want:       "A ..",
+		},
+		{
+			name:       "right clipped wide panel styles synthetic cell",
+			background: "....",
+			panel:      redBG + "A界" + reset,
+			width:      2,
+			height:     1,
+			row:        0,
+			column:     0,
+			want:       redBG + "A " + reset + "..",
 		},
 		{
 			name:       "right and bottom overflow clips",

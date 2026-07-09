@@ -23,11 +23,44 @@ func Width(s string) int {
 // state after the retained text are preserved. A non-positive maxWidth returns
 // an empty prefix.
 func Prefix(line string, maxWidth int) (prefix string, width int) {
+	content, trailingControls, width := prefixParts(line, maxWidth)
+	return content + trailingControls, width
+}
+
+func prefixParts(line string, maxWidth int) (content, trailingControls string, width int) {
 	if line == "" || maxWidth <= 0 {
-		return "", 0
+		return "", "", 0
 	}
-	prefix = ansi.Truncate(line, maxWidth, "")
-	return prefix, ansi.StringWidth(prefix)
+
+	var contentBuilder strings.Builder
+	var trailingBuilder strings.Builder
+	state := ansi.NormalState
+	truncated := false
+	for offset := 0; offset < len(line); {
+		sequence, sequenceWidth, bytesRead, nextState := ansi.DecodeSequence(line[offset:], state, nil)
+		if bytesRead == 0 {
+			if truncated {
+				trailingBuilder.WriteString(line[offset:])
+			} else {
+				contentBuilder.WriteString(line[offset:])
+			}
+			break
+		}
+		switch {
+		case sequenceWidth == 0 && truncated:
+			trailingBuilder.WriteString(sequence)
+		case sequenceWidth == 0:
+			contentBuilder.WriteString(sequence)
+		case !truncated && width+sequenceWidth <= maxWidth:
+			contentBuilder.WriteString(sequence)
+			width += sequenceWidth
+		default:
+			truncated = true
+		}
+		offset += bytesRead
+		state = nextState
+	}
+	return contentBuilder.String(), trailingBuilder.String(), width
 }
 
 // Truncate returns the printable prefix of line that fits in maxWidth terminal
@@ -43,13 +76,13 @@ func Truncate(line string, maxWidth int) string {
 // crosses a wide grapheme, the complete grapheme is skipped. A non-positive
 // skipWidth returns line unchanged.
 func Suffix(line string, skipWidth int) string {
-	suffix, _ := suffixWithWidth(line, skipWidth)
-	return suffix
+	controls, suffix, _ := suffixParts(line, skipWidth)
+	return controls + suffix
 }
 
-func suffixWithWidth(line string, skipWidth int) (suffix string, skippedWidth int) {
+func suffixParts(line string, skipWidth int) (controls, suffix string, skippedWidth int) {
 	if line == "" || skipWidth <= 0 {
-		return line, 0
+		return "", line, 0
 	}
 
 	var carried strings.Builder
@@ -61,7 +94,7 @@ func suffixWithWidth(line string, skipWidth int) (suffix string, skippedWidth in
 		if bytesRead == 0 {
 			// Invalid UTF-8 cannot advance the decoder. Preserve the remaining
 			// input rather than looping or silently dropping bytes.
-			return carried.String() + line[offset:], used
+			return carried.String(), line[offset:], used
 		}
 		if width == 0 {
 			carried.WriteString(sequence)
@@ -71,7 +104,7 @@ func suffixWithWidth(line string, skipWidth int) (suffix string, skippedWidth in
 		state = nextState
 	}
 	if offset >= len(line) {
-		return "", used
+		return "", "", used
 	}
-	return carried.String() + line[offset:], used
+	return carried.String(), line[offset:], used
 }
