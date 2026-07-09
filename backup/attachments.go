@@ -118,7 +118,11 @@ type AttachmentCapture struct {
 // files, object stores); the engine still verifies every blob's SHA-256
 // against ref.Hash and enforces the per-blob size cap, so a source cannot
 // weaken capture integrity. Open is called from concurrent capture workers
-// and must be safe for concurrent use.
+// and must be safe for concurrent use; it should honor ctx and return
+// promptly once ctx is done, or a cancelled capture blocks until every
+// in-flight Open returns. Capture paces its memory use by ref.Size, so a
+// ref whose declared size understates the real payload weakens that pacing
+// (never integrity); report actual sizes.
 type ContentSource interface {
 	Open(ctx context.Context, ref ContentRef) (io.ReadCloser, error)
 }
