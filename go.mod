@@ -9,6 +9,7 @@ require (
 	github.com/gofrs/flock v0.13.0
 	github.com/klauspost/compress v1.18.6
 	github.com/leanovate/gopter v0.2.11
+	github.com/mattn/go-runewidth v0.0.24
 	github.com/mattn/go-sqlite3 v1.14.44
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/posthog/posthog-go v1.12.6
@@ -45,7 +46,6 @@ require (
 	github.com/lucasb-eyer/go-colorful v1.4.0 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
-	github.com/mattn/go-runewidth v0.0.23 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
