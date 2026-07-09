@@ -112,6 +112,21 @@ type AttachmentCapture struct {
 	BlobBytes   int64
 }
 
+// ContentSource supplies attachment content bytes during capture, replacing
+// the engine's own reads of the attachments directory. Implementations
+// resolve a ref however the application stores content (loose files, pack
+// files, object stores); the engine still verifies every blob's SHA-256
+// against ref.Hash and enforces the per-blob size cap, so a source cannot
+// weaken capture integrity. Open is called from concurrent capture workers
+// and must be safe for concurrent use; it should honor ctx and return
+// promptly once ctx is done, or a cancelled capture blocks until every
+// in-flight Open returns. Capture paces its memory use by ref.Size, so a
+// ref whose declared size understates the real payload weakens that pacing
+// (never integrity); report actual sizes.
+type ContentSource interface {
+	Open(ctx context.Context, ref ContentRef) (io.ReadCloser, error)
+}
+
 // CaptureOptions tunes CaptureAttachments.
 type CaptureOptions struct {
 	// Jobs is the number of concurrent read+hash+compress workers. Zero or
@@ -123,6 +138,10 @@ type CaptureOptions struct {
 	// number of files done so far, the total file count, and the cumulative
 	// bytes read; it does not otherwise affect capture behavior.
 	Progress func(done, total int, bytesRead int64)
+	// Source, when non-nil, supplies attachment bytes instead of the engine
+	// reading them from the attachments directory; the directory is then
+	// ignored entirely. Reads are still hash-verified and size-capped.
+	Source ContentSource
 }
 
 // captureResult is one worker's read+hash+compress output for refs[index].
@@ -197,6 +216,9 @@ func (g *byteGate) stop() {
 // match a serial capture exactly. Blobs already stored in the repository are
 // detected before compression and skip it entirely, keeping the no-change
 // incremental case cheap.
+//
+// attachmentsDir is ignored entirely when opts.Source is non-nil; content is
+// read through the source instead.
 func CaptureAttachments(
 	ctx context.Context,
 	attachmentsDir string, refs []ContentRef, parentSeen map[string]bool, appender *PackAppender,
@@ -234,17 +256,22 @@ func captureContents(
 	if len(refs) == 0 {
 		return nil
 	}
-	// Read every attachment through a root confined to attachmentsDir: a
-	// tampered DB row whose storage path resolves through a symlink to a file
-	// (or parent directory) outside the attachments tree must not be able to
-	// pull arbitrary host files into the backup. os.Root refuses any symlink
-	// that escapes the root, and captureRef additionally requires a regular
-	// file. os.Root is safe for concurrent use by the workers below.
-	root, err := os.OpenRoot(attachmentsDir)
-	if err != nil {
-		return fmt.Errorf("backup: opening attachments directory: %w", err)
+	var root *os.Root
+	if opts.Source == nil {
+		// Read every attachment through a root confined to attachmentsDir: a
+		// tampered DB row whose storage path resolves through a symlink to a
+		// file (or parent directory) outside the attachments tree must not be
+		// able to pull arbitrary host files into the backup. os.Root refuses
+		// any symlink that escapes the root, and captureRef additionally
+		// requires a regular file. os.Root is safe for concurrent use by the
+		// workers below.
+		var err error
+		root, err = os.OpenRoot(attachmentsDir)
+		if err != nil {
+			return fmt.Errorf("backup: opening attachments directory: %w", err)
+		}
+		defer func() { _ = root.Close() }()
 	}
-	defer func() { _ = root.Close() }()
 	workers := opts.Jobs
 	if workers <= 0 {
 		workers = runtime.GOMAXPROCS(0)
@@ -276,7 +303,11 @@ func captureContents(
 	go func() {
 		defer close(work)
 		for i := range refs {
-			if rel, err := captureRelPath(refs[i]); err == nil {
+			if opts.Source != nil {
+				// A source ref is weighted by its declared size; Size is -1
+				// when unknown, same as today's stat-failure fallback below.
+				weights[i] = max(refs[i].Size, 0)
+			} else if rel, err := captureRelPath(refs[i]); err == nil {
 				if info, err := root.Stat(rel); err == nil {
 					weights[i] = info.Size()
 				}
@@ -308,7 +339,11 @@ func captureContents(
 	for range workers {
 		wg.Go(func() {
 			for i := range work {
-				results <- captureRef(root, refs[i], i, preKnown, level)
+				if opts.Source != nil {
+					results <- captureRefFromSource(ctx, opts.Source, refs[i], i, preKnown, level)
+				} else {
+					results <- captureRef(root, refs[i], i, preKnown, level)
+				}
 			}
 		})
 	}
@@ -415,6 +450,51 @@ func captureRef(
 	}
 	res.frame, res.compressed = pack.EncodeFrame(content, level)
 	return res
+}
+
+// captureRefFromSource is captureRef for an application-supplied source:
+// same hash verification, size cap, known-blob skip, and trial compression;
+// only the byte acquisition differs.
+func captureRefFromSource(
+	ctx context.Context, source ContentSource, ref ContentRef, index int,
+	preKnown map[pack.BlobID]struct{}, level int,
+) captureResult {
+	content, err := readSourceBlob(ctx, source, ref)
+	if err != nil {
+		return captureResult{index: index, err: fmt.Errorf("backup: reading attachment %s from content source: %w", ref.Hash, err)}
+	}
+	sum := sha256.Sum256(content)
+	if hex.EncodeToString(sum[:]) != ref.Hash {
+		return captureResult{
+			index: index,
+			err:   fmt.Errorf("backup: attachment %s content does not match its hash (live store corruption)", ref.Hash),
+		}
+	}
+	res := captureResult{index: index, size: int64(len(content)), id: sum}
+	if _, ok := preKnown[res.id]; ok {
+		res.known = true
+		return res
+	}
+	res.frame, res.compressed = pack.EncodeFrame(content, level)
+	return res
+}
+
+// readSourceBlob reads one blob from source under the same cap
+// readRegularFile enforces for directory reads.
+func readSourceBlob(ctx context.Context, source ContentSource, ref ContentRef) ([]byte, error) {
+	rc, err := source.Open(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rc.Close() }()
+	data, err := io.ReadAll(io.LimitReader(rc, maxCaptureRawLen+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxCaptureRawLen {
+		return nil, fmt.Errorf("%q is larger than the maximum blob size %d", ref.Hash, maxCaptureRawLen)
+	}
+	return data, nil
 }
 
 // maxCaptureRawLen bounds the bytes capture will buffer for one file. It is

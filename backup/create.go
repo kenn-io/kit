@@ -16,6 +16,11 @@ import (
 type CreateOptions struct {
 	DBPath     string
 	ContentDir string
+	// ContentSource, when non-nil, supplies attachment content bytes during
+	// capture instead of the engine reading ContentDir; ContentDir is then
+	// ignored for content reads (it may be empty). Extras and the page scan
+	// are unaffected. See ContentSource.
+	ContentSource ContentSource
 	// DataDir anchors the Extras spec's directory walks and glob matches.
 	DataDir string
 	// Extras selects the operational files that ride along with the
@@ -218,7 +223,8 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 		captureSeen = map[string]bool{}
 	}
 	capture, err := CaptureAttachments(ctx, opts.ContentDir, info.Refs, captureSeen, appender, CaptureOptions{
-		Jobs: opts.Jobs,
+		Jobs:   opts.Jobs,
+		Source: opts.ContentSource,
 		Progress: func(done, total int, bytesRead int64) {
 			pr.emit(ProgressEvent{
 				Stage: ProgressStageAttachments, Done: int64(done), Total: int64(total), BytesDone: bytesRead,
