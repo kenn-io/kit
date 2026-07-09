@@ -26,6 +26,28 @@ func TestReflowRows(t *testing.T) {
 			wanted: nil,
 		},
 		{
+			name: "positive width preserves empty source rows",
+			rows: [][]HelpItem{
+				nil,
+				{item("a", "one"), item("b", "two")},
+				nil,
+			},
+			width: 12,
+			gap:   2,
+			wanted: [][]HelpItem{
+				nil,
+				{item("a", "one"), item("b", "two")},
+				nil,
+			},
+		},
+		{
+			name:   "positive width preserves all-empty source rows",
+			rows:   [][]HelpItem{nil, nil},
+			width:  80,
+			gap:    2,
+			wanted: [][]HelpItem{nil, nil},
+		},
+		{
 			name: "wide width preserves source rows",
 			rows: [][]HelpItem{
 				{item("a", "one"), item("b", "two"), item("c", "three")},
@@ -90,16 +112,18 @@ func TestReflowRows(t *testing.T) {
 			},
 		},
 		{
-			name: "overwide item remains intact on its own row",
+			name: "overwide item forces globally aligned single column layout",
 			rows: [][]HelpItem{{
 				item("very-long-key", "long description"),
 				item("x", "one"),
+				item("y", "two"),
 			}},
-			width: 8,
+			width: 12,
 			gap:   2,
 			wanted: [][]HelpItem{
 				{item("very-long-key", "long description")},
 				{item("x", "one")},
+				{item("y", "two")},
 			},
 		},
 		{
@@ -127,6 +151,39 @@ func TestReflowRows(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			assert.Equal(t, test.wanted, ReflowRows(test.rows, test.width, test.gap))
+		})
+	}
+}
+
+func TestColumnWidths(t *testing.T) {
+	item := func(key, description string) HelpItem {
+		return HelpItem{Key: key, Description: description}
+	}
+
+	tests := []struct {
+		name   string
+		rows   [][]HelpItem
+		wanted []int
+	}{
+		{
+			name: "returns widest terminal-cell width for each column",
+			rows: [][]HelpItem{
+				nil,
+				{item("界", "go"), item("x", "")},
+				{item("a", "long"), item("b", "two")},
+			},
+			wanted: []int{6, 5},
+		},
+		{
+			name:   "returns no columns for empty rows",
+			rows:   [][]HelpItem{nil, nil},
+			wanted: nil,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert.Equal(t, test.wanted, ColumnWidths(test.rows))
 		})
 	}
 }

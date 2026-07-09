@@ -6,8 +6,14 @@
 // responsible for rendering the returned rows with their own Charm version or
 // another terminal UI stack.
 //
-// ReflowRows measures plain item text in terminal cells. Styling should be
-// applied after reflow and should not change the visible item text. Callers
-// pass the complete visible width added between columns, including any border,
-// separator, or padding cells used by their renderer.
+// HelpItem values must contain single-line, unstyled, printable text. Tabs,
+// newlines, control characters, and ANSI escape sequences are outside the text
+// model because their rendered width depends on terminal state. Styling should
+// be applied after reflow and should not change the visible item text.
+//
+// ReflowRows measures item text in terminal cells, and ColumnWidths exposes the
+// same measurements for aligned rendering. Callers pass the complete visible
+// width inserted between columns, including borders, separators, or leading
+// padding. Alignment fill that expands a shorter cell to its column width is
+// already represented by ColumnWidths and is not part of the gap.
 package helplayout
