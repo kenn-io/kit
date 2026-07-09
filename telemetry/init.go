@@ -98,11 +98,7 @@ func initWithDependencies(
 		}
 	}
 
-	configuredResource, err := resource.New(ctx, config.resourceOptions...)
-	if err != nil {
-		return nil, fmt.Errorf("initialize OpenTelemetry resource: %w", err)
-	}
-	configuredResource, err = resource.Merge(resource.Default(), configuredResource)
+	configuredResource, err := newResource(ctx, config.resourceOptions...)
 	if err != nil {
 		return nil, fmt.Errorf("initialize OpenTelemetry resource: %w", err)
 	}
@@ -145,6 +141,15 @@ func initWithDependencies(
 	return func(ctx context.Context) error {
 		return shutdownAll(ctx, meterProvider.Shutdown, tracerProvider.Shutdown)
 	}, nil
+}
+
+func newResource(ctx context.Context, options ...resource.Option) (*resource.Resource, error) {
+	options = append([]resource.Option{resource.WithFromEnv()}, options...)
+	configuredResource, err := resource.New(ctx, options...)
+	if err != nil {
+		return nil, err
+	}
+	return resource.Merge(resource.Default(), configuredResource)
 }
 
 func shutdownAll(ctx context.Context, shutdowns ...func(context.Context) error) error {

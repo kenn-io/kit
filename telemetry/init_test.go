@@ -56,6 +56,22 @@ func TestInitAppliesNativeOptionsAndRegistersGlobals(t *testing.T) {
 	assert.Equal(t, []string{"test-propagator"}, otel.GetTextMapPropagator().Fields())
 }
 
+func TestNewResourceAppliesEnvironmentBeforeCallerOptions(t *testing.T) {
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "test.environment=loaded,test.precedence=environment")
+
+	res, err := newResource(context.Background(),
+		resource.WithAttributes(attribute.String("test.precedence", "caller")),
+	)
+	require.NoError(t, err)
+
+	environmentValue, ok := res.Set().Value("test.environment")
+	require.True(t, ok)
+	assert.Equal(t, "loaded", environmentValue.AsString())
+	precedenceValue, ok := res.Set().Value("test.precedence")
+	require.True(t, ok)
+	assert.Equal(t, "caller", precedenceValue.AsString())
+}
+
 func TestDefaultExporterFactoriesDisableEmptySelectors(t *testing.T) {
 	t.Setenv("OTEL_TRACES_EXPORTER", "")
 	t.Setenv("OTEL_METRICS_EXPORTER", "")
