@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"go.opentelemetry.io/contrib/exporters/autoexport"
 	"go.opentelemetry.io/contrib/propagators/autoprop"
@@ -163,20 +166,45 @@ func initWithDependencies(
 }
 
 func newResource(ctx context.Context, options ...resource.Option) (*resource.Resource, error) {
-	options = append([]resource.Option{
-		resource.WithService(),
-		resource.WithFromEnv(),
-		resource.WithTelemetrySDK(),
-	}, options...)
-	configuredResource, err := resource.New(ctx, options...)
-	if errors.Is(err, resource.ErrSchemaURLConflict) {
+	defaultOptions := []resource.Option{resource.WithTelemetrySDK()}
+	if strings.EqualFold(os.Getenv("OTEL_GO_X_RESOURCE"), "true") {
+		defaultOptions = append([]resource.Option{resource.WithService()}, defaultOptions...)
+	} else {
+		defaultOptions = append([]resource.Option{resource.WithDetectors(resource.StringDetector(
+			"",
+			"service.name",
+			defaultServiceName,
+		))}, defaultOptions...)
+	}
+
+	defaultResource, err := resource.New(ctx, defaultOptions...)
+	if err != nil {
 		return nil, err
 	}
+	environmentResource, err := resource.New(ctx, resource.WithFromEnv())
 	if errors.Is(err, resource.ErrPartialResource) {
 		otel.Handle(err)
-		return configuredResource, nil
+	} else if err != nil {
+		return nil, err
 	}
-	return configuredResource, err
+	callerResource, err := resource.New(ctx, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	configuredResource, err := resource.Merge(defaultResource, environmentResource)
+	if err != nil {
+		return nil, err
+	}
+	return resource.Merge(configuredResource, callerResource)
+}
+
+func defaultServiceName() (string, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return "unknown_service:go", nil
+	}
+	return "unknown_service:" + filepath.Base(executable), nil
 }
 
 func shutdownAll(ctx context.Context, shutdowns ...func(context.Context) error) error {

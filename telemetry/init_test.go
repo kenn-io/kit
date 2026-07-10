@@ -126,6 +126,35 @@ func TestNewResourceRetainsValidAttributesFromPartialEnvironment(t *testing.T) {
 	assert.Equal(t, "value", value.AsString())
 }
 
+func TestNewResourceReturnsCallerDetectorErrorWithPartialEnvironment(t *testing.T) {
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "test.valid=value,invalid")
+	fatalErr := errors.New("caller detector failed")
+	detector := resource.StringDetector("", "test.detector", func() (string, error) {
+		return "", fatalErr
+	})
+
+	_, err := newResource(context.Background(), resource.WithDetectors(detector))
+	require.ErrorIs(t, err, fatalErr)
+}
+
+func TestNewResourcePreservesServiceInstanceFeatureGate(t *testing.T) {
+	t.Run("disabled", func(t *testing.T) {
+		t.Setenv("OTEL_GO_X_RESOURCE", "")
+		res, err := newResource(context.Background())
+		require.NoError(t, err)
+		_, ok := res.Set().Value("service.instance.id")
+		assert.False(t, ok)
+	})
+
+	t.Run("enabled", func(t *testing.T) {
+		t.Setenv("OTEL_GO_X_RESOURCE", "true")
+		res, err := newResource(context.Background())
+		require.NoError(t, err)
+		_, ok := res.Set().Value("service.instance.id")
+		assert.True(t, ok)
+	})
+}
+
 func TestDefaultExporterFactoriesDisableEmptySelectors(t *testing.T) {
 	t.Setenv("OTEL_TRACES_EXPORTER", "")
 	t.Setenv("OTEL_METRICS_EXPORTER", "")
