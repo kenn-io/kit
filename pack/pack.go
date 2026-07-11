@@ -19,7 +19,10 @@ const (
 	headerMagic  = "MVPK"
 	trailerMagic = "KPVM"
 	headerSize   = 6
-	maxFooterLen = 1 << 30
+
+	// MaxFooterLen bounds the encoded footer before allocation.
+	MaxFooterLen = 1 << 30
+	maxFooterLen = MaxFooterLen
 
 	// MaxRawLen bounds the raw (decompressed) length of one blob. It matches
 	// the zstd decoder's WithDecoderMaxMemory(1<<32) limit in frame.go: a
@@ -31,6 +34,12 @@ const (
 	// oversized input from a cheap stat instead of reading it into memory
 	// first.
 	MaxRawLen = 1 << 32
+
+	// MinEntryOffset is the first valid byte offset for a blob frame.
+	MinEntryOffset = headerSize
+
+	// MaxStoredLen bounds one stored frame before allocation.
+	MaxStoredLen = maxStoredLen
 
 	// maxStoredLen bounds StoredLen, the number of bytes a footer entry claims
 	// occupy the pack's data region: readStored preallocates a buffer of this

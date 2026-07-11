@@ -53,6 +53,7 @@ func (v fakeView) Stats(ctx context.Context) (json.RawMessage, error) {
 
 func TestGenericAppRoundTrip(t *testing.T) {
 	require := require.New(t)
+	assert := assert.New(t)
 	base := t.TempDir()
 	dataDir := filepath.Join(base, "data")
 	contentDir := filepath.Join(dataDir, "content")
@@ -75,16 +76,16 @@ func TestGenericAppRoundTrip(t *testing.T) {
 		CacheDir:   filepath.Join(base, "cache"),
 	})
 	require.NoError(err)
-	assert.Equal(t, "fake-1.0", m.AppVersion)
-	assert.JSONEq(t, `{"notes":2}`, string(m.Stats))
+	assert.Equal("fake-1.0", m.AppVersion)
+	assert.JSONEq(`{"notes":2}`, string(m.Stats))
 
 	res, err := backup.Restore(context.Background(), r, fakeApp{}, backup.RestoreOptions{
 		TargetDir: filepath.Join(base, "restored"),
 	})
 	require.NoError(err) // Restore's stats proof ran against fakeApp
-	assert.Equal(t, "fake.db", filepath.Base(res.DBPath))
+	assert.Equal("fake.db", filepath.Base(res.DBPath))
 
 	vres, err := backup.Verify(context.Background(), r, fakeApp{}, backup.VerifyOptions{})
 	require.NoError(err)
-	assert.Empty(t, vres.Problems)
+	assert.Empty(vres.Problems)
 }

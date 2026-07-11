@@ -21,6 +21,8 @@ import (
 )
 
 func TestInitAppliesNativeOptionsAndRegistersGlobals(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
 	t.Setenv("OTEL_TRACES_EXPORTER", "")
 	t.Setenv("OTEL_METRICS_EXPORTER", "")
 	t.Setenv("OTEL_PROPAGATORS", "")
@@ -52,59 +54,62 @@ func TestInitAppliesNativeOptionsAndRegistersGlobals(t *testing.T) {
 		WithMeterProviderOptions(metric.WithReader(metricReader)),
 		WithPropagators(testPropagator{}),
 	)
-	require.NoError(t, err)
-	require.NotNil(t, shutdown)
+	require.NoError(err)
+	require.NotNil(shutdown)
 	t.Cleanup(func() {
-		assert.NoError(t, shutdown(context.Background()))
+		assert.NoError(shutdown(context.Background()))
 	})
 
-	require.NotNil(t, tracerProvider)
+	require.NotNil(tracerProvider)
 	_, span := tracerProvider.Tracer("go.kenn.io/kit/telemetry/init_test").Start(context.Background(), "test")
 	span.End()
 	spans := spanRecorder.Ended()
-	require.Len(t, spans, 1)
+	require.Len(spans, 1)
 	value, ok := spans[0].Resource().Set().Value("test.resource")
-	require.True(t, ok)
-	assert.Equal(t, "configured", value.AsString())
+	require.True(ok)
+	assert.Equal("configured", value.AsString())
 
-	require.NotNil(t, meterProvider)
+	require.NotNil(meterProvider)
 	counter, err := meterProvider.Meter("go.kenn.io/kit/telemetry/init_test").Int64Counter("test.counter")
-	require.NoError(t, err)
+	require.NoError(err)
 	counter.Add(context.Background(), 1)
 
 	var metrics metricdata.ResourceMetrics
-	require.NoError(t, metricReader.Collect(context.Background(), &metrics))
-	require.NotEmpty(t, metrics.ScopeMetrics)
-	require.NotNil(t, textMapPropagator)
-	assert.Equal(t, []string{"test-propagator"}, textMapPropagator.Fields())
+	require.NoError(metricReader.Collect(context.Background(), &metrics))
+	require.NotEmpty(metrics.ScopeMetrics)
+	require.NotNil(textMapPropagator)
+	assert.Equal([]string{"test-propagator"}, textMapPropagator.Fields())
 }
 
 func TestNewResourceAppliesEnvironmentBeforeCallerOptions(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
 	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "test.environment=loaded,test.precedence=environment")
 
 	res, err := newResource(context.Background(),
 		resource.WithAttributes(attribute.String("test.precedence", "caller")),
 	)
-	require.NoError(t, err)
+	require.NoError(err)
 
 	environmentValue, ok := res.Set().Value("test.environment")
-	require.True(t, ok)
-	assert.Equal(t, "loaded", environmentValue.AsString())
+	require.True(ok)
+	assert.Equal("loaded", environmentValue.AsString())
 	precedenceValue, ok := res.Set().Value("test.precedence")
-	require.True(t, ok)
-	assert.Equal(t, "caller", precedenceValue.AsString())
+	require.True(ok)
+	assert.Equal("caller", precedenceValue.AsString())
 }
 
 func TestNewResourceDoesNotRetainRemovedEnvironmentAttributes(t *testing.T) {
+	require := require.New(t)
 	const helperEnv = "KIT_TEST_RESOURCE_ENV_REMOVAL"
 	if os.Getenv(helperEnv) == "1" {
 		t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "test.stale=present")
 		_, err := newResource(context.Background())
-		require.NoError(t, err)
-		require.NoError(t, os.Unsetenv("OTEL_RESOURCE_ATTRIBUTES"))
+		require.NoError(err)
+		require.NoError(os.Unsetenv("OTEL_RESOURCE_ATTRIBUTES"))
 
 		res, err := newResource(context.Background())
-		require.NoError(t, err)
+		require.NoError(err)
 		_, ok := res.Set().Value("test.stale")
 		assert.False(t, ok)
 		return
@@ -113,17 +118,19 @@ func TestNewResourceDoesNotRetainRemovedEnvironmentAttributes(t *testing.T) {
 	cmd := exec.Command(os.Args[0], "-test.run=^TestNewResourceDoesNotRetainRemovedEnvironmentAttributes$")
 	cmd.Env = append(os.Environ(), helperEnv+"=1")
 	output, err := cmd.CombinedOutput()
-	require.NoErrorf(t, err, "helper test failed:\n%s", output)
+	require.NoErrorf(err, "helper test failed:\n%s", output)
 }
 
 func TestNewResourceRetainsValidAttributesFromPartialEnvironment(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
 	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "test.valid=value,invalid")
 
 	res, err := newResource(context.Background())
-	require.NoError(t, err)
+	require.NoError(err)
 	value, ok := res.Set().Value("test.valid")
-	require.True(t, ok)
-	assert.Equal(t, "value", value.AsString())
+	require.True(ok)
+	assert.Equal("value", value.AsString())
 }
 
 func TestNewResourceReturnsCallerDetectorErrorWithPartialEnvironment(t *testing.T) {
@@ -156,32 +163,38 @@ func TestNewResourcePreservesServiceInstanceFeatureGate(t *testing.T) {
 }
 
 func TestDefaultExporterFactoriesDisableEmptySelectors(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
 	t.Setenv("OTEL_TRACES_EXPORTER", "")
 	t.Setenv("OTEL_METRICS_EXPORTER", "")
 
 	spanExporter, err := newSpanExporterFromEnv(context.Background())
-	require.NoError(t, err)
-	assert.Nil(t, spanExporter)
+	require.NoError(err)
+	assert.Nil(spanExporter)
 
 	metricReader, err := newMetricReaderFromEnv(context.Background())
-	require.NoError(t, err)
-	assert.Nil(t, metricReader)
+	require.NoError(err)
+	assert.Nil(metricReader)
 }
 
 func TestDefaultExporterFactoriesDisableExplicitNone(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
 	t.Setenv("OTEL_TRACES_EXPORTER", "none")
 	t.Setenv("OTEL_METRICS_EXPORTER", "none")
 
 	spanExporter, err := newSpanExporterFromEnv(context.Background())
-	require.NoError(t, err)
-	assert.Nil(t, spanExporter)
+	require.NoError(err)
+	assert.Nil(spanExporter)
 
 	metricReader, err := newMetricReaderFromEnv(context.Background())
-	require.NoError(t, err)
-	assert.Nil(t, metricReader)
+	require.NoError(err)
+	assert.Nil(metricReader)
 }
 
 func TestInitCleansUpSpanExporterWhenMetricInitializationFails(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
 	initErr := errors.New("metric initialization failed")
 	cleanupErr := errors.New("span exporter cleanup failed")
 	exporter := &testSpanExporter{shutdownErr: cleanupErr}
@@ -205,11 +218,11 @@ func TestInitCleansUpSpanExporterWhenMetricInitializationFails(t *testing.T) {
 		},
 	})
 
-	assert.Nil(t, shutdown)
-	require.ErrorIs(t, err, initErr)
-	require.ErrorIs(t, err, cleanupErr)
-	assert.Equal(t, 1, exporter.shutdownCalls)
-	assert.Zero(t, registrations)
+	assert.Nil(shutdown)
+	require.ErrorIs(err, initErr)
+	require.ErrorIs(err, cleanupErr)
+	assert.Equal(1, exporter.shutdownCalls)
+	assert.Zero(registrations)
 }
 
 func TestShutdownAllAttemptsEveryFunctionAndJoinsErrors(t *testing.T) {

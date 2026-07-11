@@ -277,8 +277,7 @@ func TestStoreEnsureGenerationRejectsChangedFingerprint(t *testing.T) {
 	err := store.EnsureGeneration(ctx, 1,
 		vector.Generation{Model: "m2", Dimensions: 3, Params: map[string]string{"pooling": "mean"}},
 		sqlitevec.StateActive)
-	require.Error(err)
-	assert.ErrorContains(err, "different model")
+	require.ErrorContains(err, "different model")
 
 	var state string
 	err = db.QueryRowContext(ctx, `SELECT state FROM message_vectors_generations WHERE gen_key = ?`, 1).Scan(&state)
@@ -756,8 +755,7 @@ func TestStoreDeleteVectorsStopsBeforeMutationWhenChunkScanFails(t *testing.T) {
 	require.NoError(err)
 
 	err = store.DeleteVectors(ctx, 1)
-	require.Error(err)
-	assert.ErrorIs(err, io.ErrUnexpectedEOF)
+	require.ErrorIs(err, io.ErrUnexpectedEOF)
 	assert.Equal(int64(0), rowsErrDeleteCount.Load(), "no vector or chunk rows are deleted after a partial chunk-map scan")
 }
 

@@ -2,6 +2,7 @@ package pack
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"os"
@@ -28,10 +29,23 @@ func OpenReader(path string, crypter *Crypter) (*Reader, error) {
 	if err != nil {
 		return nil, fmt.Errorf("pack: opening %s: %w", path, err)
 	}
+	r, err := NewReaderFromFile(f, id, crypter)
+	if err != nil {
+		return nil, fmt.Errorf("pack %s: %w", path, err)
+	}
+	return r, nil
+}
+
+// NewReaderFromFile constructs a sealed-pack reader over an already-open
+// descriptor. It takes ownership of f whether construction succeeds or fails.
+// id must be the pack ID used for encrypted-footer authentication.
+func NewReaderFromFile(f *os.File, id string, crypter *Crypter) (*Reader, error) {
+	if f == nil {
+		return nil, fmt.Errorf("pack: nil file")
+	}
 	r, err := newReader(f, id, crypter)
 	if err != nil {
-		_ = f.Close()
-		return nil, fmt.Errorf("pack %s: %w", path, err)
+		return nil, errors.Join(err, f.Close())
 	}
 	return r, nil
 }

@@ -23,6 +23,14 @@ provider workflows to this repo unless the package already owns that concern.
   commands. Do not duplicate command recipes here unless the command carries a
   repo-specific intent that is not encoded elsewhere.
 
+## Roborev
+
+- Never invoke the `roborev review` CLI command in any form unless the user
+  explicitly asks for it. Use all other `roborev` CLI commands normally when
+  they are appropriate for interacting with roborev. Never invoke a roborev
+  skill (including `roborev-fix` or `roborev-design-review-branch`) unless the
+  user explicitly asks for that skill.
+
 ## Go Conventions
 
 - Use standard library APIs first and add dependencies only when they pay for

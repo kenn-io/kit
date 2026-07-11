@@ -1,0 +1,152 @@
+package packstore
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestCoordinatorAllowsConcurrentMutationsAndWaitsForAll(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	c := NewCoordinator()
+	first, err := c.AcquireMutation(context.Background())
+	require.NoError(err)
+	second, err := c.AcquireMutation(context.Background())
+	require.NoError(err)
+
+	acquired := make(chan *Lease, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		lease, acquireErr := c.AcquireMaintenance(context.Background())
+		if acquireErr != nil {
+			errCh <- acquireErr
+			return
+		}
+		acquired <- lease
+	}()
+	require.Eventually(func() bool { return c.waitingMaintenanceCount() == 1 }, time.Second, time.Millisecond)
+
+	require.NoError(first.Release())
+	assert.Never(func() bool { return len(acquired) != 0 }, 20*time.Millisecond, time.Millisecond)
+	require.NoError(second.Release())
+
+	select {
+	case err := <-errCh:
+		require.NoError(err)
+	case lease := <-acquired:
+		require.NoError(lease.Release())
+	case <-time.After(time.Second):
+		require.Fail("maintenance did not acquire after every mutation released")
+	}
+}
+
+func TestCoordinatorGivesQueuedMaintenancePriority(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	c := NewCoordinator()
+	active, err := c.AcquireMutation(context.Background())
+	require.NoError(err)
+
+	type leaseResult struct {
+		lease *Lease
+		err   error
+	}
+	maintenance := make(chan leaseResult, 1)
+	go func() {
+		lease, acquireErr := c.AcquireMaintenance(context.Background())
+		maintenance <- leaseResult{lease: lease, err: acquireErr}
+	}()
+	require.Eventually(func() bool { return c.waitingMaintenanceCount() == 1 }, time.Second, time.Millisecond)
+
+	mutation := make(chan leaseResult, 1)
+	go func() {
+		lease, acquireErr := c.AcquireMutation(context.Background())
+		mutation <- leaseResult{lease: lease, err: acquireErr}
+	}()
+	require.NoError(active.Release())
+
+	var maintenanceLease *Lease
+	select {
+	case result := <-maintenance:
+		require.NoError(result.err)
+		maintenanceLease = result.lease
+	case <-mutation:
+		require.Fail("new mutation bypassed queued maintenance")
+	case <-time.After(time.Second):
+		require.Fail("neither queued lease acquired")
+	}
+	assert.Never(func() bool { return len(mutation) != 0 }, 20*time.Millisecond, time.Millisecond)
+	require.NoError(maintenanceLease.Release())
+
+	select {
+	case result := <-mutation:
+		require.NoError(result.err)
+		require.NoError(result.lease.Release())
+	case <-time.After(time.Second):
+		require.Fail("mutation did not resume after maintenance")
+	}
+}
+
+func TestCoordinatorCancellationRemovesMaintenanceWaiter(t *testing.T) {
+	require := require.New(t)
+	c := NewCoordinator()
+	active, err := c.AcquireMutation(context.Background())
+	require.NoError(err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, acquireErr := c.AcquireMaintenance(ctx)
+		errCh <- acquireErr
+	}()
+	require.Eventually(func() bool { return c.waitingMaintenanceCount() == 1 }, time.Second, time.Millisecond)
+	cancel()
+	require.ErrorIs(<-errCh, context.Canceled)
+	require.Eventually(func() bool { return c.waitingMaintenanceCount() == 0 }, time.Second, time.Millisecond)
+
+	second, err := c.AcquireMutation(context.Background())
+	require.NoError(err, "canceled maintenance must not keep blocking mutations")
+	require.NoError(second.Release())
+	require.NoError(active.Release())
+}
+
+func TestCoordinatorRejectsCanceledAcquireAndDoubleRelease(t *testing.T) {
+	require := require.New(t)
+	c := NewCoordinator()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := c.AcquireMutation(ctx)
+	require.ErrorIs(err, context.Canceled)
+	_, err = c.AcquireMaintenance(ctx)
+	require.ErrorIs(err, context.Canceled)
+
+	lease, err := c.AcquireMutation(context.Background())
+	require.NoError(err)
+	require.NoError(lease.Release())
+	require.ErrorIs(lease.Release(), ErrLeaseReleased)
+	copied := *lease
+	require.ErrorIs(copied.Release(), ErrLeaseReleased, "copied leases share release state")
+}
+
+func TestCoordinatorSupportsIngestThenAutomaticMaintenance(t *testing.T) {
+	require := require.New(t)
+	c := NewCoordinator()
+	ingest, err := c.AcquireMutation(context.Background())
+	require.NoError(err)
+	require.NoError(ingest.Release())
+
+	maintenance, err := c.AcquireMaintenance(context.Background())
+	require.NoError(err)
+	require.NoError(maintenance.Release())
+}
+
+func (c *Coordinator) waitingMaintenanceCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.waitingMaintenance
+}

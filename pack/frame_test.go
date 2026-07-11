@@ -3,11 +3,39 @@ package pack
 import (
 	"bytes"
 	"crypto/rand"
+	"fmt"
 	"testing"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestEncodeFrameRemainsLegacyBoundedDecoderCompatible(t *testing.T) {
+	for _, size := range []int{284, 763, zstd.MinWindowSize, zstd.MinWindowSize + 1, 4097, 65535} {
+		t.Run(fmt.Sprintf("size_%d", size), func(t *testing.T) {
+			require := require.New(t)
+			raw := bytes.Repeat([]byte("x"), size)
+			stored, compressed := encodeFrame(raw, DefaultZstdLevel)
+			if size < zstd.MinWindowSize {
+				require.False(compressed, "legacy bounded readers cannot allocate a zstd window below MinWindowSize")
+				require.Equal(raw, stored)
+				return
+			}
+			require.True(compressed)
+			decoder, err := zstd.NewReader(nil,
+				zstd.WithDecoderConcurrency(1),
+				zstd.WithDecoderMaxMemory(uint64(size)),
+				zstd.WithDecoderMaxWindow(max(uint64(size), uint64(zstd.MinWindowSize))),
+				zstd.WithDecodeAllCapLimit(true))
+			require.NoError(err)
+			got, err := decoder.DecodeAll(stored, make([]byte, 0, size))
+			decoder.Close()
+			require.NoError(err)
+			require.Equal(raw, got)
+		})
+	}
+}
 
 func TestEncodeFrameCompressible(t *testing.T) {
 	require := require.New(t)
