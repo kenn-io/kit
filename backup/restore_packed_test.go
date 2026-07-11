@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -31,15 +32,30 @@ func (f restoreCatalogFunc) ReplaceRestoredPacks(
 }
 
 type testPackedTarget struct {
-	limits packstore.Limits
-	open   func(context.Context, *sql.DB) (packstore.RestoreCatalog, error)
+	limits      packstore.Limits
+	coordinator *packstore.Coordinator
+	acquire     func(context.Context) (*packstore.Lease, error)
+	open        func(context.Context, *sql.DB) (packstore.RestoreCatalog, error)
 }
 
 func (t testPackedTarget) Limits() packstore.Limits { return t.limits }
 
+func (t testPackedTarget) AcquireRestoreLease(ctx context.Context) (*packstore.Lease, error) {
+	if t.acquire != nil {
+		return t.acquire(ctx)
+	}
+	coordinator := t.coordinator
+	if coordinator == nil {
+		coordinator = defaultTestPackedRestoreCoordinator
+	}
+	return coordinator.AcquireMutation(ctx)
+}
+
 func (t testPackedTarget) OpenRestoreCatalog(ctx context.Context, db *sql.DB) (packstore.RestoreCatalog, error) {
 	return t.open(ctx, db)
 }
+
+var defaultTestPackedRestoreCoordinator = packstore.NewCoordinator()
 
 func createPackedRestoreFixture(t *testing.T) (*Repo, App, *Manifest, string) {
 	t.Helper()
@@ -65,6 +81,71 @@ func TestRestoreWithoutPackedTargetRemainsFullyLoose(t *testing.T) {
 	_, err = os.Stat(filepath.Join(target, "content", "packs"))
 	require.ErrorIs(t, err, os.ErrNotExist)
 	assert.Equal(t, snapshotDirHashes(t, sourceContent), snapshotDirHashes(t, filepath.Join(target, "content")))
+}
+
+func TestRestorePackedTargetRejectsInvalidRestoreLeaseBeforePackPublication(t *testing.T) {
+	acquireErr := errors.New("acquire restore lease")
+	maintenanceCoordinator := packstore.NewCoordinator()
+	tests := []struct {
+		name    string
+		acquire func(context.Context) (*packstore.Lease, error)
+		wantErr error
+		after   func(*testing.T)
+	}{
+		{name: "acquisition error", acquire: func(context.Context) (*packstore.Lease, error) {
+			return nil, acquireErr
+		}, wantErr: acquireErr},
+		{name: "nil lease", acquire: func(context.Context) (*packstore.Lease, error) {
+			return nil, nil
+		}, wantErr: packstore.ErrLeaseReleased},
+		{name: "zero lease", acquire: func(context.Context) (*packstore.Lease, error) {
+			return &packstore.Lease{}, nil
+		}, wantErr: packstore.ErrLeaseReleased},
+		{name: "released lease", acquire: func(ctx context.Context) (*packstore.Lease, error) {
+			lease, err := packstore.NewCoordinator().AcquireMutation(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if err := lease.Release(); err != nil {
+				return nil, err
+			}
+			return lease, nil
+		}, wantErr: packstore.ErrLeaseReleased},
+		{name: "maintenance lease", acquire: maintenanceCoordinator.AcquireMaintenance,
+			wantErr: packstore.ErrWrongLeaseKind, after: func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				lease, err := maintenanceCoordinator.AcquireMutation(ctx)
+				require.NoError(t, err, "rejected maintenance lease must be released")
+				require.NoError(t, lease.Release())
+			}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, app, _, _ := createPackedRestoreFixture(t)
+			target := filepath.Join(t.TempDir(), "restore")
+			catalogOpened := false
+			packed := testPackedTarget{
+				limits:  packstore.DefaultLimits(),
+				acquire: tt.acquire,
+				open: func(context.Context, *sql.DB) (packstore.RestoreCatalog, error) {
+					catalogOpened = true
+					return nil, errors.New("must not open")
+				},
+			}
+
+			_, err := Restore(context.Background(), r, app, RestoreOptions{
+				TargetDir: target, PackedContent: packed,
+			})
+			require.ErrorIs(t, err, tt.wantErr)
+			assert.False(t, catalogOpened)
+			_, err = os.Stat(filepath.Join(target, "content", "packs"))
+			require.ErrorIs(t, err, os.ErrNotExist)
+			if tt.after != nil {
+				tt.after(t)
+			}
+		})
+	}
 }
 
 func TestRestorePackedTargetPublishesThenCommitsBeforeProof(t *testing.T) {
@@ -121,6 +202,165 @@ func TestRestorePackedTargetPublishesThenCommitsBeforeProof(t *testing.T) {
 	var publishedPacked int64
 	require.NoError(t, published.QueryRow("SELECT packed_blobs FROM restored_pack_authority").Scan(&publishedPacked))
 	assert.Equal(t, m.Attachments.Blobs, publishedPacked)
+}
+
+type leaseResult struct {
+	lease *packstore.Lease
+	err   error
+}
+
+// maintenanceQueueContext exposes the point where AcquireMaintenance has
+// registered its waiter: the first Err check happens before locking, and the
+// second happens after waitingMaintenance is incremented.
+type maintenanceQueueContext struct {
+	context.Context
+	queued   chan struct{}
+	errCalls int
+}
+
+func newMaintenanceQueueContext() *maintenanceQueueContext {
+	return &maintenanceQueueContext{Context: context.Background(), queued: make(chan struct{})}
+}
+
+func (c *maintenanceQueueContext) Err() error {
+	c.errCalls++
+	if c.errCalls == 2 {
+		close(c.queued)
+	}
+	return c.Context.Err()
+}
+
+func assertMaintenanceBlocked(t *testing.T, acquired <-chan leaseResult, where string) {
+	t.Helper()
+	assert.Zero(t, len(acquired), where)
+}
+
+func requireMaintenanceLease(t *testing.T, acquired <-chan leaseResult) *packstore.Lease {
+	t.Helper()
+	select {
+	case result := <-acquired:
+		require.NoError(t, result.err)
+		require.NotNil(t, result.lease)
+		return result.lease
+	case <-time.After(time.Second):
+		require.Fail(t, "maintenance did not acquire after restore lease release")
+		return nil
+	}
+}
+
+// Not parallel: this test injects the package-global directory sync hook.
+func TestRestorePackedTargetHoldsLeaseThroughCatalogProofPublicationAndFinalSync(t *testing.T) {
+	r, app, _, _ := createPackedRestoreFixture(t)
+	target := filepath.Join(t.TempDir(), "restore")
+	coordinator := packstore.NewCoordinator()
+	maintenance := make(chan leaseResult, 1)
+	maintenanceCtx := newMaintenanceQueueContext()
+	openChecked := false
+	replaceChecked := false
+	proofChecked := false
+	finalSyncChecked := false
+	packed := testPackedTarget{limits: packstore.DefaultLimits(), coordinator: coordinator}
+	packed.open = func(context.Context, *sql.DB) (packstore.RestoreCatalog, error) {
+		go func() {
+			lease, err := coordinator.AcquireMaintenance(maintenanceCtx)
+			maintenance <- leaseResult{lease: lease, err: err}
+		}()
+		<-maintenanceCtx.queued
+		assertMaintenanceBlocked(t, maintenance, "maintenance acquired during OpenRestoreCatalog")
+		openChecked = true
+		return restoreCatalogFunc(func(context.Context, []packstore.PackRecord, []packstore.Adoption) error {
+			assertMaintenanceBlocked(t, maintenance, "maintenance acquired during ReplaceRestoredPacks")
+			replaceChecked = true
+			return nil
+		}), nil
+	}
+	restoreApp := proofObservingApp{App: app, beforeStats: func() {
+		assertMaintenanceBlocked(t, maintenance, "maintenance acquired during restore proof")
+		proofChecked = true
+	}}
+	originalSync := pack.SyncDir
+	pack.SyncDir = func(dir string) error {
+		if _, err := os.Stat(filepath.Join(target, app.DBFileName())); err == nil {
+			assertMaintenanceBlocked(t, maintenance, "maintenance acquired after database publication or during final sync")
+			finalSyncChecked = true
+		}
+		return originalSync(dir)
+	}
+	t.Cleanup(func() { pack.SyncDir = originalSync })
+
+	_, err := Restore(context.Background(), r, restoreApp, RestoreOptions{
+		TargetDir: target, PackedContent: packed,
+	})
+	require.NoError(t, err)
+	assert.True(t, openChecked)
+	assert.True(t, replaceChecked)
+	assert.True(t, proofChecked)
+	assert.True(t, finalSyncChecked)
+	require.NoError(t, requireMaintenanceLease(t, maintenance).Release())
+}
+
+// Not parallel: this test injects the package-global directory sync hook.
+func TestRestorePackedTargetReleasesLeaseAfterPostPublicationFailure(t *testing.T) {
+	r, app, _, _ := createPackedRestoreFixture(t)
+	target := filepath.Join(t.TempDir(), "restore")
+	coordinator := packstore.NewCoordinator()
+	packed := testPackedTarget{
+		limits:      packstore.DefaultLimits(),
+		coordinator: coordinator,
+		open: func(context.Context, *sql.DB) (packstore.RestoreCatalog, error) {
+			return restoreCatalogFunc(func(context.Context, []packstore.PackRecord, []packstore.Adoption) error {
+				return nil
+			}), nil
+		},
+	}
+	publicationErr := errors.New("final sync after database publication")
+	originalSync := pack.SyncDir
+	pack.SyncDir = func(dir string) error {
+		if _, err := os.Stat(filepath.Join(target, app.DBFileName())); err == nil {
+			return publicationErr
+		}
+		return originalSync(dir)
+	}
+	t.Cleanup(func() { pack.SyncDir = originalSync })
+
+	_, err := Restore(context.Background(), r, app, RestoreOptions{
+		TargetDir: target, PackedContent: packed,
+	})
+	require.ErrorIs(t, err, publicationErr)
+	acquireCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	maintenance, acquireErr := coordinator.AcquireMaintenance(acquireCtx)
+	require.NoError(t, acquireErr)
+	require.NoError(t, maintenance.Release())
+}
+
+func TestRestorePackedTargetJoinsReleaseErrorWithPrimaryError(t *testing.T) {
+	r, app, _, _ := createPackedRestoreFixture(t)
+	target := filepath.Join(t.TempDir(), "restore")
+	coordinator := packstore.NewCoordinator()
+	var restoreLease *packstore.Lease
+	primaryErr := errors.New("catalog publication failed")
+	packed := testPackedTarget{
+		limits: packstore.DefaultLimits(),
+		acquire: func(ctx context.Context) (*packstore.Lease, error) {
+			lease, err := coordinator.AcquireMutation(ctx)
+			restoreLease = lease
+			return lease, err
+		},
+		open: func(context.Context, *sql.DB) (packstore.RestoreCatalog, error) {
+			return restoreCatalogFunc(func(context.Context, []packstore.PackRecord, []packstore.Adoption) error {
+				require.NoError(t, restoreLease.Release())
+				return primaryErr
+			}), nil
+		},
+	}
+
+	_, err := Restore(context.Background(), r, app, RestoreOptions{
+		TargetDir: target, PackedContent: packed,
+	})
+	require.ErrorIs(t, err, primaryErr)
+	require.ErrorIs(t, err, packstore.ErrLeaseReleased)
+	assert.ErrorContains(t, err, "releasing packed restore lease")
 }
 
 type proofObservingApp struct {

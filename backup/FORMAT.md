@@ -214,6 +214,18 @@ verification before restore can succeed. Corruption, selection/footer metadata
 mismatch, or a same-ID destination with different bytes is a hard failure, not
 a fallback.
 
+Before packed attachment restoration starts, the application supplies a live
+mutation lease from the same process-local `packstore.Coordinator` used by
+every maintainer that can adopt, repack, or remove target-store content. The
+application must acquire its broader operation gates before that lease; it
+transfers sole ownership of the lease to Restore, which validates it and holds
+it across pack publication, loose fallbacks, extras, proof, database
+publication, and the final durability sync. Restore releases the lease on every
+success and failure path, joining a release failure with the primary restore
+error. `OpenRestoreCatalog` and `ReplaceRestoredPacks` run under the existing
+lease and must not reacquire or otherwise reenter that Coordinator. A
+restore without a `PackedContentTarget` does not acquire a packed-store lease.
+
 Publication and authority follow one crash-safe order:
 
 1. Stream the source pack to a private target staging file, sync it, and close

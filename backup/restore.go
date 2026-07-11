@@ -90,7 +90,7 @@ type RestoreResult struct {
 //
 // It takes a SHARED repository lock: concurrent restores and verifies are
 // safe, a running create is not.
-func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (*RestoreResult, error) {
+func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *RestoreResult, err error) {
 	start := time.Now()
 	if err := validatePackExtension(app.PackFileExtension()); err != nil {
 		return nil, err
@@ -173,7 +173,7 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (*Resto
 	defer func() { _ = root.Close() }()
 	st.root = root
 
-	res := &RestoreResult{
+	res = &RestoreResult{
 		SnapshotID: m.SnapshotID,
 		DBPath:     filepath.Join(opts.TargetDir, app.DBFileName()),
 		DBBytes:    int64(pm.PageCount * uint64(pm.PageSize)), //nolint:gosec // geometry checked against the manifest
@@ -199,6 +199,18 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (*Resto
 			ctx, app, m, app.ContentDirName())
 		res.LooseAttachmentBlobs = res.AttachmentBlobs
 	} else {
+		restoreLease, acquireErr := opts.PackedContent.AcquireRestoreLease(ctx)
+		if acquireErr != nil {
+			return nil, fmt.Errorf("backup: acquiring packed restore lease: %w", acquireErr)
+		}
+		defer func() {
+			if releaseErr := restoreLease.Release(); releaseErr != nil {
+				err = errors.Join(err, fmt.Errorf("backup: releasing packed restore lease: %w", releaseErr))
+			}
+		}()
+		if validateErr := restoreLease.ValidateMutation(); validateErr != nil {
+			return nil, fmt.Errorf("backup: validating packed restore mutation lease: %w", validateErr)
+		}
 		var packed packedRestoreResult
 		packed, err = st.restorePackedAttachments(ctx, app, m, app.ContentDirName(), opts.PackedContent, start)
 		res.AttachmentBlobs = packed.totalBlobs

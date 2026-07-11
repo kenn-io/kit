@@ -18,8 +18,15 @@ type PackedContentTarget interface {
 	// Limits returns the target store's configured compatibility and
 	// allocation ceilings.
 	Limits() packstore.Limits
+	// AcquireRestoreLease acquires a mutation lease from the same Coordinator
+	// used by every maintainer of the target content store. The target transfers
+	// sole ownership of a successful lease to Restore. Applications must acquire
+	// their own operation gates before this method is called.
+	AcquireRestoreLease(context.Context) (*packstore.Lease, error)
 	// OpenRestoreCatalog returns the packed-authority adapter for db. db is
 	// Restore's unpublished staged database, not the currently visible target.
+	// It and the returned catalog's ReplaceRestoredPacks method run while the
+	// restore lease is held and must not reenter its Coordinator.
 	OpenRestoreCatalog(context.Context, *sql.DB) (packstore.RestoreCatalog, error)
 }
 

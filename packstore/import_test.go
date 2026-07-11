@@ -25,6 +25,26 @@ type recordingRestoreCatalog struct {
 	err       error
 }
 
+type cancelOnErrContext struct {
+	context.Context
+	cancel   context.CancelFunc
+	cancelAt int
+	calls    int
+}
+
+func (c *cancelOnErrContext) Err() error {
+	c.calls++
+	if c.calls == c.cancelAt {
+		c.cancel()
+	}
+	return c.Context.Err()
+}
+
+func newCancelOnErrContext(cancelAt int) *cancelOnErrContext {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &cancelOnErrContext{Context: ctx, cancel: cancel, cancelAt: cancelAt}
+}
+
 func (c *recordingRestoreCatalog) ReplaceRestoredPacks(
 	_ context.Context,
 	records []PackRecord,
@@ -805,6 +825,81 @@ func TestPrepareImportLimitFallbackStillVerifiesSelectedPayload(t *testing.T) {
 	}
 }
 
+func TestPrepareImportLimitFallbackRejectsOverlappingFooterSpans(t *testing.T) {
+	originalChunk := importVerifyIDChunkEntries
+	importVerifyIDChunkEntries = 1
+	t.Cleanup(func() { importVerifyIDChunkEntries = originalChunk })
+
+	for _, dimension := range []string{"container bytes", "footer bytes", "entry count"} {
+		t.Run(dimension, func(t *testing.T) {
+			target := openImportTarget(t)
+			packPath, packID, entries := buildImportTestPack(t, []byte("selected content"), []byte("overlapping sibling"))
+			mutateImportFooterEntry(t, packPath, 1, func(entry []byte) {
+				binary.LittleEndian.PutUint64(entry[32:], entries[0].Offset+1)
+			})
+			limits := DefaultLimits()
+			switch dimension {
+			case "container bytes":
+				info, err := os.Stat(packPath)
+				require.NoError(t, err)
+				limits.PackBytes = info.Size() - 1
+			case "footer bytes":
+				data, err := os.ReadFile(packPath)
+				require.NoError(t, err)
+				trailerStart := len(data) - plainPackTrailerSize
+				limits.FooterBytes = int64(binary.LittleEndian.Uint32(data[trailerStart:])) - 1
+			case "entry count":
+				limits.PackEntries = 1
+			}
+
+			prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+				PackID: packID, SourcePath: packPath, Selections: importSelections(t, entries[:1]),
+			}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
+
+			assert.Nil(t, prepared)
+			require.ErrorIs(t, err, pack.ErrCorrupt)
+			assertNoImportVerificationScratch(t, target)
+		})
+	}
+}
+
+func TestPrepareImportLimitFallbackAllowsEmptyFooterSpans(t *testing.T) {
+	originalChunk := importVerifyIDChunkEntries
+	importVerifyIDChunkEntries = 1
+	t.Cleanup(func() { importVerifyIDChunkEntries = originalChunk })
+
+	for _, test := range []struct {
+		name   string
+		offset func(pack.Entry) uint64
+	}{
+		{name: "equal offset", offset: func(entry pack.Entry) uint64 { return entry.Offset }},
+		{name: "at preceding end", offset: func(entry pack.Entry) uint64 { return entry.Offset + entry.StoredLen }},
+		{name: "nested", offset: func(entry pack.Entry) uint64 { return entry.Offset + 1 }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			target := openImportTarget(t)
+			packPath, packID, entries := buildImportTestPack(t, []byte("selected content"), []byte("empty sibling"))
+			mutateImportFooterEntry(t, packPath, 1, func(entry []byte) {
+				binary.LittleEndian.PutUint64(entry[32:], test.offset(entries[0]))
+				binary.LittleEndian.PutUint64(entry[40:], 0)
+			})
+			limits := DefaultLimits()
+			limits.PackEntries = 1
+
+			prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+				PackID: packID, SourcePath: packPath, Selections: importSelections(t, entries[:1]),
+			}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
+
+			require.NoError(t, err)
+			assert.Empty(t, prepared.PackedHashes())
+			assert.Equal(t, ImportStats{
+				Fallbacks: []ImportFallback{{PackID: packID, Reason: FallbackPackEntryCountLimit}},
+			}, prepared.Stats())
+			assertNoImportVerificationScratch(t, target)
+		})
+	}
+}
+
 func TestPrepareImportLimitFallbackSkipsOversizedSelectedPayload(t *testing.T) {
 	target := openImportTarget(t)
 	content := []byte("oversized selected content")
@@ -877,6 +972,50 @@ func TestPrepareImportStreamingVerifierCleansScratch(t *testing.T) {
 	})
 }
 
+func TestPrepareImportStreamingSpanVerifierCancelsDuringMerge(t *testing.T) {
+	originalChunk := importVerifyIDChunkEntries
+	importVerifyIDChunkEntries = 1
+	t.Cleanup(func() { importVerifyIDChunkEntries = originalChunk })
+	target := openImportTarget(t)
+	packPath, packID, entries := buildImportTestPack(t, []byte("first"), []byte("second"))
+	limits := DefaultLimits()
+	limits.PackEntries = 1
+	// PrepareImport has two checkpoints, and the scan and two span spills add
+	// three. The sixth check is the span merge itself.
+	ctx := newCancelOnErrContext(6)
+	t.Cleanup(ctx.cancel)
+
+	prepared, err := PrepareImport(ctx, target, "content", []ImportPack{{
+		PackID: packID, SourcePath: packPath, Selections: importSelections(t, entries[:1]),
+	}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
+
+	assert.Nil(t, prepared)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, ctx.cancelAt, ctx.calls)
+	assertNoImportVerificationScratch(t, target)
+}
+
+func TestPrepareImportStreamingSpanVerifierRejectsWithinRunOverlap(t *testing.T) {
+	originalChunk := importVerifyIDChunkEntries
+	importVerifyIDChunkEntries = 2
+	t.Cleanup(func() { importVerifyIDChunkEntries = originalChunk })
+	target := openImportTarget(t)
+	packPath, packID, entries := buildImportTestPack(t, []byte("selected content"), []byte("overlapping sibling"))
+	mutateImportFooterEntry(t, packPath, 1, func(entry []byte) {
+		binary.LittleEndian.PutUint64(entry[32:], entries[0].Offset+1)
+	})
+	limits := DefaultLimits()
+	limits.PackEntries = 1
+
+	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+		PackID: packID, SourcePath: packPath, Selections: importSelections(t, entries[:1]),
+	}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
+
+	assert.Nil(t, prepared)
+	require.ErrorIs(t, err, pack.ErrCorrupt)
+	assertNoImportVerificationScratch(t, target)
+}
+
 func TestPrepareImportRejectsCorruptSourceInsteadOfFallingBack(t *testing.T) {
 	target := openImportTarget(t)
 	path, packID, entries := buildImportTestPack(t, []byte("selected content"), []byte("unselected content"))
@@ -937,6 +1076,20 @@ func hashFromEntry(t *testing.T, entry pack.Entry) Hash {
 	hash, err := ParseHash(entry.ID.String())
 	require.NoError(t, err)
 	return hash
+}
+
+func mutateImportFooterEntry(t *testing.T, packPath string, index int, mutate func([]byte)) {
+	t.Helper()
+	data, err := os.ReadFile(packPath)
+	require.NoError(t, err)
+	trailerStart := len(data) - plainPackTrailerSize
+	footerLen := int(binary.LittleEndian.Uint32(data[trailerStart:]))
+	footerStart := trailerStart - footerLen
+	entryStart := footerStart + 4 + index*plainPackEntrySize
+	mutate(data[entryStart : entryStart+plainPackEntrySize])
+	digest := sha256.Sum256(data[footerStart : trailerStart+4])
+	copy(data[trailerStart+4:trailerStart+36], digest[:])
+	require.NoError(t, os.WriteFile(packPath, data, 0o600))
 }
 
 func assertNoImportVerificationScratch(t *testing.T, target *os.Root) {

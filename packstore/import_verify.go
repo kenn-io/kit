@@ -18,8 +18,8 @@ import (
 
 const importVerifyScratchPrefix = ".packstore-verify-"
 
-// importVerifyIDChunkEntries bounds duplicate-detection memory. It is a var so
-// tests can force the external merge path with small real packs.
+// importVerifyIDChunkEntries bounds duplicate-ID and span-validation memory. It
+// is a var so tests can force the external merge paths with small real packs.
 var importVerifyIDChunkEntries = 4096
 
 // verifyLimitedImportPack independently proves that configured policy limits,
@@ -95,8 +95,9 @@ func verifyLimitedImportPack(
 	}
 	found := make(map[pack.BlobID]pack.Entry, len(selected))
 	runs := newImportIDRuns(ctx, target)
+	spanRuns := newImportSpanRuns(ctx, target)
 	defer func() {
-		if cleanupErr := runs.cleanup(); cleanupErr != nil {
+		if cleanupErr := errors.Join(runs.cleanup(), spanRuns.cleanup()); cleanupErr != nil {
 			resultErr = errors.Join(resultErr, fmt.Errorf("clean import verification scratch: %w", cleanupErr))
 		}
 	}()
@@ -118,6 +119,7 @@ func verifyLimitedImportPack(
 
 	chunkLimit := max(importVerifyIDChunkEntries, 1)
 	ids := make([]pack.BlobID, 0, chunkLimit)
+	spans := make([]importSpan, 0, chunkLimit)
 	for i := range count {
 		if i%1024 == 0 {
 			if err := ctx.Err(); err != nil {
@@ -133,6 +135,15 @@ func verifyLimitedImportPack(
 			return err
 		}
 		ids = append(ids, entry.ID)
+		if entry.StoredLen > 0 {
+			spans = append(spans, importSpan{offset: entry.Offset, end: entry.Offset + entry.StoredLen})
+			if len(spans) == chunkLimit {
+				if err := spanRuns.add(spans); err != nil {
+					return err
+				}
+				spans = make([]importSpan, 0, chunkLimit)
+			}
+		}
 		if len(ids) == chunkLimit && i+1 < count {
 			if err := runs.add(ids); err != nil {
 				return err
@@ -144,6 +155,9 @@ func verifyLimitedImportPack(
 		}
 	}
 	if err := runs.finish(ids); err != nil {
+		return err
+	}
+	if err := spanRuns.finish(spans); err != nil {
 		return err
 	}
 	_, _ = digest.Write(trailer[:4])
@@ -411,4 +425,211 @@ func readImportID(r *bufio.Reader) (pack.BlobID, bool, error) {
 		return pack.BlobID{}, false, fmt.Errorf("%w: truncated import ID run: %w", pack.ErrCorrupt, err)
 	}
 	return id, true, nil
+}
+
+type importSpan struct {
+	offset uint64
+	end    uint64
+}
+
+type importSpanRuns struct {
+	ctx     context.Context
+	root    *os.Root
+	dir     string
+	created bool
+	next    int
+	runs    []string
+}
+
+func newImportSpanRuns(ctx context.Context, root *os.Root) *importSpanRuns {
+	return &importSpanRuns{ctx: ctx, root: root, dir: importVerifyScratchPrefix + pack.NewPackID()}
+}
+
+func (r *importSpanRuns) add(spans []importSpan) error {
+	if err := r.ctx.Err(); err != nil {
+		return err
+	}
+	sortImportSpans(spans)
+	if err := rejectOverlappingImportSpans(spans); err != nil {
+		return err
+	}
+	if !r.created {
+		if err := r.root.Mkdir(r.dir, 0o700); err != nil {
+			return fmt.Errorf("create import verification span scratch: %w", err)
+		}
+		r.created = true
+	}
+	name := path.Join(r.dir, fmt.Sprintf("run-%06d", r.next))
+	r.next++
+	if err := writeImportSpanRun(r.root, name, spans); err != nil {
+		return err
+	}
+	r.runs = append(r.runs, name)
+	return nil
+}
+
+func (r *importSpanRuns) finish(spans []importSpan) error {
+	if len(r.runs) == 0 {
+		sortImportSpans(spans)
+		return rejectOverlappingImportSpans(spans)
+	}
+	if len(spans) > 0 {
+		if err := r.add(spans); err != nil {
+			return err
+		}
+	}
+	for len(r.runs) > 1 {
+		nextRuns := make([]string, 0, (len(r.runs)+1)/2)
+		for i := 0; i < len(r.runs); i += 2 {
+			if i+1 == len(r.runs) {
+				nextRuns = append(nextRuns, r.runs[i])
+				continue
+			}
+			merged := path.Join(r.dir, fmt.Sprintf("merge-%06d", r.next))
+			r.next++
+			if err := mergeImportSpanRuns(r.ctx, r.root, r.runs[i], r.runs[i+1], merged); err != nil {
+				return err
+			}
+			if err := r.root.Remove(r.runs[i]); err != nil {
+				return fmt.Errorf("remove merged import span run: %w", err)
+			}
+			if err := r.root.Remove(r.runs[i+1]); err != nil {
+				return fmt.Errorf("remove merged import span run: %w", err)
+			}
+			nextRuns = append(nextRuns, merged)
+		}
+		r.runs = nextRuns
+	}
+	return nil
+}
+
+func (r *importSpanRuns) cleanup() error {
+	if !r.created {
+		return nil
+	}
+	return r.root.RemoveAll(r.dir)
+}
+
+func sortImportSpans(spans []importSpan) {
+	sort.Slice(spans, func(i, j int) bool {
+		return spans[i].offset < spans[j].offset ||
+			(spans[i].offset == spans[j].offset && spans[i].end < spans[j].end)
+	})
+}
+
+func rejectOverlappingImportSpans(spans []importSpan) error {
+	var greatestEnd uint64
+	for i, span := range spans {
+		if i > 0 && span.offset < greatestEnd {
+			return fmt.Errorf("%w: overlapping entry spans", pack.ErrCorrupt)
+		}
+		greatestEnd = max(greatestEnd, span.end)
+	}
+	return nil
+}
+
+func writeImportSpanRun(root *os.Root, name string, spans []importSpan) (resultErr error) {
+	f, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("create import span run: %w", err)
+	}
+	defer func() { resultErr = errors.Join(resultErr, f.Close()) }()
+	w := bufio.NewWriter(f)
+	var encoded [16]byte
+	for _, span := range spans {
+		binary.LittleEndian.PutUint64(encoded[:8], span.offset)
+		binary.LittleEndian.PutUint64(encoded[8:], span.end)
+		if _, err := w.Write(encoded[:]); err != nil {
+			return fmt.Errorf("write import span run: %w", err)
+		}
+	}
+	if err := w.Flush(); err != nil {
+		return fmt.Errorf("flush import span run: %w", err)
+	}
+	return nil
+}
+
+func mergeImportSpanRuns(
+	ctx context.Context,
+	root *os.Root,
+	leftName, rightName, outputName string,
+) (resultErr error) {
+	left, err := root.Open(leftName)
+	if err != nil {
+		return fmt.Errorf("open left import span run: %w", err)
+	}
+	right, err := root.Open(rightName)
+	if err != nil {
+		return errors.Join(fmt.Errorf("open right import span run: %w", err), left.Close())
+	}
+	output, err := root.OpenFile(outputName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return errors.Join(fmt.Errorf("create merged import span run: %w", err), left.Close(), right.Close())
+	}
+	defer func() { resultErr = errors.Join(resultErr, left.Close(), right.Close(), output.Close()) }()
+
+	lr, rr := bufio.NewReader(left), bufio.NewReader(right)
+	w := bufio.NewWriter(output)
+	leftSpan, leftOK, err := readImportSpan(lr)
+	if err != nil {
+		return err
+	}
+	rightSpan, rightOK, err := readImportSpan(rr)
+	if err != nil {
+		return err
+	}
+	var greatestEnd uint64
+	var havePrior bool
+	var encoded [16]byte
+	for merged := 0; leftOK || rightOK; merged++ {
+		if merged%1024 == 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		}
+		var next importSpan
+		if !rightOK || (leftOK && importSpanLess(leftSpan, rightSpan)) {
+			next = leftSpan
+			leftSpan, leftOK, err = readImportSpan(lr)
+		} else {
+			next = rightSpan
+			rightSpan, rightOK, err = readImportSpan(rr)
+		}
+		if err != nil {
+			return err
+		}
+		if havePrior && next.offset < greatestEnd {
+			return fmt.Errorf("%w: overlapping entry spans", pack.ErrCorrupt)
+		}
+		havePrior = true
+		greatestEnd = max(greatestEnd, next.end)
+		binary.LittleEndian.PutUint64(encoded[:8], next.offset)
+		binary.LittleEndian.PutUint64(encoded[8:], next.end)
+		if _, err := w.Write(encoded[:]); err != nil {
+			return fmt.Errorf("write merged import span run: %w", err)
+		}
+	}
+	if err := w.Flush(); err != nil {
+		return fmt.Errorf("flush merged import span run: %w", err)
+	}
+	return nil
+}
+
+func importSpanLess(left, right importSpan) bool {
+	return left.offset < right.offset || (left.offset == right.offset && left.end < right.end)
+}
+
+func readImportSpan(r *bufio.Reader) (importSpan, bool, error) {
+	var encoded [16]byte
+	_, err := io.ReadFull(r, encoded[:])
+	if errors.Is(err, io.EOF) {
+		return importSpan{}, false, nil
+	}
+	if err != nil {
+		return importSpan{}, false, fmt.Errorf("%w: truncated import span run: %w", pack.ErrCorrupt, err)
+	}
+	return importSpan{
+		offset: binary.LittleEndian.Uint64(encoded[:8]),
+		end:    binary.LittleEndian.Uint64(encoded[8:]),
+	}, true, nil
 }
