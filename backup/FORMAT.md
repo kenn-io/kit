@@ -208,6 +208,11 @@ same copied pack can remain packed. An unsupported application pack extension
 keeps all content loose and commits an empty packed-authority replacement.
 Unsupported pack settings keep the affected packs loose; when no pack is
 compatible, the same replacement contains no pack records or hash mappings.
+Whole-pack limit fallback verification has separate conservative hard ceilings
+of 8 MiB of footer data and 100,000 entries; a larger footer fails restore
+before scanning or scratch-file creation instead of doing unbounded verifier
+work. These checks protect availability for pathological or damaged inputs and
+do not add per-entry bookkeeping to ordinary verification.
 These are compatibility outcomes, not integrity waivers: every declined hash
 must still pass the ordinary encoding-aware loose read, size check, and SHA-256
 verification before restore can succeed. Corruption, selection/footer metadata

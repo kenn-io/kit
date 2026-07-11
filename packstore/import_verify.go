@@ -18,9 +18,16 @@ import (
 
 const importVerifyScratchPrefix = ".packstore-verify-"
 
-// importVerifyIDChunkEntries bounds duplicate-ID and span-validation memory. It
-// is a var so tests can force the external merge paths with small real packs.
-var importVerifyIDChunkEntries = 4096
+var (
+	// importVerifyIDChunkEntries bounds duplicate-ID and span-validation memory.
+	// It is a var so tests can force the external merge paths with small real packs.
+	importVerifyIDChunkEntries = 4096
+	// Limited verification may exceed a target's configured policy so ordinary
+	// small-limit fallbacks remain useful, but it never exceeds these conservative
+	// fixed ceilings. Tests lower them to exercise the O(1) pre-scan checks.
+	importVerifyMaxFooterBytes = uint64(defaultFooterBytes)
+	importVerifyMaxEntries     = uint64(defaultPackEntries)
+)
 
 // verifyLimitedImportPack independently proves that configured policy limits,
 // rather than source damage, caused ordinary preflight to decline a pack. It
@@ -87,20 +94,10 @@ func verifyLimitedImportPack(
 	if footerLen < 4 || fileSize < plainPackHeaderSize+plainPackTrailerSize+footerLen {
 		return fmt.Errorf("%w: footer length %d is outside %d-byte pack", pack.ErrTruncated, footerLen, size)
 	}
-	footerStart := fileSize - plainPackTrailerSize - footerLen
-
-	selected, err := selectedImportIDs(candidate)
-	if err != nil {
-		return err
+	if footerLen > importVerifyMaxFooterBytes {
+		return newLimitError(LimitPackFooterBytes, footerLen, importVerifyMaxFooterBytes)
 	}
-	found := make(map[pack.BlobID]pack.Entry, len(selected))
-	runs := newImportIDRuns(ctx, target)
-	spanRuns := newImportSpanRuns(ctx, target)
-	defer func() {
-		if cleanupErr := errors.Join(runs.cleanup(), spanRuns.cleanup()); cleanupErr != nil {
-			resultErr = errors.Join(resultErr, fmt.Errorf("clean import verification scratch: %w", cleanupErr))
-		}
-	}()
+	footerStart := fileSize - plainPackTrailerSize - footerLen
 
 	digest := sha256.New()
 	footer := bufio.NewReaderSize(io.TeeReader(
@@ -116,6 +113,22 @@ func verifyLimitedImportPack(
 	if footerLen != wantFooterLen {
 		return fmt.Errorf("%w: footer length %d, want %d for %d entries", pack.ErrCorrupt, footerLen, wantFooterLen, count)
 	}
+	if count > importVerifyMaxEntries {
+		return newLimitError(LimitPackEntryCount, count, importVerifyMaxEntries)
+	}
+
+	selected, err := selectedImportIDs(candidate)
+	if err != nil {
+		return err
+	}
+	found := make(map[pack.BlobID]pack.Entry, len(selected))
+	runs := newImportIDRuns(ctx, target)
+	spanRuns := newImportSpanRuns(ctx, target)
+	defer func() {
+		if cleanupErr := errors.Join(runs.cleanup(), spanRuns.cleanup()); cleanupErr != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("clean import verification scratch: %w", cleanupErr))
+		}
+	}()
 
 	chunkLimit := max(importVerifyIDChunkEntries, 1)
 	ids := make([]pack.BlobID, 0, chunkLimit)

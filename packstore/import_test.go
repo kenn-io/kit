@@ -794,6 +794,111 @@ func TestPrepareImportFallsBackWholePackForValidFooterLimits(t *testing.T) {
 	}
 }
 
+func TestPrepareImportRejectsLimitedVerificationBudgetBeforeScratch(t *testing.T) {
+	for _, dimension := range []string{"footer bytes", "entry count"} {
+		t.Run(dimension, func(t *testing.T) {
+			originalFooterBytes := importVerifyMaxFooterBytes
+			originalEntries := importVerifyMaxEntries
+			t.Cleanup(func() {
+				importVerifyMaxFooterBytes = originalFooterBytes
+				importVerifyMaxEntries = originalEntries
+			})
+
+			target := openImportTarget(t)
+			packPath, packID, entries := buildImportTestPack(t, []byte("first"), []byte("second"))
+			info, err := os.Stat(packPath)
+			require.NoError(t, err)
+			data, err := os.ReadFile(packPath)
+			require.NoError(t, err)
+			footerLen := uint64(binary.LittleEndian.Uint32(data[info.Size()-plainPackTrailerSize:])) //nolint:gosec // test pack size is positive
+			limits := DefaultLimits()
+			limits.PackBytes = info.Size() - 1
+			var wantDimension LimitDimension
+			var wantActual, wantLimit uint64
+			switch dimension {
+			case "footer bytes":
+				importVerifyMaxFooterBytes = footerLen - 1
+				wantDimension = LimitPackFooterBytes
+				wantActual, wantLimit = footerLen, importVerifyMaxFooterBytes
+			case "entry count":
+				importVerifyMaxEntries = 1
+				wantDimension = LimitPackEntryCount
+				wantActual, wantLimit = uint64(len(entries)), importVerifyMaxEntries
+			}
+
+			prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+				PackID: packID, SourcePath: packPath, Selections: importSelections(t, entries[:1]),
+			}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
+
+			assert.Nil(t, prepared)
+			require.ErrorIs(t, err, ErrBlobTooLarge)
+			var limitErr *LimitError
+			require.ErrorAs(t, err, &limitErr)
+			assert.Equal(t, wantDimension, limitErr.Dimension)
+			assert.Equal(t, wantActual, limitErr.Actual)
+			assert.Equal(t, wantLimit, limitErr.Limit)
+			assertNoImportVerificationScratch(t, target)
+		})
+	}
+}
+
+func TestPrepareImportLimitedVerificationRejectsTruncatedFooterBeforeBudget(t *testing.T) {
+	target := openImportTarget(t)
+	packPath, packID, entries := buildImportTestPack(t, []byte("selected"))
+	info, err := os.Stat(packPath)
+	require.NoError(t, err)
+	f, err := os.OpenFile(packPath, os.O_RDWR, 0)
+	require.NoError(t, err)
+	var forged [4]byte
+	binary.LittleEndian.PutUint32(forged[:], uint32(importVerifyMaxFooterBytes+1)) //nolint:gosec // test ceiling fits uint32
+	_, err = f.WriteAt(forged[:], info.Size()-plainPackTrailerSize)
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+	limits := DefaultLimits()
+	limits.PackBytes = info.Size() - 1
+
+	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+		PackID: packID, SourcePath: packPath, Selections: importSelections(t, entries),
+	}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
+
+	assert.Nil(t, prepared)
+	require.ErrorIs(t, err, pack.ErrTruncated)
+	assert.NotErrorIs(t, err, ErrBlobTooLarge)
+	assertNoImportVerificationScratch(t, target)
+}
+
+func TestPrepareImportLimitedVerificationAllowsSparseOversizedContainer(t *testing.T) {
+	target := openImportTarget(t)
+	packPath, packID, entries := buildImportTestPack(t, []byte("selected"))
+	data, err := os.ReadFile(packPath)
+	require.NoError(t, err)
+	trailerStart := len(data) - plainPackTrailerSize
+	footerLen := int(binary.LittleEndian.Uint32(data[trailerStart:]))
+	footerStart := trailerStart - footerLen
+	suffix := data[footerStart:]
+	const packLimit = int64(1 << 20)
+	newSize := packLimit + 1
+	f, err := os.OpenFile(packPath, os.O_RDWR, 0)
+	require.NoError(t, err)
+	require.NoError(t, f.Truncate(newSize))
+	_, err = f.WriteAt(suffix, newSize-int64(len(suffix)))
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+	limits := DefaultLimits()
+	limits.PackBytes = packLimit
+
+	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+		PackID: packID, SourcePath: packPath, Selections: importSelections(t, entries),
+	}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
+
+	require.NoError(t, err)
+	assert.Empty(t, prepared.PackedHashes())
+	assert.Equal(t, ImportStats{
+		Fallbacks: []ImportFallback{{PackID: packID, Reason: FallbackPackContainerLimit}},
+	}, prepared.Stats())
+	assertNoImportVerificationScratch(t, target)
+}
+
 func TestPrepareImportFallsBackWholePackForRecognizableUnsupportedEncoding(t *testing.T) {
 	for _, test := range []struct {
 		name   string
