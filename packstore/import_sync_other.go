@@ -7,7 +7,7 @@ import (
 	"os"
 )
 
-func syncImportRootDir(root *os.Root, name string) error {
+func syncImportRootDirPlatform(root *os.Root, name string) error {
 	dir, err := root.Open(name)
 	if err != nil {
 		return fmt.Errorf("open rooted directory for sync: %w", err)

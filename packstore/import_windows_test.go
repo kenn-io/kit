@@ -23,9 +23,13 @@ func TestPrepareImportWindowsPublishesWithClosedHandlesAndReopens(t *testing.T) 
 
 	require.NoError(t, err)
 	assert.Equal(t, []Hash{hashFromEntry(t, entries[0])}, prepared.PackedHashes())
-	final, err := target.Open(importPackPath("content", packID))
+	finalName := importPackPath("content", packID)
+	renamedName := finalName + ".renamed"
+	require.NoError(t, target.Rename(finalName, renamedName))
+	final, err := target.Open(renamedName)
 	require.NoError(t, err)
 	assert.NoError(t, final.Close())
+	require.NoError(t, target.Rename(renamedName, finalName))
 }
 
 func TestPrepareImportWindowsReusesByteIdenticalDestination(t *testing.T) {
