@@ -86,6 +86,31 @@ func TestPackIncompleteReferenceInventoryPreservesLooseOrphans(t *testing.T) {
 	assert.NoFileExists(layout.LoosePath(liveHash))
 }
 
+func TestPackIncompleteReferenceInventoryDefersOrphanPackReconciliation(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	layout := layoutForStoreTest(t)
+	catalog := newMaintenanceCatalog()
+	catalog.referencesComplete = false
+	entry := buildStoreTestPack(t, layout, []byte("deferred orphan pack content"))
+	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
+
+	stats, err := maintainer.Pack(context.Background(), PackOptions{})
+	require.NoError(err)
+	assert.Zero(stats.PacksAdopted)
+	assert.Zero(stats.PacksRemoved)
+	require.FileExists(layout.PackPath(entry.PackID))
+
+	catalog.members[entry.Hash] = Reference{Hash: entry.Hash, OriginalHashes: []string{entry.Hash.String()}}
+	catalog.referencesComplete = true
+	stats, err = maintainer.Pack(context.Background(), PackOptions{})
+	require.NoError(err)
+	assert.Equal(1, stats.PacksAdopted)
+	indexed, records := catalog.snapshot()
+	assert.Equal(entry, indexed[entry.Hash])
+	assert.Contains(records, entry.PackID)
+}
+
 func TestPackRotatesBeforeExceedingMaintenanceOutputLimits(t *testing.T) {
 	for _, tt := range []struct {
 		name   string

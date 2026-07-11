@@ -81,8 +81,10 @@ func (m *Maintainer) Pack(ctx context.Context, opts PackOptions) (PackStats, err
 	for _, reference := range inventory.References {
 		refs[reference.Hash] = reference
 	}
-	if err := m.reconcileOrphans(ctx, refs, &stats); err != nil {
-		return stats, err
+	if inventory.Complete {
+		if err := m.reconcileOrphans(ctx, refs, &stats); err != nil {
+			return stats, err
+		}
 	}
 	if err := m.packLoose(ctx, opts, &stats); err != nil {
 		return stats, err
