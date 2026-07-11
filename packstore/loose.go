@@ -360,6 +360,9 @@ func validateWriteOptions(opts WriteOptions) error {
 	if opts.ExpectedSize < 0 || opts.MaxBytes < 0 {
 		return ErrInvalidPolicy
 	}
+	if opts.SizeKnown && opts.MaxBytes > 0 && opts.ExpectedSize > opts.MaxBytes {
+		return fmt.Errorf("%w: expected size is %d bytes, limit is %d", ErrContentMismatch, opts.ExpectedSize, opts.MaxBytes)
+	}
 	return nil
 }
 

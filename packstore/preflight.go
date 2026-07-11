@@ -113,7 +113,14 @@ func validateLimits(limits Limits) error {
 }
 
 func openBoundedPack(path string, limits Limits) (*boundedPackReader, error) {
-	f, err := os.Open(path)
+	pathInfo, err := snapshotPathIdentity(path)
+	if err != nil {
+		return nil, fmt.Errorf("inspect pack for bounded preflight: %w", err)
+	}
+	if err := validateRegularNoFollow(path, pathInfo); err != nil {
+		return nil, fmt.Errorf("validate pack for bounded preflight: %w", err)
+	}
+	f, err := openNoFollow(path, false)
 	if err != nil {
 		return nil, fmt.Errorf("open pack for bounded preflight: %w", err)
 	}
@@ -126,6 +133,9 @@ func openBoundedPack(path string, limits Limits) (*boundedPackReader, error) {
 	info, err := f.Stat()
 	if err != nil {
 		return nil, fmt.Errorf("stat pack for bounded preflight: %w", err)
+	}
+	if !os.SameFile(pathInfo, info) {
+		return nil, fmt.Errorf("packstore: pack changed identity during bounded preflight")
 	}
 	size := info.Size()
 	if size > limits.PackBytes {

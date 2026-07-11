@@ -123,6 +123,28 @@ func TestLooseWriteCancellationAndLimitCleanStaging(t *testing.T) {
 	assert.Empty(t, matchingFiles(t, stagingDir, ".staging-"))
 }
 
+func TestLooseWriteRejectsExistingObjectAboveLimit(t *testing.T) {
+	require := require.New(t)
+	content := []byte("existing object exceeds limit")
+	store := newLooseStoreForTest(t, StagingSameDirectory)
+	existing, err := store.WriteBytes(context.Background(), content, WriteOptions{
+		Durability: AtomicPublication,
+		Dedup:      VerifyFullHash,
+	})
+	require.NoError(err)
+
+	result, err := store.Write(context.Background(), bytes.NewReader(content), WriteOptions{
+		Durability:   AtomicPublication,
+		Dedup:        VerifyFullHash,
+		ExpectedHash: existing.Hash,
+		ExpectedSize: existing.Size,
+		SizeKnown:    true,
+		MaxBytes:     existing.Size - 1,
+	})
+	require.ErrorIs(err, ErrContentMismatch)
+	require.Empty(result)
+}
+
 func TestLooseWriteReturnsIdentityAfterCompleteStaging(t *testing.T) {
 	require := require.New(t)
 	content := []byte("identity survives publication failure")

@@ -144,6 +144,22 @@ func TestPreflightRejectsContainerFooterAndDuplicateIDs(t *testing.T) {
 	})
 }
 
+func TestPreflightRejectsSymlinkToValidPack(t *testing.T) {
+	require := require.New(t)
+	layout := layoutForStoreTest(t)
+	entry := buildStoreTestPack(t, layout, []byte("symlink target"))
+	link := filepath.Join(t.TempDir(), "pack-link")
+	if err := os.Symlink(layout.PackPath(entry.PackID), link); err != nil {
+		t.Skip("symlinks unavailable: " + err.Error())
+	}
+
+	reader, err := OpenMaintenancePack(link, DefaultLimits())
+	if reader != nil {
+		require.NoError(reader.Close())
+	}
+	require.Error(err)
+}
+
 func TestLimitErrorIsTyped(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
