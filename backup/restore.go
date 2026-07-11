@@ -49,8 +49,12 @@ type RestoreOptions struct {
 	// runs. nil means fully silent.
 	Progress func(ProgressEvent)
 	// PackedContent optionally restores compatible repository packs into the
-	// target content store and grants authority in the unpublished staged DB.
-	// nil preserves the legacy fully-loose restore path.
+	// target content store and replaces packed authority in the unpublished
+	// staged DB before its integrity/stats proof and final publication. Pack and
+	// entry compatibility use the target's configured limits; declined hashes
+	// are restored and verified loose. nil preserves a fully-loose restore.
+	// When non-nil, "packs" is reserved as the first component below the
+	// application's content directory.
 	PackedContent PackedContentTarget
 }
 
@@ -65,10 +69,14 @@ type RestoreResult struct {
 	// AttachmentBlobs by restored representation.
 	PackedAttachmentBlobs int64
 	LooseAttachmentBlobs  int64
-	AttachmentPacks       int
-	PackFallbacks         []packstore.ImportFallback
-	ExtrasFiles           int
-	Duration              time.Duration
+	// AttachmentPacks is the number of repository packs imported and granted
+	// authority in the restored application catalog.
+	AttachmentPacks int
+	// PackFallbacks records why packs or individual selected hashes were
+	// restored loose. An empty Hash means the reason applies to the whole pack.
+	PackFallbacks []packstore.ImportFallback
+	ExtrasFiles   int
+	Duration      time.Duration
 }
 
 // Restore materializes one snapshot into TargetDir and then proves the
@@ -76,7 +84,9 @@ type RestoreResult struct {
 // is hash-verified against the snapshot's page-hash map as it is written,
 // every blob read re-derives its SHA-256 identity, and the restored database
 // must pass PRAGMA integrity_check and reproduce the manifest's recorded
-// stats exactly before Restore reports success.
+// stats exactly before Restore reports success. When PackedContent is set,
+// compatible packs are durably published before one staged catalog replacement;
+// every fallback is durably restored loose before that authority change.
 //
 // It takes a SHARED repository lock: concurrent restores and verifies are
 // safe, a running create is not.

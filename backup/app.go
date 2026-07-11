@@ -9,11 +9,17 @@ import (
 )
 
 // PackedContentTarget supplies the application-owned packed-storage policy
-// and opens catalog authority only against Restore's unpublished staged
-// SQLite database. Kit never opens an application's live catalog through this
-// interface.
+// for an optional mixed packed-and-loose restore. It opens catalog authority
+// only against Restore's unpublished staged SQLite database; Kit never opens
+// an application's live catalog through this interface. Implementations must
+// keep catalog replacement structurally valid and neutral to RestoredStats so
+// Restore can prove the final staged database before publishing it.
 type PackedContentTarget interface {
+	// Limits returns the target store's configured compatibility and
+	// allocation ceilings.
 	Limits() packstore.Limits
+	// OpenRestoreCatalog returns the packed-authority adapter for db. db is
+	// Restore's unpublished staged database, not the currently visible target.
 	OpenRestoreCatalog(context.Context, *sql.DB) (packstore.RestoreCatalog, error)
 }
 

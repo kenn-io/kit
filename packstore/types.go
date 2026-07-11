@@ -201,7 +201,8 @@ type Limits struct {
 	PackEntries int
 }
 
-// DefaultLimits returns the msgvault-compatible maintenance ceilings.
+// DefaultLimits returns conservative maintenance ceilings for applications
+// that do not supply a custom storage policy.
 func DefaultLimits() Limits {
 	return Limits{
 		BlobBytes:   defaultBlobBytes,

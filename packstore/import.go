@@ -18,8 +18,8 @@ import (
 	"go.kenn.io/kit/pack"
 )
 
-// ImportSelection identifies one catalog-authorized entry in a source pack.
-// Its metadata must exactly match the source pack's authoritative footer.
+// ImportSelection identifies one application-live entry selected from a source
+// pack. Its metadata must exactly match the source pack's authoritative footer.
 type ImportSelection struct {
 	Hash      Hash
 	RawLen    int64
@@ -28,8 +28,9 @@ type ImportSelection struct {
 	Flags     uint8
 }
 
-// ImportPack describes one immutable source pack and the entries authorized
-// for import. SourcePath is read-only; importing never moves source bytes.
+// ImportPack describes one immutable source pack and its application-live
+// selections. SourcePath is read-only; importing copies and never moves source
+// bytes. PackID is retained for a stable, idempotent destination on retry.
 type ImportPack struct {
 	PackID     string
 	SourcePath string
@@ -68,17 +69,28 @@ type ImportFallback struct {
 	Reason FallbackReason
 }
 
-// ImportOptions configures compatibility checks for the target store.
+// ImportOptions configures compatibility checks and catalog metadata for the
+// target store.
 type ImportOptions struct {
-	Limits    Limits
+	// Limits are the target store's configured maintenance ceilings.
+	Limits Limits
+	// CreatedAt is written to imported PackRecords. Restore callers normally
+	// use restore time so age-based maintenance does not immediately repack
+	// newly imported containers.
 	CreatedAt time.Time
 }
 
-// ImportStats summarizes the compatible subset selected for import.
+// ImportStats summarizes the compatible subset selected for import and the
+// content that a caller must restore loose.
 type ImportStats struct {
+	// PackedPacks is the number of whole immutable packs durably published or
+	// reused and included in the prepared catalog replacement.
 	PackedPacks int
+	// PackedBlobs is the number of selected hashes that will receive packed
+	// authority. It excludes unselected footer entries and loose fallbacks.
 	PackedBlobs int
-	Fallbacks   []ImportFallback
+	// Fallbacks records pack-wide and per-hash compatibility declines.
+	Fallbacks []ImportFallback
 }
 
 // importRootLink is a test seam for filesystems that do not support hard
@@ -102,6 +114,9 @@ var (
 // the same records and adoptions idempotent so a restore can retry after a
 // crash without relying on uncataloged pack files surviving maintenance.
 type RestoreCatalog interface {
+	// ReplaceRestoredPacks atomically replaces all packed records and selected
+	// mappings for the restored catalog. Records contain whole-footer totals;
+	// adoptions contain only application-live hashes authorized for reads.
 	ReplaceRestoredPacks(context.Context, []PackRecord, []Adoption) error
 }
 
@@ -114,8 +129,9 @@ type preparedImportPack struct {
 	adoptions  []Adoption
 }
 
-// PreparedImport is a verified, authority-free import plan. A prepared hash is
-// not readable through a Store until a later catalog commit grants authority.
+// PreparedImport is a verified, authority-free import plan whose packs have
+// already been durably published or safely reused. A prepared hash is not
+// readable through a Store until a later catalog commit grants authority.
 type PreparedImport struct {
 	packedHashes []Hash
 	stats        ImportStats
@@ -131,7 +147,8 @@ func (p *PreparedImport) PackedHashes() []Hash {
 	return append([]Hash(nil), p.packedHashes...)
 }
 
-// Stats returns a copy of the preparation summary.
+// Stats returns a copy of the preparation summary, including every fallback
+// the caller must materialize and verify loose before Commit.
 func (p *PreparedImport) Stats() ImportStats {
 	if p == nil {
 		return ImportStats{}
@@ -142,8 +159,10 @@ func (p *PreparedImport) Stats() ImportStats {
 }
 
 // Commit grants catalog authority to all durably published packs with one
-// application transaction. It may be called again after success or failure;
-// RestoreCatalog's replacement semantics make identical retries idempotent.
+// application transaction. Callers must first durably materialize all Stats
+// fallbacks through a real authenticated, content-hash-verifying loose path.
+// Commit may be called again after success or failure; RestoreCatalog's
+// replacement semantics make identical retries idempotent.
 func (p *PreparedImport) Commit(ctx context.Context, catalog RestoreCatalog) error {
 	if p == nil {
 		return fmt.Errorf("packstore: prepared import is nil")
@@ -170,13 +189,18 @@ func (p *PreparedImport) Commit(ctx context.Context, catalog RestoreCatalog) err
 	return nil
 }
 
-// PrepareImport validates source pack compatibility and verifies every
-// selected entry it can consume within the target's configured bounds. A
+// PrepareImport validates plain version-1 source pack compatibility and
+// verifies every selected entry it can consume within the target's configured
+// bounds. Compatible packs are streamed once into the production sharded
+// layout, synced, published without replacement, reopened, and verified. A
 // fallback only declines direct import; the caller must materialize every
 // declined selection through an encoding-aware, authenticated, content-hashed
 // loose path before treating restore as successful. PrepareImport does not
 // grant catalog authority. Durable publication and catalog commit are separate
 // operations so applications can preserve publish-before-authority ordering.
+// Existing same-ID files are reused only when byte-identical; collisions fail
+// closed. On filesystems without atomic hard-link publication, new packs fall
+// back rather than using a racy replacement rename.
 func PrepareImport(
 	ctx context.Context,
 	target *os.Root,

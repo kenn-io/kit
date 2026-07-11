@@ -5,7 +5,29 @@
 // Resolver and Catalog interfaces. A file or pack entry is never sufficient by
 // itself to grant read authority.
 //
+// PrepareImport supports crash-ordered reuse of compatible immutable packs
+// during restore. It copies and verifies source packs within configured Limits,
+// publishes them without replacing an existing same-ID file, and returns a
+// PreparedImport that still grants no authority. Applications must durably
+// materialize every reported fallback before committing the prepared records
+// and selected mappings through one RestoreCatalog transaction. Whole-pack
+// totals describe the immutable footer; only selected, application-live hashes
+// receive authority. The transaction is intentionally application-owned so its
+// liveness rules remain separate from physical pack validity.
+//
+// Import is optional. Applications that do not supply packed restore policy can
+// materialize the same content loose, and applications may mix representations
+// when a pack or entry exceeds target limits or the filesystem cannot provide
+// atomic no-clobber publication. A compatibility fallback is never an integrity
+// fallback: declined content still requires an authenticated, hash-verified
+// loose read.
+//
 // Physical storage operations are supported on Unix and Windows. Other Go
 // targets compile but fail closed because their file APIs do not provide the
 // atomic no-follow and nonblocking opens required for race-safe content access.
+// On Windows, regular files are flushed and handles are closed before immutable
+// packs are published or reopened; directory sync is a no-op consistent with
+// Kit's wider durability policy. Publication uses hard links on Unix and
+// Windows and falls back loose when a new destination cannot be created this
+// way, rather than introducing a replacement-rename race.
 package packstore
