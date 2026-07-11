@@ -65,6 +65,27 @@ func TestPackDefersOversizedBlobWithoutFailingRun(t *testing.T) {
 	assert.FileExists(layout.LoosePath(hash))
 }
 
+func TestPackIncompleteReferenceInventoryPreservesLooseOrphans(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	layout := layoutForStoreTest(t)
+	catalog := newMaintenanceCatalog()
+	catalog.referencesComplete = false
+	liveContent := []byte("valid referenced content still packs")
+	liveHash := writeMaintenanceLoose(t, layout, liveContent)
+	catalog.addLoose(liveHash, layout.LoosePath(liveHash))
+	orphanContent := []byte("unknown reachability must preserve this loose object")
+	orphanHash := writeMaintenanceLoose(t, layout, orphanContent)
+	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
+
+	stats, err := maintainer.Pack(context.Background(), PackOptions{})
+	require.NoError(err)
+	assert.Equal(1, stats.BlobsPacked)
+	assert.True(stats.LooseOrphanSweepSuppressed)
+	assert.FileExists(layout.LoosePath(orphanHash))
+	assert.NoFileExists(layout.LoosePath(liveHash))
+}
+
 func TestPackRotatesBeforeExceedingMaintenanceOutputLimits(t *testing.T) {
 	for _, tt := range []struct {
 		name   string

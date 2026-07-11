@@ -166,31 +166,35 @@ func TestMaintenanceAllocationsRespectPlatformInt(t *testing.T) {
 	t.Cleanup(func() { maxPlatformInt = originalMax })
 
 	t.Run("verified loose content", func(t *testing.T) {
+		require := require.New(t)
+		assert := assert.New(t)
 		layout := layoutForStoreTest(t)
 		content := []byte("ninebytes")
 		hash := writeMaintenanceLoose(t, layout, content)
 
 		_, err := readVerifiedLoosePath(layout.LoosePath(hash), hash, int64(len(content)))
-		require.ErrorIs(t, err, ErrBlobTooLarge)
+		require.ErrorIs(err, ErrBlobTooLarge)
 		var limitErr *LimitError
-		require.ErrorAs(t, err, &limitErr)
-		assert.Equal(t, LimitBlobRawBytes, limitErr.Dimension)
-		assert.Equal(t, uint64(8), limitErr.Limit)
+		require.ErrorAs(err, &limitErr)
+		assert.Equal(LimitBlobRawBytes, limitErr.Dimension)
+		assert.Equal(uint64(8), limitErr.Limit)
 	})
 
 	t.Run("pack footer", func(t *testing.T) {
+		require := require.New(t)
+		assert := assert.New(t)
 		layout := layoutForStoreTest(t)
 		entry := buildStoreTestPack(t, layout, []byte("footer allocation"))
 
 		reader, err := OpenMaintenancePack(layout.PackPath(entry.PackID), DefaultLimits())
 		if reader != nil {
-			require.NoError(t, reader.Close())
+			require.NoError(reader.Close())
 		}
-		require.ErrorIs(t, err, ErrBlobTooLarge)
+		require.ErrorIs(err, ErrBlobTooLarge)
 		var limitErr *LimitError
-		require.ErrorAs(t, err, &limitErr)
-		assert.Equal(t, LimitPackFooterBytes, limitErr.Dimension)
-		assert.Equal(t, uint64(8), limitErr.Limit)
+		require.ErrorAs(err, &limitErr)
+		assert.Equal(LimitPackFooterBytes, limitErr.Dimension)
+		assert.Equal(uint64(8), limitErr.Limit)
 	})
 }
 

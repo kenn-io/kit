@@ -153,6 +153,16 @@ type Reference struct {
 	OriginalHashes []string
 }
 
+// ReferenceInventory reports canonical membership and whether it was complete
+// enough to authorize deletion of otherwise-unreferenced loose objects.
+// Complete must be false when an application skipped malformed or otherwise
+// unclassifiable references; packing valid candidates remains safe in that
+// state, but orphan sweeping does not.
+type ReferenceInventory struct {
+	References []Reference
+	Complete   bool
+}
+
 // Candidate describes one unpacked catalog member and its physical candidates.
 type Candidate struct {
 	Hash           Hash

@@ -73,7 +73,7 @@ func (c *memoryCatalog) Resolve(_ context.Context, hash packstore.Hash) (packsto
 	return packstore.Location{Member: true, Pack: &entry}, nil
 }
 
-func (c *memoryCatalog) ListReferences(context.Context) ([]packstore.Reference, error) {
+func (c *memoryCatalog) ListReferences(context.Context) (packstore.ReferenceInventory, error) {
 	refs := make([]packstore.Reference, 0, len(c.members))
 	for hash, member := range c.members {
 		if member {
@@ -81,7 +81,7 @@ func (c *memoryCatalog) ListReferences(context.Context) ([]packstore.Reference, 
 		}
 	}
 	sort.Slice(refs, func(i, j int) bool { return refs[i].Hash < refs[j].Hash })
-	return refs, nil
+	return packstore.ReferenceInventory{References: refs, Complete: true}, nil
 }
 
 func (c *memoryCatalog) ListUnpacked(context.Context) ([]packstore.Candidate, error) {

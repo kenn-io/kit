@@ -25,22 +25,23 @@ type PackOptions struct {
 
 // PackStats summarizes committed and repair outcomes.
 type PackStats struct {
-	PacksSealed            int
-	BlobsPacked            int
-	BytesPacked            int64
-	PacksAdopted           int
-	PacksRemoved           int
-	PacksQuarantined       int
-	PacksUnreadable        int
-	RecordsDropped         int
-	MappingsPruned         int64
-	BlobsMissing           int
-	BlobsCorrupt           int
-	BlobsDeferredOversized int
-	PacksDeferredOversized int
-	LooseSwept             int
-	LooseOrphansRemoved    int
-	BudgetExhausted        bool
+	PacksSealed                int
+	BlobsPacked                int
+	BytesPacked                int64
+	PacksAdopted               int
+	PacksRemoved               int
+	PacksQuarantined           int
+	PacksUnreadable            int
+	RecordsDropped             int
+	MappingsPruned             int64
+	BlobsMissing               int
+	BlobsCorrupt               int
+	BlobsDeferredOversized     int
+	PacksDeferredOversized     int
+	LooseSwept                 int
+	LooseOrphansRemoved        int
+	LooseOrphanSweepSuppressed bool
+	BudgetExhausted            bool
 }
 
 // Pack repairs inventory, reconciles orphan packs, packs loose members, and
@@ -72,12 +73,12 @@ func (m *Maintainer) Pack(ctx context.Context, opts PackOptions) (PackStats, err
 		return stats, err
 	}
 	stats.MappingsPruned += pruned
-	references, err := m.catalog.ListReferences(ctx)
+	inventory, err := m.catalog.ListReferences(ctx)
 	if err != nil {
 		return stats, err
 	}
-	refs := make(map[Hash]Reference, len(references))
-	for _, reference := range references {
+	refs := make(map[Hash]Reference, len(inventory.References))
+	for _, reference := range inventory.References {
 		refs[reference.Hash] = reference
 	}
 	if err := m.reconcileOrphans(ctx, refs, &stats); err != nil {
@@ -86,7 +87,7 @@ func (m *Maintainer) Pack(ctx context.Context, opts PackOptions) (PackStats, err
 	if err := m.packLoose(ctx, opts, &stats); err != nil {
 		return stats, err
 	}
-	if err := m.sweepLoose(ctx, refs, &stats); err != nil {
+	if err := m.sweepLoose(ctx, refs, inventory.Complete, &stats); err != nil {
 		return stats, err
 	}
 	return stats, nil
@@ -481,7 +482,7 @@ func validateSealedOutput(path string, limits Limits) error {
 	return reader.Close()
 }
 
-func (m *Maintainer) sweepLoose(ctx context.Context, refs map[Hash]Reference, stats *PackStats) error {
+func (m *Maintainer) sweepLoose(ctx context.Context, refs map[Hash]Reference, allowOrphanRemoval bool, stats *PackStats) error {
 	indexed, err := m.catalog.ListIndexed(ctx)
 	if err != nil {
 		return err
@@ -506,6 +507,10 @@ func (m *Maintainer) sweepLoose(ctx context.Context, refs map[Hash]Reference, st
 	entries, err := os.ReadDir(m.layout.Root())
 	if err != nil {
 		return err
+	}
+	if !allowOrphanRemoval {
+		stats.LooseOrphanSweepSuppressed = true
+		return nil
 	}
 	for _, shard := range entries {
 		if err := ctx.Err(); err != nil {

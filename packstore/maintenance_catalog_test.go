@@ -10,21 +10,22 @@ import (
 )
 
 type maintenanceCatalog struct {
-	mu             sync.Mutex
-	members        map[Hash]Reference
-	candidates     map[Hash]Candidate
-	candidateOrder []Hash
-	entries        map[Hash]IndexEntry
-	packs          map[string]PackRecord
-	commitHook     func()
-	recordErr      error
-	repackErr      error
+	mu                 sync.Mutex
+	members            map[Hash]Reference
+	candidates         map[Hash]Candidate
+	candidateOrder     []Hash
+	entries            map[Hash]IndexEntry
+	packs              map[string]PackRecord
+	commitHook         func()
+	recordErr          error
+	repackErr          error
+	referencesComplete bool
 }
 
 func newMaintenanceCatalog() *maintenanceCatalog {
 	return &maintenanceCatalog{
 		members: make(map[Hash]Reference), candidates: make(map[Hash]Candidate),
-		entries: make(map[Hash]IndexEntry), packs: make(map[string]PackRecord),
+		entries: make(map[Hash]IndexEntry), packs: make(map[string]PackRecord), referencesComplete: true,
 	}
 }
 
@@ -41,7 +42,7 @@ func (c *maintenanceCatalog) Resolve(_ context.Context, hash Hash) (Location, er
 	return Location{Member: true, Pack: &entry}, nil
 }
 
-func (c *maintenanceCatalog) ListReferences(context.Context) ([]Reference, error) {
+func (c *maintenanceCatalog) ListReferences(context.Context) (ReferenceInventory, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	result := make([]Reference, 0, len(c.members))
@@ -49,7 +50,7 @@ func (c *maintenanceCatalog) ListReferences(context.Context) ([]Reference, error
 		result = append(result, ref)
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Hash < result[j].Hash })
-	return result, nil
+	return ReferenceInventory{References: result, Complete: c.referencesComplete}, nil
 }
 
 func (c *maintenanceCatalog) ListUnpacked(context.Context) ([]Candidate, error) {

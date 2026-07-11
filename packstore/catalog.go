@@ -11,7 +11,7 @@ type Resolver interface {
 // ListUnpacked order is preserved as an application-provided physical-locality
 // hint; callers should return candidates in a useful dominant read order.
 type InventoryCatalog interface {
-	ListReferences(context.Context) ([]Reference, error)
+	ListReferences(context.Context) (ReferenceInventory, error)
 	ListUnpacked(context.Context) ([]Candidate, error)
 	ListIndexed(context.Context) ([]IndexEntry, error)
 	ListPackRecords(context.Context) ([]PackRecord, error)

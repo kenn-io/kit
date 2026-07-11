@@ -89,9 +89,10 @@ func RunCatalogContract(t *testing.T, factory func(*testing.T) CatalogHarness, o
 		entry := contractEntry(hashB, packID, 6, 13)
 		h.PutPack(contractRecord(packID, 1, entry.StoredLen, opts.Now), []packstore.IndexEntry{entry})
 
-		refs, err := h.Catalog().ListReferences(ctx)
+		inventory, err := h.Catalog().ListReferences(ctx)
 		require.NoError(t, err)
-		assert.ElementsMatch(t, []packstore.Hash{hashA, hashB}, referenceHashes(refs))
+		assert.True(t, inventory.Complete)
+		assert.ElementsMatch(t, []packstore.Hash{hashA, hashB}, referenceHashes(inventory.References))
 		candidates, err := h.Catalog().ListUnpacked(ctx)
 		require.NoError(t, err)
 		assert.Equal(t, []packstore.Candidate{candidate}, candidates)
