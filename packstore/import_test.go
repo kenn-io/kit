@@ -161,6 +161,37 @@ func TestPrepareImportFallsBackWholePackForValidFooterLimits(t *testing.T) {
 	}
 }
 
+func TestPrepareImportFallsBackWholePackForRecognizableUnsupportedEncoding(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		offset int64
+		value  byte
+	}{
+		{name: "version", offset: 4, value: plainPackVersion + 1},
+		{name: "flags", offset: 5, value: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			target := openImportTarget(t)
+			path, packID, entries := buildImportTestPack(t, []byte("first"), []byte("second"))
+			f, err := os.OpenFile(path, os.O_RDWR, 0)
+			require.NoError(t, err)
+			_, err = f.WriteAt([]byte{test.value}, test.offset)
+			require.NoError(t, err)
+			require.NoError(t, f.Close())
+
+			prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+				PackID: packID, SourcePath: path, Selections: importSelections(t, entries),
+			}}, ImportOptions{Limits: DefaultLimits(), CreatedAt: time.Now()})
+
+			require.NoError(t, err)
+			assert.Empty(t, prepared.PackedHashes())
+			assert.Equal(t, ImportStats{
+				Fallbacks: []ImportFallback{{PackID: packID, Reason: FallbackPackEncoding}},
+			}, prepared.Stats())
+		})
+	}
+}
+
 func TestPrepareImportFallsBackOnlyOversizedSelectedEntry(t *testing.T) {
 	target := openImportTarget(t)
 	contents := [][]byte{[]byte("small"), []byte("larger selected content")}

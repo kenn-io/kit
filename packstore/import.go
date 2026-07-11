@@ -30,7 +30,9 @@ type ImportPack struct {
 	Selections []ImportSelection
 }
 
-// FallbackReason identifies a compatibility limit that requires loose restore.
+// FallbackReason identifies why direct pack import was declined. It is not an
+// integrity verdict: every declined selection must still be materialized by an
+// encoding-aware loose path that authenticates and content-hash verifies it.
 type FallbackReason string
 
 const (
@@ -40,12 +42,16 @@ const (
 	FallbackPackFooterLimit FallbackReason = "pack_footer_limit"
 	// FallbackPackEntryCountLimit declines every selection when it has too many entries.
 	FallbackPackEntryCountLimit FallbackReason = "pack_entry_count_limit"
+	// FallbackPackEncoding declines direct import of a recognizable pack whose
+	// version or encoding settings this plain importer cannot verify. The caller
+	// must authenticate and hash every selected blob through its loose reader.
+	FallbackPackEncoding FallbackReason = "pack_encoding"
 	// FallbackBlobLimit declines one selected entry that exceeds the blob ceiling.
 	FallbackBlobLimit FallbackReason = "blob_limit"
 )
 
-// ImportFallback records content that must be restored loose. Hash is empty
-// when the reason applies to the whole pack.
+// ImportFallback records content that must be restored and verified loose.
+// Hash is empty when the reason applies to every selection in the pack.
 type ImportFallback struct {
 	PackID string
 	Hash   Hash
@@ -99,8 +105,11 @@ func (p *PreparedImport) Stats() ImportStats {
 }
 
 // PrepareImport validates source pack compatibility and verifies every
-// selected entry that fits the target's configured bounds. It does not grant
-// catalog authority. Durable publication and catalog commit are separate
+// selected entry it can consume within the target's configured bounds. A
+// fallback only declines direct import; the caller must materialize every
+// declined selection through an encoding-aware, authenticated, content-hashed
+// loose path before treating restore as successful. PrepareImport does not
+// grant catalog authority. Durable publication and catalog commit are separate
 // operations so applications can preserve publish-before-authority ordering.
 func PrepareImport(
 	ctx context.Context,
@@ -127,8 +136,10 @@ func PrepareImport(
 		reader, err := OpenMaintenancePack(candidate.SourcePath, opts.Limits)
 		if err != nil {
 			if reason, compatible := importFallbackReason(err); compatible {
-				if verifyErr := verifyLimitedImportPack(ctx, target, candidate, opts.Limits); verifyErr != nil {
-					return nil, fmt.Errorf("verify limited import pack %s: %w", candidate.PackID, verifyErr)
+				if reason != FallbackPackEncoding {
+					if verifyErr := verifyLimitedImportPack(ctx, target, candidate, opts.Limits); verifyErr != nil {
+						return nil, fmt.Errorf("verify limited import pack %s: %w", candidate.PackID, verifyErr)
+					}
 				}
 				prepared.stats.Fallbacks = append(prepared.stats.Fallbacks, ImportFallback{
 					PackID: candidate.PackID,
@@ -193,6 +204,9 @@ func validateImportInputs(target *os.Root, contentDir string, packs []ImportPack
 }
 
 func importFallbackReason(err error) (FallbackReason, bool) {
+	if errors.Is(err, pack.ErrUnsupportedVersion) || errors.Is(err, errUnsupportedMaintenanceEncoding) {
+		return FallbackPackEncoding, true
+	}
 	var limitErr *LimitError
 	if !errors.As(err, &limitErr) {
 		return "", false
