@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path"
 	"strings"
@@ -129,6 +130,11 @@ func PrepareImport(
 		reader, err := OpenMaintenancePack(candidate.SourcePath, opts.Limits)
 		if err != nil {
 			if reason, compatible := importFallbackReason(err); compatible {
+				if reason != FallbackPackEncoding {
+					if verifyErr := verifyLimitedImportPack(candidate, opts.Limits); verifyErr != nil {
+						return nil, fmt.Errorf("verify limited import pack %s: %w", candidate.PackID, verifyErr)
+					}
+				}
 				prepared.stats.Fallbacks = append(prepared.stats.Fallbacks, ImportFallback{
 					PackID: candidate.PackID,
 					Reason: reason,
@@ -152,6 +158,38 @@ func PrepareImport(
 		}
 	}
 	return prepared, nil
+}
+
+// verifyLimitedImportPack proves that a configured limit, rather than damaged
+// structure, caused preflight to decline a pack. The verifier ignores only the
+// container size because parsing does not allocate the container payload. It
+// raises footer and entry ceilings to at least Kit's normal maintenance bounds,
+// which is enough to classify ordinary Kit-produced packs against a stricter
+// target without allowing an attacker-selected format maximum allocation. A
+// source beyond these verification bounds fails closed unless the caller has
+// explicitly configured and accepted the larger allocation contract.
+func verifyLimitedImportPack(candidate ImportPack, configured Limits) error {
+	verification := configured
+	verification.PackBytes = math.MaxInt64
+	verification.FooterBytes = max(verification.FooterBytes, defaultFooterBytes)
+	verification.PackEntries = max(verification.PackEntries, defaultPackEntries)
+	reader, err := OpenMaintenancePack(candidate.SourcePath, verification)
+	if err != nil {
+		var limitErr *LimitError
+		if errors.As(err, &limitErr) {
+			return fmt.Errorf("%w: source exceeds bounded import verification: %v", pack.ErrCorrupt, err)
+		}
+		return err
+	}
+	_, validationErr := indexImportSelections(reader.Entries(), candidate)
+	closeErr := reader.Close()
+	if validationErr != nil {
+		return validationErr
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close bounded import verification: %w", closeErr)
+	}
+	return nil
 }
 
 func validateImportInputs(target *os.Root, contentDir string, packs []ImportPack, opts ImportOptions) error {
@@ -219,14 +257,10 @@ func prepareImportPack(
 	seenHashes map[Hash]struct{},
 	prepared *PreparedImport,
 ) (preparedImportPack, error) {
-	authoritative := make(map[Hash]pack.Entry)
 	entries := reader.Entries()
-	for _, entry := range entries {
-		hash, err := ParseHash(entry.ID.String())
-		if err != nil {
-			return preparedImportPack{}, fmt.Errorf("prepare import pack %s footer: %w", candidate.PackID, err)
-		}
-		authoritative[hash] = entry
+	authoritative, err := indexImportSelections(entries, candidate)
+	if err != nil {
+		return preparedImportPack{}, err
 	}
 	ownedCandidate := candidate
 	ownedCandidate.Selections = append([]ImportSelection(nil), candidate.Selections...)
@@ -239,14 +273,7 @@ func prepareImportPack(
 			return preparedImportPack{}, fmt.Errorf("%w %s across import selections", ErrDuplicateHash, selection.Hash)
 		}
 		seenHashes[selection.Hash] = struct{}{}
-		entry, ok := authoritative[selection.Hash]
-		if !ok {
-			return preparedImportPack{}, fmt.Errorf("%w: selected blob %s is absent from pack %s footer", pack.ErrCorrupt, selection.Hash, candidate.PackID)
-		}
-		if selection.RawLen != int64(entry.RawLen) || selection.Offset != entry.Offset ||
-			selection.StoredLen != entry.StoredLen || selection.Flags != uint8(entry.Flags) { //nolint:gosec // format caps RawLen below MaxInt64
-			return preparedImportPack{}, fmt.Errorf("%w: selected metadata for %s does not match pack %s footer", pack.ErrCorrupt, selection.Hash, candidate.PackID)
-		}
+		entry := authoritative[selection.Hash]
 		if entry.RawLen > uint64(limits.BlobBytes) || entry.StoredLen > uint64(limits.BlobBytes) { //nolint:gosec // limits are non-negative
 			prepared.stats.Fallbacks = append(prepared.stats.Fallbacks, ImportFallback{
 				PackID: candidate.PackID,
@@ -263,4 +290,31 @@ func prepareImportPack(
 		prepared.stats.PackedBlobs++
 	}
 	return plan, nil
+}
+
+func indexImportSelections(entries []pack.Entry, candidate ImportPack) (map[Hash]pack.Entry, error) {
+	authoritative := make(map[Hash]pack.Entry, len(entries))
+	for _, entry := range entries {
+		hash, err := ParseHash(entry.ID.String())
+		if err != nil {
+			return nil, fmt.Errorf("prepare import pack %s footer: %w", candidate.PackID, err)
+		}
+		authoritative[hash] = entry
+	}
+	seen := make(map[Hash]struct{}, len(candidate.Selections))
+	for _, selection := range candidate.Selections {
+		if _, duplicate := seen[selection.Hash]; duplicate {
+			return nil, fmt.Errorf("%w %s in import pack %s", ErrDuplicateHash, selection.Hash, candidate.PackID)
+		}
+		seen[selection.Hash] = struct{}{}
+		entry, ok := authoritative[selection.Hash]
+		if !ok {
+			return nil, fmt.Errorf("%w: selected blob %s is absent from pack %s footer", pack.ErrCorrupt, selection.Hash, candidate.PackID)
+		}
+		if selection.RawLen != int64(entry.RawLen) || selection.Offset != entry.Offset ||
+			selection.StoredLen != entry.StoredLen || selection.Flags != uint8(entry.Flags) { //nolint:gosec // format caps RawLen below MaxInt64
+			return nil, fmt.Errorf("%w: selected metadata for %s does not match pack %s footer", pack.ErrCorrupt, selection.Hash, candidate.PackID)
+		}
+	}
+	return authoritative, nil
 }

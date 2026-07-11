@@ -2,6 +2,7 @@ package packstore
 
 import (
 	"context"
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"testing"
@@ -45,6 +46,118 @@ func TestPrepareImportFallsBackWholePackForContainerLimit(t *testing.T) {
 	assert.Equal(t, ImportStats{
 		Fallbacks: []ImportFallback{{PackID: packID, Reason: FallbackPackContainerLimit}},
 	}, prepared.Stats())
+}
+
+func TestPrepareImportRejectsOversizedNonPackInsteadOfFallingBack(t *testing.T) {
+	target := openImportTarget(t)
+	path := filepath.Join(t.TempDir(), "not-a-pack")
+	require.NoError(t, os.WriteFile(path, make([]byte, 1024), 0o600))
+	_, packID, entries := buildImportTestPack(t, []byte("selected"))
+	limits := DefaultLimits()
+	limits.PackBytes = 512
+
+	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+		PackID: packID, SourcePath: path, Selections: importSelections(t, entries),
+	}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
+
+	assert.Nil(t, prepared)
+	assert.ErrorIs(t, err, pack.ErrBadMagic)
+}
+
+func TestPrepareImportRejectsForgedOversizedFooterLength(t *testing.T) {
+	target := openImportTarget(t)
+	path, packID, entries := buildImportTestPack(t, []byte("selected"))
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	require.NoError(t, err)
+	var forged [4]byte
+	binary.LittleEndian.PutUint32(forged[:], uint32(info.Size()+1))
+	_, err = f.WriteAt(forged[:], info.Size()-plainPackTrailerSize)
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+	limits := DefaultLimits()
+	limits.FooterBytes = 1
+
+	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+		PackID: packID, SourcePath: path, Selections: importSelections(t, entries),
+	}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
+
+	assert.Nil(t, prepared)
+	assert.ErrorIs(t, err, pack.ErrTruncated)
+}
+
+func TestPrepareImportRejectsForgedOversizedFooterCount(t *testing.T) {
+	target := openImportTarget(t)
+	path, packID, entries := buildImportTestPack(t, []byte("selected"))
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	trailerStart := len(data) - plainPackTrailerSize
+	footerLen := int(binary.LittleEndian.Uint32(data[trailerStart:]))
+	footerStart := trailerStart - footerLen
+	binary.LittleEndian.PutUint32(data[footerStart:], 2)
+	require.NoError(t, os.WriteFile(path, data, 0o600))
+	limits := DefaultLimits()
+	limits.PackEntries = 1
+
+	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+		PackID: packID, SourcePath: path, Selections: importSelections(t, entries),
+	}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
+
+	assert.Nil(t, prepared)
+	assert.ErrorIs(t, err, pack.ErrCorrupt)
+}
+
+func TestPrepareImportRejectsMetadataMismatchBehindContainerLimit(t *testing.T) {
+	target := openImportTarget(t)
+	path, packID, entries := buildImportTestPack(t, []byte("selected"))
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	selections := importSelections(t, entries)
+	selections[0].Offset++
+	limits := DefaultLimits()
+	limits.PackBytes = info.Size() - 1
+
+	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+		PackID: packID, SourcePath: path, Selections: selections,
+	}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
+
+	assert.Nil(t, prepared)
+	assert.ErrorIs(t, err, pack.ErrCorrupt)
+}
+
+func TestPrepareImportFallsBackWholePackForValidFooterLimits(t *testing.T) {
+	for _, dimension := range []string{"footer bytes", "entry count"} {
+		t.Run(dimension, func(t *testing.T) {
+			target := openImportTarget(t)
+			path, packID, entries := buildImportTestPack(t, []byte("first"), []byte("second"))
+			limits := DefaultLimits()
+			var reason FallbackReason
+			switch dimension {
+			case "footer bytes":
+				info, err := os.Stat(path)
+				require.NoError(t, err)
+				data, err := os.ReadFile(path)
+				require.NoError(t, err)
+				footerLen := int64(binary.LittleEndian.Uint32(data[info.Size()-plainPackTrailerSize:]))
+				limits.FooterBytes = footerLen - 1
+				reason = FallbackPackFooterLimit
+			case "entry count":
+				limits.PackEntries = 1
+				reason = FallbackPackEntryCountLimit
+			}
+
+			prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+				PackID: packID, SourcePath: path, Selections: importSelections(t, entries),
+			}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
+
+			require.NoError(t, err)
+			assert.Empty(t, prepared.PackedHashes())
+			assert.Equal(t, ImportStats{
+				Fallbacks: []ImportFallback{{PackID: packID, Reason: reason}},
+			}, prepared.Stats())
+		})
+	}
 }
 
 func TestPrepareImportFallsBackWholePackForUnsupportedEncoding(t *testing.T) {
