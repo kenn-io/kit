@@ -1,11 +1,17 @@
 package packstore
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
+	"math"
 	"os"
 	"path"
+	"sort"
 	"strings"
 	"time"
 
@@ -71,10 +77,26 @@ type ImportStats struct {
 	Fallbacks   []ImportFallback
 }
 
+// importRootLink is a test seam for filesystems that do not support hard
+// links. Production code must not replace it.
+var importRootLink = func(root *os.Root, oldName, newName string) error {
+	return root.Link(oldName, newName)
+}
+
+// RestoreCatalog atomically replaces the packed-storage authority of a
+// restored application catalog. Implementations must make repeated calls with
+// the same records and adoptions idempotent so a restore can retry after a
+// crash without relying on uncataloged pack files surviving maintenance.
+type RestoreCatalog interface {
+	ReplaceRestoredPacks(context.Context, []PackRecord, []Adoption) error
+}
+
 type preparedImportPack struct {
 	pack       ImportPack
 	entries    []pack.Entry
 	selections []ImportSelection
+	record     PackRecord
+	adoptions  []Adoption
 }
 
 // PreparedImport is a verified, authority-free import plan. A prepared hash is
@@ -102,6 +124,35 @@ func (p *PreparedImport) Stats() ImportStats {
 	stats := p.stats
 	stats.Fallbacks = append([]ImportFallback(nil), p.stats.Fallbacks...)
 	return stats
+}
+
+// Commit grants catalog authority to all durably published packs with one
+// application transaction. It may be called again after success or failure;
+// RestoreCatalog's replacement semantics make identical retries idempotent.
+func (p *PreparedImport) Commit(ctx context.Context, catalog RestoreCatalog) error {
+	if p == nil {
+		return fmt.Errorf("packstore: prepared import is nil")
+	}
+	if catalog == nil {
+		return fmt.Errorf("packstore: restore catalog is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	records := make([]PackRecord, 0, len(p.packs))
+	var adoptions []Adoption
+	for _, imported := range p.packs {
+		records = append(records, imported.record)
+		for _, adoption := range imported.adoptions {
+			owned := adoption
+			owned.OriginalHashes = append([]string(nil), adoption.OriginalHashes...)
+			adoptions = append(adoptions, owned)
+		}
+	}
+	if err := catalog.ReplaceRestoredPacks(ctx, records, adoptions); err != nil {
+		return fmt.Errorf("packstore: commit restored pack catalog: %w", err)
+	}
+	return nil
 }
 
 // PrepareImport validates source pack compatibility and verifies every
@@ -159,11 +210,341 @@ func PrepareImport(
 			return nil, fmt.Errorf("close import pack %s: %w", candidate.PackID, closeErr)
 		}
 		if len(packPlan.selections) > 0 {
+			entries, err := publishAndVerifyImportPack(ctx, target, contentDir, packPlan, opts.Limits)
+			if err != nil {
+				return nil, err
+			}
+			packPlan.entries = entries
+			packPlan.record, packPlan.adoptions, err = importCatalogPlan(packPlan, opts.CreatedAt)
+			if err != nil {
+				return nil, err
+			}
 			prepared.packs = append(prepared.packs, packPlan)
 			prepared.stats.PackedPacks++
 		}
 	}
 	return prepared, nil
+}
+
+func publishAndVerifyImportPack(
+	ctx context.Context,
+	target *os.Root,
+	contentDir string,
+	plan preparedImportPack,
+	limits Limits,
+) ([]pack.Entry, error) {
+	final := importPackPath(contentDir, plan.pack.PackID)
+	parent := path.Dir(final)
+	if err := mkdirAllImportSynced(target, parent); err != nil {
+		return nil, fmt.Errorf("packstore: create import pack directory: %w", err)
+	}
+	staging := path.Join(contentDir, "packs", "."+plan.pack.PackID+"."+pack.NewPackID()+".staging")
+	stagingParent := path.Dir(staging)
+	digest, size, err := copyImportSource(ctx, target, staging, plan.pack.SourcePath)
+	if err != nil {
+		cleanupErr := target.Remove(staging)
+		if errors.Is(cleanupErr, fs.ErrNotExist) {
+			cleanupErr = nil
+		}
+		return nil, errors.Join(err, cleanupErr)
+	}
+	stagingExists := true
+	defer func() {
+		if stagingExists {
+			_ = target.Remove(staging)
+		}
+	}()
+
+	published := false
+	linkErr := importRootLink(target, staging, final)
+	if linkErr == nil {
+		published = true
+		if err := target.Remove(staging); err != nil {
+			return nil, fmt.Errorf("packstore: remove import staging name after publish: %w", err)
+		}
+		stagingExists = false
+		if err := syncImportRootDir(target, stagingParent); err != nil {
+			return nil, fmt.Errorf("packstore: pack published but staging directory sync failed: %w", err)
+		}
+		if err := syncImportRootDir(target, parent); err != nil {
+			return nil, fmt.Errorf("packstore: pack published but directory sync failed: %w", err)
+		}
+	} else if errors.Is(linkErr, fs.ErrExist) {
+		if removeErr := target.Remove(staging); removeErr != nil {
+			return nil, fmt.Errorf("packstore: clean import staging after collision: %w", removeErr)
+		}
+		stagingExists = false
+	} else {
+		// Some filesystems, notably FAT/exFAT and network shares, do not
+		// support hard links. Match pack.Writer's portability policy: check
+		// for an existing immutable destination before a rooted rename. The
+		// check and rename are not atomic, but pack IDs are random ULIDs and a
+		// restore is the sole producer of its source IDs, so a same-ID race in
+		// this narrow window is not realistic. A destination visible at the
+		// check is always retained and verified; it is never replaced.
+		_, statErr := target.Lstat(final)
+		switch {
+		case statErr == nil:
+			if removeErr := target.Remove(staging); removeErr != nil {
+				return nil, fmt.Errorf("packstore: clean import staging after collision: %w", removeErr)
+			}
+			stagingExists = false
+		case !errors.Is(statErr, fs.ErrNotExist):
+			return nil, fmt.Errorf("packstore: check final import path after link failure: %w", statErr)
+		default:
+			if renameErr := target.Rename(staging, final); renameErr != nil {
+				return nil, fmt.Errorf("packstore: publish imported pack %s after link failure (%v): %w",
+					plan.pack.PackID, linkErr, renameErr)
+			}
+			published = true
+			stagingExists = false
+			if err := syncImportRootDir(target, stagingParent); err != nil {
+				return nil, fmt.Errorf("packstore: pack published but staging directory sync failed: %w", err)
+			}
+			if err := syncImportRootDir(target, parent); err != nil {
+				return nil, fmt.Errorf("packstore: pack published but directory sync failed: %w", err)
+			}
+		}
+	}
+
+	reader, err := openRootMaintenancePack(target, final, limits)
+	if err != nil {
+		if !published {
+			return nil, fmt.Errorf("packstore: publish collision for pack %s: final verification: %w", plan.pack.PackID, err)
+		}
+		return nil, fmt.Errorf("packstore: final verification for published pack %s: %w", plan.pack.PackID, err)
+	}
+	if err := verifyOpenImportFinalBytes(ctx, target, final, reader.reader.file, digest, size); err != nil {
+		_ = reader.Close()
+		if !published {
+			return nil, fmt.Errorf("packstore: publish collision for pack %s: %w", plan.pack.PackID, err)
+		}
+		return nil, fmt.Errorf("packstore: final verification for published pack %s: %w", plan.pack.PackID, err)
+	}
+	if err := syncImportRootDir(target, parent); err != nil {
+		_ = reader.Close()
+		return nil, fmt.Errorf("packstore: final pack verified but directory sync failed: %w", err)
+	}
+	entries := reader.Entries()
+	if err := verifyFinalSelections(ctx, reader, plan); err != nil {
+		_ = reader.Close()
+		if !published {
+			return nil, fmt.Errorf("packstore: publish collision for pack %s: final verification: %w", plan.pack.PackID, err)
+		}
+		return nil, fmt.Errorf("packstore: final verification for published pack %s: %w", plan.pack.PackID, err)
+	}
+	if err := reader.Close(); err != nil {
+		return nil, fmt.Errorf("packstore: close final imported pack %s: %w", plan.pack.PackID, err)
+	}
+	return entries, nil
+}
+
+func copyImportSource(
+	ctx context.Context,
+	target *os.Root,
+	staging string,
+	sourcePath string,
+) (result [sha256.Size]byte, size int64, resultErr error) {
+	before, err := snapshotBoundedPackPathIdentity(sourcePath)
+	if err != nil {
+		return result, 0, fmt.Errorf("packstore: inspect import source: %w", err)
+	}
+	if err := validateRegularNoFollow(sourcePath, before); err != nil {
+		return result, 0, fmt.Errorf("packstore: validate import source: %w", err)
+	}
+	source, err := openNoFollow(sourcePath, false)
+	if err != nil {
+		return result, 0, fmt.Errorf("packstore: reopen import source: %w", err)
+	}
+	defer func() { resultErr = errors.Join(resultErr, source.Close()) }()
+	opened, err := source.Stat()
+	if err != nil || !os.SameFile(before, opened) {
+		return result, 0, errors.Join(fmt.Errorf("packstore: import source mutation before copy"), err)
+	}
+	staged, err := target.OpenFile(staging, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return result, 0, fmt.Errorf("packstore: create private import staging: %w", err)
+	}
+	stagedOpen := true
+	defer func() {
+		if stagedOpen {
+			resultErr = errors.Join(resultErr, staged.Close())
+		}
+	}()
+	hasher := sha256.New()
+	boundedSource := io.LimitReader(source, opened.Size()+1)
+	written, err := io.CopyBuffer(io.MultiWriter(staged, hasher), &contextReader{ctx: ctx, reader: boundedSource}, make([]byte, 64<<10))
+	if err != nil {
+		return result, 0, fmt.Errorf("packstore: stream import source: %w", err)
+	}
+	afterDescriptor, err := source.Stat()
+	if err != nil || !sameImportSourceState(before, opened, afterDescriptor) {
+		return result, 0, errors.Join(fmt.Errorf("packstore: import source mutation during copy"), err)
+	}
+	afterPath, err := snapshotBoundedPackPathIdentity(sourcePath)
+	if err != nil || !sameImportSourceState(before, opened, afterPath) {
+		return result, 0, errors.Join(fmt.Errorf("packstore: import source mutation after copy"), err)
+	}
+	if written != opened.Size() {
+		return result, 0, fmt.Errorf("packstore: import source mutation changed size from %d to %d", opened.Size(), written)
+	}
+	if err := staged.Sync(); err != nil {
+		return result, 0, fmt.Errorf("packstore: sync import staging: %w", err)
+	}
+	if err := staged.Close(); err != nil {
+		return result, 0, fmt.Errorf("packstore: close import staging: %w", err)
+	}
+	stagedOpen = false
+	copy(result[:], hasher.Sum(nil))
+	return result, written, nil
+}
+
+func sameImportSourceState(before, opened, after fs.FileInfo) bool {
+	return before != nil && opened != nil && after != nil &&
+		os.SameFile(before, opened) && os.SameFile(opened, after) &&
+		before.Size() == opened.Size() && opened.Size() == after.Size() &&
+		before.ModTime().Equal(opened.ModTime()) && opened.ModTime().Equal(after.ModTime())
+}
+
+func verifyOpenImportFinalBytes(
+	ctx context.Context,
+	target *os.Root,
+	name string,
+	f *os.File,
+	wantDigest [sha256.Size]byte,
+	wantSize int64,
+) error {
+	opened, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("stat final pack for verification: %w", err)
+	}
+	hasher := sha256.New()
+	section := io.NewSectionReader(f, 0, opened.Size())
+	size, err := io.CopyBuffer(hasher, &contextReader{ctx: ctx, reader: section}, make([]byte, 64<<10))
+	if err != nil {
+		return fmt.Errorf("hash final pack: %w", err)
+	}
+	after, err := target.Lstat(name)
+	if err != nil || !os.SameFile(opened, after) {
+		return errors.Join(fmt.Errorf("final pack changed identity during verification"), err)
+	}
+	if size != wantSize || !bytes.Equal(hasher.Sum(nil), wantDigest[:]) {
+		return fmt.Errorf("final bytes differ from import source")
+	}
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("sync final pack: %w", err)
+	}
+	return nil
+}
+
+func openRootMaintenancePack(target *os.Root, name string, limits Limits) (*MaintenancePackReader, error) {
+	before, err := target.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() {
+		return nil, fmt.Errorf("packstore: final pack is not an independent regular file")
+	}
+	f, err := target.OpenFile(name, os.O_RDWR, 0)
+	if err != nil {
+		return nil, err
+	}
+	opened, err := f.Stat()
+	if err != nil || !os.SameFile(before, opened) {
+		return nil, errors.Join(fmt.Errorf("packstore: final pack changed identity before preflight"), err, f.Close())
+	}
+	reader, err := openBoundedPackFile(f, limits)
+	if err != nil {
+		return nil, err
+	}
+	return &MaintenancePackReader{reader: reader, limits: limits}, nil
+}
+
+func verifyFinalSelections(ctx context.Context, reader *MaintenancePackReader, plan preparedImportPack) error {
+	authoritative, err := indexImportSelections(reader.Entries(), plan.pack)
+	if err != nil {
+		return err
+	}
+	for _, selection := range plan.selections {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if _, ok := authoritative[selection.Hash]; !ok {
+			return fmt.Errorf("%w: selected blob %s is absent", pack.ErrCorrupt, selection.Hash)
+		}
+		if _, err := reader.ReadBlob(selection.Hash); err != nil {
+			return fmt.Errorf("verify selected blob %s: %w", selection.Hash, err)
+		}
+	}
+	return nil
+}
+
+func importCatalogPlan(plan preparedImportPack, createdAt time.Time) (PackRecord, []Adoption, error) {
+	record := PackRecord{PackID: plan.pack.PackID, EntryCount: int64(len(plan.entries)), CreatedAt: createdAt}
+	storedBytes, err := importFooterStoredBytes(plan.entries)
+	if err != nil {
+		return PackRecord{}, nil, err
+	}
+	record.StoredBytes = storedBytes
+	entries := make(map[Hash]pack.Entry, len(plan.entries))
+	for _, entry := range plan.entries {
+		hash, err := ParseHash(entry.ID.String())
+		if err != nil {
+			return PackRecord{}, nil, err
+		}
+		entries[hash] = entry
+	}
+	adoptions := make([]Adoption, 0, len(plan.selections))
+	for _, selection := range plan.selections {
+		entry := entries[selection.Hash]
+		adoptions = append(adoptions, Adoption{
+			Entry: IndexEntry{
+				Hash: selection.Hash, PackID: plan.pack.PackID,
+				Offset: int64(entry.Offset), StoredLen: int64(entry.StoredLen), RawLen: int64(entry.RawLen), //nolint:gosec // range checked by importFooterStoredBytes
+				Flags: uint8(entry.Flags), CRC32C: entry.CRC32C,
+			},
+			OriginalHashes: []string{selection.Hash.String()},
+		})
+	}
+	if err := record.Validate(); err != nil {
+		return PackRecord{}, nil, err
+	}
+	for _, adoption := range adoptions {
+		if err := adoption.Entry.Validate(); err != nil {
+			return PackRecord{}, nil, err
+		}
+	}
+	return record, adoptions, nil
+}
+
+func importFooterStoredBytes(entries []pack.Entry) (int64, error) {
+	ordered := append([]pack.Entry(nil), entries...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Offset < ordered[j].Offset })
+	var storedBytes int64
+	var previousEnd uint64
+	for i, entry := range ordered {
+		if entry.Offset > math.MaxInt64 || entry.StoredLen > math.MaxInt64 || entry.RawLen > math.MaxInt64 {
+			return 0, fmt.Errorf("%w: imported footer entry exceeds catalog integer range", pack.ErrCorrupt)
+		}
+		end := entry.Offset + entry.StoredLen
+		if end < entry.Offset {
+			return 0, fmt.Errorf("%w: imported footer entry span overflows", pack.ErrCorrupt)
+		}
+		if i > 0 && entry.Offset < previousEnd {
+			return 0, fmt.Errorf("%w: imported footer entries overlap", pack.ErrCorrupt)
+		}
+		previousEnd = end
+		stored := int64(entry.StoredLen) //nolint:gosec // range checked above
+		if storedBytes > math.MaxInt64-stored {
+			return 0, fmt.Errorf("%w: imported footer stored-byte total overflows", pack.ErrCorrupt)
+		}
+		storedBytes += stored
+	}
+	return storedBytes, nil
+}
+
+func importPackPath(contentDir, packID string) string {
+	return path.Join(contentDir, "packs", packID[:2], packID+PackExt)
 }
 
 func validateImportInputs(target *os.Root, contentDir string, packs []ImportPack, opts ImportOptions) error {
@@ -232,6 +613,9 @@ func prepareImportPack(
 	prepared *PreparedImport,
 ) (preparedImportPack, error) {
 	entries := reader.Entries()
+	if _, err := importFooterStoredBytes(entries); err != nil {
+		return preparedImportPack{}, fmt.Errorf("prepare import pack %s footer: %w", candidate.PackID, err)
+	}
 	authoritative, err := indexImportSelections(entries, candidate)
 	if err != nil {
 		return preparedImportPack{}, err

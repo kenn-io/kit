@@ -133,6 +133,22 @@ func openBoundedPack(path string, limits Limits) (*boundedPackReader, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open pack for bounded preflight: %w", err)
 	}
+	info, err := f.Stat()
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("stat pack for bounded preflight: %w", err), f.Close())
+	}
+	if !os.SameFile(pathInfo, info) {
+		return nil, errors.Join(fmt.Errorf("packstore: pack changed identity during bounded preflight"), f.Close())
+	}
+	return openBoundedPackFile(f, limits)
+}
+
+// openBoundedPackFile validates a pack through an already-open descriptor. It
+// takes ownership of f whether validation succeeds or fails.
+func openBoundedPackFile(f *os.File, limits Limits) (*boundedPackReader, error) {
+	if f == nil {
+		return nil, fmt.Errorf("packstore: nil bounded pack file")
+	}
 	keepOpen := false
 	defer func() {
 		if !keepOpen {
@@ -142,9 +158,6 @@ func openBoundedPack(path string, limits Limits) (*boundedPackReader, error) {
 	info, err := f.Stat()
 	if err != nil {
 		return nil, fmt.Errorf("stat pack for bounded preflight: %w", err)
-	}
-	if !os.SameFile(pathInfo, info) {
-		return nil, fmt.Errorf("packstore: pack changed identity during bounded preflight")
 	}
 	size := info.Size()
 	if size > limits.PackBytes {
