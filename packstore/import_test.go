@@ -413,6 +413,65 @@ func TestPrepareImportRejectsOverlappingFullFooterEntries(t *testing.T) {
 	assert.ErrorIs(t, statErr, os.ErrNotExist)
 }
 
+func TestImportFooterStoredBytesIgnoresZeroLengthSpans(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		offset uint64
+	}{
+		{name: "sharing non-empty offset", offset: 100},
+		{name: "inside non-empty span", offset: 105},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			stored, err := importFooterStoredBytes([]pack.Entry{
+				{Offset: 100, StoredLen: 10, RawLen: 10},
+				{Offset: test.offset, StoredLen: 0, RawLen: 0},
+			})
+
+			require.NoError(t, err)
+			assert.Equal(t, int64(10), stored)
+		})
+	}
+}
+
+func TestPrepareImportAllowsZeroLengthFooterEntries(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		contents [][]byte
+		mutate   func(*testing.T, string, []pack.Entry)
+	}{
+		{
+			name:     "before following frame",
+			contents: [][]byte{{}, []byte("selected content")},
+		},
+		{
+			name:     "within non-empty span",
+			contents: [][]byte{[]byte("selected content"), {}},
+			mutate: func(t *testing.T, packPath string, entries []pack.Entry) {
+				entries[1].Offset = entries[0].Offset + 1
+				mutateImportFooterEntry(t, packPath, 1, func(entry []byte) {
+					binary.LittleEndian.PutUint64(entry[32:], entries[1].Offset)
+				})
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			target := openImportTarget(t)
+			packPath, packID, entries := buildImportTestPack(t, test.contents...)
+			if test.mutate != nil {
+				test.mutate(t, packPath, entries)
+			}
+
+			prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+				PackID: packID, SourcePath: packPath, Selections: importSelections(t, entries),
+			}}, ImportOptions{Limits: DefaultLimits(), CreatedAt: time.Now()})
+
+			require.NoError(t, err)
+			assert.Len(t, prepared.PackedHashes(), len(entries))
+			assert.Equal(t, ImportStats{PackedPacks: 1, PackedBlobs: len(entries)}, prepared.Stats())
+		})
+	}
+}
+
 func TestPreparedImportRejectsOverflowingFullFooterTotals(t *testing.T) {
 	_, _, err := importCatalogPlan(preparedImportPack{
 		pack:    ImportPack{PackID: pack.NewPackID()},

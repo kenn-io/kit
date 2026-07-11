@@ -625,11 +625,9 @@ func importCatalogPlan(plan preparedImportPack, createdAt time.Time) (PackRecord
 }
 
 func importFooterStoredBytes(entries []pack.Entry) (int64, error) {
-	ordered := append([]pack.Entry(nil), entries...)
-	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Offset < ordered[j].Offset })
+	ordered := make([]pack.Entry, 0, len(entries))
 	var storedBytes int64
-	var previousEnd uint64
-	for i, entry := range ordered {
+	for _, entry := range entries {
 		if entry.Offset > math.MaxInt64 || entry.StoredLen > math.MaxInt64 || entry.RawLen > math.MaxInt64 {
 			return 0, fmt.Errorf("%w: imported footer entry exceeds catalog integer range", pack.ErrCorrupt)
 		}
@@ -637,15 +635,22 @@ func importFooterStoredBytes(entries []pack.Entry) (int64, error) {
 		if end < entry.Offset {
 			return 0, fmt.Errorf("%w: imported footer entry span overflows", pack.ErrCorrupt)
 		}
-		if i > 0 && entry.Offset < previousEnd {
-			return 0, fmt.Errorf("%w: imported footer entries overlap", pack.ErrCorrupt)
+		if entry.StoredLen > 0 {
+			ordered = append(ordered, entry)
 		}
-		previousEnd = end
 		stored := int64(entry.StoredLen) //nolint:gosec // range checked above
 		if storedBytes > math.MaxInt64-stored {
 			return 0, fmt.Errorf("%w: imported footer stored-byte total overflows", pack.ErrCorrupt)
 		}
 		storedBytes += stored
+	}
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Offset < ordered[j].Offset })
+	var previousEnd uint64
+	for i, entry := range ordered {
+		if i > 0 && entry.Offset < previousEnd {
+			return 0, fmt.Errorf("%w: imported footer entries overlap", pack.ErrCorrupt)
+		}
+		previousEnd = entry.Offset + entry.StoredLen
 	}
 	return storedBytes, nil
 }
