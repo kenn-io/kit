@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -160,26 +161,6 @@ func TestPrepareImportFallsBackWholePackForValidFooterLimits(t *testing.T) {
 	}
 }
 
-func TestPrepareImportFallsBackWholePackForUnsupportedEncoding(t *testing.T) {
-	target := openImportTarget(t)
-	path, packID, entries := buildImportTestPack(t, []byte("first"), []byte("second"))
-	f, err := os.OpenFile(path, os.O_RDWR, 0)
-	require.NoError(t, err)
-	_, err = f.WriteAt([]byte{1}, 5)
-	require.NoError(t, err)
-	require.NoError(t, f.Close())
-
-	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
-		PackID: packID, SourcePath: path, Selections: importSelections(t, entries),
-	}}, ImportOptions{Limits: DefaultLimits(), CreatedAt: time.Now()})
-
-	require.NoError(t, err)
-	assert.Empty(t, prepared.PackedHashes())
-	assert.Equal(t, ImportStats{
-		Fallbacks: []ImportFallback{{PackID: packID, Reason: FallbackPackEncoding}},
-	}, prepared.Stats())
-}
-
 func TestPrepareImportFallsBackOnlyOversizedSelectedEntry(t *testing.T) {
 	target := openImportTarget(t)
 	contents := [][]byte{[]byte("small"), []byte("larger selected content")}
@@ -202,6 +183,113 @@ func TestPrepareImportFallsBackOnlyOversizedSelectedEntry(t *testing.T) {
 			Reason: FallbackBlobLimit,
 		}},
 	}, prepared.Stats())
+}
+
+func TestPrepareImportLimitFallbackStillVerifiesSelectedPayload(t *testing.T) {
+	for _, dimension := range []string{"container bytes", "footer bytes", "entry count"} {
+		t.Run(dimension, func(t *testing.T) {
+			target := openImportTarget(t)
+			path, packID, entries := buildImportTestPack(t, []byte("selected content"), []byte("sibling"))
+			f, err := os.OpenFile(path, os.O_RDWR, 0)
+			require.NoError(t, err)
+			_, err = f.WriteAt([]byte{0xff}, int64(entries[0].Offset))
+			require.NoError(t, err)
+			require.NoError(t, f.Close())
+			limits := DefaultLimits()
+			switch dimension {
+			case "container bytes":
+				info, err := os.Stat(path)
+				require.NoError(t, err)
+				limits.PackBytes = info.Size() - 1
+			case "footer bytes":
+				data, err := os.ReadFile(path)
+				require.NoError(t, err)
+				trailerStart := len(data) - plainPackTrailerSize
+				limits.FooterBytes = int64(binary.LittleEndian.Uint32(data[trailerStart:])) - 1
+			case "entry count":
+				limits.PackEntries = 1
+			}
+
+			prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+				PackID: packID, SourcePath: path, Selections: importSelections(t, entries[:1]),
+			}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
+
+			assert.Nil(t, prepared)
+			assert.ErrorIs(t, err, pack.ErrCorrupt)
+		})
+	}
+}
+
+func TestPrepareImportLimitFallbackSkipsOversizedSelectedPayload(t *testing.T) {
+	target := openImportTarget(t)
+	content := []byte("oversized selected content")
+	path, packID, entries := buildImportTestPack(t, content)
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	require.NoError(t, err)
+	_, err = f.WriteAt([]byte{0xff}, int64(entries[0].Offset))
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	limits := DefaultLimits()
+	limits.PackBytes = info.Size() - 1
+	limits.BlobBytes = int64(len(content) - 1)
+
+	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+		PackID: packID, SourcePath: path, Selections: importSelections(t, entries),
+	}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
+
+	require.NoError(t, err)
+	assert.Empty(t, prepared.PackedHashes())
+	assert.Equal(t, ImportStats{
+		Fallbacks: []ImportFallback{{PackID: packID, Reason: FallbackPackContainerLimit}},
+	}, prepared.Stats())
+}
+
+func TestPrepareImportStreamingVerifierCleansScratch(t *testing.T) {
+	originalChunk := importVerifyIDChunkEntries
+	importVerifyIDChunkEntries = 1
+	t.Cleanup(func() { importVerifyIDChunkEntries = originalChunk })
+
+	t.Run("success", func(t *testing.T) {
+		target := openImportTarget(t)
+		path, packID, entries := buildImportTestPack(t, []byte("first"), []byte("second"), []byte("third"))
+		limits := DefaultLimits()
+		limits.PackEntries = 1
+
+		_, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+			PackID: packID, SourcePath: path, Selections: importSelections(t, entries[:1]),
+		}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
+
+		require.NoError(t, err)
+		assertNoImportVerificationScratch(t, target)
+	})
+
+	t.Run("cross-run duplicate", func(t *testing.T) {
+		target := openImportTarget(t)
+		dir := t.TempDir()
+		writer, err := pack.NewWriter(dir, pack.WriterOptions{})
+		require.NoError(t, err)
+		entry, err := writer.Append([]byte("duplicate"))
+		require.NoError(t, err)
+		_, err = writer.Append([]byte("middle"))
+		require.NoError(t, err)
+		_, err = writer.Append([]byte("duplicate"))
+		require.NoError(t, err)
+		packPath := filepath.Join(dir, writer.ID()+PackExt)
+		_, err = writer.Seal(packPath)
+		require.NoError(t, err)
+		limits := DefaultLimits()
+		limits.PackEntries = 1
+
+		prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+			PackID: writer.ID(), SourcePath: packPath, Selections: importSelections(t, []pack.Entry{entry}),
+		}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
+
+		assert.Nil(t, prepared)
+		require.ErrorIs(t, err, pack.ErrCorrupt)
+		assertNoImportVerificationScratch(t, target)
+	})
 }
 
 func TestPrepareImportRejectsCorruptSourceInsteadOfFallingBack(t *testing.T) {
@@ -264,4 +352,13 @@ func hashFromEntry(t *testing.T, entry pack.Entry) Hash {
 	hash, err := ParseHash(entry.ID.String())
 	require.NoError(t, err)
 	return hash
+}
+
+func assertNoImportVerificationScratch(t *testing.T, target *os.Root) {
+	t.Helper()
+	entries, err := os.ReadDir(target.Name())
+	require.NoError(t, err)
+	for _, entry := range entries {
+		assert.False(t, strings.HasPrefix(entry.Name(), importVerifyScratchPrefix), entry.Name())
+	}
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"os"
 	"path"
 	"strings"
@@ -41,8 +40,6 @@ const (
 	FallbackPackFooterLimit FallbackReason = "pack_footer_limit"
 	// FallbackPackEntryCountLimit declines every selection when it has too many entries.
 	FallbackPackEntryCountLimit FallbackReason = "pack_entry_count_limit"
-	// FallbackPackEncoding declines every selection when pack settings are unsupported.
-	FallbackPackEncoding FallbackReason = "pack_encoding"
 	// FallbackBlobLimit declines one selected entry that exceeds the blob ceiling.
 	FallbackBlobLimit FallbackReason = "blob_limit"
 )
@@ -130,10 +127,8 @@ func PrepareImport(
 		reader, err := OpenMaintenancePack(candidate.SourcePath, opts.Limits)
 		if err != nil {
 			if reason, compatible := importFallbackReason(err); compatible {
-				if reason != FallbackPackEncoding {
-					if verifyErr := verifyLimitedImportPack(candidate, opts.Limits); verifyErr != nil {
-						return nil, fmt.Errorf("verify limited import pack %s: %w", candidate.PackID, verifyErr)
-					}
+				if verifyErr := verifyLimitedImportPack(ctx, target, candidate, opts.Limits); verifyErr != nil {
+					return nil, fmt.Errorf("verify limited import pack %s: %w", candidate.PackID, verifyErr)
 				}
 				prepared.stats.Fallbacks = append(prepared.stats.Fallbacks, ImportFallback{
 					PackID: candidate.PackID,
@@ -158,38 +153,6 @@ func PrepareImport(
 		}
 	}
 	return prepared, nil
-}
-
-// verifyLimitedImportPack proves that a configured limit, rather than damaged
-// structure, caused preflight to decline a pack. The verifier ignores only the
-// container size because parsing does not allocate the container payload. It
-// raises footer and entry ceilings to at least Kit's normal maintenance bounds,
-// which is enough to classify ordinary Kit-produced packs against a stricter
-// target without allowing an attacker-selected format maximum allocation. A
-// source beyond these verification bounds fails closed unless the caller has
-// explicitly configured and accepted the larger allocation contract.
-func verifyLimitedImportPack(candidate ImportPack, configured Limits) error {
-	verification := configured
-	verification.PackBytes = math.MaxInt64
-	verification.FooterBytes = max(verification.FooterBytes, defaultFooterBytes)
-	verification.PackEntries = max(verification.PackEntries, defaultPackEntries)
-	reader, err := OpenMaintenancePack(candidate.SourcePath, verification)
-	if err != nil {
-		var limitErr *LimitError
-		if errors.As(err, &limitErr) {
-			return fmt.Errorf("%w: source exceeds bounded import verification: %v", pack.ErrCorrupt, err)
-		}
-		return err
-	}
-	_, validationErr := indexImportSelections(reader.Entries(), candidate)
-	closeErr := reader.Close()
-	if validationErr != nil {
-		return validationErr
-	}
-	if closeErr != nil {
-		return fmt.Errorf("close bounded import verification: %w", closeErr)
-	}
-	return nil
 }
 
 func validateImportInputs(target *os.Root, contentDir string, packs []ImportPack, opts ImportOptions) error {
@@ -230,9 +193,6 @@ func validateImportInputs(target *os.Root, contentDir string, packs []ImportPack
 }
 
 func importFallbackReason(err error) (FallbackReason, bool) {
-	if errors.Is(err, pack.ErrUnsupportedVersion) || errors.Is(err, errUnsupportedMaintenanceEncoding) {
-		return FallbackPackEncoding, true
-	}
 	var limitErr *LimitError
 	if !errors.As(err, &limitErr) {
 		return "", false

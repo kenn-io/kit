@@ -18,12 +18,6 @@ import (
 // ErrBlobTooLarge reports a bounded blob or pack that exceeds its limit.
 var ErrBlobTooLarge = errors.New("packstore: blob exceeds bounded read limit")
 
-// errUnsupportedMaintenanceEncoding marks a structurally identifiable pack
-// whose settings the bounded plain-v1 reader intentionally does not support.
-// OpenMaintenancePack still reports pack.ErrCorrupt for compatibility; import
-// planning uses this additional identity to choose the loose representation.
-var errUnsupportedMaintenanceEncoding = errors.New("packstore: unsupported maintenance pack encoding")
-
 // LimitDimension identifies the bounded quantity that exceeded its ceiling.
 type LimitDimension string
 
@@ -165,8 +159,7 @@ func openBoundedPack(path string, limits Limits) (*boundedPackReader, error) {
 		return nil, fmt.Errorf("%w: version %d", pack.ErrUnsupportedVersion, header[4])
 	}
 	if header[5] != 0 {
-		return nil, fmt.Errorf("%w: %w: bounded reads require plain v1 flags, got %#x",
-			pack.ErrCorrupt, errUnsupportedMaintenanceEncoding, header[5])
+		return nil, fmt.Errorf("%w: bounded reads require plain v1 flags, got %#x", pack.ErrCorrupt, header[5])
 	}
 
 	var trailer [plainPackTrailerSize]byte
