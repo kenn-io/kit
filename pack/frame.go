@@ -32,7 +32,8 @@ func zstdEncoder(level int) *zstd.Encoder {
 		return enc
 	}
 	enc, err := zstd.NewWriter(nil,
-		zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(level)))
+		zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(level)),
+		zstd.WithSingleSegment(true))
 	if err != nil {
 		panic(fmt.Sprintf("pack: initializing zstd encoder level %d: %v", level, err))
 	}
@@ -52,7 +53,11 @@ func minCompressionSavings(rawLen int) int {
 // encodeFrame trial-compresses raw. It returns the compressed frame only when
 // zstd saves at least 3% (backup/FORMAT.md, Pack Files); otherwise it returns raw as-is.
 func encodeFrame(raw []byte, level int) (stored []byte, compressed bool) {
-	if len(raw) == 0 {
+	// Legacy bounded readers cap decoder memory at RawLen. A zstd frame always
+	// needs at least MinWindowSize, so smaller blobs must remain raw for
+	// downgrade compatibility. Single-segment frames keep larger windows tied
+	// to the authoritative content length.
+	if len(raw) < zstd.MinWindowSize {
 		return raw, false
 	}
 	c := zstdEncoder(level).EncodeAll(raw, make([]byte, 0, len(raw)))

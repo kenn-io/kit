@@ -32,6 +32,12 @@ const (
 	// first.
 	MaxRawLen = 1 << 32
 
+	// MinEntryOffset is the first valid byte offset for a blob frame.
+	MinEntryOffset = headerSize
+
+	// MaxStoredLen bounds one stored frame before allocation.
+	MaxStoredLen = maxStoredLen
+
 	// maxStoredLen bounds StoredLen, the number of bytes a footer entry claims
 	// occupy the pack's data region: readStored preallocates a buffer of this
 	// size before any integrity check runs, so an untrusted footer entry must

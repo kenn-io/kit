@@ -13,6 +13,20 @@ const (
 	encTrailerSize   = 20 // footer_offset(8) + footer_stored_len(8) + magic(4)
 )
 
+// PlainPackSize returns the sealed container and footer-region sizes for a
+// plain pack whose frame data ends at dataEnd and contains entryCount entries.
+func PlainPackSize(dataEnd uint64, entryCount int) (containerBytes, footerBytes uint64, err error) {
+	if dataEnd < headerSize || entryCount < 0 || uint64(entryCount) > uint64(^uint32(0)) {
+		return 0, 0, fmt.Errorf("pack: invalid projected plain pack size")
+	}
+	footerBytes = 4 + uint64(entryCount)*entrySize
+	containerBytes = dataEnd + footerBytes + plainTrailerSize
+	if containerBytes < dataEnd {
+		return 0, 0, fmt.Errorf("pack: projected plain pack size overflow")
+	}
+	return containerBytes, footerBytes, nil
+}
+
 // Entry describes one blob within a pack (backup/FORMAT.md, Pack Files). Offset and
 // StoredLen locate the stored (possibly compressed and encrypted) bytes;
 // CRC32C covers exactly those stored bytes so integrity can be scanned

@@ -1,0 +1,66 @@
+//go:build windows
+
+package packstore
+
+import (
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"syscall"
+
+	"golang.org/x/sys/windows"
+)
+
+func snapshotPathIdentity(path string) (result fs.FileInfo, resultErr error) {
+	f, err := openWindowsNoFollow(path, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err := f.Close(); err != nil {
+			result = nil
+			resultErr = errors.Join(resultErr, err)
+		}
+	}()
+	return f.Stat()
+}
+
+func openNoFollow(path string, durable bool) (*os.File, error) {
+	access := uint32(windows.GENERIC_READ)
+	if durable {
+		access |= windows.GENERIC_WRITE
+	}
+	return openWindowsNoFollow(path, access)
+}
+
+func openWindowsNoFollow(path string, access uint32) (*os.File, error) {
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return nil, err
+	}
+	handle, err := windows.CreateFile(name, access,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil, windows.OPEN_EXISTING,
+		windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	if err != nil {
+		return nil, err
+	}
+	f := os.NewFile(uintptr(handle), path)
+	if f == nil {
+		_ = windows.CloseHandle(handle)
+		return nil, fmt.Errorf("packstore: create file for Windows handle")
+	}
+	return f, nil
+}
+
+func validatePlatformFileInfo(info fs.FileInfo) error {
+	attributes, ok := info.Sys().(*syscall.Win32FileAttributeData)
+	if !ok {
+		return fmt.Errorf("cannot inspect Windows file attributes")
+	}
+	if attributes.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		return fmt.Errorf("is a Windows reparse point")
+	}
+	return nil
+}

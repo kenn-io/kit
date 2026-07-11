@@ -19,6 +19,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -275,8 +276,8 @@ func gitEnvBool(env []string, key string) bool {
 // envValue returns the value of key in env, honoring exec.Cmd semantics where
 // the last duplicate entry wins.
 func envValue(env []string, key string) (string, bool) {
-	for i := len(env) - 1; i >= 0; i-- {
-		k, v, ok := strings.Cut(env[i], "=")
+	for _, entry := range slices.Backward(env) {
+		k, v, ok := strings.Cut(entry, "=")
 		if ok && k == key {
 			return v, true
 		}

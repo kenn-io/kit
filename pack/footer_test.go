@@ -65,6 +65,17 @@ func TestParseFooterRegionRejectsHugeStoredLen(t *testing.T) {
 	assert.ErrorIs(t, err, ErrCorrupt, "StoredLen beyond maxStoredLen must be rejected")
 }
 
+func TestPlainPackSizeProjectsFooterAndContainer(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	container, footer, err := PlainPackSize(MinEntryOffset+10, 2)
+	require.NoError(err)
+	assert.Equal(uint64(4+2*entrySize), footer)
+	assert.Equal(uint64(MinEntryOffset+10)+footer+plainTrailerSize, container)
+	_, _, err = PlainPackSize(0, 1)
+	require.Error(err)
+}
+
 func TestPlainTrailerRoundTrip(t *testing.T) {
 	region := encodeFooterRegion(testEntries())
 	file := append([]byte("MVPK\x01\x00padpadpadpadpadpad"), appendPlainTrailer(region)...)

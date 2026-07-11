@@ -149,32 +149,34 @@ func TestReadSafeDirectoriesBoundsProbeRuntime(t *testing.T) {
 }
 
 func TestReadSafeDirectoriesConditionalInclude(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
 	// Regression test: the probes must run in the command's directory with
 	// --includes so includeIf "gitdir:..." entries resolve for the repository
 	// the command targets, not for the calling process's working directory.
 	dir := t.TempDir()
 	repo := filepath.Join(dir, "repo")
-	require.NoError(t, os.Mkdir(repo, 0o755))
+	require.NoError(os.Mkdir(repo, 0o755))
 	// git matches gitdir patterns against resolved paths, so the pattern must
 	// use the symlink-free form (t.TempDir is a symlink on macOS).
 	realRepo, err := filepath.EvalSymlinks(repo)
-	require.NoError(t, err)
+	require.NoError(err)
 
 	included := filepath.Join(dir, "trusted-gitconfig")
-	require.NoError(t, os.WriteFile(included, []byte("[safe]\n\tdirectory = /srv/conditional\n"), 0o600))
+	require.NoError(os.WriteFile(included, []byte("[safe]\n\tdirectory = /srv/conditional\n"), 0o600))
 	globalConfig := filepath.Join(dir, "gitconfig")
-	require.NoError(t, os.WriteFile(globalConfig, []byte(
+	require.NoError(os.WriteFile(globalConfig, []byte(
 		"[includeIf \"gitdir:"+filepath.ToSlash(realRepo)+"/\"]\n\tpath = "+filepath.ToSlash(included)+"\n"), 0o600))
 	env := safeDirectoryTestEnv(t, globalConfig)
 
 	runner := New()
 	runner.Env = env
 	_, _, err = runner.Run(context.Background(), repo, nil, "init")
-	require.NoError(t, err)
+	require.NoError(err)
 
-	assert.Equal(t, []string{"/srv/conditional"}, readSafeDirectories(context.Background(), env, repo),
+	assert.Equal([]string{"/srv/conditional"}, readSafeDirectories(context.Background(), env, repo),
 		"include conditional on the target repo must apply")
-	assert.Empty(t, readSafeDirectories(context.Background(), env, dir),
+	assert.Empty(readSafeDirectories(context.Background(), env, dir),
 		"include conditional on another repo must not apply")
 }
 
@@ -211,14 +213,16 @@ func TestCommandEnvForwardsSafeDirectoryForRunnerLiterals(t *testing.T) {
 }
 
 func TestCommandEnvReadsSafeDirectoryFromRunnerEnv(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
 	// The forwarded entries must come from the runner's configured Env, not
 	// from the process environment, and one runner's entries must not leak
 	// into a runner with a different environment.
 	dir := t.TempDir()
 	trusted := filepath.Join(dir, "trusted-gitconfig")
-	require.NoError(t, os.WriteFile(trusted, []byte("[safe]\n\tdirectory = /trusted/repo\n"), 0o600))
+	require.NoError(os.WriteFile(trusted, []byte("[safe]\n\tdirectory = /trusted/repo\n"), 0o600))
 	empty := filepath.Join(dir, "empty-gitconfig")
-	require.NoError(t, os.WriteFile(empty, nil, 0o600))
+	require.NoError(os.WriteFile(empty, nil, 0o600))
 
 	trustedRunner := New()
 	trustedRunner.Env = safeDirectoryTestEnv(t, trusted)
@@ -228,8 +232,8 @@ func TestCommandEnvReadsSafeDirectoryFromRunnerEnv(t *testing.T) {
 	trustedCmd := trustedRunner.Command(context.Background(), "", "status")
 	emptyCmd := emptyRunner.Command(context.Background(), "", "status")
 
-	assert.Equal(t, "/trusted/repo", gitConfigValue(strings.Join(trustedCmd.Env, "\n"), "safe.directory"))
-	assert.Empty(t, gitConfigValue(strings.Join(emptyCmd.Env, "\n"), "safe.directory"))
+	assert.Equal("/trusted/repo", gitConfigValue(strings.Join(trustedCmd.Env, "\n"), "safe.directory"))
+	assert.Empty(gitConfigValue(strings.Join(emptyCmd.Env, "\n"), "safe.directory"))
 }
 
 func TestCommandEnvSkipsSafeDirectoryWhenDisabled(t *testing.T) {

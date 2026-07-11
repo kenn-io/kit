@@ -556,6 +556,7 @@ func TestCheckFallsBackToAPIWhenWebConventionalReleaseHasNoChecksum(t *testing.T
 
 func TestCheckRejectsHTTPAPIAssetAfterWebChecksumFallbackWhenUnsignedChecksumsAllowed(t *testing.T) {
 	t.Parallel()
+	assert := assert.New(t)
 
 	assetName := "tool_1.2.0_linux_amd64.tar.gz"
 	var apiRequests atomic.Int64
@@ -599,9 +600,9 @@ func TestCheckRejectsHTTPAPIAssetAfterWebChecksumFallbackWhenUnsignedChecksumsAl
 
 	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
 	require.Error(t, err)
-	assert.Nil(t, info)
-	assert.Contains(t, err.Error(), "release asset URL for "+assetName+" must use https")
-	assert.Equal(t, int64(1), apiRequests.Load())
+	assert.Nil(info)
+	assert.Contains(err.Error(), "release asset URL for "+assetName+" must use https")
+	assert.Equal(int64(1), apiRequests.Load())
 }
 
 func TestCheckRejectsHTTPWebBaseWhenUnsignedChecksumsAllowed(t *testing.T) {
