@@ -7,8 +7,11 @@ import (
 	"sync/atomic"
 )
 
-// ErrLeaseReleased reports an attempt to release a lease more than once.
+// ErrLeaseReleased reports a lease that is nil, invalid, or already released.
 var ErrLeaseReleased = errors.New("packstore: lease already released")
+
+// ErrWrongLeaseKind reports a live lease of a different kind than required.
+var ErrWrongLeaseKind = errors.New("packstore: wrong lease kind")
 
 // Coordinator serializes maintenance against application mutations while
 // allowing independent mutations to proceed concurrently.
@@ -48,6 +51,27 @@ const (
 	mutationLease leaseKind = iota
 	maintenanceLease
 )
+
+// Validate reports whether the lease is live and may still protect work.
+func (l *Lease) Validate() error {
+	if l == nil || l.state == nil || l.state.coordinator == nil ||
+		(l.state.kind != mutationLease && l.state.kind != maintenanceLease) ||
+		l.state.released.Load() {
+		return ErrLeaseReleased
+	}
+	return nil
+}
+
+// ValidateMutation reports whether the lease is a live mutation lease.
+func (l *Lease) ValidateMutation() error {
+	if err := l.Validate(); err != nil {
+		return err
+	}
+	if l.state.kind != mutationLease {
+		return ErrWrongLeaseKind
+	}
+	return nil
+}
 
 // AcquireMutation waits until no maintenance lease is active or queued.
 func (c *Coordinator) AcquireMutation(ctx context.Context) (*Lease, error) {

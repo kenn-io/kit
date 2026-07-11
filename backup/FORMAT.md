@@ -177,6 +177,111 @@ Restore is destructive only after the source has proven itself, in two layers. A
 
 Restore is self-proving, in layers. During materialization every blob read re-derives its SHA-256 identity (the pack reader's normal contract) and every database page is additionally checked against the snapshot's page-hash map before it is written — so a page-map bug cannot silently place correct bytes at the wrong offset. After materialization the restored database must pass `PRAGMA integrity_check` and reproduce the manifest's recorded stats (via `App.RestoredStats`) through exactly the queries capture ran inside the freeze window; the end-to-end test further proves the restored file is byte-identical to the live database as it existed at capture time, including for parent snapshots restored from an incremental chain. All files, and the directory entries naming them, are fsynced before Restore reports success. Pack reads are grouped by pack with a `Jobs` worker bound (1 = strictly serial for spinning-disk repositories); serial and parallel restores produce byte-identical trees. Restoring an old snapshot for use with a newer application version is expected to go through the application's normal schema migration at first open, the same path as any upgrade.
 
+### Optional packed-content restore
+
+Repository attachment membership is representation-neutral: the snapshot's
+attachment lists and the content paths derived from the restored database are
+the liveness authority whether bytes are restored loose or in packs. A pack
+file or footer entry alone never grants application read authority. Without a
+`PackedContentTarget`, restore follows the fully-loose path described above.
+
+With a packed-content target, restore may copy compatible plain version-1
+repository packs once into the target store's sharded `packs/<aa>/<id>.mvpack`
+layout. The source pack remains immutable and in place. Before a copied pack
+can receive catalog authority, restore validates the whole container, footer,
+entry count, version, flags, and encoding settings against the target's
+configured `packstore.Limits`. It verifies each snapshot-selected entry against
+the footer metadata, decodes and CRC-checks the stored frame, and checks its raw
+size and SHA-256 identity. The application catalog records the immutable totals
+for the whole footer, but authorizes only the selected hashes that are both live
+in this snapshot and eligible for packed storage. Imported pack `CreatedAt` is
+the restore time, so age-based maintenance does not immediately churn freshly
+restored packs.
+
+Compatibility is deliberately per pack and per selected entry. A pack falls
+back to loose restore when its container, footer, or entry count exceeds the
+configured target limits, when its otherwise recognizable version or encoding
+settings are unsupported, or when the target filesystem cannot atomically
+publish an immutable pack. A selected entry larger than the configured
+`BlobBytes` ceiling falls back independently while eligible siblings in the
+same copied pack can remain packed. An unsupported application pack extension
+keeps all content loose and commits an empty packed-authority replacement.
+Unsupported pack settings keep the affected packs loose; when no pack is
+compatible, the same replacement contains no pack records or hash mappings.
+Whole-pack limit fallback verification has separate conservative hard ceilings
+of 8 MiB of footer data and 100,000 entries; a larger footer fails restore
+before scanning or scratch-file creation instead of doing unbounded verifier
+work. These checks protect availability for pathological or damaged inputs and
+do not add per-entry bookkeeping to ordinary verification.
+These are compatibility outcomes, not integrity waivers: every declined hash
+must still pass the ordinary encoding-aware loose read, size check, and SHA-256
+verification before restore can succeed. Corruption, selection/footer metadata
+mismatch, or a same-ID destination with different bytes is a hard failure, not
+a fallback.
+
+Before packed attachment restoration starts, the application supplies a live
+mutation lease from the same process-local `packstore.Coordinator` used by
+every maintainer that can adopt, repack, or remove target-store content. The
+application must acquire its broader operation gates before that lease; it
+transfers sole ownership of the lease to Restore, which validates it and holds
+it across pack publication, loose fallbacks, extras, proof, database
+publication, and the final durability sync. Restore releases the lease on every
+success and failure path, joining a release failure with the primary restore
+error. `OpenRestoreCatalog` and `ReplaceRestoredPacks` run under the existing
+lease and must not reacquire or otherwise reenter that Coordinator. A
+restore without a `PackedContentTarget` does not acquire a packed-store lease.
+
+Publication and authority follow one crash-safe order:
+
+1. Stream the source pack to a private target staging file, sync it, and close
+   every handle.
+2. Publish without replacement by hard-linking the staging file to its final
+   sharded name, remove the staging link, and sync the containing directory.
+3. Reopen and verify the final file. An existing byte-identical final file is
+   safe to reuse on retry; validating that collision may require hashing the
+   whole container.
+4. Materialize and durably sync every loose fallback.
+5. In one application-owned transaction against the unpublished staged
+   database, replace all packed catalog records and selected mappings.
+6. Close the SQLite staged-catalog connection and remove its exact `-wal`,
+   `-shm`, and `-journal` sidecars.
+7. Reopen the main staged database file read-write, verify that the opened
+   handle still names the inspected regular file, sync it, re-check that the
+   staged path still names that same regular file, and close the handle.
+8. Run the database integrity and stats proof, then publish the database last.
+
+The staged catalog mutation must leave the database structurally valid and
+must not change the application's `RestoredStats` payload. An overwrite
+target's old visible database therefore survives any failure through catalog
+replacement and proof. A crash before catalog replacement can leave a valid
+uncataloged pack, but it grants no read authority; maintenance may adopt,
+remove, or retain it according to application liveness. Retry never depends on
+that orphan surviving: it either reuses a byte-identical final pack or fails
+closed on a collision, then replaces authority idempotently. A crash after the
+catalog transaction but before database publication changes only the staged
+database, not the visible one.
+
+The first path component `packs` is reserved inside the content directory only
+when packed restore is enabled, preventing restored loose paths from colliding
+with the production pack subtree. In a fully-loose restore it remains an
+ordinary application path.
+
+This path primarily removes per-blob file creation and associated filesystem
+or antivirus scanning for the packed subset. It does not eliminate read I/O:
+restore still streams each copied container and hashes every selected blob,
+and an existing-final retry can hash the entire container. A mixed restore also
+pays a complete content-directory durability traversal after loose fallback
+materialization and before packed authority is committed.
+
+On Windows, durability follows Kit's established policy: regular files are
+flushed, handles are closed before publication and reopening, and directory
+sync is a documented no-op. Atomic no-clobber publication uses a hard link on
+both Windows and Unix. If a filesystem cannot provide that operation, a new
+pack falls back loose instead of using a replacement rename with a race window.
+`RestoreResult` exposes packed and loose blob counts, imported pack count, and
+structured fallback reasons so callers can report both the achieved layout and
+why content stayed loose.
+
 ## Verification Model
 
 `verify` enumerates every blob a manifest can reach — page-map chains and their blob tables, hash-map chains, attachment lists and every listed content hash, the extras tree and its entries — and checks each against the index and packs. Quick mode proves structure (references resolve, objects decode, packs exist); full mode additionally reads every referenced blob and re-derives its SHA-256 identity, compares each attachment list and extras tree entry's recorded size against the blob's actual content length (restore refuses a mismatch, so verify must flag it), confirms materialized page/hash maps match the manifest's recorded geometry with full coverage, and checks every page-map run against its blob's actual bytes — the run must fit inside the blob and each mapped page must hash to the page-hash map's entry, exactly as restore's materialization requires. Extras tree paths are held to restore's rules in both modes: escaping or reserved-overlapping paths and case-folded path collisions are Problems, not restore-time surprises. Capture enforces the same rules, so a snapshot with such paths is never written in the first place; verify's check exists for trees written by other tools or tampered after the fact. Problems are collected, not fail-fast, and each names the snapshot, blob, and pack involved.
@@ -196,7 +301,5 @@ A restore-check verification mode performing the full restore materialization pr
 **Encryption.** Initializing a repository with encryption enabled generates a random 256-bit repository key; every blob, footer, index, and manifest is encrypted with XChaCha20-Poly1305, with the AAD binding each ciphertext to its identity (blob ID, or object role plus ID). The repository key is wrapped with [age](https://age-encryption.org) to one or more recipients (scrypt passphrase and/or X25519 identities) in `keys/master.age`; adding, removing, or rotating recipients rewraps the key without rewriting objects. `config.toml` stays plaintext by necessity; tampering yields detectable failures, not silent corruption. Key loss is unrecoverable by design. Blob IDs remain plaintext-content hashes but appear only inside encrypted metadata.
 
 **Retention.** Forgetting a snapshot deletes its manifest file (refusing to drop the last snapshot without an explicit force); pruning takes the exclusive lock, walks the remaining manifests to collect the live blob set, deletes fully-dead packs, repacks packs below 50% live content, and writes merged indexes — with new packs and indexes durable before anything is deleted, so a crash mid-prune never breaks reference closure. Until these ship, content purged from the application's live store persists in historical snapshots.
-
-**Packed live content storage (opt-in).** A future storage mode stores live content in the same pack container format, with the application's own content-location field carrying a `pack:<ulid>:<offset>:<stored_len>:<flags>` locator, plus a migration operation (loose → packed, resumable, hash-verified) and a compaction operation (rewrite packs past a dead-space threshold). Backups are layout-independent by design — they address content by SHA-256 either way — so switching the live layout never invalidates or re-uploads existing backup content.
 
 **Performance follow-ups.** Two accepted deferrals from review: detecting a same-page-size `VACUUM` by delta-ratio anomaly (warn that a keyframe would be cheaper), and a streaming page-map merge for memory-constrained hosts. Further out: an export mode (one self-contained archive file), WAL shipping for point-in-time recovery, native remote backends, and application-scheduled backups.

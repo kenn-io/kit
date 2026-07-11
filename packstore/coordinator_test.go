@@ -145,6 +145,36 @@ func TestCoordinatorSupportsIngestThenAutomaticMaintenance(t *testing.T) {
 	require.NoError(maintenance.Release())
 }
 
+func TestLeaseValidateAcceptsOnlyLiveLeases(t *testing.T) {
+	require := require.New(t)
+	c := NewCoordinator()
+	live, err := c.AcquireMutation(context.Background())
+	require.NoError(err)
+
+	require.NoError(live.Validate())
+	require.ErrorIs((*Lease)(nil).Validate(), ErrLeaseReleased)
+	require.ErrorIs((&Lease{}).Validate(), ErrLeaseReleased)
+	require.ErrorIs((&Lease{state: &leaseState{kind: mutationLease}}).Validate(), ErrLeaseReleased)
+	require.ErrorIs((&Lease{state: &leaseState{coordinator: c, kind: leaseKind(255)}}).Validate(), ErrLeaseReleased)
+	require.NoError(live.Release())
+	require.ErrorIs(live.Validate(), ErrLeaseReleased)
+}
+
+func TestLeaseValidateMutationRequiresLiveMutationLease(t *testing.T) {
+	require := require.New(t)
+	c := NewCoordinator()
+	mutation, err := c.AcquireMutation(context.Background())
+	require.NoError(err)
+	require.NoError(mutation.ValidateMutation())
+	require.NoError(mutation.Release())
+
+	maintenance, err := c.AcquireMaintenance(context.Background())
+	require.NoError(err)
+	require.ErrorIs(maintenance.ValidateMutation(), ErrWrongLeaseKind)
+	require.NoError(maintenance.Release())
+	require.ErrorIs(maintenance.ValidateMutation(), ErrLeaseReleased)
+}
+
 func (c *Coordinator) waitingMaintenanceCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()

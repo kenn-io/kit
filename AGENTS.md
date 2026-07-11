@@ -31,6 +31,12 @@ provider workflows to this repo unless the package already owns that concern.
   skill (including `roborev-fix` or `roborev-design-review-branch`) unless the
   user explicitly asks for that skill.
 
+## Content Hygiene
+
+- Never name private downstream projects or other private codebases in public
+  artifacts. Describe reusable requirements generically and scrub public
+  surfaces before publishing.
+
 ## Go Conventions
 
 - Use standard library APIs first and add dependencies only when they pay for
