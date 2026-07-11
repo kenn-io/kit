@@ -32,6 +32,14 @@ type packedRestoreResult struct {
 	fallbacks   []packstore.ImportFallback
 }
 
+var (
+	openStagedCatalogFile = func(root *os.Root, name string) (*os.File, error) {
+		return root.OpenFile(name, os.O_RDWR, 0)
+	}
+	syncStagedCatalogFile  = func(file *os.File) error { return file.Sync() }
+	closeStagedCatalogFile = func(file *os.File) error { return file.Close() }
+)
+
 // loadRestoreAttachmentInventory validates the snapshot lists, restored DB
 // membership, restore paths, and repository index as one shared preflight for
 // both the legacy loose writer and the optional mixed writer.
@@ -329,8 +337,63 @@ func (s *restoreState) commitPreparedImport(
 		return err
 	}
 	db = nil
+	if err := s.syncAndCloseStagedCatalog(); err != nil {
+		return err
+	}
 	if err := s.verifyHeldTarget(s.dbRead); err != nil {
 		return err
+	}
+	return nil
+}
+
+func (s *restoreState) syncAndCloseStagedCatalog() (resultErr error) {
+	before, err := s.root.Lstat(s.dbRead)
+	if err != nil {
+		return fmt.Errorf("backup: inspecting staged packed content catalog before sync: %w", err)
+	}
+	if !before.Mode().IsRegular() {
+		return fmt.Errorf(
+			"backup: staged packed content catalog %s is not a regular file before sync", s.dbRead)
+	}
+
+	file, err := openStagedCatalogFile(s.root, s.dbRead)
+	if err != nil {
+		return fmt.Errorf("backup: opening staged packed content catalog for sync: %w", err)
+	}
+	defer func() {
+		if err := closeStagedCatalogFile(file); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf(
+				"backup: closing synced staged packed content catalog: %w", err))
+		}
+	}()
+
+	opened, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("backup: inspecting opened staged packed content catalog before sync: %w", err)
+	}
+	if !opened.Mode().IsRegular() || !os.SameFile(before, opened) {
+		return fmt.Errorf(
+			"backup: opened staged packed content catalog identity does not match %s before sync", s.dbRead)
+	}
+	if err := syncStagedCatalogFile(file); err != nil {
+		return fmt.Errorf("backup: syncing staged packed content catalog: %w", err)
+	}
+
+	after, err := s.root.Lstat(s.dbRead)
+	if err != nil {
+		return fmt.Errorf("backup: inspecting staged packed content catalog after sync: %w", err)
+	}
+	if !after.Mode().IsRegular() {
+		return fmt.Errorf(
+			"backup: staged packed content catalog %s is not a regular file after sync", s.dbRead)
+	}
+	openedAfter, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("backup: inspecting opened staged packed content catalog after sync: %w", err)
+	}
+	if !openedAfter.Mode().IsRegular() || !os.SameFile(after, openedAfter) {
+		return fmt.Errorf(
+			"backup: staged packed content catalog identity changed during sync for %s", s.dbRead)
 	}
 	return nil
 }

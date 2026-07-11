@@ -238,8 +238,12 @@ Publication and authority follow one crash-safe order:
 4. Materialize and durably sync every loose fallback.
 5. In one application-owned transaction against the unpublished staged
    database, replace all packed catalog records and selected mappings.
-6. Close the staged catalog, remove SQLite sidecars, run the database integrity
-   and stats proof, then publish the database last.
+6. Close the SQLite staged-catalog connection and remove its exact `-wal`,
+   `-shm`, and `-journal` sidecars.
+7. Reopen the main staged database file read-write, verify that the opened
+   handle still names the inspected regular file, sync it, re-check that the
+   staged path still names that same regular file, and close the handle.
+8. Run the database integrity and stats proof, then publish the database last.
 
 The staged catalog mutation must leave the database structurally valid and
 must not change the application's `RestoredStats` payload. An overwrite

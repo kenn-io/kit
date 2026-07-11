@@ -455,6 +455,298 @@ func TestRestorePackedTargetCatalogFailureDoesNotPublishDatabase(t *testing.T) {
 	checkIntact()
 }
 
+func installStagedCatalogFileHooks(t *testing.T) {
+	t.Helper()
+	originalOpen := openStagedCatalogFile
+	originalSync := syncStagedCatalogFile
+	originalClose := closeStagedCatalogFile
+	t.Cleanup(func() {
+		openStagedCatalogFile = originalOpen
+		syncStagedCatalogFile = originalSync
+		closeStagedCatalogFile = originalClose
+	})
+}
+
+func stagedCatalogPath(t *testing.T, ctx context.Context, db *sql.DB) string {
+	t.Helper()
+	var sequence int
+	var name, filename string
+	require.NoError(t, db.QueryRowContext(ctx, "PRAGMA database_list").Scan(&sequence, &name, &filename))
+	return filename
+}
+
+// Not parallel: these tests inject package-global staged catalog file hooks.
+func TestRestorePackedTargetSyncsClosedStagedCatalogBeforeProofAndPublication(t *testing.T) {
+	installStagedCatalogFileHooks(t)
+	r, app, _, _ := createPackedRestoreFixture(t)
+	target := filepath.Join(t.TempDir(), "restore")
+	var catalogDB *sql.DB
+	var stagedPath string
+	var syncedFile *os.File
+	synced := false
+	closed := false
+	packed := testPackedTarget{limits: packstore.DefaultLimits(), open: func(ctx context.Context, db *sql.DB) (packstore.RestoreCatalog, error) {
+		catalogDB = db
+		stagedPath = stagedCatalogPath(t, ctx, db)
+		return restoreCatalogFunc(func(context.Context, []packstore.PackRecord, []packstore.Adoption) error { return nil }), nil
+	}}
+	originalSync := syncStagedCatalogFile
+	syncStagedCatalogFile = func(file *os.File) error {
+		require.Error(t, catalogDB.PingContext(context.Background()), "SQLite must be closed before file sync")
+		openedInfo, err := file.Stat()
+		require.NoError(t, err)
+		stagedInfo, err := os.Stat(stagedPath)
+		require.NoError(t, err)
+		require.True(t, os.SameFile(openedInfo, stagedInfo), "sync handle must name the staged database")
+		syncedFile = file
+		synced = true
+		return originalSync(file)
+	}
+	originalClose := closeStagedCatalogFile
+	closeStagedCatalogFile = func(file *os.File) error {
+		err := originalClose(file)
+		closed = true
+		return err
+	}
+	proofApp := proofObservingApp{App: app, beforeStats: func() {
+		require.True(t, synced, "staged database must be synced before proof")
+		require.True(t, closed, "synced staged database handle must be closed before proof")
+		_, err := syncedFile.Stat()
+		require.Error(t, err)
+	}}
+
+	_, err := Restore(context.Background(), r, proofApp, RestoreOptions{TargetDir: target, PackedContent: packed})
+	require.NoError(t, err)
+	assert.True(t, synced)
+	assert.True(t, closed)
+}
+
+// Not parallel: this test injects package-global staged catalog file hooks.
+func TestRestorePackedTargetCatalogReplacementFailureDoesNotSyncStagedCatalog(t *testing.T) {
+	installStagedCatalogFileHooks(t)
+	r, app, _, _ := createPackedRestoreFixture(t)
+	target, checkIntact := seedLiveOverwriteTarget(t)
+	replaceErr := errors.New("catalog replacement failed")
+	syncCalled := false
+	syncStagedCatalogFile = func(*os.File) error {
+		syncCalled = true
+		return nil
+	}
+	packed := testPackedTarget{limits: packstore.DefaultLimits(), open: func(context.Context, *sql.DB) (packstore.RestoreCatalog, error) {
+		return restoreCatalogFunc(func(context.Context, []packstore.PackRecord, []packstore.Adoption) error { return replaceErr }), nil
+	}}
+
+	_, err := Restore(context.Background(), r, app, RestoreOptions{TargetDir: target, Overwrite: true, PackedContent: packed})
+	require.ErrorIs(t, err, replaceErr)
+	assert.False(t, syncCalled)
+	checkIntact()
+}
+
+// Not parallel: this test injects package-global staged catalog file hooks.
+func TestRestorePackedTargetStagedCatalogSyncFailurePreventsProofAndPublication(t *testing.T) {
+	installStagedCatalogFileHooks(t)
+	r, app, _, _ := createPackedRestoreFixture(t)
+	target, checkIntact := seedLiveOverwriteTarget(t)
+	syncErr := errors.New("staged catalog sync failed")
+	var syncedFile *os.File
+	closed := false
+	syncStagedCatalogFile = func(file *os.File) error {
+		syncedFile = file
+		return syncErr
+	}
+	originalClose := closeStagedCatalogFile
+	closeStagedCatalogFile = func(file *os.File) error {
+		err := originalClose(file)
+		closed = true
+		return err
+	}
+	proofCalled := false
+	proofApp := proofObservingApp{App: app, beforeStats: func() { proofCalled = true }}
+	packed := testPackedTarget{limits: packstore.DefaultLimits(), open: func(context.Context, *sql.DB) (packstore.RestoreCatalog, error) {
+		return restoreCatalogFunc(func(context.Context, []packstore.PackRecord, []packstore.Adoption) error { return nil }), nil
+	}}
+
+	_, err := Restore(context.Background(), r, proofApp, RestoreOptions{TargetDir: target, Overwrite: true, PackedContent: packed})
+	require.ErrorIs(t, err, syncErr)
+	assert.False(t, proofCalled)
+	assert.True(t, closed)
+	_, statErr := syncedFile.Stat()
+	require.Error(t, statErr)
+	checkIntact()
+}
+
+// Not parallel: this test injects package-global staged catalog file hooks.
+func TestRestorePackedTargetJoinsStagedCatalogSyncAndCloseFailures(t *testing.T) {
+	installStagedCatalogFileHooks(t)
+	r, app, _, _ := createPackedRestoreFixture(t)
+	target, checkIntact := seedLiveOverwriteTarget(t)
+	syncErr := errors.New("staged catalog sync failed")
+	closeErr := errors.New("staged catalog close failed")
+	syncStagedCatalogFile = func(*os.File) error { return syncErr }
+	closeStagedCatalogFile = func(file *os.File) error {
+		return errors.Join(file.Close(), closeErr)
+	}
+	packed := testPackedTarget{limits: packstore.DefaultLimits(), open: func(context.Context, *sql.DB) (packstore.RestoreCatalog, error) {
+		return restoreCatalogFunc(func(context.Context, []packstore.PackRecord, []packstore.Adoption) error { return nil }), nil
+	}}
+
+	_, err := Restore(context.Background(), r, app, RestoreOptions{TargetDir: target, Overwrite: true, PackedContent: packed})
+	require.ErrorIs(t, err, syncErr)
+	require.ErrorIs(t, err, closeErr)
+	checkIntact()
+}
+
+// Not parallel: this test injects package-global staged catalog file hooks.
+func TestRestorePackedTargetStagedCatalogCloseFailurePreventsProofAndPublication(t *testing.T) {
+	installStagedCatalogFileHooks(t)
+	r, app, _, _ := createPackedRestoreFixture(t)
+	target, checkIntact := seedLiveOverwriteTarget(t)
+	closeErr := errors.New("staged catalog close failed")
+	var closedFile *os.File
+	closeStagedCatalogFile = func(file *os.File) error {
+		closedFile = file
+		require.NoError(t, file.Close())
+		return closeErr
+	}
+	proofCalled := false
+	proofApp := proofObservingApp{App: app, beforeStats: func() { proofCalled = true }}
+	packed := testPackedTarget{limits: packstore.DefaultLimits(), open: func(context.Context, *sql.DB) (packstore.RestoreCatalog, error) {
+		return restoreCatalogFunc(func(context.Context, []packstore.PackRecord, []packstore.Adoption) error { return nil }), nil
+	}}
+
+	_, err := Restore(context.Background(), r, proofApp, RestoreOptions{TargetDir: target, Overwrite: true, PackedContent: packed})
+	require.ErrorIs(t, err, closeErr)
+	assert.False(t, proofCalled)
+	_, statErr := closedFile.Stat()
+	require.Error(t, statErr)
+	checkIntact()
+}
+
+// Not parallel: this test injects package-global staged catalog file hooks.
+func TestRestorePackedTargetRejectsNonRegularStagedCatalogBeforeOpen(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		plant func(*testing.T, string)
+	}{
+		{name: "symlink", plant: func(t *testing.T, staged string) {
+			victim := filepath.Join(t.TempDir(), "victim.db")
+			require.NoError(t, os.WriteFile(victim, []byte("victim"), 0o600))
+			require.NoError(t, os.Remove(staged))
+			if err := os.Symlink(victim, staged); err != nil {
+				t.Skip("symlinks not supported on this platform")
+			}
+		}},
+		{name: "directory", plant: func(t *testing.T, staged string) {
+			require.NoError(t, os.Remove(staged))
+			require.NoError(t, os.Mkdir(staged, 0o700))
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			installStagedCatalogFileHooks(t)
+			target := t.TempDir()
+			staged := filepath.Join(target, "staged.db")
+			require.NoError(t, os.WriteFile(staged, []byte("staged"), 0o600))
+			root, err := os.OpenRoot(target)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, root.Close()) })
+			openCalled := false
+			syncCalled := false
+			openStagedCatalogFile = func(*os.Root, string) (*os.File, error) {
+				openCalled = true
+				return nil, errors.New("must not open")
+			}
+			syncStagedCatalogFile = func(*os.File) error {
+				syncCalled = true
+				return errors.New("must not sync")
+			}
+			tt.plant(t, staged)
+			state := restoreState{root: root, dbRead: "staged.db"}
+			err = state.syncAndCloseStagedCatalog()
+			require.ErrorContains(t, err, "regular file")
+			assert.False(t, openCalled)
+			assert.False(t, syncCalled)
+		})
+	}
+}
+
+// Not parallel: this test injects package-global staged catalog file hooks.
+func TestRestorePackedTargetRejectsOpenedStagedCatalogIdentityMismatchAndJoinsCloseFailure(t *testing.T) {
+	installStagedCatalogFileHooks(t)
+	r, app, _, _ := createPackedRestoreFixture(t)
+	target, checkIntact := seedLiveOverwriteTarget(t)
+	closeErr := errors.New("closing mismatched staged catalog")
+	syncCalled := false
+	closed := false
+	openStagedCatalogFile = func(root *os.Root, _ string) (*os.File, error) {
+		return root.OpenFile("different-regular.db", os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600)
+	}
+	syncStagedCatalogFile = func(*os.File) error {
+		syncCalled = true
+		return nil
+	}
+	closeStagedCatalogFile = func(file *os.File) error {
+		closed = true
+		return errors.Join(file.Close(), closeErr)
+	}
+	packed := testPackedTarget{limits: packstore.DefaultLimits(), open: func(context.Context, *sql.DB) (packstore.RestoreCatalog, error) {
+		return restoreCatalogFunc(func(context.Context, []packstore.PackRecord, []packstore.Adoption) error { return nil }), nil
+	}}
+
+	_, err := Restore(context.Background(), r, app, RestoreOptions{TargetDir: target, Overwrite: true, PackedContent: packed})
+	require.ErrorContains(t, err, "identity")
+	require.ErrorIs(t, err, closeErr)
+	assert.False(t, syncCalled)
+	assert.True(t, closed)
+	checkIntact()
+}
+
+// Not parallel: this test injects package-global staged catalog file hooks.
+func TestRestorePackedTargetRejectsStagedCatalogReplacedDuringSync(t *testing.T) {
+	installStagedCatalogFileHooks(t)
+	r, app, _, _ := createPackedRestoreFixture(t)
+	target, checkIntact := seedLiveOverwriteTarget(t)
+	var root *os.Root
+	var stagedName string
+	var syncedFile *os.File
+	closed := false
+	originalOpen := openStagedCatalogFile
+	openStagedCatalogFile = func(openRoot *os.Root, name string) (*os.File, error) {
+		root, stagedName = openRoot, name
+		return originalOpen(openRoot, name)
+	}
+	originalSync := syncStagedCatalogFile
+	syncStagedCatalogFile = func(file *os.File) error {
+		syncedFile = file
+		if err := originalSync(file); err != nil {
+			return err
+		}
+		require.NoError(t, root.Rename(stagedName, stagedName+".aside"))
+		replacement, err := root.OpenFile(stagedName, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+		require.NoError(t, err)
+		require.NoError(t, replacement.Close())
+		return nil
+	}
+	originalClose := closeStagedCatalogFile
+	closeStagedCatalogFile = func(file *os.File) error {
+		err := originalClose(file)
+		closed = true
+		return err
+	}
+	proofCalled := false
+	proofApp := proofObservingApp{App: app, beforeStats: func() { proofCalled = true }}
+	packed := testPackedTarget{limits: packstore.DefaultLimits(), open: func(context.Context, *sql.DB) (packstore.RestoreCatalog, error) {
+		return restoreCatalogFunc(func(context.Context, []packstore.PackRecord, []packstore.Adoption) error { return nil }), nil
+	}}
+
+	_, err := Restore(context.Background(), r, proofApp, RestoreOptions{TargetDir: target, Overwrite: true, PackedContent: packed})
+	require.ErrorContains(t, err, "identity")
+	assert.False(t, proofCalled)
+	assert.True(t, closed)
+	_, statErr := syncedFile.Stat()
+	require.Error(t, statErr)
+	checkIntact()
+}
+
 func TestRestorePackedTargetProofFailureKeepsVisibleDatabase(t *testing.T) {
 	r, app, _, _ := createPackedRestoreFixture(t)
 	target, checkIntact := seedLiveOverwriteTarget(t)
