@@ -56,6 +56,8 @@ const (
 
 var boundedCRC32CTable = crc32.MakeTable(crc32.Castagnoli)
 
+var snapshotBoundedPackPathIdentity = snapshotPathIdentity
+
 type boundedPackReader struct {
 	file    *os.File
 	entries map[pack.BlobID]pack.Entry
@@ -113,7 +115,7 @@ func validateLimits(limits Limits) error {
 }
 
 func openBoundedPack(path string, limits Limits) (*boundedPackReader, error) {
-	pathInfo, err := snapshotPathIdentity(path)
+	pathInfo, err := snapshotBoundedPackPathIdentity(path)
 	if err != nil {
 		return nil, fmt.Errorf("inspect pack for bounded preflight: %w", err)
 	}
