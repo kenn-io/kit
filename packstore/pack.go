@@ -133,6 +133,9 @@ func (m *Maintainer) dropDangling(ctx context.Context, stats *PackStats) error {
 		return err
 	}
 	for _, entry := range indexed {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if _, err := os.Stat(m.layout.PackPath(entry.PackID)); errors.Is(err, fs.ErrNotExist) {
 			if err := m.catalog.DeleteIndexEntry(ctx, entry.Hash); err != nil {
 				return err
@@ -140,6 +143,17 @@ func (m *Maintainer) dropDangling(ctx context.Context, stats *PackStats) error {
 			stats.MappingsPruned++
 		} else if err != nil {
 			return err
+		} else {
+			if _, _, err := m.store.readPackedBounded(entry.Hash, &entry, m.limits.BlobBytes); err == nil {
+				continue
+			}
+			if _, err := readVerifiedLoosePath(m.layout.LoosePath(entry.Hash), entry.Hash, m.limits.BlobBytes); err != nil {
+				continue
+			}
+			if err := m.catalog.DeleteIndexEntry(ctx, entry.Hash); err != nil {
+				return err
+			}
+			stats.MappingsPruned++
 		}
 	}
 	return nil

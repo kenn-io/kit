@@ -225,6 +225,44 @@ func TestRepairDropsDanglingRecordsAndUnreferencedMappings(t *testing.T) {
 	assert.Equal(t, int64(1), stats.MappingsPruned)
 }
 
+func TestRepairRepacksValidLooseCopyWhenIndexedPackIsCorrupt(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	layout := layoutForStoreTest(t)
+	catalog := newMaintenanceCatalog()
+	content := []byte("recover from corrupt indexed pack")
+	entry := buildStoreTestPack(t, layout, content)
+	require.Equal(entry.Hash, writeMaintenanceLoose(t, layout, content))
+	catalog.addLoose(entry.Hash, layout.LoosePath(entry.Hash))
+	catalog.entries[entry.Hash] = entry
+	catalog.packs[entry.PackID] = PackRecord{
+		PackID: entry.PackID, EntryCount: 1, StoredBytes: entry.StoredLen, CreatedAt: time.Now(),
+	}
+	path := layout.PackPath(entry.PackID)
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	require.NoError(err)
+	var damaged [1]byte
+	_, err = f.ReadAt(damaged[:], entry.Offset)
+	require.NoError(err)
+	damaged[0] ^= 0xff
+	_, err = f.WriteAt(damaged[:], entry.Offset)
+	require.NoError(err)
+	require.NoError(f.Close())
+	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
+
+	stats, err := maintainer.Pack(context.Background(), PackOptions{})
+	require.NoError(err)
+	assert.Equal(int64(1), stats.MappingsPruned)
+	assert.Equal(1, stats.PacksSealed)
+	assert.Equal(1, stats.BlobsPacked)
+	indexed, _ := catalog.snapshot()
+	require.Contains(indexed, entry.Hash)
+	assert.NotEqual(entry.PackID, indexed[entry.Hash].PackID)
+	assert.NoFileExists(layout.LoosePath(entry.Hash))
+	got, _ := readStoreTest(t, maintainer.store, entry.Hash)
+	assert.Equal(content, got)
+}
+
 func TestReconcileAdoptsOnlyFullyVerifiedOrphanPack(t *testing.T) {
 	for _, damaged := range []bool{false, true} {
 		name := "valid"
