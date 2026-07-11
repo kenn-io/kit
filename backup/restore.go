@@ -155,6 +155,7 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (*Resto
 	// target: it marks the deepest directory that already existed, so the
 	// final durability pass knows which ancestors gained new entries.
 	syncCeiling := restoreSyncCeiling(opts.TargetDir)
+	st.syncCeiling = syncCeiling
 	root, err := prepareRestoreTarget(opts.TargetDir, opts.Overwrite, app.DBFileName())
 	if err != nil {
 		return nil, err
@@ -502,6 +503,10 @@ type restoreState struct {
 	// so verifyHeldTarget re-ties that path to root around each one.
 	root   *os.Root
 	target string
+	// syncCeiling is the deepest target ancestor that predated this restore.
+	// Packed restore uses it for the pre-authority durability barrier; the
+	// final tree sync reuses it after extras and the database are published.
+	syncCeiling string
 	// dbRead is the relative name read-only database opens use: the staging
 	// temp, which both content-path derivation (restoreAttachments) and the
 	// restore proof (proveRestoredDB) read — the database is published only

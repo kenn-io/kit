@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"go.kenn.io/kit/pack"
@@ -136,6 +138,13 @@ func (s *restoreState) restorePackedAttachments(
 			"backup: attachment lists sum to %d bytes but manifest reports %d",
 			result.totalBytes, m.Attachments.BlobBytes)
 	}
+	if err := validatePackedRestorePaths(inventory.paths); err != nil {
+		return packedRestoreResult{}, err
+	}
+	s.done, s.doneByte = 0, 0
+	s.progress.emit(ProgressEvent{
+		Stage: ProgressStageAttachments, Total: result.totalBlobs, BytesTotal: result.totalBytes,
+	})
 
 	var candidates []packstore.ImportPack
 	if app.PackFileExtension() == packstore.PackExt {
@@ -166,10 +175,6 @@ func (s *restoreState) restorePackedAttachments(
 		return packedRestoreResult{}, fmt.Errorf("backup: packed import reported inconsistent selected hash count")
 	}
 
-	s.done, s.doneByte = 0, 0
-	s.progress.emit(ProgressEvent{
-		Stage: ProgressStageAttachments, Total: result.totalBlobs, BytesTotal: result.totalBytes,
-	})
 	looseGroups := make(map[string][]ContentRef)
 	var looseOrder []string
 	for _, packID := range inventory.order {
@@ -201,6 +206,11 @@ func (s *restoreState) restorePackedAttachments(
 	if result.packedBlobs < 0 || result.looseBlobs < 0 || result.packedBlobs+result.looseBlobs != result.totalBlobs {
 		return packedRestoreResult{}, fmt.Errorf("backup: packed and loose attachment coverage is inconsistent")
 	}
+	if result.looseBlobs > 0 {
+		if err := s.syncPackedRestoreContent(); err != nil {
+			return packedRestoreResult{}, err
+		}
+	}
 	if err := s.commitPreparedImport(ctx, target, prepared); err != nil {
 		return packedRestoreResult{}, err
 	}
@@ -211,6 +221,38 @@ func (s *restoreState) restorePackedAttachments(
 		BytesDone: result.totalBytes, BytesTotal: result.totalBytes, Final: true,
 	})
 	return result, nil
+}
+
+func validatePackedRestorePaths(paths map[string][]string) error {
+	for hash, rels := range paths {
+		for _, rel := range rels {
+			portable := path.Clean(strings.ReplaceAll(filepath.ToSlash(rel), `\`, "/"))
+			first, _, _ := strings.Cut(portable, "/")
+			if strings.EqualFold(first, "packs") {
+				return fmt.Errorf(
+					"backup: attachment %s restore path %q uses reserved packed-content subtree %q",
+					hash, rel, "packs")
+			}
+		}
+	}
+	return nil
+}
+
+func (s *restoreState) syncPackedRestoreContent() error {
+	if err := s.verifyHeldTarget(s.dbRead); err != nil {
+		return err
+	}
+	// Mixed restores deliberately use the existing complete-tree durability
+	// pass. The final pass still runs after extras and database publication, so
+	// mixed restores currently pay one additional directory traversal in exchange
+	// for a simple, identical durability contract before catalog authority.
+	if err := syncRestoredTree(s.target, s.syncCeiling); err != nil {
+		return fmt.Errorf("backup: syncing loose attachment fallbacks before packed catalog authority: %w", err)
+	}
+	if err := s.verifyHeldTarget(s.dbRead); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *restoreState) importCandidates(
@@ -251,7 +293,11 @@ func (s *restoreState) commitPreparedImport(
 		return fmt.Errorf("backup: opening staged database for packed content catalog: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	defer func() { resultErr = errors.Join(resultErr, db.Close()) }()
+	defer func() {
+		if db != nil {
+			resultErr = errors.Join(resultErr, s.closeStagedCatalogDB(db))
+		}
+	}()
 	if err := db.PingContext(ctx); err != nil {
 		return fmt.Errorf("backup: opening staged database for packed content catalog: %w", err)
 	}
@@ -278,18 +324,28 @@ func (s *restoreState) commitPreparedImport(
 	if err := s.verifyHeldTarget(s.dbRead); err != nil {
 		return err
 	}
-	if err := db.Close(); err != nil {
-		return fmt.Errorf("backup: closing staged packed content catalog: %w", err)
+	if err := s.closeStagedCatalogDB(db); err != nil {
+		db = nil
+		return err
 	}
+	db = nil
 	if err := s.verifyHeldTarget(s.dbRead); err != nil {
 		return err
 	}
+	return nil
+}
+
+func (s *restoreState) closeStagedCatalogDB(db *sql.DB) error {
+	if err := db.Close(); err != nil {
+		return fmt.Errorf(
+			"backup: closing staged packed content catalog before sidecar cleanup: %w", err)
+	}
+	var cleanupErr error
 	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
-		if _, err := s.root.Stat(s.dbRead + suffix); err == nil {
-			return fmt.Errorf("backup: staged packed content catalog left SQLite sidecar %s", s.dbRead+suffix)
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("backup: checking staged packed content catalog sidecar: %w", err)
+		name := s.dbRead + suffix
+		if err := s.root.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("backup: removing staged packed content catalog sidecar %s: %w", name, err))
 		}
 	}
-	return nil
+	return cleanupErr
 }
