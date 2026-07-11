@@ -19,7 +19,10 @@ const (
 	headerMagic  = "MVPK"
 	trailerMagic = "KPVM"
 	headerSize   = 6
-	maxFooterLen = 1 << 30
+
+	// MaxFooterLen bounds the encoded footer before allocation.
+	MaxFooterLen = 1 << 30
+	maxFooterLen = MaxFooterLen
 
 	// MaxRawLen bounds the raw (decompressed) length of one blob. It matches
 	// the zstd decoder's WithDecoderMaxMemory(1<<32) limit in frame.go: a

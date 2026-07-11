@@ -59,6 +59,25 @@ func TestLooseReadsRejectFIFOWithoutBlocking(t *testing.T) {
 	}
 }
 
+func TestOrdinaryPackedReadRejectsFIFOWithoutBlocking(t *testing.T) {
+	layout := layoutForStoreTest(t)
+	entry := buildStoreTestPack(t, layout, []byte("ordinary packed fifo content"))
+	path := layout.PackPath(entry.PackID)
+	require.NoError(t, os.Remove(path))
+	require.NoError(t, unix.Mkfifo(path, 0o600))
+	store := newStoreForTest(t, &mapResolver{locations: map[Hash]Location{
+		entry.Hash: {Member: true, Pack: &entry},
+	}}, layout)
+
+	assertFIFOOperationDoesNotBlock(t, path, func() error {
+		reader, _, err := store.Open(context.Background(), entry.Hash)
+		if reader != nil {
+			err = errors.Join(err, reader.Close())
+		}
+		return err
+	})
+}
+
 func TestPreflightRejectsFIFOReplacedAfterIdentitySnapshot(t *testing.T) {
 	layout := layoutForStoreTest(t)
 	entry := buildStoreTestPack(t, layout, []byte("replace pack with fifo"))

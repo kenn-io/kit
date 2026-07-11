@@ -3,7 +3,9 @@ package packstore
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -141,6 +143,63 @@ func TestPreflightRejectsContainerFooterAndDuplicateIDs(t *testing.T) {
 		require.NoError(err)
 		_, err = OpenMaintenancePack(path, limits)
 		assert.ErrorIs(t, err, pack.ErrCorrupt)
+	})
+}
+
+func TestPreflightEnforcesPackFormatLengthsIndependently(t *testing.T) {
+	t.Run("footer length", func(t *testing.T) {
+		require := require.New(t)
+		assert := assert.New(t)
+		layout := layoutForStoreTest(t)
+		entry := buildStoreTestPack(t, layout, []byte("format footer ceiling"))
+		path := layout.PackPath(entry.PackID)
+		f, err := os.OpenFile(path, os.O_RDWR, 0)
+		require.NoError(err)
+		info, err := f.Stat()
+		require.NoError(err)
+		const formatFooterLimit = uint64(pack.MaxFooterLen)
+		var encoded [4]byte
+		binary.LittleEndian.PutUint32(encoded[:], uint32(formatFooterLimit+1))
+		_, err = f.WriteAt(encoded[:], info.Size()-plainPackTrailerSize)
+		require.NoError(err)
+		require.NoError(f.Close())
+		limits := DefaultLimits()
+		limits.FooterBytes = math.MaxInt32
+
+		_, err = OpenMaintenancePack(path, limits)
+		require.ErrorIs(err, ErrBlobTooLarge)
+		var limitErr *LimitError
+		require.ErrorAs(err, &limitErr)
+		assert.Equal(LimitPackFooterBytes, limitErr.Dimension)
+		assert.Equal(formatFooterLimit, limitErr.Limit)
+	})
+
+	t.Run("stored frame length", func(t *testing.T) {
+		require := require.New(t)
+		layout := layoutForStoreTest(t)
+		entry := buildStoreTestPack(t, layout, []byte("format stored ceiling"))
+		path := layout.PackPath(entry.PackID)
+		data, err := os.ReadFile(path)
+		require.NoError(err)
+		trailerStart := len(data) - plainPackTrailerSize
+		footerLen := int(binary.LittleEndian.Uint32(data[trailerStart:]))
+		footerStart := trailerStart - footerLen
+		storedLenOffset := footerStart + 4 + 32 + 8
+		binary.LittleEndian.PutUint64(data[storedLenOffset:], uint64(pack.MaxStoredLen)+1)
+		digest := sha256.New()
+		_, err = digest.Write(data[footerStart:trailerStart])
+		require.NoError(err)
+		_, err = digest.Write(data[trailerStart : trailerStart+4])
+		require.NoError(err)
+		copy(data[trailerStart+4:trailerStart+36], digest.Sum(nil))
+		require.NoError(os.WriteFile(path, data, 0o600))
+		limits := DefaultLimits()
+		limits.BlobBytes = math.MaxInt64
+		limits.PackBytes = math.MaxInt64
+
+		_, err = OpenMaintenancePack(path, limits)
+		require.ErrorContains(err, "stored length")
+		require.ErrorContains(err, "exceeds format maximum")
 	})
 }
 

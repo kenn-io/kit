@@ -138,6 +138,30 @@ func TestStoreSharesBoundedAndOrdinaryCacheSlotsAndEvicts(t *testing.T) {
 	assert.Empty(t, store.order)
 }
 
+func TestStoreReaderModeConversionPreservesOneCacheSlot(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	layout := layoutForStoreTest(t)
+	entry := buildStoreTestPack(t, layout, []byte("one logical cache slot"))
+	store := newStoreForTest(t, &mapResolver{locations: map[Hash]Location{
+		entry.Hash: {Member: true, Pack: &entry},
+	}}, layout)
+
+	reader, _, err := store.Open(context.Background(), entry.Hash)
+	require.NoError(err)
+	require.NoError(reader.Close())
+	assert.Equal([]string{entry.PackID}, store.order)
+
+	_, _, err = store.ReadBounded(context.Background(), entry.Hash, entry.RawLen)
+	require.NoError(err)
+	assert.Equal([]string{entry.PackID}, store.order)
+
+	reader, _, err = store.Open(context.Background(), entry.Hash)
+	require.NoError(err)
+	require.NoError(reader.Close())
+	assert.Equal([]string{entry.PackID}, store.order)
+}
+
 func TestStoreConcurrentOrdinaryAndBoundedReads(t *testing.T) {
 	require := require.New(t)
 	layout := layoutForStoreTest(t)

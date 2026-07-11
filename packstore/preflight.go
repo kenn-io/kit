@@ -173,6 +173,9 @@ func openBoundedPack(path string, limits Limits) (*boundedPackReader, error) {
 	if footerLen > uint64(limits.FooterBytes) {
 		return nil, newLimitError(LimitPackFooterBytes, footerLen, uint64(limits.FooterBytes))
 	}
+	if footerLen > pack.MaxFooterLen {
+		return nil, newLimitError(LimitPackFooterBytes, footerLen, pack.MaxFooterLen)
+	}
 	if footerLen > maxPlatformInt {
 		return nil, newLimitError(LimitPackFooterBytes, footerLen, maxPlatformInt)
 	}
@@ -216,6 +219,9 @@ func openBoundedPack(path string, limits Limits) (*boundedPackReader, error) {
 		entry.CRC32C = binary.LittleEndian.Uint32(footer[offset+57:])
 		if entry.RawLen > pack.MaxRawLen {
 			return nil, fmt.Errorf("%w: entry %d raw length %d exceeds format maximum", pack.ErrCorrupt, i, entry.RawLen)
+		}
+		if entry.StoredLen > pack.MaxStoredLen {
+			return nil, fmt.Errorf("%w: entry %d stored length %d exceeds format maximum", pack.ErrCorrupt, i, entry.StoredLen)
 		}
 		if entry.Flags&^pack.BlobCompressed != 0 {
 			return nil, fmt.Errorf("%w: entry %d has unsupported flags %#x", pack.ErrCorrupt, i, entry.Flags)

@@ -3,6 +3,7 @@ package packstore
 import (
 	"errors"
 	"fmt"
+	"slices"
 
 	"go.kenn.io/kit/pack"
 )
@@ -17,7 +18,12 @@ func (s *Store) readerLocked(packID string) (*ordinaryPackReader, error) {
 		}
 		delete(s.boundedReaders, packID)
 	}
-	reader, err := pack.OpenReader(s.layout.PackPath(packID), nil)
+	path := s.layout.PackPath(packID)
+	f, err := openNoFollow(path, false)
+	if err != nil {
+		return nil, fmt.Errorf("packstore: open pack %s: %w", packID, err)
+	}
+	reader, err := pack.NewReaderFromFile(f, packID, nil)
 	if err != nil {
 		return nil, fmt.Errorf("packstore: open pack %s: %w", packID, err)
 	}
@@ -56,10 +62,7 @@ func (s *Store) boundedReaderLocked(packID string) (*boundedPackReader, error) {
 }
 
 func (s *Store) addPackSlotLocked(packID string) {
-	if _, ok := s.readers[packID]; ok {
-		return
-	}
-	if _, ok := s.boundedReaders[packID]; ok {
+	if slices.Contains(s.order, packID) {
 		return
 	}
 	if len(s.order) >= s.slots {
