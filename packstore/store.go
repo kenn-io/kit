@@ -216,9 +216,8 @@ func (s *Store) readLooseBounded(hash Hash, maxBytes int64) ([]byte, int64, erro
 	if size > maxBytes {
 		return nil, 0, newLimitError(LimitBlobRawBytes, uint64(size), uint64(maxBytes)) //nolint:gosec
 	}
-	maxInt := uint64(^uint(0) >> 1)
-	if uint64(size) > maxInt {
-		return nil, 0, newLimitError(LimitBlobRawBytes, uint64(size), maxInt)
+	if uint64(size) > maxPlatformInt {
+		return nil, 0, newLimitError(LimitBlobRawBytes, uint64(size), maxPlatformInt)
 	}
 	data := make([]byte, int(size))
 	if _, err := io.ReadFull(f, data); err != nil {

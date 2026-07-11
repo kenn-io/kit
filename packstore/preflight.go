@@ -56,6 +56,8 @@ const (
 
 var boundedCRC32CTable = crc32.MakeTable(crc32.Castagnoli)
 
+var maxPlatformInt = uint64(^uint(0) >> 1)
+
 var snapshotBoundedPackPathIdentity = snapshotPathIdentity
 
 type boundedPackReader struct {
@@ -171,6 +173,9 @@ func openBoundedPack(path string, limits Limits) (*boundedPackReader, error) {
 	if footerLen > uint64(limits.FooterBytes) {
 		return nil, newLimitError(LimitPackFooterBytes, footerLen, uint64(limits.FooterBytes))
 	}
+	if footerLen > maxPlatformInt {
+		return nil, newLimitError(LimitPackFooterBytes, footerLen, maxPlatformInt)
+	}
 	fileSize := uint64(size)
 	if footerLen < 4 || fileSize < plainPackHeaderSize+plainPackTrailerSize+footerLen {
 		return nil, fmt.Errorf("%w: footer length %d is outside %d-byte pack", pack.ErrTruncated, footerLen, size)
@@ -246,12 +251,11 @@ func (r *boundedPackReader) readBlob(entry pack.Entry, maxBytes int64) ([]byte, 
 	if entry.StoredLen > limit {
 		return nil, newLimitError(LimitBlobStoredBytes, entry.StoredLen, limit)
 	}
-	maxInt := uint64(^uint(0) >> 1)
-	if entry.RawLen > maxInt || entry.StoredLen > maxInt {
-		if entry.RawLen > maxInt {
-			return nil, newLimitError(LimitBlobRawBytes, entry.RawLen, maxInt)
+	if entry.RawLen > maxPlatformInt || entry.StoredLen > maxPlatformInt {
+		if entry.RawLen > maxPlatformInt {
+			return nil, newLimitError(LimitBlobRawBytes, entry.RawLen, maxPlatformInt)
 		}
-		return nil, newLimitError(LimitBlobStoredBytes, entry.StoredLen, maxInt)
+		return nil, newLimitError(LimitBlobStoredBytes, entry.StoredLen, maxPlatformInt)
 	}
 	stored := make([]byte, int(entry.StoredLen))
 	if _, err := r.file.ReadAt(stored, int64(entry.Offset)); err != nil { //nolint:gosec

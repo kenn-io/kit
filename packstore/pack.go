@@ -388,15 +388,19 @@ func readVerifiedLoosePath(path string, hash Hash, limit int64) ([]byte, error) 
 	if err := validateRegularNoFollow(path, info); err != nil {
 		return nil, err
 	}
-	if info.Size() < 0 || info.Size() > limit {
-		return nil, newLimitError(LimitBlobRawBytes, uint64(info.Size()), uint64(limit)) //nolint:gosec
+	size := info.Size()
+	if size < 0 || size > limit {
+		return nil, newLimitError(LimitBlobRawBytes, uint64(size), uint64(limit)) //nolint:gosec
+	}
+	if uint64(size) > maxPlatformInt {
+		return nil, newLimitError(LimitBlobRawBytes, uint64(size), maxPlatformInt)
 	}
 	f, err := openNoFollow(path, false)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
-	data := make([]byte, int(info.Size()))
+	data := make([]byte, int(size))
 	if _, err := io.ReadFull(f, data); err != nil {
 		return nil, err
 	}
