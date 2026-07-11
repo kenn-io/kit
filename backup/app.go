@@ -4,7 +4,18 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+
+	"go.kenn.io/kit/packstore"
 )
+
+// PackedContentTarget supplies the application-owned packed-storage policy
+// and opens catalog authority only against Restore's unpublished staged
+// SQLite database. Kit never opens an application's live catalog through this
+// interface.
+type PackedContentTarget interface {
+	Limits() packstore.Limits
+	OpenRestoreCatalog(context.Context, *sql.DB) (packstore.RestoreCatalog, error)
+}
 
 // ContentInfo is what the engine needs to know about the application's
 // content-addressed files, computed inside the frozen snapshot.

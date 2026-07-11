@@ -20,6 +20,7 @@ import (
 	"golang.org/x/text/unicode/norm"
 
 	"go.kenn.io/kit/pack"
+	"go.kenn.io/kit/packstore"
 )
 
 // RestoreOptions parameterizes one restore run (FORMAT.md, Restore).
@@ -47,6 +48,10 @@ type RestoreOptions struct {
 	// Progress, if non-nil, receives structured progress events as Restore
 	// runs. nil means fully silent.
 	Progress func(ProgressEvent)
+	// PackedContent optionally restores compatible repository packs into the
+	// target content store and grants authority in the unpublished staged DB.
+	// nil preserves the legacy fully-loose restore path.
+	PackedContent PackedContentTarget
 }
 
 // RestoreResult reports what Restore materialized and proved.
@@ -56,8 +61,14 @@ type RestoreResult struct {
 	DBBytes         int64
 	AttachmentBlobs int64
 	AttachmentBytes int64
-	ExtrasFiles     int
-	Duration        time.Duration
+	// PackedAttachmentBlobs and LooseAttachmentBlobs partition
+	// AttachmentBlobs by restored representation.
+	PackedAttachmentBlobs int64
+	LooseAttachmentBlobs  int64
+	AttachmentPacks       int
+	PackFallbacks         []packstore.ImportFallback
+	ExtrasFiles           int
+	Duration              time.Duration
 }
 
 // Restore materializes one snapshot into TargetDir and then proves the
@@ -172,8 +183,20 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (*Resto
 			_ = st.root.Remove(tmpRel)
 		}
 	}()
-	res.AttachmentBlobs, res.AttachmentBytes, err = st.restoreAttachments(
-		ctx, app, m, app.ContentDirName())
+	if opts.PackedContent == nil {
+		res.AttachmentBlobs, res.AttachmentBytes, err = st.restoreAttachments(
+			ctx, app, m, app.ContentDirName())
+		res.LooseAttachmentBlobs = res.AttachmentBlobs
+	} else {
+		var packed packedRestoreResult
+		packed, err = st.restorePackedAttachments(ctx, app, m, app.ContentDirName(), opts.PackedContent, start)
+		res.AttachmentBlobs = packed.totalBlobs
+		res.AttachmentBytes = packed.totalBytes
+		res.PackedAttachmentBlobs = packed.packedBlobs
+		res.LooseAttachmentBlobs = packed.looseBlobs
+		res.AttachmentPacks = packed.packs
+		res.PackFallbacks = append([]packstore.ImportFallback(nil), packed.fallbacks...)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -837,117 +860,30 @@ func (s *restoreState) writeRun(f *os.File, raw []byte, id pack.BlobID, run Page
 // grouped by pack. Every blob read re-derives its SHA-256 identity before
 // any file is written.
 func (s *restoreState) restoreAttachments(ctx context.Context, app App, m *Manifest, contentDir string) (int64, int64, error) {
-	refs, _, err := LoadListRefs(s.repo, s.known, m.Attachments.Lists, nil, app.PackFileExtension())
+	inventory, err := s.loadRestoreAttachmentInventory(ctx, app, m)
 	if err != nil {
 		return 0, 0, err
-	}
-	if int64(len(refs)) != m.Attachments.Blobs {
-		return 0, 0, fmt.Errorf(
-			"backup: attachment lists name %d blobs but manifest reports %d", len(refs), m.Attachments.Blobs)
-	}
-	paths, err := s.restoredContentPaths(ctx)
-	if err != nil {
-		return 0, 0, err
-	}
-	// The materialization loop below iterates listed refs only, so a hash the
-	// restored database references but no attachment list carries would never
-	// be written, yet restore would still report success. Prove the two sets
-	// coincide up front, in both directions, before any pack worker writes a
-	// file: every path key must trace back to a listed blob, and every listed
-	// blob must have at least one recorded path — the manifest's stats proof
-	// pins list count == DB blob count, so a listed hash with no DB path means
-	// the sets diverge and must fail before the workers start publishing
-	// content files into the target.
-	listed := make(map[string]struct{}, len(refs))
-	for _, ref := range refs {
-		listed[ref.Hash] = struct{}{}
-		if len(paths[ref.Hash]) == 0 {
-			return 0, 0, fmt.Errorf(
-				"backup: attachment blob %s is in the snapshot's lists but the restored database records no path for it",
-				ref.Hash)
-		}
-	}
-	for hash := range paths {
-		if _, ok := listed[hash]; !ok {
-			return 0, 0, fmt.Errorf(
-				"backup: restored database references attachment %s that appears in no attachment list", hash)
-		}
-	}
-	// Two different content hashes must never claim the same restore path: the
-	// attachment writer publishes each blob with a temp-then-rename that
-	// clobbers, so a shared path would silently leave whichever blob finished
-	// last and discard the other while restore still reported success. Reject up
-	// front. The same path repeated under one hash is harmless (identical
-	// writes), so key the check on the cleaned path and only fail on a
-	// conflicting owner.
-	//
-	// The collision key is deliberately conservative: it case-folds the cleaned
-	// path (the same folding stageExtrasEntry's reserved-name guard uses)
-	// because case-insensitive filesystems (default macOS, Windows) alias "A/b"
-	// and "a/b" onto one file, and it rejects any component ending in a dot or
-	// space (which Windows trims). This also makes restore stricter on
-	// case-sensitive filesystems — two paths differing only by case now collide
-	// — which is the intended contract: a snapshot that only restores correctly
-	// on a case-sensitive host is not safe to call restorable.
-	pathOwner := make(map[string]string)
-	for hash, rels := range paths {
-		for _, rel := range rels {
-			// A non-local path is a more fundamental error than a collision and
-			// has no meaningful normalized key; reject it first (the per-write
-			// path below re-checks as defense in depth).
-			if !filepath.IsLocal(rel) {
-				return 0, 0, fmt.Errorf(
-					"backup: attachment %s restore path %q escapes the content directory", hash, rel)
-			}
-			if bad := trailingDotOrSpaceComponent(rel); bad != "" {
-				return 0, 0, fmt.Errorf(
-					"backup: attachment %s restore path %q has component %q ending in a dot or space", hash, rel, bad)
-			}
-			key := foldedPathKey(rel)
-			if other, ok := pathOwner[key]; ok && other != hash {
-				return 0, 0, fmt.Errorf(
-					"backup: restore path %q collides under case-folded key %q with two different attachments %s and %s",
-					rel, key, other, hash)
-			}
-			pathOwner[key] = hash
-		}
-	}
-	groups := map[string][]ContentRef{}
-	var order []string
-	for _, ref := range refs {
-		id, err := pack.ParseBlobID(ref.Hash)
-		if err != nil {
-			return 0, 0, fmt.Errorf("backup: attachment content hash %q: %w", ref.Hash, err)
-		}
-		ie, ok := s.known[id]
-		if !ok {
-			return 0, 0, fmt.Errorf("backup: attachment blob %s not present in any index", ref.Hash)
-		}
-		if _, seen := groups[ie.PackID]; !seen {
-			order = append(order, ie.PackID)
-		}
-		groups[ie.PackID] = append(groups[ie.PackID], ref)
 	}
 
 	s.done, s.doneByte = 0, 0
 	s.progress.emit(ProgressEvent{
-		Stage: ProgressStageAttachments, Total: int64(len(refs)), BytesTotal: m.Attachments.BlobBytes,
+		Stage: ProgressStageAttachments, Total: int64(len(inventory.refs)), BytesTotal: m.Attachments.BlobBytes,
 	})
-	err = s.runPackGroups(ctx, order, func(packID string) {
-		s.restorePackAttachments(contentDir, packID, groups[packID], paths, int64(len(refs)), m.Attachments.BlobBytes)
+	err = s.runPackGroups(ctx, inventory.order, func(packID string) {
+		s.restorePackAttachments(contentDir, packID, inventory.groups[packID], inventory.paths, int64(len(inventory.refs)), m.Attachments.BlobBytes)
 	})
 	if err != nil {
 		return 0, 0, err
 	}
 	var totalBytes int64
-	for _, ref := range refs {
+	for _, ref := range inventory.refs {
 		totalBytes += ref.Size
 	}
 	s.progress.emit(ProgressEvent{
-		Stage: ProgressStageAttachments, Done: int64(len(refs)), Total: int64(len(refs)),
+		Stage: ProgressStageAttachments, Done: int64(len(inventory.refs)), Total: int64(len(inventory.refs)),
 		BytesDone: totalBytes, BytesTotal: totalBytes, Final: true,
 	})
-	return int64(len(refs)), totalBytes, nil
+	return int64(len(inventory.refs)), totalBytes, nil
 }
 
 // sqliteURIDSN builds a file: SQLite URI for path carrying rawQuery as its
