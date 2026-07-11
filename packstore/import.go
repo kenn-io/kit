@@ -351,6 +351,13 @@ func publishAndVerifyImportPack(
 		}
 		return nil, fmt.Errorf("packstore: final verification for published pack %s: %w", plan.pack.PackID, err)
 	}
+	if existing {
+		if err := syncImportRootDir(target, parent); err != nil {
+			return nil, errors.Join(
+				fmt.Errorf("packstore: sync reused pack directory before catalog authority: %w", err),
+				reader.Close())
+		}
+	}
 	if err := reader.Close(); err != nil {
 		return nil, fmt.Errorf("packstore: close final imported pack %s: %w", plan.pack.PackID, err)
 	}

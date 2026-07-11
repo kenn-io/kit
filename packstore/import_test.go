@@ -68,6 +68,31 @@ func TestPrepareImportReusesByteIdenticalDestination(t *testing.T) {
 	assert.Equal(t, first.Stats(), second.Stats())
 }
 
+func TestPrepareImportReuseRequiresDurableDestinationDirectory(t *testing.T) {
+	target := openImportTarget(t)
+	source, packID, entries := buildImportTestPack(t, []byte("selected"))
+	input := []ImportPack{{PackID: packID, SourcePath: source, Selections: importSelections(t, entries)}}
+	opts := ImportOptions{Limits: DefaultLimits(), CreatedAt: time.Now()}
+	_, err := PrepareImport(context.Background(), target, "content", input, opts)
+	require.NoError(t, err)
+	originalSync := syncImportRootDir
+	syncErr := errors.New("reused pack directory sync failed")
+	finalParent := path.Dir(importPackPath("content", packID))
+	syncImportRootDir = func(_ *os.Root, name string) error {
+		if name == finalParent {
+			return syncErr
+		}
+		return nil
+	}
+	t.Cleanup(func() { syncImportRootDir = originalSync })
+
+	prepared, err := PrepareImport(context.Background(), target, "content", input, opts)
+
+	assert.Nil(t, prepared)
+	require.ErrorIs(t, err, syncErr)
+	assertNoImportStaging(t, target)
+}
+
 func TestPrepareImportFallsBackWhenHardLinksUnavailable(t *testing.T) {
 	originalLink := importRootLink
 	originalUnsupported := importLinkUnsupported
