@@ -77,6 +77,14 @@ func center(values []float64) float64 {
 }
 
 func evaluate(gate metricGate, oldValues, newValues []float64) (string, *violation, error) {
+	if gate.needSignificance && len(oldValues) < minTimeSamples {
+		return "", nil, fmt.Errorf("%s needs at least %d baseline samples, got %d",
+			gate.unit, minTimeSamples, len(oldValues))
+	}
+	if gate.needSignificance && len(newValues) < minTimeSamples {
+		return "", nil, fmt.Errorf("%s needs at least %d candidate samples, got %d",
+			gate.unit, minTimeSamples, len(newValues))
+	}
 	oldCenter := center(oldValues)
 	newCenter := center(newValues)
 	class := benchunit.ClassOf(gate.unit)
@@ -84,13 +92,6 @@ func evaluate(gate metricGate, oldValues, newValues []float64) (string, *violati
 		benchunit.Scale(oldCenter, class), benchunit.Scale(newCenter, class))
 	if oldCenter <= 0 || oldCenter < gate.floor {
 		return span + " (below comparison floor)", nil, nil
-	}
-	if gate.needSignificance && len(newValues) < minTimeSamples {
-		return span, nil, fmt.Errorf("%s needs at least %d candidate samples, got %d",
-			gate.unit, minTimeSamples, len(newValues))
-	}
-	if gate.needSignificance && len(oldValues) < minTimeSamples {
-		return fmt.Sprintf("%s (baseline has %d samples; not time-gated)", span, len(oldValues)), nil, nil
 	}
 	ratio := newCenter / oldCenter
 	detail := fmt.Sprintf("%s (%.2fx, limit %.2fx)", span, ratio, gate.maxRatio)
@@ -139,7 +140,8 @@ func compare(old, next benchmarkSamples, gates []metricGate) ([]string, []violat
 			case !oldOK && !newOK:
 				continue
 			case !oldOK:
-				parts = append(parts, gate.unit+" missing from baseline; not gated")
+				parts = append(parts, gate.unit+" missing from baseline")
+				issues = append(issues, name+": "+gate.unit+" missing from baseline")
 			case !newOK:
 				parts = append(parts, gate.unit+" missing from candidate")
 				issues = append(issues, name+": "+gate.unit+" missing from candidate")
@@ -215,7 +217,7 @@ func run(oldPath, newPath string, gates []metricGate) (string, int) {
 		fmt.Fprintf(&out, "benchgate: configuration: %s\n", issue)
 	}
 	switch {
-	case len(nextSyntax) > 0 || len(issues) > 0 || len(next) == 0:
+	case len(oldSyntax) > 0 || len(nextSyntax) > 0 || len(issues) > 0 || len(next) == 0:
 		return out.String(), 2
 	case len(violations) > 0:
 		return out.String(), 1

@@ -71,12 +71,48 @@ func TestRunRejectsRemovedBenchmark(t *testing.T) {
 }
 
 func TestCompareMissingCandidateMetricIsConfigurationError(t *testing.T) {
-	old := benchmarkSamples{"Read-8": {"B/op": {10_000}}}
+	old := benchmarkSamples{"Read-8": {"B/op": {10_000}, "allocs/op": {10}}}
 	next := benchmarkSamples{"Read-8": {"allocs/op": {10}}}
 	_, violations, issues := compare(old, next, defaultGates(2, 1.2, 1.25, 100_000, 8, 4096))
 	assert.Empty(t, violations)
 	require.Len(t, issues, 1)
 	assert.Contains(t, issues[0], "B/op missing from candidate")
+}
+
+func TestCompareIncompleteBaselineIsConfigurationError(t *testing.T) {
+	t.Run("missing metric", func(t *testing.T) {
+		old := benchmarkSamples{"Read-8": {"sec/op": {0.001, 0.001, 0.001, 0.001, 0.001}}}
+		next := benchmarkSamples{"Read-8": {
+			"sec/op": {0.001, 0.001, 0.001, 0.001, 0.001}, "B/op": {10_000},
+		}}
+		_, violations, issues := compare(old, next, defaultGates(2, 1.2, 1.25, 100_000, 8, 4096))
+		assert.Empty(t, violations)
+		require.Len(t, issues, 1)
+		assert.Contains(t, issues[0], "B/op missing from baseline")
+	})
+
+	t.Run("too few timing samples", func(t *testing.T) {
+		old := benchmarkSamples{"Read-8": {"sec/op": {0.000001}}}
+		next := benchmarkSamples{"Read-8": {"sec/op": {0.001, 0.001, 0.001, 0.001, 0.001}}}
+		_, violations, issues := compare(old, next, defaultGates(2, 1.2, 1.25, 100_000, 8, 4096))
+		assert.Empty(t, violations)
+		require.Len(t, issues, 1)
+		assert.Contains(t, issues[0], "needs at least 5 baseline samples")
+	})
+}
+
+func TestRunRejectsMalformedBaseline(t *testing.T) {
+	dir := t.TempDir()
+	baseline := filepath.Join(dir, "old.txt")
+	candidate := filepath.Join(dir, "new.txt")
+	require.NoError(t, os.WriteFile(baseline, []byte(
+		"BenchmarkRead-8 not-a-valid-result\n"), 0o600))
+	line := "BenchmarkRead-8 5 1000000 ns/op 10000 B/op 10 allocs/op\n"
+	require.NoError(t, os.WriteFile(candidate, []byte(strings.Repeat(line, 5)), 0o600))
+
+	out, code := run(baseline, candidate, defaultGates(2, 1.2, 1.25, 100_000, 8, 4096))
+	assert.Equal(t, 2, code)
+	assert.Contains(t, out, "baseline syntax")
 }
 
 func TestRunExitCodes(t *testing.T) {
