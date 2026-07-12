@@ -47,6 +47,7 @@ type Reader struct {
 	crypter  *Crypter
 	enc      bool
 	entries  []Entry
+	entrySet map[Entry]struct{}
 	limits   ReaderLimits
 	metadata ReaderMetadata
 	streams  int
@@ -144,7 +145,9 @@ func newReader(f *os.File, id string, crypter *Crypter, limits ReaderLimits) (*R
 	if err != nil {
 		return nil, err
 	}
+	entrySet := make(map[Entry]struct{}, len(entries))
 	for _, entry := range entries {
+		entrySet[entry] = struct{}{}
 		if entry.RawLen > limits.RawBytes {
 			return nil, &StreamLimitError{Dimension: StreamLimitRawBytes, Actual: entry.RawLen, Limit: limits.RawBytes}
 		}
@@ -153,7 +156,7 @@ func newReader(f *os.File, id string, crypter *Crypter, limits ReaderLimits) (*R
 		}
 	}
 	return &Reader{
-			id: id, f: f, crypter: crypter, enc: enc, entries: entries, limits: limits,
+			id: id, f: f, crypter: crypter, enc: enc, entries: entries, entrySet: entrySet, limits: limits,
 			metadata: ReaderMetadata{ContainerBytes: uint64(size), FooterBytes: uint64(len(region)), EntryCount: uint64(len(entries))},
 		},
 		nil
@@ -238,13 +241,17 @@ func readFooterRegion(f *os.File, size int64, enc bool, id string,
 // ID returns the pack ULID derived from the filename.
 func (r *Reader) ID() string { return r.id }
 
-// Entries returns the footer entries in pack order. Callers must not mutate.
-func (r *Reader) Entries() []Entry { return r.entries }
+// Entries returns a copy of the verified footer entries in pack order.
+func (r *Reader) Entries() []Entry { return append([]Entry(nil), r.entries...) }
 
 // Metadata returns immutable container quantities from the verified footer.
 func (r *Reader) Metadata() ReaderMetadata { return r.metadata }
 
 func (r *Reader) readStored(e Entry) ([]byte, error) {
+	e, err := r.authoritativeEntry(e)
+	if err != nil {
+		return nil, err
+	}
 	buf := make([]byte, e.StoredLen)
 	//nolint:gosec // e.Offset < footerStart <= file size (int64), per parseFooterRegion
 	if _, err := r.f.ReadAt(buf, int64(e.Offset)); err != nil {
@@ -257,6 +264,14 @@ func (r *Reader) readStored(e Entry) ([]byte, error) {
 			e.ID)
 	}
 	return buf, nil
+}
+
+func (r *Reader) authoritativeEntry(entry Entry) (Entry, error) {
+	if _, ok := r.entrySet[entry]; !ok {
+		return Entry{}, fmt.Errorf(
+			"%w: blob %s entry does not match verified footer", ErrCorrupt, entry.ID)
+	}
+	return entry, nil
 }
 
 // VerifyStored checks the stored bytes' CRC without decrypting or decoding.

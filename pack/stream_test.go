@@ -360,6 +360,38 @@ func TestBlobReaderTerminalVerificationAndParentLifetime(t *testing.T) {
 	require.NoError(t, reader.Close())
 }
 
+func TestBlobReaderRejectsEntryOutsideVerifiedFooter(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	secret := []byte("secret entry bytes")
+	public := []byte("public entry bytes")
+	writer, err := NewWriter(dir, WriterOptions{})
+	require.NoError(t, err)
+	secretEntry, err := writer.Append(secret)
+	require.NoError(t, err)
+	publicEntry, err := writer.Append(public)
+	require.NoError(t, err)
+	final := filepath.Join(dir, writer.ID()+".pack")
+	_, err = writer.Seal(final)
+	require.NoError(t, err)
+
+	reader, err := OpenReader(final, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, reader.Close()) })
+	listed := reader.Entries()
+	listed[0] = publicEntry
+	assert.Equal(t, secretEntry, reader.Entries()[0], "returned footer entries must not mutate reader authority")
+
+	forged := publicEntry
+	forged.Offset = secretEntry.Offset
+	forged.StoredLen = secretEntry.StoredLen
+	forged.RawLen = secretEntry.RawLen
+	stream, err := reader.OpenBlob(context.Background(), forged)
+	require.ErrorIs(t, err, ErrCorrupt)
+	require.ErrorContains(t, err, "does not match verified footer")
+	assert.Nil(t, stream)
+}
+
 func TestBlobReaderCancellationIsTerminal(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -463,11 +495,18 @@ func TestBlobReaderDetectsHashMismatch(t *testing.T) {
 	final := filepath.Join(dir, writer.ID()+".pack")
 	_, err = writer.Seal(final)
 	require.NoError(t, err)
-	entry.ID = ComputeBlobID([]byte("different"))
+	forged := entry
+	forged.ID = ComputeBlobID([]byte("different"))
+	data, err := os.ReadFile(final)
+	require.NoError(t, err)
+	footerStart := int(entry.Offset + entry.StoredLen)
+	rebuilt := append([]byte{}, data[:footerStart]...)
+	rebuilt = append(rebuilt, appendPlainTrailer(encodeFooterRegion([]Entry{forged}))...)
+	require.NoError(t, os.WriteFile(final, rebuilt, 0o600))
 
 	reader, err := OpenReader(final, nil)
 	require.NoError(t, err)
-	stream, err := reader.OpenBlob(context.Background(), entry)
+	stream, err := reader.OpenBlob(context.Background(), reader.Entries()[0])
 	require.NoError(t, err)
 	got, err := io.ReadAll(stream)
 	assert.Equal(t, content, got)

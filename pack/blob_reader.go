@@ -56,17 +56,23 @@ func (s *storedStream) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// OpenBlob opens a verified-on-EOF stream for one plain entry.
+// OpenBlob opens a verified-on-EOF stream for one plain entry. Entry must
+// exactly match a value returned by this Reader's Entries method.
 func (r *Reader) OpenBlob(ctx context.Context, entry Entry) (*BlobReader, error) {
 	return r.OpenBlobWithOptions(ctx, entry, BlobReaderOptions{})
 }
 
 // OpenBlobWithOptions opens a verified stream with narrower per-stream limits.
+// Entry must exactly match a value returned by this Reader's Entries method.
 func (r *Reader) OpenBlobWithOptions(
 	ctx context.Context, entry Entry, opts BlobReaderOptions,
 ) (*BlobReader, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("pack: nil context")
+	}
+	entry, err := r.authoritativeEntry(entry)
+	if err != nil {
+		return nil, err
 	}
 	if r.enc || entry.Flags&BlobEncrypted != 0 {
 		return nil, &UnsupportedStreamError{Feature: StreamEncryptedV1}

@@ -53,8 +53,9 @@ func (s *Store) cachedReaderLocked(packID string, enforcePolicy bool) (*cachedPa
 	if err != nil {
 		return nil, fmt.Errorf("packstore: open pack %s: %w", packID, mapPackStreamLimit(err))
 	}
-	entries := make(map[pack.BlobID]pack.Entry, len(reader.Entries()))
-	for _, entry := range reader.Entries() {
+	footerEntries := reader.Entries()
+	entries := make(map[pack.BlobID]pack.Entry, len(footerEntries))
+	for _, entry := range footerEntries {
 		if _, duplicate := entries[entry.ID]; duplicate {
 			return nil, errors.Join(fmt.Errorf("%w: duplicate blob id %s", pack.ErrCorrupt, entry.ID), reader.Close())
 		}
