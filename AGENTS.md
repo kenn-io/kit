@@ -74,6 +74,12 @@ provider workflows to this repo unless the package already owns that concern.
 - Do not amend commits unless the user explicitly asks.
 - Never revert user changes. If existing edits touch the same files, read them
   and work with them.
+- Keep pull request descriptions concise and rationale-first: explain the
+  problem, the chosen approach, and consequences that matter to reviewers.
+- Do not add validation sections, command or check inventories, benchmark logs,
+  caveats about unrelated pre-existing failures, or agent/tool attribution to
+  pull request descriptions. Put verification evidence in CI, the kata issue,
+  or a targeted review comment when it is useful.
 
 <!-- BEGIN KATA (managed by `kata init --with-agents`) -->
 ## kata issue tracker

@@ -1,9 +1,11 @@
 package pack
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"io"
 	"os"
 	"path/filepath"
 )
@@ -125,6 +127,124 @@ func (w *Writer) AppendEncoded(id BlobID, frame []byte, rawLen uint64, compresse
 			id, len(frame), rawLen)
 	}
 	return w.appendFrame(id, frame, rawLen, compressed)
+}
+
+// AppendStream reads exactly rawLen bytes from src, prepares a bounded-scratch
+// plain frame, and appends it. It never closes src. Source and preparation
+// failures leave the Writer usable; failures after the pack copy starts poison
+// it and require Abort.
+func (w *Writer) AppendStream(
+	ctx context.Context,
+	src io.Reader,
+	rawLen uint64,
+	opts AppendStreamOptions,
+) (Entry, error) {
+	if w.done {
+		return Entry{}, ErrSealed
+	}
+	if w.err != nil {
+		return Entry{}, w.err
+	}
+	if w.opts.Crypter != nil {
+		return Entry{}, &UnsupportedStreamError{Feature: StreamEncryptedV1}
+	}
+	if opts.ScratchDir == "" {
+		opts.ScratchDir = filepath.Dir(w.staging)
+	}
+	prepared, err := PrepareBlob(ctx, src, rawLen, w.opts.ZstdLevel, opts)
+	if err != nil {
+		return Entry{}, err
+	}
+	return w.AppendPrepared(ctx, prepared)
+}
+
+// AppendPrepared consumes prepared on every return and appends its complete
+// plain frame. It is the ordered writer half of concurrent PrepareBlob work.
+func (w *Writer) AppendPrepared(
+	ctx context.Context,
+	prepared *PreparedBlob,
+) (entry Entry, resultErr error) {
+	if ctx == nil {
+		return Entry{}, fmt.Errorf("pack: nil context")
+	}
+	if prepared == nil {
+		return Entry{}, fmt.Errorf("pack: nil prepared blob")
+	}
+	f, scratchPath, preparedInfo, err := prepared.take()
+	if err != nil {
+		return Entry{}, err
+	}
+	writerMutated := false
+	defer func() {
+		cleanupErr := closeAndRemoveScratch(f, scratchPath)
+		prepared.finish(cleanupErr)
+		if cleanupErr != nil {
+			resultErr = errors.Join(resultErr, cleanupErr)
+			if writerMutated {
+				w.err = resultErr
+			}
+		}
+	}()
+	if w.done {
+		return Entry{}, ErrSealed
+	}
+	if w.err != nil {
+		return Entry{}, w.err
+	}
+	if w.opts.Crypter != nil {
+		return Entry{}, &UnsupportedStreamError{Feature: StreamEncryptedV1}
+	}
+	if err := ctx.Err(); err != nil {
+		return Entry{}, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return Entry{}, fmt.Errorf("pack: stat prepared frame: %w", err)
+	}
+	if !os.SameFile(preparedInfo, info) || info.Size() < 0 || uint64(info.Size()) != prepared.storedLen {
+		return Entry{}, fmt.Errorf("pack: prepared frame identity or length changed")
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return Entry{}, fmt.Errorf("pack: rewinding prepared frame: %w", err)
+	}
+
+	crc := crc32.New(crc32cTable)
+	written, err := copyContext(ctx, io.MultiWriter(w.f, crc), f, prepared.storedLen)
+	writerMutated = written != 0
+	if err != nil || written != prepared.storedLen {
+		if err == nil {
+			err = io.ErrUnexpectedEOF
+		}
+		resultErr = fmt.Errorf("pack: writing streamed blob %s after %d bytes: %w", prepared.id, written, err)
+		if writerMutated {
+			w.err = resultErr
+		}
+		return Entry{}, resultErr
+	}
+	// A successful zero-length copy still commits a logical entry below, so a
+	// later cleanup failure must poison the writer even though no frame bytes
+	// were written.
+	writerMutated = true
+	if crc.Sum32() != prepared.crc {
+		w.err = fmt.Errorf("%w: prepared frame crc changed for blob %s", ErrCorrupt, prepared.id)
+		return Entry{}, w.err
+	}
+
+	var flags BlobFlags
+	if prepared.compressed {
+		flags |= BlobCompressed
+	}
+	entry = Entry{
+		ID:        prepared.id,
+		Offset:    uint64(w.off), //nolint:gosec // w.off is non-negative
+		StoredLen: prepared.storedLen,
+		RawLen:    prepared.rawLen,
+		Flags:     flags,
+		CRC32C:    prepared.crc,
+	}
+	w.off += int64(prepared.storedLen) //nolint:gosec // bounded by MaxStoredLen
+	w.entries = append(w.entries, entry)
+	return entry, nil
 }
 
 // appendFrame seals (when encrypted), writes, and records one encoded frame.

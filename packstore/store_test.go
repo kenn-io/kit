@@ -131,7 +131,7 @@ func TestStoreSharesBoundedAndOrdinaryCacheSlotsAndEvicts(t *testing.T) {
 		require.NoError(r.Close())
 		_, _, err = store.ReadBounded(context.Background(), entry.Hash, int64(len(content)))
 		require.NoError(err)
-		require.LessOrEqual(len(store.readers)+len(store.boundedReaders), maxOpenReaders)
+		require.LessOrEqual(len(store.packReaders), maxOpenReaders)
 	}
 	assert.Len(t, store.order, maxOpenReaders)
 	require.NoError(store.Close())

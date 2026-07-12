@@ -1,7 +1,15 @@
-// Package pack implements a content-addressed blob/pack container format
-// for archive and backup tools: blobs are stored in sealed-immutable pack
-// files, written once via Writer and never mutated afterward, with optional
-// zstd compression and XChaCha20-Poly1305 encryption.
+// Package pack implements a content-addressed blob/pack container format for
+// archive and backup tools: blobs are stored in sealed-immutable pack files,
+// written once via Writer and never mutated afterward, with optional zstd
+// compression and XChaCha20-Poly1305 encryption.
+//
+// Buffered Append and ReadBlob remain the compatibility path. AppendStream,
+// PrepareBlob, AppendPrepared, and Reader.OpenBlob stream plain format-v1
+// frames through bounded scratch and codec windows. A BlobReader is trusted
+// only after terminal io.EOF, Verify succeeds, or Verified reports true;
+// closing it earlier reports ErrVerificationIncomplete. Format-v1 encryption
+// authenticates whole frames and therefore returns ErrStreamUnsupported from
+// the streaming APIs instead of exposing unauthenticated prefixes.
 package pack
 
 import "errors"

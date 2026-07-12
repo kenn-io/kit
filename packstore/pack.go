@@ -147,7 +147,7 @@ func (m *Maintainer) dropDangling(ctx context.Context, stats *PackStats) error {
 		} else if err != nil {
 			return err
 		} else {
-			if _, _, err := m.store.readPackedBounded(entry.Hash, &entry, m.limits.BlobBytes); err == nil {
+			if _, _, err := m.store.readPackedBounded(ctx, entry.Hash, &entry, m.limits.BlobBytes); err == nil {
 				continue
 			}
 			if _, err := readVerifiedLoosePath(m.layout.LoosePath(entry.Hash), entry.Hash, m.limits.BlobBytes); err != nil {

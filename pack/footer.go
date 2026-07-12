@@ -77,6 +77,10 @@ func parseFooterRegion(region []byte, footerStart uint64) ([]Entry, error) {
 		e.RawLen = binary.LittleEndian.Uint64(region[off+48:])
 		e.Flags = BlobFlags(region[off+56])
 		e.CRC32C = binary.LittleEndian.Uint32(region[off+57:])
+		if e.Flags & ^(BlobCompressed|BlobEncrypted) != 0 {
+			return nil, fmt.Errorf(
+				"%w: entry %d has unknown flags %#x", ErrCorrupt, i, e.Flags)
+		}
 		if e.StoredLen > maxStoredLen {
 			return nil, fmt.Errorf(
 				"%w: entry %d stored length %d exceeds max %d",
