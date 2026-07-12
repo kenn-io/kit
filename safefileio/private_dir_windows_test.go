@@ -98,33 +98,36 @@ func TestOpenCurrentUserFileAcceptsCurrentTokenOwner(t *testing.T) {
 }
 
 func TestWindowsOwnerMatchesCurrentUserAndTokenOwner(t *testing.T) {
-	userSID, err := currentWindowsUserSID()
-	require.NoError(t, err)
-	ownerSID, err := currentWindowsOwnerSID()
-	require.NoError(t, err)
+	require := require.New(t)
+	assert := assert.New(t)
+	userSID, err := windows.CreateWellKnownSid(windows.WinBuiltinUsersSid)
+	require.NoError(err)
+	ownerSID, err := windows.CreateWellKnownSid(windows.WinBuiltinGuestsSid)
+	require.NoError(err)
 	systemSID, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
-	require.NoError(t, err)
+	require.NoError(err)
 	adminsSID, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
-	require.NoError(t, err)
+	require.NoError(err)
 
-	require.True(t, windowsOwnerMatches(userSID, userSID, ownerSID))
-	require.True(t, windowsOwnerMatches(ownerSID, userSID, ownerSID))
-	require.False(t, windowsOwnerMatches(systemSID, userSID, ownerSID))
-	require.False(t, windowsOwnerMatches(adminsSID, userSID, ownerSID))
-	require.False(t, windowsOwnerMatches(nil, userSID, ownerSID))
+	assert.True(windowsOwnerMatches(userSID, userSID, ownerSID))
+	assert.True(windowsOwnerMatches(ownerSID, userSID, ownerSID))
+	assert.False(windowsOwnerMatches(systemSID, userSID, ownerSID))
+	assert.False(windowsOwnerMatches(adminsSID, userSID, ownerSID))
+	assert.False(windowsOwnerMatches(nil, userSID, ownerSID))
 }
 
 func TestVerifyWindowsDirectoryOwner(t *testing.T) {
-	userSID, err := currentWindowsUserSID()
-	require.NoError(t, err)
-	ownerSID, err := currentWindowsOwnerSID()
-	require.NoError(t, err)
+	require := require.New(t)
+	userSID, err := windows.CreateWellKnownSid(windows.WinBuiltinUsersSid)
+	require.NoError(err)
+	ownerSID, err := windows.CreateWellKnownSid(windows.WinBuiltinGuestsSid)
+	require.NoError(err)
 	systemSID, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
-	require.NoError(t, err)
+	require.NoError(err)
 	adminsSID, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
-	require.NoError(t, err)
+	require.NoError(err)
 	worldSID, err := windows.CreateWellKnownSid(windows.WinWorldSid)
-	require.NoError(t, err)
+	require.NoError(err)
 
 	tests := []struct {
 		name      string
@@ -149,11 +152,12 @@ func TestVerifyWindowsDirectoryOwner(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			assert := assert.New(t)
 			err := verifyWindowsDirectoryOwner("runtime", tt.owner, userSID, ownerSID)
 			if tt.wantError != "" {
-				assert.EqualError(t, err, tt.wantError)
+				assert.EqualError(err, tt.wantError)
 			} else {
-				assert.NoError(t, err)
+				assert.NoError(err)
 			}
 		})
 	}
