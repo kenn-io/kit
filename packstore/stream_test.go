@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -477,13 +478,13 @@ func TestStoreStreamsPackedObjectAboveDefaultCeiling(t *testing.T) {
 	if testing.Short() {
 		t.Skip("writes a blob above the default 64 MiB policy ceiling")
 	}
-	const size = int64(64<<20 + 1)
+	size := largeStoreStreamTestBytes(t, 64<<20+1)
 	layout := layoutForStoreTest(t)
 	staging := t.TempDir()
 	w, err := pack.NewWriter(staging, pack.WriterOptions{})
 	require.NoError(t, err)
 	entry, err := w.AppendStream(context.Background(), io.LimitReader(streamZeroReader{}, size), uint64(size), pack.AppendStreamOptions{
-		ScratchDir: staging, ScratchBytes: 140 << 20,
+		ScratchDir: staging, ScratchBytes: uint64(size)*2 + 64<<20, //nolint:gosec // helper requires positive size
 	})
 	require.NoError(t, err)
 	packID := w.ID()
@@ -505,6 +506,18 @@ func TestStoreStreamsPackedObjectAboveDefaultCeiling(t *testing.T) {
 	assert.Equal(t, size, gotSize)
 	require.NoError(t, stream.Verify())
 	require.NoError(t, stream.Close())
+}
+
+func largeStoreStreamTestBytes(t *testing.T, fallback int64) int64 {
+	t.Helper()
+	value := os.Getenv("KIT_STREAM_TEST_BYTES")
+	if value == "" {
+		return fallback
+	}
+	size, err := strconv.ParseInt(value, 10, 64)
+	require.NoError(t, err)
+	require.Positive(t, size)
+	return size
 }
 
 type streamZeroReader struct{}

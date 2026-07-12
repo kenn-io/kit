@@ -75,3 +75,53 @@ jobs:
 
       - name: Run go vet
         run: go vet ./...
+
+  streaming-gates:
+    name: Streaming race and portability gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run streaming race tests
+        run: go test -race ./pack ./packstore ./backup
+
+      - name: Compile streaming packages for Linux 386
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: "386"
+        run: |
+          go test -c -o "${RUNNER_TEMP}/kit-pack-linux386.test" ./pack
+          go test -c -o "${RUNNER_TEMP}/kit-packstore-linux386.test" ./packstore
+          go test -c -o "${RUNNER_TEMP}/kit-backup-linux386.test" ./backup
+
+      - name: Compile fail-closed storage packages for Plan 9
+        env:
+          CGO_ENABLED: "0"
+          GOOS: plan9
+          GOARCH: amd64
+        run: |
+          go test -c -o "${RUNNER_TEMP}/kit-pack-plan9.test" ./pack
+          go test -c -o "${RUNNER_TEMP}/kit-packstore-plan9.test" ./packstore
+
+      - name: Verify current streamed packs with the v0.7.0 reader
+        run: |
+          go run ./tools/packstreamfixture -out "${RUNNER_TEMP}/current-stream.pack"
+          mkdir "${RUNNER_TEMP}/v070-reader"
+          cp tools/packv1reader/main.go "${RUNNER_TEMP}/v070-reader/main.go"
+          cd "${RUNNER_TEMP}/v070-reader"
+          go mod init compatibility-reader
+          go mod edit -require go.kenn.io/kit@v0.7.0
+          go mod tidy
+          go run . -pack "${RUNNER_TEMP}/current-stream.pack"

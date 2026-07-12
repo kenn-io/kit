@@ -14,6 +14,19 @@ import (
 
 func BenchmarkStorePackedReads(b *testing.B) {
 	content := bytes.Repeat([]byte("packstore stream benchmark "), (1<<20)/27)
+	benchmarkStorePackedReads(b, content)
+}
+
+func BenchmarkStorePackedReadsRaw(b *testing.B) {
+	content := make([]byte, 1<<20)
+	reader := &maintenanceBenchNoiseReader{state: 1}
+	_, err := io.ReadFull(reader, content)
+	require.NoError(b, err)
+	benchmarkStorePackedReads(b, content)
+}
+
+func benchmarkStorePackedReads(b *testing.B, content []byte) {
+	b.Helper()
 	root := b.TempDir()
 	layout, err := NewLayout(root, LayoutOptions{Staging: StagingStoreDirectory, StagingDir: "tmp"})
 	require.NoError(b, err)

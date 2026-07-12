@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -90,7 +91,7 @@ func TestAppendStreamAboveLegacyCeiling(t *testing.T) {
 	if testing.Short() {
 		t.Skip("writes a blob above the former 64 MiB policy ceiling")
 	}
-	const size = uint64(64<<20 + 1)
+	size := uint64(largeStreamTestBytes(t, 64<<20+1)) //nolint:gosec // helper requires a positive value
 	tests := []struct {
 		name       string
 		source     func() io.Reader
@@ -107,7 +108,7 @@ func TestAppendStreamAboveLegacyCeiling(t *testing.T) {
 			t.Cleanup(func() { _ = writer.Abort() })
 			source := io.LimitReader(tt.source(), int64(size))
 			entry, err := writer.AppendStream(context.Background(), source, size, AppendStreamOptions{
-				ScratchDir: dir, ScratchBytes: 140 << 20,
+				ScratchDir: dir, ScratchBytes: size*2 + 64<<20,
 			})
 			require.NoError(t, err)
 			assert.Equal(t, tt.compressed, entry.Flags&BlobCompressed != 0)
@@ -125,6 +126,18 @@ func TestAppendStreamAboveLegacyCeiling(t *testing.T) {
 			require.NoError(t, reader.Close())
 		})
 	}
+}
+
+func largeStreamTestBytes(t *testing.T, fallback int64) int64 {
+	t.Helper()
+	value := os.Getenv("KIT_STREAM_TEST_BYTES")
+	if value == "" {
+		return fallback
+	}
+	size, err := strconv.ParseInt(value, 10, 64)
+	require.NoError(t, err)
+	require.Positive(t, size)
+	return size
 }
 
 type zeroReader struct{}
@@ -281,7 +294,7 @@ func TestAppendPreparedZeroByteWriteFailureDoesNotPoisonWriter(t *testing.T) {
 	require.NoError(t, writer.f.Close())
 	_, err = writer.AppendPrepared(context.Background(), prepared)
 	require.Error(t, err)
-	assert.Nil(t, writer.err)
+	assert.NoError(t, writer.err)
 }
 
 func TestAppendPreparedCancellationBeforeCopyLeavesWriterUsable(t *testing.T) {

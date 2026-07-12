@@ -35,6 +35,7 @@ func TestFooterRegionEmpty(t *testing.T) {
 
 func TestParseFooterRegionRejects(t *testing.T) {
 	assert := assert.New(t)
+	require := require.New(t)
 	region := encodeFooterRegion(testEntries())
 
 	_, err := parseFooterRegion(region[:len(region)-1], 20)
@@ -48,12 +49,12 @@ func TestParseFooterRegionRejects(t *testing.T) {
 
 	bad := encodeFooterRegion([]Entry{{Offset: 2, StoredLen: 1, RawLen: 1}})
 	_, err = parseFooterRegion(bad, 20)
-	assert.ErrorIs(err, ErrCorrupt, "entry offset inside header")
+	require.ErrorIs(err, ErrCorrupt, "entry offset inside header")
 
 	unknownFlags := testEntries()
 	unknownFlags[1].Flags |= 1 << 7
 	_, err = parseFooterRegion(encodeFooterRegion(unknownFlags), 20)
-	assert.ErrorIs(err, ErrCorrupt, "unknown entry flags")
+	require.ErrorIs(err, ErrCorrupt, "unknown entry flags")
 	assert.ErrorContains(err, "entry 1 has unknown flags 0x80")
 }
 
