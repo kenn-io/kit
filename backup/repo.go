@@ -9,6 +9,14 @@
 // format-v1 encrypted entries retain their whole-entry authentication contract
 // and are not exposed as verified-prefix streams.
 //
+// Existing Create, Verify, and Restore callers receive the plain-content
+// streaming implementation without changing repository format or application
+// adapters. Repo.OpenBlob is available to sequential consumers; bytes from it
+// become authoritative only after terminal EOF or a successful Verify, and an
+// early Close reports incomplete verification. Capture preparation trades
+// object-sized heap for private repository scratch, so callers must provision
+// scratch capacity for the configured capture concurrency.
+//
 // The engine is application-neutral: everything specific to a given
 // application (its database filename, content directory, referenced-file
 // enumeration, and the opaque stats payload recorded per snapshot) is supplied
