@@ -323,9 +323,6 @@ func (r *boundedPackReader) readBlob(entry pack.Entry, maxBytes int64) ([]byte, 
 		}
 		return nil, newLimitError(LimitBlobStoredBytes, entry.StoredLen, maxPlatformInt)
 	}
-	if r.streamReader != nil {
-		return r.streamReader.ReadBlob(entry)
-	}
 	stored := make([]byte, int(entry.StoredLen))
 	if _, err := r.file.ReadAt(stored, int64(entry.Offset)); err != nil { //nolint:gosec
 		return nil, fmt.Errorf("%w: read stored bytes for %s: %w", pack.ErrCorrupt, entry.ID, err)

@@ -48,6 +48,40 @@ func TestMaintenanceReadAllowsMinimumZstdWindowForSmallBlob(t *testing.T) {
 	require.Equal(content, got)
 }
 
+func TestMaintenanceReadRejectsZstdWindowAboveBlobLimit(t *testing.T) {
+	require := require.New(t)
+	content := bytes.Repeat([]byte("bounded window "), 128)
+	encoder, err := zstd.NewWriter(nil,
+		zstd.WithEncoderConcurrency(1),
+		zstd.WithWindowSize(1<<20),
+		zstd.WithSingleSegment(false))
+	require.NoError(err)
+	encoded := encoder.EncodeAll(content, nil)
+	encoder.Close()
+
+	layout := layoutForStoreTest(t)
+	writer, err := pack.NewWriter(t.TempDir(), pack.WriterOptions{})
+	require.NoError(err)
+	id := pack.ComputeBlobID(content)
+	_, err = writer.AppendEncoded(id, encoded, uint64(len(content)), true)
+	require.NoError(err)
+	path := layout.PackPath(writer.ID())
+	require.NoError(os.MkdirAll(filepath.Dir(path), 0o700))
+	_, err = writer.Seal(path)
+	require.NoError(err)
+
+	limits := DefaultLimits()
+	limits.BlobBytes = int64(len(content))
+	reader, err := OpenMaintenancePack(path, limits)
+	require.NoError(err)
+	t.Cleanup(func() { require.NoError(reader.Close()) })
+	hash, err := ParseHash(id.String())
+	require.NoError(err)
+	_, err = reader.ReadBlob(hash)
+	require.Error(err)
+	require.ErrorIs(err, pack.ErrCorrupt)
+}
+
 func TestReadBoundedEnforcesLooseAndPackedBlobLimits(t *testing.T) {
 	for _, storage := range []string{"loose", "packed"} {
 		t.Run(storage, func(t *testing.T) {
