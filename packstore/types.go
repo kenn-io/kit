@@ -193,9 +193,11 @@ type RepackMove struct {
 	NewEntry  IndexEntry
 }
 
-// Limits bounds allocation and parsing for packed reads and maintenance.
-// BlobBytes does not cap Store.Open or OpenStream for authorized loose files;
-// use ReadBounded or caller policy when a loose-read work limit is required.
+// Limits bounds allocation and parsing for Store.ReadBounded, packed
+// Store.OpenStream, and maintenance. Store.Open is the buffered compatibility
+// path and does not enforce these limits. BlobBytes also does not cap
+// OpenStream for authorized loose files; use ReadBounded or caller policy when
+// a loose-read work limit is required.
 type Limits struct {
 	BlobBytes   int64
 	PackBytes   int64
@@ -203,8 +205,8 @@ type Limits struct {
 	PackEntries int
 }
 
-// DefaultLimits returns conservative maintenance ceilings for applications
-// that do not supply a custom storage policy.
+// DefaultLimits returns conservative bounded-read, packed-stream, and
+// maintenance ceilings for applications that do not supply a custom policy.
 func DefaultLimits() Limits {
 	return Limits{
 		BlobBytes:   defaultBlobBytes,

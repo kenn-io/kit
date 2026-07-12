@@ -240,7 +240,7 @@ Defaults remain deliberately conservative:
 
 | Limit | Default | Controls |
 | --- | ---: | --- |
-| `BlobBytes` | 64 MiB | raw and stored bytes admitted for packed reads and maintenance |
+| `BlobBytes` | 64 MiB | raw and stored bytes admitted by `ReadBounded`, packed `OpenStream`, and maintenance |
 | `PackBytes` | 128 MiB | one pack container |
 | `FooterBytes` | 8 MiB | footer parsing and allocation |
 | `PackEntries` | 100,000 | entries parsed from one pack |
@@ -249,7 +249,9 @@ Streaming capability does not change these defaults. Raising `BlobBytes`
 without a compatible `PackBytes` still leaves large objects unpackable. Keep
 the four limits coherent with target pack size, expected object distribution,
 and restore inputs. Larger authorized loose objects remain readable and stay
-loose until packing policy admits them.
+loose until packing policy admits them. The buffered compatibility path
+`Store.Open` does not enforce these limits; callers requiring an allocation
+ceiling must choose `ReadBounded` or packed `OpenStream` instead.
 
 Plain entry preparation can temporarily hold the raw scratch file plus a
 worst-case zstd candidate: approximately `2.004 * raw size` plus fixed frame
