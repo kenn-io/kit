@@ -41,6 +41,40 @@ func TestStoreOpenStreamLoosePackedParity(t *testing.T) {
 	}
 }
 
+func TestStoreStreamsLooseObjectAboveMaintenanceLimit(t *testing.T) {
+	content := bytes.Repeat([]byte("oversized loose content "), 16)
+	layout := layoutForStoreTest(t)
+	hash := hashForTest(content)
+	require.NoError(t, os.MkdirAll(filepath.Dir(layout.LoosePath(hash)), 0o700))
+	require.NoError(t, os.WriteFile(layout.LoosePath(hash), content, 0o600))
+	limits := DefaultLimits()
+	limits.BlobBytes = int64(len(content) - 1)
+	store, err := NewStore(&mapResolver{locations: map[Hash]Location{
+		hash: {Member: true},
+	}}, layout, StoreOptions{Limits: limits})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+
+	stream, size, err := store.OpenStream(context.Background(), hash)
+	require.NoError(t, err)
+	assert.Equal(t, int64(len(content)), size)
+	got, err := io.ReadAll(stream)
+	require.NoError(t, err)
+	assert.Equal(t, content, got)
+	require.NoError(t, stream.Close())
+
+	var copied bytes.Buffer
+	written, err := store.CopyVerified(context.Background(), hash, &copied)
+	require.NoError(t, err)
+	assert.Equal(t, int64(len(content)), written)
+	assert.Equal(t, content, copied.Bytes())
+
+	_, _, err = store.ReadBounded(context.Background(), hash, limits.BlobBytes)
+	var limitErr *LimitError
+	require.ErrorAs(t, err, &limitErr)
+	assert.Equal(t, LimitBlobRawBytes, limitErr.Dimension)
+}
+
 func TestStoreOpenStreamEarlyCloseLoosePackedParity(t *testing.T) {
 	content := []byte("early close content")
 	for _, representation := range []string{"loose", "packed"} {

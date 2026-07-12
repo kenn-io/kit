@@ -193,7 +193,9 @@ type RepackMove struct {
 	NewEntry  IndexEntry
 }
 
-// Limits bounds allocation and parsing during maintenance.
+// Limits bounds allocation and parsing for packed reads and maintenance.
+// BlobBytes does not cap Store.Open or OpenStream for authorized loose files;
+// use ReadBounded or caller policy when a loose-read work limit is required.
 type Limits struct {
 	BlobBytes   int64
 	PackBytes   int64

@@ -120,7 +120,7 @@ result, err := loose.Write(ctx, src, packstore.WriteOptions{
 	ExpectedHash: hash,
 	ExpectedSize: size,
 	SizeKnown:    true,
-	MaxBytes:     limits.BlobBytes,
+	MaxBytes:     looseWriteLimit,
 })
 if err != nil {
 	return err
@@ -132,6 +132,11 @@ if err != nil {
 If the database transaction fails, the durable loose object is an authority-free
 orphan and can be reconciled later. Do not delete it as transaction rollback
 unless the application can prove that no concurrent member references it.
+
+`looseWriteLimit` is application ingestion policy and is independent of the
+packed-maintenance `limits.BlobBytes` value. Reusing the maintenance limit here
+is appropriate only when the application deliberately gives loose and packed
+objects the same ceiling.
 
 ## Buffered and streaming reads
 
@@ -160,6 +165,12 @@ _ = size // authoritative decoded length
 
 Closing early does not drain the stream and returns incomplete verification.
 Cancellation and integrity failures are terminal and sticky.
+
+Authorized loose streams preserve `Store.Open` availability and are not
+capped by `Limits.BlobBytes`; streaming them does not require an object-sized
+allocation. Packed streams still enforce configured raw, stored, container,
+footer, and decoder-window limits. Use `ReadBounded` or application policy when
+a loose read needs an explicit work ceiling.
 
 When output will become authoritative, copy into a caller-owned private
 staging file with `Store.CopyVerified`. That method verifies the source but
@@ -229,7 +240,7 @@ Defaults remain deliberately conservative:
 
 | Limit | Default | Controls |
 | --- | ---: | --- |
-| `BlobBytes` | 64 MiB | raw and stored bytes admitted for one object |
+| `BlobBytes` | 64 MiB | raw and stored bytes admitted for packed reads and maintenance |
 | `PackBytes` | 128 MiB | one pack container |
 | `FooterBytes` | 8 MiB | footer parsing and allocation |
 | `PackEntries` | 100,000 | entries parsed from one pack |
@@ -237,7 +248,8 @@ Defaults remain deliberately conservative:
 Streaming capability does not change these defaults. Raising `BlobBytes`
 without a compatible `PackBytes` still leaves large objects unpackable. Keep
 the four limits coherent with target pack size, expected object distribution,
-and restore inputs.
+and restore inputs. Larger authorized loose objects remain readable and stay
+loose until packing policy admits them.
 
 Plain entry preparation can temporarily hold the raw scratch file plus a
 worst-case zstd candidate: approximately `2.004 * raw size` plus fixed frame
@@ -294,5 +306,6 @@ Before enabling packed storage or raising object limits:
   amplification at expected concurrency; and
 - raise `BlobBytes` and related limits only from those measurements.
 
-An initial upgrade should keep the 64 MiB default. Capability and policy can
-then be rolled out independently.
+An initial upgrade should keep the 64 MiB packed-maintenance default.
+Capability, loose-object policy, and packing policy can then be rolled out
+independently.
