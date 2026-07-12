@@ -196,10 +196,19 @@ maxima.
 internally. All application paths that change membership or physical content
 must use mutation leases from the same coordinator.
 
-`PackOptions.MaxBytes` and `RepackOptions.MaxBytes` are soft committed raw-byte
-budgets. A run may finish the object already in progress before reporting
-`BudgetExhausted`. Use finite budgets for scheduled work and inspect returned
-statistics instead of assuming every eligible object was processed.
+`PackOptions.MaxBytes` is checked after each appended object. `Pack` can
+therefore overshoot by one object's raw size, then reports `BudgetExhausted`.
+
+`RepackOptions.MaxBytes` is checked only between selected source packs.
+`Repack` can overshoot by the live raw bytes of an entire source pack. It sets
+`BudgetExhausted` only when another source remains and reaches the next budget
+check; crossing the budget while rewriting the final source leaves the flag
+false. Treat `BytesRepacked` as the amount actually committed and the flag as
+an indication that another source was skipped, not as proof that the numeric
+budget was or was not crossed.
+
+Use finite budgets for scheduled work and inspect all returned statistics
+instead of assuming every eligible object was processed.
 
 Maintenance preserves authority ordering:
 
