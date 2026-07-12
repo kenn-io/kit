@@ -232,7 +232,7 @@ func (c *maintenanceQueueContext) Err() error {
 
 func assertMaintenanceBlocked(t *testing.T, acquired <-chan leaseResult, where string) {
 	t.Helper()
-	assert.Zero(t, len(acquired), where)
+	assert.Empty(t, acquired, where)
 }
 
 func requireMaintenanceLease(t *testing.T, acquired <-chan leaseResult) *packstore.Lease {

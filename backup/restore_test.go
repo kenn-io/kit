@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -345,6 +346,7 @@ func (a badContentPathApp) RestoredContentPaths(ctx context.Context, db *sql.DB)
 // snapshot exercises the incremental known-blob path, which must still stream
 // and verify live content before reusing repository authority.
 func TestLargePlainAttachmentCaptureVerifyRestore(t *testing.T) {
+	largeBytes := largeBackupStreamTestBytes(t, 64<<20+1)
 	for _, tc := range []struct {
 		name         string
 		compressible bool
@@ -358,7 +360,7 @@ func TestLargePlainAttachmentCaptureVerifyRestore(t *testing.T) {
 			ctx := context.Background()
 			r := initTestRepo(t)
 			dbPath, attachmentsDir, dataDir, writer := seedBackupFixture(t)
-			large := writeLargeAttachment(t, attachmentsDir, (64<<20)+1, tc.compressible)
+			large := writeLargeAttachment(t, attachmentsDir, largeBytes, tc.compressible)
 			_, err := writer.ExecContext(ctx,
 				`INSERT INTO blobs (content_hash, storage_path, size, preview_hash, preview_path)
 				 VALUES (?, ?, ?, '', '')`, large.Hash, large.StoragePath, large.Size)
@@ -393,6 +395,18 @@ func TestLargePlainAttachmentCaptureVerifyRestore(t *testing.T) {
 			require.Equal(large.Hash, hash)
 		})
 	}
+}
+
+func largeBackupStreamTestBytes(t *testing.T, fallback int64) int64 {
+	t.Helper()
+	value := os.Getenv("KIT_STREAM_TEST_BYTES")
+	if value == "" {
+		return fallback
+	}
+	size, err := strconv.ParseInt(value, 10, 64)
+	require.NoError(t, err)
+	require.Positive(t, size)
+	return size
 }
 
 // TestRestoreRejectsBadAttachmentPaths pins that restore refuses attachment

@@ -863,7 +863,7 @@ func TestPrepareImportLimitedVerificationRejectsTruncatedFooterBeforeBudget(t *t
 
 	assert.Nil(t, prepared)
 	require.ErrorIs(t, err, pack.ErrTruncated)
-	assert.NotErrorIs(t, err, ErrBlobTooLarge)
+	require.NotErrorIs(t, err, ErrBlobTooLarge)
 	assertNoImportVerificationScratch(t, target)
 }
 

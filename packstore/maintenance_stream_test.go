@@ -16,7 +16,7 @@ func TestPackAndUnpackStreamAboveFormerCeiling(t *testing.T) {
 	if testing.Short() {
 		t.Skip("streams an object above the former 64 MiB maintenance ceiling")
 	}
-	const size = int64(64<<20 + 1)
+	size := largeStoreStreamTestBytes(t, 64<<20+1)
 	layout := layoutForStoreTest(t)
 	loose, err := NewLooseStore(layout)
 	require.NoError(t, err)
@@ -53,7 +53,7 @@ func TestRepackStreamsAboveFormerCeiling(t *testing.T) {
 	if testing.Short() {
 		t.Skip("streams an object above the former 64 MiB maintenance ceiling")
 	}
-	const size = int64(64<<20 + 1)
+	size := largeStoreStreamTestBytes(t, 64<<20+1)
 	layout := layoutForStoreTest(t)
 	require.NoError(t, os.MkdirAll(layout.PacksDir(), 0o700))
 	writer, err := pack.NewWriter(layout.PacksDir(), pack.WriterOptions{})
