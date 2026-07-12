@@ -170,3 +170,20 @@ future format.
 The format-v1 length fields also impose their existing object-size ceiling.
 Streaming removes heap proportionality within that ceiling; it does not extend
 the wire format beyond it.
+
+## Implementation evidence
+
+The format-v1 compatibility gate cross-reads raw and compressed entries with a
+frozen Kit v0.7 reader and verifies the frozen v1 fixture with the current
+reader. Integrated tests exercise loose writes, packing, mixed reads,
+repacking, unpacking, backup, verification, and loose and packed restore under
+one catalog lifecycle. Focused race tests and native Windows tests cover active
+descriptor retirement and retry behavior; portability jobs cover 32-bit and
+fail-closed unsupported targets.
+
+Isolated macOS/arm64 runs exercised 1 GiB raw and compressible objects through
+direct pack I/O, packstore maintenance and reads, and backup capture, verify,
+and restore. Peak resident memory stayed below 82 MiB. This is evidence that
+heap use is controlled independently of object size, not a default policy
+recommendation; applications must still measure aggregate memory, scratch,
+descriptor, and throughput behavior at their chosen concurrency.

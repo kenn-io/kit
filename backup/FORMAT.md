@@ -77,6 +77,14 @@ Each footer entry records the blob ID, offset, stored length, raw length, CRC32-
 
 Reading a blob verifies, in order: the footer trailer hash (at open), the entry CRC over stored bytes, then — after decompression — that SHA-256 of the result equals the blob ID.
 
+Plain format-v1 frames may be consumed incrementally without changing their
+encoding. In that mode, bytes read before terminal EOF are an unverified
+prefix; the CRC, decoded length, trailing-data check, and blob identity become
+authoritative only when the stream reaches its successful terminal result.
+Closing early is not success. Encrypted format-v1 frames retain whole-entry
+authentication and therefore remain buffered; safely streaming encrypted
+prefixes requires a future chunk-authenticated format.
+
 ## Index Objects (`.mvidx`, magic `MVIX`)
 
 Immutable mappings from blob ID to pack location, written once per `create` after its packs are sealed:

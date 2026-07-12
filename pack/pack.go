@@ -10,6 +10,16 @@
 // closing it earlier reports ErrVerificationIncomplete. Format-v1 encryption
 // authenticates whole frames and therefore returns ErrStreamUnsupported from
 // the streaming APIs instead of exposing unauthenticated prefixes.
+//
+// Preparation uses private disk scratch rather than object-sized heap. Its
+// worst case is the raw input plus an incompressible zstd candidate, about
+// 2.004 times raw length plus fixed frame overhead. AppendStreamOptions should
+// bound and place that scratch explicitly for automatic work. Context
+// cancellation and typed StreamLimitError values fail closed and clean only
+// scratch owned by the operation.
+//
+// Format v1 retains its 4 GiB raw-length ceiling. Streaming changes transport
+// and allocation behavior, not the on-disk representation or that ceiling.
 package pack
 
 import "errors"
