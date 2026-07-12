@@ -121,7 +121,11 @@ func newReader(f *os.File, id string, crypter *Crypter, limits ReaderLimits) (*R
 		return nil, fmt.Errorf("%w: version %d", ErrUnsupportedVersion,
 			header[4])
 	}
-	enc := packFlags(header[5])&packEncrypted != 0
+	flags := packFlags(header[5])
+	if flags&^packEncrypted != 0 {
+		return nil, fmt.Errorf("%w: unknown pack flags %#x", ErrCorrupt, header[5])
+	}
+	enc := flags&packEncrypted != 0
 	if enc && crypter == nil {
 		return nil, ErrEncrypted
 	}

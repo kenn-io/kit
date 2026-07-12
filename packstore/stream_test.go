@@ -58,6 +58,49 @@ func TestStoreOpenStreamEarlyCloseLoosePackedParity(t *testing.T) {
 	}
 }
 
+func TestStoreRejectsUnknownPackFlags(t *testing.T) {
+	tests := []struct {
+		name string
+		read func(*Store, Hash) error
+	}{
+		{
+			name: "bounded",
+			read: func(store *Store, hash Hash) error {
+				_, _, err := store.ReadBounded(context.Background(), hash, 1<<20)
+				return err
+			},
+		},
+		{
+			name: "streaming",
+			read: func(store *Store, hash Hash) error {
+				stream, _, err := store.OpenStream(context.Background(), hash)
+				if err != nil {
+					return err
+				}
+				return errors.Join(stream.Verify(), stream.Close())
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			layout := layoutForStoreTest(t)
+			entry := buildStoreTestPack(t, layout, []byte("unknown pack flags"))
+			f, err := os.OpenFile(layout.PackPath(entry.PackID), os.O_WRONLY, 0)
+			require.NoError(t, err)
+			_, err = f.WriteAt([]byte{0x80}, 5)
+			require.NoError(t, err)
+			require.NoError(t, f.Close())
+			store := newStoreForTest(t, &mapResolver{locations: map[Hash]Location{
+				entry.Hash: {Member: true, Pack: &entry},
+			}}, layout)
+
+			err = tt.read(store, entry.Hash)
+			require.ErrorIs(t, err, pack.ErrCorrupt)
+			require.ErrorContains(t, err, "unknown pack flags 0x80")
+		})
+	}
+}
+
 func TestStoreCopyVerifiedLoosePackedParity(t *testing.T) {
 	content := bytes.Repeat([]byte("verified copy "), 2048)
 	for _, representation := range []string{"loose", "packed"} {

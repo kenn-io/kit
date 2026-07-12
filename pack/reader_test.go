@@ -102,6 +102,10 @@ func TestReaderHeaderValidation(t *testing.T) {
 
 	_, err = OpenReader(writeVariant(func(b []byte) { b[4] = 99 }), nil)
 	require.ErrorIs(t, err, ErrUnsupportedVersion)
+
+	_, err = OpenReader(writeVariant(func(b []byte) { b[5] = byte(packEncrypted | 1<<7) }), nil)
+	require.ErrorIs(t, err, ErrCorrupt)
+	require.ErrorContains(t, err, "unknown pack flags 0x81")
 }
 
 func TestReaderBlobCorruption(t *testing.T) {
