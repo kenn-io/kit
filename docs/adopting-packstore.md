@@ -257,9 +257,12 @@ must then:
 1. inspect `PreparedImport.Stats`;
 2. materialize every fallback through an authenticated, hash-verifying loose
    path;
-3. finish and durably flush the staged application database; and
+3. finish all other staged database mutations;
 4. call `PreparedImport.Commit` against that staged database's
-   `RestoreCatalog` transaction before publishing the restored application.
+   `RestoreCatalog` transaction;
+5. close the staged database and durably flush its final state, including the
+   committed packed authority; and
+6. publish the restored application.
 
 A fallback is a compatibility decision, never an integrity bypass. Retry uses
 the same pack IDs and requires `ReplaceRestoredPacks` to be idempotent.
