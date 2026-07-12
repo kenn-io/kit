@@ -29,6 +29,7 @@ type LimitDimension string
 const (
 	LimitBlobRawBytes       LimitDimension = "blob_raw_bytes"
 	LimitBlobStoredBytes    LimitDimension = "blob_stored_bytes"
+	LimitBlobWindowBytes    LimitDimension = "blob_window_bytes"
 	LimitBlobStatBytes      LimitDimension = "blob_stat_bytes"
 	LimitPackContainerBytes LimitDimension = "pack_container_bytes"
 	LimitPackFooterBytes    LimitDimension = "pack_footer_bytes"

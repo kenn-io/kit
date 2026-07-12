@@ -31,17 +31,26 @@ type ReaderOptions struct {
 	Limits ReaderLimits
 }
 
+// ReaderMetadata reports immutable container quantities useful for applying
+// caller policy after a format-valid reader is cached.
+type ReaderMetadata struct {
+	ContainerBytes uint64
+	FooterBytes    uint64
+	EntryCount     uint64
+}
+
 // Reader provides random access to a sealed pack file via pread.
 type Reader struct {
-	mu      sync.Mutex
-	id      string
-	f       *os.File
-	crypter *Crypter
-	enc     bool
-	entries []Entry
-	limits  ReaderLimits
-	streams int
-	closed  bool
+	mu       sync.Mutex
+	id       string
+	f        *os.File
+	crypter  *Crypter
+	enc      bool
+	entries  []Entry
+	limits   ReaderLimits
+	metadata ReaderMetadata
+	streams  int
+	closed   bool
 }
 
 // OpenReader opens a sealed pack. The pack ID is the filename minus its
@@ -139,7 +148,10 @@ func newReader(f *os.File, id string, crypter *Crypter, limits ReaderLimits) (*R
 			return nil, &StreamLimitError{Dimension: StreamLimitStoredBytes, Actual: entry.StoredLen, Limit: limits.StoredBytes}
 		}
 	}
-	return &Reader{id: id, f: f, crypter: crypter, enc: enc, entries: entries, limits: limits},
+	return &Reader{
+			id: id, f: f, crypter: crypter, enc: enc, entries: entries, limits: limits,
+			metadata: ReaderMetadata{ContainerBytes: uint64(size), FooterBytes: uint64(len(region)), EntryCount: uint64(len(entries))},
+		},
 		nil
 }
 
@@ -224,6 +236,9 @@ func (r *Reader) ID() string { return r.id }
 
 // Entries returns the footer entries in pack order. Callers must not mutate.
 func (r *Reader) Entries() []Entry { return r.entries }
+
+// Metadata returns immutable container quantities from the verified footer.
+func (r *Reader) Metadata() ReaderMetadata { return r.metadata }
 
 func (r *Reader) readStored(e Entry) ([]byte, error) {
 	buf := make([]byte, e.StoredLen)

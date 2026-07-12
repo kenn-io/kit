@@ -16,9 +16,33 @@ import (
 
 const maxOpenReaders = 16
 
+// ErrPackRetirementDeferred identifies a canonical pack removal that callers
+// may retry after readers or external filesystem users release the file.
+var ErrPackRetirementDeferred = errors.New("packstore: pack retirement deferred")
+
+// PackRetirementError carries a retryable physical cleanup failure. Catalog
+// authority is deliberately outside RetirePack and is never rolled back.
+type PackRetirementError struct {
+	PackID string
+	Err    error
+}
+
+func (e *PackRetirementError) Error() string {
+	return fmt.Sprintf("%s %s: %v", ErrPackRetirementDeferred, e.PackID, e.Err)
+}
+
+func (e *PackRetirementError) Unwrap() error { return e.Err }
+
+func (e *PackRetirementError) Is(target error) bool {
+	return target == ErrPackRetirementDeferred || errors.Is(e.Err, target)
+}
+
 // StoreOptions configures mixed loose and packed reads.
 type StoreOptions struct {
-	Limits      Limits
+	Limits Limits
+	// ReaderSlots bounds cached pack descriptors. A stream whose slot is
+	// evicted keeps its descriptor leased until terminal read or Close, so total
+	// live descriptors are bounded by cached slots plus active streams.
 	ReaderSlots int
 }
 
@@ -29,12 +53,11 @@ type Store struct {
 	limits   Limits
 	slots    int
 
-	// mu is held across packed pread/decode so eviction cannot close a reader
-	// while another goroutine uses its descriptor.
-	mu             sync.Mutex
-	readers        map[string]*ordinaryPackReader
-	boundedReaders map[string]*boundedPackReader
-	order          []string
+	// mu protects cache membership and descriptor leases. Content I/O never
+	// holds it; retired descriptors close after their final lease is released.
+	mu          sync.Mutex
+	packReaders map[string]*cachedPackReader
+	order       []string
 }
 
 // NewStore constructs a mixed content reader.
@@ -59,8 +82,7 @@ func NewStore(resolver Resolver, layout Layout, opts StoreOptions) (*Store, erro
 	}
 	return &Store{
 		resolver: resolver, layout: layout, limits: opts.Limits, slots: opts.ReaderSlots,
-		readers:        make(map[string]*ordinaryPackReader),
-		boundedReaders: make(map[string]*boundedPackReader),
+		packReaders: make(map[string]*cachedPackReader),
 	}, nil
 }
 
@@ -71,7 +93,9 @@ func (s *Store) Open(ctx context.Context, hash Hash) (io.ReadSeekCloser, int64, 
 	if err := hash.Validate(); err != nil {
 		return nil, 0, err
 	}
-	return resolveBlob(ctx, s, hash, s.openLoose, s.openPacked)
+	return resolveBlob(ctx, s, hash,
+		func(hash Hash) (io.ReadSeekCloser, int64, error) { return s.openLoose(hash) },
+		s.openPacked)
 }
 
 // ReadBounded returns verified content while bounding both stored and raw
@@ -89,7 +113,7 @@ func (s *Store) ReadBounded(ctx context.Context, hash Hash, maxBytes int64) ([]b
 	return resolveBlob(ctx, s, hash,
 		func(hash Hash) ([]byte, int64, error) { return s.readLooseBounded(hash, maxBytes) },
 		func(hash Hash, entry *IndexEntry) ([]byte, int64, error) {
-			return s.readPackedBounded(hash, entry, maxBytes)
+			return s.readPackedBounded(ctx, hash, entry, maxBytes)
 		})
 }
 
@@ -147,22 +171,18 @@ func blobNotFound(hash Hash) error {
 func (s *Store) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ids := make(map[string]struct{}, len(s.readers)+len(s.boundedReaders))
-	for id := range s.readers {
-		ids[id] = struct{}{}
-	}
-	for id := range s.boundedReaders {
-		ids[id] = struct{}{}
-	}
+	ids := append([]string(nil), s.order...)
 	var closeErr error
-	for id := range ids {
-		closeErr = errors.Join(closeErr, s.closePackSlotLocked(id))
+	for _, id := range ids {
+		closeErr = errors.Join(closeErr, s.retirePackSlotLocked(id))
 	}
 	s.order = nil
 	return closeErr
 }
 
-// RetirePack closes cached readers and removes the canonical pack file. It
+// RetirePack retires cached readers and removes the canonical pack file. Live
+// streams keep their exact descriptor until terminal read or Close. A physical
+// removal failure returns PackRetirementError and may be retried. The method
 // deliberately does not alter catalog authority.
 func (s *Store) RetirePack(packID string) error {
 	if !pack.IsValidPackID(packID) {
@@ -170,24 +190,17 @@ func (s *Store) RetirePack(packID string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	filtered := s.order[:0]
-	for _, id := range s.order {
-		if id != packID {
-			filtered = append(filtered, id)
-		}
-	}
-	s.order = filtered
-	closeErr := s.closePackSlotLocked(packID)
+	closeErr := s.retirePackSlotLocked(packID)
 	removeErr := os.Remove(s.layout.PackPath(packID))
 	if errors.Is(removeErr, fs.ErrNotExist) {
 		removeErr = nil
 	} else if removeErr != nil {
-		removeErr = fmt.Errorf("packstore: remove pack %s: %w", packID, removeErr)
+		removeErr = &PackRetirementError{PackID: packID, Err: removeErr}
 	}
 	return errors.Join(closeErr, removeErr)
 }
 
-func (s *Store) openLoose(hash Hash) (io.ReadSeekCloser, int64, error) {
+func (s *Store) openLoose(hash Hash) (*os.File, int64, error) {
 	f, err := openNoFollow(s.layout.LoosePath(hash), false)
 	if err != nil {
 		return nil, 0, err
@@ -239,57 +252,81 @@ func (s *Store) readLooseBounded(hash Hash, maxBytes int64) ([]byte, int64, erro
 }
 
 func (s *Store) openPacked(hash Hash, entry *IndexEntry) (io.ReadSeekCloser, int64, error) {
-	if err := entry.Validate(); err != nil {
-		return nil, 0, err
-	}
-	id, err := pack.ParseBlobID(hash.String())
+	slot, footerEntry, release, err := s.acquirePackedEntry(hash, entry, false)
 	if err != nil {
 		return nil, 0, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	reader, err := s.readerLocked(entry.PackID)
-	if err != nil {
-		return nil, 0, err
-	}
-	entryIndex, found := reader.entryIndexes[id]
-	if !found {
-		return nil, 0, &fs.PathError{Op: "find blob in pack footer", Path: hash.String(), Err: fs.ErrNotExist}
-	}
-	footerEntry := reader.Entries()[entryIndex]
-	if reader.ID() != entry.PackID || !packIndexMatchesFooter(entry, footerEntry) {
-		return nil, 0, fmt.Errorf("packstore: pack index metadata mismatch for %s", hash)
-	}
-	data, err := reader.ReadBlob(footerEntry)
+	data, readErr := slot.reader.ReadBlob(footerEntry)
+	err = errors.Join(readErr, release())
 	if err != nil {
 		return nil, 0, err
 	}
 	return nopSeekCloser{bytes.NewReader(data)}, int64(len(data)), nil
 }
 
-func (s *Store) readPackedBounded(hash Hash, entry *IndexEntry, maxBytes int64) ([]byte, int64, error) {
-	if err := entry.Validate(); err != nil {
+func (s *Store) readPackedBounded(
+	ctx context.Context, hash Hash, entry *IndexEntry, maxBytes int64,
+) (data []byte, size int64, resultErr error) {
+	slot, footerEntry, release, err := s.acquirePackedEntry(hash, entry, true)
+	if err != nil {
 		return nil, 0, err
+	}
+	defer func() { resultErr = errors.Join(resultErr, release()) }()
+	if err := s.validatePackPolicy(slot); err != nil {
+		return nil, 0, err
+	}
+	limit := uint64(maxBytes) //nolint:gosec // validated non-negative by caller
+	if footerEntry.RawLen > limit {
+		return nil, 0, newLimitError(LimitBlobRawBytes, footerEntry.RawLen, limit)
+	}
+	if footerEntry.StoredLen > limit {
+		return nil, 0, newLimitError(LimitBlobStoredBytes, footerEntry.StoredLen, limit)
+	}
+	if footerEntry.RawLen > maxPlatformInt {
+		return nil, 0, newLimitError(LimitBlobRawBytes, footerEntry.RawLen, maxPlatformInt)
+	}
+	if footerEntry.StoredLen > maxPlatformInt {
+		return nil, 0, newLimitError(LimitBlobStoredBytes, footerEntry.StoredLen, maxPlatformInt)
+	}
+	windowLimit := max(limit, uint64(1<<10))
+	stream, err := slot.reader.OpenBlobWithOptions(ctx, footerEntry, pack.BlobReaderOptions{WindowBytes: windowLimit})
+	if err != nil {
+		return nil, 0, mapPackStreamLimit(err)
+	}
+	data = make([]byte, int(footerEntry.RawLen))
+	_, readErr := io.ReadFull(stream, data)
+	verifyErr := stream.Verify()
+	closeErr := stream.Close()
+	if err := errors.Join(readErr, verifyErr, closeErr); err != nil {
+		return nil, 0, err
+	}
+	return data, int64(len(data)), nil
+}
+
+func (s *Store) acquirePackedEntry(
+	hash Hash, entry *IndexEntry, enforcePolicy bool,
+) (*cachedPackReader, pack.Entry, func() error, error) {
+	if err := entry.Validate(); err != nil {
+		return nil, pack.Entry{}, nil, err
 	}
 	id, err := pack.ParseBlobID(hash.String())
 	if err != nil {
-		return nil, 0, err
+		return nil, pack.Entry{}, nil, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	reader, err := s.boundedReaderLocked(entry.PackID)
+	slot, release, err := s.acquirePackReader(entry.PackID, enforcePolicy)
 	if err != nil {
-		return nil, 0, err
+		return nil, pack.Entry{}, nil, err
 	}
-	footerEntry, found := reader.entries[id]
+	footerEntry, found := slot.entries[id]
 	if !found {
-		return nil, 0, &fs.PathError{Op: "find blob in pack footer", Path: hash.String(), Err: fs.ErrNotExist}
+		return nil, pack.Entry{}, nil, errors.Join(
+			&fs.PathError{Op: "find blob in pack footer", Path: hash.String(), Err: fs.ErrNotExist}, release())
 	}
 	if !packIndexMatchesFooter(entry, footerEntry) {
-		return nil, 0, fmt.Errorf("packstore: pack index metadata mismatch for %s", hash)
+		return nil, pack.Entry{}, nil, errors.Join(
+			fmt.Errorf("packstore: pack index metadata mismatch for %s", hash), release())
 	}
-	data, err := reader.readBlob(footerEntry, maxBytes)
-	return data, int64(len(data)), err
+	return slot, footerEntry, release, nil
 }
 
 func packIndexMatchesFooter(index *IndexEntry, footer pack.Entry) bool {
@@ -297,11 +334,6 @@ func packIndexMatchesFooter(index *IndexEntry, footer pack.Entry) bool {
 		index.StoredLen >= 0 && uint64(index.StoredLen) == footer.StoredLen &&
 		index.RawLen >= 0 && uint64(index.RawLen) == footer.RawLen &&
 		pack.BlobFlags(index.Flags) == footer.Flags && index.CRC32C == footer.CRC32C
-}
-
-type ordinaryPackReader struct {
-	*pack.Reader
-	entryIndexes map[pack.BlobID]int
 }
 
 type nopSeekCloser struct{ *bytes.Reader }

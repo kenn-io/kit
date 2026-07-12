@@ -5,6 +5,15 @@
 // Resolver and Catalog interfaces. A file or pack entry is never sufficient by
 // itself to grant read authority.
 //
+// Store.OpenStream exposes loose and plain packed content through one
+// verification-on-EOF contract. A prefix is not authoritative: callers must
+// observe terminal io.EOF, call Verify successfully, or check Verified before
+// trusting the complete object. Store.CopyVerified consumes that contract into
+// caller-owned private staging but deliberately does not sync, close, publish,
+// or grant catalog authority. Packed streams lease cached descriptors; eviction
+// and Store.Close retire them without racing active reads, and the last stream
+// close releases the physical handle.
+//
 // PrepareImport supports crash-ordered reuse of compatible immutable packs
 // during restore. It copies and verifies source packs within configured Limits,
 // publishes them without replacing an existing same-ID file, and returns a

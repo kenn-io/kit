@@ -31,6 +31,12 @@ type BlobReader struct {
 	closed   bool
 }
 
+// BlobReaderOptions applies per-stream codec policy within the Reader's
+// constructor limits. Zero fields retain the Reader limit.
+type BlobReaderOptions struct {
+	WindowBytes uint64
+}
+
 type storedStream struct {
 	ctx   context.Context
 	r     *io.SectionReader
@@ -52,6 +58,13 @@ func (s *storedStream) Read(p []byte) (int, error) {
 
 // OpenBlob opens a verified-on-EOF stream for one plain entry.
 func (r *Reader) OpenBlob(ctx context.Context, entry Entry) (*BlobReader, error) {
+	return r.OpenBlobWithOptions(ctx, entry, BlobReaderOptions{})
+}
+
+// OpenBlobWithOptions opens a verified stream with narrower per-stream limits.
+func (r *Reader) OpenBlobWithOptions(
+	ctx context.Context, entry Entry, opts BlobReaderOptions,
+) (*BlobReader, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("pack: nil context")
 	}
@@ -89,14 +102,18 @@ func (r *Reader) OpenBlob(ctx context.Context, entry Entry) (*BlobReader, error)
 		if err != nil {
 			return nil, err
 		}
-		if window > r.limits.WindowBytes {
-			return nil, &StreamLimitError{Dimension: StreamLimitWindowBytes, Actual: window, Limit: r.limits.WindowBytes}
+		windowLimit := r.limits.WindowBytes
+		if opts.WindowBytes != 0 && opts.WindowBytes < windowLimit {
+			windowLimit = opts.WindowBytes
+		}
+		if window > windowLimit {
+			return nil, &StreamLimitError{Dimension: StreamLimitWindowBytes, Actual: window, Limit: windowLimit}
 		}
 		decoderMemory := max(entry.RawLen, uint64(zstd.MinWindowSize))
 		decoder, err := zstd.NewReader(stored,
 			zstd.WithDecoderConcurrency(1),
 			zstd.WithDecoderMaxMemory(decoderMemory),
-			zstd.WithDecoderMaxWindow(r.limits.WindowBytes))
+			zstd.WithDecoderMaxWindow(windowLimit))
 		if err != nil {
 			return nil, fmt.Errorf("%w: opening zstd stream for blob %s: %w", ErrCorrupt, entry.ID, err)
 		}
