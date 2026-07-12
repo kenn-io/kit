@@ -4,7 +4,10 @@
 // Create pins the database in a frozen read transaction, captures changed
 // SQLite pages and any new content files into content-addressed packs
 // (kit/pack), and writes a manifest chained to the previous snapshot. Restore
-// and Verify reconstruct and validate snapshots from the repository.
+// and Verify reconstruct and validate snapshots from the repository. Plain
+// content capture, verification, and loose restore use bounded-memory streams;
+// format-v1 encrypted entries retain their whole-entry authentication contract
+// and are not exposed as verified-prefix streams.
 //
 // The engine is application-neutral: everything specific to a given
 // application (its database filename, content directory, referenced-file

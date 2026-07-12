@@ -5,7 +5,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io"
 	"io/fs"
 	"maps"
 	"math"
@@ -13,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +24,52 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/pack"
 )
+
+func writeLargeAttachment(t *testing.T, dir string, size int64, compressible bool) ContentRef {
+	t.Helper()
+	require := require.New(t)
+	require.Positive(size)
+	tmp, err := os.CreateTemp(t.TempDir(), "large-attachment-*")
+	require.NoError(err)
+	digest := sha256.New()
+	chunk := make([]byte, 96<<10)
+	if compressible {
+		copy(chunk, bytes.Repeat([]byte("streaming backup content "), len(chunk)/25+1))
+	}
+	var state uint32 = 1
+	dst := io.MultiWriter(tmp, digest)
+	remaining := size
+	for remaining > 0 {
+		if !compressible {
+			for i := range chunk {
+				state ^= state << 13
+				state ^= state >> 17
+				state ^= state << 5
+				chunk[i] = byte(state)
+			}
+		}
+		n := min(int64(len(chunk)), remaining)
+		_, err = dst.Write(chunk[:n])
+		require.NoError(err)
+		remaining -= n
+	}
+	require.NoError(tmp.Close())
+	hash := hex.EncodeToString(digest.Sum(nil))
+	rel := filepath.Join(hash[:2], hash)
+	require.NoError(os.MkdirAll(filepath.Join(dir, hash[:2]), 0o700))
+	require.NoError(os.Rename(tmp.Name(), filepath.Join(dir, rel)))
+	return ContentRef{Hash: hash, Size: size, StoragePath: filepath.ToSlash(rel)}
+}
+
+func hashFileStream(t *testing.T, path string) (int64, string) {
+	t.Helper()
+	f, err := os.Open(path)
+	require.NoError(t, err)
+	digest := sha256.New()
+	size, copyErr := io.CopyBuffer(digest, f, make([]byte, 64<<10))
+	require.NoError(t, errors.Join(copyErr, f.Close()))
+	return size, hex.EncodeToString(digest.Sum(nil))
+}
 
 // TestSyncRestoredTreeCoversCreatedAncestors pins the durability pass for a
 // restore target whose ancestors did not exist before the restore: the sync
@@ -288,6 +338,61 @@ func (a badContentPathApp) RestoredContentPaths(ctx context.Context, db *sql.DB)
 		out[hash] = []string{a.path}
 	}
 	return out, nil
+}
+
+// TestLargePlainAttachmentCaptureVerifyRestore crosses the former 64 MiB
+// whole-content ceiling without constructing the object in memory. The second
+// snapshot exercises the incremental known-blob path, which must still stream
+// and verify live content before reusing repository authority.
+func TestLargePlainAttachmentCaptureVerifyRestore(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		compressible bool
+		wantFlag     bool
+	}{
+		{name: "compressed", compressible: true, wantFlag: true},
+		{name: "raw", compressible: false, wantFlag: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require := require.New(t)
+			ctx := context.Background()
+			r := initTestRepo(t)
+			dbPath, attachmentsDir, dataDir, writer := seedBackupFixture(t)
+			large := writeLargeAttachment(t, attachmentsDir, (64<<20)+1, tc.compressible)
+			_, err := writer.ExecContext(ctx,
+				`INSERT INTO blobs (content_hash, storage_path, size, preview_hash, preview_path)
+				 VALUES (?, ?, ?, '', '')`, large.Hash, large.StoragePath, large.Size)
+			require.NoError(err)
+
+			opts := createOpts(dbPath, attachmentsDir, dataDir, t.TempDir())
+			first, err := Create(ctx, r, newTestApp(), opts)
+			require.NoError(err)
+			id, err := pack.ParseBlobID(large.Hash)
+			require.NoError(err)
+			known, err := r.LoadBlobIndex()
+			require.NoError(err)
+			require.Equal(tc.wantFlag, known[id].Flags&pack.BlobCompressed != 0)
+
+			second, err := Create(ctx, r, newTestApp(), opts)
+			require.NoError(err)
+			require.Equal(first.SnapshotID, second.ParentID)
+			require.Less(second.BytesAdded, large.Size,
+				"incremental capture must reuse the verified large content blob")
+
+			verified, err := Verify(ctx, r, newTestApp(), VerifyOptions{SnapshotID: second.SnapshotID, Jobs: 2})
+			require.NoError(err)
+			require.Empty(verified.Problems)
+
+			target := filepath.Join(t.TempDir(), "large-restore")
+			_, err = Restore(ctx, r, newTestApp(), RestoreOptions{
+				SnapshotID: second.SnapshotID, TargetDir: target, Jobs: 2,
+			})
+			require.NoError(err)
+			size, hash := hashFileStream(t, filepath.Join(target, "content", filepath.FromSlash(large.StoragePath)))
+			require.Equal(large.Size, size)
+			require.Equal(large.Hash, hash)
+		})
+	}
 }
 
 // TestRestoreRejectsBadAttachmentPaths pins that restore refuses attachment
@@ -583,6 +688,52 @@ func TestWriteRunRejectsOverflowingBlobOffset(t *testing.T) {
 	for _, offset := range []uint64{math.MaxUint64 - 100, math.MaxUint64, 4097} {
 		err := st.writeRun(f, raw, blobID("b"), PageRun{StartPage: 0, PageCount: 1, BlobOffset: offset}, 4096, hm)
 		require.ErrorContains(err, "overruns blob", "offset %d", offset)
+	}
+}
+
+func TestWriteRootReaderPublishesOnlyExactCompletedContent(t *testing.T) {
+	tests := []struct {
+		name     string
+		content  string
+		expected int64
+		cancel   bool
+		wantErr  string
+	}{
+		{name: "exact", content: "verified", expected: 8},
+		{name: "short", content: "short", expected: 8, wantErr: "record says 8"},
+		{name: "long", content: "too long", expected: 3, wantErr: "record says 3"},
+		{name: "canceled", content: "verified", expected: 8, cancel: true, wantErr: context.Canceled.Error()},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			require := require.New(t)
+			target := t.TempDir()
+			root, err := openRestoreRoot(target)
+			require.NoError(err)
+			t.Cleanup(func() { require.NoError(root.Close()) })
+			st := &restoreState{root: root, target: target}
+			ctx, cancel := context.WithCancel(context.Background())
+			if tc.cancel {
+				cancel()
+			} else {
+				defer cancel()
+			}
+			err = st.writeRootReader(ctx, "content/blob", strings.NewReader(tc.content), tc.expected, 0o600)
+			final := filepath.Join(target, "content", "blob")
+			if tc.wantErr != "" {
+				require.ErrorContains(err, tc.wantErr)
+				_, statErr := os.Stat(final)
+				require.ErrorIs(statErr, os.ErrNotExist)
+				matches, globErr := filepath.Glob(filepath.Join(target, "content", ".restore-*"))
+				require.NoError(globErr)
+				require.Empty(matches)
+				return
+			}
+			require.NoError(err)
+			got, readErr := os.ReadFile(final)
+			require.NoError(readErr)
+			require.Equal(tc.content, string(got))
+		})
 	}
 }
 
@@ -1318,7 +1469,7 @@ func TestRestoreExtrasEntryRejectsEscapingPaths(t *testing.T) {
 	st := &restoreState{}
 
 	for _, path := range []string{"", "/etc/passwd", "../outside", "a/../../outside", ".."} {
-		_, err := st.stageExtrasEntry(newTestApp(), ExtrasEntry{Path: path, Blob: blobID("x").String()})
+		_, err := st.stageExtrasEntry(context.Background(), newTestApp(), ExtrasEntry{Path: path, Blob: blobID("x").String()})
 		require.ErrorContains(err, "escapes the restore target", "path %q", path)
 	}
 }
@@ -1335,7 +1486,7 @@ func TestRestoreExtrasEntryRejectsArchiveOverlap(t *testing.T) {
 		"app.db", "APP.DB", "app.db-wal", "app.db-shm", "app.db-journal",
 		"content/aa/aa11", "Content/aa/aa11", "content",
 	} {
-		_, err := st.stageExtrasEntry(newTestApp(), ExtrasEntry{Path: path, Blob: blobID("x").String()})
+		_, err := st.stageExtrasEntry(context.Background(), newTestApp(), ExtrasEntry{Path: path, Blob: blobID("x").String()})
 		require.ErrorContains(err, "overlaps restored archive content", "path %q", path)
 	}
 
@@ -1345,7 +1496,7 @@ func TestRestoreExtrasEntryRejectsArchiveOverlap(t *testing.T) {
 	for _, path := range []string{
 		"safe/../app.db", "safe/../APP.DB-wal", "safe/../content/aa/aa11",
 	} {
-		_, err := st.stageExtrasEntry(newTestApp(), ExtrasEntry{Path: path, Blob: blobID("x").String()})
+		_, err := st.stageExtrasEntry(context.Background(), newTestApp(), ExtrasEntry{Path: path, Blob: blobID("x").String()})
 		require.ErrorContains(err, "overlaps restored archive content", "path %q", path)
 	}
 
@@ -1357,17 +1508,17 @@ func TestRestoreExtrasEntryRejectsArchiveOverlap(t *testing.T) {
 		"content.", "content ", "content./aa/aa11", "app.db.", "app.db ",
 		"safe/dir./file", "safe/dir /file",
 	} {
-		_, err := st.stageExtrasEntry(newTestApp(), ExtrasEntry{Path: path, Blob: blobID("x").String()})
+		_, err := st.stageExtrasEntry(context.Background(), newTestApp(), ExtrasEntry{Path: path, Blob: blobID("x").String()})
 		require.ErrorContains(err, "component ending in a dot or space", "path %q", path)
 	}
 
 	// A path that cleans to the target directory itself is rejected outright.
-	_, err := st.stageExtrasEntry(newTestApp(), ExtrasEntry{Path: "safe/..", Blob: blobID("x").String()})
+	_, err := st.stageExtrasEntry(context.Background(), newTestApp(), ExtrasEntry{Path: "safe/..", Blob: blobID("x").String()})
 	require.ErrorContains(err, "escapes the restore target")
 
 	// Legitimate extras still restore fine (proven end-to-end elsewhere);
 	// here just confirm the reserved-name check does not reject them.
-	_, err = st.stageExtrasEntry(newTestApp(), ExtrasEntry{Path: "deletions/manifest-1.json", Blob: "not-a-blob"})
+	_, err = st.stageExtrasEntry(context.Background(), newTestApp(), ExtrasEntry{Path: "deletions/manifest-1.json", Blob: "not-a-blob"})
 	require.NotContains(err.Error(), "overlaps restored archive content")
 }
 

@@ -120,9 +120,9 @@ type AttachmentCapture struct {
 // weaken capture integrity. Open is called from concurrent capture workers
 // and must be safe for concurrent use; it should honor ctx and return
 // promptly once ctx is done, or a cancelled capture blocks until every
-// in-flight Open returns. Capture paces its memory use by ref.Size, so a
-// ref whose declared size understates the real payload weakens that pacing
-// (never integrity); report actual sizes.
+// in-flight Open returns. Capture uses ref.Size to pace concurrent work and
+// scratch use; a declared size that understates the payload weakens that
+// admission policy (never integrity), so sources should report actual sizes.
 type ContentSource interface {
 	Open(ctx context.Context, ref ContentRef) (io.ReadCloser, error)
 }
@@ -144,23 +144,25 @@ type CaptureOptions struct {
 	Source ContentSource
 }
 
-// captureResult is one worker's read+hash+compress output for refs[index].
+// captureResult is one worker's verified output for refs[index]. Plain blobs
+// retain only bounded-scratch PreparedBlob handles; encrypted v1 retains its
+// authenticated whole frame because that format is not streamable.
 type captureResult struct {
 	index      int
 	size       int64
 	id         pack.BlobID
 	frame      []byte
+	prepared   *pack.PreparedBlob
 	compressed bool
 	known      bool
 	err        error
 }
 
-// captureMemoryBudget bounds the attachment content bytes admitted into the
-// capture pipeline at once. Workers hold a whole file while hashing and
-// trial-compressing it, so an unweighted worker pool over a library of large
-// videos would hold many complete files in memory simultaneously. Trial
-// compression transiently holds content plus candidate frame, so peak usage
-// can briefly reach about twice this budget. A var so tests can shrink it.
+// captureMemoryBudget bounds the declared attachment bytes admitted into the
+// capture pipeline at once. For plain packs it paces concurrent source and
+// preparation scratch work; encrypted v1 still holds whole authenticated
+// frames, so it also remains a heap admission limit there. A var so tests can
+// shrink it.
 var captureMemoryBudget int64 = 1 << 30
 
 // byteGate admits work under a byte budget. A request larger than the whole
@@ -283,11 +285,13 @@ func captureContents(
 	// run, so the snapshot's answer is exact for every queued blob.
 	preKnown := appender.knownSnapshot()
 	level := appender.zstdLevel
+	streaming := appender.crypter == nil
+	scratchDir := appender.repo.Path(stagingDirName)
 
 	// inflight bounds dispatched-but-unrecorded refs; the byte gate below
-	// additionally bounds their cumulative size, since a count bound alone
-	// lets a worker-per-CPU pool hold that many complete video files at
-	// once. results has the same capacity as tokens, so workers never block
+	// additionally bounds their cumulative declared size, since a count bound
+	// alone allows excessive concurrent scratch work (and encrypted-v1 heap).
+	// results has the same capacity as tokens, so workers never block
 	// on a stalled collector.
 	inflight := workers + 2
 	stop := make(chan struct{})
@@ -340,9 +344,9 @@ func captureContents(
 		wg.Go(func() {
 			for i := range work {
 				if opts.Source != nil {
-					results <- captureRefFromSource(ctx, opts.Source, refs[i], i, preKnown, level)
+					results <- captureRefFromSource(ctx, opts.Source, refs[i], i, preKnown, level, streaming, scratchDir)
 				} else {
-					results <- captureRef(root, refs[i], i, preKnown, level)
+					results <- captureRef(ctx, root, refs[i], i, preKnown, level, streaming, scratchDir)
 				}
 			}
 		})
@@ -357,6 +361,9 @@ func captureContents(
 	var firstErr error
 	for res := range results {
 		if firstErr != nil {
+			if res.prepared != nil {
+				_ = res.prepared.Close()
+			}
 			gate.release(weights[res.index])
 			continue // draining after failure
 		}
@@ -364,6 +371,9 @@ func captureContents(
 			firstErr = err
 			close(stop)
 			gate.stop()
+			if res.prepared != nil {
+				_ = res.prepared.Close()
+			}
 			gate.release(weights[res.index])
 			continue
 		}
@@ -379,13 +389,18 @@ func captureContents(
 			if c.err != nil {
 				firstErr = c.err
 			} else {
-				firstErr = recordCapture(c, refs, parentSeen, appender, opts, out)
+				firstErr = recordCapture(ctx, c, refs, parentSeen, appender, opts, out)
 			}
 			gate.release(weights[c.index])
 			if firstErr != nil {
 				close(stop)
 				gate.stop()
 			}
+		}
+	}
+	for _, res := range pending {
+		if res.prepared != nil {
+			_ = res.prepared.Close()
 		}
 	}
 	if firstErr == nil {
@@ -423,7 +438,8 @@ func captureRelPath(ref ContentRef) (string, error) {
 // go through root, confined to the attachments directory, so a storage path
 // resolving through a symlink outside the tree is refused rather than read.
 func captureRef(
-	root *os.Root, ref ContentRef, index int, preKnown map[pack.BlobID]struct{}, level int,
+	ctx context.Context, root *os.Root, ref ContentRef, index int,
+	preKnown map[pack.BlobID]struct{}, level int, streaming bool, scratchDir string,
 ) captureResult {
 	// Failing validation here (not in an upfront sweep) keeps error reporting
 	// in strict ref order: the collector surfaces whichever failure a serial
@@ -431,6 +447,9 @@ func captureRef(
 	rel, err := captureRelPath(ref)
 	if err != nil {
 		return captureResult{index: index, err: err}
+	}
+	if streaming {
+		return prepareCaptureFile(ctx, root, rel, ref, index, preKnown, level, scratchDir)
 	}
 	content, _, err := readRegularFile(root, rel)
 	if err != nil {
@@ -457,8 +476,11 @@ func captureRef(
 // only the byte acquisition differs.
 func captureRefFromSource(
 	ctx context.Context, source ContentSource, ref ContentRef, index int,
-	preKnown map[pack.BlobID]struct{}, level int,
+	preKnown map[pack.BlobID]struct{}, level int, streaming bool, scratchDir string,
 ) captureResult {
+	if streaming {
+		return prepareCaptureSource(ctx, source, ref, index, preKnown, level, scratchDir)
+	}
 	content, err := readSourceBlob(ctx, source, ref)
 	if err != nil {
 		return captureResult{index: index, err: fmt.Errorf("backup: reading attachment %s from content source: %w", ref.Hash, err)}
@@ -479,6 +501,167 @@ func captureRefFromSource(
 	return res
 }
 
+func prepareCaptureFile(
+	ctx context.Context, root *os.Root, rel string, ref ContentRef, index int,
+	preKnown map[pack.BlobID]struct{}, level int, scratchDir string,
+) captureResult {
+	pre, err := root.Stat(rel)
+	if err != nil {
+		return captureResult{index: index, err: fmt.Errorf("backup: reading attachment %s: %w", rel, err)}
+	}
+	if !pre.Mode().IsRegular() {
+		return captureResult{index: index, err: fmt.Errorf("backup: reading attachment %s: %q is not a regular file", rel, rel)}
+	}
+	if err := validateCaptureFileSize(rel, pre.Size()); err != nil {
+		return captureResult{index: index, err: fmt.Errorf("backup: reading attachment %s: %w", rel, err)}
+	}
+	f, err := root.Open(rel)
+	if err != nil {
+		return captureResult{index: index, err: fmt.Errorf("backup: reading attachment %s: %w", rel, err)}
+	}
+	info, statErr := f.Stat()
+	if statErr != nil || !os.SameFile(pre, info) {
+		return captureResult{index: index, err: errors.Join(
+			fmt.Errorf("backup: reading attachment %s: file changed during capture", rel), statErr, f.Close())}
+	}
+	if err := validateCaptureFileSize(rel, info.Size()); err != nil {
+		return captureResult{index: index, err: errors.Join(
+			fmt.Errorf("backup: reading attachment %s: %w", rel, err), f.Close())}
+	}
+	id, err := parseCanonicalCaptureID(ref.Hash)
+	if err != nil {
+		return captureResult{index: index, err: errors.Join(err, f.Close())}
+	}
+	if _, known := preKnown[id]; known {
+		verifyErr := verifyCaptureReader(ctx, f, uint64(info.Size()), id)
+		after, afterErr := f.Stat()
+		closeErr := f.Close()
+		if verifyErr == nil && (afterErr != nil || !os.SameFile(info, after) || after.Size() != info.Size()) {
+			verifyErr = errors.Join(afterErr, fmt.Errorf("file changed during capture"))
+		}
+		return captureResult{index: index, size: info.Size(), id: id, known: true,
+			err: errors.Join(verifyErr, closeErr)}
+	}
+	prepared, prepareErr := pack.PrepareBlob(ctx, f, uint64(info.Size()), level, pack.AppendStreamOptions{
+		ExpectedID: &id, ScratchDir: scratchDir,
+	})
+	after, afterErr := f.Stat()
+	closeErr := f.Close()
+	if prepareErr == nil && (afterErr != nil || !os.SameFile(info, after) || after.Size() != info.Size()) {
+		prepareErr = errors.Join(afterErr, fmt.Errorf("file changed during capture"))
+	}
+	if err := errors.Join(prepareErr, closeErr); err != nil {
+		if prepared != nil {
+			_ = prepared.Close()
+		}
+		return captureResult{index: index, err: fmt.Errorf("backup: reading attachment %s: %w", rel, err)}
+	}
+	return captureResult{index: index, size: info.Size(), id: id, prepared: prepared}
+}
+
+func prepareCaptureSource(
+	ctx context.Context, source ContentSource, ref ContentRef, index int,
+	preKnown map[pack.BlobID]struct{}, level int, scratchDir string,
+) captureResult {
+	rc, err := source.Open(ctx, ref)
+	if err != nil {
+		return captureResult{index: index, err: fmt.Errorf("backup: reading attachment %s from content source: %w", ref.Hash, err)}
+	}
+	tmp, err := os.CreateTemp(scratchDir, "backup-source-*")
+	if err != nil {
+		_ = rc.Close()
+		return captureResult{index: index, err: fmt.Errorf("backup: staging attachment %s from content source: %w", ref.Hash, err)}
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+	}()
+	digest := sha256.New()
+	reader := io.LimitReader(&captureContextReader{ctx: ctx, reader: rc}, maxCaptureRawLen+1)
+	size, copyErr := io.CopyBuffer(io.MultiWriter(tmp, digest), reader, make([]byte, 64<<10))
+	closeErr := rc.Close()
+	if err := errors.Join(copyErr, closeErr); err != nil {
+		return captureResult{index: index, err: fmt.Errorf("backup: reading attachment %s from content source: %w", ref.Hash, err)}
+	}
+	if size > maxCaptureRawLen {
+		return captureResult{index: index, err: fmt.Errorf("backup: attachment %q is larger than the maximum blob size %d", ref.Hash, maxCaptureRawLen)}
+	}
+	id, err := parseCanonicalCaptureID(ref.Hash)
+	if err != nil {
+		return captureResult{index: index, err: err}
+	}
+	var got pack.BlobID
+	copy(got[:], digest.Sum(nil))
+	if got != id {
+		return captureResult{index: index, err: fmt.Errorf("backup: attachment %s content does not match its hash (live store corruption)", ref.Hash)}
+	}
+	if _, known := preKnown[id]; known {
+		return captureResult{index: index, size: size, id: id, known: true}
+	}
+	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+		return captureResult{index: index, err: err}
+	}
+	prepared, err := pack.PrepareBlob(ctx, tmp, uint64(size), level, pack.AppendStreamOptions{
+		ExpectedID: &id, ScratchDir: scratchDir,
+	})
+	if err != nil {
+		return captureResult{index: index, err: fmt.Errorf("backup: preparing attachment %s from content source: %w", ref.Hash, err)}
+	}
+	return captureResult{index: index, size: size, id: id, prepared: prepared}
+}
+
+func validateCaptureFileSize(rel string, size int64) error {
+	if size < 0 {
+		return fmt.Errorf("%q has invalid size %d", rel, size)
+	}
+	if size > maxCaptureRawLen {
+		return fmt.Errorf("%q is %d bytes, larger than the maximum blob size %d",
+			rel, size, maxCaptureRawLen)
+	}
+	return nil
+}
+
+func parseCanonicalCaptureID(hash string) (pack.BlobID, error) {
+	id, err := pack.ParseBlobID(hash)
+	if err != nil {
+		return pack.BlobID{}, err
+	}
+	if id.String() != hash {
+		return pack.BlobID{}, fmt.Errorf("backup: attachment hash %q is not canonical lowercase hex", hash)
+	}
+	return id, nil
+}
+
+func verifyCaptureReader(ctx context.Context, reader io.Reader, size uint64, id pack.BlobID) error {
+	digest := sha256.New()
+	written, err := io.CopyBuffer(digest, io.LimitReader(&captureContextReader{ctx: ctx, reader: reader}, int64(size)+1), make([]byte, 64<<10)) //nolint:gosec // capture size is bounded by format-v1
+	if err != nil {
+		return err
+	}
+	if uint64(written) != size {
+		return fmt.Errorf("content size changed during capture")
+	}
+	var got pack.BlobID
+	copy(got[:], digest.Sum(nil))
+	if got != id {
+		return fmt.Errorf("content does not match its hash (live store corruption)")
+	}
+	return nil
+}
+
+type captureContextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r *captureContextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(p)
+}
+
 // readSourceBlob reads one blob from source under the same cap
 // readRegularFile enforces for directory reads.
 func readSourceBlob(ctx context.Context, source ContentSource, ref ContentRef) ([]byte, error) {
@@ -497,11 +680,10 @@ func readSourceBlob(ctx context.Context, source ContentSource, ref ContentRef) (
 	return data, nil
 }
 
-// maxCaptureRawLen bounds the bytes capture will buffer for one file. It is
-// the pack layer's per-blob raw limit, which Append would enforce anyway —
-// but only after the whole file had been read and trial-compressed, so an
-// oversized referenced file must be rejected from the cheap fstat before it
-// can exhaust memory. It is a var, not a const, only so tests can lower it.
+// maxCaptureRawLen is capture's pack-format raw-size ceiling. Plain capture
+// enforces it while streaming; encrypted-v1 compatibility still buffers a
+// whole authenticated frame. It is a var, not a const, only so tests can
+// lower it.
 var maxCaptureRawLen int64 = pack.MaxRawLen
 
 // readRegularFile reads rel through root and requires it to be a regular file,
@@ -557,14 +739,20 @@ func readRegularFile(root *os.Root, rel string) ([]byte, os.FileInfo, error) {
 // (unless the blob was already stored), fill the ref's size, and update
 // accounting, the new-list segment, and progress. Runs on the collector.
 func recordCapture(
-	c captureResult, refs []ContentRef, parentSeen map[string]bool, appender *PackAppender,
+	ctx context.Context, c captureResult, refs []ContentRef, parentSeen map[string]bool, appender *PackAppender,
 	opts CaptureOptions, out *AttachmentCapture,
 ) error {
 	ref := &refs[c.index]
 	ref.Size = c.size
 	if !c.known {
-		if _, err := appender.AddEncoded(c.id, c.frame, uint64(c.size), c.compressed); err != nil { //nolint:gosec // sizes are non-negative
-			return err
+		if c.prepared != nil {
+			if _, err := appender.AddPrepared(ctx, c.prepared); err != nil {
+				return err
+			}
+		} else {
+			if _, err := appender.AddEncoded(c.id, c.frame, uint64(c.size), c.compressed); err != nil { //nolint:gosec // sizes are non-negative
+				return err
+			}
 		}
 	}
 	out.Blobs++
