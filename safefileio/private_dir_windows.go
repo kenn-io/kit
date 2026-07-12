@@ -13,8 +13,8 @@ import (
 )
 
 // EnsurePrivateDir creates path when needed and verifies it is a non-reparse
-// directory owned by the current token user or token owner with a
-// user/system/admin-only DACL.
+// directory owned by the current token user, token owner, LocalSystem, or
+// built-in Administrators with a DACL restricted to those trusted principals.
 func EnsurePrivateDir(path string) error {
 	if path == "" {
 		return fmt.Errorf("path is empty")
@@ -55,7 +55,9 @@ func EnsurePrivateDir(path string) error {
 }
 
 // ValidatePrivateDir verifies path is a non-reparse directory owned by the
-// current token user or token owner. It never creates or changes the directory.
+// current token user, token owner, LocalSystem, or built-in Administrators with
+// a DACL restricted to those trusted principals. It never creates or changes
+// the directory.
 func ValidatePrivateDir(path string) error {
 	if path == "" {
 		return fmt.Errorf("path is empty")
@@ -167,8 +169,28 @@ func verifyWindowsDirHandle(path string, handle windows.Handle, userSID, ownerSI
 	if owner == nil {
 		return fmt.Errorf("%s owner is missing", path)
 	}
-	if !windowsOwnerMatches(owner, userSID, ownerSID) {
-		return fmt.Errorf("%s is not owned by current user or token owner", path)
+	return verifyWindowsDirectoryOwner(path, owner, userSID, ownerSID)
+}
+
+func trustedWindowsDirectoryOwners(userSID, ownerSID *windows.SID) ([]*windows.SID, error) {
+	systemSID, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
+	if err != nil {
+		return nil, err
+	}
+	adminsSID, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+	if err != nil {
+		return nil, err
+	}
+	return []*windows.SID{userSID, ownerSID, systemSID, adminsSID}, nil
+}
+
+func verifyWindowsDirectoryOwner(path string, owner, userSID, ownerSID *windows.SID) error {
+	trusted, err := trustedWindowsDirectoryOwners(userSID, ownerSID)
+	if err != nil {
+		return err
+	}
+	if !windowsAnyOwnerMatches(owner, trusted) {
+		return fmt.Errorf("%s is not owned by current user, token owner, LocalSystem, or built-in Administrators", path)
 	}
 	return nil
 }
@@ -196,15 +218,10 @@ func verifyWindowsDirDACL(path string, handle windows.Handle, userSID, ownerSID 
 	if dacl == nil {
 		return fmt.Errorf("%s DACL is empty", path)
 	}
-	system, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
+	allowed, err := trustedWindowsDirectoryOwners(userSID, ownerSID)
 	if err != nil {
 		return err
 	}
-	admins, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
-	if err != nil {
-		return err
-	}
-	allowed := []*windows.SID{userSID, ownerSID, system, admins}
 	for i := uint16(0); i < dacl.AceCount; i++ {
 		var ace *windows.ACCESS_ALLOWED_ACE
 		if err := windows.GetAce(dacl, uint32(i), &ace); err != nil {
