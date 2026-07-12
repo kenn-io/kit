@@ -512,8 +512,8 @@ func prepareCaptureFile(
 	if !pre.Mode().IsRegular() {
 		return captureResult{index: index, err: fmt.Errorf("backup: reading attachment %s: %q is not a regular file", rel, rel)}
 	}
-	if pre.Size() < 0 || pre.Size() > maxCaptureRawLen {
-		return captureResult{index: index, err: fmt.Errorf("backup: reading attachment %s: %q is %d bytes, larger than the maximum blob size %d", rel, rel, pre.Size(), maxCaptureRawLen)}
+	if err := validateCaptureFileSize(rel, pre.Size()); err != nil {
+		return captureResult{index: index, err: fmt.Errorf("backup: reading attachment %s: %w", rel, err)}
 	}
 	f, err := root.Open(rel)
 	if err != nil {
@@ -524,7 +524,11 @@ func prepareCaptureFile(
 		return captureResult{index: index, err: errors.Join(
 			fmt.Errorf("backup: reading attachment %s: file changed during capture", rel), statErr, f.Close())}
 	}
-	id, err := pack.ParseBlobID(ref.Hash)
+	if err := validateCaptureFileSize(rel, info.Size()); err != nil {
+		return captureResult{index: index, err: errors.Join(
+			fmt.Errorf("backup: reading attachment %s: %w", rel, err), f.Close())}
+	}
+	id, err := parseCanonicalCaptureID(ref.Hash)
 	if err != nil {
 		return captureResult{index: index, err: errors.Join(err, f.Close())}
 	}
@@ -583,7 +587,7 @@ func prepareCaptureSource(
 	if size > maxCaptureRawLen {
 		return captureResult{index: index, err: fmt.Errorf("backup: attachment %q is larger than the maximum blob size %d", ref.Hash, maxCaptureRawLen)}
 	}
-	id, err := pack.ParseBlobID(ref.Hash)
+	id, err := parseCanonicalCaptureID(ref.Hash)
 	if err != nil {
 		return captureResult{index: index, err: err}
 	}
@@ -605,6 +609,28 @@ func prepareCaptureSource(
 		return captureResult{index: index, err: fmt.Errorf("backup: preparing attachment %s from content source: %w", ref.Hash, err)}
 	}
 	return captureResult{index: index, size: size, id: id, prepared: prepared}
+}
+
+func validateCaptureFileSize(rel string, size int64) error {
+	if size < 0 {
+		return fmt.Errorf("%q has invalid size %d", rel, size)
+	}
+	if size > maxCaptureRawLen {
+		return fmt.Errorf("%q is %d bytes, larger than the maximum blob size %d",
+			rel, size, maxCaptureRawLen)
+	}
+	return nil
+}
+
+func parseCanonicalCaptureID(hash string) (pack.BlobID, error) {
+	id, err := pack.ParseBlobID(hash)
+	if err != nil {
+		return pack.BlobID{}, err
+	}
+	if id.String() != hash {
+		return pack.BlobID{}, fmt.Errorf("backup: attachment hash %q is not canonical lowercase hex", hash)
+	}
+	return id, nil
 }
 
 func verifyCaptureReader(ctx context.Context, reader io.Reader, size uint64, id pack.BlobID) error {

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -106,6 +107,20 @@ func TestCaptureFromSourceHashMismatch(t *testing.T) {
 		map[string]bool{}, appender, CaptureOptions{Source: src})
 	require.Error(err)
 	require.Contains(err.Error(), "does not match its hash")
+}
+
+func TestCaptureFromSourceRejectsNoncanonicalHash(t *testing.T) {
+	require := require.New(t)
+	content := []byte("canonical source hash")
+	ref, hash := sourceRef(content)
+	ref.Hash = strings.ToUpper(hash)
+	src := &mapSource{blobs: map[string][]byte{ref.Hash: content}}
+
+	appender, _, _ := newTestAppenderForSource(t)
+	defer appender.Abort()
+	_, err := CaptureAttachments(context.Background(), "", []ContentRef{ref},
+		map[string]bool{}, appender, CaptureOptions{Source: src})
+	require.ErrorContains(err, "not canonical lowercase hex")
 }
 
 func TestCaptureFromSourceMissingBlob(t *testing.T) {

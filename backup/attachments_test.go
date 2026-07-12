@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -206,6 +207,30 @@ func TestCaptureAttachmentsRejectsCorruptFile(t *testing.T) {
 	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	_, err := CaptureAttachments(context.Background(), dir, []ContentRef{ref}, map[string]bool{}, appender, CaptureOptions{})
 	require.ErrorContains(err, ref.Hash[:2])
+}
+
+func TestCaptureAttachmentsRejectsNoncanonicalHash(t *testing.T) {
+	require := require.New(t)
+	r := initTestRepo(t)
+	dir := t.TempDir()
+	ref := writeLooseAttachment(t, dir, []byte("canonical hash spelling"))
+	ref.StoragePath = filepath.ToSlash(filepath.Join(ref.Hash[:2], ref.Hash))
+	ref.Hash = strings.ToUpper(ref.Hash)
+
+	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
+	defer appender.Abort()
+	_, err := CaptureAttachments(context.Background(), dir, []ContentRef{ref}, map[string]bool{}, appender, CaptureOptions{})
+	require.ErrorContains(err, "not canonical lowercase hex")
+}
+
+func TestValidateCaptureFileSize(t *testing.T) {
+	old := maxCaptureRawLen
+	maxCaptureRawLen = 16
+	t.Cleanup(func() { maxCaptureRawLen = old })
+
+	require.NoError(t, validateCaptureFileSize("blob", 16))
+	require.ErrorContains(t, validateCaptureFileSize("blob", -1), "invalid size")
+	require.ErrorContains(t, validateCaptureFileSize("blob", 17), "larger than the maximum blob size")
 }
 
 // TestCaptureAttachmentsRejectsOversizedFile pins the fstat size guard: a
