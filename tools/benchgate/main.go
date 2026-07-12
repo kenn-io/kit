@@ -172,6 +172,7 @@ func compare(old, next benchmarkSamples, gates []metricGate) ([]string, []violat
 	sort.Strings(removed)
 	for _, name := range removed {
 		report = append(report, name+": missing from candidate")
+		issues = append(issues, name+": benchmark missing from candidate")
 	}
 	return report, violations, issues
 }

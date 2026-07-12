@@ -54,12 +54,10 @@ jobs:
           base=$(git merge-base HEAD "origin/${BASE_REF}")
           git worktree add "${RUNNER_TEMP}/bench-base" "${base}"
           read -r -a packages <<< "${BENCH_PACKAGES}"
-          if ! (cd "${RUNNER_TEMP}/bench-base" && \
+          (cd "${RUNNER_TEMP}/bench-base" && \
             go test -run '^$' -bench "${BENCH_PATTERN}" -benchmem \
               -count "${BENCH_COUNT}" -benchtime "${BENCH_TIME}" \
-              "${packages[@]}") > "${RUNNER_TEMP}/bench-old.txt"; then
-            echo "::warning title=Benchmark Gate::merge-base benchmark run failed; comparing its partial output"
-          fi
+              "${packages[@]}") > "${RUNNER_TEMP}/bench-old.txt"
 
       - name: Compare with merge base
         run: go run ./tools/benchgate -old "${RUNNER_TEMP}/bench-old.txt" -new "${RUNNER_TEMP}/bench-new.txt"

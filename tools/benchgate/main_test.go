@@ -50,9 +50,24 @@ func TestCompareReportsBenchmarkSetChanges(t *testing.T) {
 	next := benchmarkSamples{"New-8": {"sec/op": {0.001}}}
 	report, violations, issues := compare(old, next, defaultGates(2, 1.2, 1.25, 100_000, 8, 4096))
 	assert.Empty(t, violations)
-	assert.Empty(t, issues)
+	require.Len(t, issues, 1)
+	assert.Contains(t, issues[0], "Old-8: benchmark missing from candidate")
 	assert.Contains(t, strings.Join(report, "\n"), "new benchmark; no baseline")
 	assert.Contains(t, strings.Join(report, "\n"), "missing from candidate")
+}
+
+func TestRunRejectsRemovedBenchmark(t *testing.T) {
+	dir := t.TempDir()
+	baseline := filepath.Join(dir, "old.txt")
+	candidate := filepath.Join(dir, "new.txt")
+	line := "BenchmarkOld-8 5 1000000 ns/op 10000 B/op 10 allocs/op\n"
+	require.NoError(t, os.WriteFile(baseline, []byte(strings.Repeat(line, 5)), 0o600))
+	require.NoError(t, os.WriteFile(candidate, []byte(
+		strings.Repeat(strings.ReplaceAll(line, "Old", "New"), 5)), 0o600))
+
+	out, code := run(baseline, candidate, defaultGates(2, 1.2, 1.25, 100_000, 8, 4096))
+	assert.Equal(t, 2, code)
+	assert.Contains(t, out, "Old-8: benchmark missing from candidate")
 }
 
 func TestCompareMissingCandidateMetricIsConfigurationError(t *testing.T) {
