@@ -45,7 +45,7 @@ func TestPackAndUnpackStreamAboveFormerCeiling(t *testing.T) {
 	info, err := os.Stat(written.Path)
 	require.NoError(t, err)
 	assert.Equal(t, size, info.Size())
-	err = verifyLoosePath(written.Path, written.Hash, size)
+	err = verifyLoosePath(context.Background(), written.Path, written.Hash, size)
 	require.NoError(t, err)
 }
 

@@ -230,7 +230,7 @@ func TestMaintenanceAllocationsRespectPlatformInt(t *testing.T) {
 		content := []byte("ninebytes")
 		hash := writeMaintenanceLoose(t, layout, content)
 
-		err := verifyLoosePath(layout.LoosePath(hash), hash, int64(len(content)))
+		err := verifyLoosePath(context.Background(), layout.LoosePath(hash), hash, int64(len(content)))
 		require.NoError(err, "streamed verification does not allocate from content length")
 	})
 
@@ -249,6 +249,45 @@ func TestMaintenanceAllocationsRespectPlatformInt(t *testing.T) {
 		require.ErrorAs(err, &limitErr)
 		assert.Equal(LimitPackFooterBytes, limitErr.Dimension)
 		assert.Equal(uint64(8), limitErr.Limit)
+	})
+}
+
+func TestVerifyLooseFileBoundsSnapshotAndHonorsCancellation(t *testing.T) {
+	t.Run("growth", func(t *testing.T) {
+		layout := layoutForStoreTest(t)
+		content := []byte("snapshotted content")
+		hash := writeMaintenanceLoose(t, layout, content)
+		path := layout.LoosePath(hash)
+		info, err := snapshotPathIdentity(path)
+		require.NoError(t, err)
+		appendFile, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+		require.NoError(t, err)
+		_, err = appendFile.Write([]byte("growth"))
+		require.NoError(t, err)
+		require.NoError(t, appendFile.Close())
+		f, err := openNoFollow(path, false)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, f.Close()) })
+
+		err = verifyLooseFile(context.Background(), f, info, hash)
+		require.ErrorIs(t, err, ErrContentMismatch)
+	})
+
+	t.Run("cancellation", func(t *testing.T) {
+		layout := layoutForStoreTest(t)
+		content := []byte("cancel verification")
+		hash := writeMaintenanceLoose(t, layout, content)
+		path := layout.LoosePath(hash)
+		info, err := snapshotPathIdentity(path)
+		require.NoError(t, err)
+		f, err := openNoFollow(path, false)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, f.Close()) })
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		err = verifyLooseFile(ctx, f, info, hash)
+		require.ErrorIs(t, err, context.Canceled)
 	})
 }
 

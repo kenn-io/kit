@@ -149,7 +149,7 @@ func (m *Maintainer) dropDangling(ctx context.Context, stats *PackStats) error {
 			if _, _, err := m.store.readPackedBounded(ctx, entry.Hash, &entry, m.limits.BlobBytes); err == nil {
 				continue
 			}
-			if err := verifyLoosePath(m.layout.LoosePath(entry.Hash), entry.Hash, m.limits.BlobBytes); err != nil {
+			if err := verifyLoosePath(ctx, m.layout.LoosePath(entry.Hash), entry.Hash, m.limits.BlobBytes); err != nil {
 				continue
 			}
 			if err := m.catalog.DeleteIndexEntry(ctx, entry.Hash); err != nil {
@@ -230,7 +230,7 @@ func (m *Maintainer) reconcileOne(ctx context.Context, path, packID string, refs
 			}
 		}
 		if location.Member && location.Pack == nil {
-			if readErr := verifyLoosePath(m.layout.LoosePath(hash), hash, m.limits.BlobBytes); readErr == nil {
+			if readErr := verifyLoosePath(ctx, m.layout.LoosePath(hash), hash, m.limits.BlobBytes); readErr == nil {
 				continue
 			}
 		}
@@ -429,7 +429,10 @@ func (m *Maintainer) prepareCandidate(
 	return nil, "", nil, false, corrupt
 }
 
-func verifyLoosePath(path string, hash Hash, limit int64) error {
+func verifyLoosePath(ctx context.Context, path string, hash Hash, limit int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	info, err := snapshotPathIdentity(path)
 	if err != nil {
 		return err
@@ -446,18 +449,34 @@ func verifyLoosePath(path string, hash Hash, limit int64) error {
 		return err
 	}
 	defer func() { _ = f.Close() }()
+	return verifyLooseFile(ctx, f, info, hash)
+}
+
+func verifyLooseFile(ctx context.Context, f *os.File, info fs.FileInfo, hash Hash) error {
+	size := info.Size()
 	digest := sha256.New()
 	buffer := make([]byte, 64<<10)
-	written, err := io.CopyBuffer(digest, f, buffer)
+	source := &contextReader{ctx: ctx, reader: f}
+	reader := io.LimitReader(source, size)
+	written, err := io.CopyBuffer(digest, reader, buffer)
 	if err != nil {
 		return err
 	}
 	if written != size {
 		return ErrContentMismatch
 	}
+	var probe [1]byte
+	if n, err := source.Read(probe[:]); n != 0 || err == nil {
+		return ErrContentMismatch
+	} else if !errors.Is(err, io.EOF) {
+		return err
+	}
 	after, err := f.Stat()
 	if err != nil || !os.SameFile(info, after) {
 		return errors.Join(err, errIdentityChanged)
+	}
+	if after.Size() != size {
+		return ErrContentMismatch
 	}
 	if hex.EncodeToString(digest.Sum(nil)) != hash.String() {
 		return ErrContentMismatch
@@ -542,7 +561,7 @@ func (m *Maintainer) sweepLoose(ctx context.Context, refs map[Hash]Reference, al
 		if _, _, err := m.store.ReadBounded(ctx, entry.Hash, m.limits.BlobBytes); err != nil {
 			continue
 		}
-		if err := verifyLoosePath(path, entry.Hash, m.limits.BlobBytes); err != nil {
+		if err := verifyLoosePath(ctx, path, entry.Hash, m.limits.BlobBytes); err != nil {
 			continue
 		}
 		if err := os.Remove(path); err == nil {
