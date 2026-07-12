@@ -4,6 +4,16 @@ Status: **approved** for issue `6j6h` on 2026-07-11. Implementation issues must
 preserve this contract; changes to its public API or authority-safety choices
 require an explicit contract amendment before dependent code changes.
 
+Amendments approved during `n6jv` implementation:
+
+- zstd history has its own `WindowBytes` policy dimension. Legacy
+  single-segment frames can require a window equal to raw length; newly
+  streamed frames cap it at 8 MiB. This records the codec constraint explicitly
+  instead of representing it as raw allocation.
+- scratch names contain a unique preparation ID rather than a writer pack ID.
+  Parallel preparation must precede pack rotation, so the eventual pack ID is
+  not necessarily known when scratch is created.
+
 ## Scope and fixed compatibility boundary
 
 This design adds bounded-memory streaming for plain format-v1 entries across
@@ -72,8 +82,20 @@ type UnsupportedStreamError struct {
 func (*UnsupportedStreamError) Error() string
 func (*UnsupportedStreamError) Unwrap() error // ErrStreamUnsupported
 
+type StreamLimitDimension string
+
+const (
+	StreamLimitRawBytes       StreamLimitDimension = "raw_bytes"
+	StreamLimitStoredBytes    StreamLimitDimension = "stored_bytes"
+	StreamLimitContainerBytes StreamLimitDimension = "container_bytes"
+	StreamLimitFooterBytes    StreamLimitDimension = "footer_bytes"
+	StreamLimitEntryCount     StreamLimitDimension = "entry_count"
+	StreamLimitScratchBytes   StreamLimitDimension = "scratch_bytes"
+	StreamLimitWindowBytes    StreamLimitDimension = "window_bytes"
+)
+
 type StreamLimitError struct {
-	Dimension string
+	Dimension StreamLimitDimension
 	Actual    uint64
 	Limit     uint64
 }
@@ -87,6 +109,7 @@ type ReaderLimits struct {
 	Entries        uint64
 	RawBytes       uint64
 	StoredBytes    uint64
+	WindowBytes    uint64
 }
 
 type ReaderOptions struct {
@@ -181,12 +204,17 @@ An entry with `BlobEncrypted`, or any entry inside an encrypted pack, makes
 `OpenBlob` return `UnsupportedStreamError{StreamEncryptedV1}`. Existing
 `ReadBlob` remains the authenticated bounded-buffer path.
 
-Zero reader limits select the format maxima. `OpenReader` and
+Zero reader limits select the format or codec maxima. `OpenReader` and
 `NewReaderFromFile` delegate to the option-bearing constructors with zero
 limits. The constructors enforce container, footer, entry-count, stored, and
-raw limits before allocation or exposure, and retain ownership of the supplied
-descriptor on every return. This lets `packstore` use its stable no-follow
-descriptor without maintaining a second frame/footer implementation.
+raw limits before allocation or exposure. Compressed streams additionally
+preflight the advertised zstd window against `WindowBytes`. Legacy buffered
+format-v1 frames are single-segment and may advertise a window equal to raw
+length; callers that cannot admit that history return a typed `window_bytes`
+policy error. Newly streamed frames use a maximum 8 MiB window so their codec
+heap remains independent of object size. Constructors retain ownership of the
+supplied descriptor on every return. This lets `packstore` use its stable
+no-follow descriptor without maintaining a second frame/footer implementation.
 
 `Reader.Close` must not race a live `BlobReader`. The low-level contract is
 that closing the parent before all children is misuse and returns
@@ -202,8 +230,8 @@ follows:
 
 1. Preflight `rawLen`, the worst-case stored bound, and scratch budget.
 2. Create exact-owned random raw and compressed scratch files with mode 0600
-   using create-exclusive semantics. Names contain the writer pack ID and end
-   in `.raw.staging` and `.zstd.staging`.
+   using create-exclusive semantics. Names contain a unique preparation ID and
+   end in `.raw.staging` and `.zstd.staging`.
 3. Read the source once while hashing and writing raw scratch; feed the same
    bytes to a streaming zstd encoder, initialized with the declared content
    size, when `rawLen >= zstd.MinWindowSize`.
