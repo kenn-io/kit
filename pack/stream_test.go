@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -267,7 +268,7 @@ func TestPreparedBlobCloseIsIdempotent(t *testing.T) {
 	assert.Empty(t, matches)
 }
 
-func TestAppendPreparedWriteFailurePoisonsWriter(t *testing.T) {
+func TestAppendPreparedZeroByteWriteFailureDoesNotPoisonWriter(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	content := bytes.Repeat([]byte("prepared"), 1<<14)
@@ -278,10 +279,43 @@ func TestAppendPreparedWriteFailurePoisonsWriter(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = writer.Abort() })
 	require.NoError(t, writer.f.Close())
-	_, firstErr := writer.AppendPrepared(context.Background(), prepared)
-	require.Error(t, firstErr)
-	_, nextErr := writer.Append([]byte("later"))
-	assert.EqualError(t, nextErr, firstErr.Error())
+	_, err = writer.AppendPrepared(context.Background(), prepared)
+	require.Error(t, err)
+	assert.Nil(t, writer.err)
+}
+
+func TestAppendPreparedCancellationBeforeCopyLeavesWriterUsable(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	content := bytes.Repeat([]byte("prepared cancellation"), 1<<12)
+	prepared, err := PrepareBlob(context.Background(), bytes.NewReader(content), uint64(len(content)), DefaultZstdLevel, AppendStreamOptions{ScratchDir: dir})
+	require.NoError(t, err)
+
+	writer, err := NewWriter(dir, WriterOptions{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = writer.Abort() })
+	ctx, cancel := context.WithCancel(context.Background())
+	cancelBetweenChecks := &cancelAfterFirstErrContext{Context: ctx, cancel: cancel}
+	_, err = writer.AppendPrepared(cancelBetweenChecks, prepared)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, int64(headerSize), writer.StoredSize())
+
+	later := []byte("later append")
+	entry, err := writer.Append(later)
+	require.NoError(t, err)
+	assert.Equal(t, ComputeBlobID(later), entry.ID)
+}
+
+type cancelAfterFirstErrContext struct {
+	context.Context
+	cancel context.CancelFunc
+	once   sync.Once
+}
+
+func (c *cancelAfterFirstErrContext) Err() error {
+	err := c.Context.Err()
+	c.once.Do(c.cancel)
+	return err
 }
 
 func TestAppendPreparedScratchCorruptionPoisonsWriter(t *testing.T) {

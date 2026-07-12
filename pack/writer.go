@@ -174,13 +174,13 @@ func (w *Writer) AppendPrepared(
 	if err != nil {
 		return Entry{}, err
 	}
-	copyStarted := false
+	writerMutated := false
 	defer func() {
 		cleanupErr := closeAndRemoveScratch(f, scratchPath)
 		prepared.finish(cleanupErr)
 		if cleanupErr != nil {
 			resultErr = errors.Join(resultErr, cleanupErr)
-			if copyStarted {
+			if writerMutated {
 				w.err = resultErr
 			}
 		}
@@ -209,15 +209,22 @@ func (w *Writer) AppendPrepared(
 	}
 
 	crc := crc32.New(crc32cTable)
-	copyStarted = true
 	written, err := copyContext(ctx, io.MultiWriter(w.f, crc), f, prepared.storedLen)
+	writerMutated = written != 0
 	if err != nil || written != prepared.storedLen {
 		if err == nil {
 			err = io.ErrUnexpectedEOF
 		}
-		w.err = fmt.Errorf("pack: writing streamed blob %s after %d bytes: %w", prepared.id, written, err)
-		return Entry{}, w.err
+		resultErr = fmt.Errorf("pack: writing streamed blob %s after %d bytes: %w", prepared.id, written, err)
+		if writerMutated {
+			w.err = resultErr
+		}
+		return Entry{}, resultErr
 	}
+	// A successful zero-length copy still commits a logical entry below, so a
+	// later cleanup failure must poison the writer even though no frame bytes
+	// were written.
+	writerMutated = true
 	if crc.Sum32() != prepared.crc {
 		w.err = fmt.Errorf("%w: prepared frame crc changed for blob %s", ErrCorrupt, prepared.id)
 		return Entry{}, w.err
