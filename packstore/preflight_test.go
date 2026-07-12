@@ -48,6 +48,40 @@ func TestMaintenanceReadAllowsMinimumZstdWindowForSmallBlob(t *testing.T) {
 	require.Equal(content, got)
 }
 
+func TestMaintenanceReadRejectsZstdWindowAboveBlobLimit(t *testing.T) {
+	require := require.New(t)
+	content := bytes.Repeat([]byte("bounded window "), 128)
+	encoder, err := zstd.NewWriter(nil,
+		zstd.WithEncoderConcurrency(1),
+		zstd.WithWindowSize(1<<20),
+		zstd.WithSingleSegment(false))
+	require.NoError(err)
+	encoded := encoder.EncodeAll(content, nil)
+	encoder.Close()
+
+	layout := layoutForStoreTest(t)
+	writer, err := pack.NewWriter(t.TempDir(), pack.WriterOptions{})
+	require.NoError(err)
+	id := pack.ComputeBlobID(content)
+	_, err = writer.AppendEncoded(id, encoded, uint64(len(content)), true)
+	require.NoError(err)
+	path := layout.PackPath(writer.ID())
+	require.NoError(os.MkdirAll(filepath.Dir(path), 0o700))
+	_, err = writer.Seal(path)
+	require.NoError(err)
+
+	limits := DefaultLimits()
+	limits.BlobBytes = int64(len(content))
+	reader, err := OpenMaintenancePack(path, limits)
+	require.NoError(err)
+	t.Cleanup(func() { require.NoError(reader.Close()) })
+	hash, err := ParseHash(id.String())
+	require.NoError(err)
+	_, err = reader.ReadBlob(hash)
+	require.Error(err)
+	require.ErrorIs(err, pack.ErrCorrupt)
+}
+
 func TestReadBoundedEnforcesLooseAndPackedBlobLimits(t *testing.T) {
 	for _, storage := range []string{"loose", "packed"} {
 		t.Run(storage, func(t *testing.T) {
@@ -226,17 +260,12 @@ func TestMaintenanceAllocationsRespectPlatformInt(t *testing.T) {
 
 	t.Run("verified loose content", func(t *testing.T) {
 		require := require.New(t)
-		assert := assert.New(t)
 		layout := layoutForStoreTest(t)
 		content := []byte("ninebytes")
 		hash := writeMaintenanceLoose(t, layout, content)
 
-		_, err := readVerifiedLoosePath(layout.LoosePath(hash), hash, int64(len(content)))
-		require.ErrorIs(err, ErrBlobTooLarge)
-		var limitErr *LimitError
-		require.ErrorAs(err, &limitErr)
-		assert.Equal(LimitBlobRawBytes, limitErr.Dimension)
-		assert.Equal(uint64(8), limitErr.Limit)
+		err := verifyLoosePath(context.Background(), layout.LoosePath(hash), hash, int64(len(content)))
+		require.NoError(err, "streamed verification does not allocate from content length")
 	})
 
 	t.Run("pack footer", func(t *testing.T) {
@@ -254,6 +283,45 @@ func TestMaintenanceAllocationsRespectPlatformInt(t *testing.T) {
 		require.ErrorAs(err, &limitErr)
 		assert.Equal(LimitPackFooterBytes, limitErr.Dimension)
 		assert.Equal(uint64(8), limitErr.Limit)
+	})
+}
+
+func TestVerifyLooseFileBoundsSnapshotAndHonorsCancellation(t *testing.T) {
+	t.Run("growth", func(t *testing.T) {
+		layout := layoutForStoreTest(t)
+		content := []byte("snapshotted content")
+		hash := writeMaintenanceLoose(t, layout, content)
+		path := layout.LoosePath(hash)
+		info, err := snapshotPathIdentity(path)
+		require.NoError(t, err)
+		appendFile, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+		require.NoError(t, err)
+		_, err = appendFile.Write([]byte("growth"))
+		require.NoError(t, err)
+		require.NoError(t, appendFile.Close())
+		f, err := openNoFollow(path, false)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, f.Close()) })
+
+		err = verifyLooseFile(context.Background(), f, info, hash)
+		require.ErrorIs(t, err, ErrContentMismatch)
+	})
+
+	t.Run("cancellation", func(t *testing.T) {
+		layout := layoutForStoreTest(t)
+		content := []byte("cancel verification")
+		hash := writeMaintenanceLoose(t, layout, content)
+		path := layout.LoosePath(hash)
+		info, err := snapshotPathIdentity(path)
+		require.NoError(t, err)
+		f, err := openNoFollow(path, false)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, f.Close()) })
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		err = verifyLooseFile(ctx, f, info, hash)
+		require.ErrorIs(t, err, context.Canceled)
 	})
 }
 
