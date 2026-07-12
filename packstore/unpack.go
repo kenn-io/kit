@@ -1,7 +1,6 @@
 package packstore
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -101,20 +100,19 @@ func (m *Maintainer) Unpack(ctx context.Context) (UnpackStats, error) {
 			if err := ctx.Err(); err != nil {
 				return stats, errors.Join(err, reader.Close())
 			}
-			data, err := reader.ReadBlob(entry.Hash)
+			stream, err := reader.OpenBlob(ctx, entry.Hash)
 			if err != nil {
 				return stats, errors.Join(err, reader.Close())
 			}
-			size := int64(len(data))
-			_, err = loose.Write(ctx, bytes.NewReader(data), WriteOptions{
+			_, writeErr := loose.Write(ctx, stream, WriteOptions{
 				Durability: DurablePublication, Dedup: VerifyFullHash,
-				ExpectedHash: entry.Hash, ExpectedSize: size, SizeKnown: true,
+				ExpectedHash: entry.Hash, MaxBytes: entry.RawLen,
 			})
-			if err != nil {
+			if err := errors.Join(writeErr, stream.Close()); err != nil {
 				return stats, errors.Join(err, reader.Close())
 			}
 			stats.BlobsRestored++
-			stats.BytesRestored += size
+			stats.BytesRestored += entry.RawLen
 		}
 		if err := reader.Close(); err != nil {
 			return stats, err

@@ -226,17 +226,12 @@ func TestMaintenanceAllocationsRespectPlatformInt(t *testing.T) {
 
 	t.Run("verified loose content", func(t *testing.T) {
 		require := require.New(t)
-		assert := assert.New(t)
 		layout := layoutForStoreTest(t)
 		content := []byte("ninebytes")
 		hash := writeMaintenanceLoose(t, layout, content)
 
-		_, err := readVerifiedLoosePath(layout.LoosePath(hash), hash, int64(len(content)))
-		require.ErrorIs(err, ErrBlobTooLarge)
-		var limitErr *LimitError
-		require.ErrorAs(err, &limitErr)
-		assert.Equal(LimitBlobRawBytes, limitErr.Dimension)
-		assert.Equal(uint64(8), limitErr.Limit)
+		err := verifyLoosePath(layout.LoosePath(hash), hash, int64(len(content)))
+		require.NoError(err, "streamed verification does not allocate from content length")
 	})
 
 	t.Run("pack footer", func(t *testing.T) {

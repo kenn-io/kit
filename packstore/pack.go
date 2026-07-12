@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -150,7 +149,7 @@ func (m *Maintainer) dropDangling(ctx context.Context, stats *PackStats) error {
 			if _, _, err := m.store.readPackedBounded(ctx, entry.Hash, &entry, m.limits.BlobBytes); err == nil {
 				continue
 			}
-			if _, err := readVerifiedLoosePath(m.layout.LoosePath(entry.Hash), entry.Hash, m.limits.BlobBytes); err != nil {
+			if err := verifyLoosePath(m.layout.LoosePath(entry.Hash), entry.Hash, m.limits.BlobBytes); err != nil {
 				continue
 			}
 			if err := m.catalog.DeleteIndexEntry(ctx, entry.Hash); err != nil {
@@ -231,11 +230,16 @@ func (m *Maintainer) reconcileOne(ctx context.Context, path, packID string, refs
 			}
 		}
 		if location.Member && location.Pack == nil {
-			if _, readErr := readVerifiedLoosePath(m.layout.LoosePath(hash), hash, m.limits.BlobBytes); readErr == nil {
+			if readErr := verifyLoosePath(m.layout.LoosePath(hash), hash, m.limits.BlobBytes); readErr == nil {
 				continue
 			}
 		}
-		if _, err := reader.ReadBlob(hash); err != nil {
+		stream, err := reader.OpenBlob(ctx, hash)
+		if err != nil {
+			stats.PacksQuarantined++
+			return nil
+		}
+		if err := errors.Join(stream.Verify(), stream.Close()); err != nil {
 			stats.PacksQuarantined++
 			return nil
 		}
@@ -262,6 +266,7 @@ func (m *Maintainer) reconcileOne(ctx context.Context, path, packID string, refs
 type packedSource struct {
 	candidate Candidate
 	path      string
+	identity  fs.FileInfo
 	entry     pack.Entry
 }
 
@@ -303,7 +308,7 @@ func (m *Maintainer) packLoose(ctx context.Context, opts PackOptions, stats *Pac
 			stats.BlobsDeferredOversized++
 			continue
 		}
-		data, source, found, readErr := m.readCandidate(ctx, candidate)
+		prepared, source, sourceIdentity, found, readErr := m.prepareCandidate(ctx, candidate)
 		if readErr != nil {
 			if errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) {
 				return readErr
@@ -319,18 +324,15 @@ func (m *Maintainer) packLoose(ctx context.Context, opts PackOptions, stats *Pac
 			stats.BlobsMissing++
 			continue
 		}
-		id := pack.ComputeBlobID(data)
-		if id.String() != candidate.Hash.String() {
-			return fmt.Errorf("%w: appended hash differs from candidate", ErrContentMismatch)
-		}
-		frame, compressed := pack.EncodeFrame(data, pack.DefaultZstdLevel)
-		if err := checkPlainOutput(m.limits, uint64(pack.MinEntryOffset), uint64(len(frame)), 1); err != nil {
+		if err := checkPlainOutput(m.limits, uint64(pack.MinEntryOffset), prepared.StoredLen(), 1); err != nil {
+			_ = prepared.Close()
 			stats.BlobsDeferredOversized++
 			continue
 		}
 		if writer != nil {
-			if err := checkPlainOutput(m.limits, uint64(writer.StoredSize()), uint64(len(frame)), len(sources)+1); err != nil { //nolint:gosec // writer offsets are non-negative
+			if err := checkPlainOutput(m.limits, uint64(writer.StoredSize()), prepared.StoredLen(), len(sources)+1); err != nil { //nolint:gosec // writer offsets are non-negative
 				if err := seal(); err != nil {
+					_ = prepared.Close()
 					return err
 				}
 			}
@@ -338,15 +340,16 @@ func (m *Maintainer) packLoose(ctx context.Context, opts PackOptions, stats *Pac
 		if writer == nil {
 			writer, err = pack.NewWriter(m.layout.PacksDir(), pack.WriterOptions{TargetSize: opts.TargetSize})
 			if err != nil {
+				_ = prepared.Close()
 				return err
 			}
 		}
-		entry, err := writer.AppendEncoded(id, frame, uint64(len(data)), compressed)
+		entry, err := writer.AppendPrepared(ctx, prepared)
 		if err != nil {
 			return err
 		}
-		sources = append(sources, packedSource{candidate: candidate, path: source, entry: entry})
-		rawBytes += int64(len(data))
+		sources = append(sources, packedSource{candidate: candidate, path: source, identity: sourceIdentity, entry: entry})
+		rawBytes += int64(entry.RawLen) //nolint:gosec // bounded by configured limits
 		if writer.Full() || (opts.MaxBytes > 0 && rawBytes >= opts.MaxBytes) {
 			if err := seal(); err != nil {
 				return err
@@ -360,17 +363,23 @@ func (m *Maintainer) packLoose(ctx context.Context, opts PackOptions, stats *Pac
 	return seal()
 }
 
-func (m *Maintainer) readCandidate(ctx context.Context, candidate Candidate) ([]byte, string, bool, error) {
+func (m *Maintainer) prepareCandidate(
+	ctx context.Context, candidate Candidate,
+) (*pack.PreparedBlob, string, fs.FileInfo, bool, error) {
+	id, err := pack.ParseBlobID(candidate.Hash.String())
+	if err != nil {
+		return nil, "", nil, false, err
+	}
 	var corrupt error
 	for _, candidatePath := range candidate.Paths {
 		if err := ctx.Err(); err != nil {
-			return nil, "", false, err
+			return nil, "", nil, false, err
 		}
 		path := candidatePath
 		if !filepath.IsAbs(path) {
 			path = filepath.Join(m.layout.Root(), filepath.FromSlash(path))
 		}
-		data, err := readVerifiedLoosePath(path, candidate.Hash, m.limits.BlobBytes)
+		identity, err := snapshotPathIdentity(path)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
@@ -378,50 +387,82 @@ func (m *Maintainer) readCandidate(ctx context.Context, candidate Candidate) ([]
 			corrupt = errors.Join(corrupt, err)
 			continue
 		}
-		return data, path, true, nil
+		if err := validateRegularNoFollow(path, identity); err != nil {
+			corrupt = errors.Join(corrupt, err)
+			continue
+		}
+		size := identity.Size()
+		if size < 0 || size > m.limits.BlobBytes {
+			corrupt = errors.Join(corrupt, newLimitError(LimitBlobRawBytes, uint64(size), uint64(m.limits.BlobBytes))) //nolint:gosec
+			continue
+		}
+		f, err := openNoFollow(path, false)
+		if err != nil {
+			corrupt = errors.Join(corrupt, err)
+			continue
+		}
+		opened, statErr := f.Stat()
+		if statErr != nil || !os.SameFile(identity, opened) {
+			corrupt = errors.Join(corrupt, statErr, errIdentityChanged, f.Close())
+			continue
+		}
+		prepared, prepareErr := pack.PrepareBlob(ctx, f, uint64(size), pack.DefaultZstdLevel, pack.AppendStreamOptions{
+			ExpectedID: &id, ScratchDir: m.layout.PacksDir(),
+		})
+		after, afterErr := f.Stat()
+		closeErr := f.Close()
+		if prepareErr == nil && (afterErr != nil || !os.SameFile(identity, after)) {
+			prepareErr = errors.Join(afterErr, errIdentityChanged)
+		}
+		if err := errors.Join(prepareErr, closeErr); err != nil {
+			if prepared != nil {
+				_ = prepared.Close()
+			}
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, "", nil, false, err
+			}
+			corrupt = errors.Join(corrupt, err)
+			continue
+		}
+		return prepared, path, identity, true, nil
 	}
-	return nil, "", false, corrupt
+	return nil, "", nil, false, corrupt
 }
 
-func readVerifiedLoosePath(path string, hash Hash, limit int64) ([]byte, error) {
+func verifyLoosePath(path string, hash Hash, limit int64) error {
 	info, err := snapshotPathIdentity(path)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if err := validateRegularNoFollow(path, info); err != nil {
-		return nil, err
+		return err
 	}
 	size := info.Size()
 	if size < 0 || size > limit {
-		return nil, newLimitError(LimitBlobRawBytes, uint64(size), uint64(limit)) //nolint:gosec
-	}
-	if uint64(size) > maxPlatformInt {
-		return nil, newLimitError(LimitBlobRawBytes, uint64(size), maxPlatformInt)
+		return newLimitError(LimitBlobRawBytes, uint64(size), uint64(limit)) //nolint:gosec
 	}
 	f, err := openNoFollow(path, false)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer func() { _ = f.Close() }()
-	data := make([]byte, int(size))
-	if _, err := io.ReadFull(f, data); err != nil {
-		return nil, err
+	digest := sha256.New()
+	buffer := make([]byte, 64<<10)
+	written, err := io.CopyBuffer(digest, f, buffer)
+	if err != nil {
+		return err
 	}
-	var probe [1]byte
-	if n, err := f.Read(probe[:]); n != 0 || err == nil {
-		return nil, ErrContentMismatch
-	} else if !errors.Is(err, io.EOF) {
-		return nil, err
+	if written != size {
+		return ErrContentMismatch
 	}
 	after, err := f.Stat()
 	if err != nil || !os.SameFile(info, after) {
-		return nil, errors.Join(err, errIdentityChanged)
+		return errors.Join(err, errIdentityChanged)
 	}
-	digest := sha256.Sum256(data)
-	if hex.EncodeToString(digest[:]) != hash.String() {
-		return nil, ErrContentMismatch
+	if hex.EncodeToString(digest.Sum(nil)) != hash.String() {
+		return ErrContentMismatch
 	}
-	return data, nil
+	return nil
 }
 
 func (m *Maintainer) sealAndRecord(ctx context.Context, writer *pack.Writer, sources []packedSource, stats *PackStats) error {
@@ -451,7 +492,9 @@ func (m *Maintainer) sealAndRecord(ctx context.Context, writer *pack.Writer, sou
 	stats.BlobsPacked += len(sources)
 	for _, source := range sources {
 		stats.BytesPacked += int64(source.entry.RawLen) //nolint:gosec
-		_ = os.Remove(source.path)
+		if current, err := snapshotPathIdentity(source.path); err == nil && os.SameFile(source.identity, current) {
+			_ = os.Remove(source.path)
+		}
 	}
 	return nil
 }
@@ -499,7 +542,7 @@ func (m *Maintainer) sweepLoose(ctx context.Context, refs map[Hash]Reference, al
 		if _, _, err := m.store.ReadBounded(ctx, entry.Hash, m.limits.BlobBytes); err != nil {
 			continue
 		}
-		if _, err := readVerifiedLoosePath(path, entry.Hash, m.limits.BlobBytes); err != nil {
+		if err := verifyLoosePath(path, entry.Hash, m.limits.BlobBytes); err != nil {
 			continue
 		}
 		if err := os.Remove(path); err == nil {

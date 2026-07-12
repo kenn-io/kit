@@ -275,24 +275,37 @@ func (m *Maintainer) rewriteSource(ctx context.Context, oldPackID string, entrie
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
-		data, size, err := m.store.ReadBounded(ctx, indexed.Hash, m.limits.BlobBytes)
+		stream, size, err := m.store.OpenStream(ctx, indexed.Hash)
 		if err != nil {
 			return result, fmt.Errorf("packstore: read source %s blob %s: %w", oldPackID, indexed.Hash, err)
 		}
-		if size != int64(len(data)) || size != indexed.RawLen {
+		if size != indexed.RawLen {
+			_ = stream.Close()
 			return result, fmt.Errorf("%w: source length mismatch", ErrContentMismatch)
 		}
-		id := pack.ComputeBlobID(data)
-		if id.String() != indexed.Hash.String() {
-			return result, fmt.Errorf("%w: replacement hash mismatch", ErrContentMismatch)
+		id, err := pack.ParseBlobID(indexed.Hash.String())
+		if err != nil {
+			_ = stream.Close()
+			return result, err
 		}
-		frame, compressed := pack.EncodeFrame(data, pack.DefaultZstdLevel)
-		if err := checkPlainOutput(m.limits, uint64(pack.MinEntryOffset), uint64(len(frame)), 1); err != nil {
+		prepared, prepareErr := pack.PrepareBlob(ctx, stream, uint64(size), pack.DefaultZstdLevel, pack.AppendStreamOptions{
+			ExpectedID: &id, ScratchDir: m.layout.PacksDir(),
+		}) //nolint:gosec // size is a validated non-negative catalog length
+		streamErr := stream.Close()
+		if err := errors.Join(prepareErr, streamErr); err != nil {
+			if prepared != nil {
+				_ = prepared.Close()
+			}
+			return result, fmt.Errorf("packstore: read source %s blob %s: %w", oldPackID, indexed.Hash, err)
+		}
+		if err := checkPlainOutput(m.limits, uint64(pack.MinEntryOffset), prepared.StoredLen(), 1); err != nil {
+			_ = prepared.Close()
 			return result, err
 		}
 		if writer != nil {
-			if err := checkPlainOutput(m.limits, uint64(writer.StoredSize()), uint64(len(frame)), len(current)+1); err != nil { //nolint:gosec // writer offsets are non-negative
+			if err := checkPlainOutput(m.limits, uint64(writer.StoredSize()), prepared.StoredLen(), len(current)+1); err != nil { //nolint:gosec // writer offsets are non-negative
 				if err := seal(); err != nil {
+					_ = prepared.Close()
 					return result, err
 				}
 			}
@@ -300,10 +313,11 @@ func (m *Maintainer) rewriteSource(ctx context.Context, oldPackID string, entrie
 		if writer == nil {
 			writer, err = pack.NewWriter(m.layout.PacksDir(), pack.WriterOptions{TargetSize: targetSize})
 			if err != nil {
+				_ = prepared.Close()
 				return result, err
 			}
 		}
-		sealed, err := writer.AppendEncoded(id, frame, uint64(len(data)), compressed)
+		sealed, err := writer.AppendPrepared(ctx, prepared)
 		if err != nil {
 			return result, err
 		}

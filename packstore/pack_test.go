@@ -379,7 +379,7 @@ func TestPackDurablyCreatesPacksDirectory(t *testing.T) {
 	require.Contains(synced, layout.Root())
 }
 
-func newMaintainerForTest(t *testing.T, catalog Catalog, layout Layout, limits Limits) *Maintainer {
+func newMaintainerForTest(t testing.TB, catalog Catalog, layout Layout, limits Limits) *Maintainer {
 	t.Helper()
 	maintainer, err := NewMaintainer(catalog, layout, MaintainerOptions{Limits: limits})
 	require.NoError(t, err)

@@ -55,3 +55,50 @@ func BenchmarkStorePackedReads(b *testing.B) {
 		})
 	}
 }
+
+func BenchmarkMaintenancePackUnpack(b *testing.B) {
+	const size = int64(1 << 20)
+	for _, tt := range []struct {
+		name   string
+		source func() io.Reader
+	}{
+		{name: "raw-1MiB", source: func() io.Reader { return io.LimitReader(&maintenanceBenchNoiseReader{state: 1}, size) }},
+		{name: "compressed-1MiB", source: func() io.Reader { return io.LimitReader(streamZeroReader{}, size) }},
+	} {
+		b.Run(tt.name, func(b *testing.B) {
+			layout, err := NewLayout(b.TempDir(), LayoutOptions{Staging: StagingStoreDirectory, StagingDir: "tmp"})
+			require.NoError(b, err)
+			loose, err := NewLooseStore(layout)
+			require.NoError(b, err)
+			written, err := loose.Write(context.Background(), tt.source(), WriteOptions{
+				Durability: AtomicPublication, Dedup: VerifyFullHash, MaxBytes: size,
+			})
+			require.NoError(b, err)
+			catalog := newMaintenanceCatalog()
+			catalog.addLoose(written.Hash, written.Path)
+			maintainer := newMaintainerForTest(b, catalog, layout, DefaultLimits())
+
+			b.ReportAllocs()
+			b.SetBytes(2 * size)
+			b.ResetTimer()
+			for range b.N {
+				_, err := maintainer.Pack(context.Background(), PackOptions{})
+				require.NoError(b, err)
+				_, err = maintainer.Unpack(context.Background())
+				require.NoError(b, err)
+			}
+		})
+	}
+}
+
+type maintenanceBenchNoiseReader struct{ state uint32 }
+
+func (r *maintenanceBenchNoiseReader) Read(p []byte) (int, error) {
+	for i := range p {
+		r.state ^= r.state << 13
+		r.state ^= r.state >> 17
+		r.state ^= r.state << 5
+		p[i] = byte(r.state)
+	}
+	return len(p), nil
+}
