@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"context"
 	"fmt"
 
 	"go.kenn.io/kit/pack"
@@ -78,6 +79,32 @@ func (a *PackAppender) AddEncoded(id pack.BlobID, frame []byte, rawLen uint64, c
 		return false, err
 	}
 	entry, err := a.w.AppendEncoded(id, frame, rawLen, compressed)
+	if err != nil {
+		a.err = fmt.Errorf("backup: appending blob %s: %w", id, err)
+		return false, a.err
+	}
+	return true, a.recordEntry(id, entry)
+}
+
+// AddPrepared consumes prepared and appends its bounded-scratch frame unless
+// the blob is already known. Prepared is consumed or closed on every return.
+func (a *PackAppender) AddPrepared(ctx context.Context, prepared *pack.PreparedBlob) (bool, error) {
+	if prepared == nil {
+		return false, fmt.Errorf("backup: nil prepared blob")
+	}
+	id := prepared.ID()
+	if a.err != nil {
+		_ = prepared.Close()
+		return false, a.err
+	}
+	if _, ok := a.known[id]; ok {
+		return false, prepared.Close()
+	}
+	if err := a.ensureWriter(); err != nil {
+		_ = prepared.Close()
+		return false, err
+	}
+	entry, err := a.w.AppendPrepared(ctx, prepared)
 	if err != nil {
 		a.err = fmt.Errorf("backup: appending blob %s: %w", id, err)
 		return false, a.err

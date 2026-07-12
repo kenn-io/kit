@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/url"
 	"os"
@@ -897,7 +898,7 @@ func (s *restoreState) restoreAttachments(ctx context.Context, app App, m *Manif
 		Stage: ProgressStageAttachments, Total: int64(len(inventory.refs)), BytesTotal: m.Attachments.BlobBytes,
 	})
 	err = s.runPackGroups(ctx, inventory.order, func(packID string) {
-		s.restorePackAttachments(contentDir, packID, inventory.groups[packID], inventory.paths, int64(len(inventory.refs)), m.Attachments.BlobBytes)
+		s.restorePackAttachments(ctx, contentDir, packID, inventory.groups[packID], inventory.paths, int64(len(inventory.refs)), m.Attachments.BlobBytes)
 	})
 	if err != nil {
 		return 0, 0, err
@@ -1029,7 +1030,8 @@ func (s *restoreState) restoredContentPaths(ctx context.Context) (map[string][]s
 // restorePackAttachments writes one pack's attachment blobs to their
 // recorded storage paths under dir.
 func (s *restoreState) restorePackAttachments(
-	contentDir, packID string, refs []ContentRef, paths map[string][]string, total, totalBytes int64,
+	ctx context.Context, contentDir, packID string, refs []ContentRef,
+	paths map[string][]string, total, totalBytes int64,
 ) {
 	pr, err := pack.OpenReader(s.repo.packPath(packID, s.app.PackFileExtension()), nil)
 	if err != nil {
@@ -1052,14 +1054,14 @@ func (s *restoreState) restorePackAttachments(
 			s.fail(fmt.Errorf("backup: attachment blob %s missing from pack %s footer", ref.Hash, packID))
 			return
 		}
-		content, err := pr.ReadBlob(*entry)
-		if err != nil {
-			s.fail(fmt.Errorf("backup: reading attachment %s from pack %s: %w", ref.Hash, packID, err))
+		indexed := s.known[id]
+		if entry.Offset != indexed.Offset || entry.StoredLen != indexed.StoredLen || entry.Flags != indexed.Flags {
+			s.fail(fmt.Errorf("backup: attachment %s index entry disagrees with pack %s footer", ref.Hash, packID))
 			return
 		}
-		if int64(len(content)) != ref.Size {
+		if int64(entry.RawLen) != ref.Size { //nolint:gosec // format-v1 raw lengths fit int64
 			s.fail(fmt.Errorf(
-				"backup: attachment %s is %d bytes but its list records %d", ref.Hash, len(content), ref.Size))
+				"backup: attachment %s is %d bytes but its list records %d", ref.Hash, entry.RawLen, ref.Size))
 			return
 		}
 		// Every listed hash was proven to have at least one path before the
@@ -1074,7 +1076,13 @@ func (s *restoreState) restorePackAttachments(
 					"backup: attachment %s restore path %q escapes the content directory", ref.Hash, rel))
 				return
 			}
-			if err := s.writeRootFile(filepath.Join(contentDir, rel), content, 0o600); err != nil {
+			stream, err := pr.OpenBlob(ctx, *entry)
+			if err != nil {
+				s.fail(fmt.Errorf("backup: opening attachment %s from pack %s: %w", ref.Hash, packID, err))
+				return
+			}
+			writeErr := s.writeRootReader(ctx, filepath.Join(contentDir, rel), stream, ref.Size, 0o600)
+			if err := errors.Join(writeErr, stream.Close()); err != nil {
 				s.fail(err)
 				return
 			}
@@ -1142,7 +1150,7 @@ func (s *restoreState) stageExtras(ctx context.Context, app App, m *Manifest) ([
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		sf, err := s.stageExtrasEntry(app, entry)
+		sf, err := s.stageExtrasEntry(ctx, app, entry)
 		if err != nil {
 			return nil, err
 		}
@@ -1279,7 +1287,7 @@ func validateExtrasEntryPath(path, contentDirName, dbFileName string) (string, e
 // extra, so an entry naming the restored database, its SQLite sidecars, or
 // the content tree can only come from a tampered tree blob trying to
 // overwrite already-proven outputs (validateExtrasEntryPath).
-func (s *restoreState) stageExtrasEntry(app App, entry ExtrasEntry) (stagedFile, error) {
+func (s *restoreState) stageExtrasEntry(ctx context.Context, app App, entry ExtrasEntry) (stagedFile, error) {
 	rel, err := validateExtrasEntryPath(entry.Path, app.ContentDirName(), app.DBFileName())
 	if err != nil {
 		return stagedFile{}, err
@@ -1289,21 +1297,17 @@ func (s *restoreState) stageExtrasEntry(app App, entry ExtrasEntry) (stagedFile,
 		return stagedFile{}, fmt.Errorf(
 			"backup: extras entry %s blob id %q: %w", entry.Path, entry.Blob, err)
 	}
-	content, err := s.fetch(id)
+	stream, err := s.repo.OpenBlob(ctx, s.known, id, nil, s.app.PackFileExtension())
 	if err != nil {
 		return stagedFile{}, err
-	}
-	if int64(len(content)) != entry.Size {
-		return stagedFile{}, fmt.Errorf("backup: extras entry %s is %d bytes but its tree records %d",
-			entry.Path, len(content), entry.Size)
 	}
 	mode := os.FileMode(entry.Mode).Perm()
 	if mode == 0 {
 		mode = 0o600
 	}
-	tmpRel, err := s.stageRootFile(rel, content, mode)
-	if err != nil {
-		return stagedFile{}, err
+	tmpRel, stageErr := s.stageRootReader(ctx, rel, stream, entry.Size, mode)
+	if err := errors.Join(stageErr, stream.Close()); err != nil {
+		return stagedFile{}, fmt.Errorf("backup: restoring extras entry %s: %w", entry.Path, err)
 	}
 	return stagedFile{rel: rel, tmpRel: tmpRel}, nil
 }
@@ -1374,13 +1378,12 @@ func (s *restoreState) closeLeafDir(dir *os.Root) {
 	}
 }
 
-// writeRootFile writes one restored file durably beneath the confined root:
-// the bytes are staged as a fresh, unpredictably named temp in rel's
-// directory and immediately renamed over the leaf name. The temp-then-rename
-// replaces a preexisting symlink at rel rather than following it. rel is
-// relative to the root (the restore target).
-func (s *restoreState) writeRootFile(rel string, content []byte, mode os.FileMode) error {
-	tmpRel, err := s.stageRootFile(rel, content, mode)
+// writeRootReader streams exactly expected bytes into private staging and
+// publishes the file only after the source reaches its verified terminal EOF.
+func (s *restoreState) writeRootReader(
+	ctx context.Context, rel string, src io.Reader, expected int64, mode os.FileMode,
+) error {
+	tmpRel, err := s.stageRootReader(ctx, rel, src, expected, mode)
 	if err != nil {
 		return err
 	}
@@ -1391,12 +1394,31 @@ func (s *restoreState) writeRootFile(rel string, content []byte, mode os.FileMod
 	return nil
 }
 
-// stageRootFile writes content to a fresh, unpredictably named temp in rel's
-// directory — created and entered one verified component at a time — and
-// returns the temp's root-relative path. The temp is synced before the
-// function returns, so promoting it later is a pure rename. On error the
-// temp is removed.
-func (s *restoreState) stageRootFile(rel string, content []byte, mode os.FileMode) (string, error) {
+type restoreContextReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (r restoreContextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.r.Read(p)
+}
+
+// stageRootReader writes to a fresh, unpredictably named temp entered through
+// verified directory components. Reading one byte beyond the recorded size
+// distinguishes a forged short size from verified EOF without allowing an
+// unbounded source to fill the target. The temp is synced before return.
+func (s *restoreState) stageRootReader(
+	ctx context.Context, rel string, src io.Reader, expected int64, mode os.FileMode,
+) (string, error) {
+	if ctx == nil {
+		return "", fmt.Errorf("backup: nil restore context")
+	}
+	if expected < 0 || uint64(expected) > pack.MaxRawLen {
+		return "", fmt.Errorf("backup: restored file %s has invalid recorded size %d", rel, expected)
+	}
 	dir, _, err := s.openLeafDir(rel)
 	if err != nil {
 		return "", err
@@ -1419,9 +1441,15 @@ func (s *restoreState) stageRootFile(rel string, content []byte, mode os.FileMod
 		_ = f.Close()
 		return "", fmt.Errorf("backup: setting mode on restored file %s: %w", rel, err)
 	}
-	if _, err := f.Write(content); err != nil {
+	reader := io.LimitReader(restoreContextReader{ctx: ctx, r: src}, expected+1)
+	written, copyErr := io.CopyBuffer(f, reader, make([]byte, 64<<10))
+	if copyErr != nil {
 		_ = f.Close()
-		return "", fmt.Errorf("backup: writing restored file %s: %w", rel, err)
+		return "", fmt.Errorf("backup: writing restored file %s: %w", rel, copyErr)
+	}
+	if written != expected {
+		_ = f.Close()
+		return "", fmt.Errorf("backup: restored file %s is %d bytes but its record says %d", rel, written, expected)
 	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close()

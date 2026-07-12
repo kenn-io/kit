@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"runtime"
 	"strings"
 	"sync"
@@ -90,6 +91,7 @@ func Verify(ctx context.Context, r *Repo, app App, opts VerifyOptions) (*VerifyR
 		jobs = runtime.GOMAXPROCS(0)
 	}
 	st := &verifyState{
+		ctx:              ctx,
 		app:              app,
 		repo:             r,
 		known:            known,
@@ -197,6 +199,7 @@ var maxOpenPackReaders = 64
 // readVerdict, readerErrs, contentReads, progress emission); the serial
 // phases run alone and need no locking.
 type verifyState struct {
+	ctx          context.Context
 	app          App
 	repo         *Repo
 	known        map[pack.BlobID]IndexEntry
@@ -360,10 +363,10 @@ func (s *verifyState) blob(id pack.BlobID, snapshotID string, readContent bool) 
 		s.problem(snapshotID, fmt.Sprintf("blob %s missing from pack %s footer", id, ie.PackID))
 		return nil, false
 	}
-	if entry.Offset != ie.Offset || entry.StoredLen != ie.StoredLen {
+	if entry.Offset != ie.Offset || entry.StoredLen != ie.StoredLen || entry.Flags != ie.Flags {
 		s.problem(snapshotID, fmt.Sprintf(
-			"blob %s index entry (offset %d, len %d) disagrees with pack %s footer (offset %d, len %d)",
-			id, ie.Offset, ie.StoredLen, ie.PackID, entry.Offset, entry.StoredLen))
+			"blob %s index entry (offset %d, len %d, flags %#x) disagrees with pack %s footer (offset %d, len %d, flags %#x)",
+			id, ie.Offset, ie.StoredLen, ie.Flags, ie.PackID, entry.Offset, entry.StoredLen, entry.Flags))
 		return nil, false
 	}
 	if !s.checked[id] {
@@ -559,10 +562,10 @@ func (s *verifyState) verifyGroupBlob(
 		fail(fmt.Sprintf("blob %s missing from pack %s footer", rd.id, packID))
 		return
 	}
-	if entry.Offset != ie.Offset || entry.StoredLen != ie.StoredLen {
+	if entry.Offset != ie.Offset || entry.StoredLen != ie.StoredLen || entry.Flags != ie.Flags {
 		fail(fmt.Sprintf(
-			"blob %s index entry (offset %d, len %d) disagrees with pack %s footer (offset %d, len %d)",
-			rd.id, ie.Offset, ie.StoredLen, packID, entry.Offset, entry.StoredLen))
+			"blob %s index entry (offset %d, len %d, flags %#x) disagrees with pack %s footer (offset %d, len %d, flags %#x)",
+			rd.id, ie.Offset, ie.StoredLen, ie.Flags, packID, entry.Offset, entry.StoredLen, entry.Flags))
 		return
 	}
 	s.mu.Lock()
@@ -570,11 +573,32 @@ func (s *verifyState) verifyGroupBlob(
 		s.checked[rd.id] = true
 		s.result.BlobsChecked++
 	}
+	checks := s.pendingRunChecks[rd.id]
+	delete(s.pendingRunChecks, rd.id)
 	s.mu.Unlock()
-	raw, err := pr.ReadBlob(*entry)
-	if err != nil {
-		fail(fmt.Sprintf("reading blob %s from pack %s: %v", rd.id, packID, err))
-		return
+	var raw []byte
+	if len(checks) != 0 {
+		var err error
+		raw, err = pr.ReadBlob(*entry)
+		if err != nil {
+			fail(fmt.Sprintf("reading blob %s from pack %s: %v", rd.id, packID, err))
+			return
+		}
+	} else {
+		ctx := s.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		stream, err := pr.OpenBlob(ctx, *entry)
+		if err != nil {
+			fail(fmt.Sprintf("opening blob %s from pack %s: %v", rd.id, packID, err))
+			return
+		}
+		_, copyErr := io.Copy(io.Discard, stream)
+		if err := errors.Join(copyErr, stream.Close()); err != nil {
+			fail(fmt.Sprintf("reading blob %s from pack %s: %v", rd.id, packID, err))
+			return
+		}
 	}
 	s.mu.Lock()
 	if !s.readDone[rd.id] {
@@ -585,13 +609,11 @@ func (s *verifyState) verifyGroupBlob(
 	// The read re-derived the blob's SHA-256 identity, so this length is the
 	// authenticated content length; checkAttachmentSizes compares listed
 	// sizes against it.
-	s.readLen[rd.id] = int64(len(raw))
+	s.readLen[rd.id] = int64(entry.RawLen) //nolint:gosec // format-v1 lengths fit int64
 	s.contentReads++
 	// Run this blob's queued page-map run checks now, while its bytes are in
 	// hand, so page blobs are not re-read after the drain just to hash their
 	// pages. Popped under the lock, hashed outside it.
-	checks := s.pendingRunChecks[rd.id]
-	delete(s.pendingRunChecks, rd.id)
 	s.mu.Unlock()
 
 	var details []string

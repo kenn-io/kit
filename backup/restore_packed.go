@@ -205,7 +205,7 @@ func (s *restoreState) restorePackedAttachments(
 		})
 	}
 	if err := s.runPackGroups(ctx, looseOrder, func(packID string) {
-		s.restorePackAttachments(contentDir, packID, looseGroups[packID], inventory.paths, result.totalBlobs, result.totalBytes)
+		s.restorePackAttachments(ctx, contentDir, packID, looseGroups[packID], inventory.paths, result.totalBlobs, result.totalBytes)
 	}); err != nil {
 		return packedRestoreResult{}, err
 	}
