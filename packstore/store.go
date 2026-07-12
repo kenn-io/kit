@@ -39,6 +39,8 @@ func (e *PackRetirementError) Is(target error) bool {
 
 // StoreOptions configures mixed loose and packed reads.
 type StoreOptions struct {
+	// Limits applies to ReadBounded and packed OpenStream calls. Store.Open
+	// retains its buffered compatibility behavior and does not enforce it.
 	Limits Limits
 	// ReaderSlots bounds cached pack descriptors. A stream whose slot is
 	// evicted keeps its descriptor leased until terminal read or Close, so total

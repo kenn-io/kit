@@ -23,7 +23,9 @@ type VerifiedReadCloser interface {
 
 // OpenStream returns catalog-authorized loose or packed content without a
 // whole-object allocation. Resolution is retried once if migration removes the
-// initially selected physical source.
+// initially selected physical source. Loose streams preserve Store.Open's size
+// availability and are not capped by the maintenance BlobBytes policy; packed
+// streams retain configured format and decoder limits.
 func (s *Store) OpenStream(ctx context.Context, contentHash Hash) (VerifiedReadCloser, int64, error) {
 	if ctx == nil {
 		return nil, 0, fmt.Errorf("packstore: nil context")
@@ -125,11 +127,6 @@ func (s *Store) openLooseStream(ctx context.Context, contentHash Hash) (Verified
 	}
 	if size < 0 {
 		return nil, 0, errors.Join(fmt.Errorf("packstore: negative loose size %d", size), f.Close())
-	}
-	if size > s.limits.BlobBytes {
-		return nil, 0, errors.Join(
-			newLimitError(LimitBlobRawBytes, uint64(size), uint64(s.limits.BlobBytes)), //nolint:gosec
-			f.Close())
 	}
 	id, err := pack.ParseBlobID(contentHash.String())
 	if err != nil {

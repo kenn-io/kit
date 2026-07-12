@@ -3,6 +3,7 @@ package packstore
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -56,7 +57,7 @@ func benchmarkStorePackedReads(b *testing.B, content []byte) {
 					reader, _, openErr := store.OpenStream(context.Background(), hash)
 					require.NoError(b, openErr)
 					_, copyErr := io.Copy(io.Discard, reader)
-					require.NoError(b, copyErr)
+					require.NoError(b, errors.Join(copyErr, reader.Close()))
 					continue
 				}
 				reader, _, openErr := store.Open(context.Background(), hash)

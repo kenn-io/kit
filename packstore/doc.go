@@ -47,11 +47,14 @@
 // Windows and falls back loose when a new destination cannot be created this
 // way, rather than introducing a replacement-rename race.
 //
-// DefaultLimits retains a 64 MiB per-blob policy. Streaming removes the former
-// object-sized heap requirement but does not raise policy automatically.
-// Callers must budget scratch (about twice the largest concurrently prepared
-// plain object), decoder windows, active streams, and descriptors before
-// increasing limits. RetirePack can return ErrPackRetirementDeferred when a
-// physical file remains in use; this is retryable cleanup and never permission
-// to restore retired catalog authority.
+// DefaultLimits retains a 64 MiB policy for ReadBounded, packed OpenStream,
+// and maintenance. Store.Open is the buffered compatibility path and does not
+// enforce those limits; larger authorized loose objects also remain available
+// through OpenStream. Streaming removes the former object-sized heap
+// requirement but does not raise packing policy automatically. Callers must
+// budget scratch (about twice the largest concurrently prepared plain object),
+// decoder windows, active streams, and descriptors before increasing limits.
+// RetirePack can return ErrPackRetirementDeferred when a physical file remains
+// in use; this is retryable cleanup and never permission to restore retired
+// catalog authority.
 package packstore
