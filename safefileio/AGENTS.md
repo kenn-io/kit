@@ -14,8 +14,11 @@ callers responsible for their own file formats and higher-level policy.
   supplied, not a symlink target reached after traversal.
 - `EnsurePrivateDir` may repair a real directory's permissions when that is safe.
   `ValidatePrivateDir` must report problems without repairing them.
-- Keep permissions and ownership checks tied to current-user-only runtime state.
-  On Windows, that means SID semantics rather than username string comparisons.
+- Keep file ownership checks tied to current-user-only runtime state. On
+  Windows, private directories may also be owned by LocalSystem or built-in
+  Administrators only when their protected DACL restricts access to the same
+  trusted user, token-owner, system, and administrator principals. Use SID
+  semantics rather than username string comparisons.
 - If ownership or file type cannot be established, return an error.
 
 ## Tests

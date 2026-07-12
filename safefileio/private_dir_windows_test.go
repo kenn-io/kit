@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/windows"
 )
@@ -101,10 +102,61 @@ func TestWindowsOwnerMatchesCurrentUserAndTokenOwner(t *testing.T) {
 	require.NoError(t, err)
 	ownerSID, err := currentWindowsOwnerSID()
 	require.NoError(t, err)
+	systemSID, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
+	require.NoError(t, err)
+	adminsSID, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+	require.NoError(t, err)
 
 	require.True(t, windowsOwnerMatches(userSID, userSID, ownerSID))
 	require.True(t, windowsOwnerMatches(ownerSID, userSID, ownerSID))
+	require.False(t, windowsOwnerMatches(systemSID, userSID, ownerSID))
+	require.False(t, windowsOwnerMatches(adminsSID, userSID, ownerSID))
 	require.False(t, windowsOwnerMatches(nil, userSID, ownerSID))
+}
+
+func TestVerifyWindowsDirectoryOwner(t *testing.T) {
+	userSID, err := currentWindowsUserSID()
+	require.NoError(t, err)
+	ownerSID, err := currentWindowsOwnerSID()
+	require.NoError(t, err)
+	systemSID, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
+	require.NoError(t, err)
+	adminsSID, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+	require.NoError(t, err)
+	worldSID, err := windows.CreateWellKnownSid(windows.WinWorldSid)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name      string
+		owner     *windows.SID
+		wantError string
+	}{
+		{name: "current user", owner: userSID},
+		{name: "token owner", owner: ownerSID},
+		{name: "LocalSystem", owner: systemSID},
+		{name: "Administrators", owner: adminsSID},
+		{
+			name:      "World",
+			owner:     worldSID,
+			wantError: "runtime is not owned by current user, token owner, LocalSystem, or built-in Administrators",
+		},
+		{
+			name:      "missing",
+			owner:     nil,
+			wantError: "runtime is not owned by current user, token owner, LocalSystem, or built-in Administrators",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := verifyWindowsDirectoryOwner("runtime", tt.owner, userSID, ownerSID)
+			if tt.wantError != "" {
+				assert.EqualError(t, err, tt.wantError)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
 }
 
 func TestCurrentUserIDIsPerUser(t *testing.T) {
