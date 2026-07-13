@@ -518,7 +518,7 @@ func TestOpenMissingRestoreTargetPinsEveryCreatedParent(t *testing.T) {
 			return nil, symlinkErr
 		}
 		return next, nil
-	})
+	}, filepath.EvalSymlinks)
 	if root != nil {
 		require.NoError(root.Close())
 	}
@@ -529,6 +529,37 @@ func TestOpenMissingRestoreTargetPinsEveryCreatedParent(t *testing.T) {
 	entries, err := os.ReadDir(victim)
 	require.NoError(err)
 	require.Empty(entries, "a replacement symlink must not receive created target entries")
+}
+
+func TestOpenMissingRestoreTargetPinsExistingAncestorBeforeResolution(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows prevents renaming an open directory handle")
+	}
+	require := require.New(t)
+	base := t.TempDir()
+	ancestor := filepath.Join(base, "existing")
+	parked := filepath.Join(base, "parked")
+	victim := filepath.Join(base, "victim")
+	target := filepath.Join(ancestor, "nested")
+	require.NoError(os.Mkdir(ancestor, 0o700))
+	require.NoError(os.Mkdir(victim, 0o700))
+
+	root, err := openMissingRestoreTarget(target, enterRestoreDir, func(path string) (string, error) {
+		require.Equal(ancestor, path)
+		require.NoError(os.Rename(ancestor, parked))
+		require.NoError(os.Symlink(victim, ancestor))
+		return filepath.EvalSymlinks(path)
+	})
+	if root != nil {
+		require.NoError(root.Close())
+	}
+	require.ErrorContains(err, "was replaced while opening")
+	entries, err := os.ReadDir(victim)
+	require.NoError(err)
+	require.Empty(entries, "a swapped existing ancestor must receive no target entries")
+	entries, err = os.ReadDir(parked)
+	require.NoError(err)
+	require.Empty(entries, "failure must precede creation beneath the detached ancestor")
 }
 
 func TestRestoreCoordinatesPinnedTargetBeforeCleanup(t *testing.T) {
@@ -582,6 +613,35 @@ func TestRestoreCoordinatesPinnedTargetBeforeCleanup(t *testing.T) {
 	require.ErrorContains(err, "target is already owned")
 	_, err = os.Stat(filepath.Join(blockedTarget, blockedStale))
 	require.NoError(err, "failed coordination must leave existing target bytes untouched")
+
+	if runtime.GOOS != "windows" {
+		swappedTarget := t.TempDir()
+		swappedHeld := swappedTarget + "-held"
+		swappedStale := "app.db.restore-" + pack.NewPackID()
+		require.NoError(os.WriteFile(
+			filepath.Join(swappedTarget, swappedStale), []byte("stale"), 0o600))
+		releasedAfterSwap := false
+		_, err = Restore(ctx, r, newTestApp(), RestoreOptions{
+			TargetDir: swappedTarget, Overwrite: true,
+			TargetCoordinator: restoreTargetCoordinatorFunc(func(
+				_ context.Context, _ *os.Root,
+			) (RestoreTargetLease, error) {
+				require.NoError(os.Rename(swappedTarget, swappedHeld))
+				require.NoError(os.Mkdir(swappedTarget, 0o700))
+				return restoreTargetLeaseFunc(func() error {
+					releasedAfterSwap = true
+					return nil
+				}), nil
+			}),
+		})
+		require.ErrorContains(err, "was replaced while opening")
+		require.True(releasedAfterSwap)
+		_, err = os.Stat(filepath.Join(swappedHeld, swappedStale))
+		require.NoError(err, "post-lease identity failure must precede stale cleanup")
+		replacementEntries, err := os.ReadDir(swappedTarget)
+		require.NoError(err)
+		require.Empty(replacementEntries, "post-lease identity failure must not stage through the new path")
+	}
 }
 
 func TestRestoreRechecksEmptyTargetAfterCoordination(t *testing.T) {

@@ -200,6 +200,9 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *R
 					fmt.Errorf("backup: releasing restore target coordination: %w", releaseErr))
 			}
 		}()
+		if err := verifyRestoreRoot(opts.TargetDir, root); err != nil {
+			return nil, err
+		}
 	}
 	// The pathname-level check in openRestoreTarget is only an early refusal.
 	// Coordination can block while another owner still holds the target, so
@@ -462,7 +465,8 @@ func openRestoreTarget(target string, overwrite bool) (*os.Root, bool, error) {
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		existed = false
-		root, createErr := openMissingRestoreTarget(target, enterRestoreDir)
+		root, createErr := openMissingRestoreTarget(
+			target, enterRestoreDir, filepath.EvalSymlinks)
 		if createErr != nil {
 			return nil, false, createErr
 		}
@@ -487,6 +491,7 @@ func openRestoreTarget(target string, overwrite bool) (*os.Root, bool, error) {
 func openMissingRestoreTarget(
 	target string,
 	enter func(*os.Root, string) (*os.Root, error),
+	resolve func(string) (string, error),
 ) (*os.Root, error) {
 	abs, err := filepath.Abs(target)
 	if err != nil {
@@ -509,13 +514,27 @@ func openMissingRestoreTarget(
 		missing = append(missing, filepath.Base(current))
 		current = parent
 	}
-	resolved, err := filepath.EvalSymlinks(current)
+	ancestor, err := os.Stat(current)
+	if err != nil {
+		return nil, fmt.Errorf("backup: checking restore target ancestor identity: %w", err)
+	}
+	resolved, err := resolve(current)
 	if err != nil {
 		return nil, fmt.Errorf("backup: resolving restore target ancestor: %w", err)
 	}
 	root, err := openRestoreRoot(resolved)
 	if err != nil {
 		return nil, err
+	}
+	heldAncestor, err := root.Stat(".")
+	if err != nil {
+		_ = root.Close()
+		return nil, fmt.Errorf("backup: checking held restore target ancestor: %w", err)
+	}
+	if !os.SameFile(ancestor, heldAncestor) {
+		_ = root.Close()
+		return nil, fmt.Errorf(
+			"backup: restore target ancestor %s was replaced while opening it", current)
 	}
 	slices.Reverse(missing)
 	for _, comp := range missing {
