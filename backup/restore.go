@@ -462,9 +462,11 @@ func openRestoreTarget(target string, overwrite bool) (*os.Root, bool, error) {
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		existed = false
-		if err := os.MkdirAll(target, 0o700); err != nil {
-			return nil, false, fmt.Errorf("backup: creating restore target: %w", err)
+		root, createErr := openMissingRestoreTarget(target, enterRestoreDir)
+		if createErr != nil {
+			return nil, false, createErr
 		}
+		return root, existed, nil
 	case err != nil:
 		return nil, false, fmt.Errorf("backup: reading restore target: %w", err)
 	case len(entries) > 0 && !overwrite:
@@ -475,6 +477,61 @@ func openRestoreTarget(target string, overwrite bool) (*os.Root, bool, error) {
 		return nil, false, err
 	}
 	return root, existed, nil
+}
+
+// openMissingRestoreTarget creates each absent component relative to a held
+// parent root. Pathname-based MkdirAll followed by OpenRoot leaves a gap where
+// replacing an ancestor can redirect creation before the target descriptor is
+// acquired. The final identity check also proves the original spelling still
+// names the descriptor assembled through the held chain.
+func openMissingRestoreTarget(
+	target string,
+	enter func(*os.Root, string) (*os.Root, error),
+) (*os.Root, error) {
+	abs, err := filepath.Abs(target)
+	if err != nil {
+		return nil, fmt.Errorf("backup: resolving restore target: %w", err)
+	}
+	current := abs
+	var missing []string
+	for {
+		_, err = os.Lstat(current)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("backup: checking restore target ancestor: %w", err)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return nil, fmt.Errorf("backup: restore target has no existing ancestor: %s", target)
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+	}
+	resolved, err := filepath.EvalSymlinks(current)
+	if err != nil {
+		return nil, fmt.Errorf("backup: resolving restore target ancestor: %w", err)
+	}
+	root, err := openRestoreRoot(resolved)
+	if err != nil {
+		return nil, err
+	}
+	slices.Reverse(missing)
+	for _, comp := range missing {
+		next, enterErr := enter(root, comp)
+		_ = root.Close()
+		if enterErr != nil {
+			return nil, fmt.Errorf(
+				"backup: creating restore target component %q: %w", comp, enterErr)
+		}
+		root = next
+	}
+	if err := verifyRestoreRoot(abs, root); err != nil {
+		_ = root.Close()
+		return nil, err
+	}
+	return root, nil
 }
 
 // prepareRestoreTarget retains the package's direct preparation helper for
@@ -557,27 +614,31 @@ func openRestoreRoot(target string) (*os.Root, error) {
 	if err != nil {
 		return nil, fmt.Errorf("backup: opening restore target: %w", err)
 	}
+	if err := verifyRestoreRoot(target, root); err != nil {
+		_ = root.Close()
+		return nil, err
+	}
+	return root, nil
+}
+
+func verifyRestoreRoot(target string, root *os.Root) error {
 	leaf, err := os.Lstat(target)
 	if err != nil {
-		_ = root.Close()
-		return nil, fmt.Errorf("backup: checking restore target: %w", err)
+		return fmt.Errorf("backup: checking restore target: %w", err)
 	}
 	if leaf.Mode()&os.ModeSymlink != 0 {
-		_ = root.Close()
-		return nil, fmt.Errorf(
+		return fmt.Errorf(
 			"backup: restore target %s is a symlink; pass the real directory path", target)
 	}
 	held, err := root.Stat(".")
 	if err != nil {
-		_ = root.Close()
-		return nil, fmt.Errorf("backup: checking restore target: %w", err)
+		return fmt.Errorf("backup: checking restore target: %w", err)
 	}
 	if !os.SameFile(leaf, held) {
-		_ = root.Close()
-		return nil, fmt.Errorf(
+		return fmt.Errorf(
 			"backup: restore target %s was replaced while opening it", target)
 	}
-	return root, nil
+	return nil
 }
 
 // restoreState carries the shared read machinery for one Restore run. mu

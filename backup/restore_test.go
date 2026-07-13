@@ -489,6 +489,48 @@ func TestRestoreRefusesNonEmptyTargetWithoutOverwrite(t *testing.T) {
 	require.NoError(err)
 }
 
+func TestOpenMissingRestoreTargetPinsEveryCreatedParent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows prevents renaming an open directory handle")
+	}
+	require := require.New(t)
+	base := t.TempDir()
+	target := filepath.Join(base, "new", "nested")
+	parked := filepath.Join(base, "parked")
+	victim := filepath.Join(base, "victim")
+	require.NoError(os.Mkdir(victim, 0o700))
+	swapped := false
+
+	root, err := openMissingRestoreTarget(target, func(
+		parent *os.Root, comp string,
+	) (*os.Root, error) {
+		next, enterErr := enterRestoreDir(parent, comp)
+		if enterErr != nil || swapped {
+			return next, enterErr
+		}
+		swapped = true
+		if renameErr := os.Rename(filepath.Join(base, "new"), parked); renameErr != nil {
+			_ = next.Close()
+			return nil, renameErr
+		}
+		if symlinkErr := os.Symlink(victim, filepath.Join(base, "new")); symlinkErr != nil {
+			_ = next.Close()
+			return nil, symlinkErr
+		}
+		return next, nil
+	})
+	if root != nil {
+		require.NoError(root.Close())
+	}
+	require.Error(err)
+	require.ErrorContains(err, "checking restore target")
+	_, err = os.Stat(filepath.Join(parked, "nested"))
+	require.NoError(err, "creation must remain below the held original parent")
+	entries, err := os.ReadDir(victim)
+	require.NoError(err)
+	require.Empty(entries, "a replacement symlink must not receive created target entries")
+}
+
 func TestRestoreCoordinatesPinnedTargetBeforeCleanup(t *testing.T) {
 	require := require.New(t)
 	ctx := context.Background()
