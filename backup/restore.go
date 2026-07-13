@@ -201,6 +201,21 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *R
 			}
 		}()
 	}
+	// The pathname-level check in openRestoreTarget is only an early refusal.
+	// Coordination can block while another owner still holds the target, so
+	// enforce the caller's non-overwrite policy again against the pinned root
+	// after the lease makes this decision authoritative.
+	if !opts.Overwrite {
+		entries, readErr := fs.ReadDir(root.FS(), ".")
+		if readErr != nil {
+			return nil, fmt.Errorf("backup: reading coordinated restore target: %w", readErr)
+		}
+		if len(entries) > 0 {
+			return nil, fmt.Errorf(
+				"backup: restore target %s is not empty (use --overwrite to restore into it anyway)",
+				opts.TargetDir)
+		}
+	}
 	if existed {
 		if err := removeRestoreTempFiles(root, app.DBFileName()); err != nil {
 			return nil, err

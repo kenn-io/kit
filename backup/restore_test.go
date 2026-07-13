@@ -542,6 +542,39 @@ func TestRestoreCoordinatesPinnedTargetBeforeCleanup(t *testing.T) {
 	require.NoError(err, "failed coordination must leave existing target bytes untouched")
 }
 
+func TestRestoreRechecksEmptyTargetAfterCoordination(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+	_, err := Create(ctx, r, newTestApp(), createOpts(
+		dbPath, attachmentsDir, dataDir, t.TempDir()))
+	require.NoError(err)
+
+	target := t.TempDir()
+	released := false
+	coordinator := restoreTargetCoordinatorFunc(func(
+		_ context.Context, root *os.Root,
+	) (RestoreTargetLease, error) {
+		require.NoError(root.WriteFile("raced.txt", []byte("new owner"), 0o600))
+		return restoreTargetLeaseFunc(func() error {
+			released = true
+			return nil
+		}), nil
+	})
+
+	_, err = Restore(ctx, r, newTestApp(), RestoreOptions{
+		TargetDir: target, TargetCoordinator: coordinator,
+	})
+	require.ErrorContains(err, "not empty")
+	require.True(released, "failed restore must release target coordination")
+	content, readErr := os.ReadFile(filepath.Join(target, "raced.txt"))
+	require.NoError(readErr)
+	require.Equal("new owner", string(content))
+	_, statErr := os.Stat(filepath.Join(target, "app.db"))
+	require.ErrorIs(statErr, os.ErrNotExist)
+}
+
 // TestRestoreOverwriteRemovesStaleDBSidecars pins the --overwrite hazard: a
 // stale -wal/-shm pair or rollback journal left next to the restored database
 // would be replayed over the proven bytes on its first normal SQLite open, so
