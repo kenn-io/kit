@@ -27,8 +27,10 @@ type MetadataSnapshot interface {
 }
 
 // MetadataRestorer builds the application's current runtime database at
-// targetPath from one verified portable metadata stream. It must consume the
-// stream through EOF, close and checkpoint the database, and leave no sidecars.
+// targetPath from one verified portable metadata stream. targetPath is inside
+// Kit-owned private scratch, not the eventual restore target. The restorer must
+// consume the stream through EOF, close and checkpoint the database, and leave
+// no sidecars. Kit copies the closed result into its confined target root.
 type MetadataRestorer interface {
 	RestoreMetadata(ctx context.Context, format string, metadata io.Reader, targetPath string) error
 }

@@ -777,7 +777,9 @@ func (s *restoreState) restoreDB(ctx context.Context, dbRel string, pm *PageMap,
 }
 
 // restorePortableMetadata streams one verified logical metadata artifact into
-// an application-built runtime database staged under the confined target.
+// an application-built runtime database in Kit-owned private scratch, then
+// copies the closed result through the held target root. The restorer never
+// receives a path whose resolution depends on the caller-supplied target.
 func (s *restoreState) restorePortableMetadata(
 	ctx context.Context, dbRel string, metadata *ManifestMetadata, restorer MetadataRestorer,
 ) (tmpRel string, dbBytes int64, resultErr error) {
@@ -804,62 +806,71 @@ func (s *restoreState) restorePortableMetadata(
 			"backup: portable metadata blob is %d bytes but manifest records %d", stream.Size(), metadata.Bytes)
 	}
 
-	tmpRel = dbRel + ".restore-" + pack.NewPackID()
-	cleanup := true
+	privateDir, err := os.MkdirTemp("", "kit-backup-metadata-*")
+	if err != nil {
+		return "", 0, fmt.Errorf("backup: creating private metadata staging directory: %w", err)
+	}
 	defer func() {
-		if cleanup {
-			_ = s.root.Remove(tmpRel)
-			for _, sidecar := range sqliteSidecarNames(tmpRel) {
-				_ = s.root.Remove(sidecar)
-			}
+		if err := os.RemoveAll(privateDir); err != nil {
+			resultErr = errors.Join(resultErr,
+				fmt.Errorf("backup: removing private metadata staging directory: %w", err))
 		}
 	}()
-	if _, err := s.root.Lstat(tmpRel); !errors.Is(err, os.ErrNotExist) {
-		if err == nil {
-			return "", 0, fmt.Errorf("backup: portable metadata staging path %s already exists", tmpRel)
-		}
-		return "", 0, fmt.Errorf("backup: checking portable metadata staging path: %w", err)
-	}
+	privateDB := filepath.Join(privateDir, "runtime.db")
 	s.progress.emit(ProgressEvent{
 		Stage: ProgressStageMetadata, Total: 1, BytesTotal: metadata.Bytes,
 	})
 	if err := restorer.RestoreMetadata(
-		ctx, metadata.Format, stream, filepath.Join(s.target, tmpRel)); err != nil {
+		ctx, metadata.Format, stream, privateDB); err != nil {
 		return "", 0, fmt.Errorf("backup: restoring portable metadata: %w", err)
 	}
 	if !stream.Verified() {
 		return "", 0, errors.New("backup: metadata restorer returned before verified EOF")
 	}
-	info, err := s.root.Lstat(tmpRel)
+	info, err := os.Lstat(privateDB)
 	if err != nil {
 		return "", 0, fmt.Errorf("backup: checking restored metadata database: %w", err)
 	}
 	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 		return "", 0, errors.New("backup: metadata restorer did not create a regular database file")
 	}
-	for _, sidecar := range sqliteSidecarNames(tmpRel) {
-		if _, err := s.root.Lstat(sidecar); !errors.Is(err, os.ErrNotExist) {
+	for _, sidecar := range sqliteSidecarNames(privateDB) {
+		if _, err := os.Lstat(sidecar); !errors.Is(err, os.ErrNotExist) {
 			if err == nil {
 				return "", 0, fmt.Errorf("backup: metadata restorer left SQLite sidecar %s", sidecar)
 			}
 			return "", 0, fmt.Errorf("backup: checking metadata restore sidecar: %w", err)
 		}
 	}
-	if err := s.verifyHeldTarget(tmpRel); err != nil {
-		return "", 0, err
-	}
-	f, err := s.root.OpenFile(tmpRel, os.O_RDWR, 0)
+	f, err := os.Open(privateDB)
 	if err != nil {
 		return "", 0, fmt.Errorf("backup: opening restored metadata database: %w", err)
 	}
-	if err := f.Sync(); err != nil {
+	openedInfo, err := f.Stat()
+	if err != nil {
 		_ = f.Close()
-		return "", 0, fmt.Errorf("backup: syncing restored metadata database: %w", err)
+		return "", 0, fmt.Errorf("backup: inspecting restored metadata database: %w", err)
 	}
-	if err := f.Close(); err != nil {
-		return "", 0, fmt.Errorf("backup: closing restored metadata database: %w", err)
+	if !os.SameFile(info, openedInfo) {
+		_ = f.Close()
+		return "", 0, errors.New("backup: restored metadata database changed before confinement")
 	}
-	cleanup = false
+	tmpRel, err = s.stageRootReader(ctx, dbRel, f, info.Size(), 0o600)
+	closeErr := f.Close()
+	stagedRel := tmpRel
+	confined := false
+	defer func() {
+		if !confined && stagedRel != "" {
+			_ = s.root.Remove(stagedRel)
+		}
+	}()
+	if err := errors.Join(err, closeErr); err != nil {
+		return "", 0, fmt.Errorf("backup: confining restored metadata database: %w", err)
+	}
+	if err := s.verifyHeldTarget(tmpRel); err != nil {
+		return "", 0, err
+	}
+	confined = true
 	s.progress.emit(ProgressEvent{
 		Stage: ProgressStageMetadata, Done: 1, Total: 1,
 		BytesDone: metadata.Bytes, BytesTotal: metadata.Bytes, Final: true,

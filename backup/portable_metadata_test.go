@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -220,6 +221,37 @@ func TestPortableMetadataCreateVerifyRestoreAndSQLiteSuccessor(t *testing.T) {
 	require.ErrorContains(err, "before verified EOF")
 	_, statErr = os.Stat(filepath.Join(incompleteTarget, "portable.db"))
 	require.ErrorIs(statErr, os.ErrNotExist)
+
+	if runtime.GOOS != "windows" {
+		replacedTarget := filepath.Join(base, "replaced-target")
+		heldTarget := replacedTarget + "-held"
+		require.NoError(os.MkdirAll(replacedTarget, 0o700))
+		var privatePath string
+		_, err = backup.Restore(ctx, repo, portableApp{}, backup.RestoreOptions{
+			TargetDir: replacedTarget,
+			MetadataRestorer: metadataRestorerFunc(func(
+				ctx context.Context, format string, metadata io.Reader, targetPath string,
+			) error {
+				privatePath = targetPath
+				if err := os.Rename(replacedTarget, heldTarget); err != nil {
+					return err
+				}
+				if err := os.Mkdir(replacedTarget, 0o700); err != nil {
+					return err
+				}
+				return (portableRestorer{}).RestoreMetadata(ctx, format, metadata, targetPath)
+			}),
+		})
+		require.ErrorContains(err, "was replaced during restore")
+		replacementEntries, readErr := os.ReadDir(replacedTarget)
+		require.NoError(readErr)
+		assert.Empty(replacementEntries)
+		heldEntries, readErr := os.ReadDir(heldTarget)
+		require.NoError(readErr)
+		assert.Empty(heldEntries)
+		_, statErr = os.Stat(filepath.Dir(privatePath))
+		require.ErrorIs(statErr, os.ErrNotExist)
+	}
 
 	overwriteTarget := filepath.Join(base, "failed-overwrite")
 	require.NoError(os.MkdirAll(overwriteTarget, 0o700))
