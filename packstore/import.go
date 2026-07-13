@@ -102,9 +102,12 @@ var importRootLink = func(root *os.Root, oldName, newName string) error {
 var (
 	importLinkUnsupported    = isImportLinkUnsupported
 	importAfterSourceOpen    = func(string) error { return nil }
-	importVerifySelectedBlob = func(reader *MaintenancePackReader, hash Hash) error {
-		_, err := reader.ReadBlob(hash)
-		return err
+	importVerifySelectedBlob = func(ctx context.Context, reader *MaintenancePackReader, hash Hash) error {
+		stream, err := reader.OpenBlob(ctx, hash)
+		if err != nil {
+			return err
+		}
+		return errors.Join(stream.Verify(), stream.Close())
 	}
 	errImportPublicationUnsupported = errors.New("packstore: atomic pack publication unsupported")
 )
@@ -578,7 +581,7 @@ func verifyImportSelections(ctx context.Context, reader *MaintenancePackReader, 
 			return fmt.Errorf("%w: selected blob %s is absent", pack.ErrCorrupt, selection.Hash)
 		}
 		if verifyPayload {
-			if err := importVerifySelectedBlob(reader, selection.Hash); err != nil {
+			if err := importVerifySelectedBlob(ctx, reader, selection.Hash); err != nil {
 				return fmt.Errorf("verify selected blob %s: %w", selection.Hash, err)
 			}
 		}

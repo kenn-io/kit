@@ -1,6 +1,7 @@
 package packstore
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/pack"
@@ -306,10 +308,13 @@ func TestImportBoundedWriterNeverWritesBeyondLimit(t *testing.T) {
 func TestPrepareImportVerifiesEligibleSelectedPayloadOnce(t *testing.T) {
 	originalVerify := importVerifySelectedBlob
 	var calls int
-	importVerifySelectedBlob = func(reader *MaintenancePackReader, hash Hash) error {
+	importVerifySelectedBlob = func(ctx context.Context, reader *MaintenancePackReader, hash Hash) error {
 		calls++
-		_, err := reader.ReadBlob(hash)
-		return err
+		stream, err := reader.OpenBlob(ctx, hash)
+		if err != nil {
+			return err
+		}
+		return errors.Join(stream.Verify(), stream.Close())
 	}
 	t.Cleanup(func() { importVerifySelectedBlob = originalVerify })
 	target := openImportTarget(t)
@@ -321,6 +326,35 @@ func TestPrepareImportVerifiesEligibleSelectedPayloadOnce(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, 1, calls)
+}
+
+func TestPrepareImportAcceptsLegacyZstdWindowWithinLimit(t *testing.T) {
+	content := bytes.Repeat([]byte("legacy bounded window "), 128)
+	encoder, err := zstd.NewWriter(nil,
+		zstd.WithEncoderConcurrency(1),
+		zstd.WithWindowSize(1<<20),
+		zstd.WithSingleSegment(false))
+	require.NoError(t, err)
+	encoded := encoder.EncodeAll(content, nil)
+	encoder.Close()
+
+	dir := t.TempDir()
+	writer, err := pack.NewWriter(dir, pack.WriterOptions{})
+	require.NoError(t, err)
+	id := pack.ComputeBlobID(content)
+	_, err = writer.AppendEncoded(id, encoded, uint64(len(content)), true)
+	require.NoError(t, err)
+	source := filepath.Join(dir, writer.ID()+PackExt)
+	entries, err := writer.Seal(source)
+	require.NoError(t, err)
+	target := openImportTarget(t)
+
+	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+		PackID: writer.ID(), SourcePath: source, Selections: importSelections(t, entries),
+	}}, ImportOptions{Limits: DefaultLimits(), CreatedAt: time.Now()})
+
+	require.NoError(t, err)
+	assert.Equal(t, []Hash{hashFromEntry(t, entries[0])}, prepared.PackedHashes())
 }
 
 func TestPrepareImportSurfacesStagingDirectorySyncFailure(t *testing.T) {

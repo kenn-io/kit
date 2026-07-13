@@ -172,15 +172,6 @@ func openBoundedPack(path string, limits Limits) (*boundedPackReader, error) {
 	if err != nil {
 		return nil, err
 	}
-	streamReader, err := pack.NewReaderFromFileWithOptions(reader.file, "", nil, pack.ReaderOptions{Limits: pack.ReaderLimits{
-		ContainerBytes: uint64(limits.PackBytes), //nolint:gosec // validated positive
-		FooterBytes:    uint64(limits.FooterBytes),
-		Entries:        uint64(limits.PackEntries),
-	}})
-	if err != nil {
-		return nil, mapPackStreamLimit(err)
-	}
-	reader.streamReader = streamReader
 	return reader, nil
 }
 
@@ -295,8 +286,16 @@ func openBoundedPackFile(f *os.File, limits Limits) (*boundedPackReader, error) 
 		}
 		entries[entry.ID] = entry
 	}
+	streamReader, err := pack.NewReaderFromFileWithOptions(f, "", nil, pack.ReaderOptions{Limits: pack.ReaderLimits{
+		ContainerBytes: uint64(limits.PackBytes), //nolint:gosec // validated positive
+		FooterBytes:    uint64(limits.FooterBytes),
+		Entries:        uint64(limits.PackEntries),
+	}})
+	if err != nil {
+		return nil, mapPackStreamLimit(err)
+	}
 	keepOpen = true
-	return &boundedPackReader{file: f, entries: entries}, nil
+	return &boundedPackReader{file: f, entries: entries, streamReader: streamReader}, nil
 }
 
 func readBoundedPackAt(f *os.File, dst []byte, offset int64, part string) error {
