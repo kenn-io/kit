@@ -1,5 +1,8 @@
-// Package backup is an incremental snapshot engine for applications whose
-// state is a single SQLite database plus a tree of content-addressed files.
+// Package backup is a snapshot engine for applications whose state consists
+// of metadata plus a tree of content-addressed files. Metadata may be captured
+// either as incremental SQLite page maps or as an application-defined portable
+// stream that the application rebuilds into its current runtime database on
+// restore.
 //
 // Create pins the database in a frozen read transaction, captures changed
 // SQLite pages and any new content files into content-addressed packs
@@ -19,9 +22,10 @@
 //
 // The engine is application-neutral: everything specific to a given
 // application (its database filename, content directory, referenced-file
-// enumeration, and the opaque stats payload recorded per snapshot) is supplied
-// through the App interface. The engine records stats bytes at create and
-// byte-compares them at restore without interpreting them.
+// enumeration, portable metadata format, and the opaque stats payload recorded
+// per snapshot) is supplied through application interfaces. The engine records
+// stats bytes at create and byte-compares them at restore without interpreting
+// them.
 //
 // On-disk formats are versioned by the FormatVersion and MinReaderVersion
 // constants and the per-snapshot manifest fields; readers refuse snapshots
@@ -54,7 +58,7 @@ const (
 	// release may read formats newer than the one it writes, or vice versa.
 	// Repo.Open and LoadManifest refuse anything whose min_reader_version
 	// exceeds this.
-	SupportedReaderVersion = 2
+	SupportedReaderVersion = 3
 
 	// dbPathManifestVersion marks snapshots whose attachment population
 	// records storage paths beyond the canonical loose "<aa>/<hash>"
@@ -65,6 +69,9 @@ const (
 	// whose paths are all canonical keep version 1 and stay readable by
 	// older code.
 	dbPathManifestVersion = 2
+	// portableMetadataManifestVersion marks snapshots whose application state
+	// is a logical metadata blob rather than SQLite page-map chains.
+	portableMetadataManifestVersion = 3
 
 	repoConfigName   = "config.toml"
 	snapshotsDirName = "snapshots"

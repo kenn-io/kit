@@ -769,15 +769,19 @@ func (s *verifyState) fetcher(snapshotID string) func(pack.BlobID) ([]byte, erro
 // map's blob table, attachment lists and the content blobs they name, and
 // the extras tree and the blobs it names.
 func (s *verifyState) verifySnapshot(m *Manifest) {
-	hashMap := s.checkHashMapChain(m)
+	if m.Metadata == nil {
+		hashMap := s.checkHashMapChain(m)
 
-	pageMap := s.checkPageMapChain(m)
-	if pageMap != nil {
-		s.checkPageMapBlobs(m, pageMap)
-		if !s.quick {
-			s.checkPageMapCoverage(m, pageMap)
-			s.queuePageRunChecks(m, pageMap, hashMap)
+		pageMap := s.checkPageMapChain(m)
+		if pageMap != nil {
+			s.checkPageMapBlobs(m, pageMap)
+			if !s.quick {
+				s.checkPageMapCoverage(m, pageMap)
+				s.queuePageRunChecks(m, pageMap, hashMap)
+			}
 		}
+	} else {
+		s.checkPortableMetadata(m)
 	}
 
 	refs := s.checkAttachmentLists(m)
@@ -786,6 +790,21 @@ func (s *verifyState) verifySnapshot(m *Manifest) {
 	}
 
 	s.checkExtrasTree(m)
+}
+
+func (s *verifyState) checkPortableMetadata(m *Manifest) {
+	id, err := pack.ParseBlobID(m.Metadata.Blob)
+	if err != nil {
+		s.problem(m.SnapshotID, fmt.Sprintf("portable metadata blob id %q: %v", m.Metadata.Blob, err))
+		return
+	}
+	s.verifyContentBlob(id, m.SnapshotID)
+	if !s.quick {
+		s.pendingSizeChecks = append(s.pendingSizeChecks, listedSizeCheck{
+			id: id, snapshotID: m.SnapshotID, want: m.Metadata.Bytes,
+			what: fmt.Sprintf("portable metadata blob %s", id), source: "manifest",
+		})
+	}
 }
 
 // checkHashMapChain enumerates, decodes, and geometry-checks the page-hash-map

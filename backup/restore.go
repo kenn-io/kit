@@ -49,6 +49,9 @@ type RestoreOptions struct {
 	// Progress, if non-nil, receives structured progress events as Restore
 	// runs. nil means fully silent.
 	Progress func(ProgressEvent)
+	// MetadataRestorer is required for snapshots whose application state is a
+	// portable metadata artifact instead of SQLite page maps.
+	MetadataRestorer MetadataRestorer
 	// PackedContent optionally restores compatible repository packs into the
 	// target content store and replaces packed authority in the unpublished
 	// staged DB before its integrity/stats proof and final publication. Pack and
@@ -152,9 +155,15 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *R
 	// the target's database and sidecars are touched only after every
 	// content blob — pages, attachments, extras — has been read and
 	// verified (publishRestoredDB).
-	hm, pm, err := st.materializeMaps(m)
-	if err != nil {
-		return nil, err
+	var hm *PageHashMap
+	var pm *PageMap
+	if m.Metadata == nil {
+		hm, pm, err = st.materializeMaps(m)
+		if err != nil {
+			return nil, err
+		}
+	} else if opts.MetadataRestorer == nil {
+		return nil, errors.New("backup: portable metadata snapshot requires a MetadataRestorer")
 	}
 	if err := st.preflightSnapshotBlobs(m, pm); err != nil {
 		return nil, err
@@ -177,14 +186,22 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *R
 	res = &RestoreResult{
 		SnapshotID: m.SnapshotID,
 		DBPath:     filepath.Join(opts.TargetDir, app.DBFileName()),
-		DBBytes:    int64(pm.PageCount * uint64(pm.PageSize)), //nolint:gosec // geometry checked against the manifest
+	}
+	if pm != nil {
+		res.DBBytes = int64(pm.PageCount * uint64(pm.PageSize)) //nolint:gosec // geometry checked against the manifest
 	}
 	// The database stays in its staging temp until attachments and extras
 	// have fully materialized: every one of those reads re-derives its
 	// blob's SHA-256, so an unreadable or corrupt content pack — which the
 	// index-membership preflight cannot see — fails the restore before
 	// publishRestoredDB touches an Overwrite target's existing database.
-	tmpRel, err := st.restoreDB(ctx, app.DBFileName(), pm, hm)
+	var tmpRel string
+	if m.Metadata == nil {
+		tmpRel, err = st.restoreDB(ctx, app.DBFileName(), pm, hm)
+	} else {
+		tmpRel, res.DBBytes, err = st.restorePortableMetadata(
+			ctx, app.DBFileName(), m.Metadata, opts.MetadataRestorer)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -610,9 +627,20 @@ func (s *restoreState) materializeMaps(m *Manifest) (*PageHashMap, *PageMap, err
 // pass re-reads — attachment lists and the extras tree — are cheap next to
 // the content reads restore performs anyway.
 func (s *restoreState) preflightSnapshotBlobs(m *Manifest, pm *PageMap) error {
-	for _, id := range pm.Blobs {
+	if pm != nil {
+		for _, id := range pm.Blobs {
+			if _, ok := s.known[id]; !ok {
+				return fmt.Errorf("backup: page blob %s not present in any index", id)
+			}
+		}
+	}
+	if m.Metadata != nil {
+		id, err := pack.ParseBlobID(m.Metadata.Blob)
+		if err != nil {
+			return fmt.Errorf("backup: portable metadata blob id %q: %w", m.Metadata.Blob, err)
+		}
 		if _, ok := s.known[id]; !ok {
-			return fmt.Errorf("backup: page blob %s not present in any index", id)
+			return fmt.Errorf("backup: portable metadata blob %s not present in any index", id)
 		}
 	}
 	refs, _, err := LoadListRefs(s.repo, s.known, m.Attachments.Lists, nil, s.app.PackFileExtension())
@@ -743,6 +771,108 @@ func (s *restoreState) restoreDB(ctx context.Context, dbRel string, pm *PageMap,
 		BytesDone: size, BytesTotal: size, Final: true,
 	})
 	return tmpRel, nil
+}
+
+// restorePortableMetadata streams one verified logical metadata artifact into
+// an application-built runtime database in Kit-owned private scratch, then
+// copies the closed result through the held target root. The restorer never
+// receives a path whose resolution depends on the caller-supplied target.
+func (s *restoreState) restorePortableMetadata(
+	ctx context.Context, dbRel string, metadata *ManifestMetadata, restorer MetadataRestorer,
+) (tmpRel string, dbBytes int64, resultErr error) {
+	var stagedRel string
+	// Register this before every other cleanup defer so it runs last and sees
+	// errors those defers add to resultErr. The caller installs ownership of a
+	// successful temp only after this function returns nil.
+	defer func() {
+		if resultErr == nil || stagedRel == "" {
+			return
+		}
+		if err := s.root.Remove(stagedRel); err != nil && !errors.Is(err, os.ErrNotExist) {
+			resultErr = errors.Join(resultErr,
+				fmt.Errorf("backup: removing failed portable database staging: %w", err))
+		}
+	}()
+	if metadata == nil {
+		return "", 0, errors.New("backup: portable metadata manifest is missing")
+	}
+	id, err := pack.ParseBlobID(metadata.Blob)
+	if err != nil {
+		return "", 0, fmt.Errorf("backup: portable metadata blob id %q: %w", metadata.Blob, err)
+	}
+	stream, err := s.repo.OpenBlob(ctx, s.known, id, nil, s.app.PackFileExtension())
+	if err != nil {
+		return "", 0, err
+	}
+	defer func() { resultErr = errors.Join(resultErr, stream.Close()) }()
+	if stream.Size() != metadata.Bytes {
+		return "", 0, fmt.Errorf(
+			"backup: portable metadata blob is %d bytes but manifest records %d", stream.Size(), metadata.Bytes)
+	}
+
+	privateDir, err := os.MkdirTemp(s.repo.Path(stagingDirName), "restore-metadata-*")
+	if err != nil {
+		return "", 0, fmt.Errorf("backup: creating private metadata staging directory: %w", err)
+	}
+	defer func() {
+		if err := os.RemoveAll(privateDir); err != nil {
+			resultErr = errors.Join(resultErr,
+				fmt.Errorf("backup: removing private metadata staging directory: %w", err))
+		}
+	}()
+	privateDB := filepath.Join(privateDir, "runtime.db")
+	s.progress.emit(ProgressEvent{
+		Stage: ProgressStageMetadata, Total: 1, BytesTotal: metadata.Bytes,
+	})
+	if err := restorer.RestoreMetadata(
+		ctx, metadata.Format, stream, privateDB); err != nil {
+		return "", 0, fmt.Errorf("backup: restoring portable metadata: %w", err)
+	}
+	if !stream.Verified() {
+		return "", 0, errors.New("backup: metadata restorer returned before verified EOF")
+	}
+	info, err := os.Lstat(privateDB)
+	if err != nil {
+		return "", 0, fmt.Errorf("backup: checking restored metadata database: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", 0, errors.New("backup: metadata restorer did not create a regular database file")
+	}
+	for _, sidecar := range sqliteSidecarNames(privateDB) {
+		if _, err := os.Lstat(sidecar); !errors.Is(err, os.ErrNotExist) {
+			if err == nil {
+				return "", 0, fmt.Errorf("backup: metadata restorer left SQLite sidecar %s", sidecar)
+			}
+			return "", 0, fmt.Errorf("backup: checking metadata restore sidecar: %w", err)
+		}
+	}
+	f, err := os.Open(privateDB)
+	if err != nil {
+		return "", 0, fmt.Errorf("backup: opening restored metadata database: %w", err)
+	}
+	openedInfo, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return "", 0, fmt.Errorf("backup: inspecting restored metadata database: %w", err)
+	}
+	if !os.SameFile(info, openedInfo) {
+		_ = f.Close()
+		return "", 0, errors.New("backup: restored metadata database changed before confinement")
+	}
+	tmpRel, err = s.stageRootDatabase(ctx, dbRel, f, info.Size())
+	closeErr := f.Close()
+	stagedRel = tmpRel
+	if err := errors.Join(err, closeErr); err != nil {
+		return "", 0, fmt.Errorf("backup: confining restored metadata database: %w", err)
+	}
+	if err := s.verifyHeldTarget(tmpRel); err != nil {
+		return "", 0, err
+	}
+	s.progress.emit(ProgressEvent{
+		Stage: ProgressStageMetadata, Done: 1, Total: 1,
+		BytesDone: metadata.Bytes, BytesTotal: metadata.Bytes, Final: true,
+	})
+	return tmpRel, info.Size(), nil
 }
 
 // publishRestoredDB swaps the fully materialized staging temp into place:
@@ -1413,10 +1543,27 @@ func (r restoreContextReader) Read(p []byte) (int, error) {
 func (s *restoreState) stageRootReader(
 	ctx context.Context, rel string, src io.Reader, expected int64, mode os.FileMode,
 ) (string, error) {
+	return s.stageRootReaderWithOptions(ctx, rel, src, expected, mode, ".restore-", pack.MaxRawLen)
+}
+
+// stageRootDatabase confines an application-built runtime database without
+// imposing the pack format's per-blob ceiling. Its temp name intentionally
+// matches removeRestoreTempFiles' crash-recovery sweep.
+func (s *restoreState) stageRootDatabase(
+	ctx context.Context, rel string, src io.Reader, expected int64,
+) (string, error) {
+	return s.stageRootReaderWithOptions(
+		ctx, rel, src, expected, 0o600, filepath.Base(rel)+".restore-", 0)
+}
+
+func (s *restoreState) stageRootReaderWithOptions(
+	ctx context.Context, rel string, src io.Reader, expected int64, mode os.FileMode,
+	tempPrefix string, maxBytes uint64,
+) (string, error) {
 	if ctx == nil {
 		return "", fmt.Errorf("backup: nil restore context")
 	}
-	if expected < 0 || uint64(expected) > pack.MaxRawLen {
+	if expected < 0 || (maxBytes > 0 && uint64(expected) > maxBytes) {
 		return "", fmt.Errorf("backup: restored file %s has invalid recorded size %d", rel, expected)
 	}
 	dir, _, err := s.openLeafDir(rel)
@@ -1424,7 +1571,7 @@ func (s *restoreState) stageRootReader(
 		return "", err
 	}
 	defer s.closeLeafDir(dir)
-	tmp := ".restore-" + pack.NewPackID()
+	tmp := tempPrefix + pack.NewPackID()
 	f, err := dir.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
 		return "", fmt.Errorf("backup: creating restored file %s: %w", rel, err)
@@ -1441,8 +1588,8 @@ func (s *restoreState) stageRootReader(
 		_ = f.Close()
 		return "", fmt.Errorf("backup: setting mode on restored file %s: %w", rel, err)
 	}
-	reader := io.LimitReader(restoreContextReader{ctx: ctx, r: src}, expected+1)
-	written, copyErr := io.CopyBuffer(f, reader, make([]byte, 64<<10))
+	reader := restoreContextReader{ctx: ctx, r: src}
+	written, copyErr := io.CopyBuffer(f, io.LimitReader(reader, expected), make([]byte, 64<<10))
 	if copyErr != nil {
 		_ = f.Close()
 		return "", fmt.Errorf("backup: writing restored file %s: %w", rel, copyErr)
@@ -1450,6 +1597,15 @@ func (s *restoreState) stageRootReader(
 	if written != expected {
 		_ = f.Close()
 		return "", fmt.Errorf("backup: restored file %s is %d bytes but its record says %d", rel, written, expected)
+	}
+	var extra [1]byte
+	n, readErr := reader.Read(extra[:])
+	if n != 0 || !errors.Is(readErr, io.EOF) {
+		_ = f.Close()
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return "", fmt.Errorf("backup: checking restored file %s terminal EOF: %w", rel, readErr)
+		}
+		return "", fmt.Errorf("backup: restored file %s has more bytes than its record says %d", rel, expected)
 	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close()

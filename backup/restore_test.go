@@ -545,6 +545,33 @@ func TestRestoreOverwriteSweepsOrphanedTempFiles(t *testing.T) {
 	require.NoError(statErr, "a non-temp file sharing the prefix must survive")
 }
 
+func TestStageRootDatabaseHasNoPackCeilingAndUsesSweepableName(t *testing.T) {
+	require := require.New(t)
+	target := t.TempDir()
+	root, err := openRestoreRoot(target)
+	require.NoError(err)
+	st := &restoreState{root: root, target: target}
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = st.stageRootDatabase(
+		canceled, "app.db", strings.NewReader(""), int64(pack.MaxRawLen)+1)
+	require.ErrorIs(err, context.Canceled)
+	require.NotContains(err.Error(), "invalid recorded size")
+
+	rel, err := st.stageRootDatabase(
+		context.Background(), "app.db", strings.NewReader("sqlite"), int64(len("sqlite")))
+	require.NoError(err)
+	require.True(strings.HasPrefix(rel, "app.db.restore-"), rel)
+	require.NoError(root.Close())
+
+	sweptRoot, err := prepareRestoreTarget(target, true, "app.db")
+	require.NoError(err)
+	defer func() { _ = sweptRoot.Close() }()
+	_, err = sweptRoot.Stat(rel)
+	require.ErrorIs(err, os.ErrNotExist)
+}
+
 // TestRestoreTargetPathWithURISyntax pins the proof DSN construction: a
 // target path containing '?' or '#' must reach SQLite as a path, not be
 // misparsed as URI query/fragment syntax.
