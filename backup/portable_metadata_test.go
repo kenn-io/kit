@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -80,11 +81,15 @@ func (portableApp) RestoredStats(ctx context.Context, db *sql.DB) (json.RawMessa
 }
 
 type portableSource struct {
-	raw    []byte
-	info   *backup.ContentInfo
-	stats  json.RawMessage
-	opened bool
-	closed bool
+	raw            []byte
+	info           *backup.ContentInfo
+	stats          json.RawMessage
+	opened         bool
+	closed         bool
+	closes         int
+	closeErr       error
+	metadataReader io.ReadCloser
+	metadataErr    error
 }
 
 func (s *portableSource) Format() string { return "test-json-v1" }
@@ -93,7 +98,11 @@ func (s *portableSource) OpenSnapshot(context.Context) (backup.MetadataSnapshot,
 	return s, nil
 }
 func (s *portableSource) OpenMetadata(context.Context) (io.ReadCloser, int64, error) {
-	return io.NopCloser(bytes.NewReader(s.raw)), int64(len(s.raw)), nil
+	reader := s.metadataReader
+	if reader == nil {
+		reader = io.NopCloser(bytes.NewReader(s.raw))
+	}
+	return reader, int64(len(s.raw)), s.metadataErr
 }
 func (s *portableSource) ContentInfo(context.Context) (*backup.ContentInfo, error) {
 	return s.info, nil
@@ -101,8 +110,14 @@ func (s *portableSource) ContentInfo(context.Context) (*backup.ContentInfo, erro
 func (s *portableSource) Stats(context.Context) (json.RawMessage, error) { return s.stats, nil }
 func (s *portableSource) Close() error {
 	s.closed = true
-	return nil
+	s.closes++
+	return s.closeErr
 }
+
+type closeCounter struct{ closes int }
+
+func (*closeCounter) Read([]byte) (int, error) { return 0, io.EOF }
+func (r *closeCounter) Close() error           { r.closes++; return nil }
 
 type portableRestorer struct{}
 
@@ -249,6 +264,7 @@ func TestPortableMetadataCreateVerifyRestoreAndSQLiteSuccessor(t *testing.T) {
 		heldEntries, readErr := os.ReadDir(heldTarget)
 		require.NoError(readErr)
 		assert.Empty(heldEntries)
+		assert.Equal(repo.Path("staging"), filepath.Dir(filepath.Dir(privatePath)))
 		_, statErr = os.Stat(filepath.Dir(privatePath))
 		require.ErrorIs(statErr, os.ErrNotExist)
 	}
@@ -305,4 +321,61 @@ func TestPortableMetadataCreateVerifyRestoreAndSQLiteSuccessor(t *testing.T) {
 	require.NoError(err)
 	assert.Nil(legacyManifest.Metadata)
 	assert.Zero(legacyManifest.DB.MapChainDepth)
+}
+
+func TestPortableMetadataCaptureClosesPartialResourcesOnce(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("metadata open error", func(t *testing.T) {
+		require := require.New(t)
+		assert := assert.New(t)
+		reader := &closeCounter{}
+		source := &portableSource{
+			metadataReader: reader,
+			metadataErr:    errors.New("metadata unavailable"),
+			stats:          json.RawMessage(`{}`),
+			info:           &backup.ContentInfo{},
+		}
+		repo, err := backup.Init(filepath.Join(t.TempDir(), "repo"))
+		require.NoError(err)
+		_, err = backup.Create(ctx, repo, portableApp{}, backup.CreateOptions{MetadataSource: source})
+		require.ErrorContains(err, "metadata unavailable")
+		assert.Equal(1, reader.closes)
+		assert.Equal(1, source.closes)
+	})
+
+	t.Run("snapshot close error", func(t *testing.T) {
+		require := require.New(t)
+		assert := assert.New(t)
+		source := &portableSource{
+			raw:      []byte(`{}`),
+			stats:    json.RawMessage(`{}`),
+			info:     &backup.ContentInfo{},
+			closeErr: errors.New("snapshot close failed"),
+		}
+		repo, err := backup.Init(filepath.Join(t.TempDir(), "repo"))
+		require.NoError(err)
+		_, err = backup.Create(ctx, repo, portableApp{}, backup.CreateOptions{MetadataSource: source})
+		require.ErrorContains(err, "snapshot close failed")
+		assert.Equal(1, source.closes)
+	})
+}
+
+func TestLoadManifestRejectsDualMetadataAuthority(t *testing.T) {
+	require := require.New(t)
+	repo, err := backup.Init(filepath.Join(t.TempDir(), "repo"))
+	require.NoError(err)
+	m := &backup.Manifest{
+		FormatVersion:    3,
+		MinReaderVersion: 3,
+		CreatedAt:        time.Unix(1_700_000_000, 0).UTC().Format(time.RFC3339),
+		DB:               backup.ManifestDB{Engine: "sqlite"},
+		Metadata: &backup.ManifestMetadata{
+			Format: "test-json-v1", Blob: pack.ComputeBlobID(nil).String(),
+		},
+	}
+	id, err := repo.WriteManifest(m)
+	require.NoError(err)
+	_, err = repo.LoadManifest(id)
+	require.ErrorContains(err, "also carries SQLite page-map authority")
 }

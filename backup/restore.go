@@ -635,9 +635,6 @@ func (s *restoreState) preflightSnapshotBlobs(m *Manifest, pm *PageMap) error {
 		}
 	}
 	if m.Metadata != nil {
-		if err := validatePortableManifest(m); err != nil {
-			return err
-		}
 		id, err := pack.ParseBlobID(m.Metadata.Blob)
 		if err != nil {
 			return fmt.Errorf("backup: portable metadata blob id %q: %w", m.Metadata.Blob, err)
@@ -786,12 +783,6 @@ func (s *restoreState) restorePortableMetadata(
 	if metadata == nil {
 		return "", 0, errors.New("backup: portable metadata manifest is missing")
 	}
-	if err := validateMetadataFormat(metadata.Format); err != nil {
-		return "", 0, err
-	}
-	if metadata.Bytes < 0 {
-		return "", 0, fmt.Errorf("backup: portable metadata has negative size %d", metadata.Bytes)
-	}
 	id, err := pack.ParseBlobID(metadata.Blob)
 	if err != nil {
 		return "", 0, fmt.Errorf("backup: portable metadata blob id %q: %w", metadata.Blob, err)
@@ -806,7 +797,7 @@ func (s *restoreState) restorePortableMetadata(
 			"backup: portable metadata blob is %d bytes but manifest records %d", stream.Size(), metadata.Bytes)
 	}
 
-	privateDir, err := os.MkdirTemp("", "kit-backup-metadata-*")
+	privateDir, err := os.MkdirTemp(s.repo.Path(stagingDirName), "restore-metadata-*")
 	if err != nil {
 		return "", 0, fmt.Errorf("backup: creating private metadata staging directory: %w", err)
 	}
@@ -831,7 +822,7 @@ func (s *restoreState) restorePortableMetadata(
 	if err != nil {
 		return "", 0, fmt.Errorf("backup: checking restored metadata database: %w", err)
 	}
-	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+	if !info.Mode().IsRegular() {
 		return "", 0, errors.New("backup: metadata restorer did not create a regular database file")
 	}
 	for _, sidecar := range sqliteSidecarNames(privateDB) {
@@ -855,7 +846,7 @@ func (s *restoreState) restorePortableMetadata(
 		_ = f.Close()
 		return "", 0, errors.New("backup: restored metadata database changed before confinement")
 	}
-	tmpRel, err = s.stageRootReader(ctx, dbRel, f, info.Size(), 0o600)
+	tmpRel, err = s.stageRootDatabase(ctx, dbRel, f, info.Size())
 	closeErr := f.Close()
 	stagedRel := tmpRel
 	confined := false
@@ -1546,10 +1537,27 @@ func (r restoreContextReader) Read(p []byte) (int, error) {
 func (s *restoreState) stageRootReader(
 	ctx context.Context, rel string, src io.Reader, expected int64, mode os.FileMode,
 ) (string, error) {
+	return s.stageRootReaderWithOptions(ctx, rel, src, expected, mode, ".restore-", pack.MaxRawLen)
+}
+
+// stageRootDatabase confines an application-built runtime database without
+// imposing the pack format's per-blob ceiling. Its temp name intentionally
+// matches removeRestoreTempFiles' crash-recovery sweep.
+func (s *restoreState) stageRootDatabase(
+	ctx context.Context, rel string, src io.Reader, expected int64,
+) (string, error) {
+	return s.stageRootReaderWithOptions(
+		ctx, rel, src, expected, 0o600, filepath.Base(rel)+".restore-", 0)
+}
+
+func (s *restoreState) stageRootReaderWithOptions(
+	ctx context.Context, rel string, src io.Reader, expected int64, mode os.FileMode,
+	tempPrefix string, maxBytes uint64,
+) (string, error) {
 	if ctx == nil {
 		return "", fmt.Errorf("backup: nil restore context")
 	}
-	if expected < 0 || uint64(expected) > pack.MaxRawLen {
+	if expected < 0 || (maxBytes > 0 && uint64(expected) > maxBytes) {
 		return "", fmt.Errorf("backup: restored file %s has invalid recorded size %d", rel, expected)
 	}
 	dir, _, err := s.openLeafDir(rel)
@@ -1557,7 +1565,7 @@ func (s *restoreState) stageRootReader(
 		return "", err
 	}
 	defer s.closeLeafDir(dir)
-	tmp := ".restore-" + pack.NewPackID()
+	tmp := tempPrefix + pack.NewPackID()
 	f, err := dir.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
 		return "", fmt.Errorf("backup: creating restored file %s: %w", rel, err)
@@ -1574,8 +1582,8 @@ func (s *restoreState) stageRootReader(
 		_ = f.Close()
 		return "", fmt.Errorf("backup: setting mode on restored file %s: %w", rel, err)
 	}
-	reader := io.LimitReader(restoreContextReader{ctx: ctx, r: src}, expected+1)
-	written, copyErr := io.CopyBuffer(f, reader, make([]byte, 64<<10))
+	reader := restoreContextReader{ctx: ctx, r: src}
+	written, copyErr := io.CopyBuffer(f, io.LimitReader(reader, expected), make([]byte, 64<<10))
 	if copyErr != nil {
 		_ = f.Close()
 		return "", fmt.Errorf("backup: writing restored file %s: %w", rel, copyErr)
@@ -1583,6 +1591,15 @@ func (s *restoreState) stageRootReader(
 	if written != expected {
 		_ = f.Close()
 		return "", fmt.Errorf("backup: restored file %s is %d bytes but its record says %d", rel, written, expected)
+	}
+	var extra [1]byte
+	n, readErr := reader.Read(extra[:])
+	if n != 0 || !errors.Is(readErr, io.EOF) {
+		_ = f.Close()
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return "", fmt.Errorf("backup: checking restored file %s terminal EOF: %w", rel, readErr)
+		}
+		return "", fmt.Errorf("backup: restored file %s has more bytes than its record says %d", rel, expected)
 	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close()

@@ -64,27 +64,46 @@ type FrozenSession struct {
 // every daemon write for minutes instead. Accepted limitation — see
 // FORMAT.md, Current Limitations.
 func OpenFrozenSession(ctx context.Context, dbPath string, fc FreezeCoordinator) (*FrozenSession, error) {
+	return openWhileFrozen(ctx, fc,
+		func() (*FrozenSession, error) { return openPinnedSession(ctx, dbPath) },
+		func(s *FrozenSession) error {
+			if s == nil {
+				return nil
+			}
+			return s.Close()
+		})
+}
+
+func openWhileFrozen[T any](
+	ctx context.Context,
+	fc FreezeCoordinator,
+	open func() (T, error),
+	closeResource func(T) error,
+) (T, error) {
+	var zero T
 	if err := fc.Begin(ctx); err != nil {
-		return nil, fmt.Errorf("backup: freeze begin: %w", err)
+		return zero, fmt.Errorf("backup: freeze begin: %w", err)
 	}
-	s, err := openPinnedSession(ctx, dbPath)
+	resource, openErr := open()
 	endCtx, cancel := context.WithTimeout(context.Background(), freezeEndTimeout)
 	endErr := fc.End(endCtx)
 	cancel()
-	if err != nil {
-		if s != nil {
-			_ = s.Close()
-		}
-		if endErr != nil {
-			return nil, errors.Join(err, fmt.Errorf("backup: freeze end: %w", endErr))
-		}
-		return nil, err
+	if openErr != nil {
+		_ = closeResource(resource)
+		return zero, errors.Join(openErr, wrapFreezeEnd(endErr))
 	}
 	if endErr != nil {
-		_ = s.Close()
-		return nil, fmt.Errorf("backup: freeze end: %w", endErr)
+		_ = closeResource(resource)
+		return zero, wrapFreezeEnd(endErr)
 	}
-	return s, nil
+	return resource, nil
+}
+
+func wrapFreezeEnd(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("backup: freeze end: %w", err)
 }
 
 func openPinnedSession(ctx context.Context, dbPath string) (*FrozenSession, error) {

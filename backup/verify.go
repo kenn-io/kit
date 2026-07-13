@@ -793,10 +793,6 @@ func (s *verifyState) verifySnapshot(m *Manifest) {
 }
 
 func (s *verifyState) checkPortableMetadata(m *Manifest) {
-	if err := validatePortableManifest(m); err != nil {
-		s.problem(m.SnapshotID, err.Error())
-		return
-	}
 	id, err := pack.ParseBlobID(m.Metadata.Blob)
 	if err != nil {
 		s.problem(m.SnapshotID, fmt.Sprintf("portable metadata blob id %q: %v", m.Metadata.Blob, err))

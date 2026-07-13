@@ -220,6 +220,9 @@ func (r *Repo) LoadManifest(id string) (*Manifest, error) {
 				"(computed %s, embedded %q); the manifest file is corrupted, renamed, or forged",
 			id, computed, m.SnapshotID)
 	}
+	if err := validatePortableManifest(&m); err != nil {
+		return nil, fmt.Errorf("backup: snapshot %s: %w", id, err)
+	}
 	return &m, nil
 }
 

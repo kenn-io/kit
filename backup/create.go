@@ -209,93 +209,17 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 		return nil, err
 	}
 
-	parentSeen := map[string]bool{}
-	if parent != nil {
-		_, parentSeen, err = LoadListRefs(r, known, parent.Attachments.Lists, nil, app.PackFileExtension())
-		if err != nil {
-			return nil, err
-		}
-	}
-	// Attachment lists are inherited append-only only while the parent union
-	// stays a subset of the current ref set. If any parent-listed ref is no
-	// longer present locally (e.g. after remove-account), the union would
-	// exceed the current set and Verify's list-union == manifest-count check
-	// would permanently fail. In that shrinkage case, write one fresh full
-	// list of exactly the current refs by capturing with an empty seen set,
-	// so the new snapshot's single list equals the current population.
-	shrunk := parentUnionShrank(parentSeen, info.Refs)
-	captureSeen := parentSeen
-	if shrunk {
-		captureSeen = map[string]bool{}
-	}
-	capture, err := CaptureAttachments(ctx, opts.ContentDir, info.Refs, captureSeen, appender, CaptureOptions{
-		Jobs:   opts.Jobs,
-		Source: opts.ContentSource,
-		Progress: func(done, total int, bytesRead int64) {
-			pr.emit(ProgressEvent{
-				Stage: ProgressStageAttachments, Done: int64(done), Total: int64(total), BytesDone: bytesRead,
-			})
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-	pr.emit(ProgressEvent{
-		Stage: ProgressStageAttachments, Done: capture.Blobs, Total: capture.Blobs,
-		BytesDone: capture.BlobBytes, BytesTotal: capture.BlobBytes, Final: true,
-	})
-	var lists []string
-	if shrunk {
-		if capture.HasNewList {
-			lists = []string{capture.NewListBlob.String()}
-		}
-	} else {
-		if parent != nil {
-			lists = append(lists, parent.Attachments.Lists...)
-		}
-		if capture.HasNewList {
-			lists = append(lists, capture.NewListBlob.String())
-		}
-	}
-
-	treeBlob, hasTree, err := CaptureExtras(ctx, ExtrasOptions{
-		DataDir:               opts.DataDir,
-		Spec:                  opts.Extras,
-		AllowPlaintextSecrets: opts.AllowPlaintextSecrets,
-		Encrypted:             false,
-		ContentDirName:        app.ContentDirName(),
-		DBFileName:            app.DBFileName(),
-	}, appender)
+	capture, lists, treeBlob, hasTree, err := captureSnapshotFiles(
+		ctx, r, app, opts, parent, known, info, appender, pr)
 	if err != nil {
 		return nil, err
 	}
 
-	// Attachment capture was the last stage that watched ctx itself; nothing
-	// below may run under a canceled context — sealing publishes the packs
-	// and the manifest write publishes the snapshot, and a canceled backup
-	// must not report success.
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	pr.emit(ProgressEvent{Stage: ProgressStageSeal, Total: 1})
-	newPacks, newEntries, err := appender.Finish()
+	sealed, err := sealSnapshotCapture(ctx, r, appender, pr)
 	if err != nil {
 		return nil, err
 	}
 	ok = true
-	pr.emit(ProgressEvent{Stage: ProgressStageSeal, Done: 1, Total: 1, Final: true})
-
-	var bytesAdded int64
-	for _, e := range newEntries {
-		bytesAdded += int64(e.StoredLen) //nolint:gosec // stored lengths fit int64
-	}
-	newIndex := ""
-	if len(newEntries) > 0 {
-		newIndex, err = r.WriteIndex(newEntries)
-		if err != nil {
-			return nil, err
-		}
-	}
 	if err := r.SetPageSize(int(session.PageSize)); err != nil {
 		return nil, err
 	}
@@ -345,10 +269,10 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 		},
 		Excluded:        app.ExcludedPaths(),
 		Stats:           statsRaw,
-		NewPacks:        newPacks,
-		NewIndex:        newIndex,
+		NewPacks:        sealed.newPacks,
+		NewIndex:        sealed.newIndex,
 		DurationSeconds: time.Since(start).Seconds(),
-		BytesAdded:      bytesAdded,
+		BytesAdded:      sealed.bytesAdded,
 	}
 	if parent != nil {
 		m.ParentID = parent.SnapshotID

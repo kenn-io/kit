@@ -150,16 +150,22 @@ database page map: one snapshot has exactly one metadata authority.
 
 Portable metadata is a first-class durable representation, not an intermediate
 upgrade format. On restore, `MetadataRestorer` streams the logical artifact
-into a Kit-owned private scratch path and constructs the application's current
-runtime database. Kit then copies the closed file through its held target-root
-descriptor into unpublished staging. The application never receives a path
-whose resolution depends on the caller-supplied target. This allows the archive
-representation to remain stable while runtime schemas evolve. The restorer
+into a Kit-owned private repository-staging path and constructs the
+application's current runtime database. Kit then copies the closed file through
+its held target-root descriptor into unpublished staging. The application never
+receives a path whose resolution depends on the caller-supplied target. This
+allows the archive representation to remain stable while runtime schemas evolve. The restorer
 must consume the stream through verified EOF, finish and close the database,
 and leave no SQLite sidecars before Kit can publish it. Existing SQLite-page
-snapshots remain readable, and a repository may contain both kinds. A SQLite capture following a portable
-snapshot starts a fresh page-map keyframe because there is no prior page chain
-to inherit.
+snapshots remain readable, and a repository may contain both kinds. A SQLite
+capture following a portable snapshot starts a fresh page-map keyframe because
+there is no prior page chain to inherit.
+
+The repository staging filesystem must have capacity for the complete rebuilt
+runtime database. Confining it into the target requires one complete sequential
+copy, so the target must simultaneously have capacity for its unpublished copy.
+This deliberate scratch cost keeps the application callback independent of the
+caller-supplied target path on every supported platform.
 
 ## Attachment Lists (magic `MVAL`)
 
