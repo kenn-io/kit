@@ -115,7 +115,7 @@ func (r *Reader) OpenBlobWithOptions(
 		if window > windowLimit {
 			return nil, &StreamLimitError{Dimension: StreamLimitWindowBytes, Actual: window, Limit: windowLimit}
 		}
-		decoderMemory := max(entry.RawLen, uint64(zstd.MinWindowSize))
+		decoderMemory := max(entry.RawLen, window, uint64(zstd.MinWindowSize))
 		decoder, err := zstd.NewReader(stored,
 			zstd.WithDecoderConcurrency(1),
 			zstd.WithDecoderMaxMemory(decoderMemory),

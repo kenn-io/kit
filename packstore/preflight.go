@@ -172,15 +172,6 @@ func openBoundedPack(path string, limits Limits) (*boundedPackReader, error) {
 	if err != nil {
 		return nil, err
 	}
-	streamReader, err := pack.NewReaderFromFileWithOptions(reader.file, "", nil, pack.ReaderOptions{Limits: pack.ReaderLimits{
-		ContainerBytes: uint64(limits.PackBytes), //nolint:gosec // validated positive
-		FooterBytes:    uint64(limits.FooterBytes),
-		Entries:        uint64(limits.PackEntries),
-	}})
-	if err != nil {
-		return nil, mapPackStreamLimit(err)
-	}
-	reader.streamReader = streamReader
 	return reader, nil
 }
 
@@ -295,8 +286,16 @@ func openBoundedPackFile(f *os.File, limits Limits) (*boundedPackReader, error) 
 		}
 		entries[entry.ID] = entry
 	}
+	streamReader, err := pack.NewReaderFromFileWithOptions(f, "", nil, pack.ReaderOptions{Limits: pack.ReaderLimits{
+		ContainerBytes: uint64(limits.PackBytes), //nolint:gosec // validated positive
+		FooterBytes:    uint64(limits.FooterBytes),
+		Entries:        uint64(limits.PackEntries),
+	}})
+	if err != nil {
+		return nil, mapPackStreamLimit(err)
+	}
 	keepOpen = true
-	return &boundedPackReader{file: f, entries: entries}, nil
+	return &boundedPackReader{file: f, entries: entries, streamReader: streamReader}, nil
 }
 
 func readBoundedPackAt(f *os.File, dst []byte, offset int64, part string) error {
@@ -335,14 +334,27 @@ func (r *boundedPackReader) readBlob(entry pack.Entry, maxBytes int64) ([]byte, 
 		if entry.RawLen == 0 {
 			return nil, fmt.Errorf("%w: compressed empty blob", pack.ErrCorrupt)
 		}
+		var header zstd.Header
+		if err := header.Decode(stored); err != nil {
+			return nil, fmt.Errorf("%w: decode blob %s frame header: %w", pack.ErrCorrupt, entry.ID, err)
+		}
+		window := header.WindowSize
+		if header.SingleSegment {
+			window = header.FrameContentSize
+		}
+		windowLimit := max(limit, uint64(zstd.MinWindowSize))
+		if window > windowLimit {
+			return nil, fmt.Errorf("%w: %w", pack.ErrCorrupt,
+				newLimitError(LimitBlobWindowBytes, window, windowLimit))
+		}
 		// Zstd requires at least MinWindowSize bytes of decoder memory even
 		// when the authoritative decoded content is smaller. The destination
 		// capacity and WithDecodeAllCapLimit still enforce RawLen exactly.
-		decoderMemory := max(entry.RawLen, uint64(zstd.MinWindowSize))
+		decoderMemory := max(entry.RawLen, window, uint64(zstd.MinWindowSize))
 		decoder, err := zstd.NewReader(nil,
 			zstd.WithDecoderConcurrency(1),
 			zstd.WithDecoderMaxMemory(decoderMemory),
-			zstd.WithDecoderMaxWindow(decoderMemory),
+			zstd.WithDecoderMaxWindow(windowLimit),
 			zstd.WithDecodeAllCapLimit(true))
 		if err != nil {
 			return nil, fmt.Errorf("%w: initialize bounded decoder: %w", pack.ErrCorrupt, err)
