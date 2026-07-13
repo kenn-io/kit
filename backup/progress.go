@@ -27,8 +27,16 @@ const (
 	// ProgressStageExtras covers laying out captured extras files during
 	// Restore.
 	ProgressStageExtras ProgressStage = "extras"
-	// ProgressStageProof covers Restore's post-materialization proof
-	// (integrity_check and manifest stats comparison).
+	// ProgressStageIntegrityCheck covers Restore's optional SQLite
+	// integrity_check. The check reports only start and completion because
+	// SQLite does not expose intermediate progress.
+	ProgressStageIntegrityCheck ProgressStage = "integrity_check"
+	// ProgressStageRestoreStats covers recomputing and comparing the restored
+	// database's application-defined manifest statistics.
+	ProgressStageRestoreStats ProgressStage = "restore_stats"
+	// ProgressStageProof is retained for source compatibility. Restore emits
+	// the more specific IntegrityCheck and RestoreStats stages instead.
+	// Deprecated: use ProgressStageIntegrityCheck and ProgressStageRestoreStats.
 	ProgressStageProof ProgressStage = "proof"
 )
 

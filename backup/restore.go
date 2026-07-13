@@ -46,6 +46,10 @@ type RestoreOptions struct {
 	// the repository lives on a spinning disk or NAS share.
 	Jobs        int
 	ForceUnlock bool
+	// SkipIntegrityCheck omits SQLite's full PRAGMA integrity_check after
+	// materialization. Database pages and content blobs remain SHA-256 verified,
+	// and restored application statistics are still compared with the manifest.
+	SkipIntegrityCheck bool
 	// Progress, if non-nil, receives structured progress events as Restore
 	// runs. nil means fully silent.
 	Progress func(ProgressEvent)
@@ -80,15 +84,19 @@ type RestoreResult struct {
 	// restored loose. An empty Hash means the reason applies to the whole pack.
 	PackFallbacks []packstore.ImportFallback
 	ExtrasFiles   int
-	Duration      time.Duration
+	// DatabaseIntegrityChecked reports whether Restore ran SQLite's full
+	// PRAGMA integrity_check against the staged database.
+	DatabaseIntegrityChecked bool
+	Duration                 time.Duration
 }
 
 // Restore materializes one snapshot into TargetDir and then proves the
 // result (FORMAT.md, Restore): every database page
 // is hash-verified against the snapshot's page-hash map as it is written,
 // every blob read re-derives its SHA-256 identity, and the restored database
-// must pass PRAGMA integrity_check and reproduce the manifest's recorded
-// stats exactly before Restore reports success. When PackedContent is set,
+// reproduces the manifest's recorded stats exactly before Restore reports
+// success, and passes PRAGMA integrity_check unless SkipIntegrityCheck is set.
+// When PackedContent is set,
 // compatible packs are durably published before one staged catalog replacement;
 // every fallback is durably restored loose before that authority change.
 //
@@ -260,19 +268,30 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *R
 	}()
 
 	// The proof runs against the staging temp, BEFORE the database is
-	// published: an integrity_check failure, a stats mismatch, or a late
+	// published: an enabled integrity_check failure, a stats mismatch, or a late
 	// cancellation must fail the restore while an Overwrite target's
-	// existing database is still intact. The proof has two visible steps:
-	// integrity_check (which reads the whole restored database inside
-	// SQLite and dominates on large archives) and the manifest stats
-	// comparison.
-	st.progress.emit(ProgressEvent{Stage: ProgressStageProof, Total: 2})
-	if err := st.proveRestoredDB(ctx, m, func() {
-		st.progress.emit(ProgressEvent{Stage: ProgressStageProof, Done: 1, Total: 2})
+	// existing database is still intact. Report the optional SQLite scan and
+	// the inexpensive manifest-statistics comparison as distinct stages.
+	startStats := func() {
+		st.progress.emit(ProgressEvent{Stage: ProgressStageRestoreStats, Total: 1})
+	}
+	if !opts.SkipIntegrityCheck {
+		st.progress.emit(ProgressEvent{Stage: ProgressStageIntegrityCheck, Total: 1})
+	} else {
+		startStats()
+	}
+	if err := st.proveRestoredDB(ctx, m, !opts.SkipIntegrityCheck, func() {
+		res.DatabaseIntegrityChecked = true
+		st.progress.emit(ProgressEvent{
+			Stage: ProgressStageIntegrityCheck, Done: 1, Total: 1, Final: true,
+		})
+		startStats()
 	}); err != nil {
 		return nil, err
 	}
-	st.progress.emit(ProgressEvent{Stage: ProgressStageProof, Done: 2, Total: 2, Final: true})
+	st.progress.emit(ProgressEvent{
+		Stage: ProgressStageRestoreStats, Done: 1, Total: 1, Final: true,
+	})
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -879,8 +898,8 @@ func (s *restoreState) restorePortableMetadata(
 // stale SQLite sidecars are set aside, the temp is renamed over dbRel, and
 // the asides are then removed. It runs only after every content blob the
 // snapshot references — pages, attachments, extras — has been read and
-// verified AND the staging database has passed the restore proof
-// (integrity_check plus the manifest stats comparison), so this is the
+// verified AND the staging database has passed its manifest-statistics check
+// and optional integrity_check, so this is the
 // single point where an Overwrite restore becomes destructive.
 //
 // The sidecar set-aside must precede the rename: a crash between the two
@@ -1289,6 +1308,12 @@ func (s *restoreState) stageExtras(ctx context.Context, app App, m *Manifest) ([
 			Stage: ProgressStageExtras, Done: int64(i + 1), Total: int64(len(tree.Entries)),
 		})
 	}
+	if len(staged) > 0 {
+		s.progress.emit(ProgressEvent{
+			Stage: ProgressStageExtras, Done: int64(len(staged)), Total: int64(len(staged)),
+			Final: true,
+		})
+	}
 	ok = true
 	return staged, nil
 }
@@ -1305,12 +1330,6 @@ func (s *restoreState) promoteExtras(staged []stagedFile) error {
 		if err := s.promoteRootFile(sf.tmpRel, sf.rel); err != nil {
 			return err
 		}
-	}
-	if len(staged) > 0 {
-		s.progress.emit(ProgressEvent{
-			Stage: ProgressStageExtras, Done: int64(len(staged)), Total: int64(len(staged)),
-			Final: true,
-		})
 	}
 	return nil
 }
@@ -1634,22 +1653,47 @@ func (s *restoreState) promoteRootFile(tmpRel, rel string) error {
 	return nil
 }
 
-// proveRestoredDB is the restore proof (FORMAT.md,
-// Restore): the restored database must pass PRAGMA integrity_check and
-// reproduce the manifest's recorded stats through exactly the queries
-// capture ran inside the freeze. Page-level identity was already proven
-// against the page-hash map during materialization. The proof reads the
-// staging temp (s.dbRead): it runs BEFORE publishRestoredDB, so a failed
-// proof leaves an Overwrite target's existing database untouched.
-// checked is called after integrity_check passes, before the stats
-// comparison, so callers can report sub-step progress.
-func (s *restoreState) proveRestoredDB(ctx context.Context, m *Manifest, checked func()) error {
+// proveRestoredDB compares restored application statistics with the capture
+// manifest and optionally runs SQLite's full integrity_check first. Page-level
+// identity was already proven against the page-hash map during materialization.
+// The checks read the staging temp before publishRestoredDB, so failure leaves
+// an Overwrite target's existing database untouched. checked is called only
+// after an enabled integrity_check passes.
+func (s *restoreState) proveRestoredDB(
+	ctx context.Context, m *Manifest, checkIntegrity bool, checked func(),
+) error {
 	db, err := s.openRestoredDB(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = db.Close() }()
 
+	if checkIntegrity {
+		if err := restoreIntegrityCheck(ctx, db); err != nil {
+			return err
+		}
+		if checked != nil {
+			checked()
+		}
+	}
+
+	restoredStats, err := s.app.RestoredStats(ctx, db)
+	if err != nil {
+		return err
+	}
+	// The proof is only about the database the root holds; fail closed if the
+	// path the queries ran against no longer resolves to it.
+	if err := s.verifyHeldTarget(s.dbRead); err != nil {
+		return err
+	}
+	if !bytes.Equal(compactJSON(restoredStats), compactJSON(m.Stats)) {
+		return fmt.Errorf("backup: restored database stats %s do not match manifest stats %s",
+			restoredStats, m.Stats)
+	}
+	return nil
+}
+
+func restoreIntegrityCheck(ctx context.Context, db *sql.DB) error {
 	rows, err := db.QueryContext(ctx, "PRAGMA integrity_check")
 	if err != nil {
 		return fmt.Errorf("backup: restored database integrity_check: %w", err)
@@ -1668,23 +1712,6 @@ func (s *restoreState) proveRestoredDB(ctx context.Context, m *Manifest, checked
 	}
 	if len(findings) != 1 || findings[0] != "ok" {
 		return fmt.Errorf("backup: restored database failed integrity_check: %v", findings)
-	}
-	if checked != nil {
-		checked()
-	}
-
-	restoredStats, err := s.app.RestoredStats(ctx, db)
-	if err != nil {
-		return err
-	}
-	// The proof is only about the database the root holds; fail closed if the
-	// path the queries ran against no longer resolves to it.
-	if err := s.verifyHeldTarget(s.dbRead); err != nil {
-		return err
-	}
-	if !bytes.Equal(compactJSON(restoredStats), compactJSON(m.Stats)) {
-		return fmt.Errorf("backup: restored database stats %s do not match manifest stats %s",
-			restoredStats, m.Stats)
 	}
 	return nil
 }

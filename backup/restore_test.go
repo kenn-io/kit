@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -197,6 +198,7 @@ func TestRestoreReproducesArchiveByteForByte(t *testing.T) {
 	})
 	require.NoError(err)
 	assert.Equal(m2.SnapshotID, res2.SnapshotID)
+	assert.True(res2.DatabaseIntegrityChecked)
 	restored2, err := os.ReadFile(res2.DBPath)
 	require.NoError(err)
 	require.True(bytes.Equal(dbAtSnap2, restored2),
@@ -231,17 +233,33 @@ func TestRestoreReproducesArchiveByteForByte(t *testing.T) {
 	require.ErrorIs(err, os.ErrNotExist,
 		"an attachment added after snapshot 1 must not appear in snapshot 1's restore")
 
-	// Progress: the db, attachments, and proof stages all completed.
+	// Progress: each materialization and database-check stage completed.
 	final := map[ProgressStage]ProgressEvent{}
 	for _, ev := range events {
 		if ev.Final {
 			final[ev.Stage] = ev
 		}
 	}
-	for _, stage := range []ProgressStage{ProgressStageRestoreDB, ProgressStageAttachments, ProgressStageExtras, ProgressStageProof} {
+	for _, stage := range []ProgressStage{
+		ProgressStageRestoreDB,
+		ProgressStageAttachments,
+		ProgressStageExtras,
+		ProgressStageIntegrityCheck,
+		ProgressStageRestoreStats,
+	} {
 		require.Contains(final, stage)
 		assert.Equal(final[stage].Done, final[stage].Total, "stage %s must finish complete", stage)
 	}
+	extrasFinalIndex := slices.IndexFunc(events, func(event ProgressEvent) bool {
+		return event.Stage == ProgressStageExtras && event.Final
+	})
+	integrityStartIndex := slices.IndexFunc(events, func(event ProgressEvent) bool {
+		return event.Stage == ProgressStageIntegrityCheck
+	})
+	require.NotEqual(-1, extrasFinalIndex)
+	require.NotEqual(-1, integrityStartIndex)
+	assert.Less(extrasFinalIndex, integrityStartIndex,
+		"extras must report completion before database checks begin")
 }
 
 // collidingContentPathApp maps every content hash to one shared restore path,
@@ -640,10 +658,10 @@ func TestRestoreRelativeTarget(t *testing.T) {
 	require.Equal(fileSHA256(t, dbPath), fileSHA256(t, res.DBPath))
 }
 
-// TestRestoreProofCatchesManifestStatsMismatch proves the proof fires: a
+// TestRestoreStatsCheckCatchesManifestMismatchWhenIntegritySkipped proves a
 // self-consistent manifest (valid content-derived ID) whose recorded stats
-// disagree with the captured pages must fail the restore, not pass silently.
-func TestRestoreProofCatchesManifestStatsMismatch(t *testing.T) {
+// disagree with the captured pages still fails when integrity_check is omitted.
+func TestRestoreStatsCheckCatchesManifestMismatchWhenIntegritySkipped(t *testing.T) {
 	require := require.New(t)
 	ctx := context.Background()
 	r := initTestRepo(t)
@@ -670,8 +688,40 @@ func TestRestoreProofCatchesManifestStatsMismatch(t *testing.T) {
 	require.NoError(os.Remove(path))
 	require.NoError(os.WriteFile(r.Path(snapshotsDirName, forgedID+manifestExt), out, 0o600))
 
-	_, err = Restore(ctx, r, newTestApp(), RestoreOptions{TargetDir: filepath.Join(t.TempDir(), "restore")})
+	_, err = Restore(ctx, r, newTestApp(), RestoreOptions{
+		TargetDir:          filepath.Join(t.TempDir(), "restore"),
+		SkipIntegrityCheck: true,
+	})
 	require.ErrorContains(err, "do not match manifest stats")
+}
+
+func TestRestoreCanSkipIntegrityCheck(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	ctx := context.Background()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
+	require.NoError(err)
+
+	var events []ProgressEvent
+	res, err := Restore(ctx, r, newTestApp(), RestoreOptions{
+		TargetDir:          filepath.Join(t.TempDir(), "restore"),
+		SkipIntegrityCheck: true,
+		Progress:           func(ev ProgressEvent) { events = append(events, ev) },
+	})
+
+	require.NoError(err)
+	assert.False(res.DatabaseIntegrityChecked)
+	final := make(map[ProgressStage]ProgressEvent)
+	for _, event := range events {
+		if event.Final {
+			final[event.Stage] = event
+		}
+	}
+	assert.NotContains(final, ProgressStageIntegrityCheck)
+	require.Contains(final, ProgressStageRestoreStats)
+	assert.Equal(int64(1), final[ProgressStageRestoreStats].Done)
 }
 
 func TestRestoreDetectsCorruptPack(t *testing.T) {
