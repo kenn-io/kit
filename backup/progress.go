@@ -9,6 +9,8 @@ const (
 	ProgressStageFreeze ProgressStage = "freeze"
 	// ProgressStageScan covers the full page-hash scan.
 	ProgressStageScan ProgressStage = "scan"
+	// ProgressStageMetadata covers portable metadata capture or restore.
+	ProgressStageMetadata ProgressStage = "metadata"
 	// ProgressStagePack covers compressing and writing changed-page blobs
 	// into pack files. On a first backup this is most of the wall clock
 	// (every page is new); on a no-change backup it is skipped entirely.

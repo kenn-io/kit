@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -30,6 +31,7 @@ type Manifest struct {
 	CreatedAt   string              `json:"created_at"`
 	Options     ManifestOptions     `json:"options"`
 	DB          ManifestDB          `json:"db"`
+	Metadata    *ManifestMetadata   `json:"metadata,omitempty"`
 	Attachments ManifestAttachments `json:"attachments"`
 	Extras      ManifestExtras      `json:"extras"`
 	Excluded    []string            `json:"excluded"`
@@ -40,6 +42,39 @@ type Manifest struct {
 	NewIndex        string          `json:"new_index"`
 	DurationSeconds float64         `json:"duration_seconds"`
 	BytesAdded      int64           `json:"bytes_added"`
+}
+
+// ManifestMetadata identifies one application-owned portable metadata blob.
+// nil denotes the historical SQLite page-map representation in DB.
+type ManifestMetadata struct {
+	Format string `json:"format"`
+	Blob   string `json:"blob"`
+	Bytes  int64  `json:"bytes"`
+}
+
+func validatePortableManifest(m *Manifest) error {
+	if m.Metadata == nil {
+		return nil
+	}
+	if m.FormatVersion < portableMetadataManifestVersion ||
+		m.MinReaderVersion < portableMetadataManifestVersion {
+		return fmt.Errorf(
+			"backup: portable metadata requires manifest and reader version %d",
+			portableMetadataManifestVersion)
+	}
+	if m.DB != (ManifestDB{}) {
+		return errors.New("backup: portable metadata manifest also carries SQLite page-map authority")
+	}
+	if err := validateMetadataFormat(m.Metadata.Format); err != nil {
+		return err
+	}
+	if m.Metadata.Bytes < 0 {
+		return fmt.Errorf("backup: portable metadata has negative size %d", m.Metadata.Bytes)
+	}
+	if _, err := pack.ParseBlobID(m.Metadata.Blob); err != nil {
+		return fmt.Errorf("backup: portable metadata blob id %q: %w", m.Metadata.Blob, err)
+	}
+	return nil
 }
 
 type ManifestOptions struct {

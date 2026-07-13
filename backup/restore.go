@@ -49,6 +49,9 @@ type RestoreOptions struct {
 	// Progress, if non-nil, receives structured progress events as Restore
 	// runs. nil means fully silent.
 	Progress func(ProgressEvent)
+	// MetadataRestorer is required for snapshots whose application state is a
+	// portable metadata artifact instead of SQLite page maps.
+	MetadataRestorer MetadataRestorer
 	// PackedContent optionally restores compatible repository packs into the
 	// target content store and replaces packed authority in the unpublished
 	// staged DB before its integrity/stats proof and final publication. Pack and
@@ -152,9 +155,15 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *R
 	// the target's database and sidecars are touched only after every
 	// content blob — pages, attachments, extras — has been read and
 	// verified (publishRestoredDB).
-	hm, pm, err := st.materializeMaps(m)
-	if err != nil {
-		return nil, err
+	var hm *PageHashMap
+	var pm *PageMap
+	if m.Metadata == nil {
+		hm, pm, err = st.materializeMaps(m)
+		if err != nil {
+			return nil, err
+		}
+	} else if opts.MetadataRestorer == nil {
+		return nil, errors.New("backup: portable metadata snapshot requires a MetadataRestorer")
 	}
 	if err := st.preflightSnapshotBlobs(m, pm); err != nil {
 		return nil, err
@@ -177,14 +186,22 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *R
 	res = &RestoreResult{
 		SnapshotID: m.SnapshotID,
 		DBPath:     filepath.Join(opts.TargetDir, app.DBFileName()),
-		DBBytes:    int64(pm.PageCount * uint64(pm.PageSize)), //nolint:gosec // geometry checked against the manifest
+	}
+	if pm != nil {
+		res.DBBytes = int64(pm.PageCount * uint64(pm.PageSize)) //nolint:gosec // geometry checked against the manifest
 	}
 	// The database stays in its staging temp until attachments and extras
 	// have fully materialized: every one of those reads re-derives its
 	// blob's SHA-256, so an unreadable or corrupt content pack — which the
 	// index-membership preflight cannot see — fails the restore before
 	// publishRestoredDB touches an Overwrite target's existing database.
-	tmpRel, err := st.restoreDB(ctx, app.DBFileName(), pm, hm)
+	var tmpRel string
+	if m.Metadata == nil {
+		tmpRel, err = st.restoreDB(ctx, app.DBFileName(), pm, hm)
+	} else {
+		tmpRel, res.DBBytes, err = st.restorePortableMetadata(
+			ctx, app.DBFileName(), m.Metadata, opts.MetadataRestorer)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -610,9 +627,23 @@ func (s *restoreState) materializeMaps(m *Manifest) (*PageHashMap, *PageMap, err
 // pass re-reads — attachment lists and the extras tree — are cheap next to
 // the content reads restore performs anyway.
 func (s *restoreState) preflightSnapshotBlobs(m *Manifest, pm *PageMap) error {
-	for _, id := range pm.Blobs {
+	if pm != nil {
+		for _, id := range pm.Blobs {
+			if _, ok := s.known[id]; !ok {
+				return fmt.Errorf("backup: page blob %s not present in any index", id)
+			}
+		}
+	}
+	if m.Metadata != nil {
+		if err := validatePortableManifest(m); err != nil {
+			return err
+		}
+		id, err := pack.ParseBlobID(m.Metadata.Blob)
+		if err != nil {
+			return fmt.Errorf("backup: portable metadata blob id %q: %w", m.Metadata.Blob, err)
+		}
 		if _, ok := s.known[id]; !ok {
-			return fmt.Errorf("backup: page blob %s not present in any index", id)
+			return fmt.Errorf("backup: portable metadata blob %s not present in any index", id)
 		}
 	}
 	refs, _, err := LoadListRefs(s.repo, s.known, m.Attachments.Lists, nil, s.app.PackFileExtension())
@@ -743,6 +774,97 @@ func (s *restoreState) restoreDB(ctx context.Context, dbRel string, pm *PageMap,
 		BytesDone: size, BytesTotal: size, Final: true,
 	})
 	return tmpRel, nil
+}
+
+// restorePortableMetadata streams one verified logical metadata artifact into
+// an application-built runtime database staged under the confined target.
+func (s *restoreState) restorePortableMetadata(
+	ctx context.Context, dbRel string, metadata *ManifestMetadata, restorer MetadataRestorer,
+) (tmpRel string, dbBytes int64, resultErr error) {
+	if metadata == nil {
+		return "", 0, errors.New("backup: portable metadata manifest is missing")
+	}
+	if err := validateMetadataFormat(metadata.Format); err != nil {
+		return "", 0, err
+	}
+	if metadata.Bytes < 0 {
+		return "", 0, fmt.Errorf("backup: portable metadata has negative size %d", metadata.Bytes)
+	}
+	id, err := pack.ParseBlobID(metadata.Blob)
+	if err != nil {
+		return "", 0, fmt.Errorf("backup: portable metadata blob id %q: %w", metadata.Blob, err)
+	}
+	stream, err := s.repo.OpenBlob(ctx, s.known, id, nil, s.app.PackFileExtension())
+	if err != nil {
+		return "", 0, err
+	}
+	defer func() { resultErr = errors.Join(resultErr, stream.Close()) }()
+	if stream.Size() != metadata.Bytes {
+		return "", 0, fmt.Errorf(
+			"backup: portable metadata blob is %d bytes but manifest records %d", stream.Size(), metadata.Bytes)
+	}
+
+	tmpRel = dbRel + ".restore-" + pack.NewPackID()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = s.root.Remove(tmpRel)
+			for _, sidecar := range sqliteSidecarNames(tmpRel) {
+				_ = s.root.Remove(sidecar)
+			}
+		}
+	}()
+	if _, err := s.root.Lstat(tmpRel); !errors.Is(err, os.ErrNotExist) {
+		if err == nil {
+			return "", 0, fmt.Errorf("backup: portable metadata staging path %s already exists", tmpRel)
+		}
+		return "", 0, fmt.Errorf("backup: checking portable metadata staging path: %w", err)
+	}
+	s.progress.emit(ProgressEvent{
+		Stage: ProgressStageMetadata, Total: 1, BytesTotal: metadata.Bytes,
+	})
+	if err := restorer.RestoreMetadata(
+		ctx, metadata.Format, stream, filepath.Join(s.target, tmpRel)); err != nil {
+		return "", 0, fmt.Errorf("backup: restoring portable metadata: %w", err)
+	}
+	if !stream.Verified() {
+		return "", 0, errors.New("backup: metadata restorer returned before verified EOF")
+	}
+	info, err := s.root.Lstat(tmpRel)
+	if err != nil {
+		return "", 0, fmt.Errorf("backup: checking restored metadata database: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return "", 0, errors.New("backup: metadata restorer did not create a regular database file")
+	}
+	for _, sidecar := range sqliteSidecarNames(tmpRel) {
+		if _, err := s.root.Lstat(sidecar); !errors.Is(err, os.ErrNotExist) {
+			if err == nil {
+				return "", 0, fmt.Errorf("backup: metadata restorer left SQLite sidecar %s", sidecar)
+			}
+			return "", 0, fmt.Errorf("backup: checking metadata restore sidecar: %w", err)
+		}
+	}
+	if err := s.verifyHeldTarget(tmpRel); err != nil {
+		return "", 0, err
+	}
+	f, err := s.root.OpenFile(tmpRel, os.O_RDWR, 0)
+	if err != nil {
+		return "", 0, fmt.Errorf("backup: opening restored metadata database: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return "", 0, fmt.Errorf("backup: syncing restored metadata database: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return "", 0, fmt.Errorf("backup: closing restored metadata database: %w", err)
+	}
+	cleanup = false
+	s.progress.emit(ProgressEvent{
+		Stage: ProgressStageMetadata, Done: 1, Total: 1,
+		BytesDone: metadata.Bytes, BytesTotal: metadata.Bytes, Final: true,
+	})
+	return tmpRel, info.Size(), nil
 }
 
 // publishRestoredDB swaps the fully materialized staging temp into place:

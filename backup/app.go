@@ -4,9 +4,34 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"io"
 
 	"go.kenn.io/kit/packstore"
 )
+
+// MetadataSource opens one application-owned logical metadata snapshot while
+// Create holds its FreezeCoordinator. OpenSnapshot must establish a stable
+// view before returning; the coordinator is released immediately afterward.
+type MetadataSource interface {
+	Format() string
+	OpenSnapshot(context.Context) (MetadataSnapshot, error)
+}
+
+// MetadataSnapshot supplies portable metadata bytes, content membership, and
+// fidelity stats from one stable application view.
+type MetadataSnapshot interface {
+	OpenMetadata(context.Context) (io.ReadCloser, int64, error)
+	ContentInfo(context.Context) (*ContentInfo, error)
+	Stats(context.Context) (json.RawMessage, error)
+	Close() error
+}
+
+// MetadataRestorer builds the application's current runtime database at
+// targetPath from one verified portable metadata stream. It must consume the
+// stream through EOF, close and checkpoint the database, and leave no sidecars.
+type MetadataRestorer interface {
+	RestoreMetadata(ctx context.Context, format string, metadata io.Reader, targetPath string) error
+}
 
 // PackedContentTarget supplies the application-owned packed-storage policy
 // for an optional mixed packed-and-loose restore. It opens catalog authority

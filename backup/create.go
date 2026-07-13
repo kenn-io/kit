@@ -16,6 +16,9 @@ import (
 type CreateOptions struct {
 	DBPath     string
 	ContentDir string
+	// MetadataSource selects portable application metadata instead of SQLite
+	// page capture. DBPath is ignored in this mode.
+	MetadataSource MetadataSource
 	// ContentSource, when non-nil, supplies attachment content bytes during
 	// capture instead of the engine reading ContentDir; ContentDir is then
 	// ignored for content reads (it may be empty). Extras and the page scan
@@ -53,6 +56,9 @@ type CreateOptions struct {
 // Create captures one snapshot: freeze -> scan -> pack -> index -> manifest
 // (written last). See FORMAT.md.
 func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifest, error) {
+	if opts.MetadataSource != nil {
+		return createPortable(ctx, r, app, opts)
+	}
 	if err := validatePackExtension(app.PackFileExtension()); err != nil {
 		return nil, err
 	}
@@ -429,7 +435,7 @@ func nextCreatedAt(now time.Time, parent *Manifest) (time.Time, error) {
 // (chain starts plus roughly one snapshot in keyframeChainMax) and stays warm
 // for whenever the parent is itself a keyframe.
 func loadParentHashMap(r *Repo, parent *Manifest, cacheDir string, fetch func(pack.BlobID) ([]byte, error)) (*PageHashMap, error) {
-	if parent == nil {
+	if parent == nil || parent.Metadata != nil {
 		return nil, nil //nolint:nilnil // no parent snapshot -> no parent hash map, not an error
 	}
 	if cacheDir != "" {

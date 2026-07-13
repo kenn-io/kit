@@ -7,7 +7,10 @@ in enough detail to audit a repository by hand or reimplement a reader.
 
 The engine is application-agnostic: an application supplies its own database
 filename, content-directory name, and schema-specific stats/content-path
-logic through the `App` interface (`app.go`). The engine treats the
+logic through the `App` interface (`app.go`). Application metadata can be
+represented either by incremental SQLite page maps or by a portable logical
+stream supplied through `MetadataSource` and rebuilt through
+`MetadataRestorer`. The engine treats the
 manifest's application version and stats payload as opaque bytes — it
 records them at create and byte-compares them at restore. Everything below
 applies uniformly to every application built on this engine.
@@ -44,7 +47,7 @@ Compatibility is enforced at three levels, all of which must pass:
 
 1. **Repository level.** `config.toml` records `repo_id` (a lowercase-hex UUID; readers refuse any other shape, because the ID is embedded verbatim in local cache filenames), `format_version` (what wrote it), and `min_reader_version` (the oldest format a reader must understand). `Open` refuses a repository whose `min_reader_version` exceeds the reader's supported version, with an explicit error telling the caller to upgrade the reader. A future format change that old readers can safely ignore bumps only `format_version`; a change they cannot safely ignore also bumps `min_reader_version`.
 2. **Object level.** Every binary object begins with a 4-byte magic and a version field, and every decoder rejects an unknown magic or version. A reader can therefore never misparse an object from a future format as if it were current.
-3. **Snapshot level.** Each manifest records its own `format_version`, `min_reader_version`, and the application version string that wrote it (wire key `msgvault_version`, frozen for compatibility across every application built on this engine), so compatibility can evolve per-snapshot within one repository (for example, when a future version introduces encrypted snapshots alongside existing plaintext ones). Version 2 marks snapshots whose attachment population records storage paths beyond the canonical `<aa>/<hash>` derivation: version-1 readers placed every restored attachment at the canonical path and would materialize a database pointing at files that do not exist, so they must refuse these snapshots. Snapshots whose recorded paths are all canonical keep version 1. A manifest whose `min_reader_version` a reader accepts must contain only fields that reader knows: the content-derived ID covers only known fields, so an unknown field would otherwise ride along in an authenticated manifest, and readers refuse it as forged rather than ignore it.
+3. **Snapshot level.** Each manifest records its own `format_version`, `min_reader_version`, and the application version string that wrote it (wire key `msgvault_version`, frozen for compatibility across every application built on this engine), so compatibility can evolve per-snapshot within one repository (for example, when a future version introduces encrypted snapshots alongside existing plaintext ones). Version 2 marks snapshots whose attachment population records storage paths beyond the canonical `<aa>/<hash>` derivation: version-1 readers placed every restored attachment at the canonical path and would materialize a database pointing at files that do not exist, so they must refuse these snapshots. Snapshots whose recorded paths are all canonical keep version 1. Version 3 marks snapshots whose application metadata is a portable logical blob rather than SQLite page-map chains. A manifest whose `min_reader_version` a reader accepts must contain only fields that reader knows: the content-derived ID covers only known fields, so an unknown field would otherwise ride along in an authenticated manifest, and readers refuse it as forged rather than ignore it.
 
 Integrity is separate from versioning: every metadata object ends with a SHA-256 trailer over everything before it, checked before any field is interpreted, and pack entries carry CRC32-C over the stored bytes.
 
@@ -126,6 +129,36 @@ A keyframe must cover `[0, page_count)` with no gaps; deltas are sparse. Delta a
 
 **Keyframe cadence:** a snapshot writes fresh keyframes (instead of deltas) when the chain would exceed 30 deltas or when the accumulated deltas' stored size exceeds the previous keyframe's, bounding both chain-walk depth and wasted space. Chain walks independently enforce cycle detection and the depth bound, so corrupted parent links fail deterministically.
 
+## Portable Metadata
+
+A version-3 snapshot may replace the database page-map and page-hash chains
+with one application-defined logical metadata blob:
+
+```json
+"metadata": {
+  "format": "application-defined-format",
+  "blob": "<sha256>",
+  "bytes": 1234
+}
+```
+
+The blob is stored in the same content-addressed packs as every other backup
+object. `format` identifies the logical serialization and is interpreted only
+by the application. Kit verifies its declared length and SHA-256 identity but
+does not parse or migrate it. A portable manifest must not also contain a
+database page map: one snapshot has exactly one metadata authority.
+
+Portable metadata is a first-class durable representation, not an intermediate
+upgrade format. On restore, `MetadataRestorer` streams the logical artifact
+into an unpublished staging path and constructs the application's current
+runtime database. This allows the archive representation to remain stable
+while runtime schemas evolve. The restorer must consume the stream through
+verified EOF, finish and close the database, and leave no SQLite sidecars before
+Kit can publish it. Existing SQLite-page snapshots remain readable, and a
+repository may contain both kinds. A SQLite capture following a portable
+snapshot starts a fresh page-map keyframe because there is no prior page chain
+to inherit.
+
 ## Attachment Lists (magic `MVAL`)
 
 ```
@@ -169,7 +202,7 @@ A crash at any point leaves either a complete snapshot or no snapshot — never 
 
 ## Freeze Protocol
 
-To capture a transactionally consistent database image while the application's database-owning process (for example, a daemon) keeps running:
+To capture a transactionally consistent database image while the application's database-owning process (for example, a daemon) keeps running, the SQLite page-capture path does the following:
 
 1. `OpenFrozenSession` calls `FreezeCoordinator.Begin`, which the application implements to pause conflicting writes against the live database — for example, an authenticated same-host call into a daemon's serial operation gate — and returns once the gate is held. The application is expected to bound this with its own watchdog so a crashed capture cannot wedge the gate forever.
 2. It opens its own SQLite connection, runs `PRAGMA wal_checkpoint(TRUNCATE)` (with bounded retries) until the WAL is empty, then pins a read transaction — from this point the main database file bytes cannot change under it.
@@ -177,13 +210,18 @@ To capture a transactionally consistent database image while the application's d
 
 The freeze window is therefore milliseconds-to-seconds regardless of archive size. `Create` refuses to run unfrozen against a live database owner: an application whose `FreezeCoordinator.Begin` cannot resolve the owner should fail rather than risk a torn read.
 
+For portable metadata capture, Kit holds the same coordinator gate while
+`MetadataSource.OpenSnapshot` establishes an application-defined stable view,
+then releases the gate. The metadata stream, content references, and stats must
+all come from that one view, which remains open until metadata capture finishes.
+
 ## Restore
 
-`Restore` materializes one snapshot into a target directory as a usable copy of the application's data: the database written run-by-run at `page × page_size` from the materialized page map, content files at the storage paths the restored database records for each hash (applications may namespace paths beyond the loose `<hash[:2]>/<hash>` layout; paths are re-validated as local before writing), and captured extras at their recorded relative paths and file modes (tree entry paths are re-validated as local and traversal-free before writing). It refuses a non-empty target unless `Overwrite` is set.
+`Restore` materializes one snapshot into a target directory as a usable copy of the application's data. For a page-map snapshot, the database is written run-by-run at `page × page_size`. For a portable snapshot, the application consumes the verified logical metadata stream and builds its current runtime database at Kit's private staging path. Content files are written at the storage paths the restored database records for each hash (applications may namespace paths beyond the loose `<hash[:2]>/<hash>` layout; paths are re-validated as local before writing), and captured extras at their recorded relative paths and file modes (tree entry paths are re-validated as local and traversal-free before writing). It refuses a non-empty target unless `Overwrite` is set.
 
 Restore is destructive only after the source has proven itself, in two layers. A preflight runs before the target is touched: the snapshot's map chains must materialize, every referenced blob (pages, attachments, extras) must resolve through the index, and the extras tree's paths must pass restore's locality, reserved-name, and collision rules. Failures the index cannot reveal — unreadable or corrupt pack bytes — are covered by ordering instead: the database is materialized and page-verified in a staging temp, attachments are then read (each re-deriving its SHA-256) and written to their content-addressed paths, extras are read and staged as temp siblings of their final paths, and the full restore proof (integrity_check plus the stats comparison, below) runs against the staging temp. Only after all of that do the staged extras get renamed over their live counterparts and the database published: the target's stale SQLite sidecars are set aside (renamed, so a failed publish puts them back rather than stranding the old database without its WAL), the temp is renamed over the existing database, and the asides are removed. An `--overwrite` target's live database and extras files therefore survive any content or proof failure up to that final swap; partial attachment writes are benign because the paths are content-addressed — a write to a path the live tree already uses is byte-identical, and a write to a new path is an orphan the live database never references. One caveat: that argument holds only for the canonical `<hash[:2]>/<hash>` layout. An application that namespaces attachment paths (reader version 2) can record different content at the same path across snapshots, so a failed overwrite restore may leave such a path already rewritten; no current application does this, and an application adopting namespaced paths onto live overwrite targets should derive the path from the content hash to stay in the benign case. Content-path derivation and the proof both read the staging temp, never the not-yet-replaced database.
 
-Restore is self-proving, in layers. During materialization every blob read re-derives its SHA-256 identity (the pack reader's normal contract) and every database page is additionally checked against the snapshot's page-hash map before it is written — so a page-map bug cannot silently place correct bytes at the wrong offset. After materialization the restored database must pass `PRAGMA integrity_check` and reproduce the manifest's recorded stats (via `App.RestoredStats`) through exactly the queries capture ran inside the freeze window; the end-to-end test further proves the restored file is byte-identical to the live database as it existed at capture time, including for parent snapshots restored from an incremental chain. All files, and the directory entries naming them, are fsynced before Restore reports success. Pack reads are grouped by pack with a `Jobs` worker bound (1 = strictly serial for spinning-disk repositories); serial and parallel restores produce byte-identical trees. Restoring an old snapshot for use with a newer application version is expected to go through the application's normal schema migration at first open, the same path as any upgrade.
+Restore is self-proving, in layers. During materialization every blob read re-derives its SHA-256 identity (the pack reader's normal contract) and every database page is additionally checked against the snapshot's page-hash map before it is written — so a page-map bug cannot silently place correct bytes at the wrong offset. After materialization the restored database must pass `PRAGMA integrity_check` and reproduce the manifest's recorded stats (via `App.RestoredStats`) through exactly the queries capture ran inside the freeze window; the end-to-end test further proves the restored file is byte-identical to the live database as it existed at capture time, including for parent snapshots restored from an incremental chain. All files, and the directory entries naming them, are fsynced before Restore reports success. Pack reads are grouped by pack with a `Jobs` worker bound (1 = strictly serial for spinning-disk repositories); serial and parallel restores produce byte-identical trees. Restoring an old SQLite-page snapshot for use with a newer application version still goes through the application's normal schema migration at first open. A portable snapshot instead rebuilds the current runtime schema during restore, so runtime database migrations are not part of that archive's compatibility contract.
 
 ### Optional packed-content restore
 
@@ -297,7 +335,10 @@ why content stayed loose.
 ## Current Limitations
 
 - Repository encryption and retention (forgetting and pruning snapshots) are not yet implemented; the format reserves flags and fields for them (`encryption` in the repo config, the `encrypted` blob flag, crypter parameters threaded through the code as nil).
-- The application database must be SQLite; other database engines are not supported.
+- The runtime database produced by restore must currently be SQLite because
+  packed-content catalog replacement and the final integrity proof operate on
+  it. The archived metadata itself may be an application-defined portable
+  serialization.
 - The application's write gate is held only through the freeze protocol (checkpoint plus read-transaction pin), not through content capture. An operation that deletes content files while a backup is still capturing can therefore delete a file the frozen database still references; the backup then fails loudly with a read or hash error and can be retried after the deletion completes. This is a deliberate trade: holding the gate — and with it every write — for the full capture window would be far more disruptive than a rare retryable backup failure. A snapshot that completed is unaffected: it captured every file it references.
 
 ## Roadmap (settled design, not yet implemented)
