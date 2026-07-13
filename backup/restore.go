@@ -780,6 +780,19 @@ func (s *restoreState) restoreDB(ctx context.Context, dbRel string, pm *PageMap,
 func (s *restoreState) restorePortableMetadata(
 	ctx context.Context, dbRel string, metadata *ManifestMetadata, restorer MetadataRestorer,
 ) (tmpRel string, dbBytes int64, resultErr error) {
+	var stagedRel string
+	// Register this before every other cleanup defer so it runs last and sees
+	// errors those defers add to resultErr. The caller installs ownership of a
+	// successful temp only after this function returns nil.
+	defer func() {
+		if resultErr == nil || stagedRel == "" {
+			return
+		}
+		if err := s.root.Remove(stagedRel); err != nil && !errors.Is(err, os.ErrNotExist) {
+			resultErr = errors.Join(resultErr,
+				fmt.Errorf("backup: removing failed portable database staging: %w", err))
+		}
+	}()
 	if metadata == nil {
 		return "", 0, errors.New("backup: portable metadata manifest is missing")
 	}
@@ -848,20 +861,13 @@ func (s *restoreState) restorePortableMetadata(
 	}
 	tmpRel, err = s.stageRootDatabase(ctx, dbRel, f, info.Size())
 	closeErr := f.Close()
-	stagedRel := tmpRel
-	confined := false
-	defer func() {
-		if !confined && stagedRel != "" {
-			_ = s.root.Remove(stagedRel)
-		}
-	}()
+	stagedRel = tmpRel
 	if err := errors.Join(err, closeErr); err != nil {
 		return "", 0, fmt.Errorf("backup: confining restored metadata database: %w", err)
 	}
 	if err := s.verifyHeldTarget(tmpRel); err != nil {
 		return "", 0, err
 	}
-	confined = true
 	s.progress.emit(ProgressEvent{
 		Stage: ProgressStageMetadata, Done: 1, Total: 1,
 		BytesDone: metadata.Bytes, BytesTotal: metadata.Bytes, Final: true,

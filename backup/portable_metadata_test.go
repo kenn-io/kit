@@ -267,6 +267,36 @@ func TestPortableMetadataCreateVerifyRestoreAndSQLiteSuccessor(t *testing.T) {
 		assert.Equal(repo.Path("staging"), filepath.Dir(filepath.Dir(privatePath)))
 		_, statErr = os.Stat(filepath.Dir(privatePath))
 		require.ErrorIs(statErr, os.ErrNotExist)
+
+		cleanupFailureTarget := filepath.Join(base, "cleanup-failure-target")
+		var cleanupPrivatePath string
+		_, err = backup.Restore(ctx, repo, portableApp{}, backup.RestoreOptions{
+			TargetDir: cleanupFailureTarget,
+			MetadataRestorer: metadataRestorerFunc(func(
+				ctx context.Context, format string, metadata io.Reader, targetPath string,
+			) error {
+				cleanupPrivatePath = targetPath
+				if err := (portableRestorer{}).RestoreMetadata(
+					ctx, format, metadata, targetPath); err != nil {
+					return err
+				}
+				blocker := filepath.Join(filepath.Dir(targetPath), "blocked", "child")
+				if err := os.MkdirAll(filepath.Dir(blocker), 0o700); err != nil {
+					return err
+				}
+				if err := os.WriteFile(blocker, []byte("prevent cleanup"), 0o600); err != nil {
+					return err
+				}
+				return os.Chmod(filepath.Dir(blocker), 0)
+			}),
+		})
+		require.ErrorContains(err, "removing private metadata staging directory")
+		cleanupTargetEntries, readErr := os.ReadDir(cleanupFailureTarget)
+		require.NoError(readErr)
+		assert.Empty(cleanupTargetEntries)
+		privateDir := filepath.Dir(cleanupPrivatePath)
+		require.NoError(os.Chmod(filepath.Join(privateDir, "blocked"), 0o700))
+		require.NoError(os.RemoveAll(privateDir))
 	}
 
 	overwriteTarget := filepath.Join(base, "failed-overwrite")
