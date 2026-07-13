@@ -26,6 +26,20 @@ import (
 	"go.kenn.io/kit/pack"
 )
 
+type restoreTargetCoordinatorFunc func(
+	context.Context, *os.Root,
+) (RestoreTargetLease, error)
+
+func (f restoreTargetCoordinatorFunc) AcquireRestoreTarget(
+	ctx context.Context, root *os.Root,
+) (RestoreTargetLease, error) {
+	return f(ctx, root)
+}
+
+type restoreTargetLeaseFunc func() error
+
+func (f restoreTargetLeaseFunc) Release() error { return f() }
+
 func writeLargeAttachment(t *testing.T, dir string, size int64, compressible bool) ContentRef {
 	t.Helper()
 	require := require.New(t)
@@ -473,6 +487,59 @@ func TestRestoreRefusesNonEmptyTargetWithoutOverwrite(t *testing.T) {
 
 	_, err = Restore(ctx, r, newTestApp(), RestoreOptions{TargetDir: target, Overwrite: true})
 	require.NoError(err)
+}
+
+func TestRestoreCoordinatesPinnedTargetBeforeCleanup(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+	_, err := Create(ctx, r, newTestApp(), createOpts(
+		dbPath, attachmentsDir, dataDir, t.TempDir()))
+	require.NoError(err)
+
+	target := t.TempDir()
+	stale := "app.db.restore-" + pack.NewPackID()
+	require.NoError(os.WriteFile(filepath.Join(target, stale), []byte("stale"), 0o600))
+	acquired := false
+	released := false
+	coordinator := restoreTargetCoordinatorFunc(func(
+		_ context.Context, root *os.Root,
+	) (RestoreTargetLease, error) {
+		acquired = true
+		_, statErr := root.Stat(stale)
+		require.NoError(statErr, "coordination must precede stale-target cleanup")
+		return restoreTargetLeaseFunc(func() error {
+			released = true
+			_, statErr := root.Stat("app.db")
+			return statErr
+		}), nil
+	})
+
+	_, err = Restore(ctx, r, newTestApp(), RestoreOptions{
+		TargetDir: target, Overwrite: true, TargetCoordinator: coordinator,
+	})
+	require.NoError(err)
+	require.True(acquired)
+	require.True(released)
+	_, err = os.Stat(filepath.Join(target, stale))
+	require.ErrorIs(err, os.ErrNotExist)
+
+	blockedTarget := t.TempDir()
+	blockedStale := "app.db.restore-" + pack.NewPackID()
+	require.NoError(os.WriteFile(
+		filepath.Join(blockedTarget, blockedStale), []byte("stale"), 0o600))
+	_, err = Restore(ctx, r, newTestApp(), RestoreOptions{
+		TargetDir: blockedTarget, Overwrite: true,
+		TargetCoordinator: restoreTargetCoordinatorFunc(func(
+			context.Context, *os.Root,
+		) (RestoreTargetLease, error) {
+			return nil, errors.New("target is already owned")
+		}),
+	})
+	require.ErrorContains(err, "target is already owned")
+	_, err = os.Stat(filepath.Join(blockedTarget, blockedStale))
+	require.NoError(err, "failed coordination must leave existing target bytes untouched")
 }
 
 // TestRestoreOverwriteRemovesStaleDBSidecars pins the --overwrite hazard: a

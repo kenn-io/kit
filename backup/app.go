@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"io"
+	"os"
 
 	"go.kenn.io/kit/packstore"
 )
@@ -33,6 +34,21 @@ type MetadataSnapshot interface {
 // no sidecars. Kit copies the closed result into its confined target root.
 type MetadataRestorer interface {
 	RestoreMetadata(ctx context.Context, format string, metadata io.Reader, targetPath string) error
+}
+
+// RestoreTargetCoordinator binds application-owned coordination to the exact
+// directory descriptor Restore uses for every target mutation. Restore calls
+// AcquireRestoreTarget after securely opening the target root and before stale
+// staging cleanup or content publication. The root is borrowed: implementations
+// must not close it or retain it after the lease is released.
+type RestoreTargetCoordinator interface {
+	AcquireRestoreTarget(context.Context, *os.Root) (RestoreTargetLease, error)
+}
+
+// RestoreTargetLease holds application-owned target coordination for one
+// complete restore. Release runs before Kit closes the borrowed target root.
+type RestoreTargetLease interface {
+	Release() error
 }
 
 // PackedContentTarget supplies the application-owned packed-storage policy
