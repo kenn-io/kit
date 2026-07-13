@@ -347,6 +347,12 @@ func TestPrepareImportAcceptsLegacyZstdWindowWithinLimit(t *testing.T) {
 	source := filepath.Join(dir, writer.ID()+PackExt)
 	entries, err := writer.Seal(source)
 	require.NoError(t, err)
+	reader, err := OpenMaintenancePack(source, DefaultLimits())
+	require.NoError(t, err)
+	decoded, err := reader.ReadBlob(hashFromEntry(t, entries[0]))
+	require.NoError(t, err)
+	assert.Equal(t, content, decoded)
+	require.NoError(t, reader.Close())
 	target := openImportTarget(t)
 
 	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
