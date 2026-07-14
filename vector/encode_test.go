@@ -3,6 +3,7 @@ package vector_test
 import (
 	"context"
 	"errors"
+	"math"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -77,6 +78,9 @@ func TestEncodeBatchedRespectsConcurrencyBound(t *testing.T) {
 		}
 		defer inFlight.Add(-1)
 		out := make([][]float32, len(texts))
+		for i := range out {
+			out[i] = []float32{1}
+		}
 		return out, nil
 	}
 
@@ -141,6 +145,53 @@ func TestEncodeBatchedRejectsCountMismatch(t *testing.T) {
 
 	_, err := vector.EncodeBatched(context.Background(), enc, chunks("a", "b"), vector.BatchOptions{})
 	assert.ErrorContains(err, "vectors for")
+}
+
+func TestEncodeBatchedRejectsNonFiniteComponent(t *testing.T) {
+	for name, bad := range map[string]float32{
+		"NaN":  float32(math.NaN()),
+		"+Inf": float32(math.Inf(1)),
+		"-Inf": float32(math.Inf(-1)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			enc := func(_ context.Context, texts []string) ([][]float32, error) {
+				out := make([][]float32, len(texts))
+				for i := range texts {
+					out[i] = []float32{1, 2}
+				}
+				out[len(out)-1] = []float32{1, bad}
+				return out, nil
+			}
+
+			_, err := vector.EncodeBatched(context.Background(), enc, chunks("a", "b", "c"), vector.BatchOptions{})
+			var invalid *vector.InvalidVectorError
+			require.ErrorAs(t, err, &invalid)
+			assert.Equal(t, 2, invalid.Chunk, "chunk index is global, not batch-relative")
+			assert.Equal(t, 1, invalid.Component)
+		})
+	}
+}
+
+func TestEncodeBatchedRejectsZeroNormVector(t *testing.T) {
+	enc := func(_ context.Context, texts []string) ([][]float32, error) {
+		out := make([][]float32, len(texts))
+		for i, txt := range texts {
+			if txt == "c" {
+				out[i] = []float32{0, 0}
+			} else {
+				out[i] = []float32{1, 2}
+			}
+		}
+		return out, nil
+	}
+
+	// BatchSize 2 puts the zero vector in the second batch, so a
+	// batch-relative index would wrongly report 0.
+	_, err := vector.EncodeBatched(context.Background(), enc, chunks("a", "b", "c"), vector.BatchOptions{BatchSize: 2})
+	var invalid *vector.InvalidVectorError
+	require.ErrorAs(t, err, &invalid)
+	assert.Equal(t, 2, invalid.Chunk)
+	assert.Equal(t, -1, invalid.Component, "zero norm reports no single component")
 }
 
 func TestEncodeBatchedNilEncoder(t *testing.T) {
