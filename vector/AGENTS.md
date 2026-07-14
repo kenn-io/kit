@@ -16,6 +16,16 @@ pipeline. Preserve these invariants when changing it.
   `vec0 MATCH`, pgvector `<=>`, and duckdb `array_distance` belong behind
   `QueryGeneration`, never in the core flows.
 
+## Encoded vectors must be usable for cosine distance
+
+- `EncodeBatched` rejects encoder output that has the right vector count
+  but cannot participate in cosine distance — a non-finite component or a
+  zero-norm vector — with an error wrapping `*InvalidVectorError`. `Fill`
+  and `Search` route every encode through it, so faulty endpoint output
+  never reaches a `Store`. Do not weaken this to a skip or a warning: a
+  stamped invalid vector looks complete forever and silently poisons
+  search rankings.
+
 ## Keys and generations are opaque
 
 - Document identity is the caller's type `K` and generation identity its

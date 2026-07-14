@@ -3,11 +3,29 @@ package vector
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 )
 
 // Vector is a single embedding.
 type Vector []float32
+
+// InvalidVectorError reports an encoder output vector that has the expected
+// count but cannot participate in cosine distance: a non-finite component or
+// a zero norm. Chunk is the index within the chunks passed to EncodeBatched;
+// Component is the offending component, or -1 for a zero-norm vector.
+type InvalidVectorError struct {
+	Chunk     int
+	Component int
+	Reason    string
+}
+
+func (e *InvalidVectorError) Error() string {
+	if e.Component >= 0 {
+		return fmt.Sprintf("invalid vector for chunk %d component %d: %s", e.Chunk, e.Component, e.Reason)
+	}
+	return fmt.Sprintf("invalid vector for chunk %d: %s", e.Chunk, e.Reason)
+}
 
 // EncodeFunc turns a batch of texts into one vector each, in the same
 // order. Implementations own the model or API client and any retry or
@@ -28,6 +46,11 @@ type BatchOptions struct {
 // concurrency, and returns one Vector per input chunk in input order. It
 // stops launching work at the first error or when ctx is cancelled, and
 // reports the first error encountered.
+//
+// Encoder output that has the right count but cannot participate in cosine
+// distance — a non-finite component or a zero-norm vector — is rejected with
+// an error wrapping *InvalidVectorError, so faulty endpoint output never
+// reaches a Store.
 func EncodeBatched(ctx context.Context, enc EncodeFunc, chunks []Chunk, o BatchOptions) ([]Vector, error) {
 	if enc == nil {
 		return nil, fmt.Errorf("encode func is nil")
@@ -114,6 +137,10 @@ launch:
 			// Each batch owns a disjoint index range, so writes to out
 			// never overlap across goroutines.
 			for i, v := range vecs {
+				if err := validateVector(v, start+i); err != nil {
+					setErr(fmt.Errorf("encode batch at %d: %w", start, err))
+					return
+				}
 				out[start+i] = Vector(v)
 			}
 		}(start, texts)
@@ -124,4 +151,22 @@ launch:
 		return nil, firstErr
 	}
 	return out, nil
+}
+
+// validateVector rejects vectors that would poison cosine distance: any
+// non-finite component, or a vector whose norm is zero. chunk is the global
+// chunk index reported in the error.
+func validateVector(v []float32, chunk int) error {
+	var squaredNorm float64
+	for component, value := range v {
+		f := float64(value)
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return &InvalidVectorError{Chunk: chunk, Component: component, Reason: "non-finite component"}
+		}
+		squaredNorm += f * f
+	}
+	if squaredNorm == 0 {
+		return &InvalidVectorError{Chunk: chunk, Component: -1, Reason: "zero norm"}
+	}
+	return nil
 }
