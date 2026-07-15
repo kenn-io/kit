@@ -16,6 +16,9 @@ import (
 type CreateOptions struct {
 	DBPath     string
 	ContentDir string
+	// SQLiteOpener selects the SQLite implementation used for page-map
+	// capture. Nil preserves Kit's mattn/go-sqlite3 default.
+	SQLiteOpener SQLiteOpener
 	// MetadataSource selects portable application metadata instead of SQLite
 	// page capture. DBPath is ignored in this mode.
 	MetadataSource MetadataSource
@@ -111,7 +114,7 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 	defer func() { _ = dbFile.Close() }()
 
 	pr.emit(ProgressEvent{Stage: ProgressStageFreeze, Total: 1})
-	session, err := OpenFrozenSession(ctx, opts.DBPath, opts.Freezer)
+	session, err := OpenFrozenSessionWithOpener(ctx, opts.DBPath, opts.Freezer, opts.SQLiteOpener)
 	if err != nil {
 		return nil, err
 	}

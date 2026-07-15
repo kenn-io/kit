@@ -69,6 +69,9 @@ type RestoreOptions struct {
 	// the pathname gap that would exist if a caller locked TargetDir before Kit
 	// opened it. The lease is held through publication and durability sync.
 	TargetCoordinator RestoreTargetCoordinator
+	// SQLiteOpener selects the SQLite implementation used to validate and
+	// update the staged database. Nil preserves Kit's mattn/go-sqlite3 default.
+	SQLiteOpener SQLiteOpener
 }
 
 // RestoreResult reports what Restore materialized and proved.
@@ -157,6 +160,7 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *R
 		jobs:     jobs,
 		progress: newProgressEmitter(opts.Progress),
 		target:   opts.TargetDir,
+		sqlite:   sqliteOpener(opts.SQLiteOpener),
 	}
 
 	// Source preflight runs BEFORE the target is touched: materializing the
@@ -693,6 +697,7 @@ type restoreState struct {
 	// so verifyHeldTarget re-ties that path to root around each one.
 	root   *os.Root
 	target string
+	sqlite SQLiteOpener
 	// syncCeiling is the deepest target ancestor that predated this restore.
 	// Packed restore uses it for the pre-authority durability barrier; the
 	// final tree sync reuses it after extras and the database are published.
@@ -1270,7 +1275,9 @@ func (s *restoreState) verifyHeldTarget(dbRel string) error {
 // path-based open can detect.
 func (s *restoreState) openRestoredDB(ctx context.Context) (*sql.DB, error) {
 	dbRel := s.dbRead
-	db, err := sql.Open("sqlite3", restoredDBDSN(filepath.Join(s.target, dbRel)))
+	db, err := sqliteOpener(s.sqlite).OpenSQLite(filepath.Join(s.target, dbRel), SQLiteOpenOptions{
+		Access: SQLiteReadOnlyImmutable,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("backup: opening restored database: %w", err)
 	}
