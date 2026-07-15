@@ -295,8 +295,9 @@ func (s *restoreState) commitPreparedImport(
 	if err := s.verifyHeldTarget(s.dbRead); err != nil {
 		return err
 	}
-	dsn := sqliteURIDSN(filepath.Join(s.target, s.dbRead), "_busy_timeout=5000&mode=rw")
-	db, err := sql.Open("sqlite3", dsn)
+	db, err := sqliteOpener(s.sqlite).OpenSQLite(filepath.Join(s.target, s.dbRead), SQLiteOpenOptions{
+		Access: SQLiteReadWriteExisting, BusyTimeout: 5 * time.Second,
+	})
 	if err != nil {
 		return fmt.Errorf("backup: opening staged database for packed content catalog: %w", err)
 	}

@@ -6,11 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"time"
-
-	// The embedding application typically registers the sqlite3 driver
-	// itself; the blank import keeps this package usable standalone (tests,
-	// restore).
-	_ "github.com/mattn/go-sqlite3"
 )
 
 // FreezeCoordinator brackets the freeze window: Begin drains and holds the
@@ -64,8 +59,16 @@ type FrozenSession struct {
 // every daemon write for minutes instead. Accepted limitation — see
 // FORMAT.md, Current Limitations.
 func OpenFrozenSession(ctx context.Context, dbPath string, fc FreezeCoordinator) (*FrozenSession, error) {
+	return OpenFrozenSessionWithOpener(ctx, dbPath, fc, nil)
+}
+
+// OpenFrozenSessionWithOpener executes the freeze protocol with the supplied
+// SQLite implementation. Nil opener preserves the default.
+func OpenFrozenSessionWithOpener(
+	ctx context.Context, dbPath string, fc FreezeCoordinator, opener SQLiteOpener,
+) (*FrozenSession, error) {
 	return openWhileFrozen(ctx, fc,
-		func() (*FrozenSession, error) { return openPinnedSession(ctx, dbPath) },
+		func() (*FrozenSession, error) { return openPinnedSession(ctx, dbPath, opener) },
 		func(s *FrozenSession) error {
 			if s == nil {
 				return nil
@@ -106,13 +109,15 @@ func wrapFreezeEnd(err error) error {
 	return fmt.Errorf("backup: freeze end: %w", err)
 }
 
-func openPinnedSession(ctx context.Context, dbPath string) (*FrozenSession, error) {
+func openPinnedSession(ctx context.Context, dbPath string, opener SQLiteOpener) (*FrozenSession, error) {
 	// mode=rw opens the live database read-write but never creates it: a typo'd
 	// or missing DBPath must fail loudly, not have SQLite's default rwc create
 	// an empty database that capture would then "succeed" over. mode is only
 	// permitted to make the open more restrictive than the driver's flags
 	// (which include create), so rw is accepted and drops create.
-	db, err := sql.Open("sqlite3", sqliteURIDSN(dbPath, "_busy_timeout=5000&mode=rw"))
+	db, err := sqliteOpener(opener).OpenSQLite(dbPath, SQLiteOpenOptions{
+		Access: SQLiteReadWriteExisting, BusyTimeout: 5 * time.Second,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("backup: opening DB %s: %w", dbPath, err)
 	}
