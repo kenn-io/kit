@@ -248,7 +248,78 @@ func TestCommandEnvSkipsSafeDirectoryWhenDisabled(t *testing.T) {
 	assert.Empty(t, gitConfigValue(strings.Join(cmd.Env, "\n"), "safe.directory"))
 }
 
+func TestCredentialResponseIsPrivateDataAndCleanupIsIdempotent(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+
+	path, cleanup, err := (basicAuth{
+		username: "alice",
+		password: "secret-token",
+	}).credentialResponse()
+	require.NoError(err)
+	t.Cleanup(cleanup)
+
+	info, err := os.Stat(path)
+	require.NoError(err)
+	assert.True(info.Mode().IsRegular())
+	assert.Zero(info.Mode() & 0o111)
+	if runtime.GOOS != "windows" {
+		assert.Equal(os.FileMode(0o600), info.Mode().Perm())
+	}
+	contents, err := os.ReadFile(path)
+	require.NoError(err)
+	assert.Equal("username=alice\npassword=secret-token\n", string(contents))
+
+	cleanup()
+	cleanup()
+	_, err = os.Stat(path)
+	assert.ErrorIs(err, os.ErrNotExist)
+}
+
+func TestCredentialResponseRejectsProtocolDelimitersBeforeCreatingFile(t *testing.T) {
+	tests := []struct {
+		name     string
+		username string
+		password string
+		field    string
+		secret   string
+	}{
+		{name: "username LF", username: "ali\nce", password: "token", field: "username", secret: "ali\nce"},
+		{name: "username CR", username: "ali\rce", password: "token", field: "username", secret: "ali\rce"},
+		{name: "username NUL", username: "ali\x00ce", password: "token", field: "username", secret: "ali\x00ce"},
+		{name: "password LF", username: "alice", password: "token\nquit=1", field: "password", secret: "token\nquit=1"},
+		{name: "password CR", username: "alice", password: "token\rquit=1", field: "password", secret: "token\rquit=1"},
+		{name: "password NUL", username: "alice", password: "token\x00quit=1", field: "password", secret: "token\x00quit=1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require := require.New(t)
+			assert := assert.New(t)
+			tempDir := t.TempDir()
+			t.Setenv("TMPDIR", tempDir)
+			t.Setenv("TMP", tempDir)
+			t.Setenv("TEMP", tempDir)
+
+			path, cleanup, err := (basicAuth{
+				username: tt.username,
+				password: tt.password,
+			}).credentialResponse()
+			require.Error(err)
+			assert.Empty(path)
+			assert.Contains(err.Error(), tt.field)
+			assert.NotContains(err.Error(), tt.secret)
+			assert.NotPanics(cleanup)
+
+			entries, readErr := os.ReadDir(tempDir)
+			require.NoError(readErr)
+			assert.Empty(entries)
+		})
+	}
+}
+
 func TestWithBasicAuthKeepsSecretOutOfCommandEnvironment(t *testing.T) {
+	assert := assert.New(t)
 	env := captureGitEnv(t, New().WithBasicAuth("alice", "secret-token"))
 
 	for _, secret := range []string{
@@ -258,13 +329,56 @@ func TestWithBasicAuthKeepsSecretOutOfCommandEnvironment(t *testing.T) {
 		"Authorization: Basic",
 		"http.extraHeader",
 	} {
-		if strings.Contains(env, secret) {
-			t.Fatalf("command environment leaked %q:\n%s", secret, env)
-		}
+		assert.NotContains(env, secret)
 	}
-	if !strings.Contains(env, "credential.helper") {
-		t.Fatalf("basic auth should be supplied through a credential helper:\n%s", env)
+	helper := gitConfigValue(env, "credential.helper")
+	assert.NotEmpty(helper)
+	assert.True(strings.HasPrefix(helper, "!"), "credential helper must be an inline shell snippet, got %q", helper)
+}
+
+func TestWithBasicAuthRoundTripsCredentialProtocol(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	username := `al ice'$\"`
+	password := `sec ret'\"$\\;|&()`
+	request := "protocol=https\nhost=example.invalid\n\n"
+
+	stdout, stderr, err := New().WithBasicAuth(username, password).Run(
+		context.Background(), "", strings.NewReader(request), "credential", "fill",
+	)
+
+	require.NoError(err, string(stderr))
+	assert.Empty(stderr)
+	assert.Contains(string(stdout), "username="+username+"\n")
+	assert.Contains(string(stdout), "password="+password+"\n")
+}
+
+func TestWithBasicAuthStoreAndEraseDoNotDiscloseCredentials(t *testing.T) {
+	request := "protocol=https\nhost=example.invalid\nusername=alice\npassword=secret-token\n\n"
+	for _, operation := range []string{"approve", "reject"} {
+		t.Run(operation, func(t *testing.T) {
+			stdout, stderr, err := New().WithBasicAuth("alice", "secret-token").Run(
+				context.Background(), "", strings.NewReader(request), "credential", operation,
+			)
+			require.NoError(t, err, string(stderr))
+			assert.Empty(t, stdout)
+			assert.Empty(t, stderr)
+		})
 	}
+}
+
+func TestWithBasicAuthRejectsCredentialProtocolInjection(t *testing.T) {
+	password := "secret-token\nusername=mallory"
+	request := "protocol=https\nhost=example.invalid\n\n"
+
+	stdout, stderr, err := New().WithBasicAuth("alice", password).Run(
+		context.Background(), "", strings.NewReader(request), "credential", "fill",
+	)
+
+	require.Error(t, err)
+	assert.Empty(t, stdout)
+	assert.NotContains(t, string(stderr), password)
+	assert.NotContains(t, err.Error(), password)
 }
 
 func TestWithBasicAuthRejectsCommand(t *testing.T) {
@@ -284,15 +398,44 @@ func TestWithBasicAuthRejectsCommand(t *testing.T) {
 	New().WithBasicAuth("alice", "secret-token").Command(context.Background(), "", "status")
 }
 
-func TestWithBasicAuthRemovesCredentialHelperAfterRun(t *testing.T) {
-	env := captureGitEnv(t, New().WithBasicAuth("alice", "secret-token"))
-	helper := gitConfigValue(env, "credential.helper")
-	if helper == "" {
-		t.Fatalf("credential.helper not found in env:\n%s", env)
+func TestWithBasicAuthRemovesCredentialResponseAfterRun(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("TMPDIR", tempDir)
+	t.Setenv("TMP", tempDir)
+	t.Setenv("TEMP", tempDir)
+
+	captureGitEnv(t, New().WithBasicAuth("alice", "secret-token"))
+
+	responses, err := filepath.Glob(filepath.Join(tempDir, "gitcmd-credential-response-*"))
+	require.NoError(t, err)
+	assert.Empty(t, responses)
+}
+
+func TestWithBasicAuthRemovesCredentialResponseAfterGitFailure(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("TMPDIR", tempDir)
+	t.Setenv("TMP", tempDir)
+	t.Setenv("TEMP", tempDir)
+
+	binDir := t.TempDir()
+	gitPath := filepath.Join(binDir, "git")
+	script := "#!/bin/sh\nexit 1\n"
+	if runtime.GOOS == "windows" {
+		gitPath += ".bat"
+		script = "@exit /b 1\r\n"
 	}
-	if _, err := os.Stat(helper); !os.IsNotExist(err) {
-		t.Fatalf("credential helper file still exists after Run: stat err = %v", err)
-	}
+	require.NoError(t, os.WriteFile(gitPath, []byte(script), 0o700))
+
+	pathEnv := binDir + string(os.PathListSeparator) + os.Getenv("PATH")
+	t.Setenv("PATH", pathEnv)
+	runner := New().WithBasicAuth("alice", "secret-token")
+	runner.Env = []string{"PATH=" + pathEnv}
+	_, _, err := runner.Run(context.Background(), "", nil, "version")
+	require.Error(t, err)
+
+	responses, globErr := filepath.Glob(filepath.Join(tempDir, "gitcmd-credential-response-*"))
+	require.NoError(t, globErr)
+	assert.Empty(t, responses)
 }
 
 func captureGitEnv(t *testing.T, runner Runner) string {

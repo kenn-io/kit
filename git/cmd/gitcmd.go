@@ -81,7 +81,8 @@ func (r Runner) WithConfig(key, value string) Runner {
 
 // WithBasicAuth returns a copy of r with credentials supplied through a
 // short-lived git credential helper. The reusable secret is written to a
-// user-only helper file instead of being exposed in the git process environment.
+// user-only, non-executable response file instead of being exposed in the git
+// process environment.
 func (r Runner) WithBasicAuth(username, password string) Runner {
 	r.basicAuth = &basicAuth{username: username, password: password}
 	return r
@@ -144,36 +145,51 @@ type basicAuth struct {
 	password string
 }
 
-func (a basicAuth) credentialHelper() (string, func(), error) {
-	file, err := os.CreateTemp("", "gitcmd-credential-helper-*")
+func validateCredentialValue(field, value string) error {
+	if strings.ContainsAny(value, "\r\n\x00") {
+		return fmt.Errorf("%s contains a character unsupported by the git credential protocol", field)
+	}
+	return nil
+}
+
+func (a basicAuth) credentialResponse() (string, func(), error) {
+	noCleanup := func() {}
+	if err := validateCredentialValue("username", a.username); err != nil {
+		return "", noCleanup, err
+	}
+	if err := validateCredentialValue("password", a.password); err != nil {
+		return "", noCleanup, err
+	}
+
+	file, err := os.CreateTemp("", "gitcmd-credential-response-*")
 	if err != nil {
-		return "", nil, err
+		return "", noCleanup, err
 	}
 	path := file.Name()
 	cleanup := func() {
 		_ = os.Remove(path)
 	}
 
-	_, writeErr := file.WriteString("#!/bin/sh\n" +
-		"case \"$1\" in\n" +
-		"get)\n" +
-		"\tprintf '%s\\n' " + shellSingleQuote("username="+a.username) + " " + shellSingleQuote("password="+a.password) + "\n" +
-		"\t;;\n" +
-		"esac\n")
+	_, writeErr := fmt.Fprintf(file, "username=%s\npassword=%s\n", a.username, a.password)
 	closeErr := file.Close()
 	if writeErr != nil {
 		cleanup()
-		return "", nil, writeErr
+		return "", noCleanup, writeErr
 	}
 	if closeErr != nil {
 		cleanup()
-		return "", nil, closeErr
-	}
-	if err := os.Chmod(path, 0o700); err != nil {
-		cleanup()
-		return "", nil, err
+		return "", noCleanup, closeErr
 	}
 	return path, cleanup, nil
+}
+
+func credentialHelper(path string) string {
+	return `!f() { ` +
+		`while IFS= read -r line && [ -n "$line" ]; do :; done; ` +
+		`if [ "$1" = get ]; then ` +
+		`while IFS= read -r line; do printf '%s\n' "$line"; done < ` + shellSingleQuote(path) + `; ` +
+		`fi; ` +
+		`}; f`
 }
 
 func shellSingleQuote(value string) string {
@@ -317,11 +333,13 @@ func (r Runner) commandEnv(ctx context.Context, dir string) ([]string, func()) {
 	}
 	config = append(config, r.Config...)
 	if r.basicAuth != nil {
-		helper, cleanupHelper, err := r.basicAuth.credentialHelper()
+		responsePath, cleanupResponse, err := r.basicAuth.credentialResponse()
+		var helper string
 		if err != nil {
 			helper = `!f() { echo "gitcmd basic auth helper setup failed" >&2; exit 1; }; f`
 		} else {
-			cleanup = cleanupHelper
+			helper = credentialHelper(responsePath)
+			cleanup = cleanupResponse
 		}
 		config = append(config, Config{Key: "credential.helper", Value: helper})
 	}
