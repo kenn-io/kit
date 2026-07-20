@@ -16,13 +16,14 @@ import (
 
 const windowsFileDeleteChild = 0x40
 
-func TestWindowsDropDanglingAcceptsReadableNonDeletableLooseAuthority(t *testing.T) {
+func TestWindowsRecoveryPacksReadableNonDeletableLooseAuthority(t *testing.T) {
 	layout := layoutForStoreTest(t)
 	content := []byte("readable loose authority without deletion permission")
 	entry := buildStoreTestPack(t, layout, content)
 	require.Equal(t, entry.Hash, writeMaintenanceLoose(t, layout, content))
 	catalog := newMaintenanceCatalog()
 	catalog.entries[entry.Hash] = entry
+	catalog.members[entry.Hash] = Reference{Hash: entry.Hash, OriginalHashes: []string{entry.Hash.String()}}
 	catalog.packs[entry.PackID] = PackRecord{
 		PackID: entry.PackID, EntryCount: 1, StoredBytes: entry.StoredLen, CreatedAt: time.Now(),
 	}
@@ -47,20 +48,17 @@ func TestWindowsDropDanglingAcceptsReadableNonDeletableLooseAuthority(t *testing
 	}
 	require.Error(t, deleteErr, "fixture must deny deletion-capable identity handles")
 	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
-	var stats PackStats
-	refs := map[Hash]Reference{
-		entry.Hash: {Hash: entry.Hash, OriginalHashes: []string{entry.Hash.String()}},
-	}
 
-	recoveries, err := maintainer.dropDangling(context.Background(), &stats, refs)
+	stats, err := maintainer.Pack(context.Background(), PackOptions{})
 
 	require.NoError(t, err)
-	require.Len(t, recoveries, 1)
-	assert.Equal(t, entry.Hash, recoveries[0].Hash)
-	assert.Zero(t, stats.MappingsPruned)
+	assert.Equal(t, 1, stats.BlobsPacked)
 	entries, _ := catalog.snapshot()
-	assert.Contains(t, entries, entry.Hash)
+	require.Contains(t, entries, entry.Hash)
+	assert.NotEqual(t, entry.PackID, entries[entry.Hash].PackID)
 	assert.FileExists(t, loosePath)
+	got, _ := readStoreTest(t, maintainer.store, entry.Hash)
+	assert.Equal(t, content, got)
 }
 
 func denyWindowsFileDeletion(t *testing.T, path string) func() {

@@ -78,7 +78,11 @@ func (m *Maintainer) Pack(ctx context.Context, opts PackOptions) (PackStats, err
 	if err != nil {
 		return stats, err
 	}
-	if err := m.packCandidates(ctx, recoveries, opts, &stats, m.catalog.AdoptPack, true); err != nil {
+	if err := m.packCandidates(ctx, recoveries, opts, &stats, packCandidatePolicy{
+		commit:          m.catalog.AdoptPack,
+		openPin:         openLooseMaintenanceVerificationPin,
+		replaceMappings: true,
+	}); err != nil {
 		return stats, err
 	}
 	pruned, err := m.catalog.PruneUnreferenced(ctx)
@@ -160,7 +164,7 @@ func (m *Maintainer) dropDangling(
 			if _, _, err := m.store.readPackedBounded(ctx, entry.Hash, &entry, m.limits.BlobBytes); err == nil {
 				continue
 			}
-			valid, err := m.hasAnyValidCanonicalLoose(ctx, entry.Hash)
+			logicalSize, valid, err := m.findAnyValidCanonicalLoose(ctx, entry.Hash)
 			if err != nil {
 				return nil, err
 			}
@@ -182,7 +186,7 @@ func (m *Maintainer) dropDangling(
 					m.layout.CompressedLoosePath(entry.Hash),
 					m.layout.LoosePath(entry.Hash),
 				},
-				Size: entry.RawLen,
+				Size: logicalSize,
 			})
 		}
 	}
@@ -399,18 +403,28 @@ func (m *Maintainer) packLoose(ctx context.Context, opts PackOptions, stats *Pac
 	if err != nil {
 		return err
 	}
-	return m.packCandidates(ctx, candidates, opts, stats, m.catalog.RecordPack, false)
+	return m.packCandidates(ctx, candidates, opts, stats, packCandidatePolicy{
+		commit:       m.catalog.RecordPack,
+		openPin:      m.openIdentityPin,
+		removeSource: true,
+	})
 }
 
 type packCatalogCommit func(context.Context, PackRecord, []Adoption) error
+
+type packCandidatePolicy struct {
+	commit          packCatalogCommit
+	openPin         identityPinOpener
+	replaceMappings bool
+	removeSource    bool
+}
 
 func (m *Maintainer) packCandidates(
 	ctx context.Context,
 	candidates []Candidate,
 	opts PackOptions,
 	stats *PackStats,
-	commit packCatalogCommit,
-	replaceMappings bool,
+	policy packCandidatePolicy,
 ) (resultErr error) {
 	var writer *pack.Writer
 	var sources []packedSource
@@ -430,7 +444,7 @@ func (m *Maintainer) packCandidates(
 		}
 		sealedSources := sources
 		sources = nil
-		if err := m.sealAndCommit(ctx, writer, sealedSources, stats, commit, replaceMappings); err != nil {
+		if err := m.sealAndCommit(ctx, writer, sealedSources, stats, policy); err != nil {
 			return err
 		}
 		writer = nil
@@ -454,7 +468,7 @@ func (m *Maintainer) packCandidates(
 				return err
 			}
 		}
-		prepared, source, sourcePin, found, readErr := m.prepareCandidate(ctx, candidate)
+		prepared, source, sourcePin, found, readErr := m.prepareCandidate(ctx, candidate, policy.openPin)
 		if readErr != nil {
 			if errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) {
 				return readErr
@@ -511,7 +525,7 @@ func (m *Maintainer) packCandidates(
 }
 
 func (m *Maintainer) prepareCandidate(
-	ctx context.Context, candidate Candidate,
+	ctx context.Context, candidate Candidate, openPin identityPinOpener,
 ) (*pack.PreparedBlob, string, identityPin, bool, error) {
 	id, err := pack.ParseBlobID(candidate.Hash.String())
 	if err != nil {
@@ -575,7 +589,7 @@ func (m *Maintainer) prepareCandidate(
 		}
 		var pin identityPin
 		if selected == nil {
-			pin, err = m.pinOpenCandidate(path, identity)
+			pin, err = m.pinOpenCandidate(path, identity, openPin)
 			if err != nil {
 				corrupt = errors.Join(corrupt, err, object.file.Close())
 				continue
@@ -621,8 +635,10 @@ func (m *Maintainer) prepareCandidate(
 	return nil, "", nil, false, corrupt
 }
 
-func (m *Maintainer) pinOpenCandidate(path string, expected fs.FileInfo) (identityPin, error) {
-	pin, pinned, err := m.openIdentityPin(path)
+func (m *Maintainer) pinOpenCandidate(
+	path string, expected fs.FileInfo, openPin identityPinOpener,
+) (identityPin, error) {
+	pin, pinned, err := openPin(path)
 	if err != nil {
 		return nil, err
 	}
@@ -713,7 +729,7 @@ func verifyLoosePathIdentity(
 	limit int64,
 	encoding LooseEncoding,
 ) (fs.FileInfo, error) {
-	pin, err := verifyLoosePathPinned(ctx, path, hash, limit, encoding, openLooseMaintenanceVerificationPin)
+	pin, _, err := verifyLoosePathPinned(ctx, path, hash, limit, encoding, openLooseMaintenanceVerificationPin)
 	if err != nil {
 		return nil, err
 	}
@@ -728,45 +744,47 @@ func verifyLoosePathPinned(
 	limit int64,
 	encoding LooseEncoding,
 	openPin identityPinOpener,
-) (identityPin, error) {
+) (identityPin, int64, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	object, identity, err := openLooseObjectAtPath(path, hash, nil, encoding)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	size := object.logicalSize
 	if size < 0 || size > limit {
-		return nil, errors.Join(
+		return nil, 0, errors.Join(
 			newLimitError(LimitBlobRawBytes, uint64(size), uint64(limit)), //nolint:gosec
 			object.file.Close(),
 		)
 	}
 	if object.storedSize > limit {
-		return nil, errors.Join(
+		return nil, 0, errors.Join(
 			newLimitError(LimitBlobStoredBytes, uint64(object.storedSize), uint64(limit)), //nolint:gosec
 			object.file.Close(),
 		)
 	}
 	pin, pinned, err := openPin(path)
 	if err != nil {
-		return nil, errors.Join(err, object.file.Close())
+		return nil, 0, errors.Join(err, object.file.Close())
 	}
 	if !os.SameFile(identity, pinned) {
-		return nil, errors.Join(errIdentityChanged, object.file.Close(), pin.Close())
+		return nil, 0, errors.Join(errIdentityChanged, object.file.Close(), pin.Close())
 	}
 	stream, err := newLooseVerifiedStream(ctx, hash, object)
 	if err != nil {
-		return nil, errors.Join(err, pin.Close())
+		return nil, 0, errors.Join(err, pin.Close())
 	}
 	if err := errors.Join(stream.Verify(), stream.Close()); err != nil {
-		return nil, errors.Join(err, pin.Close())
+		return nil, 0, errors.Join(err, pin.Close())
 	}
-	return pin, nil
+	return pin, size, nil
 }
 
-func (m *Maintainer) hasAnyValidCanonicalLoose(ctx context.Context, hash Hash) (bool, error) {
+func (m *Maintainer) findAnyValidCanonicalLoose(
+	ctx context.Context, hash Hash,
+) (int64, bool, error) {
 	for _, candidate := range []struct {
 		path     string
 		encoding LooseEncoding
@@ -775,17 +793,26 @@ func (m *Maintainer) hasAnyValidCanonicalLoose(ctx context.Context, hash Hash) (
 		{path: m.layout.LoosePath(hash), encoding: LooseEncodingRaw},
 	} {
 		if err := ctx.Err(); err != nil {
-			return false, err
+			return 0, false, err
 		}
-		if _, err := verifyLoosePathIdentity(
-			ctx, candidate.path, hash, m.limits.BlobBytes, candidate.encoding,
-		); err == nil {
-			return true, nil
+		pin, size, err := verifyLoosePathPinned(
+			ctx,
+			candidate.path,
+			hash,
+			m.limits.BlobBytes,
+			candidate.encoding,
+			openLooseMaintenanceVerificationPin,
+		)
+		if err == nil {
+			if err := pin.Close(); err != nil {
+				return 0, false, err
+			}
+			return size, true, nil
 		} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return false, err
+			return 0, false, err
 		}
 	}
-	return false, nil
+	return 0, false, nil
 }
 
 func (m *Maintainer) hasAuthoritativeCanonicalLoose(ctx context.Context, hash Hash) (bool, error) {
@@ -850,8 +877,7 @@ func (m *Maintainer) sealAndCommit(
 	writer *pack.Writer,
 	sources []packedSource,
 	stats *PackStats,
-	commit packCatalogCommit,
-	replaceMappings bool,
+	policy packCandidatePolicy,
 ) (resultErr error) {
 	defer func() {
 		resultErr = errors.Join(resultErr, closePackedSourcePins(sources))
@@ -875,18 +901,21 @@ func (m *Maintainer) sealAndCommit(
 		record.StoredBytes += entry.StoredLen
 		adoptions[i] = Adoption{Entry: entry, OriginalHashes: source.candidate.OriginalHashes}
 	}
-	if err := commit(ctx, record, adoptions); err != nil {
+	if err := policy.commit(ctx, record, adoptions); err != nil {
 		return err
 	}
 	stats.PacksSealed++
 	stats.BlobsPacked += len(sources)
-	if replaceMappings {
+	if policy.replaceMappings {
 		stats.MappingsPruned += int64(len(sources))
 	}
 	var cleanupErr error
 	for index := range sources {
 		source := sources[index]
 		stats.BytesPacked += int64(source.entry.RawLen) //nolint:gosec
+		if !policy.removeSource {
+			continue
+		}
 		// Removal owns and closes the pin on every return path. Clear it so
 		// the function-level fallback closes only pins not yet consumed.
 		sources[index].pin = nil
@@ -962,7 +991,7 @@ func (m *Maintainer) sweepLoose(ctx context.Context, refs map[Hash]Reference, al
 				continue
 			}
 			present++
-			pin, err := verifyLoosePathPinned(
+			pin, _, err := verifyLoosePathPinned(
 				ctx, candidate.path, entry.Hash, m.limits.BlobBytes, candidate.encoding, m.openIdentityPin,
 			)
 			if err != nil {

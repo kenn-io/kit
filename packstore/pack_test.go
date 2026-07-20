@@ -1234,6 +1234,32 @@ func TestRepairCommitFailureRetainsCorruptPackedMappingWhenOnlyRawAlternateIsVal
 	assert.Equal(corruptCompressed, mustReadFile(t, layout.CompressedLoosePath(entry.Hash)))
 }
 
+func TestRepairUsesVerifiedLooseSizeWhenPackedMetadataIsCorrupt(t *testing.T) {
+	layout := layoutForStoreTest(t)
+	catalog := newMaintenanceCatalog()
+	content := []byte("derive recovery size from verified loose bytes")
+	entry := buildStoreTestPack(t, layout, content)
+	require.Equal(t, entry.Hash, writeMaintenanceLoose(t, layout, content))
+	catalog.addLoose(entry.Hash, layout.LoosePath(entry.Hash))
+	entry.RawLen++
+	catalog.entries[entry.Hash] = entry
+	catalog.packs[entry.PackID] = PackRecord{
+		PackID: entry.PackID, EntryCount: 1, StoredBytes: entry.StoredLen, CreatedAt: time.Now(),
+	}
+	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
+
+	stats, err := maintainer.Pack(context.Background(), PackOptions{})
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.BlobsPacked)
+	location, err := catalog.Resolve(context.Background(), entry.Hash)
+	require.NoError(t, err)
+	require.NotNil(t, location.Pack)
+	assert.NotEqual(t, entry.PackID, location.Pack.PackID)
+	got, _ := readStoreTest(t, maintainer.store, entry.Hash)
+	assert.Equal(t, content, got)
+}
+
 func TestReconcileAdoptsOnlyFullyVerifiedOrphanPack(t *testing.T) {
 	for _, damaged := range []bool{false, true} {
 		name := "valid"
