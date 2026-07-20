@@ -63,14 +63,16 @@ func TestLooseWriteFullHashRejectsEqualSizeReplacementAfterVerification(t *testi
 				require.NoError(t, err)
 				replacement := bytes.Repeat([]byte{0xa5}, len(physical))
 
-				replacementInstalled := installEqualSizeReplacementAtFinalSnapshot(t, created.Path, replacement)
+				replacementOutcome := installEqualSizeReplacementAtFinalSnapshot(t, created.Path, replacement)
 
 				result, err := api.write(context.Background(), store, content, opts)
 
 				require.Error(t, err)
 				assert.True(t, errors.Is(err, ErrContentMismatch) || errors.Is(err, errIdentityChanged), err)
 				assert.False(t, result.Created)
-				assert.True(t, *replacementInstalled)
+				assert.True(t, replacementOutcome.installed)
+				assert.True(t, replacementOutcome.pinLiveAtReplacement)
+				assert.True(t, replacementOutcome.replacementIdentityChanged)
 				assert.Equal(t, replacement, mustReadFile(t, created.Path))
 			})
 		}
@@ -107,7 +109,7 @@ func TestLooseDurableTypeAndSizeRejectsEqualSizeReplacementAfterSync(t *testing.
 			physical, err := os.ReadFile(created.Path)
 			require.NoError(t, err)
 			replacement := bytes.Repeat([]byte{0x5a}, len(physical))
-			replacementInstalled := installEqualSizeReplacementAtFinalSnapshot(t, created.Path, replacement)
+			replacementOutcome := installEqualSizeReplacementAtFinalSnapshot(t, created.Path, replacement)
 
 			result, err := store.WriteBytes(context.Background(), content, WriteOptions{
 				Durability:   DurablePublication,
@@ -121,44 +123,78 @@ func TestLooseDurableTypeAndSizeRejectsEqualSizeReplacementAfterSync(t *testing.
 			require.Error(t, err)
 			assert.True(t, errors.Is(err, ErrContentMismatch) || errors.Is(err, errIdentityChanged), err)
 			assert.False(t, result.Created)
-			assert.True(t, *replacementInstalled)
+			assert.True(t, replacementOutcome.installed)
+			assert.True(t, replacementOutcome.pinLiveAtReplacement)
+			assert.True(t, replacementOutcome.replacementIdentityChanged)
 			assert.Equal(t, replacement, mustReadFile(t, created.Path))
 		})
 	}
 }
 
-func installEqualSizeReplacementAtFinalSnapshot(t *testing.T, path string, replacement []byte) *bool {
+type equalSizeReplacementOutcome struct {
+	installed                  bool
+	pinLiveAtReplacement       bool
+	replacementIdentityChanged bool
+}
+
+type observedLooseVerificationPin struct {
+	looseVerificationIdentityPin
+	live *bool
+}
+
+func (p *observedLooseVerificationPin) Close() error {
+	err := p.looseVerificationIdentityPin.Close()
+	*p.live = false
+	return err
+}
+
+func installEqualSizeReplacementAtFinalSnapshot(t *testing.T, path string, replacement []byte) *equalSizeReplacementOutcome {
 	t.Helper()
 	originalSnapshot := snapshotLoosePathIdentity
+	originalOpenPin := openLooseVerificationIdentityPin
 	var snapshots int
-	var installed bool
+	var originalIdentity fs.FileInfo
+	var pinLive bool
+	outcome := &equalSizeReplacementOutcome{}
+	openLooseVerificationIdentityPin = func(gotPath string) (looseVerificationIdentityPin, fs.FileInfo, error) {
+		pin, info, err := originalOpenPin(gotPath)
+		if err != nil || filepath.Clean(gotPath) != filepath.Clean(path) {
+			return pin, info, err
+		}
+		pinLive = true
+		return &observedLooseVerificationPin{looseVerificationIdentityPin: pin, live: &pinLive}, info, nil
+	}
 	snapshotLoosePathIdentity = func(gotPath string) (fs.FileInfo, error) {
 		info, snapshotErr := originalSnapshot(gotPath)
 		if snapshotErr != nil || filepath.Clean(gotPath) != filepath.Clean(path) {
 			return info, snapshotErr
 		}
 		snapshots++
+		if snapshots == 1 {
+			originalIdentity = info
+		}
 		if snapshots != 2 {
 			return info, nil
 		}
-		installed = true
+		outcome.installed = true
 		require.NoError(t, os.Remove(gotPath))
-		var replacementInfo fs.FileInfo
-		for attempt := 0; attempt < 256; attempt++ {
-			require.NoError(t, os.WriteFile(gotPath, replacement, 0o600))
-			replacementInfo, snapshotErr = originalSnapshot(gotPath)
-			require.NoError(t, snapshotErr)
-			if os.SameFile(info, replacementInfo) {
-				break
-			}
-			require.NoError(t, os.Remove(gotPath))
-		}
-		if _, statErr := os.Stat(gotPath); errors.Is(statErr, fs.ErrNotExist) {
-			require.NoError(t, os.WriteFile(gotPath, replacement, 0o600))
-			replacementInfo, snapshotErr = originalSnapshot(gotPath)
+		require.NoError(t, os.WriteFile(gotPath, replacement, 0o600))
+		replacementInfo, snapshotErr := originalSnapshot(gotPath)
+		require.NoError(t, snapshotErr)
+		outcome.pinLiveAtReplacement = pinLive
+		outcome.replacementIdentityChanged = !os.SameFile(originalIdentity, replacementInfo)
+		if !pinLive {
+			// Linux may recycle the released inode number before a pathname-only
+			// recheck. Model that permitted ABA deterministically. A live pin keeps
+			// the original inode allocated, so the real replacement identity must
+			// be returned and rejected instead.
+			return originalIdentity, nil
 		}
 		return replacementInfo, snapshotErr
 	}
-	t.Cleanup(func() { snapshotLoosePathIdentity = originalSnapshot })
-	return &installed
+	t.Cleanup(func() {
+		snapshotLoosePathIdentity = originalSnapshot
+		openLooseVerificationIdentityPin = originalOpenPin
+	})
+	return outcome
 }

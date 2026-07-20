@@ -877,6 +877,9 @@ func (s *LooseStore) existingOnce(ctx context.Context, path string, hash Hash, s
 			return WriteResult{}, false, err
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return WriteResult{}, false, err
+	}
 	return WriteResult{
 		Hash:       hash,
 		Size:       size,

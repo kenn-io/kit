@@ -2235,6 +2235,84 @@ func TestLooseWriteFullHashHonorsCancellationWhileVerifyingExisting(t *testing.T
 	}
 }
 
+func TestLooseWriteFullHashHonorsCancellationDuringFinalIdentityCheck(t *testing.T) {
+	content := bytes.Repeat([]byte("cancel final identity check\n"), 256)
+	tests := []struct {
+		name        string
+		compression LooseCompressionOptions
+		write       func(context.Context, *LooseStore, []byte, WriteOptions) error
+	}{
+		{
+			name: "stream raw",
+			write: func(ctx context.Context, store *LooseStore, content []byte, opts WriteOptions) error {
+				_, err := store.Write(ctx, bytes.NewReader(content), opts)
+				return err
+			},
+		},
+		{
+			name:        "stream compressed",
+			compression: LooseCompressionOptions{Enabled: true},
+			write: func(ctx context.Context, store *LooseStore, content []byte, opts WriteOptions) error {
+				_, err := store.Write(ctx, bytes.NewReader(content), opts)
+				return err
+			},
+		},
+		{
+			name: "bytes raw",
+			write: func(ctx context.Context, store *LooseStore, content []byte, opts WriteOptions) error {
+				_, err := store.WriteBytes(ctx, content, opts)
+				return err
+			},
+		},
+		{
+			name:        "bytes compressed",
+			compression: LooseCompressionOptions{Enabled: true},
+			write: func(ctx context.Context, store *LooseStore, content []byte, opts WriteOptions) error {
+				_, err := store.WriteBytes(ctx, content, opts)
+				return err
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newLooseStoreForTest(t, StagingSameDirectory)
+			opts := WriteOptions{
+				Durability:   AtomicPublication,
+				Dedup:        VerifyFullHash,
+				ExpectedHash: hashForTest(content),
+				ExpectedSize: int64(len(content)),
+				SizeKnown:    true,
+				Compression:  tt.compression,
+			}
+			created, err := store.WriteBytes(context.Background(), content, opts)
+			require.NoError(t, err)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			originalSnapshot := snapshotLoosePathIdentity
+			var snapshots int
+			var canceledDuringFinalSnapshot bool
+			snapshotLoosePathIdentity = func(path string) (fs.FileInfo, error) {
+				info, snapshotErr := originalSnapshot(path)
+				if snapshotErr == nil && filepath.Clean(path) == filepath.Clean(created.Path) {
+					snapshots++
+					if snapshots == 2 {
+						cancel()
+						canceledDuringFinalSnapshot = true
+					}
+				}
+				return info, snapshotErr
+			}
+			t.Cleanup(func() { snapshotLoosePathIdentity = originalSnapshot })
+
+			err = tt.write(ctx, store, content, opts)
+
+			require.ErrorIs(t, err, context.Canceled)
+			assert.True(t, canceledDuringFinalSnapshot)
+			assert.FileExists(t, created.Path)
+		})
+	}
+}
+
 type cancelAfterFirstRead struct {
 	reader    io.Reader
 	cancel    context.CancelFunc
