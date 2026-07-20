@@ -286,6 +286,14 @@ type identityPin interface {
 	removeClaim(string) error
 }
 
+type verificationOnlyIdentityPin struct {
+	looseVerificationIdentityPin
+}
+
+func (*verificationOnlyIdentityPin) removeClaim(string) error {
+	return fmt.Errorf("packstore: verification-only identity pin cannot remove content: %w", errors.ErrUnsupported)
+}
+
 type identityPinOpener func(string) (identityPin, fs.FileInfo, error)
 
 var removePinnedLooseClaim = func(pin identityPin, path string) error {
@@ -309,6 +317,14 @@ func openLooseIdentityPin(path string) (identityPin, fs.FileInfo, error) {
 		return nil, nil, errors.Join(err, pin.Close())
 	}
 	return pin, pinned, nil
+}
+
+func openLooseMaintenanceVerificationPin(path string) (identityPin, fs.FileInfo, error) {
+	pin, identity, err := openLooseVerificationIdentityPin(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &verificationOnlyIdentityPin{looseVerificationIdentityPin: pin}, identity, nil
 }
 
 type candidateGroup struct {
@@ -661,7 +677,7 @@ func verifyLoosePathIdentity(
 	limit int64,
 	encoding LooseEncoding,
 ) (fs.FileInfo, error) {
-	pin, err := verifyLoosePathPinned(ctx, path, hash, limit, encoding, openLooseIdentityPin)
+	pin, err := verifyLoosePathPinned(ctx, path, hash, limit, encoding, openLooseMaintenanceVerificationPin)
 	if err != nil {
 		return nil, err
 	}

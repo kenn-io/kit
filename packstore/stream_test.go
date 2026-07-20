@@ -464,6 +464,30 @@ func TestStoreOpenStreamRejectsCompressedLooseIntegrityFailures(t *testing.T) {
 	}
 }
 
+func TestStoreOpenStreamRejectsCompressedLooseGrowthAfterOpen(t *testing.T) {
+	content := bytes.Repeat([]byte("compressed growth after open "), 1024)
+	layout := layoutForStoreTest(t)
+	hash := hashForTest(content)
+	writeCompressedLooseFixture(t, layout, hash, int64(len(content)), content, nil)
+	store := newStoreForTest(t, &mapResolver{locations: map[Hash]Location{
+		hash: {Member: true},
+	}}, layout)
+	stream, size, err := store.OpenStream(context.Background(), hash)
+	require.NoError(t, err)
+	assert.Equal(t, int64(len(content)), size)
+	appendFile, err := os.OpenFile(layout.CompressedLoosePath(hash), os.O_APPEND|os.O_WRONLY, 0)
+	require.NoError(t, err)
+	_, err = appendFile.Write([]byte("trailing physical mutation"))
+	require.NoError(t, err)
+	require.NoError(t, appendFile.Close())
+
+	err = stream.Verify()
+
+	require.ErrorIs(t, err, ErrContentMismatch)
+	require.ErrorIs(t, stream.Close(), ErrContentMismatch)
+	assert.False(t, stream.Verified())
+}
+
 func TestStoreOpenStreamRejectsSkippableFrameAfterSingleSegmentRawBlock(t *testing.T) {
 	content := []byte("12345678")
 	frame := []byte{

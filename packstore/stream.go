@@ -278,6 +278,21 @@ func (s *looseVerifiedStream) finish() error {
 			return s.fail(fmt.Errorf("packstore: sync verified loose content: %w", err))
 		}
 	}
+	if s.payload != nil {
+		physical, err := s.object.file.Stat()
+		if err != nil {
+			return s.fail(fmt.Errorf("packstore: recheck verified compressed loose size: %w", err))
+		}
+		if physical.Size() != s.object.storedSize {
+			return s.fail(fmt.Errorf(
+				"%w: %w: compressed loose stored size changed from %d to %d bytes",
+				ErrContentMismatch,
+				errIdentityChanged,
+				s.object.storedSize,
+				physical.Size(),
+			))
+		}
+	}
 	s.closeErr = s.closePhysical()
 	s.closed = true
 	if s.closeErr != nil {
