@@ -71,13 +71,18 @@ would lengthen secret lifetime.
 
 For each `Run` or `Output` call made by a runner with basic authentication:
 
-1. Create a uniquely named file in the operating system's temporary directory.
-2. Write a Git credential-protocol response containing `username` and
-   `password`, one attribute per line, terminated by a blank line.
-3. Close the file before starting Git.
-4. Ensure the file is private and non-executable. On Unix its permissions are
-   `0600`; Windows retains the existing reliance on the current user's private
-   temporary directory and inherited owner access.
+1. Reject usernames or passwords containing LF, CR, or NUL before creating a
+   file. Those bytes cannot be represented safely in Git's line-oriented
+   credential protocol.
+2. Create a uniquely named file in the operating system's temporary directory.
+   `os.CreateTemp` creates it atomically with mode `0600` on Unix, so there is
+   no post-creation interval with broader permissions. On Windows, retain the
+   existing reliance on the current user's private temporary directory and
+   inherited owner access.
+3. Write a Git credential-protocol response containing `username` and
+   `password`, one attribute per line. EOF terminates the response; a trailing
+   blank line is optional.
+4. Close the file before starting Git.
 5. Return both the helper configuration and an idempotent cleanup function.
 
 The file contains data only: it has no shebang, commands, or executable bits.
@@ -87,7 +92,9 @@ The file contains data only: it has no shebang, commands, or executable bits.
 The injected `credential.helper` value begins with `!`, which Git defines as a
 shell snippet. The snippet:
 
-- responds only when its first argument is `get`;
+- consumes the credential request from standard input through its terminating
+  blank line or EOF;
+- responds with credentials only when its first argument is `get`;
 - reads the response file without evaluating its contents;
 - writes the attributes to standard output unchanged; and
 - returns success without output for `store` and `erase`.
@@ -97,7 +104,10 @@ Credentials remain confined to the private file and the helper's standard
 output pipe. The path must be safely quoted for spaces, apostrophes, dollar
 signs, backslashes, and other shell metacharacters. The implementation should
 use portable shell constructs available in the shell Git uses on supported
-Unix platforms and Git for Windows.
+Unix platforms and Git for Windows. On Windows, the quoted path remains in
+drive-letter and backslash form; Git for Windows invokes the snippet through
+its bundled MSYS shell, whose filesystem layer resolves that native path when
+the snippet opens the response file.
 
 ### Cleanup and errors
 
@@ -105,7 +115,7 @@ The response file is removed through the existing deferred cleanup path after
 Git exits, whether Git succeeds, fails, or the context is cancelled. Cleanup
 is idempotent and remains best effort, matching current behavior.
 
-Creation, write, close, or permission failures continue to produce a helper
+Validation, creation, write, or close failures continue to produce a helper
 that fails the Git operation without including credentials in its diagnostic.
 Partially created files are removed before the failure is returned to Git.
 
@@ -114,8 +124,9 @@ Partially created files are removed before the failure is returned to Git.
 - Credentials do not appear in Git arguments, config environment values,
   process error strings, or panic text.
 - The response file is private, non-executable, and scoped to one Git command.
-- File contents are treated as protocol data, not shell source; credential
-  characters cannot alter helper behavior.
+- Credential values containing protocol delimiters are rejected. All accepted
+  file contents are treated as protocol data, not shell source, so credential
+  characters cannot alter helper or protocol behavior.
 - The temporary file is closed before Git reads it and removed immediately
   after Git completes.
 - The change does not enable ambient Git credential helpers or relax the
@@ -134,7 +145,13 @@ Package tests will verify:
 - The response file is removed after successful and failed Git commands.
 - Credentials and temporary paths containing spaces and shell metacharacters
   are handled as data.
+- Usernames and passwords containing LF, CR, or NUL are rejected without
+  creating a credential response file or leaking the rejected value.
+- The helper consumes Git's complete stdin request before responding.
 - `store` and `erase` operations do not disclose credentials.
+- A targeted Windows test invokes the real Git credential plumbing command and
+  verifies that an inline helper can read a response file through a quoted
+  native drive-letter path and round-trip both credential fields.
 - Existing Windows tests and the full cross-platform suite continue to pass.
 
 On macOS, a targeted diagnostic may additionally confirm that repeated
@@ -147,4 +164,5 @@ suite dependency.
 The public Go API is unchanged. Callers continue using `WithBasicAuth` followed
 by `Run` or `Output`. The helper remains per-command and noninteractive. No
 credential files survive successful cleanup, and no storage-format or caller
-migration is required.
+migration is required. Credentials containing LF, CR, or NUL now fail closed
+instead of producing an ambiguous or injectable credential-protocol stream.
