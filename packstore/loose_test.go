@@ -12,11 +12,14 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/pack"
 )
+
+var errInjectedPrimary = errors.New("injected primary failure")
 
 func TestLooseWriteStreamsAndChecksExpectedMetadata(t *testing.T) {
 	assert := assert.New(t)
@@ -249,6 +252,212 @@ func TestLooseWriteCompressedDurabilitySyncsSelectedFileAndShard(t *testing.T) {
 	assert.FileExists(t, result.Path)
 }
 
+func TestLooseWriteDurableStoreStagingSyncsAllUnlinks(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	content := bytes.Repeat([]byte("durable staging unlink\n"), 4096)
+	store := newLooseStoreForTest(t, StagingStoreDirectory)
+	stagingDir := store.layout.LooseStagingDir(hashForTest(content))
+	originalSync := syncLooseStagingDir
+	var syncs int
+	syncLooseStagingDir = func(path string) error {
+		syncs++
+		assert.Equal(filepath.Clean(stagingDir), filepath.Clean(path))
+		assert.Empty(matchingFiles(t, stagingDir, ".staging-"), "all staging unlinks precede their durability sync")
+		return originalSync(path)
+	}
+	t.Cleanup(func() { syncLooseStagingDir = originalSync })
+
+	result, err := store.WriteBytes(context.Background(), content, WriteOptions{
+		Durability:  DurablePublication,
+		Dedup:       VerifyFullHash,
+		Compression: LooseCompressionOptions{Enabled: true},
+	})
+
+	require.NoError(err)
+	assert.Equal(1, syncs)
+	assert.FileExists(result.Path)
+	assert.NoFileExists(store.layout.LoosePath(result.Hash))
+}
+
+func TestLooseWriteDurableStoreStagingSyncsCancellationCleanup(t *testing.T) {
+	assert := assert.New(t)
+	content := bytes.Repeat([]byte("durable cancelled staging\n"), 4096)
+	store := newLooseStoreForTest(t, StagingStoreDirectory)
+	stagingDir := store.layout.LooseStagingDir(hashForTest(content))
+	originalSync := syncLooseStagingDir
+	var syncs int
+	syncLooseStagingDir = func(path string) error {
+		syncs++
+		assert.Equal(filepath.Clean(stagingDir), filepath.Clean(path))
+		assert.Empty(matchingFiles(t, stagingDir, ".staging-"))
+		return originalSync(path)
+	}
+	t.Cleanup(func() { syncLooseStagingDir = originalSync })
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	_, err := store.Write(ctx, &cancelAfterRead{reader: bytes.NewReader(content), cancel: cancel}, WriteOptions{
+		Durability:  DurablePublication,
+		Dedup:       VerifyFullHash,
+		Compression: LooseCompressionOptions{Enabled: true},
+	})
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(1, syncs)
+}
+
+func TestLooseWriteDurableStoreStagingSyncsCreationFailureCleanup(t *testing.T) {
+	assert := assert.New(t)
+	content := []byte("staging creation cleanup")
+	store := newLooseStoreForTest(t, StagingStoreDirectory)
+	stagingDir := store.layout.LooseStagingDir(hashForTest(content))
+	chmodErr := errors.New("injected staging chmod failure")
+	originalChmod := chmodLooseStagingFile
+	originalSync := syncLooseStagingDir
+	chmodLooseStagingFile = func(*os.File, fs.FileMode) error { return chmodErr }
+	var syncs int
+	syncLooseStagingDir = func(path string) error {
+		syncs++
+		assert.Equal(filepath.Clean(stagingDir), filepath.Clean(path))
+		assert.Empty(matchingFiles(t, stagingDir, ".staging-"))
+		return originalSync(path)
+	}
+	t.Cleanup(func() {
+		chmodLooseStagingFile = originalChmod
+		syncLooseStagingDir = originalSync
+	})
+
+	_, err := store.WriteBytes(context.Background(), content, WriteOptions{
+		Durability: DurablePublication,
+		Dedup:      VerifyFullHash,
+	})
+
+	require.ErrorIs(t, err, chmodErr)
+	assert.Equal(1, syncs)
+}
+
+func TestLooseWriteDurableStagingSyncFailureIsReturned(t *testing.T) {
+	content := bytes.Repeat([]byte("staging sync failure\n"), 4096)
+	store := newLooseStoreForTest(t, StagingStoreDirectory)
+	syncErr := errors.New("injected staging directory sync failure")
+	originalSync := syncLooseStagingDir
+	syncLooseStagingDir = func(string) error { return syncErr }
+	t.Cleanup(func() { syncLooseStagingDir = originalSync })
+
+	result, err := store.WriteBytes(context.Background(), content, WriteOptions{
+		Durability:  DurablePublication,
+		Dedup:       VerifyFullHash,
+		Compression: LooseCompressionOptions{Enabled: true},
+	})
+
+	require.ErrorIs(t, err, syncErr)
+	assert.True(t, result.Created)
+	assert.FileExists(t, result.Path)
+	assert.Empty(t, matchingFiles(t, store.layout.LooseStagingDir(result.Hash), ".staging-"))
+}
+
+func TestLooseWriteJoinsStagingCloseFailureOnEarlyReturns(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		configure   func(*testing.T, context.CancelFunc, error) io.Reader
+		opts        func([]byte) WriteOptions
+		wantPrimary func(error) bool
+	}{
+		{
+			name: "cancellation",
+			configure: func(_ *testing.T, cancel context.CancelFunc, _ error) io.Reader {
+				return &cancelAfterRead{reader: bytes.NewReader(bytes.Repeat([]byte("cancel"), 4096)), cancel: cancel}
+			},
+			opts: func([]byte) WriteOptions {
+				return WriteOptions{Durability: AtomicPublication, Dedup: VerifyFullHash, Compression: LooseCompressionOptions{Enabled: true}}
+			},
+			wantPrimary: func(err error) bool { return errors.Is(err, context.Canceled) },
+		},
+		{
+			name: "copy failure",
+			configure: func(_ *testing.T, _ context.CancelFunc, primary error) io.Reader {
+				return &errorReader{err: primary}
+			},
+			opts: func([]byte) WriteOptions {
+				return WriteOptions{Durability: AtomicPublication, Dedup: VerifyFullHash, Compression: LooseCompressionOptions{Enabled: true}}
+			},
+			wantPrimary: func(err error) bool { return errors.Is(err, errInjectedPrimary) },
+		},
+		{
+			name: "encoder failure",
+			configure: func(t *testing.T, _ context.CancelFunc, primary error) io.Reader {
+				originalWriter := newLooseZstdWriter
+				newLooseZstdWriter = func(io.Writer) (io.WriteCloser, error) {
+					return &errorWriteCloser{err: primary}, nil
+				}
+				t.Cleanup(func() { newLooseZstdWriter = originalWriter })
+				return bytes.NewReader(bytes.Repeat([]byte("encoder"), 4096))
+			},
+			opts: func([]byte) WriteOptions {
+				return WriteOptions{Durability: AtomicPublication, Dedup: VerifyFullHash, Compression: LooseCompressionOptions{Enabled: true}}
+			},
+			wantPrimary: func(err error) bool { return errors.Is(err, errInjectedPrimary) },
+		},
+		{
+			name: "validation failure",
+			configure: func(_ *testing.T, _ context.CancelFunc, _ error) io.Reader {
+				return bytes.NewReader([]byte("validation content"))
+			},
+			opts: func(content []byte) WriteOptions {
+				return WriteOptions{
+					Durability:   AtomicPublication,
+					Dedup:        VerifyFullHash,
+					ExpectedHash: hashForTest([]byte("different content")),
+					Compression:  LooseCompressionOptions{Enabled: true},
+				}
+			},
+			wantPrimary: func(err error) bool { return errors.Is(err, ErrContentMismatch) },
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cleanupErr := errors.New("injected staging close failure")
+			primaryErr := errInjectedPrimary
+			store := newLooseStoreForTest(t, StagingStoreDirectory)
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			content := []byte("validation content")
+			originalClose := closeLooseStagingFile
+			closeLooseStagingFile = func(file *os.File) error {
+				return errors.Join(originalClose(file), cleanupErr)
+			}
+			t.Cleanup(func() { closeLooseStagingFile = originalClose })
+			src := tt.configure(t, cancel, primaryErr)
+
+			_, err := store.Write(ctx, src, tt.opts(content))
+
+			require.Error(t, err)
+			assert.True(t, tt.wantPrimary(err), "primary failure must remain in the returned error: %v", err)
+			require.ErrorIs(t, err, cleanupErr)
+		})
+	}
+}
+
+func TestLooseWriteJoinsStagingRemoveFailure(t *testing.T) {
+	primaryErr := errors.New("injected source failure")
+	cleanupErr := errors.New("injected staging remove failure")
+	store := newLooseStoreForTest(t, StagingStoreDirectory)
+	originalRemove := removeLooseStagingFile
+	removeLooseStagingFile = func(path string) error {
+		return errors.Join(originalRemove(path), cleanupErr)
+	}
+	t.Cleanup(func() { removeLooseStagingFile = originalRemove })
+
+	_, err := store.Write(context.Background(), &errorReader{err: primaryErr}, WriteOptions{
+		Durability:  AtomicPublication,
+		Dedup:       VerifyFullHash,
+		Compression: LooseCompressionOptions{Enabled: true},
+	})
+
+	require.ErrorIs(t, err, primaryErr)
+	require.ErrorIs(t, err, cleanupErr)
+}
+
 func TestLooseWriteRejectsExistingObjectAboveLimit(t *testing.T) {
 	require := require.New(t)
 	content := []byte("existing object exceeds limit")
@@ -402,22 +611,13 @@ func TestLooseWriteCompressionPolicy(t *testing.T) {
 			want: LooseEncodingZstd,
 		},
 		{
-			name:    "savings at lower integer boundary",
+			name:    "compressible at high threshold",
 			content: compressible,
 			compression: LooseCompressionOptions{
 				Enabled:           true,
 				MinSavingsPercent: 99,
 			},
 			want: LooseEncodingZstd,
-		},
-		{
-			name:    "savings below upper integer boundary",
-			content: compressible,
-			compression: LooseCompressionOptions{
-				Enabled:           true,
-				MinSavingsPercent: 100,
-			},
-			want: LooseEncodingRaw,
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -474,6 +674,82 @@ func TestLooseWriteCompressionPolicy(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLooseWriteCompressionExactSavingsBoundaryIncludesHeader(t *testing.T) {
+	content := bytes.Repeat([]byte("x"), 100)
+	originalWriter := newLooseZstdWriter
+	newLooseZstdWriter = func(dst io.Writer) (io.WriteCloser, error) {
+		return &fixedSizeEncoder{dst: dst, payloadBytes: 64}, nil
+	}
+	t.Cleanup(func() { newLooseZstdWriter = originalWriter })
+
+	for _, tt := range []struct {
+		name       string
+		minSavings int
+		want       LooseEncoding
+		storedSize int64
+	}{
+		{
+			name:       "exact twenty percent is inclusive",
+			minSavings: 20,
+			want:       LooseEncodingZstd,
+			storedSize: 80,
+		},
+		{
+			name:       "one percent above exact boundary is raw",
+			minSavings: 21,
+			want:       LooseEncodingRaw,
+			storedSize: 100,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newLooseStoreForTest(t, StagingSameDirectory)
+
+			result, err := store.WriteBytes(context.Background(), content, WriteOptions{
+				Durability: AtomicPublication,
+				Dedup:      VerifyFullHash,
+				Compression: LooseCompressionOptions{
+					Enabled:           true,
+					MinSavingsPercent: tt.minSavings,
+				},
+			})
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, result.Encoding)
+			assert.Equal(t, tt.storedSize, result.StoredSize)
+			if tt.want == LooseEncodingZstd {
+				assert.FileExists(t, store.layout.CompressedLoosePath(result.Hash))
+				assert.NoFileExists(t, store.layout.LoosePath(result.Hash))
+			} else {
+				assert.FileExists(t, store.layout.LoosePath(result.Hash))
+				assert.NoFileExists(t, store.layout.CompressedLoosePath(result.Hash))
+			}
+		})
+	}
+}
+
+func TestLooseWriteCompressionStreamsSourceWithPooledBuffer(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	content := bytes.Repeat([]byte("bounded compressed source\n"), 64*1024)
+	store := newLooseStoreForTest(t, StagingSameDirectory)
+
+	result, err := store.Write(context.Background(), &boundedChunkReader{
+		r:   bytes.NewReader(content),
+		max: 32 << 10,
+	}, WriteOptions{
+		Durability:   AtomicPublication,
+		Dedup:        VerifyFullHash,
+		ExpectedHash: hashForTest(content),
+		Compression:  LooseCompressionOptions{Enabled: true},
+	})
+
+	require.NoError(err)
+	assert.Equal(LooseEncodingZstd, result.Encoding)
+	assert.Equal(int64(len(content)), result.Size)
+	assert.Less(result.StoredSize, result.Size)
+	assert.FileExists(result.Path)
 }
 
 func TestLooseWriteSupportsEmptyAndStoreDirectoryStaging(t *testing.T) {
@@ -778,6 +1054,83 @@ func TestLooseWriteConcurrentDedup(t *testing.T) {
 	assert.Equal(t, content, stored)
 }
 
+func TestLooseWriteConcurrentRawAndCompressedPublishOneRepresentation(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	content := bytes.Repeat([]byte("cross-representation publication\n"), 4096)
+	hash := hashForTest(content)
+	layout, err := NewLayout(t.TempDir(), LayoutOptions{Staging: StagingSameDirectory})
+	require.NoError(err)
+	rawStore, err := NewLooseStore(layout)
+	require.NoError(err)
+	compressedStore, err := NewLooseStore(layout)
+	require.NoError(err)
+	arrived := make(chan LooseEncoding, 2)
+	release := make(chan struct{})
+	originalBeforePublish := beforeLoosePublish
+	beforeLoosePublish = func(gotHash Hash, encoding LooseEncoding) {
+		if gotHash == hash {
+			arrived <- encoding
+			<-release
+		}
+	}
+	t.Cleanup(func() { beforeLoosePublish = originalBeforePublish })
+
+	type writeOutcome struct {
+		result WriteResult
+		err    error
+	}
+	outcomes := make(chan writeOutcome, 2)
+	var writers sync.WaitGroup
+	writers.Go(func() {
+		result, err := rawStore.WriteBytes(context.Background(), content, WriteOptions{
+			Durability: AtomicPublication,
+			Dedup:      VerifyFullHash,
+		})
+		outcomes <- writeOutcome{result: result, err: err}
+	})
+	writers.Go(func() {
+		result, err := compressedStore.WriteBytes(context.Background(), content, WriteOptions{
+			Durability:  AtomicPublication,
+			Dedup:       VerifyFullHash,
+			Compression: LooseCompressionOptions{Enabled: true},
+		})
+		outcomes <- writeOutcome{result: result, err: err}
+	})
+
+	firstArrival := receiveLooseEncoding(t, arrived)
+	secondArrival := receiveLooseEncoding(t, arrived)
+	assert.ElementsMatch([]LooseEncoding{LooseEncodingRaw, LooseEncodingZstd}, []LooseEncoding{firstArrival, secondArrival})
+	close(release)
+	writers.Wait()
+	close(outcomes)
+
+	var results []WriteResult
+	for outcome := range outcomes {
+		require.NoError(outcome.err)
+		results = append(results, outcome.result)
+	}
+	require.Len(results, 2)
+	assert.Equal(results[0].Path, results[1].Path)
+	assert.Equal(results[0].Encoding, results[1].Encoding)
+	created := 0
+	for _, result := range results {
+		if result.Created {
+			created++
+		}
+	}
+	assert.Equal(1, created)
+	canonicalFiles := 0
+	for _, path := range []string{layout.LoosePath(hash), layout.CompressedLoosePath(hash)} {
+		if _, err := os.Stat(path); err == nil {
+			canonicalFiles++
+		} else {
+			require.ErrorIs(err, fs.ErrNotExist)
+		}
+	}
+	assert.Equal(1, canonicalFiles)
+}
+
 func TestLooseWriteRejectsSymlinkDestination(t *testing.T) {
 	require := require.New(t)
 	content := []byte("content")
@@ -898,6 +1251,17 @@ func stagingName(staging StagingMode) string {
 	return "store directory"
 }
 
+func receiveLooseEncoding(t *testing.T, values <-chan LooseEncoding) LooseEncoding {
+	t.Helper()
+	select {
+	case value := <-values:
+		return value
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "timed out waiting for loose writer to reach publication barrier")
+		return 0
+	}
+}
+
 type cancelAfterRead struct {
 	reader io.Reader
 	cancel context.CancelFunc
@@ -937,6 +1301,24 @@ type errorWriteCloser struct {
 
 func (w *errorWriteCloser) Write([]byte) (int, error) { return 0, w.err }
 func (w *errorWriteCloser) Close() error              { return nil }
+
+type errorReader struct {
+	err error
+}
+
+func (r *errorReader) Read([]byte) (int, error) { return 0, r.err }
+
+type fixedSizeEncoder struct {
+	dst          io.Writer
+	payloadBytes int
+}
+
+func (w *fixedSizeEncoder) Write(p []byte) (int, error) { return len(p), nil }
+
+func (w *fixedSizeEncoder) Close() error {
+	_, err := w.dst.Write(make([]byte, w.payloadBytes))
+	return err
+}
 
 type boundedChunkReader struct {
 	r   io.Reader

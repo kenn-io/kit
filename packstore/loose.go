@@ -26,13 +26,20 @@ var looseCopyBufferPool = sync.Pool{
 	New: func() any { return new([looseCopyBufferBytes]byte) },
 }
 
+var looseWriteLocks [256]sync.Mutex
+
 var (
 	syncLooseFile             = func(file *os.File) error { return file.Sync() }
 	snapshotLoosePathIdentity = snapshotPathIdentity
 	newLooseZstdWriter        = func(dst io.Writer) (io.WriteCloser, error) {
 		return zstd.NewWriter(dst, zstd.WithEncoderConcurrency(1))
 	}
-	publishLooseFile = os.Link
+	publishLooseFile       = os.Link
+	beforeLoosePublish     = func(Hash, LooseEncoding) {}
+	closeLooseStagingFile  = func(file *os.File) error { return file.Close() }
+	removeLooseStagingFile = os.Remove
+	syncLooseStagingDir    = func(path string) error { return pack.SyncDir(path) }
+	chmodLooseStagingFile  = func(file *os.File, mode fs.FileMode) error { return file.Chmod(mode) }
 )
 
 var (
@@ -186,7 +193,7 @@ type stagedLooseFile struct {
 	closed bool
 }
 
-func (s *LooseStore) publish(ctx context.Context, src io.Reader, opts WriteOptions, stagingDir string, known *WriteResult) (WriteResult, error) {
+func (s *LooseStore) publish(ctx context.Context, src io.Reader, opts WriteOptions, stagingDir string, known *WriteResult) (result WriteResult, resultErr error) {
 	identity := WriteResult{}
 	if known != nil {
 		identity = *known
@@ -194,20 +201,30 @@ func (s *LooseStore) publish(ctx context.Context, src io.Reader, opts WriteOptio
 	if err := ensureDirectory(stagingDir, opts.Durability); err != nil {
 		return identity, fmt.Errorf("packstore: prepare loose staging: %w", err)
 	}
+	var staged []*stagedLooseFile
+	defer func() {
+		if err := cleanupLooseStaging(stagingDir, opts.Durability, staged...); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("packstore: clean loose staging: %w", err))
+		}
+	}()
 	raw, err := createLooseStagingFile(stagingDir)
+	if raw != nil {
+		staged = append(staged, raw)
+	}
 	if err != nil {
 		return identity, err
 	}
-	defer raw.cleanup()
 
 	var compressed *stagedLooseFile
 	var encoder io.WriteCloser
 	if opts.Compression.Enabled {
 		compressed, err = createLooseStagingFile(stagingDir)
+		if compressed != nil {
+			staged = append(staged, compressed)
+		}
 		if err != nil {
 			return identity, err
 		}
-		defer compressed.cleanup()
 		if _, err := compressed.file.Write(make([]byte, compressedLooseHeaderSize)); err != nil {
 			return identity, fmt.Errorf("packstore: write compressed loose header placeholder: %w", err)
 		}
@@ -287,14 +304,8 @@ func (s *LooseStore) publish(ctx context.Context, src io.Reader, opts WriteOptio
 	}
 
 	selected := raw
-	loser := compressed
 	if identity.Encoding == LooseEncodingZstd {
-		selected, loser = compressed, raw
-	}
-	if loser != nil {
-		if err := loser.cleanup(); err != nil {
-			return identity, fmt.Errorf("packstore: clean unselected loose staging: %w", err)
-		}
+		selected = compressed
 	}
 	if opts.Durability == DurablePublication {
 		if err := syncLooseFile(selected.file); err != nil {
@@ -305,6 +316,10 @@ func (s *LooseStore) publish(ctx context.Context, src io.Reader, opts WriteOptio
 		return identity, fmt.Errorf("packstore: close loose staging file: %w", err)
 	}
 
+	beforeLoosePublish(identity.Hash, identity.Encoding)
+	writeLock := &looseWriteLocks[looseHashLockIndex(identity.Hash)]
+	writeLock.Lock()
+	defer writeLock.Unlock()
 	if result, exists, err := s.existing(identity.Hash, identity.Size, opts.Dedup, opts.Durability); err != nil {
 		return identity, err
 	} else if exists {
@@ -326,9 +341,6 @@ func (s *LooseStore) publish(ctx context.Context, src io.Reader, opts WriteOptio
 		return identity, errors.Join(fmt.Errorf("packstore: publish loose content: %w", err), verifyErr)
 	}
 	identity.Created = true
-	if err := selected.cleanup(); err != nil {
-		return identity, fmt.Errorf("packstore: clean published loose staging: %w", err)
-	}
 	if opts.Durability == DurablePublication {
 		if err := pack.SyncDir(shard); err != nil {
 			return identity, fmt.Errorf("packstore: sync loose shard: %w", err)
@@ -337,26 +349,52 @@ func (s *LooseStore) publish(ctx context.Context, src io.Reader, opts WriteOptio
 	return identity, nil
 }
 
+func looseHashLockIndex(hash Hash) byte {
+	return hexNibble(hash[0])<<4 | hexNibble(hash[1])
+}
+
+func hexNibble(value byte) byte {
+	if value >= '0' && value <= '9' {
+		return value - '0'
+	}
+	return value - 'a' + 10
+}
+
 func createLooseStagingFile(dir string) (*stagedLooseFile, error) {
 	file, err := os.CreateTemp(dir, ".staging-")
 	if err != nil {
 		return nil, fmt.Errorf("packstore: create loose staging file: %w", err)
 	}
 	staged := &stagedLooseFile{file: file, path: file.Name()}
-	if err := file.Chmod(0o600); err != nil {
-		return nil, errors.Join(fmt.Errorf("packstore: chmod loose staging file: %w", err), staged.cleanup())
+	if err := chmodLooseStagingFile(file, 0o600); err != nil {
+		return staged, fmt.Errorf("packstore: chmod loose staging file: %w", err)
 	}
 	return staged, nil
 }
 
-func (f *stagedLooseFile) cleanup() error {
+func cleanupLooseStaging(dir string, durability Durability, staged ...*stagedLooseFile) error {
+	var cleanupErr error
+	var unlinksAttempted bool
+	for _, file := range staged {
+		attempted, err := file.cleanup()
+		unlinksAttempted = unlinksAttempted || attempted
+		cleanupErr = errors.Join(cleanupErr, err)
+	}
+	if durability == DurablePublication && unlinksAttempted {
+		cleanupErr = errors.Join(cleanupErr, syncLooseStagingDir(dir))
+	}
+	return cleanupErr
+}
+
+func (f *stagedLooseFile) cleanup() (bool, error) {
 	if f == nil {
-		return nil
+		return false, nil
 	}
 	closeErr := f.close()
 	var removeErr error
+	unlinkAttempted := f.path != ""
 	if f.path != "" {
-		removeErr = os.Remove(f.path)
+		removeErr = removeLooseStagingFile(f.path)
 		if errors.Is(removeErr, fs.ErrNotExist) {
 			removeErr = nil
 		}
@@ -364,7 +402,7 @@ func (f *stagedLooseFile) cleanup() error {
 			f.path = ""
 		}
 	}
-	return errors.Join(closeErr, removeErr)
+	return unlinkAttempted, errors.Join(closeErr, removeErr)
 }
 
 func (f *stagedLooseFile) close() error {
@@ -372,7 +410,7 @@ func (f *stagedLooseFile) close() error {
 		return nil
 	}
 	f.closed = true
-	return f.file.Close()
+	return closeLooseStagingFile(f.file)
 }
 
 func shouldCompressLoose(logicalSize, storedSize int64, opts LooseCompressionOptions) bool {
