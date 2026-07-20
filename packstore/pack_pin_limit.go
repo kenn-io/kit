@@ -30,9 +30,22 @@ func packedSourcePinLimitForSoftLimit(soft uint64) int {
 	return max(1, min(maxPackedSourcePins, int(min(budget, uint64(maxPackedSourcePins)))))
 }
 
-func packedSourcePinLimitForReportedSoftLimit(soft uint64, positive bool) int {
-	if !positive || soft == 0 {
+func packedSourcePinLimitForReportedSoftLimit(soft uint64, invalid bool) int {
+	if invalid {
 		return fallbackPackedSourcePins
 	}
 	return packedSourcePinLimitForSoftLimit(soft)
+}
+
+func normalizePackedSourceSoftLimit[T ~int64 | ~uint64](soft T) (uint64, bool) {
+	normalized := uint64(soft)
+	const (
+		maxUnsigned = ^uint64(0)
+		maxSigned   = maxUnsigned >> 1
+	)
+	// Rlimit is signed on BSD targets and unsigned on Linux and Darwin.
+	// Infinity is conventionally the maximum signed or unsigned value; some
+	// signed targets report another negative sentinel. Zero is a real limit.
+	invalid := soft < 0 || normalized == maxUnsigned || normalized == maxSigned
+	return normalized, invalid
 }

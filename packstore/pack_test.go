@@ -431,11 +431,34 @@ func TestPackedSourcePinLimitForSoftLimit(t *testing.T) {
 	}
 }
 
-func TestPackedSourcePinLimitForReportedSoftLimitRejectsNonpositiveValues(t *testing.T) {
-	assert.Equal(t, fallbackPackedSourcePins, packedSourcePinLimitForReportedSoftLimit(0, false))
-	assert.Equal(t, fallbackPackedSourcePins, packedSourcePinLimitForReportedSoftLimit(^uint64(0), false),
-		"a signed -1 converted to uint64 remains an invalid report")
-	assert.Equal(t, 64, packedSourcePinLimitForReportedSoftLimit(256, true))
+func TestPackedSourcePinLimitForReportedSoftLimitDistinguishesZeroFromInvalid(t *testing.T) {
+	assert.Equal(t, 1, packedSourcePinLimitForReportedSoftLimit(0, false),
+		"zero is a valid soft limit with no descriptors available for source pins")
+	assert.Equal(t, fallbackPackedSourcePins, packedSourcePinLimitForReportedSoftLimit(^uint64(0), true),
+		"a signed negative or infinity sentinel remains an invalid report after conversion")
+	assert.Equal(t, 64, packedSourcePinLimitForReportedSoftLimit(256, false))
+}
+
+func TestNormalizePackedSourceSoftLimitRecognizesPortableSentinels(t *testing.T) {
+	soft, invalid := normalizePackedSourceSoftLimit(uint64(0))
+	assert.Equal(t, uint64(0), soft)
+	assert.False(t, invalid)
+
+	soft, invalid = normalizePackedSourceSoftLimit(int64(-1))
+	assert.Equal(t, ^uint64(0), soft)
+	assert.True(t, invalid)
+
+	soft, invalid = normalizePackedSourceSoftLimit(^uint64(0))
+	assert.Equal(t, ^uint64(0), soft)
+	assert.True(t, invalid)
+
+	soft, invalid = normalizePackedSourceSoftLimit(int64(^uint64(0) >> 1))
+	assert.Equal(t, uint64(^uint64(0)>>1), soft)
+	assert.True(t, invalid)
+
+	soft, invalid = normalizePackedSourceSoftLimit(int64(256))
+	assert.Equal(t, uint64(256), soft)
+	assert.False(t, invalid)
 }
 
 func TestPackTargetDerivedSourcePinLimitKeepsThousandTinySourcesTogether(t *testing.T) {
