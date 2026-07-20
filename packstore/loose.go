@@ -1,6 +1,7 @@
 package packstore
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -15,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/klauspost/compress/zstd"
 	"go.kenn.io/kit/pack"
 )
 
@@ -27,6 +29,10 @@ var looseCopyBufferPool = sync.Pool{
 var (
 	syncLooseFile             = func(file *os.File) error { return file.Sync() }
 	snapshotLoosePathIdentity = snapshotPathIdentity
+	newLooseZstdWriter        = func(dst io.Writer) (io.WriteCloser, error) {
+		return zstd.NewWriter(dst, zstd.WithEncoderConcurrency(1))
+	}
+	publishLooseFile = os.Link
 )
 
 var (
@@ -127,93 +133,7 @@ func (s *LooseStore) Write(ctx context.Context, src io.Reader, opts WriteOptions
 	if err != nil {
 		return WriteResult{}, err
 	}
-	if err := ensureDirectory(stagingDir, opts.Durability); err != nil {
-		return WriteResult{}, fmt.Errorf("packstore: prepare loose staging: %w", err)
-	}
-	tmp, err := os.CreateTemp(stagingDir, ".staging-")
-	if err != nil {
-		return WriteResult{}, fmt.Errorf("packstore: create loose staging file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	keep := false
-	defer func() {
-		_ = tmp.Close()
-		if !keep {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-	if err := tmp.Chmod(0o600); err != nil {
-		return WriteResult{}, fmt.Errorf("packstore: chmod loose staging file: %w", err)
-	}
-
-	hasher := sha256.New()
-	reader := io.Reader(&contextReader{ctx: ctx, reader: src})
-	if opts.MaxBytes > 0 && opts.MaxBytes < math.MaxInt64 {
-		reader = io.LimitReader(reader, opts.MaxBytes+1)
-	}
-	buffer := looseCopyBufferPool.Get().(*[looseCopyBufferBytes]byte)
-	size, err := io.CopyBuffer(io.MultiWriter(tmp, hasher), reader, buffer[:])
-	looseCopyBufferPool.Put(buffer)
-	if err != nil {
-		return WriteResult{}, fmt.Errorf("packstore: stage loose content: %w", err)
-	}
-	if opts.MaxBytes > 0 && size > opts.MaxBytes {
-		return WriteResult{}, fmt.Errorf("%w: content is %d bytes, limit is %d", ErrContentMismatch, size, opts.MaxBytes)
-	}
-	hash, err := ParseHash(hex.EncodeToString(hasher.Sum(nil)))
-	if err != nil {
-		return WriteResult{}, err
-	}
-	identity := WriteResult{
-		Hash:       hash,
-		Size:       size,
-		Path:       s.layout.LoosePath(hash),
-		Encoding:   LooseEncodingRaw,
-		StoredSize: size,
-	}
-	if opts.ExpectedHash != "" && hash != opts.ExpectedHash {
-		return identity, fmt.Errorf("%w: expected hash %s, got %s", ErrContentMismatch, opts.ExpectedHash, hash)
-	}
-	if opts.SizeKnown && size != opts.ExpectedSize {
-		return identity, fmt.Errorf("%w: expected size %d, got %d", ErrContentMismatch, opts.ExpectedSize, size)
-	}
-	if opts.Durability == DurablePublication {
-		if err := syncLooseFile(tmp); err != nil {
-			return identity, fmt.Errorf("packstore: sync loose staging file: %w", err)
-		}
-	}
-	if err := tmp.Close(); err != nil {
-		return identity, fmt.Errorf("packstore: close loose staging file: %w", err)
-	}
-
-	if result, exists, err := s.existingPath(identity.Path, hash, size, opts.Dedup, opts.Durability); err != nil {
-		return identity, err
-	} else if exists {
-		return result, nil
-	}
-
-	final := identity.Path
-	shard := filepath.Dir(final)
-	if filepath.Clean(shard) != filepath.Clean(stagingDir) {
-		if err := ensureDirectory(shard, opts.Durability); err != nil {
-			return identity, fmt.Errorf("packstore: prepare loose shard: %w", err)
-		}
-	}
-	if err := os.Rename(tmpPath, final); err != nil {
-		result, exists, verifyErr := s.existingPath(final, hash, size, opts.Dedup, opts.Durability)
-		if verifyErr == nil && exists {
-			return result, nil
-		}
-		return identity, errors.Join(fmt.Errorf("packstore: publish loose content: %w", err), verifyErr)
-	}
-	keep = true
-	if opts.Durability == DurablePublication {
-		if err := pack.SyncDir(shard); err != nil {
-			return identity, fmt.Errorf("packstore: sync loose shard: %w", err)
-		}
-	}
-	identity.Created = true
-	return identity, nil
+	return s.publish(ctx, src, opts, stagingDir, nil)
 }
 
 // WriteBytes publishes in-memory content without redundantly hashing it while
@@ -234,7 +154,7 @@ func (s *LooseStore) WriteBytes(ctx context.Context, content []byte, opts WriteO
 		return WriteResult{}, err
 	}
 	size := int64(len(content))
-	identity := WriteResult{
+	identity := &WriteResult{
 		Hash:       hash,
 		Size:       size,
 		Path:       s.layout.LoosePath(hash),
@@ -242,56 +162,150 @@ func (s *LooseStore) WriteBytes(ctx context.Context, content []byte, opts WriteO
 		StoredSize: size,
 	}
 	if opts.MaxBytes > 0 && size > opts.MaxBytes {
-		return identity, fmt.Errorf("%w: content is %d bytes, limit is %d", ErrContentMismatch, size, opts.MaxBytes)
+		return *identity, fmt.Errorf("%w: content is %d bytes, limit is %d", ErrContentMismatch, size, opts.MaxBytes)
 	}
 	if opts.ExpectedHash != "" && hash != opts.ExpectedHash {
-		return identity, fmt.Errorf("%w: expected hash %s, got %s", ErrContentMismatch, opts.ExpectedHash, hash)
+		return *identity, fmt.Errorf("%w: expected hash %s, got %s", ErrContentMismatch, opts.ExpectedHash, hash)
 	}
 	if opts.SizeKnown && size != opts.ExpectedSize {
-		return identity, fmt.Errorf("%w: expected size %d, got %d", ErrContentMismatch, opts.ExpectedSize, size)
+		return *identity, fmt.Errorf("%w: expected size %d, got %d", ErrContentMismatch, opts.ExpectedSize, size)
 	}
-	if result, exists, err := s.existingPath(identity.Path, hash, size, opts.Dedup, opts.Durability); err != nil {
-		return identity, err
+	if result, exists, err := s.existing(hash, size, opts.Dedup, opts.Durability); err != nil {
+		return *identity, err
 	} else if exists {
 		return result, nil
 	}
 
 	stagingDir := s.layout.LooseStagingDir(hash)
+	return s.publish(ctx, bytes.NewReader(content), opts, stagingDir, identity)
+}
+
+type stagedLooseFile struct {
+	file   *os.File
+	path   string
+	closed bool
+}
+
+func (s *LooseStore) publish(ctx context.Context, src io.Reader, opts WriteOptions, stagingDir string, known *WriteResult) (WriteResult, error) {
+	identity := WriteResult{}
+	if known != nil {
+		identity = *known
+	}
 	if err := ensureDirectory(stagingDir, opts.Durability); err != nil {
 		return identity, fmt.Errorf("packstore: prepare loose staging: %w", err)
 	}
-	tmp, err := os.CreateTemp(stagingDir, ".staging-")
+	raw, err := createLooseStagingFile(stagingDir)
 	if err != nil {
-		return identity, fmt.Errorf("packstore: create loose staging file: %w", err)
+		return identity, err
 	}
-	tmpPath := tmp.Name()
-	keep := false
-	defer func() {
-		_ = tmp.Close()
-		if !keep {
-			_ = os.Remove(tmpPath)
+	defer raw.cleanup()
+
+	var compressed *stagedLooseFile
+	var encoder io.WriteCloser
+	if opts.Compression.Enabled {
+		compressed, err = createLooseStagingFile(stagingDir)
+		if err != nil {
+			return identity, err
 		}
-	}()
-	if err := tmp.Chmod(0o600); err != nil {
-		return identity, fmt.Errorf("packstore: chmod loose staging file: %w", err)
+		defer compressed.cleanup()
+		if _, err := compressed.file.Write(make([]byte, compressedLooseHeaderSize)); err != nil {
+			return identity, fmt.Errorf("packstore: write compressed loose header placeholder: %w", err)
+		}
+		encoder, err = newLooseZstdWriter(compressed.file)
+		if err != nil {
+			return identity, fmt.Errorf("packstore: create loose zstd encoder: %w", err)
+		}
 	}
-	if written, err := tmp.Write(content); err != nil {
-		return identity, fmt.Errorf("packstore: stage loose content: %w", err)
-	} else if written != len(content) {
-		return identity, fmt.Errorf("packstore: stage loose content: %w", io.ErrShortWrite)
+
+	hasher := sha256.New()
+	writers := []io.Writer{raw.file}
+	if known == nil {
+		writers = append(writers, hasher)
+	}
+	if encoder != nil {
+		writers = append(writers, encoder)
+	}
+	reader := io.Reader(&contextReader{ctx: ctx, reader: src})
+	if opts.MaxBytes > 0 && opts.MaxBytes < math.MaxInt64 {
+		reader = io.LimitReader(reader, opts.MaxBytes+1)
+	}
+	buffer := looseCopyBufferPool.Get().(*[looseCopyBufferBytes]byte)
+	size, copyErr := io.CopyBuffer(io.MultiWriter(writers...), reader, buffer[:])
+	looseCopyBufferPool.Put(buffer)
+	if encoder != nil {
+		err = encoder.Close()
+	}
+	if copyErr != nil || err != nil {
+		return identity, fmt.Errorf("packstore: stage loose content: %w", errors.Join(copyErr, err))
 	}
 	if err := ctx.Err(); err != nil {
 		return identity, err
 	}
+	if opts.MaxBytes > 0 && size > opts.MaxBytes {
+		return identity, fmt.Errorf("%w: content is %d bytes, limit is %d", ErrContentMismatch, size, opts.MaxBytes)
+	}
+	if known == nil {
+		hash, err := ParseHash(hex.EncodeToString(hasher.Sum(nil)))
+		if err != nil {
+			return identity, err
+		}
+		identity = WriteResult{Hash: hash, Size: size}
+	} else if size != identity.Size {
+		return identity, fmt.Errorf("%w: content changed size from %d to %d", ErrContentMismatch, identity.Size, size)
+	}
+	if opts.ExpectedHash != "" && identity.Hash != opts.ExpectedHash {
+		return identity, fmt.Errorf("%w: expected hash %s, got %s", ErrContentMismatch, opts.ExpectedHash, identity.Hash)
+	}
+	if opts.SizeKnown && identity.Size != opts.ExpectedSize {
+		return identity, fmt.Errorf("%w: expected size %d, got %d", ErrContentMismatch, opts.ExpectedSize, identity.Size)
+	}
+
+	rawStoredSize := identity.Size
+	if compressed != nil {
+		header := encodeCompressedLooseHeader(uint64(identity.Size))
+		if _, err := compressed.file.WriteAt(header[:], 0); err != nil {
+			return identity, fmt.Errorf("packstore: finalize compressed loose header: %w", err)
+		}
+		info, err := compressed.file.Stat()
+		if err != nil {
+			return identity, fmt.Errorf("packstore: stat compressed loose staging: %w", err)
+		}
+		compressedSize := info.Size()
+		if shouldCompressLoose(identity.Size, compressedSize, opts.Compression) {
+			identity.Path = s.layout.CompressedLoosePath(identity.Hash)
+			identity.Encoding = LooseEncodingZstd
+			identity.StoredSize = compressedSize
+		} else {
+			identity.Path = s.layout.LoosePath(identity.Hash)
+			identity.Encoding = LooseEncodingRaw
+			identity.StoredSize = rawStoredSize
+		}
+	} else {
+		identity.Path = s.layout.LoosePath(identity.Hash)
+		identity.Encoding = LooseEncodingRaw
+		identity.StoredSize = rawStoredSize
+	}
+
+	selected := raw
+	loser := compressed
+	if identity.Encoding == LooseEncodingZstd {
+		selected, loser = compressed, raw
+	}
+	if loser != nil {
+		if err := loser.cleanup(); err != nil {
+			return identity, fmt.Errorf("packstore: clean unselected loose staging: %w", err)
+		}
+	}
 	if opts.Durability == DurablePublication {
-		if err := syncLooseFile(tmp); err != nil {
+		if err := syncLooseFile(selected.file); err != nil {
 			return identity, fmt.Errorf("packstore: sync loose staging file: %w", err)
 		}
 	}
-	if err := tmp.Close(); err != nil {
+	if err := selected.close(); err != nil {
 		return identity, fmt.Errorf("packstore: close loose staging file: %w", err)
 	}
-	if result, exists, err := s.existingPath(identity.Path, hash, size, opts.Dedup, opts.Durability); err != nil {
+
+	if result, exists, err := s.existing(identity.Hash, identity.Size, opts.Dedup, opts.Durability); err != nil {
 		return identity, err
 	} else if exists {
 		return result, nil
@@ -304,21 +318,71 @@ func (s *LooseStore) WriteBytes(ctx context.Context, content []byte, opts WriteO
 			return identity, fmt.Errorf("packstore: prepare loose shard: %w", err)
 		}
 	}
-	if err := os.Rename(tmpPath, final); err != nil {
-		result, exists, verifyErr := s.existingPath(final, hash, size, opts.Dedup, opts.Durability)
+	if err := publishLooseFile(selected.path, final); err != nil {
+		result, exists, verifyErr := s.existing(identity.Hash, identity.Size, opts.Dedup, opts.Durability)
 		if verifyErr == nil && exists {
 			return result, nil
 		}
 		return identity, errors.Join(fmt.Errorf("packstore: publish loose content: %w", err), verifyErr)
 	}
-	keep = true
+	identity.Created = true
+	if err := selected.cleanup(); err != nil {
+		return identity, fmt.Errorf("packstore: clean published loose staging: %w", err)
+	}
 	if opts.Durability == DurablePublication {
 		if err := pack.SyncDir(shard); err != nil {
 			return identity, fmt.Errorf("packstore: sync loose shard: %w", err)
 		}
 	}
-	identity.Created = true
 	return identity, nil
+}
+
+func createLooseStagingFile(dir string) (*stagedLooseFile, error) {
+	file, err := os.CreateTemp(dir, ".staging-")
+	if err != nil {
+		return nil, fmt.Errorf("packstore: create loose staging file: %w", err)
+	}
+	staged := &stagedLooseFile{file: file, path: file.Name()}
+	if err := file.Chmod(0o600); err != nil {
+		return nil, errors.Join(fmt.Errorf("packstore: chmod loose staging file: %w", err), staged.cleanup())
+	}
+	return staged, nil
+}
+
+func (f *stagedLooseFile) cleanup() error {
+	if f == nil {
+		return nil
+	}
+	closeErr := f.close()
+	var removeErr error
+	if f.path != "" {
+		removeErr = os.Remove(f.path)
+		if errors.Is(removeErr, fs.ErrNotExist) {
+			removeErr = nil
+		}
+		if removeErr == nil {
+			f.path = ""
+		}
+	}
+	return errors.Join(closeErr, removeErr)
+}
+
+func (f *stagedLooseFile) close() error {
+	if f.closed {
+		return nil
+	}
+	f.closed = true
+	return f.file.Close()
+}
+
+func shouldCompressLoose(logicalSize, storedSize int64, opts LooseCompressionOptions) bool {
+	if !opts.Enabled || logicalSize < opts.MinBytes || storedSize > logicalSize {
+		return false
+	}
+	whole := logicalSize / 100 * int64(opts.MinSavingsPercent)
+	remainder := logicalSize % 100 * int64(opts.MinSavingsPercent)
+	requiredSavings := whole + (remainder+99)/100
+	return logicalSize-storedSize >= requiredSavings
 }
 
 // Verify checks whether the canonical loose object exists and satisfies the
@@ -395,16 +459,20 @@ func (s *LooseStore) stagingDir(opts WriteOptions) (string, error) {
 }
 
 func (s *LooseStore) existing(hash Hash, size int64, verification DedupVerification, durability Durability) (WriteResult, bool, error) {
-	return s.existingPath(s.layout.LoosePath(hash), hash, size, verification, durability)
+	result, exists, err := s.existingPath(s.layout.CompressedLoosePath(hash), hash, size, LooseEncodingZstd, verification, durability)
+	if err != nil || exists {
+		return result, exists, err
+	}
+	return s.existingPath(s.layout.LoosePath(hash), hash, size, LooseEncodingRaw, verification, durability)
 }
 
-func (s *LooseStore) existingPath(path string, hash Hash, size int64, verification DedupVerification, durability Durability) (WriteResult, bool, error) {
+func (s *LooseStore) existingPath(path string, hash Hash, size int64, encoding LooseEncoding, verification DedupVerification, durability Durability) (WriteResult, bool, error) {
 	const maxIdentityAttempts = 8
 	var result WriteResult
 	var exists bool
 	var err error
 	for attempt := range maxIdentityAttempts {
-		result, exists, err = s.existingOnce(path, hash, size, verification, durability)
+		result, exists, err = s.existingOnce(path, hash, size, encoding, verification, durability)
 		if !errors.Is(err, errIdentityChanged) {
 			return result, exists, err
 		}
@@ -419,7 +487,7 @@ func (s *LooseStore) existingPath(path string, hash Hash, size int64, verificati
 	return result, exists, err
 }
 
-func (s *LooseStore) existingOnce(path string, hash Hash, size int64, verification DedupVerification, durability Durability) (WriteResult, bool, error) {
+func (s *LooseStore) existingOnce(path string, hash Hash, size int64, encoding LooseEncoding, verification DedupVerification, durability Durability) (WriteResult, bool, error) {
 	info, err := snapshotLoosePathIdentity(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return WriteResult{}, false, nil
@@ -430,16 +498,22 @@ func (s *LooseStore) existingOnce(path string, hash Hash, size int64, verificati
 	if err := validateRegularNoFollow(path, info); err != nil {
 		return WriteResult{}, false, err
 	}
-	if info.Size() != size {
-		return WriteResult{}, false, fmt.Errorf("%w: existing size is %d, want %d", ErrContentMismatch, info.Size(), size)
-	}
-	if verification == VerifyFullHash {
-		if err := s.verifyPathHash(path, info, hash, durability == DurablePublication); err != nil {
+	if encoding == LooseEncodingZstd {
+		if err := s.verifyCompressedPath(path, info, hash, size, verification, durability == DurablePublication); err != nil {
 			return WriteResult{}, false, err
 		}
-	} else if durability == DurablePublication {
-		if err := syncPathIdentity(path, info); err != nil {
-			return WriteResult{}, false, err
+	} else {
+		if info.Size() != size {
+			return WriteResult{}, false, fmt.Errorf("%w: existing size is %d, want %d", ErrContentMismatch, info.Size(), size)
+		}
+		if verification == VerifyFullHash {
+			if err := s.verifyPathHash(path, info, hash, durability == DurablePublication); err != nil {
+				return WriteResult{}, false, err
+			}
+		} else if durability == DurablePublication {
+			if err := syncPathIdentity(path, info); err != nil {
+				return WriteResult{}, false, err
+			}
 		}
 	}
 	if durability == DurablePublication {
@@ -454,9 +528,72 @@ func (s *LooseStore) existingOnce(path string, hash Hash, size int64, verificati
 		Hash:       hash,
 		Size:       size,
 		Path:       path,
-		Encoding:   LooseEncodingRaw,
-		StoredSize: size,
+		Encoding:   encoding,
+		StoredSize: info.Size(),
 	}, true, nil
+}
+
+func (s *LooseStore) verifyCompressedPath(path string, before fs.FileInfo, expectedHash Hash, expectedSize int64, verification DedupVerification, durable bool) error {
+	f, err := openNoFollow(path, durable)
+	if err != nil {
+		return fmt.Errorf("packstore: open compressed loose content: %w", err)
+	}
+	descriptorInfo, statErr := f.Stat()
+	if statErr != nil {
+		return errors.Join(statErr, f.Close())
+	}
+	if !os.SameFile(before, descriptorInfo) {
+		return errors.Join(fmt.Errorf("%w: %w", ErrContentMismatch, errIdentityChanged), f.Close())
+	}
+	header := make([]byte, compressedLooseHeaderSize)
+	if _, err := io.ReadFull(f, header); err != nil {
+		return errors.Join(fmt.Errorf("%w: read compressed loose header: %v", ErrContentMismatch, err), f.Close())
+	}
+	logicalSize, err := decodeCompressedLooseHeader(header)
+	if err != nil {
+		return errors.Join(fmt.Errorf("%w: %v", ErrContentMismatch, err), f.Close())
+	}
+	if logicalSize != expectedSize {
+		return errors.Join(fmt.Errorf("%w: existing logical size is %d, want %d", ErrContentMismatch, logicalSize, expectedSize), f.Close())
+	}
+	if verification == VerifyFullHash {
+		decoder, err := zstd.NewReader(struct{ io.Reader }{f},
+			zstd.WithDecoderConcurrency(1),
+			zstd.WithDecoderMaxMemory(64<<20))
+		if err != nil {
+			return errors.Join(fmt.Errorf("%w: open compressed loose payload: %v", ErrContentMismatch, err), f.Close())
+		}
+		hasher := sha256.New()
+		buffer := looseCopyBufferPool.Get().(*[looseCopyBufferBytes]byte)
+		decodedSize, readErr := io.CopyBuffer(hasher, decoder, buffer[:])
+		looseCopyBufferPool.Put(buffer)
+		decoder.Close()
+		if readErr != nil {
+			return errors.Join(fmt.Errorf("%w: decode compressed loose payload: %v", ErrContentMismatch, readErr), f.Close())
+		}
+		if decodedSize != expectedSize {
+			return errors.Join(fmt.Errorf("%w: decoded size is %d, want %d", ErrContentMismatch, decodedSize, expectedSize), f.Close())
+		}
+		if hex.EncodeToString(hasher.Sum(nil)) != expectedHash.String() {
+			return errors.Join(fmt.Errorf("%w: existing hash differs from %s", ErrContentMismatch, expectedHash), f.Close())
+		}
+	}
+	if durable {
+		if err := syncLooseFile(f); err != nil {
+			return errors.Join(err, f.Close())
+		}
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	after, err := snapshotLoosePathIdentity(path)
+	if err != nil {
+		return fmt.Errorf("packstore: recheck compressed loose content: %w", err)
+	}
+	if !os.SameFile(before, descriptorInfo) || !os.SameFile(after, descriptorInfo) {
+		return fmt.Errorf("%w: %w", ErrContentMismatch, errIdentityChanged)
+	}
+	return nil
 }
 
 func (s *LooseStore) verifyPathHash(path string, before fs.FileInfo, expected Hash, durable bool) error {

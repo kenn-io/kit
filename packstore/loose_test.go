@@ -127,6 +127,128 @@ func TestLooseWriteCancellationAndLimitCleanStaging(t *testing.T) {
 	assert.Empty(t, matchingFiles(t, stagingDir, ".staging-"))
 }
 
+func TestLooseWriteCompressionCancellationCleansStaging(t *testing.T) {
+	content := bytes.Repeat([]byte("cancel compressed staging\n"), 4096)
+	for _, staging := range []StagingMode{StagingSameDirectory, StagingStoreDirectory} {
+		for _, cancelAt := range []string{"source read", "zstd write"} {
+			t.Run(cancelAt+"/"+stagingName(staging), func(t *testing.T) {
+				require := require.New(t)
+				store := newLooseStoreForTest(t, staging)
+				ctx, cancel := context.WithCancel(context.Background())
+				t.Cleanup(cancel)
+				src := io.Reader(&cancelAfterRead{reader: bytes.NewReader(content), cancel: cancel})
+				if cancelAt == "zstd write" {
+					src = bytes.NewReader(content)
+					originalWriter := newLooseZstdWriter
+					newLooseZstdWriter = func(dst io.Writer) (io.WriteCloser, error) {
+						writer, err := originalWriter(dst)
+						if err != nil {
+							return nil, err
+						}
+						return &cancelOnWriteCloser{WriteCloser: writer, cancel: cancel}, nil
+					}
+					t.Cleanup(func() { newLooseZstdWriter = originalWriter })
+				}
+				opts := WriteOptions{
+					Durability:   AtomicPublication,
+					Dedup:        VerifyFullHash,
+					ExpectedHash: hashForTest(content),
+					Compression: LooseCompressionOptions{
+						Enabled: true,
+					},
+				}
+
+				_, err := store.Write(ctx, src, opts)
+
+				require.ErrorIs(err, context.Canceled)
+				assertNoLooseWriteResidue(t, store, hashForTest(content))
+			})
+		}
+	}
+}
+
+func TestLooseWriteCompressionFailureCleansStaging(t *testing.T) {
+	content := bytes.Repeat([]byte("zstd write failure\n"), 4096)
+	store := newLooseStoreForTest(t, StagingStoreDirectory)
+	writeErr := errors.New("injected zstd write failure")
+	originalWriter := newLooseZstdWriter
+	newLooseZstdWriter = func(io.Writer) (io.WriteCloser, error) {
+		return &errorWriteCloser{err: writeErr}, nil
+	}
+	t.Cleanup(func() { newLooseZstdWriter = originalWriter })
+
+	_, err := store.Write(context.Background(), bytes.NewReader(content), WriteOptions{
+		Durability:  AtomicPublication,
+		Dedup:       VerifyFullHash,
+		Compression: LooseCompressionOptions{Enabled: true},
+	})
+
+	require.ErrorIs(t, err, writeErr)
+	assertNoLooseWriteResidue(t, store, hashForTest(content))
+}
+
+func TestLooseWritePublicationFailureCleansStaging(t *testing.T) {
+	content := bytes.Repeat([]byte("publication failure\n"), 4096)
+	publishErr := errors.New("injected publication failure")
+	originalPublish := publishLooseFile
+	publishLooseFile = func(string, string) error { return publishErr }
+	t.Cleanup(func() { publishLooseFile = originalPublish })
+
+	for _, staging := range []StagingMode{StagingSameDirectory, StagingStoreDirectory} {
+		t.Run(stagingName(staging), func(t *testing.T) {
+			store := newLooseStoreForTest(t, staging)
+			result, err := store.Write(context.Background(), bytes.NewReader(content), WriteOptions{
+				Durability:   AtomicPublication,
+				Dedup:        VerifyFullHash,
+				ExpectedHash: hashForTest(content),
+				Compression: LooseCompressionOptions{
+					Enabled: true,
+				},
+			})
+
+			require.ErrorIs(t, err, publishErr)
+			assert.Equal(t, hashForTest(content), result.Hash)
+			assertNoLooseWriteResidue(t, store, result.Hash)
+		})
+	}
+}
+
+func TestLooseWriteCompressedDurabilitySyncsSelectedFileAndShard(t *testing.T) {
+	require := require.New(t)
+	content := bytes.Repeat([]byte("durable compressed content\n"), 4096)
+	store := newLooseStoreForTest(t, StagingStoreDirectory)
+	originalFileSync := syncLooseFile
+	originalDirSync := pack.SyncDir
+	var fileSyncs int
+	var syncedDirs []string
+	syncLooseFile = func(file *os.File) error {
+		fileSyncs++
+		return originalFileSync(file)
+	}
+	pack.SyncDir = func(path string) error {
+		syncedDirs = append(syncedDirs, filepath.Clean(path))
+		return originalDirSync(path)
+	}
+	t.Cleanup(func() {
+		syncLooseFile = originalFileSync
+		pack.SyncDir = originalDirSync
+	})
+
+	result, err := store.WriteBytes(context.Background(), content, WriteOptions{
+		Durability:  DurablePublication,
+		Dedup:       VerifyFullHash,
+		Compression: LooseCompressionOptions{Enabled: true},
+	})
+
+	require.NoError(err)
+	require.Equal(LooseEncodingZstd, result.Encoding)
+	assert.Equal(t, 1, fileSyncs, "only the selected staging file is synced")
+	assert.Contains(t, syncedDirs, filepath.Clean(filepath.Dir(result.Path)))
+	assert.NoFileExists(t, store.layout.LoosePath(result.Hash))
+	assert.Empty(t, matchingFiles(t, store.layout.LooseStagingDir(result.Hash), ".staging-"))
+	assert.FileExists(t, result.Path)
+}
+
 func TestLooseWriteRejectsExistingObjectAboveLimit(t *testing.T) {
 	require := require.New(t)
 	content := []byte("existing object exceeds limit")
@@ -237,6 +359,123 @@ func TestLooseWriteValidatesCompressionPolicy(t *testing.T) {
 	}
 }
 
+func TestLooseWriteCompressionPolicy(t *testing.T) {
+	compressible := bytes.Repeat([]byte("compressible loose content\n"), 256)
+	incompressible := deterministicLooseNoise(8 << 10)
+	for _, tt := range []struct {
+		name        string
+		content     []byte
+		compression LooseCompressionOptions
+		want        LooseEncoding
+	}{
+		{
+			name:        "disabled",
+			content:     compressible,
+			compression: LooseCompressionOptions{},
+			want:        LooseEncodingRaw,
+		},
+		{
+			name:    "below minimum size",
+			content: compressible,
+			compression: LooseCompressionOptions{
+				Enabled:  true,
+				MinBytes: int64(len(compressible)) + 1,
+			},
+			want: LooseEncodingRaw,
+		},
+		{
+			name:    "incompressible",
+			content: incompressible,
+			compression: LooseCompressionOptions{
+				Enabled: true,
+			},
+			want: LooseEncodingRaw,
+		},
+		{
+			name:    "compressible",
+			content: compressible,
+			compression: LooseCompressionOptions{
+				Enabled:           true,
+				MinBytes:          int64(len(compressible)),
+				MinSavingsPercent: 90,
+			},
+			want: LooseEncodingZstd,
+		},
+		{
+			name:    "savings at lower integer boundary",
+			content: compressible,
+			compression: LooseCompressionOptions{
+				Enabled:           true,
+				MinSavingsPercent: 99,
+			},
+			want: LooseEncodingZstd,
+		},
+		{
+			name:    "savings below upper integer boundary",
+			content: compressible,
+			compression: LooseCompressionOptions{
+				Enabled:           true,
+				MinSavingsPercent: 100,
+			},
+			want: LooseEncodingRaw,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, write := range []struct {
+				name string
+				run  func(*LooseStore) (WriteResult, error)
+			}{
+				{
+					name: "stream",
+					run: func(store *LooseStore) (WriteResult, error) {
+						return store.Write(context.Background(), bytes.NewReader(tt.content), WriteOptions{
+							Durability:   AtomicPublication,
+							Dedup:        VerifyFullHash,
+							ExpectedHash: hashForTest(tt.content),
+							Compression:  tt.compression,
+						})
+					},
+				},
+				{
+					name: "bytes",
+					run: func(store *LooseStore) (WriteResult, error) {
+						return store.WriteBytes(context.Background(), tt.content, WriteOptions{
+							Durability:  AtomicPublication,
+							Dedup:       VerifyFullHash,
+							Compression: tt.compression,
+						})
+					},
+				},
+			} {
+				t.Run(write.name, func(t *testing.T) {
+					assert := assert.New(t)
+					require := require.New(t)
+					store := newLooseStoreForTest(t, StagingSameDirectory)
+
+					result, err := write.run(store)
+
+					require.NoError(err)
+					assert.Equal(hashForTest(tt.content), result.Hash, "hash describes logical content")
+					assert.Equal(int64(len(tt.content)), result.Size, "size describes logical content")
+					assert.Equal(tt.want, result.Encoding)
+					assert.True(result.Created)
+					assert.FileExists(result.Path)
+					if tt.want == LooseEncodingZstd {
+						assert.Equal(store.layout.CompressedLoosePath(result.Hash), result.Path)
+						assert.Less(result.StoredSize, result.Size)
+						assert.NoFileExists(store.layout.LoosePath(result.Hash))
+					} else {
+						assert.Equal(store.layout.LoosePath(result.Hash), result.Path)
+						assert.Equal(result.Size, result.StoredSize)
+						assert.NoFileExists(store.layout.CompressedLoosePath(result.Hash))
+					}
+					assert.Empty(matchingFiles(t, filepath.Dir(result.Path), ".staging-"))
+				})
+			}
+		})
+	}
+}
+
 func TestLooseWriteSupportsEmptyAndStoreDirectoryStaging(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
@@ -322,6 +561,66 @@ func TestLooseDurableWriteSyncsRootForExistingObject(t *testing.T) {
 	})
 	require.NoError(err)
 	assert.Contains(t, synced, filepath.Clean(store.layout.Root()))
+}
+
+func TestLooseWriteDedupPrefersCompressedRepresentation(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	content := bytes.Repeat([]byte("preferred compressed representation\n"), 256)
+	store := newLooseStoreForTest(t, StagingSameDirectory)
+	created, err := store.WriteBytes(context.Background(), content, WriteOptions{
+		Durability: AtomicPublication,
+		Dedup:      VerifyFullHash,
+		Compression: LooseCompressionOptions{
+			Enabled:           true,
+			MinSavingsPercent: 50,
+		},
+	})
+	require.NoError(err)
+	require.Equal(LooseEncodingZstd, created.Encoding)
+	rawPath := store.layout.LoosePath(created.Hash)
+	require.NoError(os.WriteFile(rawPath, content, 0o600))
+
+	result, err := store.WriteBytes(context.Background(), content, WriteOptions{
+		Durability: AtomicPublication,
+		Dedup:      VerifyFullHash,
+	})
+
+	require.NoError(err)
+	assert.False(result.Created)
+	assert.Equal(LooseEncodingZstd, result.Encoding)
+	assert.Equal(created.Path, result.Path)
+	assert.Equal(created.StoredSize, result.StoredSize)
+	assert.FileExists(rawPath, "dedup leaves dual-copy reconciliation to maintenance")
+	assert.FileExists(created.Path)
+}
+
+func TestLooseWriteDedupRejectsCorruptPreferredRepresentation(t *testing.T) {
+	require := require.New(t)
+	content := bytes.Repeat([]byte("do not fall back from corrupt preferred content\n"), 256)
+	store := newLooseStoreForTest(t, StagingSameDirectory)
+	created, err := store.WriteBytes(context.Background(), content, WriteOptions{
+		Durability: AtomicPublication,
+		Dedup:      VerifyFullHash,
+		Compression: LooseCompressionOptions{
+			Enabled: true,
+		},
+	})
+	require.NoError(err)
+	require.Equal(LooseEncodingZstd, created.Encoding)
+	rawPath := store.layout.LoosePath(created.Hash)
+	require.NoError(os.WriteFile(rawPath, content, 0o600))
+	corrupt := []byte("corrupt preferred copy")
+	require.NoError(os.WriteFile(created.Path, corrupt, 0o600))
+
+	_, err = store.WriteBytes(context.Background(), content, WriteOptions{
+		Durability: AtomicPublication,
+		Dedup:      VerifyFullHash,
+	})
+
+	require.ErrorIs(err, ErrContentMismatch)
+	assert.Equal(t, corrupt, mustReadFile(t, created.Path), "ordinary writes must not replace a corrupt preferred copy")
+	assert.Equal(t, content, mustReadFile(t, rawPath), "a valid alternate copy must not mask preferred corruption")
 }
 
 func TestLooseWriteDedupVerificationPolicies(t *testing.T) {
@@ -559,12 +858,85 @@ func bytesToHex(data []byte) []byte {
 	return encoded
 }
 
+func deterministicLooseNoise(size int) []byte {
+	content := make([]byte, size)
+	state := uint64(0x9e3779b97f4a7c15)
+	for i := range content {
+		state ^= state << 13
+		state ^= state >> 7
+		state ^= state << 17
+		content[i] = byte(state)
+	}
+	return content
+}
+
 func matchingFiles(t *testing.T, dir, pattern string) []string {
 	t.Helper()
 	matches, err := filepath.Glob(filepath.Join(dir, pattern+"*"))
 	require.NoError(t, err)
 	return matches
 }
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	require.NoError(t, err)
+	return content
+}
+
+func assertNoLooseWriteResidue(t *testing.T, store *LooseStore, hash Hash) {
+	t.Helper()
+	assert.NoFileExists(t, store.layout.LoosePath(hash))
+	assert.NoFileExists(t, store.layout.CompressedLoosePath(hash))
+	assert.Empty(t, matchingFiles(t, store.layout.LooseStagingDir(hash), ".staging-"))
+}
+
+func stagingName(staging StagingMode) string {
+	if staging == StagingSameDirectory {
+		return "same directory"
+	}
+	return "store directory"
+}
+
+type cancelAfterRead struct {
+	reader io.Reader
+	cancel context.CancelFunc
+	done   bool
+}
+
+func (r *cancelAfterRead) Read(p []byte) (int, error) {
+	if len(p) > 1024 {
+		p = p[:1024]
+	}
+	n, err := r.reader.Read(p)
+	if n > 0 && !r.done {
+		r.done = true
+		r.cancel()
+	}
+	return n, err
+}
+
+type cancelOnWriteCloser struct {
+	io.WriteCloser
+	cancel context.CancelFunc
+	done   bool
+}
+
+func (w *cancelOnWriteCloser) Write(p []byte) (int, error) {
+	n, err := w.WriteCloser.Write(p)
+	if !w.done {
+		w.done = true
+		w.cancel()
+	}
+	return n, err
+}
+
+type errorWriteCloser struct {
+	err error
+}
+
+func (w *errorWriteCloser) Write([]byte) (int, error) { return 0, w.err }
+func (w *errorWriteCloser) Close() error              { return nil }
 
 type boundedChunkReader struct {
 	r   io.Reader
