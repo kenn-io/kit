@@ -80,9 +80,8 @@ func (r Runner) WithConfig(key, value string) Runner {
 }
 
 // WithBasicAuth returns a copy of r with credentials supplied through a
-// short-lived git credential helper. The reusable secret is written to a
-// user-only, non-executable response file instead of being exposed in the git
-// process environment.
+// short-lived git credential helper that reads them from a user-only,
+// non-executable response file, cleaned up when the command finishes.
 func (r Runner) WithBasicAuth(username, password string) Runner {
 	r.basicAuth = &basicAuth{username: username, password: password}
 	return r
