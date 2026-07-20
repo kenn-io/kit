@@ -142,6 +142,52 @@ func TestLooseRemovePublishesCompleteRegularRestoreAtomically(t *testing.T) {
 	assertNoLooseRemovalClaims(t, written.Path)
 }
 
+func TestLooseRemoveRestoresConcurrentClaimWrites(t *testing.T) {
+	store := newLooseStoreForTest(t, StagingSameDirectory)
+	written, err := store.WriteBytes(context.Background(), []byte("concurrent restore source"), WriteOptions{
+		Durability: AtomicPublication,
+		Dedup:      VerifyFullHash,
+	})
+	require.NoError(t, err)
+	foreign := []byte("foreign replacement before restore")
+	_ = installLooseRemovalReplacement(t, written.Path, func(t *testing.T, path string) func(*testing.T, string) {
+		require.NoError(t, os.WriteFile(path, foreign, 0o600))
+		return func(*testing.T, string) {}
+	})
+	updated := []byte("foreign replacement after writer update")
+	originalBeforePublish := beforeLooseRemovalRestorePublish
+	writerRan := false
+	var writerIdentity fs.FileInfo
+	beforeLooseRemovalRestorePublish = func(sourcePath, canonicalPath string) {
+		writerRan = true
+		writer, openErr := os.OpenFile(
+			filepath.Join(filepath.Dir(sourcePath), "claimed"),
+			os.O_WRONLY|os.O_TRUNC,
+			0,
+		)
+		require.NoError(t, openErr)
+		writerIdentity, openErr = writer.Stat()
+		require.NoError(t, openErr)
+		_, writeErr := writer.Write(updated)
+		require.NoError(t, writeErr)
+		require.NoError(t, writer.Sync())
+		require.NoError(t, writer.Close())
+		_, statErr := os.Lstat(canonicalPath)
+		require.ErrorIs(t, statErr, fs.ErrNotExist)
+	}
+	t.Cleanup(func() { beforeLooseRemovalRestorePublish = originalBeforePublish })
+
+	err = store.Remove(written.Hash, BestEffortRemoval)
+
+	require.ErrorIs(t, err, errIdentityChanged)
+	assert.True(t, writerRan)
+	assert.Equal(t, updated, mustReadFile(t, written.Path))
+	canonicalIdentity, statErr := os.Stat(written.Path)
+	require.NoError(t, statErr)
+	assert.True(t, os.SameFile(writerIdentity, canonicalIdentity), "restoration keeps the writer's exact inode")
+	assertNoLooseRemovalClaims(t, written.Path)
+}
+
 func TestLooseRemoveTreatsPostPublicationReplacementAsLaterAction(t *testing.T) {
 	tests := []struct {
 		name    string

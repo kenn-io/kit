@@ -1087,7 +1087,7 @@ func restoreLooseRemovalClaim(path, aside string, claimed fs.FileInfo) error {
 	}
 	switch {
 	case claimed.Mode().IsRegular():
-		if err := copyLooseRemovalClaim(path, aside, claimed); err != nil {
+		if err := linkLooseRemovalClaim(path, aside, claimed); err != nil {
 			return err
 		}
 	case claimed.Mode()&os.ModeSymlink != 0:
@@ -1120,80 +1120,38 @@ func restoreLooseRemovalClaim(path, aside string, claimed fs.FileInfo) error {
 	return nil
 }
 
-// copyLooseRemovalClaim restores regular content through a pinned no-follow
-// descriptor into private staging. Only after the complete staging file is
-// synced does a no-clobber hard link publish it at path. Successful publication
-// is the linearization point: later removal or replacement at path is a later
-// operation and does not make cleanup of the original claim unsafe.
-func copyLooseRemovalClaim(path, aside string, claimed fs.FileInfo) error {
+// linkLooseRemovalClaim restores the exact claimed inode with a no-clobber hard
+// link. Writers that already hold the inode therefore remain attached to the
+// restored name, and no copied snapshot can overwrite their later changes.
+func linkLooseRemovalClaim(path, aside string, claimed fs.FileInfo) (resultErr error) {
 	source, sourceIdentity, err := openLooseFile(aside)
 	if err != nil {
 		return fmt.Errorf("open foreign loose content %s for restore: %w", aside, err)
 	}
+	defer func() { resultErr = errors.Join(resultErr, source.Close()) }()
 	if !os.SameFile(claimed, sourceIdentity) {
-		return errors.Join(
-			errIdentityChanged,
-			fmt.Errorf("foreign loose removal claim %s changed while opening", aside),
-			source.Close(),
-		)
+		return errors.Join(errIdentityChanged, fmt.Errorf("foreign loose removal claim %s changed while opening", aside))
 	}
-	stagingPath := filepath.Join(filepath.Dir(aside), "restore")
-	destination, err := createLooseRemovalRestoreFile(stagingPath, claimed.Mode().Perm())
-	if err != nil {
-		return errors.Join(
-			fmt.Errorf("stage foreign loose content from %s for restore: %w", aside, err),
-			source.Close(),
-		)
+	beforeLooseRemovalRestorePublish(aside, path)
+	if err := publishLooseRemovalRestoreFile(aside, path); err != nil {
+		return fmt.Errorf("publish restored foreign loose content from %s to %s without clobbering: %w", aside, path, err)
 	}
-	destinationIdentity, statErr := destination.Stat()
-	buffer := looseCopyBufferPool.Get().(*[looseCopyBufferBytes]byte)
-	_, copyErr := io.CopyBuffer(destination, source, buffer[:])
-	looseCopyBufferPool.Put(buffer)
-	after, afterErr := source.Stat()
-	syncErr := destination.Sync()
-	closeErr := destination.Close()
-	sourceCloseErr := source.Close()
-	if afterErr == nil && !os.SameFile(claimed, after) {
-		afterErr = errIdentityChanged
+	pinned, pinErr := source.Stat()
+	canonical, canonicalErr := snapshotPathIdentity(path)
+	current, currentErr := snapshotPathIdentity(aside)
+	if err := errors.Join(pinErr, canonicalErr, currentErr); err != nil {
+		return fmt.Errorf("recheck linked foreign loose claim %s: %w", aside, err)
 	}
-	if restoreErr := errors.Join(statErr, copyErr, afterErr, syncErr, closeErr, sourceCloseErr); restoreErr != nil {
-		cleanupErr := removeLooseRemovalRestoreStaging(stagingPath, destinationIdentity)
-		return errors.Join(
-			fmt.Errorf("copy foreign loose content from %s into private staging: %w", aside, restoreErr),
-			cleanupErr,
-		)
+	if !os.SameFile(claimed, pinned) ||
+		!os.SameFile(pinned, canonical) ||
+		!os.SameFile(pinned, current) {
+		return fmt.Errorf("%w: linked foreign loose claim %s changed identity", errIdentityChanged, aside)
 	}
-	beforeLooseRemovalRestorePublish(stagingPath, path)
-	if err := publishLooseRemovalRestoreFile(stagingPath, path); err != nil {
-		return errors.Join(
-			fmt.Errorf("publish restored foreign loose content from %s to %s without clobbering: %w", stagingPath, path, err),
-			removeLooseRemovalRestoreStaging(stagingPath, destinationIdentity),
-		)
-	}
-	// The complete, synced inode is now atomically visible at path. Cleanup no
-	// longer depends on path retaining that entry.
+	// The exact claimed inode is now atomically visible at path. Later writes,
+	// removal, or replacement are later actions and cannot make claim cleanup
+	// discard a stale copy.
 	afterLooseRemovalRestorePublish(path)
-	if err := removeLooseRemovalRestoreStaging(stagingPath, destinationIdentity); err != nil {
-		return fmt.Errorf("clean published loose restore staging %s: %w", stagingPath, err)
-	}
 	return nil
-}
-
-func removeLooseRemovalRestoreStaging(path string, identity fs.FileInfo) error {
-	if identity == nil {
-		return nil
-	}
-	current, err := snapshotPathIdentity(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if !os.SameFile(identity, current) {
-		return fmt.Errorf("%w: loose removal restore staging %s changed identity", errIdentityChanged, path)
-	}
-	return removeLooseCanonicalFile(path)
 }
 
 // canonicalLoosePathEqual is lexical only: Windows folds case, while no
