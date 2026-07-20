@@ -22,7 +22,7 @@ func TestUnreadableLooseRemovalUsesIdentityOnlyPin(t *testing.T) {
 		runUnreadableRemovalChild(t, mode)
 		return
 	}
-	for _, mode := range []string{"explicit", "orphan"} {
+	for _, mode := range []string{"explicit", "orphan", "replacement"} {
 		t.Run(mode, func(t *testing.T) {
 			command := exec.Command(os.Args[0], "-test.run=^TestUnreadableLooseRemovalUsesIdentityOnlyPin$")
 			command.Env = append(os.Environ(), unreadableRemovalChild+"="+mode)
@@ -63,6 +63,34 @@ func runUnreadableRemovalChild(t *testing.T, mode string) {
 		require.NoError(t, err)
 		assert.Equal(t, 1, stats.LooseOrphansRemoved)
 		assert.NoFileExists(t, path)
+		assertNoIdentityPinDebris(t, path)
+	case "replacement":
+		replacement := []byte("unreadable raced replacement")
+		held := path + ".held"
+		originalHook := beforeLooseRemovalClaim
+		var replacementIdentity os.FileInfo
+		beforeLooseRemovalClaim = func(gotPath string) {
+			if replacementIdentity != nil || filepath.Clean(gotPath) != filepath.Clean(path) {
+				return
+			}
+			require.NoError(t, os.Rename(path, held))
+			require.NoError(t, os.WriteFile(path, replacement, 0))
+			replacementIdentity, err = os.Lstat(path)
+			require.NoError(t, err)
+		}
+		t.Cleanup(func() { beforeLooseRemovalClaim = originalHook })
+		store, err := NewLooseStore(layout)
+		require.NoError(t, err)
+
+		err = store.Remove(hash, BestEffortRemoval)
+
+		require.ErrorIs(t, err, errIdentityChanged)
+		require.NotNil(t, replacementIdentity)
+		canonicalIdentity, statErr := os.Lstat(path)
+		require.NoError(t, statErr)
+		assert.True(t, os.SameFile(replacementIdentity, canonicalIdentity), "the exact unreadable replacement wins the removal race")
+		assert.FileExists(t, held)
+		assertNoLooseRemovalClaims(t, path)
 		assertNoIdentityPinDebris(t, path)
 	default:
 		require.FailNow(t, "unknown unreadable-removal child mode", mode)

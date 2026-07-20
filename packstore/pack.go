@@ -1165,12 +1165,13 @@ func restoreLooseRemovalClaim(path, aside string, claimed fs.FileInfo) error {
 }
 
 // linkLooseRemovalClaim restores the exact claimed inode with a no-clobber hard
-// link. Writers that already hold the inode therefore remain attached to the
-// restored name, and no copied snapshot can overwrite their later changes.
+// link. The namespace identity pin does not require content-read access.
+// Writers that already hold the inode therefore remain attached to the restored
+// name, and no copied snapshot can overwrite their later changes.
 func linkLooseRemovalClaim(path, aside string, claimed fs.FileInfo) (resultErr error) {
-	source, sourceIdentity, err := openLooseFile(aside)
+	source, sourceIdentity, err := openLooseIdentityPin(aside)
 	if err != nil {
-		return fmt.Errorf("open foreign loose content %s for restore: %w", aside, err)
+		return fmt.Errorf("pin foreign loose content %s for restore: %w", aside, err)
 	}
 	defer func() { resultErr = errors.Join(resultErr, source.Close()) }()
 	if !os.SameFile(claimed, sourceIdentity) {
