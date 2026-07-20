@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 
@@ -65,7 +66,9 @@ func TestStoreOpenReadsAndSeeksCompressedLooseContent(t *testing.T) {
 	assert.FileExists(t, temporaryPath)
 	temporaryInfo, err := os.Stat(temporaryPath)
 	require.NoError(t, err)
-	assert.Equal(t, fs.FileMode(0o600), temporaryInfo.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		assert.Equal(t, fs.FileMode(0o600), temporaryInfo.Mode().Perm())
+	}
 
 	offset, err := reader.Seek(9, io.SeekStart)
 	require.NoError(t, err)
