@@ -406,6 +406,30 @@ func TestSweepLooseDoesNotReportValidSourceCorruptWhenRemovalPinIsUnavailable(t 
 	assert.FileExists(t, layout.LoosePath(entry.Hash))
 }
 
+func TestPackDoesNotRequireRemovalAuthorityForReadableCandidate(t *testing.T) {
+	layout := layoutForStoreTest(t)
+	content := []byte("pack readable source without removal authority")
+	hash := writeMaintenanceLoose(t, layout, content)
+	catalog := newMaintenanceCatalog()
+	catalog.addLoose(hash, layout.LoosePath(hash))
+	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
+	maintainer.openIdentityPin = func(string) (identityPin, fs.FileInfo, error) {
+		return nil, nil, fs.ErrPermission
+	}
+
+	stats, err := maintainer.Pack(context.Background(), PackOptions{})
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.BlobsPacked)
+	assert.Zero(t, stats.BlobsCorrupt)
+	assert.FileExists(t, layout.LoosePath(hash), "unavailable cleanup preserves the redundant loose source")
+	location, err := catalog.Resolve(context.Background(), hash)
+	require.NoError(t, err)
+	require.NotNil(t, location.Pack)
+	got, _ := readStoreTest(t, maintainer.store, hash)
+	assert.Equal(t, content, got)
+}
+
 func TestPackSourcePinLimitRotatesWithoutLeakingPins(t *testing.T) {
 	layout := layoutForStoreTest(t)
 	catalog := newMaintenanceCatalog()
@@ -420,8 +444,8 @@ func TestPackSourcePinLimitRotatesWithoutLeakingPins(t *testing.T) {
 	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
 	maintainer.packedSourcePinLimit = 3
 	opened, closed := 0, 0
-	baseOpen := maintainer.openIdentityPin
-	maintainer.openIdentityPin = func(path string) (identityPin, fs.FileInfo, error) {
+	baseOpen := maintainer.openVerificationPin
+	maintainer.openVerificationPin = func(path string) (identityPin, fs.FileInfo, error) {
 		pin, identity, err := baseOpen(path)
 		if err != nil {
 			return nil, nil, err
@@ -520,8 +544,8 @@ func TestPackClosesSourcePinsWhenRecordPackFails(t *testing.T) {
 	catalog.recordErr = recordErr
 	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
 	opened, closed := 0, 0
-	baseOpen := maintainer.openIdentityPin
-	maintainer.openIdentityPin = func(path string) (identityPin, fs.FileInfo, error) {
+	baseOpen := maintainer.openVerificationPin
+	maintainer.openVerificationPin = func(path string) (identityPin, fs.FileInfo, error) {
 		pin, identity, err := baseOpen(path)
 		if err != nil {
 			return nil, nil, err
@@ -546,8 +570,8 @@ func TestPackReportsSourcePinCloseFailure(t *testing.T) {
 	catalog.addLoose(hash, layout.LoosePath(hash))
 	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
 	closeErr := errors.New("injected source pin close failure")
-	baseOpen := maintainer.openIdentityPin
-	maintainer.openIdentityPin = func(path string) (identityPin, fs.FileInfo, error) {
+	baseOpen := maintainer.openVerificationPin
+	maintainer.openVerificationPin = func(path string) (identityPin, fs.FileInfo, error) {
 		pin, identity, err := baseOpen(path)
 		if err != nil {
 			return nil, nil, err
@@ -586,8 +610,8 @@ func TestPackCancellationDuringCompressedCandidateCleansScratch(t *testing.T) {
 	t.Cleanup(func() { newLooseZstdReader = originalReader })
 	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
 	opened, closed := 0, 0
-	baseOpen := maintainer.openIdentityPin
-	maintainer.openIdentityPin = func(path string) (identityPin, fs.FileInfo, error) {
+	baseOpen := maintainer.openVerificationPin
+	maintainer.openVerificationPin = func(path string) (identityPin, fs.FileInfo, error) {
 		pin, identity, err := baseOpen(path)
 		if err != nil {
 			return nil, nil, err
@@ -643,8 +667,8 @@ func TestPackCancellationBetweenCandidatePathsClosesSelectedPin(t *testing.T) {
 	}
 	opened, closed := 0, 0
 	closeErr := errors.New("selected pin close failure")
-	baseOpen := maintainer.openIdentityPin
-	maintainer.openIdentityPin = func(path string) (identityPin, fs.FileInfo, error) {
+	baseOpen := maintainer.openVerificationPin
+	maintainer.openVerificationPin = func(path string) (identityPin, fs.FileInfo, error) {
 		pin, identity, err := baseOpen(path)
 		if err != nil {
 			return nil, nil, err

@@ -16,6 +16,38 @@ import (
 
 const windowsFileDeleteChild = 0x40
 
+func TestWindowsPackingReadableNonDeletableLooseCandidate(t *testing.T) {
+	layout := layoutForStoreTest(t)
+	content := []byte("readable packing candidate without deletion permission")
+	hash := writeMaintenanceLoose(t, layout, content)
+	loosePath := layout.LoosePath(hash)
+	catalog := newMaintenanceCatalog()
+	catalog.addLoose(hash, loosePath)
+	restoreWindowsFileDACL := denyWindowsFileDeletion(t, loosePath)
+	t.Cleanup(restoreWindowsFileDACL)
+	readable, _, err := openLooseFile(loosePath)
+	require.NoError(t, err, "fixture remains readable")
+	require.NoError(t, readable.Close())
+	deletePin, _, deleteErr := openLooseIdentityPin(loosePath)
+	if deletePin != nil {
+		require.NoError(t, deletePin.Close())
+	}
+	require.Error(t, deleteErr, "fixture must deny deletion-capable identity handles")
+	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
+
+	stats, err := maintainer.Pack(context.Background(), PackOptions{})
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.BlobsPacked)
+	assert.Zero(t, stats.BlobsCorrupt)
+	location, err := catalog.Resolve(context.Background(), hash)
+	require.NoError(t, err)
+	require.NotNil(t, location.Pack)
+	assert.FileExists(t, loosePath)
+	got, _ := readStoreTest(t, maintainer.store, hash)
+	assert.Equal(t, content, got)
+}
+
 func TestWindowsRecoveryPacksReadableNonDeletableLooseAuthority(t *testing.T) {
 	layout := layoutForStoreTest(t)
 	content := []byte("readable loose authority without deletion permission")

@@ -80,7 +80,7 @@ func (m *Maintainer) Pack(ctx context.Context, opts PackOptions) (PackStats, err
 	}
 	if err := m.packCandidates(ctx, recoveries, opts, &stats, packCandidatePolicy{
 		commit:          m.catalog.AdoptPack,
-		openPin:         openLooseMaintenanceVerificationPin,
+		openPin:         m.openVerificationPin,
 		replaceMappings: true,
 	}); err != nil {
 		return stats, err
@@ -405,7 +405,7 @@ func (m *Maintainer) packLoose(ctx context.Context, opts PackOptions, stats *Pac
 	}
 	return m.packCandidates(ctx, candidates, opts, stats, packCandidatePolicy{
 		commit:       m.catalog.RecordPack,
-		openPin:      m.openIdentityPin,
+		openPin:      m.openVerificationPin,
 		removeSource: true,
 	})
 }
@@ -916,10 +916,33 @@ func (m *Maintainer) sealAndCommit(
 		if !policy.removeSource {
 			continue
 		}
-		// Removal owns and closes the pin on every return path. Clear it so
-		// the function-level fallback closes only pins not yet consumed.
+		verifiedIdentity, statErr := source.pin.Stat()
 		sources[index].pin = nil
-		if _, err := removeLoosePathPinned(source.path, source.pin); err != nil {
+		if statErr != nil {
+			cleanupErr = errors.Join(cleanupErr, statErr, source.pin.Close())
+			continue
+		}
+		removalPin, removalIdentity, openErr := m.openIdentityPin(source.path)
+		closeErr := source.pin.Close()
+		if closeErr != nil {
+			cleanupErr = errors.Join(cleanupErr, closeErr, closeIdentityPin(removalPin))
+			continue
+		}
+		if openErr != nil {
+			if errors.Is(openErr, fs.ErrNotExist) || errors.Is(openErr, fs.ErrPermission) {
+				continue
+			}
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf(
+				"packstore: open packed loose source %s for removal: %w", source.path, openErr,
+			))
+			continue
+		}
+		if !os.SameFile(verifiedIdentity, removalIdentity) {
+			cleanupErr = errors.Join(cleanupErr, errIdentityChanged, removalPin.Close())
+			continue
+		}
+		// Removal owns and closes the removal pin on every return path.
+		if _, err := removeLoosePathPinned(source.path, removalPin); err != nil {
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf(
 				"packstore: remove packed loose source %s: %w", source.path, err,
 			))

@@ -19,6 +19,7 @@ type Maintainer struct {
 	coordinator          *Coordinator
 	store                *Store
 	packedSourcePinLimit int
+	openVerificationPin  identityPinOpener
 	openIdentityPin      identityPinOpener
 	beforeCandidatePath  func(int)
 }
@@ -45,6 +46,7 @@ func NewMaintainer(catalog Catalog, layout Layout, opts MaintainerOptions) (*Mai
 	return &Maintainer{
 		catalog: catalog, layout: layout, limits: opts.Limits, coordinator: opts.Coordinator, store: store,
 		packedSourcePinLimit: defaultPackedSourcePinLimit(opts.Limits.PackEntries),
+		openVerificationPin:  openLooseMaintenanceVerificationPin,
 		openIdentityPin:      openLooseIdentityPin,
 	}, nil
 }
