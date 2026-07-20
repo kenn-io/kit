@@ -45,6 +45,149 @@ func TestStoreReadsOnlyCatalogMembersFromLooseAndPackedStorage(t *testing.T) {
 	assert.ErrorIs(err, fs.ErrNotExist)
 }
 
+func TestStoreOpenReadsAndSeeksCompressedLooseContent(t *testing.T) {
+	content := bytes.Repeat([]byte("seekable compressed content "), 1024)
+	layout := layoutForStoreTest(t)
+	hash := hashForTest(content)
+	writeCompressedLooseFixture(t, layout, hash, int64(len(content)), content, nil)
+	store := newStoreForTest(t, &mapResolver{locations: map[Hash]Location{
+		hash: {Member: true},
+	}}, layout)
+
+	reader, size, err := store.Open(context.Background(), hash)
+	require.NoError(t, err)
+	assert.Equal(t, int64(len(content)), size)
+	named, ok := reader.(interface{ Name() string })
+	require.True(t, ok, "compressed compatibility reader must expose its private temporary path")
+	temporaryPath := named.Name()
+	assert.FileExists(t, temporaryPath)
+
+	offset, err := reader.Seek(9, io.SeekStart)
+	require.NoError(t, err)
+	assert.Equal(t, int64(9), offset)
+	got, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	assert.Equal(t, content[9:], got)
+	require.NoError(t, reader.Close())
+	assert.NoFileExists(t, temporaryPath)
+	require.NoError(t, reader.Close())
+}
+
+func TestStoreOpenRejectsCorruptCompressedLooseAndCleansTemporaryFile(t *testing.T) {
+	content := bytes.Repeat([]byte("verify before seekable exposure "), 1024)
+	layout := layoutForStoreTest(t)
+	hash := hashForTest(content)
+	writeCompressedLooseFixture(
+		t, layout, hash, int64(len(content)), bytes.Repeat([]byte{'x'}, len(content)), nil,
+	)
+	store := newStoreForTest(t, &mapResolver{locations: map[Hash]Location{
+		hash: {Member: true},
+	}}, layout)
+	pattern := filepath.Join(os.TempDir(), "packstore-loose-open-*")
+	before, err := filepath.Glob(pattern)
+	require.NoError(t, err)
+
+	reader, size, err := store.Open(context.Background(), hash)
+	require.ErrorIs(t, err, ErrContentMismatch)
+	assert.Nil(t, reader)
+	assert.Zero(t, size)
+	after, globErr := filepath.Glob(pattern)
+	require.NoError(t, globErr)
+	assert.ElementsMatch(t, before, after, "failed compatibility opens must remove private temporary files")
+}
+
+func TestStoreOpenTemporaryWriteFailureDoesNotDrainCompressedSource(t *testing.T) {
+	content := bytes.Repeat([]byte("do not drain after temporary write failure\n"), 4096)
+	layout := layoutForStoreTest(t)
+	hash := hashForTest(content)
+	writeCompressedLooseFixture(t, layout, hash, int64(len(content)), content, nil)
+	store := newStoreForTest(t, &mapResolver{locations: map[Hash]Location{
+		hash: {Member: true},
+	}}, layout)
+
+	originalReader := newLooseZstdReader
+	var decodedBytes int64
+	newLooseZstdReader = func(src io.Reader) (looseZstdReader, error) {
+		reader, err := originalReader(src)
+		if err != nil {
+			return nil, err
+		}
+		return &countingLooseZstdReader{looseZstdReader: reader, read: &decodedBytes}, nil
+	}
+	t.Cleanup(func() { newLooseZstdReader = originalReader })
+
+	originalCreate := createSeekableLooseTemp
+	var temporaryPath string
+	createSeekableLooseTemp = func() (*os.File, error) {
+		file, err := os.CreateTemp(t.TempDir(), "closed-seekable-")
+		if err != nil {
+			return nil, err
+		}
+		temporaryPath = file.Name()
+		return file, file.Close()
+	}
+	t.Cleanup(func() { createSeekableLooseTemp = originalCreate })
+
+	reader, _, err := store.Open(context.Background(), hash)
+	require.Error(t, err)
+	assert.Nil(t, reader)
+	assert.LessOrEqual(t, decodedBytes, int64(looseCopyBufferBytes))
+	assert.NoFileExists(t, temporaryPath)
+}
+
+type countingLooseZstdReader struct {
+	looseZstdReader
+	read *int64
+}
+
+func (r *countingLooseZstdReader) Read(p []byte) (int, error) {
+	n, err := r.looseZstdReader.Read(p)
+	*r.read += int64(n)
+	return n, err
+}
+
+func TestReadBoundedCompressedLooseParityAndHeaderPreflight(t *testing.T) {
+	content := bytes.Repeat([]byte("bounded compressed content "), 1024)
+	layout := layoutForStoreTest(t)
+	hash := hashForTest(content)
+	writeCompressedLooseFixture(t, layout, hash, int64(len(content)), content, nil)
+	store := newStoreForTest(t, &mapResolver{locations: map[Hash]Location{
+		hash: {Member: true},
+	}}, layout)
+
+	got, size, err := store.ReadBounded(context.Background(), hash, int64(len(content)))
+	require.NoError(t, err)
+	assert.Equal(t, content, got)
+	assert.Equal(t, int64(len(content)), size)
+
+	_, _, err = store.ReadBounded(context.Background(), hash, int64(len(content)-1))
+	var limitErr *LimitError
+	require.ErrorAs(t, err, &limitErr)
+	assert.Equal(t, LimitBlobRawBytes, limitErr.Dimension)
+	assert.Equal(t, uint64(len(content)), limitErr.Actual)
+}
+
+func TestReadBoundedPreflightsCompressedHeaderBeforeDecode(t *testing.T) {
+	content := []byte("preflight identity")
+	layout := layoutForStoreTest(t)
+	hash := hashForTest(content)
+	path := layout.CompressedLoosePath(hash)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	header := encodeCompressedLooseHeader(1024)
+	require.NoError(t, os.WriteFile(path, append(header[:], []byte("not zstd")...), 0o600))
+	store := newStoreForTest(t, &mapResolver{locations: map[Hash]Location{
+		hash: {Member: true},
+	}}, layout)
+
+	data, size, err := store.ReadBounded(context.Background(), hash, 16)
+	var limitErr *LimitError
+	require.ErrorAs(t, err, &limitErr)
+	assert.Equal(t, LimitBlobRawBytes, limitErr.Dimension)
+	assert.Equal(t, uint64(1024), limitErr.Actual)
+	assert.Nil(t, data)
+	assert.Zero(t, size)
+}
+
 func TestReadBoundedRejectsCorruptLooseContent(t *testing.T) {
 	require := require.New(t)
 	layout := layoutForStoreTest(t)

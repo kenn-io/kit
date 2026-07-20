@@ -3,7 +3,6 @@ package packstore
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +14,10 @@ import (
 )
 
 const maxOpenReaders = 16
+
+var createSeekableLooseTemp = func() (*os.File, error) {
+	return os.CreateTemp("", "packstore-loose-open-")
+}
 
 // ErrPackRetirementDeferred identifies a canonical pack removal that callers
 // may retry after readers or external filesystem users release the file.
@@ -88,21 +91,29 @@ func NewStore(resolver Resolver, layout Layout, opts StoreOptions) (*Store, erro
 	}, nil
 }
 
-// Open returns catalog-authorized content and its raw size. Resolution is
-// retried once when a concurrent migration removes the initially selected
-// physical source.
+// Open returns seekable catalog-authorized content and its logical size.
+// Compressed loose objects are verified into a private temporary file to
+// preserve this compatibility API; streaming callers should prefer OpenStream.
+// Resolution is retried once when a concurrent migration removes the initially
+// selected physical source.
 func (s *Store) Open(ctx context.Context, hash Hash) (io.ReadSeekCloser, int64, error) {
+	if ctx == nil {
+		return nil, 0, fmt.Errorf("packstore: nil context")
+	}
 	if err := hash.Validate(); err != nil {
 		return nil, 0, err
 	}
 	return resolveBlob(ctx, s, hash,
-		func(hash Hash) (io.ReadSeekCloser, int64, error) { return s.openLoose(hash) },
+		func(hash Hash) (io.ReadSeekCloser, int64, error) { return s.openSeekableLoose(ctx, hash) },
 		s.openPacked)
 }
 
 // ReadBounded returns verified content while bounding both stored and raw
 // allocations. Packed cache misses also preflight container and footer limits.
 func (s *Store) ReadBounded(ctx context.Context, hash Hash, maxBytes int64) ([]byte, int64, error) {
+	if ctx == nil {
+		return nil, 0, fmt.Errorf("packstore: nil context")
+	}
 	if err := hash.Validate(); err != nil {
 		return nil, 0, err
 	}
@@ -113,7 +124,7 @@ func (s *Store) ReadBounded(ctx context.Context, hash Hash, maxBytes int64) ([]b
 		maxBytes = s.limits.BlobBytes
 	}
 	return resolveBlob(ctx, s, hash,
-		func(hash Hash) ([]byte, int64, error) { return s.readLooseBounded(hash, maxBytes) },
+		func(hash Hash) ([]byte, int64, error) { return s.readLooseBounded(ctx, hash, maxBytes) },
 		func(hash Hash, entry *IndexEntry) ([]byte, int64, error) {
 			return s.readPackedBounded(ctx, hash, entry, maxBytes)
 		})
@@ -202,53 +213,163 @@ func (s *Store) RetirePack(packID string) error {
 	return errors.Join(closeErr, removeErr)
 }
 
-func (s *Store) openLoose(hash Hash) (*os.File, int64, error) {
-	f, err := openNoFollow(s.layout.LoosePath(hash), false)
+type looseObject struct {
+	file        *os.File
+	encoding    LooseEncoding
+	logicalSize int64
+	storedSize  int64
+}
+
+func (s *Store) openLooseObject(hash Hash) (*looseObject, error) {
+	compressedPath := s.layout.CompressedLoosePath(hash)
+	f, info, err := openLooseFile(compressedPath)
+	if err == nil {
+		header := make([]byte, compressedLooseHeaderSize)
+		if _, readErr := io.ReadFull(f, header); readErr != nil {
+			return nil, errors.Join(
+				fmt.Errorf("%w: read compressed loose header: %v", ErrContentMismatch, readErr),
+				f.Close(),
+			)
+		}
+		logicalSize, headerErr := decodeCompressedLooseHeader(header)
+		if headerErr != nil {
+			return nil, errors.Join(
+				fmt.Errorf("%w: decode compressed loose header: %w", ErrContentMismatch, headerErr),
+				f.Close(),
+			)
+		}
+		return &looseObject{
+			file: f, encoding: LooseEncodingZstd,
+			logicalSize: logicalSize, storedSize: info.Size(),
+		}, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+
+	rawPath := s.layout.LoosePath(hash)
+	f, info, err = openLooseFile(rawPath)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
+	}
+	return &looseObject{
+		file: f, encoding: LooseEncodingRaw,
+		logicalSize: info.Size(), storedSize: info.Size(),
+	}, nil
+}
+
+func openLooseFile(path string) (*os.File, fs.FileInfo, error) {
+	f, err := openNoFollow(path, false)
+	if err != nil {
+		return nil, nil, err
 	}
 	info, err := f.Stat()
 	if err != nil {
-		_ = f.Close()
-		return nil, 0, err
+		return nil, nil, errors.Join(err, f.Close())
 	}
-	if err := validateRegularNoFollow(s.layout.LoosePath(hash), info); err != nil {
-		_ = f.Close()
-		return nil, 0, err
+	if err := validateRegularNoFollow(path, info); err != nil {
+		return nil, nil, errors.Join(err, f.Close())
 	}
-	return f, info.Size(), nil
+	return f, info, nil
 }
 
-func (s *Store) readLooseBounded(hash Hash, maxBytes int64) ([]byte, int64, error) {
-	f, size, err := s.openLoose(hash)
+func (s *Store) openSeekableLoose(ctx context.Context, hash Hash) (io.ReadSeekCloser, int64, error) {
+	object, err := s.openLooseObject(hash)
 	if err != nil {
 		return nil, 0, err
 	}
-	defer func() { _ = f.Close() }()
-	if size < 0 {
-		return nil, 0, fmt.Errorf("packstore: negative loose size %d", size)
+	if object.encoding == LooseEncodingRaw {
+		return object.file, object.logicalSize, nil
 	}
-	if size > maxBytes {
-		return nil, 0, newLimitError(LimitBlobRawBytes, uint64(size), uint64(maxBytes)) //nolint:gosec
-	}
-	if uint64(size) > maxPlatformInt {
-		return nil, 0, newLimitError(LimitBlobRawBytes, uint64(size), maxPlatformInt)
-	}
-	data := make([]byte, int(size))
-	if _, err := io.ReadFull(f, data); err != nil {
+	stream, err := newLooseVerifiedStream(ctx, hash, object)
+	if err != nil {
 		return nil, 0, err
 	}
-	var probe [1]byte
-	n, probeErr := f.Read(probe[:])
-	if n != 0 || probeErr == nil {
-		return nil, 0, newLimitError(LimitBlobStatBytes, uint64(size)+uint64(n), uint64(size)) //nolint:gosec
+	temporary, err := createSeekableLooseTemp()
+	if err != nil {
+		return nil, 0, errors.Join(
+			fmt.Errorf("packstore: create seekable loose temporary file: %w", err),
+			stream.Close(),
+		)
 	}
-	if !errors.Is(probeErr, io.EOF) {
-		return nil, 0, probeErr
+	cleanup := func(primary error) error {
+		streamErr := stream.Close()
+		closeErr := temporary.Close()
+		removeErr := os.Remove(temporary.Name())
+		if errors.Is(removeErr, fs.ErrNotExist) {
+			removeErr = nil
+		}
+		return errors.Join(primary, streamErr, closeErr, removeErr)
 	}
-	sum := sha256.Sum256(data)
-	if !bytes.Equal(sum[:], hash.Bytes()) {
-		return nil, 0, fmt.Errorf("%w: loose hash differs from %s", ErrContentMismatch, hash)
+	buffer := looseCopyBufferPool.Get().(*[looseCopyBufferBytes]byte)
+	_, copyErr := io.CopyBuffer(struct{ io.Writer }{temporary}, stream, buffer[:])
+	looseCopyBufferPool.Put(buffer)
+	if copyErr != nil {
+		return nil, 0, cleanup(copyErr)
+	}
+	verifyErr := stream.Verify()
+	if verifyErr != nil {
+		return nil, 0, cleanup(verifyErr)
+	}
+	if err := stream.Close(); err != nil {
+		return nil, 0, cleanup(err)
+	}
+	if _, err := temporary.Seek(0, io.SeekStart); err != nil {
+		return nil, 0, cleanup(fmt.Errorf("packstore: rewind seekable loose temporary file: %w", err))
+	}
+	return &temporarySeekCloser{File: temporary, path: temporary.Name()}, object.logicalSize, nil
+}
+
+type temporarySeekCloser struct {
+	*os.File
+	path string
+	once sync.Once
+	err  error
+}
+
+func (f *temporarySeekCloser) Close() error {
+	f.once.Do(func() {
+		closeErr := f.File.Close()
+		removeErr := os.Remove(f.path)
+		if errors.Is(removeErr, fs.ErrNotExist) {
+			removeErr = nil
+		}
+		f.err = errors.Join(closeErr, removeErr)
+	})
+	return f.err
+}
+
+func (s *Store) readLooseBounded(ctx context.Context, hash Hash, maxBytes int64) ([]byte, int64, error) {
+	object, err := s.openLooseObject(hash)
+	if err != nil {
+		return nil, 0, err
+	}
+	size := object.logicalSize
+	if size < 0 {
+		return nil, 0, errors.Join(fmt.Errorf("packstore: negative loose size %d", size), object.file.Close())
+	}
+	if size > maxBytes {
+		return nil, 0, errors.Join(
+			newLimitError(LimitBlobRawBytes, uint64(size), uint64(maxBytes)), //nolint:gosec
+			object.file.Close(),
+		)
+	}
+	if uint64(size) > maxPlatformInt {
+		return nil, 0, errors.Join(
+			newLimitError(LimitBlobRawBytes, uint64(size), maxPlatformInt),
+			object.file.Close(),
+		)
+	}
+	stream, err := newLooseVerifiedStream(ctx, hash, object)
+	if err != nil {
+		return nil, 0, err
+	}
+	data := make([]byte, int(size))
+	_, readErr := io.ReadFull(stream, data)
+	verifyErr := stream.Verify()
+	closeErr := stream.Close()
+	if err := errors.Join(readErr, verifyErr, closeErr); err != nil {
+		return nil, 0, err
 	}
 	return data, size, nil
 }

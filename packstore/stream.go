@@ -10,6 +10,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/klauspost/compress/zstd"
 	"go.kenn.io/kit/pack"
 )
 
@@ -121,25 +122,64 @@ func (s *packedVerifiedStream) finish() {
 }
 
 func (s *Store) openLooseStream(ctx context.Context, contentHash Hash) (VerifiedReadCloser, int64, error) {
-	f, size, err := s.openLoose(contentHash)
+	object, err := s.openLooseObject(contentHash)
 	if err != nil {
 		return nil, 0, err
 	}
-	if size < 0 {
-		return nil, 0, errors.Join(fmt.Errorf("packstore: negative loose size %d", size), f.Close())
+	if object.logicalSize < 0 {
+		return nil, 0, errors.Join(
+			fmt.Errorf("packstore: negative loose size %d", object.logicalSize),
+			object.file.Close(),
+		)
 	}
+	stream, err := newLooseVerifiedStream(ctx, contentHash, object)
+	if err != nil {
+		return nil, 0, err
+	}
+	return stream, object.logicalSize, nil
+}
+
+func newLooseVerifiedStream(
+	ctx context.Context,
+	contentHash Hash,
+	object *looseObject,
+) (*looseVerifiedStream, error) {
 	id, err := pack.ParseBlobID(contentHash.String())
 	if err != nil {
-		return nil, 0, errors.Join(err, f.Close())
+		return nil, errors.Join(err, object.file.Close())
 	}
-	return &looseVerifiedStream{
-		ctx: ctx, f: f, expected: id, size: uint64(size), digest: sha256.New(),
-	}, size, nil
+	stream := &looseVerifiedStream{
+		ctx: ctx, object: object, reader: object.file,
+		expected: id, size: uint64(object.logicalSize), digest: sha256.New(),
+	}
+	if object.encoding == LooseEncodingZstd {
+		payloadSize := object.storedSize - compressedLooseHeaderSize
+		if payloadSize < 0 {
+			return nil, errors.Join(
+				fmt.Errorf("%w: compressed loose payload size is negative", ErrContentMismatch),
+				object.file.Close(),
+			)
+		}
+		stream.payload = &io.LimitedReader{R: object.file, N: payloadSize}
+		decoder, decoderErr := newLooseZstdReader(newSingleZstdFrameReader(stream.payload))
+		if decoderErr != nil {
+			return nil, errors.Join(
+				fmt.Errorf("%w: open compressed loose payload: %w", ErrContentMismatch, decoderErr),
+				object.file.Close(),
+			)
+		}
+		stream.decoder = decoder
+		stream.reader = decoder
+	}
+	return stream, nil
 }
 
 type looseVerifiedStream struct {
 	ctx      context.Context
-	f        *os.File
+	object   *looseObject
+	reader   io.Reader
+	decoder  looseZstdReader
+	payload  *io.LimitedReader
 	expected pack.BlobID
 	size     uint64
 	digest   hash.Hash
@@ -171,12 +211,15 @@ func (s *looseVerifiedStream) Read(p []byte) (int, error) {
 		return 0, s.finish()
 	}
 	want := min(uint64(len(p)), remaining)
-	n, readErr := s.f.Read(p[:want])
+	n, readErr := s.reader.Read(p[:want])
 	if n > 0 {
 		_, _ = s.digest.Write(p[:n])
 		s.read += uint64(n)
 	}
 	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		if s.decoder != nil {
+			readErr = fmt.Errorf("%w: decode compressed loose payload: %w", ErrContentMismatch, readErr)
+		}
 		return n, s.fail(readErr)
 	}
 	if errors.Is(readErr, io.EOF) && s.read != s.size {
@@ -197,19 +240,27 @@ func (s *looseVerifiedStream) finish() error {
 		return s.fail(err)
 	}
 	var probe [1]byte
-	n, err := s.f.Read(probe[:])
+	n, err := s.reader.Read(probe[:])
 	if n != 0 || err == nil {
-		return s.fail(newLimitError(LimitBlobStatBytes, s.size+uint64(n), s.size))
+		return s.fail(fmt.Errorf(
+			"%w: loose decoded size exceeds %d bytes", ErrContentMismatch, s.size,
+		))
 	}
 	if !errors.Is(err, io.EOF) {
-		return s.fail(err)
+		return s.fail(fmt.Errorf("%w: read loose terminal state: %w", ErrContentMismatch, err))
+	}
+	if s.payload != nil && s.payload.N != 0 {
+		return s.fail(fmt.Errorf(
+			"%w: compressed loose payload ended with %d unread bytes",
+			ErrContentMismatch, s.payload.N,
+		))
 	}
 	var got pack.BlobID
 	copy(got[:], s.digest.Sum(nil))
 	if got != s.expected {
 		return s.fail(fmt.Errorf("%w: loose hash differs from %s", ErrContentMismatch, s.expected))
 	}
-	s.closeErr = s.f.Close()
+	s.closeErr = s.closePhysical()
 	s.closed = true
 	if s.closeErr != nil {
 		s.terminal = s.closeErr
@@ -221,7 +272,7 @@ func (s *looseVerifiedStream) finish() error {
 
 func (s *looseVerifiedStream) fail(err error) error {
 	if s.terminal == nil {
-		s.closeErr = s.f.Close()
+		s.closeErr = s.closePhysical()
 		s.closed = true
 		s.terminal = errors.Join(err, s.closeErr)
 	}
@@ -254,11 +305,155 @@ func (s *looseVerifiedStream) Verified() bool { return s.verified }
 
 func (s *looseVerifiedStream) Close() error {
 	if !s.closed {
-		s.closeErr = s.f.Close()
+		s.closeErr = s.closePhysical()
 		s.closed = true
 	}
 	if s.verified {
 		return s.closeErr
 	}
 	return errors.Join(s.terminal, s.closeErr, pack.ErrVerificationIncomplete)
+}
+
+func (s *looseVerifiedStream) closePhysical() error {
+	if s.decoder != nil {
+		s.decoder.Close()
+		s.decoder = nil
+	}
+	return s.object.file.Close()
+}
+
+type zstdFrameReaderState uint8
+
+const (
+	zstdFrameHeader zstdFrameReaderState = iota + 1
+	zstdFrameBlockHeader
+	zstdFrameBlockData
+	zstdFrameChecksum
+	zstdFrameDone
+	zstdFramePassthrough
+)
+
+// singleZstdFrameReader exposes exactly one physical zstd frame. The decoder
+// therefore reaches EOF at the first frame boundary, leaving any concatenated
+// frame or trailing bytes visible in the outer LimitedReader.
+type singleZstdFrameReader struct {
+	source *io.LimitedReader
+	state  zstdFrameReaderState
+
+	header      [zstd.HeaderMaxSize]byte
+	headerBytes int
+	blockHeader [3]byte
+	blockBytes  int
+	remaining   int64
+	lastBlock   bool
+	hasChecksum bool
+}
+
+func newSingleZstdFrameReader(source *io.LimitedReader) *singleZstdFrameReader {
+	return &singleZstdFrameReader{source: source, state: zstdFrameHeader}
+}
+
+func (r *singleZstdFrameReader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	switch r.state {
+	case zstdFrameDone:
+		return 0, io.EOF
+	case zstdFrameHeader:
+		p = p[:min(len(p), len(r.header)-r.headerBytes)]
+	case zstdFrameBlockHeader:
+		p = p[:min(len(p), len(r.blockHeader)-r.blockBytes)]
+	case zstdFrameBlockData, zstdFrameChecksum:
+		p = p[:min(int64(len(p)), r.remaining)]
+	}
+	n, err := r.source.Read(p)
+	if n > 0 {
+		r.observe(p[:n])
+	}
+	return n, err
+}
+
+func (r *singleZstdFrameReader) observe(data []byte) {
+	switch r.state {
+	case zstdFrameHeader:
+		copy(r.header[r.headerBytes:], data)
+		r.headerBytes += len(data)
+		var header zstd.Header
+		err := header.Decode(r.header[:r.headerBytes])
+		if errors.Is(err, io.ErrUnexpectedEOF) || err == nil && !header.Skippable && !header.FirstBlock.OK {
+			if r.headerBytes == len(r.header) {
+				r.state = zstdFramePassthrough
+				return
+			}
+			if err == nil && header.HeaderSize > 0 && r.headerBytes >= header.HeaderSize+3 {
+				r.state = zstdFramePassthrough
+			}
+			return
+		}
+		if err != nil {
+			r.state = zstdFramePassthrough
+			return
+		}
+		r.hasChecksum = header.HasCheckSum
+		if header.Skippable {
+			r.lastBlock = true
+			r.remaining = int64(header.SkippableSize)
+			r.state = zstdFrameBlockData
+			r.finishZstdFramePart()
+			return
+		}
+		r.lastBlock = header.FirstBlock.Last
+		r.remaining = int64(header.FirstBlock.CompressedSize)
+		r.state = zstdFrameBlockData
+		r.finishZstdFramePart()
+	case zstdFrameBlockHeader:
+		copy(r.blockHeader[r.blockBytes:], data)
+		r.blockBytes += len(data)
+		if r.blockBytes != len(r.blockHeader) {
+			return
+		}
+		value := uint32(r.blockHeader[0]) |
+			uint32(r.blockHeader[1])<<8 |
+			uint32(r.blockHeader[2])<<16
+		r.lastBlock = value&1 != 0
+		blockType := (value >> 1) & 3
+		blockSize := int64(value >> 3)
+		switch blockType {
+		case 0, 2:
+			r.remaining = blockSize
+		case 1:
+			r.remaining = 1
+		default:
+			r.state = zstdFramePassthrough
+			return
+		}
+		r.blockBytes = 0
+		r.state = zstdFrameBlockData
+		r.finishZstdFramePart()
+	case zstdFrameBlockData, zstdFrameChecksum:
+		r.remaining -= int64(len(data))
+		r.finishZstdFramePart()
+	}
+}
+
+func (r *singleZstdFrameReader) finishZstdFramePart() {
+	if r.remaining != 0 {
+		return
+	}
+	switch r.state {
+	case zstdFrameBlockData:
+		if !r.lastBlock {
+			r.state = zstdFrameBlockHeader
+			return
+		}
+		if r.hasChecksum {
+			r.state = zstdFrameChecksum
+			r.remaining = 4
+			return
+		}
+		r.state = zstdFrameDone
+	case zstdFrameChecksum:
+		r.state = zstdFrameDone
+	}
 }
