@@ -327,7 +327,7 @@ func TestStoreOpenStreamCancellationClosesCompressedLoose(t *testing.T) {
 	require.ErrorIs(t, stream.Close(), context.Canceled)
 	assert.False(t, stream.Verified())
 	assert.Equal(t, 1, closeCalls)
-	_, err = physical.Stat()
+	_, err = physical.Read(make([]byte, 1))
 	require.ErrorIs(t, err, os.ErrClosed)
 }
 
