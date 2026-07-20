@@ -20,7 +20,10 @@ import (
 	"go.kenn.io/kit/pack"
 )
 
-const looseCopyBufferBytes = 32 << 10
+const (
+	looseCopyBufferBytes = 32 << 10
+	looseZstdWindowBytes = 1 << 20
+)
 
 var looseCopyBufferPool = sync.Pool{
 	New: func() any { return new([looseCopyBufferBytes]byte) },
@@ -38,7 +41,10 @@ var (
 	syncLooseFile             = func(file *os.File) error { return file.Sync() }
 	snapshotLoosePathIdentity = snapshotPathIdentity
 	newLooseZstdWriter        = func(dst io.Writer) (io.WriteCloser, error) {
-		return zstd.NewWriter(dst, zstd.WithEncoderConcurrency(1))
+		return zstd.NewWriter(dst,
+			zstd.WithEncoderConcurrency(1),
+			zstd.WithWindowSize(looseZstdWindowBytes),
+		)
 	}
 	newLooseZstdReader = func(src io.Reader) (looseZstdReader, error) {
 		return zstd.NewReader(src,
