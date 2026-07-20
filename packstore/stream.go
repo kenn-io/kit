@@ -361,7 +361,10 @@ func (r *singleZstdFrameReader) Read(p []byte) (int, error) {
 	case zstdFrameDone:
 		return 0, io.EOF
 	case zstdFrameHeader:
-		p = p[:min(len(p), len(r.header)-r.headerBytes)]
+		// Header.Decode includes the first block header in FirstBlock. Discover
+		// that boundary one byte at a time so bytes from the block payload are
+		// never handed over before remaining has been initialized.
+		p = p[:1]
 	case zstdFrameBlockHeader:
 		p = p[:min(len(p), len(r.blockHeader)-r.blockBytes)]
 	case zstdFrameBlockData, zstdFrameChecksum:

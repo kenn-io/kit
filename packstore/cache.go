@@ -40,7 +40,7 @@ func (s *Store) cachedReaderLocked(packID string, enforcePolicy bool) (*cachedPa
 	}
 	f, err := openNoFollow(s.layout.PackPath(packID), false)
 	if err != nil {
-		return nil, fmt.Errorf("packstore: open pack %s: %w", packID, err)
+		return nil, fmt.Errorf("packstore: open pack %s: %w", packID, markPhysicalSourceNotFound(err))
 	}
 	windowBytes := uint64(max(s.limits.BlobBytes, int64(1<<10))) //nolint:gosec // limits are non-negative
 	readerLimits := pack.ReaderLimits{WindowBytes: windowBytes}

@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -61,6 +63,9 @@ func TestStoreOpenReadsAndSeeksCompressedLooseContent(t *testing.T) {
 	require.True(t, ok, "compressed compatibility reader must expose its private temporary path")
 	temporaryPath := named.Name()
 	assert.FileExists(t, temporaryPath)
+	temporaryInfo, err := os.Stat(temporaryPath)
+	require.NoError(t, err)
+	assert.Equal(t, fs.FileMode(0o600), temporaryInfo.Mode().Perm())
 
 	offset, err := reader.Seek(9, io.SeekStart)
 	require.NoError(t, err)
@@ -119,20 +124,48 @@ func TestStoreOpenTemporaryWriteFailureDoesNotDrainCompressedSource(t *testing.T
 	originalCreate := createSeekableLooseTemp
 	var temporaryPath string
 	createSeekableLooseTemp = func() (*os.File, error) {
-		file, err := os.CreateTemp(t.TempDir(), "closed-seekable-")
+		file, err := os.CreateTemp(t.TempDir(), "failed-seekable-")
 		if err != nil {
 			return nil, err
 		}
 		temporaryPath = file.Name()
-		return file, file.Close()
+		return file, nil
 	}
 	t.Cleanup(func() { createSeekableLooseTemp = originalCreate })
+	originalCopy := copySeekableLoose
+	writeErr := errors.New("injected temporary write failure")
+	copySeekableLoose = func(io.Writer, io.Reader, []byte) (int64, error) { return 0, writeErr }
+	t.Cleanup(func() { copySeekableLoose = originalCopy })
 
 	reader, _, err := store.Open(context.Background(), hash)
-	require.Error(t, err)
+	require.ErrorIs(t, err, writeErr)
 	assert.Nil(t, reader)
 	assert.LessOrEqual(t, decodedBytes, int64(looseCopyBufferBytes))
 	assert.NoFileExists(t, temporaryPath)
+}
+
+func TestStoreOpenDoesNotRetryTemporaryNotExist(t *testing.T) {
+	content := []byte("temporary creation failure is not migration")
+	layout := layoutForStoreTest(t)
+	hash := hashForTest(content)
+	writeCompressedLooseFixture(t, layout, hash, int64(len(content)), content, nil)
+	packed := buildStoreTestPack(t, layout, content)
+	resolver := &sequenceResolver{locations: []Location{
+		{Member: true},
+		{Member: true, Pack: &packed},
+	}}
+	store := newStoreForTest(t, resolver, layout)
+	stagingErr := fmt.Errorf("seekable staging unavailable: %w", fs.ErrNotExist)
+
+	originalCreate := createSeekableLooseTemp
+	createSeekableLooseTemp = func() (*os.File, error) { return nil, stagingErr }
+	t.Cleanup(func() { createSeekableLooseTemp = originalCreate })
+
+	reader, size, err := store.Open(context.Background(), hash)
+	require.ErrorIs(t, err, stagingErr)
+	assert.Nil(t, reader)
+	assert.Zero(t, size)
+	assert.Equal(t, 1, resolver.calls)
 }
 
 type countingLooseZstdReader struct {
@@ -188,6 +221,35 @@ func TestReadBoundedPreflightsCompressedHeaderBeforeDecode(t *testing.T) {
 	assert.Zero(t, size)
 }
 
+func TestReadBoundedPreflightsPlatformIntBeforeAllocation(t *testing.T) {
+	content := []byte("platform allocation preflight")
+	layout := layoutForStoreTest(t)
+	hash := hashForTest(content)
+	path := layout.CompressedLoosePath(hash)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	header := encodeCompressedLooseHeader(math.MaxInt64)
+	require.NoError(t, os.WriteFile(path, append(header[:], []byte("not zstd")...), 0o600))
+	limits := DefaultLimits()
+	limits.BlobBytes = math.MaxInt64
+	store, err := NewStore(&mapResolver{locations: map[Hash]Location{hash: {Member: true}}}, layout, StoreOptions{
+		Limits: limits,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	originalMax := maxPlatformInt
+	maxPlatformInt = 1024
+	t.Cleanup(func() { maxPlatformInt = originalMax })
+
+	data, size, err := store.ReadBounded(context.Background(), hash, math.MaxInt64)
+	var limitErr *LimitError
+	require.ErrorAs(t, err, &limitErr)
+	assert.Equal(t, LimitBlobRawBytes, limitErr.Dimension)
+	assert.Equal(t, uint64(math.MaxInt64), limitErr.Actual)
+	assert.Equal(t, uint64(1024), limitErr.Limit)
+	assert.Nil(t, data)
+	assert.Zero(t, size)
+}
+
 func TestReadBoundedRejectsCorruptLooseContent(t *testing.T) {
 	require := require.New(t)
 	layout := layoutForStoreTest(t)
@@ -235,6 +297,7 @@ func TestStoreRetriesLooseToPackAndPackToLooseRacesOnce(t *testing.T) {
 	store := newStoreForTest(t, looseToPack, layout)
 	got, _ := readStoreTest(t, store, hash)
 	assert.Equal(content, got)
+	assert.Equal(2, looseToPack.calls)
 	require.NoError(store.Close())
 
 	require.NoError(os.WriteFile(loosePath, content, 0o600))

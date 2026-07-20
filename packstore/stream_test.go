@@ -303,9 +303,20 @@ func TestStoreOpenStreamCancellationReleasesPackedLease(t *testing.T) {
 func TestStoreOpenStreamCancellationClosesCompressedLoose(t *testing.T) {
 	content := bytes.Repeat([]byte("cancel compressed stream "), 4096)
 	store, hash := streamStoreForTest(t, "compressed", content)
+	originalReader := newLooseZstdReader
+	closeCalls := 0
+	newLooseZstdReader = func(src io.Reader) (looseZstdReader, error) {
+		reader, err := originalReader(src)
+		if err != nil {
+			return nil, err
+		}
+		return &closeCountingLooseZstdReader{looseZstdReader: reader, closeCalls: &closeCalls}, nil
+	}
+	t.Cleanup(func() { newLooseZstdReader = originalReader })
 	ctx, cancel := context.WithCancel(context.Background())
 	stream, _, err := store.OpenStream(ctx, hash)
 	require.NoError(t, err)
+	physical := stream.(*looseVerifiedStream).object.file
 	buf := make([]byte, 32)
 	_, err = stream.Read(buf)
 	require.NoError(t, err)
@@ -314,6 +325,19 @@ func TestStoreOpenStreamCancellationClosesCompressedLoose(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 	require.ErrorIs(t, stream.Close(), context.Canceled)
 	assert.False(t, stream.Verified())
+	assert.Equal(t, 1, closeCalls)
+	_, err = physical.Stat()
+	require.ErrorIs(t, err, os.ErrClosed)
+}
+
+type closeCountingLooseZstdReader struct {
+	looseZstdReader
+	closeCalls *int
+}
+
+func (r *closeCountingLooseZstdReader) Close() {
+	*r.closeCalls++
+	r.looseZstdReader.Close()
 }
 
 func TestStoreOpenStreamRejectsCompressedLooseIntegrityFailures(t *testing.T) {
@@ -322,6 +346,7 @@ func TestStoreOpenStreamRejectsCompressedLooseIntegrityFailures(t *testing.T) {
 	emptyEncoder, err := zstd.NewWriter(&emptyFrame, zstd.WithEncoderConcurrency(1))
 	require.NoError(t, err)
 	require.NoError(t, emptyEncoder.Close())
+	emptySkippableFrame := []byte{0x50, 0x2a, 0x4d, 0x18, 0, 0, 0, 0}
 	tests := []struct {
 		name        string
 		logicalSize int64
@@ -367,6 +392,14 @@ func TestStoreOpenStreamRejectsCompressedLooseIntegrityFailures(t *testing.T) {
 				return append(physical, emptyFrame.Bytes()...)
 			},
 		},
+		{
+			name:        "trailing empty skippable frame",
+			logicalSize: int64(len(content)),
+			decoded:     content,
+			mutate: func(physical []byte) []byte {
+				return append(physical, emptySkippableFrame...)
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -384,6 +417,86 @@ func TestStoreOpenStreamRejectsCompressedLooseIntegrityFailures(t *testing.T) {
 			require.ErrorIs(t, err, ErrContentMismatch)
 			require.ErrorIs(t, stream.Close(), ErrContentMismatch)
 			assert.False(t, stream.Verified())
+		})
+	}
+}
+
+func TestStoreOpenStreamRejectsSkippableFrameAfterSingleSegmentRawBlock(t *testing.T) {
+	content := []byte("12345678")
+	frame := []byte{
+		0x28, 0xb5, 0x2f, 0xfd, // zstd magic
+		0x20, byte(len(content)), // single-segment descriptor and content size
+		byte(1 | len(content)<<3), 0, 0, // last raw block
+	}
+	frame = append(frame, content...)
+	frame = append(frame, 0x50, 0x2a, 0x4d, 0x18, 0, 0, 0, 0)
+
+	layout := layoutForStoreTest(t)
+	hash := hashForTest(content)
+	writeCompressedLooseFixture(t, layout, hash, int64(len(content)), content, func(physical []byte) []byte {
+		return append(bytes.Clone(physical[:compressedLooseHeaderSize]), frame...)
+	})
+	store := newStoreForTest(t, &mapResolver{locations: map[Hash]Location{
+		hash: {Member: true},
+	}}, layout)
+
+	stream, size, err := store.OpenStream(context.Background(), hash)
+	require.NoError(t, err)
+	assert.Equal(t, int64(len(content)), size)
+	require.ErrorIs(t, stream.Verify(), ErrContentMismatch)
+	require.ErrorIs(t, stream.Close(), ErrContentMismatch)
+}
+
+func TestSingleZstdFrameReaderLeavesConcatenatedFrameUnread(t *testing.T) {
+	content := []byte("12345678")
+	rawFrame := []byte{
+		0x28, 0xb5, 0x2f, 0xfd,
+		0x20, byte(len(content)),
+		byte(1 | len(content)<<3), 0, 0,
+	}
+	rawFrame = append(rawFrame, content...)
+	rleFrame := []byte{
+		0x28, 0xb5, 0x2f, 0xfd,
+		0x20, byte(len(content)),
+		byte(1 | 1<<1 | len(content)<<3), 0, 0,
+		content[0],
+	}
+	encode := func(t *testing.T, opts ...zstd.EOption) []byte {
+		t.Helper()
+		encoder, err := zstd.NewWriter(nil, opts...)
+		require.NoError(t, err)
+		frame := encoder.EncodeAll(bytes.Repeat([]byte("compressible block content "), 128), nil)
+		require.NoError(t, encoder.Close())
+		var header zstd.Header
+		require.NoError(t, header.Decode(frame))
+		require.True(t, header.FirstBlock.Compressed)
+		return frame
+	}
+	tests := []struct {
+		name  string
+		frame []byte
+	}{
+		{name: "single segment raw block", frame: rawFrame},
+		{name: "single segment RLE block", frame: rleFrame},
+		{
+			name:  "single segment compressed block with checksum",
+			frame: encode(t, zstd.WithSingleSegment(true), zstd.WithEncoderCRC(true)),
+		},
+		{
+			name:  "windowed compressed block without checksum",
+			frame: encode(t, zstd.WithSingleSegment(false), zstd.WithEncoderCRC(false)),
+		},
+	}
+	skippable := []byte{0x50, 0x2a, 0x4d, 0x18, 0, 0, 0, 0}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			physical := append(bytes.Clone(tt.frame), skippable...)
+			source := &io.LimitedReader{R: bytes.NewReader(physical), N: int64(len(physical))}
+
+			got, err := io.ReadAll(newSingleZstdFrameReader(source))
+			require.NoError(t, err)
+			assert.Equal(t, tt.frame, got)
+			assert.Equal(t, int64(len(skippable)), source.N)
 		})
 	}
 }

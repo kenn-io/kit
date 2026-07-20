@@ -19,6 +19,27 @@ var createSeekableLooseTemp = func() (*os.File, error) {
 	return os.CreateTemp("", "packstore-loose-open-")
 }
 
+var copySeekableLoose = func(dst io.Writer, src io.Reader, buffer []byte) (int64, error) {
+	return io.CopyBuffer(dst, src, buffer)
+}
+
+type physicalSourceNotFoundError struct{ err error }
+
+func (e *physicalSourceNotFoundError) Error() string { return e.err.Error() }
+func (e *physicalSourceNotFoundError) Unwrap() error { return e.err }
+
+func markPhysicalSourceNotFound(err error) error {
+	if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return &physicalSourceNotFoundError{err: err}
+}
+
+func isPhysicalSourceNotFound(err error) bool {
+	var missing *physicalSourceNotFoundError
+	return errors.As(err, &missing)
+}
+
 // ErrPackRetirementDeferred identifies a canonical pack removal that callers
 // may retry after readers or external filesystem users release the file.
 var ErrPackRetirementDeferred = errors.New("packstore: pack retirement deferred")
@@ -144,7 +165,7 @@ func resolveBlob[T any](ctx context.Context, store *Store, hash Hash,
 	}
 	if location.Pack == nil {
 		value, size, looseErr := readLoose(hash)
-		if !errors.Is(looseErr, fs.ErrNotExist) {
+		if !isPhysicalSourceNotFound(looseErr) {
 			return value, size, looseErr
 		}
 		location, err = store.resolver.Resolve(ctx, hash)
@@ -160,7 +181,7 @@ func resolveBlob[T any](ctx context.Context, store *Store, hash Hash,
 		return readPacked(hash, location.Pack)
 	}
 	value, size, packErr := readPacked(hash, location.Pack)
-	if !errors.Is(packErr, fs.ErrNotExist) {
+	if !isPhysicalSourceNotFound(packErr) {
 		return value, size, packErr
 	}
 	location, err = store.resolver.Resolve(ctx, hash)
@@ -250,7 +271,7 @@ func (s *Store) openLooseObject(hash Hash) (*looseObject, error) {
 	rawPath := s.layout.LoosePath(hash)
 	f, info, err = openLooseFile(rawPath)
 	if err != nil {
-		return nil, err
+		return nil, markPhysicalSourceNotFound(err)
 	}
 	return &looseObject{
 		file: f, encoding: LooseEncodingRaw,
@@ -302,7 +323,7 @@ func (s *Store) openSeekableLoose(ctx context.Context, hash Hash) (io.ReadSeekCl
 		return errors.Join(primary, streamErr, closeErr, removeErr)
 	}
 	buffer := looseCopyBufferPool.Get().(*[looseCopyBufferBytes]byte)
-	_, copyErr := io.CopyBuffer(struct{ io.Writer }{temporary}, stream, buffer[:])
+	_, copyErr := copySeekableLoose(struct{ io.Writer }{temporary}, stream, buffer[:])
 	looseCopyBufferPool.Put(buffer)
 	if copyErr != nil {
 		return nil, 0, cleanup(copyErr)
