@@ -19,7 +19,7 @@
 // retaining corrupt evidence for diagnosis. New compressed writes use a fixed
 // 1 MiB encoder window so streaming allocations do not scale with object size.
 // Readers continue accepting older compressed loose frames within the 64 MiB
-// decoder-memory ceiling.
+// streaming frame-window ceiling.
 //
 // Store.OpenStream exposes loose and plain packed content through one
 // verification-on-EOF contract. A prefix is not authoritative: callers must
