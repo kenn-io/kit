@@ -57,10 +57,15 @@ func openWindowsNoFollow(path string, access uint32) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Identity snapshots must inspect foreign directories without traversing
+	// them. Windows requires BACKUP_SEMANTICS to open a directory handle; it
+	// does not enable backup-privilege bypass on its own.
 	handle, err := windows.CreateFile(name, access,
 		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
 		nil, windows.OPEN_EXISTING,
-		windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+		windows.FILE_ATTRIBUTE_NORMAL|
+			windows.FILE_FLAG_BACKUP_SEMANTICS|
+			windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	if err != nil {
 		return nil, err
 	}
