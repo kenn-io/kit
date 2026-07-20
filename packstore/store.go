@@ -15,9 +15,7 @@ import (
 
 const maxOpenReaders = 16
 
-var createSeekableLooseTemp = func() (*os.File, error) {
-	return os.CreateTemp("", "packstore-loose-open-")
-}
+var createSeekableLooseTemp = createSeekableLooseTempPlatform
 
 var copySeekableLoose = func(dst io.Writer, src io.Reader, buffer []byte) (int64, error) {
 	return io.CopyBuffer(dst, src, buffer)
@@ -316,11 +314,7 @@ func (s *Store) openSeekableLoose(ctx context.Context, hash Hash) (io.ReadSeekCl
 	cleanup := func(primary error) error {
 		streamErr := stream.Close()
 		closeErr := temporary.Close()
-		removeErr := os.Remove(temporary.Name())
-		if errors.Is(removeErr, fs.ErrNotExist) {
-			removeErr = nil
-		}
-		return errors.Join(primary, streamErr, closeErr, removeErr)
+		return errors.Join(primary, streamErr, closeErr)
 	}
 	buffer := looseCopyBufferPool.Get().(*[looseCopyBufferBytes]byte)
 	_, copyErr := copySeekableLoose(struct{ io.Writer }{temporary}, stream, buffer[:])
@@ -338,24 +332,18 @@ func (s *Store) openSeekableLoose(ctx context.Context, hash Hash) (io.ReadSeekCl
 	if _, err := temporary.Seek(0, io.SeekStart); err != nil {
 		return nil, 0, cleanup(fmt.Errorf("packstore: rewind seekable loose temporary file: %w", err))
 	}
-	return &temporarySeekCloser{File: temporary, path: temporary.Name()}, object.logicalSize, nil
+	return &temporarySeekCloser{File: temporary}, object.logicalSize, nil
 }
 
 type temporarySeekCloser struct {
 	*os.File
-	path string
 	once sync.Once
 	err  error
 }
 
 func (f *temporarySeekCloser) Close() error {
 	f.once.Do(func() {
-		closeErr := f.File.Close()
-		removeErr := os.Remove(f.path)
-		if errors.Is(removeErr, fs.ErrNotExist) {
-			removeErr = nil
-		}
-		f.err = errors.Join(closeErr, removeErr)
+		f.err = f.File.Close()
 	})
 	return f.err
 }

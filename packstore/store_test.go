@@ -63,8 +63,14 @@ func TestStoreOpenReadsAndSeeksCompressedLooseContent(t *testing.T) {
 	named, ok := reader.(interface{ Name() string })
 	require.True(t, ok, "compressed compatibility reader must expose its private temporary path")
 	temporaryPath := named.Name()
-	assert.FileExists(t, temporaryPath)
-	temporaryInfo, err := os.Stat(temporaryPath)
+	if runtime.GOOS == "windows" {
+		assert.FileExists(t, temporaryPath)
+	} else {
+		assert.NoFileExists(t, temporaryPath, "Unix compatibility temps are unlinked before exposure")
+	}
+	statter, ok := reader.(interface{ Stat() (fs.FileInfo, error) })
+	require.True(t, ok)
+	temporaryInfo, err := statter.Stat()
 	require.NoError(t, err)
 	if runtime.GOOS != "windows" {
 		assert.Equal(t, fs.FileMode(0o600), temporaryInfo.Mode().Perm())
@@ -79,6 +85,28 @@ func TestStoreOpenReadsAndSeeksCompressedLooseContent(t *testing.T) {
 	require.NoError(t, reader.Close())
 	assert.NoFileExists(t, temporaryPath)
 	require.NoError(t, reader.Close())
+}
+
+func TestStoreOpenClosePreservesTemporaryPathReplacement(t *testing.T) {
+	content := bytes.Repeat([]byte("seekable replacement-safe content "), 1024)
+	layout := layoutForStoreTest(t)
+	hash := hashForTest(content)
+	writeCompressedLooseFixture(t, layout, hash, int64(len(content)), content, nil)
+	store := newStoreForTest(t, &mapResolver{locations: map[Hash]Location{
+		hash: {Member: true},
+	}}, layout)
+
+	reader, _, err := store.Open(context.Background(), hash)
+	require.NoError(t, err)
+	named, ok := reader.(interface{ Name() string })
+	require.True(t, ok)
+	temporaryPath := named.Name()
+	replacement := []byte("unrelated temporary path replacement")
+	replaceSeekableTemporaryPath(t, temporaryPath, replacement)
+
+	require.NoError(t, reader.Close())
+
+	assert.Equal(t, replacement, mustReadFile(t, temporaryPath))
 }
 
 func TestStoreOpenRejectsCorruptCompressedLooseAndCleansTemporaryFile(t *testing.T) {
@@ -127,12 +155,11 @@ func TestStoreOpenTemporaryWriteFailureDoesNotDrainCompressedSource(t *testing.T
 	originalCreate := createSeekableLooseTemp
 	var temporaryPath string
 	createSeekableLooseTemp = func() (*os.File, error) {
-		file, err := os.CreateTemp(t.TempDir(), "failed-seekable-")
-		if err != nil {
-			return nil, err
+		file, err := originalCreate()
+		if err == nil {
+			temporaryPath = file.Name()
 		}
-		temporaryPath = file.Name()
-		return file, nil
+		return file, err
 	}
 	t.Cleanup(func() { createSeekableLooseTemp = originalCreate })
 	originalCopy := copySeekableLoose
@@ -145,6 +172,55 @@ func TestStoreOpenTemporaryWriteFailureDoesNotDrainCompressedSource(t *testing.T
 	assert.Nil(t, reader)
 	assert.LessOrEqual(t, decodedBytes, int64(looseCopyBufferBytes))
 	assert.NoFileExists(t, temporaryPath)
+}
+
+func TestStoreOpenFailurePreservesTemporaryPathReplacement(t *testing.T) {
+	content := bytes.Repeat([]byte("failed open replacement-safe content\n"), 1024)
+	layout := layoutForStoreTest(t)
+	hash := hashForTest(content)
+	writeCompressedLooseFixture(t, layout, hash, int64(len(content)), content, nil)
+	store := newStoreForTest(t, &mapResolver{locations: map[Hash]Location{
+		hash: {Member: true},
+	}}, layout)
+
+	originalCreate := createSeekableLooseTemp
+	var temporaryPath string
+	createSeekableLooseTemp = func() (*os.File, error) {
+		file, err := originalCreate()
+		if err == nil {
+			temporaryPath = file.Name()
+		}
+		return file, err
+	}
+	t.Cleanup(func() { createSeekableLooseTemp = originalCreate })
+	originalCopy := copySeekableLoose
+	writeErr := errors.New("injected temporary write failure after replacement")
+	replacement := []byte("unrelated failed-open path replacement")
+	copySeekableLoose = func(io.Writer, io.Reader, []byte) (int64, error) {
+		replaceSeekableTemporaryPath(t, temporaryPath, replacement)
+		return 0, writeErr
+	}
+	t.Cleanup(func() { copySeekableLoose = originalCopy })
+
+	reader, _, err := store.Open(context.Background(), hash)
+
+	require.ErrorIs(t, err, writeErr)
+	assert.Nil(t, reader)
+	assert.Equal(t, replacement, mustReadFile(t, temporaryPath))
+}
+
+func replaceSeekableTemporaryPath(t *testing.T, path string, replacement []byte) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		displaced := path + ".displaced"
+		require.NoError(t, os.Rename(path, displaced))
+		t.Cleanup(func() { _ = os.Remove(displaced) })
+	} else {
+		removeErr := os.Remove(path)
+		require.True(t, removeErr == nil || errors.Is(removeErr, fs.ErrNotExist), removeErr)
+	}
+	require.NoError(t, os.WriteFile(path, replacement, 0o600))
+	t.Cleanup(func() { _ = os.Remove(path) })
 }
 
 func TestStoreOpenDoesNotRetryTemporaryNotExist(t *testing.T) {
