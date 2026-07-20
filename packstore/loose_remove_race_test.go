@@ -82,20 +82,20 @@ func TestLooseRemoveDoesNotClobberNewerOccupantWhileRestoringForeignClaim(t *tes
 		return func(*testing.T, string) {}
 	})
 	newer := []byte("newer occupant must win")
-	originalCreate := createLooseRemovalRestoreFile
-	createLooseRemovalRestoreFile = func(newPath string, mode fs.FileMode) (*os.File, error) {
+	originalPublish := publishLooseRemovalRestoreFile
+	publishLooseRemovalRestoreFile = func(stagingPath, newPath string) error {
 		f, createErr := os.OpenFile(newPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if createErr != nil {
-			return nil, createErr
+			return createErr
 		}
 		_, writeErr := f.Write(newer)
 		closeErr := f.Close()
 		if err := errors.Join(writeErr, closeErr); err != nil {
-			return nil, err
+			return err
 		}
-		return originalCreate(newPath, mode)
+		return originalPublish(stagingPath, newPath)
 	}
-	t.Cleanup(func() { createLooseRemovalRestoreFile = originalCreate })
+	t.Cleanup(func() { publishLooseRemovalRestoreFile = originalPublish })
 
 	err = store.Remove(written.Hash, BestEffortRemoval)
 
@@ -108,6 +108,100 @@ func TestLooseRemoveDoesNotClobberNewerOccupantWhileRestoringForeignClaim(t *tes
 	require.NoError(t, globErr)
 	require.Len(t, claims, 1, "the un-restorable foreign entry remains preserved")
 	assert.Equal(t, foreign, mustReadFile(t, filepath.Join(claims[0], "claimed")))
+}
+
+func TestLooseRemovePublishesCompleteRegularRestoreAtomically(t *testing.T) {
+	store := newLooseStoreForTest(t, StagingSameDirectory)
+	written, err := store.WriteBytes(context.Background(), []byte("atomic restore source"), WriteOptions{
+		Durability: AtomicPublication,
+		Dedup:      VerifyFullHash,
+	})
+	require.NoError(t, err)
+	foreign := bytes.Repeat([]byte("complete foreign restoration\n"), 4096)
+	_ = installLooseRemovalReplacement(t, written.Path, func(t *testing.T, path string) func(*testing.T, string) {
+		require.NoError(t, os.WriteFile(path, foreign, 0o600))
+		return func(t *testing.T, path string) {
+			assert.Equal(t, foreign, mustReadFile(t, path))
+		}
+	})
+	originalBeforePublish := beforeLooseRemovalRestorePublish
+	publishReached := false
+	beforeLooseRemovalRestorePublish = func(stagingPath, canonicalPath string) {
+		publishReached = true
+		assert.Equal(t, foreign, mustReadFile(t, stagingPath), "private staging is complete before publication")
+		_, statErr := os.Lstat(canonicalPath)
+		require.ErrorIs(t, statErr, fs.ErrNotExist, "readers cannot observe restoration while it is being copied")
+	}
+	t.Cleanup(func() { beforeLooseRemovalRestorePublish = originalBeforePublish })
+
+	err = store.Remove(written.Hash, BestEffortRemoval)
+
+	require.ErrorIs(t, err, errIdentityChanged)
+	assert.True(t, publishReached)
+	assert.Equal(t, foreign, mustReadFile(t, written.Path))
+	assertNoLooseRemovalClaims(t, written.Path)
+}
+
+func TestLooseRemoveTreatsPostPublicationReplacementAsLaterAction(t *testing.T) {
+	tests := []struct {
+		name    string
+		replace func(*testing.T, string) func(*testing.T, string)
+		check   func(*testing.T, string)
+	}{
+		{
+			name: "regular file",
+			replace: func(t *testing.T, path string) func(*testing.T, string) {
+				require.NoError(t, os.WriteFile(path, []byte("published regular foreign entry"), 0o600))
+				return func(*testing.T, string) {}
+			},
+			check: func(t *testing.T, path string) {
+				assert.Equal(t, []byte("published regular foreign entry"), mustReadFile(t, path))
+			},
+		},
+		{
+			name: "symlink",
+			replace: func(t *testing.T, path string) func(*testing.T, string) {
+				target := filepath.Join(t.TempDir(), "foreign-target")
+				require.NoError(t, os.WriteFile(target, []byte("target"), 0o600))
+				require.NoError(t, os.Symlink(target, path))
+				return func(*testing.T, string) {}
+			},
+			check: func(t *testing.T, path string) {
+				info, err := os.Lstat(path)
+				require.NoError(t, err)
+				assert.NotZero(t, info.Mode()&os.ModeSymlink)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newLooseStoreForTest(t, StagingSameDirectory)
+			written, err := store.WriteBytes(context.Background(), []byte("post-publication source"), WriteOptions{
+				Durability: AtomicPublication,
+				Dedup:      VerifyFullHash,
+			})
+			require.NoError(t, err)
+			_ = installLooseRemovalReplacement(t, written.Path, tt.replace)
+			newer := []byte("later external occupant")
+			originalAfterPublish := afterLooseRemovalRestorePublish
+			published := false
+			afterLooseRemovalRestorePublish = func(path string) {
+				published = true
+				tt.check(t, path)
+				require.NoError(t, os.Remove(path))
+				require.NoError(t, os.WriteFile(path, newer, 0o600))
+			}
+			t.Cleanup(func() { afterLooseRemovalRestorePublish = originalAfterPublish })
+
+			err = store.Remove(written.Hash, BestEffortRemoval)
+
+			require.ErrorIs(t, err, errIdentityChanged)
+			assert.True(t, published)
+			assert.Equal(t, newer, mustReadFile(t, written.Path))
+			assertNoLooseRemovalClaims(t, written.Path)
+		})
+	}
 }
 
 func TestLooseRemoveDoesNotClobberPreexistingAsideName(t *testing.T) {

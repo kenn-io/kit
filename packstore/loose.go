@@ -66,10 +66,13 @@ var (
 	createLooseRemovalRestoreFile = func(path string, mode fs.FileMode) (*os.File, error) {
 		return os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
 	}
-	beforeLooseRemovalClaim = func(string) {}
-	syncLooseStagingDir     = func(path string) error { return pack.SyncDir(path) }
-	syncLooseRepairShard    = func(path string) error { return pack.SyncDir(path) }
-	chmodLooseStagingFile   = func(file *os.File, mode fs.FileMode) error { return file.Chmod(mode) }
+	publishLooseRemovalRestoreFile   = os.Link
+	beforeLooseRemovalClaim          = func(string) {}
+	beforeLooseRemovalRestorePublish = func(string, string) {}
+	afterLooseRemovalRestorePublish  = func(string) {}
+	syncLooseStagingDir              = func(path string) error { return pack.SyncDir(path) }
+	syncLooseRepairShard             = func(path string) error { return pack.SyncDir(path) }
+	chmodLooseStagingFile            = func(file *os.File, mode fs.FileMode) error { return file.Chmod(mode) }
 )
 
 var (
