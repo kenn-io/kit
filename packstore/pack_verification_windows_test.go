@@ -5,6 +5,7 @@ package packstore
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -12,6 +13,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/windows"
 )
+
+const windowsFileDeleteChild = 0x40
 
 func TestWindowsDropDanglingAcceptsReadableNonDeletableLooseAuthority(t *testing.T) {
 	layout := layoutForStoreTest(t)
@@ -59,6 +62,8 @@ func denyWindowsFileDeletion(t *testing.T, path string) func() {
 	t.Helper()
 	file, err := openWindowsNoFollow(path, windows.READ_CONTROL|windows.WRITE_DAC)
 	require.NoError(t, err)
+	parent, err := openWindowsNoFollow(filepath.Dir(path), windows.READ_CONTROL|windows.WRITE_DAC)
+	require.NoError(t, err)
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	require.NoError(t, err)
 	trustee := windows.TRUSTEE{
@@ -90,6 +95,30 @@ func denyWindowsFileDeletion(t *testing.T, path string) func() {
 		restricted,
 		nil,
 	))
+	restrictedParent, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{
+		{
+			AccessPermissions: windowsFileDeleteChild,
+			AccessMode:        windows.DENY_ACCESS,
+			Inheritance:       windows.NO_INHERITANCE,
+			Trustee:           trustee,
+		},
+		{
+			AccessPermissions: windows.GENERIC_READ | windows.GENERIC_EXECUTE,
+			AccessMode:        windows.GRANT_ACCESS,
+			Inheritance:       windows.NO_INHERITANCE,
+			Trustee:           trustee,
+		},
+	}, nil)
+	require.NoError(t, err)
+	require.NoError(t, windows.SetSecurityInfo(
+		windows.Handle(parent.Fd()),
+		windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		nil,
+		nil,
+		restrictedParent,
+		nil,
+	))
 	return func() {
 		fullControl, aclErr := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{{
 			AccessPermissions: windows.GENERIC_ALL,
@@ -107,6 +136,16 @@ func denyWindowsFileDeletion(t *testing.T, path string) func() {
 			fullControl,
 			nil,
 		))
+		require.NoError(t, windows.SetSecurityInfo(
+			windows.Handle(parent.Fd()),
+			windows.SE_FILE_OBJECT,
+			windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+			nil,
+			nil,
+			fullControl,
+			nil,
+		))
 		require.NoError(t, file.Close())
+		require.NoError(t, parent.Close())
 	}
 }
