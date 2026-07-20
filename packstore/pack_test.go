@@ -1147,7 +1147,7 @@ func TestRepairDropsDanglingRecordsAndUnreferencedMappings(t *testing.T) {
 	assert.Equal(t, int64(1), stats.MappingsPruned)
 }
 
-func TestRepairRepacksValidLooseCopyWhenIndexedPackIsCorrupt(t *testing.T) {
+func TestRepairRepacksValidRawCopyWhenIndexedPackAndPreferredCompressedAreCorrupt(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
 	layout := layoutForStoreTest(t)
@@ -1155,6 +1155,14 @@ func TestRepairRepacksValidLooseCopyWhenIndexedPackIsCorrupt(t *testing.T) {
 	content := []byte("recover from corrupt indexed pack")
 	entry := buildStoreTestPack(t, layout, content)
 	require.Equal(entry.Hash, writeMaintenanceLoose(t, layout, content))
+	writeCompressedLooseFixture(
+		t,
+		layout,
+		entry.Hash,
+		int64(len(content)),
+		bytes.Repeat([]byte{'x'}, len(content)),
+		nil,
+	)
 	catalog.addLoose(entry.Hash, layout.LoosePath(entry.Hash))
 	catalog.entries[entry.Hash] = entry
 	catalog.packs[entry.PackID] = PackRecord{

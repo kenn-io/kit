@@ -151,7 +151,7 @@ func (m *Maintainer) dropDangling(ctx context.Context, stats *PackStats) error {
 			if _, _, err := m.store.readPackedBounded(ctx, entry.Hash, &entry, m.limits.BlobBytes); err == nil {
 				continue
 			}
-			valid, err := m.hasValidCanonicalLoose(ctx, entry.Hash)
+			valid, err := m.hasAnyValidCanonicalLoose(ctx, entry.Hash)
 			if err != nil {
 				return err
 			}
@@ -236,7 +236,7 @@ func (m *Maintainer) reconcileOne(ctx context.Context, path, packID string, refs
 			}
 		}
 		if location.Member && location.Pack == nil {
-			valid, verifyErr := m.hasValidCanonicalLoose(ctx, hash)
+			valid, verifyErr := m.hasAuthoritativeCanonicalLoose(ctx, hash)
 			if verifyErr != nil {
 				return verifyErr
 			}
@@ -714,7 +714,29 @@ func verifyLoosePathPinned(
 	return pin, nil
 }
 
-func (m *Maintainer) hasValidCanonicalLoose(ctx context.Context, hash Hash) (bool, error) {
+func (m *Maintainer) hasAnyValidCanonicalLoose(ctx context.Context, hash Hash) (bool, error) {
+	for _, candidate := range []struct {
+		path     string
+		encoding LooseEncoding
+	}{
+		{path: m.layout.CompressedLoosePath(hash), encoding: LooseEncodingZstd},
+		{path: m.layout.LoosePath(hash), encoding: LooseEncodingRaw},
+	} {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		if _, err := verifyLoosePathIdentity(
+			ctx, candidate.path, hash, m.limits.BlobBytes, candidate.encoding,
+		); err == nil {
+			return true, nil
+		} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return false, err
+		}
+	}
+	return false, nil
+}
+
+func (m *Maintainer) hasAuthoritativeCanonicalLoose(ctx context.Context, hash Hash) (bool, error) {
 	for _, candidate := range []struct {
 		path     string
 		encoding LooseEncoding
