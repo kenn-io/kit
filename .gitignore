@@ -1,3 +1,4 @@
 .kata.local.toml
+/.worktrees/
 # roborev snapshots
 /.roborev/
