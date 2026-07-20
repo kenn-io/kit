@@ -14,5 +14,5 @@ func replaceLooseRepairFile(staging, final string, _ fs.FileInfo) (looseRepairPu
 	if err := os.Rename(staging, final); err != nil {
 		return looseRepairPublishResult{}, err
 	}
-	return looseRepairPublishResult{Created: true}, nil
+	return looseRepairPublishResult{Created: true, SyncShard: true}, nil
 }

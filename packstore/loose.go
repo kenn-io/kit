@@ -224,7 +224,9 @@ func (s *LooseStore) WriteBytes(ctx context.Context, content []byte, opts WriteO
 // remain the caller's responsibility. If replacement succeeds but alternate
 // removal, repair-backup cleanup, shard durability, or deferred staging cleanup
 // fails, Repair returns the published receipt with Created true together with
-// the non-nil error.
+// the non-nil error. If recovery instead restores the old canonical or preserves
+// the verified staging entry, DurablePublication syncs each changed namespace
+// before returning Created false with the joined recovery and durability errors.
 // Repair staging is private to this call; correctness assumes no external
 // writer mutates that private inode after its final verification begins.
 func (s *LooseStore) Repair(
@@ -460,7 +462,11 @@ func (s *LooseStore) publish(
 			if publicationErr == nil {
 				publicationErr = fmt.Errorf("repair publisher did not create canonical content")
 			}
-			return identity, fmt.Errorf("packstore: replace loose content: %w", publicationErr)
+			durabilityErr := syncLooseRepairPublication(opts.Durability, publication, shard, stagingDir)
+			return identity, errors.Join(
+				fmt.Errorf("packstore: replace loose content: %w", publicationErr),
+				durabilityErr,
+			)
 		}
 		identity.Created = true
 		alternate := s.layout.CompressedLoosePath(identity.Hash)
@@ -474,12 +480,8 @@ func (s *LooseStore) publish(
 		if removeErr != nil {
 			removeErr = fmt.Errorf("packstore: remove alternate loose representation: %w", removeErr)
 		}
-		var syncErr error
-		if opts.Durability == DurablePublication {
-			if err := syncLooseRepairShard(shard); err != nil {
-				syncErr = fmt.Errorf("packstore: sync repaired loose shard: %w", err)
-			}
-		}
+		publication.SyncShard = true
+		syncErr := syncLooseRepairPublication(opts.Durability, publication, shard, stagingDir)
 		if publicationErr != nil {
 			publicationErr = fmt.Errorf("packstore: replace loose content: %w", publicationErr)
 		}
@@ -499,6 +501,29 @@ func (s *LooseStore) publish(
 		}
 	}
 	return identity, nil
+}
+
+func syncLooseRepairPublication(
+	durability Durability,
+	publication looseRepairPublishResult,
+	shard string,
+	stagingDir string,
+) error {
+	if durability != DurablePublication {
+		return nil
+	}
+	var syncErr error
+	if publication.SyncShard {
+		if err := syncLooseRepairShard(shard); err != nil {
+			syncErr = errors.Join(syncErr, fmt.Errorf("packstore: sync repaired loose shard: %w", err))
+		}
+	}
+	if publication.SyncStaging {
+		if err := syncLooseStagingDir(stagingDir); err != nil {
+			syncErr = errors.Join(syncErr, fmt.Errorf("packstore: sync preserved loose repair staging: %w", err))
+		}
+	}
+	return syncErr
 }
 
 type pinnedLooseRepair struct {

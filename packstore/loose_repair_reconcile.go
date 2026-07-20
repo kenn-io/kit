@@ -1,6 +1,8 @@
 package packstore
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -16,6 +18,8 @@ var (
 type looseRepairPublishResult struct {
 	Created     bool
 	KeepStaging bool
+	SyncShard   bool
+	SyncStaging bool
 }
 
 type looseRepairPathState struct {
@@ -43,28 +47,32 @@ func reconcileLooseRepairReplacement(
 ) (looseRepairPublishResult, error) {
 	finalState, err := inspectLooseRepairPath(final, verified)
 	if err != nil {
-		return looseRepairPublishResult{KeepStaging: true}, errors.Join(
+		return looseRepairPublishResult{KeepStaging: true, SyncShard: true, SyncStaging: true}, errors.Join(
 			replaceErr,
 			fmt.Errorf("inspect repaired canonical path: %w", err),
 		)
 	}
 	stagingState, err := inspectLooseRepairPath(staging, verified)
 	if err != nil {
-		return looseRepairPublishResult{KeepStaging: true}, errors.Join(
+		return looseRepairPublishResult{KeepStaging: true, SyncShard: true, SyncStaging: true}, errors.Join(
 			replaceErr,
 			fmt.Errorf("inspect verified repair staging path: %w", err),
 		)
 	}
 	backupState, err := inspectLooseRepairPath(backup, verified)
 	if err != nil {
-		return looseRepairPublishResult{KeepStaging: stagingState.matches}, errors.Join(
-			replaceErr,
-			fmt.Errorf("inspect repair backup path: %w", err),
-		)
+		return looseRepairPublishResult{
+				KeepStaging: stagingState.matches,
+				SyncShard:   true,
+				SyncStaging: stagingState.matches,
+			}, errors.Join(
+				replaceErr,
+				fmt.Errorf("inspect repair backup path: %w", err),
+			)
 	}
 
 	if finalState.matches {
-		return looseRepairPublishResult{Created: true}, errors.Join(
+		return looseRepairPublishResult{Created: true, SyncShard: true}, errors.Join(
 			replaceErr,
 			cleanupLooseRepairBackup(backup, backupState.exists),
 		)
@@ -72,24 +80,32 @@ func reconcileLooseRepairReplacement(
 
 	if stagingState.matches {
 		if finalState.exists {
-			return looseRepairPublishResult{KeepStaging: true}, replaceErr
+			return looseRepairPublishResult{
+				KeepStaging: true,
+				SyncShard:   backupState.exists,
+				SyncStaging: true,
+			}, replaceErr
 		}
 		linkErr := linkLooseRepairRecoveryFile(staging, final)
 		if linkErr != nil {
 			finalAfter, inspectErr := inspectLooseRepairPath(final, verified)
 			if inspectErr == nil && finalAfter.matches {
-				return looseRepairPublishResult{Created: true}, errors.Join(
+				return looseRepairPublishResult{Created: true, SyncShard: true}, errors.Join(
 					replaceErr,
 					cleanupLooseRepairBackup(backup, backupState.exists),
 				)
 			}
-			return looseRepairPublishResult{KeepStaging: true}, errors.Join(
-				replaceErr,
-				fmt.Errorf("restore verified repair staging: %w", linkErr),
-				inspectErr,
-			)
+			return looseRepairPublishResult{
+					KeepStaging: true,
+					SyncShard:   backupState.exists || finalAfter.exists,
+					SyncStaging: true,
+				}, errors.Join(
+					replaceErr,
+					fmt.Errorf("restore verified repair staging: %w", linkErr),
+					inspectErr,
+				)
 		}
-		return looseRepairPublishResult{Created: true}, errors.Join(
+		return looseRepairPublishResult{Created: true, SyncShard: true}, errors.Join(
 			replaceErr,
 			cleanupLooseRepairBackup(backup, backupState.exists),
 		)
@@ -100,21 +116,21 @@ func reconcileLooseRepairReplacement(
 		if linkErr != nil {
 			finalAfter, inspectErr := inspectLooseRepairPath(final, verified)
 			if inspectErr != nil || !finalAfter.exists {
-				return looseRepairPublishResult{}, errors.Join(
+				return looseRepairPublishResult{SyncShard: true}, errors.Join(
 					replaceErr,
 					fmt.Errorf("restore repaired canonical backup: %w", linkErr),
 					inspectErr,
 				)
 			}
-			return looseRepairPublishResult{}, replaceErr
+			return looseRepairPublishResult{SyncShard: true}, replaceErr
 		}
-		return looseRepairPublishResult{}, errors.Join(
+		return looseRepairPublishResult{SyncShard: true}, errors.Join(
 			replaceErr,
 			cleanupLooseRepairBackup(backup, true),
 		)
 	}
 
-	return looseRepairPublishResult{}, replaceErr
+	return looseRepairPublishResult{SyncShard: backupState.exists}, replaceErr
 }
 
 func cleanupLooseRepairBackup(path string, exists bool) error {
@@ -128,13 +144,12 @@ func cleanupLooseRepairBackup(path string, exists bool) error {
 }
 
 func newLooseRepairBackupPath(final string) (string, error) {
-	file, err := os.CreateTemp(filepath.Dir(final), "."+filepath.Base(final)+".repair-backup-")
-	if err != nil {
-		return "", fmt.Errorf("reserve repair backup path: %w", err)
+	var suffix [16]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return "", fmt.Errorf("generate repair backup path: %w", err)
 	}
-	path := file.Name()
-	if err := errors.Join(file.Close(), os.Remove(path)); err != nil {
-		return "", fmt.Errorf("release reserved repair backup path: %w", err)
-	}
-	return path, nil
+	return filepath.Join(
+		filepath.Dir(final),
+		"."+filepath.Base(final)+".repair-backup-"+hex.EncodeToString(suffix[:]),
+	), nil
 }

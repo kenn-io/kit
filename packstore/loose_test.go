@@ -1197,6 +1197,153 @@ func TestLooseRepairPublicationFailurePreservesLastVerifiedStagingCopy(t *testin
 	assert.NoFileExists(canonical)
 }
 
+func TestLooseRepairDurableBackupRestorationSyncsShardBeforeStagingCleanup(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		syncErr error
+	}{
+		{name: "sync succeeds"},
+		{name: "sync failure remains visible", syncErr: errors.New("injected restored shard sync failure")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			assert := assert.New(t)
+			require := require.New(t)
+			content := []byte("replacement disappears during partial Windows repair")
+			oldCanonical := []byte("restored old canonical backup")
+			store := newLooseStoreForTest(t, StagingStoreDirectory)
+			hash := hashForTest(content)
+			canonical := store.layout.LoosePath(hash)
+			backup := canonical + ".repair-backup"
+			stagingDir := store.layout.LooseStagingDir(hash)
+			require.NoError(os.MkdirAll(filepath.Dir(canonical), 0o700))
+			require.NoError(os.WriteFile(canonical, oldCanonical, 0o600))
+			publishErr := errors.New("injected partial replacement failure")
+			originalFileSync := syncLooseFile
+			originalPublish := publishLooseRepairFile
+			originalShardSync := syncLooseRepairShard
+			originalStagingSync := syncLooseStagingDir
+			var events []string
+			syncLooseFile = func(file *os.File) error {
+				events = append(events, "file")
+				return originalFileSync(file)
+			}
+			publishLooseRepairFile = func(staging, final string, _ fs.FileInfo) (looseRepairPublishResult, error) {
+				events = append(events, "publish")
+				require.Equal(canonical, final)
+				require.NoError(os.Rename(final, backup))
+				require.NoError(os.Remove(staging))
+				require.NoError(os.Link(backup, final))
+				require.NoError(os.Remove(backup))
+				return looseRepairPublishResult{SyncShard: true}, publishErr
+			}
+			syncLooseRepairShard = func(path string) error {
+				events = append(events, "shard")
+				assert.Equal(filepath.Dir(canonical), path)
+				assert.Equal(oldCanonical, mustReadFile(t, canonical))
+				assert.NoFileExists(backup)
+				return tt.syncErr
+			}
+			syncLooseStagingDir = func(path string) error {
+				events = append(events, "staging")
+				assert.Equal(stagingDir, path)
+				assert.Empty(matchingFiles(t, stagingDir, ".staging-"))
+				return originalStagingSync(path)
+			}
+			t.Cleanup(func() {
+				syncLooseFile = originalFileSync
+				publishLooseRepairFile = originalPublish
+				syncLooseRepairShard = originalShardSync
+				syncLooseStagingDir = originalStagingSync
+			})
+
+			result, err := store.Repair(context.Background(), bytes.NewReader(content), LooseIdentity{
+				Hash: hash,
+				Size: int64(len(content)),
+			}, RepairOptions{Durability: DurablePublication})
+
+			require.ErrorIs(err, publishErr)
+			if tt.syncErr != nil {
+				require.ErrorIs(err, tt.syncErr)
+			}
+			assert.False(result.Created)
+			assert.Equal(oldCanonical, mustReadFile(t, canonical))
+			assert.Equal([]string{"file", "publish", "shard", "staging"}, events)
+		})
+	}
+}
+
+func TestLooseRepairDurableKeepStagingSyncsPreservedEntryBeforeReturn(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		syncErr error
+	}{
+		{name: "sync succeeds"},
+		{name: "sync failure remains visible", syncErr: errors.New("injected preserved staging sync failure")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			assert := assert.New(t)
+			require := require.New(t)
+			content := []byte("preserved durable repair staging")
+			store := newLooseStoreForTest(t, StagingStoreDirectory)
+			hash := hashForTest(content)
+			canonical := store.layout.LoosePath(hash)
+			stagingDir := store.layout.LooseStagingDir(hash)
+			publishErr := errors.New("injected unrecoverable durable replacement failure")
+			originalFileSync := syncLooseFile
+			originalPublish := publishLooseRepairFile
+			originalShardSync := syncLooseRepairShard
+			originalStagingSync := syncLooseStagingDir
+			var events []string
+			var staging string
+			syncLooseFile = func(file *os.File) error {
+				events = append(events, "file")
+				return originalFileSync(file)
+			}
+			publishLooseRepairFile = func(gotStaging, final string, _ fs.FileInfo) (looseRepairPublishResult, error) {
+				events = append(events, "publish")
+				staging = gotStaging
+				assert.Equal(canonical, final)
+				return looseRepairPublishResult{KeepStaging: true, SyncStaging: true}, publishErr
+			}
+			syncLooseRepairShard = func(string) error {
+				assert.Fail("preserving an unchanged staging entry must not sync the shard")
+				return nil
+			}
+			syncLooseStagingDir = func(path string) error {
+				events = append(events, "staging")
+				assert.Equal(stagingDir, path)
+				require.NotEmpty(staging)
+				assert.Equal(content, mustReadFile(t, staging))
+				return tt.syncErr
+			}
+			t.Cleanup(func() {
+				syncLooseFile = originalFileSync
+				publishLooseRepairFile = originalPublish
+				syncLooseRepairShard = originalShardSync
+				syncLooseStagingDir = originalStagingSync
+				if staging != "" {
+					_ = os.Remove(staging)
+				}
+			})
+
+			result, err := store.Repair(context.Background(), bytes.NewReader(content), LooseIdentity{
+				Hash: hash,
+				Size: int64(len(content)),
+			}, RepairOptions{Durability: DurablePublication})
+
+			require.ErrorIs(err, publishErr)
+			if tt.syncErr != nil {
+				require.ErrorIs(err, tt.syncErr)
+			}
+			assert.False(result.Created)
+			require.NotEmpty(staging)
+			assert.Equal(content, mustReadFile(t, staging))
+			assert.NoFileExists(canonical)
+			assert.Equal([]string{"file", "publish", "staging"}, events)
+		})
+	}
+}
+
 func TestLooseRepairReplacementAPIErrorReturnsPublishedReceipt(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)

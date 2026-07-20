@@ -44,6 +44,8 @@ func TestReplaceLooseRepairFileUnixPublishesAtomically(t *testing.T) {
 			require.NoError(err)
 			assert.True(result.Created)
 			assert.False(result.KeepStaging)
+			assert.True(result.SyncShard)
+			assert.False(result.SyncStaging)
 			assert.Equal(after, mustReadFile(t, final))
 			assert.NoFileExists(staging)
 			if active != nil {

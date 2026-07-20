@@ -27,23 +27,23 @@ var (
 func replaceLooseRepairFile(staging, final string, verified fs.FileInfo) (looseRepairPublishResult, error) {
 	backup, err := newLooseRepairBackupPath(final)
 	if err != nil {
-		return looseRepairPublishResult{KeepStaging: true}, err
+		return looseRepairPublishResult{KeepStaging: true, SyncStaging: true}, err
 	}
 	err = replaceLooseFileWindows(staging, final, backup)
 	if err == nil {
-		return looseRepairPublishResult{Created: true}, cleanupLooseRepairBackup(backup, true)
+		return looseRepairPublishResult{Created: true, SyncShard: true}, cleanupLooseRepairBackup(backup, true)
 	}
 	if !isWindowsNotExist(err) {
 		return reconcileLooseRepairReplacement(staging, final, backup, verified, err)
 	}
 	if err := linkLooseRepairFileWindows(staging, final); err == nil {
-		return looseRepairPublishResult{Created: true}, nil
+		return looseRepairPublishResult{Created: true, SyncShard: true}, nil
 	} else if !errors.Is(err, fs.ErrExist) {
 		return reconcileLooseRepairReplacement(staging, final, backup, verified, err)
 	}
 	err = replaceLooseFileWindows(staging, final, backup)
 	if err == nil {
-		return looseRepairPublishResult{Created: true}, cleanupLooseRepairBackup(backup, true)
+		return looseRepairPublishResult{Created: true, SyncShard: true}, cleanupLooseRepairBackup(backup, true)
 	}
 	return reconcileLooseRepairReplacement(staging, final, backup, verified, err)
 }

@@ -35,6 +35,8 @@ func TestReplaceLooseRepairFileWindowsReplacesActiveReader(t *testing.T) {
 	require.NoError(err)
 	assert.True(result.Created)
 	assert.False(result.KeepStaging)
+	assert.True(result.SyncShard)
+	assert.False(result.SyncStaging)
 	assert.Equal(after, mustReadFile(t, final))
 	oldBytes, err := io.ReadAll(active)
 	require.NoError(err)
@@ -60,6 +62,8 @@ func TestReplaceLooseRepairFileWindowsReplacesWhileProductionPinIsHeld(t *testin
 	require.NoError(err)
 	assert.True(result.Created)
 	assert.False(result.KeepStaging)
+	assert.True(result.SyncShard)
+	assert.False(result.SyncStaging)
 	assert.Equal(after, mustReadFile(t, final))
 	canonicalIdentity, err := os.Stat(final)
 	require.NoError(err)
@@ -82,6 +86,8 @@ func TestReplaceLooseRepairFileWindowsCreatesAbsentTargetWithoutClobber(t *testi
 	require.NoError(err)
 	assert.True(result.Created)
 	assert.False(result.KeepStaging)
+	assert.True(result.SyncShard)
+	assert.False(result.SyncStaging)
 	assert.Equal(content, mustReadFile(t, final))
 }
 
@@ -122,6 +128,8 @@ func TestReplaceLooseRepairFileWindowsRetriesReplaceAfterCreateRace(t *testing.T
 	require.NoError(err)
 	assert.True(result.Created)
 	assert.False(result.KeepStaging)
+	assert.True(result.SyncShard)
+	assert.False(result.SyncStaging)
 	assert.Equal([]byte("verified race replacement"), mustReadFile(t, final))
 	assert.Equal([]string{
 		"replace:" + staging + ":" + final + ":" + dir,
@@ -137,25 +145,30 @@ func TestReplaceLooseRepairFileWindowsReconcilesDocumentedPartialFailures(t *tes
 		moveOld     bool
 		wantCreated bool
 		wantKeep    bool
+		wantShard   bool
+		wantStaging bool
 		wantFinal   []byte
 	}{
 		{
-			name:      "unable to remove replaced",
-			code:      windows.ERROR_UNABLE_TO_REMOVE_REPLACED,
-			wantKeep:  true,
-			wantFinal: []byte("old canonical evidence"),
+			name:        "unable to remove replaced",
+			code:        windows.ERROR_UNABLE_TO_REMOVE_REPLACED,
+			wantKeep:    true,
+			wantStaging: true,
+			wantFinal:   []byte("old canonical evidence"),
 		},
 		{
-			name:      "unable to move replacement",
-			code:      windows.ERROR_UNABLE_TO_MOVE_REPLACEMENT,
-			wantKeep:  true,
-			wantFinal: []byte("old canonical evidence"),
+			name:        "unable to move replacement",
+			code:        windows.ERROR_UNABLE_TO_MOVE_REPLACEMENT,
+			wantKeep:    true,
+			wantStaging: true,
+			wantFinal:   []byte("old canonical evidence"),
 		},
 		{
 			name:        "unable to move replacement after backup",
 			code:        windows.ERROR_UNABLE_TO_MOVE_REPLACEMENT_2,
 			moveOld:     true,
 			wantCreated: true,
+			wantShard:   true,
 			wantFinal:   []byte("verified replacement"),
 		},
 	} {
@@ -190,6 +203,8 @@ func TestReplaceLooseRepairFileWindowsReconcilesDocumentedPartialFailures(t *tes
 			require.ErrorIs(err, tt.code)
 			assert.Equal(tt.wantCreated, result.Created)
 			assert.Equal(tt.wantKeep, result.KeepStaging)
+			assert.Equal(tt.wantShard, result.SyncShard)
+			assert.Equal(tt.wantStaging, result.SyncStaging)
 			assert.Equal(tt.wantFinal, mustReadFile(t, final))
 			assert.NotEmpty(backup)
 			assert.NoFileExists(backup)
