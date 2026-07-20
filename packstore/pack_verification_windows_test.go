@@ -53,6 +53,7 @@ func TestWindowsRecoveryPacksReadableNonDeletableLooseAuthority(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, 1, stats.BlobsPacked)
+	assert.Zero(t, stats.BlobsCorrupt)
 	entries, _ := catalog.snapshot()
 	require.Contains(t, entries, entry.Hash)
 	assert.NotEqual(t, entry.PackID, entries[entry.Hash].PackID)

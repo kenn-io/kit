@@ -381,6 +381,31 @@ func TestSweepLooseVerifiesPackedAuthorityForCanonicalLooseCandidate(t *testing.
 	}
 }
 
+func TestSweepLooseDoesNotReportValidSourceCorruptWhenRemovalPinIsUnavailable(t *testing.T) {
+	layout := layoutForStoreTest(t)
+	content := []byte("valid redundant loose source without removal authority")
+	entry := buildStoreTestPack(t, layout, content)
+	require.Equal(t, entry.Hash, writeMaintenanceLoose(t, layout, content))
+	catalog := newMaintenanceCatalog()
+	catalog.members[entry.Hash] = Reference{Hash: entry.Hash}
+	catalog.entries[entry.Hash] = entry
+	catalog.packs[entry.PackID] = PackRecord{
+		PackID: entry.PackID, EntryCount: 1, StoredBytes: entry.StoredLen, CreatedAt: time.Now(),
+	}
+	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
+	maintainer.openIdentityPin = func(string) (identityPin, fs.FileInfo, error) {
+		return nil, nil, fs.ErrPermission
+	}
+	var stats PackStats
+
+	err := maintainer.sweepLoose(context.Background(), catalog.members, true, &stats)
+
+	require.NoError(t, err)
+	assert.Zero(t, stats.BlobsCorrupt)
+	assert.Zero(t, stats.LooseSwept)
+	assert.FileExists(t, layout.LoosePath(entry.Hash))
+}
+
 func TestPackSourcePinLimitRotatesWithoutLeakingPins(t *testing.T) {
 	layout := layoutForStoreTest(t)
 	catalog := newMaintenanceCatalog()

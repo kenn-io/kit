@@ -991,8 +991,13 @@ func (m *Maintainer) sweepLoose(ctx context.Context, refs map[Hash]Reference, al
 				continue
 			}
 			present++
-			pin, _, err := verifyLoosePathPinned(
-				ctx, candidate.path, entry.Hash, m.limits.BlobBytes, candidate.encoding, m.openIdentityPin,
+			verificationPin, _, err := verifyLoosePathPinned(
+				ctx,
+				candidate.path,
+				entry.Hash,
+				m.limits.BlobBytes,
+				candidate.encoding,
+				openLooseMaintenanceVerificationPin,
 			)
 			if err != nil {
 				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -1001,7 +1006,25 @@ func (m *Maintainer) sweepLoose(ctx context.Context, refs map[Hash]Reference, al
 				continue
 			}
 			verified++
-			removed, removeErr := removeLoosePathPinned(candidate.path, pin)
+			verifiedIdentity, statErr := verificationPin.Stat()
+			removalPin, removalIdentity, openErr := m.openIdentityPin(candidate.path)
+			if openErr != nil {
+				if closeErr := verificationPin.Close(); closeErr != nil {
+					return closeErr
+				}
+				continue
+			}
+			closeErr := verificationPin.Close()
+			if err := errors.Join(statErr, closeErr); err != nil {
+				return errors.Join(err, removalPin.Close())
+			}
+			if !os.SameFile(verifiedIdentity, removalIdentity) {
+				if err := removalPin.Close(); err != nil {
+					return err
+				}
+				continue
+			}
+			removed, removeErr := removeLoosePathPinned(candidate.path, removalPin)
 			if removeErr != nil {
 				return fmt.Errorf("packstore: sweep loose content: %w", removeErr)
 			}
