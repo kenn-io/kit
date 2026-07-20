@@ -942,7 +942,8 @@ func (m *Maintainer) sealAndCommit(
 			continue
 		}
 		// Removal owns and closes the removal pin on every return path.
-		if _, err := removeLoosePathPinned(source.path, removalPin); err != nil {
+		if _, err := removeLoosePathPinned(source.path, removalPin); err != nil &&
+			!errors.Is(err, errLooseRemovalUnavailable) {
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf(
 				"packstore: remove packed loose source %s: %w", source.path, err,
 			))
@@ -1048,6 +1049,9 @@ func (m *Maintainer) sweepLoose(ctx context.Context, refs map[Hash]Reference, al
 				continue
 			}
 			removed, removeErr := removeLoosePathPinned(candidate.path, removalPin)
+			if errors.Is(removeErr, errLooseRemovalUnavailable) {
+				continue
+			}
 			if removeErr != nil {
 				return fmt.Errorf("packstore: sweep loose content: %w", removeErr)
 			}
@@ -1183,8 +1187,31 @@ func removeLoosePathPinnedWithOwnership(
 	if err != nil {
 		return false, fmt.Errorf("inspect pinned loose content %s: %w", path, err)
 	}
+	removalUnavailable := func(cause error) (bool, error) {
+		current, currentErr := snapshotPathIdentity(path)
+		if currentErr != nil {
+			return false, errors.Join(cause, currentErr)
+		}
+		if validationErr := validateRegularNoFollow(path, current); validationErr != nil {
+			return false, errors.Join(cause, validationErr)
+		}
+		if !os.SameFile(identity, current) {
+			return false, errors.Join(cause, errIdentityChanged)
+		}
+		if consumePin {
+			closeErr := pin.Close()
+			pinOpen = false
+			if closeErr != nil {
+				return false, errors.Join(cause, closeErr)
+			}
+		}
+		return false, errors.Join(errLooseRemovalUnavailable, cause)
+	}
 	asideDir, err := makeLooseRemovalAside(path)
 	if err != nil {
+		if errors.Is(err, fs.ErrPermission) {
+			return removalUnavailable(err)
+		}
 		return false, err
 	}
 	aside := filepath.Join(asideDir, "claimed")
@@ -1193,6 +1220,9 @@ func removeLoosePathPinnedWithOwnership(
 		cleanupErr := removeLooseRemovalAside(asideDir)
 		if errors.Is(err, fs.ErrNotExist) {
 			return false, cleanupErr
+		}
+		if errors.Is(err, fs.ErrPermission) && cleanupErr == nil {
+			return removalUnavailable(fmt.Errorf("claim %s for removal: %w", path, err))
 		}
 		return false, errors.Join(
 			fmt.Errorf("claim %s for removal: %w", path, err),
@@ -1219,7 +1249,11 @@ func removeLoosePathPinnedWithOwnership(
 	}
 	if err := removePinnedLooseClaim(pin, aside); err != nil {
 		removeErr := fmt.Errorf("remove claimed loose content %s: %w", aside, err)
-		return false, errors.Join(removeErr, restoreLooseRemovalClaim(path, aside, claimed))
+		restoreErr := restoreLooseRemovalClaim(path, aside, claimed)
+		if errors.Is(err, fs.ErrPermission) && restoreErr == nil {
+			return removalUnavailable(removeErr)
+		}
+		return false, errors.Join(removeErr, restoreErr)
 	}
 	if consumePin {
 		closeErr := pin.Close()

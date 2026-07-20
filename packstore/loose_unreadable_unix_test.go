@@ -16,6 +16,52 @@ import (
 )
 
 const unreadableRemovalChild = "KIT_PACKSTORE_UNREADABLE_REMOVAL_CHILD"
+const nonWritableShardPackingChild = "KIT_PACKSTORE_NONWRITABLE_SHARD_PACKING_CHILD"
+
+func TestPackRetainsReadableLooseSourceWhenShardDeniesCleanup(t *testing.T) {
+	if os.Getenv(nonWritableShardPackingChild) != "" {
+		runNonWritableShardPackingChild(t)
+		return
+	}
+	command := exec.Command(os.Args[0], "-test.run=^TestPackRetainsReadableLooseSourceWhenShardDeniesCleanup$")
+	command.Env = append(os.Environ(), nonWritableShardPackingChild+"=1")
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, string(output))
+}
+
+func runNonWritableShardPackingChild(t *testing.T) {
+	root, err := os.MkdirTemp("", "kit-packstore-nonwritable-shard-")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, os.RemoveAll(root)) })
+	layout, err := NewLayout(root, LayoutOptions{Staging: StagingStoreDirectory, StagingDir: "tmp"})
+	require.NoError(t, err)
+	content := []byte("readable loose source in non-writable shard")
+	hash := writeMaintenanceLoose(t, layout, content)
+	path := layout.LoosePath(hash)
+	shard := filepath.Dir(path)
+	require.NoError(t, os.Chmod(shard, 0o500))
+	dropUnreadableRemovalPrivileges(t, root)
+	t.Cleanup(func() { require.NoError(t, os.Chmod(shard, 0o700)) })
+	readable, err := os.Open(path)
+	require.NoError(t, err, "fixture must remain readable")
+	require.NoError(t, readable.Close())
+	catalog := newMaintenanceCatalog()
+	catalog.addLoose(hash, path)
+	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
+
+	stats, err := maintainer.Pack(context.Background(), PackOptions{})
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.BlobsPacked)
+	assert.Zero(t, stats.BlobsCorrupt)
+	assert.FileExists(t, path)
+	assertNoLooseRemovalClaims(t, path)
+	location, err := catalog.Resolve(context.Background(), hash)
+	require.NoError(t, err)
+	require.NotNil(t, location.Pack)
+	got, _ := readStoreTest(t, maintainer.store, hash)
+	assert.Equal(t, content, got)
+}
 
 func TestUnreadableLooseRemovalUsesIdentityOnlyPin(t *testing.T) {
 	if mode := os.Getenv(unreadableRemovalChild); mode != "" {

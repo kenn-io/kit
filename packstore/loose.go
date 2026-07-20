@@ -92,8 +92,9 @@ var (
 	ErrInvalidPolicy = errors.New("packstore: invalid loose storage policy")
 	// ErrContentMismatch reports bytes, size, or an existing object that does
 	// not agree with its content identity.
-	ErrContentMismatch = errors.New("packstore: loose content mismatch")
-	errIdentityChanged = errors.New("packstore: loose content changed identity")
+	ErrContentMismatch         = errors.New("packstore: loose content mismatch")
+	errIdentityChanged         = errors.New("packstore: loose content changed identity")
+	errLooseRemovalUnavailable = errors.New("packstore: loose removal authority unavailable")
 )
 
 // Durability selects the crash guarantee for loose publication.
