@@ -65,7 +65,8 @@ var (
 	openLooseVerificationIdentityPin = func(path string) (looseVerificationIdentityPin, fs.FileInfo, error) {
 		return openLooseRepairPin(path)
 	}
-	publishLooseFile                 = os.Link
+	linkLoosePublicationFile         = os.Link
+	publishLooseFile                 = publishLooseFileNoReplace
 	publishLooseRepairFile           = replaceLooseRepairFile
 	beforeLoosePublish               = func(Hash, LooseEncoding) {}
 	afterLooseStripeAcquire          = func(Hash, LooseEncoding) {}

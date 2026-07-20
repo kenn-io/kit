@@ -217,6 +217,53 @@ func TestLooseWritePublicationFailureCleansStaging(t *testing.T) {
 	}
 }
 
+func TestLooseWriteFallsBackWhenHardLinksAreUnsupported(t *testing.T) {
+	content := bytes.Repeat([]byte("portable no-replace publication\n"), 4096)
+	for _, compression := range []LooseCompressionOptions{
+		{},
+		{Enabled: true},
+	} {
+		name := "raw"
+		if compression.Enabled {
+			name = "compressed"
+		}
+		t.Run(name, func(t *testing.T) {
+			store := newLooseStoreForTest(t, StagingStoreDirectory)
+			originalLink := linkLoosePublicationFile
+			linkCalls := 0
+			linkLoosePublicationFile = func(string, string) error {
+				linkCalls++
+				return fs.ErrInvalid
+			}
+			t.Cleanup(func() { linkLoosePublicationFile = originalLink })
+
+			result, err := store.WriteBytes(context.Background(), content, WriteOptions{
+				Durability:   AtomicPublication,
+				Dedup:        VerifyFullHash,
+				ExpectedHash: hashForTest(content),
+				Compression:  compression,
+			})
+
+			require.NoError(t, err)
+			assert.True(t, result.Created)
+			assert.FileExists(t, result.Path)
+			assert.Equal(t, 1, linkCalls)
+			assert.Empty(t, matchingFiles(t, store.layout.LooseStagingDir(result.Hash), ".staging-"))
+
+			deduplicated, err := store.WriteBytes(context.Background(), content, WriteOptions{
+				Durability:   AtomicPublication,
+				Dedup:        VerifyFullHash,
+				ExpectedHash: result.Hash,
+				Compression:  compression,
+			})
+			require.NoError(t, err)
+			assert.False(t, deduplicated.Created)
+			assert.Equal(t, result.Path, deduplicated.Path)
+			assert.Equal(t, 1, linkCalls, "deduplication does not attempt publication")
+		})
+	}
+}
+
 func TestLooseWriteCompressedDurabilitySyncsSelectedFileAndShard(t *testing.T) {
 	require := require.New(t)
 	content := bytes.Repeat([]byte("durable compressed content\n"), 4096)

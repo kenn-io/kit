@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"unsafe"
 
 	"go.kenn.io/kit/pack"
 	"golang.org/x/sys/windows"
@@ -17,6 +18,10 @@ import (
 // object when its handle closes. Deletion is bound to the handle identity, so
 // a later occupant of the same pathname is never removed by cleanup.
 func createSeekableLooseTempPlatform() (*os.File, error) {
+	security, err := seekableLooseTempSecurityAttributes()
+	if err != nil {
+		return nil, fmt.Errorf("packstore: create Windows seekable loose temporary security descriptor: %w", err)
+	}
 	const attempts = 8
 	for range attempts {
 		path := filepath.Join(os.TempDir(), "packstore-loose-open-"+pack.NewPackID())
@@ -27,8 +32,8 @@ func createSeekableLooseTempPlatform() (*os.File, error) {
 		handle, err := windows.CreateFile(
 			name,
 			windows.GENERIC_READ|windows.GENERIC_WRITE|windows.DELETE,
-			windows.FILE_SHARE_READ|windows.FILE_SHARE_DELETE,
-			nil,
+			windows.FILE_SHARE_DELETE,
+			security,
 			windows.CREATE_NEW,
 			windows.FILE_ATTRIBUTE_TEMPORARY|windows.FILE_FLAG_DELETE_ON_CLOSE,
 			0,
@@ -49,4 +54,25 @@ func createSeekableLooseTempPlatform() (*os.File, error) {
 		return file, nil
 	}
 	return nil, fmt.Errorf("packstore: create unique Windows seekable loose temporary file: %w", fs.ErrExist)
+}
+
+func seekableLooseTempSecurityAttributes() (*windows.SecurityAttributes, error) {
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return nil, err
+	}
+	userSID := user.User.Sid.String()
+	descriptor, err := windows.SecurityDescriptorFromString(
+		"O:" + userSID + "D:P" +
+			"(A;;GA;;;" + userSID + ")" +
+			"(A;;GA;;;SY)" +
+			"(A;;GA;;;BA)",
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &windows.SecurityAttributes{
+		Length:             uint32(unsafe.Sizeof(windows.SecurityAttributes{})),
+		SecurityDescriptor: descriptor,
+	}, nil
 }
