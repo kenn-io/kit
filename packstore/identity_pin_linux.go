@@ -14,7 +14,7 @@ import (
 // openLooseRemovalIdentityPin uses O_PATH so namespace cleanup needs search
 // permission on the parent, not read permission on the regular file itself.
 // O_NOFOLLOW exposes symlinks to the caller's descriptor-mode validation.
-func openLooseRemovalIdentityPin(path string) (*os.File, fs.FileInfo, error) {
+func openLooseRemovalIdentityPin(path string) (identityPin, fs.FileInfo, error) {
 	fd, err := unix.Open(path, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, nil, err
@@ -27,5 +27,5 @@ func openLooseRemovalIdentityPin(path string) (*os.File, fs.FileInfo, error) {
 	if err != nil {
 		return nil, nil, errors.Join(err, file.Close())
 	}
-	return file, identity, nil
+	return &fileIdentityPin{File: file}, identity, nil
 }

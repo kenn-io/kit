@@ -17,7 +17,7 @@ func createSeekableLooseTempPlatform() (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := removeLoosePathPinned(file.Name(), file); err != nil {
+	if _, err := unlinkLoosePathPinned(file.Name(), &fileIdentityPin{File: file}); err != nil {
 		return nil, errors.Join(
 			fmt.Errorf("packstore: unlink seekable loose temporary file: %w", err),
 			file.Close(),

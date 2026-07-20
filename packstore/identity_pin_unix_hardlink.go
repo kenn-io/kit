@@ -64,13 +64,20 @@ func (p *hardlinkIdentityPin) Close() error {
 	return errors.Join(statErr, removeErr, dirErr)
 }
 
+func (p *hardlinkIdentityPin) removeClaim(path string) error {
+	return removeLooseCanonicalFile(path)
+}
+
 // Unix platforms without O_PATH first use the ordinary readable no-follow
 // descriptor. Permission-denied files fall back to an exclusive hard link,
 // which pins the inode while preserving unlink-as-parent-directory semantics.
 func openLooseRemovalIdentityPin(path string) (identityPin, fs.FileInfo, error) {
 	file, identity, err := openLooseRepairPin(path)
 	if err == nil || !errors.Is(err, fs.ErrPermission) {
-		return file, identity, err
+		if err != nil {
+			return nil, nil, err
+		}
+		return &fileIdentityPin{File: file}, identity, nil
 	}
 	return openHardlinkIdentityPin(path)
 }

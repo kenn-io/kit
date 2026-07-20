@@ -731,17 +731,17 @@ func TestPackSweepReturnsRemovalFailure(t *testing.T) {
 	catalog.entries[entry.Hash] = entry
 	catalog.packs[entry.PackID] = PackRecord{PackID: entry.PackID, EntryCount: 1, StoredBytes: entry.StoredLen, CreatedAt: time.Now()}
 	removeErr := errors.New("injected loose sweep removal failure")
-	originalRemove := removeLooseCanonicalFile
-	removeLooseCanonicalFile = func(path string) error {
+	originalRemove := removePinnedLooseClaim
+	removePinnedLooseClaim = func(pin identityPin, path string) error {
 		if filepath.Base(path) == "claimed" && strings.HasPrefix(
 			filepath.Base(filepath.Dir(path)),
 			"."+filepath.Base(layout.LoosePath(entry.Hash))+".remove-",
 		) {
 			return removeErr
 		}
-		return originalRemove(path)
+		return originalRemove(pin, path)
 	}
-	t.Cleanup(func() { removeLooseCanonicalFile = originalRemove })
+	t.Cleanup(func() { removePinnedLooseClaim = originalRemove })
 	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
 
 	_, err := maintainer.Pack(context.Background(), PackOptions{})

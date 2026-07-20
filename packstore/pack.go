@@ -283,9 +283,14 @@ type packedSource struct {
 type identityPin interface {
 	Stat() (fs.FileInfo, error)
 	Close() error
+	removeClaim(string) error
 }
 
 type identityPinOpener func(string) (identityPin, fs.FileInfo, error)
+
+var removePinnedLooseClaim = func(pin identityPin, path string) error {
+	return pin.removeClaim(path)
+}
 
 // openLooseIdentityPin linearizes namespace-only removal at pin acquisition.
 // Callers that verified an earlier descriptor must separately compare its
@@ -775,8 +780,12 @@ func (m *Maintainer) sealAndRecord(
 	stats.PacksSealed++
 	stats.BlobsPacked += len(sources)
 	var cleanupErr error
-	for _, source := range sources {
+	for index := range sources {
+		source := sources[index]
 		stats.BytesPacked += int64(source.entry.RawLen) //nolint:gosec
+		// Removal owns and closes the pin on every return path. Clear it so
+		// the function-level fallback closes only pins not yet consumed.
+		sources[index].pin = nil
 		if _, err := removeLoosePathPinned(source.path, source.pin); err != nil {
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf(
 				"packstore: remove packed loose source %s: %w", source.path, err,
@@ -860,8 +869,8 @@ func (m *Maintainer) sweepLoose(ctx context.Context, refs map[Hash]Reference, al
 			}
 			verified++
 			removed, removeErr := removeLoosePathPinned(candidate.path, pin)
-			if err := errors.Join(removeErr, pin.Close()); err != nil {
-				return fmt.Errorf("packstore: sweep loose content: %w", err)
+			if removeErr != nil {
+				return fmt.Errorf("packstore: sweep loose content: %w", removeErr)
 			}
 			if removed {
 				stats.LooseSwept++
@@ -966,13 +975,31 @@ func removeLoosePath(path string, openPin identityPinOpener) (removed bool, resu
 	if err != nil {
 		return false, err
 	}
-	defer func() {
-		resultErr = errors.Join(resultErr, pin.Close())
-	}()
 	return removeLoosePathPinned(path, pin)
 }
 
 func removeLoosePathPinned(path string, pin identityPin) (bool, error) {
+	return removeLoosePathPinnedWithOwnership(path, pin, true)
+}
+
+// unlinkLoosePathPinned retains ownership of pin after unlink. It is used by
+// Unix seekable temporaries, whose open descriptor remains the only name for
+// the verified bytes until the compatibility reader closes.
+func unlinkLoosePathPinned(path string, pin identityPin) (bool, error) {
+	return removeLoosePathPinnedWithOwnership(path, pin, false)
+}
+
+func removeLoosePathPinnedWithOwnership(
+	path string,
+	pin identityPin,
+	consumePin bool,
+) (removed bool, resultErr error) {
+	pinOpen := true
+	defer func() {
+		if consumePin && pinOpen {
+			resultErr = errors.Join(resultErr, pin.Close())
+		}
+	}()
 	identity, err := pin.Stat()
 	if err != nil {
 		return false, fmt.Errorf("inspect pinned loose content %s: %w", path, err)
@@ -1011,14 +1038,21 @@ func removeLoosePathPinned(path string, pin identityPin) (bool, error) {
 			"validate claimed loose content %s (preserved at %s): %w", path, aside, err,
 		)
 	}
-	if err := removeLooseCanonicalFile(aside); err != nil {
+	if err := removePinnedLooseClaim(pin, aside); err != nil {
 		removeErr := fmt.Errorf("remove claimed loose content %s: %w", aside, err)
 		return false, errors.Join(removeErr, restoreLooseRemovalClaim(path, aside, claimed))
 	}
-	if err := removeLooseRemovalAside(asideDir); err != nil {
-		return true, fmt.Errorf("remove empty loose removal aside %s: %w", asideDir, err)
+	if consumePin {
+		closeErr := pin.Close()
+		pinOpen = false
+		if closeErr != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("close removed loose content pin %s: %w", aside, closeErr))
+		}
 	}
-	return true, nil
+	if err := removeLooseRemovalAside(asideDir); err != nil {
+		resultErr = errors.Join(resultErr, fmt.Errorf("remove empty loose removal aside %s: %w", asideDir, err))
+	}
+	return true, resultErr
 }
 
 // makeLooseRemovalAside uses an exclusive directory rather than renaming
