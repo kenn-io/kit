@@ -144,13 +144,22 @@ func newLooseVerifiedStream(
 	contentHash Hash,
 	object *looseObject,
 ) (*looseVerifiedStream, error) {
+	return newLooseVerifiedStreamWithDurability(ctx, contentHash, object, false)
+}
+
+func newLooseVerifiedStreamWithDurability(
+	ctx context.Context,
+	contentHash Hash,
+	object *looseObject,
+	durable bool,
+) (*looseVerifiedStream, error) {
 	id, err := pack.ParseBlobID(contentHash.String())
 	if err != nil {
 		return nil, errors.Join(err, object.file.Close())
 	}
 	stream := &looseVerifiedStream{
 		ctx: ctx, object: object, reader: object.file,
-		expected: id, size: uint64(object.logicalSize), digest: sha256.New(),
+		expected: id, size: uint64(object.logicalSize), digest: sha256.New(), durable: durable,
 	}
 	if object.encoding == LooseEncodingZstd {
 		payloadSize := object.storedSize - compressedLooseHeaderSize
@@ -188,6 +197,7 @@ type looseVerifiedStream struct {
 	closeErr error
 	verified bool
 	closed   bool
+	durable  bool
 }
 
 func (s *looseVerifiedStream) Read(p []byte) (int, error) {
@@ -259,6 +269,11 @@ func (s *looseVerifiedStream) finish() error {
 	copy(got[:], s.digest.Sum(nil))
 	if got != s.expected {
 		return s.fail(fmt.Errorf("%w: loose hash differs from %s", ErrContentMismatch, s.expected))
+	}
+	if s.durable {
+		if err := syncLooseFile(s.object.file); err != nil {
+			return s.fail(fmt.Errorf("packstore: sync verified loose content: %w", err))
+		}
 	}
 	s.closeErr = s.closePhysical()
 	s.closed = true

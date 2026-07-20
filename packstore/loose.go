@@ -868,41 +868,32 @@ func (s *LooseStore) verifyCompressedPath(path string, before fs.FileInfo, expec
 		return errors.Join(fmt.Errorf("%w: existing logical size is %d, want %d", ErrContentMismatch, logicalSize, expectedSize), f.Close())
 	}
 	if verification == VerifyFullHash {
-		decoder, err := newLooseZstdReader(struct{ io.Reader }{f})
+		object := &looseObject{
+			file:        f,
+			encoding:    LooseEncodingZstd,
+			logicalSize: logicalSize,
+			storedSize:  descriptorInfo.Size(),
+		}
+		stream, err := newLooseVerifiedStreamWithDurability(
+			context.Background(), expectedHash, object, durable,
+		)
 		if err != nil {
-			return errors.Join(fmt.Errorf("%w: open compressed loose payload: %v", ErrContentMismatch, err), f.Close())
+			return err
 		}
-		hasher := sha256.New()
-		buffer := looseCopyBufferPool.Get().(*[looseCopyBufferBytes]byte)
-		decodedSize, readErr := io.CopyBuffer(hasher, &io.LimitedReader{R: decoder, N: expectedSize}, buffer[:])
-		looseCopyBufferPool.Put(buffer)
-		if readErr == nil && decodedSize == expectedSize {
-			var extra [1]byte
-			n, probeErr := io.ReadFull(decoder, extra[:])
-			if n != 0 {
-				readErr = fmt.Errorf("decoded size exceeds expected %d bytes", expectedSize)
-			} else if probeErr != nil && !errors.Is(probeErr, io.EOF) && !errors.Is(probeErr, io.ErrUnexpectedEOF) {
-				readErr = probeErr
-			}
+		if err := errors.Join(stream.Verify(), stream.Close()); err != nil {
+			return err
 		}
-		decoder.Close()
-		if readErr != nil {
-			return errors.Join(fmt.Errorf("%w: decode compressed loose payload: %v", ErrContentMismatch, readErr), f.Close())
-		}
-		if decodedSize != expectedSize {
-			return errors.Join(fmt.Errorf("%w: decoded size is %d, want %d", ErrContentMismatch, decodedSize, expectedSize), f.Close())
-		}
-		if hex.EncodeToString(hasher.Sum(nil)) != expectedHash.String() {
-			return errors.Join(fmt.Errorf("%w: existing hash differs from %s", ErrContentMismatch, expectedHash), f.Close())
-		}
-	}
-	if durable {
+	} else if durable {
 		if err := syncLooseFile(f); err != nil {
 			return errors.Join(err, f.Close())
 		}
-	}
-	if err := f.Close(); err != nil {
-		return err
+		if err := f.Close(); err != nil {
+			return err
+		}
+	} else {
+		if err := f.Close(); err != nil {
+			return err
+		}
 	}
 	after, err := snapshotLoosePathIdentity(path)
 	if err != nil {

@@ -948,6 +948,74 @@ func TestLooseWriteDedupRejectsOverlongCompressedPayloadAfterOneExtraByte(t *tes
 	assert.NoFileExists(t, store.layout.LoosePath(hash))
 }
 
+func TestLooseFullHashRejectsConcatenatedCompressedFrames(t *testing.T) {
+	content := bytes.Repeat([]byte("one logical object across two physical frames\n"), 64)
+	half := len(content) / 2
+	secondFrameEncoder, err := zstd.NewWriter(nil, zstd.WithEncoderConcurrency(1))
+	require.NoError(t, err)
+	secondFrame := secondFrameEncoder.EncodeAll(content[half:], nil)
+	require.NoError(t, secondFrameEncoder.Close())
+
+	newFixture := func(t *testing.T) (*LooseStore, []byte) {
+		t.Helper()
+		store := newLooseStoreForTest(t, StagingSameDirectory)
+		hash := hashForTest(content)
+		writeCompressedLooseFixture(
+			t,
+			store.layout,
+			hash,
+			int64(len(content)),
+			content[:half],
+			func(physical []byte) []byte { return append(physical, secondFrame...) },
+		)
+		return store, mustReadFile(t, store.layout.CompressedLoosePath(hash))
+	}
+
+	t.Run("loose verify", func(t *testing.T) {
+		store, before := newFixture(t)
+		hash := hashForTest(content)
+
+		result, exists, err := store.Verify(hash, int64(len(content)), VerifyFullHash, AtomicPublication)
+
+		require.ErrorIs(t, err, ErrContentMismatch)
+		assert.False(t, exists)
+		assert.False(t, result.Created)
+		assert.Equal(t, before, mustReadFile(t, store.layout.CompressedLoosePath(hash)))
+	})
+
+	t.Run("write dedup", func(t *testing.T) {
+		store, before := newFixture(t)
+		hash := hashForTest(content)
+
+		result, err := store.WriteBytes(context.Background(), content, WriteOptions{
+			Durability: AtomicPublication,
+			Dedup:      VerifyFullHash,
+		})
+
+		require.ErrorIs(t, err, ErrContentMismatch)
+		assert.Equal(t, hash, result.Hash)
+		assert.False(t, result.Created)
+		assert.Equal(t, before, mustReadFile(t, store.layout.CompressedLoosePath(hash)))
+		assert.NoFileExists(t, store.layout.LoosePath(hash))
+	})
+
+	t.Run("stream verify", func(t *testing.T) {
+		loose, before := newFixture(t)
+		hash := hashForTest(content)
+		store := newStoreForTest(t, &mapResolver{locations: map[Hash]Location{
+			hash: {Member: true},
+		}}, loose.layout)
+
+		stream, size, err := store.OpenStream(context.Background(), hash)
+		require.NoError(t, err)
+		assert.Equal(t, int64(len(content)), size)
+		require.ErrorIs(t, stream.Verify(), ErrContentMismatch)
+		require.ErrorIs(t, stream.Close(), ErrContentMismatch)
+		assert.False(t, stream.Verified())
+		assert.Equal(t, before, mustReadFile(t, loose.layout.CompressedLoosePath(hash)))
+	})
+}
+
 func TestLooseWriteDedupVerificationPolicies(t *testing.T) {
 	require := require.New(t)
 	content := []byte("right")

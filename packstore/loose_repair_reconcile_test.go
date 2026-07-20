@@ -5,15 +5,20 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
+var (
+	errInjectedReplaceFailure = errors.New("injected replacement failure")
+	errInjectedMoveFailure    = errors.New("injected replacement move failure")
+	errInjectedRecoveryState  = errors.New("injected replacement recovery state")
+)
+
 func TestReconcileLooseRepairReplacementPreservesVerifiedStagingWhenNamesAreUnchanged(t *testing.T) {
-	for _, code := range []syscall.Errno{1175, 1176} {
+	for _, code := range []error{errInjectedReplaceFailure, errInjectedMoveFailure} {
 		t.Run(code.Error(), func(t *testing.T) {
 			assert := assert.New(t)
 			require := require.New(t)
@@ -56,9 +61,9 @@ func TestReconcileLooseRepairReplacementPublishesVerifiedStagingAfterMoveFailure
 	verified, err := os.Stat(staging)
 	require.NoError(err)
 
-	result, err := reconcileLooseRepairReplacement(staging, final, backup, verified, syscall.Errno(1177))
+	result, err := reconcileLooseRepairReplacement(staging, final, backup, verified, errInjectedRecoveryState)
 
-	require.ErrorIs(err, syscall.Errno(1177))
+	require.ErrorIs(err, errInjectedRecoveryState)
 	assert.True(result.Created)
 	assert.False(result.KeepStaging)
 	assert.True(result.SyncShard)
@@ -83,9 +88,9 @@ func TestReconcileLooseRepairReplacementRecognizesReplacementDespiteAPIError(t *
 	require.NoError(os.WriteFile(backup, before, 0o600))
 	require.NoError(os.Rename(staging, final))
 
-	result, err := reconcileLooseRepairReplacement(staging, final, backup, verified, syscall.Errno(1175))
+	result, err := reconcileLooseRepairReplacement(staging, final, backup, verified, errInjectedReplaceFailure)
 
-	require.ErrorIs(err, syscall.Errno(1175))
+	require.ErrorIs(err, errInjectedReplaceFailure)
 	assert.True(result.Created)
 	assert.False(result.KeepStaging)
 	assert.True(result.SyncShard)
@@ -110,9 +115,9 @@ func TestReconcileLooseRepairReplacementRestoresOnlyBackup(t *testing.T) {
 	require.NoError(os.Remove(staging))
 	require.NoError(os.WriteFile(backup, before, 0o600))
 
-	result, err := reconcileLooseRepairReplacement(staging, final, backup, verified, syscall.Errno(1177))
+	result, err := reconcileLooseRepairReplacement(staging, final, backup, verified, errInjectedRecoveryState)
 
-	require.ErrorIs(err, syscall.Errno(1177))
+	require.ErrorIs(err, errInjectedRecoveryState)
 	assert.False(result.Created)
 	assert.False(result.KeepStaging)
 	assert.True(result.SyncShard)
@@ -145,9 +150,9 @@ func TestReconcileLooseRepairReplacementPreservesOnlyBackupWhenRestoreFails(t *t
 	}
 	t.Cleanup(func() { linkLooseRepairRecoveryFile = originalLink })
 
-	result, err := reconcileLooseRepairReplacement(staging, final, backup, verified, syscall.Errno(1177))
+	result, err := reconcileLooseRepairReplacement(staging, final, backup, verified, errInjectedRecoveryState)
 
-	require.ErrorIs(err, syscall.Errno(1177))
+	require.ErrorIs(err, errInjectedRecoveryState)
 	require.ErrorIs(err, recoveryErr)
 	assert.False(result.Created)
 	assert.False(result.KeepStaging)
@@ -178,9 +183,9 @@ func TestReconcileLooseRepairReplacementAcceptsNoClobberRecoveryRace(t *testing.
 	}
 	t.Cleanup(func() { linkLooseRepairRecoveryFile = originalLink })
 
-	result, err := reconcileLooseRepairReplacement(staging, final, backup, verified, syscall.Errno(1177))
+	result, err := reconcileLooseRepairReplacement(staging, final, backup, verified, errInjectedRecoveryState)
 
-	require.ErrorIs(err, syscall.Errno(1177))
+	require.ErrorIs(err, errInjectedRecoveryState)
 	assert.True(result.Created)
 	assert.False(result.KeepStaging)
 	assert.True(result.SyncShard)
@@ -210,9 +215,9 @@ func TestReconcileLooseRepairReplacementReportsBackupCleanupAfterPartialSuccess(
 	}
 	t.Cleanup(func() { removeLooseRepairBackupFile = originalRemove })
 
-	result, err := reconcileLooseRepairReplacement(staging, final, backup, verified, syscall.Errno(1175))
+	result, err := reconcileLooseRepairReplacement(staging, final, backup, verified, errInjectedReplaceFailure)
 
-	require.ErrorIs(err, syscall.Errno(1175))
+	require.ErrorIs(err, errInjectedReplaceFailure)
 	require.ErrorIs(err, cleanupErr)
 	assert.True(result.Created)
 	assert.False(result.KeepStaging)
@@ -242,9 +247,9 @@ func TestReconcileLooseRepairReplacementKeepsLastVerifiedCopyWhenRecoveryFails(t
 	}
 	t.Cleanup(func() { linkLooseRepairRecoveryFile = originalLink })
 
-	result, err := reconcileLooseRepairReplacement(staging, final, backup, verified, syscall.Errno(1177))
+	result, err := reconcileLooseRepairReplacement(staging, final, backup, verified, errInjectedRecoveryState)
 
-	require.ErrorIs(err, syscall.Errno(1177))
+	require.ErrorIs(err, errInjectedRecoveryState)
 	require.ErrorIs(err, recoveryErr)
 	assert.False(result.Created)
 	assert.True(result.KeepStaging)

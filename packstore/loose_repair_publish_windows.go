@@ -3,14 +3,29 @@
 package packstore
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
+
+func newLooseRepairBackupPath(final string) (string, error) {
+	var suffix [16]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return "", fmt.Errorf("generate repair backup path: %w", err)
+	}
+	return filepath.Join(
+		filepath.Dir(final),
+		"."+filepath.Base(final)+".repair-backup-"+hex.EncodeToString(suffix[:]),
+	), nil
+}
 
 var (
 	procReplaceFileW           = windows.NewLazySystemDLL("kernel32.dll").NewProc("ReplaceFileW")

@@ -1,13 +1,10 @@
 package packstore
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
-	"path/filepath"
 )
 
 var (
@@ -141,15 +138,4 @@ func cleanupLooseRepairBackup(path string, exists bool) error {
 		return fmt.Errorf("remove repair backup: %w", err)
 	}
 	return nil
-}
-
-func newLooseRepairBackupPath(final string) (string, error) {
-	var suffix [16]byte
-	if _, err := rand.Read(suffix[:]); err != nil {
-		return "", fmt.Errorf("generate repair backup path: %w", err)
-	}
-	return filepath.Join(
-		filepath.Dir(final),
-		"."+filepath.Base(final)+".repair-backup-"+hex.EncodeToString(suffix[:]),
-	), nil
 }
