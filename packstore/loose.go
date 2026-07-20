@@ -46,6 +46,7 @@ var (
 			zstd.WithDecoderMaxMemory(64<<20))
 	}
 	publishLooseFile        = os.Link
+	replaceLooseFile        = os.Rename
 	beforeLoosePublish      = func(Hash, LooseEncoding) {}
 	afterLooseStripeAcquire = func(Hash, LooseEncoding) {}
 	closeLooseStagingFile   = func(file *os.File) error { return file.Close() }
@@ -106,6 +107,19 @@ type WriteOptions struct {
 	Compression  LooseCompressionOptions
 }
 
+// LooseIdentity is the complete logical identity required for loose repair.
+type LooseIdentity struct {
+	Hash Hash
+	Size int64
+}
+
+// RepairOptions controls verified physical replacement of one loose object.
+type RepairOptions struct {
+	Durability  Durability
+	Compression LooseCompressionOptions
+	MaxBytes    int64
+}
+
 // WriteResult describes one canonical loose object.
 type WriteResult struct {
 	Hash       Hash
@@ -152,7 +166,7 @@ func (s *LooseStore) Write(ctx context.Context, src io.Reader, opts WriteOptions
 	if err != nil {
 		return WriteResult{}, err
 	}
-	return s.publish(ctx, src, opts, stagingDir, nil)
+	return s.publish(ctx, src, opts, stagingDir, nil, false)
 }
 
 // WriteBytes publishes in-memory content without redundantly hashing it while
@@ -196,7 +210,42 @@ func (s *LooseStore) WriteBytes(ctx context.Context, content []byte, opts WriteO
 	}
 
 	stagingDir := s.layout.LooseStagingDir(hash)
-	return s.publish(ctx, bytes.NewReader(content), opts, stagingDir, identity)
+	return s.publish(ctx, bytes.NewReader(content), opts, stagingDir, identity, false)
+}
+
+// Repair completely verifies src against expected before atomically replacing
+// its selected loose representation and removing the alternate canonical name.
+// It changes only physical loose bytes; catalog membership and packed mappings
+// remain the caller's responsibility.
+func (s *LooseStore) Repair(
+	ctx context.Context,
+	src io.Reader,
+	expected LooseIdentity,
+	opts RepairOptions,
+) (WriteResult, error) {
+	if err := expected.Hash.Validate(); err != nil {
+		return WriteResult{}, err
+	}
+	writeOpts := WriteOptions{
+		Durability:   opts.Durability,
+		Dedup:        VerifyFullHash,
+		ExpectedHash: expected.Hash,
+		ExpectedSize: expected.Size,
+		SizeKnown:    true,
+		MaxBytes:     opts.MaxBytes,
+		Compression:  opts.Compression,
+	}
+	if err := validateWriteOptions(writeOpts); err != nil {
+		return WriteResult{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return WriteResult{}, err
+	}
+	stagingDir, err := s.stagingDir(writeOpts)
+	if err != nil {
+		return WriteResult{}, err
+	}
+	return s.publish(ctx, src, writeOpts, stagingDir, nil, true)
 }
 
 type stagedLooseFile struct {
@@ -210,7 +259,14 @@ type looseZstdReader interface {
 	Close()
 }
 
-func (s *LooseStore) publish(ctx context.Context, src io.Reader, opts WriteOptions, stagingDir string, known *WriteResult) (result WriteResult, resultErr error) {
+func (s *LooseStore) publish(
+	ctx context.Context,
+	src io.Reader,
+	opts WriteOptions,
+	stagingDir string,
+	known *WriteResult,
+	replace bool,
+) (result WriteResult, resultErr error) {
 	identity := WriteResult{}
 	if known != nil {
 		identity = *known
@@ -332,6 +388,11 @@ func (s *LooseStore) publish(ctx context.Context, src io.Reader, opts WriteOptio
 	if err := selected.close(); err != nil {
 		return identity, fmt.Errorf("packstore: close loose staging file: %w", err)
 	}
+	if replace {
+		if err := verifyStagedLooseRepair(ctx, selected.path, identity); err != nil {
+			return identity, fmt.Errorf("packstore: verify staged loose repair: %w", err)
+		}
+	}
 
 	beforeLoosePublish(identity.Hash, identity.Encoding)
 	releaseStripe, err := acquireLooseWriteStripe(ctx, identity.Hash)
@@ -343,15 +404,17 @@ func (s *LooseStore) publish(ctx context.Context, src io.Reader, opts WriteOptio
 	if err := ctx.Err(); err != nil {
 		return identity, err
 	}
-	existing, exists, err := s.existing(identity.Hash, identity.Size, opts.Dedup, opts.Durability)
-	if err != nil {
-		return identity, err
-	}
-	if err := ctx.Err(); err != nil {
-		return identity, err
-	}
-	if exists {
-		return existing, nil
+	if !replace {
+		existing, exists, err := s.existing(identity.Hash, identity.Size, opts.Dedup, opts.Durability)
+		if err != nil {
+			return identity, err
+		}
+		if err := ctx.Err(); err != nil {
+			return identity, err
+		}
+		if exists {
+			return existing, nil
+		}
 	}
 
 	final := identity.Path
@@ -363,6 +426,30 @@ func (s *LooseStore) publish(ctx context.Context, src io.Reader, opts WriteOptio
 	}
 	if err := ctx.Err(); err != nil {
 		return identity, err
+	}
+	if replace {
+		if err := replaceLooseFile(selected.path, final); err != nil {
+			return identity, fmt.Errorf("packstore: replace loose content: %w", err)
+		}
+		identity.Created = true
+		alternate := s.layout.CompressedLoosePath(identity.Hash)
+		if identity.Encoding == LooseEncodingZstd {
+			alternate = s.layout.LoosePath(identity.Hash)
+		}
+		removeErr := os.Remove(alternate)
+		if errors.Is(removeErr, fs.ErrNotExist) {
+			removeErr = nil
+		}
+		if removeErr != nil {
+			removeErr = fmt.Errorf("packstore: remove alternate loose representation: %w", removeErr)
+		}
+		var syncErr error
+		if opts.Durability == DurablePublication {
+			if err := pack.SyncDir(shard); err != nil {
+				syncErr = fmt.Errorf("packstore: sync repaired loose shard: %w", err)
+			}
+		}
+		return identity, errors.Join(removeErr, syncErr)
 	}
 	if err := publishLooseFile(selected.path, final); err != nil {
 		result, exists, verifyErr := s.existing(identity.Hash, identity.Size, opts.Dedup, opts.Durability)
@@ -378,6 +465,46 @@ func (s *LooseStore) publish(ctx context.Context, src io.Reader, opts WriteOptio
 		}
 	}
 	return identity, nil
+}
+
+func verifyStagedLooseRepair(ctx context.Context, path string, identity WriteResult) error {
+	file, info, err := openLooseFile(path)
+	if err != nil {
+		return err
+	}
+	object := &looseObject{
+		file:        file,
+		encoding:    identity.Encoding,
+		logicalSize: identity.Size,
+		storedSize:  info.Size(),
+	}
+	if identity.Encoding == LooseEncodingZstd {
+		header := make([]byte, compressedLooseHeaderSize)
+		if _, err := io.ReadFull(file, header); err != nil {
+			return errors.Join(
+				fmt.Errorf("%w: read compressed loose header: %v", ErrContentMismatch, err),
+				file.Close(),
+			)
+		}
+		logicalSize, err := decodeCompressedLooseHeader(header)
+		if err != nil {
+			return errors.Join(
+				fmt.Errorf("%w: decode compressed loose header: %v", ErrContentMismatch, err),
+				file.Close(),
+			)
+		}
+		if logicalSize != identity.Size {
+			return errors.Join(
+				fmt.Errorf("%w: compressed loose logical size is %d, want %d", ErrContentMismatch, logicalSize, identity.Size),
+				file.Close(),
+			)
+		}
+	}
+	stream, err := newLooseVerifiedStream(ctx, identity.Hash, object)
+	if err != nil {
+		return err
+	}
+	return errors.Join(stream.Verify(), stream.Close())
 }
 
 func acquireLooseWriteStripe(ctx context.Context, hash Hash) (func(), error) {
