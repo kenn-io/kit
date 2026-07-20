@@ -689,8 +689,9 @@ func TestPackPreservesSoleValidAndDiagnosticCopiesUntilAdoption(t *testing.T) {
 	catalog.recordErr = nil
 	stats, err := maintainer.Pack(context.Background(), PackOptions{})
 	require.NoError(err)
-	assert.Equal(1, stats.BlobsPacked)
-	assert.Equal(1, stats.BlobsCorrupt, "the invalid redundant copy is reported")
+	assert.Equal(1, stats.PacksAdopted, "the verified orphan remains authoritative over the unreadable preferred loose copy")
+	assert.Zero(stats.PacksRemoved)
+	assert.Zero(stats.BlobsPacked)
 	assert.NoFileExists(rawPath, "the adopted pack now verifies as another logical representation")
 	assert.Equal(corruptCompressed, mustReadFile(t, compressedPath), "corrupt diagnostic evidence remains")
 	got, _ := readStoreTest(t, maintainer.store, hash)
@@ -800,6 +801,95 @@ func TestPackReconcilePreservesCompressedOnlyAuthorityOverOrphanPack(t *testing.
 	assert.Zero(stats.PacksAdopted)
 	assert.NoFileExists(layout.PackPath(entry.PackID))
 	assert.FileExists(layout.CompressedLoosePath(entry.Hash))
+}
+
+func TestPackReconcileDoesNotTreatRawAsAuthoritativeAfterPreferredCompressedCorruption(t *testing.T) {
+	layout := layoutForStoreTest(t)
+	content := bytes.Repeat([]byte("orphan pack remains readable authority\n"), 32)
+	entry := buildStoreTestPack(t, layout, content)
+	require.Equal(t, entry.Hash, writeMaintenanceLoose(t, layout, content))
+	writeCompressedLooseFixture(
+		t,
+		layout,
+		entry.Hash,
+		int64(len(content)),
+		bytes.Repeat([]byte{'x'}, len(content)),
+		nil,
+	)
+	catalog := newMaintenanceCatalog()
+	catalog.members[entry.Hash] = Reference{Hash: entry.Hash}
+	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
+
+	stats, err := maintainer.Pack(context.Background(), PackOptions{})
+
+	require.NoError(t, err)
+	assert.Zero(t, stats.PacksRemoved)
+	assert.Equal(t, 1, stats.PacksAdopted)
+	assert.FileExists(t, layout.PackPath(entry.PackID))
+	got, _ := readStoreTest(t, maintainer.store, entry.Hash)
+	assert.Equal(t, content, got)
+}
+
+func TestMaintenancePreflightsCompressedStoredSizeBeforeDecode(t *testing.T) {
+	layout := layoutForStoreTest(t)
+	content := []byte("small maintenance object")
+	hash := hashForTest(content)
+	path := layout.CompressedLoosePath(hash)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	header := encodeCompressedLooseHeader(uint64(len(content)))
+	physical := append(header[:], bytes.Repeat([]byte("oversized stored payload"), 4)...)
+	require.NoError(t, os.WriteFile(path, physical, 0o600))
+	originalReader := newLooseZstdReader
+	decoderCalls := 0
+	newLooseZstdReader = func(src io.Reader) (looseZstdReader, error) {
+		decoderCalls++
+		return originalReader(src)
+	}
+	t.Cleanup(func() { newLooseZstdReader = originalReader })
+	limit := int64(len(content) + 1)
+
+	_, err := verifyLoosePathIdentity(context.Background(), path, hash, limit, LooseEncodingZstd)
+
+	var limitErr *LimitError
+	require.ErrorAs(t, err, &limitErr)
+	assert.Equal(t, LimitBlobStoredBytes, limitErr.Dimension)
+	assert.Equal(t, uint64(len(physical)), limitErr.Actual)
+	assert.Equal(t, uint64(limit), limitErr.Limit)
+	assert.Zero(t, decoderCalls)
+}
+
+func TestPackDefersCompressedCandidateAboveStoredLimitBeforeDecode(t *testing.T) {
+	layout := layoutForStoreTest(t)
+	content := []byte("small pack candidate")
+	hash := hashForTest(content)
+	path := layout.CompressedLoosePath(hash)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	header := encodeCompressedLooseHeader(uint64(len(content)))
+	physical := append(header[:], bytes.Repeat([]byte("oversized stored payload"), 4)...)
+	require.NoError(t, os.WriteFile(path, physical, 0o600))
+	catalog := newMaintenanceCatalog()
+	addMaintenanceCandidate(catalog, Candidate{
+		Hash: hash, Paths: []string{path}, Size: int64(len(content)),
+	})
+	limits := DefaultLimits()
+	limits.BlobBytes = int64(len(content) + 1)
+	maintainer := newMaintainerForTest(t, catalog, layout, limits)
+	originalReader := newLooseZstdReader
+	decoderCalls := 0
+	newLooseZstdReader = func(src io.Reader) (looseZstdReader, error) {
+		decoderCalls++
+		return originalReader(src)
+	}
+	t.Cleanup(func() { newLooseZstdReader = originalReader })
+
+	stats, err := maintainer.Pack(context.Background(), PackOptions{})
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.BlobsDeferredOversized)
+	assert.Zero(t, stats.BlobsCorrupt)
+	assert.Zero(t, stats.BlobsPacked)
+	assert.Zero(t, decoderCalls)
+	assert.FileExists(t, path)
 }
 
 func TestPackOrphanSweepRecognizesOnlyCanonicalLooseNames(t *testing.T) {

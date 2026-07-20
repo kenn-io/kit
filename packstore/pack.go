@@ -509,6 +509,18 @@ func (m *Maintainer) prepareCandidate(
 			corrupt = errors.Join(corrupt, err)
 			continue
 		}
+		if object.storedSize > m.limits.BlobBytes {
+			corrupt = errors.Join(
+				corrupt,
+				newLimitError(
+					LimitBlobStoredBytes,
+					uint64(object.storedSize), //nolint:gosec // file sizes are non-negative
+					uint64(m.limits.BlobBytes),
+				),
+				object.file.Close(),
+			)
+			continue
+		}
 		var pin identityPin
 		if selected == nil {
 			pin, err = m.pinOpenCandidate(path, identity)
@@ -679,6 +691,12 @@ func verifyLoosePathPinned(
 			object.file.Close(),
 		)
 	}
+	if object.storedSize > limit {
+		return nil, errors.Join(
+			newLimitError(LimitBlobStoredBytes, uint64(object.storedSize), uint64(limit)), //nolint:gosec
+			object.file.Close(),
+		)
+	}
 	pin, pinned, err := openPin(path)
 	if err != nil {
 		return nil, errors.Join(err, object.file.Close())
@@ -697,7 +715,6 @@ func verifyLoosePathPinned(
 }
 
 func (m *Maintainer) hasValidCanonicalLoose(ctx context.Context, hash Hash) (bool, error) {
-	valid := false
 	for _, candidate := range []struct {
 		path     string
 		encoding LooseEncoding
@@ -708,13 +725,18 @@ func (m *Maintainer) hasValidCanonicalLoose(ctx context.Context, hash Hash) (boo
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
-		if _, err := verifyLoosePathIdentity(ctx, candidate.path, hash, m.limits.BlobBytes, candidate.encoding); err == nil {
-			valid = true
-		} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		_, err := verifyLoosePathIdentity(ctx, candidate.path, hash, m.limits.BlobBytes, candidate.encoding)
+		if err == nil {
+			return true, nil
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return false, err
 		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
 	}
-	return valid, nil
+	return false, nil
 }
 
 func verifyLooseFile(ctx context.Context, f *os.File, info fs.FileInfo, hash Hash) error {

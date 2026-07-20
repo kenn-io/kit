@@ -331,6 +331,48 @@ func TestStoreOpenStreamCancellationClosesCompressedLoose(t *testing.T) {
 	require.ErrorIs(t, err, os.ErrClosed)
 }
 
+func TestStoreOpenStreamChecksCancellationBetweenCompressedPayloadReads(t *testing.T) {
+	content := bytes.Repeat([]byte("cancel within compressed payload "), 128)
+	store, hash := streamStoreForTest(t, "compressed", content)
+	ctx, cancel := context.WithCancel(context.Background())
+	originalReader := newLooseZstdReader
+	newLooseZstdReader = func(src io.Reader) (looseZstdReader, error) {
+		return &cancelBetweenSourceReadsDecoder{
+			source: src,
+			cancel: cancel,
+		}, nil
+	}
+	t.Cleanup(func() { newLooseZstdReader = originalReader })
+	stream, _, err := store.OpenStream(ctx, hash)
+	require.NoError(t, err)
+
+	_, err = stream.Read(make([]byte, 1))
+
+	require.ErrorIs(t, err, context.Canceled)
+	require.ErrorIs(t, stream.Close(), context.Canceled)
+}
+
+var errCompressedSourceCancellationMissed = errors.New("compressed source missed cancellation")
+
+type cancelBetweenSourceReadsDecoder struct {
+	source io.Reader
+	cancel context.CancelFunc
+}
+
+func (r *cancelBetweenSourceReadsDecoder) Read([]byte) (int, error) {
+	var one [1]byte
+	if _, err := r.source.Read(one[:]); err != nil {
+		return 0, err
+	}
+	r.cancel()
+	if _, err := r.source.Read(one[:]); err != nil {
+		return 0, err
+	}
+	return 0, errCompressedSourceCancellationMissed
+}
+
+func (*cancelBetweenSourceReadsDecoder) Close() {}
+
 type closeCountingLooseZstdReader struct {
 	looseZstdReader
 	closeCalls *int

@@ -363,6 +363,12 @@ func (s *Store) readLooseBounded(ctx context.Context, hash Hash, maxBytes int64)
 			object.file.Close(),
 		)
 	}
+	if object.storedSize > maxBytes {
+		return nil, 0, errors.Join(
+			newLimitError(LimitBlobStoredBytes, uint64(object.storedSize), uint64(maxBytes)), //nolint:gosec
+			object.file.Close(),
+		)
+	}
 	if uint64(size) > maxPlatformInt {
 		return nil, 0, errors.Join(
 			newLimitError(LimitBlobRawBytes, uint64(size), maxPlatformInt),

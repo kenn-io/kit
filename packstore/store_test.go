@@ -300,6 +300,39 @@ func TestReadBoundedPreflightsCompressedHeaderBeforeDecode(t *testing.T) {
 	assert.Zero(t, size)
 }
 
+func TestReadBoundedPreflightsCompressedStoredSizeBeforeDecode(t *testing.T) {
+	content := []byte("small logical content")
+	layout := layoutForStoreTest(t)
+	hash := hashForTest(content)
+	path := layout.CompressedLoosePath(hash)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	header := encodeCompressedLooseHeader(uint64(len(content)))
+	physical := append(header[:], bytes.Repeat([]byte("oversized stored payload"), 4)...)
+	require.NoError(t, os.WriteFile(path, physical, 0o600))
+	store := newStoreForTest(t, &mapResolver{locations: map[Hash]Location{
+		hash: {Member: true},
+	}}, layout)
+	originalReader := newLooseZstdReader
+	decoderCalls := 0
+	newLooseZstdReader = func(src io.Reader) (looseZstdReader, error) {
+		decoderCalls++
+		return originalReader(src)
+	}
+	t.Cleanup(func() { newLooseZstdReader = originalReader })
+	limit := int64(len(content) + 1)
+
+	data, size, err := store.ReadBounded(context.Background(), hash, limit)
+
+	var limitErr *LimitError
+	require.ErrorAs(t, err, &limitErr)
+	assert.Equal(t, LimitBlobStoredBytes, limitErr.Dimension)
+	assert.Equal(t, uint64(len(physical)), limitErr.Actual)
+	assert.Equal(t, uint64(limit), limitErr.Limit)
+	assert.Zero(t, decoderCalls)
+	assert.Nil(t, data)
+	assert.Zero(t, size)
+}
+
 func TestReadBoundedPreflightsPlatformIntBeforeAllocation(t *testing.T) {
 	content := []byte("platform allocation preflight")
 	layout := layoutForStoreTest(t)

@@ -169,7 +169,10 @@ func newLooseVerifiedStreamWithDurability(
 				object.file.Close(),
 			)
 		}
-		stream.payload = &io.LimitedReader{R: object.file, N: payloadSize}
+		stream.payload = &io.LimitedReader{
+			R: &contextReader{ctx: ctx, reader: object.file},
+			N: payloadSize,
+		}
 		decoder, decoderErr := newLooseZstdReader(newSingleZstdFrameReader(stream.payload))
 		if decoderErr != nil {
 			return nil, errors.Join(
