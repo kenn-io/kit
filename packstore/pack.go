@@ -1169,7 +1169,7 @@ func restoreLooseRemovalClaim(path, aside string, claimed fs.FileInfo) error {
 // Writers that already hold the inode therefore remain attached to the restored
 // name, and no copied snapshot can overwrite their later changes.
 func linkLooseRemovalClaim(path, aside string, claimed fs.FileInfo) (resultErr error) {
-	source, sourceIdentity, err := openLooseIdentityPin(aside)
+	source, sourceIdentity, err := openLooseRestorationIdentityPin(aside)
 	if err != nil {
 		return fmt.Errorf("pin foreign loose content %s for restore: %w", aside, err)
 	}
