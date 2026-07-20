@@ -175,7 +175,7 @@ func (s *LooseStore) Write(ctx context.Context, src io.Reader, opts WriteOptions
 	}
 
 	if opts.ExpectedHash != "" && opts.SizeKnown {
-		result, exists, err := s.existing(opts.ExpectedHash, opts.ExpectedSize, opts.Dedup, opts.Durability)
+		result, exists, err := s.existing(ctx, opts.ExpectedHash, opts.ExpectedSize, opts.Dedup, opts.Durability)
 		if err != nil {
 			return WriteResult{}, err
 		}
@@ -225,7 +225,7 @@ func (s *LooseStore) WriteBytes(ctx context.Context, content []byte, opts WriteO
 	if opts.SizeKnown && size != opts.ExpectedSize {
 		return *identity, fmt.Errorf("%w: expected size %d, got %d", ErrContentMismatch, opts.ExpectedSize, size)
 	}
-	if result, exists, err := s.existing(hash, size, opts.Dedup, opts.Durability); err != nil {
+	if result, exists, err := s.existing(ctx, hash, size, opts.Dedup, opts.Durability); err != nil {
 		return *identity, err
 	} else if exists {
 		return result, nil
@@ -429,7 +429,7 @@ func (s *LooseStore) publish(
 		return identity, err
 	}
 	if !replace {
-		existing, exists, err := s.existing(identity.Hash, identity.Size, opts.Dedup, opts.Durability)
+		existing, exists, err := s.existing(ctx, identity.Hash, identity.Size, opts.Dedup, opts.Durability)
 		if err != nil {
 			return identity, err
 		}
@@ -505,7 +505,7 @@ func (s *LooseStore) publish(
 		return identity, errors.Join(publicationErr, removeErr, syncErr)
 	}
 	if err := publishLooseFile(selected.path, final); err != nil {
-		result, exists, verifyErr := s.existing(identity.Hash, identity.Size, opts.Dedup, opts.Durability)
+		result, exists, verifyErr := s.existing(ctx, identity.Hash, identity.Size, opts.Dedup, opts.Durability)
 		if verifyErr == nil && exists {
 			return result, nil
 		}
@@ -703,7 +703,7 @@ func (s *LooseStore) Verify(hash Hash, size int64, verification DedupVerificatio
 	if err := validateWriteOptions(opts); err != nil {
 		return WriteResult{}, false, err
 	}
-	return s.existing(hash, size, verification, durability)
+	return s.existing(context.Background(), hash, size, verification, durability)
 }
 
 // Remove deletes both canonical physical representations of a loose object.
@@ -770,21 +770,24 @@ func (s *LooseStore) stagingDir(opts WriteOptions) (string, error) {
 	return filepath.Join(s.layout.Root(), s.layout.stagingDir), nil
 }
 
-func (s *LooseStore) existing(hash Hash, size int64, verification DedupVerification, durability Durability) (WriteResult, bool, error) {
-	result, exists, err := s.existingPath(s.layout.CompressedLoosePath(hash), hash, size, LooseEncodingZstd, verification, durability)
+func (s *LooseStore) existing(ctx context.Context, hash Hash, size int64, verification DedupVerification, durability Durability) (WriteResult, bool, error) {
+	result, exists, err := s.existingPath(ctx, s.layout.CompressedLoosePath(hash), hash, size, LooseEncodingZstd, verification, durability)
 	if err != nil || exists {
 		return result, exists, err
 	}
-	return s.existingPath(s.layout.LoosePath(hash), hash, size, LooseEncodingRaw, verification, durability)
+	return s.existingPath(ctx, s.layout.LoosePath(hash), hash, size, LooseEncodingRaw, verification, durability)
 }
 
-func (s *LooseStore) existingPath(path string, hash Hash, size int64, encoding LooseEncoding, verification DedupVerification, durability Durability) (WriteResult, bool, error) {
+func (s *LooseStore) existingPath(ctx context.Context, path string, hash Hash, size int64, encoding LooseEncoding, verification DedupVerification, durability Durability) (WriteResult, bool, error) {
 	const maxIdentityAttempts = 8
 	var result WriteResult
 	var exists bool
 	var err error
 	for attempt := range maxIdentityAttempts {
-		result, exists, err = s.existingOnce(path, hash, size, encoding, verification, durability)
+		if err := ctx.Err(); err != nil {
+			return WriteResult{}, false, err
+		}
+		result, exists, err = s.existingOnce(ctx, path, hash, size, encoding, verification, durability)
 		if !errors.Is(err, errIdentityChanged) {
 			return result, exists, err
 		}
@@ -799,7 +802,7 @@ func (s *LooseStore) existingPath(path string, hash Hash, size int64, encoding L
 	return result, exists, err
 }
 
-func (s *LooseStore) existingOnce(path string, hash Hash, size int64, encoding LooseEncoding, verification DedupVerification, durability Durability) (WriteResult, bool, error) {
+func (s *LooseStore) existingOnce(ctx context.Context, path string, hash Hash, size int64, encoding LooseEncoding, verification DedupVerification, durability Durability) (WriteResult, bool, error) {
 	info, err := snapshotLoosePathIdentity(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return WriteResult{}, false, nil
@@ -811,7 +814,7 @@ func (s *LooseStore) existingOnce(path string, hash Hash, size int64, encoding L
 		return WriteResult{}, false, err
 	}
 	if encoding == LooseEncodingZstd {
-		if err := s.verifyCompressedPath(path, info, hash, size, verification, durability == DurablePublication); err != nil {
+		if err := s.verifyCompressedPath(ctx, path, info, hash, size, verification, durability == DurablePublication); err != nil {
 			return WriteResult{}, false, err
 		}
 	} else {
@@ -819,7 +822,7 @@ func (s *LooseStore) existingOnce(path string, hash Hash, size int64, encoding L
 			return WriteResult{}, false, fmt.Errorf("%w: existing size is %d, want %d", ErrContentMismatch, info.Size(), size)
 		}
 		if verification == VerifyFullHash {
-			if err := s.verifyPathHash(path, info, hash, durability == DurablePublication); err != nil {
+			if err := s.verifyPathHash(ctx, path, info, hash, durability == DurablePublication); err != nil {
 				return WriteResult{}, false, err
 			}
 		} else if durability == DurablePublication {
@@ -828,6 +831,9 @@ func (s *LooseStore) existingOnce(path string, hash Hash, size int64, encoding L
 			}
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return WriteResult{}, false, err
+	}
 	if durability == DurablePublication {
 		if err := pack.SyncDir(s.layout.Root()); err != nil {
 			return WriteResult{}, false, fmt.Errorf("packstore: sync loose root: %w", err)
@@ -835,6 +841,9 @@ func (s *LooseStore) existingOnce(path string, hash Hash, size int64, encoding L
 		if err := pack.SyncDir(filepath.Dir(path)); err != nil {
 			return WriteResult{}, false, fmt.Errorf("packstore: sync existing loose shard: %w", err)
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return WriteResult{}, false, err
 	}
 	return WriteResult{
 		Hash:       hash,
@@ -845,7 +854,7 @@ func (s *LooseStore) existingOnce(path string, hash Hash, size int64, encoding L
 	}, true, nil
 }
 
-func (s *LooseStore) verifyCompressedPath(path string, before fs.FileInfo, expectedHash Hash, expectedSize int64, verification DedupVerification, durable bool) error {
+func (s *LooseStore) verifyCompressedPath(ctx context.Context, path string, before fs.FileInfo, expectedHash Hash, expectedSize int64, verification DedupVerification, durable bool) error {
 	f, err := openNoFollow(path, durable)
 	if err != nil {
 		return fmt.Errorf("packstore: open compressed loose content: %w", err)
@@ -876,7 +885,7 @@ func (s *LooseStore) verifyCompressedPath(path string, before fs.FileInfo, expec
 			storedSize:  descriptorInfo.Size(),
 		}
 		stream, err := newLooseVerifiedStreamWithDurability(
-			context.Background(), expectedHash, object, durable,
+			ctx, expectedHash, object, durable,
 		)
 		if err != nil {
 			return err
@@ -906,7 +915,7 @@ func (s *LooseStore) verifyCompressedPath(path string, before fs.FileInfo, expec
 	return nil
 }
 
-func (s *LooseStore) verifyPathHash(path string, before fs.FileInfo, expected Hash, durable bool) error {
+func (s *LooseStore) verifyPathHash(ctx context.Context, path string, before fs.FileInfo, expected Hash, durable bool) error {
 	f, err := openNoFollow(path, durable)
 	if err != nil {
 		return fmt.Errorf("packstore: open loose content: %w", err)
@@ -921,7 +930,7 @@ func (s *LooseStore) verifyPathHash(path string, before fs.FileInfo, expected Ha
 
 	hasher := sha256.New()
 	buffer := looseCopyBufferPool.Get().(*[looseCopyBufferBytes]byte)
-	_, readErr := io.CopyBuffer(hasher, struct{ io.Reader }{f}, buffer[:])
+	_, readErr := io.CopyBuffer(hasher, struct{ io.Reader }{&contextReader{ctx: ctx, reader: f}}, buffer[:])
 	looseCopyBufferPool.Put(buffer)
 	if readErr == nil && hex.EncodeToString(hasher.Sum(nil)) != expected.String() {
 		readErr = fmt.Errorf("%w: existing hash differs from %s", ErrContentMismatch, expected)

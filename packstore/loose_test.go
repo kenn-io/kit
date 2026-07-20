@@ -2136,6 +2136,82 @@ func TestLooseWriteFullHashRejectsChangedFileWithRestoredTimestamp(t *testing.T)
 	require.ErrorIs(err, ErrContentMismatch)
 }
 
+func TestLooseWriteFullHashHonorsCancellationWhileVerifyingExisting(t *testing.T) {
+	content := bytes.Repeat([]byte("cancel existing verification\n"), 4096)
+	tests := []struct {
+		name        string
+		compression LooseCompressionOptions
+		write       func(context.Context, *LooseStore, []byte, WriteOptions) error
+	}{
+		{
+			name: "stream raw",
+			write: func(ctx context.Context, store *LooseStore, content []byte, opts WriteOptions) error {
+				_, err := store.Write(ctx, bytes.NewReader(content), opts)
+				return err
+			},
+		},
+		{
+			name:        "stream compressed",
+			compression: LooseCompressionOptions{Enabled: true},
+			write: func(ctx context.Context, store *LooseStore, content []byte, opts WriteOptions) error {
+				_, err := store.Write(ctx, bytes.NewReader(content), opts)
+				return err
+			},
+		},
+		{
+			name: "bytes raw",
+			write: func(ctx context.Context, store *LooseStore, content []byte, opts WriteOptions) error {
+				_, err := store.WriteBytes(ctx, content, opts)
+				return err
+			},
+		},
+		{
+			name:        "bytes compressed",
+			compression: LooseCompressionOptions{Enabled: true},
+			write: func(ctx context.Context, store *LooseStore, content []byte, opts WriteOptions) error {
+				_, err := store.WriteBytes(ctx, content, opts)
+				return err
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newLooseStoreForTest(t, StagingSameDirectory)
+			opts := WriteOptions{
+				Durability:   AtomicPublication,
+				Dedup:        VerifyFullHash,
+				ExpectedHash: hashForTest(content),
+				ExpectedSize: int64(len(content)),
+				SizeKnown:    true,
+				Compression:  tt.compression,
+			}
+			created, err := store.WriteBytes(context.Background(), content, opts)
+			require.NoError(t, err)
+			if tt.compression.Enabled {
+				require.Equal(t, LooseEncodingZstd, created.Encoding)
+			} else {
+				require.Equal(t, LooseEncodingRaw, created.Encoding)
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			originalSnapshot := snapshotLoosePathIdentity
+			snapshotLoosePathIdentity = func(path string) (fs.FileInfo, error) {
+				info, snapshotErr := originalSnapshot(path)
+				if filepath.Clean(path) == filepath.Clean(created.Path) {
+					cancel()
+				}
+				return info, snapshotErr
+			}
+			t.Cleanup(func() { snapshotLoosePathIdentity = originalSnapshot })
+
+			err = tt.write(ctx, store, content, opts)
+
+			require.ErrorIs(t, err, context.Canceled)
+			assert.FileExists(t, created.Path)
+		})
+	}
+}
+
 func TestLooseWriteMaxIntLimitDoesNotOverflow(t *testing.T) {
 	store := newLooseStoreForTest(t, StagingStoreDirectory)
 	content := []byte("max-int limit remains bounded by io.Copy's int64 result")

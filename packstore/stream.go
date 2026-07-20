@@ -345,8 +345,15 @@ const (
 	zstdFrameBlockData
 	zstdFrameChecksum
 	zstdFrameDone
-	zstdFramePassthrough
+	zstdFrameInvalid
 )
+
+// zstd.HeaderMaxSize is documented as including the first block header, but
+// its value does not cover the valid combination of a window descriptor,
+// four-byte dictionary ID, and eight-byte frame content size. Allow the four
+// additional bytes required by that maximal frame header before the three-byte
+// first block header.
+const zstdFrameHeaderBufferSize = zstd.HeaderMaxSize + 4
 
 // singleZstdFrameReader exposes exactly one physical zstd frame. The decoder
 // therefore reaches EOF at the first frame boundary, leaving any concatenated
@@ -355,13 +362,14 @@ type singleZstdFrameReader struct {
 	source *io.LimitedReader
 	state  zstdFrameReaderState
 
-	header      [zstd.HeaderMaxSize]byte
+	header      [zstdFrameHeaderBufferSize]byte
 	headerBytes int
 	blockHeader [3]byte
 	blockBytes  int
 	remaining   int64
 	lastBlock   bool
 	hasChecksum bool
+	boundaryErr error
 }
 
 func newSingleZstdFrameReader(source *io.LimitedReader) *singleZstdFrameReader {
@@ -375,6 +383,8 @@ func (r *singleZstdFrameReader) Read(p []byte) (int, error) {
 	switch r.state {
 	case zstdFrameDone:
 		return 0, io.EOF
+	case zstdFrameInvalid:
+		return 0, r.boundaryErr
 	case zstdFrameHeader:
 		// Header.Decode includes the first block header in FirstBlock. Discover
 		// that boundary one byte at a time so bytes from the block payload are
@@ -387,12 +397,14 @@ func (r *singleZstdFrameReader) Read(p []byte) (int, error) {
 	}
 	n, err := r.source.Read(p)
 	if n > 0 {
-		r.observe(p[:n])
+		if boundaryErr := r.observe(p[:n]); boundaryErr != nil {
+			return n, errors.Join(err, boundaryErr)
+		}
 	}
 	return n, err
 }
 
-func (r *singleZstdFrameReader) observe(data []byte) {
+func (r *singleZstdFrameReader) observe(data []byte) error {
 	switch r.state {
 	case zstdFrameHeader:
 		copy(r.header[r.headerBytes:], data)
@@ -401,17 +413,15 @@ func (r *singleZstdFrameReader) observe(data []byte) {
 		err := header.Decode(r.header[:r.headerBytes])
 		if errors.Is(err, io.ErrUnexpectedEOF) || err == nil && !header.Skippable && !header.FirstBlock.OK {
 			if r.headerBytes == len(r.header) {
-				r.state = zstdFramePassthrough
-				return
+				return r.failBoundary("header exceeds parsing bound")
 			}
 			if err == nil && header.HeaderSize > 0 && r.headerBytes >= header.HeaderSize+3 {
-				r.state = zstdFramePassthrough
+				return r.failBoundary("invalid first block header")
 			}
-			return
+			return nil
 		}
 		if err != nil {
-			r.state = zstdFramePassthrough
-			return
+			return r.failBoundary(err.Error())
 		}
 		r.hasChecksum = header.HasCheckSum
 		if header.Skippable {
@@ -419,7 +429,7 @@ func (r *singleZstdFrameReader) observe(data []byte) {
 			r.remaining = int64(header.SkippableSize)
 			r.state = zstdFrameBlockData
 			r.finishZstdFramePart()
-			return
+			return nil
 		}
 		r.lastBlock = header.FirstBlock.Last
 		r.remaining = int64(header.FirstBlock.CompressedSize)
@@ -429,7 +439,7 @@ func (r *singleZstdFrameReader) observe(data []byte) {
 		copy(r.blockHeader[r.blockBytes:], data)
 		r.blockBytes += len(data)
 		if r.blockBytes != len(r.blockHeader) {
-			return
+			return nil
 		}
 		value := uint32(r.blockHeader[0]) |
 			uint32(r.blockHeader[1])<<8 |
@@ -443,8 +453,7 @@ func (r *singleZstdFrameReader) observe(data []byte) {
 		case 1:
 			r.remaining = 1
 		default:
-			r.state = zstdFramePassthrough
-			return
+			return r.failBoundary("reserved block type")
 		}
 		r.blockBytes = 0
 		r.state = zstdFrameBlockData
@@ -453,6 +462,13 @@ func (r *singleZstdFrameReader) observe(data []byte) {
 		r.remaining -= int64(len(data))
 		r.finishZstdFramePart()
 	}
+	return nil
+}
+
+func (r *singleZstdFrameReader) failBoundary(reason string) error {
+	r.state = zstdFrameInvalid
+	r.boundaryErr = fmt.Errorf("%w: cannot determine zstd frame boundary: %s", ErrContentMismatch, reason)
+	return r.boundaryErr
 }
 
 func (r *singleZstdFrameReader) finishZstdFramePart() {

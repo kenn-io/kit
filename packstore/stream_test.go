@@ -3,6 +3,7 @@ package packstore
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"io/fs"
@@ -499,6 +500,30 @@ func TestSingleZstdFrameReaderLeavesConcatenatedFrameUnread(t *testing.T) {
 			assert.Equal(t, int64(len(skippable)), source.N)
 		})
 	}
+}
+
+func TestSingleZstdFrameReaderLeavesTrailingFrameAfterMaximalHeader(t *testing.T) {
+	content := []byte("maximal header")
+	frame := []byte{
+		0x28, 0xb5, 0x2f, 0xfd, // zstd magic
+		0xc3,       // windowed, 4-byte dictionary ID, 8-byte content size
+		0,          // window descriptor
+		0, 0, 0, 0, // zero dictionary ID
+	}
+	frame = binary.LittleEndian.AppendUint64(frame, uint64(len(content)))
+	frame = append(frame,
+		byte(1|len(content)<<3), 0, 0, // last raw block
+	)
+	frame = append(frame, content...)
+	skippable := []byte{0x50, 0x2a, 0x4d, 0x18, 0, 0, 0, 0}
+	physical := append(bytes.Clone(frame), skippable...)
+	source := &io.LimitedReader{R: bytes.NewReader(physical), N: int64(len(physical))}
+
+	got, err := io.ReadAll(newSingleZstdFrameReader(source))
+
+	require.NoError(t, err)
+	assert.Equal(t, frame, got)
+	assert.Equal(t, int64(len(skippable)), source.N)
 }
 
 func TestStoreOpenStreamRejectsMalformedCompressedLooseHeader(t *testing.T) {
