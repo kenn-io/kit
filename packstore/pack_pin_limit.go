@@ -29,3 +29,10 @@ func packedSourcePinLimitForSoftLimit(soft uint64) int {
 	budget := (soft - packedSourcePinReserve) / 2
 	return max(1, min(maxPackedSourcePins, int(min(budget, uint64(maxPackedSourcePins)))))
 }
+
+func packedSourcePinLimitForReportedSoftLimit(soft uint64, positive bool) int {
+	if !positive || soft == 0 {
+		return fallbackPackedSourcePins
+	}
+	return packedSourcePinLimitForSoftLimit(soft)
+}

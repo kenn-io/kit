@@ -9,5 +9,9 @@ func platformPackedSourcePinLimit() int {
 	if err := unix.Getrlimit(unix.RLIMIT_NOFILE, &processLimit); err != nil {
 		return fallbackPackedSourcePins
 	}
-	return packedSourcePinLimitForSoftLimit(processLimit.Cur)
+	// Rlimit fields are uint64 on some Unix targets and int64 on others.
+	// Check positivity before conversion so a signed infinity sentinel (-1)
+	// cannot become an effectively unlimited descriptor budget.
+	positive := processLimit.Cur > 0
+	return packedSourcePinLimitForReportedSoftLimit(uint64(processLimit.Cur), positive)
 }

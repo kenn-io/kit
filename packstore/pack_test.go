@@ -431,6 +431,13 @@ func TestPackedSourcePinLimitForSoftLimit(t *testing.T) {
 	}
 }
 
+func TestPackedSourcePinLimitForReportedSoftLimitRejectsNonpositiveValues(t *testing.T) {
+	assert.Equal(t, fallbackPackedSourcePins, packedSourcePinLimitForReportedSoftLimit(0, false))
+	assert.Equal(t, fallbackPackedSourcePins, packedSourcePinLimitForReportedSoftLimit(^uint64(0), false),
+		"a signed -1 converted to uint64 remains an invalid report")
+	assert.Equal(t, 64, packedSourcePinLimitForReportedSoftLimit(256, true))
+}
+
 func TestPackTargetDerivedSourcePinLimitKeepsThousandTinySourcesTogether(t *testing.T) {
 	if testing.Short() {
 		t.Skip("creates enough source files to protect the normal packing resource tradeoff")
@@ -561,6 +568,51 @@ func TestPackCancellationDuringCompressedCandidateCleansScratch(t *testing.T) {
 		return nil
 	}))
 	assert.Empty(scratch)
+}
+
+func TestPackCancellationBetweenCandidatePathsClosesSelectedPin(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	layout := layoutForStoreTest(t)
+	content := bytes.Repeat([]byte("cancel between candidate paths\n"), 128)
+	hash := writeMaintenanceLoose(t, layout, content)
+	writeCompressedLooseFixture(t, layout, hash, int64(len(content)), content, nil)
+	catalog := newMaintenanceCatalog()
+	addMaintenanceCandidate(catalog, Candidate{
+		Hash: hash,
+		Paths: []string{
+			layout.CompressedLoosePath(hash),
+			layout.LoosePath(hash),
+		},
+		Size: int64(len(content)),
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
+	maintainer.beforeCandidatePath = func(index int) {
+		if index == 1 {
+			cancel()
+		}
+	}
+	opened, closed := 0, 0
+	closeErr := errors.New("selected pin close failure")
+	baseOpen := maintainer.openIdentityPin
+	maintainer.openIdentityPin = func(path string) (identityPin, fs.FileInfo, error) {
+		pin, identity, err := baseOpen(path)
+		if err != nil {
+			return nil, nil, err
+		}
+		opened++
+		return &observedIdentityPin{identityPin: pin, closed: &closed, closeErr: closeErr}, identity, nil
+	}
+
+	_, err := maintainer.Pack(ctx, PackOptions{})
+
+	require.ErrorIs(err, context.Canceled)
+	require.ErrorIs(err, closeErr)
+	assert.Equal(opened, closed, "the selected source pin closes on top-of-loop cancellation")
+	assert.Equal(1, opened)
+	assert.FileExists(layout.LoosePath(hash))
+	assert.FileExists(layout.CompressedLoosePath(hash))
 }
 
 func TestPackPreservesDualCopiesWhenNeitherVerifies(t *testing.T) {

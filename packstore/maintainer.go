@@ -20,6 +20,7 @@ type Maintainer struct {
 	store                *Store
 	packedSourcePinLimit int
 	openIdentityPin      identityPinOpener
+	beforeCandidatePath  func(int)
 }
 
 // NewMaintainer constructs a lifecycle engine over an application catalog.

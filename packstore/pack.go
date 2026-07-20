@@ -287,15 +287,11 @@ type identityPin interface {
 
 type identityPinOpener func(string) (identityPin, fs.FileInfo, error)
 
+// openLooseIdentityPin linearizes namespace-only removal at pin acquisition.
+// Callers that verified an earlier descriptor must separately compare its
+// identity with the returned pin before authorizing content cleanup.
 func openLooseIdentityPin(path string) (identityPin, fs.FileInfo, error) {
-	before, err := snapshotPathIdentity(path)
-	if err != nil {
-		return nil, nil, err
-	}
-	if err := validateRegularNoFollow(path, before); err != nil {
-		return nil, nil, err
-	}
-	pin, pinned, err := openLooseRepairPin(path)
+	pin, pinned, err := openLooseRemovalIdentityPin(path)
 	if err != nil {
 		if current, snapshotErr := snapshotPathIdentity(path); snapshotErr == nil {
 			if validationErr := validateRegularNoFollow(path, current); validationErr != nil {
@@ -304,8 +300,8 @@ func openLooseIdentityPin(path string) (identityPin, fs.FileInfo, error) {
 		}
 		return nil, nil, err
 	}
-	if !os.SameFile(before, pinned) {
-		return nil, nil, errors.Join(errIdentityChanged, pin.Close())
+	if err := validateRegularNoFollow(path, pinned); err != nil {
+		return nil, nil, errors.Join(err, pin.Close())
 	}
 	return pin, pinned, nil
 }
@@ -477,10 +473,13 @@ func (m *Maintainer) prepareCandidate(
 	var selectedPath string
 	var selectedPin identityPin
 	seenPaths := make(map[string]struct{}, len(candidate.Paths))
-	for _, candidatePath := range candidate.Paths {
+	for pathIndex, candidatePath := range candidate.Paths {
+		if m.beforeCandidatePath != nil {
+			m.beforeCandidatePath(pathIndex)
+		}
 		if err := ctx.Err(); err != nil {
 			if selected != nil {
-				_ = selected.Close()
+				err = errors.Join(err, selected.Close(), closeIdentityPin(selectedPin))
 			}
 			return nil, "", nil, false, err
 		}
@@ -957,7 +956,7 @@ func parseCanonicalLooseName(name string) (Hash, LooseEncoding, bool) {
 	return hash, encoding, err == nil
 }
 
-// removeLoosePathIdentity moves the current directory entry into an exclusive
+// removeLoosePathPinned moves the current directory entry into an exclusive
 // sibling aside before deciding whether to delete it. The move closes the
 // validation-to-unlink race at path: a replacement is restored without
 // clobbering any still-newer occupant, while only the expected identity is
