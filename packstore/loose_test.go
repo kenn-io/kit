@@ -149,6 +149,29 @@ func TestLooseWriteRejectsExistingObjectAboveLimit(t *testing.T) {
 	require.Empty(result)
 }
 
+func TestLooseWriteDeduplicatedRawResultReportsPhysicalMetadata(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	content := []byte("existing raw physical metadata")
+	store := newLooseStoreForTest(t, StagingSameDirectory)
+	created, err := store.WriteBytes(context.Background(), content, WriteOptions{
+		Durability: AtomicPublication,
+		Dedup:      VerifyFullHash,
+	})
+	require.NoError(err)
+
+	result, err := store.WriteBytes(context.Background(), content, WriteOptions{
+		Durability: AtomicPublication,
+		Dedup:      VerifyFullHash,
+	})
+
+	require.NoError(err)
+	assert.False(result.Created)
+	assert.Equal(created.Path, result.Path)
+	assert.Equal(LooseEncodingRaw, result.Encoding)
+	assert.Equal(result.Size, result.StoredSize)
+}
+
 func TestLooseWriteReturnsIdentityAfterCompleteStaging(t *testing.T) {
 	require := require.New(t)
 	content := []byte("identity survives publication failure")

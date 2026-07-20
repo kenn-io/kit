@@ -27,6 +27,15 @@ func TestCompressedLooseHeaderRoundTrips(t *testing.T) {
 	assert.Equal(int64(logicalSize), decodedSize)
 }
 
+func TestCompressedLooseHeaderRoundTripsMaximumLogicalSize(t *testing.T) {
+	header := encodeCompressedLooseHeader(uint64(math.MaxInt64))
+
+	logicalSize, err := decodeCompressedLooseHeader(header[:])
+
+	require.NoError(t, err)
+	assert.Equal(t, int64(math.MaxInt64), logicalSize)
+}
+
 func TestCompressedLooseHeaderRejectsInvalidFields(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
