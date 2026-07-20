@@ -689,7 +689,9 @@ func (s *LooseStore) Verify(hash Hash, size int64, verification DedupVerificatio
 	return s.existing(hash, size, verification, durability)
 }
 
-// Remove deletes a canonical loose object. Missing objects are successful.
+// Remove deletes both canonical physical representations of a loose object.
+// Missing objects are successful; symlinks and other non-regular entries are
+// preserved and reported as content mismatches.
 func (s *LooseStore) Remove(hash Hash, durability RemovalDurability) error {
 	if err := hash.Validate(); err != nil {
 		return err
@@ -697,16 +699,33 @@ func (s *LooseStore) Remove(hash Hash, durability RemovalDurability) error {
 	if durability != BestEffortRemoval && durability != DurableRemoval {
 		return ErrInvalidPolicy
 	}
-	path := s.layout.LoosePath(hash)
-	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("packstore: remove loose content: %w", err)
-	}
-	if durability == DurableRemoval {
-		if err := pack.SyncDir(filepath.Dir(path)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("packstore: sync loose removal: %w", err)
+	rawPath := s.layout.LoosePath(hash)
+	var removeErr error
+	for _, path := range []string{rawPath, s.layout.CompressedLoosePath(hash)} {
+		identity, err := snapshotLoosePathIdentity(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			removeErr = errors.Join(removeErr, fmt.Errorf("packstore: inspect loose removal: %w", err))
+			continue
+		}
+		if err := validateRegularNoFollow(path, identity); err != nil {
+			removeErr = errors.Join(removeErr, err)
+			continue
+		}
+		_, err = removeLoosePathIdentity(path, identity)
+		if err != nil {
+			removeErr = errors.Join(removeErr, fmt.Errorf("packstore: remove loose content: %w", err))
+			continue
 		}
 	}
-	return nil
+	if durability == DurableRemoval {
+		if err := pack.SyncDir(filepath.Dir(rawPath)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			removeErr = errors.Join(removeErr, fmt.Errorf("packstore: sync loose removal: %w", err))
+		}
+	}
+	return removeErr
 }
 
 func validateWriteOptions(opts WriteOptions) error {

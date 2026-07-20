@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -149,7 +150,11 @@ func (m *Maintainer) dropDangling(ctx context.Context, stats *PackStats) error {
 			if _, _, err := m.store.readPackedBounded(ctx, entry.Hash, &entry, m.limits.BlobBytes); err == nil {
 				continue
 			}
-			if err := verifyLoosePath(ctx, m.layout.LoosePath(entry.Hash), entry.Hash, m.limits.BlobBytes); err != nil {
+			valid, err := m.hasValidCanonicalLoose(ctx, entry.Hash)
+			if err != nil {
+				return err
+			}
+			if !valid {
 				continue
 			}
 			if err := m.catalog.DeleteIndexEntry(ctx, entry.Hash); err != nil {
@@ -230,7 +235,11 @@ func (m *Maintainer) reconcileOne(ctx context.Context, path, packID string, refs
 			}
 		}
 		if location.Member && location.Pack == nil {
-			if readErr := verifyLoosePath(ctx, m.layout.LoosePath(hash), hash, m.limits.BlobBytes); readErr == nil {
+			valid, verifyErr := m.hasValidCanonicalLoose(ctx, hash)
+			if verifyErr != nil {
+				return verifyErr
+			}
+			if valid {
 				continue
 			}
 		}
@@ -370,16 +379,36 @@ func (m *Maintainer) prepareCandidate(
 	if err != nil {
 		return nil, "", nil, false, err
 	}
+	if candidate.Size < 0 {
+		return nil, "", nil, false, fmt.Errorf("%w: negative loose logical size %d", ErrContentMismatch, candidate.Size)
+	}
+	if candidate.Size > m.limits.BlobBytes {
+		return nil, "", nil, false, newLimitError(
+			LimitBlobRawBytes, uint64(candidate.Size), uint64(m.limits.BlobBytes),
+		)
+	}
 	var corrupt error
+	var selected *pack.PreparedBlob
+	var selectedPath string
+	var selectedIdentity fs.FileInfo
+	seenPaths := make(map[string]struct{}, len(candidate.Paths))
 	for _, candidatePath := range candidate.Paths {
 		if err := ctx.Err(); err != nil {
+			if selected != nil {
+				_ = selected.Close()
+			}
 			return nil, "", nil, false, err
 		}
 		path := candidatePath
 		if !filepath.IsAbs(path) {
 			path = filepath.Join(m.layout.Root(), filepath.FromSlash(path))
 		}
-		identity, err := snapshotPathIdentity(path)
+		path = filepath.Clean(path)
+		if _, duplicate := seenPaths[path]; duplicate {
+			continue
+		}
+		seenPaths[path] = struct{}{}
+		object, identity, err := openCandidateLooseObject(path, candidate.Hash, candidate.Size)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
@@ -387,69 +416,134 @@ func (m *Maintainer) prepareCandidate(
 			corrupt = errors.Join(corrupt, err)
 			continue
 		}
-		if err := validateRegularNoFollow(path, identity); err != nil {
-			corrupt = errors.Join(corrupt, err)
-			continue
-		}
-		size := identity.Size()
-		if size < 0 || size > m.limits.BlobBytes {
-			corrupt = errors.Join(corrupt, newLimitError(LimitBlobRawBytes, uint64(size), uint64(m.limits.BlobBytes))) //nolint:gosec
-			continue
-		}
-		f, err := openNoFollow(path, false)
+		stream, err := newLooseVerifiedStream(ctx, candidate.Hash, object)
 		if err != nil {
 			corrupt = errors.Join(corrupt, err)
 			continue
 		}
-		opened, statErr := f.Stat()
-		if statErr != nil || !os.SameFile(identity, opened) {
-			corrupt = errors.Join(corrupt, statErr, errIdentityChanged, f.Close())
-			continue
+		var prepared *pack.PreparedBlob
+		var prepareErr error
+		if selected == nil {
+			prepared, prepareErr = pack.PrepareBlob(ctx, stream, uint64(candidate.Size), pack.DefaultZstdLevel, pack.AppendStreamOptions{
+				ExpectedID: &id, ScratchDir: m.layout.PacksDir(),
+			})
 		}
-		prepared, prepareErr := pack.PrepareBlob(ctx, f, uint64(size), pack.DefaultZstdLevel, pack.AppendStreamOptions{
-			ExpectedID: &id, ScratchDir: m.layout.PacksDir(),
-		})
-		after, afterErr := f.Stat()
-		closeErr := f.Close()
-		if prepareErr == nil && (afterErr != nil || !os.SameFile(identity, after)) {
-			prepareErr = errors.Join(afterErr, errIdentityChanged)
-		}
-		if err := errors.Join(prepareErr, closeErr); err != nil {
+		verifyErr := stream.Verify()
+		closeErr := stream.Close()
+		if err := errors.Join(prepareErr, verifyErr, closeErr); err != nil {
 			if prepared != nil {
 				_ = prepared.Close()
 			}
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				if selected != nil {
+					_ = selected.Close()
+				}
 				return nil, "", nil, false, err
 			}
 			corrupt = errors.Join(corrupt, err)
 			continue
 		}
-		return prepared, path, identity, true, nil
+		if selected == nil {
+			selected = prepared
+			selectedPath = path
+			selectedIdentity = identity
+		}
+	}
+	if selected != nil {
+		return selected, selectedPath, selectedIdentity, true, nil
 	}
 	return nil, "", nil, false, corrupt
 }
 
+func openCandidateLooseObject(path string, hash Hash, expectedSize int64) (*looseObject, fs.FileInfo, error) {
+	return openLooseObjectAtPath(path, hash, &expectedSize)
+}
+
+func openLooseObjectAtPath(path string, hash Hash, expectedSize *int64) (*looseObject, fs.FileInfo, error) {
+	identity, err := snapshotPathIdentity(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := validateRegularNoFollow(path, identity); err != nil {
+		return nil, nil, err
+	}
+	f, info, err := openLooseFile(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !os.SameFile(identity, info) {
+		return nil, nil, errors.Join(errIdentityChanged, f.Close())
+	}
+	encoding := LooseEncodingRaw
+	logicalSize := info.Size()
+	if filepath.Base(path) == hash.String()+".zst" {
+		encoding = LooseEncodingZstd
+		header := make([]byte, compressedLooseHeaderSize)
+		if _, err := io.ReadFull(f, header); err != nil {
+			return nil, nil, errors.Join(
+				fmt.Errorf("%w: read compressed loose header: %v", ErrContentMismatch, err),
+				f.Close(),
+			)
+		}
+		logicalSize, err = decodeCompressedLooseHeader(header)
+		if err != nil {
+			return nil, nil, errors.Join(fmt.Errorf("%w: %v", ErrContentMismatch, err), f.Close())
+		}
+	}
+	if expectedSize != nil && logicalSize != *expectedSize {
+		return nil, nil, errors.Join(
+			fmt.Errorf("%w: loose logical size is %d, want %d", ErrContentMismatch, logicalSize, *expectedSize),
+			f.Close(),
+		)
+	}
+	return &looseObject{
+		file: f, encoding: encoding, logicalSize: logicalSize, storedSize: info.Size(),
+	}, identity, nil
+}
+
 func verifyLoosePath(ctx context.Context, path string, hash Hash, limit int64) error {
+	_, err := verifyLoosePathIdentity(ctx, path, hash, limit)
+	return err
+}
+
+func verifyLoosePathIdentity(ctx context.Context, path string, hash Hash, limit int64) (fs.FileInfo, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return nil, err
 	}
-	info, err := snapshotPathIdentity(path)
+	object, identity, err := openLooseObjectAtPath(path, hash, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if err := validateRegularNoFollow(path, info); err != nil {
-		return err
-	}
-	size := info.Size()
+	size := object.logicalSize
 	if size < 0 || size > limit {
-		return newLimitError(LimitBlobRawBytes, uint64(size), uint64(limit)) //nolint:gosec
+		return nil, errors.Join(
+			newLimitError(LimitBlobRawBytes, uint64(size), uint64(limit)), //nolint:gosec
+			object.file.Close(),
+		)
 	}
-	f, err := openNoFollow(path, false)
+	stream, err := newLooseVerifiedStream(ctx, hash, object)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer func() { _ = f.Close() }()
-	return verifyLooseFile(ctx, f, info, hash)
+	if err := errors.Join(stream.Verify(), stream.Close()); err != nil {
+		return nil, err
+	}
+	return identity, nil
+}
+
+func (m *Maintainer) hasValidCanonicalLoose(ctx context.Context, hash Hash) (bool, error) {
+	valid := false
+	for _, path := range []string{m.layout.CompressedLoosePath(hash), m.layout.LoosePath(hash)} {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		if err := verifyLoosePath(ctx, path, hash, m.limits.BlobBytes); err == nil {
+			valid = true
+		} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return false, err
+		}
+	}
+	return valid, nil
 }
 
 func verifyLooseFile(ctx context.Context, f *os.File, info fs.FileInfo, hash Hash) error {
@@ -552,20 +646,37 @@ func (m *Maintainer) sweepLoose(ctx context.Context, refs map[Hash]Reference, al
 		return err
 	}
 	for _, entry := range indexed {
-		path := m.layout.LoosePath(entry.Hash)
-		if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
-			continue
-		} else if err != nil {
-			return err
-		}
 		if _, _, err := m.store.ReadBounded(ctx, entry.Hash, m.limits.BlobBytes); err != nil {
 			continue
 		}
-		if err := verifyLoosePath(ctx, path, entry.Hash, m.limits.BlobBytes); err != nil {
-			continue
+		present := 0
+		verified := 0
+		for _, path := range []string{m.layout.LoosePath(entry.Hash), m.layout.CompressedLoosePath(entry.Hash)} {
+			physical, err := snapshotPathIdentity(path)
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			} else if err != nil {
+				return err
+			}
+			if err := validateRegularNoFollow(path, physical); err != nil {
+				continue
+			}
+			present++
+			identity, err := verifyLoosePathIdentity(ctx, path, entry.Hash, m.limits.BlobBytes)
+			if err != nil {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return err
+				}
+				continue
+			}
+			verified++
+			removed, _ := removeLoosePathIdentity(path, identity)
+			if removed {
+				stats.LooseSwept++
+			}
 		}
-		if err := os.Remove(path); err == nil {
-			stats.LooseSwept++
+		if present > 0 && verified == 0 {
+			stats.BlobsCorrupt++
 		}
 	}
 	entries, err := os.ReadDir(m.layout.Root())
@@ -588,20 +699,71 @@ func (m *Maintainer) sweepLoose(ctx context.Context, refs map[Hash]Reference, al
 			return err
 		}
 		for _, file := range files {
-			hash, err := ParseHash(file.Name())
-			if err != nil || hash.String()[:2] != shard.Name() || !file.Type().IsRegular() {
+			hash, encoding, ok := parseCanonicalLooseName(file.Name())
+			if !ok || hash.String()[:2] != shard.Name() || !file.Type().IsRegular() {
 				continue
 			}
 			if _, live := refs[hash]; live {
 				continue
 			}
-			if err := os.Remove(filepath.Join(m.layout.Root(), shard.Name(), file.Name())); err != nil {
+			path := m.layout.LoosePath(hash)
+			if encoding == LooseEncodingZstd {
+				path = m.layout.CompressedLoosePath(hash)
+			}
+			if filepath.Clean(path) != filepath.Clean(filepath.Join(m.layout.Root(), shard.Name(), file.Name())) {
+				continue
+			}
+			identity, err := snapshotPathIdentity(path)
+			if err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					continue
+				}
 				return err
 			}
-			stats.LooseOrphansRemoved++
+			if err := validateRegularNoFollow(path, identity); err != nil {
+				continue
+			}
+			removed, err := removeLoosePathIdentity(path, identity)
+			if err != nil {
+				return err
+			}
+			if removed {
+				stats.LooseOrphansRemoved++
+			}
 		}
 	}
 	return nil
+}
+
+func parseCanonicalLooseName(name string) (Hash, LooseEncoding, bool) {
+	encoding := LooseEncodingRaw
+	hashName := name
+	if strings.HasSuffix(name, ".zst") {
+		encoding = LooseEncodingZstd
+		hashName = strings.TrimSuffix(name, ".zst")
+	}
+	hash, err := ParseHash(hashName)
+	return hash, encoding, err == nil
+}
+
+func removeLoosePathIdentity(path string, identity fs.FileInfo) (bool, error) {
+	current, err := snapshotPathIdentity(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if err := validateRegularNoFollow(path, current); err != nil {
+		return false, err
+	}
+	if !os.SameFile(identity, current) {
+		return false, errIdentityChanged
+	}
+	if err := os.Remove(path); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func indexFromPack(packID string, entry pack.Entry) IndexEntry {

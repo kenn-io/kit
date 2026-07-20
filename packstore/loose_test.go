@@ -2214,6 +2214,61 @@ func TestRemoveLooseUsesExplicitDurability(t *testing.T) {
 	require.ErrorIs(store.Remove(result.Hash, 0), ErrInvalidPolicy)
 }
 
+func TestLooseRemoveRemovesRawAndCompressedRepresentationsDurably(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	store := newLooseStoreForTest(t, StagingStoreDirectory)
+	content := bytes.Repeat([]byte("remove both representations\n"), 16)
+	result, err := store.WriteBytes(context.Background(), content, WriteOptions{
+		Durability:  AtomicPublication,
+		Dedup:       VerifyFullHash,
+		Compression: LooseCompressionOptions{Enabled: true},
+	})
+	require.NoError(err)
+	require.Equal(LooseEncodingZstd, result.Encoding)
+	rawPath := store.layout.LoosePath(result.Hash)
+	require.NoError(os.WriteFile(rawPath, content, 0o600))
+	var synced []string
+	originalSyncDir := pack.SyncDir
+	pack.SyncDir = func(path string) error {
+		synced = append(synced, path)
+		return nil
+	}
+	t.Cleanup(func() { pack.SyncDir = originalSyncDir })
+
+	require.NoError(store.Remove(result.Hash, DurableRemoval))
+
+	assert.NoFileExists(rawPath)
+	assert.NoFileExists(result.Path)
+	assert.Equal([]string{filepath.Dir(rawPath)}, synced)
+}
+
+func TestLooseRemoveRejectsSymlinksAndPreservesUnknownExtensions(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	store := newLooseStoreForTest(t, StagingStoreDirectory)
+	hash := hashForTest([]byte("remove canonical names only"))
+	rawPath := store.layout.LoosePath(hash)
+	compressedPath := store.layout.CompressedLoosePath(hash)
+	unknownPath := rawPath + ".bak"
+	require.NoError(os.MkdirAll(filepath.Dir(rawPath), 0o700))
+	target := filepath.Join(t.TempDir(), "target")
+	require.NoError(os.WriteFile(target, []byte("target"), 0o600))
+	require.NoError(os.Symlink(target, rawPath))
+	require.NoError(os.WriteFile(compressedPath, []byte("canonical physical bytes"), 0o600))
+	require.NoError(os.WriteFile(unknownPath, []byte("unknown extension"), 0o600))
+
+	err := store.Remove(hash, BestEffortRemoval)
+
+	require.ErrorIs(err, ErrContentMismatch)
+	rawInfo, statErr := os.Lstat(rawPath)
+	require.NoError(statErr)
+	assert.NotZero(rawInfo.Mode() & os.ModeSymlink)
+	assert.NoFileExists(compressedPath, "the independent canonical representation is still removed")
+	assert.FileExists(unknownPath)
+	assert.FileExists(target)
+}
+
 func BenchmarkLooseWriteBytesDuplicate(b *testing.B) {
 	content := bytes.Repeat([]byte("duplicate loose content\n"), 4096)
 	store := newLooseStoreForTest(b, StagingSameDirectory)

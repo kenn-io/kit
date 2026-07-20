@@ -47,6 +47,229 @@ func TestPackRepairsThenPacksAndSweepsLooseContent(t *testing.T) {
 	assert.NoFileExists(layout.LoosePath(hash))
 }
 
+func TestPackMixedLooseRepresentationsUsesLogicalIdentity(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	layout := layoutForStoreTest(t)
+	catalog := newMaintenanceCatalog()
+	contents := [][]byte{
+		[]byte("raw packing candidate"),
+		bytes.Repeat([]byte("compressed packing candidate\n"), 128),
+		bytes.Repeat([]byte("duplicate physical representation\n"), 96),
+	}
+	hashes := make([]Hash, len(contents))
+
+	hashes[0] = writeMaintenanceLoose(t, layout, contents[0])
+	rawRelative, err := filepath.Rel(layout.Root(), layout.LoosePath(hashes[0]))
+	require.NoError(err)
+	addMaintenanceCandidate(catalog, Candidate{
+		Hash: hashes[0], Paths: []string{filepath.ToSlash(rawRelative)}, Size: int64(len(contents[0])),
+	})
+
+	hashes[1] = hashForTest(contents[1])
+	writeCompressedLooseFixture(t, layout, hashes[1], int64(len(contents[1])), contents[1], nil)
+	addMaintenanceCandidate(catalog, Candidate{
+		Hash: hashes[1], Paths: []string{layout.CompressedLoosePath(hashes[1])}, Size: int64(len(contents[1])),
+	})
+
+	hashes[2] = writeMaintenanceLoose(t, layout, contents[2])
+	writeCompressedLooseFixture(t, layout, hashes[2], int64(len(contents[2])), contents[2], nil)
+	compressedRelative, err := filepath.Rel(layout.Root(), layout.CompressedLoosePath(hashes[2]))
+	require.NoError(err)
+	addMaintenanceCandidate(catalog, Candidate{
+		Hash: hashes[2],
+		Paths: []string{
+			filepath.ToSlash(compressedRelative),
+			layout.LoosePath(hashes[2]),
+		},
+		Size: int64(len(contents[2])),
+	})
+
+	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
+	stats, err := maintainer.Pack(context.Background(), PackOptions{})
+	require.NoError(err)
+	assert.Equal(len(contents), stats.BlobsPacked)
+	assert.Equal(int64(len(contents[0])+len(contents[1])+len(contents[2])), stats.BytesPacked)
+
+	indexed, records := catalog.snapshot()
+	require.Len(records, 1)
+	require.Len(indexed, len(contents), "one pack entry per logical hash")
+	for index, hash := range hashes {
+		entry, found := indexed[hash]
+		require.True(found)
+		assert.Equal(int64(len(contents[index])), entry.RawLen, "RawLen is decoded logical length")
+		got, size := readStoreTest(t, maintainer.store, hash)
+		assert.Equal(int64(len(contents[index])), size)
+		assert.Equal(contents[index], got)
+		assert.NoFileExists(layout.LoosePath(hash))
+		assert.NoFileExists(layout.CompressedLoosePath(hash))
+	}
+}
+
+func TestPackRejectsCorruptCompressedCandidate(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	layout := layoutForStoreTest(t)
+	catalog := newMaintenanceCatalog()
+	content := bytes.Repeat([]byte("verify compressed candidate\n"), 64)
+	hash := hashForTest(content)
+	writeCompressedLooseFixture(t, layout, hash, int64(len(content)), content, func(physical []byte) []byte {
+		physical[len(physical)-1] ^= 0xff
+		return physical
+	})
+	addMaintenanceCandidate(catalog, Candidate{
+		Hash: hash, Paths: []string{layout.CompressedLoosePath(hash)}, Size: int64(len(content)),
+	})
+	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
+
+	stats, err := maintainer.Pack(context.Background(), PackOptions{})
+
+	require.NoError(err)
+	assert.Equal(1, stats.BlobsCorrupt)
+	assert.Zero(stats.BlobsPacked)
+	assert.FileExists(layout.CompressedLoosePath(hash), "corrupt evidence is preserved")
+}
+
+func TestPackPreservesCompressedSourceReplacementAfterCatalogCommit(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	layout := layoutForStoreTest(t)
+	catalog := newMaintenanceCatalog()
+	content := bytes.Repeat([]byte("source replacement race\n"), 128)
+	hash := hashForTest(content)
+	path := layout.CompressedLoosePath(hash)
+	writeCompressedLooseFixture(t, layout, hash, int64(len(content)), content, nil)
+	addMaintenanceCandidate(catalog, Candidate{
+		Hash: hash, Paths: []string{path}, Size: int64(len(content)),
+	})
+	replacement := []byte("replacement planted after catalog commit")
+	catalog.commitHook = func() {
+		require.NoError(os.Remove(path))
+		require.NoError(os.WriteFile(path, replacement, 0o600))
+	}
+	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
+
+	stats, err := maintainer.Pack(context.Background(), PackOptions{})
+
+	require.NoError(err)
+	assert.Equal(1, stats.BlobsPacked)
+	assert.Equal(replacement, mustReadFile(t, path), "cleanup must not unlink a replacement inode")
+	got, _ := readStoreTest(t, maintainer.store, hash)
+	assert.Equal(content, got)
+}
+
+func TestPackPreservesDualCopiesWhenNeitherVerifies(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	layout := layoutForStoreTest(t)
+	catalog := newMaintenanceCatalog()
+	content := []byte("expected dual-copy logical bytes")
+	hash := hashForTest(content)
+	rawPath := layout.LoosePath(hash)
+	require.NoError(os.MkdirAll(filepath.Dir(rawPath), 0o700))
+	require.NoError(os.WriteFile(rawPath, []byte("different dual-copy raw bytes"), 0o600))
+	writeCompressedLooseFixture(t, layout, hash, int64(len(content)), []byte("different compressed bytes!!!!"), nil)
+	compressedPath := layout.CompressedLoosePath(hash)
+	addMaintenanceCandidate(catalog, Candidate{
+		Hash: hash, Paths: []string{compressedPath, rawPath}, Size: int64(len(content)),
+	})
+	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
+
+	stats, err := maintainer.Pack(context.Background(), PackOptions{})
+
+	require.NoError(err)
+	assert.Equal(1, stats.BlobsCorrupt)
+	assert.Zero(stats.BlobsPacked)
+	assert.FileExists(rawPath)
+	assert.FileExists(compressedPath)
+}
+
+func TestPackPreservesSoleValidAndDiagnosticCopiesUntilAdoption(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	layout := layoutForStoreTest(t)
+	catalog := newMaintenanceCatalog()
+	content := bytes.Repeat([]byte("sole valid loose representation\n"), 32)
+	hash := writeMaintenanceLoose(t, layout, content)
+	rawPath := layout.LoosePath(hash)
+	compressedPath := layout.CompressedLoosePath(hash)
+	corruptCompressed := []byte("corrupt compressed diagnostic evidence")
+	require.NoError(os.WriteFile(compressedPath, corruptCompressed, 0o600))
+	addMaintenanceCandidate(catalog, Candidate{
+		Hash: hash, Paths: []string{rawPath, compressedPath}, Size: int64(len(content)),
+	})
+	catalog.recordErr = errors.New("injected adoption failure")
+	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
+
+	_, err := maintainer.Pack(context.Background(), PackOptions{})
+	require.ErrorContains(err, "injected adoption failure")
+	assert.Equal(content, mustReadFile(t, rawPath), "the sole valid copy remains authoritative")
+	assert.Equal(corruptCompressed, mustReadFile(t, compressedPath), "diagnostic evidence is preserved")
+
+	catalog.recordErr = nil
+	stats, err := maintainer.Pack(context.Background(), PackOptions{})
+	require.NoError(err)
+	assert.Equal(1, stats.BlobsPacked)
+	assert.Equal(1, stats.BlobsCorrupt, "the invalid redundant copy is reported")
+	assert.NoFileExists(rawPath, "the adopted pack now verifies as another logical representation")
+	assert.Equal(corruptCompressed, mustReadFile(t, compressedPath), "corrupt diagnostic evidence remains")
+	got, _ := readStoreTest(t, maintainer.store, hash)
+	assert.Equal(content, got)
+}
+
+func TestPackSweepsBothVerifiedLooseRepresentations(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	layout := layoutForStoreTest(t)
+	content := bytes.Repeat([]byte("redundant packed content\n"), 32)
+	entry := buildStoreTestPack(t, layout, content)
+	require.Equal(entry.Hash, writeMaintenanceLoose(t, layout, content))
+	writeCompressedLooseFixture(t, layout, entry.Hash, int64(len(content)), content, nil)
+	catalog := newMaintenanceCatalog()
+	catalog.members[entry.Hash] = Reference{Hash: entry.Hash}
+	catalog.entries[entry.Hash] = entry
+	catalog.packs[entry.PackID] = PackRecord{PackID: entry.PackID, EntryCount: 1, StoredBytes: entry.StoredLen, CreatedAt: time.Now()}
+	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
+
+	stats, err := maintainer.Pack(context.Background(), PackOptions{})
+
+	require.NoError(err)
+	assert.Equal(2, stats.LooseSwept)
+	assert.NoFileExists(layout.LoosePath(entry.Hash))
+	assert.NoFileExists(layout.CompressedLoosePath(entry.Hash))
+}
+
+func TestPackOrphanSweepRecognizesOnlyCanonicalLooseNames(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	layout := layoutForStoreTest(t)
+	rawHash := writeMaintenanceLoose(t, layout, []byte("raw orphan"))
+	compressedContent := []byte("compressed orphan")
+	compressedHash := hashForTest(compressedContent)
+	writeCompressedLooseFixture(t, layout, compressedHash, int64(len(compressedContent)), compressedContent, nil)
+	unknown := layout.LoosePath(hashForTest([]byte("unknown extension"))) + ".bak"
+	require.NoError(os.MkdirAll(filepath.Dir(unknown), 0o700))
+	require.NoError(os.WriteFile(unknown, []byte("preserve"), 0o600))
+	symlinkHash := hashForTest([]byte("symlink orphan"))
+	symlinkPath := layout.CompressedLoosePath(symlinkHash)
+	require.NoError(os.MkdirAll(filepath.Dir(symlinkPath), 0o700))
+	target := filepath.Join(t.TempDir(), "target")
+	require.NoError(os.WriteFile(target, []byte("target"), 0o600))
+	require.NoError(os.Symlink(target, symlinkPath))
+	maintainer := newMaintainerForTest(t, newMaintenanceCatalog(), layout, DefaultLimits())
+
+	stats, err := maintainer.Pack(context.Background(), PackOptions{})
+
+	require.NoError(err)
+	assert.Equal(2, stats.LooseOrphansRemoved)
+	assert.NoFileExists(layout.LoosePath(rawHash))
+	assert.NoFileExists(layout.CompressedLoosePath(compressedHash))
+	assert.FileExists(unknown)
+	info, err := os.Lstat(symlinkPath)
+	require.NoError(err)
+	assert.NotZero(info.Mode() & os.ModeSymlink)
+}
+
 func TestPackDefersOversizedBlobWithoutFailingRun(t *testing.T) {
 	assert := assert.New(t)
 	layout := layoutForStoreTest(t)
@@ -394,4 +617,12 @@ func writeMaintenanceLoose(t *testing.T, layout Layout, content []byte) Hash {
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
 	require.NoError(t, os.WriteFile(path, content, 0o600))
 	return hash
+}
+
+func addMaintenanceCandidate(catalog *maintenanceCatalog, candidate Candidate) {
+	catalog.members[candidate.Hash] = Reference{
+		Hash: candidate.Hash, OriginalHashes: []string{candidate.Hash.String()},
+	}
+	candidate.OriginalHashes = []string{candidate.Hash.String()}
+	catalog.candidates[candidate.Hash] = candidate
 }
