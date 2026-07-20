@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -295,10 +297,12 @@ func TestPackPreservesCompressedSourceReplacementAfterCatalogCommit(t *testing.T
 	hash := hashForTest(content)
 	path := layout.CompressedLoosePath(hash)
 	writeCompressedLooseFixture(t, layout, hash, int64(len(content)), content, nil)
+	physical, err := os.Stat(path)
+	require.NoError(err)
 	addMaintenanceCandidate(catalog, Candidate{
 		Hash: hash, Paths: []string{path}, Size: int64(len(content)),
 	})
-	replacement := []byte("replacement planted after catalog commit")
+	replacement := bytes.Repeat([]byte{0xa5}, int(physical.Size()))
 	catalog.commitHook = func() {
 		require.NoError(os.Remove(path))
 		require.NoError(os.WriteFile(path, replacement, 0o600))
@@ -310,8 +314,198 @@ func TestPackPreservesCompressedSourceReplacementAfterCatalogCommit(t *testing.T
 	require.ErrorIs(err, errIdentityChanged)
 	assert.Equal(1, stats.BlobsPacked)
 	assert.Equal(replacement, mustReadFile(t, path), "cleanup must not unlink a replacement inode")
+	assertNoLooseRemovalClaims(t, path)
 	got, _ := readStoreTest(t, maintainer.store, hash)
 	assert.Equal(content, got)
+}
+
+func TestSweepLooseSkipsPackedAuthorityWhenNoCanonicalLooseCandidateExists(t *testing.T) {
+	layout := layoutForStoreTest(t)
+	base := newMaintenanceCatalog()
+	var first Hash
+	for index := range 64 {
+		hash, err := ParseHash(fmt.Sprintf("%064x", index+1))
+		require.NoError(t, err)
+		if index == 0 {
+			first = hash
+		}
+		base.members[hash] = Reference{Hash: hash}
+		base.entries[hash] = IndexEntry{Hash: hash, PackID: pack.NewPackID()}
+	}
+	require.NoError(t, os.MkdirAll(layout.LoosePath(first), 0o700))
+	symlink := layout.CompressedLoosePath(first)
+	if err := os.Symlink("elsewhere", symlink); err != nil {
+		t.Logf("symlink fixture unavailable: %v", err)
+	}
+	catalog := &countingResolveCatalog{maintenanceCatalog: base}
+	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
+	var stats PackStats
+
+	err := maintainer.sweepLoose(context.Background(), base.members, true, &stats)
+
+	require.NoError(t, err)
+	assert.Zero(t, catalog.resolveCalls, "an absent loose namespace must not open packed authority")
+	assert.Equal(t, PackStats{}, stats)
+	assert.DirExists(t, layout.LoosePath(first), "non-regular canonical-looking entries stay untouched")
+}
+
+func TestSweepLooseVerifiesPackedAuthorityForCanonicalLooseCandidate(t *testing.T) {
+	for _, encoding := range []LooseEncoding{LooseEncodingRaw, LooseEncodingZstd} {
+		t.Run(fmt.Sprint(encoding), func(t *testing.T) {
+			layout := layoutForStoreTest(t)
+			content := bytes.Repeat([]byte("redundant packed authority\n"), 32)
+			entry := buildStoreTestPack(t, layout, content)
+			if encoding == LooseEncodingRaw {
+				require.Equal(t, entry.Hash, writeMaintenanceLoose(t, layout, content))
+			} else {
+				writeCompressedLooseFixture(t, layout, entry.Hash, int64(len(content)), content, nil)
+			}
+			base := newMaintenanceCatalog()
+			base.members[entry.Hash] = Reference{Hash: entry.Hash}
+			base.entries[entry.Hash] = entry
+			base.packs[entry.PackID] = PackRecord{
+				PackID: entry.PackID, EntryCount: 1, StoredBytes: entry.StoredLen, CreatedAt: time.Now(),
+			}
+			catalog := &countingResolveCatalog{maintenanceCatalog: base}
+			maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
+			var stats PackStats
+
+			err := maintainer.sweepLoose(context.Background(), base.members, true, &stats)
+
+			require.NoError(t, err)
+			assert.Equal(t, 1, catalog.resolveCalls, "a loose candidate requires packed authority verification")
+			assert.Equal(t, 1, stats.LooseSwept)
+			assert.NoFileExists(t, layout.LoosePath(entry.Hash))
+			assert.NoFileExists(t, layout.CompressedLoosePath(entry.Hash))
+		})
+	}
+}
+
+func TestPackSourcePinLimitRotatesWithoutLeakingPins(t *testing.T) {
+	layout := layoutForStoreTest(t)
+	catalog := newMaintenanceCatalog()
+	var order []Hash
+	for index := range 10 {
+		content := fmt.Appendf(nil, "tiny source %02d", index)
+		hash := writeMaintenanceLoose(t, layout, content)
+		catalog.addLoose(hash, layout.LoosePath(hash))
+		order = append(order, hash)
+	}
+	catalog.setCandidateOrder(order)
+	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
+	maintainer.packedSourcePinLimit = 3
+	opened, closed := 0, 0
+	baseOpen := maintainer.openIdentityPin
+	maintainer.openIdentityPin = func(path string) (identityPin, fs.FileInfo, error) {
+		pin, identity, err := baseOpen(path)
+		if err != nil {
+			return nil, nil, err
+		}
+		opened++
+		return &observedIdentityPin{identityPin: pin, closed: &closed}, identity, nil
+	}
+
+	stats, err := maintainer.Pack(context.Background(), PackOptions{})
+
+	require.NoError(t, err)
+	assert.Equal(t, 10, stats.BlobsPacked)
+	assert.Equal(t, 4, stats.PacksSealed)
+	assert.Equal(t, opened, closed)
+	assert.Equal(t, 10, opened)
+}
+
+func TestPackedSourcePinLimitForSoftLimit(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		soft uint64
+		want int
+	}{
+		{name: "below reserve", soft: 64, want: 1},
+		{name: "small process", soft: 256, want: 64},
+		{name: "common conservative limit", soft: 1_024, want: 448},
+		{name: "target-derived ceiling", soft: 10_000, want: 4_096},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, packedSourcePinLimitForSoftLimit(tt.soft))
+		})
+	}
+}
+
+func TestPackTargetDerivedSourcePinLimitKeepsThousandTinySourcesTogether(t *testing.T) {
+	if testing.Short() {
+		t.Skip("creates enough source files to protect the normal packing resource tradeoff")
+	}
+	layout := layoutForStoreTest(t)
+	catalog := newMaintenanceCatalog()
+	var order []Hash
+	for index := range 1_000 {
+		content := fmt.Appendf(nil, "default pin budget tiny source %04d", index)
+		hash := writeMaintenanceLoose(t, layout, content)
+		catalog.addLoose(hash, layout.LoosePath(hash))
+		order = append(order, hash)
+	}
+	catalog.setCandidateOrder(order)
+	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
+	maintainer.packedSourcePinLimit = maxPackedSourcePins
+
+	stats, err := maintainer.Pack(context.Background(), PackOptions{})
+
+	require.NoError(t, err)
+	assert.Equal(t, 1_000, stats.BlobsPacked)
+	assert.Equal(t, 1, stats.PacksSealed, "the normal resource cap must not fragment ordinary tiny-object packs")
+}
+
+func TestPackClosesSourcePinsWhenRecordPackFails(t *testing.T) {
+	layout := layoutForStoreTest(t)
+	catalog := newMaintenanceCatalog()
+	content := []byte("source pin closes after catalog failure")
+	hash := writeMaintenanceLoose(t, layout, content)
+	catalog.addLoose(hash, layout.LoosePath(hash))
+	recordErr := errors.New("injected RecordPack failure")
+	catalog.recordErr = recordErr
+	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
+	opened, closed := 0, 0
+	baseOpen := maintainer.openIdentityPin
+	maintainer.openIdentityPin = func(path string) (identityPin, fs.FileInfo, error) {
+		pin, identity, err := baseOpen(path)
+		if err != nil {
+			return nil, nil, err
+		}
+		opened++
+		return &observedIdentityPin{identityPin: pin, closed: &closed}, identity, nil
+	}
+
+	_, err := maintainer.Pack(context.Background(), PackOptions{})
+
+	require.ErrorIs(t, err, recordErr)
+	assert.Equal(t, 1, opened)
+	assert.Equal(t, opened, closed)
+	assert.FileExists(t, layout.LoosePath(hash))
+}
+
+func TestPackReportsSourcePinCloseFailure(t *testing.T) {
+	layout := layoutForStoreTest(t)
+	catalog := newMaintenanceCatalog()
+	content := []byte("source pin close errors remain visible")
+	hash := writeMaintenanceLoose(t, layout, content)
+	catalog.addLoose(hash, layout.LoosePath(hash))
+	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
+	closeErr := errors.New("injected source pin close failure")
+	baseOpen := maintainer.openIdentityPin
+	maintainer.openIdentityPin = func(path string) (identityPin, fs.FileInfo, error) {
+		pin, identity, err := baseOpen(path)
+		if err != nil {
+			return nil, nil, err
+		}
+		return &observedIdentityPin{identityPin: pin, closeErr: closeErr}, identity, nil
+	}
+
+	stats, err := maintainer.Pack(context.Background(), PackOptions{})
+
+	require.ErrorIs(t, err, closeErr)
+	assert.Equal(t, 1, stats.BlobsPacked, "catalog commit remains authoritative despite cleanup failure")
+	got, _ := readStoreTest(t, maintainer.store, hash)
+	assert.Equal(t, content, got)
 }
 
 func TestPackCancellationDuringCompressedCandidateCleansScratch(t *testing.T) {
@@ -336,10 +530,22 @@ func TestPackCancellationDuringCompressedCandidateCleansScratch(t *testing.T) {
 	}
 	t.Cleanup(func() { newLooseZstdReader = originalReader })
 	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
+	opened, closed := 0, 0
+	baseOpen := maintainer.openIdentityPin
+	maintainer.openIdentityPin = func(path string) (identityPin, fs.FileInfo, error) {
+		pin, identity, err := baseOpen(path)
+		if err != nil {
+			return nil, nil, err
+		}
+		opened++
+		return &observedIdentityPin{identityPin: pin, closed: &closed}, identity, nil
+	}
 
 	_, err := maintainer.Pack(ctx, PackOptions{})
 
 	require.ErrorIs(err, context.Canceled)
+	assert.Equal(opened, closed, "cancellation closes every acquired source pin")
+	assert.Equal(1, opened)
 	assert.FileExists(layout.CompressedLoosePath(hash))
 	indexed, records := catalog.snapshot()
 	assert.Empty(indexed)
@@ -913,6 +1119,29 @@ type listedCandidateCatalog struct {
 	*maintenanceCatalog
 	listed   []Candidate
 	recorded []Adoption
+}
+
+type countingResolveCatalog struct {
+	*maintenanceCatalog
+	resolveCalls int
+}
+
+type observedIdentityPin struct {
+	identityPin
+	closed   *int
+	closeErr error
+}
+
+func (p *observedIdentityPin) Close() error {
+	if p.closed != nil {
+		*p.closed++
+	}
+	return errors.Join(p.identityPin.Close(), p.closeErr)
+}
+
+func (c *countingResolveCatalog) Resolve(ctx context.Context, hash Hash) (Location, error) {
+	c.resolveCalls++
+	return c.maintenanceCatalog.Resolve(ctx, hash)
 }
 
 type cancelAfterFirstLooseRead struct {

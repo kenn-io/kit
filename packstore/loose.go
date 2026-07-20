@@ -719,19 +719,10 @@ func (s *LooseStore) Remove(hash Hash, durability RemovalDurability) error {
 	rawPath := s.layout.LoosePath(hash)
 	var removeErr error
 	for _, path := range []string{rawPath, s.layout.CompressedLoosePath(hash)} {
-		identity, err := snapshotLoosePathIdentity(path)
+		_, err := removeLoosePath(path, openLooseIdentityPin)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
-		if err != nil {
-			removeErr = errors.Join(removeErr, fmt.Errorf("packstore: inspect loose removal: %w", err))
-			continue
-		}
-		if err := validateRegularNoFollow(path, identity); err != nil {
-			removeErr = errors.Join(removeErr, err)
-			continue
-		}
-		_, err = removeLoosePathIdentity(path, identity)
 		if err != nil {
 			removeErr = errors.Join(removeErr, fmt.Errorf("packstore: remove loose content: %w", err))
 			continue

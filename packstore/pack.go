@@ -276,8 +276,38 @@ func (m *Maintainer) reconcileOne(ctx context.Context, path, packID string, refs
 type packedSource struct {
 	candidate Candidate
 	path      string
-	identity  fs.FileInfo
+	pin       identityPin
 	entry     pack.Entry
+}
+
+type identityPin interface {
+	Stat() (fs.FileInfo, error)
+	Close() error
+}
+
+type identityPinOpener func(string) (identityPin, fs.FileInfo, error)
+
+func openLooseIdentityPin(path string) (identityPin, fs.FileInfo, error) {
+	before, err := snapshotPathIdentity(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := validateRegularNoFollow(path, before); err != nil {
+		return nil, nil, err
+	}
+	pin, pinned, err := openLooseRepairPin(path)
+	if err != nil {
+		if current, snapshotErr := snapshotPathIdentity(path); snapshotErr == nil {
+			if validationErr := validateRegularNoFollow(path, current); validationErr != nil {
+				return nil, nil, errors.Join(validationErr, err)
+			}
+		}
+		return nil, nil, err
+	}
+	if !os.SameFile(before, pinned) {
+		return nil, nil, errors.Join(errIdentityChanged, pin.Close())
+	}
+	return pin, pinned, nil
 }
 
 type candidateGroup struct {
@@ -325,7 +355,7 @@ func mergeLogicalCandidates(candidates []Candidate) []candidateGroup {
 	return groups
 }
 
-func (m *Maintainer) packLoose(ctx context.Context, opts PackOptions, stats *PackStats) error {
+func (m *Maintainer) packLoose(ctx context.Context, opts PackOptions, stats *PackStats) (resultErr error) {
 	candidates, err := m.catalog.ListUnpacked(ctx)
 	if err != nil {
 		return err
@@ -333,21 +363,25 @@ func (m *Maintainer) packLoose(ctx context.Context, opts PackOptions, stats *Pac
 	var writer *pack.Writer
 	var sources []packedSource
 	var rawBytes int64
-	abort := func() {
+	abort := func() error {
 		if writer != nil {
-			_ = writer.Abort()
+			return writer.Abort()
 		}
+		return nil
 	}
-	defer abort()
+	defer func() {
+		resultErr = errors.Join(resultErr, abort(), closePackedSourcePins(sources))
+	}()
 	seal := func() error {
 		if writer == nil || len(sources) == 0 {
 			return nil
 		}
-		if err := m.sealAndRecord(ctx, writer, sources, stats); err != nil {
+		sealedSources := sources
+		sources = nil
+		if err := m.sealAndRecord(ctx, writer, sealedSources, stats); err != nil {
 			return err
 		}
 		writer = nil
-		sources = nil
 		return nil
 	}
 	for _, group := range mergeLogicalCandidates(candidates) {
@@ -363,7 +397,12 @@ func (m *Maintainer) packLoose(ctx context.Context, opts PackOptions, stats *Pac
 			stats.BlobsDeferredOversized++
 			continue
 		}
-		prepared, source, sourceIdentity, found, readErr := m.prepareCandidate(ctx, candidate)
+		if writer != nil && len(sources) >= m.packedSourcePinLimit {
+			if err := seal(); err != nil {
+				return err
+			}
+		}
+		prepared, source, sourcePin, found, readErr := m.prepareCandidate(ctx, candidate)
 		if readErr != nil {
 			if errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) {
 				return readErr
@@ -380,30 +419,30 @@ func (m *Maintainer) packLoose(ctx context.Context, opts PackOptions, stats *Pac
 			continue
 		}
 		if err := checkPlainOutput(m.limits, uint64(pack.MinEntryOffset), prepared.StoredLen(), 1); err != nil {
-			_ = prepared.Close()
+			if closeErr := errors.Join(prepared.Close(), sourcePin.Close()); closeErr != nil {
+				return closeErr
+			}
 			stats.BlobsDeferredOversized++
 			continue
 		}
 		if writer != nil {
 			if err := checkPlainOutput(m.limits, uint64(writer.StoredSize()), prepared.StoredLen(), len(sources)+1); err != nil { //nolint:gosec // writer offsets are non-negative
 				if err := seal(); err != nil {
-					_ = prepared.Close()
-					return err
+					return errors.Join(err, prepared.Close(), sourcePin.Close())
 				}
 			}
 		}
 		if writer == nil {
 			writer, err = pack.NewWriter(m.layout.PacksDir(), pack.WriterOptions{TargetSize: opts.TargetSize})
 			if err != nil {
-				_ = prepared.Close()
-				return err
+				return errors.Join(err, prepared.Close(), sourcePin.Close())
 			}
 		}
 		entry, err := writer.AppendPrepared(ctx, prepared)
 		if err != nil {
-			return err
+			return errors.Join(err, sourcePin.Close())
 		}
-		sources = append(sources, packedSource{candidate: candidate, path: source, identity: sourceIdentity, entry: entry})
+		sources = append(sources, packedSource{candidate: candidate, path: source, pin: sourcePin, entry: entry})
 		rawBytes += int64(entry.RawLen) //nolint:gosec // bounded by configured limits
 		if writer.Full() || (opts.MaxBytes > 0 && rawBytes >= opts.MaxBytes) {
 			if err := seal(); err != nil {
@@ -420,7 +459,7 @@ func (m *Maintainer) packLoose(ctx context.Context, opts PackOptions, stats *Pac
 
 func (m *Maintainer) prepareCandidate(
 	ctx context.Context, candidate Candidate,
-) (*pack.PreparedBlob, string, fs.FileInfo, bool, error) {
+) (*pack.PreparedBlob, string, identityPin, bool, error) {
 	id, err := pack.ParseBlobID(candidate.Hash.String())
 	if err != nil {
 		return nil, "", nil, false, err
@@ -436,7 +475,7 @@ func (m *Maintainer) prepareCandidate(
 	var corrupt error
 	var selected *pack.PreparedBlob
 	var selectedPath string
-	var selectedIdentity fs.FileInfo
+	var selectedPin identityPin
 	seenPaths := make(map[string]struct{}, len(candidate.Paths))
 	for _, candidatePath := range candidate.Paths {
 		if err := ctx.Err(); err != nil {
@@ -466,9 +505,17 @@ func (m *Maintainer) prepareCandidate(
 			corrupt = errors.Join(corrupt, err)
 			continue
 		}
+		var pin identityPin
+		if selected == nil {
+			pin, err = m.pinOpenCandidate(path, identity)
+			if err != nil {
+				corrupt = errors.Join(corrupt, err, object.file.Close())
+				continue
+			}
+		}
 		stream, err := newLooseVerifiedStream(ctx, candidate.Hash, object)
 		if err != nil {
-			corrupt = errors.Join(corrupt, err)
+			corrupt = errors.Join(corrupt, err, closeIdentityPin(pin))
 			continue
 		}
 		var prepared *pack.PreparedBlob
@@ -482,11 +529,12 @@ func (m *Maintainer) prepareCandidate(
 		closeErr := stream.Close()
 		if err := errors.Join(prepareErr, verifyErr, closeErr); err != nil {
 			if prepared != nil {
-				_ = prepared.Close()
+				err = errors.Join(err, prepared.Close())
 			}
+			err = errors.Join(err, closeIdentityPin(pin))
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				if selected != nil {
-					_ = selected.Close()
+					err = errors.Join(err, selected.Close(), closeIdentityPin(selectedPin))
 				}
 				return nil, "", nil, false, err
 			}
@@ -496,13 +544,39 @@ func (m *Maintainer) prepareCandidate(
 		if selected == nil {
 			selected = prepared
 			selectedPath = path
-			selectedIdentity = identity
+			selectedPin = pin
 		}
 	}
 	if selected != nil {
-		return selected, selectedPath, selectedIdentity, true, nil
+		return selected, selectedPath, selectedPin, true, nil
 	}
 	return nil, "", nil, false, corrupt
+}
+
+func (m *Maintainer) pinOpenCandidate(path string, expected fs.FileInfo) (identityPin, error) {
+	pin, pinned, err := m.openIdentityPin(path)
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(expected, pinned) {
+		return nil, errors.Join(errIdentityChanged, pin.Close())
+	}
+	return pin, nil
+}
+
+func closeIdentityPin(pin identityPin) error {
+	if pin == nil {
+		return nil
+	}
+	return pin.Close()
+}
+
+func closePackedSourcePins(sources []packedSource) error {
+	var resultErr error
+	for _, source := range sources {
+		resultErr = errors.Join(resultErr, closeIdentityPin(source.pin))
+	}
+	return resultErr
 }
 
 func openCandidateLooseObject(
@@ -571,6 +645,22 @@ func verifyLoosePathIdentity(
 	limit int64,
 	encoding LooseEncoding,
 ) (fs.FileInfo, error) {
+	pin, err := verifyLoosePathPinned(ctx, path, hash, limit, encoding, openLooseIdentityPin)
+	if err != nil {
+		return nil, err
+	}
+	identity, statErr := pin.Stat()
+	return identity, errors.Join(statErr, pin.Close())
+}
+
+func verifyLoosePathPinned(
+	ctx context.Context,
+	path string,
+	hash Hash,
+	limit int64,
+	encoding LooseEncoding,
+	openPin identityPinOpener,
+) (identityPin, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -585,14 +675,21 @@ func verifyLoosePathIdentity(
 			object.file.Close(),
 		)
 	}
+	pin, pinned, err := openPin(path)
+	if err != nil {
+		return nil, errors.Join(err, object.file.Close())
+	}
+	if !os.SameFile(identity, pinned) {
+		return nil, errors.Join(errIdentityChanged, object.file.Close(), pin.Close())
+	}
 	stream, err := newLooseVerifiedStream(ctx, hash, object)
 	if err != nil {
-		return nil, err
+		return nil, errors.Join(err, pin.Close())
 	}
 	if err := errors.Join(stream.Verify(), stream.Close()); err != nil {
-		return nil, err
+		return nil, errors.Join(err, pin.Close())
 	}
-	return identity, nil
+	return pin, nil
 }
 
 func (m *Maintainer) hasValidCanonicalLoose(ctx context.Context, hash Hash) (bool, error) {
@@ -648,7 +745,12 @@ func verifyLooseFile(ctx context.Context, f *os.File, info fs.FileInfo, hash Has
 	return nil
 }
 
-func (m *Maintainer) sealAndRecord(ctx context.Context, writer *pack.Writer, sources []packedSource, stats *PackStats) error {
+func (m *Maintainer) sealAndRecord(
+	ctx context.Context, writer *pack.Writer, sources []packedSource, stats *PackStats,
+) (resultErr error) {
+	defer func() {
+		resultErr = errors.Join(resultErr, closePackedSourcePins(sources))
+	}()
 	packID := writer.ID()
 	path := m.layout.PackPath(packID)
 	entries, err := writer.Seal(path)
@@ -676,7 +778,7 @@ func (m *Maintainer) sealAndRecord(ctx context.Context, writer *pack.Writer, sou
 	var cleanupErr error
 	for _, source := range sources {
 		stats.BytesPacked += int64(source.entry.RawLen) //nolint:gosec
-		if _, err := removeLoosePathIdentity(source.path, source.identity); err != nil {
+		if _, err := removeLoosePathPinned(source.path, source.pin); err != nil {
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf(
 				"packstore: remove packed loose source %s: %w", source.path, err,
 			))
@@ -719,6 +821,13 @@ func (m *Maintainer) sweepLoose(ctx context.Context, refs map[Hash]Reference, al
 		return err
 	}
 	for _, entry := range indexed {
+		hasCandidate, err := m.hasCanonicalLooseCandidate(ctx, entry.Hash)
+		if err != nil {
+			return err
+		}
+		if !hasCandidate {
+			continue
+		}
 		if _, _, err := m.store.ReadBounded(ctx, entry.Hash, m.limits.BlobBytes); err != nil {
 			continue
 		}
@@ -741,8 +850,8 @@ func (m *Maintainer) sweepLoose(ctx context.Context, refs map[Hash]Reference, al
 				continue
 			}
 			present++
-			identity, err := verifyLoosePathIdentity(
-				ctx, candidate.path, entry.Hash, m.limits.BlobBytes, candidate.encoding,
+			pin, err := verifyLoosePathPinned(
+				ctx, candidate.path, entry.Hash, m.limits.BlobBytes, candidate.encoding, m.openIdentityPin,
 			)
 			if err != nil {
 				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -751,9 +860,9 @@ func (m *Maintainer) sweepLoose(ctx context.Context, refs map[Hash]Reference, al
 				continue
 			}
 			verified++
-			removed, removeErr := removeLoosePathIdentity(candidate.path, identity)
-			if removeErr != nil {
-				return fmt.Errorf("packstore: sweep loose content: %w", removeErr)
+			removed, removeErr := removeLoosePathPinned(candidate.path, pin)
+			if err := errors.Join(removeErr, pin.Close()); err != nil {
+				return fmt.Errorf("packstore: sweep loose content: %w", err)
 			}
 			if removed {
 				stats.LooseSwept++
@@ -797,17 +906,13 @@ func (m *Maintainer) sweepLoose(ctx context.Context, refs map[Hash]Reference, al
 			if filepath.Clean(path) != filepath.Clean(filepath.Join(m.layout.Root(), shard.Name(), file.Name())) {
 				continue
 			}
-			identity, err := snapshotPathIdentity(path)
-			if err != nil {
-				if errors.Is(err, fs.ErrNotExist) {
-					continue
-				}
-				return err
-			}
-			if err := validateRegularNoFollow(path, identity); err != nil {
+			removed, err := removeLoosePath(path, openLooseIdentityPin)
+			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
-			removed, err := removeLoosePathIdentity(path, identity)
+			if errors.Is(err, ErrContentMismatch) {
+				continue
+			}
 			if err != nil {
 				return err
 			}
@@ -817,6 +922,28 @@ func (m *Maintainer) sweepLoose(ctx context.Context, refs map[Hash]Reference, al
 		}
 	}
 	return nil
+}
+
+// hasCanonicalLooseCandidate is an authorization-free, no-follow preflight.
+// A negative result only defers work; deletion still requires a second open,
+// full verification, and a live identity pin after packed authority verifies.
+func (m *Maintainer) hasCanonicalLooseCandidate(ctx context.Context, hash Hash) (bool, error) {
+	for _, path := range []string{m.layout.LoosePath(hash), m.layout.CompressedLoosePath(hash)} {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		identity, err := snapshotPathIdentity(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		if err := validateRegularNoFollow(path, identity); err == nil {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func parseCanonicalLooseName(name string) (Hash, LooseEncoding, bool) {
@@ -835,7 +962,22 @@ func parseCanonicalLooseName(name string) (Hash, LooseEncoding, bool) {
 // validation-to-unlink race at path: a replacement is restored without
 // clobbering any still-newer occupant, while only the expected identity is
 // discarded.
-func removeLoosePathIdentity(path string, identity fs.FileInfo) (bool, error) {
+func removeLoosePath(path string, openPin identityPinOpener) (removed bool, resultErr error) {
+	pin, _, err := openPin(path)
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		resultErr = errors.Join(resultErr, pin.Close())
+	}()
+	return removeLoosePathPinned(path, pin)
+}
+
+func removeLoosePathPinned(path string, pin identityPin) (bool, error) {
+	identity, err := pin.Stat()
+	if err != nil {
+		return false, fmt.Errorf("inspect pinned loose content %s: %w", path, err)
+	}
 	asideDir, err := makeLooseRemovalAside(path)
 	if err != nil {
 		return false, err

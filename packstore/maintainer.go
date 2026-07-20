@@ -13,11 +13,13 @@ type MaintainerOptions struct {
 
 // Maintainer owns physical repair, pack, unpack, and repack lifecycle work.
 type Maintainer struct {
-	catalog     Catalog
-	layout      Layout
-	limits      Limits
-	coordinator *Coordinator
-	store       *Store
+	catalog              Catalog
+	layout               Layout
+	limits               Limits
+	coordinator          *Coordinator
+	store                *Store
+	packedSourcePinLimit int
+	openIdentityPin      identityPinOpener
 }
 
 // NewMaintainer constructs a lifecycle engine over an application catalog.
@@ -39,8 +41,11 @@ func NewMaintainer(catalog Catalog, layout Layout, opts MaintainerOptions) (*Mai
 	if err != nil {
 		return nil, err
 	}
-	return &Maintainer{catalog: catalog, layout: layout, limits: opts.Limits,
-		coordinator: opts.Coordinator, store: store}, nil
+	return &Maintainer{
+		catalog: catalog, layout: layout, limits: opts.Limits, coordinator: opts.Coordinator, store: store,
+		packedSourcePinLimit: defaultPackedSourcePinLimit(opts.Limits.PackEntries),
+		openIdentityPin:      openLooseIdentityPin,
+	}, nil
 }
 
 // Store returns the shared mixed reader owned by this maintainer.
