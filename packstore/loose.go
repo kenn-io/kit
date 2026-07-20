@@ -26,7 +26,13 @@ var looseCopyBufferPool = sync.Pool{
 	New: func() any { return new([looseCopyBufferBytes]byte) },
 }
 
-var looseWriteLocks [256]sync.Mutex
+var looseWriteStripes = func() [256]chan struct{} {
+	var stripes [256]chan struct{}
+	for index := range stripes {
+		stripes[index] = make(chan struct{}, 1)
+	}
+	return stripes
+}()
 
 var (
 	syncLooseFile             = func(file *os.File) error { return file.Sync() }
@@ -34,12 +40,18 @@ var (
 	newLooseZstdWriter        = func(dst io.Writer) (io.WriteCloser, error) {
 		return zstd.NewWriter(dst, zstd.WithEncoderConcurrency(1))
 	}
-	publishLooseFile       = os.Link
-	beforeLoosePublish     = func(Hash, LooseEncoding) {}
-	closeLooseStagingFile  = func(file *os.File) error { return file.Close() }
-	removeLooseStagingFile = os.Remove
-	syncLooseStagingDir    = func(path string) error { return pack.SyncDir(path) }
-	chmodLooseStagingFile  = func(file *os.File, mode fs.FileMode) error { return file.Chmod(mode) }
+	newLooseZstdReader = func(src io.Reader) (looseZstdReader, error) {
+		return zstd.NewReader(src,
+			zstd.WithDecoderConcurrency(1),
+			zstd.WithDecoderMaxMemory(64<<20))
+	}
+	publishLooseFile        = os.Link
+	beforeLoosePublish      = func(Hash, LooseEncoding) {}
+	afterLooseStripeAcquire = func(Hash, LooseEncoding) {}
+	closeLooseStagingFile   = func(file *os.File) error { return file.Close() }
+	removeLooseStagingFile  = os.Remove
+	syncLooseStagingDir     = func(path string) error { return pack.SyncDir(path) }
+	chmodLooseStagingFile   = func(file *os.File, mode fs.FileMode) error { return file.Chmod(mode) }
 )
 
 var (
@@ -193,6 +205,11 @@ type stagedLooseFile struct {
 	closed bool
 }
 
+type looseZstdReader interface {
+	io.Reader
+	Close()
+}
+
 func (s *LooseStore) publish(ctx context.Context, src io.Reader, opts WriteOptions, stagingDir string, known *WriteResult) (result WriteResult, resultErr error) {
 	identity := WriteResult{}
 	if known != nil {
@@ -317,13 +334,24 @@ func (s *LooseStore) publish(ctx context.Context, src io.Reader, opts WriteOptio
 	}
 
 	beforeLoosePublish(identity.Hash, identity.Encoding)
-	writeLock := &looseWriteLocks[looseHashLockIndex(identity.Hash)]
-	writeLock.Lock()
-	defer writeLock.Unlock()
-	if result, exists, err := s.existing(identity.Hash, identity.Size, opts.Dedup, opts.Durability); err != nil {
+	releaseStripe, err := acquireLooseWriteStripe(ctx, identity.Hash)
+	if err != nil {
 		return identity, err
-	} else if exists {
-		return result, nil
+	}
+	defer releaseStripe()
+	afterLooseStripeAcquire(identity.Hash, identity.Encoding)
+	if err := ctx.Err(); err != nil {
+		return identity, err
+	}
+	existing, exists, err := s.existing(identity.Hash, identity.Size, opts.Dedup, opts.Durability)
+	if err != nil {
+		return identity, err
+	}
+	if err := ctx.Err(); err != nil {
+		return identity, err
+	}
+	if exists {
+		return existing, nil
 	}
 
 	final := identity.Path
@@ -332,6 +360,9 @@ func (s *LooseStore) publish(ctx context.Context, src io.Reader, opts WriteOptio
 		if err := ensureDirectory(shard, opts.Durability); err != nil {
 			return identity, fmt.Errorf("packstore: prepare loose shard: %w", err)
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return identity, err
 	}
 	if err := publishLooseFile(selected.path, final); err != nil {
 		result, exists, verifyErr := s.existing(identity.Hash, identity.Size, opts.Dedup, opts.Durability)
@@ -347,6 +378,20 @@ func (s *LooseStore) publish(ctx context.Context, src io.Reader, opts WriteOptio
 		}
 	}
 	return identity, nil
+}
+
+func acquireLooseWriteStripe(ctx context.Context, hash Hash) (func(), error) {
+	stripe := looseWriteStripes[looseHashLockIndex(hash)]
+	select {
+	case stripe <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			<-stripe
+			return nil, err
+		}
+		return func() { <-stripe }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func looseHashLockIndex(hash Hash) byte {
@@ -595,16 +640,23 @@ func (s *LooseStore) verifyCompressedPath(path string, before fs.FileInfo, expec
 		return errors.Join(fmt.Errorf("%w: existing logical size is %d, want %d", ErrContentMismatch, logicalSize, expectedSize), f.Close())
 	}
 	if verification == VerifyFullHash {
-		decoder, err := zstd.NewReader(struct{ io.Reader }{f},
-			zstd.WithDecoderConcurrency(1),
-			zstd.WithDecoderMaxMemory(64<<20))
+		decoder, err := newLooseZstdReader(struct{ io.Reader }{f})
 		if err != nil {
 			return errors.Join(fmt.Errorf("%w: open compressed loose payload: %v", ErrContentMismatch, err), f.Close())
 		}
 		hasher := sha256.New()
 		buffer := looseCopyBufferPool.Get().(*[looseCopyBufferBytes]byte)
-		decodedSize, readErr := io.CopyBuffer(hasher, decoder, buffer[:])
+		decodedSize, readErr := io.CopyBuffer(hasher, &io.LimitedReader{R: decoder, N: expectedSize}, buffer[:])
 		looseCopyBufferPool.Put(buffer)
+		if readErr == nil && decodedSize == expectedSize {
+			var extra [1]byte
+			n, probeErr := io.ReadFull(decoder, extra[:])
+			if n != 0 {
+				readErr = fmt.Errorf("decoded size exceeds expected %d bytes", expectedSize)
+			} else if probeErr != nil && !errors.Is(probeErr, io.EOF) && !errors.Is(probeErr, io.ErrUnexpectedEOF) {
+				readErr = probeErr
+			}
+		}
 		decoder.Close()
 		if readErr != nil {
 			return errors.Join(fmt.Errorf("%w: decode compressed loose payload: %v", ErrContentMismatch, readErr), f.Close())

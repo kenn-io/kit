@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/pack"
@@ -899,6 +900,53 @@ func TestLooseWriteDedupRejectsCorruptPreferredRepresentation(t *testing.T) {
 	assert.Equal(t, content, mustReadFile(t, rawPath), "a valid alternate copy must not mask preferred corruption")
 }
 
+func TestLooseWriteDedupRejectsOverlongCompressedPayloadAfterOneExtraByte(t *testing.T) {
+	require := require.New(t)
+	expected := []byte("short logical content")
+	overlong := bytes.Repeat([]byte("overlong decoded content\n"), 4096)
+	store := newLooseStoreForTest(t, StagingSameDirectory)
+	hash := hashForTest(expected)
+	path := store.layout.CompressedLoosePath(hash)
+	require.NoError(os.MkdirAll(filepath.Dir(path), 0o700))
+	header := encodeCompressedLooseHeader(uint64(len(expected)))
+	var physical bytes.Buffer
+	_, err := physical.Write(header[:])
+	require.NoError(err)
+	encoder, err := zstd.NewWriter(&physical, zstd.WithEncoderConcurrency(1))
+	require.NoError(err)
+	_, err = encoder.Write(overlong)
+	require.NoError(err)
+	require.NoError(encoder.Close())
+	require.NoError(os.WriteFile(path, physical.Bytes(), 0o600))
+	overreadErr := errors.New("decoded beyond expected logical size plus one byte")
+	overreadAttempted := false
+	originalReader := newLooseZstdReader
+	newLooseZstdReader = func(src io.Reader) (looseZstdReader, error) {
+		decoder, err := originalReader(src)
+		if err != nil {
+			return nil, err
+		}
+		return &maxDecodedReader{
+			reader:            decoder,
+			remaining:         int64(len(expected)) + 1,
+			overread:          overreadErr,
+			overreadAttempted: &overreadAttempted,
+		}, nil
+	}
+	t.Cleanup(func() { newLooseZstdReader = originalReader })
+
+	_, err = store.WriteBytes(context.Background(), expected, WriteOptions{
+		Durability: AtomicPublication,
+		Dedup:      VerifyFullHash,
+	})
+
+	require.ErrorIs(err, ErrContentMismatch)
+	require.NotErrorIs(err, overreadErr)
+	assert.False(t, overreadAttempted, "verification must stop after one decoded byte beyond the expected size")
+	assert.Equal(t, physical.Bytes(), mustReadFile(t, path), "ordinary dedup must preserve the corrupt preferred copy")
+	assert.NoFileExists(t, store.layout.LoosePath(hash))
+}
+
 func TestLooseWriteDedupVerificationPolicies(t *testing.T) {
 	require := require.New(t)
 	content := []byte("right")
@@ -1131,6 +1179,92 @@ func TestLooseWriteConcurrentRawAndCompressedPublishOneRepresentation(t *testing
 	assert.Equal(1, canonicalFiles)
 }
 
+func TestLooseWriteCancelledWhileQueuedForStripeReturnsWithoutDedupOrPublish(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	content := bytes.Repeat([]byte("cancel queued publication\n"), 4096)
+	hash := hashForTest(content)
+	layout, err := NewLayout(t.TempDir(), LayoutOptions{Staging: StagingSameDirectory})
+	require.NoError(err)
+	holderStore, err := NewLooseStore(layout)
+	require.NoError(err)
+	queuedStore, err := NewLooseStore(layout)
+	require.NoError(err)
+	holderAcquired := make(chan struct{})
+	holderRelease := make(chan struct{})
+	queuedAtAcquire := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseHolder := func() { releaseOnce.Do(func() { close(holderRelease) }) }
+	t.Cleanup(releaseHolder)
+	originalBeforePublish := beforeLoosePublish
+	originalAfterAcquire := afterLooseStripeAcquire
+	beforeLoosePublish = func(gotHash Hash, encoding LooseEncoding) {
+		if gotHash == hash && encoding == LooseEncodingZstd {
+			close(queuedAtAcquire)
+		}
+	}
+	afterLooseStripeAcquire = func(gotHash Hash, encoding LooseEncoding) {
+		if gotHash == hash && encoding == LooseEncodingRaw {
+			close(holderAcquired)
+			<-holderRelease
+		}
+	}
+	t.Cleanup(func() {
+		beforeLoosePublish = originalBeforePublish
+		afterLooseStripeAcquire = originalAfterAcquire
+	})
+
+	type writeOutcome struct {
+		result WriteResult
+		err    error
+	}
+	holderOutcome := make(chan writeOutcome, 1)
+	go func() {
+		result, err := holderStore.WriteBytes(context.Background(), content, WriteOptions{
+			Durability: AtomicPublication,
+			Dedup:      VerifyFullHash,
+		})
+		holderOutcome <- writeOutcome{result: result, err: err}
+	}()
+	receiveLooseSignal(t, holderAcquired, "holder to acquire loose publication stripe")
+
+	queuedCtx, cancelQueued := context.WithCancel(context.Background())
+	t.Cleanup(cancelQueued)
+	queuedOutcome := make(chan writeOutcome, 1)
+	go func() {
+		result, err := queuedStore.WriteBytes(queuedCtx, content, WriteOptions{
+			Durability:  AtomicPublication,
+			Dedup:       VerifyFullHash,
+			Compression: LooseCompressionOptions{Enabled: true},
+		})
+		queuedOutcome <- writeOutcome{result: result, err: err}
+	}()
+	receiveLooseSignal(t, queuedAtAcquire, "queued writer to reach loose publication stripe")
+	cancelQueued()
+
+	var queued writeOutcome
+	timedOut := false
+	select {
+	case queued = <-queuedOutcome:
+	case <-time.After(time.Second):
+		timedOut = true
+		releaseHolder()
+		queued = <-queuedOutcome
+	}
+	assert.False(timedOut, "cancelled queued writer must not wait for the stripe holder")
+	require.ErrorIs(queued.err, context.Canceled)
+	assert.False(queued.result.Created)
+	assert.NoFileExists(layout.LoosePath(hash), "holder has not been released to publish")
+	assert.NoFileExists(layout.CompressedLoosePath(hash), "cancelled queued writer must not publish")
+
+	releaseHolder()
+	holder := <-holderOutcome
+	require.NoError(holder.err)
+	assert.True(holder.result.Created)
+	assert.Equal(LooseEncodingRaw, holder.result.Encoding)
+	assert.FileExists(holder.result.Path)
+}
+
 func TestLooseWriteRejectsSymlinkDestination(t *testing.T) {
 	require := require.New(t)
 	content := []byte("content")
@@ -1262,6 +1396,15 @@ func receiveLooseEncoding(t *testing.T, values <-chan LooseEncoding) LooseEncodi
 	}
 }
 
+func receiveLooseSignal(t *testing.T, signal <-chan struct{}, description string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "timed out waiting for "+description)
+	}
+}
+
 type cancelAfterRead struct {
 	reader io.Reader
 	cancel context.CancelFunc
@@ -1319,6 +1462,28 @@ func (w *fixedSizeEncoder) Close() error {
 	_, err := w.dst.Write(make([]byte, w.payloadBytes))
 	return err
 }
+
+type maxDecodedReader struct {
+	reader            looseZstdReader
+	remaining         int64
+	overread          error
+	overreadAttempted *bool
+}
+
+func (r *maxDecodedReader) Read(p []byte) (int, error) {
+	if r.remaining == 0 {
+		*r.overreadAttempted = true
+		return 0, r.overread
+	}
+	if int64(len(p)) > r.remaining {
+		p = p[:r.remaining]
+	}
+	n, err := r.reader.Read(p)
+	r.remaining -= int64(n)
+	return n, err
+}
+
+func (r *maxDecodedReader) Close() { r.reader.Close() }
 
 type boundedChunkReader struct {
 	r   io.Reader
