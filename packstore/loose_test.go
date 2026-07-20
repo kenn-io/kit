@@ -1147,7 +1147,9 @@ func TestLooseRepairPublicationFailurePreservesAllCanonicalCopies(t *testing.T) 
 	require.NoError(os.WriteFile(compressedPath, compressedBefore, 0o600))
 	publishErr := errors.New("injected repair replacement failure")
 	originalReplace := publishLooseRepairFile
-	publishLooseRepairFile = func(string, string) error { return publishErr }
+	publishLooseRepairFile = func(string, string, fs.FileInfo) (looseRepairPublishResult, error) {
+		return looseRepairPublishResult{}, publishErr
+	}
 	t.Cleanup(func() { publishLooseRepairFile = originalReplace })
 
 	_, err := store.Repair(context.Background(), bytes.NewReader(content), LooseIdentity{
@@ -1159,6 +1161,69 @@ func TestLooseRepairPublicationFailurePreservesAllCanonicalCopies(t *testing.T) 
 	assert.Equal(rawBefore, mustReadFile(t, rawPath))
 	assert.Equal(compressedBefore, mustReadFile(t, compressedPath))
 	assert.Empty(matchingFiles(t, store.layout.LooseStagingDir(hash), ".staging-"))
+}
+
+func TestLooseRepairPublicationFailurePreservesLastVerifiedStagingCopy(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	content := []byte("last verified repair staging copy")
+	store := newLooseStoreForTest(t, StagingStoreDirectory)
+	hash := hashForTest(content)
+	canonical := store.layout.LoosePath(hash)
+	publishErr := errors.New("injected unrecoverable replacement failure")
+	originalReplace := publishLooseRepairFile
+	var staging string
+	publishLooseRepairFile = func(gotStaging, final string, _ fs.FileInfo) (looseRepairPublishResult, error) {
+		staging = gotStaging
+		assert.Equal(canonical, final)
+		return looseRepairPublishResult{KeepStaging: true}, publishErr
+	}
+	t.Cleanup(func() {
+		publishLooseRepairFile = originalReplace
+		if staging != "" {
+			_ = os.Remove(staging)
+		}
+	})
+
+	result, err := store.Repair(context.Background(), bytes.NewReader(content), LooseIdentity{
+		Hash: hash,
+		Size: int64(len(content)),
+	}, RepairOptions{Durability: AtomicPublication})
+
+	require.ErrorIs(err, publishErr)
+	assert.False(result.Created)
+	require.NotEmpty(staging)
+	assert.Equal(content, mustReadFile(t, staging))
+	assert.NoFileExists(canonical)
+}
+
+func TestLooseRepairReplacementAPIErrorReturnsPublishedReceipt(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	content := []byte("replacement reached canonical despite API error")
+	store := newLooseStoreForTest(t, StagingStoreDirectory)
+	hash := hashForTest(content)
+	canonical := store.layout.LoosePath(hash)
+	require.NoError(os.MkdirAll(filepath.Dir(canonical), 0o700))
+	require.NoError(os.WriteFile(canonical, []byte("old canonical evidence"), 0o600))
+	publishErr := errors.New("injected partial ReplaceFileW failure")
+	originalReplace := publishLooseRepairFile
+	publishLooseRepairFile = func(staging, final string, _ fs.FileInfo) (looseRepairPublishResult, error) {
+		require.Equal(canonical, final)
+		require.NoError(os.Rename(staging, final))
+		return looseRepairPublishResult{Created: true}, publishErr
+	}
+	t.Cleanup(func() { publishLooseRepairFile = originalReplace })
+
+	result, err := store.Repair(context.Background(), bytes.NewReader(content), LooseIdentity{
+		Hash: hash,
+		Size: int64(len(content)),
+	}, RepairOptions{Durability: AtomicPublication})
+
+	require.ErrorIs(err, publishErr)
+	assert.True(result.Created)
+	assert.Equal(canonical, result.Path)
+	assert.Equal(content, mustReadFile(t, canonical))
 }
 
 func TestLooseRepairVerifiesSelectedStagingRepresentationBeforeReplacement(t *testing.T) {
@@ -1223,6 +1288,57 @@ func TestLooseRepairRejectsSelectedPathSwapAfterVerification(t *testing.T) {
 	require.ErrorIs(err, ErrContentMismatch)
 	assert.Equal(before, mustReadFile(t, canonical))
 	assert.NoFileExists(store.layout.CompressedLoosePath(hash))
+}
+
+func TestLooseRepairRejectsSameInodeMutationAfterVerification(t *testing.T) {
+	content := []byte("verified repair staging content")
+	for _, tt := range []struct {
+		name   string
+		mutate func(*testing.T, string)
+	}{
+		{
+			name: "overwrite",
+			mutate: func(t *testing.T, path string) {
+				require.NoError(t, os.WriteFile(path, []byte("mutated repair staging content!"), 0o600))
+			},
+		},
+		{
+			name: "truncate",
+			mutate: func(t *testing.T, path string) {
+				require.NoError(t, os.Truncate(path, 5))
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			assert := assert.New(t)
+			require := require.New(t)
+			store := newLooseStoreForTest(t, StagingSameDirectory)
+			hash := hashForTest(content)
+			canonical := store.layout.LoosePath(hash)
+			require.NoError(os.MkdirAll(filepath.Dir(canonical), 0o700))
+			before := []byte("existing same-inode evidence")
+			require.NoError(os.WriteFile(canonical, before, 0o600))
+			originalAfterVerify := afterLooseRepairVerify
+			afterLooseRepairVerify = func(path string) {
+				identityBefore, err := os.Stat(path)
+				require.NoError(err)
+				tt.mutate(t, path)
+				identityAfter, err := os.Stat(path)
+				require.NoError(err)
+				assert.True(os.SameFile(identityBefore, identityAfter), "fixture must mutate the verified inode in place")
+			}
+			t.Cleanup(func() { afterLooseRepairVerify = originalAfterVerify })
+
+			_, err := store.Repair(context.Background(), bytes.NewReader(content), LooseIdentity{
+				Hash: hash,
+				Size: int64(len(content)),
+			}, RepairOptions{Durability: AtomicPublication})
+
+			require.ErrorIs(err, ErrContentMismatch)
+			assert.Equal(before, mustReadFile(t, canonical))
+			assert.NoFileExists(store.layout.CompressedLoosePath(hash))
+		})
+	}
 }
 
 func TestLooseRepairCancellationDuringStagingPreservesCanonicalEvidence(t *testing.T) {

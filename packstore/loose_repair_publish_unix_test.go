@@ -29,18 +29,21 @@ func TestReplaceLooseRepairFileUnixPublishesAtomically(t *testing.T) {
 			before := []byte("old open descriptor")
 			after := []byte("verified replacement")
 			require.NoError(os.WriteFile(staging, after, 0o600))
+			verified, err := os.Stat(staging)
+			require.NoError(err)
 			var active *os.File
 			if tt.existingTarget {
 				require.NoError(os.WriteFile(final, before, 0o600))
-				var err error
 				active, err = openNoFollow(final, false)
 				require.NoError(err)
 				t.Cleanup(func() { _ = active.Close() })
 			}
 
-			err := replaceLooseRepairFile(staging, final)
+			result, err := replaceLooseRepairFile(staging, final, verified)
 
 			require.NoError(err)
+			assert.True(result.Created)
+			assert.False(result.KeepStaging)
 			assert.Equal(after, mustReadFile(t, final))
 			assert.NoFileExists(staging)
 			if active != nil {

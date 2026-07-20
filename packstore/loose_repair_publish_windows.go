@@ -24,17 +24,28 @@ var (
 // atomically without clobbering a name planted by a concurrent process; losing
 // that creation race returns to ReplaceFileW rather than remove-then-rename.
 // The absent-target link may leave the staging name for caller-owned cleanup.
-func replaceLooseRepairFile(staging, final string) error {
-	err := replaceLooseFileWindows(staging, final)
+func replaceLooseRepairFile(staging, final string, verified fs.FileInfo) (looseRepairPublishResult, error) {
+	backup, err := newLooseRepairBackupPath(final)
+	if err != nil {
+		return looseRepairPublishResult{KeepStaging: true}, err
+	}
+	err = replaceLooseFileWindows(staging, final, backup)
+	if err == nil {
+		return looseRepairPublishResult{Created: true}, cleanupLooseRepairBackup(backup, true)
+	}
 	if !isWindowsNotExist(err) {
-		return err
+		return reconcileLooseRepairReplacement(staging, final, backup, verified, err)
 	}
 	if err := linkLooseRepairFileWindows(staging, final); err == nil {
-		return nil
+		return looseRepairPublishResult{Created: true}, nil
 	} else if !errors.Is(err, fs.ErrExist) {
-		return err
+		return reconcileLooseRepairReplacement(staging, final, backup, verified, err)
 	}
-	return replaceLooseFileWindows(staging, final)
+	err = replaceLooseFileWindows(staging, final, backup)
+	if err == nil {
+		return looseRepairPublishResult{Created: true}, cleanupLooseRepairBackup(backup, true)
+	}
+	return reconcileLooseRepairReplacement(staging, final, backup, verified, err)
 }
 
 func isWindowsNotExist(err error) bool {
@@ -43,7 +54,7 @@ func isWindowsNotExist(err error) bool {
 		errors.Is(err, windows.ERROR_PATH_NOT_FOUND)
 }
 
-func replaceLooseFileWindowsAPI(staging, final string) error {
+func replaceLooseFileWindowsAPI(staging, final, backup string) error {
 	replacedName, err := windows.UTF16PtrFromString(final)
 	if err != nil {
 		return err
@@ -52,10 +63,14 @@ func replaceLooseFileWindowsAPI(staging, final string) error {
 	if err != nil {
 		return err
 	}
+	backupName, err := windows.UTF16PtrFromString(backup)
+	if err != nil {
+		return err
+	}
 	r1, _, callErr := procReplaceFileW.Call(
 		uintptr(unsafe.Pointer(replacedName)),
 		uintptr(unsafe.Pointer(replacementName)),
-		0,
+		uintptr(unsafe.Pointer(backupName)),
 		0,
 		0,
 		0,

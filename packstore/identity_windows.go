@@ -34,6 +34,24 @@ func openNoFollow(path string, durable bool) (*os.File, error) {
 	return openWindowsNoFollow(path, access)
 }
 
+// openLooseRepairPin holds only an identity handle. Zero requested access is
+// deliberate: ReplaceFileW opens the replacement without sharing, so a readable
+// pin would conflict even if that pin granted FILE_SHARE_DELETE.
+func openLooseRepairPin(path string) (*os.File, fs.FileInfo, error) {
+	f, err := openWindowsNoFollow(path, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return nil, nil, errors.Join(err, f.Close())
+	}
+	if err := validateRegularNoFollow(path, info); err != nil {
+		return nil, nil, errors.Join(err, f.Close())
+	}
+	return f, info, nil
+}
+
 func openWindowsNoFollow(path string, access uint32) (*os.File, error) {
 	name, err := windows.UTF16PtrFromString(path)
 	if err != nil {

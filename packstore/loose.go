@@ -222,8 +222,11 @@ func (s *LooseStore) WriteBytes(ctx context.Context, content []byte, opts WriteO
 // its selected loose representation and removing the alternate canonical name.
 // It changes only physical loose bytes; catalog membership and packed mappings
 // remain the caller's responsibility. If replacement succeeds but alternate
-// removal, shard durability, or deferred staging cleanup fails, Repair returns
-// the published receipt with Created true together with the non-nil error.
+// removal, repair-backup cleanup, shard durability, or deferred staging cleanup
+// fails, Repair returns the published receipt with Created true together with
+// the non-nil error.
+// Repair staging is private to this call; correctness assumes no external
+// writer mutates that private inode after its final verification begins.
 func (s *LooseStore) Repair(
 	ctx context.Context,
 	src io.Reader,
@@ -439,6 +442,9 @@ func (s *LooseStore) publish(
 		if err := ctx.Err(); err != nil {
 			return identity, err
 		}
+		if err := verifyStagedLooseRepairPath(ctx, selected.path, identity); err != nil {
+			return identity, fmt.Errorf("packstore: reverify staged loose repair: %w", err)
+		}
 		current, err := snapshotLoosePathIdentity(selected.path)
 		if err != nil {
 			return identity, fmt.Errorf("%w: recheck staged loose repair identity: %v", ErrContentMismatch, err)
@@ -446,8 +452,15 @@ func (s *LooseStore) publish(
 		if !os.SameFile(pin.identity, current) {
 			return identity, fmt.Errorf("%w: %w", ErrContentMismatch, errIdentityChanged)
 		}
-		if err := publishLooseRepairFile(selected.path, final); err != nil {
-			return identity, fmt.Errorf("packstore: replace loose content: %w", err)
+		publication, publicationErr := publishLooseRepairFile(selected.path, final, pin.identity)
+		if publication.KeepStaging {
+			selected.path = ""
+		}
+		if !publication.Created {
+			if publicationErr == nil {
+				publicationErr = fmt.Errorf("repair publisher did not create canonical content")
+			}
+			return identity, fmt.Errorf("packstore: replace loose content: %w", publicationErr)
 		}
 		identity.Created = true
 		alternate := s.layout.CompressedLoosePath(identity.Hash)
@@ -467,7 +480,10 @@ func (s *LooseStore) publish(
 				syncErr = fmt.Errorf("packstore: sync repaired loose shard: %w", err)
 			}
 		}
-		return identity, errors.Join(removeErr, syncErr)
+		if publicationErr != nil {
+			publicationErr = fmt.Errorf("packstore: replace loose content: %w", publicationErr)
+		}
+		return identity, errors.Join(publicationErr, removeErr, syncErr)
 	}
 	if err := publishLooseFile(selected.path, final); err != nil {
 		result, exists, verifyErr := s.existing(identity.Hash, identity.Size, opts.Dedup, opts.Durability)
@@ -491,7 +507,7 @@ type pinnedLooseRepair struct {
 }
 
 func pinAndVerifyStagedLooseRepair(ctx context.Context, path string, identity WriteResult) (*pinnedLooseRepair, error) {
-	pinFile, pinIdentity, err := openLooseFile(path)
+	pinFile, pinIdentity, err := openLooseRepairPin(path)
 	if err != nil {
 		return nil, err
 	}
