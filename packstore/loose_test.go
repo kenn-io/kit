@@ -903,7 +903,8 @@ func TestLooseWriteDedupRejectsCorruptPreferredRepresentation(t *testing.T) {
 func TestLooseWriteDedupRejectsOverlongCompressedPayloadAfterOneExtraByte(t *testing.T) {
 	require := require.New(t)
 	expected := []byte("short logical content")
-	overlong := bytes.Repeat([]byte("overlong decoded content\n"), 4096)
+	extra := bytes.Repeat([]byte("extra decoded content\n"), 4096)
+	overlong := append(bytes.Clone(expected), extra...)
 	store := newLooseStoreForTest(t, StagingSameDirectory)
 	hash := hashForTest(expected)
 	path := store.layout.CompressedLoosePath(hash)
