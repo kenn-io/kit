@@ -29,6 +29,11 @@ var looseCopyBufferPool = sync.Pool{
 	New: func() any { return new([looseCopyBufferBytes]byte) },
 }
 
+type looseVerificationIdentityPin interface {
+	Stat() (fs.FileInfo, error)
+	Close() error
+}
+
 var looseWriteStripes = func() [256]chan struct{} {
 	var stripes [256]chan struct{}
 	for index := range stripes {
@@ -53,6 +58,12 @@ var (
 	}
 	newLooseHashReader = func(ctx context.Context, src io.Reader) io.Reader {
 		return &contextReader{ctx: ctx, reader: src}
+	}
+	// Verification pins deliberately reuse the non-removal repair handle. In
+	// particular, Windows deduplication must not require DELETE access merely
+	// to keep a checked file identity allocated through the final path recheck.
+	openLooseVerificationIdentityPin = func(path string) (looseVerificationIdentityPin, fs.FileInfo, error) {
+		return openLooseRepairPin(path)
 	}
 	publishLooseFile              = os.Link
 	publishLooseRepairFile        = replaceLooseRepairFile
@@ -805,7 +816,7 @@ func (s *LooseStore) existingPath(ctx context.Context, path string, hash Hash, s
 	return result, exists, err
 }
 
-func (s *LooseStore) existingOnce(ctx context.Context, path string, hash Hash, size int64, encoding LooseEncoding, verification DedupVerification, durability Durability) (WriteResult, bool, error) {
+func (s *LooseStore) existingOnce(ctx context.Context, path string, hash Hash, size int64, encoding LooseEncoding, verification DedupVerification, durability Durability) (result WriteResult, exists bool, resultErr error) {
 	info, err := snapshotLoosePathIdentity(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return WriteResult{}, false, nil
@@ -816,8 +827,19 @@ func (s *LooseStore) existingOnce(ctx context.Context, path string, hash Hash, s
 	if err := validateRegularNoFollow(path, info); err != nil {
 		return WriteResult{}, false, err
 	}
+	var verified *looseVerifiedIdentity
+	defer func() {
+		if verified == nil {
+			return
+		}
+		if closeErr := verified.close(); closeErr != nil {
+			resultErr = errors.Join(resultErr, closeErr)
+			exists = false
+		}
+	}()
 	if encoding == LooseEncodingZstd {
-		if err := s.verifyCompressedPath(ctx, path, info, hash, size, verification, durability == DurablePublication); err != nil {
+		verified, err = s.verifyCompressedPath(ctx, path, info, hash, size, verification, durability == DurablePublication)
+		if err != nil {
 			return WriteResult{}, false, err
 		}
 	} else {
@@ -825,11 +847,13 @@ func (s *LooseStore) existingOnce(ctx context.Context, path string, hash Hash, s
 			return WriteResult{}, false, fmt.Errorf("%w: existing size is %d, want %d", ErrContentMismatch, info.Size(), size)
 		}
 		if verification == VerifyFullHash {
-			if err := s.verifyPathHash(ctx, path, info, hash, durability == DurablePublication); err != nil {
+			verified, err = s.verifyPathHash(ctx, path, info, hash, durability == DurablePublication)
+			if err != nil {
 				return WriteResult{}, false, err
 			}
 		} else if durability == DurablePublication {
-			if err := syncPathIdentity(path, info); err != nil {
+			verified, err = syncPathIdentity(path, info)
+			if err != nil {
 				return WriteResult{}, false, err
 			}
 		}
@@ -848,6 +872,11 @@ func (s *LooseStore) existingOnce(ctx context.Context, path string, hash Hash, s
 	if err := ctx.Err(); err != nil {
 		return WriteResult{}, false, err
 	}
+	if verified != nil {
+		if err := verified.recheck(path); err != nil {
+			return WriteResult{}, false, err
+		}
+	}
 	return WriteResult{
 		Hash:       hash,
 		Size:       size,
@@ -857,28 +886,37 @@ func (s *LooseStore) existingOnce(ctx context.Context, path string, hash Hash, s
 	}, true, nil
 }
 
-func (s *LooseStore) verifyCompressedPath(ctx context.Context, path string, before fs.FileInfo, expectedHash Hash, expectedSize int64, verification DedupVerification, durable bool) error {
+func (s *LooseStore) verifyCompressedPath(ctx context.Context, path string, before fs.FileInfo, expectedHash Hash, expectedSize int64, verification DedupVerification, durable bool) (result *looseVerifiedIdentity, resultErr error) {
 	f, err := openNoFollow(path, durable)
 	if err != nil {
-		return fmt.Errorf("packstore: open compressed loose content: %w", err)
+		return nil, fmt.Errorf("packstore: open compressed loose content: %w", err)
 	}
 	descriptorInfo, statErr := f.Stat()
 	if statErr != nil {
-		return errors.Join(statErr, f.Close())
+		return nil, errors.Join(statErr, f.Close())
 	}
 	if !sameLooseFileState(before, descriptorInfo) {
-		return errors.Join(fmt.Errorf("%w: %w", ErrContentMismatch, errIdentityChanged), f.Close())
+		return nil, errors.Join(fmt.Errorf("%w: %w", ErrContentMismatch, errIdentityChanged), f.Close())
 	}
+	verified, err := pinLooseVerificationIdentity(path, before, descriptorInfo)
+	if err != nil {
+		return nil, errors.Join(err, f.Close())
+	}
+	defer func() {
+		if resultErr != nil {
+			resultErr = errors.Join(resultErr, verified.close())
+		}
+	}()
 	header := make([]byte, compressedLooseHeaderSize)
 	if _, err := io.ReadFull(f, header); err != nil {
-		return errors.Join(fmt.Errorf("%w: read compressed loose header: %v", ErrContentMismatch, err), f.Close())
+		return nil, errors.Join(fmt.Errorf("%w: read compressed loose header: %v", ErrContentMismatch, err), f.Close())
 	}
 	logicalSize, err := decodeCompressedLooseHeader(header)
 	if err != nil {
-		return errors.Join(fmt.Errorf("%w: %v", ErrContentMismatch, err), f.Close())
+		return nil, errors.Join(fmt.Errorf("%w: %v", ErrContentMismatch, err), f.Close())
 	}
 	if logicalSize != expectedSize {
-		return errors.Join(fmt.Errorf("%w: existing logical size is %d, want %d", ErrContentMismatch, logicalSize, expectedSize), f.Close())
+		return nil, errors.Join(fmt.Errorf("%w: existing logical size is %d, want %d", ErrContentMismatch, logicalSize, expectedSize), f.Close())
 	}
 	if verification == VerifyFullHash {
 		object := &looseObject{
@@ -891,45 +929,47 @@ func (s *LooseStore) verifyCompressedPath(ctx context.Context, path string, befo
 			ctx, expectedHash, object, durable,
 		)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if err := errors.Join(stream.Verify(), stream.Close()); err != nil {
-			return err
+			return nil, err
 		}
 	} else if durable {
 		if err := syncLooseFile(f); err != nil {
-			return errors.Join(err, f.Close())
+			return nil, errors.Join(err, f.Close())
 		}
 		if err := f.Close(); err != nil {
-			return err
+			return nil, err
 		}
 	} else {
 		if err := f.Close(); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	after, err := snapshotLoosePathIdentity(path)
-	if err != nil {
-		return fmt.Errorf("packstore: recheck compressed loose content: %w", err)
-	}
-	if !sameLooseFileState(before, descriptorInfo) || !sameLooseFileState(after, descriptorInfo) {
-		return fmt.Errorf("%w: %w", ErrContentMismatch, errIdentityChanged)
-	}
-	return nil
+	return verified, nil
 }
 
-func (s *LooseStore) verifyPathHash(ctx context.Context, path string, before fs.FileInfo, expected Hash, durable bool) error {
+func (s *LooseStore) verifyPathHash(ctx context.Context, path string, before fs.FileInfo, expected Hash, durable bool) (result *looseVerifiedIdentity, resultErr error) {
 	f, err := openNoFollow(path, durable)
 	if err != nil {
-		return fmt.Errorf("packstore: open loose content: %w", err)
+		return nil, fmt.Errorf("packstore: open loose content: %w", err)
 	}
 	descriptorInfo, statErr := f.Stat()
 	if statErr != nil {
-		return errors.Join(statErr, f.Close())
+		return nil, errors.Join(statErr, f.Close())
 	}
 	if !sameLooseFileState(before, descriptorInfo) {
-		return errors.Join(fmt.Errorf("%w: %w", ErrContentMismatch, errIdentityChanged), f.Close())
+		return nil, errors.Join(fmt.Errorf("%w: %w", ErrContentMismatch, errIdentityChanged), f.Close())
 	}
+	verified, err := pinLooseVerificationIdentity(path, before, descriptorInfo)
+	if err != nil {
+		return nil, errors.Join(err, f.Close())
+	}
+	defer func() {
+		if resultErr != nil {
+			resultErr = errors.Join(resultErr, verified.close())
+		}
+	}()
 
 	hasher := sha256.New()
 	buffer := looseCopyBufferPool.Get().(*[looseCopyBufferBytes]byte)
@@ -943,40 +983,85 @@ func (s *LooseStore) verifyPathHash(ctx context.Context, path string, before fs.
 	}
 	closeErr := f.Close()
 	if readErr != nil || closeErr != nil {
-		return errors.Join(readErr, closeErr)
+		return nil, errors.Join(readErr, closeErr)
 	}
-	after, err := snapshotLoosePathIdentity(path)
+	return verified, nil
+}
+
+func syncPathIdentity(path string, before fs.FileInfo) (result *looseVerifiedIdentity, resultErr error) {
+	f, err := openNoFollow(path, true)
 	if err != nil {
-		return fmt.Errorf("packstore: recheck loose content: %w", err)
+		return nil, fmt.Errorf("packstore: open existing loose content durably: %w", err)
 	}
-	if !sameLooseFileState(before, descriptorInfo) || !sameLooseFileState(after, descriptorInfo) {
+	descriptorInfo, statErr := f.Stat()
+	if statErr != nil || !sameLooseFileState(before, descriptorInfo) {
+		return nil, errors.Join(statErr, fmt.Errorf("%w: %w", ErrContentMismatch, errIdentityChanged), f.Close())
+	}
+	verified, err := pinLooseVerificationIdentity(path, before, descriptorInfo)
+	if err != nil {
+		return nil, errors.Join(err, f.Close())
+	}
+	defer func() {
+		if resultErr != nil {
+			resultErr = errors.Join(resultErr, verified.close())
+		}
+	}()
+	syncErr := syncLooseFile(f)
+	closeErr := f.Close()
+	if syncErr != nil || closeErr != nil {
+		return nil, errors.Join(syncErr, closeErr)
+	}
+	return verified, nil
+}
+
+type looseVerifiedIdentity struct {
+	pin        looseVerificationIdentityPin
+	before     fs.FileInfo
+	descriptor fs.FileInfo
+}
+
+func pinLooseVerificationIdentity(path string, before, descriptor fs.FileInfo) (*looseVerifiedIdentity, error) {
+	pin, pinned, err := openLooseVerificationIdentityPin(path)
+	if err != nil {
+		return nil, fmt.Errorf("packstore: pin verified loose content: %w", err)
+	}
+	if !sameLooseFileState(descriptor, pinned) {
+		return nil, errors.Join(
+			fmt.Errorf("%w: %w", ErrContentMismatch, errIdentityChanged),
+			pin.Close(),
+		)
+	}
+	return &looseVerifiedIdentity{pin: pin, before: before, descriptor: descriptor}, nil
+}
+
+func (v *looseVerifiedIdentity) recheck(path string) error {
+	pinned, pinErr := v.pin.Stat()
+	after, snapshotErr := snapshotLoosePathIdentity(path)
+	if pinErr != nil || snapshotErr != nil {
+		var resultErr error
+		if pinErr != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("packstore: recheck pinned loose content: %w", pinErr))
+		}
+		if snapshotErr != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("packstore: recheck loose content: %w", snapshotErr))
+		}
+		return resultErr
+	}
+	if !sameLooseFileState(v.before, v.descriptor) ||
+		!sameLooseFileState(v.descriptor, pinned) ||
+		!sameLooseFileState(pinned, after) {
 		return fmt.Errorf("%w: %w", ErrContentMismatch, errIdentityChanged)
 	}
 	return nil
 }
 
-func syncPathIdentity(path string, before fs.FileInfo) error {
-	f, err := openNoFollow(path, true)
-	if err != nil {
-		return fmt.Errorf("packstore: open existing loose content durably: %w", err)
+func (v *looseVerifiedIdentity) close() error {
+	if v == nil || v.pin == nil {
+		return nil
 	}
-	descriptorInfo, statErr := f.Stat()
-	if statErr != nil || !sameLooseFileState(before, descriptorInfo) {
-		return errors.Join(statErr, fmt.Errorf("%w: %w", ErrContentMismatch, errIdentityChanged), f.Close())
-	}
-	syncErr := syncLooseFile(f)
-	closeErr := f.Close()
-	if syncErr != nil || closeErr != nil {
-		return errors.Join(syncErr, closeErr)
-	}
-	after, err := snapshotLoosePathIdentity(path)
-	if err != nil {
-		return fmt.Errorf("packstore: recheck durable loose content: %w", err)
-	}
-	if !sameLooseFileState(descriptorInfo, after) {
-		return fmt.Errorf("%w: %w", ErrContentMismatch, errIdentityChanged)
-	}
-	return nil
+	err := v.pin.Close()
+	v.pin = nil
+	return err
 }
 
 func sameLooseFileState(expected, actual fs.FileInfo) bool {
