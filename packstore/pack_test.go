@@ -1193,6 +1193,47 @@ func TestRepairRepacksValidRawCopyWhenIndexedPackAndPreferredCompressedAreCorrup
 	assert.Equal(content, got)
 }
 
+func TestRepairCommitFailureRetainsCorruptPackedMappingWhenOnlyRawAlternateIsValid(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	layout := layoutForStoreTest(t)
+	catalog := newMaintenanceCatalog()
+	content := []byte("retain corrupt packed authority until raw recovery commits")
+	entry := buildStoreTestPack(t, layout, content)
+	require.Equal(entry.Hash, writeMaintenanceLoose(t, layout, content))
+	corruptCompressed := []byte("corrupt preferred compressed recovery source")
+	require.NoError(os.WriteFile(layout.CompressedLoosePath(entry.Hash), corruptCompressed, 0o600))
+	catalog.addLoose(entry.Hash, layout.LoosePath(entry.Hash))
+	catalog.entries[entry.Hash] = entry
+	catalog.packs[entry.PackID] = PackRecord{
+		PackID: entry.PackID, EntryCount: 1, StoredBytes: entry.StoredLen, CreatedAt: time.Now(),
+	}
+	path := layout.PackPath(entry.PackID)
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	require.NoError(err)
+	var damaged [1]byte
+	_, err = f.ReadAt(damaged[:], entry.Offset)
+	require.NoError(err)
+	damaged[0] ^= 0xff
+	_, err = f.WriteAt(damaged[:], entry.Offset)
+	require.NoError(err)
+	require.NoError(f.Close())
+	commitErr := errors.New("injected recovery commit failure")
+	catalog.recordErr = commitErr
+	catalog.adoptErr = commitErr
+	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
+
+	_, err = maintainer.Pack(context.Background(), PackOptions{})
+
+	require.ErrorIs(err, commitErr)
+	location, err := catalog.Resolve(context.Background(), entry.Hash)
+	require.NoError(err)
+	require.NotNil(location.Pack)
+	assert.Equal(entry, *location.Pack, "failed recovery retains the previous catalog authority")
+	assert.Equal(content, mustReadFile(t, layout.LoosePath(entry.Hash)))
+	assert.Equal(corruptCompressed, mustReadFile(t, layout.CompressedLoosePath(entry.Hash)))
+}
+
 func TestReconcileAdoptsOnlyFullyVerifiedOrphanPack(t *testing.T) {
 	for _, damaged := range []bool{false, true} {
 		name := "valid"

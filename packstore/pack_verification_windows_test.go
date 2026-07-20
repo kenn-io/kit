@@ -48,13 +48,18 @@ func TestWindowsDropDanglingAcceptsReadableNonDeletableLooseAuthority(t *testing
 	require.Error(t, deleteErr, "fixture must deny deletion-capable identity handles")
 	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
 	var stats PackStats
+	refs := map[Hash]Reference{
+		entry.Hash: {Hash: entry.Hash, OriginalHashes: []string{entry.Hash.String()}},
+	}
 
-	err = maintainer.dropDangling(context.Background(), &stats)
+	recoveries, err := maintainer.dropDangling(context.Background(), &stats, refs)
 
 	require.NoError(t, err)
-	assert.Equal(t, int64(1), stats.MappingsPruned)
+	require.Len(t, recoveries, 1)
+	assert.Equal(t, entry.Hash, recoveries[0].Hash)
+	assert.Zero(t, stats.MappingsPruned)
 	entries, _ := catalog.snapshot()
-	assert.NotContains(t, entries, entry.Hash)
+	assert.Contains(t, entries, entry.Hash)
 	assert.FileExists(t, loosePath)
 }
 

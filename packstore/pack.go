@@ -66,14 +66,6 @@ func (m *Maintainer) Pack(ctx context.Context, opts PackOptions) (PackStats, err
 	if err := m.cleanPackStaging(ctx); err != nil {
 		return stats, err
 	}
-	if err := m.dropDangling(ctx, &stats); err != nil {
-		return stats, err
-	}
-	pruned, err := m.catalog.PruneUnreferenced(ctx)
-	if err != nil {
-		return stats, err
-	}
-	stats.MappingsPruned += pruned
 	inventory, err := m.catalog.ListReferences(ctx)
 	if err != nil {
 		return stats, err
@@ -82,13 +74,27 @@ func (m *Maintainer) Pack(ctx context.Context, opts PackOptions) (PackStats, err
 	for _, reference := range inventory.References {
 		refs[reference.Hash] = reference
 	}
+	recoveries, err := m.dropDangling(ctx, &stats, refs)
+	if err != nil {
+		return stats, err
+	}
+	if err := m.packCandidates(ctx, recoveries, opts, &stats, m.catalog.AdoptPack, true); err != nil {
+		return stats, err
+	}
+	pruned, err := m.catalog.PruneUnreferenced(ctx)
+	if err != nil {
+		return stats, err
+	}
+	stats.MappingsPruned += pruned
 	if inventory.Complete {
 		if err := m.reconcileOrphans(ctx, refs, &stats); err != nil {
 			return stats, err
 		}
 	}
-	if err := m.packLoose(ctx, opts, &stats); err != nil {
-		return stats, err
+	if !stats.BudgetExhausted {
+		if err := m.packLoose(ctx, opts, &stats); err != nil {
+			return stats, err
+		}
 	}
 	if err := m.sweepLoose(ctx, refs, inventory.Complete, &stats); err != nil {
 		return stats, err
@@ -114,57 +120,73 @@ func (m *Maintainer) cleanPackStaging(ctx context.Context) error {
 	return nil
 }
 
-func (m *Maintainer) dropDangling(ctx context.Context, stats *PackStats) error {
+func (m *Maintainer) dropDangling(
+	ctx context.Context, stats *PackStats, refs map[Hash]Reference,
+) ([]Candidate, error) {
 	records, err := m.catalog.ListPackRecords(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for _, record := range records {
 		if err := ctx.Err(); err != nil {
-			return err
+			return nil, err
 		}
 		if _, err := os.Stat(m.layout.PackPath(record.PackID)); errors.Is(err, fs.ErrNotExist) {
 			if err := m.catalog.DeletePackRecord(ctx, record.PackID); err != nil {
-				return err
+				return nil, err
 			}
 			stats.RecordsDropped++
 		} else if err != nil {
-			return err
+			return nil, err
 		}
 	}
 	indexed, err := m.catalog.ListIndexed(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	var recoveries []Candidate
 	for _, entry := range indexed {
 		if err := ctx.Err(); err != nil {
-			return err
+			return nil, err
 		}
 		if _, err := os.Stat(m.layout.PackPath(entry.PackID)); errors.Is(err, fs.ErrNotExist) {
 			if err := m.catalog.DeleteIndexEntry(ctx, entry.Hash); err != nil {
-				return err
+				return nil, err
 			}
 			stats.MappingsPruned++
 		} else if err != nil {
-			return err
+			return nil, err
 		} else {
 			if _, _, err := m.store.readPackedBounded(ctx, entry.Hash, &entry, m.limits.BlobBytes); err == nil {
 				continue
 			}
 			valid, err := m.hasAnyValidCanonicalLoose(ctx, entry.Hash)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			if !valid {
 				continue
 			}
-			if err := m.catalog.DeleteIndexEntry(ctx, entry.Hash); err != nil {
-				return err
+			reference, live := refs[entry.Hash]
+			if !live {
+				continue
 			}
-			stats.MappingsPruned++
+			// Keep the unreadable mapping authoritative until a replacement pack
+			// is fully sealed and AdoptPack atomically advances the catalog. The
+			// valid alternate is only recovery input; it is not yet readable loose
+			// authority when a corrupt preferred compressed name exists.
+			recoveries = append(recoveries, Candidate{
+				Hash:           entry.Hash,
+				OriginalHashes: append([]string(nil), reference.OriginalHashes...),
+				Paths: []string{
+					m.layout.CompressedLoosePath(entry.Hash),
+					m.layout.LoosePath(entry.Hash),
+				},
+				Size: entry.RawLen,
+			})
 		}
 	}
-	return nil
+	return recoveries, nil
 }
 
 func (m *Maintainer) reconcileOrphans(ctx context.Context, refs map[Hash]Reference, stats *PackStats) error {
@@ -377,9 +399,22 @@ func (m *Maintainer) packLoose(ctx context.Context, opts PackOptions, stats *Pac
 	if err != nil {
 		return err
 	}
+	return m.packCandidates(ctx, candidates, opts, stats, m.catalog.RecordPack, false)
+}
+
+type packCatalogCommit func(context.Context, PackRecord, []Adoption) error
+
+func (m *Maintainer) packCandidates(
+	ctx context.Context,
+	candidates []Candidate,
+	opts PackOptions,
+	stats *PackStats,
+	commit packCatalogCommit,
+	replaceMappings bool,
+) (resultErr error) {
 	var writer *pack.Writer
 	var sources []packedSource
-	var rawBytes int64
+	rawBytes := stats.BytesPacked
 	abort := func() error {
 		if writer != nil {
 			return writer.Abort()
@@ -395,7 +430,7 @@ func (m *Maintainer) packLoose(ctx context.Context, opts PackOptions, stats *Pac
 		}
 		sealedSources := sources
 		sources = nil
-		if err := m.sealAndRecord(ctx, writer, sealedSources, stats); err != nil {
+		if err := m.sealAndCommit(ctx, writer, sealedSources, stats, commit, replaceMappings); err != nil {
 			return err
 		}
 		writer = nil
@@ -450,10 +485,11 @@ func (m *Maintainer) packLoose(ctx context.Context, opts PackOptions, stats *Pac
 			}
 		}
 		if writer == nil {
-			writer, err = pack.NewWriter(m.layout.PacksDir(), pack.WriterOptions{TargetSize: opts.TargetSize})
+			newWriter, err := pack.NewWriter(m.layout.PacksDir(), pack.WriterOptions{TargetSize: opts.TargetSize})
 			if err != nil {
 				return errors.Join(err, prepared.Close(), sourcePin.Close())
 			}
+			writer = newWriter
 		}
 		entry, err := writer.AppendPrepared(ctx, prepared)
 		if err != nil {
@@ -809,8 +845,13 @@ func verifyLooseFile(ctx context.Context, f *os.File, info fs.FileInfo, hash Has
 	return nil
 }
 
-func (m *Maintainer) sealAndRecord(
-	ctx context.Context, writer *pack.Writer, sources []packedSource, stats *PackStats,
+func (m *Maintainer) sealAndCommit(
+	ctx context.Context,
+	writer *pack.Writer,
+	sources []packedSource,
+	stats *PackStats,
+	commit packCatalogCommit,
+	replaceMappings bool,
 ) (resultErr error) {
 	defer func() {
 		resultErr = errors.Join(resultErr, closePackedSourcePins(sources))
@@ -834,11 +875,14 @@ func (m *Maintainer) sealAndRecord(
 		record.StoredBytes += entry.StoredLen
 		adoptions[i] = Adoption{Entry: entry, OriginalHashes: source.candidate.OriginalHashes}
 	}
-	if err := m.catalog.RecordPack(ctx, record, adoptions); err != nil {
+	if err := commit(ctx, record, adoptions); err != nil {
 		return err
 	}
 	stats.PacksSealed++
 	stats.BlobsPacked += len(sources)
+	if replaceMappings {
+		stats.MappingsPruned += int64(len(sources))
+	}
 	var cleanupErr error
 	for index := range sources {
 		source := sources[index]
