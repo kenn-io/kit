@@ -36,6 +36,8 @@ func TestLooseWriteStreamsAndChecksExpectedMetadata(t *testing.T) {
 	require.NoError(err)
 	assert.Equal(hash, result.Hash)
 	assert.Equal(size, result.Size)
+	assert.Equal(LooseEncodingRaw, result.Encoding)
+	assert.Equal(size, result.StoredSize)
 	assert.True(result.Created)
 	stored, err := os.ReadFile(result.Path)
 	require.NoError(err)
@@ -56,6 +58,8 @@ func TestLooseWriteBytesComputesIdentityBeforeSameDirectoryStaging(t *testing.T)
 	require.NoError(err)
 	assert.Equal(hashForTest(content), result.Hash)
 	assert.Equal(int64(len(content)), result.Size)
+	assert.Equal(LooseEncodingRaw, result.Encoding)
+	assert.Equal(int64(len(content)), result.StoredSize)
 	assert.True(result.Created)
 	stored, err := os.ReadFile(result.Path)
 	require.NoError(err)
@@ -165,6 +169,49 @@ func TestLooseWriteRequiresExplicitPolicies(t *testing.T) {
 	store := newLooseStoreForTest(t, StagingStoreDirectory)
 	_, err := store.Write(context.Background(), bytes.NewReader(nil), WriteOptions{})
 	require.ErrorIs(t, err, ErrInvalidPolicy)
+}
+
+func TestLooseWriteValidatesCompressionPolicy(t *testing.T) {
+	store := newLooseStoreForTest(t, StagingSameDirectory)
+	for _, tt := range []struct {
+		name        string
+		compression LooseCompressionOptions
+		wantErr     bool
+	}{
+		{
+			name:        "negative minimum bytes",
+			compression: LooseCompressionOptions{MinBytes: -1},
+			wantErr:     true,
+		},
+		{
+			name:        "negative minimum savings",
+			compression: LooseCompressionOptions{MinSavingsPercent: -1},
+			wantErr:     true,
+		},
+		{
+			name:        "minimum savings above 100",
+			compression: LooseCompressionOptions{MinSavingsPercent: 101},
+			wantErr:     true,
+		},
+		{
+			name:        "minimum savings of 100",
+			compression: LooseCompressionOptions{MinSavingsPercent: 100},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := store.WriteBytes(context.Background(), []byte("content"), WriteOptions{
+				Durability:  AtomicPublication,
+				Dedup:       VerifyFullHash,
+				Compression: tt.compression,
+			})
+
+			if tt.wantErr {
+				require.ErrorIs(t, err, ErrInvalidPolicy)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
 }
 
 func TestLooseWriteSupportsEmptyAndStoreDirectoryStaging(t *testing.T) {

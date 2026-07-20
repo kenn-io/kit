@@ -30,6 +30,24 @@ var (
 // Hash is a canonical lowercase SHA-256 content identity.
 type Hash string
 
+// LooseEncoding identifies the physical representation of a loose object.
+type LooseEncoding uint8
+
+const (
+	// LooseEncodingRaw stores the logical bytes without compression.
+	LooseEncodingRaw LooseEncoding = iota + 1
+	// LooseEncodingZstd stores the logical bytes in the compressed-loose format.
+	LooseEncodingZstd
+)
+
+// LooseCompressionOptions controls whether a loose write may select zstd.
+// The zero value disables compression for backward compatibility.
+type LooseCompressionOptions struct {
+	Enabled           bool
+	MinBytes          int64
+	MinSavingsPercent int
+}
+
 // ParseHash validates and returns a canonical content hash.
 func ParseHash(value string) (Hash, error) {
 	hash := Hash(value)

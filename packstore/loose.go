@@ -78,14 +78,17 @@ type WriteOptions struct {
 	ExpectedSize int64
 	SizeKnown    bool
 	MaxBytes     int64
+	Compression  LooseCompressionOptions
 }
 
 // WriteResult describes one canonical loose object.
 type WriteResult struct {
-	Hash    Hash
-	Size    int64
-	Path    string
-	Created bool
+	Hash       Hash
+	Size       int64
+	Path       string
+	Created    bool
+	Encoding   LooseEncoding
+	StoredSize int64
 }
 
 // LooseStore owns policy-explicit loose content-addressed operations.
@@ -161,7 +164,13 @@ func (s *LooseStore) Write(ctx context.Context, src io.Reader, opts WriteOptions
 	if err != nil {
 		return WriteResult{}, err
 	}
-	identity := WriteResult{Hash: hash, Size: size, Path: s.layout.LoosePath(hash)}
+	identity := WriteResult{
+		Hash:       hash,
+		Size:       size,
+		Path:       s.layout.LoosePath(hash),
+		Encoding:   LooseEncodingRaw,
+		StoredSize: size,
+	}
 	if opts.ExpectedHash != "" && hash != opts.ExpectedHash {
 		return identity, fmt.Errorf("%w: expected hash %s, got %s", ErrContentMismatch, opts.ExpectedHash, hash)
 	}
@@ -225,7 +234,13 @@ func (s *LooseStore) WriteBytes(ctx context.Context, content []byte, opts WriteO
 		return WriteResult{}, err
 	}
 	size := int64(len(content))
-	identity := WriteResult{Hash: hash, Size: size, Path: s.layout.LoosePath(hash)}
+	identity := WriteResult{
+		Hash:       hash,
+		Size:       size,
+		Path:       s.layout.LoosePath(hash),
+		Encoding:   LooseEncodingRaw,
+		StoredSize: size,
+	}
 	if opts.MaxBytes > 0 && size > opts.MaxBytes {
 		return identity, fmt.Errorf("%w: content is %d bytes, limit is %d", ErrContentMismatch, size, opts.MaxBytes)
 	}
@@ -360,6 +375,9 @@ func validateWriteOptions(opts WriteOptions) error {
 	if opts.ExpectedSize < 0 || opts.MaxBytes < 0 {
 		return ErrInvalidPolicy
 	}
+	if opts.Compression.MinBytes < 0 || opts.Compression.MinSavingsPercent < 0 || opts.Compression.MinSavingsPercent > 100 {
+		return ErrInvalidPolicy
+	}
 	if opts.SizeKnown && opts.MaxBytes > 0 && opts.ExpectedSize > opts.MaxBytes {
 		return fmt.Errorf("%w: expected size is %d bytes, limit is %d", ErrContentMismatch, opts.ExpectedSize, opts.MaxBytes)
 	}
@@ -432,7 +450,13 @@ func (s *LooseStore) existingOnce(path string, hash Hash, size int64, verificati
 			return WriteResult{}, false, fmt.Errorf("packstore: sync existing loose shard: %w", err)
 		}
 	}
-	return WriteResult{Hash: hash, Size: size, Path: path}, true, nil
+	return WriteResult{
+		Hash:       hash,
+		Size:       size,
+		Path:       path,
+		Encoding:   LooseEncodingRaw,
+		StoredSize: size,
+	}, true, nil
 }
 
 func (s *LooseStore) verifyPathHash(path string, before fs.FileInfo, expected Hash, durable bool) error {
