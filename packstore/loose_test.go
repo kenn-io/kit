@@ -1980,6 +1980,114 @@ func TestLooseVerifyChecksCanonicalObject(t *testing.T) {
 	require.ErrorIs(err, ErrInvalidHash)
 }
 
+func TestLooseVerifyRejectsSameInodeGrowthAfterFullHash(t *testing.T) {
+	content := bytes.Repeat([]byte("same inode verification growth\n"), 256)
+	for _, tt := range []struct {
+		name        string
+		compression LooseCompressionOptions
+		want        LooseEncoding
+	}{
+		{name: "raw", want: LooseEncodingRaw},
+		{
+			name:        "compressed",
+			compression: LooseCompressionOptions{Enabled: true},
+			want:        LooseEncodingZstd,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			assert := assert.New(t)
+			require := require.New(t)
+			store := newLooseStoreForTest(t, StagingSameDirectory)
+			created, err := store.WriteBytes(context.Background(), content, WriteOptions{
+				Durability:  AtomicPublication,
+				Dedup:       VerifyFullHash,
+				Compression: tt.compression,
+			})
+			require.NoError(err)
+			require.Equal(tt.want, created.Encoding)
+			before, err := os.Stat(created.Path)
+			require.NoError(err)
+
+			if tt.want == LooseEncodingZstd {
+				originalReader := newLooseZstdReader
+				var mutated bool
+				newLooseZstdReader = func(src io.Reader) (looseZstdReader, error) {
+					if !mutated {
+						mutated = true
+						appendLooseTestMutation(t, created.Path)
+					}
+					return originalReader(src)
+				}
+				t.Cleanup(func() { newLooseZstdReader = originalReader })
+			} else {
+				originalSnapshot := snapshotLoosePathIdentity
+				var snapshots int
+				snapshotLoosePathIdentity = func(path string) (fs.FileInfo, error) {
+					if filepath.Clean(path) == filepath.Clean(created.Path) {
+						snapshots++
+						if snapshots == 2 {
+							appendLooseTestMutation(t, path)
+						}
+					}
+					return originalSnapshot(path)
+				}
+				t.Cleanup(func() { snapshotLoosePathIdentity = originalSnapshot })
+			}
+
+			result, exists, err := store.Verify(created.Hash, created.Size, VerifyFullHash, DurablePublication)
+
+			require.ErrorIs(err, errIdentityChanged)
+			assert.False(exists)
+			assert.False(result.Created)
+			after, statErr := os.Stat(created.Path)
+			require.NoError(statErr)
+			assert.True(os.SameFile(before, after), "fixture must grow the verified inode in place")
+			assert.Greater(after.Size(), before.Size())
+		})
+	}
+}
+
+func TestLooseWriteBytesRejectsCompressedSameInodeGrowthDuringDedup(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	content := bytes.Repeat([]byte("compressed dedup growth\n"), 256)
+	store := newLooseStoreForTest(t, StagingSameDirectory)
+	opts := WriteOptions{
+		Durability:  AtomicPublication,
+		Dedup:       VerifyFullHash,
+		Compression: LooseCompressionOptions{Enabled: true},
+	}
+	created, err := store.WriteBytes(context.Background(), content, opts)
+	require.NoError(err)
+	require.Equal(LooseEncodingZstd, created.Encoding)
+
+	originalReader := newLooseZstdReader
+	var mutated bool
+	newLooseZstdReader = func(src io.Reader) (looseZstdReader, error) {
+		if !mutated {
+			mutated = true
+			appendLooseTestMutation(t, created.Path)
+		}
+		return originalReader(src)
+	}
+	t.Cleanup(func() { newLooseZstdReader = originalReader })
+
+	result, err := store.WriteBytes(context.Background(), content, opts)
+
+	require.ErrorIs(err, ErrContentMismatch)
+	assert.False(result.Created, "a raced deduplication must not report existing content as valid")
+	assert.Equal(created.Hash, result.Hash)
+}
+
+func appendLooseTestMutation(t *testing.T, path string) {
+	t.Helper()
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	require.NoError(t, err)
+	_, err = file.Write([]byte("trailing mutation"))
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
+}
+
 func TestLooseDurableVerifyRejectsIdentitySwap(t *testing.T) {
 	require := require.New(t)
 	content := []byte("durable identity must remain stable")

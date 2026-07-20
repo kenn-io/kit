@@ -468,7 +468,7 @@ func (s *LooseStore) publish(
 		if err != nil {
 			return identity, fmt.Errorf("%w: recheck staged loose repair identity: %v", ErrContentMismatch, err)
 		}
-		if !os.SameFile(pin.identity, current) {
+		if !sameLooseFileState(pin.identity, current) {
 			return identity, fmt.Errorf("%w: %w", ErrContentMismatch, errIdentityChanged)
 		}
 		publication, publicationErr := publishLooseRepairFile(selected.path, final, pin.identity)
@@ -863,7 +863,7 @@ func (s *LooseStore) verifyCompressedPath(path string, before fs.FileInfo, expec
 	if statErr != nil {
 		return errors.Join(statErr, f.Close())
 	}
-	if !os.SameFile(before, descriptorInfo) {
+	if !sameLooseFileState(before, descriptorInfo) {
 		return errors.Join(fmt.Errorf("%w: %w", ErrContentMismatch, errIdentityChanged), f.Close())
 	}
 	header := make([]byte, compressedLooseHeaderSize)
@@ -909,7 +909,7 @@ func (s *LooseStore) verifyCompressedPath(path string, before fs.FileInfo, expec
 	if err != nil {
 		return fmt.Errorf("packstore: recheck compressed loose content: %w", err)
 	}
-	if !os.SameFile(before, descriptorInfo) || !os.SameFile(after, descriptorInfo) {
+	if !sameLooseFileState(before, descriptorInfo) || !sameLooseFileState(after, descriptorInfo) {
 		return fmt.Errorf("%w: %w", ErrContentMismatch, errIdentityChanged)
 	}
 	return nil
@@ -924,7 +924,7 @@ func (s *LooseStore) verifyPathHash(path string, before fs.FileInfo, expected Ha
 	if statErr != nil {
 		return errors.Join(statErr, f.Close())
 	}
-	if !os.SameFile(before, descriptorInfo) {
+	if !sameLooseFileState(before, descriptorInfo) {
 		return errors.Join(fmt.Errorf("%w: %w", ErrContentMismatch, errIdentityChanged), f.Close())
 	}
 
@@ -946,7 +946,7 @@ func (s *LooseStore) verifyPathHash(path string, before fs.FileInfo, expected Ha
 	if err != nil {
 		return fmt.Errorf("packstore: recheck loose content: %w", err)
 	}
-	if !os.SameFile(before, descriptorInfo) || !os.SameFile(after, descriptorInfo) {
+	if !sameLooseFileState(before, descriptorInfo) || !sameLooseFileState(after, descriptorInfo) {
 		return fmt.Errorf("%w: %w", ErrContentMismatch, errIdentityChanged)
 	}
 	return nil
@@ -958,7 +958,7 @@ func syncPathIdentity(path string, before fs.FileInfo) error {
 		return fmt.Errorf("packstore: open existing loose content durably: %w", err)
 	}
 	descriptorInfo, statErr := f.Stat()
-	if statErr != nil || !os.SameFile(before, descriptorInfo) {
+	if statErr != nil || !sameLooseFileState(before, descriptorInfo) {
 		return errors.Join(statErr, fmt.Errorf("%w: %w", ErrContentMismatch, errIdentityChanged), f.Close())
 	}
 	syncErr := syncLooseFile(f)
@@ -970,10 +970,14 @@ func syncPathIdentity(path string, before fs.FileInfo) error {
 	if err != nil {
 		return fmt.Errorf("packstore: recheck durable loose content: %w", err)
 	}
-	if !os.SameFile(descriptorInfo, after) {
+	if !sameLooseFileState(descriptorInfo, after) {
 		return fmt.Errorf("%w: %w", ErrContentMismatch, errIdentityChanged)
 	}
 	return nil
+}
+
+func sameLooseFileState(expected, actual fs.FileInfo) bool {
+	return os.SameFile(expected, actual) && expected.Size() == actual.Size()
 }
 
 func validateRegularNoFollow(path string, info fs.FileInfo) error {
