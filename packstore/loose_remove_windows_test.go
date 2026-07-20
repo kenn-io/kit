@@ -3,13 +3,47 @@
 package packstore
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestWindowsLooseRemovalUnlinksActiveStream(t *testing.T) {
+	layout := layoutForStoreTest(t)
+	loose, err := NewLooseStore(layout)
+	require.NoError(t, err)
+	content := bytes.Repeat([]byte("active Windows loose reader\n"), 128)
+	written, err := loose.WriteBytes(context.Background(), content, WriteOptions{
+		Durability: AtomicPublication,
+		Dedup:      VerifyFullHash,
+	})
+	require.NoError(t, err)
+	store := newStoreForTest(t, &mapResolver{locations: map[Hash]Location{
+		written.Hash: {Member: true},
+	}}, layout)
+	stream, size, err := store.OpenStream(context.Background(), written.Hash)
+	require.NoError(t, err)
+	require.Equal(t, int64(len(content)), size)
+	t.Cleanup(func() { require.NoError(t, stream.Close()) })
+	prefix := make([]byte, 37)
+	_, err = io.ReadFull(stream, prefix)
+	require.NoError(t, err)
+
+	err = loose.Remove(written.Hash, BestEffortRemoval)
+
+	require.NoError(t, err)
+	assert.NoFileExists(t, written.Path)
+	assertNoLooseRemovalClaims(t, written.Path)
+	remainder, err := io.ReadAll(stream)
+	require.NoError(t, err)
+	assert.Equal(t, content, append(prefix, remainder...))
+	require.NoError(t, stream.Verify())
+}
 
 func TestWindowsLooseCleanupRemovesClaimDirectories(t *testing.T) {
 	t.Run("explicit removal", func(t *testing.T) {
