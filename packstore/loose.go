@@ -51,18 +51,25 @@ var (
 			zstd.WithDecoderConcurrency(1),
 			zstd.WithDecoderMaxMemory(64<<20))
 	}
-	publishLooseFile         = os.Link
-	publishLooseRepairFile   = replaceLooseRepairFile
-	beforeLoosePublish       = func(Hash, LooseEncoding) {}
-	afterLooseStripeAcquire  = func(Hash, LooseEncoding) {}
-	afterLooseRepairVerify   = func(string) {}
-	closeLooseStagingFile    = func(file *os.File) error { return file.Close() }
-	removeLooseStagingFile   = os.Remove
-	removeLooseAlternateFile = os.Remove
-	removeLooseCanonicalFile = os.Remove
-	syncLooseStagingDir      = func(path string) error { return pack.SyncDir(path) }
-	syncLooseRepairShard     = func(path string) error { return pack.SyncDir(path) }
-	chmodLooseStagingFile    = func(file *os.File, mode fs.FileMode) error { return file.Chmod(mode) }
+	publishLooseFile              = os.Link
+	publishLooseRepairFile        = replaceLooseRepairFile
+	beforeLoosePublish            = func(Hash, LooseEncoding) {}
+	afterLooseStripeAcquire       = func(Hash, LooseEncoding) {}
+	afterLooseRepairVerify        = func(string) {}
+	closeLooseStagingFile         = func(file *os.File) error { return file.Close() }
+	removeLooseStagingFile        = os.Remove
+	removeLooseAlternateFile      = os.Remove
+	removeLooseCanonicalFile      = os.Remove
+	claimLooseRemovalPath         = os.Rename
+	createLooseRemovalAside       = func(path string) error { return os.Mkdir(path, 0o700) }
+	removeLooseRemovalAside       = os.Remove
+	createLooseRemovalRestoreFile = func(path string, mode fs.FileMode) (*os.File, error) {
+		return os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+	}
+	beforeLooseRemovalClaim = func(string) {}
+	syncLooseStagingDir     = func(path string) error { return pack.SyncDir(path) }
+	syncLooseRepairShard    = func(path string) error { return pack.SyncDir(path) }
+	chmodLooseStagingFile   = func(file *os.File, mode fs.FileMode) error { return file.Chmod(mode) }
 )
 
 var (

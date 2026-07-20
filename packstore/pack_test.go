@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -130,6 +131,44 @@ func TestPackTreatsNoncanonicalHashZstdPathAsLegacyRaw(t *testing.T) {
 	assert.NoFileExists(legacyPath)
 	got, _ := readStoreTest(t, maintainer.store, hash)
 	assert.Equal(content, got)
+}
+
+func TestPackClassifiesWindowsCaseVariantCanonicalPathAsCompressed(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	layout := layoutForStoreTest(t)
+	content := bytes.Repeat([]byte("case-insensitive canonical compressed path\n"), 32)
+	hash := hashForTest(content)
+	canonical := layout.CompressedLoosePath(hash)
+	writeCompressedLooseFixture(t, layout, hash, int64(len(content)), content, nil)
+	variant := filepath.Join(filepath.Dir(canonical), strings.ToUpper(filepath.Base(canonical)))
+	require.NotEqual(canonical, variant)
+	require.NoError(os.Rename(canonical, variant))
+	originalEqual := canonicalLoosePathEqual
+	canonicalLoosePathEqual = func(left, right string) bool {
+		return canonicalLoosePathEqualForOS("windows", left, right)
+	}
+	t.Cleanup(func() { canonicalLoosePathEqual = originalEqual })
+	catalog := newMaintenanceCatalog()
+	addMaintenanceCandidate(catalog, Candidate{Hash: hash, Paths: []string{variant}, Size: int64(len(content))})
+	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
+
+	stats, err := maintainer.Pack(context.Background(), PackOptions{})
+
+	require.NoError(err)
+	assert.Equal(1, stats.BlobsPacked)
+	got, _ := readStoreTest(t, maintainer.store, hash)
+	assert.Equal(content, got)
+}
+
+func TestCanonicalLoosePathEqualForOS(t *testing.T) {
+	canonical := filepath.Join("root", "ab", "abcdef.zst")
+	caseVariant := filepath.Join("ROOT", "AB", "ABCDEF.ZST")
+	noncanonical := filepath.Join("root", "legacy", "abcdef.zst")
+
+	assert.True(t, canonicalLoosePathEqualForOS("windows", canonical, caseVariant))
+	assert.False(t, canonicalLoosePathEqualForOS("linux", canonical, caseVariant))
+	assert.False(t, canonicalLoosePathEqualForOS("windows", canonical, noncanonical))
 }
 
 func TestPackMergesDuplicateCandidateFallbackPathsAndAliases(t *testing.T) {
@@ -268,7 +307,7 @@ func TestPackPreservesCompressedSourceReplacementAfterCatalogCommit(t *testing.T
 
 	stats, err := maintainer.Pack(context.Background(), PackOptions{})
 
-	require.NoError(err)
+	require.ErrorIs(err, errIdentityChanged)
 	assert.Equal(1, stats.BlobsPacked)
 	assert.Equal(replacement, mustReadFile(t, path), "cleanup must not unlink a replacement inode")
 	got, _ := readStoreTest(t, maintainer.store, hash)
@@ -413,7 +452,10 @@ func TestPackSweepReturnsRemovalFailure(t *testing.T) {
 	removeErr := errors.New("injected loose sweep removal failure")
 	originalRemove := removeLooseCanonicalFile
 	removeLooseCanonicalFile = func(path string) error {
-		if path == layout.LoosePath(entry.Hash) {
+		if filepath.Base(path) == "claimed" && strings.HasPrefix(
+			filepath.Base(filepath.Dir(path)),
+			"."+filepath.Base(layout.LoosePath(entry.Hash))+".remove-",
+		) {
 			return removeErr
 		}
 		return originalRemove(path)

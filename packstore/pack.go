@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -454,7 +455,7 @@ func (m *Maintainer) prepareCandidate(
 		}
 		seenPaths[path] = struct{}{}
 		encoding := LooseEncodingRaw
-		if path == filepath.Clean(m.layout.CompressedLoosePath(candidate.Hash)) {
+		if canonicalLoosePathEqual(path, m.layout.CompressedLoosePath(candidate.Hash)) {
 			encoding = LooseEncodingZstd
 		}
 		object, identity, err := openCandidateLooseObject(path, candidate.Hash, candidate.Size, encoding)
@@ -672,13 +673,16 @@ func (m *Maintainer) sealAndRecord(ctx context.Context, writer *pack.Writer, sou
 	}
 	stats.PacksSealed++
 	stats.BlobsPacked += len(sources)
+	var cleanupErr error
 	for _, source := range sources {
 		stats.BytesPacked += int64(source.entry.RawLen) //nolint:gosec
-		if current, err := snapshotPathIdentity(source.path); err == nil && os.SameFile(source.identity, current) {
-			_ = os.Remove(source.path)
+		if _, err := removeLoosePathIdentity(source.path, source.identity); err != nil {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf(
+				"packstore: remove packed loose source %s: %w", source.path, err,
+			))
 		}
 	}
-	return nil
+	return cleanupErr
 }
 
 func checkPlainOutput(limits Limits, dataEnd, nextStored uint64, entryCount int) error {
@@ -826,24 +830,177 @@ func parseCanonicalLooseName(name string) (Hash, LooseEncoding, bool) {
 	return hash, encoding, err == nil
 }
 
+// removeLoosePathIdentity moves the current directory entry into an exclusive
+// sibling aside before deciding whether to delete it. The move closes the
+// validation-to-unlink race at path: a replacement is restored without
+// clobbering any still-newer occupant, while only the expected identity is
+// discarded.
 func removeLoosePathIdentity(path string, identity fs.FileInfo) (bool, error) {
-	current, err := snapshotPathIdentity(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil
-	}
+	asideDir, err := makeLooseRemovalAside(path)
 	if err != nil {
 		return false, err
 	}
-	if err := validateRegularNoFollow(path, current); err != nil {
-		return false, err
+	aside := filepath.Join(asideDir, "claimed")
+	beforeLooseRemovalClaim(path)
+	if err := claimLooseRemovalPath(path, aside); err != nil {
+		cleanupErr := removeLooseRemovalAside(asideDir)
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, cleanupErr
+		}
+		return false, errors.Join(
+			fmt.Errorf("claim %s for removal: %w", path, err),
+			cleanupErr,
+		)
 	}
-	if !os.SameFile(identity, current) {
+	claimed, err := snapshotPathIdentity(aside)
+	if err != nil {
+		return false, fmt.Errorf(
+			"inspect claimed loose content %s (preserved at %s): %w", path, aside, err,
+		)
+	}
+	if !os.SameFile(identity, claimed) {
+		restoreErr := restoreLooseRemovalClaim(path, aside, claimed)
+		if restoreErr != nil {
+			return false, errors.Join(errIdentityChanged, restoreErr)
+		}
 		return false, errIdentityChanged
 	}
-	if err := removeLooseCanonicalFile(path); err != nil {
-		return false, err
+	if err := validateRegularNoFollow(aside, claimed); err != nil {
+		return false, fmt.Errorf(
+			"validate claimed loose content %s (preserved at %s): %w", path, aside, err,
+		)
+	}
+	if err := removeLooseCanonicalFile(aside); err != nil {
+		removeErr := fmt.Errorf("remove claimed loose content %s: %w", aside, err)
+		return false, errors.Join(removeErr, restoreLooseRemovalClaim(path, aside, claimed))
+	}
+	if err := removeLooseRemovalAside(asideDir); err != nil {
+		return true, fmt.Errorf("remove empty loose removal aside %s: %w", asideDir, err)
 	}
 	return true, nil
+}
+
+// makeLooseRemovalAside uses an exclusive directory rather than renaming
+// directly to a random sibling file. os.Rename replaces existing destinations
+// on Unix; the private directory makes the final claim name known-absent.
+func makeLooseRemovalAside(path string) (string, error) {
+	const attempts = 8
+	for range attempts {
+		aside := filepath.Join(
+			filepath.Dir(path),
+			"."+filepath.Base(path)+".remove-"+pack.NewPackID(),
+		)
+		if err := createLooseRemovalAside(aside); err == nil {
+			return aside, nil
+		} else if !errors.Is(err, fs.ErrExist) {
+			return "", fmt.Errorf("create loose removal aside for %s: %w", path, err)
+		}
+	}
+	return "", fmt.Errorf("create unique loose removal aside for %s: %w", path, fs.ErrExist)
+}
+
+// restoreLooseRemovalClaim puts a foreign claimed entry back without replacing
+// a newer entry at path. Failures preserve the claim at the path named in the
+// returned error for diagnosis and manual recovery.
+func restoreLooseRemovalClaim(path, aside string, claimed fs.FileInfo) error {
+	current, err := snapshotPathIdentity(aside)
+	if err != nil {
+		return fmt.Errorf("inspect foreign loose removal claim %s: %w", aside, err)
+	}
+	if !os.SameFile(claimed, current) {
+		return fmt.Errorf("%w: foreign loose removal claim %s changed before restore", errIdentityChanged, aside)
+	}
+	switch {
+	case claimed.Mode().IsRegular():
+		if err := copyLooseRemovalClaim(path, aside, claimed); err != nil {
+			return err
+		}
+	case claimed.Mode()&os.ModeSymlink != 0:
+		target, err := os.Readlink(aside)
+		if err != nil {
+			return fmt.Errorf("read foreign loose symlink %s for restore: %w", aside, err)
+		}
+		if err := os.Symlink(target, path); err != nil {
+			return fmt.Errorf("restore foreign loose symlink from %s to %s without clobbering: %w", aside, path, err)
+		}
+	default:
+		return fmt.Errorf("foreign loose content at %s has unsupported mode %s; preserved at %s", path, claimed.Mode(), aside)
+	}
+	current, err = snapshotPathIdentity(aside)
+	if err != nil {
+		return fmt.Errorf("recheck restored foreign loose claim %s: %w", aside, err)
+	}
+	if !os.SameFile(claimed, current) {
+		return fmt.Errorf("%w: restored foreign loose claim %s changed before cleanup", errIdentityChanged, aside)
+	}
+	if err := removeLooseCanonicalFile(aside); err != nil {
+		return fmt.Errorf("clean restored foreign loose claim %s: %w", aside, err)
+	}
+	if err := removeLooseRemovalAside(filepath.Dir(aside)); err != nil {
+		return fmt.Errorf("remove restored loose removal aside %s: %w", filepath.Dir(aside), err)
+	}
+	return nil
+}
+
+// copyLooseRemovalClaim restores regular content through a pinned no-follow
+// descriptor and an exclusive destination. Copying is the portable fallback
+// for filesystems where a no-clobber rename or hard link is unavailable.
+func copyLooseRemovalClaim(path, aside string, claimed fs.FileInfo) error {
+	source, sourceIdentity, err := openLooseFile(aside)
+	if err != nil {
+		return fmt.Errorf("open foreign loose content %s for restore: %w", aside, err)
+	}
+	if !os.SameFile(claimed, sourceIdentity) {
+		return errors.Join(
+			errIdentityChanged,
+			fmt.Errorf("foreign loose removal claim %s changed while opening", aside),
+			source.Close(),
+		)
+	}
+	destination, err := createLooseRemovalRestoreFile(path, claimed.Mode().Perm())
+	if err != nil {
+		return errors.Join(
+			fmt.Errorf("restore foreign loose content from %s to %s without clobbering: %w", aside, path, err),
+			source.Close(),
+		)
+	}
+	destinationIdentity, statErr := destination.Stat()
+	buffer := looseCopyBufferPool.Get().(*[looseCopyBufferBytes]byte)
+	_, copyErr := io.CopyBuffer(destination, source, buffer[:])
+	looseCopyBufferPool.Put(buffer)
+	after, afterErr := source.Stat()
+	syncErr := destination.Sync()
+	closeErr := destination.Close()
+	sourceCloseErr := source.Close()
+	if afterErr == nil && !os.SameFile(claimed, after) {
+		afterErr = errIdentityChanged
+	}
+	if restoreErr := errors.Join(statErr, copyErr, afterErr, syncErr, closeErr, sourceCloseErr); restoreErr != nil {
+		var cleanupErr error
+		if destinationIdentity != nil {
+			_, cleanupErr = removeLoosePathIdentity(path, destinationIdentity)
+		}
+		return errors.Join(
+			fmt.Errorf("copy foreign loose content from %s to %s: %w", aside, path, restoreErr),
+			cleanupErr,
+		)
+	}
+	return nil
+}
+
+// canonicalLoosePathEqual is lexical only: Windows folds case, while no
+// platform resolves symlink aliases or broadens the canonical namespace.
+var canonicalLoosePathEqual = func(left, right string) bool {
+	return canonicalLoosePathEqualForOS(runtime.GOOS, left, right)
+}
+
+func canonicalLoosePathEqualForOS(goos, left, right string) bool {
+	left = filepath.Clean(left)
+	right = filepath.Clean(right)
+	if goos == "windows" {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
 }
 
 func indexFromPack(packID string, entry pack.Entry) IndexEntry {
