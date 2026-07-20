@@ -279,12 +279,56 @@ type packedSource struct {
 	entry     pack.Entry
 }
 
+type candidateGroup struct {
+	Candidate
+	err error
+}
+
+func mergeLogicalCandidates(candidates []Candidate) []candidateGroup {
+	groups := make([]candidateGroup, 0, len(candidates))
+	byHash := make(map[Hash]int, len(candidates))
+	pathSets := make([]map[string]struct{}, 0, len(candidates))
+	aliasSets := make([]map[string]struct{}, 0, len(candidates))
+	for _, candidate := range candidates {
+		index, exists := byHash[candidate.Hash]
+		if !exists {
+			index = len(groups)
+			byHash[candidate.Hash] = index
+			groups = append(groups, candidateGroup{Candidate: Candidate{
+				Hash: candidate.Hash,
+				Size: candidate.Size,
+			}})
+			pathSets = append(pathSets, make(map[string]struct{}, len(candidate.Paths)))
+			aliasSets = append(aliasSets, make(map[string]struct{}, len(candidate.OriginalHashes)))
+		} else if groups[index].Size != candidate.Size {
+			groups[index].err = errors.Join(groups[index].err, fmt.Errorf(
+				"%w: candidate %s has contradictory logical sizes %d and %d",
+				ErrContentMismatch, candidate.Hash, groups[index].Size, candidate.Size,
+			))
+		}
+		for _, path := range candidate.Paths {
+			if _, duplicate := pathSets[index][path]; duplicate {
+				continue
+			}
+			pathSets[index][path] = struct{}{}
+			groups[index].Paths = append(groups[index].Paths, path)
+		}
+		for _, alias := range candidate.OriginalHashes {
+			if _, duplicate := aliasSets[index][alias]; duplicate {
+				continue
+			}
+			aliasSets[index][alias] = struct{}{}
+			groups[index].OriginalHashes = append(groups[index].OriginalHashes, alias)
+		}
+	}
+	return groups
+}
+
 func (m *Maintainer) packLoose(ctx context.Context, opts PackOptions, stats *PackStats) error {
 	candidates, err := m.catalog.ListUnpacked(ctx)
 	if err != nil {
 		return err
 	}
-	seen := make(map[Hash]struct{}, len(candidates))
 	var writer *pack.Writer
 	var sources []packedSource
 	var rawBytes int64
@@ -305,14 +349,15 @@ func (m *Maintainer) packLoose(ctx context.Context, opts PackOptions, stats *Pac
 		sources = nil
 		return nil
 	}
-	for _, candidate := range candidates {
+	for _, group := range mergeLogicalCandidates(candidates) {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if _, duplicate := seen[candidate.Hash]; duplicate {
+		if group.err != nil {
+			stats.BlobsCorrupt++
 			continue
 		}
-		seen[candidate.Hash] = struct{}{}
+		candidate := group.Candidate
 		if candidate.Size > m.limits.BlobBytes {
 			stats.BlobsDeferredOversized++
 			continue
@@ -408,7 +453,11 @@ func (m *Maintainer) prepareCandidate(
 			continue
 		}
 		seenPaths[path] = struct{}{}
-		object, identity, err := openCandidateLooseObject(path, candidate.Hash, candidate.Size)
+		encoding := LooseEncodingRaw
+		if path == filepath.Clean(m.layout.CompressedLoosePath(candidate.Hash)) {
+			encoding = LooseEncodingZstd
+		}
+		object, identity, err := openCandidateLooseObject(path, candidate.Hash, candidate.Size, encoding)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
@@ -455,11 +504,21 @@ func (m *Maintainer) prepareCandidate(
 	return nil, "", nil, false, corrupt
 }
 
-func openCandidateLooseObject(path string, hash Hash, expectedSize int64) (*looseObject, fs.FileInfo, error) {
-	return openLooseObjectAtPath(path, hash, &expectedSize)
+func openCandidateLooseObject(
+	path string,
+	hash Hash,
+	expectedSize int64,
+	encoding LooseEncoding,
+) (*looseObject, fs.FileInfo, error) {
+	return openLooseObjectAtPath(path, hash, &expectedSize, encoding)
 }
 
-func openLooseObjectAtPath(path string, hash Hash, expectedSize *int64) (*looseObject, fs.FileInfo, error) {
+func openLooseObjectAtPath(
+	path string,
+	hash Hash,
+	expectedSize *int64,
+	encoding LooseEncoding,
+) (*looseObject, fs.FileInfo, error) {
 	identity, err := snapshotPathIdentity(path)
 	if err != nil {
 		return nil, nil, err
@@ -474,10 +533,8 @@ func openLooseObjectAtPath(path string, hash Hash, expectedSize *int64) (*looseO
 	if !os.SameFile(identity, info) {
 		return nil, nil, errors.Join(errIdentityChanged, f.Close())
 	}
-	encoding := LooseEncodingRaw
 	logicalSize := info.Size()
-	if filepath.Base(path) == hash.String()+".zst" {
-		encoding = LooseEncodingZstd
+	if encoding == LooseEncodingZstd {
 		header := make([]byte, compressedLooseHeaderSize)
 		if _, err := io.ReadFull(f, header); err != nil {
 			return nil, nil, errors.Join(
@@ -502,15 +559,21 @@ func openLooseObjectAtPath(path string, hash Hash, expectedSize *int64) (*looseO
 }
 
 func verifyLoosePath(ctx context.Context, path string, hash Hash, limit int64) error {
-	_, err := verifyLoosePathIdentity(ctx, path, hash, limit)
+	_, err := verifyLoosePathIdentity(ctx, path, hash, limit, LooseEncodingRaw)
 	return err
 }
 
-func verifyLoosePathIdentity(ctx context.Context, path string, hash Hash, limit int64) (fs.FileInfo, error) {
+func verifyLoosePathIdentity(
+	ctx context.Context,
+	path string,
+	hash Hash,
+	limit int64,
+	encoding LooseEncoding,
+) (fs.FileInfo, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	object, identity, err := openLooseObjectAtPath(path, hash, nil)
+	object, identity, err := openLooseObjectAtPath(path, hash, nil, encoding)
 	if err != nil {
 		return nil, err
 	}
@@ -533,11 +596,17 @@ func verifyLoosePathIdentity(ctx context.Context, path string, hash Hash, limit 
 
 func (m *Maintainer) hasValidCanonicalLoose(ctx context.Context, hash Hash) (bool, error) {
 	valid := false
-	for _, path := range []string{m.layout.CompressedLoosePath(hash), m.layout.LoosePath(hash)} {
+	for _, candidate := range []struct {
+		path     string
+		encoding LooseEncoding
+	}{
+		{path: m.layout.CompressedLoosePath(hash), encoding: LooseEncodingZstd},
+		{path: m.layout.LoosePath(hash), encoding: LooseEncodingRaw},
+	} {
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
-		if err := verifyLoosePath(ctx, path, hash, m.limits.BlobBytes); err == nil {
+		if _, err := verifyLoosePathIdentity(ctx, candidate.path, hash, m.limits.BlobBytes, candidate.encoding); err == nil {
 			valid = true
 		} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return false, err
@@ -651,18 +720,26 @@ func (m *Maintainer) sweepLoose(ctx context.Context, refs map[Hash]Reference, al
 		}
 		present := 0
 		verified := 0
-		for _, path := range []string{m.layout.LoosePath(entry.Hash), m.layout.CompressedLoosePath(entry.Hash)} {
-			physical, err := snapshotPathIdentity(path)
+		for _, candidate := range []struct {
+			path     string
+			encoding LooseEncoding
+		}{
+			{path: m.layout.LoosePath(entry.Hash), encoding: LooseEncodingRaw},
+			{path: m.layout.CompressedLoosePath(entry.Hash), encoding: LooseEncodingZstd},
+		} {
+			physical, err := snapshotPathIdentity(candidate.path)
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			} else if err != nil {
 				return err
 			}
-			if err := validateRegularNoFollow(path, physical); err != nil {
+			if err := validateRegularNoFollow(candidate.path, physical); err != nil {
 				continue
 			}
 			present++
-			identity, err := verifyLoosePathIdentity(ctx, path, entry.Hash, m.limits.BlobBytes)
+			identity, err := verifyLoosePathIdentity(
+				ctx, candidate.path, entry.Hash, m.limits.BlobBytes, candidate.encoding,
+			)
 			if err != nil {
 				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 					return err
@@ -670,7 +747,10 @@ func (m *Maintainer) sweepLoose(ctx context.Context, refs map[Hash]Reference, al
 				continue
 			}
 			verified++
-			removed, _ := removeLoosePathIdentity(path, identity)
+			removed, removeErr := removeLoosePathIdentity(candidate.path, identity)
+			if removeErr != nil {
+				return fmt.Errorf("packstore: sweep loose content: %w", removeErr)
+			}
 			if removed {
 				stats.LooseSwept++
 			}
@@ -760,7 +840,7 @@ func removeLoosePathIdentity(path string, identity fs.FileInfo) (bool, error) {
 	if !os.SameFile(identity, current) {
 		return false, errIdentityChanged
 	}
-	if err := os.Remove(path); err != nil {
+	if err := removeLooseCanonicalFile(path); err != nil {
 		return false, err
 	}
 	return true, nil

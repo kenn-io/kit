@@ -53,6 +53,7 @@ var (
 	closeLooseStagingFile    = func(file *os.File) error { return file.Close() }
 	removeLooseStagingFile   = os.Remove
 	removeLooseAlternateFile = os.Remove
+	removeLooseCanonicalFile = os.Remove
 	syncLooseStagingDir      = func(path string) error { return pack.SyncDir(path) }
 	syncLooseRepairShard     = func(path string) error { return pack.SyncDir(path) }
 	chmodLooseStagingFile    = func(file *os.File, mode fs.FileMode) error { return file.Chmod(mode) }
