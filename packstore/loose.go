@@ -45,14 +45,17 @@ var (
 			zstd.WithDecoderConcurrency(1),
 			zstd.WithDecoderMaxMemory(64<<20))
 	}
-	publishLooseFile        = os.Link
-	replaceLooseFile        = os.Rename
-	beforeLoosePublish      = func(Hash, LooseEncoding) {}
-	afterLooseStripeAcquire = func(Hash, LooseEncoding) {}
-	closeLooseStagingFile   = func(file *os.File) error { return file.Close() }
-	removeLooseStagingFile  = os.Remove
-	syncLooseStagingDir     = func(path string) error { return pack.SyncDir(path) }
-	chmodLooseStagingFile   = func(file *os.File, mode fs.FileMode) error { return file.Chmod(mode) }
+	publishLooseFile         = os.Link
+	publishLooseRepairFile   = replaceLooseRepairFile
+	beforeLoosePublish       = func(Hash, LooseEncoding) {}
+	afterLooseStripeAcquire  = func(Hash, LooseEncoding) {}
+	afterLooseRepairVerify   = func(string) {}
+	closeLooseStagingFile    = func(file *os.File) error { return file.Close() }
+	removeLooseStagingFile   = os.Remove
+	removeLooseAlternateFile = os.Remove
+	syncLooseStagingDir      = func(path string) error { return pack.SyncDir(path) }
+	syncLooseRepairShard     = func(path string) error { return pack.SyncDir(path) }
+	chmodLooseStagingFile    = func(file *os.File, mode fs.FileMode) error { return file.Chmod(mode) }
 )
 
 var (
@@ -120,7 +123,9 @@ type RepairOptions struct {
 	MaxBytes    int64
 }
 
-// WriteResult describes one canonical loose object.
+// WriteResult describes one canonical loose object. Created remains true when
+// canonical publication succeeded but a later cleanup or durability step
+// returned an error.
 type WriteResult struct {
 	Hash       Hash
 	Size       int64
@@ -216,7 +221,9 @@ func (s *LooseStore) WriteBytes(ctx context.Context, content []byte, opts WriteO
 // Repair completely verifies src against expected before atomically replacing
 // its selected loose representation and removing the alternate canonical name.
 // It changes only physical loose bytes; catalog membership and packed mappings
-// remain the caller's responsibility.
+// remain the caller's responsibility. If replacement succeeds but alternate
+// removal, shard durability, or deferred staging cleanup fails, Repair returns
+// the published receipt with Created true together with the non-nil error.
 func (s *LooseStore) Repair(
 	ctx context.Context,
 	src io.Reader,
@@ -388,11 +395,6 @@ func (s *LooseStore) publish(
 	if err := selected.close(); err != nil {
 		return identity, fmt.Errorf("packstore: close loose staging file: %w", err)
 	}
-	if replace {
-		if err := verifyStagedLooseRepair(ctx, selected.path, identity); err != nil {
-			return identity, fmt.Errorf("packstore: verify staged loose repair: %w", err)
-		}
-	}
 
 	beforeLoosePublish(identity.Hash, identity.Encoding)
 	releaseStripe, err := acquireLooseWriteStripe(ctx, identity.Hash)
@@ -428,7 +430,23 @@ func (s *LooseStore) publish(
 		return identity, err
 	}
 	if replace {
-		if err := replaceLooseFile(selected.path, final); err != nil {
+		pin, err := pinAndVerifyStagedLooseRepair(ctx, selected.path, identity)
+		if err != nil {
+			return identity, fmt.Errorf("packstore: verify staged loose repair: %w", err)
+		}
+		defer func() { resultErr = errors.Join(resultErr, pin.file.Close()) }()
+		afterLooseRepairVerify(selected.path)
+		if err := ctx.Err(); err != nil {
+			return identity, err
+		}
+		current, err := snapshotLoosePathIdentity(selected.path)
+		if err != nil {
+			return identity, fmt.Errorf("%w: recheck staged loose repair identity: %v", ErrContentMismatch, err)
+		}
+		if !os.SameFile(pin.identity, current) {
+			return identity, fmt.Errorf("%w: %w", ErrContentMismatch, errIdentityChanged)
+		}
+		if err := publishLooseRepairFile(selected.path, final); err != nil {
 			return identity, fmt.Errorf("packstore: replace loose content: %w", err)
 		}
 		identity.Created = true
@@ -436,7 +454,7 @@ func (s *LooseStore) publish(
 		if identity.Encoding == LooseEncodingZstd {
 			alternate = s.layout.LoosePath(identity.Hash)
 		}
-		removeErr := os.Remove(alternate)
+		removeErr := removeLooseAlternateFile(alternate)
 		if errors.Is(removeErr, fs.ErrNotExist) {
 			removeErr = nil
 		}
@@ -445,7 +463,7 @@ func (s *LooseStore) publish(
 		}
 		var syncErr error
 		if opts.Durability == DurablePublication {
-			if err := pack.SyncDir(shard); err != nil {
+			if err := syncLooseRepairShard(shard); err != nil {
 				syncErr = fmt.Errorf("packstore: sync repaired loose shard: %w", err)
 			}
 		}
@@ -467,7 +485,23 @@ func (s *LooseStore) publish(
 	return identity, nil
 }
 
-func verifyStagedLooseRepair(ctx context.Context, path string, identity WriteResult) error {
+type pinnedLooseRepair struct {
+	file     *os.File
+	identity fs.FileInfo
+}
+
+func pinAndVerifyStagedLooseRepair(ctx context.Context, path string, identity WriteResult) (*pinnedLooseRepair, error) {
+	pinFile, pinIdentity, err := openLooseFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := verifyStagedLooseRepairPath(ctx, path, identity); err != nil {
+		return nil, errors.Join(err, pinFile.Close())
+	}
+	return &pinnedLooseRepair{file: pinFile, identity: pinIdentity}, nil
+}
+
+func verifyStagedLooseRepairPath(ctx context.Context, path string, identity WriteResult) error {
 	file, info, err := openLooseFile(path)
 	if err != nil {
 		return err

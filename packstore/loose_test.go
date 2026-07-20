@@ -1146,9 +1146,9 @@ func TestLooseRepairPublicationFailurePreservesAllCanonicalCopies(t *testing.T) 
 	require.NoError(os.WriteFile(rawPath, rawBefore, 0o600))
 	require.NoError(os.WriteFile(compressedPath, compressedBefore, 0o600))
 	publishErr := errors.New("injected repair replacement failure")
-	originalReplace := replaceLooseFile
-	replaceLooseFile = func(string, string) error { return publishErr }
-	t.Cleanup(func() { replaceLooseFile = originalReplace })
+	originalReplace := publishLooseRepairFile
+	publishLooseRepairFile = func(string, string) error { return publishErr }
+	t.Cleanup(func() { publishLooseRepairFile = originalReplace })
 
 	_, err := store.Repair(context.Background(), bytes.NewReader(content), LooseIdentity{
 		Hash: hash,
@@ -1191,35 +1191,209 @@ func TestLooseRepairVerifiesSelectedStagingRepresentationBeforeReplacement(t *te
 	assert.Empty(matchingFiles(t, store.layout.LooseStagingDir(hash), ".staging-"))
 }
 
+func TestLooseRepairRejectsSelectedPathSwapAfterVerification(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	content := []byte("verified repair staging identity")
+	store := newLooseStoreForTest(t, StagingSameDirectory)
+	hash := hashForTest(content)
+	canonical := store.layout.LoosePath(hash)
+	require.NoError(os.MkdirAll(filepath.Dir(canonical), 0o700))
+	before := []byte("existing canonical evidence")
+	require.NoError(os.WriteFile(canonical, before, 0o600))
+	var displaced string
+	originalAfterVerify := afterLooseRepairVerify
+	afterLooseRepairVerify = func(path string) {
+		displaced = path + ".verified"
+		require.NoError(os.Rename(path, displaced))
+		require.NoError(os.WriteFile(path, []byte("post-verification staging impostor"), 0o600))
+	}
+	t.Cleanup(func() {
+		afterLooseRepairVerify = originalAfterVerify
+		if displaced != "" {
+			_ = os.Remove(displaced)
+		}
+	})
+
+	_, err := store.Repair(context.Background(), bytes.NewReader(content), LooseIdentity{
+		Hash: hash,
+		Size: int64(len(content)),
+	}, RepairOptions{Durability: AtomicPublication})
+
+	require.ErrorIs(err, ErrContentMismatch)
+	assert.Equal(before, mustReadFile(t, canonical))
+	assert.NoFileExists(store.layout.CompressedLoosePath(hash))
+}
+
+func TestLooseRepairCancellationDuringStagingPreservesCanonicalEvidence(t *testing.T) {
+	content := bytes.Repeat([]byte("cancel repair staging\n"), 4096)
+	for _, staging := range []StagingMode{StagingSameDirectory, StagingStoreDirectory} {
+		t.Run(stagingName(staging), func(t *testing.T) {
+			assert := assert.New(t)
+			require := require.New(t)
+			store := newLooseStoreForTest(t, staging)
+			hash := hashForTest(content)
+			canonical := store.layout.LoosePath(hash)
+			require.NoError(os.MkdirAll(filepath.Dir(canonical), 0o700))
+			before := []byte("existing staging-cancel evidence")
+			require.NoError(os.WriteFile(canonical, before, 0o600))
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+
+			_, err := store.Repair(ctx, &cancelAfterRead{reader: bytes.NewReader(content), cancel: cancel}, LooseIdentity{
+				Hash: hash,
+				Size: int64(len(content)),
+			}, RepairOptions{Durability: AtomicPublication})
+
+			require.ErrorIs(err, context.Canceled)
+			assert.Equal(before, mustReadFile(t, canonical))
+			assert.Empty(matchingFiles(t, store.layout.LooseStagingDir(hash), ".staging-"))
+		})
+	}
+}
+
+func TestLooseRepairCancellationDuringVerificationPreservesCanonicalEvidence(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	content := bytes.Repeat([]byte("cancel repair verification\n"), 4096)
+	store := newLooseStoreForTest(t, StagingStoreDirectory)
+	hash := hashForTest(content)
+	canonical := store.layout.LoosePath(hash)
+	require.NoError(os.MkdirAll(filepath.Dir(canonical), 0o700))
+	before := []byte("existing verification-cancel evidence")
+	require.NoError(os.WriteFile(canonical, before, 0o600))
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	originalReader := newLooseZstdReader
+	newLooseZstdReader = func(src io.Reader) (looseZstdReader, error) {
+		reader, err := originalReader(src)
+		if err != nil {
+			return nil, err
+		}
+		return &cancelOnLooseRead{looseZstdReader: reader, cancel: cancel}, nil
+	}
+	t.Cleanup(func() { newLooseZstdReader = originalReader })
+
+	_, err := store.Repair(ctx, bytes.NewReader(content), LooseIdentity{
+		Hash: hash,
+		Size: int64(len(content)),
+	}, RepairOptions{
+		Durability:  AtomicPublication,
+		Compression: LooseCompressionOptions{Enabled: true},
+	})
+
+	require.ErrorIs(err, context.Canceled)
+	assert.Equal(before, mustReadFile(t, canonical))
+	assert.NoFileExists(store.layout.CompressedLoosePath(hash))
+	assert.Empty(matchingFiles(t, store.layout.LooseStagingDir(hash), ".staging-"))
+}
+
+func TestLooseRepairCancellationWhileWaitingForStripeSkipsVerification(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	content := bytes.Repeat([]byte("cancel repair stripe wait\n"), 4096)
+	store := newLooseStoreForTest(t, StagingStoreDirectory)
+	hash := hashForTest(content)
+	canonical := store.layout.LoosePath(hash)
+	require.NoError(os.MkdirAll(filepath.Dir(canonical), 0o700))
+	before := []byte("existing stripe-cancel evidence")
+	require.NoError(os.WriteFile(canonical, before, 0o600))
+	releaseStripe, err := acquireLooseWriteStripe(context.Background(), hash)
+	require.NoError(err)
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(releaseStripe) }
+	t.Cleanup(release)
+	reachedStripe := make(chan struct{})
+	originalBeforePublish := beforeLoosePublish
+	beforeLoosePublish = func(gotHash Hash, _ LooseEncoding) {
+		if gotHash == hash {
+			close(reachedStripe)
+		}
+	}
+	t.Cleanup(func() { beforeLoosePublish = originalBeforePublish })
+	verificationStarted := false
+	originalReader := newLooseZstdReader
+	newLooseZstdReader = func(src io.Reader) (looseZstdReader, error) {
+		verificationStarted = true
+		return originalReader(src)
+	}
+	t.Cleanup(func() { newLooseZstdReader = originalReader })
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	type repairOutcome struct {
+		result WriteResult
+		err    error
+	}
+	outcome := make(chan repairOutcome, 1)
+	go func() {
+		result, repairErr := store.Repair(ctx, bytes.NewReader(content), LooseIdentity{
+			Hash: hash,
+			Size: int64(len(content)),
+		}, RepairOptions{
+			Durability:  AtomicPublication,
+			Compression: LooseCompressionOptions{Enabled: true},
+		})
+		outcome <- repairOutcome{result: result, err: repairErr}
+	}()
+	receiveLooseSignal(t, reachedStripe, "repair to queue for the loose publication stripe")
+	cancel()
+
+	var got repairOutcome
+	select {
+	case got = <-outcome:
+	case <-time.After(time.Second):
+		release()
+		got = <-outcome
+		assert.Fail("cancelled repair remained blocked on the loose publication stripe")
+	}
+
+	require.ErrorIs(got.err, context.Canceled)
+	assert.False(got.result.Created)
+	assert.False(verificationStarted, "repair verification must begin only after acquiring the hash stripe")
+	assert.Equal(before, mustReadFile(t, canonical))
+	assert.NoFileExists(store.layout.CompressedLoosePath(hash))
+	assert.Empty(matchingFiles(t, store.layout.LooseStagingDir(hash), ".staging-"))
+}
+
 func TestLooseRepairDurablePublicationSyncsReplacementAndReconciliation(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
 	content := []byte("durable repair content")
-	store := newLooseStoreForTest(t, StagingSameDirectory)
+	store := newLooseStoreForTest(t, StagingStoreDirectory)
 	hash := hashForTest(content)
 	rawPath := store.layout.LoosePath(hash)
 	compressedPath := store.layout.CompressedLoosePath(hash)
+	stagingDir := store.layout.LooseStagingDir(hash)
+	shard := filepath.Dir(rawPath)
+	require.NotEqual(filepath.Clean(stagingDir), filepath.Clean(shard))
 	require.NoError(os.MkdirAll(filepath.Dir(rawPath), 0o700))
 	require.NoError(os.WriteFile(rawPath, []byte("corrupt raw"), 0o600))
 	require.NoError(os.WriteFile(compressedPath, []byte("corrupt compressed"), 0o600))
 	originalFileSync := syncLooseFile
-	originalDirSync := pack.SyncDir
-	var fileSyncs int
-	var reconciledShardSyncs int
+	originalShardSync := syncLooseRepairShard
+	originalStagingSync := syncLooseStagingDir
+	var events []string
 	syncLooseFile = func(file *os.File) error {
-		fileSyncs++
+		events = append(events, "file")
 		return originalFileSync(file)
 	}
-	pack.SyncDir = func(path string) error {
-		if filepath.Clean(path) == filepath.Clean(filepath.Dir(rawPath)) &&
-			fileExistsForTest(rawPath) && !fileExistsForTest(compressedPath) {
-			reconciledShardSyncs++
-		}
-		return originalDirSync(path)
+	syncLooseRepairShard = func(path string) error {
+		assert.Equal(filepath.Clean(shard), filepath.Clean(path))
+		assert.Equal(content, mustReadFile(t, rawPath))
+		assert.NoFileExists(compressedPath)
+		events = append(events, "shard")
+		return originalShardSync(path)
+	}
+	syncLooseStagingDir = func(path string) error {
+		assert.Equal(filepath.Clean(stagingDir), filepath.Clean(path))
+		assert.Empty(matchingFiles(t, stagingDir, ".staging-"))
+		events = append(events, "staging")
+		return originalStagingSync(path)
 	}
 	t.Cleanup(func() {
 		syncLooseFile = originalFileSync
-		pack.SyncDir = originalDirSync
+		syncLooseRepairShard = originalShardSync
+		syncLooseStagingDir = originalStagingSync
 	})
 
 	result, err := store.Repair(context.Background(), bytes.NewReader(content), LooseIdentity{
@@ -1229,37 +1403,173 @@ func TestLooseRepairDurablePublicationSyncsReplacementAndReconciliation(t *testi
 
 	require.NoError(err)
 	assert.Equal(LooseEncodingRaw, result.Encoding)
-	assert.Equal(1, fileSyncs, "repair syncs only the selected staged representation")
-	assert.Positive(reconciledShardSyncs, "the shard is synced after replacement and alternate cleanup")
+	assert.Equal([]string{"file", "shard", "staging"}, events)
 }
 
-func TestLooseRepairKeepsActiveReaderStable(t *testing.T) {
+func TestLooseRepairAlternateRemovalFailureReturnsPublishedReceipt(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
-	content := []byte("stable repaired content")
-	corrupt := []byte("old corrupt descriptor!")
-	require.Len(corrupt, len(content))
-	store := newLooseStoreForTest(t, StagingSameDirectory)
-	created, err := store.WriteBytes(context.Background(), content, WriteOptions{
-		Durability: AtomicPublication,
-		Dedup:      VerifyFullHash,
-	})
-	require.NoError(err)
-	require.NoError(os.WriteFile(created.Path, corrupt, 0o600))
-	active, err := openNoFollow(created.Path, false)
-	require.NoError(err)
-	t.Cleanup(func() { _ = active.Close() })
+	content := []byte("alternate cleanup receipt")
+	store := newLooseStoreForTest(t, StagingStoreDirectory)
+	hash := hashForTest(content)
+	rawPath := store.layout.LoosePath(hash)
+	compressedPath := store.layout.CompressedLoosePath(hash)
+	require.NoError(os.MkdirAll(filepath.Dir(rawPath), 0o700))
+	require.NoError(os.WriteFile(rawPath, []byte("old raw evidence"), 0o600))
+	compressedBefore := []byte("old compressed evidence")
+	require.NoError(os.WriteFile(compressedPath, compressedBefore, 0o600))
+	removeErr := errors.New("injected alternate removal failure")
+	originalRemove := removeLooseAlternateFile
+	removeLooseAlternateFile = func(path string) error {
+		assert.Equal(compressedPath, path)
+		return removeErr
+	}
+	t.Cleanup(func() { removeLooseAlternateFile = originalRemove })
 
-	_, err = store.Repair(context.Background(), bytes.NewReader(content), LooseIdentity{
-		Hash: created.Hash,
-		Size: created.Size,
+	result, err := store.Repair(context.Background(), bytes.NewReader(content), LooseIdentity{
+		Hash: hash,
+		Size: int64(len(content)),
 	}, RepairOptions{Durability: AtomicPublication})
-	require.NoError(err)
 
-	oldBytes, err := io.ReadAll(active)
-	require.NoError(err)
-	assert.Equal(corrupt, oldBytes, "an open reader remains pinned to its original physical file")
-	assert.Equal(content, readRepairedLoose(t, store, created), "new readers see the atomically replaced file")
+	require.ErrorIs(err, removeErr)
+	assert.Equal(hash, result.Hash)
+	assert.Equal(int64(len(content)), result.Size)
+	assert.Equal(rawPath, result.Path)
+	assert.Equal(LooseEncodingRaw, result.Encoding)
+	assert.Equal(int64(len(content)), result.StoredSize)
+	assert.True(result.Created)
+	assert.Equal(content, mustReadFile(t, rawPath))
+	assert.Equal(compressedBefore, mustReadFile(t, compressedPath))
+}
+
+func TestLooseRepairShardSyncFailureReturnsPublishedReceipt(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	content := []byte("shard durability receipt")
+	store := newLooseStoreForTest(t, StagingStoreDirectory)
+	hash := hashForTest(content)
+	rawPath := store.layout.LoosePath(hash)
+	compressedPath := store.layout.CompressedLoosePath(hash)
+	require.NoError(os.MkdirAll(filepath.Dir(rawPath), 0o700))
+	require.NoError(os.WriteFile(rawPath, []byte("old raw evidence"), 0o600))
+	require.NoError(os.WriteFile(compressedPath, []byte("old compressed evidence"), 0o600))
+	syncErr := errors.New("injected repaired shard sync failure")
+	originalSync := syncLooseRepairShard
+	syncLooseRepairShard = func(path string) error {
+		assert.Equal(filepath.Dir(rawPath), path)
+		return syncErr
+	}
+	t.Cleanup(func() { syncLooseRepairShard = originalSync })
+
+	result, err := store.Repair(context.Background(), bytes.NewReader(content), LooseIdentity{
+		Hash: hash,
+		Size: int64(len(content)),
+	}, RepairOptions{Durability: DurablePublication})
+
+	require.ErrorIs(err, syncErr)
+	assert.Equal(hash, result.Hash)
+	assert.Equal(int64(len(content)), result.Size)
+	assert.Equal(rawPath, result.Path)
+	assert.Equal(LooseEncodingRaw, result.Encoding)
+	assert.Equal(int64(len(content)), result.StoredSize)
+	assert.True(result.Created)
+	assert.Equal(content, mustReadFile(t, rawPath))
+	assert.NoFileExists(compressedPath)
+}
+
+func TestLooseRepairStagingSyncFailureReturnsPublishedReceipt(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	content := []byte("staging durability receipt")
+	store := newLooseStoreForTest(t, StagingStoreDirectory)
+	hash := hashForTest(content)
+	rawPath := store.layout.LoosePath(hash)
+	compressedPath := store.layout.CompressedLoosePath(hash)
+	stagingDir := store.layout.LooseStagingDir(hash)
+	require.NoError(os.MkdirAll(filepath.Dir(rawPath), 0o700))
+	require.NoError(os.WriteFile(rawPath, []byte("old raw evidence"), 0o600))
+	require.NoError(os.WriteFile(compressedPath, []byte("old compressed evidence"), 0o600))
+	syncErr := errors.New("injected repair staging sync failure")
+	originalSync := syncLooseStagingDir
+	syncLooseStagingDir = func(path string) error {
+		assert.Equal(stagingDir, path)
+		assert.Empty(matchingFiles(t, stagingDir, ".staging-"))
+		return syncErr
+	}
+	t.Cleanup(func() { syncLooseStagingDir = originalSync })
+
+	result, err := store.Repair(context.Background(), bytes.NewReader(content), LooseIdentity{
+		Hash: hash,
+		Size: int64(len(content)),
+	}, RepairOptions{Durability: DurablePublication})
+
+	require.ErrorIs(err, syncErr)
+	assert.Equal(hash, result.Hash)
+	assert.Equal(int64(len(content)), result.Size)
+	assert.Equal(rawPath, result.Path)
+	assert.Equal(LooseEncodingRaw, result.Encoding)
+	assert.Equal(int64(len(content)), result.StoredSize)
+	assert.True(result.Created)
+	assert.Equal(content, mustReadFile(t, rawPath))
+	assert.NoFileExists(compressedPath)
+	assert.Empty(matchingFiles(t, stagingDir, ".staging-"))
+}
+
+func TestLooseRepairKeepsActiveReadersStableAcrossRepresentations(t *testing.T) {
+	content := bytes.Repeat([]byte("stable repaired representation content\n"), 1024)
+	for _, tt := range []struct {
+		name            string
+		initialEncoding LooseEncoding
+		repairEncoding  LooseEncoding
+	}{
+		{name: "raw to raw", initialEncoding: LooseEncodingRaw, repairEncoding: LooseEncodingRaw},
+		{name: "zstd to zstd", initialEncoding: LooseEncodingZstd, repairEncoding: LooseEncodingZstd},
+		{name: "raw to zstd", initialEncoding: LooseEncodingRaw, repairEncoding: LooseEncodingZstd},
+		{name: "zstd to raw", initialEncoding: LooseEncodingZstd, repairEncoding: LooseEncodingRaw},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			assert := assert.New(t)
+			require := require.New(t)
+			store := newLooseStoreForTest(t, StagingStoreDirectory)
+			writeCompression := LooseCompressionOptions{Enabled: tt.initialEncoding == LooseEncodingZstd}
+			created, err := store.WriteBytes(context.Background(), content, WriteOptions{
+				Durability:  AtomicPublication,
+				Dedup:       VerifyFullHash,
+				Compression: writeCompression,
+			})
+			require.NoError(err)
+			require.Equal(tt.initialEncoding, created.Encoding)
+			oldPhysical := []byte("old open physical bytes for " + tt.name)
+			require.NoError(os.WriteFile(created.Path, oldPhysical, 0o600))
+			active, err := openNoFollow(created.Path, false)
+			require.NoError(err)
+			t.Cleanup(func() { _ = active.Close() })
+
+			result, err := store.Repair(context.Background(), bytes.NewReader(content), LooseIdentity{
+				Hash: created.Hash,
+				Size: created.Size,
+			}, RepairOptions{
+				Durability: AtomicPublication,
+				Compression: LooseCompressionOptions{
+					Enabled: tt.repairEncoding == LooseEncodingZstd,
+				},
+			})
+			require.NoError(err)
+
+			oldBytes, err := io.ReadAll(active)
+			require.NoError(err)
+			assert.Equal(oldPhysical, oldBytes, "the active reader stays pinned to its old physical identity")
+			assert.Equal(tt.repairEncoding, result.Encoding)
+			assert.Equal(content, readRepairedLoose(t, store, result), "new readers see the repaired logical content")
+			if tt.repairEncoding == LooseEncodingRaw {
+				assert.Equal(store.layout.LoosePath(result.Hash), result.Path)
+				assert.NoFileExists(store.layout.CompressedLoosePath(result.Hash))
+			} else {
+				assert.Equal(store.layout.CompressedLoosePath(result.Hash), result.Path)
+				assert.NoFileExists(store.layout.LoosePath(result.Hash))
+			}
+		})
+	}
 }
 
 func TestLooseRepairValidatesRequiredIdentityAndPolicyBeforeReading(t *testing.T) {
@@ -1726,11 +2036,6 @@ func readRepairedLoose(t *testing.T, loose *LooseStore, result WriteResult) []by
 	return content
 }
 
-func fileExistsForTest(path string) bool {
-	_, err := os.Lstat(path)
-	return err == nil
-}
-
 func assertNoLooseWriteResidue(t *testing.T, store *LooseStore, hash Hash) {
 	t.Helper()
 	assert.NoFileExists(t, store.layout.LoosePath(hash))
@@ -1787,6 +2092,21 @@ type cancelOnWriteCloser struct {
 	io.WriteCloser
 	cancel context.CancelFunc
 	done   bool
+}
+
+type cancelOnLooseRead struct {
+	looseZstdReader
+	cancel context.CancelFunc
+	done   bool
+}
+
+func (r *cancelOnLooseRead) Read(p []byte) (int, error) {
+	n, err := r.looseZstdReader.Read(p)
+	if n > 0 && !r.done {
+		r.done = true
+		r.cancel()
+	}
+	return n, err
 }
 
 func (w *cancelOnWriteCloser) Write(p []byte) (int, error) {
