@@ -51,6 +51,9 @@ var (
 			zstd.WithDecoderConcurrency(1),
 			zstd.WithDecoderMaxMemory(64<<20))
 	}
+	newLooseHashReader = func(ctx context.Context, src io.Reader) io.Reader {
+		return &contextReader{ctx: ctx, reader: src}
+	}
 	publishLooseFile              = os.Link
 	publishLooseRepairFile        = replaceLooseRepairFile
 	beforeLoosePublish            = func(Hash, LooseEncoding) {}
@@ -930,7 +933,7 @@ func (s *LooseStore) verifyPathHash(ctx context.Context, path string, before fs.
 
 	hasher := sha256.New()
 	buffer := looseCopyBufferPool.Get().(*[looseCopyBufferBytes]byte)
-	_, readErr := io.CopyBuffer(hasher, struct{ io.Reader }{&contextReader{ctx: ctx, reader: f}}, buffer[:])
+	_, readErr := io.CopyBuffer(hasher, struct{ io.Reader }{newLooseHashReader(ctx, f)}, buffer[:])
 	looseCopyBufferPool.Put(buffer)
 	if readErr == nil && hex.EncodeToString(hasher.Sum(nil)) != expected.String() {
 		readErr = fmt.Errorf("%w: existing hash differs from %s", ErrContentMismatch, expected)

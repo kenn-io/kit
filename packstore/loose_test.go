@@ -2141,10 +2141,12 @@ func TestLooseWriteFullHashHonorsCancellationWhileVerifyingExisting(t *testing.T
 	tests := []struct {
 		name        string
 		compression LooseCompressionOptions
+		maxRead     int64
 		write       func(context.Context, *LooseStore, []byte, WriteOptions) error
 	}{
 		{
-			name: "stream raw",
+			name:    "stream raw",
+			maxRead: looseCopyBufferBytes,
 			write: func(ctx context.Context, store *LooseStore, content []byte, opts WriteOptions) error {
 				_, err := store.Write(ctx, bytes.NewReader(content), opts)
 				return err
@@ -2153,13 +2155,15 @@ func TestLooseWriteFullHashHonorsCancellationWhileVerifyingExisting(t *testing.T
 		{
 			name:        "stream compressed",
 			compression: LooseCompressionOptions{Enabled: true},
+			maxRead:     64 << 10,
 			write: func(ctx context.Context, store *LooseStore, content []byte, opts WriteOptions) error {
 				_, err := store.Write(ctx, bytes.NewReader(content), opts)
 				return err
 			},
 		},
 		{
-			name: "bytes raw",
+			name:    "bytes raw",
+			maxRead: looseCopyBufferBytes,
 			write: func(ctx context.Context, store *LooseStore, content []byte, opts WriteOptions) error {
 				_, err := store.WriteBytes(ctx, content, opts)
 				return err
@@ -2168,6 +2172,7 @@ func TestLooseWriteFullHashHonorsCancellationWhileVerifyingExisting(t *testing.T
 		{
 			name:        "bytes compressed",
 			compression: LooseCompressionOptions{Enabled: true},
+			maxRead:     64 << 10,
 			write: func(ctx context.Context, store *LooseStore, content []byte, opts WriteOptions) error {
 				_, err := store.WriteBytes(ctx, content, opts)
 				return err
@@ -2194,22 +2199,65 @@ func TestLooseWriteFullHashHonorsCancellationWhileVerifyingExisting(t *testing.T
 			}
 
 			ctx, cancel := context.WithCancel(context.Background())
-			originalSnapshot := snapshotLoosePathIdentity
-			snapshotLoosePathIdentity = func(path string) (fs.FileInfo, error) {
-				info, snapshotErr := originalSnapshot(path)
-				if filepath.Clean(path) == filepath.Clean(created.Path) {
-					cancel()
+			var readBytes int64
+			if tt.compression.Enabled {
+				originalReader := newLooseZstdReader
+				newLooseZstdReader = func(src io.Reader) (looseZstdReader, error) {
+					decoder, decodeErr := originalReader(src)
+					if decodeErr != nil {
+						return nil, decodeErr
+					}
+					return &cancelAfterFirstLooseZstdRead{
+						looseZstdReader: decoder,
+						reader: &cancelAfterFirstRead{
+							reader: decoder, cancel: cancel, readBytes: &readBytes,
+						},
+					}, nil
 				}
-				return info, snapshotErr
+				t.Cleanup(func() { newLooseZstdReader = originalReader })
+			} else {
+				originalReader := newLooseHashReader
+				newLooseHashReader = func(readerCtx context.Context, src io.Reader) io.Reader {
+					return originalReader(readerCtx, &cancelAfterFirstRead{
+						reader: src, cancel: cancel, readBytes: &readBytes,
+					})
+				}
+				t.Cleanup(func() { newLooseHashReader = originalReader })
 			}
-			t.Cleanup(func() { snapshotLoosePathIdentity = originalSnapshot })
 
 			err = tt.write(ctx, store, content, opts)
 
 			require.ErrorIs(t, err, context.Canceled)
+			assert.Positive(t, readBytes)
+			assert.LessOrEqual(t, readBytes, tt.maxRead)
 			assert.FileExists(t, created.Path)
 		})
 	}
+}
+
+type cancelAfterFirstRead struct {
+	reader    io.Reader
+	cancel    context.CancelFunc
+	readBytes *int64
+	once      sync.Once
+}
+
+func (r *cancelAfterFirstRead) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	*r.readBytes += int64(n)
+	if n > 0 {
+		r.once.Do(r.cancel)
+	}
+	return n, err
+}
+
+type cancelAfterFirstLooseZstdRead struct {
+	looseZstdReader
+	reader *cancelAfterFirstRead
+}
+
+func (r *cancelAfterFirstLooseZstdRead) Read(p []byte) (int, error) {
+	return r.reader.Read(p)
 }
 
 func TestLooseWriteMaxIntLimitDoesNotOverflow(t *testing.T) {
