@@ -49,6 +49,45 @@ func TestPackAndUnpackStreamAboveFormerCeiling(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestPackCompressedLooseStreamAboveFormerCeiling(t *testing.T) {
+	if testing.Short() {
+		t.Skip("streams a compressed object above the former 64 MiB maintenance ceiling")
+	}
+	size := largeStoreStreamTestBytes(t, 64<<20+1)
+	layout := layoutForStoreTest(t)
+	loose, err := NewLooseStore(layout)
+	require.NoError(t, err)
+	written, err := loose.Write(context.Background(), io.LimitReader(streamZeroReader{}, size), WriteOptions{
+		Durability:  AtomicPublication,
+		Dedup:       VerifyFullHash,
+		MaxBytes:    size,
+		Compression: LooseCompressionOptions{Enabled: true},
+	})
+	require.NoError(t, err)
+	require.Equal(t, LooseEncodingZstd, written.Encoding)
+	require.Less(t, written.StoredSize, written.Size)
+
+	catalog := newMaintenanceCatalog()
+	addMaintenanceCandidate(catalog, Candidate{
+		Hash: written.Hash, Paths: []string{written.Path}, Size: written.Size,
+	})
+	limits := DefaultLimits()
+	limits.BlobBytes = size
+	maintainer := newMaintainerForTest(t, catalog, layout, limits)
+
+	stats, err := maintainer.Pack(context.Background(), PackOptions{})
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.BlobsPacked)
+	assert.Equal(t, size, stats.BytesPacked)
+	assert.NoFileExists(t, written.Path)
+	stream, gotSize, err := maintainer.store.OpenStream(context.Background(), written.Hash)
+	require.NoError(t, err)
+	assert.Equal(t, size, gotSize)
+	require.NoError(t, stream.Verify())
+	require.NoError(t, stream.Close())
+}
+
 func TestRepackStreamsAboveFormerCeiling(t *testing.T) {
 	if testing.Short() {
 		t.Skip("streams an object above the former 64 MiB maintenance ceiling")

@@ -18,6 +18,7 @@ type maintenanceCatalog struct {
 	packs              map[string]PackRecord
 	commitHook         func()
 	recordErr          error
+	adoptErr           error
 	repackErr          error
 	referencesComplete bool
 }
@@ -156,6 +157,9 @@ func (c *maintenanceCatalog) RecordPack(_ context.Context, record PackRecord, ad
 func (c *maintenanceCatalog) AdoptPack(_ context.Context, record PackRecord, adoptions []Adoption) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.adoptErr != nil {
+		return c.adoptErr
+	}
 	c.recordLocked(record, adoptions, true)
 	return nil
 }

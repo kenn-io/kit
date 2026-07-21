@@ -77,6 +77,20 @@ func TestLayoutBuildsCanonicalPaths(t *testing.T) {
 	assert.Equal(root, rootTemp.LooseStagingDir(hash))
 }
 
+func TestLayoutCompressedLoosePath(t *testing.T) {
+	require := require.New(t)
+	root := t.TempDir()
+	hash, err := packstore.ParseHash(testHash())
+	require.NoError(err)
+	layout, err := packstore.NewLayout(root, packstore.LayoutOptions{
+		Staging: packstore.StagingSameDirectory,
+	})
+	require.NoError(err)
+
+	assert.Equal(t, layout.LoosePath(hash)+".zst", layout.CompressedLoosePath(hash))
+	assert.Empty(t, layout.CompressedLoosePath(packstore.Hash("invalid")))
+}
+
 func TestLayoutRejectsUnsafeConfigurationAndPackIDs(t *testing.T) {
 	require := require.New(t)
 	root := t.TempDir()

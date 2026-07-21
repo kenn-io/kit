@@ -75,6 +75,16 @@ func (l Layout) LoosePath(hash Hash) string {
 	return filepath.Join(l.root, hash.String()[:2], hash.String())
 }
 
+// CompressedLoosePath returns the canonical compressed path for hash, or empty
+// for an invalid hash.
+func (l Layout) CompressedLoosePath(hash Hash) string {
+	path := l.LoosePath(hash)
+	if path == "" {
+		return ""
+	}
+	return path + ".zst"
+}
+
 // LooseStagingDir returns the owned staging directory for one loose write.
 func (l Layout) LooseStagingDir(hash Hash) string {
 	if err := hash.Validate(); err != nil {

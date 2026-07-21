@@ -31,4 +31,8 @@ func openNoFollow(path string, durable bool) (*os.File, error) {
 	return f, nil
 }
 
+func openLooseRepairPin(path string) (*os.File, fs.FileInfo, error) {
+	return openLooseFile(path)
+}
+
 func validatePlatformFileInfo(fs.FileInfo) error { return nil }
