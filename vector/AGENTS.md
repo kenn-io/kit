@@ -26,6 +26,23 @@ pipeline. Preserve these invariants when changing it.
   stamped invalid vector looks complete forever and silently poisons
   search rankings.
 
+## Fill batches without losing document boundaries
+
+- A positive `FillOptions.Batch.BatchSize` packs chunks across documents in
+  one scan page; values less than or equal to zero preserve the legacy
+  per-document encode unit. `BatchSize` remains the maximum texts in one
+  `EncodeFunc` call.
+- Vectors from a shared encode batch must be scattered back to their exact
+  document and chunk indexes before `SaveVectors`. Saves and `OnEncodeError`
+  remain serialized and per document.
+- If a shared encode batch fails, isolate its document slices on the error
+  path. Skip only documents that fail in isolation; if every isolated request
+  succeeds, keep the original unattributed batch error fatal instead of hiding
+  a request-shape or transport failure.
+- With one fill worker, finish the current bounded encode window and its saves
+  before starting another window. A save failure must not launch later encode
+  work.
+
 ## Keys and generations are opaque
 
 - Document identity is the caller's type `K` and generation identity its
