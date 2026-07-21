@@ -2,6 +2,7 @@ package vector_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -263,4 +264,41 @@ func TestFillSharedInvalidVectorOutOfRangeIsFatal(t *testing.T) {
 	assert.Equal(t, 1, calls)
 	assert.Zero(t, classifiers)
 	assert.Zero(t, hooks)
+}
+
+func TestFillSharedInvalidVectorPreservesCompanionCauses(t *testing.T) {
+	store := newMemStore()
+	store.content = map[int64]string{1: "good", 2: "bad"}
+	providerErr := &fillProviderError{code: 422}
+	sentinel := errors.New("companion sentinel")
+	enc := func(context.Context, []string) ([][]float32, error) {
+		return nil, errors.Join(
+			&vector.InvalidVectorError{Chunk: 1, Component: -1, Reason: "zero norm"},
+			providerErr,
+			sentinel,
+		)
+	}
+	_, err := vector.Fill(context.Background(), store, 7, enc, vector.FillOptions[int64]{
+		ScanBatch: 2,
+		Batch:     vector.BatchOptions{BatchSize: 2},
+		OnEncodeError: func(doc int64, err error) bool {
+			assert.Equal(t, int64(2), doc)
+			var invalid *vector.InvalidVectorError
+			require.ErrorAs(t, err, &invalid)
+			assert.Equal(t, 0, invalid.Chunk)
+			var gotProvider *fillProviderError
+			assert.ErrorAs(t, err, &gotProvider)
+			assert.Same(t, providerErr, gotProvider)
+			assert.ErrorIs(t, err, sentinel)
+			return false
+		},
+	})
+	require.Error(t, err)
+	var invalid *vector.InvalidVectorError
+	require.ErrorAs(t, err, &invalid)
+	assert.Equal(t, 0, invalid.Chunk)
+	var gotProvider *fillProviderError
+	assert.ErrorAs(t, err, &gotProvider)
+	assert.Same(t, providerErr, gotProvider)
+	assert.ErrorIs(t, err, sentinel)
 }

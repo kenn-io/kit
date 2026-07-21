@@ -13,6 +13,10 @@ type internalFillProviderError struct{}
 
 func (*internalFillProviderError) Error() string { return "input rejected" }
 
+type internalFillCompanionError struct{}
+
+func (*internalFillCompanionError) Error() string { return "companion provider error" }
+
 type noOpFillStore struct{}
 
 func (noOpFillStore) PendingForGeneration(context.Context, int, int) ([]Pending[int64], error) {
@@ -82,4 +86,73 @@ func TestApplyFillBatchProbeInvalidVectorAddsSliceAndLocalOffsets(t *testing.T) 
 	assert.Equal(t, 4, got.Chunk, "slice start 3 plus local invalid index 1")
 	assert.Equal(t, 2, calls)
 	assert.True(t, errors.As(err, &got))
+}
+
+func TestApplyFillBatchProbeInvalidVectorPreservesCompanionCauses(t *testing.T) {
+	refs := []fillChunkRef{
+		{doc: 0, chunk: 3, value: Chunk{Index: 3, Text: "d"}},
+		{doc: 0, chunk: 4, value: Chunk{Index: 4, Text: "e"}},
+		{doc: 1, chunk: 0, value: Chunk{Index: 0, Text: "z"}},
+	}
+	states := []fillDocumentState[int64]{
+		{
+			encoded: fillEncoded[int64]{
+				doc:     Pending[int64]{Doc: 10},
+				chunks:  []Chunk{{Index: 0}, {Index: 1}, {Index: 2}, {Index: 3}, {Index: 4}},
+				vectors: []Vector{{1}, {1}, {1}, nil, nil},
+			},
+			remaining: 2,
+		},
+		{
+			encoded: fillEncoded[int64]{
+				doc: Pending[int64]{Doc: 20}, chunks: []Chunk{{Index: 0}}, vectors: make([]Vector, 1),
+			},
+			remaining: 1,
+		},
+	}
+	companion := &internalFillCompanionError{}
+	sentinel := errors.New("companion sentinel")
+	var calls int
+	enc := func(_ context.Context, texts []string) ([][]float32, error) {
+		calls++
+		if calls == 1 {
+			assert.Equal(t, []string{"d", "e", "z"}, texts)
+			return nil, &internalFillProviderError{}
+		}
+		assert.Equal(t, []string{"d", "e"}, texts)
+		return nil, errors.Join(
+			&InvalidVectorError{Chunk: 1, Component: -1, Reason: "zero norm"},
+			companion,
+			sentinel,
+		)
+	}
+	batch := encodeFillBatch(context.Background(), enc, refs)
+	var gotInvalid *InvalidVectorError
+	err := applyFillBatch(context.Background(), noOpFillStore{}, 7,
+		FillOptions[int64]{
+			ShouldIsolateBatchError: func(err error) bool {
+				var providerErr *internalFillProviderError
+				require.ErrorAs(t, err, &providerErr)
+				return true
+			},
+			OnEncodeError: func(doc int64, err error) bool {
+				assert.Equal(t, int64(10), doc)
+				require.ErrorAs(t, err, &gotInvalid)
+				assert.Equal(t, 4, gotInvalid.Chunk)
+				var gotCompanion *internalFillCompanionError
+				assert.ErrorAs(t, err, &gotCompanion)
+				assert.Same(t, companion, gotCompanion)
+				assert.ErrorIs(t, err, sentinel)
+				return false
+			},
+		},
+		enc, batch, states, true, map[int64]struct{}{}, &FillStats{})
+	require.Error(t, err)
+	require.NotNil(t, gotInvalid)
+	assert.Equal(t, 4, gotInvalid.Chunk)
+	assert.Equal(t, 2, calls)
+	var gotCompanion *internalFillCompanionError
+	assert.ErrorAs(t, err, &gotCompanion)
+	assert.Same(t, companion, gotCompanion)
+	assert.ErrorIs(t, err, sentinel)
 }

@@ -274,7 +274,7 @@ func offsetInvalidVectorError(err error, chunkOffset int) error {
 	}
 	translated := *invalid
 	translated.Chunk += chunkOffset
-	return fmt.Errorf("encode document chunks at %d: %w", chunkOffset, &translated)
+	return fmt.Errorf("encode document chunks at %d: %w", chunkOffset, errors.Join(&translated, err))
 }
 
 func applyFillVectors[K comparable](refs []fillChunkRef, vectors []Vector, states []fillDocumentState[K]) {
