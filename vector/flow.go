@@ -205,6 +205,7 @@ func fillPageAcrossDocuments[K, G comparable](
 				}
 			}
 			err = runFillJobs(ctx, batchConcurrency, active, encode,
+				func(result fillBatchResult) bool { return result.err != nil },
 				func(batch fillBatchResult) error {
 					return applyFillBatch(ctx, store, gen, o, enc, batch, documentStates,
 						true, stale, stats)
@@ -226,6 +227,7 @@ func fillPageAcrossDocuments[K, G comparable](
 			workers = o.Concurrency * batchConcurrency
 		}
 		err = runFillJobs(ctx, workers, batches, encode,
+			func(result fillBatchResult) bool { return result.err != nil },
 			func(batch fillBatchResult) error {
 				return applyFillBatch(ctx, store, gen, o, enc, batch, documentStates,
 					false, stale, stats)
@@ -504,11 +506,17 @@ func incompleteFillDocuments[K comparable](states []fillDocumentState[K]) int {
 	return incomplete
 }
 
+type fillJobResult[R any] struct {
+	value     R
+	collected chan struct{}
+}
+
 func runFillJobs[J, R any](
 	ctx context.Context,
 	workers int,
 	jobs []J,
 	work func(context.Context, J) R,
+	holdUntilCollected func(R) bool,
 	collect func(R) error,
 ) error {
 	workers = min(workers, len(jobs))
@@ -528,16 +536,27 @@ func runFillJobs[J, R any](
 	defer cancel()
 
 	jobCh := make(chan J)
-	results := make(chan R)
+	results := make(chan fillJobResult[R])
 	var wg sync.WaitGroup
 	for range workers {
 		wg.Go(func() {
 			for job := range jobCh {
-				result := work(workCtx, job)
+				value := work(workCtx, job)
+				var collected chan struct{}
+				if holdUntilCollected != nil && holdUntilCollected(value) {
+					collected = make(chan struct{})
+				}
 				select {
-				case results <- result:
+				case results <- fillJobResult[R]{value: value, collected: collected}:
 				case <-workCtx.Done():
 					return
+				}
+				if collected != nil {
+					select {
+					case <-collected:
+					case <-workCtx.Done():
+						return
+					}
 				}
 			}
 		})
@@ -559,12 +578,14 @@ func runFillJobs[J, R any](
 
 	var firstErr error
 	for result := range results {
-		if firstErr != nil {
-			continue
+		if firstErr == nil {
+			if err := collect(result.value); err != nil {
+				firstErr = err
+				cancel()
+			}
 		}
-		if err := collect(result); err != nil {
-			firstErr = err
-			cancel()
+		if result.collected != nil {
+			close(result.collected)
 		}
 	}
 	if firstErr != nil {
@@ -587,6 +608,7 @@ func fillPageByDocument[K, G comparable](
 			vectors, err := EncodeBatched(workCtx, enc, chunks, o.Batch)
 			return fillEncoded[K]{doc: p, chunks: chunks, vectors: vectors, err: err}
 		},
+		nil,
 		func(result fillEncoded[K]) error {
 			return saveEncoded(ctx, store, gen, o, result, stale, stats)
 		})
