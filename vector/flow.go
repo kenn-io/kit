@@ -371,6 +371,40 @@ func probeFillDocumentSlices[K, G comparable](
 	return failed, nil
 }
 
+func applyAttributedInvalidFillBatch[K, G comparable](
+	ctx context.Context, store Store[K, G], gen G, enc EncodeFunc, o FillOptions[K],
+	batch fillBatchResult, invalid *InvalidVectorError, states []fillDocumentState[K],
+	orderedSaves bool, stale map[K]struct{}, stats *FillStats,
+) error {
+	if invalid.Chunk < 0 || invalid.Chunk >= len(batch.refs) {
+		return fillBatchContextError(fmt.Errorf(
+			"invalid vector chunk %d outside batch of %d chunks: %w",
+			invalid.Chunk, len(batch.refs), batch.err), batch.refs, states)
+	}
+
+	failingRef := batch.refs[invalid.Chunk]
+	failingState := &states[failingRef.doc]
+	if !failingState.saved && !failingState.failed {
+		err := offsetInvalidVectorError(batch.err, failingRef.chunk-invalid.Chunk)
+		if err := decideFillDocumentError(ctx, o, states, failingRef.doc, err); err != nil {
+			return err
+		}
+		if err := saveReadyDocuments(ctx, store, gen, o, states, orderedSaves, stale, stats); err != nil {
+			return err
+		}
+	}
+
+	recovery := make([]fillChunkRef, 0, len(batch.refs))
+	for _, ref := range batch.refs {
+		if ref.doc != failingRef.doc && !states[ref.doc].saved && !states[ref.doc].failed {
+			recovery = append(recovery, ref)
+		}
+	}
+	_, err := probeFillDocumentSlices(ctx, store, gen, enc, o, recovery, states,
+		orderedSaves, stale, stats)
+	return err
+}
+
 func applyFillBatch[K, G comparable](
 	ctx context.Context, store Store[K, G], gen G, o FillOptions[K], enc EncodeFunc,
 	batch fillBatchResult, states []fillDocumentState[K], orderedSaves bool,
@@ -385,6 +419,11 @@ func applyFillBatch[K, G comparable](
 	}
 	if errors.Is(batch.err, context.Canceled) || errors.Is(batch.err, context.DeadlineExceeded) {
 		return fillBatchContextError(batch.err, batch.refs, states)
+	}
+	var invalid *InvalidVectorError
+	if errors.As(batch.err, &invalid) {
+		return applyAttributedInvalidFillBatch(ctx, store, gen, enc, o, batch, invalid,
+			states, orderedSaves, stale, stats)
 	}
 
 	if batch.refs[0].doc == batch.refs[len(batch.refs)-1].doc {
@@ -404,11 +443,8 @@ func applyFillBatch[K, G comparable](
 	if len(active) == 0 {
 		return nil
 	}
-	var invalid *InvalidVectorError
-	if !errors.As(batch.err, &invalid) {
-		if o.ShouldIsolateBatchError == nil || !o.ShouldIsolateBatchError(batch.err) {
-			return fillBatchContextError(batch.err, active, states)
-		}
+	if o.ShouldIsolateBatchError == nil || !o.ShouldIsolateBatchError(batch.err) {
+		return fillBatchContextError(batch.err, active, states)
 	}
 	failed, err := probeFillDocumentSlices(ctx, store, gen, enc, o, active, states,
 		orderedSaves, stale, stats)
