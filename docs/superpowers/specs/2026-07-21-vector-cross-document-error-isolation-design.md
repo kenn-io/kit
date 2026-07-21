@@ -71,8 +71,10 @@ type FillOptions[K comparable] struct {
     // is worth diagnosing at document-slice granularity.
     //
     // Fill does not call this function for single-document batches or for
-    // errors wrapping context.Canceled or context.DeadlineExceeded. Returning
-    // true permits diagnosis only; OnEncodeError still owns the decision to
+    // errors wrapping context.Canceled or context.DeadlineExceeded. Errors
+    // carrying exact batch-position attribution (*InvalidVectorError) also
+    // bypass this function and go directly to OnEncodeError. Returning true
+    // permits diagnosis only; OnEncodeError still owns the decision to
     // skip-stamp an attributed document. Returning false, or leaving this nil,
     // aborts Fill without document-level retries.
     ShouldIsolateBatchError func(error) bool
@@ -186,6 +188,11 @@ document-relative chunk.
    calls.
 6. If it accepts, record the pre-decided skip and re-encode only the other
    active document slices. The known-invalid slice is never re-encoded.
+
+Each recovery re-encode follows the same per-probe context checks, wrapped
+context-error handling, invalid-vector offset translation, and exactly-once
+hook decision described below for diagnosis probes. A recovery failure is
+never reclassified.
 
 The other slices must be recovered because `EncodeBatched` returns no vector
 result when validation fails. A nondeterministic encoder cannot erase the exact
@@ -330,8 +337,10 @@ Caller-specific direct repair loops that do not use `Fill` need no changes.
 1. Land the kit API, collector-path diagnosis, state changes, tests, and
    `vector/AGENTS.md` invariants.
 2. Publish the change as a minor release because it adds public API and changes
-   positive-`BatchSize` failure behavior. Release notes call out the
-   conservative nil default.
+   positive-`BatchSize` behavior. Release notes lead with the existing option's
+   semantic change from per-document sub-batching to cross-document packing,
+   which changes request shapes for every upgrading caller. They then call out
+   the conservative nil-classifier default for shared failures.
 3. In each consumer, combine the dependency bump and classifier wiring in one
    change. Consumers still pinned to an older kit release are unaffected, so
    repositories do not require an atomic simultaneous release.
