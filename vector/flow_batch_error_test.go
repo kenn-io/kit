@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -310,16 +311,23 @@ func TestFillRejectedProbeBackpressuresAndCancelsWorkers(t *testing.T) {
 	store.content = map[int64]string{
 		1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six",
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	secondStarted := make(chan struct{})
 	probeStarted := make(chan struct{})
 	releaseProbe := make(chan struct{})
 	secondCanceled := make(chan struct{})
-	var thirdStarted atomic.Bool
+	thirdStarted := make(chan struct{})
+	var releaseProbeOnce sync.Once
+	release := func() { releaseProbeOnce.Do(func() { close(releaseProbe) }) }
 	enc := func(ctx context.Context, texts []string) ([][]float32, error) {
 		switch fmt.Sprint(texts) {
 		case "[one two]":
-			<-secondStarted
-			return nil, &fillProviderError{code: 400}
+			select {
+			case <-secondStarted:
+				return nil, &fillProviderError{code: 400}
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
 		case "[three four]":
 			close(secondStarted)
 			<-ctx.Done()
@@ -327,10 +335,14 @@ func TestFillRejectedProbeBackpressuresAndCancelsWorkers(t *testing.T) {
 			return nil, ctx.Err()
 		case "[one]":
 			close(probeStarted)
-			<-releaseProbe
-			return nil, &fillProviderError{code: 400}
+			select {
+			case <-releaseProbe:
+				return nil, &fillProviderError{code: 400}
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
 		case "[five six]":
-			thirdStarted.Store(true)
+			close(thirdStarted)
 			return [][]float32{{1}, {1}}, nil
 		default:
 			return nil, fmt.Errorf("unexpected texts %q", texts)
@@ -338,8 +350,10 @@ func TestFillRejectedProbeBackpressuresAndCancelsWorkers(t *testing.T) {
 	}
 
 	done := make(chan error, 1)
+	fillReturned := make(chan struct{})
 	go func() {
-		_, err := vector.Fill(context.Background(), store, 7, enc, vector.FillOptions[int64]{
+		defer close(fillReturned)
+		_, err := vector.Fill(ctx, store, 7, enc, vector.FillOptions[int64]{
 			ScanBatch:               6,
 			Batch:                   vector.BatchOptions{BatchSize: 2},
 			Concurrency:             2,
@@ -348,14 +362,27 @@ func TestFillRejectedProbeBackpressuresAndCancelsWorkers(t *testing.T) {
 		})
 		done <- err
 	}()
+	t.Cleanup(func() {
+		cancel()
+		release()
+		select {
+		case <-fillReturned:
+		case <-time.After(5 * time.Second):
+			assert.Fail(t, "Fill goroutine did not stop during cleanup")
+		}
+	})
 
 	select {
 	case <-probeStarted:
 	case <-time.After(5 * time.Second):
 		require.FailNow(t, "collector did not start the first probe")
 	}
-	assert.False(t, thirdStarted.Load(), "the failed-result worker must wait for collection")
-	close(releaseProbe)
+	select {
+	case <-thirdStarted:
+		require.FailNow(t, "failed-result worker started a third job during collection")
+	case <-time.After(100 * time.Millisecond):
+	}
+	release()
 	select {
 	case err := <-done:
 		require.Error(t, err)
@@ -367,7 +394,11 @@ func TestFillRejectedProbeBackpressuresAndCancelsWorkers(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		require.FailNow(t, "in-flight worker did not observe cancellation")
 	}
-	assert.False(t, thirdStarted.Load())
+	select {
+	case <-thirdStarted:
+		assert.Fail(t, "third job started after collection rejected the failure")
+	default:
+	}
 }
 
 func TestFillLateSharedFailureFiltersDecidedDocument(t *testing.T) {
