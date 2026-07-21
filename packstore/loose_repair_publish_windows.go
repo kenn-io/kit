@@ -35,10 +35,10 @@ var (
 
 // replaceLooseRepairFile uses ReplaceFileW when the canonical name exists.
 // ReplaceFileW preserves handles opened with FILE_SHARE_DELETE, as Kit's
-// no-follow reader does. If the target is absent, a hard link creates it
-// atomically without clobbering a name planted by a concurrent process; losing
-// that creation race returns to ReplaceFileW rather than remove-then-rename.
-// The absent-target link may leave the staging name for caller-owned cleanup.
+// no-follow reader does. If the target is absent, publication uses a hard link
+// or an atomic no-replace move on filesystems without hard-link support. Losing
+// either creation race returns to ReplaceFileW rather than remove-then-rename.
+// The absent-target hard link may leave staging for caller-owned cleanup.
 func replaceLooseRepairFile(staging, final string, verified fs.FileInfo) (looseRepairPublishResult, error) {
 	backup, err := newLooseRepairBackupPath(final)
 	if err != nil {
@@ -51,10 +51,21 @@ func replaceLooseRepairFile(staging, final string, verified fs.FileInfo) (looseR
 	if !isWindowsNotExist(err) {
 		return reconcileLooseRepairReplacement(staging, final, backup, verified, err)
 	}
-	if err := linkLooseRepairFileWindows(staging, final); err == nil {
+	linkErr := linkLooseRepairFileWindows(staging, final)
+	if linkErr == nil {
 		return looseRepairPublishResult{Created: true, SyncShard: true}, nil
-	} else if !errors.Is(err, fs.ErrExist) {
-		return reconcileLooseRepairReplacement(staging, final, backup, verified, err)
+	}
+	if !isWindowsExist(linkErr) {
+		renameErr := renameLoosePublicationNoReplace(staging, final)
+		if renameErr == nil {
+			return looseRepairPublishResult{Created: true, SyncShard: true}, nil
+		}
+		if !isWindowsExist(renameErr) {
+			return reconcileLooseRepairReplacement(staging, final, backup, verified, errors.Join(
+				fmt.Errorf("hard-link loose repair publication: %w", linkErr),
+				fmt.Errorf("no-replace rename loose repair publication: %w", renameErr),
+			))
+		}
 	}
 	err = replaceLooseFileWindows(staging, final, backup)
 	if err == nil {
@@ -67,6 +78,12 @@ func isWindowsNotExist(err error) bool {
 	return errors.Is(err, fs.ErrNotExist) ||
 		errors.Is(err, windows.ERROR_FILE_NOT_FOUND) ||
 		errors.Is(err, windows.ERROR_PATH_NOT_FOUND)
+}
+
+func isWindowsExist(err error) bool {
+	return errors.Is(err, fs.ErrExist) ||
+		errors.Is(err, windows.ERROR_FILE_EXISTS) ||
+		errors.Is(err, windows.ERROR_ALREADY_EXISTS)
 }
 
 func replaceLooseFileWindowsAPI(staging, final, backup string) error {

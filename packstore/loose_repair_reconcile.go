@@ -8,9 +8,25 @@ import (
 )
 
 var (
-	linkLooseRepairRecoveryFile = os.Link
-	removeLooseRepairBackupFile = os.Remove
+	linkLooseRepairRecoveryFile   = os.Link
+	renameLooseRepairRecoveryFile = renameLoosePublicationNoReplace
+	removeLooseRepairBackupFile   = os.Remove
 )
+
+func publishLooseRepairRecoveryNoReplace(staging, final string) error {
+	linkErr := linkLooseRepairRecoveryFile(staging, final)
+	if linkErr == nil {
+		return nil
+	}
+	renameErr := renameLooseRepairRecoveryFile(staging, final)
+	if renameErr == nil {
+		return nil
+	}
+	return errors.Join(
+		fmt.Errorf("hard-link loose repair recovery: %w", linkErr),
+		fmt.Errorf("no-replace rename loose repair recovery: %w", renameErr),
+	)
+}
 
 type looseRepairPublishResult struct {
 	Created     bool
@@ -83,7 +99,7 @@ func reconcileLooseRepairReplacement(
 				SyncStaging: true,
 			}, replaceErr
 		}
-		linkErr := linkLooseRepairRecoveryFile(staging, final)
+		linkErr := publishLooseRepairRecoveryNoReplace(staging, final)
 		if linkErr != nil {
 			finalAfter, inspectErr := inspectLooseRepairPath(final, verified)
 			if inspectErr == nil && finalAfter.matches {
@@ -109,7 +125,7 @@ func reconcileLooseRepairReplacement(
 	}
 
 	if backupState.exists && !finalState.exists {
-		linkErr := linkLooseRepairRecoveryFile(backup, final)
+		linkErr := publishLooseRepairRecoveryNoReplace(backup, final)
 		if linkErr != nil {
 			finalAfter, inspectErr := inspectLooseRepairPath(final, verified)
 			if inspectErr != nil || !finalAfter.exists {

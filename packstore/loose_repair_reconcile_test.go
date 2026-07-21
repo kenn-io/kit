@@ -73,6 +73,32 @@ func TestReconcileLooseRepairReplacementPublishesVerifiedStagingAfterMoveFailure
 	assert.NoFileExists(backup)
 }
 
+func TestReconcileLooseRepairReplacementFallsBackWhenHardLinksAreUnsupported(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	dir := t.TempDir()
+	staging := filepath.Join(dir, "staging")
+	final := filepath.Join(dir, "final")
+	backup := filepath.Join(dir, "backup")
+	content := []byte("verified reconciliation without hard links")
+	require.NoError(os.WriteFile(staging, content, 0o600))
+	verified, err := os.Stat(staging)
+	require.NoError(err)
+	originalLink := linkLooseRepairRecoveryFile
+	linkLooseRepairRecoveryFile = func(string, string) error { return errors.ErrUnsupported }
+	t.Cleanup(func() { linkLooseRepairRecoveryFile = originalLink })
+
+	result, err := reconcileLooseRepairReplacement(staging, final, backup, verified, errInjectedRecoveryState)
+
+	require.ErrorIs(err, errInjectedRecoveryState)
+	assert.True(result.Created)
+	assert.False(result.KeepStaging)
+	assert.True(result.SyncShard)
+	assert.False(result.SyncStaging)
+	assert.NoFileExists(staging)
+	assert.Equal(content, mustReadFile(t, final))
+}
+
 func TestReconcileLooseRepairReplacementRecognizesReplacementDespiteAPIError(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
@@ -144,12 +170,21 @@ func TestReconcileLooseRepairReplacementPreservesOnlyBackupWhenRestoreFails(t *t
 	require.NoError(os.WriteFile(backup, before, 0o600))
 	recoveryErr := errors.New("injected backup restoration failure")
 	originalLink := linkLooseRepairRecoveryFile
+	originalRename := renameLooseRepairRecoveryFile
 	linkLooseRepairRecoveryFile = func(oldname, newname string) error {
 		require.Equal(backup, oldname)
 		require.Equal(final, newname)
 		return recoveryErr
 	}
-	t.Cleanup(func() { linkLooseRepairRecoveryFile = originalLink })
+	renameLooseRepairRecoveryFile = func(oldname, newname string) error {
+		require.Equal(backup, oldname)
+		require.Equal(final, newname)
+		return recoveryErr
+	}
+	t.Cleanup(func() {
+		linkLooseRepairRecoveryFile = originalLink
+		renameLooseRepairRecoveryFile = originalRename
+	})
 
 	result, err := reconcileLooseRepairReplacement(staging, final, backup, verified, errInjectedRecoveryState)
 
@@ -242,12 +277,21 @@ func TestReconcileLooseRepairReplacementKeepsLastVerifiedCopyWhenRecoveryFails(t
 	require.NoError(err)
 	recoveryErr := errors.New("injected no-clobber recovery failure")
 	originalLink := linkLooseRepairRecoveryFile
+	originalRename := renameLooseRepairRecoveryFile
 	linkLooseRepairRecoveryFile = func(oldname, newname string) error {
 		require.Equal(staging, oldname)
 		require.Equal(final, newname)
 		return recoveryErr
 	}
-	t.Cleanup(func() { linkLooseRepairRecoveryFile = originalLink })
+	renameLooseRepairRecoveryFile = func(oldname, newname string) error {
+		require.Equal(staging, oldname)
+		require.Equal(final, newname)
+		return recoveryErr
+	}
+	t.Cleanup(func() {
+		linkLooseRepairRecoveryFile = originalLink
+		renameLooseRepairRecoveryFile = originalRename
+	})
 
 	result, err := reconcileLooseRepairReplacement(staging, final, backup, verified, errInjectedRecoveryState)
 

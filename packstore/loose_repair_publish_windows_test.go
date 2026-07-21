@@ -3,6 +3,7 @@
 package packstore
 
 import (
+	"errors"
 	"io"
 	"io/fs"
 	"os"
@@ -88,6 +89,85 @@ func TestReplaceLooseRepairFileWindowsCreatesAbsentTargetWithoutClobber(t *testi
 	assert.False(result.KeepStaging)
 	assert.True(result.SyncShard)
 	assert.False(result.SyncStaging)
+	assert.Equal(content, mustReadFile(t, final))
+}
+
+func TestReplaceLooseRepairFileWindowsFallsBackWhenHardLinksAreUnsupported(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	dir := t.TempDir()
+	staging := filepath.Join(dir, "staging")
+	final := filepath.Join(dir, "final")
+	content := []byte("verified repair without hard links")
+	require.NoError(os.WriteFile(staging, content, 0o600))
+	verified, err := os.Stat(staging)
+	require.NoError(err)
+	missing := &fs.PathError{Op: "ReplaceFileW", Path: final, Err: fs.ErrNotExist}
+	originalReplace := replaceLooseFileWindows
+	originalLink := linkLooseRepairFileWindows
+	replaceLooseFileWindows = func(string, string, string) error { return missing }
+	linkLooseRepairFileWindows = func(string, string) error { return errors.ErrUnsupported }
+	t.Cleanup(func() {
+		replaceLooseFileWindows = originalReplace
+		linkLooseRepairFileWindows = originalLink
+	})
+
+	result, err := replaceLooseRepairFile(staging, final, verified)
+
+	require.NoError(err)
+	assert.True(result.Created)
+	assert.False(result.KeepStaging)
+	assert.True(result.SyncShard)
+	assert.False(result.SyncStaging)
+	assert.NoFileExists(staging)
+	assert.Equal(content, mustReadFile(t, final))
+}
+
+func TestReplaceLooseRepairFileWindowsRetriesReplaceAfterFallbackMoveRace(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	dir := t.TempDir()
+	staging := filepath.Join(dir, "staging")
+	final := filepath.Join(dir, "final")
+	content := []byte("verified fallback race replacement")
+	require.NoError(os.WriteFile(staging, content, 0o600))
+	verified, err := os.Stat(staging)
+	require.NoError(err)
+	missing := &fs.PathError{Op: "ReplaceFileW", Path: final, Err: fs.ErrNotExist}
+	originalReplace := replaceLooseFileWindows
+	originalLink := linkLooseRepairFileWindows
+	var calls []string
+	replaceLooseFileWindows = func(gotStaging, gotFinal, backup string) error {
+		calls = append(calls, "replace")
+		require.Equal(staging, gotStaging)
+		require.Equal(final, gotFinal)
+		if len(calls) == 1 {
+			return missing
+		}
+		require.NoError(os.Rename(final, backup))
+		require.NoError(os.Rename(staging, final))
+		return nil
+	}
+	linkLooseRepairFileWindows = func(gotStaging, gotFinal string) error {
+		calls = append(calls, "link")
+		require.Equal(staging, gotStaging)
+		require.Equal(final, gotFinal)
+		require.NoError(os.WriteFile(final, []byte("racing canonical"), 0o600))
+		return errors.ErrUnsupported
+	}
+	t.Cleanup(func() {
+		replaceLooseFileWindows = originalReplace
+		linkLooseRepairFileWindows = originalLink
+	})
+
+	result, err := replaceLooseRepairFile(staging, final, verified)
+
+	require.NoError(err)
+	assert.True(result.Created)
+	assert.False(result.KeepStaging)
+	assert.True(result.SyncShard)
+	assert.False(result.SyncStaging)
+	assert.Equal([]string{"replace", "link", "replace"}, calls)
 	assert.Equal(content, mustReadFile(t, final))
 }
 
