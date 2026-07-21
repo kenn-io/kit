@@ -26,6 +26,41 @@ pipeline. Preserve these invariants when changing it.
   stamped invalid vector looks complete forever and silently poisons
   search rankings.
 
+## Fill batches without losing document boundaries
+
+- A positive `FillOptions.Batch.BatchSize` packs chunks across documents in
+  one scan page; values less than or equal to zero preserve the legacy
+  per-document encode unit. `BatchSize` remains the maximum texts in one
+  `EncodeFunc` call.
+- Vectors from a shared encode batch must be scattered back to their exact
+  document and chunk indexes before `SaveVectors`. Saves and `OnEncodeError`
+  remain serialized and per document.
+- A failed shared encode batch is isolated only when
+  `ShouldIsolateBatchError` permits document-slice diagnosis. A nil or false
+  classifier aborts without probes; classification never authorizes a skip.
+- A document slice is one document's refs within the failed batch, not
+  necessarily its complete chunk list. Probes, classification, hook decisions,
+  and saves stay on the serialized collector and use Fill's outer context.
+- Errors carrying an in-range `*InvalidVectorError` batch index bypass
+  classification. Decide the attributed document before recovering other
+  slices, never retry the known-invalid slice, and make an out-of-range index
+  fatal.
+- Consult `OnEncodeError` exactly once per failed document. Record an accepted
+  skip before saving so `saveEncoded` does not consult the hook again; a nil or
+  rejected hook aborts immediately.
+- Collector diagnosis back-pressures the worker that delivered the failed
+  result. Filter concurrently completed results against documents already
+  saved or skip-decided, and cancel in-flight workers promptly on abort.
+- If every active slice succeeds in isolation and no already-failed document
+  explains the shared error, keep the original error fatal. Preserve provider,
+  invalid-vector, and context causes through all wrappers with `%w`.
+- With one fill worker, finish the current bounded encode window and its saves
+  before starting another window. A save failure must not launch later encode
+  work.
+- With multiple fill workers, save a completed document without waiting for an
+  unrelated earlier batch. Saves remain serialized even when encode calls
+  complete out of order.
+
 ## Keys and generations are opaque
 
 - Document identity is the caller's type `K` and generation identity its
