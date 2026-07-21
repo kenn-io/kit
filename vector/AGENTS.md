@@ -35,10 +35,25 @@ pipeline. Preserve these invariants when changing it.
 - Vectors from a shared encode batch must be scattered back to their exact
   document and chunk indexes before `SaveVectors`. Saves and `OnEncodeError`
   remain serialized and per document.
-- If a shared encode batch fails, isolate its document slices on the error
-  path. Skip only documents that fail in isolation; if every isolated request
-  succeeds, keep the original unattributed batch error fatal instead of hiding
-  a request-shape or transport failure.
+- A failed shared encode batch is isolated only when
+  `ShouldIsolateBatchError` permits document-slice diagnosis. A nil or false
+  classifier aborts without probes; classification never authorizes a skip.
+- A document slice is one document's refs within the failed batch, not
+  necessarily its complete chunk list. Probes, classification, hook decisions,
+  and saves stay on the serialized collector and use Fill's outer context.
+- Errors carrying an in-range `*InvalidVectorError` batch index bypass
+  classification. Decide the attributed document before recovering other
+  slices, never retry the known-invalid slice, and make an out-of-range index
+  fatal.
+- Consult `OnEncodeError` exactly once per failed document. Record an accepted
+  skip before saving so `saveEncoded` does not consult the hook again; a nil or
+  rejected hook aborts immediately.
+- Collector diagnosis back-pressures the worker that delivered the failed
+  result. Filter concurrently completed results against documents already
+  saved or skip-decided, and cancel in-flight workers promptly on abort.
+- If every active slice succeeds in isolation and no already-failed document
+  explains the shared error, keep the original error fatal. Preserve provider,
+  invalid-vector, and context causes through all wrappers with `%w`.
 - With one fill worker, finish the current bounded encode window and its saves
   before starting another window. A save failure must not launch later encode
   work.

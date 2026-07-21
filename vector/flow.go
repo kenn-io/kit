@@ -73,10 +73,11 @@ type FillStats struct {
 // document cannot starve the loop.
 //
 // When Batch.BatchSize is positive, chunks from adjacent documents in one
-// scan page may share an encode call. A failed shared call is retried at
-// document granularity before OnEncodeError is consulted. If those retries
-// cannot attribute the failure to a document, Fill aborts rather than silently
-// converting a request-shape or transport failure into successful documents.
+// scan page may share an encode call. Errors with exact document attribution
+// go directly to OnEncodeError. Other shared-call errors are diagnosed at
+// document-slice granularity only when ShouldIsolateBatchError permits it;
+// the nil default aborts without document-level retries. OnEncodeError remains
+// the sole authority for skip-stamping an attributed document.
 func Fill[K, G comparable](ctx context.Context, store Store[K, G], gen G, enc EncodeFunc, o FillOptions[K]) (FillStats, error) {
 	scanBatch := o.ScanBatch
 	if scanBatch <= 0 {

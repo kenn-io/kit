@@ -433,3 +433,48 @@ func TestFillWrappedProbeDeadlineAbortsWithoutHook(t *testing.T) {
 	assert.Equal(t, 2, calls)
 	assert.Zero(t, hooks)
 }
+
+func TestFillBatchClassifierExclusions(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		content   map[int64]string
+		batchSize int
+		encodeErr error
+		wantHook  int
+	}{
+		{
+			name:      "single document",
+			content:   map[int64]string{1: "one"},
+			batchSize: 2,
+			encodeErr: &fillProviderError{code: 400},
+			wantHook:  1,
+		},
+		{
+			name:      "shared cancellation",
+			content:   map[int64]string{1: "one", 2: "two"},
+			batchSize: 2,
+			encodeErr: fmt.Errorf("stopped: %w", context.Canceled),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMemStore()
+			store.content = tc.content
+			var classifiers, hooks int
+			_, err := vector.Fill(context.Background(), store, 7,
+				func(context.Context, []string) ([][]float32, error) { return nil, tc.encodeErr },
+				vector.FillOptions[int64]{
+					ScanBatch:               len(tc.content),
+					Batch:                   vector.BatchOptions{BatchSize: tc.batchSize},
+					ShouldIsolateBatchError: func(error) bool { classifiers++; return true },
+					OnEncodeError:           func(int64, error) bool { hooks++; return true },
+				})
+			if errors.Is(tc.encodeErr, context.Canceled) {
+				require.ErrorIs(t, err, context.Canceled)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Zero(t, classifiers)
+			assert.Equal(t, tc.wantHook, hooks)
+		})
+	}
+}
