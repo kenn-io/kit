@@ -42,6 +42,9 @@ pipeline. Preserve these invariants when changing it.
 - With one fill worker, finish the current bounded encode window and its saves
   before starting another window. A save failure must not launch later encode
   work.
+- With multiple fill workers, save a completed document without waiting for an
+  unrelated earlier batch. Saves remain serialized even when encode calls
+  complete out of order.
 
 ## Keys and generations are opaque
 

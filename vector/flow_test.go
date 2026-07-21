@@ -424,6 +424,24 @@ func TestFillCrossDocumentBatchingStampsEmptyDocuments(t *testing.T) {
 	assert.Empty(store.vectors[7][3])
 }
 
+func TestFillCrossDocumentBatchingRejectsNilEncoderBeforeStampingEmptyDocuments(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	store := newMemStore()
+	store.content[1] = ""
+	store.content[2] = ""
+
+	stats, err := vector.Fill(context.Background(), store, 7, nil, vector.FillOptions[int64]{
+		ScanBatch: 2,
+		Batch:     vector.BatchOptions{BatchSize: 2},
+	})
+	require.Error(err)
+
+	assert.Zero(stats.Documents)
+	assert.False(store.embedded[1][7])
+	assert.False(store.embedded[2][7])
+}
+
 func TestFillCrossDocumentBatchingEncodeErrorAbortsAtFailedDocument(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
@@ -682,6 +700,21 @@ type firstSaveErrorStore struct {
 	saves int
 }
 
+type observingSaveStore struct {
+	*memStore
+	saved chan int64
+}
+
+func (s *observingSaveStore) SaveVectors(
+	ctx context.Context, gen int, doc int64, revision any, vecs []vector.ChunkVector,
+) error {
+	if err := s.memStore.SaveVectors(ctx, gen, doc, revision, vecs); err != nil {
+		return err
+	}
+	s.saved <- doc
+	return nil
+}
+
 func (s *firstSaveErrorStore) SaveVectors(
 	ctx context.Context, gen int, doc int64, revision any, vecs []vector.ChunkVector,
 ) error {
@@ -813,6 +846,116 @@ func TestFillCrossDocumentBatchingComposesConcurrencyBounds(t *testing.T) {
 		"Fill and batch concurrency compose without exceeding their product")
 	assert.Equal(8, stats.Documents)
 	assert.Equal(8, stats.Chunks)
+}
+
+func TestFillCrossDocumentBatchingConcurrentFailureKeepsAttribution(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	store := newMemStore()
+	store.content[1] = "poison"
+	store.content[2] = "fine one"
+	store.content[3] = "fine two"
+	store.content[4] = "fine three"
+
+	failedWindowStarted := make(chan struct{})
+	laterWindowFinished := make(chan struct{})
+	releaseFailedWindow := make(chan struct{})
+	enc := func(_ context.Context, texts []string) ([][]float32, error) {
+		hasPoison := false
+		for _, text := range texts {
+			hasPoison = hasPoison || text == "poison"
+		}
+		if hasPoison {
+			if len(texts) > 1 {
+				close(failedWindowStarted)
+				<-releaseFailedWindow
+			}
+			return nil, errors.New("content rejected")
+		}
+		if len(texts) > 1 {
+			close(laterWindowFinished)
+		}
+		out := make([][]float32, len(texts))
+		for i := range out {
+			out[i] = []float32{1}
+		}
+		return out, nil
+	}
+
+	type fillResult struct {
+		stats vector.FillStats
+		err   error
+	}
+	done := make(chan fillResult, 1)
+	go func() {
+		stats, err := vector.Fill(context.Background(), store, 7, enc, vector.FillOptions[int64]{
+			ScanBatch:   4,
+			Batch:       vector.BatchOptions{BatchSize: 2, Concurrency: 1},
+			Concurrency: 2,
+			OnEncodeError: func(doc int64, _ error) bool {
+				return doc == 1
+			},
+		})
+		done <- fillResult{stats: stats, err: err}
+	}()
+
+	<-failedWindowStarted
+	<-laterWindowFinished
+	close(releaseFailedWindow)
+	result := <-done
+	require.NoError(result.err)
+
+	assert.Equal(3, result.stats.Documents)
+	assert.Equal(1, result.stats.Skipped)
+	for doc := int64(1); doc <= 4; doc++ {
+		assert.True(store.embedded[doc][7], "doc %d should be stamped", doc)
+	}
+}
+
+func TestFillCrossDocumentBatchingDoesNotBlockCompletedSaves(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	base := newMemStore()
+	base.content[1] = "slow"
+	base.content[2] = "fast"
+	store := &observingSaveStore{memStore: base, saved: make(chan int64, 2)}
+
+	slowStarted := make(chan struct{})
+	fastFinished := make(chan struct{})
+	releaseSlow := make(chan struct{})
+	enc := func(_ context.Context, texts []string) ([][]float32, error) {
+		if texts[0] == "slow" {
+			close(slowStarted)
+			<-releaseSlow
+		} else {
+			close(fastFinished)
+		}
+		return [][]float32{{1}}, nil
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := vector.Fill(context.Background(), store, 7, enc, vector.FillOptions[int64]{
+			ScanBatch:   2,
+			Batch:       vector.BatchOptions{BatchSize: 1, Concurrency: 2},
+			Concurrency: 2,
+		})
+		done <- err
+	}()
+	<-slowStarted
+	<-fastFinished
+
+	savedBeforeRelease := false
+	select {
+	case doc := <-store.saved:
+		savedBeforeRelease = doc == 2
+	case <-time.After(5 * time.Second):
+	}
+	close(releaseSlow)
+	require.NoError(<-done)
+
+	assert.True(savedBeforeRelease,
+		"the completed second document should be saved while the first encoder is still running")
 }
 
 func TestFillConcurrencySkipHookStampsFailedDocument(t *testing.T) {

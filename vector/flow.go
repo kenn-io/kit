@@ -19,11 +19,12 @@ type FillOptions[K comparable] struct {
 	// BatchSize packs chunks across documents within each scan page. Values
 	// <= 0 preserve the per-document encode unit.
 	Batch BatchOptions
-	// Concurrency is the number of encode windows processed in parallel
-	// within each scan page. Values <= 0 use 1 (sequential).
+	// Concurrency bounds parallel fill work within each scan page. Values
+	// <= 0 use 1 (sequential).
 	// SaveVectors and OnEncodeError stay serialized on the calling goroutine
-	// regardless, so stores and hooks need no extra locking. It composes with
-	// Batch.Concurrency, which parallelizes encode calls within each window.
+	// regardless, so stores and hooks need no extra locking. With a positive
+	// BatchSize, it composes with Batch.Concurrency to bound concurrent encode
+	// calls by their product.
 	Concurrency int
 	// OnEncodeError, if non-nil, is consulted when encoding a document
 	// fails. Returning true skips the document: it is stamped for the
@@ -129,10 +130,6 @@ type fillBatchResult struct {
 	fatal     error
 }
 
-type fillWindowResult struct {
-	batches []fillBatchResult
-}
-
 // fillPage embeds one scan page. A positive BatchSize packs fixed-size chunk
 // batches across documents, then scatters vectors back before saving each
 // document independently. The legacy per-document path remains in use when
@@ -141,7 +138,7 @@ func fillPage[K, G comparable](
 	ctx context.Context, store Store[K, G], gen G, enc EncodeFunc,
 	o FillOptions[K], docs []Pending[K], stale map[K]struct{}, stats *FillStats,
 ) error {
-	if o.Batch.BatchSize <= 0 {
+	if o.Batch.BatchSize <= 0 || enc == nil {
 		return fillPageByDocument(ctx, store, gen, enc, o, docs, stale, stats)
 	}
 	return fillPageAcrossDocuments(ctx, store, gen, enc, o, docs, stale, stats)
@@ -168,98 +165,75 @@ func fillPageAcrossDocuments[K, G comparable](
 		}
 	}
 
-	nextSave := 0
-	if err := saveReadyDocuments(ctx, store, gen, o, documentStates, &nextSave, stale, stats); err != nil {
+	if len(refs) == 0 {
+		return saveReadyDocuments(ctx, store, gen, o, documentStates, true, stale, stats)
+	}
+
+	orderedSaves := o.Concurrency <= 1
+	if err := saveReadyDocuments(ctx, store, gen, o, documentStates, orderedSaves, stale, stats); err != nil {
 		return err
 	}
-	if len(refs) == 0 {
-		return nil
-	}
 
-	batchConcurrency := o.Batch.Concurrency
-	if batchConcurrency <= 0 {
-		batchConcurrency = 1
+	batchConcurrency := max(o.Batch.Concurrency, 1)
+	batches := splitFillRefs(refs, o.Batch.BatchSize)
+	encode := func(workCtx context.Context, batch []fillChunkRef) fillBatchResult {
+		return encodeFillBatch(workCtx, enc, batch)
 	}
-	windowSize := len(refs)
-	if o.Batch.BatchSize <= len(refs)/batchConcurrency {
-		windowSize = o.Batch.BatchSize * batchConcurrency
-	}
-	windowCount := 1 + (len(refs)-1)/windowSize
-	workers := min(max(o.Concurrency, 1), windowCount)
-	if workers <= 1 {
-		for start := 0; start < len(refs); start += windowSize {
-			end := min(start+windowSize, len(refs))
-			active := activeFillRefs(refs[start:end], documentStates)
-			if len(active) == 0 {
-				continue
-			}
-			result := encodeFillWindow(ctx, enc, active, o.Batch.BatchSize)
-			if err := applyFillWindow(ctx, store, gen, o, result, documentStates,
-				&nextSave, stale, stats); err != nil {
-				return err
-			}
-		}
-		if nextSave != len(documentStates) {
-			return fmt.Errorf("fill page: %d documents were not completed", len(documentStates)-nextSave)
-		}
-		return nil
-	}
-
-	encCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	jobs := make(chan []fillChunkRef)
-	results := make(chan fillWindowResult)
-	var wg sync.WaitGroup
-	for range workers {
-		wg.Go(func() {
-			for window := range jobs {
-				result := encodeFillWindow(encCtx, enc, window, o.Batch.BatchSize)
-				select {
-				case results <- result:
-				case <-encCtx.Done():
-					return
+	var err error
+	if orderedSaves {
+		// A sequential fill completes and saves one bounded window before
+		// starting another, so a save failure cannot launch later work.
+		for start := 0; start < len(batches); start += batchConcurrency {
+			window := batches[start:min(start+batchConcurrency, len(batches))]
+			active := make([][]fillChunkRef, 0, len(window))
+			for _, batch := range window {
+				batch = activeFillRefs(batch, documentStates)
+				if len(batch) > 0 {
+					active = append(active, batch)
 				}
 			}
-		})
-	}
-	go func() {
-		defer close(jobs)
-		for start := 0; start < len(refs); start += windowSize {
-			end := min(start+windowSize, len(refs))
-			select {
-			case jobs <- refs[start:end]:
-			case <-encCtx.Done():
-				return
+			err = runFillJobs(ctx, batchConcurrency, active, encode,
+				func(batch fillBatchResult) error {
+					return applyFillBatch(ctx, store, gen, o, batch, documentStates,
+						true, stale, stats)
+				})
+			if err != nil {
+				break
 			}
 		}
-	}()
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	var pageErr error
-	for result := range results {
-		if pageErr != nil {
-			continue
+	} else {
+		// Schedule individual batches so a completed document can be saved
+		// without waiting for an unrelated slow batch in the same window.
+		// Already-dispatched work may finish after another batch skips one of
+		// its documents; applyFillBatch discards those results without racing
+		// workers against the serialized document state.
+		workers := len(batches)
+		// Compute min(Concurrency*Batch.Concurrency, len(batches)) without
+		// overflowing the product.
+		if o.Concurrency <= len(batches)/batchConcurrency {
+			workers = o.Concurrency * batchConcurrency
 		}
-		if err := applyFillWindow(ctx, store, gen, o, result, documentStates,
-			&nextSave, stale, stats); err != nil {
-			pageErr = err
-			cancel()
-		}
+		err = runFillJobs(ctx, workers, batches, encode,
+			func(batch fillBatchResult) error {
+				return applyFillBatch(ctx, store, gen, o, batch, documentStates,
+					false, stale, stats)
+			})
 	}
-	if pageErr != nil {
-		return pageErr
-	}
-	if err := ctx.Err(); err != nil {
+	if err != nil {
 		return err
 	}
-	if nextSave != len(documentStates) {
-		return fmt.Errorf("fill page: %d documents were not completed", len(documentStates)-nextSave)
+	if incomplete := incompleteFillDocuments(documentStates); incomplete > 0 {
+		return fmt.Errorf("fill page: %d documents were not completed", incomplete)
 	}
 	return nil
+}
+
+func splitFillRefs(refs []fillChunkRef, size int) [][]fillChunkRef {
+	parts := make([][]fillChunkRef, 0, 1+(len(refs)-1)/size)
+	for start := 0; start < len(refs); start += size {
+		parts = append(parts, refs[start:min(start+size, len(refs))])
+	}
+	return parts
 }
 
 func activeFillRefs[K comparable](refs []fillChunkRef, states []fillDocumentState[K]) []fillChunkRef {
@@ -270,26 +244,6 @@ func activeFillRefs[K comparable](refs []fillChunkRef, states []fillDocumentStat
 		}
 	}
 	return active
-}
-
-func encodeFillWindow(ctx context.Context, enc EncodeFunc, refs []fillChunkRef, batchSize int) fillWindowResult {
-	batchCount := 1 + (len(refs)-1)/batchSize
-	result := fillWindowResult{batches: make([]fillBatchResult, batchCount)}
-	if batchCount == 1 {
-		result.batches[0] = encodeFillBatch(ctx, enc, refs)
-		return result
-	}
-
-	var wg sync.WaitGroup
-	for batch := range batchCount {
-		start := batch * batchSize
-		end := min(start+batchSize, len(refs))
-		wg.Go(func() {
-			result.batches[batch] = encodeFillBatch(ctx, enc, refs[start:end])
-		})
-	}
-	wg.Wait()
-	return result
 }
 
 func encodeFillBatch(ctx context.Context, enc EncodeFunc, refs []fillChunkRef) fillBatchResult {
@@ -359,62 +313,144 @@ func offsetInvalidVectorError(err error, chunkOffset int) error {
 	return fmt.Errorf("encode document chunks at %d: %w", chunkOffset, &translated)
 }
 
-func applyFillWindow[K, G comparable](
-	ctx context.Context, store Store[K, G], gen G, o FillOptions[K], result fillWindowResult,
-	states []fillDocumentState[K], nextSave *int, stale map[K]struct{}, stats *FillStats,
+func applyFillBatch[K, G comparable](
+	ctx context.Context, store Store[K, G], gen G, o FillOptions[K], batch fillBatchResult,
+	states []fillDocumentState[K], orderedSaves bool, stale map[K]struct{}, stats *FillStats,
 ) error {
-	for _, batch := range result.batches {
-		if batch.fatal != nil {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			for _, ref := range batch.refs {
-				if states[ref.doc].saved {
-					continue
-				}
-				return fmt.Errorf("encode batch beginning with document %v: %w",
-					states[ref.doc].encoded.doc.Doc, batch.fatal)
-			}
-			return batch.fatal
-		}
-
-		for doc, err := range batch.docErrors {
-			state := &states[doc]
-			if state.saved || state.failed {
-				continue
-			}
-			state.encoded.err = err
-			state.remaining = 0
-			state.failed = true
-		}
-		for i, ref := range batch.refs {
-			state := &states[ref.doc]
-			if state.saved || state.failed {
-				continue
-			}
-			state.encoded.vectors[ref.chunk] = batch.vectors[i]
-			state.remaining--
-		}
-		if err := saveReadyDocuments(ctx, store, gen, o, states, nextSave, stale, stats); err != nil {
+	if batch.fatal != nil {
+		if err := ctx.Err(); err != nil {
 			return err
 		}
+		for _, ref := range batch.refs {
+			if states[ref.doc].saved {
+				continue
+			}
+			return fmt.Errorf("encode batch beginning with document %v: %w",
+				states[ref.doc].encoded.doc.Doc, batch.fatal)
+		}
+		return batch.fatal
 	}
-	return nil
+
+	for doc, err := range batch.docErrors {
+		state := &states[doc]
+		if state.saved || state.failed {
+			continue
+		}
+		state.encoded.err = err
+		state.remaining = 0
+		state.failed = true
+	}
+	for i, ref := range batch.refs {
+		state := &states[ref.doc]
+		if state.saved || state.failed {
+			continue
+		}
+		state.encoded.vectors[ref.chunk] = batch.vectors[i]
+		state.remaining--
+	}
+	return saveReadyDocuments(ctx, store, gen, o, states, orderedSaves, stale, stats)
 }
 
 func saveReadyDocuments[K, G comparable](
 	ctx context.Context, store Store[K, G], gen G, o FillOptions[K],
-	states []fillDocumentState[K], nextSave *int, stale map[K]struct{}, stats *FillStats,
+	states []fillDocumentState[K], ordered bool, stale map[K]struct{}, stats *FillStats,
 ) error {
-	for *nextSave < len(states) && states[*nextSave].remaining == 0 {
-		state := &states[*nextSave]
+	for i := range states {
+		state := &states[i]
+		if state.saved {
+			continue
+		}
+		if state.remaining != 0 {
+			if ordered {
+				break
+			}
+			continue
+		}
 		if err := saveEncoded(ctx, store, gen, o, state.encoded, stale, stats); err != nil {
 			return err
 		}
 		state.saved = true
-		*nextSave = *nextSave + 1
 	}
 	return nil
+}
+
+func incompleteFillDocuments[K comparable](states []fillDocumentState[K]) int {
+	incomplete := 0
+	for _, state := range states {
+		if !state.saved {
+			incomplete++
+		}
+	}
+	return incomplete
+}
+
+func runFillJobs[J, R any](
+	ctx context.Context,
+	workers int,
+	jobs []J,
+	work func(context.Context, J) R,
+	collect func(R) error,
+) error {
+	workers = min(workers, len(jobs))
+	if workers <= 1 {
+		for _, job := range jobs {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := collect(work(ctx, job)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	workCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	jobCh := make(chan J)
+	results := make(chan R)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Go(func() {
+			for job := range jobCh {
+				result := work(workCtx, job)
+				select {
+				case results <- result:
+				case <-workCtx.Done():
+					return
+				}
+			}
+		})
+	}
+	go func() {
+		defer close(jobCh)
+		for _, job := range jobs {
+			select {
+			case jobCh <- job:
+			case <-workCtx.Done():
+				return
+			}
+		}
+	}()
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	var firstErr error
+	for result := range results {
+		if firstErr != nil {
+			continue
+		}
+		if err := collect(result); err != nil {
+			firstErr = err
+			cancel()
+		}
+	}
+	if firstErr != nil {
+		return firstErr
+	}
+	return ctx.Err()
 }
 
 // fillPageByDocument is the original per-document path used when BatchSize is
@@ -425,69 +461,15 @@ func fillPageByDocument[K, G comparable](
 	ctx context.Context, store Store[K, G], gen G, enc EncodeFunc,
 	o FillOptions[K], docs []Pending[K], stale map[K]struct{}, stats *FillStats,
 ) error {
-	workers := min(o.Concurrency, len(docs))
-	if workers <= 1 {
-		// Concurrency <= 1 promises strictly sequential behavior: encode,
-		// then save, then take up the next document. The worker pipeline
-		// below would keep one encode in flight while the caller saves — an
-		// extra encoder/API call the options said would not be made, issued
-		// even as a failing save is about to abort the fill.
-		for _, p := range docs {
+	return runFillJobs(ctx, o.Concurrency, docs,
+		func(workCtx context.Context, p Pending[K]) fillEncoded[K] {
 			chunks := Split(p.Content, o.Split)
-			vectors, err := EncodeBatched(ctx, enc, chunks, o.Batch)
-			r := fillEncoded[K]{doc: p, chunks: chunks, vectors: vectors, err: err}
-			if err := saveEncoded(ctx, store, gen, o, r, stale, stats); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-
-	encCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	jobs := make(chan Pending[K])
-	results := make(chan fillEncoded[K])
-	var wg sync.WaitGroup
-	for range workers {
-		wg.Go(func() {
-			for p := range jobs {
-				chunks := Split(p.Content, o.Split)
-				vectors, err := EncodeBatched(encCtx, enc, chunks, o.Batch)
-				select {
-				case results <- fillEncoded[K]{doc: p, chunks: chunks, vectors: vectors, err: err}:
-				case <-encCtx.Done():
-					return
-				}
-			}
+			vectors, err := EncodeBatched(workCtx, enc, chunks, o.Batch)
+			return fillEncoded[K]{doc: p, chunks: chunks, vectors: vectors, err: err}
+		},
+		func(result fillEncoded[K]) error {
+			return saveEncoded(ctx, store, gen, o, result, stale, stats)
 		})
-	}
-	go func() {
-		defer close(jobs)
-		for _, p := range docs {
-			select {
-			case jobs <- p:
-			case <-encCtx.Done():
-				return
-			}
-		}
-	}()
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	var pageErr error
-	for r := range results {
-		if pageErr != nil {
-			continue // draining after cancel
-		}
-		if err := saveEncoded(ctx, store, gen, o, r, stale, stats); err != nil {
-			pageErr = err
-			cancel()
-		}
-	}
-	return pageErr
 }
 
 // saveEncoded applies one document's encode outcome: it consults
