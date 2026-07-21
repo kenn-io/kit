@@ -33,6 +33,18 @@ type FillOptions[K comparable] struct {
 	// Returning false — or leaving OnEncodeError nil — aborts the fill
 	// with the error, which is the right default for transient failures.
 	OnEncodeError func(doc K, err error) bool
+	// ShouldIsolateBatchError reports whether an error from a shared,
+	// multi-document encode call might be caused by an individual input and
+	// is worth diagnosing at document-slice granularity.
+	//
+	// Fill does not call this function for single-document batches or for
+	// errors wrapping context.Canceled or context.DeadlineExceeded. Errors
+	// carrying exact batch-position attribution (*InvalidVectorError) also
+	// bypass this function and go directly to OnEncodeError. Returning true
+	// permits diagnosis only; OnEncodeError still owns the decision to
+	// skip-stamp an attributed document. Returning false, or leaving this nil,
+	// aborts Fill without document-level retries.
+	ShouldIsolateBatchError func(error) bool
 }
 
 // FillStats reports what a Fill run embedded.
@@ -108,6 +120,7 @@ type fillEncoded[K comparable] struct {
 	chunks  []Chunk
 	vectors []Vector
 	err     error
+	skip    bool
 }
 
 type fillDocumentState[K comparable] struct {
@@ -124,10 +137,9 @@ type fillChunkRef struct {
 }
 
 type fillBatchResult struct {
-	refs      []fillChunkRef
-	vectors   []Vector
-	docErrors map[int]error
-	fatal     error
+	refs    []fillChunkRef
+	vectors []Vector
+	err     error
 }
 
 // fillPage embeds one scan page. A positive BatchSize packs fixed-size chunk
@@ -194,7 +206,7 @@ func fillPageAcrossDocuments[K, G comparable](
 			}
 			err = runFillJobs(ctx, batchConcurrency, active, encode,
 				func(batch fillBatchResult) error {
-					return applyFillBatch(ctx, store, gen, o, batch, documentStates,
+					return applyFillBatch(ctx, store, gen, o, enc, batch, documentStates,
 						true, stale, stats)
 				})
 			if err != nil {
@@ -215,7 +227,7 @@ func fillPageAcrossDocuments[K, G comparable](
 		}
 		err = runFillJobs(ctx, workers, batches, encode,
 			func(batch fillBatchResult) error {
-				return applyFillBatch(ctx, store, gen, o, batch, documentStates,
+				return applyFillBatch(ctx, store, gen, o, enc, batch, documentStates,
 					false, stale, stats)
 			})
 	}
@@ -247,60 +259,12 @@ func activeFillRefs[K comparable](refs []fillChunkRef, states []fillDocumentStat
 }
 
 func encodeFillBatch(ctx context.Context, enc EncodeFunc, refs []fillChunkRef) fillBatchResult {
-	result := fillBatchResult{
-		refs:      refs,
-		vectors:   make([]Vector, len(refs)),
-		docErrors: make(map[int]error),
-	}
 	chunks := make([]Chunk, len(refs))
 	for i, ref := range refs {
 		chunks[i] = ref.value
 	}
-
 	vectors, err := EncodeBatched(ctx, enc, chunks, BatchOptions{})
-	if err == nil {
-		result.vectors = vectors
-		return result
-	}
-	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		result.fatal = err
-		return result
-	}
-
-	// A one-document batch already has exact error attribution. Retrying it
-	// would only duplicate the same request; translate typed chunk indexes
-	// back to their position within the document and return the failure.
-	if refs[0].doc == refs[len(refs)-1].doc {
-		result.docErrors[refs[0].doc] = offsetInvalidVectorError(err, refs[0].chunk)
-		return result
-	}
-
-	// An encoder error for a cross-document batch cannot identify which
-	// document was rejected. Retry each document's contiguous slice only on
-	// this error path, so OnEncodeError is still consulted per document and
-	// unaffected neighbors can be saved.
-	for start := 0; start < len(refs); {
-		end := start + 1
-		for end < len(refs) && refs[end].doc == refs[start].doc {
-			end++
-		}
-		segment := chunks[start:end]
-		segmentVectors, segmentErr := EncodeBatched(ctx, enc, segment, BatchOptions{})
-		if segmentErr != nil {
-			if ctx.Err() != nil || errors.Is(segmentErr, context.Canceled) || errors.Is(segmentErr, context.DeadlineExceeded) {
-				result.fatal = segmentErr
-				return result
-			}
-			result.docErrors[refs[start].doc] = offsetInvalidVectorError(segmentErr, refs[start].chunk)
-		} else {
-			copy(result.vectors[start:end], segmentVectors)
-		}
-		start = end
-	}
-	if len(result.docErrors) == 0 {
-		result.fatal = fmt.Errorf("cross-document batch failed but no document failed in isolation: %w", err)
-	}
-	return result
+	return fillBatchResult{refs: refs, vectors: vectors, err: err}
 }
 
 func offsetInvalidVectorError(err error, chunkOffset int) error {
@@ -313,42 +277,162 @@ func offsetInvalidVectorError(err error, chunkOffset int) error {
 	return fmt.Errorf("encode document chunks at %d: %w", chunkOffset, &translated)
 }
 
-func applyFillBatch[K, G comparable](
-	ctx context.Context, store Store[K, G], gen G, o FillOptions[K], batch fillBatchResult,
-	states []fillDocumentState[K], orderedSaves bool, stale map[K]struct{}, stats *FillStats,
-) error {
-	if batch.fatal != nil {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		for _, ref := range batch.refs {
-			if states[ref.doc].saved {
-				continue
-			}
-			return fmt.Errorf("encode batch beginning with document %v: %w",
-				states[ref.doc].encoded.doc.Doc, batch.fatal)
-		}
-		return batch.fatal
-	}
-
-	for doc, err := range batch.docErrors {
-		state := &states[doc]
-		if state.saved || state.failed {
-			continue
-		}
-		state.encoded.err = err
-		state.remaining = 0
-		state.failed = true
-	}
-	for i, ref := range batch.refs {
+func applyFillVectors[K comparable](refs []fillChunkRef, vectors []Vector, states []fillDocumentState[K]) {
+	for i, ref := range refs {
 		state := &states[ref.doc]
 		if state.saved || state.failed {
 			continue
 		}
-		state.encoded.vectors[ref.chunk] = batch.vectors[i]
+		state.encoded.vectors[ref.chunk] = vectors[i]
 		state.remaining--
 	}
-	return saveReadyDocuments(ctx, store, gen, o, states, orderedSaves, stale, stats)
+}
+
+func fillRefsContainFailedDocument[K comparable](refs []fillChunkRef, states []fillDocumentState[K]) bool {
+	for _, ref := range refs {
+		if states[ref.doc].failed {
+			return true
+		}
+	}
+	return false
+}
+
+func splitFillRefsByDocument(refs []fillChunkRef) [][]fillChunkRef {
+	var slices [][]fillChunkRef
+	for start := 0; start < len(refs); {
+		end := start + 1
+		for end < len(refs) && refs[end].doc == refs[start].doc {
+			end++
+		}
+		slices = append(slices, refs[start:end])
+		start = end
+	}
+	return slices
+}
+
+func decideFillDocumentError[K comparable](
+	ctx context.Context, o FillOptions[K], states []fillDocumentState[K], doc int, err error,
+) error {
+	state := &states[doc]
+	if state.saved || state.failed {
+		return nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("encode document %v: %w", state.encoded.doc.Doc, err)
+	}
+	if o.OnEncodeError == nil || !o.OnEncodeError(state.encoded.doc.Doc, err) {
+		return fmt.Errorf("encode document %v: %w", state.encoded.doc.Doc, err)
+	}
+	state.encoded.err = err
+	state.encoded.skip = true
+	state.remaining = 0
+	state.failed = true
+	return nil
+}
+
+func probeFillDocumentSlices[K, G comparable](
+	ctx context.Context, store Store[K, G], gen G, enc EncodeFunc, o FillOptions[K],
+	refs []fillChunkRef, states []fillDocumentState[K], orderedSaves bool,
+	stale map[K]struct{}, stats *FillStats,
+) (bool, error) {
+	failed := false
+	for _, documentSlice := range splitFillRefsByDocument(refs) {
+		active := activeFillRefs(documentSlice, states)
+		if len(active) == 0 {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return failed, err
+		}
+		probe := encodeFillBatch(ctx, enc, active)
+		if err := ctx.Err(); err != nil {
+			return failed, err
+		}
+		if probe.err != nil {
+			if errors.Is(probe.err, context.Canceled) || errors.Is(probe.err, context.DeadlineExceeded) {
+				return failed, fmt.Errorf("encode document %v: %w",
+					states[active[0].doc].encoded.doc.Doc, probe.err)
+			}
+			failed = true
+			err := offsetInvalidVectorError(probe.err, active[0].chunk)
+			if err := decideFillDocumentError(ctx, o, states, active[0].doc, err); err != nil {
+				return failed, err
+			}
+		} else {
+			applyFillVectors(active, probe.vectors, states)
+		}
+		if err := saveReadyDocuments(ctx, store, gen, o, states, orderedSaves, stale, stats); err != nil {
+			return failed, err
+		}
+	}
+	return failed, nil
+}
+
+func applyFillBatch[K, G comparable](
+	ctx context.Context, store Store[K, G], gen G, o FillOptions[K], enc EncodeFunc,
+	batch fillBatchResult, states []fillDocumentState[K], orderedSaves bool,
+	stale map[K]struct{}, stats *FillStats,
+) error {
+	if batch.err == nil {
+		applyFillVectors(batch.refs, batch.vectors, states)
+		return saveReadyDocuments(ctx, store, gen, o, states, orderedSaves, stale, stats)
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if errors.Is(batch.err, context.Canceled) || errors.Is(batch.err, context.DeadlineExceeded) {
+		return fillBatchContextError(batch.err, batch.refs, states)
+	}
+
+	if batch.refs[0].doc == batch.refs[len(batch.refs)-1].doc {
+		active := activeFillRefs(batch.refs, states)
+		if len(active) == 0 {
+			return nil
+		}
+		err := offsetInvalidVectorError(batch.err, active[0].chunk)
+		if err := decideFillDocumentError(ctx, o, states, active[0].doc, err); err != nil {
+			return err
+		}
+		return saveReadyDocuments(ctx, store, gen, o, states, orderedSaves, stale, stats)
+	}
+
+	explained := fillRefsContainFailedDocument(batch.refs, states)
+	active := activeFillRefs(batch.refs, states)
+	if len(active) == 0 {
+		return nil
+	}
+	var invalid *InvalidVectorError
+	if !errors.As(batch.err, &invalid) {
+		if o.ShouldIsolateBatchError == nil || !o.ShouldIsolateBatchError(batch.err) {
+			return fillBatchContextError(batch.err, active, states)
+		}
+	}
+	failed, err := probeFillDocumentSlices(ctx, store, gen, enc, o, active, states,
+		orderedSaves, stale, stats)
+	if err != nil {
+		return err
+	}
+	if !failed && !explained {
+		return fillBatchContextError(fmt.Errorf(
+			"cross-document batch failed but no document failed in isolation: %w", batch.err),
+			active, states)
+	}
+	return nil
+}
+
+func fillBatchContextError[K comparable](
+	err error, refs []fillChunkRef, states []fillDocumentState[K],
+) error {
+	for _, ref := range refs {
+		if !states[ref.doc].saved {
+			return fmt.Errorf("encode batch beginning with document %v: %w",
+				states[ref.doc].encoded.doc.Doc, err)
+		}
+	}
+	return err
 }
 
 func saveReadyDocuments[K, G comparable](
@@ -480,8 +564,8 @@ func saveEncoded[K, G comparable](
 	ctx context.Context, store Store[K, G], gen G, o FillOptions[K],
 	r fillEncoded[K], stale map[K]struct{}, stats *FillStats,
 ) error {
-	skipped := false
-	if r.err != nil {
+	skipped := r.skip
+	if r.err != nil && !skipped {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}

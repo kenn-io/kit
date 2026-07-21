@@ -298,9 +298,10 @@ func TestFillCrossDocumentBatchingIsolatesPoisonDocument(t *testing.T) {
 	}
 	var skipped []int64
 	stats, err := vector.Fill(ctx, store, 7, enc, vector.FillOptions[int64]{
-		ScanBatch:   3,
-		Batch:       vector.BatchOptions{BatchSize: 3, Concurrency: 1},
-		Concurrency: 1,
+		ScanBatch:               3,
+		Batch:                   vector.BatchOptions{BatchSize: 3, Concurrency: 1},
+		Concurrency:             1,
+		ShouldIsolateBatchError: func(error) bool { return true },
 		OnEncodeError: func(doc int64, _ error) bool {
 			skipped = append(skipped, doc)
 			return true
@@ -453,9 +454,10 @@ func TestFillCrossDocumentBatchingEncodeErrorAbortsAtFailedDocument(t *testing.T
 	store.content[3] = "fine two"
 	var consulted []int64
 	_, err := vector.Fill(ctx, store, 7, poisonEncoder(), vector.FillOptions[int64]{
-		ScanBatch:   3,
-		Batch:       vector.BatchOptions{BatchSize: 3, Concurrency: 1},
-		Concurrency: 1,
+		ScanBatch:               3,
+		Batch:                   vector.BatchOptions{BatchSize: 3, Concurrency: 1},
+		Concurrency:             1,
+		ShouldIsolateBatchError: func(error) bool { return true },
 		OnEncodeError: func(doc int64, _ error) bool {
 			consulted = append(consulted, doc)
 			return false
@@ -488,9 +490,10 @@ func TestFillCrossDocumentBatchingAbortsUnattributedBatchError(t *testing.T) {
 	}
 	called := false
 	_, err := vector.Fill(ctx, store, 7, enc, vector.FillOptions[int64]{
-		ScanBatch:   3,
-		Batch:       vector.BatchOptions{BatchSize: 3, Concurrency: 1},
-		Concurrency: 1,
+		ScanBatch:               3,
+		Batch:                   vector.BatchOptions{BatchSize: 3, Concurrency: 1},
+		Concurrency:             1,
+		ShouldIsolateBatchError: func(error) bool { return true },
 		OnEncodeError: func(int64, error) bool {
 			called = true
 			return true
@@ -501,7 +504,8 @@ func TestFillCrossDocumentBatchingAbortsUnattributedBatchError(t *testing.T) {
 	assert.Equal([]int{3, 1, 1, 1}, batchSizes)
 	assert.False(called, "a batch-shape failure is not attributed to an arbitrary document")
 	for doc := int64(1); doc <= 3; doc++ {
-		assert.False(store.embedded[doc][7], "doc %d remains pending", doc)
+		assert.True(store.embedded[doc][7], "doc %d is saved after its successful probe", doc)
+		assert.NotEmpty(store.vectors[7][doc], "doc %d keeps its recovered vectors", doc)
 	}
 }
 
@@ -889,9 +893,10 @@ func TestFillCrossDocumentBatchingConcurrentFailureKeepsAttribution(t *testing.T
 	done := make(chan fillResult, 1)
 	go func() {
 		stats, err := vector.Fill(context.Background(), store, 7, enc, vector.FillOptions[int64]{
-			ScanBatch:   4,
-			Batch:       vector.BatchOptions{BatchSize: 2, Concurrency: 1},
-			Concurrency: 2,
+			ScanBatch:               4,
+			Batch:                   vector.BatchOptions{BatchSize: 2, Concurrency: 1},
+			Concurrency:             2,
+			ShouldIsolateBatchError: func(error) bool { return true },
 			OnEncodeError: func(doc int64, _ error) bool {
 				return doc == 1
 			},
