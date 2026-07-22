@@ -176,7 +176,16 @@ func (g *ChangeRequestGit) validateProjectRemote(
 			"project Git remote contains credentials or command syntax", nil)
 	}
 	remoteURL, single := singleRemoteURL(string(output))
-	if !single || !remoteMatchesRepository(remoteURL, g.project) {
+	if !single {
+		return changeRequestError(ChangeRequestUnsafeConfiguration,
+			fmt.Sprintf("project Git remote has an unexpected effective %s destination", label), nil)
+	}
+	canonicalRemoteURL, _, err := canonicalCloneURL(g.root, remoteURL)
+	if err != nil {
+		return changeRequestError(ChangeRequestUnsafeConfiguration,
+			"failed to resolve the project Git remote", err)
+	}
+	if !remoteMatchesRepository(canonicalRemoteURL, g.project) {
 		return changeRequestError(ChangeRequestUnsafeConfiguration,
 			fmt.Sprintf("project Git remote has an unexpected effective %s destination", label), nil)
 	}
@@ -654,9 +663,19 @@ func (g *ChangeRequestGit) validateEffectiveRemote(
 			return changeRequestError(ChangeRequestAuthentication,
 				"change-request import requires credential-free Git remote URLs; use a credential helper or SSH agent", nil)
 		}
-		matches := singleRemoteMatchesRepository(string(output), repository)
+		effectiveURL, single := singleRemoteURL(string(output))
+		if !single {
+			return changeRequestError(ChangeRequestUnsafeConfiguration,
+				fmt.Sprintf("change-request Git remote has an unsafe effective %s destination", test.label), nil)
+		}
+		canonicalEffectiveURL, _, err := canonicalCloneURL(g.root, effectiveURL)
+		if err != nil {
+			return changeRequestError(ChangeRequestUnsafeConfiguration,
+				"failed to resolve the effective change-request Git remote", err)
+		}
+		matches := remoteMatchesRepository(canonicalEffectiveURL, repository)
 		if hasExpectedURL {
-			matches = matches && singleRemoteURLEquals(string(output), expectedURL)
+			matches = matches && remoteURLsEqual(canonicalEffectiveURL, expectedURL)
 		}
 		if !matches {
 			return changeRequestError(ChangeRequestUnsafeConfiguration,

@@ -619,6 +619,39 @@ func TestCreateWorktreeResultRollbackPreservesBranchWhenPathDisappears(t *testin
 	assert.True(branchExistsInRepo(t, repo, result.Branch))
 }
 
+func TestCreateWorktreeResultRollbackReportsBranchWhenFinalInspectionFails(t *testing.T) {
+	assert := assert.New(t)
+	require := Require.New(t)
+	repo := initLifecycleRepo(t)
+	inspectionFailure := errors.New("final branch inspection failed")
+	inspectionCount := 0
+	result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Branch:      "review/final-inspection-failure",
+		Path:        filepath.Join(t.TempDir(), "inspection-failure"),
+		BaseRef:     "HEAD",
+		RunGit: func(
+			ctx context.Context, runner gitcmd.Runner, dir string, args ...string,
+		) ([]byte, error) {
+			if len(args) > 0 && args[0] == "for-each-ref" {
+				inspectionCount++
+				if inspectionCount == 2 {
+					return nil, inspectionFailure
+				}
+			}
+			stdout, stderr, runErr := runner.Run(ctx, dir, nil, args...)
+			return append(stdout, stderr...), runErr
+		},
+	})
+	require.NoError(err)
+
+	remaining, err := result.Rollback(t.Context())
+
+	require.ErrorIs(err, inspectionFailure)
+	require.ErrorIs(err, ErrWorktreeCleanupIncomplete)
+	assert.Equal(RollbackResult{Branch: result.Branch}, remaining)
+}
+
 func TestCreateWorktreeResultRollbackDisablesRepositoryHooks(t *testing.T) {
 	assert := assert.New(t)
 	require := Require.New(t)

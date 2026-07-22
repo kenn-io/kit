@@ -422,6 +422,7 @@ func (r CreateWorktreeResult) rollbackOwned(
 		}
 		_, stillExists, err := lifecycleRefOID(ctx, r.projectRoot, r.Branch)
 		if err != nil {
+			remaining.Branch = r.Branch
 			errs = append(errs, fmt.Errorf("inspect created branch after rollback: %w", err))
 		} else if stillExists {
 			remaining.Branch = r.Branch

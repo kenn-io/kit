@@ -96,6 +96,34 @@ func TestCreateWorktreeFromMergeRequestSameRepo(t *testing.T) {
 	assert.Equal("upstream", worktreeConfig(t, dest, "push.default"))
 }
 
+func TestCreateWorktreeFromMergeRequestAcceptsRelativeProjectRemote(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	origin, clone := initOriginAndClone(t)
+	relativeOrigin, err := filepath.Rel(clone, origin)
+	require.NoError(err)
+	lifecycleGit(t, clone, "remote", "set-url", "origin", relativeOrigin)
+	lifecycleGit(t, origin, "checkout", "-q", "-b", "relative-origin")
+	lifecycleGit(t, origin, "commit", "--allow-empty", "-m", "relative origin")
+	headSHA := lifecycleGit(t, origin, "rev-parse", "relative-origin")
+	lifecycleGit(t, origin, "checkout", "-q", "main")
+
+	result, err := CreateWorktreeFromMergeRequest(t.Context(), MergeRequestWorktreeOptions{
+		ProjectRoot:         clone,
+		Branch:              "pr-relative-origin",
+		Path:                filepath.Join(t.TempDir(), "worktree"),
+		Number:              22,
+		HeadBranch:          "relative-origin",
+		HeadRepoCloneURL:    relativeOrigin,
+		ProjectRepoIdentity: relativeOrigin,
+	})
+
+	require.NoError(err)
+	t.Cleanup(func() { _, _ = result.Rollback(context.Background()) })
+	assert.Equal(headSHA, lifecycleGit(t, result.Path, "rev-parse", "HEAD"))
+	assert.Equal("origin", worktreeConfig(t, result.Path, "branch.pr-relative-origin.remote"))
+}
+
 func TestCreateWorktreeFromMergeRequestSameLocalRepoAlternateSpellings(t *testing.T) {
 	for _, test := range []struct {
 		name    string
