@@ -3,6 +3,7 @@ package managedworktree
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -620,6 +621,7 @@ type lifecycleHookScript struct {
 	requested string
 	path      string
 	info      os.FileInfo
+	digest    [sha256.Size]byte
 }
 
 // resolveHookScript resolves a caller-supplied hook script path against the
@@ -650,14 +652,13 @@ func resolveHookScript(projectRoot, raw string) (lifecycleHookScript, error) {
 	if !pathWithinRoot(canonicalRoot, resolved) {
 		return lifecycleHookScript{}, fmt.Errorf("%w: %q", ErrHookOutsideProject, raw)
 	}
-	info, err := os.Stat(resolved)
+	info, digest, err := snapshotLifecycleHook(resolved)
 	if err != nil {
 		return lifecycleHookScript{}, fmt.Errorf("inspect lifecycle hook script: %w", err)
 	}
-	if !info.Mode().IsRegular() {
-		return lifecycleHookScript{}, fmt.Errorf("lifecycle hook script is not a regular file: %q", raw)
-	}
-	return lifecycleHookScript{requested: requested, path: resolved, info: info}, nil
+	return lifecycleHookScript{
+		requested: requested, path: resolved, info: info, digest: digest,
+	}, nil
 }
 
 func (h lifecycleHookScript) revalidate(projectRoot string) error {
@@ -672,14 +673,36 @@ func (h lifecycleHookScript) revalidate(projectRoot string) error {
 	if resolved != h.path || !pathWithinRoot(canonicalRoot, resolved) {
 		return errors.New("lifecycle hook script target changed before execution")
 	}
-	info, err := os.Stat(resolved)
+	info, digest, err := snapshotLifecycleHook(resolved)
 	if err != nil {
 		return fmt.Errorf("revalidate lifecycle hook script: %w", err)
 	}
-	if !info.Mode().IsRegular() || !os.SameFile(h.info, info) {
+	if !os.SameFile(h.info, info) || info.Mode() != h.info.Mode() || digest != h.digest {
 		return errors.New("lifecycle hook script identity changed before execution")
 	}
 	return nil
+}
+
+func snapshotLifecycleHook(path string) (os.FileInfo, [sha256.Size]byte, error) {
+	var digest [sha256.Size]byte
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, digest, err
+	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, digest, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, digest, fmt.Errorf("%s is not a regular file", path)
+	}
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return nil, digest, err
+	}
+	copy(digest[:], hash.Sum(nil))
+	return info, digest, nil
 }
 
 func pathWithinRoot(root, path string) bool {

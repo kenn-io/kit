@@ -137,7 +137,7 @@ func TestCreateWorktreeOnDiskRevalidatesHookIdentityBeforeExecution(t *testing.T
 		},
 	})
 
-	require.Error(err)
+	require.ErrorContains(err, "identity changed")
 	assert.NoFileExists(marker)
 }
 
