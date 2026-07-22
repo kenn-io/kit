@@ -61,7 +61,7 @@ func writeHookScript(t *testing.T, dir, outFile string, exitCode int) string {
 	shellOutFile := strings.ReplaceAll(filepath.ToSlash(outFile), "'", "'\\''")
 	body := "#!/bin/sh\n" +
 		"{\n" +
-		"  pwd\n" +
+		"  if pwd -W >/dev/null 2>&1; then pwd -W; else pwd; fi\n" +
 		"  echo \"name=$KIT_WORKTREE_NAME\"\n" +
 		"  echo \"path=$KIT_WORKTREE_PATH\"\n" +
 		"  echo \"root=$KIT_PROJECT_ROOT\"\n" +
