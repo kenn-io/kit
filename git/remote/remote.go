@@ -194,6 +194,10 @@ func NormalizeHost(host string) string {
 // accepted; query strings and fragments fail closed because they are common
 // credential carriers and are not part of repository identity.
 func UnsafeForAutomation(remoteURL string) bool {
+	remoteURL = strings.TrimSpace(remoteURL)
+	if strings.HasPrefix(remoteURL, `\\`) || strings.HasPrefix(remoteURL, "//") {
+		return true
+	}
 	if strings.ContainsAny(remoteURL, "?#") || isRemoteHelperURL(remoteURL) {
 		return true
 	}
@@ -206,6 +210,11 @@ func UnsafeForAutomation(remoteURL string) bool {
 		switch scheme {
 		case "file", "git+ssh", "https", "ssh", "ssh+git":
 		default:
+			return true
+		}
+		if scheme == "file" &&
+			(parsed.Host != "" && !strings.EqualFold(parsed.Host, "localhost") ||
+				strings.HasPrefix(parsed.Path, "//") || strings.HasPrefix(parsed.Path, `\\`)) {
 			return true
 		}
 		if parsed.User != nil {

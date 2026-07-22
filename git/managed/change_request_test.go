@@ -360,10 +360,22 @@ func TestChangeRequestGitEnsureRemoteCanonicalizesRelativeLocalPath(t *testing.T
 	relative, err := filepath.Rel(repo, target)
 	require.NoError(t, err)
 
-	remote, err := backend.EnsureRemote(t.Context(), RemoteRepository{CloneURL: relative})
+	repository := RemoteRepository{CloneURL: relative}
+	remote, err := backend.EnsureRemote(t.Context(), repository)
 
 	require.NoError(t, err)
 	assert.Equal(t, target, lifecycleGit(t, repo, "remote", "get-url", remote))
+	created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Branch:      "relative-local-push",
+		Path:        filepath.Join(t.TempDir(), "worktree"),
+		BaseRef:     "HEAD",
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _, _ = created.Rollback(context.Background()) })
+	require.NoError(t, backend.ConfigurePush(
+		t.Context(), created, remote, repository, "feature",
+	))
 }
 
 func TestChangeRequestGitExpectedURLDoesNotReplaceIdentityValidation(t *testing.T) {

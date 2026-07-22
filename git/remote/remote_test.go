@@ -74,6 +74,11 @@ func TestUnsafeForAutomationRejectsCredentialAndCommandSurfaces(t *testing.T) {
 		{remoteURL: "git+ssh://git@github.com/acme/widget.git"},
 		{remoteURL: "ssh://git@[2001:db8::1]/acme/widget.git"},
 		{remoteURL: "/tmp/widget.git"},
+		{remoteURL: "file:///tmp/widget.git"},
+		{remoteURL: "file://localhost/tmp/widget.git"},
+		{remoteURL: "file://attacker/share/widget.git", want: true},
+		{remoteURL: `\\attacker\share\widget.git`, want: true},
+		{remoteURL: "//attacker/share/widget.git", want: true},
 	}
 
 	for _, test := range tests {

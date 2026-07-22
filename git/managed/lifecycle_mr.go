@@ -213,12 +213,16 @@ func prepareMergeRequestRemote(
 		mergeRequestRepositoriesEqual(cloneURL, opts.ProjectRepoIdentity)
 	if sameRepo && hasHeadBranch {
 		destination := "refs/remotes/origin/" + headBranch
+		trackingCloneURL := cloneURL
+		if repositoryIdentity(opts.ProjectRepoIdentity).Host == "" {
+			trackingCloneURL = opts.ProjectRepoIdentity
+		}
 		return mergeRequestRemoteTarget{
 			checkoutRemote: "origin", checkoutSourceRef: "refs/heads/" + headBranch,
 			checkoutDestinationRef: destination,
 			trackingRemote:         "origin",
 			trackingRepository: RemoteRepository{
-				Identity: repositoryIdentity(opts.ProjectRepoIdentity), CloneURL: cloneURL,
+				Identity: repositoryIdentity(opts.ProjectRepoIdentity), CloneURL: trackingCloneURL,
 			},
 			trackingMergeRef: "refs/heads/" + headBranch,
 		}, nil

@@ -297,6 +297,10 @@ func (g *ChangeRequestGit) EnsureRemote(ctx context.Context, repository RemoteRe
 }
 
 func (g *ChangeRequestGit) ensureRemote(ctx context.Context, repository RemoteRepository) (string, error) {
+	if gitremote.UnsafeForAutomation(strings.TrimSpace(repository.CloneURL)) {
+		return "", changeRequestError(ChangeRequestAuthentication,
+			"change-request head repository URL contains credentials or command syntax", nil)
+	}
 	output, err := g.runSafe(ctx, g.root, "remote")
 	if err != nil {
 		return "", changeRequestError(ChangeRequestUnsafeConfiguration, "failed to list Git remotes", err)
@@ -618,6 +622,16 @@ func (g *ChangeRequestGit) validatePushRouting(
 func (g *ChangeRequestGit) validateEffectiveRemote(
 	ctx context.Context, worktreePath, remote string, repository RemoteRepository,
 ) error {
+	if gitremote.UnsafeForAutomation(strings.TrimSpace(repository.CloneURL)) {
+		return changeRequestError(ChangeRequestAuthentication,
+			"change-request head repository URL contains credentials or command syntax", nil)
+	}
+	canonicalURL, _, err := canonicalCloneURL(g.root, repository.CloneURL)
+	if err != nil {
+		return changeRequestError(ChangeRequestUnsafeConfiguration,
+			"failed to resolve the change-request clone URL", err)
+	}
+	repository.CloneURL = canonicalURL
 	expectedURL, hasExpectedURL := g.expectedRemoteURL(remote)
 	if !hasExpectedURL && strings.TrimSpace(repository.CloneURL) != "" &&
 		gitremote.RemoteHost(repository.CloneURL) == "" {

@@ -2,6 +2,7 @@ package managedworktree
 
 import (
 	"context"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -93,6 +94,53 @@ func TestCreateWorktreeFromMergeRequestSameRepo(t *testing.T) {
 	assert.Equal("refs/heads/feature-x",
 		worktreeConfig(t, dest, "branch.pr-42.merge"))
 	assert.Equal("upstream", worktreeConfig(t, dest, "push.default"))
+}
+
+func TestCreateWorktreeFromMergeRequestSameLocalRepoAlternateSpellings(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		headURL func(t *testing.T, origin string) string
+	}{
+		{
+			name: "symlink",
+			headURL: func(t *testing.T, origin string) string {
+				alias := filepath.Join(t.TempDir(), "origin-alias")
+				if err := os.Symlink(origin, alias); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+				return alias
+			},
+		},
+		{
+			name: "file URL",
+			headURL: func(_ *testing.T, origin string) string {
+				return (&url.URL{Scheme: "file", Path: filepath.ToSlash(origin)}).String()
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			origin, clone := initOriginAndClone(t)
+			lifecycleGit(t, origin, "checkout", "-q", "-b", "alternate-spelling")
+			lifecycleGit(t, origin, "commit", "--allow-empty", "-m", "alternate spelling")
+			headSHA := lifecycleGit(t, origin, "rev-parse", "HEAD")
+			lifecycleGit(t, origin, "checkout", "-q", "main")
+
+			result, err := CreateWorktreeFromMergeRequest(t.Context(), MergeRequestWorktreeOptions{
+				ProjectRoot:         clone,
+				Branch:              "pr-alternate",
+				Path:                filepath.Join(t.TempDir(), "worktree"),
+				Number:              19,
+				HeadBranch:          "alternate-spelling",
+				HeadRepoCloneURL:    test.headURL(t, origin),
+				ProjectRepoIdentity: origin,
+			})
+
+			Require.NoError(t, err)
+			t.Cleanup(func() { _, _ = result.Rollback(context.Background()) })
+			assert.Equal(t, headSHA, lifecycleGit(t, result.Path, "rev-parse", "HEAD"))
+			assert.Equal(t, "origin", worktreeConfig(t, result.Path, "branch.pr-alternate.remote"))
+		})
+	}
 }
 
 func TestPrepareMergeRequestRemoteKeepsCaseDistinctLocalRepositoriesSeparate(t *testing.T) {
