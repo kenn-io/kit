@@ -144,6 +144,13 @@ func gitCommand(ctx context.Context, hideConsoleWindow bool, args ...string) *ex
 // console window from being allocated for the child process.
 func PrepareProcessTreeCancellation(cmd *exec.Cmd, hideConsoleWindow bool) {
 	prepareGitCommand(cmd, hideConsoleWindow)
+	if cmd.WaitDelay == 0 {
+		// Bound Wait when a descendant escapes cancellation but retains a
+		// captured-output pipe. Platform cancellation still attempts to kill
+		// the complete tree; this prevents a broken tree walk from hanging the
+		// caller indefinitely.
+		cmd.WaitDelay = time.Second
+	}
 }
 
 type basicAuth struct {
