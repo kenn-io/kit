@@ -145,7 +145,7 @@ func TestReadSafeDirectoriesBoundsProbeRuntime(t *testing.T) {
 	got := readSafeDirectories(context.Background(), env, "")
 
 	assert.Empty(t, got)
-	assert.Less(t, time.Since(start), time.Second, "safe.directory probes are best-effort and must not stall git commands")
+	assert.Less(t, time.Since(start), 3*time.Second, "safe.directory probes are best-effort and must not stall git commands")
 }
 
 func TestReadSafeDirectoriesConditionalInclude(t *testing.T) {

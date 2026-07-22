@@ -53,6 +53,17 @@ func branchExistsInRepo(t *testing.T, repo, branch string) bool {
 	return cmd.Run() == nil
 }
 
+func canonicalLifecycleTestPath(t *testing.T, path string) string {
+	t.Helper()
+	clean := filepath.Clean(path)
+	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
+		return resolved
+	}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(clean))
+	Require.NoError(t, err)
+	return filepath.Join(parent, filepath.Base(clean))
+}
+
 // writeHookScript writes an executable script that records its working
 // directory and lifecycle environment to outFile, exiting with exitCode.
 func writeHookScript(t *testing.T, dir, outFile string, exitCode int) string {
@@ -335,9 +346,7 @@ func TestCreateWorktreeOnDiskRunsSetupHook(t *testing.T) {
 	require.Len(lines, 5)
 	// pwd resolves symlinks (macOS /var -> /private/var), so compare
 	// canonical forms.
-	canonicalDest, err := filepath.EvalSymlinks(dest)
-	require.NoError(err)
-	assert.Equal(canonicalDest, lines[0],
+	assert.Equal(canonicalLifecycleTestPath(t, dest), canonicalLifecycleTestPath(t, lines[0]),
 		"hook runs in the worktree directory")
 	assert.Equal("name=Feature Work", lines[1])
 	assert.Equal("path="+dest, lines[2])
@@ -518,15 +527,7 @@ func TestRemoveWorktreeFromDiskRunsTeardownHookFirst(t *testing.T) {
 	require.NoError(err)
 	lines := strings.Split(strings.TrimSpace(string(recorded)), "\n")
 	require.Len(lines, 5)
-	canonicalDest, err := filepath.EvalSymlinks(dest)
-	// The worktree is gone by the time we compare; EvalSymlinks on a
-	// removed path fails, so canonicalize the parent instead.
-	if err != nil {
-		parent, evalErr := filepath.EvalSymlinks(filepath.Dir(dest))
-		require.NoError(evalErr)
-		canonicalDest = filepath.Join(parent, filepath.Base(dest))
-	}
-	assert.Equal(canonicalDest, lines[0],
+	assert.Equal(canonicalLifecycleTestPath(t, dest), canonicalLifecycleTestPath(t, lines[0]),
 		"teardown runs in the worktree before it is removed")
 	assert.Equal("name=Feature Work", lines[1])
 	assert.Equal("branch=feature", lines[4])
