@@ -23,6 +23,9 @@ not about one product's workflow.
   parsing in callers or sibling packages.
 - Do not assume GitHub-only identity. Keep host, owner, and repository name
   handling explicit.
+- `git/managed` is the shared named-worktree lifecycle. Extend that package
+  instead of creating app-local worktree creation, merge-request import,
+  tracking, hook, or rollback implementations.
 
 ## Tests
 
