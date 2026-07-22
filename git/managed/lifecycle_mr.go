@@ -69,6 +69,21 @@ type mergeRequestRemoteTarget struct {
 func CreateWorktreeFromMergeRequest(
 	ctx context.Context, opts MergeRequestWorktreeOptions,
 ) (CreateWorktreeResult, error) {
+	root, err := absRequired(opts.ProjectRoot, "project root")
+	if err != nil {
+		return CreateWorktreeResult{}, err
+	}
+	ctx, unlock, err := acquireRepositoryMutationLock(ctx, root)
+	if err != nil {
+		return CreateWorktreeResult{}, err
+	}
+	result, createErr := createWorktreeFromMergeRequest(ctx, opts)
+	return result, errors.Join(createErr, unlock())
+}
+
+func createWorktreeFromMergeRequest(
+	ctx context.Context, opts MergeRequestWorktreeOptions,
+) (CreateWorktreeResult, error) {
 	ctx = withLifecycleExecution(ctx, opts.Runner, opts.RunGit, opts.RunHook)
 	root, branch, err := requireRootAndBranch(
 		opts.ProjectRoot, opts.Branch,

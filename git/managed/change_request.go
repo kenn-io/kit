@@ -284,6 +284,15 @@ func (g *ChangeRequestGit) effectiveConfigRecords(ctx context.Context, worktreeP
 // EnsureRemote returns a single-destination, credential-free remote for the
 // source repository, adding a deterministic remote when no safe match exists.
 func (g *ChangeRequestGit) EnsureRemote(ctx context.Context, repository RemoteRepository) (string, error) {
+	ctx, unlock, err := acquireRepositoryMutationLock(ctx, g.root)
+	if err != nil {
+		return "", changeRequestError(ChangeRequestUnsafeConfiguration, "failed to lock the Git repository", err)
+	}
+	remote, ensureErr := g.ensureRemote(ctx, repository)
+	return remote, errors.Join(ensureErr, unlock())
+}
+
+func (g *ChangeRequestGit) ensureRemote(ctx context.Context, repository RemoteRepository) (string, error) {
 	output, err := g.runSafe(ctx, g.root, "remote")
 	if err != nil {
 		return "", changeRequestError(ChangeRequestUnsafeConfiguration, "failed to list Git remotes", err)
@@ -374,6 +383,15 @@ func (g *ChangeRequestGit) EnsureRemote(ctx context.Context, repository RemoteRe
 // Fetch imports sourceRef into destinationRef with hooks and prompts disabled
 // and returns the resolved commit OID.
 func (g *ChangeRequestGit) Fetch(ctx context.Context, remote, sourceRef, destinationRef string) (string, error) {
+	ctx, unlock, err := acquireRepositoryMutationLock(ctx, g.root)
+	if err != nil {
+		return "", changeRequestError(ChangeRequestUnsafeConfiguration, "failed to lock the Git repository", err)
+	}
+	oid, fetchErr := g.fetch(ctx, remote, sourceRef, destinationRef)
+	return oid, errors.Join(fetchErr, unlock())
+}
+
+func (g *ChangeRequestGit) fetch(ctx context.Context, remote, sourceRef, destinationRef string) (string, error) {
 	refspec := "+" + sourceRef + ":" + destinationRef
 	if _, err := g.runSafe(ctx, g.root, "fetch", "--no-tags", remote, refspec); err != nil {
 		message := strings.ToLower(err.Error())
@@ -424,6 +442,20 @@ func (g *ChangeRequestGit) ConfigurePush(
 	repository RemoteRepository,
 	sourceBranch string,
 ) error {
+	ctx, unlock, err := acquireRepositoryMutationLock(ctx, g.root)
+	if err != nil {
+		return changeRequestError(ChangeRequestUnsafeConfiguration, "failed to lock the Git repository", err)
+	}
+	return errors.Join(g.configurePush(ctx, created, remote, repository, sourceBranch), unlock())
+}
+
+func (g *ChangeRequestGit) configurePush(
+	ctx context.Context,
+	created CreateWorktreeResult,
+	remote string,
+	repository RemoteRepository,
+	sourceBranch string,
+) error {
 	if err := g.validateEffectiveRemote(ctx, created.Path, remote, repository); err != nil {
 		return err
 	}
@@ -454,8 +486,12 @@ func (g *ChangeRequestGit) ConfigurePush(
 func (g *ChangeRequestGit) ConfigureWorktreeIsolation(
 	ctx context.Context, created CreateWorktreeResult,
 ) error {
-	_, err := g.configureWorktreeIsolation(ctx, created)
-	return err
+	ctx, unlock, err := acquireRepositoryMutationLock(ctx, g.root)
+	if err != nil {
+		return changeRequestError(ChangeRequestUnsafeConfiguration, "failed to lock the Git repository", err)
+	}
+	_, configureErr := g.configureWorktreeIsolation(ctx, created)
+	return errors.Join(configureErr, unlock())
 }
 
 func (g *ChangeRequestGit) configureWorktreeIsolation(
@@ -756,6 +792,10 @@ func configHasUnsafeHTTPConfiguration(output string) bool {
 	for record := range strings.SplitSeq(output, "\x00") {
 		key, value, _ := strings.Cut(record, "\n")
 		key = strings.ToLower(strings.TrimSpace(key))
+		if strings.HasPrefix(key, "remote.") &&
+			(strings.HasSuffix(key, ".proxy") || strings.HasSuffix(key, ".proxyauthmethod")) {
+			return true
+		}
 		if !strings.HasPrefix(key, "http.") {
 			continue
 		}

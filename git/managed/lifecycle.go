@@ -172,7 +172,12 @@ func (r CreateWorktreeResult) Rollback(ctx context.Context) (RollbackResult, err
 		)
 	}
 	ctx = withLifecycleExecution(ctx, r.runner, r.runGit, r.runHook)
-	return r.rollbackOwned(ctx, true)
+	ctx, unlock, err := acquireRepositoryMutationLock(ctx, r.projectRoot)
+	if err != nil {
+		return RollbackResult{Path: r.Path, Branch: r.Branch}, err
+	}
+	remaining, rollbackErr := r.rollbackOwned(ctx, true)
+	return remaining, errors.Join(rollbackErr, unlock())
 }
 
 // CreateWorktreeOnDisk performs the git side of worktree creation: it
@@ -182,6 +187,21 @@ func (r CreateWorktreeResult) Rollback(ctx context.Context) (RollbackResult, err
 // call created — are rolled back so a retry does not trip
 // ErrWorktreeDestinationExists.
 func CreateWorktreeOnDisk(
+	ctx context.Context, opts CreateWorktreeOptions,
+) (CreateWorktreeResult, error) {
+	root, err := absRequired(opts.ProjectRoot, "project root")
+	if err != nil {
+		return CreateWorktreeResult{}, err
+	}
+	ctx, unlock, err := acquireRepositoryMutationLock(ctx, root)
+	if err != nil {
+		return CreateWorktreeResult{}, err
+	}
+	result, createErr := createWorktreeOnDisk(ctx, opts)
+	return result, errors.Join(createErr, unlock())
+}
+
+func createWorktreeOnDisk(
 	ctx context.Context, opts CreateWorktreeOptions,
 ) (CreateWorktreeResult, error) {
 	ctx = withLifecycleExecution(ctx, opts.Runner, opts.RunGit, opts.RunHook)
@@ -251,7 +271,7 @@ func CreateWorktreeOnDisk(
 	if opts.IsolatedCheckout {
 		if opts.BeforeCheckout != nil {
 			if err := opts.BeforeCheckout(ctx, path); err != nil {
-				_, cleanupErr := result.Rollback(context.WithoutCancel(ctx))
+				_, cleanupErr := result.rollbackOwned(context.WithoutCancel(ctx), true)
 				return result, errors.Join(fmt.Errorf("pre-checkout validation: %w", err), cleanupErr)
 			}
 		}
@@ -490,6 +510,21 @@ type RemoveWorktreeResult struct {
 // registration when the path is already gone), and optionally
 // deletes the branch.
 func RemoveWorktreeFromDisk(
+	ctx context.Context, opts RemoveWorktreeOptions,
+) (RemoveWorktreeResult, error) {
+	root, err := absRequired(opts.ProjectRoot, "project root")
+	if err != nil {
+		return RemoveWorktreeResult{}, err
+	}
+	ctx, unlock, err := acquireRepositoryMutationLock(ctx, root)
+	if err != nil {
+		return RemoveWorktreeResult{}, err
+	}
+	result, removeErr := removeWorktreeFromDisk(ctx, opts)
+	return result, errors.Join(removeErr, unlock())
+}
+
+func removeWorktreeFromDisk(
 	ctx context.Context, opts RemoveWorktreeOptions,
 ) (RemoveWorktreeResult, error) {
 	ctx = withLifecycleExecution(ctx, opts.Runner, opts.RunGit, opts.RunHook)

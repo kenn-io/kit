@@ -246,6 +246,123 @@ func TestCreateWorktreeOnDiskUsesExecutionPolicy(t *testing.T) {
 	assert.Contains(gitCommands, "update-ref -d refs/heads/"+result.Branch+" "+result.branchOID)
 }
 
+func TestCreateWorktreeOnDiskSerializesRepositoryMutation(t *testing.T) {
+	repo := initLifecycleRepo(t)
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{}, 2)
+	runGit := func(
+		ctx context.Context, runner gitcmd.Runner, dir string, args ...string,
+	) ([]byte, error) {
+		if len(args) >= 2 && args[0] == "worktree" && args[1] == "add" {
+			entered <- struct{}{}
+			<-release
+		}
+		stdout, stderr, err := runner.Run(ctx, dir, nil, args...)
+		return append(stdout, stderr...), err
+	}
+	type createResult struct {
+		result CreateWorktreeResult
+		err    error
+	}
+	results := make(chan createResult, 2)
+	started := make(chan struct{}, 2)
+	create := func(branch, path string) {
+		started <- struct{}{}
+		result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+			ProjectRoot: repo,
+			Branch:      branch,
+			Path:        path,
+			RunGit:      runGit,
+		})
+		results <- createResult{result: result, err: err}
+	}
+	firstPath := filepath.Join(t.TempDir(), "serialized-one")
+	secondPath := filepath.Join(t.TempDir(), "serialized-two")
+	go create("serialized-one", firstPath)
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first worktree mutation did not start")
+	}
+	go create("serialized-two", secondPath)
+	<-started
+	<-started
+	select {
+	case <-entered:
+		release <- struct{}{}
+		release <- struct{}{}
+		first := <-results
+		second := <-results
+		if first.err == nil {
+			_, _ = first.result.Rollback(context.Background())
+		}
+		if second.err == nil {
+			_, _ = second.result.Rollback(context.Background())
+		}
+		t.Fatal("second worktree mutation entered before the first released its repository lock")
+	case <-time.After(150 * time.Millisecond):
+	}
+	release <- struct{}{}
+	first := <-results
+	Require.NoError(t, first.err)
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second worktree mutation did not resume")
+	}
+	release <- struct{}{}
+	second := <-results
+	Require.NoError(t, second.err)
+	for _, result := range []CreateWorktreeResult{first.result, second.result} {
+		_, err := result.Rollback(context.Background())
+		Require.NoError(t, err)
+	}
+}
+
+func TestRepositoryMutationLockUsesCommonGitDirectory(t *testing.T) {
+	repo := initLifecycleRepo(t)
+	linked := filepath.Join(t.TempDir(), "linked")
+	lifecycleGit(t, repo, "worktree", "add", "-b", "linked-lock-test", linked)
+	t.Cleanup(func() {
+		_, _ = RemoveWorktreeFromDisk(context.Background(), RemoveWorktreeOptions{ProjectRoot: repo, Path: linked, Branch: "linked-lock-test", Force: true, RemoveBranch: true})
+	})
+
+	_, unlock, err := acquireRepositoryMutationLock(t.Context(), repo)
+	Require.NoError(t, err)
+	acquired := make(chan func() error, 1)
+	errs := make(chan error, 1)
+	started := make(chan struct{})
+	go func() {
+		close(started)
+		_, release, lockErr := acquireRepositoryMutationLock(t.Context(), linked)
+		if lockErr != nil {
+			errs <- lockErr
+			return
+		}
+		acquired <- release
+	}()
+	<-started
+	select {
+	case release := <-acquired:
+		_ = release()
+		_ = unlock()
+		t.Fatal("linked worktree acquired a different repository lock")
+	case lockErr := <-errs:
+		_ = unlock()
+		Require.NoError(t, lockErr)
+	case <-time.After(150 * time.Millisecond):
+	}
+	Require.NoError(t, unlock())
+	select {
+	case release := <-acquired:
+		Require.NoError(t, release())
+	case lockErr := <-errs:
+		Require.NoError(t, lockErr)
+	case <-time.After(5 * time.Second):
+		t.Fatal("linked worktree did not acquire the repository lock after release")
+	}
+}
+
 func TestCreateWorktreeOnDiskPreservesConfiguredRunnerWithNilEnvironment(t *testing.T) {
 	require := Require.New(t)
 	assert := assert.New(t)

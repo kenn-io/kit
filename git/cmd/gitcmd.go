@@ -419,6 +419,9 @@ func nonInteractiveEnvironment(environment, source []string) []string {
 }
 
 func nonInteractiveSSHCommand(command, variant string) string {
+	if !validateSimpleShellCommand(command) {
+		return rejectedNonInteractiveSSHCommand
+	}
 	executable, ok := locateSSHExecutable(command)
 	if !ok {
 		return rejectedNonInteractiveSSHCommand
@@ -437,6 +440,25 @@ func nonInteractiveSSHCommand(command, variant string) string {
 			return rejectedNonInteractiveSSHCommand
 		}
 		return command
+	}
+}
+
+func validateSimpleShellCommand(command string) bool {
+	if strings.ContainsAny(command, "\r\n") {
+		return false
+	}
+	position := 0
+	words := 0
+	for {
+		_, next, ok := nextSimpleShellWord(command, position)
+		if !ok {
+			return words > 0 && strings.TrimSpace(command[position:]) == ""
+		}
+		words++
+		position = next
+		if position == len(command) {
+			return true
+		}
 	}
 }
 
@@ -547,7 +569,7 @@ func nextSimpleShellWord(command string, position int) (shellWord, int, bool) {
 				return shellWord{value: word.String(), end: i}, i, word.Len() > 0
 			case '\'', '"':
 				quote = char
-			case ';', '|', '&', '<', '>', '`', '$':
+			case ';', '|', '&', '<', '>', '(', ')', '`', '$':
 				return shellWord{}, i, false
 			case '\\':
 				if i+1 < len(command) && strings.ContainsRune(" \t\r\n'\"\\", rune(command[i+1])) {
@@ -561,7 +583,12 @@ func nextSimpleShellWord(command string, position int) (shellWord, int, bool) {
 			}
 		} else if char == quote {
 			quote = 0
-		} else if char == '\\' && quote == '"' && i+1 < len(command) {
+		} else if quote == '"' && char == '`' {
+			return shellWord{}, i, false
+		} else if quote == '"' && char == '$' && i+1 < len(command) && command[i+1] == '(' {
+			return shellWord{}, i, false
+		} else if char == '\\' && quote == '"' && i+1 < len(command) &&
+			strings.ContainsRune("$`\"\\\n", rune(command[i+1])) {
 			i++
 			word.WriteByte(command[i])
 		} else {

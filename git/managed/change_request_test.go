@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -144,6 +145,22 @@ func TestChangeRequestGitValidateRejectsUnsafeEffectiveConfiguration(t *testing.
 			},
 			kind: ChangeRequestAuthentication,
 		},
+		{
+			name: "remote-scoped proxy",
+			setup: func(t *testing.T, repo string) {
+				lifecycleGit(t, repo, "remote", "add", "origin", "https://github.com/acme/widget.git")
+				lifecycleGit(t, repo, "config", "remote.origin.proxy", "https://user:secret@proxy.example")
+			},
+			kind: ChangeRequestAuthentication,
+		},
+		{
+			name: "remote-scoped proxy authentication",
+			setup: func(t *testing.T, repo string) {
+				lifecycleGit(t, repo, "remote", "add", "origin", "https://github.com/acme/widget.git")
+				lifecycleGit(t, repo, "config", "remote.origin.proxyAuthMethod", "basic")
+			},
+			kind: ChangeRequestAuthentication,
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			repo, backend := newChangeRequestGit(t)
@@ -224,6 +241,74 @@ func TestChangeRequestGitEnsureRemoteRejectsEffectiveURLRewrite(t *testing.T) {
 	require.ErrorAs(t, err, &typed)
 	assert.Equal(t, ChangeRequestUnsafeConfiguration, typed.Kind)
 	assert.NotContains(t, strings.Fields(lifecycleGit(t, repo, "remote")), "review-octocat")
+}
+
+func TestChangeRequestGitEnsureRemoteSerializesRepositoryMutation(t *testing.T) {
+	repo := initLifecycleRepo(t)
+	lifecycleGit(t, repo, "remote", "add", "origin", "https://github.com/acme/widget.git")
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{}, 2)
+	runGit := func(
+		ctx context.Context, runner gitcmd.Runner, dir string, args ...string,
+	) ([]byte, error) {
+		if len(args) == 1 && args[0] == "remote" {
+			entered <- struct{}{}
+			<-release
+		}
+		stdout, stderr, err := runner.Run(ctx, dir, nil, args...)
+		return append(stdout, stderr...), err
+	}
+	newBackend := func() *ChangeRequestGit {
+		backend, err := NewChangeRequestGit(ChangeRequestGitOptions{
+			ProjectRoot: repo,
+			ProjectIdentity: gitremote.Identity{
+				Host: "github.com", Owner: "acme", Name: "widget",
+			},
+			RunGit: runGit,
+		})
+		require.NoError(t, err)
+		return backend
+	}
+	firstBackend := newBackend()
+	secondBackend := newBackend()
+
+	results := make(chan error, 2)
+	started := make(chan struct{}, 2)
+	go func() {
+		started <- struct{}{}
+		_, err := firstBackend.EnsureRemote(t.Context(), changeRequestRemote("octocat"))
+		results <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first remote mutation did not start")
+	}
+	go func() {
+		started <- struct{}{}
+		_, err := secondBackend.EnsureRemote(t.Context(), changeRequestRemote("octocat"))
+		results <- err
+	}()
+	<-started
+	<-started
+	select {
+	case <-entered:
+		release <- struct{}{}
+		release <- struct{}{}
+		require.NoError(t, <-results)
+		require.NoError(t, <-results)
+		t.Fatal("second remote mutation entered before the first released its repository lock")
+	case <-time.After(150 * time.Millisecond):
+	}
+	release <- struct{}{}
+	require.NoError(t, <-results)
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second remote mutation did not resume")
+	}
+	release <- struct{}{}
+	require.NoError(t, <-results)
 }
 
 func TestChangeRequestGitEnsureRemoteRejectsCloneURLIdentityMismatch(t *testing.T) {
