@@ -90,9 +90,7 @@ func NewChangeRequestGit(opts ChangeRequestGitOptions) (*ChangeRequestGit, error
 		return nil, err
 	}
 	runner := opts.Runner
-	if runner.Env == nil {
-		runner = gitcmd.New()
-	}
+	runner = normalizeLifecycleRunner(runner, gitcmd.New())
 	prefix := sanitizeRemoteName(opts.RemoteNamePrefix)
 	if prefix == "" {
 		prefix = "review"
@@ -152,9 +150,9 @@ func (g *ChangeRequestGit) validateConfigurationAt(ctx context.Context, worktree
 		return changeRequestError(ChangeRequestAuthentication,
 			"change-request import requires credential-free Git remote URLs; use a credential helper or SSH agent", nil)
 	}
-	if configHasCustomReceivePack(string(configOutput)) {
+	if configHasExecutableTransportOverride(string(configOutput)) {
 		return changeRequestError(ChangeRequestUnsafeConfiguration,
-			"change-request import does not allow custom Git receive-pack commands", nil)
+			"change-request import does not allow custom Git transport commands", nil)
 	}
 	remotes, err := g.runAt(ctx, worktreePath, "remote")
 	if err != nil {
@@ -638,11 +636,17 @@ func configHasUnsafeRemote(output string) bool {
 	return false
 }
 
-func configHasCustomReceivePack(output string) bool {
+func configHasExecutableTransportOverride(output string) bool {
 	for record := range strings.SplitSeq(output, "\x00") {
 		key, _, _ := strings.Cut(record, "\n")
 		key = strings.ToLower(strings.TrimSpace(key))
-		if strings.HasPrefix(key, "remote.") && strings.HasSuffix(key, ".receivepack") {
+		if key == "core.gitproxy" || key == "core.sshcommand" {
+			return true
+		}
+		if strings.HasPrefix(key, "remote.") &&
+			(strings.HasSuffix(key, ".receivepack") ||
+				strings.HasSuffix(key, ".uploadpack") ||
+				strings.HasSuffix(key, ".vcs")) {
 			return true
 		}
 	}
@@ -690,6 +694,9 @@ func singleRemoteMatchesRepository(output string, repository RemoteRepository) b
 func remoteMatchesRepository(remoteURL string, repository RemoteRepository) bool {
 	if repository.Identity.Host == "" {
 		return remoteURLsEqual(remoteURL, repository.CloneURL)
+	}
+	if gitremote.RemoteHost(remoteURL) == "" || gitremote.RemoteRepoPath(remoteURL) == "" {
+		return false
 	}
 	return gitremote.ValidateRemoteIdentity(repository.Identity, remoteURL) == nil
 }

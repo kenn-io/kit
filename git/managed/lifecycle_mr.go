@@ -42,14 +42,13 @@ type MergeRequestWorktreeOptions struct {
 }
 
 // mergeRequestRemoteTarget describes how to materialize a merge request
-// head locally: the fetch that makes the checkout ref available, the ref
-// the new branch starts at, an optional second fetch that makes upstream
-// tracking possible, and the tracking remote/merge-ref pair.
+// head locally: the fetch that resolves the immutable checkout OID, an
+// optional second fetch that makes upstream tracking possible, and the
+// tracking remote/merge-ref pair.
 type mergeRequestRemoteTarget struct {
 	checkoutRemote         string
 	checkoutSourceRef      string
 	checkoutDestinationRef string
-	checkoutRef            string
 	trackingRemote         string
 	trackingRepository     RemoteRepository
 	trackingSourceRef      string
@@ -110,10 +109,11 @@ func CreateWorktreeFromMergeRequest(
 	if err != nil {
 		return CreateWorktreeResult{}, err
 	}
-	if _, err := changeRequestGit.FetchExpected(
+	checkoutOID, err := changeRequestGit.FetchExpected(
 		ctx, target.checkoutRemote, target.checkoutSourceRef,
 		target.checkoutDestinationRef, opts.ExpectedHeadSHA,
-	); err != nil {
+	)
+	if err != nil {
 		return CreateWorktreeResult{}, err
 	}
 	trackingEnabled := target.trackingRemote != "" &&
@@ -121,17 +121,18 @@ func CreateWorktreeFromMergeRequest(
 	if trackingEnabled && target.trackingSourceRef != "" {
 		// The tracking fetch is best-effort: a fork that has vanished
 		// or is unreachable must not block importing via the pull ref.
-		if _, err := changeRequestGit.Fetch(
+		trackingOID, fetchErr := changeRequestGit.Fetch(
 			ctx, target.trackingRemote, target.trackingSourceRef,
 			target.trackingDestinationRef,
-		); err != nil {
+		)
+		if fetchErr != nil || !strings.EqualFold(trackingOID, checkoutOID) {
 			trackingEnabled = false
 		}
 	}
 
 	result, err := CreateWorktreeOnDisk(ctx, CreateWorktreeOptions{
 		ProjectRoot: root, Path: path, Branch: branch,
-		BaseRef: target.checkoutRef, Runner: opts.Runner,
+		BaseRef: checkoutOID, Runner: opts.Runner,
 		RunGit: opts.RunGit, IsolatedCheckout: true, NoTrack: true,
 		BeforeCheckout: changeRequestGit.ValidateWorktree,
 	})
@@ -158,7 +159,9 @@ func CreateWorktreeFromMergeRequest(
 			ctx, hookScript, root, path, branch, opts.WorktreeName,
 			opts.HookEnvironmentPrefix,
 		); hookErr != nil {
-			_, cleanupErr := result.Rollback(context.WithoutCancel(ctx))
+			_, cleanupErr := result.rollbackOwned(
+				context.WithoutCancel(ctx), false,
+			)
 			return result, errors.Join(hookErr, cleanupErr)
 		}
 		result.HookRan = true
@@ -190,8 +193,8 @@ func prepareMergeRequestRemote(
 		destination := "refs/remotes/origin/" + headBranch
 		return mergeRequestRemoteTarget{
 			checkoutRemote: "origin", checkoutSourceRef: "refs/heads/" + headBranch,
-			checkoutDestinationRef: destination, checkoutRef: destination,
-			trackingRemote: "origin",
+			checkoutDestinationRef: destination,
+			trackingRemote:         "origin",
 			trackingRepository: RemoteRepository{
 				Identity: repositoryIdentity(opts.ProjectRepoIdentity), CloneURL: cloneURL,
 			},
@@ -208,7 +211,7 @@ func prepareMergeRequestRemote(
 	if cloneURL == "" {
 		return mergeRequestRemoteTarget{
 			checkoutRemote: "origin", checkoutSourceRef: headRef,
-			checkoutDestinationRef: localRef, checkoutRef: localRef,
+			checkoutDestinationRef: localRef,
 		}, nil
 	}
 
@@ -222,8 +225,8 @@ func prepareMergeRequestRemote(
 	}
 	return mergeRequestRemoteTarget{
 		checkoutRemote: "origin", checkoutSourceRef: headRef,
-		checkoutDestinationRef: localRef, checkoutRef: localRef,
-		trackingRemote: remoteName, trackingRepository: repository,
+		checkoutDestinationRef: localRef,
+		trackingRemote:         remoteName, trackingRepository: repository,
 		trackingSourceRef:      "refs/heads/" + headBranch,
 		trackingDestinationRef: "refs/remotes/" + remoteName + "/" + headBranch,
 		trackingMergeRef:       "refs/heads/" + headBranch,

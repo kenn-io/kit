@@ -68,6 +68,8 @@ func TestUnsafeForAutomationRejectsCredentialAndCommandSurfaces(t *testing.T) {
 		{remoteURL: "git@github.com:acme/widget.git?access_token=secret", want: true},
 		{remoteURL: "corp::--token=secret", want: true},
 		{remoteURL: "::--token=secret", want: true},
+		{remoteURL: "evil://github.com/acme/widget.git", want: true},
+		{remoteURL: "git+ssh://git@github.com/acme/widget.git"},
 		{remoteURL: "ssh://git@[2001:db8::1]/acme/widget.git"},
 		{remoteURL: "/tmp/widget.git"},
 	}

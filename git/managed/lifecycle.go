@@ -151,7 +151,7 @@ type RollbackResult struct {
 // Rollback unwinds the worktree represented by this creation result.
 func (r CreateWorktreeResult) Rollback(ctx context.Context) (RollbackResult, error) {
 	ctx = withLifecycleExecution(ctx, r.runner, r.runGit, r.runHook)
-	return r.rollbackOwned(ctx)
+	return r.rollbackOwned(ctx, true)
 }
 
 // CreateWorktreeOnDisk performs the git side of worktree creation: it
@@ -204,7 +204,17 @@ func CreateWorktreeOnDisk(
 	if opts.NoTrack {
 		args = slices.Insert(args, 2, "--no-track")
 	}
-	if out, err := runLifecycleGit(ctx, root, args...); err != nil {
+	var out []byte
+	if opts.IsolatedCheckout {
+		runner, runnerErr := lifecycleHooksRunner(ctx)
+		if runnerErr != nil {
+			return CreateWorktreeResult{}, runnerErr
+		}
+		out, err = runLifecycleGitWithRunner(ctx, runner, root, args...)
+	} else {
+		out, err = runLifecycleGit(ctx, root, args...)
+	}
+	if err != nil {
 		return CreateWorktreeResult{}, classifyWorktreeGitError(out, err)
 	}
 
@@ -234,7 +244,9 @@ func CreateWorktreeOnDisk(
 			opts.HookEnvironmentPrefix,
 		)
 		if hookErr != nil {
-			_, cleanupErr := result.Rollback(context.WithoutCancel(ctx))
+			_, cleanupErr := result.rollbackOwned(
+				context.WithoutCancel(ctx), false,
+			)
 			return result, errors.Join(hookErr, cleanupErr)
 		}
 		result.HookRan = true
@@ -264,9 +276,12 @@ func snapshotCreateWorktreeResult(
 	}, nil
 }
 
-func (r CreateWorktreeResult) rollbackOwned(ctx context.Context) (RollbackResult, error) {
+func (r CreateWorktreeResult) rollbackOwned(
+	ctx context.Context, preserveChanges bool,
+) (RollbackResult, error) {
 	remaining := RollbackResult{}
 	var errs []error
+	preserveBranch := false
 	pathOwned := sameLifecycleFile(r.Path, r.pathInfo)
 	pathPresent := lifecyclePathExists(r.Path)
 	branchOID, branchExists, branchErr := lifecycleRefOID(ctx, r.projectRoot, r.Branch)
@@ -279,18 +294,22 @@ func (r CreateWorktreeResult) rollbackOwned(ctx context.Context) (RollbackResult
 		remaining.Path = r.Path
 		errs = append(errs, errors.New("created worktree path ownership changed; preserving it"))
 	case !pathPresent:
+		preserveBranch = true
 		errs = append(errs, errors.New("created worktree path disappeared; preserving its branch"))
 	case branchErr != nil || branchExists && !strings.EqualFold(branchOID, r.branchOID):
 		remaining.Path = r.Path
 		errs = append(errs, errors.New("created worktree branch advanced; preserving it"))
-	case r.materialized:
+	case r.materialized && preserveChanges:
 		runner, err := isolatedLifecycleRunner(ctx, r.Path)
 		if err != nil {
 			remaining.Path = r.Path
 			errs = append(errs, fmt.Errorf("inspect rollback filters: %w", err))
 			break
 		}
-		status, err := runner.Output(ctx, r.Path, "status", "--porcelain=v1", "--untracked-files=all")
+		status, err := runLifecycleGitWithRunner(
+			ctx, runner, r.Path,
+			"status", "--porcelain=v1", "--untracked-files=all",
+		)
 		if err != nil {
 			remaining.Path = r.Path
 			errs = append(errs, fmt.Errorf("inspect created worktree changes: %w", err))
@@ -305,23 +324,27 @@ func (r CreateWorktreeResult) rollbackOwned(ctx context.Context) (RollbackResult
 		if err != nil {
 			remaining.Path = r.Path
 			errs = append(errs, err)
-		} else if stdout, stderr, err := runner.Run(ctx, r.projectRoot, nil,
-			"worktree", "remove", "--force", r.Path); err != nil {
+		} else if out, err := runLifecycleGitWithRunner(
+			ctx, runner, r.projectRoot,
+			"worktree", "remove", "--force", r.Path,
+		); err != nil {
 			remaining.Path = r.Path
 			errs = append(errs, fmt.Errorf("remove created worktree: %w: %s", err,
-				strings.TrimSpace(string(append(stdout, stderr...)))))
+				strings.TrimSpace(string(out))))
 		}
 	}
 
 	if r.BranchCreated {
-		if remaining.Path == "" && branchErr == nil && branchExists && strings.EqualFold(branchOID, r.branchOID) {
+		if !preserveBranch && remaining.Path == "" && branchErr == nil && branchExists && strings.EqualFold(branchOID, r.branchOID) {
 			runner, err := lifecycleHooksRunner(ctx)
 			if err != nil {
 				errs = append(errs, err)
-			} else if stdout, stderr, err := runner.Run(ctx, r.projectRoot, nil,
-				"update-ref", "-d", "refs/heads/"+r.Branch, r.branchOID); err != nil {
+			} else if out, err := runLifecycleGitWithRunner(
+				ctx, runner, r.projectRoot,
+				"update-ref", "-d", "refs/heads/"+r.Branch, r.branchOID,
+			); err != nil {
 				errs = append(errs, fmt.Errorf("delete created branch: %w: %s", err,
-					strings.TrimSpace(string(append(stdout, stderr...)))))
+					strings.TrimSpace(string(out))))
 			}
 		}
 		_, stillExists, err := lifecycleRefOID(ctx, r.projectRoot, r.Branch)
@@ -396,8 +419,8 @@ type RemoveWorktreeResult struct {
 }
 
 // RemoveWorktreeFromDisk performs the git side of worktree removal: it
-// runs the optional teardown hook, removes the worktree (or prunes the
-// stale registration when the path is already gone), and optionally
+// runs the optional teardown hook, removes the worktree (or its exact stale
+// registration when the path is already gone), and optionally
 // deletes the branch.
 func RemoveWorktreeFromDisk(
 	ctx context.Context, opts RemoveWorktreeOptions,
@@ -450,8 +473,9 @@ func RemoveWorktreeFromDisk(
 	} else {
 		// The directory is gone but git may still hold a stale
 		// registration that would block branch deletion and re-creation.
+		// Removing by path leaves unrelated stale registrations alone.
 		if out, err := runLifecycleGit(
-			ctx, root, "worktree", "prune",
+			ctx, root, "worktree", "remove", "--force", path,
 		); err != nil {
 			return result, classifyWorktreeGitError(out, err)
 		}
@@ -611,7 +635,12 @@ func localBranchExists(ctx context.Context, root, branch string) bool {
 func runLifecycleGit(
 	ctx context.Context, dir string, args ...string,
 ) ([]byte, error) {
-	runner := lifecycleRunner(ctx)
+	return runLifecycleGitWithRunner(ctx, lifecycleRunner(ctx), dir, args...)
+}
+
+func runLifecycleGitWithRunner(
+	ctx context.Context, runner gitcmd.Runner, dir string, args ...string,
+) ([]byte, error) {
 	if run := lifecycleGitRunner(ctx); run != nil {
 		return run(ctx, runner, dir, args...)
 	}
@@ -630,12 +659,29 @@ type lifecycleExecution struct {
 func withLifecycleExecution(
 	ctx context.Context, runner gitcmd.Runner, runGit GitRunner, runHook HookRunner,
 ) context.Context {
-	if runner.Env == nil {
-		runner = gitcmd.Runner{Env: os.Environ(), StripEnv: true}
-	}
+	runner = normalizeLifecycleRunner(runner, gitcmd.Runner{
+		Env: os.Environ(), StripEnv: true,
+	})
 	return context.WithValue(ctx, lifecycleExecutionContextKey{}, lifecycleExecution{
 		runner: runner, runGit: runGit, runHook: runHook,
 	})
+}
+
+func normalizeLifecycleRunner(runner, fallback gitcmd.Runner) gitcmd.Runner {
+	if lifecycleRunnerIsZero(runner) {
+		return fallback
+	}
+	if runner.Env == nil {
+		runner.Env = os.Environ()
+	}
+	return runner
+}
+
+func lifecycleRunnerIsZero(runner gitcmd.Runner) bool {
+	return runner.Env == nil && len(runner.Config) == 0 &&
+		!runner.StripEnv && !runner.TerminalPrompt &&
+		!runner.NullGlobalConfig && !runner.NoSystemConfig &&
+		!runner.DisableSafeDirectoryForward
 }
 
 func lifecycleRunner(ctx context.Context) gitcmd.Runner {
@@ -660,7 +706,9 @@ func checkoutIsolated(ctx context.Context, path string) error {
 	if err != nil {
 		return fmt.Errorf("inspect checkout filters: %w", err)
 	}
-	if _, _, err := runner.Run(ctx, path, nil, "reset", "--hard", "HEAD"); err != nil {
+	if _, err := runLifecycleGitWithRunner(
+		ctx, runner, path, "reset", "--hard", "HEAD",
+	); err != nil {
 		return fmt.Errorf("materialize isolated worktree: %w", err)
 	}
 	return nil
@@ -671,7 +719,9 @@ func isolatedLifecycleRunner(ctx context.Context, path string) (gitcmd.Runner, e
 	if err != nil {
 		return gitcmd.Runner{}, err
 	}
-	out, err := runner.Output(ctx, path, "config", "--includes", "--null", "--list")
+	out, err := runLifecycleGitWithRunner(
+		ctx, runner, path, "config", "--includes", "--null", "--list",
+	)
 	if err != nil {
 		return gitcmd.Runner{}, err
 	}

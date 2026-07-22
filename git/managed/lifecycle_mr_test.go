@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	Require "github.com/stretchr/testify/require"
 
+	gitcmd "go.kenn.io/kit/git/cmd"
 	gitenv "go.kenn.io/kit/git/env"
 )
 
@@ -114,6 +115,42 @@ func TestCreateWorktreeFromMergeRequestPullRefFallback(t *testing.T) {
 		"no tracking without a fork clone URL")
 }
 
+func TestCreateWorktreeFromMergeRequestChecksOutVerifiedOID(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	origin, clone := initOriginAndClone(t)
+	lifecycleGit(t, origin, "checkout", "-q", "-b", "contributor-work")
+	lifecycleGit(t, origin, "commit", "--allow-empty", "-m", "pr work")
+	headSHA := lifecycleGit(t, origin, "rev-parse", "contributor-work")
+	lifecycleGit(t, origin, "update-ref", "refs/pull/8/head", headSHA)
+	lifecycleGit(t, origin, "checkout", "-q", "main")
+	mainSHA := lifecycleGit(t, origin, "rev-parse", "main")
+	mutated := false
+
+	result, err := CreateWorktreeFromMergeRequest(t.Context(), MergeRequestWorktreeOptions{
+		ProjectRoot:     clone,
+		Branch:          "pr-8",
+		Path:            filepath.Join(t.TempDir(), "wt"),
+		Number:          8,
+		HeadBranch:      "contributor-work",
+		ExpectedHeadSHA: headSHA,
+		RunGit: func(
+			ctx context.Context, runner gitcmd.Runner, dir string, args ...string,
+		) ([]byte, error) {
+			if !mutated && len(args) >= 2 && args[0] == "worktree" && args[1] == "add" {
+				mutated = true
+				lifecycleGit(t, clone, "update-ref", "refs/remotes/origin/pull/8/head", mainSHA)
+			}
+			stdout, stderr, runErr := runner.Run(ctx, dir, nil, args...)
+			return append(stdout, stderr...), runErr
+		},
+	})
+	require.NoError(err)
+	t.Cleanup(func() { _, _ = result.Rollback(context.Background()) })
+	assert.True(mutated)
+	assert.Equal(headSHA, lifecycleGit(t, result.Path, "rev-parse", "HEAD"))
+}
+
 // TestCreateWorktreeFromMergeRequestFork covers the fork scenario: checkout
 // still comes from origin's pull ref, while tracking is configured against
 // a dedicated fork remote.
@@ -156,6 +193,37 @@ func TestCreateWorktreeFromMergeRequestFork(t *testing.T) {
 		worktreeConfig(t, dest, "branch.pr-9.merge"))
 	remoteURL := lifecycleGit(t, clone, "remote", "get-url", remote)
 	assert.Equal(fork, remoteURL)
+}
+
+func TestCreateWorktreeFromMergeRequestDisablesTrackingWhenForkHeadDiffers(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	origin, clone := initOriginAndClone(t)
+	fork := filepath.Join(t.TempDir(), "fork")
+	lifecycleGit(t, filepath.Dir(origin), "clone", "-q", origin, fork)
+	lifecycleGit(t, fork, "config", "user.email", "t@e.st")
+	lifecycleGit(t, fork, "config", "user.name", "Tester")
+	lifecycleGit(t, fork, "checkout", "-q", "-b", "fork-work")
+	lifecycleGit(t, fork, "commit", "--allow-empty", "-m", "selected pr work")
+	selectedSHA := lifecycleGit(t, fork, "rev-parse", "fork-work")
+	lifecycleGit(t, origin, "fetch", "-q", fork,
+		"+refs/heads/fork-work:refs/pull/10/head")
+	lifecycleGit(t, fork, "commit", "--allow-empty", "-m", "later fork work")
+
+	result, err := CreateWorktreeFromMergeRequest(t.Context(), MergeRequestWorktreeOptions{
+		ProjectRoot:         clone,
+		Branch:              "pr-10",
+		Path:                filepath.Join(t.TempDir(), "wt"),
+		Number:              10,
+		HeadBranch:          "fork-work",
+		HeadRepoCloneURL:    fork,
+		ExpectedHeadSHA:     selectedSHA,
+		ProjectRepoIdentity: identityOfCloneURL(origin),
+	})
+	require.NoError(err)
+	t.Cleanup(func() { _, _ = result.Rollback(context.Background()) })
+	assert.Equal(selectedSHA, lifecycleGit(t, result.Path, "rev-parse", "HEAD"))
+	assert.Empty(worktreeConfig(t, result.Path, "branch.pr-10.remote"))
 }
 
 // TestCreateWorktreeFromMergeRequestTrackingFetchFailureIsNonFatal: when
@@ -201,7 +269,7 @@ func TestCreateWorktreeFromMergeRequestHookFailureRollsBack(t *testing.T) {
 	lifecycleGit(t, origin, "checkout", "-q", "main")
 	require.NoError(os.WriteFile(
 		filepath.Join(clone, "setup"),
-		[]byte("#!/bin/sh\nexit 5\n"), 0o755))
+		[]byte("#!/bin/sh\nprintf partial > setup-output.txt\nexit 5\n"), 0o755))
 
 	dest := filepath.Join(t.TempDir(), "wt")
 	_, err := CreateWorktreeFromMergeRequest(

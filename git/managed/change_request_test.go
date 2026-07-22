@@ -64,6 +64,38 @@ func TestChangeRequestGitValidateRejectsUnsafeEffectiveConfiguration(t *testing.
 			},
 			kind: ChangeRequestUnsafeConfiguration,
 		},
+		{
+			name: "custom upload pack",
+			setup: func(t *testing.T, repo string) {
+				lifecycleGit(t, repo, "remote", "add", "origin", "https://github.com/acme/widget.git")
+				lifecycleGit(t, repo, "config", "remote.origin.uploadpack", "sh -c fetch-redirect")
+			},
+			kind: ChangeRequestUnsafeConfiguration,
+		},
+		{
+			name: "custom remote helper",
+			setup: func(t *testing.T, repo string) {
+				lifecycleGit(t, repo, "remote", "add", "origin", "https://github.com/acme/widget.git")
+				lifecycleGit(t, repo, "config", "remote.origin.vcs", "evil")
+			},
+			kind: ChangeRequestUnsafeConfiguration,
+		},
+		{
+			name: "custom git proxy",
+			setup: func(t *testing.T, repo string) {
+				lifecycleGit(t, repo, "remote", "add", "origin", "git://github.com/acme/widget.git")
+				lifecycleGit(t, repo, "config", "core.gitProxy", "sh -c proxy")
+			},
+			kind: ChangeRequestUnsafeConfiguration,
+		},
+		{
+			name: "custom ssh command",
+			setup: func(t *testing.T, repo string) {
+				lifecycleGit(t, repo, "remote", "add", "origin", "ssh://git@github.com/acme/widget.git")
+				lifecycleGit(t, repo, "config", "core.sshCommand", "sh -c ssh-redirect")
+			},
+			kind: ChangeRequestUnsafeConfiguration,
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			repo, backend := newChangeRequestGit(t)
@@ -78,6 +110,20 @@ func TestChangeRequestGitValidateRejectsUnsafeEffectiveConfiguration(t *testing.
 			assert.NotContains(t, err.Error(), "redirect")
 		})
 	}
+}
+
+func TestNewChangeRequestGitPreservesConfiguredRunnerWithNilEnvironment(t *testing.T) {
+	repo := initLifecycleRepo(t)
+	runner := gitcmd.Runner{Config: []gitcmd.Config{{Key: "gc.auto", Value: "0"}}}
+
+	backend, err := NewChangeRequestGit(ChangeRequestGitOptions{
+		ProjectRoot: repo,
+		Runner:      runner,
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, runner.Config, backend.runner.Config)
+	assert.NotNil(t, backend.runner.Env)
 }
 
 func TestChangeRequestWorktreeConfigVersionRequirement(t *testing.T) {
@@ -117,6 +163,23 @@ func TestChangeRequestGitEnsureRemotePreservesProjectSSHTransport(t *testing.T) 
 	assert.Equal(t, "review-octocat", remote)
 	assert.Equal(t, "ssh://custom@github.com:2222/octocat/widget.git",
 		lifecycleGit(t, repo, "remote", "get-url", remote))
+}
+
+func TestRemoteMatchesRepositoryRequiresHostForHostedIdentity(t *testing.T) {
+	repository := changeRequestRemote("octocat")
+
+	assert.False(t, remoteMatchesRepository(
+		filepath.Join(t.TempDir(), "widget.git"), repository,
+	))
+	assert.False(t, remoteMatchesRepository(
+		"file:///tmp/widget.git", repository,
+	))
+	assert.False(t, remoteMatchesRepository(
+		"ssh://git@github.com", repository,
+	))
+	assert.True(t, remoteMatchesRepository(
+		"ssh://git@github.com/octocat/widget.git", repository,
+	))
 }
 
 func TestChangeRequestGitConfiguresPersistentSafePushRouting(t *testing.T) {

@@ -189,9 +189,9 @@ func NormalizeHost(host string) string {
 }
 
 // UnsafeForAutomation reports whether a remote URL can disclose embedded
-// credentials or invoke a git remote-helper command. Query strings and
-// fragments fail closed because they are common credential carriers and are
-// not part of a repository identity.
+// credentials or invoke a git remote-helper command. Only Git's built-in URL
+// transports are accepted; query strings and fragments fail closed because
+// they are common credential carriers and are not part of repository identity.
 func UnsafeForAutomation(remoteURL string) bool {
 	if strings.ContainsAny(remoteURL, "?#") || isRemoteHelperURL(remoteURL) {
 		return true
@@ -201,9 +201,14 @@ func UnsafeForAutomation(remoteURL string) bool {
 		if err != nil {
 			return true
 		}
+		scheme := strings.ToLower(parsed.Scheme)
+		switch scheme {
+		case "file", "git", "git+ssh", "http", "https", "ssh", "ssh+git":
+		default:
+			return true
+		}
 		if parsed.User != nil {
-			scheme := strings.ToLower(parsed.Scheme)
-			if scheme == "ssh" || scheme == "git+ssh" {
+			if scheme == "ssh" || scheme == "git+ssh" || scheme == "ssh+git" {
 				_, hasPassword := parsed.User.Password()
 				return hasPassword
 			}

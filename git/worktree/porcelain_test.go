@@ -35,3 +35,15 @@ func TestParsePorcelainIgnoresUnknownFieldsAndIncompleteBlocks(t *testing.T) {
 	assert.True(t, entries[0].Locked)
 	assert.Equal(t, "reason", entries[0].LockedReason)
 }
+
+func TestParsePorcelainHandlesCRLFAndQuotedPaths(t *testing.T) {
+	entries := ParsePorcelain(
+		"worktree /repo\r\nHEAD abc123\r\nbranch refs/heads/main\r\n\r\n" +
+			"worktree \"/repo/quoted\\tpath\"\r\nHEAD def456\r\ndetached\r\n",
+	)
+
+	require.Len(t, entries, 2)
+	assert.Equal(t, "/repo", entries[0].Path)
+	assert.Equal(t, "/repo/quoted\tpath", entries[1].Path)
+	assert.True(t, entries[1].Detached)
+}

@@ -151,6 +151,36 @@ func TestCreateWorktreeOnDiskCanIsolateUntrustedCheckout(t *testing.T) {
 	assert.NoFileExists(hookMarker)
 }
 
+func TestCreateWorktreeOnDiskIsolatesHooksBeforeBranchCreation(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	repo := initLifecycleRepo(t)
+	hooks := filepath.Join(repo, ".githooks")
+	require.NoError(os.MkdirAll(hooks, 0o755))
+	marker := filepath.Join(t.TempDir(), "reference-transaction-ran")
+	hook := filepath.Join(hooks, "reference-transaction")
+	require.NoError(os.WriteFile(hook, []byte(
+		"#!/bin/sh\nprintf ran > '"+filepath.ToSlash(marker)+"'\n",
+	), 0o755))
+	lifecycleGit(t, repo, "config", "core.hooksPath", ".githooks")
+	lifecycleGit(t, repo, "branch", "hook-probe")
+	if _, err := os.Stat(marker); os.IsNotExist(err) {
+		t.Skip("installed Git does not support reference-transaction hooks")
+	}
+	require.NoError(os.Remove(marker))
+
+	result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot:      repo,
+		Branch:           "review/hook-isolation",
+		Path:             filepath.Join(t.TempDir(), "isolated"),
+		BaseRef:          "HEAD",
+		IsolatedCheckout: true,
+	})
+	require.NoError(err)
+	t.Cleanup(func() { _, _ = result.Rollback(context.Background()) })
+	assert.NoFileExists(marker)
+}
+
 func TestCreateWorktreeOnDiskUsesExecutionPolicy(t *testing.T) {
 	require := Require.New(t)
 	assert := assert.New(t)
@@ -158,17 +188,18 @@ func TestCreateWorktreeOnDiskUsesExecutionPolicy(t *testing.T) {
 	hook := filepath.Join(repo, "setup")
 	require.NoError(os.WriteFile(hook, []byte("#!/bin/sh\nexit 0\n"), 0o755))
 
-	gitRuns := 0
+	gitCommands := make([]string, 0)
 	hookRuns := 0
-	_, err := CreateWorktreeOnDisk(context.Background(), CreateWorktreeOptions{
-		ProjectRoot: repo,
-		Branch:      "execution-policy",
-		Path:        filepath.Join(t.TempDir(), "wt"),
-		SetupScript: hook,
+	result, err := CreateWorktreeOnDisk(context.Background(), CreateWorktreeOptions{
+		ProjectRoot:      repo,
+		Branch:           "execution-policy",
+		Path:             filepath.Join(t.TempDir(), "wt"),
+		SetupScript:      hook,
+		IsolatedCheckout: true,
 		RunGit: func(
 			ctx context.Context, runner gitcmd.Runner, dir string, args ...string,
 		) ([]byte, error) {
-			gitRuns++
+			gitCommands = append(gitCommands, strings.Join(args, " "))
 			stdout, stderr, err := runner.Run(ctx, dir, nil, args...)
 			return append(stdout, stderr...), err
 		},
@@ -178,8 +209,48 @@ func TestCreateWorktreeOnDiskUsesExecutionPolicy(t *testing.T) {
 		},
 	})
 	require.NoError(err)
-	assert.Greater(gitRuns, 0)
 	assert.Equal(1, hookRuns)
+	assert.Contains(gitCommands, "config --includes --null --list")
+	assert.Contains(gitCommands, "reset --hard HEAD")
+
+	remaining, err := result.Rollback(context.Background())
+	require.NoError(err)
+	assert.Empty(remaining)
+	assert.Contains(gitCommands, "status --porcelain=v1 --untracked-files=all")
+	assert.Contains(gitCommands, "worktree remove --force "+result.Path)
+	assert.Contains(gitCommands, "update-ref -d refs/heads/"+result.Branch+" "+result.branchOID)
+}
+
+func TestCreateWorktreeOnDiskPreservesConfiguredRunnerWithNilEnvironment(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	repo := initLifecycleRepo(t)
+	wantConfig := []gitcmd.Config{{Key: "gc.auto", Value: "0"}}
+	sawConfig := false
+	sawEnvironment := false
+
+	result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Branch:      "configured-runner",
+		Path:        filepath.Join(t.TempDir(), "wt"),
+		Runner:      gitcmd.Runner{Config: wantConfig},
+		RunGit: func(
+			ctx context.Context, runner gitcmd.Runner, dir string, args ...string,
+		) ([]byte, error) {
+			for _, config := range runner.Config {
+				if config == wantConfig[0] {
+					sawConfig = true
+				}
+			}
+			sawEnvironment = sawEnvironment || runner.Env != nil
+			stdout, stderr, err := runner.Run(ctx, dir, nil, args...)
+			return append(stdout, stderr...), err
+		},
+	})
+	require.NoError(err)
+	t.Cleanup(func() { _, _ = result.Rollback(context.Background()) })
+	assert.True(sawConfig)
+	assert.True(sawEnvironment)
 }
 
 func TestCreateWorktreeResultRollbackPreservesAdvancedBranch(t *testing.T) {
@@ -248,6 +319,26 @@ func TestCreateWorktreeResultRollbackPreservesReplacedPath(t *testing.T) {
 	require.Error(err)
 	assert.Equal(RollbackResult{Path: result.Path, Branch: result.Branch}, remaining)
 	assert.FileExists(marker)
+}
+
+func TestCreateWorktreeResultRollbackPreservesBranchWhenPathDisappears(t *testing.T) {
+	assert := assert.New(t)
+	require := Require.New(t)
+	repo := initLifecycleRepo(t)
+	result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Branch:      "review/disappeared",
+		Path:        filepath.Join(t.TempDir(), "disappeared"),
+		BaseRef:     "HEAD",
+	})
+	require.NoError(err)
+	require.NoError(os.RemoveAll(result.Path))
+
+	remaining, err := result.Rollback(t.Context())
+
+	require.Error(err)
+	assert.Equal(RollbackResult{Branch: result.Branch}, remaining)
+	assert.True(branchExistsInRepo(t, repo, result.Branch))
 }
 
 func TestCreateWorktreeResultRollbackDisablesRepositoryHooks(t *testing.T) {
@@ -382,6 +473,31 @@ func TestCreateWorktreeOnDiskRollsBackWhenSetupHookFails(t *testing.T) {
 		"failed hook rolls the worktree directory back")
 	assert.False(branchExistsInRepo(t, repo, "feature"),
 		"failed hook rolls the created branch back")
+}
+
+func TestCreateWorktreeOnDiskRollsBackDirtyOutputFromFailedSetupHook(t *testing.T) {
+	assert := assert.New(t)
+	require := Require.New(t)
+	repo := initLifecycleRepo(t)
+	script := filepath.Join(repo, "setup-dirty")
+	require.NoError(os.WriteFile(script, []byte(
+		"#!/bin/sh\nprintf partial > setup-output.txt\nexit 3\n",
+	), 0o755))
+	dest := filepath.Join(t.TempDir(), "wt")
+
+	_, err := CreateWorktreeOnDisk(context.Background(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Branch:      "dirty-setup-failure",
+		Path:        dest,
+		SetupScript: "setup-dirty",
+	})
+
+	var hookErr *HookError
+	require.ErrorAs(err, &hookErr)
+	_, statErr := os.Stat(dest)
+	assert.True(os.IsNotExist(statErr),
+		"failed setup output belongs to the operation and is removed")
+	assert.False(branchExistsInRepo(t, repo, "dirty-setup-failure"))
 }
 
 func TestCreateWorktreeOnDiskKeepsPreexistingBranchOnHookFailure(t *testing.T) {
@@ -577,6 +693,31 @@ func TestRemoveWorktreeFromDiskPrunesWhenPathAlreadyGone(t *testing.T) {
 	assert.False(branchExistsInRepo(t, repo, "feature"))
 	list := lifecycleGit(t, repo, "worktree", "list", "--porcelain")
 	assert.NotContains(list, dest, "stale worktree entry pruned")
+}
+
+func TestRemoveMissingWorktreePreservesUnrelatedStaleRegistration(t *testing.T) {
+	assert := assert.New(t)
+	require := Require.New(t)
+	repo := initLifecycleRepo(t)
+	target := filepath.Join(t.TempDir(), "target")
+	unrelated := filepath.Join(t.TempDir(), "unrelated")
+	lifecycleGit(t, repo, "worktree", "add", "-b", "target", target)
+	lifecycleGit(t, repo, "worktree", "add", "-b", "unrelated", unrelated)
+	require.NoError(os.RemoveAll(target))
+	require.NoError(os.RemoveAll(unrelated))
+
+	_, err := RemoveWorktreeFromDisk(context.Background(), RemoveWorktreeOptions{
+		ProjectRoot:  repo,
+		Path:         target,
+		Branch:       "target",
+		RemoveBranch: true,
+	})
+
+	require.NoError(err)
+	list := lifecycleGit(t, repo, "worktree", "list", "--porcelain")
+	assert.NotContains(list, target)
+	assert.Contains(list, unrelated,
+		"removing one stale worktree must not prune another registration")
 }
 
 func TestRemoveWorktreeFromDiskForceRemovesDirtyWorktree(t *testing.T) {

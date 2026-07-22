@@ -1,6 +1,9 @@
 package gitworktree
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // PorcelainEntry is one block from `git worktree list --porcelain`.
 type PorcelainEntry struct {
@@ -15,9 +18,11 @@ type PorcelainEntry struct {
 	PrunableReason string
 }
 
-// ParsePorcelain parses `git worktree list --porcelain` output. Unknown fields
-// are ignored so newer Git versions can extend the format compatibly.
+// ParsePorcelain parses `git worktree list --porcelain` output, including CRLF
+// records and Git's C-quoted paths. Unknown fields are ignored so newer Git
+// versions can extend the format compatibly.
 func ParsePorcelain(output string) []PorcelainEntry {
+	output = strings.ReplaceAll(output, "\r\n", "\n")
 	blocks := strings.Split(strings.TrimSpace(output), "\n\n")
 	entries := make([]PorcelainEntry, 0, len(blocks))
 	for _, block := range blocks {
@@ -30,7 +35,9 @@ func ParsePorcelain(output string) []PorcelainEntry {
 			line = strings.TrimSuffix(line, "\r")
 			switch {
 			case strings.HasPrefix(line, "worktree "):
-				entry.Path = strings.TrimSpace(strings.TrimPrefix(line, "worktree "))
+				entry.Path = decodePorcelainValue(
+					strings.TrimSpace(strings.TrimPrefix(line, "worktree ")),
+				)
 			case strings.HasPrefix(line, "HEAD "):
 				entry.Head = strings.TrimSpace(strings.TrimPrefix(line, "HEAD "))
 			case strings.HasPrefix(line, "branch "):
@@ -59,4 +66,15 @@ func ParsePorcelain(output string) []PorcelainEntry {
 		}
 	}
 	return entries
+}
+
+func decodePorcelainValue(value string) string {
+	if !strings.HasPrefix(value, `"`) {
+		return value
+	}
+	decoded, err := strconv.Unquote(value)
+	if err != nil {
+		return value
+	}
+	return decoded
 }
