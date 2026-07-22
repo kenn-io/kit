@@ -49,14 +49,17 @@ func TestRunnerCommandDisablesCredentialAndSSHPrompts(t *testing.T) {
 		name        string
 		environment []string
 		wantCommand string
+		wantVariant string
 	}{
 		{name: "OpenSSH", environment: []string{"GIT_SSH_COMMAND=ssh -i key"}, wantCommand: "ssh -oBatchMode=yes -i key"},
 		{name: "OpenSSH override", environment: []string{"GIT_SSH_COMMAND=ssh -oBatchMode=no -i key"}, wantCommand: "ssh -oBatchMode=yes -oBatchMode=no -i key"},
-		{name: "explicit plink", environment: []string{"GIT_SSH_COMMAND=C:\\PuTTY\\plink.exe", "GIT_SSH_VARIANT=plink"}, wantCommand: "C:\\PuTTY\\plink.exe -batch"},
+		{name: "explicit plink", environment: []string{"GIT_SSH_COMMAND=C:\\PuTTY\\plink.exe", "GIT_SSH_VARIANT=plink"}, wantCommand: "C:\\PuTTY\\plink.exe -batch", wantVariant: "plink"},
+		{name: "renamed plink", environment: []string{"GIT_SSH_COMMAND=C:\\tools\\corp-ssh.exe", "GIT_SSH_VARIANT=plink"}, wantCommand: "C:\\tools\\corp-ssh.exe -batch", wantVariant: "plink"},
+		{name: "last duplicate wins", environment: []string{"GIT_SSH_COMMAND=ssh -i old", "GIT_SSH_VARIANT=ssh", "GIT_SSH_COMMAND=C:\\tools\\corp-ssh.exe", "GIT_SSH_VARIANT=plink"}, wantCommand: "C:\\tools\\corp-ssh.exe -batch", wantVariant: "plink"},
 		{name: "detected plink", environment: []string{"GIT_SSH_COMMAND=/usr/local/bin/plink"}, wantCommand: "/usr/local/bin/plink -batch"},
 		{name: "quoted OpenSSH", environment: []string{"GIT_SSH_COMMAND='/opt/Open SSH/ssh' -i key"}, wantCommand: "'/opt/Open SSH/ssh' -oBatchMode=yes -i key"},
-		{name: "OpenSSH from GIT_SSH", environment: []string{"GIT_SSH=/usr/local/bin/ssh"}, wantCommand: "'/usr/local/bin/ssh' -oBatchMode=yes"},
-		{name: "plink from GIT_SSH", environment: []string{"GIT_SSH=C:\\Program Files\\PuTTY\\plink.exe"}, wantCommand: "'C:\\Program Files\\PuTTY\\plink.exe' -batch"},
+		{name: "OpenSSH from GIT_SSH", environment: []string{"GIT_SSH=/usr/local/bin/ssh"}, wantCommand: "'/usr/local/bin/ssh' -oBatchMode=yes", wantVariant: "ssh"},
+		{name: "plink from GIT_SSH", environment: []string{"GIT_SSH=C:\\Program Files\\PuTTY\\plink.exe"}, wantCommand: "'C:\\Program Files\\PuTTY\\plink.exe' -batch", wantVariant: "plink"},
 		{name: "unknown", environment: []string{"GIT_SSH_COMMAND=custom-transport"}, wantCommand: "custom-transport"},
 	}
 
@@ -67,10 +70,13 @@ func TestRunnerCommandDisablesCredentialAndSSHPrompts(t *testing.T) {
 			cmd := runner.Command(context.Background(), t.TempDir(), "status")
 
 			sshCommand, _ := envValue(cmd.Env, "GIT_SSH_COMMAND")
+			sshVariant, hasSSHVariant := envValue(cmd.Env, "GIT_SSH_VARIANT")
 			terminalPrompt, _ := envValue(cmd.Env, "GIT_TERMINAL_PROMPT")
 			credentialPrompt, _ := envValue(cmd.Env, "GCM_INTERACTIVE")
 			askpass, _ := envValue(cmd.Env, "SSH_ASKPASS_REQUIRE")
 			assert.Equal(t, test.wantCommand, sshCommand)
+			assert.Equal(t, test.wantVariant, sshVariant)
+			assert.Equal(t, test.wantVariant != "", hasSSHVariant)
 			assert.Equal(t, "0", terminalPrompt)
 			assert.Equal(t, "Never", credentialPrompt)
 			assert.Equal(t, "never", askpass)

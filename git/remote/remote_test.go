@@ -57,6 +57,8 @@ func TestUnsafeForAutomationRejectsCredentialAndCommandSurfaces(t *testing.T) {
 		want      bool
 	}{
 		{remoteURL: "https://github.com/acme/widget.git"},
+		{remoteURL: "http://github.com/acme/widget.git", want: true},
+		{remoteURL: "git://github.com/acme/widget.git", want: true},
 		{remoteURL: "https://token@github.com/acme/widget.git", want: true},
 		{remoteURL: "git@github.com:acme/widget.git"},
 		{remoteURL: "ssh://git@github.com/acme/widget.git"},

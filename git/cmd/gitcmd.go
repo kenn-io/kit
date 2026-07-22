@@ -384,10 +384,11 @@ func nonInteractiveEnvironment(environment, source []string) []string {
 	for _, key := range []string{
 		"GIT_TERMINAL_PROMPT", "GIT_ASKPASS", "SSH_ASKPASS", "SSH_ASKPASS_REQUIRE",
 		"GCM_INTERACTIVE", "GIT_CREDENTIAL_INTERACTIVE", "GIT_SSH_COMMAND",
+		"GIT_SSH_VARIANT",
 	} {
 		environment = withoutEnvironmentKeyFold(environment, key)
 	}
-	return append(environment,
+	environment = append(environment,
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_ASKPASS=",
 		"SSH_ASKPASS=",
@@ -396,6 +397,10 @@ func nonInteractiveEnvironment(environment, source []string) []string {
 		"GIT_CREDENTIAL_INTERACTIVE=never",
 		"GIT_SSH_COMMAND="+sshCommand,
 	)
+	if strings.TrimSpace(sshVariant) != "" {
+		environment = append(environment, "GIT_SSH_VARIANT="+sshVariant)
+	}
+	return environment
 }
 
 func nonInteractiveSSHCommand(command, variant string) string {
@@ -508,7 +513,7 @@ func detectSSHExecutableVariant(executable string) string {
 }
 
 func environmentValueFold(environment []string, key string) string {
-	for _, entry := range environment {
+	for _, entry := range slices.Backward(environment) {
 		name, value, ok := strings.Cut(entry, "=")
 		if ok && strings.EqualFold(name, key) {
 			return value

@@ -273,6 +273,42 @@ func TestCreateWorktreeOnDiskPreservesConfiguredRunnerWithNilEnvironment(t *test
 	assert.True(sawEnvironment)
 }
 
+func TestCreateWorktreeOnDiskPreservesArtifactsWhenSnapshotFails(t *testing.T) {
+	assert := assert.New(t)
+	require := Require.New(t)
+	repo := initLifecycleRepo(t)
+	dest := filepath.Join(t.TempDir(), "snapshot-failure")
+	snapshotFailure := errors.New("snapshot unavailable")
+
+	result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Branch:      "snapshot-failure",
+		Path:        dest,
+		RunGit: func(
+			ctx context.Context, runner gitcmd.Runner, dir string, args ...string,
+		) ([]byte, error) {
+			if len(args) == 3 && args[0] == "rev-parse" && args[1] == "--verify" &&
+				args[2] == "refs/heads/snapshot-failure^{commit}" {
+				return nil, snapshotFailure
+			}
+			stdout, stderr, runErr := runner.Run(ctx, dir, nil, args...)
+			return append(stdout, stderr...), runErr
+		},
+	})
+
+	require.ErrorIs(err, snapshotFailure)
+	require.ErrorIs(err, ErrWorktreeCleanupIncomplete)
+	assert.Equal(dest, result.Path)
+	assert.Equal("snapshot-failure", result.Branch)
+	assert.DirExists(dest)
+	assert.True(branchExistsInRepo(t, repo, "snapshot-failure"))
+
+	remaining, rollbackErr := result.Rollback(t.Context())
+	require.ErrorIs(rollbackErr, ErrWorktreeCleanupIncomplete)
+	assert.Equal(RollbackResult{Path: dest, Branch: "snapshot-failure"}, remaining)
+	assert.DirExists(dest)
+}
+
 func TestCreateWorktreeResultRollbackPreservesAdvancedBranch(t *testing.T) {
 	assert := assert.New(t)
 	require := Require.New(t)
@@ -291,7 +327,7 @@ func TestCreateWorktreeResultRollbackPreservesAdvancedBranch(t *testing.T) {
 
 	remaining, err := result.Rollback(t.Context())
 
-	require.Error(err)
+	require.ErrorIs(err, ErrWorktreeCleanupIncomplete)
 	assert.Equal(RollbackResult{Path: result.Path, Branch: result.Branch}, remaining)
 	assert.FileExists(filepath.Join(result.Path, "review.txt"))
 	assert.Equal(advancedOID, lifecycleGit(t, repo, "rev-parse", "refs/heads/"+result.Branch))
@@ -905,4 +941,35 @@ func TestWorktreeIsDirty(t *testing.T) {
 
 	_, err = WorktreeIsDirty(context.Background(), filepath.Join(dest, "missing"))
 	require.Error(err, "a missing path is an error, not clean")
+}
+
+func TestWorktreeIsDirtyDisablesFiltersAndFSMonitor(t *testing.T) {
+	assert := assert.New(t)
+	require := Require.New(t)
+	repo := initLifecycleRepo(t)
+	require.NoError(os.WriteFile(
+		filepath.Join(repo, ".gitattributes"), []byte("tracked.txt filter=capture\n"), 0o644,
+	))
+	require.NoError(os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("base\n"), 0o644))
+	lifecycleGit(t, repo, "add", ".gitattributes", "tracked.txt")
+	lifecycleGit(t, repo, "commit", "-m", "add filtered file")
+
+	dest := filepath.Join(t.TempDir(), "wt")
+	lifecycleGit(t, repo, "worktree", "add", "-b", "isolated-status", dest)
+	marker := filepath.Join(t.TempDir(), "status-command-ran")
+	script := filepath.Join(t.TempDir(), "status-command.sh")
+	quotedMarker := "'" + strings.ReplaceAll(filepath.ToSlash(marker), "'", "'\\''") + "'"
+	require.NoError(os.WriteFile(script, []byte(
+		"#!/bin/sh\nprintf ran >> "+quotedMarker+"\ncat\n",
+	), 0o755))
+	command := "sh '" + strings.ReplaceAll(filepath.ToSlash(script), "'", "'\\''") + "'"
+	lifecycleGit(t, repo, "config", "filter.capture.clean", command)
+	lifecycleGit(t, repo, "config", "core.fsmonitor", script)
+	require.NoError(os.WriteFile(filepath.Join(dest, "tracked.txt"), []byte("changed\n"), 0o644))
+
+	dirty, err := WorktreeIsDirty(t.Context(), dest)
+
+	require.NoError(err)
+	assert.True(dirty)
+	assert.NoFileExists(marker)
 }

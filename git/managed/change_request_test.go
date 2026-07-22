@@ -49,6 +49,13 @@ func TestChangeRequestGitValidateRejectsUnsafeEffectiveConfiguration(t *testing.
 			kind: ChangeRequestAuthentication,
 		},
 		{
+			name: "plaintext hosted transport",
+			setup: func(t *testing.T, repo string) {
+				lifecycleGit(t, repo, "remote", "add", "origin", "http://github.com/acme/widget.git")
+			},
+			kind: ChangeRequestAuthentication,
+		},
+		{
 			name: "remote helper rewrite",
 			setup: func(t *testing.T, repo string) {
 				lifecycleGit(t, repo, "remote", "add", "origin", "https://alias/acme/widget.git")
@@ -83,7 +90,7 @@ func TestChangeRequestGitValidateRejectsUnsafeEffectiveConfiguration(t *testing.
 		{
 			name: "custom git proxy",
 			setup: func(t *testing.T, repo string) {
-				lifecycleGit(t, repo, "remote", "add", "origin", "git://github.com/acme/widget.git")
+				lifecycleGit(t, repo, "remote", "add", "origin", "https://github.com/acme/widget.git")
 				lifecycleGit(t, repo, "config", "core.gitProxy", "sh -c proxy")
 			},
 			kind: ChangeRequestUnsafeConfiguration,

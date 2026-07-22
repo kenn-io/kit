@@ -10,9 +10,8 @@ import (
 	Require "github.com/stretchr/testify/require"
 )
 
-// TestCreateWorktreeOnDiskReportsBranchCreated pins the BranchCreated flag
-// callers thread into RollbackCreatedWorktree: a branch this call created may
-// be force-deleted on rollback, a pre-existing one must never be.
+// TestCreateWorktreeOnDiskReportsBranchCreated pins the BranchCreated flag:
+// rollback may delete a branch this call created, but never a pre-existing one.
 func TestCreateWorktreeOnDiskReportsBranchCreated(t *testing.T) {
 	assert := assert.New(t)
 	require := Require.New(t)
@@ -37,10 +36,10 @@ func TestCreateWorktreeOnDiskReportsBranchCreated(t *testing.T) {
 	assert.True(created.BranchCreated)
 }
 
-// TestRollbackCreatedWorktreePreservesPreexistingBranch covers the
-// registry-conflict rollback path: rolling back with BranchCreated=false
-// removes the worktree but leaves the branch intact.
-func TestRollbackCreatedWorktreePreservesPreexistingBranch(t *testing.T) {
+// TestCreateWorktreeResultRollbackPreservesPreexistingBranch covers the
+// registry-conflict rollback path: a conservative result rollback removes the
+// unchanged worktree but leaves a branch the operation did not create.
+func TestCreateWorktreeResultRollbackPreservesPreexistingBranch(t *testing.T) {
 	assert := assert.New(t)
 	require := Require.New(t)
 	repo := initLifecycleRepo(t)
@@ -54,10 +53,9 @@ func TestRollbackCreatedWorktreePreservesPreexistingBranch(t *testing.T) {
 	})
 	require.NoError(err)
 
-	RollbackCreatedWorktree(
-		context.Background(), repo, result.Path, result.Branch,
-		result.BranchCreated,
-	)
+	remaining, err := result.Rollback(context.Background())
+	require.NoError(err)
+	assert.Empty(remaining)
 	_, statErr := os.Stat(dest)
 	assert.True(os.IsNotExist(statErr), "rollback must remove the worktree")
 	assert.True(branchExistsInRepo(t, repo, "keep-me"),

@@ -41,6 +41,10 @@ var (
 	ErrHookOutsideProject = errors.New(
 		"lifecycle hook script resolves outside the project",
 	)
+	// ErrWorktreeCleanupIncomplete reports that destructive cleanup was not
+	// attempted because the operation could not establish or revalidate
+	// ownership of the worktree artifacts.
+	ErrWorktreeCleanupIncomplete = errors.New("worktree cleanup incomplete")
 )
 
 // HookError reports a lifecycle hook script that ran and exited non-zero.
@@ -131,7 +135,7 @@ type CreateWorktreeResult struct {
 	Branch string
 	// BranchCreated reports whether this call created the branch (as
 	// opposed to attaching a pre-existing local branch). Callers rolling
-	// the git work back must pass it to RollbackCreatedWorktree so a
+	// the git work back must use this result's Rollback method so a
 	// pre-existing branch is never force-deleted.
 	BranchCreated bool
 	HookRan       bool
@@ -145,6 +149,7 @@ type CreateWorktreeResult struct {
 	headOID       string
 	headRef       string
 	materialized  bool
+	snapshotted   bool
 }
 
 // RollbackResult identifies worktree artifacts that remained after rollback.
@@ -155,6 +160,16 @@ type RollbackResult struct {
 
 // Rollback unwinds the worktree represented by this creation result.
 func (r CreateWorktreeResult) Rollback(ctx context.Context) (RollbackResult, error) {
+	if !r.snapshotted {
+		remaining := RollbackResult{Path: r.Path}
+		if r.BranchCreated {
+			remaining.Branch = r.Branch
+		}
+		return remaining, fmt.Errorf(
+			"%w: ownership snapshot unavailable; preserving worktree artifacts",
+			ErrWorktreeCleanupIncomplete,
+		)
+	}
 	ctx = withLifecycleExecution(ctx, r.runner, r.runGit, r.runHook)
 	return r.rollbackOwned(ctx, true)
 }
@@ -227,8 +242,10 @@ func CreateWorktreeOnDisk(
 		ctx, root, path, branch, !branchExisted, !opts.IsolatedCheckout,
 	)
 	if err != nil {
-		rollbackCreatedWorktree(context.WithoutCancel(ctx), root, path, branch, !branchExisted)
-		return CreateWorktreeResult{}, err
+		return result, errors.Join(err, fmt.Errorf(
+			"%w: ownership snapshot unavailable; preserving worktree at %s",
+			ErrWorktreeCleanupIncomplete, path,
+		))
 	}
 	if opts.IsolatedCheckout {
 		if opts.BeforeCheckout != nil {
@@ -265,25 +282,30 @@ func snapshotCreateWorktreeResult(
 	root, path, branch string,
 	branchCreated, materialized bool,
 ) (CreateWorktreeResult, error) {
-	pathInfo, err := os.Lstat(path)
-	if err != nil {
-		return CreateWorktreeResult{}, fmt.Errorf("inspect created worktree path: %w", err)
-	}
-	out, err := runLifecycleGit(ctx, root, "rev-parse", "--verify", "refs/heads/"+branch+"^{commit}")
-	if err != nil {
-		return CreateWorktreeResult{}, fmt.Errorf("resolve created worktree branch: %w", err)
-	}
-	headRef, headOID, err := lifecycleWorktreeHead(ctx, path)
-	if err != nil {
-		return CreateWorktreeResult{}, fmt.Errorf("resolve created worktree HEAD: %w", err)
-	}
-	return CreateWorktreeResult{
+	result := CreateWorktreeResult{
 		Path: path, Branch: branch, BranchCreated: branchCreated,
 		projectRoot: root, runner: lifecycleRunner(ctx),
-		runGit: lifecycleGitRunner(ctx), runHook: lifecycleHookRunner(ctx), pathInfo: pathInfo,
-		branchOID: strings.TrimSpace(string(out)), headOID: headOID, headRef: headRef,
+		runGit: lifecycleGitRunner(ctx), runHook: lifecycleHookRunner(ctx),
 		materialized: materialized,
-	}, nil
+	}
+	pathInfo, err := os.Lstat(path)
+	if err != nil {
+		return result, fmt.Errorf("inspect created worktree path: %w", err)
+	}
+	result.pathInfo = pathInfo
+	out, err := runLifecycleGit(ctx, root, "rev-parse", "--verify", "refs/heads/"+branch+"^{commit}")
+	if err != nil {
+		return result, fmt.Errorf("resolve created worktree branch: %w", err)
+	}
+	result.branchOID = strings.TrimSpace(string(out))
+	headRef, headOID, err := lifecycleWorktreeHead(ctx, path)
+	if err != nil {
+		return result, fmt.Errorf("resolve created worktree HEAD: %w", err)
+	}
+	result.headOID = headOID
+	result.headRef = headRef
+	result.snapshotted = true
+	return result, nil
 }
 
 func (r CreateWorktreeResult) rollbackOwned(
@@ -376,7 +398,10 @@ func (r CreateWorktreeResult) rollbackOwned(
 		}
 	}
 	if remaining.Path != "" {
+		errs = append(errs, ErrWorktreeCleanupIncomplete)
 		errs = append(errs, errors.New("created worktree path remains"))
+	} else if remaining.Branch != "" {
+		errs = append(errs, ErrWorktreeCleanupIncomplete)
 	}
 	if remaining.Branch != "" {
 		errs = append(errs, errors.New("created worktree branch remains"))
@@ -538,7 +563,11 @@ func RemoveWorktreeFromDisk(
 // WorktreeIsDirty reports whether the worktree at path has uncommitted
 // changes (staged, unstaged, or untracked).
 func WorktreeIsDirty(ctx context.Context, path string) (bool, error) {
-	out, err := runLifecycleGit(ctx, path, "status", "--porcelain")
+	runner, err := isolatedLifecycleRunner(ctx, path)
+	if err != nil {
+		return false, fmt.Errorf("inspect worktree filters: %w", err)
+	}
+	out, err := runLifecycleGitWithRunner(ctx, runner, path, "status", "--porcelain")
 	if err != nil {
 		return false, fmt.Errorf(
 			"check worktree dirty state: %w: %s",
@@ -909,43 +938,4 @@ func runLifecycleHook(
 		return fmt.Errorf("run lifecycle hook %s: %w", script, err)
 	}
 	return nil
-}
-
-// RollbackCreatedWorktree best-effort unwinds a worktree created earlier
-// in the same operation, for callers whose post-create step (registry
-// insert) failed after CreateWorktreeOnDisk succeeded.
-func RollbackCreatedWorktree(
-	ctx context.Context, root, path, branch string, deleteBranch bool,
-) {
-	rollbackCreatedWorktree(ctx, root, path, branch, deleteBranch)
-}
-
-// rollbackCreatedWorktree best-effort unwinds a worktree this call just
-// created after its setup hook failed. The branch is deleted only when
-// this call created it; the original hook error is what the caller
-// surfaces.
-func rollbackCreatedWorktree(
-	ctx context.Context, root, path, branch string, deleteBranch bool,
-) {
-	_, _ = rollbackCreatedWorktreeWithResult(ctx, root, path, branch, deleteBranch)
-}
-
-func rollbackCreatedWorktreeWithResult(
-	ctx context.Context, root, path, branch string, deleteBranch bool,
-) (RollbackResult, error) {
-	var result RollbackResult
-	var errs []error
-	if out, err := runLifecycleGit(
-		ctx, root, "worktree", "remove", "--force", path,
-	); err != nil {
-		result.Path = path
-		errs = append(errs, fmt.Errorf("remove created worktree: %w: %s", err, strings.TrimSpace(string(out))))
-	}
-	if deleteBranch {
-		if out, err := runLifecycleGit(ctx, root, "branch", "-D", "--", branch); err != nil {
-			result.Branch = branch
-			errs = append(errs, fmt.Errorf("delete created branch: %w: %s", err, strings.TrimSpace(string(out))))
-		}
-	}
-	return result, errors.Join(errs...)
 }
