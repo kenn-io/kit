@@ -165,6 +165,46 @@ func TestChangeRequestGitEnsureRemotePreservesProjectSSHTransport(t *testing.T) 
 		lifecycleGit(t, repo, "remote", "get-url", remote))
 }
 
+func TestChangeRequestGitValidateRejectsMismatchedProjectOrigin(t *testing.T) {
+	repo, backend := newChangeRequestGit(t)
+	lifecycleGit(t, repo, "remote", "add", "origin", "https://evil.example/acme/widget.git")
+
+	err := backend.Validate(t.Context())
+
+	var typed *ChangeRequestError
+	require.ErrorAs(t, err, &typed)
+	assert.Equal(t, ChangeRequestUnsafeConfiguration, typed.Kind)
+}
+
+func TestChangeRequestGitDoesNotInheritSSHFromUnrelatedPushRemote(t *testing.T) {
+	repo, backend := newChangeRequestGit(t)
+	lifecycleGit(t, repo, "remote", "add", "origin", "https://github.com/acme/widget.git")
+	lifecycleGit(t, repo, "remote", "add", "backup", "ssh://git@evil.example/acme/widget.git")
+	lifecycleGit(t, repo, "config", "remote.pushDefault", "backup")
+
+	remote, err := backend.EnsureRemote(t.Context(), changeRequestRemote("octocat"))
+
+	require.NoError(t, err)
+	assert.Equal(t, "https://github.com/octocat/widget.git",
+		lifecycleGit(t, repo, "remote", "get-url", remote))
+}
+
+func TestChangeRequestGitRejectsDerivedSSHURLForDifferentHost(t *testing.T) {
+	repo, backend := newChangeRequestGit(t)
+	lifecycleGit(t, repo, "remote", "add", "origin", "ssh://git@github.com/acme/widget.git")
+	repository := RemoteRepository{
+		Identity: gitremote.Identity{Host: "gitlab.example", Owner: "octocat", Name: "widget"},
+		CloneURL: "https://gitlab.example/octocat/widget.git",
+	}
+
+	_, err := backend.EnsureRemote(t.Context(), repository)
+
+	var typed *ChangeRequestError
+	require.ErrorAs(t, err, &typed)
+	assert.Equal(t, ChangeRequestUnsafeConfiguration, typed.Kind)
+	assert.NotContains(t, strings.Fields(lifecycleGit(t, repo, "remote")), "review-octocat")
+}
+
 func TestRemoteMatchesRepositoryRequiresHostForHostedIdentity(t *testing.T) {
 	repository := changeRequestRemote("octocat")
 

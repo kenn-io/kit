@@ -391,12 +391,38 @@ func nonInteractiveSSHCommand(command, variant string) string {
 	}
 	switch variant {
 	case "ssh":
-		return command + " -oBatchMode=yes"
+		return insertShellArgumentAfterExecutable(command, "-oBatchMode=yes")
 	case "plink", "putty", "tortoiseplink":
 		return command + " -batch"
 	default:
 		return command
 	}
+}
+
+func insertShellArgumentAfterExecutable(command, argument string) string {
+	var quote byte
+	for i := 0; i < len(command); i++ {
+		char := command[i]
+		if quote == 0 {
+			switch char {
+			case ' ', '\t', '\r', '\n':
+				if strings.TrimSpace(command[:i]) != "" {
+					return command[:i] + " " + argument + command[i:]
+				}
+			case '\'', '"':
+				quote = char
+			case '\\':
+				if i+1 < len(command) && strings.ContainsRune(" \t\r\n'\"\\", rune(command[i+1])) {
+					i++
+				}
+			}
+		} else if char == quote {
+			quote = 0
+		} else if char == '\\' && quote == '"' && i+1 < len(command) {
+			i++
+		}
+	}
+	return command + " " + argument
 }
 
 func detectSSHVariant(command string) string {

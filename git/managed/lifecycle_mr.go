@@ -180,6 +180,7 @@ func prepareMergeRequestRemote(
 	opts MergeRequestWorktreeOptions,
 ) (mergeRequestRemoteTarget, error) {
 	headBranch := strings.TrimSpace(opts.HeadBranch)
+	hasHeadBranch := headBranch != ""
 	if headBranch == "" {
 		headBranch = "merge-request"
 	}
@@ -189,7 +190,7 @@ func prepareMergeRequestRemote(
 		strings.EqualFold(
 			CloneURLIdentity(cloneURL), opts.ProjectRepoIdentity,
 		)
-	if sameRepo {
+	if sameRepo && hasHeadBranch {
 		destination := "refs/remotes/origin/" + headBranch
 		return mergeRequestRemoteTarget{
 			checkoutRemote: "origin", checkoutSourceRef: "refs/heads/" + headBranch,
@@ -208,7 +209,7 @@ func prepareMergeRequestRemote(
 	headRef := mergeRequestHeadRef(opts.Platform, opts.Number)
 	localRef := "refs/remotes/origin/" + strings.TrimPrefix(headRef, "refs/")
 
-	if cloneURL == "" {
+	if cloneURL == "" || sameRepo {
 		return mergeRequestRemoteTarget{
 			checkoutRemote: "origin", checkoutSourceRef: headRef,
 			checkoutDestinationRef: localRef,

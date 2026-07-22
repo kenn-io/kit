@@ -117,7 +117,46 @@ func (g *ChangeRequestGit) Validate(ctx context.Context) error {
 	if !supportsChangeRequestWorktreeConfig(string(output)) {
 		return changeRequestError(ChangeRequestUnsupportedGit, "change-request import requires Git 2.20 or newer", nil)
 	}
-	return g.validateConfigurationAt(ctx, "")
+	if err := g.validateConfigurationAt(ctx, ""); err != nil {
+		return err
+	}
+	if strings.TrimSpace(g.project.Host) == "" {
+		return nil
+	}
+	for _, push := range []bool{false, true} {
+		if err := g.validateProjectRemote(ctx, "origin", push); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (g *ChangeRequestGit) validateProjectRemote(
+	ctx context.Context, remote string, push bool,
+) error {
+	args := []string{"remote", "get-url", "--all"}
+	label := "fetch"
+	if push {
+		args = append(args, "--push")
+		label = "push"
+	}
+	args = append(args, remote)
+	output, err := g.runSafe(ctx, g.root, args...)
+	if err != nil {
+		return changeRequestError(ChangeRequestUnsafeConfiguration,
+			"failed to inspect the project Git remote", err)
+	}
+	if remoteURLListUnsafe(string(output)) {
+		return changeRequestError(ChangeRequestAuthentication,
+			"project Git remote contains credentials or command syntax", nil)
+	}
+	remoteURL, single := singleRemoteURL(string(output))
+	project := RemoteRepository{Identity: g.project}
+	if !single || !remoteMatchesRepository(remoteURL, project) {
+		return changeRequestError(ChangeRequestUnsafeConfiguration,
+			fmt.Sprintf("project Git remote has an unexpected effective %s destination", label), nil)
+	}
+	return nil
 }
 
 // ValidateWorktree verifies that branch/worktree conditional configuration did
@@ -219,6 +258,10 @@ func (g *ChangeRequestGit) EnsureRemote(ctx context.Context, repository RemoteRe
 		if err != nil {
 			return "", changeRequestError(ChangeRequestUnsafeConfiguration,
 				"failed to preserve the project's SSH transport for the change-request remote", err)
+		}
+		if !remoteMatchesRepository(remoteURL, repository) {
+			return "", changeRequestError(ChangeRequestUnsafeConfiguration,
+				"derived change-request SSH remote does not match the source repository", nil)
 		}
 	}
 	if remoteURL == "" {
@@ -542,7 +585,8 @@ func (g *ChangeRequestGit) projectPushSSHURL(ctx context.Context, remotes map[st
 		return ""
 	}
 	pushURL, single := singleRemoteURL(string(pushURLs))
-	if !single || !isSSHRemoteURL(pushURL) {
+	if !single || !isSSHRemoteURL(pushURL) ||
+		!remoteMatchesRepository(pushURL, RemoteRepository{Identity: g.project}) {
 		return ""
 	}
 	return pushURL
@@ -698,7 +742,20 @@ func remoteMatchesRepository(remoteURL string, repository RemoteRepository) bool
 	if gitremote.RemoteHost(remoteURL) == "" || gitremote.RemoteRepoPath(remoteURL) == "" {
 		return false
 	}
-	return gitremote.ValidateRemoteIdentity(repository.Identity, remoteURL) == nil
+	if gitremote.ValidateRemoteIdentity(repository.Identity, remoteURL) == nil {
+		return true
+	}
+	parsed, err := url.Parse(strings.TrimSpace(remoteURL))
+	if err != nil || !isSSHRemoteURL(remoteURL) || parsed.Hostname() == "" {
+		return false
+	}
+	if gitremote.NormalizeHost(parsed.Hostname()) !=
+		gitremote.NormalizeHost(repository.Identity.Host) {
+		return false
+	}
+	wantRepo := strings.Trim(strings.TrimSpace(repository.Identity.Owner)+"/"+
+		strings.TrimSpace(repository.Identity.Name), "/")
+	return strings.EqualFold(gitremote.RemoteRepoPath(remoteURL), wantRepo)
 }
 
 func forkSSHURL(projectURL string, repository gitremote.Identity) (string, error) {

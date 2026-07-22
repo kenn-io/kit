@@ -741,6 +741,46 @@ func TestRemoveWorktreeFromDiskForceRemovesDirtyWorktree(t *testing.T) {
 	assert.True(os.IsNotExist(statErr))
 }
 
+func TestRemoveWorktreeFromDiskForceRemovesLockedWorktree(t *testing.T) {
+	assert := assert.New(t)
+	require := Require.New(t)
+	repo := initLifecycleRepo(t)
+	dest := filepath.Join(t.TempDir(), "wt")
+	lifecycleGit(t, repo, "worktree", "add", "-b", "locked", dest)
+	lifecycleGit(t, repo, "worktree", "lock", dest)
+
+	_, err := RemoveWorktreeFromDisk(t.Context(), RemoveWorktreeOptions{
+		ProjectRoot: repo,
+		Path:        dest,
+		Branch:      "locked",
+		Force:       true,
+	})
+
+	require.NoError(err)
+	assert.NoDirExists(dest)
+}
+
+func TestRemoveWorktreeFromDiskForceRemovesMissingLockedWorktree(t *testing.T) {
+	assert := assert.New(t)
+	require := Require.New(t)
+	repo := initLifecycleRepo(t)
+	dest := filepath.Join(t.TempDir(), "wt")
+	lifecycleGit(t, repo, "worktree", "add", "-b", "locked-missing", dest)
+	lifecycleGit(t, repo, "worktree", "lock", dest)
+	require.NoError(os.RemoveAll(dest))
+
+	_, err := RemoveWorktreeFromDisk(t.Context(), RemoveWorktreeOptions{
+		ProjectRoot: repo,
+		Path:        dest,
+		Branch:      "locked-missing",
+		Force:       true,
+	})
+
+	require.NoError(err)
+	list := lifecycleGit(t, repo, "worktree", "list", "--porcelain")
+	assert.NotContains(list, "branch refs/heads/locked-missing")
+}
+
 func TestRemoveWorktreeFromDiskBranchInUseElsewhere(t *testing.T) {
 	require := Require.New(t)
 	repo := initLifecycleRepo(t)

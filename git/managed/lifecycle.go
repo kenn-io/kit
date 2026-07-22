@@ -393,9 +393,9 @@ type RemoveWorktreeOptions struct {
 	// Branch is the branch deleted when RemoveBranch is set; an empty
 	// branch (detached HEAD) makes RemoveBranch a no-op.
 	Branch string
-	// Force passes --force to git worktree remove so dirty or locked
-	// worktrees still go. Policy checks (refusing dirty removal without
-	// force) belong to the caller.
+	// Force passes --force twice to git worktree remove so dirty and locked
+	// worktrees still go. Policy checks (refusing dirty removal without force)
+	// belong to the caller.
 	Force        bool
 	RemoveBranch bool
 	// TeardownScript, when set, runs in the worktree before removal.
@@ -464,7 +464,7 @@ func RemoveWorktreeFromDisk(
 	if pathExists {
 		args := []string{"worktree", "remove"}
 		if opts.Force {
-			args = append(args, "--force")
+			args = append(args, "--force", "--force")
 		}
 		args = append(args, path)
 		if out, err := runLifecycleGit(ctx, root, args...); err != nil {
@@ -474,9 +474,12 @@ func RemoveWorktreeFromDisk(
 		// The directory is gone but git may still hold a stale
 		// registration that would block branch deletion and re-creation.
 		// Removing by path leaves unrelated stale registrations alone.
-		if out, err := runLifecycleGit(
-			ctx, root, "worktree", "remove", "--force", path,
-		); err != nil {
+		args := []string{"worktree", "remove", "--force"}
+		if opts.Force {
+			args = append(args, "--force")
+		}
+		args = append(args, path)
+		if out, err := runLifecycleGit(ctx, root, args...); err != nil {
 			return result, classifyWorktreeGitError(out, err)
 		}
 	}

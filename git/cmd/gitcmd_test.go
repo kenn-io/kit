@@ -50,10 +50,11 @@ func TestRunnerCommandDisablesCredentialAndSSHPrompts(t *testing.T) {
 		environment []string
 		wantCommand string
 	}{
-		{name: "OpenSSH", environment: []string{"GIT_SSH_COMMAND=ssh -i key"}, wantCommand: "ssh -i key -oBatchMode=yes"},
+		{name: "OpenSSH", environment: []string{"GIT_SSH_COMMAND=ssh -i key"}, wantCommand: "ssh -oBatchMode=yes -i key"},
+		{name: "OpenSSH override", environment: []string{"GIT_SSH_COMMAND=ssh -oBatchMode=no -i key"}, wantCommand: "ssh -oBatchMode=yes -oBatchMode=no -i key"},
 		{name: "explicit plink", environment: []string{"GIT_SSH_COMMAND=C:\\PuTTY\\plink.exe", "GIT_SSH_VARIANT=plink"}, wantCommand: "C:\\PuTTY\\plink.exe -batch"},
 		{name: "detected plink", environment: []string{"GIT_SSH_COMMAND=/usr/local/bin/plink"}, wantCommand: "/usr/local/bin/plink -batch"},
-		{name: "quoted OpenSSH", environment: []string{"GIT_SSH_COMMAND='/opt/Open SSH/ssh' -i key"}, wantCommand: "'/opt/Open SSH/ssh' -i key -oBatchMode=yes"},
+		{name: "quoted OpenSSH", environment: []string{"GIT_SSH_COMMAND='/opt/Open SSH/ssh' -i key"}, wantCommand: "'/opt/Open SSH/ssh' -oBatchMode=yes -i key"},
 		{name: "OpenSSH from GIT_SSH", environment: []string{"GIT_SSH=/usr/local/bin/ssh"}, wantCommand: "'/usr/local/bin/ssh' -oBatchMode=yes"},
 		{name: "plink from GIT_SSH", environment: []string{"GIT_SSH=C:\\Program Files\\PuTTY\\plink.exe"}, wantCommand: "'C:\\Program Files\\PuTTY\\plink.exe' -batch"},
 		{name: "unknown", environment: []string{"GIT_SSH_COMMAND=custom-transport"}, wantCommand: "custom-transport"},
