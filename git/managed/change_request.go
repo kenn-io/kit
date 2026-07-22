@@ -99,6 +99,10 @@ func NewChangeRequestGit(opts ChangeRequestGitOptions) (*ChangeRequestGit, error
 	}
 	runner := opts.Runner
 	runner = normalizeLifecycleRunner(runner, gitcmd.New())
+	// Change-request operations are an automation trust boundary. Callers may
+	// share an interactive runner elsewhere, but validation, fetch, and
+	// configuration here must never prompt or weaken process-tree cancellation.
+	runner.TerminalPrompt = false
 	prefix := sanitizeRemoteName(opts.RemoteNamePrefix)
 	if prefix == "" {
 		prefix = "review"

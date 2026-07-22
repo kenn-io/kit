@@ -191,6 +191,34 @@ func TestNewChangeRequestGitPreservesConfiguredRunnerWithNilEnvironment(t *testi
 	assert.NotNil(t, backend.runner.Env)
 }
 
+func TestChangeRequestGitForcesNonInteractiveRunner(t *testing.T) {
+	repo := initLifecycleRepo(t)
+	lifecycleGit(t, repo, "remote", "add", "origin", "https://github.com/acme/widget.git")
+	runner := gitcmd.New()
+	runner.TerminalPrompt = true
+	commands := 0
+	backend, err := NewChangeRequestGit(ChangeRequestGitOptions{
+		ProjectRoot: repo,
+		ProjectIdentity: gitremote.Identity{
+			Host: "github.com", Owner: "acme", Name: "widget",
+		},
+		Runner: runner,
+		RunGit: func(
+			ctx context.Context, effective gitcmd.Runner, dir string, args ...string,
+		) ([]byte, error) {
+			commands++
+			assert.False(t, effective.TerminalPrompt,
+				"change-request Git commands must remain noninteractive")
+			stdout, stderr, runErr := effective.Run(ctx, dir, nil, args...)
+			return append(stdout, stderr...), runErr
+		},
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, backend.Validate(t.Context()))
+	assert.Positive(t, commands)
+}
+
 func TestChangeRequestGitValidateRejectsHostedOriginWithoutTrustAnchor(t *testing.T) {
 	repo := initLifecycleRepo(t)
 	lifecycleGit(t, repo, "remote", "add", "origin", "https://github.com/acme/widget.git")

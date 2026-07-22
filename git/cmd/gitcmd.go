@@ -89,7 +89,9 @@ func (r Runner) WithBasicAuth(username, password string) Runner {
 	return r
 }
 
-// Command constructs a git command in dir.
+// Command constructs a git command in dir. On Windows, callers that need the
+// process-tree cancellation guarantee must execute it with
+// RunProcessTreeCommand rather than calling cmd.Run directly.
 //
 // Command cannot be used with WithBasicAuth because callers would not have a
 // way to clean up the temporary credential helper. Use Run or Output instead.
@@ -123,7 +125,7 @@ func (r Runner) Run(ctx context.Context, dir string, stdin io.Reader, args ...st
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err := RunProcessTreeCommand(cmd)
 	if err != nil {
 		return stdout.Bytes(), stderr.Bytes(), &GitError{
 			Dir:    dir,
@@ -142,12 +144,20 @@ func gitCommand(ctx context.Context, terminalPrompt bool, args ...string) *exec.
 	return cmd
 }
 
-// PrepareProcessTreeCancellation configures cmd so context cancellation
-// terminates its process tree. On Windows, hideConsoleWindow also prevents a
-// console window from being allocated for the child process.
+// PrepareProcessTreeCancellation configures cmd for process-tree cancellation.
+// Execute it with RunProcessTreeCommand. On Windows, hideConsoleWindow also
+// prevents a console window from being allocated for the child process.
 func PrepareProcessTreeCancellation(cmd *exec.Cmd, hideConsoleWindow bool) {
 	prepareGitCommand(cmd, hideConsoleWindow, false)
 	boundCommandWait(cmd)
+}
+
+// RunProcessTreeCommand starts cmd under the platform process-tree boundary
+// installed by PrepareProcessTreeCancellation and waits for it to exit.
+// Windows callers must use this function so the process can be assigned to a
+// kill-on-close Job Object before its suspended primary thread is resumed.
+func RunProcessTreeCommand(cmd *exec.Cmd) error {
+	return runProcessTreeCommand(cmd)
 }
 
 func boundCommandWait(cmd *exec.Cmd) {
@@ -280,8 +290,11 @@ func readSafeDirectories(ctx context.Context, env []string, dir string) []string
 		probeCtx, cancel := context.WithTimeout(ctx, safeDirectoryProbeTimeout)
 		cmd := safeDirectoryProbeCommand(probeCtx, env, dir,
 			"config", scope, "--includes", "-z", "--get-all", "safe.directory")
-		out, err := cmd.Output()
+		var stdout bytes.Buffer
+		cmd.Stdout = &stdout
+		err := RunProcessTreeCommand(cmd)
 		cancel()
+		out := stdout.Bytes()
 		if err != nil || len(out) == 0 {
 			continue
 		}

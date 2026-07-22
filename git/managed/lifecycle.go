@@ -1066,7 +1066,7 @@ func runLifecycleHook(
 		cmd.Env = command.Env
 		cmd.Stdout = command.Stdout
 		cmd.Stderr = command.Stderr
-		err = cmd.Run()
+		err = gitcmd.RunProcessTreeCommand(cmd)
 	}
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {

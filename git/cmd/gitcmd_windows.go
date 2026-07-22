@@ -3,18 +3,17 @@
 package gitcmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"sync"
 	"syscall"
-	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
-
-const windowsStillActive = 259
 
 func prepareGitCommand(cmd *exec.Cmd, hideConsoleWindow, _ bool) {
 	if hideConsoleWindow {
@@ -24,162 +23,161 @@ func prepareGitCommand(cmd *exec.Cmd, hideConsoleWindow, _ bool) {
 		// Console-less callers otherwise cause git.exe to allocate a visible window.
 		cmd.SysProcAttr.CreationFlags |= windows.CREATE_NO_WINDOW
 	}
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return os.ErrProcessDone
-		}
-		rootPID := uint32(cmd.Process.Pid)
-		rootCreation, identityErr := windowsProcessCreation(rootPID)
-		rootErr := cmd.Process.Kill()
-		if identityErr != nil || rootErr != nil && !errors.Is(rootErr, os.ErrProcessDone) {
-			return errors.Join(identityErr, rootErr)
-		}
-		var cutoff windows.Filetime
-		windows.GetSystemTimeAsFileTime(&cutoff)
-		treeErr := terminateWindowsProcessDescendants(
-			rootPID, filetimeValue(rootCreation), filetimeValue(cutoff),
-		)
-		if errors.Is(rootErr, os.ErrProcessDone) && identityErr == nil && treeErr == nil {
-			return os.ErrProcessDone
-		}
-		return errors.Join(identityErr, rootErr, treeErr)
+}
+
+func runProcessTreeCommand(cmd *exec.Cmd) error {
+	job, err := createKillOnCloseJob()
+	if err != nil {
+		return err
 	}
-}
+	defer func() { _ = windows.CloseHandle(job) }()
 
-type windowsProcessIdentity struct {
-	pid     uint32
-	created uint64
-}
-
-func terminateWindowsProcessDescendants(
-	rootPID uint32, rootCreated, rootStopped uint64,
-) error {
-	var errs []error
-	for range 16 {
-		descendants, err := windowsProcessDescendants(rootPID, rootCreated, rootStopped)
-		if err != nil {
-			errs = append(errs, err)
-		}
-		if len(descendants) == 0 {
-			return errors.Join(errs...)
-		}
-		for _, process := range descendants {
-			if err := terminateWindowsProcess(process); err != nil {
-				errs = append(errs, err)
-			}
-		}
-		time.Sleep(10 * time.Millisecond)
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
-	return errors.Join(append(errs,
-		fmt.Errorf("descendant processes remained after repeated cancellation"))...)
-}
+	// Starting suspended closes the assignment race: the root cannot create a
+	// descendant before it and all future descendants inherit job membership.
+	cmd.SysProcAttr.CreationFlags |= windows.CREATE_SUSPENDED
+	cancellation := windowsJobCancellation{job: job}
+	cmd.Cancel = cancellation.cancel
+	if err := cmd.Start(); err != nil {
+		return err
+	}
 
-func terminateWindowsProcess(identity windowsProcessIdentity) error {
-	process, openErr := windows.OpenProcess(
-		windows.PROCESS_TERMINATE|windows.PROCESS_QUERY_LIMITED_INFORMATION,
-		false, identity.pid,
+	process, err := windows.OpenProcess(
+		windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE,
+		false, uint32(cmd.Process.Pid),
 	)
-	if openErr != nil {
-		if errors.Is(openErr, windows.ERROR_INVALID_PARAMETER) {
-			return nil
-		}
-		return fmt.Errorf("open descendant process %d: %w", identity.pid, openErr)
-	}
-	defer func() { _ = windows.CloseHandle(process) }()
-	created, err := windowsProcessCreationFromHandle(process)
 	if err != nil {
-		return fmt.Errorf("identify descendant process %d: %w", identity.pid, err)
+		return abortSuspendedProcess(cmd, fmt.Errorf("open process for job assignment: %w", err))
 	}
-	if filetimeValue(created) != identity.created {
-		return fmt.Errorf("descendant process %d identity changed before termination", identity.pid)
+	assignErr := windows.AssignProcessToJobObject(job, process)
+	closeErr := windows.CloseHandle(process)
+	if assignErr != nil {
+		return abortSuspendedProcess(cmd, fmt.Errorf("assign process to Job Object: %w", assignErr))
 	}
-	terminateErr := windows.TerminateProcess(process, 1)
-	if terminateErr != nil {
-		var exitCode uint32
-		processExited := errors.Is(terminateErr, windows.ERROR_ACCESS_DENIED) &&
-			windows.GetExitCodeProcess(process, &exitCode) == nil &&
-			exitCode != windowsStillActive
-		if !processExited {
-			return fmt.Errorf("terminate descendant process %d: %w", identity.pid, terminateErr)
-		}
+	if closeErr != nil {
+		return abortJobProcess(cmd, job, fmt.Errorf("close process assignment handle: %w", closeErr))
 	}
-	return nil
+	if cancellation.markAssigned() {
+		return abortJobProcess(cmd, job, context.Canceled)
+	}
+	if err := resumeWindowsProcess(uint32(cmd.Process.Pid)); err != nil {
+		return abortJobProcess(cmd, job, err)
+	}
+	return cmd.Wait()
 }
 
-func windowsProcessCreation(pid uint32) (windows.Filetime, error) {
-	process, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+type windowsJobCancellation struct {
+	job      windows.Handle
+	mu       sync.Mutex
+	assigned bool
+	canceled bool
+}
+
+func (c *windowsJobCancellation) cancel() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.assigned {
+		c.canceled = true
+		return nil
+	}
+	return windows.TerminateJobObject(c.job, 1)
+}
+
+func (c *windowsJobCancellation) markAssigned() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.assigned = true
+	return c.canceled
+}
+
+func createKillOnCloseJob() (windows.Handle, error) {
+	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
-		return windows.Filetime{}, err
+		return 0, fmt.Errorf("create process Job Object: %w", err)
 	}
-	defer func() { _ = windows.CloseHandle(process) }()
-	return windowsProcessCreationFromHandle(process)
-}
-
-func windowsProcessCreationFromHandle(process windows.Handle) (windows.Filetime, error) {
-	var created, exited, kernel, user windows.Filetime
-	if err := windows.GetProcessTimes(process, &created, &exited, &kernel, &user); err != nil {
-		return windows.Filetime{}, err
+	info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
+	info.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+	if _, err := windows.SetInformationJobObject(
+		job, windows.JobObjectExtendedLimitInformation,
+		uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)),
+	); err != nil {
+		_ = windows.CloseHandle(job)
+		return 0, fmt.Errorf("configure process Job Object: %w", err)
 	}
-	return created, nil
+	return job, nil
 }
 
-func filetimeValue(value windows.Filetime) uint64 {
-	return uint64(value.HighDateTime)<<32 | uint64(value.LowDateTime)
-}
-
-func windowsProcessDescendants(
-	rootPID uint32, rootCreated, rootStopped uint64,
-) ([]windowsProcessIdentity, error) {
-	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+func resumeWindowsProcess(pid uint32) error {
+	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPTHREAD, 0)
 	if err != nil {
-		return nil, err
+		return fmt.Errorf("enumerate suspended process threads: %w", err)
 	}
 	defer func() { _ = windows.CloseHandle(snapshot) }()
 
-	children := make(map[uint32][]uint32)
-	entry := windows.ProcessEntry32{Size: uint32(unsafe.Sizeof(windows.ProcessEntry32{}))}
-	if err := windows.Process32First(snapshot, &entry); err != nil {
-		return nil, err
+	entry := windows.ThreadEntry32{Size: uint32(unsafe.Sizeof(windows.ThreadEntry32{}))}
+	if err := windows.Thread32First(snapshot, &entry); err != nil {
+		return fmt.Errorf("read suspended process threads: %w", err)
 	}
+	resumed := false
 	for {
-		children[entry.ParentProcessID] = append(children[entry.ParentProcessID], entry.ProcessID)
-		err = windows.Process32Next(snapshot, &entry)
+		if entry.OwnerProcessID == pid {
+			thread, openErr := windows.OpenThread(windows.THREAD_SUSPEND_RESUME, false, entry.ThreadID)
+			if openErr != nil {
+				return fmt.Errorf("open suspended process thread: %w", openErr)
+			}
+			_, resumeErr := windows.ResumeThread(thread)
+			closeErr := windows.CloseHandle(thread)
+			if resumeErr != nil || closeErr != nil {
+				return errors.Join(windowsThreadError("resume", resumeErr), windowsThreadError("close", closeErr))
+			}
+			resumed = true
+		}
+		err = windows.Thread32Next(snapshot, &entry)
 		if errors.Is(err, windows.ERROR_NO_MORE_FILES) {
 			break
 		}
 		if err != nil {
-			return nil, err
+			return fmt.Errorf("read suspended process threads: %w", err)
 		}
 	}
+	if !resumed {
+		return fmt.Errorf("suspended process had no discoverable thread")
+	}
+	return nil
+}
 
-	result := make([]windowsProcessIdentity, 0)
-	var identityErrs []error
-	visited := map[uint32]bool{rootPID: true}
-	var appendChildren func(uint32, uint64, bool)
-	appendChildren = func(parent uint32, parentCreated uint64, direct bool) {
-		for _, pid := range children[parent] {
-			if pid == 0 || visited[pid] {
-				continue
-			}
-			visited[pid] = true
-			created, creationErr := windowsProcessCreation(pid)
-			if creationErr != nil {
-				if !errors.Is(creationErr, windows.ERROR_INVALID_PARAMETER) {
-					identityErrs = append(identityErrs,
-						fmt.Errorf("identify descendant process %d: %w", pid, creationErr))
-				}
-				continue
-			}
-			createdValue := filetimeValue(created)
-			if createdValue < parentCreated || direct && createdValue > rootStopped {
-				continue
-			}
-			appendChildren(pid, createdValue, false)
-			result = append(result, windowsProcessIdentity{
-				pid: pid, created: createdValue,
-			})
-		}
+func windowsThreadError(operation string, err error) error {
+	if err == nil {
+		return nil
 	}
-	appendChildren(rootPID, rootCreated, true)
-	return result, errors.Join(identityErrs...)
+	return fmt.Errorf("%s process thread: %w", operation, err)
+}
+
+func abortSuspendedProcess(cmd *exec.Cmd, cause error) error {
+	killErr := cmd.Process.Kill()
+	waitErr := cmd.Wait()
+	return errors.Join(cause, ignoreProcessDone(killErr), ignoreExitError(waitErr))
+}
+
+func abortJobProcess(cmd *exec.Cmd, job windows.Handle, cause error) error {
+	terminateErr := windows.TerminateJobObject(job, 1)
+	waitErr := cmd.Wait()
+	return errors.Join(cause, ignoreProcessDone(terminateErr), ignoreExitError(waitErr))
+}
+
+func ignoreProcessDone(err error) error {
+	if errors.Is(err, os.ErrProcessDone) {
+		return nil
+	}
+	return err
+}
+
+func ignoreExitError(err error) error {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return nil
+	}
+	return err
 }

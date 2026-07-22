@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -33,25 +34,49 @@ func TestRunnerCommandAllowsConsoleWindowForTerminalPrompts(t *testing.T) {
 	}
 }
 
-func TestProcessTreeCancellationStopsLateDescendants(t *testing.T) {
+func TestWindowsJobCancellationLatchesBeforeAssignment(t *testing.T) {
+	cancellation := windowsJobCancellation{}
+
+	require.NoError(t, cancellation.cancel())
+	assert.True(t, cancellation.markAssigned())
+}
+
+func TestProcessTreeJobKillsMembersWhenClosed(t *testing.T) {
+	job, err := createKillOnCloseJob()
+	require.NoError(t, err)
+	defer windows.CloseHandle(job)
+
+	var info windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+	err = windows.QueryInformationJobObject(
+		job, windows.JobObjectExtendedLimitInformation,
+		uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)), nil,
+	)
+	require.NoError(t, err)
+	assert.NotZero(t,
+		info.BasicLimitInformation.LimitFlags&windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)
+}
+
+func TestProcessTreeCancellationStopsGrandchildAfterIntermediateExits(t *testing.T) {
 	const helperMode = "KIT_GITCMD_WINDOWS_TREE_HELPER"
 	mode := os.Getenv(helperMode)
 	marker := os.Getenv("KIT_GITCMD_WINDOWS_TREE_MARKER")
 	ready := os.Getenv("KIT_GITCMD_WINDOWS_TREE_READY")
-	if mode == "child" {
+	if mode == "grandchild" {
 		time.Sleep(1500 * time.Millisecond)
 		_ = os.WriteFile(marker, []byte("escaped"), 0o600)
 		return
 	}
+	if mode == "intermediate" {
+		child := exec.Command(os.Args[0], "-test.run=^TestProcessTreeCancellationStopsGrandchildAfterIntermediateExits$")
+		child.Env = append(os.Environ(), helperMode+"=grandchild")
+		_ = child.Start()
+		return
+	}
 	if mode == "parent" {
+		intermediate := exec.Command(os.Args[0], "-test.run=^TestProcessTreeCancellationStopsGrandchildAfterIntermediateExits$")
+		intermediate.Env = append(os.Environ(), helperMode+"=intermediate")
+		_ = intermediate.Run()
 		_ = os.WriteFile(ready, []byte("ready"), 0o600)
-		deadline := time.Now().Add(750 * time.Millisecond)
-		for time.Now().Before(deadline) {
-			child := exec.Command(os.Args[0], "-test.run=^TestProcessTreeCancellationStopsLateDescendants$")
-			child.Env = append(os.Environ(), helperMode+"=child")
-			_ = child.Start()
-			time.Sleep(5 * time.Millisecond)
-		}
 		time.Sleep(5 * time.Second)
 		return
 	}
@@ -62,21 +87,21 @@ func TestProcessTreeCancellationStopsLateDescendants(t *testing.T) {
 	ready = marker + ".ready"
 	ctx, cancel := context.WithCancel(t.Context())
 	parent := exec.CommandContext(
-		ctx, os.Args[0], "-test.run=^TestProcessTreeCancellationStopsLateDescendants$",
+		ctx, os.Args[0], "-test.run=^TestProcessTreeCancellationStopsGrandchildAfterIntermediateExits$",
 	)
 	parent.Env = append(os.Environ(),
 		helperMode+"=parent", "KIT_GITCMD_WINDOWS_TREE_MARKER="+marker,
 		"KIT_GITCMD_WINDOWS_TREE_READY="+ready,
 	)
 	PrepareProcessTreeCancellation(parent, true)
-	require.NoError(parent.Start())
+	done := make(chan error, 1)
+	go func() { done <- RunProcessTreeCommand(parent) }()
 	require.Eventually(func() bool {
 		_, err := os.Stat(ready)
 		return err == nil
 	}, 5*time.Second, 10*time.Millisecond)
-	time.Sleep(50 * time.Millisecond)
 	cancel()
-	_ = parent.Wait()
+	_ = <-done
 	time.Sleep(2 * time.Second)
 	assert.NoFileExists(marker)
 }

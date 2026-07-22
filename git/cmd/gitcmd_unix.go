@@ -25,3 +25,7 @@ func prepareGitCommand(cmd *exec.Cmd, _ bool, preserveForeground bool) {
 		return err
 	}
 }
+
+func runProcessTreeCommand(cmd *exec.Cmd) error {
+	return cmd.Run()
+}

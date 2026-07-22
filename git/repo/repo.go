@@ -118,12 +118,14 @@ func IsUnbornHead(ctx context.Context, path string) bool {
 	if ref == "" {
 		return false
 	}
-	return runner.Command(ctx, path, "rev-parse", "--verify", ref).Run() != nil
+	_, err = runner.Output(ctx, path, "rev-parse", "--verify", ref)
+	return err != nil
 }
 
 // RefExists reports whether fullRef resolves in path.
 func RefExists(ctx context.Context, path, fullRef string) bool {
-	return runner.Command(ctx, path, "rev-parse", "--verify", "--quiet", fullRef).Run() == nil
+	_, err := runner.Output(ctx, path, "rev-parse", "--verify", "--quiet", fullRef)
+	return err == nil
 }
 
 // Resolve resolves ref to a SHA.
