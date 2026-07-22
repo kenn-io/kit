@@ -139,6 +139,42 @@ func TestCreateWorktreeOnDiskCanIsolateUntrustedCheckout(t *testing.T) {
 	assert.NoFileExists(hookMarker)
 }
 
+func TestCreateWorktreeOnDiskUsesExecutionPolicy(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	repo := initLifecycleRepo(t)
+	hook := filepath.Join(repo, "setup.sh")
+	require.NoError(os.WriteFile(hook, []byte("#!/bin/sh\nexit 0\n"), 0o755))
+
+	gitRuns := 0
+	hookRuns := 0
+	_, err := CreateWorktreeOnDisk(context.Background(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Branch:      "execution-policy",
+		Path:        filepath.Join(t.TempDir(), "wt"),
+		SetupScript: hook,
+		RunGit: func(
+			ctx context.Context, runner gitcmd.Runner, dir string, args ...string,
+		) ([]byte, error) {
+			gitRuns++
+			stdout, stderr, err := runner.Run(ctx, dir, nil, args...)
+			return append(stdout, stderr...), err
+		},
+		RunHook: func(ctx context.Context, command HookCommand) error {
+			hookRuns++
+			cmd := exec.CommandContext(ctx, command.Script)
+			cmd.Dir = command.Dir
+			cmd.Env = command.Env
+			cmd.Stdout = command.Stdout
+			cmd.Stderr = command.Stderr
+			return cmd.Run()
+		},
+	})
+	require.NoError(err)
+	assert.Greater(gitRuns, 0)
+	assert.Equal(1, hookRuns)
+}
+
 func TestCreateWorktreeResultRollbackPreservesAdvancedBranch(t *testing.T) {
 	assert := assert.New(t)
 	require := Require.New(t)

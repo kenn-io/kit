@@ -25,6 +25,8 @@ type MergeRequestWorktreeOptions struct {
 	WorktreeName          string
 	HookEnvironmentPrefix string
 	Runner                gitcmd.Runner
+	RunGit                GitRunner
+	RunHook               HookRunner
 
 	Number              int
 	HeadBranch          string
@@ -57,7 +59,7 @@ type mergeRequestRemoteTarget struct {
 func CreateWorktreeFromMergeRequest(
 	ctx context.Context, opts MergeRequestWorktreeOptions,
 ) (CreateWorktreeResult, error) {
-	ctx = withLifecycleRunner(ctx, opts.Runner)
+	ctx = withLifecycleExecution(ctx, opts.Runner, opts.RunGit, opts.RunHook)
 	root, branch, err := requireRootAndBranch(
 		opts.ProjectRoot, opts.Branch,
 	)

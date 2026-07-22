@@ -49,6 +49,23 @@ type HookError struct {
 	Stderr   string
 }
 
+// GitRunner runs one Git command under an application's process policy.
+type GitRunner func(
+	ctx context.Context, runner gitcmd.Runner, dir string, args ...string,
+) ([]byte, error)
+
+// HookCommand describes one lifecycle hook invocation.
+type HookCommand struct {
+	Script string
+	Dir    string
+	Env    []string
+	Stdout io.Writer
+	Stderr io.Writer
+}
+
+// HookRunner runs one lifecycle hook under an application's process policy.
+type HookRunner func(context.Context, HookCommand) error
+
 func (e *HookError) Error() string {
 	return fmt.Sprintf(
 		"%s failed with exit code %d: %s", e.Script, e.ExitCode, e.Stderr,
@@ -91,6 +108,10 @@ type CreateWorktreeOptions struct {
 	// Runner overrides the Git execution policy. A zero runner preserves the
 	// production lifecycle defaults.
 	Runner gitcmd.Runner
+	// RunGit and RunHook let an application retain its process limiter and
+	// platform-specific command policy. Their zero values execute directly.
+	RunGit  GitRunner
+	RunHook HookRunner
 	// IsolatedCheckout prepares the worktree without checkout, calls
 	// BeforeCheckout, then materializes files with hooks, filters, and fsmonitor
 	// disabled.
@@ -111,6 +132,8 @@ type CreateWorktreeResult struct {
 	HookScript    string
 	projectRoot   string
 	runner        gitcmd.Runner
+	runGit        GitRunner
+	runHook       HookRunner
 	pathInfo      os.FileInfo
 	branchOID     string
 	materialized  bool
@@ -124,7 +147,7 @@ type RollbackResult struct {
 
 // Rollback unwinds the worktree represented by this creation result.
 func (r CreateWorktreeResult) Rollback(ctx context.Context) (RollbackResult, error) {
-	ctx = withLifecycleRunner(ctx, r.runner)
+	ctx = withLifecycleExecution(ctx, r.runner, r.runGit, r.runHook)
 	return r.rollbackOwned(ctx)
 }
 
@@ -137,7 +160,7 @@ func (r CreateWorktreeResult) Rollback(ctx context.Context) (RollbackResult, err
 func CreateWorktreeOnDisk(
 	ctx context.Context, opts CreateWorktreeOptions,
 ) (CreateWorktreeResult, error) {
-	ctx = withLifecycleRunner(ctx, opts.Runner)
+	ctx = withLifecycleExecution(ctx, opts.Runner, opts.RunGit, opts.RunHook)
 	root, branch, err := requireRootAndBranch(
 		opts.ProjectRoot, opts.Branch,
 	)
@@ -229,7 +252,8 @@ func snapshotCreateWorktreeResult(
 	}
 	return CreateWorktreeResult{
 		Path: path, Branch: branch, BranchCreated: branchCreated,
-		projectRoot: root, runner: lifecycleRunner(ctx), pathInfo: pathInfo,
+		projectRoot: root, runner: lifecycleRunner(ctx),
+		runGit: lifecycleGitRunner(ctx), runHook: lifecycleHookRunner(ctx), pathInfo: pathInfo,
 		branchOID: strings.TrimSpace(string(out)), materialized: materialized,
 	}, nil
 }
@@ -355,6 +379,8 @@ type RemoveWorktreeOptions struct {
 	WorktreeName          string
 	HookEnvironmentPrefix string
 	Runner                gitcmd.Runner
+	RunGit                GitRunner
+	RunHook               HookRunner
 }
 
 // RemoveWorktreeResult reports what RemoveWorktreeFromDisk did.
@@ -370,7 +396,7 @@ type RemoveWorktreeResult struct {
 func RemoveWorktreeFromDisk(
 	ctx context.Context, opts RemoveWorktreeOptions,
 ) (RemoveWorktreeResult, error) {
-	ctx = withLifecycleRunner(ctx, opts.Runner)
+	ctx = withLifecycleExecution(ctx, opts.Runner, opts.RunGit, opts.RunHook)
 	root, err := absRequired(opts.ProjectRoot, "project root")
 	if err != nil {
 		return RemoveWorktreeResult{}, err
@@ -580,24 +606,47 @@ func runLifecycleGit(
 	ctx context.Context, dir string, args ...string,
 ) ([]byte, error) {
 	runner := lifecycleRunner(ctx)
+	if run := lifecycleGitRunner(ctx); run != nil {
+		return run(ctx, runner, dir, args...)
+	}
 	stdout, stderr, err := runner.Run(ctx, dir, nil, args...)
 	return append(stdout, stderr...), err
 }
 
-type lifecycleRunnerContextKey struct{}
+type lifecycleExecutionContextKey struct{}
 
-func withLifecycleRunner(ctx context.Context, runner gitcmd.Runner) context.Context {
+type lifecycleExecution struct {
+	runner  gitcmd.Runner
+	runGit  GitRunner
+	runHook HookRunner
+}
+
+func withLifecycleExecution(
+	ctx context.Context, runner gitcmd.Runner, runGit GitRunner, runHook HookRunner,
+) context.Context {
 	if runner.Env == nil {
 		runner = gitcmd.Runner{Env: os.Environ(), StripEnv: true}
 	}
-	return context.WithValue(ctx, lifecycleRunnerContextKey{}, runner)
+	return context.WithValue(ctx, lifecycleExecutionContextKey{}, lifecycleExecution{
+		runner: runner, runGit: runGit, runHook: runHook,
+	})
 }
 
 func lifecycleRunner(ctx context.Context) gitcmd.Runner {
-	if runner, ok := ctx.Value(lifecycleRunnerContextKey{}).(gitcmd.Runner); ok && runner.Env != nil {
-		return runner
+	if execution, ok := ctx.Value(lifecycleExecutionContextKey{}).(lifecycleExecution); ok && execution.runner.Env != nil {
+		return execution.runner
 	}
 	return gitcmd.Runner{Env: os.Environ(), StripEnv: true}
+}
+
+func lifecycleGitRunner(ctx context.Context) GitRunner {
+	execution, _ := ctx.Value(lifecycleExecutionContextKey{}).(lifecycleExecution)
+	return execution.runGit
+}
+
+func lifecycleHookRunner(ctx context.Context) HookRunner {
+	execution, _ := ctx.Value(lifecycleExecutionContextKey{}).(lifecycleExecution)
+	return execution.runHook
 }
 
 func checkoutIsolated(ctx context.Context, path string) error {
@@ -715,19 +764,30 @@ func runLifecycleHook(
 	if prefix == "" {
 		prefix = defaultHookEnvironmentPrefix
 	}
-	cmd := exec.CommandContext(ctx, script)
-	cmd.Dir = worktreePath
-	cmd.Env = append(
+	environment := append(
 		os.Environ(),
 		prefix+"_WORKTREE_NAME="+name,
 		prefix+"_WORKTREE_PATH="+worktreePath,
 		prefix+"_PROJECT_ROOT="+projectRoot,
 		prefix+"_BRANCH="+branch,
 	)
-	cmd.Stdout = io.Discard
 	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	command := HookCommand{
+		Script: script, Dir: worktreePath, Env: environment,
+		Stdout: io.Discard, Stderr: &stderr,
+	}
+	var err error
+	if run := lifecycleHookRunner(ctx); run != nil {
+		err = run(ctx, command)
+	} else {
+		cmd := exec.CommandContext(ctx, command.Script)
+		cmd.Dir = command.Dir
+		cmd.Env = command.Env
+		cmd.Stdout = command.Stdout
+		cmd.Stderr = command.Stderr
+		err = cmd.Run()
+	}
+	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			return &HookError{
