@@ -187,3 +187,57 @@ func NormalizeHost(host string) string {
 	}
 	return host
 }
+
+// UnsafeForAutomation reports whether a remote URL can disclose embedded
+// credentials or invoke a git remote-helper command. Query strings and
+// fragments fail closed because they are common credential carriers and are
+// not part of a repository identity.
+func UnsafeForAutomation(remoteURL string) bool {
+	if strings.ContainsAny(remoteURL, "?#") || isRemoteHelperURL(remoteURL) {
+		return true
+	}
+	if strings.Contains(remoteURL, "://") {
+		parsed, err := url.Parse(remoteURL)
+		if err != nil {
+			return true
+		}
+		if parsed.User != nil {
+			scheme := strings.ToLower(parsed.Scheme)
+			if scheme == "ssh" || scheme == "git+ssh" {
+				_, hasPassword := parsed.User.Password()
+				return hasPassword
+			}
+			return true
+		}
+	}
+	at := strings.IndexByte(remoteURL, '@')
+	if at < 0 {
+		return false
+	}
+	return strings.Contains(remoteURL[:at], ":") &&
+		strings.Contains(remoteURL[at+1:], ":")
+}
+
+// isRemoteHelperURL recognizes git's <transport>::<address> syntax. The
+// address is an arbitrary command line for a git-remote-* helper, not a
+// repository host/path, so automated imports must reject it.
+func isRemoteHelperURL(remoteURL string) bool {
+	prefix, _, found := strings.Cut(remoteURL, "::")
+	if !found {
+		return false
+	}
+	for i := 0; i < len(prefix); i++ {
+		if !isURLSchemeChar(i == 0, prefix[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func isURLSchemeChar(first bool, value byte) bool {
+	isAlpha := value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z'
+	if first || isAlpha {
+		return isAlpha
+	}
+	return value >= '0' && value <= '9' || value == '+' || value == '-' || value == '.'
+}
