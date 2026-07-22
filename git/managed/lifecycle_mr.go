@@ -30,10 +30,14 @@ type MergeRequestWorktreeOptions struct {
 	RunGit                GitRunner
 	RunHook               HookRunner
 
-	Number              int
-	HeadBranch          string
-	HeadRepoCloneURL    string
-	ExpectedHeadSHA     string
+	Number           int
+	HeadBranch       string
+	HeadRepoCloneURL string
+	// ExpectedHeadSHA is an independent provenance anchor. A hosted origin
+	// requires either this value or ProjectRepoIdentity.
+	ExpectedHeadSHA string
+	// ProjectRepoIdentity is the normalized hosted identity or exact local
+	// clone URL expected for origin.
 	ProjectRepoIdentity string
 	// Platform is the project's platform kind ("github", "gitlab", ...);
 	// it selects the remote ref that carries the merge request head when
@@ -94,6 +98,8 @@ func CreateWorktreeFromMergeRequest(
 	changeRequestGit, err := NewChangeRequestGit(ChangeRequestGitOptions{
 		ProjectRoot:            root,
 		ProjectIdentity:        repositoryIdentity(opts.ProjectRepoIdentity),
+		ProjectCloneURL:        opts.ProjectRepoIdentity,
+		ExpectedHeadOID:        opts.ExpectedHeadSHA,
 		RemoteNamePrefix:       "mr",
 		HookIsolationNamespace: opts.HookEnvironmentPrefix,
 		Runner:                 opts.Runner,

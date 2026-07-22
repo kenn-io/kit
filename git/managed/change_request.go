@@ -61,8 +61,14 @@ type RemoteRepository struct {
 // ChangeRequestGitOptions configures the reusable Git trust boundary used to
 // fetch and materialize contributor-controlled change-request heads.
 type ChangeRequestGitOptions struct {
-	ProjectRoot            string
-	ProjectIdentity        gitremote.Identity
+	ProjectRoot     string
+	ProjectIdentity gitremote.Identity
+	// ProjectCloneURL is the expected local/file project remote when
+	// ProjectIdentity is hostless.
+	ProjectCloneURL string
+	// ExpectedHeadOID is an independent provenance anchor that permits a
+	// hosted project remote when ProjectIdentity is unavailable.
+	ExpectedHeadOID        string
 	RemoteNamePrefix       string
 	HookIsolationNamespace string
 	Runner                 gitcmd.Runner
@@ -73,7 +79,8 @@ type ChangeRequestGitOptions struct {
 // worktree config validation, and persistent safe push routing.
 type ChangeRequestGit struct {
 	root             string
-	project          gitremote.Identity
+	project          RemoteRepository
+	expectedHeadOID  string
 	remoteNamePrefix string
 	hookNamespace    string
 	runner           gitcmd.Runner
@@ -100,7 +107,11 @@ func NewChangeRequestGit(opts ChangeRequestGitOptions) (*ChangeRequestGit, error
 		namespace = "kit"
 	}
 	return &ChangeRequestGit{
-		root: root, project: opts.ProjectIdentity,
+		root: root,
+		project: RemoteRepository{
+			Identity: opts.ProjectIdentity, CloneURL: strings.TrimSpace(opts.ProjectCloneURL),
+		},
+		expectedHeadOID:  strings.TrimSpace(opts.ExpectedHeadOID),
 		remoteNamePrefix: prefix, hookNamespace: namespace,
 		runner: runner, runGit: opts.RunGit,
 		expectedRemoteURLs: make(map[string]string),
@@ -120,7 +131,16 @@ func (g *ChangeRequestGit) Validate(ctx context.Context) error {
 	if err := g.validateConfigurationAt(ctx, ""); err != nil {
 		return err
 	}
-	if strings.TrimSpace(g.project.Host) == "" {
+	if strings.TrimSpace(g.project.Identity.Host) == "" && g.expectedHeadOID != "" {
+		return nil
+	}
+	if strings.TrimSpace(g.project.Identity.Host) == "" &&
+		strings.TrimSpace(g.project.CloneURL) == "" {
+		for _, push := range []bool{false, true} {
+			if err := g.validateLocalProjectRemote(ctx, "origin", push); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 	for _, push := range []bool{false, true} {
@@ -151,10 +171,31 @@ func (g *ChangeRequestGit) validateProjectRemote(
 			"project Git remote contains credentials or command syntax", nil)
 	}
 	remoteURL, single := singleRemoteURL(string(output))
-	project := RemoteRepository{Identity: g.project}
-	if !single || !remoteMatchesRepository(remoteURL, project) {
+	if !single || !remoteMatchesRepository(remoteURL, g.project) {
 		return changeRequestError(ChangeRequestUnsafeConfiguration,
 			fmt.Sprintf("project Git remote has an unexpected effective %s destination", label), nil)
+	}
+	return nil
+}
+
+func (g *ChangeRequestGit) validateLocalProjectRemote(
+	ctx context.Context, remote string, push bool,
+) error {
+	args := []string{"remote", "get-url", "--all"}
+	if push {
+		args = append(args, "--push")
+	}
+	args = append(args, remote)
+	output, err := g.runSafe(ctx, g.root, args...)
+	if err != nil {
+		return changeRequestError(ChangeRequestUnsafeConfiguration,
+			"failed to inspect the unidentified project Git remote", err)
+	}
+	remoteURL, single := singleRemoteURL(string(output))
+	if !single || gitremote.UnsafeForAutomation(remoteURL) ||
+		gitremote.RemoteHost(remoteURL) != "" || gitremote.RemoteRepoPath(remoteURL) != "" {
+		return changeRequestError(ChangeRequestUnsafeConfiguration,
+			"hosted project Git remote requires a project identity or expected head OID", nil)
 	}
 	return nil
 }
@@ -271,6 +312,10 @@ func (g *ChangeRequestGit) EnsureRemote(ctx context.Context, repository RemoteRe
 	if gitremote.UnsafeForAutomation(remoteURL) {
 		return "", changeRequestError(ChangeRequestAuthentication,
 			"change-request head repository URL contains credentials or command syntax", nil)
+	}
+	if !remoteMatchesRepository(remoteURL, repository) {
+		return "", changeRequestError(ChangeRequestUnsafeConfiguration,
+			"change-request clone URL does not match the source repository identity", nil)
 	}
 	for _, name := range remoteNames {
 		fetchURLs, fetchErr := g.runSafe(ctx, g.root, "remote", "get-url", "--all", name)
@@ -547,7 +592,7 @@ func (g *ChangeRequestGit) validateEffectiveRemote(
 		}
 		matches := singleRemoteMatchesRepository(string(output), repository)
 		if hasExpectedURL {
-			matches = singleRemoteURLEquals(string(output), expectedURL)
+			matches = matches && singleRemoteURLEquals(string(output), expectedURL)
 		}
 		if !matches {
 			return changeRequestError(ChangeRequestUnsafeConfiguration,
@@ -586,7 +631,7 @@ func (g *ChangeRequestGit) projectPushSSHURL(ctx context.Context, remotes map[st
 	}
 	pushURL, single := singleRemoteURL(string(pushURLs))
 	if !single || !isSSHRemoteURL(pushURL) ||
-		!remoteMatchesRepository(pushURL, RemoteRepository{Identity: g.project}) {
+		!remoteMatchesRepository(pushURL, g.project) {
 		return ""
 	}
 	return pushURL

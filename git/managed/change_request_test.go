@@ -126,6 +126,31 @@ func TestNewChangeRequestGitPreservesConfiguredRunnerWithNilEnvironment(t *testi
 	assert.NotNil(t, backend.runner.Env)
 }
 
+func TestChangeRequestGitValidateRejectsHostedOriginWithoutTrustAnchor(t *testing.T) {
+	repo := initLifecycleRepo(t)
+	lifecycleGit(t, repo, "remote", "add", "origin", "https://github.com/acme/widget.git")
+	backend, err := NewChangeRequestGit(ChangeRequestGitOptions{ProjectRoot: repo})
+	require.NoError(t, err)
+
+	err = backend.Validate(t.Context())
+
+	var typed *ChangeRequestError
+	require.ErrorAs(t, err, &typed)
+	assert.Equal(t, ChangeRequestUnsafeConfiguration, typed.Kind)
+}
+
+func TestChangeRequestGitValidateAllowsHostedOriginWithExpectedHead(t *testing.T) {
+	repo := initLifecycleRepo(t)
+	lifecycleGit(t, repo, "remote", "add", "origin", "https://github.com/acme/widget.git")
+	backend, err := NewChangeRequestGit(ChangeRequestGitOptions{
+		ProjectRoot:     repo,
+		ExpectedHeadOID: strings.Repeat("a", 40),
+	})
+	require.NoError(t, err)
+
+	assert.NoError(t, backend.Validate(t.Context()))
+}
+
 func TestChangeRequestWorktreeConfigVersionRequirement(t *testing.T) {
 	for _, test := range []struct {
 		output string
@@ -151,6 +176,35 @@ func TestChangeRequestGitEnsureRemoteRejectsEffectiveURLRewrite(t *testing.T) {
 	require.ErrorAs(t, err, &typed)
 	assert.Equal(t, ChangeRequestUnsafeConfiguration, typed.Kind)
 	assert.NotContains(t, strings.Fields(lifecycleGit(t, repo, "remote")), "review-octocat")
+}
+
+func TestChangeRequestGitEnsureRemoteRejectsCloneURLIdentityMismatch(t *testing.T) {
+	repo, backend := newChangeRequestGit(t)
+	lifecycleGit(t, repo, "remote", "add", "origin", "https://github.com/acme/widget.git")
+	repository := changeRequestRemote("octocat")
+	repository.CloneURL = "https://evil.example/octocat/widget.git"
+
+	_, err := backend.EnsureRemote(t.Context(), repository)
+
+	var typed *ChangeRequestError
+	require.ErrorAs(t, err, &typed)
+	assert.Equal(t, ChangeRequestUnsafeConfiguration, typed.Kind)
+	assert.NotContains(t, strings.Fields(lifecycleGit(t, repo, "remote")), "review-octocat")
+}
+
+func TestChangeRequestGitExpectedURLDoesNotReplaceIdentityValidation(t *testing.T) {
+	repo, backend := newChangeRequestGit(t)
+	remoteURL := "https://evil.example/octocat/widget.git"
+	lifecycleGit(t, repo, "remote", "add", "fork", remoteURL)
+	backend.rememberExpectedRemoteURL("fork", remoteURL)
+
+	err := backend.validateEffectiveRemote(
+		t.Context(), "", "fork", changeRequestRemote("octocat"),
+	)
+
+	var typed *ChangeRequestError
+	require.ErrorAs(t, err, &typed)
+	assert.Equal(t, ChangeRequestUnsafeConfiguration, typed.Kind)
 }
 
 func TestChangeRequestGitEnsureRemotePreservesProjectSSHTransport(t *testing.T) {
