@@ -58,6 +58,7 @@ func branchExistsInRepo(t *testing.T, repo, branch string) bool {
 func writeHookScript(t *testing.T, dir, outFile string, exitCode int) string {
 	t.Helper()
 	script := filepath.Join(dir, "hook")
+	shellOutFile := strings.ReplaceAll(filepath.ToSlash(outFile), "'", "'\\''")
 	body := "#!/bin/sh\n" +
 		"{\n" +
 		"  pwd\n" +
@@ -65,7 +66,7 @@ func writeHookScript(t *testing.T, dir, outFile string, exitCode int) string {
 		"  echo \"path=$KIT_WORKTREE_PATH\"\n" +
 		"  echo \"root=$KIT_PROJECT_ROOT\"\n" +
 		"  echo \"branch=$KIT_BRANCH\"\n" +
-		"} > " + outFile + "\n"
+		"} > '" + shellOutFile + "'\n"
 	if exitCode != 0 {
 		body += "echo boom >&2\nexit " + string(rune('0'+exitCode)) + "\n"
 	}
