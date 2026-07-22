@@ -33,6 +33,7 @@ type MergeRequestWorktreeOptions struct {
 	Number              int
 	HeadBranch          string
 	HeadRepoCloneURL    string
+	ExpectedHeadSHA     string
 	ProjectRepoIdentity string
 	// Platform is the project's platform kind ("github", "gitlab", ...);
 	// it selects the remote ref that carries the merge request head when
@@ -109,9 +110,9 @@ func CreateWorktreeFromMergeRequest(
 	if err != nil {
 		return CreateWorktreeResult{}, err
 	}
-	if _, err := changeRequestGit.Fetch(
+	if _, err := changeRequestGit.FetchExpected(
 		ctx, target.checkoutRemote, target.checkoutSourceRef,
-		target.checkoutDestinationRef,
+		target.checkoutDestinationRef, opts.ExpectedHeadSHA,
 	); err != nil {
 		return CreateWorktreeResult{}, err
 	}

@@ -25,6 +25,7 @@ const (
 	ChangeRequestAuthentication      ChangeRequestErrorKind = "authentication"
 	ChangeRequestNetwork             ChangeRequestErrorKind = "network"
 	ChangeRequestInaccessibleHead    ChangeRequestErrorKind = "inaccessible_head"
+	ChangeRequestHeadChanged         ChangeRequestErrorKind = "head_changed"
 	ChangeRequestUnsupportedGit      ChangeRequestErrorKind = "unsupported_git"
 	ChangeRequestUnsafeConfiguration ChangeRequestErrorKind = "unsafe_configuration"
 	ChangeRequestWorktreeCreation    ChangeRequestErrorKind = "worktree_creation"
@@ -298,6 +299,24 @@ func (g *ChangeRequestGit) Fetch(ctx context.Context, remote, sourceRef, destina
 			"fetched change-request head is not a commit", err)
 	}
 	return strings.TrimSpace(string(sha)), nil
+}
+
+// FetchExpected fetches a change-request ref and rejects it when the resolved
+// commit differs from the provider metadata the caller selected. An empty
+// expected OID retains Fetch behavior for providers without that metadata.
+func (g *ChangeRequestGit) FetchExpected(
+	ctx context.Context, remote, sourceRef, destinationRef, expectedOID string,
+) (string, error) {
+	oid, err := g.Fetch(ctx, remote, sourceRef, destinationRef)
+	if err != nil {
+		return "", err
+	}
+	if expected := strings.TrimSpace(expectedOID); expected != "" &&
+		!strings.EqualFold(oid, expected) {
+		return "", changeRequestError(ChangeRequestHeadChanged,
+			"change-request head changed while it was being imported; retry", nil)
+	}
+	return oid, nil
 }
 
 // ConfigurePush persists worktree-scoped routing to the contributor's source

@@ -252,3 +252,27 @@ func TestCreateWorktreeFromMergeRequestPersistsSafePushRouting(t *testing.T) {
 	assert.DirExists(t, hooksPath)
 	assert.Equal(t, "upstream", worktreeConfig(t, result.Path, "push.default"))
 }
+
+func TestCreateWorktreeFromMergeRequestRejectsChangedHead(t *testing.T) {
+	origin, clone := initOriginAndClone(t)
+	lifecycleGit(t, origin, "checkout", "-q", "-b", "feature-changed")
+	lifecycleGit(t, origin, "commit", "--allow-empty", "-m", "changed head")
+	lifecycleGit(t, origin, "checkout", "-q", "main")
+
+	destination := filepath.Join(t.TempDir(), "wt")
+	_, err := CreateWorktreeFromMergeRequest(context.Background(), MergeRequestWorktreeOptions{
+		ProjectRoot:         clone,
+		Branch:              "mr-52-changed",
+		Path:                destination,
+		Number:              52,
+		HeadBranch:          "feature-changed",
+		HeadRepoCloneURL:    origin,
+		ProjectRepoIdentity: identityOfCloneURL(origin),
+		ExpectedHeadSHA:     strings.Repeat("0", 40),
+	})
+
+	var changeRequestErr *ChangeRequestError
+	Require.ErrorAs(t, err, &changeRequestErr)
+	assert.Equal(t, ChangeRequestHeadChanged, changeRequestErr.Kind)
+	assert.NoDirExists(t, destination)
+}
