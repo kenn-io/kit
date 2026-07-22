@@ -176,6 +176,32 @@ func TestCreateWorktreeOnDiskCanIsolateUntrustedCheckout(t *testing.T) {
 	assert.NoFileExists(hookMarker)
 }
 
+func TestCreateWorktreeOnDiskPreservesArtifactFromFailedBeforeCheckout(t *testing.T) {
+	repo := initLifecycleRepo(t)
+	dest := filepath.Join(t.TempDir(), "pre-checkout-artifact")
+	wantErr := errors.New("validation failed")
+
+	result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot:      repo,
+		Branch:           "pre-checkout-artifact",
+		Path:             dest,
+		BaseRef:          "HEAD",
+		IsolatedCheckout: true,
+		BeforeCheckout: func(_ context.Context, worktreePath string) error {
+			Require.NoError(t, os.WriteFile(
+				filepath.Join(worktreePath, "keep.txt"), []byte("keep\n"), 0o600,
+			))
+			return wantErr
+		},
+	})
+
+	Require.ErrorIs(t, err, wantErr)
+	Require.ErrorIs(t, err, ErrWorktreeCleanupIncomplete)
+	assert.Equal(t, dest, result.Path)
+	assert.FileExists(t, filepath.Join(dest, "keep.txt"))
+	assert.True(t, branchExistsInRepo(t, repo, "pre-checkout-artifact"))
+}
+
 func TestCreateWorktreeOnDiskIsolatesHooksBeforeBranchCreation(t *testing.T) {
 	require := Require.New(t)
 	assert := assert.New(t)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -209,9 +210,7 @@ func prepareMergeRequestRemote(
 
 	cloneURL := strings.TrimSpace(opts.HeadRepoCloneURL)
 	sameRepo := cloneURL != "" && opts.ProjectRepoIdentity != "" &&
-		strings.EqualFold(
-			CloneURLIdentity(cloneURL), opts.ProjectRepoIdentity,
-		)
+		mergeRequestRepositoriesEqual(cloneURL, opts.ProjectRepoIdentity)
 	if sameRepo && hasHeadBranch {
 		destination := "refs/remotes/origin/" + headBranch
 		return mergeRequestRemoteTarget{
@@ -254,6 +253,64 @@ func prepareMergeRequestRemote(
 		trackingDestinationRef: "refs/remotes/" + remoteName + "/" + headBranch,
 		trackingMergeRef:       "refs/heads/" + headBranch,
 	}, nil
+}
+
+func mergeRequestRepositoriesEqual(headURL, projectIdentity string) bool {
+	headIdentity := CloneURLIdentity(headURL)
+	projectIdentity = CloneURLIdentity(projectIdentity)
+	headHosted := repositoryIdentity(headIdentity).Host != ""
+	projectHosted := repositoryIdentity(projectIdentity).Host != ""
+	if headHosted || projectHosted {
+		return headHosted && projectHosted && strings.EqualFold(headIdentity, projectIdentity)
+	}
+	return localRepositoriesEqual(headIdentity, projectIdentity)
+}
+
+func localRepositoriesEqual(left, right string) bool {
+	leftPath, leftErr := localRepositoryPath(left)
+	rightPath, rightErr := localRepositoryPath(right)
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
+	if leftPath == rightPath {
+		return true
+	}
+	leftInfo, leftErr := os.Stat(leftPath)
+	rightInfo, rightErr := os.Stat(rightPath)
+	return leftErr == nil && rightErr == nil && os.SameFile(leftInfo, rightInfo)
+}
+
+func localRepositoryPath(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", fmt.Errorf("local repository path is empty")
+	}
+	if strings.HasPrefix(strings.ToLower(trimmed), "file:") {
+		parsed, err := url.Parse(trimmed)
+		if err != nil || !strings.EqualFold(parsed.Scheme, "file") ||
+			parsed.User != nil || parsed.Opaque != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+			return "", fmt.Errorf("invalid local repository URL")
+		}
+		path, err := url.PathUnescape(parsed.EscapedPath())
+		if err != nil {
+			return "", err
+		}
+		if parsed.Host != "" && !strings.EqualFold(parsed.Host, "localhost") {
+			path = "//" + parsed.Host + "/" + strings.TrimPrefix(path, "/")
+		}
+		if len(path) >= 3 && path[0] == '/' && path[2] == ':' {
+			path = path[1:]
+		}
+		if path == "" {
+			return "", fmt.Errorf("local repository path is empty")
+		}
+		trimmed = filepath.FromSlash(path)
+	}
+	absolute, err := filepath.Abs(trimmed)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(absolute), nil
 }
 
 func normalizeMergeRequestCloneURLs(

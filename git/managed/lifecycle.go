@@ -363,7 +363,16 @@ func (r CreateWorktreeResult) rollbackOwned(
 	case branchErr != nil || branchExists && !strings.EqualFold(branchOID, r.branchOID):
 		remaining.Path = r.Path
 		errs = append(errs, errors.New("created worktree branch advanced; preserving it"))
-	case r.materialized && preserveChanges:
+	case !r.materialized && preserveChanges:
+		hasArtifacts, err := unmaterializedWorktreeHasArtifacts(r.Path)
+		if err != nil {
+			remaining.Path = r.Path
+			errs = append(errs, fmt.Errorf("inspect unmaterialized worktree: %w", err))
+		} else if hasArtifacts {
+			remaining.Path = r.Path
+			errs = append(errs, errors.New("unmaterialized worktree contains unexpected artifacts; preserving it"))
+		}
+	case preserveChanges:
 		runner, err := isolatedLifecycleRunner(ctx, r.Path)
 		if err != nil {
 			remaining.Path = r.Path
@@ -428,6 +437,19 @@ func (r CreateWorktreeResult) rollbackOwned(
 		errs = append(errs, errors.New("created worktree branch remains"))
 	}
 	return remaining, errors.Join(errs...)
+}
+
+func unmaterializedWorktreeHasArtifacts(path string) (bool, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if entry.Name() != ".git" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func lifecycleRefOID(ctx context.Context, root, branch string) (string, bool, error) {

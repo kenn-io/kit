@@ -95,6 +95,28 @@ func TestCreateWorktreeFromMergeRequestSameRepo(t *testing.T) {
 	assert.Equal("upstream", worktreeConfig(t, dest, "push.default"))
 }
 
+func TestPrepareMergeRequestRemoteKeepsCaseDistinctLocalRepositoriesSeparate(t *testing.T) {
+	repo := initLifecycleRepo(t)
+	backend, err := NewChangeRequestGit(ChangeRequestGitOptions{
+		ProjectRoot:     repo,
+		ExpectedHeadOID: strings.Repeat("a", 40),
+	})
+	Require.NoError(t, err)
+	base := t.TempDir()
+
+	target, err := prepareMergeRequestRemote(t.Context(), backend, MergeRequestWorktreeOptions{
+		Number:              18,
+		Platform:            "github",
+		HeadBranch:          "feature",
+		HeadRepoCloneURL:    filepath.Join(base, "CaseRepo"),
+		ProjectRepoIdentity: filepath.Join(base, "caserepo"),
+	})
+
+	Require.NoError(t, err)
+	assert.Equal(t, "refs/pull/18/head", target.checkoutSourceRef)
+	assert.NotEqual(t, "origin", target.trackingRemote)
+}
+
 // TestCreateWorktreeFromMergeRequestPullRefFallback covers the no-fork-URL
 // scenario: the merge request head is fetched via the platform pull ref and
 // no upstream tracking is configured.
