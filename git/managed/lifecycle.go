@@ -780,7 +780,7 @@ func runLifecycleHook(
 	if run := lifecycleHookRunner(ctx); run != nil {
 		err = run(ctx, command)
 	} else {
-		cmd := exec.CommandContext(ctx, command.Script)
+		cmd := lifecycleCommandContext(ctx, command.Script)
 		cmd.Dir = command.Dir
 		cmd.Env = command.Env
 		cmd.Stdout = command.Stdout

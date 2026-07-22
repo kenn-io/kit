@@ -200,7 +200,7 @@ func TestCreateWorktreeFromMergeRequestHookFailureRollsBack(t *testing.T) {
 	lifecycleGit(t, origin, "commit", "--allow-empty", "-m", "pr work")
 	lifecycleGit(t, origin, "checkout", "-q", "main")
 	require.NoError(os.WriteFile(
-		filepath.Join(clone, "setup.sh"),
+		filepath.Join(clone, "setup"),
 		[]byte("#!/bin/sh\nexit 5\n"), 0o755))
 
 	dest := filepath.Join(t.TempDir(), "wt")
@@ -213,7 +213,7 @@ func TestCreateWorktreeFromMergeRequestHookFailureRollsBack(t *testing.T) {
 			HeadBranch:          "feature-x",
 			HeadRepoCloneURL:    origin,
 			ProjectRepoIdentity: identityOfCloneURL(origin),
-			SetupScript:         "setup.sh",
+			SetupScript:         "setup",
 		})
 	var hookErr *HookError
 	require.ErrorAs(err, &hookErr)

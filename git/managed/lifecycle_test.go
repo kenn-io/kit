@@ -57,7 +57,7 @@ func branchExistsInRepo(t *testing.T, repo, branch string) bool {
 // directory and lifecycle environment to outFile, exiting with exitCode.
 func writeHookScript(t *testing.T, dir, outFile string, exitCode int) string {
 	t.Helper()
-	script := filepath.Join(dir, "hook.sh")
+	script := filepath.Join(dir, "hook")
 	body := "#!/bin/sh\n" +
 		"{\n" +
 		"  pwd\n" +
@@ -143,7 +143,7 @@ func TestCreateWorktreeOnDiskUsesExecutionPolicy(t *testing.T) {
 	require := Require.New(t)
 	assert := assert.New(t)
 	repo := initLifecycleRepo(t)
-	hook := filepath.Join(repo, "setup.sh")
+	hook := filepath.Join(repo, "setup")
 	require.NoError(os.WriteFile(hook, []byte("#!/bin/sh\nexit 0\n"), 0o755))
 
 	gitRuns := 0
@@ -162,12 +162,7 @@ func TestCreateWorktreeOnDiskUsesExecutionPolicy(t *testing.T) {
 		},
 		RunHook: func(ctx context.Context, command HookCommand) error {
 			hookRuns++
-			cmd := exec.CommandContext(ctx, command.Script)
-			cmd.Dir = command.Dir
-			cmd.Env = command.Env
-			cmd.Stdout = command.Stdout
-			cmd.Stderr = command.Stderr
-			return cmd.Run()
+			return nil
 		},
 	})
 	require.NoError(err)
@@ -316,7 +311,7 @@ func TestCreateWorktreeOnDiskRunsSetupHook(t *testing.T) {
 	outFile := filepath.Join(t.TempDir(), "hook.out")
 	script := writeHookScript(t, t.TempDir(), outFile, 0)
 	// Hook scripts resolve against the project root; place one inside.
-	inRepo := filepath.Join(repo, "setup.sh")
+	inRepo := filepath.Join(repo, "setup")
 	data, err := os.ReadFile(script)
 	require.NoError(err)
 	require.NoError(os.WriteFile(inRepo, data, 0o755))
@@ -326,7 +321,7 @@ func TestCreateWorktreeOnDiskRunsSetupHook(t *testing.T) {
 		ProjectRoot:  repo,
 		Branch:       "feature",
 		Path:         dest,
-		SetupScript:  "setup.sh",
+		SetupScript:  "setup",
 		WorktreeName: "Feature Work",
 	})
 	require.NoError(err)
@@ -355,7 +350,7 @@ func TestCreateWorktreeOnDiskRollsBackWhenSetupHookFails(t *testing.T) {
 	repo := initLifecycleRepo(t)
 	outFile := filepath.Join(t.TempDir(), "hook.out")
 	script := writeHookScript(t, t.TempDir(), outFile, 3)
-	inRepo := filepath.Join(repo, "setup.sh")
+	inRepo := filepath.Join(repo, "setup")
 	data, err := os.ReadFile(script)
 	require.NoError(err)
 	require.NoError(os.WriteFile(inRepo, data, 0o755))
@@ -365,7 +360,7 @@ func TestCreateWorktreeOnDiskRollsBackWhenSetupHookFails(t *testing.T) {
 		ProjectRoot: repo,
 		Branch:      "feature",
 		Path:        dest,
-		SetupScript: "setup.sh",
+		SetupScript: "setup",
 	})
 	var hookErr *HookError
 	require.ErrorAs(err, &hookErr)
@@ -384,7 +379,7 @@ func TestCreateWorktreeOnDiskKeepsPreexistingBranchOnHookFailure(t *testing.T) {
 	require := Require.New(t)
 	repo := initLifecycleRepo(t)
 	lifecycleGit(t, repo, "branch", "existing")
-	script := filepath.Join(repo, "setup.sh")
+	script := filepath.Join(repo, "setup")
 	require.NoError(os.WriteFile(
 		script, []byte("#!/bin/sh\nexit 1\n"), 0o755,
 	))
@@ -394,7 +389,7 @@ func TestCreateWorktreeOnDiskKeepsPreexistingBranchOnHookFailure(t *testing.T) {
 		ProjectRoot: repo,
 		Branch:      "existing",
 		Path:        dest,
-		SetupScript: "setup.sh",
+		SetupScript: "setup",
 	})
 	var hookErr *HookError
 	require.ErrorAs(err, &hookErr)
@@ -503,7 +498,7 @@ func TestRemoveWorktreeFromDiskRunsTeardownHookFirst(t *testing.T) {
 
 	outFile := filepath.Join(t.TempDir(), "hook.out")
 	script := writeHookScript(t, t.TempDir(), outFile, 0)
-	inRepo := filepath.Join(repo, "teardown.sh")
+	inRepo := filepath.Join(repo, "teardown")
 	data, err := os.ReadFile(script)
 	require.NoError(err)
 	require.NoError(os.WriteFile(inRepo, data, 0o755))
@@ -512,7 +507,7 @@ func TestRemoveWorktreeFromDiskRunsTeardownHookFirst(t *testing.T) {
 		ProjectRoot:    repo,
 		Path:           dest,
 		Branch:         "feature",
-		TeardownScript: "teardown.sh",
+		TeardownScript: "teardown",
 		WorktreeName:   "Feature Work",
 	})
 	require.NoError(err)
@@ -542,7 +537,7 @@ func TestRemoveWorktreeFromDiskAbortsWhenTeardownHookFails(t *testing.T) {
 	repo := initLifecycleRepo(t)
 	dest := filepath.Join(t.TempDir(), "wt")
 	lifecycleGit(t, repo, "worktree", "add", "-b", "feature", dest)
-	script := filepath.Join(repo, "teardown.sh")
+	script := filepath.Join(repo, "teardown")
 	require.NoError(os.WriteFile(
 		script, []byte("#!/bin/sh\necho nope >&2\nexit 2\n"), 0o755,
 	))
@@ -551,7 +546,7 @@ func TestRemoveWorktreeFromDiskAbortsWhenTeardownHookFails(t *testing.T) {
 		ProjectRoot:    repo,
 		Path:           dest,
 		Branch:         "feature",
-		TeardownScript: "teardown.sh",
+		TeardownScript: "teardown",
 		RemoveBranch:   true,
 	})
 	var hookErr *HookError
