@@ -221,3 +221,23 @@ func TestChangeRequestGitNormalPushCannotRunContributorHook(t *testing.T) {
 	require.NoError(t, err, string(output))
 	assert.NoFileExists(t, marker)
 }
+
+func TestSSHRemoteURLRejectsLocalPaths(t *testing.T) {
+	tests := []struct {
+		name      string
+		remoteURL string
+		want      bool
+	}{
+		{name: "scp", remoteURL: "git@example.com:owner/repo.git", want: true},
+		{name: "ssh URL", remoteURL: "ssh://git@example.com/owner/repo.git", want: true},
+		{name: "Windows drive", remoteURL: `D:\work\repo.git`},
+		{name: "Windows slash drive", remoteURL: "D:/work/repo.git"},
+		{name: "Unix absolute", remoteURL: "/work/repo.git"},
+		{name: "file URL", remoteURL: "file:///work/repo.git"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isSSHRemoteURL(tt.remoteURL))
+		})
+	}
+}

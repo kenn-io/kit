@@ -718,6 +718,9 @@ func forkSSHURL(projectURL string, repository gitremote.Identity) (string, error
 
 func isSSHRemoteURL(remoteURL string) bool {
 	remoteURL = strings.TrimSpace(remoteURL)
+	if gitremote.IsLocal(remoteURL) {
+		return false
+	}
 	lower := strings.ToLower(remoteURL)
 	if strings.HasPrefix(lower, "ssh://") || strings.HasPrefix(lower, "git+ssh://") {
 		return true
