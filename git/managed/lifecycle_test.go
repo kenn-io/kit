@@ -715,8 +715,8 @@ func TestRemoveMissingWorktreePreservesUnrelatedStaleRegistration(t *testing.T) 
 
 	require.NoError(err)
 	list := lifecycleGit(t, repo, "worktree", "list", "--porcelain")
-	assert.NotContains(list, target)
-	assert.Contains(list, unrelated,
+	assert.NotContains(list, "branch refs/heads/target")
+	assert.Contains(list, "branch refs/heads/unrelated",
 		"removing one stale worktree must not prune another registration")
 }
 
