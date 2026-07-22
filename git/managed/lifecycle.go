@@ -116,7 +116,10 @@ type CreateWorktreeOptions struct {
 	// BeforeCheckout, then materializes files with hooks, filters, and fsmonitor
 	// disabled.
 	IsolatedCheckout bool
-	BeforeCheckout   func(context.Context, string) error
+	// NoTrack prevents Git from implicitly configuring upstream tracking when
+	// BaseRef names a remote-tracking branch.
+	NoTrack        bool
+	BeforeCheckout func(context.Context, string) error
 }
 
 // CreateWorktreeResult reports what CreateWorktreeOnDisk did.
@@ -197,6 +200,9 @@ func CreateWorktreeOnDisk(
 	}
 	if opts.IsolatedCheckout {
 		args = slices.Insert(args, 2, "--no-checkout")
+	}
+	if opts.NoTrack {
+		args = slices.Insert(args, 2, "--no-track")
 	}
 	if out, err := runLifecycleGit(ctx, root, args...); err != nil {
 		return CreateWorktreeResult{}, classifyWorktreeGitError(out, err)

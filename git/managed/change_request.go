@@ -309,16 +309,10 @@ func (g *ChangeRequestGit) ConfigurePush(
 	repository RemoteRepository,
 	sourceBranch string,
 ) error {
-	if err := g.validateWorkspaceHead(ctx, created); err != nil {
-		return err
-	}
 	if err := g.validateEffectiveRemote(ctx, created.Path, remote, repository); err != nil {
 		return err
 	}
-	if _, err := g.runSafe(ctx, g.root, "config", "extensions.worktreeConfig", "true"); err != nil {
-		return err
-	}
-	hooksPath, err := g.configureDisabledHooks(ctx, created.Path)
+	hooksPath, err := g.configureWorktreeIsolation(ctx, created)
 	if err != nil {
 		return err
 	}
@@ -337,6 +331,32 @@ func (g *ChangeRequestGit) ConfigurePush(
 		}
 	}
 	return g.validatePushRouting(ctx, created, remote, repository, sourceBranch, hooksPath)
+}
+
+// ConfigureWorktreeIsolation persists a non-contributor-controlled empty
+// hooks directory for a newly created change-request worktree, even when no
+// safe upstream is available for push routing.
+func (g *ChangeRequestGit) ConfigureWorktreeIsolation(
+	ctx context.Context, created CreateWorktreeResult,
+) error {
+	_, err := g.configureWorktreeIsolation(ctx, created)
+	return err
+}
+
+func (g *ChangeRequestGit) configureWorktreeIsolation(
+	ctx context.Context, created CreateWorktreeResult,
+) (string, error) {
+	if err := g.validateWorkspaceHead(ctx, created); err != nil {
+		return "", err
+	}
+	if err := g.ValidateWorktree(ctx, created.Path); err != nil {
+		return "", err
+	}
+	if _, err := g.runSafe(ctx, g.root, "config", "extensions.worktreeConfig", "true"); err != nil {
+		return "", changeRequestError(ChangeRequestUnsafeConfiguration,
+			"failed to enable worktree-scoped Git configuration", err)
+	}
+	return g.configureDisabledHooks(ctx, created.Path)
 }
 
 func (g *ChangeRequestGit) validateWorkspaceHead(ctx context.Context, created CreateWorktreeResult) error {

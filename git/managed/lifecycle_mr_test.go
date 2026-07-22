@@ -222,3 +222,33 @@ func TestCreateWorktreeFromMergeRequestHookFailureRollsBack(t *testing.T) {
 	assert.True(os.IsNotExist(statErr))
 	assert.False(branchExistsInRepo(t, clone, "pr-42"))
 }
+
+func TestCreateWorktreeFromMergeRequestPersistsSafePushRouting(t *testing.T) {
+	origin, clone := initOriginAndClone(t)
+	fork := filepath.Join(t.TempDir(), "fork")
+	lifecycleGit(t, clone, "clone", origin, fork)
+	lifecycleGit(t, fork, "config", "user.email", "t@e.st")
+	lifecycleGit(t, fork, "config", "user.name", "Tester")
+	lifecycleGit(t, fork, "checkout", "-b", "feature-safe")
+	lifecycleGit(t, fork, "commit", "--allow-empty", "-m", "safe routing")
+	lifecycleGit(t, origin, "fetch", fork, "+refs/heads/feature-safe:refs/pull/51/head")
+	lifecycleGit(t, clone, "config", "core.hooksPath", ".githooks")
+
+	result, err := CreateWorktreeFromMergeRequest(context.Background(), MergeRequestWorktreeOptions{
+		ProjectRoot:         clone,
+		Branch:              "mr-51-safe-routing",
+		BaseDir:             t.TempDir(),
+		Number:              51,
+		HeadBranch:          "feature-safe",
+		HeadRepoCloneURL:    fork,
+		ProjectRepoIdentity: identityOfCloneURL(origin),
+		Platform:            "github",
+	})
+	Require.NoError(t, err)
+	t.Cleanup(func() { _, _ = result.Rollback(context.Background()) })
+
+	hooksPath := lifecycleGit(t, result.Path, "config", "--path", "--get", "core.hooksPath")
+	assert.True(t, filepath.IsAbs(hooksPath), hooksPath)
+	assert.DirExists(t, hooksPath)
+	assert.Equal(t, "upstream", worktreeConfig(t, result.Path, "push.default"))
+}
