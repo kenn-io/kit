@@ -247,15 +247,46 @@ func TestChangeRequestGitValidateAllowsHostedOriginWithExpectedHead(t *testing.T
 func TestChangeRequestWorktreeConfigVersionRequirement(t *testing.T) {
 	for _, test := range []struct {
 		output string
+		goos   string
 		want   bool
 	}{
-		{output: "git version 2.19.6"},
-		{output: "git version 2.20.0", want: true},
-		{output: "git version 2.45.2 (Apple Git-145)", want: true},
-		{output: "not git"},
+		{output: "git version 2.19.6", goos: "linux"},
+		{output: "git version 2.20.0", goos: "linux", want: true},
+		{output: "git version 2.45.2 (Apple Git-145)", goos: "darwin", want: true},
+		{output: "git version 2.52.2.windows.4", goos: "windows"},
+		{output: "git version 2.53.0", goos: "windows"},
+		{output: "git version 2.53.0.windows.2", goos: "windows"},
+		{output: "git version 2.53.0.windows.3-malformed", goos: "windows"},
+		{output: "git version 2.53.0.windows.3", goos: "windows", want: true},
+		{output: "git version 2.53.1.windows.1", goos: "windows", want: true},
+		{output: "git version 2.54.0.windows.1", goos: "windows", want: true},
+		{output: "not git", goos: "linux"},
 	} {
-		assert.Equal(t, test.want, supportsChangeRequestWorktreeConfig(test.output), test.output)
+		assert.Equal(t, test.want,
+			supportsChangeRequestGitVersion(test.output, test.goos), test.output)
 	}
+}
+
+func TestChangeRequestGitFetchEnforcesConfiguredExpectedHead(t *testing.T) {
+	repo := initLifecycleRepo(t)
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	lifecycleGit(t, repo, "init", "--bare", bare)
+	lifecycleGit(t, repo, "push", bare, "HEAD:refs/heads/topic")
+	lifecycleGit(t, repo, "remote", "add", "origin", bare)
+	backend, err := NewChangeRequestGit(ChangeRequestGitOptions{
+		ProjectRoot:     repo,
+		ExpectedHeadOID: strings.Repeat("a", 40),
+	})
+	require.NoError(t, err)
+	require.NoError(t, backend.Validate(t.Context()))
+
+	_, err = backend.Fetch(
+		t.Context(), "origin", "refs/heads/topic", "refs/kit/reviews/anchored",
+	)
+
+	var typed *ChangeRequestError
+	require.ErrorAs(t, err, &typed)
+	assert.Equal(t, ChangeRequestHeadChanged, typed.Kind)
 }
 
 func TestChangeRequestGitEnsureRemoteRejectsEffectiveURLRewrite(t *testing.T) {

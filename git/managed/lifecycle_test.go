@@ -93,6 +93,42 @@ func writeHookScript(t *testing.T, dir, outFile string, exitCode int) string {
 	return script
 }
 
+func TestLifecycleShebangCommandUsesDeclaredInterpreterRegardlessOfExtension(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		content         string
+		wantInterpreter string
+		wantArgs        []string
+		wantOK          bool
+	}{
+		{name: "extension shell", content: "#!/bin/sh\necho ok\n", wantInterpreter: "sh", wantOK: true},
+		{name: "env python", content: "#!/usr/bin/env python3 -u\nprint(1)\n", wantInterpreter: "python3", wantArgs: []string{"-u"}, wantOK: true},
+		{name: "env split", content: "#!/usr/bin/env -S python3 -u\nprint(1)\n", wantInterpreter: "python3", wantArgs: []string{"-u"}, wantOK: true},
+		{name: "no shebang", content: "echo ok\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
+			require := Require.New(t)
+			extension := ".sh"
+			if test.wantInterpreter == "python3" {
+				extension = ".py"
+			}
+			script := filepath.Join(t.TempDir(), "setup"+extension)
+			require.NoError(os.WriteFile(script, []byte(test.content), 0o755))
+
+			interpreter, args, ok := lifecycleShebangCommand(script)
+
+			assert.Equal(test.wantOK, ok)
+			assert.Equal(test.wantInterpreter, interpreter)
+			if test.wantOK {
+				assert.Equal(append(test.wantArgs, script), args)
+			} else {
+				assert.Empty(args)
+			}
+		})
+	}
+}
+
 func TestCreateWorktreeOnDiskDerivesPathAndCreatesBranch(t *testing.T) {
 	assert := assert.New(t)
 	require := Require.New(t)

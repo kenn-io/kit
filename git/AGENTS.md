@@ -41,6 +41,12 @@ not about one product's workflow.
 - Interactive Git commands must retain foreground terminal access; automated
   Git and lifecycle hooks must keep bounded process-tree cancellation, and hook
   cancellation must terminate the spawned tree rather than only its parent.
+- Contributor-controlled checkout on Windows requires Git for Windows
+  2.53.0.windows.3 or newer. Keep the full Windows patch level in version
+  validation; a base `2.53.0` version is not sufficient.
+- When an expected head OID is the project-remote provenance anchor, every fetch
+  through that boundary must enforce the stored OID. Windows lifecycle scripts
+  must honor their declared shebang interpreter regardless of file extension.
 - Canonicalize relative local clone paths against the project root before
   deriving repository identity or persisting a remote. Configure change-request
   tracking only when the provider supplied an explicit source branch.

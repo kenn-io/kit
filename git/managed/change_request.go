@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -68,7 +69,8 @@ type ChangeRequestGitOptions struct {
 	// ProjectIdentity is hostless.
 	ProjectCloneURL string
 	// ExpectedHeadOID is an independent provenance anchor that permits a
-	// hosted project remote when ProjectIdentity is unavailable.
+	// hosted project remote when ProjectIdentity is unavailable. Every Fetch
+	// through this boundary enforces the configured OID.
 	ExpectedHeadOID        string
 	RemoteNamePrefix       string
 	HookIsolationNamespace string
@@ -130,8 +132,12 @@ func (g *ChangeRequestGit) Validate(ctx context.Context) error {
 	if err != nil {
 		return changeRequestError(ChangeRequestUnsupportedGit, "failed to determine Git version", err)
 	}
-	if !supportsChangeRequestWorktreeConfig(string(output)) {
-		return changeRequestError(ChangeRequestUnsupportedGit, "change-request import requires Git 2.20 or newer", nil)
+	if !supportsChangeRequestGitVersion(string(output), runtime.GOOS) {
+		message := "change-request import requires Git 2.20 or newer"
+		if runtime.GOOS == "windows" {
+			message = "change-request import requires Git for Windows 2.53.0.windows.3 or newer"
+		}
+		return changeRequestError(ChangeRequestUnsupportedGit, message, nil)
 	}
 	if err := g.validateConfigurationAt(ctx, ""); err != nil {
 		return err
@@ -397,14 +403,18 @@ func (g *ChangeRequestGit) ensureRemote(ctx context.Context, repository RemoteRe
 	return name, nil
 }
 
-// Fetch imports sourceRef into destinationRef with hooks and prompts disabled
-// and returns the resolved commit OID.
+// Fetch imports sourceRef into destinationRef with hooks and prompts disabled,
+// enforces the configured expected head OID, and returns the resolved commit
+// OID.
 func (g *ChangeRequestGit) Fetch(ctx context.Context, remote, sourceRef, destinationRef string) (string, error) {
 	ctx, unlock, err := acquireRepositoryMutationLock(ctx, g.root)
 	if err != nil {
 		return "", changeRequestError(ChangeRequestUnsafeConfiguration, "failed to lock the Git repository", err)
 	}
 	oid, fetchErr := g.fetch(ctx, remote, sourceRef, destinationRef)
+	if fetchErr == nil {
+		fetchErr = verifyExpectedHeadOID(oid, g.expectedHeadOID)
+	}
 	return oid, errors.Join(fetchErr, unlock())
 }
 
@@ -442,12 +452,19 @@ func (g *ChangeRequestGit) FetchExpected(
 	if err != nil {
 		return "", err
 	}
-	if expected := strings.TrimSpace(expectedOID); expected != "" &&
-		!strings.EqualFold(oid, expected) {
-		return "", changeRequestError(ChangeRequestHeadChanged,
-			"change-request head changed while it was being imported; retry", nil)
+	if err := verifyExpectedHeadOID(oid, expectedOID); err != nil {
+		return "", err
 	}
 	return oid, nil
+}
+
+func verifyExpectedHeadOID(actual, expected string) error {
+	expected = strings.TrimSpace(expected)
+	if expected == "" || strings.EqualFold(strings.TrimSpace(actual), expected) {
+		return nil
+	}
+	return changeRequestError(ChangeRequestHeadChanged,
+		"change-request head changed while it was being imported; retry", nil)
 }
 
 // ConfigurePush persists worktree-scoped routing to the contributor's source
@@ -1025,14 +1042,27 @@ func isGitNetworkFailure(message string) bool {
 	return false
 }
 
-var changeRequestGitVersionPattern = regexp.MustCompile(`(?i)git version (\d+)\.(\d+)(?:\.(\d+))?`)
+var changeRequestGitVersionPattern = regexp.MustCompile(
+	`(?i)git version (\d+)\.(\d+)(?:\.(\d+))?(?:\.windows\.(\d+))?(?:\s|$)`,
+)
 
-func supportsChangeRequestWorktreeConfig(output string) bool {
+func supportsChangeRequestGitVersion(output, goos string) bool {
 	match := changeRequestGitVersionPattern.FindStringSubmatch(strings.TrimSpace(output))
 	if len(match) == 0 {
 		return false
 	}
 	major, _ := strconv.Atoi(match[1])
 	minor, _ := strconv.Atoi(match[2])
-	return major > 2 || major == 2 && minor >= 20
+	patch, _ := strconv.Atoi(match[3])
+	if major < 2 || major == 2 && minor < 20 {
+		return false
+	}
+	if goos != "windows" {
+		return true
+	}
+	if major != 2 || minor != 53 || patch != 0 {
+		return major > 2 || major == 2 && (minor > 53 || minor == 53 && patch > 0)
+	}
+	windowsPatch, err := strconv.Atoi(match[4])
+	return err == nil && windowsPatch >= 3
 }
