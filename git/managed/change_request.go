@@ -234,6 +234,10 @@ func (g *ChangeRequestGit) validateConfigurationAt(ctx context.Context, worktree
 		return changeRequestError(ChangeRequestUnsafeConfiguration,
 			"change-request import does not allow custom Git transport commands", nil)
 	}
+	if configHasAuthenticationBearingHTTP(string(configOutput)) {
+		return changeRequestError(ChangeRequestAuthentication,
+			"change-request import does not allow authentication-bearing HTTP configuration", nil)
+	}
 	remotes, err := g.runAt(ctx, worktreePath, "remote")
 	if err != nil {
 		return changeRequestError(ChangeRequestUnsafeConfiguration, "failed to enumerate effective Git remotes", err)
@@ -736,6 +740,19 @@ func configHasExecutableTransportOverride(output string) bool {
 			(strings.HasSuffix(key, ".receivepack") ||
 				strings.HasSuffix(key, ".uploadpack") ||
 				strings.HasSuffix(key, ".vcs")) {
+			return true
+		}
+	}
+	return false
+}
+
+func configHasAuthenticationBearingHTTP(output string) bool {
+	for record := range strings.SplitSeq(output, "\x00") {
+		key, _, _ := strings.Cut(record, "\n")
+		key = strings.ToLower(strings.TrimSpace(key))
+		if strings.HasPrefix(key, "http.") &&
+			(strings.HasSuffix(key, ".extraheader") ||
+				strings.HasSuffix(key, ".cookiefile")) {
 			return true
 		}
 	}

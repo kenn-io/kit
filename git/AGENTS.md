@@ -26,6 +26,13 @@ not about one product's workflow.
 - `git/managed` is the shared named-worktree lifecycle. Extend that package
   instead of creating app-local worktree creation, merge-request import,
   tracking, hook, or rollback implementations.
+- Keep managed worktree rollback ownership-conservative: path identity, branch
+  OID, symbolic HEAD, and worktree HEAD OID must still match their creation
+  snapshots before destructive cleanup.
+- Default managed worktree bases must stay restricted to the current user on
+  Unix and Windows. Callers opt into shared permissions with an explicit base.
+- Lifecycle hook cancellation must terminate the spawned process tree, not
+  only the immediate hook process.
 
 ## Tests
 

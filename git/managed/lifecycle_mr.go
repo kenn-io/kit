@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -283,25 +282,10 @@ func CloneURLIdentity(rawURL string) string {
 	if trimmed == "" {
 		return ""
 	}
-	if strings.Contains(trimmed, "://") {
-		parsed, err := url.Parse(trimmed)
-		if err == nil && parsed.Host != "" {
-			path := strings.TrimPrefix(parsed.Path, "/")
-			path = strings.TrimSuffix(path, ".git")
-			if path != "" {
-				return strings.ToLower(parsed.Host) + "/" + path
-			}
-		}
-	}
-	if atIndex := strings.Index(trimmed, "@"); atIndex >= 0 {
-		if colonIndex := strings.Index(trimmed[atIndex:], ":"); colonIndex >= 0 {
-			colonIndex += atIndex
-			host := strings.ToLower(trimmed[atIndex+1 : colonIndex])
-			path := strings.TrimSuffix(trimmed[colonIndex+1:], ".git")
-			if path != "" {
-				return host + "/" + path
-			}
-		}
+	host := gitremote.RemoteHost(trimmed)
+	repositoryPath := gitremote.RemoteRepoPath(trimmed)
+	if host != "" && repositoryPath != "" {
+		return gitremote.NormalizeHost(host) + "/" + repositoryPath
 	}
 	return trimmed
 }

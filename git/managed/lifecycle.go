@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	gitcmd "go.kenn.io/kit/git/cmd"
+	"go.kenn.io/kit/safefileio"
 )
 
 // Sentinel errors for worktree lifecycle failures the HTTP layer maps to
@@ -87,7 +88,9 @@ type CreateWorktreeOptions struct {
 	// BaseDir (default "<ProjectRoot>-worktrees") plus the slash-slugged
 	// branch name.
 	Path string
-	// BaseDir overrides the derivation base used when Path is empty.
+	// BaseDir overrides the derivation base used when Path is empty. The
+	// default base is restricted to the current user; an explicit BaseDir is
+	// caller-owned and is the opt-in for a shared or otherwise custom base.
 	BaseDir string
 	// BaseRef, when set, forces creation of a new Branch starting at this
 	// ref (git worktree add <path> -b <branch> -- <ref>). When empty, an
@@ -139,6 +142,8 @@ type CreateWorktreeResult struct {
 	runHook       HookRunner
 	pathInfo      os.FileInfo
 	branchOID     string
+	headOID       string
+	headRef       string
 	materialized  bool
 }
 
@@ -268,11 +273,16 @@ func snapshotCreateWorktreeResult(
 	if err != nil {
 		return CreateWorktreeResult{}, fmt.Errorf("resolve created worktree branch: %w", err)
 	}
+	headRef, headOID, err := lifecycleWorktreeHead(ctx, path)
+	if err != nil {
+		return CreateWorktreeResult{}, fmt.Errorf("resolve created worktree HEAD: %w", err)
+	}
 	return CreateWorktreeResult{
 		Path: path, Branch: branch, BranchCreated: branchCreated,
 		projectRoot: root, runner: lifecycleRunner(ctx),
 		runGit: lifecycleGitRunner(ctx), runHook: lifecycleHookRunner(ctx), pathInfo: pathInfo,
-		branchOID: strings.TrimSpace(string(out)), materialized: materialized,
+		branchOID: strings.TrimSpace(string(out)), headOID: headOID, headRef: headRef,
+		materialized: materialized,
 	}, nil
 }
 
@@ -288,6 +298,11 @@ func (r CreateWorktreeResult) rollbackOwned(
 	if branchErr != nil {
 		errs = append(errs, fmt.Errorf("inspect created branch: %w", branchErr))
 	}
+	var headRef, headOID string
+	var headErr error
+	if pathPresent && pathOwned {
+		headRef, headOID, headErr = lifecycleWorktreeHead(ctx, r.Path)
+	}
 
 	switch {
 	case pathPresent && !pathOwned:
@@ -296,6 +311,12 @@ func (r CreateWorktreeResult) rollbackOwned(
 	case !pathPresent:
 		preserveBranch = true
 		errs = append(errs, errors.New("created worktree path disappeared; preserving its branch"))
+	case headErr != nil:
+		remaining.Path = r.Path
+		errs = append(errs, fmt.Errorf("inspect created worktree HEAD: %w", headErr))
+	case headRef != r.headRef || !strings.EqualFold(headOID, r.headOID):
+		remaining.Path = r.Path
+		errs = append(errs, errors.New("created worktree HEAD changed; preserving it"))
 	case branchErr != nil || branchExists && !strings.EqualFold(branchOID, r.branchOID):
 		remaining.Path = r.Path
 		errs = append(errs, errors.New("created worktree branch advanced; preserving it"))
@@ -370,6 +391,26 @@ func lifecycleRefOID(ctx context.Context, root, branch string) (string, bool, er
 	}
 	oid := strings.TrimSpace(string(out))
 	return oid, oid != "", nil
+}
+
+func lifecycleWorktreeHead(ctx context.Context, path string) (string, string, error) {
+	runner, err := isolatedLifecycleRunner(ctx, path)
+	if err != nil {
+		return "", "", err
+	}
+	oidOutput, err := runLifecycleGitWithRunner(
+		ctx, runner, path, "rev-parse", "--verify", "HEAD^{commit}",
+	)
+	if err != nil {
+		return "", "", err
+	}
+	refOutput, err := runLifecycleGitWithRunner(
+		ctx, runner, path, "rev-parse", "--symbolic-full-name", "HEAD",
+	)
+	if err != nil {
+		return "", "", err
+	}
+	return strings.TrimSpace(string(refOutput)), strings.TrimSpace(string(oidOutput)), nil
 }
 
 func sameLifecycleFile(path string, expected os.FileInfo) bool {
@@ -599,10 +640,17 @@ func resolveWorktreeDestination(
 		dest = abs
 	} else {
 		base := strings.TrimSpace(baseDir)
-		if base == "" {
+		privateBase := base == ""
+		if privateBase {
 			base = root + "-worktrees"
 		}
-		if err := os.MkdirAll(base, 0o755); err != nil {
+		var err error
+		if privateBase {
+			err = safefileio.EnsurePrivateDir(base)
+		} else {
+			err = os.MkdirAll(base, 0o755)
+		}
+		if err != nil {
 			return "", fmt.Errorf("create worktree base dir: %w", err)
 		}
 		// Canonicalize the base so derived paths agree with what git
@@ -847,6 +895,9 @@ func runLifecycleHook(
 		err = cmd.Run()
 	}
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			return &HookError{

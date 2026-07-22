@@ -9,15 +9,22 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	gitcmd "go.kenn.io/kit/git/cmd"
 )
 
 func lifecycleCommandContext(ctx context.Context, name string) *exec.Cmd {
+	var cmd *exec.Cmd
 	if lifecycleShebangScript(name) {
 		if shell, err := exec.LookPath("sh"); err == nil {
-			return exec.CommandContext(ctx, shell, name)
+			cmd = exec.CommandContext(ctx, shell, name)
 		}
 	}
-	return exec.CommandContext(ctx, name)
+	if cmd == nil {
+		cmd = exec.CommandContext(ctx, name)
+	}
+	gitcmd.PrepareProcessTreeCancellation(cmd, true)
+	return cmd
 }
 
 // lifecycleShebangScript mirrors Middleman's production Windows command

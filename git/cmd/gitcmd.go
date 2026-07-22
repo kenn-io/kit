@@ -135,8 +135,15 @@ func (r Runner) Run(ctx context.Context, dir string, stdin io.Reader, args ...st
 
 func gitCommand(ctx context.Context, hideConsoleWindow bool, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "git", args...)
-	prepareGitCommand(cmd, hideConsoleWindow)
+	PrepareProcessTreeCancellation(cmd, hideConsoleWindow)
 	return cmd
+}
+
+// PrepareProcessTreeCancellation configures cmd so context cancellation
+// terminates its process tree. On Windows, hideConsoleWindow also prevents a
+// console window from being allocated for the child process.
+func PrepareProcessTreeCancellation(cmd *exec.Cmd, hideConsoleWindow bool) {
+	prepareGitCommand(cmd, hideConsoleWindow)
 }
 
 type basicAuth struct {

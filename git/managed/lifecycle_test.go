@@ -2,17 +2,20 @@ package managedworktree
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	Require "github.com/stretchr/testify/require"
 
 	gitcmd "go.kenn.io/kit/git/cmd"
 	gitenv "go.kenn.io/kit/git/env"
+	"go.kenn.io/kit/safefileio"
 )
 
 func lifecycleGit(t *testing.T, dir string, args ...string) string {
@@ -105,6 +108,23 @@ func TestCreateWorktreeOnDiskDerivesPathAndCreatesBranch(t *testing.T) {
 	head := lifecycleGit(t, result.Path, "rev-parse", "--abbrev-ref", "HEAD")
 	assert.Equal("feat/new-thing", head)
 	assert.False(result.HookRan)
+}
+
+func TestCreateWorktreeOnDiskSecuresDefaultBase(t *testing.T) {
+	require := Require.New(t)
+	repo := initLifecycleRepo(t)
+	base := repo + "-worktrees"
+	require.NoError(os.MkdirAll(base, 0o755))
+	require.NoError(os.Chmod(base, 0o755))
+
+	result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Branch:      "private-default-base",
+	})
+
+	require.NoError(err)
+	t.Cleanup(func() { _, _ = result.Rollback(context.Background()) })
+	require.NoError(safefileio.ValidatePrivateDir(base))
 }
 
 func TestCreateWorktreeOnDiskCanIsolateUntrustedCheckout(t *testing.T) {
@@ -321,6 +341,49 @@ func TestCreateWorktreeResultRollbackPreservesReplacedPath(t *testing.T) {
 	assert.FileExists(marker)
 }
 
+func TestCreateWorktreeResultRollbackPreservesDetachedCommit(t *testing.T) {
+	assert := assert.New(t)
+	require := Require.New(t)
+	repo := initLifecycleRepo(t)
+	result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Branch:      "review/detached-commit",
+		Path:        filepath.Join(t.TempDir(), "detached"),
+		BaseRef:     "HEAD",
+	})
+	require.NoError(err)
+	lifecycleGit(t, result.Path, "checkout", "--detach")
+	lifecycleGit(t, result.Path, "commit", "--allow-empty", "-m", "detached work")
+	detachedOID := lifecycleGit(t, result.Path, "rev-parse", "HEAD")
+
+	remaining, err := result.Rollback(t.Context())
+
+	require.Error(err)
+	assert.Equal(RollbackResult{Path: result.Path, Branch: result.Branch}, remaining)
+	assert.DirExists(result.Path)
+	assert.Equal(detachedOID, lifecycleGit(t, result.Path, "rev-parse", "HEAD"))
+}
+
+func TestCreateWorktreeResultRollbackPreservesDetachedHeadAtOriginalCommit(t *testing.T) {
+	assert := assert.New(t)
+	require := Require.New(t)
+	repo := initLifecycleRepo(t)
+	result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Branch:      "review/detached-head",
+		Path:        filepath.Join(t.TempDir(), "detached"),
+		BaseRef:     "HEAD",
+	})
+	require.NoError(err)
+	lifecycleGit(t, result.Path, "checkout", "--detach")
+
+	remaining, err := result.Rollback(t.Context())
+
+	require.Error(err)
+	assert.Equal(RollbackResult{Path: result.Path, Branch: result.Branch}, remaining)
+	assert.DirExists(result.Path)
+}
+
 func TestCreateWorktreeResultRollbackPreservesBranchWhenPathDisappears(t *testing.T) {
 	assert := assert.New(t)
 	require := Require.New(t)
@@ -498,6 +561,31 @@ func TestCreateWorktreeOnDiskRollsBackDirtyOutputFromFailedSetupHook(t *testing.
 	assert.True(os.IsNotExist(statErr),
 		"failed setup output belongs to the operation and is removed")
 	assert.False(branchExistsInRepo(t, repo, "dirty-setup-failure"))
+}
+
+func TestCreateWorktreeOnDiskHookCancellationTerminatesProcessTree(t *testing.T) {
+	assert := assert.New(t)
+	require := Require.New(t)
+	repo := initLifecycleRepo(t)
+	script := filepath.Join(repo, "setup-cancel")
+	require.NoError(os.WriteFile(script, []byte(
+		"#!/bin/sh\nsleep 5 &\nwait\n",
+	), 0o755))
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	started := time.Now()
+
+	_, err := CreateWorktreeOnDisk(ctx, CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Branch:      "cancel-setup-tree",
+		Path:        filepath.Join(t.TempDir(), "wt"),
+		SetupScript: "setup-cancel",
+	})
+
+	require.ErrorIs(err, context.DeadlineExceeded)
+	assert.Less(time.Since(started), 3*time.Second)
+	var hookErr *HookError
+	assert.False(errors.As(err, &hookErr), "cancellation is not a hook failure")
 }
 
 func TestCreateWorktreeOnDiskKeepsPreexistingBranchOnHookFailure(t *testing.T) {

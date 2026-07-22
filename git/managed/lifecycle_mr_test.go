@@ -26,6 +26,17 @@ func identityOfCloneURL(rawURL string) string {
 	return CloneURLIdentity(rawURL)
 }
 
+func TestCloneURLIdentityRecognizesSCPWithoutUsername(t *testing.T) {
+	assert.Equal(t, "github.com/acme/widget",
+		CloneURLIdentity("github.com:acme/widget.git"))
+	assert.Equal(t, "github.com/acme/widget",
+		CloneURLIdentity("git@github.com:acme/widget.git"))
+	assert.Equal(t, `C:\repos\widget.git`,
+		CloneURLIdentity(`C:\repos\widget.git`))
+	assert.Equal(t, "./local:path/widget.git",
+		CloneURLIdentity("./local:path/widget.git"))
+}
+
 // initOriginAndClone builds an "origin" repository with one commit on main
 // and a clone of it, returning (originDir, cloneDir). The clone is the
 // project checkout merge-request worktrees are created in.

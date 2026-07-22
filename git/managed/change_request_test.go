@@ -96,6 +96,22 @@ func TestChangeRequestGitValidateRejectsUnsafeEffectiveConfiguration(t *testing.
 			},
 			kind: ChangeRequestUnsafeConfiguration,
 		},
+		{
+			name: "authorization header",
+			setup: func(t *testing.T, repo string) {
+				lifecycleGit(t, repo, "remote", "add", "origin", "https://github.com/acme/widget.git")
+				lifecycleGit(t, repo, "config", "http.extraHeader", "Authorization: Bearer secret")
+			},
+			kind: ChangeRequestAuthentication,
+		},
+		{
+			name: "cookie file",
+			setup: func(t *testing.T, repo string) {
+				lifecycleGit(t, repo, "remote", "add", "origin", "https://github.com/acme/widget.git")
+				lifecycleGit(t, repo, "config", "http.cookieFile", filepath.Join(t.TempDir(), "cookies"))
+			},
+			kind: ChangeRequestAuthentication,
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			repo, backend := newChangeRequestGit(t)
