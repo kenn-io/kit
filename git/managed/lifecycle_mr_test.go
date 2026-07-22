@@ -45,8 +45,7 @@ func initOriginAndClone(t *testing.T) (string, string) {
 	origin := initLifecycleRepo(t)
 	clone := filepath.Join(t.TempDir(), "clone")
 	lifecycleGit(t, filepath.Dir(origin), "clone", "-q", origin, clone)
-	lifecycleGit(t, clone, "config", "user.email", "t@e.st")
-	lifecycleGit(t, clone, "config", "user.name", "Tester")
+	configureLifecycleGitIdentity(t, clone)
 	return origin, clone
 }
 
@@ -157,6 +156,7 @@ func TestCreateWorktreeFromForkWithoutHeadBranchDisablesTracking(t *testing.T) {
 	origin, clone := initOriginAndClone(t)
 	fork := filepath.Join(t.TempDir(), "fork")
 	lifecycleGit(t, filepath.Dir(origin), "clone", "-q", origin, fork)
+	configureLifecycleGitIdentity(t, fork)
 	lifecycleGit(t, fork, "checkout", "-q", "-b", "merge-request")
 	lifecycleGit(t, fork, "commit", "--allow-empty", "-m", "unnamed fork head")
 	headSHA := lifecycleGit(t, fork, "rev-parse", "HEAD")
@@ -185,6 +185,7 @@ func TestCreateWorktreeFromMergeRequestCanonicalizesRelativeForkPath(t *testing.
 	fork := filepath.Join(filepath.Dir(clone), "forks", "team", "fork")
 	require.NoError(os.MkdirAll(filepath.Dir(fork), 0o755))
 	lifecycleGit(t, filepath.Dir(fork), "clone", "-q", origin, fork)
+	configureLifecycleGitIdentity(t, fork)
 	lifecycleGit(t, fork, "checkout", "-q", "-b", "relative-fork")
 	lifecycleGit(t, fork, "commit", "--allow-empty", "-m", "relative fork head")
 	headSHA := lifecycleGit(t, fork, "rev-parse", "HEAD")

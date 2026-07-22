@@ -28,6 +28,13 @@ func lifecycleGit(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
+func configureLifecycleGitIdentity(t *testing.T, dir string) {
+	t.Helper()
+	lifecycleGit(t, dir, "config", "user.email", "t@e.st")
+	lifecycleGit(t, dir, "config", "user.name", "Tester")
+	lifecycleGit(t, dir, "config", "commit.gpgsign", "false")
+}
+
 // initLifecycleRepo creates a git repository with one commit on a stable
 // default branch named "main" so tests do not depend on the host git's
 // init.defaultBranch setting.
@@ -39,9 +46,7 @@ func initLifecycleRepo(t *testing.T) string {
 	dir := filepath.Join(t.TempDir(), "repo")
 	Require.NoError(t, os.MkdirAll(dir, 0o755))
 	lifecycleGit(t, dir, "init", "-q", "-b", "main")
-	lifecycleGit(t, dir, "config", "user.email", "t@e.st")
-	lifecycleGit(t, dir, "config", "user.name", "Tester")
-	lifecycleGit(t, dir, "config", "commit.gpgsign", "false")
+	configureLifecycleGitIdentity(t, dir)
 	lifecycleGit(t, dir, "commit", "--allow-empty", "-m", "initial")
 	return dir
 }
