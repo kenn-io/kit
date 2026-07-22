@@ -44,6 +44,39 @@ func TestRunnerCommandUsesDefensiveEnvironment(t *testing.T) {
 	}
 }
 
+func TestRunnerCommandDisablesCredentialAndSSHPrompts(t *testing.T) {
+	tests := []struct {
+		name        string
+		environment []string
+		wantCommand string
+	}{
+		{name: "OpenSSH", environment: []string{"GIT_SSH_COMMAND=ssh -i key"}, wantCommand: "ssh -i key -oBatchMode=yes"},
+		{name: "explicit plink", environment: []string{"GIT_SSH_COMMAND=C:\\PuTTY\\plink.exe", "GIT_SSH_VARIANT=plink"}, wantCommand: "C:\\PuTTY\\plink.exe -batch"},
+		{name: "detected plink", environment: []string{"GIT_SSH_COMMAND=/usr/local/bin/plink"}, wantCommand: "/usr/local/bin/plink -batch"},
+		{name: "quoted OpenSSH", environment: []string{"GIT_SSH_COMMAND='/opt/Open SSH/ssh' -i key"}, wantCommand: "'/opt/Open SSH/ssh' -i key -oBatchMode=yes"},
+		{name: "OpenSSH from GIT_SSH", environment: []string{"GIT_SSH=/usr/local/bin/ssh"}, wantCommand: "'/usr/local/bin/ssh' -oBatchMode=yes"},
+		{name: "plink from GIT_SSH", environment: []string{"GIT_SSH=C:\\Program Files\\PuTTY\\plink.exe"}, wantCommand: "'C:\\Program Files\\PuTTY\\plink.exe' -batch"},
+		{name: "unknown", environment: []string{"GIT_SSH_COMMAND=custom-transport"}, wantCommand: "custom-transport"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runner := New()
+			runner.Env = test.environment
+			cmd := runner.Command(context.Background(), t.TempDir(), "status")
+
+			sshCommand, _ := envValue(cmd.Env, "GIT_SSH_COMMAND")
+			terminalPrompt, _ := envValue(cmd.Env, "GIT_TERMINAL_PROMPT")
+			credentialPrompt, _ := envValue(cmd.Env, "GCM_INTERACTIVE")
+			askpass, _ := envValue(cmd.Env, "SSH_ASKPASS_REQUIRE")
+			assert.Equal(t, test.wantCommand, sshCommand)
+			assert.Equal(t, "0", terminalPrompt)
+			assert.Equal(t, "Never", credentialPrompt)
+			assert.Equal(t, "never", askpass)
+		})
+	}
+}
+
 func TestNullGlobalConfigPathIsReadableEmptyFile(t *testing.T) {
 	// Regression test: GIT_CONFIG_GLOBAL must point at a real, readable, empty
 	// file rather than os.DevNull. On Windows os.DevNull is "NUL", which some

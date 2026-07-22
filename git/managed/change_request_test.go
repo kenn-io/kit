@@ -80,6 +80,20 @@ func TestChangeRequestGitValidateRejectsUnsafeEffectiveConfiguration(t *testing.
 	}
 }
 
+func TestChangeRequestWorktreeConfigVersionRequirement(t *testing.T) {
+	for _, test := range []struct {
+		output string
+		want   bool
+	}{
+		{output: "git version 2.19.6"},
+		{output: "git version 2.20.0", want: true},
+		{output: "git version 2.45.2 (Apple Git-145)", want: true},
+		{output: "not git"},
+	} {
+		assert.Equal(t, test.want, supportsChangeRequestWorktreeConfig(test.output), test.output)
+	}
+}
+
 func TestChangeRequestGitEnsureRemoteRejectsEffectiveURLRewrite(t *testing.T) {
 	repo, backend := newChangeRequestGit(t)
 	lifecycleGit(t, repo, "remote", "add", "origin", "https://github.com/acme/widget.git")

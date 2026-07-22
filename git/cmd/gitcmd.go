@@ -313,7 +313,7 @@ func (r Runner) commandEnv(ctx context.Context, dir string) ([]string, func()) {
 		env = append([]string(nil), env...)
 	}
 	if !r.TerminalPrompt {
-		env = append(env, "GIT_TERMINAL_PROMPT=0")
+		env = nonInteractiveEnvironment(env, base)
 	}
 	if r.NoSystemConfig {
 		env = append(env, "GIT_CONFIG_NOSYSTEM=1")
@@ -350,6 +350,138 @@ func (r Runner) commandEnv(ctx context.Context, dir string) ([]string, func()) {
 	}
 	env = append(env, fmt.Sprintf("GIT_CONFIG_COUNT=%d", len(config)))
 	return env, cleanup
+}
+
+func nonInteractiveEnvironment(environment, source []string) []string {
+	sshVariant := environmentValueFold(source, "GIT_SSH_VARIANT")
+	sshCommand := environmentValueFold(source, "GIT_SSH_COMMAND")
+	if strings.TrimSpace(sshCommand) == "" {
+		if sshExecutable := environmentValueFold(source, "GIT_SSH"); strings.TrimSpace(sshExecutable) != "" {
+			if variant := strings.ToLower(strings.TrimSpace(sshVariant)); variant == "" || variant == "auto" {
+				sshVariant = detectSSHExecutableVariant(sshExecutable)
+			}
+			sshCommand = shellSingleQuote(sshExecutable)
+		}
+	}
+	if strings.TrimSpace(sshCommand) == "" {
+		sshCommand = "ssh"
+	}
+	sshCommand = nonInteractiveSSHCommand(sshCommand, sshVariant)
+	for _, key := range []string{
+		"GIT_TERMINAL_PROMPT", "GIT_ASKPASS", "SSH_ASKPASS", "SSH_ASKPASS_REQUIRE",
+		"GCM_INTERACTIVE", "GIT_CREDENTIAL_INTERACTIVE", "GIT_SSH_COMMAND",
+	} {
+		environment = withoutEnvironmentKeyFold(environment, key)
+	}
+	return append(environment,
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_ASKPASS=",
+		"SSH_ASKPASS=",
+		"SSH_ASKPASS_REQUIRE=never",
+		"GCM_INTERACTIVE=Never",
+		"GIT_CREDENTIAL_INTERACTIVE=never",
+		"GIT_SSH_COMMAND="+sshCommand,
+	)
+}
+
+func nonInteractiveSSHCommand(command, variant string) string {
+	variant = strings.ToLower(strings.TrimSpace(variant))
+	if variant == "" || variant == "auto" {
+		variant = detectSSHVariant(command)
+	}
+	switch variant {
+	case "ssh":
+		return command + " -oBatchMode=yes"
+	case "plink", "putty", "tortoiseplink":
+		return command + " -batch"
+	default:
+		return command
+	}
+}
+
+func detectSSHVariant(command string) string {
+	executable := leadingShellWord(command)
+	if executable == "" {
+		return ""
+	}
+	return detectSSHExecutableVariant(executable)
+}
+
+func leadingShellWord(command string) string {
+	command = strings.TrimLeft(command, " \t\r\n")
+	var word strings.Builder
+	var quote byte
+	for i := 0; i < len(command); i++ {
+		char := command[i]
+		if quote == 0 {
+			switch char {
+			case ' ', '\t', '\r', '\n':
+				return word.String()
+			case '\'', '"':
+				quote = char
+			case '\\':
+				if i+1 < len(command) {
+					next := command[i+1]
+					if strings.ContainsRune(" \t\r\n'\"\\", rune(next)) {
+						i++
+						word.WriteByte(next)
+					} else {
+						word.WriteByte(char)
+					}
+				}
+			default:
+				word.WriteByte(char)
+			}
+			continue
+		}
+		if char == quote {
+			quote = 0
+			continue
+		}
+		if char == '\\' && quote == '"' && i+1 < len(command) {
+			next := command[i+1]
+			if strings.ContainsRune("$`\"\\\n", rune(next)) {
+				i++
+				word.WriteByte(next)
+				continue
+			}
+		}
+		word.WriteByte(char)
+	}
+	return word.String()
+}
+
+func detectSSHExecutableVariant(executable string) string {
+	executable = strings.ReplaceAll(executable, `\`, "/")
+	if slash := strings.LastIndexByte(executable, '/'); slash >= 0 {
+		executable = executable[slash+1:]
+	}
+	executable = strings.TrimSuffix(strings.ToLower(executable), ".exe")
+	switch executable {
+	case "ssh":
+		return "ssh"
+	case "plink", "putty", "tortoiseplink":
+		return executable
+	default:
+		return ""
+	}
+}
+
+func environmentValueFold(environment []string, key string) string {
+	for _, entry := range environment {
+		name, value, ok := strings.Cut(entry, "=")
+		if ok && strings.EqualFold(name, key) {
+			return value
+		}
+	}
+	return ""
+}
+
+func withoutEnvironmentKeyFold(environment []string, key string) []string {
+	return slices.DeleteFunc(environment, func(entry string) bool {
+		name, _, _ := strings.Cut(entry, "=")
+		return strings.EqualFold(name, key)
+	})
 }
 
 // GitError wraps a failed git command with stderr.
