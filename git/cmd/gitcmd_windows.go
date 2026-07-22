@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strconv"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -28,57 +28,108 @@ func prepareGitCommand(cmd *exec.Cmd, hideConsoleWindow, _ bool) {
 		if cmd.Process == nil {
 			return os.ErrProcessDone
 		}
-		if err := terminateWindowsProcessDescendants(uint32(cmd.Process.Pid)); err == nil {
-			return cmd.Process.Kill()
+		rootPID := uint32(cmd.Process.Pid)
+		rootCreation, identityErr := windowsProcessCreation(rootPID)
+		rootErr := cmd.Process.Kill()
+		if identityErr != nil || rootErr != nil && !errors.Is(rootErr, os.ErrProcessDone) {
+			return errors.Join(identityErr, rootErr)
 		}
-		// Retain taskkill as a fallback if Windows denied process snapshot or
-		// termination access. MSYS descendants are not always removed by
-		// taskkill alone, which is why the explicit tree walk runs first.
-		kill := exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(cmd.Process.Pid))
-		kill.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
-		if err := kill.Run(); err == nil {
+		var cutoff windows.Filetime
+		windows.GetSystemTimeAsFileTime(&cutoff)
+		treeErr := terminateWindowsProcessDescendants(
+			rootPID, filetimeValue(rootCreation), filetimeValue(cutoff),
+		)
+		if errors.Is(rootErr, os.ErrProcessDone) && identityErr == nil && treeErr == nil {
+			return os.ErrProcessDone
+		}
+		return errors.Join(identityErr, rootErr, treeErr)
+	}
+}
+
+type windowsProcessIdentity struct {
+	pid     uint32
+	created uint64
+}
+
+func terminateWindowsProcessDescendants(
+	rootPID uint32, rootCreated, rootStopped uint64,
+) error {
+	var errs []error
+	for range 16 {
+		descendants, err := windowsProcessDescendants(rootPID, rootCreated, rootStopped)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		if len(descendants) == 0 {
+			return errors.Join(errs...)
+		}
+		for _, process := range descendants {
+			if err := terminateWindowsProcess(process); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return errors.Join(append(errs,
+		fmt.Errorf("descendant processes remained after repeated cancellation"))...)
+}
+
+func terminateWindowsProcess(identity windowsProcessIdentity) error {
+	process, openErr := windows.OpenProcess(
+		windows.PROCESS_TERMINATE|windows.PROCESS_QUERY_LIMITED_INFORMATION,
+		false, identity.pid,
+	)
+	if openErr != nil {
+		if errors.Is(openErr, windows.ERROR_INVALID_PARAMETER) {
 			return nil
 		}
-		return cmd.Process.Kill()
+		return fmt.Errorf("open descendant process %d: %w", identity.pid, openErr)
 	}
-}
-
-func terminateWindowsProcessDescendants(rootPID uint32) error {
-	descendants, err := windowsProcessDescendants(rootPID)
+	defer func() { _ = windows.CloseHandle(process) }()
+	created, err := windowsProcessCreationFromHandle(process)
 	if err != nil {
-		return err
+		return fmt.Errorf("identify descendant process %d: %w", identity.pid, err)
 	}
-	var errs []error
-	for _, pid := range descendants {
-		process, openErr := windows.OpenProcess(
-			windows.PROCESS_TERMINATE|windows.PROCESS_QUERY_LIMITED_INFORMATION,
-			false, pid,
-		)
-		if openErr != nil {
-			if !errors.Is(openErr, windows.ERROR_INVALID_PARAMETER) {
-				errs = append(errs, fmt.Errorf("open descendant process %d: %w", pid, openErr))
-			}
-			continue
-		}
-		terminateErr := windows.TerminateProcess(process, 1)
-		if terminateErr != nil {
-			var exitCode uint32
-			processExited := errors.Is(terminateErr, windows.ERROR_ACCESS_DENIED) &&
-				windows.GetExitCodeProcess(process, &exitCode) == nil &&
-				exitCode != windowsStillActive
-			if !processExited {
-				errs = append(errs, fmt.Errorf("terminate descendant process %d: %w", pid, terminateErr))
-			}
-		}
-		closeErr := windows.CloseHandle(process)
-		if closeErr != nil {
-			errs = append(errs, fmt.Errorf("close descendant process %d: %w", pid, closeErr))
+	if filetimeValue(created) != identity.created {
+		return fmt.Errorf("descendant process %d identity changed before termination", identity.pid)
+	}
+	terminateErr := windows.TerminateProcess(process, 1)
+	if terminateErr != nil {
+		var exitCode uint32
+		processExited := errors.Is(terminateErr, windows.ERROR_ACCESS_DENIED) &&
+			windows.GetExitCodeProcess(process, &exitCode) == nil &&
+			exitCode != windowsStillActive
+		if !processExited {
+			return fmt.Errorf("terminate descendant process %d: %w", identity.pid, terminateErr)
 		}
 	}
-	return errors.Join(errs...)
+	return nil
 }
 
-func windowsProcessDescendants(rootPID uint32) ([]uint32, error) {
+func windowsProcessCreation(pid uint32) (windows.Filetime, error) {
+	process, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err != nil {
+		return windows.Filetime{}, err
+	}
+	defer func() { _ = windows.CloseHandle(process) }()
+	return windowsProcessCreationFromHandle(process)
+}
+
+func windowsProcessCreationFromHandle(process windows.Handle) (windows.Filetime, error) {
+	var created, exited, kernel, user windows.Filetime
+	if err := windows.GetProcessTimes(process, &created, &exited, &kernel, &user); err != nil {
+		return windows.Filetime{}, err
+	}
+	return created, nil
+}
+
+func filetimeValue(value windows.Filetime) uint64 {
+	return uint64(value.HighDateTime)<<32 | uint64(value.LowDateTime)
+}
+
+func windowsProcessDescendants(
+	rootPID uint32, rootCreated, rootStopped uint64,
+) ([]windowsProcessIdentity, error) {
 	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
 		return nil, err
@@ -101,19 +152,34 @@ func windowsProcessDescendants(rootPID uint32) ([]uint32, error) {
 		}
 	}
 
-	result := make([]uint32, 0)
+	result := make([]windowsProcessIdentity, 0)
+	var identityErrs []error
 	visited := map[uint32]bool{rootPID: true}
-	var appendChildren func(uint32)
-	appendChildren = func(parent uint32) {
-		for _, child := range children[parent] {
-			if child == 0 || visited[child] {
+	var appendChildren func(uint32, uint64, bool)
+	appendChildren = func(parent uint32, parentCreated uint64, direct bool) {
+		for _, pid := range children[parent] {
+			if pid == 0 || visited[pid] {
 				continue
 			}
-			visited[child] = true
-			appendChildren(child)
-			result = append(result, child)
+			visited[pid] = true
+			created, creationErr := windowsProcessCreation(pid)
+			if creationErr != nil {
+				if !errors.Is(creationErr, windows.ERROR_INVALID_PARAMETER) {
+					identityErrs = append(identityErrs,
+						fmt.Errorf("identify descendant process %d: %w", pid, creationErr))
+				}
+				continue
+			}
+			createdValue := filetimeValue(created)
+			if createdValue < parentCreated || direct && createdValue > rootStopped {
+				continue
+			}
+			appendChildren(pid, createdValue, false)
+			result = append(result, windowsProcessIdentity{
+				pid: pid, created: createdValue,
+			})
 		}
 	}
-	appendChildren(rootPID)
-	return result, nil
+	appendChildren(rootPID, rootCreated, true)
+	return result, errors.Join(identityErrs...)
 }

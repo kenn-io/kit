@@ -580,6 +580,32 @@ func TestCreateWorktreeOnDiskRunsSetupHook(t *testing.T) {
 	assert.Equal("branch=feature", lines[4])
 }
 
+func TestCreateWorktreeOnDiskRunsVerifiedHookSnapshot(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	repo := initLifecycleRepo(t)
+	hook := filepath.Join(repo, "setup")
+	trusted := []byte("#!/bin/sh\nexit 0\n")
+	require.NoError(os.WriteFile(hook, trusted, 0o755))
+
+	result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Branch:      "verified-hook-snapshot",
+		Path:        filepath.Join(t.TempDir(), "wt"),
+		SetupScript: hook,
+		RunHook: func(_ context.Context, command HookCommand) error {
+			require.NoError(os.WriteFile(hook, []byte("untrusted replacement\n"), 0o755))
+			executed, readErr := os.ReadFile(command.Script)
+			require.NoError(readErr)
+			assert.Equal(trusted, executed)
+			assert.NotEqual(hook, command.Script)
+			return nil
+		},
+	})
+	require.NoError(err)
+	t.Cleanup(func() { _, _ = result.Rollback(context.Background()) })
+}
+
 func TestCreateWorktreeOnDiskRollsBackWhenSetupHookFails(t *testing.T) {
 	assert := assert.New(t)
 	require := Require.New(t)

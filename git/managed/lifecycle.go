@@ -652,7 +652,7 @@ func resolveHookScript(projectRoot, raw string) (lifecycleHookScript, error) {
 	if !pathWithinRoot(canonicalRoot, resolved) {
 		return lifecycleHookScript{}, fmt.Errorf("%w: %q", ErrHookOutsideProject, raw)
 	}
-	info, digest, err := snapshotLifecycleHook(resolved)
+	info, digest, _, err := snapshotLifecycleHook(resolved)
 	if err != nil {
 		return lifecycleHookScript{}, fmt.Errorf("inspect lifecycle hook script: %w", err)
 	}
@@ -661,48 +661,77 @@ func resolveHookScript(projectRoot, raw string) (lifecycleHookScript, error) {
 	}, nil
 }
 
-func (h lifecycleHookScript) revalidate(projectRoot string) error {
+func (h lifecycleHookScript) verifiedContents(projectRoot string) ([]byte, error) {
 	canonicalRoot, err := filepath.EvalSymlinks(projectRoot)
 	if err != nil {
-		return fmt.Errorf("revalidate lifecycle hook project root: %w", err)
+		return nil, fmt.Errorf("revalidate lifecycle hook project root: %w", err)
 	}
 	resolved, err := filepath.EvalSymlinks(h.requested)
 	if err != nil {
-		return fmt.Errorf("revalidate lifecycle hook script: %w", err)
+		return nil, fmt.Errorf("revalidate lifecycle hook script: %w", err)
 	}
 	if resolved != h.path || !pathWithinRoot(canonicalRoot, resolved) {
-		return errors.New("lifecycle hook script target changed before execution")
+		return nil, errors.New("lifecycle hook script target changed before execution")
 	}
-	info, digest, err := snapshotLifecycleHook(resolved)
+	info, digest, contents, err := snapshotLifecycleHook(resolved)
 	if err != nil {
-		return fmt.Errorf("revalidate lifecycle hook script: %w", err)
+		return nil, fmt.Errorf("revalidate lifecycle hook script: %w", err)
 	}
 	if !os.SameFile(h.info, info) || info.Mode() != h.info.Mode() || digest != h.digest {
-		return errors.New("lifecycle hook script identity changed before execution")
+		return nil, errors.New("lifecycle hook script identity changed before execution")
 	}
-	return nil
+	return contents, nil
 }
 
-func snapshotLifecycleHook(path string) (os.FileInfo, [sha256.Size]byte, error) {
+func snapshotLifecycleHook(path string) (os.FileInfo, [sha256.Size]byte, []byte, error) {
 	var digest [sha256.Size]byte
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, digest, err
+		return nil, digest, nil, err
 	}
 	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil {
-		return nil, digest, err
+		return nil, digest, nil, err
 	}
 	if !info.Mode().IsRegular() {
-		return nil, digest, fmt.Errorf("%s is not a regular file", path)
+		return nil, digest, nil, fmt.Errorf("%s is not a regular file", path)
 	}
-	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
-		return nil, digest, err
+	contents, err := io.ReadAll(file)
+	if err != nil {
+		return nil, digest, nil, err
 	}
-	copy(digest[:], hash.Sum(nil))
-	return info, digest, nil
+	digest = sha256.Sum256(contents)
+	return info, digest, contents, nil
+}
+
+func (h lifecycleHookScript) executableSnapshot(contents []byte) (string, func(), error) {
+	dir, err := lifecycleHooksDir()
+	if err != nil {
+		return "", nil, fmt.Errorf("prepare lifecycle hook snapshot: %w", err)
+	}
+	file, err := os.CreateTemp(dir, "lifecycle-*"+filepath.Ext(h.path))
+	if err != nil {
+		return "", nil, fmt.Errorf("create lifecycle hook snapshot: %w", err)
+	}
+	path := file.Name()
+	cleanup := func() { _ = os.Remove(path) }
+	fail := func(cause error) (string, func(), error) {
+		_ = file.Close()
+		cleanup()
+		return "", nil, cause
+	}
+	if err := file.Chmod(0o500); err != nil {
+		return fail(fmt.Errorf("secure lifecycle hook snapshot: %w", err))
+	}
+	if _, err := file.Write(contents); err != nil {
+		return fail(fmt.Errorf("write lifecycle hook snapshot: %w", err))
+	}
+	if err := file.Close(); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("close lifecycle hook snapshot: %w", err)
+	}
+	return path, cleanup, nil
 }
 
 func pathWithinRoot(root, path string) bool {
@@ -965,9 +994,15 @@ func runLifecycleHook(
 	script lifecycleHookScript, projectRoot, worktreePath, branch, worktreeName,
 	environmentPrefix string,
 ) error {
-	if err := script.revalidate(projectRoot); err != nil {
+	contents, err := script.verifiedContents(projectRoot)
+	if err != nil {
 		return err
 	}
+	executable, cleanup, err := script.executableSnapshot(contents)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
 	name := strings.TrimSpace(worktreeName)
 	if name == "" {
 		name = branch
@@ -985,10 +1020,9 @@ func runLifecycleHook(
 	)
 	var stderr bytes.Buffer
 	command := HookCommand{
-		Script: script.path, Dir: worktreePath, Env: environment,
+		Script: executable, Dir: worktreePath, Env: environment,
 		Stdout: io.Discard, Stderr: &stderr,
 	}
-	var err error
 	if run := lifecycleHookRunner(ctx); run != nil {
 		err = run(ctx, command)
 	} else {

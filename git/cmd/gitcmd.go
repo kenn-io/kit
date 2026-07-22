@@ -19,6 +19,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -418,96 +419,159 @@ func nonInteractiveEnvironment(environment, source []string) []string {
 }
 
 func nonInteractiveSSHCommand(command, variant string) string {
+	executable, ok := locateSSHExecutable(command)
+	if !ok {
+		return rejectedNonInteractiveSSHCommand
+	}
 	variant = strings.ToLower(strings.TrimSpace(variant))
 	if variant == "" || variant == "auto" {
-		variant = detectSSHVariant(command)
+		variant = detectSSHExecutableVariant(executable.value)
 	}
 	switch variant {
 	case "ssh":
-		return insertShellArgumentAfterExecutable(command, "-oBatchMode=yes")
+		return insertShellArgument(command, executable.end, "-oBatchMode=yes")
 	case "plink", "putty", "tortoiseplink":
-		return command + " -batch"
+		return insertShellArgument(command, executable.end, "-batch")
 	default:
+		if strings.TrimSpace(command[executable.end:]) != "" {
+			return rejectedNonInteractiveSSHCommand
+		}
 		return command
 	}
 }
 
-func insertShellArgumentAfterExecutable(command, argument string) string {
+const rejectedNonInteractiveSSHCommand = "kit-rejected-compound-git-ssh-command"
+
+type shellWord struct {
+	value string
+	end   int
+}
+
+func insertShellArgument(command string, offset int, argument string) string {
+	return command[:offset] + " " + argument + command[offset:]
+}
+
+func locateSSHExecutable(command string) (shellWord, bool) {
+	position := 0
+	word, position, ok := nextSimpleShellWord(command, position)
+	if !ok {
+		return shellWord{}, false
+	}
+	for isShellAssignment(word.value) {
+		word, position, ok = nextSimpleShellWord(command, position)
+		if !ok {
+			return shellWord{}, false
+		}
+	}
+	for {
+		switch strings.ToLower(filepath.Base(word.value)) {
+		case "env", "env.exe":
+			word, position, ok = nextSimpleShellWord(command, position)
+			if !ok {
+				return shellWord{}, false
+			}
+			if word.value == "--" {
+				word, position, ok = nextSimpleShellWord(command, position)
+				if !ok {
+					return shellWord{}, false
+				}
+			} else if strings.HasPrefix(word.value, "-") {
+				return shellWord{}, false
+			}
+			for isShellAssignment(word.value) {
+				word, position, ok = nextSimpleShellWord(command, position)
+				if !ok {
+					return shellWord{}, false
+				}
+			}
+		case "command", "exec":
+			word, position, ok = nextSimpleShellWord(command, position)
+			if !ok {
+				return shellWord{}, false
+			}
+			if word.value == "--" {
+				word, position, ok = nextSimpleShellWord(command, position)
+				if !ok {
+					return shellWord{}, false
+				}
+			} else if strings.HasPrefix(word.value, "-") {
+				return shellWord{}, false
+			}
+		default:
+			if unsupportedSSHWrapper(word.value) {
+				return shellWord{}, false
+			}
+			return word, true
+		}
+	}
+}
+
+func isShellAssignment(value string) bool {
+	name, _, found := strings.Cut(value, "=")
+	if !found || name == "" {
+		return false
+	}
+	for i, char := range name {
+		if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') &&
+			char != '_' && (i == 0 || char < '0' || char > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func unsupportedSSHWrapper(value string) bool {
+	switch strings.ToLower(filepath.Base(value)) {
+	case "sudo", "sudo.exe", "doas", "nice", "timeout", "sh", "bash",
+		"zsh", "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe":
+		return true
+	default:
+		return false
+	}
+}
+
+func nextSimpleShellWord(command string, position int) (shellWord, int, bool) {
+	for position < len(command) && strings.ContainsRune(" \t\r\n", rune(command[position])) {
+		position++
+	}
+	if position == len(command) {
+		return shellWord{}, position, false
+	}
+	var word strings.Builder
 	var quote byte
-	for i := 0; i < len(command); i++ {
+	for i := position; i < len(command); i++ {
 		char := command[i]
 		if quote == 0 {
 			switch char {
 			case ' ', '\t', '\r', '\n':
-				if strings.TrimSpace(command[:i]) != "" {
-					return command[:i] + " " + argument + command[i:]
-				}
+				return shellWord{value: word.String(), end: i}, i, word.Len() > 0
 			case '\'', '"':
 				quote = char
+			case ';', '|', '&', '<', '>', '`', '$':
+				return shellWord{}, i, false
 			case '\\':
 				if i+1 < len(command) && strings.ContainsRune(" \t\r\n'\"\\", rune(command[i+1])) {
 					i++
+					word.WriteByte(command[i])
+				} else {
+					word.WriteByte(char)
 				}
+			default:
+				word.WriteByte(char)
 			}
 		} else if char == quote {
 			quote = 0
 		} else if char == '\\' && quote == '"' && i+1 < len(command) {
 			i++
+			word.WriteByte(command[i])
+		} else {
+			word.WriteByte(char)
 		}
 	}
-	return command + " " + argument
-}
-
-func detectSSHVariant(command string) string {
-	executable := leadingShellWord(command)
-	if executable == "" {
-		return ""
+	if quote != 0 || word.Len() == 0 {
+		return shellWord{}, len(command), false
 	}
-	return detectSSHExecutableVariant(executable)
-}
-
-func leadingShellWord(command string) string {
-	command = strings.TrimLeft(command, " \t\r\n")
-	var word strings.Builder
-	var quote byte
-	for i := 0; i < len(command); i++ {
-		char := command[i]
-		if quote == 0 {
-			switch char {
-			case ' ', '\t', '\r', '\n':
-				return word.String()
-			case '\'', '"':
-				quote = char
-			case '\\':
-				if i+1 < len(command) {
-					next := command[i+1]
-					if strings.ContainsRune(" \t\r\n'\"\\", rune(next)) {
-						i++
-						word.WriteByte(next)
-					} else {
-						word.WriteByte(char)
-					}
-				}
-			default:
-				word.WriteByte(char)
-			}
-			continue
-		}
-		if char == quote {
-			quote = 0
-			continue
-		}
-		if char == '\\' && quote == '"' && i+1 < len(command) {
-			next := command[i+1]
-			if strings.ContainsRune("$`\"\\\n", rune(next)) {
-				i++
-				word.WriteByte(next)
-				continue
-			}
-		}
-		word.WriteByte(char)
-	}
-	return word.String()
+	return shellWord{value: word.String(), end: len(command)}, len(command), true
 }
 
 func detectSSHExecutableVariant(executable string) string {
