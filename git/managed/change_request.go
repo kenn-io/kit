@@ -15,6 +15,7 @@ import (
 
 	gitcmd "go.kenn.io/kit/git/cmd"
 	gitremote "go.kenn.io/kit/git/remote"
+	"go.kenn.io/kit/safefileio"
 )
 
 // ChangeRequestErrorKind classifies failures from the shared change-request
@@ -234,9 +235,9 @@ func (g *ChangeRequestGit) validateConfigurationAt(ctx context.Context, worktree
 		return changeRequestError(ChangeRequestUnsafeConfiguration,
 			"change-request import does not allow custom Git transport commands", nil)
 	}
-	if configHasAuthenticationBearingHTTP(string(configOutput)) {
+	if configHasUnsafeHTTPConfiguration(string(configOutput)) {
 		return changeRequestError(ChangeRequestAuthentication,
-			"change-request import does not allow authentication-bearing HTTP configuration", nil)
+			"change-request import does not allow security-sensitive HTTP configuration", nil)
 	}
 	remotes, err := g.runAt(ctx, worktreePath, "remote")
 	if err != nil {
@@ -494,7 +495,7 @@ func (g *ChangeRequestGit) configureDisabledHooks(ctx context.Context, worktreeP
 	}
 	hooksPath := filepath.Join(filepath.Clean(commonDir), g.hookNamespace, "disabled-hooks")
 	for _, directory := range []string{filepath.Dir(hooksPath), hooksPath} {
-		if err := ensurePrivateDirectory(directory); err != nil {
+		if err := safefileio.EnsurePrivateDir(directory); err != nil {
 			return "", changeRequestError(ChangeRequestUnsafeConfiguration,
 				"failed to prepare persistent hook isolation", err)
 		}
@@ -746,13 +747,34 @@ func configHasExecutableTransportOverride(output string) bool {
 	return false
 }
 
-func configHasAuthenticationBearingHTTP(output string) bool {
+func configHasUnsafeHTTPConfiguration(output string) bool {
 	for record := range strings.SplitSeq(output, "\x00") {
-		key, _, _ := strings.Cut(record, "\n")
+		key, value, _ := strings.Cut(record, "\n")
 		key = strings.ToLower(strings.TrimSpace(key))
-		if strings.HasPrefix(key, "http.") &&
-			(strings.HasSuffix(key, ".extraheader") ||
-				strings.HasSuffix(key, ".cookiefile")) {
+		if !strings.HasPrefix(key, "http.") {
+			continue
+		}
+		if strings.HasSuffix(key, ".sslverify") {
+			enabled, err := strconv.ParseBool(strings.TrimSpace(value))
+			if err != nil || !enabled {
+				return true
+			}
+		}
+		for _, suffix := range []string{
+			".extraheader", ".cookiefile", ".savecookies",
+			".sslcert", ".sslkey", ".sslcertpasswordprotected",
+			".proxy", ".proxyauthmethod", ".proxysslcert", ".proxysslkey",
+			".proxysslcertpasswordprotected", ".proxysslcainfo",
+			".emptyauth", ".delegation", ".proactiveauth",
+			".sslcipherlist", ".sslversion", ".sslbackend", ".pinnedpubkey",
+			".schannelcheckrevoke", ".schannelusesslcainfo", ".followredirects",
+		} {
+			if strings.HasSuffix(key, suffix) {
+				return true
+			}
+		}
+		if strings.HasSuffix(key, ".sslcainfo") ||
+			strings.HasSuffix(key, ".sslcapath") {
 			return true
 		}
 	}
@@ -857,20 +879,6 @@ func isSSHRemoteURL(remoteURL string) bool {
 	colon := strings.IndexByte(remoteURL, ':')
 	slash := strings.IndexAny(remoteURL, `/\`)
 	return colon >= 0 && (slash < 0 || colon < slash)
-}
-
-func ensurePrivateDirectory(path string) error {
-	if err := os.Mkdir(path, 0o700); err != nil && !os.IsExist(err) {
-		return err
-	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		return err
-	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("%s is not a trusted directory", path)
-	}
-	return os.Chmod(path, 0o700)
 }
 
 func isGitAuthenticationFailure(message string) bool {

@@ -16,7 +16,7 @@ import (
 
 const windowsStillActive = 259
 
-func prepareGitCommand(cmd *exec.Cmd, hideConsoleWindow bool) {
+func prepareGitCommand(cmd *exec.Cmd, hideConsoleWindow, _ bool) {
 	if hideConsoleWindow {
 		if cmd.SysProcAttr == nil {
 			cmd.SysProcAttr = &syscall.SysProcAttr{}

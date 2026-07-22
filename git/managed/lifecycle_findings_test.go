@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -82,6 +83,62 @@ func TestCreateWorktreeOnDiskRejectsSymlinkedHookEscape(t *testing.T) {
 		SetupScript: "hook-link.sh",
 	})
 	require.ErrorIs(err, ErrHookOutsideProject)
+}
+
+func TestCreateWorktreeOnDiskRejectsDanglingHookBeforeMutation(t *testing.T) {
+	assert := assert.New(t)
+	require := Require.New(t)
+	repo := initLifecycleRepo(t)
+	dest := filepath.Join(t.TempDir(), "future-worktree")
+	marker := filepath.Join(t.TempDir(), "hook-ran")
+	quotedMarker := "'" + strings.ReplaceAll(filepath.ToSlash(marker), "'", "'\\''") + "'"
+	require.NoError(os.WriteFile(
+		filepath.Join(repo, "setup"),
+		[]byte("#!/bin/sh\nprintf ran > "+quotedMarker+"\n"), 0o755,
+	))
+	lifecycleGit(t, repo, "add", "setup")
+	lifecycleGit(t, repo, "commit", "-m", "add contributor setup")
+	require.NoError(os.Symlink(filepath.Join(dest, "setup"), filepath.Join(repo, "hook-link")))
+
+	_, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Branch:      "dangling-hook",
+		Path:        dest,
+		SetupScript: "hook-link",
+	})
+
+	require.ErrorContains(err, "resolve lifecycle hook script")
+	assert.NoDirExists(dest)
+	assert.False(branchExistsInRepo(t, repo, "dangling-hook"))
+	assert.NoFileExists(marker)
+}
+
+func TestCreateWorktreeOnDiskRevalidatesHookIdentityBeforeExecution(t *testing.T) {
+	assert := assert.New(t)
+	require := Require.New(t)
+	repo := initLifecycleRepo(t)
+	hook := filepath.Join(repo, "setup")
+	require.NoError(os.WriteFile(hook, []byte("#!/bin/sh\nexit 0\n"), 0o755))
+	marker := filepath.Join(t.TempDir(), "replacement-ran")
+	quotedMarker := "'" + strings.ReplaceAll(filepath.ToSlash(marker), "'", "'\\''") + "'"
+	dest := filepath.Join(t.TempDir(), "worktree")
+
+	_, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot:      repo,
+		Branch:           "replaced-hook",
+		Path:             dest,
+		SetupScript:      "setup",
+		IsolatedCheckout: true,
+		BeforeCheckout: func(context.Context, string) error {
+			require.NoError(os.Remove(hook))
+			return os.WriteFile(hook, []byte(
+				"#!/bin/sh\nprintf ran > "+quotedMarker+"\n",
+			), 0o755)
+		},
+	})
+
+	require.Error(err)
+	assert.NoFileExists(marker)
 }
 
 // TestCreateWorktreeFromMergeRequestGitLabRef verifies the merge-request head

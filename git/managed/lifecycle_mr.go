@@ -159,7 +159,7 @@ func CreateWorktreeFromMergeRequest(
 		return result, errors.Join(err, cleanupErr)
 	}
 
-	if hookScript != "" {
+	if hookScript.path != "" {
 		if hookErr := runLifecycleHook(
 			ctx, hookScript, root, path, branch, opts.WorktreeName,
 			opts.HookEnvironmentPrefix,
@@ -170,7 +170,7 @@ func CreateWorktreeFromMergeRequest(
 			return result, errors.Join(hookErr, cleanupErr)
 		}
 		result.HookRan = true
-		result.HookScript = hookScript
+		result.HookScript = hookScript.requested
 	}
 	return result, nil
 }

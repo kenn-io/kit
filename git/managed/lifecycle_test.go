@@ -236,7 +236,7 @@ func TestCreateWorktreeOnDiskUsesExecutionPolicy(t *testing.T) {
 	remaining, err := result.Rollback(context.Background())
 	require.NoError(err)
 	assert.Empty(remaining)
-	assert.Contains(gitCommands, "status --porcelain=v1 --untracked-files=all")
+	assert.Contains(gitCommands, "status --porcelain=v1 --untracked-files=all --ignored=matching")
 	assert.Contains(gitCommands, "worktree remove --force "+result.Path)
 	assert.Contains(gitCommands, "update-ref -d refs/heads/"+result.Branch+" "+result.branchOID)
 }
@@ -352,6 +352,37 @@ func TestCreateWorktreeResultRollbackPreservesDirtyWorktree(t *testing.T) {
 	require.Error(err)
 	assert.Equal(RollbackResult{Path: result.Path, Branch: result.Branch}, remaining)
 	assert.FileExists(marker)
+}
+
+func TestCreateWorktreeResultRollbackPreservesIgnoredFiles(t *testing.T) {
+	assert := assert.New(t)
+	require := Require.New(t)
+	repo := initLifecycleRepo(t)
+	require.NoError(os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("ignored.txt\n"), 0o644))
+	lifecycleGit(t, repo, "add", ".gitignore")
+	lifecycleGit(t, repo, "commit", "-m", "ignore local artifact")
+	result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Branch:      "review/ignored-file",
+		Path:        filepath.Join(t.TempDir(), "ignored"),
+		BaseRef:     "HEAD",
+	})
+	require.NoError(err)
+	ignored := filepath.Join(result.Path, "ignored.txt")
+	require.NoError(os.WriteFile(ignored, []byte("keep\n"), 0o644))
+
+	remaining, err := result.Rollback(t.Context())
+
+	require.ErrorIs(err, ErrWorktreeCleanupIncomplete)
+	assert.Equal(RollbackResult{Path: result.Path, Branch: result.Branch}, remaining)
+	assert.FileExists(ignored)
+}
+
+func TestLifecycleHooksDirIsPrivate(t *testing.T) {
+	require := Require.New(t)
+	hooksDir, err := lifecycleHooksDir()
+	require.NoError(err)
+	require.NoError(safefileio.ValidatePrivateDir(hooksDir))
 }
 
 func TestCreateWorktreeResultRollbackPreservesReplacedPath(t *testing.T) {
@@ -817,6 +848,24 @@ func TestRemoveWorktreeFromDiskPrunesWhenPathAlreadyGone(t *testing.T) {
 	assert.False(branchExistsInRepo(t, repo, "feature"))
 	list := lifecycleGit(t, repo, "worktree", "list", "--porcelain")
 	assert.NotContains(list, dest, "stale worktree entry pruned")
+}
+
+func TestRemoveMissingWorktreeSkipsMissingTeardownHook(t *testing.T) {
+	require := Require.New(t)
+	repo := initLifecycleRepo(t)
+	dest := filepath.Join(t.TempDir(), "wt")
+	lifecycleGit(t, repo, "worktree", "add", "-b", "feature", dest)
+	require.NoError(os.RemoveAll(dest))
+
+	_, err := RemoveWorktreeFromDisk(t.Context(), RemoveWorktreeOptions{
+		ProjectRoot:    repo,
+		Path:           dest,
+		Branch:         "feature",
+		TeardownScript: "missing-teardown",
+		RemoveBranch:   true,
+	})
+
+	require.NoError(err)
 }
 
 func TestRemoveMissingWorktreePreservesUnrelatedStaleRegistration(t *testing.T) {

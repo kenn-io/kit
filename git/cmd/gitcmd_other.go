@@ -4,4 +4,4 @@ package gitcmd
 
 import "os/exec"
 
-func prepareGitCommand(*exec.Cmd, bool) {}
+func prepareGitCommand(*exec.Cmd, bool, bool) {}

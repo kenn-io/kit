@@ -32,8 +32,15 @@ not about one product's workflow.
   be obtained, preserve the artifacts and report incomplete cleanup.
 - Default managed worktree bases must stay restricted to the current user on
   Unix and Windows. Callers opt into shared permissions with an explicit base.
-- Lifecycle hook cancellation must terminate the spawned process tree, not
-  only the immediate hook process.
+- Lifecycle hooks must resolve to an existing regular file inside the project
+  before worktree mutation and retain the same target and file identity at
+  execution time. Hook-isolation directories must be private to the current
+  user on Unix and Windows.
+- Conservative rollback must include ignored and untracked artifacts when it
+  decides whether a managed worktree still matches its creation snapshot.
+- Interactive Git commands must retain foreground terminal access; automated
+  Git and lifecycle hooks must keep bounded process-tree cancellation, and hook
+  cancellation must terminate the spawned tree rather than only its parent.
 
 ## Tests
 

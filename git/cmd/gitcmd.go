@@ -44,7 +44,8 @@ type Runner struct {
 	Config []Config
 	// StripEnv removes inherited GIT_* variables before running git.
 	StripEnv bool
-	// TerminalPrompt allows interactive git prompts when true.
+	// TerminalPrompt allows interactive git prompts when true and preserves
+	// foreground terminal access on Unix.
 	TerminalPrompt bool
 	// NullGlobalConfig makes git read an empty global config when true, by
 	// pointing GIT_CONFIG_GLOBAL at an empty file (not os.DevNull, which is the
@@ -95,7 +96,7 @@ func (r Runner) Command(ctx context.Context, dir string, args ...string) *exec.C
 	if r.basicAuth != nil {
 		panic("gitcmd: Command cannot be used with WithBasicAuth; use Run or Output so credentials can be cleaned up")
 	}
-	cmd := gitCommand(ctx, !r.TerminalPrompt, args...)
+	cmd := gitCommand(ctx, r.TerminalPrompt, args...)
 	cmd.Dir = dir
 	cmd.Env, _ = r.commandEnv(ctx, dir)
 	return cmd
@@ -109,7 +110,7 @@ func (r Runner) Output(ctx context.Context, dir string, args ...string) ([]byte,
 
 // Run runs git and returns stdout, stderr, and a *GitError on failure.
 func (r Runner) Run(ctx context.Context, dir string, stdin io.Reader, args ...string) ([]byte, []byte, error) {
-	cmd := gitCommand(ctx, !r.TerminalPrompt, args...)
+	cmd := gitCommand(ctx, r.TerminalPrompt, args...)
 	cmd.Dir = dir
 	var cleanup func()
 	cmd.Env, cleanup = r.commandEnv(ctx, dir)
@@ -133,9 +134,10 @@ func (r Runner) Run(ctx context.Context, dir string, stdin io.Reader, args ...st
 	return stdout.Bytes(), stderr.Bytes(), nil
 }
 
-func gitCommand(ctx context.Context, hideConsoleWindow bool, args ...string) *exec.Cmd {
+func gitCommand(ctx context.Context, terminalPrompt bool, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "git", args...)
-	PrepareProcessTreeCancellation(cmd, hideConsoleWindow)
+	prepareGitCommand(cmd, !terminalPrompt, terminalPrompt)
+	boundCommandWait(cmd)
 	return cmd
 }
 
@@ -143,7 +145,11 @@ func gitCommand(ctx context.Context, hideConsoleWindow bool, args ...string) *ex
 // terminates its process tree. On Windows, hideConsoleWindow also prevents a
 // console window from being allocated for the child process.
 func PrepareProcessTreeCancellation(cmd *exec.Cmd, hideConsoleWindow bool) {
-	prepareGitCommand(cmd, hideConsoleWindow)
+	prepareGitCommand(cmd, hideConsoleWindow, false)
+	boundCommandWait(cmd)
+}
+
+func boundCommandWait(cmd *exec.Cmd) {
 	if cmd.WaitDelay == 0 {
 		// Bound Wait when a descendant escapes cancellation but retains a
 		// captured-output pipe. Platform cancellation still attempts to kill

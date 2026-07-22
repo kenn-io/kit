@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	gitcmd "go.kenn.io/kit/git/cmd"
 	gitremote "go.kenn.io/kit/git/remote"
+	"go.kenn.io/kit/safefileio"
 )
 
 func newChangeRequestGit(t *testing.T) (string, *ChangeRequestGit) {
@@ -116,6 +117,30 @@ func TestChangeRequestGitValidateRejectsUnsafeEffectiveConfiguration(t *testing.
 			setup: func(t *testing.T, repo string) {
 				lifecycleGit(t, repo, "remote", "add", "origin", "https://github.com/acme/widget.git")
 				lifecycleGit(t, repo, "config", "http.cookieFile", filepath.Join(t.TempDir(), "cookies"))
+			},
+			kind: ChangeRequestAuthentication,
+		},
+		{
+			name: "disabled TLS verification",
+			setup: func(t *testing.T, repo string) {
+				lifecycleGit(t, repo, "remote", "add", "origin", "https://github.com/acme/widget.git")
+				lifecycleGit(t, repo, "config", "http.https://github.com/.sslVerify", "false")
+			},
+			kind: ChangeRequestAuthentication,
+		},
+		{
+			name: "client certificate",
+			setup: func(t *testing.T, repo string) {
+				lifecycleGit(t, repo, "remote", "add", "origin", "https://github.com/acme/widget.git")
+				lifecycleGit(t, repo, "config", "http.sslCert", filepath.Join(t.TempDir(), "client.pem"))
+			},
+			kind: ChangeRequestAuthentication,
+		},
+		{
+			name: "credential-bearing proxy",
+			setup: func(t *testing.T, repo string) {
+				lifecycleGit(t, repo, "remote", "add", "origin", "https://github.com/acme/widget.git")
+				lifecycleGit(t, repo, "config", "http.proxy", "https://user:secret@proxy.example")
 			},
 			kind: ChangeRequestAuthentication,
 		},
@@ -320,6 +345,7 @@ func TestChangeRequestGitConfiguresPersistentSafePushRouting(t *testing.T) {
 	hooksPath := lifecycleGit(t, created.Path, "config", "--path", "--get", "core.hooksPath")
 	assert.True(t, filepath.IsAbs(hooksPath), hooksPath)
 	assert.DirExists(t, hooksPath)
+	require.NoError(t, safefileio.ValidatePrivateDir(hooksPath))
 }
 
 func TestChangeRequestGitConfigurePushRejectsChangedHead(t *testing.T) {

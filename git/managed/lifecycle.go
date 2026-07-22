@@ -260,7 +260,7 @@ func CreateWorktreeOnDisk(
 			return result, errors.Join(err, cleanupErr)
 		}
 	}
-	if hookScript != "" {
+	if hookScript.path != "" {
 		hookErr := runLifecycleHook(
 			ctx, hookScript, root, path, branch, opts.WorktreeName,
 			opts.HookEnvironmentPrefix,
@@ -272,7 +272,7 @@ func CreateWorktreeOnDisk(
 			return result, errors.Join(hookErr, cleanupErr)
 		}
 		result.HookRan = true
-		result.HookScript = hookScript
+		result.HookScript = hookScript.requested
 	}
 	return result, nil
 }
@@ -351,7 +351,7 @@ func (r CreateWorktreeResult) rollbackOwned(
 		}
 		status, err := runLifecycleGitWithRunner(
 			ctx, runner, r.Path,
-			"status", "--porcelain=v1", "--untracked-files=all",
+			"status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching",
 		)
 		if err != nil {
 			remaining.Path = r.Path
@@ -500,11 +500,6 @@ func RemoveWorktreeFromDisk(
 	if err != nil {
 		return RemoveWorktreeResult{}, err
 	}
-	hookScript, err := resolveHookScript(root, opts.TeardownScript)
-	if err != nil {
-		return RemoveWorktreeResult{}, err
-	}
-
 	pathExists := true
 	if _, statErr := os.Stat(path); statErr != nil {
 		if !os.IsNotExist(statErr) {
@@ -514,9 +509,16 @@ func RemoveWorktreeFromDisk(
 		}
 		pathExists = false
 	}
+	hookScript := lifecycleHookScript{}
+	if pathExists {
+		hookScript, err = resolveHookScript(root, opts.TeardownScript)
+		if err != nil {
+			return RemoveWorktreeResult{}, err
+		}
+	}
 
 	result := RemoveWorktreeResult{}
-	if hookScript != "" && pathExists {
+	if hookScript.path != "" && pathExists {
 		if hookErr := runLifecycleHook(
 			ctx, hookScript, root, path, opts.Branch, opts.WorktreeName,
 			opts.HookEnvironmentPrefix,
@@ -524,7 +526,7 @@ func RemoveWorktreeFromDisk(
 			return RemoveWorktreeResult{}, hookErr
 		}
 		result.HookRan = true
-		result.HookScript = hookScript
+		result.HookScript = hookScript.requested
 	}
 
 	if pathExists {
@@ -614,35 +616,70 @@ func validateBranchName(
 	return nil
 }
 
-// resolveHookScript resolves a caller-supplied hook script path against the
-// project root and rejects paths that escape it. Both sides of the
-// containment check are canonicalized through symlink resolution so a
-// symlink inside the project cannot smuggle in a script that lives outside
-// it. An empty raw path means no hook and resolves to "".
-func resolveHookScript(projectRoot, raw string) (string, error) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return "", nil
-	}
-	resolved := trimmed
-	if !filepath.IsAbs(resolved) {
-		resolved = filepath.Join(projectRoot, resolved)
-	}
-	resolved = filepath.Clean(resolved)
-	if !pathWithinRoot(canonicalizePath(projectRoot), canonicalizePath(resolved)) {
-		return "", fmt.Errorf("%w: %q", ErrHookOutsideProject, raw)
-	}
-	return resolved, nil
+type lifecycleHookScript struct {
+	requested string
+	path      string
+	info      os.FileInfo
 }
 
-// canonicalizePath resolves symlinks when the path exists; a path that does
-// not exist yet (or cannot be resolved) keeps its lexical form, which fails
-// later at execution time rather than here.
-func canonicalizePath(path string) string {
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
-		return resolved
+// resolveHookScript resolves a caller-supplied hook script path against the
+// project root and snapshots the existing regular file's identity. Requiring
+// the target to exist before worktree mutation prevents a dangling symlink
+// from becoming contributor-controlled after checkout.
+func resolveHookScript(projectRoot, raw string) (lifecycleHookScript, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return lifecycleHookScript{}, nil
 	}
-	return path
+	requested := trimmed
+	if !filepath.IsAbs(requested) {
+		requested = filepath.Join(projectRoot, requested)
+	}
+	requested = filepath.Clean(requested)
+	canonicalRoot, err := filepath.EvalSymlinks(projectRoot)
+	if err != nil {
+		return lifecycleHookScript{}, fmt.Errorf("resolve lifecycle hook project root: %w", err)
+	}
+	resolved, err := filepath.EvalSymlinks(requested)
+	if err != nil {
+		if !pathWithinRoot(filepath.Clean(projectRoot), requested) {
+			return lifecycleHookScript{}, fmt.Errorf("%w: %q", ErrHookOutsideProject, raw)
+		}
+		return lifecycleHookScript{}, fmt.Errorf("resolve lifecycle hook script: %w", err)
+	}
+	if !pathWithinRoot(canonicalRoot, resolved) {
+		return lifecycleHookScript{}, fmt.Errorf("%w: %q", ErrHookOutsideProject, raw)
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return lifecycleHookScript{}, fmt.Errorf("inspect lifecycle hook script: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return lifecycleHookScript{}, fmt.Errorf("lifecycle hook script is not a regular file: %q", raw)
+	}
+	return lifecycleHookScript{requested: requested, path: resolved, info: info}, nil
+}
+
+func (h lifecycleHookScript) revalidate(projectRoot string) error {
+	canonicalRoot, err := filepath.EvalSymlinks(projectRoot)
+	if err != nil {
+		return fmt.Errorf("revalidate lifecycle hook project root: %w", err)
+	}
+	resolved, err := filepath.EvalSymlinks(h.requested)
+	if err != nil {
+		return fmt.Errorf("revalidate lifecycle hook script: %w", err)
+	}
+	if resolved != h.path || !pathWithinRoot(canonicalRoot, resolved) {
+		return errors.New("lifecycle hook script target changed before execution")
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return fmt.Errorf("revalidate lifecycle hook script: %w", err)
+	}
+	if !info.Mode().IsRegular() || !os.SameFile(h.info, info) {
+		return errors.New("lifecycle hook script identity changed before execution")
+	}
+	return nil
 }
 
 func pathWithinRoot(root, path string) bool {
@@ -861,7 +898,20 @@ var (
 
 func lifecycleHooksDir() (string, error) {
 	lifecycleHooksOnce.Do(func() {
-		lifecycleHooksPath, lifecycleHooksErr = os.MkdirTemp("", "kit-managed-hooks-")
+		userID, err := safefileio.CurrentUserID()
+		if err != nil {
+			lifecycleHooksErr = err
+			return
+		}
+		base := filepath.Join(os.TempDir(), "kit-managed-hooks-"+userID)
+		if err := safefileio.EnsurePrivateDir(base); err != nil {
+			lifecycleHooksErr = err
+			return
+		}
+		lifecycleHooksPath, lifecycleHooksErr = os.MkdirTemp(base, "disabled-")
+		if lifecycleHooksErr == nil {
+			lifecycleHooksErr = safefileio.EnsurePrivateDir(lifecycleHooksPath)
+		}
 	})
 	return lifecycleHooksPath, lifecycleHooksErr
 }
@@ -889,9 +939,12 @@ func classifyWorktreeGitError(out []byte, err error) error {
 // stderr is captured into the HookError a non-zero exit produces.
 func runLifecycleHook(
 	ctx context.Context,
-	script, projectRoot, worktreePath, branch, worktreeName,
+	script lifecycleHookScript, projectRoot, worktreePath, branch, worktreeName,
 	environmentPrefix string,
 ) error {
+	if err := script.revalidate(projectRoot); err != nil {
+		return err
+	}
 	name := strings.TrimSpace(worktreeName)
 	if name == "" {
 		name = branch
@@ -909,7 +962,7 @@ func runLifecycleHook(
 	)
 	var stderr bytes.Buffer
 	command := HookCommand{
-		Script: script, Dir: worktreePath, Env: environment,
+		Script: script.path, Dir: worktreePath, Env: environment,
 		Stdout: io.Discard, Stderr: &stderr,
 	}
 	var err error
@@ -930,12 +983,12 @@ func runLifecycleHook(
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			return &HookError{
-				Script:   script,
+				Script:   script.path,
 				ExitCode: exitErr.ExitCode(),
 				Stderr:   strings.TrimSpace(stderr.String()),
 			}
 		}
-		return fmt.Errorf("run lifecycle hook %s: %w", script, err)
+		return fmt.Errorf("run lifecycle hook %s: %w", script.path, err)
 	}
 	return nil
 }

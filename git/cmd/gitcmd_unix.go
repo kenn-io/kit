@@ -9,7 +9,10 @@ import (
 	"syscall"
 )
 
-func prepareGitCommand(cmd *exec.Cmd, _ bool) {
+func prepareGitCommand(cmd *exec.Cmd, _ bool, preserveForeground bool) {
+	if preserveForeground {
+		return
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {

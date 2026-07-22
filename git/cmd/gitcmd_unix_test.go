@@ -10,10 +10,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestRunnerCommandCancelsEntireProcessGroup(t *testing.T) {
-	cmd := New().Command(context.Background(), t.TempDir(), "status")
+func TestInteractiveCommandPreservesForegroundProcessGroup(t *testing.T) {
+	interactive := New()
+	interactive.TerminalPrompt = true
+	interactiveCommand := interactive.Command(context.Background(), "", "status")
 
-	require.NotNil(t, cmd.SysProcAttr)
-	assert.True(t, cmd.SysProcAttr.Setpgid)
-	assert.NotNil(t, cmd.Cancel)
+	nonInteractiveCommand := New().Command(context.Background(), "", "status")
+
+	assert.Nil(t, interactiveCommand.SysProcAttr)
+	assert.NotNil(t, interactiveCommand.Cancel)
+	require.NotNil(t, nonInteractiveCommand.SysProcAttr)
+	assert.True(t, nonInteractiveCommand.SysProcAttr.Setpgid)
+	assert.NotNil(t, nonInteractiveCommand.Cancel)
 }
