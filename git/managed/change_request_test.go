@@ -240,6 +240,19 @@ func TestChangeRequestGitEnsureRemoteRejectsCloneURLIdentityMismatch(t *testing.
 	assert.NotContains(t, strings.Fields(lifecycleGit(t, repo, "remote")), "review-octocat")
 }
 
+func TestChangeRequestGitEnsureRemoteCanonicalizesRelativeLocalPath(t *testing.T) {
+	repo, backend := newChangeRequestGit(t)
+	target := filepath.Join(filepath.Dir(repo), "forks", "team", "widget")
+	require.NoError(t, os.MkdirAll(target, 0o755))
+	relative, err := filepath.Rel(repo, target)
+	require.NoError(t, err)
+
+	remote, err := backend.EnsureRemote(t.Context(), RemoteRepository{CloneURL: relative})
+
+	require.NoError(t, err)
+	assert.Equal(t, target, lifecycleGit(t, repo, "remote", "get-url", remote))
+}
+
 func TestChangeRequestGitExpectedURLDoesNotReplaceIdentityValidation(t *testing.T) {
 	repo, backend := newChangeRequestGit(t)
 	remoteURL := "https://evil.example/octocat/widget.git"
@@ -436,6 +449,7 @@ func TestSSHRemoteURLRejectsLocalPaths(t *testing.T) {
 	}{
 		{name: "scp", remoteURL: "git@example.com:owner/repo.git", want: true},
 		{name: "ssh URL", remoteURL: "ssh://git@example.com/owner/repo.git", want: true},
+		{name: "ssh plus git URL", remoteURL: "ssh+git://git@example.com/owner/repo.git", want: true},
 		{name: "Windows drive", remoteURL: `D:\work\repo.git`},
 		{name: "Windows slash drive", remoteURL: "D:/work/repo.git"},
 		{name: "Unix absolute", remoteURL: "/work/repo.git"},

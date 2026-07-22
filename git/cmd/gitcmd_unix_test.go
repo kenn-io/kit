@@ -23,3 +23,11 @@ func TestInteractiveCommandPreservesForegroundProcessGroup(t *testing.T) {
 	assert.True(t, nonInteractiveCommand.SysProcAttr.Setpgid)
 	assert.NotNil(t, nonInteractiveCommand.Cancel)
 }
+
+func TestSafeDirectoryProbeUsesNonInteractiveProcessSettings(t *testing.T) {
+	cmd := safeDirectoryProbeCommand(context.Background(), nil, "")
+
+	require.NotNil(t, cmd.SysProcAttr)
+	assert.True(t, cmd.SysProcAttr.Setpgid)
+	assert.NotNil(t, cmd.Cancel)
+}

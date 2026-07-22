@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -79,6 +80,10 @@ func CreateWorktreeFromMergeRequest(
 		return CreateWorktreeResult{}, fmt.Errorf(
 			"merge request number is required",
 		)
+	}
+	opts, err = normalizeMergeRequestCloneURLs(root, opts)
+	if err != nil {
+		return CreateWorktreeResult{}, err
 	}
 	if err := validateBranchName(ctx, root, branch); err != nil {
 		return CreateWorktreeResult{}, err
@@ -186,9 +191,6 @@ func prepareMergeRequestRemote(
 ) (mergeRequestRemoteTarget, error) {
 	headBranch := strings.TrimSpace(opts.HeadBranch)
 	hasHeadBranch := headBranch != ""
-	if headBranch == "" {
-		headBranch = "merge-request"
-	}
 
 	cloneURL := strings.TrimSpace(opts.HeadRepoCloneURL)
 	sameRepo := cloneURL != "" && opts.ProjectRepoIdentity != "" &&
@@ -214,7 +216,7 @@ func prepareMergeRequestRemote(
 	headRef := mergeRequestHeadRef(opts.Platform, opts.Number)
 	localRef := "refs/remotes/origin/" + strings.TrimPrefix(headRef, "refs/")
 
-	if cloneURL == "" || sameRepo {
+	if cloneURL == "" || sameRepo || !hasHeadBranch {
 		return mergeRequestRemoteTarget{
 			checkoutRemote: "origin", checkoutSourceRef: headRef,
 			checkoutDestinationRef: localRef,
@@ -237,6 +239,36 @@ func prepareMergeRequestRemote(
 		trackingDestinationRef: "refs/remotes/" + remoteName + "/" + headBranch,
 		trackingMergeRef:       "refs/heads/" + headBranch,
 	}, nil
+}
+
+func normalizeMergeRequestCloneURLs(
+	root string, opts MergeRequestWorktreeOptions,
+) (MergeRequestWorktreeOptions, error) {
+	headURL, _, err := canonicalCloneURL(root, opts.HeadRepoCloneURL)
+	if err != nil {
+		return opts, fmt.Errorf("resolve merge-request head clone URL: %w", err)
+	}
+	opts.HeadRepoCloneURL = headURL
+
+	project := strings.TrimSpace(opts.ProjectRepoIdentity)
+	if project == "" {
+		return opts, nil
+	}
+	canonicalProject, local, err := canonicalCloneURL(root, project)
+	if err != nil {
+		return opts, fmt.Errorf("resolve project repository identity: %w", err)
+	}
+	if !local {
+		return opts, nil
+	}
+	if gitremote.IsLocal(project) || strings.HasPrefix(project, ".") {
+		opts.ProjectRepoIdentity = canonicalProject
+		return opts, nil
+	}
+	if _, err := os.Stat(canonicalProject); err == nil {
+		opts.ProjectRepoIdentity = canonicalProject
+	}
+	return opts, nil
 }
 
 func repositoryIdentity(identity string) gitremote.Identity {

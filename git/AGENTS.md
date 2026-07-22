@@ -41,6 +41,9 @@ not about one product's workflow.
 - Interactive Git commands must retain foreground terminal access; automated
   Git and lifecycle hooks must keep bounded process-tree cancellation, and hook
   cancellation must terminate the spawned tree rather than only its parent.
+- Canonicalize relative local clone paths against the project root before
+  deriving repository identity or persisting a remote. Configure change-request
+  tracking only when the provider supplied an explicit source branch.
 
 ## Tests
 

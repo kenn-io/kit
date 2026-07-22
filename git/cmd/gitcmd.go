@@ -277,9 +277,8 @@ func readSafeDirectories(ctx context.Context, env []string, dir string) []string
 		// --includes is required for explicit-scope reads to honor include.path
 		// and includeIf directives the way git's default config sequence does.
 		probeCtx, cancel := context.WithTimeout(ctx, safeDirectoryProbeTimeout)
-		cmd := gitCommand(probeCtx, true, "config", scope, "--includes", "-z", "--get-all", "safe.directory")
-		cmd.Dir = dir
-		cmd.Env = env
+		cmd := safeDirectoryProbeCommand(probeCtx, env, dir,
+			"config", scope, "--includes", "-z", "--get-all", "safe.directory")
 		out, err := cmd.Output()
 		cancel()
 		if err != nil || len(out) == 0 {
@@ -288,6 +287,15 @@ func readSafeDirectories(ctx context.Context, env []string, dir string) []string
 		dirs = append(dirs, strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00")...)
 	}
 	return dirs
+}
+
+func safeDirectoryProbeCommand(
+	ctx context.Context, env []string, dir string, args ...string,
+) *exec.Cmd {
+	cmd := gitCommand(ctx, false, args...)
+	cmd.Dir = dir
+	cmd.Env = env
+	return cmd
 }
 
 // gitEnvBool reports whether env sets key to a value git's boolean parsing

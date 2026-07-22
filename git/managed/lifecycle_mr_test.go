@@ -151,6 +151,66 @@ func TestCreateWorktreeFromMergeRequestSameRepoWithoutHeadBranchUsesPullRef(t *t
 	assert.Empty(worktreeConfig(t, result.Path, "branch.pr-12.remote"))
 }
 
+func TestCreateWorktreeFromForkWithoutHeadBranchDisablesTracking(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	origin, clone := initOriginAndClone(t)
+	fork := filepath.Join(t.TempDir(), "fork")
+	lifecycleGit(t, filepath.Dir(origin), "clone", "-q", origin, fork)
+	lifecycleGit(t, fork, "checkout", "-q", "-b", "merge-request")
+	lifecycleGit(t, fork, "commit", "--allow-empty", "-m", "unnamed fork head")
+	headSHA := lifecycleGit(t, fork, "rev-parse", "HEAD")
+	lifecycleGit(t, origin, "fetch", "-q", fork,
+		"+refs/heads/merge-request:refs/pull/13/head")
+
+	result, err := CreateWorktreeFromMergeRequest(t.Context(), MergeRequestWorktreeOptions{
+		ProjectRoot:         clone,
+		Branch:              "pr-13",
+		Path:                filepath.Join(t.TempDir(), "wt"),
+		Number:              13,
+		HeadRepoCloneURL:    fork,
+		ProjectRepoIdentity: identityOfCloneURL(origin),
+	})
+
+	require.NoError(err)
+	t.Cleanup(func() { _, _ = result.Rollback(context.Background()) })
+	assert.Equal(headSHA, lifecycleGit(t, result.Path, "rev-parse", "HEAD"))
+	assert.Empty(worktreeConfig(t, result.Path, "branch.pr-13.remote"))
+}
+
+func TestCreateWorktreeFromMergeRequestCanonicalizesRelativeForkPath(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	origin, clone := initOriginAndClone(t)
+	fork := filepath.Join(filepath.Dir(clone), "forks", "team", "fork")
+	require.NoError(os.MkdirAll(filepath.Dir(fork), 0o755))
+	lifecycleGit(t, filepath.Dir(fork), "clone", "-q", origin, fork)
+	lifecycleGit(t, fork, "checkout", "-q", "-b", "relative-fork")
+	lifecycleGit(t, fork, "commit", "--allow-empty", "-m", "relative fork head")
+	headSHA := lifecycleGit(t, fork, "rev-parse", "HEAD")
+	lifecycleGit(t, origin, "fetch", "-q", fork,
+		"+refs/heads/relative-fork:refs/pull/14/head")
+	relativeFork, err := filepath.Rel(clone, fork)
+	require.NoError(err)
+
+	result, err := CreateWorktreeFromMergeRequest(t.Context(), MergeRequestWorktreeOptions{
+		ProjectRoot:         clone,
+		Branch:              "pr-14",
+		Path:                filepath.Join(t.TempDir(), "wt"),
+		Number:              14,
+		HeadBranch:          "relative-fork",
+		HeadRepoCloneURL:    relativeFork,
+		ProjectRepoIdentity: identityOfCloneURL(origin),
+	})
+
+	require.NoError(err)
+	t.Cleanup(func() { _, _ = result.Rollback(context.Background()) })
+	assert.Equal(headSHA, lifecycleGit(t, result.Path, "rev-parse", "HEAD"))
+	remote := worktreeConfig(t, result.Path, "branch.pr-14.remote")
+	assert.NotEmpty(remote)
+	assert.Equal(fork, lifecycleGit(t, clone, "remote", "get-url", remote))
+}
+
 func TestCreateWorktreeFromMergeRequestChecksOutVerifiedOID(t *testing.T) {
 	require := Require.New(t)
 	assert := assert.New(t)

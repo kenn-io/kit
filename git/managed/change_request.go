@@ -297,7 +297,12 @@ func (g *ChangeRequestGit) EnsureRemote(ctx context.Context, repository RemoteRe
 			remoteNames = append(remoteNames, name)
 		}
 	}
-	remoteURL := strings.TrimSpace(repository.CloneURL)
+	remoteURL, _, err := canonicalCloneURL(g.root, repository.CloneURL)
+	if err != nil {
+		return "", changeRequestError(ChangeRequestUnsafeConfiguration,
+			"failed to resolve the change-request clone URL", err)
+	}
+	repository.CloneURL = remoteURL
 	projectSSHURL := g.projectPushSSHURL(ctx, existing)
 	if projectSSHURL != "" {
 		remoteURL, err = forkSSHURL(projectSSHURL, repository.Identity)
@@ -870,7 +875,8 @@ func isSSHRemoteURL(remoteURL string) bool {
 		return false
 	}
 	lower := strings.ToLower(remoteURL)
-	if strings.HasPrefix(lower, "ssh://") || strings.HasPrefix(lower, "git+ssh://") {
+	if strings.HasPrefix(lower, "ssh://") || strings.HasPrefix(lower, "git+ssh://") ||
+		strings.HasPrefix(lower, "ssh+git://") {
 		return true
 	}
 	if strings.Contains(lower, "://") {
@@ -878,6 +884,40 @@ func isSSHRemoteURL(remoteURL string) bool {
 	}
 	colon := strings.IndexByte(remoteURL, ':')
 	slash := strings.IndexAny(remoteURL, `/\`)
+	return colon >= 0 && (slash < 0 || colon < slash)
+}
+
+// canonicalCloneURL makes local clone paths stable across commands run from
+// the project and its managed worktrees. Git interprets any URL without a
+// scheme or SCP-style host prefix as a path relative to the current command.
+func canonicalCloneURL(projectRoot, raw string) (string, bool, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", false, nil
+	}
+	if filepath.IsAbs(trimmed) || gitremote.IsLocal(trimmed) {
+		if strings.HasPrefix(strings.ToLower(trimmed), "file:") {
+			return trimmed, true, nil
+		}
+		absolute, err := filepath.Abs(trimmed)
+		if err != nil {
+			return "", true, err
+		}
+		return filepath.Clean(absolute), true, nil
+	}
+	if strings.Contains(trimmed, "://") || cloneURLHasSCPHost(trimmed) {
+		return trimmed, false, nil
+	}
+	absolute, err := filepath.Abs(filepath.Join(projectRoot, trimmed))
+	if err != nil {
+		return "", true, err
+	}
+	return filepath.Clean(absolute), true, nil
+}
+
+func cloneURLHasSCPHost(value string) bool {
+	colon := strings.IndexByte(value, ':')
+	slash := strings.IndexAny(value, `/\`)
 	return colon >= 0 && (slash < 0 || colon < slash)
 }
 
