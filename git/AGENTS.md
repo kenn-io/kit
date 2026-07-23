@@ -64,6 +64,9 @@ not about one product's workflow.
   preserve native absolute interpreter paths. Private hook snapshots must keep
   owner-write permission on Windows so successful execution does not leak a
   read-only temporary file.
+- Safe push routing is transactional at the public method boundary. Snapshot
+  affected worktree configuration and restore it after any routing write or
+  final-validation failure; persistent hook isolation may remain installed.
 - Before teardown hooks or destructive removal, verify that the path is still
   the registered worktree for the expected repository and branch. Preserve
   replacement paths and repositories, require detached worktrees to remain

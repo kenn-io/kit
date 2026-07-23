@@ -2,9 +2,11 @@ package managedworktree
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -35,6 +37,17 @@ func changeRequestRemote(owner string) RemoteRepository {
 		Identity: gitremote.Identity{Host: "github.com", Owner: owner, Name: "widget"},
 		CloneURL: "https://github.com/" + owner + "/widget.git",
 	}
+}
+
+func worktreeConfigValues(t *testing.T, dir, key string) []string {
+	t.Helper()
+	output, err := gitcmd.New().Output(t.Context(), dir,
+		"config", "--worktree", "--get-all", key)
+	if gitcmd.IsExitCode(err, 1) {
+		return nil
+	}
+	require.NoError(t, err)
+	return strings.Split(strings.TrimSpace(string(output)), "\n")
 }
 
 func TestChangeRequestGitValidateRejectsUnsafeEffectiveConfiguration(t *testing.T) {
@@ -849,6 +862,96 @@ func TestChangeRequestGitConfigurePushRejectsChangedHead(t *testing.T) {
 	var typed *ChangeRequestError
 	require.ErrorAs(t, err, &typed)
 	assert.Equal(t, ChangeRequestUnsafeConfiguration, typed.Kind)
+}
+
+func TestChangeRequestGitConfigurePushRestoresRoutingAfterWriteFailure(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	repo := initLifecycleRepo(t)
+	injected := errors.New("injected routing write failure")
+	backend, err := NewChangeRequestGit(ChangeRequestGitOptions{
+		ProjectRoot:            repo,
+		ProjectIdentity:        gitremote.Identity{Host: "github.com", Owner: "acme", Name: "widget"},
+		RemoteNamePrefix:       "review",
+		HookIsolationNamespace: "kit-test",
+		Runner:                 gitcmd.New(),
+		RunGit: func(ctx context.Context, runner gitcmd.Runner, dir string, args ...string) ([]byte, error) {
+			if len(args) >= 4 && args[0] == "config" && args[1] == "--worktree" &&
+				args[2] == "remote.fork.push" && args[3] == "HEAD:refs/heads/feature/widgets" {
+				return nil, injected
+			}
+			stdout, stderr, runErr := runner.Run(ctx, dir, nil, args...)
+			return append(stdout, stderr...), runErr
+		},
+	})
+	require.NoError(err)
+	lifecycleGit(t, repo, "remote", "add", "fork", "https://github.com/octocat/widget.git")
+	created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Path:        filepath.Join(t.TempDir(), "routing-rollback-worktree"),
+		Branch:      "review-routing-rollback",
+		BaseRef:     "main",
+	})
+	require.NoError(err)
+	t.Cleanup(func() { _, _ = created.Rollback(context.Background()) })
+
+	err = backend.ConfigurePush(
+		t.Context(), created, "fork", changeRequestRemote("octocat"), "feature/widgets",
+	)
+
+	require.ErrorIs(err, injected)
+	for _, key := range []string{
+		"branch.review-routing-rollback.remote",
+		"branch.review-routing-rollback.pushRemote",
+		"branch.review-routing-rollback.merge",
+		"remote.fork.push",
+		"remote.fork.mirror",
+		"push.default",
+		"push.followTags",
+	} {
+		assert.Empty(worktreeConfigValues(t, created.Path, key), key)
+	}
+	hooksPath := lifecycleGit(t, created.Path, "config", "--worktree", "--get", "core.hooksPath")
+	assert.NotEmpty(hooksPath)
+}
+
+func TestChangeRequestGitConfigurePushRestoresRoutingAfterValidationFailure(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	repo := initLifecycleRepo(t)
+	backend, err := NewChangeRequestGit(ChangeRequestGitOptions{
+		ProjectRoot:            repo,
+		ProjectIdentity:        gitremote.Identity{Host: "github.com", Owner: "acme", Name: "widget"},
+		RemoteNamePrefix:       "review",
+		HookIsolationNamespace: "kit-test",
+		Runner:                 gitcmd.New(),
+		RunGit: func(ctx context.Context, runner gitcmd.Runner, dir string, args ...string) ([]byte, error) {
+			if slices.Equal(args, []string{"config", "--includes", "--get-all", "remote.fork.push"}) {
+				return []byte("unexpected\n"), nil
+			}
+			stdout, stderr, runErr := runner.Run(ctx, dir, nil, args...)
+			return append(stdout, stderr...), runErr
+		},
+	})
+	require.NoError(err)
+	lifecycleGit(t, repo, "remote", "add", "fork", "https://github.com/octocat/widget.git")
+	created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Path:        filepath.Join(t.TempDir(), "routing-validation-worktree"),
+		Branch:      "review-routing-validation",
+		BaseRef:     "main",
+	})
+	require.NoError(err)
+	t.Cleanup(func() { _, _ = created.Rollback(context.Background()) })
+
+	err = backend.ConfigurePush(
+		t.Context(), created, "fork", changeRequestRemote("octocat"), "feature/widgets",
+	)
+
+	require.Error(err)
+	assert.Empty(worktreeConfigValues(t, created.Path,
+		"branch.review-routing-validation.remote"))
+	assert.Empty(worktreeConfigValues(t, created.Path, "remote.fork.push"))
 }
 
 func TestChangeRequestGitFetchDisablesRepositoryHooks(t *testing.T) {

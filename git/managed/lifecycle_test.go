@@ -1084,7 +1084,7 @@ func TestCreateWorktreeOnDiskRollsBackDirtyOutputFromFailedSetupHook(t *testing.
 	assert.False(branchExistsInRepo(t, repo, "dirty-setup-failure"))
 }
 
-func TestCreateWorktreeOnDiskHookCancellationTerminatesProcessTree(t *testing.T) {
+func TestRunLifecycleHookCancellationTerminatesProcessTree(t *testing.T) {
 	assert := assert.New(t)
 	require := Require.New(t)
 	repo := initLifecycleRepo(t)
@@ -1095,18 +1095,41 @@ func TestCreateWorktreeOnDiskHookCancellationTerminatesProcessTree(t *testing.T)
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	started := time.Now()
+	hookScript, err := resolveHookScript(repo, "setup-cancel")
+	require.NoError(err)
 
-	_, err := CreateWorktreeOnDisk(ctx, CreateWorktreeOptions{
-		ProjectRoot: repo,
-		Branch:      "cancel-setup-tree",
-		Path:        filepath.Join(t.TempDir(), "wt"),
-		SetupScript: "setup-cancel",
-	})
+	err = runLifecycleHook(ctx, hookScript, repo, repo, "cancel-hook-tree", "", "")
 
 	require.ErrorIs(err, context.DeadlineExceeded)
 	assert.Less(time.Since(started), 3*time.Second)
 	var hookErr *HookError
 	assert.False(errors.As(err, &hookErr), "cancellation is not a hook failure")
+}
+
+func TestCreateWorktreeOnDiskHookCancellationRollsBack(t *testing.T) {
+	assert := assert.New(t)
+	require := Require.New(t)
+	repo := initLifecycleRepo(t)
+	script := filepath.Join(repo, "setup-cancel")
+	require.NoError(os.WriteFile(script, []byte(
+		"#!/bin/sh\nsleep 5 &\nwait\n",
+	), 0o755))
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	path := filepath.Join(t.TempDir(), "wt")
+
+	_, err := CreateWorktreeOnDisk(ctx, CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Branch:      "cancel-setup-tree",
+		Path:        path,
+		SetupScript: "setup-cancel",
+	})
+
+	require.ErrorIs(err, context.DeadlineExceeded)
+	var hookErr *HookError
+	assert.False(errors.As(err, &hookErr), "cancellation is not a hook failure")
+	assert.NoDirExists(path)
+	assert.False(branchExistsInRepo(t, repo, "cancel-setup-tree"))
 }
 
 func TestCreateWorktreeOnDiskKeepsPreexistingBranchOnHookFailure(t *testing.T) {

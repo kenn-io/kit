@@ -637,7 +637,9 @@ func verifyExpectedHeadOID(actual, expected string) error {
 }
 
 // ConfigurePush persists worktree-scoped routing to the contributor's source
-// branch and installs a non-contributor-controlled empty hooks directory.
+// branch and installs a non-contributor-controlled empty hooks directory. If
+// routing setup fails, it restores the affected worktree configuration while
+// retaining the safe hook isolation.
 func (g *ChangeRequestGit) ConfigurePush(
 	ctx context.Context,
 	created CreateWorktreeResult,
@@ -675,12 +677,85 @@ func (g *ChangeRequestGit) configurePush(
 		{"config", "--worktree", "push.default", "upstream"},
 		{"config", "--worktree", "push.followTags", "false"},
 	}
+	keys := make([]string, 0, len(commands))
+	for _, args := range commands {
+		keys = append(keys, args[2])
+	}
+	snapshot, err := g.snapshotWorktreeConfig(ctx, created.Path, keys)
+	if err != nil {
+		return changeRequestError(ChangeRequestUnsafeConfiguration,
+			"failed to snapshot change-request push configuration", err)
+	}
+	var configureErr error
 	for _, args := range commands {
 		if _, err := g.runSafe(ctx, created.Path, args...); err != nil {
-			return err
+			configureErr = err
+			break
 		}
 	}
-	return g.validatePushRouting(ctx, created, remote, repository, sourceBranch, hooksPath)
+	if configureErr == nil {
+		configureErr = g.validatePushRouting(
+			ctx, created, remote, repository, sourceBranch, hooksPath,
+		)
+	}
+	if configureErr == nil {
+		return nil
+	}
+	restoreErr := g.restoreWorktreeConfig(
+		context.WithoutCancel(ctx), created.Path, keys, snapshot,
+	)
+	if restoreErr != nil {
+		restoreErr = changeRequestError(ChangeRequestUnsafeConfiguration,
+			"failed to restore change-request push configuration", restoreErr)
+	}
+	return errors.Join(configureErr, restoreErr)
+}
+
+func (g *ChangeRequestGit) snapshotWorktreeConfig(
+	ctx context.Context, worktreePath string, keys []string,
+) (map[string][]string, error) {
+	output, err := g.runSafe(ctx, worktreePath, "config", "--worktree", "--null", "--list")
+	if err != nil {
+		return nil, err
+	}
+	snapshot := make(map[string][]string, len(keys))
+	for record := range strings.SplitSeq(string(output), "\x00") {
+		key, value, found := strings.Cut(record, "\n")
+		if !found {
+			continue
+		}
+		for _, wanted := range keys {
+			if strings.EqualFold(strings.TrimSpace(key), wanted) {
+				snapshot[wanted] = append(snapshot[wanted], value)
+				break
+			}
+		}
+	}
+	return snapshot, nil
+}
+
+func (g *ChangeRequestGit) restoreWorktreeConfig(
+	ctx context.Context, worktreePath string, keys []string, snapshot map[string][]string,
+) error {
+	var errs []error
+	for index := len(keys) - 1; index >= 0; index-- {
+		key := keys[index]
+		if _, err := g.runSafe(
+			ctx, worktreePath, "config", "--worktree", "--unset-all", key,
+		); err != nil && !gitcmd.IsExitCode(err, 5) {
+			errs = append(errs, fmt.Errorf("clear %s: %w", key, err))
+			continue
+		}
+		for _, value := range snapshot[key] {
+			if _, err := g.runSafe(
+				ctx, worktreePath, "config", "--worktree", "--add", key, value,
+			); err != nil {
+				errs = append(errs, fmt.Errorf("restore %s: %w", key, err))
+				break
+			}
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // ConfigureWorktreeIsolation persists a non-contributor-controlled empty
