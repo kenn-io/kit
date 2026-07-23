@@ -330,7 +330,7 @@ func prepareMergeRequestRemote(
 				fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s",
 					headBranch, headBranch),
 			},
-			checkoutRef:      "origin/" + headBranch,
+			checkoutRef:      "refs/remotes/origin/" + headBranch,
 			trackingRemote:   "origin",
 			trackingMergeRef: "refs/heads/" + headBranch,
 		}, nil
@@ -377,7 +377,7 @@ func prepareMergeRequestRemote(
 			fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s",
 				headBranch, remoteName, headBranch),
 		},
-		trackingRef:      remoteName + "/" + headBranch,
+		trackingRef:      "refs/remotes/" + remoteName + "/" + headBranch,
 		trackingRemote:   remoteName,
 		trackingMergeRef: "refs/heads/" + headBranch,
 	}, nil

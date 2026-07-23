@@ -213,6 +213,12 @@ func isolationSensitiveConfigKey(key string) bool {
 		"submodule.recurse", "fetch.recursesubmodules":
 		return true
 	}
+	if strings.HasPrefix(lower, "hook.") &&
+		(strings.HasSuffix(lower, ".command") ||
+			strings.HasSuffix(lower, ".event") ||
+			strings.HasSuffix(lower, ".enabled")) {
+		return true
+	}
 	if strings.HasPrefix(lower, "submodule.") &&
 		strings.HasSuffix(lower, ".fetchrecursesubmodules") {
 		return true
@@ -270,6 +276,12 @@ func completeUntrustedTreeIsolation(
 		return untrustedTreeIsolation{}, err
 	}
 	keys := append(checkoutKeys, ambientKeys...)
+	if hooks := configuredGitHooks(keys); len(hooks) != 0 {
+		return untrustedTreeIsolation{}, fmt.Errorf(
+			"configured Git hooks are unsupported for untrusted tree imports: %s",
+			strings.Join(hooks, ", "),
+		)
+	}
 	drivers := neutralizeAttributeDrivers(keys)
 	submodules, err := submoduleFetchRecurseConfig(
 		ctx, worktreePath, isolation.runner,
@@ -291,6 +303,29 @@ func completeUntrustedTreeIsolation(
 		isolation.runner = isolation.runner.WithConfig(entry.Key, entry.Value)
 	}
 	return isolation, nil
+}
+
+func configuredGitHooks(keys []string) []string {
+	hooks := make(map[string]struct{})
+	for _, key := range keys {
+		lower := strings.ToLower(key)
+		if !strings.HasPrefix(lower, "hook.") ||
+			(!strings.HasSuffix(lower, ".command") &&
+				!strings.HasSuffix(lower, ".event")) {
+			continue
+		}
+		name := key[len("hook."):]
+		name = name[:strings.LastIndexByte(name, '.')]
+		if name != "" {
+			hooks[name] = struct{}{}
+		}
+	}
+	names := make([]string, 0, len(hooks))
+	for name := range hooks {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func submoduleFetchRecurseConfig(

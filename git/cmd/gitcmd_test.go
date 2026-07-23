@@ -70,6 +70,28 @@ func TestRunnerPreservesInheritedCommandScopeConfig(t *testing.T) {
 	assert.Equal("added", strings.TrimSpace(string(added)))
 }
 
+func TestEnvValueForGOOSHonorsPlatformKeyCasing(t *testing.T) {
+	env := []string{
+		"git_config_count=1",
+		"GIT_CONFIG_COUNT=2",
+	}
+
+	value, ok := envValueForGOOS(env, "GIT_CONFIG_COUNT", "windows")
+	require.True(t, ok)
+	assert.Equal(t, "2", value)
+
+	value, ok = envValueForGOOS(
+		[]string{"git_config_count=1"}, "GIT_CONFIG_COUNT", "windows",
+	)
+	require.True(t, ok)
+	assert.Equal(t, "1", value)
+
+	_, ok = envValueForGOOS(
+		[]string{"git_config_count=1"}, "GIT_CONFIG_COUNT", "linux",
+	)
+	assert.False(t, ok)
+}
+
 func TestNullGlobalConfigPathIsReadableEmptyFile(t *testing.T) {
 	// Regression test: GIT_CONFIG_GLOBAL must point at a real, readable, empty
 	// file rather than os.DevNull. On Windows os.DevNull is "NUL", which some

@@ -672,12 +672,22 @@ func absRequired(raw, label string) (string, error) {
 func validateBranchName(
 	ctx context.Context, root, branch string,
 ) error {
-	if _, err := runLifecycleGit(
+	out, err := runLifecycleGit(
 		ctx, root, "check-ref-format", "--branch", branch,
-	); err != nil {
+	)
+	if err == nil {
+		return nil
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if gitcmd.IsExitCode(err, 128) {
 		return fmt.Errorf("%w: %q", ErrInvalidBranchName, branch)
 	}
-	return nil
+	return fmt.Errorf(
+		"validate branch name %q: %w: %s",
+		branch, err, strings.TrimSpace(string(out)),
+	)
 }
 
 // resolveHookScript resolves a caller-supplied hook script path against the

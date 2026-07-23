@@ -664,6 +664,38 @@ func TestCreateWorktreeOnDiskRejectsInvalidBranchName(t *testing.T) {
 	require.ErrorIs(err, ErrInvalidBranchName)
 }
 
+func TestValidateBranchNamePreservesCancellation(t *testing.T) {
+	require := Require.New(t)
+	repo := initLifecycleRepo(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := validateBranchName(ctx, repo, "feature")
+
+	require.ErrorIs(err, context.Canceled)
+	require.NotErrorIs(err, ErrInvalidBranchName)
+}
+
+func TestValidateBranchNamePreservesRunnerFailure(t *testing.T) {
+	require := Require.New(t)
+	repo := initLifecycleRepo(t)
+	runnerErr := errors.New("runner unavailable")
+	ctx := withLifecycleExecution(
+		context.Background(), gitcmd.New(),
+		func(
+			context.Context, gitcmd.Runner, string, ...string,
+		) ([]byte, error) {
+			return nil, runnerErr
+		},
+		nil,
+	)
+
+	err := validateBranchName(ctx, repo, "feature")
+
+	require.ErrorIs(err, runnerErr)
+	require.NotErrorIs(err, ErrInvalidBranchName)
+}
+
 func TestRemoveWorktreeFromDiskRemovesWorktreeAndBranch(t *testing.T) {
 	assert := assert.New(t)
 	require := Require.New(t)

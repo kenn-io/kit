@@ -82,6 +82,7 @@ func TestCreateWorktreeFromMergeRequestSameRepo(t *testing.T) {
 	headSHA := lifecycleGit(t, origin, "rev-parse", "feature-x")
 	lifecycleGit(t, origin, "checkout", "-q", "main")
 	lifecycleGit(t, clone, "config", "remote.pushDefault", "elsewhere")
+	lifecycleGit(t, clone, "tag", "origin/feature-x", "main")
 
 	dest := filepath.Join(t.TempDir(), "wt")
 	result, err := CreateWorktreeFromMergeRequest(
@@ -826,6 +827,42 @@ func TestCreateWorktreeFromMergeRequestRejectsInheritedCommandScopeConfig(
 				"command-scope Git configuration cannot be isolated")
 			assert.NoDirExists(dest)
 		})
+	}
+}
+
+func TestCreateWorktreeFromMergeRequestRejectsConfiguredHooks(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	origin, clone := initOriginAndClone(t)
+	lifecycleGit(t, origin, "checkout", "-q", "-b", "configured-hook")
+	lifecycleGit(t, origin, "commit", "--allow-empty", "-m", "configured hook")
+	headSHA := lifecycleGit(t, origin, "rev-parse", "HEAD")
+	lifecycleGit(t, origin, "checkout", "-q", "main")
+	lifecycleGit(t, clone, "config", "hook.import.command", "./import-hook")
+	lifecycleGit(t, clone, "config", "--add", "hook.import.event", "post-checkout")
+
+	dest := filepath.Join(t.TempDir(), "wt")
+	_, err := CreateWorktreeFromMergeRequest(
+		t.Context(), MergeRequestWorktreeOptions{
+			ProjectRoot: clone, Branch: "pr-configured-hook", Path: dest,
+			Number: 34, HeadBranch: "configured-hook",
+			HeadRepoCloneURL: origin, ProjectRepoIdentity: identityOfCloneURL(origin),
+			ExpectedHeadSHA: headSHA,
+		})
+
+	require.Error(err)
+	assert.ErrorContains(err, "configured Git hooks are unsupported")
+	assert.NoDirExists(dest)
+	assert.False(branchExistsInRepo(t, clone, "pr-configured-hook"))
+}
+
+func TestIsolationSensitiveConfigKeyIncludesConfiguredHooks(t *testing.T) {
+	for _, key := range []string{
+		"hook.import.command",
+		"hook.import.event",
+		"hook.import.enabled",
+	} {
+		assert.True(t, isolationSensitiveConfigKey(key), key)
 	}
 }
 
