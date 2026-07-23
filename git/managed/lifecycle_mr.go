@@ -2,6 +2,7 @@ package managedworktree
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"net/url"
@@ -90,12 +91,13 @@ type MergeRequestWorktreeOptions struct {
 // the new branch starts at, an optional second fetch that makes upstream
 // tracking possible, and the tracking remote/merge-ref pair.
 type mergeRequestRemoteTarget struct {
-	checkoutFetch    []string
-	checkoutRef      string
-	trackingFetch    []string
-	trackingRef      string
-	trackingRemote   string
-	trackingMergeRef string
+	checkoutFetch        []string
+	checkoutRef          string
+	temporaryCheckoutRef string
+	trackingFetch        []string
+	trackingRef          string
+	trackingRemote       string
+	trackingMergeRef     string
 }
 
 // CreateWorktreeFromMergeRequest materializes an untrusted merge request head
@@ -157,11 +159,11 @@ func CreateWorktreeFromMergeRequest(
 		return CreateWorktreeResult{}, err
 	}
 
-	target, err := prepareMergeRequestRemote(ctx, root, opts)
+	isolation, err := prepareUntrustedTreeIsolation(ctx, root)
 	if err != nil {
 		return CreateWorktreeResult{}, err
 	}
-	isolation, err := prepareUntrustedTreeIsolation(ctx, root)
+	target, err := prepareMergeRequestRemote(ctx, root, opts)
 	if err != nil {
 		return CreateWorktreeResult{}, err
 	}
@@ -169,15 +171,26 @@ func CreateWorktreeFromMergeRequest(
 	if out, err := runLifecycleGit(
 		ctx, root, target.checkoutFetch...,
 	); err != nil {
-		return CreateWorktreeResult{}, classifyChangeRequestFetchError(out, err)
+		cleanupErr := clearTemporaryMergeRequestRef(
+			context.WithoutCancel(ctx), root, target.temporaryCheckoutRef,
+		)
+		return CreateWorktreeResult{}, errors.Join(
+			classifyChangeRequestFetchError(out, err), cleanupErr,
+		)
 	}
 	checkoutOID, err := resolveMergeRequestOID(ctx, root, target.checkoutRef)
+	cleanupErr := clearTemporaryMergeRequestRef(
+		context.WithoutCancel(ctx), root, target.temporaryCheckoutRef,
+	)
 	if err != nil {
 		return CreateWorktreeResult{}, &ChangeRequestError{
 			Kind:    ChangeRequestInaccessibleHead,
 			Message: "resolve fetched merge request head",
-			Cause:   err,
+			Cause:   errors.Join(err, cleanupErr),
 		}
+	}
+	if cleanupErr != nil {
+		return CreateWorktreeResult{}, cleanupErr
 	}
 	if expected := strings.TrimSpace(opts.ExpectedHeadSHA); expected != "" {
 		expectedOID, resolveErr := resolveMergeRequestOID(ctx, root, expected)
@@ -319,18 +332,22 @@ func prepareMergeRequestRemote(
 	// Forgejo, and Gitea; refs/merge-requests/<n>/head on GitLab) carries
 	// the head commit regardless of where the head branch lives.
 	headRef := mergeRequestHeadRef(opts.Platform, opts.Number)
-	localRef := strings.TrimPrefix(headRef, "refs/")
+	localRef, err := temporaryMergeRequestRef(opts.Number)
+	if err != nil {
+		return mergeRequestRemoteTarget{}, err
+	}
 	pullRefFetch := []string{
 		"fetch", "--no-tags", "--no-write-fetch-head",
 		"--no-recurse-submodules", "origin",
-		fmt.Sprintf("+%s:refs/remotes/origin/%s", headRef, localRef),
+		fmt.Sprintf("+%s:%s", headRef, localRef),
 	}
-	pullRef := "origin/" + localRef
+	pullRef := localRef
 
 	if cloneURL == "" || headBranch == "" {
 		return mergeRequestRemoteTarget{
-			checkoutFetch: pullRefFetch,
-			checkoutRef:   pullRef,
+			checkoutFetch:        pullRefFetch,
+			checkoutRef:          pullRef,
+			temporaryCheckoutRef: pullRef,
 		}, nil
 	}
 
@@ -343,8 +360,9 @@ func prepareMergeRequestRemote(
 		return mergeRequestRemoteTarget{}, err
 	}
 	return mergeRequestRemoteTarget{
-		checkoutFetch: pullRefFetch,
-		checkoutRef:   pullRef,
+		checkoutFetch:        pullRefFetch,
+		checkoutRef:          pullRef,
+		temporaryCheckoutRef: pullRef,
 		trackingFetch: []string{
 			"fetch", "--no-tags", "--no-write-fetch-head",
 			"--no-recurse-submodules", remoteName,
@@ -355,6 +373,34 @@ func prepareMergeRequestRemote(
 		trackingRemote:   remoteName,
 		trackingMergeRef: "refs/heads/" + headBranch,
 	}, nil
+}
+
+func temporaryMergeRequestRef(number int) (string, error) {
+	var suffix [16]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return "", fmt.Errorf("create temporary merge request ref: %w", err)
+	}
+	return fmt.Sprintf(
+		"refs/kit/merge-requests/%d/%x", number, suffix,
+	), nil
+}
+
+func clearTemporaryMergeRequestRef(
+	ctx context.Context, root, ref string,
+) error {
+	if ref == "" {
+		return nil
+	}
+	out, err := runLifecycleGit(
+		ctx, root, "update-ref", "--no-deref", "-d", ref,
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"remove temporary merge request ref: %w: %s",
+			err, strings.TrimSpace(string(out)),
+		)
+	}
+	return nil
 }
 
 func mergeRequestRepositoriesEqual(left, right string) bool {

@@ -144,6 +144,11 @@ func localGitConfigValue(
 func prepareUntrustedTreeIsolation(
 	ctx context.Context, root string,
 ) (untrustedTreeIsolation, error) {
+	if err := rejectCommandScopeIsolationOverrides(
+		ctx, root, lifecycleRunner(ctx),
+	); err != nil {
+		return untrustedTreeIsolation{}, err
+	}
 	hooksPath, err := managedEmptyHooksPath(ctx, root)
 	if err != nil {
 		return untrustedTreeIsolation{}, err
@@ -160,6 +165,59 @@ func prepareUntrustedTreeIsolation(
 		runner = runner.WithConfig(entry.Key, entry.Value)
 	}
 	return untrustedTreeIsolation{runner: runner, config: config}, nil
+}
+
+func rejectCommandScopeIsolationOverrides(
+	ctx context.Context, root string, runner gitcmd.Runner,
+) error {
+	runner.Env = withoutGitRepositoryBindings(runner.Env)
+	runner.StripEnv = false
+	runner.NullGlobalConfig = false
+	runner.NoSystemConfig = false
+	out, err := runLifecycleGitWithRunner(
+		ctx, runner, root,
+		"config", "--null", "--show-origin", "--name-only",
+		"--includes", "--list",
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"inspect command-scope Git configuration: %w: %s",
+			err, strings.TrimSpace(string(out)),
+		)
+	}
+	fields := bytes.Split(out, []byte{0})
+	var overrides []string
+	for index := 0; index+1 < len(fields); index += 2 {
+		if string(fields[index]) != "command line:" {
+			continue
+		}
+		key := strings.TrimSpace(string(fields[index+1]))
+		if isolationSensitiveConfigKey(key) {
+			overrides = append(overrides, key)
+		}
+	}
+	if len(overrides) == 0 {
+		return nil
+	}
+	sort.Strings(overrides)
+	return fmt.Errorf(
+		"command-scope Git configuration cannot be isolated: %s",
+		strings.Join(overrides, ", "),
+	)
+}
+
+func isolationSensitiveConfigKey(key string) bool {
+	lower := strings.ToLower(key)
+	switch lower {
+	case "core.hookspath", "core.fsmonitor",
+		"submodule.recurse", "fetch.recursesubmodules":
+		return true
+	}
+	if strings.HasPrefix(lower, "submodule.") &&
+		strings.HasSuffix(lower, ".fetchrecursesubmodules") {
+		return true
+	}
+	return len(neutralizeAttributeDrivers([]string{key})) != 0
 }
 
 func managedEmptyHooksPath(ctx context.Context, root string) (string, error) {
@@ -349,6 +407,7 @@ func rejectConfigOriginsInsideWorktree(
 	}
 	fields := bytes.Split(out, []byte{0})
 	worktree := comparableWorktreePath(worktreePath)
+	lexicalWorktree := lexicalWorktreePath(worktreePath)
 	for index := 0; index+1 < len(fields); index += 2 {
 		origin := string(fields[index])
 		if !strings.HasPrefix(origin, "file:") {
@@ -358,7 +417,9 @@ func rejectConfigOriginsInsideWorktree(
 		if !filepath.IsAbs(configPath) {
 			configPath = filepath.Join(worktreePath, configPath)
 		}
-		if pathWithinRoot(worktree, comparableWorktreePath(configPath)) {
+		if pathWithinRoot(
+			lexicalWorktree, lexicalWorktreePath(configPath),
+		) || pathWithinRoot(worktree, comparableWorktreePath(configPath)) {
 			return fmt.Errorf(
 				"Git configuration inside merge request worktree is not allowed: %s",
 				configPath,
@@ -366,6 +427,18 @@ func rejectConfigOriginsInsideWorktree(
 		}
 	}
 	return nil
+}
+
+func lexicalWorktreePath(path string) string {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		absolute = path
+	}
+	absolute = filepath.Clean(absolute)
+	if filepath.Separator == '\\' {
+		absolute = strings.ToLower(absolute)
+	}
+	return absolute
 }
 
 func withoutGitRepositoryBindings(env []string) []string {
