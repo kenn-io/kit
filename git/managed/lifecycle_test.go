@@ -368,7 +368,7 @@ func TestCreateWorktreeOnDiskUsesExecutionPolicy(t *testing.T) {
 	require.NoError(err)
 	assert.Empty(remaining)
 	assert.Contains(gitCommands, "status --porcelain=v1 --untracked-files=all --ignored=matching")
-	assert.Contains(gitCommands, "worktree remove --force "+result.Path)
+	assert.Contains(gitCommands, "worktree remove "+result.Path)
 	assert.Contains(gitCommands, "update-ref --no-deref -d refs/heads/"+result.Branch+" "+result.branchOID)
 }
 
@@ -602,6 +602,82 @@ func TestCreateWorktreeResultRollbackPreservesDirtyWorktree(t *testing.T) {
 	assert.FileExists(marker)
 }
 
+func TestCreateWorktreeResultRollbackPreservesFileCreatedAfterFinalStatusCheck(t *testing.T) {
+	assert := assert.New(t)
+	require := Require.New(t)
+	repo := initLifecycleRepo(t)
+	var result CreateWorktreeResult
+	armed := false
+	changed := false
+	statusChecks := 0
+	result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Branch:      "review/status-race",
+		Path:        filepath.Join(t.TempDir(), "status-race"),
+		BaseRef:     "HEAD",
+		RunGit: func(ctx context.Context, runner gitcmd.Runner, dir string, args ...string) ([]byte, error) {
+			stdout, stderr, runErr := runner.Run(ctx, dir, nil, args...)
+			if armed && runErr == nil && len(args) > 0 && args[0] == "status" {
+				statusChecks++
+				if statusChecks == 2 {
+					changed = true
+					require.NoError(os.WriteFile(
+						filepath.Join(result.Path, "keep.txt"), []byte("keep\n"), 0o600,
+					))
+				}
+			}
+			return append(stdout, stderr...), runErr
+		},
+	})
+	require.NoError(err)
+	armed = true
+
+	remaining, err := result.Rollback(t.Context())
+
+	require.ErrorIs(err, ErrWorktreeCleanupIncomplete)
+	assert.True(changed)
+	assert.Equal(2, statusChecks)
+	assert.Equal(RollbackResult{Path: result.Path, Branch: result.Branch}, remaining)
+	assert.FileExists(filepath.Join(result.Path, "keep.txt"))
+}
+
+func TestCreateWorktreeResultRollbackPreservesHeadChangedBeforeRemoval(t *testing.T) {
+	assert := assert.New(t)
+	require := Require.New(t)
+	repo := initLifecycleRepo(t)
+	var result CreateWorktreeResult
+	armed := false
+	changed := false
+	result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Branch:      "review/head-race",
+		Path:        filepath.Join(t.TempDir(), "head-race"),
+		BaseRef:     "HEAD",
+		RunGit: func(ctx context.Context, runner gitcmd.Runner, dir string, args ...string) ([]byte, error) {
+			stdout, stderr, runErr := runner.Run(ctx, dir, nil, args...)
+			if armed && !changed && runErr == nil && len(args) >= 3 &&
+				args[0] == "rev-parse" && args[1] == "--abbrev-ref" && args[2] == "HEAD" {
+				changed = true
+				require.NoError(os.WriteFile(
+					filepath.Join(result.Path, "keep.txt"), []byte("keep\n"), 0o600,
+				))
+				lifecycleGit(t, result.Path, "add", "keep.txt")
+				lifecycleGit(t, result.Path, "commit", "-m", "keep concurrent work")
+			}
+			return append(stdout, stderr...), runErr
+		},
+	})
+	require.NoError(err)
+	armed = true
+
+	remaining, err := result.Rollback(t.Context())
+
+	require.ErrorIs(err, ErrWorktreeCleanupIncomplete)
+	assert.True(changed)
+	assert.Equal(RollbackResult{Path: result.Path, Branch: result.Branch}, remaining)
+	assert.FileExists(filepath.Join(result.Path, "keep.txt"))
+}
+
 func TestCreateWorktreeResultRollbackPreservesIgnoredFiles(t *testing.T) {
 	assert := assert.New(t)
 	require := Require.New(t)
@@ -819,7 +895,8 @@ func TestCreateWorktreeResultRollbackReportsBranchWhenFinalInspectionFails(t *te
 
 	require.ErrorIs(err, inspectionFailure)
 	require.ErrorIs(err, ErrWorktreeCleanupIncomplete)
-	assert.Equal(RollbackResult{Branch: result.Branch}, remaining)
+	assert.Equal(RollbackResult{Path: result.Path, Branch: result.Branch}, remaining)
+	assert.DirExists(result.Path)
 }
 
 func TestCreateWorktreeResultRollbackDisablesRepositoryHooks(t *testing.T) {

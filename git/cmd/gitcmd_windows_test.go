@@ -90,7 +90,9 @@ func TestSuccessfulProcessPreservesDetachedDescendant(t *testing.T) {
 	}
 
 	marker = filepath.Join(t.TempDir(), "descendant-finished")
-	parent := exec.Command(os.Args[0], "-test.run=^TestSuccessfulProcessPreservesDetachedDescendant$")
+	parent := exec.CommandContext(
+		t.Context(), os.Args[0], "-test.run=^TestSuccessfulProcessPreservesDetachedDescendant$",
+	)
 	parent.Env = append(os.Environ(), helperMode+"=parent",
 		"KIT_GITCMD_WINDOWS_SUCCESS_MARKER="+marker)
 	PrepareProcessTreeCancellation(parent, true)

@@ -416,18 +416,22 @@ func (r CreateWorktreeResult) rollbackOwned(
 		if err != nil {
 			remaining.Path = r.Path
 			errs = append(errs, err)
-		} else if err := verifyRegisteredWorktree(
-			ctx, r.projectRoot, r.Path, r.Branch, r.pathInfo,
-		); err != nil {
+		} else if err := r.revalidateRollbackRemoval(ctx, preserveChanges); err != nil {
 			remaining.Path = r.Path
 			errs = append(errs, err)
-		} else if out, err := runLifecycleGitWithRunner(
-			ctx, runner, r.projectRoot,
-			"worktree", "remove", "--force", r.Path,
-		); err != nil {
-			remaining.Path = r.Path
-			errs = append(errs, fmt.Errorf("remove created worktree: %w: %s", err,
-				strings.TrimSpace(string(out))))
+		} else {
+			args := []string{"worktree", "remove"}
+			if !preserveChanges {
+				args = append(args, "--force")
+			}
+			args = append(args, r.Path)
+			if out, err := runLifecycleGitWithRunner(
+				ctx, runner, r.projectRoot, args...,
+			); err != nil {
+				remaining.Path = r.Path
+				errs = append(errs, fmt.Errorf("remove created worktree: %w: %s", err,
+					strings.TrimSpace(string(out))))
+			}
 		}
 	}
 
@@ -472,6 +476,60 @@ func (r CreateWorktreeResult) rollbackOwned(
 		errs = append(errs, errors.New("created worktree branch remains"))
 	}
 	return remaining, errors.Join(errs...)
+}
+
+func (r CreateWorktreeResult) revalidateRollbackRemoval(
+	ctx context.Context, preserveChanges bool,
+) error {
+	if err := verifyRegisteredWorktree(
+		ctx, r.projectRoot, r.Path, r.Branch, r.pathInfo,
+	); err != nil {
+		return err
+	}
+	headRef, headOID, err := lifecycleWorktreeHead(ctx, r.Path)
+	if err != nil {
+		return fmt.Errorf("revalidate created worktree HEAD: %w", err)
+	}
+	if headRef != r.headRef || !strings.EqualFold(headOID, r.headOID) {
+		return errors.New("created worktree HEAD changed before removal; preserving it")
+	}
+	branchOID, branchExists, branchDirect, err := lifecycleRefState(
+		ctx, r.projectRoot, r.Branch,
+	)
+	if err != nil {
+		return fmt.Errorf("revalidate created worktree branch: %w", err)
+	}
+	if !branchExists || !branchDirect || !strings.EqualFold(branchOID, r.branchOID) {
+		return errors.New("created worktree branch changed before removal; preserving it")
+	}
+	if !preserveChanges {
+		return nil
+	}
+	if !r.materialized {
+		hasArtifacts, err := unmaterializedWorktreeHasArtifacts(r.Path)
+		if err != nil {
+			return fmt.Errorf("revalidate unmaterialized worktree artifacts: %w", err)
+		}
+		if hasArtifacts {
+			return errors.New("unmaterialized worktree gained artifacts before removal; preserving it")
+		}
+		return nil
+	}
+	runner, err := isolatedLifecycleRunner(ctx, r.Path)
+	if err != nil {
+		return fmt.Errorf("revalidate rollback filters: %w", err)
+	}
+	status, err := runLifecycleGitWithRunner(
+		ctx, runner, r.Path,
+		"status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching",
+	)
+	if err != nil {
+		return fmt.Errorf("revalidate created worktree changes: %w", err)
+	}
+	if strings.TrimSpace(string(status)) != "" {
+		return errors.New("created worktree changed before removal; preserving it")
+	}
+	return nil
 }
 
 func unmaterializedWorktreeHasArtifacts(path string) (bool, error) {

@@ -42,6 +42,9 @@ not about one product's workflow.
 - Interactive Git commands must retain foreground terminal access; automated
   Git and lifecycle hooks must keep bounded process-tree cancellation, and hook
   cancellation must terminate the spawned tree rather than only its parent.
+  Commands passed through the exported process-tree cancellation helpers must
+  be created with `exec.CommandContext` because platform policies install
+  `exec.Cmd.Cancel`.
 - Contributor-controlled checkout requires Git 2.39.1 or newer on every
   platform. Windows additionally requires Git for Windows
   2.53.0.windows.3 or newer; keep the full Windows patch level in version
@@ -53,9 +56,10 @@ not about one product's workflow.
   destination ref. Publish merge-request heads only under a request-numbered
   Kit namespace, reject symbolic or case-alias destinations, and terminate Git
   fetch options before remote/ref arguments. Fetch only through remote names
-  previously validated by the managed boundary, revalidate their effective URLs
-  immediately before use, and stage fetched OIDs in operation-private Kit refs
-  rather than the repository-wide `FETCH_HEAD`. Windows lifecycle scripts must
+  previously validated by the managed boundary, snapshot fetch and push URLs
+  independently, revalidate each effective URL immediately before its matching
+  operation, and stage fetched OIDs in operation-private Kit refs rather than
+  the repository-wide `FETCH_HEAD`. Windows lifecycle scripts must
   honor their declared shebang interpreter regardless of file extension and
   preserve native absolute interpreter paths. Private hook snapshots must keep
   owner-write permission on Windows so successful execution does not leak a
@@ -65,7 +69,9 @@ not about one product's workflow.
   replacement paths and repositories, require detached worktrees to remain
   detached, and report incomplete cleanup when ownership changed. Dirty-state
   checks must explicitly include untracked files regardless of repository
-  status configuration.
+  status configuration. Conservative rollback must revalidate exact HEAD,
+  branch ref state, and artifacts immediately before removal and must not use
+  forced worktree removal while preserving changes.
 - Windows Job Objects may kill a Git process tree on cancellation or failure,
   but successful Git commands—including roots that return `exec.ErrWaitDelay`
   because a descendant retained output handles—must preserve those descendants.

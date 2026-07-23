@@ -650,7 +650,7 @@ func TestChangeRequestGitExpectedURLDoesNotReplaceIdentityValidation(t *testing.
 	repo, backend := newChangeRequestGit(t)
 	remoteURL := "https://evil.example/octocat/widget.git"
 	lifecycleGit(t, repo, "remote", "add", "fork", remoteURL)
-	backend.rememberExpectedRemoteURL("fork", remoteURL)
+	backend.rememberExpectedRemoteURL("fork", false, remoteURL)
 
 	err := backend.validateEffectiveRemote(
 		t.Context(), "", "fork", changeRequestRemote("octocat"),
@@ -752,6 +752,82 @@ func TestChangeRequestGitConfiguresPersistentSafePushRouting(t *testing.T) {
 	assert.True(t, filepath.IsAbs(hooksPath), hooksPath)
 	assert.DirExists(t, hooksPath)
 	require.NoError(t, safefileio.ValidatePrivateDir(hooksPath))
+}
+
+func TestChangeRequestGitConfigurePushAcceptsDistinctValidatedRemoteURLs(t *testing.T) {
+	require := require.New(t)
+	repo, backend := newChangeRequestGit(t)
+	repository := changeRequestRemote("octocat")
+	lifecycleGit(t, repo, "remote", "add", "fork", repository.CloneURL)
+	pushURL := "git@github.com:octocat/widget.git"
+	lifecycleGit(t, repo, "remote", "set-url", "--push", "fork", pushURL)
+	remote, err := backend.EnsureRemote(t.Context(), repository)
+	require.NoError(err)
+	require.Equal("fork", remote)
+	created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Path:        filepath.Join(t.TempDir(), "mixed-transport-worktree"),
+		Branch:      "review-mixed-transport",
+		BaseRef:     "main",
+	})
+	require.NoError(err)
+	t.Cleanup(func() { _, _ = created.Rollback(context.Background()) })
+
+	err = backend.ConfigurePush(t.Context(), created, remote, repository, "feature/widgets")
+
+	require.NoError(err)
+	require.Equal(repository.CloneURL, lifecycleGit(t, repo, "remote", "get-url", remote))
+	require.Equal(pushURL, lifecycleGit(t, repo, "remote", "get-url", "--push", remote))
+}
+
+func TestChangeRequestGitConfigurePushAcceptsDistinctValidatedProjectURLs(t *testing.T) {
+	require := require.New(t)
+	repo, backend := newChangeRequestGit(t)
+	repository := changeRequestRemote("acme")
+	lifecycleGit(t, repo, "remote", "add", "origin", repository.CloneURL)
+	pushURL := "git@github.com:acme/widget.git"
+	lifecycleGit(t, repo, "remote", "set-url", "--push", "origin", pushURL)
+	require.NoError(backend.Validate(t.Context()))
+	created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Path:        filepath.Join(t.TempDir(), "mixed-project-transport-worktree"),
+		Branch:      "review-mixed-project-transport",
+		BaseRef:     "main",
+	})
+	require.NoError(err)
+	t.Cleanup(func() { _, _ = created.Rollback(context.Background()) })
+
+	err = backend.ConfigurePush(t.Context(), created, "origin", repository, "feature/widgets")
+
+	require.NoError(err)
+	require.Equal(repository.CloneURL, lifecycleGit(t, repo, "remote", "get-url", "origin"))
+	require.Equal(pushURL, lifecycleGit(t, repo, "remote", "get-url", "--push", "origin"))
+}
+
+func TestChangeRequestGitConfigurePushRejectsChangedValidatedPushURL(t *testing.T) {
+	repo, backend := newChangeRequestGit(t)
+	repository := changeRequestRemote("octocat")
+	lifecycleGit(t, repo, "remote", "add", "fork", repository.CloneURL)
+	lifecycleGit(t, repo, "remote", "set-url", "--push", "fork",
+		"git@github.com:octocat/widget.git")
+	remote, err := backend.EnsureRemote(t.Context(), repository)
+	require.NoError(t, err)
+	lifecycleGit(t, repo, "remote", "set-url", "--push", "fork",
+		"ssh://git@github.com/octocat/widget.git")
+	created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Path:        filepath.Join(t.TempDir(), "changed-push-worktree"),
+		Branch:      "review-changed-push",
+		BaseRef:     "main",
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _, _ = created.Rollback(context.Background()) })
+
+	err = backend.ConfigurePush(t.Context(), created, remote, repository, "feature/widgets")
+
+	var typed *ChangeRequestError
+	require.ErrorAs(t, err, &typed)
+	assert.Equal(t, ChangeRequestUnsafeConfiguration, typed.Kind)
 }
 
 func TestChangeRequestGitConfigurePushRejectsChangedHead(t *testing.T) {

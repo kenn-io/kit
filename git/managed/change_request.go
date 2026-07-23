@@ -92,7 +92,12 @@ type ChangeRequestGit struct {
 	runGit           GitRunner
 
 	expectedRemoteURLsMu sync.RWMutex
-	expectedRemoteURLs   map[string]string
+	expectedRemoteURLs   map[string]remoteURLSnapshot
+}
+
+type remoteURLSnapshot struct {
+	fetch string
+	push  string
 }
 
 // NewChangeRequestGit constructs a shared change-request Git boundary.
@@ -127,7 +132,7 @@ func NewChangeRequestGit(opts ChangeRequestGitOptions) (*ChangeRequestGit, error
 		expectedHeadOID:  strings.TrimSpace(opts.ExpectedHeadOID),
 		remoteNamePrefix: prefix, hookNamespace: namespace,
 		runner: runner, runGit: opts.RunGit,
-		expectedRemoteURLs: make(map[string]string),
+		expectedRemoteURLs: make(map[string]remoteURLSnapshot),
 	}, nil
 }
 
@@ -150,7 +155,7 @@ func (g *ChangeRequestGit) Validate(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		g.rememberExpectedRemoteURL("origin", remoteURL)
+		g.rememberExpectedRemoteURL("origin", false, remoteURL)
 		return nil
 	}
 	if strings.TrimSpace(g.project.Identity.Host) == "" &&
@@ -203,9 +208,7 @@ func (g *ChangeRequestGit) validateProjectRemote(
 		return changeRequestError(ChangeRequestUnsafeConfiguration,
 			fmt.Sprintf("project Git remote has an unexpected effective %s destination", label), nil)
 	}
-	if !push {
-		g.rememberExpectedRemoteURL(remote, canonicalRemoteURL)
-	}
+	g.rememberExpectedRemoteURL(remote, push, canonicalRemoteURL)
 	return nil
 }
 
@@ -228,14 +231,12 @@ func (g *ChangeRequestGit) validateLocalProjectRemote(
 		return changeRequestError(ChangeRequestUnsafeConfiguration,
 			"hosted project Git remote requires a project identity or expected head OID", nil)
 	}
-	if !push {
-		canonicalURL, _, err := canonicalCloneURL(g.root, remoteURL)
-		if err != nil {
-			return changeRequestError(ChangeRequestUnsafeConfiguration,
-				"failed to resolve the local project Git remote", err)
-		}
-		g.rememberExpectedRemoteURL(remote, canonicalURL)
+	canonicalURL, _, err := canonicalCloneURL(g.root, remoteURL)
+	if err != nil {
+		return changeRequestError(ChangeRequestUnsafeConfiguration,
+			"failed to resolve the local project Git remote", err)
 	}
+	g.rememberExpectedRemoteURL(remote, push, canonicalURL)
 	return nil
 }
 
@@ -385,18 +386,23 @@ func (g *ChangeRequestGit) ensureRemote(ctx context.Context, repository RemoteRe
 			continue
 		}
 		fetchURL, singleFetch := singleRemoteURL(string(fetchURLs))
+		pushURL, singlePush := singleRemoteURL(string(pushURLs))
 		fetchMatches := singleFetch && remoteMatchesRepository(fetchURL, repository)
-		pushMatches := singleRemoteMatchesRepository(string(pushURLs), repository)
+		pushMatches := singlePush && remoteMatchesRepository(pushURL, repository)
 		if projectSSHURL != "" {
 			fetchMatches = singleFetch && remoteURLsEqual(fetchURL, remoteURL)
-			pushMatches = singleRemoteURLEquals(string(pushURLs), remoteURL)
+			pushMatches = singlePush && remoteURLsEqual(pushURL, remoteURL)
 		}
 		if fetchMatches && pushMatches && !g.remoteHasCustomPushRefspec(ctx, name) {
 			canonicalFetchURL, _, canonicalErr := canonicalCloneURL(g.root, fetchURL)
 			if canonicalErr != nil {
 				continue
 			}
-			g.rememberExpectedRemoteURL(name, canonicalFetchURL)
+			canonicalPushURL, _, canonicalErr := canonicalCloneURL(g.root, pushURL)
+			if canonicalErr != nil {
+				continue
+			}
+			g.rememberExpectedRemoteURLs(name, canonicalFetchURL, canonicalPushURL)
 			return name, nil
 		}
 	}
@@ -411,7 +417,7 @@ func (g *ChangeRequestGit) ensureRemote(ctx context.Context, repository RemoteRe
 	if _, err := g.runSafe(ctx, g.root, "remote", "add", name, remoteURL); err != nil {
 		return "", changeRequestError(ChangeRequestUnsafeConfiguration, "failed to add change-request Git remote", err)
 	}
-	g.rememberExpectedRemoteURL(name, remoteURL)
+	g.rememberExpectedRemoteURLs(name, remoteURL, remoteURL)
 	if validateErr := g.validateEffectiveRemote(ctx, "", name, repository); validateErr != nil {
 		g.forgetExpectedRemoteURL(name)
 		_, removeErr := g.runSafe(context.WithoutCancel(ctx), g.root, "remote", "remove", name)
@@ -555,7 +561,7 @@ func (g *ChangeRequestGit) validateFetchPublication(
 				"change-request destination is symbolic", nil)
 		}
 	}
-	expectedRemoteURL, ok := g.expectedRemoteURL(remote)
+	expectedRemoteURL, ok := g.expectedRemoteURL(remote, false)
 	if !ok {
 		return changeRequestError(ChangeRequestUnsafeConfiguration,
 			"change-request fetch remote was not previously validated", nil)
@@ -821,19 +827,20 @@ func (g *ChangeRequestGit) validateEffectiveRemote(
 			"failed to resolve the change-request clone URL", err)
 	}
 	repository.CloneURL = canonicalURL
-	expectedURL, hasExpectedURL := g.expectedRemoteURL(remote)
-	if !hasExpectedURL && strings.TrimSpace(repository.CloneURL) != "" &&
-		gitremote.RemoteHost(repository.CloneURL) == "" {
-		expectedURL = strings.TrimSpace(repository.CloneURL)
-		hasExpectedURL = true
-	}
 	for _, test := range []struct {
 		label string
+		push  bool
 		args  []string
 	}{
 		{label: "fetch", args: []string{"remote", "get-url", "--all", remote}},
-		{label: "push", args: []string{"remote", "get-url", "--all", "--push", remote}},
+		{label: "push", push: true, args: []string{"remote", "get-url", "--all", "--push", remote}},
 	} {
+		expectedURL, hasExpectedURL := g.expectedRemoteURL(remote, test.push)
+		if !hasExpectedURL && strings.TrimSpace(repository.CloneURL) != "" &&
+			gitremote.RemoteHost(repository.CloneURL) == "" {
+			expectedURL = strings.TrimSpace(repository.CloneURL)
+			hasExpectedURL = true
+		}
 		output, err := g.runAt(ctx, worktreePath, test.args...)
 		if err != nil {
 			return changeRequestError(ChangeRequestUnsafeConfiguration,
@@ -953,10 +960,22 @@ func (g *ChangeRequestGit) runWithRunner(
 	return runner.Output(ctx, dir, args...)
 }
 
-func (g *ChangeRequestGit) rememberExpectedRemoteURL(remote, expectedURL string) {
+func (g *ChangeRequestGit) rememberExpectedRemoteURL(remote string, push bool, expectedURL string) {
 	g.expectedRemoteURLsMu.Lock()
 	defer g.expectedRemoteURLsMu.Unlock()
-	g.expectedRemoteURLs[remote] = expectedURL
+	snapshot := g.expectedRemoteURLs[remote]
+	if push {
+		snapshot.push = expectedURL
+	} else {
+		snapshot.fetch = expectedURL
+	}
+	g.expectedRemoteURLs[remote] = snapshot
+}
+
+func (g *ChangeRequestGit) rememberExpectedRemoteURLs(remote, fetchURL, pushURL string) {
+	g.expectedRemoteURLsMu.Lock()
+	defer g.expectedRemoteURLsMu.Unlock()
+	g.expectedRemoteURLs[remote] = remoteURLSnapshot{fetch: fetchURL, push: pushURL}
 }
 
 func (g *ChangeRequestGit) forgetExpectedRemoteURL(remote string) {
@@ -965,11 +984,17 @@ func (g *ChangeRequestGit) forgetExpectedRemoteURL(remote string) {
 	delete(g.expectedRemoteURLs, remote)
 }
 
-func (g *ChangeRequestGit) expectedRemoteURL(remote string) (string, bool) {
+func (g *ChangeRequestGit) expectedRemoteURL(remote string, push bool) (string, bool) {
 	g.expectedRemoteURLsMu.RLock()
 	defer g.expectedRemoteURLsMu.RUnlock()
-	expectedURL, ok := g.expectedRemoteURLs[remote]
-	return expectedURL, ok
+	snapshot, ok := g.expectedRemoteURLs[remote]
+	if !ok {
+		return "", false
+	}
+	if push {
+		return snapshot.push, snapshot.push != ""
+	}
+	return snapshot.fetch, snapshot.fetch != ""
 }
 
 func configHasUnsafeRemote(output string) bool {
@@ -1067,18 +1092,8 @@ func singleRemoteURL(output string) (string, bool) {
 	return remoteURL, remoteURL != ""
 }
 
-func singleRemoteURLEquals(output, expected string) bool {
-	remoteURL, single := singleRemoteURL(output)
-	return single && remoteURLsEqual(remoteURL, expected)
-}
-
 func remoteURLsEqual(left, right string) bool {
 	return strings.TrimSpace(left) == strings.TrimSpace(right)
-}
-
-func singleRemoteMatchesRepository(output string, repository RemoteRepository) bool {
-	remoteURL, single := singleRemoteURL(output)
-	return single && remoteMatchesRepository(remoteURL, repository)
 }
 
 func remoteMatchesRepository(remoteURL string, repository RemoteRepository) bool {
