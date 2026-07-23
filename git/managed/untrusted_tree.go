@@ -29,8 +29,8 @@ type untrustedTreeIsolation struct {
 // them through PATH. The diff replacement emits a simple old/new rendering;
 // the merge replacement declines the custom driver so Git reports a conflict.
 const (
-	safeExternalDiffCommand = `f() { while IFS= read -r line; do printf '%s\n' "-$line"; done < "$2"; while IFS= read -r line; do printf '%s\n' "+$line"; done < "$5"; }; f`
-	safeTextconvCommand     = `f() { while IFS= read -r line; do printf '%s\n' "$line"; done < "$1"; }; f`
+	safeExternalDiffCommand = `f() { emit() { prefix=$1; file=$2; line=; while IFS= read -r line; do printf '%s%s\n' "$prefix" "$line"; line=; done < "$file"; case "$line" in "") ;; *) printf '%s%s\n' "$prefix" "$line"; printf '%s\n' '\ No newline at end of file' ;; esac; }; emit - "$2"; emit + "$5"; }; f`
+	safeTextconvCommand     = `f() { line=; while IFS= read -r line; do printf '%s\n' "$line"; line=; done < "$1"; case "$line" in "") ;; *) printf '%s' "$line" ;; esac; }; f`
 	safeMergeDriverCommand  = `f() { return 1; }; f`
 )
 
@@ -308,15 +308,9 @@ func completeUntrustedTreeIsolation(
 func configuredGitHooks(keys []string) []string {
 	hooks := make(map[string]struct{})
 	for _, key := range keys {
-		lower := strings.ToLower(key)
-		if !strings.HasPrefix(lower, "hook.") ||
-			(!strings.HasSuffix(lower, ".command") &&
-				!strings.HasSuffix(lower, ".event")) {
-			continue
-		}
-		name := key[len("hook."):]
-		name = name[:strings.LastIndexByte(name, '.')]
-		if name != "" {
+		if name, ok := configuredSubsectionName(
+			key, "hook", []string{".command", ".event"},
+		); ok {
 			hooks[name] = struct{}{}
 		}
 	}
@@ -372,15 +366,29 @@ func submoduleFetchRecurseConfig(
 }
 
 func configuredSubmoduleName(key string) (string, bool) {
+	return configuredSubsectionName(
+		key, "submodule", []string{".path", ".fetchrecursesubmodules"},
+	)
+}
+
+func configuredSubsectionName(
+	key, section string, suffixes []string,
+) (string, bool) {
 	lower := strings.ToLower(key)
-	if !strings.HasPrefix(lower, "submodule.") {
+	prefix := strings.ToLower(section) + "."
+	if !strings.HasPrefix(lower, prefix) {
 		return "", false
 	}
-	for _, suffix := range []string{".path", ".fetchrecursesubmodules"} {
-		if strings.HasSuffix(lower, suffix) {
-			name := key[len("submodule.") : len(key)-len(suffix)]
-			return name, name != ""
+	start := len(prefix)
+	for _, suffix := range suffixes {
+		if !strings.HasSuffix(lower, suffix) {
+			continue
 		}
+		end := len(key) - len(suffix)
+		if end <= start {
+			return "", false
+		}
+		return key[start:end], true
 	}
 	return "", false
 }
@@ -551,10 +559,17 @@ func neutralizeAttributeDrivers(keys []string) []gitcmd.Config {
 
 func configuredDriverName(key string, suffixes []string) (string, bool) {
 	lower := strings.ToLower(key)
+	start := strings.IndexByte(key, '.') + 1
+	if start == 0 {
+		return "", false
+	}
 	for _, suffix := range suffixes {
 		if strings.HasSuffix(lower, suffix) {
-			driver := key[strings.IndexByte(key, '.')+1 : len(key)-len(suffix)]
-			return driver, driver != ""
+			end := len(key) - len(suffix)
+			if end <= start {
+				return "", false
+			}
+			return key[start:end], true
 		}
 	}
 	return "", false

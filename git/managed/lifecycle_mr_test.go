@@ -345,10 +345,13 @@ func TestCreateWorktreeFromMergeRequestIsolatesUntrustedTreeGitPrograms(t *testi
 	))
 	require.NoError(os.WriteFile(
 		filepath.Join(origin, ".gitattributes"),
-		[]byte("payload filter=owned diff=owned merge=owned\n"), 0o644,
+		[]byte(
+			"payload filter=owned diff=owned merge=owned\n"+
+				"added diff=owned\n",
+		), 0o644,
 	))
 	require.NoError(os.WriteFile(
-		filepath.Join(origin, "payload"), []byte("external\n"), 0o644,
+		filepath.Join(origin, "payload"), []byte("external"), 0o644,
 	))
 	lifecycleGit(t, origin, "add", ".githooks", ".gitattributes", "payload")
 	lifecycleGit(t, origin, "commit", "-qm", "untrusted tree programs")
@@ -414,11 +417,19 @@ func TestCreateWorktreeFromMergeRequestIsolatesUntrustedTreeGitPrograms(t *testi
 		"persistent isolation protects later ordinary Git commands")
 
 	require.NoError(os.WriteFile(
-		filepath.Join(dest, "payload"), []byte("changed\n"), 0o644,
+		filepath.Join(dest, "payload"), []byte("changed"), 0o644,
 	))
 	diff := lifecycleGit(t, dest, "diff", "--", "payload")
 	assert.Contains(diff, "-external")
 	assert.Contains(diff, "+changed")
+	assert.Contains(diff, `\ No newline at end of file`)
+	require.NoError(os.WriteFile(
+		filepath.Join(dest, "added"), []byte("new"), 0o644,
+	))
+	lifecycleGit(t, dest, "add", "-N", "added")
+	addedDiff := lifecycleGit(t, dest, "diff", "--", "added")
+	assert.Contains(addedDiff, "+new")
+	assert.Contains(addedDiff, `\ No newline at end of file`)
 	lifecycleGit(t, dest, "add", "payload")
 	assert.NoFileExists(filterMarker,
 		"later diff and clean operations keep attribute programs disabled")
@@ -864,6 +875,47 @@ func TestIsolationSensitiveConfigKeyIncludesConfiguredHooks(t *testing.T) {
 	} {
 		assert.True(t, isolationSensitiveConfigKey(key), key)
 	}
+}
+
+func TestSectionLevelConfigKeysDoNotNameSubsections(t *testing.T) {
+	assert.Empty(t, configuredGitHooks([]string{
+		"hook.command",
+		"hook.event",
+	}))
+
+	_, ok := configuredSubmoduleName("submodule.path")
+	assert.False(t, ok)
+
+	assert.Empty(t, neutralizeAttributeDrivers([]string{
+		"filter.clean",
+		"diff.command",
+		"merge.driver",
+	}))
+}
+
+func TestSafeTextconvPreservesUnterminatedLines(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	repo := initLifecycleRepo(t)
+	require.NoError(os.WriteFile(
+		filepath.Join(repo, ".gitattributes"),
+		[]byte("payload diff=owned\n"), 0o644,
+	))
+	require.NoError(os.WriteFile(
+		filepath.Join(repo, "payload"), []byte("before"), 0o644,
+	))
+	lifecycleGit(t, repo, "add", ".gitattributes", "payload")
+	lifecycleGit(t, repo, "commit", "-qm", "textconv fixture")
+	lifecycleGit(t, repo, "config", "diff.owned.textconv", safeTextconvCommand)
+	require.NoError(os.WriteFile(
+		filepath.Join(repo, "payload"), []byte("after"), 0o644,
+	))
+
+	diff := lifecycleGit(t, repo, "diff", "--", "payload")
+
+	assert.Contains(diff, "-before")
+	assert.Contains(diff, "+after")
+	assert.Contains(diff, `\ No newline at end of file`)
 }
 
 func TestCreateWorktreeFromMergeRequestRejectsConditionalCommandScopeConfig(
