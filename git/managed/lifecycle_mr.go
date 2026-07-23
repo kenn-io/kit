@@ -603,20 +603,7 @@ func resolveMergeRequestOID(ctx context.Context, root, ref string) (string, erro
 
 func classifyChangeRequestFetchError(out []byte, err error) error {
 	detail := strings.TrimSpace(string(out))
-	lower := strings.ToLower(detail)
-	kind := ChangeRequestInaccessibleHead
-	switch {
-	case strings.Contains(lower, "authentication failed"),
-		strings.Contains(lower, "permission denied"),
-		strings.Contains(lower, "could not read username"),
-		strings.Contains(lower, "repository not found"):
-		kind = ChangeRequestAuthentication
-	case strings.Contains(lower, "could not resolve host"),
-		strings.Contains(lower, "failed to connect"),
-		strings.Contains(lower, "connection timed out"),
-		strings.Contains(lower, "network is unreachable"):
-		kind = ChangeRequestNetwork
-	}
+	kind, _ := classifyChangeRequestRemoteFailure(out)
 	message := "fetch merge request head"
 	if detail != "" {
 		message += ": " + detail
@@ -625,25 +612,43 @@ func classifyChangeRequestFetchError(out []byte, err error) error {
 }
 
 func optionalTrackingFetchUnavailable(out []byte) bool {
+	_, recognized := classifyChangeRequestRemoteFailure(out)
+	return recognized
+}
+
+func classifyChangeRequestRemoteFailure(
+	out []byte,
+) (ChangeRequestErrorKind, bool) {
 	lower := strings.ToLower(string(out))
-	for _, message := range []string{
-		"authentication failed",
-		"permission denied",
-		"could not read username",
-		"repository not found",
-		"could not resolve host",
-		"failed to connect",
-		"connection timed out",
-		"network is unreachable",
-		"does not appear to be a git repository",
-		"could not read from remote repository",
-		"couldn't find remote ref",
-	} {
-		if strings.Contains(lower, message) {
-			return true
-		}
+	switch {
+	case strings.Contains(lower, "authentication failed"),
+		strings.Contains(lower, "permission denied"),
+		strings.Contains(lower, "could not read username"),
+		strings.Contains(lower, "repository not found"),
+		strings.Contains(lower, "requested url returned error: 401"),
+		strings.Contains(lower, "requested url returned error: 403"):
+		return ChangeRequestAuthentication, true
+	case strings.Contains(lower, "could not resolve host"),
+		strings.Contains(lower, "failed to connect"),
+		strings.Contains(lower, "connection timed out"),
+		strings.Contains(lower, "network is unreachable"),
+		strings.Contains(lower, "connection reset"),
+		strings.Contains(lower, "recv failure"),
+		strings.Contains(lower, "ssl certificate problem"),
+		strings.Contains(lower, "server certificate verification failed"),
+		strings.Contains(lower, "gnutls_handshake() failed"),
+		strings.Contains(lower, "tls connection"),
+		strings.Contains(lower, "ssl_connect"),
+		strings.Contains(lower, "schannel:"):
+		return ChangeRequestNetwork, true
+	case strings.Contains(lower, "requested url returned error:"),
+		strings.Contains(lower, "does not appear to be a git repository"),
+		strings.Contains(lower, "could not read from remote repository"),
+		strings.Contains(lower, "couldn't find remote ref"):
+		return ChangeRequestInaccessibleHead, true
+	default:
+		return ChangeRequestInaccessibleHead, false
 	}
-	return false
 }
 
 // ensureFetchRemote returns the name of a remote pointing at cloneURL,

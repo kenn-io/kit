@@ -1522,6 +1522,48 @@ func TestCanonicalizeMergeRequestCloneURLAllowsSSHUsername(t *testing.T) {
 	assert.Equal(t, rawURL, cloneURL)
 }
 
+func TestOptionalTrackingFetchUnavailable(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{
+			name:   "HTTP forbidden",
+			output: "fatal: unable to access 'https://example.com/fork.git/': The requested URL returned error: 403",
+			want:   true,
+		},
+		{
+			name:   "HTTP not found",
+			output: "fatal: unable to access 'https://example.com/fork.git/': The requested URL returned error: 404",
+			want:   true,
+		},
+		{
+			name:   "TLS failure",
+			output: "fatal: unable to access 'https://example.com/fork.git/': SSL certificate problem: unable to get local issuer certificate",
+			want:   true,
+		},
+		{
+			name:   "connection reset",
+			output: "fatal: unable to access 'https://example.com/fork.git/': Recv failure: Connection reset by peer",
+			want:   true,
+		},
+		{
+			name:   "local runner failure",
+			output: "runner policy failed",
+			want:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, optionalTrackingFetchUnavailable(
+				[]byte(tt.output),
+			))
+		})
+	}
+}
+
 // TestCreateWorktreeFromMergeRequestTrackingFetchFailureIsNonFatal: when
 // the fork cannot be fetched, the import still succeeds via the pull ref
 // and tracking is silently disabled.
