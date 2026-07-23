@@ -767,6 +767,152 @@ func TestChangeRequestGitConfiguresPersistentSafePushRouting(t *testing.T) {
 	require.NoError(t, safefileio.ValidatePrivateDir(hooksPath))
 }
 
+func TestChangeRequestGitPersistsFilterAndFSMonitorIsolation(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	repo, backend := newChangeRequestGit(t)
+	require.NoError(os.WriteFile(
+		filepath.Join(repo, ".gitattributes"), []byte("tracked.txt filter=capture\n"), 0o644,
+	))
+	require.NoError(os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("base\n"), 0o644))
+	lifecycleGit(t, repo, "add", ".gitattributes", "tracked.txt")
+	lifecycleGit(t, repo, "commit", "-m", "add filtered file")
+	created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Path:        filepath.Join(t.TempDir(), "isolated-worktree"),
+		Branch:      "review-persistent-isolation",
+		BaseRef:     "main",
+	})
+	require.NoError(err)
+	t.Cleanup(func() { _, _ = created.Rollback(context.Background()) })
+
+	marker := filepath.Join(t.TempDir(), "git-command-ran")
+	script := filepath.Join(t.TempDir(), "git-command.sh")
+	quotedMarker := "'" + strings.ReplaceAll(filepath.ToSlash(marker), "'", "'\\''") + "'"
+	require.NoError(os.WriteFile(script, []byte(
+		"#!/bin/sh\nprintf ran >> "+quotedMarker+"\ncat\n",
+	), 0o755))
+	command := "sh '" + strings.ReplaceAll(filepath.ToSlash(script), "'", "'\\''") + "'"
+	lifecycleGit(t, repo, "config", "core.fsmonitor", script)
+	lifecycleGit(t, repo, "config", "filter.capture.clean", command)
+	lifecycleGit(t, repo, "config", "filter.capture.smudge", command)
+	lifecycleGit(t, repo, "config", "filter.capture.process", command)
+	lifecycleGit(t, repo, "config", "filter.capture.required", "true")
+
+	require.NoError(backend.ConfigureWorktreeIsolation(t.Context(), created))
+
+	assert.Equal("false", lifecycleGit(t, created.Path,
+		"config", "--worktree", "--get", "core.fsmonitor"))
+	for _, key := range []string{
+		"filter.capture.clean",
+		"filter.capture.smudge",
+		"filter.capture.process",
+	} {
+		assert.Empty(lifecycleGit(t, created.Path, "config", "--worktree", "--get", key), key)
+	}
+	assert.Equal("false", lifecycleGit(t, created.Path,
+		"config", "--worktree", "--get", "filter.capture.required"))
+
+	lifecycleGit(t, created.Path, "status", "--porcelain")
+	require.NoError(os.WriteFile(filepath.Join(created.Path, "tracked.txt"), []byte("changed\n"), 0o644))
+	lifecycleGit(t, created.Path, "add", "tracked.txt")
+	assert.NoFileExists(marker)
+}
+
+func TestChangeRequestGitConfigureWorktreeIsolationRejectsForeignWorktree(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	repo, backend := newChangeRequestGit(t)
+	foreignRepo := initLifecycleRepo(t)
+	created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: foreignRepo,
+		Path:        filepath.Join(t.TempDir(), "foreign-worktree"),
+		Branch:      "review-foreign-worktree",
+		BaseRef:     "main",
+	})
+	require.NoError(err)
+	t.Cleanup(func() { _, _ = created.Rollback(context.Background()) })
+
+	err = backend.ConfigureWorktreeIsolation(t.Context(), created)
+
+	var typed *ChangeRequestError
+	require.ErrorAs(err, &typed)
+	assert.Equal(ChangeRequestUnsafeConfiguration, typed.Kind)
+	_, configErr := gitcmd.New().Output(t.Context(), repo,
+		"config", "--get", "extensions.worktreeConfig")
+	assert.Error(configErr, "ownership must be rejected before repository configuration is written")
+}
+
+func TestChangeRequestGitConfigureWorktreeIsolationRejectsChangedPathIdentity(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	repo, backend := newChangeRequestGit(t)
+	created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Path:        filepath.Join(t.TempDir(), "changed-identity-worktree"),
+		Branch:      "review-changed-path-identity",
+		BaseRef:     "main",
+	})
+	require.NoError(err)
+	t.Cleanup(func() { _, _ = created.Rollback(context.Background()) })
+	otherPath := t.TempDir()
+	created.pathInfo, err = os.Lstat(otherPath)
+	require.NoError(err)
+
+	err = backend.ConfigureWorktreeIsolation(t.Context(), created)
+
+	var typed *ChangeRequestError
+	require.ErrorAs(err, &typed)
+	assert.Equal(ChangeRequestUnsafeConfiguration, typed.Kind)
+	_, configErr := gitcmd.New().Output(t.Context(), repo,
+		"config", "--get", "extensions.worktreeConfig")
+	assert.Error(configErr, "path identity must be rejected before repository configuration is written")
+}
+
+func TestChangeRequestGitConfigurePushRevalidatesOwnershipBeforeRouting(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	repo := initLifecycleRepo(t)
+	injected := errors.New("injected ownership revalidation failure")
+	ownershipChecks := 0
+	backend, err := NewChangeRequestGit(ChangeRequestGitOptions{
+		ProjectRoot:            repo,
+		ProjectIdentity:        gitremote.Identity{Host: "github.com", Owner: "acme", Name: "widget"},
+		RemoteNamePrefix:       "review",
+		HookIsolationNamespace: "kit-test",
+		Runner:                 gitcmd.New(),
+		RunGit: func(ctx context.Context, runner gitcmd.Runner, dir string, args ...string) ([]byte, error) {
+			if slices.Equal(args, []string{"worktree", "list", "--porcelain"}) {
+				ownershipChecks++
+				if ownershipChecks == 2 {
+					return nil, injected
+				}
+			}
+			stdout, stderr, runErr := runner.Run(ctx, dir, nil, args...)
+			return append(stdout, stderr...), runErr
+		},
+	})
+	require.NoError(err)
+	lifecycleGit(t, repo, "remote", "add", "fork", "https://github.com/octocat/widget.git")
+	created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Path:        filepath.Join(t.TempDir(), "routing-ownership-worktree"),
+		Branch:      "review-routing-ownership",
+		BaseRef:     "main",
+	})
+	require.NoError(err)
+	t.Cleanup(func() { _, _ = created.Rollback(context.Background()) })
+
+	err = backend.ConfigurePush(
+		t.Context(), created, "fork", changeRequestRemote("octocat"), "feature/widgets",
+	)
+
+	require.ErrorIs(err, injected)
+	assert.Equal(2, ownershipChecks)
+	assert.Empty(worktreeConfigValues(t, created.Path,
+		"branch.review-routing-ownership.remote"))
+}
+
 func TestChangeRequestGitConfigurePushAcceptsDistinctValidatedRemoteURLs(t *testing.T) {
 	require := require.New(t)
 	repo, backend := newChangeRequestGit(t)

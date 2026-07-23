@@ -140,19 +140,20 @@ type CreateWorktreeResult struct {
 	// opposed to attaching a pre-existing local branch). Callers rolling
 	// the git work back must use this result's Rollback method so a
 	// pre-existing branch is never force-deleted.
-	BranchCreated bool
-	HookRan       bool
-	HookScript    string
-	projectRoot   string
-	runner        gitcmd.Runner
-	runGit        GitRunner
-	runHook       HookRunner
-	pathInfo      os.FileInfo
-	branchOID     string
-	headOID       string
-	headRef       string
-	materialized  bool
-	snapshotted   bool
+	BranchCreated   bool
+	HookRan         bool
+	HookScript      string
+	projectRoot     string
+	runner          gitcmd.Runner
+	runGit          GitRunner
+	runHook         HookRunner
+	pathInfo        os.FileInfo
+	branchOID       string
+	headOID         string
+	headRef         string
+	materialized    bool
+	filtersIsolated bool
+	snapshotted     bool
 }
 
 // RollbackResult identifies worktree artifacts that remained after rollback.
@@ -275,6 +276,7 @@ func createWorktreeOnDisk(
 			ErrWorktreeCleanupIncomplete, path,
 		))
 	}
+	result.filtersIsolated = opts.IsolatedCheckout
 	if opts.IsolatedCheckout {
 		if opts.BeforeCheckout != nil {
 			if err := opts.BeforeCheckout(ctx, path); err != nil {
@@ -392,7 +394,7 @@ func (r CreateWorktreeResult) rollbackOwned(
 			errs = append(errs, errors.New("unmaterialized worktree contains unexpected artifacts; preserving it"))
 		}
 	case preserveChanges:
-		runner, err := isolatedLifecycleRunner(ctx, r.Path)
+		runner, err := lifecycleStatusRunner(ctx, r.Path, r.filtersIsolated)
 		if err != nil {
 			remaining.Path = r.Path
 			errs = append(errs, fmt.Errorf("inspect rollback filters: %w", err))
@@ -515,7 +517,7 @@ func (r CreateWorktreeResult) revalidateRollbackRemoval(
 		}
 		return nil
 	}
-	runner, err := isolatedLifecycleRunner(ctx, r.Path)
+	runner, err := lifecycleStatusRunner(ctx, r.Path, r.filtersIsolated)
 	if err != nil {
 		return fmt.Errorf("revalidate rollback filters: %w", err)
 	}
@@ -848,11 +850,26 @@ func lifecyclePathsEqual(left, right string) bool {
 }
 
 // WorktreeIsDirty reports whether the worktree at path has uncommitted
-// changes (staged, unstaged, or untracked).
+// changes (staged, unstaged, or untracked), using its configured filters and
+// fsmonitor so ordinary filtered worktrees retain Git's normal clean-state
+// semantics. Contributor worktrees persist non-executing filter and fsmonitor
+// configuration before callers use this helper.
 func WorktreeIsDirty(ctx context.Context, path string) (bool, error) {
-	runner, err := isolatedLifecycleRunner(ctx, path)
+	return worktreeIsDirty(ctx, path, false)
+}
+
+// WorktreeIsDirtyIsolated reports dirty state without executing configured
+// filters or fsmonitor commands. It is conservative and may report a clean
+// ordinary worktree as dirty when that worktree was materialized with filters;
+// use it only when materialization also disabled those filters.
+func WorktreeIsDirtyIsolated(ctx context.Context, path string) (bool, error) {
+	return worktreeIsDirty(ctx, path, true)
+}
+
+func worktreeIsDirty(ctx context.Context, path string, isolateFilters bool) (bool, error) {
+	runner, err := lifecycleStatusRunner(ctx, path, isolateFilters)
 	if err != nil {
-		return false, fmt.Errorf("inspect worktree filters: %w", err)
+		return false, fmt.Errorf("prepare worktree status: %w", err)
 	}
 	out, err := runLifecycleGitWithRunner(
 		ctx, runner, path, "status", "--porcelain", "--untracked-files=all",
@@ -864,6 +881,15 @@ func WorktreeIsDirty(ctx context.Context, path string) (bool, error) {
 		)
 	}
 	return strings.TrimSpace(string(out)) != "", nil
+}
+
+func lifecycleStatusRunner(
+	ctx context.Context, path string, isolateFilters bool,
+) (gitcmd.Runner, error) {
+	if isolateFilters {
+		return isolatedLifecycleRunner(ctx, path)
+	}
+	return lifecycleHooksRunner(ctx)
 }
 
 func requireRootAndBranch(

@@ -686,6 +686,9 @@ func (g *ChangeRequestGit) configurePush(
 		return changeRequestError(ChangeRequestUnsafeConfiguration,
 			"failed to snapshot change-request push configuration", err)
 	}
+	if err := g.validateCreatedWorktreeOwnership(ctx, created); err != nil {
+		return err
+	}
 	var configureErr error
 	for _, args := range commands {
 		if _, err := g.runSafe(ctx, created.Path, args...); err != nil {
@@ -775,6 +778,9 @@ func (g *ChangeRequestGit) ConfigureWorktreeIsolation(
 func (g *ChangeRequestGit) configureWorktreeIsolation(
 	ctx context.Context, created CreateWorktreeResult,
 ) (string, error) {
+	if err := g.validateCreatedWorktreeOwnership(ctx, created); err != nil {
+		return "", err
+	}
 	if err := g.validateWorkspaceHead(ctx, created); err != nil {
 		return "", err
 	}
@@ -785,7 +791,25 @@ func (g *ChangeRequestGit) configureWorktreeIsolation(
 		return "", changeRequestError(ChangeRequestUnsafeConfiguration,
 			"failed to enable worktree-scoped Git configuration", err)
 	}
-	return g.configureDisabledHooks(ctx, created.Path)
+	return g.configurePersistentWorktreeIsolation(ctx, created.Path)
+}
+
+func (g *ChangeRequestGit) validateCreatedWorktreeOwnership(
+	ctx context.Context, created CreateWorktreeResult,
+) error {
+	if !created.snapshotted || created.pathInfo == nil ||
+		!lifecyclePathsEqual(g.root, created.projectRoot) {
+		return changeRequestError(ChangeRequestUnsafeConfiguration,
+			"change-request worktree lacks a matching creation snapshot", nil)
+	}
+	ctx = withLifecycleExecution(ctx, g.runner, g.runGit, nil)
+	if err := verifyRegisteredWorktree(
+		ctx, g.root, created.Path, created.Branch, created.pathInfo,
+	); err != nil {
+		return changeRequestError(ChangeRequestUnsafeConfiguration,
+			"change-request worktree ownership changed before configuration", err)
+	}
+	return nil
 }
 
 func (g *ChangeRequestGit) validateWorkspaceHead(ctx context.Context, created CreateWorktreeResult) error {
@@ -797,7 +821,17 @@ func (g *ChangeRequestGit) validateWorkspaceHead(ctx context.Context, created Cr
 	return nil
 }
 
-func (g *ChangeRequestGit) configureDisabledHooks(ctx context.Context, worktreePath string) (string, error) {
+func (g *ChangeRequestGit) configurePersistentWorktreeIsolation(
+	ctx context.Context, worktreePath string,
+) (string, error) {
+	configOutput, err := g.runSafe(
+		ctx, worktreePath, "config", "--includes", "--null", "--list",
+	)
+	if err != nil {
+		return "", changeRequestError(ChangeRequestUnsafeConfiguration,
+			"failed to inspect Git filters for persistent isolation", err)
+	}
+	filterDrivers := lifecycleFilterDrivers(string(configOutput))
 	output, err := g.runSafe(ctx, worktreePath, "rev-parse", "--git-common-dir")
 	if err != nil {
 		return "", changeRequestError(ChangeRequestUnsafeConfiguration,
@@ -832,7 +866,61 @@ func (g *ChangeRequestGit) configureDisabledHooks(ctx context.Context, worktreeP
 		return "", changeRequestError(ChangeRequestUnsafeConfiguration,
 			"failed to persist hook isolation", err)
 	}
+	commands := [][]string{
+		{"config", "--worktree", "core.fsmonitor", "false"},
+	}
+	for _, driver := range filterDrivers {
+		prefix := "filter." + driver + "."
+		commands = append(commands,
+			[]string{"config", "--worktree", prefix + "clean", ""},
+			[]string{"config", "--worktree", prefix + "smudge", ""},
+			[]string{"config", "--worktree", prefix + "process", ""},
+			[]string{"config", "--worktree", prefix + "required", "false"},
+		)
+	}
+	for _, args := range commands {
+		if _, err := g.runSafe(ctx, worktreePath, args...); err != nil {
+			return "", changeRequestError(ChangeRequestUnsafeConfiguration,
+				"failed to persist filter and fsmonitor isolation", err)
+		}
+	}
+	if err := g.validatePersistentWorktreeIsolation(
+		ctx, worktreePath, hooksPath, filterDrivers,
+	); err != nil {
+		return "", err
+	}
 	return hooksPath, nil
+}
+
+func (g *ChangeRequestGit) validatePersistentWorktreeIsolation(
+	ctx context.Context, worktreePath, expectedHooksPath string, filterDrivers []string,
+) error {
+	expected := map[string]string{
+		"core.hooksPath": expectedHooksPath,
+		"core.fsmonitor": "false",
+	}
+	for _, driver := range filterDrivers {
+		prefix := "filter." + driver + "."
+		expected[prefix+"clean"] = ""
+		expected[prefix+"smudge"] = ""
+		expected[prefix+"process"] = ""
+		expected[prefix+"required"] = "false"
+	}
+	for key, want := range expected {
+		output, err := g.run(
+			ctx, worktreePath, "config", "--includes", "--get", key,
+		)
+		got := strings.TrimSpace(string(output))
+		matches := got == want
+		if key == "core.hooksPath" {
+			matches = filepath.Clean(got) == filepath.Clean(want)
+		}
+		if err != nil || !matches {
+			return changeRequestError(ChangeRequestUnsafeConfiguration,
+				"change-request worktree does not retain persistent Git execution isolation", err)
+		}
+	}
+	return nil
 }
 
 func (g *ChangeRequestGit) validatePushRouting(
@@ -851,10 +939,18 @@ func (g *ChangeRequestGit) validatePushRouting(
 	if err := g.validateEffectiveRemote(ctx, created.Path, remote, repository); err != nil {
 		return err
 	}
-	hooksOutput, err := g.run(ctx, created.Path, "config", "--includes", "--path", "--get", "core.hooksPath")
-	if err != nil || filepath.Clean(strings.TrimSpace(string(hooksOutput))) != filepath.Clean(expectedHooksPath) {
+	configOutput, err := g.runSafe(
+		ctx, created.Path, "config", "--includes", "--null", "--list",
+	)
+	if err != nil {
 		return changeRequestError(ChangeRequestUnsafeConfiguration,
-			"change-request worktree does not retain persistent hook isolation", err)
+			"failed to inspect persistent Git execution isolation", err)
+	}
+	if err := g.validatePersistentWorktreeIsolation(
+		ctx, created.Path, expectedHooksPath,
+		lifecycleFilterDrivers(string(configOutput)),
+	); err != nil {
+		return err
 	}
 	pushKey := "remote." + remote + ".push"
 	pushOutput, err := g.runSafe(ctx, created.Path, "config", "--includes", "--get-all", pushKey)

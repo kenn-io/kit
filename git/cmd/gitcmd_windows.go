@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -70,8 +71,9 @@ func runProcessTreeCommand(cmd *exec.Cmd) error {
 		if err := disableJobKillOnClose(job); err != nil {
 			return err
 		}
+		return waitErr
 	}
-	return waitErr
+	return errors.Join(waitErr, terminateAndDrainWindowsJob(job))
 }
 
 type windowsJobCancellation struct {
@@ -124,6 +126,54 @@ func disableJobKillOnClose(job windows.Handle) error {
 		return fmt.Errorf("preserve successful process descendants: %w", err)
 	}
 	return nil
+}
+
+type windowsJobAccounting struct {
+	totalUserTime             int64
+	totalKernelTime           int64
+	thisPeriodTotalUserTime   int64
+	thisPeriodTotalKernelTime int64
+	totalPageFaultCount       uint32
+	totalProcesses            uint32
+	activeProcesses           uint32
+	totalTerminatedProcesses  uint32
+}
+
+func terminateAndDrainWindowsJob(job windows.Handle) error {
+	accounting, err := queryWindowsJobAccounting(job)
+	if err != nil {
+		terminateErr := windows.TerminateJobObject(job, 1)
+		return errors.Join(fmt.Errorf("inspect Job Object before termination: %w", err), terminateErr)
+	}
+	if accounting.activeProcesses == 0 {
+		return nil
+	}
+	terminateErr := windows.TerminateJobObject(job, 1)
+	deadline := time.Now().Add(time.Second)
+	for {
+		accounting, queryErr := queryWindowsJobAccounting(job)
+		if queryErr != nil {
+			return errors.Join(terminateErr,
+				fmt.Errorf("inspect terminated Job Object: %w", queryErr))
+		}
+		if accounting.activeProcesses == 0 {
+			return terminateErr
+		}
+		if time.Now().After(deadline) {
+			return errors.Join(terminateErr,
+				fmt.Errorf("timed out waiting for terminated Job Object processes"))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func queryWindowsJobAccounting(job windows.Handle) (windowsJobAccounting, error) {
+	accounting := windowsJobAccounting{}
+	err := windows.QueryInformationJobObject(
+		job, windows.JobObjectBasicAccountingInformation,
+		uintptr(unsafe.Pointer(&accounting)), uint32(unsafe.Sizeof(accounting)), nil,
+	)
+	return accounting, err
 }
 
 func resumeWindowsProcess(pid uint32) error {
@@ -179,7 +229,7 @@ func abortSuspendedProcess(cmd *exec.Cmd, cause error) error {
 }
 
 func abortJobProcess(cmd *exec.Cmd, job windows.Handle, cause error) error {
-	terminateErr := windows.TerminateJobObject(job, 1)
+	terminateErr := terminateAndDrainWindowsJob(job)
 	waitErr := cmd.Wait()
 	return errors.Join(cause, ignoreProcessDone(terminateErr), ignoreExitError(waitErr))
 }

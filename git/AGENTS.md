@@ -66,7 +66,14 @@ not about one product's workflow.
   read-only temporary file.
 - Safe push routing is transactional at the public method boundary. Snapshot
   affected worktree configuration and restore it after any routing write or
-  final-validation failure; persistent hook isolation may remain installed.
+  final-validation failure; persistent Git execution isolation may remain
+  installed. Managed contributor worktrees must retain worktree-scoped hook,
+  fsmonitor, and filter isolation for their lifetime. Verify their captured
+  path and repository ownership before isolation writes and again immediately
+  before push-routing writes.
+- Dirty-state checks for ordinary worktrees must retain configured filter and
+  fsmonitor semantics. Use filter-disabled status only for worktrees that were
+  materialized with those filters disabled.
 - Before teardown hooks or destructive removal, verify that the path is still
   the registered worktree for the expected repository and branch. Preserve
   replacement paths and repositories, require detached worktrees to remain
@@ -78,6 +85,8 @@ not about one product's workflow.
 - Windows Job Objects may kill a Git process tree on cancellation or failure,
   but successful Git commands—including roots that return `exec.ErrWaitDelay`
   because a descendant retained output handles—must preserve those descendants.
+  Failed and cancelled jobs must finish terminating their descendants before
+  lifecycle code can begin filesystem cleanup.
 - Keep transport classification platform-aware: drive-letter syntax is local
   only on Windows, while identity parsers may recognize that syntax on any host.
 - Canonicalize relative local clone paths against the project root before

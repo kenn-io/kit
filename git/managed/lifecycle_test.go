@@ -1542,7 +1542,32 @@ func TestWorktreeIsDirtyIncludesUntrackedFilesWhenConfigHidesThem(t *testing.T) 
 	assert.True(dirty)
 }
 
-func TestWorktreeIsDirtyDisablesFiltersAndFSMonitor(t *testing.T) {
+func TestWorktreeIsDirtyUsesNormalFiltersForOrdinaryWorktree(t *testing.T) {
+	assert := assert.New(t)
+	require := Require.New(t)
+	repo := initLifecycleRepo(t)
+	require.NoError(os.WriteFile(
+		filepath.Join(repo, ".gitattributes"), []byte("tracked.txt filter=capture\n"), 0o644,
+	))
+	lifecycleGit(t, repo, "config", "filter.capture.clean", "sed s/^filtered://")
+	lifecycleGit(t, repo, "config", "filter.capture.smudge", "sed s/^/filtered:/")
+	require.NoError(os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("filtered:base\n"), 0o644))
+	lifecycleGit(t, repo, "add", ".gitattributes", "tracked.txt")
+	lifecycleGit(t, repo, "commit", "-m", "add filtered file")
+
+	dest := filepath.Join(t.TempDir(), "wt")
+	lifecycleGit(t, repo, "worktree", "add", "-b", "filtered-status", dest)
+	contents, err := os.ReadFile(filepath.Join(dest, "tracked.txt"))
+	require.NoError(err)
+	assert.Equal("filtered:base", strings.TrimSpace(string(contents)))
+
+	dirty, err := WorktreeIsDirty(t.Context(), dest)
+
+	require.NoError(err)
+	assert.False(dirty)
+}
+
+func TestWorktreeIsDirtyIsolatedDisablesFiltersAndFSMonitor(t *testing.T) {
 	assert := assert.New(t)
 	require := Require.New(t)
 	repo := initLifecycleRepo(t)
@@ -1566,9 +1591,38 @@ func TestWorktreeIsDirtyDisablesFiltersAndFSMonitor(t *testing.T) {
 	lifecycleGit(t, repo, "config", "core.fsmonitor", script)
 	require.NoError(os.WriteFile(filepath.Join(dest, "tracked.txt"), []byte("changed\n"), 0o644))
 
-	dirty, err := WorktreeIsDirty(t.Context(), dest)
+	dirty, err := WorktreeIsDirtyIsolated(t.Context(), dest)
 
 	require.NoError(err)
 	assert.True(dirty)
 	assert.NoFileExists(marker)
+}
+
+func TestRollbackUsesNormalFiltersForOrdinaryWorktree(t *testing.T) {
+	assert := assert.New(t)
+	require := Require.New(t)
+	repo := initLifecycleRepo(t)
+	require.NoError(os.WriteFile(
+		filepath.Join(repo, ".gitattributes"), []byte("tracked.txt filter=capture\n"), 0o644,
+	))
+	lifecycleGit(t, repo, "config", "filter.capture.clean", "sed s/^filtered://")
+	lifecycleGit(t, repo, "config", "filter.capture.smudge", "sed s/^/filtered:/")
+	require.NoError(os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("filtered:base\n"), 0o644))
+	lifecycleGit(t, repo, "add", ".gitattributes", "tracked.txt")
+	lifecycleGit(t, repo, "commit", "-m", "add filtered file")
+	path := filepath.Join(t.TempDir(), "filtered-rollback")
+	result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Path:        path,
+		Branch:      "filtered-rollback",
+		BaseRef:     "main",
+	})
+	require.NoError(err)
+
+	remaining, err := result.Rollback(t.Context())
+
+	require.NoError(err)
+	assert.Empty(remaining)
+	assert.NoDirExists(path)
+	assert.False(branchExistsInRepo(t, repo, "filtered-rollback"))
 }
