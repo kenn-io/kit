@@ -342,13 +342,26 @@ func (r Runner) commandEnv(ctx context.Context, dir string) ([]string, func()) {
 		}
 		config = append(config, Config{Key: "credential.helper", Value: helper})
 	}
+	configOffset := 0
+	if !r.StripEnv {
+		if inheritedCount, ok := envValue(
+			env, "GIT_CONFIG_COUNT",
+		); ok {
+			if count, err := strconv.Atoi(inheritedCount); err == nil && count >= 0 {
+				configOffset = count
+			}
+		}
+	}
 	for i, c := range config {
+		i += configOffset
 		env = append(env,
 			fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", i, c.Key),
 			fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", i, c.Value),
 		)
 	}
-	env = append(env, fmt.Sprintf("GIT_CONFIG_COUNT=%d", len(config)))
+	env = append(env, fmt.Sprintf(
+		"GIT_CONFIG_COUNT=%d", configOffset+len(config),
+	))
 	return env, cleanup
 }
 

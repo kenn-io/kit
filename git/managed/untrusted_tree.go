@@ -296,7 +296,8 @@ func gitConfigKeys(
 	ctx context.Context, worktreePath string, runner gitcmd.Runner,
 ) ([]string, error) {
 	out, err := runLifecycleGitWithRunner(
-		ctx, runner, worktreePath, "config", "--null", "--name-only", "--list",
+		ctx, runner, worktreePath,
+		"config", "--null", "--name-only", "--includes", "--list",
 	)
 	if err != nil {
 		return nil, fmt.Errorf(
@@ -318,8 +319,9 @@ func ambientGitConfigKeys(
 	ctx context.Context, worktreePath string, runner gitcmd.Runner,
 ) ([]string, error) {
 	// The first scan exactly matches checkout. This second scan preserves
-	// explicit global/system selectors so persistent isolation also covers
-	// ordinary Git commands run outside the application's stripped environment.
+	// explicit global/system and command-scope selectors so persistent
+	// isolation also covers ordinary Git commands run outside the
+	// application's stripped environment.
 	runner.Env = withoutGitRepositoryBindings(runner.Env)
 	runner.StripEnv = false
 	runner.NullGlobalConfig = false

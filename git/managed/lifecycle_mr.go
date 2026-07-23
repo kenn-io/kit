@@ -371,7 +371,9 @@ func mergeRequestRepositoriesEqual(left, right string) bool {
 		}
 		return filepath.Clean(leftPath) == filepath.Clean(rightPath)
 	}
-	return CloneURLIdentity(left) == CloneURLIdentity(right)
+	leftIdentity := CloneURLIdentity(left)
+	right = strings.TrimSpace(right)
+	return leftIdentity == right || leftIdentity == CloneURLIdentity(right)
 }
 
 func localClonePath(raw string) (string, bool) {

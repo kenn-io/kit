@@ -44,6 +44,32 @@ func TestRunnerCommandUsesDefensiveEnvironment(t *testing.T) {
 	}
 }
 
+func TestRunnerPreservesInheritedCommandScopeConfig(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	runner := New()
+	runner.StripEnv = false
+	runner.DisableSafeDirectoryForward = true
+	runner.Env = append(os.Environ(),
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=filter.inherited.smudge",
+		"GIT_CONFIG_VALUE_0=inherited",
+	)
+	runner = runner.WithConfig("filter.added.clean", "added")
+
+	inherited, err := runner.Output(
+		t.Context(), "", "config", "--get", "filter.inherited.smudge",
+	)
+	require.NoError(err)
+	assert.Equal("inherited", strings.TrimSpace(string(inherited)))
+
+	added, err := runner.Output(
+		t.Context(), "", "config", "--get", "filter.added.clean",
+	)
+	require.NoError(err)
+	assert.Equal("added", strings.TrimSpace(string(added)))
+}
+
 func TestNullGlobalConfigPathIsReadableEmptyFile(t *testing.T) {
 	// Regression test: GIT_CONFIG_GLOBAL must point at a real, readable, empty
 	// file rather than os.DevNull. On Windows os.DevNull is "NUL", which some

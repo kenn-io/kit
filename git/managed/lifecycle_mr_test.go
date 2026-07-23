@@ -719,6 +719,49 @@ func TestCreateWorktreeFromMergeRequestInspectsSelectedConfigFiles(t *testing.T)
 		worktreeOnlyConfig(t, dest, "merge.selected.driver"))
 }
 
+func TestCreateWorktreeFromMergeRequestInspectsInheritedCommandScopeConfig(
+	t *testing.T,
+) {
+	require := Require.New(t)
+	assert := assert.New(t)
+
+	origin, clone := initOriginAndClone(t)
+	lifecycleGit(t, origin, "checkout", "-q", "-b", "inherited-config")
+	require.NoError(os.WriteFile(
+		filepath.Join(origin, ".gitattributes"),
+		[]byte("payload filter=inherited\n"), 0o644,
+	))
+	require.NoError(os.WriteFile(
+		filepath.Join(origin, "payload"), []byte("external\n"), 0o644,
+	))
+	lifecycleGit(t, origin, "add", ".gitattributes", "payload")
+	lifecycleGit(t, origin, "commit", "-qm", "select inherited driver")
+	headSHA := lifecycleGit(t, origin, "rev-parse", "HEAD")
+	lifecycleGit(t, origin, "checkout", "-q", "main")
+
+	runner := gitcmd.New()
+	runner.Env = append(gitenv.StripAll(os.Environ()),
+		"GIT_CONFIG_COUNT=2",
+		"GIT_CONFIG_KEY_0=filter.inherited.smudge",
+		"GIT_CONFIG_VALUE_0=false",
+		"GIT_CONFIG_KEY_1=filter.inherited.required",
+		"GIT_CONFIG_VALUE_1=true",
+	)
+	dest := filepath.Join(t.TempDir(), "wt")
+	_, err := CreateWorktreeFromMergeRequest(
+		t.Context(), MergeRequestWorktreeOptions{
+			ProjectRoot: clone, Branch: "pr-inherited-config", Path: dest,
+			Number: 30, HeadBranch: "inherited-config",
+			HeadRepoCloneURL: origin, ProjectRepoIdentity: identityOfCloneURL(origin),
+			ExpectedHeadSHA: headSHA, Runner: runner,
+		})
+
+	require.NoError(err)
+	assert.Empty(worktreeOnlyConfig(t, dest, "filter.inherited.smudge"))
+	assert.Equal("false",
+		worktreeOnlyConfig(t, dest, "filter.inherited.required"))
+}
+
 func TestCreateWorktreeFromMergeRequestRejectsConfigFromMaterializedTree(
 	t *testing.T,
 ) {
@@ -762,6 +805,42 @@ func TestCreateWorktreeFromMergeRequestRejectsConfigFromMaterializedTree(
 	assert.NoDirExists(dest)
 }
 
+func TestCreateWorktreeFromMergeRequestRejectsInheritedRelativeInclude(
+	t *testing.T,
+) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	origin, clone := initOriginAndClone(t)
+	lifecycleGit(t, origin, "checkout", "-q", "-b", "inherited-include")
+	require.NoError(os.WriteFile(
+		filepath.Join(origin, ".gitconfig"),
+		[]byte("[diff \"materialized\"]\n\tcommand = false\n"), 0o644,
+	))
+	lifecycleGit(t, origin, "add", ".gitconfig")
+	lifecycleGit(t, origin, "commit", "-qm", "materialized include")
+	headSHA := lifecycleGit(t, origin, "rev-parse", "HEAD")
+	lifecycleGit(t, origin, "checkout", "-q", "main")
+
+	runner := gitcmd.New()
+	runner.Env = append(gitenv.StripAll(os.Environ()),
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=include.path",
+		"GIT_CONFIG_VALUE_0=.gitconfig",
+	)
+	dest := filepath.Join(t.TempDir(), "wt")
+	_, err := CreateWorktreeFromMergeRequest(
+		t.Context(), MergeRequestWorktreeOptions{
+			ProjectRoot: clone, Branch: "pr-inherited-include", Path: dest,
+			Number: 31, HeadBranch: "inherited-include",
+			HeadRepoCloneURL: origin, ProjectRepoIdentity: identityOfCloneURL(origin),
+			ExpectedHeadSHA: headSHA, Runner: runner,
+		})
+
+	require.Error(err)
+	assert.ErrorContains(err, "relative config includes must come from files")
+	assert.NoDirExists(dest)
+}
+
 func TestMergeRequestRepositoriesKeepPathCase(t *testing.T) {
 	assert.False(t, mergeRequestRepositoriesEqual(
 		"https://example.com/Owner/Widget.git",
@@ -771,6 +850,18 @@ func TestMergeRequestRepositoriesKeepPathCase(t *testing.T) {
 		"https://EXAMPLE.com/Owner/Widget.git",
 		"https://example.com/Owner/Widget.git",
 	))
+}
+
+func TestMergeRequestRepositoriesAcceptNormalizedHostedIdentity(t *testing.T) {
+	for _, rawURL := range []string{
+		"https://example.com:8443/Owner/Widget.git",
+		"ssh://[2001:db8::1]:2222/Owner/Widget.git",
+	} {
+		identity := CloneURLIdentity(rawURL)
+		assert.NotEqual(t, rawURL, identity)
+		assert.True(t, mergeRequestRepositoriesEqual(rawURL, identity),
+			"%s should match normalized identity %s", rawURL, identity)
+	}
 }
 
 func TestCreateWorktreeFromMergeRequestInspectsConditionalIncludes(t *testing.T) {
