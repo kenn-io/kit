@@ -426,6 +426,70 @@ func TestCreateWorktreeFromMergeRequestPersistsAttributeDriverIsolation(t *testi
 	assert.Contains(diff, "+portable change")
 }
 
+func TestMergeRequestRollbackRetainsIsolatedRunner(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("executable fsmonitor and filter fixtures require POSIX")
+	}
+	require := Require.New(t)
+	assert := assert.New(t)
+
+	origin, clone := initOriginAndClone(t)
+	lifecycleGit(t, origin, "checkout", "-q", "-b", "rollback-isolation")
+	require.NoError(os.WriteFile(
+		filepath.Join(origin, ".gitattributes"),
+		[]byte("payload filter=rollback\n"), 0o644,
+	))
+	require.NoError(os.WriteFile(
+		filepath.Join(origin, "payload"), []byte("external\n"), 0o644,
+	))
+	lifecycleGit(t, origin, "add", ".gitattributes", "payload")
+	lifecycleGit(t, origin, "commit", "-qm", "rollback isolation fixture")
+	headSHA := lifecycleGit(t, origin, "rev-parse", "HEAD")
+	lifecycleGit(t, origin, "checkout", "-q", "main")
+
+	markers := t.TempDir()
+	fsmonitorMarker := filepath.Join(markers, "fsmonitor-ran")
+	filterMarker := filepath.Join(markers, "filter-ran")
+	fsmonitorScript := filepath.Join(markers, "fsmonitor.sh")
+	filterScript := filepath.Join(markers, "filter.sh")
+	require.NoError(os.WriteFile(
+		fsmonitorScript,
+		[]byte("#!/bin/sh\n: > \""+fsmonitorMarker+"\"\nprintf '0\\n'\n"), 0o755,
+	))
+	require.NoError(os.WriteFile(
+		filterScript,
+		[]byte("#!/bin/sh\n: > \""+filterMarker+"\"\ncat\n"), 0o755,
+	))
+	runner := gitcmd.New().
+		WithConfig("core.fsmonitor", fsmonitorScript).
+		WithConfig("filter.rollback.clean", filterScript).
+		WithConfig("filter.rollback.smudge", filterScript).
+		WithConfig("filter.rollback.required", "true")
+
+	result, err := CreateWorktreeFromMergeRequest(
+		t.Context(), MergeRequestWorktreeOptions{
+			ProjectRoot: clone, Branch: "pr-rollback-isolation",
+			Path:   filepath.Join(t.TempDir(), "wt"),
+			Number: 27, HeadBranch: "rollback-isolation",
+			HeadRepoCloneURL: origin, ProjectRepoIdentity: identityOfCloneURL(origin),
+			ExpectedHeadSHA: headSHA, Runner: runner,
+		})
+	require.NoError(err)
+	for _, marker := range []string{fsmonitorMarker, filterMarker} {
+		if removeErr := os.Remove(marker); removeErr != nil {
+			require.ErrorIs(removeErr, os.ErrNotExist)
+		}
+	}
+
+	remaining, err := result.Rollback(t.Context())
+
+	require.NoError(err)
+	assert.Empty(remaining.Path)
+	assert.Empty(remaining.Branch)
+	assert.NoFileExists(fsmonitorMarker)
+	assert.NoFileExists(filterMarker)
+}
+
 func TestCreateWorktreeFromMergeRequestInspectsSelectedConfigFiles(t *testing.T) {
 	require := Require.New(t)
 	assert := assert.New(t)

@@ -224,7 +224,12 @@ func CreateWorktreeFromMergeRequest(
 		)
 		return CreateWorktreeResult{}, errors.Join(err, cleanupErr)
 	}
-	result, err := snapshotCreateWorktreeResult(ctx, root, path, branch, true)
+	isolatedCtx := withLifecycleExecution(
+		ctx, isolation.runner, lifecycleGitRunner(ctx), lifecycleHookRunner(ctx),
+	)
+	result, err := snapshotCreateWorktreeResult(
+		isolatedCtx, root, path, branch, true,
+	)
 	if err != nil {
 		_, cleanupErr := rollbackCreatedWorktreeWithResult(
 			context.WithoutCancel(ctx), root, path, branch, true,
