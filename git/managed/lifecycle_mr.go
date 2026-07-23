@@ -58,7 +58,8 @@ type MergeRequestWorktreeOptions struct {
 	BaseDir     string
 	// SetupScript is an explicitly configured, caller-trusted script. It runs
 	// after the untrusted request tree is materialized; callers must sandbox
-	// it if the script evaluates or executes content from that tree.
+	// it if the script evaluates or executes content from that tree. It must
+	// already exist as a regular file outside the worktree destination.
 	SetupScript           string
 	WorktreeName          string
 	HookEnvironmentPrefix string
@@ -129,12 +130,14 @@ func CreateWorktreeFromMergeRequest(
 	if err := validateUntrustedTreeCheckoutGitVersion(ctx, root); err != nil {
 		return CreateWorktreeResult{}, err
 	}
-	hookScript, err := resolveHookScript(root, opts.SetupScript)
+	path, err := resolveWorktreeDestination(
+		root, branch, opts.Path, opts.BaseDir,
+	)
 	if err != nil {
 		return CreateWorktreeResult{}, err
 	}
-	path, err := resolveWorktreeDestination(
-		root, branch, opts.Path, opts.BaseDir,
+	hookScript, err := resolveMergeRequestHookScript(
+		root, path, opts.SetupScript,
 	)
 	if err != nil {
 		return CreateWorktreeResult{}, err

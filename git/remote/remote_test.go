@@ -56,5 +56,13 @@ func TestCloneURLIdentityNormalizesHostAndPreservesRepoCase(t *testing.T) {
 		"example.com/Acme/Widget",
 		CloneURLIdentity("https://EXAMPLE.com:443/Acme/Widget.git"),
 	)
+	assert.Equal(t,
+		"2001:db8::1/Acme/Widget",
+		CloneURLIdentity("https://[2001:db8::1]:443/Acme/Widget.git"),
+	)
+	assert.NotEqual(t,
+		CloneURLIdentity("ssh://example.com/Acme/Widget.git"),
+		CloneURLIdentity("ssh://example.com:443/Acme/Widget.git"),
+	)
 	assert.Equal(t, "/tmp/Widget.git", CloneURLIdentity(" /tmp/Widget.git "))
 }

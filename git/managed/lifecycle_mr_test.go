@@ -835,3 +835,44 @@ func TestCreateWorktreeFromMergeRequestHookFailureRollsBack(t *testing.T) {
 	assert.True(os.IsNotExist(statErr))
 	assert.False(branchExistsInRepo(t, clone, "pr-42"))
 }
+
+func TestCreateWorktreeFromMergeRequestRejectsHookFromDestination(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	origin, clone := initOriginAndClone(t)
+	lifecycleGit(t, origin, "checkout", "-q", "-b", "hook-from-tree")
+	require.NoError(os.WriteFile(
+		filepath.Join(origin, "setup.sh"),
+		[]byte("#!/bin/sh\nexit 0\n"), 0o755,
+	))
+	lifecycleGit(t, origin, "add", "setup.sh")
+	lifecycleGit(t, origin, "commit", "-qm", "contributor hook")
+	lifecycleGit(t, origin, "checkout", "-q", "main")
+
+	canonicalClone, err := filepath.EvalSymlinks(clone)
+	require.NoError(err)
+	base := filepath.Join(canonicalClone, ".managed-worktrees")
+	require.NoError(os.MkdirAll(base, 0o755))
+	dest := filepath.Join(base, "pr-hook")
+	hookRan := false
+	_, err = CreateWorktreeFromMergeRequest(
+		t.Context(), MergeRequestWorktreeOptions{
+			ProjectRoot:         clone,
+			Branch:              "pr-hook",
+			Path:                dest,
+			Number:              31,
+			HeadBranch:          "hook-from-tree",
+			HeadRepoCloneURL:    origin,
+			ProjectRepoIdentity: identityOfCloneURL(origin),
+			SetupScript:         filepath.Join(dest, "setup.sh"),
+			RunHook: func(context.Context, HookCommand) error {
+				hookRan = true
+				return nil
+			},
+		})
+
+	require.Error(err)
+	assert.ErrorContains(err, "must already exist")
+	assert.False(hookRan)
+	assert.NoDirExists(dest)
+}

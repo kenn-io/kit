@@ -473,6 +473,7 @@ func RemoveWorktreeFromDisk(
 func WorktreeIsDirty(ctx context.Context, path string) (bool, error) {
 	out, err := runLifecycleGit(
 		ctx, path, "status", "--porcelain", "--untracked-files=all",
+		"--ignore-submodules=none",
 	)
 	if err != nil {
 		return false, fmt.Errorf(
@@ -486,7 +487,7 @@ func WorktreeIsDirty(ctx context.Context, path string) (bool, error) {
 func worktreeHasRollbackArtifacts(ctx context.Context, path string) (bool, error) {
 	out, err := runLifecycleGit(
 		ctx, path, "status", "--porcelain", "--untracked-files=all",
-		"--ignored=matching",
+		"--ignored=matching", "--ignore-submodules=none",
 	)
 	if err != nil {
 		return false, fmt.Errorf(
@@ -500,6 +501,11 @@ func worktreeHasRollbackArtifacts(ctx context.Context, path string) (bool, error
 func verifyRemovalTarget(
 	ctx context.Context, root, path, expectedBranch string,
 ) error {
+	if err := verifyRegisteredRemovalTarget(
+		ctx, root, path, expectedBranch,
+	); err != nil {
+		return err
+	}
 	rootCommon, err := lifecycleCommonGitDir(ctx, root)
 	if err != nil {
 		return err
@@ -544,9 +550,16 @@ func verifyRegisteredRemovalTarget(
 	}
 	wantPath := comparableWorktreePath(path)
 	wantBranch := strings.TrimSpace(expectedBranch)
-	for _, entry := range gitworktree.ParsePorcelain(string(out)) {
+	for index, entry := range gitworktree.ParsePorcelain(string(out)) {
 		if comparableWorktreePath(entry.Path) != wantPath {
 			continue
+		}
+		// Git documents the primary worktree as the first porcelain entry.
+		// It is never a valid managed-worktree removal target.
+		if index == 0 {
+			return fmt.Errorf(
+				"refusing to remove primary worktree: %s", path,
+			)
 		}
 		if entry.Branch != wantBranch ||
 			(wantBranch == "" && !entry.Detached) {
@@ -655,6 +668,43 @@ func resolveHookScript(projectRoot, raw string) (string, error) {
 	resolved = filepath.Clean(resolved)
 	if !pathWithinRoot(canonicalizePath(projectRoot), canonicalizePath(resolved)) {
 		return "", fmt.Errorf("%w: %q", ErrHookOutsideProject, raw)
+	}
+	return resolved, nil
+}
+
+// resolveMergeRequestHookScript accepts only a caller-trusted script that
+// already exists outside the not-yet-created merge-request worktree.
+func resolveMergeRequestHookScript(
+	projectRoot, worktreePath, raw string,
+) (string, error) {
+	script, err := resolveHookScript(projectRoot, raw)
+	if err != nil || script == "" {
+		return script, err
+	}
+	resolved, err := filepath.EvalSymlinks(script)
+	if err != nil {
+		return "", fmt.Errorf(
+			"merge request setup hook must already exist: %w", err,
+		)
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", fmt.Errorf(
+			"inspect merge request setup hook: %w", err,
+		)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf(
+			"merge request setup hook must be a regular file",
+		)
+	}
+	if pathWithinRoot(
+		comparableWorktreePath(worktreePath),
+		comparableWorktreePath(resolved),
+	) {
+		return "", fmt.Errorf(
+			"merge request setup hook must be outside its worktree destination",
+		)
 	}
 	return resolved, nil
 }

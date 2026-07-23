@@ -715,6 +715,55 @@ func TestRemoveWorktreeFromDiskRejectsDifferentRepositoryBeforeHook(t *testing.T
 	assert.True(branchExistsInRepo(t, otherRepo, created.Branch))
 }
 
+func TestRemoveWorktreeFromDiskRejectsPrimaryCheckoutBeforeHook(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	repo := initLifecycleRepo(t)
+	marker := filepath.Join(t.TempDir(), "hook-ran")
+	writeHookScript(t, repo, marker, 0)
+
+	_, err := RemoveWorktreeFromDisk(t.Context(), RemoveWorktreeOptions{
+		ProjectRoot:    repo,
+		Path:           repo,
+		Branch:         "main",
+		Force:          true,
+		TeardownScript: "hook.sh",
+	})
+
+	require.Error(err)
+	assert.ErrorContains(err, "primary worktree")
+	assert.NoFileExists(marker)
+	assert.DirExists(repo)
+}
+
+func TestRemoveWorktreeFromDiskRejectsWorktreeSubdirectoryBeforeHook(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	repo := initLifecycleRepo(t)
+	created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Branch:      "subdirectory-target",
+	})
+	require.NoError(err)
+	subdirectory := filepath.Join(created.Path, "nested")
+	require.NoError(os.MkdirAll(subdirectory, 0o755))
+	marker := filepath.Join(t.TempDir(), "hook-ran")
+	writeHookScript(t, repo, marker, 0)
+
+	_, err = RemoveWorktreeFromDisk(t.Context(), RemoveWorktreeOptions{
+		ProjectRoot:    repo,
+		Path:           subdirectory,
+		Branch:         created.Branch,
+		Force:          true,
+		TeardownScript: "hook.sh",
+	})
+
+	require.Error(err)
+	assert.ErrorContains(err, "registration not found")
+	assert.NoFileExists(marker)
+	assert.DirExists(created.Path)
+}
+
 func TestRemoveWorktreeFromDiskAbortsWhenTeardownHookFails(t *testing.T) {
 	assert := assert.New(t)
 	require := Require.New(t)
@@ -918,4 +967,67 @@ func TestWorktreeIsDirtyIncludesUntrackedFilesWhenConfigHidesThem(t *testing.T) 
 
 	require.NoError(err)
 	assert.True(dirty)
+}
+
+func TestDirtyChecksOverrideConfiguredSubmoduleIgnore(t *testing.T) {
+	detectors := []struct {
+		name   string
+		detect func(context.Context, string) (bool, error)
+	}{
+		{name: "ordinary dirty check", detect: WorktreeIsDirty},
+		{name: "rollback artifact check", detect: worktreeHasRollbackArtifacts},
+	}
+	states := []struct {
+		name   string
+		change func(*testing.T, string)
+	}{
+		{
+			name: "modified",
+			change: func(t *testing.T, module string) {
+				Require.NoError(t, os.WriteFile(
+					filepath.Join(module, "tracked.txt"),
+					[]byte("modified\n"), 0o644,
+				))
+			},
+		},
+		{
+			name: "untracked",
+			change: func(t *testing.T, module string) {
+				Require.NoError(t, os.WriteFile(
+					filepath.Join(module, "untracked.txt"),
+					[]byte("new\n"), 0o644,
+				))
+			},
+		},
+	}
+	for _, detector := range detectors {
+		for _, state := range states {
+			t.Run(detector.name+"/"+state.name, func(t *testing.T) {
+				require := Require.New(t)
+				assert := assert.New(t)
+				moduleOrigin := initLifecycleRepo(t)
+				require.NoError(os.WriteFile(
+					filepath.Join(moduleOrigin, "tracked.txt"),
+					[]byte("original\n"), 0o644,
+				))
+				lifecycleGit(t, moduleOrigin, "add", "tracked.txt")
+				lifecycleGit(t, moduleOrigin, "commit", "-qm", "tracked file")
+
+				repo := initLifecycleRepo(t)
+				lifecycleGit(t, repo,
+					"-c", "protocol.file.allow=always",
+					"submodule", "add", "-q", moduleOrigin, "deps/module",
+				)
+				lifecycleGit(t, repo, "commit", "-qam", "add submodule")
+				lifecycleGit(t, repo, "config",
+					"submodule.deps/module.ignore", "all")
+				state.change(t, filepath.Join(repo, "deps", "module"))
+
+				dirty, err := detector.detect(t.Context(), repo)
+
+				require.NoError(err)
+				assert.True(dirty)
+			})
+		}
+	}
 }
