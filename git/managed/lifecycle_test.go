@@ -163,6 +163,31 @@ func TestCreateWorktreeResultRollbackPreservesPreexistingBranch(t *testing.T) {
 	assert.True(branchExistsInRepo(t, repo, "keep-me"))
 }
 
+func TestCreateWorktreeResultRollbackIgnoresMutatedPublicOwnership(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	repo := initLifecycleRepo(t)
+	lifecycleGit(t, repo, "branch", "keep-me")
+	result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Branch:      "owned",
+		Path:        filepath.Join(t.TempDir(), "owned"),
+	})
+	require.NoError(err)
+	ownedPath := result.Path
+	result.Path = filepath.Join(t.TempDir(), "not-owned")
+	result.Branch = "keep-me"
+	result.BranchCreated = false
+
+	remaining, err := result.Rollback(t.Context())
+
+	require.NoError(err)
+	assert.Empty(remaining)
+	assert.NoDirExists(ownedPath)
+	assert.False(branchExistsInRepo(t, repo, "owned"))
+	assert.True(branchExistsInRepo(t, repo, "keep-me"))
+}
+
 func TestCreateWorktreeOnDiskRejectsSymlinkedHookEscape(t *testing.T) {
 	require := Require.New(t)
 	repo := initLifecycleRepo(t)

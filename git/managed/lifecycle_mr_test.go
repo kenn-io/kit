@@ -163,6 +163,35 @@ func TestCreateWorktreeFromMergeRequestMatchesEquivalentLocalRepositories(t *tes
 	}
 }
 
+func TestCreateWorktreeFromMergeRequestCanonicalizesRelativeProjectIdentity(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	origin, clone := initOriginAndClone(t)
+	lifecycleGit(t, origin, "checkout", "-q", "-b", "relative-project")
+	lifecycleGit(t, origin, "commit", "--allow-empty", "-m", "relative project")
+	headSHA := lifecycleGit(t, origin, "rev-parse", "HEAD")
+	lifecycleGit(t, origin, "checkout", "-q", "main")
+	relativeOrigin, err := filepath.Rel(clone, origin)
+	require.NoError(err)
+	require.True(strings.HasPrefix(relativeOrigin, ".."))
+
+	result, err := CreateWorktreeFromMergeRequest(
+		t.Context(), MergeRequestWorktreeOptions{
+			ProjectRoot:         clone,
+			Branch:              "pr-relative-project",
+			Path:                filepath.Join(t.TempDir(), "worktree"),
+			Number:              20,
+			HeadBranch:          "relative-project",
+			HeadRepoCloneURL:    origin,
+			ProjectRepoIdentity: relativeOrigin,
+		})
+
+	require.NoError(err)
+	assert.Equal(headSHA, lifecycleGit(t, result.Path, "rev-parse", "HEAD"))
+	assert.Equal("origin",
+		worktreeConfig(t, result.Path, "branch.pr-relative-project.remote"))
+}
+
 func TestCreateWorktreeFromMergeRequestGitLabRef(t *testing.T) {
 	require := Require.New(t)
 	assert := assert.New(t)
@@ -568,6 +597,47 @@ func TestCreateWorktreeFromMergeRequestInspectsSelectedConfigFiles(t *testing.T)
 		worktreeOnlyConfig(t, dest, "merge.selected.driver"))
 }
 
+func TestCreateWorktreeFromMergeRequestReinspectsConfigAfterMaterialization(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	origin, clone := initOriginAndClone(t)
+	lifecycleGit(t, origin, "checkout", "-q", "-b", "materialized-config")
+	require.NoError(os.WriteFile(
+		filepath.Join(origin, ".gitconfig"),
+		[]byte("[diff \"materialized\"]\n\tcommand = false\n"), 0o644,
+	))
+	require.NoError(os.WriteFile(
+		filepath.Join(origin, ".gitattributes"),
+		[]byte("payload diff=materialized\n"), 0o644,
+	))
+	require.NoError(os.WriteFile(
+		filepath.Join(origin, "payload"), []byte("external\n"), 0o644,
+	))
+	lifecycleGit(t, origin, "add", ".gitconfig", ".gitattributes", "payload")
+	lifecycleGit(t, origin, "commit", "-qm", "materialized config")
+	headSHA := lifecycleGit(t, origin, "rev-parse", "HEAD")
+	lifecycleGit(t, origin, "checkout", "-q", "main")
+
+	runner := gitcmd.New()
+	runner.NullGlobalConfig = false
+	runner.Env = append(
+		gitenv.StripAll(os.Environ()),
+		"GIT_CONFIG_GLOBAL=.gitconfig",
+	)
+	dest := filepath.Join(t.TempDir(), "wt")
+	_, err := CreateWorktreeFromMergeRequest(
+		t.Context(), MergeRequestWorktreeOptions{
+			ProjectRoot: clone, Branch: "pr-materialized-config", Path: dest,
+			Number: 24, HeadBranch: "materialized-config",
+			HeadRepoCloneURL: origin, ProjectRepoIdentity: identityOfCloneURL(origin),
+			ExpectedHeadSHA: headSHA, Runner: runner,
+		})
+
+	require.NoError(err)
+	assert.Equal(safeExternalDiffCommand,
+		worktreeOnlyConfig(t, dest, "diff.materialized.command"))
+}
+
 func TestMergeRequestRepositoriesKeepPathCase(t *testing.T) {
 	assert.False(t, mergeRequestRepositoriesEqual(
 		"https://example.com/Owner/Widget.git",
@@ -742,6 +812,51 @@ func TestCreateWorktreeFromMergeRequestCanonicalizesRelativeForkURL(t *testing.T
 
 	remote := worktreeConfig(t, dest, "branch.pr-10.remote")
 	assert.Equal(fork, lifecycleGit(t, clone, "remote", "get-url", remote))
+}
+
+func TestEnsureFetchRemoteSkipsPushOnlyNameCollision(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	repo := initLifecycleRepo(t)
+	lifecycleGit(t, repo, "config",
+		"remote.fork.pushurl", filepath.Join(t.TempDir(), "push-only.git"))
+	cloneURL := filepath.Join(t.TempDir(), "fork.git")
+
+	name, err := ensureFetchRemote(t.Context(), repo, "fork", cloneURL)
+
+	require.NoError(err)
+	assert.Equal("fork-2", name)
+	assert.Equal(cloneURL,
+		lifecycleGit(t, repo, "config", "--get", "remote.fork-2.url"))
+}
+
+func TestEnsureFetchRemoteDoesNotMutateAfterConfigReadFailure(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	repo := initLifecycleRepo(t)
+	lifecycleGit(t, repo, "remote", "add", "fork",
+		filepath.Join(t.TempDir(), "existing.git"))
+	ctx := withLifecycleExecution(
+		t.Context(), gitcmd.Runner{}, func(
+			ctx context.Context, runner gitcmd.Runner,
+			dir string, args ...string,
+		) ([]byte, error) {
+			if strings.Join(args, " ") ==
+				"config --get remote.fork.url" {
+				return nil, errors.New("config unavailable")
+			}
+			stdout, stderr, err := runner.Run(ctx, dir, nil, args...)
+			return append(stdout, stderr...), err
+		}, nil,
+	)
+
+	_, err := ensureFetchRemote(
+		ctx, repo, "fork", filepath.Join(t.TempDir(), "fork.git"),
+	)
+
+	require.Error(err)
+	assert.ErrorContains(err, "inspect remote fork URL")
+	assert.Empty(worktreeConfig(t, repo, "remote.fork-2.url"))
 }
 
 func TestCanonicalizeMergeRequestCloneURLRejectsEmbeddedSecrets(t *testing.T) {

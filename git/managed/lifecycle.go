@@ -121,18 +121,21 @@ type CreateWorktreeResult struct {
 	Path   string
 	Branch string
 	// BranchCreated reports whether this call created the branch (as
-	// opposed to attaching a pre-existing local branch). Rollback uses it so
-	// a pre-existing branch is never deleted.
-	BranchCreated bool
-	HookRan       bool
-	HookScript    string
-	projectRoot   string
-	runner        gitcmd.Runner
-	runGit        GitRunner
-	runHook       HookRunner
-	branchOID     string
-	headOID       string
-	headRef       string
+	// opposed to attaching a pre-existing local branch). Rollback uses an
+	// immutable private ownership snapshot rather than these report fields.
+	BranchCreated      bool
+	HookRan            bool
+	HookScript         string
+	projectRoot        string
+	runner             gitcmd.Runner
+	runGit             GitRunner
+	runHook            HookRunner
+	ownedPath          string
+	ownedBranch        string
+	ownedBranchCreated bool
+	branchOID          string
+	headOID            string
+	headRef            string
 }
 
 // RollbackResult identifies worktree artifacts that remained after rollback.
@@ -238,23 +241,26 @@ func snapshotCreateWorktreeResult(
 		Path: path, Branch: branch, BranchCreated: branchCreated,
 		projectRoot: root, runner: lifecycleRunner(ctx),
 		runGit: lifecycleGitRunner(ctx), runHook: lifecycleHookRunner(ctx),
-		branchOID: strings.TrimSpace(string(out)),
-		headOID:   headOID,
-		headRef:   headRef,
+		ownedPath: path, ownedBranch: branch, ownedBranchCreated: branchCreated,
+		branchOID: strings.TrimSpace(string(out)), headOID: headOID,
+		headRef: headRef,
 	}, nil
 }
 
 func (r CreateWorktreeResult) rollbackOwned(ctx context.Context) (RollbackResult, error) {
-	remaining := RollbackResult{Path: r.Path}
-	if r.BranchCreated {
-		remaining.Branch = r.Branch
+	path := r.ownedPath
+	branch := r.ownedBranch
+	branchCreated := r.ownedBranchCreated
+	remaining := RollbackResult{Path: path}
+	if branchCreated {
+		remaining.Branch = branch
 	}
-	if strings.TrimSpace(r.projectRoot) == "" || strings.TrimSpace(r.Path) == "" {
+	if strings.TrimSpace(r.projectRoot) == "" || strings.TrimSpace(path) == "" {
 		return remaining, fmt.Errorf(
 			"%w: creation result is incomplete", ErrWorktreeCleanupIncomplete,
 		)
 	}
-	if _, err := os.Stat(r.Path); err != nil {
+	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
 			return remaining, fmt.Errorf(
 				"%w: worktree path disappeared; preserving its branch",
@@ -264,7 +270,7 @@ func (r CreateWorktreeResult) rollbackOwned(ctx context.Context) (RollbackResult
 		return remaining, fmt.Errorf("%w: inspect worktree path: %v",
 			ErrWorktreeCleanupIncomplete, err)
 	}
-	headOID, headRef, err := lifecycleWorktreeHead(ctx, r.Path)
+	headOID, headRef, err := lifecycleWorktreeHead(ctx, path)
 	if err != nil {
 		return remaining, fmt.Errorf("%w: %v", ErrWorktreeCleanupIncomplete, err)
 	}
@@ -274,7 +280,7 @@ func (r CreateWorktreeResult) rollbackOwned(ctx context.Context) (RollbackResult
 			ErrWorktreeCleanupIncomplete,
 		)
 	}
-	branchOID, branchExists, branchErr := lifecycleRefOID(ctx, r.projectRoot, r.Branch)
+	branchOID, branchExists, branchErr := lifecycleRefOID(ctx, r.projectRoot, branch)
 	if branchErr != nil {
 		return remaining, fmt.Errorf("%w: inspect created branch: %v",
 			ErrWorktreeCleanupIncomplete, branchErr)
@@ -285,7 +291,7 @@ func (r CreateWorktreeResult) rollbackOwned(ctx context.Context) (RollbackResult
 			ErrWorktreeCleanupIncomplete,
 		)
 	}
-	dirty, err := worktreeHasRollbackArtifacts(ctx, r.Path)
+	dirty, err := worktreeHasRollbackArtifacts(ctx, path)
 	if err != nil {
 		return remaining, fmt.Errorf("%w: %v", ErrWorktreeCleanupIncomplete, err)
 	}
@@ -296,15 +302,15 @@ func (r CreateWorktreeResult) rollbackOwned(ctx context.Context) (RollbackResult
 		)
 	}
 	if out, err := runLifecycleGit(
-		ctx, r.projectRoot, "worktree", "remove", "--force", r.Path,
+		ctx, r.projectRoot, "worktree", "remove", "--force", path,
 	); err != nil {
 		return remaining, fmt.Errorf("remove created worktree: %w: %s",
 			err, strings.TrimSpace(string(out)))
 	}
 	remaining.Path = ""
-	if r.BranchCreated {
+	if branchCreated {
 		if out, err := runLifecycleGit(
-			ctx, r.projectRoot, "branch", "-D", "--", r.Branch,
+			ctx, r.projectRoot, "branch", "-D", "--", branch,
 		); err != nil {
 			return remaining, fmt.Errorf("delete created branch: %w: %s",
 				err, strings.TrimSpace(string(out)))

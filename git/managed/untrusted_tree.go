@@ -207,8 +207,17 @@ func completeUntrustedTreeIsolation(
 	}
 	keys := append(checkoutKeys, ambientKeys...)
 	drivers := neutralizeAttributeDrivers(keys)
-	isolation.config = append(isolation.config, drivers...)
+	existing := make(map[string]struct{}, len(isolation.config))
+	for _, entry := range isolation.config {
+		existing[strings.ToLower(entry.Key)] = struct{}{}
+	}
 	for _, entry := range drivers {
+		key := strings.ToLower(entry.Key)
+		if _, ok := existing[key]; ok {
+			continue
+		}
+		existing[key] = struct{}{}
+		isolation.config = append(isolation.config, entry)
 		isolation.runner = isolation.runner.WithConfig(entry.Key, entry.Value)
 	}
 	return isolation, nil

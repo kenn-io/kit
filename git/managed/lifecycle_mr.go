@@ -75,7 +75,9 @@ type MergeRequestWorktreeOptions struct {
 	HeadRepoCloneURL string
 	// ExpectedHeadSHA, when set, must match the fetched request head before
 	// any worktree or local branch is created.
-	ExpectedHeadSHA     string
+	ExpectedHeadSHA string
+	// ProjectRepoIdentity is normally a CloneURLIdentity value. Explicit
+	// relative local paths such as ../origin.git resolve against ProjectRoot.
 	ProjectRepoIdentity string
 	// Platform is the project's platform kind ("github", "gitlab", ...);
 	// it selects the remote ref that carries the merge request head when
@@ -144,6 +146,12 @@ func CreateWorktreeFromMergeRequest(
 	}
 	opts.HeadRepoCloneURL, err = canonicalizeMergeRequestCloneURL(
 		root, opts.HeadRepoCloneURL,
+	)
+	if err != nil {
+		return CreateWorktreeResult{}, err
+	}
+	opts.ProjectRepoIdentity, err = canonicalizeMergeRequestProjectIdentity(
+		root, opts.ProjectRepoIdentity,
 	)
 	if err != nil {
 		return CreateWorktreeResult{}, err
@@ -226,6 +234,21 @@ func CreateWorktreeFromMergeRequest(
 		return CreateWorktreeResult{}, errors.Join(err, cleanupErr)
 	}
 	if err := materializeUntrustedTree(ctx, path, isolation); err != nil {
+		_, cleanupErr := rollbackCreatedWorktreeWithResult(
+			context.WithoutCancel(ctx), root, path, branch, true,
+		)
+		return CreateWorktreeResult{}, errors.Join(err, cleanupErr)
+	}
+	isolation, err = completeUntrustedTreeIsolation(ctx, path, isolation)
+	if err != nil {
+		_, cleanupErr := rollbackCreatedWorktreeWithResult(
+			context.WithoutCancel(ctx), root, path, branch, true,
+		)
+		return CreateWorktreeResult{}, errors.Join(err, cleanupErr)
+	}
+	if err := persistUntrustedTreeIsolation(
+		ctx, root, path, isolation,
+	); err != nil {
 		_, cleanupErr := rollbackCreatedWorktreeWithResult(
 			context.WithoutCancel(ctx), root, path, branch, true,
 		)
@@ -455,6 +478,20 @@ func canonicalizeMergeRequestCloneURL(root, raw string) (string, error) {
 	return filepath.Clean(absolute), nil
 }
 
+func canonicalizeMergeRequestProjectIdentity(
+	root, raw string,
+) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "." || value == ".." ||
+		strings.HasPrefix(value, "./") ||
+		strings.HasPrefix(value, "../") ||
+		strings.HasPrefix(value, `.\`) ||
+		strings.HasPrefix(value, `..\`) {
+		return canonicalizeMergeRequestCloneURL(root, value)
+	}
+	return value, nil
+}
+
 func looksLikeSCPRemote(value string) bool {
 	prefix, _, found := strings.Cut(value, ":")
 	return found && prefix != "" &&
@@ -504,13 +541,22 @@ func ensureFetchRemote(
 	ctx context.Context, root, preferredName, cloneURL string,
 ) (string, error) {
 	const maxAttempts = 100
+	out, err := runLifecycleGit(ctx, root, "remote")
+	if err != nil {
+		return "", fmt.Errorf(
+			"list configured remotes: %w: %s",
+			err, strings.TrimSpace(string(out)),
+		)
+	}
+	remoteNames := make(map[string]struct{})
+	for name := range strings.SplitSeq(string(out), "\n") {
+		if name = strings.TrimSpace(name); name != "" {
+			remoteNames[name] = struct{}{}
+		}
+	}
 	candidate := preferredName
 	for attempt := 2; attempt < maxAttempts+2; attempt++ {
-		existing, err := runLifecycleGit(
-			ctx, root, "config", "--get",
-			"remote."+candidate+".url",
-		)
-		if err != nil {
+		if _, exists := remoteNames[candidate]; !exists {
 			// The remote does not exist yet; claim the name.
 			if out, addErr := runLifecycleGit(
 				ctx, root, "remote", "add", candidate, cloneURL,
@@ -521,6 +567,20 @@ func ensureFetchRemote(
 				)
 			}
 			return candidate, nil
+		}
+		existing, err := runLifecycleGit(
+			ctx, root, "config", "--get",
+			"remote."+candidate+".url",
+		)
+		if err != nil {
+			if gitcmd.IsExitCode(err, 1) {
+				candidate = fmt.Sprintf("%s-%d", preferredName, attempt)
+				continue
+			}
+			return "", fmt.Errorf(
+				"inspect remote %s URL: %w: %s", candidate, err,
+				strings.TrimSpace(string(existing)),
+			)
 		}
 		existingURL := strings.TrimSpace(string(existing))
 		if existingURL == cloneURL ||
