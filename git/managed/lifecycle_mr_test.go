@@ -1560,6 +1560,8 @@ func TestCreateWorktreeFromMergeRequestPropagatesTrackingRunnerFailure(
 	origin, clone := initOriginAndClone(t)
 	fork := filepath.Join(t.TempDir(), "fork")
 	lifecycleGit(t, filepath.Dir(origin), "clone", "-q", origin, fork)
+	lifecycleGit(t, fork, "config", "user.email", "t@e.st")
+	lifecycleGit(t, fork, "config", "user.name", "Tester")
 	lifecycleGit(t, fork, "checkout", "-q", "-b", "tracking-failure")
 	lifecycleGit(t, fork, "commit", "--allow-empty", "-m", "fork head")
 	headSHA := lifecycleGit(t, fork, "rev-parse", "HEAD")
