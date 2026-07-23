@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	gitcmd "go.kenn.io/kit/git/cmd"
+	gitremote "go.kenn.io/kit/git/remote"
 )
 
 // ChangeRequestErrorKind classifies failures callers commonly present
@@ -65,8 +66,11 @@ type MergeRequestWorktreeOptions struct {
 	RunGit                GitRunner
 	RunHook               HookRunner
 
-	Number           int
-	HeadBranch       string
+	Number     int
+	HeadBranch string
+	// HeadRepoCloneURL must not contain HTTP credentials, passwords, query
+	// parameters, or fragments. Supply transport authentication through the
+	// configured runner instead.
 	HeadRepoCloneURL string
 	// ExpectedHeadSHA, when set, must match the fetched request head before
 	// any worktree or local branch is created.
@@ -421,6 +425,22 @@ func configureMergeRequestTracking(
 
 func canonicalizeMergeRequestCloneURL(root, raw string) (string, error) {
 	value := strings.TrimSpace(raw)
+	if strings.Contains(value, "://") {
+		parsed, err := url.Parse(value)
+		if err != nil {
+			return "", errors.New("invalid merge request clone URL")
+		}
+		scheme := strings.ToLower(parsed.Scheme)
+		sshUsernameOnly := scheme == "ssh" ||
+			scheme == "git+ssh" || scheme == "ssh+git"
+		_, hasPassword := parsed.User.Password()
+		if hasPassword || parsed.RawQuery != "" || parsed.Fragment != "" ||
+			(parsed.User != nil && !sshUsernameOnly) {
+			return "", errors.New(
+				"merge request clone URL must not contain embedded credentials, query parameters, or fragments",
+			)
+		}
+	}
 	if value == "" || strings.Contains(value, "://") ||
 		looksLikeSCPRemote(value) || filepath.IsAbs(value) {
 		return value, nil
@@ -529,31 +549,7 @@ func sanitizeRemoteName(value string) string {
 // "host/owner/name" for URL and scp-like forms (lowercased host, ".git"
 // stripped), or the trimmed input for anything else (such as local paths).
 func CloneURLIdentity(rawURL string) string {
-	trimmed := strings.TrimSpace(rawURL)
-	if trimmed == "" {
-		return ""
-	}
-	if strings.Contains(trimmed, "://") {
-		parsed, err := url.Parse(trimmed)
-		if err == nil && parsed.Host != "" {
-			path := strings.TrimPrefix(parsed.Path, "/")
-			path = strings.TrimSuffix(path, ".git")
-			if path != "" {
-				return strings.ToLower(parsed.Host) + "/" + path
-			}
-		}
-	}
-	if atIndex := strings.Index(trimmed, "@"); atIndex >= 0 {
-		if colonIndex := strings.Index(trimmed[atIndex:], ":"); colonIndex >= 0 {
-			colonIndex += atIndex
-			host := strings.ToLower(trimmed[atIndex+1 : colonIndex])
-			path := strings.TrimSuffix(trimmed[colonIndex+1:], ".git")
-			if path != "" {
-				return host + "/" + path
-			}
-		}
-	}
-	return trimmed
+	return gitremote.CloneURLIdentity(rawURL)
 }
 
 // ownerFromCloneURL extracts the repository owner segment from a clone

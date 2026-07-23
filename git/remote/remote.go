@@ -157,6 +157,22 @@ func RemoteRepoPath(remoteURL string) string {
 	return repoPath
 }
 
+// CloneURLIdentity normalizes a hosted clone URL to "host/owner/name",
+// preserving repository-path case. Local paths and unrecognized spellings
+// are returned trimmed.
+func CloneURLIdentity(remoteURL string) string {
+	trimmed := strings.TrimSpace(remoteURL)
+	if trimmed == "" {
+		return ""
+	}
+	host := RemoteHost(trimmed)
+	repoPath := RemoteRepoPath(trimmed)
+	if host == "" || repoPath == "" {
+		return trimmed
+	}
+	return NormalizeHost(host) + "/" + repoPath
+}
+
 // IsLocal reports whether remoteURL is a local filesystem remote.
 func IsLocal(remoteURL string) bool {
 	if filepath.VolumeName(remoteURL) != "" || isWindowsDrivePath(remoteURL) {

@@ -51,7 +51,7 @@ func validateUntrustedTreeCheckoutGitVersion(
 		return nil
 	}
 	requirement := "Git 2.39.1 or newer"
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == "windows" || isGitForWindowsVersion(string(out)) {
 		requirement = "Git for Windows 2.53.0.windows.3 or newer"
 	}
 	return &ChangeRequestError{
@@ -73,7 +73,7 @@ func supportsUntrustedTreeCheckoutGitVersion(output, goos string) bool {
 	if major < 2 || major == 2 && (minor < 39 || minor == 39 && patch < 1) {
 		return false
 	}
-	if goos != "windows" {
+	if goos != "windows" && match[4] == "" {
 		return true
 	}
 	if major != 2 || minor != 53 || patch != 0 {
@@ -82,6 +82,13 @@ func supportsUntrustedTreeCheckoutGitVersion(output, goos string) bool {
 	}
 	windowsPatch, err := strconv.Atoi(match[4])
 	return err == nil && windowsPatch >= 3
+}
+
+func isGitForWindowsVersion(output string) bool {
+	match := untrustedTreeGitVersionPattern.FindStringSubmatch(
+		strings.TrimSpace(output),
+	)
+	return len(match) != 0 && match[4] != ""
 }
 
 func validateWorktreeConfigCompatibility(

@@ -29,6 +29,13 @@ func identityOfCloneURL(rawURL string) string {
 	return CloneURLIdentity(rawURL)
 }
 
+func TestCloneURLIdentityNormalizesDefaultHTTPSPort(t *testing.T) {
+	assert.Equal(t,
+		CloneURLIdentity("https://example.com/acme/widget.git"),
+		CloneURLIdentity("https://example.com:443/acme/widget.git"),
+	)
+}
+
 // initOriginAndClone builds an "origin" repository with one commit on main
 // and a clone of it, returning (originDir, cloneDir). The clone is the
 // project checkout merge-request worktrees are created in.
@@ -735,6 +742,32 @@ func TestCreateWorktreeFromMergeRequestCanonicalizesRelativeForkURL(t *testing.T
 
 	remote := worktreeConfig(t, dest, "branch.pr-10.remote")
 	assert.Equal(fork, lifecycleGit(t, clone, "remote", "get-url", remote))
+}
+
+func TestCanonicalizeMergeRequestCloneURLRejectsEmbeddedSecrets(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	for _, rawURL := range []string{
+		"https://user:secret@example.com/acme/widget.git",
+		"https://secret@example.com/acme/widget.git",
+		"https://example.com/acme/widget.git?access_token=secret",
+	} {
+		_, err := canonicalizeMergeRequestCloneURL(t.TempDir(), rawURL)
+
+		require.Error(err)
+		assert.NotContains(err.Error(), "secret")
+		assert.NotContains(err.Error(), rawURL)
+	}
+}
+
+func TestCanonicalizeMergeRequestCloneURLAllowsSSHUsername(t *testing.T) {
+	require := Require.New(t)
+	const rawURL = "ssh://git@example.com/acme/widget.git"
+
+	cloneURL, err := canonicalizeMergeRequestCloneURL(t.TempDir(), rawURL)
+
+	require.NoError(err)
+	assert.Equal(t, rawURL, cloneURL)
 }
 
 // TestCreateWorktreeFromMergeRequestTrackingFetchFailureIsNonFatal: when
