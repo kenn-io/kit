@@ -84,6 +84,51 @@ func supportsUntrustedTreeCheckoutGitVersion(output, goos string) bool {
 	return err == nil && windowsPatch >= 3
 }
 
+func validateWorktreeConfigCompatibility(
+	ctx context.Context, root string,
+) error {
+	if value, present, err := localGitConfigValue(
+		ctx, root, "core.worktree",
+	); err != nil {
+		return err
+	} else if present {
+		return fmt.Errorf(
+			"cannot enable worktree-scoped configuration while shared core.worktree is set to %q",
+			value,
+		)
+	}
+	if value, present, err := localGitConfigValue(
+		ctx, root, "core.bare",
+	); err != nil {
+		return err
+	} else if present && strings.EqualFold(value, "true") {
+		return fmt.Errorf(
+			"cannot enable worktree-scoped configuration while shared core.bare=true",
+		)
+	}
+	return nil
+}
+
+func localGitConfigValue(
+	ctx context.Context, root, key string,
+) (string, bool, error) {
+	args := []string{"config", "--local", "--get", key}
+	if key == "core.bare" {
+		args = []string{"config", "--local", "--type=bool", "--get", key}
+	}
+	out, err := runLifecycleGit(ctx, root, args...)
+	if err == nil {
+		return strings.TrimSpace(string(out)), true, nil
+	}
+	if gitcmd.IsExitCode(err, 1) {
+		return "", false, nil
+	}
+	return "", false, fmt.Errorf(
+		"inspect shared %s configuration: %w: %s",
+		key, err, strings.TrimSpace(string(out)),
+	)
+}
+
 func prepareUntrustedTreeIsolation(
 	ctx context.Context, root string,
 ) (untrustedTreeIsolation, error) {

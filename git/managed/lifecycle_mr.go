@@ -116,6 +116,9 @@ func CreateWorktreeFromMergeRequest(
 			"merge request number is required",
 		)
 	}
+	if err := validateWorktreeConfigCompatibility(ctx, root); err != nil {
+		return CreateWorktreeResult{}, err
+	}
 	if err := validateBranchName(ctx, root, branch); err != nil {
 		return CreateWorktreeResult{}, err
 	}

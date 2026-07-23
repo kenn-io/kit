@@ -338,6 +338,11 @@ func lifecycleWorktreeHead(
 		ctx, path, "symbolic-ref", "--quiet", "HEAD",
 	); refErr == nil {
 		symbolicRef = strings.TrimSpace(string(refOut))
+	} else if !gitcmd.IsExitCode(refErr, 1) {
+		return "", "", fmt.Errorf(
+			"resolve worktree symbolic HEAD: %w: %s",
+			refErr, strings.TrimSpace(string(refOut)),
+		)
 	}
 	return oid, symbolicRef, nil
 }
@@ -843,6 +848,9 @@ func runLifecycleHook(
 		err = cmd.Run()
 	}
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("run lifecycle hook %s: %w", script, ctxErr)
+		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			return &HookError{

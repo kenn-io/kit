@@ -240,6 +240,42 @@ func TestCreateWorktreeFromMergeRequestRejectsChangedHead(t *testing.T) {
 	assert.NoDirExists(dest)
 }
 
+func TestCreateWorktreeFromMergeRequestRejectsIncompatibleCommonConfig(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{name: "core worktree", key: "core.worktree", value: "/other/worktree"},
+		{name: "bare repository", key: "core.bare", value: "true"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			require := Require.New(t)
+			assert := assert.New(t)
+			origin, clone := initOriginAndClone(t)
+			lifecycleGit(t, origin, "checkout", "-q", "-b", "config-check")
+			lifecycleGit(t, origin, "commit", "--allow-empty", "-m", "request head")
+			headSHA := lifecycleGit(t, origin, "rev-parse", "HEAD")
+			lifecycleGit(t, origin, "checkout", "-q", "main")
+			lifecycleGit(t, clone, "config", "--local", test.key, test.value)
+
+			dest := filepath.Join(t.TempDir(), "wt")
+			_, err := CreateWorktreeFromMergeRequest(
+				t.Context(), MergeRequestWorktreeOptions{
+					ProjectRoot: clone, Branch: "pr-config-check", Path: dest,
+					Number: 26, HeadBranch: "config-check",
+					HeadRepoCloneURL:    origin,
+					ProjectRepoIdentity: identityOfCloneURL(origin),
+					ExpectedHeadSHA:     headSHA,
+				})
+
+			require.Error(err)
+			assert.ErrorContains(err, test.key)
+			assert.NoDirExists(dest)
+		})
+	}
+}
+
 func TestCreateWorktreeFromMergeRequestIsolatesUntrustedTreeGitPrograms(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("executable Git hook and filter fixture requires POSIX")

@@ -363,6 +363,28 @@ func TestCreateWorktreeOnDiskReportsSnapshotCleanupFailure(t *testing.T) {
 	assert.ErrorContains(err, "cleanup failed")
 }
 
+func TestLifecycleWorktreeHeadPropagatesSymbolicRefFailure(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	repo := initLifecycleRepo(t)
+	ctx := withLifecycleExecution(
+		t.Context(), gitcmd.Runner{}, func(
+			ctx context.Context, runner gitcmd.Runner, dir string, args ...string,
+		) ([]byte, error) {
+			if len(args) > 0 && args[0] == "symbolic-ref" {
+				return nil, errors.New("symbolic ref failed")
+			}
+			stdout, stderr, err := runner.Run(ctx, dir, nil, args...)
+			return append(stdout, stderr...), err
+		}, nil,
+	)
+
+	_, _, err := lifecycleWorktreeHead(ctx, repo)
+
+	require.Error(err)
+	assert.ErrorContains(err, "symbolic ref failed")
+}
+
 func TestCreateWorktreeOnDiskAttachesExistingBranch(t *testing.T) {
 	assert := assert.New(t)
 	require := Require.New(t)
@@ -718,6 +740,42 @@ func TestRemoveWorktreeFromDiskAbortsWhenTeardownHookFails(t *testing.T) {
 	_, statErr := os.Stat(dest)
 	require.NoError(statErr, "failed teardown leaves the worktree in place")
 	assert.True(branchExistsInRepo(t, repo, "feature"))
+}
+
+func TestLifecycleHookPreservesContextCancellation(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	repo := initLifecycleRepo(t)
+	script := filepath.Join(repo, "hook")
+	require.NoError(os.WriteFile(script, []byte("fixture"), 0o755))
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	err := runLifecycleHook(
+		withLifecycleExecution(ctx, gitcmd.Runner{}, nil, func(
+			_ context.Context, _ HookCommand,
+		) error {
+			cancel()
+			cmd := exec.Command(
+				os.Args[0], "-test.run=^TestLifecycleHookExitHelper$",
+			)
+			cmd.Env = append(os.Environ(), "KIT_TEST_HOOK_EXIT=1")
+			return cmd.Run()
+		}),
+		script, repo, repo, "branch", "", "",
+	)
+
+	require.Error(err)
+	assert.ErrorIs(err, context.Canceled)
+	var hookErr *HookError
+	assert.False(errors.As(err, &hookErr))
+}
+
+func TestLifecycleHookExitHelper(t *testing.T) {
+	if os.Getenv("KIT_TEST_HOOK_EXIT") != "1" {
+		t.Skip("helper process")
+	}
+	os.Exit(7)
 }
 
 func TestRemoveWorktreeFromDiskPrunesWhenPathAlreadyGone(t *testing.T) {
