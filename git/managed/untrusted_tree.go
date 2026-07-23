@@ -209,7 +209,7 @@ func rejectCommandScopeIsolationOverrides(
 func isolationSensitiveConfigKey(key string) bool {
 	lower := strings.ToLower(key)
 	switch lower {
-	case "core.hookspath", "core.fsmonitor",
+	case "core.hookspath", "core.fsmonitor", "core.worktree",
 		"submodule.recurse", "fetch.recursesubmodules":
 		return true
 	}
@@ -462,7 +462,9 @@ func rejectConfigOriginsInsideWorktree(
 		}
 		if pathWithinRoot(
 			lexicalWorktree, lexicalWorktreePath(configPath),
-		) || pathWithinRoot(worktree, comparableWorktreePath(configPath)) {
+		) || pathWithinRoot(
+			worktree, comparableWorktreePath(configPath),
+		) || pathWithinRootByIdentity(worktreePath, configPath) {
 			return fmt.Errorf(
 				"Git configuration inside merge request worktree is not allowed: %s",
 				configPath,
@@ -470,6 +472,23 @@ func rejectConfigOriginsInsideWorktree(
 		}
 	}
 	return nil
+}
+
+func pathWithinRootByIdentity(root, path string) bool {
+	rootInfo, err := os.Stat(root)
+	if err != nil {
+		return false
+	}
+	for current := path; ; current = filepath.Dir(current) {
+		if info, statErr := os.Stat(current); statErr == nil &&
+			os.SameFile(rootInfo, info) {
+			return true
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return false
+		}
+	}
 }
 
 func lexicalWorktreePath(path string) string {

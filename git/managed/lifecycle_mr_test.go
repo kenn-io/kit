@@ -981,6 +981,48 @@ func TestIsolationSensitiveConfigKeyIncludesConfiguredHooks(t *testing.T) {
 	}
 }
 
+func TestCreateWorktreeFromMergeRequestRejectsCommandScopeWorktree(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	origin, clone := initOriginAndClone(t)
+	lifecycleGit(t, origin, "checkout", "-q", "-b", "worktree-override")
+	lifecycleGit(t, origin, "commit", "--allow-empty", "-m", "override")
+	headSHA := lifecycleGit(t, origin, "rev-parse", "HEAD")
+	lifecycleGit(t, origin, "checkout", "-q", "main")
+	external := t.TempDir()
+	marker := filepath.Join(external, "keep")
+	require.NoError(os.WriteFile(marker, []byte("preserve"), 0o600))
+	runner := gitcmd.New().WithConfig("core.worktree", external)
+	dest := filepath.Join(t.TempDir(), "wt")
+
+	_, err := CreateWorktreeFromMergeRequest(
+		t.Context(), MergeRequestWorktreeOptions{
+			ProjectRoot: clone, Branch: "pr-worktree-override", Path: dest,
+			Number: 37, HeadBranch: "worktree-override",
+			HeadRepoCloneURL: origin, ProjectRepoIdentity: identityOfCloneURL(origin),
+			ExpectedHeadSHA: headSHA, Runner: runner,
+		})
+
+	require.Error(err)
+	assert.ErrorContains(err,
+		"command-scope Git configuration cannot be isolated")
+	assert.FileExists(marker)
+	assert.NoDirExists(dest)
+}
+
+func TestPathWithinRootByIdentityRecognizesFilesystemAliases(t *testing.T) {
+	root := t.TempDir()
+	child := filepath.Join(root, "config")
+	Require.NoError(t, os.WriteFile(child, []byte("[safe]\n"), 0o600))
+	assert.True(t, pathWithinRootByIdentity(root, child))
+
+	caseAlias := strings.ToUpper(child)
+	if _, err := os.Stat(caseAlias); err != nil {
+		t.Skip("temporary filesystem is case-sensitive")
+	}
+	assert.True(t, pathWithinRootByIdentity(root, caseAlias))
+}
+
 func TestSectionLevelConfigKeysDoNotNameSubsections(t *testing.T) {
 	assert.Empty(t, configuredGitHooks([]string{
 		"hook.command",
