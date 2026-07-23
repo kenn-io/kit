@@ -44,54 +44,6 @@ func TestRunnerCommandUsesDefensiveEnvironment(t *testing.T) {
 	}
 }
 
-func TestRunnerCommandDisablesCredentialAndSSHPrompts(t *testing.T) {
-	tests := []struct {
-		name        string
-		environment []string
-		wantCommand string
-		wantVariant string
-	}{
-		{name: "OpenSSH", environment: []string{"GIT_SSH_COMMAND=ssh -i key"}, wantCommand: "ssh -oBatchMode=yes -i key"},
-		{name: "OpenSSH override", environment: []string{"GIT_SSH_COMMAND=ssh -oBatchMode=no -i key"}, wantCommand: "ssh -oBatchMode=yes -oBatchMode=no -i key"},
-		{name: "explicit plink", environment: []string{"GIT_SSH_COMMAND=C:\\PuTTY\\plink.exe", "GIT_SSH_VARIANT=plink"}, wantCommand: "C:\\PuTTY\\plink.exe -batch", wantVariant: "plink"},
-		{name: "renamed plink", environment: []string{"GIT_SSH_COMMAND=C:\\tools\\corp-ssh.exe", "GIT_SSH_VARIANT=plink"}, wantCommand: "C:\\tools\\corp-ssh.exe -batch", wantVariant: "plink"},
-		{name: "last duplicate wins", environment: []string{"GIT_SSH_COMMAND=ssh -i old", "GIT_SSH_VARIANT=ssh", "GIT_SSH_COMMAND=C:\\tools\\corp-ssh.exe", "GIT_SSH_VARIANT=plink"}, wantCommand: "C:\\tools\\corp-ssh.exe -batch", wantVariant: "plink"},
-		{name: "detected plink", environment: []string{"GIT_SSH_COMMAND=/usr/local/bin/plink"}, wantCommand: "/usr/local/bin/plink -batch"},
-		{name: "quoted OpenSSH", environment: []string{"GIT_SSH_COMMAND='/opt/Open SSH/ssh' -i key"}, wantCommand: "'/opt/Open SSH/ssh' -oBatchMode=yes -i key"},
-		{name: "quoted Windows OpenSSH", environment: []string{`GIT_SSH_COMMAND="C:\Program Files\OpenSSH\ssh.exe" -i key`}, wantCommand: `"C:\Program Files\OpenSSH\ssh.exe" -oBatchMode=yes -i key`},
-		{name: "assignment-prefixed OpenSSH", environment: []string{"GIT_SSH_COMMAND=FOO=bar ssh -i key"}, wantCommand: "FOO=bar ssh -oBatchMode=yes -i key"},
-		{name: "env-prefixed OpenSSH", environment: []string{"GIT_SSH_COMMAND=env FOO=bar ssh -i key"}, wantCommand: "env FOO=bar ssh -oBatchMode=yes -i key"},
-		{name: "command-wrapped OpenSSH", environment: []string{"GIT_SSH_COMMAND=command -- ssh -i key"}, wantCommand: "command -- ssh -oBatchMode=yes -i key"},
-		{name: "unsupported SSH wrapper", environment: []string{"GIT_SSH_COMMAND=sudo ssh -i key", "GIT_SSH_VARIANT=ssh"}, wantCommand: rejectedNonInteractiveSSHCommand, wantVariant: "ssh"},
-		{name: "trailing shell command", environment: []string{"GIT_SSH_COMMAND=ssh -i key; touch marker"}, wantCommand: rejectedNonInteractiveSSHCommand},
-		{name: "command substitution", environment: []string{`GIT_SSH_COMMAND=ssh -i "$(touch marker)"`}, wantCommand: rejectedNonInteractiveSSHCommand},
-		{name: "newline command", environment: []string{"GIT_SSH_COMMAND=ssh -i key\ntouch marker"}, wantCommand: rejectedNonInteractiveSSHCommand},
-		{name: "OpenSSH from GIT_SSH", environment: []string{"GIT_SSH=/usr/local/bin/ssh"}, wantCommand: "'/usr/local/bin/ssh' -oBatchMode=yes", wantVariant: "ssh"},
-		{name: "plink from GIT_SSH", environment: []string{"GIT_SSH=C:\\Program Files\\PuTTY\\plink.exe"}, wantCommand: "'C:\\Program Files\\PuTTY\\plink.exe' -batch", wantVariant: "plink"},
-		{name: "unknown", environment: []string{"GIT_SSH_COMMAND=custom-transport"}, wantCommand: "custom-transport"},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			runner := New()
-			runner.Env = test.environment
-			cmd := runner.Command(context.Background(), t.TempDir(), "status")
-
-			sshCommand, _ := envValue(cmd.Env, "GIT_SSH_COMMAND")
-			sshVariant, hasSSHVariant := envValue(cmd.Env, "GIT_SSH_VARIANT")
-			terminalPrompt, _ := envValue(cmd.Env, "GIT_TERMINAL_PROMPT")
-			credentialPrompt, _ := envValue(cmd.Env, "GCM_INTERACTIVE")
-			askpass, _ := envValue(cmd.Env, "SSH_ASKPASS_REQUIRE")
-			assert.Equal(t, test.wantCommand, sshCommand)
-			assert.Equal(t, test.wantVariant, sshVariant)
-			assert.Equal(t, test.wantVariant != "", hasSSHVariant)
-			assert.Equal(t, "0", terminalPrompt)
-			assert.Equal(t, "Never", credentialPrompt)
-			assert.Equal(t, "never", askpass)
-		})
-	}
-}
-
 func TestNullGlobalConfigPathIsReadableEmptyFile(t *testing.T) {
 	// Regression test: GIT_CONFIG_GLOBAL must point at a real, readable, empty
 	// file rather than os.DevNull. On Windows os.DevNull is "NUL", which some
@@ -193,27 +145,7 @@ func TestReadSafeDirectoriesBoundsProbeRuntime(t *testing.T) {
 	got := readSafeDirectories(context.Background(), env, "")
 
 	assert.Empty(t, got)
-	assert.Less(t, time.Since(start), 3*time.Second, "safe.directory probes are best-effort and must not stall git commands")
-}
-
-func TestRunnerTreatsSuccessfulRootWithRetainedOutputAsSuccess(t *testing.T) {
-	binDir := buildOutputRetainingGit(t)
-	marker := filepath.Join(t.TempDir(), "descendant-finished")
-	pathEnv := binDir + string(os.PathListSeparator) + os.Getenv("PATH")
-	t.Setenv("PATH", pathEnv)
-	runner := New()
-	runner.DisableSafeDirectoryForward = true
-	runner.Env = append(os.Environ(), "PATH="+pathEnv,
-		"KIT_GITCMD_RETAINED_OUTPUT_MARKER="+marker)
-
-	stdout, _, err := runner.Run(t.Context(), "", nil, "version")
-
-	require.NoError(t, err)
-	assert.Equal(t, "root exited\n", string(stdout))
-	require.Eventually(t, func() bool {
-		_, statErr := os.Stat(marker)
-		return statErr == nil
-	}, 5*time.Second, 10*time.Millisecond)
+	assert.Less(t, time.Since(start), time.Second, "safe.directory probes are best-effort and must not stall git commands")
 }
 
 func TestReadSafeDirectoriesConditionalInclude(t *testing.T) {
@@ -548,47 +480,6 @@ import "time"
 
 func main() {
 	time.Sleep(10 * time.Second)
-}
-`), 0o600))
-	cmd := exec.Command("go", "build", "-o", exePath, srcPath)
-	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, string(out))
-	return binDir
-}
-
-func buildOutputRetainingGit(t *testing.T) string {
-	t.Helper()
-	binDir := t.TempDir()
-	exeName := "git"
-	if runtime.GOOS == "windows" {
-		exeName += ".exe"
-	}
-	exePath := filepath.Join(binDir, exeName)
-	srcPath := filepath.Join(t.TempDir(), "main.go")
-	require.NoError(t, os.WriteFile(srcPath, []byte(`package main
-
-import (
-	"fmt"
-	"os"
-	"os/exec"
-	"time"
-)
-
-func main() {
-	marker := os.Getenv("KIT_GITCMD_RETAINED_OUTPUT_MARKER")
-	if os.Getenv("KIT_GITCMD_RETAINED_OUTPUT_CHILD") == "1" {
-		time.Sleep(1500 * time.Millisecond)
-		_ = os.WriteFile(marker, []byte("done"), 0600)
-		return
-	}
-	child := exec.Command(os.Args[0])
-	child.Env = append(os.Environ(), "KIT_GITCMD_RETAINED_OUTPUT_CHILD=1")
-	child.Stdout = os.Stdout
-	child.Stderr = os.Stderr
-	if err := child.Start(); err != nil {
-		os.Exit(1)
-	}
-	fmt.Println("root exited")
 }
 `), 0o600))
 	cmd := exec.Command("go", "build", "-o", exePath, srcPath)

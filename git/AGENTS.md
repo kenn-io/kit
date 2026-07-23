@@ -2,114 +2,46 @@
 
 ## Scope
 
-The `git/` tree provides reusable helpers for automation that needs to inspect,
-mutate, or isolate git repositories. Keep these packages about git mechanics,
-not about one product's workflow.
+The `git/` tree provides reusable helpers for developer tools that inspect and
+mutate Git repositories. Keep these packages about Git mechanics rather than a
+specific application or forge workflow.
 
 ## Package Rules
 
-- Prefer `gitcmd.New()` for git subprocesses so automation stays insulated from
-  inherited repository state, global config, prompts, and credential leaks.
+- Prefer `gitcmd.New()` for Git subprocesses so callers get consistent
+  environment and prompt handling.
 - Do not call `exec.Command("git", ...)` directly in package code unless the
   direct call is the behavior being tested.
-- Pass `context.Context` through git operations that can block.
-- Keep best-effort helper probes bounded; they must not stall the caller's real
-  git command when optional ambient state is slow or broken.
-- Return git failures with captured stderr. Do not hide git's message behind a
+- Pass `context.Context` through Git operations that can block.
+- Return Git failures with captured stderr. Do not hide Git's message behind a
   generic error.
-- Use `gitlock` around mutations that can race with another process touching
-  the same repository. Derive repository lock keys from the common Git
-  directory's filesystem identity so case and path aliases cannot split locks.
-- Keep remote and clone-path validation in `gitremote`; do not duplicate that
-  parsing in callers or sibling packages.
-- Do not assume GitHub-only identity. Keep host, owner, and repository name
-  handling explicit.
-- `git/managed` is the shared named-worktree lifecycle. Extend that package
-  instead of creating app-local worktree creation, merge-request import,
+- Keep remote and clone-path parsing in `gitremote`; do not duplicate it in
+  sibling packages.
+- Do not assume GitHub-only identity. Keep host, owner, repository name, and
+  provider-specific merge-request refs explicit.
+- `git/managed` owns the shared named-worktree lifecycle. Extend it instead of
+  creating application-local worktree creation, merge-request import,
   tracking, hook, or rollback implementations.
-- Keep managed worktree rollback ownership-conservative: path identity, branch
-  OID, symbolic HEAD, and worktree HEAD OID must still match their creation
-  snapshots before destructive cleanup. If a complete creation snapshot cannot
-  be obtained, preserve the artifacts and report incomplete cleanup. Created
-  branches must remain direct refs and be deleted with no-dereference semantics.
-- Default managed worktree bases must stay restricted to the current user on
-  Unix and Windows. Callers opt into shared permissions with an explicit base.
-- Lifecycle hooks must resolve to an existing regular file inside the project
-  before worktree mutation and retain the same target and file identity at
-  execution time. Hook-isolation directories must be private to the current
-  user on Unix and Windows.
-- Conservative rollback must include ignored and untracked artifacts when it
-  decides whether a managed worktree still matches its creation snapshot.
-- Interactive Git commands must retain foreground terminal access; automated
-  Git and lifecycle hooks must keep bounded process-tree cancellation, and hook
-  cancellation or an unsuccessful root exit must terminate the spawned tree
-  rather than only its parent.
-  Commands passed through the exported process-tree cancellation helpers must
-  be created with `exec.CommandContext` because platform policies install
-  `exec.Cmd.Cancel`.
-- Contributor-controlled checkout requires Git 2.39.1 or newer on every
-  platform. Windows additionally requires Git for Windows
-  2.53.0.windows.3 or newer; keep the full Windows patch level in version
-  validation because a base `2.53.0` version is not sufficient. Enforce this
-  in the public isolated-checkout path before worktree mutation, not only in
-  change-request orchestration.
-- When an expected head OID is the project-remote provenance anchor, every fetch
-  through that boundary must enforce the stored OID before publishing a
-  destination ref. Publish merge-request heads only under a request-numbered
-  Kit namespace, reject symbolic or case-alias destinations, and terminate Git
-  fetch options before remote/ref arguments. Fetch only through remote names
-  previously validated by the managed boundary, snapshot fetch and push URLs
-  independently, revalidate each effective URL immediately before its matching
-  operation, and stage fetched OIDs in operation-private Kit refs rather than
-  the repository-wide `FETCH_HEAD`. Windows lifecycle scripts must
-  honor their declared shebang interpreter regardless of file extension and
-  preserve native absolute interpreter paths. Private hook snapshots must keep
-  owner-write permission on Windows so successful execution does not leak a
-  read-only temporary file.
-- Safe push routing is transactional at the public method boundary. Snapshot
-  affected worktree configuration and restore it after any routing write or
-  final-validation failure; persistent Git execution isolation may remain
-  installed. Revalidate captured ownership before compensating restoration and
-  preserve the configuration when ownership changed. Managed contributor
-  worktrees must retain worktree-scoped hook, fsmonitor, and filter isolation
-  for their lifetime, and retries may recognize only those exact package-owned
-  safe settings. Verify their captured path and repository ownership before
-  isolation writes and again immediately before push-routing writes.
-- Dirty-state checks for ordinary worktrees must retain configured filter and
-  fsmonitor semantics. Use filter-disabled status only for worktrees that were
-  materialized with those filters disabled.
-- Before teardown hooks or destructive removal, verify that the path is still
-  the registered worktree for the expected repository and branch. Preserve
-  replacement paths and repositories, require detached worktrees to remain
-  detached, and report incomplete cleanup when ownership changed. Dirty-state
-  checks must explicitly include untracked files regardless of repository
-  status configuration. Conservative rollback must revalidate exact HEAD,
-  branch ref state, and artifacts immediately before removal and must not use
-  forced worktree removal while preserving changes. A transient removal may be
-  retried only after the complete ownership boundary is revalidated before
-  each attempt.
-- Windows Job Objects may kill a Git process tree on cancellation or failure,
-  but successful Git commands—including roots that return `exec.ErrWaitDelay`
-  because a descendant retained output handles—must preserve those descendants.
-  Failed and cancelled jobs must finish terminating their descendants before
-  lifecycle code can begin filesystem cleanup.
-- Keep transport classification platform-aware: drive-letter syntax is local
-  only on Windows, while identity parsers may recognize that syntax on any host.
-- Canonicalize relative local clone paths against the project root before
-  deriving repository identity or persisting a remote. Configure change-request
-  tracking only when the provider supplied an explicit source branch.
-- Preserve effective remote URL bytes exactly: reject leading or trailing
-  whitespace before validation and compare the same untrimmed value Git will
-  use. Treat normalized hosted identities separately from local clone paths;
-  filesystem contents beneath a checkout must not change that classification.
-- If a managed worktree path disappears, preserve and report its exact stale
-  registration as incomplete cleanup even when the attached branch predated
-  the lifecycle operation.
+- The managed lifecycle operates on repositories, remotes, Git configuration,
+  and lifecycle hooks the user trusts. It is not a sandbox for hostile
+  repositories, hostile Git configuration, or malicious same-user processes.
+  Callers that need that boundary must provide an OS or container sandbox.
+- Expected merge-request head SHAs are correctness anchors: verify them before
+  creating the local branch or materializing a worktree.
+- Rollback after a completed create is conservative about ordinary user work:
+  preserve a dirty worktree or an advanced branch and report
+  `ErrWorktreeCleanupIncomplete`. Cleanup performed immediately after an
+  in-operation failure may force-remove artifacts created by that operation.
+- Configure merge-request tracking in worktree-scoped Git configuration so
+  removing a worktree does not leave branch routing behind in shared config.
+- Lifecycle hooks must resolve inside the project tree. Applications may
+  supply Git and hook runners to retain their process limits and
+  platform-specific execution policy.
 
 ## Tests
 
-- Use `git/test` fixtures instead of the user's real repositories.
-- Tests must not read or mutate global git config. Set needed identity/config
-  inside the fixture.
-- Use temporary directories and clean them with test cleanup hooks.
-- Prefer testify assertions for new or changed checks.
+- Use `git/test` fixtures or temporary local repositories instead of the
+  user's repositories.
+- Tests must not read or mutate global Git config. Set needed identity and
+  configuration inside the fixture.
+- Prefer testify assertions for new and changed checks.

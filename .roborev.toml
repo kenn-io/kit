@@ -14,6 +14,21 @@ code actually does not compile, the toolchain will fail before the PR can land.
 Focus reviews on logic, architecture, behavior, security boundaries, and test
 coverage for behavior. Trust the build for compilability.
 
+## Managed Git trust boundary
+
+`git/managed` is for interactive developer tools operating on repositories,
+remotes, Git configuration, hooks, and same-user filesystem state the user has
+chosen to trust. It deliberately uses ordinary Git checkout, filter, fsmonitor,
+hook, credential, and transport behavior. Expected head SHAs protect against
+stale request metadata; they are not a hostile-repository sandbox.
+
+Review correctness, accidental data loss, noninteractive cancellation, and
+unexpected disclosure introduced by Kit itself. Do not require this package to
+neutralize trusted ambient Git configuration, enforce transport or Git-version
+security policy, defend against malicious same-user replacement races, or
+contain code execution from a hostile repository. Those boundaries belong in a
+caller-supplied OS or container sandbox.
+
 ## gitcmd safe.directory forwarding
 
 `gitcmd.Runner`'s isolation flags (`StripEnv`, `NullGlobalConfig`,

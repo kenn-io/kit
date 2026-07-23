@@ -3,22 +3,15 @@ package managedworktree
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
-	"slices"
 	"strings"
-	"sync"
-	"time"
 
 	gitcmd "go.kenn.io/kit/git/cmd"
-	gitworktree "go.kenn.io/kit/git/worktree"
-	"go.kenn.io/kit/safefileio"
 )
 
 // Sentinel errors for worktree lifecycle failures the HTTP layer maps to
@@ -45,9 +38,8 @@ var (
 	ErrHookOutsideProject = errors.New(
 		"lifecycle hook script resolves outside the project",
 	)
-	// ErrWorktreeCleanupIncomplete reports that destructive cleanup was not
-	// attempted because the operation could not establish or revalidate
-	// ownership of the worktree artifacts.
+	// ErrWorktreeCleanupIncomplete reports that rollback preserved a worktree
+	// because it contains changes or its branch advanced after creation.
 	ErrWorktreeCleanupIncomplete = errors.New("worktree cleanup incomplete")
 )
 
@@ -96,9 +88,7 @@ type CreateWorktreeOptions struct {
 	// BaseDir (default "<ProjectRoot>-worktrees") plus the slash-slugged
 	// branch name.
 	Path string
-	// BaseDir overrides the derivation base used when Path is empty. The
-	// default base is restricted to the current user; an explicit BaseDir is
-	// caller-owned and is the opt-in for a shared or otherwise custom base.
+	// BaseDir overrides the derivation base used when Path is empty.
 	BaseDir string
 	// BaseRef, when set, forces creation of a new Branch starting at this
 	// ref (git worktree add <path> -b <branch> -- <ref>). When empty, an
@@ -123,14 +113,6 @@ type CreateWorktreeOptions struct {
 	// platform-specific command policy. Their zero values execute directly.
 	RunGit  GitRunner
 	RunHook HookRunner
-	// IsolatedCheckout prepares the worktree without checkout, calls
-	// BeforeCheckout, then materializes files with hooks, filters, and fsmonitor
-	// disabled.
-	IsolatedCheckout bool
-	// NoTrack prevents Git from implicitly configuring upstream tracking when
-	// BaseRef names a remote-tracking branch.
-	NoTrack        bool
-	BeforeCheckout func(context.Context, string) error
 }
 
 // CreateWorktreeResult reports what CreateWorktreeOnDisk did.
@@ -138,23 +120,18 @@ type CreateWorktreeResult struct {
 	Path   string
 	Branch string
 	// BranchCreated reports whether this call created the branch (as
-	// opposed to attaching a pre-existing local branch). Callers rolling
-	// the git work back must use this result's Rollback method so a
-	// pre-existing branch is never force-deleted.
-	BranchCreated   bool
-	HookRan         bool
-	HookScript      string
-	projectRoot     string
-	runner          gitcmd.Runner
-	runGit          GitRunner
-	runHook         HookRunner
-	pathInfo        os.FileInfo
-	branchOID       string
-	headOID         string
-	headRef         string
-	materialized    bool
-	filtersIsolated bool
-	snapshotted     bool
+	// opposed to attaching a pre-existing local branch). Rollback uses it so
+	// a pre-existing branch is never deleted.
+	BranchCreated bool
+	HookRan       bool
+	HookScript    string
+	projectRoot   string
+	runner        gitcmd.Runner
+	runGit        GitRunner
+	runHook       HookRunner
+	branchOID     string
+	headOID       string
+	headRef       string
 }
 
 // RollbackResult identifies worktree artifacts that remained after rollback.
@@ -165,23 +142,8 @@ type RollbackResult struct {
 
 // Rollback unwinds the worktree represented by this creation result.
 func (r CreateWorktreeResult) Rollback(ctx context.Context) (RollbackResult, error) {
-	if !r.snapshotted {
-		remaining := RollbackResult{Path: r.Path}
-		if r.BranchCreated {
-			remaining.Branch = r.Branch
-		}
-		return remaining, fmt.Errorf(
-			"%w: ownership snapshot unavailable; preserving worktree artifacts",
-			ErrWorktreeCleanupIncomplete,
-		)
-	}
 	ctx = withLifecycleExecution(ctx, r.runner, r.runGit, r.runHook)
-	ctx, unlock, err := acquireRepositoryMutationLock(ctx, r.projectRoot)
-	if err != nil {
-		return RollbackResult{Path: r.Path, Branch: r.Branch}, err
-	}
-	remaining, rollbackErr := r.rollbackOwned(ctx, true)
-	return remaining, errors.Join(rollbackErr, unlock())
+	return r.rollbackOwned(ctx)
 }
 
 // CreateWorktreeOnDisk performs the git side of worktree creation: it
@@ -193,32 +155,12 @@ func (r CreateWorktreeResult) Rollback(ctx context.Context) (RollbackResult, err
 func CreateWorktreeOnDisk(
 	ctx context.Context, opts CreateWorktreeOptions,
 ) (CreateWorktreeResult, error) {
-	root, err := absRequired(opts.ProjectRoot, "project root")
-	if err != nil {
-		return CreateWorktreeResult{}, err
-	}
-	ctx, unlock, err := acquireRepositoryMutationLock(ctx, root)
-	if err != nil {
-		return CreateWorktreeResult{}, err
-	}
-	result, createErr := createWorktreeOnDisk(ctx, opts)
-	return result, errors.Join(createErr, unlock())
-}
-
-func createWorktreeOnDisk(
-	ctx context.Context, opts CreateWorktreeOptions,
-) (CreateWorktreeResult, error) {
 	ctx = withLifecycleExecution(ctx, opts.Runner, opts.RunGit, opts.RunHook)
 	root, branch, err := requireRootAndBranch(
 		opts.ProjectRoot, opts.Branch,
 	)
 	if err != nil {
 		return CreateWorktreeResult{}, err
-	}
-	if opts.IsolatedCheckout {
-		if err := validateIsolatedCheckoutGitVersion(ctx, root); err != nil {
-			return CreateWorktreeResult{}, err
-		}
 	}
 	if err := validateBranchName(ctx, root, branch); err != nil {
 		return CreateWorktreeResult{}, err
@@ -248,393 +190,153 @@ func createWorktreeOnDisk(
 	default:
 		args = []string{"worktree", "add", "-b", branch, path}
 	}
-	if opts.IsolatedCheckout {
-		args = slices.Insert(args, 2, "--no-checkout")
-	}
-	if opts.NoTrack {
-		args = slices.Insert(args, 2, "--no-track")
-	}
-	var out []byte
-	if opts.IsolatedCheckout {
-		runner, runnerErr := lifecycleHooksRunner(ctx)
-		if runnerErr != nil {
-			return CreateWorktreeResult{}, runnerErr
-		}
-		out, err = runLifecycleGitWithRunner(ctx, runner, root, args...)
-	} else {
-		out, err = runLifecycleGit(ctx, root, args...)
-	}
-	if err != nil {
+	if out, err := runLifecycleGit(ctx, root, args...); err != nil {
 		return CreateWorktreeResult{}, classifyWorktreeGitError(out, err)
 	}
 
 	result, err := snapshotCreateWorktreeResult(
-		ctx, root, path, branch, !branchExisted, !opts.IsolatedCheckout,
+		ctx, root, path, branch, !branchExisted,
 	)
 	if err != nil {
-		return result, errors.Join(err, fmt.Errorf(
-			"%w: ownership snapshot unavailable; preserving worktree at %s",
-			ErrWorktreeCleanupIncomplete, path,
-		))
+		rollbackCreatedWorktree(context.WithoutCancel(ctx), root, path, branch, !branchExisted)
+		return CreateWorktreeResult{}, err
 	}
-	result.filtersIsolated = opts.IsolatedCheckout
-	if opts.IsolatedCheckout {
-		if opts.BeforeCheckout != nil {
-			if err := opts.BeforeCheckout(ctx, path); err != nil {
-				_, cleanupErr := result.rollbackOwned(context.WithoutCancel(ctx), true)
-				return result, errors.Join(fmt.Errorf("pre-checkout validation: %w", err), cleanupErr)
-			}
-		}
-		result.materialized = true
-		if err := checkoutIsolated(ctx, path); err != nil {
-			_, cleanupErr := result.Rollback(context.WithoutCancel(ctx))
-			return result, errors.Join(err, cleanupErr)
-		}
-	}
-	if hookScript.path != "" {
+	if hookScript != "" {
 		hookErr := runLifecycleHook(
 			ctx, hookScript, root, path, branch, opts.WorktreeName,
 			opts.HookEnvironmentPrefix,
 		)
 		if hookErr != nil {
-			_, cleanupErr := result.rollbackOwned(
-				context.WithoutCancel(ctx), false,
+			_, cleanupErr := rollbackCreatedWorktreeWithResult(
+				context.WithoutCancel(ctx), root, path, branch, !branchExisted,
 			)
 			return result, errors.Join(hookErr, cleanupErr)
 		}
 		result.HookRan = true
-		result.HookScript = hookScript.requested
+		result.HookScript = hookScript
 	}
 	return result, nil
-}
-
-func validateIsolatedCheckoutGitVersion(ctx context.Context, root string) error {
-	output, err := runLifecycleGit(ctx, root, "version")
-	if err != nil {
-		return fmt.Errorf("determine Git version for isolated checkout: %w", err)
-	}
-	if !supportsChangeRequestGitVersion(string(output), runtime.GOOS) {
-		return errors.New("isolated checkout requires " + safeCheckoutGitVersionRequirement(runtime.GOOS))
-	}
-	return nil
 }
 
 func snapshotCreateWorktreeResult(
 	ctx context.Context,
 	root, path, branch string,
-	branchCreated, materialized bool,
+	branchCreated bool,
 ) (CreateWorktreeResult, error) {
-	result := CreateWorktreeResult{
+	out, err := runLifecycleGit(ctx, root, "rev-parse", "--verify", "refs/heads/"+branch+"^{commit}")
+	if err != nil {
+		return CreateWorktreeResult{}, fmt.Errorf("resolve created worktree branch: %w", err)
+	}
+	headOID, headRef, err := lifecycleWorktreeHead(ctx, path)
+	if err != nil {
+		return CreateWorktreeResult{}, err
+	}
+	return CreateWorktreeResult{
 		Path: path, Branch: branch, BranchCreated: branchCreated,
 		projectRoot: root, runner: lifecycleRunner(ctx),
 		runGit: lifecycleGitRunner(ctx), runHook: lifecycleHookRunner(ctx),
-		materialized: materialized,
-	}
-	pathInfo, err := os.Lstat(path)
-	if err != nil {
-		return result, fmt.Errorf("inspect created worktree path: %w", err)
-	}
-	result.pathInfo = pathInfo
-	out, err := runLifecycleGit(ctx, root, "rev-parse", "--verify", "refs/heads/"+branch+"^{commit}")
-	if err != nil {
-		return result, fmt.Errorf("resolve created worktree branch: %w", err)
-	}
-	result.branchOID = strings.TrimSpace(string(out))
-	headRef, headOID, err := lifecycleWorktreeHead(ctx, path)
-	if err != nil {
-		return result, fmt.Errorf("resolve created worktree HEAD: %w", err)
-	}
-	result.headOID = headOID
-	result.headRef = headRef
-	result.snapshotted = true
-	return result, nil
+		branchOID: strings.TrimSpace(string(out)),
+		headOID:   headOID,
+		headRef:   headRef,
+	}, nil
 }
 
-func (r CreateWorktreeResult) rollbackOwned(
-	ctx context.Context, preserveChanges bool,
-) (RollbackResult, error) {
-	remaining := RollbackResult{}
-	var errs []error
-	preserveBranch := false
-	pathOwned := sameLifecycleFile(r.Path, r.pathInfo)
-	pathPresent := lifecyclePathExists(r.Path)
-	branchOID, branchExists, branchDirect, branchErr := lifecycleRefState(ctx, r.projectRoot, r.Branch)
-	if branchErr != nil {
-		errs = append(errs, fmt.Errorf("inspect created branch: %w", branchErr))
-	}
-	var headRef, headOID string
-	var headErr error
-	if pathPresent && pathOwned {
-		headRef, headOID, headErr = lifecycleWorktreeHead(ctx, r.Path)
-	}
-
-	switch {
-	case pathPresent && !pathOwned:
-		remaining.Path = r.Path
-		errs = append(errs, errors.New("created worktree path ownership changed; preserving it"))
-	case !pathPresent:
-		remaining.Path = r.Path
-		preserveBranch = true
-		errs = append(errs, errors.New(
-			"created worktree path disappeared; preserving its registration and branch",
-		))
-	case headErr != nil:
-		remaining.Path = r.Path
-		errs = append(errs, fmt.Errorf("inspect created worktree HEAD: %w", headErr))
-	case headRef != r.headRef || !strings.EqualFold(headOID, r.headOID):
-		remaining.Path = r.Path
-		errs = append(errs, errors.New("created worktree HEAD changed; preserving it"))
-	case branchErr != nil || branchExists &&
-		(!branchDirect || !strings.EqualFold(branchOID, r.branchOID)):
-		remaining.Path = r.Path
-		errs = append(errs, errors.New("created worktree branch advanced; preserving it"))
-	case !r.materialized && preserveChanges:
-		hasArtifacts, err := unmaterializedWorktreeHasArtifacts(r.Path)
-		if err != nil {
-			remaining.Path = r.Path
-			errs = append(errs, fmt.Errorf("inspect unmaterialized worktree: %w", err))
-		} else if hasArtifacts {
-			remaining.Path = r.Path
-			errs = append(errs, errors.New("unmaterialized worktree contains unexpected artifacts; preserving it"))
-		}
-	case preserveChanges:
-		runner, err := lifecycleStatusRunner(ctx, r.Path, r.filtersIsolated)
-		if err != nil {
-			remaining.Path = r.Path
-			errs = append(errs, fmt.Errorf("inspect rollback filters: %w", err))
-			break
-		}
-		status, err := runLifecycleGitWithRunner(
-			ctx, runner, r.Path,
-			"status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching",
-		)
-		if err != nil {
-			remaining.Path = r.Path
-			errs = append(errs, fmt.Errorf("inspect created worktree changes: %w", err))
-		} else if strings.TrimSpace(string(status)) != "" {
-			remaining.Path = r.Path
-			errs = append(errs, errors.New("created worktree contains changes; preserving it"))
-		}
-	}
-
-	if remaining.Path == "" && pathOwned {
-		runner, err := lifecycleHooksRunner(ctx)
-		if err != nil {
-			remaining.Path = r.Path
-			errs = append(errs, err)
-		} else if err := r.revalidateRollbackRemoval(ctx, preserveChanges); err != nil {
-			remaining.Path = r.Path
-			errs = append(errs, err)
-		} else {
-			if out, err := r.removeOwnedWorktree(
-				ctx, runner, preserveChanges,
-			); err != nil {
-				remaining.Path = r.Path
-				errs = append(errs, fmt.Errorf("remove created worktree: %w: %s", err,
-					strings.TrimSpace(string(out))))
-			}
-		}
-	}
-
+func (r CreateWorktreeResult) rollbackOwned(ctx context.Context) (RollbackResult, error) {
+	remaining := RollbackResult{Path: r.Path}
 	if r.BranchCreated {
-		if !preserveBranch && remaining.Path == "" && branchErr == nil && branchExists && strings.EqualFold(branchOID, r.branchOID) {
-			currentOID, currentExists, currentDirect, inspectErr := lifecycleRefState(
-				ctx, r.projectRoot, r.Branch,
-			)
-			switch {
-			case inspectErr != nil:
-				errs = append(errs, fmt.Errorf("revalidate created branch: %w", inspectErr))
-			case currentExists && (!currentDirect || !strings.EqualFold(currentOID, r.branchOID)):
-				errs = append(errs, errors.New("created worktree branch ownership changed; preserving it"))
-			case currentExists:
-				runner, err := lifecycleHooksRunner(ctx)
-				if err != nil {
-					errs = append(errs, err)
-				} else if out, err := runLifecycleGitWithRunner(
-					ctx, runner, r.projectRoot,
-					"update-ref", "--no-deref", "-d", "refs/heads/"+r.Branch, r.branchOID,
-				); err != nil {
-					errs = append(errs, fmt.Errorf("delete created branch: %w: %s", err,
-						strings.TrimSpace(string(out))))
-				}
-			}
-		}
-		_, stillExists, _, err := lifecycleRefState(ctx, r.projectRoot, r.Branch)
-		if err != nil {
-			remaining.Branch = r.Branch
-			errs = append(errs, fmt.Errorf("inspect created branch after rollback: %w", err))
-		} else if stillExists {
-			remaining.Branch = r.Branch
-		}
+		remaining.Branch = r.Branch
 	}
-	if remaining.Path != "" {
-		errs = append(errs, ErrWorktreeCleanupIncomplete)
-		errs = append(errs, errors.New("created worktree path remains"))
-	} else if remaining.Branch != "" {
-		errs = append(errs, ErrWorktreeCleanupIncomplete)
-	}
-	if remaining.Branch != "" {
-		errs = append(errs, errors.New("created worktree branch remains"))
-	}
-	return remaining, errors.Join(errs...)
-}
-
-func (r CreateWorktreeResult) removeOwnedWorktree(
-	ctx context.Context, runner gitcmd.Runner, preserveChanges bool,
-) ([]byte, error) {
-	args := []string{"worktree", "remove"}
-	if !preserveChanges {
-		args = append(args, "--force")
-	}
-	args = append(args, r.Path)
-	const attempts = 5
-	delay := 25 * time.Millisecond
-	var lastOutput []byte
-	var lastErr error
-	for attempt := range attempts {
-		if attempt > 0 {
-			timer := time.NewTimer(delay)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return lastOutput, errors.Join(lastErr, ctx.Err())
-			case <-timer.C:
-			}
-			if err := r.revalidateRollbackRemoval(ctx, preserveChanges); err != nil {
-				return lastOutput, errors.Join(lastErr,
-					fmt.Errorf("revalidate before worktree removal retry: %w", err))
-			}
-			delay *= 2
-		}
-		lastOutput, lastErr = runLifecycleGitWithRunner(
-			ctx, runner, r.projectRoot, args...,
+	if strings.TrimSpace(r.projectRoot) == "" || strings.TrimSpace(r.Path) == "" {
+		return remaining, fmt.Errorf(
+			"%w: creation result is incomplete", ErrWorktreeCleanupIncomplete,
 		)
-		if lastErr == nil {
-			return lastOutput, nil
-		}
 	}
-	return lastOutput, lastErr
-}
-
-func (r CreateWorktreeResult) revalidateRollbackRemoval(
-	ctx context.Context, preserveChanges bool,
-) error {
-	if err := verifyRegisteredWorktree(
-		ctx, r.projectRoot, r.Path, r.Branch, r.pathInfo,
+	if _, err := os.Stat(r.Path); err != nil {
+		if os.IsNotExist(err) {
+			return remaining, fmt.Errorf(
+				"%w: worktree path disappeared; preserving its branch",
+				ErrWorktreeCleanupIncomplete,
+			)
+		}
+		return remaining, fmt.Errorf("%w: inspect worktree path: %v",
+			ErrWorktreeCleanupIncomplete, err)
+	}
+	headOID, headRef, err := lifecycleWorktreeHead(ctx, r.Path)
+	if err != nil {
+		return remaining, fmt.Errorf("%w: %v", ErrWorktreeCleanupIncomplete, err)
+	}
+	if !strings.EqualFold(headOID, r.headOID) || headRef != r.headRef {
+		return remaining, fmt.Errorf(
+			"%w: worktree HEAD changed; preserving it",
+			ErrWorktreeCleanupIncomplete,
+		)
+	}
+	branchOID, branchExists, branchErr := lifecycleRefOID(ctx, r.projectRoot, r.Branch)
+	if branchErr != nil {
+		return remaining, fmt.Errorf("%w: inspect created branch: %v",
+			ErrWorktreeCleanupIncomplete, branchErr)
+	}
+	if !branchExists || !strings.EqualFold(branchOID, r.branchOID) {
+		return remaining, fmt.Errorf(
+			"%w: created worktree branch changed; preserving it",
+			ErrWorktreeCleanupIncomplete,
+		)
+	}
+	dirty, err := WorktreeIsDirty(ctx, r.Path)
+	if err != nil {
+		return remaining, fmt.Errorf("%w: %v", ErrWorktreeCleanupIncomplete, err)
+	}
+	if dirty {
+		return remaining, fmt.Errorf(
+			"%w: created worktree contains changes; preserving it",
+			ErrWorktreeCleanupIncomplete,
+		)
+	}
+	if out, err := runLifecycleGit(
+		ctx, r.projectRoot, "worktree", "remove", "--force", r.Path,
 	); err != nil {
-		return err
+		return remaining, fmt.Errorf("remove created worktree: %w: %s",
+			err, strings.TrimSpace(string(out)))
 	}
-	headRef, headOID, err := lifecycleWorktreeHead(ctx, r.Path)
-	if err != nil {
-		return fmt.Errorf("revalidate created worktree HEAD: %w", err)
-	}
-	if headRef != r.headRef || !strings.EqualFold(headOID, r.headOID) {
-		return errors.New("created worktree HEAD changed before removal; preserving it")
-	}
-	branchOID, branchExists, branchDirect, err := lifecycleRefState(
-		ctx, r.projectRoot, r.Branch,
-	)
-	if err != nil {
-		return fmt.Errorf("revalidate created worktree branch: %w", err)
-	}
-	if !branchExists || !branchDirect || !strings.EqualFold(branchOID, r.branchOID) {
-		return errors.New("created worktree branch changed before removal; preserving it")
-	}
-	if !preserveChanges {
-		return nil
-	}
-	if !r.materialized {
-		hasArtifacts, err := unmaterializedWorktreeHasArtifacts(r.Path)
-		if err != nil {
-			return fmt.Errorf("revalidate unmaterialized worktree artifacts: %w", err)
+	remaining.Path = ""
+	if r.BranchCreated {
+		if out, err := runLifecycleGit(
+			ctx, r.projectRoot, "branch", "-D", "--", r.Branch,
+		); err != nil {
+			return remaining, fmt.Errorf("delete created branch: %w: %s",
+				err, strings.TrimSpace(string(out)))
 		}
-		if hasArtifacts {
-			return errors.New("unmaterialized worktree gained artifacts before removal; preserving it")
-		}
-		return nil
+		remaining.Branch = ""
 	}
-	runner, err := lifecycleStatusRunner(ctx, r.Path, r.filtersIsolated)
-	if err != nil {
-		return fmt.Errorf("revalidate rollback filters: %w", err)
-	}
-	status, err := runLifecycleGitWithRunner(
-		ctx, runner, r.Path,
-		"status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching",
-	)
-	if err != nil {
-		return fmt.Errorf("revalidate created worktree changes: %w", err)
-	}
-	if strings.TrimSpace(string(status)) != "" {
-		return errors.New("created worktree changed before removal; preserving it")
-	}
-	return nil
+	return remaining, nil
 }
 
-func unmaterializedWorktreeHasArtifacts(path string) (bool, error) {
-	entries, err := os.ReadDir(path)
+func lifecycleRefOID(ctx context.Context, root, branch string) (string, bool, error) {
+	out, err := runLifecycleGit(ctx, root, "for-each-ref", "--format=%(objectname)", "refs/heads/"+branch)
 	if err != nil {
-		return false, err
+		return "", false, err
 	}
-	for _, entry := range entries {
-		if entry.Name() != ".git" {
-			return true, nil
-		}
-	}
-	return false, nil
+	oid := strings.TrimSpace(string(out))
+	return oid, oid != "", nil
 }
 
-func lifecycleRefState(
-	ctx context.Context, root, branch string,
-) (oid string, exists, direct bool, err error) {
-	refName := "refs/heads/" + branch
-	out, err := runLifecycleGit(
-		ctx, root, "for-each-ref", "--format=%(refname)%00%(objectname)%00%(symref)", refName,
-	)
+func lifecycleWorktreeHead(
+	ctx context.Context, path string,
+) (oid string, symbolicRef string, err error) {
+	out, err := runLifecycleGit(ctx, path, "rev-parse", "--verify", "HEAD^{commit}")
 	if err != nil {
-		return "", false, false, err
+		return "", "", fmt.Errorf(
+			"resolve worktree HEAD: %w: %s",
+			err, strings.TrimSpace(string(out)),
+		)
 	}
-	record := strings.TrimSpace(string(out))
-	if record == "" {
-		return "", false, false, nil
+	oid = strings.TrimSpace(string(out))
+	if refOut, refErr := runLifecycleGit(
+		ctx, path, "symbolic-ref", "--quiet", "HEAD",
+	); refErr == nil {
+		symbolicRef = strings.TrimSpace(string(refOut))
 	}
-	fields := strings.Split(record, "\x00")
-	if len(fields) != 3 || fields[0] != refName {
-		return "", false, false, fmt.Errorf("unexpected ref inspection output")
-	}
-	return strings.TrimSpace(fields[1]), true, strings.TrimSpace(fields[2]) == "", nil
-}
-
-func lifecycleWorktreeHead(ctx context.Context, path string) (string, string, error) {
-	runner, err := isolatedLifecycleRunner(ctx, path)
-	if err != nil {
-		return "", "", err
-	}
-	oidOutput, err := runLifecycleGitWithRunner(
-		ctx, runner, path, "rev-parse", "--verify", "HEAD^{commit}",
-	)
-	if err != nil {
-		return "", "", err
-	}
-	refOutput, err := runLifecycleGitWithRunner(
-		ctx, runner, path, "rev-parse", "--symbolic-full-name", "HEAD",
-	)
-	if err != nil {
-		return "", "", err
-	}
-	return strings.TrimSpace(string(refOutput)), strings.TrimSpace(string(oidOutput)), nil
-}
-
-func sameLifecycleFile(path string, expected os.FileInfo) bool {
-	if expected == nil {
-		return false
-	}
-	current, err := os.Lstat(path)
-	return err == nil && os.SameFile(expected, current)
-}
-
-func lifecyclePathExists(path string) bool {
-	_, err := os.Lstat(path)
-	return err == nil || !os.IsNotExist(err)
+	return oid, symbolicRef, nil
 }
 
 // RemoveWorktreeOptions parameterizes RemoveWorktreeFromDisk. ProjectRoot
@@ -645,9 +347,9 @@ type RemoveWorktreeOptions struct {
 	// Branch is the branch deleted when RemoveBranch is set; an empty
 	// branch (detached HEAD) makes RemoveBranch a no-op.
 	Branch string
-	// Force passes --force twice to git worktree remove so dirty and locked
-	// worktrees still go. Policy checks (refusing dirty removal without force)
-	// belong to the caller.
+	// Force passes --force to git worktree remove so dirty or locked
+	// worktrees still go. Policy checks (refusing dirty removal without
+	// force) belong to the caller.
 	Force        bool
 	RemoveBranch bool
 	// TeardownScript, when set, runs in the worktree before removal.
@@ -671,25 +373,10 @@ type RemoveWorktreeResult struct {
 }
 
 // RemoveWorktreeFromDisk performs the git side of worktree removal: it
-// runs the optional teardown hook, removes the worktree (or its exact stale
-// registration when the path is already gone), and optionally
+// runs the optional teardown hook, removes the worktree (or prunes the
+// stale registration when the path is already gone), and optionally
 // deletes the branch.
 func RemoveWorktreeFromDisk(
-	ctx context.Context, opts RemoveWorktreeOptions,
-) (RemoveWorktreeResult, error) {
-	root, err := absRequired(opts.ProjectRoot, "project root")
-	if err != nil {
-		return RemoveWorktreeResult{}, err
-	}
-	ctx, unlock, err := acquireRepositoryMutationLock(ctx, root)
-	if err != nil {
-		return RemoveWorktreeResult{}, err
-	}
-	result, removeErr := removeWorktreeFromDisk(ctx, opts)
-	return result, errors.Join(removeErr, unlock())
-}
-
-func removeWorktreeFromDisk(
 	ctx context.Context, opts RemoveWorktreeOptions,
 ) (RemoveWorktreeResult, error) {
 	ctx = withLifecycleExecution(ctx, opts.Runner, opts.RunGit, opts.RunHook)
@@ -701,33 +388,23 @@ func removeWorktreeFromDisk(
 	if err != nil {
 		return RemoveWorktreeResult{}, err
 	}
+	hookScript, err := resolveHookScript(root, opts.TeardownScript)
+	if err != nil {
+		return RemoveWorktreeResult{}, err
+	}
+
 	pathExists := true
-	var pathInfo os.FileInfo
-	if pathInfo, err = os.Lstat(path); err != nil {
-		if !os.IsNotExist(err) {
+	if _, statErr := os.Stat(path); statErr != nil {
+		if !os.IsNotExist(statErr) {
 			return RemoveWorktreeResult{}, fmt.Errorf(
-				"stat worktree path: %w", err,
+				"stat worktree path: %w", statErr,
 			)
 		}
 		pathExists = false
-		pathInfo = nil
-	}
-	if err := verifyRegisteredWorktree(ctx, root, path, opts.Branch, pathInfo); err != nil {
-		return RemoveWorktreeResult{}, err
-	}
-	hookScript := lifecycleHookScript{}
-	if pathExists {
-		hookScript, err = resolveHookScript(root, opts.TeardownScript)
-		if err != nil {
-			return RemoveWorktreeResult{}, err
-		}
 	}
 
 	result := RemoveWorktreeResult{}
-	if hookScript.path != "" && pathExists {
-		if err := verifyRegisteredWorktree(ctx, root, path, opts.Branch, pathInfo); err != nil {
-			return RemoveWorktreeResult{}, err
-		}
+	if hookScript != "" && pathExists {
 		if hookErr := runLifecycleHook(
 			ctx, hookScript, root, path, opts.Branch, opts.WorktreeName,
 			opts.HookEnvironmentPrefix,
@@ -735,15 +412,13 @@ func removeWorktreeFromDisk(
 			return RemoveWorktreeResult{}, hookErr
 		}
 		result.HookRan = true
-		result.HookScript = hookScript.requested
+		result.HookScript = hookScript
 	}
 
 	if pathExists {
-		if err := verifyRegisteredWorktree(ctx, root, path, opts.Branch, pathInfo); err != nil {
-			return result, err
-		}
 		args := []string{"worktree", "remove"}
 		if opts.Force {
+			// Git requires force twice to remove a locked worktree.
 			args = append(args, "--force", "--force")
 		}
 		args = append(args, path)
@@ -753,13 +428,6 @@ func removeWorktreeFromDisk(
 	} else {
 		// The directory is gone but git may still hold a stale
 		// registration that would block branch deletion and re-creation.
-		// Removing by path leaves unrelated stale registrations alone.
-		if _, statErr := os.Lstat(path); statErr == nil {
-			return result, fmt.Errorf("%w: worktree path appeared during removal; preserving it",
-				ErrWorktreeCleanupIncomplete)
-		} else if !os.IsNotExist(statErr) {
-			return result, fmt.Errorf("recheck missing worktree path: %w", statErr)
-		}
 		args := []string{"worktree", "remove", "--force"}
 		if opts.Force {
 			args = append(args, "--force")
@@ -780,135 +448,11 @@ func removeWorktreeFromDisk(
 	return result, nil
 }
 
-func verifyRegisteredWorktree(
-	ctx context.Context, root, path, branch string, pathInfo os.FileInfo,
-) error {
-	runner, err := lifecycleHooksRunner(ctx)
-	if err != nil {
-		return err
-	}
-	out, err := runLifecycleGitWithRunner(
-		ctx, runner, root, "worktree", "list", "--porcelain",
-	)
-	if err != nil {
-		return fmt.Errorf("%w: inspect registered worktrees: %w",
-			ErrWorktreeCleanupIncomplete, err)
-	}
-	wantPath := canonicalLifecyclePath(path)
-	wantBranch := strings.TrimSpace(branch)
-	var registeredEntry *gitworktree.PorcelainEntry
-	for _, entry := range gitworktree.ParsePorcelain(string(out)) {
-		if !lifecyclePathsEqual(entry.Path, wantPath) {
-			continue
-		}
-		entryCopy := entry
-		registeredEntry = &entryCopy
-		if wantBranch != "" && entry.Branch != wantBranch {
-			return fmt.Errorf("%w: registered worktree branch changed; preserving path",
-				ErrWorktreeCleanupIncomplete)
-		}
-		if wantBranch == "" && !entry.Detached {
-			return fmt.Errorf("%w: registered worktree is no longer detached; preserving path",
-				ErrWorktreeCleanupIncomplete)
-		}
-		break
-	}
-	if registeredEntry == nil {
-		return fmt.Errorf("%w: path is no longer a registered worktree; preserving it",
-			ErrWorktreeCleanupIncomplete)
-	}
-	if pathInfo == nil {
-		return nil
-	}
-	if !sameLifecycleFile(path, pathInfo) {
-		return fmt.Errorf("%w: registered worktree path identity changed; preserving it",
-			ErrWorktreeCleanupIncomplete)
-	}
-	topLevel, err := runLifecycleGitWithRunner(
-		ctx, runner, path, "rev-parse", "--path-format=absolute", "--show-toplevel",
-	)
-	if err != nil || !lifecyclePathsEqual(strings.TrimSpace(string(topLevel)), wantPath) {
-		return fmt.Errorf("%w: path no longer resolves to the registered worktree; preserving it",
-			ErrWorktreeCleanupIncomplete)
-	}
-	rootCommon, rootErr := runLifecycleGitWithRunner(
-		ctx, runner, root, "rev-parse", "--path-format=absolute", "--git-common-dir",
-	)
-	pathCommon, pathErr := runLifecycleGitWithRunner(
-		ctx, runner, path, "rev-parse", "--path-format=absolute", "--git-common-dir",
-	)
-	if rootErr != nil || pathErr != nil || !lifecyclePathsEqual(
-		strings.TrimSpace(string(rootCommon)), strings.TrimSpace(string(pathCommon)),
-	) {
-		return fmt.Errorf("%w: worktree repository identity changed; preserving path",
-			ErrWorktreeCleanupIncomplete)
-	}
-	actualBranch, branchErr := runLifecycleGitWithRunner(
-		ctx, runner, path, "rev-parse", "--abbrev-ref", "HEAD",
-	)
-	if branchErr != nil {
-		return fmt.Errorf("%w: failed to inspect worktree HEAD identity; preserving path",
-			ErrWorktreeCleanupIncomplete)
-	}
-	actualBranchName := strings.TrimSpace(string(actualBranch))
-	if wantBranch != "" {
-		if actualBranchName != wantBranch {
-			return fmt.Errorf("%w: worktree HEAD branch changed; preserving path",
-				ErrWorktreeCleanupIncomplete)
-		}
-	} else if actualBranchName != "HEAD" {
-		return fmt.Errorf("%w: worktree HEAD is no longer detached; preserving path",
-			ErrWorktreeCleanupIncomplete)
-	}
-	return nil
-}
-
-func canonicalLifecyclePath(path string) string {
-	clean := filepath.Clean(strings.TrimSpace(path))
-	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
-		return filepath.Clean(resolved)
-	}
-	if parent, err := filepath.EvalSymlinks(filepath.Dir(clean)); err == nil {
-		return filepath.Join(parent, filepath.Base(clean))
-	}
-	return clean
-}
-
-func lifecyclePathsEqual(left, right string) bool {
-	left = canonicalLifecyclePath(left)
-	right = canonicalLifecyclePath(right)
-	if left == right || runtime.GOOS == "windows" && strings.EqualFold(left, right) {
-		return true
-	}
-	leftInfo, leftErr := os.Stat(left)
-	rightInfo, rightErr := os.Stat(right)
-	return leftErr == nil && rightErr == nil && os.SameFile(leftInfo, rightInfo)
-}
-
 // WorktreeIsDirty reports whether the worktree at path has uncommitted
-// changes (staged, unstaged, or untracked), using its configured filters and
-// fsmonitor so ordinary filtered worktrees retain Git's normal clean-state
-// semantics. Contributor worktrees persist non-executing filter and fsmonitor
-// configuration before callers use this helper.
+// changes (staged, unstaged, or untracked).
 func WorktreeIsDirty(ctx context.Context, path string) (bool, error) {
-	return worktreeIsDirty(ctx, path, false)
-}
-
-// WorktreeIsDirtyIsolated reports dirty state without executing configured
-// filters or fsmonitor commands. It is conservative and may report a clean
-// ordinary worktree as dirty when that worktree was materialized with filters;
-// use it only when materialization also disabled those filters.
-func WorktreeIsDirtyIsolated(ctx context.Context, path string) (bool, error) {
-	return worktreeIsDirty(ctx, path, true)
-}
-
-func worktreeIsDirty(ctx context.Context, path string, isolateFilters bool) (bool, error) {
-	runner, err := lifecycleStatusRunner(ctx, path, isolateFilters)
-	if err != nil {
-		return false, fmt.Errorf("prepare worktree status: %w", err)
-	}
-	out, err := runLifecycleGitWithRunner(
-		ctx, runner, path, "status", "--porcelain", "--untracked-files=all",
+	out, err := runLifecycleGit(
+		ctx, path, "status", "--porcelain", "--untracked-files=all",
 	)
 	if err != nil {
 		return false, fmt.Errorf(
@@ -917,15 +461,6 @@ func worktreeIsDirty(ctx context.Context, path string, isolateFilters bool) (boo
 		)
 	}
 	return strings.TrimSpace(string(out)) != "", nil
-}
-
-func lifecycleStatusRunner(
-	ctx context.Context, path string, isolateFilters bool,
-) (gitcmd.Runner, error) {
-	if isolateFilters {
-		return isolatedLifecycleRunner(ctx, path)
-	}
-	return lifecycleHooksRunner(ctx)
 }
 
 func requireRootAndBranch(
@@ -965,131 +500,35 @@ func validateBranchName(
 	return nil
 }
 
-type lifecycleHookScript struct {
-	requested string
-	path      string
-	info      os.FileInfo
-	digest    [sha256.Size]byte
-}
-
 // resolveHookScript resolves a caller-supplied hook script path against the
-// project root and snapshots the existing regular file's identity. Requiring
-// the target to exist before worktree mutation prevents a dangling symlink
-// from becoming contributor-controlled after checkout.
-func resolveHookScript(projectRoot, raw string) (lifecycleHookScript, error) {
+// project root and rejects paths that escape it. Both sides of the
+// containment check are canonicalized through symlink resolution so a
+// symlink inside the project cannot smuggle in a script that lives outside
+// it. An empty raw path means no hook and resolves to "".
+func resolveHookScript(projectRoot, raw string) (string, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
-		return lifecycleHookScript{}, nil
+		return "", nil
 	}
-	requested := trimmed
-	if !filepath.IsAbs(requested) {
-		requested = filepath.Join(projectRoot, requested)
+	resolved := trimmed
+	if !filepath.IsAbs(resolved) {
+		resolved = filepath.Join(projectRoot, resolved)
 	}
-	requested = filepath.Clean(requested)
-	canonicalRoot, err := filepath.EvalSymlinks(projectRoot)
-	if err != nil {
-		return lifecycleHookScript{}, fmt.Errorf("resolve lifecycle hook project root: %w", err)
+	resolved = filepath.Clean(resolved)
+	if !pathWithinRoot(canonicalizePath(projectRoot), canonicalizePath(resolved)) {
+		return "", fmt.Errorf("%w: %q", ErrHookOutsideProject, raw)
 	}
-	resolved, err := filepath.EvalSymlinks(requested)
-	if err != nil {
-		if !pathWithinRoot(filepath.Clean(projectRoot), requested) {
-			return lifecycleHookScript{}, fmt.Errorf("%w: %q", ErrHookOutsideProject, raw)
-		}
-		return lifecycleHookScript{}, fmt.Errorf("resolve lifecycle hook script: %w", err)
-	}
-	if !pathWithinRoot(canonicalRoot, resolved) {
-		return lifecycleHookScript{}, fmt.Errorf("%w: %q", ErrHookOutsideProject, raw)
-	}
-	info, digest, _, err := snapshotLifecycleHook(resolved)
-	if err != nil {
-		return lifecycleHookScript{}, fmt.Errorf("inspect lifecycle hook script: %w", err)
-	}
-	return lifecycleHookScript{
-		requested: requested, path: resolved, info: info, digest: digest,
-	}, nil
+	return resolved, nil
 }
 
-func (h lifecycleHookScript) verifiedContents(projectRoot string) ([]byte, error) {
-	canonicalRoot, err := filepath.EvalSymlinks(projectRoot)
-	if err != nil {
-		return nil, fmt.Errorf("revalidate lifecycle hook project root: %w", err)
+// canonicalizePath resolves symlinks when the path exists; a path that does
+// not exist yet (or cannot be resolved) keeps its lexical form, which fails
+// later at execution time rather than here.
+func canonicalizePath(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
 	}
-	resolved, err := filepath.EvalSymlinks(h.requested)
-	if err != nil {
-		return nil, fmt.Errorf("revalidate lifecycle hook script: %w", err)
-	}
-	if resolved != h.path || !pathWithinRoot(canonicalRoot, resolved) {
-		return nil, errors.New("lifecycle hook script target changed before execution")
-	}
-	info, digest, contents, err := snapshotLifecycleHook(resolved)
-	if err != nil {
-		return nil, fmt.Errorf("revalidate lifecycle hook script: %w", err)
-	}
-	if !os.SameFile(h.info, info) || info.Mode() != h.info.Mode() || digest != h.digest {
-		return nil, errors.New("lifecycle hook script identity changed before execution")
-	}
-	return contents, nil
-}
-
-func snapshotLifecycleHook(path string) (os.FileInfo, [sha256.Size]byte, []byte, error) {
-	var digest [sha256.Size]byte
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, digest, nil, err
-	}
-	defer func() { _ = file.Close() }()
-	info, err := file.Stat()
-	if err != nil {
-		return nil, digest, nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, digest, nil, fmt.Errorf("%s is not a regular file", path)
-	}
-	contents, err := io.ReadAll(file)
-	if err != nil {
-		return nil, digest, nil, err
-	}
-	digest = sha256.Sum256(contents)
-	return info, digest, contents, nil
-}
-
-func (h lifecycleHookScript) executableSnapshot(contents []byte) (string, func(), error) {
-	dir, err := lifecycleHooksDir()
-	if err != nil {
-		return "", nil, fmt.Errorf("prepare lifecycle hook snapshot: %w", err)
-	}
-	file, err := os.CreateTemp(dir, "lifecycle-*"+filepath.Ext(h.path))
-	if err != nil {
-		return "", nil, fmt.Errorf("create lifecycle hook snapshot: %w", err)
-	}
-	path := file.Name()
-	cleanup := func() { _ = os.Remove(path) }
-	fail := func(cause error) (string, func(), error) {
-		_ = file.Close()
-		cleanup()
-		return "", nil, cause
-	}
-	if err := file.Chmod(lifecycleHookSnapshotMode(runtime.GOOS)); err != nil {
-		return fail(fmt.Errorf("secure lifecycle hook snapshot: %w", err))
-	}
-	if _, err := file.Write(contents); err != nil {
-		return fail(fmt.Errorf("write lifecycle hook snapshot: %w", err))
-	}
-	if err := file.Close(); err != nil {
-		cleanup()
-		return "", nil, fmt.Errorf("close lifecycle hook snapshot: %w", err)
-	}
-	return path, cleanup, nil
-}
-
-func lifecycleHookSnapshotMode(goos string) os.FileMode {
-	if goos == "windows" {
-		// On Windows, removing a read-only file fails. The containing hooks
-		// directory is private, so retaining owner write permission keeps the
-		// immutable snapshot confined while allowing deterministic cleanup.
-		return 0o700
-	}
-	return 0o500
+	return path
 }
 
 func pathWithinRoot(root, path string) bool {
@@ -1116,17 +555,10 @@ func resolveWorktreeDestination(
 		dest = abs
 	} else {
 		base := strings.TrimSpace(baseDir)
-		privateBase := base == ""
-		if privateBase {
+		if base == "" {
 			base = root + "-worktrees"
 		}
-		var err error
-		if privateBase {
-			err = safefileio.EnsurePrivateDir(base)
-		} else {
-			err = os.MkdirAll(base, 0o755)
-		}
-		if err != nil {
+		if err := os.MkdirAll(base, 0o755); err != nil {
 			return "", fmt.Errorf("create worktree base dir: %w", err)
 		}
 		// Canonicalize the base so derived paths agree with what git
@@ -1162,12 +594,7 @@ func localBranchExists(ctx context.Context, root, branch string) bool {
 func runLifecycleGit(
 	ctx context.Context, dir string, args ...string,
 ) ([]byte, error) {
-	return runLifecycleGitWithRunner(ctx, lifecycleRunner(ctx), dir, args...)
-}
-
-func runLifecycleGitWithRunner(
-	ctx context.Context, runner gitcmd.Runner, dir string, args ...string,
-) ([]byte, error) {
+	runner := lifecycleRunner(ctx)
 	if run := lifecycleGitRunner(ctx); run != nil {
 		return run(ctx, runner, dir, args...)
 	}
@@ -1186,29 +613,21 @@ type lifecycleExecution struct {
 func withLifecycleExecution(
 	ctx context.Context, runner gitcmd.Runner, runGit GitRunner, runHook HookRunner,
 ) context.Context {
-	runner = normalizeLifecycleRunner(runner, gitcmd.Runner{
-		Env: os.Environ(), StripEnv: true,
-	})
+	if runner.Env == nil {
+		isZero := len(runner.Config) == 0 &&
+			!runner.StripEnv &&
+			!runner.TerminalPrompt &&
+			!runner.NullGlobalConfig &&
+			!runner.NoSystemConfig &&
+			!runner.DisableSafeDirectoryForward
+		runner.Env = os.Environ()
+		if isZero {
+			runner.StripEnv = true
+		}
+	}
 	return context.WithValue(ctx, lifecycleExecutionContextKey{}, lifecycleExecution{
 		runner: runner, runGit: runGit, runHook: runHook,
 	})
-}
-
-func normalizeLifecycleRunner(runner, fallback gitcmd.Runner) gitcmd.Runner {
-	if lifecycleRunnerIsZero(runner) {
-		return fallback
-	}
-	if runner.Env == nil {
-		runner.Env = os.Environ()
-	}
-	return runner
-}
-
-func lifecycleRunnerIsZero(runner gitcmd.Runner) bool {
-	return runner.Env == nil && len(runner.Config) == 0 &&
-		!runner.StripEnv && !runner.TerminalPrompt &&
-		!runner.NullGlobalConfig && !runner.NoSystemConfig &&
-		!runner.DisableSafeDirectoryForward
 }
 
 func lifecycleRunner(ctx context.Context) gitcmd.Runner {
@@ -1226,104 +645,6 @@ func lifecycleGitRunner(ctx context.Context) GitRunner {
 func lifecycleHookRunner(ctx context.Context) HookRunner {
 	execution, _ := ctx.Value(lifecycleExecutionContextKey{}).(lifecycleExecution)
 	return execution.runHook
-}
-
-func checkoutIsolated(ctx context.Context, path string) error {
-	runner, err := isolatedLifecycleRunner(ctx, path)
-	if err != nil {
-		return fmt.Errorf("inspect checkout filters: %w", err)
-	}
-	if _, err := runLifecycleGitWithRunner(
-		ctx, runner, path, "reset", "--hard", "HEAD",
-	); err != nil {
-		return fmt.Errorf("materialize isolated worktree: %w", err)
-	}
-	return nil
-}
-
-func isolatedLifecycleRunner(ctx context.Context, path string) (gitcmd.Runner, error) {
-	runner, err := lifecycleHooksRunner(ctx)
-	if err != nil {
-		return gitcmd.Runner{}, err
-	}
-	out, err := runLifecycleGitWithRunner(
-		ctx, runner, path, "config", "--includes", "--null", "--list",
-	)
-	if err != nil {
-		return gitcmd.Runner{}, err
-	}
-	runner = runner.WithConfig("core.fsmonitor", "false")
-	for _, driver := range lifecycleFilterDrivers(string(out)) {
-		prefix := "filter." + driver + "."
-		runner = runner.WithConfig(prefix+"clean", "")
-		runner = runner.WithConfig(prefix+"smudge", "")
-		runner = runner.WithConfig(prefix+"process", "")
-		runner = runner.WithConfig(prefix+"required", "false")
-	}
-	return runner, nil
-}
-
-func lifecycleHooksRunner(ctx context.Context) (gitcmd.Runner, error) {
-	hooksDir, err := lifecycleHooksDir()
-	if err != nil {
-		return gitcmd.Runner{}, fmt.Errorf("create isolated hooks directory: %w", err)
-	}
-	return lifecycleRunner(ctx).WithConfig("core.hooksPath", hooksDir), nil
-}
-
-func lifecycleFilterDrivers(configOutput string) []string {
-	drivers := map[string]struct{}{}
-	for record := range strings.SplitSeq(configOutput, "\x00") {
-		key, _, found := strings.Cut(record, "\n")
-		if !found {
-			continue
-		}
-		key = strings.TrimSpace(key)
-		lower := strings.ToLower(key)
-		if !strings.HasPrefix(lower, "filter.") {
-			continue
-		}
-		for _, suffix := range []string{".clean", ".smudge", ".process", ".required"} {
-			if strings.HasSuffix(lower, suffix) {
-				driver := key[len("filter.") : len(key)-len(suffix)]
-				if driver != "" {
-					drivers[driver] = struct{}{}
-				}
-			}
-		}
-	}
-	result := make([]string, 0, len(drivers))
-	for driver := range drivers {
-		result = append(result, driver)
-	}
-	slices.Sort(result)
-	return result
-}
-
-var (
-	lifecycleHooksOnce sync.Once
-	lifecycleHooksPath string
-	lifecycleHooksErr  error
-)
-
-func lifecycleHooksDir() (string, error) {
-	lifecycleHooksOnce.Do(func() {
-		userID, err := safefileio.CurrentUserID()
-		if err != nil {
-			lifecycleHooksErr = err
-			return
-		}
-		base := filepath.Join(os.TempDir(), "kit-managed-hooks-"+userID)
-		if err := safefileio.EnsurePrivateDir(base); err != nil {
-			lifecycleHooksErr = err
-			return
-		}
-		lifecycleHooksPath, lifecycleHooksErr = os.MkdirTemp(base, "disabled-")
-		if lifecycleHooksErr == nil {
-			lifecycleHooksErr = safefileio.EnsurePrivateDir(lifecycleHooksPath)
-		}
-	})
-	return lifecycleHooksPath, lifecycleHooksErr
 }
 
 // classifyWorktreeGitError maps well-known git stderr phrases onto the
@@ -1349,18 +670,9 @@ func classifyWorktreeGitError(out []byte, err error) error {
 // stderr is captured into the HookError a non-zero exit produces.
 func runLifecycleHook(
 	ctx context.Context,
-	script lifecycleHookScript, projectRoot, worktreePath, branch, worktreeName,
+	script, projectRoot, worktreePath, branch, worktreeName,
 	environmentPrefix string,
 ) error {
-	contents, err := script.verifiedContents(projectRoot)
-	if err != nil {
-		return err
-	}
-	executable, cleanup, err := script.executableSnapshot(contents)
-	if err != nil {
-		return err
-	}
-	defer cleanup()
 	name := strings.TrimSpace(worktreeName)
 	if name == "" {
 		name = branch
@@ -1378,32 +690,60 @@ func runLifecycleHook(
 	)
 	var stderr bytes.Buffer
 	command := HookCommand{
-		Script: executable, Dir: worktreePath, Env: environment,
+		Script: script, Dir: worktreePath, Env: environment,
 		Stdout: io.Discard, Stderr: &stderr,
 	}
+	var err error
 	if run := lifecycleHookRunner(ctx); run != nil {
 		err = run(ctx, command)
 	} else {
-		cmd := lifecycleCommandContext(ctx, command.Script)
+		cmd := exec.CommandContext(ctx, command.Script)
 		cmd.Dir = command.Dir
 		cmd.Env = command.Env
 		cmd.Stdout = command.Stdout
 		cmd.Stderr = command.Stderr
-		err = gitcmd.RunProcessTreeCommand(cmd)
+		err = cmd.Run()
 	}
 	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ctxErr
-		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			return &HookError{
-				Script:   script.path,
+				Script:   script,
 				ExitCode: exitErr.ExitCode(),
 				Stderr:   strings.TrimSpace(stderr.String()),
 			}
 		}
-		return fmt.Errorf("run lifecycle hook %s: %w", script.path, err)
+		return fmt.Errorf("run lifecycle hook %s: %w", script, err)
 	}
 	return nil
+}
+
+// rollbackCreatedWorktree best-effort unwinds a worktree this call just
+// created after its setup hook failed. The branch is deleted only when
+// this call created it; the original hook error is what the caller
+// surfaces.
+func rollbackCreatedWorktree(
+	ctx context.Context, root, path, branch string, deleteBranch bool,
+) {
+	_, _ = rollbackCreatedWorktreeWithResult(ctx, root, path, branch, deleteBranch)
+}
+
+func rollbackCreatedWorktreeWithResult(
+	ctx context.Context, root, path, branch string, deleteBranch bool,
+) (RollbackResult, error) {
+	var result RollbackResult
+	var errs []error
+	if out, err := runLifecycleGit(
+		ctx, root, "worktree", "remove", "--force", path,
+	); err != nil {
+		result.Path = path
+		errs = append(errs, fmt.Errorf("remove created worktree: %w: %s", err, strings.TrimSpace(string(out))))
+	}
+	if deleteBranch {
+		if out, err := runLifecycleGit(ctx, root, "branch", "-D", "--", branch); err != nil {
+			result.Branch = branch
+			errs = append(errs, fmt.Errorf("delete created branch: %w: %s", err, strings.TrimSpace(string(out))))
+		}
+	}
+	return result, errors.Join(errs...)
 }

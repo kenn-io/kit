@@ -2,10 +2,7 @@ package gitremote
 
 import (
 	"path/filepath"
-	"runtime"
 	"testing"
-
-	"github.com/stretchr/testify/assert"
 )
 
 func TestClonePathRejectsTraversalAndSeparators(t *testing.T) {
@@ -50,55 +47,4 @@ func TestValidateRemoteIdentity(t *testing.T) {
 	if err := ValidateRemoteIdentity(id, "/tmp/widget.git"); err != nil {
 		t.Fatalf("local paths should be accepted: %v", err)
 	}
-}
-
-func TestUnsafeForAutomationRejectsCredentialAndCommandSurfaces(t *testing.T) {
-	tests := []struct {
-		remoteURL string
-		want      bool
-	}{
-		{remoteURL: "https://github.com/acme/widget.git"},
-		{remoteURL: "http://github.com/acme/widget.git", want: true},
-		{remoteURL: "git://github.com/acme/widget.git", want: true},
-		{remoteURL: "https://token@github.com/acme/widget.git", want: true},
-		{remoteURL: "git@github.com:acme/widget.git"},
-		{remoteURL: "ssh://git@github.com/acme/widget.git"},
-		{remoteURL: "ssh://git:secret@github.com/acme/widget.git", want: true},
-		{remoteURL: "git:secret@github.com:acme/widget.git", want: true},
-		{remoteURL: "https://github.com/acme/widget.git?access_token=secret", want: true},
-		{remoteURL: "https://github.com/acme/widget.git#token", want: true},
-		{remoteURL: "https://github.com/%zz", want: true},
-		{remoteURL: "git@github.com:acme/widget.git?access_token=secret", want: true},
-		{remoteURL: "corp::--token=secret", want: true},
-		{remoteURL: "::--token=secret", want: true},
-		{remoteURL: "evil://github.com/acme/widget.git", want: true},
-		{remoteURL: "git+ssh://git@github.com/acme/widget.git"},
-		{remoteURL: "ssh://git@[2001:db8::1]/acme/widget.git"},
-		{remoteURL: "/tmp/widget.git"},
-		{remoteURL: "file:///tmp/widget.git"},
-		{remoteURL: "file://localhost/tmp/widget.git"},
-		{remoteURL: "file:/tmp/widget.git", want: true},
-		{remoteURL: "file:C:/repos/widget.git", want: true},
-		{remoteURL: "file://attacker/share/widget.git", want: true},
-		{remoteURL: `\\attacker\share\widget.git`, want: true},
-		{remoteURL: "//attacker/share/widget.git", want: true},
-	}
-
-	for _, test := range tests {
-		t.Run(test.remoteURL, func(t *testing.T) {
-			assert.Equal(t, test.want, UnsafeForAutomation(test.remoteURL))
-		})
-	}
-}
-
-func TestIsLocalRequiresCanonicalFileURLSyntax(t *testing.T) {
-	assert.True(t, IsLocal("file:///tmp/widget.git"))
-	assert.True(t, IsLocal("file://localhost/tmp/widget.git"))
-	assert.False(t, IsLocal("file:/tmp/widget.git"))
-	assert.False(t, IsLocal("file:C:/repos/widget.git"))
-}
-
-func TestIsLocalClassifiesWindowsDrivePathsByHostPlatform(t *testing.T) {
-	assert.Equal(t, runtime.GOOS == "windows", IsLocal("D:/repo.git"))
-	assert.Equal(t, runtime.GOOS == "windows", IsLocal(`D:\repo.git`))
 }

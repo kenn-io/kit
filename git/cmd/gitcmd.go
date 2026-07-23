@@ -19,7 +19,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -45,8 +44,7 @@ type Runner struct {
 	Config []Config
 	// StripEnv removes inherited GIT_* variables before running git.
 	StripEnv bool
-	// TerminalPrompt allows interactive git prompts when true and preserves
-	// foreground terminal access on Unix.
+	// TerminalPrompt allows interactive git prompts when true.
 	TerminalPrompt bool
 	// NullGlobalConfig makes git read an empty global config when true, by
 	// pointing GIT_CONFIG_GLOBAL at an empty file (not os.DevNull, which is the
@@ -89,9 +87,7 @@ func (r Runner) WithBasicAuth(username, password string) Runner {
 	return r
 }
 
-// Command constructs a git command in dir. On Windows, callers that need the
-// process-tree cancellation guarantee must execute it with
-// RunProcessTreeCommand rather than calling cmd.Run directly.
+// Command constructs a git command in dir.
 //
 // Command cannot be used with WithBasicAuth because callers would not have a
 // way to clean up the temporary credential helper. Use Run or Output instead.
@@ -99,7 +95,7 @@ func (r Runner) Command(ctx context.Context, dir string, args ...string) *exec.C
 	if r.basicAuth != nil {
 		panic("gitcmd: Command cannot be used with WithBasicAuth; use Run or Output so credentials can be cleaned up")
 	}
-	cmd := gitCommand(ctx, r.TerminalPrompt, args...)
+	cmd := gitCommand(ctx, !r.TerminalPrompt, args...)
 	cmd.Dir = dir
 	cmd.Env, _ = r.commandEnv(ctx, dir)
 	return cmd
@@ -113,7 +109,7 @@ func (r Runner) Output(ctx context.Context, dir string, args ...string) ([]byte,
 
 // Run runs git and returns stdout, stderr, and a *GitError on failure.
 func (r Runner) Run(ctx context.Context, dir string, stdin io.Reader, args ...string) ([]byte, []byte, error) {
-	cmd := gitCommand(ctx, r.TerminalPrompt, args...)
+	cmd := gitCommand(ctx, !r.TerminalPrompt, args...)
 	cmd.Dir = dir
 	var cleanup func()
 	cmd.Env, cleanup = r.commandEnv(ctx, dir)
@@ -125,7 +121,7 @@ func (r Runner) Run(ctx context.Context, dir string, stdin io.Reader, args ...st
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := RunProcessTreeCommand(cmd)
+	err := cmd.Run()
 	if err != nil {
 		return stdout.Bytes(), stderr.Bytes(), &GitError{
 			Dir:    dir,
@@ -137,45 +133,10 @@ func (r Runner) Run(ctx context.Context, dir string, stdin io.Reader, args ...st
 	return stdout.Bytes(), stderr.Bytes(), nil
 }
 
-func gitCommand(ctx context.Context, terminalPrompt bool, args ...string) *exec.Cmd {
+func gitCommand(ctx context.Context, hideConsoleWindow bool, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "git", args...)
-	prepareGitCommand(cmd, !terminalPrompt, terminalPrompt)
-	boundCommandWait(cmd)
+	prepareGitCommand(cmd, hideConsoleWindow)
 	return cmd
-}
-
-// PrepareProcessTreeCancellation configures cmd for process-tree cancellation.
-// Execute it with RunProcessTreeCommand. On Windows, hideConsoleWindow also
-// prevents a console window from being allocated for the child process.
-func PrepareProcessTreeCancellation(cmd *exec.Cmd, hideConsoleWindow bool) {
-	prepareGitCommand(cmd, hideConsoleWindow, false)
-	boundCommandWait(cmd)
-}
-
-// RunProcessTreeCommand starts cmd under the platform process-tree boundary
-// installed by PrepareProcessTreeCancellation and waits for it to exit.
-// Windows callers must use this function so the process can be assigned to a
-// kill-on-close Job Object before its suspended primary thread is resumed.
-func RunProcessTreeCommand(cmd *exec.Cmd) error {
-	err := runProcessTreeCommand(cmd)
-	if errors.Is(err, exec.ErrWaitDelay) && rootProcessSucceeded(cmd) {
-		return nil
-	}
-	return err
-}
-
-func rootProcessSucceeded(cmd *exec.Cmd) bool {
-	return cmd != nil && cmd.ProcessState != nil && cmd.ProcessState.Success()
-}
-
-func boundCommandWait(cmd *exec.Cmd) {
-	if cmd.WaitDelay == 0 {
-		// Bound Wait when a descendant escapes cancellation but retains a
-		// captured-output pipe. Platform cancellation still attempts to kill
-		// the complete tree; this prevents a broken tree walk from hanging the
-		// caller indefinitely.
-		cmd.WaitDelay = time.Second
-	}
 }
 
 type basicAuth struct {
@@ -296,28 +257,17 @@ func readSafeDirectories(ctx context.Context, env []string, dir string) []string
 		// --includes is required for explicit-scope reads to honor include.path
 		// and includeIf directives the way git's default config sequence does.
 		probeCtx, cancel := context.WithTimeout(ctx, safeDirectoryProbeTimeout)
-		cmd := safeDirectoryProbeCommand(probeCtx, env, dir,
-			"config", scope, "--includes", "-z", "--get-all", "safe.directory")
-		var stdout bytes.Buffer
-		cmd.Stdout = &stdout
-		err := RunProcessTreeCommand(cmd)
+		cmd := gitCommand(probeCtx, true, "config", scope, "--includes", "-z", "--get-all", "safe.directory")
+		cmd.Dir = dir
+		cmd.Env = env
+		out, err := cmd.Output()
 		cancel()
-		out := stdout.Bytes()
 		if err != nil || len(out) == 0 {
 			continue
 		}
 		dirs = append(dirs, strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00")...)
 	}
 	return dirs
-}
-
-func safeDirectoryProbeCommand(
-	ctx context.Context, env []string, dir string, args ...string,
-) *exec.Cmd {
-	cmd := gitCommand(ctx, false, args...)
-	cmd.Dir = dir
-	cmd.Env = env
-	return cmd
 }
 
 // gitEnvBool reports whether env sets key to a value git's boolean parsing
@@ -363,7 +313,7 @@ func (r Runner) commandEnv(ctx context.Context, dir string) ([]string, func()) {
 		env = append([]string(nil), env...)
 	}
 	if !r.TerminalPrompt {
-		env = nonInteractiveEnvironment(env, base)
+		env = append(env, "GIT_TERMINAL_PROMPT=0")
 	}
 	if r.NoSystemConfig {
 		env = append(env, "GIT_CONFIG_NOSYSTEM=1")
@@ -400,259 +350,6 @@ func (r Runner) commandEnv(ctx context.Context, dir string) ([]string, func()) {
 	}
 	env = append(env, fmt.Sprintf("GIT_CONFIG_COUNT=%d", len(config)))
 	return env, cleanup
-}
-
-func nonInteractiveEnvironment(environment, source []string) []string {
-	sshVariant := environmentValueFold(source, "GIT_SSH_VARIANT")
-	sshCommand := environmentValueFold(source, "GIT_SSH_COMMAND")
-	if strings.TrimSpace(sshCommand) == "" {
-		if sshExecutable := environmentValueFold(source, "GIT_SSH"); strings.TrimSpace(sshExecutable) != "" {
-			if variant := strings.ToLower(strings.TrimSpace(sshVariant)); variant == "" || variant == "auto" {
-				sshVariant = detectSSHExecutableVariant(sshExecutable)
-			}
-			sshCommand = shellSingleQuote(sshExecutable)
-		}
-	}
-	if strings.TrimSpace(sshCommand) == "" {
-		sshCommand = "ssh"
-	}
-	sshCommand = nonInteractiveSSHCommand(sshCommand, sshVariant)
-	for _, key := range []string{
-		"GIT_TERMINAL_PROMPT", "GIT_ASKPASS", "SSH_ASKPASS", "SSH_ASKPASS_REQUIRE",
-		"GCM_INTERACTIVE", "GIT_CREDENTIAL_INTERACTIVE", "GIT_SSH_COMMAND",
-		"GIT_SSH_VARIANT",
-	} {
-		environment = withoutEnvironmentKeyFold(environment, key)
-	}
-	environment = append(environment,
-		"GIT_TERMINAL_PROMPT=0",
-		"GIT_ASKPASS=",
-		"SSH_ASKPASS=",
-		"SSH_ASKPASS_REQUIRE=never",
-		"GCM_INTERACTIVE=Never",
-		"GIT_CREDENTIAL_INTERACTIVE=never",
-		"GIT_SSH_COMMAND="+sshCommand,
-	)
-	if strings.TrimSpace(sshVariant) != "" {
-		environment = append(environment, "GIT_SSH_VARIANT="+sshVariant)
-	}
-	return environment
-}
-
-func nonInteractiveSSHCommand(command, variant string) string {
-	if !validateSimpleShellCommand(command) {
-		return rejectedNonInteractiveSSHCommand
-	}
-	executable, ok := locateSSHExecutable(command)
-	if !ok {
-		return rejectedNonInteractiveSSHCommand
-	}
-	variant = strings.ToLower(strings.TrimSpace(variant))
-	if variant == "" || variant == "auto" {
-		variant = detectSSHExecutableVariant(executable.value)
-	}
-	switch variant {
-	case "ssh":
-		return insertShellArgument(command, executable.end, "-oBatchMode=yes")
-	case "plink", "putty", "tortoiseplink":
-		return insertShellArgument(command, executable.end, "-batch")
-	default:
-		if strings.TrimSpace(command[executable.end:]) != "" {
-			return rejectedNonInteractiveSSHCommand
-		}
-		return command
-	}
-}
-
-func validateSimpleShellCommand(command string) bool {
-	if strings.ContainsAny(command, "\r\n") {
-		return false
-	}
-	position := 0
-	words := 0
-	for {
-		_, next, ok := nextSimpleShellWord(command, position)
-		if !ok {
-			return words > 0 && strings.TrimSpace(command[position:]) == ""
-		}
-		words++
-		position = next
-		if position == len(command) {
-			return true
-		}
-	}
-}
-
-const rejectedNonInteractiveSSHCommand = "kit-rejected-compound-git-ssh-command"
-
-type shellWord struct {
-	value string
-	end   int
-}
-
-func insertShellArgument(command string, offset int, argument string) string {
-	return command[:offset] + " " + argument + command[offset:]
-}
-
-func locateSSHExecutable(command string) (shellWord, bool) {
-	position := 0
-	word, position, ok := nextSimpleShellWord(command, position)
-	if !ok {
-		return shellWord{}, false
-	}
-	for isShellAssignment(word.value) {
-		word, position, ok = nextSimpleShellWord(command, position)
-		if !ok {
-			return shellWord{}, false
-		}
-	}
-	for {
-		switch strings.ToLower(filepath.Base(word.value)) {
-		case "env", "env.exe":
-			word, position, ok = nextSimpleShellWord(command, position)
-			if !ok {
-				return shellWord{}, false
-			}
-			if word.value == "--" {
-				word, position, ok = nextSimpleShellWord(command, position)
-				if !ok {
-					return shellWord{}, false
-				}
-			} else if strings.HasPrefix(word.value, "-") {
-				return shellWord{}, false
-			}
-			for isShellAssignment(word.value) {
-				word, position, ok = nextSimpleShellWord(command, position)
-				if !ok {
-					return shellWord{}, false
-				}
-			}
-		case "command", "exec":
-			word, position, ok = nextSimpleShellWord(command, position)
-			if !ok {
-				return shellWord{}, false
-			}
-			if word.value == "--" {
-				word, position, ok = nextSimpleShellWord(command, position)
-				if !ok {
-					return shellWord{}, false
-				}
-			} else if strings.HasPrefix(word.value, "-") {
-				return shellWord{}, false
-			}
-		default:
-			if unsupportedSSHWrapper(word.value) {
-				return shellWord{}, false
-			}
-			return word, true
-		}
-	}
-}
-
-func isShellAssignment(value string) bool {
-	name, _, found := strings.Cut(value, "=")
-	if !found || name == "" {
-		return false
-	}
-	for i, char := range name {
-		if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') &&
-			char != '_' && (i == 0 || char < '0' || char > '9') {
-			return false
-		}
-	}
-	return true
-}
-
-func unsupportedSSHWrapper(value string) bool {
-	switch strings.ToLower(filepath.Base(value)) {
-	case "sudo", "sudo.exe", "doas", "nice", "timeout", "sh", "bash",
-		"zsh", "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe":
-		return true
-	default:
-		return false
-	}
-}
-
-func nextSimpleShellWord(command string, position int) (shellWord, int, bool) {
-	for position < len(command) && strings.ContainsRune(" \t\r\n", rune(command[position])) {
-		position++
-	}
-	if position == len(command) {
-		return shellWord{}, position, false
-	}
-	var word strings.Builder
-	var quote byte
-	for i := position; i < len(command); i++ {
-		char := command[i]
-		if quote == 0 {
-			switch char {
-			case ' ', '\t', '\r', '\n':
-				return shellWord{value: word.String(), end: i}, i, word.Len() > 0
-			case '\'', '"':
-				quote = char
-			case ';', '|', '&', '<', '>', '(', ')', '`', '$':
-				return shellWord{}, i, false
-			case '\\':
-				if i+1 < len(command) && strings.ContainsRune(" \t\r\n'\"\\", rune(command[i+1])) {
-					i++
-					word.WriteByte(command[i])
-				} else {
-					word.WriteByte(char)
-				}
-			default:
-				word.WriteByte(char)
-			}
-		} else if char == quote {
-			quote = 0
-		} else if quote == '"' && char == '`' {
-			return shellWord{}, i, false
-		} else if quote == '"' && char == '$' && i+1 < len(command) && command[i+1] == '(' {
-			return shellWord{}, i, false
-		} else if char == '\\' && quote == '"' && i+1 < len(command) &&
-			strings.ContainsRune("$`\"\\\n", rune(command[i+1])) {
-			i++
-			word.WriteByte(command[i])
-		} else {
-			word.WriteByte(char)
-		}
-	}
-	if quote != 0 || word.Len() == 0 {
-		return shellWord{}, len(command), false
-	}
-	return shellWord{value: word.String(), end: len(command)}, len(command), true
-}
-
-func detectSSHExecutableVariant(executable string) string {
-	executable = strings.ReplaceAll(executable, `\`, "/")
-	if slash := strings.LastIndexByte(executable, '/'); slash >= 0 {
-		executable = executable[slash+1:]
-	}
-	executable = strings.TrimSuffix(strings.ToLower(executable), ".exe")
-	switch executable {
-	case "ssh":
-		return "ssh"
-	case "plink", "putty", "tortoiseplink":
-		return executable
-	default:
-		return ""
-	}
-}
-
-func environmentValueFold(environment []string, key string) string {
-	for _, entry := range slices.Backward(environment) {
-		name, value, ok := strings.Cut(entry, "=")
-		if ok && strings.EqualFold(name, key) {
-			return value
-		}
-	}
-	return ""
-}
-
-func withoutEnvironmentKeyFold(environment []string, key string) []string {
-	return slices.DeleteFunc(environment, func(entry string) bool {
-		name, _, _ := strings.Cut(entry, "=")
-		return strings.EqualFold(name, key)
-	})
 }
 
 // GitError wraps a failed git command with stderr.

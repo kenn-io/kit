@@ -11,8 +11,38 @@ import (
 	"strings"
 
 	gitcmd "go.kenn.io/kit/git/cmd"
-	gitremote "go.kenn.io/kit/git/remote"
 )
+
+// ChangeRequestErrorKind classifies failures callers commonly present
+// differently from local worktree errors.
+type ChangeRequestErrorKind string
+
+const (
+	ChangeRequestAuthentication   ChangeRequestErrorKind = "authentication"
+	ChangeRequestNetwork          ChangeRequestErrorKind = "network"
+	ChangeRequestInaccessibleHead ChangeRequestErrorKind = "inaccessible_head"
+	ChangeRequestHeadChanged      ChangeRequestErrorKind = "head_changed"
+	// ChangeRequestUnsupportedGit is retained for callers that map older Kit
+	// errors. The trusted-repository lifecycle does not impose a Git version
+	// policy.
+	ChangeRequestUnsupportedGit ChangeRequestErrorKind = "unsupported_git"
+)
+
+// ChangeRequestError describes a merge-request fetch or verification failure.
+type ChangeRequestError struct {
+	Kind    ChangeRequestErrorKind
+	Message string
+	Cause   error
+}
+
+func (e *ChangeRequestError) Error() string {
+	if e.Message != "" {
+		return e.Message
+	}
+	return string(e.Kind)
+}
+
+func (e *ChangeRequestError) Unwrap() error { return e.Cause }
 
 // MergeRequestWorktreeOptions parameterizes CreateWorktreeFromMergeRequest.
 // ProjectRoot, Branch, and Number are required. HeadBranch and
@@ -34,11 +64,9 @@ type MergeRequestWorktreeOptions struct {
 	Number           int
 	HeadBranch       string
 	HeadRepoCloneURL string
-	// ExpectedHeadSHA is an independent provenance anchor. A hosted origin
-	// requires either this value or ProjectRepoIdentity.
-	ExpectedHeadSHA string
-	// ProjectRepoIdentity is the normalized hosted identity or exact local
-	// clone URL expected for origin.
+	// ExpectedHeadSHA, when set, must match the fetched request head before
+	// any worktree or local branch is created.
+	ExpectedHeadSHA     string
 	ProjectRepoIdentity string
 	// Platform is the project's platform kind ("github", "gitlab", ...);
 	// it selects the remote ref that carries the merge request head when
@@ -47,18 +75,16 @@ type MergeRequestWorktreeOptions struct {
 }
 
 // mergeRequestRemoteTarget describes how to materialize a merge request
-// head locally: the fetch that resolves the immutable checkout OID, an
-// optional second fetch that makes upstream tracking possible, and the
-// tracking remote/merge-ref pair.
+// head locally: the fetch that makes the checkout ref available, the ref
+// the new branch starts at, an optional second fetch that makes upstream
+// tracking possible, and the tracking remote/merge-ref pair.
 type mergeRequestRemoteTarget struct {
-	checkoutRemote         string
-	checkoutSourceRef      string
-	checkoutDestinationRef string
-	trackingRemote         string
-	trackingRepository     RemoteRepository
-	trackingSourceRef      string
-	trackingDestinationRef string
-	trackingMergeRef       string
+	checkoutFetch    []string
+	checkoutRef      string
+	trackingFetch    []string
+	trackingRef      string
+	trackingRemote   string
+	trackingMergeRef string
 }
 
 // CreateWorktreeFromMergeRequest materializes a merge request head as a new
@@ -68,21 +94,6 @@ type mergeRequestRemoteTarget struct {
 // cannot be fetched), and runs the optional setup hook. Failures after the
 // worktree exists roll it back.
 func CreateWorktreeFromMergeRequest(
-	ctx context.Context, opts MergeRequestWorktreeOptions,
-) (CreateWorktreeResult, error) {
-	root, err := absRequired(opts.ProjectRoot, "project root")
-	if err != nil {
-		return CreateWorktreeResult{}, err
-	}
-	ctx, unlock, err := acquireRepositoryMutationLock(ctx, root)
-	if err != nil {
-		return CreateWorktreeResult{}, err
-	}
-	result, createErr := createWorktreeFromMergeRequest(ctx, opts)
-	return result, errors.Join(createErr, unlock())
-}
-
-func createWorktreeFromMergeRequest(
 	ctx context.Context, opts MergeRequestWorktreeOptions,
 ) (CreateWorktreeResult, error) {
 	ctx = withLifecycleExecution(ctx, opts.Runner, opts.RunGit, opts.RunHook)
@@ -97,10 +108,6 @@ func createWorktreeFromMergeRequest(
 			"merge request number is required",
 		)
 	}
-	opts, err = normalizeMergeRequestCloneURLs(root, opts)
-	if err != nil {
-		return CreateWorktreeResult{}, err
-	}
 	if err := validateBranchName(ctx, root, branch); err != nil {
 		return CreateWorktreeResult{}, err
 	}
@@ -114,84 +121,99 @@ func createWorktreeFromMergeRequest(
 	if err != nil {
 		return CreateWorktreeResult{}, err
 	}
-
-	changeRequestGit, err := NewChangeRequestGit(ChangeRequestGitOptions{
-		ProjectRoot:            root,
-		ProjectIdentity:        repositoryIdentity(opts.ProjectRepoIdentity),
-		ProjectCloneURL:        opts.ProjectRepoIdentity,
-		ExpectedHeadOID:        opts.ExpectedHeadSHA,
-		RemoteNamePrefix:       "mr",
-		HookIsolationNamespace: opts.HookEnvironmentPrefix,
-		Runner:                 opts.Runner,
-		RunGit:                 opts.RunGit,
-	})
-	if err != nil {
-		return CreateWorktreeResult{}, err
-	}
-	if err := changeRequestGit.Validate(ctx); err != nil {
-		return CreateWorktreeResult{}, err
-	}
-	target, err := prepareMergeRequestRemote(ctx, changeRequestGit, opts)
-	if err != nil {
-		return CreateWorktreeResult{}, err
-	}
-	checkoutOID, err := changeRequestGit.FetchExpected(
-		ctx, target.checkoutRemote, target.checkoutSourceRef,
-		target.checkoutDestinationRef, opts.ExpectedHeadSHA,
+	opts.HeadRepoCloneURL, err = canonicalizeMergeRequestCloneURL(
+		root, opts.HeadRepoCloneURL,
 	)
 	if err != nil {
 		return CreateWorktreeResult{}, err
 	}
+
+	target, err := prepareMergeRequestRemote(ctx, root, opts)
+	if err != nil {
+		return CreateWorktreeResult{}, err
+	}
+
+	if out, err := runLifecycleGit(
+		ctx, root, target.checkoutFetch...,
+	); err != nil {
+		return CreateWorktreeResult{}, classifyChangeRequestFetchError(out, err)
+	}
+	checkoutOID, err := resolveMergeRequestOID(ctx, root, target.checkoutRef)
+	if err != nil {
+		return CreateWorktreeResult{}, &ChangeRequestError{
+			Kind:    ChangeRequestInaccessibleHead,
+			Message: "resolve fetched merge request head",
+			Cause:   err,
+		}
+	}
+	if expected := strings.TrimSpace(opts.ExpectedHeadSHA); expected != "" {
+		expectedOID, resolveErr := resolveMergeRequestOID(ctx, root, expected)
+		if resolveErr != nil || !strings.EqualFold(checkoutOID, expectedOID) {
+			return CreateWorktreeResult{}, &ChangeRequestError{
+				Kind: ChangeRequestHeadChanged,
+				Message: fmt.Sprintf(
+					"merge request head changed: expected %s, fetched %s",
+					expected, checkoutOID,
+				),
+				Cause: resolveErr,
+			}
+		}
+	}
 	trackingEnabled := target.trackingRemote != "" &&
 		target.trackingMergeRef != ""
-	if trackingEnabled && target.trackingSourceRef != "" {
+	if trackingEnabled && len(target.trackingFetch) > 0 {
 		// The tracking fetch is best-effort: a fork that has vanished
 		// or is unreachable must not block importing via the pull ref.
-		trackingOID, fetchErr := changeRequestGit.Fetch(
-			ctx, target.trackingRemote, target.trackingSourceRef,
-			target.trackingDestinationRef,
-		)
-		if fetchErr != nil || !strings.EqualFold(trackingOID, checkoutOID) {
+		if _, err := runLifecycleGit(
+			ctx, root, target.trackingFetch...,
+		); err != nil {
+			trackingEnabled = false
+		} else if trackingOID, resolveErr := resolveMergeRequestOID(
+			ctx, root, target.trackingRef,
+		); resolveErr != nil || !strings.EqualFold(trackingOID, checkoutOID) {
 			trackingEnabled = false
 		}
 	}
 
-	result, err := CreateWorktreeOnDisk(ctx, CreateWorktreeOptions{
-		ProjectRoot: root, Path: path, Branch: branch,
-		BaseRef: checkoutOID, Runner: opts.Runner,
-		RunGit: opts.RunGit, IsolatedCheckout: true, NoTrack: true,
-		BeforeCheckout: changeRequestGit.ValidateWorktree,
-	})
+	// --no-track: tracking is configured explicitly below; without it git
+	// auto-tracks the remote-tracking start point (e.g. the read-only
+	// pull ref), which is wrong for pushes.
+	if out, err := runLifecycleGit(
+		ctx, root,
+		"worktree", "add", path, "--no-track", "-b", branch,
+		"--", checkoutOID,
+	); err != nil {
+		return CreateWorktreeResult{}, classifyWorktreeGitError(out, err)
+	}
+	result, err := snapshotCreateWorktreeResult(ctx, root, path, branch, true)
 	if err != nil {
-		return result, err
+		rollbackCreatedWorktree(context.WithoutCancel(ctx), root, path, branch, true)
+		return CreateWorktreeResult{}, err
 	}
 
 	if trackingEnabled {
-		if err := changeRequestGit.ConfigurePush(
-			ctx, result, target.trackingRemote,
-			target.trackingRepository,
-			strings.TrimPrefix(target.trackingMergeRef, "refs/heads/"),
+		if err := configureMergeRequestTracking(
+			ctx, root, path, branch, target,
 		); err != nil {
-			_, cleanupErr := result.Rollback(context.WithoutCancel(ctx))
+			_, cleanupErr := rollbackCreatedWorktreeWithResult(
+				context.WithoutCancel(ctx), root, path, branch, true,
+			)
 			return result, errors.Join(err, cleanupErr)
 		}
-	} else if err := changeRequestGit.ConfigureWorktreeIsolation(ctx, result); err != nil {
-		_, cleanupErr := result.Rollback(context.WithoutCancel(ctx))
-		return result, errors.Join(err, cleanupErr)
 	}
 
-	if hookScript.path != "" {
+	if hookScript != "" {
 		if hookErr := runLifecycleHook(
 			ctx, hookScript, root, path, branch, opts.WorktreeName,
 			opts.HookEnvironmentPrefix,
 		); hookErr != nil {
-			_, cleanupErr := result.rollbackOwned(
-				context.WithoutCancel(ctx), false,
+			_, cleanupErr := rollbackCreatedWorktreeWithResult(
+				context.WithoutCancel(ctx), root, path, branch, true,
 			)
 			return result, errors.Join(hookErr, cleanupErr)
 		}
 		result.HookRan = true
-		result.HookScript = hookScript.requested
+		result.HookScript = hookScript
 	}
 	return result, nil
 }
@@ -202,30 +224,23 @@ func createWorktreeFromMergeRequest(
 // a dedicated fork remote; heads with no clone URL fetch the pull ref with
 // no tracking.
 func prepareMergeRequestRemote(
-	ctx context.Context, changeRequestGit *ChangeRequestGit,
-	opts MergeRequestWorktreeOptions,
+	ctx context.Context, root string, opts MergeRequestWorktreeOptions,
 ) (mergeRequestRemoteTarget, error) {
 	headBranch := strings.TrimSpace(opts.HeadBranch)
-	hasHeadBranch := headBranch != ""
-	requestRef := fmt.Sprintf("refs/kit/merge-requests/%d", opts.Number)
-	checkoutDestination := requestRef + "/head"
-	trackingDestination := requestRef + "/tracking"
 
 	cloneURL := strings.TrimSpace(opts.HeadRepoCloneURL)
-	sameRepo := cloneURL != "" && opts.ProjectRepoIdentity != "" &&
+	sameRepo := headBranch != "" && cloneURL != "" &&
+		opts.ProjectRepoIdentity != "" &&
 		mergeRequestRepositoriesEqual(cloneURL, opts.ProjectRepoIdentity)
-	if sameRepo && hasHeadBranch {
-		trackingCloneURL := cloneURL
-		if repositoryIdentity(opts.ProjectRepoIdentity).Host == "" {
-			trackingCloneURL = opts.ProjectRepoIdentity
-		}
+	if sameRepo {
 		return mergeRequestRemoteTarget{
-			checkoutRemote: "origin", checkoutSourceRef: "refs/heads/" + headBranch,
-			checkoutDestinationRef: checkoutDestination,
-			trackingRemote:         "origin",
-			trackingRepository: RemoteRepository{
-				Identity: repositoryIdentity(opts.ProjectRepoIdentity), CloneURL: trackingCloneURL,
+			checkoutFetch: []string{
+				"fetch", "origin",
+				fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s",
+					headBranch, headBranch),
 			},
+			checkoutRef:      "origin/" + headBranch,
+			trackingRemote:   "origin",
 			trackingMergeRef: "refs/heads/" + headBranch,
 		}, nil
 	}
@@ -234,138 +249,73 @@ func prepareMergeRequestRemote(
 	// Forgejo, and Gitea; refs/merge-requests/<n>/head on GitLab) carries
 	// the head commit regardless of where the head branch lives.
 	headRef := mergeRequestHeadRef(opts.Platform, opts.Number)
-	if cloneURL == "" || sameRepo || !hasHeadBranch {
+	localRef := strings.TrimPrefix(headRef, "refs/")
+	pullRefFetch := []string{
+		"fetch", "origin",
+		fmt.Sprintf("+%s:refs/remotes/origin/%s", headRef, localRef),
+	}
+	pullRef := "origin/" + localRef
+
+	if cloneURL == "" || headBranch == "" {
 		return mergeRequestRemoteTarget{
-			checkoutRemote: "origin", checkoutSourceRef: headRef,
-			checkoutDestinationRef: checkoutDestination,
+			checkoutFetch: pullRefFetch,
+			checkoutRef:   pullRef,
 		}, nil
 	}
 
-	repository := RemoteRepository{
-		Identity: repositoryIdentity(CloneURLIdentity(cloneURL)),
-		CloneURL: cloneURL,
+	preferredName := sanitizeRemoteName(ownerFromCloneURL(cloneURL))
+	if preferredName == "" {
+		preferredName = "mr-head"
 	}
-	remoteName, err := changeRequestGit.EnsureRemote(ctx, repository)
+	remoteName, err := ensureFetchRemote(ctx, root, preferredName, cloneURL)
 	if err != nil {
 		return mergeRequestRemoteTarget{}, err
 	}
 	return mergeRequestRemoteTarget{
-		checkoutRemote: "origin", checkoutSourceRef: headRef,
-		checkoutDestinationRef: checkoutDestination,
-		trackingRemote:         remoteName, trackingRepository: repository,
-		trackingSourceRef:      "refs/heads/" + headBranch,
-		trackingDestinationRef: trackingDestination,
-		trackingMergeRef:       "refs/heads/" + headBranch,
+		checkoutFetch: pullRefFetch,
+		checkoutRef:   pullRef,
+		trackingFetch: []string{
+			"fetch", remoteName,
+			fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s",
+				headBranch, remoteName, headBranch),
+		},
+		trackingRef:      remoteName + "/" + headBranch,
+		trackingRemote:   remoteName,
+		trackingMergeRef: "refs/heads/" + headBranch,
 	}, nil
 }
 
-func mergeRequestRepositoriesEqual(headURL, projectIdentity string) bool {
-	headIdentity := CloneURLIdentity(headURL)
-	projectIdentity = CloneURLIdentity(projectIdentity)
-	headHosted := repositoryIdentity(headIdentity).Host != ""
-	projectHosted := repositoryIdentity(projectIdentity).Host != ""
-	if headHosted || projectHosted {
-		return headHosted && projectHosted && strings.EqualFold(headIdentity, projectIdentity)
+func mergeRequestRepositoriesEqual(left, right string) bool {
+	leftPath, leftLocal := localClonePath(left)
+	rightPath, rightLocal := localClonePath(right)
+	if leftLocal || rightLocal {
+		if !leftLocal || !rightLocal {
+			return false
+		}
+		leftInfo, leftErr := os.Stat(leftPath)
+		rightInfo, rightErr := os.Stat(rightPath)
+		if leftErr == nil && rightErr == nil {
+			return os.SameFile(leftInfo, rightInfo)
+		}
+		return filepath.Clean(leftPath) == filepath.Clean(rightPath)
 	}
-	return localRepositoriesEqual(headIdentity, projectIdentity)
+	return strings.EqualFold(CloneURLIdentity(left), CloneURLIdentity(right))
 }
 
-func localRepositoriesEqual(left, right string) bool {
-	leftPath, leftErr := localRepositoryPath(left)
-	rightPath, rightErr := localRepositoryPath(right)
-	if leftErr != nil || rightErr != nil {
-		return false
+func localClonePath(raw string) (string, bool) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", false
 	}
-	if leftPath == rightPath {
-		return true
+	if parsed, err := url.Parse(value); err == nil &&
+		strings.EqualFold(parsed.Scheme, "file") &&
+		(parsed.Host == "" || strings.EqualFold(parsed.Host, "localhost")) {
+		return filepath.FromSlash(parsed.Path), true
 	}
-	leftInfo, leftErr := os.Stat(leftPath)
-	rightInfo, rightErr := os.Stat(rightPath)
-	return leftErr == nil && rightErr == nil && os.SameFile(leftInfo, rightInfo)
-}
-
-func localRepositoryPath(raw string) (string, error) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return "", fmt.Errorf("local repository path is empty")
+	if filepath.IsAbs(value) {
+		return filepath.Clean(value), true
 	}
-	if strings.HasPrefix(strings.ToLower(trimmed), "file:") {
-		parsed, err := url.Parse(trimmed)
-		if err != nil || !strings.EqualFold(parsed.Scheme, "file") ||
-			parsed.User != nil || parsed.Opaque != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
-			return "", fmt.Errorf("invalid local repository URL")
-		}
-		path, err := url.PathUnescape(parsed.EscapedPath())
-		if err != nil {
-			return "", err
-		}
-		if parsed.Host != "" && !strings.EqualFold(parsed.Host, "localhost") {
-			path = "//" + parsed.Host + "/" + strings.TrimPrefix(path, "/")
-		}
-		if len(path) >= 3 && path[0] == '/' && path[2] == ':' {
-			path = path[1:]
-		}
-		if path == "" {
-			return "", fmt.Errorf("local repository path is empty")
-		}
-		trimmed = filepath.FromSlash(path)
-	}
-	absolute, err := filepath.Abs(trimmed)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Clean(absolute), nil
-}
-
-func normalizeMergeRequestCloneURLs(
-	root string, opts MergeRequestWorktreeOptions,
-) (MergeRequestWorktreeOptions, error) {
-	headURL, _, err := canonicalCloneURL(root, opts.HeadRepoCloneURL)
-	if err != nil {
-		return opts, fmt.Errorf("resolve merge-request head clone URL: %w", err)
-	}
-	opts.HeadRepoCloneURL = headURL
-
-	project := strings.TrimSpace(opts.ProjectRepoIdentity)
-	if project == "" {
-		return opts, nil
-	}
-	// ProjectRepoIdentity represents hosted repositories in normalized
-	// host/owner/name form. Keep that identity separate from local clone paths:
-	// its spelling must not change merely because a matching relative path
-	// happens to exist beneath the checkout.
-	if identity := repositoryIdentity(project); identity.Host != "" &&
-		identity.Host != "." && identity.Host != ".." {
-		return opts, nil
-	}
-	canonicalProject, local, err := canonicalCloneURL(root, project)
-	if err != nil {
-		return opts, fmt.Errorf("resolve project repository identity: %w", err)
-	}
-	if !local {
-		return opts, nil
-	}
-	if gitremote.IsLocal(project) || strings.HasPrefix(project, ".") {
-		opts.ProjectRepoIdentity = canonicalProject
-		return opts, nil
-	}
-	opts.ProjectRepoIdentity = canonicalProject
-	return opts, nil
-}
-
-func repositoryIdentity(identity string) gitremote.Identity {
-	trimmed := strings.TrimSpace(identity)
-	if filepath.IsAbs(trimmed) || strings.HasPrefix(trimmed, "file://") {
-		return gitremote.Identity{}
-	}
-	parts := strings.Split(strings.Trim(trimmed, "/"), "/")
-	if len(parts) < 3 {
-		return gitremote.Identity{}
-	}
-	return gitremote.Identity{
-		Host: parts[0], Owner: strings.Join(parts[1:len(parts)-1], "/"),
-		Name: parts[len(parts)-1],
-	}
+	return "", false
 }
 
 func mergeRequestHeadRef(platform string, number int) string {
@@ -373,6 +323,138 @@ func mergeRequestHeadRef(platform string, number int) string {
 		return fmt.Sprintf("refs/merge-requests/%d/head", number)
 	}
 	return fmt.Sprintf("refs/pull/%d/head", number)
+}
+
+// configureMergeRequestTracking points the imported branch at its upstream
+// using worktree-scoped config, so `git push`/`git pull` in the worktree
+// target the merge request head without affecting the primary checkout.
+func configureMergeRequestTracking(
+	ctx context.Context,
+	root, worktreePath, branch string,
+	target mergeRequestRemoteTarget,
+) error {
+	steps := []struct {
+		dir  string
+		args []string
+	}{
+		{root, []string{"config", "extensions.worktreeConfig", "true"}},
+		{worktreePath, []string{
+			"config", "--worktree",
+			"branch." + branch + ".remote", target.trackingRemote,
+		}},
+		{worktreePath, []string{
+			"config", "--worktree",
+			"branch." + branch + ".merge", target.trackingMergeRef,
+		}},
+		{worktreePath, []string{
+			"config", "--worktree", "push.default", "upstream",
+		}},
+	}
+	for _, step := range steps {
+		if out, err := runLifecycleGit(
+			ctx, step.dir, step.args...,
+		); err != nil {
+			return fmt.Errorf(
+				"configure merge request tracking (git %s): %w: %s",
+				strings.Join(step.args, " "), err,
+				strings.TrimSpace(string(out)),
+			)
+		}
+	}
+	return nil
+}
+
+func canonicalizeMergeRequestCloneURL(root, raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" || strings.Contains(value, "://") ||
+		looksLikeSCPRemote(value) || filepath.IsAbs(value) {
+		return value, nil
+	}
+	absolute, err := filepath.Abs(filepath.Join(root, value))
+	if err != nil {
+		return "", fmt.Errorf("resolve merge request clone URL: %w", err)
+	}
+	return filepath.Clean(absolute), nil
+}
+
+func looksLikeSCPRemote(value string) bool {
+	prefix, _, found := strings.Cut(value, ":")
+	return found && prefix != "" &&
+		!strings.ContainsAny(prefix, `/\`) &&
+		!(len(prefix) == 1 &&
+			((prefix[0] >= 'a' && prefix[0] <= 'z') ||
+				(prefix[0] >= 'A' && prefix[0] <= 'Z')))
+}
+
+func resolveMergeRequestOID(ctx context.Context, root, ref string) (string, error) {
+	out, err := runLifecycleGit(ctx, root, "rev-parse", "--verify", ref+"^{commit}")
+	if err != nil {
+		return "", fmt.Errorf(
+			"resolve %s: %w: %s", ref, err, strings.TrimSpace(string(out)),
+		)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func classifyChangeRequestFetchError(out []byte, err error) error {
+	detail := strings.TrimSpace(string(out))
+	lower := strings.ToLower(detail)
+	kind := ChangeRequestInaccessibleHead
+	switch {
+	case strings.Contains(lower, "authentication failed"),
+		strings.Contains(lower, "permission denied"),
+		strings.Contains(lower, "could not read username"),
+		strings.Contains(lower, "repository not found"):
+		kind = ChangeRequestAuthentication
+	case strings.Contains(lower, "could not resolve host"),
+		strings.Contains(lower, "failed to connect"),
+		strings.Contains(lower, "connection timed out"),
+		strings.Contains(lower, "network is unreachable"):
+		kind = ChangeRequestNetwork
+	}
+	message := "fetch merge request head"
+	if detail != "" {
+		message += ": " + detail
+	}
+	return &ChangeRequestError{Kind: kind, Message: message, Cause: err}
+}
+
+// ensureFetchRemote returns the name of a remote pointing at cloneURL,
+// adding one when absent. Name collisions with other URLs fall back to
+// numbered suffixes.
+func ensureFetchRemote(
+	ctx context.Context, root, preferredName, cloneURL string,
+) (string, error) {
+	const maxAttempts = 100
+	candidate := preferredName
+	for attempt := 2; attempt < maxAttempts+2; attempt++ {
+		existing, err := runLifecycleGit(
+			ctx, root, "config", "--get",
+			"remote."+candidate+".url",
+		)
+		if err != nil {
+			// The remote does not exist yet; claim the name.
+			if out, addErr := runLifecycleGit(
+				ctx, root, "remote", "add", candidate, cloneURL,
+			); addErr != nil {
+				return "", fmt.Errorf(
+					"add remote %s: %w: %s", candidate, addErr,
+					strings.TrimSpace(string(out)),
+				)
+			}
+			return candidate, nil
+		}
+		existingURL := strings.TrimSpace(string(existing))
+		if existingURL == cloneURL ||
+			CloneURLIdentity(existingURL) == CloneURLIdentity(cloneURL) {
+			return candidate, nil
+		}
+		candidate = fmt.Sprintf("%s-%d", preferredName, attempt)
+	}
+	return "", fmt.Errorf(
+		"no unique remote name for %s after %d attempts",
+		cloneURL, maxAttempts,
+	)
 }
 
 var remoteNameSanitizer = regexp.MustCompile(`[^A-Za-z0-9]+`)
@@ -396,10 +478,38 @@ func CloneURLIdentity(rawURL string) string {
 	if trimmed == "" {
 		return ""
 	}
-	host := gitremote.RemoteHost(trimmed)
-	repositoryPath := gitremote.RemoteRepoPath(trimmed)
-	if host != "" && repositoryPath != "" {
-		return gitremote.NormalizeHost(host) + "/" + repositoryPath
+	if strings.Contains(trimmed, "://") {
+		parsed, err := url.Parse(trimmed)
+		if err == nil && parsed.Host != "" {
+			path := strings.TrimPrefix(parsed.Path, "/")
+			path = strings.TrimSuffix(path, ".git")
+			if path != "" {
+				return strings.ToLower(parsed.Host) + "/" + path
+			}
+		}
+	}
+	if atIndex := strings.Index(trimmed, "@"); atIndex >= 0 {
+		if colonIndex := strings.Index(trimmed[atIndex:], ":"); colonIndex >= 0 {
+			colonIndex += atIndex
+			host := strings.ToLower(trimmed[atIndex+1 : colonIndex])
+			path := strings.TrimSuffix(trimmed[colonIndex+1:], ".git")
+			if path != "" {
+				return host + "/" + path
+			}
+		}
 	}
 	return trimmed
+}
+
+// ownerFromCloneURL extracts the repository owner segment from a clone
+// URL identity ("host/owner/name"). Identities without that shape (local
+// paths) yield "".
+func ownerFromCloneURL(rawURL string) string {
+	identity := CloneURLIdentity(rawURL)
+	if _, after, ok := strings.Cut(identity, "/"); ok {
+		if owner, _, ok := strings.Cut(after, "/"); ok && owner != "" {
+			return owner
+		}
+	}
+	return ""
 }

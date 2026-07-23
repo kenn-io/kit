@@ -12,7 +12,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	Require "github.com/stretchr/testify/require"
 
-	gitcmd "go.kenn.io/kit/git/cmd"
 	gitenv "go.kenn.io/kit/git/env"
 )
 
@@ -27,31 +26,6 @@ func identityOfCloneURL(rawURL string) string {
 	return CloneURLIdentity(rawURL)
 }
 
-func TestCloneURLIdentityRecognizesSCPWithoutUsername(t *testing.T) {
-	assert.Equal(t, "github.com/acme/widget",
-		CloneURLIdentity("github.com:acme/widget.git"))
-	assert.Equal(t, "github.com/acme/widget",
-		CloneURLIdentity("git@github.com:acme/widget.git"))
-	assert.Equal(t, `C:\repos\widget.git`,
-		CloneURLIdentity(`C:\repos\widget.git`))
-	assert.Equal(t, "./local:path/widget.git",
-		CloneURLIdentity("./local:path/widget.git"))
-}
-
-func TestNormalizeMergeRequestCloneURLsKeepsHostedIdentityWhenPathExists(t *testing.T) {
-	root := t.TempDir()
-	hostedIdentity := "github.com/acme/widget"
-	Require.NoError(t, os.MkdirAll(filepath.Join(root, filepath.FromSlash(hostedIdentity)), 0o755))
-
-	opts, err := normalizeMergeRequestCloneURLs(root, MergeRequestWorktreeOptions{
-		HeadRepoCloneURL:    "https://github.com/acme/widget.git",
-		ProjectRepoIdentity: hostedIdentity,
-	})
-
-	Require.NoError(t, err)
-	assert.Equal(t, hostedIdentity, opts.ProjectRepoIdentity)
-}
-
 // initOriginAndClone builds an "origin" repository with one commit on main
 // and a clone of it, returning (originDir, cloneDir). The clone is the
 // project checkout merge-request worktrees are created in.
@@ -60,7 +34,8 @@ func initOriginAndClone(t *testing.T) (string, string) {
 	origin := initLifecycleRepo(t)
 	clone := filepath.Join(t.TempDir(), "clone")
 	lifecycleGit(t, filepath.Dir(origin), "clone", "-q", origin, clone)
-	configureLifecycleGitIdentity(t, clone)
+	lifecycleGit(t, clone, "config", "user.email", "t@e.st")
+	lifecycleGit(t, clone, "config", "user.name", "Tester")
 	return origin, clone
 }
 
@@ -110,38 +85,10 @@ func TestCreateWorktreeFromMergeRequestSameRepo(t *testing.T) {
 	assert.Equal("upstream", worktreeConfig(t, dest, "push.default"))
 }
 
-func TestCreateWorktreeFromMergeRequestAcceptsRelativeProjectRemote(t *testing.T) {
-	require := Require.New(t)
-	assert := assert.New(t)
-	origin, clone := initOriginAndClone(t)
-	relativeOrigin, err := filepath.Rel(clone, origin)
-	require.NoError(err)
-	lifecycleGit(t, clone, "remote", "set-url", "origin", relativeOrigin)
-	lifecycleGit(t, origin, "checkout", "-q", "-b", "relative-origin")
-	lifecycleGit(t, origin, "commit", "--allow-empty", "-m", "relative origin")
-	headSHA := lifecycleGit(t, origin, "rev-parse", "relative-origin")
-	lifecycleGit(t, origin, "checkout", "-q", "main")
-
-	result, err := CreateWorktreeFromMergeRequest(t.Context(), MergeRequestWorktreeOptions{
-		ProjectRoot:         clone,
-		Branch:              "pr-relative-origin",
-		Path:                filepath.Join(t.TempDir(), "worktree"),
-		Number:              22,
-		HeadBranch:          "relative-origin",
-		HeadRepoCloneURL:    relativeOrigin,
-		ProjectRepoIdentity: relativeOrigin,
-	})
-
-	require.NoError(err)
-	t.Cleanup(func() { _, _ = result.Rollback(context.Background()) })
-	assert.Equal(headSHA, lifecycleGit(t, result.Path, "rev-parse", "HEAD"))
-	assert.Equal("origin", worktreeConfig(t, result.Path, "branch.pr-relative-origin.remote"))
-}
-
-func TestCreateWorktreeFromMergeRequestSameLocalRepoAlternateSpellings(t *testing.T) {
+func TestCreateWorktreeFromMergeRequestMatchesEquivalentLocalRepositories(t *testing.T) {
 	for _, test := range []struct {
 		name    string
-		headURL func(t *testing.T, origin string) string
+		headURL func(*testing.T, string) string
 	}{
 		{
 			name: "symlink",
@@ -157,7 +104,8 @@ func TestCreateWorktreeFromMergeRequestSameLocalRepoAlternateSpellings(t *testin
 			name: "file URL",
 			headURL: func(_ *testing.T, origin string) string {
 				path := filepath.ToSlash(origin)
-				if filepath.VolumeName(origin) != "" && !strings.HasPrefix(path, "/") {
+				if filepath.VolumeName(origin) != "" &&
+					!strings.HasPrefix(path, "/") {
 					path = "/" + path
 				}
 				return (&url.URL{Scheme: "file", Path: path}).String()
@@ -165,73 +113,56 @@ func TestCreateWorktreeFromMergeRequestSameLocalRepoAlternateSpellings(t *testin
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			require := Require.New(t)
+			assert := assert.New(t)
 			origin, clone := initOriginAndClone(t)
-			lifecycleGit(t, origin, "checkout", "-q", "-b", "alternate-spelling")
-			lifecycleGit(t, origin, "commit", "--allow-empty", "-m", "alternate spelling")
+			lifecycleGit(t, origin, "checkout", "-q", "-b", "alternate")
+			lifecycleGit(t, origin, "commit", "--allow-empty", "-m", "alternate")
 			headSHA := lifecycleGit(t, origin, "rev-parse", "HEAD")
 			lifecycleGit(t, origin, "checkout", "-q", "main")
 
-			result, err := CreateWorktreeFromMergeRequest(t.Context(), MergeRequestWorktreeOptions{
-				ProjectRoot:         clone,
-				Branch:              "pr-alternate",
-				Path:                filepath.Join(t.TempDir(), "worktree"),
-				Number:              19,
-				HeadBranch:          "alternate-spelling",
-				HeadRepoCloneURL:    test.headURL(t, origin),
-				ProjectRepoIdentity: origin,
-			})
+			result, err := CreateWorktreeFromMergeRequest(
+				t.Context(), MergeRequestWorktreeOptions{
+					ProjectRoot:         clone,
+					Branch:              "pr-alternate",
+					Path:                filepath.Join(t.TempDir(), "worktree"),
+					Number:              19,
+					HeadBranch:          "alternate",
+					HeadRepoCloneURL:    test.headURL(t, origin),
+					ProjectRepoIdentity: origin,
+				})
 
-			Require.NoError(t, err)
-			t.Cleanup(func() { _, _ = result.Rollback(context.Background()) })
-			assert.Equal(t, headSHA, lifecycleGit(t, result.Path, "rev-parse", "HEAD"))
-			assert.Equal(t, "origin", worktreeConfig(t, result.Path, "branch.pr-alternate.remote"))
+			require.NoError(err)
+			assert.Equal(headSHA, lifecycleGit(t, result.Path, "rev-parse", "HEAD"))
+			assert.Equal("origin",
+				worktreeConfig(t, result.Path, "branch.pr-alternate.remote"))
 		})
 	}
 }
 
-func TestPrepareMergeRequestRemoteKeepsCaseDistinctLocalRepositoriesSeparate(t *testing.T) {
-	repo := initLifecycleRepo(t)
-	backend, err := NewChangeRequestGit(ChangeRequestGitOptions{
-		ProjectRoot:     repo,
-		ExpectedHeadOID: strings.Repeat("a", 40),
-	})
-	Require.NoError(t, err)
-	base := t.TempDir()
+func TestCreateWorktreeFromMergeRequestGitLabRef(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
 
-	target, err := prepareMergeRequestRemote(t.Context(), backend, MergeRequestWorktreeOptions{
-		Number:              18,
-		Platform:            "github",
-		HeadBranch:          "feature",
-		HeadRepoCloneURL:    filepath.Join(base, "CaseRepo"),
-		ProjectRepoIdentity: filepath.Join(base, "caserepo"),
-	})
+	origin, clone := initOriginAndClone(t)
+	lifecycleGit(t, origin, "checkout", "-q", "-b", "mr-work")
+	lifecycleGit(t, origin, "commit", "--allow-empty", "-m", "mr work")
+	headSHA := lifecycleGit(t, origin, "rev-parse", "mr-work")
+	lifecycleGit(t, origin, "update-ref", "refs/merge-requests/5/head", headSHA)
+	lifecycleGit(t, origin, "checkout", "-q", "main")
 
-	Require.NoError(t, err)
-	assert.Equal(t, "refs/pull/18/head", target.checkoutSourceRef)
-	assert.Equal(t, "refs/kit/merge-requests/18/head", target.checkoutDestinationRef)
-	assert.Equal(t, "refs/kit/merge-requests/18/tracking", target.trackingDestinationRef)
-	assert.NotEqual(t, "origin", target.trackingRemote)
-}
-
-func TestPrepareMergeRequestRemoteUsesDedicatedRefForSameRepoHEADBranch(t *testing.T) {
-	repo := initLifecycleRepo(t)
-	backend, err := NewChangeRequestGit(ChangeRequestGitOptions{
-		ProjectRoot: repo,
-	})
-	Require.NoError(t, err)
-
-	target, err := prepareMergeRequestRemote(t.Context(), backend, MergeRequestWorktreeOptions{
-		Number:              23,
-		Platform:            "github",
-		HeadBranch:          "HEAD",
-		HeadRepoCloneURL:    repo,
-		ProjectRepoIdentity: repo,
-	})
-
-	Require.NoError(t, err)
-	assert.Equal(t, "refs/heads/HEAD", target.checkoutSourceRef)
-	assert.Equal(t, "refs/kit/merge-requests/23/head", target.checkoutDestinationRef)
-	assert.NotEqual(t, "refs/remotes/origin/HEAD", target.checkoutDestinationRef)
+	dest := filepath.Join(t.TempDir(), "wt")
+	_, err := CreateWorktreeFromMergeRequest(
+		context.Background(), MergeRequestWorktreeOptions{
+			ProjectRoot: clone,
+			Branch:      "mr-5",
+			Path:        dest,
+			Number:      5,
+			HeadBranch:  "mr-work",
+			Platform:    "gitlab",
+		})
+	require.NoError(err)
+	assert.Equal(headSHA, lifecycleGit(t, dest, "rev-parse", "HEAD"))
 }
 
 // TestCreateWorktreeFromMergeRequestPullRefFallback covers the no-fork-URL
@@ -264,127 +195,33 @@ func TestCreateWorktreeFromMergeRequestPullRefFallback(t *testing.T) {
 		"no tracking without a fork clone URL")
 }
 
-func TestCreateWorktreeFromMergeRequestSameRepoWithoutHeadBranchUsesPullRef(t *testing.T) {
+func TestCreateWorktreeFromMergeRequestRejectsChangedHead(t *testing.T) {
 	require := Require.New(t)
 	assert := assert.New(t)
+
 	origin, clone := initOriginAndClone(t)
-	lifecycleGit(t, origin, "checkout", "-q", "-b", "unnamed-head")
+	lifecycleGit(t, origin, "checkout", "-q", "-b", "changed-head")
 	lifecycleGit(t, origin, "commit", "--allow-empty", "-m", "pr work")
-	headSHA := lifecycleGit(t, origin, "rev-parse", "unnamed-head")
-	lifecycleGit(t, origin, "update-ref", "refs/pull/12/head", headSHA)
-	lifecycleGit(t, origin, "checkout", "-q", "main")
-
-	result, err := CreateWorktreeFromMergeRequest(t.Context(), MergeRequestWorktreeOptions{
-		ProjectRoot:         clone,
-		Branch:              "pr-12",
-		Path:                filepath.Join(t.TempDir(), "wt"),
-		Number:              12,
-		HeadRepoCloneURL:    origin,
-		ProjectRepoIdentity: identityOfCloneURL(origin),
-	})
-
-	require.NoError(err)
-	t.Cleanup(func() { _, _ = result.Rollback(context.Background()) })
-	assert.Equal(headSHA, lifecycleGit(t, result.Path, "rev-parse", "HEAD"))
-	assert.Empty(worktreeConfig(t, result.Path, "branch.pr-12.remote"))
-}
-
-func TestCreateWorktreeFromForkWithoutHeadBranchDisablesTracking(t *testing.T) {
-	require := Require.New(t)
-	assert := assert.New(t)
-	origin, clone := initOriginAndClone(t)
-	fork := filepath.Join(t.TempDir(), "fork")
-	lifecycleGit(t, filepath.Dir(origin), "clone", "-q", origin, fork)
-	configureLifecycleGitIdentity(t, fork)
-	lifecycleGit(t, fork, "checkout", "-q", "-b", "merge-request")
-	lifecycleGit(t, fork, "commit", "--allow-empty", "-m", "unnamed fork head")
-	headSHA := lifecycleGit(t, fork, "rev-parse", "HEAD")
-	lifecycleGit(t, origin, "fetch", "-q", fork,
-		"+refs/heads/merge-request:refs/pull/13/head")
-
-	result, err := CreateWorktreeFromMergeRequest(t.Context(), MergeRequestWorktreeOptions{
-		ProjectRoot:         clone,
-		Branch:              "pr-13",
-		Path:                filepath.Join(t.TempDir(), "wt"),
-		Number:              13,
-		HeadRepoCloneURL:    fork,
-		ProjectRepoIdentity: identityOfCloneURL(origin),
-	})
-
-	require.NoError(err)
-	t.Cleanup(func() { _, _ = result.Rollback(context.Background()) })
-	assert.Equal(headSHA, lifecycleGit(t, result.Path, "rev-parse", "HEAD"))
-	assert.Empty(worktreeConfig(t, result.Path, "branch.pr-13.remote"))
-}
-
-func TestCreateWorktreeFromMergeRequestCanonicalizesRelativeForkPath(t *testing.T) {
-	require := Require.New(t)
-	assert := assert.New(t)
-	origin, clone := initOriginAndClone(t)
-	fork := filepath.Join(filepath.Dir(clone), "forks", "team", "fork")
-	require.NoError(os.MkdirAll(filepath.Dir(fork), 0o755))
-	lifecycleGit(t, filepath.Dir(fork), "clone", "-q", origin, fork)
-	configureLifecycleGitIdentity(t, fork)
-	lifecycleGit(t, fork, "checkout", "-q", "-b", "relative-fork")
-	lifecycleGit(t, fork, "commit", "--allow-empty", "-m", "relative fork head")
-	headSHA := lifecycleGit(t, fork, "rev-parse", "HEAD")
-	lifecycleGit(t, origin, "fetch", "-q", fork,
-		"+refs/heads/relative-fork:refs/pull/14/head")
-	relativeFork, err := filepath.Rel(clone, fork)
-	require.NoError(err)
-
-	result, err := CreateWorktreeFromMergeRequest(t.Context(), MergeRequestWorktreeOptions{
-		ProjectRoot:         clone,
-		Branch:              "pr-14",
-		Path:                filepath.Join(t.TempDir(), "wt"),
-		Number:              14,
-		HeadBranch:          "relative-fork",
-		HeadRepoCloneURL:    relativeFork,
-		ProjectRepoIdentity: identityOfCloneURL(origin),
-	})
-
-	require.NoError(err)
-	t.Cleanup(func() { _, _ = result.Rollback(context.Background()) })
-	assert.Equal(headSHA, lifecycleGit(t, result.Path, "rev-parse", "HEAD"))
-	remote := worktreeConfig(t, result.Path, "branch.pr-14.remote")
-	assert.NotEmpty(remote)
-	assert.Equal(fork, lifecycleGit(t, clone, "remote", "get-url", remote))
-}
-
-func TestCreateWorktreeFromMergeRequestChecksOutVerifiedOID(t *testing.T) {
-	require := Require.New(t)
-	assert := assert.New(t)
-	origin, clone := initOriginAndClone(t)
-	lifecycleGit(t, origin, "checkout", "-q", "-b", "contributor-work")
-	lifecycleGit(t, origin, "commit", "--allow-empty", "-m", "pr work")
-	headSHA := lifecycleGit(t, origin, "rev-parse", "contributor-work")
+	headSHA := lifecycleGit(t, origin, "rev-parse", "changed-head")
 	lifecycleGit(t, origin, "update-ref", "refs/pull/8/head", headSHA)
 	lifecycleGit(t, origin, "checkout", "-q", "main")
-	mainSHA := lifecycleGit(t, origin, "rev-parse", "main")
-	mutated := false
 
-	result, err := CreateWorktreeFromMergeRequest(t.Context(), MergeRequestWorktreeOptions{
-		ProjectRoot:     clone,
-		Branch:          "pr-8",
-		Path:            filepath.Join(t.TempDir(), "wt"),
-		Number:          8,
-		HeadBranch:      "contributor-work",
-		ExpectedHeadSHA: headSHA,
-		RunGit: func(
-			ctx context.Context, runner gitcmd.Runner, dir string, args ...string,
-		) ([]byte, error) {
-			if !mutated && len(args) >= 2 && args[0] == "worktree" && args[1] == "add" {
-				mutated = true
-				lifecycleGit(t, clone, "update-ref", "refs/kit/merge-requests/8/head", mainSHA)
-			}
-			stdout, stderr, runErr := runner.Run(ctx, dir, nil, args...)
-			return append(stdout, stderr...), runErr
-		},
-	})
-	require.NoError(err)
-	t.Cleanup(func() { _, _ = result.Rollback(context.Background()) })
-	assert.True(mutated)
-	assert.Equal(headSHA, lifecycleGit(t, result.Path, "rev-parse", "HEAD"))
+	dest := filepath.Join(t.TempDir(), "wt")
+	result, err := CreateWorktreeFromMergeRequest(
+		context.Background(), MergeRequestWorktreeOptions{
+			ProjectRoot:     clone,
+			Branch:          "pr-8",
+			Path:            dest,
+			Number:          8,
+			HeadBranch:      "changed-head",
+			ExpectedHeadSHA: lifecycleGit(t, origin, "rev-parse", "main"),
+		})
+
+	assert.Empty(result.Path)
+	var changeErr *ChangeRequestError
+	require.ErrorAs(err, &changeErr)
+	assert.Equal(ChangeRequestHeadChanged, changeErr.Kind)
+	assert.NoDirExists(dest)
 }
 
 // TestCreateWorktreeFromMergeRequestFork covers the fork scenario: checkout
@@ -431,35 +268,35 @@ func TestCreateWorktreeFromMergeRequestFork(t *testing.T) {
 	assert.Equal(fork, remoteURL)
 }
 
-func TestCreateWorktreeFromMergeRequestDisablesTrackingWhenForkHeadDiffers(t *testing.T) {
+func TestCreateWorktreeFromMergeRequestCanonicalizesRelativeForkURL(t *testing.T) {
 	require := Require.New(t)
 	assert := assert.New(t)
+
 	origin, clone := initOriginAndClone(t)
-	fork := filepath.Join(t.TempDir(), "fork")
+	fork := filepath.Join(filepath.Dir(clone), "fork")
 	lifecycleGit(t, filepath.Dir(origin), "clone", "-q", origin, fork)
 	lifecycleGit(t, fork, "config", "user.email", "t@e.st")
 	lifecycleGit(t, fork, "config", "user.name", "Tester")
 	lifecycleGit(t, fork, "checkout", "-q", "-b", "fork-work")
-	lifecycleGit(t, fork, "commit", "--allow-empty", "-m", "selected pr work")
-	selectedSHA := lifecycleGit(t, fork, "rev-parse", "fork-work")
+	lifecycleGit(t, fork, "commit", "--allow-empty", "-m", "fork pr work")
 	lifecycleGit(t, origin, "fetch", "-q", fork,
 		"+refs/heads/fork-work:refs/pull/10/head")
-	lifecycleGit(t, fork, "commit", "--allow-empty", "-m", "later fork work")
 
-	result, err := CreateWorktreeFromMergeRequest(t.Context(), MergeRequestWorktreeOptions{
-		ProjectRoot:         clone,
-		Branch:              "pr-10",
-		Path:                filepath.Join(t.TempDir(), "wt"),
-		Number:              10,
-		HeadBranch:          "fork-work",
-		HeadRepoCloneURL:    fork,
-		ExpectedHeadSHA:     selectedSHA,
-		ProjectRepoIdentity: identityOfCloneURL(origin),
-	})
+	dest := filepath.Join(t.TempDir(), "wt")
+	_, err := CreateWorktreeFromMergeRequest(
+		context.Background(), MergeRequestWorktreeOptions{
+			ProjectRoot:         clone,
+			Branch:              "pr-10",
+			Path:                dest,
+			Number:              10,
+			HeadBranch:          "fork-work",
+			HeadRepoCloneURL:    "../fork",
+			ProjectRepoIdentity: identityOfCloneURL(origin),
+		})
 	require.NoError(err)
-	t.Cleanup(func() { _, _ = result.Rollback(context.Background()) })
-	assert.Equal(selectedSHA, lifecycleGit(t, result.Path, "rev-parse", "HEAD"))
-	assert.Empty(worktreeConfig(t, result.Path, "branch.pr-10.remote"))
+
+	remote := worktreeConfig(t, dest, "branch.pr-10.remote")
+	assert.Equal(fork, lifecycleGit(t, clone, "remote", "get-url", remote))
 }
 
 // TestCreateWorktreeFromMergeRequestTrackingFetchFailureIsNonFatal: when
@@ -504,8 +341,8 @@ func TestCreateWorktreeFromMergeRequestHookFailureRollsBack(t *testing.T) {
 	lifecycleGit(t, origin, "commit", "--allow-empty", "-m", "pr work")
 	lifecycleGit(t, origin, "checkout", "-q", "main")
 	require.NoError(os.WriteFile(
-		filepath.Join(clone, "setup"),
-		[]byte("#!/bin/sh\nprintf partial > setup-output.txt\nexit 5\n"), 0o755))
+		filepath.Join(clone, "setup.sh"),
+		[]byte("#!/bin/sh\nexit 5\n"), 0o755))
 
 	dest := filepath.Join(t.TempDir(), "wt")
 	_, err := CreateWorktreeFromMergeRequest(
@@ -517,7 +354,7 @@ func TestCreateWorktreeFromMergeRequestHookFailureRollsBack(t *testing.T) {
 			HeadBranch:          "feature-x",
 			HeadRepoCloneURL:    origin,
 			ProjectRepoIdentity: identityOfCloneURL(origin),
-			SetupScript:         "setup",
+			SetupScript:         "setup.sh",
 		})
 	var hookErr *HookError
 	require.ErrorAs(err, &hookErr)
@@ -525,58 +362,4 @@ func TestCreateWorktreeFromMergeRequestHookFailureRollsBack(t *testing.T) {
 	_, statErr := os.Stat(dest)
 	assert.True(os.IsNotExist(statErr))
 	assert.False(branchExistsInRepo(t, clone, "pr-42"))
-}
-
-func TestCreateWorktreeFromMergeRequestPersistsSafePushRouting(t *testing.T) {
-	origin, clone := initOriginAndClone(t)
-	fork := filepath.Join(t.TempDir(), "fork")
-	lifecycleGit(t, clone, "clone", origin, fork)
-	lifecycleGit(t, fork, "config", "user.email", "t@e.st")
-	lifecycleGit(t, fork, "config", "user.name", "Tester")
-	lifecycleGit(t, fork, "checkout", "-b", "feature-safe")
-	lifecycleGit(t, fork, "commit", "--allow-empty", "-m", "safe routing")
-	lifecycleGit(t, origin, "fetch", fork, "+refs/heads/feature-safe:refs/pull/51/head")
-	lifecycleGit(t, clone, "config", "core.hooksPath", ".githooks")
-
-	result, err := CreateWorktreeFromMergeRequest(context.Background(), MergeRequestWorktreeOptions{
-		ProjectRoot:         clone,
-		Branch:              "mr-51-safe-routing",
-		BaseDir:             t.TempDir(),
-		Number:              51,
-		HeadBranch:          "feature-safe",
-		HeadRepoCloneURL:    fork,
-		ProjectRepoIdentity: identityOfCloneURL(origin),
-		Platform:            "github",
-	})
-	Require.NoError(t, err)
-	t.Cleanup(func() { _, _ = result.Rollback(context.Background()) })
-
-	hooksPath := lifecycleGit(t, result.Path, "config", "--path", "--get", "core.hooksPath")
-	assert.True(t, filepath.IsAbs(hooksPath), hooksPath)
-	assert.DirExists(t, hooksPath)
-	assert.Equal(t, "upstream", worktreeConfig(t, result.Path, "push.default"))
-}
-
-func TestCreateWorktreeFromMergeRequestRejectsChangedHead(t *testing.T) {
-	origin, clone := initOriginAndClone(t)
-	lifecycleGit(t, origin, "checkout", "-q", "-b", "feature-changed")
-	lifecycleGit(t, origin, "commit", "--allow-empty", "-m", "changed head")
-	lifecycleGit(t, origin, "checkout", "-q", "main")
-
-	destination := filepath.Join(t.TempDir(), "wt")
-	_, err := CreateWorktreeFromMergeRequest(context.Background(), MergeRequestWorktreeOptions{
-		ProjectRoot:         clone,
-		Branch:              "mr-52-changed",
-		Path:                destination,
-		Number:              52,
-		HeadBranch:          "feature-changed",
-		HeadRepoCloneURL:    origin,
-		ProjectRepoIdentity: identityOfCloneURL(origin),
-		ExpectedHeadSHA:     strings.Repeat("0", 40),
-	})
-
-	var changeRequestErr *ChangeRequestError
-	Require.ErrorAs(t, err, &changeRequestErr)
-	assert.Equal(t, ChangeRequestHeadChanged, changeRequestErr.Kind)
-	assert.NoDirExists(t, destination)
 }

@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
-	"runtime"
 	"strings"
 )
 
@@ -160,25 +159,16 @@ func RemoteRepoPath(remoteURL string) string {
 
 // IsLocal reports whether remoteURL is a local filesystem remote.
 func IsLocal(remoteURL string) bool {
-	if filepath.VolumeName(remoteURL) != "" ||
-		runtime.GOOS == "windows" && IsWindowsDrivePath(remoteURL) {
+	if filepath.VolumeName(remoteURL) != "" || isWindowsDrivePath(remoteURL) {
 		return true
 	}
-	lower := strings.ToLower(strings.TrimSpace(remoteURL))
-	if strings.HasPrefix(lower, "file://") {
-		u, err := url.Parse(remoteURL)
-		if err != nil || !strings.EqualFold(u.Scheme, "file") || u.Opaque != "" {
-			return false
-		}
+	if u, err := url.Parse(remoteURL); err == nil && strings.EqualFold(u.Scheme, "file") {
 		return true
 	}
 	return false
 }
 
-// IsWindowsDrivePath reports whether value uses drive-letter path syntax.
-// It recognizes syntax independently of the host OS; callers deciding how Git
-// transports a value must still account for the current platform.
-func IsWindowsDrivePath(value string) bool {
+func isWindowsDrivePath(value string) bool {
 	if len(value) < 3 || value[1] != ':' {
 		return false
 	}
@@ -196,77 +186,4 @@ func NormalizeHost(host string) string {
 		return before
 	}
 	return host
-}
-
-// UnsafeForAutomation reports whether a remote URL can disclose embedded
-// credentials, invoke a git remote-helper command, or use an unauthenticated
-// hosted transport. Only local files and authenticated built-in transports are
-// accepted; query strings and fragments fail closed because they are common
-// credential carriers and are not part of repository identity.
-func UnsafeForAutomation(remoteURL string) bool {
-	remoteURL = strings.TrimSpace(remoteURL)
-	lower := strings.ToLower(remoteURL)
-	if strings.HasPrefix(lower, "file:") && !strings.HasPrefix(lower, "file://") {
-		return true
-	}
-	if strings.HasPrefix(remoteURL, `\\`) || strings.HasPrefix(remoteURL, "//") {
-		return true
-	}
-	if strings.ContainsAny(remoteURL, "?#") || isRemoteHelperURL(remoteURL) {
-		return true
-	}
-	if strings.Contains(remoteURL, "://") {
-		parsed, err := url.Parse(remoteURL)
-		if err != nil {
-			return true
-		}
-		scheme := strings.ToLower(parsed.Scheme)
-		switch scheme {
-		case "file", "git+ssh", "https", "ssh", "ssh+git":
-		default:
-			return true
-		}
-		if scheme == "file" &&
-			(parsed.Host != "" && !strings.EqualFold(parsed.Host, "localhost") ||
-				strings.HasPrefix(parsed.Path, "//") || strings.HasPrefix(parsed.Path, `\\`)) {
-			return true
-		}
-		if parsed.User != nil {
-			if scheme == "ssh" || scheme == "git+ssh" || scheme == "ssh+git" {
-				_, hasPassword := parsed.User.Password()
-				return hasPassword
-			}
-			return true
-		}
-	}
-	at := strings.IndexByte(remoteURL, '@')
-	if at < 0 {
-		return false
-	}
-	return strings.Contains(remoteURL[:at], ":") &&
-		strings.Contains(remoteURL[at+1:], ":")
-}
-
-// isRemoteHelperURL recognizes git's <transport>::<address> syntax. The
-// address is an arbitrary command line for a git-remote-* helper, not a
-// repository host/path, so automated imports must reject it.
-func isRemoteHelperURL(remoteURL string) bool {
-	prefix, _, found := strings.Cut(remoteURL, "::")
-	if !found {
-		return false
-	}
-	for i := 0; i < len(prefix); i++ {
-		if !isURLSchemeChar(i == 0, prefix[i]) {
-			return false
-		}
-	}
-	return true
-}
-
-func isURLSchemeChar(first bool, value byte) bool {
-	isAlpha := value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z'
-	if first || isAlpha {
-		return isAlpha
-	}
-	return value >= '0' && value <= '9' || value == '+' || value == '-' || value == '.'
 }
