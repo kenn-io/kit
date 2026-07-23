@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	gitcmd "go.kenn.io/kit/git/cmd"
@@ -414,6 +415,7 @@ func RemoveWorktreeFromDisk(
 	if err != nil {
 		return RemoveWorktreeResult{}, err
 	}
+	branch := strings.TrimSpace(opts.Branch)
 	hookScript, err := resolveHookScript(root, opts.TeardownScript)
 	if err != nil {
 		return RemoveWorktreeResult{}, err
@@ -431,11 +433,11 @@ func RemoveWorktreeFromDisk(
 
 	result := RemoveWorktreeResult{}
 	if hookScript != "" && pathExists {
-		if err := verifyRemovalTarget(ctx, root, path, opts.Branch); err != nil {
+		if err := verifyRemovalTarget(ctx, root, path, branch); err != nil {
 			return RemoveWorktreeResult{}, err
 		}
 		if hookErr := runLifecycleHook(
-			ctx, hookScript, root, path, opts.Branch, opts.WorktreeName,
+			ctx, hookScript, root, path, branch, opts.WorktreeName,
 			opts.HookEnvironmentPrefix,
 		); hookErr != nil {
 			return RemoveWorktreeResult{}, hookErr
@@ -445,7 +447,7 @@ func RemoveWorktreeFromDisk(
 	}
 
 	if pathExists {
-		if err := verifyRemovalTarget(ctx, root, path, opts.Branch); err != nil {
+		if err := verifyRemovalTarget(ctx, root, path, branch); err != nil {
 			return result, err
 		}
 		args := []string{"worktree", "remove"}
@@ -459,7 +461,7 @@ func RemoveWorktreeFromDisk(
 		}
 	} else {
 		if err := verifyRegisteredRemovalTarget(
-			ctx, root, path, opts.Branch,
+			ctx, root, path, branch,
 		); err != nil {
 			return result, err
 		}
@@ -475,9 +477,9 @@ func RemoveWorktreeFromDisk(
 		}
 	}
 
-	if opts.RemoveBranch && strings.TrimSpace(opts.Branch) != "" {
+	if opts.RemoveBranch && branch != "" {
 		if out, err := runLifecycleGit(
-			ctx, root, "branch", "-D", "--", opts.Branch,
+			ctx, root, "branch", "-D", "--", branch,
 		); err != nil {
 			return result, classifyWorktreeGitError(out, err)
 		}
@@ -554,7 +556,7 @@ func verifyRemovalTarget(
 	if err != nil {
 		return fmt.Errorf("inspect worktree repository: %w", err)
 	}
-	if rootCommon != pathCommon {
+	if !pathsEqualForGOOS(rootCommon, pathCommon, runtime.GOOS) {
 		return fmt.Errorf(
 			"worktree path belongs to a different repository: %s", path,
 		)
@@ -574,6 +576,13 @@ func verifyRemovalTarget(
 		)
 	}
 	return nil
+}
+
+func pathsEqualForGOOS(left, right, goos string) bool {
+	if goos == "windows" {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
 }
 
 func verifyRegisteredRemovalTarget(

@@ -768,6 +768,34 @@ func TestRemoveWorktreeFromDiskRemovesWorktreeAndBranch(t *testing.T) {
 	assert.False(branchExistsInRepo(t, repo, "feature"))
 }
 
+func TestRemoveWorktreeFromDiskNormalizesBranchOnce(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	repo := initLifecycleRepo(t)
+	dest := filepath.Join(t.TempDir(), "wt")
+	lifecycleGit(t, repo, "worktree", "add", "-b", "feature", dest)
+
+	_, err := RemoveWorktreeFromDisk(t.Context(), RemoveWorktreeOptions{
+		ProjectRoot:  repo,
+		Path:         dest,
+		Branch:       " feature ",
+		RemoveBranch: true,
+	})
+
+	require.NoError(err)
+	assert.NoDirExists(dest)
+	assert.False(branchExistsInRepo(t, repo, "feature"))
+}
+
+func TestPathsEqualForGOOSHonorsWindowsCasing(t *testing.T) {
+	assert.True(t, pathsEqualForGOOS(
+		`C:\Code\Repository\.git`, `c:\code\repository\.git`, "windows",
+	))
+	assert.False(t, pathsEqualForGOOS(
+		"/Code/Repository/.git", "/code/repository/.git", "linux",
+	))
+}
+
 func TestRemoveWorktreeFromDiskKeepsBranchWithoutRemoveBranch(t *testing.T) {
 	assert := assert.New(t)
 	require := Require.New(t)
