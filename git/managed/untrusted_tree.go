@@ -176,7 +176,7 @@ func rejectCommandScopeIsolationOverrides(
 	runner.NoSystemConfig = false
 	out, err := runLifecycleGitWithRunner(
 		ctx, runner, root,
-		"config", "--null", "--show-origin", "--name-only",
+		"config", "--null", "--show-scope", "--show-origin", "--name-only",
 		"--includes", "--list",
 	)
 	if err != nil {
@@ -187,11 +187,11 @@ func rejectCommandScopeIsolationOverrides(
 	}
 	fields := bytes.Split(out, []byte{0})
 	var overrides []string
-	for index := 0; index+1 < len(fields); index += 2 {
-		if string(fields[index]) != "command line:" {
+	for index := 0; index+2 < len(fields); index += 3 {
+		if string(fields[index]) != "command" {
 			continue
 		}
-		key := strings.TrimSpace(string(fields[index+1]))
+		key := strings.TrimSpace(string(fields[index+2]))
 		if isolationSensitiveConfigKey(key) {
 			overrides = append(overrides, key)
 		}

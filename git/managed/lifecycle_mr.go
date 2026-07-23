@@ -231,6 +231,14 @@ func CreateWorktreeFromMergeRequest(
 	); err != nil {
 		return CreateWorktreeResult{}, classifyWorktreeGitError(out, err)
 	}
+	if err := rejectCommandScopeIsolationOverrides(
+		ctx, path, lifecycleRunner(ctx),
+	); err != nil {
+		_, cleanupErr := rollbackCreatedWorktreeWithResult(
+			context.WithoutCancel(ctx), root, path, branch, true,
+		)
+		return CreateWorktreeResult{}, errors.Join(err, cleanupErr)
+	}
 	isolation, err = completeUntrustedTreeIsolation(ctx, path, isolation)
 	if err != nil {
 		_, cleanupErr := rollbackCreatedWorktreeWithResult(

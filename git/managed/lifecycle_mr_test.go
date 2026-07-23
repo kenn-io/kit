@@ -743,11 +743,11 @@ func TestCreateWorktreeFromMergeRequestRejectsInheritedCommandScopeConfig(
 ) {
 	for _, test := range []struct {
 		name   string
-		runner func() gitcmd.Runner
+		runner func(*testing.T) gitcmd.Runner
 	}{
 		{
 			name: "GIT_CONFIG_COUNT",
-			runner: func() gitcmd.Runner {
+			runner: func(_ *testing.T) gitcmd.Runner {
 				runner := gitcmd.New()
 				runner.Env = append(gitenv.StripAll(os.Environ()),
 					"GIT_CONFIG_COUNT=1",
@@ -759,7 +759,7 @@ func TestCreateWorktreeFromMergeRequestRejectsInheritedCommandScopeConfig(
 		},
 		{
 			name: "GIT_CONFIG_PARAMETERS",
-			runner: func() gitcmd.Runner {
+			runner: func(_ *testing.T) gitcmd.Runner {
 				runner := gitcmd.New()
 				runner.Env = append(gitenv.StripAll(os.Environ()),
 					"GIT_CONFIG_PARAMETERS='filter.inherited.smudge'='false'",
@@ -769,10 +769,28 @@ func TestCreateWorktreeFromMergeRequestRejectsInheritedCommandScopeConfig(
 		},
 		{
 			name: "Runner Config",
-			runner: func() gitcmd.Runner {
+			runner: func(_ *testing.T) gitcmd.Runner {
 				return gitcmd.New().WithConfig(
 					"filter.inherited.smudge", "false",
 				)
+			},
+		},
+		{
+			name: "absolute include",
+			runner: func(t *testing.T) gitcmd.Runner {
+				config := filepath.Join(t.TempDir(), "included.gitconfig")
+				Require.NoError(t, os.WriteFile(
+					config,
+					[]byte("[filter \"inherited\"]\n\tsmudge = false\n"),
+					0o600,
+				))
+				runner := gitcmd.New()
+				runner.Env = append(gitenv.StripAll(os.Environ()),
+					"GIT_CONFIG_COUNT=1",
+					"GIT_CONFIG_KEY_0=include.path",
+					"GIT_CONFIG_VALUE_0="+config,
+				)
+				return runner
 			},
 		},
 	} {
@@ -800,7 +818,7 @@ func TestCreateWorktreeFromMergeRequestRejectsInheritedCommandScopeConfig(
 					Number: 30, HeadBranch: "inherited-config",
 					HeadRepoCloneURL:    origin,
 					ProjectRepoIdentity: identityOfCloneURL(origin),
-					ExpectedHeadSHA:     headSHA, Runner: test.runner(),
+					ExpectedHeadSHA:     headSHA, Runner: test.runner(t),
 				})
 
 			require.Error(err)
@@ -809,6 +827,44 @@ func TestCreateWorktreeFromMergeRequestRejectsInheritedCommandScopeConfig(
 			assert.NoDirExists(dest)
 		})
 	}
+}
+
+func TestCreateWorktreeFromMergeRequestRejectsConditionalCommandScopeConfig(
+	t *testing.T,
+) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	origin, clone := initOriginAndClone(t)
+	lifecycleGit(t, origin, "checkout", "-q", "-b", "conditional-command")
+	lifecycleGit(t, origin, "commit", "--allow-empty", "-m", "conditional")
+	headSHA := lifecycleGit(t, origin, "rev-parse", "HEAD")
+	lifecycleGit(t, origin, "checkout", "-q", "main")
+
+	config := filepath.Join(t.TempDir(), "conditional.gitconfig")
+	require.NoError(os.WriteFile(
+		config,
+		[]byte("[filter \"conditional\"]\n\tsmudge = false\n"), 0o600,
+	))
+	runner := gitcmd.New()
+	runner.Env = append(gitenv.StripAll(os.Environ()),
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=includeIf.onbranch:pr-command-conditional.path",
+		"GIT_CONFIG_VALUE_0="+config,
+	)
+	dest := filepath.Join(t.TempDir(), "wt")
+	_, err := CreateWorktreeFromMergeRequest(
+		t.Context(), MergeRequestWorktreeOptions{
+			ProjectRoot: clone, Branch: "pr-command-conditional", Path: dest,
+			Number: 33, HeadBranch: "conditional-command",
+			HeadRepoCloneURL: origin, ProjectRepoIdentity: identityOfCloneURL(origin),
+			ExpectedHeadSHA: headSHA, Runner: runner,
+		})
+
+	require.Error(err)
+	assert.ErrorContains(err,
+		"command-scope Git configuration cannot be isolated")
+	assert.NoDirExists(dest)
+	assert.False(branchExistsInRepo(t, clone, "pr-command-conditional"))
 }
 
 func TestCreateWorktreeFromMergeRequestRejectsConfigFromMaterializedTree(
