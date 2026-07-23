@@ -153,6 +153,7 @@ func prepareUntrustedTreeIsolation(
 		{Key: "core.hooksPath", Value: hooksPath},
 		{Key: "core.fsmonitor", Value: "false"},
 		{Key: "submodule.recurse", Value: "false"},
+		{Key: "fetch.recurseSubmodules", Value: "false"},
 	}
 	runner := lifecycleRunner(ctx)
 	for _, entry := range config {
@@ -212,6 +213,13 @@ func completeUntrustedTreeIsolation(
 	}
 	keys := append(checkoutKeys, ambientKeys...)
 	drivers := neutralizeAttributeDrivers(keys)
+	submodules, err := submoduleFetchRecurseConfig(
+		ctx, worktreePath, isolation.runner,
+	)
+	if err != nil {
+		return untrustedTreeIsolation{}, err
+	}
+	drivers = append(drivers, submodules...)
 	existing := make(map[string]struct{}, len(isolation.config))
 	for _, entry := range isolation.config {
 		existing[entry.Key] = struct{}{}
@@ -225,6 +233,63 @@ func completeUntrustedTreeIsolation(
 		isolation.runner = isolation.runner.WithConfig(entry.Key, entry.Value)
 	}
 	return isolation, nil
+}
+
+func submoduleFetchRecurseConfig(
+	ctx context.Context, worktreePath string, runner gitcmd.Runner,
+) ([]gitcmd.Config, error) {
+	treeEntry, err := runLifecycleGitWithRunner(
+		ctx, runner, worktreePath,
+		"ls-tree", "--name-only", "-z", "HEAD", "--", ".gitmodules",
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"inspect merge request tree for submodules: %w: %s",
+			err, strings.TrimSpace(string(treeEntry)),
+		)
+	}
+	if len(treeEntry) == 0 {
+		return nil, nil
+	}
+	out, err := runLifecycleGitWithRunner(
+		ctx, runner, worktreePath,
+		"config", "--null", "--name-only", "--blob", "HEAD:.gitmodules",
+		"--list",
+	)
+	if err != nil {
+		if gitcmd.IsExitCode(err, 1) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf(
+			"inspect committed submodule recursion configuration: %w: %s",
+			err, strings.TrimSpace(string(out)),
+		)
+	}
+	fields := bytes.Split(out, []byte{0})
+	config := make([]gitcmd.Config, 0, len(fields))
+	for _, field := range fields {
+		if name, ok := configuredSubmoduleName(string(field)); ok {
+			config = append(config, gitcmd.Config{
+				Key:   "submodule." + name + ".fetchRecurseSubmodules",
+				Value: "false",
+			})
+		}
+	}
+	return config, nil
+}
+
+func configuredSubmoduleName(key string) (string, bool) {
+	lower := strings.ToLower(key)
+	if !strings.HasPrefix(lower, "submodule.") {
+		return "", false
+	}
+	for _, suffix := range []string{".path", ".fetchrecursesubmodules"} {
+		if strings.HasSuffix(lower, suffix) {
+			name := key[len("submodule.") : len(key)-len(suffix)]
+			return name, name != ""
+		}
+	}
+	return "", false
 }
 
 func gitConfigKeys(

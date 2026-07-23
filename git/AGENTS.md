@@ -40,9 +40,10 @@ specific application or forge workflow.
 - Expected merge-request head SHAs are correctness anchors: verify them before
   creating the local branch or materializing a worktree.
 - Rollback after a completed create is conservative about ordinary user work:
-  preserve a dirty worktree or an advanced branch and report
-  `ErrWorktreeCleanupIncomplete`. Cleanup performed immediately after an
-  in-operation failure may force-remove artifacts created by that operation.
+  preserve a dirty worktree, an initialized submodule, or an advanced branch
+  and report `ErrWorktreeCleanupIncomplete`. Cleanup performed immediately
+  after an in-operation failure may force-remove artifacts created by that
+  operation.
 - Configure merge-request tracking in worktree-scoped Git configuration so
   removing a worktree does not leave branch routing behind in shared config.
 - Lifecycle hooks must resolve inside the project tree. Applications may

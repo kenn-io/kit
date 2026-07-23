@@ -501,7 +501,30 @@ func worktreeHasRollbackArtifacts(ctx context.Context, path string) (bool, error
 			err, strings.TrimSpace(string(out)),
 		)
 	}
-	return strings.TrimSpace(string(out)) != "", nil
+	if strings.TrimSpace(string(out)) != "" {
+		return true, nil
+	}
+	return worktreeHasInitializedSubmodules(ctx, path)
+}
+
+func worktreeHasInitializedSubmodules(
+	ctx context.Context, path string,
+) (bool, error) {
+	out, err := runLifecycleGit(
+		ctx, path, "submodule", "status", "--recursive",
+	)
+	if err != nil {
+		return false, fmt.Errorf(
+			"inspect initialized submodules before rollback: %w: %s",
+			err, strings.TrimSpace(string(out)),
+		)
+	}
+	for _, line := range bytes.Split(out, []byte{'\n'}) {
+		if len(line) != 0 && line[0] != '-' {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func verifyRemovalTarget(

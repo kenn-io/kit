@@ -359,6 +359,49 @@ func TestCreateWorktreeResultRollbackPreservesIgnoredArtifacts(t *testing.T) {
 	assert.FileExists(filepath.Join(result.Path, "scratch.log"))
 }
 
+func TestCreateWorktreeResultRollbackPreservesInitializedSubmodule(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+
+	moduleOrigin := initLifecycleRepo(t)
+	require.NoError(os.WriteFile(
+		filepath.Join(moduleOrigin, ".gitignore"), []byte("build/\n"), 0o644,
+	))
+	require.NoError(os.WriteFile(
+		filepath.Join(moduleOrigin, "tracked.txt"), []byte("content\n"), 0o644,
+	))
+	lifecycleGit(t, moduleOrigin, "add", ".gitignore", "tracked.txt")
+	lifecycleGit(t, moduleOrigin, "commit", "-qm", "module content")
+
+	repo := initLifecycleRepo(t)
+	lifecycleGit(t, repo,
+		"-c", "protocol.file.allow=always",
+		"submodule", "add", "-q", moduleOrigin, "deps/module",
+	)
+	lifecycleGit(t, repo, "commit", "-qam", "add submodule")
+	result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Branch:      "submodule-artifacts",
+	})
+	require.NoError(err)
+	lifecycleGit(t, result.Path,
+		"-c", "protocol.file.allow=always",
+		"submodule", "update", "--init", "--", "deps/module",
+	)
+	artifact := filepath.Join(result.Path, "deps", "module", "build", "output.o")
+	require.NoError(os.MkdirAll(filepath.Dir(artifact), 0o755))
+	require.NoError(os.WriteFile(artifact, []byte("keep\n"), 0o644))
+
+	remaining, err := result.Rollback(t.Context())
+
+	require.ErrorIs(err, ErrWorktreeCleanupIncomplete)
+	assert.Equal(RollbackResult{
+		Path: result.Path, Branch: result.Branch,
+	}, remaining)
+	assert.DirExists(result.Path)
+	assert.FileExists(artifact)
+}
+
 func TestCreateWorktreeOnDiskReportsSnapshotCleanupFailure(t *testing.T) {
 	require := Require.New(t)
 	assert := assert.New(t)

@@ -413,6 +413,71 @@ func TestCreateWorktreeFromMergeRequestIsolatesUntrustedTreeGitPrograms(t *testi
 		"later diff and clean operations keep attribute programs disabled")
 }
 
+func TestCreateWorktreeFromMergeRequestDisablesLaterSubmoduleFetches(
+	t *testing.T,
+) {
+	require := Require.New(t)
+	assert := assert.New(t)
+
+	moduleOrigin := initLifecycleRepo(t)
+	require.NoError(os.WriteFile(
+		filepath.Join(moduleOrigin, "tracked.txt"), []byte("original\n"), 0o644,
+	))
+	lifecycleGit(t, moduleOrigin, "add", "tracked.txt")
+	lifecycleGit(t, moduleOrigin, "commit", "-qm", "module content")
+
+	origin, clone := initOriginAndClone(t)
+	lifecycleGit(t, origin, "checkout", "-q", "-b", "submodule-tree")
+	lifecycleGit(t, origin,
+		"-c", "protocol.file.allow=always",
+		"submodule", "add", "-q", moduleOrigin, "deps/module",
+	)
+	lifecycleGit(t, origin, "commit", "-qam", "add recursive submodule")
+	headSHA := lifecycleGit(t, origin, "rev-parse", "HEAD")
+	lifecycleGit(t, origin, "checkout", "-q", "main")
+	lifecycleGit(t, clone, "config", "fetch.recurseSubmodules", "true")
+	lifecycleGit(t, clone, "config",
+		"submodule.deps/module.fetchRecurseSubmodules", "true")
+
+	dest := filepath.Join(t.TempDir(), "wt")
+	_, err := CreateWorktreeFromMergeRequest(
+		t.Context(), MergeRequestWorktreeOptions{
+			ProjectRoot: clone, Branch: "pr-submodule-fetch", Path: dest,
+			Number: 29, HeadBranch: "submodule-tree",
+			HeadRepoCloneURL: origin, ProjectRepoIdentity: identityOfCloneURL(origin),
+			ExpectedHeadSHA: headSHA,
+		})
+	require.NoError(err)
+	assert.Equal("false", worktreeOnlyConfig(
+		t, dest, "fetch.recurseSubmodules",
+	))
+	assert.Equal("false", worktreeOnlyConfig(
+		t, dest, "submodule.deps/module.fetchRecurseSubmodules",
+	))
+
+	lifecycleGit(t, dest,
+		"-c", "protocol.file.allow=always",
+		"submodule", "update", "--init", "--", "deps/module",
+	)
+	module := filepath.Join(dest, "deps", "module")
+	before := lifecycleGit(t, module, "rev-parse", "refs/remotes/origin/main")
+	require.NoError(os.WriteFile(
+		filepath.Join(moduleOrigin, "tracked.txt"), []byte("advanced\n"), 0o644,
+	))
+	lifecycleGit(t, moduleOrigin, "commit", "-qam", "advance module")
+	advanced := lifecycleGit(t, moduleOrigin, "rev-parse", "HEAD")
+	require.NotEqual(before, advanced)
+
+	lifecycleGit(t, dest,
+		"-c", "protocol.file.allow=always",
+		"fetch", "origin",
+	)
+	assert.Equal(before,
+		lifecycleGit(t, module, "rev-parse", "refs/remotes/origin/main"),
+		"later project fetch does not recurse into the imported submodule",
+	)
+}
+
 func TestCreateWorktreeFromMergeRequestNeutralizesCaseDistinctAttributeDrivers(
 	t *testing.T,
 ) {
