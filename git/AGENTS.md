@@ -29,7 +29,8 @@ not about one product's workflow.
 - Keep managed worktree rollback ownership-conservative: path identity, branch
   OID, symbolic HEAD, and worktree HEAD OID must still match their creation
   snapshots before destructive cleanup. If a complete creation snapshot cannot
-  be obtained, preserve the artifacts and report incomplete cleanup.
+  be obtained, preserve the artifacts and report incomplete cleanup. Created
+  branches must remain direct refs and be deleted with no-dereference semantics.
 - Default managed worktree bases must stay restricted to the current user on
   Unix and Windows. Callers opt into shared permissions with an explicit base.
 - Lifecycle hooks must resolve to an existing regular file inside the project
@@ -49,7 +50,10 @@ not about one product's workflow.
   through that boundary must enforce the stored OID before publishing a
   destination ref. Publish merge-request heads only under a request-numbered
   Kit namespace, reject symbolic or case-alias destinations, and terminate Git
-  fetch options before remote/ref arguments. Windows lifecycle scripts must
+  fetch options before remote/ref arguments. Fetch only through remote names
+  previously validated by the managed boundary, revalidate their effective URLs
+  immediately before use, and stage fetched OIDs in operation-private Kit refs
+  rather than the repository-wide `FETCH_HEAD`. Windows lifecycle scripts must
   honor their declared shebang interpreter regardless of file extension.
 - Before teardown hooks or destructive removal, verify that the path is still
   the registered worktree for the expected repository and branch. Preserve

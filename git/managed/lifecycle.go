@@ -339,7 +339,7 @@ func (r CreateWorktreeResult) rollbackOwned(
 	preserveBranch := false
 	pathOwned := sameLifecycleFile(r.Path, r.pathInfo)
 	pathPresent := lifecyclePathExists(r.Path)
-	branchOID, branchExists, branchErr := lifecycleRefOID(ctx, r.projectRoot, r.Branch)
+	branchOID, branchExists, branchDirect, branchErr := lifecycleRefState(ctx, r.projectRoot, r.Branch)
 	if branchErr != nil {
 		errs = append(errs, fmt.Errorf("inspect created branch: %w", branchErr))
 	}
@@ -362,7 +362,8 @@ func (r CreateWorktreeResult) rollbackOwned(
 	case headRef != r.headRef || !strings.EqualFold(headOID, r.headOID):
 		remaining.Path = r.Path
 		errs = append(errs, errors.New("created worktree HEAD changed; preserving it"))
-	case branchErr != nil || branchExists && !strings.EqualFold(branchOID, r.branchOID):
+	case branchErr != nil || branchExists &&
+		(!branchDirect || !strings.EqualFold(branchOID, r.branchOID)):
 		remaining.Path = r.Path
 		errs = append(errs, errors.New("created worktree branch advanced; preserving it"))
 	case !r.materialized && preserveChanges:
@@ -416,18 +417,28 @@ func (r CreateWorktreeResult) rollbackOwned(
 
 	if r.BranchCreated {
 		if !preserveBranch && remaining.Path == "" && branchErr == nil && branchExists && strings.EqualFold(branchOID, r.branchOID) {
-			runner, err := lifecycleHooksRunner(ctx)
-			if err != nil {
-				errs = append(errs, err)
-			} else if out, err := runLifecycleGitWithRunner(
-				ctx, runner, r.projectRoot,
-				"update-ref", "-d", "refs/heads/"+r.Branch, r.branchOID,
-			); err != nil {
-				errs = append(errs, fmt.Errorf("delete created branch: %w: %s", err,
-					strings.TrimSpace(string(out))))
+			currentOID, currentExists, currentDirect, inspectErr := lifecycleRefState(
+				ctx, r.projectRoot, r.Branch,
+			)
+			switch {
+			case inspectErr != nil:
+				errs = append(errs, fmt.Errorf("revalidate created branch: %w", inspectErr))
+			case currentExists && (!currentDirect || !strings.EqualFold(currentOID, r.branchOID)):
+				errs = append(errs, errors.New("created worktree branch ownership changed; preserving it"))
+			case currentExists:
+				runner, err := lifecycleHooksRunner(ctx)
+				if err != nil {
+					errs = append(errs, err)
+				} else if out, err := runLifecycleGitWithRunner(
+					ctx, runner, r.projectRoot,
+					"update-ref", "--no-deref", "-d", "refs/heads/"+r.Branch, r.branchOID,
+				); err != nil {
+					errs = append(errs, fmt.Errorf("delete created branch: %w: %s", err,
+						strings.TrimSpace(string(out))))
+				}
 			}
 		}
-		_, stillExists, err := lifecycleRefOID(ctx, r.projectRoot, r.Branch)
+		_, stillExists, _, err := lifecycleRefState(ctx, r.projectRoot, r.Branch)
 		if err != nil {
 			remaining.Branch = r.Branch
 			errs = append(errs, fmt.Errorf("inspect created branch after rollback: %w", err))
@@ -460,13 +471,25 @@ func unmaterializedWorktreeHasArtifacts(path string) (bool, error) {
 	return false, nil
 }
 
-func lifecycleRefOID(ctx context.Context, root, branch string) (string, bool, error) {
-	out, err := runLifecycleGit(ctx, root, "for-each-ref", "--format=%(objectname)", "refs/heads/"+branch)
+func lifecycleRefState(
+	ctx context.Context, root, branch string,
+) (oid string, exists, direct bool, err error) {
+	refName := "refs/heads/" + branch
+	out, err := runLifecycleGit(
+		ctx, root, "for-each-ref", "--format=%(refname)%00%(objectname)%00%(symref)", refName,
+	)
 	if err != nil {
-		return "", false, err
+		return "", false, false, err
 	}
-	oid := strings.TrimSpace(string(out))
-	return oid, oid != "", nil
+	record := strings.TrimSpace(string(out))
+	if record == "" {
+		return "", false, false, nil
+	}
+	fields := strings.Split(record, "\x00")
+	if len(fields) != 3 || fields[0] != refName {
+		return "", false, false, fmt.Errorf("unexpected ref inspection output")
+	}
+	return strings.TrimSpace(fields[1]), true, strings.TrimSpace(fields[2]) == "", nil
 }
 
 func lifecycleWorktreeHead(ctx context.Context, path string) (string, string, error) {

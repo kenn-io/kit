@@ -2,6 +2,8 @@ package managedworktree
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -147,6 +149,11 @@ func (g *ChangeRequestGit) Validate(ctx context.Context) error {
 		return err
 	}
 	if strings.TrimSpace(g.project.Identity.Host) == "" && g.expectedHeadOID != "" {
+		remoteURL, err := g.configuredFetchRemoteURL(ctx, "origin")
+		if err != nil {
+			return err
+		}
+		g.rememberExpectedRemoteURL("origin", remoteURL)
 		return nil
 	}
 	if strings.TrimSpace(g.project.Identity.Host) == "" &&
@@ -199,6 +206,9 @@ func (g *ChangeRequestGit) validateProjectRemote(
 		return changeRequestError(ChangeRequestUnsafeConfiguration,
 			fmt.Sprintf("project Git remote has an unexpected effective %s destination", label), nil)
 	}
+	if !push {
+		g.rememberExpectedRemoteURL(remote, canonicalRemoteURL)
+	}
 	return nil
 }
 
@@ -220,6 +230,14 @@ func (g *ChangeRequestGit) validateLocalProjectRemote(
 		gitremote.RemoteHost(remoteURL) != "" || gitremote.RemoteRepoPath(remoteURL) != "" {
 		return changeRequestError(ChangeRequestUnsafeConfiguration,
 			"hosted project Git remote requires a project identity or expected head OID", nil)
+	}
+	if !push {
+		canonicalURL, _, err := canonicalCloneURL(g.root, remoteURL)
+		if err != nil {
+			return changeRequestError(ChangeRequestUnsafeConfiguration,
+				"failed to resolve the local project Git remote", err)
+		}
+		g.rememberExpectedRemoteURL(remote, canonicalURL)
 	}
 	return nil
 }
@@ -377,9 +395,11 @@ func (g *ChangeRequestGit) ensureRemote(ctx context.Context, repository RemoteRe
 			pushMatches = singleRemoteURLEquals(string(pushURLs), remoteURL)
 		}
 		if fetchMatches && pushMatches && !g.remoteHasCustomPushRefspec(ctx, name) {
-			if projectSSHURL != "" {
-				g.rememberExpectedRemoteURL(name, remoteURL)
+			canonicalFetchURL, _, canonicalErr := canonicalCloneURL(g.root, fetchURL)
+			if canonicalErr != nil {
+				continue
 			}
+			g.rememberExpectedRemoteURL(name, canonicalFetchURL)
 			return name, nil
 		}
 	}
@@ -424,7 +444,12 @@ func (g *ChangeRequestGit) fetchAndPublish(
 	if validationErr := g.validateFetchPublication(ctx, remote, sourceRef, destinationRef); validationErr != nil {
 		return "", errors.Join(validationErr, unlock())
 	}
-	oid, fetchErr := g.fetchHead(ctx, remote, sourceRef)
+	temporaryRef, err := newTemporaryFetchRef()
+	if err != nil {
+		return "", errors.Join(changeRequestError(ChangeRequestUnsafeConfiguration,
+			"failed to allocate a private fetch ref", err), unlock())
+	}
+	oid, fetchErr := g.fetchHead(ctx, remote, sourceRef, temporaryRef)
 	if fetchErr == nil {
 		fetchErr = verifyExpectedHeadOID(oid, g.expectedHeadOID)
 	}
@@ -437,11 +462,15 @@ func (g *ChangeRequestGit) fetchAndPublish(
 				"failed to publish the verified change-request head", updateErr)
 		}
 	}
-	return oid, errors.Join(fetchErr, unlock())
+	cleanupErr := g.deleteTemporaryFetchRef(context.WithoutCancel(ctx), temporaryRef, oid)
+	return oid, errors.Join(fetchErr, cleanupErr, unlock())
 }
 
-func (g *ChangeRequestGit) fetchHead(ctx context.Context, remote, sourceRef string) (string, error) {
-	if _, err := g.runSafe(ctx, g.root, "fetch", "--no-tags", "--", remote, sourceRef); err != nil {
+func (g *ChangeRequestGit) fetchHead(
+	ctx context.Context, remote, sourceRef, temporaryRef string,
+) (string, error) {
+	refspec := "+" + sourceRef + ":" + temporaryRef
+	if _, err := g.runSafe(ctx, g.root, "fetch", "--no-tags", "--", remote, refspec); err != nil {
 		message := strings.ToLower(err.Error())
 		switch {
 		case isGitAuthenticationFailure(message):
@@ -455,12 +484,34 @@ func (g *ChangeRequestGit) fetchHead(ctx context.Context, remote, sourceRef stri
 				"change-request head ref is unavailable", err)
 		}
 	}
-	sha, err := g.runSafe(ctx, g.root, "rev-parse", "--verify", "FETCH_HEAD^{commit}")
+	sha, err := g.runSafe(ctx, g.root, "rev-parse", "--verify", temporaryRef+"^{commit}")
 	if err != nil {
 		return "", changeRequestError(ChangeRequestInaccessibleHead,
 			"fetched change-request head is not a commit", err)
 	}
 	return strings.TrimSpace(string(sha)), nil
+}
+
+func newTemporaryFetchRef() (string, error) {
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", err
+	}
+	return "refs/kit/tmp/fetch-" + hex.EncodeToString(random[:]), nil
+}
+
+func (g *ChangeRequestGit) deleteTemporaryFetchRef(
+	ctx context.Context, temporaryRef, expectedOID string,
+) error {
+	args := []string{"update-ref", "--no-deref", "-d", temporaryRef}
+	if strings.TrimSpace(expectedOID) != "" {
+		args = append(args, expectedOID)
+	}
+	if _, err := g.runSafe(ctx, g.root, args...); err != nil {
+		return changeRequestError(ChangeRequestUnsafeConfiguration,
+			"failed to remove the private fetch ref", err)
+	}
+	return nil
 }
 
 func (g *ChangeRequestGit) validateFetchPublication(
@@ -484,6 +535,10 @@ func (g *ChangeRequestGit) validateFetchPublication(
 		return changeRequestError(ChangeRequestUnsafeConfiguration,
 			"change-request destination ref is invalid", err)
 	}
+	if !isManagedMergeRequestRef(destinationRef) {
+		return changeRequestError(ChangeRequestUnsafeConfiguration,
+			"change-request destination is outside the managed ref namespace", nil)
+	}
 	refs, err := g.runSafe(ctx, g.root, "for-each-ref", "--format=%(refname)%00%(symref)")
 	if err != nil {
 		return changeRequestError(ChangeRequestUnsafeConfiguration,
@@ -503,7 +558,61 @@ func (g *ChangeRequestGit) validateFetchPublication(
 				"change-request destination is symbolic", nil)
 		}
 	}
+	expectedRemoteURL, ok := g.expectedRemoteURL(remote)
+	if !ok {
+		return changeRequestError(ChangeRequestUnsafeConfiguration,
+			"change-request fetch remote was not previously validated", nil)
+	}
+	effectiveRemoteURL, err := g.configuredFetchRemoteURL(ctx, remote)
+	if err != nil {
+		return err
+	}
+	if !remoteURLsEqual(effectiveRemoteURL, expectedRemoteURL) {
+		return changeRequestError(ChangeRequestUnsafeConfiguration,
+			"change-request fetch remote changed after validation", nil)
+	}
 	return nil
+}
+
+func isManagedMergeRequestRef(ref string) bool {
+	rest, ok := strings.CutPrefix(ref, "refs/kit/merge-requests/")
+	if !ok {
+		return false
+	}
+	number, leaf, ok := strings.Cut(rest, "/")
+	if !ok || strings.Contains(leaf, "/") || leaf != "head" && leaf != "tracking" {
+		return false
+	}
+	parsed, err := strconv.Atoi(number)
+	return err == nil && parsed > 0
+}
+
+func (g *ChangeRequestGit) configuredFetchRemoteURL(
+	ctx context.Context, remote string,
+) (string, error) {
+	if err := g.validateConfigurationAt(ctx, ""); err != nil {
+		return "", err
+	}
+	output, err := g.runSafe(ctx, g.root, "remote", "get-url", "--all", remote)
+	if err != nil {
+		return "", changeRequestError(ChangeRequestUnsafeConfiguration,
+			"failed to inspect the validated change-request remote", err)
+	}
+	if remoteURLListUnsafe(string(output)) {
+		return "", changeRequestError(ChangeRequestAuthentication,
+			"change-request fetch remote contains credentials or command syntax", nil)
+	}
+	remoteURL, single := singleRemoteURL(string(output))
+	if !single {
+		return "", changeRequestError(ChangeRequestUnsafeConfiguration,
+			"change-request fetch remote has multiple destinations", nil)
+	}
+	canonicalURL, _, err := canonicalCloneURL(g.root, remoteURL)
+	if err != nil {
+		return "", changeRequestError(ChangeRequestUnsafeConfiguration,
+			"failed to resolve the validated change-request remote", err)
+	}
+	return canonicalURL, nil
 }
 
 // FetchExpected fetches a change-request ref and rejects it when the resolved

@@ -305,7 +305,7 @@ func TestCreateWorktreeOnDiskUsesExecutionPolicy(t *testing.T) {
 	assert.Empty(remaining)
 	assert.Contains(gitCommands, "status --porcelain=v1 --untracked-files=all --ignored=matching")
 	assert.Contains(gitCommands, "worktree remove --force "+result.Path)
-	assert.Contains(gitCommands, "update-ref -d refs/heads/"+result.Branch+" "+result.branchOID)
+	assert.Contains(gitCommands, "update-ref --no-deref -d refs/heads/"+result.Branch+" "+result.branchOID)
 }
 
 func TestCreateWorktreeOnDiskSerializesRepositoryMutation(t *testing.T) {
@@ -626,6 +626,40 @@ func TestCreateWorktreeResultRollbackPreservesReplacementRepository(t *testing.T
 	assert.Equal(RollbackResult{Path: result.Path, Branch: result.Branch}, remaining)
 	assert.Zero(removeAttempts, "rollback must verify repository ownership before removal")
 	assert.DirExists(result.Path)
+}
+
+func TestCreateWorktreeResultRollbackPreservesSymbolicBranchReplacement(t *testing.T) {
+	assert := assert.New(t)
+	require := Require.New(t)
+	repo := initLifecycleRepo(t)
+	branch := "review/symbolic-replacement"
+	result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Branch:      branch,
+		Path:        filepath.Join(t.TempDir(), "symbolic-replacement"),
+		BaseRef:     "HEAD",
+		RunGit: func(ctx context.Context, runner gitcmd.Runner, dir string, args ...string) ([]byte, error) {
+			stdout, stderr, runErr := runner.Run(ctx, dir, nil, args...)
+			if runErr == nil && len(args) >= 2 && args[0] == "worktree" && args[1] == "remove" {
+				lifecycleGit(t, repo, "update-ref", "-d", "refs/heads/"+branch)
+				lifecycleGit(t, repo, "symbolic-ref", "refs/heads/"+branch, "refs/heads/main")
+			}
+			return append(stdout, stderr...), runErr
+		},
+	})
+	require.NoError(err)
+	mainOID := lifecycleGit(t, repo, "rev-parse", "refs/heads/main")
+
+	remaining, err := result.Rollback(t.Context())
+
+	require.ErrorIs(err, ErrWorktreeCleanupIncomplete)
+	assert.Equal(branch, remaining.Branch)
+	require.True(branchExistsInRepo(t, repo, "main"),
+		"rollback must not dereference and delete the symbolic target")
+	assert.Equal(mainOID, lifecycleGit(t, repo, "rev-parse", "refs/heads/main"),
+		"rollback must not dereference and delete the symbolic target")
+	assert.Equal("refs/heads/main",
+		lifecycleGit(t, repo, "symbolic-ref", "refs/heads/"+branch))
 }
 
 func TestCreateWorktreeResultRollbackPreservesDetachedCommit(t *testing.T) {
