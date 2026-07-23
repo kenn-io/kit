@@ -76,10 +76,19 @@ func writeHookScript(t *testing.T, dir, outFile string, exitCode int) string {
 }
 
 func testHookRunner() HookRunner {
+	return testHookRunnerRecordingDir(nil)
+}
+
+func testHookRunnerRecordingDir(recordedDir *string) HookRunner {
 	if runtime.GOOS != "windows" {
 		return nil
 	}
-	return runTestHook
+	return func(ctx context.Context, command HookCommand) error {
+		if recordedDir != nil {
+			*recordedDir = command.Dir
+		}
+		return runTestHook(ctx, command)
+	}
 }
 
 func runTestHook(ctx context.Context, command HookCommand) error {
@@ -510,13 +519,14 @@ func TestCreateWorktreeOnDiskRunsSetupHook(t *testing.T) {
 	require.NoError(os.WriteFile(inRepo, data, 0o755))
 
 	dest := filepath.Join(t.TempDir(), "wt")
+	var hookDir string
 	result, err := CreateWorktreeOnDisk(context.Background(), CreateWorktreeOptions{
 		ProjectRoot:  repo,
 		Branch:       "feature",
 		Path:         dest,
 		SetupScript:  "setup.sh",
 		WorktreeName: "Feature Work",
-		RunHook:      testHookRunner(),
+		RunHook:      testHookRunnerRecordingDir(&hookDir),
 	})
 	require.NoError(err)
 	assert.True(result.HookRan)
@@ -530,8 +540,13 @@ func TestCreateWorktreeOnDiskRunsSetupHook(t *testing.T) {
 	// canonical forms.
 	canonicalDest, err := filepath.EvalSymlinks(dest)
 	require.NoError(err)
-	assert.Equal(canonicalDest, lines[0],
-		"hook runs in the worktree directory")
+	if runtime.GOOS == "windows" {
+		assert.Equal(dest, hookDir,
+			"hook runner receives the native worktree directory")
+	} else {
+		assert.Equal(canonicalDest, lines[0],
+			"hook runs in the worktree directory")
+	}
 	assert.Equal("name=Feature Work", lines[1])
 	assert.Equal("path="+dest, lines[2])
 	assert.Equal("root="+repo, lines[3])
@@ -699,13 +714,14 @@ func TestRemoveWorktreeFromDiskRunsTeardownHookFirst(t *testing.T) {
 	require.NoError(err)
 	require.NoError(os.WriteFile(inRepo, data, 0o755))
 
+	var hookDir string
 	result, err := RemoveWorktreeFromDisk(context.Background(), RemoveWorktreeOptions{
 		ProjectRoot:    repo,
 		Path:           dest,
 		Branch:         "feature",
 		TeardownScript: "teardown.sh",
 		WorktreeName:   "Feature Work",
-		RunHook:        testHookRunner(),
+		RunHook:        testHookRunnerRecordingDir(&hookDir),
 	})
 	require.NoError(err)
 	assert.True(result.HookRan)
@@ -714,16 +730,21 @@ func TestRemoveWorktreeFromDiskRunsTeardownHookFirst(t *testing.T) {
 	require.NoError(err)
 	lines := strings.Split(strings.TrimSpace(string(recorded)), "\n")
 	require.Len(lines, 5)
-	canonicalDest, err := filepath.EvalSymlinks(dest)
-	// The worktree is gone by the time we compare; EvalSymlinks on a
-	// removed path fails, so canonicalize the parent instead.
-	if err != nil {
-		parent, evalErr := filepath.EvalSymlinks(filepath.Dir(dest))
-		require.NoError(evalErr)
-		canonicalDest = filepath.Join(parent, filepath.Base(dest))
+	if runtime.GOOS == "windows" {
+		assert.Equal(dest, hookDir,
+			"hook runner receives the native worktree directory")
+	} else {
+		canonicalDest, evalErr := filepath.EvalSymlinks(dest)
+		// The worktree is gone by the time we compare; EvalSymlinks on a
+		// removed path fails, so canonicalize the parent instead.
+		if evalErr != nil {
+			parent, parentErr := filepath.EvalSymlinks(filepath.Dir(dest))
+			require.NoError(parentErr)
+			canonicalDest = filepath.Join(parent, filepath.Base(dest))
+		}
+		assert.Equal(canonicalDest, lines[0],
+			"teardown runs in the worktree before it is removed")
 	}
-	assert.Equal(canonicalDest, lines[0],
-		"teardown runs in the worktree before it is removed")
 	assert.Equal("name=Feature Work", lines[1])
 	assert.Equal("branch=feature", lines[4])
 }
