@@ -592,6 +592,42 @@ func TestCreateWorktreeResultRollbackPreservesReplacedPath(t *testing.T) {
 	assert.FileExists(marker)
 }
 
+func TestCreateWorktreeResultRollbackPreservesReplacementRepository(t *testing.T) {
+	assert := assert.New(t)
+	require := Require.New(t)
+	repo := initLifecycleRepo(t)
+	removeAttempts := 0
+	result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Branch:      "review/replacement-repository",
+		Path:        filepath.Join(t.TempDir(), "replacement-repository"),
+		BaseRef:     "HEAD",
+		RunGit: func(ctx context.Context, runner gitcmd.Runner, dir string, args ...string) ([]byte, error) {
+			if len(args) >= 2 && args[0] == "worktree" && args[1] == "remove" {
+				removeAttempts++
+				return nil, nil
+			}
+			stdout, stderr, runErr := runner.Run(ctx, dir, nil, args...)
+			return append(stdout, stderr...), runErr
+		},
+	})
+	require.NoError(err)
+	replacement := filepath.Join(t.TempDir(), "other-repository")
+	lifecycleGit(t, filepath.Dir(replacement), "clone", "-q", repo, replacement)
+	lifecycleGit(t, replacement, "checkout", "-q", "-b", result.Branch,
+		"origin/"+result.Branch)
+	require.NoError(os.WriteFile(filepath.Join(result.Path, ".git"), []byte(
+		"gitdir: "+filepath.ToSlash(filepath.Join(replacement, ".git"))+"\n",
+	), 0o600))
+
+	remaining, err := result.Rollback(t.Context())
+
+	require.ErrorIs(err, ErrWorktreeCleanupIncomplete)
+	assert.Equal(RollbackResult{Path: result.Path, Branch: result.Branch}, remaining)
+	assert.Zero(removeAttempts, "rollback must verify repository ownership before removal")
+	assert.DirExists(result.Path)
+}
+
 func TestCreateWorktreeResultRollbackPreservesDetachedCommit(t *testing.T) {
 	assert := assert.New(t)
 	require := Require.New(t)
@@ -1106,6 +1142,28 @@ func TestRemoveWorktreeFromDiskPreservesReplacementDirectory(t *testing.T) {
 		"ownership failure must preserve the registered branch")
 }
 
+func TestRemoveDetachedWorktreePreservesNewlyAttachedCheckout(t *testing.T) {
+	assert := assert.New(t)
+	require := Require.New(t)
+	repo := initLifecycleRepo(t)
+	dest := filepath.Join(t.TempDir(), "wt")
+	lifecycleGit(t, repo, "worktree", "add", "--detach", dest)
+	lifecycleGit(t, dest, "switch", "-c", "newly-attached")
+	hookMarker := filepath.Join(t.TempDir(), "hook-ran")
+	script := filepath.Join(repo, "teardown")
+	require.NoError(os.WriteFile(script, []byte(
+		"#!/bin/sh\nprintf ran > '"+filepath.ToSlash(hookMarker)+"'\n",
+	), 0o755))
+
+	_, err := RemoveWorktreeFromDisk(t.Context(), RemoveWorktreeOptions{
+		ProjectRoot: repo, Path: dest, TeardownScript: "teardown", Force: true,
+	})
+
+	require.ErrorIs(err, ErrWorktreeCleanupIncomplete)
+	assert.DirExists(dest)
+	assert.NoFileExists(hookMarker)
+}
+
 func TestRemoveWorktreeFromDiskPrunesWhenPathAlreadyGone(t *testing.T) {
 	assert := assert.New(t)
 	require := Require.New(t)
@@ -1269,6 +1327,21 @@ func TestWorktreeIsDirty(t *testing.T) {
 
 	_, err = WorktreeIsDirty(context.Background(), filepath.Join(dest, "missing"))
 	require.Error(err, "a missing path is an error, not clean")
+}
+
+func TestWorktreeIsDirtyIncludesUntrackedFilesWhenConfigHidesThem(t *testing.T) {
+	assert := assert.New(t)
+	require := Require.New(t)
+	repo := initLifecycleRepo(t)
+	dest := filepath.Join(t.TempDir(), "wt")
+	lifecycleGit(t, repo, "worktree", "add", "-b", "hidden-untracked", dest)
+	lifecycleGit(t, dest, "config", "status.showUntrackedFiles", "no")
+	require.NoError(os.WriteFile(filepath.Join(dest, "scratch.txt"), []byte("x\n"), 0o600))
+
+	dirty, err := WorktreeIsDirty(t.Context(), dest)
+
+	require.NoError(err)
+	assert.True(dirty)
 }
 
 func TestWorktreeIsDirtyDisablesFiltersAndFSMonitor(t *testing.T) {

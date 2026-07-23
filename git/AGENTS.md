@@ -47,13 +47,21 @@ not about one product's workflow.
   validation because a base `2.53.0` version is not sufficient.
 - When an expected head OID is the project-remote provenance anchor, every fetch
   through that boundary must enforce the stored OID before publishing a
-  destination ref. Windows lifecycle scripts must honor their declared shebang
-  interpreter regardless of file extension.
+  destination ref. Publish merge-request heads only under a request-numbered
+  Kit namespace, reject symbolic or case-alias destinations, and terminate Git
+  fetch options before remote/ref arguments. Windows lifecycle scripts must
+  honor their declared shebang interpreter regardless of file extension.
 - Before teardown hooks or destructive removal, verify that the path is still
   the registered worktree for the expected repository and branch. Preserve
-  replacement paths and report incomplete cleanup when ownership changed.
+  replacement paths and repositories, require detached worktrees to remain
+  detached, and report incomplete cleanup when ownership changed. Dirty-state
+  checks must explicitly include untracked files regardless of repository
+  status configuration.
 - Windows Job Objects may kill a Git process tree on cancellation or failure,
-  but successful Git commands must preserve descendants that outlive the root.
+  but successful Git commands—including roots that return `exec.ErrWaitDelay`
+  because a descendant retained output handles—must preserve those descendants.
+- Keep transport classification platform-aware: drive-letter syntax is local
+  only on Windows, while identity parsers may recognize that syntax on any host.
 - Canonicalize relative local clone paths against the project root before
   deriving repository identity or persisting a remote. Configure change-request
   tracking only when the provider supplied an explicit source branch.

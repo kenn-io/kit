@@ -194,7 +194,30 @@ func TestPrepareMergeRequestRemoteKeepsCaseDistinctLocalRepositoriesSeparate(t *
 
 	Require.NoError(t, err)
 	assert.Equal(t, "refs/pull/18/head", target.checkoutSourceRef)
+	assert.Equal(t, "refs/kit/merge-requests/18/head", target.checkoutDestinationRef)
+	assert.Equal(t, "refs/kit/merge-requests/18/tracking", target.trackingDestinationRef)
 	assert.NotEqual(t, "origin", target.trackingRemote)
+}
+
+func TestPrepareMergeRequestRemoteUsesDedicatedRefForSameRepoHEADBranch(t *testing.T) {
+	repo := initLifecycleRepo(t)
+	backend, err := NewChangeRequestGit(ChangeRequestGitOptions{
+		ProjectRoot: repo,
+	})
+	Require.NoError(t, err)
+
+	target, err := prepareMergeRequestRemote(t.Context(), backend, MergeRequestWorktreeOptions{
+		Number:              23,
+		Platform:            "github",
+		HeadBranch:          "HEAD",
+		HeadRepoCloneURL:    repo,
+		ProjectRepoIdentity: repo,
+	})
+
+	Require.NoError(t, err)
+	assert.Equal(t, "refs/heads/HEAD", target.checkoutSourceRef)
+	assert.Equal(t, "refs/kit/merge-requests/23/head", target.checkoutDestinationRef)
+	assert.NotEqual(t, "refs/remotes/origin/HEAD", target.checkoutDestinationRef)
 }
 
 // TestCreateWorktreeFromMergeRequestPullRefFallback covers the no-fork-URL
@@ -338,7 +361,7 @@ func TestCreateWorktreeFromMergeRequestChecksOutVerifiedOID(t *testing.T) {
 		) ([]byte, error) {
 			if !mutated && len(args) >= 2 && args[0] == "worktree" && args[1] == "add" {
 				mutated = true
-				lifecycleGit(t, clone, "update-ref", "refs/remotes/origin/pull/8/head", mainSHA)
+				lifecycleGit(t, clone, "update-ref", "refs/kit/merge-requests/8/head", mainSHA)
 			}
 			stdout, stderr, runErr := runner.Run(ctx, dir, nil, args...)
 			return append(stdout, stderr...), runErr

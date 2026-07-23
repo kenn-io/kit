@@ -2,6 +2,7 @@ package gitremote
 
 import (
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -95,4 +96,9 @@ func TestIsLocalRequiresCanonicalFileURLSyntax(t *testing.T) {
 	assert.True(t, IsLocal("file://localhost/tmp/widget.git"))
 	assert.False(t, IsLocal("file:/tmp/widget.git"))
 	assert.False(t, IsLocal("file:C:/repos/widget.git"))
+}
+
+func TestIsLocalClassifiesWindowsDrivePathsByHostPlatform(t *testing.T) {
+	assert.Equal(t, runtime.GOOS == "windows", IsLocal("D:/repo.git"))
+	assert.Equal(t, runtime.GOOS == "windows", IsLocal(`D:\repo.git`))
 }

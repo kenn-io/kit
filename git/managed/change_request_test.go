@@ -323,6 +323,91 @@ func TestChangeRequestGitFetchExpectedValidatesBeforePublishing(t *testing.T) {
 		"a per-call OID mismatch must not publish over the destination ref")
 }
 
+func TestChangeRequestGitFetchRejectsSymbolicDestination(t *testing.T) {
+	repo := initLifecycleRepo(t)
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	lifecycleGit(t, repo, "init", "--bare", bare)
+	lifecycleGit(t, repo, "commit", "--allow-empty", "-m", "remote head")
+	lifecycleGit(t, repo, "push", bare, "HEAD:refs/heads/topic")
+	lifecycleGit(t, repo, "remote", "add", "origin", bare)
+	mainOID := lifecycleGit(t, repo, "rev-parse", "refs/heads/main")
+	lifecycleGit(t, repo, "symbolic-ref", "refs/kit/reviews/symbolic", "refs/heads/main")
+	backend, err := NewChangeRequestGit(ChangeRequestGitOptions{ProjectRoot: repo})
+	require.NoError(t, err)
+
+	_, err = backend.Fetch(
+		t.Context(), "origin", "refs/heads/topic", "refs/kit/reviews/symbolic",
+	)
+
+	var typed *ChangeRequestError
+	require.ErrorAs(t, err, &typed)
+	assert.Equal(t, ChangeRequestUnsafeConfiguration, typed.Kind)
+	assert.Equal(t, mainOID, lifecycleGit(t, repo, "rev-parse", "refs/heads/main"))
+}
+
+func TestChangeRequestGitFetchRejectsCaseInsensitiveDestinationAlias(t *testing.T) {
+	repo := initLifecycleRepo(t)
+	lifecycleGit(t, repo, "update-ref", "refs/kit/reviews/Trusted", "HEAD")
+	backend, err := NewChangeRequestGit(ChangeRequestGitOptions{ProjectRoot: repo})
+	require.NoError(t, err)
+
+	_, err = backend.Fetch(
+		t.Context(), "origin", "refs/heads/topic", "refs/kit/reviews/trusted",
+	)
+
+	var typed *ChangeRequestError
+	require.ErrorAs(t, err, &typed)
+	assert.Equal(t, ChangeRequestUnsafeConfiguration, typed.Kind)
+}
+
+func TestChangeRequestGitFetchRejectsLeadingOptionArguments(t *testing.T) {
+	repo := initLifecycleRepo(t)
+	backend, err := NewChangeRequestGit(ChangeRequestGitOptions{ProjectRoot: repo})
+	require.NoError(t, err)
+
+	for _, test := range []struct {
+		name      string
+		remote    string
+		sourceRef string
+	}{
+		{name: "remote", remote: "--upload-pack=evil", sourceRef: "refs/heads/topic"},
+		{name: "source ref", remote: "origin", sourceRef: "--upload-pack=evil"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, fetchErr := backend.Fetch(t.Context(), test.remote, test.sourceRef,
+				"refs/kit/reviews/options")
+			var typed *ChangeRequestError
+			require.ErrorAs(t, fetchErr, &typed)
+			assert.Equal(t, ChangeRequestUnsafeConfiguration, typed.Kind)
+		})
+	}
+}
+
+func TestChangeRequestGitFetchTerminatesOptions(t *testing.T) {
+	repo := initLifecycleRepo(t)
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	lifecycleGit(t, repo, "init", "--bare", bare)
+	lifecycleGit(t, repo, "push", bare, "HEAD:refs/heads/topic")
+	lifecycleGit(t, repo, "remote", "add", "origin", bare)
+	var fetchArgs []string
+	backend, err := NewChangeRequestGit(ChangeRequestGitOptions{
+		ProjectRoot: repo,
+		RunGit: func(ctx context.Context, runner gitcmd.Runner, dir string, args ...string) ([]byte, error) {
+			if len(args) > 0 && args[0] == "fetch" {
+				fetchArgs = append([]string(nil), args...)
+			}
+			stdout, stderr, runErr := runner.Run(ctx, dir, nil, args...)
+			return append(stdout, stderr...), runErr
+		},
+	})
+	require.NoError(t, err)
+
+	_, err = backend.Fetch(t.Context(), "origin", "refs/heads/topic", "refs/kit/reviews/options")
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"fetch", "--no-tags", "--", "origin", "refs/heads/topic"}, fetchArgs)
+}
+
 func TestChangeRequestGitCanonicalizesRelativeProjectCloneURL(t *testing.T) {
 	project := initLifecycleRepo(t)
 	origin := filepath.Join(t.TempDir(), "origin.git")

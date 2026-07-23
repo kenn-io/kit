@@ -207,19 +207,21 @@ func prepareMergeRequestRemote(
 ) (mergeRequestRemoteTarget, error) {
 	headBranch := strings.TrimSpace(opts.HeadBranch)
 	hasHeadBranch := headBranch != ""
+	requestRef := fmt.Sprintf("refs/kit/merge-requests/%d", opts.Number)
+	checkoutDestination := requestRef + "/head"
+	trackingDestination := requestRef + "/tracking"
 
 	cloneURL := strings.TrimSpace(opts.HeadRepoCloneURL)
 	sameRepo := cloneURL != "" && opts.ProjectRepoIdentity != "" &&
 		mergeRequestRepositoriesEqual(cloneURL, opts.ProjectRepoIdentity)
 	if sameRepo && hasHeadBranch {
-		destination := "refs/remotes/origin/" + headBranch
 		trackingCloneURL := cloneURL
 		if repositoryIdentity(opts.ProjectRepoIdentity).Host == "" {
 			trackingCloneURL = opts.ProjectRepoIdentity
 		}
 		return mergeRequestRemoteTarget{
 			checkoutRemote: "origin", checkoutSourceRef: "refs/heads/" + headBranch,
-			checkoutDestinationRef: destination,
+			checkoutDestinationRef: checkoutDestination,
 			trackingRemote:         "origin",
 			trackingRepository: RemoteRepository{
 				Identity: repositoryIdentity(opts.ProjectRepoIdentity), CloneURL: trackingCloneURL,
@@ -232,12 +234,10 @@ func prepareMergeRequestRemote(
 	// Forgejo, and Gitea; refs/merge-requests/<n>/head on GitLab) carries
 	// the head commit regardless of where the head branch lives.
 	headRef := mergeRequestHeadRef(opts.Platform, opts.Number)
-	localRef := "refs/remotes/origin/" + strings.TrimPrefix(headRef, "refs/")
-
 	if cloneURL == "" || sameRepo || !hasHeadBranch {
 		return mergeRequestRemoteTarget{
 			checkoutRemote: "origin", checkoutSourceRef: headRef,
-			checkoutDestinationRef: localRef,
+			checkoutDestinationRef: checkoutDestination,
 		}, nil
 	}
 
@@ -251,10 +251,10 @@ func prepareMergeRequestRemote(
 	}
 	return mergeRequestRemoteTarget{
 		checkoutRemote: "origin", checkoutSourceRef: headRef,
-		checkoutDestinationRef: localRef,
+		checkoutDestinationRef: checkoutDestination,
 		trackingRemote:         remoteName, trackingRepository: repository,
 		trackingSourceRef:      "refs/heads/" + headBranch,
-		trackingDestinationRef: "refs/remotes/" + remoteName + "/" + headBranch,
+		trackingDestinationRef: trackingDestination,
 		trackingMergeRef:       "refs/heads/" + headBranch,
 	}, nil
 }

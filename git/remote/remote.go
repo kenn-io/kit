@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -159,7 +160,8 @@ func RemoteRepoPath(remoteURL string) string {
 
 // IsLocal reports whether remoteURL is a local filesystem remote.
 func IsLocal(remoteURL string) bool {
-	if filepath.VolumeName(remoteURL) != "" || isWindowsDrivePath(remoteURL) {
+	if filepath.VolumeName(remoteURL) != "" ||
+		runtime.GOOS == "windows" && IsWindowsDrivePath(remoteURL) {
 		return true
 	}
 	lower := strings.ToLower(strings.TrimSpace(remoteURL))
@@ -173,7 +175,10 @@ func IsLocal(remoteURL string) bool {
 	return false
 }
 
-func isWindowsDrivePath(value string) bool {
+// IsWindowsDrivePath reports whether value uses drive-letter path syntax.
+// It recognizes syntax independently of the host OS; callers deciding how Git
+// transports a value must still account for the current platform.
+func IsWindowsDrivePath(value string) bool {
 	if len(value) < 3 || value[1] != ':' {
 		return false
 	}

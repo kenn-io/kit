@@ -399,6 +399,11 @@ func (r CreateWorktreeResult) rollbackOwned(
 		if err != nil {
 			remaining.Path = r.Path
 			errs = append(errs, err)
+		} else if err := verifyRegisteredWorktree(
+			ctx, r.projectRoot, r.Path, r.Branch, r.pathInfo,
+		); err != nil {
+			remaining.Path = r.Path
+			errs = append(errs, err)
 		} else if out, err := runLifecycleGitWithRunner(
 			ctx, runner, r.projectRoot,
 			"worktree", "remove", "--force", r.Path,
@@ -656,19 +661,24 @@ func verifyRegisteredWorktree(
 	}
 	wantPath := canonicalLifecyclePath(path)
 	wantBranch := strings.TrimSpace(branch)
-	registered := false
+	var registeredEntry *gitworktree.PorcelainEntry
 	for _, entry := range gitworktree.ParsePorcelain(string(out)) {
 		if !lifecyclePathsEqual(entry.Path, wantPath) {
 			continue
 		}
-		registered = true
+		entryCopy := entry
+		registeredEntry = &entryCopy
 		if wantBranch != "" && entry.Branch != wantBranch {
 			return fmt.Errorf("%w: registered worktree branch changed; preserving path",
 				ErrWorktreeCleanupIncomplete)
 		}
+		if wantBranch == "" && !entry.Detached {
+			return fmt.Errorf("%w: registered worktree is no longer detached; preserving path",
+				ErrWorktreeCleanupIncomplete)
+		}
 		break
 	}
-	if !registered {
+	if registeredEntry == nil {
 		return fmt.Errorf("%w: path is no longer a registered worktree; preserving it",
 			ErrWorktreeCleanupIncomplete)
 	}
@@ -698,14 +708,22 @@ func verifyRegisteredWorktree(
 		return fmt.Errorf("%w: worktree repository identity changed; preserving path",
 			ErrWorktreeCleanupIncomplete)
 	}
+	actualBranch, branchErr := runLifecycleGitWithRunner(
+		ctx, runner, path, "rev-parse", "--abbrev-ref", "HEAD",
+	)
+	if branchErr != nil {
+		return fmt.Errorf("%w: failed to inspect worktree HEAD identity; preserving path",
+			ErrWorktreeCleanupIncomplete)
+	}
+	actualBranchName := strings.TrimSpace(string(actualBranch))
 	if wantBranch != "" {
-		actualBranch, branchErr := runLifecycleGitWithRunner(
-			ctx, runner, path, "symbolic-ref", "--quiet", "--short", "HEAD",
-		)
-		if branchErr != nil || strings.TrimSpace(string(actualBranch)) != wantBranch {
+		if actualBranchName != wantBranch {
 			return fmt.Errorf("%w: worktree HEAD branch changed; preserving path",
 				ErrWorktreeCleanupIncomplete)
 		}
+	} else if actualBranchName != "HEAD" {
+		return fmt.Errorf("%w: worktree HEAD is no longer detached; preserving path",
+			ErrWorktreeCleanupIncomplete)
 	}
 	return nil
 }
@@ -739,7 +757,9 @@ func WorktreeIsDirty(ctx context.Context, path string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("inspect worktree filters: %w", err)
 	}
-	out, err := runLifecycleGitWithRunner(ctx, runner, path, "status", "--porcelain")
+	out, err := runLifecycleGitWithRunner(
+		ctx, runner, path, "status", "--porcelain", "--untracked-files=all",
+	)
 	if err != nil {
 		return false, fmt.Errorf(
 			"check worktree dirty state: %w: %s",

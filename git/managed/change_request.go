@@ -421,6 +421,9 @@ func (g *ChangeRequestGit) fetchAndPublish(
 	if err != nil {
 		return "", changeRequestError(ChangeRequestUnsafeConfiguration, "failed to lock the Git repository", err)
 	}
+	if validationErr := g.validateFetchPublication(ctx, remote, sourceRef, destinationRef); validationErr != nil {
+		return "", errors.Join(validationErr, unlock())
+	}
 	oid, fetchErr := g.fetchHead(ctx, remote, sourceRef)
 	if fetchErr == nil {
 		fetchErr = verifyExpectedHeadOID(oid, g.expectedHeadOID)
@@ -429,7 +432,7 @@ func (g *ChangeRequestGit) fetchAndPublish(
 		fetchErr = verifyExpectedHeadOID(oid, expectedOID)
 	}
 	if fetchErr == nil {
-		if _, updateErr := g.runSafe(ctx, g.root, "update-ref", destinationRef, oid); updateErr != nil {
+		if _, updateErr := g.runSafe(ctx, g.root, "update-ref", "--no-deref", destinationRef, oid); updateErr != nil {
 			fetchErr = changeRequestError(ChangeRequestUnsafeConfiguration,
 				"failed to publish the verified change-request head", updateErr)
 		}
@@ -438,7 +441,7 @@ func (g *ChangeRequestGit) fetchAndPublish(
 }
 
 func (g *ChangeRequestGit) fetchHead(ctx context.Context, remote, sourceRef string) (string, error) {
-	if _, err := g.runSafe(ctx, g.root, "fetch", "--no-tags", remote, sourceRef); err != nil {
+	if _, err := g.runSafe(ctx, g.root, "fetch", "--no-tags", "--", remote, sourceRef); err != nil {
 		message := strings.ToLower(err.Error())
 		switch {
 		case isGitAuthenticationFailure(message):
@@ -458,6 +461,49 @@ func (g *ChangeRequestGit) fetchHead(ctx context.Context, remote, sourceRef stri
 			"fetched change-request head is not a commit", err)
 	}
 	return strings.TrimSpace(string(sha)), nil
+}
+
+func (g *ChangeRequestGit) validateFetchPublication(
+	ctx context.Context, remote, sourceRef, destinationRef string,
+) error {
+	if remote == "" || remote != strings.TrimSpace(remote) ||
+		strings.HasPrefix(remote, "-") || strings.ContainsAny(remote, " \t\r\n\x00") {
+		return changeRequestError(ChangeRequestUnsafeConfiguration,
+			"change-request fetch remote name is unsafe", nil)
+	}
+	if sourceRef == "" || sourceRef != strings.TrimSpace(sourceRef) ||
+		strings.HasPrefix(sourceRef, "-") || strings.ContainsAny(sourceRef, "\r\n\x00") {
+		return changeRequestError(ChangeRequestUnsafeConfiguration,
+			"change-request source ref is unsafe", nil)
+	}
+	if _, err := g.runSafe(ctx, g.root, "check-ref-format", sourceRef); err != nil {
+		return changeRequestError(ChangeRequestUnsafeConfiguration,
+			"change-request source ref is invalid", err)
+	}
+	if _, err := g.runSafe(ctx, g.root, "check-ref-format", destinationRef); err != nil {
+		return changeRequestError(ChangeRequestUnsafeConfiguration,
+			"change-request destination ref is invalid", err)
+	}
+	refs, err := g.runSafe(ctx, g.root, "for-each-ref", "--format=%(refname)%00%(symref)")
+	if err != nil {
+		return changeRequestError(ChangeRequestUnsafeConfiguration,
+			"failed to inspect change-request destination refs", err)
+	}
+	for record := range strings.SplitSeq(strings.TrimSpace(string(refs)), "\n") {
+		refName, symbolicTarget, _ := strings.Cut(record, "\x00")
+		if !strings.EqualFold(refName, destinationRef) {
+			continue
+		}
+		if refName != destinationRef {
+			return changeRequestError(ChangeRequestUnsafeConfiguration,
+				"change-request destination aliases an existing ref", nil)
+		}
+		if strings.TrimSpace(symbolicTarget) != "" {
+			return changeRequestError(ChangeRequestUnsafeConfiguration,
+				"change-request destination is symbolic", nil)
+		}
+	}
+	return nil
 }
 
 // FetchExpected fetches a change-request ref and rejects it when the resolved
@@ -976,7 +1022,7 @@ func forkSSHURL(projectURL string, repository gitremote.Identity) (string, error
 
 func isSSHRemoteURL(remoteURL string) bool {
 	remoteURL = strings.TrimSpace(remoteURL)
-	if gitremote.IsLocal(remoteURL) {
+	if gitremote.IsLocal(remoteURL) || gitremote.IsWindowsDrivePath(remoteURL) {
 		return false
 	}
 	lower := strings.ToLower(remoteURL)

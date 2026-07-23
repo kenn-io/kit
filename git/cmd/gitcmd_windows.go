@@ -66,7 +66,7 @@ func runProcessTreeCommand(cmd *exec.Cmd) error {
 		return abortJobProcess(cmd, job, err)
 	}
 	waitErr := cmd.Wait()
-	if waitErr == nil {
+	if waitErr == nil || errors.Is(waitErr, exec.ErrWaitDelay) && rootProcessSucceeded(cmd) {
 		if err := disableJobKillOnClose(job); err != nil {
 			return err
 		}

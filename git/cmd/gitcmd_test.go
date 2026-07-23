@@ -196,6 +196,26 @@ func TestReadSafeDirectoriesBoundsProbeRuntime(t *testing.T) {
 	assert.Less(t, time.Since(start), 3*time.Second, "safe.directory probes are best-effort and must not stall git commands")
 }
 
+func TestRunnerTreatsSuccessfulRootWithRetainedOutputAsSuccess(t *testing.T) {
+	binDir := buildOutputRetainingGit(t)
+	marker := filepath.Join(t.TempDir(), "descendant-finished")
+	pathEnv := binDir + string(os.PathListSeparator) + os.Getenv("PATH")
+	t.Setenv("PATH", pathEnv)
+	runner := New()
+	runner.DisableSafeDirectoryForward = true
+	runner.Env = append(os.Environ(), "PATH="+pathEnv,
+		"KIT_GITCMD_RETAINED_OUTPUT_MARKER="+marker)
+
+	stdout, _, err := runner.Run(t.Context(), "", nil, "version")
+
+	require.NoError(t, err)
+	assert.Equal(t, "root exited\n", string(stdout))
+	require.Eventually(t, func() bool {
+		_, statErr := os.Stat(marker)
+		return statErr == nil
+	}, 5*time.Second, 10*time.Millisecond)
+}
+
 func TestReadSafeDirectoriesConditionalInclude(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
@@ -528,6 +548,47 @@ import "time"
 
 func main() {
 	time.Sleep(10 * time.Second)
+}
+`), 0o600))
+	cmd := exec.Command("go", "build", "-o", exePath, srcPath)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	return binDir
+}
+
+func buildOutputRetainingGit(t *testing.T) string {
+	t.Helper()
+	binDir := t.TempDir()
+	exeName := "git"
+	if runtime.GOOS == "windows" {
+		exeName += ".exe"
+	}
+	exePath := filepath.Join(binDir, exeName)
+	srcPath := filepath.Join(t.TempDir(), "main.go")
+	require.NoError(t, os.WriteFile(srcPath, []byte(`package main
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"time"
+)
+
+func main() {
+	marker := os.Getenv("KIT_GITCMD_RETAINED_OUTPUT_MARKER")
+	if os.Getenv("KIT_GITCMD_RETAINED_OUTPUT_CHILD") == "1" {
+		time.Sleep(1500 * time.Millisecond)
+		_ = os.WriteFile(marker, []byte("done"), 0600)
+		return
+	}
+	child := exec.Command(os.Args[0])
+	child.Env = append(os.Environ(), "KIT_GITCMD_RETAINED_OUTPUT_CHILD=1")
+	child.Stdout = os.Stdout
+	child.Stderr = os.Stderr
+	if err := child.Start(); err != nil {
+		os.Exit(1)
+	}
+	fmt.Println("root exited")
 }
 `), 0o600))
 	cmd := exec.Command("go", "build", "-o", exePath, srcPath)

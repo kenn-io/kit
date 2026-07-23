@@ -157,7 +157,15 @@ func PrepareProcessTreeCancellation(cmd *exec.Cmd, hideConsoleWindow bool) {
 // Windows callers must use this function so the process can be assigned to a
 // kill-on-close Job Object before its suspended primary thread is resumed.
 func RunProcessTreeCommand(cmd *exec.Cmd) error {
-	return runProcessTreeCommand(cmd)
+	err := runProcessTreeCommand(cmd)
+	if errors.Is(err, exec.ErrWaitDelay) && rootProcessSucceeded(cmd) {
+		return nil
+	}
+	return err
+}
+
+func rootProcessSucceeded(cmd *exec.Cmd) bool {
+	return cmd != nil && cmd.ProcessState != nil && cmd.ProcessState.Success()
 }
 
 func boundCommandWait(cmd *exec.Cmd) {
