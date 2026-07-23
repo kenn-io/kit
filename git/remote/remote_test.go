@@ -76,6 +76,8 @@ func TestUnsafeForAutomationRejectsCredentialAndCommandSurfaces(t *testing.T) {
 		{remoteURL: "/tmp/widget.git"},
 		{remoteURL: "file:///tmp/widget.git"},
 		{remoteURL: "file://localhost/tmp/widget.git"},
+		{remoteURL: "file:/tmp/widget.git", want: true},
+		{remoteURL: "file:C:/repos/widget.git", want: true},
 		{remoteURL: "file://attacker/share/widget.git", want: true},
 		{remoteURL: `\\attacker\share\widget.git`, want: true},
 		{remoteURL: "//attacker/share/widget.git", want: true},
@@ -86,4 +88,11 @@ func TestUnsafeForAutomationRejectsCredentialAndCommandSurfaces(t *testing.T) {
 			assert.Equal(t, test.want, UnsafeForAutomation(test.remoteURL))
 		})
 	}
+}
+
+func TestIsLocalRequiresCanonicalFileURLSyntax(t *testing.T) {
+	assert.True(t, IsLocal("file:///tmp/widget.git"))
+	assert.True(t, IsLocal("file://localhost/tmp/widget.git"))
+	assert.False(t, IsLocal("file:/tmp/widget.git"))
+	assert.False(t, IsLocal("file:C:/repos/widget.git"))
 }

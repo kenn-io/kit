@@ -250,8 +250,9 @@ func TestChangeRequestWorktreeConfigVersionRequirement(t *testing.T) {
 		goos   string
 		want   bool
 	}{
-		{output: "git version 2.19.6", goos: "linux"},
-		{output: "git version 2.20.0", goos: "linux", want: true},
+		{output: "git version 2.20.0", goos: "linux"},
+		{output: "git version 2.39.0", goos: "linux"},
+		{output: "git version 2.39.1", goos: "linux", want: true},
 		{output: "git version 2.45.2 (Apple Git-145)", goos: "darwin", want: true},
 		{output: "git version 2.52.2.windows.4", goos: "windows"},
 		{output: "git version 2.53.0", goos: "windows"},
@@ -271,8 +272,11 @@ func TestChangeRequestGitFetchEnforcesConfiguredExpectedHead(t *testing.T) {
 	repo := initLifecycleRepo(t)
 	bare := filepath.Join(t.TempDir(), "origin.git")
 	lifecycleGit(t, repo, "init", "--bare", bare)
+	originalOID := lifecycleGit(t, repo, "rev-parse", "HEAD")
+	lifecycleGit(t, repo, "commit", "--allow-empty", "-m", "remote head")
 	lifecycleGit(t, repo, "push", bare, "HEAD:refs/heads/topic")
 	lifecycleGit(t, repo, "remote", "add", "origin", bare)
+	lifecycleGit(t, repo, "update-ref", "refs/kit/reviews/anchored", originalOID)
 	backend, err := NewChangeRequestGit(ChangeRequestGitOptions{
 		ProjectRoot:     repo,
 		ExpectedHeadOID: strings.Repeat("a", 40),
@@ -287,6 +291,53 @@ func TestChangeRequestGitFetchEnforcesConfiguredExpectedHead(t *testing.T) {
 	var typed *ChangeRequestError
 	require.ErrorAs(t, err, &typed)
 	assert.Equal(t, ChangeRequestHeadChanged, typed.Kind)
+	assert.Equal(t, originalOID,
+		lifecycleGit(t, repo, "rev-parse", "refs/kit/reviews/anchored"),
+		"an unverified fetch must not publish over the destination ref")
+}
+
+func TestChangeRequestGitFetchExpectedValidatesBeforePublishing(t *testing.T) {
+	repo := initLifecycleRepo(t)
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	lifecycleGit(t, repo, "init", "--bare", bare)
+	originalOID := lifecycleGit(t, repo, "rev-parse", "HEAD")
+	lifecycleGit(t, repo, "commit", "--allow-empty", "-m", "remote head")
+	lifecycleGit(t, repo, "push", bare, "HEAD:refs/heads/topic")
+	lifecycleGit(t, repo, "remote", "add", "origin", bare)
+	lifecycleGit(t, repo, "update-ref", "refs/kit/reviews/expected", originalOID)
+	backend, err := NewChangeRequestGit(ChangeRequestGitOptions{
+		ProjectRoot: repo,
+	})
+	require.NoError(t, err)
+
+	_, err = backend.FetchExpected(
+		t.Context(), "origin", "refs/heads/topic", "refs/kit/reviews/expected",
+		strings.Repeat("b", 40),
+	)
+
+	var typed *ChangeRequestError
+	require.ErrorAs(t, err, &typed)
+	assert.Equal(t, ChangeRequestHeadChanged, typed.Kind)
+	assert.Equal(t, originalOID,
+		lifecycleGit(t, repo, "rev-parse", "refs/kit/reviews/expected"),
+		"a per-call OID mismatch must not publish over the destination ref")
+}
+
+func TestChangeRequestGitCanonicalizesRelativeProjectCloneURL(t *testing.T) {
+	project := initLifecycleRepo(t)
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	lifecycleGit(t, project, "init", "--bare", origin)
+	relative, err := filepath.Rel(project, origin)
+	require.NoError(t, err)
+	lifecycleGit(t, project, "remote", "add", "origin", relative)
+	backend, err := NewChangeRequestGit(ChangeRequestGitOptions{
+		ProjectRoot:     project,
+		ProjectCloneURL: relative,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, backend.Validate(t.Context()))
+	assert.Equal(t, origin, backend.project.CloneURL)
 }
 
 func TestChangeRequestGitEnsureRemoteRejectsEffectiveURLRewrite(t *testing.T) {

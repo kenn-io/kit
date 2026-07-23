@@ -99,6 +99,10 @@ func NewChangeRequestGit(opts ChangeRequestGitOptions) (*ChangeRequestGit, error
 	if err != nil {
 		return nil, err
 	}
+	projectCloneURL, _, err := canonicalCloneURL(root, opts.ProjectCloneURL)
+	if err != nil {
+		return nil, fmt.Errorf("resolve project clone URL: %w", err)
+	}
 	runner := opts.Runner
 	runner = normalizeLifecycleRunner(runner, gitcmd.New())
 	// Change-request operations are an automation trust boundary. Callers may
@@ -116,7 +120,7 @@ func NewChangeRequestGit(opts ChangeRequestGitOptions) (*ChangeRequestGit, error
 	return &ChangeRequestGit{
 		root: root,
 		project: RemoteRepository{
-			Identity: opts.ProjectIdentity, CloneURL: strings.TrimSpace(opts.ProjectCloneURL),
+			Identity: opts.ProjectIdentity, CloneURL: projectCloneURL,
 		},
 		expectedHeadOID:  strings.TrimSpace(opts.ExpectedHeadOID),
 		remoteNamePrefix: prefix, hookNamespace: namespace,
@@ -133,7 +137,7 @@ func (g *ChangeRequestGit) Validate(ctx context.Context) error {
 		return changeRequestError(ChangeRequestUnsupportedGit, "failed to determine Git version", err)
 	}
 	if !supportsChangeRequestGitVersion(string(output), runtime.GOOS) {
-		message := "change-request import requires Git 2.20 or newer"
+		message := "change-request import requires Git 2.39.1 or newer"
 		if runtime.GOOS == "windows" {
 			message = "change-request import requires Git for Windows 2.53.0.windows.3 or newer"
 		}
@@ -407,20 +411,34 @@ func (g *ChangeRequestGit) ensureRemote(ctx context.Context, repository RemoteRe
 // enforces the configured expected head OID, and returns the resolved commit
 // OID.
 func (g *ChangeRequestGit) Fetch(ctx context.Context, remote, sourceRef, destinationRef string) (string, error) {
+	return g.fetchAndPublish(ctx, remote, sourceRef, destinationRef, "")
+}
+
+func (g *ChangeRequestGit) fetchAndPublish(
+	ctx context.Context, remote, sourceRef, destinationRef, expectedOID string,
+) (string, error) {
 	ctx, unlock, err := acquireRepositoryMutationLock(ctx, g.root)
 	if err != nil {
 		return "", changeRequestError(ChangeRequestUnsafeConfiguration, "failed to lock the Git repository", err)
 	}
-	oid, fetchErr := g.fetch(ctx, remote, sourceRef, destinationRef)
+	oid, fetchErr := g.fetchHead(ctx, remote, sourceRef)
 	if fetchErr == nil {
 		fetchErr = verifyExpectedHeadOID(oid, g.expectedHeadOID)
+	}
+	if fetchErr == nil {
+		fetchErr = verifyExpectedHeadOID(oid, expectedOID)
+	}
+	if fetchErr == nil {
+		if _, updateErr := g.runSafe(ctx, g.root, "update-ref", destinationRef, oid); updateErr != nil {
+			fetchErr = changeRequestError(ChangeRequestUnsafeConfiguration,
+				"failed to publish the verified change-request head", updateErr)
+		}
 	}
 	return oid, errors.Join(fetchErr, unlock())
 }
 
-func (g *ChangeRequestGit) fetch(ctx context.Context, remote, sourceRef, destinationRef string) (string, error) {
-	refspec := "+" + sourceRef + ":" + destinationRef
-	if _, err := g.runSafe(ctx, g.root, "fetch", "--no-tags", remote, refspec); err != nil {
+func (g *ChangeRequestGit) fetchHead(ctx context.Context, remote, sourceRef string) (string, error) {
+	if _, err := g.runSafe(ctx, g.root, "fetch", "--no-tags", remote, sourceRef); err != nil {
 		message := strings.ToLower(err.Error())
 		switch {
 		case isGitAuthenticationFailure(message):
@@ -434,7 +452,7 @@ func (g *ChangeRequestGit) fetch(ctx context.Context, remote, sourceRef, destina
 				"change-request head ref is unavailable", err)
 		}
 	}
-	sha, err := g.runSafe(ctx, g.root, "rev-parse", "--verify", destinationRef+"^{commit}")
+	sha, err := g.runSafe(ctx, g.root, "rev-parse", "--verify", "FETCH_HEAD^{commit}")
 	if err != nil {
 		return "", changeRequestError(ChangeRequestInaccessibleHead,
 			"fetched change-request head is not a commit", err)
@@ -448,14 +466,7 @@ func (g *ChangeRequestGit) fetch(ctx context.Context, remote, sourceRef, destina
 func (g *ChangeRequestGit) FetchExpected(
 	ctx context.Context, remote, sourceRef, destinationRef, expectedOID string,
 ) (string, error) {
-	oid, err := g.Fetch(ctx, remote, sourceRef, destinationRef)
-	if err != nil {
-		return "", err
-	}
-	if err := verifyExpectedHeadOID(oid, expectedOID); err != nil {
-		return "", err
-	}
-	return oid, nil
+	return g.fetchAndPublish(ctx, remote, sourceRef, destinationRef, expectedOID)
 }
 
 func verifyExpectedHeadOID(actual, expected string) error {
@@ -1054,7 +1065,7 @@ func supportsChangeRequestGitVersion(output, goos string) bool {
 	major, _ := strconv.Atoi(match[1])
 	minor, _ := strconv.Atoi(match[2])
 	patch, _ := strconv.Atoi(match[3])
-	if major < 2 || major == 2 && minor < 20 {
+	if major < 2 || major == 2 && (minor < 39 || minor == 39 && patch < 1) {
 		return false
 	}
 	if goos != "windows" {

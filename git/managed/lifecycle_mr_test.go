@@ -142,7 +142,11 @@ func TestCreateWorktreeFromMergeRequestSameLocalRepoAlternateSpellings(t *testin
 		{
 			name: "file URL",
 			headURL: func(_ *testing.T, origin string) string {
-				return (&url.URL{Scheme: "file", Path: filepath.ToSlash(origin)}).String()
+				path := filepath.ToSlash(origin)
+				if filepath.VolumeName(origin) != "" && !strings.HasPrefix(path, "/") {
+					path = "/" + path
+				}
+				return (&url.URL{Scheme: "file", Path: path}).String()
 			},
 		},
 	} {

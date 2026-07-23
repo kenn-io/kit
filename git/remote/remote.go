@@ -162,7 +162,12 @@ func IsLocal(remoteURL string) bool {
 	if filepath.VolumeName(remoteURL) != "" || isWindowsDrivePath(remoteURL) {
 		return true
 	}
-	if u, err := url.Parse(remoteURL); err == nil && strings.EqualFold(u.Scheme, "file") {
+	lower := strings.ToLower(strings.TrimSpace(remoteURL))
+	if strings.HasPrefix(lower, "file://") {
+		u, err := url.Parse(remoteURL)
+		if err != nil || !strings.EqualFold(u.Scheme, "file") || u.Opaque != "" {
+			return false
+		}
 		return true
 	}
 	return false
@@ -195,6 +200,10 @@ func NormalizeHost(host string) string {
 // credential carriers and are not part of repository identity.
 func UnsafeForAutomation(remoteURL string) bool {
 	remoteURL = strings.TrimSpace(remoteURL)
+	lower := strings.ToLower(remoteURL)
+	if strings.HasPrefix(lower, "file:") && !strings.HasPrefix(lower, "file://") {
+		return true
+	}
 	if strings.HasPrefix(remoteURL, `\\`) || strings.HasPrefix(remoteURL, "//") {
 		return true
 	}

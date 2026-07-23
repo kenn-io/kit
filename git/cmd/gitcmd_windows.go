@@ -65,7 +65,13 @@ func runProcessTreeCommand(cmd *exec.Cmd) error {
 	if err := resumeWindowsProcess(uint32(cmd.Process.Pid)); err != nil {
 		return abortJobProcess(cmd, job, err)
 	}
-	return cmd.Wait()
+	waitErr := cmd.Wait()
+	if waitErr == nil {
+		if err := disableJobKillOnClose(job); err != nil {
+			return err
+		}
+	}
+	return waitErr
 }
 
 type windowsJobCancellation struct {
@@ -107,6 +113,17 @@ func createKillOnCloseJob() (windows.Handle, error) {
 		return 0, fmt.Errorf("configure process Job Object: %w", err)
 	}
 	return job, nil
+}
+
+func disableJobKillOnClose(job windows.Handle) error {
+	info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
+	if _, err := windows.SetInformationJobObject(
+		job, windows.JobObjectExtendedLimitInformation,
+		uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)),
+	); err != nil {
+		return fmt.Errorf("preserve successful process descendants: %w", err)
+	}
+	return nil
 }
 
 func resumeWindowsProcess(pid uint32) error {

@@ -56,6 +56,51 @@ func TestProcessTreeJobKillsMembersWhenClosed(t *testing.T) {
 		info.BasicLimitInformation.LimitFlags&windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)
 }
 
+func TestProcessTreeJobCanPreserveMembersAfterSuccessfulCommand(t *testing.T) {
+	job, err := createKillOnCloseJob()
+	require.NoError(t, err)
+	defer windows.CloseHandle(job)
+
+	require.NoError(t, disableJobKillOnClose(job))
+
+	var info windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+	err = windows.QueryInformationJobObject(
+		job, windows.JobObjectExtendedLimitInformation,
+		uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)), nil,
+	)
+	require.NoError(t, err)
+	assert.Zero(t,
+		info.BasicLimitInformation.LimitFlags&windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)
+}
+
+func TestSuccessfulProcessPreservesDetachedDescendant(t *testing.T) {
+	const helperMode = "KIT_GITCMD_WINDOWS_SUCCESS_HELPER"
+	mode := os.Getenv(helperMode)
+	marker := os.Getenv("KIT_GITCMD_WINDOWS_SUCCESS_MARKER")
+	if mode == "child" {
+		time.Sleep(500 * time.Millisecond)
+		_ = os.WriteFile(marker, []byte("survived"), 0o600)
+		return
+	}
+	if mode == "parent" {
+		child := exec.Command(os.Args[0], "-test.run=^TestSuccessfulProcessPreservesDetachedDescendant$")
+		child.Env = append(os.Environ(), helperMode+"=child")
+		_ = child.Start()
+		return
+	}
+
+	marker = filepath.Join(t.TempDir(), "descendant-finished")
+	parent := exec.Command(os.Args[0], "-test.run=^TestSuccessfulProcessPreservesDetachedDescendant$")
+	parent.Env = append(os.Environ(), helperMode+"=parent",
+		"KIT_GITCMD_WINDOWS_SUCCESS_MARKER="+marker)
+	PrepareProcessTreeCancellation(parent, true)
+	require.NoError(t, RunProcessTreeCommand(parent))
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(marker)
+		return err == nil
+	}, 5*time.Second, 10*time.Millisecond)
+}
+
 func TestProcessTreeCancellationStopsGrandchildAfterIntermediateExits(t *testing.T) {
 	const helperMode = "KIT_GITCMD_WINDOWS_TREE_HELPER"
 	mode := os.Getenv(helperMode)

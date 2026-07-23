@@ -10,11 +10,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
 
 	gitcmd "go.kenn.io/kit/git/cmd"
+	gitworktree "go.kenn.io/kit/git/worktree"
 	"go.kenn.io/kit/safefileio"
 )
 
@@ -560,13 +562,18 @@ func removeWorktreeFromDisk(
 		return RemoveWorktreeResult{}, err
 	}
 	pathExists := true
-	if _, statErr := os.Stat(path); statErr != nil {
-		if !os.IsNotExist(statErr) {
+	var pathInfo os.FileInfo
+	if pathInfo, err = os.Lstat(path); err != nil {
+		if !os.IsNotExist(err) {
 			return RemoveWorktreeResult{}, fmt.Errorf(
-				"stat worktree path: %w", statErr,
+				"stat worktree path: %w", err,
 			)
 		}
 		pathExists = false
+		pathInfo = nil
+	}
+	if err := verifyRegisteredWorktree(ctx, root, path, opts.Branch, pathInfo); err != nil {
+		return RemoveWorktreeResult{}, err
 	}
 	hookScript := lifecycleHookScript{}
 	if pathExists {
@@ -578,6 +585,9 @@ func removeWorktreeFromDisk(
 
 	result := RemoveWorktreeResult{}
 	if hookScript.path != "" && pathExists {
+		if err := verifyRegisteredWorktree(ctx, root, path, opts.Branch, pathInfo); err != nil {
+			return RemoveWorktreeResult{}, err
+		}
 		if hookErr := runLifecycleHook(
 			ctx, hookScript, root, path, opts.Branch, opts.WorktreeName,
 			opts.HookEnvironmentPrefix,
@@ -589,6 +599,9 @@ func removeWorktreeFromDisk(
 	}
 
 	if pathExists {
+		if err := verifyRegisteredWorktree(ctx, root, path, opts.Branch, pathInfo); err != nil {
+			return result, err
+		}
 		args := []string{"worktree", "remove"}
 		if opts.Force {
 			args = append(args, "--force", "--force")
@@ -601,6 +614,12 @@ func removeWorktreeFromDisk(
 		// The directory is gone but git may still hold a stale
 		// registration that would block branch deletion and re-creation.
 		// Removing by path leaves unrelated stale registrations alone.
+		if _, statErr := os.Lstat(path); statErr == nil {
+			return result, fmt.Errorf("%w: worktree path appeared during removal; preserving it",
+				ErrWorktreeCleanupIncomplete)
+		} else if !os.IsNotExist(statErr) {
+			return result, fmt.Errorf("recheck missing worktree path: %w", statErr)
+		}
 		args := []string{"worktree", "remove", "--force"}
 		if opts.Force {
 			args = append(args, "--force")
@@ -619,6 +638,98 @@ func removeWorktreeFromDisk(
 		}
 	}
 	return result, nil
+}
+
+func verifyRegisteredWorktree(
+	ctx context.Context, root, path, branch string, pathInfo os.FileInfo,
+) error {
+	runner, err := lifecycleHooksRunner(ctx)
+	if err != nil {
+		return err
+	}
+	out, err := runLifecycleGitWithRunner(
+		ctx, runner, root, "worktree", "list", "--porcelain",
+	)
+	if err != nil {
+		return fmt.Errorf("%w: inspect registered worktrees: %w",
+			ErrWorktreeCleanupIncomplete, err)
+	}
+	wantPath := canonicalLifecyclePath(path)
+	wantBranch := strings.TrimSpace(branch)
+	registered := false
+	for _, entry := range gitworktree.ParsePorcelain(string(out)) {
+		if !lifecyclePathsEqual(entry.Path, wantPath) {
+			continue
+		}
+		registered = true
+		if wantBranch != "" && entry.Branch != wantBranch {
+			return fmt.Errorf("%w: registered worktree branch changed; preserving path",
+				ErrWorktreeCleanupIncomplete)
+		}
+		break
+	}
+	if !registered {
+		return fmt.Errorf("%w: path is no longer a registered worktree; preserving it",
+			ErrWorktreeCleanupIncomplete)
+	}
+	if pathInfo == nil {
+		return nil
+	}
+	if !sameLifecycleFile(path, pathInfo) {
+		return fmt.Errorf("%w: registered worktree path identity changed; preserving it",
+			ErrWorktreeCleanupIncomplete)
+	}
+	topLevel, err := runLifecycleGitWithRunner(
+		ctx, runner, path, "rev-parse", "--path-format=absolute", "--show-toplevel",
+	)
+	if err != nil || !lifecyclePathsEqual(strings.TrimSpace(string(topLevel)), wantPath) {
+		return fmt.Errorf("%w: path no longer resolves to the registered worktree; preserving it",
+			ErrWorktreeCleanupIncomplete)
+	}
+	rootCommon, rootErr := runLifecycleGitWithRunner(
+		ctx, runner, root, "rev-parse", "--path-format=absolute", "--git-common-dir",
+	)
+	pathCommon, pathErr := runLifecycleGitWithRunner(
+		ctx, runner, path, "rev-parse", "--path-format=absolute", "--git-common-dir",
+	)
+	if rootErr != nil || pathErr != nil || !lifecyclePathsEqual(
+		strings.TrimSpace(string(rootCommon)), strings.TrimSpace(string(pathCommon)),
+	) {
+		return fmt.Errorf("%w: worktree repository identity changed; preserving path",
+			ErrWorktreeCleanupIncomplete)
+	}
+	if wantBranch != "" {
+		actualBranch, branchErr := runLifecycleGitWithRunner(
+			ctx, runner, path, "symbolic-ref", "--quiet", "--short", "HEAD",
+		)
+		if branchErr != nil || strings.TrimSpace(string(actualBranch)) != wantBranch {
+			return fmt.Errorf("%w: worktree HEAD branch changed; preserving path",
+				ErrWorktreeCleanupIncomplete)
+		}
+	}
+	return nil
+}
+
+func canonicalLifecyclePath(path string) string {
+	clean := filepath.Clean(strings.TrimSpace(path))
+	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
+		return filepath.Clean(resolved)
+	}
+	if parent, err := filepath.EvalSymlinks(filepath.Dir(clean)); err == nil {
+		return filepath.Join(parent, filepath.Base(clean))
+	}
+	return clean
+}
+
+func lifecyclePathsEqual(left, right string) bool {
+	left = canonicalLifecyclePath(left)
+	right = canonicalLifecyclePath(right)
+	if left == right || runtime.GOOS == "windows" && strings.EqualFold(left, right) {
+		return true
+	}
+	leftInfo, leftErr := os.Stat(left)
+	rightInfo, rightErr := os.Stat(right)
+	return leftErr == nil && rightErr == nil && os.SameFile(leftInfo, rightInfo)
 }
 
 // WorktreeIsDirty reports whether the worktree at path has uncommitted

@@ -1073,6 +1073,39 @@ func TestRemoveWorktreeFromDiskAbortsWhenTeardownHookFails(t *testing.T) {
 	assert.True(branchExistsInRepo(t, repo, "feature"))
 }
 
+func TestRemoveWorktreeFromDiskPreservesReplacementDirectory(t *testing.T) {
+	assert := assert.New(t)
+	require := Require.New(t)
+	repo := initLifecycleRepo(t)
+	dest := filepath.Join(t.TempDir(), "wt")
+	displaced := dest + "-displaced"
+	lifecycleGit(t, repo, "worktree", "add", "-b", "feature", dest)
+	require.NoError(os.Rename(dest, displaced))
+	require.NoError(os.Mkdir(dest, 0o755))
+	marker := filepath.Join(dest, "unrelated.txt")
+	require.NoError(os.WriteFile(marker, []byte("preserve me\n"), 0o600))
+	hookMarker := filepath.Join(t.TempDir(), "hook-ran")
+	script := filepath.Join(repo, "teardown")
+	require.NoError(os.WriteFile(script, []byte(
+		"#!/bin/sh\nprintf ran > '"+filepath.ToSlash(hookMarker)+"'\n",
+	), 0o755))
+
+	_, err := RemoveWorktreeFromDisk(t.Context(), RemoveWorktreeOptions{
+		ProjectRoot:    repo,
+		Path:           dest,
+		Branch:         "feature",
+		Force:          true,
+		RemoveBranch:   true,
+		TeardownScript: "teardown",
+	})
+
+	require.ErrorIs(err, ErrWorktreeCleanupIncomplete)
+	assert.FileExists(marker, "an unrelated replacement directory must be preserved")
+	assert.NoFileExists(hookMarker, "the teardown hook must not run in a replacement directory")
+	assert.True(branchExistsInRepo(t, repo, "feature"),
+		"ownership failure must preserve the registered branch")
+}
+
 func TestRemoveWorktreeFromDiskPrunesWhenPathAlreadyGone(t *testing.T) {
 	assert := assert.New(t)
 	require := Require.New(t)
@@ -1197,7 +1230,8 @@ func TestRemoveWorktreeFromDiskForceRemovesMissingLockedWorktree(t *testing.T) {
 	assert.NotContains(list, "branch refs/heads/locked-missing")
 }
 
-func TestRemoveWorktreeFromDiskBranchInUseElsewhere(t *testing.T) {
+func TestRemoveWorktreeFromDiskRejectsMismatchedBranch(t *testing.T) {
+	assert := assert.New(t)
 	require := Require.New(t)
 	repo := initLifecycleRepo(t)
 	dest := filepath.Join(t.TempDir(), "wt")
@@ -1209,8 +1243,10 @@ func TestRemoveWorktreeFromDiskBranchInUseElsewhere(t *testing.T) {
 		Branch:       "main",
 		RemoveBranch: true,
 	})
-	require.ErrorIs(err, ErrBranchInUse,
-		"deleting a branch checked out in another worktree is refused")
+	require.ErrorIs(err, ErrWorktreeCleanupIncomplete)
+	assert.DirExists(dest, "a branch mismatch preserves the registered worktree")
+	assert.True(branchExistsInRepo(t, repo, "feature"))
+	assert.True(branchExistsInRepo(t, repo, "main"))
 }
 
 func TestWorktreeIsDirty(t *testing.T) {
