@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -222,6 +223,156 @@ func TestCreateWorktreeFromMergeRequestRejectsChangedHead(t *testing.T) {
 	require.ErrorAs(err, &changeErr)
 	assert.Equal(ChangeRequestHeadChanged, changeErr.Kind)
 	assert.NoDirExists(dest)
+}
+
+func TestCreateWorktreeFromMergeRequestIsolatesUntrustedTreeGitPrograms(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("executable Git hook and filter fixture requires POSIX")
+	}
+	require := Require.New(t)
+	assert := assert.New(t)
+
+	origin, clone := initOriginAndClone(t)
+	markers := t.TempDir()
+	hookMarker := filepath.Join(markers, "hook-ran")
+	filterMarker := filepath.Join(markers, "filter-ran")
+	fsmonitorMarker := filepath.Join(markers, "fsmonitor-ran")
+	dest := filepath.Join(t.TempDir(), "wt")
+
+	lifecycleGit(t, origin, "checkout", "-q", "-b", "untrusted-tree")
+	require.NoError(os.MkdirAll(filepath.Join(origin, ".githooks"), 0o755))
+	require.NoError(os.WriteFile(
+		filepath.Join(origin, ".githooks", "post-checkout"),
+		[]byte("#!/bin/sh\n: > "+hookMarker+"\n"), 0o755,
+	))
+	require.NoError(os.WriteFile(
+		filepath.Join(origin, ".gitattributes"),
+		[]byte("payload filter=owned diff=owned merge=owned\n"), 0o644,
+	))
+	require.NoError(os.WriteFile(
+		filepath.Join(origin, "payload"), []byte("external\n"), 0o644,
+	))
+	lifecycleGit(t, origin, "add", ".githooks", ".gitattributes", "payload")
+	lifecycleGit(t, origin, "commit", "-qm", "untrusted tree programs")
+	headSHA := lifecycleGit(t, origin, "rev-parse", "HEAD")
+	lifecycleGit(t, origin, "checkout", "-q", "main")
+
+	filterScript := filepath.Join(markers, "filter.sh")
+	require.NoError(os.WriteFile(
+		filterScript,
+		[]byte("#!/bin/sh\n: > "+filterMarker+"\ncat\n"), 0o755,
+	))
+	fsmonitorScript := filepath.Join(markers, "fsmonitor.sh")
+	require.NoError(os.WriteFile(
+		fsmonitorScript,
+		[]byte("#!/bin/sh\n: > "+fsmonitorMarker+"\nprintf '0\\n'\n"), 0o755,
+	))
+	lifecycleGit(t, clone, "config", "core.hooksPath",
+		filepath.Join(dest, ".githooks"))
+	lifecycleGit(t, clone, "config", "core.fsmonitor", fsmonitorScript)
+	lifecycleGit(t, clone, "config", "filter.owned.smudge", filterScript)
+	lifecycleGit(t, clone, "config", "filter.owned.clean", filterScript)
+	lifecycleGit(t, clone, "config", "filter.owned.required", "true")
+	lifecycleGit(t, clone, "config", "diff.owned.command", filterScript)
+	lifecycleGit(t, clone, "config", "diff.owned.textconv", filterScript)
+	lifecycleGit(t, clone, "config", "merge.owned.driver", filterScript)
+
+	result, err := CreateWorktreeFromMergeRequest(
+		t.Context(), MergeRequestWorktreeOptions{
+			ProjectRoot:         clone,
+			Branch:              "pr-untrusted",
+			Path:                dest,
+			Number:              21,
+			HeadBranch:          "untrusted-tree",
+			HeadRepoCloneURL:    origin,
+			ProjectRepoIdentity: identityOfCloneURL(origin),
+			ExpectedHeadSHA:     headSHA,
+		})
+
+	require.NoError(err)
+	assert.Equal(dest, result.Path)
+	assert.NoFileExists(hookMarker)
+	assert.NoFileExists(filterMarker)
+	assert.Equal("external", lifecycleGit(t, dest, "show", "HEAD:payload"))
+	assert.Equal("false", worktreeConfig(t, dest, "core.fsmonitor"))
+	assert.Empty(worktreeConfig(t, dest, "filter.owned.clean"))
+	assert.Empty(worktreeConfig(t, dest, "filter.owned.smudge"))
+	assert.Empty(worktreeConfig(t, dest, "filter.owned.process"))
+	assert.Equal("false", worktreeConfig(t, dest, "filter.owned.required"))
+	assert.Equal(safeExternalDiffCommand,
+		worktreeConfig(t, dest, "diff.owned.command"))
+	assert.Equal("cat", worktreeConfig(t, dest, "diff.owned.textconv"))
+	assert.Equal("false", worktreeConfig(t, dest, "merge.owned.driver"))
+
+	if err := os.Remove(fsmonitorMarker); err != nil {
+		require.ErrorIs(err, os.ErrNotExist)
+	}
+	dirty, dirtyErr := WorktreeIsDirty(t.Context(), dest)
+	require.NoError(dirtyErr)
+	assert.False(dirty)
+	assert.NoFileExists(fsmonitorMarker,
+		"persistent isolation protects later ordinary Git commands")
+
+	require.NoError(os.WriteFile(
+		filepath.Join(dest, "payload"), []byte("changed\n"), 0o644,
+	))
+	diff := lifecycleGit(t, dest, "diff", "--", "payload")
+	assert.Contains(diff, "-external")
+	assert.Contains(diff, "+changed")
+	lifecycleGit(t, dest, "add", "payload")
+	assert.NoFileExists(filterMarker,
+		"later diff and clean operations keep attribute programs disabled")
+}
+
+func TestCreateWorktreeFromMergeRequestPersistsAttributeDriverIsolation(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+
+	origin, clone := initOriginAndClone(t)
+	lifecycleGit(t, origin, "checkout", "-q", "-b", "driver-selection")
+	require.NoError(os.WriteFile(
+		filepath.Join(origin, ".gitattributes"),
+		[]byte("payload filter=portable diff=portable merge=portable\n"), 0o644,
+	))
+	require.NoError(os.WriteFile(
+		filepath.Join(origin, "payload"), []byte("external\n"), 0o644,
+	))
+	lifecycleGit(t, origin, "add", ".gitattributes", "payload")
+	lifecycleGit(t, origin, "commit", "-qm", "select configured drivers")
+	headSHA := lifecycleGit(t, origin, "rev-parse", "HEAD")
+	lifecycleGit(t, origin, "checkout", "-q", "main")
+
+	lifecycleGit(t, clone, "config", "filter.portable.smudge", "false")
+	lifecycleGit(t, clone, "config", "filter.portable.required", "true")
+	lifecycleGit(t, clone, "config", "diff.portable.command", "false")
+	lifecycleGit(t, clone, "config", "merge.portable.driver", "false")
+
+	dest := filepath.Join(t.TempDir(), "wt")
+	_, err := CreateWorktreeFromMergeRequest(
+		t.Context(), MergeRequestWorktreeOptions{
+			ProjectRoot:         clone,
+			Branch:              "pr-drivers",
+			Path:                dest,
+			Number:              22,
+			HeadBranch:          "driver-selection",
+			HeadRepoCloneURL:    origin,
+			ProjectRepoIdentity: identityOfCloneURL(origin),
+			ExpectedHeadSHA:     headSHA,
+		})
+
+	require.NoError(err)
+	assert.Equal("external", lifecycleGit(t, dest, "show", "HEAD:payload"))
+	assert.Empty(worktreeConfig(t, dest, "filter.portable.smudge"))
+	assert.Equal("false", worktreeConfig(t, dest, "filter.portable.required"))
+	assert.Equal(safeExternalDiffCommand,
+		worktreeConfig(t, dest, "diff.portable.command"))
+	assert.Equal("false", worktreeConfig(t, dest, "merge.portable.driver"))
+	require.NoError(os.WriteFile(
+		filepath.Join(dest, "payload"), []byte("portable change\n"), 0o644,
+	))
+	diff := lifecycleGit(t, dest, "diff", "--", "payload")
+	assert.Contains(diff, "-external")
+	assert.Contains(diff, "+portable change")
 }
 
 // TestCreateWorktreeFromMergeRequestFork covers the fork scenario: checkout

@@ -54,6 +54,9 @@ type MergeRequestWorktreeOptions struct {
 	Branch                string
 	Path                  string
 	BaseDir               string
+	// SetupScript is an explicitly configured, caller-trusted script. It runs
+	// after the untrusted request tree is materialized; callers must sandbox
+	// it if the script evaluates or executes content from that tree.
 	SetupScript           string
 	WorktreeName          string
 	HookEnvironmentPrefix string
@@ -87,12 +90,16 @@ type mergeRequestRemoteTarget struct {
 	trackingMergeRef string
 }
 
-// CreateWorktreeFromMergeRequest materializes a merge request head as a new
-// worktree: it fetches the head (from the project's own branch, the fork,
-// or the platform pull ref), creates a new local branch on it, configures
-// upstream tracking when possible (non-fatally skipping it when the fork
-// cannot be fetched), and runs the optional setup hook. Failures after the
-// worktree exists roll it back.
+// CreateWorktreeFromMergeRequest materializes an untrusted merge request head
+// as a new worktree. It verifies the expected head when supplied, creates the
+// worktree without checkout-time hooks or configured attribute programs,
+// persists that isolation for later Git commands, and disables implicit
+// submodule recursion. The existing repository, its configuration, provider
+// metadata, remotes, and explicitly configured setup hook remain trusted.
+//
+// The function also configures upstream tracking when possible, non-fatally
+// skipping it when the fork cannot be fetched. Failures after the worktree
+// exists roll it back.
 func CreateWorktreeFromMergeRequest(
 	ctx context.Context, opts MergeRequestWorktreeOptions,
 ) (CreateWorktreeResult, error) {
@@ -109,6 +116,9 @@ func CreateWorktreeFromMergeRequest(
 		)
 	}
 	if err := validateBranchName(ctx, root, branch); err != nil {
+		return CreateWorktreeResult{}, err
+	}
+	if err := validateUntrustedTreeCheckoutGitVersion(ctx, root); err != nil {
 		return CreateWorktreeResult{}, err
 	}
 	hookScript, err := resolveHookScript(root, opts.SetupScript)
@@ -129,6 +139,10 @@ func CreateWorktreeFromMergeRequest(
 	}
 
 	target, err := prepareMergeRequestRemote(ctx, root, opts)
+	if err != nil {
+		return CreateWorktreeResult{}, err
+	}
+	isolation, err := prepareUntrustedTreeIsolation(ctx, root)
 	if err != nil {
 		return CreateWorktreeResult{}, err
 	}
@@ -178,12 +192,22 @@ func CreateWorktreeFromMergeRequest(
 	// --no-track: tracking is configured explicitly below; without it git
 	// auto-tracks the remote-tracking start point (e.g. the read-only
 	// pull ref), which is wrong for pushes.
-	if out, err := runLifecycleGit(
-		ctx, root,
-		"worktree", "add", path, "--no-track", "-b", branch,
+	if out, err := runLifecycleGitWithRunner(
+		ctx, isolation.runner, root,
+		"worktree", "add", "--no-checkout", "--no-track", "-b", branch, path,
 		"--", checkoutOID,
 	); err != nil {
 		return CreateWorktreeResult{}, classifyWorktreeGitError(out, err)
+	}
+	if err := persistUntrustedTreeIsolation(
+		ctx, root, path, isolation,
+	); err != nil {
+		rollbackCreatedWorktree(context.WithoutCancel(ctx), root, path, branch, true)
+		return CreateWorktreeResult{}, err
+	}
+	if err := materializeUntrustedTree(ctx, path, isolation); err != nil {
+		rollbackCreatedWorktree(context.WithoutCancel(ctx), root, path, branch, true)
+		return CreateWorktreeResult{}, err
 	}
 	result, err := snapshotCreateWorktreeResult(ctx, root, path, branch, true)
 	if err != nil {

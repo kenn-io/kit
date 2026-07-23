@@ -22,10 +22,15 @@ specific application or forge workflow.
 - `git/managed` owns the shared named-worktree lifecycle. Extend it instead of
   creating application-local worktree creation, merge-request import,
   tracking, hook, or rollback implementations.
-- The managed lifecycle operates on repositories, remotes, Git configuration,
-  and lifecycle hooks the user trusts. It is not a sandbox for hostile
-  repositories, hostile Git configuration, or malicious same-user processes.
-  Callers that need that boundary must provide an OS or container sandbox.
+- The managed lifecycle trusts the existing repository, remotes, Git
+  configuration, provider metadata, lifecycle hooks, and same-user filesystem
+  state. Ordinary named-worktree creation also trusts the checked-out tree.
+- Merge-request import treats the fetched tree as untrusted: keep checkout-time
+  hooks disabled, neutralize configured filter/fsmonitor/diff/merge programs
+  the tree can select, disable implicit submodule recursion, and persist those
+  settings in the imported worktree. This is a narrow Git execution boundary,
+  not an OS sandbox for hostile configuration, remotes, lifecycle scripts,
+  same-user replacement races, or resource exhaustion.
 - Expected merge-request head SHAs are correctness anchors: verify them before
   creating the local branch or materializing a worktree.
 - Rollback after a completed create is conservative about ordinary user work:

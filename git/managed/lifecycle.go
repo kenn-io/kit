@@ -594,7 +594,12 @@ func localBranchExists(ctx context.Context, root, branch string) bool {
 func runLifecycleGit(
 	ctx context.Context, dir string, args ...string,
 ) ([]byte, error) {
-	runner := lifecycleRunner(ctx)
+	return runLifecycleGitWithRunner(ctx, lifecycleRunner(ctx), dir, args...)
+}
+
+func runLifecycleGitWithRunner(
+	ctx context.Context, runner gitcmd.Runner, dir string, args ...string,
+) ([]byte, error) {
 	if run := lifecycleGitRunner(ctx); run != nil {
 		return run(ctx, runner, dir, args...)
 	}
