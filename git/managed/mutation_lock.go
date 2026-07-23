@@ -97,5 +97,9 @@ func repositoryMutationIdentity(root string) (string, error) {
 	if resolved, resolveErr := filepath.EvalSymlinks(gitDir); resolveErr == nil {
 		gitDir = resolved
 	}
-	return gitDir, nil
+	identity, err := repositoryFilesystemIdentity(gitDir)
+	if err != nil {
+		return "", fmt.Errorf("identify Git common directory %s: %w", gitDir, err)
+	}
+	return identity, nil
 }

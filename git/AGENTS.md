@@ -18,7 +18,8 @@ not about one product's workflow.
 - Return git failures with captured stderr. Do not hide git's message behind a
   generic error.
 - Use `gitlock` around mutations that can race with another process touching
-  the same repository.
+  the same repository. Derive repository lock keys from the common Git
+  directory's filesystem identity so case and path aliases cannot split locks.
 - Keep remote and clone-path validation in `gitremote`; do not duplicate that
   parsing in callers or sibling packages.
 - Do not assume GitHub-only identity. Keep host, owner, and repository name
@@ -41,7 +42,8 @@ not about one product's workflow.
   decides whether a managed worktree still matches its creation snapshot.
 - Interactive Git commands must retain foreground terminal access; automated
   Git and lifecycle hooks must keep bounded process-tree cancellation, and hook
-  cancellation must terminate the spawned tree rather than only its parent.
+  cancellation or an unsuccessful root exit must terminate the spawned tree
+  rather than only its parent.
   Commands passed through the exported process-tree cancellation helpers must
   be created with `exec.CommandContext` because platform policies install
   `exec.Cmd.Cancel`.
@@ -67,10 +69,12 @@ not about one product's workflow.
 - Safe push routing is transactional at the public method boundary. Snapshot
   affected worktree configuration and restore it after any routing write or
   final-validation failure; persistent Git execution isolation may remain
-  installed. Managed contributor worktrees must retain worktree-scoped hook,
-  fsmonitor, and filter isolation for their lifetime. Verify their captured
-  path and repository ownership before isolation writes and again immediately
-  before push-routing writes.
+  installed. Revalidate captured ownership before compensating restoration and
+  preserve the configuration when ownership changed. Managed contributor
+  worktrees must retain worktree-scoped hook, fsmonitor, and filter isolation
+  for their lifetime, and retries may recognize only those exact package-owned
+  safe settings. Verify their captured path and repository ownership before
+  isolation writes and again immediately before push-routing writes.
 - Dirty-state checks for ordinary worktrees must retain configured filter and
   fsmonitor semantics. Use filter-disabled status only for worktrees that were
   materialized with those filters disabled.
@@ -81,7 +85,9 @@ not about one product's workflow.
   checks must explicitly include untracked files regardless of repository
   status configuration. Conservative rollback must revalidate exact HEAD,
   branch ref state, and artifacts immediately before removal and must not use
-  forced worktree removal while preserving changes.
+  forced worktree removal while preserving changes. A transient removal may be
+  retried only after the complete ownership boundary is revalidated before
+  each attempt.
 - Windows Job Objects may kill a Git process tree on cancellation or failure,
   but successful Git commands—including roots that return `exec.ErrWaitDelay`
   because a descendant retained output handles—must preserve those descendants.

@@ -311,13 +311,33 @@ func (g *ChangeRequestGit) effectiveConfigRecords(ctx context.Context, worktreeP
 	}
 	records := make([]string, 0)
 	for record := range strings.SplitSeq(string(output), "\x00") {
-		key, _, _ := strings.Cut(record, "\n")
-		if strings.EqualFold(strings.TrimSpace(key), "core.hookspath") || record == "" {
+		key, value, _ := strings.Cut(record, "\n")
+		key = strings.ToLower(strings.TrimSpace(key))
+		value = strings.TrimSpace(value)
+		if record == "" || key == "core.hookspath" ||
+			key == "core.fsmonitor" && strings.EqualFold(value, "false") ||
+			isPackageIsolationFilterSetting(key, value) {
 			continue
 		}
 		records = append(records, record)
 	}
 	return records, nil
+}
+
+func isPackageIsolationFilterSetting(key, value string) bool {
+	if !strings.HasPrefix(key, "filter.") {
+		return false
+	}
+	switch {
+	case strings.HasSuffix(key, ".clean"),
+		strings.HasSuffix(key, ".smudge"),
+		strings.HasSuffix(key, ".process"):
+		return value == ""
+	case strings.HasSuffix(key, ".required"):
+		return strings.EqualFold(value, "false")
+	default:
+		return false
+	}
 }
 
 // EnsureRemote returns a single-destination, credential-free remote for the
@@ -704,9 +724,14 @@ func (g *ChangeRequestGit) configurePush(
 	if configureErr == nil {
 		return nil
 	}
-	restoreErr := g.restoreWorktreeConfig(
-		context.WithoutCancel(ctx), created.Path, keys, snapshot,
-	)
+	restoreCtx := context.WithoutCancel(ctx)
+	if ownershipErr := g.validateCreatedWorktreeOwnership(restoreCtx, created); ownershipErr != nil {
+		return errors.Join(configureErr, fmt.Errorf(
+			"%w: change-request push configuration was not restored after worktree ownership changed: %w",
+			ErrWorktreeCleanupIncomplete, ownershipErr,
+		))
+	}
+	restoreErr := g.restoreWorktreeConfig(restoreCtx, created.Path, keys, snapshot)
 	if restoreErr != nil {
 		restoreErr = changeRequestError(ChangeRequestUnsafeConfiguration,
 			"failed to restore change-request push configuration", restoreErr)

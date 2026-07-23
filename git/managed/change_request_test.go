@@ -1015,6 +1015,7 @@ func TestChangeRequestGitConfigurePushRestoresRoutingAfterWriteFailure(t *testin
 	require := require.New(t)
 	repo := initLifecycleRepo(t)
 	injected := errors.New("injected routing write failure")
+	failedOnce := false
 	backend, err := NewChangeRequestGit(ChangeRequestGitOptions{
 		ProjectRoot:            repo,
 		ProjectIdentity:        gitremote.Identity{Host: "github.com", Owner: "acme", Name: "widget"},
@@ -1023,7 +1024,9 @@ func TestChangeRequestGitConfigurePushRestoresRoutingAfterWriteFailure(t *testin
 		Runner:                 gitcmd.New(),
 		RunGit: func(ctx context.Context, runner gitcmd.Runner, dir string, args ...string) ([]byte, error) {
 			if len(args) >= 4 && args[0] == "config" && args[1] == "--worktree" &&
-				args[2] == "remote.fork.push" && args[3] == "HEAD:refs/heads/feature/widgets" {
+				args[2] == "remote.fork.push" && args[3] == "HEAD:refs/heads/feature/widgets" &&
+				!failedOnce {
+				failedOnce = true
 				return nil, injected
 			}
 			stdout, stderr, runErr := runner.Run(ctx, dir, nil, args...)
@@ -1059,6 +1062,12 @@ func TestChangeRequestGitConfigurePushRestoresRoutingAfterWriteFailure(t *testin
 	}
 	hooksPath := lifecycleGit(t, created.Path, "config", "--worktree", "--get", "core.hooksPath")
 	assert.NotEmpty(hooksPath)
+
+	require.NoError(backend.ConfigurePush(
+		t.Context(), created, "fork", changeRequestRemote("octocat"), "feature/widgets",
+	))
+	assert.Equal("fork", lifecycleGit(t, created.Path, "config", "--worktree",
+		"--get", "branch.review-routing-rollback.remote"))
 }
 
 func TestChangeRequestGitConfigurePushRestoresRoutingAfterValidationFailure(t *testing.T) {
@@ -1098,6 +1107,61 @@ func TestChangeRequestGitConfigurePushRestoresRoutingAfterValidationFailure(t *t
 	assert.Empty(worktreeConfigValues(t, created.Path,
 		"branch.review-routing-validation.remote"))
 	assert.Empty(worktreeConfigValues(t, created.Path, "remote.fork.push"))
+}
+
+func TestChangeRequestGitConfigurePushSkipsRestoreAfterWorktreeReplacement(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	repo := initLifecycleRepo(t)
+	lifecycleGit(t, repo, "remote", "add", "fork", "https://github.com/octocat/widget.git")
+	created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Path:        filepath.Join(t.TempDir(), "routing-replacement-worktree"),
+		Branch:      "review-routing-replacement",
+		BaseRef:     "main",
+	})
+	require.NoError(err)
+
+	replacement := initLifecycleRepo(t)
+	lifecycleGit(t, replacement, "checkout", "-b", created.Branch)
+	lifecycleGit(t, replacement, "config", "extensions.worktreeConfig", "true")
+	configKey := "branch." + created.Branch + ".remote"
+	lifecycleGit(t, replacement, "config", "--worktree", configKey, "preserve")
+	displaced := filepath.Join(t.TempDir(), "displaced-worktree")
+	replaced := false
+	backend, err := NewChangeRequestGit(ChangeRequestGitOptions{
+		ProjectRoot:            repo,
+		ProjectIdentity:        gitremote.Identity{Host: "github.com", Owner: "acme", Name: "widget"},
+		RemoteNamePrefix:       "review",
+		HookIsolationNamespace: "kit-test",
+		Runner:                 gitcmd.New(),
+		RunGit: func(ctx context.Context, runner gitcmd.Runner, dir string, args ...string) ([]byte, error) {
+			if !replaced && slices.Equal(args,
+				[]string{"config", "--includes", "--get-all", "remote.fork.push"}) {
+				if renameErr := os.Rename(created.Path, displaced); renameErr != nil {
+					return nil, renameErr
+				}
+				if renameErr := os.Rename(replacement, created.Path); renameErr != nil {
+					return nil, renameErr
+				}
+				replaced = true
+				return []byte("unexpected\n"), nil
+			}
+			stdout, stderr, runErr := runner.Run(ctx, dir, nil, args...)
+			return append(stdout, stderr...), runErr
+		},
+	})
+	require.NoError(err)
+
+	err = backend.ConfigurePush(
+		t.Context(), created, "fork", changeRequestRemote("octocat"), "feature/widgets",
+	)
+
+	require.Error(err)
+	assert.ErrorIs(err, ErrWorktreeCleanupIncomplete)
+	assert.True(replaced)
+	assert.Equal("preserve", lifecycleGit(t, created.Path,
+		"config", "--worktree", "--get", configKey))
 }
 
 func TestChangeRequestGitFetchDisablesRepositoryHooks(t *testing.T) {

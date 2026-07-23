@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -486,6 +487,48 @@ func TestRepositoryMutationLockUsesCommonGitDirectory(t *testing.T) {
 		Require.NoError(t, lockErr)
 	case <-time.After(5 * time.Second):
 		t.Fatal("linked worktree did not acquire the repository lock after release")
+	}
+}
+
+func TestRepositoryMutationLockSerializesCaseAlias(t *testing.T) {
+	repo := initLifecycleRepo(t)
+	alias := filepath.Join(filepath.Dir(repo), strings.ToUpper(filepath.Base(repo)))
+	repoInfo, repoErr := os.Stat(repo)
+	aliasInfo, aliasErr := os.Stat(alias)
+	if repoErr != nil || aliasErr != nil || !os.SameFile(repoInfo, aliasInfo) {
+		t.Skip("test filesystem is case-sensitive")
+	}
+
+	_, unlock, err := acquireRepositoryMutationLock(t.Context(), repo)
+	Require.NoError(t, err)
+	acquired := make(chan func() error, 1)
+	errs := make(chan error, 1)
+	go func() {
+		_, release, lockErr := acquireRepositoryMutationLock(t.Context(), alias)
+		if lockErr != nil {
+			errs <- lockErr
+			return
+		}
+		acquired <- release
+	}()
+	select {
+	case release := <-acquired:
+		_ = release()
+		_ = unlock()
+		Require.FailNow(t, "case alias acquired a different repository lock")
+	case lockErr := <-errs:
+		_ = unlock()
+		Require.NoError(t, lockErr)
+	case <-time.After(150 * time.Millisecond):
+	}
+	Require.NoError(t, unlock())
+	select {
+	case release := <-acquired:
+		Require.NoError(t, release())
+	case lockErr := <-errs:
+		Require.NoError(t, lockErr)
+	case <-time.After(5 * time.Second):
+		Require.FailNow(t, "case alias did not acquire the repository lock after release")
 	}
 }
 
@@ -1128,8 +1171,47 @@ func TestCreateWorktreeOnDiskHookCancellationRollsBack(t *testing.T) {
 	require.ErrorIs(err, context.DeadlineExceeded)
 	var hookErr *HookError
 	assert.False(errors.As(err, &hookErr), "cancellation is not a hook failure")
-	assert.NoDirExists(path)
-	assert.False(branchExistsInRepo(t, repo, "cancel-setup-tree"))
+	assert.NoDirExists(path, "rollback error: %v", err)
+	assert.False(branchExistsInRepo(t, repo, "cancel-setup-tree"),
+		"rollback error: %v", err)
+}
+
+func TestFailedSetupRetriesOwnedWorktreeRemoval(t *testing.T) {
+	assert := assert.New(t)
+	require := Require.New(t)
+	repo := initLifecycleRepo(t)
+	script := filepath.Join(repo, "setup-failure")
+	require.NoError(os.WriteFile(script, []byte("#!/bin/sh\nexit 3\n"), 0o755))
+	path := filepath.Join(t.TempDir(), "wt")
+	removeAttempts := 0
+	transient := errors.New("injected transient removal failure")
+	runGit := func(
+		ctx context.Context, runner gitcmd.Runner, dir string, args ...string,
+	) ([]byte, error) {
+		if slices.Equal(args, []string{"worktree", "remove", "--force", path}) {
+			removeAttempts++
+			if removeAttempts == 1 {
+				return nil, transient
+			}
+		}
+		stdout, stderr, err := runner.Run(ctx, dir, nil, args...)
+		return append(stdout, stderr...), err
+	}
+
+	_, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Branch:      "retry-failed-setup-removal",
+		Path:        path,
+		SetupScript: "setup-failure",
+		RunGit:      runGit,
+	})
+
+	var hookErr *HookError
+	require.ErrorAs(err, &hookErr)
+	assert.Equal(2, removeAttempts)
+	assert.NoDirExists(path, "rollback error: %v", err)
+	assert.False(branchExistsInRepo(t, repo, "retry-failed-setup-removal"),
+		"rollback error: %v", err)
 }
 
 func TestCreateWorktreeOnDiskKeepsPreexistingBranchOnHookFailure(t *testing.T) {

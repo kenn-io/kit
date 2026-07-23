@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	gitcmd "go.kenn.io/kit/git/cmd"
 	gitworktree "go.kenn.io/kit/git/worktree"
@@ -422,13 +423,8 @@ func (r CreateWorktreeResult) rollbackOwned(
 			remaining.Path = r.Path
 			errs = append(errs, err)
 		} else {
-			args := []string{"worktree", "remove"}
-			if !preserveChanges {
-				args = append(args, "--force")
-			}
-			args = append(args, r.Path)
-			if out, err := runLifecycleGitWithRunner(
-				ctx, runner, r.projectRoot, args...,
+			if out, err := r.removeOwnedWorktree(
+				ctx, runner, preserveChanges,
 			); err != nil {
 				remaining.Path = r.Path
 				errs = append(errs, fmt.Errorf("remove created worktree: %w: %s", err,
@@ -478,6 +474,43 @@ func (r CreateWorktreeResult) rollbackOwned(
 		errs = append(errs, errors.New("created worktree branch remains"))
 	}
 	return remaining, errors.Join(errs...)
+}
+
+func (r CreateWorktreeResult) removeOwnedWorktree(
+	ctx context.Context, runner gitcmd.Runner, preserveChanges bool,
+) ([]byte, error) {
+	args := []string{"worktree", "remove"}
+	if !preserveChanges {
+		args = append(args, "--force")
+	}
+	args = append(args, r.Path)
+	const attempts = 5
+	delay := 25 * time.Millisecond
+	var lastOutput []byte
+	var lastErr error
+	for attempt := range attempts {
+		if attempt > 0 {
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return lastOutput, errors.Join(lastErr, ctx.Err())
+			case <-timer.C:
+			}
+			if err := r.revalidateRollbackRemoval(ctx, preserveChanges); err != nil {
+				return lastOutput, errors.Join(lastErr,
+					fmt.Errorf("revalidate before worktree removal retry: %w", err))
+			}
+			delay *= 2
+		}
+		lastOutput, lastErr = runLifecycleGitWithRunner(
+			ctx, runner, r.projectRoot, args...,
+		)
+		if lastErr == nil {
+			return lastOutput, nil
+		}
+	}
+	return lastOutput, lastErr
 }
 
 func (r CreateWorktreeResult) revalidateRollbackRemoval(

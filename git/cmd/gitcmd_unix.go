@@ -30,5 +30,15 @@ func prepareGitCommand(cmd *exec.Cmd, _ bool, preserveForeground bool) {
 }
 
 func runProcessTreeCommand(cmd *exec.Cmd) error {
-	return cmd.Run()
+	err := cmd.Run()
+	if err == nil || errors.Is(err, exec.ErrWaitDelay) && rootProcessSucceeded(cmd) ||
+		cmd.Process == nil || cmd.SysProcAttr == nil ||
+		!cmd.SysProcAttr.Setpgid {
+		return err
+	}
+	killErr := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	if errors.Is(killErr, syscall.ESRCH) {
+		killErr = nil
+	}
+	return errors.Join(err, killErr)
 }
