@@ -50,10 +50,10 @@ func (e *ChangeRequestError) Unwrap() error { return e.Cause }
 // ProjectRepoIdentity is the CloneURLIdentity-normalized identity of the
 // project's own repository, used to recognize same-repo merge requests.
 type MergeRequestWorktreeOptions struct {
-	ProjectRoot           string
-	Branch                string
-	Path                  string
-	BaseDir               string
+	ProjectRoot string
+	Branch      string
+	Path        string
+	BaseDir     string
 	// SetupScript is an explicitly configured, caller-trusted script. It runs
 	// after the untrusted request tree is materialized; callers must sandbox
 	// it if the script evaluates or executes content from that tree.
@@ -199,20 +199,33 @@ func CreateWorktreeFromMergeRequest(
 	); err != nil {
 		return CreateWorktreeResult{}, classifyWorktreeGitError(out, err)
 	}
+	isolation, err = completeUntrustedTreeIsolation(ctx, path, isolation)
+	if err != nil {
+		_, cleanupErr := rollbackCreatedWorktreeWithResult(
+			context.WithoutCancel(ctx), root, path, branch, true,
+		)
+		return CreateWorktreeResult{}, errors.Join(err, cleanupErr)
+	}
 	if err := persistUntrustedTreeIsolation(
 		ctx, root, path, isolation,
 	); err != nil {
-		rollbackCreatedWorktree(context.WithoutCancel(ctx), root, path, branch, true)
-		return CreateWorktreeResult{}, err
+		_, cleanupErr := rollbackCreatedWorktreeWithResult(
+			context.WithoutCancel(ctx), root, path, branch, true,
+		)
+		return CreateWorktreeResult{}, errors.Join(err, cleanupErr)
 	}
 	if err := materializeUntrustedTree(ctx, path, isolation); err != nil {
-		rollbackCreatedWorktree(context.WithoutCancel(ctx), root, path, branch, true)
-		return CreateWorktreeResult{}, err
+		_, cleanupErr := rollbackCreatedWorktreeWithResult(
+			context.WithoutCancel(ctx), root, path, branch, true,
+		)
+		return CreateWorktreeResult{}, errors.Join(err, cleanupErr)
 	}
 	result, err := snapshotCreateWorktreeResult(ctx, root, path, branch, true)
 	if err != nil {
-		rollbackCreatedWorktree(context.WithoutCancel(ctx), root, path, branch, true)
-		return CreateWorktreeResult{}, err
+		_, cleanupErr := rollbackCreatedWorktreeWithResult(
+			context.WithoutCancel(ctx), root, path, branch, true,
+		)
+		return CreateWorktreeResult{}, errors.Join(err, cleanupErr)
 	}
 
 	if trackingEnabled {

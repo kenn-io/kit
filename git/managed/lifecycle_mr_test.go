@@ -2,6 +2,7 @@ package managedworktree
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	Require "github.com/stretchr/testify/require"
 
+	gitcmd "go.kenn.io/kit/git/cmd"
 	gitenv "go.kenn.io/kit/git/env"
 )
 
@@ -43,6 +45,16 @@ func initOriginAndClone(t *testing.T) (string, string) {
 func worktreeConfig(t *testing.T, dir, key string) string {
 	t.Helper()
 	cmd := lifecycleGitCommand(dir, "config", "--get", key)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func worktreeOnlyConfig(t *testing.T, dir, key string) string {
+	t.Helper()
+	cmd := lifecycleGitCommand(dir, "config", "--worktree", "--get", key)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return ""
@@ -373,6 +385,152 @@ func TestCreateWorktreeFromMergeRequestPersistsAttributeDriverIsolation(t *testi
 	diff := lifecycleGit(t, dest, "diff", "--", "payload")
 	assert.Contains(diff, "-external")
 	assert.Contains(diff, "+portable change")
+}
+
+func TestCreateWorktreeFromMergeRequestInspectsSelectedConfigFiles(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+
+	origin, clone := initOriginAndClone(t)
+	lifecycleGit(t, origin, "checkout", "-q", "-b", "selected-config")
+	require.NoError(os.WriteFile(
+		filepath.Join(origin, ".gitattributes"),
+		[]byte("payload filter=selected diff=selected merge=selected\n"), 0o644,
+	))
+	require.NoError(os.WriteFile(
+		filepath.Join(origin, "payload"), []byte("external\n"), 0o644,
+	))
+	lifecycleGit(t, origin, "add", ".gitattributes", "payload")
+	lifecycleGit(t, origin, "commit", "-qm", "select alternate config driver")
+	headSHA := lifecycleGit(t, origin, "rev-parse", "HEAD")
+	lifecycleGit(t, origin, "checkout", "-q", "main")
+
+	configDir := t.TempDir()
+	globalConfig := filepath.Join(configDir, "global.gitconfig")
+	systemConfig := filepath.Join(configDir, "system.gitconfig")
+	require.NoError(os.WriteFile(globalConfig, []byte(
+		"[filter \"selected\"]\n"+
+			"\tsmudge = false\n"+
+			"\trequired = true\n"+
+			"[diff \"selected\"]\n"+
+			"\tcommand = false\n",
+	), 0o600))
+	require.NoError(os.WriteFile(systemConfig, []byte(
+		"[merge \"selected\"]\n\tdriver = false\n",
+	), 0o600))
+	runner := gitcmd.New()
+	runner.Env = append(gitenv.StripAll(os.Environ()),
+		"HOME="+configDir,
+		"GIT_CONFIG_GLOBAL="+globalConfig,
+		"GIT_CONFIG_SYSTEM="+systemConfig,
+	)
+
+	dest := filepath.Join(t.TempDir(), "wt")
+	_, err := CreateWorktreeFromMergeRequest(
+		t.Context(), MergeRequestWorktreeOptions{
+			ProjectRoot: clone, Branch: "pr-selected-config", Path: dest,
+			Number: 23, HeadBranch: "selected-config",
+			HeadRepoCloneURL: origin, ProjectRepoIdentity: identityOfCloneURL(origin),
+			ExpectedHeadSHA: headSHA, Runner: runner,
+		})
+
+	require.NoError(err)
+	assert.Equal("false",
+		worktreeOnlyConfig(t, dest, "filter.selected.required"))
+	assert.Equal(safeExternalDiffCommand,
+		worktreeOnlyConfig(t, dest, "diff.selected.command"))
+	assert.Equal("false",
+		worktreeOnlyConfig(t, dest, "merge.selected.driver"))
+}
+
+func TestCreateWorktreeFromMergeRequestInspectsConditionalIncludes(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+
+	origin, clone := initOriginAndClone(t)
+	lifecycleGit(t, origin, "checkout", "-q", "-b", "conditional-config")
+	require.NoError(os.WriteFile(
+		filepath.Join(origin, ".gitattributes"),
+		[]byte(
+			"branch-payload filter=branch-driver\n"+
+				"gitdir-payload filter=gitdir-driver\n",
+		), 0o644,
+	))
+	require.NoError(os.WriteFile(
+		filepath.Join(origin, "branch-payload"), []byte("branch\n"), 0o644,
+	))
+	require.NoError(os.WriteFile(
+		filepath.Join(origin, "gitdir-payload"), []byte("gitdir\n"), 0o644,
+	))
+	lifecycleGit(t, origin, "add", ".")
+	lifecycleGit(t, origin, "commit", "-qm", "select conditional drivers")
+	headSHA := lifecycleGit(t, origin, "rev-parse", "HEAD")
+	lifecycleGit(t, origin, "checkout", "-q", "main")
+
+	includes := t.TempDir()
+	branchInclude := filepath.Join(includes, "branch.gitconfig")
+	gitdirInclude := filepath.Join(includes, "gitdir.gitconfig")
+	require.NoError(os.WriteFile(branchInclude, []byte(
+		"[filter \"branch-driver\"]\n\tsmudge = false\n\trequired = true\n",
+	), 0o600))
+	require.NoError(os.WriteFile(gitdirInclude, []byte(
+		"[filter \"gitdir-driver\"]\n\tsmudge = false\n\trequired = true\n",
+	), 0o600))
+	lifecycleGit(t, clone, "config", "--add",
+		"includeIf.onbranch:pr-conditional.path", branchInclude)
+	lifecycleGit(t, clone, "config", "--add",
+		"includeIf.gitdir:./worktrees/**.path", gitdirInclude)
+
+	dest := filepath.Join(t.TempDir(), "wt")
+	_, err := CreateWorktreeFromMergeRequest(
+		t.Context(), MergeRequestWorktreeOptions{
+			ProjectRoot: clone, Branch: "pr-conditional", Path: dest,
+			Number: 24, HeadBranch: "conditional-config",
+			HeadRepoCloneURL: origin, ProjectRepoIdentity: identityOfCloneURL(origin),
+			ExpectedHeadSHA: headSHA,
+		})
+
+	require.NoError(err)
+	assert.Equal("false",
+		worktreeOnlyConfig(t, dest, "filter.branch-driver.required"))
+	assert.Equal("false",
+		worktreeOnlyConfig(t, dest, "filter.gitdir-driver.required"))
+}
+
+func TestCreateWorktreeFromMergeRequestReportsCleanupFailure(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	origin, clone := initOriginAndClone(t)
+	lifecycleGit(t, origin, "checkout", "-q", "-b", "cleanup-failure")
+	lifecycleGit(t, origin, "commit", "--allow-empty", "-m", "request head")
+	headSHA := lifecycleGit(t, origin, "rev-parse", "HEAD")
+	lifecycleGit(t, origin, "checkout", "-q", "main")
+
+	runGit := func(
+		ctx context.Context, runner gitcmd.Runner, dir string, args ...string,
+	) ([]byte, error) {
+		if len(args) >= 2 && args[0] == "reset" && args[1] == "--hard" {
+			return nil, errors.New("materialization failed")
+		}
+		if len(args) >= 2 && args[0] == "worktree" && args[1] == "remove" {
+			return nil, errors.New("cleanup failed")
+		}
+		stdout, stderr, err := runner.Run(ctx, dir, nil, args...)
+		return append(stdout, stderr...), err
+	}
+
+	_, err := CreateWorktreeFromMergeRequest(
+		t.Context(), MergeRequestWorktreeOptions{
+			ProjectRoot: clone, Branch: "pr-cleanup-failure",
+			Path:   filepath.Join(t.TempDir(), "wt"),
+			Number: 25, HeadBranch: "cleanup-failure",
+			HeadRepoCloneURL: origin, ProjectRepoIdentity: identityOfCloneURL(origin),
+			ExpectedHeadSHA: headSHA, RunGit: runGit,
+		})
+
+	require.Error(err)
+	assert.ErrorContains(err, "materialization failed")
+	assert.ErrorContains(err, "cleanup failed")
 }
 
 // TestCreateWorktreeFromMergeRequestFork covers the fork scenario: checkout

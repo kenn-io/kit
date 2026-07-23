@@ -282,7 +282,7 @@ func (r CreateWorktreeResult) rollbackOwned(ctx context.Context) (RollbackResult
 			ErrWorktreeCleanupIncomplete,
 		)
 	}
-	dirty, err := WorktreeIsDirty(ctx, r.Path)
+	dirty, err := worktreeHasRollbackArtifacts(ctx, r.Path)
 	if err != nil {
 		return remaining, fmt.Errorf("%w: %v", ErrWorktreeCleanupIncomplete, err)
 	}
@@ -344,8 +344,9 @@ func lifecycleWorktreeHead(
 type RemoveWorktreeOptions struct {
 	ProjectRoot string
 	Path        string
-	// Branch is the branch deleted when RemoveBranch is set; an empty
-	// branch (detached HEAD) makes RemoveBranch a no-op.
+	// Branch is the branch the worktree must still have attached and is deleted
+	// when RemoveBranch is set. An empty Branch requires a detached worktree and
+	// makes RemoveBranch a no-op.
 	Branch string
 	// Force passes --force to git worktree remove so dirty or locked
 	// worktrees still go. Policy checks (refusing dirty removal without
@@ -405,6 +406,9 @@ func RemoveWorktreeFromDisk(
 
 	result := RemoveWorktreeResult{}
 	if hookScript != "" && pathExists {
+		if err := verifyRemovalTarget(ctx, root, path, opts.Branch); err != nil {
+			return RemoveWorktreeResult{}, err
+		}
 		if hookErr := runLifecycleHook(
 			ctx, hookScript, root, path, opts.Branch, opts.WorktreeName,
 			opts.HookEnvironmentPrefix,
@@ -416,6 +420,9 @@ func RemoveWorktreeFromDisk(
 	}
 
 	if pathExists {
+		if err := verifyRemovalTarget(ctx, root, path, opts.Branch); err != nil {
+			return result, err
+		}
 		args := []string{"worktree", "remove"}
 		if opts.Force {
 			// Git requires force twice to remove a locked worktree.
@@ -461,6 +468,75 @@ func WorktreeIsDirty(ctx context.Context, path string) (bool, error) {
 		)
 	}
 	return strings.TrimSpace(string(out)) != "", nil
+}
+
+func worktreeHasRollbackArtifacts(ctx context.Context, path string) (bool, error) {
+	out, err := runLifecycleGit(
+		ctx, path, "status", "--porcelain", "--untracked-files=all",
+		"--ignored=matching",
+	)
+	if err != nil {
+		return false, fmt.Errorf(
+			"check worktree rollback state: %w: %s",
+			err, strings.TrimSpace(string(out)),
+		)
+	}
+	return strings.TrimSpace(string(out)) != "", nil
+}
+
+func verifyRemovalTarget(
+	ctx context.Context, root, path, expectedBranch string,
+) error {
+	rootCommon, err := lifecycleCommonGitDir(ctx, root)
+	if err != nil {
+		return err
+	}
+	pathCommon, err := lifecycleCommonGitDir(ctx, path)
+	if err != nil {
+		return fmt.Errorf("inspect worktree repository: %w", err)
+	}
+	if rootCommon != pathCommon {
+		return fmt.Errorf(
+			"worktree path belongs to a different repository: %s", path,
+		)
+	}
+	_, headRef, err := lifecycleWorktreeHead(ctx, path)
+	if err != nil {
+		return err
+	}
+	wantRef := ""
+	if branch := strings.TrimSpace(expectedBranch); branch != "" {
+		wantRef = "refs/heads/" + branch
+	}
+	if headRef != wantRef {
+		return fmt.Errorf(
+			"worktree branch changed: expected %q, found %q",
+			wantRef, headRef,
+		)
+	}
+	return nil
+}
+
+func lifecycleCommonGitDir(ctx context.Context, path string) (string, error) {
+	out, err := runLifecycleGit(ctx, path, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return "", fmt.Errorf(
+			"resolve common Git directory: %w: %s",
+			err, strings.TrimSpace(string(out)),
+		)
+	}
+	common := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(path, common)
+	}
+	common, err = filepath.Abs(common)
+	if err != nil {
+		return "", fmt.Errorf("resolve common Git directory path: %w", err)
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(common); resolveErr == nil {
+		common = resolved
+	}
+	return filepath.Clean(common), nil
 }
 
 func requireRootAndBranch(

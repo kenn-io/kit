@@ -35,6 +35,12 @@ replacement races, resource exhaustion, zero-days in Git or content parsers,
 or a trusted lifecycle script choosing to execute imported content. Callers
 that need those boundaries must provide an OS or container sandbox.
 
+The default hook runner is intentionally limited to trusted native
+executables. Applications that need process-tree supervision or Windows script
+dispatch supply `RunHook`. Worktree base permissions follow the caller's path
+and host umask; owner-only directory and platform ACL policy also belongs to the
+application. Do not request those layers in Kit.
+
 ## gitcmd safe.directory forwarding
 
 `gitcmd.Runner`'s isolation flags (`StripEnv`, `NullGlobalConfig`,

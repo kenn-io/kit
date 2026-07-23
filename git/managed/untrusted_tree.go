@@ -91,17 +91,12 @@ func prepareUntrustedTreeIsolation(
 	if err != nil {
 		return untrustedTreeIsolation{}, err
 	}
-	keys, err := effectiveGitConfigKeys(ctx, root)
-	if err != nil {
-		return untrustedTreeIsolation{}, err
-	}
 
 	config := []gitcmd.Config{
 		{Key: "core.hooksPath", Value: hooksPath},
 		{Key: "core.fsmonitor", Value: "false"},
 		{Key: "submodule.recurse", Value: "false"},
 	}
-	config = append(config, neutralizeAttributeDrivers(keys)...)
 	runner := lifecycleRunner(ctx)
 	for _, entry := range config {
 		runner = runner.WithConfig(entry.Key, entry.Value)
@@ -143,15 +138,33 @@ func managedEmptyHooksPath(ctx context.Context, root string) (string, error) {
 	return hooksPath, nil
 }
 
-func effectiveGitConfigKeys(ctx context.Context, root string) ([]string, error) {
-	// A caller's automation runner may intentionally hide global and system
-	// config. Inspect those trusted scopes anyway because ordinary Git commands
-	// run by the user after import will honor them.
-	runner := lifecycleRunner(ctx)
+func completeUntrustedTreeIsolation(
+	ctx context.Context, worktreePath string, isolation untrustedTreeIsolation,
+) (untrustedTreeIsolation, error) {
+	keys, err := effectiveGitConfigKeys(ctx, worktreePath, isolation.runner)
+	if err != nil {
+		return untrustedTreeIsolation{}, err
+	}
+	drivers := neutralizeAttributeDrivers(keys)
+	isolation.config = append(isolation.config, drivers...)
+	for _, entry := range drivers {
+		isolation.runner = isolation.runner.WithConfig(entry.Key, entry.Value)
+	}
+	return isolation, nil
+}
+
+func effectiveGitConfigKeys(
+	ctx context.Context, worktreePath string, runner gitcmd.Runner,
+) ([]string, error) {
+	// Inspect after the linked worktree exists so branch- and gitdir-conditional
+	// includes match the same checkout ordinary Git will use. Preserve explicit
+	// global/system config selectors while removing only repository bindings.
+	runner.Env = withoutGitRepositoryBindings(runner.Env)
+	runner.StripEnv = false
 	runner.NullGlobalConfig = false
 	runner.NoSystemConfig = false
 	out, err := runLifecycleGitWithRunner(
-		ctx, runner, root, "config", "--null", "--name-only", "--list",
+		ctx, runner, worktreePath, "config", "--null", "--name-only", "--list",
 	)
 	if err != nil {
 		return nil, fmt.Errorf(
@@ -167,6 +180,26 @@ func effectiveGitConfigKeys(ctx context.Context, root string) ([]string, error) 
 		}
 	}
 	return keys, nil
+}
+
+func withoutGitRepositoryBindings(env []string) []string {
+	clean := make([]string, 0, len(env))
+	for _, entry := range env {
+		key, _, _ := strings.Cut(entry, "=")
+		switch strings.ToUpper(key) {
+		case "GIT_DIR",
+			"GIT_WORK_TREE",
+			"GIT_INDEX_FILE",
+			"GIT_OBJECT_DIRECTORY",
+			"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+			"GIT_COMMON_DIR",
+			"GIT_NAMESPACE",
+			"GIT_PREFIX":
+			continue
+		}
+		clean = append(clean, entry)
+	}
+	return clean
 }
 
 func neutralizeAttributeDrivers(keys []string) []gitcmd.Config {

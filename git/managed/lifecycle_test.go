@@ -290,6 +290,32 @@ func TestCreateWorktreeResultRollbackPreservesDirtyWorktree(t *testing.T) {
 	assert.FileExists(marker)
 }
 
+func TestCreateWorktreeResultRollbackPreservesIgnoredArtifacts(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	repo := initLifecycleRepo(t)
+	require.NoError(os.WriteFile(
+		filepath.Join(repo, ".gitignore"), []byte("scratch.log\n"), 0o644,
+	))
+	lifecycleGit(t, repo, "add", ".gitignore")
+	lifecycleGit(t, repo, "commit", "-qm", "ignore scratch artifacts")
+
+	result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Branch:      "ignored-artifact",
+	})
+	require.NoError(err)
+	require.NoError(os.WriteFile(
+		filepath.Join(result.Path, "scratch.log"), []byte("keep me\n"), 0o600,
+	))
+
+	remaining, err := result.Rollback(t.Context())
+
+	require.ErrorIs(err, ErrWorktreeCleanupIncomplete)
+	assert.Equal(RollbackResult{Path: result.Path, Branch: result.Branch}, remaining)
+	assert.FileExists(filepath.Join(result.Path, "scratch.log"))
+}
+
 func TestCreateWorktreeOnDiskAttachesExistingBranch(t *testing.T) {
 	assert := assert.New(t)
 	require := Require.New(t)
@@ -561,6 +587,61 @@ func TestRemoveWorktreeFromDiskRunsTeardownHookFirst(t *testing.T) {
 	assert.Equal("branch=feature", lines[4])
 }
 
+func TestRemoveWorktreeFromDiskRejectsMismatchedBranchBeforeHook(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	repo := initLifecycleRepo(t)
+	created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Branch:      "actual-branch",
+	})
+	require.NoError(err)
+	marker := filepath.Join(t.TempDir(), "hook-ran")
+	writeHookScript(t, repo, marker, 0)
+
+	_, err = RemoveWorktreeFromDisk(t.Context(), RemoveWorktreeOptions{
+		ProjectRoot:    repo,
+		Path:           created.Path,
+		Branch:         "stale-record-branch",
+		Force:          true,
+		RemoveBranch:   true,
+		TeardownScript: "hook.sh",
+	})
+
+	require.Error(err)
+	assert.NoFileExists(marker)
+	assert.DirExists(created.Path)
+	assert.True(branchExistsInRepo(t, repo, "actual-branch"))
+}
+
+func TestRemoveWorktreeFromDiskRejectsDifferentRepositoryBeforeHook(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	repo := initLifecycleRepo(t)
+	otherRepo := initLifecycleRepo(t)
+	created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: otherRepo,
+		Branch:      "other-repository",
+	})
+	require.NoError(err)
+	marker := filepath.Join(t.TempDir(), "hook-ran")
+	writeHookScript(t, repo, marker, 0)
+
+	_, err = RemoveWorktreeFromDisk(t.Context(), RemoveWorktreeOptions{
+		ProjectRoot:    repo,
+		Path:           created.Path,
+		Branch:         created.Branch,
+		Force:          true,
+		RemoveBranch:   true,
+		TeardownScript: "hook.sh",
+	})
+
+	require.Error(err)
+	assert.NoFileExists(marker)
+	assert.DirExists(created.Path)
+	assert.True(branchExistsInRepo(t, otherRepo, created.Branch))
+}
+
 func TestRemoveWorktreeFromDiskAbortsWhenTeardownHookFails(t *testing.T) {
 	assert := assert.New(t)
 	require := Require.New(t)
@@ -669,22 +750,6 @@ func TestRemoveWorktreeFromDiskForceRemovesLockedWorktree(t *testing.T) {
 
 	require.NoError(err)
 	assert.NoDirExists(dest)
-}
-
-func TestRemoveWorktreeFromDiskBranchInUseElsewhere(t *testing.T) {
-	require := Require.New(t)
-	repo := initLifecycleRepo(t)
-	dest := filepath.Join(t.TempDir(), "wt")
-	lifecycleGit(t, repo, "worktree", "add", "-b", "feature", dest)
-
-	_, err := RemoveWorktreeFromDisk(context.Background(), RemoveWorktreeOptions{
-		ProjectRoot:  repo,
-		Path:         dest,
-		Branch:       "main",
-		RemoveBranch: true,
-	})
-	require.ErrorIs(err, ErrBranchInUse,
-		"deleting a branch checked out in another worktree is refused")
 }
 
 func TestWorktreeIsDirty(t *testing.T) {

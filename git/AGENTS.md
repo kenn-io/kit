@@ -31,6 +31,11 @@ specific application or forge workflow.
   settings in the imported worktree. This is a narrow Git execution boundary,
   not an OS sandbox for hostile configuration, remotes, lifecycle scripts,
   same-user replacement races, or resource exhaustion.
+- The default lifecycle-hook runner is for trusted native executables. Callers
+  that need process-tree supervision or cross-platform script dispatch must
+  supply `RunHook`; do not grow those application policies into this package.
+- Worktree base permissions follow the caller's path and host umask. Owner-only
+  directory policy and platform ACL management belong to the application.
 - Expected merge-request head SHAs are correctness anchors: verify them before
   creating the local branch or materializing a worktree.
 - Rollback after a completed create is conservative about ordinary user work:
