@@ -693,6 +693,7 @@ func TestCreateWorktreeFromMergeRequestHookFailureRollsBack(t *testing.T) {
 			HeadRepoCloneURL:    origin,
 			ProjectRepoIdentity: identityOfCloneURL(origin),
 			SetupScript:         "setup.sh",
+			RunHook:             testHookRunner(),
 		})
 	var hookErr *HookError
 	require.ErrorAs(err, &hookErr)

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 
 	gitcmd "go.kenn.io/kit/git/cmd"
@@ -347,7 +348,12 @@ func localClonePath(raw string) (string, bool) {
 	if parsed, err := url.Parse(value); err == nil &&
 		strings.EqualFold(parsed.Scheme, "file") &&
 		(parsed.Host == "" || strings.EqualFold(parsed.Host, "localhost")) {
-		return filepath.FromSlash(parsed.Path), true
+		path := parsed.Path
+		if runtime.GOOS == "windows" && len(path) >= 3 &&
+			path[0] == '/' && path[2] == ':' {
+			path = path[1:]
+		}
+		return filepath.FromSlash(path), true
 	}
 	if filepath.IsAbs(value) {
 		return filepath.Clean(value), true

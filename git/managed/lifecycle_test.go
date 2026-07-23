@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -66,12 +67,33 @@ func writeHookScript(t *testing.T, dir, outFile string, exitCode int) string {
 		"  echo \"path=$KIT_WORKTREE_PATH\"\n" +
 		"  echo \"root=$KIT_PROJECT_ROOT\"\n" +
 		"  echo \"branch=$KIT_BRANCH\"\n" +
-		"} > " + outFile + "\n"
+		"} > \"" + filepath.ToSlash(outFile) + "\"\n"
 	if exitCode != 0 {
 		body += "echo boom >&2\nexit " + string(rune('0'+exitCode)) + "\n"
 	}
 	Require.NoError(t, os.WriteFile(script, []byte(body), 0o755))
 	return script
+}
+
+func testHookRunner() HookRunner {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	return runTestHook
+}
+
+func runTestHook(ctx context.Context, command HookCommand) error {
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.CommandContext(ctx, "sh", command.Script)
+	} else {
+		cmd = exec.CommandContext(ctx, command.Script)
+	}
+	cmd.Dir = command.Dir
+	cmd.Env = command.Env
+	cmd.Stdout = command.Stdout
+	cmd.Stderr = command.Stderr
+	return cmd.Run()
 }
 
 func TestCreateWorktreeOnDiskDerivesPathAndCreatesBranch(t *testing.T) {
@@ -183,12 +205,7 @@ func TestCreateWorktreeOnDiskUsesExecutionPolicy(t *testing.T) {
 		},
 		RunHook: func(ctx context.Context, command HookCommand) error {
 			hookRuns++
-			cmd := exec.CommandContext(ctx, command.Script)
-			cmd.Dir = command.Dir
-			cmd.Env = command.Env
-			cmd.Stdout = command.Stdout
-			cmd.Stderr = command.Stderr
-			return cmd.Run()
+			return runTestHook(ctx, command)
 		},
 	})
 	require.NoError(err)
@@ -409,6 +426,7 @@ func TestCreateWorktreeOnDiskRunsSetupHook(t *testing.T) {
 		Path:         dest,
 		SetupScript:  "setup.sh",
 		WorktreeName: "Feature Work",
+		RunHook:      testHookRunner(),
 	})
 	require.NoError(err)
 	assert.True(result.HookRan)
@@ -447,6 +465,7 @@ func TestCreateWorktreeOnDiskRollsBackWhenSetupHookFails(t *testing.T) {
 		Branch:      "feature",
 		Path:        dest,
 		SetupScript: "setup.sh",
+		RunHook:     testHookRunner(),
 	})
 	var hookErr *HookError
 	require.ErrorAs(err, &hookErr)
@@ -476,6 +495,7 @@ func TestCreateWorktreeOnDiskKeepsPreexistingBranchOnHookFailure(t *testing.T) {
 		Branch:      "existing",
 		Path:        dest,
 		SetupScript: "setup.sh",
+		RunHook:     testHookRunner(),
 	})
 	var hookErr *HookError
 	require.ErrorAs(err, &hookErr)
@@ -595,6 +615,7 @@ func TestRemoveWorktreeFromDiskRunsTeardownHookFirst(t *testing.T) {
 		Branch:         "feature",
 		TeardownScript: "teardown.sh",
 		WorktreeName:   "Feature Work",
+		RunHook:        testHookRunner(),
 	})
 	require.NoError(err)
 	assert.True(result.HookRan)
@@ -689,6 +710,7 @@ func TestRemoveWorktreeFromDiskAbortsWhenTeardownHookFails(t *testing.T) {
 		Branch:         "feature",
 		TeardownScript: "teardown.sh",
 		RemoveBranch:   true,
+		RunHook:        testHookRunner(),
 	})
 	var hookErr *HookError
 	require.ErrorAs(err, &hookErr)
