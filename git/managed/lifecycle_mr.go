@@ -140,6 +140,15 @@ func CreateWorktreeFromMergeRequest(
 	if err != nil {
 		return CreateWorktreeResult{}, err
 	}
+	branchExisted, err := localBranchExists(ctx, root, branch)
+	if err != nil {
+		return CreateWorktreeResult{}, err
+	}
+	if branchExisted {
+		return CreateWorktreeResult{}, fmt.Errorf(
+			"%w: %s", ErrBranchAlreadyExists, branch,
+		)
+	}
 	hookScript, err := resolveMergeRequestHookScript(
 		root, path, opts.SetupScript,
 	)
@@ -174,6 +183,9 @@ func CreateWorktreeFromMergeRequest(
 		cleanupErr := clearTemporaryMergeRequestRef(
 			context.WithoutCancel(ctx), root, target.temporaryCheckoutRef,
 		)
+		if ctx.Err() != nil {
+			return CreateWorktreeResult{}, errors.Join(ctx.Err(), cleanupErr)
+		}
 		return CreateWorktreeResult{}, errors.Join(
 			classifyChangeRequestFetchError(out, err), cleanupErr,
 		)
@@ -183,6 +195,9 @@ func CreateWorktreeFromMergeRequest(
 		context.WithoutCancel(ctx), root, target.temporaryCheckoutRef,
 	)
 	if err != nil {
+		if ctx.Err() != nil {
+			return CreateWorktreeResult{}, errors.Join(ctx.Err(), cleanupErr)
+		}
 		return CreateWorktreeResult{}, &ChangeRequestError{
 			Kind:    ChangeRequestInaccessibleHead,
 			Message: "resolve fetched merge request head",
@@ -195,6 +210,9 @@ func CreateWorktreeFromMergeRequest(
 	if expected := strings.TrimSpace(opts.ExpectedHeadSHA); expected != "" {
 		expectedOID, resolveErr := resolveMergeRequestOID(ctx, root, expected)
 		if resolveErr != nil || !strings.EqualFold(checkoutOID, expectedOID) {
+			if ctx.Err() != nil {
+				return CreateWorktreeResult{}, ctx.Err()
+			}
 			return CreateWorktreeResult{}, &ChangeRequestError{
 				Kind: ChangeRequestHeadChanged,
 				Message: fmt.Sprintf(
@@ -213,10 +231,16 @@ func CreateWorktreeFromMergeRequest(
 		if _, err := runLifecycleGit(
 			ctx, root, target.trackingFetch...,
 		); err != nil {
+			if ctx.Err() != nil {
+				return CreateWorktreeResult{}, ctx.Err()
+			}
 			trackingEnabled = false
 		} else if trackingOID, resolveErr := resolveMergeRequestOID(
 			ctx, root, target.trackingRef,
 		); resolveErr != nil || !strings.EqualFold(trackingOID, checkoutOID) {
+			if ctx.Err() != nil {
+				return CreateWorktreeResult{}, ctx.Err()
+			}
 			trackingEnabled = false
 		}
 	}

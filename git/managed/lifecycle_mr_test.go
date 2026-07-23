@@ -258,6 +258,80 @@ func TestCreateWorktreeFromMergeRequestPullRefFallback(t *testing.T) {
 	), "temporary managed fetch refs are removed after resolving the head")
 }
 
+func TestCreateWorktreeFromMergeRequestRejectsLeftoverBranch(t *testing.T) {
+	require := Require.New(t)
+	origin, clone := initOriginAndClone(t)
+	lifecycleGit(t, clone, "branch", "pr-leftover")
+	dest := filepath.Join(t.TempDir(), "wt")
+
+	_, err := CreateWorktreeFromMergeRequest(
+		t.Context(), MergeRequestWorktreeOptions{
+			ProjectRoot:         clone,
+			Branch:              "pr-leftover",
+			Path:                dest,
+			Number:              35,
+			HeadBranch:          "contributor-work",
+			HeadRepoCloneURL:    origin,
+			ProjectRepoIdentity: identityOfCloneURL(origin),
+		})
+
+	require.ErrorIs(err, ErrBranchAlreadyExists)
+	require.NotErrorIs(err, ErrWorktreeDestinationExists)
+	require.NoDirExists(dest)
+}
+
+func TestCreateWorktreeFromMergeRequestPreservesCancellation(t *testing.T) {
+	for _, phase := range []string{"fetch", "resolve"} {
+		t.Run(phase, func(t *testing.T) {
+			require := Require.New(t)
+			assert := assert.New(t)
+			origin, clone := initOriginAndClone(t)
+			lifecycleGit(t, origin, "checkout", "-q", "-b", "cancel-import")
+			lifecycleGit(t, origin, "commit", "--allow-empty", "-m", "cancel")
+			lifecycleGit(t, origin, "checkout", "-q", "main")
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			fetched := false
+
+			_, err := CreateWorktreeFromMergeRequest(
+				ctx, MergeRequestWorktreeOptions{
+					ProjectRoot:         clone,
+					Branch:              "pr-cancel-" + phase,
+					Path:                filepath.Join(t.TempDir(), "wt"),
+					Number:              35,
+					HeadBranch:          "cancel-import",
+					HeadRepoCloneURL:    origin,
+					ProjectRepoIdentity: identityOfCloneURL(origin),
+					RunGit: func(
+						runCtx context.Context, runner gitcmd.Runner,
+						dir string, args ...string,
+					) ([]byte, error) {
+						if len(args) > 0 && args[0] == "fetch" {
+							if phase == "fetch" {
+								cancel()
+								return nil, errors.New("process killed")
+							}
+							fetched = true
+						}
+						if phase == "resolve" && fetched &&
+							len(args) > 0 && args[0] == "rev-parse" {
+							cancel()
+							return nil, errors.New("process killed")
+						}
+						stdout, stderr, runErr := runner.Run(
+							runCtx, dir, nil, args...,
+						)
+						return append(stdout, stderr...), runErr
+					},
+				})
+
+			require.ErrorIs(err, context.Canceled)
+			var changeErr *ChangeRequestError
+			assert.False(errors.As(err, &changeErr))
+		})
+	}
+}
+
 func TestCreateWorktreeFromMergeRequestRejectsChangedHead(t *testing.T) {
 	require := Require.New(t)
 	assert := assert.New(t)

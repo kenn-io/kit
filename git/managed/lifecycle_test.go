@@ -506,6 +506,24 @@ func TestCreateWorktreeOnDiskFromBaseRef(t *testing.T) {
 	_ = result
 }
 
+func TestCreateWorktreeOnDiskClassifiesExistingBaseRefBranch(t *testing.T) {
+	require := Require.New(t)
+	repo := initLifecycleRepo(t)
+	lifecycleGit(t, repo, "branch", "existing")
+	dest := filepath.Join(t.TempDir(), "wt")
+
+	_, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Branch:      "existing",
+		Path:        dest,
+		BaseRef:     "HEAD",
+	})
+
+	require.ErrorIs(err, ErrBranchAlreadyExists)
+	require.NotErrorIs(err, ErrWorktreeDestinationExists)
+	require.NoDirExists(dest)
+}
+
 func TestCreateWorktreeOnDiskRunsSetupHook(t *testing.T) {
 	assert := assert.New(t)
 	require := Require.New(t)
@@ -551,6 +569,40 @@ func TestCreateWorktreeOnDiskRunsSetupHook(t *testing.T) {
 	assert.Equal("path="+dest, lines[2])
 	assert.Equal("root="+repo, lines[3])
 	assert.Equal("branch=feature", lines[4])
+}
+
+func TestLifecycleHookStripsRepositoryBindingEnvironment(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	repo := initLifecycleRepo(t)
+	script := filepath.Join(repo, "setup.sh")
+	require.NoError(os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), 0o755))
+	t.Setenv("GIT_DIR", "/wrong/repository")
+	t.Setenv("GIT_WORK_TREE", "/wrong/worktree")
+	t.Setenv("GIT_INDEX_FILE", "/wrong/index")
+	t.Setenv("KIT_UNRELATED", "preserved")
+
+	var hookEnv []string
+	_, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Branch:      "hook-environment",
+		Path:        filepath.Join(t.TempDir(), "wt"),
+		SetupScript: "setup.sh",
+		RunHook: func(_ context.Context, command HookCommand) error {
+			hookEnv = command.Env
+			return nil
+		},
+	})
+
+	require.NoError(err)
+	assert.Contains(hookEnv, "KIT_UNRELATED=preserved")
+	for _, entry := range hookEnv {
+		key, _, _ := strings.Cut(entry, "=")
+		switch strings.ToUpper(key) {
+		case "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE":
+			assert.Fail("repository-binding variable reached hook", key)
+		}
+	}
 }
 
 func TestCreateWorktreeOnDiskRollsBackWhenSetupHookFails(t *testing.T) {

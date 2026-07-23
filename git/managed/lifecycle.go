@@ -29,6 +29,9 @@ var (
 	ErrBranchInUse = errors.New(
 		"branch is checked out in another worktree",
 	)
+	// ErrBranchAlreadyExists reports that an operation requiring a new branch
+	// was given the name of an existing local branch.
+	ErrBranchAlreadyExists = errors.New("branch already exists")
 	// ErrInvalidBranchName reports a branch name git rejects
 	// (`git check-ref-format --branch`).
 	ErrInvalidBranchName = errors.New("invalid branch name")
@@ -180,7 +183,15 @@ func CreateWorktreeOnDisk(
 		return CreateWorktreeResult{}, err
 	}
 
-	branchExisted := localBranchExists(ctx, root, branch)
+	branchExisted, err := localBranchExists(ctx, root, branch)
+	if err != nil {
+		return CreateWorktreeResult{}, err
+	}
+	if opts.BaseRef != "" && branchExisted {
+		return CreateWorktreeResult{}, fmt.Errorf(
+			"%w: %s", ErrBranchAlreadyExists, branch,
+		)
+	}
 	var args []string
 	switch {
 	case opts.BaseRef != "":
@@ -810,12 +821,26 @@ func resolveWorktreeDestination(
 	return dest, nil
 }
 
-func localBranchExists(ctx context.Context, root, branch string) bool {
-	_, err := runLifecycleGit(
+func localBranchExists(
+	ctx context.Context, root, branch string,
+) (bool, error) {
+	out, err := runLifecycleGit(
 		ctx, root, "show-ref", "--verify", "--quiet",
 		"refs/heads/"+branch,
 	)
-	return err == nil
+	if err == nil {
+		return true, nil
+	}
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
+	if gitcmd.IsExitCode(err, 1) {
+		return false, nil
+	}
+	return false, fmt.Errorf(
+		"inspect local branch %q: %w: %s",
+		branch, err, strings.TrimSpace(string(out)),
+	)
 }
 
 func runLifecycleGit(
@@ -891,6 +916,9 @@ func classifyWorktreeGitError(out []byte, err error) error {
 	case strings.Contains(detail, "is already checked out at"),
 		strings.Contains(detail, "used by worktree at"):
 		return fmt.Errorf("%w: %s", ErrBranchInUse, detail)
+	case strings.Contains(detail, "a branch named") &&
+		strings.Contains(detail, "already exists"):
+		return fmt.Errorf("%w: %s", ErrBranchAlreadyExists, detail)
 	case strings.Contains(detail, "already exists"):
 		return fmt.Errorf("%w: %s", ErrWorktreeDestinationExists, detail)
 	}
@@ -914,7 +942,7 @@ func runLifecycleHook(
 		prefix = defaultHookEnvironmentPrefix
 	}
 	environment := append(
-		os.Environ(),
+		withoutGitRepositoryBindings(os.Environ()),
 		prefix+"_WORKTREE_NAME="+name,
 		prefix+"_WORKTREE_PATH="+worktreePath,
 		prefix+"_PROJECT_ROOT="+projectRoot,
