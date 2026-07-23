@@ -231,18 +231,25 @@ func CreateWorktreeFromMergeRequest(
 	if trackingEnabled && len(target.trackingFetch) > 0 {
 		// The tracking fetch is best-effort: a fork that has vanished
 		// or is unreachable must not block importing via the pull ref.
-		if _, err := runLifecycleGit(
+		if out, err := runLifecycleGit(
 			ctx, root, target.trackingFetch...,
 		); err != nil {
 			if ctx.Err() != nil {
 				return CreateWorktreeResult{}, ctx.Err()
 			}
-			trackingEnabled = false
+			if optionalTrackingFetchUnavailable(out) {
+				trackingEnabled = false
+			} else {
+				return CreateWorktreeResult{}, err
+			}
 		} else if trackingOID, resolveErr := resolveMergeRequestOID(
 			ctx, root, target.trackingRef,
 		); resolveErr != nil || !strings.EqualFold(trackingOID, checkoutOID) {
 			if ctx.Err() != nil {
 				return CreateWorktreeResult{}, ctx.Err()
+			}
+			if resolveErr != nil {
+				return CreateWorktreeResult{}, resolveErr
 			}
 			trackingEnabled = false
 		}
@@ -615,6 +622,28 @@ func classifyChangeRequestFetchError(out []byte, err error) error {
 		message += ": " + detail
 	}
 	return &ChangeRequestError{Kind: kind, Message: message, Cause: err}
+}
+
+func optionalTrackingFetchUnavailable(out []byte) bool {
+	lower := strings.ToLower(string(out))
+	for _, message := range []string{
+		"authentication failed",
+		"permission denied",
+		"could not read username",
+		"repository not found",
+		"could not resolve host",
+		"failed to connect",
+		"connection timed out",
+		"network is unreachable",
+		"does not appear to be a git repository",
+		"could not read from remote repository",
+		"couldn't find remote ref",
+	} {
+		if strings.Contains(lower, message) {
+			return true
+		}
+	}
+	return false
 }
 
 // ensureFetchRemote returns the name of a remote pointing at cloneURL,

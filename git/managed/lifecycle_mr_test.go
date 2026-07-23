@@ -1553,6 +1553,49 @@ func TestCreateWorktreeFromMergeRequestTrackingFetchFailureIsNonFatal(t *testing
 		"tracking silently disabled when the fork fetch fails")
 }
 
+func TestCreateWorktreeFromMergeRequestPropagatesTrackingRunnerFailure(
+	t *testing.T,
+) {
+	require := Require.New(t)
+	origin, clone := initOriginAndClone(t)
+	fork := filepath.Join(t.TempDir(), "fork")
+	lifecycleGit(t, filepath.Dir(origin), "clone", "-q", origin, fork)
+	lifecycleGit(t, fork, "checkout", "-q", "-b", "tracking-failure")
+	lifecycleGit(t, fork, "commit", "--allow-empty", "-m", "fork head")
+	headSHA := lifecycleGit(t, fork, "rev-parse", "HEAD")
+	lifecycleGit(t, origin, "fetch", "-q", fork,
+		"+refs/heads/tracking-failure:refs/pull/38/head")
+	runnerErr := errors.New("runner policy failed")
+	fetches := 0
+
+	_, err := CreateWorktreeFromMergeRequest(
+		t.Context(), MergeRequestWorktreeOptions{
+			ProjectRoot:         clone,
+			Branch:              "pr-tracking-failure",
+			Path:                filepath.Join(t.TempDir(), "wt"),
+			Number:              38,
+			HeadBranch:          "tracking-failure",
+			HeadRepoCloneURL:    fork,
+			ProjectRepoIdentity: identityOfCloneURL(origin),
+			ExpectedHeadSHA:     headSHA,
+			RunGit: func(
+				ctx context.Context, runner gitcmd.Runner,
+				dir string, args ...string,
+			) ([]byte, error) {
+				if len(args) > 0 && args[0] == "fetch" {
+					fetches++
+					if fetches == 2 {
+						return nil, runnerErr
+					}
+				}
+				stdout, stderr, runErr := runner.Run(ctx, dir, nil, args...)
+				return append(stdout, stderr...), runErr
+			},
+		})
+
+	require.ErrorIs(err, runnerErr)
+}
+
 // TestCreateWorktreeFromMergeRequestHookFailureRollsBack: a failing setup
 // hook rolls back the imported worktree and its branch.
 func TestCreateWorktreeFromMergeRequestHookFailureRollsBack(t *testing.T) {

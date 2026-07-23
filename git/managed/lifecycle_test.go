@@ -748,6 +748,27 @@ func TestValidateBranchNamePreservesRunnerFailure(t *testing.T) {
 	require.NotErrorIs(err, ErrInvalidBranchName)
 }
 
+func TestRunLifecycleGitPreservesCustomRunnerCancellation(t *testing.T) {
+	require := Require.New(t)
+	processErr := errors.New("process killed")
+	ctx, cancel := context.WithCancel(t.Context())
+	ctx = withLifecycleExecution(
+		ctx, gitcmd.New(),
+		func(
+			context.Context, gitcmd.Runner, string, ...string,
+		) ([]byte, error) {
+			cancel()
+			return nil, processErr
+		},
+		nil,
+	)
+
+	_, err := runLifecycleGit(ctx, t.TempDir(), "status")
+
+	require.ErrorIs(err, context.Canceled)
+	require.ErrorIs(err, processErr)
+}
+
 func TestRemoveWorktreeFromDiskRemovesWorktreeAndBranch(t *testing.T) {
 	assert := assert.New(t)
 	require := Require.New(t)

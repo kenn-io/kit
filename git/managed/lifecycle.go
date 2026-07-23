@@ -862,9 +862,16 @@ func runLifecycleGitWithRunner(
 	ctx context.Context, runner gitcmd.Runner, dir string, args ...string,
 ) ([]byte, error) {
 	if run := lifecycleGitRunner(ctx); run != nil {
-		return run(ctx, runner, dir, args...)
+		out, err := run(ctx, runner, dir, args...)
+		if err != nil && ctx.Err() != nil {
+			err = errors.Join(err, ctx.Err())
+		}
+		return out, err
 	}
 	stdout, stderr, err := runner.Run(ctx, dir, nil, args...)
+	if err != nil && ctx.Err() != nil {
+		err = errors.Join(err, ctx.Err())
+	}
 	return append(stdout, stderr...), err
 }
 

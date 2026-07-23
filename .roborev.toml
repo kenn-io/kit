@@ -43,6 +43,14 @@ dispatch supply `RunHook`. Worktree base permissions follow the caller's path
 and host umask; owner-only directory and platform ACL policy also belongs to the
 application. Do not request those layers in Kit.
 
+The lifecycle matches Middleman's production ownership boundary around
+`git worktree add`: once Git reports success, later setup failures roll back
+the created worktree and branch. If `git worktree add` itself reports failure,
+Kit returns that error and does not claim or auto-delete ambiguous partial
+artifacts. Do not request a pre-snapshot ownership or recovery protocol for
+failed adds in this extraction; that would be a separate API and product
+decision rather than production-code reuse.
+
 ## gitcmd safe.directory forwarding
 
 `gitcmd.Runner`'s isolation flags (`StripEnv`, `NullGlobalConfig`,
