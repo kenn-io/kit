@@ -336,7 +336,7 @@ func mergeRequestRepositoriesEqual(left, right string) bool {
 		}
 		return filepath.Clean(leftPath) == filepath.Clean(rightPath)
 	}
-	return strings.EqualFold(CloneURLIdentity(left), CloneURLIdentity(right))
+	return CloneURLIdentity(left) == CloneURLIdentity(right)
 }
 
 func localClonePath(raw string) (string, bool) {
@@ -382,6 +382,10 @@ func configureMergeRequestTracking(
 		{worktreePath, []string{
 			"config", "--worktree",
 			"branch." + branch + ".merge", target.trackingMergeRef,
+		}},
+		{worktreePath, []string{
+			"config", "--worktree",
+			"branch." + branch + ".pushRemote", target.trackingRemote,
 		}},
 		{worktreePath, []string{
 			"config", "--worktree", "push.default", "upstream",

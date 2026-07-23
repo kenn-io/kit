@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	gitcmd "go.kenn.io/kit/git/cmd"
+	gitworktree "go.kenn.io/kit/git/worktree"
 )
 
 // Sentinel errors for worktree lifecycle failures the HTTP layer maps to
@@ -198,8 +199,10 @@ func CreateWorktreeOnDisk(
 		ctx, root, path, branch, !branchExisted,
 	)
 	if err != nil {
-		rollbackCreatedWorktree(context.WithoutCancel(ctx), root, path, branch, !branchExisted)
-		return CreateWorktreeResult{}, err
+		_, cleanupErr := rollbackCreatedWorktreeWithResult(
+			context.WithoutCancel(ctx), root, path, branch, !branchExisted,
+		)
+		return CreateWorktreeResult{}, errors.Join(err, cleanupErr)
 	}
 	if hookScript != "" {
 		hookErr := runLifecycleHook(
@@ -433,6 +436,11 @@ func RemoveWorktreeFromDisk(
 			return result, classifyWorktreeGitError(out, err)
 		}
 	} else {
+		if err := verifyRegisteredRemovalTarget(
+			ctx, root, path, opts.Branch,
+		); err != nil {
+			return result, err
+		}
 		// The directory is gone but git may still hold a stale
 		// registration that would block branch deletion and re-creation.
 		args := []string{"worktree", "remove", "--force"}
@@ -515,6 +523,55 @@ func verifyRemovalTarget(
 		)
 	}
 	return nil
+}
+
+func verifyRegisteredRemovalTarget(
+	ctx context.Context, root, path, expectedBranch string,
+) error {
+	out, err := runLifecycleGit(
+		ctx, root, "worktree", "list", "--porcelain",
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"list registered worktrees: %w: %s",
+			err, strings.TrimSpace(string(out)),
+		)
+	}
+	wantPath := comparableWorktreePath(path)
+	wantBranch := strings.TrimSpace(expectedBranch)
+	for _, entry := range gitworktree.ParsePorcelain(string(out)) {
+		if comparableWorktreePath(entry.Path) != wantPath {
+			continue
+		}
+		if entry.Branch != wantBranch ||
+			(wantBranch == "" && !entry.Detached) {
+			return fmt.Errorf(
+				"stale worktree registration branch changed: expected %q, found %q",
+				wantBranch, entry.Branch,
+			)
+		}
+		return nil
+	}
+	return fmt.Errorf("worktree registration not found: %s", path)
+}
+
+func comparableWorktreePath(path string) string {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		absolute = filepath.Clean(path)
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(absolute); resolveErr == nil {
+		absolute = resolved
+	} else if parent, parentErr := filepath.EvalSymlinks(
+		filepath.Dir(absolute),
+	); parentErr == nil {
+		absolute = filepath.Join(parent, filepath.Base(absolute))
+	}
+	absolute = filepath.Clean(absolute)
+	if filepath.Separator == '\\' {
+		absolute = strings.ToLower(absolute)
+	}
+	return absolute
 }
 
 func lifecycleCommonGitDir(ctx context.Context, path string) (string, error) {

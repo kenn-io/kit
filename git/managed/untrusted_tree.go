@@ -141,10 +141,19 @@ func managedEmptyHooksPath(ctx context.Context, root string) (string, error) {
 func completeUntrustedTreeIsolation(
 	ctx context.Context, worktreePath string, isolation untrustedTreeIsolation,
 ) (untrustedTreeIsolation, error) {
-	keys, err := effectiveGitConfigKeys(ctx, worktreePath, isolation.runner)
+	checkoutKeys, err := gitConfigKeys(
+		ctx, worktreePath, isolation.runner,
+	)
 	if err != nil {
 		return untrustedTreeIsolation{}, err
 	}
+	ambientKeys, err := ambientGitConfigKeys(
+		ctx, worktreePath, isolation.runner,
+	)
+	if err != nil {
+		return untrustedTreeIsolation{}, err
+	}
+	keys := append(checkoutKeys, ambientKeys...)
 	drivers := neutralizeAttributeDrivers(keys)
 	isolation.config = append(isolation.config, drivers...)
 	for _, entry := range drivers {
@@ -153,16 +162,9 @@ func completeUntrustedTreeIsolation(
 	return isolation, nil
 }
 
-func effectiveGitConfigKeys(
+func gitConfigKeys(
 	ctx context.Context, worktreePath string, runner gitcmd.Runner,
 ) ([]string, error) {
-	// Inspect after the linked worktree exists so branch- and gitdir-conditional
-	// includes match the same checkout ordinary Git will use. Preserve explicit
-	// global/system config selectors while removing only repository bindings.
-	runner.Env = withoutGitRepositoryBindings(runner.Env)
-	runner.StripEnv = false
-	runner.NullGlobalConfig = false
-	runner.NoSystemConfig = false
 	out, err := runLifecycleGitWithRunner(
 		ctx, runner, worktreePath, "config", "--null", "--name-only", "--list",
 	)
@@ -180,6 +182,19 @@ func effectiveGitConfigKeys(
 		}
 	}
 	return keys, nil
+}
+
+func ambientGitConfigKeys(
+	ctx context.Context, worktreePath string, runner gitcmd.Runner,
+) ([]string, error) {
+	// The first scan exactly matches checkout. This second scan preserves
+	// explicit global/system selectors so persistent isolation also covers
+	// ordinary Git commands run outside the application's stripped environment.
+	runner.Env = withoutGitRepositoryBindings(runner.Env)
+	runner.StripEnv = false
+	runner.NullGlobalConfig = false
+	runner.NoSystemConfig = false
+	return gitConfigKeys(ctx, worktreePath, runner)
 }
 
 func withoutGitRepositoryBindings(env []string) []string {

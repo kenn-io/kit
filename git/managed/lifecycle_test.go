@@ -2,6 +2,7 @@ package managedworktree
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -314,6 +315,35 @@ func TestCreateWorktreeResultRollbackPreservesIgnoredArtifacts(t *testing.T) {
 	require.ErrorIs(err, ErrWorktreeCleanupIncomplete)
 	assert.Equal(RollbackResult{Path: result.Path, Branch: result.Branch}, remaining)
 	assert.FileExists(filepath.Join(result.Path, "scratch.log"))
+}
+
+func TestCreateWorktreeOnDiskReportsSnapshotCleanupFailure(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	repo := initLifecycleRepo(t)
+	runGit := func(
+		ctx context.Context, runner gitcmd.Runner, dir string, args ...string,
+	) ([]byte, error) {
+		if len(args) >= 2 && args[0] == "rev-parse" &&
+			args[1] == "--verify" && dir != repo {
+			return nil, errors.New("snapshot failed")
+		}
+		if len(args) >= 2 && args[0] == "worktree" && args[1] == "remove" {
+			return nil, errors.New("cleanup failed")
+		}
+		stdout, stderr, err := runner.Run(ctx, dir, nil, args...)
+		return append(stdout, stderr...), err
+	}
+
+	_, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Branch:      "snapshot-cleanup-failure",
+		RunGit:      runGit,
+	})
+
+	require.Error(err)
+	assert.ErrorContains(err, "snapshot failed")
+	assert.ErrorContains(err, "cleanup failed")
 }
 
 func TestCreateWorktreeOnDiskAttachesExistingBranch(t *testing.T) {
@@ -686,6 +716,27 @@ func TestRemoveWorktreeFromDiskPrunesWhenPathAlreadyGone(t *testing.T) {
 	assert.False(branchExistsInRepo(t, repo, "feature"))
 	list := lifecycleGit(t, repo, "worktree", "list", "--porcelain")
 	assert.NotContains(list, dest, "stale worktree entry pruned")
+}
+
+func TestRemoveWorktreeFromDiskRejectsMismatchedStaleRegistration(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	repo := initLifecycleRepo(t)
+	dest := filepath.Join(t.TempDir(), "wt")
+	lifecycleGit(t, repo, "worktree", "add", "-b", "registered-branch", dest)
+	require.NoError(os.RemoveAll(dest))
+
+	_, err := RemoveWorktreeFromDisk(t.Context(), RemoveWorktreeOptions{
+		ProjectRoot:  repo,
+		Path:         dest,
+		Branch:       "unrelated-branch",
+		RemoveBranch: true,
+	})
+
+	require.Error(err)
+	assert.True(branchExistsInRepo(t, repo, "registered-branch"))
+	assert.Contains(lifecycleGit(t, repo, "worktree", "list", "--porcelain"),
+		"branch refs/heads/registered-branch")
 }
 
 func TestRemoveMissingWorktreePreservesUnrelatedStaleRegistration(t *testing.T) {

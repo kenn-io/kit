@@ -24,7 +24,8 @@ specific application or forge workflow.
   tracking, hook, or rollback implementations.
 - The managed lifecycle trusts the existing repository, remotes, Git
   configuration, provider metadata, lifecycle hooks, and same-user filesystem
-  state. Ordinary named-worktree creation also trusts the checked-out tree.
+  state. This includes configured remote push URLs and refspecs. Ordinary
+  named-worktree creation also trusts the checked-out tree.
 - Merge-request import treats the fetched tree as untrusted: keep checkout-time
   hooks disabled, neutralize configured filter/fsmonitor/diff/merge programs
   the tree can select, disable implicit submodule recursion, and persist those

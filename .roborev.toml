@@ -19,6 +19,8 @@ coverage for behavior. Trust the build for compilability.
 `git/managed` trusts the existing local repository, its remotes and
 configuration, provider metadata, configured lifecycle scripts, and same-user
 filesystem state. Ordinary named-worktree operations also trust their tree.
+Configured remote push URLs and push refspecs are part of that trusted state;
+preserving HTTPS-fetch/SSH-push and other intentional routing is required.
 
 Merge-request import has one narrower boundary: the fetched commit and tree are
 untrusted. Before materializing them, Kit verifies an expected head when the

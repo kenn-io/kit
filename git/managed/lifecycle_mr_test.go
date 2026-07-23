@@ -74,6 +74,7 @@ func TestCreateWorktreeFromMergeRequestSameRepo(t *testing.T) {
 	lifecycleGit(t, origin, "commit", "--allow-empty", "-m", "pr work")
 	headSHA := lifecycleGit(t, origin, "rev-parse", "feature-x")
 	lifecycleGit(t, origin, "checkout", "-q", "main")
+	lifecycleGit(t, clone, "config", "remote.pushDefault", "elsewhere")
 
 	dest := filepath.Join(t.TempDir(), "wt")
 	result, err := CreateWorktreeFromMergeRequest(
@@ -95,6 +96,8 @@ func TestCreateWorktreeFromMergeRequestSameRepo(t *testing.T) {
 	assert.Equal("origin", worktreeConfig(t, dest, "branch.pr-42.remote"))
 	assert.Equal("refs/heads/feature-x",
 		worktreeConfig(t, dest, "branch.pr-42.merge"))
+	assert.Equal("origin",
+		worktreeConfig(t, dest, "branch.pr-42.pushRemote"))
 	assert.Equal("upstream", worktreeConfig(t, dest, "push.default"))
 }
 
@@ -395,12 +398,18 @@ func TestCreateWorktreeFromMergeRequestInspectsSelectedConfigFiles(t *testing.T)
 	lifecycleGit(t, origin, "checkout", "-q", "-b", "selected-config")
 	require.NoError(os.WriteFile(
 		filepath.Join(origin, ".gitattributes"),
-		[]byte("payload filter=selected diff=selected merge=selected\n"), 0o644,
+		[]byte(
+			"payload filter=checkout diff=selected merge=selected\n"+
+				"selected-payload filter=selected\n",
+		), 0o644,
 	))
 	require.NoError(os.WriteFile(
 		filepath.Join(origin, "payload"), []byte("external\n"), 0o644,
 	))
-	lifecycleGit(t, origin, "add", ".gitattributes", "payload")
+	require.NoError(os.WriteFile(
+		filepath.Join(origin, "selected-payload"), []byte("selected\n"), 0o644,
+	))
+	lifecycleGit(t, origin, "add", ".gitattributes", "payload", "selected-payload")
 	lifecycleGit(t, origin, "commit", "-qm", "select alternate config driver")
 	headSHA := lifecycleGit(t, origin, "rev-parse", "HEAD")
 	lifecycleGit(t, origin, "checkout", "-q", "main")
@@ -408,6 +417,11 @@ func TestCreateWorktreeFromMergeRequestInspectsSelectedConfigFiles(t *testing.T)
 	configDir := t.TempDir()
 	globalConfig := filepath.Join(configDir, "global.gitconfig")
 	systemConfig := filepath.Join(configDir, "system.gitconfig")
+	require.NoError(os.WriteFile(filepath.Join(configDir, ".gitconfig"), []byte(
+		"[filter \"checkout\"]\n"+
+			"\tsmudge = false\n"+
+			"\trequired = true\n",
+	), 0o600))
 	require.NoError(os.WriteFile(globalConfig, []byte(
 		"[filter \"selected\"]\n"+
 			"\tsmudge = false\n"+
@@ -419,6 +433,8 @@ func TestCreateWorktreeFromMergeRequestInspectsSelectedConfigFiles(t *testing.T)
 		"[merge \"selected\"]\n\tdriver = false\n",
 	), 0o600))
 	runner := gitcmd.New()
+	runner.NullGlobalConfig = false
+	runner.NoSystemConfig = false
 	runner.Env = append(gitenv.StripAll(os.Environ()),
 		"HOME="+configDir,
 		"GIT_CONFIG_GLOBAL="+globalConfig,
@@ -436,11 +452,24 @@ func TestCreateWorktreeFromMergeRequestInspectsSelectedConfigFiles(t *testing.T)
 
 	require.NoError(err)
 	assert.Equal("false",
+		worktreeOnlyConfig(t, dest, "filter.checkout.required"))
+	assert.Equal("false",
 		worktreeOnlyConfig(t, dest, "filter.selected.required"))
 	assert.Equal(safeExternalDiffCommand,
 		worktreeOnlyConfig(t, dest, "diff.selected.command"))
 	assert.Equal("false",
 		worktreeOnlyConfig(t, dest, "merge.selected.driver"))
+}
+
+func TestMergeRequestRepositoriesKeepPathCase(t *testing.T) {
+	assert.False(t, mergeRequestRepositoriesEqual(
+		"https://example.com/Owner/Widget.git",
+		"https://example.com/owner/widget.git",
+	))
+	assert.True(t, mergeRequestRepositoriesEqual(
+		"https://EXAMPLE.com/Owner/Widget.git",
+		"https://example.com/Owner/Widget.git",
+	))
 }
 
 func TestCreateWorktreeFromMergeRequestInspectsConditionalIncludes(t *testing.T) {
