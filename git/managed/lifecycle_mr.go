@@ -330,6 +330,14 @@ func normalizeMergeRequestCloneURLs(
 	if project == "" {
 		return opts, nil
 	}
+	// ProjectRepoIdentity represents hosted repositories in normalized
+	// host/owner/name form. Keep that identity separate from local clone paths:
+	// its spelling must not change merely because a matching relative path
+	// happens to exist beneath the checkout.
+	if identity := repositoryIdentity(project); identity.Host != "" &&
+		identity.Host != "." && identity.Host != ".." {
+		return opts, nil
+	}
 	canonicalProject, local, err := canonicalCloneURL(root, project)
 	if err != nil {
 		return opts, fmt.Errorf("resolve project repository identity: %w", err)
@@ -341,9 +349,7 @@ func normalizeMergeRequestCloneURLs(
 		opts.ProjectRepoIdentity = canonicalProject
 		return opts, nil
 	}
-	if _, err := os.Stat(canonicalProject); err == nil {
-		opts.ProjectRepoIdentity = canonicalProject
-	}
+	opts.ProjectRepoIdentity = canonicalProject
 	return opts, nil
 }
 

@@ -466,6 +466,24 @@ func TestChangeRequestGitFetchRevalidatesConfiguredRemoteURL(t *testing.T) {
 	assert.Equal(t, ChangeRequestUnsafeConfiguration, typed.Kind)
 }
 
+func TestChangeRequestGitValidateRejectsRemoteURLWhitespace(t *testing.T) {
+	repo := initLifecycleRepo(t)
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	lifecycleGit(t, repo, "init", "--bare", origin)
+	lifecycleGit(t, repo, "remote", "add", "origin", " "+origin+" ")
+	backend, err := NewChangeRequestGit(ChangeRequestGitOptions{
+		ProjectRoot:     repo,
+		ExpectedHeadOID: strings.Repeat("a", 40),
+	})
+	require.NoError(t, err)
+
+	err = backend.Validate(t.Context())
+
+	var typed *ChangeRequestError
+	require.ErrorAs(t, err, &typed)
+	assert.Equal(t, ChangeRequestAuthentication, typed.Kind)
+}
+
 func TestChangeRequestGitFetchRejectsTrustedDestinationNamespace(t *testing.T) {
 	repo := initLifecycleRepo(t)
 	bare := filepath.Join(t.TempDir(), "origin.git")

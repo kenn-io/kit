@@ -373,8 +373,11 @@ func (r CreateWorktreeResult) rollbackOwned(
 		remaining.Path = r.Path
 		errs = append(errs, errors.New("created worktree path ownership changed; preserving it"))
 	case !pathPresent:
+		remaining.Path = r.Path
 		preserveBranch = true
-		errs = append(errs, errors.New("created worktree path disappeared; preserving its branch"))
+		errs = append(errs, errors.New(
+			"created worktree path disappeared; preserving its registration and branch",
+		))
 	case headErr != nil:
 		remaining.Path = r.Path
 		errs = append(errs, fmt.Errorf("inspect created worktree HEAD: %w", headErr))

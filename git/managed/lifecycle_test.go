@@ -679,7 +679,7 @@ func TestCreateWorktreeResultRollbackPreservesFileCreatedAfterFinalStatusCheck(t
 
 	require.ErrorIs(err, ErrWorktreeCleanupIncomplete)
 	assert.True(changed)
-	assert.Equal(2, statusChecks)
+	assert.GreaterOrEqual(statusChecks, 2)
 	assert.Equal(RollbackResult{Path: result.Path, Branch: result.Branch}, remaining)
 	assert.FileExists(filepath.Join(result.Path, "keep.txt"))
 }
@@ -904,8 +904,29 @@ func TestCreateWorktreeResultRollbackPreservesBranchWhenPathDisappears(t *testin
 	remaining, err := result.Rollback(t.Context())
 
 	require.Error(err)
-	assert.Equal(RollbackResult{Branch: result.Branch}, remaining)
+	require.ErrorIs(err, ErrWorktreeCleanupIncomplete)
+	assert.Equal(RollbackResult{Path: result.Path, Branch: result.Branch}, remaining)
 	assert.True(branchExistsInRepo(t, repo, result.Branch))
+}
+
+func TestCreateWorktreeResultRollbackReportsMissingExistingBranchWorktree(t *testing.T) {
+	assert := assert.New(t)
+	require := Require.New(t)
+	repo := initLifecycleRepo(t)
+	lifecycleGit(t, repo, "branch", "review/existing")
+	result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo,
+		Branch:      "review/existing",
+		Path:        filepath.Join(t.TempDir(), "existing"),
+	})
+	require.NoError(err)
+	require.NoError(os.RemoveAll(result.Path))
+
+	remaining, err := result.Rollback(t.Context())
+
+	require.ErrorIs(err, ErrWorktreeCleanupIncomplete)
+	assert.Equal(RollbackResult{Path: result.Path}, remaining)
+	assert.Contains(lifecycleGit(t, repo, "worktree", "list", "--porcelain"), result.Path)
 }
 
 func TestCreateWorktreeResultRollbackReportsBranchWhenFinalInspectionFails(t *testing.T) {

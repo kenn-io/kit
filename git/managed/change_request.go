@@ -1265,8 +1265,9 @@ func configHasUnsafeHTTPConfiguration(output string) bool {
 }
 
 func remoteURLListUnsafe(output string) bool {
-	for line := range strings.SplitSeq(strings.TrimSpace(output), "\n") {
-		if gitremote.UnsafeForAutomation(strings.TrimSpace(line)) {
+	for line := range strings.SplitSeq(strings.TrimSuffix(output, "\n"), "\n") {
+		if line == "" || line != strings.TrimSpace(line) ||
+			gitremote.UnsafeForAutomation(line) {
 			return true
 		}
 	}
@@ -1275,10 +1276,9 @@ func remoteURLListUnsafe(output string) bool {
 
 func singleRemoteURL(output string) (string, bool) {
 	remoteURL := ""
-	for line := range strings.SplitSeq(strings.TrimSpace(output), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
+	for line := range strings.SplitSeq(strings.TrimSuffix(output, "\n"), "\n") {
+		if line == "" || line != strings.TrimSpace(line) {
+			return "", false
 		}
 		if remoteURL != "" {
 			return "", false
@@ -1289,7 +1289,7 @@ func singleRemoteURL(output string) (string, bool) {
 }
 
 func remoteURLsEqual(left, right string) bool {
-	return strings.TrimSpace(left) == strings.TrimSpace(right)
+	return left == right
 }
 
 func remoteMatchesRepository(remoteURL string, repository RemoteRepository) bool {

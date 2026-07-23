@@ -98,6 +98,13 @@ not about one product's workflow.
 - Canonicalize relative local clone paths against the project root before
   deriving repository identity or persisting a remote. Configure change-request
   tracking only when the provider supplied an explicit source branch.
+- Preserve effective remote URL bytes exactly: reject leading or trailing
+  whitespace before validation and compare the same untrimmed value Git will
+  use. Treat normalized hosted identities separately from local clone paths;
+  filesystem contents beneath a checkout must not change that classification.
+- If a managed worktree path disappears, preserve and report its exact stale
+  registration as incomplete cleanup even when the attached branch predated
+  the lifecycle operation.
 
 ## Tests
 

@@ -38,6 +38,20 @@ func TestCloneURLIdentityRecognizesSCPWithoutUsername(t *testing.T) {
 		CloneURLIdentity("./local:path/widget.git"))
 }
 
+func TestNormalizeMergeRequestCloneURLsKeepsHostedIdentityWhenPathExists(t *testing.T) {
+	root := t.TempDir()
+	hostedIdentity := "github.com/acme/widget"
+	Require.NoError(t, os.MkdirAll(filepath.Join(root, filepath.FromSlash(hostedIdentity)), 0o755))
+
+	opts, err := normalizeMergeRequestCloneURLs(root, MergeRequestWorktreeOptions{
+		HeadRepoCloneURL:    "https://github.com/acme/widget.git",
+		ProjectRepoIdentity: hostedIdentity,
+	})
+
+	Require.NoError(t, err)
+	assert.Equal(t, hostedIdentity, opts.ProjectRepoIdentity)
+}
+
 // initOriginAndClone builds an "origin" repository with one commit on main
 // and a clone of it, returning (originDir, cloneDir). The clone is the
 // project checkout merge-request worktrees are created in.
