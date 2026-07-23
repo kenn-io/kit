@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -129,6 +130,32 @@ func TestLifecycleShebangCommandUsesDeclaredInterpreterRegardlessOfExtension(t *
 	}
 }
 
+func TestShebangExecutableNamePreservesWindowsAbsoluteInterpreter(t *testing.T) {
+	assert.Equal(t, `C:\Tools\python.exe`,
+		shebangExecutableNameForOS(`C:\Tools\python.exe`, "windows"))
+	assert.Equal(t, `C:/Tools/python.exe`,
+		shebangExecutableNameForOS(`C:/Tools/python.exe`, "windows"))
+	assert.Equal(t, "python.exe",
+		shebangExecutableNameForOS(`/usr/bin/python.exe`, "windows"))
+}
+
+func TestLifecycleHookSnapshotModeKeepsWindowsSnapshotDeletable(t *testing.T) {
+	assert.NotZero(t, lifecycleHookSnapshotMode("windows")&0o200)
+	assert.Equal(t, os.FileMode(0o500), lifecycleHookSnapshotMode("linux"))
+}
+
+func TestLifecycleHookSnapshotCleanupRemovesFile(t *testing.T) {
+	require := Require.New(t)
+	script := lifecycleHookScript{path: filepath.Join(t.TempDir(), "setup.sh")}
+
+	snapshot, cleanup, err := script.executableSnapshot([]byte("#!/bin/sh\nexit 0\n"))
+	require.NoError(err)
+	require.FileExists(snapshot)
+
+	cleanup()
+	assert.NoFileExists(t, snapshot)
+}
+
 func TestCreateWorktreeOnDiskDerivesPathAndCreatesBranch(t *testing.T) {
 	assert := assert.New(t)
 	require := Require.New(t)
@@ -210,6 +237,43 @@ func TestCreateWorktreeOnDiskCanIsolateUntrustedCheckout(t *testing.T) {
 	assert.Equal("content\n", string(contents))
 	assert.NoFileExists(marker)
 	assert.NoFileExists(hookMarker)
+}
+
+func TestCreateWorktreeOnDiskRejectsUnsafeGitBeforeIsolatedMutation(t *testing.T) {
+	assert := assert.New(t)
+	require := Require.New(t)
+	repo := initLifecycleRepo(t)
+	path := filepath.Join(t.TempDir(), "unsafe-git")
+	mutated := false
+
+	result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot:      repo,
+		Branch:           "review/unsafe-git",
+		Path:             path,
+		BaseRef:          "HEAD",
+		IsolatedCheckout: true,
+		RunGit: func(
+			ctx context.Context, runner gitcmd.Runner, dir string, args ...string,
+		) ([]byte, error) {
+			if len(args) == 1 && args[0] == "version" {
+				return []byte("git version 2.38.5\n"), nil
+			}
+			if len(args) >= 2 && args[0] == "worktree" && args[1] == "add" {
+				mutated = true
+			}
+			stdout, stderr, runErr := runner.Run(ctx, dir, nil, args...)
+			return append(stdout, stderr...), runErr
+		},
+	})
+	if result.Path != "" {
+		t.Cleanup(func() { _, _ = result.Rollback(context.Background()) })
+	}
+
+	require.Error(err)
+	assert.Contains(err.Error(), "isolated checkout requires "+safeCheckoutGitVersionRequirement(runtime.GOOS))
+	assert.False(mutated)
+	assert.NoDirExists(path)
+	assert.False(branchExistsInRepo(t, repo, "review/unsafe-git"))
 }
 
 func TestCreateWorktreeOnDiskPreservesArtifactFromFailedBeforeCheckout(t *testing.T) {

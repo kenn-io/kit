@@ -45,7 +45,9 @@ not about one product's workflow.
 - Contributor-controlled checkout requires Git 2.39.1 or newer on every
   platform. Windows additionally requires Git for Windows
   2.53.0.windows.3 or newer; keep the full Windows patch level in version
-  validation because a base `2.53.0` version is not sufficient.
+  validation because a base `2.53.0` version is not sufficient. Enforce this
+  in the public isolated-checkout path before worktree mutation, not only in
+  change-request orchestration.
 - When an expected head OID is the project-remote provenance anchor, every fetch
   through that boundary must enforce the stored OID before publishing a
   destination ref. Publish merge-request heads only under a request-numbered
@@ -54,7 +56,10 @@ not about one product's workflow.
   previously validated by the managed boundary, revalidate their effective URLs
   immediately before use, and stage fetched OIDs in operation-private Kit refs
   rather than the repository-wide `FETCH_HEAD`. Windows lifecycle scripts must
-  honor their declared shebang interpreter regardless of file extension.
+  honor their declared shebang interpreter regardless of file extension and
+  preserve native absolute interpreter paths. Private hook snapshots must keep
+  owner-write permission on Windows so successful execution does not leak a
+  read-only temporary file.
 - Before teardown hooks or destructive removal, verify that the path is still
   the registered worktree for the expected repository and branch. Preserve
   replacement paths and repositories, require detached worktrees to remain

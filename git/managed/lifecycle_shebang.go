@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path"
+	"runtime"
 	"strings"
 )
 
@@ -53,5 +54,22 @@ func lifecycleShebangCommand(script string) (string, []string, bool) {
 }
 
 func shebangExecutableName(value string) string {
-	return path.Base(strings.ReplaceAll(strings.TrimSpace(value), `\`, "/"))
+	return shebangExecutableNameForOS(value, runtime.GOOS)
+}
+
+func shebangExecutableNameForOS(value, goos string) string {
+	value = strings.TrimSpace(value)
+	if goos == "windows" && isWindowsAbsoluteInterpreter(value) {
+		return value
+	}
+	return path.Base(strings.ReplaceAll(value, `\`, "/"))
+}
+
+func isWindowsAbsoluteInterpreter(value string) bool {
+	if strings.HasPrefix(value, `\\`) || strings.HasPrefix(value, "//") {
+		return true
+	}
+	return len(value) >= 3 &&
+		(value[0] >= 'A' && value[0] <= 'Z' || value[0] >= 'a' && value[0] <= 'z') &&
+		value[1] == ':' && (value[2] == '\\' || value[2] == '/')
 }

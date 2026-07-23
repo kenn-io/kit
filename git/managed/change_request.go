@@ -139,11 +139,8 @@ func (g *ChangeRequestGit) Validate(ctx context.Context) error {
 		return changeRequestError(ChangeRequestUnsupportedGit, "failed to determine Git version", err)
 	}
 	if !supportsChangeRequestGitVersion(string(output), runtime.GOOS) {
-		message := "change-request import requires Git 2.39.1 or newer"
-		if runtime.GOOS == "windows" {
-			message = "change-request import requires Git for Windows 2.53.0.windows.3 or newer"
-		}
-		return changeRequestError(ChangeRequestUnsupportedGit, message, nil)
+		return changeRequestError(ChangeRequestUnsupportedGit,
+			"change-request import requires "+safeCheckoutGitVersionRequirement(runtime.GOOS), nil)
 	}
 	if err := g.validateConfigurationAt(ctx, ""); err != nil {
 		return err
@@ -1231,4 +1228,11 @@ func supportsChangeRequestGitVersion(output, goos string) bool {
 	}
 	windowsPatch, err := strconv.Atoi(match[4])
 	return err == nil && windowsPatch >= 3
+}
+
+func safeCheckoutGitVersionRequirement(goos string) string {
+	if goos == "windows" {
+		return "Git for Windows 2.53.0.windows.3 or newer"
+	}
+	return "Git 2.39.1 or newer"
 }

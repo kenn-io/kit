@@ -213,6 +213,11 @@ func createWorktreeOnDisk(
 	if err != nil {
 		return CreateWorktreeResult{}, err
 	}
+	if opts.IsolatedCheckout {
+		if err := validateIsolatedCheckoutGitVersion(ctx, root); err != nil {
+			return CreateWorktreeResult{}, err
+		}
+	}
 	if err := validateBranchName(ctx, root, branch); err != nil {
 		return CreateWorktreeResult{}, err
 	}
@@ -298,6 +303,17 @@ func createWorktreeOnDisk(
 		result.HookScript = hookScript.requested
 	}
 	return result, nil
+}
+
+func validateIsolatedCheckoutGitVersion(ctx context.Context, root string) error {
+	output, err := runLifecycleGit(ctx, root, "version")
+	if err != nil {
+		return fmt.Errorf("determine Git version for isolated checkout: %w", err)
+	}
+	if !supportsChangeRequestGitVersion(string(output), runtime.GOOS) {
+		return errors.New("isolated checkout requires " + safeCheckoutGitVersionRequirement(runtime.GOOS))
+	}
+	return nil
 }
 
 func snapshotCreateWorktreeResult(
@@ -933,7 +949,7 @@ func (h lifecycleHookScript) executableSnapshot(contents []byte) (string, func()
 		cleanup()
 		return "", nil, cause
 	}
-	if err := file.Chmod(0o500); err != nil {
+	if err := file.Chmod(lifecycleHookSnapshotMode(runtime.GOOS)); err != nil {
 		return fail(fmt.Errorf("secure lifecycle hook snapshot: %w", err))
 	}
 	if _, err := file.Write(contents); err != nil {
@@ -944,6 +960,16 @@ func (h lifecycleHookScript) executableSnapshot(contents []byte) (string, func()
 		return "", nil, fmt.Errorf("close lifecycle hook snapshot: %w", err)
 	}
 	return path, cleanup, nil
+}
+
+func lifecycleHookSnapshotMode(goos string) os.FileMode {
+	if goos == "windows" {
+		// On Windows, removing a read-only file fails. The containing hooks
+		// directory is private, so retaining owner write permission keeps the
+		// immutable snapshot confined while allowing deterministic cleanup.
+		return 0o700
+	}
+	return 0o500
 }
 
 func pathWithinRoot(root, path string) bool {
