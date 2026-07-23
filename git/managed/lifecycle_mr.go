@@ -54,9 +54,12 @@ func (e *ChangeRequestError) Unwrap() error { return e.Cause }
 // project's own repository, used to recognize same-repo merge requests.
 type MergeRequestWorktreeOptions struct {
 	ProjectRoot string
-	Branch      string
-	Path        string
-	BaseDir     string
+	// ProjectRemote names the trusted project remote used for branch and
+	// provider request-ref fetches. It defaults to "origin".
+	ProjectRemote string
+	Branch        string
+	Path          string
+	BaseDir       string
 	// SetupScript is an explicitly configured, caller-trusted script. It runs
 	// after the untrusted request tree is materialized; callers must sandbox
 	// it if the script evaluates or executes content from that tree. It must
@@ -333,7 +336,7 @@ func CreateWorktreeFromMergeRequest(
 }
 
 // prepareMergeRequestRemote decides how to fetch the merge request head.
-// Same-repo heads fetch the branch from origin directly with tracking;
+// Same-repo heads fetch the branch from the project remote with tracking;
 // fork heads fetch the checkout from the platform pull ref while tracking
 // a dedicated fork remote; heads with no clone URL fetch the pull ref with
 // no tracking.
@@ -341,6 +344,10 @@ func prepareMergeRequestRemote(
 	ctx context.Context, root string, opts MergeRequestWorktreeOptions,
 ) (mergeRequestRemoteTarget, error) {
 	headBranch := strings.TrimSpace(opts.HeadBranch)
+	projectRemote := strings.TrimSpace(opts.ProjectRemote)
+	if projectRemote == "" {
+		projectRemote = "origin"
+	}
 
 	cloneURL := strings.TrimSpace(opts.HeadRepoCloneURL)
 	sameRepo := headBranch != "" && cloneURL != "" &&
@@ -350,12 +357,12 @@ func prepareMergeRequestRemote(
 		return mergeRequestRemoteTarget{
 			checkoutFetch: []string{
 				"fetch", "--no-tags", "--no-write-fetch-head",
-				"--no-recurse-submodules", "origin",
-				fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s",
-					headBranch, headBranch),
+				"--no-recurse-submodules", projectRemote,
+				fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s",
+					headBranch, projectRemote, headBranch),
 			},
-			checkoutRef:      "refs/remotes/origin/" + headBranch,
-			trackingRemote:   "origin",
+			checkoutRef:      "refs/remotes/" + projectRemote + "/" + headBranch,
+			trackingRemote:   projectRemote,
 			trackingMergeRef: "refs/heads/" + headBranch,
 		}, nil
 	}
@@ -370,7 +377,7 @@ func prepareMergeRequestRemote(
 	}
 	pullRefFetch := []string{
 		"fetch", "--no-tags", "--no-write-fetch-head",
-		"--no-recurse-submodules", "origin",
+		"--no-recurse-submodules", projectRemote,
 		fmt.Sprintf("+%s:%s", headRef, localRef),
 	}
 	pullRef := localRef

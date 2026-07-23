@@ -327,12 +327,22 @@ func (r Runner) commandEnv(ctx context.Context, dir string) ([]string, func()) {
 		env = append(env, "GIT_CONFIG_GLOBAL="+nullGlobalConfigPath())
 	}
 	config := []Config{{Key: "gc.auto", Value: "0"}, {Key: "maintenance.auto", Value: "false"}}
+	inheritedSafeDirectories, inheritedSafeDirectoryReset :=
+		inheritedSafeDirectoriesAfterReset(env, r.StripEnv)
 	if !r.DisableSafeDirectoryForward {
 		// Read from the runner's base env before stripping, so the entries come
 		// from the configuration this runner's environment would see, not from
 		// the process environment.
 		for _, trusted := range readSafeDirectories(ctx, base, dir) {
 			config = append(config, Config{Key: "safe.directory", Value: trusted})
+		}
+	}
+	if inheritedSafeDirectoryReset {
+		config = append(config, Config{Key: "safe.directory", Value: ""})
+		for _, trusted := range inheritedSafeDirectories {
+			config = append(config, Config{
+				Key: "safe.directory", Value: trusted,
+			})
 		}
 	}
 	config = append(config, r.Config...)
@@ -368,6 +378,38 @@ func (r Runner) commandEnv(ctx context.Context, dir string) ([]string, func()) {
 		"GIT_CONFIG_COUNT=%d", configOffset+len(config),
 	))
 	return env, cleanup
+}
+
+func inheritedSafeDirectoriesAfterReset(
+	env []string, stripEnv bool,
+) ([]string, bool) {
+	if stripEnv {
+		return nil, false
+	}
+	rawCount, ok := envValue(env, "GIT_CONFIG_COUNT")
+	if !ok {
+		return nil, false
+	}
+	count, err := strconv.Atoi(rawCount)
+	if err != nil || count < 0 {
+		return nil, false
+	}
+	var directories []string
+	reset := false
+	for i := range count {
+		key, ok := envValue(env, fmt.Sprintf("GIT_CONFIG_KEY_%d", i))
+		if !ok || !strings.EqualFold(key, "safe.directory") {
+			continue
+		}
+		value, _ := envValue(env, fmt.Sprintf("GIT_CONFIG_VALUE_%d", i))
+		if value == "" {
+			reset = true
+			directories = nil
+		} else if reset {
+			directories = append(directories, value)
+		}
+	}
+	return directories, reset
 }
 
 // GitError wraps a failed git command with stderr.

@@ -109,6 +109,36 @@ func TestCreateWorktreeFromMergeRequestSameRepo(t *testing.T) {
 	assert.Equal("upstream", worktreeConfig(t, dest, "push.default"))
 }
 
+func TestCreateWorktreeFromMergeRequestUsesExplicitProjectRemote(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	origin, clone := initOriginAndClone(t)
+	lifecycleGit(t, clone, "remote", "rename", "origin", "upstream")
+	lifecycleGit(t, origin, "checkout", "-q", "-b", "remote-feature")
+	lifecycleGit(t, origin, "commit", "--allow-empty", "-m", "remote feature")
+	headSHA := lifecycleGit(t, origin, "rev-parse", "HEAD")
+	lifecycleGit(t, origin, "checkout", "-q", "main")
+
+	result, err := CreateWorktreeFromMergeRequest(
+		t.Context(), MergeRequestWorktreeOptions{
+			ProjectRoot:         clone,
+			ProjectRemote:       "upstream",
+			Branch:              "pr-explicit-remote",
+			Path:                filepath.Join(t.TempDir(), "wt"),
+			Number:              36,
+			HeadBranch:          "remote-feature",
+			HeadRepoCloneURL:    origin,
+			ProjectRepoIdentity: identityOfCloneURL(origin),
+		})
+
+	require.NoError(err)
+	assert.Equal(headSHA, lifecycleGit(t, result.Path, "rev-parse", "HEAD"))
+	assert.Equal("upstream",
+		worktreeConfig(t, result.Path, "branch.pr-explicit-remote.remote"))
+	assert.Equal("upstream",
+		worktreeConfig(t, result.Path, "branch.pr-explicit-remote.pushRemote"))
+}
+
 func TestCreateWorktreeFromMergeRequestMatchesEquivalentLocalRepositories(t *testing.T) {
 	for _, test := range []struct {
 		name    string

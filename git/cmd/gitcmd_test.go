@@ -70,6 +70,35 @@ func TestRunnerPreservesInheritedCommandScopeConfig(t *testing.T) {
 	assert.Equal("added", strings.TrimSpace(string(added)))
 }
 
+func TestRunnerPreservesInheritedSafeDirectoryReset(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
+	require.NoError(os.WriteFile(
+		globalConfig,
+		[]byte("[safe]\n\tdirectory = /forwarded/repository\n"),
+		0o600,
+	))
+	runner := New()
+	runner.StripEnv = false
+	runner.Env = append(
+		safeDirectoryTestEnv(t, globalConfig),
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=safe.directory",
+		"GIT_CONFIG_VALUE_0=",
+	)
+
+	out, err := runner.Output(
+		t.Context(), "", "config", "--null", "--get-all", "safe.directory",
+	)
+
+	require.NoError(err)
+	assert.Equal(
+		[]byte("\x00/forwarded/repository\x00\x00"), out,
+		"forwarded entries must be followed by the inherited trust reset",
+	)
+}
+
 func TestEnvValueForGOOSHonorsPlatformKeyCasing(t *testing.T) {
 	env := []string{
 		"git_config_count=1",
