@@ -24,10 +24,15 @@ type untrustedTreeIsolation struct {
 	config []gitcmd.Config
 }
 
-// Git appends the standard seven external-diff arguments to this command.
-// The nested diff explicitly disables attributes and text conversion, while
-// the wrapper translates diff's ordinary "different" exit code to success.
-const safeExternalDiffCommand = `sh -c 'git diff --no-index --no-ext-diff --no-textconv -- "$2" "$5"; status=$?; test "$status" -le 1' --`
+// Git invokes these through its compiled-in shell because they contain shell
+// syntax. They use only shell builtins, so an untrusted worktree cannot steer
+// them through PATH. The diff replacement emits a simple old/new rendering;
+// the merge replacement declines the custom driver so Git reports a conflict.
+const (
+	safeExternalDiffCommand = `f() { while IFS= read -r line; do printf '%s\n' "-$line"; done < "$2"; while IFS= read -r line; do printf '%s\n' "+$line"; done < "$5"; }; f`
+	safeTextconvCommand     = `f() { while IFS= read -r line; do printf '%s\n' "$line"; done < "$1"; }; f`
+	safeMergeDriverCommand  = `f() { return 1; }; f`
+)
 
 var untrustedTreeGitVersionPattern = regexp.MustCompile(
 	`(?i)git version (\d+)\.(\d+)(?:\.(\d+))?(?:\.windows\.(\d+))?(?:\s|$)`,
@@ -209,14 +214,13 @@ func completeUntrustedTreeIsolation(
 	drivers := neutralizeAttributeDrivers(keys)
 	existing := make(map[string]struct{}, len(isolation.config))
 	for _, entry := range isolation.config {
-		existing[strings.ToLower(entry.Key)] = struct{}{}
+		existing[entry.Key] = struct{}{}
 	}
 	for _, entry := range drivers {
-		key := strings.ToLower(entry.Key)
-		if _, ok := existing[key]; ok {
+		if _, ok := existing[entry.Key]; ok {
 			continue
 		}
-		existing[key] = struct{}{}
+		existing[entry.Key] = struct{}{}
 		isolation.config = append(isolation.config, entry)
 		isolation.runner = isolation.runner.WithConfig(entry.Key, entry.Value)
 	}
@@ -256,6 +260,45 @@ func ambientGitConfigKeys(
 	runner.NullGlobalConfig = false
 	runner.NoSystemConfig = false
 	return gitConfigKeys(ctx, worktreePath, runner)
+}
+
+func rejectConfigOriginsInsideWorktree(
+	ctx context.Context, worktreePath string, runner gitcmd.Runner,
+) error {
+	runner.Env = withoutGitRepositoryBindings(runner.Env)
+	runner.StripEnv = false
+	runner.NullGlobalConfig = false
+	runner.NoSystemConfig = false
+	out, err := runLifecycleGitWithRunner(
+		ctx, runner, worktreePath,
+		"config", "--null", "--show-origin", "--name-only",
+		"--includes", "--list",
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"inspect Git configuration origins: %w: %s",
+			err, strings.TrimSpace(string(out)),
+		)
+	}
+	fields := bytes.Split(out, []byte{0})
+	worktree := comparableWorktreePath(worktreePath)
+	for index := 0; index+1 < len(fields); index += 2 {
+		origin := string(fields[index])
+		if !strings.HasPrefix(origin, "file:") {
+			continue
+		}
+		configPath := strings.TrimPrefix(origin, "file:")
+		if !filepath.IsAbs(configPath) {
+			configPath = filepath.Join(worktreePath, configPath)
+		}
+		if pathWithinRoot(worktree, comparableWorktreePath(configPath)) {
+			return fmt.Errorf(
+				"Git configuration inside merge request worktree is not allowed: %s",
+				configPath,
+			)
+		}
+	}
+	return nil
 }
 
 func withoutGitRepositoryBindings(env []string) []string {
@@ -320,12 +363,12 @@ func neutralizeAttributeDrivers(keys []string) []gitcmd.Config {
 		prefix := "diff." + driver
 		config = append(config,
 			gitcmd.Config{Key: prefix + ".command", Value: safeExternalDiffCommand},
-			gitcmd.Config{Key: prefix + ".textconv", Value: "cat"},
+			gitcmd.Config{Key: prefix + ".textconv", Value: safeTextconvCommand},
 		)
 	}
 	for _, driver := range sortedDriverNames(merges) {
 		config = append(config, gitcmd.Config{
-			Key: "merge." + driver + ".driver", Value: "false",
+			Key: "merge." + driver + ".driver", Value: safeMergeDriverCommand,
 		})
 	}
 	return config

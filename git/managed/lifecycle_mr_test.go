@@ -388,8 +388,10 @@ func TestCreateWorktreeFromMergeRequestIsolatesUntrustedTreeGitPrograms(t *testi
 	assert.Equal("false", worktreeConfig(t, dest, "filter.owned.required"))
 	assert.Equal(safeExternalDiffCommand,
 		worktreeConfig(t, dest, "diff.owned.command"))
-	assert.Equal("cat", worktreeConfig(t, dest, "diff.owned.textconv"))
-	assert.Equal("false", worktreeConfig(t, dest, "merge.owned.driver"))
+	assert.Equal(safeTextconvCommand,
+		worktreeConfig(t, dest, "diff.owned.textconv"))
+	assert.Equal(safeMergeDriverCommand,
+		worktreeConfig(t, dest, "merge.owned.driver"))
 
 	if err := os.Remove(fsmonitorMarker); err != nil {
 		require.ErrorIs(err, os.ErrNotExist)
@@ -411,7 +413,9 @@ func TestCreateWorktreeFromMergeRequestIsolatesUntrustedTreeGitPrograms(t *testi
 		"later diff and clean operations keep attribute programs disabled")
 }
 
-func TestCreateWorktreeFromMergeRequestPersistsAttributeDriverIsolation(t *testing.T) {
+func TestCreateWorktreeFromMergeRequestNeutralizesCaseDistinctAttributeDrivers(
+	t *testing.T,
+) {
 	require := Require.New(t)
 	assert := assert.New(t)
 
@@ -419,20 +423,28 @@ func TestCreateWorktreeFromMergeRequestPersistsAttributeDriverIsolation(t *testi
 	lifecycleGit(t, origin, "checkout", "-q", "-b", "driver-selection")
 	require.NoError(os.WriteFile(
 		filepath.Join(origin, ".gitattributes"),
-		[]byte("payload filter=portable diff=portable merge=portable\n"), 0o644,
+		[]byte(
+			"upper filter=Safe diff=Safe merge=Safe\n"+
+				"lower filter=safe diff=safe merge=safe\n",
+		), 0o644,
 	))
 	require.NoError(os.WriteFile(
-		filepath.Join(origin, "payload"), []byte("external\n"), 0o644,
+		filepath.Join(origin, "upper"), []byte("upper\n"), 0o644,
 	))
-	lifecycleGit(t, origin, "add", ".gitattributes", "payload")
+	require.NoError(os.WriteFile(
+		filepath.Join(origin, "lower"), []byte("lower\n"), 0o644,
+	))
+	lifecycleGit(t, origin, "add", ".gitattributes", "upper", "lower")
 	lifecycleGit(t, origin, "commit", "-qm", "select configured drivers")
 	headSHA := lifecycleGit(t, origin, "rev-parse", "HEAD")
 	lifecycleGit(t, origin, "checkout", "-q", "main")
 
-	lifecycleGit(t, clone, "config", "filter.portable.smudge", "false")
-	lifecycleGit(t, clone, "config", "filter.portable.required", "true")
-	lifecycleGit(t, clone, "config", "diff.portable.command", "false")
-	lifecycleGit(t, clone, "config", "merge.portable.driver", "false")
+	for _, driver := range []string{"Safe", "safe"} {
+		lifecycleGit(t, clone, "config", "filter."+driver+".smudge", "false")
+		lifecycleGit(t, clone, "config", "filter."+driver+".required", "true")
+		lifecycleGit(t, clone, "config", "diff."+driver+".command", "false")
+		lifecycleGit(t, clone, "config", "merge."+driver+".driver", "false")
+	}
 
 	dest := filepath.Join(t.TempDir(), "wt")
 	_, err := CreateWorktreeFromMergeRequest(
@@ -448,18 +460,63 @@ func TestCreateWorktreeFromMergeRequestPersistsAttributeDriverIsolation(t *testi
 		})
 
 	require.NoError(err)
-	assert.Equal("external", lifecycleGit(t, dest, "show", "HEAD:payload"))
-	assert.Empty(worktreeConfig(t, dest, "filter.portable.smudge"))
-	assert.Equal("false", worktreeConfig(t, dest, "filter.portable.required"))
-	assert.Equal(safeExternalDiffCommand,
-		worktreeConfig(t, dest, "diff.portable.command"))
-	assert.Equal("false", worktreeConfig(t, dest, "merge.portable.driver"))
+	for _, driver := range []string{"Safe", "safe"} {
+		assert.Equal("false",
+			worktreeOnlyConfig(t, dest, "filter."+driver+".required"))
+		assert.Equal(safeExternalDiffCommand,
+			worktreeOnlyConfig(t, dest, "diff."+driver+".command"))
+		assert.Equal(safeMergeDriverCommand,
+			worktreeOnlyConfig(t, dest, "merge."+driver+".driver"))
+	}
+}
+
+func TestCreateWorktreeFromMergeRequestDoesNotPATHSearchDriverHelpers(
+	t *testing.T,
+) {
+	if runtime.GOOS == "windows" {
+		t.Skip("executable PATH fixture requires POSIX")
+	}
+	require := Require.New(t)
+	assert := assert.New(t)
+	origin, clone := initOriginAndClone(t)
+	marker := filepath.Join(t.TempDir(), "attacker-sh-ran")
+	lifecycleGit(t, origin, "checkout", "-q", "-b", "path-driver")
 	require.NoError(os.WriteFile(
-		filepath.Join(dest, "payload"), []byte("portable change\n"), 0o644,
+		filepath.Join(origin, ".gitattributes"),
+		[]byte("payload diff=owned\n"), 0o644,
 	))
-	diff := lifecycleGit(t, dest, "diff", "--", "payload")
-	assert.Contains(diff, "-external")
-	assert.Contains(diff, "+portable change")
+	require.NoError(os.WriteFile(
+		filepath.Join(origin, "payload"), []byte("external\n"), 0o644,
+	))
+	require.NoError(os.WriteFile(
+		filepath.Join(origin, "sh"),
+		[]byte("#!/bin/sh\n: > \""+marker+"\"\nexit 0\n"), 0o755,
+	))
+	lifecycleGit(t, origin, "add", ".gitattributes", "payload", "sh")
+	lifecycleGit(t, origin, "commit", "-qm", "PATH driver fixture")
+	headSHA := lifecycleGit(t, origin, "rev-parse", "HEAD")
+	lifecycleGit(t, origin, "checkout", "-q", "main")
+	lifecycleGit(t, clone, "config", "diff.owned.command", "false")
+
+	dest := filepath.Join(t.TempDir(), "wt")
+	_, err := CreateWorktreeFromMergeRequest(
+		t.Context(), MergeRequestWorktreeOptions{
+			ProjectRoot: clone, Branch: "pr-path-driver", Path: dest,
+			Number: 28, HeadBranch: "path-driver",
+			HeadRepoCloneURL: origin, ProjectRepoIdentity: identityOfCloneURL(origin),
+			ExpectedHeadSHA: headSHA,
+		})
+	require.NoError(err)
+	require.NoError(os.WriteFile(
+		filepath.Join(dest, "payload"), []byte("changed\n"), 0o644,
+	))
+
+	cmd := lifecycleGitCommand(dest, "diff", "--", "payload")
+	cmd.Env = append(cmd.Env, "PATH="+dest+":"+os.Getenv("PATH"))
+	out, err := cmd.CombinedOutput()
+
+	require.NoError(err, string(out))
+	assert.NoFileExists(marker)
 }
 
 func TestMergeRequestRollbackRetainsIsolatedRunner(t *testing.T) {
@@ -593,11 +650,13 @@ func TestCreateWorktreeFromMergeRequestInspectsSelectedConfigFiles(t *testing.T)
 		worktreeOnlyConfig(t, dest, "filter.selected.required"))
 	assert.Equal(safeExternalDiffCommand,
 		worktreeOnlyConfig(t, dest, "diff.selected.command"))
-	assert.Equal("false",
+	assert.Equal(safeMergeDriverCommand,
 		worktreeOnlyConfig(t, dest, "merge.selected.driver"))
 }
 
-func TestCreateWorktreeFromMergeRequestReinspectsConfigAfterMaterialization(t *testing.T) {
+func TestCreateWorktreeFromMergeRequestRejectsConfigFromMaterializedTree(
+	t *testing.T,
+) {
 	require := Require.New(t)
 	assert := assert.New(t)
 	origin, clone := initOriginAndClone(t)
@@ -633,9 +692,9 @@ func TestCreateWorktreeFromMergeRequestReinspectsConfigAfterMaterialization(t *t
 			ExpectedHeadSHA: headSHA, Runner: runner,
 		})
 
-	require.NoError(err)
-	assert.Equal(safeExternalDiffCommand,
-		worktreeOnlyConfig(t, dest, "diff.materialized.command"))
+	require.Error(err)
+	assert.ErrorContains(err, "configuration inside merge request worktree")
+	assert.NoDirExists(dest)
 }
 
 func TestMergeRequestRepositoriesKeepPathCase(t *testing.T) {
@@ -755,13 +814,21 @@ func TestCreateWorktreeFromMergeRequestFork(t *testing.T) {
 	lifecycleGit(t, fork, "config", "user.name", "Tester")
 	lifecycleGit(t, fork, "checkout", "-q", "-b", "fork-work")
 	lifecycleGit(t, fork, "commit", "--allow-empty", "-m", "fork pr work")
+	lifecycleGit(t, fork, "tag", "contributor-tag")
 	headSHA := lifecycleGit(t, fork, "rev-parse", "fork-work")
 
 	// GitHub exposes the fork's head on origin's pull ref.
 	lifecycleGit(t, origin, "fetch", "-q", fork,
 		"+refs/heads/fork-work:refs/pull/9/head")
+	lifecycleGit(t, clone, "config", "fetch.recurseSubmodules", "true")
+	const fetchHeadSentinel = "preserve existing fetch state\n"
+	require.NoError(os.WriteFile(
+		filepath.Join(clone, ".git", "FETCH_HEAD"),
+		[]byte(fetchHeadSentinel), 0o644,
+	))
 
 	dest := filepath.Join(t.TempDir(), "wt")
+	var fetches [][]string
 	_, err := CreateWorktreeFromMergeRequest(
 		context.Background(), MergeRequestWorktreeOptions{
 			ProjectRoot:         clone,
@@ -771,8 +838,31 @@ func TestCreateWorktreeFromMergeRequestFork(t *testing.T) {
 			HeadBranch:          "fork-work",
 			HeadRepoCloneURL:    fork,
 			ProjectRepoIdentity: identityOfCloneURL(origin),
+			RunGit: func(
+				ctx context.Context, runner gitcmd.Runner,
+				dir string, args ...string,
+			) ([]byte, error) {
+				if len(args) > 0 && args[0] == "fetch" {
+					fetches = append(fetches, append([]string(nil), args...))
+				}
+				stdout, stderr, runErr := runner.Run(ctx, dir, nil, args...)
+				return append(stdout, stderr...), runErr
+			},
 		})
 	require.NoError(err)
+	require.Len(fetches, 2)
+	for _, fetch := range fetches {
+		assert.Contains(fetch, "--no-tags")
+		assert.Contains(fetch, "--no-write-fetch-head")
+		assert.Contains(fetch, "--no-recurse-submodules")
+	}
+	fetchHead, readErr := os.ReadFile(filepath.Join(clone, ".git", "FETCH_HEAD"))
+	require.NoError(readErr)
+	assert.Equal(fetchHeadSentinel, string(fetchHead))
+	tagCommand := lifecycleGitCommand(
+		clone, "show-ref", "--verify", "--quiet", "refs/tags/contributor-tag",
+	)
+	assert.Error(tagCommand.Run())
 	assert.Equal(headSHA, lifecycleGit(t, dest, "rev-parse", "HEAD"))
 	remote := worktreeConfig(t, dest, "branch.pr-9.remote")
 	assert.NotEmpty(remote, "fork tracking remote configured")

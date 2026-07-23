@@ -239,15 +239,8 @@ func CreateWorktreeFromMergeRequest(
 		)
 		return CreateWorktreeResult{}, errors.Join(err, cleanupErr)
 	}
-	isolation, err = completeUntrustedTreeIsolation(ctx, path, isolation)
-	if err != nil {
-		_, cleanupErr := rollbackCreatedWorktreeWithResult(
-			context.WithoutCancel(ctx), root, path, branch, true,
-		)
-		return CreateWorktreeResult{}, errors.Join(err, cleanupErr)
-	}
-	if err := persistUntrustedTreeIsolation(
-		ctx, root, path, isolation,
+	if err := rejectConfigOriginsInsideWorktree(
+		ctx, path, isolation.runner,
 	); err != nil {
 		_, cleanupErr := rollbackCreatedWorktreeWithResult(
 			context.WithoutCancel(ctx), root, path, branch, true,
@@ -311,7 +304,8 @@ func prepareMergeRequestRemote(
 	if sameRepo {
 		return mergeRequestRemoteTarget{
 			checkoutFetch: []string{
-				"fetch", "origin",
+				"fetch", "--no-tags", "--no-write-fetch-head",
+				"--no-recurse-submodules", "origin",
 				fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s",
 					headBranch, headBranch),
 			},
@@ -327,7 +321,8 @@ func prepareMergeRequestRemote(
 	headRef := mergeRequestHeadRef(opts.Platform, opts.Number)
 	localRef := strings.TrimPrefix(headRef, "refs/")
 	pullRefFetch := []string{
-		"fetch", "origin",
+		"fetch", "--no-tags", "--no-write-fetch-head",
+		"--no-recurse-submodules", "origin",
 		fmt.Sprintf("+%s:refs/remotes/origin/%s", headRef, localRef),
 	}
 	pullRef := "origin/" + localRef
@@ -351,7 +346,8 @@ func prepareMergeRequestRemote(
 		checkoutFetch: pullRefFetch,
 		checkoutRef:   pullRef,
 		trackingFetch: []string{
-			"fetch", remoteName,
+			"fetch", "--no-tags", "--no-write-fetch-head",
+			"--no-recurse-submodules", remoteName,
 			fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s",
 				headBranch, remoteName, headBranch),
 		},
