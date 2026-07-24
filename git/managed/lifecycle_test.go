@@ -769,6 +769,26 @@ func TestRunLifecycleGitPreservesCustomRunnerCancellation(t *testing.T) {
 	require.ErrorIs(err, processErr)
 }
 
+func TestRunLifecycleGitUsesStableDiagnosticLocale(t *testing.T) {
+	require := Require.New(t)
+	ctx := withLifecycleExecution(
+		t.Context(),
+		gitcmd.Runner{Env: []string{"LC_ALL=fr_FR.UTF-8"}},
+		func(
+			_ context.Context, runner gitcmd.Runner, _ string, _ ...string,
+		) ([]byte, error) {
+			require.NotEmpty(runner.Env)
+			require.Equal("LC_ALL=C", runner.Env[len(runner.Env)-1])
+			return nil, nil
+		},
+		nil,
+	)
+
+	_, err := runLifecycleGit(ctx, t.TempDir(), "status")
+
+	require.NoError(err)
+}
+
 func TestRemoveWorktreeFromDiskRemovesWorktreeAndBranch(t *testing.T) {
 	assert := assert.New(t)
 	require := Require.New(t)
