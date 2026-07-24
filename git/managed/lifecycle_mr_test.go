@@ -1321,8 +1321,11 @@ func TestCreateWorktreeFromMergeRequestReportsCleanupFailure(t *testing.T) {
 	runGit := func(
 		ctx context.Context, runner gitcmd.Runner, dir string, args ...string,
 	) ([]byte, error) {
-		if len(args) >= 2 && args[0] == "reset" && args[1] == "--hard" {
-			return nil, errors.New("materialization failed")
+		for index, arg := range args {
+			if arg == "reset" && index+1 < len(args) &&
+				args[index+1] == "--hard" {
+				return nil, errors.New("materialization failed")
+			}
 		}
 		if len(args) >= 2 && args[0] == "worktree" && args[1] == "remove" {
 			return nil, errors.New("cleanup failed")

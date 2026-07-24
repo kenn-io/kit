@@ -1,9 +1,15 @@
 package managedworktree
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	Require "github.com/stretchr/testify/require"
+
+	gitcmd "go.kenn.io/kit/git/cmd"
+	gitenv "go.kenn.io/kit/git/env"
 )
 
 func TestSupportsUntrustedTreeCheckoutGitVersion(t *testing.T) {
@@ -30,4 +36,41 @@ func TestSupportsUntrustedTreeCheckoutGitVersion(t *testing.T) {
 			supportsUntrustedTreeCheckoutGitVersion(test.output, test.goos),
 			test.output)
 	}
+}
+
+func TestMaterializeUntrustedTreePinsWorktree(t *testing.T) {
+	require := Require.New(t)
+	assert := assert.New(t)
+	repo := initLifecycleRepo(t)
+	require.NoError(os.WriteFile(
+		filepath.Join(repo, "payload"), []byte("imported"), 0o600,
+	))
+	lifecycleGit(t, repo, "add", "payload")
+	lifecycleGit(t, repo, "commit", "-m", "add payload")
+
+	worktree := filepath.Join(t.TempDir(), "worktree")
+	lifecycleGit(t, repo, "worktree", "add", "--no-checkout", "-b", "import",
+		worktree)
+	external := t.TempDir()
+	externalPayload := filepath.Join(external, "payload")
+	require.NoError(os.WriteFile(externalPayload, []byte("preserve"), 0o600))
+	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
+	require.NoError(os.WriteFile(globalConfig, []byte(
+		"[core]\n\tworktree = "+filepath.ToSlash(external)+"\n",
+	), 0o600))
+	env := append(gitenv.StripAll(os.Environ()),
+		"GIT_CONFIG_GLOBAL="+globalConfig,
+		"GIT_WORK_TREE="+external,
+	)
+
+	err := materializeUntrustedTree(t.Context(), worktree,
+		untrustedTreeIsolation{runner: gitcmd.Runner{
+			Env: env, StripEnv: false, NoSystemConfig: true,
+		}})
+
+	require.NoError(err)
+	assert.FileExists(filepath.Join(worktree, "payload"))
+	externalContents, err := os.ReadFile(externalPayload)
+	require.NoError(err)
+	assert.Equal("preserve", string(externalContents))
 }

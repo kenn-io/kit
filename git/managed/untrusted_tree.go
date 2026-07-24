@@ -634,9 +634,15 @@ func materializeUntrustedTree(
 	ctx context.Context, worktreePath string,
 	isolation untrustedTreeIsolation,
 ) error {
+	worktreePath, err := filepath.Abs(worktreePath)
+	if err != nil {
+		return fmt.Errorf("resolve merge request worktree path: %w", err)
+	}
+	runner := isolation.runner
+	runner.Env = withoutGitRepositoryBindings(runner.Env)
 	out, err := runLifecycleGitWithRunner(
-		ctx, isolation.runner, worktreePath,
-		"reset", "--hard", "HEAD",
+		ctx, runner, worktreePath,
+		"--work-tree="+worktreePath, "reset", "--hard", "HEAD",
 	)
 	if err != nil {
 		return fmt.Errorf(
