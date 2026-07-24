@@ -19,6 +19,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -291,9 +292,13 @@ func gitEnvBool(env []string, key string) bool {
 // envValue returns the value of key in env, honoring exec.Cmd semantics where
 // the last duplicate entry wins.
 func envValue(env []string, key string) (string, bool) {
+	return envValueForGOOS(env, key, runtime.GOOS)
+}
+
+func envValueForGOOS(env []string, key, goos string) (string, bool) {
 	for _, entry := range slices.Backward(env) {
 		k, v, ok := strings.Cut(entry, "=")
-		if ok && k == key {
+		if ok && (k == key || goos == "windows" && strings.EqualFold(k, key)) {
 			return v, true
 		}
 	}
@@ -322,6 +327,7 @@ func (r Runner) commandEnv(ctx context.Context, dir string) ([]string, func()) {
 		env = append(env, "GIT_CONFIG_GLOBAL="+nullGlobalConfigPath())
 	}
 	config := []Config{{Key: "gc.auto", Value: "0"}, {Key: "maintenance.auto", Value: "false"}}
+	inheritedSafeDirectories := inheritedSafeDirectoryValues(env, r.StripEnv)
 	if !r.DisableSafeDirectoryForward {
 		// Read from the runner's base env before stripping, so the entries come
 		// from the configuration this runner's environment would see, not from
@@ -329,6 +335,11 @@ func (r Runner) commandEnv(ctx context.Context, dir string) ([]string, func()) {
 		for _, trusted := range readSafeDirectories(ctx, base, dir) {
 			config = append(config, Config{Key: "safe.directory", Value: trusted})
 		}
+	}
+	for _, trusted := range inheritedSafeDirectories {
+		config = append(config, Config{
+			Key: "safe.directory", Value: trusted,
+		})
 	}
 	config = append(config, r.Config...)
 	if r.basicAuth != nil {
@@ -342,14 +353,53 @@ func (r Runner) commandEnv(ctx context.Context, dir string) ([]string, func()) {
 		}
 		config = append(config, Config{Key: "credential.helper", Value: helper})
 	}
+	configOffset := 0
+	if !r.StripEnv {
+		if inheritedCount, ok := envValue(
+			env, "GIT_CONFIG_COUNT",
+		); ok {
+			if count, err := strconv.Atoi(inheritedCount); err == nil && count >= 0 {
+				configOffset = count
+			}
+		}
+	}
 	for i, c := range config {
+		i += configOffset
 		env = append(env,
 			fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", i, c.Key),
 			fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", i, c.Value),
 		)
 	}
-	env = append(env, fmt.Sprintf("GIT_CONFIG_COUNT=%d", len(config)))
+	env = append(env, fmt.Sprintf(
+		"GIT_CONFIG_COUNT=%d", configOffset+len(config),
+	))
 	return env, cleanup
+}
+
+func inheritedSafeDirectoryValues(
+	env []string, stripEnv bool,
+) []string {
+	if stripEnv {
+		return nil
+	}
+	rawCount, ok := envValue(env, "GIT_CONFIG_COUNT")
+	if !ok {
+		return nil
+	}
+	count, err := strconv.Atoi(rawCount)
+	if err != nil || count < 0 {
+		return nil
+	}
+	var directories []string
+	for i := range count {
+		key, ok := envValue(env, fmt.Sprintf("GIT_CONFIG_KEY_%d", i))
+		if !ok || !strings.EqualFold(key, "safe.directory") {
+			continue
+		}
+		value, _ := envValue(env, fmt.Sprintf("GIT_CONFIG_VALUE_%d", i))
+		directories = append(directories, value)
+	}
+	return directories
 }
 
 // GitError wraps a failed git command with stderr.

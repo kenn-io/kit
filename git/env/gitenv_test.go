@@ -26,6 +26,22 @@ func TestStripAllRemovesEveryGitVariable(t *testing.T) {
 	}
 }
 
+func TestStripAllForGOOSRemovesLowercaseWindowsGitVariables(t *testing.T) {
+	env := []string{
+		"PATH=C:\\Windows",
+		"git_dir=C:\\parent\\.git",
+		"git_work_tree=C:\\parent",
+		"git_config_parameters='core.worktree'='C:\\elsewhere'",
+		"ssh_askpass=C:\\askpass.exe",
+	}
+
+	got := stripAllForGOOS(env, "windows")
+
+	if !slices.Equal(got, []string{"PATH=C:\\Windows"}) {
+		t.Fatalf("Windows Git variables were not stripped: %#v", got)
+	}
+}
+
 func TestStripInheritedPreservesDiagnosticsButRemovesContext(t *testing.T) {
 	env := []string{
 		"GIT_DIR=/parent/.git",

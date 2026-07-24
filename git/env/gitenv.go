@@ -8,6 +8,7 @@
 package gitenv
 
 import (
+	"runtime"
 	"slices"
 	"strings"
 )
@@ -15,7 +16,7 @@ import (
 // StripInherited removes GIT_* variables that can bind a child git process to
 // an inherited parent repository, config, identity, or credential prompt.
 func StripInherited(env []string) []string {
-	return slices.DeleteFunc(cloneEnv(env), isInherited)
+	return stripInheritedForGOOS(env, runtime.GOOS)
 }
 
 // StripAll removes every GIT_* variable and SSH_ASKPASS from env.
@@ -24,8 +25,15 @@ func StripInherited(env []string) []string {
 // variables such as GIT_DIR, GIT_CONFIG_*, GIT_DEFAULT_HASH, or GIT_SSL_* should
 // not silently affect throwaway repositories or credential-injected commands.
 func StripAll(env []string) []string {
+	return stripAllForGOOS(env, runtime.GOOS)
+}
+
+func stripAllForGOOS(env []string, goos string) []string {
 	return slices.DeleteFunc(cloneEnv(env), func(e string) bool {
 		key, _, _ := strings.Cut(e, "=")
+		if goos == "windows" {
+			key = strings.ToUpper(key)
+		}
 		return strings.HasPrefix(key, "GIT_") || key == "SSH_ASKPASS"
 	})
 }
@@ -37,8 +45,17 @@ func cloneEnv(env []string) []string {
 	return slices.Clone(env)
 }
 
-func isInherited(e string) bool {
+func stripInheritedForGOOS(env []string, goos string) []string {
+	return slices.DeleteFunc(cloneEnv(env), func(e string) bool {
+		return isInheritedForGOOS(e, goos)
+	})
+}
+
+func isInheritedForGOOS(e, goos string) bool {
 	key, _, _ := strings.Cut(e, "=")
+	if goos == "windows" {
+		key = strings.ToUpper(key)
+	}
 	switch key {
 	case "GIT_DIR",
 		"GIT_WORK_TREE",

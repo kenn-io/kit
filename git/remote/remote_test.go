@@ -3,6 +3,8 @@ package gitremote
 import (
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestClonePathRejectsTraversalAndSeparators(t *testing.T) {
@@ -47,4 +49,20 @@ func TestValidateRemoteIdentity(t *testing.T) {
 	if err := ValidateRemoteIdentity(id, "/tmp/widget.git"); err != nil {
 		t.Fatalf("local paths should be accepted: %v", err)
 	}
+}
+
+func TestCloneURLIdentityNormalizesHostAndPreservesRepoCase(t *testing.T) {
+	assert.Equal(t,
+		"example.com/Acme/Widget",
+		CloneURLIdentity("https://EXAMPLE.com:443/Acme/Widget.git"),
+	)
+	assert.Equal(t,
+		"2001:db8::1/Acme/Widget",
+		CloneURLIdentity("https://[2001:db8::1]:443/Acme/Widget.git"),
+	)
+	assert.NotEqual(t,
+		CloneURLIdentity("ssh://example.com/Acme/Widget.git"),
+		CloneURLIdentity("ssh://example.com:443/Acme/Widget.git"),
+	)
+	assert.Equal(t, "/tmp/Widget.git", CloneURLIdentity(" /tmp/Widget.git "))
 }

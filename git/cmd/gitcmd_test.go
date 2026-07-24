@@ -44,6 +44,120 @@ func TestRunnerCommandUsesDefensiveEnvironment(t *testing.T) {
 	}
 }
 
+func TestRunnerPreservesInheritedCommandScopeConfig(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	runner := New()
+	runner.StripEnv = false
+	runner.DisableSafeDirectoryForward = true
+	runner.Env = append(os.Environ(),
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=filter.inherited.smudge",
+		"GIT_CONFIG_VALUE_0=inherited",
+	)
+	runner = runner.WithConfig("filter.added.clean", "added")
+
+	inherited, err := runner.Output(
+		t.Context(), "", "config", "--get", "filter.inherited.smudge",
+	)
+	require.NoError(err)
+	assert.Equal("inherited", strings.TrimSpace(string(inherited)))
+
+	added, err := runner.Output(
+		t.Context(), "", "config", "--get", "filter.added.clean",
+	)
+	require.NoError(err)
+	assert.Equal("added", strings.TrimSpace(string(added)))
+}
+
+func TestRunnerPreservesInheritedSafeDirectoryReset(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
+	require.NoError(os.WriteFile(
+		globalConfig,
+		[]byte("[safe]\n\tdirectory = /forwarded/repository\n"),
+		0o600,
+	))
+	runner := New()
+	runner.StripEnv = false
+	runner.Env = append(
+		safeDirectoryTestEnv(t, globalConfig),
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=safe.directory",
+		"GIT_CONFIG_VALUE_0=",
+	)
+
+	out, err := runner.Output(
+		t.Context(), "", "config", "--null", "--get-all", "safe.directory",
+	)
+
+	require.NoError(err)
+	assert.Equal(
+		[]byte("\x00/forwarded/repository\x00\x00"), out,
+		"forwarded entries must be followed by the inherited trust reset",
+	)
+}
+
+func TestRunnerReplaysInheritedSafeDirectoryAfterLowerScopeReset(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
+	require.NoError(os.WriteFile(
+		globalConfig,
+		[]byte(
+			"[safe]\n"+
+				"\tdirectory =\n"+
+				"\tdirectory = /lower/repository\n",
+		),
+		0o600,
+	))
+	runner := New()
+	runner.StripEnv = false
+	runner.Env = append(
+		safeDirectoryTestEnv(t, globalConfig),
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=safe.directory",
+		"GIT_CONFIG_VALUE_0=/command/repository",
+	)
+
+	out, err := runner.Output(
+		t.Context(), "", "config", "--null", "--get-all", "safe.directory",
+	)
+
+	require.NoError(err)
+	assert.Equal(
+		[]byte(
+			"/command/repository\x00\x00/lower/repository\x00"+
+				"/command/repository\x00",
+		),
+		out,
+		"command-scope trust must follow the forwarded lower-scope reset",
+	)
+}
+
+func TestEnvValueForGOOSHonorsPlatformKeyCasing(t *testing.T) {
+	env := []string{
+		"git_config_count=1",
+		"GIT_CONFIG_COUNT=2",
+	}
+
+	value, ok := envValueForGOOS(env, "GIT_CONFIG_COUNT", "windows")
+	require.True(t, ok)
+	assert.Equal(t, "2", value)
+
+	value, ok = envValueForGOOS(
+		[]string{"git_config_count=1"}, "GIT_CONFIG_COUNT", "windows",
+	)
+	require.True(t, ok)
+	assert.Equal(t, "1", value)
+
+	_, ok = envValueForGOOS(
+		[]string{"git_config_count=1"}, "GIT_CONFIG_COUNT", "linux",
+	)
+	assert.False(t, ok)
+}
+
 func TestNullGlobalConfigPathIsReadableEmptyFile(t *testing.T) {
 	// Regression test: GIT_CONFIG_GLOBAL must point at a real, readable, empty
 	// file rather than os.DevNull. On Windows os.DevNull is "NUL", which some

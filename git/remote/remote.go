@@ -10,6 +10,7 @@ package gitremote
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -155,6 +156,49 @@ func RemoteRepoPath(remoteURL string) string {
 		return ""
 	}
 	return repoPath
+}
+
+// CloneURLIdentity normalizes a hosted clone URL to "host/owner/name",
+// preserving repository-path case. Local paths and unrecognized spellings
+// are returned trimmed.
+func CloneURLIdentity(remoteURL string) string {
+	trimmed := strings.TrimSpace(remoteURL)
+	if trimmed == "" {
+		return ""
+	}
+	host := cloneURLHost(trimmed)
+	repoPath := RemoteRepoPath(trimmed)
+	if host == "" || repoPath == "" {
+		return trimmed
+	}
+	return host + "/" + repoPath
+}
+
+func cloneURLHost(remoteURL string) string {
+	if parsed, err := url.Parse(remoteURL); err == nil && parsed.Host != "" {
+		host := strings.ToLower(parsed.Hostname())
+		port := parsed.Port()
+		if port == "" || port == defaultPort(parsed.Scheme) {
+			return host
+		}
+		return net.JoinHostPort(host, port)
+	}
+	return NormalizeHost(RemoteHost(remoteURL))
+}
+
+func defaultPort(scheme string) string {
+	switch strings.ToLower(scheme) {
+	case "http":
+		return "80"
+	case "https":
+		return "443"
+	case "ssh", "git+ssh", "ssh+git":
+		return "22"
+	case "git":
+		return "9418"
+	default:
+		return ""
+	}
 }
 
 // IsLocal reports whether remoteURL is a local filesystem remote.

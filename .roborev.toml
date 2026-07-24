@@ -14,6 +14,43 @@ code actually does not compile, the toolchain will fail before the PR can land.
 Focus reviews on logic, architecture, behavior, security boundaries, and test
 coverage for behavior. Trust the build for compilability.
 
+## Managed Git trust boundary
+
+`git/managed` trusts the existing local repository, its remotes and
+configuration, provider metadata, configured lifecycle scripts, and same-user
+filesystem state. Ordinary named-worktree operations also trust their tree.
+Configured remote push URLs and push refspecs are part of that trusted state;
+preserving HTTPS-fetch/SSH-push and other intentional routing is required.
+
+Merge-request import has one narrower boundary: the fetched commit and tree are
+untrusted. Before materializing them, Kit verifies an expected head when the
+caller supplies one, requires a checkout-safe Git version, creates the worktree
+without checkout-time hooks, neutralizes configured filter, fsmonitor, diff,
+and merge programs the tree can select, disables implicit submodule recursion,
+and persists those settings in worktree-scoped configuration.
+
+Review that narrow boundary, correctness, accidental data loss, noninteractive
+cancellation, and unexpected disclosure introduced by Kit itself. Do not
+expand it into a general hostile-repository framework: Kit does not defend
+against malicious local configuration or remotes, malicious same-user
+replacement races, resource exhaustion, zero-days in Git or content parsers,
+or a trusted lifecycle script choosing to execute imported content. Callers
+that need those boundaries must provide an OS or container sandbox.
+
+The default hook runner is intentionally limited to trusted native
+executables. Applications that need process-tree supervision or Windows script
+dispatch supply `RunHook`. Worktree base permissions follow the caller's path
+and host umask; owner-only directory and platform ACL policy also belongs to the
+application. Do not request those layers in Kit.
+
+The lifecycle matches Middleman's production ownership boundary around
+`git worktree add`: once Git reports success, later setup failures roll back
+the created worktree and branch. If `git worktree add` itself reports failure,
+Kit returns that error and does not claim or auto-delete ambiguous partial
+artifacts. Do not request a pre-snapshot ownership or recovery protocol for
+failed adds in this extraction; that would be a separate API and product
+decision rather than production-code reuse.
+
 ## gitcmd safe.directory forwarding
 
 `gitcmd.Runner`'s isolation flags (`StripEnv`, `NullGlobalConfig`,
