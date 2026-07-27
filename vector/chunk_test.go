@@ -68,6 +68,38 @@ func TestSplit(t *testing.T) {
 			},
 		},
 		{
+			// Zero width space, byte order mark, zero width joiner, soft
+			// hyphen, and NUL: invisible, but none are unicode.IsSpace.
+			name:    "invisible formatting and control runes yield no chunks",
+			content: "\u200b\ufeff\u200d\u00ad\x00 ",
+			opts:    vector.SplitOptions{MaxRunes: 2},
+			want:    nil,
+		},
+		{
+			name:    "invisible-only windows are omitted",
+			content: "abcd\u200b\ufeff\u200d\u2060efgh",
+			opts:    vector.SplitOptions{MaxRunes: 4},
+			want: []vector.Chunk{
+				{Index: 0, Text: "abcd"},
+				{Index: 2, Text: "efgh"},
+			},
+		},
+		{
+			name:    "invisible runes beside real text keep the window",
+			content: "\u200bhi\ufeff",
+			opts:    vector.SplitOptions{MaxRunes: 4},
+			want:    []vector.Chunk{{Index: 0, Text: "\u200bhi\ufeff"}},
+		},
+		{
+			// Braille pattern blank and Hangul filler render as nothing but
+			// belong to visible categories and carry meaning where they are
+			// used, so the rule deliberately leaves them alone.
+			name:    "blank-looking runes from visible categories are kept",
+			content: "\u2800\u3164",
+			opts:    vector.SplitOptions{MaxRunes: 4},
+			want:    []vector.Chunk{{Index: 0, Text: "\u2800\u3164"}},
+		},
+		{
 			name:    "overlap at or above max clamps to max-1",
 			content: "abcdef",
 			opts:    vector.SplitOptions{MaxRunes: 3, Overlap: 9},
