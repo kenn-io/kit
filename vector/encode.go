@@ -5,18 +5,19 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"strings"
 	"sync"
 )
 
 // Vector is a single embedding.
 type Vector []float32
 
-// ErrEmptyEmbeddingInput reports that a text passed for embedding is empty or
-// contains only Unicode whitespace. EncodeBatched detects it before invoking
+// ErrEmptyEmbeddingInput reports that a text passed for embedding carries
+// nothing to embed: it is empty, or every rune is whitespace, invisible
+// formatting, or a control character. EncodeBatched detects it before invoking
 // the encoder, so callers can safely recognize it with errors.Is without
 // depending on a provider's validation response.
-var ErrEmptyEmbeddingInput = errors.New("embedding input is empty or whitespace-only")
+var ErrEmptyEmbeddingInput = errors.New(
+	"embedding input is empty or contains only whitespace and invisible formatting")
 
 // InvalidVectorError reports an encoder output vector that has the expected
 // count but cannot participate in cosine distance: a non-finite component or
@@ -58,8 +59,8 @@ type BatchOptions struct {
 // Encoder output that has the right count but cannot participate in cosine
 // distance — a non-finite component or a zero-norm vector — is rejected with
 // an error wrapping *InvalidVectorError, so faulty endpoint output never
-// reaches a Store. Empty or whitespace-only chunk text is rejected with an
-// error wrapping ErrEmptyEmbeddingInput before any EncodeFunc call.
+// reaches a Store. Blank chunk text is rejected with an error wrapping
+// ErrEmptyEmbeddingInput before any EncodeFunc call.
 func EncodeBatched(ctx context.Context, enc EncodeFunc, chunks []Chunk, o BatchOptions) ([]Vector, error) {
 	if enc == nil {
 		return nil, fmt.Errorf("encode func is nil")
@@ -68,7 +69,7 @@ func EncodeBatched(ctx context.Context, enc EncodeFunc, chunks []Chunk, o BatchO
 		return nil, nil
 	}
 	for i, chunk := range chunks {
-		if strings.TrimSpace(chunk.Text) == "" {
+		if blank(chunk.Text) {
 			return nil, fmt.Errorf("encode chunk %d: %w", i, ErrEmptyEmbeddingInput)
 		}
 	}

@@ -218,6 +218,24 @@ func TestEncodeBatchedRejectsWhitespaceBeforeCallingEncoder(t *testing.T) {
 	assert.Zero(t, calls.Load(), "the batch is validated before any provider call")
 }
 
+// TestEncodeBatchedRejectsInvisibleTextBeforeCallingEncoder covers text a
+// provider sees as non-empty while it carries nothing to embed: zero-width
+// and formatting runes are not unicode.IsSpace, so trimming whitespace alone
+// would let this chunk through and leave the provider to reject the call.
+func TestEncodeBatchedRejectsInvisibleTextBeforeCallingEncoder(t *testing.T) {
+	var calls atomic.Int64
+	enc := echoEncoder(func([]string) { calls.Add(1) })
+
+	_, err := vector.EncodeBatched(context.Background(), enc,
+		chunks("alpha", "\u200b\ufeff\u200d"), vector.BatchOptions{
+			BatchSize:   1,
+			Concurrency: 2,
+		})
+
+	require.ErrorIs(t, err, vector.ErrEmptyEmbeddingInput)
+	assert.Zero(t, calls.Load(), "the batch is validated before any provider call")
+}
+
 func TestEncodeBatchedStopsOnCancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

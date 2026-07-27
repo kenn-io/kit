@@ -18,10 +18,16 @@ pipeline. Preserve these invariants when changing it.
 
 ## Encoded vectors must be usable for cosine distance
 
-- Empty and Unicode-whitespace-only text is never sent to an encoder. `Split`
-  omits blank windows so `Fill` stamp-saves blank documents without vectors;
-  `EncodeBatched` rejects manually supplied blank chunks before any encoder
-  call with an error wrapping `ErrEmptyEmbeddingInput`.
+- Blank text is never sent to an encoder. `Split` omits blank windows so `Fill`
+  stamp-saves blank documents without vectors; `EncodeBatched` rejects manually
+  supplied blank chunks before any encoder call with an error wrapping
+  `ErrEmptyEmbeddingInput`. Blank means every rune is whitespace, invisible
+  formatting (category Cf: zero-width space and joiners, byte order mark, soft
+  hyphen), or a control character — see `blank` in `blank.go`, the one place
+  that rule lives. Runes that only render as blank but belong to visible
+  categories, such as U+2800 and U+3164, are content and stay. Widening the
+  rule beyond invisible runes needs a concrete failing input, not a hunch: a
+  false positive silently drops a document from the index.
 - `EncodeBatched` rejects encoder output that has the right vector count
   but cannot participate in cosine distance — a non-finite component or a
   zero-norm vector — with an error wrapping `*InvalidVectorError`. `Fill`
