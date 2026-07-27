@@ -22,6 +22,12 @@ func TestSplit(t *testing.T) {
 			want:    nil,
 		},
 		{
+			name:    "Unicode whitespace yields no chunks",
+			content: " \t\n\u2003",
+			opts:    vector.SplitOptions{MaxRunes: 2},
+			want:    nil,
+		},
+		{
 			name:    "non-positive max returns single chunk",
 			content: "hello world",
 			opts:    vector.SplitOptions{MaxRunes: 0},
@@ -50,6 +56,15 @@ func TestSplit(t *testing.T) {
 				{Index: 0, Text: "abcd"},
 				{Index: 1, Text: "defg"},
 				{Index: 2, Text: "ghij"},
+			},
+		},
+		{
+			name:    "whitespace-only windows are omitted",
+			content: "abcd    efgh",
+			opts:    vector.SplitOptions{MaxRunes: 4},
+			want: []vector.Chunk{
+				{Index: 0, Text: "abcd"},
+				{Index: 2, Text: "efgh"},
 			},
 		},
 		{

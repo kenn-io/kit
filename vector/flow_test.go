@@ -393,15 +393,15 @@ func TestFillCrossDocumentBatchingLeavesOnlyChangedDocumentPending(t *testing.T)
 	assert.True(store.embedded[2][7], "a stale batch mate does not affect this document")
 }
 
-func TestFillCrossDocumentBatchingStampsEmptyDocuments(t *testing.T) {
+func TestFillCrossDocumentBatchingStampsBlankDocuments(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
 	ctx := context.Background()
 
 	store := newMemStore()
-	store.content[1] = ""
+	store.content[1] = " \t\n"
 	store.content[2] = "alpha"
-	store.content[3] = ""
+	store.content[3] = "\u2003"
 	var calls atomic.Int64
 	enc := func(ctx context.Context, texts []string) ([][]float32, error) {
 		calls.Add(1)

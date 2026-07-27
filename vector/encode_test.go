@@ -205,6 +205,19 @@ func TestEncodeBatchedEmptyInput(t *testing.T) {
 	assert.Empty(t, out)
 }
 
+func TestEncodeBatchedRejectsWhitespaceBeforeCallingEncoder(t *testing.T) {
+	var calls atomic.Int64
+	enc := echoEncoder(func([]string) { calls.Add(1) })
+
+	_, err := vector.EncodeBatched(context.Background(), enc, chunks("alpha", " \t\n\u2003"), vector.BatchOptions{
+		BatchSize:   1,
+		Concurrency: 2,
+	})
+
+	require.ErrorIs(t, err, vector.ErrEmptyEmbeddingInput)
+	assert.Zero(t, calls.Load(), "the batch is validated before any provider call")
+}
+
 func TestEncodeBatchedStopsOnCancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

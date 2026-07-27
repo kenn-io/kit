@@ -1,5 +1,7 @@
 package vector
 
+import "strings"
+
 // Chunk is a window of text encoded as a single vector. Index is the
 // chunk's position within the source content, starting at zero.
 type Chunk struct {
@@ -19,12 +21,13 @@ type SplitOptions struct {
 
 // Split windows content into overlapping chunks of at most MaxRunes runes.
 // It splits on runes rather than bytes so multi-byte characters are never
-// torn apart. Empty content yields no chunks.
+// torn apart. Empty or Unicode-whitespace-only windows yield no chunks, so
+// callers never need to send semantically empty text to an embedding model.
 //
 // Split measures size in runes, not model tokens. Callers that budget by
 // tokens should convert their token budget to an approximate rune count.
 func Split(content string, o SplitOptions) []Chunk {
-	if content == "" {
+	if strings.TrimSpace(content) == "" {
 		return nil
 	}
 	runes := []rune(content)
@@ -39,10 +42,16 @@ func Split(content string, o SplitOptions) []Chunk {
 	for start, idx := 0, 0; start < len(runes); start, idx = start+stride, idx+1 {
 		end := start + o.MaxRunes
 		if end >= len(runes) {
-			chunks = append(chunks, Chunk{Index: idx, Text: string(runes[start:])})
+			text := string(runes[start:])
+			if strings.TrimSpace(text) != "" {
+				chunks = append(chunks, Chunk{Index: idx, Text: text})
+			}
 			break
 		}
-		chunks = append(chunks, Chunk{Index: idx, Text: string(runes[start:end])})
+		text := string(runes[start:end])
+		if strings.TrimSpace(text) != "" {
+			chunks = append(chunks, Chunk{Index: idx, Text: text})
+		}
 	}
 	return chunks
 }
