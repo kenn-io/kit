@@ -18,6 +18,10 @@ pipeline. Preserve these invariants when changing it.
 
 ## Encoded vectors must be usable for cosine distance
 
+- Empty and Unicode-whitespace-only text is never sent to an encoder. `Split`
+  omits blank windows so `Fill` stamp-saves blank documents without vectors;
+  `EncodeBatched` rejects manually supplied blank chunks before any encoder
+  call with an error wrapping `ErrEmptyEmbeddingInput`.
 - `EncodeBatched` rejects encoder output that has the right vector count
   but cannot participate in cosine distance — a non-finite component or a
   zero-norm vector — with an error wrapping `*InvalidVectorError`. `Fill`
