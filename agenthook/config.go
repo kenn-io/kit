@@ -21,20 +21,21 @@ type Hook struct {
 }
 
 // InstallOptions describes an application's hooks. Set Executable and Arguments
-// to have kit construct native and Windows command lines. Command and
-// CommandWindows are mutually exclusive overrides for callers that already have
-// complete command lines. Marker must be a stable, application-namespaced
-// substring unique to commands the caller owns; it identifies those commands
-// across binary path changes. Hooks defaults to every event supported by the
-// selected profile.
+// to have kit construct commands for every supported shell. Command,
+// CommandWindows, and CommandPowerShell are raw overrides for the native,
+// Win32 argv, and PowerShell forms respectively; do not combine them with
+// Executable. Marker must be a stable, application-namespaced substring unique
+// to commands the caller owns; it identifies those commands across binary path
+// changes. Hooks defaults to every event supported by the selected profile.
 type InstallOptions struct {
-	ConfigPath     string
-	Executable     string
-	Arguments      []string
-	Command        string
-	CommandWindows string
-	Marker         string
-	Hooks          []Hook
+	ConfigPath        string
+	Executable        string
+	Arguments         []string
+	Command           string
+	CommandWindows    string
+	CommandPowerShell string
+	Marker            string
+	Hooks             []Hook
 }
 
 // Result reports the planned or completed config mutation. Data contains the

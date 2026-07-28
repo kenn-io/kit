@@ -71,6 +71,15 @@ const (
 	windowsCommandPowerShell
 )
 
+type responseFormat uint8
+
+const (
+	responseClaude responseFormat = iota
+	responseCopilot
+	responseHermes
+	responseObservational
+)
+
 type profileSpec struct {
 	profile             Profile
 	format              configFormat
@@ -82,6 +91,7 @@ type profileSpec struct {
 	timeoutUnit         time.Duration
 	timeoutField        string
 	windowsCommandStyle windowsCommandStyle
+	responseFormat      responseFormat
 	requireVersion      bool
 }
 

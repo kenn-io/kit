@@ -19,6 +19,7 @@ func copilotProfile() profileSpec {
 		func() (string, error) { return userDotDir(".copilot") },
 	)
 	spec.windowsCommandStyle = windowsCommandPowerShell
+	spec.responseFormat = responseCopilot
 	spec.timeoutField = "timeoutSec"
 	spec.requireVersion = true
 	return spec

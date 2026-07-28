@@ -6,6 +6,12 @@
 - Handle must dispatch typed Claude Code inputs after normalizing field, event,
   and tool names. Preserve the complete normalized payload in CommonInput.Raw;
   agent-specific structural promotion belongs here rather than in consumers.
+- Handler methods return event-specific output types. Keep NoopHandler complete
+  so consumers can embed it and override only the lifecycle events they use.
+- Handle owns native response encoding after typed dispatch. A profile must
+  translate supported control output into its harness's response schema and
+  return an error for unsupported control output; never silently downgrade a
+  security decision to observational success.
 - Profiles own config discovery, native event and tool translation, file
   format, and format-specific validation. Add support for a new harness here
   rather than in each consuming application.

@@ -46,8 +46,10 @@ func BuildCommand(executable string, arguments ...string) (Commands, error) {
 
 func resolveCommands(opts InstallOptions) (Commands, error) {
 	hasExecutable := strings.TrimSpace(opts.Executable) != ""
-	hasCommand := strings.TrimSpace(opts.Command) != ""
-	if hasExecutable && hasCommand {
+	hasOverride := strings.TrimSpace(opts.Command) != "" ||
+		strings.TrimSpace(opts.CommandWindows) != "" ||
+		strings.TrimSpace(opts.CommandPowerShell) != ""
+	if hasExecutable && hasOverride {
 		return Commands{}, errors.New("agent hook executable and command override are mutually exclusive")
 	}
 	if hasExecutable {
@@ -58,7 +60,7 @@ func resolveCommands(opts InstallOptions) (Commands, error) {
 	}
 	return Commands{
 		Native: opts.Command, POSIX: opts.Command, Windows: opts.CommandWindows,
-		PowerShell: opts.CommandWindows,
+		PowerShell: opts.CommandPowerShell,
 	}, nil
 }
 

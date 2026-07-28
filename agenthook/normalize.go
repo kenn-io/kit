@@ -1,11 +1,14 @@
 package agenthook
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 )
+
+const maxHookPayloadBytes = 16 << 20
 
 func normalize(agent Agent, input io.Reader) ([]byte, error) {
 	spec, ok := profiles[agent]
@@ -13,7 +16,16 @@ func normalize(agent Agent, input io.Reader) ([]byte, error) {
 		return nil, fmt.Errorf("unsupported agent hook integration %q", agent)
 	}
 
-	decoder := json.NewDecoder(input)
+	data, err := io.ReadAll(io.LimitReader(input, maxHookPayloadBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read %s hook payload: %w", spec.profile.DisplayName, err)
+	}
+	if len(data) > maxHookPayloadBytes {
+		return nil, fmt.Errorf(
+			"%s hook payload exceeds %d bytes", spec.profile.DisplayName, maxHookPayloadBytes,
+		)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	var payload map[string]json.RawMessage
 	if err := decoder.Decode(&payload); err != nil {
 		return nil, fmt.Errorf("decode %s hook payload: %w", spec.profile.DisplayName, err)
@@ -31,7 +43,9 @@ func normalize(agent Agent, input io.Reader) ([]byte, error) {
 
 	promoteAliases(payload)
 	if agent == AgentHermes {
-		promoteHermesExtra(payload)
+		if err := promoteHermesExtra(payload); err != nil {
+			return nil, fmt.Errorf("normalize Hermes Agent hook payload: %w", err)
+		}
 	}
 	if err := normalizePayloadString(payload, "hook_event_name", func(value string) string {
 		return canonicalEventName(spec, value)
@@ -47,7 +61,7 @@ func normalize(agent Agent, input io.Reader) ([]byte, error) {
 		return nil, fmt.Errorf("normalize %s hook payload: %w", spec.profile.DisplayName, err)
 	}
 
-	data, err := json.Marshal(payload)
+	data, err = json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("encode normalized %s hook payload: %w", spec.profile.DisplayName, err)
 	}
@@ -68,7 +82,7 @@ func promoteAliases(payload map[string]json.RawMessage) {
 		{canonical: "tool_name", native: []string{"toolName"}},
 		{canonical: "tool_use_id", native: []string{"tool_call_id", "toolUseId", "toolUseID", "toolCallId", "toolCallID"}},
 		{canonical: "tool_input", native: []string{"toolInput"}},
-		{canonical: "tool_response", native: []string{"tool_output", "toolResponse", "toolOutput"}},
+		{canonical: "tool_response", native: []string{"tool_result", "tool_output", "toolResponse", "toolOutput"}},
 		{canonical: "notification_type", native: []string{"notificationType"}},
 	}
 	for _, alias := range aliases {
@@ -76,18 +90,20 @@ func promoteAliases(payload map[string]json.RawMessage) {
 	}
 }
 
-func promoteHermesExtra(payload map[string]json.RawMessage) {
+func promoteHermesExtra(payload map[string]json.RawMessage) error {
 	raw, ok := payload["extra"]
 	if !ok {
-		return
+		return nil
 	}
 	var extra map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &extra); err != nil {
-		return
+		return fmt.Errorf("field %q must be an object: %w", "extra", err)
 	}
+	promoteFirst(payload, "prompt", extra, "user_message")
 	promoteFirst(payload, "turn_id", extra, "turn_id")
 	promoteFirst(payload, "tool_use_id", extra, "tool_call_id")
 	promoteFirst(payload, "tool_response", extra, "result")
+	return nil
 }
 
 func promoteFirst(

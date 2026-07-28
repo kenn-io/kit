@@ -14,6 +14,7 @@ import (
 type selectiveHandler struct {
 	NoopHandler
 	postToolUse *PostToolUseInput
+	postOutput  PostToolUseOutput
 	stop        *StopInput
 }
 
@@ -22,21 +23,17 @@ var _ Handler = (*selectiveHandler)(nil)
 func (h *selectiveHandler) PostToolUse(
 	_ context.Context,
 	input PostToolUseInput,
-) (Output, error) {
+) (PostToolUseOutput, error) {
 	h.postToolUse = &input
-	return Output{
-		HookSpecificOutput: &HookSpecificOutput{
-			AdditionalContext: "run the focused tests",
-		},
-	}, nil
+	return h.postOutput, nil
 }
 
 func (h *selectiveHandler) Stop(
 	_ context.Context,
 	input StopInput,
-) (Output, error) {
+) (StopOutput, error) {
 	h.stop = &input
-	return Output{Decision: DecisionBlock, Reason: "work remains"}, nil
+	return StopOutput{Decision: DecisionBlock, Reason: "work remains"}, nil
 }
 
 func TestHandleNormalizesAndDispatchesTypedPostToolUse(t *testing.T) {
@@ -70,12 +67,7 @@ func TestHandleNormalizesAndDispatchesTypedPostToolUse(t *testing.T) {
 	assert.JSONEq(`"ok"`, string(input.ToolResponse))
 	assert.JSONEq(`{"command":"go test ./agenthook"}`, string(input.ToolInput))
 	assert.Contains(string(input.Raw), `"extra"`)
-	assert.JSONEq(`{
-  "hookSpecificOutput": {
-    "hookEventName": "PostToolUse",
-    "additionalContext": "run the focused tests"
-  }
-}`, output.String())
+	assert.JSONEq(`{}`, output.String())
 }
 
 func TestHandleDispatchesTypedStop(t *testing.T) {
@@ -113,7 +105,7 @@ func TestNoopHandlerImplementsEveryTypedEvent(t *testing.T) {
 	err := Handle(
 		context.Background(),
 		AgentClaude,
-		strings.NewReader(`{"session_id":"c1","hook_event_name":"Notification","message":"ready"}`),
+		strings.NewReader(`{"session_id":"c1","hook_event_name":"Notification","message":"ready","notification_type":"idle_prompt"}`),
 		&output,
 		handler,
 	)
@@ -138,17 +130,38 @@ func TestHandleRejectsUnknownEventsBeforeCallingHandler(t *testing.T) {
 	assert.Empty(t, output.String())
 }
 
-func TestOutputMarshalsTypedPermissionDecision(t *testing.T) {
-	output := Output{
-		HookSpecificOutput: &HookSpecificOutput{
-			HookEventName:            EventPreToolUse,
-			PermissionDecision:       PermissionDecisionDeny,
-			PermissionDecisionReason: "production command",
-			UpdatedInput:             json.RawMessage(`{"command":"true"}`),
-		},
-	}
+type preToolHandler struct {
+	NoopHandler
+	output PreToolUseOutput
+}
 
-	data, err := json.Marshal(output)
+func (h preToolHandler) PreToolUse(
+	context.Context,
+	PreToolUseInput,
+) (PreToolUseOutput, error) {
+	return h.output, nil
+}
+
+func TestHandleEncodesTypedClaudePermissionDecision(t *testing.T) {
+	var output bytes.Buffer
+	handler := preToolHandler{output: PreToolUseOutput{
+		PermissionDecision:       PermissionDecisionDeny,
+		PermissionDecisionReason: "production command",
+		UpdatedInput:             json.RawMessage(`{"command":"true"}`),
+	}}
+
+	err := Handle(
+		context.Background(),
+		AgentClaude,
+		strings.NewReader(`{
+  "session_id":"c1",
+  "hook_event_name":"PreToolUse",
+  "tool_name":"Bash",
+  "tool_input":{"command":"false"}
+}`),
+		&output,
+		handler,
+	)
 
 	require.NoError(t, err)
 	assert.JSONEq(t, `{
@@ -158,5 +171,250 @@ func TestOutputMarshalsTypedPermissionDecision(t *testing.T) {
     "permissionDecisionReason": "production command",
     "updatedInput": {"command":"true"}
   }
-}`, string(data))
+}`, output.String())
+}
+
+func TestHandleEncodesTypedCopilotPermissionDecision(t *testing.T) {
+	var output bytes.Buffer
+	handler := preToolHandler{output: PreToolUseOutput{
+		PermissionDecision:       PermissionDecisionDeny,
+		PermissionDecisionReason: "production command",
+		UpdatedInput:             json.RawMessage(`{"command":"true"}`),
+	}}
+
+	err := Handle(
+		context.Background(),
+		AgentCopilot,
+		strings.NewReader(`{
+  "session_id":"c1",
+  "hook_event_name":"PreToolUse",
+  "tool_name":"Bash",
+  "tool_input":{"command":"false"}
+}`),
+		&output,
+		handler,
+	)
+
+	require.NoError(t, err)
+	assert.JSONEq(t, `{
+  "permissionDecision": "deny",
+  "permissionDecisionReason": "production command",
+  "modifiedArgs": {"command":"true"}
+}`, output.String())
+}
+
+type promptHandler struct {
+	NoopHandler
+	output UserPromptSubmitOutput
+}
+
+type permissionHandler struct {
+	NoopHandler
+	output PermissionRequestOutput
+}
+
+func (h permissionHandler) PermissionRequest(
+	context.Context,
+	PermissionRequestInput,
+) (PermissionRequestOutput, error) {
+	return h.output, nil
+}
+
+type stopHandler struct {
+	NoopHandler
+	output StopOutput
+}
+
+func (h stopHandler) Stop(context.Context, StopInput) (StopOutput, error) {
+	return h.output, nil
+}
+
+func (h promptHandler) UserPromptSubmit(
+	context.Context,
+	UserPromptSubmitInput,
+) (UserPromptSubmitOutput, error) {
+	return h.output, nil
+}
+
+func TestHandleEncodesHermesPromptContext(t *testing.T) {
+	var output bytes.Buffer
+	handler := promptHandler{output: UserPromptSubmitOutput{
+		AdditionalContext: "deployment is production",
+	}}
+
+	err := Handle(
+		context.Background(),
+		AgentHermes,
+		strings.NewReader(`{
+  "session_id":"h1",
+  "hook_event_name":"pre_llm_call",
+  "extra":{"user_message":"deploy"}
+}`),
+		&output,
+		handler,
+	)
+
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"context":"deployment is production"}`, output.String())
+}
+
+func TestHandleRejectsUnsupportedCursorControlOutput(t *testing.T) {
+	var output bytes.Buffer
+	handler := preToolHandler{output: PreToolUseOutput{
+		PermissionDecision:       PermissionDecisionDeny,
+		PermissionDecisionReason: "production command",
+	}}
+
+	err := Handle(
+		context.Background(),
+		AgentCursor,
+		strings.NewReader(`{
+  "conversation_id":"c1",
+  "hook_event_name":"preToolUse",
+  "tool_name":"Shell",
+  "tool_input":{"command":"false"}
+}`),
+		&output,
+		handler,
+	)
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "Cursor does not support PreToolUse control output")
+	assert.Empty(t, output.String())
+}
+
+func TestHandleRejectsIncompleteToolInput(t *testing.T) {
+	var output bytes.Buffer
+
+	err := Handle(
+		context.Background(),
+		AgentClaude,
+		strings.NewReader(`{
+  "session_id":"c1",
+  "hook_event_name":"PreToolUse",
+  "tool_input":{"command":"false"}
+}`),
+		&output,
+		NoopHandler{},
+	)
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, `PreToolUse input missing tool_name`)
+	assert.Empty(t, output.String())
+}
+
+func TestHandleRejectsMissingSessionID(t *testing.T) {
+	var output bytes.Buffer
+
+	err := Handle(
+		context.Background(),
+		AgentClaude,
+		strings.NewReader(`{
+  "hook_event_name":"PreToolUse",
+  "tool_name":"Bash",
+  "tool_input":{"command":"false"}
+}`),
+		&output,
+		NoopHandler{},
+	)
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, `PreToolUse input missing session_id`)
+	assert.Empty(t, output.String())
+}
+
+func TestHandleRejectsDenyWithoutReason(t *testing.T) {
+	var output bytes.Buffer
+	handler := preToolHandler{output: PreToolUseOutput{
+		PermissionDecision: PermissionDecisionDeny,
+	}}
+
+	err := Handle(
+		context.Background(),
+		AgentClaude,
+		strings.NewReader(`{
+  "session_id":"c1",
+  "hook_event_name":"PreToolUse",
+  "tool_name":"Bash",
+  "tool_input":{"command":"false"}
+}`),
+		&output,
+		handler,
+	)
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "deny output requires a reason")
+	assert.Empty(t, output.String())
+}
+
+func TestHandleRejectsInvalidTypedOutput(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+		handler Handler
+		want    string
+	}{
+		{
+			name: "permission decision",
+			payload: `{
+  "session_id":"c1",
+  "hook_event_name":"PreToolUse",
+  "tool_name":"Bash",
+  "tool_input":{"command":"false"}
+}`,
+			handler: preToolHandler{output: PreToolUseOutput{
+				PermissionDecision: PermissionDecision("sometimes"),
+			}},
+			want: `PreToolUse output has invalid permission decision "sometimes"`,
+		},
+		{
+			name: "block without reason",
+			payload: `{
+  "session_id":"c1",
+  "hook_event_name":"Stop"
+}`,
+			handler: stopHandler{output: StopOutput{Decision: DecisionBlock}},
+			want:    "Stop block output requires a reason",
+		},
+		{
+			name: "permission behavior",
+			payload: `{
+  "session_id":"c1",
+  "hook_event_name":"PermissionRequest",
+  "tool_name":"Bash",
+  "tool_input":{"command":"false"}
+}`,
+			handler: permissionHandler{output: PermissionRequestOutput{
+				Decision: &PermissionRequestDecision{Behavior: PermissionBehavior("sometimes")},
+			}},
+			want: `PermissionRequest output has invalid behavior "sometimes"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var output bytes.Buffer
+			err := Handle(
+				context.Background(), AgentClaude, strings.NewReader(tt.payload),
+				&output, tt.handler,
+			)
+
+			require.Error(t, err)
+			assert.ErrorContains(t, err, tt.want)
+			assert.Empty(t, output.String())
+		})
+	}
+}
+
+func TestHandleRejectsOversizedPayload(t *testing.T) {
+	payload := `{"hook_event_name":"Notification","message":"` +
+		strings.Repeat("x", maxHookPayloadBytes) + `"}`
+
+	err := Handle(
+		context.Background(), AgentClaude, strings.NewReader(payload),
+		&bytes.Buffer{}, NoopHandler{},
+	)
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "hook payload exceeds")
 }

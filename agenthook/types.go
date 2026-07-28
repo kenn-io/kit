@@ -168,17 +168,13 @@ const (
 	SessionEndOther                     SessionEndReason = "other"
 )
 
-// Output is the typed Claude hook response envelope. HookSpecificOutput is
-// used for event-specific control fields.
-type Output struct {
-	Continue           *bool               `json:"continue,omitempty"`
-	StopReason         string              `json:"stopReason,omitempty"`
-	SuppressOutput     bool                `json:"suppressOutput,omitempty"`
-	SystemMessage      string              `json:"systemMessage,omitempty"`
-	TerminalSequence   string              `json:"terminalSequence,omitempty"`
-	Decision           Decision            `json:"decision,omitempty"`
-	Reason             string              `json:"reason,omitempty"`
-	HookSpecificOutput *HookSpecificOutput `json:"hookSpecificOutput,omitempty"`
+// CommonOutput contains control fields available to every Claude hook event.
+type CommonOutput struct {
+	Continue         *bool  `json:"continue,omitempty"`
+	StopReason       string `json:"stopReason,omitempty"`
+	SuppressOutput   bool   `json:"suppressOutput,omitempty"`
+	SystemMessage    string `json:"systemMessage,omitempty"`
+	TerminalSequence string `json:"terminalSequence,omitempty"`
 }
 
 // Decision is a top-level Claude hook decision.
@@ -190,22 +186,73 @@ const (
 	DecisionBlock Decision = "block"
 )
 
-// HookSpecificOutput contains the typed event-specific Claude output fields.
-// Handle fills HookEventName from the dispatched event when it is omitted.
-type HookSpecificOutput struct {
-	HookEventName            Event                      `json:"hookEventName"`
-	AdditionalContext        string                     `json:"additionalContext,omitempty"`
-	InitialUserMessage       string                     `json:"initialUserMessage,omitempty"`
-	SessionTitle             string                     `json:"sessionTitle,omitempty"`
-	WatchPaths               []string                   `json:"watchPaths,omitempty"`
-	ReloadSkills             bool                       `json:"reloadSkills,omitempty"`
-	SuppressOriginalPrompt   bool                       `json:"suppressOriginalPrompt,omitempty"`
-	PermissionDecision       PermissionDecision         `json:"permissionDecision,omitempty"`
-	PermissionDecisionReason string                     `json:"permissionDecisionReason,omitempty"`
-	UpdatedInput             json.RawMessage            `json:"updatedInput,omitempty"`
-	Decision                 *PermissionRequestDecision `json:"decision,omitempty"`
-	UpdatedToolOutput        json.RawMessage            `json:"updatedToolOutput,omitempty"`
-	UpdatedMCPToolOutput     json.RawMessage            `json:"updatedMCPToolOutput,omitempty"`
+// SessionStartOutput is the typed response from a SessionStart handler.
+type SessionStartOutput struct {
+	CommonOutput
+	AdditionalContext  string
+	InitialUserMessage string
+	SessionTitle       string
+	WatchPaths         []string
+	ReloadSkills       bool
+}
+
+// UserPromptSubmitOutput is the typed response from a UserPromptSubmit handler.
+type UserPromptSubmitOutput struct {
+	CommonOutput
+	Decision               Decision
+	Reason                 string
+	AdditionalContext      string
+	SessionTitle           string
+	SuppressOriginalPrompt bool
+}
+
+// PreToolUseOutput is the typed response from a PreToolUse handler.
+type PreToolUseOutput struct {
+	CommonOutput
+	PermissionDecision       PermissionDecision
+	PermissionDecisionReason string
+	UpdatedInput             json.RawMessage
+	AdditionalContext        string
+}
+
+// PostToolUseOutput is the typed response from a PostToolUse handler.
+type PostToolUseOutput struct {
+	CommonOutput
+	Decision             Decision
+	Reason               string
+	AdditionalContext    string
+	UpdatedToolOutput    json.RawMessage
+	UpdatedMCPToolOutput json.RawMessage
+}
+
+// PostToolUseFailureOutput is the typed response from a PostToolUseFailure handler.
+type PostToolUseFailureOutput struct {
+	CommonOutput
+	AdditionalContext string
+}
+
+// PermissionRequestOutput is the typed response from a PermissionRequest handler.
+type PermissionRequestOutput struct {
+	CommonOutput
+	Decision *PermissionRequestDecision
+}
+
+// NotificationOutput is the typed response from a Notification handler.
+type NotificationOutput struct {
+	CommonOutput
+}
+
+// StopOutput is the typed response from a Stop handler.
+type StopOutput struct {
+	CommonOutput
+	Decision          Decision
+	Reason            string
+	AdditionalContext string
+}
+
+// SessionEndOutput is the typed response from a SessionEnd handler.
+type SessionEndOutput struct {
+	CommonOutput
 }
 
 // PermissionDecision controls a Claude PreToolUse request.

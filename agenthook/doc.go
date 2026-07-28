@@ -35,12 +35,14 @@
 //	func (hooks) PostToolUse(
 //		ctx context.Context,
 //		input agenthook.PostToolUseInput,
-//	) (agenthook.Output, error) {
+//	) (agenthook.PostToolUseOutput, error) {
 //		return recordToolUse(ctx, input)
 //	}
 //
 //	err := agenthook.Handle(ctx, agent, os.Stdin, os.Stdout, hooks{})
 //
-// Handle translates native fields before typed dispatch. CommonInput.Raw keeps
-// the complete normalized payload so handlers can inspect extension fields.
+// Handle translates native fields before typed dispatch, then translates the
+// typed Claude-style output into the invoking harness's response format.
+// CommonInput.Raw keeps the complete normalized payload so handlers can inspect
+// extension fields.
 package agenthook

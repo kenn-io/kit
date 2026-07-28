@@ -16,6 +16,7 @@ func cursorProfile() profileSpec {
 		func() (string, error) { return userDotDir(".cursor") },
 	)
 	spec.eventName = cursorEventName
+	spec.responseFormat = responseObservational
 	spec.requireVersion = true
 	return spec
 }

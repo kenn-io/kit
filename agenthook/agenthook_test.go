@@ -287,12 +287,12 @@ func TestInstallCopilotUsesDirectEntriesAndPreservesOtherHooks(t *testing.T) {
   }
 }`), 0o600))
 	command := "/opt/hook " + testMarker
-	commandWindows := `C:\Program Files\hook.exe ` + testMarker
+	commandPowerShell := `& 'C:\Program Files\hook.exe' '--source' 'shared-agent-hook-test'`
 	opts := InstallOptions{
-		ConfigPath:     path,
-		Command:        command,
-		CommandWindows: commandWindows,
-		Marker:         testMarker,
+		ConfigPath:        path,
+		Command:           command,
+		CommandPowerShell: commandPowerShell,
+		Marker:            testMarker,
 		Hooks: []Hook{
 			{Event: EventPreToolUse, Matcher: ToolBash, Timeout: 2 * time.Second},
 			{Event: EventStop},
@@ -313,7 +313,7 @@ func TestInstallCopilotUsesDirectEntriesAndPreservesOtherHooks(t *testing.T) {
 	assert.Equal("command", preTool["type"])
 	assert.Equal("Bash", preTool["matcher"])
 	assert.Equal(command, preTool["bash"])
-	assert.Equal(commandWindows, preTool["powershell"])
+	assert.Equal(commandPowerShell, preTool["powershell"])
 	assert.Equal(float64(2), preTool["timeoutSec"])
 
 	result, err = Install(AgentCopilot, opts)
@@ -362,6 +362,44 @@ func TestCopilotCommandSelectionKeepsBashPOSIXOnWindows(t *testing.T) {
 
 	assert.Equal(t, `'C:\Program Files\hook.exe' run`, native)
 	assert.Equal(t, `& 'C:\Program Files\hook.exe' 'run'`, windows)
+}
+
+func TestPlanInstallCopilotDistinguishesWin32AndPowerShellOverrides(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	path := filepath.Join(t.TempDir(), "agenthook.json")
+
+	result, err := PlanInstall(AgentCopilot, InstallOptions{
+		ConfigPath:     path,
+		Command:        "/opt/hook " + testMarker,
+		CommandWindows: `"C:\Program Files\hook.exe" --source shared-agent-hook-test`,
+		Marker:         testMarker,
+		Hooks:          []Hook{{Event: EventSessionStart}},
+	})
+
+	require.NoError(err)
+	var root map[string]any
+	require.NoError(json.Unmarshal(result.Data, &root))
+	entry := root["hooks"].(map[string]any)["SessionStart"].([]any)[0].(map[string]any)
+	assert.Equal("/opt/hook "+testMarker, entry["command"])
+	assert.NotContains(entry, "powershell")
+
+	result, err = PlanInstall(AgentCopilot, InstallOptions{
+		ConfigPath:        path,
+		Command:           "/opt/hook " + testMarker,
+		CommandPowerShell: `& 'C:\Program Files\hook.exe' '--source' 'shared-agent-hook-test'`,
+		Marker:            testMarker,
+		Hooks:             []Hook{{Event: EventSessionStart}},
+	})
+
+	require.NoError(err)
+	require.NoError(json.Unmarshal(result.Data, &root))
+	entry = root["hooks"].(map[string]any)["SessionStart"].([]any)[0].(map[string]any)
+	assert.Equal("/opt/hook "+testMarker, entry["bash"])
+	assert.Equal(
+		`& 'C:\Program Files\hook.exe' '--source' 'shared-agent-hook-test'`,
+		entry["powershell"],
+	)
 }
 
 func TestPlanDirectJSONRejectsUnsupportedSchemaVersions(t *testing.T) {
@@ -485,7 +523,7 @@ hooks:
 	assert.Equal("terminal", installed["matcher"])
 	assert.Equal(command, installed["command"])
 	assert.Equal(2, installed["timeout"])
-	stop := hooks["post_llm_call"].([]any)[0].(map[string]any)
+	stop := hooks["pre_verify"].([]any)[0].(map[string]any)
 	assert.Equal(command, stop["command"])
 
 	result, err = Install(AgentHermes, opts)
@@ -523,6 +561,56 @@ func TestPlanUninstallHermesPreservesUnrelatedHookNodes(t *testing.T) {
 	assert.Contains(data, "# keep event note")
 	assert.Contains(data, "# keep entry note")
 	assert.Contains(data, "# keep matcher note")
+	assert.Less(strings.Index(data, "pre_tool_call"), strings.Index(data, "post_tool_call"))
+}
+
+func TestPlanUninstallHermesResolvesAliasedHooks(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(os.WriteFile(path, []byte(`shared_hooks: &shared_hooks
+  - &owned
+    command: "/opt/hook --source shared-agent-hook-test"
+hooks:
+  pre_tool_call: *shared_hooks
+  post_tool_call:
+    - *owned
+`), 0o600))
+
+	result, err := PlanUninstall(AgentHermes, path, testMarker)
+
+	require.NoError(err)
+	assert.True(result.Changed)
+	var root map[string]any
+	require.NoError(yaml.Unmarshal(result.Data, &root))
+	hooks := root["hooks"].(map[string]any)
+	assert.NotContains(hooks, "pre_tool_call")
+	assert.NotContains(hooks, "post_tool_call")
+}
+
+func TestPlanInstallHermesRetainsOwnedEventNodeMetadata(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(os.WriteFile(path, []byte(`hooks:
+  # keep event note
+  pre_tool_call: &pre_tool_hooks
+    - command: "/opt/hook --source shared-agent-hook-test" # old hook
+  post_tool_call:
+    - command: keep-after
+`), 0o600))
+
+	result, err := PlanInstall(AgentHermes, InstallOptions{
+		ConfigPath: path,
+		Command:    "/new/hook " + testMarker,
+		Marker:     testMarker,
+		Hooks:      []Hook{{Event: EventPreToolUse, Matcher: ToolBash}},
+	})
+
+	require.NoError(err)
+	data := string(result.Data)
+	assert.Contains(data, "# keep event note")
+	assert.Contains(data, "&pre_tool_hooks")
 	assert.Less(strings.Index(data, "pre_tool_call"), strings.Index(data, "post_tool_call"))
 }
 
@@ -626,6 +714,14 @@ func TestNormalizeRejectsInvalidInput(t *testing.T) {
 	_, err = normalize(AgentClaude, strings.NewReader(`{"session_id":"s1"} {}`))
 	require.Error(err)
 	assert.ErrorContains(err, "multiple JSON values")
+
+	_, err = normalize(AgentHermes, strings.NewReader(`{
+  "session_id":"h1",
+  "hook_event_name":"post_tool_call",
+  "extra":[]
+}`))
+	require.Error(err)
+	assert.ErrorContains(err, `field "extra" must be an object`)
 }
 
 func TestHermesRejectsUnsupportedClaudeStyleHooks(t *testing.T) {

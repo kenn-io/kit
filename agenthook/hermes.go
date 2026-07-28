@@ -27,7 +27,7 @@ type hermesHooks struct {
 	PreToolUse        []hermesHook            `yaml:"pre_tool_call,omitempty"`
 	PostToolUse       []hermesHook            `yaml:"post_tool_call,omitempty"`
 	PermissionRequest []hermesHook            `yaml:"pre_approval_request,omitempty"`
-	Stop              []hermesHook            `yaml:"post_llm_call,omitempty"`
+	Stop              []hermesHook            `yaml:"pre_verify,omitempty"`
 	SessionEnd        []hermesHook            `yaml:"on_session_end,omitempty"`
 	Extra             map[string][]hermesHook `yaml:",inline"`
 }
@@ -54,6 +54,7 @@ func hermesProfile() profileSpec {
 		hermesDefaultDir,
 	)
 	spec.eventName = hermesEventName
+	spec.responseFormat = responseHermes
 	return spec
 }
 
@@ -88,7 +89,13 @@ func planHermesConfig(
 		return nil, false, err
 	}
 	if hooksNode != nil {
-		if err := removeOwnedHermesHookNodes(hooksNode, marker, path); err != nil {
+		retainedEvents := map[string]struct{}{}
+		if !uninstall {
+			for _, hook := range hooks {
+				retainedEvents[hook.name] = struct{}{}
+			}
+		}
+		if err := removeOwnedHermesHookNodes(hooksNode, marker, path, retainedEvents); err != nil {
 			return nil, false, err
 		}
 		if !uninstall {
@@ -114,11 +121,16 @@ func planHermesConfig(
 	return after, changed, nil
 }
 
-func removeOwnedHermesHookNodes(hooks *yaml.Node, marker, path string) error {
+func removeOwnedHermesHookNodes(
+	hooks *yaml.Node,
+	marker, path string,
+	retainedEvents map[string]struct{},
+) error {
 	for i := 0; i+1 < len(hooks.Content); {
 		event := hooks.Content[i]
 		entries := hooks.Content[i+1]
-		if entries.Kind != yaml.SequenceNode {
+		resolvedEntries := resolveYAMLAlias(entries)
+		if resolvedEntries.Kind != yaml.SequenceNode {
 			if isHermesEventName(event.Value) {
 				return fmt.Errorf(
 					"Hermes config %s event %q must be an array", path, event.Value,
@@ -127,20 +139,42 @@ func removeOwnedHermesHookNodes(hooks *yaml.Node, marker, path string) error {
 			i += 2
 			continue
 		}
+		removed := false
+		for _, entry := range resolvedEntries.Content {
+			command := yamlResolvedField(entry, "command")
+			if command != nil && command.Kind == yaml.ScalarNode &&
+				strings.Contains(command.Value, marker) {
+				removed = true
+				break
+			}
+		}
+		if !removed {
+			i += 2
+			continue
+		}
+		if entries.Kind == yaml.AliasNode {
+			materialized := cloneResolvedYAMLNode(entries)
+			materialized.HeadComment = entries.HeadComment
+			materialized.LineComment = entries.LineComment
+			materialized.FootComment = entries.FootComment
+			*entries = *materialized
+		}
 		kept := make([]*yaml.Node, 0, len(entries.Content))
 		for _, entry := range entries.Content {
-			command := yamlField(entry, "command")
+			command := yamlResolvedField(entry, "command")
 			if command != nil && command.Kind == yaml.ScalarNode &&
 				strings.Contains(command.Value, marker) {
 				continue
 			}
 			kept = append(kept, entry)
 		}
-		if len(kept) == 0 && len(entries.Content) > 0 {
+		entries.Content = kept
+		_, retainEmpty := retainedEvents[event.Value]
+		if len(kept) == 0 && !retainEmpty &&
+			!yamlNodeHasMetadata(event) && !yamlNodeHasMetadata(entries) {
 			hooks.Content = append(hooks.Content[:i], hooks.Content[i+2:]...)
 			continue
 		}
-		entries.Content = kept
 		i += 2
 	}
 	return nil
@@ -155,6 +189,13 @@ func appendHermesHookNode(hooks *yaml.Node, event string, hook hermesHook, path 
 			entries,
 		)
 	}
+	if entries.Kind == yaml.AliasNode {
+		materialized := cloneResolvedYAMLNode(entries)
+		materialized.HeadComment = entries.HeadComment
+		materialized.LineComment = entries.LineComment
+		materialized.FootComment = entries.FootComment
+		*entries = *materialized
+	}
 	if entries.Kind != yaml.SequenceNode {
 		return fmt.Errorf("Hermes config %s event %q must be an array", path, event)
 	}
@@ -164,6 +205,75 @@ func appendHermesHookNode(hooks *yaml.Node, event string, hook hermesHook, path 
 	}
 	entries.Content = append(entries.Content, &encoded)
 	return nil
+}
+
+func resolveYAMLAlias(node *yaml.Node) *yaml.Node {
+	seen := map[*yaml.Node]struct{}{}
+	for node != nil && node.Kind == yaml.AliasNode && node.Alias != nil {
+		if _, exists := seen[node]; exists {
+			return node
+		}
+		seen[node] = struct{}{}
+		node = node.Alias
+	}
+	return node
+}
+
+func yamlResolvedField(root *yaml.Node, key string) *yaml.Node {
+	return yamlResolvedFieldSeen(root, key, map[*yaml.Node]struct{}{})
+}
+
+func yamlResolvedFieldSeen(
+	root *yaml.Node,
+	key string,
+	seen map[*yaml.Node]struct{},
+) *yaml.Node {
+	root = resolveYAMLAlias(root)
+	if root == nil || root.Kind != yaml.MappingNode {
+		return nil
+	}
+	if _, exists := seen[root]; exists {
+		return nil
+	}
+	seen[root] = struct{}{}
+	defer delete(seen, root)
+	if value := yamlField(root, key); value != nil {
+		return resolveYAMLAlias(value)
+	}
+	merge := yamlField(root, "<<")
+	merge = resolveYAMLAlias(merge)
+	if merge == nil {
+		return nil
+	}
+	if merge.Kind == yaml.SequenceNode {
+		for _, candidate := range merge.Content {
+			if value := yamlResolvedFieldSeen(candidate, key, seen); value != nil {
+				return value
+			}
+		}
+		return nil
+	}
+	return yamlResolvedFieldSeen(merge, key, seen)
+}
+
+func cloneResolvedYAMLNode(node *yaml.Node) *yaml.Node {
+	node = resolveYAMLAlias(node)
+	if node == nil {
+		return &yaml.Node{}
+	}
+	clone := *node
+	clone.Anchor = ""
+	clone.Alias = nil
+	clone.Content = make([]*yaml.Node, 0, len(node.Content))
+	for _, child := range node.Content {
+		clone.Content = append(clone.Content, cloneResolvedYAMLNode(child))
+	}
+	return &clone
+}
+
+func yamlNodeHasMetadata(node *yaml.Node) bool {
+	return node.Anchor != "" || node.Style != 0 || node.HeadComment != "" ||
+		node.LineComment != "" || node.FootComment != ""
 }
 
 func isHermesEventName(name string) bool {
