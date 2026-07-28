@@ -6,12 +6,14 @@ import (
 	"strings"
 )
 
-// Commands contains hook command lines for the current platform and Windows.
-// Codex stores the Windows variant alongside the native command so the same
-// config can be used from either environment.
+// Commands contains hook command lines for the current platform, POSIX shells,
+// the Win32 argv convention, and PowerShell. Profiles select the command syntax
+// their config fields require.
 type Commands struct {
-	Native  string
-	Windows string
+	Native     string
+	POSIX      string
+	Windows    string
+	PowerShell string
 }
 
 // BuildCommand quotes an executable and arguments for agent hook config. It
@@ -24,13 +26,17 @@ func BuildCommand(executable string, arguments ...string) (Commands, error) {
 	argv := append([]string{executable}, arguments...)
 	posix := make([]string, 0, len(argv))
 	windows := make([]string, 0, len(argv))
+	powerShell := make([]string, 0, len(argv))
 	for _, arg := range argv {
 		posix = append(posix, quotePOSIXArgument(arg))
 		windows = append(windows, quoteWindowsArgument(arg))
+		powerShell = append(powerShell, quotePowerShellArgument(arg))
 	}
 	commands := Commands{
-		Native:  strings.Join(posix, " "),
-		Windows: strings.Join(windows, " "),
+		Native:     strings.Join(posix, " "),
+		POSIX:      strings.Join(posix, " "),
+		Windows:    strings.Join(windows, " "),
+		PowerShell: "& " + strings.Join(powerShell, " "),
 	}
 	if runtime.GOOS == "windows" {
 		commands.Native = commands.Windows
@@ -50,7 +56,22 @@ func resolveCommands(opts InstallOptions) (Commands, error) {
 	if len(opts.Arguments) > 0 {
 		return Commands{}, errors.New("agent hook arguments require an executable")
 	}
-	return Commands{Native: opts.Command, Windows: opts.CommandWindows}, nil
+	return Commands{
+		Native: opts.Command, POSIX: opts.Command, Windows: opts.CommandWindows,
+		PowerShell: opts.CommandWindows,
+	}, nil
+}
+
+func profileCommands(spec profileSpec, commands Commands) (native, windows string) {
+	native = commands.Native
+	switch spec.windowsCommandStyle {
+	case windowsCommandNested:
+		windows = commands.Windows
+	case windowsCommandPowerShell:
+		native = commands.POSIX
+		windows = commands.PowerShell
+	}
+	return native, windows
 }
 
 func quotePOSIXArgument(arg string) string {
@@ -93,4 +114,8 @@ func quoteWindowsArgument(arg string) string {
 	quoted.WriteString(strings.Repeat("\\", backslashes*2))
 	quoted.WriteByte('"')
 	return quoted.String()
+}
+
+func quotePowerShellArgument(arg string) string {
+	return "'" + strings.ReplaceAll(arg, "'", "''") + "'"
 }

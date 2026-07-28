@@ -23,9 +23,10 @@ type Hook struct {
 // InstallOptions describes an application's hooks. Set Executable and Arguments
 // to have kit construct native and Windows command lines. Command and
 // CommandWindows are mutually exclusive overrides for callers that already have
-// complete command lines. Marker is a stable substring that identifies commands
-// owned by the application across binary path changes. Hooks defaults to every
-// event supported by the selected profile.
+// complete command lines. Marker must be a stable, application-namespaced
+// substring unique to commands the caller owns; it identifies those commands
+// across binary path changes. Hooks defaults to every event supported by the
+// selected profile.
 type InstallOptions struct {
 	ConfigPath     string
 	Executable     string
@@ -52,17 +53,18 @@ func PlanInstall(agent Agent, opts InstallOptions) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	opts.Command = commands.Native
-	opts.CommandWindows = commands.Windows
+	spec, ok := profiles[agent]
+	if !ok {
+		return Result{}, fmt.Errorf("unsupported agent hook integration %q", agent)
+	}
+	opts.Command, opts.CommandWindows = profileCommands(spec, commands)
 	spec, path, hooks, err := prepareInstall(agent, opts)
 	if err != nil {
 		return Result{}, err
 	}
-	commandWindows := ""
-	if spec.windowsCommandStyle != windowsCommandNone {
-		commandWindows = opts.CommandWindows
-	}
-	data, changed, err := planConfig(spec, path, opts.Marker, opts.Command, commandWindows, hooks, false)
+	data, changed, err := planConfig(
+		spec, path, opts.Marker, opts.Command, opts.CommandWindows, hooks, false,
+	)
 	if err != nil {
 		return Result{}, err
 	}
@@ -70,6 +72,7 @@ func PlanInstall(agent Agent, opts InstallOptions) (Result, error) {
 }
 
 // Install merges the application's hooks into the selected agent config.
+// Callers must serialize concurrent mutations of the same config path.
 func Install(agent Agent, opts InstallOptions) (Result, error) {
 	result, err := PlanInstall(agent, opts)
 	if err != nil || !result.Changed {
@@ -104,7 +107,8 @@ func PlanUninstall(agent Agent, configPath, marker string) (Result, error) {
 }
 
 // Uninstall removes every command containing marker from the selected agent
-// config while preserving hooks owned by other applications.
+// config while preserving hooks owned by other applications. Callers must
+// serialize concurrent mutations of the same config path.
 func Uninstall(agent Agent, configPath, marker string) (Result, error) {
 	result, err := PlanUninstall(agent, configPath, marker)
 	if err != nil || !result.Changed {
@@ -150,12 +154,14 @@ func prepareInstall(agent Agent, opts InstallOptions) (profileSpec, string, []na
 		if !slices.Contains(spec.profile.SupportedEvents, hook.Event) {
 			return profileSpec{}, "", nil, fmt.Errorf("%s does not support %s hooks", spec.profile.DisplayName, hook.Event)
 		}
-		if hook.Timeout < 0 || hook.Timeout%time.Second != 0 {
-			return profileSpec{}, "", nil, fmt.Errorf("%s hook timeout must be a non-negative whole number of seconds", hook.Event)
+		if hook.Timeout < 0 || hook.Timeout%spec.timeoutUnit != 0 {
+			return profileSpec{}, "", nil, fmt.Errorf(
+				"%s hook timeout must be a non-negative multiple of %s",
+				hook.Event, spec.timeoutUnit,
+			)
 		}
 		timeout := int(hook.Timeout / spec.timeoutUnit)
-		seconds := int(hook.Timeout / time.Second)
-		if spec.format == formatHermesYAML && seconds > 300 {
+		if spec.format == formatHermesYAML && hook.Timeout > 300*time.Second {
 			return profileSpec{}, "", nil, fmt.Errorf("Hermes hook timeout must not exceed 300 seconds")
 		}
 		matcher := nativeMatcher(spec, strings.TrimSpace(hook.Matcher))

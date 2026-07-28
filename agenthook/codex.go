@@ -15,5 +15,6 @@ func codexProfile() profileSpec {
 		func() (string, error) { return userDotDir(".codex") },
 	)
 	spec.windowsCommandStyle = windowsCommandNested
+	spec.shellToolName = ToolBash
 	return spec
 }

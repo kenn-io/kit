@@ -75,6 +75,7 @@ type profileSpec struct {
 	profile             Profile
 	format              configFormat
 	shellTool           string
+	shellToolName       string
 	defaultDir          func() (string, error)
 	configEnvSubdir     string
 	eventName           func(Event) string
@@ -114,7 +115,8 @@ func newProfileSpec(
 ) profileSpec {
 	return profileSpec{
 		profile: profile, format: format, shellTool: shellTool,
-		defaultDir: defaultDir, timeoutUnit: time.Second, timeoutField: "timeout",
+		shellToolName: shellTool,
+		defaultDir:    defaultDir, timeoutUnit: time.Second, timeoutField: "timeout",
 	}
 }
 

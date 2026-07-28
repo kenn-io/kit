@@ -2,7 +2,9 @@ package agenthook
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
+	"math/big"
 	"strings"
 )
 
@@ -15,6 +17,15 @@ func planDirectJSONConfig(
 	root, exists, err := readJSONConfig(path)
 	if err != nil {
 		return nil, false, err
+	}
+	if spec.requireVersion {
+		if version, ok := root["version"]; ok {
+			if !directJSONVersionOne(version) {
+				return nil, false, fmt.Errorf(
+					"agent hook config %s version must be 1", path,
+				)
+			}
+		}
 	}
 	before, err := marshalJSONConfig(root)
 	if err != nil {
@@ -66,6 +77,15 @@ func planDirectJSONConfig(
 		changed = false
 	}
 	return after, changed, nil
+}
+
+func directJSONVersionOne(value any) bool {
+	number, ok := value.(json.Number)
+	if !ok {
+		return false
+	}
+	parsed, ok := new(big.Rat).SetString(number.String())
+	return ok && parsed.Cmp(big.NewRat(1, 1)) == 0
 }
 
 func removeOwnedDirectJSONHooks(hooks map[string]any, marker, path string) error {

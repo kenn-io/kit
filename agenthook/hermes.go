@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -42,7 +43,7 @@ var hermesSupportedEvents = []Event{
 }
 
 func hermesProfile() profileSpec {
-	return newProfileSpec(
+	spec := newProfileSpec(
 		Profile{
 			Agent: AgentHermes, DisplayName: "Hermes Agent",
 			ConfigEnvironment: "HERMES_HOME", ConfigFilename: "config.yaml",
@@ -52,6 +53,20 @@ func hermesProfile() profileSpec {
 		"terminal",
 		hermesDefaultDir,
 	)
+	spec.eventName = hermesEventName
+	return spec
+}
+
+func hermesEventName(event Event) string {
+	field, ok := reflect.TypeFor[hermesHooks]().FieldByName(string(event))
+	if !ok {
+		return string(event)
+	}
+	name, _, _ := strings.Cut(field.Tag.Get("yaml"), ",")
+	if name == "" {
+		return string(event)
+	}
+	return name
 }
 
 func planHermesConfig(
@@ -73,32 +88,20 @@ func planHermesConfig(
 		return nil, false, err
 	}
 	if hooksNode != nil {
-		var configured hermesHooks
-		if err := hooksNode.Decode(&configured); err != nil {
-			return nil, false, fmt.Errorf("decode Hermes hooks in %s: %w", path, err)
+		if err := removeOwnedHermesHookNodes(hooksNode, marker, path); err != nil {
+			return nil, false, err
 		}
-		configured.removeOwned(marker)
 		if !uninstall {
 			for _, hook := range hooks {
-				entries, ok := configured.entries(hook.event)
-				if !ok {
-					return nil, false, fmt.Errorf("Hermes does not support %s hooks", hook.event)
-				}
-				*entries = append(*entries, hermesHook{
+				if err := appendHermesHookNode(hooksNode, hook.name, hermesHook{
 					Matcher: hook.matcher,
 					Command: command,
 					Timeout: hook.timeout,
-				})
+				}, path); err != nil {
+					return nil, false, err
+				}
 			}
 		}
-		var encoded yaml.Node
-		if err := encoded.Encode(configured); err != nil {
-			return nil, false, fmt.Errorf("encode Hermes hooks in %s: %w", path, err)
-		}
-		encoded.HeadComment = hooksNode.HeadComment
-		encoded.LineComment = hooksNode.LineComment
-		encoded.FootComment = hooksNode.FootComment
-		*hooksNode = encoded
 	}
 	after, err := yaml.Marshal(document)
 	if err != nil {
@@ -111,50 +114,65 @@ func planHermesConfig(
 	return after, changed, nil
 }
 
-func (h *hermesHooks) entries(event Event) (*[]hermesHook, bool) {
-	switch event {
-	case EventSessionStart:
-		return &h.SessionStart, true
-	case EventUserPromptSubmit:
-		return &h.UserPromptSubmit, true
-	case EventPreToolUse:
-		return &h.PreToolUse, true
-	case EventPostToolUse:
-		return &h.PostToolUse, true
-	case EventPermissionRequest:
-		return &h.PermissionRequest, true
-	case EventStop:
-		return &h.Stop, true
-	case EventSessionEnd:
-		return &h.SessionEnd, true
-	default:
-		return nil, false
+func removeOwnedHermesHookNodes(hooks *yaml.Node, marker, path string) error {
+	for i := 0; i+1 < len(hooks.Content); {
+		event := hooks.Content[i]
+		entries := hooks.Content[i+1]
+		if entries.Kind != yaml.SequenceNode {
+			if isHermesEventName(event.Value) {
+				return fmt.Errorf(
+					"Hermes config %s event %q must be an array", path, event.Value,
+				)
+			}
+			i += 2
+			continue
+		}
+		kept := make([]*yaml.Node, 0, len(entries.Content))
+		for _, entry := range entries.Content {
+			command := yamlField(entry, "command")
+			if command != nil && command.Kind == yaml.ScalarNode &&
+				strings.Contains(command.Value, marker) {
+				continue
+			}
+			kept = append(kept, entry)
+		}
+		if len(kept) == 0 && len(entries.Content) > 0 {
+			hooks.Content = append(hooks.Content[:i], hooks.Content[i+2:]...)
+			continue
+		}
+		entries.Content = kept
+		i += 2
 	}
+	return nil
 }
 
-func (h *hermesHooks) removeOwned(marker string) {
+func appendHermesHookNode(hooks *yaml.Node, event string, hook hermesHook, path string) error {
+	entries := yamlField(hooks, event)
+	if entries == nil {
+		entries = &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+		hooks.Content = append(hooks.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: event},
+			entries,
+		)
+	}
+	if entries.Kind != yaml.SequenceNode {
+		return fmt.Errorf("Hermes config %s event %q must be an array", path, event)
+	}
+	var encoded yaml.Node
+	if err := encoded.Encode(hook); err != nil {
+		return fmt.Errorf("encode Hermes hook %q in %s: %w", event, path, err)
+	}
+	entries.Content = append(entries.Content, &encoded)
+	return nil
+}
+
+func isHermesEventName(name string) bool {
 	for _, event := range hermesSupportedEvents {
-		entries, _ := h.entries(event)
-		*entries = keepOtherHermesHooks(*entries, marker)
-	}
-	for event, entries := range h.Extra {
-		entries = keepOtherHermesHooks(entries, marker)
-		if len(entries) == 0 {
-			delete(h.Extra, event)
-		} else {
-			h.Extra[event] = entries
+		if hermesEventName(event) == name {
+			return true
 		}
 	}
-}
-
-func keepOtherHermesHooks(hooks []hermesHook, marker string) []hermesHook {
-	kept := make([]hermesHook, 0, len(hooks))
-	for _, hook := range hooks {
-		if !strings.Contains(hook.Command, marker) {
-			kept = append(kept, hook)
-		}
-	}
-	return kept
+	return false
 }
 
 func readHermesConfig(path string) (*yaml.Node, bool, error) {

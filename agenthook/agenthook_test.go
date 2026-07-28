@@ -2,6 +2,7 @@ package agenthook
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -81,6 +82,23 @@ func TestBuildCommandQuotesNativeAndWindowsArguments(t *testing.T) {
 	assert.Equal(
 		`"/opt/Example Agent/bin/hook" agent-hook run --config "/tmp/example config.toml"`,
 		commands.Windows,
+	)
+	assert.Equal(
+		`& '/opt/Example Agent/bin/hook' 'agent-hook' 'run' '--config' '/tmp/example config.toml'`,
+		commands.PowerShell,
+	)
+}
+
+func TestBuildCommandQuotesPowerShellArguments(t *testing.T) {
+	commands, err := BuildCommand(
+		`C:\Program Files\hook.exe`,
+		`a'b`, `$value;&`, "",
+	)
+
+	require.NoError(t, err)
+	assert.Equal(t,
+		`& 'C:\Program Files\hook.exe' 'a''b' '$value;&' ''`,
+		commands.PowerShell,
 	)
 }
 
@@ -207,6 +225,24 @@ func TestPlanInstallQwenUsesClaudeEventsAndMillisecondTimeouts(t *testing.T) {
 	assert.Equal(float64(2000), handler["timeout"])
 }
 
+func TestPlanInstallAcceptsWholeMillisecondTimeouts(t *testing.T) {
+	for _, agent := range []Agent{AgentGemini, AgentQwen} {
+		t.Run(string(agent), func(t *testing.T) {
+			result, err := PlanInstall(agent, InstallOptions{
+				ConfigPath: filepath.Join(t.TempDir(), "settings.json"),
+				Command:    "/opt/hook " + testMarker,
+				Marker:     testMarker,
+				Hooks: []Hook{{
+					Event: EventPreToolUse, Timeout: 1500 * time.Millisecond,
+				}},
+			})
+
+			require.NoError(t, err)
+			assert.Contains(t, string(result.Data), `"timeout": 1500`)
+		})
+	}
+}
+
 func TestPlanInstallGeminiTranslatesClaudeEvents(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
@@ -289,6 +325,84 @@ func TestInstallCopilotUsesDirectEntriesAndPreservesOtherHooks(t *testing.T) {
 	assert.True(result.Changed)
 	assert.Contains(string(result.Data), "keep-me")
 	assert.NotContains(string(result.Data), testMarker)
+}
+
+func TestPlanInstallCopilotBuildsBashAndPowerShellCommands(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	result, err := PlanInstall(AgentCopilot, InstallOptions{
+		ConfigPath: filepath.Join(t.TempDir(), "agenthook.json"),
+		Executable: `C:\Program Files\hook.exe`,
+		Arguments:  []string{"agent-hook", "run", "--source", "shared-agent-hook-test"},
+		Marker:     testMarker,
+		Hooks:      []Hook{{Event: EventSessionStart}},
+	})
+
+	require.NoError(err)
+	var root map[string]any
+	require.NoError(json.Unmarshal(result.Data, &root))
+	entry := root["hooks"].(map[string]any)["SessionStart"].([]any)[0].(map[string]any)
+	assert.Equal(
+		`'C:\Program Files\hook.exe' agent-hook run --source shared-agent-hook-test`,
+		entry["bash"],
+	)
+	assert.Equal(
+		`& 'C:\Program Files\hook.exe' 'agent-hook' 'run' '--source' 'shared-agent-hook-test'`,
+		entry["powershell"],
+	)
+}
+
+func TestCopilotCommandSelectionKeepsBashPOSIXOnWindows(t *testing.T) {
+	native, windows := profileCommands(copilotProfile(), Commands{
+		Native:     `"C:\Program Files\hook.exe" run`,
+		POSIX:      `'C:\Program Files\hook.exe' run`,
+		Windows:    `"C:\Program Files\hook.exe" run`,
+		PowerShell: `& 'C:\Program Files\hook.exe' 'run'`,
+	})
+
+	assert.Equal(t, `'C:\Program Files\hook.exe' run`, native)
+	assert.Equal(t, `& 'C:\Program Files\hook.exe' 'run'`, windows)
+}
+
+func TestPlanDirectJSONRejectsUnsupportedSchemaVersions(t *testing.T) {
+	for _, agent := range []Agent{AgentCopilot, AgentCursor} {
+		for _, version := range []string{`2`, `"1"`, `true`} {
+			t.Run(fmt.Sprintf("%s/%s", agent, version), func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), "hooks.json")
+				require.NoError(t, os.WriteFile(path, fmt.Appendf(nil,
+					`{"version":%s,"hooks":{}}`, version), 0o600))
+
+				_, err := PlanInstall(agent, InstallOptions{
+					ConfigPath: path,
+					Command:    "/opt/hook " + testMarker,
+					Marker:     testMarker,
+					Hooks:      []Hook{{Event: EventSessionStart}},
+				})
+
+				require.Error(t, err)
+				assert.ErrorContains(t, err, "version must be 1")
+			})
+		}
+	}
+}
+
+func TestPlanDirectJSONAcceptsNumericSchemaVersionOne(t *testing.T) {
+	for _, version := range []string{`1`, `1.0`, `1e0`} {
+		t.Run(version, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "hooks.json")
+			require.NoError(t, os.WriteFile(path, fmt.Appendf(nil,
+				`{"version":%s,"hooks":{}}`, version), 0o600))
+
+			_, err := PlanInstall(AgentCursor, InstallOptions{
+				ConfigPath: path,
+				Command:    "/opt/hook " + testMarker,
+				Marker:     testMarker,
+				Hooks:      []Hook{{Event: EventSessionStart}},
+			})
+
+			require.NoError(t, err)
+		})
+	}
 }
 
 func TestPlanInstallCursorUsesNativeDirectEntries(t *testing.T) {
@@ -385,6 +499,133 @@ hooks:
 	require.NoError(err)
 	assert.Contains(string(data), "keep-me")
 	assert.NotContains(string(data), testMarker)
+}
+
+func TestPlanUninstallHermesPreservesUnrelatedHookNodes(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(os.WriteFile(path, []byte(`hooks:
+  # keep event note
+  pre_tool_call:
+    # keep entry note
+    - matcher: terminal # keep matcher note
+      command: keep-me
+  post_tool_call:
+    - command: keep-after
+`), 0o600))
+
+	result, err := PlanUninstall(AgentHermes, path, testMarker)
+
+	require.NoError(err)
+	assert.False(result.Changed)
+	data := string(result.Data)
+	assert.Contains(data, "# keep event note")
+	assert.Contains(data, "# keep entry note")
+	assert.Contains(data, "# keep matcher note")
+	assert.Less(strings.Index(data, "pre_tool_call"), strings.Index(data, "post_tool_call"))
+}
+
+func TestNormalizeConvertsNativePayloadToClaudeShape(t *testing.T) {
+	tests := []struct {
+		name  string
+		agent Agent
+		input string
+		want  map[string]any
+	}{
+		{
+			name:  "claude payload stays canonical",
+			agent: AgentClaude,
+			input: `{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Bash","future":9007199254740993}`,
+			want: map[string]any{
+				"session_id": "s1", "hook_event_name": "PreToolUse", "tool_name": "Bash",
+				"future": json.Number("9007199254740993"),
+			},
+		},
+		{
+			name:  "cursor aliases",
+			agent: AgentCursor,
+			input: `{"conversation_id":"c1","generation_id":"g1","hook_event_name":"postToolUse","tool_name":"Shell","tool_input":{"command":"go test ./..."},"tool_output":{"exitCode":0}}`,
+			want: map[string]any{
+				"session_id": "c1", "hook_event_name": "PostToolUse", "tool_name": "Bash",
+				"tool_response":   map[string]any{"exitCode": json.Number("0")},
+				"conversation_id": "c1", "generation_id": "g1",
+			},
+		},
+		{
+			name:  "gemini event and response aliases",
+			agent: AgentGemini,
+			input: `{"session_id":"g1","hook_event_name":"AfterAgent","prompt_response":"finished","stop_hook_active":true}`,
+			want: map[string]any{
+				"session_id": "g1", "hook_event_name": "Stop",
+				"last_assistant_message": "finished", "stop_hook_active": true,
+			},
+		},
+		{
+			name:  "hermes promotes extra tool fields",
+			agent: AgentHermes,
+			input: `{"session_id":"h1","hook_event_name":"post_tool_call","tool_name":"terminal","tool_input":{"command":"pwd"},"extra":{"result":"/tmp","tool_call_id":"call-1","turn_id":"turn-1","status":"ok"}}`,
+			want: map[string]any{
+				"session_id": "h1", "hook_event_name": "PostToolUse", "tool_name": "Bash",
+				"tool_use_id": "call-1", "turn_id": "turn-1", "tool_response": "/tmp",
+				"extra": map[string]any{
+					"result": "/tmp", "tool_call_id": "call-1", "turn_id": "turn-1", "status": "ok",
+				},
+			},
+		},
+		{
+			name:  "qwen shell tool",
+			agent: AgentQwen,
+			input: `{"session_id":"q1","hook_event_name":"PreToolUse","tool_name":"run_shell_command"}`,
+			want: map[string]any{
+				"session_id": "q1", "hook_event_name": "PreToolUse", "tool_name": "Bash",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := Normalize(tt.agent, strings.NewReader(tt.input))
+
+			require.NoError(t, err)
+			decoder := json.NewDecoder(strings.NewReader(string(data)))
+			decoder.UseNumber()
+			var got map[string]any
+			require.NoError(t, decoder.Decode(&got))
+			for key, want := range tt.want {
+				assert.Equal(t, want, got[key], key)
+			}
+		})
+	}
+}
+
+func TestNormalizeKeepsCanonicalFieldsOverAliases(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	data, err := Normalize(AgentCursor, strings.NewReader(`{
+  "session_id":"canonical",
+  "conversation_id":"native",
+  "hook_event_name":"preToolUse",
+  "tool_response":{"canonical":true},
+  "tool_output":{"native":true}
+}`))
+
+	require.NoError(err)
+	var got map[string]any
+	require.NoError(json.Unmarshal(data, &got))
+	assert.Equal("canonical", got["session_id"])
+	assert.Equal(map[string]any{"canonical": true}, got["tool_response"])
+}
+
+func TestNormalizeRejectsInvalidInput(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	_, err := Normalize(Agent("unknown"), strings.NewReader(`{}`))
+	require.Error(err)
+	assert.ErrorContains(err, "unsupported agent hook integration")
+
+	_, err = Normalize(AgentClaude, strings.NewReader(`{"session_id":"s1"} {}`))
+	require.Error(err)
+	assert.ErrorContains(err, "multiple JSON values")
 }
 
 func TestHermesRejectsUnsupportedClaudeStyleHooks(t *testing.T) {
