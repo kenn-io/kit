@@ -1,0 +1,452 @@
+package agenthook
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
+)
+
+const testMarker = "--source shared-agent-hook-test"
+
+func TestProfilesExposeClaudeStyleEvents(t *testing.T) {
+	t.Parallel()
+	assert := assert.New(t)
+	require := require.New(t)
+
+	profiles := Profiles()
+	require.Len(profiles, 8)
+	assert.Equal([]Agent{
+		AgentClaude,
+		AgentCodex,
+		AgentCopilot,
+		AgentCursor,
+		AgentDroid,
+		AgentGemini,
+		AgentHermes,
+		AgentQwen,
+	}, []Agent{
+		profiles[0].Agent,
+		profiles[1].Agent,
+		profiles[2].Agent,
+		profiles[3].Agent,
+		profiles[4].Agent,
+		profiles[5].Agent,
+		profiles[6].Agent,
+		profiles[7].Agent,
+	})
+	assert.Contains(profiles[6].SupportedEvents, EventPreToolUse)
+	assert.NotContains(profiles[6].SupportedEvents, EventNotification)
+	assert.Contains(profiles[7].SupportedEvents, EventPermissionRequest)
+}
+
+func TestPlanInstallDefaultsToEveryProfileEvent(t *testing.T) {
+	assert := assert.New(t)
+	result, err := PlanInstall(AgentDroid, InstallOptions{
+		ConfigPath: filepath.Join(t.TempDir(), "hooks.json"),
+		Command:    "/opt/hook " + testMarker,
+		Marker:     testMarker,
+	})
+
+	require.NoError(t, err)
+	assert.True(result.Changed)
+	assert.Contains(string(result.Data), `"PreToolUse"`)
+	assert.Contains(string(result.Data), `"PostToolUse"`)
+	assert.Contains(string(result.Data), `"Stop"`)
+}
+
+func TestBuildCommandQuotesNativeAndWindowsArguments(t *testing.T) {
+	assert := assert.New(t)
+	commands, err := BuildCommand(
+		"/opt/Example Agent/bin/hook",
+		"agent-hook", "run", "--config", "/tmp/example config.toml",
+	)
+
+	require.NoError(t, err)
+	if runtime.GOOS == "windows" {
+		assert.Equal(commands.Windows, commands.Native)
+	} else {
+		assert.Equal(
+			`'/opt/Example Agent/bin/hook' agent-hook run --config '/tmp/example config.toml'`,
+			commands.Native,
+		)
+	}
+	assert.Equal(
+		`"/opt/Example Agent/bin/hook" agent-hook run --config "/tmp/example config.toml"`,
+		commands.Windows,
+	)
+}
+
+func TestPlanInstallBuildsCommandFromExecutable(t *testing.T) {
+	result, err := PlanInstall(AgentClaude, InstallOptions{
+		ConfigPath: filepath.Join(t.TempDir(), "settings.json"),
+		Executable: "/opt/Example Agent/hook",
+		Arguments:  []string{"agent-hook", "run", "--source", "shared-agent-hook-test"},
+		Marker:     testMarker,
+		Hooks:      []Hook{{Event: EventSessionStart}},
+	})
+
+	require.NoError(t, err)
+	assert.Contains(t, string(result.Data), "Example Agent")
+	assert.Contains(t, string(result.Data), testMarker)
+}
+
+func TestConfigPathHonorsAgentHomes(t *testing.T) {
+	tests := []struct {
+		agent Agent
+		env   string
+		path  string
+	}{
+		{agent: AgentClaude, env: "CLAUDE_CONFIG_DIR", path: "settings.json"},
+		{agent: AgentCodex, env: "CODEX_HOME", path: "hooks.json"},
+		{agent: AgentCopilot, env: "COPILOT_HOME", path: filepath.Join("hooks", "agenthook.json")},
+		{agent: AgentGemini, env: "GEMINI_CLI_HOME", path: filepath.Join(".gemini", "settings.json")},
+		{agent: AgentHermes, env: "HERMES_HOME", path: "config.yaml"},
+		{agent: AgentQwen, env: "QWEN_HOME", path: "settings.json"},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.agent), func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv(tt.env, dir)
+
+			path, err := ConfigPath(tt.agent)
+
+			require.NoError(t, err)
+			assert.Equal(t, filepath.Join(dir, tt.path), path)
+		})
+	}
+}
+
+func TestInstallJSONPreservesOtherHooksAndReplacesOwnedHooks(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	path := filepath.Join(t.TempDir(), "hooks.json")
+	oldCommand := "/old/middleman agent-hook run " + testMarker
+	require.NoError(os.WriteFile(path, []byte(`{
+  "sequence": 9007199254740993,
+  "hooks": {
+    "Stop": [{"hooks": [{"type": "command", "command": "keep-me"}]}],
+    "SessionStart": [{"hooks": [{"type": "command", "command": "`+oldCommand+`"}]}]
+  }
+}`), 0o640))
+	command := "/opt/middleman agent-hook run " + testMarker
+	opts := InstallOptions{
+		ConfigPath: path,
+		Command:    command,
+		CommandWindows: `C:\Program Files\middleman.exe agent-hook run ` +
+			testMarker,
+		Marker: testMarker,
+		Hooks: []Hook{
+			{Event: EventPreToolUse, Matcher: ToolBash, Timeout: 2 * time.Second},
+			{Event: EventStop, Timeout: 2 * time.Second},
+		},
+	}
+
+	result, err := Install(AgentCodex, opts)
+	require.NoError(err)
+	assert.True(result.Changed)
+	info, err := os.Stat(path)
+	require.NoError(err)
+	assert.Equal(os.FileMode(0o640), info.Mode().Perm())
+
+	data, err := os.ReadFile(path)
+	require.NoError(err)
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.UseNumber()
+	var root map[string]any
+	require.NoError(decoder.Decode(&root))
+	assert.Equal(json.Number("9007199254740993"), root["sequence"])
+	hooks := root["hooks"].(map[string]any)
+	assert.NotContains(hooks, "SessionStart")
+	assert.Contains(string(data), "keep-me")
+	assert.Contains(string(data), `"matcher": "^Bash$"`)
+	assert.Contains(string(data), `"commandWindows"`)
+	assert.Equal(2, strings.Count(string(data), `"command": "`+command+`"`))
+
+	result, err = Install(AgentCodex, opts)
+	require.NoError(err)
+	assert.False(result.Changed)
+
+	result, err = Uninstall(AgentCodex, path, testMarker)
+	require.NoError(err)
+	assert.True(result.Changed)
+	data, err = os.ReadFile(path)
+	require.NoError(err)
+	assert.Contains(string(data), "keep-me")
+	assert.NotContains(string(data), testMarker)
+}
+
+func TestPlanInstallQwenUsesClaudeEventsAndMillisecondTimeouts(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	result, err := PlanInstall(AgentQwen, InstallOptions{
+		ConfigPath: filepath.Join(t.TempDir(), "settings.json"),
+		Command:    "/opt/hook " + testMarker,
+		Marker:     testMarker,
+		Hooks: []Hook{{
+			Event: EventPreToolUse, Matcher: ToolBash, Timeout: 2 * time.Second,
+		}},
+	})
+
+	require.NoError(err)
+	var root map[string]any
+	require.NoError(json.Unmarshal(result.Data, &root))
+	hooks := root["hooks"].(map[string]any)
+	entries := hooks["PreToolUse"].([]any)
+	entry := entries[0].(map[string]any)
+	assert.Equal("run_shell_command", entry["matcher"])
+	handlers := entry["hooks"].([]any)
+	handler := handlers[0].(map[string]any)
+	assert.Equal(float64(2000), handler["timeout"])
+}
+
+func TestPlanInstallGeminiTranslatesClaudeEvents(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	result, err := PlanInstall(AgentGemini, InstallOptions{
+		ConfigPath: filepath.Join(t.TempDir(), "settings.json"),
+		Command:    "/opt/hook " + testMarker,
+		Marker:     testMarker,
+		Hooks: []Hook{
+			{Event: EventUserPromptSubmit},
+			{Event: EventPreToolUse, Matcher: ToolBash, Timeout: 2 * time.Second},
+			{Event: EventPostToolUse},
+			{Event: EventStop},
+		},
+	})
+
+	require.NoError(err)
+	var root map[string]any
+	require.NoError(json.Unmarshal(result.Data, &root))
+	hooks := root["hooks"].(map[string]any)
+	assert.Contains(hooks, "BeforeAgent")
+	assert.Contains(hooks, "BeforeTool")
+	assert.Contains(hooks, "AfterTool")
+	assert.Contains(hooks, "AfterAgent")
+	assert.NotContains(hooks, "UserPromptSubmit")
+	beforeTool := hooks["BeforeTool"].([]any)[0].(map[string]any)
+	assert.Equal("run_shell_command", beforeTool["matcher"])
+	handler := beforeTool["hooks"].([]any)[0].(map[string]any)
+	assert.Equal(float64(2000), handler["timeout"])
+}
+
+func TestInstallCopilotUsesDirectEntriesAndPreservesOtherHooks(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	path := filepath.Join(t.TempDir(), "agenthook.json")
+	oldCommand := "/old/hook " + testMarker
+	require.NoError(os.WriteFile(path, []byte(`{
+  "version": 1,
+  "future": "keep-top-level",
+  "hooks": {
+    "Stop": [{"type": "command", "command": "keep-me"}],
+    "SessionStart": [{"type": "command", "bash": "`+oldCommand+`"}]
+  }
+}`), 0o600))
+	command := "/opt/hook " + testMarker
+	commandWindows := `C:\Program Files\hook.exe ` + testMarker
+	opts := InstallOptions{
+		ConfigPath:     path,
+		Command:        command,
+		CommandWindows: commandWindows,
+		Marker:         testMarker,
+		Hooks: []Hook{
+			{Event: EventPreToolUse, Matcher: ToolBash, Timeout: 2 * time.Second},
+			{Event: EventStop},
+		},
+	}
+
+	result, err := Install(AgentCopilot, opts)
+	require.NoError(err)
+	assert.True(result.Changed)
+	var root map[string]any
+	require.NoError(json.Unmarshal(result.Data, &root))
+	assert.Equal(float64(1), root["version"])
+	assert.Equal("keep-top-level", root["future"])
+	hooks := root["hooks"].(map[string]any)
+	assert.NotContains(hooks, "SessionStart")
+	assert.Len(hooks["Stop"], 2)
+	preTool := hooks["PreToolUse"].([]any)[0].(map[string]any)
+	assert.Equal("command", preTool["type"])
+	assert.Equal("Bash", preTool["matcher"])
+	assert.Equal(command, preTool["bash"])
+	assert.Equal(commandWindows, preTool["powershell"])
+	assert.Equal(float64(2), preTool["timeoutSec"])
+
+	result, err = Install(AgentCopilot, opts)
+	require.NoError(err)
+	assert.False(result.Changed)
+
+	result, err = Uninstall(AgentCopilot, path, testMarker)
+	require.NoError(err)
+	assert.True(result.Changed)
+	assert.Contains(string(result.Data), "keep-me")
+	assert.NotContains(string(result.Data), testMarker)
+}
+
+func TestPlanInstallCursorUsesNativeDirectEntries(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	result, err := PlanInstall(AgentCursor, InstallOptions{
+		ConfigPath: filepath.Join(t.TempDir(), "hooks.json"),
+		Command:    "/opt/hook " + testMarker,
+		Marker:     testMarker,
+		Hooks: []Hook{
+			{Event: EventUserPromptSubmit},
+			{Event: EventPreToolUse, Matcher: ToolBash, Timeout: 2 * time.Second},
+			{Event: EventPostToolUseFailure},
+			{Event: EventStop},
+		},
+	})
+
+	require.NoError(err)
+	var root map[string]any
+	require.NoError(json.Unmarshal(result.Data, &root))
+	assert.Equal(float64(1), root["version"])
+	hooks := root["hooks"].(map[string]any)
+	assert.Contains(hooks, "beforeSubmitPrompt")
+	assert.Contains(hooks, "postToolUseFailure")
+	assert.Contains(hooks, "stop")
+	preTool := hooks["preToolUse"].([]any)[0].(map[string]any)
+	assert.Equal("command", preTool["type"])
+	assert.Equal("Shell", preTool["matcher"])
+	assert.Equal("/opt/hook "+testMarker, preTool["command"])
+	assert.Equal(float64(2), preTool["timeout"])
+}
+
+func TestInstallHermesTranslatesEventsAndPreservesYAML(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	oldCommand := "/old/middleman agent-hook run " + testMarker
+	require.NoError(os.WriteFile(path, []byte(`# keep this operator note
+model: test-model
+hooks_auto_accept: false
+hooks:
+  pre_tool_call:
+    - matcher: web_search
+      command: keep-me
+  transform_tool_result:
+    - command: keep-transform
+      future_field: keep-extra
+  on_session_start:
+    - command: "`+oldCommand+`"
+`), 0o600))
+	command := "/opt/middleman agent-hook run " + testMarker
+	opts := InstallOptions{
+		ConfigPath: path,
+		Command:    command,
+		Marker:     testMarker,
+		Hooks: []Hook{
+			{Event: EventPreToolUse, Matcher: ToolBash, Timeout: 2 * time.Second},
+			{Event: EventStop, Timeout: 2 * time.Second},
+		},
+	}
+
+	result, err := Install(AgentHermes, opts)
+	require.NoError(err)
+	assert.True(result.Changed)
+	data, err := os.ReadFile(path)
+	require.NoError(err)
+	assert.Contains(string(data), "# keep this operator note")
+	assert.Contains(string(data), "keep-me")
+	assert.NotContains(string(data), oldCommand)
+
+	var root map[string]any
+	require.NoError(yaml.Unmarshal(data, &root))
+	hooks := root["hooks"].(map[string]any)
+	assert.NotContains(hooks, "on_session_start")
+	transform := hooks["transform_tool_result"].([]any)[0].(map[string]any)
+	assert.Equal("keep-extra", transform["future_field"])
+	preTool := hooks["pre_tool_call"].([]any)
+	assert.Len(preTool, 2)
+	installed := preTool[1].(map[string]any)
+	assert.Equal("terminal", installed["matcher"])
+	assert.Equal(command, installed["command"])
+	assert.Equal(2, installed["timeout"])
+	stop := hooks["post_llm_call"].([]any)[0].(map[string]any)
+	assert.Equal(command, stop["command"])
+
+	result, err = Install(AgentHermes, opts)
+	require.NoError(err)
+	assert.False(result.Changed)
+
+	result, err = Uninstall(AgentHermes, path, testMarker)
+	require.NoError(err)
+	assert.True(result.Changed)
+	data, err = os.ReadFile(path)
+	require.NoError(err)
+	assert.Contains(string(data), "keep-me")
+	assert.NotContains(string(data), testMarker)
+}
+
+func TestHermesRejectsUnsupportedClaudeStyleHooks(t *testing.T) {
+	tests := []struct {
+		name string
+		hook Hook
+		want string
+	}{
+		{
+			name: "event",
+			hook: Hook{Event: EventNotification},
+			want: "does not support Notification",
+		},
+		{
+			name: "matcher",
+			hook: Hook{Event: EventStop, Matcher: ToolBash},
+			want: "only supports matchers",
+		},
+		{
+			name: "timeout",
+			hook: Hook{Event: EventStop, Timeout: 301 * time.Second},
+			want: "must not exceed 300 seconds",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := PlanInstall(AgentHermes, InstallOptions{
+				ConfigPath: filepath.Join(t.TempDir(), "config.yaml"),
+				Command:    "/opt/hook " + testMarker,
+				Marker:     testMarker,
+				Hooks:      []Hook{tt.hook},
+			})
+
+			require.Error(t, err)
+			assert.ErrorContains(t, err, tt.want)
+		})
+	}
+}
+
+func TestInstallPreservesConfigSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation commonly requires elevated privileges on Windows")
+	}
+	assert := assert.New(t)
+	require := require.New(t)
+	target := filepath.Join(t.TempDir(), "settings.json")
+	require.NoError(os.WriteFile(target, []byte(`{"hooks":{}}`), 0o600))
+	link := filepath.Join(t.TempDir(), "settings.json")
+	require.NoError(os.Symlink(target, link))
+
+	_, err := Install(AgentClaude, InstallOptions{
+		ConfigPath: link,
+		Command:    "/opt/hook " + testMarker,
+		Marker:     testMarker,
+		Hooks:      []Hook{{Event: EventSessionStart}},
+	})
+
+	require.NoError(err)
+	info, err := os.Lstat(link)
+	require.NoError(err)
+	assert.NotZero(info.Mode() & os.ModeSymlink)
+	data, err := os.ReadFile(target)
+	require.NoError(err)
+	assert.Contains(string(data), testMarker)
+}
