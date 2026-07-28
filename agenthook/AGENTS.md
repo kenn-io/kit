@@ -3,9 +3,9 @@
 - The exported event and tool vocabulary follows Claude Code. Agent-specific
   names belong in profiles; callers should not need native event names to
   describe equivalent hooks.
-- Normalize must produce Claude Code field, event, and tool names while
-  preserving native fields that have no Claude equivalent. Agent-specific
-  structural promotion belongs here rather than in consuming applications.
+- Handle must dispatch typed Claude Code inputs after normalizing field, event,
+  and tool names. Preserve the complete normalized payload in CommonInput.Raw;
+  agent-specific structural promotion belongs here rather than in consumers.
 - Profiles own config discovery, native event and tool translation, file
   format, and format-specific validation. Add support for a new harness here
   rather than in each consuming application.

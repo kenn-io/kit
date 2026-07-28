@@ -25,17 +25,22 @@
 // Installing a Hermes profile does not enable hooks_auto_accept. Hermes retains
 // its first-use consent flow for every event and command pair.
 //
-// A command installed for multiple harnesses can keep one Claude-shaped
-// handler. Pass the selected agent to Normalize before decoding or forwarding
-// the hook payload:
+// A command installed for multiple harnesses can use one typed Claude handler.
+// Embed NoopHandler and override only the events the application needs:
 //
-//	payload, err := agenthook.Normalize(agent, os.Stdin)
-//	if err != nil {
-//		return err
+//	type hooks struct {
+//		agenthook.NoopHandler
 //	}
-//	return handleClaudeHook(bytes.NewReader(payload))
 //
-// Normalize retains native fields that have no Claude equivalent. Consumers
-// can therefore use a Claude-compatible struct while still inspecting
-// harness-specific extensions when needed.
+//	func (hooks) PostToolUse(
+//		ctx context.Context,
+//		input agenthook.PostToolUseInput,
+//	) (agenthook.Output, error) {
+//		return recordToolUse(ctx, input)
+//	}
+//
+//	err := agenthook.Handle(ctx, agent, os.Stdin, os.Stdout, hooks{})
+//
+// Handle translates native fields before typed dispatch. CommonInput.Raw keeps
+// the complete normalized payload so handlers can inspect extension fields.
 package agenthook

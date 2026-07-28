@@ -584,7 +584,7 @@ func TestNormalizeConvertsNativePayloadToClaudeShape(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			data, err := Normalize(tt.agent, strings.NewReader(tt.input))
+			data, err := normalize(tt.agent, strings.NewReader(tt.input))
 
 			require.NoError(t, err)
 			decoder := json.NewDecoder(strings.NewReader(string(data)))
@@ -601,7 +601,7 @@ func TestNormalizeConvertsNativePayloadToClaudeShape(t *testing.T) {
 func TestNormalizeKeepsCanonicalFieldsOverAliases(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
-	data, err := Normalize(AgentCursor, strings.NewReader(`{
+	data, err := normalize(AgentCursor, strings.NewReader(`{
   "session_id":"canonical",
   "conversation_id":"native",
   "hook_event_name":"preToolUse",
@@ -619,11 +619,11 @@ func TestNormalizeKeepsCanonicalFieldsOverAliases(t *testing.T) {
 func TestNormalizeRejectsInvalidInput(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
-	_, err := Normalize(Agent("unknown"), strings.NewReader(`{}`))
+	_, err := normalize(Agent("unknown"), strings.NewReader(`{}`))
 	require.Error(err)
 	assert.ErrorContains(err, "unsupported agent hook integration")
 
-	_, err = Normalize(AgentClaude, strings.NewReader(`{"session_id":"s1"} {}`))
+	_, err = normalize(AgentClaude, strings.NewReader(`{"session_id":"s1"} {}`))
 	require.Error(err)
 	assert.ErrorContains(err, "multiple JSON values")
 }

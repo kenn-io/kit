@@ -7,10 +7,7 @@ import (
 	"io"
 )
 
-// Normalize converts one native hook payload into the Claude Code JSON shape.
-// Unknown fields are preserved so Claude-style handlers can opt into new
-// harness fields without waiting for this package to model them.
-func Normalize(agent Agent, input io.Reader) ([]byte, error) {
+func normalize(agent Agent, input io.Reader) ([]byte, error) {
 	spec, ok := profiles[agent]
 	if !ok {
 		return nil, fmt.Errorf("unsupported agent hook integration %q", agent)
