@@ -18,6 +18,11 @@ func geminiProfile() profileSpec {
 	)
 	spec.configEnvSubdir = ".gemini"
 	spec.eventName = geminiEventName
+	// Gemini BeforeTool uses top-level decision/reason and rewrites through
+	// hookSpecificOutput.tool_input rather than Claude's PreToolUse fields:
+	// https://github.com/google-gemini/gemini-cli/blob/main/docs/hooks/reference.md#beforetool
+	// https://github.com/google-gemini/gemini-cli/blob/main/packages/core/src/hooks/types.ts#L327-L347
+	spec.responseFormat = responseGemini
 	spec.timeoutUnit = time.Millisecond
 	return spec
 }

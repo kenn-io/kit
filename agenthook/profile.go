@@ -76,6 +76,7 @@ type responseFormat uint8
 const (
 	responseClaude responseFormat = iota
 	responseCopilot
+	responseGemini
 	responseHermes
 	responseObservational
 )

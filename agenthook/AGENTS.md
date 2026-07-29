@@ -15,6 +15,9 @@
 - Profiles own config discovery, native event and tool translation, file
   format, and format-specific validation. Add support for a new harness here
   rather than in each consuming application.
+- Keep an authoritative upstream documentation or implementation URL beside
+  non-obvious native matcher and response mappings so profile behavior can be
+  checked without guessing from another agent's vocabulary.
 - JSON harnesses use either Claude-style nested handlers or native direct
   entries. Keep those encodings separate, and let each profile own event names,
   timeout units, timeout fields, and cross-platform command fields.

@@ -200,6 +200,61 @@ func TestHandleEncodesTypedCopilotPermissionDecision(t *testing.T) {
   "permissionDecision": "deny",
   "permissionDecisionReason": "production command",
   "modifiedArgs": {"command":"true"}
+	}`, output.String())
+}
+
+func TestHandleEncodesGeminiToolDenial(t *testing.T) {
+	var output bytes.Buffer
+	handler := preToolHandler{output: PreToolUseOutput{
+		PermissionDecision:       PermissionDecisionDeny,
+		PermissionDecisionReason: "production command",
+	}}
+
+	err := Handle(
+		context.Background(),
+		AgentGemini,
+		strings.NewReader(`{
+  "session_id":"g1",
+  "hook_event_name":"BeforeTool",
+  "tool_name":"run_shell_command",
+  "tool_input":{"command":"false"}
+}`),
+		&output,
+		handler,
+	)
+
+	require.NoError(t, err)
+	assert.JSONEq(t, `{
+  "decision": "deny",
+  "reason": "production command"
+}`, output.String())
+}
+
+func TestHandleEncodesGeminiToolRewrite(t *testing.T) {
+	var output bytes.Buffer
+	handler := preToolHandler{output: PreToolUseOutput{
+		UpdatedInput: json.RawMessage(`{"command":"true"}`),
+	}}
+
+	err := Handle(
+		context.Background(),
+		AgentGemini,
+		strings.NewReader(`{
+  "session_id":"g1",
+  "hook_event_name":"BeforeTool",
+  "tool_name":"run_shell_command",
+  "tool_input":{"command":"false"}
+}`),
+		&output,
+		handler,
+	)
+
+	require.NoError(t, err)
+	assert.JSONEq(t, `{
+  "hookSpecificOutput": {
+    "hookEventName": "BeforeTool",
+    "tool_input": {"command":"true"}
+  }
 }`, output.String())
 }
 

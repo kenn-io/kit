@@ -147,6 +147,97 @@ func encodeCopilotResponse(event Event, value any) (map[string]any, error) {
 	return response, nil
 }
 
+// encodeGeminiResponse follows Gemini CLI's native hook response contract.
+// BeforeTool decisions are top-level, while input rewrites use
+// hookSpecificOutput.tool_input:
+// https://github.com/google-gemini/gemini-cli/blob/main/docs/hooks/reference.md#beforetool
+// https://github.com/google-gemini/gemini-cli/blob/main/packages/core/src/hooks/types.ts#L327-L347
+func encodeGeminiResponse(event Event, value any) (map[string]any, error) {
+	response := map[string]any{}
+	addSpecific := func(fields map[string]any) {
+		if len(fields) == 0 {
+			return
+		}
+		fields["hookEventName"] = geminiEventName(event)
+		response["hookSpecificOutput"] = fields
+	}
+
+	switch output := value.(type) {
+	case SessionStartOutput:
+		if err := addGeminiCommonOutput(response, output.CommonOutput); err != nil {
+			return nil, err
+		}
+		if output.InitialUserMessage != "" || output.SessionTitle != "" ||
+			len(output.WatchPaths) > 0 || output.ReloadSkills {
+			return nil, errors.New("unsupported SessionStart output fields")
+		}
+		specific := map[string]any{}
+		addValue(specific, "additionalContext", output.AdditionalContext)
+		addSpecific(specific)
+	case UserPromptSubmitOutput:
+		if err := addGeminiCommonOutput(response, output.CommonOutput); err != nil {
+			return nil, err
+		}
+		if output.SessionTitle != "" || output.SuppressOriginalPrompt {
+			return nil, errors.New("unsupported UserPromptSubmit output fields")
+		}
+		addDecision(response, output.Decision, output.Reason)
+		specific := map[string]any{}
+		addValue(specific, "additionalContext", output.AdditionalContext)
+		addSpecific(specific)
+	case PreToolUseOutput:
+		if err := addGeminiCommonOutput(response, output.CommonOutput); err != nil {
+			return nil, err
+		}
+		if output.PermissionDecision == PermissionDecisionDefer || output.AdditionalContext != "" {
+			return nil, errors.New("unsupported PreToolUse output fields")
+		}
+		addValue(response, "decision", output.PermissionDecision)
+		addValue(response, "reason", output.PermissionDecisionReason)
+		specific := map[string]any{}
+		addRaw(specific, "tool_input", output.UpdatedInput)
+		addSpecific(specific)
+	case PostToolUseOutput:
+		if err := addGeminiCommonOutput(response, output.CommonOutput); err != nil {
+			return nil, err
+		}
+		if len(output.UpdatedToolOutput) > 0 || len(output.UpdatedMCPToolOutput) > 0 {
+			return nil, errors.New("unsupported PostToolUse output fields")
+		}
+		addDecision(response, output.Decision, output.Reason)
+		specific := map[string]any{}
+		addValue(specific, "additionalContext", output.AdditionalContext)
+		addSpecific(specific)
+	case NotificationOutput:
+		if err := addGeminiCommonOutput(response, output.CommonOutput); err != nil {
+			return nil, err
+		}
+	case StopOutput:
+		if err := addGeminiCommonOutput(response, output.CommonOutput); err != nil {
+			return nil, err
+		}
+		if output.AdditionalContext != "" {
+			return nil, errors.New("unsupported Stop output fields")
+		}
+		addDecision(response, output.Decision, output.Reason)
+	case SessionEndOutput:
+		if err := addGeminiCommonOutput(response, output.CommonOutput); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, fmt.Errorf("Gemini CLI does not support %s output", event)
+	}
+	return response, nil
+}
+
+func addGeminiCommonOutput(response map[string]any, output CommonOutput) error {
+	if output.TerminalSequence != "" {
+		return errors.New("terminalSequence is unsupported")
+	}
+	addCommonOutput(response, output)
+	return nil
+}
+
 func encodeHermesResponse(event Event, value any) (map[string]any, error) {
 	response := map[string]any{}
 	if isZeroOutput(value) {
