@@ -18,7 +18,8 @@ type FindFunc func(context.Context) (RuntimeRecord, PingInfo, bool, error)
 type StartFunc func(context.Context) error
 
 // Manager coordinates discovery and optional auto-start. When FindFunc is nil,
-// Find uses Store, Discover, and Compatible.
+// Find uses Store, Discover, and Compatible. Store is still required by Ensure
+// because it identifies the start lock, even when FindFunc supplies discovery.
 type Manager struct {
 	Store      RuntimeStore
 	Discover   DiscoverOptions

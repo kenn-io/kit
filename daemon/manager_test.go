@@ -222,9 +222,10 @@ func TestManagerEnsureSerializesConcurrentStartsWithCustomDiscovery(t *testing.T
 	}))
 	defer server.Close()
 
-	store := daemon.RuntimeStore{Dir: t.TempDir()}
+	discoveryStore := daemon.RuntimeStore{Dir: t.TempDir()}
+	lockStore := daemon.RuntimeStore{Dir: t.TempDir()}
 	findCalls := make(chan struct{}, 8)
-	find := discoverWithHeader(store, "Authorization", "Bearer test-token")
+	find := discoverWithHeader(discoveryStore, "Authorization", "Bearer test-token")
 	startEntered := make(chan struct{})
 	releaseStart := make(chan struct{})
 	t.Cleanup(func() {
@@ -237,7 +238,7 @@ func TestManagerEnsureSerializesConcurrentStartsWithCustomDiscovery(t *testing.T
 
 	var starts atomic.Int32
 	manager := daemon.Manager{
-		Store: store,
+		Store: lockStore,
 		FindFunc: func(ctx context.Context) (daemon.RuntimeRecord, daemon.PingInfo, bool, error) {
 			rec, info, ok, err := find(ctx)
 			findCalls <- struct{}{}
@@ -252,7 +253,7 @@ func TestManagerEnsureSerializesConcurrentStartsWithCustomDiscovery(t *testing.T
 				return ctx.Err()
 			case <-releaseStart:
 			}
-			_, err := store.Write(daemon.RuntimeRecord{
+			_, err := discoveryStore.Write(daemon.RuntimeRecord{
 				PID:       os.Getpid(),
 				Network:   daemon.NetworkTCP,
 				Address:   listenerAddr(t, server),
