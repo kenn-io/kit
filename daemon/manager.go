@@ -10,19 +10,30 @@ import (
 // CompatibleFunc returns true when a discovered daemon can serve this client.
 type CompatibleFunc func(RuntimeRecord, PingInfo) bool
 
+// FindFunc returns a live compatible daemon using caller-defined discovery.
+// It must honor ctx so Manager.Ensure can enforce its timeout.
+type FindFunc func(context.Context) (RuntimeRecord, PingInfo, bool, error)
+
 // StartFunc starts a daemon in the background.
 type StartFunc func(context.Context) error
 
-// Manager coordinates discovery and optional auto-start.
+// Manager coordinates discovery and optional auto-start. When FindFunc is nil,
+// Find uses Store, Discover, and Compatible. Store is still required by Ensure
+// because it identifies the start lock, even when FindFunc supplies discovery.
 type Manager struct {
 	Store      RuntimeStore
 	Discover   DiscoverOptions
 	Compatible CompatibleFunc
+	FindFunc   FindFunc
 	Start      StartFunc
 }
 
-// Find returns a live compatible daemon, when one is already running.
+// Find returns a live compatible daemon, when one is already running. When
+// FindFunc is set, Find delegates discovery to it.
 func (m Manager) Find(ctx context.Context) (RuntimeRecord, PingInfo, bool, error) {
+	if m.FindFunc != nil {
+		return m.FindFunc(ctx)
+	}
 	opts := m.Discover
 	accept := opts.Accept
 	opts.Accept = func(rec RuntimeRecord, info PingInfo) bool {

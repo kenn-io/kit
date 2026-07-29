@@ -132,6 +132,41 @@ func TestManagerFindScansPastIncompatibleDaemon(t *testing.T) {
 	assert.Equal("new", info.Version)
 }
 
+func TestManagerFindUsesCustomDiscovery(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test-token" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"ok":true,"service":"tool","version":"v1"}`)
+	}))
+	defer server.Close()
+
+	store := daemon.RuntimeStore{Dir: t.TempDir()}
+	_, err := store.Write(daemon.RuntimeRecord{
+		PID:       os.Getpid(),
+		Network:   daemon.NetworkTCP,
+		Address:   listenerAddr(t, server),
+		Service:   "tool",
+		Version:   "v1",
+		StartedAt: time.Now(),
+	})
+	require.NoError(err)
+
+	manager := daemon.Manager{
+		Store:    store,
+		FindFunc: discoverWithHeader(store, "Authorization", "Bearer test-token"),
+	}
+	rec, info, ok, err := manager.Find(context.Background())
+	require.NoError(err)
+	require.True(ok)
+	assert.Equal(listenerAddr(t, server), rec.Address)
+	assert.Equal("tool", info.Service)
+}
+
 func TestManagerEnsureSerializesConcurrentStarts(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprint(w, `{"ok":true,"service":"tool","version":"v1"}`)
@@ -172,6 +207,93 @@ func TestManagerEnsureSerializesConcurrentStarts(t *testing.T) {
 	assert.Equal(t, int32(1), starts.Load())
 }
 
+func TestManagerEnsureSerializesConcurrentStartsWithCustomDiscovery(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+
+	var authenticatedProbes atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test-token" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		authenticatedProbes.Add(1)
+		_, _ = fmt.Fprint(w, `{"ok":true,"service":"tool","version":"v1"}`)
+	}))
+	defer server.Close()
+
+	discoveryStore := daemon.RuntimeStore{Dir: t.TempDir()}
+	lockStore := daemon.RuntimeStore{Dir: t.TempDir()}
+	findCalls := make(chan struct{}, 8)
+	find := discoverWithHeader(discoveryStore, "Authorization", "Bearer test-token")
+	startEntered := make(chan struct{})
+	releaseStart := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-releaseStart:
+		default:
+			close(releaseStart)
+		}
+	})
+
+	var starts atomic.Int32
+	manager := daemon.Manager{
+		Store: lockStore,
+		FindFunc: func(ctx context.Context) (daemon.RuntimeRecord, daemon.PingInfo, bool, error) {
+			rec, info, ok, err := find(ctx)
+			findCalls <- struct{}{}
+			return rec, info, ok, err
+		},
+		Start: func(ctx context.Context) error {
+			if starts.Add(1) == 1 {
+				close(startEntered)
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-releaseStart:
+			}
+			_, err := discoveryStore.Write(daemon.RuntimeRecord{
+				PID:       os.Getpid(),
+				Network:   daemon.NetworkTCP,
+				Address:   listenerAddr(t, server),
+				Service:   "tool",
+				Version:   "v1",
+				StartedAt: time.Now(),
+			})
+			return err
+		},
+	}
+
+	type result struct {
+		rec  daemon.RuntimeRecord
+		info daemon.PingInfo
+		err  error
+	}
+	results := make(chan result, 2)
+	ensure := func() {
+		rec, info, err := manager.Ensure(context.Background(), 2*time.Second)
+		results <- result{rec: rec, info: info, err: err}
+	}
+
+	go ensure()
+	requireSignal(t, startEntered)
+	requireSignal(t, findCalls)
+	requireSignal(t, findCalls)
+	go ensure()
+	requireSignal(t, findCalls)
+	close(releaseStart)
+
+	for range 2 {
+		result := <-results
+		require.NoError(result.err)
+		assert.Equal(listenerAddr(t, server), result.rec.Address)
+		assert.Equal("tool", result.info.Service)
+	}
+	assert.Equal(int32(1), starts.Load())
+	assert.Equal(int32(2), authenticatedProbes.Load())
+}
+
 func TestManagerEnsureAppliesTimeoutToStartLock(t *testing.T) {
 	require := require.New(t)
 
@@ -195,4 +317,48 @@ func TestManagerEnsureAppliesTimeoutToStartLock(t *testing.T) {
 	_, _, err = manager.Ensure(context.Background(), 50*time.Millisecond)
 	require.Error(err)
 	assert.Less(t, time.Since(startedAt), 500*time.Millisecond)
+}
+
+func discoverWithHeader(store daemon.RuntimeStore, name, value string) func(context.Context) (daemon.RuntimeRecord, daemon.PingInfo, bool, error) {
+	return func(ctx context.Context) (daemon.RuntimeRecord, daemon.PingInfo, bool, error) {
+		records, err := store.List()
+		if err != nil {
+			return daemon.RuntimeRecord{}, daemon.PingInfo{}, false, err
+		}
+		for _, rec := range records {
+			ep := rec.Endpoint()
+			client := ep.HTTPClient(daemon.HTTPClientOptions{DisableKeepAlives: true})
+			client.Transport = headerTransport{
+				base:  client.Transport,
+				name:  name,
+				value: value,
+			}
+			info, err := daemon.ProbeHTTP(ctx, client, ep.BaseURL(), daemon.ProbeOptions{ExpectedService: "tool"})
+			if err == nil {
+				return rec, info, true, nil
+			}
+		}
+		return daemon.RuntimeRecord{}, daemon.PingInfo{}, false, nil
+	}
+}
+
+type headerTransport struct {
+	base  http.RoundTripper
+	name  string
+	value string
+}
+
+func (t headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req = req.Clone(req.Context())
+	req.Header.Set(t.name, t.value)
+	return t.base.RoundTrip(req)
+}
+
+func requireSignal(t *testing.T, signal <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(time.Second):
+		require.FailNow(t, "timed out waiting for test signal")
+	}
 }
