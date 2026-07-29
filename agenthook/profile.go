@@ -83,18 +83,20 @@ const (
 )
 
 type profileSpec struct {
-	profile             Profile
-	format              configFormat
-	shellTool           string
-	shellToolName       string
-	defaultDir          func() (string, error)
-	configEnvSubdir     string
-	eventName           func(Event) string
-	timeoutUnit         time.Duration
-	timeoutField        string
-	windowsCommandStyle windowsCommandStyle
-	responseFormat      responseFormat
-	requireVersion      bool
+	profile                 Profile
+	format                  configFormat
+	shellTool               string
+	shellToolName           string
+	defaultDir              func() (string, error)
+	configEnvSubdir         string
+	eventName               func(Event) string
+	timeoutUnit             time.Duration
+	timeoutField            string
+	windowsCommandStyle     windowsCommandStyle
+	responseFormat          responseFormat
+	requireVersion          bool
+	requireSessionSource    bool
+	requireSessionEndReason bool
 }
 
 var profileOrder = []Agent{

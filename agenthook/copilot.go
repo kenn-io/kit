@@ -22,5 +22,9 @@ func copilotProfile() profileSpec {
 	spec.responseFormat = responseCopilot
 	spec.timeoutField = "timeoutSec"
 	spec.requireVersion = true
+	// Copilot's SessionStart and SessionEnd schemas require source and reason:
+	// https://docs.github.com/en/copilot/reference/hooks-reference#sessionstart--sessionstart
+	spec.requireSessionSource = true
+	spec.requireSessionEndReason = true
 	return spec
 }

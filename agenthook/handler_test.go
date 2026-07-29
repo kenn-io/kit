@@ -475,6 +475,11 @@ func TestHandleRejectsMissingRequiredEventFields(t *testing.T) {
 		want    string
 	}{
 		{
+			name:    "session source",
+			payload: `{"session_id":"c1","hook_event_name":"SessionStart"}`,
+			want:    "SessionStart input missing source",
+		},
+		{
 			name:    "user prompt",
 			payload: `{"session_id":"c1","hook_event_name":"UserPromptSubmit"}`,
 			want:    "UserPromptSubmit input missing prompt",
@@ -497,6 +502,11 @@ func TestHandleRejectsMissingRequiredEventFields(t *testing.T) {
   "notification_type":"idle_prompt"
 }`,
 			want: "Notification input missing message",
+		},
+		{
+			name:    "session end reason",
+			payload: `{"session_id":"c1","hook_event_name":"SessionEnd"}`,
+			want:    "SessionEnd input missing reason",
 		},
 	}
 

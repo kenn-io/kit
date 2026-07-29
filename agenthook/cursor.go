@@ -18,6 +18,10 @@ func cursorProfile() profileSpec {
 	spec.eventName = cursorEventName
 	spec.responseFormat = responseObservational
 	spec.requireVersion = true
+	// Cursor sessionStart omits source, while sessionEnd requires reason:
+	// https://cursor.com/docs/hooks.md#sessionstart
+	// https://cursor.com/docs/hooks.md#sessionend
+	spec.requireSessionEndReason = true
 	return spec
 }
 

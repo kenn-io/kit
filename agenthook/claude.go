@@ -18,5 +18,9 @@ func claudeProfile() profileSpec {
 	// Claude defines the package's public response vocabulary:
 	// https://code.claude.com/docs/en/hooks#json-output
 	spec.responseFormat = responseClaude
+	// Claude SessionStart and SessionEnd require source and reason:
+	// https://code.claude.com/docs/en/hooks#hook-inputs
+	spec.requireSessionSource = true
+	spec.requireSessionEndReason = true
 	return spec
 }

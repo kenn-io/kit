@@ -25,5 +25,9 @@ func qwenProfile() profileSpec {
 	// https://github.com/QwenLM/qwen-code/blob/main/docs/users/features/hooks.md#json-output
 	spec.responseFormat = responseClaude
 	spec.timeoutUnit = time.Millisecond
+	// Qwen SessionStart and SessionEnd require source and reason:
+	// https://github.com/QwenLM/qwen-code/blob/main/docs/users/features/hooks.md#sessionstart
+	spec.requireSessionSource = true
+	spec.requireSessionEndReason = true
 	return spec
 }

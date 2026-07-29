@@ -17,8 +17,11 @@
   handler execution but cannot interrupt reads from an arbitrary `io.Reader`;
   do not introduce a goroutine-backed reader shim that can leak on cancellation.
 - Profiles own config discovery, native event and tool translation, file
-  format, and format-specific validation. Add support for a new harness here
-  rather than in each consuming application.
+  format, response encoding, and profile-specific input requirements. A native
+  lifecycle hook that lacks a Claude field leaves the typed field at its zero
+  value; it must not weaken validation for profiles whose schema requires that
+  field. Add support for a new harness here rather than in each consuming
+  application.
 - Keep an authoritative upstream documentation or implementation URL beside
   non-obvious native matcher and response mappings so profile behavior can be
   checked without guessing from another agent's vocabulary.

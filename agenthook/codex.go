@@ -19,5 +19,7 @@ func codexProfile() profileSpec {
 	// Codex hooks use the Claude-compatible JSON response contract:
 	// https://developers.openai.com/codex/config-advanced#hooks
 	spec.responseFormat = responseClaude
+	spec.requireSessionSource = true
+	spec.requireSessionEndReason = true
 	return spec
 }

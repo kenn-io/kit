@@ -112,7 +112,7 @@ func Handle(
 		return errors.New("normalized agent hook payload missing hook_event_name")
 	}
 
-	result, err := dispatch(ctx, handler, envelope.HookEventName, payload)
+	result, err := dispatch(ctx, handler, spec, envelope.HookEventName, payload)
 	if err != nil {
 		return fmt.Errorf("handle %s agent hook: %w", envelope.HookEventName, err)
 	}
@@ -133,69 +133,70 @@ type handledOutput struct {
 func dispatch(
 	ctx context.Context,
 	handler Handler,
+	spec profileSpec,
 	event Event,
 	payload []byte,
 ) (handledOutput, error) {
 	switch event {
 	case EventSessionStart:
 		var input SessionStartInput
-		if err := decodeTypedInput(event, payload, &input.CommonInput, &input); err != nil {
+		if err := decodeTypedInput(spec, event, payload, &input.CommonInput, &input); err != nil {
 			return handledOutput{}, err
 		}
 		output, err := handler.SessionStart(ctx, input)
 		return handledOutput{value: output}, err
 	case EventUserPromptSubmit:
 		var input UserPromptSubmitInput
-		if err := decodeTypedInput(event, payload, &input.CommonInput, &input); err != nil {
+		if err := decodeTypedInput(spec, event, payload, &input.CommonInput, &input); err != nil {
 			return handledOutput{}, err
 		}
 		output, err := handler.UserPromptSubmit(ctx, input)
 		return handledOutput{value: output}, err
 	case EventPreToolUse:
 		var input PreToolUseInput
-		if err := decodeTypedInput(event, payload, &input.CommonInput, &input); err != nil {
+		if err := decodeTypedInput(spec, event, payload, &input.CommonInput, &input); err != nil {
 			return handledOutput{}, err
 		}
 		output, err := handler.PreToolUse(ctx, input)
 		return handledOutput{value: output}, err
 	case EventPostToolUse:
 		var input PostToolUseInput
-		if err := decodeTypedInput(event, payload, &input.CommonInput, &input); err != nil {
+		if err := decodeTypedInput(spec, event, payload, &input.CommonInput, &input); err != nil {
 			return handledOutput{}, err
 		}
 		output, err := handler.PostToolUse(ctx, input)
 		return handledOutput{value: output}, err
 	case EventPostToolUseFailure:
 		var input PostToolUseFailureInput
-		if err := decodeTypedInput(event, payload, &input.CommonInput, &input); err != nil {
+		if err := decodeTypedInput(spec, event, payload, &input.CommonInput, &input); err != nil {
 			return handledOutput{}, err
 		}
 		output, err := handler.PostToolUseFailure(ctx, input)
 		return handledOutput{value: output}, err
 	case EventPermissionRequest:
 		var input PermissionRequestInput
-		if err := decodeTypedInput(event, payload, &input.CommonInput, &input); err != nil {
+		if err := decodeTypedInput(spec, event, payload, &input.CommonInput, &input); err != nil {
 			return handledOutput{}, err
 		}
 		output, err := handler.PermissionRequest(ctx, input)
 		return handledOutput{value: output}, err
 	case EventNotification:
 		var input NotificationInput
-		if err := decodeTypedInput(event, payload, &input.CommonInput, &input); err != nil {
+		if err := decodeTypedInput(spec, event, payload, &input.CommonInput, &input); err != nil {
 			return handledOutput{}, err
 		}
 		output, err := handler.Notification(ctx, input)
 		return handledOutput{value: output}, err
 	case EventStop:
 		var input StopInput
-		if err := decodeTypedInput(event, payload, &input.CommonInput, &input); err != nil {
+		if err := decodeTypedInput(spec, event, payload, &input.CommonInput, &input); err != nil {
 			return handledOutput{}, err
 		}
 		output, err := handler.Stop(ctx, input)
 		return handledOutput{value: output}, err
 	case EventSessionEnd:
 		var input SessionEndInput
-		if err := decodeTypedInput(event, payload, &input.CommonInput, &input); err != nil {
+		if err := decodeTypedInput(spec, event, payload, &input.CommonInput, &input); err != nil {
 			return handledOutput{}, err
 		}
 		output, err := handler.SessionEnd(ctx, input)
@@ -205,7 +206,13 @@ func dispatch(
 	}
 }
 
-func decodeTypedInput(event Event, payload []byte, common *CommonInput, target any) error {
+func decodeTypedInput(
+	spec profileSpec,
+	event Event,
+	payload []byte,
+	common *CommonInput,
+	target any,
+) error {
 	if err := json.Unmarshal(payload, target); err != nil {
 		return fmt.Errorf("decode typed agent hook input: %w", err)
 	}
@@ -213,15 +220,10 @@ func decodeTypedInput(event Event, payload []byte, common *CommonInput, target a
 	if common.SessionID == "" {
 		return fmt.Errorf("%s input missing session_id", event)
 	}
-	return validateTypedInput(event, target)
+	return validateTypedInput(spec, event, target)
 }
 
-func validateTypedInput(event Event, input any) error {
-	// Validate only fields required by every profile that exposes the event.
-	// Some native lifecycle hooks have no Claude equivalent for source or
-	// reason, so those fields intentionally remain zero after normalization:
-	// https://cursor.com/docs/hooks.md#sessionstart
-	// https://github.com/NousResearch/hermes-agent/blob/main/hermes_cli/hooks.py#L151-L162
+func validateTypedInput(spec profileSpec, event Event, input any) error {
 	missingToolInput := func(name string, toolInput json.RawMessage) error {
 		if name == "" {
 			return fmt.Errorf("%s input missing tool_name", event)
@@ -232,6 +234,10 @@ func validateTypedInput(event Event, input any) error {
 		return nil
 	}
 	switch value := input.(type) {
+	case *SessionStartInput:
+		if spec.requireSessionSource && value.Source == "" {
+			return errors.New("SessionStart input missing source")
+		}
 	case *UserPromptSubmitInput:
 		if value.Prompt == "" {
 			return errors.New("UserPromptSubmit input missing prompt")
@@ -260,6 +266,10 @@ func validateTypedInput(event Event, input any) error {
 		}
 		if value.NotificationType == "" {
 			return errors.New("Notification input missing notification_type")
+		}
+	case *SessionEndInput:
+		if spec.requireSessionEndReason && value.Reason == "" {
+			return errors.New("SessionEnd input missing reason")
 		}
 	}
 	return nil
