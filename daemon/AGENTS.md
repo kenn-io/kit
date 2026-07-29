@@ -19,6 +19,8 @@ databases, command parsing, and shutdown policy belong to the caller.
   this package created. Refuse paths whose type or ownership does not match
   that intent.
 - Use listen locks to serialize startup and bind attempts.
+- Route every `Manager.Ensure` lookup through `Manager.Find` so a caller's
+  `FindFunc` is used for initial discovery, locked re-discovery, and polling.
 - Keep platform-specific behavior in build-tagged files when ownership, sockets,
   process checks, or permissions differ.
 - Auto-start goes through the caller-provided `StartFunc`; this package must not
