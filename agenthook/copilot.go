@@ -24,7 +24,7 @@ func copilotProfile() profileSpec {
 	spec.requireVersion = true
 	// Copilot's SessionStart and SessionEnd schemas require source and reason:
 	// https://docs.github.com/en/copilot/reference/hooks-reference#sessionstart--sessionstart
-	spec.requireSessionSource = true
-	spec.requireSessionEndReason = true
+	spec.sessionSourceRequirement = inputRequired
+	spec.sessionEndReasonRequirement = inputRequired
 	return spec
 }

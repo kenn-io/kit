@@ -55,6 +55,11 @@ func hermesProfile() profileSpec {
 	)
 	spec.eventName = hermesEventName
 	spec.responseFormat = responseHermes
+	// Hermes lifecycle payloads define neither a Claude SessionStart source nor
+	// a Claude SessionEnd reason:
+	// https://github.com/NousResearch/hermes-agent/blob/main/hermes_cli/hooks.py#L151-L162
+	spec.sessionSourceRequirement = inputOptional
+	spec.sessionEndReasonRequirement = inputOptional
 	return spec
 }
 

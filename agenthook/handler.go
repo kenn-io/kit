@@ -235,9 +235,9 @@ func validateTypedInput(spec profileSpec, event Event, input any) error {
 	}
 	switch value := input.(type) {
 	case *SessionStartInput:
-		if spec.requireSessionSource && value.Source == "" {
-			return errors.New("SessionStart input missing source")
-		}
+		return validateInputRequirement(
+			spec, event, "source", spec.sessionSourceRequirement, value.Source == "",
+		)
 	case *UserPromptSubmitInput:
 		if value.Prompt == "" {
 			return errors.New("UserPromptSubmit input missing prompt")
@@ -268,11 +268,34 @@ func validateTypedInput(spec profileSpec, event Event, input any) error {
 			return errors.New("Notification input missing notification_type")
 		}
 	case *SessionEndInput:
-		if spec.requireSessionEndReason && value.Reason == "" {
-			return errors.New("SessionEnd input missing reason")
-		}
+		return validateInputRequirement(
+			spec, event, "reason", spec.sessionEndReasonRequirement, value.Reason == "",
+		)
 	}
 	return nil
+}
+
+func validateInputRequirement(
+	spec profileSpec,
+	event Event,
+	field string,
+	requirement inputRequirement,
+	missing bool,
+) error {
+	switch requirement {
+	case inputOptional:
+		return nil
+	case inputRequired:
+		if missing {
+			return fmt.Errorf("%s input missing %s", event, field)
+		}
+		return nil
+	default:
+		return fmt.Errorf(
+			"%s has no %s %s requirement",
+			spec.profile.DisplayName, event, field,
+		)
+	}
 }
 
 func encodeResponse(spec profileSpec, event Event, output handledOutput) ([]byte, error) {

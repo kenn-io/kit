@@ -16,10 +16,11 @@ func codexProfile() profileSpec {
 	)
 	spec.windowsCommandStyle = windowsCommandNested
 	spec.shellToolName = ToolBash
-	// Codex hooks use the Claude-compatible JSON response contract:
+	// Codex hooks use the Claude-compatible JSON response and lifecycle input
+	// contract, including SessionStart source and SessionEnd reason:
 	// https://developers.openai.com/codex/config-advanced#hooks
 	spec.responseFormat = responseClaude
-	spec.requireSessionSource = true
-	spec.requireSessionEndReason = true
+	spec.sessionSourceRequirement = inputRequired
+	spec.sessionEndReasonRequirement = inputRequired
 	return spec
 }

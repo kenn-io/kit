@@ -663,6 +663,31 @@ func TestEncodeResponseRejectsUnspecifiedProfileFormat(t *testing.T) {
 	assert.Empty(t, response)
 }
 
+func TestDecodeTypedInputRejectsUnspecifiedLifecycleRequirement(t *testing.T) {
+	spec := newProfileSpec(
+		Profile{
+			Agent:           "test",
+			DisplayName:     "Test Agent",
+			SupportedEvents: []Event{EventSessionStart},
+		},
+		formatNestedJSON,
+		ToolBash,
+		func() (string, error) { return "", nil },
+	)
+	var input SessionStartInput
+
+	err := decodeTypedInput(
+		spec,
+		EventSessionStart,
+		[]byte(`{"session_id":"s1","hook_event_name":"SessionStart"}`),
+		&input.CommonInput,
+		&input,
+	)
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "Test Agent has no SessionStart source requirement")
+}
+
 func TestHandleRejectsDenyWithoutReason(t *testing.T) {
 	var output bytes.Buffer
 	handler := preToolHandler{output: PreToolUseOutput{

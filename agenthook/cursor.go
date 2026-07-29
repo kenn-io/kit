@@ -21,7 +21,8 @@ func cursorProfile() profileSpec {
 	// Cursor sessionStart omits source, while sessionEnd requires reason:
 	// https://cursor.com/docs/hooks.md#sessionstart
 	// https://cursor.com/docs/hooks.md#sessionend
-	spec.requireSessionEndReason = true
+	spec.sessionSourceRequirement = inputOptional
+	spec.sessionEndReasonRequirement = inputRequired
 	return spec
 }
 

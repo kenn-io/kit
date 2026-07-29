@@ -20,7 +20,7 @@ func claudeProfile() profileSpec {
 	spec.responseFormat = responseClaude
 	// Claude SessionStart and SessionEnd require source and reason:
 	// https://code.claude.com/docs/en/hooks#hook-inputs
-	spec.requireSessionSource = true
-	spec.requireSessionEndReason = true
+	spec.sessionSourceRequirement = inputRequired
+	spec.sessionEndReasonRequirement = inputRequired
 	return spec
 }

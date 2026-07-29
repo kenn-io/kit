@@ -27,7 +27,7 @@ func qwenProfile() profileSpec {
 	spec.timeoutUnit = time.Millisecond
 	// Qwen SessionStart and SessionEnd require source and reason:
 	// https://github.com/QwenLM/qwen-code/blob/main/docs/users/features/hooks.md#sessionstart
-	spec.requireSessionSource = true
-	spec.requireSessionEndReason = true
+	spec.sessionSourceRequirement = inputRequired
+	spec.sessionEndReasonRequirement = inputRequired
 	return spec
 }

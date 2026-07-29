@@ -82,21 +82,29 @@ const (
 	responseObservational
 )
 
+type inputRequirement uint8
+
+const (
+	inputUnspecified inputRequirement = iota
+	inputOptional
+	inputRequired
+)
+
 type profileSpec struct {
-	profile                 Profile
-	format                  configFormat
-	shellTool               string
-	shellToolName           string
-	defaultDir              func() (string, error)
-	configEnvSubdir         string
-	eventName               func(Event) string
-	timeoutUnit             time.Duration
-	timeoutField            string
-	windowsCommandStyle     windowsCommandStyle
-	responseFormat          responseFormat
-	requireVersion          bool
-	requireSessionSource    bool
-	requireSessionEndReason bool
+	profile                     Profile
+	format                      configFormat
+	shellTool                   string
+	shellToolName               string
+	defaultDir                  func() (string, error)
+	configEnvSubdir             string
+	eventName                   func(Event) string
+	timeoutUnit                 time.Duration
+	timeoutField                string
+	windowsCommandStyle         windowsCommandStyle
+	responseFormat              responseFormat
+	requireVersion              bool
+	sessionSourceRequirement    inputRequirement
+	sessionEndReasonRequirement inputRequirement
 }
 
 var profileOrder = []Agent{
