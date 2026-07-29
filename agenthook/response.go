@@ -195,7 +195,12 @@ func encodeGeminiResponse(event Event, value any) (map[string]any, error) {
 		addValue(response, "decision", output.PermissionDecision)
 		addValue(response, "reason", output.PermissionDecisionReason)
 		specific := map[string]any{}
-		addRaw(specific, "tool_input", output.UpdatedInput)
+		if len(output.UpdatedInput) > 0 {
+			if err := validateJSONObject(output.UpdatedInput); err != nil {
+				return nil, fmt.Errorf("Gemini tool input rewrite must be a JSON object: %w", err)
+			}
+			addRaw(specific, "tool_input", output.UpdatedInput)
+		}
 		addSpecific(specific)
 	case PostToolUseOutput:
 		if err := addGeminiCommonOutput(response, output.CommonOutput); err != nil {
@@ -267,6 +272,14 @@ func encodeHermesResponse(event Event, value any) (map[string]any, error) {
 		if err := requireEmptyCommon(output.CommonOutput); err != nil {
 			return nil, err
 		}
+		// Hermes pre_verify follows Claude Stop semantics: block means keep
+		// working. It has no native representation for allow or deny:
+		// https://hermes-agent.nousresearch.com/docs/user-guide/features/hooks#shell-hooks
+		if output.Decision != "" && output.Decision != DecisionBlock {
+			return nil, fmt.Errorf(
+				"Hermes Stop output does not support decision %q", output.Decision,
+			)
+		}
 		reason := output.Reason
 		if reason == "" {
 			reason = output.AdditionalContext
@@ -313,6 +326,17 @@ func addRaw(response map[string]any, key string, value json.RawMessage) bool {
 	}
 	response[key] = value
 	return true
+}
+
+func validateJSONObject(value json.RawMessage) error {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(value, &object); err != nil {
+		return err
+	}
+	if object == nil {
+		return errors.New("value is null")
+	}
+	return nil
 }
 
 func requireEmptyCommon(output CommonOutput) error {

@@ -77,7 +77,9 @@ func (NoopHandler) SessionEnd(context.Context, SessionEndInput) (SessionEndOutpu
 
 // Handle normalizes one native agent payload, dispatches its Claude event to
 // handler, and writes an agent-compatible hook response as JSON. Input must be
-// one finite JSON object; payloads larger than 16 MiB are rejected.
+// one finite JSON object that reaches EOF; payloads larger than 16 MiB are
+// rejected. Context cancellation governs handler execution, but cannot
+// interrupt reads from an arbitrary io.Reader.
 func Handle(
 	ctx context.Context,
 	agent Agent,
@@ -215,6 +217,8 @@ func decodeTypedInput(event Event, payload []byte, common *CommonInput, target a
 }
 
 func validateTypedInput(event Event, input any) error {
+	// Required fields follow Claude's authoritative event input schemas:
+	// https://code.claude.com/docs/en/hooks#hook-inputs
 	missingToolInput := func(name string, toolInput json.RawMessage) error {
 		if name == "" {
 			return fmt.Errorf("%s input missing tool_name", event)
@@ -225,6 +229,14 @@ func validateTypedInput(event Event, input any) error {
 		return nil
 	}
 	switch value := input.(type) {
+	case *SessionStartInput:
+		if value.Source == "" {
+			return errors.New("SessionStart input missing source")
+		}
+	case *UserPromptSubmitInput:
+		if value.Prompt == "" {
+			return errors.New("UserPromptSubmit input missing prompt")
+		}
 	case *PreToolUseInput:
 		return missingToolInput(value.ToolName, value.ToolInput)
 	case *PostToolUseInput:
@@ -235,12 +247,24 @@ func validateTypedInput(event Event, input any) error {
 			return errors.New("PostToolUse input missing tool_response")
 		}
 	case *PostToolUseFailureInput:
-		return missingToolInput(value.ToolName, value.ToolInput)
+		if err := missingToolInput(value.ToolName, value.ToolInput); err != nil {
+			return err
+		}
+		if value.Error == "" {
+			return errors.New("PostToolUseFailure input missing error")
+		}
 	case *PermissionRequestInput:
 		return missingToolInput(value.ToolName, value.ToolInput)
 	case *NotificationInput:
+		if value.Message == "" {
+			return errors.New("Notification input missing message")
+		}
 		if value.NotificationType == "" {
 			return errors.New("Notification input missing notification_type")
+		}
+	case *SessionEndInput:
+		if value.Reason == "" {
+			return errors.New("SessionEnd input missing reason")
 		}
 	}
 	return nil

@@ -255,7 +255,31 @@ func TestHandleEncodesGeminiToolRewrite(t *testing.T) {
     "hookEventName": "BeforeTool",
     "tool_input": {"command":"true"}
   }
-}`, output.String())
+	}`, output.String())
+}
+
+func TestHandleRejectsNonObjectGeminiToolRewrite(t *testing.T) {
+	var output bytes.Buffer
+	handler := preToolHandler{output: PreToolUseOutput{
+		UpdatedInput: json.RawMessage(`[]`),
+	}}
+
+	err := Handle(
+		context.Background(),
+		AgentGemini,
+		strings.NewReader(`{
+  "session_id":"g1",
+  "hook_event_name":"BeforeTool",
+  "tool_name":"run_shell_command",
+  "tool_input":{"command":"false"}
+}`),
+		&output,
+		handler,
+	)
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "Gemini tool input rewrite must be a JSON object")
+	assert.Empty(t, output.String())
 }
 
 type promptHandler struct {
@@ -311,6 +335,29 @@ func TestHandleEncodesHermesPromptContext(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"context":"deployment is production"}`, output.String())
+}
+
+func TestHandleRejectsHermesStopContextWithExplicitAllow(t *testing.T) {
+	var output bytes.Buffer
+	handler := stopHandler{output: StopOutput{
+		Decision:          DecisionAllow,
+		AdditionalContext: "continue checking the deployment",
+	}}
+
+	err := Handle(
+		context.Background(),
+		AgentHermes,
+		strings.NewReader(`{
+  "session_id":"h1",
+  "hook_event_name":"pre_verify"
+}`),
+		&output,
+		handler,
+	)
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "Hermes Stop output does not support decision \"allow\"")
+	assert.Empty(t, output.String())
 }
 
 func TestHandleRejectsUnsupportedCursorControlOutput(t *testing.T) {
@@ -376,6 +423,78 @@ func TestHandleRejectsMissingSessionID(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorContains(t, err, `PreToolUse input missing session_id`)
 	assert.Empty(t, output.String())
+}
+
+func TestHandleRejectsMissingRequiredEventFields(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{
+			name:    "session source",
+			payload: `{"session_id":"c1","hook_event_name":"SessionStart"}`,
+			want:    "SessionStart input missing source",
+		},
+		{
+			name:    "user prompt",
+			payload: `{"session_id":"c1","hook_event_name":"UserPromptSubmit"}`,
+			want:    "UserPromptSubmit input missing prompt",
+		},
+		{
+			name: "tool failure error",
+			payload: `{
+  "session_id":"c1",
+  "hook_event_name":"PostToolUseFailure",
+  "tool_name":"Bash",
+  "tool_input":{"command":"false"}
+}`,
+			want: "PostToolUseFailure input missing error",
+		},
+		{
+			name: "notification message",
+			payload: `{
+  "session_id":"c1",
+  "hook_event_name":"Notification",
+  "notification_type":"idle_prompt"
+}`,
+			want: "Notification input missing message",
+		},
+		{
+			name:    "session end reason",
+			payload: `{"session_id":"c1","hook_event_name":"SessionEnd"}`,
+			want:    "SessionEnd input missing reason",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var output bytes.Buffer
+			err := Handle(
+				context.Background(), AgentClaude, strings.NewReader(tt.payload),
+				&output, NoopHandler{},
+			)
+
+			require.Error(t, err)
+			assert.ErrorContains(t, err, tt.want)
+			assert.Empty(t, output.String())
+		})
+	}
+}
+
+func TestEncodeResponseRejectsUnspecifiedProfileFormat(t *testing.T) {
+	spec := newProfileSpec(
+		Profile{Agent: "test", DisplayName: "Test Agent"},
+		formatNestedJSON,
+		ToolBash,
+		func() (string, error) { return "", nil },
+	)
+
+	response, err := encodeResponse(spec, EventStop, handledOutput{value: StopOutput{}})
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "unsupported agent hook response format")
+	assert.Empty(t, response)
 }
 
 func TestHandleRejectsDenyWithoutReason(t *testing.T) {

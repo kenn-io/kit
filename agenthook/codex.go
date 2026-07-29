@@ -16,5 +16,8 @@ func codexProfile() profileSpec {
 	)
 	spec.windowsCommandStyle = windowsCommandNested
 	spec.shellToolName = ToolBash
+	// Codex hooks use the Claude-compatible JSON response contract:
+	// https://developers.openai.com/codex/config-advanced#hooks
+	spec.responseFormat = responseClaude
 	return spec
 }

@@ -74,7 +74,8 @@ const (
 type responseFormat uint8
 
 const (
-	responseClaude responseFormat = iota
+	responseUnknown responseFormat = iota
+	responseClaude
 	responseCopilot
 	responseGemini
 	responseHermes

@@ -21,6 +21,9 @@ func qwenProfile() profileSpec {
 		"run_shell_command",
 		func() (string, error) { return userDotDir(".qwen") },
 	)
+	// Qwen documents Claude-compatible JSON output for hook control:
+	// https://github.com/QwenLM/qwen-code/blob/main/docs/users/features/hooks.md#json-output
+	spec.responseFormat = responseClaude
 	spec.timeoutUnit = time.Millisecond
 	return spec
 }

@@ -172,7 +172,9 @@ func TestInstallJSONPreservesOtherHooksAndReplacesOwnedHooks(t *testing.T) {
 	assert.True(result.Changed)
 	info, err := os.Stat(path)
 	require.NoError(err)
-	assert.Equal(os.FileMode(0o640), info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		assert.Equal(os.FileMode(0o640), info.Mode().Perm())
+	}
 
 	data, err := os.ReadFile(path)
 	require.NoError(err)
