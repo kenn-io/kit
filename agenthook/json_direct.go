@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"slices"
 	"strings"
 )
 
@@ -49,6 +50,9 @@ func planDirectJSONConfig(
 		}
 		for _, hook := range hooks {
 			entry := map[string]any{"type": "command"}
+			if slices.Contains(spec.failClosedEvents, hook.event) {
+				entry["failClosed"] = true
+			}
 			if hook.matcher != "" {
 				entry["matcher"] = hook.matcher
 			}

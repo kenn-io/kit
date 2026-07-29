@@ -468,11 +468,16 @@ func TestPlanInstallCursorUsesNativeDirectEntries(t *testing.T) {
 	assert.Contains(hooks, "beforeSubmitPrompt")
 	assert.Contains(hooks, "postToolUseFailure")
 	assert.Contains(hooks, "stop")
+	beforePrompt := hooks["beforeSubmitPrompt"].([]any)[0].(map[string]any)
+	assert.Equal(true, beforePrompt["failClosed"])
 	preTool := hooks["preToolUse"].([]any)[0].(map[string]any)
 	assert.Equal("command", preTool["type"])
 	assert.Equal("Shell", preTool["matcher"])
 	assert.Equal("/opt/hook "+testMarker, preTool["command"])
 	assert.Equal(float64(2), preTool["timeout"])
+	assert.Equal(true, preTool["failClosed"])
+	stop := hooks["stop"].([]any)[0].(map[string]any)
+	assert.NotContains(stop, "failClosed")
 }
 
 func TestInstallHermesTranslatesEventsAndPreservesYAML(t *testing.T) {

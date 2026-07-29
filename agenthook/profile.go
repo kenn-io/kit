@@ -77,6 +77,7 @@ const (
 	responseUnknown responseFormat = iota
 	responseClaude
 	responseCopilot
+	responseCursor
 	responseGemini
 	responseHermes
 	responseObservational
@@ -102,6 +103,7 @@ type profileSpec struct {
 	timeoutField                string
 	windowsCommandStyle         windowsCommandStyle
 	responseFormat              responseFormat
+	failClosedEvents            []Event
 	requireVersion              bool
 	sessionSourceRequirement    inputRequirement
 	sessionEndReasonRequirement inputRequirement

@@ -403,7 +403,7 @@ func TestHandleRejectsHermesStopContextWithExplicitAllow(t *testing.T) {
 	assert.Empty(t, output.String())
 }
 
-func TestHandleRejectsUnsupportedCursorControlOutput(t *testing.T) {
+func TestHandleEncodesCursorToolDenial(t *testing.T) {
 	var output bytes.Buffer
 	handler := preToolHandler{output: PreToolUseOutput{
 		PermissionDecision:       PermissionDecisionDeny,
@@ -423,9 +423,61 @@ func TestHandleRejectsUnsupportedCursorControlOutput(t *testing.T) {
 		handler,
 	)
 
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "Cursor does not support PreToolUse control output")
-	assert.Empty(t, output.String())
+	require.NoError(t, err)
+	assert.JSONEq(t, `{
+  "permission":"deny",
+  "user_message":"production command",
+  "agent_message":"production command"
+}`, output.String())
+}
+
+func TestHandleEncodesCursorToolRewrite(t *testing.T) {
+	var output bytes.Buffer
+	handler := preToolHandler{output: PreToolUseOutput{
+		UpdatedInput: json.RawMessage(`{"command":"true"}`),
+	}}
+
+	err := Handle(
+		context.Background(),
+		AgentCursor,
+		strings.NewReader(`{
+  "conversation_id":"c1",
+  "hook_event_name":"preToolUse",
+  "tool_name":"Shell",
+  "tool_input":{"command":"false"}
+}`),
+		&output,
+		handler,
+	)
+
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"updated_input":{"command":"true"}}`, output.String())
+}
+
+func TestHandleEncodesCursorPromptBlock(t *testing.T) {
+	var output bytes.Buffer
+	handler := promptHandler{output: UserPromptSubmitOutput{
+		Decision: DecisionBlock,
+		Reason:   "prompt violates policy",
+	}}
+
+	err := Handle(
+		context.Background(),
+		AgentCursor,
+		strings.NewReader(`{
+  "conversation_id":"c1",
+  "hook_event_name":"beforeSubmitPrompt",
+  "prompt":"publish the credentials"
+}`),
+		&output,
+		handler,
+	)
+
+	require.NoError(t, err)
+	assert.JSONEq(t, `{
+  "continue":false,
+  "user_message":"prompt violates policy"
+}`, output.String())
 }
 
 func TestHandleRejectsIncompleteToolInput(t *testing.T) {

@@ -173,6 +173,68 @@ func encodeCopilotResponse(event Event, value any) (map[string]any, error) {
 	return response, nil
 }
 
+// encodeCursorResponse follows Cursor's native decision-bearing hook schemas:
+// https://cursor.com/docs/hooks.md#pretooluse
+// https://cursor.com/docs/hooks.md#beforesubmitprompt
+func encodeCursorResponse(event Event, value any) (map[string]any, error) {
+	response := map[string]any{}
+	if isZeroOutput(value) {
+		return response, nil
+	}
+	switch output := value.(type) {
+	case UserPromptSubmitOutput:
+		if err := requireEmptyCommon(output.CommonOutput); err != nil {
+			return nil, err
+		}
+		if output.AdditionalContext != "" || output.SessionTitle != "" ||
+			output.SuppressOriginalPrompt {
+			return nil, errors.New("unsupported UserPromptSubmit output fields")
+		}
+		switch output.Decision {
+		case DecisionBlock:
+			response["continue"] = false
+			response["user_message"] = output.Reason
+		case "":
+			if output.Reason != "" {
+				return nil, errors.New("UserPromptSubmit reason requires a block decision")
+			}
+		default:
+			return nil, fmt.Errorf(
+				"Cursor UserPromptSubmit does not support decision %q", output.Decision,
+			)
+		}
+	case PreToolUseOutput:
+		if err := requireEmptyCommon(output.CommonOutput); err != nil {
+			return nil, err
+		}
+		if output.AdditionalContext != "" {
+			return nil, errors.New("unsupported PreToolUse output fields")
+		}
+		switch output.PermissionDecision {
+		case PermissionDecisionAllow:
+			response["permission"] = "allow"
+		case PermissionDecisionDeny:
+			response["permission"] = "deny"
+			response["user_message"] = output.PermissionDecisionReason
+			response["agent_message"] = output.PermissionDecisionReason
+		case "":
+		default:
+			return nil, fmt.Errorf(
+				"Cursor PreToolUse does not support permission decision %q",
+				output.PermissionDecision,
+			)
+		}
+		if output.PermissionDecisionReason != "" &&
+			output.PermissionDecision != PermissionDecisionDeny {
+			return nil, errors.New("PreToolUse reason requires a deny decision")
+		}
+		addRaw(response, "updated_input", output.UpdatedInput)
+	default:
+		return nil, fmt.Errorf("Cursor does not support %s control output", event)
+	}
+	return response, nil
+}
+
 // encodeGeminiResponse follows Gemini CLI's native hook response contract.
 // BeforeTool decisions are top-level, while input rewrites use
 // hookSpecificOutput.tool_input:

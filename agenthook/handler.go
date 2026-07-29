@@ -311,6 +311,8 @@ func encodeResponse(spec profileSpec, event Event, output handledOutput) ([]byte
 		response, err = encodeClaudeResponse(spec, event, output.value)
 	case responseCopilot:
 		response, err = encodeCopilotResponse(event, output.value)
+	case responseCursor:
+		response, err = encodeCursorResponse(event, output.value)
 	case responseGemini:
 		response, err = encodeGeminiResponse(event, output.value)
 	case responseHermes:

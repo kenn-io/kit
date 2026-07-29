@@ -27,7 +27,9 @@
   checked without guessing from another agent's vocabulary.
 - JSON harnesses use either Claude-style nested handlers or native direct
   entries. Keep those encodings separate, and let each profile own event names,
-  timeout units, timeout fields, and cross-platform command fields.
+  timeout units, timeout fields, failure policy, and cross-platform command
+  fields. Decision-bearing Cursor registrations are fail-closed because Cursor
+  otherwise allows the operation when a hook crashes or emits invalid JSON.
 - Keep each harness profile in its own agent-named file (`claude.go`,
   `codex.go`, and so on). `profile.go` owns only the shared vocabulary,
   registry, and lookup behavior.
