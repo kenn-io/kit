@@ -217,8 +217,11 @@ func decodeTypedInput(event Event, payload []byte, common *CommonInput, target a
 }
 
 func validateTypedInput(event Event, input any) error {
-	// Required fields follow Claude's authoritative event input schemas:
-	// https://code.claude.com/docs/en/hooks#hook-inputs
+	// Validate only fields required by every profile that exposes the event.
+	// Some native lifecycle hooks have no Claude equivalent for source or
+	// reason, so those fields intentionally remain zero after normalization:
+	// https://cursor.com/docs/hooks.md#sessionstart
+	// https://github.com/NousResearch/hermes-agent/blob/main/hermes_cli/hooks.py#L151-L162
 	missingToolInput := func(name string, toolInput json.RawMessage) error {
 		if name == "" {
 			return fmt.Errorf("%s input missing tool_name", event)
@@ -229,10 +232,6 @@ func validateTypedInput(event Event, input any) error {
 		return nil
 	}
 	switch value := input.(type) {
-	case *SessionStartInput:
-		if value.Source == "" {
-			return errors.New("SessionStart input missing source")
-		}
 	case *UserPromptSubmitInput:
 		if value.Prompt == "" {
 			return errors.New("UserPromptSubmit input missing prompt")
@@ -262,10 +261,6 @@ func validateTypedInput(event Event, input any) error {
 		if value.NotificationType == "" {
 			return errors.New("Notification input missing notification_type")
 		}
-	case *SessionEndInput:
-		if value.Reason == "" {
-			return errors.New("SessionEnd input missing reason")
-		}
 	}
 	return nil
 }
@@ -280,7 +275,7 @@ func encodeResponse(spec profileSpec, event Event, output handledOutput) ([]byte
 	)
 	switch spec.responseFormat {
 	case responseClaude:
-		response, err = encodeClaudeResponse(event, output.value)
+		response, err = encodeClaudeResponse(spec, event, output.value)
 	case responseCopilot:
 		response, err = encodeCopilotResponse(event, output.value)
 	case responseGemini:
@@ -325,6 +320,11 @@ func validateTypedOutput(event Event, value any) error {
 			output.PermissionDecisionReason == "" {
 			return errors.New("deny output requires a reason")
 		}
+		if len(output.UpdatedInput) > 0 {
+			if err := validateJSONObject(output.UpdatedInput); err != nil {
+				return fmt.Errorf("PreToolUse updatedInput must be a JSON object: %w", err)
+			}
+		}
 	case PostToolUseOutput:
 		return validateDecision(event, output.Decision, output.Reason)
 	case PermissionRequestOutput:
@@ -333,11 +333,17 @@ func validateTypedOutput(event Event, value any) error {
 		}
 		switch output.Decision.Behavior {
 		case PermissionBehaviorAllow, PermissionBehaviorDeny:
-			return nil
 		default:
 			return fmt.Errorf(
 				"%s output has invalid behavior %q", event, output.Decision.Behavior,
 			)
+		}
+		if len(output.Decision.UpdatedInput) > 0 {
+			if err := validateJSONObject(output.Decision.UpdatedInput); err != nil {
+				return fmt.Errorf(
+					"PermissionRequest updatedInput must be a JSON object: %w", err,
+				)
+			}
 		}
 	case StopOutput:
 		return validateDecision(event, output.Decision, output.Reason)

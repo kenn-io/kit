@@ -258,28 +258,71 @@ func TestHandleEncodesGeminiToolRewrite(t *testing.T) {
 	}`, output.String())
 }
 
-func TestHandleRejectsNonObjectGeminiToolRewrite(t *testing.T) {
-	var output bytes.Buffer
-	handler := preToolHandler{output: PreToolUseOutput{
-		UpdatedInput: json.RawMessage(`[]`),
-	}}
-
-	err := Handle(
-		context.Background(),
-		AgentGemini,
-		strings.NewReader(`{
+func TestHandleRejectsNonObjectToolRewrite(t *testing.T) {
+	tests := []struct {
+		name    string
+		agent   Agent
+		payload string
+	}{
+		{
+			name:  "Claude",
+			agent: AgentClaude,
+			payload: `{
+  "session_id":"c1",
+  "hook_event_name":"PreToolUse",
+  "tool_name":"Bash",
+  "tool_input":{"command":"false"}
+}`,
+		},
+		{
+			name:  "Copilot",
+			agent: AgentCopilot,
+			payload: `{
+  "session_id":"c1",
+  "hook_event_name":"PreToolUse",
+  "tool_name":"Bash",
+  "tool_input":{"command":"false"}
+}`,
+		},
+		{
+			name:  "Gemini",
+			agent: AgentGemini,
+			payload: `{
   "session_id":"g1",
   "hook_event_name":"BeforeTool",
   "tool_name":"run_shell_command",
   "tool_input":{"command":"false"}
-}`),
-		&output,
-		handler,
-	)
+}`,
+		},
+		{
+			name:  "Qwen",
+			agent: AgentQwen,
+			payload: `{
+  "session_id":"q1",
+  "hook_event_name":"PreToolUse",
+  "tool_name":"run_shell_command",
+  "tool_input":{"command":"false"}
+}`,
+		},
+	}
 
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "Gemini tool input rewrite must be a JSON object")
-	assert.Empty(t, output.String())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var output bytes.Buffer
+			handler := preToolHandler{output: PreToolUseOutput{
+				UpdatedInput: json.RawMessage(`[]`),
+			}}
+
+			err := Handle(
+				context.Background(), tt.agent, strings.NewReader(tt.payload),
+				&output, handler,
+			)
+
+			require.Error(t, err)
+			assert.ErrorContains(t, err, "PreToolUse updatedInput must be a JSON object")
+			assert.Empty(t, output.String())
+		})
+	}
 }
 
 type promptHandler struct {
@@ -432,11 +475,6 @@ func TestHandleRejectsMissingRequiredEventFields(t *testing.T) {
 		want    string
 	}{
 		{
-			name:    "session source",
-			payload: `{"session_id":"c1","hook_event_name":"SessionStart"}`,
-			want:    "SessionStart input missing source",
-		},
-		{
 			name:    "user prompt",
 			payload: `{"session_id":"c1","hook_event_name":"UserPromptSubmit"}`,
 			want:    "UserPromptSubmit input missing prompt",
@@ -460,11 +498,6 @@ func TestHandleRejectsMissingRequiredEventFields(t *testing.T) {
 }`,
 			want: "Notification input missing message",
 		},
-		{
-			name:    "session end reason",
-			payload: `{"session_id":"c1","hook_event_name":"SessionEnd"}`,
-			want:    "SessionEnd input missing reason",
-		},
 	}
 
 	for _, tt := range tests {
@@ -480,6 +513,129 @@ func TestHandleRejectsMissingRequiredEventFields(t *testing.T) {
 			assert.Empty(t, output.String())
 		})
 	}
+}
+
+type lifecycleHandler struct {
+	NoopHandler
+	sessionStart *SessionStartInput
+	sessionEnd   *SessionEndInput
+}
+
+func (h *lifecycleHandler) SessionStart(
+	_ context.Context,
+	input SessionStartInput,
+) (SessionStartOutput, error) {
+	h.sessionStart = &input
+	return SessionStartOutput{}, nil
+}
+
+func (h *lifecycleHandler) SessionEnd(
+	_ context.Context,
+	input SessionEndInput,
+) (SessionEndOutput, error) {
+	h.sessionEnd = &input
+	return SessionEndOutput{}, nil
+}
+
+func TestHandleAllowsNativeLifecyclePayloadWithoutClaudeEquivalent(t *testing.T) {
+	tests := []struct {
+		name    string
+		agent   Agent
+		payload string
+		check   func(*testing.T, *lifecycleHandler)
+	}{
+		{
+			name:  "Cursor session start without source",
+			agent: AgentCursor,
+			payload: `{
+  "session_id":"c1",
+  "hook_event_name":"sessionStart",
+  "is_background_agent":false,
+  "composer_mode":"agent"
+}`,
+			check: func(t *testing.T, handler *lifecycleHandler) {
+				require.NotNil(t, handler.sessionStart)
+				assert.Empty(t, handler.sessionStart.Source)
+			},
+		},
+		{
+			name:  "Hermes session end without Claude reason",
+			agent: AgentHermes,
+			payload: `{
+  "session_id":"h1",
+  "hook_event_name":"on_session_end",
+  "turn_exit_reason":"text_response(stop)",
+  "completed":true
+}`,
+			check: func(t *testing.T, handler *lifecycleHandler) {
+				require.NotNil(t, handler.sessionEnd)
+				assert.Empty(t, handler.sessionEnd.Reason)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var output bytes.Buffer
+			handler := &lifecycleHandler{}
+
+			err := Handle(
+				context.Background(), tt.agent, strings.NewReader(tt.payload),
+				&output, handler,
+			)
+
+			require.NoError(t, err)
+			tt.check(t, handler)
+			assert.JSONEq(t, `{}`, output.String())
+		})
+	}
+}
+
+func TestHandleRejectsUnsupportedClaudeStyleDecision(t *testing.T) {
+	for _, agent := range []Agent{AgentClaude, AgentCodex, AgentDroid} {
+		t.Run(string(agent), func(t *testing.T) {
+			var output bytes.Buffer
+			handler := stopHandler{output: StopOutput{
+				Decision: DecisionDeny,
+				Reason:   "continue checking",
+			}}
+
+			err := Handle(
+				context.Background(), agent,
+				strings.NewReader(`{"session_id":"s1","hook_event_name":"Stop"}`),
+				&output, handler,
+			)
+
+			require.Error(t, err)
+			assert.ErrorContains(t, err, `Stop output does not support decision "deny"`)
+			assert.Empty(t, output.String())
+		})
+	}
+}
+
+func TestHandleRejectsNonObjectPermissionRequestRewrite(t *testing.T) {
+	var output bytes.Buffer
+	handler := permissionHandler{output: PermissionRequestOutput{
+		Decision: &PermissionRequestDecision{
+			Behavior:     PermissionBehaviorAllow,
+			UpdatedInput: json.RawMessage(`null`),
+		},
+	}}
+
+	err := Handle(
+		context.Background(), AgentClaude,
+		strings.NewReader(`{
+  "session_id":"c1",
+  "hook_event_name":"PermissionRequest",
+  "tool_name":"Bash",
+  "tool_input":{"command":"false"}
+}`),
+		&output, handler,
+	)
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "PermissionRequest updatedInput must be a JSON object")
+	assert.Empty(t, output.String())
 }
 
 func TestEncodeResponseRejectsUnspecifiedProfileFormat(t *testing.T) {

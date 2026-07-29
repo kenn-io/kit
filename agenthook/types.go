@@ -39,6 +39,7 @@ type Effort struct {
 // SessionStartInput is the typed Claude SessionStart payload.
 type SessionStartInput struct {
 	CommonInput
+	// Source is empty when the native hook has no equivalent lifecycle concept.
 	Source       SessionSource `json:"source"`
 	Model        string        `json:"model,omitempty"`
 	SessionTitle string        `json:"session_title,omitempty"`
@@ -153,6 +154,7 @@ type SessionCron struct {
 // SessionEndInput is the typed Claude SessionEnd payload.
 type SessionEndInput struct {
 	CommonInput
+	// Reason is empty when the native hook has no Claude-equivalent reason.
 	Reason SessionEndReason `json:"reason"`
 }
 
@@ -177,7 +179,9 @@ type CommonOutput struct {
 	TerminalSequence string `json:"terminalSequence,omitempty"`
 }
 
-// Decision is a top-level Claude hook decision.
+// Decision is a top-level hook decision. Claude-shaped lifecycle controls use
+// block; profiles whose native contract supports allow or deny retain those
+// values at the encoder boundary.
 type Decision string
 
 const (

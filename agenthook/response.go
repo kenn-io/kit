@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-func encodeClaudeResponse(event Event, value any) (map[string]any, error) {
+func encodeClaudeResponse(spec profileSpec, event Event, value any) (map[string]any, error) {
 	response := map[string]any{}
 	specific := map[string]any{"hookEventName": event}
 	addSpecific := false
@@ -25,6 +25,9 @@ func encodeClaudeResponse(event Event, value any) (map[string]any, error) {
 			addSpecific = true
 		}
 	case UserPromptSubmitOutput:
+		if err := validateClaudeStyleDecision(spec, event, output.Decision); err != nil {
+			return nil, err
+		}
 		addCommonOutput(response, output.CommonOutput)
 		addDecision(response, output.Decision, output.Reason)
 		addSpecific = addValue(specific, "additionalContext", output.AdditionalContext) || addSpecific
@@ -40,6 +43,9 @@ func encodeClaudeResponse(event Event, value any) (map[string]any, error) {
 		addSpecific = addRaw(specific, "updatedInput", output.UpdatedInput) || addSpecific
 		addSpecific = addValue(specific, "additionalContext", output.AdditionalContext) || addSpecific
 	case PostToolUseOutput:
+		if err := validateClaudeStyleDecision(spec, event, output.Decision); err != nil {
+			return nil, err
+		}
 		addCommonOutput(response, output.CommonOutput)
 		addDecision(response, output.Decision, output.Reason)
 		addSpecific = addValue(specific, "additionalContext", output.AdditionalContext) || addSpecific
@@ -57,6 +63,9 @@ func encodeClaudeResponse(event Event, value any) (map[string]any, error) {
 	case NotificationOutput:
 		addCommonOutput(response, output.CommonOutput)
 	case StopOutput:
+		if err := validateClaudeStyleDecision(spec, event, output.Decision); err != nil {
+			return nil, err
+		}
 		addCommonOutput(response, output.CommonOutput)
 		addDecision(response, output.Decision, output.Reason)
 		addSpecific = addValue(specific, "additionalContext", output.AdditionalContext)
@@ -69,6 +78,23 @@ func encodeClaudeResponse(event Event, value any) (map[string]any, error) {
 		response["hookSpecificOutput"] = specific
 	}
 	return response, nil
+}
+
+func validateClaudeStyleDecision(spec profileSpec, event Event, decision Decision) error {
+	if decision == "" || decision == DecisionBlock || spec.profile.Agent == AgentQwen {
+		return nil
+	}
+	// Claude, Codex, and Factory Droid use block for these Claude-shaped
+	// lifecycle controls. Qwen uses the same envelope but explicitly accepts
+	// allow, deny, and block, so its profile retains the broader vocabulary:
+	// https://code.claude.com/docs/en/hooks#stop-decision-control
+	// https://developers.openai.com/codex/config-advanced#hooks
+	// https://docs.factory.ai/docs/harness/hooks#posttooluse-prompt-and-stop-control
+	// https://github.com/QwenLM/qwen-code/blob/main/docs/users/features/hooks.md#userpromptsubmit
+	return fmt.Errorf(
+		"%s %s output does not support decision %q",
+		spec.profile.DisplayName, event, decision,
+	)
 }
 
 func encodeCopilotResponse(event Event, value any) (map[string]any, error) {
@@ -195,12 +221,7 @@ func encodeGeminiResponse(event Event, value any) (map[string]any, error) {
 		addValue(response, "decision", output.PermissionDecision)
 		addValue(response, "reason", output.PermissionDecisionReason)
 		specific := map[string]any{}
-		if len(output.UpdatedInput) > 0 {
-			if err := validateJSONObject(output.UpdatedInput); err != nil {
-				return nil, fmt.Errorf("Gemini tool input rewrite must be a JSON object: %w", err)
-			}
-			addRaw(specific, "tool_input", output.UpdatedInput)
-		}
+		addRaw(specific, "tool_input", output.UpdatedInput)
 		addSpecific(specific)
 	case PostToolUseOutput:
 		if err := addGeminiCommonOutput(response, output.CommonOutput); err != nil {
