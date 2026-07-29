@@ -1,0 +1,44 @@
+# Agent Hook Package Invariants
+
+- The exported event and tool vocabulary follows Claude Code. Agent-specific
+  names belong in profiles; callers should not need native event names to
+  describe equivalent hooks.
+- Handle must dispatch typed Claude Code inputs after normalizing field, event,
+  and tool names. Preserve the complete normalized payload in CommonInput.Raw;
+  agent-specific structural promotion belongs here rather than in consumers.
+- Handler methods return event-specific output types. Keep NoopHandler complete
+  so consumers can embed it and override only the lifecycle events they use.
+- Handle owns native response encoding after typed dispatch. A profile must
+  translate supported control output into its harness's response schema and
+  return an error for unsupported control output; never silently downgrade a
+  security decision to observational success. Every profile must explicitly
+  select a response format; the zero value is intentionally invalid.
+- Handle requires a finite input reader that reaches EOF. Its context governs
+  handler execution but cannot interrupt reads from an arbitrary `io.Reader`;
+  do not introduce a goroutine-backed reader shim that can leak on cancellation.
+- Profiles own config discovery, native event and tool translation, file
+  format, response encoding, and profile-specific input requirements. A native
+  lifecycle hook that lacks a Claude field leaves the typed field at its zero
+  value; it must not weaken validation for profiles whose schema requires that
+  field. Add support for a new harness here rather than in each consuming
+  application.
+- Keep an authoritative upstream documentation or implementation URL beside
+  non-obvious native matcher and response mappings so profile behavior can be
+  checked without guessing from another agent's vocabulary.
+- JSON harnesses use either Claude-style nested handlers or native direct
+  entries. Keep those encodings separate, and let each profile own event names,
+  timeout units, timeout fields, failure policy, and cross-platform command
+  fields. Decision-bearing Cursor registrations are fail-closed because Cursor
+  otherwise allows the operation when a hook crashes or emits invalid JSON.
+- Keep each harness profile in its own agent-named file (`claude.go`,
+  `codex.go`, and so on). `profile.go` owns only the shared vocabulary,
+  registry, and lookup behavior.
+- A marker is a caller-provided, application-namespaced unique substring that
+  identifies application-owned commands. Install and uninstall may replace or
+  remove only matching commands and must preserve unrelated hooks and top-level
+  config.
+- Do not silently enable an agent's hook auto-approval setting. Installation
+  writes registrations; the harness remains responsible for user consent.
+- JSON and YAML writes must preserve symlinked config paths and existing file
+  mode bits. Keep replacement behavior explicit on Unix and Windows; callers
+  must serialize mutations that target the same config path.
