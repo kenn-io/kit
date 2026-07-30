@@ -107,7 +107,8 @@ func (s *ownershipState) get() *Ownership {
 	return &copy
 }
 
-func canonicalOwnership(value Ownership) ([]byte, error) {
+// MarshalOwnership returns the canonical ownership-marker representation.
+func MarshalOwnership(value Ownership) ([]byte, error) {
 	if err := value.Validate(); err != nil {
 		return nil, err
 	}
@@ -116,6 +117,30 @@ func canonicalOwnership(value Ownership) ([]byte, error) {
 		return nil, fmt.Errorf("packstore: encode ownership marker: %w", err)
 	}
 	return append(encoded, '\n'), nil
+}
+
+// ParseOwnership strictly validates a canonical ownership marker.
+func ParseOwnership(data []byte) (Ownership, error) {
+	if len(data) > maxOwnershipMarkerBytes {
+		return Ownership{}, fmt.Errorf("packstore: ownership marker size %d is invalid", len(data))
+	}
+	var value Ownership
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&value); err != nil {
+		return Ownership{}, fmt.Errorf("packstore: decode ownership marker: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return Ownership{}, fmt.Errorf("packstore: ownership marker contains trailing JSON")
+	}
+	canonical, err := MarshalOwnership(value)
+	if err != nil {
+		return Ownership{}, err
+	}
+	if !bytes.Equal(data, canonical) {
+		return Ownership{}, fmt.Errorf("packstore: ownership marker is not canonical")
+	}
+	return value, nil
 }
 
 func readOwnership(path string) (Ownership, error) {
@@ -138,23 +163,7 @@ func readOwnership(path string) (Ownership, error) {
 	if err != nil {
 		return Ownership{}, fmt.Errorf("packstore: read ownership marker: %w", err)
 	}
-	var value Ownership
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&value); err != nil {
-		return Ownership{}, fmt.Errorf("packstore: decode ownership marker: %w", err)
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return Ownership{}, fmt.Errorf("packstore: ownership marker contains trailing JSON")
-	}
-	canonical, err := canonicalOwnership(value)
-	if err != nil {
-		return Ownership{}, err
-	}
-	if !bytes.Equal(data, canonical) {
-		return Ownership{}, fmt.Errorf("packstore: ownership marker is not canonical")
-	}
-	return value, nil
+	return ParseOwnership(data)
 }
 
 func replaceOwnership(
@@ -166,7 +175,7 @@ func replaceOwnership(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	encoded, err := canonicalOwnership(next)
+	encoded, err := MarshalOwnership(next)
 	if err != nil {
 		return err
 	}

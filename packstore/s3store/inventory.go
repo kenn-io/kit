@@ -1,0 +1,204 @@
+package s3store
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"sort"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"go.kenn.io/kit/pack"
+	"go.kenn.io/kit/packstore"
+)
+
+// Inventory returns one bounded, paginated namespace page. Only canonical
+// Kit-generated keys become recognized objects; unknown names are reported
+// and preserved.
+func (b *Backend) Inventory(
+	ctx context.Context,
+	cursor packstore.InventoryCursor,
+) (packstore.InventoryPage, error) {
+	input := &s3.ListObjectsV2Input{
+		Bucket: aws.String(b.bucket), Prefix: aws.String(b.keys.join("")),
+		MaxKeys: aws.Int32(b.page),
+	}
+	if cursor != "" {
+		input.ContinuationToken = aws.String(string(cursor))
+	}
+	output, err := b.client.ListObjectsV2(ctx, input)
+	if err != nil {
+		return packstore.InventoryPage{}, classifyError("list store inventory", err)
+	}
+	page := packstore.InventoryPage{}
+	for _, object := range output.Contents {
+		key := aws.ToString(object.Key)
+		if key == b.keys.ownership() {
+			continue
+		}
+		if ref, ok := b.keys.objectRef(key); ok {
+			page.Objects = append(page.Objects, packstore.InventoryObject{
+				Ref: ref, StoredSize: aws.ToInt64(object.Size),
+			})
+			continue
+		}
+		page.Unknown = append(page.Unknown, key)
+	}
+	sort.Slice(page.Objects, func(i, j int) bool {
+		return inventoryRefKey(page.Objects[i].Ref) < inventoryRefKey(page.Objects[j].Ref)
+	})
+	sort.Strings(page.Unknown)
+	if output.IsTruncated != nil && *output.IsTruncated {
+		page.NextCursor = packstore.InventoryCursor(aws.ToString(output.NextContinuationToken))
+	}
+	return page, nil
+}
+
+// Retire deletes one canonical object after a fresh ownership check.
+func (b *Backend) Retire(ctx context.Context, ref packstore.ObjectRef) error {
+	if _, err := b.requireOwnership(ctx); err != nil {
+		return err
+	}
+	key, err := b.objectKey(ref)
+	if err != nil {
+		return err
+	}
+	_, err = b.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(b.bucket), Key: aws.String(key),
+	})
+	return classifyError("retire object", err)
+}
+
+func (b *Backend) objectKey(ref packstore.ObjectRef) (string, error) {
+	switch {
+	case ref.LooseHash != "" && ref.PackID == "":
+		if err := ref.LooseHash.Validate(); err != nil {
+			return "", err
+		}
+		if ref.LooseEncoding != packstore.LooseEncodingRaw &&
+			ref.LooseEncoding != packstore.LooseEncodingZstd {
+			return "", fmt.Errorf("s3store: invalid loose encoding %d", ref.LooseEncoding)
+		}
+		return b.keys.loose(ref.LooseHash, ref.LooseEncoding), nil
+	case ref.LooseHash == "" && ref.LooseEncoding == 0 && ref.PackID != "":
+		if !pack.IsValidPackID(ref.PackID) {
+			return "", fmt.Errorf("s3store: invalid pack id %q", ref.PackID)
+		}
+		return b.keys.pack(ref.PackID), nil
+	default:
+		return "", fmt.Errorf("s3store: object reference must select one representation")
+	}
+}
+
+func inventoryRefKey(ref packstore.ObjectRef) string {
+	if ref.LooseHash != "" {
+		return fmt.Sprintf("loose/%d/%s", ref.LooseEncoding, ref.LooseHash)
+	}
+	return "pack/" + ref.PackID
+}
+
+// Probe verifies the endpoint capabilities required for safe operation using
+// an owned, temporary probe key. Endpoints that cannot provide strong,
+// repeatable reads are rejected rather than accommodated with retry windows.
+func (b *Backend) Probe(ctx context.Context) (report CapabilityReport, resultErr error) {
+	owner, err := b.requireOwnership(ctx)
+	if err != nil {
+		return report, err
+	}
+	generation, err := newGeneration()
+	if err != nil {
+		return report, err
+	}
+	key := b.keys.staging(owner.Epoch, string(generation), "probe")
+	payload := bytes.Repeat([]byte("kit-s3-probe\n"), 512<<10)
+	published, err := b.multipartPublish(ctx, key, bytes.NewReader(payload), int64(len(payload)), "")
+	if err != nil {
+		return report, err
+	}
+	if !published.created {
+		return report, errors.Join(
+			packstore.ErrPhysicalCorrupt,
+			fmt.Errorf("s3store: fresh probe key already exists"),
+		)
+	}
+	defer func() {
+		if _, err := b.requireOwnership(context.WithoutCancel(ctx)); err != nil {
+			resultErr = errors.Join(resultErr, err)
+			return
+		}
+		_, err := b.client.DeleteObject(context.WithoutCancel(ctx), &s3.DeleteObjectInput{
+			Bucket: aws.String(b.bucket), Key: aws.String(key),
+		})
+		resultErr = errors.Join(resultErr, classifyError("clean probe object", err))
+	}()
+
+	for index := range 2 {
+		output, err := b.client.GetObject(ctx, &s3.GetObjectInput{
+			Bucket: aws.String(b.bucket), Key: aws.String(key),
+		})
+		if err != nil {
+			return report, classifyError("probe read-after-write", err)
+		}
+		got, readErr := io.ReadAll(output.Body)
+		closeErr := output.Body.Close()
+		if readErr != nil || closeErr != nil || !bytes.Equal(got, payload) {
+			return report, errors.Join(
+				packstore.ErrPhysicalCorrupt, readErr, closeErr,
+				fmt.Errorf("s3store: probe read %d differs from publication", index+1),
+			)
+		}
+	}
+	report.StrongReadAfterWrite = true
+	report.RepeatableReads = true
+	report.MultipartPublication = true
+
+	ranged, err := b.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(b.bucket), Key: aws.String(key),
+		Range: aws.String("bytes=5-20"),
+	})
+	if err != nil {
+		return report, classifyError("probe range read", err)
+	}
+	got, readErr := io.ReadAll(ranged.Body)
+	closeErr := ranged.Body.Close()
+	if readErr != nil || closeErr != nil || !bytes.Equal(got, payload[5:21]) {
+		return report, errors.Join(
+			packstore.ErrPhysicalCorrupt, readErr, closeErr,
+			fmt.Errorf("s3store: probe range differs from publication"),
+		)
+	}
+	report.RangeReads = true
+
+	listed, err := b.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket: aws.String(b.bucket), Prefix: aws.String(key), MaxKeys: aws.Int32(2),
+	})
+	if err != nil {
+		return report, classifyError("probe listing", err)
+	}
+	found := false
+	for _, object := range listed.Contents {
+		found = found || aws.ToString(object.Key) == key
+	}
+	if !found {
+		return report, errors.Join(
+			packstore.ErrPhysicalCorrupt,
+			fmt.Errorf("s3store: probe listing omitted published key"),
+		)
+	}
+	report.Listing = true
+
+	if _, err := b.requireOwnership(ctx); err != nil {
+		return report, err
+	}
+	_, err = b.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(b.bucket), Key: aws.String(key),
+	})
+	if err != nil {
+		return report, classifyError("probe delete", err)
+	}
+	resultErr = nil
+	report.Delete = true
+	return report, nil
+}
