@@ -340,7 +340,7 @@ func (m *Maintainer) retireEmpty(ctx context.Context, packID string, stats *Repa
 	if !deleted {
 		return fmt.Errorf("packstore: pack %s still has mappings", packID)
 	}
-	if err := m.store.RetirePack(packID); err != nil {
+	if err := m.filesystem.Retire(ctx, ObjectRef{PackID: packID}); err != nil {
 		return err
 	}
 	stats.PacksRemoved++

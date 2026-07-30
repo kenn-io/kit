@@ -193,6 +193,36 @@ func (s *Store) openLooseStream(ctx context.Context, contentHash Hash) (Verified
 	return stream, object.logicalSize, nil
 }
 
+func (s *Store) openLooseStreamAt(
+	ctx context.Context,
+	contentHash Hash,
+	location LooseLocation,
+) (VerifiedReadCloser, int64, error) {
+	object, err := s.openLooseObjectAt(contentHash, location.Encoding)
+	if err != nil {
+		return nil, 0, err
+	}
+	if object.logicalSize != location.LogicalSize ||
+		object.storedSize != location.StoredSize {
+		return nil, 0, errors.Join(
+			ErrPhysicalCorrupt,
+			fmt.Errorf(
+				"packstore: loose authority is logical=%d stored=%d, found logical=%d stored=%d",
+				location.LogicalSize,
+				location.StoredSize,
+				object.logicalSize,
+				object.storedSize,
+			),
+			object.file.Close(),
+		)
+	}
+	stream, err := newLooseVerifiedStream(ctx, contentHash, object)
+	if err != nil {
+		return nil, 0, err
+	}
+	return stream, object.logicalSize, nil
+}
+
 func newLooseVerifiedStream(
 	ctx context.Context,
 	contentHash Hash,

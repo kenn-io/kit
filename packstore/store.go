@@ -82,6 +82,7 @@ type Store struct {
 	health           *Health
 	retryResolution  bool
 	observeStreams   bool
+	filesystem       *FilesystemBackend
 
 	// mu protects cache membership and descriptor leases. Content I/O never
 	// holds it; retired descriptors close after their final lease is released.
@@ -104,7 +105,12 @@ func NewStore(resolver Resolver, layout Layout, opts StoreOptions) (*Store, erro
 	}
 	store.layout = layout
 	store.resolver = resolver
-	legacyBackend := &legacyReadBackend{store: store}
+	loose, err := newFilesystemLooseStore(layout)
+	if err != nil {
+		return nil, err
+	}
+	legacyBackend := newFilesystemBackendWithReader(layout, loose, store, true)
+	store.filesystem = legacyBackend
 	store.locationResolver = legacyLocationResolver{resolver: resolver}
 	store.backends = legacyBackendRegistry{backend: legacyBackend}
 	store.health = NewHealth()
@@ -314,6 +320,13 @@ func (s *Store) Close() error {
 // removal failure returns PackRetirementError and may be retried. The method
 // deliberately does not alter catalog authority.
 func (s *Store) RetirePack(packID string) error {
+	if s.filesystem == nil {
+		return fmt.Errorf("packstore: pack retirement requires a filesystem backend")
+	}
+	return s.filesystem.retirePack(packID)
+}
+
+func (s *Store) retireFilesystemPack(packID string) error {
 	if !pack.IsValidPackID(packID) {
 		return fmt.Errorf("packstore: invalid pack id %q", packID)
 	}
@@ -337,9 +350,26 @@ type looseObject struct {
 }
 
 func (s *Store) openLooseObject(hash Hash) (*looseObject, error) {
-	compressedPath := s.layout.CompressedLoosePath(hash)
-	f, info, err := openLooseFile(compressedPath)
+	object, err := s.openLooseObjectAt(hash, LooseEncodingZstd)
 	if err == nil {
+		return object, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	return s.openLooseObjectAt(hash, LooseEncodingRaw)
+}
+
+func (s *Store) openLooseObjectAt(
+	hash Hash,
+	encoding LooseEncoding,
+) (*looseObject, error) {
+	switch encoding {
+	case LooseEncodingZstd:
+		f, info, err := openLooseFile(s.layout.CompressedLoosePath(hash))
+		if err != nil {
+			return nil, markPhysicalSourceNotFound(err)
+		}
 		header := make([]byte, compressedLooseHeaderSize)
 		if _, readErr := io.ReadFull(f, header); readErr != nil {
 			return nil, errors.Join(
@@ -358,20 +388,18 @@ func (s *Store) openLooseObject(hash Hash) (*looseObject, error) {
 			file: f, encoding: LooseEncodingZstd,
 			logicalSize: logicalSize, storedSize: info.Size(),
 		}, nil
+	case LooseEncodingRaw:
+		f, info, err := openLooseFile(s.layout.LoosePath(hash))
+		if err != nil {
+			return nil, markPhysicalSourceNotFound(err)
+		}
+		return &looseObject{
+			file: f, encoding: LooseEncodingRaw,
+			logicalSize: info.Size(), storedSize: info.Size(),
+		}, nil
+	default:
+		return nil, fmt.Errorf("packstore: invalid loose encoding %d", encoding)
 	}
-	if !errors.Is(err, fs.ErrNotExist) {
-		return nil, err
-	}
-
-	rawPath := s.layout.LoosePath(hash)
-	f, info, err = openLooseFile(rawPath)
-	if err != nil {
-		return nil, markPhysicalSourceNotFound(err)
-	}
-	return &looseObject{
-		file: f, encoding: LooseEncodingRaw,
-		logicalSize: info.Size(), storedSize: info.Size(),
-	}, nil
 }
 
 func openLooseFile(path string) (*os.File, fs.FileInfo, error) {

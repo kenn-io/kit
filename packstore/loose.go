@@ -165,21 +165,19 @@ type WriteResult struct {
 	StoredSize int64
 }
 
-// LooseStore owns policy-explicit loose content-addressed operations.
-type LooseStore struct {
+type filesystemLooseStore struct {
 	layout Layout
 }
 
-// NewLooseStore prepares layout for loose operations.
-func NewLooseStore(layout Layout) (*LooseStore, error) {
+func newFilesystemLooseStore(layout Layout) (*filesystemLooseStore, error) {
 	if layout.Root() == "" {
 		return nil, fmt.Errorf("packstore: invalid empty layout")
 	}
-	return &LooseStore{layout: layout}, nil
+	return &filesystemLooseStore{layout: layout}, nil
 }
 
 // Write streams src into its canonical content-addressed path.
-func (s *LooseStore) Write(ctx context.Context, src io.Reader, opts WriteOptions) (WriteResult, error) {
+func (s *filesystemLooseStore) Write(ctx context.Context, src io.Reader, opts WriteOptions) (WriteResult, error) {
 	if err := validateWriteOptions(opts); err != nil {
 		return WriteResult{}, err
 	}
@@ -208,7 +206,7 @@ func (s *LooseStore) Write(ctx context.Context, src io.Reader, opts WriteOptions
 // copying. The caller must not mutate content until the method returns.
 // Because identity is known before filesystem work begins, errors after that
 // point return a result populated with Hash and Size.
-func (s *LooseStore) WriteBytes(ctx context.Context, content []byte, opts WriteOptions) (WriteResult, error) {
+func (s *filesystemLooseStore) WriteBytes(ctx context.Context, content []byte, opts WriteOptions) (WriteResult, error) {
 	if err := validateWriteOptions(opts); err != nil {
 		return WriteResult{}, err
 	}
@@ -259,7 +257,7 @@ func (s *LooseStore) WriteBytes(ctx context.Context, content []byte, opts WriteO
 // before returning Created false with the joined recovery and durability errors.
 // Repair staging is private to this call; correctness assumes no external
 // writer mutates that private inode after its final verification begins.
-func (s *LooseStore) Repair(
+func (s *filesystemLooseStore) Repair(
 	ctx context.Context,
 	src io.Reader,
 	expected LooseIdentity,
@@ -301,7 +299,7 @@ type looseZstdReader interface {
 	Close()
 }
 
-func (s *LooseStore) publish(
+func (s *filesystemLooseStore) publish(
 	ctx context.Context,
 	src io.Reader,
 	opts WriteOptions,
@@ -702,7 +700,7 @@ func shouldCompressLoose(logicalSize, storedSize int64, opts LooseCompressionOpt
 
 // Verify checks whether the canonical loose object exists and satisfies the
 // requested identity, deduplication, and durability policy.
-func (s *LooseStore) Verify(hash Hash, size int64, verification DedupVerification, durability Durability) (WriteResult, bool, error) {
+func (s *filesystemLooseStore) Verify(hash Hash, size int64, verification DedupVerification, durability Durability) (WriteResult, bool, error) {
 	if err := hash.Validate(); err != nil {
 		return WriteResult{}, false, err
 	}
@@ -722,7 +720,7 @@ func (s *LooseStore) Verify(hash Hash, size int64, verification DedupVerificatio
 // Remove deletes both canonical physical representations of a loose object.
 // Missing objects are successful; symlinks and other non-regular entries are
 // preserved and reported as content mismatches.
-func (s *LooseStore) Remove(hash Hash, durability RemovalDurability) error {
+func (s *filesystemLooseStore) Remove(hash Hash, durability RemovalDurability) error {
 	if err := hash.Validate(); err != nil {
 		return err
 	}
@@ -773,7 +771,7 @@ func validateWriteOptions(opts WriteOptions) error {
 	return nil
 }
 
-func (s *LooseStore) stagingDir(opts WriteOptions) (string, error) {
+func (s *filesystemLooseStore) stagingDir(opts WriteOptions) (string, error) {
 	if s.layout.staging == StagingSameDirectory {
 		if opts.ExpectedHash == "" {
 			return "", fmt.Errorf("%w: same-directory staging requires expected hash", ErrInvalidPolicy)
@@ -783,7 +781,7 @@ func (s *LooseStore) stagingDir(opts WriteOptions) (string, error) {
 	return filepath.Join(s.layout.Root(), s.layout.stagingDir), nil
 }
 
-func (s *LooseStore) existing(ctx context.Context, hash Hash, size int64, verification DedupVerification, durability Durability) (WriteResult, bool, error) {
+func (s *filesystemLooseStore) existing(ctx context.Context, hash Hash, size int64, verification DedupVerification, durability Durability) (WriteResult, bool, error) {
 	result, exists, err := s.existingPath(ctx, s.layout.CompressedLoosePath(hash), hash, size, LooseEncodingZstd, verification, durability)
 	if err != nil || exists {
 		return result, exists, err
@@ -791,7 +789,7 @@ func (s *LooseStore) existing(ctx context.Context, hash Hash, size int64, verifi
 	return s.existingPath(ctx, s.layout.LoosePath(hash), hash, size, LooseEncodingRaw, verification, durability)
 }
 
-func (s *LooseStore) existingPath(ctx context.Context, path string, hash Hash, size int64, encoding LooseEncoding, verification DedupVerification, durability Durability) (WriteResult, bool, error) {
+func (s *filesystemLooseStore) existingPath(ctx context.Context, path string, hash Hash, size int64, encoding LooseEncoding, verification DedupVerification, durability Durability) (WriteResult, bool, error) {
 	const maxIdentityAttempts = 8
 	var result WriteResult
 	var exists bool
@@ -815,7 +813,7 @@ func (s *LooseStore) existingPath(ctx context.Context, path string, hash Hash, s
 	return result, exists, err
 }
 
-func (s *LooseStore) existingOnce(ctx context.Context, path string, hash Hash, size int64, encoding LooseEncoding, verification DedupVerification, durability Durability) (result WriteResult, exists bool, resultErr error) {
+func (s *filesystemLooseStore) existingOnce(ctx context.Context, path string, hash Hash, size int64, encoding LooseEncoding, verification DedupVerification, durability Durability) (result WriteResult, exists bool, resultErr error) {
 	info, err := snapshotLoosePathIdentity(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return WriteResult{}, false, nil
@@ -888,7 +886,7 @@ func (s *LooseStore) existingOnce(ctx context.Context, path string, hash Hash, s
 	}, true, nil
 }
 
-func (s *LooseStore) verifyCompressedPath(ctx context.Context, path string, before fs.FileInfo, expectedHash Hash, expectedSize int64, verification DedupVerification, durable bool) (result *looseVerifiedIdentity, resultErr error) {
+func (s *filesystemLooseStore) verifyCompressedPath(ctx context.Context, path string, before fs.FileInfo, expectedHash Hash, expectedSize int64, verification DedupVerification, durable bool) (result *looseVerifiedIdentity, resultErr error) {
 	f, err := openNoFollow(path, durable)
 	if err != nil {
 		return nil, fmt.Errorf("packstore: open compressed loose content: %w", err)
@@ -951,7 +949,7 @@ func (s *LooseStore) verifyCompressedPath(ctx context.Context, path string, befo
 	return verified, nil
 }
 
-func (s *LooseStore) verifyPathHash(ctx context.Context, path string, before fs.FileInfo, expected Hash, durable bool) (result *looseVerifiedIdentity, resultErr error) {
+func (s *filesystemLooseStore) verifyPathHash(ctx context.Context, path string, before fs.FileInfo, expected Hash, durable bool) (result *looseVerifiedIdentity, resultErr error) {
 	f, err := openNoFollow(path, durable)
 	if err != nil {
 		return nil, fmt.Errorf("packstore: open loose content: %w", err)

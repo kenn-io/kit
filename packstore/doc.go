@@ -30,6 +30,13 @@
 // second candidate; a later read prefers another less-damaged authorized
 // generation when one exists.
 //
+// FilesystemBackend applies the same verified loose and pack mechanics to a
+// store-scoped namespace. Canonical Ownership markers fence publication and
+// retirement by vault, store, and epoch; ordinary reads use application-cached
+// availability observations rather than performing a marker round trip.
+// Move copies one candidate, reads the destination back, and returns physical
+// evidence without granting catalog authority or retiring the source.
+//
 // Store.OpenStream exposes loose and plain packed content through one
 // verification-on-EOF contract. A prefix is not authoritative: callers must
 // observe terminal io.EOF, call Verify successfully, or check Verified before

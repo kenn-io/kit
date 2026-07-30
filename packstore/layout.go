@@ -106,3 +106,11 @@ func (l Layout) PackPath(packID string) string {
 	}
 	return filepath.Join(l.PacksDir(), packID[:2], packID+PackExt)
 }
+
+// OwnershipPath returns the canonical store ownership marker.
+func (l Layout) OwnershipPath() string {
+	if l.root == "" {
+		return ""
+	}
+	return filepath.Join(l.root, ownershipMarkerName)
+}

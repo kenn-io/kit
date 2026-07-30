@@ -126,7 +126,7 @@ func (m *Maintainer) Unpack(ctx context.Context) (UnpackStats, error) {
 	}
 	var retireErr error
 	for _, plan := range plans {
-		if err := m.store.RetirePack(plan.packID); err != nil {
+		if err := m.filesystem.Retire(ctx, ObjectRef{PackID: plan.packID}); err != nil {
 			retireErr = errors.Join(retireErr, err)
 			continue
 		}
