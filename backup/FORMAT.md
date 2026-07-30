@@ -47,7 +47,7 @@ Compatibility is enforced at three levels, all of which must pass:
 
 1. **Repository level.** `config.toml` records `repo_id` (a lowercase-hex UUID; readers refuse any other shape, because the ID is embedded verbatim in local cache filenames), `format_version` (what wrote it), and `min_reader_version` (the oldest format a reader must understand). `Open` refuses a repository whose `min_reader_version` exceeds the reader's supported version, with an explicit error telling the caller to upgrade the reader. A future format change that old readers can safely ignore bumps only `format_version`; a change they cannot safely ignore also bumps `min_reader_version`.
 2. **Object level.** Every binary object begins with a 4-byte magic and a version field, and every decoder rejects an unknown magic or version. A reader can therefore never misparse an object from a future format as if it were current.
-3. **Snapshot level.** Each manifest records its own `format_version`, `min_reader_version`, and the application version string that wrote it (wire key `msgvault_version`, frozen for compatibility across every application built on this engine), so compatibility can evolve per-snapshot within one repository (for example, when a future version introduces encrypted snapshots alongside existing plaintext ones). Version 2 marks snapshots whose attachment population records storage paths beyond the canonical `<aa>/<hash>` derivation: version-1 readers placed every restored attachment at the canonical path and would materialize a database pointing at files that do not exist, so they must refuse these snapshots. Snapshots whose recorded paths are all canonical keep version 1. Version 3 marks snapshots whose application metadata is a portable logical blob rather than SQLite page-map chains. A manifest whose `min_reader_version` a reader accepts must contain only fields that reader knows: the content-derived ID covers only known fields, so an unknown field would otherwise ride along in an authenticated manifest, and readers refuse it as forged rather than ignore it.
+3. **Snapshot level.** Each manifest records its own `format_version`, `min_reader_version`, and the application version string that wrote it (wire key `msgvault_version`, frozen for compatibility across every application built on this engine), so compatibility can evolve per-snapshot within one repository (for example, when a future version introduces encrypted snapshots alongside existing plaintext ones). Version 2 marks snapshots whose attachment population records storage paths beyond the canonical `<aa>/<hash>` derivation: version-1 readers placed every restored attachment at the canonical path and would materialize a database pointing at files that do not exist, so they must refuse these snapshots. Snapshots whose recorded paths are all canonical keep version 1. Version 3 marks snapshots whose application metadata is a portable logical blob rather than SQLite page-map chains. Version 4 marks snapshots with application-defined auxiliary artifacts. A manifest whose `min_reader_version` a reader accepts must contain only fields that reader knows: the content-derived ID covers only known fields, so an unknown field would otherwise ride along in an authenticated manifest, and readers refuse it as forged rather than ignore it.
 
 Integrity is separate from versioning: every metadata object ends with a SHA-256 trailer over everything before it, checked before any field is interpreted, and pack entries carry CRC32-C over the stored bytes.
 
@@ -166,6 +166,25 @@ runtime database. Confining it into the target requires one complete sequential
 copy, so the target must simultaneously have capacity for its unpublished copy.
 This deliberate scratch cost keeps the application callback independent of the
 caller-supplied target path on every supported platform.
+
+## Auxiliary Artifacts
+
+A version-4 snapshot may carry a bounded, name-sorted list of
+application-defined artifacts alongside either metadata representation. Each
+manifest entry records a canonical name, an opaque format identifier, byte
+length, blob identity, and SHA-256 digest. The artifact bytes use the same
+content-addressed packs and verification path as every other snapshot object.
+
+For portable metadata, the artifact list comes from the same pinned
+`MetadataSnapshot`; for SQLite capture it comes from the pinned `FrozenView`.
+Kit opens and streams each artifact exactly once before releasing that view.
+It interprets neither the format nor the bytes.
+
+Quick verification proves every artifact resolves through the repository
+index and pack footer. Full verification reads it and re-derives its length
+and SHA-256. Restore performs the same content verification before delivering
+the complete bytes to `AuxiliaryTarget`. A missing target or target error
+fails while the restored database remains unpublished.
 
 ## Attachment Lists (magic `MVAL`)
 

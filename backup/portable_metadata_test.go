@@ -84,6 +84,7 @@ type portableSource struct {
 	raw            []byte
 	info           *backup.ContentInfo
 	stats          json.RawMessage
+	auxiliary      []backup.AuxiliaryArtifact
 	opened         bool
 	closed         bool
 	closes         int
@@ -108,6 +109,9 @@ func (s *portableSource) ContentInfo(context.Context) (*backup.ContentInfo, erro
 	return s.info, nil
 }
 func (s *portableSource) Stats(context.Context) (json.RawMessage, error) { return s.stats, nil }
+func (s *portableSource) AuxiliaryArtifacts(context.Context) ([]backup.AuxiliaryArtifact, error) {
+	return s.auxiliary, nil
+}
 func (s *portableSource) Close() error {
 	s.closed = true
 	s.closes++
@@ -165,6 +169,110 @@ func (f metadataRestorerFunc) RestoreMetadata(
 	ctx context.Context, format string, metadata io.Reader, targetPath string,
 ) error {
 	return f(ctx, format, metadata, targetPath)
+}
+
+type auxiliaryTargetFunc func(context.Context, []backup.RestoredAuxiliary) error
+
+func (f auxiliaryTargetFunc) RestoreAuxiliary(
+	ctx context.Context,
+	artifacts []backup.RestoredAuxiliary,
+) error {
+	return f(ctx, artifacts)
+}
+
+func TestAuxiliaryCaptureVerifyAndRestore(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	ctx := context.Background()
+	base := t.TempDir()
+	repo, err := backup.Init(filepath.Join(base, "repo"))
+	require.NoError(err)
+	record := portableRecord{Notes: []string{"snapshot"}}
+	raw, err := json.Marshal(record)
+	require.NoError(err)
+	stats, err := json.Marshal(portableStats{Notes: 1})
+	require.NoError(err)
+	placement := []byte(`{"stores":["primary","archive"]}`)
+	source := &portableSource{
+		raw: raw, stats: stats, info: &backup.ContentInfo{},
+		auxiliary: []backup.AuxiliaryArtifact{{
+			Name: "placement", Format: "synthetic-placement-v1",
+			Open: func(context.Context) (io.ReadCloser, int64, error) {
+				return io.NopCloser(bytes.NewReader(placement)), int64(len(placement)), nil
+			},
+		}},
+	}
+	manifest, err := backup.Create(ctx, repo, portableApp{}, backup.CreateOptions{
+		MetadataSource: source, Jobs: 1,
+	})
+	require.NoError(err)
+	require.Len(manifest.Auxiliary, 1)
+	assert.Equal("placement", manifest.Auxiliary[0].Name)
+	assert.Equal("synthetic-placement-v1", manifest.Auxiliary[0].Format)
+	assert.Equal(int64(len(placement)), manifest.Auxiliary[0].Bytes)
+	assert.Equal(manifest.Auxiliary[0].Blob, manifest.Auxiliary[0].SHA256)
+	assert.Equal(4, manifest.MinReaderVersion)
+
+	for _, quick := range []bool{true, false} {
+		verified, verifyErr := backup.Verify(ctx, repo, portableApp{}, backup.VerifyOptions{Quick: quick})
+		require.NoError(verifyErr)
+		assert.Empty(verified.Problems)
+	}
+
+	var restored []backup.RestoredAuxiliary
+	result, err := backup.Restore(ctx, repo, portableApp{}, backup.RestoreOptions{
+		TargetDir:        filepath.Join(base, "restored"),
+		MetadataRestorer: portableRestorer{},
+		AuxiliaryTarget: auxiliaryTargetFunc(func(
+			_ context.Context,
+			artifacts []backup.RestoredAuxiliary,
+		) error {
+			restored = append(restored, artifacts...)
+			return nil
+		}),
+	})
+	require.NoError(err)
+	assert.Equal(1, result.AuxiliaryArtifacts)
+	require.Len(restored, 1)
+	assert.Equal("placement", restored[0].Name)
+	assert.Equal("synthetic-placement-v1", restored[0].Format)
+	assert.Equal(placement, restored[0].Data)
+
+	targetErr := errors.New("reject auxiliary")
+	failedTarget := filepath.Join(base, "failed-target")
+	_, err = backup.Restore(ctx, repo, portableApp{}, backup.RestoreOptions{
+		TargetDir: failedTarget, MetadataRestorer: portableRestorer{},
+		AuxiliaryTarget: auxiliaryTargetFunc(func(
+			context.Context,
+			[]backup.RestoredAuxiliary,
+		) error {
+			return targetErr
+		}),
+	})
+	require.ErrorIs(err, targetErr)
+	_, statErr := os.Stat(filepath.Join(failedTarget, "portable.db"))
+	require.ErrorIs(statErr, os.ErrNotExist)
+
+	index, err := repo.LoadBlobIndex()
+	require.NoError(err)
+	artifactID, err := pack.ParseBlobID(manifest.Auxiliary[0].Blob)
+	require.NoError(err)
+	entry := index[artifactID]
+	packPath := repo.Path("packs", entry.PackID[:2], entry.PackID+".kpack")
+	file, err := os.OpenFile(packPath, os.O_RDWR, 0)
+	require.NoError(err)
+	var original [1]byte
+	_, err = file.ReadAt(original[:], int64(entry.Offset))
+	require.NoError(err)
+	original[0] ^= 0xff
+	_, err = file.WriteAt(original[:], int64(entry.Offset))
+	require.NoError(err)
+	require.NoError(file.Close())
+
+	verified, err := backup.Verify(ctx, repo, portableApp{}, backup.VerifyOptions{})
+	require.NoError(err)
+	require.NotEmpty(verified.Problems)
+	assert.Contains(verified.Problems[0].Detail, manifest.Auxiliary[0].Blob)
 }
 
 type countingFreezer struct{ begins, ends int }

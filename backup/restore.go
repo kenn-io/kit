@@ -72,6 +72,9 @@ type RestoreOptions struct {
 	// SQLiteOpener selects the SQLite implementation used to validate and
 	// update the staged database. Nil preserves Kit's mattn/go-sqlite3 default.
 	SQLiteOpener SQLiteOpener
+	// AuxiliaryTarget consumes verified application-defined snapshot artifacts
+	// before the target database becomes visible.
+	AuxiliaryTarget AuxiliaryTarget
 }
 
 // RestoreResult reports what Restore materialized and proved.
@@ -92,6 +95,9 @@ type RestoreResult struct {
 	// restored loose. An empty Hash means the reason applies to the whole pack.
 	PackFallbacks []packstore.ImportFallback
 	ExtrasFiles   int
+	// AuxiliaryArtifacts is the number of verified artifacts delivered to
+	// AuxiliaryTarget.
+	AuxiliaryArtifacts int
 	// DatabaseIntegrityChecked reports whether Restore ran SQLite's full
 	// PRAGMA integrity_check against the staged database.
 	DatabaseIntegrityChecked bool
@@ -144,6 +150,9 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *R
 		if m == nil {
 			return nil, errors.New("backup: repository has no snapshots to restore")
 		}
+	}
+	if len(m.Auxiliary) > 0 && opts.AuxiliaryTarget == nil {
+		return nil, errors.New("backup: snapshot carries auxiliary artifacts but no AuxiliaryTarget was provided")
 	}
 	known, err := r.LoadBlobIndex()
 	if err != nil {
@@ -267,6 +276,16 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *R
 			_ = st.root.Remove(tmpRel)
 		}
 	}()
+	if len(m.Auxiliary) > 0 {
+		auxiliary, auxiliaryErr := st.restoreAuxiliary(ctx, m)
+		if auxiliaryErr != nil {
+			return nil, auxiliaryErr
+		}
+		if auxiliaryErr := opts.AuxiliaryTarget.RestoreAuxiliary(ctx, auxiliary); auxiliaryErr != nil {
+			return nil, fmt.Errorf("backup: restoring auxiliary artifacts: %w", auxiliaryErr)
+		}
+		res.AuxiliaryArtifacts = len(auxiliary)
+	}
 	if opts.PackedContent == nil {
 		res.AttachmentBlobs, res.AttachmentBytes, err = st.restoreAttachments(
 			ctx, app, m, app.ContentDirName())
@@ -798,6 +817,21 @@ func (s *restoreState) preflightSnapshotBlobs(m *Manifest, pm *PageMap) error {
 			return fmt.Errorf("backup: portable metadata blob %s not present in any index", id)
 		}
 	}
+	for _, artifact := range m.Auxiliary {
+		id, err := pack.ParseBlobID(artifact.Blob)
+		if err != nil {
+			return fmt.Errorf(
+				"backup: auxiliary artifact %q blob id %q: %w",
+				artifact.Name, artifact.Blob, err,
+			)
+		}
+		if _, ok := s.known[id]; !ok {
+			return fmt.Errorf(
+				"backup: auxiliary artifact %q blob %s not present in any index",
+				artifact.Name, id,
+			)
+		}
+	}
 	refs, _, err := LoadListRefs(s.repo, s.known, m.Attachments.Lists, nil, s.app.PackFileExtension())
 	if err != nil {
 		return err
@@ -847,6 +881,49 @@ func (s *restoreState) preflightSnapshotBlobs(m *Manifest, pm *PageMap) error {
 		}
 	}
 	return nil
+}
+
+func (s *restoreState) restoreAuxiliary(
+	ctx context.Context,
+	m *Manifest,
+) ([]RestoredAuxiliary, error) {
+	restored := make([]RestoredAuxiliary, 0, len(m.Auxiliary))
+	for _, artifact := range m.Auxiliary {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		id, err := pack.ParseBlobID(artifact.Blob)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"backup: auxiliary artifact %q blob id %q: %w",
+				artifact.Name, artifact.Blob, err,
+			)
+		}
+		data, err := s.fetch(id)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"backup: reading auxiliary artifact %q: %w",
+				artifact.Name, err,
+			)
+		}
+		if int64(len(data)) != artifact.Bytes {
+			return nil, fmt.Errorf(
+				"backup: auxiliary artifact %q is %d bytes but manifest records %d",
+				artifact.Name, len(data), artifact.Bytes,
+			)
+		}
+		if digest := pack.ComputeBlobID(data).String(); digest != artifact.SHA256 {
+			return nil, fmt.Errorf(
+				"backup: auxiliary artifact %q digest differs from manifest",
+				artifact.Name,
+			)
+		}
+		restored = append(restored, RestoredAuxiliary{
+			Name: artifact.Name, Format: artifact.Format,
+			SHA256: artifact.SHA256, Data: data,
+		})
+	}
+	return restored, nil
 }
 
 // blobRuns is one page blob and every page-map run it backs.
