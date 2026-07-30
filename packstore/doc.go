@@ -21,6 +21,15 @@
 // Readers continue accepting older compressed loose frames within the 64 MiB
 // streaming frame-window ceiling.
 //
+// Store may read one legacy filesystem layout or an application-ordered set of
+// store-scoped physical candidates. Applications retain membership and
+// candidate authority through LocationResolver; BackendRegistry supplies only
+// byte mechanics. Failed candidates retain typed evidence, and process-local
+// Health observations demote a damaged generation without changing durable
+// authority. A stream that fails after yielding bytes is never spliced to a
+// second candidate; a later read prefers another less-damaged authorized
+// generation when one exists.
+//
 // Store.OpenStream exposes loose and plain packed content through one
 // verification-on-EOF contract. A prefix is not authoritative: callers must
 // observe terminal io.EOF, call Verify successfully, or check Verified before

@@ -77,6 +77,12 @@ type Store struct {
 	limits   Limits
 	slots    int
 
+	locationResolver LocationResolver
+	backends         BackendRegistry
+	health           *Health
+	retryResolution  bool
+	observeStreams   bool
+
 	// mu protects cache membership and descriptor leases. Content I/O never
 	// holds it; retired descriptors close after their final lease is released.
 	mu          sync.Mutex
@@ -92,20 +98,35 @@ func NewStore(resolver Resolver, layout Layout, opts StoreOptions) (*Store, erro
 	if layout.Root() == "" {
 		return nil, fmt.Errorf("packstore: invalid empty layout")
 	}
-	if opts.Limits == (Limits{}) {
-		opts.Limits = DefaultLimits()
-	}
-	if err := validateLimits(opts.Limits); err != nil {
+	store, err := newStoreOptions(opts.Limits, opts.ReaderSlots)
+	if err != nil {
 		return nil, err
 	}
-	if opts.ReaderSlots == 0 {
-		opts.ReaderSlots = maxOpenReaders
+	store.layout = layout
+	store.resolver = resolver
+	legacyBackend := &legacyReadBackend{store: store}
+	store.locationResolver = legacyLocationResolver{resolver: resolver}
+	store.backends = legacyBackendRegistry{backend: legacyBackend}
+	store.health = NewHealth()
+	store.retryResolution = true
+	return store, nil
+}
+
+func newStoreOptions(limits Limits, readerSlots int) (*Store, error) {
+	if limits == (Limits{}) {
+		limits = DefaultLimits()
 	}
-	if opts.ReaderSlots < 1 {
+	if err := validateLimits(limits); err != nil {
+		return nil, err
+	}
+	if readerSlots == 0 {
+		readerSlots = maxOpenReaders
+	}
+	if readerSlots < 1 {
 		return nil, fmt.Errorf("packstore: reader slots must be positive")
 	}
 	return &Store{
-		resolver: resolver, layout: layout, limits: opts.Limits, slots: opts.ReaderSlots,
+		limits: limits, slots: readerSlots,
 		packReaders: make(map[string]*cachedPackReader),
 	}, nil
 }
@@ -122,9 +143,70 @@ func (s *Store) Open(ctx context.Context, hash Hash) (io.ReadSeekCloser, int64, 
 	if err := hash.Validate(); err != nil {
 		return nil, 0, err
 	}
-	return resolveBlob(ctx, s, hash,
-		func(hash Hash) (io.ReadSeekCloser, int64, error) { return s.openSeekableLoose(ctx, hash) },
-		s.openPacked)
+	return s.openMultiSeekable(ctx, hash)
+}
+
+func (s *Store) openMultiSeekable(
+	ctx context.Context,
+	hash Hash,
+) (io.ReadSeekCloser, int64, error) {
+	reader, size, location, err := resolveCandidates(
+		ctx,
+		s,
+		hash,
+		func(backend ReadBackend, location ReadLocation) (io.ReadSeekCloser, int64, error) {
+			if seekable, ok := backend.(seekableReadBackend); ok {
+				if location.Loose != nil {
+					return seekable.OpenSeekableLoose(ctx, hash, *location.Loose)
+				}
+				return seekable.OpenSeekablePack(ctx, hash, *location.Pack)
+			}
+			stream, streamSize, err := openBackendStream(ctx, backend, hash, location)
+			if err != nil {
+				return nil, 0, err
+			}
+			return materializeSeekable(stream, streamSize)
+		},
+	)
+	if err != nil {
+		return nil, 0, err
+	}
+	if s.observeStreams {
+		s.health.Clear(location)
+	}
+	return reader, size, nil
+}
+
+func materializeSeekable(
+	stream VerifiedReadCloser,
+	size int64,
+) (io.ReadSeekCloser, int64, error) {
+	temporary, err := createSeekableLooseTemp()
+	if err != nil {
+		return nil, 0, errors.Join(
+			fmt.Errorf("packstore: create seekable temporary file: %w", err),
+			stream.Close(),
+		)
+	}
+	cleanup := func(primary error) error {
+		return errors.Join(primary, stream.Close(), temporary.Close())
+	}
+	buffer := looseCopyBufferPool.Get().(*[looseCopyBufferBytes]byte)
+	_, copyErr := copySeekableLoose(struct{ io.Writer }{temporary}, stream, buffer[:])
+	looseCopyBufferPool.Put(buffer)
+	if copyErr != nil {
+		return nil, 0, cleanup(copyErr)
+	}
+	if err := stream.Verify(); err != nil {
+		return nil, 0, cleanup(err)
+	}
+	if err := stream.Close(); err != nil {
+		return nil, 0, cleanup(err)
+	}
+	if _, err := temporary.Seek(0, io.SeekStart); err != nil {
+		return nil, 0, cleanup(fmt.Errorf("packstore: rewind seekable temporary file: %w", err))
+	}
+	return &temporarySeekCloser{File: temporary}, size, nil
 }
 
 // ReadBounded returns verified content while bounding both stored and raw
@@ -142,57 +224,72 @@ func (s *Store) ReadBounded(ctx context.Context, hash Hash, maxBytes int64) ([]b
 	if maxBytes > s.limits.BlobBytes {
 		maxBytes = s.limits.BlobBytes
 	}
-	return resolveBlob(ctx, s, hash,
-		func(hash Hash) ([]byte, int64, error) { return s.readLooseBounded(ctx, hash, maxBytes) },
-		func(hash Hash, entry *IndexEntry) ([]byte, int64, error) {
-			return s.readPackedBounded(ctx, hash, entry, maxBytes)
-		})
+	return s.readMultiBounded(ctx, hash, maxBytes)
 }
 
-func resolveBlob[T any](ctx context.Context, store *Store, hash Hash,
-	readLoose func(Hash) (T, int64, error),
-	readPacked func(Hash, *IndexEntry) (T, int64, error),
-) (T, int64, error) {
-	var zero T
-	location, err := store.resolver.Resolve(ctx, hash)
+func (s *Store) readMultiBounded(
+	ctx context.Context,
+	hash Hash,
+	maxBytes int64,
+) ([]byte, int64, error) {
+	data, size, location, err := resolveCandidates(
+		ctx,
+		s,
+		hash,
+		func(backend ReadBackend, location ReadLocation) ([]byte, int64, error) {
+			if bounded, ok := backend.(boundedReadBackend); ok {
+				if location.Loose != nil {
+					return bounded.ReadLooseBounded(ctx, hash, *location.Loose, maxBytes)
+				}
+				return bounded.ReadPackBounded(ctx, hash, *location.Pack, maxBytes)
+			}
+			stream, streamSize, err := openBackendStream(ctx, backend, hash, location)
+			if err != nil {
+				return nil, 0, err
+			}
+			return consumeBounded(stream, streamSize, maxBytes)
+		},
+	)
 	if err != nil {
-		return zero, 0, err
+		return nil, 0, err
 	}
-	if !location.Member {
-		return zero, 0, blobNotFound(hash)
+	if s.observeStreams {
+		s.health.Clear(location)
 	}
-	if location.Pack == nil {
-		value, size, looseErr := readLoose(hash)
-		if !isPhysicalSourceNotFound(looseErr) {
-			return value, size, looseErr
-		}
-		location, err = store.resolver.Resolve(ctx, hash)
-		if err != nil {
-			return zero, 0, err
-		}
-		if !location.Member {
-			return zero, 0, blobNotFound(hash)
-		}
-		if location.Pack == nil {
-			return zero, 0, looseErr
-		}
-		return readPacked(hash, location.Pack)
+	return data, size, nil
+}
+
+func consumeBounded(
+	stream VerifiedReadCloser,
+	size int64,
+	maxBytes int64,
+) ([]byte, int64, error) {
+	if size < 0 {
+		return nil, 0, errors.Join(
+			fmt.Errorf("packstore: negative backend content size %d", size),
+			stream.Close(),
+		)
 	}
-	value, size, packErr := readPacked(hash, location.Pack)
-	if !isPhysicalSourceNotFound(packErr) {
-		return value, size, packErr
+	if size > maxBytes {
+		return nil, 0, errors.Join(
+			newLimitError(LimitBlobRawBytes, uint64(size), uint64(maxBytes)), //nolint:gosec
+			stream.Close(),
+		)
 	}
-	location, err = store.resolver.Resolve(ctx, hash)
-	if err != nil {
-		return zero, 0, err
+	if uint64(size) > maxPlatformInt {
+		return nil, 0, errors.Join(
+			newLimitError(LimitBlobRawBytes, uint64(size), maxPlatformInt),
+			stream.Close(),
+		)
 	}
-	if !location.Member {
-		return zero, 0, blobNotFound(hash)
+	data := make([]byte, int(size))
+	_, readErr := io.ReadFull(stream, data)
+	verifyErr := stream.Verify()
+	closeErr := stream.Close()
+	if err := errors.Join(readErr, verifyErr, closeErr); err != nil {
+		return nil, 0, err
 	}
-	if location.Pack == nil {
-		return readLoose(hash)
-	}
-	return readPacked(hash, location.Pack)
+	return data, size, nil
 }
 
 func blobNotFound(hash Hash) error {

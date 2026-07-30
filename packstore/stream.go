@@ -34,11 +34,65 @@ func (s *Store) OpenStream(ctx context.Context, contentHash Hash) (VerifiedReadC
 	if err := contentHash.Validate(); err != nil {
 		return nil, 0, err
 	}
-	return resolveBlob(ctx, s, contentHash,
-		func(hash Hash) (VerifiedReadCloser, int64, error) { return s.openLooseStream(ctx, hash) },
-		func(hash Hash, entry *IndexEntry) (VerifiedReadCloser, int64, error) {
-			return s.openPackedStream(ctx, hash, entry)
-		})
+	return s.openMultiStream(ctx, contentHash)
+}
+
+func (s *Store) openMultiStream(
+	ctx context.Context,
+	contentHash Hash,
+) (VerifiedReadCloser, int64, error) {
+	stream, size, location, err := resolveCandidates(
+		ctx,
+		s,
+		contentHash,
+		func(backend ReadBackend, location ReadLocation) (VerifiedReadCloser, int64, error) {
+			return openBackendStream(ctx, backend, contentHash, location)
+		},
+	)
+	if err != nil {
+		return nil, 0, err
+	}
+	if !s.observeStreams {
+		return stream, size, nil
+	}
+	return &observedVerifiedStream{
+		VerifiedReadCloser: stream,
+		health:             s.health,
+		location:           location,
+	}, size, nil
+}
+
+type observedVerifiedStream struct {
+	VerifiedReadCloser
+	health   *Health
+	location ReadLocation
+}
+
+func (s *observedVerifiedStream) Read(p []byte) (int, error) {
+	n, err := s.VerifiedReadCloser.Read(p)
+	s.observe(err)
+	return n, err
+}
+
+func (s *observedVerifiedStream) Verify() error {
+	err := s.VerifiedReadCloser.Verify()
+	s.observe(err)
+	return err
+}
+
+func (s *observedVerifiedStream) Close() error {
+	err := s.VerifiedReadCloser.Close()
+	s.observe(err)
+	return err
+}
+
+func (s *observedVerifiedStream) observe(err error) {
+	switch {
+	case isCandidateFailure(err):
+		s.health.Observe(s.location, err)
+	case err == nil && s.Verified():
+		s.health.Clear(s.location)
+	}
 }
 
 // CopyVerified copies catalog-authorized content to caller-owned private
