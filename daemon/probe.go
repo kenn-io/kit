@@ -88,36 +88,52 @@ func Probe(ctx context.Context, ep Endpoint, opts ProbeOptions) (PingInfo, error
 
 // ProbeHTTP checks that baseURL answers its ping endpoint.
 func ProbeHTTP(ctx context.Context, client *http.Client, baseURL string, opts ProbeOptions) (PingInfo, error) {
+	info, _, err := probeHTTP(ctx, client, baseURL, opts, "")
+	return info, err
+}
+
+func probeHTTP(
+	ctx context.Context,
+	client *http.Client,
+	baseURL string,
+	opts ProbeOptions,
+	proofChallenge string,
+) (PingInfo, http.Header, error) {
 	ctx, cancel := context.WithTimeout(ctx, opts.timeout())
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+opts.path(), nil)
 	if err != nil {
-		return PingInfo{}, err
+		return PingInfo{}, nil, err
+	}
+	if proofChallenge != "" {
+		req.Header.Set(proofChallengeHeader, proofChallenge)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return PingInfo{}, err
+		return PingInfo{}, nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return PingInfo{}, fmt.Errorf("daemon ping returned %d", resp.StatusCode)
+		return PingInfo{}, nil, fmt.Errorf("daemon ping returned %d", resp.StatusCode)
 	}
 	var info PingInfo
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return PingInfo{}, fmt.Errorf("decode daemon ping: %w", err)
+		return PingInfo{}, nil, fmt.Errorf("decode daemon ping: %w", err)
 	}
 	if !info.OK {
-		return PingInfo{}, errors.New("daemon ping returned ok=false")
+		return PingInfo{}, nil, errors.New("daemon ping returned ok=false")
 	}
 	if opts.ExpectedService != "" && info.Service != opts.ExpectedService {
-		return PingInfo{}, fmt.Errorf("unexpected daemon service %q", info.Service)
+		return PingInfo{}, nil, fmt.Errorf("unexpected daemon service %q", info.Service)
 	}
-	return info, nil
+	return info, resp.Header.Clone(), nil
 }
 
 // DiscoverOptions configures runtime-file discovery.
 type DiscoverOptions struct {
-	Probe           ProbeOptions
+	Probe ProbeOptions
+	// Proof enables proof-of-possession probing for each runtime record.
+	Proof           *Proof
 	RequirePIDAlive bool
 	Accept          func(RuntimeRecord, PingInfo) bool
 }
@@ -138,7 +154,12 @@ func Discover(ctx context.Context, store RuntimeStore, opts DiscoverOptions) (Ru
 		if opts.RequirePIDAlive && !ProcessAlive(rec.PID) {
 			continue
 		}
-		info, err := Probe(ctx, rec.Endpoint(), opts.Probe)
+		var info PingInfo
+		if opts.Proof == nil {
+			info, err = Probe(ctx, rec.Endpoint(), opts.Probe)
+		} else {
+			info, err = opts.Proof.Probe(ctx, rec, opts.Probe)
+		}
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return RuntimeRecord{}, PingInfo{}, false, ctxErr

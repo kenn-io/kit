@@ -11,6 +11,10 @@ databases, command parsing, and shutdown policy belong to the caller.
 
 - Never infer live daemon state from a runtime record alone. Probe the endpoint
   before claiming a process is reachable.
+- Never send a bearer credential to a runtime-record endpoint before it proves
+  possession of the daemon token and its recorded service, version, PID,
+  network, and address. Use the package proof ping and probe contract for this
+  ordering.
 - Default network behavior stays local. Do not add public listen addresses or
   broad bind behavior without an explicit caller option.
 - Unix sockets and runtime records must live under private current-user

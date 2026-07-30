@@ -11,7 +11,9 @@ import (
 type CompatibleFunc func(RuntimeRecord, PingInfo) bool
 
 // FindFunc returns a live compatible daemon using caller-defined discovery.
-// It must honor ctx so Manager.Ensure can enforce its timeout.
+// It must honor ctx so Manager.Ensure can enforce its timeout. Callbacks that
+// use bearer credentials must prove the runtime endpoint with Proof.Probe
+// before sending them; ordinary authenticated discovery can use Discover.Proof.
 type FindFunc func(context.Context) (RuntimeRecord, PingInfo, bool, error)
 
 // StartFunc starts a daemon in the background.
