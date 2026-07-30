@@ -289,10 +289,20 @@ func TestProofFormattingDoesNotDiscloseKey(t *testing.T) {
 	manager := daemon.Manager{Discover: daemon.DiscoverOptions{Proof: proof}}
 	byteList := fmt.Sprintf("%d", key)
 
-	for _, format := range []string{"%v", "%+v", "%#v"} {
-		rendered := fmt.Sprintf(format, manager)
-		disclosed := strings.Contains(rendered, string(key)) || strings.Contains(rendered, byteList)
-		assert.False(disclosed, "formatted daemon configuration disclosed proof key material")
+	values := []struct {
+		name  string
+		value any
+	}{
+		{name: "pointer", value: proof},
+		{name: "value", value: *proof},
+		{name: "manager", value: manager},
+	}
+	for _, value := range values {
+		for _, format := range []string{"%v", "%+v", "%#v"} {
+			rendered := fmt.Sprintf(format, value.value)
+			disclosed := strings.Contains(rendered, string(key)) || strings.Contains(rendered, byteList)
+			assert.False(disclosed, "%s formatting disclosed proof key material", value.name)
+		}
 	}
 }
 

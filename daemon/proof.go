@@ -39,7 +39,7 @@ func NewProof(key []byte) (*Proof, error) {
 }
 
 // Format redacts the proof key from diagnostic formatting.
-func (p *Proof) Format(state fmt.State, _ rune) {
+func (Proof) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("<daemon proof>"))
 }
 
