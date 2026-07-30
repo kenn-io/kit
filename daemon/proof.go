@@ -59,32 +59,32 @@ func (p *Proof) NewPingHandler(rec RuntimeRecord) (http.Handler, error) {
 		PID:     rec.PID,
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			ping.ServeHTTP(w, r)
-			return
-		}
 		challenges := r.Header.Values(proofChallengeHeader)
-		if len(challenges) == 0 {
-			ping.ServeHTTP(w, r)
+		if r.Method == http.MethodGet && len(challenges) > 0 &&
+			!p.writePingProof(w, challenges, rec) {
 			return
 		}
-		if len(challenges) != 1 {
-			http.Error(w, "invalid daemon proof challenge", http.StatusBadRequest)
-			return
-		}
-		nonce, err := decodeProofValue(challenges[0], proofNonceSize)
-		if err != nil {
-			http.Error(w, "invalid daemon proof challenge", http.StatusBadRequest)
-			return
-		}
-		proof, err := proofMAC(p.key, nonce, rec)
-		if err != nil {
-			http.Error(w, "daemon proof unavailable", http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set(proofResponseHeader, proofEncoding.EncodeToString(proof))
 		ping.ServeHTTP(w, r)
 	}), nil
+}
+
+func (p *Proof) writePingProof(w http.ResponseWriter, challenges []string, rec RuntimeRecord) bool {
+	if len(challenges) != 1 {
+		http.Error(w, "invalid daemon proof challenge", http.StatusBadRequest)
+		return false
+	}
+	nonce, err := decodeProofValue(challenges[0], proofNonceSize)
+	if err != nil {
+		http.Error(w, "invalid daemon proof challenge", http.StatusBadRequest)
+		return false
+	}
+	proof, err := proofMAC(p.key, nonce, rec)
+	if err != nil {
+		http.Error(w, "daemon proof unavailable", http.StatusInternalServerError)
+		return false
+	}
+	w.Header().Set(proofResponseHeader, proofEncoding.EncodeToString(proof))
+	return true
 }
 
 // Probe checks that the endpoint in rec answers its ping endpoint and proves
