@@ -137,7 +137,7 @@ func TestManagerFindUsesCustomDiscovery(t *testing.T) {
 	require := require.New(t)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer test-token" {
+		if r.Header.Get("X-Test-Probe") != "present" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -158,7 +158,7 @@ func TestManagerFindUsesCustomDiscovery(t *testing.T) {
 
 	manager := daemon.Manager{
 		Store:    store,
-		FindFunc: discoverWithHeader(store, "Authorization", "Bearer test-token"),
+		FindFunc: discoverWithHeader(store, "X-Test-Probe", "present"),
 	}
 	rec, info, ok, err := manager.Find(context.Background())
 	require.NoError(err)
@@ -211,13 +211,13 @@ func TestManagerEnsureSerializesConcurrentStartsWithCustomDiscovery(t *testing.T
 	assert := assert.New(t)
 	require := require.New(t)
 
-	var authenticatedProbes atomic.Int32
+	var customProbes atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer test-token" {
+		if r.Header.Get("X-Test-Probe") != "present" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		authenticatedProbes.Add(1)
+		customProbes.Add(1)
 		_, _ = fmt.Fprint(w, `{"ok":true,"service":"tool","version":"v1"}`)
 	}))
 	defer server.Close()
@@ -225,7 +225,7 @@ func TestManagerEnsureSerializesConcurrentStartsWithCustomDiscovery(t *testing.T
 	discoveryStore := daemon.RuntimeStore{Dir: t.TempDir()}
 	lockStore := daemon.RuntimeStore{Dir: t.TempDir()}
 	findCalls := make(chan struct{}, 8)
-	find := discoverWithHeader(discoveryStore, "Authorization", "Bearer test-token")
+	find := discoverWithHeader(discoveryStore, "X-Test-Probe", "present")
 	startEntered := make(chan struct{})
 	releaseStart := make(chan struct{})
 	t.Cleanup(func() {
@@ -291,7 +291,7 @@ func TestManagerEnsureSerializesConcurrentStartsWithCustomDiscovery(t *testing.T
 		assert.Equal("tool", result.info.Service)
 	}
 	assert.Equal(int32(1), starts.Load())
-	assert.Equal(int32(2), authenticatedProbes.Load())
+	assert.Equal(int32(2), customProbes.Load())
 }
 
 func TestManagerEnsureAppliesTimeoutToStartLock(t *testing.T) {

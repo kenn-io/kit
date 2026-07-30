@@ -1,14 +1,20 @@
 package daemon_test
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -163,6 +169,141 @@ func TestDiscoverRejectsPIDMismatchWhenRequiringLivePID(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestManagerFindDoesNotDiscloseCredentialBeforeProof(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+
+	livePID := startLivePIDHelper(t)
+	assert.NotEqual(os.Getpid(), livePID)
+	token := []byte("persistent-daemon-token")
+	proof := newDaemonProof(t, token)
+	var credentialDisclosed atomic.Bool
+	attacker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			credentialDisclosed.Store(true)
+		}
+		if r.Header.Get("Authorization") != "" ||
+			requestContainsSecret(r, body, token) {
+			credentialDisclosed.Store(true)
+		}
+		_, _ = fmt.Fprintf(w, `{"ok":true,"service":"tool","version":"v1","pid":%d}`, livePID)
+	}))
+	defer attacker.Close()
+
+	store := daemon.RuntimeStore{Dir: t.TempDir()}
+	_, err := store.Write(daemon.RuntimeRecord{
+		PID:       livePID,
+		Network:   daemon.NetworkTCP,
+		Address:   listenerAddr(t, attacker),
+		Service:   "tool",
+		Version:   "v1",
+		StartedAt: time.Now().Add(-time.Hour),
+	})
+	require.NoError(err)
+
+	manager := daemon.Manager{
+		Store: store,
+		Discover: daemon.DiscoverOptions{
+			Probe:           daemon.ProbeOptions{ExpectedService: "tool"},
+			RequirePIDAlive: true,
+			Proof:           proof,
+		},
+	}
+
+	_, _, ok, err := manager.Find(context.Background())
+	require.NoError(err)
+	assert.False(ok)
+	assert.False(credentialDisclosed.Load(), "credential material reached an unproved endpoint")
+}
+
+func TestDiscoverAcceptsValidRuntimeProof(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+
+	key := []byte("valid-proof-key")
+	serverProof := newDaemonProof(t, key)
+	server, rec := startProofServer(t, daemon.RuntimeRecord{
+		PID:       os.Getpid(),
+		Service:   "tool",
+		Version:   "v1",
+		StartedAt: time.Now(),
+	}, serverProof)
+	defer server.Close()
+
+	store := daemon.RuntimeStore{Dir: t.TempDir()}
+	_, err := store.Write(rec)
+	require.NoError(err)
+
+	found, info, ok, err := daemon.Discover(context.Background(), store, daemon.DiscoverOptions{
+		Probe:           daemon.ProbeOptions{ExpectedService: "tool"},
+		RequirePIDAlive: true,
+		Proof:           newDaemonProof(t, key),
+	})
+	require.NoError(err)
+	require.True(ok)
+	assert.Equal(rec.Address, found.Address)
+	assert.Equal(rec.PID, info.PID)
+	assert.Equal(rec.Service, info.Service)
+}
+
+func TestProofPingHandlerPreservesStandardReadiness(t *testing.T) {
+	assert := assert.New(t)
+
+	server, rec := startProofServer(t, daemon.RuntimeRecord{
+		PID:     os.Getpid(),
+		Service: "tool",
+		Version: "v1",
+	}, newDaemonProof(t, []byte("readiness-proof-key")))
+	defer server.Close()
+
+	info, err := daemon.Probe(context.Background(), rec.Endpoint(), daemon.ProbeOptions{
+		ExpectedService: "tool",
+	})
+	require.NoError(t, err)
+	assert.True(info.OK)
+	assert.Equal(rec.PID, info.PID)
+	assert.Equal(rec.Version, info.Version)
+}
+
+func TestProofProbeRejectsWrongKey(t *testing.T) {
+	serverProof := newDaemonProof(t, []byte("server-proof-key"))
+	server, rec := startProofServer(t, daemon.RuntimeRecord{
+		PID:     os.Getpid(),
+		Service: "tool",
+		Version: "v1",
+	}, serverProof)
+	defer server.Close()
+
+	clientProof := newDaemonProof(t, []byte("different-proof-key"))
+	_, err := clientProof.Probe(context.Background(), rec, daemon.ProbeOptions{
+		ExpectedService: "tool",
+	})
+	require.Error(t, err)
+}
+
+func TestProofFormattingDoesNotDiscloseKey(t *testing.T) {
+	assert := assert.New(t)
+	key := []byte("format-sensitive-key")
+	proof := newDaemonProof(t, key)
+	manager := daemon.Manager{Discover: daemon.DiscoverOptions{Proof: proof}}
+	byteList := fmt.Sprintf("%d", key)
+
+	for _, format := range []string{"%v", "%+v", "%#v"} {
+		rendered := fmt.Sprintf(format, manager)
+		disclosed := strings.Contains(rendered, string(key)) || strings.Contains(rendered, byteList)
+		assert.False(disclosed, "formatted daemon configuration disclosed proof key material")
+	}
+}
+
+func TestLivePIDHelper(t *testing.T) {
+	if os.Getenv("KIT_DAEMON_LIVE_PID_HELPER") != "1" {
+		return
+	}
+	_, _ = fmt.Fprintln(os.Stdout, "ready")
+	_, _ = io.Copy(io.Discard, os.Stdin)
+}
+
 func TestDiscoverPropagatesContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -244,4 +385,61 @@ func listenerAddr(t *testing.T, server *httptest.Server) string {
 		return err
 	}(), "server address %q", addr)
 	return addr
+}
+
+func startLivePIDHelper(t *testing.T) int {
+	t.Helper()
+	require := require.New(t)
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestLivePIDHelper$")
+	cmd.Env = append(os.Environ(), "KIT_DAEMON_LIVE_PID_HELPER=1")
+	stdin, err := cmd.StdinPipe()
+	require.NoError(err)
+	stdout, err := cmd.StdoutPipe()
+	require.NoError(err)
+	require.NoError(cmd.Start())
+	t.Cleanup(func() {
+		require.NoError(stdin.Close())
+		require.NoError(cmd.Wait())
+	})
+
+	ready, err := bufio.NewReader(stdout).ReadString('\n')
+	require.NoError(err)
+	require.Equal("ready\n", ready)
+	return cmd.Process.Pid
+}
+
+func requestContainsSecret(r *http.Request, body, secret []byte) bool {
+	if bytes.Contains([]byte(r.URL.String()), secret) || bytes.Contains(body, secret) {
+		return true
+	}
+	for _, values := range r.Header {
+		for _, value := range values {
+			if strings.Contains(value, string(secret)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func newDaemonProof(t *testing.T, key []byte) *daemon.Proof {
+	t.Helper()
+	proof, err := daemon.NewProof(key)
+	require.NoError(t, err)
+	return proof
+}
+
+func startProofServer(t *testing.T, rec daemon.RuntimeRecord, proof *daemon.Proof) (*httptest.Server, daemon.RuntimeRecord) {
+	t.Helper()
+	require := require.New(t)
+
+	server := httptest.NewUnstartedServer(nil)
+	rec.Network = daemon.NetworkTCP
+	rec.Address = server.Listener.Addr().String()
+	handler, err := proof.NewPingHandler(rec)
+	require.NoError(err)
+	server.Config.Handler = handler
+	server.Start()
+	return server, rec
 }
