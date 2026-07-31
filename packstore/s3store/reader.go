@@ -156,8 +156,16 @@ func (b *Backend) downloadPackRanges(
 		written, copyErr := io.CopyN(staged, output.Body, end-start+1)
 		closeErr := output.Body.Close()
 		if copyErr != nil || closeErr != nil || written != end-start+1 {
+			rangeErr := errors.Join(copyErr, closeErr)
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, "", errors.Join(ctxErr, rangeErr)
+			}
+			if errors.Is(rangeErr, context.Canceled) ||
+				errors.Is(rangeErr, context.DeadlineExceeded) {
+				return nil, "", rangeErr
+			}
 			return nil, "", errors.Join(
-				packstore.ErrPhysicalCorrupt, copyErr, closeErr,
+				packstore.ErrPhysicalCorrupt, rangeErr,
 				fmt.Errorf("s3store: pack range returned %d bytes, expected %d",
 					written, end-start+1),
 			)

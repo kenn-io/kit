@@ -50,6 +50,38 @@ func TestDownloadPackRangesRejectsOversizedObjectBeforeGET(t *testing.T) {
 	assert.Zero(t, getRequests)
 }
 
+func TestDownloadPackRangesPreservesCancellation(t *testing.T) {
+	for _, terminal := range []error{context.Canceled, context.DeadlineExceeded} {
+		t.Run(terminal.Error(), func(t *testing.T) {
+			backend := newHTTPBackend(packstore.DefaultLimits(), func(request *http.Request) (*http.Response, error) {
+				header := make(http.Header)
+				header.Set("Content-Length", "1")
+				if request.Method == http.MethodHead {
+					return &http.Response{
+						StatusCode: http.StatusOK, Header: header,
+						Body: io.NopCloser(bytes.NewReader(nil)), ContentLength: 1,
+						Request: request,
+					}, nil
+				}
+				header.Set("Content-Range", "bytes 0-0/1")
+				return &http.Response{
+					StatusCode: http.StatusPartialContent, Header: header,
+					Body: &failingRangeBody{err: terminal}, ContentLength: 1,
+					Request: request,
+				}, nil
+			})
+
+			_, _, err := backend.downloadPackRanges(
+				context.Background(),
+				"0123456789abcdef0123456789abcdef",
+			)
+
+			require.ErrorIs(t, err, terminal)
+			require.NotErrorIs(t, err, packstore.ErrPhysicalCorrupt)
+		})
+	}
+}
+
 func TestPackReaderOptionsUseConfiguredLimits(t *testing.T) {
 	backend := &Backend{limits: packstore.Limits{
 		BlobBytes: 4096, PackBytes: 8192, FooterBytes: 2048, PackEntries: 32,
@@ -360,6 +392,11 @@ type memoryVerifiedReader struct {
 	*bytes.Reader
 	verified bool
 }
+
+type failingRangeBody struct{ err error }
+
+func (b *failingRangeBody) Read([]byte) (int, error) { return 0, b.err }
+func (b *failingRangeBody) Close() error             { return nil }
 
 func (r *memoryVerifiedReader) Read(p []byte) (int, error) {
 	n, err := r.Reader.Read(p)
