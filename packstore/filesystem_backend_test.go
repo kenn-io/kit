@@ -198,13 +198,13 @@ func TestFilesystemBackendSeekablePackHonorsCancellation(t *testing.T) {
 func TestFilesystemBackendDurablePackPublicationSyncsFreshHierarchy(t *testing.T) {
 	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
 	packPath, packID, _ := buildBackendPackSource(t, []byte("durable pack hierarchy"))
-	originalSyncDir := pack.SyncDir
+	originalSyncDir := syncFilesystemRootDir
 	var synced []string
-	pack.SyncDir = func(dir string) error {
-		synced = append(synced, filepath.Clean(dir))
+	syncFilesystemRootDir = func(dir *os.Root) error {
+		synced = append(synced, filepath.Clean(dir.Name()))
 		return nil
 	}
-	t.Cleanup(func() { pack.SyncDir = originalSyncDir })
+	t.Cleanup(func() { syncFilesystemRootDir = originalSyncDir })
 	source, err := os.Open(packPath)
 	require.NoError(t, err)
 
@@ -214,9 +214,11 @@ func TestFilesystemBackendDurablePackPublicationSyncsFreshHierarchy(t *testing.T
 	)
 	require.NoError(t, errors.Join(err, source.Close()))
 
-	packsDir := backend.Layout().PacksDir()
+	resolvedRoot, err := filepath.EvalSymlinks(backend.Layout().Root())
+	require.NoError(t, err)
+	packsDir := filepath.Join(resolvedRoot, "packs")
 	assert.Equal(t, []string{
-		backend.Layout().Root(),
+		resolvedRoot,
 		packsDir,
 		packsDir,
 		filepath.Join(packsDir, packID[:2]),

@@ -276,7 +276,7 @@ func (b *FilesystemBackend) ReadLooseBounded(
 		return consumeBounded(stream, size, maxBytes)
 	}
 	data, size, err := b.reader.readLooseBounded(ctx, hash, maxBytes)
-	return data, size, classifyPhysicalError(err)
+	return data, size, classifyPhysicalError(ClassifyRepresentationLimitError(err))
 }
 
 func (b *FilesystemBackend) ReadPackBounded(
@@ -290,7 +290,7 @@ func (b *FilesystemBackend) ReadPackBounded(
 }
 
 func classifyPackPhysicalError(err error) error {
-	return classifyPhysicalError(ClassifyPackLimitError(err))
+	return classifyPhysicalError(ClassifyRepresentationLimitError(err))
 }
 
 // PublishLoose writes a canonical immutable loose object after a fresh
@@ -437,21 +437,33 @@ func (b *FilesystemBackend) PublishPack(
 	if err != nil {
 		return PackReceipt{}, err
 	}
-	stagingDir := filepath.Join(b.layout.PacksDir(), ".staging")
-	if err := preparePackDirectory(stagingDir, opts.Durability); err != nil {
+	root, err := openFilesystemRoot(b.layout)
+	if err != nil {
+		return PackReceipt{}, fmt.Errorf("packstore: open pack publication root: %w", err)
+	}
+	defer func() { resultErr = errors.Join(resultErr, root.Close()) }()
+	durable := opts.Durability == DurablePublication || opts.Durability == 0
+	packsRoot, err := ensureRootDirNoSymlinks(root, "packs", durable)
+	if err != nil {
+		return PackReceipt{}, fmt.Errorf("packstore: prepare pack directory: %w", err)
+	}
+	defer func() { resultErr = errors.Join(resultErr, packsRoot.Close()) }()
+	stagingRoot, err := ensureRootDirNoSymlinks(packsRoot, ".staging", durable)
+	if err != nil {
 		return PackReceipt{}, fmt.Errorf("packstore: prepare pack staging: %w", err)
 	}
-	staged, err := os.CreateTemp(stagingDir, ".pack-")
+	defer func() { resultErr = errors.Join(resultErr, stagingRoot.Close()) }()
+	staged, stagedName, err := createRootTemp(stagingRoot, ".pack-")
 	if err != nil {
 		return PackReceipt{}, fmt.Errorf("packstore: create pack staging: %w", err)
 	}
-	stagedPath := staged.Name()
+	stagedPath := filepath.Join(b.layout.PacksDir(), ".staging", stagedName)
 	stagedOpen := true
 	defer func() {
 		if stagedOpen {
 			resultErr = errors.Join(resultErr, staged.Close())
 		}
-		if err := os.Remove(stagedPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		if err := stagingRoot.Remove(stagedName); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			resultErr = errors.Join(resultErr, err)
 		}
 	}()
@@ -478,22 +490,34 @@ func (b *FilesystemBackend) PublishPack(
 		return PackReceipt{}, fmt.Errorf("packstore: close pack staging: %w", err)
 	}
 	stagedOpen = false
-	if err := validateFilesystemPackStaging(ctx, stagedPath, packID, b.limits); err != nil {
+	stagedValidation, err := openRootRegularFile(stagingRoot, stagedName, stagedPath)
+	if err != nil {
+		return PackReceipt{}, fmt.Errorf("packstore: open pack staging for validation: %w", err)
+	}
+	if err := validateFilesystemPackFile(ctx, stagedValidation, packID, b.limits); err != nil {
 		return PackReceipt{}, err
 	}
 	final := b.layout.PackPath(packID)
-	if err := preparePackDirectory(filepath.Dir(final), opts.Durability); err != nil {
+	shardName := packID[:2]
+	shardRoot, err := ensureRootDirNoSymlinks(packsRoot, shardName, durable)
+	if err != nil {
 		return PackReceipt{}, fmt.Errorf("packstore: prepare pack shard: %w", err)
 	}
+	defer func() { resultErr = errors.Join(resultErr, shardRoot.Close()) }()
+	finalName := packID + PackExt
 	created := false
-	if err := publishLooseFile(stagedPath, final); err == nil {
+	if err := packsRoot.Link(filepath.Join(".staging", stagedName), filepath.Join(shardName, finalName)); err == nil {
 		created = true
 	} else if !errors.Is(err, fs.ErrExist) {
 		return PackReceipt{}, fmt.Errorf("packstore: publish pack: %w", err)
 	}
+	canonical, err := openRootRegularFile(shardRoot, finalName, final)
+	if err != nil {
+		return PackReceipt{}, err
+	}
 	size, err := verifyFilesystemPack(
 		ctx,
-		final,
+		canonical,
 		packID,
 		b.limits,
 		written,
@@ -505,8 +529,8 @@ func (b *FilesystemBackend) PublishPack(
 		}
 		return PackReceipt{}, errors.Join(ErrPhysicalCorrupt, err)
 	}
-	if opts.Durability == DurablePublication || opts.Durability == 0 {
-		if err := pack.SyncDir(filepath.Dir(final)); err != nil {
+	if durable {
+		if err := syncFilesystemRootDir(shardRoot); err != nil {
 			return PackReceipt{}, fmt.Errorf("packstore: sync pack publication: %w", err)
 		}
 	}
@@ -514,13 +538,6 @@ func (b *FilesystemBackend) PublishPack(
 		StoreID: owner.Store, Generation: generation,
 		PackID: packID, Size: size, Created: created,
 	}, nil
-}
-
-func preparePackDirectory(path string, durability Durability) error {
-	if durability == DurablePublication || durability == 0 {
-		return pack.MkdirAllSynced(path)
-	}
-	return os.MkdirAll(path, 0o700)
 }
 
 func copyBoundedContext(
@@ -573,16 +590,12 @@ func effectivePackPublicationLimit(
 
 func verifyFilesystemPack(
 	ctx context.Context,
-	path string,
+	file *os.File,
 	packID string,
 	limits Limits,
 	expectedSize int64,
 	expectedDigest [sha256.Size]byte,
 ) (resultSize int64, resultErr error) {
-	file, err := openNoFollow(path, false)
-	if err != nil {
-		return 0, err
-	}
 	info, err := file.Stat()
 	if err != nil {
 		return 0, errors.Join(err, file.Close())
@@ -621,16 +634,12 @@ func verifyFilesystemPack(
 	return info.Size(), nil
 }
 
-func validateFilesystemPackStaging(
+func validateFilesystemPackFile(
 	ctx context.Context,
-	path string,
+	file *os.File,
 	packID string,
 	limits Limits,
 ) error {
-	file, err := openNoFollow(path, false)
-	if err != nil {
-		return fmt.Errorf("packstore: open pack staging for validation: %w", err)
-	}
 	if err := packvalidate.File(
 		ctx, file, packID, filesystemPackReaderOptions(limits), filesystemPackBlobLimits(limits),
 	); err != nil {
@@ -672,7 +681,7 @@ func (b *FilesystemBackend) Retire(ctx context.Context, ref ObjectRef) error {
 	}
 	switch {
 	case ref.LooseHash != "" && ref.PackID == "":
-		return b.retireLoose(ref.LooseHash, ref.LooseEncoding)
+		return b.retireLoose(ctx, ref.LooseHash, ref.LooseEncoding)
 	case ref.LooseHash == "" && ref.LooseEncoding == 0 && ref.PackID != "":
 		return b.retirePack(ref.PackID)
 	default:
@@ -680,31 +689,90 @@ func (b *FilesystemBackend) Retire(ctx context.Context, ref ObjectRef) error {
 	}
 }
 
-func (b *FilesystemBackend) retirePack(packID string) error {
-	return b.reader.retireFilesystemPack(packID)
+func (b *FilesystemBackend) retirePack(packID string) (resultErr error) {
+	if !pack.IsValidPackID(packID) {
+		return fmt.Errorf("packstore: invalid pack id %q", packID)
+	}
+	root, err := openFilesystemRoot(b.layout)
+	if missingFilesystemRoot(err) {
+		b.reader.mu.Lock()
+		defer b.reader.mu.Unlock()
+		return b.reader.retirePackSlotLocked(packID)
+	}
+	if err != nil {
+		return &PackRetirementError{
+			PackID: packID, Err: fmt.Errorf("packstore: open pack retirement root: %w", err),
+		}
+	}
+	defer func() { resultErr = errors.Join(resultErr, root.Close()) }()
+	b.reader.mu.Lock()
+	defer b.reader.mu.Unlock()
+	closeErr := b.reader.retirePackSlotLocked(packID)
+	shardRel := filepath.Join("packs", packID[:2])
+	shard, err := openRootDirNoSymlinks(root, shardRel)
+	if missingFilesystemRoot(err) {
+		return closeErr
+	}
+	if err != nil {
+		return errors.Join(closeErr, &PackRetirementError{
+			PackID: packID, Err: fmt.Errorf("packstore: open pack retirement shard: %w", err),
+		})
+	}
+	defer func() { resultErr = errors.Join(resultErr, shard.Close()) }()
+	removeErr := removeRootRegularFile(shard, packID+PackExt, b.layout.PackPath(packID))
+	if errors.Is(removeErr, fs.ErrNotExist) {
+		removeErr = nil
+	} else if removeErr != nil {
+		removeErr = &PackRetirementError{PackID: packID, Err: removeErr}
+	}
+	return errors.Join(closeErr, removeErr)
 }
 
-func (b *FilesystemBackend) retireLoose(hash Hash, encoding LooseEncoding) error {
+func (b *FilesystemBackend) retireLoose(
+	ctx context.Context,
+	hash Hash,
+	encoding LooseEncoding,
+) (resultErr error) {
 	if err := hash.Validate(); err != nil {
 		return err
 	}
-	var path string
+	var name string
 	switch encoding {
 	case LooseEncodingRaw:
-		path = b.layout.LoosePath(hash)
+		name = hash.String()
 	case LooseEncodingZstd:
-		path = b.layout.CompressedLoosePath(hash)
+		name = hash.String() + ".zst"
 	default:
 		return fmt.Errorf("packstore: invalid loose retirement encoding %d", encoding)
 	}
-	_, err := removeLoosePath(path, openLooseIdentityPin)
+	release, err := acquireLooseWriteStripe(ctx, hash)
+	if err != nil {
+		return err
+	}
+	defer release()
+	root, err := openFilesystemRoot(b.layout)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
+		return fmt.Errorf("packstore: open loose retirement root: %w", err)
+	}
+	defer func() { resultErr = errors.Join(resultErr, root.Close()) }()
+	shard, err := openRootDirNoSymlinks(root, hash.String()[:2])
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("packstore: open loose retirement shard: %w", err)
+	}
+	defer func() { resultErr = errors.Join(resultErr, shard.Close()) }()
+	path := filepath.Join(filepath.Dir(b.layout.LoosePath(hash)), name)
+	if err := removeRootRegularFile(shard, name, path); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	} else if err != nil {
 		return fmt.Errorf("packstore: retire loose content: %w", err)
 	}
-	if err := pack.SyncDir(filepath.Dir(path)); err != nil {
+	if err := syncFilesystemRootDir(shard); err != nil {
 		return fmt.Errorf("packstore: sync loose retirement: %w", err)
 	}
 	return nil

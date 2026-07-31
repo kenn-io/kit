@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"go.kenn.io/kit/pack"
 	"go.kenn.io/kit/packstore"
+	"go.kenn.io/kit/packstore/internal/packvalidate"
 )
 
 const rangeChunkBytes = int64(8 << 20)
@@ -97,11 +98,18 @@ func (b *Backend) OpenPack(
 	if err != nil {
 		_ = os.Remove(path)
 		if mapped, ok := mapPackLimit(err); ok {
-			return nil, 0, packstore.ClassifyPackLimitError(mapped)
+			return nil, 0, packstore.ClassifyRepresentationLimitError(mapped)
 		}
 		return nil, 0, errors.Join(packstore.ErrPhysicalCorrupt, err)
 	}
-	canonical, ok := findPackEntry(reader.Entries(), entry)
+	entries := reader.Entries()
+	if err := packvalidate.UniqueEntries(entries); err != nil {
+		return nil, 0, errors.Join(
+			packstore.ErrPhysicalCorrupt,
+			err, reader.Close(), os.Remove(path),
+		)
+	}
+	canonical, ok := findPackEntry(entries, entry)
 	if !ok {
 		return nil, 0, errors.Join(
 			packstore.ErrPhysicalCorrupt,
@@ -110,13 +118,15 @@ func (b *Backend) OpenPack(
 		)
 	}
 	if err := b.checkSelectedPackEntryLimits(canonical); err != nil {
-		return nil, 0, errors.Join(err, reader.Close(), os.Remove(path))
+		return nil, 0, errors.Join(
+			packstore.ClassifyRepresentationLimitError(err), reader.Close(), os.Remove(path),
+		)
 	}
 	blob, err := reader.OpenBlob(ctx, canonical)
 	if err != nil {
 		if mapped, ok := mapPackLimit(err); ok {
 			return nil, 0, errors.Join(
-				packstore.ClassifyPackLimitError(mapped), reader.Close(), os.Remove(path),
+				packstore.ClassifyRepresentationLimitError(mapped), reader.Close(), os.Remove(path),
 			)
 		}
 		return nil, 0, errors.Join(

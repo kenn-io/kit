@@ -280,13 +280,13 @@ func preflightBoundedStoredSize(location ReadLocation, maxBytes int64) error {
 	}
 	// Leave catalog entries whose logical size is already over the limit to the
 	// backend: a corrupt candidate must not prevent replica fallback. Stored
-	// overhead is terminal only when the authorized logical content still fits.
+	// overhead belongs to one physical representation and advances candidates.
 	if logicalSize <= maxBytes && storedSize > maxBytes {
-		return newLimitError(
+		return ClassifyRepresentationLimitError(newLimitError(
 			LimitBlobStoredBytes,
 			uint64(storedSize), //nolint:gosec // locations reject negative sizes
 			uint64(maxBytes),   //nolint:gosec // ReadBounded rejects negative limits
-		)
+		))
 	}
 	return nil
 }
@@ -350,22 +350,6 @@ func (s *Store) RetirePack(packID string) error {
 		return fmt.Errorf("packstore: pack retirement requires a filesystem backend")
 	}
 	return s.filesystem.retirePack(packID)
-}
-
-func (s *Store) retireFilesystemPack(packID string) error {
-	if !pack.IsValidPackID(packID) {
-		return fmt.Errorf("packstore: invalid pack id %q", packID)
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	closeErr := s.retirePackSlotLocked(packID)
-	removeErr := os.Remove(s.layout.PackPath(packID))
-	if errors.Is(removeErr, fs.ErrNotExist) {
-		removeErr = nil
-	} else if removeErr != nil {
-		removeErr = &PackRetirementError{PackID: packID, Err: removeErr}
-	}
-	return errors.Join(closeErr, removeErr)
 }
 
 type looseObject struct {

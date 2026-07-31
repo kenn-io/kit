@@ -73,7 +73,7 @@ func TestClassifyIntegrityError(t *testing.T) {
 	}
 }
 
-func TestClassifyPackLimitError(t *testing.T) {
+func TestClassifyRepresentationLimitError(t *testing.T) {
 	tests := []struct {
 		name    string
 		input   error
@@ -97,13 +97,17 @@ func TestClassifyPackLimitError(t *testing.T) {
 			corrupt: true,
 		},
 		{name: "blob raw limit", input: newLimitError(LimitBlobRawBytes, 2, 1)},
-		{name: "blob stored limit", input: newLimitError(LimitBlobStoredBytes, 2, 1)},
+		{
+			name:    "blob stored limit",
+			input:   newLimitError(LimitBlobStoredBytes, 2, 1),
+			corrupt: true,
+		},
 		{name: "blob window limit", input: newLimitError(LimitBlobWindowBytes, 2, 1)},
 		{name: "blob stat limit", input: newLimitError(LimitBlobStatBytes, 2, 1)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ClassifyPackLimitError(tt.input)
+			err := ClassifyRepresentationLimitError(tt.input)
 
 			assert.Equal(t, tt.corrupt, errors.Is(err, ErrPhysicalCorrupt))
 			require.ErrorIs(t, err, tt.input)

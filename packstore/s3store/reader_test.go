@@ -194,6 +194,55 @@ func TestOpenPackIgnoresUnselectedEntryBlobLimit(t *testing.T) {
 	assert.Equal(t, int64(len(selected)), size)
 }
 
+func TestS3DuplicatePackEntriesFallBackToHealthyCandidate(t *testing.T) {
+	content := []byte("duplicate S3 footer fallback")
+	_, packBytes, entries := makePackEntries(t, content, content)
+	corrupt := newHTTPBackend(packstore.DefaultLimits(), func(request *http.Request) (*http.Response, error) {
+		header := make(http.Header)
+		header.Set("Content-Length", strconv.Itoa(len(packBytes)))
+		if request.Method == http.MethodHead {
+			return &http.Response{
+				StatusCode: http.StatusOK, Header: header,
+				Body: io.NopCloser(bytes.NewReader(nil)), ContentLength: int64(len(packBytes)),
+				Request: request,
+			}, nil
+		}
+		header.Set("Content-Range", fmt.Sprintf("bytes 0-%d/%d", len(packBytes)-1, len(packBytes)))
+		return &http.Response{
+			StatusCode: http.StatusPartialContent, Header: header,
+			Body: io.NopCloser(bytes.NewReader(packBytes)), ContentLength: int64(len(packBytes)),
+			Request: request,
+		}, nil
+	})
+	attachTestBackend(corrupt)
+	healthy := &memoryReadBackend{content: content}
+	store, err := packstore.NewMultiStore(
+		staticReadLocationResolver{resolution: packstore.Resolution{
+			Member: true,
+			Candidates: []packstore.ReadLocation{
+				{StoreID: "corrupt", Generation: "corrupt-1", Pack: &entries[0]},
+				{StoreID: "healthy", Generation: "healthy-1", Pack: &entries[0]},
+			},
+		}},
+		staticReadBackendRegistry{"corrupt": corrupt, "healthy": healthy},
+		packstore.MultiStoreOptions{},
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+
+	stream, size, err := store.OpenStream(context.Background(), entries[0].Hash)
+	require.NoError(t, err)
+	got, err := io.ReadAll(stream)
+	require.NoError(t, errors.Join(err, stream.Close()))
+	assert.Equal(t, content, got)
+	assert.Equal(t, int64(len(content)), size)
+	assert.Equal(t, 1, healthy.opens)
+
+	_, _, err = corrupt.OpenPack(context.Background(), entries[0].Hash, entries[0])
+	require.ErrorIs(t, err, packstore.ErrPhysicalCorrupt)
+	require.ErrorIs(t, err, pack.ErrCorrupt)
+}
+
 func TestOversizedS3ReplicaFallsBackToHealthyCandidate(t *testing.T) {
 	content := []byte("healthy replica content")
 	_, packBytes, indexed := makePack(t, content)

@@ -428,6 +428,46 @@ func TestMultiStoreReadBoundedPreflightsCatalogStoredSize(t *testing.T) {
 	}
 }
 
+func TestMultiStoreReadBoundedFallsBackAfterStoredSizeLimit(t *testing.T) {
+	content := []byte("stored representation fallback")
+	hash := hashForTest(content)
+	maxBytes := int64(len(content))
+	oversized := &recordingReadBackend{content: content}
+	healthy := &recordingReadBackend{content: content}
+	store, err := NewMultiStore(
+		staticLocationResolver{resolution: Resolution{
+			Member: true,
+			Candidates: []ReadLocation{
+				{
+					StoreID: "oversized", Generation: "oversized-1",
+					Loose: &LooseLocation{
+						Encoding: LooseEncodingZstd, LogicalSize: maxBytes,
+						StoredSize: maxBytes + 1,
+					},
+				},
+				{
+					StoreID: "healthy", Generation: "healthy-1",
+					Loose: &LooseLocation{
+						Encoding: LooseEncodingRaw, LogicalSize: maxBytes,
+						StoredSize: maxBytes,
+					},
+				},
+			},
+		}},
+		staticBackendRegistry{"oversized": oversized, "healthy": healthy},
+		MultiStoreOptions{},
+	)
+	require.NoError(t, err)
+
+	got, size, err := store.ReadBounded(context.Background(), hash, maxBytes)
+
+	require.NoError(t, err)
+	assert.Equal(t, content, got)
+	assert.Equal(t, maxBytes, size)
+	assert.Zero(t, oversized.opens)
+	assert.Equal(t, 1, healthy.opens)
+}
+
 func TestMultiStoreRejectsMismatchedPackedCandidate(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)

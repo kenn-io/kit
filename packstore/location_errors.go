@@ -132,10 +132,10 @@ func isPhysicalControlError(err error) bool {
 	return false
 }
 
-// ClassifyPackLimitError marks representation-specific pack limits as physical
+// ClassifyRepresentationLimitError marks physical-representation limits as
 // corruption while preserving structured limit evidence. Logical blob limits
 // remain caller-policy errors.
-func ClassifyPackLimitError(err error) error {
+func ClassifyRepresentationLimitError(err error) error {
 	if err == nil || isCandidateFailure(err) {
 		return err
 	}
@@ -144,7 +144,8 @@ func ClassifyPackLimitError(err error) error {
 		return err
 	}
 	switch limit.Dimension {
-	case LimitPackContainerBytes, LimitPackFooterBytes, LimitPackEntryCount:
+	case LimitPackContainerBytes, LimitPackFooterBytes, LimitPackEntryCount,
+		LimitBlobStoredBytes:
 		return errors.Join(ErrPhysicalCorrupt, err)
 	default:
 		return err

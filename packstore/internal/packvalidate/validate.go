@@ -30,12 +30,10 @@ func File(
 	}
 	defer func() { resultErr = errors.Join(resultErr, reader.Close()) }()
 	entries := reader.Entries()
-	seen := make(map[pack.BlobID]struct{}, len(entries))
+	if err := UniqueEntries(entries); err != nil {
+		return err
+	}
 	for _, entry := range entries {
-		if _, ok := seen[entry.ID]; ok {
-			return fmt.Errorf("%w: duplicate blob id %s", pack.ErrCorrupt, entry.ID)
-		}
-		seen[entry.ID] = struct{}{}
 		if entry.RawLen > limits.RawBytes {
 			return &pack.StreamLimitError{
 				Dimension: pack.StreamLimitRawBytes,
@@ -59,6 +57,18 @@ func File(
 		if err := errors.Join(blob.Verify(), blob.Close()); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// UniqueEntries rejects ambiguous pack footers before callers select an entry.
+func UniqueEntries(entries []pack.Entry) error {
+	seen := make(map[pack.BlobID]struct{}, len(entries))
+	for _, entry := range entries {
+		if _, ok := seen[entry.ID]; ok {
+			return fmt.Errorf("%w: duplicate blob id %s", pack.ErrCorrupt, entry.ID)
+		}
+		seen[entry.ID] = struct{}{}
 	}
 	return nil
 }
