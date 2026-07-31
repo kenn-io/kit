@@ -383,17 +383,30 @@ func (b *Backend) multipartPublish(
 
 	hasher := sha256.New()
 	bufferBytes := b.part
-	if opts.maxBytes > 0 {
-		bufferBytes = min(bufferBytes, opts.maxBytes)
+	if opts.maxBytes > 0 && opts.maxBytes < bufferBytes {
+		bufferBytes = opts.maxBytes + 1
 	}
-	if opts.sizeKnown && opts.exactSize > 0 {
-		bufferBytes = min(bufferBytes, opts.exactSize)
+	if opts.sizeKnown && opts.exactSize < bufferBytes {
+		bufferBytes = opts.exactSize + 1
 	}
 	buffer := make([]byte, int(bufferBytes))
 	reader := &publicationContextReader{ctx: ctx, src: src}
 	var parts []types.CompletedPart
 	for partNumber := int32(1); ; partNumber++ {
-		n, readErr := io.ReadFull(reader, buffer)
+		readBytes := int64(len(buffer))
+		if opts.maxBytes > 0 {
+			remaining := opts.maxBytes - result.size
+			if remaining < readBytes {
+				readBytes = remaining + 1
+			}
+		}
+		if opts.sizeKnown {
+			remaining := opts.exactSize - result.size
+			if remaining < readBytes {
+				readBytes = remaining + 1
+			}
+		}
+		n, readErr := io.ReadFull(reader, buffer[:readBytes])
 		if err := ctx.Err(); err != nil {
 			return publicationResult{}, err
 		}

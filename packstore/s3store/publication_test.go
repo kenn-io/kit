@@ -602,7 +602,7 @@ func TestMultipartPublishBoundsPartBufferByPublicationLimit(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), result.size)
 	assert.Equal(t, int64(2), uploaded)
-	assert.Equal(t, 2, source.maxRequest)
+	assert.Equal(t, 3, source.maxRequest)
 }
 
 func TestMultipartPublishAbortsDeduplicatedUpload(t *testing.T) {
@@ -732,6 +732,44 @@ func TestMultipartPublishCancelAbortsWithBoundedContext(t *testing.T) {
 	assert.Equal(t, 1, source.reads)
 	assert.Zero(t, uploads)
 	assert.Zero(t, completes)
+	assert.Equal(t, 1, aborts)
+}
+
+func TestMultipartPublishReadsOnlyOneByteBeyondLimit(t *testing.T) {
+	source := &countingReadCloser{reader: strings.NewReader("0123456789abcdefghij")}
+	var uploads, aborts int
+	backend := newHTTPBackend(packstore.DefaultLimits(), func(request *http.Request) (*http.Response, error) {
+		query := request.URL.Query()
+		switch {
+		case request.Method == http.MethodPost && query.Has("uploads"):
+			return xmlResponse(request, http.StatusOK,
+				`<InitiateMultipartUploadResult>`+
+					`<Bucket>test-bucket</Bucket><Key>packs/test</Key>`+
+					`<UploadId>upload-1</UploadId>`+
+					`</InitiateMultipartUploadResult>`), nil
+		case request.Method == http.MethodPut && query.Get("uploadId") == "upload-1":
+			uploads++
+			response := xmlResponse(request, http.StatusOK, "")
+			response.Header.Set("ETag", `"part-etag"`)
+			return response, nil
+		case request.Method == http.MethodDelete && query.Get("uploadId") == "upload-1":
+			aborts++
+			return xmlResponse(request, http.StatusNoContent, ""), nil
+		default:
+			return xmlResponse(request, http.StatusInternalServerError,
+				`<Error><Code>UnexpectedRequest</Code></Error>`), nil
+		}
+	})
+	backend.part = 5
+
+	_, err := backend.multipartPublish(
+		context.Background(), "packs/test", source,
+		multipartPublishOptions{maxBytes: 7},
+	)
+
+	require.ErrorIs(t, err, packstore.ErrBlobTooLarge)
+	assert.Equal(t, int64(8), source.read)
+	assert.Equal(t, 1, uploads)
 	assert.Equal(t, 1, aborts)
 }
 
