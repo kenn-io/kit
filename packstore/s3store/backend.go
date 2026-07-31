@@ -3,6 +3,8 @@ package s3store
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"strings"
 	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -20,16 +22,19 @@ const (
 // ExpectedOwnership enables ordinary reads and destructive operations; an
 // unattached backend may only inspect or replace its ownership marker.
 type Config struct {
-	Endpoint          string
-	Region            string
-	Bucket            string
-	Prefix            string
-	Credentials       aws.CredentialsProvider
-	ForcePathStyle    bool
-	ExpectedOwnership *packstore.Ownership
-	PartBytes         int64
-	InventoryPageSize int32
-	Limits            packstore.Limits
+	Endpoint       string
+	Region         string
+	Bucket         string
+	Prefix         string
+	Credentials    aws.CredentialsProvider
+	ForcePathStyle bool
+	// AllowInsecureTransport permits an explicitly configured HTTP endpoint.
+	// It does not relax URL parsing or permit non-HTTP schemes.
+	AllowInsecureTransport bool
+	ExpectedOwnership      *packstore.Ownership
+	PartBytes              int64
+	InventoryPageSize      int32
+	Limits                 packstore.Limits
 }
 
 // CapabilityReport records the endpoint behavior required by this backend.
@@ -61,6 +66,9 @@ type Backend struct {
 func New(ctx context.Context, cfg Config) (*Backend, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("s3store: nil context")
+	}
+	if err := validateEndpoint(cfg.Endpoint, cfg.AllowInsecureTransport); err != nil {
+		return nil, err
 	}
 	if cfg.Bucket == "" {
 		return nil, fmt.Errorf("s3store: bucket is required")
@@ -118,6 +126,26 @@ func New(ctx context.Context, cfg Config) (*Backend, error) {
 		backend.owner = &copy
 	}
 	return backend, nil
+}
+
+func validateEndpoint(endpoint string, allowInsecure bool) error {
+	if endpoint == "" {
+		return nil
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Host == "" {
+		return fmt.Errorf("s3store: endpoint must be an absolute HTTP or HTTPS URL")
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("s3store: endpoint must be an absolute HTTP or HTTPS URL")
+	}
+	if scheme == "http" && !allowInsecure {
+		return fmt.Errorf(
+			"s3store: insecure HTTP endpoint requires AllowInsecureTransport",
+		)
+	}
+	return nil
 }
 
 func normalizeLimits(limits packstore.Limits) (packstore.Limits, error) {

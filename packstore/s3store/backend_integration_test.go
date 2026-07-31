@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -32,6 +33,7 @@ func TestS3BackendConformance(t *testing.T) {
 		Endpoint: endpoint, Region: "us-east-1",
 		Bucket: envOr("KIT_S3_TEST_BUCKET", "kit-conformance"),
 		Prefix: prefix, ForcePathStyle: true,
+		AllowInsecureTransport: strings.HasPrefix(endpoint, "http://"),
 		Credentials: credentials.NewStaticCredentialsProvider(
 			envOr("KIT_S3_TEST_ACCESS_KEY", "kit-test"),
 			envOr("KIT_S3_TEST_SECRET_KEY", "kit-test-secret"),
@@ -156,7 +158,8 @@ func TestS3BackendConformance(t *testing.T) {
 	oldBackend, err := New(ctx, Config{
 		Endpoint: config.Endpoint, Region: config.Region, Bucket: config.Bucket,
 		Prefix: config.Prefix, ForcePathStyle: true, Credentials: config.Credentials,
-		ExpectedOwnership: &owner1,
+		AllowInsecureTransport: config.AllowInsecureTransport,
+		ExpectedOwnership:      &owner1,
 	})
 	require.NoError(err)
 	owner2 := owner1
