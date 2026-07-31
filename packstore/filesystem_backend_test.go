@@ -156,6 +156,74 @@ func TestFilesystemBackendPublishPackRejectsDecodedLengthMismatch(t *testing.T) 
 	}
 }
 
+func TestFilesystemBackendPublishPackRejectsKnownConfiguredLimitBeforeRead(t *testing.T) {
+	limits := DefaultLimits()
+	limits.PackBytes = 8
+	layout := layoutForStoreTest(t)
+	backend, err := NewFilesystemBackend(layout, FilesystemBackendOptions{
+		Limits: limits,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, backend.Close()) })
+	owner := Ownership{
+		Format: OwnershipFormatV1,
+		Vault:  "test-vault",
+		Store:  "archive",
+		Epoch:  "epoch-1",
+	}
+	require.NoError(t, backend.ReplaceOwnership(context.Background(), owner, nil))
+	packID := pack.NewPackID()
+	source := &countingPackReader{
+		reader: bytes.NewReader(bytes.Repeat([]byte("x"), 9)),
+	}
+
+	_, err = backend.PublishPack(
+		context.Background(),
+		packID,
+		source,
+		PublishOptions{ExpectedSize: 9, SizeKnown: true, MaxBytes: 100},
+	)
+
+	require.ErrorIs(t, err, ErrBlobTooLarge)
+	var limit *LimitError
+	require.ErrorAs(t, err, &limit)
+	assert.Equal(t, LimitPackContainerBytes, limit.Dimension)
+	assert.Zero(t, source.reads)
+	assert.NoFileExists(t, layout.PackPath(packID))
+}
+
+func TestFilesystemBackendPublishPackCapsCallerLimitBeforeCanonicalWrite(t *testing.T) {
+	limits := DefaultLimits()
+	limits.PackBytes = 8
+	layout := layoutForStoreTest(t)
+	backend, err := NewFilesystemBackend(layout, FilesystemBackendOptions{
+		Limits: limits,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, backend.Close()) })
+	owner := Ownership{
+		Format: OwnershipFormatV1,
+		Vault:  "test-vault",
+		Store:  "archive",
+		Epoch:  "epoch-1",
+	}
+	require.NoError(t, backend.ReplaceOwnership(context.Background(), owner, nil))
+	packID := pack.NewPackID()
+
+	_, err = backend.PublishPack(
+		context.Background(),
+		packID,
+		bytes.NewReader(bytes.Repeat([]byte("x"), 9)),
+		PublishOptions{MaxBytes: 100},
+	)
+
+	require.ErrorIs(t, err, ErrBlobTooLarge)
+	var limit *LimitError
+	require.ErrorAs(t, err, &limit)
+	assert.Equal(t, LimitPackContainerBytes, limit.Dimension)
+	assert.NoFileExists(t, layout.PackPath(packID))
+}
+
 func TestFilesystemBackendUsesAndRetiresExactLooseRepresentation(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
@@ -408,6 +476,16 @@ func buildEncodedBackendPackSource(
 	_, err = writer.Seal(path)
 	require.NoError(t, err)
 	return path, packID
+}
+
+type countingPackReader struct {
+	reader io.Reader
+	reads  int
+}
+
+func (r *countingPackReader) Read(p []byte) (int, error) {
+	r.reads++
+	return r.reader.Read(p)
 }
 
 func indexEntryFromPack(entry pack.Entry, packID string) (IndexEntry, error) {

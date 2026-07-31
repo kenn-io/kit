@@ -392,11 +392,14 @@ func (b *FilesystemBackend) PublishPack(
 	if src == nil {
 		return PackReceipt{}, fmt.Errorf("packstore: nil pack publication source")
 	}
-	if opts.MaxBytes == 0 {
-		opts.MaxBytes = b.limits.PackBytes
-	}
-	if opts.MaxBytes < 0 {
-		return PackReceipt{}, ErrInvalidPolicy
+	maxBytes, err := effectivePackPublicationLimit(
+		opts.MaxBytes,
+		opts.ExpectedSize,
+		opts.SizeKnown,
+		b.limits.PackBytes,
+	)
+	if err != nil {
+		return PackReceipt{}, err
 	}
 	generation, err := newLocationGeneration()
 	if err != nil {
@@ -424,7 +427,7 @@ func (b *FilesystemBackend) PublishPack(
 		return PackReceipt{}, fmt.Errorf("packstore: protect pack staging: %w", err)
 	}
 	hasher := sha256.New()
-	written, err := copyBoundedContext(ctx, io.MultiWriter(staged, hasher), src, opts.MaxBytes)
+	written, err := copyBoundedContext(ctx, io.MultiWriter(staged, hasher), src, maxBytes)
 	if err != nil {
 		return PackReceipt{}, err
 	}
@@ -488,14 +491,36 @@ func copyBoundedContext(
 		return written, fmt.Errorf("packstore: copy publication: %w", err)
 	}
 	if written > maxBytes {
-		return written, fmt.Errorf(
-			"%w: pack publication is %d bytes, limit is %d",
-			ErrContentMismatch,
-			written,
-			maxBytes,
+		return written, newLimitError(
+			LimitPackContainerBytes,
+			uint64(written),  //nolint:gosec // written is non-negative
+			uint64(maxBytes), //nolint:gosec // validated positive
 		)
 	}
 	return written, nil
+}
+
+func effectivePackPublicationLimit(
+	maxBytes int64,
+	expectedSize int64,
+	sizeKnown bool,
+	configured int64,
+) (int64, error) {
+	if maxBytes < 0 || expectedSize < 0 || configured <= 0 {
+		return 0, ErrInvalidPolicy
+	}
+	effective := configured
+	if maxBytes > 0 {
+		effective = min(maxBytes, configured)
+	}
+	if sizeKnown && expectedSize > effective {
+		return 0, newLimitError(
+			LimitPackContainerBytes,
+			uint64(expectedSize), //nolint:gosec // validated non-negative
+			uint64(effective),    //nolint:gosec // validated positive
+		)
+	}
+	return effective, nil
 }
 
 func verifyFilesystemPack(

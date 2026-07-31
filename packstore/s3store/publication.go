@@ -178,7 +178,16 @@ func (b *Backend) PublishPack(
 	if src == nil {
 		return packstore.PackReceipt{}, fmt.Errorf("s3store: nil pack publication source")
 	}
-	result, err := b.multipartPublish(ctx, b.keys.pack(packID), src, opts.MaxBytes, "")
+	maxBytes, err := effectivePackPublicationLimit(
+		opts.MaxBytes,
+		opts.ExpectedSize,
+		opts.SizeKnown,
+		b.limits.PackBytes,
+	)
+	if err != nil {
+		return packstore.PackReceipt{}, err
+	}
+	result, err := b.multipartPublish(ctx, b.keys.pack(packID), src, maxBytes, "")
 	if err != nil {
 		return packstore.PackReceipt{}, err
 	}
@@ -262,10 +271,11 @@ func (b *Backend) multipartPublish(
 		}
 		result.size += int64(n)
 		if maxBytes > 0 && result.size > maxBytes {
-			return publicationResult{}, fmt.Errorf(
-				"%w: publication exceeds %d bytes",
-				packstore.ErrContentMismatch, maxBytes,
-			)
+			return publicationResult{}, &packstore.LimitError{
+				Dimension: packstore.LimitPackContainerBytes,
+				Actual:    uint64(result.size), //nolint:gosec // non-negative
+				Limit:     uint64(maxBytes),    //nolint:gosec // validated positive
+			}
 		}
 		_, _ = hasher.Write(buffer[:n])
 		uploaded, err := b.client.UploadPart(ctx, &s3.UploadPartInput{
@@ -309,6 +319,29 @@ func (b *Backend) multipartPublish(
 		return publicationResult{}, classifyError("complete multipart publication", err)
 	}
 	return result, nil
+}
+
+func effectivePackPublicationLimit(
+	maxBytes int64,
+	expectedSize int64,
+	sizeKnown bool,
+	configured int64,
+) (int64, error) {
+	if maxBytes < 0 || expectedSize < 0 || configured <= 0 {
+		return 0, packstore.ErrInvalidPolicy
+	}
+	effective := configured
+	if maxBytes > 0 {
+		effective = min(maxBytes, configured)
+	}
+	if sizeKnown && expectedSize > effective {
+		return 0, &packstore.LimitError{
+			Dimension: packstore.LimitPackContainerBytes,
+			Actual:    uint64(expectedSize), //nolint:gosec // validated non-negative
+			Limit:     uint64(effective),    //nolint:gosec // validated positive
+		}
+	}
+	return effective, nil
 }
 
 func (b *Backend) publishEmpty(

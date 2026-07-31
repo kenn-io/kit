@@ -176,6 +176,120 @@ func TestVerifyPackObjectRejectsDecodedLengthMismatch(t *testing.T) {
 	}
 }
 
+func TestPublishPackRejectsKnownConfiguredLimitBeforeMultipart(t *testing.T) {
+	limits := packstore.DefaultLimits()
+	limits.PackBytes = 8
+	owner := packstore.Ownership{
+		Format: packstore.OwnershipFormatV1,
+		Vault:  "test-vault",
+		Store:  "archive",
+		Epoch:  "epoch-1",
+	}
+	marker, err := packstore.MarshalOwnership(owner)
+	require.NoError(t, err)
+	var requests int
+	backend := newHTTPBackend(limits, func(request *http.Request) (*http.Response, error) {
+		requests++
+		if requests == 1 && request.Method == http.MethodGet {
+			header := make(http.Header)
+			header.Set("Content-Length", strconv.Itoa(len(marker)))
+			return &http.Response{
+				StatusCode: http.StatusOK, Header: header,
+				Body:          io.NopCloser(bytes.NewReader(marker)),
+				ContentLength: int64(len(marker)), Request: request,
+			}, nil
+		}
+		return xmlResponse(
+			request,
+			http.StatusInternalServerError,
+			`<Error><Code>UnexpectedRequest</Code></Error>`,
+		), nil
+	})
+	backend.setOwnership(owner, `"owner-etag"`)
+	source := &countingReadCloser{
+		reader: bytes.NewReader(bytes.Repeat([]byte("x"), 9)),
+	}
+
+	_, err = backend.PublishPack(
+		context.Background(),
+		pack.NewPackID(),
+		source,
+		packstore.PublishOptions{
+			ExpectedSize: 9, SizeKnown: true, MaxBytes: 100,
+		},
+	)
+
+	require.ErrorIs(t, err, packstore.ErrBlobTooLarge)
+	var limit *packstore.LimitError
+	require.ErrorAs(t, err, &limit)
+	assert.Equal(t, packstore.LimitPackContainerBytes, limit.Dimension)
+	assert.Zero(t, source.read)
+	assert.Equal(t, 1, requests)
+}
+
+func TestPublishPackCapsCallerLimitAndAbortsMultipart(t *testing.T) {
+	limits := packstore.DefaultLimits()
+	limits.PackBytes = 8
+	owner := packstore.Ownership{
+		Format: packstore.OwnershipFormatV1,
+		Vault:  "test-vault",
+		Store:  "archive",
+		Epoch:  "epoch-1",
+	}
+	marker, err := packstore.MarshalOwnership(owner)
+	require.NoError(t, err)
+	var uploads, completes, aborts int
+	backend := newHTTPBackend(limits, func(request *http.Request) (*http.Response, error) {
+		query := request.URL.Query()
+		switch {
+		case request.Method == http.MethodGet:
+			header := make(http.Header)
+			header.Set("Content-Length", strconv.Itoa(len(marker)))
+			return &http.Response{
+				StatusCode: http.StatusOK, Header: header,
+				Body:          io.NopCloser(bytes.NewReader(marker)),
+				ContentLength: int64(len(marker)), Request: request,
+			}, nil
+		case request.Method == http.MethodPost && query.Has("uploads"):
+			return xmlResponse(request, http.StatusOK,
+				`<InitiateMultipartUploadResult>`+
+					`<Bucket>test-bucket</Bucket><Key>packs/test</Key>`+
+					`<UploadId>upload-1</UploadId>`+
+					`</InitiateMultipartUploadResult>`), nil
+		case request.Method == http.MethodPut && query.Get("uploadId") == "upload-1":
+			uploads++
+			response := xmlResponse(request, http.StatusOK, "")
+			response.Header.Set("ETag", `"part-etag"`)
+			return response, nil
+		case request.Method == http.MethodPost && query.Get("uploadId") == "upload-1":
+			completes++
+			return xmlResponse(request, http.StatusOK, ""), nil
+		case request.Method == http.MethodDelete && query.Get("uploadId") == "upload-1":
+			aborts++
+			return xmlResponse(request, http.StatusNoContent, ""), nil
+		default:
+			return xmlResponse(request, http.StatusInternalServerError,
+				`<Error><Code>UnexpectedRequest</Code></Error>`), nil
+		}
+	})
+	backend.setOwnership(owner, `"owner-etag"`)
+
+	_, err = backend.PublishPack(
+		context.Background(),
+		pack.NewPackID(),
+		bytes.NewReader(bytes.Repeat([]byte("x"), 9)),
+		packstore.PublishOptions{MaxBytes: 100},
+	)
+
+	require.ErrorIs(t, err, packstore.ErrBlobTooLarge)
+	var limit *packstore.LimitError
+	require.ErrorAs(t, err, &limit)
+	assert.Equal(t, packstore.LimitPackContainerBytes, limit.Dimension)
+	assert.Equal(t, 1, uploads)
+	assert.Zero(t, completes)
+	assert.Equal(t, 1, aborts)
+}
+
 func TestMultipartPublishAbortsDeduplicatedUpload(t *testing.T) {
 	var aborts int
 	backend := newHTTPBackend(packstore.DefaultLimits(), func(request *http.Request) (*http.Response, error) {
