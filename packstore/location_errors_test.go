@@ -3,12 +3,49 @@ package packstore
 import (
 	"context"
 	"errors"
+	"io"
+	"io/fs"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/pack"
 )
+
+func TestClassifyPhysicalErrorPreservesControlErrors(t *testing.T) {
+	limit := newLimitError(LimitBlobRawBytes, 2, 1)
+	tests := []struct {
+		name        string
+		input       error
+		unavailable bool
+		missing     bool
+		corrupt     bool
+	}{
+		{name: "filesystem failure", input: errors.New("filesystem offline"), unavailable: true},
+		{name: "missing", input: markPhysicalSourceNotFound(fs.ErrNotExist), missing: true},
+		{name: "corrupt", input: pack.ErrChecksum, corrupt: true},
+		{name: "already unavailable", input: ErrStoreUnavailable, unavailable: true},
+		{name: "context canceled", input: context.Canceled},
+		{name: "context deadline", input: context.DeadlineExceeded},
+		{name: "verified eof", input: io.EOF},
+		{name: "verification incomplete", input: pack.ErrVerificationIncomplete},
+		{name: "streams active", input: pack.ErrStreamsActive},
+		{name: "invalid policy", input: ErrInvalidPolicy},
+		{name: "structured limit", input: limit},
+		{name: "stream unsupported", input: pack.ErrStreamUnsupported},
+		{name: "stream limit", input: pack.ErrStreamLimit},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := classifyPhysicalError(tt.input)
+
+			require.ErrorIs(t, err, tt.input)
+			assert.Equal(t, tt.unavailable, errors.Is(err, ErrStoreUnavailable))
+			assert.Equal(t, tt.missing, errors.Is(err, ErrPhysicalMissing))
+			assert.Equal(t, tt.corrupt, errors.Is(err, ErrPhysicalCorrupt))
+		})
+	}
+}
 
 func TestClassifyIntegrityError(t *testing.T) {
 	tests := []struct {

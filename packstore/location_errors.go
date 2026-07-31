@@ -1,8 +1,10 @@
 package packstore
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 
 	"go.kenn.io/kit/pack"
 )
@@ -100,7 +102,32 @@ func classifyPhysicalError(err error) error {
 	if isPhysicalSourceNotFound(err) {
 		return errors.Join(ErrPhysicalMissing, err)
 	}
-	return ClassifyIntegrityError(err)
+	if classified := ClassifyIntegrityError(err); errors.Is(classified, ErrPhysicalCorrupt) {
+		return classified
+	}
+	if isPhysicalControlError(err) {
+		return err
+	}
+	return errors.Join(ErrStoreUnavailable, err)
+}
+
+func isPhysicalControlError(err error) bool {
+	for _, control := range []error{
+		context.Canceled,
+		context.DeadlineExceeded,
+		io.EOF,
+		pack.ErrVerificationIncomplete,
+		pack.ErrStreamsActive,
+		ErrInvalidPolicy,
+		ErrBlobTooLarge,
+		pack.ErrStreamUnsupported,
+		pack.ErrStreamLimit,
+	} {
+		if errors.Is(err, control) {
+			return true
+		}
+	}
+	return false
 }
 
 // ClassifyIntegrityError marks content and container verification failures as

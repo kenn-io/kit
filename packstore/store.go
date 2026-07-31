@@ -83,6 +83,7 @@ type Store struct {
 	retryResolution  bool
 	observeStreams   bool
 	filesystem       *FilesystemBackend
+	openLooseFile    func(string) (*os.File, fs.FileInfo, error)
 
 	// mu protects cache membership and descriptor leases. Content I/O never
 	// holds it; retired descriptors close after their final lease is released.
@@ -132,7 +133,7 @@ func newStoreOptions(limits Limits, readerSlots int) (*Store, error) {
 		return nil, fmt.Errorf("packstore: reader slots must be positive")
 	}
 	return &Store{
-		limits: limits, slots: readerSlots,
+		limits: limits, slots: readerSlots, openLooseFile: openLooseFile,
 		packReaders: make(map[string]*cachedPackReader),
 	}, nil
 }
@@ -366,7 +367,7 @@ func (s *Store) openLooseObjectAt(
 ) (*looseObject, error) {
 	switch encoding {
 	case LooseEncodingZstd:
-		f, info, err := openLooseFile(s.layout.CompressedLoosePath(hash))
+		f, info, err := s.openLooseFile(s.layout.CompressedLoosePath(hash))
 		if err != nil {
 			return nil, markPhysicalSourceNotFound(err)
 		}
@@ -389,7 +390,7 @@ func (s *Store) openLooseObjectAt(
 			logicalSize: logicalSize, storedSize: info.Size(),
 		}, nil
 	case LooseEncodingRaw:
-		f, info, err := openLooseFile(s.layout.LoosePath(hash))
+		f, info, err := s.openLooseFile(s.layout.LoosePath(hash))
 		if err != nil {
 			return nil, markPhysicalSourceNotFound(err)
 		}

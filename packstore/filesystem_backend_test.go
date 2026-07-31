@@ -417,6 +417,89 @@ func TestFilesystemBackendDoesNotClassifyIncompleteStreamCloseAsCorrupt(t *testi
 	require.NotErrorIs(t, err, ErrPhysicalCorrupt)
 }
 
+func TestMultiStoreFallsBackFromUnavailableFilesystemLooseObject(t *testing.T) {
+	ctx := context.Background()
+	content := []byte("healthy filesystem fallback")
+	hash := hashForTest(content)
+	primary := attachedFilesystemBackend(t, "primary", "primary-1")
+	secondary := attachedFilesystemBackend(t, "secondary", "secondary-1")
+	openErr := errors.New("filesystem device unavailable")
+	primary.reader.openLooseFile = func(string) (*os.File, os.FileInfo, error) {
+		return nil, nil, openErr
+	}
+	receipt, err := secondary.PublishLoose(
+		ctx,
+		hash,
+		bytes.NewReader(content),
+		PublishOptions{ExpectedSize: int64(len(content)), SizeKnown: true},
+	)
+	require.NoError(t, err)
+
+	operations := []struct {
+		name string
+		read func(*testing.T, *Store) []byte
+	}{
+		{
+			name: "OpenStream",
+			read: func(t *testing.T, store *Store) []byte {
+				t.Helper()
+				stream, size, err := store.OpenStream(ctx, hash)
+				require.NoError(t, err)
+				require.Equal(t, int64(len(content)), size)
+				data, err := io.ReadAll(stream)
+				require.NoError(t, errors.Join(err, stream.Close()))
+				return data
+			},
+		},
+		{
+			name: "Open",
+			read: func(t *testing.T, store *Store) []byte {
+				t.Helper()
+				reader, size, err := store.Open(ctx, hash)
+				require.NoError(t, err)
+				require.Equal(t, int64(len(content)), size)
+				data, err := io.ReadAll(reader)
+				require.NoError(t, errors.Join(err, reader.Close()))
+				return data
+			},
+		},
+		{
+			name: "ReadBounded",
+			read: func(t *testing.T, store *Store) []byte {
+				t.Helper()
+				data, size, err := store.ReadBounded(ctx, hash, int64(len(content)))
+				require.NoError(t, err)
+				require.Equal(t, int64(len(content)), size)
+				return data
+			},
+		},
+	}
+	for _, operation := range operations {
+		t.Run(operation.name, func(t *testing.T) {
+			store, err := NewMultiStore(
+				staticLocationResolver{resolution: Resolution{
+					Member: true,
+					Candidates: []ReadLocation{
+						{StoreID: "primary", Generation: "primary-1", Loose: &receipt.Location},
+						{StoreID: "secondary", Generation: "secondary-1", Loose: &receipt.Location},
+					},
+				}},
+				staticBackendRegistry{"primary": primary, "secondary": secondary},
+				MultiStoreOptions{},
+			)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, store.Close()) })
+
+			assert.Equal(t, content, operation.read(t, store))
+			_, _, err = primary.OpenLoose(ctx, hash, receipt.Location)
+			require.ErrorIs(t, err, ErrStoreUnavailable)
+			require.NotErrorIs(t, err, ErrPhysicalMissing)
+			require.NotErrorIs(t, err, ErrPhysicalCorrupt)
+			require.ErrorIs(t, err, openErr)
+		})
+	}
+}
+
 func TestMultiStoreFallsBackFromPackFooterCorruption(t *testing.T) {
 	ctx := context.Background()
 	content := []byte("healthy fallback pack content")
