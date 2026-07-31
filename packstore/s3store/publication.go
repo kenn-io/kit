@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -18,6 +19,8 @@ import (
 	"go.kenn.io/kit/pack"
 	"go.kenn.io/kit/packstore"
 )
+
+const multipartAbortTimeout = 10 * time.Second
 
 // PublishLoose conditionally publishes immutable logical bytes at their
 // canonical raw key, then performs an independent full GET and SHA-256
@@ -114,13 +117,16 @@ func (b *Backend) RepairLoose(
 		)
 	}
 	hasher := sha256.New()
-	reader := io.Reader(src)
+	reader := io.Reader(&publicationContextReader{ctx: ctx, src: src})
 	if opts.MaxBytes > 0 {
-		reader = io.LimitReader(src, opts.MaxBytes+1)
+		reader = io.LimitReader(reader, opts.MaxBytes+1)
 	}
 	size, err := io.CopyBuffer(
 		io.MultiWriter(staged, hasher), reader, make([]byte, 64<<10),
 	)
+	if err := ctx.Err(); err != nil {
+		return packstore.LooseReceipt{}, err
+	}
 	if err != nil {
 		return packstore.LooseReceipt{}, fmt.Errorf(
 			"s3store: stage repair source: %w", err,
@@ -223,6 +229,18 @@ type publicationResult struct {
 	created bool
 }
 
+type publicationContextReader struct {
+	ctx context.Context
+	src io.Reader
+}
+
+func (r *publicationContextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.src.Read(p)
+}
+
 func (b *Backend) multipartPublish(
 	ctx context.Context,
 	key string,
@@ -242,7 +260,11 @@ func (b *Backend) multipartPublish(
 		if completed {
 			return
 		}
-		_, abortErr := b.client.AbortMultipartUpload(context.WithoutCancel(ctx),
+		abortCtx, cancel := context.WithTimeout(
+			context.WithoutCancel(ctx), multipartAbortTimeout,
+		)
+		defer cancel()
+		_, abortErr := b.client.AbortMultipartUpload(abortCtx,
 			&s3.AbortMultipartUploadInput{
 				Bucket: aws.String(b.bucket), Key: aws.String(key),
 				UploadId: aws.String(uploadID),
@@ -254,9 +276,13 @@ func (b *Backend) multipartPublish(
 
 	hasher := sha256.New()
 	buffer := make([]byte, b.part)
+	reader := &publicationContextReader{ctx: ctx, src: src}
 	var parts []types.CompletedPart
 	for partNumber := int32(1); ; partNumber++ {
-		n, readErr := io.ReadFull(src, buffer)
+		n, readErr := io.ReadFull(reader, buffer)
+		if err := ctx.Err(); err != nil {
+			return publicationResult{}, err
+		}
 		if errors.Is(readErr, io.ErrUnexpectedEOF) {
 			readErr = io.EOF
 		}

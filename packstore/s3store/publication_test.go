@@ -331,6 +331,94 @@ func TestMultipartPublishAbortsDeduplicatedUpload(t *testing.T) {
 	assert.Equal(t, 1, aborts)
 }
 
+func TestRepairLooseCancelStopsBeforePut(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	source := &cancelAfterFirstRead{
+		cancel: cancel,
+		reader: strings.NewReader("hello"),
+	}
+	owner := packstore.Ownership{
+		Format: packstore.OwnershipFormatV1,
+		Vault:  "test-vault",
+		Store:  "archive",
+		Epoch:  "epoch-1",
+	}
+	marker, err := packstore.MarshalOwnership(owner)
+	require.NoError(t, err)
+	var puts int
+	backend := newHTTPBackend(packstore.DefaultLimits(), func(request *http.Request) (*http.Response, error) {
+		switch request.Method {
+		case http.MethodGet:
+			header := make(http.Header)
+			header.Set("Content-Length", strconv.Itoa(len(marker)))
+			return &http.Response{
+				StatusCode: http.StatusOK, Header: header,
+				Body:          io.NopCloser(bytes.NewReader(marker)),
+				ContentLength: int64(len(marker)), Request: request,
+			}, nil
+		case http.MethodPut:
+			puts++
+		}
+		return xmlResponse(request, http.StatusInternalServerError,
+			`<Error><Code>UnexpectedRequest</Code></Error>`), nil
+	})
+	backend.setOwnership(owner, `"owner-etag"`)
+
+	_, err = backend.RepairLoose(
+		ctx,
+		packstore.Hash("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"),
+		source,
+		packstore.PublishOptions{ExpectedSize: 5, SizeKnown: true},
+	)
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 1, source.reads)
+	assert.Zero(t, puts)
+}
+
+func TestMultipartPublishCancelAbortsWithBoundedContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	source := &cancelAfterFirstRead{
+		cancel: cancel,
+		reader: strings.NewReader("hello"),
+	}
+	var uploads, completes, aborts int
+	backend := newHTTPBackend(packstore.DefaultLimits(), func(request *http.Request) (*http.Response, error) {
+		query := request.URL.Query()
+		switch {
+		case request.Method == http.MethodPost && query.Has("uploads"):
+			return xmlResponse(request, http.StatusOK,
+				`<InitiateMultipartUploadResult>`+
+					`<Bucket>test-bucket</Bucket><Key>packs/test</Key>`+
+					`<UploadId>upload-1</UploadId>`+
+					`</InitiateMultipartUploadResult>`), nil
+		case request.Method == http.MethodPut && query.Get("uploadId") == "upload-1":
+			uploads++
+			return xmlResponse(request, http.StatusOK, ""), nil
+		case request.Method == http.MethodPost && query.Get("uploadId") == "upload-1":
+			completes++
+			return xmlResponse(request, http.StatusOK, ""), nil
+		case request.Method == http.MethodDelete && query.Get("uploadId") == "upload-1":
+			assert.NoError(t, request.Context().Err())
+			_, hasDeadline := request.Context().Deadline()
+			assert.True(t, hasDeadline)
+			aborts++
+			return xmlResponse(request, http.StatusNoContent, ""), nil
+		default:
+			return xmlResponse(request, http.StatusInternalServerError,
+				`<Error><Code>UnexpectedRequest</Code></Error>`), nil
+		}
+	})
+
+	_, err := backend.multipartPublish(ctx, "packs/test", source, 5, "")
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 1, source.reads)
+	assert.Zero(t, uploads)
+	assert.Zero(t, completes)
+	assert.Equal(t, 1, aborts)
+}
+
 type countingReadCloser struct {
 	reader io.Reader
 	read   int64
@@ -343,6 +431,24 @@ func (r *countingReadCloser) Read(p []byte) (int, error) {
 }
 
 func (r *countingReadCloser) Close() error { return nil }
+
+type cancelAfterFirstRead struct {
+	cancel context.CancelFunc
+	reader io.Reader
+	reads  int
+}
+
+func (r *cancelAfterFirstRead) Read(p []byte) (int, error) {
+	if len(p) > 1 {
+		p = p[:1]
+	}
+	n, err := r.reader.Read(p)
+	r.reads++
+	if n > 0 {
+		r.cancel()
+	}
+	return n, err
+}
 
 func makeEncodedPack(
 	t *testing.T,
