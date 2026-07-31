@@ -26,6 +26,14 @@ func BenchmarkStorePackedReadsRaw(b *testing.B) {
 	benchmarkStorePackedReads(b, content)
 }
 
+func BenchmarkStorePackedReadsLargeRaw(b *testing.B) {
+	content := make([]byte, 4<<20)
+	reader := &maintenanceBenchNoiseReader{state: 1}
+	_, err := io.ReadFull(reader, content)
+	require.NoError(b, err)
+	benchmarkStorePackedReads(b, content)
+}
+
 func benchmarkStorePackedReads(b *testing.B, content []byte) {
 	b.Helper()
 	root := b.TempDir()

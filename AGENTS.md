@@ -72,6 +72,9 @@ provider workflows to this repo unless the package already owns that concern.
 
 - Do not change branches unless the user explicitly asks.
 - Do not amend commits unless the user explicitly asks.
+- Do not poll or watch CI or pull request checks after pushing unless the user
+  explicitly asks. A one-time status lookup is allowed when diagnosing a
+  user-identified CI failure.
 - Never revert user changes. If existing edits touch the same files, read them
   and work with them.
 - Keep pull request descriptions concise and rationale-first: explain the

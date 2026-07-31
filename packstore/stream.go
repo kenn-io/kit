@@ -34,6 +34,19 @@ func (s *Store) OpenStream(ctx context.Context, contentHash Hash) (VerifiedReadC
 	if err := contentHash.Validate(); err != nil {
 		return nil, 0, err
 	}
+	if s.resolver != nil {
+		return resolveBlob(
+			ctx,
+			s,
+			contentHash,
+			func(hash Hash) (VerifiedReadCloser, int64, error) {
+				return s.openLooseStream(ctx, hash)
+			},
+			func(hash Hash, entry *IndexEntry) (VerifiedReadCloser, int64, error) {
+				return s.openPackedStream(ctx, hash, entry)
+			},
+		)
+	}
 	return s.openMultiStream(ctx, contentHash)
 }
 

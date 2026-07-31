@@ -48,6 +48,76 @@ func TestStoreReadsOnlyCatalogMembersFromLooseAndPackedStorage(t *testing.T) {
 	assert.ErrorIs(err, fs.ErrNotExist)
 }
 
+func TestNewStorePreservesSingleFilesystemFailureShape(t *testing.T) {
+	hash := hashForTest([]byte("missing local content"))
+	store := newStoreForTest(t, &mapResolver{locations: map[Hash]Location{
+		hash: {Member: true},
+	}}, layoutForStoreTest(t))
+	reads := []struct {
+		name string
+		read func() error
+	}{
+		{
+			name: "seekable",
+			read: func() error {
+				reader, _, err := store.Open(context.Background(), hash)
+				if reader != nil {
+					err = errors.Join(err, reader.Close())
+				}
+				return err
+			},
+		},
+		{
+			name: "stream",
+			read: func() error {
+				reader, _, err := store.OpenStream(context.Background(), hash)
+				if reader != nil {
+					err = errors.Join(err, reader.Close())
+				}
+				return err
+			},
+		},
+		{
+			name: "bounded",
+			read: func() error {
+				_, _, err := store.ReadBounded(context.Background(), hash, 1<<20)
+				return err
+			},
+		},
+	}
+	for _, tt := range reads {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.read()
+			require.ErrorIs(t, err, fs.ErrNotExist)
+			var exhausted *ExhaustedError
+			assert.NotErrorAs(t, err, &exhausted)
+		})
+	}
+}
+
+func TestNewStoreLargePackedOpenDoesNotRequireTemporaryStorage(t *testing.T) {
+	content := bytes.Repeat([]byte("large packed compatibility content\n"), 1<<16)
+	layout := layoutForStoreTest(t)
+	entry := buildStoreTestPack(t, layout, content)
+	store := newStoreForTest(t, &mapResolver{locations: map[Hash]Location{
+		entry.Hash: {Member: true, Pack: &entry},
+	}}, layout)
+
+	originalCreate := createSeekableLooseTemp
+	createSeekableLooseTemp = func() (*os.File, error) {
+		return nil, errors.New("temporary storage unavailable")
+	}
+	t.Cleanup(func() { createSeekableLooseTemp = originalCreate })
+
+	reader, size, err := store.Open(context.Background(), entry.Hash)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, reader.Close()) })
+	assert.Equal(t, int64(len(content)), size)
+	actual, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	assert.Equal(t, content, actual)
+}
+
 func TestStoreOpenReadsAndSeeksCompressedLooseContent(t *testing.T) {
 	content := bytes.Repeat([]byte("seekable compressed content "), 1024)
 	layout := layoutForStoreTest(t)

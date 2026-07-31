@@ -13,7 +13,10 @@ import (
 	"go.kenn.io/kit/pack"
 )
 
-const maxOpenReaders = 16
+const (
+	maxOpenReaders          = 16
+	seekableDirectPackBytes = int64(1 << 20)
+)
 
 var createSeekableLooseTemp = createSeekableLooseTempPlatform
 
@@ -92,7 +95,9 @@ type Store struct {
 	order       []string
 }
 
-// NewStore constructs a mixed content reader.
+// NewStore constructs a single-filesystem mixed content reader. Its reads keep
+// the direct Resolver path; multi-location ordering and health tracking are
+// enabled only by NewMultiStore.
 func NewStore(resolver Resolver, layout Layout, opts StoreOptions) (*Store, error) {
 	if resolver == nil {
 		return nil, fmt.Errorf("packstore: resolver is nil")
@@ -112,10 +117,6 @@ func NewStore(resolver Resolver, layout Layout, opts StoreOptions) (*Store, erro
 	}
 	legacyBackend := newFilesystemBackendWithReader(layout, loose, store, true)
 	store.filesystem = legacyBackend
-	store.locationResolver = legacyLocationResolver{resolver: resolver}
-	store.backends = legacyBackendRegistry{backend: legacyBackend}
-	store.health = NewHealth()
-	store.retryResolution = true
 	return store, nil
 }
 
@@ -150,7 +151,55 @@ func (s *Store) Open(ctx context.Context, hash Hash) (io.ReadSeekCloser, int64, 
 	if err := hash.Validate(); err != nil {
 		return nil, 0, err
 	}
+	if s.resolver != nil {
+		return s.openSingleSeekable(ctx, hash)
+	}
 	return s.openMultiSeekable(ctx, hash)
+}
+
+func (s *Store) openSingleSeekable(
+	ctx context.Context,
+	hash Hash,
+) (io.ReadSeekCloser, int64, error) {
+	location, err := s.resolver.Resolve(ctx, hash)
+	if err != nil {
+		return nil, 0, err
+	}
+	if !location.Member {
+		return nil, 0, blobNotFound(hash)
+	}
+	if location.Pack == nil {
+		reader, size, looseErr := s.openSeekableLoose(ctx, hash)
+		if !isPhysicalSourceNotFound(looseErr) {
+			return reader, size, looseErr
+		}
+		location, err = s.resolver.Resolve(ctx, hash)
+		if err != nil {
+			return nil, 0, err
+		}
+		if !location.Member {
+			return nil, 0, blobNotFound(hash)
+		}
+		if location.Pack == nil {
+			return nil, 0, looseErr
+		}
+		return s.openSeekablePacked(ctx, hash, location.Pack)
+	}
+	reader, size, packErr := s.openSeekablePacked(ctx, hash, location.Pack)
+	if !isPhysicalSourceNotFound(packErr) {
+		return reader, size, packErr
+	}
+	location, err = s.resolver.Resolve(ctx, hash)
+	if err != nil {
+		return nil, 0, err
+	}
+	if !location.Member {
+		return nil, 0, blobNotFound(hash)
+	}
+	if location.Pack == nil {
+		return s.openSeekableLoose(ctx, hash)
+	}
+	return s.openSeekablePacked(ctx, hash, location.Pack)
 }
 
 func (s *Store) openMultiSeekable(
@@ -231,7 +280,69 @@ func (s *Store) ReadBounded(ctx context.Context, hash Hash, maxBytes int64) ([]b
 	if maxBytes > s.limits.BlobBytes {
 		maxBytes = s.limits.BlobBytes
 	}
+	if s.resolver != nil {
+		return resolveBlob(
+			ctx,
+			s,
+			hash,
+			func(hash Hash) ([]byte, int64, error) {
+				return s.readLooseBounded(ctx, hash, maxBytes)
+			},
+			func(hash Hash, entry *IndexEntry) ([]byte, int64, error) {
+				return s.readPackedBounded(ctx, hash, entry, maxBytes)
+			},
+		)
+	}
 	return s.readMultiBounded(ctx, hash, maxBytes)
+}
+
+func resolveBlob[T any](
+	ctx context.Context,
+	store *Store,
+	hash Hash,
+	readLoose func(Hash) (T, int64, error),
+	readPacked func(Hash, *IndexEntry) (T, int64, error),
+) (T, int64, error) {
+	var zero T
+	location, err := store.resolver.Resolve(ctx, hash)
+	if err != nil {
+		return zero, 0, err
+	}
+	if !location.Member {
+		return zero, 0, blobNotFound(hash)
+	}
+	if location.Pack == nil {
+		value, size, looseErr := readLoose(hash)
+		if !isPhysicalSourceNotFound(looseErr) {
+			return value, size, looseErr
+		}
+		location, err = store.resolver.Resolve(ctx, hash)
+		if err != nil {
+			return zero, 0, err
+		}
+		if !location.Member {
+			return zero, 0, blobNotFound(hash)
+		}
+		if location.Pack == nil {
+			return zero, 0, looseErr
+		}
+		return readPacked(hash, location.Pack)
+	}
+	value, size, packErr := readPacked(hash, location.Pack)
+	if !isPhysicalSourceNotFound(packErr) {
+		return value, size, packErr
+	}
+	location, err = store.resolver.Resolve(ctx, hash)
+	if err != nil {
+		return zero, 0, err
+	}
+	if !location.Member {
+		return zero, 0, blobNotFound(hash)
+	}
+	if location.Pack == nil {
+		return readLoose(hash)
+	}
+	return readPacked(hash, location.Pack)
 }
 
 func (s *Store) readMultiBounded(
@@ -535,6 +646,38 @@ func (s *Store) openPacked(hash Hash, entry *IndexEntry) (io.ReadSeekCloser, int
 		return nil, 0, err
 	}
 	return nopSeekCloser{bytes.NewReader(data)}, int64(len(data)), nil
+}
+
+func (s *Store) openSeekablePacked(
+	ctx context.Context,
+	hash Hash,
+	entry *IndexEntry,
+) (io.ReadSeekCloser, int64, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, 0, err
+	}
+	// Keep the compatibility API's allocation profile for small, strictly
+	// bounded entries. Larger work is streamed so cancellation can interrupt
+	// decompression and materialization.
+	if entry.RawLen <= seekableDirectPackBytes && entry.StoredLen <= seekableDirectPackBytes {
+		reader, size, err := s.openPacked(hash, entry)
+		if err != nil {
+			return nil, 0, err
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, 0, errors.Join(err, reader.Close())
+		}
+		return reader, size, nil
+	}
+	stream, size, err := s.openPackedCompatibilityStream(ctx, hash, entry)
+	if err != nil {
+		return nil, 0, err
+	}
+	data, _, err := consumeBounded(stream, size, size)
+	if err != nil {
+		return nil, 0, err
+	}
+	return nopSeekCloser{bytes.NewReader(data)}, size, nil
 }
 
 func (s *Store) readPackedBounded(
