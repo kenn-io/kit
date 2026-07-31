@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -482,7 +483,7 @@ func copyBoundedContext(
 	maxBytes int64,
 ) (int64, error) {
 	reader := io.Reader(&contextReader{ctx: ctx, reader: src})
-	if maxBytes == 0 {
+	if maxBytes == 0 || maxBytes == math.MaxInt64 {
 		return io.CopyBuffer(dst, reader, make([]byte, 64<<10))
 	}
 	limited := &io.LimitedReader{R: reader, N: maxBytes + 1}

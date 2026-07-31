@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -222,6 +223,21 @@ func TestFilesystemBackendPublishPackCapsCallerLimitBeforeCanonicalWrite(t *test
 	require.ErrorAs(t, err, &limit)
 	assert.Equal(t, LimitPackContainerBytes, limit.Dimension)
 	assert.NoFileExists(t, layout.PackPath(packID))
+}
+
+func TestCopyBoundedContextAcceptsMaxInt64Limit(t *testing.T) {
+	var destination bytes.Buffer
+
+	written, err := copyBoundedContext(
+		context.Background(),
+		&destination,
+		bytes.NewReader([]byte("bounded content")),
+		math.MaxInt64,
+	)
+
+	require.NoError(t, err)
+	assert.Equal(t, int64(len("bounded content")), written)
+	assert.Equal(t, "bounded content", destination.String())
 }
 
 func TestFilesystemBackendUsesAndRetiresExactLooseRepresentation(t *testing.T) {
