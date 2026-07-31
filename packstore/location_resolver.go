@@ -15,8 +15,8 @@ type StoreID string
 type LocationGeneration string
 
 // LooseLocation describes one catalog-authorized loose representation.
-// Zero sizes and encoding are permitted when adapting a legacy resolver whose
-// filesystem backend discovers those values while opening the object.
+// Multi-location resolvers must provide an explicit encoding and sizes. The
+// internal legacy adapter alone may defer representation discovery.
 type LooseLocation struct {
 	Encoding    LooseEncoding
 	LogicalSize int64
