@@ -3,6 +3,8 @@ package packstore
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"io"
 	"math"
@@ -344,6 +346,60 @@ func TestFilesystemBackendPublishPackEnforcesZeroBlobLimit(t *testing.T) {
 			assert.NoFileExists(t, layout.PackPath(packID))
 		})
 	}
+}
+
+func TestFilesystemBackendPublishPackPreflightsAllEntryLimitsBeforeIntegrity(t *testing.T) {
+	staging := t.TempDir()
+	writer, err := pack.NewWriter(staging, pack.WriterOptions{})
+	require.NoError(t, err)
+	_, err = writer.Append(nil)
+	require.NoError(t, err)
+	_, err = writer.Append([]byte("x"))
+	require.NoError(t, err)
+	packID := writer.ID()
+	packPath := filepath.Join(staging, packID+PackExt)
+	_, err = writer.Seal(packPath)
+	require.NoError(t, err)
+	packBytes, err := os.ReadFile(packPath)
+	require.NoError(t, err)
+	trailerOffset := len(packBytes) - plainPackTrailerSize
+	footerLen := int(binary.LittleEndian.Uint32(packBytes[trailerOffset:]))
+	footerOffset := trailerOffset - footerLen
+	forgedID := pack.ComputeBlobID([]byte("not the empty blob"))
+	copy(packBytes[footerOffset+4:footerOffset+4+len(forgedID)], forgedID[:])
+	footerDigest := sha256.New()
+	_, _ = footerDigest.Write(packBytes[footerOffset:trailerOffset])
+	_, _ = footerDigest.Write(packBytes[trailerOffset : trailerOffset+4])
+	copy(packBytes[trailerOffset+4:trailerOffset+36], footerDigest.Sum(nil))
+	require.NoError(t, os.WriteFile(packPath, packBytes, 0o600))
+
+	limits := DefaultLimits()
+	limits.BlobBytes = 0
+	layout := layoutForStoreTest(t)
+	backend, err := NewFilesystemBackend(layout, FilesystemBackendOptions{Limits: limits})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, backend.Close()) })
+	owner := Ownership{
+		Format: OwnershipFormatV1,
+		Vault:  "test-vault",
+		Store:  "archive",
+		Epoch:  "epoch-1",
+	}
+	require.NoError(t, backend.ReplaceOwnership(context.Background(), owner, nil))
+	source, err := os.Open(packPath)
+	require.NoError(t, err)
+
+	_, err = backend.PublishPack(context.Background(), packID, source, PublishOptions{})
+	require.NoError(t, source.Close())
+
+	require.ErrorIs(t, err, ErrBlobTooLarge)
+	require.NotErrorIs(t, err, pack.ErrBlobMismatch)
+	var limit *LimitError
+	require.ErrorAs(t, err, &limit)
+	assert.Equal(t, LimitBlobRawBytes, limit.Dimension)
+	assert.Equal(t, uint64(1), limit.Actual)
+	assert.Zero(t, limit.Limit)
+	assert.NoFileExists(t, layout.PackPath(packID))
 }
 
 func TestCopyBoundedContextAcceptsMaxInt64Limit(t *testing.T) {

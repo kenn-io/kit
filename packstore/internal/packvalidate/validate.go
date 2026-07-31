@@ -28,7 +28,8 @@ func File(
 		return err
 	}
 	defer func() { resultErr = errors.Join(resultErr, reader.Close()) }()
-	for _, entry := range reader.Entries() {
+	entries := reader.Entries()
+	for _, entry := range entries {
 		if entry.RawLen > limits.RawBytes {
 			return &pack.StreamLimitError{
 				Dimension: pack.StreamLimitRawBytes,
@@ -43,6 +44,8 @@ func File(
 				Limit:     limits.StoredBytes,
 			}
 		}
+	}
+	for _, entry := range entries {
 		blob, err := reader.OpenBlob(ctx, entry)
 		if err != nil {
 			return err
