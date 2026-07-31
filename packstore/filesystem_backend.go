@@ -179,7 +179,7 @@ func (b *FilesystemBackend) OpenPack(
 ) (VerifiedReadCloser, int64, error) {
 	stream, size, err := b.reader.openPackedStream(ctx, hash, &entry)
 	if err != nil {
-		return nil, 0, classifyPhysicalError(err)
+		return nil, 0, classifyPackPhysicalError(err)
 	}
 	return &physicalVerifiedStream{stream: stream}, size, nil
 }
@@ -230,7 +230,7 @@ func (b *FilesystemBackend) OpenSeekablePack(
 	entry IndexEntry,
 ) (io.ReadSeekCloser, int64, error) {
 	reader, size, err := b.reader.openPacked(hash, &entry)
-	return reader, size, classifyPhysicalError(err)
+	return reader, size, classifyPackPhysicalError(err)
 }
 
 func (b *FilesystemBackend) ReadLooseBounded(
@@ -260,7 +260,11 @@ func (b *FilesystemBackend) ReadPackBounded(
 	maxBytes int64,
 ) ([]byte, int64, error) {
 	data, size, err := b.reader.readPackedBounded(ctx, hash, &entry, maxBytes)
-	return data, size, classifyPhysicalError(err)
+	return data, size, classifyPackPhysicalError(err)
+}
+
+func classifyPackPhysicalError(err error) error {
+	return classifyPhysicalError(ClassifyPackLimitError(err))
 }
 
 // PublishLoose writes a canonical immutable loose object after a fresh

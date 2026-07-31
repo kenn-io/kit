@@ -132,19 +132,30 @@ func isPhysicalControlError(err error) bool {
 	return false
 }
 
-// ClassifyIntegrityError marks content and representation-specific container
-// verification failures as physical corruption while preserving errors that
-// are already classified. Logical blob limits remain caller-policy errors.
-func ClassifyIntegrityError(err error) error {
+// ClassifyPackLimitError marks representation-specific pack limits as physical
+// corruption while preserving structured limit evidence. Logical blob limits
+// remain caller-policy errors.
+func ClassifyPackLimitError(err error) error {
 	if err == nil || isCandidateFailure(err) {
 		return err
 	}
 	var limit *LimitError
-	if errors.As(err, &limit) {
-		switch limit.Dimension {
-		case LimitPackContainerBytes, LimitPackFooterBytes, LimitPackEntryCount:
-			return errors.Join(ErrPhysicalCorrupt, err)
-		}
+	if !errors.As(err, &limit) {
+		return err
+	}
+	switch limit.Dimension {
+	case LimitPackContainerBytes, LimitPackFooterBytes, LimitPackEntryCount:
+		return errors.Join(ErrPhysicalCorrupt, err)
+	default:
+		return err
+	}
+}
+
+// ClassifyIntegrityError marks content and container verification failures as
+// physical corruption while preserving errors that are already classified.
+func ClassifyIntegrityError(err error) error {
+	if err == nil || isCandidateFailure(err) {
+		return err
 	}
 	for _, corrupt := range []error{
 		ErrContentMismatch,

@@ -60,6 +60,25 @@ func TestClassifyIntegrityError(t *testing.T) {
 		{name: "checksum", input: pack.ErrChecksum, corrupt: true},
 		{name: "corrupt", input: pack.ErrCorrupt, corrupt: true},
 		{name: "blob mismatch", input: pack.ErrBlobMismatch, corrupt: true},
+		{name: "verification incomplete", input: pack.ErrVerificationIncomplete},
+		{name: "context canceled", input: context.Canceled},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ClassifyIntegrityError(tt.input)
+
+			assert.Equal(t, tt.corrupt, errors.Is(err, ErrPhysicalCorrupt))
+			require.ErrorIs(t, err, tt.input)
+		})
+	}
+}
+
+func TestClassifyPackLimitError(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   error
+		corrupt bool
+	}{
 		{
 			name: "pack container limit",
 			input: newLimitError(
@@ -81,12 +100,10 @@ func TestClassifyIntegrityError(t *testing.T) {
 		{name: "blob stored limit", input: newLimitError(LimitBlobStoredBytes, 2, 1)},
 		{name: "blob window limit", input: newLimitError(LimitBlobWindowBytes, 2, 1)},
 		{name: "blob stat limit", input: newLimitError(LimitBlobStatBytes, 2, 1)},
-		{name: "verification incomplete", input: pack.ErrVerificationIncomplete},
-		{name: "context canceled", input: context.Canceled},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ClassifyIntegrityError(tt.input)
+			err := ClassifyPackLimitError(tt.input)
 
 			assert.Equal(t, tt.corrupt, errors.Is(err, ErrPhysicalCorrupt))
 			require.ErrorIs(t, err, tt.input)
