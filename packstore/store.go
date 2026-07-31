@@ -583,11 +583,11 @@ func (s *Store) acquirePackedEntry(
 	footerEntry, found := slot.entries[id]
 	if !found {
 		return nil, pack.Entry{}, nil, errors.Join(
-			&fs.PathError{Op: "find blob in pack footer", Path: hash.String(), Err: fs.ErrNotExist}, release())
+			fmt.Errorf("%w: pack footer has no entry for %s", ErrContentMismatch, hash), release())
 	}
 	if !packIndexMatchesFooter(entry, footerEntry) {
 		return nil, pack.Entry{}, nil, errors.Join(
-			fmt.Errorf("packstore: pack index metadata mismatch for %s", hash), release())
+			fmt.Errorf("%w: pack index metadata mismatch for %s", ErrContentMismatch, hash), release())
 	}
 	return slot, footerEntry, release, nil
 }

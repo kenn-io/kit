@@ -387,6 +387,138 @@ func TestFilesystemBackendDoesNotClassifyIncompleteStreamCloseAsCorrupt(t *testi
 	require.NotErrorIs(t, err, ErrPhysicalCorrupt)
 }
 
+func TestMultiStoreFallsBackFromPackFooterCorruption(t *testing.T) {
+	ctx := context.Background()
+	content := []byte("healthy fallback pack content")
+	hash := hashForTest(content)
+	operations := []struct {
+		name         string
+		read         func(*testing.T, *Store, Hash) []byte
+		primaryError func(*FilesystemBackend, IndexEntry) error
+	}{
+		{
+			name: "OpenStream",
+			read: func(t *testing.T, store *Store, hash Hash) []byte {
+				t.Helper()
+				stream, size, err := store.OpenStream(ctx, hash)
+				require.NoError(t, err)
+				require.Equal(t, int64(len(content)), size)
+				data, err := io.ReadAll(stream)
+				require.NoError(t, errors.Join(err, stream.Close()))
+				return data
+			},
+			primaryError: func(backend *FilesystemBackend, entry IndexEntry) error {
+				stream, _, err := backend.OpenPack(ctx, hash, entry)
+				if stream != nil {
+					return errors.Join(err, stream.Close())
+				}
+				return err
+			},
+		},
+		{
+			name: "Open",
+			read: func(t *testing.T, store *Store, hash Hash) []byte {
+				t.Helper()
+				reader, size, err := store.Open(ctx, hash)
+				require.NoError(t, err)
+				require.Equal(t, int64(len(content)), size)
+				data, err := io.ReadAll(reader)
+				require.NoError(t, errors.Join(err, reader.Close()))
+				return data
+			},
+			primaryError: func(backend *FilesystemBackend, entry IndexEntry) error {
+				reader, _, err := backend.OpenSeekablePack(ctx, hash, entry)
+				if reader != nil {
+					return errors.Join(err, reader.Close())
+				}
+				return err
+			},
+		},
+		{
+			name: "ReadBounded",
+			read: func(t *testing.T, store *Store, hash Hash) []byte {
+				t.Helper()
+				data, size, err := store.ReadBounded(ctx, hash, int64(len(content)))
+				require.NoError(t, err)
+				require.Equal(t, int64(len(content)), size)
+				return data
+			},
+			primaryError: func(backend *FilesystemBackend, entry IndexEntry) error {
+				_, _, err := backend.ReadPackBounded(ctx, hash, entry, int64(len(content)))
+				return err
+			},
+		},
+	}
+	conditions := []struct {
+		name        string
+		primaryData []byte
+		entry       func(IndexEntry) IndexEntry
+	}{
+		{
+			name:        "missing footer entry",
+			primaryData: []byte("different primary pack content"),
+			entry: func(entry IndexEntry) IndexEntry {
+				entry.Hash = hash
+				return entry
+			},
+		},
+		{
+			name:        "catalog footer metadata mismatch",
+			primaryData: content,
+			entry: func(entry IndexEntry) IndexEntry {
+				entry.Offset++
+				return entry
+			},
+		},
+	}
+
+	for _, condition := range conditions {
+		t.Run(condition.name, func(t *testing.T) {
+			primary := attachedFilesystemBackend(t, "primary", "primary-1")
+			secondary := attachedFilesystemBackend(t, "secondary", "secondary-1")
+			primaryPath, primaryID, primaryEntries := buildBackendPackSource(t, condition.primaryData)
+			primarySource, err := os.Open(primaryPath)
+			require.NoError(t, err)
+			_, err = primary.PublishPack(ctx, primaryID, primarySource, PublishOptions{})
+			require.NoError(t, errors.Join(err, primarySource.Close()))
+			primaryEntry, err := indexEntryFromPack(primaryEntries[0], primaryID)
+			require.NoError(t, err)
+			primaryEntry = condition.entry(primaryEntry)
+
+			secondaryPath, secondaryID, secondaryEntries := buildBackendPackSource(t, content)
+			secondarySource, err := os.Open(secondaryPath)
+			require.NoError(t, err)
+			_, err = secondary.PublishPack(ctx, secondaryID, secondarySource, PublishOptions{})
+			require.NoError(t, errors.Join(err, secondarySource.Close()))
+			secondaryEntry, err := indexEntryFromPack(secondaryEntries[0], secondaryID)
+			require.NoError(t, err)
+
+			for _, operation := range operations {
+				t.Run(operation.name, func(t *testing.T) {
+					store, err := NewMultiStore(
+						staticLocationResolver{resolution: Resolution{
+							Member: true,
+							Candidates: []ReadLocation{
+								{StoreID: "primary", Generation: "primary-1", Pack: &primaryEntry},
+								{StoreID: "secondary", Generation: "secondary-1", Pack: &secondaryEntry},
+							},
+						}},
+						staticBackendRegistry{"primary": primary, "secondary": secondary},
+						MultiStoreOptions{},
+					)
+					require.NoError(t, err)
+					t.Cleanup(func() { require.NoError(t, store.Close()) })
+
+					assert.Equal(t, content, operation.read(t, store, hash))
+					err = operation.primaryError(primary, primaryEntry)
+					require.ErrorIs(t, err, ErrPhysicalCorrupt)
+					require.NotErrorIs(t, err, ErrPhysicalMissing)
+				})
+			}
+		})
+	}
+}
+
 func TestFilesystemBackendClassifiesLateLooseIntegrityFailure(t *testing.T) {
 	ctx := context.Background()
 	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
