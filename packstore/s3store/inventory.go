@@ -7,12 +7,15 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"go.kenn.io/kit/pack"
 	"go.kenn.io/kit/packstore"
 )
+
+const probeCleanupTimeout = 10 * time.Second
 
 // Inventory returns one bounded, paginated namespace page. Only canonical
 // Kit-generated keys become recognized objects; unknown names are reported
@@ -125,15 +128,11 @@ func (b *Backend) Probe(ctx context.Context) (report CapabilityReport, resultErr
 			fmt.Errorf("s3store: fresh probe key already exists"),
 		)
 	}
+	cleanupPending := true
 	defer func() {
-		if _, err := b.requireOwnership(context.WithoutCancel(ctx)); err != nil {
-			resultErr = errors.Join(resultErr, err)
-			return
+		if cleanupPending {
+			resultErr = errors.Join(resultErr, b.cleanupProbeObject(ctx, key))
 		}
-		_, err := b.client.DeleteObject(context.WithoutCancel(ctx), &s3.DeleteObjectInput{
-			Bucket: aws.String(b.bucket), Key: aws.String(key),
-		})
-		resultErr = errors.Join(resultErr, classifyError("clean probe object", err))
 	}()
 
 	for index := range 2 {
@@ -200,9 +199,22 @@ func (b *Backend) Probe(ctx context.Context) (report CapabilityReport, resultErr
 	if err != nil {
 		return report, classifyError("probe delete", err)
 	}
+	cleanupPending = false
 	resultErr = nil
 	report.Delete = true
 	return report, nil
+}
+
+func (b *Backend) cleanupProbeObject(ctx context.Context, key string) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), probeCleanupTimeout)
+	defer cancel()
+	if _, err := b.requireOwnership(cleanupCtx); err != nil {
+		return err
+	}
+	_, err := b.client.DeleteObject(cleanupCtx, &s3.DeleteObjectInput{
+		Bucket: aws.String(b.bucket), Key: aws.String(key),
+	})
+	return classifyError("clean probe object", err)
 }
 
 // NamespaceEmpty reports whether the configured bucket prefix contains any
