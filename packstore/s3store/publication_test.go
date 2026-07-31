@@ -614,7 +614,7 @@ func TestMultipartPublishCancelAbortsWithBoundedContext(t *testing.T) {
 			completes++
 			return xmlResponse(request, http.StatusOK, ""), nil
 		case request.Method == http.MethodDelete && query.Get("uploadId") == "upload-1":
-			assert.NoError(t, request.Context().Err())
+			require.NoError(t, request.Context().Err())
 			_, hasDeadline := request.Context().Deadline()
 			assert.True(t, hasDeadline)
 			aborts++
