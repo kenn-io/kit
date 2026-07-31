@@ -250,6 +250,16 @@ Restore is destructive only after the source has proven itself, in two layers. A
 
 Restore is self-proving, in layers. During materialization every blob read re-derives its SHA-256 identity (the pack reader's normal contract) and every database page is additionally checked against the snapshot's page-hash map before it is written — so a page-map bug cannot silently place correct bytes at the wrong offset. After materialization the restored database reproduces the manifest's recorded stats (via `App.RestoredStats`) through exactly the queries capture ran inside the freeze window. Unless `SkipIntegrityCheck` is set, it also passes `PRAGMA integrity_check`; callers restoring large databases may omit that SQLite scan without disabling cryptographic page or blob verification. The end-to-end test further proves the restored file is byte-identical to the live database as it existed at capture time, including for parent snapshots restored from an incremental chain. All files, and the directory entries naming them, are fsynced before Restore reports success. Pack reads are grouped by pack with a `Jobs` worker bound (1 = strictly serial for spinning-disk repositories); serial and parallel restores produce byte-identical trees. Restoring an old SQLite-page snapshot for use with a newer application version still goes through the application's normal schema migration at first open. A portable snapshot instead rebuilds the current runtime schema during restore, so runtime database migrations are not part of that archive's compatibility contract.
 
+`BeforePublication` receives `TargetDir` together with a private scratch
+`DBPath` outside that namespace. Kit copies the unpublished database into that
+scratch before invoking the callback, so replacing the target directory cannot
+redirect callback writes. The callback must finish its update, checkpoint and
+close SQLite, and leave no `-wal`, `-shm`, or `-journal` sidecar. Kit rejects
+any other output, copies the exact closed regular file back through the held
+target-root descriptor, then runs the normal integrity and statistics proof
+before canonical publication. A callback error or invalid output therefore
+leaves the canonical database unpublished.
+
 ### Optional packed-content restore
 
 Repository attachment membership is representation-neutral: the snapshot's

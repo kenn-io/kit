@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"maps"
@@ -133,6 +134,19 @@ func fileSHA256(t *testing.T, path string) [32]byte {
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
 	return sha256.Sum256(data)
+}
+
+func restorePublicationScratchDirs(t *testing.T, r *Repo) []string {
+	t.Helper()
+	entries, err := os.ReadDir(r.Path(stagingDirName))
+	require.NoError(t, err)
+	var dirs []string
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), "restore-publication-") {
+			dirs = append(dirs, entry.Name())
+		}
+	}
+	return dirs
 }
 
 // snapshotDirHashes maps every regular file under root (relative path) to
@@ -860,8 +874,22 @@ func TestRestoreRelativeTarget(t *testing.T) {
 	require.Equal(fileSHA256(t, dbPath), fileSHA256(t, res.DBPath))
 }
 
-func TestRestoreBeforePublicationFailureLeavesDatabaseUnpublished(t *testing.T) {
+type callbackUpdateProofApp struct{ App }
+
+func (a callbackUpdateProofApp) RestoredStats(ctx context.Context, db *sql.DB) (json.RawMessage, error) {
+	var userVersion int
+	if err := db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&userVersion); err != nil {
+		return nil, err
+	}
+	if userVersion != 1 {
+		return nil, fmt.Errorf("callback update was not present during restore proof: user_version=%d", userVersion)
+	}
+	return a.App.RestoredStats(ctx, db)
+}
+
+func TestRestoreBeforePublicationUsesPrivateScratchAndPublishesUpdate(t *testing.T) {
 	require := require.New(t)
+	assert := assert.New(t)
 	ctx := context.Background()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
@@ -871,19 +899,73 @@ func TestRestoreBeforePublicationFailureLeavesDatabaseUnpublished(t *testing.T) 
 	require.NoError(err)
 
 	target := filepath.Join(t.TempDir(), "restore")
+	beforeScratch := restorePublicationScratchDirs(t, r)
+	res, err := Restore(ctx, r, callbackUpdateProofApp{App: newTestApp()}, RestoreOptions{
+		TargetDir: target,
+		BeforePublication: func(_ context.Context, staged RestorePublicationTarget) error {
+			assert.Equal(target, staged.TargetDir)
+			rel, err := filepath.Rel(staged.TargetDir, staged.DBPath)
+			require.NoError(err)
+			assert.True(rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)),
+				"callback database %q must be outside target %q", staged.DBPath, staged.TargetDir)
+			assert.FileExists(staged.DBPath)
+			assert.NoFileExists(filepath.Join(target, newTestApp().DBFileName()))
+
+			db, err := sql.Open("sqlite3", staged.DBPath)
+			if err != nil {
+				return err
+			}
+			if _, err := db.Exec("PRAGMA user_version = 1"); err != nil {
+				_ = db.Close()
+				return err
+			}
+			if _, err := db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+				_ = db.Close()
+				return err
+			}
+			return db.Close()
+		},
+	})
+	require.NoError(err)
+
+	updated, err := sql.Open("sqlite3", res.DBPath)
+	require.NoError(err)
+	defer func() { _ = updated.Close() }()
+	var userVersion int
+	require.NoError(updated.QueryRow("PRAGMA user_version").Scan(&userVersion))
+	assert.Equal(1, userVersion)
+	info, err := os.Stat(res.DBPath)
+	require.NoError(err)
+	assert.Equal(info.Size(), res.DBBytes)
+	assert.Equal(beforeScratch, restorePublicationScratchDirs(t, r))
+}
+
+func TestRestoreBeforePublicationFailureLeavesDatabaseUnpublished(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	ctx := context.Background()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+	_, err := Create(ctx, r, newTestApp(), createOpts(
+		dbPath, attachmentsDir, dataDir, t.TempDir(),
+	))
+	require.NoError(err)
+
+	target := filepath.Join(t.TempDir(), "restore")
+	beforeScratch := restorePublicationScratchDirs(t, r)
 	hookErr := errors.New("application publication refused")
 	_, err = Restore(ctx, r, newTestApp(), RestoreOptions{
 		TargetDir: target,
 		BeforePublication: func(_ context.Context, staged RestorePublicationTarget) error {
-			assert.Equal(t, target, staged.TargetDir)
-			assert.FileExists(t, staged.DBPath)
-			assert.NotEqual(t, filepath.Join(target, newTestApp().DBFileName()), staged.DBPath)
-			assert.NoFileExists(t, filepath.Join(target, newTestApp().DBFileName()))
+			assert.Equal(target, staged.TargetDir)
+			assert.FileExists(staged.DBPath)
+			assert.NoFileExists(filepath.Join(target, newTestApp().DBFileName()))
 			return hookErr
 		},
 	})
 	require.ErrorIs(err, hookErr)
-	assert.NoFileExists(t, filepath.Join(target, newTestApp().DBFileName()))
+	assert.NoFileExists(filepath.Join(target, newTestApp().DBFileName()))
+	assert.Equal(beforeScratch, restorePublicationScratchDirs(t, r))
 }
 
 // TestRestoreStatsCheckCatchesManifestMismatchWhenIntegritySkipped proves a

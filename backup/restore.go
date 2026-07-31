@@ -77,13 +77,16 @@ type RestoreOptions struct {
 	AuxiliaryTarget AuxiliaryTarget
 	// BeforePublication runs after every content object has been restored and
 	// verified but before the staged database's integrity/stats proof and
-	// canonical publication. Applications may update the staged database to
-	// bind restored physical state; returning an error leaves it unpublished.
+	// canonical publication. Applications may update a private scratch copy to
+	// bind restored physical state; DBPath is outside TargetDir and does not
+	// resolve through it. The callback must close/checkpoint its database and
+	// leave no SQLite sidecars; returning an error leaves it unpublished.
 	BeforePublication func(context.Context, RestorePublicationTarget) error
 }
 
-// RestorePublicationTarget identifies the private staged restore state passed
-// to BeforePublication. DBPath is valid only for the duration of the callback.
+// RestorePublicationTarget identifies the private scratch state passed to
+// BeforePublication. DBPath is outside TargetDir and valid only for the
+// duration of the callback.
 type RestorePublicationTarget struct {
 	TargetDir string
 	DBPath    string
@@ -345,12 +348,12 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *R
 		}
 	}()
 	if opts.BeforePublication != nil {
-		if err := opts.BeforePublication(ctx, RestorePublicationTarget{
-			TargetDir: opts.TargetDir,
-			DBPath:    filepath.Join(opts.TargetDir, tmpRel),
-		}); err != nil {
-			return nil, fmt.Errorf("backup: preparing restored application state: %w", err)
+		tmpRel, res.DBBytes, err = st.prepareBeforePublication(
+			ctx, tmpRel, app.DBFileName(), opts.BeforePublication)
+		if err != nil {
+			return nil, err
 		}
+		st.dbRead = tmpRel
 	}
 
 	// The proof runs against the staging temp, BEFORE the database is
@@ -1125,6 +1128,126 @@ func (s *restoreState) restorePortableMetadata(
 		BytesDone: metadata.Bytes, BytesTotal: metadata.Bytes, Final: true,
 	})
 	return tmpRel, info.Size(), nil
+}
+
+// prepareBeforePublication gives the application an isolated copy of the
+// unpublished database, then copies its closed replacement through the held
+// target root. The callback must not be able to reach a target namespace that
+// changed after Restore opened its root descriptor.
+func (s *restoreState) prepareBeforePublication(
+	ctx context.Context, currentRel, finalDBRel string,
+	callback func(context.Context, RestorePublicationTarget) error,
+) (replacementRel string, dbBytes int64, resultErr error) {
+	var privateDir string
+	// Register first so every resource acquired below is closed before the
+	// directory cleanup sees and joins its error with resultErr.
+	defer func() {
+		if privateDir == "" {
+			return
+		}
+		if err := os.RemoveAll(privateDir); err != nil {
+			resultErr = errors.Join(resultErr,
+				fmt.Errorf("backup: removing private publication staging directory: %w", err))
+		}
+	}()
+
+	source, err := s.root.Open(currentRel)
+	if err != nil {
+		return "", 0, fmt.Errorf("backup: opening staged database for publication preparation: %w", err)
+	}
+	defer func() {
+		if source != nil {
+			resultErr = errors.Join(resultErr, source.Close())
+		}
+	}()
+	sourceInfo, err := source.Stat()
+	if err != nil {
+		return "", 0, fmt.Errorf("backup: inspecting staged database for publication preparation: %w", err)
+	}
+	if !sourceInfo.Mode().IsRegular() {
+		return "", 0, errors.New("backup: staged database for publication preparation is not a regular file")
+	}
+
+	privateDir, err = os.MkdirTemp(s.repo.Path(stagingDirName), "restore-publication-*")
+	if err != nil {
+		return "", 0, fmt.Errorf("backup: creating private publication staging directory: %w", err)
+	}
+	privateDB := filepath.Join(privateDir, filepath.Base(finalDBRel))
+	private, err := os.OpenFile(privateDB, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return "", 0, fmt.Errorf("backup: creating private publication database: %w", err)
+	}
+	defer func() {
+		if private != nil {
+			resultErr = errors.Join(resultErr, private.Close())
+		}
+	}()
+	written, err := io.Copy(private, source)
+	if err != nil {
+		return "", 0, fmt.Errorf("backup: copying private publication database: %w", err)
+	}
+	if written != sourceInfo.Size() {
+		return "", 0, fmt.Errorf(
+			"backup: staged database is %d bytes but changed to %d bytes during publication preparation",
+			sourceInfo.Size(), written)
+	}
+	if err := private.Sync(); err != nil {
+		return "", 0, fmt.Errorf("backup: syncing private publication database: %w", err)
+	}
+	if err := private.Close(); err != nil {
+		private = nil
+		return "", 0, fmt.Errorf("backup: closing private publication database: %w", err)
+	}
+	private = nil
+	if err := source.Close(); err != nil {
+		source = nil
+		return "", 0, fmt.Errorf("backup: closing staged database for publication preparation: %w", err)
+	}
+	source = nil
+
+	if err := callback(ctx, RestorePublicationTarget{TargetDir: s.target, DBPath: privateDB}); err != nil {
+		return "", 0, fmt.Errorf("backup: preparing restored application state: %w", err)
+	}
+	info, err := os.Lstat(privateDB)
+	if err != nil {
+		return "", 0, fmt.Errorf("backup: checking prepared restored database: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", 0, errors.New("backup: publication callback did not leave a regular database file")
+	}
+	for _, sidecar := range sqliteSidecarNames(privateDB) {
+		if _, err := os.Lstat(sidecar); !errors.Is(err, os.ErrNotExist) {
+			if err == nil {
+				return "", 0, fmt.Errorf("backup: publication callback left SQLite sidecar %s", sidecar)
+			}
+			return "", 0, fmt.Errorf("backup: checking publication callback sidecar: %w", err)
+		}
+	}
+	opened, err := os.Open(privateDB)
+	if err != nil {
+		return "", 0, fmt.Errorf("backup: opening prepared restored database: %w", err)
+	}
+	openedInfo, err := opened.Stat()
+	if err != nil {
+		_ = opened.Close()
+		return "", 0, fmt.Errorf("backup: inspecting prepared restored database: %w", err)
+	}
+	if !os.SameFile(info, openedInfo) {
+		_ = opened.Close()
+		return "", 0, errors.New("backup: prepared restored database changed before confinement")
+	}
+	stagedRel, stageErr := s.stageRootDatabase(ctx, finalDBRel, opened, info.Size())
+	closeErr := opened.Close()
+	if err := errors.Join(stageErr, closeErr); err != nil {
+		return "", 0, fmt.Errorf("backup: confining prepared restored database: %w", err)
+	}
+	if err := s.root.Remove(currentRel); err != nil {
+		removeErr := s.root.Remove(stagedRel)
+		return "", 0, errors.Join(
+			fmt.Errorf("backup: removing replaced staged database: %w", err),
+			removeErr)
+	}
+	return stagedRel, info.Size(), nil
 }
 
 // publishRestoredDB swaps the fully materialized staging temp into place:
