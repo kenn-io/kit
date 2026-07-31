@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/klauspost/compress/zstd"
@@ -65,6 +66,62 @@ func TestFilesystemBackendPublishesAndInventoriesCanonicalObjects(t *testing.T) 
 		page.Objects,
 	)
 	assert.Equal([]string{"operator-note"}, page.Unknown)
+}
+
+func TestFilesystemBackendInventoryRejectsCanonicalSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires privileges on Windows")
+	}
+	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
+	hash := hashForTest([]byte("unsafe inventory entry"))
+	path := backend.Layout().LoosePath(hash)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	target := filepath.Join(t.TempDir(), "target")
+	require.NoError(t, os.WriteFile(target, []byte("not authoritative"), 0o600))
+	require.NoError(t, os.Symlink(target, path))
+	relative, err := filepath.Rel(backend.Layout().Root(), path)
+	require.NoError(t, err)
+
+	page, err := backend.Inventory(context.Background(), "")
+
+	require.NoError(t, err)
+	assert.Empty(t, page.Objects)
+	assert.Equal(t, []string{filepath.ToSlash(relative)}, page.Unknown)
+}
+
+func TestFilesystemBackendSeekablePackHonorsCancellation(t *testing.T) {
+	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
+	packPath, packID, entries := buildBackendPackSource(
+		t, bytes.Repeat([]byte("cancel seekable pack"), 128<<10),
+	)
+	source, err := os.Open(packPath)
+	require.NoError(t, err)
+	_, err = backend.PublishPack(context.Background(), packID, source, PublishOptions{})
+	require.NoError(t, errors.Join(err, source.Close()))
+	require.Len(t, entries, 1)
+	indexed, err := indexEntryFromPack(entries[0], packID)
+	require.NoError(t, err)
+	store, err := NewMultiStore(
+		staticLocationResolver{resolution: Resolution{
+			Member: true,
+			Candidates: []ReadLocation{{
+				StoreID: "archive", Generation: "epoch-1", Pack: &indexed,
+			}},
+		}},
+		staticBackendRegistry{"archive": backend},
+		MultiStoreOptions{},
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	reader, _, err := store.Open(ctx, indexed.Hash)
+	if reader != nil {
+		_ = reader.Close()
+	}
+
+	require.ErrorIs(t, err, context.Canceled)
 }
 
 func TestFilesystemBackendDurablePackPublicationSyncsFreshHierarchy(t *testing.T) {

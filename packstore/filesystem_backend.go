@@ -39,6 +39,8 @@ type FilesystemBackend struct {
 	legacy    bool
 }
 
+const seekableDirectPackBytes = int64(1 << 20)
+
 // NewFilesystemBackend prepares one filesystem store.
 func NewFilesystemBackend(
 	layout Layout,
@@ -225,12 +227,34 @@ func (b *FilesystemBackend) OpenSeekableLoose(
 }
 
 func (b *FilesystemBackend) OpenSeekablePack(
-	_ context.Context,
+	ctx context.Context,
 	hash Hash,
 	entry IndexEntry,
 ) (io.ReadSeekCloser, int64, error) {
-	reader, size, err := b.reader.openPacked(hash, &entry)
-	return reader, size, classifyPackPhysicalError(err)
+	if err := entry.Validate(); err != nil {
+		return nil, 0, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, 0, err
+	}
+	// Keep the compatibility API's allocation profile for small, strictly
+	// bounded entries. Larger work is streamed so cancellation can interrupt
+	// decompression and materialization.
+	if entry.RawLen <= seekableDirectPackBytes && entry.StoredLen <= seekableDirectPackBytes {
+		reader, size, err := b.reader.openPacked(hash, &entry)
+		if err != nil {
+			return nil, 0, classifyPackPhysicalError(err)
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, 0, errors.Join(err, reader.Close())
+		}
+		return reader, size, nil
+	}
+	stream, size, err := b.reader.openPackedCompatibilityStream(ctx, hash, &entry)
+	if err != nil {
+		return nil, 0, classifyPackPhysicalError(err)
+	}
+	return materializeSeekable(&physicalVerifiedStream{stream: stream}, size)
 }
 
 func (b *FilesystemBackend) ReadLooseBounded(
@@ -715,7 +739,7 @@ func (b *FilesystemBackend) Inventory(
 		if err != nil {
 			return err
 		}
-		if ref, ok := b.canonicalObjectRef(relative); ok {
+		if ref, ok := b.canonicalObjectRef(relative); ok && validateRegularNoFollow(path, info) == nil {
 			page.Objects = append(page.Objects, InventoryObject{Ref: ref, StoredSize: info.Size()})
 		} else {
 			page.Unknown = append(page.Unknown, filepath.ToSlash(relative))

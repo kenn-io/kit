@@ -116,19 +116,36 @@ func (s *Store) CopyVerified(ctx context.Context, contentHash Hash, dst io.Write
 func (s *Store) openPackedStream(
 	ctx context.Context, contentHash Hash, indexed *IndexEntry,
 ) (VerifiedReadCloser, int64, error) {
-	slot, footer, release, err := s.acquirePackedEntry(contentHash, indexed, true)
+	return s.openPackedStreamWithPolicy(ctx, contentHash, indexed, true)
+}
+
+func (s *Store) openPackedCompatibilityStream(
+	ctx context.Context, contentHash Hash, indexed *IndexEntry,
+) (VerifiedReadCloser, int64, error) {
+	return s.openPackedStreamWithPolicy(ctx, contentHash, indexed, false)
+}
+
+func (s *Store) openPackedStreamWithPolicy(
+	ctx context.Context,
+	contentHash Hash,
+	indexed *IndexEntry,
+	enforcePolicy bool,
+) (VerifiedReadCloser, int64, error) {
+	slot, footer, release, err := s.acquirePackedEntry(contentHash, indexed, enforcePolicy)
 	if err != nil {
 		return nil, 0, err
 	}
-	if err := s.validatePackPolicy(slot); err != nil {
-		return nil, 0, errors.Join(err, release())
-	}
-	limit := uint64(s.limits.BlobBytes) //nolint:gosec // validated non-negative
-	if footer.RawLen > limit {
-		return nil, 0, errors.Join(newLimitError(LimitBlobRawBytes, footer.RawLen, limit), release())
-	}
-	if footer.StoredLen > limit {
-		return nil, 0, errors.Join(newLimitError(LimitBlobStoredBytes, footer.StoredLen, limit), release())
+	if enforcePolicy {
+		if err := s.validatePackPolicy(slot); err != nil {
+			return nil, 0, errors.Join(err, release())
+		}
+		limit := uint64(s.limits.BlobBytes) //nolint:gosec // validated non-negative
+		if footer.RawLen > limit {
+			return nil, 0, errors.Join(newLimitError(LimitBlobRawBytes, footer.RawLen, limit), release())
+		}
+		if footer.StoredLen > limit {
+			return nil, 0, errors.Join(newLimitError(LimitBlobStoredBytes, footer.StoredLen, limit), release())
+		}
 	}
 	stream, err := slot.reader.OpenBlob(ctx, footer)
 	if err != nil {
