@@ -225,6 +225,20 @@ func TestFilesystemBackendDurablePackPublicationSyncsFreshHierarchy(t *testing.T
 	}, synced)
 }
 
+func TestFilesystemBackendPublishPackRejectsInvalidDurabilityBeforeWrite(t *testing.T) {
+	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
+	packPath, packID, _ := buildBackendPackSource(t, []byte("invalid durability"))
+	source, err := os.Open(packPath)
+	require.NoError(t, err)
+
+	_, err = backend.PublishPack(
+		context.Background(), packID, source,
+		PublishOptions{Durability: Durability(99)},
+	)
+	require.ErrorIs(t, errors.Join(err, source.Close()), ErrInvalidPolicy)
+	assert.NoFileExists(t, backend.Layout().PackPath(packID))
+}
+
 func TestFilesystemBackendRejectsDifferentPackAtExistingIdentity(t *testing.T) {
 	require := require.New(t)
 	ctx := context.Background()

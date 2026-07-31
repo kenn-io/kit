@@ -457,6 +457,12 @@ func (b *FilesystemBackend) PublishPack(
 	if src == nil {
 		return PackReceipt{}, fmt.Errorf("packstore: nil pack publication source")
 	}
+	if opts.Durability == 0 {
+		opts.Durability = DurablePublication
+	}
+	if opts.Durability != AtomicPublication && opts.Durability != DurablePublication {
+		return PackReceipt{}, ErrInvalidPolicy
+	}
 	maxBytes, err := effectivePackPublicationLimit(
 		opts.MaxBytes,
 		opts.ExpectedSize,
@@ -479,7 +485,7 @@ func (b *FilesystemBackend) PublishPack(
 	if err != nil {
 		return PackReceipt{}, err
 	}
-	durable := opts.Durability == DurablePublication || opts.Durability == 0
+	durable := opts.Durability == DurablePublication
 	packsRoot, err := ensureRootDirNoSymlinks(root, "packs", durable)
 	if err != nil {
 		return PackReceipt{}, fmt.Errorf("packstore: prepare pack directory: %w", err)
