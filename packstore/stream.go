@@ -160,7 +160,11 @@ func (s *Store) openPackedStreamWithPolicy(
 			return nil, 0, errors.Join(newLimitError(LimitBlobStoredBytes, footer.StoredLen, limit), release())
 		}
 	}
-	stream, err := slot.reader.OpenBlob(ctx, footer)
+	var streamOptions pack.BlobReaderOptions
+	if enforcePolicy {
+		streamOptions.WindowBytes = uint64(max(s.limits.BlobBytes, int64(1<<10))) //nolint:gosec // limits are non-negative
+	}
+	stream, err := slot.reader.OpenBlobWithOptions(ctx, footer, streamOptions)
 	if err != nil {
 		return nil, 0, errors.Join(mapPackStreamLimit(err), release())
 	}

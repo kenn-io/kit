@@ -799,8 +799,8 @@ func TestStoreOpenStreamRejectsNonMemberBeforePhysicalRead(t *testing.T) {
 	require.ErrorIs(t, err, fs.ErrNotExist)
 }
 
-func TestStoreOpenStreamMapsZstdWindowPolicy(t *testing.T) {
-	content := bytes.Repeat([]byte("window policy "), 1<<16)
+func TestStoreOpenWindowPolicyAppliesOnlyToStreaming(t *testing.T) {
+	content := bytes.Repeat([]byte("window policy "), 1<<18)
 	var frame bytes.Buffer
 	encoder, err := zstd.NewWriter(&frame, zstd.WithWindowSize(8<<20), zstd.WithEncoderConcurrency(1))
 	require.NoError(t, err)
@@ -823,12 +823,20 @@ func TestStoreOpenStreamMapsZstdWindowPolicy(t *testing.T) {
 	require.NoError(t, err)
 	indexed := IndexEntry{Hash: hash, PackID: packID, Offset: int64(entry.Offset), StoredLen: int64(entry.StoredLen), RawLen: int64(entry.RawLen), Flags: uint8(entry.Flags), CRC32C: entry.CRC32C}
 	limits := DefaultLimits()
-	limits.BlobBytes = 2 << 20
+	limits.BlobBytes = 4 << 20
 	store, err := NewStore(&mapResolver{locations: map[Hash]Location{
 		hash: {Member: true, Pack: &indexed},
 	}}, layout, StoreOptions{Limits: limits})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	buffered, size, err := store.Open(context.Background(), hash)
+	require.NoError(t, err)
+	assert.Equal(t, int64(len(content)), size)
+	actual, err := io.ReadAll(buffered)
+	require.NoError(t, err)
+	require.NoError(t, buffered.Close())
+	assert.Equal(t, content, actual)
+
 	_, _, err = store.OpenStream(context.Background(), hash)
 	var limitErr *LimitError
 	require.ErrorAs(t, err, &limitErr)
