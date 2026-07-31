@@ -18,6 +18,15 @@ import (
 
 const rangeChunkBytes = int64(8 << 20)
 
+func (b *Backend) requireAttached() error {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if b.owner == nil {
+		return fmt.Errorf("%w: s3store backend is not attached", packstore.ErrStoreFenced)
+	}
+	return nil
+}
+
 // OpenLoose opens one catalog-authorized object. Read admission intentionally
 // uses the cached binding; marker round trips are reserved for destructive
 // operations.
@@ -34,6 +43,9 @@ func (b *Backend) OpenLoose(
 			packstore.ErrStoreUnavailable,
 			fmt.Errorf("s3store: unsupported loose encoding %d", location.Encoding),
 		)
+	}
+	if err := b.requireAttached(); err != nil {
+		return nil, 0, err
 	}
 	output, err := b.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(b.bucket),
@@ -68,6 +80,9 @@ func (b *Backend) OpenPack(
 	}
 	if entry.Hash != expected {
 		return nil, 0, fmt.Errorf("s3store: indexed hash does not match requested hash")
+	}
+	if err := b.requireAttached(); err != nil {
+		return nil, 0, err
 	}
 	staged, path, err := b.downloadPackRanges(ctx, entry.PackID)
 	if err != nil {

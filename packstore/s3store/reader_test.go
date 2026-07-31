@@ -97,6 +97,31 @@ func TestPackReaderOptionsUseConfiguredLimits(t *testing.T) {
 	}}, backend.packReaderOptions())
 }
 
+func TestOpenRequiresAttachedOwnership(t *testing.T) {
+	content := []byte("unattached reads are fenced")
+	_, _, entry := makePack(t, content)
+	var requests int
+	backend := newHTTPBackend(packstore.DefaultLimits(), func(*http.Request) (*http.Response, error) {
+		requests++
+		return nil, errors.New("unexpected request from unattached backend")
+	})
+
+	_, _, err := backend.OpenLoose(
+		context.Background(),
+		entry.Hash,
+		packstore.LooseLocation{
+			Encoding:    packstore.LooseEncodingRaw,
+			LogicalSize: int64(len(content)),
+			StoredSize:  int64(len(content)),
+		},
+	)
+	require.ErrorIs(t, err, packstore.ErrStoreFenced)
+
+	_, _, err = backend.OpenPack(context.Background(), entry.Hash, entry)
+	require.ErrorIs(t, err, packstore.ErrStoreFenced)
+	assert.Zero(t, requests)
+}
+
 func TestOpenPackEnforcesConfiguredBlobLimit(t *testing.T) {
 	content := []byte("blob exceeds configured S3 reader limit")
 	_, packBytes, indexed := makePack(t, content)
@@ -122,6 +147,7 @@ func TestOpenPackEnforcesConfiguredBlobLimit(t *testing.T) {
 			ContentLength: int64(len(packBytes)), Request: request,
 		}, nil
 	})
+	attachTestBackend(backend)
 
 	_, _, err := backend.OpenPack(
 		context.Background(),
@@ -151,6 +177,7 @@ func TestOversizedS3ReplicaFallsBackToHealthyCandidate(t *testing.T) {
 			ContentLength: int64(len(packBytes)), Request: request,
 		}, nil
 	})
+	attachTestBackend(oversized)
 	healthy := &memoryReadBackend{content: content}
 	store, err := packstore.NewMultiStore(
 		staticReadLocationResolver{resolution: packstore.Resolution{
@@ -227,6 +254,7 @@ func TestS3PackRepresentationLimitsFallBackToHealthyCandidate(t *testing.T) {
 					Request: request,
 				}, nil
 			})
+			attachTestBackend(limited)
 			healthy := &memoryReadBackend{content: content}
 			store, err := packstore.NewMultiStore(
 				staticReadLocationResolver{resolution: packstore.Resolution{
