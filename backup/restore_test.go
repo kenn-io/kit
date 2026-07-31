@@ -149,6 +149,19 @@ func restorePublicationScratchDirs(t *testing.T, r *Repo) []string {
 	return dirs
 }
 
+func restoreDatabaseStageFiles(t *testing.T, target, dbFileName string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(target)
+	require.NoError(t, err)
+	var files []string
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), dbFileName+".restore-") {
+			files = append(files, entry.Name())
+		}
+	}
+	return files
+}
+
 // snapshotDirHashes maps every regular file under root (relative path) to
 // its content hash, for whole-tree equality comparisons.
 func snapshotDirHashes(t *testing.T, root string) map[string][32]byte {
@@ -940,6 +953,33 @@ func TestRestoreBeforePublicationUsesPrivateScratchAndPublishesUpdate(t *testing
 	assert.Equal(beforeScratch, restorePublicationScratchDirs(t, r))
 }
 
+func TestRestoreBeforePublicationScratchIsOutsideRepositoryTarget(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	ctx := context.Background()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+	_, err := Create(ctx, r, newTestApp(), createOpts(
+		dbPath, attachmentsDir, dataDir, t.TempDir(),
+	))
+	require.NoError(err)
+
+	hookErr := errors.New("stop after private scratch check")
+	_, err = Restore(ctx, r, newTestApp(), RestoreOptions{
+		TargetDir: r.Root(),
+		Overwrite: true,
+		BeforePublication: func(_ context.Context, staged RestorePublicationTarget) error {
+			rel, err := filepath.Rel(staged.TargetDir, staged.DBPath)
+			require.NoError(err)
+			assert.True(rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)),
+				"callback database %q must be outside repository target %q", staged.DBPath, staged.TargetDir)
+			return hookErr
+		},
+	})
+	require.ErrorIs(err, hookErr)
+	assert.Empty(restoreDatabaseStageFiles(t, r.Root(), newTestApp().DBFileName()))
+}
+
 func TestRestoreBeforePublicationFailureLeavesDatabaseUnpublished(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
@@ -965,6 +1005,7 @@ func TestRestoreBeforePublicationFailureLeavesDatabaseUnpublished(t *testing.T) 
 	})
 	require.ErrorIs(err, hookErr)
 	assert.NoFileExists(filepath.Join(target, newTestApp().DBFileName()))
+	assert.Empty(restoreDatabaseStageFiles(t, target, newTestApp().DBFileName()))
 	assert.Equal(beforeScratch, restorePublicationScratchDirs(t, r))
 }
 

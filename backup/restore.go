@@ -348,12 +348,14 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *R
 		}
 	}()
 	if opts.BeforePublication != nil {
-		tmpRel, res.DBBytes, err = st.prepareBeforePublication(
+		replacementRel, replacementBytes, prepareErr := st.prepareBeforePublication(
 			ctx, tmpRel, app.DBFileName(), opts.BeforePublication)
-		if err != nil {
-			return nil, err
+		if prepareErr != nil {
+			return nil, prepareErr
 		}
-		st.dbRead = tmpRel
+		tmpRel = replacementRel
+		res.DBBytes = replacementBytes
+		st.dbRead = replacementRel
 	}
 
 	// The proof runs against the staging temp, BEFORE the database is
@@ -1168,7 +1170,11 @@ func (s *restoreState) prepareBeforePublication(
 		return "", 0, errors.New("backup: staged database for publication preparation is not a regular file")
 	}
 
-	privateDir, err = os.MkdirTemp(s.repo.Path(stagingDirName), "restore-publication-*")
+	scratchBase, err := publicationScratchBase(s.target, s.repo.Path(stagingDirName))
+	if err != nil {
+		return "", 0, err
+	}
+	privateDir, err = os.MkdirTemp(scratchBase, "restore-publication-*")
 	if err != nil {
 		return "", 0, fmt.Errorf("backup: creating private publication staging directory: %w", err)
 	}
@@ -1248,6 +1254,32 @@ func (s *restoreState) prepareBeforePublication(
 			removeErr)
 	}
 	return stagedRel, info.Size(), nil
+}
+
+// publicationScratchBase selects a filesystem location that cannot resolve
+// through the callback's mutable target namespace. Repository staging avoids
+// ambient temp storage when it is already disjoint; restoring into the
+// repository itself instead falls back to the system temporary directory.
+func publicationScratchBase(target, repoStaging string) (string, error) {
+	targetPath, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		return "", fmt.Errorf("backup: resolving restore target for publication scratch: %w", err)
+	}
+	for _, candidate := range []string{repoStaging, os.TempDir()} {
+		candidatePath, err := filepath.EvalSymlinks(candidate)
+		if err != nil {
+			continue
+		}
+		rel, err := filepath.Rel(targetPath, candidatePath)
+		if err != nil {
+			// Separate filesystem volumes cannot contain one another.
+			return candidate, nil
+		}
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("backup: no private publication staging directory outside restore target %s", target)
 }
 
 // publishRestoredDB swaps the fully materialized staging temp into place:

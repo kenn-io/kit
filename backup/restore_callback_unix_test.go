@@ -86,6 +86,7 @@ func TestRestoreBeforePublicationRejectsInvalidPrivateOutput(t *testing.T) {
 			got, readErr := os.ReadFile(filepath.Join(target, newTestApp().DBFileName()))
 			require.NoError(readErr)
 			assert.Equal(original, got, "invalid callback output must fail before canonical publication")
+			assert.Empty(restoreDatabaseStageFiles(t, target, newTestApp().DBFileName()))
 			assert.Equal(beforeScratch, restorePublicationScratchDirs(t, r))
 		})
 	}
