@@ -399,7 +399,7 @@ func TestPortableMetadataCreateVerifyRestoreAndSQLiteSuccessor(t *testing.T) {
 		heldEntries, readErr := os.ReadDir(heldTarget)
 		require.NoError(readErr)
 		assert.Empty(heldEntries)
-		resolvedScratch, resolveErr := filepath.EvalSymlinks(os.TempDir())
+		resolvedScratch, resolveErr := filepath.EvalSymlinks(repo.Path("staging"))
 		require.NoError(resolveErr)
 		assert.Equal(resolvedScratch, filepath.Dir(filepath.Dir(filepath.Dir(privatePath))))
 		_, statErr = os.Stat(filepath.Dir(privatePath))

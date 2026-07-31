@@ -918,12 +918,12 @@ func TestRestoreBeforePublicationUsesPrivateScratchAndPublishesUpdate(t *testing
 		TargetDir: target,
 		BeforePublication: func(_ context.Context, staged RestorePublicationTarget) error {
 			assert.Equal(target, staged.TargetDir)
-			trustedTemp, err := filepath.EvalSymlinks(os.TempDir())
+			repositoryStaging, err := filepath.EvalSymlinks(r.Path(stagingDirName))
 			require.NoError(err)
 			privateDir := filepath.Dir(staged.DBPath)
 			scratchRoot := filepath.Dir(privateDir)
-			assert.Equal(trustedTemp, filepath.Dir(scratchRoot),
-				"callback scratch must use a private root beneath trusted temporary storage")
+			assert.Equal(repositoryStaging, filepath.Dir(scratchRoot),
+				"callback scratch must prefer disjoint repository staging")
 			require.NoError(safefileio.ValidatePrivateDir(scratchRoot))
 			rel, err := filepath.Rel(staged.TargetDir, staged.DBPath)
 			require.NoError(err)
@@ -994,7 +994,7 @@ func TestRestoreScratchRejectsTrustedTempInsideTarget(t *testing.T) {
 	require.NoError(err)
 	t.Cleanup(func() { require.NoError(target.Close()) })
 
-	scratch, err := openRestoreScratch(target)
+	scratch, err := openRestoreScratch(target, t.TempDir())
 
 	require.Error(err)
 	require.Nil(scratch)

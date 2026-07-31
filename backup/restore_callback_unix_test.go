@@ -262,7 +262,7 @@ func TestPrepareBeforePublicationRemovesStagedReplacementAfterScratchCleanupFail
 	t.Cleanup(func() { require.NoError(root.Close()) })
 	currentRel := "app.db.restore-" + pack.NewPackID()
 	require.NoError(os.WriteFile(filepath.Join(target, currentRel), []byte("database"), 0o600))
-	st := &restoreState{root: root, target: target}
+	st := &restoreState{root: root, target: target, repo: initTestRepo(t)}
 	var blockedDir string
 
 	_, _, err = st.prepareBeforePublication(

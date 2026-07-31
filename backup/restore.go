@@ -1102,7 +1102,7 @@ func (s *restoreState) restorePortableMetadata(
 			"backup: portable metadata blob is %d bytes but manifest records %d", stream.Size(), metadata.Bytes)
 	}
 
-	scratch, err := openRestoreScratch(s.root)
+	scratch, err := openRestoreScratch(s.root, s.repo.Path(stagingDirName))
 	if err != nil {
 		return "", 0, err
 	}
@@ -1217,7 +1217,7 @@ func (s *restoreState) prepareBeforePublication(
 		return "", 0, errors.New("backup: staged database for publication preparation is not a regular file")
 	}
 
-	scratch, err := openRestoreScratch(s.root)
+	scratch, err := openRestoreScratch(s.root, s.repo.Path(stagingDirName))
 	if err != nil {
 		return "", 0, err
 	}
@@ -1336,10 +1336,11 @@ type restoreScratch struct {
 	relative string
 }
 
-// openRestoreScratch pins the trusted system temporary root and proves that
-// the held restore target is neither that root nor one of its ancestors. The
-// callback path never traverses the caller-controlled target or repository.
-func openRestoreScratch(target *os.Root) (*restoreScratch, error) {
+// openRestoreScratch prefers the repository staging root when it is disjoint
+// from the held restore target, then falls back to the system temporary root.
+// Each candidate is resolved and pinned before use so callback paths never
+// traverse the caller-controlled target namespace.
+func openRestoreScratch(target *os.Root, repoStaging string) (*restoreScratch, error) {
 	if target == nil {
 		return nil, errors.New("backup: nil restore target root for publication scratch")
 	}
@@ -1347,32 +1348,50 @@ func openRestoreScratch(target *os.Root) (*restoreScratch, error) {
 	if err != nil {
 		return nil, fmt.Errorf("backup: inspecting restore target for publication scratch: %w", err)
 	}
-	scratchPath, err := filepath.Abs(os.TempDir())
+	var candidateErrs []error
+	for _, candidate := range []string{repoStaging, os.TempDir()} {
+		scratch, err := openRestoreScratchCandidate(targetInfo, candidate)
+		if err == nil {
+			return scratch, nil
+		}
+		candidateErrs = append(candidateErrs, err)
+	}
+	return nil, errors.Join(
+		errors.New("backup: no private restore scratch outside target"),
+		errors.Join(candidateErrs...),
+	)
+}
+
+func openRestoreScratchCandidate(
+	targetInfo fs.FileInfo,
+	candidate string,
+) (*restoreScratch, error) {
+	scratchPath, err := filepath.Abs(candidate)
 	if err != nil {
-		return nil, fmt.Errorf("backup: resolving trusted publication scratch: %w", err)
+		return nil, fmt.Errorf("backup: resolving restore scratch %s: %w", candidate, err)
 	}
 	scratchPath, err = filepath.EvalSymlinks(scratchPath)
 	if err != nil {
-		return nil, fmt.Errorf("backup: resolving trusted publication scratch: %w", err)
+		return nil, fmt.Errorf("backup: resolving restore scratch %s: %w", candidate, err)
 	}
 	baseRoot, err := os.OpenRoot(scratchPath)
 	if err != nil {
-		return nil, fmt.Errorf("backup: opening trusted publication scratch: %w", err)
+		return nil, fmt.Errorf("backup: opening restore scratch %s: %w", scratchPath, err)
 	}
 	closeOnError := func(err error) (*restoreScratch, error) {
 		return nil, errors.Join(err, baseRoot.Close())
 	}
 	scratchInfo, err := baseRoot.Stat(".")
 	if err != nil {
-		return closeOnError(fmt.Errorf("backup: inspecting trusted publication scratch: %w", err))
+		return closeOnError(fmt.Errorf("backup: inspecting restore scratch %s: %w", scratchPath, err))
 	}
 	contained, err := pathContainsFilesystemIdentity(targetInfo, scratchInfo, scratchPath)
 	if err != nil {
-		return closeOnError(fmt.Errorf("backup: proving trusted publication scratch: %w", err))
+		return closeOnError(fmt.Errorf("backup: proving restore scratch %s: %w", scratchPath, err))
 	}
 	if contained {
 		return closeOnError(fmt.Errorf(
-			"backup: trusted publication scratch %s is inside restore target", scratchPath))
+			"backup: restore scratch %s is inside restore target", scratchPath))
 	}
 	var operationRel string
 	created := false
