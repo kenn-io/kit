@@ -3,6 +3,7 @@ package packvalidate
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 
 	"go.kenn.io/kit/pack"
@@ -29,7 +30,12 @@ func File(
 	}
 	defer func() { resultErr = errors.Join(resultErr, reader.Close()) }()
 	entries := reader.Entries()
+	seen := make(map[pack.BlobID]struct{}, len(entries))
 	for _, entry := range entries {
+		if _, ok := seen[entry.ID]; ok {
+			return fmt.Errorf("%w: duplicate blob id %s", pack.ErrCorrupt, entry.ID)
+		}
+		seen[entry.ID] = struct{}{}
 		if entry.RawLen > limits.RawBytes {
 			return &pack.StreamLimitError{
 				Dimension: pack.StreamLimitRawBytes,

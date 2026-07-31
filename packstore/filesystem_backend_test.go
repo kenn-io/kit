@@ -429,6 +429,29 @@ func TestFilesystemBackendPublishPackRejectsMalformedBeforeCanonicalWrite(t *tes
 	assert.NoFileExists(t, backend.Layout().PackPath(packID))
 }
 
+func TestFilesystemBackendPublishPackRejectsDuplicateBlobIDs(t *testing.T) {
+	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
+	writer, err := pack.NewWriter(t.TempDir(), pack.WriterOptions{})
+	require.NoError(t, err)
+	content := []byte("duplicate publication entry")
+	_, err = writer.Append(content)
+	require.NoError(t, err)
+	_, err = writer.Append(content)
+	require.NoError(t, err)
+	packID := writer.ID()
+	path := filepath.Join(t.TempDir(), packID+PackExt)
+	_, err = writer.Seal(path)
+	require.NoError(t, err)
+	source, err := os.Open(path)
+	require.NoError(t, err)
+
+	_, err = backend.PublishPack(context.Background(), packID, source, PublishOptions{})
+	require.NoError(t, source.Close())
+
+	require.ErrorIs(t, err, pack.ErrCorrupt)
+	assert.NoFileExists(t, backend.Layout().PackPath(packID))
+}
+
 func TestFilesystemBackendPublishPackRejectsForgedBlobLimitBeforeCanonicalWrite(t *testing.T) {
 	limits := DefaultLimits()
 	limits.BlobBytes = 16

@@ -375,6 +375,9 @@ func TestPublishPackValidatesEveryEntryBeforeMultipart(t *testing.T) {
 	forgedLimits := packstore.DefaultLimits()
 	forgedLimits.BlobBytes = 16
 	forgedID, forgedBytes := makeEncodedPack(t, []byte("x"), 17, 0)
+	duplicateID, duplicateBytes, _ := makePackEntries(
+		t, []byte("duplicate blob id"), []byte("duplicate blob id"),
+	)
 	tests := []struct {
 		name      string
 		limits    packstore.Limits
@@ -392,6 +395,11 @@ func TestPublishPackValidatesEveryEntryBeforeMultipart(t *testing.T) {
 			name: "forged blob limit", limits: forgedLimits,
 			packID: forgedID, packBytes: forgedBytes,
 			wantErr: packstore.ErrBlobTooLarge, limit: packstore.LimitBlobRawBytes,
+		},
+		{
+			name: "duplicate blob id", limits: packstore.DefaultLimits(),
+			packID: duplicateID, packBytes: duplicateBytes,
+			wantErr: pack.ErrCorrupt,
 		},
 	}
 	for _, tt := range tests {

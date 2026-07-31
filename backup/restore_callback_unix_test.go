@@ -282,5 +282,8 @@ func TestPrepareBeforePublicationRemovesStagedReplacementAfterScratchCleanupFail
 	require.ErrorContains(err, "removing private publication staging directory")
 	assert.Empty(t, restoreDatabaseStageFiles(t, target, "app.db"))
 	require.NoError(os.Chmod(blockedDir, 0o700))
-	require.NoError(os.RemoveAll(filepath.Dir(blockedDir)))
+	privateDir := filepath.Dir(blockedDir)
+	scratchRoot := filepath.Dir(privateDir)
+	require.NoError(os.RemoveAll(privateDir))
+	require.NoError(os.Remove(scratchRoot))
 }

@@ -401,7 +401,7 @@ func TestPortableMetadataCreateVerifyRestoreAndSQLiteSuccessor(t *testing.T) {
 		assert.Empty(heldEntries)
 		resolvedScratch, resolveErr := filepath.EvalSymlinks(os.TempDir())
 		require.NoError(resolveErr)
-		assert.Equal(resolvedScratch, filepath.Dir(filepath.Dir(privatePath)))
+		assert.Equal(resolvedScratch, filepath.Dir(filepath.Dir(filepath.Dir(privatePath))))
 		_, statErr = os.Stat(filepath.Dir(privatePath))
 		require.ErrorIs(statErr, os.ErrNotExist)
 
@@ -432,8 +432,10 @@ func TestPortableMetadataCreateVerifyRestoreAndSQLiteSuccessor(t *testing.T) {
 		require.NoError(readErr)
 		assert.Empty(cleanupTargetEntries)
 		privateDir := filepath.Dir(cleanupPrivatePath)
+		scratchRoot := filepath.Dir(privateDir)
 		require.NoError(os.Chmod(filepath.Join(privateDir, "blocked"), 0o700))
 		require.NoError(os.RemoveAll(privateDir))
+		require.NoError(os.Remove(scratchRoot))
 	}
 
 	overwriteTarget := filepath.Join(base, "failed-overwrite")

@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/pack"
+	"go.kenn.io/kit/safefileio"
 )
 
 type restoreTargetCoordinatorFunc func(
@@ -919,8 +920,11 @@ func TestRestoreBeforePublicationUsesPrivateScratchAndPublishesUpdate(t *testing
 			assert.Equal(target, staged.TargetDir)
 			trustedTemp, err := filepath.EvalSymlinks(os.TempDir())
 			require.NoError(err)
-			assert.Equal(trustedTemp, filepath.Dir(filepath.Dir(staged.DBPath)),
-				"callback scratch must be a direct child of the trusted temporary root")
+			privateDir := filepath.Dir(staged.DBPath)
+			scratchRoot := filepath.Dir(privateDir)
+			assert.Equal(trustedTemp, filepath.Dir(scratchRoot),
+				"callback scratch must use a private root beneath trusted temporary storage")
+			require.NoError(safefileio.ValidatePrivateDir(scratchRoot))
 			rel, err := filepath.Rel(staged.TargetDir, staged.DBPath)
 			require.NoError(err)
 			assert.True(rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)),

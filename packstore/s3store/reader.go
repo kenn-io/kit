@@ -151,7 +151,7 @@ func (b *Backend) downloadPackRanges(
 		}
 		return nil, "", errors.Join(packstore.ErrPhysicalCorrupt, limitErr)
 	}
-	staged, err := os.CreateTemp("", "kit-s3-pack-range-*")
+	staged, err := createPrivateTemp("kit-s3-pack-range-*")
 	if err != nil {
 		return nil, "", fmt.Errorf("s3store: create pack read staging: %w", err)
 	}

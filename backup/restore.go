@@ -22,6 +22,7 @@ import (
 
 	"go.kenn.io/kit/pack"
 	"go.kenn.io/kit/packstore"
+	"go.kenn.io/kit/safefileio"
 )
 
 // RestoreOptions parameterizes one restore run (FORMAT.md, Restore).
@@ -1105,7 +1106,7 @@ func (s *restoreState) restorePortableMetadata(
 	if err != nil {
 		return "", 0, err
 	}
-	defer func() { resultErr = errors.Join(resultErr, scratch.root.Close()) }()
+	defer func() { resultErr = errors.Join(resultErr, scratch.close()) }()
 	privateRel, privateDir, err := scratch.mkdir("restore-metadata-")
 	if err != nil {
 		return "", 0, fmt.Errorf("backup: creating private metadata staging directory: %w", err)
@@ -1220,7 +1221,7 @@ func (s *restoreState) prepareBeforePublication(
 	if err != nil {
 		return "", 0, err
 	}
-	defer func() { resultErr = errors.Join(resultErr, scratch.root.Close()) }()
+	defer func() { resultErr = errors.Join(resultErr, scratch.close()) }()
 	privateRel, _, err := scratch.mkdir("restore-publication-")
 	if err != nil {
 		return "", 0, fmt.Errorf("backup: creating private publication staging directory: %w", err)
@@ -1329,8 +1330,10 @@ func (s *restoreState) prepareBeforePublication(
 }
 
 type restoreScratch struct {
-	root *os.Root
-	path string
+	base     *os.Root
+	root     *os.Root
+	path     string
+	relative string
 }
 
 // openRestoreScratch pins the trusted system temporary root and proves that
@@ -1352,14 +1355,14 @@ func openRestoreScratch(target *os.Root) (*restoreScratch, error) {
 	if err != nil {
 		return nil, fmt.Errorf("backup: resolving trusted publication scratch: %w", err)
 	}
-	scratchRoot, err := os.OpenRoot(scratchPath)
+	baseRoot, err := os.OpenRoot(scratchPath)
 	if err != nil {
 		return nil, fmt.Errorf("backup: opening trusted publication scratch: %w", err)
 	}
 	closeOnError := func(err error) (*restoreScratch, error) {
-		return nil, errors.Join(err, scratchRoot.Close())
+		return nil, errors.Join(err, baseRoot.Close())
 	}
-	scratchInfo, err := scratchRoot.Stat(".")
+	scratchInfo, err := baseRoot.Stat(".")
 	if err != nil {
 		return closeOnError(fmt.Errorf("backup: inspecting trusted publication scratch: %w", err))
 	}
@@ -1371,7 +1374,56 @@ func openRestoreScratch(target *os.Root) (*restoreScratch, error) {
 		return closeOnError(fmt.Errorf(
 			"backup: trusted publication scratch %s is inside restore target", scratchPath))
 	}
-	return &restoreScratch{root: scratchRoot, path: scratchPath}, nil
+	var operationRel string
+	created := false
+	for range 100 {
+		operationRel = "kit-restore-" + pack.NewPackID()
+		if err := baseRoot.Mkdir(operationRel, 0o700); err != nil {
+			if errors.Is(err, fs.ErrExist) {
+				continue
+			}
+			return closeOnError(fmt.Errorf("backup: creating private publication scratch: %w", err))
+		}
+		created = true
+		break
+	}
+	if !created {
+		return closeOnError(fmt.Errorf("backup: exhausted publication scratch name attempts"))
+	}
+	operationPath := filepath.Join(scratchPath, operationRel)
+	cleanupOperation := func(operationRoot *os.Root, cause error) (*restoreScratch, error) {
+		var closeErr error
+		if operationRoot != nil {
+			closeErr = operationRoot.Close()
+		}
+		return nil, errors.Join(cause, closeErr, baseRoot.RemoveAll(operationRel), baseRoot.Close())
+	}
+	if err := safefileio.EnsurePrivateDir(operationPath); err != nil {
+		return cleanupOperation(nil,
+			fmt.Errorf("backup: protecting private publication scratch: %w", err))
+	}
+	if err := safefileio.ValidatePrivateDir(operationPath); err != nil {
+		return cleanupOperation(nil,
+			fmt.Errorf("backup: validating private publication scratch: %w", err))
+	}
+	operationRoot, err := baseRoot.OpenRoot(operationRel)
+	if err != nil {
+		return cleanupOperation(nil,
+			fmt.Errorf("backup: opening private publication scratch: %w", err))
+	}
+	heldOperation, err := operationRoot.Stat(".")
+	if err != nil {
+		return cleanupOperation(operationRoot,
+			fmt.Errorf("backup: inspecting private publication scratch: %w", err))
+	}
+	pathOperation, err := os.Stat(operationPath)
+	if err != nil || !os.SameFile(heldOperation, pathOperation) {
+		return cleanupOperation(operationRoot, errors.Join(
+			fmt.Errorf("backup: private publication scratch changed while opening it"), err))
+	}
+	return &restoreScratch{
+		base: baseRoot, root: operationRoot, path: operationPath, relative: operationRel,
+	}, nil
 }
 
 func pathContainsFilesystemIdentity(
@@ -1408,6 +1460,10 @@ func (s *restoreScratch) mkdir(prefix string) (relative string, absolute string,
 		return name, filepath.Join(s.path, name), nil
 	}
 	return "", "", fmt.Errorf("backup: exhausted private scratch name attempts")
+}
+
+func (s *restoreScratch) close() error {
+	return errors.Join(s.root.Close(), s.base.Remove(s.relative), s.base.Close())
 }
 
 // publishRestoredDB swaps the fully materialized staging temp into place:

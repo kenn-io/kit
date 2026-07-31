@@ -102,7 +102,7 @@ func (b *Backend) RepairLoose(
 	if !opts.SizeKnown || opts.Compression.Enabled {
 		return packstore.LooseReceipt{}, packstore.ErrInvalidPolicy
 	}
-	staged, err := os.CreateTemp("", "kit-s3-repair-*")
+	staged, err := createPrivateTemp("kit-s3-repair-*")
 	if err != nil {
 		return packstore.LooseReceipt{}, fmt.Errorf(
 			"s3store: create repair staging: %w", err,
@@ -262,7 +262,7 @@ func stagePackPublication(
 	exactSize int64,
 	sizeKnown bool,
 ) (path string, size int64, digest [sha256.Size]byte, resultErr error) {
-	staged, err := os.CreateTemp("", "kit-s3-pack-publish-*")
+	staged, err := createPrivateTemp("kit-s3-pack-publish-*")
 	if err != nil {
 		return "", 0, digest, fmt.Errorf("s3store: create pack publication staging: %w", err)
 	}
@@ -625,7 +625,7 @@ func (b *Backend) verifyPackObject(
 	if err := validateReadbackSize("pack", output.ContentLength, expectedSize); err != nil {
 		return 0, digest, err
 	}
-	staged, err := os.CreateTemp("", "kit-s3-pack-*")
+	staged, err := createPrivateTemp("kit-s3-pack-*")
 	if err != nil {
 		return 0, digest, fmt.Errorf("s3store: create pack verification staging: %w", err)
 	}
