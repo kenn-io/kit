@@ -82,6 +82,28 @@ func TestNewValidatesEndpointTransport(t *testing.T) {
 	}
 }
 
+func TestNewDoesNotInheritSDKEndpointOverrides(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+	}{
+		{name: "global", key: "AWS_ENDPOINT_URL"},
+		{name: "S3", key: "AWS_ENDPOINT_URL_S3"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("AWS_ENDPOINT_URL", "")
+			t.Setenv("AWS_ENDPOINT_URL_S3", "")
+			t.Setenv(tt.key, "http://objects.example.test")
+
+			backend, err := New(context.Background(), testConfig())
+
+			require.NoError(t, err)
+			assert.Nil(t, backend.client.Options().BaseEndpoint)
+		})
+	}
+}
+
 func testConfig() Config {
 	return Config{
 		Region: "us-east-1",

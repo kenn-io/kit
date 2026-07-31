@@ -113,6 +113,9 @@ func New(ctx context.Context, cfg Config) (*Backend, error) {
 	}
 	client := s3.NewFromConfig(awsCfg, func(options *s3.Options) {
 		options.UsePathStyle = cfg.ForcePathStyle
+		// Config.Endpoint is the only admitted custom endpoint; SDK
+		// environment and shared-config overrides bypass its validation.
+		options.BaseEndpoint = nil
 		if cfg.Endpoint != "" {
 			options.BaseEndpoint = aws.String(cfg.Endpoint)
 		}
