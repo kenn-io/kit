@@ -1037,6 +1037,35 @@ func TestRestoreBeforePublicationCleansReplacementOnCloseFailure(t *testing.T) {
 	assert.Equal(before, restoreDatabaseStageFiles(t, target, newTestApp().DBFileName()))
 }
 
+func TestRestoreBeforePublicationStopsBeforeCallbackWhenCanceled(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	r := initTestRepo(t)
+	target := t.TempDir()
+	root, err := openRestoreRoot(target)
+	require.NoError(err)
+	defer func() { _ = root.Close() }()
+
+	currentRel := "app.db.restore-" + pack.NewPackID()
+	require.NoError(os.WriteFile(filepath.Join(target, currentRel), []byte("database"), 0o600))
+	st := &restoreState{repo: r, root: root, target: target}
+	beforeScratch := restorePublicationScratchDirs(t, r)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	callbackCalled := false
+
+	_, _, err = st.prepareBeforePublication(
+		ctx, currentRel, newTestApp().DBFileName(),
+		func(context.Context, RestorePublicationTarget) error {
+			callbackCalled = true
+			return nil
+		})
+
+	require.ErrorIs(err, context.Canceled)
+	assert.False(callbackCalled)
+	assert.Equal(beforeScratch, restorePublicationScratchDirs(t, r))
+}
+
 // TestRestoreStatsCheckCatchesManifestMismatchWhenIntegritySkipped proves a
 // self-consistent manifest (valid content-derived ID) whose recorded stats
 // disagree with the captured pages still fails when integrity_check is omitted.

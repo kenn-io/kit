@@ -1226,7 +1226,7 @@ func (s *restoreState) prepareBeforePublication(
 			resultErr = errors.Join(resultErr, private.Close())
 		}
 	}()
-	written, err := io.Copy(private, source)
+	written, err := io.Copy(private, restoreContextReader{ctx: ctx, r: source})
 	if err != nil {
 		return "", 0, fmt.Errorf("backup: copying private publication database: %w", err)
 	}
@@ -1234,6 +1234,9 @@ func (s *restoreState) prepareBeforePublication(
 		return "", 0, fmt.Errorf(
 			"backup: staged database is %d bytes but changed to %d bytes during publication preparation",
 			sourceInfo.Size(), written)
+	}
+	if err := ctx.Err(); err != nil {
+		return "", 0, err
 	}
 	if err := private.Sync(); err != nil {
 		return "", 0, fmt.Errorf("backup: syncing private publication database: %w", err)
@@ -1249,6 +1252,9 @@ func (s *restoreState) prepareBeforePublication(
 	}
 	source = nil
 
+	if err := ctx.Err(); err != nil {
+		return "", 0, err
+	}
 	if err := callback(ctx, RestorePublicationTarget{TargetDir: s.target, DBPath: privateDB}); err != nil {
 		return "", 0, fmt.Errorf("backup: preparing restored application state: %w", err)
 	}
