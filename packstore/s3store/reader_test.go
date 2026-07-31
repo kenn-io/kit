@@ -43,6 +43,10 @@ func TestDownloadPackRangesRejectsOversizedObjectBeforeGET(t *testing.T) {
 	)
 
 	require.ErrorIs(t, err, packstore.ErrBlobTooLarge)
+	require.ErrorIs(t, err, packstore.ErrPhysicalCorrupt)
+	var limit *packstore.LimitError
+	require.ErrorAs(t, err, &limit)
+	assert.Equal(t, packstore.LimitPackContainerBytes, limit.Dimension)
 	assert.Zero(t, getRequests)
 }
 
@@ -94,9 +98,53 @@ func TestOpenPackEnforcesConfiguredBlobLimit(t *testing.T) {
 	)
 
 	require.ErrorIs(t, err, packstore.ErrBlobTooLarge)
+	require.NotErrorIs(t, err, packstore.ErrPhysicalCorrupt)
 	var limit *packstore.LimitError
 	require.ErrorAs(t, err, &limit)
 	assert.Equal(t, packstore.LimitBlobRawBytes, limit.Dimension)
+}
+
+func TestOversizedS3ReplicaFallsBackToHealthyCandidate(t *testing.T) {
+	content := []byte("healthy replica content")
+	_, packBytes, indexed := makePack(t, content)
+	limits := packstore.DefaultLimits()
+	limits.PackBytes = int64(len(packBytes) - 1)
+	oversized := newHTTPBackend(limits, func(request *http.Request) (*http.Response, error) {
+		require.Equal(t, http.MethodHead, request.Method)
+		header := make(http.Header)
+		header.Set("Content-Length", strconv.Itoa(len(packBytes)))
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: header,
+			Body:          io.NopCloser(bytes.NewReader(nil)),
+			ContentLength: int64(len(packBytes)), Request: request,
+		}, nil
+	})
+	healthy := &memoryReadBackend{content: content}
+	store, err := packstore.NewMultiStore(
+		staticReadLocationResolver{resolution: packstore.Resolution{
+			Member: true,
+			Candidates: []packstore.ReadLocation{
+				{StoreID: "oversized", Generation: "oversized-1", Pack: &indexed},
+				{StoreID: "healthy", Generation: "healthy-1", Pack: &indexed},
+			},
+		}},
+		staticReadBackendRegistry{
+			"oversized": oversized,
+			"healthy":   healthy,
+		},
+		packstore.MultiStoreOptions{},
+	)
+	require.NoError(t, err)
+
+	stream, size, err := store.OpenStream(context.Background(), indexed.Hash)
+	require.NoError(t, err)
+	got, err := io.ReadAll(stream)
+	require.NoError(t, err)
+	require.NoError(t, stream.Close())
+
+	assert.Equal(t, int64(len(content)), size)
+	assert.Equal(t, content, got)
+	assert.Equal(t, 1, healthy.opens)
 }
 
 func TestPackBodyClassifiesTerminalReadCorruption(t *testing.T) {
@@ -168,4 +216,82 @@ func newPackBody(
 		_ = os.Remove(path)
 	})
 	return &packBody{blob: blob, reader: reader, path: path}, indexed
+}
+
+type staticReadLocationResolver struct {
+	resolution packstore.Resolution
+}
+
+func (r staticReadLocationResolver) ResolveLocations(
+	context.Context,
+	packstore.Hash,
+) (packstore.Resolution, error) {
+	return r.resolution, nil
+}
+
+type staticReadBackendRegistry map[packstore.StoreID]packstore.ReadBackend
+
+func (r staticReadBackendRegistry) Backend(
+	id packstore.StoreID,
+) (packstore.ReadBackend, bool) {
+	backend, ok := r[id]
+	return backend, ok
+}
+
+type memoryReadBackend struct {
+	content []byte
+	opens   int
+}
+
+func (b *memoryReadBackend) OpenLoose(
+	context.Context,
+	packstore.Hash,
+	packstore.LooseLocation,
+) (packstore.VerifiedReadCloser, int64, error) {
+	return b.open()
+}
+
+func (b *memoryReadBackend) OpenPack(
+	context.Context,
+	packstore.Hash,
+	packstore.IndexEntry,
+) (packstore.VerifiedReadCloser, int64, error) {
+	return b.open()
+}
+
+func (b *memoryReadBackend) open() (packstore.VerifiedReadCloser, int64, error) {
+	b.opens++
+	return &memoryVerifiedReader{
+		Reader: bytes.NewReader(b.content),
+	}, int64(len(b.content)), nil
+}
+
+type memoryVerifiedReader struct {
+	*bytes.Reader
+	verified bool
+}
+
+func (r *memoryVerifiedReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	if errors.Is(err, io.EOF) {
+		r.verified = true
+	}
+	return n, err
+}
+
+func (r *memoryVerifiedReader) Verify() error {
+	_, err := io.Copy(io.Discard, r)
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	return err
+}
+
+func (r *memoryVerifiedReader) Verified() bool { return r.verified }
+
+func (r *memoryVerifiedReader) Close() error {
+	if r.verified {
+		return nil
+	}
+	return pack.ErrVerificationIncomplete
 }

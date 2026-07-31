@@ -126,11 +126,12 @@ func (b *Backend) downloadPackRanges(
 		)
 	}
 	if *head.ContentLength > b.limits.PackBytes {
-		return nil, "", &packstore.LimitError{
+		limitErr := &packstore.LimitError{
 			Dimension: packstore.LimitPackContainerBytes,
 			Actual:    uint64(*head.ContentLength), //nolint:gosec // checked non-negative
 			Limit:     uint64(b.limits.PackBytes),  //nolint:gosec // validated positive
 		}
+		return nil, "", errors.Join(packstore.ErrPhysicalCorrupt, limitErr)
 	}
 	staged, err := os.CreateTemp("", "kit-s3-pack-range-*")
 	if err != nil {
