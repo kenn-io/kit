@@ -181,6 +181,15 @@ func (f auxiliaryTargetFunc) RestoreAuxiliary(
 	return f(ctx, artifacts)
 }
 
+type mismatchedStatsPortableApp struct{ portableApp }
+
+func (mismatchedStatsPortableApp) RestoredStats(
+	context.Context,
+	*sql.DB,
+) (json.RawMessage, error) {
+	return json.RawMessage(`{"forged":"stats"}`), nil
+}
+
 func TestAuxiliaryCaptureVerifyAndRestore(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
@@ -274,6 +283,48 @@ func TestAuxiliaryCaptureVerifyAndRestore(t *testing.T) {
 	require.NoError(err)
 	require.NotEmpty(verified.Problems)
 	assert.Contains(verified.Problems[0].Detail, manifest.Auxiliary[0].Blob)
+}
+
+func TestRestoreDefersAuxiliaryTargetUntilDatabaseProofSucceeds(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	ctx := context.Background()
+	base := t.TempDir()
+	repo, err := backup.Init(filepath.Join(base, "repo"))
+	require.NoError(err)
+	raw, err := json.Marshal(portableRecord{Notes: []string{"snapshot"}})
+	require.NoError(err)
+	stats, err := json.Marshal(portableStats{Notes: 1})
+	require.NoError(err)
+	artifact := []byte("auxiliary state")
+	_, err = backup.Create(ctx, repo, portableApp{}, backup.CreateOptions{
+		MetadataSource: &portableSource{
+			raw: raw, stats: stats, info: &backup.ContentInfo{},
+			auxiliary: []backup.AuxiliaryArtifact{{
+				Name: "state", Format: "synthetic-state-v1",
+				Open: func(context.Context) (io.ReadCloser, int64, error) {
+					return io.NopCloser(bytes.NewReader(artifact)), int64(len(artifact)), nil
+				},
+			}},
+		},
+		Jobs: 1,
+	})
+	require.NoError(err)
+
+	calls := 0
+	_, err = backup.Restore(ctx, repo, mismatchedStatsPortableApp{}, backup.RestoreOptions{
+		TargetDir:        filepath.Join(base, "restored"),
+		MetadataRestorer: portableRestorer{},
+		AuxiliaryTarget: auxiliaryTargetFunc(func(
+			context.Context,
+			[]backup.RestoredAuxiliary,
+		) error {
+			calls++
+			return nil
+		}),
+	})
+	require.ErrorContains(err, "do not match manifest stats")
+	assert.Zero(calls)
 }
 
 type countingFreezer struct{ begins, ends int }

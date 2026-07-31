@@ -292,15 +292,12 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *R
 			_ = st.root.Remove(tmpRel)
 		}
 	}()
+	var auxiliary []RestoredAuxiliary
 	if len(m.Auxiliary) > 0 {
-		auxiliary, auxiliaryErr := st.restoreAuxiliary(ctx, m)
-		if auxiliaryErr != nil {
-			return nil, auxiliaryErr
+		auxiliary, err = st.restoreAuxiliary(ctx, m)
+		if err != nil {
+			return nil, err
 		}
-		if auxiliaryErr := opts.AuxiliaryTarget.RestoreAuxiliary(ctx, auxiliary); auxiliaryErr != nil {
-			return nil, fmt.Errorf("backup: restoring auxiliary artifacts: %w", auxiliaryErr)
-		}
-		res.AuxiliaryArtifacts = len(auxiliary)
 	}
 	if opts.PackedContent == nil {
 		res.AttachmentBlobs, res.AttachmentBytes, err = st.restoreAttachments(
@@ -384,6 +381,19 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *R
 	st.progress.emit(ProgressEvent{
 		Stage: ProgressStageRestoreStats, Done: 1, Total: 1, Final: true,
 	})
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	// The application handoff may have external side effects, so defer it
+	// until every snapshot object and the staged database have passed their
+	// integrity proofs. It remains ahead of extras and database publication,
+	// preserving the guarantee that target files stay unpublished on error.
+	if len(auxiliary) > 0 {
+		if err := opts.AuxiliaryTarget.RestoreAuxiliary(ctx, auxiliary); err != nil {
+			return nil, fmt.Errorf("backup: restoring auxiliary artifacts: %w", err)
+		}
+		res.AuxiliaryArtifacts = len(auxiliary)
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
