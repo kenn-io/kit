@@ -718,7 +718,14 @@ func (b *FilesystemBackend) Inventory(
 		return InventoryPage{}, fmt.Errorf("packstore: invalid filesystem inventory cursor")
 	}
 	var page InventoryPage
-	err := filepath.WalkDir(b.layout.Root(), func(path string, entry fs.DirEntry, walkErr error) error {
+	walkRoot, err := filepath.EvalSymlinks(b.layout.Root())
+	if errors.Is(err, fs.ErrNotExist) {
+		return page, nil
+	}
+	if err != nil {
+		return page, err
+	}
+	err = filepath.WalkDir(walkRoot, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -728,7 +735,7 @@ func (b *FilesystemBackend) Inventory(
 		if entry.IsDir() {
 			return nil
 		}
-		relative, err := filepath.Rel(b.layout.Root(), path)
+		relative, err := filepath.Rel(walkRoot, path)
 		if err != nil {
 			return err
 		}
@@ -759,8 +766,15 @@ func (b *FilesystemBackend) Inventory(
 // NamespaceEmpty reports whether the configured root contains any file or
 // non-directory entry. Empty directory scaffolding is not physical authority.
 func (b *FilesystemBackend) NamespaceEmpty(ctx context.Context) (bool, error) {
+	walkRoot, err := filepath.EvalSymlinks(b.layout.Root())
+	if errors.Is(err, fs.ErrNotExist) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("packstore: inspect filesystem namespace: %w", err)
+	}
 	empty := true
-	err := filepath.WalkDir(b.layout.Root(), func(
+	err = filepath.WalkDir(walkRoot, func(
 		_ string, entry fs.DirEntry, walkErr error,
 	) error {
 		if walkErr != nil {

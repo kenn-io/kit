@@ -89,6 +89,42 @@ func TestFilesystemBackendInventoryRejectsCanonicalSymlink(t *testing.T) {
 	assert.Equal(t, []string{filepath.ToSlash(relative)}, page.Unknown)
 }
 
+func TestFilesystemBackendInventoryFollowsConfiguredSymlinkRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires privileges on Windows")
+	}
+	require := require.New(t)
+	actualRoot := t.TempDir()
+	linkedRoot := filepath.Join(t.TempDir(), "store")
+	require.NoError(os.Symlink(actualRoot, linkedRoot))
+	layout, err := NewLayout(linkedRoot, LayoutOptions{
+		Staging: StagingStoreDirectory, StagingDir: "tmp",
+	})
+	require.NoError(err)
+	backend, err := NewFilesystemBackend(layout, FilesystemBackendOptions{})
+	require.NoError(err)
+	t.Cleanup(func() { require.NoError(backend.Close()) })
+	empty, err := backend.NamespaceEmpty(context.Background())
+	require.NoError(err)
+	assert.True(t, empty)
+	content := []byte("symlink-root inventory content")
+	hash := hashForTest(content)
+	require.NoError(os.MkdirAll(filepath.Dir(layout.LoosePath(hash)), 0o700))
+	require.NoError(os.WriteFile(layout.LoosePath(hash), content, 0o600))
+
+	page, err := backend.Inventory(context.Background(), "")
+	require.NoError(err)
+	empty, err = backend.NamespaceEmpty(context.Background())
+	require.NoError(err)
+
+	assert.Equal(t, []InventoryObject{{
+		Ref:        ObjectRef{LooseHash: hash, LooseEncoding: LooseEncodingRaw},
+		StoredSize: int64(len(content)),
+	}}, page.Objects)
+	assert.Empty(t, page.Unknown)
+	assert.False(t, empty)
+}
+
 func TestFilesystemBackendSeekablePackHonorsCancellation(t *testing.T) {
 	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
 	packPath, packID, entries := buildBackendPackSource(
