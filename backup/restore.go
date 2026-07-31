@@ -1132,6 +1132,10 @@ func (s *restoreState) restorePortableMetadata(
 	return tmpRel, info.Size(), nil
 }
 
+// closePreparedRestoreDatabase is a narrow seam for exercising cleanup after
+// a successful confinement whose final close reports an error.
+var closePreparedRestoreDatabase = (*os.File).Close
+
 // prepareBeforePublication gives the application an isolated copy of the
 // unpublished database, then copies its closed replacement through the held
 // target root. The callback must not be able to reach a target namespace that
@@ -1243,9 +1247,13 @@ func (s *restoreState) prepareBeforePublication(
 		return "", 0, errors.New("backup: prepared restored database changed before confinement")
 	}
 	stagedRel, stageErr := s.stageRootDatabase(ctx, finalDBRel, opened, info.Size())
-	closeErr := opened.Close()
+	closeErr := closePreparedRestoreDatabase(opened)
 	if err := errors.Join(stageErr, closeErr); err != nil {
-		return "", 0, fmt.Errorf("backup: confining prepared restored database: %w", err)
+		var cleanupErr error
+		if stagedRel != "" {
+			cleanupErr = s.root.Remove(stagedRel)
+		}
+		return "", 0, fmt.Errorf("backup: confining prepared restored database: %w", errors.Join(err, cleanupErr))
 	}
 	if err := s.root.Remove(currentRel); err != nil {
 		removeErr := s.root.Remove(stagedRel)
@@ -1273,10 +1281,10 @@ func publicationScratchBase(target, repoStaging string) (string, error) {
 		rel, err := filepath.Rel(targetPath, candidatePath)
 		if err != nil {
 			// Separate filesystem volumes cannot contain one another.
-			return candidate, nil
+			return candidatePath, nil
 		}
 		if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-			return candidate, nil
+			return candidatePath, nil
 		}
 	}
 	return "", fmt.Errorf("backup: no private publication staging directory outside restore target %s", target)

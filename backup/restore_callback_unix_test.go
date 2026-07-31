@@ -139,3 +139,59 @@ func TestRestoreBeforePublicationCannotWriteReplacedTargetNamespace(t *testing.T
 	require.NoError(attacker.QueryRow("PRAGMA user_version").Scan(&userVersion))
 	require.Equal(99, userVersion, "callback writes must not reach the attacker-selected database")
 }
+
+func TestRestoreBeforePublicationResolvedStagingCannotBeRedirected(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+	_, err := Create(ctx, r, newTestApp(), createOpts(
+		dbPath, attachmentsDir, dataDir, t.TempDir(),
+	))
+	require.NoError(err)
+
+	externalStaging := t.TempDir()
+	require.NoError(os.Remove(r.Path(stagingDirName)))
+	require.NoError(os.Symlink(externalStaging, r.Path(stagingDirName)))
+	attackerStore := t.TempDir()
+	target := r.Root()
+	heldTarget := target + "-held"
+	var attackerDB string
+	_, err = Restore(ctx, r, newTestApp(), RestoreOptions{
+		TargetDir: target,
+		Overwrite: true,
+		BeforePublication: func(_ context.Context, staged RestorePublicationTarget) error {
+			privateDirName := filepath.Base(filepath.Dir(staged.DBPath))
+			require.NoError(os.Rename(target, heldTarget))
+			require.NoError(os.Mkdir(target, 0o700))
+			attackerDir := filepath.Join(target, stagingDirName, privateDirName)
+			require.NoError(os.MkdirAll(filepath.Dir(attackerDir), 0o700))
+			require.NoError(os.Symlink(attackerStore, attackerDir))
+			attackerDB = filepath.Join(attackerStore, filepath.Base(staged.DBPath))
+			attacker, err := sql.Open("sqlite3", attackerDB)
+			require.NoError(err)
+			require.NoError(func() error {
+				_, err := attacker.Exec("PRAGMA user_version = 99")
+				return err
+			}())
+			require.NoError(attacker.Close())
+
+			callbackDB, err := sql.Open("sqlite3", staged.DBPath)
+			require.NoError(err)
+			require.NoError(func() error {
+				_, err := callbackDB.Exec("PRAGMA user_version = 1")
+				return err
+			}())
+			require.NoError(callbackDB.Close())
+			return nil
+		},
+	})
+	require.Error(err, "the replaced target must never be accepted for later proof or publication")
+
+	attacker, err := sql.Open("sqlite3", attackerDB)
+	require.NoError(err)
+	defer func() { _ = attacker.Close() }()
+	var userVersion int
+	require.NoError(attacker.QueryRow("PRAGMA user_version").Scan(&userVersion))
+	require.Equal(99, userVersion, "callback writes must not reach the symlinked-staging namespace")
+}

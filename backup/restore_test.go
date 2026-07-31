@@ -1009,6 +1009,34 @@ func TestRestoreBeforePublicationFailureLeavesDatabaseUnpublished(t *testing.T) 
 	assert.Equal(beforeScratch, restorePublicationScratchDirs(t, r))
 }
 
+func TestRestoreBeforePublicationCleansReplacementOnCloseFailure(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	r := initTestRepo(t)
+	target := t.TempDir()
+	root, err := openRestoreRoot(target)
+	require.NoError(err)
+	defer func() { _ = root.Close() }()
+
+	currentRel := "app.db.restore-" + pack.NewPackID()
+	require.NoError(os.WriteFile(filepath.Join(target, currentRel), []byte("database"), 0o600))
+	st := &restoreState{repo: r, root: root, target: target}
+	before := restoreDatabaseStageFiles(t, target, newTestApp().DBFileName())
+	closeErr := errors.New("prepared database close failed")
+	originalClose := closePreparedRestoreDatabase
+	closePreparedRestoreDatabase = func(f *os.File) error {
+		require.NoError(f.Close())
+		return closeErr
+	}
+	t.Cleanup(func() { closePreparedRestoreDatabase = originalClose })
+
+	_, _, err = st.prepareBeforePublication(
+		context.Background(), currentRel, newTestApp().DBFileName(),
+		func(context.Context, RestorePublicationTarget) error { return nil })
+	require.ErrorIs(err, closeErr)
+	assert.Equal(before, restoreDatabaseStageFiles(t, target, newTestApp().DBFileName()))
+}
+
 // TestRestoreStatsCheckCatchesManifestMismatchWhenIntegritySkipped proves a
 // self-consistent manifest (valid content-derived ID) whose recorded stats
 // disagree with the captured pages still fails when integrity_check is omitted.
