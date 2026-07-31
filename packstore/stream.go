@@ -58,6 +58,7 @@ func (s *Store) openMultiStream(
 	return &observedVerifiedStream{
 		VerifiedReadCloser: stream,
 		health:             s.health,
+		hash:               contentHash,
 		location:           location,
 	}, size, nil
 }
@@ -65,6 +66,7 @@ func (s *Store) openMultiStream(
 type observedVerifiedStream struct {
 	VerifiedReadCloser
 	health   *Health
+	hash     Hash
 	location ReadLocation
 }
 
@@ -89,9 +91,9 @@ func (s *observedVerifiedStream) Close() error {
 func (s *observedVerifiedStream) observe(err error) {
 	switch {
 	case isCandidateFailure(err):
-		s.health.Observe(s.location, err)
+		s.health.Observe(s.hash, s.location, err)
 	case err == nil && s.Verified():
-		s.health.Clear(s.location)
+		s.health.Clear(s.hash, s.location)
 	}
 }
 

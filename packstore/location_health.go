@@ -23,42 +23,42 @@ func NewHealth() *Health {
 }
 
 // Order returns a detached candidate list in current read preference order.
-func (h *Health) Order(candidates []ReadLocation) []ReadLocation {
+func (h *Health) Order(hash Hash, candidates []ReadLocation) []ReadLocation {
 	ordered := append([]ReadLocation(nil), candidates...)
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	sort.SliceStable(ordered, func(i, j int) bool {
-		return h.score(ordered[i]) < h.score(ordered[j])
+		return h.score(hash, ordered[i]) < h.score(hash, ordered[j])
 	})
 	return ordered
 }
 
 // Observe records a typed physical failure without changing durable authority.
-func (h *Health) Observe(location ReadLocation, err error) {
+func (h *Health) Observe(hash Hash, location ReadLocation, err error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	switch {
 	case errors.Is(err, ErrPhysicalMissing), errors.Is(err, ErrPhysicalCorrupt):
-		h.locations[healthKey(location)] = struct{}{}
+		h.locations[healthKey(hash, location)] = struct{}{}
 	case errors.Is(err, ErrStoreUnavailable), errors.Is(err, ErrStoreFenced):
 		h.stores[location.StoreID] = struct{}{}
 	}
 }
 
 // Clear removes process-local failure observations after verified success.
-func (h *Health) Clear(location ReadLocation) {
+func (h *Health) Clear(hash Hash, location ReadLocation) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	delete(h.locations, healthKey(location))
+	delete(h.locations, healthKey(hash, location))
 	delete(h.stores, location.StoreID)
 }
 
-func (h *Health) score(location ReadLocation) int {
+func (h *Health) score(hash Hash, location ReadLocation) int {
 	score := 0
 	if _, failed := h.stores[location.StoreID]; failed {
 		score++
 	}
-	if _, failed := h.locations[healthKey(location)]; failed {
+	if _, failed := h.locations[healthKey(hash, location)]; failed {
 		score += 2
 	}
 	return score
@@ -80,10 +80,11 @@ type locationHealthKey struct {
 	crc32c      uint32
 }
 
-func healthKey(location ReadLocation) locationHealthKey {
+func healthKey(hash Hash, location ReadLocation) locationHealthKey {
 	key := locationHealthKey{
 		store:      location.StoreID,
 		generation: location.Generation,
+		hash:       hash,
 	}
 	if location.Loose != nil {
 		key.kind = 1
@@ -94,7 +95,6 @@ func healthKey(location ReadLocation) locationHealthKey {
 	}
 	key.kind = 2
 	if location.Pack != nil {
-		key.hash = location.Pack.Hash
 		key.packID = location.Pack.PackID
 		key.offset = location.Pack.Offset
 		key.storedLen = location.Pack.StoredLen

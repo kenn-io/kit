@@ -166,7 +166,7 @@ func resolveCandidates[T any](
 	if err != nil {
 		return zero, 0, ReadLocation{}, err
 	}
-	if sameResolution(resolution, refreshed) {
+	if sameResolution(hash, resolution, refreshed) {
 		return zero, 0, ReadLocation{}, exhausted
 	}
 	value, size, location, refreshedExhausted, err := attemptResolution(store, hash, refreshed, open)
@@ -195,14 +195,14 @@ func attemptResolution[T any](
 	var attempts []AttemptError
 	candidates := resolution.Candidates
 	if store.observeStreams {
-		candidates = store.health.Order(candidates)
+		candidates = store.health.Order(hash, candidates)
 	}
 	for _, location := range candidates {
 		backend, ok := store.backends.Backend(location.StoreID)
 		if !ok || backend == nil {
 			err := fmt.Errorf("%w: store %s has no read backend", ErrStoreUnavailable, location.StoreID)
 			attempts = append(attempts, AttemptError{Location: location, Err: err})
-			store.health.Observe(location, err)
+			store.health.Observe(hash, location, err)
 			continue
 		}
 		value, size, err := open(backend, location)
@@ -212,7 +212,7 @@ func attemptResolution[T any](
 		if !isCandidateFailure(err) {
 			return zero, 0, ReadLocation{}, nil, err
 		}
-		store.health.Observe(location, err)
+		store.health.Observe(hash, location, err)
 		attempts = append(attempts, AttemptError{Location: location, Err: err})
 	}
 	return zero, 0, ReadLocation{}, newExhaustedError(attempts), nil
@@ -238,7 +238,7 @@ func validateResolution(hash Hash, resolution Resolution) error {
 			)
 		}
 		if seen != nil {
-			key := healthKey(location)
+			key := healthKey(hash, location)
 			if _, duplicate := seen[key]; duplicate {
 				return fmt.Errorf(
 					"packstore: duplicate physical candidate for store %s generation %s",
@@ -252,12 +252,12 @@ func validateResolution(hash Hash, resolution Resolution) error {
 	return nil
 }
 
-func sameResolution(left, right Resolution) bool {
+func sameResolution(hash Hash, left, right Resolution) bool {
 	if left.Member != right.Member || len(left.Candidates) != len(right.Candidates) {
 		return false
 	}
 	for i := range left.Candidates {
-		if healthKey(left.Candidates[i]) != healthKey(right.Candidates[i]) {
+		if healthKey(hash, left.Candidates[i]) != healthKey(hash, right.Candidates[i]) {
 			return false
 		}
 	}

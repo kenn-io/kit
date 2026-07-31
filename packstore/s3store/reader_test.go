@@ -276,9 +276,9 @@ func TestS3TerminalCorruptionDemotesGeneration(t *testing.T) {
 
 	err := body.Verify()
 	require.ErrorIs(t, err, packstore.ErrPhysicalCorrupt)
-	health.Observe(primary, err)
+	health.Observe(indexed.Hash, primary, err)
 
-	ordered := health.Order([]packstore.ReadLocation{primary, secondary})
+	ordered := health.Order(indexed.Hash, []packstore.ReadLocation{primary, secondary})
 	require.Len(t, ordered, 2)
 	assert.Equal(t, secondary, ordered[0])
 	assert.Equal(t, primary, ordered[1])

@@ -179,7 +179,7 @@ func (s *Store) openMultiSeekable(
 		return nil, 0, err
 	}
 	if s.observeStreams {
-		s.health.Clear(location)
+		s.health.Clear(hash, location)
 	}
 	return reader, size, nil
 }
@@ -261,7 +261,7 @@ func (s *Store) readMultiBounded(
 		return nil, 0, err
 	}
 	if s.observeStreams {
-		s.health.Clear(location)
+		s.health.Clear(hash, location)
 	}
 	return data, size, nil
 }
