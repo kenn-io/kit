@@ -23,8 +23,8 @@ func TestMultiStoreSelectsFirstHealthyCandidate(t *testing.T) {
 		staticLocationResolver{resolution: Resolution{
 			Member: true,
 			Candidates: []ReadLocation{
-				{StoreID: "primary", Generation: "primary-1", Loose: &LooseLocation{}},
-				{StoreID: "secondary", Generation: "secondary-1", Loose: &LooseLocation{}},
+				{StoreID: "primary", Generation: "primary-1", Loose: rawLocation(content)},
+				{StoreID: "secondary", Generation: "secondary-1", Loose: rawLocation(content)},
 			},
 		}},
 		staticBackendRegistry{
@@ -60,8 +60,8 @@ func TestMultiStoreOpenFailureFallsThroughBeforePayload(t *testing.T) {
 		staticLocationResolver{resolution: Resolution{
 			Member: true,
 			Candidates: []ReadLocation{
-				{StoreID: "primary", Generation: "primary-1", Loose: &LooseLocation{}},
-				{StoreID: "secondary", Generation: "secondary-1", Loose: &LooseLocation{}},
+				{StoreID: "primary", Generation: "primary-1", Loose: rawLocation(content)},
+				{StoreID: "secondary", Generation: "secondary-1", Loose: rawLocation(content)},
 			},
 		}},
 		staticBackendRegistry{
@@ -83,6 +83,48 @@ func TestMultiStoreOpenFailureFallsThroughBeforePayload(t *testing.T) {
 	assert.Equal(1, secondary.opens)
 }
 
+func TestMultiStoreRefreshesChangedResolutionAfterMissingLocation(t *testing.T) {
+	content := []byte("migrated content")
+	hash := hashForTest(content)
+	oldLocation := ReadLocation{
+		StoreID: "old", Generation: "old-1",
+		Loose: &LooseLocation{
+			Encoding: LooseEncodingRaw, LogicalSize: int64(len(content)),
+			StoredSize: int64(len(content)),
+		},
+	}
+	newLocation := ReadLocation{
+		StoreID: "new", Generation: "new-1",
+		Loose: &LooseLocation{
+			Encoding: LooseEncodingRaw, LogicalSize: int64(len(content)),
+			StoredSize: int64(len(content)),
+		},
+	}
+	resolver := &changingLocationResolver{resolutions: []Resolution{
+		{Member: true, Candidates: []ReadLocation{oldLocation}},
+		{Member: true, Candidates: []ReadLocation{newLocation}},
+	}}
+	oldBackend := &recordingReadBackend{err: ErrPhysicalMissing}
+	newBackend := &recordingReadBackend{content: content}
+	store, err := NewMultiStore(
+		resolver,
+		staticBackendRegistry{"old": oldBackend, "new": newBackend},
+		MultiStoreOptions{},
+	)
+	require.NoError(t, err)
+
+	stream, _, err := store.OpenStream(context.Background(), hash)
+	require.NoError(t, err)
+	got, err := io.ReadAll(stream)
+	require.NoError(t, err)
+	require.NoError(t, stream.Close())
+
+	assert.Equal(t, content, got)
+	assert.Equal(t, 2, resolver.calls)
+	assert.Equal(t, 1, oldBackend.opens)
+	assert.Equal(t, 1, newBackend.opens)
+}
+
 func TestMultiStoreNextReadDemotesCorruptGeneration(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
@@ -97,8 +139,8 @@ func TestMultiStoreNextReadDemotesCorruptGeneration(t *testing.T) {
 		staticLocationResolver{resolution: Resolution{
 			Member: true,
 			Candidates: []ReadLocation{
-				{StoreID: "primary", Generation: "primary-1", Loose: &LooseLocation{}},
-				{StoreID: "secondary", Generation: "secondary-1", Loose: &LooseLocation{}},
+				{StoreID: "primary", Generation: "primary-1", Loose: rawLocation(content)},
+				{StoreID: "secondary", Generation: "secondary-1", Loose: rawLocation(content)},
 			},
 		}},
 		staticBackendRegistry{
@@ -141,8 +183,8 @@ func TestMultiStoreGenerationChangeClearsDemotion(t *testing.T) {
 	resolver := &mutableLocationResolver{resolution: Resolution{
 		Member: true,
 		Candidates: []ReadLocation{
-			{StoreID: "primary", Generation: "primary-1", Loose: &LooseLocation{}},
-			{StoreID: "secondary", Generation: "secondary-1", Loose: &LooseLocation{}},
+			{StoreID: "primary", Generation: "primary-1", Loose: rawLocation(content)},
+			{StoreID: "secondary", Generation: "secondary-1", Loose: rawLocation(content)},
 		},
 	}}
 	store, err := NewMultiStore(
@@ -196,7 +238,7 @@ func TestMultiStoreExhaustedPrecedence(t *testing.T) {
 	}
 	for _, failure := range failures {
 		resolution.Candidates = append(resolution.Candidates, ReadLocation{
-			StoreID: failure.store, Generation: "generation-1", Loose: &LooseLocation{},
+			StoreID: failure.store, Generation: "generation-1", Loose: rawLocation(nil),
 		})
 		backends[failure.store] = &recordingReadBackend{err: failure.err}
 	}
@@ -235,7 +277,7 @@ func TestMultiStoreOpenReturnsVerifiedSeekableContent(t *testing.T) {
 		staticLocationResolver{resolution: Resolution{
 			Member: true,
 			Candidates: []ReadLocation{{
-				StoreID: "archive", Generation: "archive-1", Loose: &LooseLocation{},
+				StoreID: "archive", Generation: "archive-1", Loose: rawLocation(content),
 			}},
 		}},
 		staticBackendRegistry{
@@ -267,7 +309,7 @@ func TestMultiStoreReadBoundedVerifiesWithinLimit(t *testing.T) {
 		staticLocationResolver{resolution: Resolution{
 			Member: true,
 			Candidates: []ReadLocation{{
-				StoreID: "archive", Generation: "archive-1", Loose: &LooseLocation{},
+				StoreID: "archive", Generation: "archive-1", Loose: rawLocation(content),
 			}},
 		}},
 		staticBackendRegistry{
@@ -307,7 +349,7 @@ func TestMultiStoreRejectsMismatchedPackedCandidate(t *testing.T) {
 		staticLocationResolver{resolution: Resolution{
 			Member: true,
 			Candidates: []ReadLocation{
-				{StoreID: "archive", Generation: "archive-1", Loose: &LooseLocation{}},
+				{StoreID: "archive", Generation: "archive-1", Loose: rawLocation(content)},
 				{StoreID: "archive", Generation: "archive-2", Pack: &entry},
 			},
 		}},
@@ -332,7 +374,7 @@ func TestMultiStoreOpenRejectsNilBackendStream(t *testing.T) {
 		staticLocationResolver{resolution: Resolution{
 			Member: true,
 			Candidates: []ReadLocation{{
-				StoreID: "archive", Generation: "archive-1", Loose: &LooseLocation{},
+				StoreID: "archive", Generation: "archive-1", Loose: rawLocation(nil),
 			}},
 		}},
 		staticBackendRegistry{
@@ -375,6 +417,32 @@ func TestMultiStoreRejectsUnknownLooseEncoding(t *testing.T) {
 	assert.Zero(backend.opens)
 }
 
+func TestMultiStoreRejectsAmbiguousLooseLocation(t *testing.T) {
+	content := []byte("ambiguous loose authority")
+	hash := hashForTest(content)
+	backend := &recordingReadBackend{content: content}
+	store, err := NewMultiStore(
+		staticLocationResolver{resolution: Resolution{
+			Member: true,
+			Candidates: []ReadLocation{{
+				StoreID: "archive", Generation: "archive-1",
+				Loose: &LooseLocation{},
+			}},
+		}},
+		staticBackendRegistry{"archive": backend},
+		MultiStoreOptions{},
+	)
+	require.NoError(t, err)
+
+	stream, _, err := store.OpenStream(context.Background(), hash)
+	if stream != nil {
+		t.Cleanup(func() { _ = stream.Close() })
+	}
+
+	require.ErrorIs(t, err, ErrInvalidPolicy)
+	assert.Zero(t, backend.opens)
+}
+
 func TestMultiStoreRejectsBackendSizeMismatch(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
@@ -407,6 +475,13 @@ func TestMultiStoreRejectsBackendSizeMismatch(t *testing.T) {
 	assert.ErrorContains(err, "logical size")
 }
 
+func rawLocation(content []byte) *LooseLocation {
+	size := int64(len(content))
+	return &LooseLocation{
+		Encoding: LooseEncodingRaw, LogicalSize: size, StoredSize: size,
+	}
+}
+
 type staticLocationResolver struct {
 	resolution Resolution
 	err        error
@@ -414,6 +489,20 @@ type staticLocationResolver struct {
 
 type mutableLocationResolver struct {
 	resolution Resolution
+}
+
+type changingLocationResolver struct {
+	resolutions []Resolution
+	calls       int
+}
+
+func (r *changingLocationResolver) ResolveLocations(
+	context.Context,
+	Hash,
+) (Resolution, error) {
+	index := min(r.calls, len(r.resolutions)-1)
+	r.calls++
+	return r.resolutions[index], nil
 }
 
 func (r *mutableLocationResolver) ResolveLocations(context.Context, Hash) (Resolution, error) {

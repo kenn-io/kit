@@ -205,6 +205,27 @@ func TestFilesystemBackendUsesAndRetiresExactLooseRepresentation(t *testing.T) {
 	require.NoError(stream.Close())
 }
 
+func TestFilesystemBackendRejectsAmbiguousLooseLocation(t *testing.T) {
+	ctx := context.Background()
+	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
+	content := []byte("explicit loose representation required")
+	hash := hashForTest(content)
+	_, err := backend.PublishLoose(
+		ctx,
+		hash,
+		bytes.NewReader(content),
+		PublishOptions{ExpectedSize: int64(len(content)), SizeKnown: true},
+	)
+	require.NoError(t, err)
+
+	stream, _, err := backend.OpenLoose(ctx, hash, LooseLocation{})
+	if stream != nil {
+		t.Cleanup(func() { _ = stream.Close() })
+	}
+
+	require.ErrorIs(t, err, ErrInvalidPolicy)
+}
+
 func TestFilesystemBackendRepairLooseOverwritesCorruptCanonical(t *testing.T) {
 	ctx := context.Background()
 	backend := attachedFilesystemBackend(t, "archive", "epoch-1")

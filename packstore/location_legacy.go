@@ -25,7 +25,7 @@ func (r legacyLocationResolver) ResolveLocations(
 		Generation: legacyLocationGenerationValue,
 	}
 	if location.Pack == nil {
-		candidate.Loose = &LooseLocation{}
+		candidate.Loose = &LooseLocation{legacy: true}
 	} else {
 		candidate.Pack = location.Pack
 	}

@@ -21,6 +21,7 @@ type LooseLocation struct {
 	Encoding    LooseEncoding
 	LogicalSize int64
 	StoredSize  int64
+	legacy      bool
 }
 
 // ReadLocation identifies one catalog-authorized physical representation.
@@ -44,21 +45,31 @@ func (l ReadLocation) Validate() error {
 		return fmt.Errorf("packstore: location must select exactly one representation")
 	}
 	if l.Loose != nil {
-		if l.Loose.LogicalSize < 0 || l.Loose.StoredSize < 0 {
-			return fmt.Errorf("packstore: negative loose location size")
+		return l.Loose.validate()
+	}
+	return l.Pack.Validate()
+}
+
+func (l LooseLocation) validate() error {
+	if l.LogicalSize < 0 || l.StoredSize < 0 {
+		return fmt.Errorf("packstore: negative loose location size")
+	}
+	if l.Encoding == 0 {
+		if !l.legacy {
+			return fmt.Errorf(
+				"%w: loose location requires an explicit encoding",
+				ErrInvalidPolicy,
+			)
 		}
-		if l.Loose.Encoding == 0 &&
-			(l.Loose.LogicalSize != 0 || l.Loose.StoredSize != 0) {
+		if l.LogicalSize != 0 || l.StoredSize != 0 {
 			return fmt.Errorf("packstore: legacy loose location must omit sizes")
-		}
-		if l.Loose.Encoding != 0 &&
-			l.Loose.Encoding != LooseEncodingRaw &&
-			l.Loose.Encoding != LooseEncodingZstd {
-			return fmt.Errorf("packstore: invalid loose encoding %d", l.Loose.Encoding)
 		}
 		return nil
 	}
-	return l.Pack.Validate()
+	if l.Encoding != LooseEncodingRaw && l.Encoding != LooseEncodingZstd {
+		return fmt.Errorf("packstore: invalid loose encoding %d", l.Encoding)
+	}
+	return nil
 }
 
 // Resolution grants logical membership and returns candidates in the
@@ -123,6 +134,7 @@ func NewMultiStore(
 	store.locationResolver = resolver
 	store.backends = backends
 	store.health = opts.Health
+	store.retryResolution = true
 	store.observeStreams = true
 	if store.health == nil {
 		store.health = NewHealth()

@@ -152,6 +152,9 @@ func (b *FilesystemBackend) OpenLoose(
 	hash Hash,
 	location LooseLocation,
 ) (VerifiedReadCloser, int64, error) {
+	if err := location.validate(); err != nil {
+		return nil, 0, err
+	}
 	var stream VerifiedReadCloser
 	var size int64
 	var err error
@@ -205,6 +208,9 @@ func (b *FilesystemBackend) OpenSeekableLoose(
 	hash Hash,
 	location LooseLocation,
 ) (io.ReadSeekCloser, int64, error) {
+	if err := location.validate(); err != nil {
+		return nil, 0, err
+	}
 	if location.Encoding != 0 {
 		stream, size, err := b.OpenLoose(ctx, hash, location)
 		if err != nil {
@@ -231,6 +237,9 @@ func (b *FilesystemBackend) ReadLooseBounded(
 	location LooseLocation,
 	maxBytes int64,
 ) ([]byte, int64, error) {
+	if err := location.validate(); err != nil {
+		return nil, 0, err
+	}
 	if location.Encoding != 0 {
 		stream, size, err := b.OpenLoose(ctx, hash, location)
 		if err != nil {

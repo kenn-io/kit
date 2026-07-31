@@ -9,10 +9,12 @@ import (
 func TestLocationHealthPrefersTransientlyUnavailableOverKnownDamage(t *testing.T) {
 	health := NewHealth()
 	corrupt := ReadLocation{
-		StoreID: "corrupt", Generation: "corrupt-1", Loose: &LooseLocation{},
+		StoreID: "corrupt", Generation: "corrupt-1",
+		Loose: &LooseLocation{Encoding: LooseEncodingRaw},
 	}
 	unavailable := ReadLocation{
-		StoreID: "unavailable", Generation: "unavailable-1", Loose: &LooseLocation{},
+		StoreID: "unavailable", Generation: "unavailable-1",
+		Loose: &LooseLocation{Encoding: LooseEncodingRaw},
 	}
 	health.Observe(corrupt, ErrPhysicalCorrupt)
 	health.Observe(unavailable, ErrStoreUnavailable)
