@@ -100,6 +100,15 @@ func classifyPhysicalError(err error) error {
 	if isPhysicalSourceNotFound(err) {
 		return errors.Join(ErrPhysicalMissing, err)
 	}
+	return ClassifyIntegrityError(err)
+}
+
+// ClassifyIntegrityError marks content and container verification failures as
+// physical corruption while preserving errors that are already classified.
+func ClassifyIntegrityError(err error) error {
+	if err == nil || isCandidateFailure(err) {
+		return err
+	}
 	for _, corrupt := range []error{
 		ErrContentMismatch,
 		pack.ErrBadMagic,

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 
@@ -95,4 +97,75 @@ func TestOpenPackEnforcesConfiguredBlobLimit(t *testing.T) {
 	var limit *packstore.LimitError
 	require.ErrorAs(t, err, &limit)
 	assert.Equal(t, packstore.LimitBlobRawBytes, limit.Dimension)
+}
+
+func TestPackBodyClassifiesTerminalReadCorruption(t *testing.T) {
+	body, _ := newPackBody(t, true)
+
+	_, err := io.ReadAll(body)
+
+	require.ErrorIs(t, err, pack.ErrCorrupt)
+	require.ErrorIs(t, err, packstore.ErrPhysicalCorrupt)
+}
+
+func TestPackBodyClassifiesTerminalVerifyCorruption(t *testing.T) {
+	body, _ := newPackBody(t, true)
+
+	err := body.Verify()
+
+	require.ErrorIs(t, err, pack.ErrCorrupt)
+	require.ErrorIs(t, err, packstore.ErrPhysicalCorrupt)
+}
+
+func TestPackBodyDoesNotClassifyIncompleteCloseAsCorrupt(t *testing.T) {
+	body, _ := newPackBody(t, false)
+
+	err := body.Close()
+
+	require.ErrorIs(t, err, pack.ErrVerificationIncomplete)
+	require.NotErrorIs(t, err, packstore.ErrPhysicalCorrupt)
+}
+
+func TestS3TerminalCorruptionDemotesGeneration(t *testing.T) {
+	body, indexed := newPackBody(t, true)
+	primary := packstore.ReadLocation{
+		StoreID: "primary", Generation: "primary-1", Pack: &indexed,
+	}
+	secondary := primary
+	secondary.StoreID = "secondary"
+	secondary.Generation = "secondary-1"
+	health := packstore.NewHealth()
+
+	err := body.Verify()
+	require.ErrorIs(t, err, packstore.ErrPhysicalCorrupt)
+	health.Observe(primary, err)
+
+	ordered := health.Order([]packstore.ReadLocation{primary, secondary})
+	require.Len(t, ordered, 2)
+	assert.Equal(t, secondary, ordered[0])
+	assert.Equal(t, primary, ordered[1])
+}
+
+func newPackBody(
+	t *testing.T,
+	corrupt bool,
+) (*packBody, packstore.IndexEntry) {
+	t.Helper()
+	content := []byte("terminal S3 pack integrity")
+	packID, packBytes, indexed := makePack(t, content)
+	if corrupt {
+		packBytes[indexed.Offset] ^= 0xff
+	}
+	path := filepath.Join(t.TempDir(), packID+".pack")
+	require.NoError(t, os.WriteFile(path, packBytes, 0o600))
+	reader, err := pack.OpenReader(path, nil)
+	require.NoError(t, err)
+	blob, err := reader.OpenBlob(context.Background(), reader.Entries()[0])
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = blob.Close()
+		_ = reader.Close()
+		_ = os.Remove(path)
+	})
+	return &packBody{blob: blob, reader: reader, path: path}, indexed
 }

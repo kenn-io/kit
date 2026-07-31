@@ -348,23 +348,20 @@ func (r *packBody) Read(p []byte) (int, error) {
 	if err != nil {
 		r.finish()
 	}
-	if r.closeErr != nil {
-		return n, errors.Join(err, r.closeErr)
-	}
-	return n, err
+	return n, packstore.ClassifyIntegrityError(errors.Join(err, r.closeErr))
 }
 
 func (r *packBody) Verify() error {
 	err := r.blob.Verify()
 	r.finish()
-	return errors.Join(err, r.closeErr)
+	return packstore.ClassifyIntegrityError(errors.Join(err, r.closeErr))
 }
 
 func (r *packBody) Verified() bool { return r.blob.Verified() }
 
 func (r *packBody) Close() error {
 	r.finish()
-	return r.closeErr
+	return packstore.ClassifyIntegrityError(r.closeErr)
 }
 
 func (r *packBody) finish() {
@@ -372,5 +369,9 @@ func (r *packBody) finish() {
 		return
 	}
 	r.once = true
-	r.closeErr = errors.Join(r.blob.Close(), r.reader.Close(), os.Remove(r.path))
+	r.closeErr = packstore.ClassifyIntegrityError(errors.Join(
+		r.blob.Close(),
+		r.reader.Close(),
+		os.Remove(r.path),
+	))
 }
