@@ -75,6 +75,18 @@ type RestoreOptions struct {
 	// AuxiliaryTarget consumes verified application-defined snapshot artifacts
 	// before the target database becomes visible.
 	AuxiliaryTarget AuxiliaryTarget
+	// BeforePublication runs after every content object has been restored and
+	// verified but before the staged database's integrity/stats proof and
+	// canonical publication. Applications may update the staged database to
+	// bind restored physical state; returning an error leaves it unpublished.
+	BeforePublication func(context.Context, RestorePublicationTarget) error
+}
+
+// RestorePublicationTarget identifies the private staged restore state passed
+// to BeforePublication. DBPath is valid only for the duration of the callback.
+type RestorePublicationTarget struct {
+	TargetDir string
+	DBPath    string
 }
 
 // RestoreResult reports what Restore materialized and proved.
@@ -332,6 +344,14 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *R
 			st.removeStagedFiles(extras)
 		}
 	}()
+	if opts.BeforePublication != nil {
+		if err := opts.BeforePublication(ctx, RestorePublicationTarget{
+			TargetDir: opts.TargetDir,
+			DBPath:    filepath.Join(opts.TargetDir, tmpRel),
+		}); err != nil {
+			return nil, fmt.Errorf("backup: preparing restored application state: %w", err)
+		}
+	}
 
 	// The proof runs against the staging temp, BEFORE the database is
 	// published: an enabled integrity_check failure, a stats mismatch, or a late

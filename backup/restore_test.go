@@ -860,6 +860,32 @@ func TestRestoreRelativeTarget(t *testing.T) {
 	require.Equal(fileSHA256(t, dbPath), fileSHA256(t, res.DBPath))
 }
 
+func TestRestoreBeforePublicationFailureLeavesDatabaseUnpublished(t *testing.T) {
+	require := require.New(t)
+	ctx := context.Background()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+	_, err := Create(ctx, r, newTestApp(), createOpts(
+		dbPath, attachmentsDir, dataDir, t.TempDir(),
+	))
+	require.NoError(err)
+
+	target := filepath.Join(t.TempDir(), "restore")
+	hookErr := errors.New("application publication refused")
+	_, err = Restore(ctx, r, newTestApp(), RestoreOptions{
+		TargetDir: target,
+		BeforePublication: func(_ context.Context, staged RestorePublicationTarget) error {
+			assert.Equal(t, target, staged.TargetDir)
+			assert.FileExists(t, staged.DBPath)
+			assert.NotEqual(t, filepath.Join(target, newTestApp().DBFileName()), staged.DBPath)
+			assert.NoFileExists(t, filepath.Join(target, newTestApp().DBFileName()))
+			return hookErr
+		},
+	})
+	require.ErrorIs(err, hookErr)
+	assert.NoFileExists(t, filepath.Join(target, newTestApp().DBFileName()))
+}
+
 // TestRestoreStatsCheckCatchesManifestMismatchWhenIntegritySkipped proves a
 // self-consistent manifest (valid content-derived ID) whose recorded stats
 // disagree with the captured pages still fails when integrity_check is omitted.
