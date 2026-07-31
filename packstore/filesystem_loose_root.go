@@ -102,8 +102,14 @@ func (b *FilesystemBackend) publishLooseRoot(
 		writers = append(writers, encoder)
 	}
 	reader := io.Reader(&contextReader{ctx: ctx, reader: src})
-	if opts.MaxBytes > 0 && opts.MaxBytes < math.MaxInt64 {
-		reader = io.LimitReader(reader, opts.MaxBytes+1)
+	readLimit := opts.MaxBytes
+	readLimitKnown := readLimit > 0
+	if opts.SizeKnown && (!readLimitKnown || opts.ExpectedSize < readLimit) {
+		readLimit = opts.ExpectedSize
+		readLimitKnown = true
+	}
+	if readLimitKnown && readLimit < math.MaxInt64 {
+		reader = io.LimitReader(reader, readLimit+1)
 	}
 	buffer := looseCopyBufferPool.Get().(*[looseCopyBufferBytes]byte)
 	size, copyErr := io.CopyBuffer(io.MultiWriter(writers...), reader, buffer[:])

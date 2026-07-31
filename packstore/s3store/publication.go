@@ -122,8 +122,12 @@ func (b *Backend) RepairLoose(
 	}
 	hasher := sha256.New()
 	reader := io.Reader(&publicationContextReader{ctx: ctx, src: src})
-	if opts.MaxBytes > 0 && opts.MaxBytes < math.MaxInt64 {
-		reader = io.LimitReader(reader, opts.MaxBytes+1)
+	readLimit := opts.ExpectedSize
+	if opts.MaxBytes > 0 {
+		readLimit = min(readLimit, opts.MaxBytes)
+	}
+	if readLimit < math.MaxInt64 {
+		reader = io.LimitReader(reader, readLimit+1)
 	}
 	size, err := io.CopyBuffer(
 		io.MultiWriter(staged, hasher), reader, make([]byte, 64<<10),

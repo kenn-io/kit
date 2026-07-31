@@ -69,6 +69,58 @@ func TestFilesystemBackendPublishesAndInventoriesCanonicalObjects(t *testing.T) 
 	assert.Equal([]string{"operator-note"}, page.Unknown)
 }
 
+func TestFilesystemBackendLoosePublicationReadsOnlyOneByteBeyondExpectedSize(t *testing.T) {
+	expected := []byte("known")
+	hash := hashForTest(expected)
+	sourceBytes := append(bytes.Clone(expected), bytes.Repeat([]byte("x"), 1<<20)...)
+	operations := []struct {
+		name string
+		run  func(*FilesystemBackend, io.Reader) error
+	}{
+		{
+			name: "publish",
+			run: func(backend *FilesystemBackend, source io.Reader) error {
+				_, err := backend.PublishLoose(
+					context.Background(), hash, source,
+					PublishOptions{
+						ExpectedSize: int64(len(expected)), SizeKnown: true,
+						MaxBytes: int64(len(sourceBytes)),
+					},
+				)
+				return err
+			},
+		},
+		{
+			name: "repair",
+			run: func(backend *FilesystemBackend, source io.Reader) error {
+				_, err := backend.RepairLoose(
+					context.Background(), hash, source,
+					PublishOptions{
+						ExpectedSize: int64(len(expected)), SizeKnown: true,
+						MaxBytes: int64(len(sourceBytes)),
+					},
+				)
+				return err
+			},
+		},
+	}
+	for _, tt := range operations {
+		t.Run(tt.name, func(t *testing.T) {
+			assert := assert.New(t)
+			require := require.New(t)
+			backend := attachedFilesystemBackend(t, "archive", "epoch-1")
+			source := &countingPackReader{reader: bytes.NewReader(sourceBytes)}
+
+			err := tt.run(backend, source)
+
+			require.ErrorIs(err, ErrContentMismatch)
+			assert.Equal(int64(len(expected)+1), source.bytes)
+			assert.NoFileExists(backend.Layout().LoosePath(hash))
+			assert.NoFileExists(backend.Layout().CompressedLoosePath(hash))
+		})
+	}
+}
+
 func TestFilesystemBackendInventoryRejectsCanonicalSymlink(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation requires privileges on Windows")
@@ -1199,11 +1251,14 @@ func buildEncodedBackendPackSource(
 type countingPackReader struct {
 	reader io.Reader
 	reads  int
+	bytes  int64
 }
 
 func (r *countingPackReader) Read(p []byte) (int, error) {
 	r.reads++
-	return r.reader.Read(p)
+	n, err := r.reader.Read(p)
+	r.bytes += int64(n)
+	return n, err
 }
 
 func indexEntryFromPack(entry pack.Entry, packID string) (IndexEntry, error) {

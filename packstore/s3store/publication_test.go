@@ -698,6 +698,54 @@ func TestRepairLooseCancelStopsBeforePut(t *testing.T) {
 	assert.Zero(t, puts)
 }
 
+func TestRepairLooseReadsOnlyOneByteBeyondExpectedSize(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	expected := []byte("known")
+	sourceBytes := append(bytes.Clone(expected), bytes.Repeat([]byte("x"), 1<<20)...)
+	source := &countingReadCloser{reader: bytes.NewReader(sourceBytes)}
+	owner := packstore.Ownership{
+		Format: packstore.OwnershipFormatV1,
+		Vault:  "test-vault",
+		Store:  "archive",
+		Epoch:  "epoch-1",
+	}
+	marker, err := packstore.MarshalOwnership(owner)
+	require.NoError(err)
+	var puts int
+	backend := newHTTPBackend(packstore.DefaultLimits(), func(request *http.Request) (*http.Response, error) {
+		switch request.Method {
+		case http.MethodGet:
+			header := make(http.Header)
+			header.Set("Content-Length", strconv.Itoa(len(marker)))
+			return &http.Response{
+				StatusCode: http.StatusOK, Header: header,
+				Body:          io.NopCloser(bytes.NewReader(marker)),
+				ContentLength: int64(len(marker)), Request: request,
+			}, nil
+		case http.MethodPut:
+			puts++
+		}
+		return xmlResponse(request, http.StatusInternalServerError,
+			`<Error><Code>UnexpectedRequest</Code></Error>`), nil
+	})
+	backend.setOwnership(owner, `"owner-etag"`)
+
+	_, err = backend.RepairLoose(
+		context.Background(),
+		hashOf(expected),
+		source,
+		packstore.PublishOptions{
+			ExpectedSize: int64(len(expected)), SizeKnown: true,
+			MaxBytes: int64(len(sourceBytes)),
+		},
+	)
+
+	require.ErrorIs(err, packstore.ErrContentMismatch)
+	assert.Equal(int64(len(expected)+1), source.read)
+	assert.Zero(puts)
+}
+
 func TestMultipartPublishCancelAbortsWithBoundedContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	source := &cancelAfterFirstRead{
