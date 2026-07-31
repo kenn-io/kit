@@ -73,8 +73,9 @@ type RestoreOptions struct {
 	// SQLiteOpener selects the SQLite implementation used to validate and
 	// update the staged database. Nil preserves Kit's mattn/go-sqlite3 default.
 	SQLiteOpener SQLiteOpener
-	// AuxiliaryTarget consumes verified application-defined snapshot artifacts
-	// before the target database becomes visible.
+	// AuxiliaryTarget stages verified application-defined snapshot artifacts
+	// after all restore proofs and commits them only after the target is
+	// published and durably synced.
 	AuxiliaryTarget AuxiliaryTarget
 	// BeforePublication runs after every content object has been restored and
 	// verified but before the staged database's integrity/stats proof and
@@ -111,7 +112,7 @@ type RestoreResult struct {
 	// restored loose. An empty Hash means the reason applies to the whole pack.
 	PackFallbacks []packstore.ImportFallback
 	ExtrasFiles   int
-	// AuxiliaryArtifacts is the number of verified artifacts delivered to
+	// AuxiliaryArtifacts is the number of verified artifacts committed through
 	// AuxiliaryTarget.
 	AuxiliaryArtifacts int
 	// DatabaseIntegrityChecked reports whether Restore ran SQLite's full
@@ -223,20 +224,28 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *R
 		return nil, err
 	}
 	defer func() { _ = root.Close() }()
+	var targetLease RestoreTargetLease
+	releaseTargetLease := func() error {
+		if targetLease == nil {
+			return nil
+		}
+		lease := targetLease
+		targetLease = nil
+		if releaseErr := lease.Release(); releaseErr != nil {
+			return fmt.Errorf("backup: releasing restore target coordination: %w", releaseErr)
+		}
+		return nil
+	}
+	defer func() { err = errors.Join(err, releaseTargetLease()) }()
 	if opts.TargetCoordinator != nil {
-		targetLease, acquireErr := opts.TargetCoordinator.AcquireRestoreTarget(ctx, root)
+		var acquireErr error
+		targetLease, acquireErr = opts.TargetCoordinator.AcquireRestoreTarget(ctx, root)
 		if acquireErr != nil {
 			return nil, fmt.Errorf("backup: acquiring restore target coordination: %w", acquireErr)
 		}
 		if targetLease == nil {
 			return nil, errors.New("backup: restore target coordinator returned a nil lease")
 		}
-		defer func() {
-			if releaseErr := targetLease.Release(); releaseErr != nil {
-				err = errors.Join(err,
-					fmt.Errorf("backup: releasing restore target coordination: %w", releaseErr))
-			}
-		}()
 		if err := verifyRestoreRoot(opts.TargetDir, root); err != nil {
 			return nil, err
 		}
@@ -299,21 +308,30 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *R
 			return nil, err
 		}
 	}
+	var packedRestoreLease *packstore.Lease
+	releasePackedRestoreLease := func() error {
+		if packedRestoreLease == nil {
+			return nil
+		}
+		lease := packedRestoreLease
+		packedRestoreLease = nil
+		if releaseErr := lease.Release(); releaseErr != nil {
+			return fmt.Errorf("backup: releasing packed restore lease: %w", releaseErr)
+		}
+		return nil
+	}
+	defer func() { err = errors.Join(err, releasePackedRestoreLease()) }()
 	if opts.PackedContent == nil {
 		res.AttachmentBlobs, res.AttachmentBytes, err = st.restoreAttachments(
 			ctx, app, m, app.ContentDirName())
 		res.LooseAttachmentBlobs = res.AttachmentBlobs
 	} else {
-		restoreLease, acquireErr := opts.PackedContent.AcquireRestoreLease(ctx)
+		var acquireErr error
+		packedRestoreLease, acquireErr = opts.PackedContent.AcquireRestoreLease(ctx)
 		if acquireErr != nil {
 			return nil, fmt.Errorf("backup: acquiring packed restore lease: %w", acquireErr)
 		}
-		defer func() {
-			if releaseErr := restoreLease.Release(); releaseErr != nil {
-				err = errors.Join(err, fmt.Errorf("backup: releasing packed restore lease: %w", releaseErr))
-			}
-		}()
-		if validateErr := restoreLease.ValidateMutation(); validateErr != nil {
+		if validateErr := packedRestoreLease.ValidateMutation(); validateErr != nil {
 			return nil, fmt.Errorf("backup: validating packed restore mutation lease: %w", validateErr)
 		}
 		var packed packedRestoreResult
@@ -384,15 +402,29 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *R
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	// The application handoff may have external side effects, so defer it
-	// until every snapshot object and the staged database have passed their
-	// integrity proofs. It remains ahead of extras and database publication,
-	// preserving the guarantee that target files stay unpublished on error.
+	var stagedAuxiliary AuxiliaryRestore
 	if len(auxiliary) > 0 {
-		if err := opts.AuxiliaryTarget.RestoreAuxiliary(ctx, auxiliary); err != nil {
-			return nil, fmt.Errorf("backup: restoring auxiliary artifacts: %w", err)
+		stagedAuxiliary, err = opts.AuxiliaryTarget.StageAuxiliary(ctx, auxiliary)
+		if err != nil {
+			return nil, fmt.Errorf("backup: staging auxiliary artifacts: %w", err)
 		}
-		res.AuxiliaryArtifacts = len(auxiliary)
+		if stagedAuxiliary == nil {
+			return nil, errors.New("backup: auxiliary target returned a nil restore transaction")
+		}
+		defer func() {
+			if stagedAuxiliary == nil {
+				return
+			}
+			rollbackCtx, cancel := context.WithTimeout(
+				context.WithoutCancel(ctx), auxiliaryRollbackTimeout,
+			)
+			rollbackErr := stagedAuxiliary.Rollback(rollbackCtx)
+			cancel()
+			if rollbackErr != nil {
+				err = errors.Join(err,
+					fmt.Errorf("backup: rolling back auxiliary artifacts: %w", rollbackErr))
+			}
+		}()
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -407,6 +439,22 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *R
 
 	if err := syncRestoredTree(opts.TargetDir, syncCeiling); err != nil {
 		return nil, err
+	}
+	if err := releasePackedRestoreLease(); err != nil {
+		return res, err
+	}
+	if err := releaseTargetLease(); err != nil {
+		return res, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if stagedAuxiliary != nil {
+		if err := stagedAuxiliary.Commit(ctx); err != nil {
+			return nil, fmt.Errorf("backup: committing auxiliary artifacts: %w", err)
+		}
+		stagedAuxiliary = nil
+		res.AuxiliaryArtifacts = len(auxiliary)
 	}
 	res.Duration = time.Since(start)
 	return res, nil

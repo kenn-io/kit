@@ -186,9 +186,15 @@ It interprets neither the format nor the bytes.
 
 Quick verification proves every artifact resolves through the repository
 index and pack footer. Full verification reads it and re-derives its length
-and SHA-256. Restore performs the same content verification before delivering
-the complete bytes to `AuxiliaryTarget`. A missing target or target error
-fails while the restored database remains unpublished.
+and SHA-256. Restore performs the same content verification, proves the staged
+database, and then delivers the complete bytes to
+`AuxiliaryTarget.StageAuxiliary`. Staging must not expose the replacement
+state. If cancellation, extras promotion, database publication, durability
+sync, or the final auxiliary commit fails, Kit invokes `Rollback` with a
+bounded context independent of caller cancellation. `Commit` runs only after
+the restored target is published, synced, and released from restore
+coordination. A missing target or staging error fails while the restored
+database remains unpublished.
 
 ## Attachment Lists (magic `MVAL`)
 

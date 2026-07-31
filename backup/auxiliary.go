@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -15,8 +16,9 @@ import (
 )
 
 const (
-	maxAuxiliaryArtifacts = 64
-	maxAuxiliaryBytes     = int64(64 << 20)
+	maxAuxiliaryArtifacts    = 64
+	maxAuxiliaryBytes        = int64(64 << 20)
+	auxiliaryRollbackTimeout = 10 * time.Second
 )
 
 var auxiliaryNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,127}$`)
@@ -46,10 +48,21 @@ type RestoredAuxiliary struct {
 	Data   []byte
 }
 
-// AuxiliaryTarget consumes verified application-defined artifacts before the
-// restored target becomes visible. Kit never interprets their payloads.
+// AuxiliaryTarget stages verified application-defined artifacts without
+// making them externally visible. A StageAuxiliary error must leave no work
+// for Kit to clean up. Kit never interprets artifact payloads.
 type AuxiliaryTarget interface {
-	RestoreAuxiliary(context.Context, []RestoredAuxiliary) error
+	StageAuxiliary(context.Context, []RestoredAuxiliary) (AuxiliaryRestore, error)
+}
+
+// AuxiliaryRestore is one staged auxiliary-state replacement. Commit runs
+// only after Kit has published and durably synced the restored target.
+// Rollback must discard all staged work and clean up any partial effects from
+// a failed Commit. Kit calls Commit at most once and, if Commit does not
+// succeed, Rollback exactly once with an independently bounded context.
+type AuxiliaryRestore interface {
+	Commit(context.Context) error
+	Rollback(context.Context) error
 }
 
 // ManifestAuxiliary identifies one content-addressed auxiliary artifact.
