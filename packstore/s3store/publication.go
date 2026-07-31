@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"time"
@@ -41,26 +42,22 @@ func (b *Backend) PublishLoose(
 	if src == nil {
 		return packstore.LooseReceipt{}, fmt.Errorf("s3store: nil loose publication source")
 	}
+	opts, err = normalizeLoosePublishOptions(opts)
+	if err != nil {
+		return packstore.LooseReceipt{}, err
+	}
 	if opts.Compression.Enabled {
 		return packstore.LooseReceipt{}, fmt.Errorf(
 			"s3store: compressed loose publication is not supported",
 		)
 	}
 	key := b.keys.loose(hash, packstore.LooseEncodingRaw)
-	result, err := b.multipartPublish(ctx, key, src, opts.MaxBytes, hash.String())
+	result, err := b.multipartPublish(ctx, key, src, multipartPublishOptions{
+		maxBytes: opts.MaxBytes, exactSize: opts.ExpectedSize,
+		sizeKnown: opts.SizeKnown, expectedDigest: hash.String(),
+	})
 	if err != nil {
 		return packstore.LooseReceipt{}, err
-	}
-	if opts.SizeKnown && result.size != opts.ExpectedSize {
-		return packstore.LooseReceipt{}, fmt.Errorf(
-			"%w: published size %d does not match expected %d",
-			packstore.ErrContentMismatch, result.size, opts.ExpectedSize,
-		)
-	}
-	if hex.EncodeToString(result.digest[:]) != hash.String() {
-		return packstore.LooseReceipt{}, fmt.Errorf(
-			"%w: published bytes differ from %s", packstore.ErrContentMismatch, hash,
-		)
 	}
 	if err := b.verifyRawObject(ctx, key, hash, result.size); err != nil {
 		return packstore.LooseReceipt{}, err
@@ -94,8 +91,14 @@ func (b *Backend) RepairLoose(
 	if err := hash.Validate(); err != nil {
 		return packstore.LooseReceipt{}, err
 	}
-	if src == nil || !opts.SizeKnown || opts.ExpectedSize < 0 ||
-		opts.Compression.Enabled {
+	if src == nil {
+		return packstore.LooseReceipt{}, packstore.ErrInvalidPolicy
+	}
+	opts, err = normalizeLoosePublishOptions(opts)
+	if err != nil {
+		return packstore.LooseReceipt{}, err
+	}
+	if !opts.SizeKnown || opts.Compression.Enabled {
 		return packstore.LooseReceipt{}, packstore.ErrInvalidPolicy
 	}
 	staged, err := os.CreateTemp("", "kit-s3-repair-*")
@@ -118,7 +121,7 @@ func (b *Backend) RepairLoose(
 	}
 	hasher := sha256.New()
 	reader := io.Reader(&publicationContextReader{ctx: ctx, src: src})
-	if opts.MaxBytes > 0 {
+	if opts.MaxBytes > 0 && opts.MaxBytes < math.MaxInt64 {
 		reader = io.LimitReader(reader, opts.MaxBytes+1)
 	}
 	size, err := io.CopyBuffer(
@@ -193,15 +196,11 @@ func (b *Backend) PublishPack(
 	if err != nil {
 		return packstore.PackReceipt{}, err
 	}
-	result, err := b.multipartPublish(ctx, b.keys.pack(packID), src, maxBytes, "")
+	result, err := b.multipartPublish(ctx, b.keys.pack(packID), src, multipartPublishOptions{
+		maxBytes: maxBytes, exactSize: opts.ExpectedSize, sizeKnown: opts.SizeKnown,
+	})
 	if err != nil {
 		return packstore.PackReceipt{}, err
-	}
-	if opts.SizeKnown && result.size != opts.ExpectedSize {
-		return packstore.PackReceipt{}, fmt.Errorf(
-			"%w: published pack size %d does not match expected %d",
-			packstore.ErrContentMismatch, result.size, opts.ExpectedSize,
-		)
 	}
 	size, digest, err := b.verifyPackObject(ctx, packID, result.size)
 	if err != nil {
@@ -229,6 +228,13 @@ type publicationResult struct {
 	created bool
 }
 
+type multipartPublishOptions struct {
+	maxBytes       int64
+	exactSize      int64
+	sizeKnown      bool
+	expectedDigest string
+}
+
 type publicationContextReader struct {
 	ctx context.Context
 	src io.Reader
@@ -245,8 +251,7 @@ func (b *Backend) multipartPublish(
 	ctx context.Context,
 	key string,
 	src io.Reader,
-	maxBytes int64,
-	expectedDigest string,
+	opts multipartPublishOptions,
 ) (result publicationResult, resultErr error) {
 	created, err := b.client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
 		Bucket: aws.String(b.bucket), Key: aws.String(key),
@@ -275,7 +280,14 @@ func (b *Backend) multipartPublish(
 	}()
 
 	hasher := sha256.New()
-	buffer := make([]byte, b.part)
+	bufferBytes := b.part
+	if opts.maxBytes > 0 {
+		bufferBytes = min(bufferBytes, opts.maxBytes)
+	}
+	if opts.sizeKnown && opts.exactSize > 0 {
+		bufferBytes = min(bufferBytes, opts.exactSize)
+	}
+	buffer := make([]byte, int(bufferBytes))
 	reader := &publicationContextReader{ctx: ctx, src: src}
 	var parts []types.CompletedPart
 	for partNumber := int32(1); ; partNumber++ {
@@ -290,18 +302,30 @@ func (b *Backend) multipartPublish(
 			return publicationResult{}, fmt.Errorf("s3store: read publication source: %w", readErr)
 		}
 		if n == 0 {
+			if opts.sizeKnown && result.size != opts.exactSize {
+				return publicationResult{}, fmt.Errorf(
+					"%w: publication size %d does not match expected %d",
+					packstore.ErrContentMismatch, result.size, opts.exactSize,
+				)
+			}
 			if len(parts) == 0 {
-				return b.publishEmpty(ctx, key, expectedDigest)
+				return b.publishEmpty(ctx, key, opts.expectedDigest)
 			}
 			break
 		}
 		result.size += int64(n)
-		if maxBytes > 0 && result.size > maxBytes {
+		if opts.maxBytes > 0 && result.size > opts.maxBytes {
 			return publicationResult{}, &packstore.LimitError{
 				Dimension: packstore.LimitPackContainerBytes,
-				Actual:    uint64(result.size), //nolint:gosec // non-negative
-				Limit:     uint64(maxBytes),    //nolint:gosec // validated positive
+				Actual:    uint64(result.size),   //nolint:gosec // non-negative
+				Limit:     uint64(opts.maxBytes), //nolint:gosec // validated positive
 			}
+		}
+		if opts.sizeKnown && result.size > opts.exactSize {
+			return publicationResult{}, fmt.Errorf(
+				"%w: publication size %d does not match expected %d",
+				packstore.ErrContentMismatch, result.size, opts.exactSize,
+			)
 		}
 		_, _ = hasher.Write(buffer[:n])
 		uploaded, err := b.client.UploadPart(ctx, &s3.UploadPartInput{
@@ -319,11 +343,17 @@ func (b *Backend) multipartPublish(
 			break
 		}
 	}
+	if opts.sizeKnown && result.size != opts.exactSize {
+		return publicationResult{}, fmt.Errorf(
+			"%w: publication size %d does not match expected %d",
+			packstore.ErrContentMismatch, result.size, opts.exactSize,
+		)
+	}
 	copy(result.digest[:], hasher.Sum(nil))
-	if expectedDigest != "" && hex.EncodeToString(result.digest[:]) != expectedDigest {
+	if opts.expectedDigest != "" && hex.EncodeToString(result.digest[:]) != opts.expectedDigest {
 		return publicationResult{}, fmt.Errorf(
 			"%w: publication bytes differ from %s",
-			packstore.ErrContentMismatch, expectedDigest,
+			packstore.ErrContentMismatch, opts.expectedDigest,
 		)
 	}
 	_, err = b.client.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
@@ -345,6 +375,36 @@ func (b *Backend) multipartPublish(
 		return publicationResult{}, classifyError("complete multipart publication", err)
 	}
 	return result, nil
+}
+
+func normalizeLoosePublishOptions(
+	opts packstore.PublishOptions,
+) (packstore.PublishOptions, error) {
+	if opts.Durability == 0 {
+		opts.Durability = packstore.DurablePublication
+	}
+	if opts.Dedup == 0 {
+		opts.Dedup = packstore.VerifyFullHash
+	}
+	if opts.Durability != packstore.AtomicPublication &&
+		opts.Durability != packstore.DurablePublication {
+		return packstore.PublishOptions{}, packstore.ErrInvalidPolicy
+	}
+	if opts.Dedup != packstore.VerifyTypeAndSize && opts.Dedup != packstore.VerifyFullHash {
+		return packstore.PublishOptions{}, packstore.ErrInvalidPolicy
+	}
+	if opts.ExpectedSize < 0 || opts.MaxBytes < 0 ||
+		opts.Compression.MinBytes < 0 || opts.Compression.MinSavingsPercent < 0 ||
+		opts.Compression.MinSavingsPercent > 100 {
+		return packstore.PublishOptions{}, packstore.ErrInvalidPolicy
+	}
+	if opts.SizeKnown && opts.MaxBytes > 0 && opts.ExpectedSize > opts.MaxBytes {
+		return packstore.PublishOptions{}, fmt.Errorf(
+			"%w: expected size is %d bytes, limit is %d",
+			packstore.ErrContentMismatch, opts.ExpectedSize, opts.MaxBytes,
+		)
+	}
+	return opts, nil
 }
 
 func effectivePackPublicationLimit(

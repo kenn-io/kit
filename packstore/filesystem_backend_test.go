@@ -225,6 +225,36 @@ func TestFilesystemBackendPublishPackCapsCallerLimitBeforeCanonicalWrite(t *test
 	assert.NoFileExists(t, layout.PackPath(packID))
 }
 
+func TestFilesystemBackendPublishPackRejectsExactSizeMismatchBeforeCanonicalWrite(t *testing.T) {
+	packPath, packID, _ := buildBackendPackSource(t, []byte("exact size publication"))
+	info, err := os.Stat(packPath)
+	require.NoError(t, err)
+	for _, tt := range []struct {
+		name         string
+		expectedSize int64
+	}{
+		{name: "source is short", expectedSize: info.Size() + 1},
+		{name: "source is overlong", expectedSize: info.Size() - 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			backend := attachedFilesystemBackend(t, "archive", "epoch-1")
+			source, err := os.Open(packPath)
+			require.NoError(t, err)
+
+			_, err = backend.PublishPack(
+				context.Background(),
+				packID,
+				source,
+				PublishOptions{ExpectedSize: tt.expectedSize, SizeKnown: true},
+			)
+			require.NoError(t, source.Close())
+
+			require.ErrorIs(t, err, ErrContentMismatch)
+			assert.NoFileExists(t, backend.Layout().PackPath(packID))
+		})
+	}
+}
+
 func TestCopyBoundedContextAcceptsMaxInt64Limit(t *testing.T) {
 	var destination bytes.Buffer
 

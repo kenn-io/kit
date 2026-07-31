@@ -31,6 +31,21 @@ func TestNewRejectsPartialInvalidLimits(t *testing.T) {
 	require.ErrorContains(t, err, "invalid")
 }
 
+func TestNewRejectsPartBytesAboveS3Maximum(t *testing.T) {
+	config := testConfig()
+	config.PartBytes = (5 << 30) + 1
+
+	_, err := New(context.Background(), config)
+
+	require.ErrorContains(t, err, "at most 5 GiB")
+}
+
+func TestValidatePartBytesRejectsPlatformIntOverflow(t *testing.T) {
+	err := validatePartBytes(3<<30, (1<<31)-1)
+
+	require.ErrorContains(t, err, "platform int maximum")
+}
+
 func TestNewValidatesEndpointTransport(t *testing.T) {
 	tests := []struct {
 		name     string

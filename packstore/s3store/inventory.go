@@ -113,7 +113,9 @@ func (b *Backend) Probe(ctx context.Context) (report CapabilityReport, resultErr
 	}
 	key := b.keys.staging(owner.Epoch, string(generation), "probe")
 	payload := bytes.Repeat([]byte("kit-s3-probe\n"), 512<<10)
-	published, err := b.multipartPublish(ctx, key, bytes.NewReader(payload), int64(len(payload)), "")
+	published, err := b.multipartPublish(ctx, key, bytes.NewReader(payload), multipartPublishOptions{
+		maxBytes: int64(len(payload)), exactSize: int64(len(payload)), sizeKnown: true,
+	})
 	if err != nil {
 		return report, err
 	}

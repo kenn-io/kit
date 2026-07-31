@@ -16,6 +16,7 @@ import (
 const (
 	defaultPartBytes     = int64(8 << 20)
 	defaultInventorySize = int32(1000)
+	maximumPartBytes     = int64(5 << 30)
 )
 
 // Config binds one S3-compatible namespace. The bucket must already exist.
@@ -83,8 +84,8 @@ func New(ctx context.Context, cfg Config) (*Backend, error) {
 	if cfg.PartBytes == 0 {
 		cfg.PartBytes = defaultPartBytes
 	}
-	if cfg.PartBytes < 5<<20 {
-		return nil, fmt.Errorf("s3store: multipart part size must be at least 5 MiB")
+	if err := validatePartBytes(cfg.PartBytes, uint64(^uint(0)>>1)); err != nil {
+		return nil, err
 	}
 	if cfg.InventoryPageSize == 0 {
 		cfg.InventoryPageSize = defaultInventorySize
@@ -129,6 +130,19 @@ func New(ctx context.Context, cfg Config) (*Backend, error) {
 		backend.owner = &copy
 	}
 	return backend, nil
+}
+
+func validatePartBytes(partBytes int64, platformMaxInt uint64) error {
+	if partBytes < 5<<20 {
+		return fmt.Errorf("s3store: multipart part size must be at least 5 MiB")
+	}
+	if partBytes > maximumPartBytes {
+		return fmt.Errorf("s3store: multipart part size must be at most 5 GiB")
+	}
+	if uint64(partBytes) > platformMaxInt { //nolint:gosec // positive after the minimum check
+		return fmt.Errorf("s3store: multipart part size exceeds platform int maximum")
+	}
+	return nil
 }
 
 func validateEndpoint(endpoint string, allowInsecure bool) error {

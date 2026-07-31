@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -290,6 +291,221 @@ func TestPublishPackCapsCallerLimitAndAbortsMultipart(t *testing.T) {
 	assert.Equal(t, 1, aborts)
 }
 
+func TestPublishPackRejectsExactSizeMismatchBeforeMultipartCompletion(t *testing.T) {
+	owner := packstore.Ownership{
+		Format: packstore.OwnershipFormatV1,
+		Vault:  "test-vault",
+		Store:  "archive",
+		Epoch:  "epoch-1",
+	}
+	marker, err := packstore.MarshalOwnership(owner)
+	require.NoError(t, err)
+	for _, tt := range []struct {
+		name         string
+		expectedSize int64
+	}{
+		{name: "source is short", expectedSize: 6},
+		{name: "source is overlong", expectedSize: 4},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var uploads, completes, aborts int
+			backend := newHTTPBackend(packstore.DefaultLimits(), func(request *http.Request) (*http.Response, error) {
+				query := request.URL.Query()
+				switch {
+				case request.Method == http.MethodGet:
+					header := make(http.Header)
+					header.Set("Content-Length", strconv.Itoa(len(marker)))
+					return &http.Response{
+						StatusCode: http.StatusOK, Header: header,
+						Body:          io.NopCloser(bytes.NewReader(marker)),
+						ContentLength: int64(len(marker)), Request: request,
+					}, nil
+				case request.Method == http.MethodPost && query.Has("uploads"):
+					return xmlResponse(request, http.StatusOK,
+						`<InitiateMultipartUploadResult>`+
+							`<Bucket>test-bucket</Bucket><Key>packs/test</Key>`+
+							`<UploadId>upload-1</UploadId>`+
+							`</InitiateMultipartUploadResult>`), nil
+				case request.Method == http.MethodPut && query.Get("uploadId") == "upload-1":
+					uploads++
+					response := xmlResponse(request, http.StatusOK, "")
+					response.Header.Set("ETag", `"part-etag"`)
+					return response, nil
+				case request.Method == http.MethodPost && query.Get("uploadId") == "upload-1":
+					completes++
+					return xmlResponse(request, http.StatusOK, ""), nil
+				case request.Method == http.MethodDelete && query.Get("uploadId") == "upload-1":
+					aborts++
+					return xmlResponse(request, http.StatusNoContent, ""), nil
+				default:
+					return xmlResponse(request, http.StatusInternalServerError,
+						`<Error><Code>UnexpectedRequest</Code></Error>`), nil
+				}
+			})
+			backend.setOwnership(owner, `"owner-etag"`)
+
+			_, err := backend.PublishPack(
+				context.Background(),
+				pack.NewPackID(),
+				strings.NewReader("hello"),
+				packstore.PublishOptions{ExpectedSize: tt.expectedSize, SizeKnown: true},
+			)
+
+			require.ErrorIs(t, err, packstore.ErrContentMismatch)
+			assert.Equal(t, 1, uploads)
+			assert.Zero(t, completes)
+			assert.Equal(t, 1, aborts)
+		})
+	}
+}
+
+func TestPublishLooseRejectsInvalidOptionsBeforeMultipart(t *testing.T) {
+	owner := packstore.Ownership{
+		Format: packstore.OwnershipFormatV1,
+		Vault:  "test-vault",
+		Store:  "archive",
+		Epoch:  "epoch-1",
+	}
+	marker, err := packstore.MarshalOwnership(owner)
+	require.NoError(t, err)
+	content := []byte("hello")
+	hash := hashOf(content)
+	for _, tt := range []struct {
+		name string
+		opts packstore.PublishOptions
+	}{
+		{name: "negative maximum", opts: packstore.PublishOptions{MaxBytes: -1}},
+		{name: "negative expected size", opts: packstore.PublishOptions{ExpectedSize: -1}},
+		{name: "invalid durability", opts: packstore.PublishOptions{Durability: packstore.Durability(99)}},
+		{name: "invalid dedup", opts: packstore.PublishOptions{Dedup: packstore.DedupVerification(99)}},
+		{
+			name: "invalid compression policy",
+			opts: packstore.PublishOptions{Compression: packstore.LooseCompressionOptions{
+				MinSavingsPercent: 101,
+			}},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var multipartCreates int
+			backend := newHTTPBackend(packstore.DefaultLimits(), func(request *http.Request) (*http.Response, error) {
+				if request.Method == http.MethodGet {
+					header := make(http.Header)
+					header.Set("Content-Length", strconv.Itoa(len(marker)))
+					return &http.Response{
+						StatusCode: http.StatusOK, Header: header,
+						Body:          io.NopCloser(bytes.NewReader(marker)),
+						ContentLength: int64(len(marker)), Request: request,
+					}, nil
+				}
+				if request.Method == http.MethodPost && request.URL.Query().Has("uploads") {
+					multipartCreates++
+				}
+				return xmlResponse(request, http.StatusInternalServerError,
+					`<Error><Code>UnexpectedRequest</Code></Error>`), nil
+			})
+			backend.setOwnership(owner, `"owner-etag"`)
+
+			_, err := backend.PublishLoose(
+				context.Background(), hash, bytes.NewReader(content), tt.opts,
+			)
+
+			require.ErrorIs(t, err, packstore.ErrInvalidPolicy)
+			assert.Zero(t, multipartCreates)
+		})
+	}
+}
+
+func TestRepairLooseAcceptsMaxInt64Limit(t *testing.T) {
+	owner := packstore.Ownership{
+		Format: packstore.OwnershipFormatV1,
+		Vault:  "test-vault",
+		Store:  "archive",
+		Epoch:  "epoch-1",
+	}
+	marker, err := packstore.MarshalOwnership(owner)
+	require.NoError(t, err)
+	content := []byte("hello")
+	hash := hashOf(content)
+	var gets int
+	backend := newHTTPBackend(packstore.DefaultLimits(), func(request *http.Request) (*http.Response, error) {
+		switch request.Method {
+		case http.MethodGet:
+			gets++
+			body := marker
+			if gets == 2 {
+				body = content
+			}
+			header := make(http.Header)
+			header.Set("Content-Length", strconv.Itoa(len(body)))
+			return &http.Response{
+				StatusCode: http.StatusOK, Header: header,
+				Body:          io.NopCloser(bytes.NewReader(body)),
+				ContentLength: int64(len(body)), Request: request,
+			}, nil
+		case http.MethodPut:
+			return xmlResponse(request, http.StatusOK, ""), nil
+		default:
+			return xmlResponse(request, http.StatusInternalServerError,
+				`<Error><Code>UnexpectedRequest</Code></Error>`), nil
+		}
+	})
+	backend.setOwnership(owner, `"owner-etag"`)
+
+	receipt, err := backend.RepairLoose(
+		context.Background(),
+		hash,
+		bytes.NewReader(content),
+		packstore.PublishOptions{
+			ExpectedSize: int64(len(content)), SizeKnown: true,
+			MaxBytes: math.MaxInt64,
+		},
+	)
+
+	require.NoError(t, err)
+	assert.Equal(t, int64(len(content)), receipt.Location.LogicalSize)
+}
+
+func TestMultipartPublishBoundsPartBufferByPublicationLimit(t *testing.T) {
+	var uploaded int64
+	backend := newHTTPBackend(packstore.DefaultLimits(), func(request *http.Request) (*http.Response, error) {
+		query := request.URL.Query()
+		switch {
+		case request.Method == http.MethodPost && query.Has("uploads"):
+			return xmlResponse(request, http.StatusOK,
+				`<InitiateMultipartUploadResult>`+
+					`<Bucket>test-bucket</Bucket><Key>packs/test</Key>`+
+					`<UploadId>upload-1</UploadId>`+
+					`</InitiateMultipartUploadResult>`), nil
+		case request.Method == http.MethodPut && query.Get("uploadId") == "upload-1":
+			uploaded = request.ContentLength
+			response := xmlResponse(request, http.StatusOK, "")
+			response.Header.Set("ETag", `"part-etag"`)
+			return response, nil
+		case request.Method == http.MethodPost && query.Get("uploadId") == "upload-1":
+			return xmlResponse(request, http.StatusOK,
+				`<CompleteMultipartUploadResult>`+
+					`<Location>https://example.test/test-bucket/packs/test</Location>`+
+					`<Bucket>test-bucket</Bucket><Key>packs/test</Key>`+
+					`<ETag>&quot;complete-etag&quot;</ETag>`+
+					`</CompleteMultipartUploadResult>`), nil
+		default:
+			return xmlResponse(request, http.StatusInternalServerError,
+				`<Error><Code>UnexpectedRequest</Code></Error>`), nil
+		}
+	})
+	source := &requestedReadRecorder{reader: strings.NewReader("hi")}
+
+	result, err := backend.multipartPublish(
+		context.Background(), "packs/test", source,
+		multipartPublishOptions{maxBytes: 2},
+	)
+
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), result.size)
+	assert.Equal(t, int64(2), uploaded)
+	assert.Equal(t, 2, source.maxRequest)
+}
+
 func TestMultipartPublishAbortsDeduplicatedUpload(t *testing.T) {
 	var aborts int
 	backend := newHTTPBackend(packstore.DefaultLimits(), func(request *http.Request) (*http.Response, error) {
@@ -322,8 +538,7 @@ func TestMultipartPublishAbortsDeduplicatedUpload(t *testing.T) {
 		context.Background(),
 		"packs/test",
 		strings.NewReader("hello"),
-		5,
-		"",
+		multipartPublishOptions{maxBytes: 5},
 	)
 
 	require.NoError(t, err)
@@ -410,7 +625,9 @@ func TestMultipartPublishCancelAbortsWithBoundedContext(t *testing.T) {
 		}
 	})
 
-	_, err := backend.multipartPublish(ctx, "packs/test", source, 5, "")
+	_, err := backend.multipartPublish(
+		ctx, "packs/test", source, multipartPublishOptions{maxBytes: 5},
+	)
 
 	require.ErrorIs(t, err, context.Canceled)
 	assert.Equal(t, 1, source.reads)
@@ -436,6 +653,16 @@ type cancelAfterFirstRead struct {
 	cancel context.CancelFunc
 	reader io.Reader
 	reads  int
+}
+
+type requestedReadRecorder struct {
+	reader     io.Reader
+	maxRequest int
+}
+
+func (r *requestedReadRecorder) Read(p []byte) (int, error) {
+	r.maxRequest = max(r.maxRequest, len(p))
+	return r.reader.Read(p)
 }
 
 func (r *cancelAfterFirstRead) Read(p []byte) (int, error) {

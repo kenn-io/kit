@@ -432,6 +432,12 @@ func (b *FilesystemBackend) PublishPack(
 	if err != nil {
 		return PackReceipt{}, err
 	}
+	if opts.SizeKnown && written != opts.ExpectedSize {
+		return PackReceipt{}, fmt.Errorf(
+			"%w: expected pack size %d, got %d",
+			ErrContentMismatch, opts.ExpectedSize, written,
+		)
+	}
 	var expectedDigest [sha256.Size]byte
 	copy(expectedDigest[:], hasher.Sum(nil))
 	if err := staged.Sync(); err != nil {
