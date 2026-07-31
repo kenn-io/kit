@@ -1321,6 +1321,10 @@ func publicationScratchBase(target, repoStaging string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("backup: resolving restore target for publication scratch: %w", err)
 	}
+	targetInfo, err := os.Stat(targetPath)
+	if err != nil {
+		return "", fmt.Errorf("backup: inspecting restore target for publication scratch: %w", err)
+	}
 	for _, candidate := range []string{repoStaging, os.TempDir()} {
 		candidatePath, err := filepath.Abs(candidate)
 		if err != nil {
@@ -1330,18 +1334,30 @@ func publicationScratchBase(target, repoStaging string) (string, error) {
 		if err != nil {
 			continue
 		}
-		if !strings.EqualFold(filepath.VolumeName(targetPath), filepath.VolumeName(candidatePath)) {
-			return candidatePath, nil
-		}
-		rel, err := filepath.Rel(targetPath, candidatePath)
+		contained, err := pathContainsFilesystemIdentity(targetInfo, candidatePath)
 		if err != nil {
 			continue
 		}
-		if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		if !contained {
 			return candidatePath, nil
 		}
 	}
 	return "", fmt.Errorf("backup: no private publication staging directory outside restore target %s", target)
+}
+
+func pathContainsFilesystemIdentity(target fs.FileInfo, candidate string) (bool, error) {
+	for current := candidate; ; current = filepath.Dir(current) {
+		currentInfo, err := os.Stat(current)
+		if err != nil {
+			return false, err
+		}
+		if os.SameFile(target, currentInfo) {
+			return true, nil
+		}
+		if filepath.Dir(current) == current {
+			return false, nil
+		}
+	}
 }
 
 // publishRestoredDB swaps the fully materialized staging temp into place:

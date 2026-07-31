@@ -380,6 +380,54 @@ func TestMultiStoreReadBoundedVerifiesWithinLimit(t *testing.T) {
 	assert.Equal(uint64(len(content)), limitErr.Actual)
 }
 
+func TestMultiStoreReadBoundedPreflightsCatalogStoredSize(t *testing.T) {
+	content := []byte("data")
+	hash := hashForTest(content)
+	maxBytes := int64(len(content))
+	storedBytes := maxBytes + 1
+	packed := IndexEntry{
+		Hash: hash, PackID: pack.NewPackID(), Offset: int64(pack.MinEntryOffset),
+		StoredLen: storedBytes, RawLen: maxBytes,
+	}
+	locations := map[string]ReadLocation{
+		"loose": {
+			StoreID: "archive", Generation: "archive-1",
+			Loose: &LooseLocation{
+				Encoding: LooseEncodingZstd, LogicalSize: maxBytes, StoredSize: storedBytes,
+			},
+		},
+		"packed": {
+			StoreID: "archive", Generation: "archive-1", Pack: &packed,
+		},
+	}
+	for name, location := range locations {
+		t.Run(name, func(t *testing.T) {
+			assert := assert.New(t)
+			require := require.New(t)
+			backend := &recordingReadBackend{content: content}
+			store, err := NewMultiStore(
+				staticLocationResolver{resolution: Resolution{
+					Member: true, Candidates: []ReadLocation{location},
+				}},
+				staticBackendRegistry{"archive": backend},
+				MultiStoreOptions{},
+			)
+			require.NoError(err)
+
+			got, size, err := store.ReadBounded(context.Background(), hash, maxBytes)
+
+			assert.Nil(got)
+			assert.Zero(size)
+			var limitErr *LimitError
+			require.ErrorAs(err, &limitErr)
+			assert.Equal(LimitBlobStoredBytes, limitErr.Dimension)
+			assert.Equal(uint64(storedBytes), limitErr.Actual)
+			assert.Equal(uint64(maxBytes), limitErr.Limit)
+			assert.Zero(backend.opens)
+		})
+	}
+}
+
 func TestMultiStoreRejectsMismatchedPackedCandidate(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)

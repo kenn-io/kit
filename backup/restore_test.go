@@ -980,6 +980,30 @@ func TestRestoreBeforePublicationScratchIsOutsideRepositoryTarget(t *testing.T) 
 	assert.Empty(restoreDatabaseStageFiles(t, r.Root(), newTestApp().DBFileName()))
 }
 
+func TestPublicationScratchBaseUsesFilesystemIdentityForContainment(t *testing.T) {
+	require := require.New(t)
+	base := t.TempDir()
+	target := filepath.Join(base, "Target")
+	candidate := filepath.Join(target, "repository", "staging")
+	require.NoError(os.MkdirAll(candidate, 0o700))
+
+	caseAlias := filepath.Join(base, "target", "repository", "staging")
+	targetInfo, err := os.Stat(target)
+	require.NoError(err)
+	aliasTargetInfo, err := os.Stat(filepath.Join(base, "target"))
+	if errors.Is(err, os.ErrNotExist) {
+		t.Skip("filesystem is case-sensitive")
+	}
+	require.NoError(err)
+	require.True(os.SameFile(targetInfo, aliasTargetInfo))
+
+	got, err := publicationScratchBase(target, caseAlias)
+	require.NoError(err)
+	want, err := filepath.EvalSymlinks(os.TempDir())
+	require.NoError(err)
+	require.Equal(want, got)
+}
+
 func TestRestoreBeforePublicationFailureLeavesDatabaseUnpublished(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)

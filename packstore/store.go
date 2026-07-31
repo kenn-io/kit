@@ -244,6 +244,9 @@ func (s *Store) readMultiBounded(
 		s,
 		hash,
 		func(backend ReadBackend, location ReadLocation) ([]byte, int64, error) {
+			if err := preflightBoundedStoredSize(location, maxBytes); err != nil {
+				return nil, 0, err
+			}
 			if bounded, ok := backend.(boundedReadBackend); ok {
 				if location.Loose != nil {
 					return bounded.ReadLooseBounded(ctx, hash, *location.Loose, maxBytes)
@@ -264,6 +267,28 @@ func (s *Store) readMultiBounded(
 		s.health.Clear(hash, location)
 	}
 	return data, size, nil
+}
+
+func preflightBoundedStoredSize(location ReadLocation, maxBytes int64) error {
+	var logicalSize, storedSize int64
+	if location.Loose != nil {
+		logicalSize = location.Loose.LogicalSize
+		storedSize = location.Loose.StoredSize
+	} else {
+		logicalSize = location.Pack.RawLen
+		storedSize = location.Pack.StoredLen
+	}
+	// Leave catalog entries whose logical size is already over the limit to the
+	// backend: a corrupt candidate must not prevent replica fallback. Stored
+	// overhead is terminal only when the authorized logical content still fits.
+	if logicalSize <= maxBytes && storedSize > maxBytes {
+		return newLimitError(
+			LimitBlobStoredBytes,
+			uint64(storedSize), //nolint:gosec // locations reject negative sizes
+			uint64(maxBytes),   //nolint:gosec // ReadBounded rejects negative limits
+		)
+	}
+	return nil
 }
 
 func consumeBounded(
