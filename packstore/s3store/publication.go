@@ -653,7 +653,11 @@ func (b *Backend) verifyPackObject(
 }
 
 func (b *Backend) validatePackFile(ctx context.Context, file *os.File, packID string) error {
-	if err := packvalidate.File(ctx, file, packID, b.packReaderOptions()); err != nil {
+	limits := packvalidate.BlobLimits{
+		RawBytes:    uint64(b.limits.BlobBytes), //nolint:gosec // validated non-negative
+		StoredBytes: uint64(b.limits.BlobBytes), //nolint:gosec // validated non-negative
+	}
+	if err := packvalidate.File(ctx, file, packID, b.packReaderOptions(), limits); err != nil {
 		if mapped, ok := mapPackLimit(err); ok {
 			return mapped
 		}

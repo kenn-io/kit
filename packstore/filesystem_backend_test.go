@@ -299,6 +299,53 @@ func TestFilesystemBackendPublishPackRejectsForgedBlobLimitBeforeCanonicalWrite(
 	assert.NoFileExists(t, layout.PackPath(packID))
 }
 
+func TestFilesystemBackendPublishPackEnforcesZeroBlobLimit(t *testing.T) {
+	tests := []struct {
+		name      string
+		content   []byte
+		wantLimit bool
+	}{
+		{name: "nonempty blob", content: []byte("x"), wantLimit: true},
+		{name: "empty blob", content: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			limits := DefaultLimits()
+			limits.BlobBytes = 0
+			packPath, packID, _ := buildBackendPackSource(t, tt.content)
+			layout := layoutForStoreTest(t)
+			backend, err := NewFilesystemBackend(layout, FilesystemBackendOptions{Limits: limits})
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, backend.Close()) })
+			owner := Ownership{
+				Format: OwnershipFormatV1,
+				Vault:  "test-vault",
+				Store:  "archive",
+				Epoch:  "epoch-1",
+			}
+			require.NoError(t, backend.ReplaceOwnership(context.Background(), owner, nil))
+			source, err := os.Open(packPath)
+			require.NoError(t, err)
+
+			_, err = backend.PublishPack(context.Background(), packID, source, PublishOptions{})
+			require.NoError(t, source.Close())
+
+			if !tt.wantLimit {
+				require.NoError(t, err)
+				assert.FileExists(t, layout.PackPath(packID))
+				return
+			}
+			require.ErrorIs(t, err, ErrBlobTooLarge)
+			var limit *LimitError
+			require.ErrorAs(t, err, &limit)
+			assert.Equal(t, LimitBlobRawBytes, limit.Dimension)
+			assert.Equal(t, uint64(1), limit.Actual)
+			assert.Zero(t, limit.Limit)
+			assert.NoFileExists(t, layout.PackPath(packID))
+		})
+	}
+}
+
 func TestCopyBoundedContextAcceptsMaxInt64Limit(t *testing.T) {
 	var destination bytes.Buffer
 
@@ -459,6 +506,31 @@ func TestFilesystemBackendDoesNotClassifyIncompleteStreamCloseAsCorrupt(t *testi
 
 	require.ErrorIs(t, err, pack.ErrVerificationIncomplete)
 	require.NotErrorIs(t, err, ErrPhysicalCorrupt)
+}
+
+func TestFilesystemBackendPreservesClosedStreamLifecycleErrors(t *testing.T) {
+	ctx := context.Background()
+	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
+	content := []byte("early closed physical stream")
+	hash := hashForTest(content)
+	receipt, err := backend.PublishLoose(
+		ctx,
+		hash,
+		bytes.NewReader(content),
+		PublishOptions{ExpectedSize: int64(len(content)), SizeKnown: true},
+	)
+	require.NoError(t, err)
+	stream, _, err := backend.OpenLoose(ctx, hash, receipt.Location)
+	require.NoError(t, err)
+	require.ErrorIs(t, stream.Close(), pack.ErrVerificationIncomplete)
+
+	_, readErr := stream.Read(make([]byte, 1))
+	verifyErr := stream.Verify()
+	for _, err := range []error{readErr, verifyErr} {
+		require.ErrorIs(t, err, os.ErrClosed)
+		require.NotErrorIs(t, err, ErrStoreUnavailable)
+		require.NotErrorIs(t, err, ErrPhysicalCorrupt)
+	}
 }
 
 func TestMultiStoreFallsBackFromUnavailableFilesystemLooseObject(t *testing.T) {

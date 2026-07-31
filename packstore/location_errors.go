@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 
 	"go.kenn.io/kit/pack"
 )
@@ -116,6 +117,7 @@ func isPhysicalControlError(err error) bool {
 		context.Canceled,
 		context.DeadlineExceeded,
 		io.EOF,
+		fs.ErrClosed,
 		pack.ErrVerificationIncomplete,
 		pack.ErrStreamsActive,
 		ErrInvalidPolicy,

@@ -576,7 +576,9 @@ func verifyFilesystemPack(
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return 0, errors.Join(err, file.Close())
 	}
-	if err := packvalidate.File(ctx, file, packID, filesystemPackReaderOptions(limits)); err != nil {
+	if err := packvalidate.File(
+		ctx, file, packID, filesystemPackReaderOptions(limits), filesystemPackBlobLimits(limits),
+	); err != nil {
 		return 0, mapPackStreamLimit(err)
 	}
 	return info.Size(), nil
@@ -592,7 +594,9 @@ func validateFilesystemPackStaging(
 	if err != nil {
 		return fmt.Errorf("packstore: open pack staging for validation: %w", err)
 	}
-	if err := packvalidate.File(ctx, file, packID, filesystemPackReaderOptions(limits)); err != nil {
+	if err := packvalidate.File(
+		ctx, file, packID, filesystemPackReaderOptions(limits), filesystemPackBlobLimits(limits),
+	); err != nil {
 		err = mapPackStreamLimit(err)
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
 			errors.Is(err, ErrBlobTooLarge) {
@@ -612,6 +616,13 @@ func filesystemPackReaderOptions(limits Limits) pack.ReaderOptions {
 		StoredBytes:    uint64(limits.BlobBytes),
 		WindowBytes:    uint64(max(limits.BlobBytes, int64(1<<10))),
 	}}
+}
+
+func filesystemPackBlobLimits(limits Limits) packvalidate.BlobLimits {
+	return packvalidate.BlobLimits{
+		RawBytes:    uint64(limits.BlobBytes), //nolint:gosec // validated non-negative
+		StoredBytes: uint64(limits.BlobBytes), //nolint:gosec // validated non-negative
+	}
 }
 
 // Retire removes one canonical object after a fresh ownership check. Missing
