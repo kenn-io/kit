@@ -247,6 +247,18 @@ func (b *Backend) Probe(ctx context.Context) (report CapabilityReport, resultErr
 	if err != nil {
 		return report, classifyError("probe delete", err)
 	}
+	_, err = b.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(b.bucket), Key: aws.String(key),
+	})
+	if err == nil {
+		return report, errors.Join(
+			packstore.ErrPhysicalCorrupt,
+			fmt.Errorf("s3store: endpoint acknowledged probe deletion but object remains"),
+		)
+	}
+	if statusCode(err) != http.StatusNotFound {
+		return report, classifyError("verify probe delete", err)
+	}
 	cleanupPending = false
 	resultErr = nil
 	report.Delete = true

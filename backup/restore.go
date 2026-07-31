@@ -1101,20 +1101,22 @@ func (s *restoreState) restorePortableMetadata(
 			"backup: portable metadata blob is %d bytes but manifest records %d", stream.Size(), metadata.Bytes)
 	}
 
-	scratchBase, err := publicationScratchBase(s.target, s.repo.Path(stagingDirName))
+	scratch, err := openRestoreScratch(s.root)
 	if err != nil {
 		return "", 0, err
 	}
-	privateDir, err := os.MkdirTemp(scratchBase, "restore-metadata-*")
+	defer func() { resultErr = errors.Join(resultErr, scratch.root.Close()) }()
+	privateRel, privateDir, err := scratch.mkdir("restore-metadata-")
 	if err != nil {
 		return "", 0, fmt.Errorf("backup: creating private metadata staging directory: %w", err)
 	}
 	defer func() {
-		if err := os.RemoveAll(privateDir); err != nil {
+		if err := scratch.root.RemoveAll(privateRel); err != nil {
 			resultErr = errors.Join(resultErr,
 				fmt.Errorf("backup: removing private metadata staging directory: %w", err))
 		}
 	}()
+	privateDBRel := filepath.Join(privateRel, "runtime.db")
 	privateDB := filepath.Join(privateDir, "runtime.db")
 	s.progress.emit(ProgressEvent{
 		Stage: ProgressStageMetadata, Total: 1, BytesTotal: metadata.Bytes,
@@ -1126,22 +1128,25 @@ func (s *restoreState) restorePortableMetadata(
 	if !stream.Verified() {
 		return "", 0, errors.New("backup: metadata restorer returned before verified EOF")
 	}
-	info, err := os.Lstat(privateDB)
+	info, err := scratch.root.Lstat(privateDBRel)
 	if err != nil {
 		return "", 0, fmt.Errorf("backup: checking restored metadata database: %w", err)
 	}
 	if !info.Mode().IsRegular() {
 		return "", 0, errors.New("backup: metadata restorer did not create a regular database file")
 	}
-	for _, sidecar := range sqliteSidecarNames(privateDB) {
-		if _, err := os.Lstat(sidecar); !errors.Is(err, os.ErrNotExist) {
+	for _, sidecar := range sqliteSidecarNames(privateDBRel) {
+		if _, err := scratch.root.Lstat(sidecar); !errors.Is(err, os.ErrNotExist) {
 			if err == nil {
-				return "", 0, fmt.Errorf("backup: metadata restorer left SQLite sidecar %s", sidecar)
+				return "", 0, fmt.Errorf(
+					"backup: metadata restorer left SQLite sidecar %s",
+					filepath.Join(scratch.path, sidecar),
+				)
 			}
 			return "", 0, fmt.Errorf("backup: checking metadata restore sidecar: %w", err)
 		}
 	}
-	f, err := os.Open(privateDB)
+	f, err := scratch.root.Open(privateDBRel)
 	if err != nil {
 		return "", 0, fmt.Errorf("backup: opening restored metadata database: %w", err)
 	}
@@ -1182,19 +1187,6 @@ func (s *restoreState) prepareBeforePublication(
 	ctx context.Context, currentRel, finalDBRel string,
 	callback func(context.Context, RestorePublicationTarget) error,
 ) (replacementRel string, dbBytes int64, resultErr error) {
-	var privateDir string
-	// Register first so every resource acquired below is closed before the
-	// directory cleanup sees and joins its error with resultErr.
-	defer func() {
-		if privateDir == "" {
-			return
-		}
-		if err := os.RemoveAll(privateDir); err != nil {
-			resultErr = errors.Join(resultErr,
-				fmt.Errorf("backup: removing private publication staging directory: %w", err))
-		}
-	}()
-
 	source, err := s.root.Open(currentRel)
 	if err != nil {
 		return "", 0, fmt.Errorf("backup: opening staged database for publication preparation: %w", err)
@@ -1212,16 +1204,28 @@ func (s *restoreState) prepareBeforePublication(
 		return "", 0, errors.New("backup: staged database for publication preparation is not a regular file")
 	}
 
-	scratchBase, err := publicationScratchBase(s.target, s.repo.Path(stagingDirName))
+	scratch, err := openRestoreScratch(s.root)
 	if err != nil {
 		return "", 0, err
 	}
-	privateDir, err = os.MkdirTemp(scratchBase, "restore-publication-*")
+	defer func() { resultErr = errors.Join(resultErr, scratch.root.Close()) }()
+	privateRel, _, err := scratch.mkdir("restore-publication-")
 	if err != nil {
 		return "", 0, fmt.Errorf("backup: creating private publication staging directory: %w", err)
 	}
-	privateDB := filepath.Join(privateDir, filepath.Base(finalDBRel))
-	private, err := os.OpenFile(privateDB, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	defer func() {
+		if err := scratch.root.RemoveAll(privateRel); err != nil {
+			resultErr = errors.Join(resultErr,
+				fmt.Errorf("backup: removing private publication staging directory: %w", err))
+		}
+	}()
+	privateDBRel := filepath.Join(privateRel, filepath.Base(finalDBRel))
+	privateDB := filepath.Join(scratch.path, privateDBRel)
+	private, err := scratch.root.OpenFile(
+		privateDBRel,
+		os.O_WRONLY|os.O_CREATE|os.O_EXCL,
+		0o600,
+	)
 	if err != nil {
 		return "", 0, fmt.Errorf("backup: creating private publication database: %w", err)
 	}
@@ -1262,22 +1266,25 @@ func (s *restoreState) prepareBeforePublication(
 	if err := callback(ctx, RestorePublicationTarget{TargetDir: s.target, DBPath: privateDB}); err != nil {
 		return "", 0, fmt.Errorf("backup: preparing restored application state: %w", err)
 	}
-	info, err := os.Lstat(privateDB)
+	info, err := scratch.root.Lstat(privateDBRel)
 	if err != nil {
 		return "", 0, fmt.Errorf("backup: checking prepared restored database: %w", err)
 	}
 	if !info.Mode().IsRegular() {
 		return "", 0, errors.New("backup: publication callback did not leave a regular database file")
 	}
-	for _, sidecar := range sqliteSidecarNames(privateDB) {
-		if _, err := os.Lstat(sidecar); !errors.Is(err, os.ErrNotExist) {
+	for _, sidecar := range sqliteSidecarNames(privateDBRel) {
+		if _, err := scratch.root.Lstat(sidecar); !errors.Is(err, os.ErrNotExist) {
 			if err == nil {
-				return "", 0, fmt.Errorf("backup: publication callback left SQLite sidecar %s", sidecar)
+				return "", 0, fmt.Errorf(
+					"backup: publication callback left SQLite sidecar %s",
+					filepath.Join(scratch.path, sidecar),
+				)
 			}
 			return "", 0, fmt.Errorf("backup: checking publication callback sidecar: %w", err)
 		}
 	}
-	opened, err := os.Open(privateDB)
+	opened, err := scratch.root.Open(privateDBRel)
 	if err != nil {
 		return "", 0, fmt.Errorf("backup: opening prepared restored database: %w", err)
 	}
@@ -1308,48 +1315,64 @@ func (s *restoreState) prepareBeforePublication(
 	return stagedRel, info.Size(), nil
 }
 
-// publicationScratchBase selects a filesystem location that cannot resolve
-// through the callback's mutable target namespace. Repository staging avoids
-// ambient temp storage when it is already disjoint; restoring into the
-// repository itself instead falls back to the system temporary directory.
-func publicationScratchBase(target, repoStaging string) (string, error) {
-	targetPath, err := filepath.Abs(target)
-	if err != nil {
-		return "", fmt.Errorf("backup: resolving restore target for publication scratch: %w", err)
-	}
-	targetPath, err = filepath.EvalSymlinks(targetPath)
-	if err != nil {
-		return "", fmt.Errorf("backup: resolving restore target for publication scratch: %w", err)
-	}
-	targetInfo, err := os.Stat(targetPath)
-	if err != nil {
-		return "", fmt.Errorf("backup: inspecting restore target for publication scratch: %w", err)
-	}
-	for _, candidate := range []string{repoStaging, os.TempDir()} {
-		candidatePath, err := filepath.Abs(candidate)
-		if err != nil {
-			continue
-		}
-		candidatePath, err = filepath.EvalSymlinks(candidatePath)
-		if err != nil {
-			continue
-		}
-		contained, err := pathContainsFilesystemIdentity(targetInfo, candidatePath)
-		if err != nil {
-			continue
-		}
-		if !contained {
-			return candidatePath, nil
-		}
-	}
-	return "", fmt.Errorf("backup: no private publication staging directory outside restore target %s", target)
+type restoreScratch struct {
+	root *os.Root
+	path string
 }
 
-func pathContainsFilesystemIdentity(target fs.FileInfo, candidate string) (bool, error) {
-	for current := candidate; ; current = filepath.Dir(current) {
+// openRestoreScratch pins the trusted system temporary root and proves that
+// the held restore target is neither that root nor one of its ancestors. The
+// callback path never traverses the caller-controlled target or repository.
+func openRestoreScratch(target *os.Root) (*restoreScratch, error) {
+	if target == nil {
+		return nil, errors.New("backup: nil restore target root for publication scratch")
+	}
+	targetInfo, err := target.Stat(".")
+	if err != nil {
+		return nil, fmt.Errorf("backup: inspecting restore target for publication scratch: %w", err)
+	}
+	scratchPath, err := filepath.Abs(os.TempDir())
+	if err != nil {
+		return nil, fmt.Errorf("backup: resolving trusted publication scratch: %w", err)
+	}
+	scratchPath, err = filepath.EvalSymlinks(scratchPath)
+	if err != nil {
+		return nil, fmt.Errorf("backup: resolving trusted publication scratch: %w", err)
+	}
+	scratchRoot, err := os.OpenRoot(scratchPath)
+	if err != nil {
+		return nil, fmt.Errorf("backup: opening trusted publication scratch: %w", err)
+	}
+	closeOnError := func(err error) (*restoreScratch, error) {
+		return nil, errors.Join(err, scratchRoot.Close())
+	}
+	scratchInfo, err := scratchRoot.Stat(".")
+	if err != nil {
+		return closeOnError(fmt.Errorf("backup: inspecting trusted publication scratch: %w", err))
+	}
+	contained, err := pathContainsFilesystemIdentity(targetInfo, scratchInfo, scratchPath)
+	if err != nil {
+		return closeOnError(fmt.Errorf("backup: proving trusted publication scratch: %w", err))
+	}
+	if contained {
+		return closeOnError(fmt.Errorf(
+			"backup: trusted publication scratch %s is inside restore target", scratchPath))
+	}
+	return &restoreScratch{root: scratchRoot, path: scratchPath}, nil
+}
+
+func pathContainsFilesystemIdentity(
+	target fs.FileInfo,
+	candidate fs.FileInfo,
+	candidatePath string,
+) (bool, error) {
+	for current := candidatePath; ; current = filepath.Dir(current) {
 		currentInfo, err := os.Stat(current)
 		if err != nil {
 			return false, err
+		}
+		if current == candidatePath && !os.SameFile(candidate, currentInfo) {
+			return false, fmt.Errorf("scratch root %s was replaced while opening it", candidatePath)
 		}
 		if os.SameFile(target, currentInfo) {
 			return true, nil
@@ -1358,6 +1381,20 @@ func pathContainsFilesystemIdentity(target fs.FileInfo, candidate string) (bool,
 			return false, nil
 		}
 	}
+}
+
+func (s *restoreScratch) mkdir(prefix string) (relative string, absolute string, err error) {
+	for range 100 {
+		name := prefix + pack.NewPackID()
+		if err := s.root.Mkdir(name, 0o700); err != nil {
+			if errors.Is(err, fs.ErrExist) {
+				continue
+			}
+			return "", "", err
+		}
+		return name, filepath.Join(s.path, name), nil
+	}
+	return "", "", fmt.Errorf("backup: exhausted private scratch name attempts")
 }
 
 // publishRestoredDB swaps the fully materialized staging temp into place:

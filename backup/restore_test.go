@@ -917,6 +917,10 @@ func TestRestoreBeforePublicationUsesPrivateScratchAndPublishesUpdate(t *testing
 		TargetDir: target,
 		BeforePublication: func(_ context.Context, staged RestorePublicationTarget) error {
 			assert.Equal(target, staged.TargetDir)
+			trustedTemp, err := filepath.EvalSymlinks(os.TempDir())
+			require.NoError(err)
+			assert.Equal(trustedTemp, filepath.Dir(filepath.Dir(staged.DBPath)),
+				"callback scratch must be a direct child of the trusted temporary root")
 			rel, err := filepath.Rel(staged.TargetDir, staged.DBPath)
 			require.NoError(err)
 			assert.True(rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)),
@@ -980,28 +984,16 @@ func TestRestoreBeforePublicationScratchIsOutsideRepositoryTarget(t *testing.T) 
 	assert.Empty(restoreDatabaseStageFiles(t, r.Root(), newTestApp().DBFileName()))
 }
 
-func TestPublicationScratchBaseUsesFilesystemIdentityForContainment(t *testing.T) {
+func TestRestoreScratchRejectsTrustedTempInsideTarget(t *testing.T) {
 	require := require.New(t)
-	base := t.TempDir()
-	target := filepath.Join(base, "Target")
-	candidate := filepath.Join(target, "repository", "staging")
-	require.NoError(os.MkdirAll(candidate, 0o700))
+	target, err := os.OpenRoot(os.TempDir())
+	require.NoError(err)
+	t.Cleanup(func() { require.NoError(target.Close()) })
 
-	caseAlias := filepath.Join(base, "target", "repository", "staging")
-	targetInfo, err := os.Stat(target)
-	require.NoError(err)
-	aliasTargetInfo, err := os.Stat(filepath.Join(base, "target"))
-	if errors.Is(err, os.ErrNotExist) {
-		t.Skip("filesystem is case-sensitive")
-	}
-	require.NoError(err)
-	require.True(os.SameFile(targetInfo, aliasTargetInfo))
+	scratch, err := openRestoreScratch(target)
 
-	got, err := publicationScratchBase(target, caseAlias)
-	require.NoError(err)
-	want, err := filepath.EvalSymlinks(os.TempDir())
-	require.NoError(err)
-	require.Equal(want, got)
+	require.Error(err)
+	require.Nil(scratch)
 }
 
 func TestRestoreBeforePublicationFailureLeavesDatabaseUnpublished(t *testing.T) {

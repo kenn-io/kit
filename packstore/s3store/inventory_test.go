@@ -34,6 +34,18 @@ func TestProbeDisarmsCleanupAfterExplicitDelete(t *testing.T) {
 	assert.Equal(t, 1, state.deletes)
 }
 
+func TestProbeRejectsAcknowledgedDeleteThatLeavesObject(t *testing.T) {
+	state, backend := newProbeHTTPBackend(t, false)
+	state.ignoreDelete = true
+
+	report, err := backend.Probe(context.Background())
+
+	require.Error(t, err)
+	assert.False(t, report.Delete)
+	assert.Equal(t, 2, state.deletes, "failed verification must leave cleanup armed")
+	assert.NotNil(t, state.object)
+}
+
 func TestProbeCleanupUsesFreshDeadline(t *testing.T) {
 	state, backend := newProbeHTTPBackend(t, true)
 
@@ -85,6 +97,7 @@ type probeHTTPState struct {
 	failFirstProbeRead          bool
 	ignoreConditionalCreate     bool
 	ignoreConditionalReplace    bool
+	ignoreDelete                bool
 	probeReads                  int
 	multipartCreates            int
 	ownershipReads              int
@@ -207,7 +220,18 @@ func (s *probeHTTPState) roundTrip(request *http.Request) (*http.Response, error
 		if s.failFirstProbeRead {
 			_, s.cleanupDeleteHadDeadline = request.Context().Deadline()
 		}
+		if !s.ignoreDelete {
+			s.object = nil
+		}
 		return xmlResponse(request, http.StatusNoContent, ""), nil
+	case request.Method == http.MethodHead && key == s.probeKey:
+		if s.object == nil {
+			return xmlResponse(request, http.StatusNotFound,
+				`<Error><Code>NoSuchKey</Code></Error>`), nil
+		}
+		response := xmlResponse(request, http.StatusOK, "")
+		response.Header.Set("Content-Length", strconv.Itoa(len(s.object)))
+		return response, nil
 	default:
 		return xmlResponse(request, http.StatusInternalServerError,
 			`<Error><Code>UnexpectedRequest</Code></Error>`), nil
