@@ -1269,19 +1269,29 @@ func (s *restoreState) prepareBeforePublication(
 // ambient temp storage when it is already disjoint; restoring into the
 // repository itself instead falls back to the system temporary directory.
 func publicationScratchBase(target, repoStaging string) (string, error) {
-	targetPath, err := filepath.EvalSymlinks(target)
+	targetPath, err := filepath.Abs(target)
+	if err != nil {
+		return "", fmt.Errorf("backup: resolving restore target for publication scratch: %w", err)
+	}
+	targetPath, err = filepath.EvalSymlinks(targetPath)
 	if err != nil {
 		return "", fmt.Errorf("backup: resolving restore target for publication scratch: %w", err)
 	}
 	for _, candidate := range []string{repoStaging, os.TempDir()} {
-		candidatePath, err := filepath.EvalSymlinks(candidate)
+		candidatePath, err := filepath.Abs(candidate)
 		if err != nil {
 			continue
 		}
+		candidatePath, err = filepath.EvalSymlinks(candidatePath)
+		if err != nil {
+			continue
+		}
+		if !strings.EqualFold(filepath.VolumeName(targetPath), filepath.VolumeName(candidatePath)) {
+			return candidatePath, nil
+		}
 		rel, err := filepath.Rel(targetPath, candidatePath)
 		if err != nil {
-			// Separate filesystem volumes cannot contain one another.
-			return candidatePath, nil
+			continue
 		}
 		if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 			return candidatePath, nil
