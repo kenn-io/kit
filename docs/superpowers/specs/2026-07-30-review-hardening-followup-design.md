@@ -31,14 +31,25 @@ private-network, or other intentionally cleartext S3-compatible services.
 The conformance test will opt in for its local service. Empty endpoints
 continue to use the AWS SDK's default secure endpoint resolution.
 
-Endpoint validation will occur before AWS configuration or client
-construction so invalid transport policy cannot create a usable backend.
+Non-empty endpoints must parse as absolute URLs with a non-empty host and an
+`http` or `https` scheme. Scheme-less, malformed, and non-HTTP(S) endpoints
+are rejected regardless of `AllowInsecureTransport`; the option changes only
+whether an otherwise valid HTTP URL is admitted. Endpoint validation will
+occur before AWS configuration or client construction so invalid transport
+policy cannot create a usable backend.
 
 ### Terminal S3 integrity classification
 
-The S3 pack stream wrapper will classify terminal pack checksum, corruption,
-and blob-mismatch failures from `Read`, `Verify`, and `Close` as
-`packstore.ErrPhysicalCorrupt`. This lets health tracking demote the damaged
+`packstore` will export a shared integrity classifier used by both its
+filesystem wrapper and the S3 pack stream wrapper. It will classify
+`ErrContentMismatch`, `pack.ErrBadMagic`, `pack.ErrUnsupportedVersion`,
+`pack.ErrTruncated`, `pack.ErrChecksum`, `pack.ErrCorrupt`, and
+`pack.ErrBlobMismatch` as `packstore.ErrPhysicalCorrupt`, while preserving
+errors that already carry a candidate-failure sentinel. Filesystem-only
+source-not-found classification remains private.
+
+The S3 wrapper will apply the shared classifier to terminal failures from
+`Read`, `Verify`, and `Close`. This lets health tracking demote the damaged
 generation on the next read. Context cancellation, ordinary I/O failures,
 and an intentional early close that reports
 `pack.ErrVerificationIncomplete` remain unclassified.
@@ -90,6 +101,12 @@ Per-blob raw, stored, and decoder-window limits remain logical policy errors
 and do not trigger replica fallback because an equivalent blob in another
 container cannot satisfy the same configured logical limit.
 
+Because replicas of one pack normally share a container size, a configured
+pack limit below that legitimate size can exhaust every candidate with a
+physical-corrupt headline. Each attempt retains its structured container
+`LimitError`, keeping this policy misconfiguration distinguishable from
+malformed bytes.
+
 ## Testing
 
 Focused regression coverage will prove:
@@ -98,7 +115,8 @@ Focused regression coverage will prove:
   lengths through streaming verification;
 - HTTPS is accepted by default, HTTP is rejected by default, and explicit
   insecure transport enables the conformance endpoint;
-- S3 terminal pack integrity errors are classified while early close is not;
+- S3 terminal pack integrity errors are classified while early close is not,
+  and health tracking demotes the corrupt generation on the following read;
 - a changed resolver result is retried once after the first location
   disappears;
 - external zero-valued loose locations are rejected while the internal
