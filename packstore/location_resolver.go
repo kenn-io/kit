@@ -159,7 +159,7 @@ func resolveCandidates[T any](
 	if err != nil || exhausted == nil {
 		return value, size, location, err
 	}
-	if !store.retryResolution || exhausted.Headline != ErrPhysicalMissing {
+	if !store.retryResolution || !errors.Is(exhausted, ErrPhysicalMissing) {
 		return zero, 0, ReadLocation{}, exhausted
 	}
 	refreshed, err := store.locationResolver.ResolveLocations(ctx, hash)

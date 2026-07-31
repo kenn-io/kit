@@ -125,6 +125,52 @@ func TestMultiStoreRefreshesChangedResolutionAfterMissingLocation(t *testing.T) 
 	assert.Equal(t, 1, newBackend.opens)
 }
 
+func TestMultiStoreRefreshesAfterMixedCorruptAndMissingLocations(t *testing.T) {
+	content := []byte("migrated content after mixed failures")
+	hash := hashForTest(content)
+	corruptLocation := ReadLocation{
+		StoreID: "corrupt", Generation: "corrupt-1",
+		Loose: rawLocation(content),
+	}
+	missingLocation := ReadLocation{
+		StoreID: "old", Generation: "old-1",
+		Loose: rawLocation(content),
+	}
+	newLocation := ReadLocation{
+		StoreID: "new", Generation: "new-1",
+		Loose: rawLocation(content),
+	}
+	resolver := &changingLocationResolver{resolutions: []Resolution{
+		{Member: true, Candidates: []ReadLocation{corruptLocation, missingLocation}},
+		{Member: true, Candidates: []ReadLocation{newLocation}},
+	}}
+	corruptBackend := &recordingReadBackend{err: ErrPhysicalCorrupt}
+	missingBackend := &recordingReadBackend{err: ErrPhysicalMissing}
+	newBackend := &recordingReadBackend{content: content}
+	store, err := NewMultiStore(
+		resolver,
+		staticBackendRegistry{
+			"corrupt": corruptBackend,
+			"old":     missingBackend,
+			"new":     newBackend,
+		},
+		MultiStoreOptions{},
+	)
+	require.NoError(t, err)
+
+	stream, _, err := store.OpenStream(context.Background(), hash)
+	require.NoError(t, err)
+	got, err := io.ReadAll(stream)
+	require.NoError(t, err)
+	require.NoError(t, stream.Close())
+
+	assert.Equal(t, content, got)
+	assert.Equal(t, 2, resolver.calls)
+	assert.Equal(t, 1, corruptBackend.opens)
+	assert.Equal(t, 1, missingBackend.opens)
+	assert.Equal(t, 1, newBackend.opens)
+}
+
 func TestMultiStoreNextReadDemotesCorruptGeneration(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
