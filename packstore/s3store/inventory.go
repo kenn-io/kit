@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"sort"
 	"time"
 
@@ -190,6 +191,53 @@ func (b *Backend) Probe(ctx context.Context) (report CapabilityReport, resultErr
 	}
 	report.Listing = true
 
+	replacement := []byte("kit-s3-conditional-replacement\n")
+	duplicate, err := b.multipartPublish(
+		ctx,
+		key,
+		bytes.NewReader(replacement),
+		multipartPublishOptions{
+			maxBytes: int64(len(replacement)), exactSize: int64(len(replacement)), sizeKnown: true,
+		},
+	)
+	if err != nil {
+		return report, err
+	}
+	if duplicate.created {
+		return report, errors.Join(
+			packstore.ErrPhysicalCorrupt,
+			fmt.Errorf("s3store: endpoint ignored conditional multipart creation"),
+		)
+	}
+	probeETag, err := b.verifyProbeObject(ctx, key, payload, "conditional multipart creation")
+	if err != nil {
+		return report, err
+	}
+	_, err = b.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(b.bucket), Key: aws.String(key),
+		Body: bytes.NewReader(replacement), IfMatch: aws.String(probeETag),
+	})
+	if err != nil {
+		return report, classifyError("probe conditional replacement", err)
+	}
+	_, staleErr := b.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(b.bucket), Key: aws.String(key),
+		Body: bytes.NewReader(payload), IfMatch: aws.String(probeETag),
+	})
+	if statusCode(staleErr) != http.StatusPreconditionFailed {
+		if staleErr != nil {
+			return report, classifyError("probe stale conditional replacement", staleErr)
+		}
+		return report, errors.Join(
+			packstore.ErrPhysicalCorrupt,
+			fmt.Errorf("s3store: endpoint ignored stale conditional replacement"),
+		)
+	}
+	if _, err := b.verifyProbeObject(ctx, key, replacement, "stale conditional replacement"); err != nil {
+		return report, err
+	}
+	report.ConditionalWrites = true
+
 	if _, err := b.requireOwnership(ctx); err != nil {
 		return report, err
 	}
@@ -203,6 +251,38 @@ func (b *Backend) Probe(ctx context.Context) (report CapabilityReport, resultErr
 	resultErr = nil
 	report.Delete = true
 	return report, nil
+}
+
+func (b *Backend) verifyProbeObject(
+	ctx context.Context,
+	key string,
+	expected []byte,
+	operation string,
+) (string, error) {
+	output, err := b.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(b.bucket), Key: aws.String(key),
+	})
+	if err != nil {
+		return "", classifyError("verify probe "+operation, err)
+	}
+	got, readErr := io.ReadAll(output.Body)
+	closeErr := output.Body.Close()
+	if readErr != nil || closeErr != nil || !bytes.Equal(got, expected) {
+		return "", errors.Join(
+			packstore.ErrPhysicalCorrupt,
+			readErr,
+			closeErr,
+			fmt.Errorf("s3store: probe object changed after %s", operation),
+		)
+	}
+	etag := aws.ToString(output.ETag)
+	if etag == "" {
+		return "", errors.Join(
+			packstore.ErrPhysicalCorrupt,
+			fmt.Errorf("s3store: probe object has no ETag after %s", operation),
+		)
+	}
+	return etag, nil
 }
 
 func (b *Backend) cleanupProbeObject(ctx context.Context, key string) error {

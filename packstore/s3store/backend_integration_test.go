@@ -66,7 +66,7 @@ func TestS3BackendConformance(t *testing.T) {
 	require.NoError(err)
 	assert.Equal(CapabilityReport{
 		StrongReadAfterWrite: true, RepeatableReads: true, RangeReads: true,
-		MultipartPublication: true, Listing: true, Delete: true,
+		MultipartPublication: true, ConditionalWrites: true, Listing: true, Delete: true,
 	}, report)
 
 	content := bytes.Repeat([]byte("remote document\n"), 1024)

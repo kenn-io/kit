@@ -44,6 +44,7 @@ type CapabilityReport struct {
 	RepeatableReads      bool
 	RangeReads           bool
 	MultipartPublication bool
+	ConditionalWrites    bool
 	Listing              bool
 	Delete               bool
 }
