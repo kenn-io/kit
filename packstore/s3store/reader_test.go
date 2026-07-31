@@ -147,6 +147,86 @@ func TestOversizedS3ReplicaFallsBackToHealthyCandidate(t *testing.T) {
 	assert.Equal(t, 1, healthy.opens)
 }
 
+func TestS3PackRepresentationLimitsFallBackToHealthyCandidate(t *testing.T) {
+	content := []byte("healthy S3 representation fallback")
+	_, packBytes, entries := makePackEntries(t, content, []byte("second footer entry"))
+	tests := []struct {
+		name      string
+		dimension packstore.LimitDimension
+		limit     func(packstore.Limits) packstore.Limits
+	}{
+		{
+			name:      "footer bytes",
+			dimension: packstore.LimitPackFooterBytes,
+			limit: func(limits packstore.Limits) packstore.Limits {
+				limits.FooterBytes = 1
+				return limits
+			},
+		},
+		{
+			name:      "entry count",
+			dimension: packstore.LimitPackEntryCount,
+			limit: func(limits packstore.Limits) packstore.Limits {
+				limits.PackEntries = 1
+				return limits
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			limited := newHTTPBackend(tt.limit(packstore.DefaultLimits()), func(request *http.Request) (*http.Response, error) {
+				header := make(http.Header)
+				header.Set("Content-Length", strconv.Itoa(len(packBytes)))
+				if request.Method == http.MethodHead {
+					return &http.Response{
+						StatusCode: http.StatusOK, Header: header,
+						Body: io.NopCloser(bytes.NewReader(nil)), ContentLength: int64(len(packBytes)),
+						Request: request,
+					}, nil
+				}
+				header.Set(
+					"Content-Range",
+					"bytes 0-"+strconv.Itoa(len(packBytes)-1)+"/"+strconv.Itoa(len(packBytes)),
+				)
+				return &http.Response{
+					StatusCode: http.StatusPartialContent, Header: header,
+					Body: io.NopCloser(bytes.NewReader(packBytes)), ContentLength: int64(len(packBytes)),
+					Request: request,
+				}, nil
+			})
+			healthy := &memoryReadBackend{content: content}
+			store, err := packstore.NewMultiStore(
+				staticReadLocationResolver{resolution: packstore.Resolution{
+					Member: true,
+					Candidates: []packstore.ReadLocation{
+						{StoreID: "limited", Generation: "limited-1", Pack: &entries[0]},
+						{StoreID: "healthy", Generation: "healthy-1", Pack: &entries[0]},
+					},
+				}},
+				staticReadBackendRegistry{"limited": limited, "healthy": healthy},
+				packstore.MultiStoreOptions{},
+			)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, store.Close()) })
+
+			stream, size, err := store.OpenStream(context.Background(), entries[0].Hash)
+			require.NoError(t, err)
+			got, err := io.ReadAll(stream)
+			require.NoError(t, errors.Join(err, stream.Close()))
+			assert.Equal(t, content, got)
+			assert.Equal(t, int64(len(content)), size)
+
+			_, _, err = limited.OpenPack(context.Background(), entries[0].Hash, entries[0])
+			require.ErrorIs(t, err, packstore.ErrPhysicalCorrupt)
+			require.ErrorIs(t, err, packstore.ErrBlobTooLarge)
+			var limit *packstore.LimitError
+			require.ErrorAs(t, err, &limit)
+			assert.Equal(t, tt.dimension, limit.Dimension)
+		})
+	}
+}
+
 func TestPackBodyClassifiesTerminalReadCorruption(t *testing.T) {
 	body, _ := newPackBody(t, true)
 

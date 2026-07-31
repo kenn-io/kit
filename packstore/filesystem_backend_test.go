@@ -804,6 +804,94 @@ func TestMultiStoreFallsBackFromPackFooterCorruption(t *testing.T) {
 	}
 }
 
+func TestMultiStoreFallsBackFromFilesystemPackRepresentationLimits(t *testing.T) {
+	ctx := context.Background()
+	content := []byte("healthy filesystem representation fallback")
+	tests := []struct {
+		name      string
+		dimension LimitDimension
+		limit     func(Limits, int64) Limits
+	}{
+		{
+			name:      "container bytes",
+			dimension: LimitPackContainerBytes,
+			limit: func(limits Limits, packSize int64) Limits {
+				limits.PackBytes = packSize - 1
+				return limits
+			},
+		},
+		{
+			name:      "footer bytes",
+			dimension: LimitPackFooterBytes,
+			limit: func(limits Limits, _ int64) Limits {
+				limits.FooterBytes = 1
+				return limits
+			},
+		},
+		{
+			name:      "entry count",
+			dimension: LimitPackEntryCount,
+			limit: func(limits Limits, _ int64) Limits {
+				limits.PackEntries = 1
+				return limits
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			published := attachedFilesystemBackend(t, "primary", "primary-1")
+			packPath, packID, entries := buildBackendPackSource(
+				t, content, []byte("second footer entry"),
+			)
+			packSource, err := os.Open(packPath)
+			require.NoError(t, err)
+			_, err = published.PublishPack(ctx, packID, packSource, PublishOptions{})
+			require.NoError(t, errors.Join(err, packSource.Close()))
+			info, err := os.Stat(packPath)
+			require.NoError(t, err)
+			indexed, err := indexEntryFromPack(entries[0], packID)
+			require.NoError(t, err)
+
+			limits := tt.limit(DefaultLimits(), info.Size())
+			primary, err := NewFilesystemBackend(
+				published.Layout(),
+				FilesystemBackendOptions{Limits: limits},
+			)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, primary.Close()) })
+			healthy := &recordingReadBackend{content: content}
+			store, err := NewMultiStore(
+				staticLocationResolver{resolution: Resolution{
+					Member: true,
+					Candidates: []ReadLocation{
+						{StoreID: "primary", Generation: "primary-1", Pack: &indexed},
+						{StoreID: "healthy", Generation: "healthy-1", Loose: rawLocation(content)},
+					},
+				}},
+				staticBackendRegistry{"primary": primary, "healthy": healthy},
+				MultiStoreOptions{},
+			)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, store.Close()) })
+
+			stream, size, err := store.OpenStream(ctx, indexed.Hash)
+			require.NoError(t, err)
+			got, err := io.ReadAll(stream)
+			require.NoError(t, errors.Join(err, stream.Close()))
+			assert.Equal(t, content, got)
+			assert.Equal(t, int64(len(content)), size)
+
+			_, _, err = primary.OpenPack(ctx, indexed.Hash, indexed)
+			require.ErrorIs(t, err, ErrPhysicalCorrupt)
+			require.ErrorIs(t, err, ErrBlobTooLarge)
+			var limit *LimitError
+			require.ErrorAs(t, err, &limit)
+			assert.Equal(t, tt.dimension, limit.Dimension)
+		})
+	}
+}
+
 func TestFilesystemBackendClassifiesLateLooseIntegrityFailure(t *testing.T) {
 	ctx := context.Background()
 	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
@@ -862,14 +950,16 @@ func (s *terminalErrorStream) Close() error             { return s.closeErr }
 
 func buildBackendPackSource(
 	t *testing.T,
-	content []byte,
+	contents ...[]byte,
 ) (string, string, []pack.Entry) {
 	t.Helper()
 	root := t.TempDir()
 	writer, err := pack.NewWriter(root, pack.WriterOptions{})
 	require.NoError(t, err)
-	_, err = writer.Append(content)
-	require.NoError(t, err)
+	for _, content := range contents {
+		_, err = writer.Append(content)
+		require.NoError(t, err)
+	}
 	packID := writer.ID()
 	path := filepath.Join(root, packID+PackExt)
 	entries, err := writer.Seal(path)

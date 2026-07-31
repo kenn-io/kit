@@ -244,23 +244,39 @@ func makePack(
 	content []byte,
 ) (string, []byte, packstore.IndexEntry) {
 	t.Helper()
+	packID, data, entries := makePackEntries(t, content)
+	return packID, data, entries[0]
+}
+
+func makePackEntries(
+	t *testing.T,
+	contents ...[]byte,
+) (string, []byte, []packstore.IndexEntry) {
+	t.Helper()
 	dir := t.TempDir()
 	writer, err := pack.NewWriter(dir, pack.WriterOptions{})
 	require.NoError(t, err)
-	entry, err := writer.Append(content)
-	require.NoError(t, err)
+	entries := make([]pack.Entry, 0, len(contents))
+	for _, content := range contents {
+		entry, appendErr := writer.Append(content)
+		require.NoError(t, appendErr)
+		entries = append(entries, entry)
+	}
 	packID := pack.NewPackID()
 	path := filepath.Join(dir, packID+".pack")
 	_, err = writer.Seal(path)
 	require.NoError(t, err)
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
-	hash := hashOf(content)
-	return packID, data, packstore.IndexEntry{
-		Hash: hash, PackID: packID,
-		Offset: int64(entry.Offset), StoredLen: int64(entry.StoredLen),
-		RawLen: int64(entry.RawLen), Flags: uint8(entry.Flags), CRC32C: entry.CRC32C,
+	indexed := make([]packstore.IndexEntry, 0, len(entries))
+	for i, entry := range entries {
+		indexed = append(indexed, packstore.IndexEntry{
+			Hash: hashOf(contents[i]), PackID: packID,
+			Offset: int64(entry.Offset), StoredLen: int64(entry.StoredLen),
+			RawLen: int64(entry.RawLen), Flags: uint8(entry.Flags), CRC32C: entry.CRC32C,
+		})
 	}
+	return packID, data, indexed
 }
 
 func hashOf(content []byte) packstore.Hash {

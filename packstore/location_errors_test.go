@@ -60,6 +60,27 @@ func TestClassifyIntegrityError(t *testing.T) {
 		{name: "checksum", input: pack.ErrChecksum, corrupt: true},
 		{name: "corrupt", input: pack.ErrCorrupt, corrupt: true},
 		{name: "blob mismatch", input: pack.ErrBlobMismatch, corrupt: true},
+		{
+			name: "pack container limit",
+			input: newLimitError(
+				LimitPackContainerBytes, 2, 1,
+			),
+			corrupt: true,
+		},
+		{
+			name:    "pack footer limit",
+			input:   newLimitError(LimitPackFooterBytes, 2, 1),
+			corrupt: true,
+		},
+		{
+			name:    "pack entry limit",
+			input:   newLimitError(LimitPackEntryCount, 2, 1),
+			corrupt: true,
+		},
+		{name: "blob raw limit", input: newLimitError(LimitBlobRawBytes, 2, 1)},
+		{name: "blob stored limit", input: newLimitError(LimitBlobStoredBytes, 2, 1)},
+		{name: "blob window limit", input: newLimitError(LimitBlobWindowBytes, 2, 1)},
+		{name: "blob stat limit", input: newLimitError(LimitBlobStatBytes, 2, 1)},
 		{name: "verification incomplete", input: pack.ErrVerificationIncomplete},
 		{name: "context canceled", input: context.Canceled},
 	}

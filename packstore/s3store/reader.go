@@ -82,7 +82,7 @@ func (b *Backend) OpenPack(
 	if err != nil {
 		_ = os.Remove(path)
 		if mapped, ok := mapPackLimit(err); ok {
-			return nil, 0, mapped
+			return nil, 0, packstore.ClassifyIntegrityError(mapped)
 		}
 		return nil, 0, errors.Join(packstore.ErrPhysicalCorrupt, err)
 	}
@@ -98,7 +98,7 @@ func (b *Backend) OpenPack(
 	if err != nil {
 		if mapped, ok := mapPackLimit(err); ok {
 			return nil, 0, errors.Join(
-				mapped, reader.Close(), os.Remove(path),
+				packstore.ClassifyIntegrityError(mapped), reader.Close(), os.Remove(path),
 			)
 		}
 		return nil, 0, errors.Join(
