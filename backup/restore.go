@@ -913,6 +913,7 @@ func (s *restoreState) restoreAuxiliary(
 	m *Manifest,
 ) ([]RestoredAuxiliary, error) {
 	restored := make([]RestoredAuxiliary, 0, len(m.Auxiliary))
+	var total int64
 	for _, artifact := range m.Auxiliary {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -924,31 +925,64 @@ func (s *restoreState) restoreAuxiliary(
 				artifact.Name, artifact.Blob, err,
 			)
 		}
-		data, err := s.fetch(id)
+		stream, err := s.repo.OpenBlob(
+			ctx, s.known, id, nil, s.app.PackFileExtension(),
+		)
 		if err != nil {
 			return nil, fmt.Errorf(
 				"backup: reading auxiliary artifact %q: %w",
 				artifact.Name, err,
 			)
 		}
-		if int64(len(data)) != artifact.Bytes {
+		data, size, err := readAuxiliaryArtifact(
+			stream, artifact, maxAuxiliaryBytes-total,
+		)
+		if err != nil {
 			return nil, fmt.Errorf(
-				"backup: auxiliary artifact %q is %d bytes but manifest records %d",
-				artifact.Name, len(data), artifact.Bytes,
+				"backup: reading auxiliary artifact %q: %w",
+				artifact.Name, err,
 			)
 		}
-		if digest := pack.ComputeBlobID(data).String(); digest != artifact.SHA256 {
-			return nil, fmt.Errorf(
-				"backup: auxiliary artifact %q digest differs from manifest",
-				artifact.Name,
-			)
-		}
+		total += size
 		restored = append(restored, RestoredAuxiliary{
 			Name: artifact.Name, Format: artifact.Format,
 			SHA256: artifact.SHA256, Data: data,
 		})
 	}
 	return restored, nil
+}
+
+func readAuxiliaryArtifact(
+	stream *BlobStream,
+	artifact ManifestAuxiliary,
+	remaining int64,
+) (data []byte, size int64, resultErr error) {
+	defer func() { resultErr = errors.Join(resultErr, stream.Close()) }()
+	size = stream.Size()
+	if size != artifact.Bytes {
+		return nil, size, fmt.Errorf(
+			"auxiliary artifact %q is %d bytes but manifest records %d",
+			artifact.Name, size, artifact.Bytes,
+		)
+	}
+	if size < 0 || remaining < 0 || size > remaining {
+		return nil, size, fmt.Errorf(
+			"auxiliary artifact %q has invalid aggregate size %d",
+			artifact.Name, size,
+		)
+	}
+	data = make([]byte, int(size))
+	_, readErr := io.ReadFull(stream, data)
+	if err := errors.Join(readErr, stream.Verify()); err != nil {
+		return nil, size, err
+	}
+	if digest := pack.ComputeBlobID(data).String(); digest != artifact.SHA256 {
+		return nil, size, fmt.Errorf(
+			"auxiliary artifact %q digest differs from manifest",
+			artifact.Name,
+		)
+	}
+	return data, size, nil
 }
 
 // blobRuns is one page blob and every page-map run it backs.

@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.kenn.io/kit/pack"
 )
 
 func TestValidateAuxiliaryArtifactsRejectsAmbiguousAuthority(t *testing.T) {
@@ -93,6 +95,38 @@ func TestValidateManifestAuxiliaryRequiresSortedBoundedIdentity(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			assert.ErrorContains(t, validateManifestAuxiliary(test.artifacts), test.want)
+		})
+	}
+}
+
+func TestRestoreAuxiliaryRejectsOversizedFooterBeforePayloadRead(t *testing.T) {
+	for _, corruptPayload := range []bool{false, true} {
+		name := "valid payload"
+		if corruptPayload {
+			name = "unreadable payload"
+		}
+		t.Run(name, func(t *testing.T) {
+			repo := initTestRepo(t)
+			known := map[pack.BlobID]IndexEntry{}
+			appender := NewPackAppender(repo, known, pack.DefaultZstdLevel, nil, testPackExt)
+			content := bytes.Repeat([]byte("oversized auxiliary payload"), 4096)
+			id, _, err := appender.Add(content)
+			require.NoError(t, err)
+			_, _, err = appender.Finish()
+			require.NoError(t, err)
+			if corruptPayload {
+				corruptStoredBlob(t, repo, known, id)
+			}
+			state := &restoreState{repo: repo, app: newTestApp(), known: known}
+			manifest := &Manifest{Auxiliary: []ManifestAuxiliary{{
+				Name: "placement", Format: "test-v1", Blob: id.String(),
+				Bytes: 1, SHA256: id.String(),
+			}}}
+
+			restored, err := state.restoreAuxiliary(context.Background(), manifest)
+
+			require.ErrorContains(t, err, "is 110592 bytes but manifest records 1")
+			assert.Nil(t, restored)
 		})
 	}
 }
