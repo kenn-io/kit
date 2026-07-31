@@ -1101,7 +1101,11 @@ func (s *restoreState) restorePortableMetadata(
 			"backup: portable metadata blob is %d bytes but manifest records %d", stream.Size(), metadata.Bytes)
 	}
 
-	privateDir, err := os.MkdirTemp(s.repo.Path(stagingDirName), "restore-metadata-*")
+	scratchBase, err := publicationScratchBase(s.target, s.repo.Path(stagingDirName))
+	if err != nil {
+		return "", 0, err
+	}
+	privateDir, err := os.MkdirTemp(scratchBase, "restore-metadata-*")
 	if err != nil {
 		return "", 0, fmt.Errorf("backup: creating private metadata staging directory: %w", err)
 	}

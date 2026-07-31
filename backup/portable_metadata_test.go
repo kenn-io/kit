@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -285,7 +286,8 @@ func TestPortableMetadataCreateVerifyRestoreAndSQLiteSuccessor(t *testing.T) {
 	require := require.New(t)
 	ctx := context.Background()
 	base := t.TempDir()
-	repo, err := backup.Init(filepath.Join(base, "repo"))
+	containingTarget := filepath.Join(base, "containing-target")
+	repo, err := backup.Init(filepath.Join(containingTarget, "repo"))
 	require.NoError(err)
 	contentDir := filepath.Join(base, "content")
 	content := []byte("portable attachment")
@@ -326,10 +328,35 @@ func TestPortableMetadataCreateVerifyRestoreAndSQLiteSuccessor(t *testing.T) {
 		assert.Empty(verified.Problems)
 	}
 
+	var containedPrivatePath string
+	_, err = backup.Restore(ctx, repo, portableApp{}, backup.RestoreOptions{
+		TargetDir: containingTarget,
+		Overwrite: true,
+		MetadataRestorer: metadataRestorerFunc(func(
+			ctx context.Context, format string, metadata io.Reader, targetPath string,
+		) error {
+			containedPrivatePath = targetPath
+			relative, err := filepath.Rel(containingTarget, targetPath)
+			if err != nil {
+				return err
+			}
+			assert.True(
+				relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)),
+				"metadata scratch %q must be outside containing target %q",
+				targetPath,
+				containingTarget,
+			)
+			return (portableRestorer{}).RestoreMetadata(ctx, format, metadata, targetPath)
+		}),
+	})
+	require.NoError(err)
+	_, statErr := os.Stat(filepath.Dir(containedPrivatePath))
+	require.ErrorIs(statErr, os.ErrNotExist)
+
 	missingTarget := filepath.Join(base, "missing-restorer")
 	_, err = backup.Restore(ctx, repo, portableApp{}, backup.RestoreOptions{TargetDir: missingTarget})
 	require.ErrorContains(err, "requires a MetadataRestorer")
-	_, statErr := os.Stat(missingTarget)
+	_, statErr = os.Stat(missingTarget)
 	require.ErrorIs(statErr, os.ErrNotExist)
 
 	incompleteTarget := filepath.Join(base, "incomplete-restorer")
@@ -372,7 +399,9 @@ func TestPortableMetadataCreateVerifyRestoreAndSQLiteSuccessor(t *testing.T) {
 		heldEntries, readErr := os.ReadDir(heldTarget)
 		require.NoError(readErr)
 		assert.Empty(heldEntries)
-		assert.Equal(repo.Path("staging"), filepath.Dir(filepath.Dir(privatePath)))
+		resolvedStaging, resolveErr := filepath.EvalSymlinks(repo.Path("staging"))
+		require.NoError(resolveErr)
+		assert.Equal(resolvedStaging, filepath.Dir(filepath.Dir(privatePath)))
 		_, statErr = os.Stat(filepath.Dir(privatePath))
 		require.ErrorIs(statErr, os.ErrNotExist)
 
