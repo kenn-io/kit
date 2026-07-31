@@ -5,12 +5,16 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.kenn.io/kit/pack"
 	"go.kenn.io/kit/packstore"
 )
 
@@ -103,6 +107,75 @@ func TestVerifyPackObjectEnforcesConfiguredBlobLimit(t *testing.T) {
 	assert.Equal(t, packstore.LimitBlobRawBytes, limit.Dimension)
 }
 
+func TestVerifyPackObjectEnforcesConfiguredDecoderWindowLimit(t *testing.T) {
+	content := bytes.Repeat([]byte("window policy "), 1<<16)
+	packID, packBytes := makeEncodedPack(
+		t,
+		content,
+		uint64(len(content)),
+		8<<20,
+	)
+	limits := packstore.DefaultLimits()
+	limits.BlobBytes = 2 << 20
+	backend := newHTTPBackend(limits, func(request *http.Request) (*http.Response, error) {
+		header := make(http.Header)
+		header.Set("Content-Length", strconv.Itoa(len(packBytes)))
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: header,
+			Body:          io.NopCloser(bytes.NewReader(packBytes)),
+			ContentLength: int64(len(packBytes)), Request: request,
+		}, nil
+	})
+
+	_, _, err := backend.verifyPackObject(
+		context.Background(),
+		packID,
+		int64(len(packBytes)),
+	)
+
+	require.ErrorIs(t, err, packstore.ErrBlobTooLarge)
+	var limit *packstore.LimitError
+	require.ErrorAs(t, err, &limit)
+	assert.Equal(t, packstore.LimitBlobWindowBytes, limit.Dimension)
+}
+
+func TestVerifyPackObjectRejectsDecodedLengthMismatch(t *testing.T) {
+	content := bytes.Repeat([]byte("remote decoded length authority "), 4096)
+	tests := []struct {
+		name   string
+		rawLen uint64
+	}{
+		{name: "decoded content is longer", rawLen: uint64(len(content) - 1)},
+		{name: "decoded content is shorter", rawLen: uint64(len(content) + 1)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			packID, packBytes := makeEncodedPack(t, content, tt.rawLen, 0)
+			backend := newHTTPBackend(
+				packstore.DefaultLimits(),
+				func(request *http.Request) (*http.Response, error) {
+					header := make(http.Header)
+					header.Set("Content-Length", strconv.Itoa(len(packBytes)))
+					return &http.Response{
+						StatusCode: http.StatusOK, Header: header,
+						Body:          io.NopCloser(bytes.NewReader(packBytes)),
+						ContentLength: int64(len(packBytes)), Request: request,
+					}, nil
+				},
+			)
+
+			_, _, err := backend.verifyPackObject(
+				context.Background(),
+				packID,
+				int64(len(packBytes)),
+			)
+
+			require.ErrorIs(t, err, pack.ErrCorrupt)
+			require.ErrorIs(t, err, packstore.ErrPhysicalCorrupt)
+		})
+	}
+}
+
 func TestMultipartPublishAbortsDeduplicatedUpload(t *testing.T) {
 	var aborts int
 	backend := newHTTPBackend(packstore.DefaultLimits(), func(request *http.Request) (*http.Response, error) {
@@ -156,6 +229,42 @@ func (r *countingReadCloser) Read(p []byte) (int, error) {
 }
 
 func (r *countingReadCloser) Close() error { return nil }
+
+func makeEncodedPack(
+	t *testing.T,
+	content []byte,
+	rawLen uint64,
+	windowBytes int,
+) (string, []byte) {
+	t.Helper()
+	var frame bytes.Buffer
+	options := []zstd.EOption{zstd.WithEncoderConcurrency(1)}
+	if windowBytes > 0 {
+		options = append(options, zstd.WithWindowSize(windowBytes))
+	}
+	encoder, err := zstd.NewWriter(&frame, options...)
+	require.NoError(t, err)
+	_, err = encoder.Write(content)
+	require.NoError(t, err)
+	require.NoError(t, encoder.Close())
+	staging := t.TempDir()
+	writer, err := pack.NewWriter(staging, pack.WriterOptions{})
+	require.NoError(t, err)
+	_, err = writer.AppendEncoded(
+		pack.ComputeBlobID(content),
+		frame.Bytes(),
+		rawLen,
+		true,
+	)
+	require.NoError(t, err)
+	packID := writer.ID()
+	packPath := filepath.Join(staging, packID+".pack")
+	_, err = writer.Seal(packPath)
+	require.NoError(t, err)
+	packBytes, err := os.ReadFile(packPath)
+	require.NoError(t, err)
+	return packID, packBytes
+}
 
 func xmlResponse(
 	request *http.Request,

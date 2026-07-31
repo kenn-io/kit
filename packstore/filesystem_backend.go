@@ -439,6 +439,7 @@ func (b *FilesystemBackend) PublishPack(
 		return PackReceipt{}, fmt.Errorf("packstore: publish pack: %w", err)
 	}
 	size, err := verifyFilesystemPack(
+		ctx,
 		final,
 		packID,
 		b.limits,
@@ -489,6 +490,7 @@ func copyBoundedContext(
 }
 
 func verifyFilesystemPack(
+	ctx context.Context,
 	path string,
 	packID string,
 	limits Limits,
@@ -536,6 +538,7 @@ func verifyFilesystemPack(
 			Entries:        uint64(limits.PackEntries),
 			RawBytes:       uint64(limits.BlobBytes),
 			StoredBytes:    uint64(limits.BlobBytes),
+			WindowBytes:    uint64(max(limits.BlobBytes, int64(1<<10))),
 		},
 	})
 	if err != nil {
@@ -543,8 +546,12 @@ func verifyFilesystemPack(
 	}
 	defer func() { resultErr = errors.Join(resultErr, reader.Close()) }()
 	for _, entry := range reader.Entries() {
-		if _, err := reader.ReadBlob(entry); err != nil {
-			return 0, err
+		blob, err := reader.OpenBlob(ctx, entry)
+		if err != nil {
+			return 0, mapPackStreamLimit(err)
+		}
+		if err := errors.Join(blob.Verify(), blob.Close()); err != nil {
+			return 0, mapPackStreamLimit(err)
 		}
 	}
 	return info.Size(), nil

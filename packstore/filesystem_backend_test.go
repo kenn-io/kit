@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/pack"
@@ -78,6 +79,81 @@ func TestFilesystemBackendRejectsDifferentPackAtExistingIdentity(t *testing.T) {
 	require.NoError(err)
 	_, err = backend.PublishPack(ctx, firstID, second, PublishOptions{})
 	require.ErrorIs(errors.Join(err, second.Close()), ErrContentMismatch)
+}
+
+func TestFilesystemBackendPublishPackRejectsDecoderWindow(t *testing.T) {
+	content := bytes.Repeat([]byte("filesystem window policy "), 1<<15)
+	packPath, packID := buildEncodedBackendPackSource(
+		t,
+		content,
+		uint64(len(content)),
+		8<<20,
+	)
+	limits := DefaultLimits()
+	limits.BlobBytes = 2 << 20
+	layout := layoutForStoreTest(t)
+	backend, err := NewFilesystemBackend(layout, FilesystemBackendOptions{
+		Limits: limits,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, backend.Close()) })
+	owner := Ownership{
+		Format: OwnershipFormatV1,
+		Vault:  "test-vault",
+		Store:  "archive",
+		Epoch:  "epoch-1",
+	}
+	require.NoError(t, backend.ReplaceOwnership(context.Background(), owner, nil))
+	source, err := os.Open(packPath)
+	require.NoError(t, err)
+
+	_, err = backend.PublishPack(
+		context.Background(),
+		packID,
+		source,
+		PublishOptions{},
+	)
+	require.NoError(t, source.Close())
+
+	require.ErrorIs(t, err, ErrBlobTooLarge)
+	var limit *LimitError
+	require.ErrorAs(t, err, &limit)
+	assert.Equal(t, LimitBlobWindowBytes, limit.Dimension)
+}
+
+func TestFilesystemBackendPublishPackRejectsDecodedLengthMismatch(t *testing.T) {
+	content := bytes.Repeat([]byte("decoded length authority "), 4096)
+	tests := []struct {
+		name   string
+		rawLen uint64
+	}{
+		{name: "decoded content is longer", rawLen: uint64(len(content) - 1)},
+		{name: "decoded content is shorter", rawLen: uint64(len(content) + 1)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			packPath, packID := buildEncodedBackendPackSource(
+				t,
+				content,
+				tt.rawLen,
+				0,
+			)
+			backend := attachedFilesystemBackend(t, "archive", "epoch-1")
+			source, err := os.Open(packPath)
+			require.NoError(t, err)
+
+			_, err = backend.PublishPack(
+				context.Background(),
+				packID,
+				source,
+				PublishOptions{},
+			)
+			require.NoError(t, source.Close())
+
+			require.ErrorIs(t, err, pack.ErrCorrupt)
+			require.ErrorIs(t, err, ErrPhysicalCorrupt)
+		})
+	}
 }
 
 func TestFilesystemBackendUsesAndRetiresExactLooseRepresentation(t *testing.T) {
@@ -277,6 +353,40 @@ func buildBackendPackSource(
 	entries, err := writer.Seal(path)
 	require.NoError(t, err)
 	return path, packID, entries
+}
+
+func buildEncodedBackendPackSource(
+	t *testing.T,
+	content []byte,
+	rawLen uint64,
+	windowBytes int,
+) (string, string) {
+	t.Helper()
+	var frame bytes.Buffer
+	options := []zstd.EOption{zstd.WithEncoderConcurrency(1)}
+	if windowBytes > 0 {
+		options = append(options, zstd.WithWindowSize(windowBytes))
+	}
+	encoder, err := zstd.NewWriter(&frame, options...)
+	require.NoError(t, err)
+	_, err = encoder.Write(content)
+	require.NoError(t, err)
+	require.NoError(t, encoder.Close())
+	staging := t.TempDir()
+	writer, err := pack.NewWriter(staging, pack.WriterOptions{})
+	require.NoError(t, err)
+	_, err = writer.AppendEncoded(
+		pack.ComputeBlobID(content),
+		frame.Bytes(),
+		rawLen,
+		true,
+	)
+	require.NoError(t, err)
+	packID := writer.ID()
+	path := filepath.Join(staging, packID+PackExt)
+	_, err = writer.Seal(path)
+	require.NoError(t, err)
+	return path, packID
 }
 
 func indexEntryFromPack(entry pack.Entry, packID string) (IndexEntry, error) {

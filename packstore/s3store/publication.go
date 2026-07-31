@@ -438,7 +438,25 @@ func (b *Backend) verifyPackObject(
 	staged = nil
 	defer func() { resultErr = errors.Join(resultErr, reader.Close()) }()
 	for _, entry := range reader.Entries() {
-		if _, err := reader.ReadBlob(entry); err != nil {
+		blob, err := reader.OpenBlob(ctx, entry)
+		if err != nil {
+			if mapped, ok := mapPackLimit(err); ok {
+				return 0, digest, mapped
+			}
+			if errors.Is(err, context.Canceled) ||
+				errors.Is(err, context.DeadlineExceeded) {
+				return 0, digest, err
+			}
+			return 0, digest, errors.Join(packstore.ErrPhysicalCorrupt, err)
+		}
+		if err := errors.Join(blob.Verify(), blob.Close()); err != nil {
+			if mapped, ok := mapPackLimit(err); ok {
+				return 0, digest, mapped
+			}
+			if errors.Is(err, context.Canceled) ||
+				errors.Is(err, context.DeadlineExceeded) {
+				return 0, digest, err
+			}
 			return 0, digest, errors.Join(packstore.ErrPhysicalCorrupt, err)
 		}
 	}
