@@ -174,6 +174,16 @@ func TestPackBodyDoesNotClassifyIncompleteCloseAsCorrupt(t *testing.T) {
 	require.NotErrorIs(t, err, packstore.ErrPhysicalCorrupt)
 }
 
+func TestPackBodyPreservesVerifiedEOF(t *testing.T) {
+	body, _ := newPackBody(t, false)
+
+	got, err := io.ReadAll(body)
+
+	require.NoError(t, err)
+	assert.Equal(t, []byte("terminal S3 pack integrity"), got)
+	assert.True(t, body.Verified())
+}
+
 func TestS3TerminalCorruptionDemotesGeneration(t *testing.T) {
 	body, indexed := newPackBody(t, true)
 	primary := packstore.ReadLocation{

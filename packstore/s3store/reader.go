@@ -349,6 +349,9 @@ func (r *packBody) Read(p []byte) (int, error) {
 	if err != nil {
 		r.finish()
 	}
+	if r.closeErr == nil {
+		return n, err
+	}
 	return n, packstore.ClassifyIntegrityError(errors.Join(err, r.closeErr))
 }
 
