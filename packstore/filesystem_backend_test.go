@@ -129,6 +129,35 @@ func TestFilesystemBackendUsesAndRetiresExactLooseRepresentation(t *testing.T) {
 	require.NoError(stream.Close())
 }
 
+func TestFilesystemBackendRepairLooseOverwritesCorruptCanonical(t *testing.T) {
+	ctx := context.Background()
+	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
+	content := []byte("trusted repair content")
+	hash := hashForTest(content)
+	published, err := backend.PublishLoose(
+		ctx, hash, bytes.NewReader(content),
+		PublishOptions{ExpectedSize: int64(len(content)), SizeKnown: true},
+	)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		backend.Layout().LoosePath(hash), []byte("corrupt"), 0o600,
+	))
+
+	repaired, err := backend.RepairLoose(
+		ctx, hash, bytes.NewReader(content),
+		PublishOptions{ExpectedSize: int64(len(content)), SizeKnown: true},
+	)
+	require.NoError(t, err)
+	assert.NotEqual(t, published.Generation, repaired.Generation)
+	assert.False(t, repaired.Created)
+	stream, _, err := backend.OpenLoose(ctx, hash, repaired.Location)
+	require.NoError(t, err)
+	got, err := io.ReadAll(stream)
+	require.NoError(t, err)
+	require.NoError(t, stream.Close())
+	assert.Equal(t, content, got)
+}
+
 func TestFilesystemOwnershipRejectsNoncanonicalMarker(t *testing.T) {
 	require := require.New(t)
 	ctx := context.Background()

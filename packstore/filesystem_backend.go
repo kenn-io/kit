@@ -274,6 +274,53 @@ func (b *FilesystemBackend) PublishLoose(
 	}, nil
 }
 
+// RepairLoose deliberately overwrites one canonical loose object with bytes
+// that are independently verified against its immutable logical identity.
+func (b *FilesystemBackend) RepairLoose(
+	ctx context.Context,
+	hash Hash,
+	src io.Reader,
+	opts PublishOptions,
+) (LooseReceipt, error) {
+	owner, err := b.requireOwnership(ctx)
+	if err != nil {
+		return LooseReceipt{}, err
+	}
+	if src == nil {
+		return LooseReceipt{}, fmt.Errorf("packstore: nil loose repair source")
+	}
+	if err := hash.Validate(); err != nil {
+		return LooseReceipt{}, err
+	}
+	if !opts.SizeKnown || opts.ExpectedSize < 0 {
+		return LooseReceipt{}, ErrInvalidPolicy
+	}
+	if opts.Durability == 0 {
+		opts.Durability = DurablePublication
+	}
+	generation, err := newLocationGeneration()
+	if err != nil {
+		return LooseReceipt{}, err
+	}
+	result, err := b.loose.Repair(ctx, src, LooseIdentity{
+		Hash: hash, Size: opts.ExpectedSize,
+	}, RepairOptions{
+		Durability: opts.Durability, Compression: opts.Compression,
+		MaxBytes: opts.MaxBytes,
+	})
+	if err != nil {
+		return LooseReceipt{}, err
+	}
+	return LooseReceipt{
+		StoreID: owner.Store, Generation: generation, Hash: result.Hash,
+		Location: LooseLocation{
+			Encoding: result.Encoding, LogicalSize: result.Size,
+			StoredSize: result.StoredSize,
+		},
+		Created: false,
+	}, nil
+}
+
 func normalizePublishOptions(hash Hash, opts PublishOptions) (WriteOptions, error) {
 	if opts.Durability == 0 {
 		opts.Durability = DurablePublication

@@ -76,6 +76,90 @@ func (b *Backend) PublishLoose(
 	}, nil
 }
 
+// RepairLoose deliberately replaces one damaged canonical loose object after
+// validating the complete source locally, then independently reads it back.
+func (b *Backend) RepairLoose(
+	ctx context.Context,
+	hash packstore.Hash,
+	src io.Reader,
+	opts packstore.PublishOptions,
+) (receipt packstore.LooseReceipt, resultErr error) {
+	owner, err := b.requireOwnership(ctx)
+	if err != nil {
+		return packstore.LooseReceipt{}, err
+	}
+	if err := hash.Validate(); err != nil {
+		return packstore.LooseReceipt{}, err
+	}
+	if src == nil || !opts.SizeKnown || opts.ExpectedSize < 0 ||
+		opts.Compression.Enabled {
+		return packstore.LooseReceipt{}, packstore.ErrInvalidPolicy
+	}
+	staged, err := os.CreateTemp("", "kit-s3-repair-*")
+	if err != nil {
+		return packstore.LooseReceipt{}, fmt.Errorf(
+			"s3store: create repair staging: %w", err,
+		)
+	}
+	path := staged.Name()
+	defer func() {
+		resultErr = errors.Join(resultErr, staged.Close())
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			resultErr = errors.Join(resultErr, err)
+		}
+	}()
+	if err := staged.Chmod(0o600); err != nil {
+		return packstore.LooseReceipt{}, fmt.Errorf(
+			"s3store: protect repair staging: %w", err,
+		)
+	}
+	hasher := sha256.New()
+	reader := io.Reader(src)
+	if opts.MaxBytes > 0 {
+		reader = io.LimitReader(src, opts.MaxBytes+1)
+	}
+	size, err := io.CopyBuffer(
+		io.MultiWriter(staged, hasher), reader, make([]byte, 64<<10),
+	)
+	if err != nil {
+		return packstore.LooseReceipt{}, fmt.Errorf(
+			"s3store: stage repair source: %w", err,
+		)
+	}
+	if (opts.MaxBytes > 0 && size > opts.MaxBytes) ||
+		size != opts.ExpectedSize ||
+		hex.EncodeToString(hasher.Sum(nil)) != hash.String() {
+		return packstore.LooseReceipt{}, packstore.ErrContentMismatch
+	}
+	if _, err := staged.Seek(0, io.SeekStart); err != nil {
+		return packstore.LooseReceipt{}, fmt.Errorf(
+			"s3store: rewind repair source: %w", err,
+		)
+	}
+	key := b.keys.loose(hash, packstore.LooseEncodingRaw)
+	if _, err := b.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(b.bucket), Key: aws.String(key),
+		Body: staged, ContentLength: aws.Int64(size),
+	}); err != nil {
+		return packstore.LooseReceipt{}, classifyError("replace loose object", err)
+	}
+	if err := b.verifyRawObject(ctx, key, hash, size); err != nil {
+		return packstore.LooseReceipt{}, err
+	}
+	generation, err := newGeneration()
+	if err != nil {
+		return packstore.LooseReceipt{}, err
+	}
+	return packstore.LooseReceipt{
+		StoreID: owner.Store, Generation: generation, Hash: hash,
+		Location: packstore.LooseLocation{
+			Encoding: packstore.LooseEncodingRaw, LogicalSize: size,
+			StoredSize: size,
+		},
+		Created: false,
+	}, nil
+}
+
 // PublishPack conditionally publishes a sealed pack, then independently reads
 // it back and verifies every entry before returning physical evidence.
 func (b *Backend) PublishPack(

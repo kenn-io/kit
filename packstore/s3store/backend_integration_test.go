@@ -85,6 +85,27 @@ func TestS3BackendConformance(t *testing.T) {
 		})
 	require.NoError(err)
 	assert.False(duplicate.Created)
+	_, err = backend.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(backend.bucket),
+		Key: aws.String(backend.keys.loose(
+			hash, packstore.LooseEncodingRaw,
+		)),
+		Body: bytes.NewReader([]byte("corrupt")),
+	})
+	require.NoError(err)
+	repaired, err := backend.RepairLoose(
+		ctx, hash, bytes.NewReader(content),
+		packstore.PublishOptions{
+			ExpectedSize: int64(len(content)), SizeKnown: true,
+			MaxBytes: int64(len(content)),
+		},
+	)
+	require.NoError(err)
+	assert.False(repaired.Created)
+	stream, _, err = backend.OpenLoose(ctx, hash, repaired.Location)
+	require.NoError(err)
+	require.NoError(stream.Verify())
+	require.NoError(stream.Close())
 
 	wrongHash := hashOf([]byte("different bytes"))
 	_, err = backend.PublishLoose(ctx, wrongHash, bytes.NewReader(content),

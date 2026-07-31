@@ -90,6 +90,14 @@ type Backend interface {
 	StoreID() StoreID
 }
 
+// RepairBackend is a writable backend that can deliberately replace a
+// damaged canonical loose object. Ordinary publication remains immutable;
+// applications must gate this exception behind an explicit repair workflow.
+type RepairBackend interface {
+	Backend
+	RepairLoose(context.Context, Hash, io.Reader, PublishOptions) (LooseReceipt, error)
+}
+
 // MoveRequest asks Kit to copy and independently verify one physical
 // candidate. It does not authorize a catalog change or source retirement.
 type MoveRequest struct {
