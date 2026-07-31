@@ -163,7 +163,7 @@ func (b *FilesystemBackend) OpenLoose(
 	if err != nil {
 		return nil, 0, classifyPhysicalError(err)
 	}
-	return stream, size, nil
+	return &physicalVerifiedStream{stream: stream}, size, nil
 }
 
 // OpenPack opens and verifies one indexed pack entry.
@@ -176,7 +176,28 @@ func (b *FilesystemBackend) OpenPack(
 	if err != nil {
 		return nil, 0, classifyPhysicalError(err)
 	}
-	return stream, size, nil
+	return &physicalVerifiedStream{stream: stream}, size, nil
+}
+
+type physicalVerifiedStream struct {
+	stream VerifiedReadCloser
+}
+
+func (s *physicalVerifiedStream) Read(p []byte) (int, error) {
+	n, err := s.stream.Read(p)
+	return n, classifyPhysicalError(err)
+}
+
+func (s *physicalVerifiedStream) Verify() error {
+	return classifyPhysicalError(s.stream.Verify())
+}
+
+func (s *physicalVerifiedStream) Verified() bool {
+	return s.stream.Verified()
+}
+
+func (s *physicalVerifiedStream) Close() error {
+	return classifyPhysicalError(s.stream.Close())
 }
 
 func (b *FilesystemBackend) OpenSeekableLoose(
@@ -623,6 +644,34 @@ func (b *FilesystemBackend) Inventory(
 	})
 	sort.Strings(page.Unknown)
 	return page, err
+}
+
+// NamespaceEmpty reports whether the configured root contains any file or
+// non-directory entry. Empty directory scaffolding is not physical authority.
+func (b *FilesystemBackend) NamespaceEmpty(ctx context.Context) (bool, error) {
+	empty := true
+	err := filepath.WalkDir(b.layout.Root(), func(
+		_ string, entry fs.DirEntry, walkErr error,
+	) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !entry.IsDir() {
+			empty = false
+			return fs.SkipAll
+		}
+		return nil
+	})
+	if errors.Is(err, fs.ErrNotExist) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("packstore: inspect filesystem namespace: %w", err)
+	}
+	return empty, nil
 }
 
 func (b *FilesystemBackend) canonicalObjectRef(relative string) (ObjectRef, bool) {

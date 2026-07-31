@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -129,7 +128,7 @@ func TestMoveVerifiesDestinationReadBack(t *testing.T) {
 	assert.Equal(1, counting.readbacks)
 }
 
-func TestMoveRetirementDefersForActiveReader(t *testing.T) {
+func TestMoveRetirementKeepsActiveReaderUsable(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
 	ctx := context.Background()
@@ -140,11 +139,7 @@ func TestMoveRetirementDefersForActiveReader(t *testing.T) {
 	require.NoError(err)
 
 	retireErr := backend.Retire(ctx, ObjectRef{PackID: entry.PackID})
-	if runtime.GOOS == "windows" {
-		require.ErrorIs(retireErr, ErrPackRetirementDeferred)
-	} else {
-		require.NoError(retireErr)
-	}
+	require.NoError(retireErr)
 	got, err := io.ReadAll(stream)
 	require.NoError(err)
 	require.NoError(stream.Close())

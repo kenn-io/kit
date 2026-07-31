@@ -92,8 +92,8 @@ func (k keyspace) objectRef(key string) (packstore.ObjectRef, bool) {
 		return packstore.ObjectRef{LooseHash: hash, LooseEncoding: encoding}, true
 	case "packs":
 		name := strings.TrimSuffix(parts[2], ".pack")
-		if !strings.HasSuffix(parts[2], ".pack") || parts[1] != name[:2] ||
-			!pack.IsValidPackID(name) {
+		if !strings.HasSuffix(parts[2], ".pack") || !pack.IsValidPackID(name) ||
+			parts[1] != name[:2] {
 			return packstore.ObjectRef{}, false
 		}
 		return packstore.ObjectRef{PackID: name}, true

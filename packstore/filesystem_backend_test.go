@@ -158,6 +158,80 @@ func TestFilesystemBackendRepairLooseOverwritesCorruptCanonical(t *testing.T) {
 	assert.Equal(t, content, got)
 }
 
+func TestFilesystemBackendClassifiesTerminalStreamIntegrityErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		stream *terminalErrorStream
+		invoke func(VerifiedReadCloser) error
+	}{
+		{
+			name:   "read content mismatch",
+			stream: &terminalErrorStream{readErr: ErrContentMismatch},
+			invoke: func(stream VerifiedReadCloser) error {
+				_, err := stream.Read(make([]byte, 1))
+				return err
+			},
+		},
+		{
+			name:   "verify corrupt pack",
+			stream: &terminalErrorStream{verifyErr: pack.ErrCorrupt},
+			invoke: func(stream VerifiedReadCloser) error {
+				return stream.Verify()
+			},
+		},
+		{
+			name:   "close content mismatch",
+			stream: &terminalErrorStream{closeErr: ErrContentMismatch},
+			invoke: func(stream VerifiedReadCloser) error {
+				return stream.Close()
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.invoke(&physicalVerifiedStream{stream: tt.stream})
+			require.ErrorIs(t, err, ErrPhysicalCorrupt)
+		})
+	}
+}
+
+func TestFilesystemBackendDoesNotClassifyIncompleteStreamCloseAsCorrupt(t *testing.T) {
+	stream := &physicalVerifiedStream{stream: &terminalErrorStream{
+		closeErr: pack.ErrVerificationIncomplete,
+	}}
+
+	err := stream.Close()
+
+	require.ErrorIs(t, err, pack.ErrVerificationIncomplete)
+	require.NotErrorIs(t, err, ErrPhysicalCorrupt)
+}
+
+func TestFilesystemBackendClassifiesLateLooseIntegrityFailure(t *testing.T) {
+	ctx := context.Background()
+	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
+	content := []byte("trusted loose content")
+	hash := hashForTest(content)
+	receipt, err := backend.PublishLoose(
+		ctx,
+		hash,
+		bytes.NewReader(content),
+		PublishOptions{ExpectedSize: int64(len(content)), SizeKnown: true},
+	)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		backend.Layout().LoosePath(hash),
+		bytes.Repeat([]byte("x"), len(content)),
+		0o600,
+	))
+
+	stream, _, err := backend.OpenLoose(ctx, hash, receipt.Location)
+	require.NoError(t, err)
+	err = stream.Verify()
+
+	require.ErrorIs(t, err, ErrPhysicalCorrupt)
+	require.ErrorIs(t, stream.Close(), ErrPhysicalCorrupt)
+}
+
 func TestFilesystemOwnershipRejectsNoncanonicalMarker(t *testing.T) {
 	require := require.New(t)
 	ctx := context.Background()
@@ -176,6 +250,17 @@ func TestFilesystemOwnershipRejectsNoncanonicalMarker(t *testing.T) {
 	)
 	require.ErrorIs(err, ErrStoreFenced)
 }
+
+type terminalErrorStream struct {
+	readErr   error
+	verifyErr error
+	closeErr  error
+}
+
+func (s *terminalErrorStream) Read([]byte) (int, error) { return 0, s.readErr }
+func (s *terminalErrorStream) Verify() error            { return s.verifyErr }
+func (s *terminalErrorStream) Verified() bool           { return false }
+func (s *terminalErrorStream) Close() error             { return s.closeErr }
 
 func buildBackendPackSource(
 	t *testing.T,

@@ -84,6 +84,10 @@ func New(ctx context.Context, cfg Config) (*Backend, error) {
 	if cfg.InventoryPageSize < 1 || cfg.InventoryPageSize > 1000 {
 		return nil, fmt.Errorf("s3store: inventory page size must be between 1 and 1000")
 	}
+	cfg.Limits, err = normalizeLimits(cfg.Limits)
+	if err != nil {
+		return nil, err
+	}
 	if cfg.ExpectedOwnership != nil {
 		if err := cfg.ExpectedOwnership.Validate(); err != nil {
 			return nil, err
@@ -114,6 +118,17 @@ func New(ctx context.Context, cfg Config) (*Backend, error) {
 		backend.owner = &copy
 	}
 	return backend, nil
+}
+
+func normalizeLimits(limits packstore.Limits) (packstore.Limits, error) {
+	if limits == (packstore.Limits{}) {
+		limits = packstore.DefaultLimits()
+	}
+	if limits.BlobBytes <= 0 || limits.PackBytes <= 0 ||
+		limits.FooterBytes <= 0 || limits.PackEntries <= 0 {
+		return packstore.Limits{}, fmt.Errorf("s3store: invalid pack reader limits")
+	}
+	return limits, nil
 }
 
 // StoreID returns the configured stable store identity, or empty while

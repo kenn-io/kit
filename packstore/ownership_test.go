@@ -4,11 +4,32 @@ import (
 	"bytes"
 	"context"
 	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestFilesystemNamespaceInspectionRejectsUnmarkedContent(t *testing.T) {
+	layout := layoutForStoreTest(t)
+	backend, err := NewFilesystemBackend(layout, FilesystemBackendOptions{})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, backend.Close()) })
+
+	empty, err := backend.NamespaceEmpty(t.Context())
+	require.NoError(t, err)
+	assert.True(t, empty)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(layout.Root(), "operator-note"), []byte("keep"), 0o600,
+	))
+
+	empty, err = backend.NamespaceEmpty(t.Context())
+	require.NoError(t, err)
+	assert.False(t, empty)
+}
 
 func TestFilesystemOwnershipCreateReattachAndTakeover(t *testing.T) {
 	assert := assert.New(t)
@@ -101,6 +122,19 @@ func TestFilesystemOwnershipMismatchFencesDestructiveWork(t *testing.T) {
 	})
 	require.ErrorIs(err, ErrStoreFenced)
 	assertOwnershipMismatch(t, err, initial, takenOver)
+}
+
+func TestMarshalOwnershipRejectsUnreadableMarkerSize(t *testing.T) {
+	value := Ownership{
+		Format: OwnershipFormatV1,
+		Vault:  strings.Repeat("v", maxOwnershipMarkerBytes),
+		Store:  "archive",
+		Epoch:  "epoch-1",
+	}
+
+	_, err := MarshalOwnership(value)
+
+	require.ErrorContains(t, err, "ownership marker size")
 }
 
 func assertOwnershipMismatch(

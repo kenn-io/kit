@@ -202,3 +202,16 @@ func (b *Backend) Probe(ctx context.Context) (report CapabilityReport, resultErr
 	report.Delete = true
 	return report, nil
 }
+
+// NamespaceEmpty reports whether the configured bucket prefix contains any
+// object before ownership is attached.
+func (b *Backend) NamespaceEmpty(ctx context.Context) (bool, error) {
+	output, err := b.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket: aws.String(b.bucket), Prefix: aws.String(b.keys.join("")),
+		MaxKeys: aws.Int32(1),
+	})
+	if err != nil {
+		return false, classifyError("inspect namespace", err)
+	}
+	return len(output.Contents) == 0, nil
+}

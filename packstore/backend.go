@@ -90,6 +90,13 @@ type Backend interface {
 	StoreID() StoreID
 }
 
+// NamespaceInspector reports whether a configured physical namespace contains
+// any object before ownership is attached. Applications use it to avoid
+// claiming unrelated or abandoned data merely because no marker exists.
+type NamespaceInspector interface {
+	NamespaceEmpty(context.Context) (bool, error)
+}
+
 // RepairBackend is a writable backend that can deliberately replace a
 // damaged canonical loose object. Ordinary publication remains immutable;
 // applications must gate this exception behind an explicit repair workflow.

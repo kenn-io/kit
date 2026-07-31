@@ -301,12 +301,13 @@ func (b *Backend) multipartPublish(
 			return publicationResult{}, classifyError("complete multipart publication", err)
 		}
 		result.created = true
+		completed = true
 	case http.StatusPreconditionFailed:
 		result.created = false
+		return result, nil
 	default:
 		return publicationResult{}, classifyError("complete multipart publication", err)
 	}
-	completed = true
 	return result, nil
 }
 
@@ -347,8 +348,15 @@ func (b *Backend) verifyRawObject(
 		return classifyError("read back loose object", err)
 	}
 	defer func() { _ = output.Body.Close() }()
+	if err := validateReadbackSize("loose", output.ContentLength, expectedSize); err != nil {
+		return err
+	}
 	hasher := sha256.New()
-	size, err := io.CopyBuffer(hasher, output.Body, make([]byte, 64<<10))
+	size, err := io.CopyBuffer(
+		hasher,
+		boundedReadback(output.Body, expectedSize),
+		make([]byte, 64<<10),
+	)
 	if err != nil {
 		return classifyError("read back loose object", err)
 	}
@@ -366,6 +374,13 @@ func (b *Backend) verifyPackObject(
 	packID string,
 	expectedSize int64,
 ) (resultSize int64, digest [sha256.Size]byte, resultErr error) {
+	if expectedSize > b.limits.PackBytes {
+		return 0, digest, &packstore.LimitError{
+			Dimension: packstore.LimitPackContainerBytes,
+			Actual:    uint64(expectedSize),       //nolint:gosec // checked non-negative below
+			Limit:     uint64(b.limits.PackBytes), //nolint:gosec // validated positive
+		}
+	}
 	output, err := b.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(b.bucket), Key: aws.String(b.keys.pack(packID)),
 	})
@@ -373,6 +388,9 @@ func (b *Backend) verifyPackObject(
 		return 0, digest, classifyError("read back pack", err)
 	}
 	defer func() { resultErr = errors.Join(resultErr, output.Body.Close()) }()
+	if err := validateReadbackSize("pack", output.ContentLength, expectedSize); err != nil {
+		return 0, digest, err
+	}
 	staged, err := os.CreateTemp("", "kit-s3-pack-*")
 	if err != nil {
 		return 0, digest, fmt.Errorf("s3store: create pack verification staging: %w", err)
@@ -387,7 +405,11 @@ func (b *Backend) verifyPackObject(
 		}
 	}()
 	hasher := sha256.New()
-	resultSize, err = io.CopyBuffer(io.MultiWriter(staged, hasher), output.Body, make([]byte, 64<<10))
+	resultSize, err = io.CopyBuffer(
+		io.MultiWriter(staged, hasher),
+		boundedReadback(output.Body, expectedSize),
+		make([]byte, 64<<10),
+	)
 	if err != nil {
 		return 0, digest, classifyError("read back pack", err)
 	}
@@ -401,8 +423,16 @@ func (b *Backend) verifyPackObject(
 	if _, err := staged.Seek(0, io.SeekStart); err != nil {
 		return 0, digest, err
 	}
-	reader, err := pack.NewReaderFromFile(staged, packID, nil)
+	reader, err := pack.NewReaderFromFileWithOptions(
+		staged,
+		packID,
+		nil,
+		b.packReaderOptions(),
+	)
 	if err != nil {
+		if mapped, ok := mapPackLimit(err); ok {
+			return 0, digest, mapped
+		}
 		return 0, digest, errors.Join(packstore.ErrPhysicalCorrupt, err)
 	}
 	staged = nil
@@ -413,6 +443,34 @@ func (b *Backend) verifyPackObject(
 		}
 	}
 	return resultSize, digest, nil
+}
+
+func validateReadbackSize(kind string, actual *int64, expected int64) error {
+	if expected < 0 {
+		return errors.Join(
+			packstore.ErrPhysicalCorrupt,
+			fmt.Errorf("s3store: invalid negative %s read-back size %d", kind, expected),
+		)
+	}
+	if actual != nil && *actual != expected {
+		return errors.Join(
+			packstore.ErrPhysicalCorrupt,
+			fmt.Errorf(
+				"s3store: %s read-back content length %d differs from %d",
+				kind,
+				*actual,
+				expected,
+			),
+		)
+	}
+	return nil
+}
+
+func boundedReadback(src io.Reader, expected int64) io.Reader {
+	return io.MultiReader(
+		io.LimitReader(src, expected),
+		io.LimitReader(src, 1),
+	)
 }
 
 func newGeneration() (packstore.LocationGeneration, error) {

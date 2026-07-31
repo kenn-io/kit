@@ -116,6 +116,12 @@ func MarshalOwnership(value Ownership) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("packstore: encode ownership marker: %w", err)
 	}
+	if len(encoded)+1 > maxOwnershipMarkerBytes {
+		return nil, fmt.Errorf(
+			"packstore: ownership marker size %d is invalid",
+			len(encoded)+1,
+		)
+	}
 	return append(encoded, '\n'), nil
 }
 

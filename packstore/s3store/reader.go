@@ -73,9 +73,17 @@ func (b *Backend) OpenPack(
 	if err != nil {
 		return nil, 0, err
 	}
-	reader, err := pack.NewReaderFromFile(staged, entry.PackID, nil)
+	reader, err := pack.NewReaderFromFileWithOptions(
+		staged,
+		entry.PackID,
+		nil,
+		b.packReaderOptions(),
+	)
 	if err != nil {
 		_ = os.Remove(path)
+		if mapped, ok := mapPackLimit(err); ok {
+			return nil, 0, mapped
+		}
 		return nil, 0, errors.Join(packstore.ErrPhysicalCorrupt, err)
 	}
 	canonical, ok := findPackEntry(reader.Entries(), entry)
@@ -88,6 +96,11 @@ func (b *Backend) OpenPack(
 	}
 	blob, err := reader.OpenBlob(ctx, canonical)
 	if err != nil {
+		if mapped, ok := mapPackLimit(err); ok {
+			return nil, 0, errors.Join(
+				mapped, reader.Close(), os.Remove(path),
+			)
+		}
 		return nil, 0, errors.Join(
 			packstore.ErrPhysicalCorrupt,
 			err, reader.Close(), os.Remove(path),
@@ -112,14 +125,22 @@ func (b *Backend) downloadPackRanges(
 			fmt.Errorf("s3store: pack has invalid content length"),
 		)
 	}
+	if *head.ContentLength > b.limits.PackBytes {
+		return nil, "", &packstore.LimitError{
+			Dimension: packstore.LimitPackContainerBytes,
+			Actual:    uint64(*head.ContentLength), //nolint:gosec // checked non-negative
+			Limit:     uint64(b.limits.PackBytes),  //nolint:gosec // validated positive
+		}
+	}
 	staged, err := os.CreateTemp("", "kit-s3-pack-range-*")
 	if err != nil {
 		return nil, "", fmt.Errorf("s3store: create pack read staging: %w", err)
 	}
 	path = staged.Name()
+	stagedPath := path
 	defer func() {
 		if resultErr != nil {
-			resultErr = errors.Join(resultErr, staged.Close(), os.Remove(path))
+			resultErr = errors.Join(resultErr, staged.Close(), os.Remove(stagedPath))
 		}
 	}()
 	for start := int64(0); start < *head.ContentLength; start += rangeChunkBytes {
@@ -145,6 +166,46 @@ func (b *Backend) downloadPackRanges(
 		return nil, "", err
 	}
 	return staged, path, nil
+}
+
+func (b *Backend) packReaderOptions() pack.ReaderOptions {
+	return pack.ReaderOptions{Limits: pack.ReaderLimits{
+		ContainerBytes: uint64(b.limits.PackBytes),   //nolint:gosec // validated positive
+		FooterBytes:    uint64(b.limits.FooterBytes), //nolint:gosec // validated positive
+		Entries:        uint64(b.limits.PackEntries),
+		RawBytes:       uint64(b.limits.BlobBytes), //nolint:gosec // validated positive
+		StoredBytes:    uint64(b.limits.BlobBytes), //nolint:gosec // validated positive
+		WindowBytes:    uint64(max(b.limits.BlobBytes, int64(1<<10))),
+	}}
+}
+
+func mapPackLimit(err error) (error, bool) {
+	var limit *pack.StreamLimitError
+	if !errors.As(err, &limit) {
+		return nil, false
+	}
+	var dimension packstore.LimitDimension
+	switch limit.Dimension {
+	case pack.StreamLimitRawBytes:
+		dimension = packstore.LimitBlobRawBytes
+	case pack.StreamLimitStoredBytes:
+		dimension = packstore.LimitBlobStoredBytes
+	case pack.StreamLimitContainerBytes:
+		dimension = packstore.LimitPackContainerBytes
+	case pack.StreamLimitFooterBytes:
+		dimension = packstore.LimitPackFooterBytes
+	case pack.StreamLimitEntryCount:
+		dimension = packstore.LimitPackEntryCount
+	case pack.StreamLimitWindowBytes:
+		dimension = packstore.LimitBlobWindowBytes
+	default:
+		return nil, false
+	}
+	return &packstore.LimitError{
+		Dimension: dimension,
+		Actual:    limit.Actual,
+		Limit:     limit.Limit,
+	}, true
 }
 
 func findPackEntry(entries []pack.Entry, indexed packstore.IndexEntry) (pack.Entry, bool) {

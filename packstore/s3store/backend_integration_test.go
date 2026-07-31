@@ -43,12 +43,18 @@ func TestS3BackendConformance(t *testing.T) {
 	require.NoError(err)
 	ensureBucket(t, ctx, backend)
 	t.Cleanup(func() { cleanPrefix(t, ctx, backend) })
+	empty, err := backend.NamespaceEmpty(ctx)
+	require.NoError(err)
+	assert.True(empty)
 
 	owner1 := packstore.Ownership{
 		Format: packstore.OwnershipFormatV1,
 		Vault:  "vault-a", Store: "cold", Epoch: "epoch-1",
 	}
 	require.NoError(backend.ReplaceOwnership(ctx, owner1, nil))
+	empty, err = backend.NamespaceEmpty(ctx)
+	require.NoError(err)
+	assert.False(empty)
 	assert.Equal(owner1.Store, backend.StoreID())
 	actual, err := backend.Ownership(ctx)
 	require.NoError(err)

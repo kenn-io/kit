@@ -33,3 +33,18 @@ func TestKeyspaceRejectsNonCanonicalPrefixes(t *testing.T) {
 		assert.Error(t, err, prefix)
 	}
 }
+
+func TestObjectRefRejectsMalformedShortPackIDs(t *testing.T) {
+	t.Parallel()
+	keys, err := newKeyspace("archives/demo")
+	require.NoError(t, err)
+
+	for _, key := range []string{
+		"archives/demo/packs/x/.pack",
+		"archives/demo/packs/x/a.pack",
+	} {
+		ref, ok := keys.objectRef(key)
+		assert.False(t, ok, key)
+		assert.Equal(t, packstore.ObjectRef{}, ref, key)
+	}
+}

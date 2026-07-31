@@ -317,7 +317,11 @@ func TestStoreOpenStreamCancellationClosesCompressedLoose(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	stream, _, err := store.OpenStream(ctx, hash)
 	require.NoError(t, err)
-	physical := stream.(*looseVerifiedStream).object.file
+	classified, ok := stream.(*physicalVerifiedStream)
+	require.True(t, ok)
+	loose, ok := classified.stream.(*looseVerifiedStream)
+	require.True(t, ok)
+	physical := loose.object.file
 	buf := make([]byte, 32)
 	_, err = stream.Read(buf)
 	require.NoError(t, err)
