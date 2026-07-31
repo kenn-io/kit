@@ -412,7 +412,7 @@ func (b *FilesystemBackend) PublishPack(
 		return PackReceipt{}, err
 	}
 	stagingDir := filepath.Join(b.layout.PacksDir(), ".staging")
-	if err := os.MkdirAll(stagingDir, 0o700); err != nil {
+	if err := preparePackDirectory(stagingDir, opts.Durability); err != nil {
 		return PackReceipt{}, fmt.Errorf("packstore: prepare pack staging: %w", err)
 	}
 	staged, err := os.CreateTemp(stagingDir, ".pack-")
@@ -456,7 +456,7 @@ func (b *FilesystemBackend) PublishPack(
 		return PackReceipt{}, err
 	}
 	final := b.layout.PackPath(packID)
-	if err := os.MkdirAll(filepath.Dir(final), 0o700); err != nil {
+	if err := preparePackDirectory(filepath.Dir(final), opts.Durability); err != nil {
 		return PackReceipt{}, fmt.Errorf("packstore: prepare pack shard: %w", err)
 	}
 	created := false
@@ -488,6 +488,13 @@ func (b *FilesystemBackend) PublishPack(
 		StoreID: owner.Store, Generation: generation,
 		PackID: packID, Size: size, Created: created,
 	}, nil
+}
+
+func preparePackDirectory(path string, durability Durability) error {
+	if durability == DurablePublication || durability == 0 {
+		return pack.MkdirAllSynced(path)
+	}
+	return os.MkdirAll(path, 0o700)
 }
 
 func copyBoundedContext(

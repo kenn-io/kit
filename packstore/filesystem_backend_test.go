@@ -67,6 +67,34 @@ func TestFilesystemBackendPublishesAndInventoriesCanonicalObjects(t *testing.T) 
 	assert.Equal([]string{"operator-note"}, page.Unknown)
 }
 
+func TestFilesystemBackendDurablePackPublicationSyncsFreshHierarchy(t *testing.T) {
+	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
+	packPath, packID, _ := buildBackendPackSource(t, []byte("durable pack hierarchy"))
+	originalSyncDir := pack.SyncDir
+	var synced []string
+	pack.SyncDir = func(dir string) error {
+		synced = append(synced, filepath.Clean(dir))
+		return nil
+	}
+	t.Cleanup(func() { pack.SyncDir = originalSyncDir })
+	source, err := os.Open(packPath)
+	require.NoError(t, err)
+
+	_, err = backend.PublishPack(
+		context.Background(), packID, source,
+		PublishOptions{Durability: DurablePublication},
+	)
+	require.NoError(t, errors.Join(err, source.Close()))
+
+	packsDir := backend.Layout().PacksDir()
+	assert.Equal(t, []string{
+		backend.Layout().Root(),
+		packsDir,
+		packsDir,
+		filepath.Join(packsDir, packID[:2]),
+	}, synced)
+}
+
 func TestFilesystemBackendRejectsDifferentPackAtExistingIdentity(t *testing.T) {
 	require := require.New(t)
 	ctx := context.Background()
