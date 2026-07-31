@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"go.kenn.io/kit/pack"
+	"go.kenn.io/kit/packstore/internal/packvalidate"
 )
 
 // FilesystemBackendOptions configures one filesystem store binding. An absent
@@ -447,6 +448,9 @@ func (b *FilesystemBackend) PublishPack(
 		return PackReceipt{}, fmt.Errorf("packstore: close pack staging: %w", err)
 	}
 	stagedOpen = false
+	if err := validateFilesystemPackStaging(ctx, stagedPath, packID, b.limits); err != nil {
+		return PackReceipt{}, err
+	}
 	final := b.layout.PackPath(packID)
 	if err := os.MkdirAll(filepath.Dir(final), 0o700); err != nil {
 		return PackReceipt{}, fmt.Errorf("packstore: prepare pack shard: %w", err)
@@ -572,30 +576,42 @@ func verifyFilesystemPack(
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return 0, errors.Join(err, file.Close())
 	}
-	reader, err := pack.NewReaderFromFileWithOptions(file, packID, nil, pack.ReaderOptions{
-		Limits: pack.ReaderLimits{
-			ContainerBytes: uint64(limits.PackBytes), //nolint:gosec
-			FooterBytes:    uint64(limits.FooterBytes),
-			Entries:        uint64(limits.PackEntries),
-			RawBytes:       uint64(limits.BlobBytes),
-			StoredBytes:    uint64(limits.BlobBytes),
-			WindowBytes:    uint64(max(limits.BlobBytes, int64(1<<10))),
-		},
-	})
-	if err != nil {
-		return 0, err
-	}
-	defer func() { resultErr = errors.Join(resultErr, reader.Close()) }()
-	for _, entry := range reader.Entries() {
-		blob, err := reader.OpenBlob(ctx, entry)
-		if err != nil {
-			return 0, mapPackStreamLimit(err)
-		}
-		if err := errors.Join(blob.Verify(), blob.Close()); err != nil {
-			return 0, mapPackStreamLimit(err)
-		}
+	if err := packvalidate.File(ctx, file, packID, filesystemPackReaderOptions(limits)); err != nil {
+		return 0, mapPackStreamLimit(err)
 	}
 	return info.Size(), nil
+}
+
+func validateFilesystemPackStaging(
+	ctx context.Context,
+	path string,
+	packID string,
+	limits Limits,
+) error {
+	file, err := openNoFollow(path, false)
+	if err != nil {
+		return fmt.Errorf("packstore: open pack staging for validation: %w", err)
+	}
+	if err := packvalidate.File(ctx, file, packID, filesystemPackReaderOptions(limits)); err != nil {
+		err = mapPackStreamLimit(err)
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
+			errors.Is(err, ErrBlobTooLarge) {
+			return err
+		}
+		return errors.Join(ErrPhysicalCorrupt, err)
+	}
+	return nil
+}
+
+func filesystemPackReaderOptions(limits Limits) pack.ReaderOptions {
+	return pack.ReaderOptions{Limits: pack.ReaderLimits{
+		ContainerBytes: uint64(limits.PackBytes), //nolint:gosec
+		FooterBytes:    uint64(limits.FooterBytes),
+		Entries:        uint64(limits.PackEntries),
+		RawBytes:       uint64(limits.BlobBytes),
+		StoredBytes:    uint64(limits.BlobBytes),
+		WindowBytes:    uint64(max(limits.BlobBytes, int64(1<<10))),
+	}}
 }
 
 // Retire removes one canonical object after a fresh ownership check. Missing

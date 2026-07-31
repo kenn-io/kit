@@ -228,7 +228,7 @@ func TestPublishPackRejectsKnownConfiguredLimitBeforeMultipart(t *testing.T) {
 	assert.Equal(t, 1, requests)
 }
 
-func TestPublishPackCapsCallerLimitAndAbortsMultipart(t *testing.T) {
+func TestPublishPackCapsCallerLimitBeforeMultipart(t *testing.T) {
 	limits := packstore.DefaultLimits()
 	limits.PackBytes = 8
 	owner := packstore.Ownership{
@@ -239,7 +239,7 @@ func TestPublishPackCapsCallerLimitAndAbortsMultipart(t *testing.T) {
 	}
 	marker, err := packstore.MarshalOwnership(owner)
 	require.NoError(t, err)
-	var uploads, completes, aborts int
+	var creates, uploads, completes, aborts int
 	backend := newHTTPBackend(limits, func(request *http.Request) (*http.Response, error) {
 		query := request.URL.Query()
 		switch {
@@ -252,6 +252,7 @@ func TestPublishPackCapsCallerLimitAndAbortsMultipart(t *testing.T) {
 				ContentLength: int64(len(marker)), Request: request,
 			}, nil
 		case request.Method == http.MethodPost && query.Has("uploads"):
+			creates++
 			return xmlResponse(request, http.StatusOK,
 				`<InitiateMultipartUploadResult>`+
 					`<Bucket>test-bucket</Bucket><Key>packs/test</Key>`+
@@ -286,12 +287,13 @@ func TestPublishPackCapsCallerLimitAndAbortsMultipart(t *testing.T) {
 	var limit *packstore.LimitError
 	require.ErrorAs(t, err, &limit)
 	assert.Equal(t, packstore.LimitPackContainerBytes, limit.Dimension)
-	assert.Equal(t, 1, uploads)
+	assert.Zero(t, creates)
+	assert.Zero(t, uploads)
 	assert.Zero(t, completes)
-	assert.Equal(t, 1, aborts)
+	assert.Zero(t, aborts)
 }
 
-func TestPublishPackRejectsExactSizeMismatchBeforeMultipartCompletion(t *testing.T) {
+func TestPublishPackRejectsExactSizeMismatchBeforeMultipart(t *testing.T) {
 	owner := packstore.Ownership{
 		Format: packstore.OwnershipFormatV1,
 		Vault:  "test-vault",
@@ -308,7 +310,7 @@ func TestPublishPackRejectsExactSizeMismatchBeforeMultipartCompletion(t *testing
 		{name: "source is overlong", expectedSize: 4},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			var uploads, completes, aborts int
+			var creates, uploads, completes, aborts int
 			backend := newHTTPBackend(packstore.DefaultLimits(), func(request *http.Request) (*http.Response, error) {
 				query := request.URL.Query()
 				switch {
@@ -321,6 +323,7 @@ func TestPublishPackRejectsExactSizeMismatchBeforeMultipartCompletion(t *testing
 						ContentLength: int64(len(marker)), Request: request,
 					}, nil
 				case request.Method == http.MethodPost && query.Has("uploads"):
+					creates++
 					return xmlResponse(request, http.StatusOK,
 						`<InitiateMultipartUploadResult>`+
 							`<Bucket>test-bucket</Bucket><Key>packs/test</Key>`+
@@ -352,9 +355,105 @@ func TestPublishPackRejectsExactSizeMismatchBeforeMultipartCompletion(t *testing
 			)
 
 			require.ErrorIs(t, err, packstore.ErrContentMismatch)
-			assert.Equal(t, 1, uploads)
+			assert.Zero(t, creates)
+			assert.Zero(t, uploads)
 			assert.Zero(t, completes)
-			assert.Equal(t, 1, aborts)
+			assert.Zero(t, aborts)
+		})
+	}
+}
+
+func TestPublishPackValidatesEveryEntryBeforeMultipart(t *testing.T) {
+	owner := packstore.Ownership{
+		Format: packstore.OwnershipFormatV1,
+		Vault:  "test-vault",
+		Store:  "archive",
+		Epoch:  "epoch-1",
+	}
+	marker, err := packstore.MarshalOwnership(owner)
+	require.NoError(t, err)
+	forgedLimits := packstore.DefaultLimits()
+	forgedLimits.BlobBytes = 16
+	forgedID, forgedBytes := makeEncodedPack(t, []byte("x"), 17, 0)
+	tests := []struct {
+		name      string
+		limits    packstore.Limits
+		packID    string
+		packBytes []byte
+		wantErr   error
+		limit     packstore.LimitDimension
+	}{
+		{
+			name: "malformed pack", limits: packstore.DefaultLimits(),
+			packID: pack.NewPackID(), packBytes: []byte("not a pack"),
+			wantErr: pack.ErrBadMagic,
+		},
+		{
+			name: "forged blob limit", limits: forgedLimits,
+			packID: forgedID, packBytes: forgedBytes,
+			wantErr: packstore.ErrBlobTooLarge, limit: packstore.LimitBlobRawBytes,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gets, multipartCreates, multipartCompletes int
+			backend := newHTTPBackend(tt.limits, func(request *http.Request) (*http.Response, error) {
+				query := request.URL.Query()
+				switch {
+				case request.Method == http.MethodGet:
+					gets++
+					body := marker
+					if gets > 1 {
+						body = tt.packBytes
+					}
+					header := make(http.Header)
+					header.Set("Content-Length", strconv.Itoa(len(body)))
+					return &http.Response{
+						StatusCode: http.StatusOK, Header: header,
+						Body:          io.NopCloser(bytes.NewReader(body)),
+						ContentLength: int64(len(body)), Request: request,
+					}, nil
+				case request.Method == http.MethodPost && query.Has("uploads"):
+					multipartCreates++
+					return xmlResponse(request, http.StatusOK,
+						`<InitiateMultipartUploadResult>`+
+							`<Bucket>test-bucket</Bucket><Key>packs/test</Key>`+
+							`<UploadId>upload-1</UploadId>`+
+							`</InitiateMultipartUploadResult>`), nil
+				case request.Method == http.MethodPut && query.Get("uploadId") == "upload-1":
+					response := xmlResponse(request, http.StatusOK, "")
+					response.Header.Set("ETag", `"part-etag"`)
+					return response, nil
+				case request.Method == http.MethodPost && query.Get("uploadId") == "upload-1":
+					multipartCompletes++
+					return xmlResponse(request, http.StatusOK,
+						`<CompleteMultipartUploadResult>`+
+							`<Location>https://example.test/test-bucket/packs/test</Location>`+
+							`<Bucket>test-bucket</Bucket><Key>packs/test</Key>`+
+							`<ETag>&quot;complete-etag&quot;</ETag>`+
+							`</CompleteMultipartUploadResult>`), nil
+				default:
+					return xmlResponse(request, http.StatusInternalServerError,
+						`<Error><Code>UnexpectedRequest</Code></Error>`), nil
+				}
+			})
+			backend.setOwnership(owner, `"owner-etag"`)
+
+			_, err := backend.PublishPack(
+				context.Background(),
+				tt.packID,
+				bytes.NewReader(tt.packBytes),
+				packstore.PublishOptions{},
+			)
+
+			require.ErrorIs(t, err, tt.wantErr)
+			if tt.limit != "" {
+				var limit *packstore.LimitError
+				require.ErrorAs(t, err, &limit)
+				assert.Equal(t, tt.limit, limit.Dimension)
+			}
+			assert.Zero(t, multipartCreates)
+			assert.Zero(t, multipartCompletes)
 		})
 	}
 }

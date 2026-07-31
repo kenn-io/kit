@@ -19,6 +19,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"go.kenn.io/kit/pack"
 	"go.kenn.io/kit/packstore"
+	"go.kenn.io/kit/packstore/internal/packvalidate"
 )
 
 const multipartAbortTimeout = 10 * time.Second
@@ -176,7 +177,7 @@ func (b *Backend) PublishPack(
 	packID string,
 	src io.Reader,
 	opts packstore.PublishOptions,
-) (packstore.PackReceipt, error) {
+) (receipt packstore.PackReceipt, resultErr error) {
 	owner, err := b.requireOwnership(ctx)
 	if err != nil {
 		return packstore.PackReceipt{}, err
@@ -196,8 +197,40 @@ func (b *Backend) PublishPack(
 	if err != nil {
 		return packstore.PackReceipt{}, err
 	}
-	result, err := b.multipartPublish(ctx, b.keys.pack(packID), src, multipartPublishOptions{
-		maxBytes: maxBytes, exactSize: opts.ExpectedSize, sizeKnown: opts.SizeKnown,
+	stagedPath, stagedSize, stagedDigest, err := stagePackPublication(
+		ctx,
+		src,
+		maxBytes,
+		opts.ExpectedSize,
+		opts.SizeKnown,
+	)
+	if err != nil {
+		return packstore.PackReceipt{}, err
+	}
+	defer func() {
+		if err := os.Remove(stagedPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			resultErr = errors.Join(resultErr, err)
+		}
+	}()
+	validationFile, err := os.Open(stagedPath)
+	if err != nil {
+		return packstore.PackReceipt{}, fmt.Errorf(
+			"s3store: open pack publication staging for validation: %w", err,
+		)
+	}
+	if err := b.validatePackFile(ctx, validationFile, packID); err != nil {
+		return packstore.PackReceipt{}, err
+	}
+	uploadFile, err := os.Open(stagedPath)
+	if err != nil {
+		return packstore.PackReceipt{}, fmt.Errorf(
+			"s3store: reopen pack publication staging: %w", err,
+		)
+	}
+	defer func() { resultErr = errors.Join(resultErr, uploadFile.Close()) }()
+	result, err := b.multipartPublish(ctx, b.keys.pack(packID), uploadFile, multipartPublishOptions{
+		maxBytes: maxBytes, exactSize: stagedSize, sizeKnown: true,
+		expectedDigest: hex.EncodeToString(stagedDigest[:]),
 	})
 	if err != nil {
 		return packstore.PackReceipt{}, err
@@ -206,7 +239,7 @@ func (b *Backend) PublishPack(
 	if err != nil {
 		return packstore.PackReceipt{}, err
 	}
-	if digest != result.digest {
+	if digest != stagedDigest || result.digest != stagedDigest {
 		return packstore.PackReceipt{}, errors.Join(
 			packstore.ErrPhysicalCorrupt,
 			fmt.Errorf("s3store: canonical pack differs from published bytes"),
@@ -220,6 +253,75 @@ func (b *Backend) PublishPack(
 		StoreID: owner.Store, Generation: generation, PackID: packID,
 		Size: size, Created: result.created,
 	}, nil
+}
+
+func stagePackPublication(
+	ctx context.Context,
+	src io.Reader,
+	maxBytes int64,
+	exactSize int64,
+	sizeKnown bool,
+) (path string, size int64, digest [sha256.Size]byte, resultErr error) {
+	staged, err := os.CreateTemp("", "kit-s3-pack-publish-*")
+	if err != nil {
+		return "", 0, digest, fmt.Errorf("s3store: create pack publication staging: %w", err)
+	}
+	stagedPath := staged.Name()
+	keep := false
+	open := true
+	defer func() {
+		if open {
+			resultErr = errors.Join(resultErr, staged.Close())
+		}
+		if !keep {
+			if err := os.Remove(stagedPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				resultErr = errors.Join(resultErr, err)
+			}
+		}
+	}()
+	if err := staged.Chmod(0o600); err != nil {
+		return "", 0, digest, fmt.Errorf("s3store: protect pack publication staging: %w", err)
+	}
+	hasher := sha256.New()
+	reader := io.Reader(&publicationContextReader{ctx: ctx, src: src})
+	if maxBytes < math.MaxInt64 {
+		reader = io.LimitReader(reader, maxBytes+1)
+	}
+	size, err = io.CopyBuffer(
+		io.MultiWriter(staged, hasher),
+		reader,
+		make([]byte, 64<<10),
+	)
+	if err := ctx.Err(); err != nil {
+		return "", 0, digest, err
+	}
+	if err != nil {
+		return "", 0, digest, fmt.Errorf("s3store: stage pack publication: %w", err)
+	}
+	if size > maxBytes {
+		return "", 0, digest, &packstore.LimitError{
+			Dimension: packstore.LimitPackContainerBytes,
+			Actual:    uint64(size),     //nolint:gosec // size is non-negative
+			Limit:     uint64(maxBytes), //nolint:gosec // validated positive
+		}
+	}
+	if sizeKnown && size != exactSize {
+		return "", 0, digest, fmt.Errorf(
+			"%w: publication size %d does not match expected %d",
+			packstore.ErrContentMismatch, size, exactSize,
+		)
+	}
+	copy(digest[:], hasher.Sum(nil))
+	if err := staged.Sync(); err != nil {
+		return "", 0, digest, fmt.Errorf("s3store: sync pack publication staging: %w", err)
+	}
+	if err := staged.Close(); err != nil {
+		open = false
+		return "", 0, digest, fmt.Errorf("s3store: close pack publication staging: %w", err)
+	}
+	open = false
+	keep = true
+	return stagedPath, size, digest, nil
 }
 
 type publicationResult struct {
@@ -542,44 +644,25 @@ func (b *Backend) verifyPackObject(
 	if _, err := staged.Seek(0, io.SeekStart); err != nil {
 		return 0, digest, err
 	}
-	reader, err := pack.NewReaderFromFileWithOptions(
-		staged,
-		packID,
-		nil,
-		b.packReaderOptions(),
-	)
-	if err != nil {
-		if mapped, ok := mapPackLimit(err); ok {
-			return 0, digest, mapped
-		}
-		return 0, digest, errors.Join(packstore.ErrPhysicalCorrupt, err)
-	}
+	validationFile := staged
 	staged = nil
-	defer func() { resultErr = errors.Join(resultErr, reader.Close()) }()
-	for _, entry := range reader.Entries() {
-		blob, err := reader.OpenBlob(ctx, entry)
-		if err != nil {
-			if mapped, ok := mapPackLimit(err); ok {
-				return 0, digest, mapped
-			}
-			if errors.Is(err, context.Canceled) ||
-				errors.Is(err, context.DeadlineExceeded) {
-				return 0, digest, err
-			}
-			return 0, digest, errors.Join(packstore.ErrPhysicalCorrupt, err)
-		}
-		if err := errors.Join(blob.Verify(), blob.Close()); err != nil {
-			if mapped, ok := mapPackLimit(err); ok {
-				return 0, digest, mapped
-			}
-			if errors.Is(err, context.Canceled) ||
-				errors.Is(err, context.DeadlineExceeded) {
-				return 0, digest, err
-			}
-			return 0, digest, errors.Join(packstore.ErrPhysicalCorrupt, err)
-		}
+	if err := b.validatePackFile(ctx, validationFile, packID); err != nil {
+		return 0, digest, err
 	}
 	return resultSize, digest, nil
+}
+
+func (b *Backend) validatePackFile(ctx context.Context, file *os.File, packID string) error {
+	if err := packvalidate.File(ctx, file, packID, b.packReaderOptions()); err != nil {
+		if mapped, ok := mapPackLimit(err); ok {
+			return mapped
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		return errors.Join(packstore.ErrPhysicalCorrupt, err)
+	}
+	return nil
 }
 
 func validateReadbackSize(kind string, actual *int64, expected int64) error {

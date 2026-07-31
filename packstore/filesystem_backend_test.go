@@ -255,6 +255,50 @@ func TestFilesystemBackendPublishPackRejectsExactSizeMismatchBeforeCanonicalWrit
 	}
 }
 
+func TestFilesystemBackendPublishPackRejectsMalformedBeforeCanonicalWrite(t *testing.T) {
+	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
+	packID := pack.NewPackID()
+
+	_, err := backend.PublishPack(
+		context.Background(),
+		packID,
+		bytes.NewReader([]byte("not a pack")),
+		PublishOptions{},
+	)
+
+	require.ErrorIs(t, err, pack.ErrBadMagic)
+	require.ErrorIs(t, err, ErrPhysicalCorrupt)
+	assert.NoFileExists(t, backend.Layout().PackPath(packID))
+}
+
+func TestFilesystemBackendPublishPackRejectsForgedBlobLimitBeforeCanonicalWrite(t *testing.T) {
+	limits := DefaultLimits()
+	limits.BlobBytes = 16
+	packPath, packID := buildEncodedBackendPackSource(t, []byte("x"), 17, 0)
+	layout := layoutForStoreTest(t)
+	backend, err := NewFilesystemBackend(layout, FilesystemBackendOptions{Limits: limits})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, backend.Close()) })
+	owner := Ownership{
+		Format: OwnershipFormatV1,
+		Vault:  "test-vault",
+		Store:  "archive",
+		Epoch:  "epoch-1",
+	}
+	require.NoError(t, backend.ReplaceOwnership(context.Background(), owner, nil))
+	source, err := os.Open(packPath)
+	require.NoError(t, err)
+
+	_, err = backend.PublishPack(context.Background(), packID, source, PublishOptions{})
+	require.NoError(t, source.Close())
+
+	require.ErrorIs(t, err, ErrBlobTooLarge)
+	var limit *LimitError
+	require.ErrorAs(t, err, &limit)
+	assert.Equal(t, LimitBlobRawBytes, limit.Dimension)
+	assert.NoFileExists(t, layout.PackPath(packID))
+}
+
 func TestCopyBoundedContextAcceptsMaxInt64Limit(t *testing.T) {
 	var destination bytes.Buffer
 
