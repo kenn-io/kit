@@ -1187,6 +1187,18 @@ func (s *restoreState) prepareBeforePublication(
 	ctx context.Context, currentRel, finalDBRel string,
 	callback func(context.Context, RestorePublicationTarget) error,
 ) (replacementRel string, dbBytes int64, resultErr error) {
+	var stagedRel string
+	// Register first so it observes errors joined by scratch cleanup and close.
+	// Once staging succeeds, every error path must remove the replacement.
+	defer func() {
+		if resultErr == nil || stagedRel == "" {
+			return
+		}
+		if err := s.root.Remove(stagedRel); err != nil && !errors.Is(err, os.ErrNotExist) {
+			resultErr = errors.Join(resultErr,
+				fmt.Errorf("backup: removing failed prepared database staging: %w", err))
+		}
+	}()
 	source, err := s.root.Open(currentRel)
 	if err != nil {
 		return "", 0, fmt.Errorf("backup: opening staged database for publication preparation: %w", err)
@@ -1297,7 +1309,8 @@ func (s *restoreState) prepareBeforePublication(
 		_ = opened.Close()
 		return "", 0, errors.New("backup: prepared restored database changed before confinement")
 	}
-	stagedRel, stageErr := s.stageRootDatabase(ctx, finalDBRel, opened, info.Size())
+	var stageErr error
+	stagedRel, stageErr = s.stageRootDatabase(ctx, finalDBRel, opened, info.Size())
 	closeErr := closePreparedRestoreDatabase(opened)
 	if err := errors.Join(stageErr, closeErr); err != nil {
 		var cleanupErr error

@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.kenn.io/kit/pack"
 )
 
 func TestRestoreBeforePublicationRejectsInvalidPrivateOutput(t *testing.T) {
@@ -251,4 +252,35 @@ func TestRestoreBeforePublicationRelativeTargetCannotReachNestedRepositoryStagin
 	var userVersion int
 	require.NoError(attacker.QueryRow("PRAGMA user_version").Scan(&userVersion))
 	require.Equal(99, userVersion, "callback writes must not reach nested repository staging through a relative target")
+}
+
+func TestPrepareBeforePublicationRemovesStagedReplacementAfterScratchCleanupFailure(t *testing.T) {
+	require := require.New(t)
+	target := t.TempDir()
+	root, err := openRestoreRoot(target)
+	require.NoError(err)
+	t.Cleanup(func() { require.NoError(root.Close()) })
+	currentRel := "app.db.restore-" + pack.NewPackID()
+	require.NoError(os.WriteFile(filepath.Join(target, currentRel), []byte("database"), 0o600))
+	st := &restoreState{root: root, target: target}
+	var blockedDir string
+
+	_, _, err = st.prepareBeforePublication(
+		context.Background(), currentRel, "app.db",
+		func(_ context.Context, staged RestorePublicationTarget) error {
+			blockedDir = filepath.Join(filepath.Dir(staged.DBPath), "blocked")
+			if err := os.Mkdir(blockedDir, 0o700); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(blockedDir, "child"), []byte("block cleanup"), 0o600); err != nil {
+				return err
+			}
+			return os.Chmod(blockedDir, 0)
+		},
+	)
+
+	require.ErrorContains(err, "removing private publication staging directory")
+	assert.Empty(t, restoreDatabaseStageFiles(t, target, "app.db"))
+	require.NoError(os.Chmod(blockedDir, 0o700))
+	require.NoError(os.RemoveAll(filepath.Dir(blockedDir)))
 }

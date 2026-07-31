@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
@@ -123,6 +124,40 @@ func TestFilesystemBackendInventoryFollowsConfiguredSymlinkRoot(t *testing.T) {
 	}}, page.Objects)
 	assert.Empty(t, page.Unknown)
 	assert.False(t, empty)
+}
+
+func TestFilesystemWalkPropagatesMissingEntryAfterRootResolution(t *testing.T) {
+	layout := layoutForStoreTest(t)
+	backend, err := NewFilesystemBackend(layout, FilesystemBackendOptions{})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, backend.Close()) })
+	originalWalk := walkFilesystemTree
+	walkFilesystemTree = func(string, fs.WalkDirFunc) error { return fs.ErrNotExist }
+	t.Cleanup(func() { walkFilesystemTree = originalWalk })
+
+	_, err = backend.Inventory(context.Background(), "")
+	require.ErrorIs(t, err, fs.ErrNotExist)
+	_, err = backend.NamespaceEmpty(context.Background())
+	require.ErrorIs(t, err, fs.ErrNotExist)
+}
+
+func TestFilesystemWalkTreatsInitiallyMissingRootAsEmpty(t *testing.T) {
+	layout, err := NewLayout(filepath.Join(t.TempDir(), "missing"), LayoutOptions{
+		Staging: StagingStoreDirectory, StagingDir: "tmp",
+	})
+	require.NoError(t, err)
+	backend, err := NewFilesystemBackend(layout, FilesystemBackendOptions{})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, backend.Close()) })
+
+	page, err := backend.Inventory(context.Background(), "")
+	require.NoError(t, err)
+	empty, err := backend.NamespaceEmpty(context.Background())
+	require.NoError(t, err)
+
+	assert.Empty(t, page.Objects)
+	assert.Empty(t, page.Unknown)
+	assert.True(t, empty)
 }
 
 func TestFilesystemBackendSeekablePackHonorsCancellation(t *testing.T) {

@@ -109,6 +109,9 @@ func (b *Backend) OpenPack(
 			fmt.Errorf("s3store: pack entry differs from catalog authority"),
 		)
 	}
+	if err := b.checkSelectedPackEntryLimits(canonical); err != nil {
+		return nil, 0, errors.Join(err, reader.Close(), os.Remove(path))
+	}
 	blob, err := reader.OpenBlob(ctx, canonical)
 	if err != nil {
 		if mapped, ok := mapPackLimit(err); ok {
@@ -197,10 +200,27 @@ func (b *Backend) packReaderOptions() pack.ReaderOptions {
 		ContainerBytes: uint64(b.limits.PackBytes),   //nolint:gosec // validated positive
 		FooterBytes:    uint64(b.limits.FooterBytes), //nolint:gosec // validated positive
 		Entries:        uint64(b.limits.PackEntries),
-		RawBytes:       uint64(b.limits.BlobBytes), //nolint:gosec // validated positive
-		StoredBytes:    uint64(b.limits.BlobBytes), //nolint:gosec // validated positive
 		WindowBytes:    uint64(max(b.limits.BlobBytes, int64(1<<10))),
 	}}
+}
+
+func (b *Backend) checkSelectedPackEntryLimits(entry pack.Entry) error {
+	limit := uint64(b.limits.BlobBytes) //nolint:gosec // validated positive
+	if entry.RawLen > limit {
+		return &packstore.LimitError{
+			Dimension: packstore.LimitBlobRawBytes,
+			Actual:    entry.RawLen,
+			Limit:     limit,
+		}
+	}
+	if entry.StoredLen > limit {
+		return &packstore.LimitError{
+			Dimension: packstore.LimitBlobStoredBytes,
+			Actual:    entry.StoredLen,
+			Limit:     limit,
+		}
+	}
+	return nil
 }
 
 func mapPackLimit(err error) (error, bool) {

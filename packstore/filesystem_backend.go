@@ -41,6 +41,8 @@ type FilesystemBackend struct {
 
 const seekableDirectPackBytes = int64(1 << 20)
 
+var walkFilesystemTree = filepath.WalkDir
+
 // NewFilesystemBackend prepares one filesystem store.
 func NewFilesystemBackend(
 	layout Layout,
@@ -725,7 +727,7 @@ func (b *FilesystemBackend) Inventory(
 	if err != nil {
 		return page, err
 	}
-	err = filepath.WalkDir(walkRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+	err = walkFilesystemTree(walkRoot, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -753,9 +755,6 @@ func (b *FilesystemBackend) Inventory(
 		}
 		return nil
 	})
-	if errors.Is(err, fs.ErrNotExist) {
-		return page, nil
-	}
 	sort.Slice(page.Objects, func(i, j int) bool {
 		return objectRefKey(page.Objects[i].Ref) < objectRefKey(page.Objects[j].Ref)
 	})
@@ -774,7 +773,7 @@ func (b *FilesystemBackend) NamespaceEmpty(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("packstore: inspect filesystem namespace: %w", err)
 	}
 	empty := true
-	err = filepath.WalkDir(walkRoot, func(
+	err = walkFilesystemTree(walkRoot, func(
 		_ string, entry fs.DirEntry, walkErr error,
 	) error {
 		if walkErr != nil {
@@ -789,9 +788,6 @@ func (b *FilesystemBackend) NamespaceEmpty(ctx context.Context) (bool, error) {
 		}
 		return nil
 	})
-	if errors.Is(err, fs.ErrNotExist) {
-		return true, nil
-	}
 	if err != nil {
 		return false, fmt.Errorf("packstore: inspect filesystem namespace: %w", err)
 	}

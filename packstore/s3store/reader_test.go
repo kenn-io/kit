@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -91,8 +92,6 @@ func TestPackReaderOptionsUseConfiguredLimits(t *testing.T) {
 		ContainerBytes: 8192,
 		FooterBytes:    2048,
 		Entries:        32,
-		RawBytes:       4096,
-		StoredBytes:    4096,
 		WindowBytes:    4096,
 	}}, backend.packReaderOptions())
 }
@@ -160,6 +159,39 @@ func TestOpenPackEnforcesConfiguredBlobLimit(t *testing.T) {
 	var limit *packstore.LimitError
 	require.ErrorAs(t, err, &limit)
 	assert.Equal(t, packstore.LimitBlobRawBytes, limit.Dimension)
+}
+
+func TestOpenPackIgnoresUnselectedEntryBlobLimit(t *testing.T) {
+	selected := []byte("selected blob")
+	unselected := bytes.Repeat([]byte("unrelated oversized footer entry"), 32)
+	_, packBytes, entries := makePackEntries(t, selected, unselected)
+	limits := packstore.DefaultLimits()
+	limits.BlobBytes = int64(len(selected))
+	backend := newHTTPBackend(limits, func(request *http.Request) (*http.Response, error) {
+		header := make(http.Header)
+		header.Set("Content-Length", strconv.Itoa(len(packBytes)))
+		if request.Method == http.MethodHead {
+			return &http.Response{
+				StatusCode: http.StatusOK, Header: header,
+				Body: io.NopCloser(bytes.NewReader(nil)), ContentLength: int64(len(packBytes)),
+				Request: request,
+			}, nil
+		}
+		header.Set("Content-Range", fmt.Sprintf("bytes 0-%d/%d", len(packBytes)-1, len(packBytes)))
+		return &http.Response{
+			StatusCode: http.StatusPartialContent, Header: header,
+			Body: io.NopCloser(bytes.NewReader(packBytes)), ContentLength: int64(len(packBytes)),
+			Request: request,
+		}, nil
+	})
+	attachTestBackend(backend)
+
+	stream, size, err := backend.OpenPack(context.Background(), entries[0].Hash, entries[0])
+	require.NoError(t, err)
+	got, err := io.ReadAll(stream)
+	require.NoError(t, errors.Join(err, stream.Close()))
+	assert.Equal(t, selected, got)
+	assert.Equal(t, int64(len(selected)), size)
 }
 
 func TestOversizedS3ReplicaFallsBackToHealthyCandidate(t *testing.T) {
