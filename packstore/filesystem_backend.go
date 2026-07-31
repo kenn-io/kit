@@ -111,7 +111,12 @@ func (b *FilesystemBackend) Ownership(ctx context.Context) (Ownership, error) {
 	if err := ctx.Err(); err != nil {
 		return Ownership{}, err
 	}
-	return readOwnership(b.layout.OwnershipPath())
+	root, err := openFilesystemRoot(b.layout)
+	if err != nil {
+		return Ownership{}, err
+	}
+	defer func() { _ = root.Close() }()
+	return readOwnershipRoot(root)
 }
 
 // ReplaceOwnership atomically publishes next after checking the expected prior
@@ -126,21 +131,37 @@ func (b *FilesystemBackend) ReplaceOwnership(
 	if ctx == nil {
 		return fmt.Errorf("packstore: nil context")
 	}
-	if err := replaceOwnership(ctx, b.layout.OwnershipPath(), next, expected); err != nil {
+	if expected == nil {
+		if err := os.MkdirAll(b.layout.Root(), 0o700); err != nil {
+			return fmt.Errorf("packstore: prepare ownership root: %w", err)
+		}
+	}
+	root, err := openFilesystemRoot(b.layout)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+	if err := replaceOwnershipRoot(ctx, root, next, expected); err != nil {
 		return err
 	}
 	b.ownership.set(next)
 	return nil
 }
 
-func (b *FilesystemBackend) requireOwnership(ctx context.Context) (Ownership, error) {
+func (b *FilesystemBackend) requireOwnershipRoot(
+	ctx context.Context,
+	root *os.Root,
+) (Ownership, error) {
 	expected := b.ownership.get()
 	if expected == nil {
 		return Ownership{}, &OwnershipMismatchError{
 			Err: fmt.Errorf("packstore: filesystem backend is not attached"),
 		}
 	}
-	actual, err := b.Ownership(ctx)
+	if err := ctx.Err(); err != nil {
+		return Ownership{}, err
+	}
+	actual, err := readOwnershipRoot(root)
 	if err != nil {
 		return Ownership{}, &OwnershipMismatchError{Expected: *expected, Err: err}
 	}
@@ -300,11 +321,7 @@ func (b *FilesystemBackend) PublishLoose(
 	hash Hash,
 	src io.Reader,
 	opts PublishOptions,
-) (LooseReceipt, error) {
-	owner, err := b.requireOwnership(ctx)
-	if err != nil {
-		return LooseReceipt{}, err
-	}
+) (receipt LooseReceipt, resultErr error) {
 	if src == nil {
 		return LooseReceipt{}, fmt.Errorf("packstore: nil loose publication source")
 	}
@@ -319,7 +336,16 @@ func (b *FilesystemBackend) PublishLoose(
 	if err != nil {
 		return LooseReceipt{}, err
 	}
-	result, err := b.loose.Write(ctx, src, writeOpts)
+	root, err := openFilesystemRoot(b.layout)
+	if err != nil {
+		return LooseReceipt{}, err
+	}
+	defer func() { resultErr = errors.Join(resultErr, root.Close()) }()
+	owner, err := b.requireOwnershipRoot(ctx, root)
+	if err != nil {
+		return LooseReceipt{}, err
+	}
+	result, err := b.publishLooseRoot(ctx, root, hash, src, writeOpts, false)
 	if err != nil {
 		return LooseReceipt{}, err
 	}
@@ -343,11 +369,7 @@ func (b *FilesystemBackend) RepairLoose(
 	hash Hash,
 	src io.Reader,
 	opts PublishOptions,
-) (LooseReceipt, error) {
-	owner, err := b.requireOwnership(ctx)
-	if err != nil {
-		return LooseReceipt{}, err
-	}
+) (receipt LooseReceipt, resultErr error) {
 	if src == nil {
 		return LooseReceipt{}, fmt.Errorf("packstore: nil loose repair source")
 	}
@@ -360,16 +382,31 @@ func (b *FilesystemBackend) RepairLoose(
 	if opts.Durability == 0 {
 		opts.Durability = DurablePublication
 	}
+	if opts.Dedup == 0 {
+		opts.Dedup = VerifyFullHash
+	}
+	writeOpts := WriteOptions{
+		Durability: opts.Durability, Dedup: opts.Dedup,
+		ExpectedHash: hash, ExpectedSize: opts.ExpectedSize, SizeKnown: true,
+		MaxBytes: opts.MaxBytes, Compression: opts.Compression,
+	}
+	if err := validateWriteOptions(writeOpts); err != nil {
+		return LooseReceipt{}, err
+	}
 	generation, err := newLocationGeneration()
 	if err != nil {
 		return LooseReceipt{}, err
 	}
-	result, err := b.loose.Repair(ctx, src, LooseIdentity{
-		Hash: hash, Size: opts.ExpectedSize,
-	}, RepairOptions{
-		Durability: opts.Durability, Compression: opts.Compression,
-		MaxBytes: opts.MaxBytes,
-	})
+	root, err := openFilesystemRoot(b.layout)
+	if err != nil {
+		return LooseReceipt{}, err
+	}
+	defer func() { resultErr = errors.Join(resultErr, root.Close()) }()
+	owner, err := b.requireOwnershipRoot(ctx, root)
+	if err != nil {
+		return LooseReceipt{}, err
+	}
+	result, err := b.publishLooseRoot(ctx, root, hash, src, writeOpts, true)
 	if err != nil {
 		return LooseReceipt{}, err
 	}
@@ -414,10 +451,6 @@ func (b *FilesystemBackend) PublishPack(
 	src io.Reader,
 	opts PublishOptions,
 ) (receipt PackReceipt, resultErr error) {
-	owner, err := b.requireOwnership(ctx)
-	if err != nil {
-		return PackReceipt{}, err
-	}
 	if !pack.IsValidPackID(packID) {
 		return PackReceipt{}, fmt.Errorf("packstore: invalid pack id %q", packID)
 	}
@@ -442,6 +475,10 @@ func (b *FilesystemBackend) PublishPack(
 		return PackReceipt{}, fmt.Errorf("packstore: open pack publication root: %w", err)
 	}
 	defer func() { resultErr = errors.Join(resultErr, root.Close()) }()
+	owner, err := b.requireOwnershipRoot(ctx, root)
+	if err != nil {
+		return PackReceipt{}, err
+	}
 	durable := opts.Durability == DurablePublication || opts.Durability == 0
 	packsRoot, err := ensureRootDirNoSymlinks(root, "packs", durable)
 	if err != nil {
@@ -673,17 +710,30 @@ func filesystemPackBlobLimits(limits Limits) packvalidate.BlobLimits {
 
 // Retire removes one canonical object after a fresh ownership check. Missing
 // objects are successful and active readers retain their pinned descriptors.
-func (b *FilesystemBackend) Retire(ctx context.Context, ref ObjectRef) error {
+func (b *FilesystemBackend) Retire(
+	ctx context.Context,
+	ref ObjectRef,
+) (resultErr error) {
+	root, err := openFilesystemRoot(b.layout)
+	if err != nil {
+		if b.legacy && errors.Is(err, fs.ErrNotExist) && ref.PackID != "" {
+			b.reader.mu.Lock()
+			defer b.reader.mu.Unlock()
+			return b.reader.retirePackSlotLocked(ref.PackID)
+		}
+		return err
+	}
+	defer func() { resultErr = errors.Join(resultErr, root.Close()) }()
 	if !b.legacy {
-		if _, err := b.requireOwnership(ctx); err != nil {
+		if _, err := b.requireOwnershipRoot(ctx, root); err != nil {
 			return err
 		}
 	}
 	switch {
 	case ref.LooseHash != "" && ref.PackID == "":
-		return b.retireLoose(ctx, ref.LooseHash, ref.LooseEncoding)
+		return b.retireLooseRoot(ctx, root, ref.LooseHash, ref.LooseEncoding)
 	case ref.LooseHash == "" && ref.LooseEncoding == 0 && ref.PackID != "":
-		return b.retirePack(ref.PackID)
+		return b.retirePackRoot(root, ref.PackID)
 	default:
 		return fmt.Errorf("packstore: object reference must select exactly one representation")
 	}
@@ -705,6 +755,13 @@ func (b *FilesystemBackend) retirePack(packID string) (resultErr error) {
 		}
 	}
 	defer func() { resultErr = errors.Join(resultErr, root.Close()) }()
+	return b.retirePackRoot(root, packID)
+}
+
+func (b *FilesystemBackend) retirePackRoot(root *os.Root, packID string) (resultErr error) {
+	if !pack.IsValidPackID(packID) {
+		return fmt.Errorf("packstore: invalid pack id %q", packID)
+	}
 	b.reader.mu.Lock()
 	defer b.reader.mu.Unlock()
 	closeErr := b.reader.retirePackSlotLocked(packID)
@@ -728,8 +785,9 @@ func (b *FilesystemBackend) retirePack(packID string) (resultErr error) {
 	return errors.Join(closeErr, removeErr)
 }
 
-func (b *FilesystemBackend) retireLoose(
+func (b *FilesystemBackend) retireLooseRoot(
 	ctx context.Context,
+	root *os.Root,
 	hash Hash,
 	encoding LooseEncoding,
 ) (resultErr error) {
@@ -750,14 +808,6 @@ func (b *FilesystemBackend) retireLoose(
 		return err
 	}
 	defer release()
-	root, err := openFilesystemRoot(b.layout)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("packstore: open loose retirement root: %w", err)
-	}
-	defer func() { resultErr = errors.Join(resultErr, root.Close()) }()
 	shard, err := openRootDirNoSymlinks(root, hash.String()[:2])
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil

@@ -16,3 +16,12 @@ func OpenCurrentUserFile(string) (*os.File, error) {
 		runtime.GOOS,
 	)
 }
+
+// ValidateCurrentUserFile fails closed when handle ownership cannot be
+// established on the current platform.
+func ValidateCurrentUserFile(*os.File) error {
+	return fmt.Errorf(
+		"safefileio: current-user file validation is unsupported on %s",
+		runtime.GOOS,
+	)
+}

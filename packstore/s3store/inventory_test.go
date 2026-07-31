@@ -87,6 +87,22 @@ func TestProbeRejectsIgnoredConditionalWrites(t *testing.T) {
 	}
 }
 
+func TestReadProbeBodyBoundsAndValidatesResponse(t *testing.T) {
+	expected := []byte("probe")
+	got, err := readProbeBody(bytes.NewReader(expected), nil, expected)
+	require.NoError(t, err)
+	assert.Equal(t, expected, got)
+
+	oversized := bytes.NewReader(bytes.Repeat([]byte("x"), 64))
+	_, err = readProbeBody(oversized, nil, expected)
+	require.ErrorContains(t, err, "exceeds expected length")
+	assert.Equal(t, 64-len(expected)-1, oversized.Len())
+
+	contentLength := int64(len(expected) + 1)
+	_, err = readProbeBody(bytes.NewReader(expected), &contentLength, expected)
+	require.ErrorContains(t, err, "response length")
+}
+
 type probeHTTPState struct {
 	t                           *testing.T
 	marker                      []byte

@@ -143,7 +143,7 @@ func (b *Backend) Probe(ctx context.Context) (report CapabilityReport, resultErr
 		if err != nil {
 			return report, classifyError("probe read-after-write", err)
 		}
-		got, readErr := io.ReadAll(output.Body)
+		got, readErr := readProbeBody(output.Body, output.ContentLength, payload)
 		closeErr := output.Body.Close()
 		if readErr != nil || closeErr != nil || !bytes.Equal(got, payload) {
 			return report, errors.Join(
@@ -163,7 +163,7 @@ func (b *Backend) Probe(ctx context.Context) (report CapabilityReport, resultErr
 	if err != nil {
 		return report, classifyError("probe range read", err)
 	}
-	got, readErr := io.ReadAll(ranged.Body)
+	got, readErr := readProbeBody(ranged.Body, ranged.ContentLength, payload[5:21])
 	closeErr := ranged.Body.Close()
 	if readErr != nil || closeErr != nil || !bytes.Equal(got, payload[5:21]) {
 		return report, errors.Join(
@@ -277,7 +277,7 @@ func (b *Backend) verifyProbeObject(
 	if err != nil {
 		return "", classifyError("verify probe "+operation, err)
 	}
-	got, readErr := io.ReadAll(output.Body)
+	got, readErr := readProbeBody(output.Body, output.ContentLength, expected)
 	closeErr := output.Body.Close()
 	if readErr != nil || closeErr != nil || !bytes.Equal(got, expected) {
 		return "", errors.Join(
@@ -295,6 +295,26 @@ func (b *Backend) verifyProbeObject(
 		)
 	}
 	return etag, nil
+}
+
+func readProbeBody(body io.Reader, contentLength *int64, expected []byte) ([]byte, error) {
+	if contentLength != nil && *contentLength != int64(len(expected)) {
+		return nil, fmt.Errorf(
+			"s3store: probe response length is %d, want %d",
+			*contentLength, len(expected),
+		)
+	}
+	limited := io.LimitReader(body, int64(len(expected))+1)
+	data, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > len(expected) {
+		return nil, fmt.Errorf(
+			"s3store: probe response exceeds expected length %d", len(expected),
+		)
+	}
+	return data, nil
 }
 
 func (b *Backend) cleanupProbeObject(ctx context.Context, key string) error {

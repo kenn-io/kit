@@ -9,11 +9,9 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"sync"
 	"unicode/utf8"
 
-	"go.kenn.io/kit/pack"
 	"go.kenn.io/kit/safefileio"
 )
 
@@ -149,18 +147,18 @@ func ParseOwnership(data []byte) (Ownership, error) {
 	return value, nil
 }
 
-func readOwnership(path string) (Ownership, error) {
-	file, err := safefileio.OpenCurrentUserFile(path)
+func readOwnershipRoot(root *os.Root) (Ownership, error) {
+	file, err := openRootRegularFile(root, ownershipMarkerName, ownershipMarkerName)
 	if err != nil {
 		return Ownership{}, err
 	}
 	defer func() { _ = file.Close() }()
+	if err := safefileio.ValidateCurrentUserFile(file); err != nil {
+		return Ownership{}, err
+	}
 	info, err := file.Stat()
 	if err != nil {
 		return Ownership{}, fmt.Errorf("packstore: stat ownership marker: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return Ownership{}, fmt.Errorf("packstore: ownership marker is not a regular file")
 	}
 	if info.Size() < 0 || info.Size() > maxOwnershipMarkerBytes {
 		return Ownership{}, fmt.Errorf("packstore: ownership marker size %d is invalid", info.Size())
@@ -172,9 +170,9 @@ func readOwnership(path string) (Ownership, error) {
 	return ParseOwnership(data)
 }
 
-func replaceOwnership(
+func replaceOwnershipRoot(
 	ctx context.Context,
-	path string,
+	root *os.Root,
 	next Ownership,
 	expected *Ownership,
 ) (resultErr error) {
@@ -185,7 +183,7 @@ func replaceOwnership(
 	if err != nil {
 		return err
 	}
-	current, readErr := readOwnership(path)
+	current, readErr := readOwnershipRoot(root)
 	switch {
 	case expected == nil && readErr == nil:
 		return &OwnershipMismatchError{Actual: current}
@@ -196,26 +194,19 @@ func replaceOwnership(
 	case expected != nil && current != *expected:
 		return &OwnershipMismatchError{Expected: *expected, Actual: current}
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("packstore: prepare ownership directory: %w", err)
-	}
-	staged, err := os.CreateTemp(filepath.Dir(path), ".ownership-")
+	staged, stagedName, err := createRootTemp(root, ".ownership-")
 	if err != nil {
 		return fmt.Errorf("packstore: create ownership staging: %w", err)
 	}
-	stagedPath := staged.Name()
 	stagedOpen := true
 	defer func() {
 		if stagedOpen {
 			resultErr = errors.Join(resultErr, staged.Close())
 		}
-		if err := os.Remove(stagedPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		if err := root.Remove(stagedName); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			resultErr = errors.Join(resultErr, err)
 		}
 	}()
-	if err := staged.Chmod(0o600); err != nil {
-		return fmt.Errorf("packstore: protect ownership staging: %w", err)
-	}
 	if _, err := staged.Write(encoded); err != nil {
 		return fmt.Errorf("packstore: write ownership staging: %w", err)
 	}
@@ -226,10 +217,20 @@ func replaceOwnership(
 		return fmt.Errorf("packstore: close ownership staging: %w", err)
 	}
 	stagedOpen = false
-	if err := replaceOwnershipFile(stagedPath, path); err != nil {
+	if expected == nil {
+		if err := root.Link(stagedName, ownershipMarkerName); err != nil {
+			if errors.Is(err, fs.ErrExist) {
+				actual, readErr := readOwnershipRoot(root)
+				if readErr == nil {
+					return &OwnershipMismatchError{Actual: actual}
+				}
+			}
+			return fmt.Errorf("packstore: publish ownership marker: %w", err)
+		}
+	} else if err := root.Rename(stagedName, ownershipMarkerName); err != nil {
 		return fmt.Errorf("packstore: publish ownership marker: %w", err)
 	}
-	if err := pack.SyncDir(filepath.Dir(path)); err != nil {
+	if err := syncFilesystemRootDir(root); err != nil {
 		return fmt.Errorf("packstore: sync ownership marker: %w", err)
 	}
 	return nil

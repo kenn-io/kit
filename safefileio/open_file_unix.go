@@ -24,20 +24,32 @@ func OpenCurrentUserFile(path string) (*os.File, error) {
 			_ = file.Close()
 		}
 	}()
-	info, err := file.Stat()
-	if err != nil {
+	if err := ValidateCurrentUserFile(file); err != nil {
 		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is not a regular file", path)
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return nil, fmt.Errorf("stat %s: missing owner information", path)
-	}
-	if stat.Uid != uint32(os.Getuid()) {
-		return nil, fmt.Errorf("%s is not owned by current user", path)
 	}
 	success = true
 	return file, nil
+}
+
+// ValidateCurrentUserFile verifies an already-open handle is a regular file
+// owned by the current user.
+func ValidateCurrentUserFile(file *os.File) error {
+	if file == nil {
+		return fmt.Errorf("file is nil")
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", file.Name())
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("stat %s: missing owner information", file.Name())
+	}
+	if stat.Uid != uint32(os.Getuid()) {
+		return fmt.Errorf("%s is not owned by current user", file.Name())
+	}
+	return nil
 }

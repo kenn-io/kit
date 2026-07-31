@@ -3,6 +3,7 @@
 package packstore
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -66,4 +67,62 @@ func TestFilesystemBackendPublishPackRejectsSymlinkedPackDirectory(t *testing.T)
 	entries, readErr := os.ReadDir(external)
 	require.NoError(t, readErr)
 	assert.Empty(t, entries)
+}
+
+func TestFilesystemBackendPublishLooseStaysBoundToOwnedSymlinkRoot(t *testing.T) {
+	base := t.TempDir()
+	ownedRoot := filepath.Join(base, "owned")
+	foreignRoot := filepath.Join(base, "foreign")
+	require.NoError(t, os.Mkdir(ownedRoot, 0o700))
+	require.NoError(t, os.Mkdir(foreignRoot, 0o700))
+	link := filepath.Join(base, "store")
+	require.NoError(t, os.Symlink(ownedRoot, link))
+	linkedLayout, err := NewLayout(link, LayoutOptions{Staging: StagingSameDirectory})
+	require.NoError(t, err)
+	backend, err := NewFilesystemBackend(linkedLayout, FilesystemBackendOptions{})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, backend.Close()) })
+	owner := Ownership{
+		Format: OwnershipFormatV1, Vault: "test-vault", Store: "archive", Epoch: "epoch-1",
+	}
+	require.NoError(t, backend.ReplaceOwnership(context.Background(), owner, nil))
+
+	content := []byte("pinned ownership namespace")
+	hash := hashForTest(content)
+	source := &swapRootReader{
+		Reader: bytes.NewReader(content), link: link, replacement: foreignRoot,
+	}
+	_, err = backend.PublishLoose(
+		context.Background(), hash, source,
+		PublishOptions{ExpectedSize: int64(len(content)), SizeKnown: true},
+	)
+
+	require.NoError(t, err)
+	ownedLayout, err := NewLayout(ownedRoot, LayoutOptions{Staging: StagingSameDirectory})
+	require.NoError(t, err)
+	foreignLayout, err := NewLayout(foreignRoot, LayoutOptions{Staging: StagingSameDirectory})
+	require.NoError(t, err)
+	assert.FileExists(t, ownedLayout.LoosePath(hash))
+	assert.NoFileExists(t, foreignLayout.LoosePath(hash))
+}
+
+type swapRootReader struct {
+	*bytes.Reader
+	link        string
+	replacement string
+	swapped     bool
+}
+
+func (r *swapRootReader) Read(buffer []byte) (int, error) {
+	if !r.swapped {
+		r.swapped = true
+		next := r.link + ".next"
+		if err := os.Symlink(r.replacement, next); err != nil {
+			return 0, err
+		}
+		if err := os.Rename(next, r.link); err != nil {
+			return 0, err
+		}
+	}
+	return r.Reader.Read(buffer)
 }

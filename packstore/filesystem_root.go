@@ -137,6 +137,15 @@ func createRootTemp(dir *os.Root, prefix string) (*os.File, string, error) {
 }
 
 func openRootRegularFile(dir *os.Root, name, displayPath string) (*os.File, error) {
+	return openRootRegularFileMode(dir, name, displayPath, false)
+}
+
+func openRootRegularFileMode(
+	dir *os.Root,
+	name string,
+	displayPath string,
+	writable bool,
+) (*os.File, error) {
 	before, err := dir.Lstat(name)
 	if err != nil {
 		return nil, err
@@ -144,7 +153,12 @@ func openRootRegularFile(dir *os.Root, name, displayPath string) (*os.File, erro
 	if err := validateRegularNoFollow(displayPath, before); err != nil {
 		return nil, err
 	}
-	file, err := dir.Open(name)
+	var file *os.File
+	if writable {
+		file, err = dir.OpenFile(name, os.O_RDWR, 0)
+	} else {
+		file, err = dir.Open(name)
+	}
 	if err != nil {
 		return nil, err
 	}
