@@ -783,6 +783,7 @@ func (s *verifyState) verifySnapshot(m *Manifest) {
 	} else {
 		s.checkPortableMetadata(m)
 	}
+	s.checkAuxiliary(m)
 
 	refs := s.checkAttachmentLists(m)
 	if !s.quick {
@@ -790,6 +791,29 @@ func (s *verifyState) verifySnapshot(m *Manifest) {
 	}
 
 	s.checkExtrasTree(m)
+}
+
+func (s *verifyState) checkAuxiliary(m *Manifest) {
+	for _, artifact := range m.Auxiliary {
+		id, err := pack.ParseBlobID(artifact.Blob)
+		if err != nil {
+			s.problem(m.SnapshotID, fmt.Sprintf(
+				"auxiliary artifact %q blob id %q: %v",
+				artifact.Name, artifact.Blob, err,
+			))
+			continue
+		}
+		if s.quick {
+			s.blob(id, m.SnapshotID, false)
+			continue
+		}
+		s.verifyContentBlob(id, m.SnapshotID)
+		s.pendingSizeChecks = append(s.pendingSizeChecks, listedSizeCheck{
+			id: id, snapshotID: m.SnapshotID, want: artifact.Bytes,
+			what:   fmt.Sprintf("auxiliary artifact %q blob %s", artifact.Name, id),
+			source: "manifest",
+		})
+	}
 }
 
 func (s *verifyState) checkPortableMetadata(m *Manifest) {

@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"maps"
@@ -25,6 +26,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/pack"
+	"go.kenn.io/kit/safefileio"
 )
 
 type restoreTargetCoordinatorFunc func(
@@ -133,6 +135,32 @@ func fileSHA256(t *testing.T, path string) [32]byte {
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
 	return sha256.Sum256(data)
+}
+
+func restorePublicationScratchDirs(t *testing.T, r *Repo) []string {
+	t.Helper()
+	entries, err := os.ReadDir(r.Path(stagingDirName))
+	require.NoError(t, err)
+	var dirs []string
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), "restore-publication-") {
+			dirs = append(dirs, entry.Name())
+		}
+	}
+	return dirs
+}
+
+func restoreDatabaseStageFiles(t *testing.T, target, dbFileName string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(target)
+	require.NoError(t, err)
+	var files []string
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), dbFileName+".restore-") {
+			files = append(files, entry.Name())
+		}
+	}
+	return files
 }
 
 // snapshotDirHashes maps every regular file under root (relative path) to
@@ -858,6 +886,204 @@ func TestRestoreRelativeTarget(t *testing.T) {
 	res, err := Restore(ctx, r, newTestApp(), RestoreOptions{TargetDir: "restore-out"})
 	require.NoError(err)
 	require.Equal(fileSHA256(t, dbPath), fileSHA256(t, res.DBPath))
+}
+
+type callbackUpdateProofApp struct{ App }
+
+func (a callbackUpdateProofApp) RestoredStats(ctx context.Context, db *sql.DB) (json.RawMessage, error) {
+	var userVersion int
+	if err := db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&userVersion); err != nil {
+		return nil, err
+	}
+	if userVersion != 1 {
+		return nil, fmt.Errorf("callback update was not present during restore proof: user_version=%d", userVersion)
+	}
+	return a.App.RestoredStats(ctx, db)
+}
+
+func TestRestoreBeforePublicationUsesPrivateScratchAndPublishesUpdate(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	ctx := context.Background()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+	_, err := Create(ctx, r, newTestApp(), createOpts(
+		dbPath, attachmentsDir, dataDir, t.TempDir(),
+	))
+	require.NoError(err)
+
+	target := filepath.Join(t.TempDir(), "restore")
+	beforeScratch := restorePublicationScratchDirs(t, r)
+	res, err := Restore(ctx, r, callbackUpdateProofApp{App: newTestApp()}, RestoreOptions{
+		TargetDir: target,
+		BeforePublication: func(_ context.Context, staged RestorePublicationTarget) error {
+			assert.Equal(target, staged.TargetDir)
+			repositoryStaging, err := filepath.EvalSymlinks(r.Path(stagingDirName))
+			require.NoError(err)
+			privateDir := filepath.Dir(staged.DBPath)
+			scratchRoot := filepath.Dir(privateDir)
+			assert.Equal(repositoryStaging, filepath.Dir(scratchRoot),
+				"callback scratch must prefer disjoint repository staging")
+			require.NoError(safefileio.ValidatePrivateDir(scratchRoot))
+			rel, err := filepath.Rel(staged.TargetDir, staged.DBPath)
+			require.NoError(err)
+			assert.True(rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)),
+				"callback database %q must be outside target %q", staged.DBPath, staged.TargetDir)
+			assert.FileExists(staged.DBPath)
+			assert.NoFileExists(filepath.Join(target, newTestApp().DBFileName()))
+
+			db, err := sql.Open("sqlite3", staged.DBPath)
+			if err != nil {
+				return err
+			}
+			if _, err := db.Exec("PRAGMA user_version = 1"); err != nil {
+				_ = db.Close()
+				return err
+			}
+			if _, err := db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+				_ = db.Close()
+				return err
+			}
+			return db.Close()
+		},
+	})
+	require.NoError(err)
+
+	updated, err := sql.Open("sqlite3", res.DBPath)
+	require.NoError(err)
+	defer func() { _ = updated.Close() }()
+	var userVersion int
+	require.NoError(updated.QueryRow("PRAGMA user_version").Scan(&userVersion))
+	assert.Equal(1, userVersion)
+	info, err := os.Stat(res.DBPath)
+	require.NoError(err)
+	assert.Equal(info.Size(), res.DBBytes)
+	assert.Equal(beforeScratch, restorePublicationScratchDirs(t, r))
+}
+
+func TestRestoreBeforePublicationScratchIsOutsideRepositoryTarget(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	ctx := context.Background()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+	_, err := Create(ctx, r, newTestApp(), createOpts(
+		dbPath, attachmentsDir, dataDir, t.TempDir(),
+	))
+	require.NoError(err)
+
+	hookErr := errors.New("stop after private scratch check")
+	_, err = Restore(ctx, r, newTestApp(), RestoreOptions{
+		TargetDir: r.Root(),
+		Overwrite: true,
+		BeforePublication: func(_ context.Context, staged RestorePublicationTarget) error {
+			rel, err := filepath.Rel(staged.TargetDir, staged.DBPath)
+			require.NoError(err)
+			assert.True(rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)),
+				"callback database %q must be outside repository target %q", staged.DBPath, staged.TargetDir)
+			return hookErr
+		},
+	})
+	require.ErrorIs(err, hookErr)
+	assert.Empty(restoreDatabaseStageFiles(t, r.Root(), newTestApp().DBFileName()))
+}
+
+func TestRestoreScratchRejectsTrustedTempInsideTarget(t *testing.T) {
+	require := require.New(t)
+	target, err := os.OpenRoot(os.TempDir())
+	require.NoError(err)
+	t.Cleanup(func() { require.NoError(target.Close()) })
+
+	scratch, err := openRestoreScratch(target, t.TempDir())
+
+	require.Error(err)
+	require.Nil(scratch)
+}
+
+func TestRestoreBeforePublicationFailureLeavesDatabaseUnpublished(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	ctx := context.Background()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+	_, err := Create(ctx, r, newTestApp(), createOpts(
+		dbPath, attachmentsDir, dataDir, t.TempDir(),
+	))
+	require.NoError(err)
+
+	target := filepath.Join(t.TempDir(), "restore")
+	beforeScratch := restorePublicationScratchDirs(t, r)
+	hookErr := errors.New("application publication refused")
+	_, err = Restore(ctx, r, newTestApp(), RestoreOptions{
+		TargetDir: target,
+		BeforePublication: func(_ context.Context, staged RestorePublicationTarget) error {
+			assert.Equal(target, staged.TargetDir)
+			assert.FileExists(staged.DBPath)
+			assert.NoFileExists(filepath.Join(target, newTestApp().DBFileName()))
+			return hookErr
+		},
+	})
+	require.ErrorIs(err, hookErr)
+	assert.NoFileExists(filepath.Join(target, newTestApp().DBFileName()))
+	assert.Empty(restoreDatabaseStageFiles(t, target, newTestApp().DBFileName()))
+	assert.Equal(beforeScratch, restorePublicationScratchDirs(t, r))
+}
+
+func TestRestoreBeforePublicationCleansReplacementOnCloseFailure(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	r := initTestRepo(t)
+	target := t.TempDir()
+	root, err := openRestoreRoot(target)
+	require.NoError(err)
+	defer func() { _ = root.Close() }()
+
+	currentRel := "app.db.restore-" + pack.NewPackID()
+	require.NoError(os.WriteFile(filepath.Join(target, currentRel), []byte("database"), 0o600))
+	st := &restoreState{repo: r, root: root, target: target}
+	before := restoreDatabaseStageFiles(t, target, newTestApp().DBFileName())
+	closeErr := errors.New("prepared database close failed")
+	originalClose := closePreparedRestoreDatabase
+	closePreparedRestoreDatabase = func(f *os.File) error {
+		require.NoError(f.Close())
+		return closeErr
+	}
+	t.Cleanup(func() { closePreparedRestoreDatabase = originalClose })
+
+	_, _, err = st.prepareBeforePublication(
+		context.Background(), currentRel, newTestApp().DBFileName(),
+		func(context.Context, RestorePublicationTarget) error { return nil })
+	require.ErrorIs(err, closeErr)
+	assert.Equal(before, restoreDatabaseStageFiles(t, target, newTestApp().DBFileName()))
+}
+
+func TestRestoreBeforePublicationStopsBeforeCallbackWhenCanceled(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	r := initTestRepo(t)
+	target := t.TempDir()
+	root, err := openRestoreRoot(target)
+	require.NoError(err)
+	defer func() { _ = root.Close() }()
+
+	currentRel := "app.db.restore-" + pack.NewPackID()
+	require.NoError(os.WriteFile(filepath.Join(target, currentRel), []byte("database"), 0o600))
+	st := &restoreState{repo: r, root: root, target: target}
+	beforeScratch := restorePublicationScratchDirs(t, r)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	callbackCalled := false
+
+	_, _, err = st.prepareBeforePublication(
+		ctx, currentRel, newTestApp().DBFileName(),
+		func(context.Context, RestorePublicationTarget) error {
+			callbackCalled = true
+			return nil
+		})
+
+	require.ErrorIs(err, context.Canceled)
+	assert.False(callbackCalled)
+	assert.Equal(beforeScratch, restorePublicationScratchDirs(t, r))
 }
 
 // TestRestoreStatsCheckCatchesManifestMismatchWhenIntegritySkipped proves a

@@ -32,6 +32,7 @@ type Manifest struct {
 	Options     ManifestOptions     `json:"options"`
 	DB          ManifestDB          `json:"db"`
 	Metadata    *ManifestMetadata   `json:"metadata,omitempty"`
+	Auxiliary   []ManifestAuxiliary `json:"auxiliary,omitempty"`
 	Attachments ManifestAttachments `json:"attachments"`
 	Extras      ManifestExtras      `json:"extras"`
 	Excluded    []string            `json:"excluded"`
@@ -129,6 +130,9 @@ func ComputeSnapshotID(createdAt time.Time, m *Manifest) (string, error) {
 // WriteManifest fills the snapshot ID and publishes the manifest. It must be
 // the final write of a backup: a manifest's existence asserts closure.
 func (r *Repo) WriteManifest(m *Manifest) (string, error) {
+	if err := validateAuxiliaryManifest(m); err != nil {
+		return "", err
+	}
 	createdAt, err := time.Parse(time.RFC3339, m.CreatedAt)
 	if err != nil {
 		return "", fmt.Errorf("backup: manifest created_at %q: %w", m.CreatedAt, err)
@@ -223,7 +227,21 @@ func (r *Repo) LoadManifest(id string) (*Manifest, error) {
 	if err := validatePortableManifest(&m); err != nil {
 		return nil, fmt.Errorf("backup: snapshot %s: %w", id, err)
 	}
+	if err := validateAuxiliaryManifest(&m); err != nil {
+		return nil, fmt.Errorf("backup: snapshot %s: %w", id, err)
+	}
 	return &m, nil
+}
+
+func validateAuxiliaryManifest(m *Manifest) error {
+	if len(m.Auxiliary) > 0 && (m.FormatVersion < auxiliaryManifestVersion ||
+		m.MinReaderVersion < auxiliaryManifestVersion) {
+		return fmt.Errorf(
+			"backup: auxiliary artifacts require manifest and reader version %d",
+			auxiliaryManifestVersion,
+		)
+	}
+	return validateManifestAuxiliary(m.Auxiliary)
 }
 
 // ListSnapshots returns every manifest sorted ascending by snapshot ID

@@ -75,6 +75,10 @@ func createPortable(
 	if info == nil {
 		return nil, errors.New("backup: portable metadata snapshot returned nil content info")
 	}
+	auxiliary, err := auxiliaryArtifacts(ctx, snapshot)
+	if err != nil {
+		return nil, err
+	}
 
 	appender := NewPackAppender(r, known, opts.ZstdLevel, nil, app.PackFileExtension())
 	ok := false
@@ -86,6 +90,12 @@ func createPortable(
 
 	metadataID, metadataBytes, err := preparePortableMetadata(
 		ctx, r, snapshot, opts, appender, pr)
+	if err != nil {
+		return nil, err
+	}
+	manifestAuxiliary, err := captureAuxiliaryArtifacts(
+		ctx, r, auxiliary, opts.ZstdLevel, appender,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -108,9 +118,13 @@ func createPortable(
 	if err != nil {
 		return nil, err
 	}
+	manifestVersion := portableMetadataManifestVersion
+	if len(manifestAuxiliary) > 0 {
+		manifestVersion = auxiliaryManifestVersion
+	}
 	m := &Manifest{
-		FormatVersion:    portableMetadataManifestVersion,
-		MinReaderVersion: portableMetadataManifestVersion,
+		FormatVersion:    manifestVersion,
+		MinReaderVersion: manifestVersion,
 		AppVersion:       app.Version(),
 		CreatedAt:        createdAt.Format(time.RFC3339),
 		Options: ManifestOptions{
@@ -119,7 +133,8 @@ func createPortable(
 			ZstdLevel:     opts.ZstdLevel,
 			Tag:           opts.Tag,
 		},
-		Metadata: &ManifestMetadata{Format: format, Blob: metadataID.String(), Bytes: metadataBytes},
+		Metadata:  &ManifestMetadata{Format: format, Blob: metadataID.String(), Bytes: metadataBytes},
+		Auxiliary: manifestAuxiliary,
 		Attachments: ManifestAttachments{
 			Layout: []string{"loose"}, Rows: info.Rows, Blobs: capture.Blobs,
 			BlobBytes: capture.BlobBytes, Recipes: []string{}, Lists: lists,

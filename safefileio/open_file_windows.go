@@ -46,6 +46,15 @@ func OpenCurrentUserFile(path string) (*os.File, error) {
 	return file, nil
 }
 
+// ValidateCurrentUserFile verifies an already-open handle is a regular,
+// non-reparse file owned by the current token user or token owner.
+func ValidateCurrentUserFile(file *os.File) error {
+	if file == nil {
+		return fmt.Errorf("file is nil")
+	}
+	return validateWindowsFileHandle(file.Name(), windows.Handle(file.Fd()))
+}
+
 func validateWindowsFileHandle(path string, handle windows.Handle) error {
 	var info windows.ByHandleFileInformation
 	if err := windows.GetFileInformationByHandle(handle, &info); err != nil {

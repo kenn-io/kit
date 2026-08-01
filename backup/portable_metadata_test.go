@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -84,6 +85,7 @@ type portableSource struct {
 	raw            []byte
 	info           *backup.ContentInfo
 	stats          json.RawMessage
+	auxiliary      []backup.AuxiliaryArtifact
 	opened         bool
 	closed         bool
 	closes         int
@@ -108,6 +110,9 @@ func (s *portableSource) ContentInfo(context.Context) (*backup.ContentInfo, erro
 	return s.info, nil
 }
 func (s *portableSource) Stats(context.Context) (json.RawMessage, error) { return s.stats, nil }
+func (s *portableSource) AuxiliaryArtifacts(context.Context) ([]backup.AuxiliaryArtifact, error) {
+	return s.auxiliary, nil
+}
 func (s *portableSource) Close() error {
 	s.closed = true
 	s.closes++
@@ -167,6 +172,298 @@ func (f metadataRestorerFunc) RestoreMetadata(
 	return f(ctx, format, metadata, targetPath)
 }
 
+type auxiliaryTargetFunc func(
+	context.Context,
+	[]backup.RestoredAuxiliary,
+) (backup.AuxiliaryRestore, error)
+
+func (f auxiliaryTargetFunc) StageAuxiliary(
+	ctx context.Context,
+	artifacts []backup.RestoredAuxiliary,
+) (backup.AuxiliaryRestore, error) {
+	return f(ctx, artifacts)
+}
+
+type auxiliaryRestoreFuncs struct {
+	commit   func(context.Context) error
+	rollback func(context.Context) error
+}
+
+func (r auxiliaryRestoreFuncs) Commit(ctx context.Context) error {
+	return r.commit(ctx)
+}
+
+func (r auxiliaryRestoreFuncs) Rollback(ctx context.Context) error {
+	return r.rollback(ctx)
+}
+
+type mismatchedStatsPortableApp struct{ portableApp }
+
+func (mismatchedStatsPortableApp) RestoredStats(
+	context.Context,
+	*sql.DB,
+) (json.RawMessage, error) {
+	return json.RawMessage(`{"forged":"stats"}`), nil
+}
+
+func TestAuxiliaryCaptureVerifyAndRestore(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	ctx := context.Background()
+	base := t.TempDir()
+	repo, err := backup.Init(filepath.Join(base, "repo"))
+	require.NoError(err)
+	record := portableRecord{Notes: []string{"snapshot"}}
+	raw, err := json.Marshal(record)
+	require.NoError(err)
+	stats, err := json.Marshal(portableStats{Notes: 1})
+	require.NoError(err)
+	placement := []byte(`{"stores":["primary","archive"]}`)
+	source := &portableSource{
+		raw: raw, stats: stats, info: &backup.ContentInfo{},
+		auxiliary: []backup.AuxiliaryArtifact{{
+			Name: "placement", Format: "synthetic-placement-v1",
+			Open: func(context.Context) (io.ReadCloser, int64, error) {
+				return io.NopCloser(bytes.NewReader(placement)), int64(len(placement)), nil
+			},
+		}},
+	}
+	manifest, err := backup.Create(ctx, repo, portableApp{}, backup.CreateOptions{
+		MetadataSource: source, Jobs: 1,
+	})
+	require.NoError(err)
+	require.Len(manifest.Auxiliary, 1)
+	assert.Equal("placement", manifest.Auxiliary[0].Name)
+	assert.Equal("synthetic-placement-v1", manifest.Auxiliary[0].Format)
+	assert.Equal(int64(len(placement)), manifest.Auxiliary[0].Bytes)
+	assert.Equal(manifest.Auxiliary[0].Blob, manifest.Auxiliary[0].SHA256)
+	assert.Equal(4, manifest.MinReaderVersion)
+
+	for _, quick := range []bool{true, false} {
+		verified, verifyErr := backup.Verify(ctx, repo, portableApp{}, backup.VerifyOptions{Quick: quick})
+		require.NoError(verifyErr)
+		assert.Empty(verified.Problems)
+	}
+
+	var restored []backup.RestoredAuxiliary
+	committed := false
+	rolledBack := false
+	result, err := backup.Restore(ctx, repo, portableApp{}, backup.RestoreOptions{
+		TargetDir:        filepath.Join(base, "restored"),
+		MetadataRestorer: portableRestorer{},
+		AuxiliaryTarget: auxiliaryTargetFunc(func(
+			_ context.Context,
+			artifacts []backup.RestoredAuxiliary,
+		) (backup.AuxiliaryRestore, error) {
+			restored = append(restored, artifacts...)
+			return auxiliaryRestoreFuncs{
+				commit: func(context.Context) error {
+					committed = true
+					return nil
+				},
+				rollback: func(context.Context) error {
+					rolledBack = true
+					return nil
+				},
+			}, nil
+		}),
+	})
+	require.NoError(err)
+	assert.Equal(1, result.AuxiliaryArtifacts)
+	assert.True(committed)
+	assert.False(rolledBack)
+	require.Len(restored, 1)
+	assert.Equal("placement", restored[0].Name)
+	assert.Equal("synthetic-placement-v1", restored[0].Format)
+	assert.Equal(placement, restored[0].Data)
+
+	targetErr := errors.New("reject auxiliary")
+	failedTarget := filepath.Join(base, "failed-target")
+	_, err = backup.Restore(ctx, repo, portableApp{}, backup.RestoreOptions{
+		TargetDir: failedTarget, MetadataRestorer: portableRestorer{},
+		AuxiliaryTarget: auxiliaryTargetFunc(func(
+			context.Context,
+			[]backup.RestoredAuxiliary,
+		) (backup.AuxiliaryRestore, error) {
+			return nil, targetErr
+		}),
+	})
+	require.ErrorIs(err, targetErr)
+	_, statErr := os.Stat(filepath.Join(failedTarget, "portable.db"))
+	require.ErrorIs(statErr, os.ErrNotExist)
+
+	index, err := repo.LoadBlobIndex()
+	require.NoError(err)
+	artifactID, err := pack.ParseBlobID(manifest.Auxiliary[0].Blob)
+	require.NoError(err)
+	entry := index[artifactID]
+	packPath := repo.Path("packs", entry.PackID[:2], entry.PackID+".kpack")
+	file, err := os.OpenFile(packPath, os.O_RDWR, 0)
+	require.NoError(err)
+	var original [1]byte
+	_, err = file.ReadAt(original[:], int64(entry.Offset))
+	require.NoError(err)
+	original[0] ^= 0xff
+	_, err = file.WriteAt(original[:], int64(entry.Offset))
+	require.NoError(err)
+	require.NoError(file.Close())
+
+	verified, err := backup.Verify(ctx, repo, portableApp{}, backup.VerifyOptions{})
+	require.NoError(err)
+	require.NotEmpty(verified.Problems)
+	assert.Contains(verified.Problems[0].Detail, manifest.Auxiliary[0].Blob)
+}
+
+func TestRestoreDefersAuxiliaryTargetUntilDatabaseProofSucceeds(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	ctx := context.Background()
+	base := t.TempDir()
+	repo, err := backup.Init(filepath.Join(base, "repo"))
+	require.NoError(err)
+	raw, err := json.Marshal(portableRecord{Notes: []string{"snapshot"}})
+	require.NoError(err)
+	stats, err := json.Marshal(portableStats{Notes: 1})
+	require.NoError(err)
+	artifact := []byte("auxiliary state")
+	_, err = backup.Create(ctx, repo, portableApp{}, backup.CreateOptions{
+		MetadataSource: &portableSource{
+			raw: raw, stats: stats, info: &backup.ContentInfo{},
+			auxiliary: []backup.AuxiliaryArtifact{{
+				Name: "state", Format: "synthetic-state-v1",
+				Open: func(context.Context) (io.ReadCloser, int64, error) {
+					return io.NopCloser(bytes.NewReader(artifact)), int64(len(artifact)), nil
+				},
+			}},
+		},
+		Jobs: 1,
+	})
+	require.NoError(err)
+
+	calls := 0
+	_, err = backup.Restore(ctx, repo, mismatchedStatsPortableApp{}, backup.RestoreOptions{
+		TargetDir:        filepath.Join(base, "restored"),
+		MetadataRestorer: portableRestorer{},
+		AuxiliaryTarget: auxiliaryTargetFunc(func(
+			context.Context,
+			[]backup.RestoredAuxiliary,
+		) (backup.AuxiliaryRestore, error) {
+			calls++
+			return auxiliaryRestoreFuncs{
+				commit:   func(context.Context) error { return nil },
+				rollback: func(context.Context) error { return nil },
+			}, nil
+		}),
+	})
+	require.ErrorContains(err, "do not match manifest stats")
+	assert.Zero(calls)
+}
+
+func TestRestoreRollsBackAuxiliaryAfterPostHandoffFailures(t *testing.T) {
+	requirements := require.New(t)
+	base := t.TempDir()
+	repo, err := backup.Init(filepath.Join(base, "repo"))
+	requirements.NoError(err)
+	raw, err := json.Marshal(portableRecord{Notes: []string{"snapshot"}})
+	requirements.NoError(err)
+	stats, err := json.Marshal(portableStats{Notes: 1})
+	requirements.NoError(err)
+	artifact := []byte("auxiliary state")
+	_, err = backup.Create(context.Background(), repo, portableApp{}, backup.CreateOptions{
+		MetadataSource: &portableSource{
+			raw: raw, stats: stats, info: &backup.ContentInfo{},
+			auxiliary: []backup.AuxiliaryArtifact{{
+				Name: "state", Format: "synthetic-state-v1",
+				Open: func(context.Context) (io.ReadCloser, int64, error) {
+					return io.NopCloser(bytes.NewReader(artifact)), int64(len(artifact)), nil
+				},
+			}},
+		},
+		Jobs: 1,
+	})
+	requirements.NoError(err)
+
+	commitErr := errors.New("commit auxiliary")
+	tests := []struct {
+		name             string
+		cancelAfterStage bool
+		blockPublication bool
+		commitErr        error
+		wantErr          error
+		wantEvents       []string
+	}{
+		{
+			name:             "cancellation",
+			cancelAfterStage: true,
+			wantErr:          context.Canceled,
+			wantEvents:       []string{"stage", "rollback"},
+		},
+		{
+			name:             "database publication",
+			blockPublication: true,
+			wantEvents:       []string{"stage", "rollback"},
+		},
+		{
+			name:       "auxiliary commit",
+			commitErr:  commitErr,
+			wantErr:    commitErr,
+			wantEvents: []string{"stage", "commit", "rollback"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
+			require := require.New(t)
+			ctx := context.Background()
+			cancel := func() {}
+			if test.cancelAfterStage {
+				ctx, cancel = context.WithCancel(ctx)
+			}
+			t.Cleanup(cancel)
+			targetDir := filepath.Join(base, strings.ReplaceAll(test.name, " ", "-"))
+			if test.blockPublication {
+				require.NoError(os.MkdirAll(filepath.Join(targetDir, "portable.db"), 0o700))
+			}
+			events := make([]string, 0, 3)
+			var rollbackContextErr error
+			opts := backup.RestoreOptions{
+				TargetDir:        targetDir,
+				Overwrite:        test.blockPublication,
+				MetadataRestorer: portableRestorer{},
+				AuxiliaryTarget: auxiliaryTargetFunc(func(
+					context.Context,
+					[]backup.RestoredAuxiliary,
+				) (backup.AuxiliaryRestore, error) {
+					events = append(events, "stage")
+					if test.cancelAfterStage {
+						cancel()
+					}
+					return auxiliaryRestoreFuncs{
+						commit: func(context.Context) error {
+							events = append(events, "commit")
+							return test.commitErr
+						},
+						rollback: func(ctx context.Context) error {
+							events = append(events, "rollback")
+							rollbackContextErr = ctx.Err()
+							return nil
+						},
+					}, nil
+				}),
+			}
+
+			_, restoreErr := backup.Restore(ctx, repo, portableApp{}, opts)
+			if test.wantErr != nil {
+				require.ErrorIs(restoreErr, test.wantErr)
+			} else {
+				require.Error(restoreErr)
+			}
+			assert.Equal(test.wantEvents, events)
+			assert.NoError(rollbackContextErr)
+		})
+	}
+}
+
 type countingFreezer struct{ begins, ends int }
 
 func (f *countingFreezer) Begin(context.Context) error { f.begins++; return nil }
@@ -177,7 +474,8 @@ func TestPortableMetadataCreateVerifyRestoreAndSQLiteSuccessor(t *testing.T) {
 	require := require.New(t)
 	ctx := context.Background()
 	base := t.TempDir()
-	repo, err := backup.Init(filepath.Join(base, "repo"))
+	containingTarget := filepath.Join(base, "containing-target")
+	repo, err := backup.Init(filepath.Join(containingTarget, "repo"))
 	require.NoError(err)
 	contentDir := filepath.Join(base, "content")
 	content := []byte("portable attachment")
@@ -218,10 +516,35 @@ func TestPortableMetadataCreateVerifyRestoreAndSQLiteSuccessor(t *testing.T) {
 		assert.Empty(verified.Problems)
 	}
 
+	var containedPrivatePath string
+	_, err = backup.Restore(ctx, repo, portableApp{}, backup.RestoreOptions{
+		TargetDir: containingTarget,
+		Overwrite: true,
+		MetadataRestorer: metadataRestorerFunc(func(
+			ctx context.Context, format string, metadata io.Reader, targetPath string,
+		) error {
+			containedPrivatePath = targetPath
+			relative, err := filepath.Rel(containingTarget, targetPath)
+			if err != nil {
+				return err
+			}
+			assert.True(
+				relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)),
+				"metadata scratch %q must be outside containing target %q",
+				targetPath,
+				containingTarget,
+			)
+			return (portableRestorer{}).RestoreMetadata(ctx, format, metadata, targetPath)
+		}),
+	})
+	require.NoError(err)
+	_, statErr := os.Stat(filepath.Dir(containedPrivatePath))
+	require.ErrorIs(statErr, os.ErrNotExist)
+
 	missingTarget := filepath.Join(base, "missing-restorer")
 	_, err = backup.Restore(ctx, repo, portableApp{}, backup.RestoreOptions{TargetDir: missingTarget})
 	require.ErrorContains(err, "requires a MetadataRestorer")
-	_, statErr := os.Stat(missingTarget)
+	_, statErr = os.Stat(missingTarget)
 	require.ErrorIs(statErr, os.ErrNotExist)
 
 	incompleteTarget := filepath.Join(base, "incomplete-restorer")
@@ -264,7 +587,9 @@ func TestPortableMetadataCreateVerifyRestoreAndSQLiteSuccessor(t *testing.T) {
 		heldEntries, readErr := os.ReadDir(heldTarget)
 		require.NoError(readErr)
 		assert.Empty(heldEntries)
-		assert.Equal(repo.Path("staging"), filepath.Dir(filepath.Dir(privatePath)))
+		resolvedScratch, resolveErr := filepath.EvalSymlinks(repo.Path("staging"))
+		require.NoError(resolveErr)
+		assert.Equal(resolvedScratch, filepath.Dir(filepath.Dir(filepath.Dir(privatePath))))
 		_, statErr = os.Stat(filepath.Dir(privatePath))
 		require.ErrorIs(statErr, os.ErrNotExist)
 
@@ -295,8 +620,10 @@ func TestPortableMetadataCreateVerifyRestoreAndSQLiteSuccessor(t *testing.T) {
 		require.NoError(readErr)
 		assert.Empty(cleanupTargetEntries)
 		privateDir := filepath.Dir(cleanupPrivatePath)
+		scratchRoot := filepath.Dir(privateDir)
 		require.NoError(os.Chmod(filepath.Join(privateDir, "blocked"), 0o700))
 		require.NoError(os.RemoveAll(privateDir))
+		require.NoError(os.Remove(scratchRoot))
 	}
 
 	overwriteTarget := filepath.Join(base, "failed-overwrite")

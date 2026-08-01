@@ -22,6 +22,7 @@ import (
 
 	"go.kenn.io/kit/pack"
 	"go.kenn.io/kit/packstore"
+	"go.kenn.io/kit/safefileio"
 )
 
 // RestoreOptions parameterizes one restore run (FORMAT.md, Restore).
@@ -72,6 +73,25 @@ type RestoreOptions struct {
 	// SQLiteOpener selects the SQLite implementation used to validate and
 	// update the staged database. Nil preserves Kit's mattn/go-sqlite3 default.
 	SQLiteOpener SQLiteOpener
+	// AuxiliaryTarget stages verified application-defined snapshot artifacts
+	// after all restore proofs and commits them only after the target is
+	// published and durably synced.
+	AuxiliaryTarget AuxiliaryTarget
+	// BeforePublication runs after every content object has been restored and
+	// verified but before the staged database's integrity/stats proof and
+	// canonical publication. Applications may update a private scratch copy to
+	// bind restored physical state; DBPath is outside TargetDir and does not
+	// resolve through it. The callback must close/checkpoint its database and
+	// leave no SQLite sidecars; returning an error leaves it unpublished.
+	BeforePublication func(context.Context, RestorePublicationTarget) error
+}
+
+// RestorePublicationTarget identifies the private scratch state passed to
+// BeforePublication. DBPath is outside TargetDir and valid only for the
+// duration of the callback.
+type RestorePublicationTarget struct {
+	TargetDir string
+	DBPath    string
 }
 
 // RestoreResult reports what Restore materialized and proved.
@@ -92,6 +112,9 @@ type RestoreResult struct {
 	// restored loose. An empty Hash means the reason applies to the whole pack.
 	PackFallbacks []packstore.ImportFallback
 	ExtrasFiles   int
+	// AuxiliaryArtifacts is the number of verified artifacts committed through
+	// AuxiliaryTarget.
+	AuxiliaryArtifacts int
 	// DatabaseIntegrityChecked reports whether Restore ran SQLite's full
 	// PRAGMA integrity_check against the staged database.
 	DatabaseIntegrityChecked bool
@@ -144,6 +167,9 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *R
 		if m == nil {
 			return nil, errors.New("backup: repository has no snapshots to restore")
 		}
+	}
+	if len(m.Auxiliary) > 0 && opts.AuxiliaryTarget == nil {
+		return nil, errors.New("backup: snapshot carries auxiliary artifacts but no AuxiliaryTarget was provided")
 	}
 	known, err := r.LoadBlobIndex()
 	if err != nil {
@@ -198,20 +224,28 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *R
 		return nil, err
 	}
 	defer func() { _ = root.Close() }()
+	var targetLease RestoreTargetLease
+	releaseTargetLease := func() error {
+		if targetLease == nil {
+			return nil
+		}
+		lease := targetLease
+		targetLease = nil
+		if releaseErr := lease.Release(); releaseErr != nil {
+			return fmt.Errorf("backup: releasing restore target coordination: %w", releaseErr)
+		}
+		return nil
+	}
+	defer func() { err = errors.Join(err, releaseTargetLease()) }()
 	if opts.TargetCoordinator != nil {
-		targetLease, acquireErr := opts.TargetCoordinator.AcquireRestoreTarget(ctx, root)
+		var acquireErr error
+		targetLease, acquireErr = opts.TargetCoordinator.AcquireRestoreTarget(ctx, root)
 		if acquireErr != nil {
 			return nil, fmt.Errorf("backup: acquiring restore target coordination: %w", acquireErr)
 		}
 		if targetLease == nil {
 			return nil, errors.New("backup: restore target coordinator returned a nil lease")
 		}
-		defer func() {
-			if releaseErr := targetLease.Release(); releaseErr != nil {
-				err = errors.Join(err,
-					fmt.Errorf("backup: releasing restore target coordination: %w", releaseErr))
-			}
-		}()
 		if err := verifyRestoreRoot(opts.TargetDir, root); err != nil {
 			return nil, err
 		}
@@ -267,21 +301,37 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *R
 			_ = st.root.Remove(tmpRel)
 		}
 	}()
+	var auxiliary []RestoredAuxiliary
+	if len(m.Auxiliary) > 0 {
+		auxiliary, err = st.restoreAuxiliary(ctx, m)
+		if err != nil {
+			return nil, err
+		}
+	}
+	var packedRestoreLease *packstore.Lease
+	releasePackedRestoreLease := func() error {
+		if packedRestoreLease == nil {
+			return nil
+		}
+		lease := packedRestoreLease
+		packedRestoreLease = nil
+		if releaseErr := lease.Release(); releaseErr != nil {
+			return fmt.Errorf("backup: releasing packed restore lease: %w", releaseErr)
+		}
+		return nil
+	}
+	defer func() { err = errors.Join(err, releasePackedRestoreLease()) }()
 	if opts.PackedContent == nil {
 		res.AttachmentBlobs, res.AttachmentBytes, err = st.restoreAttachments(
 			ctx, app, m, app.ContentDirName())
 		res.LooseAttachmentBlobs = res.AttachmentBlobs
 	} else {
-		restoreLease, acquireErr := opts.PackedContent.AcquireRestoreLease(ctx)
+		var acquireErr error
+		packedRestoreLease, acquireErr = opts.PackedContent.AcquireRestoreLease(ctx)
 		if acquireErr != nil {
 			return nil, fmt.Errorf("backup: acquiring packed restore lease: %w", acquireErr)
 		}
-		defer func() {
-			if releaseErr := restoreLease.Release(); releaseErr != nil {
-				err = errors.Join(err, fmt.Errorf("backup: releasing packed restore lease: %w", releaseErr))
-			}
-		}()
-		if validateErr := restoreLease.ValidateMutation(); validateErr != nil {
+		if validateErr := packedRestoreLease.ValidateMutation(); validateErr != nil {
 			return nil, fmt.Errorf("backup: validating packed restore mutation lease: %w", validateErr)
 		}
 		var packed packedRestoreResult
@@ -313,6 +363,16 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *R
 			st.removeStagedFiles(extras)
 		}
 	}()
+	if opts.BeforePublication != nil {
+		replacementRel, replacementBytes, prepareErr := st.prepareBeforePublication(
+			ctx, tmpRel, app.DBFileName(), opts.BeforePublication)
+		if prepareErr != nil {
+			return nil, prepareErr
+		}
+		tmpRel = replacementRel
+		res.DBBytes = replacementBytes
+		st.dbRead = replacementRel
+	}
 
 	// The proof runs against the staging temp, BEFORE the database is
 	// published: an enabled integrity_check failure, a stats mismatch, or a late
@@ -342,6 +402,33 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *R
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	var stagedAuxiliary AuxiliaryRestore
+	if len(auxiliary) > 0 {
+		stagedAuxiliary, err = opts.AuxiliaryTarget.StageAuxiliary(ctx, auxiliary)
+		if err != nil {
+			return nil, fmt.Errorf("backup: staging auxiliary artifacts: %w", err)
+		}
+		if stagedAuxiliary == nil {
+			return nil, errors.New("backup: auxiliary target returned a nil restore transaction")
+		}
+		defer func() {
+			if stagedAuxiliary == nil {
+				return
+			}
+			rollbackCtx, cancel := context.WithTimeout(
+				context.WithoutCancel(ctx), auxiliaryRollbackTimeout,
+			)
+			rollbackErr := stagedAuxiliary.Rollback(rollbackCtx)
+			cancel()
+			if rollbackErr != nil {
+				err = errors.Join(err,
+					fmt.Errorf("backup: rolling back auxiliary artifacts: %w", rollbackErr))
+			}
+		}()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := st.promoteExtras(extras); err != nil {
 		return nil, err
 	}
@@ -352,6 +439,22 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *R
 
 	if err := syncRestoredTree(opts.TargetDir, syncCeiling); err != nil {
 		return nil, err
+	}
+	if err := releasePackedRestoreLease(); err != nil {
+		return res, err
+	}
+	if err := releaseTargetLease(); err != nil {
+		return res, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if stagedAuxiliary != nil {
+		if err := stagedAuxiliary.Commit(ctx); err != nil {
+			return nil, fmt.Errorf("backup: committing auxiliary artifacts: %w", err)
+		}
+		stagedAuxiliary = nil
+		res.AuxiliaryArtifacts = len(auxiliary)
 	}
 	res.Duration = time.Since(start)
 	return res, nil
@@ -798,6 +901,21 @@ func (s *restoreState) preflightSnapshotBlobs(m *Manifest, pm *PageMap) error {
 			return fmt.Errorf("backup: portable metadata blob %s not present in any index", id)
 		}
 	}
+	for _, artifact := range m.Auxiliary {
+		id, err := pack.ParseBlobID(artifact.Blob)
+		if err != nil {
+			return fmt.Errorf(
+				"backup: auxiliary artifact %q blob id %q: %w",
+				artifact.Name, artifact.Blob, err,
+			)
+		}
+		if _, ok := s.known[id]; !ok {
+			return fmt.Errorf(
+				"backup: auxiliary artifact %q blob %s not present in any index",
+				artifact.Name, id,
+			)
+		}
+	}
 	refs, _, err := LoadListRefs(s.repo, s.known, m.Attachments.Lists, nil, s.app.PackFileExtension())
 	if err != nil {
 		return err
@@ -847,6 +965,83 @@ func (s *restoreState) preflightSnapshotBlobs(m *Manifest, pm *PageMap) error {
 		}
 	}
 	return nil
+}
+
+func (s *restoreState) restoreAuxiliary(
+	ctx context.Context,
+	m *Manifest,
+) ([]RestoredAuxiliary, error) {
+	restored := make([]RestoredAuxiliary, 0, len(m.Auxiliary))
+	var total int64
+	for _, artifact := range m.Auxiliary {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		id, err := pack.ParseBlobID(artifact.Blob)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"backup: auxiliary artifact %q blob id %q: %w",
+				artifact.Name, artifact.Blob, err,
+			)
+		}
+		stream, err := s.repo.OpenBlob(
+			ctx, s.known, id, nil, s.app.PackFileExtension(),
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"backup: reading auxiliary artifact %q: %w",
+				artifact.Name, err,
+			)
+		}
+		data, size, err := readAuxiliaryArtifact(
+			stream, artifact, maxAuxiliaryBytes-total,
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"backup: reading auxiliary artifact %q: %w",
+				artifact.Name, err,
+			)
+		}
+		total += size
+		restored = append(restored, RestoredAuxiliary{
+			Name: artifact.Name, Format: artifact.Format,
+			SHA256: artifact.SHA256, Data: data,
+		})
+	}
+	return restored, nil
+}
+
+func readAuxiliaryArtifact(
+	stream *BlobStream,
+	artifact ManifestAuxiliary,
+	remaining int64,
+) (data []byte, size int64, resultErr error) {
+	defer func() { resultErr = errors.Join(resultErr, stream.Close()) }()
+	size = stream.Size()
+	if size != artifact.Bytes {
+		return nil, size, fmt.Errorf(
+			"auxiliary artifact %q is %d bytes but manifest records %d",
+			artifact.Name, size, artifact.Bytes,
+		)
+	}
+	if size < 0 || remaining < 0 || size > remaining {
+		return nil, size, fmt.Errorf(
+			"auxiliary artifact %q has invalid aggregate size %d",
+			artifact.Name, size,
+		)
+	}
+	data = make([]byte, int(size))
+	_, readErr := io.ReadFull(stream, data)
+	if err := errors.Join(readErr, stream.Verify()); err != nil {
+		return nil, size, err
+	}
+	if digest := pack.ComputeBlobID(data).String(); digest != artifact.SHA256 {
+		return nil, size, fmt.Errorf(
+			"auxiliary artifact %q digest differs from manifest",
+			artifact.Name,
+		)
+	}
+	return data, size, nil
 }
 
 // blobRuns is one page blob and every page-map run it backs.
@@ -965,16 +1160,22 @@ func (s *restoreState) restorePortableMetadata(
 			"backup: portable metadata blob is %d bytes but manifest records %d", stream.Size(), metadata.Bytes)
 	}
 
-	privateDir, err := os.MkdirTemp(s.repo.Path(stagingDirName), "restore-metadata-*")
+	scratch, err := openRestoreScratch(s.root, s.repo.Path(stagingDirName))
+	if err != nil {
+		return "", 0, err
+	}
+	defer func() { resultErr = errors.Join(resultErr, scratch.close()) }()
+	privateRel, privateDir, err := scratch.mkdir("restore-metadata-")
 	if err != nil {
 		return "", 0, fmt.Errorf("backup: creating private metadata staging directory: %w", err)
 	}
 	defer func() {
-		if err := os.RemoveAll(privateDir); err != nil {
+		if err := scratch.root.RemoveAll(privateRel); err != nil {
 			resultErr = errors.Join(resultErr,
 				fmt.Errorf("backup: removing private metadata staging directory: %w", err))
 		}
 	}()
+	privateDBRel := filepath.Join(privateRel, "runtime.db")
 	privateDB := filepath.Join(privateDir, "runtime.db")
 	s.progress.emit(ProgressEvent{
 		Stage: ProgressStageMetadata, Total: 1, BytesTotal: metadata.Bytes,
@@ -986,22 +1187,25 @@ func (s *restoreState) restorePortableMetadata(
 	if !stream.Verified() {
 		return "", 0, errors.New("backup: metadata restorer returned before verified EOF")
 	}
-	info, err := os.Lstat(privateDB)
+	info, err := scratch.root.Lstat(privateDBRel)
 	if err != nil {
 		return "", 0, fmt.Errorf("backup: checking restored metadata database: %w", err)
 	}
 	if !info.Mode().IsRegular() {
 		return "", 0, errors.New("backup: metadata restorer did not create a regular database file")
 	}
-	for _, sidecar := range sqliteSidecarNames(privateDB) {
-		if _, err := os.Lstat(sidecar); !errors.Is(err, os.ErrNotExist) {
+	for _, sidecar := range sqliteSidecarNames(privateDBRel) {
+		if _, err := scratch.root.Lstat(sidecar); !errors.Is(err, os.ErrNotExist) {
 			if err == nil {
-				return "", 0, fmt.Errorf("backup: metadata restorer left SQLite sidecar %s", sidecar)
+				return "", 0, fmt.Errorf(
+					"backup: metadata restorer left SQLite sidecar %s",
+					filepath.Join(scratch.path, sidecar),
+				)
 			}
 			return "", 0, fmt.Errorf("backup: checking metadata restore sidecar: %w", err)
 		}
 	}
-	f, err := os.Open(privateDB)
+	f, err := scratch.root.Open(privateDBRel)
 	if err != nil {
 		return "", 0, fmt.Errorf("backup: opening restored metadata database: %w", err)
 	}
@@ -1028,6 +1232,315 @@ func (s *restoreState) restorePortableMetadata(
 		BytesDone: metadata.Bytes, BytesTotal: metadata.Bytes, Final: true,
 	})
 	return tmpRel, info.Size(), nil
+}
+
+// closePreparedRestoreDatabase is a narrow seam for exercising cleanup after
+// a successful confinement whose final close reports an error.
+var closePreparedRestoreDatabase = (*os.File).Close
+
+// prepareBeforePublication gives the application an isolated copy of the
+// unpublished database, then copies its closed replacement through the held
+// target root. The callback must not be able to reach a target namespace that
+// changed after Restore opened its root descriptor.
+func (s *restoreState) prepareBeforePublication(
+	ctx context.Context, currentRel, finalDBRel string,
+	callback func(context.Context, RestorePublicationTarget) error,
+) (replacementRel string, dbBytes int64, resultErr error) {
+	var stagedRel string
+	// Register first so it observes errors joined by scratch cleanup and close.
+	// Once staging succeeds, every error path must remove the replacement.
+	defer func() {
+		if resultErr == nil || stagedRel == "" {
+			return
+		}
+		if err := s.root.Remove(stagedRel); err != nil && !errors.Is(err, os.ErrNotExist) {
+			resultErr = errors.Join(resultErr,
+				fmt.Errorf("backup: removing failed prepared database staging: %w", err))
+		}
+	}()
+	source, err := s.root.Open(currentRel)
+	if err != nil {
+		return "", 0, fmt.Errorf("backup: opening staged database for publication preparation: %w", err)
+	}
+	defer func() {
+		if source != nil {
+			resultErr = errors.Join(resultErr, source.Close())
+		}
+	}()
+	sourceInfo, err := source.Stat()
+	if err != nil {
+		return "", 0, fmt.Errorf("backup: inspecting staged database for publication preparation: %w", err)
+	}
+	if !sourceInfo.Mode().IsRegular() {
+		return "", 0, errors.New("backup: staged database for publication preparation is not a regular file")
+	}
+
+	scratch, err := openRestoreScratch(s.root, s.repo.Path(stagingDirName))
+	if err != nil {
+		return "", 0, err
+	}
+	defer func() { resultErr = errors.Join(resultErr, scratch.close()) }()
+	privateRel, _, err := scratch.mkdir("restore-publication-")
+	if err != nil {
+		return "", 0, fmt.Errorf("backup: creating private publication staging directory: %w", err)
+	}
+	defer func() {
+		if err := scratch.root.RemoveAll(privateRel); err != nil {
+			resultErr = errors.Join(resultErr,
+				fmt.Errorf("backup: removing private publication staging directory: %w", err))
+		}
+	}()
+	privateDBRel := filepath.Join(privateRel, filepath.Base(finalDBRel))
+	privateDB := filepath.Join(scratch.path, privateDBRel)
+	private, err := scratch.root.OpenFile(
+		privateDBRel,
+		os.O_WRONLY|os.O_CREATE|os.O_EXCL,
+		0o600,
+	)
+	if err != nil {
+		return "", 0, fmt.Errorf("backup: creating private publication database: %w", err)
+	}
+	defer func() {
+		if private != nil {
+			resultErr = errors.Join(resultErr, private.Close())
+		}
+	}()
+	written, err := io.Copy(private, restoreContextReader{ctx: ctx, r: source})
+	if err != nil {
+		return "", 0, fmt.Errorf("backup: copying private publication database: %w", err)
+	}
+	if written != sourceInfo.Size() {
+		return "", 0, fmt.Errorf(
+			"backup: staged database is %d bytes but changed to %d bytes during publication preparation",
+			sourceInfo.Size(), written)
+	}
+	if err := ctx.Err(); err != nil {
+		return "", 0, err
+	}
+	if err := private.Sync(); err != nil {
+		return "", 0, fmt.Errorf("backup: syncing private publication database: %w", err)
+	}
+	if err := private.Close(); err != nil {
+		private = nil
+		return "", 0, fmt.Errorf("backup: closing private publication database: %w", err)
+	}
+	private = nil
+	if err := source.Close(); err != nil {
+		source = nil
+		return "", 0, fmt.Errorf("backup: closing staged database for publication preparation: %w", err)
+	}
+	source = nil
+
+	if err := ctx.Err(); err != nil {
+		return "", 0, err
+	}
+	if err := callback(ctx, RestorePublicationTarget{TargetDir: s.target, DBPath: privateDB}); err != nil {
+		return "", 0, fmt.Errorf("backup: preparing restored application state: %w", err)
+	}
+	info, err := scratch.root.Lstat(privateDBRel)
+	if err != nil {
+		return "", 0, fmt.Errorf("backup: checking prepared restored database: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", 0, errors.New("backup: publication callback did not leave a regular database file")
+	}
+	for _, sidecar := range sqliteSidecarNames(privateDBRel) {
+		if _, err := scratch.root.Lstat(sidecar); !errors.Is(err, os.ErrNotExist) {
+			if err == nil {
+				return "", 0, fmt.Errorf(
+					"backup: publication callback left SQLite sidecar %s",
+					filepath.Join(scratch.path, sidecar),
+				)
+			}
+			return "", 0, fmt.Errorf("backup: checking publication callback sidecar: %w", err)
+		}
+	}
+	opened, err := scratch.root.Open(privateDBRel)
+	if err != nil {
+		return "", 0, fmt.Errorf("backup: opening prepared restored database: %w", err)
+	}
+	openedInfo, err := opened.Stat()
+	if err != nil {
+		_ = opened.Close()
+		return "", 0, fmt.Errorf("backup: inspecting prepared restored database: %w", err)
+	}
+	if !os.SameFile(info, openedInfo) {
+		_ = opened.Close()
+		return "", 0, errors.New("backup: prepared restored database changed before confinement")
+	}
+	var stageErr error
+	stagedRel, stageErr = s.stageRootDatabase(ctx, finalDBRel, opened, info.Size())
+	closeErr := closePreparedRestoreDatabase(opened)
+	if err := errors.Join(stageErr, closeErr); err != nil {
+		var cleanupErr error
+		if stagedRel != "" {
+			cleanupErr = s.root.Remove(stagedRel)
+		}
+		return "", 0, fmt.Errorf("backup: confining prepared restored database: %w", errors.Join(err, cleanupErr))
+	}
+	if err := s.root.Remove(currentRel); err != nil {
+		removeErr := s.root.Remove(stagedRel)
+		return "", 0, errors.Join(
+			fmt.Errorf("backup: removing replaced staged database: %w", err),
+			removeErr)
+	}
+	return stagedRel, info.Size(), nil
+}
+
+type restoreScratch struct {
+	base     *os.Root
+	root     *os.Root
+	path     string
+	relative string
+}
+
+// openRestoreScratch prefers the repository staging root when it is disjoint
+// from the held restore target, then falls back to the system temporary root.
+// Each candidate is resolved and pinned before use so callback paths never
+// traverse the caller-controlled target namespace.
+func openRestoreScratch(target *os.Root, repoStaging string) (*restoreScratch, error) {
+	if target == nil {
+		return nil, errors.New("backup: nil restore target root for publication scratch")
+	}
+	targetInfo, err := target.Stat(".")
+	if err != nil {
+		return nil, fmt.Errorf("backup: inspecting restore target for publication scratch: %w", err)
+	}
+	var candidateErrs []error
+	for _, candidate := range []string{repoStaging, os.TempDir()} {
+		scratch, err := openRestoreScratchCandidate(targetInfo, candidate)
+		if err == nil {
+			return scratch, nil
+		}
+		candidateErrs = append(candidateErrs, err)
+	}
+	return nil, errors.Join(
+		errors.New("backup: no private restore scratch outside target"),
+		errors.Join(candidateErrs...),
+	)
+}
+
+func openRestoreScratchCandidate(
+	targetInfo fs.FileInfo,
+	candidate string,
+) (*restoreScratch, error) {
+	scratchPath, err := filepath.Abs(candidate)
+	if err != nil {
+		return nil, fmt.Errorf("backup: resolving restore scratch %s: %w", candidate, err)
+	}
+	scratchPath, err = filepath.EvalSymlinks(scratchPath)
+	if err != nil {
+		return nil, fmt.Errorf("backup: resolving restore scratch %s: %w", candidate, err)
+	}
+	baseRoot, err := os.OpenRoot(scratchPath)
+	if err != nil {
+		return nil, fmt.Errorf("backup: opening restore scratch %s: %w", scratchPath, err)
+	}
+	closeOnError := func(err error) (*restoreScratch, error) {
+		return nil, errors.Join(err, baseRoot.Close())
+	}
+	scratchInfo, err := baseRoot.Stat(".")
+	if err != nil {
+		return closeOnError(fmt.Errorf("backup: inspecting restore scratch %s: %w", scratchPath, err))
+	}
+	contained, err := pathContainsFilesystemIdentity(targetInfo, scratchInfo, scratchPath)
+	if err != nil {
+		return closeOnError(fmt.Errorf("backup: proving restore scratch %s: %w", scratchPath, err))
+	}
+	if contained {
+		return closeOnError(fmt.Errorf(
+			"backup: restore scratch %s is inside restore target", scratchPath))
+	}
+	var operationRel string
+	created := false
+	for range 100 {
+		operationRel = "kit-restore-" + pack.NewPackID()
+		if err := baseRoot.Mkdir(operationRel, 0o700); err != nil {
+			if errors.Is(err, fs.ErrExist) {
+				continue
+			}
+			return closeOnError(fmt.Errorf("backup: creating private publication scratch: %w", err))
+		}
+		created = true
+		break
+	}
+	if !created {
+		return closeOnError(fmt.Errorf("backup: exhausted publication scratch name attempts"))
+	}
+	operationPath := filepath.Join(scratchPath, operationRel)
+	cleanupOperation := func(operationRoot *os.Root, cause error) (*restoreScratch, error) {
+		var closeErr error
+		if operationRoot != nil {
+			closeErr = operationRoot.Close()
+		}
+		return nil, errors.Join(cause, closeErr, baseRoot.RemoveAll(operationRel), baseRoot.Close())
+	}
+	if err := safefileio.EnsurePrivateDir(operationPath); err != nil {
+		return cleanupOperation(nil,
+			fmt.Errorf("backup: protecting private publication scratch: %w", err))
+	}
+	if err := safefileio.ValidatePrivateDir(operationPath); err != nil {
+		return cleanupOperation(nil,
+			fmt.Errorf("backup: validating private publication scratch: %w", err))
+	}
+	operationRoot, err := baseRoot.OpenRoot(operationRel)
+	if err != nil {
+		return cleanupOperation(nil,
+			fmt.Errorf("backup: opening private publication scratch: %w", err))
+	}
+	heldOperation, err := operationRoot.Stat(".")
+	if err != nil {
+		return cleanupOperation(operationRoot,
+			fmt.Errorf("backup: inspecting private publication scratch: %w", err))
+	}
+	pathOperation, err := os.Stat(operationPath)
+	if err != nil || !os.SameFile(heldOperation, pathOperation) {
+		return cleanupOperation(operationRoot, errors.Join(
+			fmt.Errorf("backup: private publication scratch changed while opening it"), err))
+	}
+	return &restoreScratch{
+		base: baseRoot, root: operationRoot, path: operationPath, relative: operationRel,
+	}, nil
+}
+
+func pathContainsFilesystemIdentity(
+	target fs.FileInfo,
+	candidate fs.FileInfo,
+	candidatePath string,
+) (bool, error) {
+	for current := candidatePath; ; current = filepath.Dir(current) {
+		currentInfo, err := os.Stat(current)
+		if err != nil {
+			return false, err
+		}
+		if current == candidatePath && !os.SameFile(candidate, currentInfo) {
+			return false, fmt.Errorf("scratch root %s was replaced while opening it", candidatePath)
+		}
+		if os.SameFile(target, currentInfo) {
+			return true, nil
+		}
+		if filepath.Dir(current) == current {
+			return false, nil
+		}
+	}
+}
+
+func (s *restoreScratch) mkdir(prefix string) (relative string, absolute string, err error) {
+	for range 100 {
+		name := prefix + pack.NewPackID()
+		if err := s.root.Mkdir(name, 0o700); err != nil {
+			if errors.Is(err, fs.ErrExist) {
+				continue
+			}
+			return "", "", err
+		}
+		return name, filepath.Join(s.path, name), nil
+	}
+	return "", "", fmt.Errorf("backup: exhausted private scratch name attempts")
+}
+
+func (s *restoreScratch) close() error {
+	return errors.Join(s.root.Close(), s.base.Remove(s.relative), s.base.Close())
 }
 
 // publishRestoredDB swaps the fully materialized staging temp into place:

@@ -34,11 +34,80 @@ func (s *Store) OpenStream(ctx context.Context, contentHash Hash) (VerifiedReadC
 	if err := contentHash.Validate(); err != nil {
 		return nil, 0, err
 	}
-	return resolveBlob(ctx, s, contentHash,
-		func(hash Hash) (VerifiedReadCloser, int64, error) { return s.openLooseStream(ctx, hash) },
-		func(hash Hash, entry *IndexEntry) (VerifiedReadCloser, int64, error) {
-			return s.openPackedStream(ctx, hash, entry)
-		})
+	if s.resolver != nil {
+		return resolveBlob(
+			ctx,
+			s,
+			contentHash,
+			func(hash Hash) (VerifiedReadCloser, int64, error) {
+				return s.openLooseStream(ctx, hash)
+			},
+			func(hash Hash, entry *IndexEntry) (VerifiedReadCloser, int64, error) {
+				return s.openPackedStream(ctx, hash, entry)
+			},
+		)
+	}
+	return s.openMultiStream(ctx, contentHash)
+}
+
+func (s *Store) openMultiStream(
+	ctx context.Context,
+	contentHash Hash,
+) (VerifiedReadCloser, int64, error) {
+	stream, size, location, err := resolveCandidates(
+		ctx,
+		s,
+		contentHash,
+		func(backend ReadBackend, location ReadLocation) (VerifiedReadCloser, int64, error) {
+			return openBackendStream(ctx, backend, contentHash, location)
+		},
+	)
+	if err != nil {
+		return nil, 0, err
+	}
+	if !s.observeStreams {
+		return stream, size, nil
+	}
+	return &observedVerifiedStream{
+		VerifiedReadCloser: stream,
+		health:             s.health,
+		hash:               contentHash,
+		location:           location,
+	}, size, nil
+}
+
+type observedVerifiedStream struct {
+	VerifiedReadCloser
+	health   *Health
+	hash     Hash
+	location ReadLocation
+}
+
+func (s *observedVerifiedStream) Read(p []byte) (int, error) {
+	n, err := s.VerifiedReadCloser.Read(p)
+	s.observe(err)
+	return n, err
+}
+
+func (s *observedVerifiedStream) Verify() error {
+	err := s.VerifiedReadCloser.Verify()
+	s.observe(err)
+	return err
+}
+
+func (s *observedVerifiedStream) Close() error {
+	err := s.VerifiedReadCloser.Close()
+	s.observe(err)
+	return err
+}
+
+func (s *observedVerifiedStream) observe(err error) {
+	switch {
+	case isCandidateFailure(err):
+		s.health.Observe(s.hash, s.location, err)
+	case err == nil && s.Verified():
+		s.health.Clear(s.hash, s.location)
+	}
 }
 
 // CopyVerified copies catalog-authorized content to caller-owned private
@@ -60,21 +129,42 @@ func (s *Store) CopyVerified(ctx context.Context, contentHash Hash, dst io.Write
 func (s *Store) openPackedStream(
 	ctx context.Context, contentHash Hash, indexed *IndexEntry,
 ) (VerifiedReadCloser, int64, error) {
-	slot, footer, release, err := s.acquirePackedEntry(contentHash, indexed, true)
+	return s.openPackedStreamWithPolicy(ctx, contentHash, indexed, true)
+}
+
+func (s *Store) openPackedCompatibilityStream(
+	ctx context.Context, contentHash Hash, indexed *IndexEntry,
+) (VerifiedReadCloser, int64, error) {
+	return s.openPackedStreamWithPolicy(ctx, contentHash, indexed, false)
+}
+
+func (s *Store) openPackedStreamWithPolicy(
+	ctx context.Context,
+	contentHash Hash,
+	indexed *IndexEntry,
+	enforcePolicy bool,
+) (VerifiedReadCloser, int64, error) {
+	slot, footer, release, err := s.acquirePackedEntry(contentHash, indexed, enforcePolicy)
 	if err != nil {
 		return nil, 0, err
 	}
-	if err := s.validatePackPolicy(slot); err != nil {
-		return nil, 0, errors.Join(err, release())
+	if enforcePolicy {
+		if err := s.validatePackPolicy(slot); err != nil {
+			return nil, 0, errors.Join(err, release())
+		}
+		limit := uint64(s.limits.BlobBytes) //nolint:gosec // validated non-negative
+		if footer.RawLen > limit {
+			return nil, 0, errors.Join(newLimitError(LimitBlobRawBytes, footer.RawLen, limit), release())
+		}
+		if footer.StoredLen > limit {
+			return nil, 0, errors.Join(newLimitError(LimitBlobStoredBytes, footer.StoredLen, limit), release())
+		}
 	}
-	limit := uint64(s.limits.BlobBytes) //nolint:gosec // validated non-negative
-	if footer.RawLen > limit {
-		return nil, 0, errors.Join(newLimitError(LimitBlobRawBytes, footer.RawLen, limit), release())
+	var streamOptions pack.BlobReaderOptions
+	if enforcePolicy {
+		streamOptions.WindowBytes = uint64(max(s.limits.BlobBytes, int64(1<<10))) //nolint:gosec // limits are non-negative
 	}
-	if footer.StoredLen > limit {
-		return nil, 0, errors.Join(newLimitError(LimitBlobStoredBytes, footer.StoredLen, limit), release())
-	}
-	stream, err := slot.reader.OpenBlob(ctx, footer)
+	stream, err := slot.reader.OpenBlobWithOptions(ctx, footer, streamOptions)
 	if err != nil {
 		return nil, 0, errors.Join(mapPackStreamLimit(err), release())
 	}
@@ -129,6 +219,36 @@ func (s *Store) openLooseStream(ctx context.Context, contentHash Hash) (Verified
 	if object.logicalSize < 0 {
 		return nil, 0, errors.Join(
 			fmt.Errorf("packstore: negative loose size %d", object.logicalSize),
+			object.file.Close(),
+		)
+	}
+	stream, err := newLooseVerifiedStream(ctx, contentHash, object)
+	if err != nil {
+		return nil, 0, err
+	}
+	return stream, object.logicalSize, nil
+}
+
+func (s *Store) openLooseStreamAt(
+	ctx context.Context,
+	contentHash Hash,
+	location LooseLocation,
+) (VerifiedReadCloser, int64, error) {
+	object, err := s.openLooseObjectAt(contentHash, location.Encoding)
+	if err != nil {
+		return nil, 0, err
+	}
+	if object.logicalSize != location.LogicalSize ||
+		object.storedSize != location.StoredSize {
+		return nil, 0, errors.Join(
+			ErrPhysicalCorrupt,
+			fmt.Errorf(
+				"packstore: loose authority is logical=%d stored=%d, found logical=%d stored=%d",
+				location.LogicalSize,
+				location.StoredSize,
+				object.logicalSize,
+				object.storedSize,
+			),
 			object.file.Close(),
 		)
 	}

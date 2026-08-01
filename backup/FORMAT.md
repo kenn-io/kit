@@ -47,7 +47,7 @@ Compatibility is enforced at three levels, all of which must pass:
 
 1. **Repository level.** `config.toml` records `repo_id` (a lowercase-hex UUID; readers refuse any other shape, because the ID is embedded verbatim in local cache filenames), `format_version` (what wrote it), and `min_reader_version` (the oldest format a reader must understand). `Open` refuses a repository whose `min_reader_version` exceeds the reader's supported version, with an explicit error telling the caller to upgrade the reader. A future format change that old readers can safely ignore bumps only `format_version`; a change they cannot safely ignore also bumps `min_reader_version`.
 2. **Object level.** Every binary object begins with a 4-byte magic and a version field, and every decoder rejects an unknown magic or version. A reader can therefore never misparse an object from a future format as if it were current.
-3. **Snapshot level.** Each manifest records its own `format_version`, `min_reader_version`, and the application version string that wrote it (wire key `msgvault_version`, frozen for compatibility across every application built on this engine), so compatibility can evolve per-snapshot within one repository (for example, when a future version introduces encrypted snapshots alongside existing plaintext ones). Version 2 marks snapshots whose attachment population records storage paths beyond the canonical `<aa>/<hash>` derivation: version-1 readers placed every restored attachment at the canonical path and would materialize a database pointing at files that do not exist, so they must refuse these snapshots. Snapshots whose recorded paths are all canonical keep version 1. Version 3 marks snapshots whose application metadata is a portable logical blob rather than SQLite page-map chains. A manifest whose `min_reader_version` a reader accepts must contain only fields that reader knows: the content-derived ID covers only known fields, so an unknown field would otherwise ride along in an authenticated manifest, and readers refuse it as forged rather than ignore it.
+3. **Snapshot level.** Each manifest records its own `format_version`, `min_reader_version`, and the application version string that wrote it (wire key `msgvault_version`, frozen for compatibility across every application built on this engine), so compatibility can evolve per-snapshot within one repository (for example, when a future version introduces encrypted snapshots alongside existing plaintext ones). Version 2 marks snapshots whose attachment population records storage paths beyond the canonical `<aa>/<hash>` derivation: version-1 readers placed every restored attachment at the canonical path and would materialize a database pointing at files that do not exist, so they must refuse these snapshots. Snapshots whose recorded paths are all canonical keep version 1. Version 3 marks snapshots whose application metadata is a portable logical blob rather than SQLite page-map chains. Version 4 marks snapshots with application-defined auxiliary artifacts. A manifest whose `min_reader_version` a reader accepts must contain only fields that reader knows: the content-derived ID covers only known fields, so an unknown field would otherwise ride along in an authenticated manifest, and readers refuse it as forged rather than ignore it.
 
 Integrity is separate from versioning: every metadata object ends with a SHA-256 trailer over everything before it, checked before any field is interpreted, and pack entries carry CRC32-C over the stored bytes.
 
@@ -150,22 +150,51 @@ database page map: one snapshot has exactly one metadata authority.
 
 Portable metadata is a first-class durable representation, not an intermediate
 upgrade format. On restore, `MetadataRestorer` streams the logical artifact
-into a Kit-owned private repository-staging path and constructs the
-application's current runtime database. Kit then copies the closed file through
-its held target-root descriptor into unpublished staging. The application never
-receives a path whose resolution depends on the caller-supplied target. This
-allows the archive representation to remain stable while runtime schemas evolve. The restorer
-must consume the stream through verified EOF, finish and close the database,
-and leave no SQLite sidecars before Kit can publish it. Existing SQLite-page
-snapshots remain readable, and a repository may contain both kinds. A SQLite
-capture following a portable snapshot starts a fresh page-map keyframe because
-there is no prior page chain to inherit.
+into a Kit-owned private scratch path and constructs the application's current
+runtime database. Kit prefers private repository staging when its resolved
+directory is disjoint from the restore target, otherwise it uses a resolved
+system temporary directory. Kit then copies the closed file through its held
+target-root descriptor into unpublished staging. The application never receives
+a path whose resolution depends on the caller-supplied target. This allows the
+archive representation to remain stable while runtime schemas evolve. The
+restorer must consume the stream through verified EOF, finish and close the
+database, and leave no SQLite sidecars before Kit can publish it. Existing
+SQLite-page snapshots remain readable, and a repository may contain both kinds.
+A SQLite capture following a portable snapshot starts a fresh page-map keyframe
+because there is no prior page chain to inherit.
 
-The repository staging filesystem must have capacity for the complete rebuilt
-runtime database. Confining it into the target requires one complete sequential
-copy, so the target must simultaneously have capacity for its unpublished copy.
-This deliberate scratch cost keeps the application callback independent of the
-caller-supplied target path on every supported platform.
+The selected scratch filesystem—normally repository staging, or system
+temporary storage when the target contains repository staging—must have
+capacity for the complete rebuilt runtime database. Confining it into the target
+requires one complete sequential copy, so the target must simultaneously have
+capacity for its unpublished copy. This deliberate scratch cost keeps the
+application callback independent of the caller-supplied target path on every
+supported platform.
+
+## Auxiliary Artifacts
+
+A version-4 snapshot may carry a bounded, name-sorted list of
+application-defined artifacts alongside either metadata representation. Each
+manifest entry records a canonical name, an opaque format identifier, byte
+length, blob identity, and SHA-256 digest. The artifact bytes use the same
+content-addressed packs and verification path as every other snapshot object.
+
+For portable metadata, the artifact list comes from the same pinned
+`MetadataSnapshot`; for SQLite capture it comes from the pinned `FrozenView`.
+Kit opens and streams each artifact exactly once before releasing that view.
+It interprets neither the format nor the bytes.
+
+Quick verification proves every artifact resolves through the repository
+index and pack footer. Full verification reads it and re-derives its length
+and SHA-256. Restore performs the same content verification, proves the staged
+database, and then delivers the complete bytes to
+`AuxiliaryTarget.StageAuxiliary`. Staging must not expose the replacement
+state. If cancellation, extras promotion, database publication, durability
+sync, or the final auxiliary commit fails, Kit invokes `Rollback` with a
+bounded context independent of caller cancellation. `Commit` runs only after
+the restored target is published, synced, and released from restore
+coordination. A missing target or staging error fails while the restored
+database remains unpublished.
 
 ## Attachment Lists (magic `MVAL`)
 
@@ -230,6 +259,19 @@ all come from that one view, which remains open until metadata capture finishes.
 Restore is destructive only after the source has proven itself, in two layers. A preflight runs before the target is touched: the snapshot's map chains must materialize, every referenced blob (pages, attachments, extras) must resolve through the index, and the extras tree's paths must pass restore's locality, reserved-name, and collision rules. Failures the index cannot reveal — unreadable or corrupt pack bytes — are covered by ordering instead: the database is materialized and page-verified in a staging temp, attachments are then read (each re-deriving its SHA-256) and written to their content-addressed paths, extras are read and staged as temp siblings of their final paths, and the restored manifest statistics are reproduced against the staging temp. Callers may additionally request SQLite's full `PRAGMA integrity_check`; this can be expensive for large databases and is distinct from restore's cryptographic page verification. Only after those checks do the staged extras get renamed over their live counterparts and the database published: the target's stale SQLite sidecars are set aside (renamed, so a failed publish puts them back rather than stranding the old database without its WAL), the temp is renamed over the existing database, and the asides are removed. An `--overwrite` target's live database and extras files therefore survive any content or proof failure up to that final swap; partial attachment writes are benign because the paths are content-addressed — a write to a path the live tree already uses is byte-identical, and a write to a new path is an orphan the live database never references. One caveat: that argument holds only for the canonical `<hash[:2]>/<hash>` layout. An application that namespaces attachment paths (reader version 2) can record different content at the same path across snapshots, so a failed overwrite restore may leave such a path already rewritten; no current application does this, and an application adopting namespaced paths onto live overwrite targets should derive the path from the content hash to stay in the benign case. Content-path derivation and the checks both read the staging temp, never the not-yet-replaced database.
 
 Restore is self-proving, in layers. During materialization every blob read re-derives its SHA-256 identity (the pack reader's normal contract) and every database page is additionally checked against the snapshot's page-hash map before it is written — so a page-map bug cannot silently place correct bytes at the wrong offset. After materialization the restored database reproduces the manifest's recorded stats (via `App.RestoredStats`) through exactly the queries capture ran inside the freeze window. Unless `SkipIntegrityCheck` is set, it also passes `PRAGMA integrity_check`; callers restoring large databases may omit that SQLite scan without disabling cryptographic page or blob verification. The end-to-end test further proves the restored file is byte-identical to the live database as it existed at capture time, including for parent snapshots restored from an incremental chain. All files, and the directory entries naming them, are fsynced before Restore reports success. Pack reads are grouped by pack with a `Jobs` worker bound (1 = strictly serial for spinning-disk repositories); serial and parallel restores produce byte-identical trees. Restoring an old SQLite-page snapshot for use with a newer application version still goes through the application's normal schema migration at first open. A portable snapshot instead rebuilds the current runtime schema during restore, so runtime database migrations are not part of that archive's compatibility contract.
+
+`BeforePublication` receives `TargetDir` together with a private scratch
+`DBPath` outside that namespace. Kit prefers repository staging when its
+resolved directory is disjoint from the target, otherwise uses a resolved
+system temporary directory, and refuses the callback when neither is outside.
+It copies the unpublished database into that scratch before invoking the
+callback, so replacing the target directory cannot redirect callback writes.
+The callback must finish its update, checkpoint and close SQLite, and leave no
+`-wal`, `-shm`, or `-journal` sidecar. Kit rejects any other output, copies the
+exact closed regular file back through the held target-root descriptor, then
+runs the normal integrity and statistics proof before canonical publication. A
+callback error or invalid output therefore leaves the canonical database
+unpublished.
 
 ### Optional packed-content restore
 

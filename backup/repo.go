@@ -58,7 +58,7 @@ const (
 	// release may read formats newer than the one it writes, or vice versa.
 	// Repo.Open and LoadManifest refuse anything whose min_reader_version
 	// exceeds this.
-	SupportedReaderVersion = 3
+	SupportedReaderVersion = 4
 
 	// dbPathManifestVersion marks snapshots whose attachment population
 	// records storage paths beyond the canonical loose "<aa>/<hash>"
@@ -72,6 +72,9 @@ const (
 	// portableMetadataManifestVersion marks snapshots whose application state
 	// is a logical metadata blob rather than SQLite page-map chains.
 	portableMetadataManifestVersion = 3
+	// auxiliaryManifestVersion marks snapshots carrying application-defined
+	// auxiliary artifacts alongside logical metadata and content.
+	auxiliaryManifestVersion = 4
 
 	repoConfigName   = "config.toml"
 	snapshotsDirName = "snapshots"

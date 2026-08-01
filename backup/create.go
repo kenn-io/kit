@@ -137,6 +137,10 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 	if err != nil {
 		return nil, err
 	}
+	auxiliary, err := auxiliaryArtifacts(ctx, view)
+	if err != nil {
+		return nil, err
+	}
 
 	if parentHash != nil && parentHash.PageSize != session.PageSize {
 		parentHash = nil // page size changed (e.g. VACUUM INTO); full re-capture
@@ -175,6 +179,12 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 	}()
 
 	delta, err := storePageBlobs(ctx, dbFile, scan, appender, opts.Jobs, pr)
+	if err != nil {
+		return nil, err
+	}
+	manifestAuxiliary, err := captureAuxiliaryArtifacts(
+		ctx, r, auxiliary, opts.ZstdLevel, appender,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -243,6 +253,10 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 		manifestVersion = dbPathManifestVersion
 		manifestMinReader = dbPathManifestVersion
 	}
+	if len(manifestAuxiliary) > 0 {
+		manifestVersion = max(manifestVersion, auxiliaryManifestVersion)
+		manifestMinReader = max(manifestMinReader, auxiliaryManifestVersion)
+	}
 	m := &Manifest{
 		FormatVersion:    manifestVersion,
 		MinReaderVersion: manifestMinReader,
@@ -262,6 +276,7 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 			PageHashMap:   hashBlob.String(),
 			MapChainDepth: chainDepth,
 		},
+		Auxiliary: manifestAuxiliary,
 		Attachments: ManifestAttachments{
 			Layout:    []string{"loose"},
 			Rows:      info.Rows,

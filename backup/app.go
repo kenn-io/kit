@@ -19,7 +19,8 @@ type MetadataSource interface {
 }
 
 // MetadataSnapshot supplies portable metadata bytes, content membership, and
-// fidelity stats from one stable application view.
+// fidelity stats from one stable application view. It may additionally
+// implement AuxiliarySource to contribute artifacts from that same view.
 type MetadataSnapshot interface {
 	OpenMetadata(context.Context) (io.ReadCloser, int64, error)
 	ContentInfo(context.Context) (*ContentInfo, error)
@@ -84,8 +85,9 @@ type ContentInfo struct {
 	NonCanonicalPaths bool
 }
 
-// FrozenView answers the application-schema questions Create asks, against
-// the pinned read transaction of a FrozenSession.
+// FrozenView answers the application-schema questions Create asks against the
+// pinned read transaction of a FrozenSession. It may additionally implement
+// AuxiliarySource to contribute artifacts from that same view.
 type FrozenView interface {
 	ContentInfo(ctx context.Context) (*ContentInfo, error)
 	Stats(ctx context.Context) (json.RawMessage, error)
