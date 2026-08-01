@@ -466,6 +466,46 @@ func TestPublishPackValidatesEveryEntryBeforeMultipart(t *testing.T) {
 	}
 }
 
+func TestPublishPackRejectsInvalidDurabilityBeforeStaging(t *testing.T) {
+	owner := packstore.Ownership{
+		Format: packstore.OwnershipFormatV1,
+		Vault:  "test-vault",
+		Store:  "archive",
+		Epoch:  "epoch-1",
+	}
+	marker, err := packstore.MarshalOwnership(owner)
+	require.NoError(t, err)
+	packID, packBytes, _ := makePack(t, []byte("invalid pack durability"))
+	multipartCreates := 0
+	backend := newHTTPBackend(packstore.DefaultLimits(), func(request *http.Request) (*http.Response, error) {
+		if request.Method == http.MethodGet {
+			header := make(http.Header)
+			header.Set("Content-Length", strconv.Itoa(len(marker)))
+			return &http.Response{
+				StatusCode: http.StatusOK, Header: header,
+				Body:          io.NopCloser(bytes.NewReader(marker)),
+				ContentLength: int64(len(marker)), Request: request,
+			}, nil
+		}
+		if request.Method == http.MethodPost && request.URL.Query().Has("uploads") {
+			multipartCreates++
+		}
+		return xmlResponse(request, http.StatusInternalServerError,
+			`<Error><Code>UnexpectedRequest</Code></Error>`), nil
+	})
+	backend.setOwnership(owner, `"owner-etag"`)
+	source := &countingReadCloser{reader: bytes.NewReader(packBytes)}
+
+	_, err = backend.PublishPack(
+		context.Background(), packID, source,
+		packstore.PublishOptions{Durability: packstore.Durability(99)},
+	)
+
+	require.ErrorIs(t, err, packstore.ErrInvalidPolicy)
+	assert.Zero(t, source.read)
+	assert.Zero(t, multipartCreates)
+}
+
 func TestPublishLooseRejectsInvalidOptionsBeforeMultipart(t *testing.T) {
 	owner := packstore.Ownership{
 		Format: packstore.OwnershipFormatV1,

@@ -192,6 +192,13 @@ func (b *Backend) PublishPack(
 	if src == nil {
 		return packstore.PackReceipt{}, fmt.Errorf("s3store: nil pack publication source")
 	}
+	if opts.Durability == 0 {
+		opts.Durability = packstore.DurablePublication
+	}
+	if opts.Durability != packstore.AtomicPublication &&
+		opts.Durability != packstore.DurablePublication {
+		return packstore.PackReceipt{}, packstore.ErrInvalidPolicy
+	}
 	maxBytes, err := effectivePackPublicationLimit(
 		opts.MaxBytes,
 		opts.ExpectedSize,

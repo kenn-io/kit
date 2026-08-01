@@ -247,6 +247,42 @@ func TestFilesystemBackendSeekablePackHonorsCancellation(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 }
 
+func TestVerifyFilesystemPackHashHonorsCancellation(t *testing.T) {
+	packPath, packID, _ := buildBackendPackSource(
+		t, bytes.Repeat([]byte("cancel canonical pack hash"), 4096),
+	)
+	file, err := os.Open(packPath)
+	require.NoError(t, err)
+	info, err := file.Stat()
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = verifyFilesystemPack(
+		ctx, file, packID, DefaultLimits(), info.Size(), [sha256.Size]byte{},
+	)
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.NotErrorIs(t, err, ErrContentMismatch)
+}
+
+func TestClassifyFilesystemPackVerificationPreservesCancellation(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+	}{
+		{name: "canceled", err: context.Canceled},
+		{name: "deadline", err: context.DeadlineExceeded},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := classifyFilesystemPackVerificationError(test.err)
+
+			require.ErrorIs(t, got, test.err)
+			assert.NotErrorIs(t, got, ErrPhysicalCorrupt)
+		})
+	}
+}
+
 func TestFilesystemBackendDurablePackPublicationSyncsFreshHierarchy(t *testing.T) {
 	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
 	packPath, packID, _ := buildBackendPackSource(t, []byte("durable pack hierarchy"))
@@ -275,6 +311,48 @@ func TestFilesystemBackendDurablePackPublicationSyncsFreshHierarchy(t *testing.T
 		packsDir,
 		filepath.Join(packsDir, packID[:2]),
 	}, synced)
+}
+
+func TestFilesystemBackendPackPublicationSyncsStagingOnlyWhenDurable(t *testing.T) {
+	syncErr := errors.New("injected pack staging sync failure")
+	originalSync := syncFilesystemPackFile
+	syncCalls := 0
+	syncFilesystemPackFile = func(*os.File) error {
+		syncCalls++
+		return syncErr
+	}
+	t.Cleanup(func() { syncFilesystemPackFile = originalSync })
+	for _, test := range []struct {
+		name       string
+		durability Durability
+		wantSync   bool
+		wantCalls  int
+	}{
+		{name: "atomic", durability: AtomicPublication},
+		{name: "durable", durability: DurablePublication, wantSync: true, wantCalls: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
+			require := require.New(t)
+			syncCalls = 0
+			backend := attachedFilesystemBackend(t, "archive", "epoch-1")
+			packPath, packID, _ := buildBackendPackSource(t, []byte(test.name+" staging sync"))
+			source, err := os.Open(packPath)
+			require.NoError(err)
+
+			_, err = backend.PublishPack(
+				context.Background(), packID, source,
+				PublishOptions{Durability: test.durability},
+			)
+			err = errors.Join(err, source.Close())
+			if test.wantSync {
+				require.ErrorIs(err, syncErr)
+			} else {
+				require.NoError(err)
+			}
+			assert.Equal(test.wantCalls, syncCalls)
+		})
+	}
 }
 
 func TestFilesystemBackendPublishPackRejectsInvalidDurabilityBeforeWrite(t *testing.T) {

@@ -39,7 +39,10 @@ type FilesystemBackend struct {
 	legacy    bool
 }
 
-var walkFilesystemTree = filepath.WalkDir
+var (
+	walkFilesystemTree     = filepath.WalkDir
+	syncFilesystemPackFile = (*os.File).Sync
+)
 
 // NewFilesystemBackend prepares one filesystem store.
 func NewFilesystemBackend(
@@ -502,8 +505,10 @@ func (b *FilesystemBackend) PublishPack(
 	}
 	var expectedDigest [sha256.Size]byte
 	copy(expectedDigest[:], hasher.Sum(nil))
-	if err := staged.Sync(); err != nil {
-		return PackReceipt{}, fmt.Errorf("packstore: sync pack staging: %w", err)
+	if durable {
+		if err := syncFilesystemPackFile(staged); err != nil {
+			return PackReceipt{}, fmt.Errorf("packstore: sync pack staging: %w", err)
+		}
 	}
 	if err := staged.Close(); err != nil {
 		return PackReceipt{}, fmt.Errorf("packstore: close pack staging: %w", err)
@@ -543,10 +548,7 @@ func (b *FilesystemBackend) PublishPack(
 		expectedDigest,
 	)
 	if err != nil {
-		if errors.Is(err, ErrContentMismatch) {
-			return PackReceipt{}, err
-		}
-		return PackReceipt{}, errors.Join(ErrPhysicalCorrupt, err)
+		return PackReceipt{}, classifyFilesystemPackVerificationError(err)
 	}
 	if durable {
 		if err := syncFilesystemRootDir(shardRoot); err != nil {
@@ -557,6 +559,14 @@ func (b *FilesystemBackend) PublishPack(
 		StoreID: owner.Store, Generation: generation,
 		PackID: packID, Size: size, Created: created,
 	}, nil
+}
+
+func classifyFilesystemPackVerificationError(err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, ErrContentMismatch) {
+		return err
+	}
+	return errors.Join(ErrPhysicalCorrupt, err)
 }
 
 func copyBoundedContext(
@@ -631,7 +641,11 @@ func verifyFilesystemPack(
 		)
 	}
 	hasher := sha256.New()
-	if _, err := io.CopyBuffer(hasher, file, make([]byte, 64<<10)); err != nil {
+	if _, err := io.CopyBuffer(
+		hasher,
+		&contextReader{ctx: ctx, reader: file},
+		make([]byte, 64<<10),
+	); err != nil {
 		return 0, errors.Join(err, file.Close())
 	}
 	var actualDigest [sha256.Size]byte
