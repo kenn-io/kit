@@ -215,14 +215,16 @@ func (b *Backend) Probe(ctx context.Context) (report CapabilityReport, resultErr
 	}
 	_, err = b.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(b.bucket), Key: aws.String(key),
-		Body: bytes.NewReader(replacement), IfMatch: aws.String(probeETag),
+		Body: bytes.NewReader(replacement), ContentLength: aws.Int64(int64(len(replacement))),
+		IfMatch: aws.String(probeETag),
 	})
 	if err != nil {
 		return report, classifyError("probe conditional replacement", err)
 	}
 	_, staleErr := b.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(b.bucket), Key: aws.String(key),
-		Body: bytes.NewReader(payload), IfMatch: aws.String(probeETag),
+		Body: bytes.NewReader(replacement), ContentLength: aws.Int64(int64(len(replacement))),
+		IfMatch: aws.String(probeETag),
 	})
 	if statusCode(staleErr) != http.StatusPreconditionFailed {
 		if staleErr != nil {
