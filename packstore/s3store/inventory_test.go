@@ -34,8 +34,8 @@ func TestProbeDisarmsCleanupAfterExplicitDelete(t *testing.T) {
 	}, report)
 	assert.Equal(2, state.ownershipReads)
 	assert.Equal(1, state.deletes)
-	assert.Equal([]int{31, 31}, state.conditionalWriteBodies)
-	assert.Equal([]int64{31, 31}, state.conditionalWriteLengths)
+	assert.Equal([]int{31, 37}, state.conditionalWriteBodies)
+	assert.Equal([]int64{31, 37}, state.conditionalWriteLengths)
 }
 
 func TestProbeRejectsAcknowledgedDeleteThatLeavesObject(t *testing.T) {
@@ -91,6 +91,15 @@ func TestProbeRejectsIgnoredConditionalWrites(t *testing.T) {
 	}
 }
 
+func TestProbeRejectsAppliedStaleConditionalReplacement(t *testing.T) {
+	state, backend := newProbeHTTPBackend(t, false)
+	state.applyStaleWrite = true
+
+	_, err := backend.Probe(context.Background())
+
+	require.ErrorIs(t, err, packstore.ErrPhysicalCorrupt)
+}
+
 func TestReadProbeBodyBoundsAndValidatesResponse(t *testing.T) {
 	expected := []byte("probe")
 	got, err := readProbeBody(bytes.NewReader(expected), nil, expected)
@@ -117,6 +126,7 @@ type probeHTTPState struct {
 	failFirstProbeRead          bool
 	ignoreConditionalCreate     bool
 	ignoreConditionalReplace    bool
+	applyStaleWrite             bool
 	ignoreDelete                bool
 	probeReads                  int
 	multipartCreates            int
@@ -231,6 +241,10 @@ func (s *probeHTTPState) roundTrip(request *http.Request) (*http.Response, error
 		s.conditionalWriteBodies = append(s.conditionalWriteBodies, len(body))
 		s.conditionalWriteLengths = append(s.conditionalWriteLengths, request.ContentLength)
 		if request.Header.Get("If-Match") != s.objectETag && !s.ignoreConditionalReplace {
+			if s.applyStaleWrite {
+				s.object = append([]byte(nil), body...)
+				s.objectETag = `"stale-replacement-etag"`
+			}
 			return xmlResponse(request, http.StatusPreconditionFailed,
 				`<Error><Code>PreconditionFailed</Code></Error>`), nil
 		}
