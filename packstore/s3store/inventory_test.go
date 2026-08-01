@@ -16,12 +16,14 @@ import (
 )
 
 func TestProbeDisarmsCleanupAfterExplicitDelete(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
 	state, backend := newProbeHTTPBackend(t, false)
 
 	report, err := backend.Probe(context.Background())
 
-	require.NoError(t, err)
-	assert.Equal(t, CapabilityReport{
+	require.NoError(err)
+	assert.Equal(CapabilityReport{
 		StrongReadAfterWrite: true,
 		RepeatableReads:      true,
 		RangeReads:           true,
@@ -30,8 +32,10 @@ func TestProbeDisarmsCleanupAfterExplicitDelete(t *testing.T) {
 		ConditionalWrites:    true,
 		Delete:               true,
 	}, report)
-	assert.Equal(t, 2, state.ownershipReads)
-	assert.Equal(t, 1, state.deletes)
+	assert.Equal(2, state.ownershipReads)
+	assert.Equal(1, state.deletes)
+	assert.Equal([]int{31, 37}, state.conditionalWriteBodies)
+	assert.Equal([]int64{31, 37}, state.conditionalWriteLengths)
 }
 
 func TestProbeRejectsAcknowledgedDeleteThatLeavesObject(t *testing.T) {
@@ -87,6 +91,15 @@ func TestProbeRejectsIgnoredConditionalWrites(t *testing.T) {
 	}
 }
 
+func TestProbeRejectsAppliedStaleConditionalReplacement(t *testing.T) {
+	state, backend := newProbeHTTPBackend(t, false)
+	state.applyStaleWrite = true
+
+	_, err := backend.Probe(context.Background())
+
+	require.ErrorIs(t, err, packstore.ErrPhysicalCorrupt)
+}
+
 func TestReadProbeBodyBoundsAndValidatesResponse(t *testing.T) {
 	expected := []byte("probe")
 	got, err := readProbeBody(bytes.NewReader(expected), nil, expected)
@@ -113,11 +126,14 @@ type probeHTTPState struct {
 	failFirstProbeRead          bool
 	ignoreConditionalCreate     bool
 	ignoreConditionalReplace    bool
+	applyStaleWrite             bool
 	ignoreDelete                bool
 	probeReads                  int
 	multipartCreates            int
 	ownershipReads              int
 	deletes                     int
+	conditionalWriteBodies      []int
+	conditionalWriteLengths     []int64
 	pendingUploads              map[string][]byte
 	cleanupOwnershipHadDeadline bool
 	cleanupDeleteHadDeadline    bool
@@ -222,7 +238,13 @@ func (s *probeHTTPState) roundTrip(request *http.Request) (*http.Response, error
 		if err != nil {
 			return nil, err
 		}
+		s.conditionalWriteBodies = append(s.conditionalWriteBodies, len(body))
+		s.conditionalWriteLengths = append(s.conditionalWriteLengths, request.ContentLength)
 		if request.Header.Get("If-Match") != s.objectETag && !s.ignoreConditionalReplace {
+			if s.applyStaleWrite {
+				s.object = append([]byte(nil), body...)
+				s.objectETag = `"stale-replacement-etag"`
+			}
 			return xmlResponse(request, http.StatusPreconditionFailed,
 				`<Error><Code>PreconditionFailed</Code></Error>`), nil
 		}
