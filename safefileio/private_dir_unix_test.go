@@ -95,3 +95,17 @@ func TestOpenCurrentUserFileRejectsNonRegularFile(t *testing.T) {
 	require.Error(err)
 	require.Nil(file)
 }
+
+func TestRestrictCurrentUserFileRepairsPublicMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "record.json")
+	require.NoError(t, os.WriteFile(path, []byte("{}"), 0o600))
+	require.NoError(t, os.Chmod(path, 0o666))
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	require.NoError(t, err)
+	defer func() { _ = file.Close() }()
+
+	require.NoError(t, safefileio.RestrictCurrentUserFile(file))
+	info, err := file.Stat()
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+}

@@ -20,6 +20,8 @@ callers responsible for their own file formats and higher-level policy.
   trusted user, token-owner, system, and administrator principals. Use SID
   semantics rather than username string comparisons.
 - If ownership or file type cannot be established, return an error.
+- Restrict an open file only after validating that same handle's regular-file
+  type and current-user ownership; never repair an unverified path.
 
 ## Tests
 

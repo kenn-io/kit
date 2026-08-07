@@ -53,3 +53,12 @@ func ValidateCurrentUserFile(file *os.File) error {
 	}
 	return nil
 }
+
+// RestrictCurrentUserFile validates an open handle and makes it readable and
+// writable only by its current-user owner.
+func RestrictCurrentUserFile(file *os.File) error {
+	if err := ValidateCurrentUserFile(file); err != nil {
+		return err
+	}
+	return file.Chmod(0o600)
+}

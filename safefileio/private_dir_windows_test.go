@@ -97,6 +97,39 @@ func TestOpenCurrentUserFileAcceptsCurrentTokenOwner(t *testing.T) {
 	require.NoError(t, file.Close())
 }
 
+func TestRestrictCurrentUserFileRepairsBroadDACL(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "record.json")
+	require.NoError(t, os.WriteFile(path, []byte("{}"), 0o600))
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	require.NoError(t, err)
+	defer func() { _ = file.Close() }()
+	handle := windows.Handle(file.Fd())
+	userSID, err := currentWindowsUserSID()
+	require.NoError(t, err)
+	ownerSID, err := currentWindowsOwnerSID()
+	require.NoError(t, err)
+	world, err := windows.CreateWellKnownSid(windows.WinWorldSid)
+	require.NoError(t, err)
+	acl, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{
+		allowFullControl(userSID, windows.TRUSTEE_IS_USER),
+		allowFullControl(world, windows.TRUSTEE_IS_WELL_KNOWN_GROUP),
+	}, nil)
+	require.NoError(t, err)
+	require.NoError(t, windows.SetSecurityInfo(
+		handle,
+		windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		nil,
+		nil,
+		acl,
+		nil,
+	))
+	require.Error(t, verifyWindowsDirDACL(path, handle, userSID, ownerSID))
+
+	require.NoError(t, RestrictCurrentUserFile(file))
+	require.NoError(t, verifyWindowsDirDACL(path, handle, userSID, ownerSID))
+}
+
 func TestWindowsOwnerMatchesCurrentUserAndTokenOwner(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)

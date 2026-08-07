@@ -55,6 +55,19 @@ func ValidateCurrentUserFile(file *os.File) error {
 	return validateWindowsFileHandle(file.Name(), windows.Handle(file.Fd()))
 }
 
+// RestrictCurrentUserFile validates an open handle and installs a protected
+// DACL limited to the current user and Windows administrative principals.
+func RestrictCurrentUserFile(file *os.File) error {
+	if err := ValidateCurrentUserFile(file); err != nil {
+		return err
+	}
+	userSID, err := currentWindowsUserSID()
+	if err != nil {
+		return err
+	}
+	return restrictWindowsDir(windows.Handle(file.Fd()), userSID)
+}
+
 func validateWindowsFileHandle(path string, handle windows.Handle) error {
 	var info windows.ByHandleFileInformation
 	if err := windows.GetFileInformationByHandle(handle, &info); err != nil {
