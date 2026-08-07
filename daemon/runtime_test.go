@@ -38,6 +38,16 @@ func TestRuntimeStoreWriteListAndRead(t *testing.T) {
 	assert.Equal("/tmp/kata.db", got.Metadata["db_path"])
 }
 
+func TestNewRuntimeRecordPersistsCurrentProcessIdentity(t *testing.T) {
+	rec := daemon.NewRuntimeRecord("tool", "v1", daemon.Endpoint{
+		Network: daemon.NetworkTCP,
+		Address: "127.0.0.1:1234",
+	})
+	require.NotEmpty(t, rec.ProcessIdentity)
+	assert.Equal(t, daemon.ProcessIdentityMatch,
+		daemon.CompareProcessIdentity(rec.PID, rec.ProcessIdentity))
+}
+
 func TestRuntimeStoreCleanupDeadLeavesMismatchedFiles(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)

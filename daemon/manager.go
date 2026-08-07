@@ -95,9 +95,5 @@ func (m Manager) Ensure(ctx context.Context, timeout time.Duration) (RuntimeReco
 }
 
 func (m Manager) lockStart(ctx context.Context) (func(), error) {
-	lockPath, err := m.Store.LockPath()
-	if err != nil {
-		return nil, err
-	}
-	return acquireDaemonLock(ctx, lockPath, "acquire daemon start lock")
+	return m.Store.AcquireStartLock(ctx)
 }

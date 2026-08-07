@@ -11,6 +11,8 @@ databases, command parsing, and shutdown policy belong to the caller.
 
 - Never infer live daemon state from a runtime record alone. Probe the endpoint
   before claiming a process is reachable.
+- Treat process-creation identity as opaque and exact-match only. An unknown
+  identity never authorizes destructive action against a process or record.
 - Never send a bearer credential to a runtime-record endpoint before it proves
   possession of the daemon token and its recorded service, version, PID,
   network, and address. Use the package proof ping and probe contract for this
@@ -23,6 +25,8 @@ databases, command parsing, and shutdown policy belong to the caller.
   this package created. Refuse paths whose type or ownership does not match
   that intent.
 - Use listen locks to serialize startup and bind attempts.
+- Hold the owner lock for the daemon's full writable lifetime; use the start
+  lock only to serialize discovery, replacement, and launch decisions.
 - Route every `Manager.Ensure` lookup through `Manager.Find` so a caller's
   `FindFunc` is used for initial discovery, locked re-discovery, and polling.
 - Keep platform-specific behavior in build-tagged files when ownership, sockets,
