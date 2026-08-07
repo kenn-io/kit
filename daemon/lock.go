@@ -42,7 +42,7 @@ func (s RuntimeStore) AcquireOwnerLock(ctx context.Context) (func(), error) {
 	if err := s.prepareDir(); err != nil {
 		return nil, err
 	}
-	path := filepath.Join(s.Dir, prefix+".owner.lock")
+	path := filepath.Join(s.Dir, prefix+".lock.owner")
 	return acquireDaemonLock(ctx, path, "acquire daemon owner lock")
 }
 

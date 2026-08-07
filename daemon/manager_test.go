@@ -227,6 +227,21 @@ func TestRuntimeStoreStartLockIsPubliclyAcquirable(t *testing.T) {
 	release()
 }
 
+func TestRuntimeStoreOwnerLockDoesNotBlockAnotherPrefixStartLock(t *testing.T) {
+	dir := t.TempDir()
+	ownerStore := daemon.RuntimeStore{Dir: dir, Prefix: "tool"}
+	releaseOwner, err := ownerStore.AcquireOwnerLock(context.Background())
+	require.NoError(t, err)
+	defer releaseOwner()
+
+	startStore := daemon.RuntimeStore{Dir: dir, Prefix: "tool.owner"}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	releaseStart, err := startStore.AcquireStartLock(ctx)
+	require.NoError(t, err)
+	releaseStart()
+}
+
 func TestManagerEnsureSerializesConcurrentStartsWithCustomDiscovery(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
