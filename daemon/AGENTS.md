@@ -27,6 +27,9 @@ databases, command parsing, and shutdown policy belong to the caller.
   `FindFunc` is used for initial discovery, locked re-discovery, and polling.
 - Keep platform-specific behavior in build-tagged files when ownership, sockets,
   process checks, or permissions differ.
+- On Windows, an openable process object is not proof that the process is still
+  running; retained handles outlive termination, so liveness must check the
+  process exit status for `STILL_ACTIVE`.
 - Auto-start goes through the caller-provided `StartFunc`; this package must not
   invent application launch commands.
 - Windows detached children use `DETACHED_PROCESS`, not `CREATE_NO_WINDOW`.
