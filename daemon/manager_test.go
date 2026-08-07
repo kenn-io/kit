@@ -207,6 +207,26 @@ func TestManagerEnsureSerializesConcurrentStarts(t *testing.T) {
 	assert.Equal(t, int32(1), starts.Load())
 }
 
+func TestRuntimeStoreOwnerLockExcludesASecondOwner(t *testing.T) {
+	store := daemon.RuntimeStore{Dir: t.TempDir(), Prefix: "tool"}
+	release, err := store.AcquireOwnerLock(context.Background())
+	require.NoError(t, err)
+	defer release()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, err = store.AcquireOwnerLock(ctx)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
+func TestRuntimeStoreStartLockIsPubliclyAcquirable(t *testing.T) {
+	store := daemon.RuntimeStore{Dir: t.TempDir(), Prefix: "tool"}
+	release, err := store.AcquireStartLock(context.Background())
+	require.NoError(t, err)
+	release()
+}
+
 func TestManagerEnsureSerializesConcurrentStartsWithCustomDiscovery(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
