@@ -17,6 +17,14 @@ func ProcessAlive(pid int) bool {
 	if err != nil {
 		return errors.Is(err, syscall.ERROR_ACCESS_DENIED)
 	}
-	_ = syscall.CloseHandle(handle)
-	return true
+	defer syscall.CloseHandle(handle)
+
+	// A terminated process object remains openable while another handle keeps
+	// it alive. The exit status, not the handle alone, distinguishes that state.
+	const stillActive = 259
+	var exitCode uint32
+	if err := syscall.GetExitCodeProcess(handle, &exitCode); err != nil {
+		return true
+	}
+	return exitCode == stillActive
 }
