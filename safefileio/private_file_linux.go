@@ -19,20 +19,29 @@ func validateLinuxPrivateAccess(file *os.File) error {
 	if err := unix.Fstatfs(int(file.Fd()), &status); err != nil {
 		return fmt.Errorf("inspect file filesystem: %w", err)
 	}
-	if linuxFilesystemRequiresServerACL(int64(status.Type)) {
+	if linuxFilesystemHasExternalAccessPolicy(int64(status.Type)) {
 		return errors.New(
 			"safefileio: private current-user file validation is unsupported " +
-				"on SMB/CIFS filesystems",
+				"on filesystems with external access policy",
 		)
 	}
 	return validateLinuxAccessACLs(file)
 }
 
-func linuxFilesystemRequiresServerACL(filesystemType int64) bool {
+func linuxFilesystemHasExternalAccessPolicy(filesystemType int64) bool {
 	switch uint32(filesystemType) {
-	case uint32(unix.CIFS_SUPER_MAGIC),
+	case uint32(unix.AAFS_MAGIC),
+		uint32(unix.AFS_FS_MAGIC),
+		uint32(unix.AFS_SUPER_MAGIC),
+		uint32(unix.CEPH_SUPER_MAGIC),
+		uint32(unix.CIFS_SUPER_MAGIC),
+		uint32(unix.CODA_SUPER_MAGIC),
+		uint32(unix.FUSE_SUPER_MAGIC),
+		uint32(unix.NCP_SUPER_MAGIC),
+		uint32(unix.NFS_SUPER_MAGIC),
 		uint32(unix.SMB_SUPER_MAGIC),
-		uint32(unix.SMB2_SUPER_MAGIC):
+		uint32(unix.SMB2_SUPER_MAGIC),
+		uint32(unix.V9FS_MAGIC):
 		return true
 	default:
 		return false
