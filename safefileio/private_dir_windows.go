@@ -196,18 +196,17 @@ func verifyWindowsDirectoryOwner(path string, owner, userSID, ownerSID *windows.
 }
 
 func verifyWindowsDirDACL(path string, handle windows.Handle, userSID, ownerSID *windows.SID) error {
-	return verifyWindowsDACL(path, handle, userSID, ownerSID, true)
+	return verifyWindowsDACL(path, handle, userSID, ownerSID)
 }
 
 func verifyWindowsFileDACL(path string, handle windows.Handle, userSID, ownerSID *windows.SID) error {
-	return verifyWindowsDACL(path, handle, userSID, ownerSID, false)
+	return verifyWindowsDACL(path, handle, userSID, ownerSID)
 }
 
 func verifyWindowsDACL(
 	path string,
 	handle windows.Handle,
 	userSID, ownerSID *windows.SID,
-	requireProtected bool,
 ) error {
 	descriptor, err := windows.GetSecurityInfo(
 		handle,
@@ -221,7 +220,7 @@ func verifyWindowsDACL(
 	if err != nil {
 		return err
 	}
-	if requireProtected && control&windows.SE_DACL_PROTECTED == 0 {
+	if control&windows.SE_DACL_PROTECTED == 0 {
 		return fmt.Errorf("%s DACL is not protected", path)
 	}
 	dacl, _, err := descriptor.DACL()

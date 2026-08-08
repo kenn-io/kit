@@ -58,7 +58,8 @@ func ValidateCurrentUserFile(file *os.File) error {
 }
 
 // ValidatePrivateCurrentUserFile verifies that an open current-user-owned file
-// grants access only to the current user and Windows administrative principals.
+// has a protected DACL granting access only to the current user and Windows
+// administrative principals.
 func ValidatePrivateCurrentUserFile(file *os.File) error {
 	handle, err := reopenWindowsFileForDACL(file)
 	if err != nil {
