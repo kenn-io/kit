@@ -11,7 +11,7 @@ import (
 	"go.kenn.io/kit/safefileio"
 )
 
-func TestRestrictCurrentUserFileRemovesExtendedACL(t *testing.T) {
+func TestValidatePrivateCurrentUserFileRejectsExtendedACL(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "record.json")
 	require.NoError(t, os.WriteFile(path, []byte("{}"), 0o600))
 	output, err := exec.Command(
@@ -25,8 +25,8 @@ func TestRestrictCurrentUserFileRemovesExtendedACL(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = file.Close() }()
 
-	require.NoError(t, safefileio.RestrictCurrentUserFile(file))
+	require.Error(t, safefileio.ValidatePrivateCurrentUserFile(file))
 	listing, err := exec.Command("ls", "-lde", path).CombinedOutput()
 	require.NoError(t, err, string(listing))
-	assert.NotContains(t, string(listing), "everyone allow read")
+	assert.Contains(t, string(listing), "everyone allow read")
 }

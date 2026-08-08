@@ -1,4 +1,4 @@
-//go:build darwin || linux
+//go:build unix && !darwin && !linux
 
 package safefileio_test
 
@@ -11,16 +11,13 @@ import (
 	"go.kenn.io/kit/safefileio"
 )
 
-func TestRestrictCurrentUserFileRepairsPublicMode(t *testing.T) {
+func TestValidatePrivateCurrentUserFileFailsClosedWhenUnsupported(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "record.json")
 	require.NoError(t, os.WriteFile(path, []byte("{}"), 0o600))
-	require.NoError(t, os.Chmod(path, 0o666))
 	file, err := os.OpenFile(path, os.O_RDWR, 0)
 	require.NoError(t, err)
 	defer func() { _ = file.Close() }()
 
-	require.NoError(t, safefileio.RestrictCurrentUserFile(file))
-	info, err := file.Stat()
-	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	err = safefileio.ValidatePrivateCurrentUserFile(file)
+	require.ErrorContains(t, err, "private current-user file validation is unsupported")
 }

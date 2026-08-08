@@ -1,6 +1,6 @@
 //go:build darwin || linux
 
-package safefileio
+package safefileio_test
 
 import (
 	"os"
@@ -8,9 +8,10 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"go.kenn.io/kit/safefileio"
 )
 
-func TestRestrictCurrentUserFileNarrowsModeAroundACLRemoval(t *testing.T) {
+func TestValidatePrivateCurrentUserFileRejectsPublicMode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "record.json")
 	require.NoError(t, os.WriteFile(path, []byte("{}"), 0o600))
 	require.NoError(t, os.Chmod(path, 0o666))
@@ -18,25 +19,18 @@ func TestRestrictCurrentUserFileNarrowsModeAroundACLRemoval(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = file.Close() }()
 
-	err = restrictCurrentUserFile(file, nil, func(file *os.File) error {
-		info, statErr := file.Stat()
-		require.NoError(t, statErr)
-		require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
-		return file.Chmod(0o666)
-	})
-	require.NoError(t, err)
+	require.Error(t, safefileio.ValidatePrivateCurrentUserFile(file))
 	info, err := file.Stat()
 	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	require.Equal(t, os.FileMode(0o666), info.Mode().Perm())
 }
 
-func TestVerifyPrivateFileModeRejectsPublicMode(t *testing.T) {
+func TestValidatePrivateCurrentUserFileAcceptsPrivateMode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "record.json")
 	require.NoError(t, os.WriteFile(path, []byte("{}"), 0o600))
-	require.NoError(t, os.Chmod(path, 0o666))
 	file, err := os.OpenFile(path, os.O_RDWR, 0)
 	require.NoError(t, err)
 	defer func() { _ = file.Close() }()
 
-	require.ErrorContains(t, verifyPrivateFileMode(file), "mode is 0666, not 0600")
+	require.NoError(t, safefileio.ValidatePrivateCurrentUserFile(file))
 }

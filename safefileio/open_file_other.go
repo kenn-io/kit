@@ -26,11 +26,11 @@ func ValidateCurrentUserFile(*os.File) error {
 	)
 }
 
-// RestrictCurrentUserFile fails closed when the platform cannot enforce
+// ValidatePrivateCurrentUserFile fails closed when the platform cannot verify
 // current-user-only file access.
-func RestrictCurrentUserFile(*os.File) error {
+func ValidatePrivateCurrentUserFile(*os.File) error {
 	return fmt.Errorf(
-		"safefileio: current-user file restriction is unsupported on %s",
+		"safefileio: private current-user file validation is unsupported on %s",
 		runtime.GOOS,
 	)
 }

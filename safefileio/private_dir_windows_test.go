@@ -97,13 +97,23 @@ func TestOpenCurrentUserFileAcceptsCurrentTokenOwner(t *testing.T) {
 	require.NoError(t, file.Close())
 }
 
-func TestRestrictCurrentUserFileRepairsBroadDACL(t *testing.T) {
+func TestValidatePrivateCurrentUserFileRejectsBroadDACL(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "record.json")
 	require.NoError(t, os.WriteFile(path, []byte("{}"), 0o600))
 	file, err := os.OpenFile(path, os.O_RDWR, 0)
 	require.NoError(t, err)
 	defer func() { _ = file.Close() }()
-	handle, err := reopenWindowsFileForDACL(file)
+	path16, err := windows.UTF16PtrFromString(path)
+	require.NoError(t, err)
+	handle, err := windows.CreateFile(
+		path16,
+		windows.READ_CONTROL|windows.WRITE_DAC,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil,
+		windows.OPEN_EXISTING,
+		windows.FILE_FLAG_OPEN_REPARSE_POINT,
+		0,
+	)
 	require.NoError(t, err)
 	defer func() { _ = windows.CloseHandle(handle) }()
 	userSID, err := currentWindowsUserSID()
@@ -128,8 +138,20 @@ func TestRestrictCurrentUserFileRepairsBroadDACL(t *testing.T) {
 	))
 	require.Error(t, verifyWindowsDirDACL(path, handle, userSID, ownerSID))
 
-	require.NoError(t, RestrictCurrentUserFile(file))
-	require.NoError(t, verifyWindowsDirDACL(path, handle, userSID, ownerSID))
+	require.Error(t, ValidatePrivateCurrentUserFile(file))
+	require.Error(t, verifyWindowsDirDACL(path, handle, userSID, ownerSID))
+}
+
+func TestValidatePrivateCurrentUserFileAcceptsPrivateDACL(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "private")
+	require.NoError(t, EnsurePrivateDir(dir))
+	path := filepath.Join(dir, "record.json")
+	require.NoError(t, os.WriteFile(path, []byte("{}"), 0o600))
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	require.NoError(t, err)
+	defer func() { _ = file.Close() }()
+
+	require.NoError(t, ValidatePrivateCurrentUserFile(file))
 }
 
 func TestWindowsOwnerMatchesCurrentUserAndTokenOwner(t *testing.T) {

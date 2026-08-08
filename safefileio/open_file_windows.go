@@ -57,9 +57,9 @@ func ValidateCurrentUserFile(file *os.File) error {
 	return validateWindowsFileHandle(file.Name(), windows.Handle(file.Fd()))
 }
 
-// RestrictCurrentUserFile validates an open handle and installs a protected
-// DACL limited to the current user and Windows administrative principals.
-func RestrictCurrentUserFile(file *os.File) error {
+// ValidatePrivateCurrentUserFile verifies that an open current-user-owned file
+// grants access only to the current user and Windows administrative principals.
+func ValidatePrivateCurrentUserFile(file *os.File) error {
 	handle, err := reopenWindowsFileForDACL(file)
 	if err != nil {
 		return err
@@ -69,7 +69,11 @@ func RestrictCurrentUserFile(file *os.File) error {
 	if err != nil {
 		return err
 	}
-	return restrictWindowsDir(handle, userSID)
+	ownerSID, err := currentWindowsOwnerSID()
+	if err != nil {
+		return err
+	}
+	return verifyWindowsFileDACL(file.Name(), handle, userSID, ownerSID)
 }
 
 func reopenWindowsFileForDACL(file *os.File) (windows.Handle, error) {
@@ -78,7 +82,7 @@ func reopenWindowsFileForDACL(file *os.File) (windows.Handle, error) {
 	}
 	result, _, callErr := reOpenFile.Call(
 		file.Fd(),
-		uintptr(windows.READ_CONTROL|windows.WRITE_DAC),
+		uintptr(windows.READ_CONTROL),
 		uintptr(windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE),
 		0,
 	)

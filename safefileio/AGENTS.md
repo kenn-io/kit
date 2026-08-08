@@ -20,14 +20,15 @@ callers responsible for their own file formats and higher-level policy.
   trusted user, token-owner, system, and administrator principals. Use SID
   semantics rather than username string comparisons.
 - If ownership or file type cannot be established, return an error.
-- Restrict an open file only after validating that same handle's regular-file
-  type and current-user ownership; never repair an unverified path.
-- On Unix platforms that support ACL removal, narrow mode bits before removing
-  ACLs and reapply the private mode afterward; never create a broader-access
-  interval while changing access-control policy.
-- Verify the exact private mode through the open handle after each chmod. Reject
-  Linux SMB/CIFS filesystems because their server DACL cannot be secured by
-  local mode and access-ACL operations.
+- Private-file validation must inspect the same open handle used by the caller
+  and must never mutate permissions. Existing broad access may already have
+  produced handles that no in-place repair can revoke.
+- On supported Unix platforms, require exact mode 0600 and no access ACL.
+  Reject Linux SMB/CIFS filesystems because their server DACL cannot be verified
+  through local mode and access-ACL operations.
+- On Windows, require a DACL that grants access only to the current user and
+  trusted administrative principals. Callers recovering a broad file must
+  create a private replacement rather than repair it in place.
 
 ## Tests
 
