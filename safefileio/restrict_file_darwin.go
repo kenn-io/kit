@@ -52,7 +52,7 @@ func removeDarwinExtendedACL(file *os.File) error {
 		acl,
 		darwinACLExtended,
 	)
-	if result == ^uintptr(0) {
+	if result != 0 {
 		return darwinACLCallError("remove extended ACL", callErr)
 	}
 	return nil
