@@ -11,6 +11,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.106.2
 	github.com/aws/smithy-go v1.27.5
 	github.com/charmbracelet/x/ansi v0.11.7
+	github.com/ebitengine/purego v0.10.0
 	github.com/gofrs/flock v0.13.0
 	github.com/klauspost/compress v1.18.6
 	github.com/leanovate/gopter v0.2.11
@@ -63,7 +64,6 @@ require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dnephin/pflag v1.0.7 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/ebitengine/purego v0.10.0 // indirect
 	github.com/fatih/color v1.18.0 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
