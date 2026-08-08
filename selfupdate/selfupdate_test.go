@@ -1786,6 +1786,8 @@ func TestExtractChecksum(t *testing.T) {
 		{"no match", fmt.Sprintf("%s  tool_linux_amd64.tar.gz", testHash64), "tool_darwin_arm64.tar.gz", ""},
 		{"substring filename", fmt.Sprintf("%s  tool_darwin_arm64.tar.gz.sig", testHash64), "tool_darwin_arm64.tar.gz", ""},
 		{"binary star", fmt.Sprintf("%s *tool_darwin_arm64.tar.gz", testHash64), "tool_darwin_arm64.tar.gz", testHash64},
+		{"leading dot slash", fmt.Sprintf("%s  ./tool_darwin_arm64.tar.gz", testHash64), "tool_darwin_arm64.tar.gz", testHash64},
+		{"binary star leading dot slash", fmt.Sprintf("%s *./tool_darwin_arm64.tar.gz", testHash64), "tool_darwin_arm64.tar.gz", testHash64},
 		{"trailing comment", fmt.Sprintf("%s  tool_darwin_arm64.tar.gz  # comment", testHash64), "tool_darwin_arm64.tar.gz", testHash64},
 	}
 
