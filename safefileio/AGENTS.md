@@ -25,6 +25,9 @@ callers responsible for their own file formats and higher-level policy.
 - On Unix platforms that support ACL removal, narrow mode bits before removing
   ACLs and reapply the private mode afterward; never create a broader-access
   interval while changing access-control policy.
+- Verify the exact private mode through the open handle after each chmod. Reject
+  Linux SMB/CIFS filesystems because their server DACL cannot be secured by
+  local mode and access-ACL operations.
 
 ## Tests
 

@@ -27,7 +27,7 @@ var (
 // RestrictCurrentUserFile validates an open handle, narrows its mode, removes
 // its macOS extended ACL, and keeps it readable and writable only by its owner.
 func RestrictCurrentUserFile(file *os.File) error {
-	return restrictCurrentUserFile(file, removeDarwinExtendedACL)
+	return restrictCurrentUserFile(file, nil, removeDarwinExtendedACL)
 }
 
 func removeDarwinExtendedACL(file *os.File) error {
