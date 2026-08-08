@@ -9,6 +9,8 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+var reOpenFile = windows.NewLazySystemDLL("kernel32.dll").NewProc("ReOpenFile")
+
 // OpenCurrentUserFile opens path without following reparse points and verifies
 // the opened handle is a regular file owned by the current token user or token
 // owner.
@@ -58,14 +60,40 @@ func ValidateCurrentUserFile(file *os.File) error {
 // RestrictCurrentUserFile validates an open handle and installs a protected
 // DACL limited to the current user and Windows administrative principals.
 func RestrictCurrentUserFile(file *os.File) error {
-	if err := ValidateCurrentUserFile(file); err != nil {
+	handle, err := reopenWindowsFileForDACL(file)
+	if err != nil {
 		return err
 	}
+	defer func() { _ = windows.CloseHandle(handle) }()
 	userSID, err := currentWindowsUserSID()
 	if err != nil {
 		return err
 	}
-	return restrictWindowsDir(windows.Handle(file.Fd()), userSID)
+	return restrictWindowsDir(handle, userSID)
+}
+
+func reopenWindowsFileForDACL(file *os.File) (windows.Handle, error) {
+	if err := ValidateCurrentUserFile(file); err != nil {
+		return 0, err
+	}
+	result, _, callErr := reOpenFile.Call(
+		file.Fd(),
+		uintptr(windows.READ_CONTROL|windows.WRITE_DAC),
+		uintptr(windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE),
+		0,
+	)
+	handle := windows.Handle(result)
+	if handle == windows.InvalidHandle {
+		if callErr != windows.ERROR_SUCCESS {
+			return 0, callErr
+		}
+		return 0, windows.ERROR_INVALID_HANDLE
+	}
+	if err := validateWindowsFileHandle(file.Name(), handle); err != nil {
+		_ = windows.CloseHandle(handle)
+		return 0, err
+	}
+	return handle, nil
 }
 
 func validateWindowsFileHandle(path string, handle windows.Handle) error {
