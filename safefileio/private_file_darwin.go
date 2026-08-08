@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"sync"
 	"syscall"
 
@@ -39,6 +40,8 @@ func validateDarwinExtendedACL(file *os.File) error {
 	if darwinACLErr != nil {
 		return darwinACLErr
 	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	errno := darwinACL.errno()
 	*errno = 0
 	acl := darwinACL.getFD(int32(file.Fd()), darwinACLExtended)
