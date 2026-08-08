@@ -97,6 +97,119 @@ func TestOpenCurrentUserFileAcceptsCurrentTokenOwner(t *testing.T) {
 	require.NoError(t, file.Close())
 }
 
+func TestValidatePrivateCurrentUserFileRejectsBroadDACL(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "record.json")
+	require.NoError(t, os.WriteFile(path, []byte("{}"), 0o600))
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	require.NoError(t, err)
+	defer func() { _ = file.Close() }()
+	path16, err := windows.UTF16PtrFromString(path)
+	require.NoError(t, err)
+	handle, err := windows.CreateFile(
+		path16,
+		windows.READ_CONTROL|windows.WRITE_DAC,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil,
+		windows.OPEN_EXISTING,
+		windows.FILE_FLAG_OPEN_REPARSE_POINT,
+		0,
+	)
+	require.NoError(t, err)
+	defer func() { _ = windows.CloseHandle(handle) }()
+	userSID, err := currentWindowsUserSID()
+	require.NoError(t, err)
+	ownerSID, err := currentWindowsOwnerSID()
+	require.NoError(t, err)
+	world, err := windows.CreateWellKnownSid(windows.WinWorldSid)
+	require.NoError(t, err)
+	acl, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{
+		allowFullControl(userSID, windows.TRUSTEE_IS_USER),
+		allowFullControl(world, windows.TRUSTEE_IS_WELL_KNOWN_GROUP),
+	}, nil)
+	require.NoError(t, err)
+	require.NoError(t, windows.SetSecurityInfo(
+		handle,
+		windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		nil,
+		nil,
+		acl,
+		nil,
+	))
+	require.Error(t, verifyWindowsDirDACL(path, handle, userSID, ownerSID))
+
+	require.Error(t, ValidatePrivateCurrentUserFile(file))
+	require.Error(t, verifyWindowsDirDACL(path, handle, userSID, ownerSID))
+}
+
+func TestValidatePrivateCurrentUserFileRejectsUnprotectedPrivateDACL(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "private")
+	require.NoError(t, EnsurePrivateDir(dir))
+	path := filepath.Join(dir, "record.json")
+	require.NoError(t, os.WriteFile(path, []byte("{}"), 0o600))
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	require.NoError(t, err)
+	defer func() { _ = file.Close() }()
+	path16, err := windows.UTF16PtrFromString(path)
+	require.NoError(t, err)
+	handle, err := windows.CreateFile(
+		path16,
+		windows.READ_CONTROL|windows.WRITE_DAC,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil,
+		windows.OPEN_EXISTING,
+		windows.FILE_FLAG_OPEN_REPARSE_POINT,
+		0,
+	)
+	require.NoError(t, err)
+	defer func() { _ = windows.CloseHandle(handle) }()
+	userSID, err := currentWindowsUserSID()
+	require.NoError(t, err)
+	acl, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{
+		allowFullControl(userSID, windows.TRUSTEE_IS_USER),
+	}, nil)
+	require.NoError(t, err)
+	require.NoError(t, windows.SetSecurityInfo(
+		handle,
+		windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.UNPROTECTED_DACL_SECURITY_INFORMATION,
+		nil,
+		nil,
+		acl,
+		nil,
+	))
+
+	require.Error(t, ValidatePrivateCurrentUserFile(file))
+}
+
+func TestValidatePrivateCurrentUserFileAcceptsProtectedPrivateDACL(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "private")
+	require.NoError(t, EnsurePrivateDir(dir))
+	path := filepath.Join(dir, "record.json")
+	require.NoError(t, os.WriteFile(path, []byte("{}"), 0o600))
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	require.NoError(t, err)
+	defer func() { _ = file.Close() }()
+	path16, err := windows.UTF16PtrFromString(path)
+	require.NoError(t, err)
+	handle, err := windows.CreateFile(
+		path16,
+		windows.READ_CONTROL|windows.WRITE_DAC,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil,
+		windows.OPEN_EXISTING,
+		windows.FILE_FLAG_OPEN_REPARSE_POINT,
+		0,
+	)
+	require.NoError(t, err)
+	defer func() { _ = windows.CloseHandle(handle) }()
+	userSID, err := currentWindowsUserSID()
+	require.NoError(t, err)
+	require.NoError(t, restrictWindowsDir(handle, userSID))
+
+	require.NoError(t, ValidatePrivateCurrentUserFile(file))
+}
+
 func TestWindowsOwnerMatchesCurrentUserAndTokenOwner(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)

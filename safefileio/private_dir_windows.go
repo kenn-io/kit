@@ -196,6 +196,18 @@ func verifyWindowsDirectoryOwner(path string, owner, userSID, ownerSID *windows.
 }
 
 func verifyWindowsDirDACL(path string, handle windows.Handle, userSID, ownerSID *windows.SID) error {
+	return verifyWindowsDACL(path, handle, userSID, ownerSID)
+}
+
+func verifyWindowsFileDACL(path string, handle windows.Handle, userSID, ownerSID *windows.SID) error {
+	return verifyWindowsDACL(path, handle, userSID, ownerSID)
+}
+
+func verifyWindowsDACL(
+	path string,
+	handle windows.Handle,
+	userSID, ownerSID *windows.SID,
+) error {
 	descriptor, err := windows.GetSecurityInfo(
 		handle,
 		windows.SE_FILE_OBJECT,

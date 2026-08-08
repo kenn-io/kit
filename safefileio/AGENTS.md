@@ -20,6 +20,16 @@ callers responsible for their own file formats and higher-level policy.
   trusted user, token-owner, system, and administrator principals. Use SID
   semantics rather than username string comparisons.
 - If ownership or file type cannot be established, return an error.
+- Private-file validation must inspect the same open handle used by the caller
+  and must never mutate permissions. Existing broad access may already have
+  produced handles that no in-place repair can revoke.
+- On supported Unix platforms, require exact mode 0600 and no access ACL.
+  Reject Linux network and user-space filesystems whose effective access policy
+  cannot be verified through local mode and access-ACL operations.
+- On Windows, require a protected DACL that grants access only to the current
+  user and trusted administrative principals. Callers recovering a broad or
+  inheritable file must create a private replacement rather than repair it in
+  place.
 
 ## Tests
 
