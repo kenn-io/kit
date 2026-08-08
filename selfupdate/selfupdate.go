@@ -657,6 +657,7 @@ func ExtractChecksum(body, assetName string) string {
 			continue
 		}
 		fname := strings.TrimPrefix(fields[1], "*")
+		fname = strings.TrimPrefix(fname, "./")
 		if fname == assetName {
 			if match := re.FindString(fields[0]); match != "" {
 				return strings.ToLower(match)
