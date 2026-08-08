@@ -24,16 +24,10 @@ var (
 	darwinACLErr  error
 )
 
-// RestrictCurrentUserFile validates an open handle, removes its macOS extended
-// ACL, and makes it readable and writable only by its current-user owner.
+// RestrictCurrentUserFile validates an open handle, narrows its mode, removes
+// its macOS extended ACL, and keeps it readable and writable only by its owner.
 func RestrictCurrentUserFile(file *os.File) error {
-	if err := ValidateCurrentUserFile(file); err != nil {
-		return err
-	}
-	if err := removeDarwinExtendedACL(file); err != nil {
-		return err
-	}
-	return file.Chmod(0o600)
+	return restrictCurrentUserFile(file, removeDarwinExtendedACL)
 }
 
 func removeDarwinExtendedACL(file *os.File) error {

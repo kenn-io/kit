@@ -22,6 +22,9 @@ callers responsible for their own file formats and higher-level policy.
 - If ownership or file type cannot be established, return an error.
 - Restrict an open file only after validating that same handle's regular-file
   type and current-user ownership; never repair an unverified path.
+- On Unix platforms that support ACL removal, narrow mode bits before removing
+  ACLs and reapply the private mode afterward; never create a broader-access
+  interval while changing access-control policy.
 
 ## Tests
 
