@@ -17,9 +17,11 @@ func TestProcessIdentityMatchesTheSameLiveProcess(t *testing.T) {
 		daemon.CompareProcessIdentity(os.Getpid(), identity))
 }
 
-func TestProcessIdentityRejectsAMismatchedCreationTime(t *testing.T) {
+func TestProcessIdentityRejectsAMismatchedIdentity(t *testing.T) {
+	identity, ok := daemon.ReadProcessIdentity(os.Getpid())
+	require.True(t, ok)
 	assert.Equal(t, daemon.ProcessIdentityMismatch,
-		daemon.CompareProcessIdentity(os.Getpid(), daemon.ProcessIdentity("1")))
+		daemon.CompareProcessIdentity(os.Getpid(), identity+"-different"))
 }
 
 func TestProcessIdentityTreatsMissingIdentityAsUnknown(t *testing.T) {

@@ -14,14 +14,15 @@ import (
 
 // RuntimeRecord is the on-disk daemon.<pid>.json shape used for discovery.
 type RuntimeRecord struct {
-	PID             int               `json:"pid"`
-	ProcessIdentity ProcessIdentity   `json:"process_identity,omitempty"`
-	Network         string            `json:"network,omitempty"`
-	Address         string            `json:"address"`
-	Service         string            `json:"service,omitempty"`
-	Version         string            `json:"version,omitempty"`
-	StartedAt       time.Time         `json:"started_at,omitempty"`
-	Metadata        map[string]string `json:"metadata,omitempty"`
+	PID               int               `json:"pid"`
+	ProcessIdentity   ProcessIdentity   `json:"process_identity,omitempty"`
+	ProcessIdentityV2 ProcessIdentity   `json:"process_identity_v2,omitempty"`
+	Network           string            `json:"network,omitempty"`
+	Address           string            `json:"address"`
+	Service           string            `json:"service,omitempty"`
+	Version           string            `json:"version,omitempty"`
+	StartedAt         time.Time         `json:"started_at,omitempty"`
+	Metadata          map[string]string `json:"metadata,omitempty"`
 
 	// SourcePath is set by List and ignored on disk.
 	SourcePath string `json:"-"`
@@ -30,15 +31,16 @@ type RuntimeRecord struct {
 // NewRuntimeRecord returns a record for the current process.
 func NewRuntimeRecord(service, version string, ep Endpoint) RuntimeRecord {
 	pid := os.Getpid()
-	identity, _ := ReadProcessIdentity(pid)
+	legacyIdentity, identityV2 := runtimeProcessIdentities(pid)
 	return RuntimeRecord{
-		PID:             pid,
-		ProcessIdentity: identity,
-		Network:         ep.Network,
-		Address:         ep.Address,
-		Service:         service,
-		Version:         version,
-		StartedAt:       time.Now().UTC(),
+		PID:               pid,
+		ProcessIdentity:   legacyIdentity,
+		ProcessIdentityV2: identityV2,
+		Network:           ep.Network,
+		Address:           ep.Address,
+		Service:           service,
+		Version:           version,
+		StartedAt:         time.Now().UTC(),
 	}
 }
 

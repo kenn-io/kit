@@ -1,11 +1,5 @@
 package daemon
 
-import (
-	"strconv"
-
-	"github.com/shirou/gopsutil/v4/process"
-)
-
 // ProcessIdentity is an opaque OS process-creation identity. Values are only
 // meaningful for exact comparison against the live process holding a PID.
 type ProcessIdentity string
@@ -19,27 +13,10 @@ const (
 	ProcessIdentityMismatch
 )
 
-// ReadProcessIdentity returns pid's OS-reported creation time as an opaque
-// identity. ok is false when pid is gone or the platform cannot inspect it.
-func ReadProcessIdentity(pid int) (ProcessIdentity, bool) {
-	if pid <= 0 {
-		return "", false
-	}
-	proc, err := process.NewProcess(int32(pid))
-	if err != nil {
-		return "", false
-	}
-	created, err := proc.CreateTime()
-	if err != nil || created <= 0 {
-		return "", false
-	}
-	return ProcessIdentity(strconv.FormatInt(created, 10)), true
-}
-
 // CompareProcessIdentity compares a recorded creation identity with the live
 // process currently holding pid. Unknown never authorizes destructive action.
 func CompareProcessIdentity(pid int, recorded ProcessIdentity) ProcessIdentityStatus {
-	if recorded == "" {
+	if recorded == "" || !processIdentityCompatible(recorded) {
 		return ProcessIdentityUnknown
 	}
 	live, ok := ReadProcessIdentity(pid)
@@ -50,4 +27,14 @@ func CompareProcessIdentity(pid int, recorded ProcessIdentity) ProcessIdentitySt
 		return ProcessIdentityMatch
 	}
 	return ProcessIdentityMismatch
+}
+
+// CompareRuntimeProcessIdentity compares the strongest process identity stored
+// in rec with the live process. Versioned identities take precedence; legacy
+// identities remain readable only on platforms where they are reliable.
+func CompareRuntimeProcessIdentity(rec RuntimeRecord) ProcessIdentityStatus {
+	if rec.ProcessIdentityV2 != "" {
+		return CompareProcessIdentity(rec.PID, rec.ProcessIdentityV2)
+	}
+	return CompareProcessIdentity(rec.PID, rec.ProcessIdentity)
 }

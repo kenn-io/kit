@@ -43,9 +43,8 @@ func TestNewRuntimeRecordPersistsCurrentProcessIdentity(t *testing.T) {
 		Network: daemon.NetworkTCP,
 		Address: "127.0.0.1:1234",
 	})
-	require.NotEmpty(t, rec.ProcessIdentity)
 	assert.Equal(t, daemon.ProcessIdentityMatch,
-		daemon.CompareProcessIdentity(rec.PID, rec.ProcessIdentity))
+		daemon.CompareRuntimeProcessIdentity(rec))
 }
 
 func TestRuntimeStoreCleanupDeadLeavesMismatchedFiles(t *testing.T) {
