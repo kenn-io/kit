@@ -21,7 +21,46 @@ func ReadProcessIdentity(pid int) (ProcessIdentity, bool) {
 }
 
 func processIdentityCompatible(identity ProcessIdentity) bool {
-	return strings.HasPrefix(string(identity), linuxProcessIdentityPrefix)
+	return validateLinuxProcessIdentity(identity)
+}
+
+func validateLinuxProcessIdentity(identity ProcessIdentity) bool {
+	encoded := string(identity)
+	if !strings.HasPrefix(encoded, linuxProcessIdentityPrefix) {
+		return false
+	}
+	fields := strings.Split(strings.TrimPrefix(encoded, linuxProcessIdentityPrefix), ":")
+	if len(fields) != 3 || !validLinuxBootID(fields[0]) {
+		return false
+	}
+	for _, field := range fields[1:] {
+		value, err := strconv.ParseUint(field, 10, 64)
+		if err != nil || value == 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func validLinuxBootID(value string) bool {
+	if len(value) != 36 {
+		return false
+	}
+	for index, character := range value {
+		switch index {
+		case 8, 13, 18, 23:
+			if character != '-' {
+				return false
+			}
+		default:
+			if !((character >= '0' && character <= '9') ||
+				(character >= 'a' && character <= 'f') ||
+				(character >= 'A' && character <= 'F')) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func runtimeProcessIdentities(pid int) (ProcessIdentity, ProcessIdentity) {
@@ -36,7 +75,8 @@ func readLinuxProcessIdentity(procRoot string, pid int) (ProcessIdentity, bool) 
 		return "", false
 	}
 	bootID, err := os.ReadFile(filepath.Join(procRoot, "sys/kernel/random/boot_id"))
-	if err != nil || strings.TrimSpace(string(bootID)) == "" {
+	bootIdentity := strings.TrimSpace(string(bootID))
+	if err != nil || !validLinuxBootID(bootIdentity) {
 		return "", false
 	}
 	namespace, err := readLinuxPIDNamespace(procRoot, pid)
@@ -50,7 +90,7 @@ func readLinuxProcessIdentity(procRoot string, pid int) (ProcessIdentity, bool) 
 	return ProcessIdentity(fmt.Sprintf(
 		"%s%s:%s:%s",
 		linuxProcessIdentityPrefix,
-		strings.TrimSpace(string(bootID)),
+		bootIdentity,
 		namespace,
 		processTicks,
 	)), true
