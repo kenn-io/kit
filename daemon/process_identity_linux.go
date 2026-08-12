@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-const linuxProcessIdentityPrefix = "linux-v2:"
+const linuxProcessIdentityPrefix = "linux-v1:"
 
 // ReadProcessIdentity returns a Linux process identity derived only from
 // monotonic kernel state. It remains stable when the wall clock changes.

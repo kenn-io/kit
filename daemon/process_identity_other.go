@@ -25,8 +25,10 @@ func ReadProcessIdentity(pid int) (ProcessIdentity, bool) {
 	return ProcessIdentity(strconv.FormatInt(created, 10)), true
 }
 
-func processIdentityCompatible(ProcessIdentity) bool {
-	return true
+func processIdentityCompatible(identity ProcessIdentity) bool {
+	encoded := string(identity)
+	value, err := strconv.ParseUint(encoded, 10, 64)
+	return err == nil && value > 0 && strconv.FormatUint(value, 10) == encoded
 }
 
 func runtimeProcessIdentities(pid int) (ProcessIdentity, ProcessIdentity) {

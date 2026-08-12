@@ -30,7 +30,7 @@ func TestReadLinuxProcessIdentityUsesInspectableTargetNamespace(t *testing.T) {
 
 	identity, ok := readLinuxProcessIdentity(proc, 42)
 	require.True(t, ok)
-	assert.Equal(t, ProcessIdentity("linux-v2:b08745a1-625b-4f8b-8ab9-0123456789ab:4026532448:202"), identity)
+	assert.Equal(t, ProcessIdentity("linux-v1:b08745a1-625b-4f8b-8ab9-0123456789ab:4026532448:202"), identity)
 }
 
 func TestReadLinuxProcessIdentityRejectsMalformedTargetNamespace(t *testing.T) {
@@ -55,11 +55,11 @@ func TestReadLinuxProcessIdentityRejectsMalformedTargetNamespace(t *testing.T) {
 
 func TestLinuxProcessIdentityCompatibilityRejectsMalformedValues(t *testing.T) {
 	tests := []ProcessIdentity{
-		"linux-v2:",
-		"linux-v2:not-a-boot-id:4026532448:202",
-		"linux-v2:b08745a1-625b-4f8b-8ab9-0123456789ab:missing:202",
-		"linux-v2:b08745a1-625b-4f8b-8ab9-0123456789ab:4026532448:0",
-		"linux-v2:b08745a1-625b-4f8b-8ab9-0123456789ab:4026532448:202:extra",
+		"linux-v1:",
+		"linux-v1:not-a-boot-id:4026532448:202",
+		"linux-v1:b08745a1-625b-4f8b-8ab9-0123456789ab:missing:202",
+		"linux-v1:b08745a1-625b-4f8b-8ab9-0123456789ab:4026532448:0",
+		"linux-v1:b08745a1-625b-4f8b-8ab9-0123456789ab:4026532448:202:extra",
 	}
 	for _, identity := range tests {
 		assert.False(t, processIdentityCompatible(identity), string(identity))

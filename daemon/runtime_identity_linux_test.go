@@ -36,11 +36,3 @@ func TestLinuxLegacyWallClockIdentityFailsClosed(t *testing.T) {
 	}
 	assert.Equal(t, daemon.ProcessIdentityUnknown, daemon.CompareRuntimeProcessIdentity(rec))
 }
-
-func TestLinuxPreviousVersionIdentityFailsClosed(t *testing.T) {
-	rec := daemon.RuntimeRecord{
-		PID:               1,
-		ProcessIdentityV2: "linux-v1:b08745a1-625b-4f8b-8ab9-0123456789ab:101:202",
-	}
-	assert.Equal(t, daemon.ProcessIdentityUnknown, daemon.CompareRuntimeProcessIdentity(rec))
-}

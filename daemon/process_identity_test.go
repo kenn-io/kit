@@ -23,7 +23,7 @@ func TestProcessIdentityMatchesTheSameLiveProcess(t *testing.T) {
 func TestProcessIdentityRejectsAMismatchedIdentity(t *testing.T) {
 	identity, ok := daemon.ReadProcessIdentity(os.Getpid())
 	require.True(t, ok)
-	mismatched := identity + "-different"
+	var mismatched daemon.ProcessIdentity
 	if runtime.GOOS == "linux" {
 		fields := strings.Split(string(identity), ":")
 		require.Len(t, fields, 4)
@@ -31,17 +31,27 @@ func TestProcessIdentityRejectsAMismatchedIdentity(t *testing.T) {
 		require.NoError(t, err)
 		fields[3] = strconv.FormatUint(startTicks+1, 10)
 		mismatched = daemon.ProcessIdentity(strings.Join(fields, ":"))
+	} else {
+		created, err := strconv.ParseUint(string(identity), 10, 64)
+		require.NoError(t, err)
+		mismatched = daemon.ProcessIdentity(strconv.FormatUint(created+1, 10))
 	}
 	assert.Equal(t, daemon.ProcessIdentityMismatch,
 		daemon.CompareProcessIdentity(os.Getpid(), mismatched))
 }
 
-func TestProcessIdentityTreatsMalformedVersionedIdentityAsUnknown(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("Linux identities have a versioned encoding")
+func TestProcessIdentityTreatsMalformedIdentityAsUnknown(t *testing.T) {
+	assert.Equal(t, daemon.ProcessIdentityUnknown,
+		daemon.CompareProcessIdentity(os.Getpid(), "malformed"))
+}
+
+func TestRuntimeProcessIdentityTreatsUnsupportedVersionAsUnknown(t *testing.T) {
+	rec := daemon.RuntimeRecord{
+		PID:               os.Getpid(),
+		ProcessIdentityV2: "future-v1:12345",
 	}
 	assert.Equal(t, daemon.ProcessIdentityUnknown,
-		daemon.CompareProcessIdentity(os.Getpid(), "linux-v2:truncated"))
+		daemon.CompareRuntimeProcessIdentity(rec))
 }
 
 func TestProcessIdentityTreatsMissingIdentityAsUnknown(t *testing.T) {
