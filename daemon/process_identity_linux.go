@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-const linuxProcessIdentityPrefix = "linux-v1:"
+const linuxProcessIdentityPrefix = "linux-v2:"
 
 // ReadProcessIdentity returns a Linux process identity derived only from
 // monotonic kernel state. It remains stable when the wall clock changes.
@@ -39,7 +39,7 @@ func readLinuxProcessIdentity(procRoot string, pid int) (ProcessIdentity, bool) 
 	if err != nil || strings.TrimSpace(string(bootID)) == "" {
 		return "", false
 	}
-	initTicks, err := readLinuxProcessStartTicks(procRoot, 1)
+	namespace, err := readLinuxPIDNamespace(procRoot, pid)
 	if err != nil {
 		return "", false
 	}
@@ -51,9 +51,25 @@ func readLinuxProcessIdentity(procRoot string, pid int) (ProcessIdentity, bool) 
 		"%s%s:%s:%s",
 		linuxProcessIdentityPrefix,
 		strings.TrimSpace(string(bootID)),
-		initTicks,
+		namespace,
 		processTicks,
 	)), true
+}
+
+func readLinuxPIDNamespace(procRoot string, pid int) (string, error) {
+	target, err := os.Readlink(filepath.Join(procRoot, strconv.Itoa(pid), "ns/pid"))
+	if err != nil {
+		return "", err
+	}
+	const prefix = "pid:["
+	if !strings.HasPrefix(target, prefix) || !strings.HasSuffix(target, "]") {
+		return "", errors.New("Linux PID namespace has an invalid link target")
+	}
+	inode := strings.TrimSuffix(strings.TrimPrefix(target, prefix), "]")
+	if _, err := strconv.ParseUint(inode, 10, 64); err != nil {
+		return "", errors.New("Linux PID namespace has an invalid inode")
+	}
+	return inode, nil
 }
 
 func readLinuxProcessStartTicks(procRoot string, pid int) (string, error) {

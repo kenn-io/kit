@@ -12,19 +12,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestReadLinuxProcessIdentityUsesBootAndNamespaceStartTicks(t *testing.T) {
+func TestReadLinuxProcessIdentityUsesInspectableTargetNamespace(t *testing.T) {
 	proc := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(proc, "sys/kernel/random"), 0o755))
-	require.NoError(t, os.MkdirAll(filepath.Join(proc, "1"), 0o755))
-	require.NoError(t, os.MkdirAll(filepath.Join(proc, "42"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(proc, "42/ns"), 0o755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(proc, "sys/kernel/random/boot_id"),
 		[]byte("boot-id\n"),
-		0o644,
-	))
-	require.NoError(t, os.WriteFile(
-		filepath.Join(proc, "1/stat"),
-		[]byte(linuxStatFixture(1, "init (namespace)", "101")),
 		0o644,
 	))
 	require.NoError(t, os.WriteFile(
@@ -32,10 +26,31 @@ func TestReadLinuxProcessIdentityUsesBootAndNamespaceStartTicks(t *testing.T) {
 		[]byte(linuxStatFixture(42, "kwt daemon (worker)", "202")),
 		0o644,
 	))
+	require.NoError(t, os.Symlink("pid:[4026532448]", filepath.Join(proc, "42/ns/pid")))
 
 	identity, ok := readLinuxProcessIdentity(proc, 42)
 	require.True(t, ok)
-	assert.Equal(t, ProcessIdentity("linux-v1:boot-id:101:202"), identity)
+	assert.Equal(t, ProcessIdentity("linux-v2:boot-id:4026532448:202"), identity)
+}
+
+func TestReadLinuxProcessIdentityRejectsMalformedTargetNamespace(t *testing.T) {
+	proc := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(proc, "sys/kernel/random"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(proc, "42/ns"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(proc, "sys/kernel/random/boot_id"),
+		[]byte("boot-id\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(proc, "42/stat"),
+		[]byte(linuxStatFixture(42, "daemon", "202")),
+		0o644,
+	))
+	require.NoError(t, os.Symlink("pid:not-an-inode", filepath.Join(proc, "42/ns/pid")))
+
+	_, ok := readLinuxProcessIdentity(proc, 42)
+	assert.False(t, ok)
 }
 
 func TestParseLinuxProcessStartTicksRejectsMalformedStat(t *testing.T) {
