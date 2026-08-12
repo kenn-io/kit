@@ -34,8 +34,7 @@ func validateLinuxProcessIdentity(identity ProcessIdentity) bool {
 		return false
 	}
 	for _, field := range fields[1:] {
-		value, err := strconv.ParseUint(field, 10, 64)
-		if err != nil || value == 0 {
+		if _, ok := parseCanonicalLinuxIdentityUint(field); !ok {
 			return false
 		}
 	}
@@ -53,14 +52,21 @@ func validLinuxBootID(value string) bool {
 				return false
 			}
 		default:
-			if !((character >= '0' && character <= '9') ||
-				(character >= 'a' && character <= 'f') ||
-				(character >= 'A' && character <= 'F')) {
+			if (character < '0' || character > '9') &&
+				(character < 'a' || character > 'f') {
 				return false
 			}
 		}
 	}
 	return true
+}
+
+func parseCanonicalLinuxIdentityUint(encoded string) (uint64, bool) {
+	value, err := strconv.ParseUint(encoded, 10, 64)
+	if err != nil || value == 0 || strconv.FormatUint(value, 10) != encoded {
+		return 0, false
+	}
+	return value, true
 }
 
 func runtimeProcessIdentities(pid int) (ProcessIdentity, ProcessIdentity) {
@@ -103,13 +109,14 @@ func readLinuxPIDNamespace(procRoot string, pid int) (string, error) {
 	}
 	const prefix = "pid:["
 	if !strings.HasPrefix(target, prefix) || !strings.HasSuffix(target, "]") {
-		return "", errors.New("Linux PID namespace has an invalid link target")
+		return "", errors.New("linux PID namespace has an invalid link target")
 	}
 	inode := strings.TrimSuffix(strings.TrimPrefix(target, prefix), "]")
-	if _, err := strconv.ParseUint(inode, 10, 64); err != nil {
-		return "", errors.New("Linux PID namespace has an invalid inode")
+	value, ok := parseCanonicalLinuxIdentityUint(inode)
+	if !ok {
+		return "", errors.New("linux PID namespace has an invalid inode")
 	}
-	return inode, nil
+	return strconv.FormatUint(value, 10), nil
 }
 
 func readLinuxProcessStartTicks(procRoot string, pid int) (string, error) {
@@ -123,15 +130,16 @@ func readLinuxProcessStartTicks(procRoot string, pid int) (string, error) {
 func parseLinuxProcessStartTicks(stat []byte) (string, error) {
 	closing := bytes.LastIndexByte(stat, ')')
 	if closing < 0 || closing+1 >= len(stat) {
-		return "", errors.New("Linux process stat has no command terminator")
+		return "", errors.New("linux process stat has no command terminator")
 	}
 	fields := strings.Fields(string(stat[closing+1:]))
 	const startTimeIndex = 19 // Field 22 after PID and command.
 	if len(fields) <= startTimeIndex {
-		return "", errors.New("Linux process stat has no start time")
+		return "", errors.New("linux process stat has no start time")
 	}
-	if _, err := strconv.ParseUint(fields[startTimeIndex], 10, 64); err != nil {
-		return "", errors.New("Linux process stat has an invalid start time")
+	value, ok := parseCanonicalLinuxIdentityUint(fields[startTimeIndex])
+	if !ok {
+		return "", errors.New("linux process stat has an invalid start time")
 	}
-	return fields[startTimeIndex], nil
+	return strconv.FormatUint(value, 10), nil
 }

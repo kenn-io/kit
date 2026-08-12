@@ -57,12 +57,18 @@ func TestLinuxProcessIdentityCompatibilityRejectsMalformedValues(t *testing.T) {
 	tests := []ProcessIdentity{
 		"linux-v1:",
 		"linux-v1:not-a-boot-id:4026532448:202",
+		"linux-v1:B08745A1-625B-4F8B-8AB9-0123456789AB:4026532448:202",
 		"linux-v1:b08745a1-625b-4f8b-8ab9-0123456789ab:missing:202",
+		"linux-v1:b08745a1-625b-4f8b-8ab9-0123456789ab:+4026532448:202",
+		"linux-v1:b08745a1-625b-4f8b-8ab9-0123456789ab:04026532448:202",
+		"linux-v1:b08745a1-625b-4f8b-8ab9-0123456789ab:4026532448:+202",
+		"linux-v1:b08745a1-625b-4f8b-8ab9-0123456789ab:4026532448:0202",
 		"linux-v1:b08745a1-625b-4f8b-8ab9-0123456789ab:4026532448:0",
 		"linux-v1:b08745a1-625b-4f8b-8ab9-0123456789ab:4026532448:202:extra",
 	}
 	for _, identity := range tests {
 		assert.False(t, processIdentityCompatible(identity), string(identity))
+		assert.Equal(t, ProcessIdentityUnknown, CompareProcessIdentity(os.Getpid(), identity), string(identity))
 	}
 }
 
