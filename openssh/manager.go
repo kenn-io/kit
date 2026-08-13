@@ -53,6 +53,7 @@ type hostEntry struct {
 	mu               sync.Mutex
 	state            string
 	target           Target
+	runSSH           RunSSH
 	message          string
 	lastActive       time.Time
 	generation       Generation
@@ -64,6 +65,7 @@ type hostEntry struct {
 type connectionSnapshot struct {
 	state      string
 	target     Target
+	runSSH     RunSSH
 	generation Generation
 }
 
@@ -161,6 +163,7 @@ func snapshotEntry(entry *hostEntry) connectionSnapshot {
 	return connectionSnapshot{
 		state:      entry.state,
 		target:     entry.target,
+		runSSH:     entry.runSSH,
 		generation: entry.generation,
 	}
 }
@@ -226,6 +229,31 @@ func (m *PersistentManager) Connect(
 	identity string,
 	target Target,
 ) (Generation, error) {
+	return m.connect(ctx, identity, target, m.config.RunSSH)
+}
+
+// ConnectWithRunner establishes or adopts the master using runSSH. The runner
+// is retained with the resulting generation and is used for every subsequent
+// probe and teardown of that master. If identity already has a live generation,
+// its retained runner remains authoritative.
+func (m *PersistentManager) ConnectWithRunner(
+	ctx context.Context,
+	identity string,
+	target Target,
+	runSSH RunSSH,
+) (Generation, error) {
+	if runSSH == nil {
+		return 0, &ConfigError{Destination: target.String(), Reason: "nil SSH runner"}
+	}
+	return m.connect(ctx, identity, target, runSSH)
+}
+
+func (m *PersistentManager) connect(
+	ctx context.Context,
+	identity string,
+	target Target,
+	runSSH RunSSH,
+) (Generation, error) {
 	if err := persistentSupportError(); err != nil {
 		return 0, err
 	}
@@ -280,7 +308,7 @@ func (m *PersistentManager) Connect(
 			oldSocketPath, pathErr := m.checkedSocketPath(identity, oldTarget)
 			teardownErr := pathErr
 			if teardownErr == nil {
-				teardownErr = m.stopMaster(ctx, oldSocketPath, oldTarget)
+				teardownErr = m.stopMaster(ctx, oldSocketPath, oldTarget, snapshot.runSSH)
 			}
 			m.finishTeardown(identity, entry, generation, done, teardownErr)
 			if teardownErr != nil {
@@ -289,12 +317,18 @@ func (m *PersistentManager) Connect(
 			continue
 		}
 		probeTarget := target
+		probeRunner := runSSH
 		if activeState(snapshot.state) && snapshot.target.Hostname != "" {
 			probeTarget = snapshot.target
 		}
+		if snapshot.target.Hostname != "" && snapshot.runSSH != nil {
+			probeRunner = snapshot.runSSH
+		}
 		entry.mu.Unlock()
 
-		probeState, probeErr := m.probeControlMaster(ctx, socketPath, probeTarget)
+		probeState, probeErr := m.probeControlMasterWithRunner(
+			ctx, socketPath, probeTarget, probeRunner,
+		)
 		entry.mu.Lock()
 		if !entryMatches(entry, snapshot) {
 			entry.mu.Unlock()
@@ -321,6 +355,7 @@ func (m *PersistentManager) Connect(
 			generation, done := beginOperation(entry)
 			entry.state = StateConnected
 			entry.target = target
+			entry.runSSH = probeRunner
 			entry.message = ""
 			entry.lastActive = time.Now()
 			entry.operationDone = nil
@@ -333,6 +368,7 @@ func (m *PersistentManager) Connect(
 		generation, done := beginOperation(entry)
 		entry.state = StateConnecting
 		entry.target = target
+		entry.runSSH = runSSH
 		entry.message = ""
 		entry.lastActive = time.Now()
 		entry.mu.Unlock()
@@ -343,7 +379,7 @@ func (m *PersistentManager) Connect(
 				return 0, m.finishStart(identity, entry, generation, done, target, removeErr)
 			}
 		}
-		if startErr := m.startMaster(ctx, socketPath, target); startErr != nil {
+		if startErr := m.startMaster(ctx, socketPath, target, runSSH); startErr != nil {
 			return 0, m.finishStart(identity, entry, generation, done, target, startErr)
 		}
 		if finishErr := m.finishStart(identity, entry, generation, done, target, nil); finishErr != nil {
@@ -357,6 +393,7 @@ func (m *PersistentManager) startMaster(
 	ctx context.Context,
 	socketPath string,
 	target Target,
+	runSSH RunSSH,
 ) error {
 	arguments, err := MasterArguments(
 		socketPath,
@@ -366,7 +403,7 @@ func (m *PersistentManager) startMaster(
 	if err != nil {
 		return err
 	}
-	exitCode, runErr := m.config.RunSSH(ctx, arguments)
+	exitCode, runErr := runSSH(ctx, arguments)
 	if runErr != nil || exitCode != 0 {
 		primary := &CommandError{
 			Operation:   "master start",
@@ -377,7 +414,7 @@ func (m *PersistentManager) startMaster(
 		if ctx.Err() != nil {
 			primary.Err = errors.Join(ctx.Err(), runErr)
 		}
-		return m.cleanupFailedStart(socketPath, target, primary)
+		return m.cleanupFailedStart(socketPath, target, runSSH, primary)
 	}
 
 	establishCtx, cancel := context.WithTimeout(ctx, m.config.EstablishTimeout)
@@ -385,13 +422,15 @@ func (m *PersistentManager) startMaster(
 	ticker := time.NewTicker(m.config.EstablishPollInterval)
 	defer ticker.Stop()
 	for {
-		probeState, probeErr := m.probeControlMaster(establishCtx, socketPath, target)
+		probeState, probeErr := m.probeControlMasterWithRunner(
+			establishCtx, socketPath, target, runSSH,
+		)
 		if probeErr != nil {
 			primary := probeErr
 			if establishCtx.Err() != nil {
 				primary = establishmentContextError(ctx, probeErr)
 			}
-			return m.cleanupFailedStart(socketPath, target, primary)
+			return m.cleanupFailedStart(socketPath, target, runSSH, primary)
 		}
 		if probeState == probeAlive {
 			return nil
@@ -401,6 +440,7 @@ func (m *PersistentManager) startMaster(
 			return m.cleanupFailedStart(
 				socketPath,
 				target,
+				runSSH,
 				establishmentContextError(ctx, nil),
 			)
 		case <-ticker.C:
@@ -419,6 +459,7 @@ func establishmentContextError(ctx context.Context, probeErr error) error {
 func (m *PersistentManager) cleanupFailedStart(
 	socketPath string,
 	target Target,
+	runSSH RunSSH,
 	primary error,
 ) error {
 	cleanupCtx, cancel := context.WithTimeout(
@@ -426,7 +467,7 @@ func (m *PersistentManager) cleanupFailedStart(
 		m.config.CleanupTimeout,
 	)
 	defer cancel()
-	cleanupErr := m.cleanupFailedStartMaster(cleanupCtx, socketPath, target)
+	cleanupErr := m.cleanupFailedStartMaster(cleanupCtx, socketPath, target, runSSH)
 	if cleanupErr == nil {
 		return primary
 	}
@@ -440,6 +481,7 @@ func (m *PersistentManager) cleanupFailedStartMaster(
 	ctx context.Context,
 	socketPath string,
 	target Target,
+	runSSH RunSSH,
 ) error {
 	ticker := time.NewTicker(m.config.EstablishPollInterval)
 	defer ticker.Stop()
@@ -449,7 +491,7 @@ func (m *PersistentManager) cleanupFailedStartMaster(
 			return err
 		}
 		if dialState != socketAbsent {
-			return m.stopMaster(ctx, socketPath, target)
+			return m.stopMaster(ctx, socketPath, target, runSSH)
 		}
 
 		select {
@@ -463,7 +505,7 @@ func (m *PersistentManager) cleanupFailedStartMaster(
 			}
 			// The observation context has expired, so give verified teardown
 			// its own bounded window to stop and drain the late master.
-			return m.stopMaster(context.Background(), socketPath, target)
+			return m.stopMaster(context.Background(), socketPath, target, runSSH)
 		case <-ticker.C:
 		}
 	}
@@ -534,6 +576,7 @@ func (m *PersistentManager) Disconnect(ctx context.Context, identity string) err
 			return nil
 		}
 		target := entry.target
+		runSSH := entry.runSSH
 		stopping := entry.state == StateStopping
 		generation, done := beginOperation(entry)
 		entry.mu.Unlock()
@@ -547,7 +590,7 @@ func (m *PersistentManager) Disconnect(ctx context.Context, identity string) err
 			if stopping {
 				teardownErr = m.drainStoppedMaster(ctx, socketPath)
 			} else {
-				teardownErr = m.stopMaster(ctx, socketPath, target)
+				teardownErr = m.stopMaster(ctx, socketPath, target, runSSH)
 			}
 		}
 		m.finishTeardown(identity, entry, generation, done, teardownErr)
@@ -568,6 +611,7 @@ func (m *PersistentManager) finishTeardown(
 		if err == nil {
 			entry.state = StateDisconnected
 			entry.target = Target{}
+			entry.runSSH = nil
 			entry.message = ""
 			entry.lastActive = time.Now()
 		} else {
@@ -595,6 +639,7 @@ func (m *PersistentManager) stopMaster(
 	ctx context.Context,
 	socketPath string,
 	target Target,
+	runSSH RunSSH,
 ) error {
 	stopCtx, cancel := context.WithTimeout(ctx, m.config.CleanupTimeout)
 	defer cancel()
@@ -613,7 +658,7 @@ func (m *PersistentManager) stopMaster(
 	if err != nil {
 		return err
 	}
-	exitCode, runErr := m.config.RunSSH(stopCtx, arguments)
+	exitCode, runErr := runSSH(stopCtx, arguments)
 	if runErr != nil || exitCode != 0 {
 		if stopCtx.Err() != nil {
 			runErr = errors.Join(stopCtx.Err(), runErr)
@@ -705,9 +750,10 @@ func (m *PersistentManager) IsAlive(
 		return false, ErrConnectionChanged
 	}
 	target := entry.target
+	runSSH := entry.runSSH
 	entry.mu.Unlock()
-	probeState, probeErr := m.probeControlMaster(
-		ctx, m.SocketPath(identity, target), target,
+	probeState, probeErr := m.probeControlMasterWithRunner(
+		ctx, m.SocketPath(identity, target), target, runSSH,
 	)
 
 	entry.mu.Lock()
@@ -844,6 +890,7 @@ func (m *PersistentManager) disconnectIdleCandidate(
 		return err
 	}
 	target := entry.target
+	runSSH := entry.runSSH
 	generation, done := beginOperation(entry)
 	entry.mu.Unlock()
 
@@ -852,7 +899,7 @@ func (m *PersistentManager) disconnectIdleCandidate(
 		err = ensurePersistentDirectory(m.socketDir)
 	}
 	if err == nil {
-		err = m.stopMaster(ctx, socketPath, target)
+		err = m.stopMaster(ctx, socketPath, target, runSSH)
 	}
 	m.finishTeardown(identity, entry, generation, done, err)
 	return err

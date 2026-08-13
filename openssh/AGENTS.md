@@ -5,6 +5,9 @@
   with a Go-native SSH protocol implementation.
 - Keep process launching injectable. Callers own environment and login-shell
   policy; the package owns argument construction and connection lifecycle.
+- Bind an explicitly supplied runner to the ControlMaster generation it starts
+  or adopts. Use that runner for every later probe and teardown of the same
+  generation; never switch execution policy underneath a live master.
 - Treat programmatic `Target` values as untrusted until `ValidateTarget`
   succeeds before every OpenSSH invocation. Unusual account names belong in
   trusted `ssh_config` behind a safe host alias; do not weaken the explicit

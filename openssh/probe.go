@@ -18,6 +18,15 @@ func (m *PersistentManager) probeControlMaster(
 	socketPath string,
 	target Target,
 ) (masterProbeState, error) {
+	return m.probeControlMasterWithRunner(ctx, socketPath, target, m.config.RunSSH)
+}
+
+func (m *PersistentManager) probeControlMasterWithRunner(
+	ctx context.Context,
+	socketPath string,
+	target Target,
+	runSSH RunSSH,
+) (masterProbeState, error) {
 	dialState, err := inspectControlSocket(ctx, socketPath)
 	if err != nil {
 		return probeAbsent, err
@@ -33,7 +42,7 @@ func (m *PersistentManager) probeControlMaster(
 	if err != nil {
 		return probeAbsent, err
 	}
-	exitCode, runErr := m.config.RunSSH(ctx, arguments)
+	exitCode, runErr := runSSH(ctx, arguments)
 	if runErr == nil && exitCode == 0 {
 		return probeAlive, nil
 	}

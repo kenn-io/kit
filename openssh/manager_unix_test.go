@@ -375,6 +375,56 @@ func TestPersistentManagerChangesDestinationByTeardownThenConnect(t *testing.T) 
 	assert.Equal("wes@new", manager.Destination("studio"))
 }
 
+func TestPersistentManagerBindsRunnerToConnectionGeneration(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	defaultRunner := newFakeSSH()
+	boundRunner := newFakeSSH()
+	manager := newTestManager(t, newSocketDir(t), defaultRunner)
+	t.Cleanup(defaultRunner.closeAll)
+	t.Cleanup(boundRunner.closeAll)
+
+	generation, err := manager.ConnectWithRunner(
+		context.Background(), "studio", testTarget("wes@studio"), boundRunner.run,
+	)
+	require.NoError(err)
+	alive, err := manager.IsAlive(context.Background(), "studio", generation)
+	require.NoError(err)
+	assert.True(alive)
+	require.NoError(manager.Disconnect(context.Background(), "studio"))
+
+	assert.Empty(defaultRunner.callsSnapshot())
+	assert.Equal(
+		[]string{"spawn", "check", "check", "exit"},
+		boundRunner.operationKinds(),
+	)
+}
+
+func TestPersistentManagerUsesOldRunnerForReplacementTeardown(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	defaultRunner := newFakeSSH()
+	oldRunner := newFakeSSH()
+	newRunner := newFakeSSH()
+	manager := newTestManager(t, newSocketDir(t), defaultRunner)
+	t.Cleanup(defaultRunner.closeAll)
+	t.Cleanup(oldRunner.closeAll)
+	t.Cleanup(newRunner.closeAll)
+
+	_, err := manager.ConnectWithRunner(
+		context.Background(), "studio", testTarget("wes@old"), oldRunner.run,
+	)
+	require.NoError(err)
+	_, err = manager.ConnectWithRunner(
+		context.Background(), "studio", testTarget("wes@new"), newRunner.run,
+	)
+	require.NoError(err)
+
+	assert.Empty(defaultRunner.callsSnapshot())
+	assert.Equal([]string{"spawn", "check", "exit"}, oldRunner.operationKinds())
+	assert.Equal([]string{"spawn", "check"}, newRunner.operationKinds())
+}
+
 func TestPersistentManagerArgumentsRemainBoundToOriginalTarget(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)

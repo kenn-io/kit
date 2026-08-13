@@ -72,6 +72,12 @@ full cleanup window, including a final socket ownership/type inspection at
 expiry, so a detached master that binds its socket late is still terminated and
 drained before the manager releases ownership.
 
+When a caller supplies a runner for one connection, the manager retains that
+runner with the connection generation. Readiness checks, later liveness probes,
+replacement teardown, explicit disconnect, and idle cleanup use the same
+runner. The caller is responsible for keeping the runner and its captured
+execution policy valid for the lifetime of the generation.
+
 ### Network and remote peers
 
 The network is untrusted. Host authentication, transport confidentiality, and
