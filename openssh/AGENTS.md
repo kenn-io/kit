@@ -5,6 +5,8 @@
   with a Go-native SSH protocol implementation.
 - Keep process launching injectable. Callers own environment and login-shell
   policy; the package owns argument construction and connection lifecycle.
+- Let callers bound detached-master survival with `ControlPersistTimeout`.
+  Zero preserves explicit-lifecycle-only behavior; reject negative durations.
 - Bind an explicitly supplied runner to the ControlMaster generation it starts
   or adopts. Use that runner for every later probe and teardown of the same
   generation; never switch execution policy underneath a live master.
