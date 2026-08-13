@@ -50,6 +50,30 @@ func TestMasterArgumentsAreBoundedAndNoninteractive(t *testing.T) {
 	}, arguments)
 }
 
+func TestMasterArgumentsBoundDetachedPersistence(t *testing.T) {
+	options := DefaultConnectionOptions()
+	options.ControlPersistTimeout = time.Hour
+
+	arguments, err := MasterArguments(
+		"/tmp/control.sock", testTarget("wes@studio"), options,
+	)
+
+	require.NoError(t, err)
+	assert.Contains(t, arguments, "ControlPersist=3600")
+}
+
+func TestMasterArgumentsRejectNegativePersistenceTimeout(t *testing.T) {
+	options := DefaultConnectionOptions()
+	options.ControlPersistTimeout = -time.Second
+
+	_, err := MasterArguments(
+		"/tmp/control.sock", testTarget("wes@studio"), options,
+	)
+
+	var configErr *ConfigError
+	require.ErrorAs(t, err, &configErr)
+}
+
 func TestMasterArgumentsRejectNonpositiveAliveCount(t *testing.T) {
 	for _, count := range []int{0, -1} {
 		options := DefaultConnectionOptions()

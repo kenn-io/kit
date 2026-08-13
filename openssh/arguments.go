@@ -8,13 +8,15 @@ import (
 
 // ConnectionOptions controls bounded noninteractive OpenSSH connections.
 // ServerAliveCountMax must be positive; manager construction and
-// MasterArguments reject custom option sets that omit it. Nonpositive timeout
-// durations use a one-second minimum.
+// MasterArguments reject custom option sets that omit it. Nonpositive network
+// timeout durations use a one-second minimum. A zero persistence timeout
+// disables the OpenSSH fallback; a negative value is invalid.
 type ConnectionOptions struct {
-	ConnectTimeout      time.Duration
-	ServerAliveInterval time.Duration
-	ServerAliveCountMax int
-	TCPKeepAlive        bool
+	ConnectTimeout        time.Duration
+	ServerAliveInterval   time.Duration
+	ServerAliveCountMax   int
+	TCPKeepAlive          bool
+	ControlPersistTimeout time.Duration
 }
 
 // DefaultConnectionOptions returns the fleet defaults shared by existing Kenn
@@ -47,7 +49,7 @@ func MasterArguments(
 	arguments := []string{
 		"-MNf",
 		"-o", "ControlMaster=yes",
-		"-o", "ControlPersist=no",
+		"-o", controlPersistArgument(options.ControlPersistTimeout),
 		"-S", literalPath,
 		"-o", "BatchMode=yes",
 		"-o", "ConnectionAttempts=1",
@@ -67,7 +69,20 @@ func validateConnectionOptions(options ConnectionOptions, destination string) er
 			Reason:      "ServerAliveCountMax must be positive",
 		}
 	}
+	if options.ControlPersistTimeout < 0 {
+		return &ConfigError{
+			Destination: destination,
+			Reason:      "ControlPersistTimeout must not be negative",
+		}
+	}
 	return nil
+}
+
+func controlPersistArgument(timeout time.Duration) string {
+	if timeout == 0 {
+		return "ControlPersist=no"
+	}
+	return "ControlPersist=" + durationSeconds(timeout)
 }
 
 // ClientArguments makes connection sharing explicit. An empty control path is
