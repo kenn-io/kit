@@ -6,7 +6,9 @@ import (
 	"time"
 )
 
-// ConnectionOptions controls bounded noninteractive OpenSSH connections.
+// ConnectionOptions controls bounded OpenSSH connections. Masters are
+// noninteractive unless AllowInteraction is explicitly enabled; callers that
+// enable it own the terminal or askpass policy used by their runner.
 // ServerAliveCountMax must be positive; manager construction and
 // MasterArguments reject custom option sets that omit it. Nonpositive network
 // timeout durations use a one-second minimum. A zero persistence timeout
@@ -17,6 +19,7 @@ type ConnectionOptions struct {
 	ServerAliveCountMax   int
 	TCPKeepAlive          bool
 	ControlPersistTimeout time.Duration
+	AllowInteraction      bool
 }
 
 // DefaultConnectionOptions returns the fleet defaults shared by existing Kenn
@@ -46,12 +49,16 @@ func MasterArguments(
 	if err != nil {
 		return nil, err
 	}
+	batchMode := "yes"
+	if options.AllowInteraction {
+		batchMode = "no"
+	}
 	arguments := []string{
 		"-MNf",
 		"-o", "ControlMaster=yes",
 		"-o", controlPersistArgument(options.ControlPersistTimeout),
 		"-S", literalPath,
-		"-o", "BatchMode=yes",
+		"-o", "BatchMode=" + batchMode,
 		"-o", "ConnectionAttempts=1",
 	}
 	arguments = append(arguments, connectionOptionArguments(options)...)
