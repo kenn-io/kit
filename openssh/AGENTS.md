@@ -5,6 +5,9 @@
   with a Go-native SSH protocol implementation.
 - Keep process launching injectable. Callers own environment and login-shell
   policy; the package owns argument construction and connection lifecycle.
+- Keep ControlMaster startup noninteractive by default. A caller may opt into
+  interaction only when its bound runner owns a bounded terminal or askpass
+  policy; the package does not supply or discover an interaction channel.
 - Let callers bound detached-master survival with `ControlPersistTimeout`.
   Zero preserves explicit-lifecycle-only behavior; reject negative durations.
 - Bind an explicitly supplied runner to the ControlMaster generation it starts

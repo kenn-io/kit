@@ -50,6 +50,19 @@ func TestMasterArgumentsAreBoundedAndNoninteractive(t *testing.T) {
 	}, arguments)
 }
 
+func TestMasterArgumentsAllowExplicitCallerOwnedInteraction(t *testing.T) {
+	options := DefaultConnectionOptions()
+	options.AllowInteraction = true
+
+	arguments, err := MasterArguments(
+		"/tmp/control.sock", testTarget("wes@studio"), options,
+	)
+
+	require.NoError(t, err)
+	assert.Contains(t, arguments, "BatchMode=no")
+	assert.NotContains(t, arguments, "BatchMode=yes")
+}
+
 func TestMasterArgumentsBoundDetachedPersistence(t *testing.T) {
 	options := DefaultConnectionOptions()
 	options.ControlPersistTimeout = time.Hour
