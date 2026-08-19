@@ -64,6 +64,8 @@ type RuntimeStore struct {
 	Prefix string
 }
 
+const runtimeWriteCheckPattern = ".%s.write-check-*"
+
 func (s RuntimeStore) prefix() string {
 	if s.Prefix == "" {
 		return "daemon"
@@ -90,6 +92,32 @@ func (s RuntimeStore) prepareDir() error {
 	}
 	if err := ensurePrivateRuntimeDir(s.Dir); err != nil {
 		return fmt.Errorf("prepare runtime dir: %w", err)
+	}
+	return nil
+}
+
+// CheckWritable verifies that the calling process can create and remove a file
+// in the runtime directory. It is an advisory preflight: it does not guarantee
+// future access or that a child process has the same permissions.
+func (s RuntimeStore) CheckWritable() error {
+	prefix, err := s.validatePrefix()
+	if err != nil {
+		return err
+	}
+	if err := s.prepareDir(); err != nil {
+		return err
+	}
+	probe, err := os.CreateTemp(s.Dir, fmt.Sprintf(runtimeWriteCheckPattern, prefix))
+	if err != nil {
+		return fmt.Errorf("create runtime write check: %w", err)
+	}
+	probePath := probe.Name()
+	if err := probe.Close(); err != nil {
+		_ = os.Remove(probePath)
+		return fmt.Errorf("close runtime write check: %w", err)
+	}
+	if err := os.Remove(probePath); err != nil {
+		return fmt.Errorf("remove runtime write check: %w", err)
 	}
 	return nil
 }
