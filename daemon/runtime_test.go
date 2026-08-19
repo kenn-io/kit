@@ -127,3 +127,31 @@ func TestRuntimeStoreListenLockPathIsSeparateFromStartLock(t *testing.T) {
 	assert.Equal(filepath.Join(store.Dir, "kata.lock"), startLock)
 	assert.Equal(filepath.Join(store.Dir, "kata.listen.lock"), listenLock)
 }
+
+func TestRuntimeStoreCheckWritableLeavesNoFiles(t *testing.T) {
+	require := require.New(t)
+
+	dir := t.TempDir()
+	store := daemon.RuntimeStore{Dir: dir}
+
+	require.NoError(store.CheckWritable())
+	entries, err := os.ReadDir(dir)
+	require.NoError(err)
+	require.Empty(entries)
+	records, err := store.List()
+	require.NoError(err)
+	require.Empty(records)
+}
+
+func TestRuntimeStoreCheckWritableRejectsNonDirectory(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+
+	path := filepath.Join(t.TempDir(), "runtime-file")
+	require.NoError(os.WriteFile(path, []byte("not a directory"), 0o600))
+
+	err := (daemon.RuntimeStore{Dir: path}).CheckWritable()
+
+	require.Error(err)
+	assert.Contains(err.Error(), "prepare runtime dir")
+}

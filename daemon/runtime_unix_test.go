@@ -60,6 +60,21 @@ func TestRuntimeStoreRepairsPrivateUnusableDir(t *testing.T) {
 	require.Equal(os.FileMode(0o700), info.Mode().Perm())
 }
 
+func TestRuntimeStoreCheckWritablePreservesPermissionError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can write through directory mode restrictions")
+	}
+	require := require.New(t)
+
+	parent := t.TempDir()
+	require.NoError(os.Chmod(parent, 0o500))
+	t.Cleanup(func() { require.NoError(os.Chmod(parent, 0o700)) })
+
+	err := (daemon.RuntimeStore{Dir: filepath.Join(parent, "runtime")}).CheckWritable()
+
+	require.ErrorIs(err, os.ErrPermission)
+}
+
 func TestRuntimeStoreRejectsSymlinkDir(t *testing.T) {
 	require := require.New(t)
 
