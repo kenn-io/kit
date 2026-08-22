@@ -6,27 +6,29 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	Assert "github.com/stretchr/testify/assert"
+	Require "github.com/stretchr/testify/require"
 	"go.kenn.io/kit/daemon"
 )
 
 func TestLinuxRuntimeRecordUsesVersionedIdentityWithoutExposingItToOldClients(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	rec := daemon.NewRuntimeRecord("tool", "v1", daemon.Endpoint{
 		Network: daemon.NetworkTCP,
 		Address: "127.0.0.1:1234",
 	})
-	require.NotEmpty(t, rec.ProcessIdentityV2)
-	assert.Empty(t, rec.ProcessIdentity)
-	assert.Equal(t, daemon.ProcessIdentityMatch, daemon.CompareRuntimeProcessIdentity(rec))
+	require.NotEmpty(rec.ProcessIdentityV2)
+	assert.Empty(rec.ProcessIdentity)
+	assert.Equal(daemon.ProcessIdentityMatch, daemon.CompareRuntimeProcessIdentity(rec))
 
 	body, err := json.Marshal(rec)
-	require.NoError(t, err)
+	require.NoError(err)
 	var legacy struct {
 		ProcessIdentity daemon.ProcessIdentity `json:"process_identity"`
 	}
-	require.NoError(t, json.Unmarshal(body, &legacy))
-	assert.Empty(t, legacy.ProcessIdentity)
+	require.NoError(json.Unmarshal(body, &legacy))
+	assert.Empty(legacy.ProcessIdentity)
 }
 
 func TestLinuxLegacyWallClockIdentityFailsClosed(t *testing.T) {
@@ -34,5 +36,5 @@ func TestLinuxLegacyWallClockIdentityFailsClosed(t *testing.T) {
 		PID:             1,
 		ProcessIdentity: "123456789",
 	}
-	assert.Equal(t, daemon.ProcessIdentityUnknown, daemon.CompareRuntimeProcessIdentity(rec))
+	Assert.Equal(t, daemon.ProcessIdentityUnknown, daemon.CompareRuntimeProcessIdentity(rec))
 }

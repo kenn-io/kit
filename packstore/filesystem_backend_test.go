@@ -15,14 +15,14 @@ import (
 	"testing"
 
 	"github.com/klauspost/compress/zstd"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	Assert "github.com/stretchr/testify/assert"
+	Require "github.com/stretchr/testify/require"
 	"go.kenn.io/kit/pack"
 )
 
 func TestFilesystemBackendPublishesAndInventoriesCanonicalObjects(t *testing.T) {
-	assert := assert.New(t)
-	require := require.New(t)
+	assert := Assert.New(t)
+	require := Require.New(t)
 	ctx := context.Background()
 	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
 	looseContent := []byte("inventory loose content")
@@ -106,8 +106,8 @@ func TestFilesystemBackendLoosePublicationReadsOnlyOneByteBeyondExpectedSize(t *
 	}
 	for _, tt := range operations {
 		t.Run(tt.name, func(t *testing.T) {
-			assert := assert.New(t)
-			require := require.New(t)
+			assert := Assert.New(t)
+			require := Require.New(t)
 			backend := attachedFilesystemBackend(t, "archive", "epoch-1")
 			source := &countingPackReader{reader: bytes.NewReader(sourceBytes)}
 
@@ -122,31 +122,34 @@ func TestFilesystemBackendLoosePublicationReadsOnlyOneByteBeyondExpectedSize(t *
 }
 
 func TestFilesystemBackendInventoryRejectsCanonicalSymlink(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation requires privileges on Windows")
 	}
 	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
 	hash := hashForTest([]byte("unsafe inventory entry"))
 	path := backend.Layout().LoosePath(hash)
-	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	require.NoError(os.MkdirAll(filepath.Dir(path), 0o700))
 	target := filepath.Join(t.TempDir(), "target")
-	require.NoError(t, os.WriteFile(target, []byte("not authoritative"), 0o600))
-	require.NoError(t, os.Symlink(target, path))
+	require.NoError(os.WriteFile(target, []byte("not authoritative"), 0o600))
+	require.NoError(os.Symlink(target, path))
 	relative, err := filepath.Rel(backend.Layout().Root(), path)
-	require.NoError(t, err)
+	require.NoError(err)
 
 	page, err := backend.Inventory(context.Background(), "")
 
-	require.NoError(t, err)
-	assert.Empty(t, page.Objects)
-	assert.Equal(t, []string{filepath.ToSlash(relative)}, page.Unknown)
+	require.NoError(err)
+	assert.Empty(page.Objects)
+	assert.Equal([]string{filepath.ToSlash(relative)}, page.Unknown)
 }
 
 func TestFilesystemBackendInventoryFollowsConfiguredSymlinkRoot(t *testing.T) {
+	assert := Assert.New(t)
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation requires privileges on Windows")
 	}
-	require := require.New(t)
+	require := Require.New(t)
 	actualRoot := t.TempDir()
 	linkedRoot := filepath.Join(t.TempDir(), "store")
 	require.NoError(os.Symlink(actualRoot, linkedRoot))
@@ -159,7 +162,7 @@ func TestFilesystemBackendInventoryFollowsConfiguredSymlinkRoot(t *testing.T) {
 	t.Cleanup(func() { require.NoError(backend.Close()) })
 	empty, err := backend.NamespaceEmpty(context.Background())
 	require.NoError(err)
-	assert.True(t, empty)
+	assert.True(empty)
 	content := []byte("symlink-root inventory content")
 	hash := hashForTest(content)
 	require.NoError(os.MkdirAll(filepath.Dir(layout.LoosePath(hash)), 0o700))
@@ -170,60 +173,63 @@ func TestFilesystemBackendInventoryFollowsConfiguredSymlinkRoot(t *testing.T) {
 	empty, err = backend.NamespaceEmpty(context.Background())
 	require.NoError(err)
 
-	assert.Equal(t, []InventoryObject{{
+	assert.Equal([]InventoryObject{{
 		Ref:        ObjectRef{LooseHash: hash, LooseEncoding: LooseEncodingRaw},
 		StoredSize: int64(len(content)),
 	}}, page.Objects)
-	assert.Empty(t, page.Unknown)
-	assert.False(t, empty)
+	assert.Empty(page.Unknown)
+	assert.False(empty)
 }
 
 func TestFilesystemWalkPropagatesMissingEntryAfterRootResolution(t *testing.T) {
 	layout := layoutForStoreTest(t)
 	backend, err := NewFilesystemBackend(layout, FilesystemBackendOptions{})
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, backend.Close()) })
+	Require.NoError(t, err)
+	t.Cleanup(func() { Require.NoError(t, backend.Close()) })
 	originalWalk := walkFilesystemTree
 	walkFilesystemTree = func(string, fs.WalkDirFunc) error { return fs.ErrNotExist }
 	t.Cleanup(func() { walkFilesystemTree = originalWalk })
 
 	_, err = backend.Inventory(context.Background(), "")
-	require.ErrorIs(t, err, fs.ErrNotExist)
+	Require.ErrorIs(t, err, fs.ErrNotExist)
 	_, err = backend.NamespaceEmpty(context.Background())
-	require.ErrorIs(t, err, fs.ErrNotExist)
+	Require.ErrorIs(t, err, fs.ErrNotExist)
 }
 
 func TestFilesystemWalkTreatsInitiallyMissingRootAsEmpty(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	layout, err := NewLayout(filepath.Join(t.TempDir(), "missing"), LayoutOptions{
 		Staging: StagingStoreDirectory, StagingDir: "tmp",
 	})
-	require.NoError(t, err)
+	require.NoError(err)
 	backend, err := NewFilesystemBackend(layout, FilesystemBackendOptions{})
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, backend.Close()) })
+	require.NoError(err)
+	t.Cleanup(func() { require.NoError(backend.Close()) })
 
 	page, err := backend.Inventory(context.Background(), "")
-	require.NoError(t, err)
+	require.NoError(err)
 	empty, err := backend.NamespaceEmpty(context.Background())
-	require.NoError(t, err)
+	require.NoError(err)
 
-	assert.Empty(t, page.Objects)
-	assert.Empty(t, page.Unknown)
-	assert.True(t, empty)
+	assert.Empty(page.Objects)
+	assert.Empty(page.Unknown)
+	assert.True(empty)
 }
 
 func TestFilesystemBackendSeekablePackHonorsCancellation(t *testing.T) {
+	require := Require.New(t)
 	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
 	packPath, packID, entries := buildBackendPackSource(
 		t, bytes.Repeat([]byte("cancel seekable pack"), 128<<10),
 	)
 	source, err := os.Open(packPath)
-	require.NoError(t, err)
+	require.NoError(err)
 	_, err = backend.PublishPack(context.Background(), packID, source, PublishOptions{})
-	require.NoError(t, errors.Join(err, source.Close()))
-	require.Len(t, entries, 1)
+	require.NoError(errors.Join(err, source.Close()))
+	require.Len(entries, 1)
 	indexed, err := indexEntryFromPack(entries[0], packID)
-	require.NoError(t, err)
+	require.NoError(err)
 	store, err := NewMultiStore(
 		staticLocationResolver{resolution: Resolution{
 			Member: true,
@@ -234,8 +240,8 @@ func TestFilesystemBackendSeekablePackHonorsCancellation(t *testing.T) {
 		staticBackendRegistry{"archive": backend},
 		MultiStoreOptions{},
 	)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	require.NoError(err)
+	t.Cleanup(func() { require.NoError(store.Close()) })
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -244,17 +250,18 @@ func TestFilesystemBackendSeekablePackHonorsCancellation(t *testing.T) {
 		_ = reader.Close()
 	}
 
-	require.ErrorIs(t, err, context.Canceled)
+	require.ErrorIs(err, context.Canceled)
 }
 
 func TestVerifyFilesystemPackHashHonorsCancellation(t *testing.T) {
+	require := Require.New(t)
 	packPath, packID, _ := buildBackendPackSource(
 		t, bytes.Repeat([]byte("cancel canonical pack hash"), 4096),
 	)
 	file, err := os.Open(packPath)
-	require.NoError(t, err)
+	require.NoError(err)
 	info, err := file.Stat()
-	require.NoError(t, err)
+	require.NoError(err)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -262,8 +269,8 @@ func TestVerifyFilesystemPackHashHonorsCancellation(t *testing.T) {
 		ctx, file, packID, DefaultLimits(), info.Size(), [sha256.Size]byte{},
 	)
 
-	require.ErrorIs(t, err, context.Canceled)
-	assert.NotErrorIs(t, err, ErrContentMismatch)
+	require.ErrorIs(err, context.Canceled)
+	Assert.NotErrorIs(t, err, ErrContentMismatch)
 }
 
 func TestClassifyFilesystemPackVerificationPreservesCancellation(t *testing.T) {
@@ -277,13 +284,14 @@ func TestClassifyFilesystemPackVerificationPreservesCancellation(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			got := classifyFilesystemPackVerificationError(test.err)
 
-			require.ErrorIs(t, got, test.err)
-			assert.NotErrorIs(t, got, ErrPhysicalCorrupt)
+			Require.ErrorIs(t, got, test.err)
+			Assert.NotErrorIs(t, got, ErrPhysicalCorrupt)
 		})
 	}
 }
 
 func TestFilesystemBackendDurablePackPublicationSyncsFreshHierarchy(t *testing.T) {
+	require := Require.New(t)
 	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
 	packPath, packID, _ := buildBackendPackSource(t, []byte("durable pack hierarchy"))
 	originalSyncDir := syncFilesystemRootDir
@@ -294,18 +302,18 @@ func TestFilesystemBackendDurablePackPublicationSyncsFreshHierarchy(t *testing.T
 	}
 	t.Cleanup(func() { syncFilesystemRootDir = originalSyncDir })
 	source, err := os.Open(packPath)
-	require.NoError(t, err)
+	require.NoError(err)
 
 	_, err = backend.PublishPack(
 		context.Background(), packID, source,
 		PublishOptions{Durability: DurablePublication},
 	)
-	require.NoError(t, errors.Join(err, source.Close()))
+	require.NoError(errors.Join(err, source.Close()))
 
 	resolvedRoot, err := filepath.EvalSymlinks(backend.Layout().Root())
-	require.NoError(t, err)
+	require.NoError(err)
 	packsDir := filepath.Join(resolvedRoot, "packs")
-	assert.Equal(t, []string{
+	Assert.Equal(t, []string{
 		resolvedRoot,
 		packsDir,
 		packsDir,
@@ -332,8 +340,8 @@ func TestFilesystemBackendPackPublicationSyncsStagingOnlyWhenDurable(t *testing.
 		{name: "durable", durability: DurablePublication, wantSync: true, wantCalls: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			assert := assert.New(t)
-			require := require.New(t)
+			assert := Assert.New(t)
+			require := Require.New(t)
 			syncCalls = 0
 			backend := attachedFilesystemBackend(t, "archive", "epoch-1")
 			packPath, packID, _ := buildBackendPackSource(t, []byte(test.name+" staging sync"))
@@ -359,18 +367,18 @@ func TestFilesystemBackendPublishPackRejectsInvalidDurabilityBeforeWrite(t *test
 	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
 	packPath, packID, _ := buildBackendPackSource(t, []byte("invalid durability"))
 	source, err := os.Open(packPath)
-	require.NoError(t, err)
+	Require.NoError(t, err)
 
 	_, err = backend.PublishPack(
 		context.Background(), packID, source,
 		PublishOptions{Durability: Durability(99)},
 	)
-	require.ErrorIs(t, errors.Join(err, source.Close()), ErrInvalidPolicy)
-	assert.NoFileExists(t, backend.Layout().PackPath(packID))
+	Require.ErrorIs(t, errors.Join(err, source.Close()), ErrInvalidPolicy)
+	Assert.NoFileExists(t, backend.Layout().PackPath(packID))
 }
 
 func TestFilesystemBackendRejectsDifferentPackAtExistingIdentity(t *testing.T) {
-	require := require.New(t)
+	require := Require.New(t)
 	ctx := context.Background()
 	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
 	firstPath, firstID, _ := buildBackendPackSource(t, []byte("first pack content"))
@@ -387,6 +395,7 @@ func TestFilesystemBackendRejectsDifferentPackAtExistingIdentity(t *testing.T) {
 }
 
 func TestFilesystemBackendPublishPackRejectsDecoderWindow(t *testing.T) {
+	require := Require.New(t)
 	content := bytes.Repeat([]byte("filesystem window policy "), 1<<15)
 	packPath, packID := buildEncodedBackendPackSource(
 		t,
@@ -400,17 +409,17 @@ func TestFilesystemBackendPublishPackRejectsDecoderWindow(t *testing.T) {
 	backend, err := NewFilesystemBackend(layout, FilesystemBackendOptions{
 		Limits: limits,
 	})
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, backend.Close()) })
+	require.NoError(err)
+	t.Cleanup(func() { require.NoError(backend.Close()) })
 	owner := Ownership{
 		Format: OwnershipFormatV1,
 		Vault:  "test-vault",
 		Store:  "archive",
 		Epoch:  "epoch-1",
 	}
-	require.NoError(t, backend.ReplaceOwnership(context.Background(), owner, nil))
+	require.NoError(backend.ReplaceOwnership(context.Background(), owner, nil))
 	source, err := os.Open(packPath)
-	require.NoError(t, err)
+	require.NoError(err)
 
 	_, err = backend.PublishPack(
 		context.Background(),
@@ -418,12 +427,12 @@ func TestFilesystemBackendPublishPackRejectsDecoderWindow(t *testing.T) {
 		source,
 		PublishOptions{},
 	)
-	require.NoError(t, source.Close())
+	require.NoError(source.Close())
 
-	require.ErrorIs(t, err, ErrBlobTooLarge)
+	require.ErrorIs(err, ErrBlobTooLarge)
 	var limit *LimitError
-	require.ErrorAs(t, err, &limit)
-	assert.Equal(t, LimitBlobWindowBytes, limit.Dimension)
+	require.ErrorAs(err, &limit)
+	Assert.Equal(t, LimitBlobWindowBytes, limit.Dimension)
 }
 
 func TestFilesystemBackendPublishPackRejectsDecodedLengthMismatch(t *testing.T) {
@@ -437,6 +446,7 @@ func TestFilesystemBackendPublishPackRejectsDecodedLengthMismatch(t *testing.T) 
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			require := Require.New(t)
 			packPath, packID := buildEncodedBackendPackSource(
 				t,
 				content,
@@ -445,7 +455,7 @@ func TestFilesystemBackendPublishPackRejectsDecodedLengthMismatch(t *testing.T) 
 			)
 			backend := attachedFilesystemBackend(t, "archive", "epoch-1")
 			source, err := os.Open(packPath)
-			require.NoError(t, err)
+			require.NoError(err)
 
 			_, err = backend.PublishPack(
 				context.Background(),
@@ -453,30 +463,32 @@ func TestFilesystemBackendPublishPackRejectsDecodedLengthMismatch(t *testing.T) 
 				source,
 				PublishOptions{},
 			)
-			require.NoError(t, source.Close())
+			require.NoError(source.Close())
 
-			require.ErrorIs(t, err, pack.ErrCorrupt)
-			require.ErrorIs(t, err, ErrPhysicalCorrupt)
+			require.ErrorIs(err, pack.ErrCorrupt)
+			require.ErrorIs(err, ErrPhysicalCorrupt)
 		})
 	}
 }
 
 func TestFilesystemBackendPublishPackRejectsKnownConfiguredLimitBeforeRead(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	limits := DefaultLimits()
 	limits.PackBytes = 8
 	layout := layoutForStoreTest(t)
 	backend, err := NewFilesystemBackend(layout, FilesystemBackendOptions{
 		Limits: limits,
 	})
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, backend.Close()) })
+	require.NoError(err)
+	t.Cleanup(func() { require.NoError(backend.Close()) })
 	owner := Ownership{
 		Format: OwnershipFormatV1,
 		Vault:  "test-vault",
 		Store:  "archive",
 		Epoch:  "epoch-1",
 	}
-	require.NoError(t, backend.ReplaceOwnership(context.Background(), owner, nil))
+	require.NoError(backend.ReplaceOwnership(context.Background(), owner, nil))
 	packID := pack.NewPackID()
 	source := &countingPackReader{
 		reader: bytes.NewReader(bytes.Repeat([]byte("x"), 9)),
@@ -489,30 +501,32 @@ func TestFilesystemBackendPublishPackRejectsKnownConfiguredLimitBeforeRead(t *te
 		PublishOptions{ExpectedSize: 9, SizeKnown: true, MaxBytes: 100},
 	)
 
-	require.ErrorIs(t, err, ErrBlobTooLarge)
+	require.ErrorIs(err, ErrBlobTooLarge)
 	var limit *LimitError
-	require.ErrorAs(t, err, &limit)
-	assert.Equal(t, LimitPackContainerBytes, limit.Dimension)
-	assert.Zero(t, source.reads)
-	assert.NoFileExists(t, layout.PackPath(packID))
+	require.ErrorAs(err, &limit)
+	assert.Equal(LimitPackContainerBytes, limit.Dimension)
+	assert.Zero(source.reads)
+	assert.NoFileExists(layout.PackPath(packID))
 }
 
 func TestFilesystemBackendPublishPackCapsCallerLimitBeforeCanonicalWrite(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	limits := DefaultLimits()
 	limits.PackBytes = 8
 	layout := layoutForStoreTest(t)
 	backend, err := NewFilesystemBackend(layout, FilesystemBackendOptions{
 		Limits: limits,
 	})
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, backend.Close()) })
+	require.NoError(err)
+	t.Cleanup(func() { require.NoError(backend.Close()) })
 	owner := Ownership{
 		Format: OwnershipFormatV1,
 		Vault:  "test-vault",
 		Store:  "archive",
 		Epoch:  "epoch-1",
 	}
-	require.NoError(t, backend.ReplaceOwnership(context.Background(), owner, nil))
+	require.NoError(backend.ReplaceOwnership(context.Background(), owner, nil))
 	packID := pack.NewPackID()
 
 	_, err = backend.PublishPack(
@@ -522,17 +536,17 @@ func TestFilesystemBackendPublishPackCapsCallerLimitBeforeCanonicalWrite(t *test
 		PublishOptions{MaxBytes: 100},
 	)
 
-	require.ErrorIs(t, err, ErrBlobTooLarge)
+	require.ErrorIs(err, ErrBlobTooLarge)
 	var limit *LimitError
-	require.ErrorAs(t, err, &limit)
-	assert.Equal(t, LimitPackContainerBytes, limit.Dimension)
-	assert.NoFileExists(t, layout.PackPath(packID))
+	require.ErrorAs(err, &limit)
+	assert.Equal(LimitPackContainerBytes, limit.Dimension)
+	assert.NoFileExists(layout.PackPath(packID))
 }
 
 func TestFilesystemBackendPublishPackRejectsExactSizeMismatchBeforeCanonicalWrite(t *testing.T) {
 	packPath, packID, _ := buildBackendPackSource(t, []byte("exact size publication"))
 	info, err := os.Stat(packPath)
-	require.NoError(t, err)
+	Require.NoError(t, err)
 	for _, tt := range []struct {
 		name         string
 		expectedSize int64
@@ -541,9 +555,10 @@ func TestFilesystemBackendPublishPackRejectsExactSizeMismatchBeforeCanonicalWrit
 		{name: "source is overlong", expectedSize: info.Size() - 1},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			require := Require.New(t)
 			backend := attachedFilesystemBackend(t, "archive", "epoch-1")
 			source, err := os.Open(packPath)
-			require.NoError(t, err)
+			require.NoError(err)
 
 			_, err = backend.PublishPack(
 				context.Background(),
@@ -551,10 +566,10 @@ func TestFilesystemBackendPublishPackRejectsExactSizeMismatchBeforeCanonicalWrit
 				source,
 				PublishOptions{ExpectedSize: tt.expectedSize, SizeKnown: true},
 			)
-			require.NoError(t, source.Close())
+			require.NoError(source.Close())
 
-			require.ErrorIs(t, err, ErrContentMismatch)
-			assert.NoFileExists(t, backend.Layout().PackPath(packID))
+			require.ErrorIs(err, ErrContentMismatch)
+			Assert.NoFileExists(t, backend.Layout().PackPath(packID))
 		})
 	}
 }
@@ -570,60 +585,63 @@ func TestFilesystemBackendPublishPackRejectsMalformedBeforeCanonicalWrite(t *tes
 		PublishOptions{},
 	)
 
-	require.ErrorIs(t, err, pack.ErrBadMagic)
-	require.ErrorIs(t, err, ErrPhysicalCorrupt)
-	assert.NoFileExists(t, backend.Layout().PackPath(packID))
+	Require.ErrorIs(t, err, pack.ErrBadMagic)
+	Require.ErrorIs(t, err, ErrPhysicalCorrupt)
+	Assert.NoFileExists(t, backend.Layout().PackPath(packID))
 }
 
 func TestFilesystemBackendPublishPackRejectsDuplicateBlobIDs(t *testing.T) {
+	require := Require.New(t)
 	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
 	writer, err := pack.NewWriter(t.TempDir(), pack.WriterOptions{})
-	require.NoError(t, err)
+	require.NoError(err)
 	content := []byte("duplicate publication entry")
 	_, err = writer.Append(content)
-	require.NoError(t, err)
+	require.NoError(err)
 	_, err = writer.Append(content)
-	require.NoError(t, err)
+	require.NoError(err)
 	packID := writer.ID()
 	path := filepath.Join(t.TempDir(), packID+PackExt)
 	_, err = writer.Seal(path)
-	require.NoError(t, err)
+	require.NoError(err)
 	source, err := os.Open(path)
-	require.NoError(t, err)
+	require.NoError(err)
 
 	_, err = backend.PublishPack(context.Background(), packID, source, PublishOptions{})
-	require.NoError(t, source.Close())
+	require.NoError(source.Close())
 
-	require.ErrorIs(t, err, pack.ErrCorrupt)
-	assert.NoFileExists(t, backend.Layout().PackPath(packID))
+	require.ErrorIs(err, pack.ErrCorrupt)
+	Assert.NoFileExists(t, backend.Layout().PackPath(packID))
 }
 
 func TestFilesystemBackendPublishPackRejectsForgedBlobLimitBeforeCanonicalWrite(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	limits := DefaultLimits()
 	limits.BlobBytes = 16
 	packPath, packID := buildEncodedBackendPackSource(t, []byte("x"), 17, 0)
 	layout := layoutForStoreTest(t)
 	backend, err := NewFilesystemBackend(layout, FilesystemBackendOptions{Limits: limits})
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, backend.Close()) })
+	require.NoError(err)
+	t.Cleanup(func() { require.NoError(backend.Close()) })
 	owner := Ownership{
 		Format: OwnershipFormatV1,
 		Vault:  "test-vault",
 		Store:  "archive",
 		Epoch:  "epoch-1",
 	}
-	require.NoError(t, backend.ReplaceOwnership(context.Background(), owner, nil))
+	require.NoError(backend.ReplaceOwnership(context.Background(), owner, nil))
 	source, err := os.Open(packPath)
-	require.NoError(t, err)
+	require.NoError(err)
 
 	_, err = backend.PublishPack(context.Background(), packID, source, PublishOptions{})
-	require.NoError(t, source.Close())
+	require.NoError(source.Close())
 
-	require.ErrorIs(t, err, ErrBlobTooLarge)
+	require.ErrorIs(err, ErrBlobTooLarge)
 	var limit *LimitError
-	require.ErrorAs(t, err, &limit)
-	assert.Equal(t, LimitBlobRawBytes, limit.Dimension)
-	assert.NoFileExists(t, layout.PackPath(packID))
+	require.ErrorAs(err, &limit)
+	assert.Equal(LimitBlobRawBytes, limit.Dimension)
+	assert.NoFileExists(layout.PackPath(packID))
 }
 
 func TestFilesystemBackendPublishPackEnforcesZeroBlobLimit(t *testing.T) {
@@ -637,56 +655,60 @@ func TestFilesystemBackendPublishPackEnforcesZeroBlobLimit(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			assert := Assert.New(t)
+			require := Require.New(t)
 			limits := DefaultLimits()
 			limits.BlobBytes = 0
 			packPath, packID, _ := buildBackendPackSource(t, tt.content)
 			layout := layoutForStoreTest(t)
 			backend, err := NewFilesystemBackend(layout, FilesystemBackendOptions{Limits: limits})
-			require.NoError(t, err)
-			t.Cleanup(func() { require.NoError(t, backend.Close()) })
+			require.NoError(err)
+			t.Cleanup(func() { require.NoError(backend.Close()) })
 			owner := Ownership{
 				Format: OwnershipFormatV1,
 				Vault:  "test-vault",
 				Store:  "archive",
 				Epoch:  "epoch-1",
 			}
-			require.NoError(t, backend.ReplaceOwnership(context.Background(), owner, nil))
+			require.NoError(backend.ReplaceOwnership(context.Background(), owner, nil))
 			source, err := os.Open(packPath)
-			require.NoError(t, err)
+			require.NoError(err)
 
 			_, err = backend.PublishPack(context.Background(), packID, source, PublishOptions{})
-			require.NoError(t, source.Close())
+			require.NoError(source.Close())
 
 			if !tt.wantLimit {
-				require.NoError(t, err)
-				assert.FileExists(t, layout.PackPath(packID))
+				require.NoError(err)
+				assert.FileExists(layout.PackPath(packID))
 				return
 			}
-			require.ErrorIs(t, err, ErrBlobTooLarge)
+			require.ErrorIs(err, ErrBlobTooLarge)
 			var limit *LimitError
-			require.ErrorAs(t, err, &limit)
-			assert.Equal(t, LimitBlobRawBytes, limit.Dimension)
-			assert.Equal(t, uint64(1), limit.Actual)
-			assert.Zero(t, limit.Limit)
-			assert.NoFileExists(t, layout.PackPath(packID))
+			require.ErrorAs(err, &limit)
+			assert.Equal(LimitBlobRawBytes, limit.Dimension)
+			assert.Equal(uint64(1), limit.Actual)
+			assert.Zero(limit.Limit)
+			assert.NoFileExists(layout.PackPath(packID))
 		})
 	}
 }
 
 func TestFilesystemBackendPublishPackPreflightsAllEntryLimitsBeforeIntegrity(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	staging := t.TempDir()
 	writer, err := pack.NewWriter(staging, pack.WriterOptions{})
-	require.NoError(t, err)
+	require.NoError(err)
 	_, err = writer.Append(nil)
-	require.NoError(t, err)
+	require.NoError(err)
 	_, err = writer.Append([]byte("x"))
-	require.NoError(t, err)
+	require.NoError(err)
 	packID := writer.ID()
 	packPath := filepath.Join(staging, packID+PackExt)
 	_, err = writer.Seal(packPath)
-	require.NoError(t, err)
+	require.NoError(err)
 	packBytes, err := os.ReadFile(packPath)
-	require.NoError(t, err)
+	require.NoError(err)
 	trailerOffset := len(packBytes) - plainPackTrailerSize
 	footerLen := int(binary.LittleEndian.Uint32(packBytes[trailerOffset:]))
 	footerOffset := trailerOffset - footerLen
@@ -696,35 +718,35 @@ func TestFilesystemBackendPublishPackPreflightsAllEntryLimitsBeforeIntegrity(t *
 	_, _ = footerDigest.Write(packBytes[footerOffset:trailerOffset])
 	_, _ = footerDigest.Write(packBytes[trailerOffset : trailerOffset+4])
 	copy(packBytes[trailerOffset+4:trailerOffset+36], footerDigest.Sum(nil))
-	require.NoError(t, os.WriteFile(packPath, packBytes, 0o600))
+	require.NoError(os.WriteFile(packPath, packBytes, 0o600))
 
 	limits := DefaultLimits()
 	limits.BlobBytes = 0
 	layout := layoutForStoreTest(t)
 	backend, err := NewFilesystemBackend(layout, FilesystemBackendOptions{Limits: limits})
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, backend.Close()) })
+	require.NoError(err)
+	t.Cleanup(func() { require.NoError(backend.Close()) })
 	owner := Ownership{
 		Format: OwnershipFormatV1,
 		Vault:  "test-vault",
 		Store:  "archive",
 		Epoch:  "epoch-1",
 	}
-	require.NoError(t, backend.ReplaceOwnership(context.Background(), owner, nil))
+	require.NoError(backend.ReplaceOwnership(context.Background(), owner, nil))
 	source, err := os.Open(packPath)
-	require.NoError(t, err)
+	require.NoError(err)
 
 	_, err = backend.PublishPack(context.Background(), packID, source, PublishOptions{})
-	require.NoError(t, source.Close())
+	require.NoError(source.Close())
 
-	require.ErrorIs(t, err, ErrBlobTooLarge)
-	require.NotErrorIs(t, err, pack.ErrBlobMismatch)
+	require.ErrorIs(err, ErrBlobTooLarge)
+	require.NotErrorIs(err, pack.ErrBlobMismatch)
 	var limit *LimitError
-	require.ErrorAs(t, err, &limit)
-	assert.Equal(t, LimitBlobRawBytes, limit.Dimension)
-	assert.Equal(t, uint64(1), limit.Actual)
-	assert.Zero(t, limit.Limit)
-	assert.NoFileExists(t, layout.PackPath(packID))
+	require.ErrorAs(err, &limit)
+	assert.Equal(LimitBlobRawBytes, limit.Dimension)
+	assert.Equal(uint64(1), limit.Actual)
+	assert.Zero(limit.Limit)
+	assert.NoFileExists(layout.PackPath(packID))
 }
 
 func TestCopyBoundedContextAcceptsMaxInt64Limit(t *testing.T) {
@@ -737,14 +759,14 @@ func TestCopyBoundedContextAcceptsMaxInt64Limit(t *testing.T) {
 		math.MaxInt64,
 	)
 
-	require.NoError(t, err)
-	assert.Equal(t, int64(len("bounded content")), written)
-	assert.Equal(t, "bounded content", destination.String())
+	Require.NoError(t, err)
+	Assert.Equal(t, int64(len("bounded content")), written)
+	Assert.Equal(t, "bounded content", destination.String())
 }
 
 func TestFilesystemBackendUsesAndRetiresExactLooseRepresentation(t *testing.T) {
-	assert := assert.New(t)
-	require := require.New(t)
+	assert := Assert.New(t)
+	require := Require.New(t)
 	ctx := context.Background()
 	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
 	content := bytes.Repeat([]byte("compressible authority "), 4096)
@@ -802,17 +824,19 @@ func TestFilesystemBackendRejectsAmbiguousLooseLocation(t *testing.T) {
 		bytes.NewReader(content),
 		PublishOptions{ExpectedSize: int64(len(content)), SizeKnown: true},
 	)
-	require.NoError(t, err)
+	Require.NoError(t, err)
 
 	stream, _, err := backend.OpenLoose(ctx, hash, LooseLocation{})
 	if stream != nil {
 		t.Cleanup(func() { _ = stream.Close() })
 	}
 
-	require.ErrorIs(t, err, ErrInvalidPolicy)
+	Require.ErrorIs(t, err, ErrInvalidPolicy)
 }
 
 func TestFilesystemBackendRepairLooseOverwritesCorruptCanonical(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	ctx := context.Background()
 	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
 	content := []byte("trusted repair content")
@@ -821,8 +845,8 @@ func TestFilesystemBackendRepairLooseOverwritesCorruptCanonical(t *testing.T) {
 		ctx, hash, bytes.NewReader(content),
 		PublishOptions{ExpectedSize: int64(len(content)), SizeKnown: true},
 	)
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(
+	require.NoError(err)
+	require.NoError(os.WriteFile(
 		backend.Layout().LoosePath(hash), []byte("corrupt"), 0o600,
 	))
 
@@ -830,15 +854,15 @@ func TestFilesystemBackendRepairLooseOverwritesCorruptCanonical(t *testing.T) {
 		ctx, hash, bytes.NewReader(content),
 		PublishOptions{ExpectedSize: int64(len(content)), SizeKnown: true},
 	)
-	require.NoError(t, err)
-	assert.NotEqual(t, published.Generation, repaired.Generation)
-	assert.False(t, repaired.Created)
+	require.NoError(err)
+	assert.NotEqual(published.Generation, repaired.Generation)
+	assert.False(repaired.Created)
 	stream, _, err := backend.OpenLoose(ctx, hash, repaired.Location)
-	require.NoError(t, err)
+	require.NoError(err)
 	got, err := io.ReadAll(stream)
-	require.NoError(t, err)
-	require.NoError(t, stream.Close())
-	assert.Equal(t, content, got)
+	require.NoError(err)
+	require.NoError(stream.Close())
+	assert.Equal(content, got)
 }
 
 func TestFilesystemBackendClassifiesTerminalStreamIntegrityErrors(t *testing.T) {
@@ -873,7 +897,7 @@ func TestFilesystemBackendClassifiesTerminalStreamIntegrityErrors(t *testing.T) 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.invoke(&physicalVerifiedStream{stream: tt.stream})
-			require.ErrorIs(t, err, ErrPhysicalCorrupt)
+			Require.ErrorIs(t, err, ErrPhysicalCorrupt)
 		})
 	}
 }
@@ -885,11 +909,12 @@ func TestFilesystemBackendDoesNotClassifyIncompleteStreamCloseAsCorrupt(t *testi
 
 	err := stream.Close()
 
-	require.ErrorIs(t, err, pack.ErrVerificationIncomplete)
-	require.NotErrorIs(t, err, ErrPhysicalCorrupt)
+	Require.ErrorIs(t, err, pack.ErrVerificationIncomplete)
+	Require.NotErrorIs(t, err, ErrPhysicalCorrupt)
 }
 
 func TestFilesystemBackendPreservesClosedStreamLifecycleErrors(t *testing.T) {
+	require := Require.New(t)
 	ctx := context.Background()
 	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
 	content := []byte("early closed physical stream")
@@ -900,17 +925,17 @@ func TestFilesystemBackendPreservesClosedStreamLifecycleErrors(t *testing.T) {
 		bytes.NewReader(content),
 		PublishOptions{ExpectedSize: int64(len(content)), SizeKnown: true},
 	)
-	require.NoError(t, err)
+	require.NoError(err)
 	stream, _, err := backend.OpenLoose(ctx, hash, receipt.Location)
-	require.NoError(t, err)
-	require.ErrorIs(t, stream.Close(), pack.ErrVerificationIncomplete)
+	require.NoError(err)
+	require.ErrorIs(stream.Close(), pack.ErrVerificationIncomplete)
 
 	_, readErr := stream.Read(make([]byte, 1))
 	verifyErr := stream.Verify()
 	for _, err := range []error{readErr, verifyErr} {
-		require.ErrorIs(t, err, os.ErrClosed)
-		require.NotErrorIs(t, err, ErrStoreUnavailable)
-		require.NotErrorIs(t, err, ErrPhysicalCorrupt)
+		require.ErrorIs(err, os.ErrClosed)
+		require.NotErrorIs(err, ErrStoreUnavailable)
+		require.NotErrorIs(err, ErrPhysicalCorrupt)
 	}
 }
 
@@ -930,7 +955,7 @@ func TestMultiStoreFallsBackFromUnavailableFilesystemLooseObject(t *testing.T) {
 		bytes.NewReader(content),
 		PublishOptions{ExpectedSize: int64(len(content)), SizeKnown: true},
 	)
-	require.NoError(t, err)
+	Require.NoError(t, err)
 
 	operations := []struct {
 		name string
@@ -941,10 +966,10 @@ func TestMultiStoreFallsBackFromUnavailableFilesystemLooseObject(t *testing.T) {
 			read: func(t *testing.T, store *Store) []byte {
 				t.Helper()
 				stream, size, err := store.OpenStream(ctx, hash)
-				require.NoError(t, err)
-				require.Equal(t, int64(len(content)), size)
+				Require.NoError(t, err)
+				Require.Equal(t, int64(len(content)), size)
 				data, err := io.ReadAll(stream)
-				require.NoError(t, errors.Join(err, stream.Close()))
+				Require.NoError(t, errors.Join(err, stream.Close()))
 				return data
 			},
 		},
@@ -953,10 +978,10 @@ func TestMultiStoreFallsBackFromUnavailableFilesystemLooseObject(t *testing.T) {
 			read: func(t *testing.T, store *Store) []byte {
 				t.Helper()
 				reader, size, err := store.Open(ctx, hash)
-				require.NoError(t, err)
-				require.Equal(t, int64(len(content)), size)
+				Require.NoError(t, err)
+				Require.Equal(t, int64(len(content)), size)
 				data, err := io.ReadAll(reader)
-				require.NoError(t, errors.Join(err, reader.Close()))
+				Require.NoError(t, errors.Join(err, reader.Close()))
 				return data
 			},
 		},
@@ -965,14 +990,15 @@ func TestMultiStoreFallsBackFromUnavailableFilesystemLooseObject(t *testing.T) {
 			read: func(t *testing.T, store *Store) []byte {
 				t.Helper()
 				data, size, err := store.ReadBounded(ctx, hash, int64(len(content)))
-				require.NoError(t, err)
-				require.Equal(t, int64(len(content)), size)
+				Require.NoError(t, err)
+				Require.Equal(t, int64(len(content)), size)
 				return data
 			},
 		},
 	}
 	for _, operation := range operations {
 		t.Run(operation.name, func(t *testing.T) {
+			require := Require.New(t)
 			store, err := NewMultiStore(
 				staticLocationResolver{resolution: Resolution{
 					Member: true,
@@ -984,15 +1010,15 @@ func TestMultiStoreFallsBackFromUnavailableFilesystemLooseObject(t *testing.T) {
 				staticBackendRegistry{"primary": primary, "secondary": secondary},
 				MultiStoreOptions{},
 			)
-			require.NoError(t, err)
-			t.Cleanup(func() { require.NoError(t, store.Close()) })
+			require.NoError(err)
+			t.Cleanup(func() { require.NoError(store.Close()) })
 
-			assert.Equal(t, content, operation.read(t, store))
+			Assert.Equal(t, content, operation.read(t, store))
 			_, _, err = primary.OpenLoose(ctx, hash, receipt.Location)
-			require.ErrorIs(t, err, ErrStoreUnavailable)
-			require.NotErrorIs(t, err, ErrPhysicalMissing)
-			require.NotErrorIs(t, err, ErrPhysicalCorrupt)
-			require.ErrorIs(t, err, openErr)
+			require.ErrorIs(err, ErrStoreUnavailable)
+			require.NotErrorIs(err, ErrPhysicalMissing)
+			require.NotErrorIs(err, ErrPhysicalCorrupt)
+			require.ErrorIs(err, openErr)
 		})
 	}
 }
@@ -1011,10 +1037,10 @@ func TestMultiStoreFallsBackFromPackFooterCorruption(t *testing.T) {
 			read: func(t *testing.T, store *Store, hash Hash) []byte {
 				t.Helper()
 				stream, size, err := store.OpenStream(ctx, hash)
-				require.NoError(t, err)
-				require.Equal(t, int64(len(content)), size)
+				Require.NoError(t, err)
+				Require.Equal(t, int64(len(content)), size)
 				data, err := io.ReadAll(stream)
-				require.NoError(t, errors.Join(err, stream.Close()))
+				Require.NoError(t, errors.Join(err, stream.Close()))
 				return data
 			},
 			primaryError: func(backend *FilesystemBackend, entry IndexEntry) error {
@@ -1030,10 +1056,10 @@ func TestMultiStoreFallsBackFromPackFooterCorruption(t *testing.T) {
 			read: func(t *testing.T, store *Store, hash Hash) []byte {
 				t.Helper()
 				reader, size, err := store.Open(ctx, hash)
-				require.NoError(t, err)
-				require.Equal(t, int64(len(content)), size)
+				Require.NoError(t, err)
+				Require.Equal(t, int64(len(content)), size)
 				data, err := io.ReadAll(reader)
-				require.NoError(t, errors.Join(err, reader.Close()))
+				Require.NoError(t, errors.Join(err, reader.Close()))
 				return data
 			},
 			primaryError: func(backend *FilesystemBackend, entry IndexEntry) error {
@@ -1049,8 +1075,8 @@ func TestMultiStoreFallsBackFromPackFooterCorruption(t *testing.T) {
 			read: func(t *testing.T, store *Store, hash Hash) []byte {
 				t.Helper()
 				data, size, err := store.ReadBounded(ctx, hash, int64(len(content)))
-				require.NoError(t, err)
-				require.Equal(t, int64(len(content)), size)
+				Require.NoError(t, err)
+				Require.Equal(t, int64(len(content)), size)
 				return data
 			},
 			primaryError: func(backend *FilesystemBackend, entry IndexEntry) error {
@@ -1084,27 +1110,29 @@ func TestMultiStoreFallsBackFromPackFooterCorruption(t *testing.T) {
 
 	for _, condition := range conditions {
 		t.Run(condition.name, func(t *testing.T) {
+			require := Require.New(t)
 			primary := attachedFilesystemBackend(t, "primary", "primary-1")
 			secondary := attachedFilesystemBackend(t, "secondary", "secondary-1")
 			primaryPath, primaryID, primaryEntries := buildBackendPackSource(t, condition.primaryData)
 			primarySource, err := os.Open(primaryPath)
-			require.NoError(t, err)
+			require.NoError(err)
 			_, err = primary.PublishPack(ctx, primaryID, primarySource, PublishOptions{})
-			require.NoError(t, errors.Join(err, primarySource.Close()))
+			require.NoError(errors.Join(err, primarySource.Close()))
 			primaryEntry, err := indexEntryFromPack(primaryEntries[0], primaryID)
-			require.NoError(t, err)
+			require.NoError(err)
 			primaryEntry = condition.entry(primaryEntry)
 
 			secondaryPath, secondaryID, secondaryEntries := buildBackendPackSource(t, content)
 			secondarySource, err := os.Open(secondaryPath)
-			require.NoError(t, err)
+			require.NoError(err)
 			_, err = secondary.PublishPack(ctx, secondaryID, secondarySource, PublishOptions{})
-			require.NoError(t, errors.Join(err, secondarySource.Close()))
+			require.NoError(errors.Join(err, secondarySource.Close()))
 			secondaryEntry, err := indexEntryFromPack(secondaryEntries[0], secondaryID)
-			require.NoError(t, err)
+			require.NoError(err)
 
 			for _, operation := range operations {
 				t.Run(operation.name, func(t *testing.T) {
+					require := Require.New(t)
 					store, err := NewMultiStore(
 						staticLocationResolver{resolution: Resolution{
 							Member: true,
@@ -1116,13 +1144,13 @@ func TestMultiStoreFallsBackFromPackFooterCorruption(t *testing.T) {
 						staticBackendRegistry{"primary": primary, "secondary": secondary},
 						MultiStoreOptions{},
 					)
-					require.NoError(t, err)
-					t.Cleanup(func() { require.NoError(t, store.Close()) })
+					require.NoError(err)
+					t.Cleanup(func() { require.NoError(store.Close()) })
 
-					assert.Equal(t, content, operation.read(t, store, hash))
+					Assert.Equal(t, content, operation.read(t, store, hash))
 					err = operation.primaryError(primary, primaryEntry)
-					require.ErrorIs(t, err, ErrPhysicalCorrupt)
-					require.NotErrorIs(t, err, ErrPhysicalMissing)
+					require.ErrorIs(err, ErrPhysicalCorrupt)
+					require.NotErrorIs(err, ErrPhysicalMissing)
 				})
 			}
 		})
@@ -1165,26 +1193,28 @@ func TestMultiStoreFallsBackFromFilesystemPackRepresentationLimits(t *testing.T)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			assert := Assert.New(t)
+			require := Require.New(t)
 			published := attachedFilesystemBackend(t, "primary", "primary-1")
 			packPath, packID, entries := buildBackendPackSource(
 				t, content, []byte("second footer entry"),
 			)
 			packSource, err := os.Open(packPath)
-			require.NoError(t, err)
+			require.NoError(err)
 			_, err = published.PublishPack(ctx, packID, packSource, PublishOptions{})
-			require.NoError(t, errors.Join(err, packSource.Close()))
+			require.NoError(errors.Join(err, packSource.Close()))
 			info, err := os.Stat(packPath)
-			require.NoError(t, err)
+			require.NoError(err)
 			indexed, err := indexEntryFromPack(entries[0], packID)
-			require.NoError(t, err)
+			require.NoError(err)
 
 			limits := tt.limit(DefaultLimits(), info.Size())
 			primary, err := NewFilesystemBackend(
 				published.Layout(),
 				FilesystemBackendOptions{Limits: limits},
 			)
-			require.NoError(t, err)
-			t.Cleanup(func() { require.NoError(t, primary.Close()) })
+			require.NoError(err)
+			t.Cleanup(func() { require.NoError(primary.Close()) })
 			healthy := &recordingReadBackend{content: content}
 			store, err := NewMultiStore(
 				staticLocationResolver{resolution: Resolution{
@@ -1197,27 +1227,28 @@ func TestMultiStoreFallsBackFromFilesystemPackRepresentationLimits(t *testing.T)
 				staticBackendRegistry{"primary": primary, "healthy": healthy},
 				MultiStoreOptions{},
 			)
-			require.NoError(t, err)
-			t.Cleanup(func() { require.NoError(t, store.Close()) })
+			require.NoError(err)
+			t.Cleanup(func() { require.NoError(store.Close()) })
 
 			stream, size, err := store.OpenStream(ctx, indexed.Hash)
-			require.NoError(t, err)
+			require.NoError(err)
 			got, err := io.ReadAll(stream)
-			require.NoError(t, errors.Join(err, stream.Close()))
-			assert.Equal(t, content, got)
-			assert.Equal(t, int64(len(content)), size)
+			require.NoError(errors.Join(err, stream.Close()))
+			assert.Equal(content, got)
+			assert.Equal(int64(len(content)), size)
 
 			_, _, err = primary.OpenPack(ctx, indexed.Hash, indexed)
-			require.ErrorIs(t, err, ErrPhysicalCorrupt)
-			require.ErrorIs(t, err, ErrBlobTooLarge)
+			require.ErrorIs(err, ErrPhysicalCorrupt)
+			require.ErrorIs(err, ErrBlobTooLarge)
 			var limit *LimitError
-			require.ErrorAs(t, err, &limit)
-			assert.Equal(t, tt.dimension, limit.Dimension)
+			require.ErrorAs(err, &limit)
+			assert.Equal(tt.dimension, limit.Dimension)
 		})
 	}
 }
 
 func TestFilesystemBackendClassifiesLateLooseIntegrityFailure(t *testing.T) {
+	require := Require.New(t)
 	ctx := context.Background()
 	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
 	content := []byte("trusted loose content")
@@ -1228,23 +1259,23 @@ func TestFilesystemBackendClassifiesLateLooseIntegrityFailure(t *testing.T) {
 		bytes.NewReader(content),
 		PublishOptions{ExpectedSize: int64(len(content)), SizeKnown: true},
 	)
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(
+	require.NoError(err)
+	require.NoError(os.WriteFile(
 		backend.Layout().LoosePath(hash),
 		bytes.Repeat([]byte("x"), len(content)),
 		0o600,
 	))
 
 	stream, _, err := backend.OpenLoose(ctx, hash, receipt.Location)
-	require.NoError(t, err)
+	require.NoError(err)
 	err = stream.Verify()
 
-	require.ErrorIs(t, err, ErrPhysicalCorrupt)
-	require.ErrorIs(t, stream.Close(), ErrPhysicalCorrupt)
+	require.ErrorIs(err, ErrPhysicalCorrupt)
+	require.ErrorIs(stream.Close(), ErrPhysicalCorrupt)
 }
 
 func TestFilesystemOwnershipRejectsNoncanonicalMarker(t *testing.T) {
-	require := require.New(t)
+	require := Require.New(t)
 	ctx := context.Background()
 	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
 	noncanonical := []byte(`{"epoch":"epoch-1","store":"archive","vault":"test-vault","format":1}` + "\n")
@@ -1280,15 +1311,15 @@ func buildBackendPackSource(
 	t.Helper()
 	root := t.TempDir()
 	writer, err := pack.NewWriter(root, pack.WriterOptions{})
-	require.NoError(t, err)
+	Require.NoError(t, err)
 	for _, content := range contents {
 		_, err = writer.Append(content)
-		require.NoError(t, err)
+		Require.NoError(t, err)
 	}
 	packID := writer.ID()
 	path := filepath.Join(root, packID+PackExt)
 	entries, err := writer.Seal(path)
-	require.NoError(t, err)
+	Require.NoError(t, err)
 	return path, packID, entries
 }
 
@@ -1305,24 +1336,24 @@ func buildEncodedBackendPackSource(
 		options = append(options, zstd.WithWindowSize(windowBytes))
 	}
 	encoder, err := zstd.NewWriter(&frame, options...)
-	require.NoError(t, err)
+	Require.NoError(t, err)
 	_, err = encoder.Write(content)
-	require.NoError(t, err)
-	require.NoError(t, encoder.Close())
+	Require.NoError(t, err)
+	Require.NoError(t, encoder.Close())
 	staging := t.TempDir()
 	writer, err := pack.NewWriter(staging, pack.WriterOptions{})
-	require.NoError(t, err)
+	Require.NoError(t, err)
 	_, err = writer.AppendEncoded(
 		pack.ComputeBlobID(content),
 		frame.Bytes(),
 		rawLen,
 		true,
 	)
-	require.NoError(t, err)
+	Require.NoError(t, err)
 	packID := writer.ID()
 	path := filepath.Join(staging, packID+PackExt)
 	_, err = writer.Seal(path)
-	require.NoError(t, err)
+	Require.NoError(t, err)
 	return path, packID
 }
 

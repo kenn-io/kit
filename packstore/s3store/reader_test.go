@@ -12,13 +12,15 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	Assert "github.com/stretchr/testify/assert"
+	Require "github.com/stretchr/testify/require"
 	"go.kenn.io/kit/pack"
 	"go.kenn.io/kit/packstore"
 )
 
 func TestDownloadPackRangesRejectsOversizedObjectBeforeGET(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	limits := packstore.DefaultLimits()
 	limits.PackBytes = 10
 	var getRequests int
@@ -43,12 +45,12 @@ func TestDownloadPackRangesRejectsOversizedObjectBeforeGET(t *testing.T) {
 		"0123456789abcdef0123456789abcdef",
 	)
 
-	require.ErrorIs(t, err, packstore.ErrBlobTooLarge)
-	require.ErrorIs(t, err, packstore.ErrPhysicalCorrupt)
+	require.ErrorIs(err, packstore.ErrBlobTooLarge)
+	require.ErrorIs(err, packstore.ErrPhysicalCorrupt)
 	var limit *packstore.LimitError
-	require.ErrorAs(t, err, &limit)
-	assert.Equal(t, packstore.LimitPackContainerBytes, limit.Dimension)
-	assert.Zero(t, getRequests)
+	require.ErrorAs(err, &limit)
+	assert.Equal(packstore.LimitPackContainerBytes, limit.Dimension)
+	assert.Zero(getRequests)
 }
 
 func TestDownloadPackRangesPreservesCancellation(t *testing.T) {
@@ -77,8 +79,8 @@ func TestDownloadPackRangesPreservesCancellation(t *testing.T) {
 				"0123456789abcdef0123456789abcdef",
 			)
 
-			require.ErrorIs(t, err, terminal)
-			require.NotErrorIs(t, err, packstore.ErrPhysicalCorrupt)
+			Require.ErrorIs(t, err, terminal)
+			Require.NotErrorIs(t, err, packstore.ErrPhysicalCorrupt)
 		})
 	}
 }
@@ -88,7 +90,7 @@ func TestPackReaderOptionsUseConfiguredLimits(t *testing.T) {
 		BlobBytes: 4096, PackBytes: 8192, FooterBytes: 2048, PackEntries: 32,
 	}}
 
-	assert.Equal(t, pack.ReaderOptions{Limits: pack.ReaderLimits{
+	Assert.Equal(t, pack.ReaderOptions{Limits: pack.ReaderLimits{
 		ContainerBytes: 8192,
 		FooterBytes:    2048,
 		Entries:        32,
@@ -114,14 +116,15 @@ func TestOpenRequiresAttachedOwnership(t *testing.T) {
 			StoredSize:  int64(len(content)),
 		},
 	)
-	require.ErrorIs(t, err, packstore.ErrStoreFenced)
+	Require.ErrorIs(t, err, packstore.ErrStoreFenced)
 
 	_, _, err = backend.OpenPack(context.Background(), entry.Hash, entry)
-	require.ErrorIs(t, err, packstore.ErrStoreFenced)
-	assert.Zero(t, requests)
+	Require.ErrorIs(t, err, packstore.ErrStoreFenced)
+	Assert.Zero(t, requests)
 }
 
 func TestOpenPackEnforcesConfiguredBlobLimit(t *testing.T) {
+	require := Require.New(t)
 	content := []byte("blob exceeds configured S3 reader limit")
 	_, packBytes, indexed := makePack(t, content)
 	limits := packstore.DefaultLimits()
@@ -154,14 +157,16 @@ func TestOpenPackEnforcesConfiguredBlobLimit(t *testing.T) {
 		indexed,
 	)
 
-	require.ErrorIs(t, err, packstore.ErrBlobTooLarge)
-	require.NotErrorIs(t, err, packstore.ErrPhysicalCorrupt)
+	require.ErrorIs(err, packstore.ErrBlobTooLarge)
+	require.NotErrorIs(err, packstore.ErrPhysicalCorrupt)
 	var limit *packstore.LimitError
-	require.ErrorAs(t, err, &limit)
-	assert.Equal(t, packstore.LimitBlobRawBytes, limit.Dimension)
+	require.ErrorAs(err, &limit)
+	Assert.Equal(t, packstore.LimitBlobRawBytes, limit.Dimension)
 }
 
 func TestOpenPackIgnoresUnselectedEntryBlobLimit(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	selected := []byte("selected blob")
 	unselected := bytes.Repeat([]byte("unrelated oversized footer entry"), 32)
 	_, packBytes, entries := makePackEntries(t, selected, unselected)
@@ -187,14 +192,16 @@ func TestOpenPackIgnoresUnselectedEntryBlobLimit(t *testing.T) {
 	attachTestBackend(backend)
 
 	stream, size, err := backend.OpenPack(context.Background(), entries[0].Hash, entries[0])
-	require.NoError(t, err)
+	require.NoError(err)
 	got, err := io.ReadAll(stream)
-	require.NoError(t, errors.Join(err, stream.Close()))
-	assert.Equal(t, selected, got)
-	assert.Equal(t, int64(len(selected)), size)
+	require.NoError(errors.Join(err, stream.Close()))
+	assert.Equal(selected, got)
+	assert.Equal(int64(len(selected)), size)
 }
 
 func TestS3DuplicatePackEntriesFallBackToHealthyCandidate(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	content := []byte("duplicate S3 footer fallback")
 	_, packBytes, entries := makePackEntries(t, content, content)
 	corrupt := newHTTPBackend(packstore.DefaultLimits(), func(request *http.Request) (*http.Response, error) {
@@ -227,29 +234,31 @@ func TestS3DuplicatePackEntriesFallBackToHealthyCandidate(t *testing.T) {
 		staticReadBackendRegistry{"corrupt": corrupt, "healthy": healthy},
 		packstore.MultiStoreOptions{},
 	)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	require.NoError(err)
+	t.Cleanup(func() { require.NoError(store.Close()) })
 
 	stream, size, err := store.OpenStream(context.Background(), entries[0].Hash)
-	require.NoError(t, err)
+	require.NoError(err)
 	got, err := io.ReadAll(stream)
-	require.NoError(t, errors.Join(err, stream.Close()))
-	assert.Equal(t, content, got)
-	assert.Equal(t, int64(len(content)), size)
-	assert.Equal(t, 1, healthy.opens)
+	require.NoError(errors.Join(err, stream.Close()))
+	assert.Equal(content, got)
+	assert.Equal(int64(len(content)), size)
+	assert.Equal(1, healthy.opens)
 
 	_, _, err = corrupt.OpenPack(context.Background(), entries[0].Hash, entries[0])
-	require.ErrorIs(t, err, packstore.ErrPhysicalCorrupt)
-	require.ErrorIs(t, err, pack.ErrCorrupt)
+	require.ErrorIs(err, packstore.ErrPhysicalCorrupt)
+	require.ErrorIs(err, pack.ErrCorrupt)
 }
 
 func TestOversizedS3ReplicaFallsBackToHealthyCandidate(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	content := []byte("healthy replica content")
 	_, packBytes, indexed := makePack(t, content)
 	limits := packstore.DefaultLimits()
 	limits.PackBytes = int64(len(packBytes) - 1)
 	oversized := newHTTPBackend(limits, func(request *http.Request) (*http.Response, error) {
-		require.Equal(t, http.MethodHead, request.Method)
+		require.Equal(http.MethodHead, request.Method)
 		header := make(http.Header)
 		header.Set("Content-Length", strconv.Itoa(len(packBytes)))
 		return &http.Response{
@@ -274,17 +283,17 @@ func TestOversizedS3ReplicaFallsBackToHealthyCandidate(t *testing.T) {
 		},
 		packstore.MultiStoreOptions{},
 	)
-	require.NoError(t, err)
+	require.NoError(err)
 
 	stream, size, err := store.OpenStream(context.Background(), indexed.Hash)
-	require.NoError(t, err)
+	require.NoError(err)
 	got, err := io.ReadAll(stream)
-	require.NoError(t, err)
-	require.NoError(t, stream.Close())
+	require.NoError(err)
+	require.NoError(stream.Close())
 
-	assert.Equal(t, int64(len(content)), size)
-	assert.Equal(t, content, got)
-	assert.Equal(t, 1, healthy.opens)
+	assert.Equal(int64(len(content)), size)
+	assert.Equal(content, got)
+	assert.Equal(1, healthy.opens)
 }
 
 func TestS3PackRepresentationLimitsFallBackToHealthyCandidate(t *testing.T) {
@@ -315,6 +324,8 @@ func TestS3PackRepresentationLimitsFallBackToHealthyCandidate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			assert := Assert.New(t)
+			require := Require.New(t)
 			limited := newHTTPBackend(tt.limit(packstore.DefaultLimits()), func(request *http.Request) (*http.Response, error) {
 				header := make(http.Header)
 				header.Set("Content-Length", strconv.Itoa(len(packBytes)))
@@ -348,22 +359,22 @@ func TestS3PackRepresentationLimitsFallBackToHealthyCandidate(t *testing.T) {
 				staticReadBackendRegistry{"limited": limited, "healthy": healthy},
 				packstore.MultiStoreOptions{},
 			)
-			require.NoError(t, err)
-			t.Cleanup(func() { require.NoError(t, store.Close()) })
+			require.NoError(err)
+			t.Cleanup(func() { require.NoError(store.Close()) })
 
 			stream, size, err := store.OpenStream(context.Background(), entries[0].Hash)
-			require.NoError(t, err)
+			require.NoError(err)
 			got, err := io.ReadAll(stream)
-			require.NoError(t, errors.Join(err, stream.Close()))
-			assert.Equal(t, content, got)
-			assert.Equal(t, int64(len(content)), size)
+			require.NoError(errors.Join(err, stream.Close()))
+			assert.Equal(content, got)
+			assert.Equal(int64(len(content)), size)
 
 			_, _, err = limited.OpenPack(context.Background(), entries[0].Hash, entries[0])
-			require.ErrorIs(t, err, packstore.ErrPhysicalCorrupt)
-			require.ErrorIs(t, err, packstore.ErrBlobTooLarge)
+			require.ErrorIs(err, packstore.ErrPhysicalCorrupt)
+			require.ErrorIs(err, packstore.ErrBlobTooLarge)
 			var limit *packstore.LimitError
-			require.ErrorAs(t, err, &limit)
-			assert.Equal(t, tt.dimension, limit.Dimension)
+			require.ErrorAs(err, &limit)
+			assert.Equal(tt.dimension, limit.Dimension)
 		})
 	}
 }
@@ -373,8 +384,8 @@ func TestPackBodyClassifiesTerminalReadCorruption(t *testing.T) {
 
 	_, err := io.ReadAll(body)
 
-	require.ErrorIs(t, err, pack.ErrCorrupt)
-	require.ErrorIs(t, err, packstore.ErrPhysicalCorrupt)
+	Require.ErrorIs(t, err, pack.ErrCorrupt)
+	Require.ErrorIs(t, err, packstore.ErrPhysicalCorrupt)
 }
 
 func TestPackBodyClassifiesTerminalVerifyCorruption(t *testing.T) {
@@ -382,8 +393,8 @@ func TestPackBodyClassifiesTerminalVerifyCorruption(t *testing.T) {
 
 	err := body.Verify()
 
-	require.ErrorIs(t, err, pack.ErrCorrupt)
-	require.ErrorIs(t, err, packstore.ErrPhysicalCorrupt)
+	Require.ErrorIs(t, err, pack.ErrCorrupt)
+	Require.ErrorIs(t, err, packstore.ErrPhysicalCorrupt)
 }
 
 func TestPackBodyDoesNotClassifyIncompleteCloseAsCorrupt(t *testing.T) {
@@ -391,8 +402,8 @@ func TestPackBodyDoesNotClassifyIncompleteCloseAsCorrupt(t *testing.T) {
 
 	err := body.Close()
 
-	require.ErrorIs(t, err, pack.ErrVerificationIncomplete)
-	require.NotErrorIs(t, err, packstore.ErrPhysicalCorrupt)
+	Require.ErrorIs(t, err, pack.ErrVerificationIncomplete)
+	Require.NotErrorIs(t, err, packstore.ErrPhysicalCorrupt)
 }
 
 func TestPackBodyPreservesVerifiedEOF(t *testing.T) {
@@ -400,12 +411,14 @@ func TestPackBodyPreservesVerifiedEOF(t *testing.T) {
 
 	got, err := io.ReadAll(body)
 
-	require.NoError(t, err)
-	assert.Equal(t, []byte("terminal S3 pack integrity"), got)
-	assert.True(t, body.Verified())
+	Require.NoError(t, err)
+	Assert.Equal(t, []byte("terminal S3 pack integrity"), got)
+	Assert.True(t, body.Verified())
 }
 
 func TestS3TerminalCorruptionDemotesGeneration(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	body, indexed := newPackBody(t, true)
 	primary := packstore.ReadLocation{
 		StoreID: "primary", Generation: "primary-1", Pack: &indexed,
@@ -416,13 +429,13 @@ func TestS3TerminalCorruptionDemotesGeneration(t *testing.T) {
 	health := packstore.NewHealth()
 
 	err := body.Verify()
-	require.ErrorIs(t, err, packstore.ErrPhysicalCorrupt)
+	require.ErrorIs(err, packstore.ErrPhysicalCorrupt)
 	health.Observe(indexed.Hash, primary, err)
 
 	ordered := health.Order(indexed.Hash, []packstore.ReadLocation{primary, secondary})
-	require.Len(t, ordered, 2)
-	assert.Equal(t, secondary, ordered[0])
-	assert.Equal(t, primary, ordered[1])
+	require.Len(ordered, 2)
+	assert.Equal(secondary, ordered[0])
+	assert.Equal(primary, ordered[1])
 }
 
 func newPackBody(
@@ -436,11 +449,11 @@ func newPackBody(
 		packBytes[indexed.Offset] ^= 0xff
 	}
 	path := filepath.Join(t.TempDir(), packID+".pack")
-	require.NoError(t, os.WriteFile(path, packBytes, 0o600))
+	Require.NoError(t, os.WriteFile(path, packBytes, 0o600))
 	reader, err := pack.OpenReader(path, nil)
-	require.NoError(t, err)
+	Require.NoError(t, err)
 	blob, err := reader.OpenBlob(context.Background(), reader.Entries()[0])
-	require.NoError(t, err)
+	Require.NoError(t, err)
 	t.Cleanup(func() {
 		_ = blob.Close()
 		_ = reader.Close()

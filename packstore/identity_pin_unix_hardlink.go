@@ -106,6 +106,9 @@ func openHardlinkIdentityPin(path string) (identityPin, fs.FileInfo, error) {
 	if identityErr := errors.Join(pinErr, sourceErr); identityErr != nil {
 		return nil, nil, errors.Join(identityErr, pin.Close())
 	}
+	if pinIdentity == nil || sourceIdentity == nil {
+		return nil, nil, errors.Join(fmt.Errorf("packstore: hard-link identity pin for %s has incomplete state", path), pin.Close())
+	}
 	if !os.SameFile(pinIdentity, sourceIdentity) {
 		return nil, nil, errors.Join(errIdentityChanged, pin.Close())
 	}

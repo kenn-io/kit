@@ -681,6 +681,9 @@ func (s *verifyState) queuePageRunChecks(m *Manifest, pm *PageMap, hm *PageHashM
 // rather than recording them, so drain workers can call it without holding
 // the state lock.
 func pageRunProblems(id pack.BlobID, raw []byte, c pageRunCheck) []string {
+	if raw == nil {
+		raw = []byte{}
+	}
 	length := uint64(c.run.PageCount) * uint64(c.pageSize)
 	blobLen := uint64(len(raw))
 	if c.run.BlobOffset > blobLen || length > blobLen-c.run.BlobOffset {

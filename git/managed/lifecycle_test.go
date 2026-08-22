@@ -243,7 +243,7 @@ func TestCreateWorktreeOnDiskUsesExecutionPolicy(t *testing.T) {
 		},
 	})
 	require.NoError(err)
-	assert.Greater(gitRuns, 0)
+	assert.Positive(gitRuns)
 	assert.Equal(1, hookRuns)
 }
 
@@ -1059,7 +1059,7 @@ func TestLifecycleHookPreservesContextCancellation(t *testing.T) {
 	require.Error(err)
 	assert.ErrorIs(err, context.Canceled)
 	var hookErr *HookError
-	assert.False(errors.As(err, &hookErr))
+	assert.NotErrorAs(err, &hookErr)
 }
 
 func TestLifecycleHookExitHelper(t *testing.T) {

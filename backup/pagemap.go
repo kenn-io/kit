@@ -241,7 +241,7 @@ func ApplyPageMapDelta(base, delta *PageMap) (*PageMap, error) {
 // MaterializePageMap walks a newest-to-oldest blob chain to a keyframe and
 // replays the deltas oldest-first.
 func MaterializePageMap(fetch func(pack.BlobID) ([]byte, error), chain []pack.BlobID) (*PageMap, error) {
-	var deltas []*PageMap
+	deltas := make([]*PageMap, 0)
 	for i, id := range chain {
 		data, err := fetch(id)
 		if err != nil {
@@ -259,6 +259,9 @@ func MaterializePageMap(fetch func(pack.BlobID) ([]byte, error), chain []pack.Bl
 				}
 			}
 			return m, nil
+		}
+		if m == nil {
+			return nil, fmt.Errorf("backup: page-map chain blob %d (%s) decoded to no delta", i, id)
 		}
 		deltas = append(deltas, m)
 	}

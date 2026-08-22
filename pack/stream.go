@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"hash"
 	"hash/crc32"
 	"io"
 	"os"
@@ -210,10 +209,9 @@ func PrepareBlob(
 	rawCRC := crc32.New(crc32cTable)
 	rawHash := sha256.New()
 	writers := []io.Writer{rawFile, rawCRC, rawHash}
-	var compressedCRC hash.Hash32
+	compressedCRC := crc32.New(crc32cTable)
 	var encoder *zstd.Encoder
 	if compressedFile != nil {
-		compressedCRC = crc32.New(crc32cTable)
 		encoder, err = zstd.NewWriter(io.MultiWriter(compressedFile, compressedCRC),
 			zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(normalizeZstdLevel(zstdLevel))),
 			zstd.WithEncoderConcurrency(1),

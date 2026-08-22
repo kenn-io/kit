@@ -52,7 +52,7 @@ priority = 0
 id = "golangci-lint"
 name = "golangci-lint"
 language = "system"
-entry = "golangci-lint run"
+entry = "make lint-golangci"
 files = "^(go\\.mod|go\\.sum|.*\\.go)$"
 pass_filenames = false
 require_serial = true
@@ -72,7 +72,7 @@ priority = 15
 id = "nilaway"
 name = "nilaway"
 language = "system"
-entry = "go tool nilaway -include-pkgs=go.kenn.io/kit ./..."
+entry = "make nilaway"
 stages = ["pre-push"]
 files = "^(go\\.mod|go\\.sum|.*\\.go)$"
 pass_filenames = false

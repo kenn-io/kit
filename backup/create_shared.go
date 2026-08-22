@@ -122,6 +122,9 @@ func preparePortableMetadata(
 		}
 		return pack.BlobID{}, 0, fmt.Errorf("backup: preparing portable metadata: %w", err)
 	}
+	if prepared == nil {
+		return pack.BlobID{}, 0, fmt.Errorf("backup: preparing portable metadata returned no result")
+	}
 	metadataID := prepared.ID()
 	if _, err := appender.AddPrepared(ctx, prepared); err != nil {
 		return pack.BlobID{}, 0, err

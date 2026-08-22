@@ -9,31 +9,33 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	Assert "github.com/stretchr/testify/assert"
+	Require "github.com/stretchr/testify/require"
 )
 
 func TestFilesystemNamespaceInspectionRejectsUnmarkedContent(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	layout := layoutForStoreTest(t)
 	backend, err := NewFilesystemBackend(layout, FilesystemBackendOptions{})
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, backend.Close()) })
+	require.NoError(err)
+	t.Cleanup(func() { require.NoError(backend.Close()) })
 
 	empty, err := backend.NamespaceEmpty(t.Context())
-	require.NoError(t, err)
-	assert.True(t, empty)
-	require.NoError(t, os.WriteFile(
+	require.NoError(err)
+	assert.True(empty)
+	require.NoError(os.WriteFile(
 		filepath.Join(layout.Root(), "operator-note"), []byte("keep"), 0o600,
 	))
 
 	empty, err = backend.NamespaceEmpty(t.Context())
-	require.NoError(t, err)
-	assert.False(t, empty)
+	require.NoError(err)
+	assert.False(empty)
 }
 
 func TestFilesystemOwnershipCreateReattachAndTakeover(t *testing.T) {
-	assert := assert.New(t)
-	require := require.New(t)
+	assert := Assert.New(t)
+	require := Require.New(t)
 	ctx := context.Background()
 	layout := layoutForStoreTest(t)
 	initial := Ownership{
@@ -85,7 +87,7 @@ func TestFilesystemOwnershipCreateReattachAndTakeover(t *testing.T) {
 }
 
 func TestFilesystemOwnershipMismatchFencesDestructiveWork(t *testing.T) {
-	require := require.New(t)
+	require := Require.New(t)
 	ctx := context.Background()
 	layout := layoutForStoreTest(t)
 	initial := Ownership{
@@ -134,7 +136,7 @@ func TestMarshalOwnershipRejectsUnreadableMarkerSize(t *testing.T) {
 
 	_, err := MarshalOwnership(value)
 
-	require.ErrorContains(t, err, "ownership marker size")
+	Require.ErrorContains(t, err, "ownership marker size")
 }
 
 func assertOwnershipMismatch(
@@ -145,9 +147,9 @@ func assertOwnershipMismatch(
 ) {
 	t.Helper()
 	var mismatch *OwnershipMismatchError
-	require.ErrorAs(t, err, &mismatch)
-	require.NotNil(t, mismatch)
-	assert.Equal(t, expected, mismatch.Expected)
-	assert.Equal(t, actual, mismatch.Actual)
-	assert.ErrorIs(t, err, ErrStoreFenced)
+	Require.ErrorAs(t, err, &mismatch)
+	Require.NotNil(t, mismatch)
+	Assert.Equal(t, expected, mismatch.Expected)
+	Assert.Equal(t, actual, mismatch.Actual)
+	Assert.ErrorIs(t, err, ErrStoreFenced)
 }

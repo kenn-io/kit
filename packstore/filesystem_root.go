@@ -85,6 +85,12 @@ func rootDirNoSymlinks(root *os.Root, rel string, create, durable bool) (*os.Roo
 			}
 			return nil, err
 		}
+		if before == nil {
+			if parentOwned {
+				_ = parent.Close()
+			}
+			return nil, fmt.Errorf("packstore: filesystem directory %q has no identity", part)
+		}
 		if before.Mode()&os.ModeSymlink != 0 || !before.IsDir() {
 			if parentOwned {
 				_ = parent.Close()
@@ -100,7 +106,7 @@ func rootDirNoSymlinks(root *os.Root, rel string, create, durable bool) (*os.Roo
 		}
 		held, heldErr := child.Stat(".")
 		after, afterErr := parent.Lstat(part)
-		if heldErr != nil || afterErr != nil || after.Mode()&os.ModeSymlink != 0 ||
+		if heldErr != nil || afterErr != nil || held == nil || after == nil || after.Mode()&os.ModeSymlink != 0 ||
 			!after.IsDir() || !os.SameFile(before, held) || !os.SameFile(held, after) {
 			closeErr := child.Close()
 			if parentOwned {

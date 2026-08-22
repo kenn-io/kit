@@ -491,6 +491,9 @@ func (s *Store) openLooseObjectAt(
 		if err != nil {
 			return nil, markPhysicalSourceNotFound(err)
 		}
+		if info == nil {
+			return nil, errors.Join(fmt.Errorf("packstore: compressed loose object has no file identity"), f.Close())
+		}
 		header := make([]byte, compressedLooseHeaderSize)
 		if _, readErr := io.ReadFull(f, header); readErr != nil {
 			return nil, errors.Join(
@@ -514,6 +517,9 @@ func (s *Store) openLooseObjectAt(
 		if err != nil {
 			return nil, markPhysicalSourceNotFound(err)
 		}
+		if info == nil {
+			return nil, errors.Join(fmt.Errorf("packstore: raw loose object has no file identity"), f.Close())
+		}
 		return &looseObject{
 			file: f, encoding: LooseEncodingRaw,
 			logicalSize: info.Size(), storedSize: info.Size(),
@@ -531,6 +537,9 @@ func openLooseFile(path string) (*os.File, fs.FileInfo, error) {
 	info, err := f.Stat()
 	if err != nil {
 		return nil, nil, errors.Join(err, f.Close())
+	}
+	if info == nil {
+		return nil, nil, errors.Join(fmt.Errorf("packstore: %s has no file identity", path), f.Close())
 	}
 	if err := validateRegularNoFollow(path, info); err != nil {
 		return nil, nil, errors.Join(err, f.Close())

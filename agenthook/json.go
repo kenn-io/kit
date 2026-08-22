@@ -34,6 +34,9 @@ func planNestedJSONConfig(
 		}
 	}
 	if !uninstall {
+		if hooksObject == nil {
+			return nil, false, fmt.Errorf("agent hook config %s has no hooks object", path)
+		}
 		for _, hook := range hooks {
 			entry := map[string]any{}
 			if hook.matcher != "" {

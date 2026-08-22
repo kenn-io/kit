@@ -150,8 +150,7 @@ func classifyError(operation string, err error) error {
 }
 
 func statusCode(err error) int {
-	var response *smithyhttp.ResponseError
-	if errors.As(err, &response) {
+	if response, ok := errors.AsType[*smithyhttp.ResponseError](err); ok {
 		return response.HTTPStatusCode()
 	}
 	return 0

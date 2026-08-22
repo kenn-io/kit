@@ -1,6 +1,7 @@
 version: "2"
 run:
   tests: true
+  go: "1.27"
 linters:
   default: none
   enable:
@@ -33,6 +34,10 @@ linters:
           alias: gittest
         - pkg: go.kenn.io/kit/git/worktree
           alias: gitworktree
+    testifylint:
+      disable:
+        - float-compare
+        - require-error
   exclusions:
     generated: lax
     presets:
@@ -47,6 +52,10 @@ linters:
       - linters:
           - modernize
         text: "omitzero:"
+      - linters:
+          - staticcheck
+        path: ^(agenthook/|git/managed/untrusted_tree\.go$)
+        text: "ST1005:"
     paths:
       - third_party$
       - builtin$

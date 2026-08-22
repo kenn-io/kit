@@ -7,14 +7,14 @@ import (
 	"io"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	Assert "github.com/stretchr/testify/assert"
+	Require "github.com/stretchr/testify/require"
 	"go.kenn.io/kit/pack"
 )
 
 func TestMultiStoreSelectsFirstHealthyCandidate(t *testing.T) {
-	assert := assert.New(t)
-	require := require.New(t)
+	assert := Assert.New(t)
+	require := Require.New(t)
 	content := []byte("multi-location content")
 	hash := hashForTest(content)
 	primary := &recordingReadBackend{content: content}
@@ -48,8 +48,8 @@ func TestMultiStoreSelectsFirstHealthyCandidate(t *testing.T) {
 }
 
 func TestMultiStoreOpenFailureFallsThroughBeforePayload(t *testing.T) {
-	assert := assert.New(t)
-	require := require.New(t)
+	assert := Assert.New(t)
+	require := Require.New(t)
 	content := []byte("secondary content")
 	hash := hashForTest(content)
 	primary := &recordingReadBackend{
@@ -84,6 +84,8 @@ func TestMultiStoreOpenFailureFallsThroughBeforePayload(t *testing.T) {
 }
 
 func TestMultiStoreRefreshesChangedResolutionAfterMissingLocation(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	content := []byte("migrated content")
 	hash := hashForTest(content)
 	oldLocation := ReadLocation{
@@ -111,21 +113,23 @@ func TestMultiStoreRefreshesChangedResolutionAfterMissingLocation(t *testing.T) 
 		staticBackendRegistry{"old": oldBackend, "new": newBackend},
 		MultiStoreOptions{},
 	)
-	require.NoError(t, err)
+	require.NoError(err)
 
 	stream, _, err := store.OpenStream(context.Background(), hash)
-	require.NoError(t, err)
+	require.NoError(err)
 	got, err := io.ReadAll(stream)
-	require.NoError(t, err)
-	require.NoError(t, stream.Close())
+	require.NoError(err)
+	require.NoError(stream.Close())
 
-	assert.Equal(t, content, got)
-	assert.Equal(t, 2, resolver.calls)
-	assert.Equal(t, 1, oldBackend.opens)
-	assert.Equal(t, 1, newBackend.opens)
+	assert.Equal(content, got)
+	assert.Equal(2, resolver.calls)
+	assert.Equal(1, oldBackend.opens)
+	assert.Equal(1, newBackend.opens)
 }
 
 func TestMultiStoreRefreshesAfterMixedCorruptAndMissingLocations(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	content := []byte("migrated content after mixed failures")
 	hash := hashForTest(content)
 	corruptLocation := ReadLocation{
@@ -156,24 +160,24 @@ func TestMultiStoreRefreshesAfterMixedCorruptAndMissingLocations(t *testing.T) {
 		},
 		MultiStoreOptions{},
 	)
-	require.NoError(t, err)
+	require.NoError(err)
 
 	stream, _, err := store.OpenStream(context.Background(), hash)
-	require.NoError(t, err)
+	require.NoError(err)
 	got, err := io.ReadAll(stream)
-	require.NoError(t, err)
-	require.NoError(t, stream.Close())
+	require.NoError(err)
+	require.NoError(stream.Close())
 
-	assert.Equal(t, content, got)
-	assert.Equal(t, 2, resolver.calls)
-	assert.Equal(t, 1, corruptBackend.opens)
-	assert.Equal(t, 1, missingBackend.opens)
-	assert.Equal(t, 1, newBackend.opens)
+	assert.Equal(content, got)
+	assert.Equal(2, resolver.calls)
+	assert.Equal(1, corruptBackend.opens)
+	assert.Equal(1, missingBackend.opens)
+	assert.Equal(1, newBackend.opens)
 }
 
 func TestMultiStoreNextReadDemotesCorruptGeneration(t *testing.T) {
-	assert := assert.New(t)
-	require := require.New(t)
+	assert := Assert.New(t)
+	require := Require.New(t)
 	content := []byte("redundant content")
 	hash := hashForTest(content)
 	primary := &recordingReadBackend{
@@ -217,8 +221,8 @@ func TestMultiStoreNextReadDemotesCorruptGeneration(t *testing.T) {
 }
 
 func TestMultiStoreGenerationChangeClearsDemotion(t *testing.T) {
-	assert := assert.New(t)
-	require := require.New(t)
+	assert := Assert.New(t)
+	require := Require.New(t)
 	content := []byte("repaired content")
 	hash := hashForTest(content)
 	primary := &recordingReadBackend{
@@ -268,8 +272,8 @@ func TestMultiStoreGenerationChangeClearsDemotion(t *testing.T) {
 }
 
 func TestMultiStoreExhaustedPrecedence(t *testing.T) {
-	assert := assert.New(t)
-	require := require.New(t)
+	assert := Assert.New(t)
+	require := Require.New(t)
 	hash := hashForTest([]byte("exhausted content"))
 	resolution := Resolution{Member: true}
 	backends := staticBackendRegistry{}
@@ -315,8 +319,8 @@ func TestMultiStoreExhaustedPrecedence(t *testing.T) {
 }
 
 func TestMultiStoreOpenReturnsVerifiedSeekableContent(t *testing.T) {
-	assert := assert.New(t)
-	require := require.New(t)
+	assert := Assert.New(t)
+	require := Require.New(t)
 	content := []byte("seekable multi-location content")
 	hash := hashForTest(content)
 	store, err := NewMultiStore(
@@ -347,8 +351,8 @@ func TestMultiStoreOpenReturnsVerifiedSeekableContent(t *testing.T) {
 }
 
 func TestMultiStoreReadBoundedVerifiesWithinLimit(t *testing.T) {
-	assert := assert.New(t)
-	require := require.New(t)
+	assert := Assert.New(t)
+	require := Require.New(t)
 	content := []byte("bounded multi-location content")
 	hash := hashForTest(content)
 	store, err := NewMultiStore(
@@ -402,8 +406,8 @@ func TestMultiStoreReadBoundedPreflightsCatalogStoredSize(t *testing.T) {
 	}
 	for name, location := range locations {
 		t.Run(name, func(t *testing.T) {
-			assert := assert.New(t)
-			require := require.New(t)
+			assert := Assert.New(t)
+			require := Require.New(t)
 			backend := &recordingReadBackend{content: content}
 			store, err := NewMultiStore(
 				staticLocationResolver{resolution: Resolution{
@@ -429,6 +433,8 @@ func TestMultiStoreReadBoundedPreflightsCatalogStoredSize(t *testing.T) {
 }
 
 func TestMultiStoreReadBoundedFallsBackAfterStoredSizeLimit(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	content := []byte("stored representation fallback")
 	hash := hashForTest(content)
 	maxBytes := int64(len(content))
@@ -457,20 +463,20 @@ func TestMultiStoreReadBoundedFallsBackAfterStoredSizeLimit(t *testing.T) {
 		staticBackendRegistry{"oversized": oversized, "healthy": healthy},
 		MultiStoreOptions{},
 	)
-	require.NoError(t, err)
+	require.NoError(err)
 
 	got, size, err := store.ReadBounded(context.Background(), hash, maxBytes)
 
-	require.NoError(t, err)
-	assert.Equal(t, content, got)
-	assert.Equal(t, maxBytes, size)
-	assert.Zero(t, oversized.opens)
-	assert.Equal(t, 1, healthy.opens)
+	require.NoError(err)
+	assert.Equal(content, got)
+	assert.Equal(maxBytes, size)
+	assert.Zero(oversized.opens)
+	assert.Equal(1, healthy.opens)
 }
 
 func TestMultiStoreRejectsMismatchedPackedCandidate(t *testing.T) {
-	assert := assert.New(t)
-	require := require.New(t)
+	assert := Assert.New(t)
+	require := Require.New(t)
 	content := []byte("requested content")
 	hash := hashForTest(content)
 	otherHash := hashForTest([]byte("different content"))
@@ -501,8 +507,8 @@ func TestMultiStoreRejectsMismatchedPackedCandidate(t *testing.T) {
 }
 
 func TestMultiStoreOpenRejectsNilBackendStream(t *testing.T) {
-	assert := assert.New(t)
-	require := require.New(t)
+	assert := Assert.New(t)
+	require := Require.New(t)
 	hash := hashForTest([]byte("nil backend stream"))
 	store, err := NewMultiStore(
 		staticLocationResolver{resolution: Resolution{
@@ -526,8 +532,8 @@ func TestMultiStoreOpenRejectsNilBackendStream(t *testing.T) {
 }
 
 func TestMultiStoreRejectsUnknownLooseEncoding(t *testing.T) {
-	assert := assert.New(t)
-	require := require.New(t)
+	assert := Assert.New(t)
+	require := Require.New(t)
 	hash := hashForTest([]byte("unknown encoding"))
 	backend := &recordingReadBackend{content: []byte("unknown encoding")}
 	store, err := NewMultiStore(
@@ -566,20 +572,20 @@ func TestMultiStoreRejectsAmbiguousLooseLocation(t *testing.T) {
 		staticBackendRegistry{"archive": backend},
 		MultiStoreOptions{},
 	)
-	require.NoError(t, err)
+	Require.NoError(t, err)
 
 	stream, _, err := store.OpenStream(context.Background(), hash)
 	if stream != nil {
 		t.Cleanup(func() { _ = stream.Close() })
 	}
 
-	require.ErrorIs(t, err, ErrInvalidPolicy)
-	assert.Zero(t, backend.opens)
+	Require.ErrorIs(t, err, ErrInvalidPolicy)
+	Assert.Zero(t, backend.opens)
 }
 
 func TestMultiStoreRejectsBackendSizeMismatch(t *testing.T) {
-	assert := assert.New(t)
-	require := require.New(t)
+	assert := Assert.New(t)
+	require := Require.New(t)
 	content := []byte("size mismatch")
 	hash := hashForTest(content)
 	store, err := NewMultiStore(

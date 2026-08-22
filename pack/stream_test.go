@@ -12,8 +12,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	Assert "github.com/stretchr/testify/assert"
+	Require "github.com/stretchr/testify/require"
 )
 
 func TestAppendStreamRoundTrip(t *testing.T) {
@@ -40,10 +40,12 @@ func TestAppendStreamRoundTrip(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			assert := Assert.New(t)
+			require := Require.New(t)
 			t.Parallel()
 			dir := t.TempDir()
 			writer, err := NewWriter(dir, WriterOptions{})
-			require.NoError(t, err)
+			require.NoError(err)
 			t.Cleanup(func() { _ = writer.Abort() })
 
 			id := ComputeBlobID(tt.content)
@@ -52,37 +54,37 @@ func TestAppendStreamRoundTrip(t *testing.T) {
 				ScratchDir:   dir,
 				ScratchBytes: uint64(len(tt.content))*3 + 1024,
 			})
-			require.NoError(t, err)
-			assert.Equal(t, tt.compressed, entry.Flags&BlobCompressed != 0)
-			assert.Equal(t, id, entry.ID)
+			require.NoError(err)
+			assert.Equal(tt.compressed, entry.Flags&BlobCompressed != 0)
+			assert.Equal(id, entry.ID)
 
 			matches, err := filepath.Glob(filepath.Join(dir, "pack-prepared-*"))
-			require.NoError(t, err)
-			assert.Empty(t, matches)
+			require.NoError(err)
+			assert.Empty(matches)
 
 			final := filepath.Join(dir, writer.ID()+".pack")
 			_, err = writer.Seal(final)
-			require.NoError(t, err)
+			require.NoError(err)
 			reader, err := OpenReader(final, nil)
-			require.NoError(t, err)
+			require.NoError(err)
 			if tt.compressed {
 				window, windowErr := reader.streamingWindow(reader.Entries()[0])
-				require.NoError(t, windowErr)
-				assert.LessOrEqual(t, window, uint64(streamMaxWindowSize))
+				require.NoError(windowErr)
+				assert.LessOrEqual(window, uint64(streamMaxWindowSize))
 			}
 			stream, err := reader.OpenBlob(context.Background(), reader.Entries()[0])
-			require.NoError(t, err)
+			require.NoError(err)
 			got, err := io.ReadAll(stream)
-			require.NoError(t, err)
-			assert.Equal(t, tt.content, got)
-			assert.True(t, stream.Verified())
-			require.NoError(t, stream.Verify())
-			require.NoError(t, stream.Close())
+			require.NoError(err)
+			assert.Equal(tt.content, got)
+			assert.True(stream.Verified())
+			require.NoError(stream.Verify())
+			require.NoError(stream.Close())
 
 			buffered, err := reader.ReadBlob(reader.Entries()[0])
-			require.NoError(t, err)
-			assert.Equal(t, tt.content, buffered)
-			require.NoError(t, reader.Close())
+			require.NoError(err)
+			assert.Equal(tt.content, buffered)
+			require.NoError(reader.Close())
 		})
 	}
 }
@@ -102,28 +104,30 @@ func TestAppendStreamAboveLegacyCeiling(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			assert := Assert.New(t)
+			require := Require.New(t)
 			dir := t.TempDir()
 			writer, err := NewWriter(dir, WriterOptions{})
-			require.NoError(t, err)
+			require.NoError(err)
 			t.Cleanup(func() { _ = writer.Abort() })
 			source := io.LimitReader(tt.source(), int64(size))
 			entry, err := writer.AppendStream(context.Background(), source, size, AppendStreamOptions{
 				ScratchDir: dir, ScratchBytes: size*2 + 64<<20,
 			})
-			require.NoError(t, err)
-			assert.Equal(t, tt.compressed, entry.Flags&BlobCompressed != 0)
+			require.NoError(err)
+			assert.Equal(tt.compressed, entry.Flags&BlobCompressed != 0)
 			final := filepath.Join(dir, writer.ID()+".pack")
 			_, err = writer.Seal(final)
-			require.NoError(t, err)
+			require.NoError(err)
 
 			reader, err := OpenReader(final, nil)
-			require.NoError(t, err)
+			require.NoError(err)
 			stream, err := reader.OpenBlob(context.Background(), reader.Entries()[0])
-			require.NoError(t, err)
-			require.NoError(t, stream.Verify())
-			assert.True(t, stream.Verified())
-			require.NoError(t, stream.Close())
-			require.NoError(t, reader.Close())
+			require.NoError(err)
+			require.NoError(stream.Verify())
+			assert.True(stream.Verified())
+			require.NoError(stream.Close())
+			require.NoError(reader.Close())
 		})
 	}
 }
@@ -135,8 +139,8 @@ func largeStreamTestBytes(t *testing.T, fallback int64) int64 {
 		return fallback
 	}
 	size, err := strconv.ParseInt(value, 10, 64)
-	require.NoError(t, err)
-	require.Positive(t, size)
+	Require.NoError(t, err)
+	Require.Positive(t, size)
 	return size
 }
 
@@ -160,21 +164,22 @@ func (r *noiseReader) Read(p []byte) (int, error) {
 }
 
 func TestAppendStreamSourceFailuresLeaveWriterUsable(t *testing.T) {
+	require := Require.New(t)
 	t.Parallel()
 	dir := t.TempDir()
 	writer, err := NewWriter(dir, WriterOptions{})
-	require.NoError(t, err)
+	require.NoError(err)
 	t.Cleanup(func() { _ = writer.Abort() })
 
 	_, err = writer.AppendStream(context.Background(), strings.NewReader("short"), 6, AppendStreamOptions{ScratchDir: dir})
-	require.ErrorIs(t, err, ErrTruncated)
+	require.ErrorIs(err, ErrTruncated)
 	_, err = writer.AppendStream(context.Background(), strings.NewReader("trailing"), 5, AppendStreamOptions{ScratchDir: dir})
-	require.ErrorIs(t, err, ErrCorrupt)
+	require.ErrorIs(err, ErrCorrupt)
 
 	content := []byte("valid after source failures")
 	entry, err := writer.AppendStream(context.Background(), bytes.NewReader(content), uint64(len(content)), AppendStreamOptions{ScratchDir: dir})
-	require.NoError(t, err)
-	assert.Equal(t, ComputeBlobID(content), entry.ID)
+	require.NoError(err)
+	Assert.Equal(t, ComputeBlobID(content), entry.ID)
 }
 
 func TestPrepareBlobCancellationCleansScratch(t *testing.T) {
@@ -183,10 +188,10 @@ func TestPrepareBlobCancellationCleansScratch(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	source := &cancelingReader{remaining: 1 << 20, cancel: cancel}
 	_, err := PrepareBlob(ctx, source, 1<<20, DefaultZstdLevel, AppendStreamOptions{ScratchDir: dir})
-	require.ErrorIs(t, err, context.Canceled)
+	Require.ErrorIs(t, err, context.Canceled)
 	matches, err := filepath.Glob(filepath.Join(dir, "pack-prepared-*"))
-	require.NoError(t, err)
-	assert.Empty(t, matches)
+	Require.NoError(t, err)
+	Assert.Empty(t, matches)
 }
 
 func TestPrepareBlobPreservesSourceError(t *testing.T) {
@@ -194,10 +199,10 @@ func TestPrepareBlobPreservesSourceError(t *testing.T) {
 	dir := t.TempDir()
 	sourceErr := errors.New("source failed")
 	_, err := PrepareBlob(context.Background(), &failingReader{err: sourceErr}, 1<<20, DefaultZstdLevel, AppendStreamOptions{ScratchDir: dir})
-	require.ErrorIs(t, err, sourceErr)
+	Require.ErrorIs(t, err, sourceErr)
 	matches, err := filepath.Glob(filepath.Join(dir, "pack-prepared-*"))
-	require.NoError(t, err)
-	assert.Empty(t, matches)
+	Require.NoError(t, err)
+	Assert.Empty(t, matches)
 }
 
 type failingReader struct {
@@ -236,6 +241,8 @@ func (r *cancelingReader) Read(p []byte) (int, error) {
 }
 
 func TestPrepareBlobLimitsAndIdentity(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	t.Parallel()
 	dir := t.TempDir()
 	content := bytes.Repeat([]byte("x"), 1<<16)
@@ -245,78 +252,82 @@ func TestPrepareBlobLimitsAndIdentity(t *testing.T) {
 		ScratchDir: dir, ScratchBytes: uint64(len(content)),
 	})
 	var limitErr *StreamLimitError
-	require.ErrorAs(t, err, &limitErr)
-	assert.Equal(t, StreamLimitScratchBytes, limitErr.Dimension)
+	require.ErrorAs(err, &limitErr)
+	assert.Equal(StreamLimitScratchBytes, limitErr.Dimension)
 
 	_, err = PrepareBlob(context.Background(), bytes.NewReader(content), uint64(len(content)), DefaultZstdLevel, AppendStreamOptions{
 		ExpectedID: &wrong, ScratchDir: dir,
 	})
-	require.ErrorIs(t, err, ErrBlobMismatch)
+	require.ErrorIs(err, ErrBlobMismatch)
 	matches, globErr := filepath.Glob(filepath.Join(dir, "pack-prepared-*"))
-	require.NoError(t, globErr)
-	assert.Empty(t, matches)
+	require.NoError(globErr)
+	assert.Empty(matches)
 
 	_, err = PrepareBlob(context.Background(), strings.NewReader(""), MaxRawLen+1, DefaultZstdLevel, AppendStreamOptions{ScratchDir: dir})
-	require.ErrorAs(t, err, &limitErr)
-	assert.Equal(t, StreamLimitRawBytes, limitErr.Dimension)
+	require.ErrorAs(err, &limitErr)
+	assert.Equal(StreamLimitRawBytes, limitErr.Dimension)
 
 	small := []byte("small")
 	prepared, err := PrepareBlob(context.Background(), bytes.NewReader(small), uint64(len(small)), DefaultZstdLevel, AppendStreamOptions{
 		ScratchDir: dir, ScratchBytes: uint64(len(small)),
 	})
-	require.NoError(t, err)
-	require.NoError(t, prepared.Close())
+	require.NoError(err)
+	require.NoError(prepared.Close())
 }
 
 func TestPreparedBlobCloseIsIdempotent(t *testing.T) {
+	require := Require.New(t)
 	t.Parallel()
 	dir := t.TempDir()
 	content := []byte("discard prepared content")
 	prepared, err := PrepareBlob(context.Background(), bytes.NewReader(content), uint64(len(content)), DefaultZstdLevel, AppendStreamOptions{ScratchDir: dir})
-	require.NoError(t, err)
-	require.NoError(t, prepared.Close())
-	require.NoError(t, prepared.Close())
+	require.NoError(err)
+	require.NoError(prepared.Close())
+	require.NoError(prepared.Close())
 	matches, err := filepath.Glob(filepath.Join(dir, "pack-prepared-*"))
-	require.NoError(t, err)
-	assert.Empty(t, matches)
+	require.NoError(err)
+	Assert.Empty(t, matches)
 }
 
 func TestAppendPreparedZeroByteWriteFailureDoesNotPoisonWriter(t *testing.T) {
+	require := Require.New(t)
 	t.Parallel()
 	dir := t.TempDir()
 	content := bytes.Repeat([]byte("prepared"), 1<<14)
 	prepared, err := PrepareBlob(context.Background(), bytes.NewReader(content), uint64(len(content)), DefaultZstdLevel, AppendStreamOptions{ScratchDir: dir})
-	require.NoError(t, err)
+	require.NoError(err)
 
 	writer, err := NewWriter(dir, WriterOptions{})
-	require.NoError(t, err)
+	require.NoError(err)
 	t.Cleanup(func() { _ = writer.Abort() })
-	require.NoError(t, writer.f.Close())
+	require.NoError(writer.f.Close())
 	_, err = writer.AppendPrepared(context.Background(), prepared)
-	require.Error(t, err)
-	assert.NoError(t, writer.err)
+	require.Error(err)
+	Assert.NoError(t, writer.err)
 }
 
 func TestAppendPreparedCancellationBeforeCopyLeavesWriterUsable(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	t.Parallel()
 	dir := t.TempDir()
 	content := bytes.Repeat([]byte("prepared cancellation"), 1<<12)
 	prepared, err := PrepareBlob(context.Background(), bytes.NewReader(content), uint64(len(content)), DefaultZstdLevel, AppendStreamOptions{ScratchDir: dir})
-	require.NoError(t, err)
+	require.NoError(err)
 
 	writer, err := NewWriter(dir, WriterOptions{})
-	require.NoError(t, err)
+	require.NoError(err)
 	t.Cleanup(func() { _ = writer.Abort() })
 	ctx, cancel := context.WithCancel(context.Background())
 	cancelBetweenChecks := &cancelAfterFirstErrContext{Context: ctx, cancel: cancel}
 	_, err = writer.AppendPrepared(cancelBetweenChecks, prepared)
-	require.ErrorIs(t, err, context.Canceled)
-	assert.Equal(t, int64(headerSize), writer.StoredSize())
+	require.ErrorIs(err, context.Canceled)
+	assert.Equal(int64(headerSize), writer.StoredSize())
 
 	later := []byte("later append")
 	entry, err := writer.Append(later)
-	require.NoError(t, err)
-	assert.Equal(t, ComputeBlobID(later), entry.ID)
+	require.NoError(err)
+	assert.Equal(ComputeBlobID(later), entry.ID)
 }
 
 type cancelAfterFirstErrContext struct {
@@ -332,324 +343,341 @@ func (c *cancelAfterFirstErrContext) Err() error {
 }
 
 func TestAppendPreparedScratchCorruptionPoisonsWriter(t *testing.T) {
+	require := Require.New(t)
 	t.Parallel()
 	dir := t.TempDir()
 	content := bytes.Repeat([]byte("prepared corruption"), 1<<12)
 	prepared, err := PrepareBlob(context.Background(), bytes.NewReader(content), uint64(len(content)), DefaultZstdLevel, AppendStreamOptions{ScratchDir: dir})
-	require.NoError(t, err)
+	require.NoError(err)
 	_, err = prepared.f.WriteAt([]byte{0xff}, 0)
-	require.NoError(t, err)
+	require.NoError(err)
 
 	writer, err := NewWriter(dir, WriterOptions{})
-	require.NoError(t, err)
+	require.NoError(err)
 	t.Cleanup(func() { _ = writer.Abort() })
 	_, firstErr := writer.AppendPrepared(context.Background(), prepared)
-	require.ErrorIs(t, firstErr, ErrCorrupt)
+	require.ErrorIs(firstErr, ErrCorrupt)
 	_, nextErr := writer.Append([]byte("later"))
-	assert.EqualError(t, nextErr, firstErr.Error())
+	Assert.EqualError(t, nextErr, firstErr.Error())
 }
 
 func TestBlobReaderTerminalVerificationAndParentLifetime(t *testing.T) {
+	require := Require.New(t)
 	t.Parallel()
 	dir := t.TempDir()
 	content := []byte("terminal verification content")
 	writer, err := NewWriter(dir, WriterOptions{})
-	require.NoError(t, err)
+	require.NoError(err)
 	entry, err := writer.Append(content)
-	require.NoError(t, err)
+	require.NoError(err)
 	final := filepath.Join(dir, writer.ID()+".pack")
 	_, err = writer.Seal(final)
-	require.NoError(t, err)
+	require.NoError(err)
 
 	reader, err := OpenReader(final, nil)
-	require.NoError(t, err)
+	require.NoError(err)
 	stream, err := reader.OpenBlob(context.Background(), entry)
-	require.NoError(t, err)
-	require.ErrorIs(t, reader.Close(), ErrStreamsActive)
+	require.NoError(err)
+	require.ErrorIs(reader.Close(), ErrStreamsActive)
 	buf := make([]byte, 4)
 	_, err = stream.Read(buf)
-	require.NoError(t, err)
-	require.ErrorIs(t, stream.Close(), ErrVerificationIncomplete)
-	require.NoError(t, reader.Close())
+	require.NoError(err)
+	require.ErrorIs(stream.Close(), ErrVerificationIncomplete)
+	require.NoError(reader.Close())
 }
 
 func TestBlobReaderRejectsEntryOutsideVerifiedFooter(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	t.Parallel()
 	dir := t.TempDir()
 	secret := []byte("secret entry bytes")
 	public := []byte("public entry bytes")
 	writer, err := NewWriter(dir, WriterOptions{})
-	require.NoError(t, err)
+	require.NoError(err)
 	secretEntry, err := writer.Append(secret)
-	require.NoError(t, err)
+	require.NoError(err)
 	publicEntry, err := writer.Append(public)
-	require.NoError(t, err)
+	require.NoError(err)
 	final := filepath.Join(dir, writer.ID()+".pack")
 	_, err = writer.Seal(final)
-	require.NoError(t, err)
+	require.NoError(err)
 
 	reader, err := OpenReader(final, nil)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, reader.Close()) })
+	require.NoError(err)
+	t.Cleanup(func() { require.NoError(reader.Close()) })
 	listed := reader.Entries()
 	listed[0] = publicEntry
-	assert.Equal(t, secretEntry, reader.Entries()[0], "returned footer entries must not mutate reader authority")
+	assert.Equal(secretEntry, reader.Entries()[0], "returned footer entries must not mutate reader authority")
 
 	forged := publicEntry
 	forged.Offset = secretEntry.Offset
 	forged.StoredLen = secretEntry.StoredLen
 	forged.RawLen = secretEntry.RawLen
 	stream, err := reader.OpenBlob(context.Background(), forged)
-	require.ErrorIs(t, err, ErrCorrupt)
-	require.ErrorContains(t, err, "does not match verified footer")
-	assert.Nil(t, stream)
+	require.ErrorIs(err, ErrCorrupt)
+	require.ErrorContains(err, "does not match verified footer")
+	assert.Nil(stream)
 }
 
 func TestBlobReaderCancellationIsTerminal(t *testing.T) {
+	require := Require.New(t)
 	t.Parallel()
 	dir := t.TempDir()
 	content := bytes.Repeat([]byte("cancel stream"), 1<<14)
 	writer, err := NewWriter(dir, WriterOptions{})
-	require.NoError(t, err)
+	require.NoError(err)
 	entry, err := writer.Append(content)
-	require.NoError(t, err)
+	require.NoError(err)
 	final := filepath.Join(dir, writer.ID()+".pack")
 	_, err = writer.Seal(final)
-	require.NoError(t, err)
+	require.NoError(err)
 	reader, err := OpenReader(final, nil)
-	require.NoError(t, err)
+	require.NoError(err)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	stream, err := reader.OpenBlob(ctx, entry)
-	require.NoError(t, err)
+	require.NoError(err)
 	buf := make([]byte, 32)
 	_, err = stream.Read(buf)
-	require.NoError(t, err)
+	require.NoError(err)
 	cancel()
 	_, err = stream.Read(buf)
-	require.ErrorIs(t, err, context.Canceled)
-	require.ErrorIs(t, stream.Verify(), context.Canceled)
-	require.ErrorIs(t, stream.Close(), context.Canceled)
-	require.NoError(t, reader.Close())
+	require.ErrorIs(err, context.Canceled)
+	require.ErrorIs(stream.Verify(), context.Canceled)
+	require.ErrorIs(stream.Close(), context.Canceled)
+	require.NoError(reader.Close())
 }
 
 func TestBlobReaderReportsTerminalIntegrityErrors(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	t.Parallel()
 	dir := t.TempDir()
 	content := []byte("content delivered before terminal verification")
 	writer, err := NewWriter(dir, WriterOptions{})
-	require.NoError(t, err)
+	require.NoError(err)
 	entry, err := writer.Append(content)
-	require.NoError(t, err)
+	require.NoError(err)
 	final := filepath.Join(dir, writer.ID()+".pack")
 	_, err = writer.Seal(final)
-	require.NoError(t, err)
+	require.NoError(err)
 
 	f, err := os.OpenFile(final, os.O_RDWR, 0)
-	require.NoError(t, err)
+	require.NoError(err)
 	_, err = f.WriteAt([]byte{'X'}, int64(entry.Offset))
-	require.NoError(t, err)
-	require.NoError(t, f.Close())
+	require.NoError(err)
+	require.NoError(f.Close())
 
 	reader, err := OpenReader(final, nil)
-	require.NoError(t, err)
+	require.NoError(err)
 	stream, err := reader.OpenBlob(context.Background(), reader.Entries()[0])
-	require.NoError(t, err)
+	require.NoError(err)
 	got, err := io.ReadAll(stream)
-	require.ErrorIs(t, err, ErrCorrupt)
-	assert.Len(t, got, len(content))
-	assert.False(t, stream.Verified())
-	require.ErrorIs(t, stream.Close(), ErrVerificationIncomplete)
-	require.NoError(t, reader.Close())
+	require.ErrorIs(err, ErrCorrupt)
+	assert.Len(got, len(content))
+	assert.False(stream.Verified())
+	require.ErrorIs(stream.Close(), ErrVerificationIncomplete)
+	require.NoError(reader.Close())
 }
 
 func TestBlobReaderReportsCompressedDecodeFailure(t *testing.T) {
+	require := Require.New(t)
 	t.Parallel()
 	dir := t.TempDir()
 	content := bytes.Repeat([]byte("compressed corruption "), 1<<15)
 	writer, err := NewWriter(dir, WriterOptions{})
-	require.NoError(t, err)
+	require.NoError(err)
 	entry, err := writer.AppendStream(context.Background(), bytes.NewReader(content), uint64(len(content)), AppendStreamOptions{ScratchDir: dir})
-	require.NoError(t, err)
-	require.NotZero(t, entry.Flags&BlobCompressed)
+	require.NoError(err)
+	require.NotZero(entry.Flags & BlobCompressed)
 	final := filepath.Join(dir, writer.ID()+".pack")
 	_, err = writer.Seal(final)
-	require.NoError(t, err)
+	require.NoError(err)
 
 	f, err := os.OpenFile(final, os.O_RDWR, 0)
-	require.NoError(t, err)
+	require.NoError(err)
 	corruptAt := int64(entry.Offset + entry.StoredLen/2) //nolint:gosec // test frame is small
 	var original [1]byte
 	_, err = f.ReadAt(original[:], corruptAt)
-	require.NoError(t, err)
+	require.NoError(err)
 	original[0] ^= 0xff
 	_, err = f.WriteAt(original[:], corruptAt)
-	require.NoError(t, err)
-	require.NoError(t, f.Close())
+	require.NoError(err)
+	require.NoError(f.Close())
 
 	reader, err := OpenReader(final, nil)
-	require.NoError(t, err)
+	require.NoError(err)
 	stream, err := reader.OpenBlob(context.Background(), reader.Entries()[0])
-	require.NoError(t, err)
+	require.NoError(err)
 	_, err = io.Copy(io.Discard, stream)
-	require.ErrorIs(t, err, ErrCorrupt)
-	require.ErrorIs(t, stream.Close(), ErrVerificationIncomplete)
-	require.NoError(t, reader.Close())
+	require.ErrorIs(err, ErrCorrupt)
+	require.ErrorIs(stream.Close(), ErrVerificationIncomplete)
+	require.NoError(reader.Close())
 }
 
 func TestBlobReaderDetectsHashMismatch(t *testing.T) {
+	require := Require.New(t)
 	t.Parallel()
 	dir := t.TempDir()
 	content := []byte("hash checked at eof")
 	writer, err := NewWriter(dir, WriterOptions{})
-	require.NoError(t, err)
+	require.NoError(err)
 	entry, err := writer.Append(content)
-	require.NoError(t, err)
+	require.NoError(err)
 	final := filepath.Join(dir, writer.ID()+".pack")
 	_, err = writer.Seal(final)
-	require.NoError(t, err)
+	require.NoError(err)
 	forged := entry
 	forged.ID = ComputeBlobID([]byte("different"))
 	data, err := os.ReadFile(final)
-	require.NoError(t, err)
+	require.NoError(err)
 	footerStart := int(entry.Offset + entry.StoredLen)
 	rebuilt := append([]byte{}, data[:footerStart]...)
 	rebuilt = append(rebuilt, appendPlainTrailer(encodeFooterRegion([]Entry{forged}))...)
-	require.NoError(t, os.WriteFile(final, rebuilt, 0o600))
+	require.NoError(os.WriteFile(final, rebuilt, 0o600))
 
 	reader, err := OpenReader(final, nil)
-	require.NoError(t, err)
+	require.NoError(err)
 	stream, err := reader.OpenBlob(context.Background(), reader.Entries()[0])
-	require.NoError(t, err)
+	require.NoError(err)
 	got, err := io.ReadAll(stream)
-	assert.Equal(t, content, got)
-	require.ErrorIs(t, err, ErrBlobMismatch)
-	require.ErrorIs(t, stream.Verify(), ErrBlobMismatch)
-	require.ErrorIs(t, stream.Close(), ErrBlobMismatch)
+	Assert.Equal(t, content, got)
+	require.ErrorIs(err, ErrBlobMismatch)
+	require.ErrorIs(stream.Verify(), ErrBlobMismatch)
+	require.ErrorIs(stream.Close(), ErrBlobMismatch)
 	_, repeatedErr := stream.Read(make([]byte, 1))
-	require.EqualError(t, repeatedErr, err.Error())
-	require.EqualError(t, stream.Verify(), err.Error())
-	require.NoError(t, reader.Close())
+	require.EqualError(repeatedErr, err.Error())
+	require.EqualError(stream.Verify(), err.Error())
+	require.NoError(reader.Close())
 }
 
 func TestStreamingEncryptedV1IsUnsupported(t *testing.T) {
+	require := Require.New(t)
 	t.Parallel()
 	key := [32]byte{1}
 	crypter, err := NewCrypter(key)
-	require.NoError(t, err)
+	require.NoError(err)
 	dir := t.TempDir()
 	writer, err := NewWriter(dir, WriterOptions{Crypter: crypter})
-	require.NoError(t, err)
+	require.NoError(err)
 	t.Cleanup(func() { _ = writer.Abort() })
 	_, err = writer.AppendStream(context.Background(), strings.NewReader("secret"), 6, AppendStreamOptions{})
-	require.ErrorIs(t, err, ErrStreamUnsupported)
+	require.ErrorIs(err, ErrStreamUnsupported)
 
 	entry, err := writer.Append([]byte("buffered secret"))
-	require.NoError(t, err)
+	require.NoError(err)
 	final := filepath.Join(dir, writer.ID()+".pack")
 	_, err = writer.Seal(final)
-	require.NoError(t, err)
+	require.NoError(err)
 	reader, err := OpenReader(final, crypter)
-	require.NoError(t, err)
+	require.NoError(err)
 	_, err = reader.OpenBlob(context.Background(), entry)
-	require.ErrorIs(t, err, ErrStreamUnsupported)
-	require.NoError(t, reader.Close())
+	require.ErrorIs(err, ErrStreamUnsupported)
+	require.NoError(reader.Close())
 }
 
 func TestOpenReaderWithOptionsEnforcesLimits(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	t.Parallel()
 	dir := t.TempDir()
 	writer, err := NewWriter(dir, WriterOptions{})
-	require.NoError(t, err)
+	require.NoError(err)
 	_, err = writer.Append([]byte("bounded content"))
-	require.NoError(t, err)
+	require.NoError(err)
 	_, err = writer.Append([]byte("second"))
-	require.NoError(t, err)
+	require.NoError(err)
 	final := filepath.Join(dir, writer.ID()+".pack")
 	_, err = writer.Seal(final)
-	require.NoError(t, err)
+	require.NoError(err)
 
 	_, err = OpenReaderWithOptions(final, nil, ReaderOptions{Limits: ReaderLimits{RawBytes: 1}})
 	var limitErr *StreamLimitError
-	require.ErrorAs(t, err, &limitErr)
-	assert.Equal(t, StreamLimitRawBytes, limitErr.Dimension)
+	require.ErrorAs(err, &limitErr)
+	assert.Equal(StreamLimitRawBytes, limitErr.Dimension)
 
 	info, err := os.Stat(final)
-	require.NoError(t, err)
+	require.NoError(err)
 	_, err = OpenReaderWithOptions(final, nil, ReaderOptions{Limits: ReaderLimits{ContainerBytes: uint64(info.Size() - 1)}}) //nolint:gosec
-	require.ErrorAs(t, err, &limitErr)
-	assert.Equal(t, StreamLimitContainerBytes, limitErr.Dimension)
+	require.ErrorAs(err, &limitErr)
+	assert.Equal(StreamLimitContainerBytes, limitErr.Dimension)
 
 	_, err = OpenReaderWithOptions(final, nil, ReaderOptions{Limits: ReaderLimits{Entries: 1}})
-	require.ErrorAs(t, err, &limitErr)
-	assert.Equal(t, StreamLimitEntryCount, limitErr.Dimension)
+	require.ErrorAs(err, &limitErr)
+	assert.Equal(StreamLimitEntryCount, limitErr.Dimension)
 
 	_, err = OpenReaderWithOptions(final, nil, ReaderOptions{Limits: ReaderLimits{FooterBytes: 1}})
-	require.ErrorAs(t, err, &limitErr)
-	assert.Equal(t, StreamLimitFooterBytes, limitErr.Dimension)
+	require.ErrorAs(err, &limitErr)
+	assert.Equal(StreamLimitFooterBytes, limitErr.Dimension)
 
 	_, err = OpenReaderWithOptions(final, nil, ReaderOptions{Limits: ReaderLimits{StoredBytes: 1}})
-	require.ErrorAs(t, err, &limitErr)
-	assert.Equal(t, StreamLimitStoredBytes, limitErr.Dimension)
+	require.ErrorAs(err, &limitErr)
+	assert.Equal(StreamLimitStoredBytes, limitErr.Dimension)
 }
 
 func TestBlobReaderEnforcesZstdWindowLimit(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	t.Parallel()
 	dir := t.TempDir()
 	content := bytes.Repeat([]byte("legacy-single-segment"), 1<<16)
 	writer, err := NewWriter(dir, WriterOptions{})
-	require.NoError(t, err)
+	require.NoError(err)
 	entry, err := writer.Append(content)
-	require.NoError(t, err)
-	require.NotZero(t, entry.Flags&BlobCompressed)
+	require.NoError(err)
+	require.NotZero(entry.Flags & BlobCompressed)
 	final := filepath.Join(dir, writer.ID()+".pack")
 	_, err = writer.Seal(final)
-	require.NoError(t, err)
+	require.NoError(err)
 
 	reader, err := OpenReaderWithOptions(final, nil, ReaderOptions{Limits: ReaderLimits{WindowBytes: 64 << 10}})
-	require.NoError(t, err)
+	require.NoError(err)
 	_, err = reader.OpenBlob(context.Background(), reader.Entries()[0])
 	var limitErr *StreamLimitError
-	require.ErrorAs(t, err, &limitErr)
-	assert.Equal(t, StreamLimitWindowBytes, limitErr.Dimension)
-	assert.Greater(t, limitErr.Actual, limitErr.Limit)
-	require.NoError(t, reader.Close())
+	require.ErrorAs(err, &limitErr)
+	assert.Equal(StreamLimitWindowBytes, limitErr.Dimension)
+	assert.Greater(limitErr.Actual, limitErr.Limit)
+	require.NoError(reader.Close())
 }
 
 func TestBlobReaderReadsFrozenV1Fixture(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	t.Parallel()
 	path := filepath.Join("..", "packstore", "testdata", "msgvault-v1", "01kx758hcw5gnkdz233217fd9a.mvpack")
 	reader, err := OpenReader(path, nil)
-	require.NoError(t, err)
+	require.NoError(err)
 	compressed := false
 	for _, entry := range reader.Entries() {
 		compressed = compressed || entry.Flags&BlobCompressed != 0
 		stream, openErr := reader.OpenBlob(context.Background(), entry)
-		require.NoError(t, openErr)
-		require.NoError(t, stream.Verify())
-		assert.True(t, stream.Verified())
-		require.NoError(t, stream.Close())
+		require.NoError(openErr)
+		require.NoError(stream.Verify())
+		assert.True(stream.Verified())
+		require.NoError(stream.Close())
 	}
-	assert.True(t, compressed)
-	require.NoError(t, reader.Close())
+	assert.True(compressed)
+	require.NoError(reader.Close())
 }
 
 func TestOpenBlobHonorsCancellation(t *testing.T) {
+	require := Require.New(t)
 	t.Parallel()
 	dir := t.TempDir()
 	writer, err := NewWriter(dir, WriterOptions{})
-	require.NoError(t, err)
+	require.NoError(err)
 	entry, err := writer.Append([]byte("cancelled"))
-	require.NoError(t, err)
+	require.NoError(err)
 	final := filepath.Join(dir, writer.ID()+".pack")
 	_, err = writer.Seal(final)
-	require.NoError(t, err)
+	require.NoError(err)
 	reader, err := OpenReader(final, nil)
-	require.NoError(t, err)
+	require.NoError(err)
 	defer func() { _ = reader.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, err = reader.OpenBlob(ctx, entry)
-	require.ErrorIs(t, err, context.Canceled)
+	require.ErrorIs(err, context.Canceled)
 }

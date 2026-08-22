@@ -2,10 +2,11 @@ package gitworktree
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	gittest "go.kenn.io/kit/git/test"
 )
@@ -43,14 +44,9 @@ func TestCreateCaptureAndApplyPatch(t *testing.T) {
 	if string(got) != "changed\n" {
 		t.Fatalf("base.txt = %q, want changed", got)
 	}
-	if err := CheckPatch(ctx, repo.Root, patch); err == nil {
-		t.Fatal("patch should conflict after being applied")
-	} else {
-		var conflict *PatchConflictError
-		if !errors.As(err, &conflict) {
-			t.Fatalf("err = %T %v, want PatchConflictError", err, err)
-		}
-	}
+	err = CheckPatch(ctx, repo.Root, patch)
+	require.Error(t, err, "patch should conflict after being applied")
+	require.ErrorAs(t, err, new(*PatchConflictError))
 }
 
 func TestGitmodulesFileProtocolDetection(t *testing.T) {

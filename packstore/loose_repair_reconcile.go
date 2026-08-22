@@ -75,13 +75,13 @@ func reconcileLooseRepairReplacement(
 	backupState, err := inspectLooseRepairPath(backup, verified)
 	if err != nil {
 		return looseRepairPublishResult{
-				KeepStaging: stagingState.matches,
-				SyncShard:   true,
-				SyncStaging: stagingState.matches,
-			}, errors.Join(
-				replaceErr,
-				fmt.Errorf("inspect repair backup path: %w", err),
-			)
+			KeepStaging: stagingState.matches,
+			SyncShard:   true,
+			SyncStaging: stagingState.matches,
+		}, errors.Join(
+			replaceErr,
+			fmt.Errorf("inspect repair backup path: %w", err),
+		)
 	}
 
 	if finalState.matches {
@@ -109,14 +109,14 @@ func reconcileLooseRepairReplacement(
 				)
 			}
 			return looseRepairPublishResult{
-					KeepStaging: true,
-					SyncShard:   backupState.exists || finalAfter.exists,
-					SyncStaging: true,
-				}, errors.Join(
-					replaceErr,
-					fmt.Errorf("restore verified repair staging: %w", linkErr),
-					inspectErr,
-				)
+				KeepStaging: true,
+				SyncShard:   backupState.exists || finalAfter.exists,
+				SyncStaging: true,
+			}, errors.Join(
+				replaceErr,
+				fmt.Errorf("restore verified repair staging: %w", linkErr),
+				inspectErr,
+			)
 		}
 		return looseRepairPublishResult{Created: true, SyncShard: true}, errors.Join(
 			replaceErr,

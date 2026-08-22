@@ -43,6 +43,9 @@ func planDirectJSONConfig(
 		}
 	}
 	if !uninstall {
+		if hooksObject == nil {
+			return nil, false, fmt.Errorf("agent hook config %s has no hooks object", path)
+		}
 		if spec.requireVersion {
 			if _, exists := root["version"]; !exists {
 				root["version"] = 1

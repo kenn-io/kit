@@ -286,6 +286,9 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *R
 	// publishRestoredDB touches an Overwrite target's existing database.
 	var tmpRel string
 	if m.Metadata == nil {
+		if pm == nil {
+			return nil, fmt.Errorf("backup: snapshot has no page map")
+		}
 		tmpRel, err = st.restoreDB(ctx, app.DBFileName(), pm, hm)
 	} else {
 		tmpRel, res.DBBytes, err = st.restorePortableMetadata(

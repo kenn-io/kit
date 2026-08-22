@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"slices"
 	"sort"
@@ -240,9 +241,7 @@ func TestFillCrossDocumentBatchingMatchesLegacyAcrossConfigurations(t *testing.T
 	}
 
 	baseline := newMemStore()
-	for doc, content := range contents {
-		baseline.content[doc] = content
-	}
+	maps.Copy(baseline.content, contents)
 	baselineStats, err := vector.Fill(ctx, baseline, 7, textEncoder(), vector.FillOptions[int64]{
 		ScanBatch: 5,
 		Split:     vector.SplitOptions{MaxRunes: 3, Overlap: 1},
@@ -257,9 +256,7 @@ func TestFillCrossDocumentBatchingMatchesLegacyAcrossConfigurations(t *testing.T
 						scanBatch, batchSize, batchConcurrency, fillConcurrency)
 					t.Run(name, func(t *testing.T) {
 						store := newMemStore()
-						for doc, content := range contents {
-							store.content[doc] = content
-						}
+						maps.Copy(store.content, contents)
 
 						stats, err := vector.Fill(ctx, store, 7, textEncoder(), vector.FillOptions[int64]{
 							ScanBatch: scanBatch,

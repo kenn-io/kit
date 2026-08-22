@@ -298,6 +298,9 @@ func (m *Maintainer) rewriteSource(ctx context.Context, oldPackID string, entrie
 			}
 			return result, fmt.Errorf("packstore: read source %s blob %s: %w", oldPackID, indexed.Hash, err)
 		}
+		if prepared == nil {
+			return result, fmt.Errorf("packstore: prepare source %s blob %s returned no result", oldPackID, indexed.Hash)
+		}
 		if err := checkPlainOutput(m.limits, uint64(pack.MinEntryOffset), prepared.StoredLen(), 1); err != nil {
 			_ = prepared.Close()
 			return result, err

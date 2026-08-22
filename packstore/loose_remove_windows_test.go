@@ -9,40 +9,42 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	Assert "github.com/stretchr/testify/assert"
+	Require "github.com/stretchr/testify/require"
 )
 
 func TestWindowsLooseRemovalUnlinksActiveStream(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	layout := layoutForStoreTest(t)
 	loose, err := NewLooseStore(layout)
-	require.NoError(t, err)
+	require.NoError(err)
 	content := bytes.Repeat([]byte("active Windows loose reader\n"), 128)
 	written, err := loose.WriteBytes(context.Background(), content, WriteOptions{
 		Durability: AtomicPublication,
 		Dedup:      VerifyFullHash,
 	})
-	require.NoError(t, err)
+	require.NoError(err)
 	store := newStoreForTest(t, &mapResolver{locations: map[Hash]Location{
 		written.Hash: {Member: true},
 	}}, layout)
 	stream, size, err := store.OpenStream(context.Background(), written.Hash)
-	require.NoError(t, err)
-	require.Equal(t, int64(len(content)), size)
-	t.Cleanup(func() { require.NoError(t, stream.Close()) })
+	require.NoError(err)
+	require.Equal(int64(len(content)), size)
+	t.Cleanup(func() { require.NoError(stream.Close()) })
 	prefix := make([]byte, 37)
 	_, err = io.ReadFull(stream, prefix)
-	require.NoError(t, err)
+	require.NoError(err)
 
 	err = loose.Remove(written.Hash, BestEffortRemoval)
 
-	require.NoError(t, err)
-	assert.NoFileExists(t, written.Path)
+	require.NoError(err)
+	assert.NoFileExists(written.Path)
 	assertNoLooseRemovalClaims(t, written.Path)
 	remainder, err := io.ReadAll(stream)
-	require.NoError(t, err)
-	assert.Equal(t, content, append(prefix, remainder...))
-	require.NoError(t, stream.Verify())
+	require.NoError(err)
+	assert.Equal(content, append(prefix, remainder...))
+	require.NoError(stream.Verify())
 }
 
 func TestWindowsLooseCleanupRemovesClaimDirectories(t *testing.T) {
@@ -52,20 +54,22 @@ func TestWindowsLooseCleanupRemovesClaimDirectories(t *testing.T) {
 			Durability: AtomicPublication,
 			Dedup:      VerifyFullHash,
 		})
-		require.NoError(t, err)
+		Require.NoError(t, err)
 
 		err = store.Remove(written.Hash, BestEffortRemoval)
 
-		require.NoError(t, err)
-		assert.NoFileExists(t, written.Path)
+		Require.NoError(t, err)
+		Assert.NoFileExists(t, written.Path)
 		assertNoLooseRemovalClaims(t, written.Path)
 	})
 
 	t.Run("redundant sweep", func(t *testing.T) {
+		assert := Assert.New(t)
+		require := Require.New(t)
 		layout := layoutForStoreTest(t)
 		content := []byte("Windows redundant loose sweep")
 		entry := buildStoreTestPack(t, layout, content)
-		require.Equal(t, entry.Hash, writeMaintenanceLoose(t, layout, content))
+		require.Equal(entry.Hash, writeMaintenanceLoose(t, layout, content))
 		catalog := newMaintenanceCatalog()
 		catalog.members[entry.Hash] = Reference{Hash: entry.Hash}
 		catalog.entries[entry.Hash] = entry
@@ -76,9 +80,9 @@ func TestWindowsLooseCleanupRemovesClaimDirectories(t *testing.T) {
 
 		stats, err := maintainer.Pack(context.Background(), PackOptions{})
 
-		require.NoError(t, err)
-		assert.Equal(t, 1, stats.LooseSwept)
-		assert.NoFileExists(t, layout.LoosePath(entry.Hash))
+		require.NoError(err)
+		assert.Equal(1, stats.LooseSwept)
+		assert.NoFileExists(layout.LoosePath(entry.Hash))
 		assertNoLooseRemovalClaims(t, layout.LoosePath(entry.Hash))
 	})
 
@@ -92,9 +96,9 @@ func TestWindowsLooseCleanupRemovesClaimDirectories(t *testing.T) {
 
 		stats, err := maintainer.Pack(context.Background(), PackOptions{})
 
-		require.NoError(t, err)
-		assert.Equal(t, 1, stats.BlobsPacked)
-		assert.NoFileExists(t, layout.LoosePath(hash))
+		Require.NoError(t, err)
+		Assert.Equal(t, 1, stats.BlobsPacked)
+		Assert.NoFileExists(t, layout.LoosePath(hash))
 		assertNoLooseRemovalClaims(t, layout.LoosePath(hash))
 	})
 }

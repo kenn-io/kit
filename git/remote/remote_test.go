@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
+	Assert "github.com/stretchr/testify/assert"
 )
 
 func TestClonePathRejectsTraversalAndSeparators(t *testing.T) {
@@ -52,17 +52,15 @@ func TestValidateRemoteIdentity(t *testing.T) {
 }
 
 func TestCloneURLIdentityNormalizesHostAndPreservesRepoCase(t *testing.T) {
-	assert.Equal(t,
-		"example.com/Acme/Widget",
+	assert := Assert.New(t)
+	assert.Equal("example.com/Acme/Widget",
 		CloneURLIdentity("https://EXAMPLE.com:443/Acme/Widget.git"),
 	)
-	assert.Equal(t,
-		"2001:db8::1/Acme/Widget",
+	assert.Equal("2001:db8::1/Acme/Widget",
 		CloneURLIdentity("https://[2001:db8::1]:443/Acme/Widget.git"),
 	)
-	assert.NotEqual(t,
-		CloneURLIdentity("ssh://example.com/Acme/Widget.git"),
+	assert.NotEqual(CloneURLIdentity("ssh://example.com/Acme/Widget.git"),
 		CloneURLIdentity("ssh://example.com:443/Acme/Widget.git"),
 	)
-	assert.Equal(t, "/tmp/Widget.git", CloneURLIdentity(" /tmp/Widget.git "))
+	assert.Equal("/tmp/Widget.git", CloneURLIdentity(" /tmp/Widget.git "))
 }

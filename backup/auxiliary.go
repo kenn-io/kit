@@ -169,6 +169,9 @@ func captureAuxiliaryArtifacts(
 			}
 			return nil, fmt.Errorf("backup: preparing auxiliary artifact %q: %w", artifact.Name, err)
 		}
+		if prepared == nil {
+			return nil, fmt.Errorf("backup: preparing auxiliary artifact %q returned no result", artifact.Name)
+		}
 		id := prepared.ID()
 		if _, err := appender.AddPrepared(ctx, prepared); err != nil {
 			return nil, err

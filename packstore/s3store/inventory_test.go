@@ -10,14 +10,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	Assert "github.com/stretchr/testify/assert"
+	Require "github.com/stretchr/testify/require"
 	"go.kenn.io/kit/packstore"
 )
 
 func TestProbeDisarmsCleanupAfterExplicitDelete(t *testing.T) {
-	assert := assert.New(t)
-	require := require.New(t)
+	assert := Assert.New(t)
+	require := Require.New(t)
 	state, backend := newProbeHTTPBackend(t, false)
 
 	report, err := backend.Probe(context.Background())
@@ -39,26 +39,28 @@ func TestProbeDisarmsCleanupAfterExplicitDelete(t *testing.T) {
 }
 
 func TestProbeRejectsAcknowledgedDeleteThatLeavesObject(t *testing.T) {
+	assert := Assert.New(t)
 	state, backend := newProbeHTTPBackend(t, false)
 	state.ignoreDelete = true
 
 	report, err := backend.Probe(context.Background())
 
-	require.Error(t, err)
-	assert.False(t, report.Delete)
-	assert.Equal(t, 2, state.deletes, "failed verification must leave cleanup armed")
-	assert.NotNil(t, state.object)
+	Require.Error(t, err)
+	assert.False(report.Delete)
+	assert.Equal(2, state.deletes, "failed verification must leave cleanup armed")
+	assert.NotNil(state.object)
 }
 
 func TestProbeCleanupUsesFreshDeadline(t *testing.T) {
+	assert := Assert.New(t)
 	state, backend := newProbeHTTPBackend(t, true)
 
 	_, err := backend.Probe(context.Background())
 
-	require.Error(t, err)
-	assert.True(t, state.cleanupOwnershipHadDeadline)
-	assert.True(t, state.cleanupDeleteHadDeadline)
-	assert.Equal(t, 1, state.deletes)
+	Require.Error(t, err)
+	assert.True(state.cleanupOwnershipHadDeadline)
+	assert.True(state.cleanupDeleteHadDeadline)
+	assert.Equal(1, state.deletes)
 }
 
 func TestProbeRejectsIgnoredConditionalWrites(t *testing.T) {
@@ -86,7 +88,7 @@ func TestProbeRejectsIgnoredConditionalWrites(t *testing.T) {
 
 			_, err := backend.Probe(context.Background())
 
-			require.Error(t, err)
+			Require.Error(t, err)
 		})
 	}
 }
@@ -97,23 +99,25 @@ func TestProbeRejectsAppliedStaleConditionalReplacement(t *testing.T) {
 
 	_, err := backend.Probe(context.Background())
 
-	require.ErrorIs(t, err, packstore.ErrPhysicalCorrupt)
+	Require.ErrorIs(t, err, packstore.ErrPhysicalCorrupt)
 }
 
 func TestReadProbeBodyBoundsAndValidatesResponse(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	expected := []byte("probe")
 	got, err := readProbeBody(bytes.NewReader(expected), nil, expected)
-	require.NoError(t, err)
-	assert.Equal(t, expected, got)
+	require.NoError(err)
+	assert.Equal(expected, got)
 
 	oversized := bytes.NewReader(bytes.Repeat([]byte("x"), 64))
 	_, err = readProbeBody(oversized, nil, expected)
-	require.ErrorContains(t, err, "exceeds expected length")
-	assert.Equal(t, 64-len(expected)-1, oversized.Len())
+	require.ErrorContains(err, "exceeds expected length")
+	assert.Equal(64-len(expected)-1, oversized.Len())
 
 	contentLength := int64(len(expected) + 1)
 	_, err = readProbeBody(bytes.NewReader(expected), &contentLength, expected)
-	require.ErrorContains(t, err, "response length")
+	require.ErrorContains(err, "response length")
 }
 
 type probeHTTPState struct {
@@ -148,7 +152,7 @@ func newProbeHTTPBackend(t *testing.T, failFirstProbeRead bool) (*probeHTTPState
 		Epoch:  "epoch-1",
 	}
 	marker, err := packstore.MarshalOwnership(owner)
-	require.NoError(t, err)
+	Require.NoError(t, err)
 	state := &probeHTTPState{
 		t:                  t,
 		marker:             marker,

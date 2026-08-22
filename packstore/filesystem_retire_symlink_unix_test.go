@@ -9,83 +9,88 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	Assert "github.com/stretchr/testify/assert"
+	Require "github.com/stretchr/testify/require"
 	"go.kenn.io/kit/pack"
 )
 
 func TestFilesystemBackendRetireRejectsSymlinkedLooseShard(t *testing.T) {
+	require := Require.New(t)
 	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
 	content := []byte("outside loose object")
 	hash := hashForTest(content)
 	external := t.TempDir()
 	externalPath := filepath.Join(external, hash.String())
-	require.NoError(t, os.WriteFile(externalPath, content, 0o600))
-	require.NoError(t, os.Symlink(external, filepath.Join(backend.Layout().Root(), hash.String()[:2])))
+	require.NoError(os.WriteFile(externalPath, content, 0o600))
+	require.NoError(os.Symlink(external, filepath.Join(backend.Layout().Root(), hash.String()[:2])))
 
 	err := backend.Retire(context.Background(), ObjectRef{
 		LooseHash: hash, LooseEncoding: LooseEncodingRaw,
 	})
 
-	require.ErrorContains(t, err, "unsafe filesystem directory")
+	require.ErrorContains(err, "unsafe filesystem directory")
 	got, readErr := os.ReadFile(externalPath)
-	require.NoError(t, readErr)
-	assert.Equal(t, content, got)
+	require.NoError(readErr)
+	Assert.Equal(t, content, got)
 }
 
 func TestFilesystemBackendRetireRejectsSymlinkedPackShard(t *testing.T) {
+	require := Require.New(t)
 	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
 	packID := pack.NewPackID()
 	external := t.TempDir()
 	externalPath := filepath.Join(external, packID+PackExt)
-	require.NoError(t, os.WriteFile(externalPath, []byte("outside pack"), 0o600))
-	require.NoError(t, os.Mkdir(filepath.Join(backend.Layout().Root(), "packs"), 0o700))
-	require.NoError(t, os.Symlink(external, filepath.Join(
+	require.NoError(os.WriteFile(externalPath, []byte("outside pack"), 0o600))
+	require.NoError(os.Mkdir(filepath.Join(backend.Layout().Root(), "packs"), 0o700))
+	require.NoError(os.Symlink(external, filepath.Join(
 		backend.Layout().Root(), "packs", packID[:2],
 	)))
 
 	err := backend.Retire(context.Background(), ObjectRef{PackID: packID})
 
-	require.ErrorContains(t, err, "unsafe filesystem directory")
+	require.ErrorContains(err, "unsafe filesystem directory")
 	got, readErr := os.ReadFile(externalPath)
-	require.NoError(t, readErr)
-	assert.Equal(t, []byte("outside pack"), got)
+	require.NoError(readErr)
+	Assert.Equal(t, []byte("outside pack"), got)
 }
 
 func TestFilesystemBackendPublishPackRejectsSymlinkedPackDirectory(t *testing.T) {
+	require := Require.New(t)
 	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
 	external := t.TempDir()
-	require.NoError(t, os.Symlink(external, filepath.Join(backend.Layout().Root(), "packs")))
+	require.NoError(os.Symlink(external, filepath.Join(backend.Layout().Root(), "packs")))
 	path, packID, _ := buildBackendPackSource(t, []byte("confined pack publication"))
 	source, err := os.Open(path)
-	require.NoError(t, err)
+	require.NoError(err)
 
 	_, err = backend.PublishPack(context.Background(), packID, source, PublishOptions{})
-	require.NoError(t, source.Close())
+	require.NoError(source.Close())
 
-	require.ErrorContains(t, err, "unsafe filesystem directory")
+	require.ErrorContains(err, "unsafe filesystem directory")
 	entries, readErr := os.ReadDir(external)
-	require.NoError(t, readErr)
-	assert.Empty(t, entries)
+	require.NoError(readErr)
+	Assert.Empty(t, entries)
 }
 
 func TestFilesystemBackendPublishLooseStaysBoundToOwnedSymlinkRoot(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	base := t.TempDir()
 	ownedRoot := filepath.Join(base, "owned")
 	foreignRoot := filepath.Join(base, "foreign")
-	require.NoError(t, os.Mkdir(ownedRoot, 0o700))
-	require.NoError(t, os.Mkdir(foreignRoot, 0o700))
+	require.NoError(os.Mkdir(ownedRoot, 0o700))
+	require.NoError(os.Mkdir(foreignRoot, 0o700))
 	link := filepath.Join(base, "store")
-	require.NoError(t, os.Symlink(ownedRoot, link))
+	require.NoError(os.Symlink(ownedRoot, link))
 	linkedLayout, err := NewLayout(link, LayoutOptions{Staging: StagingSameDirectory})
-	require.NoError(t, err)
+	require.NoError(err)
 	backend, err := NewFilesystemBackend(linkedLayout, FilesystemBackendOptions{})
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, backend.Close()) })
+	require.NoError(err)
+	t.Cleanup(func() { require.NoError(backend.Close()) })
 	owner := Ownership{
 		Format: OwnershipFormatV1, Vault: "test-vault", Store: "archive", Epoch: "epoch-1",
 	}
-	require.NoError(t, backend.ReplaceOwnership(context.Background(), owner, nil))
+	require.NoError(backend.ReplaceOwnership(context.Background(), owner, nil))
 
 	content := []byte("pinned ownership namespace")
 	hash := hashForTest(content)
@@ -97,13 +102,13 @@ func TestFilesystemBackendPublishLooseStaysBoundToOwnedSymlinkRoot(t *testing.T)
 		PublishOptions{ExpectedSize: int64(len(content)), SizeKnown: true},
 	)
 
-	require.NoError(t, err)
+	require.NoError(err)
 	ownedLayout, err := NewLayout(ownedRoot, LayoutOptions{Staging: StagingSameDirectory})
-	require.NoError(t, err)
+	require.NoError(err)
 	foreignLayout, err := NewLayout(foreignRoot, LayoutOptions{Staging: StagingSameDirectory})
-	require.NoError(t, err)
-	assert.FileExists(t, ownedLayout.LoosePath(hash))
-	assert.NoFileExists(t, foreignLayout.LoosePath(hash))
+	require.NoError(err)
+	assert.FileExists(ownedLayout.LoosePath(hash))
+	assert.NoFileExists(foreignLayout.LoosePath(hash))
 }
 
 type swapRootReader struct {

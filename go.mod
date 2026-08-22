@@ -1,6 +1,6 @@
 module go.kenn.io/kit
 
-go 1.26.6
+go 1.27.0
 
 require (
 	github.com/BurntSushi/toml v1.6.0
@@ -112,8 +112,9 @@ require (
 	go.opentelemetry.io/otel/sdk/log v0.20.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
-	go.uber.org/nilaway v0.0.0-20260528182042-490362de4fb6 // indirect
+	go.uber.org/nilaway v0.0.0-20260808063849-8649a03c818a // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
+	golang.org/x/exp/typeparams v0.0.0-20260611194520-c48552f49976 // indirect
 	golang.org/x/net v0.56.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260706201446-f0a921348800 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260706201446-f0a921348800 // indirect

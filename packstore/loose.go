@@ -420,6 +420,9 @@ func (s *filesystemLooseStore) publish(
 	if identity.Encoding == LooseEncodingZstd {
 		selected = compressed
 	}
+	if selected == nil {
+		return identity, fmt.Errorf("packstore: no loose staging file selected")
+	}
 	if opts.Durability == DurablePublication {
 		if err := syncLooseFile(selected.file); err != nil {
 			return identity, fmt.Errorf("packstore: sync loose staging file: %w", err)
@@ -681,7 +684,7 @@ func (f *stagedLooseFile) cleanup() (bool, error) {
 }
 
 func (f *stagedLooseFile) close() error {
-	if f.closed {
+	if f == nil || f.closed {
 		return nil
 	}
 	f.closed = true
@@ -1065,10 +1068,16 @@ func (v *looseVerifiedIdentity) close() error {
 }
 
 func sameLooseFileState(expected, actual fs.FileInfo) bool {
+	if expected == nil || actual == nil {
+		return false
+	}
 	return os.SameFile(expected, actual) && expected.Size() == actual.Size()
 }
 
 func validateRegularNoFollow(path string, info fs.FileInfo) error {
+	if info == nil {
+		return fmt.Errorf("%w: %s has no file identity", ErrContentMismatch, path)
+	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return fmt.Errorf("%w: %s is not an independent regular file", ErrContentMismatch, path)
 	}
