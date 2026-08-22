@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -169,6 +170,84 @@ func TestDiscoverRejectsPIDMismatchWhenRequiringLivePID(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestDiscoverReturnsUnreachableErrorForLiveRuntime(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not ready", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	rec := daemon.NewRuntimeRecord("kata", "v1", daemon.Endpoint{
+		Network: daemon.NetworkTCP,
+		Address: listenerAddr(t, server),
+	})
+	store := daemon.RuntimeStore{Dir: t.TempDir()}
+	_, err := store.Write(rec)
+	require.NoError(err)
+
+	_, _, ok, err := daemon.Discover(context.Background(), store, daemon.DiscoverOptions{
+		Probe:           daemon.ProbeOptions{ExpectedService: "kata"},
+		RequirePIDAlive: true,
+	})
+	require.Error(err)
+	assert.False(ok)
+	require.ErrorIs(err, daemon.ErrDaemonUnreachable)
+	unreachable, ok := errors.AsType[*daemon.UnreachableError](err)
+	if !ok || unreachable == nil {
+		require.FailNow("expected UnreachableError")
+		return
+	}
+	assert.Equal(rec.PID, unreachable.Record.PID)
+	assert.Equal(rec.Endpoint(), unreachable.Endpoint)
+	require.Error(unreachable.Err)
+	require.ErrorIs(err, unreachable.Err)
+}
+
+func TestDiscoverScansPastUnreachableLiveRuntime(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+
+	unreachableServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not ready", http.StatusServiceUnavailable)
+	}))
+	defer unreachableServer.Close()
+	reachableServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprintf(w, `{"ok":true,"service":"kata","pid":%d}`, os.Getpid())
+	}))
+	defer reachableServer.Close()
+
+	livePID := startLivePIDHelper(t)
+	identity, ok := daemon.ReadProcessIdentity(livePID)
+	require.True(ok)
+	store := daemon.RuntimeStore{Dir: t.TempDir()}
+	_, err := store.Write(daemon.RuntimeRecord{
+		PID:             livePID,
+		ProcessIdentity: identity,
+		Network:         daemon.NetworkTCP,
+		Address:         listenerAddr(t, unreachableServer),
+		Service:         "kata",
+		StartedAt:       time.Now().Add(-time.Minute),
+	})
+	require.NoError(err)
+	reachable := daemon.NewRuntimeRecord("kata", "v1", daemon.Endpoint{
+		Network: daemon.NetworkTCP,
+		Address: listenerAddr(t, reachableServer),
+	})
+	_, err = store.Write(reachable)
+	require.NoError(err)
+
+	found, info, ok, err := daemon.Discover(context.Background(), store, daemon.DiscoverOptions{
+		Probe:           daemon.ProbeOptions{ExpectedService: "kata"},
+		RequirePIDAlive: true,
+	})
+	require.NoError(err)
+	require.True(ok)
+	assert.Equal(reachable.PID, found.PID)
+	assert.Equal("kata", info.Service)
+}
+
 func TestManagerFindDoesNotDiscloseCredentialBeforeProof(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
@@ -212,8 +291,9 @@ func TestManagerFindDoesNotDiscloseCredentialBeforeProof(t *testing.T) {
 	}
 
 	_, _, ok, err := manager.Find(context.Background())
-	require.NoError(err)
+	require.Error(err)
 	assert.False(ok)
+	require.ErrorIs(err, daemon.ErrDaemonUnreachable)
 	assert.False(credentialDisclosed.Load(), "credential material reached an unproved endpoint")
 }
 

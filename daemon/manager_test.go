@@ -84,6 +84,40 @@ func TestManagerFindSkipsIncompatibleDaemon(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestManagerEnsureDoesNotStartWhenDiscoveryIsUnreachable(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not ready", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	store := daemon.RuntimeStore{Dir: t.TempDir()}
+	_, err := store.Write(daemon.NewRuntimeRecord("tool", "v1", daemon.Endpoint{
+		Network: daemon.NetworkTCP,
+		Address: listenerAddr(t, server),
+	}))
+	require.NoError(err)
+
+	started := false
+	manager := daemon.Manager{
+		Store: store,
+		Discover: daemon.DiscoverOptions{
+			Probe:           daemon.ProbeOptions{ExpectedService: "tool"},
+			RequirePIDAlive: true,
+		},
+		Start: func(context.Context) error {
+			started = true
+			return nil
+		},
+	}
+
+	_, _, err = manager.Ensure(context.Background(), time.Second)
+	require.Error(err)
+	require.ErrorIs(err, daemon.ErrDaemonUnreachable)
+	assert.False(started)
+}
+
 func TestManagerFindScansPastIncompatibleDaemon(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
