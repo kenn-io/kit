@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	Assert "github.com/stretchr/testify/assert"
+	Require "github.com/stretchr/testify/require"
 )
 
 func TestRunnerCommandUsesDefensiveEnvironment(t *testing.T) {
@@ -45,8 +45,8 @@ func TestRunnerCommandUsesDefensiveEnvironment(t *testing.T) {
 }
 
 func TestRunnerPreservesInheritedCommandScopeConfig(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
+	require := Require.New(t)
+	assert := Assert.New(t)
 	runner := New()
 	runner.StripEnv = false
 	runner.DisableSafeDirectoryForward = true
@@ -71,8 +71,8 @@ func TestRunnerPreservesInheritedCommandScopeConfig(t *testing.T) {
 }
 
 func TestRunnerPreservesInheritedSafeDirectoryReset(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
+	require := Require.New(t)
+	assert := Assert.New(t)
 	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
 	require.NoError(os.WriteFile(
 		globalConfig,
@@ -100,8 +100,8 @@ func TestRunnerPreservesInheritedSafeDirectoryReset(t *testing.T) {
 }
 
 func TestRunnerReplaysInheritedSafeDirectoryAfterLowerScopeReset(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
+	require := Require.New(t)
+	assert := Assert.New(t)
 	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
 	require.NoError(os.WriteFile(
 		globalConfig,
@@ -137,25 +137,27 @@ func TestRunnerReplaysInheritedSafeDirectoryAfterLowerScopeReset(t *testing.T) {
 }
 
 func TestEnvValueForGOOSHonorsPlatformKeyCasing(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	env := []string{
 		"git_config_count=1",
 		"GIT_CONFIG_COUNT=2",
 	}
 
 	value, ok := envValueForGOOS(env, "GIT_CONFIG_COUNT", "windows")
-	require.True(t, ok)
-	assert.Equal(t, "2", value)
+	require.True(ok)
+	assert.Equal("2", value)
 
 	value, ok = envValueForGOOS(
 		[]string{"git_config_count=1"}, "GIT_CONFIG_COUNT", "windows",
 	)
-	require.True(t, ok)
-	assert.Equal(t, "1", value)
+	require.True(ok)
+	assert.Equal("1", value)
 
 	_, ok = envValueForGOOS(
 		[]string{"git_config_count=1"}, "GIT_CONFIG_COUNT", "linux",
 	)
-	assert.False(t, ok)
+	assert.False(ok)
 }
 
 func TestNullGlobalConfigPathIsReadableEmptyFile(t *testing.T) {
@@ -183,7 +185,7 @@ func TestNullGlobalConfigPathIsReadableEmptyFile(t *testing.T) {
 func safeDirectoryTestEnv(t *testing.T, globalConfig string) []string {
 	t.Helper()
 	emptySystemConfig := filepath.Join(t.TempDir(), "system-gitconfig")
-	require.NoError(t, os.WriteFile(emptySystemConfig, nil, 0o600))
+	Require.NoError(t, os.WriteFile(emptySystemConfig, nil, 0o600))
 	return append(os.Environ(),
 		"GIT_CONFIG_GLOBAL="+globalConfig,
 		"GIT_CONFIG_SYSTEM="+emptySystemConfig,
@@ -193,26 +195,26 @@ func safeDirectoryTestEnv(t *testing.T, globalConfig string) []string {
 
 func TestReadSafeDirectories(t *testing.T) {
 	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
-	require.NoError(t, os.WriteFile(globalConfig, []byte("[safe]\n\tdirectory = *\n\tdirectory = /srv/repo\n"), 0o600))
+	Require.NoError(t, os.WriteFile(globalConfig, []byte("[safe]\n\tdirectory = *\n\tdirectory = /srv/repo\n"), 0o600))
 
 	got := readSafeDirectories(context.Background(), safeDirectoryTestEnv(t, globalConfig), "")
 
-	assert.Equal(t, []string{"*", "/srv/repo"}, got)
+	Assert.Equal(t, []string{"*", "/srv/repo"}, got)
 }
 
 func TestReadSafeDirectoriesUnset(t *testing.T) {
 	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
-	require.NoError(t, os.WriteFile(globalConfig, nil, 0o600))
+	Require.NoError(t, os.WriteFile(globalConfig, nil, 0o600))
 
-	assert.Empty(t, readSafeDirectories(context.Background(), safeDirectoryTestEnv(t, globalConfig), ""))
+	Assert.Empty(t, readSafeDirectories(context.Background(), safeDirectoryTestEnv(t, globalConfig), ""))
 }
 
 func TestReadSafeDirectoriesSystemScope(t *testing.T) {
 	dir := t.TempDir()
 	systemConfig := filepath.Join(dir, "system-gitconfig")
-	require.NoError(t, os.WriteFile(systemConfig, []byte("[safe]\n\tdirectory = /etc/repo\n"), 0o600))
+	Require.NoError(t, os.WriteFile(systemConfig, []byte("[safe]\n\tdirectory = /etc/repo\n"), 0o600))
 	globalConfig := filepath.Join(dir, "gitconfig")
-	require.NoError(t, os.WriteFile(globalConfig, []byte("[safe]\n\tdirectory = /home/repo\n"), 0o600))
+	Require.NoError(t, os.WriteFile(globalConfig, []byte("[safe]\n\tdirectory = /home/repo\n"), 0o600))
 	env := append(os.Environ(),
 		"GIT_CONFIG_GLOBAL="+globalConfig,
 		"GIT_CONFIG_SYSTEM="+systemConfig,
@@ -221,7 +223,7 @@ func TestReadSafeDirectoriesSystemScope(t *testing.T) {
 
 	got := readSafeDirectories(context.Background(), env, "")
 
-	assert.Equal(t, []string{"/etc/repo", "/home/repo"}, got, "system entries must come before global entries")
+	Assert.Equal(t, []string{"/etc/repo", "/home/repo"}, got, "system entries must come before global entries")
 }
 
 func TestReadSafeDirectoriesHonorsNoSystem(t *testing.T) {
@@ -231,9 +233,9 @@ func TestReadSafeDirectoriesHonorsNoSystem(t *testing.T) {
 	// "safe.directory = *" baked into CI runner images) get forwarded.
 	dir := t.TempDir()
 	systemConfig := filepath.Join(dir, "system-gitconfig")
-	require.NoError(t, os.WriteFile(systemConfig, []byte("[safe]\n\tdirectory = /etc/repo\n"), 0o600))
+	Require.NoError(t, os.WriteFile(systemConfig, []byte("[safe]\n\tdirectory = /etc/repo\n"), 0o600))
 	globalConfig := filepath.Join(dir, "gitconfig")
-	require.NoError(t, os.WriteFile(globalConfig, []byte("[safe]\n\tdirectory = /home/repo\n"), 0o600))
+	Require.NoError(t, os.WriteFile(globalConfig, []byte("[safe]\n\tdirectory = /home/repo\n"), 0o600))
 	env := append(os.Environ(),
 		"GIT_CONFIG_GLOBAL="+globalConfig,
 		"GIT_CONFIG_SYSTEM="+systemConfig,
@@ -242,7 +244,7 @@ func TestReadSafeDirectoriesHonorsNoSystem(t *testing.T) {
 
 	got := readSafeDirectories(context.Background(), env, "")
 
-	assert.Equal(t, []string{"/home/repo"}, got)
+	Assert.Equal(t, []string{"/home/repo"}, got)
 }
 
 func TestReadSafeDirectoriesBoundsProbeRuntime(t *testing.T) {
@@ -258,13 +260,13 @@ func TestReadSafeDirectoriesBoundsProbeRuntime(t *testing.T) {
 	start := time.Now()
 	got := readSafeDirectories(context.Background(), env, "")
 
-	assert.Empty(t, got)
-	assert.Less(t, time.Since(start), time.Second, "safe.directory probes are best-effort and must not stall git commands")
+	Assert.Empty(t, got)
+	Assert.Less(t, time.Since(start), time.Second, "safe.directory probes are best-effort and must not stall git commands")
 }
 
 func TestReadSafeDirectoriesConditionalInclude(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
+	require := Require.New(t)
+	assert := Assert.New(t)
 	// Regression test: the probes must run in the command's directory with
 	// --includes so includeIf "gitdir:..." entries resolve for the repository
 	// the command targets, not for the calling process's working directory.
@@ -296,16 +298,16 @@ func TestReadSafeDirectoriesConditionalInclude(t *testing.T) {
 
 func TestCommandEnvForwardsSafeDirectory(t *testing.T) {
 	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
-	require.NoError(t, os.WriteFile(globalConfig, []byte("[safe]\n\tdirectory = *\n"), 0o600))
+	Require.NoError(t, os.WriteFile(globalConfig, []byte("[safe]\n\tdirectory = *\n"), 0o600))
 
 	runner := New()
 	runner.Env = safeDirectoryTestEnv(t, globalConfig)
 	cmd := runner.Command(context.Background(), "", "status")
 
-	assert.Equal(t, "*", gitConfigValue(strings.Join(cmd.Env, "\n"), "safe.directory"))
+	Assert.Equal(t, "*", gitConfigValue(strings.Join(cmd.Env, "\n"), "safe.directory"))
 	// The sanitized environment must still hide the user's global config from
 	// everything except the forwarded safe.directory entries.
-	assert.Contains(t, cmd.Env, "GIT_CONFIG_GLOBAL="+nullGlobalConfigPath())
+	Assert.Contains(t, cmd.Env, "GIT_CONFIG_GLOBAL="+nullGlobalConfigPath())
 }
 
 func TestCommandEnvForwardsSafeDirectoryForRunnerLiterals(t *testing.T) {
@@ -313,7 +315,7 @@ func TestCommandEnvForwardsSafeDirectoryForRunnerLiterals(t *testing.T) {
 	// literal instead of using New(); a zero DisableSafeDirectoryForward
 	// keeps isolation flags from silently dropping the user's trust entries.
 	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
-	require.NoError(t, os.WriteFile(globalConfig, []byte("[safe]\n\tdirectory = /srv/repo\n"), 0o600))
+	Require.NoError(t, os.WriteFile(globalConfig, []byte("[safe]\n\tdirectory = /srv/repo\n"), 0o600))
 
 	runner := Runner{
 		Env:              safeDirectoryTestEnv(t, globalConfig),
@@ -323,12 +325,12 @@ func TestCommandEnvForwardsSafeDirectoryForRunnerLiterals(t *testing.T) {
 	}
 	cmd := runner.Command(context.Background(), "", "status")
 
-	assert.Equal(t, "/srv/repo", gitConfigValue(strings.Join(cmd.Env, "\n"), "safe.directory"))
+	Assert.Equal(t, "/srv/repo", gitConfigValue(strings.Join(cmd.Env, "\n"), "safe.directory"))
 }
 
 func TestCommandEnvReadsSafeDirectoryFromRunnerEnv(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
+	require := Require.New(t)
+	assert := Assert.New(t)
 	// The forwarded entries must come from the runner's configured Env, not
 	// from the process environment, and one runner's entries must not leak
 	// into a runner with a different environment.
@@ -352,19 +354,19 @@ func TestCommandEnvReadsSafeDirectoryFromRunnerEnv(t *testing.T) {
 
 func TestCommandEnvSkipsSafeDirectoryWhenDisabled(t *testing.T) {
 	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
-	require.NoError(t, os.WriteFile(globalConfig, []byte("[safe]\n\tdirectory = *\n"), 0o600))
+	Require.NoError(t, os.WriteFile(globalConfig, []byte("[safe]\n\tdirectory = *\n"), 0o600))
 
 	runner := New()
 	runner.Env = safeDirectoryTestEnv(t, globalConfig)
 	runner.DisableSafeDirectoryForward = true
 	cmd := runner.Command(context.Background(), "", "status")
 
-	assert.Empty(t, gitConfigValue(strings.Join(cmd.Env, "\n"), "safe.directory"))
+	Assert.Empty(t, gitConfigValue(strings.Join(cmd.Env, "\n"), "safe.directory"))
 }
 
 func TestCredentialResponseIsPrivateDataAndCleanupIsIdempotent(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
+	require := Require.New(t)
+	assert := Assert.New(t)
 
 	path, cleanup, err := (basicAuth{
 		username: "alice",
@@ -408,8 +410,8 @@ func TestCredentialResponseRejectsProtocolDelimitersBeforeCreatingFile(t *testin
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require := require.New(t)
-			assert := assert.New(t)
+			require := Require.New(t)
+			assert := Assert.New(t)
 			tempDir := t.TempDir()
 			t.Setenv("TMPDIR", tempDir)
 			t.Setenv("TMP", tempDir)
@@ -433,7 +435,7 @@ func TestCredentialResponseRejectsProtocolDelimitersBeforeCreatingFile(t *testin
 }
 
 func TestWithBasicAuthKeepsSecretOutOfCommandEnvironment(t *testing.T) {
-	assert := assert.New(t)
+	assert := Assert.New(t)
 	env := captureGitEnv(t, New().WithBasicAuth("alice", "secret-token"))
 
 	for _, secret := range []string{
@@ -451,8 +453,8 @@ func TestWithBasicAuthKeepsSecretOutOfCommandEnvironment(t *testing.T) {
 }
 
 func TestWithBasicAuthRoundTripsCredentialProtocol(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
+	require := Require.New(t)
+	assert := Assert.New(t)
 	username := `al ice'$\"`
 	password := `sec ret'\"$\\;|&()`
 	request := "protocol=https\nhost=example.invalid\n\n"
@@ -474,14 +476,15 @@ func TestWithBasicAuthStoreAndEraseDoNotDiscloseCredentials(t *testing.T) {
 			stdout, stderr, err := New().WithBasicAuth("alice", "secret-token").Run(
 				context.Background(), "", strings.NewReader(request), "credential", operation,
 			)
-			require.NoError(t, err, string(stderr))
-			assert.Empty(t, stdout)
-			assert.Empty(t, stderr)
+			Require.NoError(t, err, string(stderr))
+			Assert.Empty(t, stdout)
+			Assert.Empty(t, stderr)
 		})
 	}
 }
 
 func TestWithBasicAuthRejectsCredentialProtocolInjection(t *testing.T) {
+	assert := Assert.New(t)
 	password := "secret-token\nusername=mallory"
 	request := "protocol=https\nhost=example.invalid\n\n"
 
@@ -489,10 +492,10 @@ func TestWithBasicAuthRejectsCredentialProtocolInjection(t *testing.T) {
 		context.Background(), "", strings.NewReader(request), "credential", "fill",
 	)
 
-	require.Error(t, err)
-	assert.Empty(t, stdout)
-	assert.NotContains(t, string(stderr), password)
-	assert.NotContains(t, err.Error(), password)
+	Require.Error(t, err)
+	assert.Empty(stdout)
+	assert.NotContains(string(stderr), password)
+	assert.NotContains(err.Error(), password)
 }
 
 func TestWithBasicAuthRejectsCommand(t *testing.T) {
@@ -521,11 +524,12 @@ func TestWithBasicAuthRemovesCredentialResponseAfterRun(t *testing.T) {
 	captureGitEnv(t, New().WithBasicAuth("alice", "secret-token"))
 
 	responses, err := filepath.Glob(filepath.Join(tempDir, "gitcmd-credential-response-*"))
-	require.NoError(t, err)
-	assert.Empty(t, responses)
+	Require.NoError(t, err)
+	Assert.Empty(t, responses)
 }
 
 func TestWithBasicAuthRemovesCredentialResponseAfterGitFailure(t *testing.T) {
+	require := Require.New(t)
 	tempDir := t.TempDir()
 	t.Setenv("TMPDIR", tempDir)
 	t.Setenv("TMP", tempDir)
@@ -538,18 +542,18 @@ func TestWithBasicAuthRemovesCredentialResponseAfterGitFailure(t *testing.T) {
 		gitPath += ".bat"
 		script = "@exit /b 1\r\n"
 	}
-	require.NoError(t, os.WriteFile(gitPath, []byte(script), 0o700))
+	require.NoError(os.WriteFile(gitPath, []byte(script), 0o700))
 
 	pathEnv := binDir + string(os.PathListSeparator) + os.Getenv("PATH")
 	t.Setenv("PATH", pathEnv)
 	runner := New().WithBasicAuth("alice", "secret-token")
 	runner.Env = []string{"PATH=" + pathEnv}
 	_, _, err := runner.Run(context.Background(), "", nil, "version")
-	require.Error(t, err)
+	require.Error(err)
 
 	responses, globErr := filepath.Glob(filepath.Join(tempDir, "gitcmd-credential-response-*"))
-	require.NoError(t, globErr)
-	assert.Empty(t, responses)
+	require.NoError(globErr)
+	Assert.Empty(t, responses)
 }
 
 func captureGitEnv(t *testing.T, runner Runner) string {
@@ -588,7 +592,7 @@ func buildSleepingGit(t *testing.T) string {
 	}
 	exePath := filepath.Join(binDir, exeName)
 	srcPath := filepath.Join(t.TempDir(), "main.go")
-	require.NoError(t, os.WriteFile(srcPath, []byte(`package main
+	Require.NoError(t, os.WriteFile(srcPath, []byte(`package main
 
 import "time"
 
@@ -598,7 +602,7 @@ func main() {
 `), 0o600))
 	cmd := exec.Command("go", "build", "-o", exePath, srcPath)
 	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, string(out))
+	Require.NoError(t, err, string(out))
 	return binDir
 }
 

@@ -427,8 +427,7 @@ func (e *GitError) Unwrap() error {
 
 // ExitCode returns git's process exit code when available.
 func (e *GitError) ExitCode() (int, bool) {
-	var exitErr *exec.ExitError
-	if errors.As(e.Err, &exitErr) {
+	if exitErr, ok := errors.AsType[*exec.ExitError](e.Err); ok {
 		return exitErr.ExitCode(), true
 	}
 	return 0, false

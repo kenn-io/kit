@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	Assert "github.com/stretchr/testify/assert"
+	Require "github.com/stretchr/testify/require"
 )
 
 type internalFillProviderError struct{}
@@ -34,6 +34,8 @@ func (noOpFillStore) QueryGeneration(context.Context, int, Vector, int) ([]Hit[i
 }
 
 func TestApplyFillBatchProbeInvalidVectorAddsSliceAndLocalOffsets(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	refs := []fillChunkRef{
 		{doc: 0, chunk: 3, value: Chunk{Index: 3, Text: "d"}},
 		{doc: 0, chunk: 4, value: Chunk{Index: 4, Text: "e"}},
@@ -59,10 +61,10 @@ func TestApplyFillBatchProbeInvalidVectorAddsSliceAndLocalOffsets(t *testing.T) 
 	enc := func(_ context.Context, texts []string) ([][]float32, error) {
 		calls++
 		if calls == 1 {
-			assert.Equal(t, []string{"d", "e", "z"}, texts)
+			assert.Equal([]string{"d", "e", "z"}, texts)
 			return nil, &internalFillProviderError{}
 		}
-		assert.Equal(t, []string{"d", "e"}, texts)
+		assert.Equal([]string{"d", "e"}, texts)
 		return [][]float32{{1}, {0}}, nil
 	}
 	batch := encodeFillBatch(context.Background(), enc, refs)
@@ -71,24 +73,26 @@ func TestApplyFillBatchProbeInvalidVectorAddsSliceAndLocalOffsets(t *testing.T) 
 		FillOptions[int64]{
 			ShouldIsolateBatchError: func(err error) bool {
 				var providerErr *internalFillProviderError
-				require.ErrorAs(t, err, &providerErr)
+				require.ErrorAs(err, &providerErr)
 				return true
 			},
 			OnEncodeError: func(doc int64, err error) bool {
-				assert.Equal(t, int64(10), doc)
-				require.ErrorAs(t, err, &got)
+				assert.Equal(int64(10), doc)
+				require.ErrorAs(err, &got)
 				return false
 			},
 		},
 		enc, batch, states, true, map[int64]struct{}{}, &FillStats{})
-	require.Error(t, err)
-	require.NotNil(t, got)
-	assert.Equal(t, 4, got.Chunk, "slice start 3 plus local invalid index 1")
-	assert.Equal(t, 2, calls)
-	assert.True(t, errors.As(err, &got))
+	require.Error(err)
+	require.NotNil(got)
+	assert.Equal(4, got.Chunk, "slice start 3 plus local invalid index 1")
+	assert.Equal(2, calls)
+	assert.ErrorAs(err, &got)
 }
 
 func TestApplyFillBatchProbeInvalidVectorPreservesCompanionCauses(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	refs := []fillChunkRef{
 		{doc: 0, chunk: 3, value: Chunk{Index: 3, Text: "d"}},
 		{doc: 0, chunk: 4, value: Chunk{Index: 4, Text: "e"}},
@@ -116,10 +120,10 @@ func TestApplyFillBatchProbeInvalidVectorPreservesCompanionCauses(t *testing.T) 
 	enc := func(_ context.Context, texts []string) ([][]float32, error) {
 		calls++
 		if calls == 1 {
-			assert.Equal(t, []string{"d", "e", "z"}, texts)
+			assert.Equal([]string{"d", "e", "z"}, texts)
 			return nil, &internalFillProviderError{}
 		}
-		assert.Equal(t, []string{"d", "e"}, texts)
+		assert.Equal([]string{"d", "e"}, texts)
 		return nil, errors.Join(
 			&InvalidVectorError{Chunk: 1, Component: -1, Reason: "zero norm"},
 			companion,
@@ -132,27 +136,27 @@ func TestApplyFillBatchProbeInvalidVectorPreservesCompanionCauses(t *testing.T) 
 		FillOptions[int64]{
 			ShouldIsolateBatchError: func(err error) bool {
 				var providerErr *internalFillProviderError
-				require.ErrorAs(t, err, &providerErr)
+				require.ErrorAs(err, &providerErr)
 				return true
 			},
 			OnEncodeError: func(doc int64, err error) bool {
-				assert.Equal(t, int64(10), doc)
-				require.ErrorAs(t, err, &gotInvalid)
-				assert.Equal(t, 4, gotInvalid.Chunk)
+				assert.Equal(int64(10), doc)
+				require.ErrorAs(err, &gotInvalid)
+				assert.Equal(4, gotInvalid.Chunk)
 				var gotCompanion *internalFillCompanionError
-				assert.ErrorAs(t, err, &gotCompanion)
-				assert.Same(t, companion, gotCompanion)
-				assert.ErrorIs(t, err, sentinel)
+				assert.ErrorAs(err, &gotCompanion)
+				assert.Same(companion, gotCompanion)
+				assert.ErrorIs(err, sentinel)
 				return false
 			},
 		},
 		enc, batch, states, true, map[int64]struct{}{}, &FillStats{})
-	require.Error(t, err)
-	require.NotNil(t, gotInvalid)
-	assert.Equal(t, 4, gotInvalid.Chunk)
-	assert.Equal(t, 2, calls)
+	require.Error(err)
+	require.NotNil(gotInvalid)
+	assert.Equal(4, gotInvalid.Chunk)
+	assert.Equal(2, calls)
 	var gotCompanion *internalFillCompanionError
-	assert.ErrorAs(t, err, &gotCompanion)
-	assert.Same(t, companion, gotCompanion)
-	assert.ErrorIs(t, err, sentinel)
+	assert.ErrorAs(err, &gotCompanion)
+	assert.Same(companion, gotCompanion)
+	assert.ErrorIs(err, sentinel)
 }

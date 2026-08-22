@@ -6,33 +6,35 @@ import (
 	"maps"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	Assert "github.com/stretchr/testify/assert"
+	Require "github.com/stretchr/testify/require"
 	"go.kenn.io/kit/pack"
 )
 
 func TestRepoOpenBlobStreamsVerifiedContent(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	r := initTestRepo(t)
 	known := map[pack.BlobID]IndexEntry{}
 	appender := NewPackAppender(r, known, pack.DefaultZstdLevel, nil, testPackExt)
 	content := []byte("repository streaming content")
 	id, _, err := appender.Add(content)
-	require.NoError(t, err)
+	require.NoError(err)
 	_, _, err = appender.Finish()
-	require.NoError(t, err)
+	require.NoError(err)
 
 	stream, err := r.OpenBlob(context.Background(), known, id, nil, testPackExt)
-	require.NoError(t, err)
-	assert.Equal(t, int64(len(content)), stream.Size())
+	require.NoError(err)
+	assert.Equal(int64(len(content)), stream.Size())
 	prefix := make([]byte, 4)
 	_, err = io.ReadFull(stream, prefix)
-	require.NoError(t, err)
-	assert.False(t, stream.Verified())
+	require.NoError(err)
+	assert.False(stream.Verified())
 	rest, err := io.ReadAll(stream)
-	require.NoError(t, err)
-	assert.Equal(t, content, append(prefix, rest...))
-	assert.True(t, stream.Verified())
-	require.NoError(t, stream.Close())
+	require.NoError(err)
+	assert.Equal(content, append(prefix, rest...))
+	assert.True(stream.Verified())
+	require.NoError(stream.Close())
 }
 
 func TestRepoOpenBlobRejectsIndexMismatchBeforeStreaming(t *testing.T) {
@@ -40,9 +42,9 @@ func TestRepoOpenBlobRejectsIndexMismatchBeforeStreaming(t *testing.T) {
 	known := map[pack.BlobID]IndexEntry{}
 	appender := NewPackAppender(r, known, pack.DefaultZstdLevel, nil, testPackExt)
 	id, _, err := appender.Add([]byte("indexed content"))
-	require.NoError(t, err)
+	Require.NoError(t, err)
 	_, _, err = appender.Finish()
-	require.NoError(t, err)
+	Require.NoError(t, err)
 	for _, tc := range []struct {
 		name  string
 		forge func(*IndexEntry)
@@ -58,25 +60,26 @@ func TestRepoOpenBlobRejectsIndexMismatchBeforeStreaming(t *testing.T) {
 			forgedKnown[id] = forged
 
 			stream, err := r.OpenBlob(context.Background(), forgedKnown, id, nil, testPackExt)
-			require.ErrorContains(t, err, "index metadata disagrees")
-			assert.Nil(t, stream)
+			Require.ErrorContains(t, err, "index metadata disagrees")
+			Assert.Nil(t, stream)
 		})
 	}
 }
 
 func TestRepoOpenBlobEarlyCloseIsUnverified(t *testing.T) {
+	require := Require.New(t)
 	r := initTestRepo(t)
 	known := map[pack.BlobID]IndexEntry{}
 	appender := NewPackAppender(r, known, pack.DefaultZstdLevel, nil, testPackExt)
 	id, _, err := appender.Add([]byte("early close"))
-	require.NoError(t, err)
+	require.NoError(err)
 	_, _, err = appender.Finish()
-	require.NoError(t, err)
+	require.NoError(err)
 
 	stream, err := r.OpenBlob(context.Background(), known, id, nil, testPackExt)
-	require.NoError(t, err)
+	require.NoError(err)
 	_, err = stream.Read(make([]byte, 1))
-	require.NoError(t, err)
-	require.ErrorIs(t, stream.Close(), pack.ErrVerificationIncomplete)
-	require.ErrorIs(t, stream.Close(), pack.ErrVerificationIncomplete)
+	require.NoError(err)
+	require.ErrorIs(stream.Close(), pack.ErrVerificationIncomplete)
+	require.ErrorIs(stream.Close(), pack.ErrVerificationIncomplete)
 }

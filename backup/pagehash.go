@@ -226,7 +226,7 @@ func MaterializeHashMap(
 	fetch func(pack.BlobID) ([]byte, error),
 	chain []pack.BlobID,
 ) (*PageHashMap, error) {
-	var deltas []*PageHashDelta
+	deltas := make([]*PageHashDelta, 0)
 	for i, id := range chain {
 		data, err := fetch(id)
 		if err != nil {
@@ -257,6 +257,9 @@ func MaterializeHashMap(
 				id,
 				err,
 			)
+		}
+		if d == nil {
+			return nil, fmt.Errorf("backup: hash-map chain blob %d (%s) decoded to no delta", i, id)
 		}
 		deltas = append(deltas, d)
 	}

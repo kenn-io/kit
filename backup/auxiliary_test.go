@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	Assert "github.com/stretchr/testify/assert"
+	Require "github.com/stretchr/testify/require"
 	"go.kenn.io/kit/pack"
 )
 
@@ -48,7 +48,7 @@ func TestValidateAuxiliaryArtifactsRejectsAmbiguousAuthority(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			assert.ErrorContains(t, validateAuxiliaryArtifacts(test.artifacts), test.want)
+			Assert.ErrorContains(t, validateAuxiliaryArtifacts(test.artifacts), test.want)
 		})
 	}
 }
@@ -90,11 +90,11 @@ func TestValidateManifestAuxiliaryRequiresSortedBoundedIdentity(t *testing.T) {
 			want: "invalid size",
 		},
 	}
-	require.NoError(t, validateManifestAuxiliary([]ManifestAuxiliary{valid}))
+	Require.NoError(t, validateManifestAuxiliary([]ManifestAuxiliary{valid}))
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			assert.ErrorContains(t, validateManifestAuxiliary(test.artifacts), test.want)
+			Assert.ErrorContains(t, validateManifestAuxiliary(test.artifacts), test.want)
 		})
 	}
 }
@@ -106,14 +106,15 @@ func TestRestoreAuxiliaryRejectsOversizedFooterBeforePayloadRead(t *testing.T) {
 			name = "unreadable payload"
 		}
 		t.Run(name, func(t *testing.T) {
+			require := Require.New(t)
 			repo := initTestRepo(t)
 			known := map[pack.BlobID]IndexEntry{}
 			appender := NewPackAppender(repo, known, pack.DefaultZstdLevel, nil, testPackExt)
 			content := bytes.Repeat([]byte("oversized auxiliary payload"), 4096)
 			id, _, err := appender.Add(content)
-			require.NoError(t, err)
+			require.NoError(err)
 			_, _, err = appender.Finish()
-			require.NoError(t, err)
+			require.NoError(err)
 			if corruptPayload {
 				corruptStoredBlob(t, repo, known, id)
 			}
@@ -125,8 +126,8 @@ func TestRestoreAuxiliaryRejectsOversizedFooterBeforePayloadRead(t *testing.T) {
 
 			restored, err := state.restoreAuxiliary(context.Background(), manifest)
 
-			require.ErrorContains(t, err, "is 110592 bytes but manifest records 1")
-			assert.Nil(t, restored)
+			require.ErrorContains(err, "is 110592 bytes but manifest records 1")
+			Assert.Nil(t, restored)
 		})
 	}
 }

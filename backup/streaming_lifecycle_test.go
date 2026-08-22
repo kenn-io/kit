@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	Assert "github.com/stretchr/testify/assert"
+	Require "github.com/stretchr/testify/require"
 
 	"go.kenn.io/kit/packstore"
 	"go.kenn.io/kit/packstore/packstoretest"
@@ -40,10 +40,10 @@ func addLifecycleCandidate(t *testing.T, catalog *packstoretest.MemoryCatalog, h
 func readLifecycleBlob(t *testing.T, store *packstore.Store, hash packstore.Hash) []byte {
 	t.Helper()
 	reader, size, err := store.OpenStream(context.Background(), hash)
-	require.NoError(t, err)
+	Require.NoError(t, err)
 	content, readErr := io.ReadAll(reader)
-	require.NoError(t, errors.Join(readErr, reader.Close()))
-	assert.Equal(t, size, int64(len(content)))
+	Require.NoError(t, errors.Join(readErr, reader.Close()))
+	Assert.Equal(t, size, int64(len(content)))
 	return content
 }
 
@@ -51,7 +51,8 @@ func readLifecycleBlob(t *testing.T, store *packstore.Store, hash packstore.Hash
 // focused package tests intentionally split apart: mixed reads, sparse repack,
 // unpack, backup capture and verification, then loose and pack-native restore.
 func TestStreamingLifecycleGate(t *testing.T) {
-	require := require.New(t)
+	assert := Assert.New(t)
+	require := Require.New(t)
 	ctx := context.Background()
 	dbPath, contentDir, dataDir, _ := seedBackupFixture(t)
 	layout, err := packstore.NewLayout(contentDir, packstore.LayoutOptions{
@@ -100,9 +101,9 @@ func TestStreamingLifecycleGate(t *testing.T) {
 
 	packed, err := maintainer.Pack(ctx, packstore.PackOptions{})
 	require.NoError(err)
-	assert.Equal(t, 5, packed.BlobsPacked)
+	assert.Equal(5, packed.BlobsPacked)
 	for hash, want := range expected {
-		assert.Equal(t, want, readLifecycleBlob(t, maintainer.Store(), hash))
+		assert.Equal(want, readLifecycleBlob(t, maintainer.Store(), hash))
 	}
 
 	mixed, err := loose.WriteBytes(ctx, []byte("mixed loose member"), packstore.WriteOptions{
@@ -110,7 +111,7 @@ func TestStreamingLifecycleGate(t *testing.T) {
 	})
 	require.NoError(err)
 	addLifecycleCandidate(t, catalog, mixed.Hash, mixed.Path, mixed.Size)
-	assert.Equal(t, []byte("mixed loose member"), readLifecycleBlob(t, maintainer.Store(), mixed.Hash))
+	assert.Equal([]byte("mixed loose member"), readLifecycleBlob(t, maintainer.Store(), mixed.Hash))
 
 	for hash := range catalog.Snapshot().Members {
 		if _, keep := expected[hash]; !keep && hash != mixed.Hash {
@@ -122,14 +123,14 @@ func TestStreamingLifecycleGate(t *testing.T) {
 		Selection: packstore.RepackSelection{MinAge: time.Hour, MinDeadStored: 1},
 	})
 	require.NoError(err)
-	assert.Equal(t, 2, repacked.BlobsRepacked)
+	assert.Equal(2, repacked.BlobsRepacked)
 
 	unpacked, err := maintainer.Unpack(ctx)
 	require.NoError(err)
-	assert.Equal(t, 2, unpacked.BlobsRestored)
-	assert.Empty(t, catalog.Snapshot().Entries)
+	assert.Equal(2, unpacked.BlobsRestored)
+	assert.Empty(catalog.Snapshot().Entries)
 	for hash, want := range expected {
-		assert.Equal(t, want, readLifecycleBlob(t, maintainer.Store(), hash))
+		assert.Equal(want, readLifecycleBlob(t, maintainer.Store(), hash))
 	}
 
 	repo := initTestRepo(t)
@@ -142,7 +143,7 @@ func TestStreamingLifecycleGate(t *testing.T) {
 	require.NoError(err)
 	verified, err := Verify(ctx, repo, app, VerifyOptions{SnapshotID: manifest.SnapshotID})
 	require.NoError(err)
-	assert.Empty(t, verified.Problems)
+	assert.Empty(verified.Problems)
 
 	looseTarget := filepath.Join(t.TempDir(), "loose-restore")
 	_, err = Restore(ctx, repo, app, RestoreOptions{TargetDir: looseTarget})
@@ -151,7 +152,7 @@ func TestStreamingLifecycleGate(t *testing.T) {
 		path := filepath.Join(looseTarget, "content", hash.String()[:2], hash.String())
 		got, readErr := os.ReadFile(path)
 		require.NoError(readErr)
-		assert.Equal(t, want, got)
+		assert.Equal(want, got)
 	}
 
 	packedTarget := filepath.Join(t.TempDir(), "packed-restore")
@@ -172,7 +173,7 @@ func TestStreamingLifecycleGate(t *testing.T) {
 	}
 	result, err := Restore(ctx, repo, app, RestoreOptions{TargetDir: packedTarget, PackedContent: target})
 	require.NoError(err)
-	assert.Equal(t, manifest.Attachments.Blobs, result.PackedAttachmentBlobs)
+	assert.Equal(manifest.Attachments.Blobs, result.PackedAttachmentBlobs)
 	packedLayout, err := packstore.NewLayout(filepath.Join(packedTarget, "content"), packstore.LayoutOptions{
 		Staging: packstore.StagingSameDirectory,
 	})
@@ -181,9 +182,9 @@ func TestStreamingLifecycleGate(t *testing.T) {
 	require.NoError(err)
 	t.Cleanup(func() { require.NoError(restoredStore.Close()) })
 	for hash, want := range expected {
-		assert.Equal(t, want, readLifecycleBlob(t, restoredStore, hash))
+		assert.Equal(want, readLifecycleBlob(t, restoredStore, hash))
 	}
 	verified, err = Verify(ctx, repo, app, VerifyOptions{All: true})
 	require.NoError(err)
-	assert.Empty(t, verified.Problems)
+	assert.Empty(verified.Problems)
 }

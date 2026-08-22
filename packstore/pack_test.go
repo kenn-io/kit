@@ -14,14 +14,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	Assert "github.com/stretchr/testify/assert"
+	Require "github.com/stretchr/testify/require"
 	"go.kenn.io/kit/pack"
 )
 
 func TestPackRepairsThenPacksAndSweepsLooseContent(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
+	require := Require.New(t)
+	assert := Assert.New(t)
 	layout := layoutForStoreTest(t)
 	catalog := newMaintenanceCatalog()
 	content := []byte("pack this loose content")
@@ -52,8 +52,8 @@ func TestPackRepairsThenPacksAndSweepsLooseContent(t *testing.T) {
 }
 
 func TestPackMixedLooseRepresentationsUsesLogicalIdentity(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
+	require := Require.New(t)
+	assert := Assert.New(t)
 	layout := layoutForStoreTest(t)
 	catalog := newMaintenanceCatalog()
 	contents := [][]byte{
@@ -111,8 +111,8 @@ func TestPackMixedLooseRepresentationsUsesLogicalIdentity(t *testing.T) {
 }
 
 func TestPackTreatsNoncanonicalHashZstdPathAsLegacyRaw(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
+	require := Require.New(t)
+	assert := Assert.New(t)
 	layout := layoutForStoreTest(t)
 	content := []byte("legacy raw bytes with a compressed-looking filename")
 	hash := hashForTest(content)
@@ -136,8 +136,8 @@ func TestPackTreatsNoncanonicalHashZstdPathAsLegacyRaw(t *testing.T) {
 }
 
 func TestPackClassifiesWindowsCaseVariantCanonicalPathAsCompressed(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
+	require := Require.New(t)
+	assert := Assert.New(t)
 	layout := layoutForStoreTest(t)
 	content := bytes.Repeat([]byte("case-insensitive canonical compressed path\n"), 32)
 	hash := hashForTest(content)
@@ -168,14 +168,14 @@ func TestCanonicalLoosePathEqualForOS(t *testing.T) {
 	caseVariant := filepath.Join("ROOT", "AB", "ABCDEF.ZST")
 	noncanonical := filepath.Join("root", "legacy", "abcdef.zst")
 
-	assert.True(t, canonicalLoosePathEqualForOS("windows", canonical, caseVariant))
-	assert.False(t, canonicalLoosePathEqualForOS("linux", canonical, caseVariant))
-	assert.False(t, canonicalLoosePathEqualForOS("windows", canonical, noncanonical))
+	Assert.True(t, canonicalLoosePathEqualForOS("windows", canonical, caseVariant))
+	Assert.False(t, canonicalLoosePathEqualForOS("linux", canonical, caseVariant))
+	Assert.False(t, canonicalLoosePathEqualForOS("windows", canonical, noncanonical))
 }
 
 func TestPackMergesDuplicateCandidateFallbackPathsAndAliases(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
+	require := Require.New(t)
+	assert := Assert.New(t)
 	layout := layoutForStoreTest(t)
 	content := bytes.Repeat([]byte("duplicate candidate fallback\n"), 64)
 	hash := hashForTest(content)
@@ -213,8 +213,8 @@ func TestPackMergesDuplicateCandidateFallbackPathsAndAliases(t *testing.T) {
 }
 
 func TestPackMergesAliasesAfterFirstSuccessfulDuplicateCandidate(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
+	require := Require.New(t)
+	assert := Assert.New(t)
 	layout := layoutForStoreTest(t)
 	content := bytes.Repeat([]byte("duplicate alias union\n"), 32)
 	hash := writeMaintenanceLoose(t, layout, content)
@@ -239,8 +239,8 @@ func TestPackMergesAliasesAfterFirstSuccessfulDuplicateCandidate(t *testing.T) {
 }
 
 func TestPackRejectsContradictoryDuplicateCandidateSizes(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
+	require := Require.New(t)
+	assert := Assert.New(t)
 	layout := layoutForStoreTest(t)
 	content := []byte("contradictory candidate metadata")
 	hash := writeMaintenanceLoose(t, layout, content)
@@ -265,8 +265,8 @@ func TestPackRejectsContradictoryDuplicateCandidateSizes(t *testing.T) {
 }
 
 func TestPackRejectsCorruptCompressedCandidate(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
+	require := Require.New(t)
+	assert := Assert.New(t)
 	layout := layoutForStoreTest(t)
 	catalog := newMaintenanceCatalog()
 	content := bytes.Repeat([]byte("verify compressed candidate\n"), 64)
@@ -289,8 +289,8 @@ func TestPackRejectsCorruptCompressedCandidate(t *testing.T) {
 }
 
 func TestPackPreservesCompressedSourceReplacementAfterCatalogCommit(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
+	require := Require.New(t)
+	assert := Assert.New(t)
 	layout := layoutForStoreTest(t)
 	catalog := newMaintenanceCatalog()
 	content := bytes.Repeat([]byte("source replacement race\n"), 128)
@@ -320,19 +320,21 @@ func TestPackPreservesCompressedSourceReplacementAfterCatalogCommit(t *testing.T
 }
 
 func TestSweepLooseSkipsPackedAuthorityWhenNoCanonicalLooseCandidateExists(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	layout := layoutForStoreTest(t)
 	base := newMaintenanceCatalog()
 	var first Hash
 	for index := range 64 {
 		hash, err := ParseHash(fmt.Sprintf("%064x", index+1))
-		require.NoError(t, err)
+		require.NoError(err)
 		if index == 0 {
 			first = hash
 		}
 		base.members[hash] = Reference{Hash: hash}
 		base.entries[hash] = IndexEntry{Hash: hash, PackID: pack.NewPackID()}
 	}
-	require.NoError(t, os.MkdirAll(layout.LoosePath(first), 0o700))
+	require.NoError(os.MkdirAll(layout.LoosePath(first), 0o700))
 	symlink := layout.CompressedLoosePath(first)
 	if err := os.Symlink("elsewhere", symlink); err != nil {
 		t.Logf("symlink fixture unavailable: %v", err)
@@ -343,20 +345,22 @@ func TestSweepLooseSkipsPackedAuthorityWhenNoCanonicalLooseCandidateExists(t *te
 
 	err := maintainer.sweepLoose(context.Background(), base.members, true, &stats)
 
-	require.NoError(t, err)
-	assert.Zero(t, catalog.resolveCalls, "an absent loose namespace must not open packed authority")
-	assert.Equal(t, PackStats{}, stats)
-	assert.DirExists(t, layout.LoosePath(first), "non-regular canonical-looking entries stay untouched")
+	require.NoError(err)
+	assert.Zero(catalog.resolveCalls, "an absent loose namespace must not open packed authority")
+	assert.Equal(PackStats{}, stats)
+	assert.DirExists(layout.LoosePath(first), "non-regular canonical-looking entries stay untouched")
 }
 
 func TestSweepLooseVerifiesPackedAuthorityForCanonicalLooseCandidate(t *testing.T) {
 	for _, encoding := range []LooseEncoding{LooseEncodingRaw, LooseEncodingZstd} {
 		t.Run(fmt.Sprint(encoding), func(t *testing.T) {
+			assert := Assert.New(t)
+			require := Require.New(t)
 			layout := layoutForStoreTest(t)
 			content := bytes.Repeat([]byte("redundant packed authority\n"), 32)
 			entry := buildStoreTestPack(t, layout, content)
 			if encoding == LooseEncodingRaw {
-				require.Equal(t, entry.Hash, writeMaintenanceLoose(t, layout, content))
+				require.Equal(entry.Hash, writeMaintenanceLoose(t, layout, content))
 			} else {
 				writeCompressedLooseFixture(t, layout, entry.Hash, int64(len(content)), content, nil)
 			}
@@ -372,20 +376,22 @@ func TestSweepLooseVerifiesPackedAuthorityForCanonicalLooseCandidate(t *testing.
 
 			err := maintainer.sweepLoose(context.Background(), base.members, true, &stats)
 
-			require.NoError(t, err)
-			assert.Equal(t, 1, catalog.resolveCalls, "a loose candidate requires packed authority verification")
-			assert.Equal(t, 1, stats.LooseSwept)
-			assert.NoFileExists(t, layout.LoosePath(entry.Hash))
-			assert.NoFileExists(t, layout.CompressedLoosePath(entry.Hash))
+			require.NoError(err)
+			assert.Equal(1, catalog.resolveCalls, "a loose candidate requires packed authority verification")
+			assert.Equal(1, stats.LooseSwept)
+			assert.NoFileExists(layout.LoosePath(entry.Hash))
+			assert.NoFileExists(layout.CompressedLoosePath(entry.Hash))
 		})
 	}
 }
 
 func TestSweepLooseDoesNotReportValidSourceCorruptWhenRemovalPinIsUnavailable(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	layout := layoutForStoreTest(t)
 	content := []byte("valid redundant loose source without removal authority")
 	entry := buildStoreTestPack(t, layout, content)
-	require.Equal(t, entry.Hash, writeMaintenanceLoose(t, layout, content))
+	require.Equal(entry.Hash, writeMaintenanceLoose(t, layout, content))
 	catalog := newMaintenanceCatalog()
 	catalog.members[entry.Hash] = Reference{Hash: entry.Hash}
 	catalog.entries[entry.Hash] = entry
@@ -400,13 +406,15 @@ func TestSweepLooseDoesNotReportValidSourceCorruptWhenRemovalPinIsUnavailable(t 
 
 	err := maintainer.sweepLoose(context.Background(), catalog.members, true, &stats)
 
-	require.NoError(t, err)
-	assert.Zero(t, stats.BlobsCorrupt)
-	assert.Zero(t, stats.LooseSwept)
-	assert.FileExists(t, layout.LoosePath(entry.Hash))
+	require.NoError(err)
+	assert.Zero(stats.BlobsCorrupt)
+	assert.Zero(stats.LooseSwept)
+	assert.FileExists(layout.LoosePath(entry.Hash))
 }
 
 func TestPackDoesNotRequireRemovalAuthorityForReadableCandidate(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	layout := layoutForStoreTest(t)
 	content := []byte("pack readable source without removal authority")
 	hash := writeMaintenanceLoose(t, layout, content)
@@ -419,18 +427,19 @@ func TestPackDoesNotRequireRemovalAuthorityForReadableCandidate(t *testing.T) {
 
 	stats, err := maintainer.Pack(context.Background(), PackOptions{})
 
-	require.NoError(t, err)
-	assert.Equal(t, 1, stats.BlobsPacked)
-	assert.Zero(t, stats.BlobsCorrupt)
-	assert.FileExists(t, layout.LoosePath(hash), "unavailable cleanup preserves the redundant loose source")
+	require.NoError(err)
+	assert.Equal(1, stats.BlobsPacked)
+	assert.Zero(stats.BlobsCorrupt)
+	assert.FileExists(layout.LoosePath(hash), "unavailable cleanup preserves the redundant loose source")
 	location, err := catalog.Resolve(context.Background(), hash)
-	require.NoError(t, err)
-	require.NotNil(t, location.Pack)
+	require.NoError(err)
+	require.NotNil(location.Pack)
 	got, _ := readStoreTest(t, maintainer.store, hash)
-	assert.Equal(t, content, got)
+	assert.Equal(content, got)
 }
 
 func TestPackSourcePinLimitRotatesWithoutLeakingPins(t *testing.T) {
+	assert := Assert.New(t)
 	layout := layoutForStoreTest(t)
 	catalog := newMaintenanceCatalog()
 	var order []Hash
@@ -456,11 +465,11 @@ func TestPackSourcePinLimitRotatesWithoutLeakingPins(t *testing.T) {
 
 	stats, err := maintainer.Pack(context.Background(), PackOptions{})
 
-	require.NoError(t, err)
-	assert.Equal(t, 10, stats.BlobsPacked)
-	assert.Equal(t, 4, stats.PacksSealed)
-	assert.Equal(t, opened, closed)
-	assert.Equal(t, 10, opened)
+	Require.NoError(t, err)
+	assert.Equal(10, stats.BlobsPacked)
+	assert.Equal(4, stats.PacksSealed)
+	assert.Equal(opened, closed)
+	assert.Equal(10, opened)
 }
 
 func TestPackedSourcePinLimitForSoftLimit(t *testing.T) {
@@ -475,39 +484,40 @@ func TestPackedSourcePinLimitForSoftLimit(t *testing.T) {
 		{name: "target-derived ceiling", soft: 10_000, want: 4_096},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, packedSourcePinLimitForSoftLimit(tt.soft))
+			Assert.Equal(t, tt.want, packedSourcePinLimitForSoftLimit(tt.soft))
 		})
 	}
 }
 
 func TestPackedSourcePinLimitForReportedSoftLimitDistinguishesZeroFromInvalid(t *testing.T) {
-	assert.Equal(t, 1, packedSourcePinLimitForReportedSoftLimit(0, false),
+	Assert.Equal(t, 1, packedSourcePinLimitForReportedSoftLimit(0, false),
 		"zero is a valid soft limit with no descriptors available for source pins")
-	assert.Equal(t, fallbackPackedSourcePins, packedSourcePinLimitForReportedSoftLimit(^uint64(0), true),
+	Assert.Equal(t, fallbackPackedSourcePins, packedSourcePinLimitForReportedSoftLimit(^uint64(0), true),
 		"a signed negative or infinity sentinel remains an invalid report after conversion")
-	assert.Equal(t, 64, packedSourcePinLimitForReportedSoftLimit(256, false))
+	Assert.Equal(t, 64, packedSourcePinLimitForReportedSoftLimit(256, false))
 }
 
 func TestNormalizePackedSourceSoftLimitRecognizesPortableSentinels(t *testing.T) {
+	assert := Assert.New(t)
 	soft, invalid := normalizePackedSourceSoftLimit(uint64(0))
-	assert.Equal(t, uint64(0), soft)
-	assert.False(t, invalid)
+	assert.Equal(uint64(0), soft)
+	assert.False(invalid)
 
 	soft, invalid = normalizePackedSourceSoftLimit(int64(-1))
-	assert.Equal(t, ^uint64(0), soft)
-	assert.True(t, invalid)
+	assert.Equal(^uint64(0), soft)
+	assert.True(invalid)
 
 	soft, invalid = normalizePackedSourceSoftLimit(^uint64(0))
-	assert.Equal(t, ^uint64(0), soft)
-	assert.True(t, invalid)
+	assert.Equal(^uint64(0), soft)
+	assert.True(invalid)
 
 	soft, invalid = normalizePackedSourceSoftLimit(int64(^uint64(0) >> 1))
-	assert.Equal(t, uint64(^uint64(0)>>1), soft)
-	assert.True(t, invalid)
+	assert.Equal(uint64(^uint64(0)>>1), soft)
+	assert.True(invalid)
 
 	soft, invalid = normalizePackedSourceSoftLimit(int64(256))
-	assert.Equal(t, uint64(256), soft)
-	assert.False(t, invalid)
+	assert.Equal(uint64(256), soft)
+	assert.False(invalid)
 }
 
 func TestPackTargetDerivedSourcePinLimitKeepsThousandTinySourcesTogether(t *testing.T) {
@@ -529,12 +539,13 @@ func TestPackTargetDerivedSourcePinLimitKeepsThousandTinySourcesTogether(t *test
 
 	stats, err := maintainer.Pack(context.Background(), PackOptions{})
 
-	require.NoError(t, err)
-	assert.Equal(t, 1_000, stats.BlobsPacked)
-	assert.Equal(t, 1, stats.PacksSealed, "the normal resource cap must not fragment ordinary tiny-object packs")
+	Require.NoError(t, err)
+	Assert.Equal(t, 1_000, stats.BlobsPacked)
+	Assert.Equal(t, 1, stats.PacksSealed, "the normal resource cap must not fragment ordinary tiny-object packs")
 }
 
 func TestPackClosesSourcePinsWhenRecordPackFails(t *testing.T) {
+	assert := Assert.New(t)
 	layout := layoutForStoreTest(t)
 	catalog := newMaintenanceCatalog()
 	content := []byte("source pin closes after catalog failure")
@@ -556,10 +567,10 @@ func TestPackClosesSourcePinsWhenRecordPackFails(t *testing.T) {
 
 	_, err := maintainer.Pack(context.Background(), PackOptions{})
 
-	require.ErrorIs(t, err, recordErr)
-	assert.Equal(t, 1, opened)
-	assert.Equal(t, opened, closed)
-	assert.FileExists(t, layout.LoosePath(hash))
+	Require.ErrorIs(t, err, recordErr)
+	assert.Equal(1, opened)
+	assert.Equal(opened, closed)
+	assert.FileExists(layout.LoosePath(hash))
 }
 
 func TestPackReportsSourcePinCloseFailure(t *testing.T) {
@@ -581,15 +592,15 @@ func TestPackReportsSourcePinCloseFailure(t *testing.T) {
 
 	stats, err := maintainer.Pack(context.Background(), PackOptions{})
 
-	require.ErrorIs(t, err, closeErr)
-	assert.Equal(t, 1, stats.BlobsPacked, "catalog commit remains authoritative despite cleanup failure")
+	Require.ErrorIs(t, err, closeErr)
+	Assert.Equal(t, 1, stats.BlobsPacked, "catalog commit remains authoritative despite cleanup failure")
 	got, _ := readStoreTest(t, maintainer.store, hash)
-	assert.Equal(t, content, got)
+	Assert.Equal(t, content, got)
 }
 
 func TestPackCancellationDuringCompressedCandidateCleansScratch(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
+	require := Require.New(t)
+	assert := Assert.New(t)
 	layout := layoutForStoreTest(t)
 	content := bytes.Repeat([]byte("cancel compressed candidate\n"), 4096)
 	hash := hashForTest(content)
@@ -643,8 +654,8 @@ func TestPackCancellationDuringCompressedCandidateCleansScratch(t *testing.T) {
 }
 
 func TestPackCancellationBetweenCandidatePathsClosesSelectedPin(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
+	require := Require.New(t)
+	assert := Assert.New(t)
 	layout := layoutForStoreTest(t)
 	content := bytes.Repeat([]byte("cancel between candidate paths\n"), 128)
 	hash := writeMaintenanceLoose(t, layout, content)
@@ -688,8 +699,8 @@ func TestPackCancellationBetweenCandidatePathsClosesSelectedPin(t *testing.T) {
 }
 
 func TestPackPreservesDualCopiesWhenNeitherVerifies(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
+	require := Require.New(t)
+	assert := Assert.New(t)
 	layout := layoutForStoreTest(t)
 	catalog := newMaintenanceCatalog()
 	content := []byte("expected dual-copy logical bytes")
@@ -714,8 +725,8 @@ func TestPackPreservesDualCopiesWhenNeitherVerifies(t *testing.T) {
 }
 
 func TestPackPreservesSoleValidAndDiagnosticCopiesUntilAdoption(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
+	require := Require.New(t)
+	assert := Assert.New(t)
 	layout := layoutForStoreTest(t)
 	catalog := newMaintenanceCatalog()
 	content := bytes.Repeat([]byte("sole valid loose representation\n"), 32)
@@ -748,8 +759,8 @@ func TestPackPreservesSoleValidAndDiagnosticCopiesUntilAdoption(t *testing.T) {
 }
 
 func TestPackSweepsBothVerifiedLooseRepresentations(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
+	require := Require.New(t)
+	assert := Assert.New(t)
 	layout := layoutForStoreTest(t)
 	content := bytes.Repeat([]byte("redundant packed content\n"), 32)
 	entry := buildStoreTestPack(t, layout, content)
@@ -770,8 +781,8 @@ func TestPackSweepsBothVerifiedLooseRepresentations(t *testing.T) {
 }
 
 func TestPackSweepReturnsRemovalFailure(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
+	require := Require.New(t)
+	assert := Assert.New(t)
 	layout := layoutForStoreTest(t)
 	content := []byte("report redundant loose removal failure")
 	entry := buildStoreTestPack(t, layout, content)
@@ -801,8 +812,8 @@ func TestPackSweepReturnsRemovalFailure(t *testing.T) {
 }
 
 func TestPackRepacksCompressedOnlyAuthorityWhenIndexedPackIsCorrupt(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
+	require := Require.New(t)
+	assert := Assert.New(t)
 	layout := layoutForStoreTest(t)
 	content := bytes.Repeat([]byte("compressed-only recovery authority\n"), 32)
 	entry := buildStoreTestPack(t, layout, content)
@@ -833,8 +844,8 @@ func TestPackRepacksCompressedOnlyAuthorityWhenIndexedPackIsCorrupt(t *testing.T
 }
 
 func TestPackReconcilePreservesCompressedOnlyAuthorityOverOrphanPack(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
+	require := Require.New(t)
+	assert := Assert.New(t)
 	layout := layoutForStoreTest(t)
 	content := bytes.Repeat([]byte("compressed authority over orphan pack\n"), 32)
 	entry := buildStoreTestPack(t, layout, content)
@@ -853,10 +864,12 @@ func TestPackReconcilePreservesCompressedOnlyAuthorityOverOrphanPack(t *testing.
 }
 
 func TestPackReconcileDoesNotTreatRawAsAuthoritativeAfterPreferredCompressedCorruption(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	layout := layoutForStoreTest(t)
 	content := bytes.Repeat([]byte("orphan pack remains readable authority\n"), 32)
 	entry := buildStoreTestPack(t, layout, content)
-	require.Equal(t, entry.Hash, writeMaintenanceLoose(t, layout, content))
+	require.Equal(entry.Hash, writeMaintenanceLoose(t, layout, content))
 	writeCompressedLooseFixture(
 		t,
 		layout,
@@ -871,23 +884,25 @@ func TestPackReconcileDoesNotTreatRawAsAuthoritativeAfterPreferredCompressedCorr
 
 	stats, err := maintainer.Pack(context.Background(), PackOptions{})
 
-	require.NoError(t, err)
-	assert.Zero(t, stats.PacksRemoved)
-	assert.Equal(t, 1, stats.PacksAdopted)
-	assert.FileExists(t, layout.PackPath(entry.PackID))
+	require.NoError(err)
+	assert.Zero(stats.PacksRemoved)
+	assert.Equal(1, stats.PacksAdopted)
+	assert.FileExists(layout.PackPath(entry.PackID))
 	got, _ := readStoreTest(t, maintainer.store, entry.Hash)
-	assert.Equal(t, content, got)
+	assert.Equal(content, got)
 }
 
 func TestMaintenancePreflightsCompressedStoredSizeBeforeDecode(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	layout := layoutForStoreTest(t)
 	content := []byte("small maintenance object")
 	hash := hashForTest(content)
 	path := layout.CompressedLoosePath(hash)
-	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	require.NoError(os.MkdirAll(filepath.Dir(path), 0o700))
 	header := encodeCompressedLooseHeader(uint64(len(content)))
 	physical := append(header[:], bytes.Repeat([]byte("oversized stored payload"), 4)...)
-	require.NoError(t, os.WriteFile(path, physical, 0o600))
+	require.NoError(os.WriteFile(path, physical, 0o600))
 	originalReader := newLooseZstdReader
 	decoderCalls := 0
 	newLooseZstdReader = func(src io.Reader) (looseZstdReader, error) {
@@ -900,22 +915,24 @@ func TestMaintenancePreflightsCompressedStoredSizeBeforeDecode(t *testing.T) {
 	_, err := verifyLoosePathIdentity(context.Background(), path, hash, limit, LooseEncodingZstd)
 
 	var limitErr *LimitError
-	require.ErrorAs(t, err, &limitErr)
-	assert.Equal(t, LimitBlobStoredBytes, limitErr.Dimension)
-	assert.Equal(t, uint64(len(physical)), limitErr.Actual)
-	assert.Equal(t, uint64(limit), limitErr.Limit)
-	assert.Zero(t, decoderCalls)
+	require.ErrorAs(err, &limitErr)
+	assert.Equal(LimitBlobStoredBytes, limitErr.Dimension)
+	assert.Equal(uint64(len(physical)), limitErr.Actual)
+	assert.Equal(uint64(limit), limitErr.Limit)
+	assert.Zero(decoderCalls)
 }
 
 func TestPackDefersCompressedCandidateAboveStoredLimitBeforeDecode(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	layout := layoutForStoreTest(t)
 	content := []byte("small pack candidate")
 	hash := hashForTest(content)
 	path := layout.CompressedLoosePath(hash)
-	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	require.NoError(os.MkdirAll(filepath.Dir(path), 0o700))
 	header := encodeCompressedLooseHeader(uint64(len(content)))
 	physical := append(header[:], bytes.Repeat([]byte("oversized stored payload"), 4)...)
-	require.NoError(t, os.WriteFile(path, physical, 0o600))
+	require.NoError(os.WriteFile(path, physical, 0o600))
 	catalog := newMaintenanceCatalog()
 	addMaintenanceCandidate(catalog, Candidate{
 		Hash: hash, Paths: []string{path}, Size: int64(len(content)),
@@ -933,17 +950,17 @@ func TestPackDefersCompressedCandidateAboveStoredLimitBeforeDecode(t *testing.T)
 
 	stats, err := maintainer.Pack(context.Background(), PackOptions{})
 
-	require.NoError(t, err)
-	assert.Equal(t, 1, stats.BlobsDeferredOversized)
-	assert.Zero(t, stats.BlobsCorrupt)
-	assert.Zero(t, stats.BlobsPacked)
-	assert.Zero(t, decoderCalls)
-	assert.FileExists(t, path)
+	require.NoError(err)
+	assert.Equal(1, stats.BlobsDeferredOversized)
+	assert.Zero(stats.BlobsCorrupt)
+	assert.Zero(stats.BlobsPacked)
+	assert.Zero(decoderCalls)
+	assert.FileExists(path)
 }
 
 func TestPackOrphanSweepRecognizesOnlyCanonicalLooseNames(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
+	require := Require.New(t)
+	assert := Assert.New(t)
 	layout := layoutForStoreTest(t)
 	rawHash := writeMaintenanceLoose(t, layout, []byte("raw orphan"))
 	compressedContent := []byte("compressed orphan")
@@ -973,7 +990,7 @@ func TestPackOrphanSweepRecognizesOnlyCanonicalLooseNames(t *testing.T) {
 }
 
 func TestPackDefersOversizedBlobWithoutFailingRun(t *testing.T) {
-	assert := assert.New(t)
+	assert := Assert.New(t)
 	layout := layoutForStoreTest(t)
 	catalog := newMaintenanceCatalog()
 	content := bytes.Repeat([]byte("x"), 9)
@@ -984,15 +1001,15 @@ func TestPackDefersOversizedBlobWithoutFailingRun(t *testing.T) {
 	maintainer := newMaintainerForTest(t, catalog, layout, limits)
 
 	stats, err := maintainer.Pack(context.Background(), PackOptions{})
-	require.NoError(t, err)
+	Require.NoError(t, err)
 	assert.Equal(1, stats.BlobsDeferredOversized)
 	assert.Zero(stats.PacksSealed)
 	assert.FileExists(layout.LoosePath(hash))
 }
 
 func TestPackIncompleteReferenceInventoryPreservesLooseOrphans(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
+	require := Require.New(t)
+	assert := Assert.New(t)
 	layout := layoutForStoreTest(t)
 	catalog := newMaintenanceCatalog()
 	catalog.referencesComplete = false
@@ -1012,8 +1029,8 @@ func TestPackIncompleteReferenceInventoryPreservesLooseOrphans(t *testing.T) {
 }
 
 func TestPackIncompleteReferenceInventoryDefersOrphanPackReconciliation(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
+	require := Require.New(t)
+	assert := Assert.New(t)
 	layout := layoutForStoreTest(t)
 	catalog := newMaintenanceCatalog()
 	catalog.referencesComplete = false
@@ -1058,8 +1075,8 @@ func TestPackRotatesBeforeExceedingMaintenanceOutputLimits(t *testing.T) {
 		}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			require := require.New(t)
-			assert := assert.New(t)
+			require := Require.New(t)
+			assert := Assert.New(t)
 			layout := layoutForStoreTest(t)
 			catalog := newMaintenanceCatalog()
 			for _, content := range [][]byte{[]byte("aaaaaaaa"), []byte("bbbbbbbb"), []byte("cccccccc")} {
@@ -1084,8 +1101,8 @@ func TestPackRotatesBeforeExceedingMaintenanceOutputLimits(t *testing.T) {
 }
 
 func TestPackDefersBlobThatCannotFitAnEmptyOutputPack(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
+	require := Require.New(t)
+	assert := Assert.New(t)
 	layout := layoutForStoreTest(t)
 	catalog := newMaintenanceCatalog()
 	content := []byte("eight888")
@@ -1112,13 +1129,13 @@ func TestPackSoftBudgetStopsAfterCommittedBlob(t *testing.T) {
 	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
 
 	stats, err := maintainer.Pack(context.Background(), PackOptions{MaxBytes: 1})
-	require.NoError(t, err)
-	assert.True(t, stats.BudgetExhausted)
-	assert.Equal(t, 1, stats.BlobsPacked)
+	Require.NoError(t, err)
+	Assert.True(t, stats.BudgetExhausted)
+	Assert.Equal(t, 1, stats.BlobsPacked)
 }
 
 func TestPackPreservesCatalogCandidateOrder(t *testing.T) {
-	require := require.New(t)
+	require := Require.New(t)
 	layout := layoutForStoreTest(t)
 	catalog := newMaintenanceCatalog()
 	contents := [][]byte{[]byte("first by locality"), []byte("second by locality"), []byte("third by locality")}
@@ -1154,8 +1171,8 @@ func TestPackPreservesCatalogCandidateOrder(t *testing.T) {
 }
 
 func TestPackCommitFailureLeavesRecoverableOrphanAndLooseSource(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
+	require := Require.New(t)
+	assert := Assert.New(t)
 	layout := layoutForStoreTest(t)
 	catalog := newMaintenanceCatalog()
 	content := []byte("survive catalog commit failure")
@@ -1191,14 +1208,14 @@ func TestRepairDropsDanglingRecordsAndUnreferencedMappings(t *testing.T) {
 	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
 
 	stats, err := maintainer.Pack(context.Background(), PackOptions{})
-	require.NoError(t, err)
-	assert.Equal(t, 1, stats.RecordsDropped)
-	assert.Equal(t, int64(1), stats.MappingsPruned)
+	Require.NoError(t, err)
+	Assert.Equal(t, 1, stats.RecordsDropped)
+	Assert.Equal(t, int64(1), stats.MappingsPruned)
 }
 
 func TestRepairRepacksValidRawCopyWhenIndexedPackAndPreferredCompressedAreCorrupt(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
+	require := Require.New(t)
+	assert := Assert.New(t)
 	layout := layoutForStoreTest(t)
 	catalog := newMaintenanceCatalog()
 	content := []byte("recover from corrupt indexed pack")
@@ -1243,8 +1260,8 @@ func TestRepairRepacksValidRawCopyWhenIndexedPackAndPreferredCompressedAreCorrup
 }
 
 func TestRepairCommitFailureRetainsCorruptPackedMappingWhenOnlyRawAlternateIsValid(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
+	require := Require.New(t)
+	assert := Assert.New(t)
 	layout := layoutForStoreTest(t)
 	catalog := newMaintenanceCatalog()
 	content := []byte("retain corrupt packed authority until raw recovery commits")
@@ -1284,11 +1301,13 @@ func TestRepairCommitFailureRetainsCorruptPackedMappingWhenOnlyRawAlternateIsVal
 }
 
 func TestRepairUsesVerifiedLooseSizeWhenPackedMetadataIsCorrupt(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	layout := layoutForStoreTest(t)
 	catalog := newMaintenanceCatalog()
 	content := []byte("derive recovery size from verified loose bytes")
 	entry := buildStoreTestPack(t, layout, content)
-	require.Equal(t, entry.Hash, writeMaintenanceLoose(t, layout, content))
+	require.Equal(entry.Hash, writeMaintenanceLoose(t, layout, content))
 	catalog.addLoose(entry.Hash, layout.LoosePath(entry.Hash))
 	entry.RawLen++
 	catalog.entries[entry.Hash] = entry
@@ -1299,14 +1318,14 @@ func TestRepairUsesVerifiedLooseSizeWhenPackedMetadataIsCorrupt(t *testing.T) {
 
 	stats, err := maintainer.Pack(context.Background(), PackOptions{})
 
-	require.NoError(t, err)
-	assert.Equal(t, 1, stats.BlobsPacked)
+	require.NoError(err)
+	assert.Equal(1, stats.BlobsPacked)
 	location, err := catalog.Resolve(context.Background(), entry.Hash)
-	require.NoError(t, err)
-	require.NotNil(t, location.Pack)
-	assert.NotEqual(t, entry.PackID, location.Pack.PackID)
+	require.NoError(err)
+	require.NotNil(location.Pack)
+	assert.NotEqual(entry.PackID, location.Pack.PackID)
 	got, _ := readStoreTest(t, maintainer.store, entry.Hash)
-	assert.Equal(t, content, got)
+	assert.Equal(content, got)
 }
 
 func TestReconcileAdoptsOnlyFullyVerifiedOrphanPack(t *testing.T) {
@@ -1316,8 +1335,8 @@ func TestReconcileAdoptsOnlyFullyVerifiedOrphanPack(t *testing.T) {
 			name = "damaged"
 		}
 		t.Run(name, func(t *testing.T) {
-			assert := assert.New(t)
-			require := require.New(t)
+			assert := Assert.New(t)
+			require := Require.New(t)
 			layout := layoutForStoreTest(t)
 			catalog := newMaintenanceCatalog()
 			content := []byte("orphan recovery content")
@@ -1358,11 +1377,11 @@ func TestPackHonorsCancellationBeforeMutation(t *testing.T) {
 	cancel()
 
 	_, err := maintainer.Pack(ctx, PackOptions{})
-	require.ErrorIs(t, err, context.Canceled)
+	Require.ErrorIs(t, err, context.Canceled)
 }
 
 func TestPackDurablyCreatesPacksDirectory(t *testing.T) {
-	require := require.New(t)
+	require := Require.New(t)
 	layout := layoutForStoreTest(t)
 	catalog := newMaintenanceCatalog()
 	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
@@ -1382,8 +1401,8 @@ func TestPackDurablyCreatesPacksDirectory(t *testing.T) {
 func newMaintainerForTest(t testing.TB, catalog Catalog, layout Layout, limits Limits) *Maintainer {
 	t.Helper()
 	maintainer, err := NewMaintainer(catalog, layout, MaintainerOptions{Limits: limits})
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, maintainer.Close()) })
+	Require.NoError(t, err)
+	t.Cleanup(func() { Require.NoError(t, maintainer.Close()) })
 	return maintainer
 }
 
@@ -1391,8 +1410,8 @@ func writeMaintenanceLoose(t *testing.T, layout Layout, content []byte) Hash {
 	t.Helper()
 	hash := hashForTest(content)
 	path := layout.LoosePath(hash)
-	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
-	require.NoError(t, os.WriteFile(path, content, 0o600))
+	Require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	Require.NoError(t, os.WriteFile(path, content, 0o600))
 	return hash
 }
 

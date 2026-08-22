@@ -5,20 +5,21 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/require"
+	Require "github.com/stretchr/testify/require"
 	"go.kenn.io/kit/pack"
 )
 
 func TestReadFixture(t *testing.T) {
+	require := Require.New(t)
 	dir := t.TempDir()
 	writer, err := pack.NewWriter(dir, pack.WriterOptions{})
-	require.NoError(t, err)
+	require.NoError(err)
 	_, err = writer.Append([]byte("raw"))
-	require.NoError(t, err)
+	require.NoError(err)
 	_, err = writer.Append(bytes.Repeat([]byte("compressed"), 4096))
-	require.NoError(t, err)
+	require.NoError(err)
 	path := filepath.Join(dir, "fixture.pack")
 	_, err = writer.Seal(path)
-	require.NoError(t, err)
-	require.NoError(t, readFixture(path))
+	require.NoError(err)
+	require.NoError(readFixture(path))
 }

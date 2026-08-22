@@ -196,6 +196,9 @@ func readFooterRegion(f *os.File, size int64, enc bool, id string,
 	}
 
 	if enc {
+		if crypter == nil {
+			return nil, 0, ErrEncrypted
+		}
 		footerOffset, storedLen, err := parseEncryptedTrailer(fixedTail, uint64(size)) //nolint:gosec // size >= 0
 		if err != nil {
 			return nil, 0, err

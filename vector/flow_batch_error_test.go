@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	Assert "github.com/stretchr/testify/assert"
+	Require "github.com/stretchr/testify/require"
 
 	"go.kenn.io/kit/vector"
 )
@@ -33,11 +33,13 @@ func TestFillSharedErrorClassifierFailsClosedWithoutProbes(t *testing.T) {
 		{name: "nil classifier"},
 		{name: "classifier false", wantClassifiers: 1, classifier: func(err error) bool {
 			var got *fillProviderError
-			require.ErrorAs(t, err, &got)
+			Require.ErrorAs(t, err, &got)
 			return false
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			assert := Assert.New(t)
+			require := Require.New(t)
 			store := newMemStore()
 			store.content = map[int64]string{1: "one", 2: "two", 3: "three"}
 			var calls, classifiers, hooks int
@@ -61,13 +63,13 @@ func TestFillSharedErrorClassifierFailsClosedWithoutProbes(t *testing.T) {
 					return true
 				},
 			})
-			require.Error(t, err)
+			require.Error(err)
 			var got *fillProviderError
-			require.ErrorAs(t, err, &got)
-			assert.Same(t, providerErr, got)
-			assert.Equal(t, 1, calls)
-			assert.Equal(t, tc.wantClassifiers, classifiers)
-			assert.Zero(t, hooks)
+			require.ErrorAs(err, &got)
+			assert.Same(providerErr, got)
+			assert.Equal(1, calls)
+			assert.Equal(tc.wantClassifiers, classifiers)
+			assert.Zero(hooks)
 		})
 	}
 }
@@ -81,6 +83,8 @@ func TestFillSharedErrorRejectedFirstProbeStopsDiagnosis(t *testing.T) {
 		{name: "false hook", hook: func(int64, error) bool { return false }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			assert := Assert.New(t)
+			require := Require.New(t)
 			store := newMemStore()
 			store.content = map[int64]string{1: "poison one", 2: "poison two"}
 			var calls, classifiers, hooks int
@@ -104,17 +108,18 @@ func TestFillSharedErrorRejectedFirstProbeStopsDiagnosis(t *testing.T) {
 				},
 				OnEncodeError: hook,
 			})
-			require.Error(t, err)
+			require.Error(err)
 			var providerErr *fillProviderError
-			require.ErrorAs(t, err, &providerErr)
-			assert.Equal(t, 2, calls, "one shared call plus the first probe")
-			assert.Equal(t, 1, classifiers)
-			assert.Equal(t, map[bool]int{true: 1, false: 0}[tc.hook != nil], hooks)
+			require.ErrorAs(err, &providerErr)
+			assert.Equal(2, calls, "one shared call plus the first probe")
+			assert.Equal(1, classifiers)
+			assert.Equal(map[bool]int{true: 1, false: 0}[tc.hook != nil], hooks)
 		})
 	}
 }
 
 func TestFillSharedErrorAllowsTwoPoisonDocuments(t *testing.T) {
+	assert := Assert.New(t)
 	store := newMemStore()
 	store.content = map[int64]string{1: "poison one", 2: "poison two"}
 	var calls int
@@ -132,14 +137,15 @@ func TestFillSharedErrorAllowsTwoPoisonDocuments(t *testing.T) {
 			return true
 		},
 	})
-	require.NoError(t, err)
-	assert.Equal(t, 3, calls)
-	assert.Equal(t, map[int64]int{1: 1, 2: 1}, hooks)
-	assert.Equal(t, 2, stats.Skipped)
-	assert.Zero(t, stats.Documents)
+	Require.NoError(t, err)
+	assert.Equal(3, calls)
+	assert.Equal(map[int64]int{1: 1, 2: 1}, hooks)
+	assert.Equal(2, stats.Skipped)
+	assert.Zero(stats.Documents)
 }
 
 func TestFillSharedInvalidVectorRejectedWithoutProbe(t *testing.T) {
+	assert := Assert.New(t)
 	store := newMemStore()
 	store.content = map[int64]string{1: "good", 2: "bad", 3: "later"}
 	var calls, classifiers, hooks int
@@ -156,17 +162,17 @@ func TestFillSharedInvalidVectorRejectedWithoutProbe(t *testing.T) {
 		},
 		OnEncodeError: func(doc int64, err error) bool {
 			hooks++
-			assert.Equal(t, int64(2), doc)
+			assert.Equal(int64(2), doc)
 			var invalid *vector.InvalidVectorError
-			require.ErrorAs(t, err, &invalid)
-			assert.Equal(t, 0, invalid.Chunk)
+			Require.ErrorAs(t, err, &invalid)
+			assert.Equal(0, invalid.Chunk)
 			return false
 		},
 	})
-	require.Error(t, err)
-	assert.Equal(t, 1, calls)
-	assert.Zero(t, classifiers)
-	assert.Equal(t, 1, hooks)
+	Require.Error(t, err)
+	assert.Equal(1, calls)
+	assert.Zero(classifiers)
+	assert.Equal(1, hooks)
 }
 
 func TestFillSharedInvalidVectorNilHookRejectsWithoutProbe(t *testing.T) {
@@ -182,12 +188,13 @@ func TestFillSharedInvalidVectorNilHookRejectsWithoutProbe(t *testing.T) {
 		Batch:                   vector.BatchOptions{BatchSize: 2},
 		ShouldIsolateBatchError: func(error) bool { classifiers++; return true },
 	})
-	require.Error(t, err)
-	assert.Equal(t, 1, calls)
-	assert.Zero(t, classifiers)
+	Require.Error(t, err)
+	Assert.Equal(t, 1, calls)
+	Assert.Zero(t, classifiers)
 }
 
 func TestFillSharedInvalidVectorRecoversOnlyOtherSlices(t *testing.T) {
+	assert := Assert.New(t)
 	store := newMemStore()
 	store.content = map[int64]string{1: "good", 2: "bad", 3: "later"}
 	var calls [][]string
@@ -211,14 +218,16 @@ func TestFillSharedInvalidVectorRecoversOnlyOtherSlices(t *testing.T) {
 			return true
 		},
 	})
-	require.NoError(t, err)
-	assert.Equal(t, [][]string{{"good", "bad", "later"}, {"good"}, {"later"}}, calls)
-	assert.Equal(t, map[int64]int{2: 1}, hooks)
-	assert.Equal(t, 2, stats.Documents)
-	assert.Equal(t, 1, stats.Skipped)
+	Require.NoError(t, err)
+	assert.Equal([][]string{{"good", "bad", "later"}, {"good"}, {"later"}}, calls)
+	assert.Equal(map[int64]int{2: 1}, hooks)
+	assert.Equal(2, stats.Documents)
+	assert.Equal(1, stats.Skipped)
 }
 
 func TestFillSharedInvalidRecoveryFailureUsesProbeRules(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	store := newMemStore()
 	store.content = map[int64]string{1: "bad", 2: "neighbor"}
 	var calls, classifiers int
@@ -239,15 +248,17 @@ func TestFillSharedInvalidRecoveryFailureUsesProbeRules(t *testing.T) {
 			return doc == 1
 		},
 	})
-	require.Error(t, err)
+	require.Error(err)
 	var providerErr *fillProviderError
-	require.ErrorAs(t, err, &providerErr)
-	assert.Equal(t, 2, calls)
-	assert.Zero(t, classifiers, "recovery failures are never reclassified")
-	assert.Equal(t, map[int64]int{1: 1, 2: 1}, hooks)
+	require.ErrorAs(err, &providerErr)
+	assert.Equal(2, calls)
+	assert.Zero(classifiers, "recovery failures are never reclassified")
+	assert.Equal(map[int64]int{1: 1, 2: 1}, hooks)
 }
 
 func TestFillSharedInvalidVectorOutOfRangeIsFatal(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	store := newMemStore()
 	store.content = map[int64]string{1: "one", 2: "two"}
 	var calls, classifiers, hooks int
@@ -261,15 +272,17 @@ func TestFillSharedInvalidVectorOutOfRangeIsFatal(t *testing.T) {
 		ShouldIsolateBatchError: func(error) bool { classifiers++; return true },
 		OnEncodeError:           func(int64, error) bool { hooks++; return true },
 	})
-	require.ErrorContains(t, err, "invalid vector chunk 2 outside batch of 2 chunks")
+	require.ErrorContains(err, "invalid vector chunk 2 outside batch of 2 chunks")
 	var invalid *vector.InvalidVectorError
-	require.ErrorAs(t, err, &invalid)
-	assert.Equal(t, 1, calls)
-	assert.Zero(t, classifiers)
-	assert.Zero(t, hooks)
+	require.ErrorAs(err, &invalid)
+	assert.Equal(1, calls)
+	assert.Zero(classifiers)
+	assert.Zero(hooks)
 }
 
 func TestFillSharedInvalidVectorPreservesCompanionCauses(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	store := newMemStore()
 	store.content = map[int64]string{1: "good", 2: "bad"}
 	providerErr := &fillProviderError{code: 422}
@@ -285,28 +298,29 @@ func TestFillSharedInvalidVectorPreservesCompanionCauses(t *testing.T) {
 		ScanBatch: 2,
 		Batch:     vector.BatchOptions{BatchSize: 2},
 		OnEncodeError: func(doc int64, err error) bool {
-			assert.Equal(t, int64(2), doc)
+			assert.Equal(int64(2), doc)
 			var invalid *vector.InvalidVectorError
-			require.ErrorAs(t, err, &invalid)
-			assert.Equal(t, 0, invalid.Chunk)
+			require.ErrorAs(err, &invalid)
+			assert.Equal(0, invalid.Chunk)
 			var gotProvider *fillProviderError
-			assert.ErrorAs(t, err, &gotProvider)
-			assert.Same(t, providerErr, gotProvider)
-			assert.ErrorIs(t, err, sentinel)
+			assert.ErrorAs(err, &gotProvider)
+			assert.Same(providerErr, gotProvider)
+			assert.ErrorIs(err, sentinel)
 			return false
 		},
 	})
-	require.Error(t, err)
+	require.Error(err)
 	var invalid *vector.InvalidVectorError
-	require.ErrorAs(t, err, &invalid)
-	assert.Equal(t, 0, invalid.Chunk)
+	require.ErrorAs(err, &invalid)
+	assert.Equal(0, invalid.Chunk)
 	var gotProvider *fillProviderError
-	assert.ErrorAs(t, err, &gotProvider)
-	assert.Same(t, providerErr, gotProvider)
-	assert.ErrorIs(t, err, sentinel)
+	assert.ErrorAs(err, &gotProvider)
+	assert.Same(providerErr, gotProvider)
+	assert.ErrorIs(err, sentinel)
 }
 
 func TestFillRejectedProbeBackpressuresAndCancelsWorkers(t *testing.T) {
+	require := Require.New(t)
 	store := newMemStore()
 	store.content = map[int64]string{
 		1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six",
@@ -368,40 +382,41 @@ func TestFillRejectedProbeBackpressuresAndCancelsWorkers(t *testing.T) {
 		select {
 		case <-fillReturned:
 		case <-time.After(5 * time.Second):
-			assert.Fail(t, "Fill goroutine did not stop during cleanup")
+			Assert.Fail(t, "Fill goroutine did not stop during cleanup")
 		}
 	})
 
 	select {
 	case <-probeStarted:
 	case <-time.After(5 * time.Second):
-		require.FailNow(t, "collector did not start the first probe")
+		require.FailNow("collector did not start the first probe")
 	}
 	select {
 	case <-thirdStarted:
-		require.FailNow(t, "failed-result worker started a third job during collection")
+		require.FailNow("failed-result worker started a third job during collection")
 	case <-time.After(100 * time.Millisecond):
 	}
 	release()
 	select {
 	case err := <-done:
-		require.Error(t, err)
+		require.Error(err)
 	case <-time.After(5 * time.Second):
-		require.FailNow(t, "Fill did not abort after hook rejection")
+		require.FailNow("Fill did not abort after hook rejection")
 	}
 	select {
 	case <-secondCanceled:
 	case <-time.After(5 * time.Second):
-		require.FailNow(t, "in-flight worker did not observe cancellation")
+		require.FailNow("in-flight worker did not observe cancellation")
 	}
 	select {
 	case <-thirdStarted:
-		assert.Fail(t, "third job started after collection rejected the failure")
+		Assert.Fail(t, "third job started after collection rejected the failure")
 	default:
 	}
 }
 
 func TestFillLateSharedFailureFiltersDecidedDocument(t *testing.T) {
+	assert := Assert.New(t)
 	store := newMemStore()
 	store.content = map[int64]string{1: "abc", 2: "d"}
 	releaseShared := make(chan struct{})
@@ -430,17 +445,17 @@ func TestFillLateSharedFailureFiltersDecidedDocument(t *testing.T) {
 		},
 		OnEncodeError: func(doc int64, _ error) bool {
 			hookCalls.Add(1)
-			assert.Equal(t, int64(1), doc)
+			assert.Equal(int64(1), doc)
 			close(releaseShared)
 			return true
 		},
 	})
-	require.NoError(t, err)
-	assert.Equal(t, int32(1), hookCalls.Load())
-	assert.Equal(t, int32(1), classifierCalls.Load())
-	assert.Equal(t, 1, stats.Skipped)
-	assert.Equal(t, 1, stats.Documents)
-	assert.True(t, store.embedded[2][7])
+	Require.NoError(t, err)
+	assert.Equal(int32(1), hookCalls.Load())
+	assert.Equal(int32(1), classifierCalls.Load())
+	assert.Equal(1, stats.Skipped)
+	assert.Equal(1, stats.Documents)
+	assert.True(store.embedded[2][7])
 }
 
 func TestFillWrappedProbeDeadlineAbortsWithoutHook(t *testing.T) {
@@ -460,9 +475,9 @@ func TestFillWrappedProbeDeadlineAbortsWithoutHook(t *testing.T) {
 		ShouldIsolateBatchError: func(error) bool { return true },
 		OnEncodeError:           func(int64, error) bool { hooks++; return true },
 	})
-	require.ErrorIs(t, err, context.DeadlineExceeded)
-	assert.Equal(t, 2, calls)
-	assert.Zero(t, hooks)
+	Require.ErrorIs(t, err, context.DeadlineExceeded)
+	Assert.Equal(t, 2, calls)
+	Assert.Zero(t, hooks)
 }
 
 func TestFillBatchClassifierExclusions(t *testing.T) {
@@ -488,6 +503,8 @@ func TestFillBatchClassifierExclusions(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			assert := Assert.New(t)
+			require := Require.New(t)
 			store := newMemStore()
 			store.content = tc.content
 			var classifiers, hooks int
@@ -500,12 +517,12 @@ func TestFillBatchClassifierExclusions(t *testing.T) {
 					OnEncodeError:           func(int64, error) bool { hooks++; return true },
 				})
 			if errors.Is(tc.encodeErr, context.Canceled) {
-				require.ErrorIs(t, err, context.Canceled)
+				require.ErrorIs(err, context.Canceled)
 			} else {
-				require.NoError(t, err)
+				require.NoError(err)
 			}
-			assert.Zero(t, classifiers)
-			assert.Equal(t, tc.wantHook, hooks)
+			assert.Zero(classifiers)
+			assert.Equal(tc.wantHook, hooks)
 		})
 	}
 }

@@ -271,6 +271,9 @@ func (m *PersistentManager) connect(
 		return 0, err
 	}
 	entry := m.host(identity, true)
+	if entry == nil {
+		return 0, fmt.Errorf("OpenSSH host state for %q was not created", identity)
+	}
 
 	for {
 		entry.mu.Lock()
@@ -526,8 +529,7 @@ func (m *PersistentManager) finishStart(
 			entry.state = StateConnected
 			entry.message = ""
 		} else {
-			var drainErr *masterDrainError
-			if errors.As(err, &drainErr) {
+			if _, ok := errors.AsType[*masterDrainError](err); ok {
 				entry.state = StateStopping
 				stopping = true
 			} else {
@@ -615,8 +617,7 @@ func (m *PersistentManager) finishTeardown(
 			entry.message = ""
 			entry.lastActive = time.Now()
 		} else {
-			var drainErr *masterDrainError
-			if errors.As(err, &drainErr) {
+			if _, ok := errors.AsType[*masterDrainError](err); ok {
 				entry.state = StateStopping
 				entry.message = err.Error()
 				stopping = true
@@ -1018,8 +1019,7 @@ func runSSHCommand(
 	if contextErr := ctx.Err(); contextErr != nil {
 		return -1, errors.Join(contextErr, err)
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 		return exitErr.ExitCode(), err
 	}
 	return -1, err

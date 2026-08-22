@@ -339,6 +339,9 @@ func openLooseIdentityPin(path string) (identityPin, fs.FileInfo, error) {
 		}
 		return nil, nil, err
 	}
+	if pin == nil || pinned == nil {
+		return nil, nil, errors.Join(fmt.Errorf("packstore: identity pin for %s has incomplete state", path), closeIdentityPin(pin))
+	}
 	if err := validateRegularNoFollow(path, pinned); err != nil {
 		return nil, nil, errors.Join(err, pin.Close())
 	}
@@ -368,10 +371,9 @@ func mergeLogicalCandidates(candidates []Candidate) []candidateGroup {
 		if !exists {
 			index = len(groups)
 			byHash[candidate.Hash] = index
-			groups = append(groups, candidateGroup{Candidate: Candidate{
+			groups = append(groups, candidateGroup{
 				Hash: candidate.Hash,
-				Size: candidate.Size,
-			}})
+				Size: candidate.Size})
 			pathSets = append(pathSets, make(map[string]struct{}, len(candidate.Paths)))
 			aliasSets = append(aliasSets, make(map[string]struct{}, len(candidate.OriginalHashes)))
 		} else if groups[index].Size != candidate.Size {
@@ -483,6 +485,17 @@ func (m *Maintainer) packCandidates(
 		if !found {
 			stats.BlobsMissing++
 			continue
+		}
+		if prepared == nil || sourcePin == nil {
+			var closePreparedErr error
+			if prepared != nil {
+				closePreparedErr = prepared.Close()
+			}
+			return errors.Join(
+				fmt.Errorf("packstore: prepared candidate %s has incomplete state", candidate.Hash),
+				closePreparedErr,
+				closeIdentityPin(sourcePin),
+			)
 		}
 		if err := checkPlainOutput(m.limits, uint64(pack.MinEntryOffset), prepared.StoredLen(), 1); err != nil {
 			if closeErr := errors.Join(prepared.Close(), sourcePin.Close()); closeErr != nil {
@@ -623,6 +636,12 @@ func (m *Maintainer) prepareCandidate(
 			corrupt = errors.Join(corrupt, err)
 			continue
 		}
+		if selected == nil && prepared == nil {
+			return nil, "", nil, false, errors.Join(
+				fmt.Errorf("packstore: preparing candidate %s returned no result", candidate.Hash),
+				closeIdentityPin(pin),
+			)
+		}
 		if selected == nil {
 			selected = prepared
 			selectedPath = path
@@ -641,6 +660,9 @@ func (m *Maintainer) pinOpenCandidate(
 	pin, pinned, err := openPin(path)
 	if err != nil {
 		return nil, err
+	}
+	if pin == nil || pinned == nil {
+		return nil, errors.Join(fmt.Errorf("packstore: identity pin for %s has incomplete state", path), closeIdentityPin(pin))
 	}
 	if !os.SameFile(expected, pinned) {
 		return nil, errors.Join(errIdentityChanged, pin.Close())

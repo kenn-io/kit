@@ -586,9 +586,9 @@ func looksLikeSCPRemote(value string) bool {
 	prefix, _, found := strings.Cut(value, ":")
 	return found && prefix != "" &&
 		!strings.ContainsAny(prefix, `/\`) &&
-		!(len(prefix) == 1 &&
-			((prefix[0] >= 'a' && prefix[0] <= 'z') ||
-				(prefix[0] >= 'A' && prefix[0] <= 'Z')))
+		(len(prefix) != 1 ||
+			(prefix[0] < 'a' || prefix[0] > 'z') &&
+				(prefix[0] < 'A' || prefix[0] > 'Z'))
 }
 
 func resolveMergeRequestOID(ctx context.Context, root, ref string) (string, error) {

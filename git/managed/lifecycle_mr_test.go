@@ -357,7 +357,7 @@ func TestCreateWorktreeFromMergeRequestPreservesCancellation(t *testing.T) {
 
 			require.ErrorIs(err, context.Canceled)
 			var changeErr *ChangeRequestError
-			assert.False(errors.As(err, &changeErr))
+			assert.NotErrorAs(err, &changeErr)
 		})
 	}
 }

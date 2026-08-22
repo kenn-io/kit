@@ -3,8 +3,8 @@ package packstore
 import (
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	Assert "github.com/stretchr/testify/assert"
+	Require "github.com/stretchr/testify/require"
 )
 
 func TestLocationHealthPrefersTransientlyUnavailableOverKnownDamage(t *testing.T) {
@@ -23,10 +23,12 @@ func TestLocationHealthPrefersTransientlyUnavailableOverKnownDamage(t *testing.T
 
 	ordered := health.Order(hash, []ReadLocation{corrupt, unavailable})
 
-	assert.Equal(t, []ReadLocation{unavailable, corrupt}, ordered)
+	Assert.Equal(t, []ReadLocation{unavailable, corrupt}, ordered)
 }
 
 func TestLooseLocationHealthIsScopedToContentHash(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	health := NewHealth()
 	firstHash := hashForTest([]byte("first same-sized blob"))
 	secondHash := hashForTest([]byte("other same-sized blob"))
@@ -45,11 +47,11 @@ func TestLooseLocationHealthIsScopedToContentHash(t *testing.T) {
 	health.Observe(firstHash, primary, ErrPhysicalCorrupt)
 
 	ordered := health.Order(secondHash, []ReadLocation{primary, secondary})
-	require.Len(t, ordered, 2)
-	assert.Equal(t, primary, ordered[0])
+	require.Len(ordered, 2)
+	assert.Equal(primary, ordered[0])
 
 	health.Clear(secondHash, primary)
 	ordered = health.Order(firstHash, []ReadLocation{primary, secondary})
-	require.Len(t, ordered, 2)
-	assert.Equal(t, secondary, ordered[0])
+	require.Len(ordered, 2)
+	assert.Equal(secondary, ordered[0])
 }

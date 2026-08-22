@@ -423,8 +423,7 @@ func applyFillBatch[K, G comparable](
 	if errors.Is(batch.err, context.Canceled) || errors.Is(batch.err, context.DeadlineExceeded) {
 		return fillBatchContextError(batch.err, batch.refs, states)
 	}
-	var invalid *InvalidVectorError
-	if errors.As(batch.err, &invalid) {
+	if invalid, ok := errors.AsType[*InvalidVectorError](batch.err); ok {
 		return applyAttributedInvalidFillBatch(ctx, store, gen, enc, o, batch, invalid,
 			states, orderedSaves, stale, stats)
 	}
@@ -700,6 +699,9 @@ func Search[K, G comparable](
 		vectors, err := EncodeBatched(ctx, enc, []Chunk{{Index: 0, Text: queryText}}, BatchOptions{})
 		if err != nil {
 			return nil, fmt.Errorf("embed query for generation %v: %w", gen, err)
+		}
+		if len(vectors) != 1 {
+			return nil, fmt.Errorf("embed query for generation %v returned %d vectors, want 1", gen, len(vectors))
 		}
 		hits, err := store.QueryGeneration(ctx, gen, vectors[0], perGen)
 		if err != nil {

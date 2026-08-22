@@ -532,7 +532,7 @@ func worktreeHasInitializedSubmodules(
 			err, strings.TrimSpace(string(out)),
 		)
 	}
-	for _, line := range bytes.Split(out, []byte{'\n'}) {
+	for line := range bytes.SplitSeq(out, []byte{'\n'}) {
 		if len(line) != 0 && line[0] != '-' {
 			return true, nil
 		}
@@ -989,8 +989,7 @@ func runLifecycleHook(
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return fmt.Errorf("run lifecycle hook %s: %w", script, ctxErr)
 		}
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 			return &HookError{
 				Script:   script,
 				ExitCode: exitErr.ExitCode(),
@@ -1000,16 +999,6 @@ func runLifecycleHook(
 		return fmt.Errorf("run lifecycle hook %s: %w", script, err)
 	}
 	return nil
-}
-
-// rollbackCreatedWorktree best-effort unwinds a worktree this call just
-// created after its setup hook failed. The branch is deleted only when
-// this call created it; the original hook error is what the caller
-// surfaces.
-func rollbackCreatedWorktree(
-	ctx context.Context, root, path, branch string, deleteBranch bool,
-) {
-	_, _ = rollbackCreatedWorktreeWithResult(ctx, root, path, branch, deleteBranch)
 }
 
 func rollbackCreatedWorktreeWithResult(

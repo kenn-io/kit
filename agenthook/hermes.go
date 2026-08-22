@@ -135,7 +135,7 @@ func removeOwnedHermesHookNodes(
 		event := hooks.Content[i]
 		entries := hooks.Content[i+1]
 		resolvedEntries := resolveYAMLAlias(entries)
-		if resolvedEntries.Kind != yaml.SequenceNode {
+		if resolvedEntries == nil || resolvedEntries.Kind != yaml.SequenceNode {
 			if isHermesEventName(event.Value) {
 				return fmt.Errorf(
 					"Hermes config %s event %q must be an array", path, event.Value,

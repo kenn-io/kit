@@ -11,13 +11,13 @@ import (
 	"testing"
 
 	"github.com/klauspost/compress/zstd"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	Assert "github.com/stretchr/testify/assert"
+	Require "github.com/stretchr/testify/require"
 	"go.kenn.io/kit/pack"
 )
 
 func TestMaintenanceReadAllowsMinimumZstdWindowForSmallBlob(t *testing.T) {
-	require := require.New(t)
+	require := Require.New(t)
 	content := bytes.Repeat([]byte("small bounded frame "), 16)
 	encoder, err := zstd.NewWriter(nil,
 		zstd.WithEncoderConcurrency(1),
@@ -49,7 +49,7 @@ func TestMaintenanceReadAllowsMinimumZstdWindowForSmallBlob(t *testing.T) {
 }
 
 func TestMaintenanceReadRejectsZstdWindowAboveBlobLimit(t *testing.T) {
-	require := require.New(t)
+	require := Require.New(t)
 	content := bytes.Repeat([]byte("bounded window "), 128)
 	encoder, err := zstd.NewWriter(nil,
 		zstd.WithEncoderConcurrency(1),
@@ -85,8 +85,8 @@ func TestMaintenanceReadRejectsZstdWindowAboveBlobLimit(t *testing.T) {
 func TestReadBoundedEnforcesLooseAndPackedBlobLimits(t *testing.T) {
 	for _, storage := range []string{"loose", "packed"} {
 		t.Run(storage, func(t *testing.T) {
-			assert := assert.New(t)
-			require := require.New(t)
+			assert := Assert.New(t)
+			require := Require.New(t)
 			layout := layoutForStoreTest(t)
 			content := []byte("bounded content")
 			hash := hashForTest(content)
@@ -112,7 +112,7 @@ func TestReadBoundedEnforcesLooseAndPackedBlobLimits(t *testing.T) {
 func TestReadBoundedEnforcesConfiguredBlobCeiling(t *testing.T) {
 	for _, storage := range []string{"loose", "packed"} {
 		t.Run(storage, func(t *testing.T) {
-			require := require.New(t)
+			require := Require.New(t)
 			layout := layoutForStoreTest(t)
 			content := []byte("ninebytes")
 			hash := hashForTest(content)
@@ -141,12 +141,12 @@ func TestPreflightRejectsContainerFooterAndDuplicateIDs(t *testing.T) {
 	t.Run("container", func(t *testing.T) {
 		layout := layoutForStoreTest(t)
 		entry := buildStoreTestPack(t, layout, []byte("container"))
-		require.NoError(t, os.Truncate(layout.PackPath(entry.PackID), limits.PackBytes+1))
+		Require.NoError(t, os.Truncate(layout.PackPath(entry.PackID), limits.PackBytes+1))
 		_, err := OpenMaintenancePack(layout.PackPath(entry.PackID), limits)
-		assert.ErrorIs(t, err, ErrBlobTooLarge)
+		Assert.ErrorIs(t, err, ErrBlobTooLarge)
 	})
 	t.Run("footer", func(t *testing.T) {
-		require := require.New(t)
+		require := Require.New(t)
 		layout := layoutForStoreTest(t)
 		entry := buildStoreTestPack(t, layout, []byte("footer"))
 		path := layout.PackPath(entry.PackID)
@@ -160,10 +160,10 @@ func TestPreflightRejectsContainerFooterAndDuplicateIDs(t *testing.T) {
 		require.NoError(err)
 		require.NoError(f.Close())
 		_, err = OpenMaintenancePack(path, limits)
-		assert.ErrorIs(t, err, ErrBlobTooLarge)
+		Assert.ErrorIs(t, err, ErrBlobTooLarge)
 	})
 	t.Run("duplicate id", func(t *testing.T) {
-		require := require.New(t)
+		require := Require.New(t)
 		layout := layoutForStoreTest(t)
 		writer, err := pack.NewWriter(t.TempDir(), pack.WriterOptions{})
 		require.NoError(err)
@@ -176,14 +176,14 @@ func TestPreflightRejectsContainerFooterAndDuplicateIDs(t *testing.T) {
 		_, err = writer.Seal(path)
 		require.NoError(err)
 		_, err = OpenMaintenancePack(path, limits)
-		assert.ErrorIs(t, err, pack.ErrCorrupt)
+		Assert.ErrorIs(t, err, pack.ErrCorrupt)
 	})
 }
 
 func TestPreflightEnforcesPackFormatLengthsIndependently(t *testing.T) {
 	t.Run("footer length", func(t *testing.T) {
-		require := require.New(t)
-		assert := assert.New(t)
+		require := Require.New(t)
+		assert := Assert.New(t)
 		layout := layoutForStoreTest(t)
 		entry := buildStoreTestPack(t, layout, []byte("format footer ceiling"))
 		path := layout.PackPath(entry.PackID)
@@ -209,7 +209,7 @@ func TestPreflightEnforcesPackFormatLengthsIndependently(t *testing.T) {
 	})
 
 	t.Run("stored frame length", func(t *testing.T) {
-		require := require.New(t)
+		require := Require.New(t)
 		layout := layoutForStoreTest(t)
 		entry := buildStoreTestPack(t, layout, []byte("format stored ceiling"))
 		path := layout.PackPath(entry.PackID)
@@ -238,7 +238,7 @@ func TestPreflightEnforcesPackFormatLengthsIndependently(t *testing.T) {
 }
 
 func TestPreflightRejectsSymlinkToValidPack(t *testing.T) {
-	require := require.New(t)
+	require := Require.New(t)
 	layout := layoutForStoreTest(t)
 	entry := buildStoreTestPack(t, layout, []byte("symlink target"))
 	link := filepath.Join(t.TempDir(), "pack-link")
@@ -259,7 +259,7 @@ func TestMaintenanceAllocationsRespectPlatformInt(t *testing.T) {
 	t.Cleanup(func() { maxPlatformInt = originalMax })
 
 	t.Run("verified loose content", func(t *testing.T) {
-		require := require.New(t)
+		require := Require.New(t)
 		layout := layoutForStoreTest(t)
 		content := []byte("ninebytes")
 		hash := writeMaintenanceLoose(t, layout, content)
@@ -269,8 +269,8 @@ func TestMaintenanceAllocationsRespectPlatformInt(t *testing.T) {
 	})
 
 	t.Run("pack footer", func(t *testing.T) {
-		require := require.New(t)
-		assert := assert.New(t)
+		require := Require.New(t)
+		assert := Assert.New(t)
 		layout := layoutForStoreTest(t)
 		entry := buildStoreTestPack(t, layout, []byte("footer allocation"))
 
@@ -288,23 +288,24 @@ func TestMaintenanceAllocationsRespectPlatformInt(t *testing.T) {
 
 func TestVerifyLooseFileBoundsSnapshotAndHonorsCancellation(t *testing.T) {
 	t.Run("growth", func(t *testing.T) {
+		require := Require.New(t)
 		layout := layoutForStoreTest(t)
 		content := []byte("snapshotted content")
 		hash := writeMaintenanceLoose(t, layout, content)
 		path := layout.LoosePath(hash)
 		info, err := snapshotPathIdentity(path)
-		require.NoError(t, err)
+		require.NoError(err)
 		appendFile, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
-		require.NoError(t, err)
+		require.NoError(err)
 		_, err = appendFile.Write([]byte("growth"))
-		require.NoError(t, err)
-		require.NoError(t, appendFile.Close())
+		require.NoError(err)
+		require.NoError(appendFile.Close())
 		f, err := openNoFollow(path, false)
-		require.NoError(t, err)
-		t.Cleanup(func() { require.NoError(t, f.Close()) })
+		require.NoError(err)
+		t.Cleanup(func() { require.NoError(f.Close()) })
 
 		err = verifyLooseFile(context.Background(), f, info, hash)
-		require.ErrorIs(t, err, ErrContentMismatch)
+		require.ErrorIs(err, ErrContentMismatch)
 	})
 
 	t.Run("cancellation", func(t *testing.T) {
@@ -313,21 +314,21 @@ func TestVerifyLooseFileBoundsSnapshotAndHonorsCancellation(t *testing.T) {
 		hash := writeMaintenanceLoose(t, layout, content)
 		path := layout.LoosePath(hash)
 		info, err := snapshotPathIdentity(path)
-		require.NoError(t, err)
+		Require.NoError(t, err)
 		f, err := openNoFollow(path, false)
-		require.NoError(t, err)
-		t.Cleanup(func() { require.NoError(t, f.Close()) })
+		Require.NoError(t, err)
+		t.Cleanup(func() { Require.NoError(t, f.Close()) })
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
 		err = verifyLooseFile(ctx, f, info, hash)
-		require.ErrorIs(t, err, context.Canceled)
+		Require.ErrorIs(t, err, context.Canceled)
 	})
 }
 
 func TestLimitErrorIsTyped(t *testing.T) {
-	assert := assert.New(t)
-	require := require.New(t)
+	assert := Assert.New(t)
+	require := Require.New(t)
 	err := newLimitError(LimitBlobRawBytes, 11, 10)
 	require.ErrorIs(err, ErrBlobTooLarge)
 	var limitErr *LimitError

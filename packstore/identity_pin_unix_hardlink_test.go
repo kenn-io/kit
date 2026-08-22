@@ -7,39 +7,42 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	Assert "github.com/stretchr/testify/assert"
+	Require "github.com/stretchr/testify/require"
 )
 
 func TestHardlinkIdentityPinCloseCleansOwnedPathWithoutCapturedIdentity(t *testing.T) {
+	assert := Assert.New(t)
+	require := Require.New(t)
 	dir := filepath.Join(t.TempDir(), "exclusive-pin")
-	require.NoError(t, os.Mkdir(dir, 0o700))
+	require.NoError(os.Mkdir(dir, 0o700))
 	path := filepath.Join(dir, "pinned")
-	require.NoError(t, os.WriteFile(path, []byte("owned pin"), 0o600))
+	require.NoError(os.WriteFile(path, []byte("owned pin"), 0o600))
 	pin := &hardlinkIdentityPin{path: path, dir: dir}
 
 	var closeErr error
-	require.NotPanics(t, func() {
+	require.NotPanics(func() {
 		closeErr = pin.Close()
 	})
-	require.NoError(t, closeErr)
-	assert.NoFileExists(t, path)
-	assert.NoDirExists(t, dir)
+	require.NoError(closeErr)
+	assert.NoFileExists(path)
+	assert.NoDirExists(dir)
 }
 
 func TestHardlinkIdentityPinStatRejectsPrivatePathReplacement(t *testing.T) {
+	require := Require.New(t)
 	dir := filepath.Join(t.TempDir(), "exclusive-pin")
-	require.NoError(t, os.Mkdir(dir, 0o700))
+	require.NoError(os.Mkdir(dir, 0o700))
 	path := filepath.Join(dir, "pinned")
-	require.NoError(t, os.WriteFile(path, []byte("verified pin"), 0o600))
+	require.NoError(os.WriteFile(path, []byte("verified pin"), 0o600))
 	identity, err := os.Lstat(path)
-	require.NoError(t, err)
-	require.NoError(t, os.Link(path, filepath.Join(dir, "held")), "keep the verified inode allocated")
+	require.NoError(err)
+	require.NoError(os.Link(path, filepath.Join(dir, "held")), "keep the verified inode allocated")
 	pin := &hardlinkIdentityPin{path: path, dir: dir, identity: identity}
-	require.NoError(t, os.Remove(path))
-	require.NoError(t, os.WriteFile(path, []byte("replacement"), 0o600))
+	require.NoError(os.Remove(path))
+	require.NoError(os.WriteFile(path, []byte("replacement"), 0o600))
 
 	_, err = pin.Stat()
 
-	require.ErrorIs(t, err, errIdentityChanged)
+	require.ErrorIs(err, errIdentityChanged)
 }
