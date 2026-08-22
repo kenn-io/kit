@@ -11,6 +11,9 @@ databases, command parsing, and shutdown policy belong to the caller.
 
 - Never infer live daemon state from a runtime record alone. Probe the endpoint
   before claiming a process is reachable.
+- With PID-aware discovery, retain a live record's probe failure until another
+  reachable record wins. Absence is a definite result, not a fallback for an
+  endpoint that could not be probed.
 - Treat process-creation identity as opaque and exact-match only. An unknown
   identity never authorizes destructive action against a process or record.
 - Never send a bearer credential to a runtime-record endpoint before it proves

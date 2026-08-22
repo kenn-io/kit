@@ -21,10 +21,42 @@ func lifecycleGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	cmd.Env = gitenv.StripAll(os.Environ())
+	cmd.Env = lifecycleGitEnv(t)
 	out, err := cmd.CombinedOutput()
 	Require.NoError(t, err, "git %v: %s", args, out)
 	return strings.TrimSpace(string(out))
+}
+
+func isolateLifecycleGitConfig(t *testing.T) {
+	t.Helper()
+	globalConfig := filepath.Join(t.TempDir(), "global.gitconfig")
+	Require.NoError(t, os.WriteFile(globalConfig, nil, 0o600))
+	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+}
+
+func lifecycleGitEnv(t *testing.T) []string {
+	t.Helper()
+	globalConfig := os.Getenv("GIT_CONFIG_GLOBAL")
+	Require.NotEmpty(t, globalConfig, "Git fixture config was not isolated")
+	return append(
+		isolatedLifecycleBaseEnv(t),
+		"GIT_CONFIG_GLOBAL="+globalConfig,
+		"GIT_CONFIG_NOSYSTEM=1",
+	)
+}
+
+func isolatedLifecycleBaseEnv(t *testing.T) []string {
+	t.Helper()
+	return append(
+		gitenv.StripAll(os.Environ()),
+		"XDG_CONFIG_HOME="+t.TempDir(),
+	)
+}
+
+func lifecycleTestRunner(t *testing.T) gitcmd.Runner {
+	t.Helper()
+	return gitcmd.Runner{Env: lifecycleGitEnv(t)}
 }
 
 // initLifecycleRepo creates a git repository with one commit on a stable
@@ -35,6 +67,7 @@ func initLifecycleRepo(t *testing.T) string {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
+	isolateLifecycleGitConfig(t)
 	dir := filepath.Join(t.TempDir(), "repo")
 	Require.NoError(t, os.MkdirAll(dir, 0o755))
 	lifecycleGit(t, dir, "init", "-q", "-b", "main")
@@ -51,7 +84,7 @@ func branchExistsInRepo(t *testing.T, repo, branch string) bool {
 		"git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch,
 	)
 	cmd.Dir = repo
-	cmd.Env = gitenv.StripAll(os.Environ())
+	cmd.Env = lifecycleGitEnv(t)
 	return cmd.Run() == nil
 }
 
