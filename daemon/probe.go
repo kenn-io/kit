@@ -135,18 +135,22 @@ type DiscoverOptions struct {
 	// Proof enables proof-of-possession probing for each runtime record.
 	Proof *Proof
 	// RequirePIDAlive rejects dead processes and definite process-identity
-	// mismatches. If a remaining record cannot be probed, Discover returns an
-	// UnreachableError when no later record succeeds.
+	// mismatches. It also makes failed probes indeterminate: Discover returns an
+	// UnreachableError when no later record succeeds. The false zero value keeps
+	// the earlier compatibility behavior, where failed probes are skipped and
+	// discovery can report definite absence.
 	RequirePIDAlive bool
 	Accept          func(RuntimeRecord, PingInfo) bool
 }
 
 // ErrDaemonUnreachable reports a live runtime record whose endpoint could not
-// be proved reachable.
+// be proved usable. It classifies every Probe or proof-of-possession failure,
+// including transport, HTTP, decoding, service-identity, and proof errors.
+// Callers should inspect the wrapped error before choosing operator guidance.
 var ErrDaemonUnreachable = errors.New("daemon is unreachable")
 
-// UnreachableError retains the runtime and probe failure for an unreachable
-// daemon candidate.
+// UnreachableError retains the runtime and probe failure for a live daemon
+// candidate that discovery could not safely select.
 type UnreachableError struct {
 	Record   RuntimeRecord
 	Endpoint Endpoint

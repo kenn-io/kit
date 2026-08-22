@@ -330,6 +330,26 @@ without changing manager control flow
 4. Never clean up, signal, restart, or auto-start solely because a probe was
    denied.
 
+This behavior is intentionally opt-in through `RequirePIDAlive`. Without a
+live-process check, a failed probe cannot distinguish an inaccessible daemon
+from a stale runtime record. Keeping the false zero value also preserves the
+existing behavior for callers that do not use process-aware discovery.
+
+| PID checks | Recorded identity | Probe result | Discovery result when no later candidate wins |
+| --- | --- | --- | --- |
+| Disabled | Any | Failure | Definite absence, preserving the prior behavior |
+| Enabled | Definite mismatch or dead PID | Not attempted | Definite absence |
+| Enabled | Match or unknown | Failure | `UnreachableError` wrapping the probe failure |
+| Enabled | Match or unknown | Success and accepted | Candidate returned |
+| Enabled | Match or unknown | Success but rejected by `Accept` | Continue scanning, then definite absence |
+
+Context cancellation takes precedence over a retained probe failure, and a
+later reachable candidate takes precedence over every earlier failure. A probe
+failure includes transport denial, a non-success HTTP response, malformed ping
+data, service mismatch, and proof-of-possession failure. Applications should
+use the wrapped error, not only `ErrDaemonUnreachable`, when writing recovery
+guidance.
+
 Ordered endpoint candidates are a plausible second Kit improvement. RoboRev
 currently encodes its alternate in `RuntimeRecord.Metadata`, then reimplements
 candidate parsing and probing. A structured candidate list would remove that

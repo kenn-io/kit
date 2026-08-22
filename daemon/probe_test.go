@@ -170,6 +170,63 @@ func TestDiscoverRejectsPIDMismatchWhenRequiringLivePID(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestDiscoverSkipsMismatchedProcessIdentityWithoutProbing(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+
+	livePID := startLivePIDHelper(t)
+	recordedIdentity, ok := daemon.ReadProcessIdentity(os.Getpid())
+	require.True(ok)
+	require.Equal(daemon.ProcessIdentityMismatch,
+		daemon.CompareProcessIdentity(livePID, recordedIdentity))
+
+	var probes atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		probes.Add(1)
+		http.Error(w, "must not be probed", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	store := daemon.RuntimeStore{Dir: t.TempDir()}
+	_, err := store.Write(daemon.RuntimeRecord{
+		PID:             livePID,
+		ProcessIdentity: recordedIdentity,
+		Network:         daemon.NetworkTCP,
+		Address:         listenerAddr(t, server),
+		Service:         "kata",
+		StartedAt:       time.Now(),
+	})
+	require.NoError(err)
+
+	_, _, found, err := daemon.Discover(context.Background(), store, daemon.DiscoverOptions{
+		Probe:           daemon.ProbeOptions{ExpectedService: "kata"},
+		RequirePIDAlive: true,
+	})
+	require.NoError(err)
+	assert.False(found)
+	assert.Zero(probes.Load())
+}
+
+func TestDiscoverWithoutPIDCheckKeepsFailedProbeAsAbsence(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not ready", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	store := daemon.RuntimeStore{Dir: t.TempDir()}
+	_, err := store.Write(daemon.NewRuntimeRecord("kata", "v1", daemon.Endpoint{
+		Network: daemon.NetworkTCP,
+		Address: listenerAddr(t, server),
+	}))
+	require.NoError(t, err)
+
+	_, _, found, err := daemon.Discover(context.Background(), store, daemon.DiscoverOptions{
+		Probe: daemon.ProbeOptions{ExpectedService: "kata"},
+	})
+	require.NoError(t, err)
+	assert.False(t, found)
+}
+
 func TestDiscoverReturnsUnreachableErrorForLiveRuntime(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
