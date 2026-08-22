@@ -14,6 +14,8 @@ import (
 
 	Assert "github.com/stretchr/testify/assert"
 	Require "github.com/stretchr/testify/require"
+
+	gitenv "go.kenn.io/kit/git/env"
 )
 
 func TestRunnerCommandUsesDefensiveEnvironment(t *testing.T) {
@@ -186,7 +188,7 @@ func safeDirectoryTestEnv(t *testing.T, globalConfig string) []string {
 	t.Helper()
 	emptySystemConfig := filepath.Join(t.TempDir(), "system-gitconfig")
 	Require.NoError(t, os.WriteFile(emptySystemConfig, nil, 0o600))
-	return append(os.Environ(),
+	return append(gitenv.StripAll(os.Environ()),
 		"GIT_CONFIG_GLOBAL="+globalConfig,
 		"GIT_CONFIG_SYSTEM="+emptySystemConfig,
 		"GIT_CONFIG_NOSYSTEM=0",
@@ -272,6 +274,9 @@ func TestReadSafeDirectoriesConditionalInclude(t *testing.T) {
 	// the command targets, not for the calling process's working directory.
 	dir := t.TempDir()
 	repo := filepath.Join(dir, "repo")
+	// Git exports repository-local variables to hooks. The fixture environment
+	// must discard them before it starts or probes its own repository.
+	t.Setenv("GIT_DIR", filepath.Join(dir, "hook-repository.git"))
 	require.NoError(os.Mkdir(repo, 0o755))
 	// git matches gitdir patterns against resolved paths, so the pattern must
 	// use the symlink-free form (t.TempDir is a symlink on macOS).

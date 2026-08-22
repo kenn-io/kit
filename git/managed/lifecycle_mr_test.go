@@ -15,13 +15,13 @@ import (
 	Require "github.com/stretchr/testify/require"
 
 	gitcmd "go.kenn.io/kit/git/cmd"
-	gitenv "go.kenn.io/kit/git/env"
 )
 
-func lifecycleGitCommand(dir string, args ...string) *exec.Cmd {
+func lifecycleGitCommand(t *testing.T, dir string, args ...string) *exec.Cmd {
+	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	cmd.Env = gitenv.StripAll(os.Environ())
+	cmd.Env = lifecycleGitEnv(t)
 	return cmd
 }
 
@@ -51,7 +51,7 @@ func initOriginAndClone(t *testing.T) (string, string) {
 
 func worktreeConfig(t *testing.T, dir, key string) string {
 	t.Helper()
-	cmd := lifecycleGitCommand(dir, "config", "--get", key)
+	cmd := lifecycleGitCommand(t, dir, "config", "--get", key)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return ""
@@ -61,7 +61,7 @@ func worktreeConfig(t *testing.T, dir, key string) string {
 
 func worktreeOnlyConfig(t *testing.T, dir, key string) string {
 	t.Helper()
-	cmd := lifecycleGitCommand(dir, "config", "--worktree", "--get", key)
+	cmd := lifecycleGitCommand(t, dir, "config", "--worktree", "--get", key)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return ""
@@ -87,6 +87,7 @@ func TestCreateWorktreeFromMergeRequestSameRepo(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "wt")
 	result, err := CreateWorktreeFromMergeRequest(
 		context.Background(), MergeRequestWorktreeOptions{
+			Runner:              lifecycleTestRunner(t),
 			ProjectRoot:         clone,
 			Branch:              "pr-42",
 			Path:                dest,
@@ -121,6 +122,7 @@ func TestCreateWorktreeFromMergeRequestUsesExplicitProjectRemote(t *testing.T) {
 
 	result, err := CreateWorktreeFromMergeRequest(
 		t.Context(), MergeRequestWorktreeOptions{
+			Runner:              lifecycleTestRunner(t),
 			ProjectRoot:         clone,
 			ProjectRemote:       "upstream",
 			Branch:              "pr-explicit-remote",
@@ -177,6 +179,7 @@ func TestCreateWorktreeFromMergeRequestMatchesEquivalentLocalRepositories(t *tes
 
 			result, err := CreateWorktreeFromMergeRequest(
 				t.Context(), MergeRequestWorktreeOptions{
+					Runner:              lifecycleTestRunner(t),
 					ProjectRoot:         clone,
 					Branch:              "pr-alternate",
 					Path:                filepath.Join(t.TempDir(), "worktree"),
@@ -208,6 +211,7 @@ func TestCreateWorktreeFromMergeRequestCanonicalizesRelativeProjectIdentity(t *t
 
 	result, err := CreateWorktreeFromMergeRequest(
 		t.Context(), MergeRequestWorktreeOptions{
+			Runner:              lifecycleTestRunner(t),
 			ProjectRoot:         clone,
 			Branch:              "pr-relative-project",
 			Path:                filepath.Join(t.TempDir(), "worktree"),
@@ -237,6 +241,7 @@ func TestCreateWorktreeFromMergeRequestGitLabRef(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "wt")
 	_, err := CreateWorktreeFromMergeRequest(
 		context.Background(), MergeRequestWorktreeOptions{
+			Runner:      lifecycleTestRunner(t),
 			ProjectRoot: clone,
 			Branch:      "mr-5",
 			Path:        dest,
@@ -268,6 +273,7 @@ func TestCreateWorktreeFromMergeRequestPullRefFallback(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "wt")
 	_, err := CreateWorktreeFromMergeRequest(
 		context.Background(), MergeRequestWorktreeOptions{
+			Runner:      lifecycleTestRunner(t),
 			ProjectRoot: clone,
 			Branch:      "pr-7",
 			Path:        dest,
@@ -296,6 +302,7 @@ func TestCreateWorktreeFromMergeRequestRejectsLeftoverBranch(t *testing.T) {
 
 	_, err := CreateWorktreeFromMergeRequest(
 		t.Context(), MergeRequestWorktreeOptions{
+			Runner:              lifecycleTestRunner(t),
 			ProjectRoot:         clone,
 			Branch:              "pr-leftover",
 			Path:                dest,
@@ -325,6 +332,7 @@ func TestCreateWorktreeFromMergeRequestPreservesCancellation(t *testing.T) {
 
 			_, err := CreateWorktreeFromMergeRequest(
 				ctx, MergeRequestWorktreeOptions{
+					Runner:              lifecycleTestRunner(t),
 					ProjectRoot:         clone,
 					Branch:              "pr-cancel-" + phase,
 					Path:                filepath.Join(t.TempDir(), "wt"),
@@ -376,6 +384,7 @@ func TestCreateWorktreeFromMergeRequestRejectsChangedHead(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "wt")
 	result, err := CreateWorktreeFromMergeRequest(
 		context.Background(), MergeRequestWorktreeOptions{
+			Runner:          lifecycleTestRunner(t),
 			ProjectRoot:     clone,
 			Branch:          "pr-8",
 			Path:            dest,
@@ -413,6 +422,7 @@ func TestCreateWorktreeFromMergeRequestRejectsIncompatibleCommonConfig(t *testin
 			dest := filepath.Join(t.TempDir(), "wt")
 			_, err := CreateWorktreeFromMergeRequest(
 				t.Context(), MergeRequestWorktreeOptions{
+					Runner:      lifecycleTestRunner(t),
 					ProjectRoot: clone, Branch: "pr-config-check", Path: dest,
 					Number: 26, HeadBranch: "config-check",
 					HeadRepoCloneURL:    origin,
@@ -484,6 +494,7 @@ func TestCreateWorktreeFromMergeRequestIsolatesUntrustedTreeGitPrograms(t *testi
 
 	result, err := CreateWorktreeFromMergeRequest(
 		t.Context(), MergeRequestWorktreeOptions{
+			Runner:              lifecycleTestRunner(t),
 			ProjectRoot:         clone,
 			Branch:              "pr-untrusted",
 			Path:                dest,
@@ -568,6 +579,7 @@ func TestCreateWorktreeFromMergeRequestDisablesLaterSubmoduleFetches(
 	dest := filepath.Join(t.TempDir(), "wt")
 	_, err := CreateWorktreeFromMergeRequest(
 		t.Context(), MergeRequestWorktreeOptions{
+			Runner:      lifecycleTestRunner(t),
 			ProjectRoot: clone, Branch: "pr-submodule-fetch", Path: dest,
 			Number: 29, HeadBranch: "submodule-tree",
 			HeadRepoCloneURL: origin, ProjectRepoIdentity: identityOfCloneURL(origin),
@@ -640,6 +652,7 @@ func TestCreateWorktreeFromMergeRequestNeutralizesCaseDistinctAttributeDrivers(
 	dest := filepath.Join(t.TempDir(), "wt")
 	_, err := CreateWorktreeFromMergeRequest(
 		t.Context(), MergeRequestWorktreeOptions{
+			Runner:              lifecycleTestRunner(t),
 			ProjectRoot:         clone,
 			Branch:              "pr-drivers",
 			Path:                dest,
@@ -692,6 +705,7 @@ func TestCreateWorktreeFromMergeRequestDoesNotPATHSearchDriverHelpers(
 	dest := filepath.Join(t.TempDir(), "wt")
 	_, err := CreateWorktreeFromMergeRequest(
 		t.Context(), MergeRequestWorktreeOptions{
+			Runner:      lifecycleTestRunner(t),
 			ProjectRoot: clone, Branch: "pr-path-driver", Path: dest,
 			Number: 28, HeadBranch: "path-driver",
 			HeadRepoCloneURL: origin, ProjectRepoIdentity: identityOfCloneURL(origin),
@@ -702,7 +716,7 @@ func TestCreateWorktreeFromMergeRequestDoesNotPATHSearchDriverHelpers(
 		filepath.Join(dest, "payload"), []byte("changed\n"), 0o644,
 	))
 
-	cmd := lifecycleGitCommand(dest, "diff", "--", "payload")
+	cmd := lifecycleGitCommand(t, dest, "diff", "--", "payload")
 	cmd.Env = append(cmd.Env, "PATH="+dest+":"+os.Getenv("PATH"))
 	out, err := cmd.CombinedOutput()
 
@@ -755,7 +769,7 @@ func TestMergeRequestRollbackRetainsIsolatedRunner(t *testing.T) {
 	runner := gitcmd.New()
 	runner.NullGlobalConfig = false
 	runner.Env = append(
-		gitenv.StripAll(os.Environ()),
+		isolatedLifecycleBaseEnv(t),
 		"GIT_CONFIG_GLOBAL="+globalConfig,
 	)
 
@@ -828,7 +842,7 @@ func TestCreateWorktreeFromMergeRequestInspectsSelectedConfigFiles(t *testing.T)
 	runner := gitcmd.New()
 	runner.NullGlobalConfig = false
 	runner.NoSystemConfig = false
-	runner.Env = append(gitenv.StripAll(os.Environ()),
+	runner.Env = append(isolatedLifecycleBaseEnv(t),
 		"HOME="+configDir,
 		"GIT_CONFIG_GLOBAL="+globalConfig,
 		"GIT_CONFIG_SYSTEM="+systemConfig,
@@ -863,9 +877,9 @@ func TestCreateWorktreeFromMergeRequestRejectsInheritedCommandScopeConfig(
 	}{
 		{
 			name: "GIT_CONFIG_COUNT",
-			runner: func(_ *testing.T) gitcmd.Runner {
+			runner: func(t *testing.T) gitcmd.Runner {
 				runner := gitcmd.New()
-				runner.Env = append(gitenv.StripAll(os.Environ()),
+				runner.Env = append(isolatedLifecycleBaseEnv(t),
 					"GIT_CONFIG_COUNT=1",
 					"GIT_CONFIG_KEY_0=filter.inherited.smudge",
 					"GIT_CONFIG_VALUE_0=false",
@@ -875,9 +889,9 @@ func TestCreateWorktreeFromMergeRequestRejectsInheritedCommandScopeConfig(
 		},
 		{
 			name: "GIT_CONFIG_PARAMETERS",
-			runner: func(_ *testing.T) gitcmd.Runner {
+			runner: func(t *testing.T) gitcmd.Runner {
 				runner := gitcmd.New()
-				runner.Env = append(gitenv.StripAll(os.Environ()),
+				runner.Env = append(isolatedLifecycleBaseEnv(t),
 					"GIT_CONFIG_PARAMETERS='filter.inherited.smudge'='false'",
 				)
 				return runner
@@ -885,10 +899,14 @@ func TestCreateWorktreeFromMergeRequestRejectsInheritedCommandScopeConfig(
 		},
 		{
 			name: "Runner Config",
-			runner: func(_ *testing.T) gitcmd.Runner {
-				return gitcmd.New().WithConfig(
-					"filter.inherited.smudge", "false",
-				)
+			runner: func(t *testing.T) gitcmd.Runner {
+				return gitcmd.Runner{
+					Env:      isolatedLifecycleBaseEnv(t),
+					StripEnv: true,
+					Config: []gitcmd.Config{{
+						Key: "filter.inherited.smudge", Value: "false",
+					}},
+				}
 			},
 		},
 		{
@@ -901,7 +919,7 @@ func TestCreateWorktreeFromMergeRequestRejectsInheritedCommandScopeConfig(
 					0o600,
 				))
 				runner := gitcmd.New()
-				runner.Env = append(gitenv.StripAll(os.Environ()),
+				runner.Env = append(isolatedLifecycleBaseEnv(t),
 					"GIT_CONFIG_COUNT=1",
 					"GIT_CONFIG_KEY_0=include.path",
 					"GIT_CONFIG_VALUE_0="+config,
@@ -959,6 +977,7 @@ func TestCreateWorktreeFromMergeRequestRejectsConfiguredHooks(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "wt")
 	_, err := CreateWorktreeFromMergeRequest(
 		t.Context(), MergeRequestWorktreeOptions{
+			Runner:      lifecycleTestRunner(t),
 			ProjectRoot: clone, Branch: "pr-configured-hook", Path: dest,
 			Number: 34, HeadBranch: "configured-hook",
 			HeadRepoCloneURL: origin, ProjectRepoIdentity: identityOfCloneURL(origin),
@@ -992,7 +1011,7 @@ func TestCreateWorktreeFromMergeRequestRejectsCommandScopeWorktree(t *testing.T)
 	external := t.TempDir()
 	marker := filepath.Join(external, "keep")
 	require.NoError(os.WriteFile(marker, []byte("preserve"), 0o600))
-	runner := gitcmd.New().WithConfig("core.worktree", external)
+	runner := lifecycleTestRunner(t).WithConfig("core.worktree", external)
 	dest := filepath.Join(t.TempDir(), "wt")
 
 	_, err := CreateWorktreeFromMergeRequest(
@@ -1081,7 +1100,7 @@ func TestCreateWorktreeFromMergeRequestRejectsConditionalCommandScopeConfig(
 		[]byte("[filter \"conditional\"]\n\tsmudge = false\n"), 0o600,
 	))
 	runner := gitcmd.New()
-	runner.Env = append(gitenv.StripAll(os.Environ()),
+	runner.Env = append(isolatedLifecycleBaseEnv(t),
 		"GIT_CONFIG_COUNT=1",
 		"GIT_CONFIG_KEY_0=includeIf.onbranch:pr-command-conditional.path",
 		"GIT_CONFIG_VALUE_0="+config,
@@ -1128,7 +1147,7 @@ func TestCreateWorktreeFromMergeRequestRejectsConfigFromMaterializedTree(
 	runner := gitcmd.New()
 	runner.NullGlobalConfig = false
 	runner.Env = append(
-		gitenv.StripAll(os.Environ()),
+		isolatedLifecycleBaseEnv(t),
 		"GIT_CONFIG_GLOBAL=.gitconfig",
 	)
 	dest := filepath.Join(t.TempDir(), "wt")
@@ -1179,7 +1198,7 @@ func TestCreateWorktreeFromMergeRequestRejectsSymlinkedConfigFromTree(
 	runner := gitcmd.New()
 	runner.NullGlobalConfig = false
 	runner.Env = append(
-		gitenv.StripAll(os.Environ()),
+		isolatedLifecycleBaseEnv(t),
 		"GIT_CONFIG_GLOBAL=.gitconfig",
 	)
 	dest := filepath.Join(t.TempDir(), "wt")
@@ -1213,7 +1232,7 @@ func TestCreateWorktreeFromMergeRequestRejectsInheritedRelativeInclude(
 	lifecycleGit(t, origin, "checkout", "-q", "main")
 
 	runner := gitcmd.New()
-	runner.Env = append(gitenv.StripAll(os.Environ()),
+	runner.Env = append(isolatedLifecycleBaseEnv(t),
 		"GIT_CONFIG_COUNT=1",
 		"GIT_CONFIG_KEY_0=include.path",
 		"GIT_CONFIG_VALUE_0=.gitconfig",
@@ -1296,6 +1315,7 @@ func TestCreateWorktreeFromMergeRequestInspectsConditionalIncludes(t *testing.T)
 	dest := filepath.Join(t.TempDir(), "wt")
 	_, err := CreateWorktreeFromMergeRequest(
 		t.Context(), MergeRequestWorktreeOptions{
+			Runner:      lifecycleTestRunner(t),
 			ProjectRoot: clone, Branch: "pr-conditional", Path: dest,
 			Number: 24, HeadBranch: "conditional-config",
 			HeadRepoCloneURL: origin, ProjectRepoIdentity: identityOfCloneURL(origin),
@@ -1336,6 +1356,7 @@ func TestCreateWorktreeFromMergeRequestReportsCleanupFailure(t *testing.T) {
 
 	_, err := CreateWorktreeFromMergeRequest(
 		t.Context(), MergeRequestWorktreeOptions{
+			Runner:      lifecycleTestRunner(t),
 			ProjectRoot: clone, Branch: "pr-cleanup-failure",
 			Path:   filepath.Join(t.TempDir(), "wt"),
 			Number: 25, HeadBranch: "cleanup-failure",
@@ -1381,6 +1402,7 @@ func TestCreateWorktreeFromMergeRequestFork(t *testing.T) {
 	var fetches [][]string
 	_, err := CreateWorktreeFromMergeRequest(
 		context.Background(), MergeRequestWorktreeOptions{
+			Runner:              lifecycleTestRunner(t),
 			ProjectRoot:         clone,
 			Branch:              "pr-9",
 			Path:                dest,
@@ -1410,7 +1432,7 @@ func TestCreateWorktreeFromMergeRequestFork(t *testing.T) {
 	require.NoError(readErr)
 	assert.Equal(fetchHeadSentinel, string(fetchHead))
 	tagCommand := lifecycleGitCommand(
-		clone, "show-ref", "--verify", "--quiet", "refs/tags/contributor-tag",
+		t, clone, "show-ref", "--verify", "--quiet", "refs/tags/contributor-tag",
 	)
 	assert.Error(tagCommand.Run())
 	assert.Equal(headSHA, lifecycleGit(t, dest, "rev-parse", "HEAD"))
@@ -1440,6 +1462,7 @@ func TestCreateWorktreeFromMergeRequestCanonicalizesRelativeForkURL(t *testing.T
 	dest := filepath.Join(t.TempDir(), "wt")
 	_, err := CreateWorktreeFromMergeRequest(
 		context.Background(), MergeRequestWorktreeOptions{
+			Runner:              lifecycleTestRunner(t),
 			ProjectRoot:         clone,
 			Branch:              "pr-10",
 			Path:                dest,
@@ -1584,6 +1607,7 @@ func TestCreateWorktreeFromMergeRequestTrackingFetchFailureIsNonFatal(t *testing
 	dest := filepath.Join(t.TempDir(), "wt")
 	_, err := CreateWorktreeFromMergeRequest(
 		context.Background(), MergeRequestWorktreeOptions{
+			Runner:              lifecycleTestRunner(t),
 			ProjectRoot:         clone,
 			Branch:              "pr-11",
 			Path:                dest,
@@ -1617,6 +1641,7 @@ func TestCreateWorktreeFromMergeRequestPropagatesTrackingRunnerFailure(
 
 	_, err := CreateWorktreeFromMergeRequest(
 		t.Context(), MergeRequestWorktreeOptions{
+			Runner:              lifecycleTestRunner(t),
 			ProjectRoot:         clone,
 			Branch:              "pr-tracking-failure",
 			Path:                filepath.Join(t.TempDir(), "wt"),
@@ -1660,6 +1685,7 @@ func TestCreateWorktreeFromMergeRequestHookFailureRollsBack(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "wt")
 	_, err := CreateWorktreeFromMergeRequest(
 		context.Background(), MergeRequestWorktreeOptions{
+			Runner:              lifecycleTestRunner(t),
 			ProjectRoot:         clone,
 			Branch:              "pr-42",
 			Path:                dest,
@@ -1699,6 +1725,7 @@ func TestCreateWorktreeFromMergeRequestRejectsHookFromDestination(t *testing.T) 
 	hookRan := false
 	_, err = CreateWorktreeFromMergeRequest(
 		t.Context(), MergeRequestWorktreeOptions{
+			Runner:              lifecycleTestRunner(t),
 			ProjectRoot:         clone,
 			Branch:              "pr-hook",
 			Path:                dest,
