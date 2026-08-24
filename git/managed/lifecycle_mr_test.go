@@ -768,6 +768,9 @@ func TestMergeRequestRollbackRetainsIsolatedRunner(t *testing.T) {
 	), 0o600))
 	runner := gitcmd.New()
 	runner.NullGlobalConfig = false
+	// StripEnv would discard the GIT_CONFIG_GLOBAL override below and let git
+	// fall back to the host's real global config; Env is already sanitized.
+	runner.StripEnv = false
 	runner.Env = append(
 		isolatedLifecycleBaseEnv(t),
 		"GIT_CONFIG_GLOBAL="+globalConfig,
@@ -1146,6 +1149,9 @@ func TestCreateWorktreeFromMergeRequestRejectsConfigFromMaterializedTree(
 
 	runner := gitcmd.New()
 	runner.NullGlobalConfig = false
+	// StripEnv would discard the GIT_CONFIG_GLOBAL override below and let git
+	// fall back to the host's real global config; Env is already sanitized.
+	runner.StripEnv = false
 	runner.Env = append(
 		isolatedLifecycleBaseEnv(t),
 		"GIT_CONFIG_GLOBAL=.gitconfig",
@@ -1197,6 +1203,9 @@ func TestCreateWorktreeFromMergeRequestRejectsSymlinkedConfigFromTree(
 
 	runner := gitcmd.New()
 	runner.NullGlobalConfig = false
+	// StripEnv would discard the GIT_CONFIG_GLOBAL override below and let git
+	// fall back to the host's real global config; Env is already sanitized.
+	runner.StripEnv = false
 	runner.Env = append(
 		isolatedLifecycleBaseEnv(t),
 		"GIT_CONFIG_GLOBAL=.gitconfig",
