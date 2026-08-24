@@ -133,9 +133,41 @@ func probeHTTP(
 type DiscoverOptions struct {
 	Probe ProbeOptions
 	// Proof enables proof-of-possession probing for each runtime record.
-	Proof           *Proof
+	Proof *Proof
+	// RequirePIDAlive rejects dead processes and definite process-identity
+	// mismatches. It also makes failed probes indeterminate: Discover returns an
+	// UnreachableError when no later record succeeds. The false zero value keeps
+	// the earlier compatibility behavior, where failed probes are skipped and
+	// discovery can report definite absence.
 	RequirePIDAlive bool
 	Accept          func(RuntimeRecord, PingInfo) bool
+}
+
+// ErrDaemonUnreachable reports a live runtime record whose endpoint could not
+// be proved usable. It classifies every Probe or proof-of-possession failure,
+// including transport, HTTP, decoding, service-identity, and proof errors.
+// Callers should inspect the wrapped error before choosing operator guidance.
+var ErrDaemonUnreachable = errors.New("daemon is unreachable")
+
+// UnreachableError retains the runtime and probe failure for a live daemon
+// candidate that discovery could not safely select.
+type UnreachableError struct {
+	Record   RuntimeRecord
+	Endpoint Endpoint
+	Err      error
+}
+
+func (e *UnreachableError) Error() string {
+	return fmt.Sprintf("%v: pid %d at %s: %v",
+		ErrDaemonUnreachable, e.Record.PID, e.Endpoint.ConfigAddress(), e.Err)
+}
+
+// Unwrap preserves both the classification and the endpoint probe failure.
+func (e *UnreachableError) Unwrap() []error {
+	if e.Err == nil {
+		return []error{ErrDaemonUnreachable}
+	}
+	return []error{ErrDaemonUnreachable, e.Err}
 }
 
 // Discover scans runtime records and returns the first live daemon.
@@ -147,22 +179,34 @@ func Discover(ctx context.Context, store RuntimeStore, opts DiscoverOptions) (Ru
 	if err != nil {
 		return RuntimeRecord{}, PingInfo{}, false, err
 	}
+	var unreachable error
 	for _, rec := range records {
 		if err := ctx.Err(); err != nil {
 			return RuntimeRecord{}, PingInfo{}, false, err
 		}
-		if opts.RequirePIDAlive && !ProcessAlive(rec.PID) {
-			continue
+		if opts.RequirePIDAlive {
+			if !ProcessAlive(rec.PID) ||
+				CompareRuntimeProcessIdentity(rec) == ProcessIdentityMismatch {
+				continue
+			}
 		}
+		ep := rec.Endpoint()
 		var info PingInfo
 		if opts.Proof == nil {
-			info, err = Probe(ctx, rec.Endpoint(), opts.Probe)
+			info, err = Probe(ctx, ep, opts.Probe)
 		} else {
 			info, err = opts.Proof.Probe(ctx, rec, opts.Probe)
 		}
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return RuntimeRecord{}, PingInfo{}, false, ctxErr
+			}
+			if opts.RequirePIDAlive && unreachable == nil {
+				unreachable = &UnreachableError{
+					Record:   rec,
+					Endpoint: ep,
+					Err:      err,
+				}
 			}
 			continue
 		}
@@ -174,5 +218,5 @@ func Discover(ctx context.Context, store RuntimeStore, opts DiscoverOptions) (Ru
 		}
 		return rec, info, true, nil
 	}
-	return RuntimeRecord{}, PingInfo{}, false, nil
+	return RuntimeRecord{}, PingInfo{}, false, unreachable
 }
