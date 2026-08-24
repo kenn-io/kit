@@ -380,6 +380,60 @@ func TestHandleEncodesHermesPromptContext(t *testing.T) {
 	assert.JSONEq(t, `{"context":"deployment is production"}`, output.String())
 }
 
+func TestHandleEncodesOpenCodeContext(t *testing.T) {
+	var output bytes.Buffer
+	handler := promptHandler{output: UserPromptSubmitOutput{
+		AdditionalContext: "resolve the failed review",
+	}}
+
+	err := Handle(
+		context.Background(),
+		AgentOpenCode,
+		strings.NewReader(`{
+  "session_id":"session-1",
+  "hook_event_name":"chat.message",
+  "turn_id":"message-1",
+  "cwd":"/tmp/worktree",
+  "prompt":"continue"
+}`),
+		&output,
+		handler,
+	)
+
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"additionalContext":"resolve the failed review"}`, output.String())
+}
+
+func TestHandleNormalizesOpenCodePostToolUse(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	handler := &selectiveHandler{postOutput: PostToolUseOutput{
+		AdditionalContext: "review is ready",
+	}}
+	var output bytes.Buffer
+
+	err := Handle(
+		context.Background(),
+		AgentOpenCode,
+		strings.NewReader(`{
+  "session_id":"session-1",
+  "hook_event_name":"tool.execute.after",
+  "tool_name":"bash",
+  "tool_use_id":"call-1",
+  "tool_input":{"command":"git commit -m test"},
+  "tool_response":{"output":"ok"}
+}`),
+		&output,
+		handler,
+	)
+
+	require.NoError(err)
+	require.NotNil(handler.postToolUse)
+	assert.Equal(ToolBash, handler.postToolUse.ToolName)
+	assert.Equal("call-1", handler.postToolUse.ToolUseID)
+	assert.JSONEq(`{"additionalContext":"review is ready"}`, output.String())
+}
+
 func TestHandleRejectsHermesStopContextWithExplicitAllow(t *testing.T) {
 	var output bytes.Buffer
 	handler := stopHandler{output: StopOutput{

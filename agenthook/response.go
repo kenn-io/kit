@@ -6,6 +6,37 @@ import (
 	"fmt"
 )
 
+func encodeOpenCodeResponse(event Event, value any) (map[string]any, error) {
+	response := map[string]any{}
+	switch output := value.(type) {
+	case UserPromptSubmitOutput:
+		if err := requireEmptyCommon(output.CommonOutput); err != nil {
+			return nil, err
+		}
+		if output.Decision != "" || output.Reason != "" || output.SessionTitle != "" ||
+			output.SuppressOriginalPrompt {
+			return nil, errors.New("unsupported UserPromptSubmit output fields")
+		}
+		addValue(response, "additionalContext", output.AdditionalContext)
+	case PreToolUseOutput:
+		if !isZeroOutput(output) {
+			return nil, errors.New("PreToolUse output is observational")
+		}
+	case PostToolUseOutput:
+		if err := requireEmptyCommon(output.CommonOutput); err != nil {
+			return nil, err
+		}
+		if output.Decision != "" || output.Reason != "" || len(output.UpdatedToolOutput) > 0 ||
+			len(output.UpdatedMCPToolOutput) > 0 {
+			return nil, errors.New("unsupported PostToolUse output fields")
+		}
+		addValue(response, "additionalContext", output.AdditionalContext)
+	default:
+		return nil, fmt.Errorf("OpenCode does not support %s control output", event)
+	}
+	return response, nil
+}
+
 func encodeClaudeResponse(spec profileSpec, event Event, value any) (map[string]any, error) {
 	response := map[string]any{}
 	specific := map[string]any{"hookEventName": event}

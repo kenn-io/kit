@@ -172,6 +172,12 @@ func prepareInstall(agent Agent, opts InstallOptions) (profileSpec, string, []na
 				"Hermes only supports matchers on PreToolUse and PostToolUse hooks",
 			)
 		}
+		if spec.format == formatOpenCodePlugin && matcher != "" &&
+			hook.Event != EventPreToolUse && hook.Event != EventPostToolUse {
+			return profileSpec{}, "", nil, fmt.Errorf(
+				"OpenCode only supports matchers on PreToolUse and PostToolUse hooks",
+			)
+		}
 		key := string(hook.Event) + "\x00" + matcher
 		if _, exists := seen[key]; exists {
 			return profileSpec{}, "", nil, fmt.Errorf("duplicate %s hook matcher %q", hook.Event, hook.Matcher)
@@ -214,12 +220,20 @@ func planConfig(
 		)
 	case formatHermesYAML:
 		return planHermesConfig(path, marker, command, hooks, uninstall)
+	case formatOpenCodePlugin:
+		return planOpenCodePlugin(path, marker, command, commandWindows, hooks, uninstall)
 	default:
 		return nil, false, errors.New("unsupported agent hook config format")
 	}
 }
 
 func writeConfig(path string, data []byte) error {
+	if len(data) == 0 {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove agent hook config %s: %w", path, err)
+		}
+		return nil
+	}
 	writePath := path
 	info, err := os.Lstat(path)
 	mode := os.FileMode(0o600)

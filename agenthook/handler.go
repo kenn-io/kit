@@ -324,6 +324,8 @@ func encodeResponse(spec profileSpec, event Event, output handledOutput) ([]byte
 			)
 		}
 		response = map[string]any{}
+	case responseOpenCode:
+		response, err = encodeOpenCodeResponse(event, output.value)
 	default:
 		err = errors.New("unsupported agent hook response format")
 	}

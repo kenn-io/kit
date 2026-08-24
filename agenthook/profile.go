@@ -14,14 +14,15 @@ import (
 type Agent string
 
 const (
-	AgentClaude  Agent = "claude"
-	AgentCodex   Agent = "codex"
-	AgentCopilot Agent = "copilot"
-	AgentCursor  Agent = "cursor"
-	AgentDroid   Agent = "droid"
-	AgentGemini  Agent = "gemini"
-	AgentHermes  Agent = "hermes"
-	AgentQwen    Agent = "qwen"
+	AgentClaude   Agent = "claude"
+	AgentCodex    Agent = "codex"
+	AgentOpenCode Agent = "opencode"
+	AgentCopilot  Agent = "copilot"
+	AgentCursor   Agent = "cursor"
+	AgentDroid    Agent = "droid"
+	AgentGemini   Agent = "gemini"
+	AgentHermes   Agent = "hermes"
+	AgentQwen     Agent = "qwen"
 )
 
 // Event is a Claude Code lifecycle event name. Profiles translate events to
@@ -61,6 +62,7 @@ const (
 	formatNestedJSON configFormat = iota
 	formatDirectJSON
 	formatHermesYAML
+	formatOpenCodePlugin
 )
 
 type windowsCommandStyle uint8
@@ -81,6 +83,7 @@ const (
 	responseGemini
 	responseHermes
 	responseObservational
+	responseOpenCode
 )
 
 type inputRequirement uint8
@@ -112,6 +115,7 @@ type profileSpec struct {
 var profileOrder = []Agent{
 	AgentClaude,
 	AgentCodex,
+	AgentOpenCode,
 	AgentCopilot,
 	AgentCursor,
 	AgentDroid,
@@ -121,14 +125,15 @@ var profileOrder = []Agent{
 }
 
 var profiles = map[Agent]profileSpec{
-	AgentClaude:  claudeProfile(),
-	AgentCodex:   codexProfile(),
-	AgentCopilot: copilotProfile(),
-	AgentCursor:  cursorProfile(),
-	AgentDroid:   droidProfile(),
-	AgentGemini:  geminiProfile(),
-	AgentHermes:  hermesProfile(),
-	AgentQwen:    qwenProfile(),
+	AgentClaude:   claudeProfile(),
+	AgentCodex:    codexProfile(),
+	AgentOpenCode: openCodeProfile(),
+	AgentCopilot:  copilotProfile(),
+	AgentCursor:   cursorProfile(),
+	AgentDroid:    droidProfile(),
+	AgentGemini:   geminiProfile(),
+	AgentHermes:   hermesProfile(),
+	AgentQwen:     qwenProfile(),
 }
 
 func newProfileSpec(

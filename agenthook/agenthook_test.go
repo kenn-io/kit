@@ -23,10 +23,11 @@ func TestProfilesExposeClaudeStyleEvents(t *testing.T) {
 	require := require.New(t)
 
 	profiles := Profiles()
-	require.Len(profiles, 8)
+	require.Len(profiles, 9)
 	assert.Equal([]Agent{
 		AgentClaude,
 		AgentCodex,
+		AgentOpenCode,
 		AgentCopilot,
 		AgentCursor,
 		AgentDroid,
@@ -42,10 +43,11 @@ func TestProfilesExposeClaudeStyleEvents(t *testing.T) {
 		profiles[5].Agent,
 		profiles[6].Agent,
 		profiles[7].Agent,
+		profiles[8].Agent,
 	})
-	assert.Contains(profiles[6].SupportedEvents, EventPreToolUse)
-	assert.NotContains(profiles[6].SupportedEvents, EventNotification)
-	assert.Contains(profiles[7].SupportedEvents, EventPermissionRequest)
+	assert.Contains(profiles[7].SupportedEvents, EventPreToolUse)
+	assert.NotContains(profiles[7].SupportedEvents, EventNotification)
+	assert.Contains(profiles[8].SupportedEvents, EventPermissionRequest)
 }
 
 func TestPlanInstallDefaultsToEveryProfileEvent(t *testing.T) {
@@ -124,6 +126,7 @@ func TestConfigPathHonorsAgentHomes(t *testing.T) {
 	}{
 		{agent: AgentClaude, env: "CLAUDE_CONFIG_DIR", path: "settings.json"},
 		{agent: AgentCodex, env: "CODEX_HOME", path: "hooks.json"},
+		{agent: AgentOpenCode, env: "XDG_CONFIG_HOME", path: filepath.Join("opencode", "plugins", "roborev-agent-hook.js")},
 		{agent: AgentCopilot, env: "COPILOT_HOME", path: filepath.Join("hooks", "agenthook.json")},
 		{agent: AgentGemini, env: "GEMINI_CLI_HOME", path: filepath.Join(".gemini", "settings.json")},
 		{agent: AgentHermes, env: "HERMES_HOME", path: "config.yaml"},
@@ -140,6 +143,55 @@ func TestConfigPathHonorsAgentHomes(t *testing.T) {
 			assert.Equal(t, filepath.Join(dir, tt.path), path)
 		})
 	}
+}
+
+func TestInstallOpenCodePluginIsOwnedIdempotentAndRemovable(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	path := filepath.Join(t.TempDir(), "roborev-agent-hook.js")
+	opts := InstallOptions{
+		ConfigPath: path,
+		Command:    "/opt/roborev agent-hook run --agent opencode " + testMarker,
+		Marker:     testMarker,
+		Hooks: []Hook{
+			{Event: EventUserPromptSubmit, Timeout: 2 * time.Second},
+			{Event: EventPreToolUse, Matcher: ToolBash, Timeout: 2 * time.Second},
+			{Event: EventPostToolUse, Matcher: ToolBash, Timeout: 2 * time.Second},
+		},
+	}
+
+	result, err := Install(AgentOpenCode, opts)
+	require.NoError(err)
+	assert.True(result.Changed)
+	assert.Contains(string(result.Data), `"chat.message"`)
+	assert.Contains(string(result.Data), `"tool.execute.before"`)
+	assert.Contains(string(result.Data), `"tool.execute.after"`)
+	assert.Contains(string(result.Data), `input.tool === "bash"`)
+	assert.Contains(string(result.Data), testMarker)
+
+	result, err = Install(AgentOpenCode, opts)
+	require.NoError(err)
+	assert.False(result.Changed)
+
+	result, err = Uninstall(AgentOpenCode, path, testMarker)
+	require.NoError(err)
+	assert.True(result.Changed)
+	_, err = os.Stat(path)
+	assert.ErrorIs(err, os.ErrNotExist)
+}
+
+func TestInstallOpenCodePluginPreservesUnownedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "roborev-agent-hook.js")
+	require.NoError(t, os.WriteFile(path, []byte("export const Existing = () => ({})\n"), 0o600))
+
+	_, err := Install(AgentOpenCode, InstallOptions{
+		ConfigPath: path,
+		Command:    "/opt/roborev agent-hook run --agent opencode " + testMarker,
+		Marker:     testMarker,
+	})
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "not owned")
 }
 
 func TestInstallJSONPreservesOtherHooksAndReplacesOwnedHooks(t *testing.T) {

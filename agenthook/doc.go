@@ -6,7 +6,7 @@
 // and file format used by each harness. This lets applications describe one set
 // of lifecycle hooks while support for new agents stays centralized in kit.
 // Profiles are provided for Claude Code, Codex, GitHub Copilot CLI, Cursor,
-// Factory Droid, Gemini CLI, Hermes Agent, and Qwen Code.
+// Factory Droid, Gemini CLI, Hermes Agent, OpenCode, and Qwen Code.
 //
 // Applications identify their hooks with a stable marker embedded in the
 // command. Reinstalling replaces commands carrying that marker even when the
