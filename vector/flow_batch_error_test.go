@@ -54,15 +54,15 @@ func TestFillSharedErrorClassifierFailsClosedWithoutProbes(t *testing.T) {
 					return tc.classifier(err)
 				}
 			}
-			_, err := vector.Fill(context.Background(), store, 7, enc, vector.FillOptions[int64]{
-				ScanBatch:               3,
-				Batch:                   vector.BatchOptions{BatchSize: 3},
-				ShouldIsolateBatchError: classifier,
-				OnEncodeError: func(int64, error) bool {
+			_, err := vector.Fill(context.Background(), store, 7, enc,
+				vector.WithFillScanBatch[int64](3),
+				vector.WithFillBatch[int64](vector.WithBatchSize(3)),
+				vector.WithFillBatchErrorIsolation[int64](classifier),
+				vector.WithFillEncodeError[int64](func(int64, error) bool {
 					hooks++
 					return true
-				},
-			})
+				}),
+			)
 			require.Error(err)
 			var got *fillProviderError
 			require.ErrorAs(err, &got)
@@ -99,15 +99,15 @@ func TestFillSharedErrorRejectedFirstProbeStopsDiagnosis(t *testing.T) {
 					return tc.hook(doc, err)
 				}
 			}
-			_, err := vector.Fill(context.Background(), store, 7, enc, vector.FillOptions[int64]{
-				ScanBatch: 2,
-				Batch:     vector.BatchOptions{BatchSize: 2},
-				ShouldIsolateBatchError: func(error) bool {
+			_, err := vector.Fill(context.Background(), store, 7, enc,
+				vector.WithFillScanBatch[int64](2),
+				vector.WithFillBatch[int64](vector.WithBatchSize(2)),
+				vector.WithFillBatchErrorIsolation[int64](func(error) bool {
 					classifiers++
 					return true
-				},
-				OnEncodeError: hook,
-			})
+				}),
+				vector.WithFillEncodeError[int64](hook),
+			)
 			require.Error(err)
 			var providerErr *fillProviderError
 			require.ErrorAs(err, &providerErr)
@@ -128,15 +128,15 @@ func TestFillSharedErrorAllowsTwoPoisonDocuments(t *testing.T) {
 		calls++
 		return nil, &fillProviderError{code: 400}
 	}
-	stats, err := vector.Fill(context.Background(), store, 7, enc, vector.FillOptions[int64]{
-		ScanBatch:               2,
-		Batch:                   vector.BatchOptions{BatchSize: 2},
-		ShouldIsolateBatchError: func(error) bool { return true },
-		OnEncodeError: func(doc int64, _ error) bool {
+	stats, err := vector.Fill(context.Background(), store, 7, enc,
+		vector.WithFillScanBatch[int64](2),
+		vector.WithFillBatch[int64](vector.WithBatchSize(2)),
+		vector.WithFillBatchErrorIsolation[int64](func(error) bool { return true }),
+		vector.WithFillEncodeError[int64](func(doc int64, _ error) bool {
 			hooks[doc]++
 			return true
-		},
-	})
+		}),
+	)
 	Require.NoError(t, err)
 	assert.Equal(3, calls)
 	assert.Equal(map[int64]int{1: 1, 2: 1}, hooks)
@@ -153,22 +153,22 @@ func TestFillSharedInvalidVectorRejectedWithoutProbe(t *testing.T) {
 		calls++
 		return [][]float32{{1}, {0}, {1}}, nil
 	}
-	_, err := vector.Fill(context.Background(), store, 7, enc, vector.FillOptions[int64]{
-		ScanBatch: 3,
-		Batch:     vector.BatchOptions{BatchSize: 3},
-		ShouldIsolateBatchError: func(error) bool {
+	_, err := vector.Fill(context.Background(), store, 7, enc,
+		vector.WithFillScanBatch[int64](3),
+		vector.WithFillBatch[int64](vector.WithBatchSize(3)),
+		vector.WithFillBatchErrorIsolation[int64](func(error) bool {
 			classifiers++
 			return true
-		},
-		OnEncodeError: func(doc int64, err error) bool {
+		}),
+		vector.WithFillEncodeError[int64](func(doc int64, err error) bool {
 			hooks++
 			assert.Equal(int64(2), doc)
 			var invalid *vector.InvalidVectorError
 			Require.ErrorAs(t, err, &invalid)
 			assert.Equal(0, invalid.Chunk)
 			return false
-		},
-	})
+		}),
+	)
 	Require.Error(t, err)
 	assert.Equal(1, calls)
 	assert.Zero(classifiers)
@@ -183,11 +183,11 @@ func TestFillSharedInvalidVectorNilHookRejectsWithoutProbe(t *testing.T) {
 		calls++
 		return [][]float32{{1}, {0}}, nil
 	}
-	_, err := vector.Fill(context.Background(), store, 7, enc, vector.FillOptions[int64]{
-		ScanBatch:               2,
-		Batch:                   vector.BatchOptions{BatchSize: 2},
-		ShouldIsolateBatchError: func(error) bool { classifiers++; return true },
-	})
+	_, err := vector.Fill(context.Background(), store, 7, enc,
+		vector.WithFillScanBatch[int64](2),
+		vector.WithFillBatch[int64](vector.WithBatchSize(2)),
+		vector.WithFillBatchErrorIsolation[int64](func(error) bool { classifiers++; return true }),
+	)
 	Require.Error(t, err)
 	Assert.Equal(t, 1, calls)
 	Assert.Zero(t, classifiers)
@@ -210,14 +210,14 @@ func TestFillSharedInvalidVectorRecoversOnlyOtherSlices(t *testing.T) {
 		}
 		return out, nil
 	}
-	stats, err := vector.Fill(context.Background(), store, 7, enc, vector.FillOptions[int64]{
-		ScanBatch: 3,
-		Batch:     vector.BatchOptions{BatchSize: 3},
-		OnEncodeError: func(doc int64, _ error) bool {
+	stats, err := vector.Fill(context.Background(), store, 7, enc,
+		vector.WithFillScanBatch[int64](3),
+		vector.WithFillBatch[int64](vector.WithBatchSize(3)),
+		vector.WithFillEncodeError[int64](func(doc int64, _ error) bool {
 			hooks[doc]++
 			return true
-		},
-	})
+		}),
+	)
 	Require.NoError(t, err)
 	assert.Equal([][]string{{"good", "bad", "later"}, {"good"}, {"later"}}, calls)
 	assert.Equal(map[int64]int{2: 1}, hooks)
@@ -239,15 +239,15 @@ func TestFillSharedInvalidRecoveryFailureUsesProbeRules(t *testing.T) {
 		}
 		return nil, &fillProviderError{code: 400}
 	}
-	_, err := vector.Fill(context.Background(), store, 7, enc, vector.FillOptions[int64]{
-		ScanBatch:               2,
-		Batch:                   vector.BatchOptions{BatchSize: 2},
-		ShouldIsolateBatchError: func(error) bool { classifiers++; return true },
-		OnEncodeError: func(doc int64, _ error) bool {
+	_, err := vector.Fill(context.Background(), store, 7, enc,
+		vector.WithFillScanBatch[int64](2),
+		vector.WithFillBatch[int64](vector.WithBatchSize(2)),
+		vector.WithFillBatchErrorIsolation[int64](func(error) bool { classifiers++; return true }),
+		vector.WithFillEncodeError[int64](func(doc int64, _ error) bool {
 			hooks[doc]++
 			return doc == 1
-		},
-	})
+		}),
+	)
 	require.Error(err)
 	var providerErr *fillProviderError
 	require.ErrorAs(err, &providerErr)
@@ -266,12 +266,12 @@ func TestFillSharedInvalidVectorOutOfRangeIsFatal(t *testing.T) {
 		calls++
 		return nil, &vector.InvalidVectorError{Chunk: 2, Component: -1, Reason: "zero norm"}
 	}
-	_, err := vector.Fill(context.Background(), store, 7, enc, vector.FillOptions[int64]{
-		ScanBatch:               2,
-		Batch:                   vector.BatchOptions{BatchSize: 2},
-		ShouldIsolateBatchError: func(error) bool { classifiers++; return true },
-		OnEncodeError:           func(int64, error) bool { hooks++; return true },
-	})
+	_, err := vector.Fill(context.Background(), store, 7, enc,
+		vector.WithFillScanBatch[int64](2),
+		vector.WithFillBatch[int64](vector.WithBatchSize(2)),
+		vector.WithFillBatchErrorIsolation[int64](func(error) bool { classifiers++; return true }),
+		vector.WithFillEncodeError[int64](func(int64, error) bool { hooks++; return true }),
+	)
 	require.ErrorContains(err, "invalid vector chunk 2 outside batch of 2 chunks")
 	var invalid *vector.InvalidVectorError
 	require.ErrorAs(err, &invalid)
@@ -294,10 +294,10 @@ func TestFillSharedInvalidVectorPreservesCompanionCauses(t *testing.T) {
 			sentinel,
 		)
 	}
-	_, err := vector.Fill(context.Background(), store, 7, enc, vector.FillOptions[int64]{
-		ScanBatch: 2,
-		Batch:     vector.BatchOptions{BatchSize: 2},
-		OnEncodeError: func(doc int64, err error) bool {
+	_, err := vector.Fill(context.Background(), store, 7, enc,
+		vector.WithFillScanBatch[int64](2),
+		vector.WithFillBatch[int64](vector.WithBatchSize(2)),
+		vector.WithFillEncodeError[int64](func(doc int64, err error) bool {
 			assert.Equal(int64(2), doc)
 			var invalid *vector.InvalidVectorError
 			require.ErrorAs(err, &invalid)
@@ -307,8 +307,8 @@ func TestFillSharedInvalidVectorPreservesCompanionCauses(t *testing.T) {
 			assert.Same(providerErr, gotProvider)
 			assert.ErrorIs(err, sentinel)
 			return false
-		},
-	})
+		}),
+	)
 	require.Error(err)
 	var invalid *vector.InvalidVectorError
 	require.ErrorAs(err, &invalid)
@@ -367,13 +367,13 @@ func TestFillRejectedProbeBackpressuresAndCancelsWorkers(t *testing.T) {
 	fillReturned := make(chan struct{})
 	go func() {
 		defer close(fillReturned)
-		_, err := vector.Fill(ctx, store, 7, enc, vector.FillOptions[int64]{
-			ScanBatch:               6,
-			Batch:                   vector.BatchOptions{BatchSize: 2},
-			Concurrency:             2,
-			ShouldIsolateBatchError: func(error) bool { return true },
-			OnEncodeError:           func(int64, error) bool { return false },
-		})
+		_, err := vector.Fill(ctx, store, 7, enc,
+			vector.WithFillScanBatch[int64](6),
+			vector.WithFillBatch[int64](vector.WithBatchSize(2)),
+			vector.WithFillConcurrency[int64](2),
+			vector.WithFillBatchErrorIsolation[int64](func(error) bool { return true }),
+			vector.WithFillEncodeError[int64](func(int64, error) bool { return false }),
+		)
 		done <- err
 	}()
 	t.Cleanup(func() {
@@ -434,22 +434,22 @@ func TestFillLateSharedFailureFiltersDecidedDocument(t *testing.T) {
 			return nil, fmt.Errorf("unexpected texts %q", texts)
 		}
 	}
-	stats, err := vector.Fill(context.Background(), store, 7, enc, vector.FillOptions[int64]{
-		ScanBatch:   2,
-		Split:       vector.SplitOptions{MaxRunes: 1},
-		Batch:       vector.BatchOptions{BatchSize: 2},
-		Concurrency: 2,
-		ShouldIsolateBatchError: func(error) bool {
+	stats, err := vector.Fill(context.Background(), store, 7, enc,
+		vector.WithFillScanBatch[int64](2),
+		vector.WithFillSplit[int64](vector.SplitOptions{MaxRunes: 1}),
+		vector.WithFillBatch[int64](vector.WithBatchSize(2)),
+		vector.WithFillConcurrency[int64](2),
+		vector.WithFillBatchErrorIsolation[int64](func(error) bool {
 			classifierCalls.Add(1)
 			return true
-		},
-		OnEncodeError: func(doc int64, _ error) bool {
+		}),
+		vector.WithFillEncodeError[int64](func(doc int64, _ error) bool {
 			hookCalls.Add(1)
 			assert.Equal(int64(1), doc)
 			close(releaseShared)
 			return true
-		},
-	})
+		}),
+	)
 	Require.NoError(t, err)
 	assert.Equal(int32(1), hookCalls.Load())
 	assert.Equal(int32(1), classifierCalls.Load())
@@ -469,12 +469,12 @@ func TestFillWrappedProbeDeadlineAbortsWithoutHook(t *testing.T) {
 		}
 		return nil, fmt.Errorf("encoder timeout: %w", context.DeadlineExceeded)
 	}
-	_, err := vector.Fill(context.Background(), store, 7, enc, vector.FillOptions[int64]{
-		ScanBatch:               2,
-		Batch:                   vector.BatchOptions{BatchSize: 2},
-		ShouldIsolateBatchError: func(error) bool { return true },
-		OnEncodeError:           func(int64, error) bool { hooks++; return true },
-	})
+	_, err := vector.Fill(context.Background(), store, 7, enc,
+		vector.WithFillScanBatch[int64](2),
+		vector.WithFillBatch[int64](vector.WithBatchSize(2)),
+		vector.WithFillBatchErrorIsolation[int64](func(error) bool { return true }),
+		vector.WithFillEncodeError[int64](func(int64, error) bool { hooks++; return true }),
+	)
 	Require.ErrorIs(t, err, context.DeadlineExceeded)
 	Assert.Equal(t, 2, calls)
 	Assert.Zero(t, hooks)
@@ -510,12 +510,11 @@ func TestFillBatchClassifierExclusions(t *testing.T) {
 			var classifiers, hooks int
 			_, err := vector.Fill(context.Background(), store, 7,
 				func(context.Context, []string) ([][]float32, error) { return nil, tc.encodeErr },
-				vector.FillOptions[int64]{
-					ScanBatch:               len(tc.content),
-					Batch:                   vector.BatchOptions{BatchSize: tc.batchSize},
-					ShouldIsolateBatchError: func(error) bool { classifiers++; return true },
-					OnEncodeError:           func(int64, error) bool { hooks++; return true },
-				})
+				vector.WithFillScanBatch[int64](len(tc.content)),
+				vector.WithFillBatch[int64](vector.WithBatchSize(tc.batchSize)),
+				vector.WithFillBatchErrorIsolation[int64](func(error) bool { classifiers++; return true }),
+				vector.WithFillEncodeError[int64](func(int64, error) bool { hooks++; return true }),
+			)
 			if errors.Is(tc.encodeErr, context.Canceled) {
 				require.ErrorIs(err, context.Canceled)
 			} else {

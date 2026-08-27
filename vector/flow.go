@@ -7,44 +7,70 @@ import (
 	"sync"
 )
 
-// FillOptions configures Fill. K is the document key type of the Store the
-// fill runs over.
-type FillOptions[K comparable] struct {
-	// ScanBatch is the number of pending documents fetched per scan.
-	// Values <= 0 use 128.
-	ScanBatch int
-	// Split controls how each document's content is windowed into chunks.
-	Split SplitOptions
-	// Batch controls how chunks are batched into encode calls. A positive
-	// BatchSize packs chunks across documents within each scan page. Values
-	// <= 0 preserve the per-document encode unit.
-	Batch BatchOptions
-	// Concurrency bounds parallel fill work within each scan page. Values
-	// <= 0 use 1 (sequential).
-	// SaveVectors and OnEncodeError stay serialized on the calling goroutine
-	// regardless, so stores and hooks need no extra locking. With a positive
-	// BatchSize, it composes with Batch.Concurrency to bound concurrent encode
-	// calls by their product.
-	Concurrency int
-	// OnEncodeError, if non-nil, is consulted when encoding a document
-	// fails. Returning true skips the document: it is stamped for the
-	// generation with no vectors so it stops being pending, and the fill
-	// continues (the treatment for inputs a model permanently rejects).
-	// Returning false — or leaving OnEncodeError nil — aborts the fill
-	// with the error, which is the right default for transient failures.
-	OnEncodeError func(doc K, err error) bool
-	// ShouldIsolateBatchError reports whether an error from a shared,
-	// multi-document encode call might be caused by an individual input and
-	// is worth diagnosing at document-slice granularity.
-	//
-	// Fill does not call this function for single-document batches or for
-	// errors wrapping context.Canceled or context.DeadlineExceeded. Errors
-	// carrying exact batch-position attribution (*InvalidVectorError) also
-	// bypass this function and go directly to OnEncodeError. Returning true
-	// permits diagnosis only; OnEncodeError still owns the decision to
-	// skip-stamp an attributed document. Returning false, or leaving this nil,
-	// aborts Fill without document-level retries.
-	ShouldIsolateBatchError func(error) bool
+type fillOptions[K comparable] struct {
+	scanBatch               int
+	split                   SplitOptions
+	batch                   batchOptions
+	concurrency             int
+	onEncodeError           func(doc K, err error) bool
+	shouldIsolateBatchError func(error) bool
+}
+
+// FillOption configures a Fill call.
+type FillOption[K comparable] func(*fillOptions[K])
+
+// WithFillScanBatch sets the number of pending documents fetched per scan.
+// Values less than or equal to zero use 128.
+func WithFillScanBatch[K comparable](size int) FillOption[K] {
+	return func(o *fillOptions[K]) { o.scanBatch = size }
+}
+
+// WithFillSplit controls how each document's content is windowed into chunks.
+func WithFillSplit[K comparable](options SplitOptions) FillOption[K] {
+	return func(o *fillOptions[K]) { o.split = options }
+}
+
+// WithFillBatch controls how chunks are grouped into encode calls. A positive
+// WithBatchSize packs chunks across documents within each scan page. Omitting
+// it preserves the per-document encode unit.
+func WithFillBatch[K comparable](options ...BatchOption) FillOption[K] {
+	return func(o *fillOptions[K]) { o.batch = applyBatchOptions(options) }
+}
+
+// WithFillConcurrency bounds parallel fill work within each scan page. Values
+// less than or equal to zero use one worker. SaveVectors and the error hooks
+// stay serialized on the calling goroutine. When WithBatchSize is positive,
+// this limit composes with WithBatchConcurrency; their product bounds the
+// concurrent encode calls.
+func WithFillConcurrency[K comparable](concurrency int) FillOption[K] {
+	return func(o *fillOptions[K]) { o.concurrency = concurrency }
+}
+
+// WithFillEncodeError handles a document that fails to encode. Returning true
+// skips and stamp-saves that document so later Fill calls do not retry it.
+// Returning false aborts Fill, which is the right default for transient
+// failures. Omitting this option also aborts on the first encode error.
+func WithFillEncodeError[K comparable](handler func(doc K, err error) bool) FillOption[K] {
+	return func(o *fillOptions[K]) { o.onEncodeError = handler }
+}
+
+// WithFillBatchErrorIsolation decides whether a failed shared encode call is
+// worth diagnosing at document-slice granularity. Returning true permits
+// diagnosis only; WithFillEncodeError still decides whether to skip an
+// attributed document. Fill bypasses this handler for single-document calls,
+// context errors, and errors with an exact *InvalidVectorError position.
+func WithFillBatchErrorIsolation[K comparable](classify func(error) bool) FillOption[K] {
+	return func(o *fillOptions[K]) { o.shouldIsolateBatchError = classify }
+}
+
+func applyFillOptions[K comparable](options []FillOption[K]) fillOptions[K] {
+	o := fillOptions[K]{}
+	for _, option := range options {
+		if option != nil {
+			option(&o)
+		}
+	}
+	return o
 }
 
 // FillStats reports what a Fill run embedded.
@@ -54,7 +80,7 @@ type FillStats struct {
 	// Chunks is the total chunk vectors saved across Documents.
 	Chunks int
 	// Skipped counts documents stamped without vectors because
-	// OnEncodeError elected to skip them.
+	// the WithFillEncodeError handler elected to skip them.
 	Skipped int
 	// Stale counts documents left pending because they changed between
 	// scan and save (SaveVectors returned ErrStale). A later run retries
@@ -72,14 +98,25 @@ type FillStats struct {
 // pending and not retried until the next Fill call, so an actively edited
 // document cannot starve the loop.
 //
-// When Batch.BatchSize is positive, chunks from adjacent documents in one
-// scan page may share an encode call. Errors with exact document attribution
-// go directly to OnEncodeError. Other shared-call errors are diagnosed at
-// document-slice granularity only when ShouldIsolateBatchError permits it;
-// the nil default aborts without document-level retries. OnEncodeError remains
-// the sole authority for skip-stamping an attributed document.
-func Fill[K, G comparable](ctx context.Context, store Store[K, G], gen G, enc EncodeFunc, o FillOptions[K]) (FillStats, error) {
-	scanBatch := o.ScanBatch
+// When WithFillBatch includes a positive WithBatchSize, chunks from adjacent
+// documents in one scan page may share an encode call. Errors with exact
+// document attribution go directly to the WithFillEncodeError handler. Other
+// shared-call errors are diagnosed at document-slice granularity only when
+// WithFillBatchErrorIsolation permits it. Omitting that option aborts without
+// document-level retries. WithFillEncodeError remains the sole authority for
+// skip-stamping an attributed document.
+func Fill[K, G comparable](
+	ctx context.Context, store Store[K, G], gen G, enc EncodeFunc,
+	options ...FillOption[K],
+) (FillStats, error) {
+	o := applyFillOptions(options)
+	if err := ctx.Err(); err != nil {
+		return FillStats{}, err
+	}
+	if err := o.batch.validate(); err != nil {
+		return FillStats{}, err
+	}
+	scanBatch := o.scanBatch
 	if scanBatch <= 0 {
 		scanBatch = 128
 	}
@@ -143,15 +180,15 @@ type fillBatchResult struct {
 	err     error
 }
 
-// fillPage embeds one scan page. A positive BatchSize packs fixed-size chunk
+// fillPage embeds one scan page. A positive batch size packs fixed-size chunk
 // batches across documents, then scatters vectors back before saving each
 // document independently. The legacy per-document path remains in use when
-// BatchSize is unset, preserving its unbounded-per-document call shape.
+// the batch size is unset, preserving its unbounded-per-document call shape.
 func fillPage[K, G comparable](
 	ctx context.Context, store Store[K, G], gen G, enc EncodeFunc,
-	o FillOptions[K], docs []Pending[K], stale map[K]struct{}, stats *FillStats,
+	o fillOptions[K], docs []Pending[K], stale map[K]struct{}, stats *FillStats,
 ) error {
-	if o.Batch.BatchSize <= 0 || enc == nil {
+	if o.batch.batchSize <= 0 || enc == nil {
 		return fillPageByDocument(ctx, store, gen, enc, o, docs, stale, stats)
 	}
 	return fillPageAcrossDocuments(ctx, store, gen, enc, o, docs, stale, stats)
@@ -159,12 +196,12 @@ func fillPage[K, G comparable](
 
 func fillPageAcrossDocuments[K, G comparable](
 	ctx context.Context, store Store[K, G], gen G, enc EncodeFunc,
-	o FillOptions[K], docs []Pending[K], stale map[K]struct{}, stats *FillStats,
+	o fillOptions[K], docs []Pending[K], stale map[K]struct{}, stats *FillStats,
 ) error {
 	documentStates := make([]fillDocumentState[K], len(docs))
 	var refs []fillChunkRef
 	for doc, pending := range docs {
-		chunks := Split(pending.Content, o.Split)
+		chunks := Split(pending.Content, o.split)
 		documentStates[doc] = fillDocumentState[K]{
 			encoded: fillEncoded[K]{
 				doc:     pending,
@@ -182,13 +219,14 @@ func fillPageAcrossDocuments[K, G comparable](
 		return saveReadyDocuments(ctx, store, gen, o, documentStates, true, stale, stats)
 	}
 
-	orderedSaves := o.Concurrency <= 1
+	batchSize := o.batch.effectiveBatchSize(len(refs))
+	orderedSaves := o.concurrency <= 1
 	if err := saveReadyDocuments(ctx, store, gen, o, documentStates, orderedSaves, stale, stats); err != nil {
 		return err
 	}
 
-	batchConcurrency := max(o.Batch.Concurrency, 1)
-	batches := splitFillRefs(refs, o.Batch.BatchSize)
+	batchConcurrency := max(o.batch.concurrency, 1)
+	batches := splitFillRefs(refs, batchSize)
 	encode := func(workCtx context.Context, batch []fillChunkRef) fillBatchResult {
 		return encodeFillBatch(workCtx, enc, batch)
 	}
@@ -222,10 +260,10 @@ func fillPageAcrossDocuments[K, G comparable](
 		// its documents; applyFillBatch discards those results without racing
 		// workers against the serialized document state.
 		workers := len(batches)
-		// Compute min(Concurrency*Batch.Concurrency, len(batches)) without
+		// Compute the worker and batch concurrency product without
 		// overflowing the product.
-		if o.Concurrency <= len(batches)/batchConcurrency {
-			workers = o.Concurrency * batchConcurrency
+		if o.concurrency <= len(batches)/batchConcurrency {
+			workers = o.concurrency * batchConcurrency
 		}
 		err = runFillJobs(ctx, workers, batches, encode,
 			func(result fillBatchResult) bool { return result.err != nil },
@@ -266,7 +304,7 @@ func encodeFillBatch(ctx context.Context, enc EncodeFunc, refs []fillChunkRef) f
 	for i, ref := range refs {
 		chunks[i] = ref.value
 	}
-	vectors, err := EncodeBatched(ctx, enc, chunks, BatchOptions{})
+	vectors, err := EncodeBatched(ctx, enc, chunks)
 	return fillBatchResult{refs: refs, vectors: vectors, err: err}
 }
 
@@ -314,7 +352,7 @@ func splitFillRefsByDocument(refs []fillChunkRef) [][]fillChunkRef {
 }
 
 func decideFillDocumentError[K comparable](
-	ctx context.Context, o FillOptions[K], states []fillDocumentState[K], doc int, err error,
+	ctx context.Context, o fillOptions[K], states []fillDocumentState[K], doc int, err error,
 ) error {
 	state := &states[doc]
 	if state.saved || state.failed {
@@ -326,7 +364,7 @@ func decideFillDocumentError[K comparable](
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("encode document %v: %w", state.encoded.doc.Doc, err)
 	}
-	if o.OnEncodeError == nil || !o.OnEncodeError(state.encoded.doc.Doc, err) {
+	if o.onEncodeError == nil || !o.onEncodeError(state.encoded.doc.Doc, err) {
 		return fmt.Errorf("encode document %v: %w", state.encoded.doc.Doc, err)
 	}
 	state.encoded.err = err
@@ -337,7 +375,7 @@ func decideFillDocumentError[K comparable](
 }
 
 func probeFillDocumentSlices[K, G comparable](
-	ctx context.Context, store Store[K, G], gen G, enc EncodeFunc, o FillOptions[K],
+	ctx context.Context, store Store[K, G], gen G, enc EncodeFunc, o fillOptions[K],
 	refs []fillChunkRef, states []fillDocumentState[K], orderedSaves bool,
 	stale map[K]struct{}, stats *FillStats,
 ) (bool, error) {
@@ -375,7 +413,7 @@ func probeFillDocumentSlices[K, G comparable](
 }
 
 func applyAttributedInvalidFillBatch[K, G comparable](
-	ctx context.Context, store Store[K, G], gen G, enc EncodeFunc, o FillOptions[K],
+	ctx context.Context, store Store[K, G], gen G, enc EncodeFunc, o fillOptions[K],
 	batch fillBatchResult, invalid *InvalidVectorError, states []fillDocumentState[K],
 	orderedSaves bool, stale map[K]struct{}, stats *FillStats,
 ) error {
@@ -409,7 +447,7 @@ func applyAttributedInvalidFillBatch[K, G comparable](
 }
 
 func applyFillBatch[K, G comparable](
-	ctx context.Context, store Store[K, G], gen G, o FillOptions[K], enc EncodeFunc,
+	ctx context.Context, store Store[K, G], gen G, o fillOptions[K], enc EncodeFunc,
 	batch fillBatchResult, states []fillDocumentState[K], orderedSaves bool,
 	stale map[K]struct{}, stats *FillStats,
 ) error {
@@ -445,7 +483,7 @@ func applyFillBatch[K, G comparable](
 	if len(active) == 0 {
 		return nil
 	}
-	if o.ShouldIsolateBatchError == nil || !o.ShouldIsolateBatchError(batch.err) {
+	if o.shouldIsolateBatchError == nil || !o.shouldIsolateBatchError(batch.err) {
 		return fillBatchContextError(batch.err, active, states)
 	}
 	failed, err := probeFillDocumentSlices(ctx, store, gen, enc, o, active, states,
@@ -474,7 +512,7 @@ func fillBatchContextError[K comparable](
 }
 
 func saveReadyDocuments[K, G comparable](
-	ctx context.Context, store Store[K, G], gen G, o FillOptions[K],
+	ctx context.Context, store Store[K, G], gen G, o fillOptions[K],
 	states []fillDocumentState[K], ordered bool, stale map[K]struct{}, stats *FillStats,
 ) error {
 	for i := range states {
@@ -594,18 +632,18 @@ func runFillJobs[J, R any](
 	return ctx.Err()
 }
 
-// fillPageByDocument is the original per-document path used when BatchSize is
-// unset. Workers split and encode up to o.Concurrency documents in parallel
+// fillPageByDocument is the original per-document path used when the batch
+// size is unset. Workers split and encode up to o.concurrency documents in parallel
 // while the calling goroutine saves each result as it completes. The first
 // save-side failure cancels in-flight encodes and is returned.
 func fillPageByDocument[K, G comparable](
 	ctx context.Context, store Store[K, G], gen G, enc EncodeFunc,
-	o FillOptions[K], docs []Pending[K], stale map[K]struct{}, stats *FillStats,
+	o fillOptions[K], docs []Pending[K], stale map[K]struct{}, stats *FillStats,
 ) error {
-	return runFillJobs(ctx, o.Concurrency, docs,
+	return runFillJobs(ctx, o.concurrency, docs,
 		func(workCtx context.Context, p Pending[K]) fillEncoded[K] {
-			chunks := Split(p.Content, o.Split)
-			vectors, err := EncodeBatched(workCtx, enc, chunks, o.Batch)
+			chunks := Split(p.Content, o.split)
+			vectors, err := encodeBatched(workCtx, enc, chunks, o.batch)
 			return fillEncoded[K]{doc: p, chunks: chunks, vectors: vectors, err: err}
 		},
 		nil,
@@ -614,12 +652,12 @@ func fillPageByDocument[K, G comparable](
 		})
 }
 
-// saveEncoded applies one document's encode outcome: it consults
-// OnEncodeError for failures, stamps skips, saves vectors, and records
+// saveEncoded applies one document's encode outcome: it consults the encode
+// error handler for failures, stamps skips, saves vectors, and records
 // stale revisions, updating stats to match. It runs on Fill's calling
 // goroutine only.
 func saveEncoded[K, G comparable](
-	ctx context.Context, store Store[K, G], gen G, o FillOptions[K],
+	ctx context.Context, store Store[K, G], gen G, o fillOptions[K],
 	r fillEncoded[K], stale map[K]struct{}, stats *FillStats,
 ) error {
 	skipped := r.skip
@@ -630,7 +668,7 @@ func saveEncoded[K, G comparable](
 		if errors.Is(r.err, context.Canceled) || errors.Is(r.err, context.DeadlineExceeded) {
 			return fmt.Errorf("encode document %v: %w", r.doc.Doc, r.err)
 		}
-		if o.OnEncodeError == nil || !o.OnEncodeError(r.doc.Doc, r.err) {
+		if o.onEncodeError == nil || !o.onEncodeError(r.doc.Doc, r.err) {
 			return fmt.Errorf("encode document %v: %w", r.doc.Doc, r.err)
 		}
 		skipped = true
@@ -696,7 +734,7 @@ func Search[K, G comparable](
 		if enc == nil {
 			return nil, fmt.Errorf("no encoder for generation %v", gen)
 		}
-		vectors, err := EncodeBatched(ctx, enc, []Chunk{{Index: 0, Text: queryText}}, BatchOptions{})
+		vectors, err := EncodeBatched(ctx, enc, []Chunk{{Index: 0, Text: queryText}})
 		if err != nil {
 			return nil, fmt.Errorf("embed query for generation %v: %w", gen, err)
 		}

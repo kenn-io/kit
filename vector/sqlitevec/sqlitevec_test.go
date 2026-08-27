@@ -143,7 +143,7 @@ func TestStoreFillThenSearch(t *testing.T) {
 	require.NoError(err)
 	require.NoError(store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
 
-	stats, err := vector.Fill(ctx, store, 1, topicEncoder(), vector.FillOptions[int64]{})
+	stats, err := vector.Fill(ctx, store, 1, topicEncoder())
 	require.NoError(err)
 	assert.Equal(2, stats.Documents)
 
@@ -187,7 +187,7 @@ func TestStoreSearchUnionsLiveGenerations(t *testing.T) {
 	require.NoError(err)
 
 	require.NoError(store.EnsureGeneration(ctx, 1, vector.Generation{Model: "v1", Dimensions: 3}, sqlitevec.StateActive))
-	_, err = vector.Fill(ctx, store, 1, topicEncoder(), vector.FillOptions[int64]{})
+	_, err = vector.Fill(ctx, store, 1, topicEncoder())
 	require.NoError(err)
 
 	// The building generation has covered only doc 1 so far.
@@ -564,7 +564,7 @@ func TestStoreFillWithRevisionColumn(t *testing.T) {
 	require.NoError(err)
 	require.NoError(store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
 
-	stats, err := vector.Fill(ctx, store, 1, topicEncoder(), vector.FillOptions[int64]{})
+	stats, err := vector.Fill(ctx, store, 1, topicEncoder())
 	require.NoError(err)
 	assert.Equal(2, stats.Documents)
 
@@ -634,7 +634,7 @@ func TestStoreQueryGenerationExcludesDeletedDocuments(t *testing.T) {
 	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (1, 'a cat sat'), (2, 'a dog ran')`)
 	require.NoError(err)
 	require.NoError(store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
-	_, err = vector.Fill(ctx, store, 1, topicEncoder(), vector.FillOptions[int64]{})
+	_, err = vector.Fill(ctx, store, 1, topicEncoder())
 	require.NoError(err)
 
 	// The caller deletes a source row without telling the store.
@@ -660,7 +660,7 @@ func TestStoreQueryGenerationExcludesEditedDocumentUntilReembedded(t *testing.T)
 	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body, last_modified) VALUES (1, 'a cat sat', 1)`)
 	require.NoError(err)
 	require.NoError(store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
-	_, err = vector.Fill(ctx, store, 1, topicEncoder(), vector.FillOptions[int64]{})
+	_, err = vector.Fill(ctx, store, 1, topicEncoder())
 	require.NoError(err)
 
 	// The caller redacts the content, bumping the revision.
@@ -671,7 +671,7 @@ func TestStoreQueryGenerationExcludesEditedDocumentUntilReembedded(t *testing.T)
 	require.NoError(err)
 	assert.Empty(hits, "the pre-edit vector never surfaces after the revision changes")
 
-	_, err = vector.Fill(ctx, store, 1, topicEncoder(), vector.FillOptions[int64]{})
+	_, err = vector.Fill(ctx, store, 1, topicEncoder())
 	require.NoError(err)
 
 	hits, err = store.QueryGeneration(ctx, 1, vector.Vector{0, 1, 0}, 10)
@@ -689,7 +689,7 @@ func TestStoreQueryGenerationExcludesInvalidatedDocumentUntilReembedded(t *testi
 	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (1, 'a cat sat')`)
 	require.NoError(err)
 	require.NoError(store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
-	_, err = vector.Fill(ctx, store, 1, topicEncoder(), vector.FillOptions[int64]{})
+	_, err = vector.Fill(ctx, store, 1, topicEncoder())
 	require.NoError(err)
 
 	// Without a revision column, the caller signals an edit by clearing
@@ -701,7 +701,7 @@ func TestStoreQueryGenerationExcludesInvalidatedDocumentUntilReembedded(t *testi
 	require.NoError(err)
 	assert.Empty(hits, "the pre-invalidation vector never surfaces while the document is pending")
 
-	_, err = vector.Fill(ctx, store, 1, topicEncoder(), vector.FillOptions[int64]{})
+	_, err = vector.Fill(ctx, store, 1, topicEncoder())
 	require.NoError(err)
 
 	hits, err = store.QueryGeneration(ctx, 1, vector.Vector{0, 1, 0}, 10)

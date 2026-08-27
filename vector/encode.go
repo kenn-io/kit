@@ -41,14 +41,50 @@ func (e *InvalidVectorError) Error() string {
 // backoff policy, since retryability is provider-specific.
 type EncodeFunc func(ctx context.Context, texts []string) ([][]float32, error)
 
-// BatchOptions controls how EncodeBatched groups and parallelizes calls.
-type BatchOptions struct {
-	// BatchSize is the maximum number of chunks passed to EncodeFunc in a
-	// single call. Values <= 0 send every chunk in one call.
-	BatchSize int
-	// Concurrency bounds how many EncodeFunc calls run at once. Values
-	// <= 0 mean one call at a time.
-	Concurrency int
+type batchOptions struct {
+	batchSize            int
+	concurrency          int
+	maxBatchTokens       int
+	inputTokenUpperBound int
+	tokenBudgetSet       bool
+}
+
+// BatchOption configures batching for EncodeBatched or Fill.
+type BatchOption func(*batchOptions)
+
+// WithBatchSize limits the number of chunks in one EncodeFunc call. Values
+// less than or equal to zero send every available chunk in one call.
+func WithBatchSize(size int) BatchOption {
+	return func(o *batchOptions) {
+		o.batchSize = size
+	}
+}
+
+// WithBatchConcurrency limits concurrent EncodeFunc calls. Values less than
+// or equal to zero use one call at a time.
+func WithBatchConcurrency(concurrency int) BatchOption {
+	return func(o *batchOptions) {
+		o.concurrency = concurrency
+	}
+}
+
+// WithBatchTokenBudget keeps an EncodeFunc call within an encoder's aggregate
+// input-token limit when every input is known to contain at most
+// inputTokenUpperBound tokens. Use it when the encoder enforces a combined
+// request limit that a count-only BatchSize cannot represent.
+//
+// The option caps the batch at maxBatchTokens / inputTokenUpperBound inputs,
+// or fewer when BatchSize is smaller. The caller must choose a conservative
+// per-input bound from its model and chunking rules. This package does not
+// count tokens, so a conservative bound can intentionally leave some request
+// capacity unused. Both values must be positive, and one input must fit within
+// maxBatchTokens.
+func WithBatchTokenBudget(maxBatchTokens, inputTokenUpperBound int) BatchOption {
+	return func(o *batchOptions) {
+		o.maxBatchTokens = maxBatchTokens
+		o.inputTokenUpperBound = inputTokenUpperBound
+		o.tokenBudgetSet = true
+	}
 }
 
 // EncodeBatched splits chunks into batches, invokes enc with bounded
@@ -61,9 +97,20 @@ type BatchOptions struct {
 // an error wrapping *InvalidVectorError, so faulty endpoint output never
 // reaches a Store. Blank chunk text is rejected with an error wrapping
 // ErrEmptyEmbeddingInput before any EncodeFunc call.
-func EncodeBatched(ctx context.Context, enc EncodeFunc, chunks []Chunk, o BatchOptions) ([]Vector, error) {
+func EncodeBatched(
+	ctx context.Context, enc EncodeFunc, chunks []Chunk, options ...BatchOption,
+) ([]Vector, error) {
+	return encodeBatched(ctx, enc, chunks, applyBatchOptions(options))
+}
+
+func encodeBatched(
+	ctx context.Context, enc EncodeFunc, chunks []Chunk, o batchOptions,
+) ([]Vector, error) {
 	if enc == nil {
 		return nil, fmt.Errorf("encode func is nil")
+	}
+	if err := o.validate(); err != nil {
+		return nil, err
 	}
 	if len(chunks) == 0 {
 		return nil, nil
@@ -74,11 +121,8 @@ func EncodeBatched(ctx context.Context, enc EncodeFunc, chunks []Chunk, o BatchO
 		}
 	}
 
-	batchSize := o.BatchSize
-	if batchSize <= 0 {
-		batchSize = len(chunks)
-	}
-	concurrency := o.Concurrency
+	batchSize := o.effectiveBatchSize(len(chunks))
+	concurrency := o.concurrency
 	if concurrency <= 0 {
 		concurrency = 1
 	}
@@ -166,6 +210,44 @@ launch:
 		return nil, firstErr
 	}
 	return out, nil
+}
+
+func applyBatchOptions(options []BatchOption) batchOptions {
+	o := batchOptions{}
+	for _, option := range options {
+		if option != nil {
+			option(&o)
+		}
+	}
+	return o
+}
+
+func (o batchOptions) validate() error {
+	if !o.tokenBudgetSet {
+		return nil
+	}
+	if o.maxBatchTokens <= 0 || o.inputTokenUpperBound <= 0 {
+		return fmt.Errorf(
+			"batch token budget and input token upper bound must be positive: got %d and %d",
+			o.maxBatchTokens, o.inputTokenUpperBound)
+	}
+	if o.inputTokenUpperBound > o.maxBatchTokens {
+		return fmt.Errorf(
+			"input token upper bound %d exceeds batch token budget %d",
+			o.inputTokenUpperBound, o.maxBatchTokens)
+	}
+	return nil
+}
+
+func (o batchOptions) effectiveBatchSize(chunkCount int) int {
+	batchSize := o.batchSize
+	if batchSize <= 0 {
+		batchSize = chunkCount
+	}
+	if !o.tokenBudgetSet {
+		return batchSize
+	}
+	return min(batchSize, o.maxBatchTokens/o.inputTokenUpperBound)
 }
 
 // validateVector rejects vectors that would poison cosine distance: any

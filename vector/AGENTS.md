@@ -38,10 +38,15 @@ pipeline. Preserve these invariants when changing it.
 
 ## Fill batches without losing document boundaries
 
-- A positive `FillOptions.Batch.BatchSize` packs chunks across documents in
-  one scan page; values less than or equal to zero preserve the legacy
-  per-document encode unit. `BatchSize` remains the maximum texts in one
-  `EncodeFunc` call.
+- `WithFillBatch(WithBatchSize(n))` with a positive `n` packs chunks across
+  documents in one scan page. Omitting it preserves the legacy per-document
+  encode unit. `WithBatchSize` remains the maximum texts in one `EncodeFunc`
+  call.
+- `WithBatchTokenBudget` is opt-in and further reduces the effective batch
+  size from the caller's conservative per-input token upper bound. The vector
+  package does not choose a tokenizer, infer model limits, or alter input text.
+  Reject a configured upper bound that cannot fit one input before calling the
+  encoder.
 - Vectors from a shared encode batch must be scattered back to their exact
   document and chunk indexes before `SaveVectors`. Saves and `OnEncodeError`
   remain serialized and per document.
