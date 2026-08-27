@@ -70,13 +70,13 @@ func TestApplyFillBatchProbeInvalidVectorAddsSliceAndLocalOffsets(t *testing.T) 
 	batch := encodeFillBatch(context.Background(), enc, refs)
 	var got *InvalidVectorError
 	err := applyFillBatch(context.Background(), noOpFillStore{}, 7,
-		FillOptions[int64]{
-			ShouldIsolateBatchError: func(err error) bool {
+		fillOptions[int64]{
+			shouldIsolateBatchError: func(err error) bool {
 				var providerErr *internalFillProviderError
 				require.ErrorAs(err, &providerErr)
 				return true
 			},
-			OnEncodeError: func(doc int64, err error) bool {
+			onEncodeError: func(doc int64, err error) bool {
 				assert.Equal(int64(10), doc)
 				require.ErrorAs(err, &got)
 				return false
@@ -133,13 +133,13 @@ func TestApplyFillBatchProbeInvalidVectorPreservesCompanionCauses(t *testing.T) 
 	batch := encodeFillBatch(context.Background(), enc, refs)
 	var gotInvalid *InvalidVectorError
 	err := applyFillBatch(context.Background(), noOpFillStore{}, 7,
-		FillOptions[int64]{
-			ShouldIsolateBatchError: func(err error) bool {
+		fillOptions[int64]{
+			shouldIsolateBatchError: func(err error) bool {
 				var providerErr *internalFillProviderError
 				require.ErrorAs(err, &providerErr)
 				return true
 			},
-			OnEncodeError: func(doc int64, err error) bool {
+			onEncodeError: func(doc int64, err error) bool {
 				assert.Equal(int64(10), doc)
 				require.ErrorAs(err, &gotInvalid)
 				assert.Equal(4, gotInvalid.Chunk)

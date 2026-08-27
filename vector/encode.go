@@ -41,50 +41,30 @@ func (e *InvalidVectorError) Error() string {
 // backoff policy, since retryability is provider-specific.
 type EncodeFunc func(ctx context.Context, texts []string) ([][]float32, error)
 
-// BatchOptions controls how EncodeBatched groups and parallelizes calls.
-type BatchOptions struct {
-	// BatchSize is the maximum number of chunks passed to EncodeFunc in a
-	// single call. Values <= 0 send every chunk in one call.
-	BatchSize int
-	// Concurrency bounds how many EncodeFunc calls run at once. Values
-	// <= 0 mean one call at a time.
-	Concurrency int
-
+type batchOptions struct {
+	batchSize            int
+	concurrency          int
 	maxBatchTokens       int
 	inputTokenUpperBound int
 	tokenBudgetSet       bool
 }
 
-// BatchOption configures BatchOptions through NewBatchOptions.
-type BatchOption func(*BatchOptions)
-
-// NewBatchOptions builds BatchOptions from functional options. Use
-// WithBatchTokenBudget when an encoder limits the combined tokens in one
-// request as well as the number of inputs. Omitting it retains count-only
-// batching. A nil option is ignored.
-func NewBatchOptions(options ...BatchOption) BatchOptions {
-	o := BatchOptions{}
-	for _, option := range options {
-		if option != nil {
-			option(&o)
-		}
-	}
-	return o
-}
+// BatchOption configures batching for EncodeBatched or Fill.
+type BatchOption func(*batchOptions)
 
 // WithBatchSize limits the number of chunks in one EncodeFunc call. Values
 // less than or equal to zero send every available chunk in one call.
 func WithBatchSize(size int) BatchOption {
-	return func(o *BatchOptions) {
-		o.BatchSize = size
+	return func(o *batchOptions) {
+		o.batchSize = size
 	}
 }
 
 // WithBatchConcurrency limits concurrent EncodeFunc calls. Values less than
 // or equal to zero use one call at a time.
 func WithBatchConcurrency(concurrency int) BatchOption {
-	return func(o *BatchOptions) {
-		o.Concurrency = concurrency
+	return func(o *batchOptions) {
+		o.concurrency = concurrency
 	}
 }
 
@@ -100,7 +80,7 @@ func WithBatchConcurrency(concurrency int) BatchOption {
 // capacity unused. Both values must be positive, and one input must fit within
 // maxBatchTokens.
 func WithBatchTokenBudget(maxBatchTokens, inputTokenUpperBound int) BatchOption {
-	return func(o *BatchOptions) {
+	return func(o *batchOptions) {
 		o.maxBatchTokens = maxBatchTokens
 		o.inputTokenUpperBound = inputTokenUpperBound
 		o.tokenBudgetSet = true
@@ -117,7 +97,15 @@ func WithBatchTokenBudget(maxBatchTokens, inputTokenUpperBound int) BatchOption 
 // an error wrapping *InvalidVectorError, so faulty endpoint output never
 // reaches a Store. Blank chunk text is rejected with an error wrapping
 // ErrEmptyEmbeddingInput before any EncodeFunc call.
-func EncodeBatched(ctx context.Context, enc EncodeFunc, chunks []Chunk, o BatchOptions) ([]Vector, error) {
+func EncodeBatched(
+	ctx context.Context, enc EncodeFunc, chunks []Chunk, options ...BatchOption,
+) ([]Vector, error) {
+	return encodeBatched(ctx, enc, chunks, applyBatchOptions(options))
+}
+
+func encodeBatched(
+	ctx context.Context, enc EncodeFunc, chunks []Chunk, o batchOptions,
+) ([]Vector, error) {
 	if enc == nil {
 		return nil, fmt.Errorf("encode func is nil")
 	}
@@ -134,7 +122,7 @@ func EncodeBatched(ctx context.Context, enc EncodeFunc, chunks []Chunk, o BatchO
 	if err != nil {
 		return nil, err
 	}
-	concurrency := o.Concurrency
+	concurrency := o.concurrency
 	if concurrency <= 0 {
 		concurrency = 1
 	}
@@ -224,8 +212,18 @@ launch:
 	return out, nil
 }
 
-func (o BatchOptions) effectiveBatchSize(chunkCount int) (int, error) {
-	batchSize := o.BatchSize
+func applyBatchOptions(options []BatchOption) batchOptions {
+	o := batchOptions{}
+	for _, option := range options {
+		if option != nil {
+			option(&o)
+		}
+	}
+	return o
+}
+
+func (o batchOptions) effectiveBatchSize(chunkCount int) (int, error) {
+	batchSize := o.batchSize
 	if batchSize <= 0 {
 		batchSize = chunkCount
 	}

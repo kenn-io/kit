@@ -139,10 +139,10 @@ func TestFillEmbedsAllPendingThenStops(t *testing.T) {
 	store.content[1] = "alpha"
 	store.content[2] = "beta gamma delta"
 
-	stats, err := vector.Fill(ctx, store, 7, lenEncoder(), vector.FillOptions[int64]{
-		ScanBatch: 1, // force multiple scan rounds
-		Split:     vector.SplitOptions{MaxRunes: 4, Overlap: 0},
-	})
+	stats, err := vector.Fill(ctx, store, 7, lenEncoder(),
+		vector.WithFillScanBatch[int64](1), // force multiple scan rounds
+		vector.WithFillSplit[int64](vector.SplitOptions{MaxRunes: 4, Overlap: 0}),
+	)
 	require.NoError(err)
 
 	assert.Equal(2, stats.Documents)
@@ -151,12 +151,12 @@ func TestFillEmbedsAllPendingThenStops(t *testing.T) {
 	assert.InDelta(4, store.vectors[7][1][0].Vector[0], 1e-6, "first chunk carries its rune length")
 
 	// A second run finds nothing pending and embeds zero documents.
-	again, err := vector.Fill(ctx, store, 7, lenEncoder(), vector.FillOptions[int64]{})
+	again, err := vector.Fill(ctx, store, 7, lenEncoder())
 	require.NoError(err)
 	assert.Equal(0, again.Documents)
 }
 
-func TestFillBatchesChunksAcrossDocuments(t *testing.T) {
+func TestFillBatchesChunksAcrossDocumentsWithinTokenBudget(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
 	ctx := context.Background()
@@ -172,15 +172,19 @@ func TestFillBatchesChunksAcrossDocuments(t *testing.T) {
 		return lenEncoder()(ctx, texts)
 	}
 
-	stats, err := vector.Fill(ctx, store, 7, enc, vector.FillOptions[int64]{
-		ScanBatch:   7,
-		Batch:       vector.BatchOptions{BatchSize: 3, Concurrency: 1},
-		Concurrency: 1,
-	})
+	stats, err := vector.Fill(ctx, store, 7, enc,
+		vector.WithFillScanBatch[int64](7),
+		vector.WithFillBatch[int64](
+			vector.WithBatchSize(7),
+			vector.WithBatchConcurrency(1),
+			vector.WithBatchTokenBudget(3, 1),
+		),
+		vector.WithFillConcurrency[int64](1),
+	)
 	require.NoError(err)
 
 	assert.Equal([]int{3, 3, 1}, batchSizes,
-		"BatchSize should pack chunks from adjacent documents into each encode call")
+		"the token budget caps batches below the count limit")
 	assert.Equal(7, stats.Documents)
 	assert.Equal(7, stats.Chunks)
 	for doc := int64(1); doc <= 7; doc++ {
@@ -188,6 +192,31 @@ func TestFillBatchesChunksAcrossDocuments(t *testing.T) {
 		assert.InDelta(float64(doc), float64(store.vectors[7][doc][0].Vector[0]), 1e-6,
 			"doc %d keeps the vector for its own content", doc)
 	}
+}
+
+func TestFillRejectsInputAboveTokenBudgetBeforeEncoder(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	store := newMemStore()
+	store.content[1] = "one"
+	var calls atomic.Int64
+	enc := func(context.Context, []string) ([][]float32, error) {
+		calls.Add(1)
+		return [][]float32{{1}}, nil
+	}
+
+	stats, err := vector.Fill(context.Background(), store, 7, enc,
+		vector.WithFillBatch[int64](
+			vector.WithBatchSize(1),
+			vector.WithBatchTokenBudget(31_999, 32_000),
+		),
+	)
+
+	require.Error(err)
+	assert.ErrorContains(err, "token budget")
+	assert.Zero(calls.Load(), "an invalid budget is rejected before the provider call")
+	assert.Zero(stats.Documents)
+	assert.False(store.embedded[1][7])
 }
 
 func TestFillCrossDocumentBatchingMatchesPerDocumentVectors(t *testing.T) {
@@ -206,11 +235,10 @@ func TestFillCrossDocumentBatchingMatchesPerDocumentVectors(t *testing.T) {
 		baseline.content[doc] = content
 		batched.content[doc] = content
 	}
-	options := vector.FillOptions[int64]{
-		ScanBatch: 3,
-		Split:     vector.SplitOptions{MaxRunes: 2},
-	}
-	baselineStats, err := vector.Fill(ctx, baseline, 7, textEncoder(), options)
+	baselineStats, err := vector.Fill(ctx, baseline, 7, textEncoder(),
+		vector.WithFillScanBatch[int64](3),
+		vector.WithFillSplit[int64](vector.SplitOptions{MaxRunes: 2}),
+	)
 	require.NoError(err)
 
 	var batchSizes []int
@@ -218,9 +246,13 @@ func TestFillCrossDocumentBatchingMatchesPerDocumentVectors(t *testing.T) {
 		batchSizes = append(batchSizes, len(texts))
 		return textEncoder()(ctx, texts)
 	}
-	options.Batch = vector.BatchOptions{BatchSize: 3, Concurrency: 1}
-	options.Concurrency = 1
-	batchedStats, err := vector.Fill(ctx, batched, 7, batchedEncoder, options)
+	batchedStats, err := vector.Fill(ctx, batched, 7, batchedEncoder,
+		vector.WithFillScanBatch[int64](3),
+		vector.WithFillSplit[int64](vector.SplitOptions{MaxRunes: 2}),
+		vector.WithFillBatch[int64](
+			vector.WithBatchSize(3), vector.WithBatchConcurrency(1)),
+		vector.WithFillConcurrency[int64](1),
+	)
 	require.NoError(err)
 
 	assert.Equal([]int{3, 3, 2}, batchSizes,
@@ -242,10 +274,10 @@ func TestFillCrossDocumentBatchingMatchesLegacyAcrossConfigurations(t *testing.T
 
 	baseline := newMemStore()
 	maps.Copy(baseline.content, contents)
-	baselineStats, err := vector.Fill(ctx, baseline, 7, textEncoder(), vector.FillOptions[int64]{
-		ScanBatch: 5,
-		Split:     vector.SplitOptions{MaxRunes: 3, Overlap: 1},
-	})
+	baselineStats, err := vector.Fill(ctx, baseline, 7, textEncoder(),
+		vector.WithFillScanBatch[int64](5),
+		vector.WithFillSplit[int64](vector.SplitOptions{MaxRunes: 3, Overlap: 1}),
+	)
 	require.NoError(t, err)
 
 	for _, scanBatch := range []int{1, 2, 5} {
@@ -258,15 +290,15 @@ func TestFillCrossDocumentBatchingMatchesLegacyAcrossConfigurations(t *testing.T
 						store := newMemStore()
 						maps.Copy(store.content, contents)
 
-						stats, err := vector.Fill(ctx, store, 7, textEncoder(), vector.FillOptions[int64]{
-							ScanBatch: scanBatch,
-							Split:     vector.SplitOptions{MaxRunes: 3, Overlap: 1},
-							Batch: vector.BatchOptions{
-								BatchSize:   batchSize,
-								Concurrency: batchConcurrency,
-							},
-							Concurrency: fillConcurrency,
-						})
+						stats, err := vector.Fill(ctx, store, 7, textEncoder(),
+							vector.WithFillScanBatch[int64](scanBatch),
+							vector.WithFillSplit[int64](vector.SplitOptions{MaxRunes: 3, Overlap: 1}),
+							vector.WithFillBatch[int64](
+								vector.WithBatchSize(batchSize),
+								vector.WithBatchConcurrency(batchConcurrency),
+							),
+							vector.WithFillConcurrency[int64](fillConcurrency),
+						)
 						require.NoError(t, err)
 						assert.Equal(t, baselineStats, stats)
 						assert.Equal(t, baseline.vectors, store.vectors)
@@ -294,16 +326,17 @@ func TestFillCrossDocumentBatchingIsolatesPoisonDocument(t *testing.T) {
 		return base(ctx, texts)
 	}
 	var skipped []int64
-	stats, err := vector.Fill(ctx, store, 7, enc, vector.FillOptions[int64]{
-		ScanBatch:               3,
-		Batch:                   vector.BatchOptions{BatchSize: 3, Concurrency: 1},
-		Concurrency:             1,
-		ShouldIsolateBatchError: func(error) bool { return true },
-		OnEncodeError: func(doc int64, _ error) bool {
+	stats, err := vector.Fill(ctx, store, 7, enc,
+		vector.WithFillScanBatch[int64](3),
+		vector.WithFillBatch[int64](
+			vector.WithBatchSize(3), vector.WithBatchConcurrency(1)),
+		vector.WithFillConcurrency[int64](1),
+		vector.WithFillBatchErrorIsolation[int64](func(error) bool { return true }),
+		vector.WithFillEncodeError[int64](func(doc int64, _ error) bool {
 			skipped = append(skipped, doc)
 			return true
-		},
-	})
+		}),
+	)
 	require.NoError(err)
 
 	assert.Equal([]int{3, 1, 1, 1}, batchSizes,
@@ -337,17 +370,18 @@ func TestFillCrossDocumentBatchingTranslatesInvalidVectorChunkIndex(t *testing.T
 	}
 
 	var gotInvalid *vector.InvalidVectorError
-	stats, err := vector.Fill(ctx, store, 7, enc, vector.FillOptions[int64]{
-		ScanBatch:   2,
-		Split:       vector.SplitOptions{MaxRunes: 1},
-		Batch:       vector.BatchOptions{BatchSize: 2, Concurrency: 1},
-		Concurrency: 1,
-		OnEncodeError: func(doc int64, err error) bool {
+	stats, err := vector.Fill(ctx, store, 7, enc,
+		vector.WithFillScanBatch[int64](2),
+		vector.WithFillSplit[int64](vector.SplitOptions{MaxRunes: 1}),
+		vector.WithFillBatch[int64](
+			vector.WithBatchSize(2), vector.WithBatchConcurrency(1)),
+		vector.WithFillConcurrency[int64](1),
+		vector.WithFillEncodeError[int64](func(doc int64, err error) bool {
 			assert.Equal(int64(2), doc)
 			require.ErrorAs(err, &gotInvalid)
 			return true
-		},
-	})
+		}),
+	)
 	require.NoError(err)
 	require.NotNil(gotInvalid)
 
@@ -377,11 +411,12 @@ func TestFillCrossDocumentBatchingLeavesOnlyChangedDocumentPending(t *testing.T)
 		return out, nil
 	}
 
-	stats, err := vector.Fill(ctx, store, 7, enc, vector.FillOptions[int64]{
-		ScanBatch:   2,
-		Batch:       vector.BatchOptions{BatchSize: 2, Concurrency: 1},
-		Concurrency: 1,
-	})
+	stats, err := vector.Fill(ctx, store, 7, enc,
+		vector.WithFillScanBatch[int64](2),
+		vector.WithFillBatch[int64](
+			vector.WithBatchSize(2), vector.WithBatchConcurrency(1)),
+		vector.WithFillConcurrency[int64](1),
+	)
 	require.NoError(err)
 
 	assert.Equal(1, stats.Documents)
@@ -405,11 +440,12 @@ func TestFillCrossDocumentBatchingStampsBlankDocuments(t *testing.T) {
 		return lenEncoder()(ctx, texts)
 	}
 
-	stats, err := vector.Fill(ctx, store, 7, enc, vector.FillOptions[int64]{
-		ScanBatch:   3,
-		Batch:       vector.BatchOptions{BatchSize: 3, Concurrency: 1},
-		Concurrency: 1,
-	})
+	stats, err := vector.Fill(ctx, store, 7, enc,
+		vector.WithFillScanBatch[int64](3),
+		vector.WithFillBatch[int64](
+			vector.WithBatchSize(3), vector.WithBatchConcurrency(1)),
+		vector.WithFillConcurrency[int64](1),
+	)
 	require.NoError(err)
 
 	assert.Equal(int64(1), calls.Load())
@@ -429,10 +465,10 @@ func TestFillCrossDocumentBatchingRejectsNilEncoderBeforeStampingEmptyDocuments(
 	store.content[1] = ""
 	store.content[2] = ""
 
-	stats, err := vector.Fill(context.Background(), store, 7, nil, vector.FillOptions[int64]{
-		ScanBatch: 2,
-		Batch:     vector.BatchOptions{BatchSize: 2},
-	})
+	stats, err := vector.Fill(context.Background(), store, 7, nil,
+		vector.WithFillScanBatch[int64](2),
+		vector.WithFillBatch[int64](vector.WithBatchSize(2)),
+	)
 	require.Error(err)
 
 	assert.Zero(stats.Documents)
@@ -450,16 +486,17 @@ func TestFillCrossDocumentBatchingEncodeErrorAbortsAtFailedDocument(t *testing.T
 	store.content[2] = "poison"
 	store.content[3] = "fine two"
 	var consulted []int64
-	_, err := vector.Fill(ctx, store, 7, poisonEncoder(), vector.FillOptions[int64]{
-		ScanBatch:               3,
-		Batch:                   vector.BatchOptions{BatchSize: 3, Concurrency: 1},
-		Concurrency:             1,
-		ShouldIsolateBatchError: func(error) bool { return true },
-		OnEncodeError: func(doc int64, _ error) bool {
+	_, err := vector.Fill(ctx, store, 7, poisonEncoder(),
+		vector.WithFillScanBatch[int64](3),
+		vector.WithFillBatch[int64](
+			vector.WithBatchSize(3), vector.WithBatchConcurrency(1)),
+		vector.WithFillConcurrency[int64](1),
+		vector.WithFillBatchErrorIsolation[int64](func(error) bool { return true }),
+		vector.WithFillEncodeError[int64](func(doc int64, _ error) bool {
 			consulted = append(consulted, doc)
 			return false
-		},
-	})
+		}),
+	)
 	require.ErrorContains(err, "encode document 2")
 
 	assert.Equal([]int64{2}, consulted)
@@ -486,16 +523,17 @@ func TestFillCrossDocumentBatchingAbortsUnattributedBatchError(t *testing.T) {
 		return [][]float32{{1}}, nil
 	}
 	called := false
-	_, err := vector.Fill(ctx, store, 7, enc, vector.FillOptions[int64]{
-		ScanBatch:               3,
-		Batch:                   vector.BatchOptions{BatchSize: 3, Concurrency: 1},
-		Concurrency:             1,
-		ShouldIsolateBatchError: func(error) bool { return true },
-		OnEncodeError: func(int64, error) bool {
+	_, err := vector.Fill(ctx, store, 7, enc,
+		vector.WithFillScanBatch[int64](3),
+		vector.WithFillBatch[int64](
+			vector.WithBatchSize(3), vector.WithBatchConcurrency(1)),
+		vector.WithFillConcurrency[int64](1),
+		vector.WithFillBatchErrorIsolation[int64](func(error) bool { return true }),
+		vector.WithFillEncodeError[int64](func(int64, error) bool {
 			called = true
 			return true
-		},
-	})
+		}),
+	)
 	require.ErrorContains(err, "no document failed in isolation")
 
 	assert.Equal([]int{3, 1, 1, 1}, batchSizes)
@@ -518,15 +556,16 @@ func TestFillCrossDocumentBatchingDoesNotSkipCancelledEncode(t *testing.T) {
 	enc := func(context.Context, []string) ([][]float32, error) {
 		return nil, context.Canceled
 	}
-	_, err := vector.Fill(ctx, store, 7, enc, vector.FillOptions[int64]{
-		ScanBatch:   2,
-		Batch:       vector.BatchOptions{BatchSize: 2, Concurrency: 1},
-		Concurrency: 1,
-		OnEncodeError: func(int64, error) bool {
+	_, err := vector.Fill(ctx, store, 7, enc,
+		vector.WithFillScanBatch[int64](2),
+		vector.WithFillBatch[int64](
+			vector.WithBatchSize(2), vector.WithBatchConcurrency(1)),
+		vector.WithFillConcurrency[int64](1),
+		vector.WithFillEncodeError[int64](func(int64, error) bool {
 			called = true
 			return true
-		},
-	})
+		}),
+	)
 	require.ErrorIs(err, context.Canceled)
 
 	assert.False(called, "cancellation bypasses the permanent-error hook")
@@ -557,7 +596,7 @@ func TestFillLeavesChangedDocumentPending(t *testing.T) {
 		return out, nil
 	}
 
-	stats, err := vector.Fill(ctx, store, 7, racingEnc, vector.FillOptions[int64]{})
+	stats, err := vector.Fill(ctx, store, 7, racingEnc)
 	require.NoError(err)
 	assert.Equal(1, stats.Documents, "the unchanged doc is embedded")
 	assert.Equal(1, stats.Stale, "the changed doc is reported stale")
@@ -565,7 +604,7 @@ func TestFillLeavesChangedDocumentPending(t *testing.T) {
 	assert.True(store.embedded[2][7])
 
 	// The next run re-reads the document at its new revision and succeeds.
-	again, err := vector.Fill(ctx, store, 7, lenEncoder(), vector.FillOptions[int64]{})
+	again, err := vector.Fill(ctx, store, 7, lenEncoder())
 	require.NoError(err)
 	assert.Equal(1, again.Documents)
 	assert.True(store.embedded[1][7])
@@ -581,12 +620,12 @@ func TestFillSkipHookStampsFailedDocument(t *testing.T) {
 	store.content[2] = "fine"
 
 	var skipped []int64
-	stats, err := vector.Fill(ctx, store, 7, poisonEncoder(), vector.FillOptions[int64]{
-		OnEncodeError: func(doc int64, err error) bool {
+	stats, err := vector.Fill(ctx, store, 7, poisonEncoder(),
+		vector.WithFillEncodeError[int64](func(doc int64, err error) bool {
 			skipped = append(skipped, doc)
 			return true
-		},
-	})
+		}),
+	)
 	require.NoError(err)
 	assert.Equal(1, stats.Documents)
 	assert.Equal(1, stats.Skipped)
@@ -595,7 +634,7 @@ func TestFillSkipHookStampsFailedDocument(t *testing.T) {
 	assert.Empty(store.vectors[7][1], "skipped doc has no vectors")
 	assert.True(store.embedded[2][7])
 
-	again, err := vector.Fill(ctx, store, 7, poisonEncoder(), vector.FillOptions[int64]{})
+	again, err := vector.Fill(ctx, store, 7, poisonEncoder())
 	require.NoError(err)
 	assert.Equal(0, again.Documents, "a stamped skip does not reappear as pending")
 }
@@ -608,12 +647,11 @@ func TestFillEncodeErrorAbortsWithoutSkip(t *testing.T) {
 	store := newMemStore()
 	store.content[1] = "poison"
 
-	_, err := vector.Fill(ctx, store, 7, poisonEncoder(), vector.FillOptions[int64]{})
+	_, err := vector.Fill(ctx, store, 7, poisonEncoder())
 	require.ErrorContains(err, "encode document")
 
-	_, err = vector.Fill(ctx, store, 7, poisonEncoder(), vector.FillOptions[int64]{
-		OnEncodeError: func(int64, error) bool { return false },
-	})
+	_, err = vector.Fill(ctx, store, 7, poisonEncoder(),
+		vector.WithFillEncodeError[int64](func(int64, error) bool { return false }))
 	require.ErrorContains(err, "encode document")
 	assert.False(store.embedded[1][7], "an aborted doc is neither embedded nor stamped")
 }
@@ -630,12 +668,12 @@ func TestFillDoesNotSkipCancelledEncode(t *testing.T) {
 	enc := func(context.Context, []string) ([][]float32, error) {
 		return nil, context.Canceled
 	}
-	_, err := vector.Fill(ctx, store, 7, enc, vector.FillOptions[int64]{
-		OnEncodeError: func(int64, error) bool {
+	_, err := vector.Fill(ctx, store, 7, enc,
+		vector.WithFillEncodeError[int64](func(int64, error) bool {
 			called = true
 			return true
-		},
-	})
+		}),
+	)
 	require.ErrorIs(err, context.Canceled)
 	assert.False(called, "cancellation bypasses the permanent-error skip hook")
 	assert.False(store.embedded[1][7], "a cancelled document is not stamped as handled")
@@ -673,9 +711,8 @@ func TestFillConcurrencyEncodesDocumentsInParallel(t *testing.T) {
 		return out, nil
 	}
 
-	stats, err := vector.Fill(ctx, store, 7, enc, vector.FillOptions[int64]{
-		Concurrency: workers,
-	})
+	stats, err := vector.Fill(ctx, store, 7, enc,
+		vector.WithFillConcurrency[int64](workers))
 	require.NoError(err)
 
 	assert.Equal(workers, stats.Documents)
@@ -761,7 +798,7 @@ func TestFillDefaultConcurrencyIsSequential(t *testing.T) {
 		inSave.Store(false)
 	}}
 
-	stats, err := vector.Fill(ctx, hooked, 7, enc, vector.FillOptions[int64]{})
+	stats, err := vector.Fill(ctx, hooked, 7, enc)
 	require.NoError(err)
 	require.Equal(6, stats.Documents)
 	require.False(overlapped.Load(),
@@ -785,11 +822,12 @@ func TestFillCrossDocumentBatchingDoesNotEncodeNextWindowAfterSaveFailure(t *tes
 		return lenEncoder()(ctx, texts)
 	}
 
-	_, err := vector.Fill(ctx, store, 7, enc, vector.FillOptions[int64]{
-		ScanBatch:   7,
-		Batch:       vector.BatchOptions{BatchSize: 3, Concurrency: 1},
-		Concurrency: 1,
-	})
+	_, err := vector.Fill(ctx, store, 7, enc,
+		vector.WithFillScanBatch[int64](7),
+		vector.WithFillBatch[int64](
+			vector.WithBatchSize(3), vector.WithBatchConcurrency(1)),
+		vector.WithFillConcurrency[int64](1),
+	)
 	require.ErrorIs(err, sentinel)
 
 	assert.Equal(int64(1), calls.Load(),
@@ -833,14 +871,12 @@ func TestFillCrossDocumentBatchingComposesConcurrencyBounds(t *testing.T) {
 		return out, nil
 	}
 
-	stats, err := vector.Fill(ctx, store, 7, enc, vector.FillOptions[int64]{
-		ScanBatch: 8,
-		Batch: vector.BatchOptions{
-			BatchSize:   2,
-			Concurrency: 2,
-		},
-		Concurrency: 2,
-	})
+	stats, err := vector.Fill(ctx, store, 7, enc,
+		vector.WithFillScanBatch[int64](8),
+		vector.WithFillBatch[int64](
+			vector.WithBatchSize(2), vector.WithBatchConcurrency(2)),
+		vector.WithFillConcurrency[int64](2),
+	)
 	require.NoError(err)
 
 	assert.Equal(int64(maxCalls), observedMax.Load(),
@@ -889,15 +925,16 @@ func TestFillCrossDocumentBatchingConcurrentFailureKeepsAttribution(t *testing.T
 	}
 	done := make(chan fillResult, 1)
 	go func() {
-		stats, err := vector.Fill(context.Background(), store, 7, enc, vector.FillOptions[int64]{
-			ScanBatch:               4,
-			Batch:                   vector.BatchOptions{BatchSize: 2, Concurrency: 1},
-			Concurrency:             2,
-			ShouldIsolateBatchError: func(error) bool { return true },
-			OnEncodeError: func(doc int64, _ error) bool {
+		stats, err := vector.Fill(context.Background(), store, 7, enc,
+			vector.WithFillScanBatch[int64](4),
+			vector.WithFillBatch[int64](
+				vector.WithBatchSize(2), vector.WithBatchConcurrency(1)),
+			vector.WithFillConcurrency[int64](2),
+			vector.WithFillBatchErrorIsolation[int64](func(error) bool { return true }),
+			vector.WithFillEncodeError[int64](func(doc int64, _ error) bool {
 				return doc == 1
-			},
-		})
+			}),
+		)
 		done <- fillResult{stats: stats, err: err}
 	}()
 
@@ -937,11 +974,12 @@ func TestFillCrossDocumentBatchingDoesNotBlockCompletedSaves(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := vector.Fill(context.Background(), store, 7, enc, vector.FillOptions[int64]{
-			ScanBatch:   2,
-			Batch:       vector.BatchOptions{BatchSize: 1, Concurrency: 2},
-			Concurrency: 2,
-		})
+		_, err := vector.Fill(context.Background(), store, 7, enc,
+			vector.WithFillScanBatch[int64](2),
+			vector.WithFillBatch[int64](
+				vector.WithBatchSize(1), vector.WithBatchConcurrency(2)),
+			vector.WithFillConcurrency[int64](2),
+		)
 		done <- err
 	}()
 	<-slowStarted
@@ -971,13 +1009,13 @@ func TestFillConcurrencySkipHookStampsFailedDocument(t *testing.T) {
 	store.content[3] = "also fine"
 
 	var skipped []int64
-	stats, err := vector.Fill(ctx, store, 7, poisonEncoder(), vector.FillOptions[int64]{
-		Concurrency: 3,
-		OnEncodeError: func(doc int64, err error) bool {
+	stats, err := vector.Fill(ctx, store, 7, poisonEncoder(),
+		vector.WithFillConcurrency[int64](3),
+		vector.WithFillEncodeError[int64](func(doc int64, err error) bool {
 			skipped = append(skipped, doc)
 			return true
-		},
-	})
+		}),
+	)
 	require.NoError(err)
 	assert.Equal(2, stats.Documents)
 	assert.Equal(1, stats.Skipped)
@@ -999,17 +1037,15 @@ func TestFillConcurrencyEncodeErrorAborts(t *testing.T) {
 		store.content[doc] = "fine"
 	}
 
-	_, err := vector.Fill(ctx, store, 7, poisonEncoder(), vector.FillOptions[int64]{
-		Concurrency: 4,
-	})
+	_, err := vector.Fill(ctx, store, 7, poisonEncoder(),
+		vector.WithFillConcurrency[int64](4))
 	require.ErrorContains(err, "encode document")
 	assert.False(store.embedded[1][7], "the failed doc is neither embedded nor stamped")
 
 	// The failed document stays pending: a later run with a working encoder
 	// picks up everything the aborted page left behind.
-	again, err := vector.Fill(ctx, store, 7, lenEncoder(), vector.FillOptions[int64]{
-		Concurrency: 4,
-	})
+	again, err := vector.Fill(ctx, store, 7, lenEncoder(),
+		vector.WithFillConcurrency[int64](4))
 	require.NoError(err)
 	assert.True(store.embedded[1][7])
 	assert.Equal(0, again.Stale)

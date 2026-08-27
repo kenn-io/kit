@@ -29,7 +29,7 @@ func TestQueryGenerationPlanScansKNNOnce(t *testing.T) {
 	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (1, 'a cat sat'), (2, 'a dog ran')`)
 	require.NoError(err)
 	require.NoError(store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
-	_, err = vector.Fill(ctx, store, 1, topicEncoder(), vector.FillOptions[int64]{})
+	_, err = vector.Fill(ctx, store, 1, topicEncoder())
 	require.NoError(err)
 
 	sqlText, args, err := store.QueryGenerationSQLForTest(1, []float32{1, 0, 0}, 10)
