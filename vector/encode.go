@@ -58,9 +58,10 @@ type BatchOptions struct {
 // BatchOption configures BatchOptions through NewBatchOptions.
 type BatchOption func(*BatchOptions)
 
-// NewBatchOptions builds BatchOptions from functional options. A nil option is
-// ignored. WithBatchTokenBudget is opt-in; omitting it retains count-only
-// batching.
+// NewBatchOptions builds BatchOptions from functional options. Use
+// WithBatchTokenBudget when an encoder limits the combined tokens in one
+// request as well as the number of inputs. Omitting it retains count-only
+// batching. A nil option is ignored.
 func NewBatchOptions(options ...BatchOption) BatchOptions {
 	o := BatchOptions{}
 	for _, option := range options {
@@ -87,10 +88,17 @@ func WithBatchConcurrency(concurrency int) BatchOption {
 	}
 }
 
-// WithBatchTokenBudget limits the worst-case total input tokens in one
-// EncodeFunc call. inputTokenUpperBound is the caller's conservative upper
-// bound for each input. Both values must be positive, and one input must fit
-// within maxBatchTokens. The option does not tokenize or alter input text.
+// WithBatchTokenBudget keeps an EncodeFunc call within an encoder's aggregate
+// input-token limit when every input is known to contain at most
+// inputTokenUpperBound tokens. Use it when the encoder enforces a combined
+// request limit that a count-only BatchSize cannot represent.
+//
+// The option caps the batch at maxBatchTokens / inputTokenUpperBound inputs,
+// or fewer when BatchSize is smaller. The caller must choose a conservative
+// per-input bound from its model and chunking rules. This package does not
+// count tokens, so a conservative bound can intentionally leave some request
+// capacity unused. Both values must be positive, and one input must fit within
+// maxBatchTokens.
 func WithBatchTokenBudget(maxBatchTokens, inputTokenUpperBound int) BatchOption {
 	return func(o *BatchOptions) {
 		o.maxBatchTokens = maxBatchTokens
