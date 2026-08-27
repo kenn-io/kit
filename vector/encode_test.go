@@ -63,6 +63,41 @@ func TestEncodeBatchedPreservesOrderAcrossBatches(t *testing.T) {
 	assert.ElementsMatch([]int{2, 2, 1}, sizes, "batches are sized by BatchSize")
 }
 
+func TestEncodeBatchedCapsBatchSizeByTokenBudget(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+
+	var batches [][]string
+	enc := echoEncoder(func(batch []string) {
+		batches = append(batches, append([]string(nil), batch...))
+	})
+	in := chunks("a", "bb", "ccc", "dddd")
+
+	out, err := vector.EncodeBatched(context.Background(), enc, in,
+		vector.NewBatchOptions(
+			vector.WithBatchSize(4),
+			vector.WithBatchTokenBudget(120_000, 32_000),
+		))
+
+	require.NoError(err)
+	require.Len(out, len(in))
+	assert.Equal([][]string{{"a", "bb", "ccc"}, {"dddd"}}, batches)
+}
+
+func TestEncodeBatchedRejectsInputAboveTokenBudget(t *testing.T) {
+	var calls atomic.Int64
+	enc := echoEncoder(func([]string) { calls.Add(1) })
+
+	_, err := vector.EncodeBatched(context.Background(), enc, chunks("a"),
+		vector.NewBatchOptions(
+			vector.WithBatchTokenBudget(31_999, 32_000),
+		))
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "token budget")
+	assert.Zero(t, calls.Load(), "a known-oversized input is rejected before the provider call")
+}
+
 func TestEncodeBatchedRespectsConcurrencyBound(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
