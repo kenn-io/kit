@@ -219,6 +219,36 @@ func TestFillRejectsInputAboveTokenBudgetBeforeEncoder(t *testing.T) {
 	assert.False(store.embedded[1][7])
 }
 
+func TestFillDoesNotSkipInvalidTokenBudgetWithoutBatchSize(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	store := newMemStore()
+	store.content[1] = "one"
+	var calls, hookCalls atomic.Int64
+	enc := func(context.Context, []string) ([][]float32, error) {
+		calls.Add(1)
+		return [][]float32{{1}}, nil
+	}
+
+	stats, err := vector.Fill(context.Background(), store, 7, enc,
+		vector.WithFillBatch[int64](
+			vector.WithBatchTokenBudget(31_999, 32_000),
+		),
+		vector.WithFillEncodeError[int64](func(int64, error) bool {
+			hookCalls.Add(1)
+			return true
+		}),
+	)
+
+	require.Error(err)
+	assert.ErrorContains(err, "token budget")
+	assert.Zero(calls.Load(), "an invalid budget is rejected before the provider call")
+	assert.Zero(hookCalls.Load(), "configuration errors bypass the document error handler")
+	assert.Zero(stats.Documents)
+	assert.Zero(stats.Skipped)
+	assert.False(store.embedded[1][7])
+}
+
 func TestFillCrossDocumentBatchingMatchesPerDocumentVectors(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)

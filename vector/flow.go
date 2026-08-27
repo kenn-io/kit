@@ -110,6 +110,12 @@ func Fill[K, G comparable](
 	options ...FillOption[K],
 ) (FillStats, error) {
 	o := applyFillOptions(options)
+	if err := ctx.Err(); err != nil {
+		return FillStats{}, err
+	}
+	if err := o.batch.validate(); err != nil {
+		return FillStats{}, err
+	}
 	scanBatch := o.scanBatch
 	if scanBatch <= 0 {
 		scanBatch = 128
@@ -213,10 +219,7 @@ func fillPageAcrossDocuments[K, G comparable](
 		return saveReadyDocuments(ctx, store, gen, o, documentStates, true, stale, stats)
 	}
 
-	batchSize, err := o.batch.effectiveBatchSize(len(refs))
-	if err != nil {
-		return err
-	}
+	batchSize := o.batch.effectiveBatchSize(len(refs))
 	orderedSaves := o.concurrency <= 1
 	if err := saveReadyDocuments(ctx, store, gen, o, documentStates, orderedSaves, stale, stats); err != nil {
 		return err
@@ -227,6 +230,7 @@ func fillPageAcrossDocuments[K, G comparable](
 	encode := func(workCtx context.Context, batch []fillChunkRef) fillBatchResult {
 		return encodeFillBatch(workCtx, enc, batch)
 	}
+	var err error
 	if orderedSaves {
 		// A sequential fill completes and saves one bounded window before
 		// starting another, so a save failure cannot launch later work.

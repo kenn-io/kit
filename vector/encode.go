@@ -109,6 +109,9 @@ func encodeBatched(
 	if enc == nil {
 		return nil, fmt.Errorf("encode func is nil")
 	}
+	if err := o.validate(); err != nil {
+		return nil, err
+	}
 	if len(chunks) == 0 {
 		return nil, nil
 	}
@@ -118,10 +121,7 @@ func encodeBatched(
 		}
 	}
 
-	batchSize, err := o.effectiveBatchSize(len(chunks))
-	if err != nil {
-		return nil, err
-	}
+	batchSize := o.effectiveBatchSize(len(chunks))
 	concurrency := o.concurrency
 	if concurrency <= 0 {
 		concurrency = 1
@@ -222,26 +222,32 @@ func applyBatchOptions(options []BatchOption) batchOptions {
 	return o
 }
 
-func (o batchOptions) effectiveBatchSize(chunkCount int) (int, error) {
+func (o batchOptions) validate() error {
+	if !o.tokenBudgetSet {
+		return nil
+	}
+	if o.maxBatchTokens <= 0 || o.inputTokenUpperBound <= 0 {
+		return fmt.Errorf(
+			"batch token budget and input token upper bound must be positive: got %d and %d",
+			o.maxBatchTokens, o.inputTokenUpperBound)
+	}
+	if o.inputTokenUpperBound > o.maxBatchTokens {
+		return fmt.Errorf(
+			"input token upper bound %d exceeds batch token budget %d",
+			o.inputTokenUpperBound, o.maxBatchTokens)
+	}
+	return nil
+}
+
+func (o batchOptions) effectiveBatchSize(chunkCount int) int {
 	batchSize := o.batchSize
 	if batchSize <= 0 {
 		batchSize = chunkCount
 	}
 	if !o.tokenBudgetSet {
-		return batchSize, nil
+		return batchSize
 	}
-	if o.maxBatchTokens <= 0 || o.inputTokenUpperBound <= 0 {
-		return 0, fmt.Errorf(
-			"batch token budget and input token upper bound must be positive: got %d and %d",
-			o.maxBatchTokens, o.inputTokenUpperBound)
-	}
-	tokenBound := o.maxBatchTokens / o.inputTokenUpperBound
-	if tokenBound == 0 {
-		return 0, fmt.Errorf(
-			"input token upper bound %d exceeds batch token budget %d",
-			o.inputTokenUpperBound, o.maxBatchTokens)
-	}
-	return min(batchSize, tokenBound), nil
+	return min(batchSize, o.maxBatchTokens/o.inputTokenUpperBound)
 }
 
 // validateVector rejects vectors that would poison cosine distance: any
