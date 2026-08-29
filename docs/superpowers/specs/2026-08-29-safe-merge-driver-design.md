@@ -36,6 +36,10 @@ hide the omitted changes.
 Before preparing persistent untrusted-tree isolation, Kit resolves the same
 `git` executable that its subprocess runner uses. It converts the result to an
 absolute, cleaned path and fails the import if no executable can be resolved.
+On Windows, Kit emits the drive-qualified path with forward slashes before
+shell quoting it. Git for Windows runs custom drivers through its POSIX shell,
+and the forward-slash form works for both the shell's executable check and the
+Windows executable loader.
 
 Kit moves the existing POSIX shell single-quote helper into a shared internal
 Git package. Both the credential helper and managed-worktree isolation use it,
@@ -51,7 +55,7 @@ f() {
   '<absolute-git>' merge-file --diff3 --marker-size="$1" \
     -L current -L base -L other "$2" "$3" "$4"
   status=$?
-  if [ "$status" -gt 128 ]; then
+  if [ "$status" -eq 255 ]; then
     return 1
   fi
   return "$status"
@@ -93,13 +97,23 @@ or removed executable returns status 129 before `merge-file` starts. Git treats
 that status as a driver failure and aborts the operation instead of recording
 an ours-only conflict.
 
-`git merge-file` rejects binary content with an error status above 128. After
-the executable guard succeeds, the wrapper maps such an error to status 1.
+`git merge-file` rejects binary content with status 255. After the executable
+guard succeeds, the wrapper maps that exact status to status 1.
 This preserves the previous and built-in binary-driver behavior: Git keeps the
 current bytes, marks that path conflicted, and continues processing other
 paths. Binary files do not receive text conflict markers. The guard runs first,
 so an unavailable persisted executable is not converted into an ordinary
-conflict.
+conflict. `merge-file` still writes its binary-file diagnostic to standard
+error, including Git's temporary filename.
+
+All other statuses pass through unchanged. In particular, a signal death such
+as status 139 remains a driver failure instead of becoming an ours-only
+conflict. Statuses 126 and 127 also remain unchanged because `merge-file` can
+legitimately return those conflict counts. The executable guard covers a stable
+missing or non-executable path, but not a same-user replacement race between the
+check and invocation. Git also treats `merge-file`'s own status 128 as an
+ordinary conflict; its status contract provides no distinct value that the
+wrapper can safely reinterpret.
 
 Existing import cleanup and rollback behavior remains unchanged.
 
@@ -121,3 +135,5 @@ worktree fixtures and exercise the persisted replacement after import:
 Focused unit coverage moves with the shared single-quote helper and covers
 executable paths containing spaces and single quotes. Existing assertions for
 the persisted merge-driver value compare against the computed command.
+Behavioral tests 1 through 5 run on Unix and Windows, including the emitted
+Windows path form. Only the POSIX PATH-hijack fixture in test 6 skips Windows.
