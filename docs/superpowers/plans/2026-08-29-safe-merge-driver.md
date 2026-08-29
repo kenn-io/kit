@@ -4,9 +4,9 @@
 
 **Goal:** Replace untrusted-tree custom merge drivers with a durable driver that performs ordinary three-way text merges, writes diff3 conflict markers, keeps binary conflicts local to the file, and fails the whole Git operation when the pinned Git executable cannot run.
 
-**Architecture:** Resolve the same `git` executable used by `git/cmd.Runner` before materializing the untrusted tree, persist an absolute shell-quoted path in worktree config, and invoke `git merge-file` from a small shell wrapper. Keep attribute-driver key classification independent from command construction so command-scope checks do not require path resolution. Move the existing POSIX single-quote helper into `git/internal/shellquote` so both owning packages share the escaping rule.
+**Architecture:** Resolve the same `git` executable used by `git/cmd.Runner` before materializing the untrusted tree, escape Git-template percent signs, persist an absolute shell-quoted path in worktree config, and invoke `git merge-file` from a small shell wrapper. Keep attribute-driver key classification independent from command construction so command-scope checks do not require path resolution. Move the existing POSIX single-quote helper into `git/internal/shellquote` so both owning packages share the shell-escaping rule; keep percent escaping local to merge-driver construction.
 
-**Tech Stack:** Go 1.26, Git 2.39.1+, `testify`, standard `os/exec`, repository lifecycle fixtures.
+**Tech Stack:** Go 1.27, Git 2.39.1+ on non-Windows platforms, Git for Windows 2.53.0.windows.3+, `testify`, standard `os/exec`, repository lifecycle fixtures. Fixed merge labels add no new Git version floor.
 
 ---
 
@@ -119,6 +119,7 @@ Add these tests without any Windows skip:
 3. `TestUntrustedTreeMergeDriverDoesNotEvaluateGitLabels` — use a branch name and rebase commit subject containing `$()` and backticks that would create relative marker files; assert neither marker exists and conflict markers still use only the fixed labels.
 4. `TestUntrustedTreeMergeDriverFailsWhenResolvedGitDisappears` — copy the resolved executable to a temporary executable path, replace only the fixture worktree's `merge.owned.driver` value with the command constructed for that copy, remove it before merge, and assert Git aborts with a clean worktree rather than recording `UU` with current-only contents.
 5. `TestUntrustedTreeMergeDriverKeepsBinaryConflictLocal` — mark both `binary.dat` and `payload` with the same driver; conflict both in one merge; assert both are `UU`, binary bytes remain current without text markers, and `payload` contains diff3 markers. Accept and document the `Cannot merge binary files` stderr line naming Git's temporary file.
+6. `TestUntrustedTreeMergeDriverEscapesPlaceholdersInGitPath` — resolve a copied Git executable from a path containing literal `%Y`, merge a branch label containing `$()` and backticks, and assert no payload executes while Git records the ordinary fixed-label diff3 conflict.
 
 For the hostile-label test, use relative marker names valid under both Git for Windows' shell and POSIX shells; do not embed a platform-specific absolute path in a ref name. For the missing-executable test, use `git config --worktree merge.owned.driver <computed-command>` after import. This tests the persisted-command failure contract without adding a production seam; ordinary production preparation still calls `exec.LookPath` exactly once.
 
@@ -199,7 +200,7 @@ Build it as one line for Git config:
 
 ```go
 func safeMergeDriverCommand(gitPath string) string {
-	git := shellquote.Single(gitPath)
+	git := shellquote.Single(strings.ReplaceAll(gitPath, "%", "%%"))
 	return `f() { [ -x ` + git + ` ] || return 129; ` + git +
 		` merge-file --diff3 --marker-size="$1" -L current -L base -L other "$2" "$3" "$4"; ` +
 		`status=$?; if [ "$status" -eq 255 ]; then return 1; fi; ` +
@@ -207,7 +208,11 @@ func safeMergeDriverCommand(gitPath string) string {
 }
 ```
 
-Do not use `%S`, `%X`, or `%Y`: Git already shell-quotes those placeholders, and outer double quotes would turn hostile label content into executable shell syntax. Preserve the double quotes around `%A`, `%O`, and `%B`, which Git substitutes without shell quoting.
+Git expands merge-driver placeholders before invoking the shell. Doubling
+literal percent signs is therefore Git-template escaping and stays local to
+this builder; `shellquote.Single` continues to own only POSIX shell quoting.
+
+Do not use `%S`, `%X`, or `%Y`: Git already shell-quotes those placeholders, and outer double quotes would turn hostile label content into executable shell syntax. Preserve the double quotes around `%A`, `%O`, and `%B`, which Git substitutes without shell quoting. The fixed labels add no version requirement beyond the existing non-Windows Git 2.39.1 and Git for Windows 2.53.0.windows.3 import floors.
 
 Map only status 255 to conflict. Do not use `-gt 128`, and do not remap 126 or 127: signal deaths must remain Git operation errors, while `merge-file` can legitimately report text conflict counts through 127. The executable guard returns 129 before invocation. An internal `merge-file` `die()` can still exit 128 and be treated by Git as a conflict; Git's custom-driver protocol provides no distinguishable alternative.
 

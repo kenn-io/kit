@@ -203,6 +203,52 @@ func TestUntrustedTreeMergeDriverDoesNotEvaluateGitLabels(t *testing.T) {
 	})
 }
 
+func TestUntrustedTreeMergeDriverEscapesPlaceholdersInGitPath(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+
+	gitPath, err := exec.LookPath("git")
+	require.NoError(err)
+	gitContents, err := os.ReadFile(gitPath)
+	require.NoError(err)
+	gitDir := filepath.Join(t.TempDir(), "git-%Y-bin")
+	require.NoError(os.MkdirAll(gitDir, 0o755))
+	copyName := "git"
+	if runtime.GOOS == "windows" {
+		copyName += filepath.Ext(gitPath)
+	}
+	gitCopy := filepath.Join(gitDir, copyName)
+	require.NoError(os.WriteFile(gitCopy, gitContents, 0o755))
+	require.NoError(os.Chmod(gitCopy, 0o755))
+	t.Setenv("PATH", gitDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	markers := []string{"percent-dollar-marker", "percent-backtick-marker"}
+	fixture := newMergeDriverFixture(t,
+		[]byte("base\n"),
+		[]byte("current\n"),
+		[]byte("other\n"),
+		"",
+		"other-$(touch${IFS}percent-dollar-marker)-"+
+			"`touch${IFS}percent-backtick-marker`",
+	)
+
+	cmd := lifecycleGitCommand(t, fixture.worktree, "merge", fixture.otherRef)
+	out, err := cmd.CombinedOutput()
+
+	require.Error(err, string(out))
+	assert.Equal("UU payload",
+		lifecycleGit(t, fixture.worktree, "status", "--short", "--", "payload"))
+	for _, marker := range markers {
+		assert.NoFileExists(filepath.Join(fixture.worktree, marker))
+	}
+	payload, err := os.ReadFile(filepath.Join(fixture.worktree, "payload"))
+	require.NoError(err)
+	assert.Equal(
+		"<<<<<<< current\ncurrent\n||||||| base\nbase\n=======\nother\n>>>>>>> other\n",
+		string(payload),
+	)
+}
+
 func TestUntrustedTreeMergeDriverFailsWhenResolvedGitDisappears(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)

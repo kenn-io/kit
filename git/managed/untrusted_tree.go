@@ -55,7 +55,9 @@ func resolveMergeDriverGitPath() (string, error) {
 }
 
 func safeMergeDriverCommand(gitPath string) string {
-	git := shellquote.Single(gitPath)
+	// Git expands merge-driver placeholders before the shell parses the
+	// command. Double literal percent signs before applying shell quoting.
+	git := shellquote.Single(strings.ReplaceAll(gitPath, "%", "%%"))
 	return `f() { [ -x ` + git + ` ] || return 129; ` + git +
 		` merge-file --diff3 --marker-size="$1" -L current -L base -L other "$2" "$3" "$4"; ` +
 		`status=$?; if [ "$status" -eq 255 ]; then return 1; fi; ` +

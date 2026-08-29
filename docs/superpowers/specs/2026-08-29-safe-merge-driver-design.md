@@ -39,12 +39,19 @@ absolute, cleaned path and fails the import if no executable can be resolved.
 On Windows, Kit emits the drive-qualified path with forward slashes before
 shell quoting it. Git for Windows runs custom drivers through its POSIX shell,
 and the forward-slash form works for both the shell's executable check and the
-Windows executable loader.
+Windows executable loader. Existing untrusted-tree imports require Git 2.39.1
+or newer on non-Windows platforms and Git for Windows 2.53.0.windows.3 or
+newer.
 
 Kit moves the existing POSIX shell single-quote helper into a shared internal
 Git package. Both the credential helper and managed-worktree isolation use it,
-so executable paths remain data without adding a public API or duplicating
-shell quoting.
+so executable paths remain shell data without adding a public API or
+duplicating shell quoting. Merge-driver configuration has an earlier template
+layer: Git expands percent placeholders before it invokes the shell. The merge
+driver builder therefore doubles every literal `%` in the executable path
+before passing that path to the POSIX shell-quote helper. This percent escaping
+stays local to merge-driver construction because it is a Git-template rule,
+not generic shell quoting.
 
 Kit builds a shell function around the trusted absolute path. In expanded form,
 the function has these semantics:
@@ -72,8 +79,9 @@ already insert `%S`, `%X`, and `%Y` as shell-single-quoted strings. Placing thos
 label placeholders inside another pair of double quotes would make command
 substitutions in a branch name or commit subject executable. The replacement
 therefore uses fixed labels and does not interpolate `%S`, `%X`, or `%Y` at all.
-Fixed labels also keep the existing Git 2.39.1 minimum; no version-dependent
-fallback or higher version floor is needed.
+Fixed labels add no new version floor: the existing non-Windows Git 2.39.1 and
+Git for Windows 2.53.0.windows.3 minimums remain in force, with no
+version-dependent fallback.
 
 `git merge-file` overwrites `%A`, exits with status 0 for a clean merge, and
 returns the conflict count, capped at 127, when text conflicts remain. The
@@ -126,14 +134,16 @@ worktree fixtures and exercise the persisted replacement after import:
 2. Overlapping edits leave an unmerged path whose working file contains diff3
    markers with the fixed labels and the base, current, and other content.
 3. Adversarial branch and commit labels remain inert during a conflicted merge.
-4. A missing persisted executable aborts the merge and leaves a clean tree.
-5. Binary content produces an ordinary per-file conflict instead of aborting
+4. A resolved Git path containing literal `%Y` cannot expand an untrusted
+   branch label before shell quoting or execute its payload.
+5. A missing persisted executable aborts the merge and leaves a clean tree.
+6. Binary content produces an ordinary per-file conflict instead of aborting
    the whole merge.
-6. The existing PATH-hijack fixture is extended so a fake `git` executable
+7. The existing PATH-hijack fixture is extended so a fake `git` executable
    placed before the trusted executable is not invoked during a merge.
 
 Focused unit coverage moves with the shared single-quote helper and covers
 executable paths containing spaces and single quotes. Existing assertions for
 the persisted merge-driver value compare against the computed command.
-Behavioral tests 1 through 5 run on Unix and Windows, including the emitted
-Windows path form. Only the POSIX PATH-hijack fixture in test 6 skips Windows.
+Behavioral tests 1 through 6 run on Unix and Windows, including the emitted
+Windows path form. Only the POSIX PATH-hijack fixture in test 7 skips Windows.
