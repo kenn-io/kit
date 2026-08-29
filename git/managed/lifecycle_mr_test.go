@@ -69,6 +69,13 @@ func worktreeOnlyConfig(t *testing.T, dir, key string) string {
 	return strings.TrimSpace(string(out))
 }
 
+func expectedSafeMergeDriverCommand(t *testing.T) string {
+	t.Helper()
+	path, err := resolveMergeDriverGitPath()
+	Require.NoError(t, err)
+	return safeMergeDriverCommand(path)
+}
+
 // TestCreateWorktreeFromMergeRequestSameRepo covers the same-repo scenario:
 // the head branch is fetched from origin, the new local branch starts at
 // it, and upstream tracking points at origin's head branch.
@@ -519,7 +526,7 @@ func TestCreateWorktreeFromMergeRequestIsolatesUntrustedTreeGitPrograms(t *testi
 		worktreeConfig(t, dest, "diff.owned.command"))
 	assert.Equal(safeTextconvCommand,
 		worktreeConfig(t, dest, "diff.owned.textconv"))
-	assert.Equal(safeMergeDriverCommand,
+	assert.Equal(expectedSafeMergeDriverCommand(t),
 		worktreeConfig(t, dest, "merge.owned.driver"))
 
 	if err := os.Remove(fsmonitorMarker); err != nil {
@@ -669,7 +676,7 @@ func TestCreateWorktreeFromMergeRequestNeutralizesCaseDistinctAttributeDrivers(
 			worktreeOnlyConfig(t, dest, "filter."+driver+".required"))
 		assert.Equal(safeExternalDiffCommand,
 			worktreeOnlyConfig(t, dest, "diff."+driver+".command"))
-		assert.Equal(safeMergeDriverCommand,
+		assert.Equal(expectedSafeMergeDriverCommand(t),
 			worktreeOnlyConfig(t, dest, "merge."+driver+".driver"))
 	}
 }
@@ -684,23 +691,38 @@ func TestCreateWorktreeFromMergeRequestDoesNotPATHSearchDriverHelpers(
 	assert := assert.New(t)
 	origin, clone := initOriginAndClone(t)
 	marker := filepath.Join(t.TempDir(), "attacker-sh-ran")
-	lifecycleGit(t, origin, "checkout", "-q", "-b", "path-driver")
 	require.NoError(os.WriteFile(
 		filepath.Join(origin, ".gitattributes"),
-		[]byte("payload diff=owned\n"), 0o644,
+		[]byte("payload diff=owned merge=owned\n"), 0o644,
 	))
 	require.NoError(os.WriteFile(
-		filepath.Join(origin, "payload"), []byte("external\n"), 0o644,
+		filepath.Join(origin, "payload"), []byte("base\n"), 0o644,
 	))
+	for _, helper := range []string{"git", "sh"} {
+		require.NoError(os.WriteFile(
+			filepath.Join(origin, helper),
+			[]byte("#!/bin/sh\n: > \""+marker+"\"\nexit 0\n"), 0o755,
+		))
+	}
+	lifecycleGit(t, origin, "add", ".gitattributes", "payload", "git", "sh")
+	lifecycleGit(t, origin, "commit", "-qm", "PATH driver base")
+	lifecycleGit(t, origin, "checkout", "-q", "-b", "path-driver")
 	require.NoError(os.WriteFile(
-		filepath.Join(origin, "sh"),
-		[]byte("#!/bin/sh\n: > \""+marker+"\"\nexit 0\n"), 0o755,
+		filepath.Join(origin, "payload"), []byte("current\n"), 0o644,
 	))
-	lifecycleGit(t, origin, "add", ".gitattributes", "payload", "sh")
-	lifecycleGit(t, origin, "commit", "-qm", "PATH driver fixture")
+	lifecycleGit(t, origin, "commit", "-qam", "PATH driver current")
 	headSHA := lifecycleGit(t, origin, "rev-parse", "HEAD")
 	lifecycleGit(t, origin, "checkout", "-q", "main")
+	lifecycleGit(t, origin, "checkout", "-q", "-b", "path-driver-other")
+	require.NoError(os.WriteFile(
+		filepath.Join(origin, "payload"), []byte("other\n"), 0o644,
+	))
+	lifecycleGit(t, origin, "commit", "-qam", "PATH driver other")
+	lifecycleGit(t, origin, "checkout", "-q", "main")
+	lifecycleGit(t, clone, "fetch", "-q", "origin",
+		"refs/heads/path-driver-other:refs/remotes/origin/path-driver-other")
 	lifecycleGit(t, clone, "config", "diff.owned.command", "false")
+	lifecycleGit(t, clone, "config", "merge.owned.driver", "false")
 
 	dest := filepath.Join(t.TempDir(), "wt")
 	_, err := CreateWorktreeFromMergeRequest(
@@ -712,15 +734,14 @@ func TestCreateWorktreeFromMergeRequestDoesNotPATHSearchDriverHelpers(
 			ExpectedHeadSHA: headSHA,
 		})
 	require.NoError(err)
-	require.NoError(os.WriteFile(
-		filepath.Join(dest, "payload"), []byte("changed\n"), 0o644,
-	))
 
-	cmd := lifecycleGitCommand(t, dest, "diff", "--", "payload")
+	cmd := lifecycleGitCommand(
+		t, dest, "merge", "refs/remotes/origin/path-driver-other",
+	)
 	cmd.Env = append(cmd.Env, "PATH="+dest+":"+os.Getenv("PATH"))
 	out, err := cmd.CombinedOutput()
 
-	require.NoError(err, string(out))
+	require.Error(err, string(out))
 	assert.NoFileExists(marker)
 }
 
@@ -867,7 +888,7 @@ func TestCreateWorktreeFromMergeRequestInspectsSelectedConfigFiles(t *testing.T)
 		worktreeOnlyConfig(t, dest, "filter.selected.required"))
 	assert.Equal(safeExternalDiffCommand,
 		worktreeOnlyConfig(t, dest, "diff.selected.command"))
-	assert.Equal(safeMergeDriverCommand,
+	assert.Equal(expectedSafeMergeDriverCommand(t),
 		worktreeOnlyConfig(t, dest, "merge.selected.driver"))
 }
 
@@ -1054,11 +1075,11 @@ func TestSectionLevelConfigKeysDoNotNameSubsections(t *testing.T) {
 	_, ok := configuredSubmoduleName("submodule.path")
 	assert.False(t, ok)
 
-	assert.Empty(t, neutralizeAttributeDrivers([]string{
+	assert.False(t, configuredAttributeDrivers([]string{
 		"filter.clean",
 		"diff.command",
 		"merge.driver",
-	}))
+	}).configured())
 }
 
 func TestSafeTextconvPreservesUnterminatedLines(t *testing.T) {
