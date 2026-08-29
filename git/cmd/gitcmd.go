@@ -27,6 +27,7 @@ import (
 	"time"
 
 	gitenv "go.kenn.io/kit/git/env"
+	"go.kenn.io/kit/git/internal/shellquote"
 )
 
 // Config is one temporary git config entry injected through GIT_CONFIG_* env.
@@ -187,13 +188,9 @@ func credentialHelper(path string) string {
 	return `!f() { ` +
 		`while IFS= read -r line && [ -n "$line" ]; do :; done; ` +
 		`if [ "$1" = get ]; then ` +
-		`while IFS= read -r line; do printf '%s\n' "$line"; done < ` + shellSingleQuote(path) + `; ` +
+		`while IFS= read -r line; do printf '%s\n' "$line"; done < ` + shellquote.Single(path) + `; ` +
 		`fi; ` +
 		`}; f`
-}
-
-func shellSingleQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
 var (
