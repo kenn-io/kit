@@ -32,6 +32,12 @@ specific application or forge workflow.
   settings in the imported worktree. This is a narrow Git execution boundary,
   not an OS sandbox for hostile configuration, remotes, lifecycle scripts,
   same-user replacement races, or resource exhaustion.
+- Replacement merge drivers for untrusted merge-request imports must run the
+  resolved Git executable without looking it up through the worktree `PATH`.
+  They must write clean text merges and diff3 markers for text conflicts, while
+  treating binary rejection as an ordinary per-file conflict. A missing Git
+  executable or a merge-process crash must fail the whole operation. Keep the
+  Unix and Git for Windows behaviors explicit.
 - Reject isolation-sensitive command-scope configuration during import because
   worktree configuration cannot outrank it. Explicit command-scope overrides
   on later Git commands are caller policy, not a sandbox boundary Kit can
