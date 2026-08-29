@@ -34,10 +34,13 @@ specific application or forge workflow.
   same-user replacement races, or resource exhaustion.
 - Replacement merge drivers for untrusted merge-request imports must run the
   resolved Git executable without looking it up through the worktree `PATH`.
-  They must write clean text merges and diff3 markers for text conflicts, while
-  treating binary rejection as an ordinary per-file conflict. A missing Git
-  executable or a merge-process crash must fail the whole operation. Keep the
-  Unix and Git for Windows behaviors explicit.
+  They must classify binary inputs without repository attributes or external
+  diff/textconv helpers, write clean text merges and diff3 markers for text
+  conflicts, and treat classified binary content as an ordinary per-file
+  conflict. Classifier failures, text-merge I/O failures, a missing Git
+  executable, or a merge-process crash must fail the whole operation. This
+  contract requires Git 2.42.0+ on non-Windows and Git for Windows
+  2.53.0.windows.3+. Keep both platform behaviors explicit.
 - Reject isolation-sensitive command-scope configuration during import because
   worktree configuration cannot outrank it. Explicit command-scope overrides
   on later Git commands are caller policy, not a sandbox boundary Kit can

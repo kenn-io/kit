@@ -10,6 +10,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"go.kenn.io/kit/git/internal/shellquote"
 )
 
 type mergeDriverFixture struct {
@@ -268,7 +270,8 @@ func TestUntrustedTreeMergeDriverFailsWhenResolvedGitDisappears(t *testing.T) {
 	require.NoError(os.WriteFile(gitCopy, gitContents, 0o755))
 	require.NoError(os.Chmod(gitCopy, 0o755))
 	lifecycleGit(t, fixture.worktree, "config", "--worktree",
-		"merge.owned.driver", safeMergeDriverCommand(gitCopy))
+		"merge.owned.driver", safeMergeDriverCommand(gitCopy,
+			worktreeConfig(t, fixture.worktree, "core.hooksPath")))
 	require.NoError(os.Remove(gitCopy))
 
 	cmd := lifecycleGitCommand(t, fixture.worktree, "merge", fixture.otherRef)
@@ -295,9 +298,13 @@ func TestUntrustedTreeMergeDriverKeepsBinaryConflictLocal(t *testing.T) {
 	for _, worktree := range []string{fixture.worktree, otherWorktree} {
 		require.NoError(os.WriteFile(
 			filepath.Join(worktree, ".gitattributes"),
-			[]byte("payload merge=owned\nbinary.dat merge=owned\n"), 0o644,
+			[]byte("payload merge=owned -diff\nbinary.dat merge=owned diff=owned\n"), 0o644,
 		))
 	}
+	lifecycleGit(t, fixture.worktree, "config", "--worktree",
+		"diff.owned.command", ": > classifier-diff-marker")
+	lifecycleGit(t, fixture.worktree, "config", "--worktree",
+		"diff.owned.textconv", ": > classifier-textconv-marker")
 	currentBinary := []byte("\x00current\n")
 	otherBinary := []byte("\x00other\n")
 	require.NoError(os.WriteFile(
@@ -330,6 +337,43 @@ func TestUntrustedTreeMergeDriverKeepsBinaryConflictLocal(t *testing.T) {
 	assert.Contains(string(payload), "<<<<<<< current")
 	assert.Contains(string(payload), "||||||| base")
 	assert.Contains(string(payload), ">>>>>>> other")
-	// Git merge-file names its temporary %A file in this expected diagnostic.
-	assert.Contains(string(out), "Cannot merge binary files: ")
+	assert.NotContains(string(out), "Cannot merge binary files: ")
+	assert.NoFileExists(filepath.Join(fixture.worktree, "classifier-diff-marker"))
+	assert.NoFileExists(filepath.Join(fixture.worktree, "classifier-textconv-marker"))
+}
+
+func TestUntrustedTreeMergeDriverTreatsMergeFile255AsOperationError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the merge-file error simulator is a POSIX shell script")
+	}
+	require := require.New(t)
+	assert := assert.New(t)
+	fixture := newMergeDriverFixture(t,
+		[]byte("base\n"), []byte("current\n"), []byte("other\n"), "", "",
+	)
+
+	gitPath, err := exec.LookPath("git")
+	require.NoError(err)
+	gitPath, err = filepath.Abs(gitPath)
+	require.NoError(err)
+	simulator := filepath.Join(t.TempDir(), "git")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = merge-file ]; then echo simulated-output-failure >&2; exit 255; fi\n" +
+		"exec " + shellquote.Single(gitPath) + " \"$@\"\n"
+	require.NoError(os.WriteFile(simulator, []byte(script), 0o755))
+	require.NoError(os.Chmod(simulator, 0o755))
+	lifecycleGit(t, fixture.worktree, "config", "--worktree",
+		"merge.owned.driver", safeMergeDriverCommand(simulator,
+			worktreeConfig(t, fixture.worktree, "core.hooksPath")))
+
+	cmd := lifecycleGitCommand(t, fixture.worktree, "merge", fixture.otherRef)
+	out, err := cmd.CombinedOutput()
+
+	require.Error(err, string(out))
+	assert.Contains(string(out), "simulated-output-failure")
+	assert.Empty(lifecycleGit(t, fixture.worktree, "status", "--short"))
+	assert.Empty(lifecycleGit(t, fixture.worktree, "ls-files", "--unmerged"))
+	contents, err := os.ReadFile(filepath.Join(fixture.worktree, "payload"))
+	require.NoError(err)
+	assert.Equal("current\n", string(contents))
 }

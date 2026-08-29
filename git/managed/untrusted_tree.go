@@ -54,14 +54,35 @@ func resolveMergeDriverGitPath() (string, error) {
 	return path, nil
 }
 
-func safeMergeDriverCommand(gitPath string) string {
+func safeMergeDriverCommand(gitPath, classifierDir string) string {
 	// Git expands merge-driver placeholders before the shell parses the
 	// command. Double literal percent signs before applying shell quoting.
 	git := shellquote.Single(strings.ReplaceAll(gitPath, "%", "%%"))
-	return `f() { [ -x ` + git + ` ] || return 129; ` + git +
-		` merge-file --diff3 --marker-size="$1" -L current -L base -L other "$2" "$3" "$4"; ` +
-		`status=$?; if [ "$status" -eq 255 ]; then return 1; fi; ` +
-		`return "$status"; }; f %L "%A" "%O" "%B"`
+	classifier := shellquote.Single(strings.ReplaceAll(classifierDir, "%", "%%"))
+	ceiling := filepath.Dir(classifierDir)
+	if runtime.GOOS == "windows" {
+		classifier = shellquote.Single(strings.ReplaceAll(
+			filepath.ToSlash(classifierDir), "%", "%%",
+		))
+		ceiling = filepath.ToSlash(ceiling)
+	}
+	ceiling = shellquote.Single(strings.ReplaceAll(ceiling, "%", "%%"))
+	return `f() { [ -x ` + git + ` ] || return 129; ` +
+		`case "$2" in /*|[A-Za-z]:/*) current=$2 ;; *) current=$PWD/$2 ;; esac; ` +
+		`case "$3" in /*|[A-Za-z]:/*) base=$3 ;; *) base=$PWD/$3 ;; esac; ` +
+		`case "$4" in /*|[A-Za-z]:/*) other=$4 ;; *) other=$PWD/$4 ;; esac; ` +
+		`classify() { output=$(GIT_ATTR_NOSYSTEM=1 GIT_CEILING_DIRECTORIES=` + ceiling + ` ` + git +
+		` -c core.attributesFile= -C ` + classifier +
+		` diff --no-index --numstat --no-ext-diff --no-textconv -- "$1" "$2"); ` +
+		`status=$?; [ "$status" -le 1 ] || return 129; ` +
+		`case "$output" in -*) return 1 ;; "") [ "$status" -eq 0 ] || return 129 ;; ` +
+		`[0-9]*) ;; *) return 129 ;; esac; return 0; }; ` +
+		`classify "$current" "$base"; status=$?; ` +
+		`[ "$status" -eq 1 ] && return 1; [ "$status" -eq 0 ] || return "$status"; ` +
+		`classify "$base" "$other"; status=$?; ` +
+		`[ "$status" -eq 1 ] && return 1; [ "$status" -eq 0 ] || return "$status"; ` +
+		git + ` merge-file --diff3 --marker-size="$1" -L current -L base -L other "$2" "$3" "$4"; ` +
+		`return $?; }; f %L "%A" "%O" "%B"`
 }
 
 var untrustedTreeGitVersionPattern = regexp.MustCompile(
@@ -85,7 +106,7 @@ func validateUntrustedTreeCheckoutGitVersion(
 	if supportsUntrustedTreeCheckoutGitVersion(string(out), runtime.GOOS) {
 		return nil
 	}
-	requirement := "Git 2.39.1 or newer"
+	requirement := "Git 2.42.0 or newer"
 	if runtime.GOOS == "windows" || isGitForWindowsVersion(string(out)) {
 		requirement = "Git for Windows 2.53.0.windows.3 or newer"
 	}
@@ -105,7 +126,7 @@ func supportsUntrustedTreeCheckoutGitVersion(output, goos string) bool {
 	major, _ := strconv.Atoi(match[1])
 	minor, _ := strconv.Atoi(match[2])
 	patch, _ := strconv.Atoi(match[3])
-	if major < 2 || major == 2 && (minor < 39 || minor == 39 && patch < 1) {
+	if major < 2 || major == 2 && minor < 42 {
 		return false
 	}
 	if goos != "windows" && match[4] == "" {
@@ -201,7 +222,7 @@ func prepareUntrustedTreeIsolation(
 	return untrustedTreeIsolation{
 		runner:             runner,
 		config:             config,
-		mergeDriverCommand: safeMergeDriverCommand(gitPath),
+		mergeDriverCommand: safeMergeDriverCommand(gitPath, hooksPath),
 	}, nil
 }
 

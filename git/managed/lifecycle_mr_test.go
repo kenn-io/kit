@@ -69,11 +69,13 @@ func worktreeOnlyConfig(t *testing.T, dir, key string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func expectedSafeMergeDriverCommand(t *testing.T) string {
+func expectedSafeMergeDriverCommand(t *testing.T, worktree string) string {
 	t.Helper()
 	path, err := resolveMergeDriverGitPath()
 	Require.NoError(t, err)
-	return safeMergeDriverCommand(path)
+	hooksPath := worktreeConfig(t, worktree, "core.hooksPath")
+	Require.NotEmpty(t, hooksPath)
+	return safeMergeDriverCommand(path, hooksPath)
 }
 
 // TestCreateWorktreeFromMergeRequestSameRepo covers the same-repo scenario:
@@ -526,7 +528,7 @@ func TestCreateWorktreeFromMergeRequestIsolatesUntrustedTreeGitPrograms(t *testi
 		worktreeConfig(t, dest, "diff.owned.command"))
 	assert.Equal(safeTextconvCommand,
 		worktreeConfig(t, dest, "diff.owned.textconv"))
-	assert.Equal(expectedSafeMergeDriverCommand(t),
+	assert.Equal(expectedSafeMergeDriverCommand(t, dest),
 		worktreeConfig(t, dest, "merge.owned.driver"))
 
 	if err := os.Remove(fsmonitorMarker); err != nil {
@@ -676,7 +678,7 @@ func TestCreateWorktreeFromMergeRequestNeutralizesCaseDistinctAttributeDrivers(
 			worktreeOnlyConfig(t, dest, "filter."+driver+".required"))
 		assert.Equal(safeExternalDiffCommand,
 			worktreeOnlyConfig(t, dest, "diff."+driver+".command"))
-		assert.Equal(expectedSafeMergeDriverCommand(t),
+		assert.Equal(expectedSafeMergeDriverCommand(t, dest),
 			worktreeOnlyConfig(t, dest, "merge."+driver+".driver"))
 	}
 }
@@ -910,7 +912,7 @@ func TestCreateWorktreeFromMergeRequestInspectsSelectedConfigFiles(t *testing.T)
 		worktreeOnlyConfig(t, dest, "filter.selected.required"))
 	assert.Equal(safeExternalDiffCommand,
 		worktreeOnlyConfig(t, dest, "diff.selected.command"))
-	assert.Equal(expectedSafeMergeDriverCommand(t),
+	assert.Equal(expectedSafeMergeDriverCommand(t, dest),
 		worktreeOnlyConfig(t, dest, "merge.selected.driver"))
 }
 
