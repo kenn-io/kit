@@ -71,8 +71,11 @@ func safeMergeDriverCommand(gitPath, classifierDir string) string {
 		`case "$2" in /*|[A-Za-z]:/*) current=$2 ;; *) current=$PWD/$2 ;; esac; ` +
 		`case "$3" in /*|[A-Za-z]:/*) base=$3 ;; *) base=$PWD/$3 ;; esac; ` +
 		`case "$4" in /*|[A-Za-z]:/*) other=$4 ;; *) other=$PWD/$4 ;; esac; ` +
-		`classify() { output=$(GIT_ATTR_NOSYSTEM=1 GIT_CEILING_DIRECTORIES=` + ceiling + ` ` + git +
-		` -c core.attributesFile= -C ` + classifier +
+		`unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY ` +
+		`GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_NAMESPACE GIT_PREFIX || return 129; ` +
+		`classify() { output=$(GIT_CONFIG_COUNT=0 GIT_ATTR_NOSYSTEM=1 GIT_CEILING_DIRECTORIES=` +
+		ceiling + ` ` + git +
+		` -c core.attributesFile= -c core.bigFileThreshold=1023m -C ` + classifier +
 		` diff --no-index --numstat --no-ext-diff --no-textconv -- "$1" "$2"); ` +
 		`status=$?; [ "$status" -le 1 ] || return 129; ` +
 		`case "$output" in -*) return 1 ;; "") [ "$status" -eq 0 ] || return 129 ;; ` +

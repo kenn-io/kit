@@ -110,17 +110,20 @@ func newMergeDriverFixture(
 
 Configure the trusted clone with `merge.owned.driver=false` before import. The returned worktree must therefore succeed only if Kit replaces that configured driver.
 
-### Step 2: Write the five cross-platform behavior tests
+### Step 2: Write the merge-driver behavior tests
 
-Add these tests without any Windows skip:
+Keep these tests cross-platform except for the explicitly POSIX merge-file
+error simulator:
 
 1. `TestUntrustedTreeMergeDriverMergesNonOverlappingText` — merge edits to different lines; assert exit 0, both edits in `payload`, and no unmerged entries.
 2. `TestUntrustedTreeMergeDriverWritesDiff3ConflictMarkers` — overlap one line; assert ordinary conflict, `UU payload`, and exact marker labels `<<<<<<< current`, `||||||| base`, `=======`, `>>>>>>> other` with all three bodies.
 3. `TestUntrustedTreeMergeDriverDoesNotEvaluateGitLabels` — use a branch name and rebase commit subject containing `$()` and backticks that would create relative marker files; assert neither marker exists and conflict markers still use only the fixed labels.
-4. `TestUntrustedTreeMergeDriverFailsWhenResolvedGitDisappears` — copy the resolved executable to a temporary executable path, replace only the fixture worktree's `merge.owned.driver` value with the command constructed for that copy, remove it before merge, and assert Git aborts with a clean worktree rather than recording `UU` with current-only contents.
+4. `TestUntrustedTreeMergeDriverFailsWhenResolvedGitDisappears` — create and remove a portable placeholder executable, replace only the fixture worktree's `merge.owned.driver` value with the command constructed for that path, and assert Git aborts with a clean worktree rather than recording `UU` with current-only contents.
 5. `TestUntrustedTreeMergeDriverKeepsBinaryConflictLocal` — mark both `binary.dat` and `payload` with the same driver; use worktree diff attributes that falsely force binary to text and text to binary; conflict both in one merge; assert both are `UU`, binary bytes remain current without text markers or a `merge-file` binary diagnostic, and `payload` contains diff3 markers.
-6. `TestUntrustedTreeMergeDriverEscapesPlaceholdersInGitPath` — resolve a copied Git executable from a path containing literal `%Y`, merge a branch label containing `$()` and backticks, and assert no payload executes while Git records the ordinary fixed-label diff3 conflict.
+6. `TestUntrustedTreeMergeDriverEscapesPlaceholdersInGitPath` — persist a missing executable path containing literal `%Y`, merge a branch label containing `$()` and backticks, and assert no payload executes while the merge aborts with a clean index and current text intact. Do not copy a platform Git entrypoint.
 7. `TestUntrustedTreeMergeDriverTreatsMergeFile255AsOperationError` — on POSIX, use a behavioral executable wrapper that delegates classification but returns 255 from `merge-file`; assert the merge aborts without recording an unmerged current-only file.
+8. `TestUntrustedTreeMergeDriverIgnoresAmbientBigFileThreshold` — launch outer Git with a one-byte counted `core.bigFileThreshold`; assert plain text still receives the exact fixed-label diff3 result.
+9. `TestUntrustedTreeMergeDriverClearsInheritedRepositoryBindings` — launch outer Git with explicit absolute `--git-dir` and `--work-tree`, match `.merge_file_*` in worktree attributes, and configure marker-producing diff/textconv helpers; assert text receives diff3 and neither helper runs.
 
 For the hostile-label test, use relative marker names valid under both Git for Windows' shell and POSIX shells; do not embed a platform-specific absolute path in a ref name. For the missing-executable test, use `git config --worktree merge.owned.driver <computed-command>` after import. This tests the persisted-command failure contract without adding a production seam; ordinary production preparation still calls `exec.LookPath` exactly once.
 
@@ -186,8 +189,10 @@ managed empty directory. Before changing the subprocess cwd, convert `%A`,
 `%O`, and `%B` to absolute paths. Compare current/base and base/other with:
 
 ```sh
-GIT_ATTR_NOSYSTEM=1 GIT_CEILING_DIRECTORIES='<managed-parent>' \
-  '<absolute-git>' -c core.attributesFile= -C '<managed-empty-dir>' \
+GIT_CONFIG_COUNT=0 GIT_ATTR_NOSYSTEM=1 \
+  GIT_CEILING_DIRECTORIES='<managed-parent>' '<absolute-git>' \
+  -c core.attributesFile= -c core.bigFileThreshold=1023m \
+  -C '<managed-empty-dir>' \
   diff --no-index --numstat --no-ext-diff --no-textconv -- "$left" "$right"
 ```
 
@@ -208,13 +213,18 @@ this builder; `shellquote.Single` continues to own only POSIX shell quoting.
 
 Do not use `%S`, `%X`, or `%Y`: Git already shell-quotes those placeholders, and outer double quotes would turn hostile label content into executable shell syntax. Preserve the double quotes around `%A`, `%O`, and `%B`, which Git substitutes without shell quoting. The fixed labels add no version requirement beyond the non-Windows Git 2.42.0 and Git for Windows 2.53.0.windows.3 import floors.
 
-The classifier must use the pinned executable, disable system/global/worktree
-attributes, prevent repository discovery, and pass both `--no-ext-diff` and
-`--no-textconv`, so it cannot invoke a tree-selected helper. Do not map status
-255 from `merge-file`: it represents both binary rejection and input/output
-failures. Preclassification owns the binary case; all text-merge statuses pass
-unchanged. Git 2.42 is the minimum non-Windows version because earlier Git
-releases turn every positive custom-driver status into an ordinary conflict.
+The classifier must use the pinned executable. Before it runs, convert input
+paths to absolute paths and unset `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`,
+`GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_COMMON_DIR`,
+`GIT_NAMESPACE`, and `GIT_PREFIX`. Set `GIT_CONFIG_COUNT=0`, disable
+system/global/worktree attributes, prevent repository discovery, pin
+`core.bigFileThreshold=1023m` to merge-file's Git v2.53 `MAX_XDIFF_SIZE`, and
+pass both `--no-ext-diff` and `--no-textconv`, so ambient state cannot change
+classification or invoke a tree-selected helper. Do not map status 255 from
+`merge-file`: it represents both binary rejection and input/output failures.
+Preclassification owns the binary case; all text-merge statuses pass unchanged.
+Git 2.42 is the minimum non-Windows version because earlier Git releases turn
+every positive custom-driver status into an ordinary conflict.
 
 ### Step 3: Separate classification from construction
 
@@ -289,6 +299,9 @@ In the untrusted merge-request guidance, state that replacement merge drivers mu
 - require Git 2.42.0+ on non-Windows and Git for Windows
   2.53.0.windows.3+;
 - classify binary inputs without repository attributes or external helpers;
+- clear inherited repository bindings and counted configuration before
+  classification;
+- pin the classifier's large-file boundary to `1023m`;
 - write clean text merges and diff3 markers for text conflicts;
 - keep binary rejection as an ordinary per-file conflict;
 - surface classifier failures, text-merge I/O failures, missing executables,

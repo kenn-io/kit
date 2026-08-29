@@ -209,21 +209,6 @@ func TestUntrustedTreeMergeDriverEscapesPlaceholdersInGitPath(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
 
-	gitPath, err := exec.LookPath("git")
-	require.NoError(err)
-	gitContents, err := os.ReadFile(gitPath)
-	require.NoError(err)
-	gitDir := filepath.Join(t.TempDir(), "git-%Y-bin")
-	require.NoError(os.MkdirAll(gitDir, 0o755))
-	copyName := "git"
-	if runtime.GOOS == "windows" {
-		copyName += filepath.Ext(gitPath)
-	}
-	gitCopy := filepath.Join(gitDir, copyName)
-	require.NoError(os.WriteFile(gitCopy, gitContents, 0o755))
-	require.NoError(os.Chmod(gitCopy, 0o755))
-	t.Setenv("PATH", gitDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
 	markers := []string{"percent-dollar-marker", "percent-backtick-marker"}
 	fixture := newMergeDriverFixture(t,
 		[]byte("base\n"),
@@ -233,22 +218,23 @@ func TestUntrustedTreeMergeDriverEscapesPlaceholdersInGitPath(t *testing.T) {
 		"other-$(touch${IFS}percent-dollar-marker)-"+
 			"`touch${IFS}percent-backtick-marker`",
 	)
+	missingGit := filepath.Join(t.TempDir(), "missing-%Y-git")
+	lifecycleGit(t, fixture.worktree, "config", "--worktree",
+		"merge.owned.driver", safeMergeDriverCommand(missingGit,
+			worktreeConfig(t, fixture.worktree, "core.hooksPath")))
 
 	cmd := lifecycleGitCommand(t, fixture.worktree, "merge", fixture.otherRef)
 	out, err := cmd.CombinedOutput()
 
 	require.Error(err, string(out))
-	assert.Equal("UU payload",
-		lifecycleGit(t, fixture.worktree, "status", "--short", "--", "payload"))
+	assert.Empty(lifecycleGit(t, fixture.worktree, "status", "--short"))
+	assert.Empty(lifecycleGit(t, fixture.worktree, "ls-files", "--unmerged"))
 	for _, marker := range markers {
 		assert.NoFileExists(filepath.Join(fixture.worktree, marker))
 	}
 	payload, err := os.ReadFile(filepath.Join(fixture.worktree, "payload"))
 	require.NoError(err)
-	assert.Equal(
-		"<<<<<<< current\ncurrent\n||||||| base\nbase\n=======\nother\n>>>>>>> other\n",
-		string(payload),
-	)
+	assert.Equal("current\n", string(payload))
 }
 
 func TestUntrustedTreeMergeDriverFailsWhenResolvedGitDisappears(t *testing.T) {
@@ -258,17 +244,8 @@ func TestUntrustedTreeMergeDriverFailsWhenResolvedGitDisappears(t *testing.T) {
 		[]byte("base\n"), []byte("current\n"), []byte("other\n"), "", "",
 	)
 
-	gitPath, err := exec.LookPath("git")
-	require.NoError(err)
-	gitContents, err := os.ReadFile(gitPath)
-	require.NoError(err)
-	copyName := "git"
-	if runtime.GOOS == "windows" {
-		copyName += filepath.Ext(gitPath)
-	}
-	gitCopy := filepath.Join(t.TempDir(), copyName)
-	require.NoError(os.WriteFile(gitCopy, gitContents, 0o755))
-	require.NoError(os.Chmod(gitCopy, 0o755))
+	gitCopy := filepath.Join(t.TempDir(), "git")
+	require.NoError(os.WriteFile(gitCopy, nil, 0o755))
 	lifecycleGit(t, fixture.worktree, "config", "--worktree",
 		"merge.owned.driver", safeMergeDriverCommand(gitCopy,
 			worktreeConfig(t, fixture.worktree, "core.hooksPath")))
@@ -340,6 +317,76 @@ func TestUntrustedTreeMergeDriverKeepsBinaryConflictLocal(t *testing.T) {
 	assert.NotContains(string(out), "Cannot merge binary files: ")
 	assert.NoFileExists(filepath.Join(fixture.worktree, "classifier-diff-marker"))
 	assert.NoFileExists(filepath.Join(fixture.worktree, "classifier-textconv-marker"))
+}
+
+func TestUntrustedTreeMergeDriverIgnoresAmbientBigFileThreshold(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	fixture := newMergeDriverFixture(t,
+		[]byte("base\n"), []byte("current\n"), []byte("other\n"), "", "",
+	)
+
+	cmd := lifecycleGitCommand(t, fixture.worktree, "merge", fixture.otherRef)
+	cmd.Env = append(cmd.Env,
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=core.bigFileThreshold",
+		"GIT_CONFIG_VALUE_0=1",
+	)
+	out, err := cmd.CombinedOutput()
+
+	require.Error(err, string(out))
+	assert.Equal("UU payload",
+		lifecycleGit(t, fixture.worktree, "status", "--short", "--", "payload"))
+	contents, err := os.ReadFile(filepath.Join(fixture.worktree, "payload"))
+	require.NoError(err)
+	assert.Equal(
+		"<<<<<<< current\ncurrent\n||||||| base\nbase\n=======\nother\n>>>>>>> other\n",
+		string(contents),
+	)
+}
+
+func TestUntrustedTreeMergeDriverClearsInheritedRepositoryBindings(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	fixture := newMergeDriverFixture(t,
+		[]byte("base\n"), []byte("current\n"), []byte("other\n"), "", "",
+	)
+
+	require.NoError(os.WriteFile(
+		filepath.Join(fixture.worktree, ".gitattributes"),
+		[]byte("payload merge=owned\n.merge_file_* diff=owned\n"), 0o644,
+	))
+	lifecycleGit(t, fixture.worktree, "add", ".gitattributes")
+	lifecycleGit(t, fixture.worktree, "commit", "-qm", "bind merge temp attributes")
+	lifecycleGit(t, fixture.worktree, "config", "--worktree",
+		"diff.owned.binary", "true")
+	lifecycleGit(t, fixture.worktree, "config", "--worktree",
+		"diff.owned.command", ": > classifier-binding-diff-marker")
+	lifecycleGit(t, fixture.worktree, "config", "--worktree",
+		"diff.owned.textconv", ": > classifier-binding-textconv-marker")
+	gitDir := lifecycleGit(t, fixture.worktree, "rev-parse", "--absolute-git-dir")
+	outside := t.TempDir()
+
+	cmd := lifecycleGitCommand(t, outside,
+		"--git-dir="+gitDir,
+		"--work-tree="+fixture.worktree,
+		"merge", fixture.otherRef,
+	)
+	out, err := cmd.CombinedOutput()
+
+	require.Error(err, string(out))
+	assert.Equal("UU payload",
+		lifecycleGit(t, fixture.worktree, "status", "--short", "--", "payload"))
+	contents, err := os.ReadFile(filepath.Join(fixture.worktree, "payload"))
+	require.NoError(err)
+	assert.Equal(
+		"<<<<<<< current\ncurrent\n||||||| base\nbase\n=======\nother\n>>>>>>> other\n",
+		string(contents),
+	)
+	for _, dir := range []string{fixture.worktree, outside} {
+		assert.NoFileExists(filepath.Join(dir, "classifier-binding-diff-marker"))
+		assert.NoFileExists(filepath.Join(dir, "classifier-binding-textconv-marker"))
+	}
 }
 
 func TestUntrustedTreeMergeDriverTreatsMergeFile255AsOperationError(t *testing.T) {

@@ -110,6 +110,9 @@ type mergeRequestRemoteTarget struct {
 // submodule recursion. The existing repository, its configuration, provider
 // metadata, remotes, and explicitly configured setup hook remain trusted.
 //
+// Untrusted-tree isolation requires Git 2.42.0 or newer on non-Windows
+// platforms and Git for Windows 2.53.0.windows.3 or newer.
+//
 // The function also configures upstream tracking when possible, non-fatally
 // skipping it when the fork cannot be fetched. Failures after the worktree
 // exists roll it back.

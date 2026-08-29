@@ -62,9 +62,13 @@ the function has these semantics:
 f() {
   [ -x '<absolute-git>' ] || return 129
   # Convert the three merge inputs to absolute paths before changing Git's cwd.
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
+    GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_NAMESPACE GIT_PREFIX
   # Classify current/base and base/other with the pinned Git executable:
-  #   GIT_ATTR_NOSYSTEM=1 GIT_CEILING_DIRECTORIES='<managed-parent>' \
-  #     '<absolute-git>' -c core.attributesFile= -C '<managed-empty-dir>' \
+  #   GIT_CONFIG_COUNT=0 GIT_ATTR_NOSYSTEM=1 \
+  #     GIT_CEILING_DIRECTORIES='<managed-parent>' '<absolute-git>' \
+  #     -c core.attributesFile= -c core.bigFileThreshold=1023m \
+  #     -C '<managed-empty-dir>' \
   #     diff --no-index --numstat --no-ext-diff --no-textconv -- "$left" "$right"
   # Return 1 before merge-file for binary content and 129 on classifier errors.
   '<absolute-git>' merge-file --diff3 --marker-size="$1" \
@@ -88,15 +92,20 @@ Git for Windows 2.53.0.windows.3 minimums, with no version-dependent fallback.
 
 Before invoking `merge-file`, the wrapper asks the pinned Git executable to
 classify the inputs with `diff --no-index --numstat`. It converts the temporary
-input names to absolute paths, runs Git from the managed empty hooks directory,
+input names to absolute paths, then clears inherited repository bindings before
+running the nested Git command. `GIT_CONFIG_COUNT=0` discards counted ambient
+configuration. The nested command runs from the managed empty hooks directory
 and sets the discovery ceiling to that directory's parent. System and global
 attribute files are disabled, and repository discovery is prevented, so
-worktree attributes cannot falsely force content to text or binary. The
-`--no-ext-diff` and `--no-textconv` flags prevent configured diff and textconv
-helpers from running. A binary numstat result returns status 1 before
-`merge-file`; a classifier command error or malformed result returns status
-129. The wrapper compares current to base and base to other so an unchanged
-pair cannot hide binary content in the remaining side.
+worktree attributes cannot falsely force content to text or binary. The pinned
+`core.bigFileThreshold=1023m` matches `merge-file`'s `MAX_XDIFF_SIZE` boundary,
+which Git v2.53 defines as `1024*1024*1023`; a lower ambient threshold therefore
+cannot make ordinary text look binary. The `--no-ext-diff` and `--no-textconv`
+flags prevent configured diff and textconv helpers from running. A binary
+numstat result returns status 1 before `merge-file`; a classifier command error
+or malformed result returns status 129. The wrapper compares current to base
+and base to other so an unchanged pair cannot hide binary content in the
+remaining side.
 
 `git merge-file` overwrites `%A`, exits with status 0 for a clean merge, and
 returns the conflict count, capped at 127, when text conflicts remain. The
@@ -145,8 +154,8 @@ worktree fixtures and exercise the persisted replacement after import:
 2. Overlapping edits leave an unmerged path whose working file contains diff3
    markers with the fixed labels and the base, current, and other content.
 3. Adversarial branch and commit labels remain inert during a conflicted merge.
-4. A resolved Git path containing literal `%Y` cannot expand an untrusted
-   branch label before shell quoting or execute its payload.
+4. A missing Git path containing literal `%Y` cannot expand an untrusted branch
+   label before shell quoting or execute its payload; the merge aborts cleanly.
 5. A missing persisted executable aborts the merge and leaves a clean tree.
 6. Binary content produces an ordinary per-file conflict alongside a text
    conflict, even when worktree attributes try to force the opposite content
@@ -156,10 +165,14 @@ worktree fixtures and exercise the persisted replacement after import:
 8. Git 2.41 is rejected and Git 2.42 is accepted on non-Windows platforms.
 9. The existing PATH-hijack fixture is extended so a fake `git` executable
    placed before the trusted executable is not invoked during a merge.
+10. A low ambient `core.bigFileThreshold` cannot turn plain text into a
+    current-only binary conflict.
+11. Explicit absolute `--git-dir` and `--work-tree` bindings cannot expose
+    `.merge_file_*` paths to worktree attributes or configured helpers.
 
 Focused unit coverage moves with the shared single-quote helper and covers
 executable paths containing spaces and single quotes. Existing assertions for
 the persisted merge-driver value compare against the computed command.
-Behavioral tests 1 through 6 run on Unix and Windows, including the emitted
-Windows path form. The merge-file error simulator and PATH-hijack fixture are
-the only POSIX-only tests.
+Behavioral tests 1 through 6 and 10 through 11 run on Unix and Windows,
+including the emitted Windows path form. The merge-file error simulator and
+PATH-hijack fixture are the only POSIX-only tests.
