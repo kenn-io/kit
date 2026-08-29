@@ -735,13 +735,35 @@ func TestCreateWorktreeFromMergeRequestDoesNotPATHSearchDriverHelpers(
 		})
 	require.NoError(err)
 
-	cmd := lifecycleGitCommand(
+	require.NoError(os.WriteFile(
+		filepath.Join(dest, "payload"), []byte("changed\n"), 0o644,
+	))
+	diffCmd := lifecycleGitCommand(t, dest, "diff", "--", "payload")
+	diffCmd.Env = append(diffCmd.Env, "PATH="+dest+":"+os.Getenv("PATH"))
+	diff, err := diffCmd.CombinedOutput()
+	require.NoError(err, string(diff))
+	assert.Contains(string(diff), "-current")
+	assert.Contains(string(diff), "+changed")
+	assert.NoFileExists(marker)
+	require.NoError(os.WriteFile(
+		filepath.Join(dest, "payload"), []byte("current\n"), 0o644,
+	))
+
+	mergeCmd := lifecycleGitCommand(
 		t, dest, "merge", "refs/remotes/origin/path-driver-other",
 	)
-	cmd.Env = append(cmd.Env, "PATH="+dest+":"+os.Getenv("PATH"))
-	out, err := cmd.CombinedOutput()
+	mergeCmd.Env = append(mergeCmd.Env, "PATH="+dest+":"+os.Getenv("PATH"))
+	out, err := mergeCmd.CombinedOutput()
 
 	require.Error(err, string(out))
+	assert.Equal("UU payload",
+		lifecycleGit(t, dest, "status", "--short", "--", "payload"))
+	payload, readErr := os.ReadFile(filepath.Join(dest, "payload"))
+	require.NoError(readErr)
+	assert.Equal(
+		"<<<<<<< current\ncurrent\n||||||| base\nbase\n=======\nother\n>>>>>>> other\n",
+		string(payload),
+	)
 	assert.NoFileExists(marker)
 }
 

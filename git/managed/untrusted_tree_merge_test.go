@@ -133,44 +133,74 @@ func TestUntrustedTreeMergeDriverWritesDiff3ConflictMarkers(t *testing.T) {
 }
 
 func TestUntrustedTreeMergeDriverDoesNotEvaluateGitLabels(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
-	markers := []string{
-		"branch-dollar-marker",
-		"branch-backtick-marker",
-		"subject-dollar-marker",
-		"subject-backtick-marker",
-	}
-	fixture := newMergeDriverFixture(t,
-		[]byte("base\n"),
-		[]byte("current\n"),
-		[]byte("other\n"),
-		"current $(touch${IFS}subject-dollar-marker) "+
-			"`touch${IFS}subject-backtick-marker`",
-		"other-$(touch${IFS}branch-dollar-marker)-"+
-			"`touch${IFS}branch-backtick-marker`",
-	)
+	t.Run("merge branch label", func(t *testing.T) {
+		require := require.New(t)
+		assert := assert.New(t)
+		markers := []string{"branch-dollar-marker", "branch-backtick-marker"}
+		fixture := newMergeDriverFixture(t,
+			[]byte("base\n"),
+			[]byte("current\n"),
+			[]byte("other\n"),
+			"",
+			"other-$(touch${IFS}branch-dollar-marker)-"+
+				"`touch${IFS}branch-backtick-marker`",
+		)
 
-	cmd := lifecycleGitCommand(t, fixture.worktree, "rebase", fixture.otherRef)
-	out, err := cmd.CombinedOutput()
+		cmd := lifecycleGitCommand(t, fixture.worktree, "merge", fixture.otherRef)
+		out, err := cmd.CombinedOutput()
 
-	require.Error(err, string(out))
-	for _, marker := range markers {
-		assert.NoFileExists(filepath.Join(fixture.worktree, marker))
-	}
-	contents, err := os.ReadFile(filepath.Join(fixture.worktree, "payload"))
-	require.NoError(err)
-	for _, want := range []string{
-		"<<<<<<< current\n",
-		"||||||| base\n",
-		"=======\n",
-		">>>>>>> other\n",
-		"base\n",
-		"current\n",
-		"other\n",
-	} {
-		assert.Contains(string(contents), want)
-	}
+		require.Error(err, string(out))
+		assert.Equal("UU payload",
+			lifecycleGit(t, fixture.worktree, "status", "--short", "--", "payload"))
+		for _, marker := range markers {
+			assert.NoFileExists(filepath.Join(fixture.worktree, marker))
+		}
+		contents, err := os.ReadFile(filepath.Join(fixture.worktree, "payload"))
+		require.NoError(err)
+		assert.Equal(
+			"<<<<<<< current\ncurrent\n||||||| base\nbase\n=======\nother\n>>>>>>> other\n",
+			string(contents),
+		)
+	})
+
+	t.Run("rebase commit subject label", func(t *testing.T) {
+		require := require.New(t)
+		assert := assert.New(t)
+		markers := []string{"subject-dollar-marker", "subject-backtick-marker"}
+		fixture := newMergeDriverFixture(t,
+			[]byte("base\n"),
+			[]byte("current\n"),
+			[]byte("other\n"),
+			"current $(touch${IFS}subject-dollar-marker) "+
+				"`touch${IFS}subject-backtick-marker`",
+			"",
+		)
+
+		cmd := lifecycleGitCommand(t, fixture.worktree, "rebase", fixture.otherRef)
+		out, err := cmd.CombinedOutput()
+
+		require.Error(err, string(out))
+		assert.Equal("UU payload",
+			lifecycleGit(t, fixture.worktree, "status", "--short", "--", "payload"))
+		for _, marker := range markers {
+			assert.NoFileExists(filepath.Join(fixture.worktree, marker))
+		}
+		contents, err := os.ReadFile(filepath.Join(fixture.worktree, "payload"))
+		require.NoError(err)
+		for _, want := range []string{
+			"<<<<<<< current\n",
+			"||||||| base\n",
+			"=======\n",
+			">>>>>>> other\n",
+			"base\n",
+			"current\n",
+			"other\n",
+		} {
+			assert.Contains(string(contents), want)
+		}
+		assert.NotContains(string(contents), "subject-dollar-marker")
+		assert.NotContains(string(contents), "subject-backtick-marker")
+	})
 }
 
 func TestUntrustedTreeMergeDriverFailsWhenResolvedGitDisappears(t *testing.T) {

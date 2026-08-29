@@ -28,9 +28,11 @@ type untrustedTreeIsolation struct {
 }
 
 // Git invokes these through its compiled-in shell because they contain shell
-// syntax. They use only shell builtins, so an untrusted worktree cannot steer
-// them through PATH. The diff replacement emits a simple old/new rendering;
-// the merge replacement declines the custom driver so Git reports a conflict.
+// syntax. The diff and textconv replacements use only shell builtins. The
+// merge replacement invokes the resolved Git executable by absolute path, so
+// an untrusted worktree cannot steer a helper through PATH. The diff replacement
+// emits a simple old/new rendering; the merge replacement performs a fixed-label
+// diff3 merge.
 const (
 	safeExternalDiffCommand = `f() { emit() { prefix=$1; file=$2; line=; while IFS= read -r line; do printf '%s%s\n' "$prefix" "$line"; line=; done < "$file"; case "$line" in "") ;; *) printf '%s%s\n' "$prefix" "$line"; printf '%s\n' '\ No newline at end of file' ;; esac; }; emit - "$2"; emit + "$5"; }; f`
 	safeTextconvCommand     = `f() { line=; while IFS= read -r line; do printf '%s\n' "$line"; line=; done < "$1"; case "$line" in "") ;; *) printf '%s' "$line" ;; esac; }; f`
