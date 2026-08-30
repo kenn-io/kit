@@ -395,6 +395,8 @@ func TestUntrustedTreeMergeDriverClearsInheritedRepositoryBindings(t *testing.T)
 		"diff.owned.textconv", ": > classifier-binding-textconv-marker")
 	gitDir := lifecycleGit(t, fixture.worktree, "rev-parse", "--absolute-git-dir")
 	outside := t.TempDir()
+	classifier := worktreeConfig(t, fixture.worktree, "core.hooksPath")
+	require.NotEmpty(classifier)
 
 	cmd := lifecycleGitCommand(t, outside,
 		"--git-dir="+gitDir,
@@ -412,7 +414,10 @@ func TestUntrustedTreeMergeDriverClearsInheritedRepositoryBindings(t *testing.T)
 		"<<<<<<< current\ncurrent\n||||||| base\nbase\n=======\nother\n>>>>>>> other\n",
 		string(contents),
 	)
-	for _, dir := range []string{fixture.worktree, outside} {
+	// The classifier runs Git with -C in the hooks directory, so a helper
+	// invoked there would leave its marker in that directory rather than in
+	// the worktree or the caller's directory.
+	for _, dir := range []string{fixture.worktree, outside, classifier} {
 		assert.NoFileExists(filepath.Join(dir, "classifier-binding-diff-marker"))
 		assert.NoFileExists(filepath.Join(dir, "classifier-binding-textconv-marker"))
 	}
@@ -447,6 +452,43 @@ func TestUntrustedTreeMergeDriverTreatsMergeFile255AsOperationError(t *testing.T
 
 	require.Error(err, string(out))
 	assert.Contains(string(out), "simulated-output-failure")
+	assert.Empty(lifecycleGit(t, fixture.worktree, "status", "--short"))
+	assert.Empty(lifecycleGit(t, fixture.worktree, "ls-files", "--unmerged"))
+	contents, err := os.ReadFile(filepath.Join(fixture.worktree, "payload"))
+	require.NoError(err)
+	assert.Equal("current\n", string(contents))
+}
+
+func TestUntrustedTreeMergeDriverTreatsMergeFileCrashAsOperationError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the merge-file crash simulator is a POSIX shell script")
+	}
+	require := require.New(t)
+	assert := assert.New(t)
+	fixture := newMergeDriverFixture(t,
+		[]byte("base\n"), []byte("current\n"), []byte("other\n"), "", "",
+	)
+
+	gitPath, err := exec.LookPath("git")
+	require.NoError(err)
+	gitPath, err = filepath.Abs(gitPath)
+	require.NoError(err)
+	simulator := filepath.Join(t.TempDir(), "git")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = merge-file ]; then kill -KILL $$; fi\n" +
+		"exec " + shellquote.Single(gitPath) + " \"$@\"\n"
+	require.NoError(os.WriteFile(simulator, []byte(script), 0o755))
+	require.NoError(os.Chmod(simulator, 0o755))
+	lifecycleGit(t, fixture.worktree, "config", "--worktree",
+		"merge.owned.driver", safeMergeDriverCommand(simulator,
+			worktreeConfig(t, fixture.worktree, "core.hooksPath")))
+
+	cmd := lifecycleGitCommand(t, fixture.worktree, "merge", fixture.otherRef)
+	out, err := cmd.CombinedOutput()
+
+	// A signal-killed merge process must abort the whole operation rather
+	// than record a conflict whose working file holds only the current side.
+	require.Error(err, string(out))
 	assert.Empty(lifecycleGit(t, fixture.worktree, "status", "--short"))
 	assert.Empty(lifecycleGit(t, fixture.worktree, "ls-files", "--unmerged"))
 	contents, err := os.ReadFile(filepath.Join(fixture.worktree, "payload"))
