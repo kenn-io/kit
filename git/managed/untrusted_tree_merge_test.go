@@ -345,6 +345,35 @@ func TestUntrustedTreeMergeDriverIgnoresAmbientBigFileThreshold(t *testing.T) {
 	)
 }
 
+func TestUntrustedTreeMergeDriverIgnoresGlobalBigFileThreshold(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	fixture := newMergeDriverFixture(t,
+		[]byte("base\n"), []byte("current\n"), []byte("other\n"), "", "",
+	)
+	globalConfig := filepath.Join(t.TempDir(), "global.gitconfig")
+	require.NoError(os.WriteFile(globalConfig, []byte(
+		"[core]\n\tbigFileThreshold = 1\n",
+	), 0o600))
+
+	cmd := lifecycleGitCommand(t, fixture.worktree, "merge", fixture.otherRef)
+	cmd.Env = append(isolatedLifecycleBaseEnv(t),
+		"GIT_CONFIG_GLOBAL="+globalConfig,
+		"GIT_CONFIG_NOSYSTEM=1",
+	)
+	out, err := cmd.CombinedOutput()
+
+	require.Error(err, string(out))
+	assert.Equal("UU payload",
+		lifecycleGit(t, fixture.worktree, "status", "--short", "--", "payload"))
+	contents, err := os.ReadFile(filepath.Join(fixture.worktree, "payload"))
+	require.NoError(err)
+	assert.Equal(
+		"<<<<<<< current\ncurrent\n||||||| base\nbase\n=======\nother\n>>>>>>> other\n",
+		string(contents),
+	)
+}
+
 func TestUntrustedTreeMergeDriverClearsInheritedRepositoryBindings(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
