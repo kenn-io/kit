@@ -18,8 +18,9 @@ func TestSupportsUntrustedTreeCheckoutGitVersion(t *testing.T) {
 		goos   string
 		want   bool
 	}{
-		{output: "git version 2.39.0", goos: "linux"},
-		{output: "git version 2.39.1", goos: "linux", want: true},
+		{output: "git version 2.41.0", goos: "linux"},
+		{output: "git version 2.41.9", goos: "linux"},
+		{output: "git version 2.42.0", goos: "linux", want: true},
 		{output: "git version 2.45.2 (Apple Git-145)", goos: "darwin", want: true},
 		{output: "git version 2.52.2.windows.4", goos: "linux"},
 		{output: "git version 2.52.2.windows.4", goos: "windows"},

@@ -16,6 +16,7 @@ import (
 	Require "github.com/stretchr/testify/require"
 
 	gitenv "go.kenn.io/kit/git/env"
+	"go.kenn.io/kit/git/internal/shellquote"
 )
 
 func TestRunnerCommandUsesDefensiveEnvironment(t *testing.T) {
@@ -566,7 +567,7 @@ func captureGitEnv(t *testing.T, runner Runner) string {
 	binDir := t.TempDir()
 	envPath := filepath.Join(t.TempDir(), "env")
 	gitPath := filepath.Join(binDir, "git")
-	script := "#!/bin/sh\nenv > " + shellSingleQuote(envPath) + "\n"
+	script := "#!/bin/sh\nenv > " + shellquote.Single(envPath) + "\n"
 	if os.PathSeparator == '\\' {
 		gitPath += ".bat"
 		script = "@echo off\r\nset > " + shellDoubleQuote(envPath) + "\r\n"

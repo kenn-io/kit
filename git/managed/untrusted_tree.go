@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -13,6 +14,7 @@ import (
 	"strings"
 
 	gitcmd "go.kenn.io/kit/git/cmd"
+	"go.kenn.io/kit/git/internal/shellquote"
 )
 
 // untrustedTreeIsolation neutralizes Git programs that a fetched tree can
@@ -20,19 +22,71 @@ import (
 // configuration remain trusted; only the fetched commit is treated as
 // untrusted.
 type untrustedTreeIsolation struct {
-	runner gitcmd.Runner
-	config []gitcmd.Config
+	runner             gitcmd.Runner
+	config             []gitcmd.Config
+	mergeDriverCommand string
 }
 
 // Git invokes these through its compiled-in shell because they contain shell
-// syntax. They use only shell builtins, so an untrusted worktree cannot steer
-// them through PATH. The diff replacement emits a simple old/new rendering;
-// the merge replacement declines the custom driver so Git reports a conflict.
+// syntax. The diff and textconv replacements use only shell builtins. The
+// merge replacement invokes the resolved Git executable by absolute path, so
+// an untrusted worktree cannot steer a helper through PATH. The diff replacement
+// emits a simple old/new rendering; the merge replacement performs a fixed-label
+// diff3 merge.
 const (
 	safeExternalDiffCommand = `f() { emit() { prefix=$1; file=$2; line=; while IFS= read -r line; do printf '%s%s\n' "$prefix" "$line"; line=; done < "$file"; case "$line" in "") ;; *) printf '%s%s\n' "$prefix" "$line"; printf '%s\n' '\ No newline at end of file' ;; esac; }; emit - "$2"; emit + "$5"; }; f`
 	safeTextconvCommand     = `f() { line=; while IFS= read -r line; do printf '%s\n' "$line"; line=; done < "$1"; case "$line" in "") ;; *) printf '%s' "$line" ;; esac; }; f`
-	safeMergeDriverCommand  = `f() { return 1; }; f`
 )
+
+func resolveMergeDriverGitPath() (string, error) {
+	path, err := exec.LookPath("git")
+	if err != nil {
+		return "", fmt.Errorf("resolve Git executable for safe merge driver: %w", err)
+	}
+	path, err = filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("make Git executable path absolute: %w", err)
+	}
+	path = filepath.Clean(path)
+	if runtime.GOOS == "windows" {
+		path = filepath.ToSlash(path)
+	}
+	return path, nil
+}
+
+func safeMergeDriverCommand(gitPath, classifierDir string) string {
+	// Git expands merge-driver placeholders before the shell parses the
+	// command. Double literal percent signs before applying shell quoting.
+	git := shellquote.Single(strings.ReplaceAll(gitPath, "%", "%%"))
+	classifier := shellquote.Single(strings.ReplaceAll(classifierDir, "%", "%%"))
+	ceiling := filepath.Dir(classifierDir)
+	if runtime.GOOS == "windows" {
+		classifier = shellquote.Single(strings.ReplaceAll(
+			filepath.ToSlash(classifierDir), "%", "%%",
+		))
+		ceiling = filepath.ToSlash(ceiling)
+	}
+	ceiling = shellquote.Single(strings.ReplaceAll(ceiling, "%", "%%"))
+	return `f() { [ -x ` + git + ` ] || return 129; ` +
+		`case "$2" in /*|[A-Za-z]:/*) current=$2 ;; *) current=$PWD/$2 ;; esac; ` +
+		`case "$3" in /*|[A-Za-z]:/*) base=$3 ;; *) base=$PWD/$3 ;; esac; ` +
+		`case "$4" in /*|[A-Za-z]:/*) other=$4 ;; *) other=$PWD/$4 ;; esac; ` +
+		`unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY ` +
+		`GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_NAMESPACE GIT_PREFIX || return 129; ` +
+		`classify() { output=$(GIT_CONFIG_COUNT=0 GIT_ATTR_NOSYSTEM=1 GIT_CEILING_DIRECTORIES=` +
+		ceiling + ` ` + git +
+		` -c core.attributesFile= -c core.bigFileThreshold=1023m -C ` + classifier +
+		` diff --no-index --numstat --no-ext-diff --no-textconv -- "$1" "$2"); ` +
+		`status=$?; [ "$status" -le 1 ] || return 129; ` +
+		`case "$output" in -*) return 1 ;; "") [ "$status" -eq 0 ] || return 129 ;; ` +
+		`[0-9]*) ;; *) return 129 ;; esac; return 0; }; ` +
+		`classify "$current" "$base"; status=$?; ` +
+		`[ "$status" -eq 1 ] && return 1; [ "$status" -eq 0 ] || return "$status"; ` +
+		`classify "$base" "$other"; status=$?; ` +
+		`[ "$status" -eq 1 ] && return 1; [ "$status" -eq 0 ] || return "$status"; ` +
+		git + ` merge-file --diff3 --marker-size="$1" -L current -L base -L other "$2" "$3" "$4"; ` +
+		`return $?; }; f %L "%A" "%O" "%B"`
+}
 
 var untrustedTreeGitVersionPattern = regexp.MustCompile(
 	`(?i)git version (\d+)\.(\d+)(?:\.(\d+))?(?:\.windows\.(\d+))?(?:\s|$)`,
@@ -55,7 +109,7 @@ func validateUntrustedTreeCheckoutGitVersion(
 	if supportsUntrustedTreeCheckoutGitVersion(string(out), runtime.GOOS) {
 		return nil
 	}
-	requirement := "Git 2.39.1 or newer"
+	requirement := "Git 2.42.0 or newer"
 	if runtime.GOOS == "windows" || isGitForWindowsVersion(string(out)) {
 		requirement = "Git for Windows 2.53.0.windows.3 or newer"
 	}
@@ -75,7 +129,7 @@ func supportsUntrustedTreeCheckoutGitVersion(output, goos string) bool {
 	major, _ := strconv.Atoi(match[1])
 	minor, _ := strconv.Atoi(match[2])
 	patch, _ := strconv.Atoi(match[3])
-	if major < 2 || major == 2 && (minor < 39 || minor == 39 && patch < 1) {
+	if major < 2 || major == 2 && minor < 42 {
 		return false
 	}
 	if goos != "windows" && match[4] == "" {
@@ -149,6 +203,10 @@ func prepareUntrustedTreeIsolation(
 	); err != nil {
 		return untrustedTreeIsolation{}, err
 	}
+	gitPath, err := resolveMergeDriverGitPath()
+	if err != nil {
+		return untrustedTreeIsolation{}, err
+	}
 	hooksPath, err := managedEmptyHooksPath(ctx, root)
 	if err != nil {
 		return untrustedTreeIsolation{}, err
@@ -164,7 +222,11 @@ func prepareUntrustedTreeIsolation(
 	for _, entry := range config {
 		runner = runner.WithConfig(entry.Key, entry.Value)
 	}
-	return untrustedTreeIsolation{runner: runner, config: config}, nil
+	return untrustedTreeIsolation{
+		runner:             runner,
+		config:             config,
+		mergeDriverCommand: safeMergeDriverCommand(gitPath, hooksPath),
+	}, nil
 }
 
 func rejectCommandScopeIsolationOverrides(
@@ -223,7 +285,7 @@ func isolationSensitiveConfigKey(key string) bool {
 		strings.HasSuffix(lower, ".fetchrecursesubmodules") {
 		return true
 	}
-	return len(neutralizeAttributeDrivers([]string{key})) != 0
+	return configuredAttributeDrivers([]string{key}).configured()
 }
 
 func managedEmptyHooksPath(ctx context.Context, root string) (string, error) {
@@ -282,7 +344,9 @@ func completeUntrustedTreeIsolation(
 			strings.Join(hooks, ", "),
 		)
 	}
-	drivers := neutralizeAttributeDrivers(keys)
+	drivers := neutralizeAttributeDrivers(
+		configuredAttributeDrivers(keys), isolation.mergeDriverCommand,
+	)
 	submodules, err := submoduleFetchRecurseConfig(
 		ctx, worktreePath, isolation.runner,
 	)
@@ -523,10 +587,18 @@ func withoutGitRepositoryBindings(env []string) []string {
 	return clean
 }
 
-func neutralizeAttributeDrivers(keys []string) []gitcmd.Config {
-	filters := make(map[string]struct{})
-	diffs := make(map[string]struct{})
-	merges := make(map[string]struct{})
+type attributeDrivers struct {
+	filters map[string]struct{}
+	diffs   map[string]struct{}
+	merges  map[string]struct{}
+}
+
+func configuredAttributeDrivers(keys []string) attributeDrivers {
+	drivers := attributeDrivers{
+		filters: make(map[string]struct{}),
+		diffs:   make(map[string]struct{}),
+		merges:  make(map[string]struct{}),
+	}
 	for _, key := range keys {
 		lower := strings.ToLower(key)
 		switch {
@@ -534,25 +606,34 @@ func neutralizeAttributeDrivers(keys []string) []gitcmd.Config {
 			if driver, ok := configuredDriverName(
 				key, []string{".clean", ".smudge", ".process", ".required"},
 			); ok {
-				filters[driver] = struct{}{}
+				drivers.filters[driver] = struct{}{}
 			}
 		case strings.HasPrefix(lower, "diff."):
 			if driver, ok := configuredDriverName(
 				key, []string{".command", ".textconv"},
 			); ok {
-				diffs[driver] = struct{}{}
+				drivers.diffs[driver] = struct{}{}
 			}
 		case strings.HasPrefix(lower, "merge."):
 			if driver, ok := configuredDriverName(
 				key, []string{".driver"},
 			); ok {
-				merges[driver] = struct{}{}
+				drivers.merges[driver] = struct{}{}
 			}
 		}
 	}
+	return drivers
+}
 
+func (drivers attributeDrivers) configured() bool {
+	return len(drivers.filters)+len(drivers.diffs)+len(drivers.merges) != 0
+}
+
+func neutralizeAttributeDrivers(
+	drivers attributeDrivers, mergeDriverCommand string,
+) []gitcmd.Config {
 	var config []gitcmd.Config
-	for _, driver := range sortedDriverNames(filters) {
+	for _, driver := range sortedDriverNames(drivers.filters) {
 		prefix := "filter." + driver
 		config = append(config,
 			gitcmd.Config{Key: prefix + ".clean", Value: ""},
@@ -561,16 +642,16 @@ func neutralizeAttributeDrivers(keys []string) []gitcmd.Config {
 			gitcmd.Config{Key: prefix + ".required", Value: "false"},
 		)
 	}
-	for _, driver := range sortedDriverNames(diffs) {
+	for _, driver := range sortedDriverNames(drivers.diffs) {
 		prefix := "diff." + driver
 		config = append(config,
 			gitcmd.Config{Key: prefix + ".command", Value: safeExternalDiffCommand},
 			gitcmd.Config{Key: prefix + ".textconv", Value: safeTextconvCommand},
 		)
 	}
-	for _, driver := range sortedDriverNames(merges) {
+	for _, driver := range sortedDriverNames(drivers.merges) {
 		config = append(config, gitcmd.Config{
-			Key: "merge." + driver + ".driver", Value: safeMergeDriverCommand,
+			Key: "merge." + driver + ".driver", Value: mergeDriverCommand,
 		})
 	}
 	return config

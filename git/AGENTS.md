@@ -32,6 +32,17 @@ specific application or forge workflow.
   settings in the imported worktree. This is a narrow Git execution boundary,
   not an OS sandbox for hostile configuration, remotes, lifecycle scripts,
   same-user replacement races, or resource exhaustion.
+- Replacement merge drivers for untrusted merge-request imports must run the
+  resolved Git executable without looking it up through the worktree `PATH`.
+  They must clear inherited repository bindings and counted configuration,
+  classify binary inputs without repository attributes or external
+  diff/textconv helpers, and pin `core.bigFileThreshold=1023m` to match
+  `merge-file`'s maximum text size. They must write clean text merges and diff3
+  markers for text conflicts, and treat classified binary content as an
+  ordinary per-file conflict. Classifier failures, text-merge I/O failures, a
+  missing Git executable, or a merge-process crash must fail the whole
+  operation. This contract requires Git 2.42.0+ on non-Windows and Git for
+  Windows 2.53.0.windows.3+. Keep both platform behaviors explicit.
 - Reject isolation-sensitive command-scope configuration during import because
   worktree configuration cannot outrank it. Explicit command-scope overrides
   on later Git commands are caller policy, not a sandbox boundary Kit can

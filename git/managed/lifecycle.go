@@ -56,6 +56,13 @@ type HookError struct {
 }
 
 // GitRunner runs one Git command under an application's process policy.
+//
+// It governs how Kit's own Git commands are executed, not which Git
+// installation Kit targets. Merge-request import pins the git found on the
+// process PATH into the replacement merge driver, because Git runs that driver
+// itself and cannot route it back through this callback. A runner that
+// executes some other Git therefore does not redirect the merge driver, and
+// import fails outright when no git is on PATH.
 type GitRunner func(
 	ctx context.Context, runner gitcmd.Runner, dir string, args ...string,
 ) ([]byte, error)
