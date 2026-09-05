@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -67,6 +68,16 @@ type RepoLock struct {
 // planting the exclusive file waits out fresh shared locks (releasing and
 // failing if they persist past sharedWaitTimeout).
 func (r *Repo) AcquireExclusiveLock(operation string, force bool) (*RepoLock, error) {
+	return r.AcquireExclusiveLockContext(context.Background(), operation, force)
+}
+
+// AcquireExclusiveLockContext is AcquireExclusiveLock with a cancellable wait
+// for active readers. Cancellation releases this attempt's exclusive claim.
+// It does not interrupt an operating-system filesystem call already in progress.
+func (r *Repo) AcquireExclusiveLockContext(ctx context.Context, operation string, force bool) (*RepoLock, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	r.reapStaleClaims()
 	path := r.Path(locksDirName, exclusiveLockName)
 	if err := clearConflicting(path, force); err != nil {
@@ -77,7 +88,12 @@ func (r *Repo) AcquireExclusiveLock(operation string, force bool) (*RepoLock, er
 		return nil, err
 	}
 	deadline := time.Now().Add(sharedWaitTimeout)
+	ticker := time.NewTicker(sharedWaitPoll)
+	defer ticker.Stop()
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, errors.Join(err, lock.Release())
+		}
 		holders, err := r.freshSharedLocks(force)
 		if err != nil {
 			_ = lock.Release()
@@ -94,7 +110,11 @@ func (r *Repo) AcquireExclusiveLock(operation string, force bool) (*RepoLock, er
 				strings.Join(holders, ", "),
 			)
 		}
-		time.Sleep(sharedWaitPoll)
+		select {
+		case <-ctx.Done():
+			return nil, errors.Join(ctx.Err(), lock.Release())
+		case <-ticker.C:
+		}
 	}
 }
 

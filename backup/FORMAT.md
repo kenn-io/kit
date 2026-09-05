@@ -391,6 +391,11 @@ order without deleting manifests. Duplicate IDs are ignored; unknown IDs fail
 before deletion. Removing the last recovery point requires `AllowEmpty`, which
 is independent of lock recovery's `ForceUnlock`.
 
+Forget rejects a symlinked `snapshots` directory and keeps its validated directory
+handle for manifest reads, removals, and directory syncing. Waiting for active
+repository readers honors cancellation and releases the waiting writer's lock;
+it does not interrupt an operating-system filesystem call already in progress.
+
 A retained SQLite incremental snapshot still needs its parent manifests through
 the first keyframe. Forget rejects a selection that would break that chain.
 Portable metadata snapshots and SQLite keyframes are self-contained: their

@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"runtime"
 	"sort"
-
-	"go.kenn.io/kit/pack"
 )
 
 var (
@@ -49,13 +49,24 @@ func Forget(ctx context.Context, r *Repo, opts ForgetOptions) (_ *ForgetResult, 
 	if len(opts.SnapshotIDs) == 0 {
 		return nil, errors.New("backup: forget requires snapshot IDs")
 	}
-	lock, err := r.AcquireExclusiveLock("forget", opts.ForceUnlock)
+	lock, err := r.AcquireExclusiveLockContext(ctx, "forget", opts.ForceUnlock)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { retErr = errors.Join(retErr, lock.Release()) }()
 
-	selected, err := planForget(ctx, r, opts)
+	snapshots, err := r.openSnapshotsForForget()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { retErr = errors.Join(retErr, snapshots.Close()) }()
+	// Sync the directory we actually modify, not a path resolved after removal.
+	dir, err := snapshots.Open(".")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { retErr = errors.Join(retErr, dir.Close()) }()
+	selected, err := planForget(ctx, snapshots.FS(), opts)
 	if err != nil {
 		return nil, err
 	}
@@ -67,19 +78,45 @@ func Forget(ctx context.Context, r *Repo, opts ForgetOptions) (_ *ForgetResult, 
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
-		if err := os.Remove(r.Path(snapshotsDirName, id+manifestExt)); err != nil {
+		if err := snapshots.Remove(id + manifestExt); err != nil {
 			return result, fmt.Errorf("backup: forgetting snapshot %s: %w", id, err)
 		}
 		result.Forgotten = append(result.Forgotten, id)
-		if err := pack.SyncDir(r.Path(snapshotsDirName)); err != nil {
-			return result, fmt.Errorf("backup: snapshot %s removed but directory sync failed: %w", id, err)
+		// As with pack.SyncDir, directory syncing is a no-op on Windows.
+		if runtime.GOOS != "windows" {
+			if err := dir.Sync(); err != nil {
+				return result, fmt.Errorf("backup: snapshot %s removed but directory sync failed: %w", id, err)
+			}
 		}
 	}
 	return result, nil
 }
 
-func planForget(ctx context.Context, r *Repo, opts ForgetOptions) ([]string, error) {
-	manifests, err := r.ListSnapshots()
+// Match CleanStaging's boundary: refuse a symlink and retain the validated
+// directory handle for enumeration, dependency reads, removal, and syncing.
+func (r *Repo) openSnapshotsForForget() (*os.Root, error) {
+	path := r.Path(snapshotsDirName)
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Errorf("backup: checking snapshots directory: %w", err)
+	}
+	if !info.IsDir() {
+		return nil, errors.New("backup: snapshots must be a directory, not a symlink")
+	}
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		return nil, fmt.Errorf("backup: opening snapshots directory: %w", err)
+	}
+	held, err := root.Stat(".")
+	if err != nil || !os.SameFile(info, held) {
+		_ = root.Close()
+		return nil, errors.Join(errors.New("backup: snapshots directory changed while opening it"), err)
+	}
+	return root, nil
+}
+
+func planForget(ctx context.Context, snapshots fs.FS, opts ForgetOptions) ([]string, error) {
+	manifests, err := listSnapshots(snapshots)
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +143,9 @@ func planForget(ctx context.Context, r *Repo, opts ForgetOptions) ([]string, err
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		chain, err := r.manifestChain(m)
+		chain, err := walkManifestChain(m, func(id string) (*Manifest, error) {
+			return loadManifest(snapshots, id)
+		})
 		if err != nil {
 			return nil, err
 		}

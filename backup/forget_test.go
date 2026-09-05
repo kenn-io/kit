@@ -2,8 +2,11 @@ package backup
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -113,4 +116,67 @@ func TestForgetUsesRepositoryLock(t *testing.T) {
 	require.ErrorIs(err, ErrRepoLocked)
 	_, err = r.LoadManifest(id)
 	require.NoError(err)
+}
+
+func TestForgetRejectsSymlinkedSnapshots(t *testing.T) {
+	for _, dryRun := range []bool{true, false} {
+		t.Run(map[bool]string{true: "preview", false: "delete"}[dryRun], func(t *testing.T) {
+			require := require.New(t)
+			assert := assert.New(t)
+			r := initTestRepo(t)
+			other := initTestRepo(t)
+			id, err := other.WriteManifest(testManifest("2026-07-01T00:00:00Z", "", 0))
+			require.NoError(err)
+			require.NoError(os.Remove(r.Path(snapshotsDirName)))
+			err = os.Symlink(other.Path(snapshotsDirName), r.Path(snapshotsDirName))
+			if err != nil && runtime.GOOS == "windows" {
+				t.Skipf("symlink creation unavailable: %v", err)
+			}
+			require.NoError(err)
+			_, err = Forget(t.Context(), r, ForgetOptions{
+				SnapshotIDs: []string{id}, AllowEmpty: true, DryRun: dryRun,
+			})
+			assert.Error(err)
+			_, err = other.LoadManifest(id)
+			assert.NoError(err, "another repository's manifest must remain untouched")
+		})
+	}
+}
+
+func TestForgetCancelsWhileWaitingForSharedLock(t *testing.T) {
+	require := require.New(t)
+	r := initTestRepo(t)
+	id, err := r.WriteManifest(testManifest("2026-07-01T00:00:00Z", "", 0))
+	require.NoError(err)
+	shared, err := r.AcquireSharedLock("verify", false)
+	require.NoError(err)
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		_, err := Forget(ctx, r, ForgetOptions{SnapshotIDs: []string{id}, AllowEmpty: true})
+		done <- err
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		require.NoError(shared.Release())
+		<-done
+	})
+	require.Eventually(func() bool {
+		_, err := os.Stat(r.Path(locksDirName, exclusiveLockName))
+		return err == nil
+	}, 5*time.Second, 5*time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		require.ErrorIs(err, context.Canceled)
+	case <-time.After(2 * time.Second):
+		require.FailNow("forget did not cancel while the shared lock remained held")
+	}
+	_, err = r.LoadManifest(id)
+	require.NoError(err)
+	// The canceled waiter must release its claim, even while the reader lives.
+	reader, err := r.AcquireSharedLock("verify", false)
+	require.NoError(err)
+	require.NoError(reader.Release())
 }
