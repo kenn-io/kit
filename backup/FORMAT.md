@@ -231,7 +231,7 @@ Every repository file is published atomically: written to `staging/`, fsynced, r
 2. Index object written,
 3. Manifest written **last**.
 
-A crash at any point leaves either a complete snapshot or no snapshot — never a manifest referencing missing data. Data orphaned before the manifest write (sealed packs, an index) is unreferenced garbage: harmless, deduplicated against by later runs, and reclaimable by a future prune command.
+A crash at any point leaves either a complete snapshot or no snapshot — never a manifest referencing missing data. Data orphaned before the manifest write (sealed packs, an index) is unreferenced garbage: harmless, deduplicated against by later runs, and reclaimable by `Prune`.
 
 ## Locking
 
@@ -406,13 +406,70 @@ or an error can leave a partially completed selection; the result reports which
 manifests were removed. A sync error means the last removal may not be durable.
 
 Forget leaves packs and indexes untouched. It does **not** erase historical
-content or reclaim disk space. Pruning that unused content remains planned.
+content or reclaim disk space. Run `Prune` separately to reclaim unused storage.
+
+## Reclaiming Repository Space
+
+`Prune` takes the exclusive repository lock and collects the content needed by
+every remaining snapshot. It reuses the quick verifier's traversal of SQLite
+page/hash-map chains, portable metadata, auxiliary artifacts, attachment lists
+and content, and extras trees and files. An unreadable or incomplete reference
+walk stops cleanup before any index or pack is removed. No live application
+database or source content directory is needed.
+
+Prune deletes wholly unused packs, including orphan packs left by interrupted
+backup or cleanup runs. A pack with **less than 50% live encoded payload** is
+rewritten with only its referenced blobs. Exactly-half-live and mostly-live
+packs remain untouched. The ratio excludes pack framing and footer bytes;
+duplicate copies not selected by the current index count as unused. Prune does
+not choose snapshots to forget. An empty repository has no live blobs, so all
+recognized packs are eligible after an explicit `Forget` with `AllowEmpty`.
+
+Replacement content passes through verified streams and bounded-memory blob
+preparation. Scratch storage must accommodate one blob's preparation plus all
+replacement packs while the old packs remain present. Reference maps and pack
+footers still use memory proportional to their entry counts. Unchanged payloads
+receive structural checks, not a full reread; use full `Verify` for an integrity
+scrub. Only plain repositories are currently supported, as with `Open`.
+
+Publication follows this order:
+
+1. Seal and sync replacement packs.
+2. Write and sync one merged index containing every live blob.
+3. Remove every previously inventoried index, syncing the index directory.
+4. Remove obsolete packs, syncing each affected shard directory.
+
+The index loader unions **all** index files. During index retirement, old and
+new indexes may select either copy; both packs remain present until every old
+index removal is durable. This does not depend on a new index ID sorting last.
+After interruption, a retry recomputes liveness and can collect redundant or
+unindexed packs. Manifests are never rewritten; their original `NewPacks` and
+`NewIndex` fields describe capture history, not current content locations.
+
+Cleanup rejects symlinked repository subdirectories and symlinks in the pack
+tree. Destructive removals and directory syncs use retained directory handles.
+Other repository clients must honor the same lock; concurrent out-of-band
+filesystem modification is not supported. Directory syncing follows the
+Windows limitation described above. Cancellation stops between operations and
+during streamed copying, but cannot interrupt an already-blocked OS file call.
+
+`DryRun` performs the same reference and selection checks without writing or
+removing packs or indexes. `BytesToRemove` counts complete old pack files;
+`LiveBytesToRewrite` counts their currently encoded live payload, **not** an
+exact prediction of replacement pack size or net savings. `BytesRemoved` and
+`BytesWritten` report actual pack-file work, which may be partial on error.
+These counts exclude indexes and temporary scratch; a sync failure can leave
+the last removal non-durable.
+
+Unused bytes inside mostly-live packs remain until those packs qualify for
+rewriting. Cleanup is not secure erasure and cannot remove copies retained by
+filesystem snapshots or storage hardware.
 Applications choose their own retention schedule and pass explicit snapshot IDs.
 
 ## Current Limitations
 
 - Repository encryption is not yet implemented; the format reserves flags and fields for it (`encryption` in the repo config, the `encrypted` blob flag, crypter parameters threaded through the code as nil).
-- Snapshot forgetting is available, but unused packed bytes are not reclaimed yet.
+- Default pruning leaves unused bytes inside packs that are at least half live.
 - The runtime database produced by restore must currently be SQLite because
   packed-content catalog replacement and final database checks operate on it.
   The archived metadata itself may be an application-defined portable
@@ -428,6 +485,6 @@ database checks against scratch space, without writing a target, remains planned
 
 **Encryption.** Initializing a repository with encryption enabled generates a random 256-bit repository key; every blob, footer, index, and manifest is encrypted with XChaCha20-Poly1305, with the AAD binding each ciphertext to its identity (blob ID, or object role plus ID). The repository key is wrapped with [age](https://age-encryption.org) to one or more recipients (scrypt passphrase and/or X25519 identities) in `keys/master.age`; adding, removing, or rotating recipients rewraps the key without rewriting objects. `config.toml` stays plaintext by necessity; tampering yields detectable failures, not silent corruption. Key loss is unrecoverable by design. Blob IDs remain plaintext-content hashes but appear only inside encrypted metadata.
 
-**Pruning.** Pruning will take the exclusive lock, walk the remaining manifests to collect the live blob set, delete fully-dead packs, repack packs below 50% live content, and write merged indexes — with new packs and indexes durable before anything is deleted, so a crash mid-prune never breaks reference closure. Until pruning ships, forgetting snapshots leaves their unused content in the repository.
+**Full compaction.** An explicit mode that rewrites every mixed pack, regardless of its live fraction, remains a follow-up. It would reclaim more unused bytes at the cost of more I/O and temporary storage.
 
 **Performance follow-ups.** Two accepted deferrals from review: detecting a same-page-size `VACUUM` by delta-ratio anomaly (warn that a keyframe would be cheaper), and a streaming page-map merge for memory-constrained hosts. Further out: an export mode (one self-contained archive file), WAL shipping for point-in-time recovery, native remote backends, and application-scheduled backups.
