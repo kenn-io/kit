@@ -55,7 +55,7 @@ func Forget(ctx context.Context, r *Repo, opts ForgetOptions) (_ *ForgetResult, 
 	}
 	defer func() { retErr = errors.Join(retErr, lock.Release()) }()
 
-	snapshots, err := r.openSnapshotsForForget()
+	snapshots, err := r.openRepositoryDir(snapshotsDirName)
 	if err != nil {
 		return nil, err
 	}
@@ -94,23 +94,23 @@ func Forget(ctx context.Context, r *Repo, opts ForgetOptions) (_ *ForgetResult, 
 
 // Match CleanStaging's boundary: refuse a symlink and retain the validated
 // directory handle for enumeration, dependency reads, removal, and syncing.
-func (r *Repo) openSnapshotsForForget() (*os.Root, error) {
-	path := r.Path(snapshotsDirName)
+func (r *Repo) openRepositoryDir(name string) (*os.Root, error) {
+	path := r.Path(name)
 	info, err := os.Lstat(path)
 	if err != nil {
-		return nil, fmt.Errorf("backup: checking snapshots directory: %w", err)
+		return nil, fmt.Errorf("backup: checking %s directory: %w", name, err)
 	}
 	if !info.IsDir() {
-		return nil, errors.New("backup: snapshots must be a directory, not a symlink")
+		return nil, fmt.Errorf("backup: %s must be a directory, not a symlink", name)
 	}
 	root, err := os.OpenRoot(path)
 	if err != nil {
-		return nil, fmt.Errorf("backup: opening snapshots directory: %w", err)
+		return nil, fmt.Errorf("backup: opening %s directory: %w", name, err)
 	}
 	held, err := root.Stat(".")
 	if err != nil || !os.SameFile(info, held) {
 		_ = root.Close()
-		return nil, errors.Join(errors.New("backup: snapshots directory changed while opening it"), err)
+		return nil, errors.Join(fmt.Errorf("backup: %s directory changed while opening it", name), err)
 	}
 	return root, nil
 }

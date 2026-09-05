@@ -1,10 +1,13 @@
 package backup
 
-// ProgressStage names one phase of a Create or Verify run that reports
-// progress.
+// ProgressStage names one phase of a backup operation that reports progress.
 type ProgressStage string
 
 const (
+	// ProgressStagePruneIndexes covers retiring superseded repository indexes.
+	ProgressStagePruneIndexes ProgressStage = "prune_indexes"
+	// ProgressStagePrunePacks covers deleting obsolete pack files.
+	ProgressStagePrunePacks ProgressStage = "prune_packs"
 	// ProgressStageFreeze covers opening the frozen read session.
 	ProgressStageFreeze ProgressStage = "freeze"
 	// ProgressStageScan covers the full page-hash scan.
@@ -45,7 +48,7 @@ const (
 // item count isn't known in advance. BytesDone and BytesTotal are the
 // corresponding byte counts where meaningful; BytesTotal is 0 when the byte
 // total isn't known ahead of time (a renderer can still show BytesDone and a
-// derived rate). Final marks the last event Create or Verify will emit for
+// derived rate). Final marks the last event the operation will emit for
 // this Stage, i.e., the stage has completed.
 type ProgressEvent struct {
 	Stage      ProgressStage

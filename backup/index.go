@@ -157,6 +157,10 @@ func (r *Repo) WriteIndex(entries []IndexEntry) (string, error) {
 // reusing the orphaned blob instead of duplicating it. There is no unsafe
 // window: the failure that can orphan an index happens strictly after the
 // data it describes is already durable.
+//
+// Prune follows the same publication rule: replacement packs precede the
+// merged index, and all old indexes are retired durably before old packs.
+// Manifest NewIndex fields record capture history, not this live index set.
 func (r *Repo) LoadBlobIndex() (map[pack.BlobID]IndexEntry, error) {
 	entries, err := os.ReadDir(r.Path(indexesDirName))
 	if err != nil {

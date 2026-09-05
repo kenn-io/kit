@@ -292,6 +292,8 @@ func TestCreateWorktreeOnDiskPreservesRunnerConfigurationWithNilEnv(t *testing.T
 		Path:        filepath.Join(t.TempDir(), "wt"),
 		Runner: gitcmd.Runner{
 			Config: []gitcmd.Config{{Key: "advice.detachedHead", Value: "false"}},
+			// Keep Env nil without inheriting the invoking hook's repository.
+			StripEnv: true,
 		},
 		RunGit: func(
 			ctx context.Context, runner gitcmd.Runner, dir string, args ...string,
@@ -306,6 +308,7 @@ func TestCreateWorktreeOnDiskPreservesRunnerConfigurationWithNilEnv(t *testing.T
 	})
 	require.NoError(err)
 	assert.True(configSeen)
+	assert.True(branchExistsInRepo(t, repo, "configured-runner"))
 }
 
 func TestCreateWorktreeResultRollbackPreservesAdvancedBranch(t *testing.T) {
