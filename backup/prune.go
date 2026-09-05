@@ -143,9 +143,13 @@ func rewritePrunePacks(ctx context.Context, r *Repo, app App, known, live map[pa
 	// map there would deduplicate against the very packs being retired.
 	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, app.PackFileExtension())
 	defer appender.Abort()
+	repackIDs := make(map[string]bool, len(plan.result.PacksToRepack))
+	for _, id := range plan.result.PacksToRepack {
+		repackIDs[id] = true
+	}
 	var copyEntries []IndexEntry
 	for _, entry := range live {
-		if slices.Contains(plan.result.PacksToRepack, entry.PackID) {
+		if repackIDs[entry.PackID] {
 			copyEntries = append(copyEntries, entry)
 		}
 	}
