@@ -293,18 +293,32 @@ func (r *Repo) PageMapChain(head *Manifest) ([]pack.BlobID, error) {
 }
 
 func (r *Repo) mapChain(head *Manifest, field func(*Manifest) string) ([]pack.BlobID, error) {
+	manifests, err := r.manifestChain(head)
+	if err != nil {
+		return nil, err
+	}
 	var chain []pack.BlobID
-	m := head
-	visited := make(map[string]struct{})
-	iterations := 0
-
-	for {
+	for _, m := range manifests {
 		id, err := pack.ParseBlobID(field(m))
 		if err != nil {
 			return nil, fmt.Errorf("backup: snapshot %s map blob: %w", m.SnapshotID, err)
 		}
 		chain = append(chain, id)
-		if m.DB.MapChainDepth == 0 {
+	}
+	return chain, nil
+}
+
+// manifestChain is the recovery dependency chain, newest to keyframe.
+// Portable metadata is self-contained; its ParentID is informational.
+func (r *Repo) manifestChain(head *Manifest) ([]*Manifest, error) {
+	var chain []*Manifest
+	m := head
+	visited := make(map[string]struct{})
+	iterations := 0
+
+	for {
+		chain = append(chain, m)
+		if m.Metadata != nil || m.DB.MapChainDepth == 0 {
 			return chain, nil
 		}
 

@@ -383,9 +383,31 @@ why content stayed loose.
 
 `verify` enumerates every blob a manifest can reach — page-map chains and their blob tables, hash-map chains, attachment lists and every listed content hash, the extras tree and its entries — and checks each against the index and packs. Quick mode proves structure (references resolve, objects decode, packs exist); full mode additionally reads every referenced blob and re-derives its SHA-256 identity, compares each attachment list and extras tree entry's recorded size against the blob's actual content length (restore refuses a mismatch, so verify must flag it), confirms materialized page/hash maps match the manifest's recorded geometry with full coverage, and checks every page-map run against its blob's actual bytes — the run must fit inside the blob and each mapped page must hash to the page-hash map's entry, exactly as restore's materialization requires. Extras tree paths are held to restore's rules in both modes: escaping or reserved-overlapping paths and case-folded path collisions are Problems, not restore-time surprises. Capture enforces the same rules, so a snapshot with such paths is never written in the first place; verify's check exists for trees written by other tools or tampered after the fact. Problems are collected, not fail-fast, and each names the snapshot, blob, and pack involved.
 
+## Removing Recovery Points
+
+`Forget` removes explicitly selected snapshot manifests under the exclusive
+repository lock. `DryRun` validates the same selection and reports the removal
+order without deleting manifests. Duplicate IDs are ignored; unknown IDs fail
+before deletion. Removing the last recovery point requires `AllowEmpty`, which
+is independent of lock recovery's `ForceUnlock`.
+
+A retained SQLite incremental snapshot still needs its parent manifests through
+the first keyframe. Forget rejects a selection that would break that chain.
+Portable metadata snapshots and SQLite keyframes are self-contained: their
+`ParentID` does not keep an older manifest alive. Selected children are removed
+before their parents, with the snapshots directory synced after each deletion
+(subject to the Windows directory-sync limitation described above). Cancellation
+or an error can leave a partially completed selection; the result reports which
+manifests were removed. A sync error means the last removal may not be durable.
+
+Forget leaves packs and indexes untouched. It does **not** erase historical
+content or reclaim disk space. Pruning that unused content remains planned.
+Applications choose their own retention schedule and pass explicit snapshot IDs.
+
 ## Current Limitations
 
-- Repository encryption and retention (forgetting and pruning snapshots) are not yet implemented; the format reserves flags and fields for them (`encryption` in the repo config, the `encrypted` blob flag, crypter parameters threaded through the code as nil).
+- Repository encryption is not yet implemented; the format reserves flags and fields for it (`encryption` in the repo config, the `encrypted` blob flag, crypter parameters threaded through the code as nil).
+- Snapshot forgetting is available, but unused packed bytes are not reclaimed yet.
 - The runtime database produced by restore must currently be SQLite because
   packed-content catalog replacement and final database checks operate on it.
   The archived metadata itself may be an application-defined portable
@@ -401,6 +423,6 @@ database checks against scratch space, without writing a target, remains planned
 
 **Encryption.** Initializing a repository with encryption enabled generates a random 256-bit repository key; every blob, footer, index, and manifest is encrypted with XChaCha20-Poly1305, with the AAD binding each ciphertext to its identity (blob ID, or object role plus ID). The repository key is wrapped with [age](https://age-encryption.org) to one or more recipients (scrypt passphrase and/or X25519 identities) in `keys/master.age`; adding, removing, or rotating recipients rewraps the key without rewriting objects. `config.toml` stays plaintext by necessity; tampering yields detectable failures, not silent corruption. Key loss is unrecoverable by design. Blob IDs remain plaintext-content hashes but appear only inside encrypted metadata.
 
-**Retention.** Forgetting a snapshot deletes its manifest file (refusing to drop the last snapshot without an explicit force); pruning takes the exclusive lock, walks the remaining manifests to collect the live blob set, deletes fully-dead packs, repacks packs below 50% live content, and writes merged indexes — with new packs and indexes durable before anything is deleted, so a crash mid-prune never breaks reference closure. Until these ship, content purged from the application's live store persists in historical snapshots.
+**Pruning.** Pruning will take the exclusive lock, walk the remaining manifests to collect the live blob set, delete fully-dead packs, repack packs below 50% live content, and write merged indexes — with new packs and indexes durable before anything is deleted, so a crash mid-prune never breaks reference closure. Until pruning ships, forgetting snapshots leaves their unused content in the repository.
 
 **Performance follow-ups.** Two accepted deferrals from review: detecting a same-page-size `VACUUM` by delta-ratio anomaly (warn that a keyframe would be cheaper), and a streaming page-map merge for memory-constrained hosts. Further out: an export mode (one self-contained archive file), WAL shipping for point-in-time recovery, native remote backends, and application-scheduled backups.
