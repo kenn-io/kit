@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -158,6 +159,10 @@ var snapshotIDPattern = regexp.MustCompile(`^\d{8}T\d{6}Z-[0-9a-f]{32}$`)
 
 // LoadManifest reads one manifest by snapshot ID.
 func (r *Repo) LoadManifest(id string) (*Manifest, error) {
+	return loadManifest(os.DirFS(r.Path(snapshotsDirName)), id)
+}
+
+func loadManifest(snapshots fs.FS, id string) (*Manifest, error) {
 	// The ID becomes a filename under snapshots/, and it arrives from
 	// untrusted places — a caller's RestoreOptions.SnapshotID, or the
 	// parent_id of a manifest in a synced-in repository — so anything but
@@ -167,7 +172,7 @@ func (r *Repo) LoadManifest(id string) (*Manifest, error) {
 	if !snapshotIDPattern.MatchString(id) {
 		return nil, fmt.Errorf("backup: snapshot id %q is not a valid snapshot ID", id)
 	}
-	data, err := os.ReadFile(r.Path(snapshotsDirName, id+manifestExt))
+	data, err := fs.ReadFile(snapshots, id+manifestExt)
 	if err != nil {
 		return nil, fmt.Errorf("backup: loading snapshot %s: %w", id, err)
 	}
@@ -250,7 +255,11 @@ func validateAuxiliaryManifest(m *Manifest) error {
 // create.go), so even snapshots created within the same wall-clock second
 // still sort chronologically by ID. Lock-free by design.
 func (r *Repo) ListSnapshots() ([]*Manifest, error) {
-	entries, err := os.ReadDir(r.Path(snapshotsDirName))
+	return listSnapshots(os.DirFS(r.Path(snapshotsDirName)))
+}
+
+func listSnapshots(snapshots fs.FS) ([]*Manifest, error) {
+	entries, err := fs.ReadDir(snapshots, ".")
 	if err != nil {
 		return nil, fmt.Errorf("backup: reading snapshots dir: %w", err)
 	}
@@ -259,7 +268,7 @@ func (r *Repo) ListSnapshots() ([]*Manifest, error) {
 		if !strings.HasSuffix(e.Name(), manifestExt) {
 			continue
 		}
-		m, err := r.LoadManifest(strings.TrimSuffix(e.Name(), manifestExt))
+		m, err := loadManifest(snapshots, strings.TrimSuffix(e.Name(), manifestExt))
 		if err != nil {
 			return nil, err
 		}
@@ -293,18 +302,36 @@ func (r *Repo) PageMapChain(head *Manifest) ([]pack.BlobID, error) {
 }
 
 func (r *Repo) mapChain(head *Manifest, field func(*Manifest) string) ([]pack.BlobID, error) {
+	manifests, err := r.manifestChain(head)
+	if err != nil {
+		return nil, err
+	}
 	var chain []pack.BlobID
-	m := head
-	visited := make(map[string]struct{})
-	iterations := 0
-
-	for {
+	for _, m := range manifests {
 		id, err := pack.ParseBlobID(field(m))
 		if err != nil {
 			return nil, fmt.Errorf("backup: snapshot %s map blob: %w", m.SnapshotID, err)
 		}
 		chain = append(chain, id)
-		if m.DB.MapChainDepth == 0 {
+	}
+	return chain, nil
+}
+
+// manifestChain is the recovery dependency chain, newest to keyframe.
+// Portable metadata is self-contained; its ParentID is informational.
+func (r *Repo) manifestChain(head *Manifest) ([]*Manifest, error) {
+	return walkManifestChain(head, r.LoadManifest)
+}
+
+func walkManifestChain(head *Manifest, load func(string) (*Manifest, error)) ([]*Manifest, error) {
+	var chain []*Manifest
+	m := head
+	visited := make(map[string]struct{})
+	iterations := 0
+
+	for {
+		chain = append(chain, m)
+		if m.Metadata != nil || m.DB.MapChainDepth == 0 {
 			return chain, nil
 		}
 
@@ -326,7 +353,7 @@ func (r *Repo) mapChain(head *Manifest, field func(*Manifest) string) ([]pack.Bl
 		if m.ParentID == "" {
 			return nil, fmt.Errorf("backup: snapshot %s has chain depth %d but no parent", m.SnapshotID, m.DB.MapChainDepth)
 		}
-		parent, err := r.LoadManifest(m.ParentID)
+		parent, err := load(m.ParentID)
 		if err != nil {
 			return nil, fmt.Errorf("backup: walking map chain: %w", err)
 		}
