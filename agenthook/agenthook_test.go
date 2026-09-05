@@ -154,6 +154,8 @@ func TestInstallJSONPreservesOtherHooksAndReplacesOwnedHooks(t *testing.T) {
     "SessionStart": [{"hooks": [{"type": "command", "command": "`+oldCommand+`"}]}]
   }
 }`), 0o640))
+	// Establish the mode being preserved regardless of the process umask.
+	require.NoError(os.Chmod(path, 0o640))
 	command := "/opt/middleman agent-hook run " + testMarker
 	opts := InstallOptions{
 		ConfigPath: path,
