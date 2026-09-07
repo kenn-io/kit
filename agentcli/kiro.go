@@ -33,6 +33,9 @@ var kiroCapabilities = Capabilities{
 }
 
 func buildKiro(a *adapter, sessionID string, request Request) (Invocation, error) {
+	if err := validatePrompt(request.Prompt); err != nil {
+		return Invocation{}, err
+	}
 	args := []string{a.executable, "chat"}
 	args = append(args, a.options...)
 	args = append(args, "--no-interactive")
@@ -49,9 +52,6 @@ func buildKiro(a *adapter, sessionID string, request Request) (Invocation, error
 		args = append(args, "--trust-tools", joinComma(request.AllowedTools))
 	}
 	if request.Prompt.Source == PromptArgument {
-		if err := validatePrompt(request.Prompt); err != nil {
-			return Invocation{}, err
-		}
 		args = append(args, "--")
 		promptArgs, _, err := appendPrompt(args, request.Prompt, "", false)
 		if err != nil {

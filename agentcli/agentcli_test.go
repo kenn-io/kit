@@ -118,6 +118,11 @@ func TestUnsupportedRequestsReturnTypedErrors(t *testing.T) {
 	require.Error(err)
 }
 
+func TestKiroRejectsPromptWithoutSource(t *testing.T) {
+	_, err := mustAgent(t, agentcli.Kiro, agentcli.Command{}).Start(agentcli.Request{Mode: agentcli.NonInteractive, Prompt: agentcli.Prompt{Text: "review this"}})
+	require.Error(t, err)
+}
+
 func TestCapabilitiesAreExplicitAndIndependent(t *testing.T) {
 	t.Parallel()
 	assert := assert.New(t)
@@ -191,6 +196,7 @@ func TestConfiguredOptionsConflictWithRequest(t *testing.T) {
 		{agentcli.Codex, []string{"--model", "configured"}, agentcli.Request{Model: "requested"}},
 		{agentcli.Claude, []string{"--effort", "high"}, agentcli.Request{Reasoning: agentcli.ReasoningXHigh}},
 		{agentcli.Pi, []string{"--provider", "configured"}, agentcli.Request{Provider: "requested"}},
+		{agentcli.Pi, []string{"--extension", "configured"}, agentcli.Request{Mode: agentcli.NonInteractive, Schema: agentcli.JSONSchema{Inline: `{}`, Extension: "requested", OutputPath: "result.json"}}},
 		{agentcli.Gemini, []string{"--output-format", "json"}, agentcli.Request{Mode: agentcli.NonInteractive, OutputFormat: agentcli.OutputJSONL}},
 		{agentcli.Copilot, []string{"--disable-builtin-mcps"}, agentcli.Request{Mode: agentcli.NonInteractive, DisableBuiltInMCPs: true}},
 		{agentcli.OpenCode, []string{"--model", "configured"}, agentcli.Request{Mode: agentcli.NonInteractive, Model: "requested"}},

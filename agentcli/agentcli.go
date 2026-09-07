@@ -394,7 +394,7 @@ func (a adapter) validateConfiguredRequest(request Request) error {
 		{request.Provider != "", "provider", []string{"provider"}}, {request.Model != "", "model", []string{"model"}},
 		{request.Reasoning != ReasoningDefault, "reasoning", []string{"reasoning", "effort", "thinking"}},
 		{request.OutputFormat != OutputDefault, "output format", []string{"output-format", "stream", "mode"}},
-		{request.Schema.Inline != "" || request.Schema.Path != "", "JSON schema", []string{"json-schema", "json-output", "json-fallback"}},
+		{request.Schema.Inline != "" || request.Schema.Path != "", "JSON schema", []string{"extension", "json-schema", "json-output", "json-fallback"}},
 		{request.Sandbox != SandboxDefault, "sandbox", []string{"sandbox"}},
 		{request.Approval != ApprovalDefault, "approval mode", []string{"approval", "approve-for-me", "approval-bypass", "permission-mode", "approval-mode"}},
 		{request.Autonomy != AutonomyDefault, "autonomy", []string{"autonomy"}},
