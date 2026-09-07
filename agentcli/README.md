@@ -63,7 +63,7 @@ shape that RoboRev currently needs.
 
 | Agent | Modes | Prompt | Resume | Output | Reasoning |
 | --- | --- | --- | --- | --- | --- |
-| Codex | interactive, noninteractive | argument, stdin | `resume ID`, `exec resume ID` | text, JSONL | low, medium, high, xhigh |
+| Codex | interactive, noninteractive | argument, stdin | `resume ID`, `exec resume ID` | text, JSONL | low, medium, high, xhigh, maximum |
 | Claude Code | interactive, noninteractive | argument, stdin | `--resume ID` | text, JSON, JSONL | low, medium, high, xhigh, maximum |
 | Gemini | noninteractive | `--prompt`, stdin appended to `--prompt` | `--resume ID` | text, JSON, JSONL | none |
 | GitHub Copilot | noninteractive | `--prompt` | `--resume=ID` | text, JSONL | low, medium, high, xhigh, maximum |
@@ -75,9 +75,8 @@ shape that RoboRev currently needs.
 | Pi | interactive, noninteractive | argument and `@file` | `--session ID` | text, JSONL | low, medium, high, xhigh, maximum |
 
 `ReasoningXHigh` and `ReasoningMaximum` are distinct. Adapters with a native
-`max` value map only `ReasoningMaximum` to it. Codex does not advertise
-`ReasoningMaximum` because its CLI advertises `xhigh` but not `max`. Droid
-accepts model-dependent reasoning values, and Kilo passes the value as a
+`max` value, including Codex, map only `ReasoningMaximum` to it. Droid accepts
+model-dependent reasoning values, and Kilo passes the value as a
 provider-specific model variant, so the selected model remains the final
 authority for those two commands.
 

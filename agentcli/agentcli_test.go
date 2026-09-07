@@ -296,6 +296,7 @@ func TestCapabilitiesAreExplicitAndIndependent(t *testing.T) {
 		agentcli.ReasoningMedium,
 		agentcli.ReasoningHigh,
 		agentcli.ReasoningXHigh,
+		agentcli.ReasoningMaximum,
 	}, capabilities.ReasoningLevels)
 
 	capabilities.Modes[0] = "changed"
@@ -543,28 +544,26 @@ func TestReasoningXHighRemainsDistinctFromMaximum(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
 
-	constructors := []func(agentcli.Command) (agentcli.Adapter, error){
-		agentcli.NewClaude,
-		agentcli.NewPi,
-		agentcli.NewCopilot,
-		agentcli.NewKilo,
-		agentcli.NewKiro,
-		agentcli.NewDroid,
+	tests := []struct {
+		new            func(agentcli.Command) (agentcli.Adapter, error)
+		xhigh, maximum string
+	}{
+		{agentcli.NewCodex, `model_reasoning_effort="xhigh"`, `model_reasoning_effort="max"`},
+		{agentcli.NewClaude, "xhigh", "max"},
+		{agentcli.NewPi, "xhigh", "max"},
+		{agentcli.NewCopilot, "xhigh", "max"},
+		{agentcli.NewKilo, "xhigh", "max"},
+		{agentcli.NewKiro, "xhigh", "max"},
+		{agentcli.NewDroid, "xhigh", "max"},
 	}
-	for _, constructor := range constructors {
-		agent, err := constructor(agentcli.Command{})
+	for _, test := range tests {
+		agent, err := test.new(agentcli.Command{})
 		require.NoError(err)
 		xhigh, err := agent.Start(agentcli.Request{Mode: agentcli.NonInteractive, Reasoning: agentcli.ReasoningXHigh})
 		require.NoError(err)
 		maximum, err := agent.Start(agentcli.Request{Mode: agentcli.NonInteractive, Reasoning: agentcli.ReasoningMaximum})
 		require.NoError(err)
-		assert.Contains(xhigh.Argv, "xhigh", agent.Name())
-		assert.Contains(maximum.Argv, "max", agent.Name())
+		assert.Contains(xhigh.Argv, test.xhigh, agent.Name())
+		assert.Contains(maximum.Argv, test.maximum, agent.Name())
 	}
-
-	codex := newCodex(t, agentcli.Command{})
-	_, err := codex.Start(agentcli.Request{Reasoning: agentcli.ReasoningMaximum})
-	var unsupported *agentcli.UnsupportedOptionError
-	require.ErrorAs(err, &unsupported)
-	assert.Equal("reasoning", unsupported.Option)
 }

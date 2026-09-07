@@ -48,7 +48,7 @@ var codexCapabilities = Capabilities{
 	JSONSchemaPath:        true,
 	JSONSchemaOutputPath:  true,
 	Model:                 true,
-	ReasoningLevels:       []ReasoningLevel{ReasoningLow, ReasoningMedium, ReasoningHigh, ReasoningXHigh},
+	ReasoningLevels:       []ReasoningLevel{ReasoningLow, ReasoningMedium, ReasoningHigh, ReasoningXHigh, ReasoningMaximum},
 	SandboxModes:          []SandboxMode{SandboxReadOnly, SandboxWorkspaceWrite, SandboxDangerFullAccess},
 	ApprovalModes:         []ApprovalMode{ApprovalOnRequest, ApprovalNever, ApprovalBypass},
 	DisableSkills:         true,
@@ -225,7 +225,7 @@ func validateCodexRequest(mode Mode, request Request) error {
 		return unsupported(Codex, mode, "output format", string(request.OutputFormat), "request text or jsonl")
 	}
 	if request.Reasoning != ReasoningDefault && codexReasoning(request.Reasoning) == "" {
-		return unsupported(Codex, mode, "reasoning", string(request.Reasoning), "request low, medium, high, or xhigh")
+		return unsupported(Codex, mode, "reasoning", string(request.Reasoning), "request low, medium, high, xhigh, or maximum")
 	}
 	if request.Approval == ApprovalBypass && request.Sandbox != SandboxDefault {
 		return fmt.Errorf("agent %q cannot combine approval bypass with sandbox %q", Codex, request.Sandbox)
@@ -243,6 +243,8 @@ func codexReasoning(level ReasoningLevel) string {
 	switch level {
 	case ReasoningLow, ReasoningMedium, ReasoningHigh, ReasoningXHigh:
 		return string(level)
+	case ReasoningMaximum:
+		return "max"
 	default:
 		return ""
 	}
