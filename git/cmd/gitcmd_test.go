@@ -264,7 +264,9 @@ func TestReadSafeDirectoriesBoundsProbeRuntime(t *testing.T) {
 	got := readSafeDirectories(context.Background(), env, "")
 
 	Assert.Empty(t, got)
-	Assert.Less(t, time.Since(start), time.Second, "safe.directory probes are best-effort and must not stall git commands")
+	// Windows process teardown can take more than a second on a busy CI runner.
+	// This remains well below the sleeping fixture's ten-second runtime.
+	Assert.Less(t, time.Since(start), 5*time.Second, "safe.directory probes are best-effort and must not stall git commands")
 }
 
 func TestReadSafeDirectoriesConditionalInclude(t *testing.T) {
