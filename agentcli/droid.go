@@ -25,7 +25,7 @@ var droidOptionGrammar = optionGrammar{
 }
 
 var droidCapabilities = Capabilities{
-	Modes: []Mode{NonInteractive}, PromptSources: []PromptSource{PromptArgument, PromptStdin}, Resume: true,
+	Modes: []Mode{NonInteractive}, Resume: true,
 	OutputFormats: []OutputFormat{OutputText, OutputJSON, OutputJSONL}, Model: true,
 	ReasoningLevels: []ReasoningLevel{ReasoningLow, ReasoningMedium, ReasoningHigh, ReasoningXHigh, ReasoningMaximum},
 	AutonomyLevels:  []AutonomyLevel{AutonomyLow, AutonomyMedium, AutonomyHigh},
@@ -66,7 +66,7 @@ func buildDroid(a *adapter, sessionID string, request Request) (Invocation, erro
 	case OutputJSONL:
 		args = append(args, "--output-format", "stream-json")
 	}
-	args, stdin, err := appendPrompt(args, request.Prompt, "", false)
+	stdin, err := stdinPrompt(request.Prompt)
 	if err != nil {
 		return Invocation{}, fmt.Errorf("build %s invocation: %w", Droid, err)
 	}

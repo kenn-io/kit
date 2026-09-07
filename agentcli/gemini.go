@@ -31,7 +31,7 @@ var geminiOptionGrammar = optionGrammar{
 }
 
 var geminiCapabilities = Capabilities{
-	Modes: []Mode{NonInteractive}, PromptSources: []PromptSource{PromptArgument, PromptStdin}, Resume: true,
+	Modes: []Mode{NonInteractive}, Resume: true,
 	OutputFormats: []OutputFormat{OutputText, OutputJSON, OutputJSONL}, Model: true,
 	ApprovalModes: []ApprovalMode{ApprovalNever, ApprovalBypass},
 }
@@ -56,16 +56,12 @@ func buildGemini(a *adapter, sessionID string, request Request) (Invocation, err
 	case ApprovalBypass:
 		args = append(args, "--approval-mode", "yolo")
 	}
-	if err := validatePrompt(request.Prompt); err != nil {
+	stdin, err := stdinPrompt(request.Prompt)
+	if err != nil {
 		return Invocation{}, fmt.Errorf("build %s invocation: %w", Gemini, err)
 	}
-	var stdin *string
-	switch request.Prompt.Source {
-	case PromptArgument:
-		args = append(args, "--prompt", request.Prompt.Text)
-	case PromptStdin:
+	if stdin != nil {
 		args = append(args, "--prompt", "")
-		stdin = new(request.Prompt.Text)
 	}
 	return Invocation{Argv: args, Stdin: stdin}, nil
 }

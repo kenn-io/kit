@@ -83,21 +83,12 @@ const (
 	OutputJSONL   OutputFormat = "jsonl"
 )
 
-// PromptSource describes how a prompt reaches the agent process.
-type PromptSource string
-
-const (
-	PromptNone     PromptSource = ""
-	PromptArgument PromptSource = "argument"
-	PromptStdin    PromptSource = "stdin"
-)
-
-// Prompt is an optional initial or resumed-turn prompt. Files are supported by
-// agents whose command line has a native file-reference syntax.
+// Prompt is an optional initial or resumed-turn prompt. Its zero value means no
+// prompt. Each adapter chooses its CLI's normal argument or stdin transport.
+// Files are supported by agents with native file-reference syntax.
 type Prompt struct {
-	Source PromptSource
-	Text   string
-	Files  []string
+	Text  string
+	Files []string
 }
 
 // ReasoningLevel is the portable subset of agent reasoning controls.
@@ -206,7 +197,6 @@ type ToolCapabilities struct {
 // Capabilities reports which Request fields an adapter can honor.
 type Capabilities struct {
 	Modes                  []Mode
-	PromptSources          []PromptSource
 	PromptFiles            bool
 	Resume                 bool
 	OutputFormats          []OutputFormat
@@ -436,22 +426,6 @@ func validateSessionID(sessionID string) (string, error) {
 	return sessionID, nil
 }
 
-func validatePrompt(prompt Prompt) error {
-	switch prompt.Source {
-	case PromptNone:
-		if prompt.Text != "" || len(prompt.Files) != 0 {
-			return fmt.Errorf("agent prompt source is required when prompt content is set")
-		}
-	case PromptArgument, PromptStdin:
-	default:
-		return fmt.Errorf("unknown agent prompt source %q", prompt.Source)
-	}
-	if prompt.Source == PromptStdin && len(prompt.Files) != 0 {
-		return fmt.Errorf("agent prompt files require argument delivery")
-	}
-	return nil
-}
-
 func validateValues(option string, values []string) error {
 	for _, value := range values {
 		if strings.TrimSpace(value) == "" {
@@ -483,7 +457,6 @@ func validateSupportedRequest(name Name, mode Mode, request Request, capabilitie
 		option    string
 		value     string
 	}{
-		{request.Prompt.Source != PromptNone, slices.Contains(capabilities.PromptSources, request.Prompt.Source), "prompt transport", string(request.Prompt.Source)},
 		{len(request.Prompt.Files) != 0, capabilities.PromptFiles, "prompt files", ""},
 		{request.OutputFormat != OutputDefault, slices.Contains(capabilities.OutputFormats, request.OutputFormat), "output format", string(request.OutputFormat)},
 		{request.Schema.Inline != "", capabilities.JSONSchemaInline, "inline JSON schema", ""},
@@ -520,40 +493,34 @@ func validateSupportedRequest(name Name, mode Mode, request Request, capabilitie
 	return nil
 }
 
-func appendPrompt(args []string, prompt Prompt, stdinMarker string, supportsFiles bool) ([]string, *string, error) {
-	if err := validatePrompt(prompt); err != nil {
-		return nil, nil, err
-	}
+func appendArgumentPrompt(args []string, prompt Prompt, supportsFiles bool) ([]string, error) {
 	if len(prompt.Files) != 0 && !supportsFiles {
-		return nil, nil, fmt.Errorf("agent does not support prompt file arguments")
+		return nil, fmt.Errorf("agent does not support prompt file arguments")
 	}
-	switch prompt.Source {
-	case PromptNone:
-		return args, nil, nil
-	case PromptStdin:
-		if stdinMarker != "" {
-			args = append(args, stdinMarker)
+	for _, file := range prompt.Files {
+		if strings.TrimSpace(file) == "" {
+			return nil, fmt.Errorf("agent prompt file path is empty")
 		}
-		return args, new(prompt.Text), nil
-	case PromptArgument:
-		for _, file := range prompt.Files {
-			if strings.TrimSpace(file) == "" {
-				return nil, nil, fmt.Errorf("agent prompt file path is empty")
-			}
-			args = append(args, "@"+file)
-		}
-		if prompt.Text != "" {
-			args = append(args, prompt.Text)
-		}
-		return args, nil, nil
-	default:
-		panic("prompt source validated above")
+		args = append(args, "@"+file)
 	}
+	if prompt.Text != "" {
+		args = append(args, prompt.Text)
+	}
+	return args, nil
+}
+
+func stdinPrompt(prompt Prompt) (*string, error) {
+	if len(prompt.Files) != 0 {
+		return nil, fmt.Errorf("agent does not support prompt file arguments")
+	}
+	if prompt.Text == "" {
+		return nil, nil
+	}
+	return new(prompt.Text), nil
 }
 
 func cloneCapabilities(capabilities Capabilities) Capabilities {
 	capabilities.Modes = slices.Clone(capabilities.Modes)
-	capabilities.PromptSources = slices.Clone(capabilities.PromptSources)
 	capabilities.OutputFormats = slices.Clone(capabilities.OutputFormats)
 	capabilities.ReasoningLevels = slices.Clone(capabilities.ReasoningLevels)
 	capabilities.SandboxModes = slices.Clone(capabilities.SandboxModes)

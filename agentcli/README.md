@@ -8,8 +8,9 @@ terminals and persistent state.
 
 Constructors accept an executable separately from configured options and
 validate the options immediately. Configured options may not contain a prompt,
-subcommand, session selector, `--`, or an option with ambiguous arity. Put every
-prompt in `Request.Prompt`; use `Resume` for a saved session identity.
+subcommand, session selector, `--`, or an option with ambiguous arity. Put prompt
+text in `Request.Prompt`; its zero value means no prompt. The adapter chooses the
+CLI's normal argument or stdin transport. Use `Resume` for a saved session.
 
 ## Consumer examples
 
@@ -28,11 +29,10 @@ invocation, err := agent.Resume(sessionID, agentcli.Request{})
 // invocation.Argv: codex --profile forge resume <sessionID>
 ```
 
-RoboRev can select an adapter by name and request a noninteractive event
-stream. The adapter reports whether it expects the prompt in argv or stdin:
+RoboRev can select an adapter by name and request a noninteractive event stream:
 
 ```go
-prompt := agentcli.Prompt{Source: agentcli.PromptStdin, Text: reviewPrompt}
+prompt := agentcli.Prompt{Text: reviewPrompt}
 agent, err := agentcli.New(agentcli.Codex, agentcli.Command{Executable: configuredExecutable})
 if err != nil {
 	return err
@@ -63,15 +63,15 @@ shape that RoboRev currently needs.
 
 | Agent | Modes | Prompt | Resume | Output | Reasoning |
 | --- | --- | --- | --- | --- | --- |
-| Codex | interactive, noninteractive | argument, stdin | `resume ID`, `exec resume ID` | text, JSONL | low, medium, high, xhigh, maximum |
-| Claude Code | interactive, noninteractive | argument, stdin | `--resume ID` | text, JSON, JSONL | low, medium, high, xhigh, maximum |
-| Gemini | noninteractive | `--prompt`, stdin appended to `--prompt` | `--resume ID` | text, JSON, JSONL | none |
+| Codex | interactive, noninteractive | argument when interactive, stdin when noninteractive | `resume ID`, `exec resume ID` | text, JSONL | low, medium, high, xhigh, maximum |
+| Claude Code | interactive, noninteractive | argument when interactive, stdin when noninteractive | `--resume ID` | text, JSON, JSONL | low, medium, high, xhigh, maximum |
+| Gemini | noninteractive | stdin through `--prompt` | `--resume ID` | text, JSON, JSONL | none |
 | GitHub Copilot | noninteractive | `--prompt` | `--resume=ID` | text, JSONL | low, medium, high, xhigh, maximum |
 | OpenCode | noninteractive | stdin | `run --session ID` | text, JSONL | none |
 | Cursor Agent | noninteractive | stdin | `--resume ID` | text, JSON, JSONL | none |
 | Kiro | noninteractive | argument | `chat --resume-id ID` | text | low, medium, high, xhigh, maximum |
 | Kilo | noninteractive | stdin | `run --session ID` | text, JSONL | low, medium, high, xhigh, maximum |
-| Factory Droid | noninteractive | argument, stdin | `exec --session-id ID` | text, JSON, JSONL | low, medium, high, xhigh, maximum |
+| Factory Droid | noninteractive | stdin | `exec --session-id ID` | text, JSON, JSONL | low, medium, high, xhigh, maximum |
 | Pi | interactive, noninteractive | argument and `@file` | `--session ID` | text, JSONL | low, medium, high, xhigh, maximum |
 
 `ReasoningXHigh` and `ReasoningMaximum` are distinct. Adapters with a native

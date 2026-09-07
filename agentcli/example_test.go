@@ -31,7 +31,7 @@ func ExampleAdapter_Start() {
 	prompt := "review this change"
 	invocation, err := agent.Start(agentcli.Request{
 		Mode:         agentcli.NonInteractive,
-		Prompt:       agentcli.Prompt{Source: agentcli.PromptStdin, Text: prompt},
+		Prompt:       agentcli.Prompt{Text: prompt},
 		OutputFormat: agentcli.OutputJSONL,
 	})
 	if err != nil {

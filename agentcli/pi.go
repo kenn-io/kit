@@ -44,7 +44,6 @@ var piOptionGrammar = optionGrammar{
 
 var piCapabilities = Capabilities{
 	Modes:                  []Mode{Interactive, NonInteractive},
-	PromptSources:          []PromptSource{PromptArgument},
 	PromptFiles:            true,
 	Resume:                 true,
 	OutputFormats:          []OutputFormat{OutputText, OutputJSONL},
@@ -132,14 +131,14 @@ func buildPi(a *adapter, sessionID string, request Request) (Invocation, error) 
 	if len(request.DeniedTools) != 0 {
 		args = append(args, "--exclude-tools", strings.Join(request.DeniedTools, ","))
 	}
-	if request.Prompt.Source == PromptArgument {
+	if request.Prompt.Text != "" || len(request.Prompt.Files) != 0 {
 		args = append(args, "--")
 	}
-	args, stdin, err := appendPrompt(args, request.Prompt, "", true)
+	args, err := appendArgumentPrompt(args, request.Prompt, true)
 	if err != nil {
 		return Invocation{}, fmt.Errorf("build %s invocation: %w", Pi, err)
 	}
-	return Invocation{Argv: args, Stdin: stdin}, nil
+	return Invocation{Argv: args}, nil
 }
 
 func validatePiRequest(mode Mode, request Request) error {

@@ -26,7 +26,7 @@ var cursorOptionGrammar = optionGrammar{
 }
 
 var cursorCapabilities = Capabilities{
-	Modes: []Mode{NonInteractive}, PromptSources: []PromptSource{PromptStdin}, Resume: true,
+	Modes: []Mode{NonInteractive}, Resume: true,
 	OutputFormats: []OutputFormat{OutputText, OutputJSON, OutputJSONL}, Model: true,
 	ApprovalModes: []ApprovalMode{ApprovalNever, ApprovalBypass},
 }
@@ -52,7 +52,7 @@ func buildCursor(a *adapter, sessionID string, request Request) (Invocation, err
 	case ApprovalBypass:
 		args = append(args, "--force")
 	}
-	args, stdin, err := appendPrompt(args, request.Prompt, "", false)
+	stdin, err := stdinPrompt(request.Prompt)
 	if err != nil {
 		return Invocation{}, fmt.Errorf("build %s invocation: %w", Cursor, err)
 	}

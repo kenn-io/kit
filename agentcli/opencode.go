@@ -22,7 +22,6 @@ var openCodeOptionGrammar = optionGrammar{
 
 var openCodeCapabilities = Capabilities{
 	Modes:         []Mode{NonInteractive},
-	PromptSources: []PromptSource{PromptStdin},
 	Resume:        true,
 	OutputFormats: []OutputFormat{OutputText, OutputJSONL},
 	Model:         true,
@@ -39,7 +38,7 @@ func buildOpenCode(a *adapter, sessionID string, request Request) (Invocation, e
 	if request.Model != "" {
 		args = append(args, "--model", request.Model)
 	}
-	args, stdin, err := appendPrompt(args, request.Prompt, "", false)
+	stdin, err := stdinPrompt(request.Prompt)
 	if err != nil {
 		return Invocation{}, fmt.Errorf("build %s invocation: %w", OpenCode, err)
 	}

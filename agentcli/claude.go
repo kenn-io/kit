@@ -57,7 +57,6 @@ var claudeOptionGrammar = optionGrammar{
 
 var claudeCapabilities = Capabilities{
 	Modes:                 []Mode{Interactive, NonInteractive},
-	PromptSources:         []PromptSource{PromptArgument, PromptStdin},
 	Resume:                true,
 	OutputFormats:         []OutputFormat{OutputText, OutputJSON, OutputJSONL},
 	JSONSchemaInline:      true,
@@ -124,7 +123,13 @@ func buildClaude(a *adapter, sessionID string, request Request) (Invocation, err
 	if len(request.DeniedTools) != 0 {
 		args = append(args, "--disallowedTools", strings.Join(request.DeniedTools, ","))
 	}
-	args, stdin, err := appendPrompt(args, request.Prompt, "", false)
+	var stdin *string
+	var err error
+	if mode == Interactive {
+		args, err = appendArgumentPrompt(args, request.Prompt, false)
+	} else {
+		stdin, err = stdinPrompt(request.Prompt)
+	}
 	if err != nil {
 		return Invocation{}, fmt.Errorf("build %s invocation: %w", Claude, err)
 	}
@@ -132,9 +137,6 @@ func buildClaude(a *adapter, sessionID string, request Request) (Invocation, err
 }
 
 func validateClaudeRequest(mode Mode, request Request) error {
-	if mode == Interactive && request.Prompt.Source == PromptStdin {
-		return unsupported(Claude, mode, "stdin prompt", "", "use argument delivery for an interactive prompt")
-	}
 	if request.DisableBuiltInTools && len(request.AllowedTools) != 0 {
 		return fmt.Errorf("agent %q cannot disable built-in tools and set an allowed tool list", Claude)
 	}

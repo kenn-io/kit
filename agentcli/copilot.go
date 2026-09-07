@@ -33,7 +33,7 @@ var copilotOptionGrammar = optionGrammar{
 }
 
 var copilotCapabilities = Capabilities{
-	Modes: []Mode{NonInteractive}, PromptSources: []PromptSource{PromptArgument}, Resume: true,
+	Modes: []Mode{NonInteractive}, Resume: true,
 	OutputFormats:      []OutputFormat{OutputText, OutputJSONL},
 	Model:              true,
 	ReasoningLevels:    []ReasoningLevel{ReasoningLow, ReasoningMedium, ReasoningHigh, ReasoningXHigh, ReasoningMaximum},
@@ -73,10 +73,10 @@ func buildCopilot(a *adapter, sessionID string, request Request) (Invocation, er
 	if request.DisableContextFiles {
 		args = append(args, "--no-custom-instructions")
 	}
-	if err := validatePrompt(request.Prompt); err != nil {
-		return Invocation{}, fmt.Errorf("build %s invocation: %w", Copilot, err)
+	if len(request.Prompt.Files) != 0 {
+		return Invocation{}, fmt.Errorf("build %s invocation: agent does not support prompt file arguments", Copilot)
 	}
-	if request.Prompt.Source == PromptArgument {
+	if request.Prompt.Text != "" {
 		args = append(args, "--prompt", request.Prompt.Text)
 	}
 	return Invocation{Argv: args}, nil

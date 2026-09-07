@@ -34,7 +34,6 @@ var codexOptionGrammar = optionGrammar{
 
 var codexCapabilities = Capabilities{
 	Modes:                 []Mode{Interactive, NonInteractive},
-	PromptSources:         []PromptSource{PromptArgument, PromptStdin},
 	Resume:                true,
 	OutputFormats:         []OutputFormat{OutputText, OutputJSONL},
 	JSONSchemaPath:        true,
@@ -118,7 +117,16 @@ func buildCodex(a *adapter, sessionID string, request Request) (Invocation, erro
 	if sessionID != "" {
 		args = append(args, sessionID)
 	}
-	args, stdin, err := appendPrompt(args, request.Prompt, "-", false)
+	var stdin *string
+	var err error
+	if mode == Interactive {
+		args, err = appendArgumentPrompt(args, request.Prompt, false)
+	} else {
+		stdin, err = stdinPrompt(request.Prompt)
+		if stdin != nil {
+			args = append(args, "-")
+		}
+	}
 	if err != nil {
 		return Invocation{}, fmt.Errorf("build %s invocation: %w", Codex, err)
 	}
@@ -126,9 +134,6 @@ func buildCodex(a *adapter, sessionID string, request Request) (Invocation, erro
 }
 
 func validateCodexRequest(mode Mode, request Request) error {
-	if mode == Interactive && request.Prompt.Source == PromptStdin {
-		return unsupported(Codex, mode, "stdin prompt", "", "use argument delivery for an interactive prompt")
-	}
 	if request.OutputPath != "" && request.Schema.OutputPath != "" && request.OutputPath != request.Schema.OutputPath {
 		return fmt.Errorf("agent %q received conflicting output paths", Codex)
 	}

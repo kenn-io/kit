@@ -24,7 +24,6 @@ var kiroOptionGrammar = optionGrammar{
 
 var kiroCapabilities = Capabilities{
 	Modes:           []Mode{NonInteractive},
-	PromptSources:   []PromptSource{PromptArgument},
 	Resume:          true,
 	OutputFormats:   []OutputFormat{OutputText},
 	ReasoningLevels: []ReasoningLevel{ReasoningLow, ReasoningMedium, ReasoningHigh, ReasoningXHigh, ReasoningMaximum},
@@ -33,9 +32,6 @@ var kiroCapabilities = Capabilities{
 }
 
 func buildKiro(a *adapter, sessionID string, request Request) (Invocation, error) {
-	if err := validatePrompt(request.Prompt); err != nil {
-		return Invocation{}, err
-	}
 	args := []string{a.executable, "chat"}
 	args = append(args, a.options...)
 	args = append(args, "--no-interactive")
@@ -51,9 +47,9 @@ func buildKiro(a *adapter, sessionID string, request Request) (Invocation, error
 	if len(request.AllowedTools) != 0 {
 		args = append(args, "--trust-tools", joinComma(request.AllowedTools))
 	}
-	if request.Prompt.Source == PromptArgument {
+	if request.Prompt.Text != "" || len(request.Prompt.Files) != 0 {
 		args = append(args, "--")
-		promptArgs, _, err := appendPrompt(args, request.Prompt, "", false)
+		promptArgs, err := appendArgumentPrompt(args, request.Prompt, false)
 		if err != nil {
 			return Invocation{}, fmt.Errorf("build %s invocation: %w", Kiro, err)
 		}

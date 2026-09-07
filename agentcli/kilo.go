@@ -21,7 +21,6 @@ var kiloOptionGrammar = optionGrammar{
 
 var kiloCapabilities = Capabilities{
 	Modes:           []Mode{NonInteractive},
-	PromptSources:   []PromptSource{PromptStdin},
 	Resume:          true,
 	OutputFormats:   []OutputFormat{OutputText, OutputJSONL},
 	Model:           true,
@@ -46,7 +45,7 @@ func buildKilo(a *adapter, sessionID string, request Request) (Invocation, error
 	if variant := reasoningValue(request.Reasoning); variant != "" {
 		args = append(args, "--variant", variant)
 	}
-	args, stdin, err := appendPrompt(args, request.Prompt, "", false)
+	stdin, err := stdinPrompt(request.Prompt)
 	if err != nil {
 		return Invocation{}, fmt.Errorf("build %s invocation: %w", Kilo, err)
 	}
