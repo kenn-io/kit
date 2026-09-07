@@ -5,14 +5,62 @@ import (
 	"strings"
 )
 
-// NewClaude returns a Claude Code adapter. Command may include configured
-// options; an empty command uses "claude".
-func NewClaude(command []string) Adapter {
-	return &claudeAdapter{adapter: newAdapter(Claude, command, "claude")}
+// NewClaude returns a Claude Code adapter after validating its configured
+// options. A zero Command uses "claude".
+func NewClaude(command Command) (Adapter, error) {
+	base, err := newAdapter(Claude, command, "claude", claudeOptionGrammar)
+	if err != nil {
+		return nil, err
+	}
+	return &claudeAdapter{adapter: base}, nil
 }
 
 type claudeAdapter struct {
 	adapter
+}
+
+var claudeOptionGrammar = optionGrammar{
+	"--add-dir": value("add-dir"), "--agent": value("agent"), "--agents": value("agents"),
+	"--allow-dangerously-skip-permissions": flag("allow-permission-bypass"),
+	"--allowedTools":                       value("allowed-tools"), "--allowed-tools": value("allowed-tools"),
+	"--append-system-prompt": value("append-system-prompt"), "--autocompact": value("autocompact"),
+	"--ax-screen-reader": flag("screen-reader"), "--bare": flag("bare"), "--betas": value("betas"),
+	"--brief": flag("brief"), "--chrome": flag("chrome"), "--dangerously-skip-permissions": flag("approval-bypass"),
+	"--debug-file": value("debug-file"), "--disable-slash-commands": flag("disable-skills"),
+	"--disallowedTools": value("denied-tools"), "--disallowed-tools": value("denied-tools"),
+	"--effort": value("effort"), "--exclude-dynamic-system-prompt-sections": flag("exclude-dynamic-prompt"),
+	"--fallback-model": value("fallback-model"), "--file": value("file"),
+	"--forward-subagent-text": flag("forward-subagent-text"), "--ide": flag("ide"),
+	"--include-hook-events": flag("include-hook-events"), "--include-partial-messages": flag("include-partial-messages"),
+	"--input-format": value("input-format"), "--json-schema": value("json-schema"),
+	"--max-budget-usd": value("max-budget-usd"), "--mcp-config": value("mcp-config"),
+	"--model": value("model"), "-n": value("name"), "--name": value("name"),
+	"--no-chrome": flag("no-chrome"), "--no-session-persistence": flag("no-session-persistence"),
+	"--output-format": value("output-format"), "--permission-mode": value("permission-mode"),
+	"--permission-prompts": value("permission-prompts"), "--plugin-dir": value("plugin-dir"),
+	"--plugin-url": value("plugin-url"), "--replay-user-messages": flag("replay-user-messages"),
+	"--restricted": flag("restricted"), "--safe-mode": flag("safe-mode"),
+	"--setting-sources": value("setting-sources"), "--settings": value("settings"),
+	"--strict-mcp-config": flag("strict-mcp-config"), "--system-prompt": value("system-prompt"),
+	"--system-prompt-snapshot": value("system-prompt-snapshot"), "--tools": value("tools"),
+	"--verbose": flag("verbose"),
+	"-p":        forbidden("print mode is selected by Request.Mode"), "--print": forbidden("print mode is selected by Request.Mode"),
+	"-c": forbidden("continue selects a session"), "--continue": forbidden("continue selects a session"),
+	"-r": forbidden("resume selects a session"), "--resume": forbidden("resume selects a session"),
+	"--session-id":   forbidden("session ID is owned by Start or Resume"),
+	"--fork-session": forbidden("fork changes resume identity"), "--from-pr": forbidden("from-pr selects a session"),
+	"--teleport": forbidden("teleport selects a session"), "--cloud": forbidden("cloud changes the command target"),
+	"--environment": forbidden("environment starts a cloud session"), "--bg": forbidden("background process ownership is a caller concern"),
+	"--background":                         forbidden("background process ownership is a caller concern"),
+	"--remote-control":                     forbidden("remote control changes process ownership"),
+	"--remote-control-session-name-prefix": forbidden("remote control changes process ownership"),
+	"--tmux":                               forbidden("tmux process ownership is a caller concern"), "-w": forbidden("worktree creation is a caller concern"),
+	"--worktree":           forbidden("worktree creation is a caller concern"),
+	"-d":                   forbidden("debug has an optional value and is ambiguous in configured options"),
+	"--debug":              forbidden("debug has an optional value and is ambiguous in configured options"),
+	"--prompt-suggestions": forbidden("prompt-suggestions has an optional value and is ambiguous in configured options"),
+	"-h":                   forbidden("help is an action, not a launch option"), "--help": forbidden("help is an action, not a launch option"),
+	"-v": forbidden("version is an action, not a launch option"), "--version": forbidden("version is an action, not a launch option"),
 }
 
 var claudeCapabilities = Capabilities{
@@ -50,11 +98,11 @@ func (a *claudeAdapter) build(sessionID string, request Request) (Invocation, er
 	if err != nil {
 		return Invocation{}, err
 	}
-	args, err := a.base()
-	if err != nil {
+	args := a.base()
+	if err := validateClaudeRequest(mode, request); err != nil {
 		return Invocation{}, err
 	}
-	if err := validateClaudeRequest(mode, request); err != nil {
+	if err := a.validateConfiguredRequest(request); err != nil {
 		return Invocation{}, err
 	}
 	if mode == NonInteractive {
@@ -110,6 +158,31 @@ func (a *claudeAdapter) build(sessionID string, request Request) (Invocation, er
 		return Invocation{}, fmt.Errorf("build %s invocation: %w", Claude, err)
 	}
 	return Invocation{Argv: args, Stdin: stdin}, nil
+}
+
+func (a *claudeAdapter) validateConfiguredRequest(request Request) error {
+	checks := []struct {
+		requested bool
+		option    string
+		hint      string
+		names     []string
+	}{
+		{request.Model != "", "model", "remove the configured model or leave Request.Model empty", []string{"model"}},
+		{request.Reasoning != ReasoningDefault, "reasoning", "remove the configured effort or leave Request.Reasoning empty", []string{"effort"}},
+		{request.OutputFormat != OutputDefault, "output format", "remove the configured output format or leave Request.OutputFormat empty", []string{"output-format"}},
+		{request.Schema.Inline != "", "JSON schema", "remove the configured schema or leave Request.Schema empty", []string{"json-schema"}},
+		{request.Approval != ApprovalDefault, "approval mode", "remove the configured permission option or leave Request.Approval empty", []string{"permission-mode", "approval-bypass"}},
+		{len(request.AllowedTools) != 0 || request.DisableBuiltInTools, "allowed tools", "remove configured tool selection or leave request tool selection empty", []string{"allowed-tools", "tools"}},
+		{len(request.DeniedTools) != 0, "denied tools", "remove configured denied tools or leave Request.DeniedTools empty", []string{"denied-tools"}},
+		{request.DisableSkills || request.DisableHooks, "customization controls", "remove configured customization controls or leave request disable controls false", []string{"disable-skills", "safe-mode", "bare"}},
+		{request.DisableSessionStorage, "session persistence", "remove --no-session-persistence or leave Request.DisableSessionStorage false", []string{"no-session-persistence"}},
+	}
+	for _, check := range checks {
+		if err := a.rejectsConfigured(check.requested, check.option, check.hint, check.names...); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func validateClaudeRequest(mode Mode, request Request) error {

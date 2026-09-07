@@ -1,8 +1,11 @@
-// Package agentcli builds command lines for supported coding-agent CLIs.
+// Package agentcli validates configuration and builds command lines for
+// supported coding-agent CLIs.
 //
 // The package does not start processes or own terminal, session-storage, or
 // persistence concerns. Callers retain those responsibilities and may use the
 // returned Stdin value with os/exec when the prompt is delivered over stdin.
+// Agent constructors accept configured options separately from prompts and
+// reject command shapes that cannot be safely extended for start or resume.
 package agentcli
 
 import (
@@ -177,6 +180,15 @@ type Invocation struct {
 	Stdin *string
 }
 
+// Command identifies an agent executable and the options that must be present
+// on every invocation. Options must contain flags and their values only;
+// prompts, subcommands, session selectors, and -- are rejected by the
+// agent-specific constructor.
+type Command struct {
+	Executable string
+	Options    []string
+}
+
 // Adapter builds start and resume invocations for one CLI family.
 type Adapter interface {
 	Name() Name
@@ -195,6 +207,33 @@ type UnsupportedOptionError struct {
 	Hint   string
 }
 
+// InvalidCommandError reports a configured command token that cannot be
+// safely combined with commands built by this package.
+type InvalidCommandError struct {
+	Agent  Name
+	Token  string
+	Index  int
+	Reason string
+	Hint   string
+}
+
+func (e *InvalidCommandError) Error() string {
+	message := fmt.Sprintf("agent %q configured command", e.Agent)
+	if e.Index >= 0 {
+		message += fmt.Sprintf(" token %d", e.Index)
+	}
+	if e.Token != "" {
+		message += " " + fmt.Sprintf("%q", e.Token)
+	}
+	if e.Reason != "" {
+		message += ": " + e.Reason
+	}
+	if e.Hint != "" {
+		message += "; " + e.Hint
+	}
+	return message
+}
+
 func (e *UnsupportedOptionError) Error() string {
 	message := fmt.Sprintf("agent %q does not support %s", e.Agent, e.Option)
 	if e.Value != "" {
@@ -210,26 +249,56 @@ func (e *UnsupportedOptionError) Error() string {
 }
 
 type adapter struct {
-	name    Name
-	command []string
+	name       Name
+	executable string
+	options    []string
+	configured map[string]bool
 }
 
-func newAdapter(name Name, command []string, defaultCommand string) adapter {
-	if len(command) == 0 {
-		command = []string{defaultCommand}
+func newAdapter(name Name, command Command, defaultExecutable string, grammar optionGrammar) (adapter, error) {
+	executable := command.Executable
+	if executable == "" {
+		executable = defaultExecutable
 	}
-	return adapter{name: name, command: slices.Clone(command)}
+	if strings.TrimSpace(executable) == "" {
+		return adapter{}, fmt.Errorf("agent %q requires a configured executable", name)
+	}
+	configured, err := validateConfiguredOptions(name, command.Options, grammar)
+	if err != nil {
+		return adapter{}, err
+	}
+	return adapter{
+		name:       name,
+		executable: executable,
+		options:    slices.Clone(command.Options),
+		configured: configured,
+	}, nil
 }
 
 func (a adapter) Name() Name {
 	return a.name
 }
 
-func (a adapter) base() ([]string, error) {
-	if len(a.command) == 0 || strings.TrimSpace(a.command[0]) == "" {
-		return nil, fmt.Errorf("agent %q requires a configured executable", a.name)
+func (a adapter) base() []string {
+	return append([]string{a.executable}, a.options...)
+}
+
+func (a adapter) rejectsConfigured(requested bool, option, hint string, names ...string) error {
+	if !requested {
+		return nil
 	}
-	return slices.Clone(a.command), nil
+	for _, name := range names {
+		if a.configured[name] {
+			return &InvalidCommandError{
+				Agent:  a.name,
+				Token:  name,
+				Index:  -1,
+				Reason: "conflicts with the same option requested for this invocation",
+				Hint:   hint,
+			}
+		}
+	}
+	return nil
 }
 
 func invocationMode(mode Mode) (Mode, error) {

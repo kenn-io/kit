@@ -4,14 +4,40 @@ import (
 	"fmt"
 )
 
-// NewCodex returns a Codex CLI adapter. Command may include configured global
-// options; an empty command uses "codex".
-func NewCodex(command []string) Adapter {
-	return &codexAdapter{adapter: newAdapter(Codex, command, "codex")}
+// NewCodex returns a Codex CLI adapter after validating its configured global
+// options. A zero Command uses "codex".
+func NewCodex(command Command) (Adapter, error) {
+	base, err := newAdapter(Codex, command, "codex", codexOptionGrammar)
+	if err != nil {
+		return nil, err
+	}
+	return &codexAdapter{adapter: base}, nil
 }
 
 type codexAdapter struct {
 	adapter
+}
+
+var codexOptionGrammar = optionGrammar{
+	"-c": value("config"), "--config": value("config"),
+	"--enable": value("enable"), "--disable": value("disable"),
+	"--remote": value("remote"), "--remote-auth-token-env": value("remote-auth-token-env"),
+	"--strict-config": flag("strict-config"),
+	"-i":              value("image"), "--image": value("image"),
+	"-m": value("model"), "--model": value("model"),
+	"--oss": flag("oss"), "--local-provider": value("local-provider"),
+	"-p": value("profile"), "--profile": value("profile"),
+	"-s": value("sandbox"), "--sandbox": value("sandbox"),
+	"--approve-for-me":                           flag("approve-for-me"),
+	"--dangerously-bypass-approvals-and-sandbox": flag("approval-bypass"),
+	"--dangerously-bypass-hook-trust":            flag("hook-trust"),
+	"-C":                                         value("cd"), "--cd": value("cd"), "--add-dir": value("add-dir"),
+	"-a": value("approval"), "--ask-for-approval": value("approval"),
+	"--search": flag("search"), "--no-alt-screen": flag("no-alt-screen"),
+	"-h":        forbidden("help is an action, not a launch option"),
+	"--help":    forbidden("help is an action, not a launch option"),
+	"-V":        forbidden("version is an action, not a launch option"),
+	"--version": forbidden("version is an action, not a launch option"),
 }
 
 var codexCapabilities = Capabilities{
@@ -52,11 +78,11 @@ func (a *codexAdapter) build(sessionID string, request Request) (Invocation, err
 	if err != nil {
 		return Invocation{}, err
 	}
-	args, err := a.base()
-	if err != nil {
+	args := a.base()
+	if err := validateCodexRequest(mode, request); err != nil {
 		return Invocation{}, err
 	}
-	if err := validateCodexRequest(mode, request); err != nil {
+	if err := a.validateConfiguredRequest(request); err != nil {
 		return Invocation{}, err
 	}
 
@@ -127,6 +153,26 @@ func (a *codexAdapter) build(sessionID string, request Request) (Invocation, err
 		return Invocation{}, fmt.Errorf("build %s invocation: %w", Codex, err)
 	}
 	return Invocation{Argv: args, Stdin: stdin}, nil
+}
+
+func (a *codexAdapter) validateConfiguredRequest(request Request) error {
+	checks := []struct {
+		requested bool
+		option    string
+		hint      string
+		names     []string
+	}{
+		{request.Model != "", "model", "remove the configured model or leave Request.Model empty", []string{"model"}},
+		{request.Sandbox != SandboxDefault, "sandbox", "remove the configured sandbox or leave Request.Sandbox empty", []string{"sandbox"}},
+		{request.Approval != ApprovalDefault, "approval mode", "remove the configured approval option or leave Request.Approval empty", []string{"approval", "approve-for-me", "approval-bypass"}},
+		{request.DisableHooks, "hook controls", "remove the configured hook option or leave Request.DisableHooks false", []string{"disable", "hook-trust"}},
+	}
+	for _, check := range checks {
+		if err := a.rejectsConfigured(check.requested, check.option, check.hint, check.names...); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func validateCodexRequest(mode Mode, request Request) error {
