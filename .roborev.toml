@@ -14,6 +14,43 @@ code actually does not compile, the toolchain will fail before the PR can land.
 Focus reviews on logic, architecture, behavior, security boundaries, and test
 coverage for behavior. Trust the build for compilability.
 
+## External CLI argument grammars
+
+Do not guess how an external command parses options, option values,
+subcommands, prompts, session selectors, or argument ordering. In particular,
+do not report an agent CLI argument-shape finding from naming conventions,
+another CLI's behavior, general POSIX conventions, or synthetic test fixtures.
+
+Such a finding requires authoritative, version-matched evidence for the exact
+command under review. Acceptable evidence is the installed command's relevant
+`--help` output captured for the review, official documentation for the pinned
+version, or source from that version's argument parser. If the review cannot
+obtain that evidence, omit the finding. Do not ask for speculative validation,
+reordering, compatibility handling, or a regression test based on an assumed
+grammar.
+
+Do not assume every positional prompt needs a double-dash separator. Require
+evidence that the exact CLI continues option parsing at that position and that
+the package's selected prompt transport leaves the prompt exposed to it.
+
+Do not invent a shared safety-policy lattice across configured options and
+request fields. Different CLIs define precedence and interaction differently.
+Report a conflict only when authoritative evidence shows that the exact
+combination changes or defeats behavior the caller requested. A stricter,
+redundant, or differently expressed option is not by itself a defect. Do not
+request extra rejection logic as general hardening.
+
+Do not assume JSON Schema requires a separate JSON output-format flag. Some
+CLIs use the schema option itself to select or validate structured output.
+Report an invalid schema invocation only when authoritative evidence for that
+CLI and mode shows the constructed command cannot produce the requested
+schema-conforming result.
+
+The `agentcli` package intentionally owns the supported Codex, Claude Code, and
+Pi command shapes. Review its internal consistency and its behavior against
+supplied authoritative evidence. Do not infer that a listed option or arity is
+wrong only because roborev-ci did not execute the external CLI.
+
 ## Managed Git trust boundary
 
 `git/managed` trusts the existing local repository, its remotes and
