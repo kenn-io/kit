@@ -8,15 +8,7 @@ import (
 // NewClaude returns a Claude Code adapter after validating its configured
 // options. A zero Command uses "claude".
 func NewClaude(command Command) (Adapter, error) {
-	base, err := newAdapter(Claude, command, "claude", claudeOptionGrammar)
-	if err != nil {
-		return nil, err
-	}
-	return &claudeAdapter{adapter: base}, nil
-}
-
-type claudeAdapter struct {
-	adapter
+	return newAdapter(Claude, command, "claude", claudeOptionGrammar, claudeCapabilities, buildClaude)
 }
 
 var claudeOptionGrammar = optionGrammar{
@@ -78,35 +70,10 @@ var claudeCapabilities = Capabilities{
 	DisableSessionStorage: true,
 }
 
-func (a *claudeAdapter) Capabilities() Capabilities {
-	return cloneCapabilities(claudeCapabilities)
-}
-
-func (a *claudeAdapter) Start(request Request) (Invocation, error) {
-	return a.build("", request)
-}
-
-func (a *claudeAdapter) Resume(sessionID string, request Request) (Invocation, error) {
-	sessionID, err := validateSessionID(sessionID)
-	if err != nil {
-		return Invocation{}, err
-	}
-	return a.build(sessionID, request)
-}
-
-func (a *claudeAdapter) build(sessionID string, request Request) (Invocation, error) {
-	mode, err := invocationMode(request.Mode)
-	if err != nil {
-		return Invocation{}, err
-	}
+func buildClaude(a *adapter, sessionID string, request Request) (Invocation, error) {
+	mode := request.Mode
 	args := a.base()
-	if err := validateSupportedRequest(Claude, mode, request, claudeCapabilities); err != nil {
-		return Invocation{}, err
-	}
 	if err := validateClaudeRequest(mode, request); err != nil {
-		return Invocation{}, err
-	}
-	if err := a.validateConfiguredRequest(request); err != nil {
 		return Invocation{}, err
 	}
 	if mode == NonInteractive {
@@ -127,7 +94,7 @@ func (a *claudeAdapter) build(sessionID string, request Request) (Invocation, er
 		args = append(args, "--model", request.Model)
 	}
 	if request.Reasoning != ReasoningDefault {
-		args = append(args, "--effort", claudeReasoning(request.Reasoning))
+		args = append(args, "--effort", reasoningValue(request.Reasoning))
 	}
 	if sessionID != "" {
 		args = append(args, "--resume", sessionID)
@@ -164,64 +131,12 @@ func (a *claudeAdapter) build(sessionID string, request Request) (Invocation, er
 	return Invocation{Argv: args, Stdin: stdin}, nil
 }
 
-func (a *claudeAdapter) validateConfiguredRequest(request Request) error {
-	checks := []struct {
-		requested bool
-		option    string
-		hint      string
-		names     []string
-	}{
-		{request.Model != "", "model", "remove the configured model or leave Request.Model empty", []string{"model"}},
-		{request.Reasoning != ReasoningDefault, "reasoning", "remove the configured effort or leave Request.Reasoning empty", []string{"effort"}},
-		{request.OutputFormat != OutputDefault, "output format", "remove the configured output format or leave Request.OutputFormat empty", []string{"output-format"}},
-		{request.Schema.Inline != "", "JSON schema", "remove the configured schema or leave Request.Schema empty", []string{"json-schema"}},
-		{request.Approval != ApprovalDefault, "approval mode", "remove the configured permission option or leave Request.Approval empty", []string{"permission-mode", "approval-bypass"}},
-		{len(request.AllowedTools) != 0 || request.DisableBuiltInTools, "allowed tools", "remove configured tool selection or leave request tool selection empty", []string{"allowed-tools", "tools"}},
-		{len(request.DeniedTools) != 0, "denied tools", "remove configured denied tools or leave Request.DeniedTools empty", []string{"denied-tools"}},
-		{request.DisableSkills || request.DisableHooks, "customization controls", "remove configured customization controls or leave request disable controls false", []string{"disable-skills", "safe-mode", "bare"}},
-		{request.DisableSessionStorage, "session persistence", "remove --no-session-persistence or leave Request.DisableSessionStorage false", []string{"no-session-persistence"}},
-	}
-	for _, check := range checks {
-		if err := a.rejectsConfigured(check.requested, check.option, check.hint, check.names...); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func validateClaudeRequest(mode Mode, request Request) error {
-	if err := validateValues("allowed tools", request.AllowedTools); err != nil {
-		return err
-	}
-	if err := validateValues("denied tools", request.DeniedTools); err != nil {
-		return err
-	}
 	if mode == Interactive && request.Prompt.Source == PromptStdin {
 		return unsupported(Claude, mode, "stdin prompt", "", "use argument delivery for an interactive prompt")
 	}
-	if request.Provider != "" {
-		return unsupported(Claude, mode, "provider", request.Provider, "configure the provider outside Claude's argv")
-	}
-	if request.Autonomy != AutonomyDefault {
-		return unsupported(Claude, mode, "autonomy", string(request.Autonomy), "use approval and tool controls")
-	}
-	if request.Sandbox != SandboxDefault {
-		return unsupported(Claude, mode, "sandbox", string(request.Sandbox), "Claude permission modes do not provide a filesystem sandbox")
-	}
 	if request.DisableBuiltInTools && len(request.AllowedTools) != 0 {
 		return fmt.Errorf("agent %q cannot disable built-in tools and set an allowed tool list", Claude)
-	}
-	if len(request.SkillPaths) != 0 {
-		return unsupported(Claude, mode, "skill paths", "", "install skills through Claude configuration")
-	}
-	if request.DisableExtensions || request.DisablePromptTemplates || request.DisableThemes || request.DisableContextFiles || request.DisableBuiltInMCPs {
-		return unsupported(Claude, mode, "Pi customization controls", "", "these controls are specific to Pi")
-	}
-	if request.DisableUserConfig || len(request.ConfigOverrides) != 0 {
-		return unsupported(Claude, mode, "Codex config controls", "", "use configured Claude options such as --settings")
-	}
-	if request.Schema.Path != "" || request.Schema.OutputPath != "" || request.Schema.Extension != "" || request.Schema.Fallback != "" || request.OutputPath != "" {
-		return unsupported(Claude, mode, "schema file or output path", "", "Claude accepts an inline schema and writes structured output to stdout")
 	}
 	if mode == Interactive {
 		if request.OutputFormat != OutputDefault && request.OutputFormat != OutputText {
@@ -231,25 +146,5 @@ func validateClaudeRequest(mode Mode, request Request) error {
 			return unsupported(Claude, mode, "automation-only output controls", "", "use noninteractive mode")
 		}
 	}
-	if request.OutputFormat != OutputDefault && request.OutputFormat != OutputText && request.OutputFormat != OutputJSON && request.OutputFormat != OutputJSONL {
-		return unsupported(Claude, mode, "output format", string(request.OutputFormat), "request text, json, or jsonl")
-	}
-	if request.Reasoning != ReasoningDefault && claudeReasoning(request.Reasoning) == "" {
-		return unsupported(Claude, mode, "reasoning", string(request.Reasoning), "request low, medium, high, xhigh, or maximum")
-	}
-	if request.Approval != ApprovalDefault && request.Approval != ApprovalOnRequest && request.Approval != ApprovalNever && request.Approval != ApprovalBypass {
-		return unsupported(Claude, mode, "approval mode", string(request.Approval), "request on-request, never, or bypass")
-	}
 	return nil
-}
-
-func claudeReasoning(level ReasoningLevel) string {
-	switch level {
-	case ReasoningLow, ReasoningMedium, ReasoningHigh, ReasoningXHigh:
-		return string(level)
-	case ReasoningMaximum:
-		return "max"
-	default:
-		return ""
-	}
 }

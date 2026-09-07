@@ -5,14 +5,8 @@ import "fmt"
 // NewCursor returns a Cursor Agent adapter after validating configured
 // options. A zero Command uses "agent".
 func NewCursor(command Command) (Adapter, error) {
-	base, err := newAdapter(Cursor, command, "agent", cursorOptionGrammar)
-	if err != nil {
-		return nil, err
-	}
-	return &cursorAdapter{adapter: base}, nil
+	return newAdapter(Cursor, command, "agent", cursorOptionGrammar, cursorCapabilities, buildCursor)
 }
-
-type cursorAdapter struct{ adapter }
 
 var cursorOptionGrammar = optionGrammar{
 	"--api-key": value("api-key"), "-H": value("header"), "--header": value("header"),
@@ -37,32 +31,7 @@ var cursorCapabilities = Capabilities{
 	ApprovalModes: []ApprovalMode{ApprovalNever, ApprovalBypass},
 }
 
-func (a *cursorAdapter) Capabilities() Capabilities                { return cloneCapabilities(cursorCapabilities) }
-func (a *cursorAdapter) Start(request Request) (Invocation, error) { return a.build("", request) }
-func (a *cursorAdapter) Resume(sessionID string, request Request) (Invocation, error) {
-	sessionID, err := validateSessionID(sessionID)
-	if err != nil {
-		return Invocation{}, err
-	}
-	return a.build(sessionID, request)
-}
-func (a *cursorAdapter) build(sessionID string, request Request) (Invocation, error) {
-	mode, err := invocationMode(request.Mode)
-	if err != nil {
-		return Invocation{}, err
-	}
-	if mode != NonInteractive {
-		return Invocation{}, unsupported(Cursor, mode, "mode", string(mode), "request noninteractive mode")
-	}
-	if err := validateSupportedRequest(Cursor, mode, request, cursorCapabilities); err != nil {
-		return Invocation{}, err
-	}
-	if err := validateCursorRequest(request); err != nil {
-		return Invocation{}, err
-	}
-	if err := a.rejectsConfigured(request.Model != "", "model", "remove the configured model or leave Request.Model empty", "model"); err != nil {
-		return Invocation{}, err
-	}
+func buildCursor(a *adapter, sessionID string, request Request) (Invocation, error) {
 	args := append(a.base(), "--print")
 	if request.OutputFormat != OutputDefault && request.OutputFormat != OutputText {
 		format := string(request.OutputFormat)
@@ -88,16 +57,4 @@ func (a *cursorAdapter) build(sessionID string, request Request) (Invocation, er
 		return Invocation{}, fmt.Errorf("build %s invocation: %w", Cursor, err)
 	}
 	return Invocation{Argv: args, Stdin: stdin}, nil
-}
-func validateCursorRequest(request Request) error {
-	if request.Prompt.Source != PromptNone && request.Prompt.Source != PromptStdin {
-		return unsupported(Cursor, NonInteractive, "prompt transport", string(request.Prompt.Source), "send the prompt over stdin")
-	}
-	if request.OutputFormat != OutputDefault && request.OutputFormat != OutputText && request.OutputFormat != OutputJSON && request.OutputFormat != OutputJSONL {
-		return unsupported(Cursor, NonInteractive, "output format", string(request.OutputFormat), "request text, json, or jsonl")
-	}
-	if request.Approval != ApprovalDefault && request.Approval != ApprovalNever && request.Approval != ApprovalBypass {
-		return unsupported(Cursor, NonInteractive, "approval mode", string(request.Approval), "request never, bypass, or use the default")
-	}
-	return nil
 }

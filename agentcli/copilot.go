@@ -7,14 +7,8 @@ import (
 // NewCopilot returns a GitHub Copilot CLI adapter after validating configured
 // options. A zero Command uses "copilot".
 func NewCopilot(command Command) (Adapter, error) {
-	base, err := newAdapter(Copilot, command, "copilot", copilotOptionGrammar)
-	if err != nil {
-		return nil, err
-	}
-	return &copilotAdapter{adapter: base}, nil
+	return newAdapter(Copilot, command, "copilot", copilotOptionGrammar, copilotCapabilities, buildCopilot)
 }
-
-type copilotAdapter struct{ adapter }
 
 var copilotOptionGrammar = optionGrammar{
 	"--add-dir": value("add-dir"), "--agent": value("agent"), "--additional-mcp-config": value("mcp-config"),
@@ -48,53 +42,9 @@ var copilotCapabilities = Capabilities{
 	DisableBuiltInMCPs: true, DisableContextFiles: true,
 }
 
-func (a *copilotAdapter) Capabilities() Capabilities                { return cloneCapabilities(copilotCapabilities) }
-func (a *copilotAdapter) Start(request Request) (Invocation, error) { return a.build("", request) }
-func (a *copilotAdapter) Resume(sessionID string, request Request) (Invocation, error) {
-	sessionID, err := validateSessionID(sessionID)
-	if err != nil {
-		return Invocation{}, err
-	}
-	return a.build(sessionID, request)
-}
-func (a *copilotAdapter) build(sessionID string, request Request) (Invocation, error) {
-	mode, err := invocationMode(request.Mode)
-	if err != nil {
-		return Invocation{}, err
-	}
-	if mode != NonInteractive {
-		return Invocation{}, unsupported(Copilot, mode, "mode", string(mode), "request noninteractive mode")
-	}
-	if err := validateSupportedRequest(Copilot, mode, request, copilotCapabilities); err != nil {
-		return Invocation{}, err
-	}
-	if err := validateCopilotRequest(request); err != nil {
-		return Invocation{}, err
-	}
-	if err := a.rejectsConfigured(request.Model != "", "model", "remove the configured model or leave Request.Model empty", "model"); err != nil {
-		return Invocation{}, err
-	}
-	if err := a.rejectsConfigured(request.Reasoning != ReasoningDefault, "reasoning", "remove the configured reasoning level or leave Request.Reasoning empty", "reasoning"); err != nil {
-		return Invocation{}, err
-	}
-	checks := []struct {
-		requested bool
-		option    string
-		hint      string
-		names     []string
-	}{
-		{request.OutputFormat != OutputDefault, "output format", "remove the configured output options or leave Request.OutputFormat empty", []string{"output-format", "stream"}},
-		{request.Approval != ApprovalDefault, "approval mode", "remove the configured approval option or leave Request.Approval empty", []string{"approval-bypass"}},
-		{len(request.AllowedTools) != 0, "allowed tools", "remove configured allowed tools or leave Request.AllowedTools empty", []string{"allowed-tools"}},
-		{len(request.DeniedTools) != 0, "denied tools", "remove configured denied tools or leave Request.DeniedTools empty", []string{"denied-tools"}},
-		{request.DisableBuiltInMCPs, "built-in MCP servers", "remove --disable-builtin-mcps or leave Request.DisableBuiltInMCPs false", []string{"disable-builtin-mcps"}},
-		{request.DisableContextFiles, "custom instructions", "remove --no-custom-instructions or leave Request.DisableContextFiles false", []string{"no-custom-instructions"}},
-	}
-	for _, check := range checks {
-		if err := a.rejectsConfigured(check.requested, check.option, check.hint, check.names...); err != nil {
-			return Invocation{}, err
-		}
-	}
+func buildCopilot(a *adapter, sessionID string, request Request) (Invocation, error) {
+	// Copilot requires --allow-all-tools in noninteractive prompt mode. Callers
+	// can still restrict automatic tool use with --deny-tool rules.
 	args := append(a.base(), "--silent", "--allow-all-tools")
 	if request.OutputFormat == OutputJSONL {
 		args = append(args, "--stream", "off", "--output-format", "json")
@@ -106,7 +56,7 @@ func (a *copilotAdapter) build(sessionID string, request Request) (Invocation, e
 		args = append(args, "--model", request.Model)
 	}
 	if request.Reasoning != ReasoningDefault {
-		args = append(args, "--reasoning-effort", copilotReasoning(request.Reasoning))
+		args = append(args, "--reasoning-effort", reasoningValue(request.Reasoning))
 	}
 	if request.Approval == ApprovalBypass {
 		args = append(args, "--allow-all")
@@ -130,38 +80,4 @@ func (a *copilotAdapter) build(sessionID string, request Request) (Invocation, e
 		args = append(args, "--prompt", request.Prompt.Text)
 	}
 	return Invocation{Argv: args}, nil
-}
-func validateCopilotRequest(request Request) error {
-	if request.Prompt.Source != PromptNone && request.Prompt.Source != PromptArgument {
-		return unsupported(Copilot, NonInteractive, "prompt transport", string(request.Prompt.Source), "send the prompt with --prompt")
-	}
-	if len(request.Prompt.Files) != 0 {
-		return unsupported(Copilot, NonInteractive, "prompt files", "", "use configured --attachment options")
-	}
-	if request.OutputFormat != OutputDefault && request.OutputFormat != OutputText && request.OutputFormat != OutputJSONL {
-		return unsupported(Copilot, NonInteractive, "output format", string(request.OutputFormat), "request text or jsonl")
-	}
-	if request.Approval != ApprovalDefault && request.Approval != ApprovalBypass {
-		return unsupported(Copilot, NonInteractive, "approval mode", string(request.Approval), "request bypass or use explicit tool lists")
-	}
-	if request.Reasoning != ReasoningDefault && copilotReasoning(request.Reasoning) == "" {
-		return unsupported(Copilot, NonInteractive, "reasoning", string(request.Reasoning), "request low, medium, high, xhigh, or maximum")
-	}
-	if err := validateValues("allowed tools", request.AllowedTools); err != nil {
-		return err
-	}
-	if err := validateValues("denied tools", request.DeniedTools); err != nil {
-		return err
-	}
-	return nil
-}
-func copilotReasoning(level ReasoningLevel) string {
-	switch level {
-	case ReasoningLow, ReasoningMedium, ReasoningHigh, ReasoningXHigh:
-		return string(level)
-	case ReasoningMaximum:
-		return "max"
-	default:
-		return ""
-	}
 }

@@ -7,15 +7,7 @@ import (
 // NewCodex returns a Codex CLI adapter after validating its configured global
 // options. A zero Command uses "codex".
 func NewCodex(command Command) (Adapter, error) {
-	base, err := newAdapter(Codex, command, "codex", codexOptionGrammar)
-	if err != nil {
-		return nil, err
-	}
-	return &codexAdapter{adapter: base}, nil
-}
-
-type codexAdapter struct {
-	adapter
+	return newAdapter(Codex, command, "codex", codexOptionGrammar, codexCapabilities, buildCodex)
 }
 
 var codexOptionGrammar = optionGrammar{
@@ -58,38 +50,12 @@ var codexCapabilities = Capabilities{
 	ConfigOverrides:       true,
 }
 
-func (a *codexAdapter) Capabilities() Capabilities {
-	return cloneCapabilities(codexCapabilities)
-}
-
-func (a *codexAdapter) Start(request Request) (Invocation, error) {
-	return a.build("", request)
-}
-
-func (a *codexAdapter) Resume(sessionID string, request Request) (Invocation, error) {
-	sessionID, err := validateSessionID(sessionID)
-	if err != nil {
-		return Invocation{}, err
-	}
-	return a.build(sessionID, request)
-}
-
-func (a *codexAdapter) build(sessionID string, request Request) (Invocation, error) {
-	mode, err := invocationMode(request.Mode)
-	if err != nil {
-		return Invocation{}, err
-	}
+func buildCodex(a *adapter, sessionID string, request Request) (Invocation, error) {
+	mode := request.Mode
 	args := a.base()
-	if err := validateSupportedRequest(Codex, mode, request, codexCapabilities); err != nil {
-		return Invocation{}, err
-	}
 	if err := validateCodexRequest(mode, request); err != nil {
 		return Invocation{}, err
 	}
-	if err := a.validateConfiguredRequest(request); err != nil {
-		return Invocation{}, err
-	}
-
 	if mode == NonInteractive {
 		args = append(args, "exec")
 	}
@@ -116,7 +82,7 @@ func (a *codexAdapter) build(sessionID string, request Request) (Invocation, err
 		args = append(args, "--model", request.Model)
 	}
 	if request.Reasoning != ReasoningDefault {
-		args = append(args, "-c", fmt.Sprintf("model_reasoning_effort=%q", codexReasoning(request.Reasoning)))
+		args = append(args, "-c", fmt.Sprintf("model_reasoning_effort=%q", reasoningValue(request.Reasoning)))
 	}
 	if request.Approval == ApprovalBypass {
 		args = append(args, "--dangerously-bypass-approvals-and-sandbox")
@@ -159,50 +125,9 @@ func (a *codexAdapter) build(sessionID string, request Request) (Invocation, err
 	return Invocation{Argv: args, Stdin: stdin}, nil
 }
 
-func (a *codexAdapter) validateConfiguredRequest(request Request) error {
-	checks := []struct {
-		requested bool
-		option    string
-		hint      string
-		names     []string
-	}{
-		{request.Model != "", "model", "remove the configured model or leave Request.Model empty", []string{"model"}},
-		{request.Sandbox != SandboxDefault, "sandbox", "remove the configured sandbox or leave Request.Sandbox empty", []string{"sandbox"}},
-		{request.Approval != ApprovalDefault, "approval mode", "remove the configured approval option or leave Request.Approval empty", []string{"approval", "approve-for-me", "approval-bypass"}},
-		{request.DisableHooks, "hook controls", "remove the configured hook option or leave Request.DisableHooks false", []string{"disable", "hook-trust"}},
-	}
-	for _, check := range checks {
-		if err := a.rejectsConfigured(check.requested, check.option, check.hint, check.names...); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func validateCodexRequest(mode Mode, request Request) error {
-	if err := validateValues("config overrides", request.ConfigOverrides); err != nil {
-		return err
-	}
 	if mode == Interactive && request.Prompt.Source == PromptStdin {
 		return unsupported(Codex, mode, "stdin prompt", "", "use argument delivery for an interactive prompt")
-	}
-	if request.Provider != "" {
-		return unsupported(Codex, mode, "provider", request.Provider, "put the provider in configured Codex options")
-	}
-	if request.Autonomy != AutonomyDefault {
-		return unsupported(Codex, mode, "autonomy", string(request.Autonomy), "use sandbox and approval controls")
-	}
-	if len(request.AllowedTools) != 0 || len(request.DeniedTools) != 0 || request.DisableBuiltInTools {
-		return unsupported(Codex, mode, "tool policy", "", "Codex has no equivalent per-invocation tool-list flags")
-	}
-	if len(request.SkillPaths) != 0 {
-		return unsupported(Codex, mode, "skill paths", "", "install skills through Codex configuration")
-	}
-	if request.DisableExtensions || request.DisablePromptTemplates || request.DisableThemes || request.DisableContextFiles || request.DisableBuiltInMCPs {
-		return unsupported(Codex, mode, "Pi customization controls", "", "these controls are specific to Pi")
-	}
-	if request.Schema.Inline != "" || request.Schema.Extension != "" || request.Schema.Fallback != "" {
-		return unsupported(Codex, mode, "inline JSON schema", "", "write the schema to a file and set Schema.Path")
 	}
 	if request.OutputPath != "" && request.Schema.OutputPath != "" && request.OutputPath != request.Schema.OutputPath {
 		return fmt.Errorf("agent %q received conflicting output paths", Codex)
@@ -218,34 +143,8 @@ func validateCodexRequest(mode Mode, request Request) error {
 			return unsupported(Codex, mode, "automation-only config controls", "", "use noninteractive mode")
 		}
 	}
-	if request.OutputFormat == OutputJSON {
-		return unsupported(Codex, mode, "output format", string(OutputJSON), "Codex emits an event stream; request jsonl")
-	}
-	if request.OutputFormat != OutputDefault && request.OutputFormat != OutputText && request.OutputFormat != OutputJSONL {
-		return unsupported(Codex, mode, "output format", string(request.OutputFormat), "request text or jsonl")
-	}
-	if request.Reasoning != ReasoningDefault && codexReasoning(request.Reasoning) == "" {
-		return unsupported(Codex, mode, "reasoning", string(request.Reasoning), "request low, medium, high, xhigh, or maximum")
-	}
 	if request.Approval == ApprovalBypass && request.Sandbox != SandboxDefault {
 		return fmt.Errorf("agent %q cannot combine approval bypass with sandbox %q", Codex, request.Sandbox)
 	}
-	if request.Approval != ApprovalDefault && request.Approval != ApprovalOnRequest && request.Approval != ApprovalNever && request.Approval != ApprovalBypass {
-		return unsupported(Codex, mode, "approval mode", string(request.Approval), "request on-request, never, or bypass")
-	}
-	if request.Sandbox != SandboxDefault && request.Sandbox != SandboxReadOnly && request.Sandbox != SandboxWorkspaceWrite && request.Sandbox != SandboxDangerFullAccess {
-		return unsupported(Codex, mode, "sandbox", string(request.Sandbox), "request read-only, workspace-write, or danger-full-access")
-	}
 	return nil
-}
-
-func codexReasoning(level ReasoningLevel) string {
-	switch level {
-	case ReasoningLow, ReasoningMedium, ReasoningHigh, ReasoningXHigh:
-		return string(level)
-	case ReasoningMaximum:
-		return "max"
-	default:
-		return ""
-	}
 }

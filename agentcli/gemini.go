@@ -5,14 +5,8 @@ import "fmt"
 // NewGemini returns a Gemini CLI adapter after validating configured options.
 // A zero Command uses "gemini".
 func NewGemini(command Command) (Adapter, error) {
-	base, err := newAdapter(Gemini, command, "gemini", geminiOptionGrammar)
-	if err != nil {
-		return nil, err
-	}
-	return &geminiAdapter{adapter: base}, nil
+	return newAdapter(Gemini, command, "gemini", geminiOptionGrammar, geminiCapabilities, buildGemini)
 }
-
-type geminiAdapter struct{ adapter }
 
 var geminiOptionGrammar = optionGrammar{
 	"-d": flag("debug"), "--debug": flag("debug"), "-m": value("model"), "--model": value("model"),
@@ -42,38 +36,7 @@ var geminiCapabilities = Capabilities{
 	ApprovalModes: []ApprovalMode{ApprovalNever, ApprovalBypass},
 }
 
-func (a *geminiAdapter) Capabilities() Capabilities                { return cloneCapabilities(geminiCapabilities) }
-func (a *geminiAdapter) Start(request Request) (Invocation, error) { return a.build("", request) }
-func (a *geminiAdapter) Resume(sessionID string, request Request) (Invocation, error) {
-	sessionID, err := validateSessionID(sessionID)
-	if err != nil {
-		return Invocation{}, err
-	}
-	return a.build(sessionID, request)
-}
-func (a *geminiAdapter) build(sessionID string, request Request) (Invocation, error) {
-	mode, err := invocationMode(request.Mode)
-	if err != nil {
-		return Invocation{}, err
-	}
-	if mode != NonInteractive {
-		return Invocation{}, unsupported(Gemini, mode, "mode", string(mode), "request noninteractive mode")
-	}
-	if err := validateSupportedRequest(Gemini, mode, request, geminiCapabilities); err != nil {
-		return Invocation{}, err
-	}
-	if err := validateGeminiRequest(request); err != nil {
-		return Invocation{}, err
-	}
-	if err := a.rejectsConfigured(request.Model != "", "model", "remove the configured model or leave Request.Model empty", "model"); err != nil {
-		return Invocation{}, err
-	}
-	if err := a.rejectsConfigured(request.OutputFormat != OutputDefault, "output format", "remove the configured output format or leave Request.OutputFormat empty", "output-format"); err != nil {
-		return Invocation{}, err
-	}
-	if err := a.rejectsConfigured(request.Approval != ApprovalDefault, "approval mode", "remove the configured approval option or leave Request.Approval empty", "approval-mode", "approval-bypass"); err != nil {
-		return Invocation{}, err
-	}
+func buildGemini(a *adapter, sessionID string, request Request) (Invocation, error) {
 	args := a.base()
 	if request.OutputFormat == OutputJSON {
 		args = append(args, "--output-format", "json")
@@ -105,22 +68,4 @@ func (a *geminiAdapter) build(sessionID string, request Request) (Invocation, er
 		stdin = new(request.Prompt.Text)
 	}
 	return Invocation{Argv: args, Stdin: stdin}, nil
-}
-func validateGeminiRequest(request Request) error {
-	if request.Prompt.Source != PromptNone && request.Prompt.Source != PromptArgument && request.Prompt.Source != PromptStdin {
-		return unsupported(Gemini, NonInteractive, "prompt transport", string(request.Prompt.Source), "send the prompt with --prompt or over stdin")
-	}
-	if len(request.Prompt.Files) != 0 {
-		return unsupported(Gemini, NonInteractive, "prompt files", "", "include file references in the prompt text")
-	}
-	if request.OutputFormat != OutputDefault && request.OutputFormat != OutputText && request.OutputFormat != OutputJSON && request.OutputFormat != OutputJSONL {
-		return unsupported(Gemini, NonInteractive, "output format", string(request.OutputFormat), "request text, json, or jsonl")
-	}
-	if request.Approval != ApprovalDefault && request.Approval != ApprovalNever && request.Approval != ApprovalBypass {
-		return unsupported(Gemini, NonInteractive, "approval mode", string(request.Approval), "request never, bypass, or use the default")
-	}
-	if request.Sandbox != SandboxDefault {
-		return unsupported(Gemini, NonInteractive, "sandbox", string(request.Sandbox), "Gemini's boolean sandbox flag does not map to a portable sandbox mode")
-	}
-	return nil
 }

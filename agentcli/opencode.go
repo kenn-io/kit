@@ -5,14 +5,8 @@ import "fmt"
 // NewOpenCode returns an OpenCode adapter after validating configured global
 // options. A zero Command uses "opencode".
 func NewOpenCode(command Command) (Adapter, error) {
-	base, err := newAdapter(OpenCode, command, "opencode", openCodeOptionGrammar)
-	if err != nil {
-		return nil, err
-	}
-	return &openCodeAdapter{adapter: base}, nil
+	return newAdapter(OpenCode, command, "opencode", openCodeOptionGrammar, openCodeCapabilities, buildOpenCode)
 }
-
-type openCodeAdapter struct{ adapter }
 
 var openCodeOptionGrammar = optionGrammar{
 	"--print-logs": flag("print-logs"), "--log-level": value("log-level"),
@@ -34,35 +28,7 @@ var openCodeCapabilities = Capabilities{
 	Model:         true,
 }
 
-func (a *openCodeAdapter) Capabilities() Capabilities { return cloneCapabilities(openCodeCapabilities) }
-func (a *openCodeAdapter) Start(request Request) (Invocation, error) {
-	return a.build("", request)
-}
-func (a *openCodeAdapter) Resume(sessionID string, request Request) (Invocation, error) {
-	sessionID, err := validateSessionID(sessionID)
-	if err != nil {
-		return Invocation{}, err
-	}
-	return a.build(sessionID, request)
-}
-
-func (a *openCodeAdapter) build(sessionID string, request Request) (Invocation, error) {
-	mode, err := invocationMode(request.Mode)
-	if err != nil {
-		return Invocation{}, err
-	}
-	if mode != NonInteractive {
-		return Invocation{}, unsupported(OpenCode, mode, "mode", string(mode), "request noninteractive mode")
-	}
-	if err := validateSupportedRequest(OpenCode, mode, request, openCodeCapabilities); err != nil {
-		return Invocation{}, err
-	}
-	if err := validateOpenCodeRequest(request); err != nil {
-		return Invocation{}, err
-	}
-	if err := a.rejectsConfigured(request.Model != "", "model", "remove the configured model or leave Request.Model empty", "model"); err != nil {
-		return Invocation{}, err
-	}
+func buildOpenCode(a *adapter, sessionID string, request Request) (Invocation, error) {
 	args := append(a.base(), "run")
 	if request.OutputFormat == OutputJSONL {
 		args = append(args, "--format", "json")
@@ -78,14 +44,4 @@ func (a *openCodeAdapter) build(sessionID string, request Request) (Invocation, 
 		return Invocation{}, fmt.Errorf("build %s invocation: %w", OpenCode, err)
 	}
 	return Invocation{Argv: args, Stdin: stdin}, nil
-}
-
-func validateOpenCodeRequest(request Request) error {
-	if request.Prompt.Source != PromptNone && request.Prompt.Source != PromptStdin {
-		return unsupported(OpenCode, NonInteractive, "prompt transport", string(request.Prompt.Source), "send the prompt over stdin")
-	}
-	if request.OutputFormat != OutputDefault && request.OutputFormat != OutputText && request.OutputFormat != OutputJSONL {
-		return unsupported(OpenCode, NonInteractive, "output format", string(request.OutputFormat), "request text or jsonl")
-	}
-	return nil
 }

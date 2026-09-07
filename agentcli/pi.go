@@ -8,15 +8,7 @@ import (
 // NewPi returns a Pi adapter after validating its configured options. A zero
 // Command uses "pi".
 func NewPi(command Command) (Adapter, error) {
-	base, err := newAdapter(Pi, command, "pi", piOptionGrammar)
-	if err != nil {
-		return nil, err
-	}
-	return &piAdapter{adapter: base}, nil
-}
-
-type piAdapter struct {
-	adapter
+	return newAdapter(Pi, command, "pi", piOptionGrammar, piCapabilities, buildPi)
 }
 
 var piOptionGrammar = optionGrammar{
@@ -74,35 +66,10 @@ var piCapabilities = Capabilities{
 	DisableSessionStorage:  true,
 }
 
-func (a *piAdapter) Capabilities() Capabilities {
-	return cloneCapabilities(piCapabilities)
-}
-
-func (a *piAdapter) Start(request Request) (Invocation, error) {
-	return a.build("", request)
-}
-
-func (a *piAdapter) Resume(sessionID string, request Request) (Invocation, error) {
-	sessionID, err := validateSessionID(sessionID)
-	if err != nil {
-		return Invocation{}, err
-	}
-	return a.build(sessionID, request)
-}
-
-func (a *piAdapter) build(sessionID string, request Request) (Invocation, error) {
-	mode, err := invocationMode(request.Mode)
-	if err != nil {
-		return Invocation{}, err
-	}
+func buildPi(a *adapter, sessionID string, request Request) (Invocation, error) {
+	mode := request.Mode
 	args := a.base()
-	if err := validateSupportedRequest(Pi, mode, request, piCapabilities); err != nil {
-		return Invocation{}, err
-	}
 	if err := validatePiRequest(mode, request); err != nil {
-		return Invocation{}, err
-	}
-	if err := a.validateConfiguredRequest(request); err != nil {
 		return Invocation{}, err
 	}
 	if request.DisableSessionStorage {
@@ -157,13 +124,16 @@ func (a *piAdapter) build(sessionID string, request Request) (Invocation, error)
 		args = append(args, "--model", request.Model)
 	}
 	if request.Reasoning != ReasoningDefault {
-		args = append(args, "--thinking", piReasoning(request.Reasoning))
+		args = append(args, "--thinking", reasoningValue(request.Reasoning))
 	}
 	if len(request.AllowedTools) != 0 {
 		args = append(args, "--tools", strings.Join(request.AllowedTools, ","))
 	}
 	if len(request.DeniedTools) != 0 {
 		args = append(args, "--exclude-tools", strings.Join(request.DeniedTools, ","))
+	}
+	if request.Prompt.Source == PromptArgument {
+		args = append(args, "--")
 	}
 	args, stdin, err := appendPrompt(args, request.Prompt, "", true)
 	if err != nil {
@@ -172,63 +142,7 @@ func (a *piAdapter) build(sessionID string, request Request) (Invocation, error)
 	return Invocation{Argv: args, Stdin: stdin}, nil
 }
 
-func (a *piAdapter) validateConfiguredRequest(request Request) error {
-	checks := []struct {
-		requested bool
-		option    string
-		hint      string
-		names     []string
-	}{
-		{request.Provider != "", "provider", "remove the configured provider or leave Request.Provider empty", []string{"provider"}},
-		{request.Model != "", "model", "remove the configured model or leave Request.Model empty", []string{"model"}},
-		{request.Reasoning != ReasoningDefault, "reasoning", "remove the configured thinking level or leave Request.Reasoning empty", []string{"thinking"}},
-		{request.OutputFormat != OutputDefault, "output format", "remove the configured mode or leave Request.OutputFormat empty", []string{"mode"}},
-		{request.Schema.Inline != "", "JSON schema", "remove configured schema options or leave Request.Schema empty", []string{"json-schema", "json-output", "json-fallback"}},
-		{request.DisableBuiltInTools || len(request.AllowedTools) != 0, "allowed tools", "remove configured tool selection or leave request tool selection empty", []string{"no-tools", "no-builtin-tools", "tools"}},
-		{len(request.DeniedTools) != 0, "denied tools", "remove configured excluded tools or leave Request.DeniedTools empty", []string{"exclude-tools"}},
-		{len(request.SkillPaths) != 0 || request.DisableSkills, "skills", "remove configured skill options or leave request skill controls empty", []string{"skill", "no-skills"}},
-		{request.DisableHooks || request.DisableExtensions, "extensions", "remove configured extension controls or leave request disable controls false", []string{"extension", "no-extensions"}},
-		{request.DisablePromptTemplates, "prompt templates", "remove configured prompt-template controls or leave Request.DisablePromptTemplates false", []string{"prompt-template", "no-prompt-templates"}},
-		{request.DisableThemes, "themes", "remove configured theme controls or leave Request.DisableThemes false", []string{"theme", "use-theme", "no-themes"}},
-		{request.DisableContextFiles, "context files", "remove --no-context-files or leave Request.DisableContextFiles false", []string{"no-context-files"}},
-		{request.DisableSessionStorage, "session persistence", "remove --no-session or leave Request.DisableSessionStorage false", []string{"no-session"}},
-	}
-	for _, check := range checks {
-		if err := a.rejectsConfigured(check.requested, check.option, check.hint, check.names...); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func validatePiRequest(mode Mode, request Request) error {
-	if err := validateValues("allowed tools", request.AllowedTools); err != nil {
-		return err
-	}
-	if err := validateValues("denied tools", request.DeniedTools); err != nil {
-		return err
-	}
-	if err := validateValues("skill paths", request.SkillPaths); err != nil {
-		return err
-	}
-	if mode == Interactive && request.Prompt.Source == PromptStdin {
-		return unsupported(Pi, mode, "stdin prompt", "", "use argument delivery for an interactive prompt")
-	}
-	if mode == NonInteractive && request.Prompt.Source == PromptStdin {
-		return unsupported(Pi, mode, "stdin prompt", "", "send the prompt as an argument or file reference")
-	}
-	if request.Sandbox != SandboxDefault {
-		return unsupported(Pi, mode, "sandbox", string(request.Sandbox), "restrict Pi through its tool allowlist or an external sandbox")
-	}
-	if request.Autonomy != AutonomyDefault {
-		return unsupported(Pi, mode, "autonomy", string(request.Autonomy), "use tool controls")
-	}
-	if request.Approval != ApprovalDefault {
-		return unsupported(Pi, mode, "approval mode", string(request.Approval), "Pi exposes project trust, not tool approval policy")
-	}
-	if request.DisableBuiltInMCPs || request.DisableUserConfig || len(request.ConfigOverrides) != 0 {
-		return unsupported(Pi, mode, "Codex config controls", "", "use configured Pi options")
-	}
 	if request.OutputPath != "" || request.Schema.Path != "" {
 		return unsupported(Pi, mode, "output path", "", "Pi output files require its JSON-schema extension")
 	}
@@ -248,25 +162,5 @@ func validatePiRequest(mode Mode, request Request) error {
 	if mode == Interactive && request.OutputFormat != OutputDefault && request.OutputFormat != OutputText {
 		return unsupported(Pi, mode, "output format", string(request.OutputFormat), "use noninteractive mode for jsonl")
 	}
-	if request.OutputFormat == OutputJSON {
-		return unsupported(Pi, mode, "output format", string(OutputJSON), "Pi's native event output is jsonl")
-	}
-	if request.OutputFormat != OutputDefault && request.OutputFormat != OutputText && request.OutputFormat != OutputJSONL {
-		return unsupported(Pi, mode, "output format", string(request.OutputFormat), "request text or jsonl")
-	}
-	if request.Reasoning != ReasoningDefault && piReasoning(request.Reasoning) == "" {
-		return unsupported(Pi, mode, "reasoning", string(request.Reasoning), "request low, medium, high, xhigh, or maximum")
-	}
 	return nil
-}
-
-func piReasoning(level ReasoningLevel) string {
-	switch level {
-	case ReasoningLow, ReasoningMedium, ReasoningHigh, ReasoningXHigh:
-		return string(level)
-	case ReasoningMaximum:
-		return "max"
-	default:
-		return ""
-	}
 }

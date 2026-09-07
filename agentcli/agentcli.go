@@ -311,52 +311,107 @@ func (e *UnsupportedOptionError) Error() string {
 }
 
 type adapter struct {
-	name       Name
-	executable string
-	options    []string
-	configured map[string]bool
+	name         Name
+	executable   string
+	options      []string
+	configured   map[string]bool
+	capabilities Capabilities
+	build        func(*adapter, string, Request) (Invocation, error)
 }
 
-func newAdapter(name Name, command Command, defaultExecutable string, grammar optionGrammar) (adapter, error) {
+func newAdapter(name Name, command Command, defaultExecutable string, grammar optionGrammar, capabilities Capabilities, build func(*adapter, string, Request) (Invocation, error)) (Adapter, error) {
 	executable := command.Executable
 	if executable == "" {
 		executable = defaultExecutable
 	}
 	if strings.TrimSpace(executable) == "" {
-		return adapter{}, fmt.Errorf("agent %q requires a configured executable", name)
+		return nil, fmt.Errorf("agent %q requires a configured executable", name)
 	}
 	configured, err := validateConfiguredOptions(name, command.Options, grammar)
 	if err != nil {
-		return adapter{}, err
+		return nil, err
 	}
-	return adapter{
-		name:       name,
-		executable: executable,
-		options:    slices.Clone(command.Options),
-		configured: configured,
+	return &adapter{
+		name:         name,
+		executable:   executable,
+		options:      slices.Clone(command.Options),
+		configured:   configured,
+		capabilities: capabilities,
+		build:        build,
 	}, nil
 }
 
-func (a adapter) Name() Name {
-	return a.name
+func (a *adapter) Name() Name                                { return a.name }
+func (a *adapter) Capabilities() Capabilities                { return cloneCapabilities(a.capabilities) }
+func (a *adapter) Start(request Request) (Invocation, error) { return a.invoke("", request) }
+func (a *adapter) Resume(sessionID string, request Request) (Invocation, error) {
+	sessionID, err := validateSessionID(sessionID)
+	if err != nil {
+		return Invocation{}, err
+	}
+	return a.invoke(sessionID, request)
+}
+
+func (a *adapter) invoke(sessionID string, request Request) (Invocation, error) {
+	mode, err := invocationMode(request.Mode)
+	if err != nil {
+		return Invocation{}, err
+	}
+	if !slices.Contains(a.capabilities.Modes, mode) {
+		return Invocation{}, unsupported(a.name, mode, "mode", string(mode), "choose a mode listed by Capabilities")
+	}
+	request.Mode = mode
+	if err := validateSupportedRequest(a.name, mode, request, a.capabilities); err != nil {
+		return Invocation{}, err
+	}
+	for _, values := range []struct {
+		name   string
+		values []string
+	}{
+		{"allowed tools", request.AllowedTools}, {"denied tools", request.DeniedTools},
+		{"skill paths", request.SkillPaths}, {"config overrides", request.ConfigOverrides},
+	} {
+		if err := validateValues(values.name, values.values); err != nil {
+			return Invocation{}, err
+		}
+	}
+	if err := a.validateConfiguredRequest(request); err != nil {
+		return Invocation{}, err
+	}
+	return a.build(a, sessionID, request)
 }
 
 func (a adapter) base() []string {
 	return append([]string{a.executable}, a.options...)
 }
 
-func (a adapter) rejectsConfigured(requested bool, option, hint string, names ...string) error {
-	if !requested {
-		return nil
+func (a adapter) validateConfiguredRequest(request Request) error {
+	checks := []struct {
+		set  bool
+		name string
+		keys []string
+	}{
+		{request.Provider != "", "provider", []string{"provider"}}, {request.Model != "", "model", []string{"model"}},
+		{request.Reasoning != ReasoningDefault, "reasoning", []string{"reasoning", "effort", "thinking"}},
+		{request.OutputFormat != OutputDefault, "output format", []string{"output-format", "stream", "mode"}},
+		{request.Schema.Inline != "" || request.Schema.Path != "", "JSON schema", []string{"json-schema", "json-output", "json-fallback"}},
+		{request.Sandbox != SandboxDefault, "sandbox", []string{"sandbox"}},
+		{request.Approval != ApprovalDefault, "approval mode", []string{"approval", "approve-for-me", "approval-bypass", "permission-mode", "approval-mode"}},
+		{request.Autonomy != AutonomyDefault, "autonomy", []string{"autonomy"}},
+		{len(request.AllowedTools) != 0 || request.DisableBuiltInTools, "allowed tools", []string{"allowed-tools", "tools", "no-tools", "no-builtin-tools"}},
+		{len(request.DeniedTools) != 0, "denied tools", []string{"denied-tools", "exclude-tools"}},
+		{len(request.SkillPaths) != 0 || request.DisableSkills, "skills", []string{"skill", "no-skills", "disable-skills", "disable-builtin-skills", "safe-mode", "bare"}},
+		{request.DisableHooks || request.DisableExtensions, "extensions or hooks", []string{"disable", "hook-trust", "disable-skills", "safe-mode", "bare", "extension", "no-extensions"}},
+		{request.DisablePromptTemplates, "prompt templates", []string{"prompt-template", "no-prompt-templates"}},
+		{request.DisableThemes, "themes", []string{"theme", "use-theme", "no-themes"}},
+		{request.DisableContextFiles, "context files", []string{"no-context-files", "no-custom-instructions"}},
+		{request.DisableBuiltInMCPs, "built-in MCP servers", []string{"disable-builtin-mcps"}},
+		{request.DisableSessionStorage, "session persistence", []string{"no-session", "no-session-persistence"}},
 	}
-	for _, name := range names {
-		if a.configured[name] {
-			return &InvalidCommandError{
-				Agent:  a.name,
-				Token:  name,
-				Index:  -1,
-				Reason: "conflicts with the same option requested for this invocation",
-				Hint:   hint,
+	for _, check := range checks {
+		for _, key := range check.keys {
+			if check.set && a.configured[key] {
+				return &InvalidCommandError{Agent: a.name, Token: key, Index: -1, Reason: "conflicts with the same option requested for this invocation", Hint: "remove the configured option or leave the request setting empty"}
 			}
 		}
 	}
@@ -408,6 +463,13 @@ func validateValues(option string, values []string) error {
 
 func joinComma(values []string) string {
 	return strings.Join(values, ",")
+}
+
+func reasoningValue(level ReasoningLevel) string {
+	if level == ReasoningMaximum {
+		return "max"
+	}
+	return string(level)
 }
 
 func unsupported(name Name, mode Mode, option, value, hint string) error {
