@@ -18,10 +18,52 @@ import (
 type Name string
 
 const (
-	Codex  Name = "codex"
-	Claude Name = "claude"
-	Pi     Name = "pi"
+	Codex    Name = "codex"
+	Claude   Name = "claude"
+	Pi       Name = "pi"
+	Gemini   Name = "gemini"
+	Copilot  Name = "copilot"
+	OpenCode Name = "opencode"
+	Cursor   Name = "cursor"
+	Kilo     Name = "kilo"
+	Kiro     Name = "kiro"
+	Droid    Name = "droid"
 )
+
+var supportedNames = []Name{Codex, Claude, Gemini, Copilot, OpenCode, Cursor, Kiro, Kilo, Droid, Pi}
+
+// Names returns the CLI families with concrete adapters.
+func Names() []Name {
+	return slices.Clone(supportedNames)
+}
+
+// New returns the concrete adapter for name.
+func New(name Name, command Command) (Adapter, error) {
+	switch name {
+	case Codex:
+		return NewCodex(command)
+	case Claude:
+		return NewClaude(command)
+	case Gemini:
+		return NewGemini(command)
+	case Copilot:
+		return NewCopilot(command)
+	case OpenCode:
+		return NewOpenCode(command)
+	case Cursor:
+		return NewCursor(command)
+	case Kiro:
+		return NewKiro(command)
+	case Kilo:
+		return NewKilo(command)
+	case Droid:
+		return NewDroid(command)
+	case Pi:
+		return NewPi(command)
+	default:
+		return nil, fmt.Errorf("unsupported agent CLI %q", name)
+	}
+}
 
 // Mode selects an interactive terminal session or a one-shot invocation.
 type Mode string
@@ -66,6 +108,7 @@ const (
 	ReasoningLow     ReasoningLevel = "low"
 	ReasoningMedium  ReasoningLevel = "medium"
 	ReasoningHigh    ReasoningLevel = "high"
+	ReasoningXHigh   ReasoningLevel = "xhigh"
 	ReasoningMaximum ReasoningLevel = "maximum"
 )
 
@@ -89,6 +132,16 @@ const (
 	ApprovalBypass    ApprovalMode = "bypass"
 )
 
+// AutonomyLevel selects an agent's native tier of unattended actions.
+type AutonomyLevel string
+
+const (
+	AutonomyDefault AutonomyLevel = ""
+	AutonomyLow     AutonomyLevel = "low"
+	AutonomyMedium  AutonomyLevel = "medium"
+	AutonomyHigh    AutonomyLevel = "high"
+)
+
 // JSONSchema configures a CLI's native structured-output mechanism. Codex
 // accepts Path, while Claude and Pi accept Inline. Pi additionally requires an
 // Extension and OutputPath.
@@ -101,9 +154,10 @@ type JSONSchema struct {
 }
 
 // Request describes one agent turn. Its zero value requests an interactive
-// invocation using the agent's configured defaults. DisableExtensions,
-// DisableSkills, and DisableHooks control discovery; explicit configured
-// command options remain the caller's responsibility.
+// invocation using the agent's configured defaults. Discovery controls are
+// separate because extensions, skills, hooks, MCP servers, and context files
+// are distinct concepts in the supported CLIs. Explicit configured command
+// options remain the caller's responsibility.
 type Request struct {
 	Mode                   Mode
 	Prompt                 Prompt
@@ -115,6 +169,7 @@ type Request struct {
 	Schema                 JSONSchema
 	Sandbox                SandboxMode
 	Approval               ApprovalMode
+	Autonomy               AutonomyLevel
 	AllowedTools           []string
 	DeniedTools            []string
 	DisableBuiltInTools    bool
@@ -125,6 +180,7 @@ type Request struct {
 	DisablePromptTemplates bool
 	DisableThemes          bool
 	DisableContextFiles    bool
+	DisableBuiltInMCPs     bool
 	DisableUserConfig      bool
 	DisableSessionStorage  bool
 	ConfigOverrides        []string
@@ -134,7 +190,7 @@ type Request struct {
 type DisableScope string
 
 const (
-	DisableUnsupported        DisableScope = "unsupported"
+	DisableUnsupported        DisableScope = ""
 	DisableHooksOnly          DisableScope = "hooks-only"
 	DisableAllCustomizations  DisableScope = "all-customizations"
 	DisableExtensionDiscovery DisableScope = "extension-discovery"
@@ -150,16 +206,21 @@ type ToolCapabilities struct {
 // Capabilities reports which Request fields an adapter can honor.
 type Capabilities struct {
 	Modes                  []Mode
+	PromptSources          []PromptSource
+	PromptFiles            bool
 	Resume                 bool
 	OutputFormats          []OutputFormat
 	JSONSchemaInline       bool
 	JSONSchemaPath         bool
 	JSONSchemaOutputPath   bool
+	JSONSchemaExtension    bool
+	JSONSchemaFallback     bool
 	Model                  bool
 	Provider               bool
-	Reasoning              bool
+	ReasoningLevels        []ReasoningLevel
 	SandboxModes           []SandboxMode
 	ApprovalModes          []ApprovalMode
+	AutonomyLevels         []AutonomyLevel
 	Tools                  ToolCapabilities
 	SkillPaths             bool
 	DisableSkills          bool
@@ -168,6 +229,7 @@ type Capabilities struct {
 	DisablePromptTemplates bool
 	DisableThemes          bool
 	DisableContextFiles    bool
+	DisableBuiltInMCPs     bool
 	DisableUserConfig      bool
 	DisableSessionStorage  bool
 	ConfigOverrides        bool
@@ -344,8 +406,56 @@ func validateValues(option string, values []string) error {
 	return nil
 }
 
+func joinComma(values []string) string {
+	return strings.Join(values, ",")
+}
+
 func unsupported(name Name, mode Mode, option, value, hint string) error {
 	return &UnsupportedOptionError{Agent: name, Option: option, Value: value, Mode: mode, Hint: hint}
+}
+
+func validateSupportedRequest(name Name, mode Mode, request Request, capabilities Capabilities) error {
+	checks := []struct {
+		requested bool
+		supported bool
+		option    string
+		value     string
+	}{
+		{request.Prompt.Source != PromptNone, slices.Contains(capabilities.PromptSources, request.Prompt.Source), "prompt transport", string(request.Prompt.Source)},
+		{len(request.Prompt.Files) != 0, capabilities.PromptFiles, "prompt files", ""},
+		{request.OutputFormat != OutputDefault, slices.Contains(capabilities.OutputFormats, request.OutputFormat), "output format", string(request.OutputFormat)},
+		{request.Schema.Inline != "", capabilities.JSONSchemaInline, "inline JSON schema", ""},
+		{request.Schema.Path != "", capabilities.JSONSchemaPath, "JSON schema path", ""},
+		{request.OutputPath != "" || request.Schema.OutputPath != "", capabilities.JSONSchemaOutputPath, "output path", ""},
+		{request.Schema.Extension != "", capabilities.JSONSchemaExtension, "JSON schema extension", ""},
+		{request.Schema.Fallback != "", capabilities.JSONSchemaFallback, "JSON schema fallback", request.Schema.Fallback},
+		{request.Model != "", capabilities.Model, "model", request.Model},
+		{request.Provider != "", capabilities.Provider, "provider", request.Provider},
+		{request.Reasoning != ReasoningDefault, slices.Contains(capabilities.ReasoningLevels, request.Reasoning), "reasoning", string(request.Reasoning)},
+		{request.Sandbox != SandboxDefault, slices.Contains(capabilities.SandboxModes, request.Sandbox), "sandbox", string(request.Sandbox)},
+		{request.Approval != ApprovalDefault, slices.Contains(capabilities.ApprovalModes, request.Approval), "approval mode", string(request.Approval)},
+		{request.Autonomy != AutonomyDefault, slices.Contains(capabilities.AutonomyLevels, request.Autonomy), "autonomy", string(request.Autonomy)},
+		{len(request.AllowedTools) != 0, capabilities.Tools.AllowList, "allowed tools", ""},
+		{len(request.DeniedTools) != 0, capabilities.Tools.DenyList, "denied tools", ""},
+		{request.DisableBuiltInTools, capabilities.Tools.DisableBuiltIns, "disable built-in tools", ""},
+		{len(request.SkillPaths) != 0, capabilities.SkillPaths, "skill paths", ""},
+		{request.DisableSkills, capabilities.DisableSkills, "disable skills", ""},
+		{request.DisableHooks, capabilities.DisableHooks != DisableUnsupported, "disable hooks", ""},
+		{request.DisableExtensions, capabilities.DisableExtensions, "disable extensions", ""},
+		{request.DisablePromptTemplates, capabilities.DisablePromptTemplates, "disable prompt templates", ""},
+		{request.DisableThemes, capabilities.DisableThemes, "disable themes", ""},
+		{request.DisableContextFiles, capabilities.DisableContextFiles, "disable context files", ""},
+		{request.DisableBuiltInMCPs, capabilities.DisableBuiltInMCPs, "disable built-in MCP servers", ""},
+		{request.DisableUserConfig, capabilities.DisableUserConfig, "disable user config", ""},
+		{request.DisableSessionStorage, capabilities.DisableSessionStorage, "disable session storage", ""},
+		{len(request.ConfigOverrides) != 0, capabilities.ConfigOverrides, "config overrides", ""},
+	}
+	for _, check := range checks {
+		if check.requested && !check.supported {
+			return unsupported(name, mode, check.option, check.value, "remove this request option or choose an adapter that lists the capability")
+		}
+	}
+	return nil
 }
 
 func appendPrompt(args []string, prompt Prompt, stdinMarker string, supportsFiles bool) ([]string, *string, error) {
@@ -381,8 +491,11 @@ func appendPrompt(args []string, prompt Prompt, stdinMarker string, supportsFile
 
 func cloneCapabilities(capabilities Capabilities) Capabilities {
 	capabilities.Modes = slices.Clone(capabilities.Modes)
+	capabilities.PromptSources = slices.Clone(capabilities.PromptSources)
 	capabilities.OutputFormats = slices.Clone(capabilities.OutputFormats)
+	capabilities.ReasoningLevels = slices.Clone(capabilities.ReasoningLevels)
 	capabilities.SandboxModes = slices.Clone(capabilities.SandboxModes)
 	capabilities.ApprovalModes = slices.Clone(capabilities.ApprovalModes)
+	capabilities.AutonomyLevels = slices.Clone(capabilities.AutonomyLevels)
 	return capabilities
 }

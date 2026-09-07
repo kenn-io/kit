@@ -46,7 +46,8 @@ Report an invalid schema invocation only when authoritative evidence for that
 CLI and mode shows the constructed command cannot produce the requested
 schema-conforming result.
 
-The `agentcli` package intentionally owns the supported Codex, Claude Code, and
+The `agentcli` package intentionally owns the supported Codex, Claude Code,
+Gemini, GitHub Copilot, OpenCode, Cursor Agent, Kiro, Kilo, Factory Droid, and
 Pi command shapes. Review its internal consistency and its behavior against
 supplied authoritative evidence. Do not infer that a listed option or arity is
 wrong only because roborev-ci did not execute the external CLI.

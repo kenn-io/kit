@@ -52,13 +52,17 @@ var piOptionGrammar = optionGrammar{
 
 var piCapabilities = Capabilities{
 	Modes:                  []Mode{Interactive, NonInteractive},
+	PromptSources:          []PromptSource{PromptArgument},
+	PromptFiles:            true,
 	Resume:                 true,
 	OutputFormats:          []OutputFormat{OutputText, OutputJSONL},
 	JSONSchemaInline:       true,
 	JSONSchemaOutputPath:   true,
+	JSONSchemaExtension:    true,
+	JSONSchemaFallback:     true,
 	Model:                  true,
 	Provider:               true,
-	Reasoning:              true,
+	ReasoningLevels:        []ReasoningLevel{ReasoningLow, ReasoningMedium, ReasoningHigh, ReasoningXHigh, ReasoningMaximum},
 	Tools:                  ToolCapabilities{AllowList: true, DenyList: true, DisableBuiltIns: true},
 	SkillPaths:             true,
 	DisableSkills:          true,
@@ -92,6 +96,9 @@ func (a *piAdapter) build(sessionID string, request Request) (Invocation, error)
 		return Invocation{}, err
 	}
 	args := a.base()
+	if err := validateSupportedRequest(Pi, mode, request, piCapabilities); err != nil {
+		return Invocation{}, err
+	}
 	if err := validatePiRequest(mode, request); err != nil {
 		return Invocation{}, err
 	}
@@ -207,13 +214,19 @@ func validatePiRequest(mode Mode, request Request) error {
 	if mode == Interactive && request.Prompt.Source == PromptStdin {
 		return unsupported(Pi, mode, "stdin prompt", "", "use argument delivery for an interactive prompt")
 	}
+	if mode == NonInteractive && request.Prompt.Source == PromptStdin {
+		return unsupported(Pi, mode, "stdin prompt", "", "send the prompt as an argument or file reference")
+	}
 	if request.Sandbox != SandboxDefault {
 		return unsupported(Pi, mode, "sandbox", string(request.Sandbox), "restrict Pi through its tool allowlist or an external sandbox")
+	}
+	if request.Autonomy != AutonomyDefault {
+		return unsupported(Pi, mode, "autonomy", string(request.Autonomy), "use tool controls")
 	}
 	if request.Approval != ApprovalDefault {
 		return unsupported(Pi, mode, "approval mode", string(request.Approval), "Pi exposes project trust, not tool approval policy")
 	}
-	if request.DisableUserConfig || len(request.ConfigOverrides) != 0 {
+	if request.DisableBuiltInMCPs || request.DisableUserConfig || len(request.ConfigOverrides) != 0 {
 		return unsupported(Pi, mode, "Codex config controls", "", "use configured Pi options")
 	}
 	if request.OutputPath != "" || request.Schema.Path != "" {
@@ -242,17 +255,17 @@ func validatePiRequest(mode Mode, request Request) error {
 		return unsupported(Pi, mode, "output format", string(request.OutputFormat), "request text or jsonl")
 	}
 	if request.Reasoning != ReasoningDefault && piReasoning(request.Reasoning) == "" {
-		return unsupported(Pi, mode, "reasoning", string(request.Reasoning), "request low, medium, high, or maximum")
+		return unsupported(Pi, mode, "reasoning", string(request.Reasoning), "request low, medium, high, xhigh, or maximum")
 	}
 	return nil
 }
 
 func piReasoning(level ReasoningLevel) string {
 	switch level {
-	case ReasoningLow, ReasoningMedium, ReasoningHigh:
+	case ReasoningLow, ReasoningMedium, ReasoningHigh, ReasoningXHigh:
 		return string(level)
 	case ReasoningMaximum:
-		return "high"
+		return "max"
 	default:
 		return ""
 	}

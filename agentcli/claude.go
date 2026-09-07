@@ -65,11 +65,12 @@ var claudeOptionGrammar = optionGrammar{
 
 var claudeCapabilities = Capabilities{
 	Modes:                 []Mode{Interactive, NonInteractive},
+	PromptSources:         []PromptSource{PromptArgument, PromptStdin},
 	Resume:                true,
 	OutputFormats:         []OutputFormat{OutputText, OutputJSON, OutputJSONL},
 	JSONSchemaInline:      true,
 	Model:                 true,
-	Reasoning:             true,
+	ReasoningLevels:       []ReasoningLevel{ReasoningLow, ReasoningMedium, ReasoningHigh, ReasoningXHigh, ReasoningMaximum},
 	ApprovalModes:         []ApprovalMode{ApprovalOnRequest, ApprovalNever, ApprovalBypass},
 	Tools:                 ToolCapabilities{AllowList: true, DenyList: true, DisableBuiltIns: true},
 	DisableSkills:         true,
@@ -99,6 +100,9 @@ func (a *claudeAdapter) build(sessionID string, request Request) (Invocation, er
 		return Invocation{}, err
 	}
 	args := a.base()
+	if err := validateSupportedRequest(Claude, mode, request, claudeCapabilities); err != nil {
+		return Invocation{}, err
+	}
 	if err := validateClaudeRequest(mode, request); err != nil {
 		return Invocation{}, err
 	}
@@ -198,6 +202,9 @@ func validateClaudeRequest(mode Mode, request Request) error {
 	if request.Provider != "" {
 		return unsupported(Claude, mode, "provider", request.Provider, "configure the provider outside Claude's argv")
 	}
+	if request.Autonomy != AutonomyDefault {
+		return unsupported(Claude, mode, "autonomy", string(request.Autonomy), "use approval and tool controls")
+	}
 	if request.Sandbox != SandboxDefault {
 		return unsupported(Claude, mode, "sandbox", string(request.Sandbox), "Claude permission modes do not provide a filesystem sandbox")
 	}
@@ -207,7 +214,7 @@ func validateClaudeRequest(mode Mode, request Request) error {
 	if len(request.SkillPaths) != 0 {
 		return unsupported(Claude, mode, "skill paths", "", "install skills through Claude configuration")
 	}
-	if request.DisableExtensions || request.DisablePromptTemplates || request.DisableThemes || request.DisableContextFiles {
+	if request.DisableExtensions || request.DisablePromptTemplates || request.DisableThemes || request.DisableContextFiles || request.DisableBuiltInMCPs {
 		return unsupported(Claude, mode, "Pi customization controls", "", "these controls are specific to Pi")
 	}
 	if request.DisableUserConfig || len(request.ConfigOverrides) != 0 {
@@ -228,7 +235,7 @@ func validateClaudeRequest(mode Mode, request Request) error {
 		return unsupported(Claude, mode, "output format", string(request.OutputFormat), "request text, json, or jsonl")
 	}
 	if request.Reasoning != ReasoningDefault && claudeReasoning(request.Reasoning) == "" {
-		return unsupported(Claude, mode, "reasoning", string(request.Reasoning), "request low, medium, high, or maximum")
+		return unsupported(Claude, mode, "reasoning", string(request.Reasoning), "request low, medium, high, xhigh, or maximum")
 	}
 	if request.Approval != ApprovalDefault && request.Approval != ApprovalOnRequest && request.Approval != ApprovalNever && request.Approval != ApprovalBypass {
 		return unsupported(Claude, mode, "approval mode", string(request.Approval), "request on-request, never, or bypass")
@@ -238,7 +245,7 @@ func validateClaudeRequest(mode Mode, request Request) error {
 
 func claudeReasoning(level ReasoningLevel) string {
 	switch level {
-	case ReasoningLow, ReasoningMedium, ReasoningHigh:
+	case ReasoningLow, ReasoningMedium, ReasoningHigh, ReasoningXHigh:
 		return string(level)
 	case ReasoningMaximum:
 		return "max"

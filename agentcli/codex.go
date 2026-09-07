@@ -42,12 +42,13 @@ var codexOptionGrammar = optionGrammar{
 
 var codexCapabilities = Capabilities{
 	Modes:                 []Mode{Interactive, NonInteractive},
+	PromptSources:         []PromptSource{PromptArgument, PromptStdin},
 	Resume:                true,
 	OutputFormats:         []OutputFormat{OutputText, OutputJSONL},
 	JSONSchemaPath:        true,
 	JSONSchemaOutputPath:  true,
 	Model:                 true,
-	Reasoning:             true,
+	ReasoningLevels:       []ReasoningLevel{ReasoningLow, ReasoningMedium, ReasoningHigh, ReasoningXHigh},
 	SandboxModes:          []SandboxMode{SandboxReadOnly, SandboxWorkspaceWrite, SandboxDangerFullAccess},
 	ApprovalModes:         []ApprovalMode{ApprovalOnRequest, ApprovalNever, ApprovalBypass},
 	DisableSkills:         true,
@@ -79,6 +80,9 @@ func (a *codexAdapter) build(sessionID string, request Request) (Invocation, err
 		return Invocation{}, err
 	}
 	args := a.base()
+	if err := validateSupportedRequest(Codex, mode, request, codexCapabilities); err != nil {
+		return Invocation{}, err
+	}
 	if err := validateCodexRequest(mode, request); err != nil {
 		return Invocation{}, err
 	}
@@ -185,13 +189,16 @@ func validateCodexRequest(mode Mode, request Request) error {
 	if request.Provider != "" {
 		return unsupported(Codex, mode, "provider", request.Provider, "put the provider in configured Codex options")
 	}
+	if request.Autonomy != AutonomyDefault {
+		return unsupported(Codex, mode, "autonomy", string(request.Autonomy), "use sandbox and approval controls")
+	}
 	if len(request.AllowedTools) != 0 || len(request.DeniedTools) != 0 || request.DisableBuiltInTools {
 		return unsupported(Codex, mode, "tool policy", "", "Codex has no equivalent per-invocation tool-list flags")
 	}
 	if len(request.SkillPaths) != 0 {
 		return unsupported(Codex, mode, "skill paths", "", "install skills through Codex configuration")
 	}
-	if request.DisableExtensions || request.DisablePromptTemplates || request.DisableThemes || request.DisableContextFiles {
+	if request.DisableExtensions || request.DisablePromptTemplates || request.DisableThemes || request.DisableContextFiles || request.DisableBuiltInMCPs {
 		return unsupported(Codex, mode, "Pi customization controls", "", "these controls are specific to Pi")
 	}
 	if request.Schema.Inline != "" || request.Schema.Extension != "" || request.Schema.Fallback != "" {
@@ -218,7 +225,7 @@ func validateCodexRequest(mode Mode, request Request) error {
 		return unsupported(Codex, mode, "output format", string(request.OutputFormat), "request text or jsonl")
 	}
 	if request.Reasoning != ReasoningDefault && codexReasoning(request.Reasoning) == "" {
-		return unsupported(Codex, mode, "reasoning", string(request.Reasoning), "request low, medium, high, or maximum")
+		return unsupported(Codex, mode, "reasoning", string(request.Reasoning), "request low, medium, high, or xhigh")
 	}
 	if request.Approval == ApprovalBypass && request.Sandbox != SandboxDefault {
 		return fmt.Errorf("agent %q cannot combine approval bypass with sandbox %q", Codex, request.Sandbox)
@@ -234,10 +241,8 @@ func validateCodexRequest(mode Mode, request Request) error {
 
 func codexReasoning(level ReasoningLevel) string {
 	switch level {
-	case ReasoningLow, ReasoningMedium, ReasoningHigh:
+	case ReasoningLow, ReasoningMedium, ReasoningHigh, ReasoningXHigh:
 		return string(level)
-	case ReasoningMaximum:
-		return "xhigh"
 	default:
 		return ""
 	}

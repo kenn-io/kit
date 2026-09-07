@@ -28,12 +28,12 @@ invocation, err := agent.Resume(sessionID, agentcli.Request{})
 // invocation.Argv: codex --profile forge resume <sessionID>
 ```
 
-RoboRev can request a noninteractive event stream with explicit safety and
-prompt transport:
+RoboRev can select an adapter by name and request a noninteractive event
+stream. The adapter reports whether it expects the prompt in argv or stdin:
 
 ```go
 prompt := agentcli.Prompt{Source: agentcli.PromptStdin, Text: reviewPrompt}
-agent, err := agentcli.NewCodex(agentcli.Command{Executable: configuredExecutable})
+agent, err := agentcli.New(agentcli.Codex, agentcli.Command{Executable: configuredExecutable})
 if err != nil {
 	return err
 }
@@ -54,38 +54,69 @@ for unsafe configured command shapes. A request also returns that error when it
 would duplicate a configured singleton option, such as a model or session
 policy; remove one of the two settings instead of relying on CLI precedence.
 
-## Capability matrix
+## Supported agents
 
-| Capability | Codex | Claude Code | Pi |
+`Names` returns ten concrete CLI adapters. The modes below describe this
+package, not every mode offered by the underlying command. Beyond Forge's
+current three CLI families, the adapters expose the noninteractive command
+shape that RoboRev currently needs.
+
+| Agent | Modes | Prompt | Resume | Output | Reasoning |
+| --- | --- | --- | --- | --- | --- |
+| Codex | interactive, noninteractive | argument, stdin | `resume ID`, `exec resume ID` | text, JSONL | low, medium, high, xhigh |
+| Claude Code | interactive, noninteractive | argument, stdin | `--resume ID` | text, JSON, JSONL | low, medium, high, xhigh, maximum |
+| Gemini | noninteractive | `--prompt`, stdin appended to `--prompt` | `--resume ID` | text, JSON, JSONL | none |
+| GitHub Copilot | noninteractive | `--prompt` | `--resume=ID` | text, JSONL | low, medium, high, xhigh, maximum |
+| OpenCode | noninteractive | stdin | `run --session ID` | text, JSONL | none |
+| Cursor Agent | noninteractive | stdin | `--resume ID` | text, JSON, JSONL | none |
+| Kiro | noninteractive | argument | `chat --resume-id ID` | text | low, medium, high, xhigh, maximum |
+| Kilo | noninteractive | stdin | `run --session ID` | text, JSONL | low, medium, high, xhigh, maximum |
+| Factory Droid | noninteractive | argument, stdin | `exec --session-id ID` | text, JSON, JSONL | low, medium, high, xhigh, maximum |
+| Pi | interactive, noninteractive | argument and `@file` | `--session ID` | text, JSONL | low, medium, high, xhigh, maximum |
+
+`ReasoningXHigh` and `ReasoningMaximum` are distinct. Adapters with a native
+`max` value map only `ReasoningMaximum` to it. Codex does not advertise
+`ReasoningMaximum` because its CLI advertises `xhigh` but not `max`. Droid
+accepts model-dependent reasoning values, and Kilo passes the value as a
+provider-specific model variant, so the selected model remains the final
+authority for those two commands.
+
+The remaining controls are intentionally uneven:
+
+| Agent | JSON Schema | Execution controls | Customization controls |
 | --- | --- | --- | --- |
-| Interactive and noninteractive | yes | yes | yes |
-| Resume by caller-supplied identity | `resume ID` or `exec resume ID` | `--resume ID` | `--session ID` |
-| Output | text, JSONL | text, JSON, stream JSONL | text, JSONL |
-| JSON Schema | schema file | inline schema | inline schema through an explicit extension and output file |
-| Model and reasoning | yes | yes | yes |
-| Provider | configured options | configured options | `--provider` |
-| Sandbox | read-only, workspace-write, full access | no filesystem sandbox flag | no sandbox flag |
-| Approval policy | on-request, never, bypass | manual, dontAsk, bypass | no tool-approval policy |
-| Tool lists | no | allow, deny, disable built-ins | allow, deny, disable built-ins |
-| Skill paths | no | no | yes |
-| Disable skills | suppress skill instructions | disable slash commands | disable discovery |
-| Disable hooks | hooks feature only | safe mode disables all customizations | disable extension discovery |
-| Disable session storage | noninteractive | noninteractive | yes |
-| Disable user config | noninteractive | configured options | configured options |
-| Config overrides | `-c` | configured options | configured options |
+| Codex | schema file and output path | sandbox and approval modes | disable skill instructions, hooks, user config, or session storage; config overrides |
+| Claude Code | inline schema | approval modes; allow, deny, or disable built-in tools | disable skills, all customizations including hooks, or session storage |
+| Gemini | none | plan or bypass approval mode | none |
+| GitHub Copilot | none | allow and deny tools; full permission bypass | disable built-in MCP servers or context instructions |
+| OpenCode | none | none | none |
+| Cursor Agent | none | plan or bypass mode | none |
+| Kiro | none | trusted-tool allowlist or trust all tools | none |
+| Kilo | none | automatic approval | none |
+| Factory Droid | none | tool allowlist and denylist; low, medium, or high autonomy; permission bypass | disable built-in skills |
+| Pi | inline schema through an explicit extension and output file | allow, deny, or disable built-in tools | skill paths; disable skills, extensions, prompt templates, themes, context files, hooks through extension discovery, or session storage |
 
 The adapters reflect these CLI contracts:
 
 - [Codex noninteractive mode](https://learn.chatgpt.com/docs/non-interactive-mode)
 - [Codex configuration reference](https://developers.openai.com/codex/config-reference)
 - [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference)
+- [Gemini CLI reference](https://geminicli.com/docs/cli/commands/)
+- [GitHub Copilot CLI reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference)
+- [OpenCode CLI reference](https://opencode.ai/docs/cli/)
+- [Cursor Agent CLI reference](https://docs.cursor.com/en/cli/reference/parameters)
+- [Kiro CLI command reference](https://kiro.dev/docs/reference/cli-commands/)
+- [Kilo CLI source](https://github.com/Kilo-Org/kilocode)
+- [Factory Droid CLI reference](https://docs.factory.ai/droid-cli/cli-reference)
 - [Pi README](https://github.com/earendil-works/pi/tree/main/packages/coding-agent)
 
 The first consumer migrations should replace Forge's temporary command-option
 validator together with its interactive resume switch; Forge should pass its
 configured executable and option slice directly to the matching constructor.
-RoboRev should replace its Codex, Claude, and Pi argument builders while keeping
-stream parsing, installed-version capability probes, environment filtering, Pi
-session-file lookup, and process lifecycle code. Keeping command-shape parsing
+RoboRev should replace the argument builders for its ten command-based agents
+while keeping stream parsing, installed-version capability probes, environment
+filtering, Pi session-file lookup, and process lifecycle code. Its Agent Client
+Protocol adapter remains outside this argv package because it owns a protocol
+session and process, not a one-shot command shape. Keeping command-shape parsing
 in either consumer would create a second grammar that can drift from these
 adapters.

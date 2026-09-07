@@ -29,6 +29,38 @@ func newPi(t *testing.T, command agentcli.Command) agentcli.Adapter {
 	return agent
 }
 
+func TestSupportedAgentNamesConstructAdapters(t *testing.T) {
+	t.Parallel()
+	assert := assert.New(t)
+	require := require.New(t)
+
+	expected := []agentcli.Name{
+		agentcli.Codex,
+		agentcli.Claude,
+		agentcli.Gemini,
+		agentcli.Copilot,
+		agentcli.OpenCode,
+		agentcli.Cursor,
+		agentcli.Kiro,
+		agentcli.Kilo,
+		agentcli.Droid,
+		agentcli.Pi,
+	}
+	assert.Equal(expected, agentcli.Names())
+	for _, name := range expected {
+		agent, err := agentcli.New(name, agentcli.Command{})
+		require.NoError(err)
+		assert.Equal(name, agent.Name())
+	}
+
+	names := agentcli.Names()
+	names[0] = "changed"
+	assert.Equal(agentcli.Codex, agentcli.Names()[0])
+
+	_, err := agentcli.New("unknown", agentcli.Command{})
+	require.Error(err)
+}
+
 func TestInteractiveResumePreservesConfiguredCommand(t *testing.T) {
 	t.Parallel()
 
@@ -77,7 +109,7 @@ func TestCodexNonInteractiveResume(t *testing.T) {
 		Mode:                  agentcli.NonInteractive,
 		Prompt:                agentcli.Prompt{Source: agentcli.PromptStdin, Text: prompt},
 		Model:                 "gpt-test",
-		Reasoning:             agentcli.ReasoningMaximum,
+		Reasoning:             agentcli.ReasoningXHigh,
 		OutputFormat:          agentcli.OutputJSONL,
 		Sandbox:               agentcli.SandboxReadOnly,
 		Approval:              agentcli.ApprovalNever,
@@ -184,7 +216,7 @@ func TestPiSchemaInvocation(t *testing.T) {
 		"--print",
 		"--provider", "test-provider",
 		"--model", "test-model",
-		"--thinking", "high",
+		"--thinking", "max",
 		"@prompt.md", "classify",
 	}, invocation.Argv)
 	assert.Nil(t, invocation.Stdin)
@@ -259,9 +291,25 @@ func TestCapabilitiesAreExplicitAndIndependent(t *testing.T) {
 	assert.True(capabilities.JSONSchemaPath)
 	assert.False(capabilities.JSONSchemaInline)
 	assert.Equal(agentcli.DisableHooksOnly, capabilities.DisableHooks)
+	assert.Equal([]agentcli.ReasoningLevel{
+		agentcli.ReasoningLow,
+		agentcli.ReasoningMedium,
+		agentcli.ReasoningHigh,
+		agentcli.ReasoningXHigh,
+	}, capabilities.ReasoningLevels)
 
 	capabilities.Modes[0] = "changed"
+	capabilities.PromptSources[0] = "changed"
+	capabilities.ReasoningLevels[0] = "changed"
 	assert.Equal(agentcli.Interactive, codex.Capabilities().Modes[0])
+	assert.Equal(agentcli.PromptArgument, codex.Capabilities().PromptSources[0])
+	assert.Equal(agentcli.ReasoningLow, codex.Capabilities().ReasoningLevels[0])
+
+	droid, err := agentcli.NewDroid(agentcli.Command{})
+	require.NoError(t, err)
+	droidCapabilities := droid.Capabilities()
+	droidCapabilities.AutonomyLevels[0] = "changed"
+	assert.Equal(agentcli.AutonomyLow, droid.Capabilities().AutonomyLevels[0])
 }
 
 func TestConfiguredCommandValidation(t *testing.T) {
@@ -285,6 +333,13 @@ func TestConfiguredCommandValidation(t *testing.T) {
 		{name: "pi session", new: agentcli.NewPi, command: agentcli.Command{Options: []string{"--session", "old-session"}}, token: "--session"},
 		{name: "pi prompt boundary", new: agentcli.NewPi, command: agentcli.Command{Options: []string{"--", "old prompt"}}, token: "--"},
 		{name: "pi action", new: agentcli.NewPi, command: agentcli.Command{Options: []string{"install", "extension"}}, token: "install"},
+		{name: "gemini resume", new: agentcli.NewGemini, command: agentcli.Command{Options: []string{"--resume", "old-session"}}, token: "--resume"},
+		{name: "copilot missing model", new: agentcli.NewCopilot, command: agentcli.Command{Options: []string{"--model"}}, token: "--model"},
+		{name: "opencode session", new: agentcli.NewOpenCode, command: agentcli.Command{Options: []string{"--session", "old-session"}}, token: "--session"},
+		{name: "cursor prompt", new: agentcli.NewCursor, command: agentcli.Command{Options: []string{"old prompt"}}, token: "old prompt"},
+		{name: "kilo session", new: agentcli.NewKilo, command: agentcli.Command{Options: []string{"--session", "old-session"}}, token: "--session"},
+		{name: "kiro missing wrap", new: agentcli.NewKiro, command: agentcli.Command{Options: []string{"--wrap"}}, token: "--wrap"},
+		{name: "droid session", new: agentcli.NewDroid, command: agentcli.Command{Options: []string{"--session-id", "old-session"}}, token: "--session-id"},
 	}
 
 	for _, test := range tests {
@@ -309,6 +364,7 @@ func TestConfiguredOptionsPreserveArityAndOrdering(t *testing.T) {
 		name     string
 		new      func(agentcli.Command) (agentcli.Adapter, error)
 		command  agentcli.Command
+		mode     agentcli.Mode
 		expected []string
 	}{
 		{
@@ -333,6 +389,20 @@ func TestConfiguredOptionsPreserveArityAndOrdering(t *testing.T) {
 			command:  agentcli.Command{Options: []string{"-ne", "--tui-mode", "fullscreen", "--offline"}},
 			expected: []string{"pi", "-ne", "--tui-mode", "fullscreen", "--offline", "--session", "session-1"},
 		},
+		{
+			name:     "kiro chat options follow subcommand",
+			new:      agentcli.NewKiro,
+			command:  agentcli.Command{Executable: "kiro-custom", Options: []string{"--wrap", "never"}},
+			mode:     agentcli.NonInteractive,
+			expected: []string{"kiro-custom", "chat", "--wrap", "never", "--no-interactive", "--resume-id", "session-1"},
+		},
+		{
+			name:     "droid exec options follow subcommand",
+			new:      agentcli.NewDroid,
+			command:  agentcli.Command{Executable: "droid-custom", Options: []string{"--append-system-prompt", "review only"}},
+			mode:     agentcli.NonInteractive,
+			expected: []string{"droid-custom", "exec", "--append-system-prompt", "review only", "--session-id", "session-1"},
+		},
 	}
 
 	for _, test := range tests {
@@ -340,7 +410,7 @@ func TestConfiguredOptionsPreserveArityAndOrdering(t *testing.T) {
 			t.Parallel()
 			agent, err := test.new(test.command)
 			require.NoError(t, err)
-			invocation, err := agent.Resume("session-1", agentcli.Request{})
+			invocation, err := agent.Resume("session-1", agentcli.Request{Mode: test.mode})
 			require.NoError(t, err)
 			assert.Equal(t, test.expected, invocation.Argv)
 		})
@@ -350,10 +420,151 @@ func TestConfiguredOptionsPreserveArityAndOrdering(t *testing.T) {
 func TestConfiguredOptionConflictsWithRequest(t *testing.T) {
 	t.Parallel()
 
-	agent, err := agentcli.NewCodex(agentcli.Command{Options: []string{"--model", "configured"}})
-	require.NoError(t, err)
-	_, err = agent.Start(agentcli.Request{Model: "requested"})
-	var invalid *agentcli.InvalidCommandError
-	require.ErrorAs(t, err, &invalid)
-	assert.Contains(t, invalid.Reason, "conflicts")
+	tests := []struct {
+		name    string
+		new     func(agentcli.Command) (agentcli.Adapter, error)
+		options []string
+		request agentcli.Request
+	}{
+		{name: "codex model", new: agentcli.NewCodex, options: []string{"--model", "configured"}, request: agentcli.Request{Model: "requested"}},
+		{name: "claude reasoning", new: agentcli.NewClaude, options: []string{"--effort", "high"}, request: agentcli.Request{Reasoning: agentcli.ReasoningXHigh}},
+		{name: "pi provider", new: agentcli.NewPi, options: []string{"--provider", "configured"}, request: agentcli.Request{Provider: "requested"}},
+		{name: "gemini output", new: agentcli.NewGemini, options: []string{"--output-format", "json"}, request: agentcli.Request{Mode: agentcli.NonInteractive, OutputFormat: agentcli.OutputJSONL}},
+		{name: "copilot MCPs", new: agentcli.NewCopilot, options: []string{"--disable-builtin-mcps"}, request: agentcli.Request{Mode: agentcli.NonInteractive, DisableBuiltInMCPs: true}},
+		{name: "opencode model", new: agentcli.NewOpenCode, options: []string{"--model", "configured"}, request: agentcli.Request{Mode: agentcli.NonInteractive, Model: "requested"}},
+		{name: "cursor model", new: agentcli.NewCursor, options: []string{"--model", "configured"}, request: agentcli.Request{Mode: agentcli.NonInteractive, Model: "requested"}},
+		{name: "kilo model", new: agentcli.NewKilo, options: []string{"--model", "configured"}, request: agentcli.Request{Mode: agentcli.NonInteractive, Model: "requested"}},
+		{name: "kiro reasoning", new: agentcli.NewKiro, options: []string{"--effort", "high"}, request: agentcli.Request{Mode: agentcli.NonInteractive, Reasoning: agentcli.ReasoningXHigh}},
+		{name: "droid autonomy", new: agentcli.NewDroid, options: []string{"--auto", "low"}, request: agentcli.Request{Mode: agentcli.NonInteractive, Autonomy: agentcli.AutonomyMedium}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			agent, err := test.new(agentcli.Command{Options: test.options})
+			require.NoError(t, err)
+			_, err = agent.Start(test.request)
+			var invalid *agentcli.InvalidCommandError
+			require.ErrorAs(t, err, &invalid)
+			assert.Contains(t, invalid.Reason, "conflicts")
+		})
+	}
+}
+
+func TestAdditionalRoboRevAgentInvocations(t *testing.T) {
+	t.Parallel()
+
+	prompt := "review this change"
+	tests := []struct {
+		name     string
+		new      func(agentcli.Command) (agentcli.Adapter, error)
+		resume   bool
+		request  agentcli.Request
+		expected []string
+	}{
+		{
+			name:     "gemini",
+			new:      agentcli.NewGemini,
+			resume:   true,
+			request:  agentcli.Request{Mode: agentcli.NonInteractive, Prompt: agentcli.Prompt{Source: agentcli.PromptStdin, Text: prompt}, Model: "gemini-test", OutputFormat: agentcli.OutputJSONL, Approval: agentcli.ApprovalNever},
+			expected: []string{"gemini", "--output-format", "stream-json", "--resume", "session-1", "--model", "gemini-test", "--approval-mode", "plan", "--prompt", ""},
+		},
+		{
+			name:     "copilot",
+			new:      agentcli.NewCopilot,
+			resume:   true,
+			request:  agentcli.Request{Mode: agentcli.NonInteractive, Prompt: agentcli.Prompt{Source: agentcli.PromptArgument, Text: prompt}, Model: "copilot-test", Reasoning: agentcli.ReasoningXHigh, OutputFormat: agentcli.OutputJSONL, Approval: agentcli.ApprovalBypass, DeniedTools: []string{"write"}, DisableBuiltInMCPs: true, DisableContextFiles: true},
+			expected: []string{"copilot", "--silent", "--allow-all-tools", "--stream", "off", "--output-format", "json", "--resume=session-1", "--model", "copilot-test", "--reasoning-effort", "xhigh", "--allow-all", "--deny-tool", "write", "--disable-builtin-mcps", "--no-custom-instructions", "--prompt", prompt},
+		},
+		{
+			name:     "opencode",
+			new:      agentcli.NewOpenCode,
+			resume:   true,
+			request:  agentcli.Request{Mode: agentcli.NonInteractive, Prompt: agentcli.Prompt{Source: agentcli.PromptStdin, Text: prompt}, Model: "provider/model", OutputFormat: agentcli.OutputJSONL},
+			expected: []string{"opencode", "run", "--format", "json", "--session", "session-1", "--model", "provider/model"},
+		},
+		{
+			name:     "cursor",
+			new:      agentcli.NewCursor,
+			resume:   true,
+			request:  agentcli.Request{Mode: agentcli.NonInteractive, Prompt: agentcli.Prompt{Source: agentcli.PromptStdin, Text: prompt}, Model: "cursor-test", OutputFormat: agentcli.OutputJSONL, Approval: agentcli.ApprovalNever},
+			expected: []string{"agent", "--print", "--output-format", "stream-json", "--resume", "session-1", "--model", "cursor-test", "--mode", "plan"},
+		},
+		{
+			name:     "kilo",
+			new:      agentcli.NewKilo,
+			resume:   true,
+			request:  agentcli.Request{Mode: agentcli.NonInteractive, Prompt: agentcli.Prompt{Source: agentcli.PromptStdin, Text: prompt}, Model: "provider/model", Reasoning: agentcli.ReasoningXHigh, OutputFormat: agentcli.OutputJSONL, Approval: agentcli.ApprovalBypass},
+			expected: []string{"kilo", "run", "--format", "json", "--session", "session-1", "--model", "provider/model", "--auto", "--variant", "xhigh"},
+		},
+		{
+			name:     "kiro",
+			new:      agentcli.NewKiro,
+			resume:   true,
+			request:  agentcli.Request{Mode: agentcli.NonInteractive, Prompt: agentcli.Prompt{Source: agentcli.PromptArgument, Text: prompt}, Reasoning: agentcli.ReasoningXHigh, Approval: agentcli.ApprovalBypass},
+			expected: []string{"kiro-cli", "chat", "--no-interactive", "--resume-id", "session-1", "--effort", "xhigh", "--trust-all-tools", "--", prompt},
+		},
+		{
+			name:     "droid",
+			new:      agentcli.NewDroid,
+			resume:   true,
+			request:  agentcli.Request{Mode: agentcli.NonInteractive, Prompt: agentcli.Prompt{Source: agentcli.PromptStdin, Text: prompt}, Model: "droid-test", Reasoning: agentcli.ReasoningXHigh, OutputFormat: agentcli.OutputJSONL, Autonomy: agentcli.AutonomyMedium, DeniedTools: []string{"execute-cli"}, DisableSkills: true},
+			expected: []string{"droid", "exec", "--session-id", "session-1", "--model", "droid-test", "--reasoning-effort", "xhigh", "--auto", "medium", "--disabled-tools", "execute-cli", "--disable-builtin-skills", "--output-format", "stream-json"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			assert := assert.New(t)
+			require := require.New(t)
+			agent, err := test.new(agentcli.Command{})
+			require.NoError(err)
+			var invocation agentcli.Invocation
+			if test.resume {
+				invocation, err = agent.Resume("session-1", test.request)
+			} else {
+				invocation, err = agent.Start(test.request)
+			}
+			require.NoError(err)
+			assert.Equal(test.expected, invocation.Argv)
+			if test.request.Prompt.Source == agentcli.PromptStdin {
+				require.NotNil(invocation.Stdin)
+				assert.Equal(prompt, *invocation.Stdin)
+			} else {
+				assert.Nil(invocation.Stdin)
+			}
+		})
+	}
+}
+
+func TestReasoningXHighRemainsDistinctFromMaximum(t *testing.T) {
+	t.Parallel()
+	assert := assert.New(t)
+	require := require.New(t)
+
+	constructors := []func(agentcli.Command) (agentcli.Adapter, error){
+		agentcli.NewClaude,
+		agentcli.NewPi,
+		agentcli.NewCopilot,
+		agentcli.NewKilo,
+		agentcli.NewKiro,
+		agentcli.NewDroid,
+	}
+	for _, constructor := range constructors {
+		agent, err := constructor(agentcli.Command{})
+		require.NoError(err)
+		xhigh, err := agent.Start(agentcli.Request{Mode: agentcli.NonInteractive, Reasoning: agentcli.ReasoningXHigh})
+		require.NoError(err)
+		maximum, err := agent.Start(agentcli.Request{Mode: agentcli.NonInteractive, Reasoning: agentcli.ReasoningMaximum})
+		require.NoError(err)
+		assert.Contains(xhigh.Argv, "xhigh", agent.Name())
+		assert.Contains(maximum.Argv, "max", agent.Name())
+	}
+
+	codex := newCodex(t, agentcli.Command{})
+	_, err := codex.Start(agentcli.Request{Reasoning: agentcli.ReasoningMaximum})
+	var unsupported *agentcli.UnsupportedOptionError
+	require.ErrorAs(err, &unsupported)
+	assert.Equal("reasoning", unsupported.Option)
 }
