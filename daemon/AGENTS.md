@@ -30,6 +30,12 @@ databases, command parsing, and shutdown policy belong to the caller.
 - Use listen locks to serialize startup and bind attempts.
 - Hold the owner lock for the daemon's full writable lifetime; use the start
   lock only to serialize discovery, replacement, and launch decisions.
+- Keep blocking and nonblocking start-lock acquisition on the same local
+  semaphore and file lock. Contention is authoritative; an acquisition error
+  means unknown state. Application snapshots never override a held lock.
+- Callers own startup snapshots and cleanup policy. Cleanup must finish while
+  holding the start lock. Preserve the lock file so all holders use the same
+  filesystem object.
 - Route every `Manager.Ensure` lookup through `Manager.Find` so a caller's
   `FindFunc` is used for initial discovery, locked re-discovery, and polling.
 - Keep platform-specific behavior in build-tagged files when ownership, sockets,
