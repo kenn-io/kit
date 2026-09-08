@@ -2,22 +2,9 @@ package agentcli
 
 import "fmt"
 
-// NewOpenCode returns an OpenCode adapter after validating configured global
-// options. A zero Command uses "opencode".
+// NewOpenCode returns an adapter with the configured executable and arguments.
 func NewOpenCode(command Command) (Adapter, error) {
-	return newAdapter(OpenCode, command, "opencode", openCodeOptionGrammar, openCodeCapabilities, buildOpenCode)
-}
-
-var openCodeOptionGrammar = optionGrammar{
-	"--print-logs": flag("print-logs"), "--log-level": value("log-level"),
-	"--pure": flag("pure"), "-m": value("model"), "--model": value("model"),
-	"--agent": value("agent"),
-	"-c":      forbidden("continue selects a session"), "--continue": forbidden("continue selects a session"),
-	"-s": forbidden("session selects a session"), "--session": forbidden("session selects a session"),
-	"--fork": forbidden("fork changes session identity"), "--prompt": forbidden("prompt belongs in Request.Prompt"),
-	"--auto": forbidden("automatic permission approval belongs in Request.Approval"),
-	"-h":     forbidden("help is an action, not a launch option"), "--help": forbidden("help is an action, not a launch option"),
-	"-v": forbidden("version is an action, not a launch option"), "--version": forbidden("version is an action, not a launch option"),
+	return newAdapter(OpenCode, command, "opencode", openCodeCapabilities, buildOpenCode)
 }
 
 var openCodeCapabilities = Capabilities{

@@ -5,41 +5,9 @@ import (
 	"strings"
 )
 
-// NewPi returns a Pi adapter after validating its configured options. A zero
-// Command uses "pi".
+// NewPi returns an adapter with the configured executable and arguments.
 func NewPi(command Command) (Adapter, error) {
-	return newAdapter(Pi, command, "pi", piOptionGrammar, piCapabilities, buildPi)
-}
-
-var piOptionGrammar = optionGrammar{
-	"--provider": value("provider"), "--model": value("model"), "--api-key": value("api-key"),
-	"--system-prompt": value("system-prompt"), "--append-system-prompt": value("append-system-prompt"),
-	"--mode": value("mode"), "--session-dir": value("session-dir"), "--no-session": flag("no-session"),
-	"--name": value("name"), "-n": value("name"), "--models": value("models"),
-	"--no-tools": flag("no-tools"), "-nt": flag("no-tools"),
-	"--no-builtin-tools": flag("no-builtin-tools"), "-nbt": flag("no-builtin-tools"),
-	"--tools": value("tools"), "-t": value("tools"), "--exclude-tools": value("exclude-tools"), "-xt": value("exclude-tools"),
-	"--thinking": value("thinking"), "--extension": value("extension"), "-e": value("extension"),
-	"--no-extensions": flag("no-extensions"), "-ne": flag("no-extensions"),
-	"--skill": value("skill"), "--no-skills": flag("no-skills"), "-ns": flag("no-skills"),
-	"--prompt-template": value("prompt-template"), "--no-prompt-templates": flag("no-prompt-templates"), "-np": flag("no-prompt-templates"),
-	"--theme": value("theme"), "--use-theme": value("use-theme"), "--no-themes": flag("no-themes"),
-	"--no-context-files": flag("no-context-files"), "-nc": flag("no-context-files"),
-	"--verbose": flag("verbose"), "--tui-mode": value("tui-mode"), "--approve": flag("approve"), "-a": flag("approve"),
-	"--no-approve": flag("no-approve"), "-na": flag("no-approve"), "--offline": flag("offline"),
-	"--mcp-config": value("mcp-config"), "--json-schema": value("json-schema"),
-	"--json-output": value("json-output"), "--json-fallback": value("json-fallback"),
-	"--fff-mode": value("fff-mode"), "--fff-frecency-db": value("fff-frecency-db"),
-	"--fff-history-db": value("fff-history-db"), "--fff-enable-root-scan": flag("fff-enable-root-scan"),
-	"--fff-enable-home-scan": flag("fff-enable-home-scan"),
-	"--print":                forbidden("print mode is selected by Request.Mode"), "-p": forbidden("print mode is selected by Request.Mode"),
-	"--continue": forbidden("continue selects a session"), "-c": forbidden("continue selects a session"),
-	"--resume": forbidden("resume selects a session"), "-r": forbidden("resume selects a session"),
-	"--session": forbidden("session selector is owned by Resume"), "--session-id": forbidden("session identity is owned by Start or Resume"),
-	"--fork": forbidden("fork changes session identity"), "--export": forbidden("export is an action, not a launch option"),
-	"--list-models": forbidden("list-models has an optional value and is an action"),
-	"--help":        forbidden("help is an action, not a launch option"), "-h": forbidden("help is an action, not a launch option"),
-	"--version": forbidden("version is an action, not a launch option"), "-v": forbidden("version is an action, not a launch option"),
+	return newAdapter(Pi, command, "pi", piCapabilities, buildPi)
 }
 
 var piCapabilities = Capabilities{

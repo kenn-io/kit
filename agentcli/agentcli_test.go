@@ -82,7 +82,7 @@ func TestInteractiveResumePreservesConfiguredOptions(t *testing.T) {
 		command agentcli.Command
 		want    []string
 	}{
-		{agentcli.Codex, agentcli.Command{Executable: "codex-custom", Options: []string{"--profile", "team"}}, []string{"codex-custom", "--profile", "team", "resume", "session-1"}},
+		{agentcli.Codex, agentcli.Command{Executable: "codex-custom", Options: []string{"--full-auto", "--profile", "team"}}, []string{"codex-custom", "--full-auto", "--profile", "team", "resume", "session-1"}},
 		{agentcli.Claude, agentcli.Command{Executable: "claude-custom", Options: []string{"--setting-sources", "project"}}, []string{"claude-custom", "--setting-sources", "project", "--resume", "session-1"}},
 		{agentcli.Pi, agentcli.Command{Executable: "pi-custom", Options: []string{"--offline"}}, []string{"pi-custom", "--offline", "--session", "session-1"}},
 	}
@@ -132,32 +132,6 @@ func TestCapabilitiesAreExplicitAndIndependent(t *testing.T) {
 	assert.Equal(agentcli.ReasoningLow, codex.Capabilities().ReasoningLevels[0])
 }
 
-func TestConfiguredCommandValidation(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name    agentcli.Name
-		options []string
-		token   string
-	}{
-		{agentcli.Codex, []string{"old prompt"}, "old prompt"}, {agentcli.Codex, []string{"exec"}, "exec"},
-		{agentcli.Codex, []string{"--profile"}, "--profile"}, {agentcli.Codex, []string{"--profile", "--help"}, "--profile"},
-		{agentcli.Codex, []string{"--future-flag"}, "--future-flag"}, {agentcli.Claude, []string{"--resume", "old-session"}, "--resume"},
-		{agentcli.Claude, []string{"--settings", "--resume"}, "--settings"}, {agentcli.Claude, []string{"--debug", "api"}, "--debug"},
-		{agentcli.Pi, []string{"--session", "old-session"}, "--session"}, {agentcli.Pi, []string{"--", "old prompt"}, "--"},
-		{agentcli.Gemini, []string{"--resume", "old-session"}, "--resume"}, {agentcli.Copilot, []string{"--model"}, "--model"},
-		{agentcli.OpenCode, []string{"--session", "old-session"}, "--session"}, {agentcli.Cursor, []string{"old prompt"}, "old prompt"},
-		{agentcli.Kilo, []string{"--session", "old-session"}, "--session"}, {agentcli.Kiro, []string{"--wrap"}, "--wrap"},
-		{agentcli.Droid, []string{"--session-id", "old-session"}, "--session-id"},
-	}
-	for _, test := range tests {
-		_, err := agentcli.New(test.name, agentcli.Command{Options: test.options})
-		var invalid *agentcli.InvalidCommandError
-		require.ErrorAs(t, err, &invalid)
-		assert.Equal(t, test.token, invalid.Token)
-		assert.NotEmpty(t, invalid.Hint)
-	}
-}
-
 func TestConfiguredOptionsKeepTheirArityAndOrder(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -179,30 +153,39 @@ func TestConfiguredOptionsKeepTheirArityAndOrder(t *testing.T) {
 	}
 }
 
-func TestConfiguredOptionsConflictWithRequest(t *testing.T) {
+func TestConfiguredArgumentsPassThrough(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		name    agentcli.Name
-		options []string
-		request agentcli.Request
-	}{
-		{agentcli.Codex, []string{"--model", "configured"}, agentcli.Request{Model: "requested"}},
-		{agentcli.Claude, []string{"--effort", "high"}, agentcli.Request{Reasoning: agentcli.ReasoningXHigh}},
-		{agentcli.Pi, []string{"--provider", "configured"}, agentcli.Request{Provider: "requested"}},
-		{agentcli.Pi, []string{"--extension", "configured"}, agentcli.Request{Mode: agentcli.NonInteractive, Schema: agentcli.JSONSchema{Inline: `{}`, Extension: "requested", OutputPath: "result.json"}}},
-		{agentcli.Gemini, []string{"--output-format", "json"}, agentcli.Request{Mode: agentcli.NonInteractive, OutputFormat: agentcli.OutputJSONL}},
-		{agentcli.Copilot, []string{"--disable-builtin-mcps"}, agentcli.Request{Mode: agentcli.NonInteractive, DisableBuiltInMCPs: true}},
-		{agentcli.OpenCode, []string{"--model", "configured"}, agentcli.Request{Mode: agentcli.NonInteractive, Model: "requested"}},
-		{agentcli.Cursor, []string{"--model", "configured"}, agentcli.Request{Mode: agentcli.NonInteractive, Model: "requested"}},
-		{agentcli.Kilo, []string{"--model", "configured"}, agentcli.Request{Mode: agentcli.NonInteractive, Model: "requested"}},
-		{agentcli.Kiro, []string{"--effort", "high"}, agentcli.Request{Mode: agentcli.NonInteractive, Reasoning: agentcli.ReasoningXHigh}},
-		{agentcli.Droid, []string{"--auto", "low"}, agentcli.Request{Mode: agentcli.NonInteractive, Autonomy: agentcli.AutonomyMedium}},
-	}
-	for _, test := range tests {
-		_, err := mustAgent(t, test.name, agentcli.Command{Options: test.options}).Start(test.request)
-		var invalid *agentcli.InvalidCommandError
-		require.ErrorAs(t, err, &invalid)
-		assert.Contains(t, invalid.Reason, "conflicts")
+	for _, name := range agentcli.Names() {
+		t.Run(string(name), func(t *testing.T) {
+			t.Parallel()
+			assert := assert.New(t)
+			require := require.New(t)
+			options := []string{"--future-flag", "value with spaces", "--model", "configured", "--", "", "operand"}
+			request := agentcli.Request{Mode: agentcli.NonInteractive}
+			if name != agentcli.Kiro {
+				request.Model = "requested"
+			}
+			agent := mustAgent(t, name, agentcli.Command{Executable: "custom-worker", Options: options})
+			for _, resume := range []bool{false, true} {
+				var got agentcli.Invocation
+				var err error
+				if resume {
+					got, err = agent.Resume("session-1", request)
+				} else {
+					got, err = agent.Start(request)
+				}
+				require.NoError(err)
+				assert.Equal("custom-worker", got.Argv[0])
+				start := 1
+				if name == agentcli.Kiro || name == agentcli.Droid {
+					start++ // These CLIs put configured arguments after their subcommand.
+				}
+				assert.Equal(options, got.Argv[start:start+len(options)])
+				if request.Model != "" {
+					assert.Contains(got.Argv[start+len(options):], "requested")
+				}
+			}
+		})
 	}
 }
 

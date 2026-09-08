@@ -2,26 +2,9 @@ package agentcli
 
 import "fmt"
 
-// NewDroid returns a Factory Droid CLI adapter after validating configured
-// global options. A zero Command uses "droid".
+// NewDroid returns an adapter with the configured executable and arguments.
 func NewDroid(command Command) (Adapter, error) {
-	return newAdapter(Droid, command, "droid", droidOptionGrammar, droidCapabilities, buildDroid)
-}
-
-var droidOptionGrammar = optionGrammar{
-	"--disable-builtin-skills": flag("disable-builtin-skills"), "--append-system-prompt": value("append-system-prompt"),
-	"--append-system-prompt-file": value("append-system-prompt-file"),
-	"-m":                          value("model"), "--model": value("model"),
-	"--auto": value("autonomy"), "--reasoning-effort": value("reasoning"),
-	"--restrict-tools": value("allowed-tools"), "--disabled-tools": value("denied-tools"),
-	"-o": value("output-format"), "--output-format": value("output-format"),
-	"--skip-permissions-unsafe": flag("approval-bypass"),
-	"-w":                        forbidden("worktree creation is a caller concern"), "--worktree": forbidden("worktree creation is a caller concern"),
-	"--resume": forbidden("resume selects a session"), "-r": forbidden("resume has command-dependent meaning and is ambiguous in configured options"),
-	"-s": forbidden("session selects a session"), "--session-id": forbidden("session selects a session"),
-	"--fork": forbidden("fork changes session identity"),
-	"-h":     forbidden("help is an action, not a launch option"), "--help": forbidden("help is an action, not a launch option"),
-	"-v": forbidden("version is an action, not a launch option"), "--version": forbidden("version is an action, not a launch option"),
+	return newAdapter(Droid, command, "droid", droidCapabilities, buildDroid)
 }
 
 var droidCapabilities = Capabilities{

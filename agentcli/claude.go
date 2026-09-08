@@ -5,54 +5,9 @@ import (
 	"strings"
 )
 
-// NewClaude returns a Claude Code adapter after validating its configured
-// options. A zero Command uses "claude".
+// NewClaude returns an adapter with the configured executable and arguments.
 func NewClaude(command Command) (Adapter, error) {
-	return newAdapter(Claude, command, "claude", claudeOptionGrammar, claudeCapabilities, buildClaude)
-}
-
-var claudeOptionGrammar = optionGrammar{
-	"--add-dir": value("add-dir"), "--agent": value("agent"), "--agents": value("agents"),
-	"--allow-dangerously-skip-permissions": flag("allow-permission-bypass"),
-	"--allowedTools":                       value("allowed-tools"), "--allowed-tools": value("allowed-tools"),
-	"--append-system-prompt": value("append-system-prompt"), "--autocompact": value("autocompact"),
-	"--ax-screen-reader": flag("screen-reader"), "--bare": flag("bare"), "--betas": value("betas"),
-	"--brief": flag("brief"), "--chrome": flag("chrome"), "--dangerously-skip-permissions": flag("approval-bypass"),
-	"--debug-file": value("debug-file"), "--disable-slash-commands": flag("disable-skills"),
-	"--disallowedTools": value("denied-tools"), "--disallowed-tools": value("denied-tools"),
-	"--effort": value("effort"), "--exclude-dynamic-system-prompt-sections": flag("exclude-dynamic-prompt"),
-	"--fallback-model": value("fallback-model"), "--file": value("file"),
-	"--forward-subagent-text": flag("forward-subagent-text"), "--ide": flag("ide"),
-	"--include-hook-events": flag("include-hook-events"), "--include-partial-messages": flag("include-partial-messages"),
-	"--input-format": value("input-format"), "--json-schema": value("json-schema"),
-	"--max-budget-usd": value("max-budget-usd"), "--mcp-config": value("mcp-config"),
-	"--model": value("model"), "-n": value("name"), "--name": value("name"),
-	"--no-chrome": flag("no-chrome"), "--no-session-persistence": flag("no-session-persistence"),
-	"--output-format": value("output-format"), "--permission-mode": value("permission-mode"),
-	"--permission-prompts": value("permission-prompts"), "--plugin-dir": value("plugin-dir"),
-	"--plugin-url": value("plugin-url"), "--replay-user-messages": flag("replay-user-messages"),
-	"--restricted": flag("restricted"), "--safe-mode": flag("safe-mode"),
-	"--setting-sources": value("setting-sources"), "--settings": value("settings"),
-	"--strict-mcp-config": flag("strict-mcp-config"), "--system-prompt": value("system-prompt"),
-	"--system-prompt-snapshot": value("system-prompt-snapshot"), "--tools": value("tools"),
-	"--verbose": flag("verbose"),
-	"-p":        forbidden("print mode is selected by Request.Mode"), "--print": forbidden("print mode is selected by Request.Mode"),
-	"-c": forbidden("continue selects a session"), "--continue": forbidden("continue selects a session"),
-	"-r": forbidden("resume selects a session"), "--resume": forbidden("resume selects a session"),
-	"--session-id":   forbidden("session ID is owned by Start or Resume"),
-	"--fork-session": forbidden("fork changes resume identity"), "--from-pr": forbidden("from-pr selects a session"),
-	"--teleport": forbidden("teleport selects a session"), "--cloud": forbidden("cloud changes the command target"),
-	"--environment": forbidden("environment starts a cloud session"), "--bg": forbidden("background process ownership is a caller concern"),
-	"--background":                         forbidden("background process ownership is a caller concern"),
-	"--remote-control":                     forbidden("remote control changes process ownership"),
-	"--remote-control-session-name-prefix": forbidden("remote control changes process ownership"),
-	"--tmux":                               forbidden("tmux process ownership is a caller concern"), "-w": forbidden("worktree creation is a caller concern"),
-	"--worktree":           forbidden("worktree creation is a caller concern"),
-	"-d":                   forbidden("debug has an optional value and is ambiguous in configured options"),
-	"--debug":              forbidden("debug has an optional value and is ambiguous in configured options"),
-	"--prompt-suggestions": forbidden("prompt-suggestions has an optional value and is ambiguous in configured options"),
-	"-h":                   forbidden("help is an action, not a launch option"), "--help": forbidden("help is an action, not a launch option"),
-	"-v": forbidden("version is an action, not a launch option"), "--version": forbidden("version is an action, not a launch option"),
+	return newAdapter(Claude, command, "claude", claudeCapabilities, buildClaude)
 }
 
 var claudeCapabilities = Capabilities{

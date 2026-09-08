@@ -2,21 +2,9 @@ package agentcli
 
 import "fmt"
 
-// NewKilo returns a Kilo adapter after validating configured global options.
-// A zero Command uses "kilo".
+// NewKilo returns an adapter with the configured executable and arguments.
 func NewKilo(command Command) (Adapter, error) {
-	return newAdapter(Kilo, command, "kilo", kiloOptionGrammar, kiloCapabilities, buildKilo)
-}
-
-var kiloOptionGrammar = optionGrammar{
-	"--print-logs": flag("print-logs"), "--log-level": value("log-level"),
-	"-m": value("model"), "--model": value("model"), "--agent": value("agent"),
-	"-c": forbidden("continue selects a session"), "--continue": forbidden("continue selects a session"),
-	"-s": forbidden("session selects a session"), "--session": forbidden("session selects a session"),
-	"--fork": forbidden("fork changes session identity"), "--cloud-fork": forbidden("cloud-fork changes session identity"),
-	"--prompt": forbidden("prompt belongs in Request.Prompt"), "--auto": forbidden("automatic permission approval belongs in Request.Approval"),
-	"-h": forbidden("help is an action, not a launch option"), "--help": forbidden("help is an action, not a launch option"),
-	"-v": forbidden("version is an action, not a launch option"), "--version": forbidden("version is an action, not a launch option"),
+	return newAdapter(Kilo, command, "kilo", kiloCapabilities, buildKilo)
 }
 
 var kiloCapabilities = Capabilities{
