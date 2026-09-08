@@ -1,16 +1,20 @@
 # Agent CLI command construction
 
-`agentcli` builds argument vectors for coding-agent CLIs. It owns agent-specific
-flag placement, configured-option grammar and arity, start and resume forms,
-prompt delivery, and rejection of unsupported options. It does not execute
-commands, inspect installed versions, resolve session files, or manage
-terminals and persistent state.
+`agentcli` builds argument vectors for coding-agent CLIs. It supplies defaults,
+start and resume forms, prompt delivery, and portable controls through `Request`.
+It does not execute commands, inspect installed versions, resolve session files,
+or manage terminals and persistent state.
 
-Constructors accept an executable separately from configured options and
-validate the options immediately. Configured options may not contain a prompt,
-subcommand, session selector, `--`, or an option with ambiguous arity. Put prompt
-text in `Request.Prompt`; its zero value means no prompt. The adapter chooses the
-CLI's normal argument or stdin transport. Use `Resume` for a saved session.
+`Command.Options` passes through unchanged and in order. The package does not
+parse these arguments, restrict them to known flags, or reject overlap with
+`Request` fields. Callers own explicitly supplied arguments; the CLI interprets
+them. Configured arguments precede request-generated arguments, after the fixed
+subcommand for Kiro and Droid.
+
+Use `Request.Prompt` for kit-managed prompt delivery; its zero value means no
+prompt. The adapter chooses the CLI's normal argument or stdin transport. Use
+`Resume` for a saved session. A zero `Command` keeps the default executable and
+adds no configured arguments.
 
 ## Consumer examples
 
@@ -49,10 +53,8 @@ invocation, err := agent.Start(agentcli.Request{
 
 Call `Capabilities` before presenting options in a UI. `Start` and `Resume`
 still validate every request and return `UnsupportedOptionError` when an option
-cannot keep its requested meaning. Constructors return `InvalidCommandError`
-for unsafe configured command shapes. A request also returns that error when it
-would duplicate a configured singleton option, such as a model or session
-policy; remove one of the two settings instead of relying on CLI precedence.
+cannot keep its requested meaning. Explicit `Command.Options` are independent
+of those typed request checks.
 
 ## Supported agents
 
@@ -116,6 +118,5 @@ RoboRev should replace the argument builders for its ten command-based agents
 while keeping stream parsing, installed-version capability probes, environment
 filtering, Pi session-file lookup, and process lifecycle code. Its Agent Client
 Protocol adapter remains outside this argv package because it owns a protocol
-session and process, not a one-shot command shape. Keeping command-shape parsing
-in either consumer would create a second grammar that can drift from these
-adapters.
+session and process, not a one-shot command shape. Configured arguments remain
+caller-owned in every consumer.

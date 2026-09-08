@@ -1,11 +1,11 @@
-// Package agentcli validates configuration and builds command lines for
+// Package agentcli builds command lines for
 // supported coding-agent CLIs.
 //
 // The package does not start processes or own terminal, session-storage, or
 // persistence concerns. Callers retain those responsibilities and may use the
 // returned Stdin value with os/exec when the prompt is delivered over stdin.
-// Agent constructors accept configured options separately from prompts and
-// reject command shapes that cannot be safely extended for start or resume.
+// Configured arguments pass through unchanged. Request fields provide portable
+// defaults and controls without parsing caller-supplied arguments.
 package agentcli
 
 import (
@@ -232,10 +232,10 @@ type Invocation struct {
 	Stdin *string
 }
 
-// Command identifies an agent executable and the options that must be present
-// on every invocation. Options must contain flags and their values only;
-// prompts, subcommands, session selectors, and -- are rejected by the
-// agent-specific constructor.
+// Command identifies an agent executable and arguments included on every
+// invocation. Options pass through unchanged, in order, before request-generated
+// arguments. Callers own their meaning and any overlap with Request fields.
+// A zero Command uses the adapter's default executable and no extra arguments.
 type Command struct {
 	Executable string
 	Options    []string
@@ -259,33 +259,6 @@ type UnsupportedOptionError struct {
 	Hint   string
 }
 
-// InvalidCommandError reports a configured command token that cannot be
-// safely combined with commands built by this package.
-type InvalidCommandError struct {
-	Agent  Name
-	Token  string
-	Index  int
-	Reason string
-	Hint   string
-}
-
-func (e *InvalidCommandError) Error() string {
-	message := fmt.Sprintf("agent %q configured command", e.Agent)
-	if e.Index >= 0 {
-		message += fmt.Sprintf(" token %d", e.Index)
-	}
-	if e.Token != "" {
-		message += " " + fmt.Sprintf("%q", e.Token)
-	}
-	if e.Reason != "" {
-		message += ": " + e.Reason
-	}
-	if e.Hint != "" {
-		message += "; " + e.Hint
-	}
-	return message
-}
-
 func (e *UnsupportedOptionError) Error() string {
 	message := fmt.Sprintf("agent %q does not support %s", e.Agent, e.Option)
 	if e.Value != "" {
@@ -304,12 +277,11 @@ type adapter struct {
 	name         Name
 	executable   string
 	options      []string
-	configured   map[string]bool
 	capabilities Capabilities
 	build        func(*adapter, string, Request) (Invocation, error)
 }
 
-func newAdapter(name Name, command Command, defaultExecutable string, grammar optionGrammar, capabilities Capabilities, build func(*adapter, string, Request) (Invocation, error)) (Adapter, error) {
+func newAdapter(name Name, command Command, defaultExecutable string, capabilities Capabilities, build func(*adapter, string, Request) (Invocation, error)) (Adapter, error) {
 	executable := command.Executable
 	if executable == "" {
 		executable = defaultExecutable
@@ -317,15 +289,10 @@ func newAdapter(name Name, command Command, defaultExecutable string, grammar op
 	if strings.TrimSpace(executable) == "" {
 		return nil, fmt.Errorf("agent %q requires a configured executable", name)
 	}
-	configured, err := validateConfiguredOptions(name, command.Options, grammar)
-	if err != nil {
-		return nil, err
-	}
 	return &adapter{
 		name:         name,
 		executable:   executable,
 		options:      slices.Clone(command.Options),
-		configured:   configured,
 		capabilities: capabilities,
 		build:        build,
 	}, nil
@@ -365,47 +332,11 @@ func (a *adapter) invoke(sessionID string, request Request) (Invocation, error) 
 			return Invocation{}, err
 		}
 	}
-	if err := a.validateConfiguredRequest(request); err != nil {
-		return Invocation{}, err
-	}
 	return a.build(a, sessionID, request)
 }
 
 func (a adapter) base() []string {
 	return append([]string{a.executable}, a.options...)
-}
-
-func (a adapter) validateConfiguredRequest(request Request) error {
-	checks := []struct {
-		set  bool
-		name string
-		keys []string
-	}{
-		{request.Provider != "", "provider", []string{"provider"}}, {request.Model != "", "model", []string{"model"}},
-		{request.Reasoning != ReasoningDefault, "reasoning", []string{"reasoning", "effort", "thinking"}},
-		{request.OutputFormat != OutputDefault, "output format", []string{"output-format", "stream", "mode"}},
-		{request.Schema.Inline != "" || request.Schema.Path != "", "JSON schema", []string{"extension", "json-schema", "json-output", "json-fallback"}},
-		{request.Sandbox != SandboxDefault, "sandbox", []string{"sandbox"}},
-		{request.Approval != ApprovalDefault, "approval mode", []string{"approval", "approve-for-me", "approval-bypass", "permission-mode", "approval-mode"}},
-		{request.Autonomy != AutonomyDefault, "autonomy", []string{"autonomy"}},
-		{len(request.AllowedTools) != 0 || request.DisableBuiltInTools, "allowed tools", []string{"allowed-tools", "tools", "no-tools", "no-builtin-tools"}},
-		{len(request.DeniedTools) != 0, "denied tools", []string{"denied-tools", "exclude-tools"}},
-		{len(request.SkillPaths) != 0 || request.DisableSkills, "skills", []string{"skill", "no-skills", "disable-skills", "disable-builtin-skills", "safe-mode", "bare"}},
-		{request.DisableHooks || request.DisableExtensions, "extensions or hooks", []string{"disable", "hook-trust", "disable-skills", "safe-mode", "bare", "extension", "no-extensions"}},
-		{request.DisablePromptTemplates, "prompt templates", []string{"prompt-template", "no-prompt-templates"}},
-		{request.DisableThemes, "themes", []string{"theme", "use-theme", "no-themes"}},
-		{request.DisableContextFiles, "context files", []string{"no-context-files", "no-custom-instructions"}},
-		{request.DisableBuiltInMCPs, "built-in MCP servers", []string{"disable-builtin-mcps"}},
-		{request.DisableSessionStorage, "session persistence", []string{"no-session", "no-session-persistence"}},
-	}
-	for _, check := range checks {
-		for _, key := range check.keys {
-			if check.set && a.configured[key] {
-				return &InvalidCommandError{Agent: a.name, Token: key, Index: -1, Reason: "conflicts with the same option requested for this invocation", Hint: "remove the configured option or leave the request setting empty"}
-			}
-		}
-	}
-	return nil
 }
 
 func invocationMode(mode Mode) (Mode, error) {

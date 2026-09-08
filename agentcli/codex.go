@@ -4,32 +4,9 @@ import (
 	"fmt"
 )
 
-// NewCodex returns a Codex CLI adapter after validating its configured global
-// options. A zero Command uses "codex".
+// NewCodex returns an adapter with the configured executable and arguments.
 func NewCodex(command Command) (Adapter, error) {
-	return newAdapter(Codex, command, "codex", codexOptionGrammar, codexCapabilities, buildCodex)
-}
-
-var codexOptionGrammar = optionGrammar{
-	"-c": value("config"), "--config": value("config"),
-	"--enable": value("enable"), "--disable": value("disable"),
-	"--remote": value("remote"), "--remote-auth-token-env": value("remote-auth-token-env"),
-	"--strict-config": flag("strict-config"),
-	"-i":              value("image"), "--image": value("image"),
-	"-m": value("model"), "--model": value("model"),
-	"--oss": flag("oss"), "--local-provider": value("local-provider"),
-	"-p": value("profile"), "--profile": value("profile"),
-	"-s": value("sandbox"), "--sandbox": value("sandbox"),
-	"--approve-for-me":                           flag("approve-for-me"),
-	"--dangerously-bypass-approvals-and-sandbox": flag("approval-bypass"),
-	"--dangerously-bypass-hook-trust":            flag("hook-trust"),
-	"-C":                                         value("cd"), "--cd": value("cd"), "--add-dir": value("add-dir"),
-	"-a": value("approval"), "--ask-for-approval": value("approval"),
-	"--search": flag("search"), "--no-alt-screen": flag("no-alt-screen"),
-	"-h":        forbidden("help is an action, not a launch option"),
-	"--help":    forbidden("help is an action, not a launch option"),
-	"-V":        forbidden("version is an action, not a launch option"),
-	"--version": forbidden("version is an action, not a launch option"),
+	return newAdapter(Codex, command, "codex", codexCapabilities, buildCodex)
 }
 
 var codexCapabilities = Capabilities{

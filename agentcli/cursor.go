@@ -2,27 +2,9 @@ package agentcli
 
 import "fmt"
 
-// NewCursor returns a Cursor Agent adapter after validating configured
-// options. A zero Command uses "agent".
+// NewCursor returns an adapter with the configured executable and arguments.
 func NewCursor(command Command) (Adapter, error) {
-	return newAdapter(Cursor, command, "agent", cursorOptionGrammar, cursorCapabilities, buildCursor)
-}
-
-var cursorOptionGrammar = optionGrammar{
-	"--api-key": value("api-key"), "-H": value("header"), "--header": value("header"),
-	"--stream-partial-output": flag("stream-partial-output"), "--model": value("model"),
-	"--sandbox": value("sandbox"), "--approve-mcps": flag("approve-mcps"), "--trust": flag("trust"),
-	"--workspace": value("workspace"), "--add-dir": value("add-dir"), "--plugin-dir": value("plugin-dir"),
-	"-p": forbidden("print mode is selected by Request.Mode"), "--print": forbidden("print mode is selected by Request.Mode"),
-	"--output-format": forbidden("output format belongs in Request.OutputFormat"), "--mode": forbidden("execution mode belongs in Request.Approval"),
-	"--plan": forbidden("execution mode belongs in Request.Approval"), "-f": forbidden("permission bypass belongs in Request.Approval"),
-	"--force": forbidden("permission bypass belongs in Request.Approval"), "--yolo": forbidden("permission bypass belongs in Request.Approval"),
-	"--resume": forbidden("resume selects a session"), "--continue": forbidden("continue selects a session"),
-	"--list-models": forbidden("list-models is an action, not a launch option"),
-	"-w":            forbidden("worktree creation is a caller concern"), "--worktree": forbidden("worktree creation is a caller concern"),
-	"--worktree-base": forbidden("worktree creation is a caller concern"), "--skip-worktree-setup": forbidden("worktree creation is a caller concern"),
-	"-h": forbidden("help is an action, not a launch option"), "--help": forbidden("help is an action, not a launch option"),
-	"-v": forbidden("version is an action, not a launch option"), "--version": forbidden("version is an action, not a launch option"),
+	return newAdapter(Cursor, command, "agent", cursorCapabilities, buildCursor)
 }
 
 var cursorCapabilities = Capabilities{

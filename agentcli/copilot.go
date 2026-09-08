@@ -4,32 +4,9 @@ import (
 	"fmt"
 )
 
-// NewCopilot returns a GitHub Copilot CLI adapter after validating configured
-// options. A zero Command uses "copilot".
+// NewCopilot returns an adapter with the configured executable and arguments.
 func NewCopilot(command Command) (Adapter, error) {
-	return newAdapter(Copilot, command, "copilot", copilotOptionGrammar, copilotCapabilities, buildCopilot)
-}
-
-var copilotOptionGrammar = optionGrammar{
-	"--add-dir": value("add-dir"), "--agent": value("agent"), "--additional-mcp-config": value("mcp-config"),
-	"--attachment": value("attachment"), "-C": value("cd"), "--context": value("context"),
-	"--disable-builtin-mcps": flag("disable-builtin-mcps"), "--disable-mcp-server": value("disable-mcp-server"),
-	"--effort": value("reasoning"), "--reasoning-effort": value("reasoning"), "--model": value("model"),
-	"--allow-all": flag("approval-bypass"), "--yolo": flag("approval-bypass"), "--allow-all-tools": flag("allow-all-tools"),
-	"--allow-tool": value("allowed-tools"), "--deny-tool": value("denied-tools"),
-	"--output-format": value("output-format"), "--stream": value("stream"),
-	"--no-auto-update": flag("no-auto-update"), "--no-color": flag("no-color"),
-	"--no-custom-instructions": flag("no-custom-instructions"), "--plugin-dir": value("plugin-dir"),
-	"--screen-reader": flag("screen-reader"), "--secret-env-vars": value("secret-env-vars"),
-	"--acp": forbidden("ACP server mode is a different protocol"),
-	"-p":    forbidden("prompt belongs in Request.Prompt"), "--prompt": forbidden("prompt belongs in Request.Prompt"),
-	"-i": forbidden("interactive prompt belongs in Request.Prompt"), "--interactive": forbidden("interactive prompt belongs in Request.Prompt"),
-	"--continue": forbidden("continue selects a session"), "-r": forbidden("resume selects a session"),
-	"--resume": forbidden("resume selects a session"), "--session-id": forbidden("session identity belongs in Start or Resume"),
-	"--connect": forbidden("remote session process ownership is a caller concern"),
-	"--share":   forbidden("sharing is a caller concern"), "--share-gist": forbidden("sharing is a caller concern"),
-	"-h": forbidden("help is an action, not a launch option"), "--help": forbidden("help is an action, not a launch option"),
-	"-v": forbidden("version is an action, not a launch option"), "--version": forbidden("version is an action, not a launch option"),
+	return newAdapter(Copilot, command, "copilot", copilotCapabilities, buildCopilot)
 }
 
 var copilotCapabilities = Capabilities{
