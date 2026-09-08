@@ -12,6 +12,17 @@
 // callers need custom probing while retaining its start locking, re-discovery,
 // polling, and timeout behavior.
 //
+// RuntimeStore.TryAcquireStartLock supports nonblocking startup markers and
+// probes. A successful caller holds the same lock as Manager.Ensure until it
+// invokes the release function. Callers may inspect and clean up their own
+// startup state before releasing. Contention includes holders in this process;
+// callers that need to recognize their own marker must synchronize acquisition,
+// registration of the release function, probing, and release themselves.
+// Acquisition errors leave the state unknown. A caller may retry after resolving
+// an error, but only successful acquisition authorizes cleanup or launch.
+// Snapshot age, process identity checks, and retry policy belong to the caller.
+// A released probe grants no reservation for a subsequent launch.
+//
 // Authenticated discovery must prove an endpoint before any bearer credential
 // is sent. Servers construct a Proof from the shared daemon token and register
 // its NewPingHandler result using the same RuntimeRecord they write to
