@@ -13,6 +13,9 @@ specific application or forge workflow.
 - Do not call `exec.Command("git", ...)` directly in package code unless the
   direct call is the behavior being tested.
 - Pass `context.Context` through Git operations that can block.
+- Cancel the whole child process tree for non-interactive Git commands, and
+  bound pipe draining after cancellation. Interactive Unix Git must stay in
+  the caller's terminal process group.
 - Return Git failures with captured stderr. Do not hide Git's message behind a
   generic error.
 - Keep remote and clone-path parsing in `gitremote`; do not duplicate it in

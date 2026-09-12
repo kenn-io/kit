@@ -137,9 +137,12 @@ func (r Runner) Run(ctx context.Context, dir string, stdin io.Reader, args ...st
 
 func gitCommand(ctx context.Context, hideConsoleWindow bool, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.WaitDelay = gitCommandWaitDelay
 	prepareGitCommand(cmd, hideConsoleWindow)
 	return cmd
 }
+
+const gitCommandWaitDelay = time.Second
 
 type basicAuth struct {
 	username string

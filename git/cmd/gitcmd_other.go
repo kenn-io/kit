@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build js || plan9 || wasip1
 
 package gitcmd
 
