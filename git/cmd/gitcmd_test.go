@@ -3,6 +3,9 @@ package gitcmd
 import (
 	"context"
 	"encoding/base64"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -71,6 +74,58 @@ func TestRunnerPreservesInheritedCommandScopeConfig(t *testing.T) {
 	)
 	require.NoError(err)
 	assert.Equal("added", strings.TrimSpace(string(added)))
+}
+
+func TestRunnerCancellationStopsGitHTTPSubprocesses(t *testing.T) {
+	require := Require.New(t)
+	requestStarted := make(chan struct{})
+	requestDone := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-git-upload-pack-advertisement")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "001e# service=git-upload-pack\n00000040")
+		w.(http.Flusher).Flush()
+		close(requestStarted)
+		select {
+		case <-r.Context().Done():
+			close(requestDone)
+		case <-release:
+		}
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	result := make(chan error, 1)
+	dir := t.TempDir()
+	go func() {
+		_, _, err := New().Run(ctx, dir, nil, "ls-remote", server.URL+"/repo.git")
+		result <- err
+	}()
+
+	select {
+	case <-requestStarted:
+	case <-time.After(5 * time.Second):
+		close(release)
+		require.FailNow("git did not start its HTTP request")
+	}
+	cancel()
+
+	select {
+	case err := <-result:
+		require.Error(err)
+	case <-time.After(3 * time.Second):
+		close(release)
+		require.Error(<-result)
+		require.FailNow("git did not stop after context cancellation")
+	}
+
+	select {
+	case <-requestDone:
+	case <-time.After(time.Second):
+		close(release)
+		require.FailNow("git HTTP subprocess remained connected after cancellation")
+	}
 }
 
 func TestRunnerPreservesInheritedSafeDirectoryReset(t *testing.T) {
