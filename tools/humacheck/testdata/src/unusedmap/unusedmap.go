@@ -23,3 +23,9 @@ func New() huma.API {
 	_ = spare
 	return humago.New(http.NewServeMux(), huma.DefaultConfig("unused", "1"))
 }
+
+// An index write into a map that never reaches a Config is not an install
+// either.
+func stash() {
+	spare["application/json"] = spare["application/json"]
+}

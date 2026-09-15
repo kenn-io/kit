@@ -198,9 +198,9 @@ func (f *formatFinder) visitInstall(pkg *packages.Package, n ast.Node, found *bo
 			lhs, rhs := node.Lhs[i], node.Rhs[i]
 			if isDefault, ok := installTarget(info, lhs); ok {
 				if isDefault {
-					if f.formatExpr(pkg, rhs, 0) == yes {
-						f.defaultOverridden = true
-					}
+					// The latest assignment in walk order decides; a later
+					// v1 or unknown value clears an earlier override.
+					f.defaultOverridden = f.formatExpr(pkg, rhs, 0) == yes
 				} else if f.formatExpr(pkg, rhs, 0) == yes {
 					*found = true
 				}
@@ -300,9 +300,11 @@ func eachAssignment(pkg *packages.Package, obj *types.Var, visit func(rhs ast.Ex
 	}
 }
 
-// installTarget reports whether lhs is an application/json format slot:
-// huma.DefaultJSONFormat (isDefault) or an "application/json" index of a
-// map[string]huma.Format such as config.Formats or huma.DefaultFormats.
+// installTarget reports whether lhs is an application/json format slot
+// that reaches Huma: huma.DefaultJSONFormat (isDefault), or the
+// "application/json" index of a huma.Config's Formats field or of
+// huma.DefaultFormats. An index write into any other format map is not an
+// install.
 func installTarget(info *types.Info, lhs ast.Expr) (isDefault bool, ok bool) {
 	switch l := ast.Unparen(lhs).(type) {
 	case *ast.SelectorExpr:
@@ -310,7 +312,7 @@ func installTarget(info *types.Info, lhs ast.Expr) (isDefault bool, ok bool) {
 			return true, true
 		}
 	case *ast.IndexExpr:
-		if !isFormatMap(info.TypeOf(l.X)) {
+		if !isFormatsField(info, l.X) && !isHumaDefaultFormats(info, l.X) {
 			return false, false
 		}
 		if key, ok := constString(info, l.Index); ok && key == "application/json" {
@@ -320,12 +322,10 @@ func installTarget(info *types.Info, lhs ast.Expr) (isDefault bool, ok bool) {
 	return false, false
 }
 
-func isFormatMap(t types.Type) bool {
-	if t == nil {
-		return false
-	}
-	m, ok := t.Underlying().(*types.Map)
-	return ok && isHumaNamed(m.Elem(), "Format")
+// isHumaDefaultFormats reports whether expr is huma.DefaultFormats.
+func isHumaDefaultFormats(info *types.Info, expr ast.Expr) bool {
+	path, obj := selectorOf(info, expr)
+	return obj != nil && path == humaPath && obj.Name() == "DefaultFormats"
 }
 
 // formatExpr judges an expression of type huma.Format: yes only when both
