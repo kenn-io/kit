@@ -2,9 +2,13 @@ package humacheck
 
 import (
 	"go/ast"
+	"go/parser"
 	"go/token"
 	"go/types"
+	"io/fs"
+	"path"
 	"strconv"
+	"strings"
 
 	"golang.org/x/tools/go/packages"
 )
@@ -33,11 +37,12 @@ type constructionSite struct {
 }
 
 // constructionSites finds every production call into a Huma package that
-// takes a huma.Config or returns a huma.API or huma.Adapter.
+// takes a huma.Config or returns a huma.API or huma.Adapter, in function
+// bodies and package-level initializers alike.
 func (p *program) constructionSites() []constructionSite {
 	var sites []constructionSite
-	p.eachFunc(func(pkg *packages.Package, _ *ast.File, fn *ast.FuncDecl) {
-		ast.Inspect(fn.Body, func(n ast.Node) bool {
+	p.eachRoot(func(pkg *packages.Package, root ast.Node, _ []*types.Var) {
+		ast.Inspect(root, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
 			if !ok {
 				return true
@@ -69,29 +74,44 @@ func takesConfig(fn *types.Func) bool {
 }
 
 // checkJSONV2 enforces JSON v2 with two module-wide checks and no value
-// tracing: no production file imports encoding/json (v1), and a module that
-// builds a Huma API installs at least one huma.Format backed by
-// encoding/json/v2 somewhere. Huma's own defaults encode with v1 inside the
-// huma package, so a module with no v1 import still needs the install.
-func checkJSONV2(p *program, hasAPI bool, goModPath string) []Diagnostic {
+// tracing: no production file in the module imports encoding/json (v1),
+// and a module that builds a Huma API installs at least one huma.Format
+// backed by encoding/json/v2 somewhere. Huma's own defaults encode with v1
+// inside the huma package, so a module with no v1 import still needs the
+// install.
+//
+// The import ban reads every tracked Go file under the module directory
+// rather than the loaded packages, so files excluded by build tags or
+// platform suffixes are covered too.
+func checkJSONV2(p *program, repo fs.FS, tracked []string, hasAPI bool, goModPath string) ([]Diagnostic, error) {
 	var diags []Diagnostic
-	for _, pkg := range p.pkgs {
-		for _, file := range pkg.Syntax {
-			if p.skipFile(file) {
-				continue
-			}
-			for _, imp := range file.Imports {
-				if importPath(imp) == jsonV1Path {
-					path, line, col := positionOf(p.fset, imp.Pos())
-					diags = append(diags, Diagnostic{Path: path, Line: line, Column: col, Rule: RuleJSONV2, Message: jsonV1ImportMessage})
-				}
+	moduleDir := path.Dir(goModPath)
+	for _, name := range tracked {
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") || !underDir(name, moduleDir) || excludedDir(name) || strings.Contains("/"+name, "/generated/") {
+			continue
+		}
+		content, err := readTracked(repo, name)
+		if err != nil {
+			return nil, err
+		}
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, name, content, parser.ImportsOnly|parser.ParseComments)
+		if err != nil || ast.IsGenerated(file) {
+			// A file that does not parse is reported by the Go loader when it
+			// is part of the build; otherwise it cannot import anything.
+			continue
+		}
+		for _, imp := range file.Imports {
+			if importPath(imp) == jsonV1Path {
+				pos := fset.Position(imp.Pos())
+				diags = append(diags, Diagnostic{Path: name, Line: pos.Line, Column: pos.Column, Rule: RuleJSONV2, Message: jsonV1ImportMessage})
 			}
 		}
 	}
 	if hasAPI && !newFormatFinder(p).installsV2() {
 		diags = append(diags, Diagnostic{Path: goModPath, Line: 1, Column: 1, Rule: RuleJSONV2, Message: jsonV2MissingMessage})
 	}
-	return diags
+	return diags, nil
 }
 
 func importPath(imp *ast.ImportSpec) string {
@@ -109,8 +129,9 @@ type formatFinder struct {
 	p           *program
 	formatFuncs map[*types.Func]verdict
 	// defaultOverridden is set when huma.DefaultJSONFormat is assigned a v2
-	// format, so a later `Formats["application/json"] = huma.DefaultJSONFormat`
-	// counts as v2 too.
+	// format. That alone installs nothing: huma.DefaultFormats copied the
+	// old value at package init and huma.DefaultConfig reads the map, so the
+	// variable only counts once it is written into a Formats map.
 	defaultOverridden bool
 }
 
@@ -118,9 +139,10 @@ func newFormatFinder(p *program) *formatFinder {
 	return &formatFinder{p: p, formatFuncs: make(map[*types.Func]verdict)}
 }
 
-// installsV2 reports whether any application/json install (a Formats or
-// huma.DefaultFormats index assignment, a map literal entry, or a
-// huma.DefaultJSONFormat assignment) carries a v2 format.
+// installsV2 reports whether any application/json map install (a Formats or
+// huma.DefaultFormats index assignment or a map literal entry) carries a v2
+// format. A huma.DefaultJSONFormat assignment only makes that variable v2;
+// it must still be written into a map to count.
 func (f *formatFinder) installsV2() bool {
 	// Pass one: does anything replace Huma's default JSON format with v2?
 	f.eachInstall(func(pkg *packages.Package, isDefault bool, value ast.Expr) bool {
@@ -130,12 +152,9 @@ func (f *formatFinder) installsV2() bool {
 		}
 		return true
 	})
-	if f.defaultOverridden {
-		return true
-	}
 	found := false
-	f.eachInstall(func(pkg *packages.Package, _ bool, value ast.Expr) bool {
-		if f.formatExpr(pkg, value, 0) == yes {
+	f.eachInstall(func(pkg *packages.Package, isDefault bool, value ast.Expr) bool {
+		if !isDefault && f.formatExpr(pkg, value, 0) == yes {
 			found = true
 			return false
 		}
@@ -263,17 +282,31 @@ func (f *formatFinder) formatExpr(pkg *packages.Package, expr ast.Expr, depth in
 			return f.formatExpr(pkg, e.X, depth+1)
 		}
 	case *ast.SelectorExpr:
-		if path, obj := selectorOf(info, e); obj != nil && path == humaPath && obj.Name() == "DefaultJSONFormat" {
+		pkgPath, obj := selectorOf(info, e)
+		if obj == nil {
+			return unknown
+		}
+		if pkgPath == humaPath && obj.Name() == "DefaultJSONFormat" {
 			if f.defaultOverridden {
 				return yes
 			}
 			return no
+		}
+		// A format defined in another module package, such as
+		// codecs.JSONFormat, is judged in its defining package.
+		if v, ok := obj.(*types.Var); ok {
+			if home := f.p.packageByPath(pkgPath); home != nil {
+				return f.varFormat(home, v, depth+1)
+			}
 		}
 		return unknown
 	case *ast.Ident:
 		obj, ok := info.Uses[e].(*types.Var)
 		if !ok {
 			return unknown
+		}
+		if home := f.p.packageByPath(pkgPathOf(obj)); home != nil {
+			pkg = home
 		}
 		return f.varFormat(pkg, obj, depth+1)
 	}

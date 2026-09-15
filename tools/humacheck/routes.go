@@ -65,9 +65,8 @@ func collectRoutes(p *program) *routeSet {
 	}
 	handled := map[ast.Node]bool{}
 
-	p.eachFunc(func(pkg *packages.Package, _ *ast.File, fn *ast.FuncDecl) {
+	p.eachRoot(func(pkg *packages.Package, root ast.Node, params []*types.Var) {
 		info := pkg.TypesInfo
-		params := paramObjects(info, fn)
 		// pathsIn adds every route spelled inside expr: Operation literal
 		// paths and constant arguments at registrar path positions.
 		pathsIn := func(expr ast.Expr, kind receiverKind) {
@@ -99,7 +98,7 @@ func collectRoutes(p *program) *routeSet {
 				return true
 			})
 		}
-		ast.Inspect(fn.Body, func(n ast.Node) bool {
+		ast.Inspect(root, func(n ast.Node) bool {
 			if handled[n] {
 				return true
 			}

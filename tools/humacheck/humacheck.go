@@ -187,7 +187,11 @@ func check(pkgs []*packages.Package, repo fs.FS, tracked []string, goModPath str
 	var diags []Diagnostic
 	hasAPI := len(prog.constructionSites()) > 0
 	if enabled(RuleJSONV2) {
-		diags = append(diags, checkJSONV2(prog, hasAPI, goModPath)...)
+		found, err := checkJSONV2(prog, repo, tracked, hasAPI, goModPath)
+		if err != nil {
+			return nil, err
+		}
+		diags = append(diags, found...)
 	}
 	routes := collectRoutes(prog)
 	if enabled(RuleClient) {

@@ -2,12 +2,12 @@ package humacheck
 
 import (
 	"go/ast"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
-	"testing/fstest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -88,30 +88,57 @@ func assertDiagnostics(t *testing.T, pkgs []*packages.Package, diags []Diagnosti
 	}
 }
 
-func goOnly(t *testing.T, pkgs []*packages.Package) []Diagnostic {
+// goOnly runs the Go rules over a fixture. The fixture's own files are the
+// tracked set (rooted at testdata/src) so the module-wide import ban sees
+// them, and its go.mod is the anchor for module-wide findings.
+func goOnly(t *testing.T, fixture string, pkgs []*packages.Package) []Diagnostic {
 	t.Helper()
-	diags, err := check(pkgs, fstest.MapFS{}, nil, "go.mod", []string{RuleSpec, RuleGenerator, RuleFrontend})
+	repo := os.DirFS("testdata/src")
+	var tracked []string
+	require.NoError(t, fs.WalkDir(repo, fixture, func(name string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			tracked = append(tracked, name)
+		}
+		return err
+	}))
+	diags, err := check(pkgs, repo, tracked, fixture+"/go.mod", []string{RuleSpec, RuleGenerator, RuleFrontend})
 	require.NoError(t, err)
 	return diags
 }
 
 func TestJSONV2Rule(t *testing.T) {
 	t.Parallel()
-	for _, fixture := range []string{"v2inline", "v2global", "v1import"} {
+	for _, fixture := range []string{"v2inline", "v2global", "v2shared", "v1import"} {
 		t.Run(fixture, func(t *testing.T) {
 			t.Parallel()
 			pkgs := loadFixture(t, fixture+"/...")
-			assertDiagnostics(t, pkgs, goOnly(t, pkgs))
+			assertDiagnostics(t, pkgs, goOnly(t, fixture, pkgs))
 		})
 	}
 }
 
 func TestJSONV2MissingInstall(t *testing.T) {
 	t.Parallel()
-	pkgs := loadFixture(t, "nov2/...")
-	diags := goOnly(t, pkgs)
-	require.Len(t, diags, 1)
-	assert.Equal(t, Diagnostic{Path: "go.mod", Line: 1, Column: 1, Rule: RuleJSONV2, Message: jsonV2MissingMessage}, diags[0])
+	for _, fixture := range []string{"nov2", "defaultvar", "pkglevel"} {
+		t.Run(fixture, func(t *testing.T) {
+			t.Parallel()
+			pkgs := loadFixture(t, fixture+"/...")
+			diags := goOnly(t, fixture, pkgs)
+			require.Len(t, diags, 1)
+			assert.Equal(t, Diagnostic{Path: fixture + "/go.mod", Line: 1, Column: 1, Rule: RuleJSONV2, Message: jsonV2MissingMessage}, diags[0])
+		})
+	}
+}
+
+func TestPackageLevelInitializersCount(t *testing.T) {
+	t.Parallel()
+	assert := assert.New(t)
+	pkgs := loadFixture(t, "pkglevel")
+	prog := newProgram(pkgs)
+	assert.Len(prog.constructionSites(), 1, "the adapter call in a package-level initializer")
+	routes := collectRoutes(prog)
+	assert.Equal([]string{"/api"}, routes.adapterPrefixes)
+	assert.Equal([]string{"/v3"}, routes.groupPrefixes)
 }
 
 // TestRunUsesStagedGoSources stages a file with a v1 import, then removes the
@@ -121,13 +148,18 @@ func TestRunUsesStagedGoSources(t *testing.T) {
 	repo := gittest.NewRepo(t, gittest.Options{ResolvePath: true})
 	repo.WriteFile("go.mod", "module m\n\ngo "+goVersion(t)+"\n")
 	repo.WriteFile("m.go", "package m\n\nimport \"encoding/json\"\n\nvar _ = json.Marshal\n")
+	// Excluded by build tags on every platform, so never loaded; the import
+	// ban still sees it because it reads tracked files, not packages.
+	repo.WriteFile("m_plan9.go", "//go:build plan9\n\npackage m\n\nimport \"encoding/json\"\n\nvar _ = json.Marshal\n")
 	repo.Run("add", "-A")
 	repo.WriteFile("m.go", "package m\n")
 
 	diags, err := Run(t.Context(), Options{Dir: repo.Root})
 	require.NoError(t, err)
-	require.Len(t, diags, 1)
-	assert.Equal(t, Diagnostic{Path: "m.go", Line: 3, Column: 8, Rule: RuleJSONV2, Message: jsonV1ImportMessage}, diags[0])
+	assert.Equal(t, []Diagnostic{
+		{Path: "m.go", Line: 3, Column: 8, Rule: RuleJSONV2, Message: jsonV1ImportMessage},
+		{Path: "m_plan9.go", Line: 5, Column: 8, Rule: RuleJSONV2, Message: jsonV1ImportMessage},
+	}, diags)
 }
 
 // goVersion returns the go directive of this module so fixture modules load
@@ -144,7 +176,7 @@ func goVersion(t *testing.T) string {
 func TestClientRule(t *testing.T) {
 	t.Parallel()
 	pkgs := loadFixture(t, "routes/...")
-	assertDiagnostics(t, pkgs, goOnly(t, pkgs))
+	assertDiagnostics(t, pkgs, goOnly(t, "routes", pkgs))
 }
 
 func TestCollectRoutes(t *testing.T) {

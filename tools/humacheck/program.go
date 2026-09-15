@@ -94,6 +94,45 @@ func (p *program) eachFunc(visit func(pkg *packages.Package, file *ast.File, fn 
 	}
 }
 
+// eachRoot visits every expression tree that runs in production: function
+// bodies and package-level variable initializers. params are the enclosing
+// function's parameters, nil for initializers.
+func (p *program) eachRoot(visit func(pkg *packages.Package, root ast.Node, params []*types.Var)) {
+	for _, pkg := range p.pkgs {
+		for _, file := range pkg.Syntax {
+			if p.skipFile(file) {
+				continue
+			}
+			for _, decl := range file.Decls {
+				switch d := decl.(type) {
+				case *ast.FuncDecl:
+					if d.Body != nil {
+						visit(pkg, d.Body, paramObjects(pkg.TypesInfo, d))
+					}
+				case *ast.GenDecl:
+					for _, spec := range d.Specs {
+						if vs, ok := spec.(*ast.ValueSpec); ok {
+							for _, value := range vs.Values {
+								visit(pkg, value, nil)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// packageByPath returns the loaded package with the given import path.
+func (p *program) packageByPath(path string) *packages.Package {
+	for _, pkg := range p.pkgs {
+		if pkg.PkgPath == path {
+			return pkg
+		}
+	}
+	return nil
+}
+
 // skipFile reports whether a file is a test or generated file. Rules only
 // judge hand-written production code.
 func (p *program) skipFile(file *ast.File) bool {
