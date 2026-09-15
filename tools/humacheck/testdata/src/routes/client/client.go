@@ -97,3 +97,6 @@ func Other() string {
 func UseGenerated(ctx context.Context) error {
 	return generated.NewClient("http://localhost").Ping(ctx)
 }
+
+// Requests made while the package initializes are checked too.
+var _, initErr = http.Get("http://localhost/api/v1/queue") // want "own Huma route /api/v1/queue"

@@ -77,23 +77,6 @@ func newProgram(roots []*packages.Package) *program {
 	return p
 }
 
-// eachFunc visits every function declaration with a body in analyzable
-// (non-test, non-generated) files.
-func (p *program) eachFunc(visit func(pkg *packages.Package, file *ast.File, fn *ast.FuncDecl)) {
-	for _, pkg := range p.pkgs {
-		for _, file := range pkg.Syntax {
-			if p.skipFile(file) {
-				continue
-			}
-			for _, decl := range file.Decls {
-				if fn, ok := decl.(*ast.FuncDecl); ok && fn.Body != nil {
-					visit(pkg, file, fn)
-				}
-			}
-		}
-	}
-}
-
 // eachRoot visits every expression tree that runs in production: function
 // bodies and package-level variable initializers. params are the enclosing
 // function's parameters, nil for initializers.

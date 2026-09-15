@@ -8,15 +8,18 @@ enforces the shared Huma contract across kenn-io Go modules:
 - `jsonv2`: no production Go file in the module imports `encoding/json` (v1),
   and a module that builds a Huma API writes at least one `huma.Format`
   whose Marshal and Unmarshal reach `encoding/json/v2` into a Formats map
-  (`config.Formats["application/json"]`, a map literal entry, or
-  `huma.DefaultFormats["application/json"]`). Huma's own defaults encode
+  that reaches Huma: `config.Formats["application/json"]`, a map assigned
+  to a `huma.Config`'s Formats field or literal, or
+  `huma.DefaultFormats["application/json"]`. A format map that never reaches
+  a Config does not count. Huma's own defaults encode
   with v1 inside the huma package, so a clean import graph alone is not
   enough; without the install, payloads keep v1 semantics (nil slices as
   `null`). Assigning `huma.DefaultJSONFormat` alone installs nothing:
   `huma.DefaultFormats` copied the v1 value at package init and
-  `huma.DefaultConfig` reads the map, so the variable only counts once it is
-  written into a map. Both checks are module-wide; which API a format
-  reaches is not tracked.
+  `huma.DefaultConfig` reads the map, so the variable only counts when the
+  same function body writes it into a map after the v2 assignment (walk
+  order, per body; closures are separate bodies). Both checks are
+  module-wide; which API a format reaches is not tracked.
 - `spec`: OpenAPI 3 documents tracked in the repository are YAML, and a module
   that builds a Huma API commits at least one under its own module directory.
   Documents under sibling or nested modules do not count.
@@ -54,7 +57,14 @@ enforces the shared Huma contract across kenn-io Go modules:
 - The import ban parses every tracked `.go` file under the module directory
   (`parser.ImportsOnly`) instead of the loaded packages, so files excluded
   by build tags or platform suffixes are covered and staged content is what
-  gets judged.
+  gets judged. Files under nested modules (`nestedModuleDirs`) belong to
+  those modules and are skipped; a file that fails to parse fails the run.
+- The client rule, construction sites, and routes all walk `eachRoot`, so
+  requests, APIs, and registrations in package-level initializers count.
+- Review findings without an observed instance in a kenn-io repository are
+  recorded as not an issue at the user's instruction; do not add hardening
+  for shapes no repository uses. Check the repositories first (`grep` the
+  shape) and keep the evidence with the record.
 - A format referenced through another module package
   (`codecs.JSONFormat`) is judged in its defining package via
   `packageByPath`.

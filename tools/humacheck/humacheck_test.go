@@ -119,7 +119,7 @@ func TestJSONV2Rule(t *testing.T) {
 
 func TestJSONV2MissingInstall(t *testing.T) {
 	t.Parallel()
-	for _, fixture := range []string{"nov2", "defaultvar", "pkglevel"} {
+	for _, fixture := range []string{"nov2", "defaultvar", "pkglevel", "unusedmap", "lateoverride"} {
 		t.Run(fixture, func(t *testing.T) {
 			t.Parallel()
 			pkgs := loadFixture(t, fixture+"/...")
@@ -151,6 +151,9 @@ func TestRunUsesStagedGoSources(t *testing.T) {
 	// Excluded by build tags on every platform, so never loaded; the import
 	// ban still sees it because it reads tracked files, not packages.
 	repo.WriteFile("m_plan9.go", "//go:build plan9\n\npackage m\n\nimport \"encoding/json\"\n\nvar _ = json.Marshal\n")
+	// A nested module owns its own files; its import is not this module's.
+	repo.WriteFile("tools/gen/go.mod", "module m/tools/gen\n\ngo "+goVersion(t)+"\n")
+	repo.WriteFile("tools/gen/gen.go", "package gen\n\nimport \"encoding/json\"\n\nvar _ = json.Marshal\n")
 	repo.Run("add", "-A")
 	repo.WriteFile("m.go", "package m\n")
 
@@ -160,6 +163,20 @@ func TestRunUsesStagedGoSources(t *testing.T) {
 		{Path: "m.go", Line: 3, Column: 8, Rule: RuleJSONV2, Message: jsonV1ImportMessage},
 		{Path: "m_plan9.go", Line: 5, Column: 8, Rule: RuleJSONV2, Message: jsonV1ImportMessage},
 	}, diags)
+}
+
+// TestRunFailsOnUnparsableTrackedGoFile: a tracked production file the
+// import ban cannot parse fails the run rather than passing silently.
+func TestRunFailsOnUnparsableTrackedGoFile(t *testing.T) {
+	t.Parallel()
+	repo := gittest.NewRepo(t, gittest.Options{ResolvePath: true})
+	repo.WriteFile("go.mod", "module m\n\ngo "+goVersion(t)+"\n")
+	repo.WriteFile("m.go", "package m\n")
+	repo.WriteFile("m_plan9.go", "//go:build plan9\n\npackage m\n\nimport (\n\"encoding/json\"\n\nvar _ = json.Marshal\n")
+	repo.Run("add", "-A")
+
+	_, err := Run(t.Context(), Options{Dir: repo.Root})
+	require.ErrorContains(t, err, "m_plan9.go")
 }
 
 // goVersion returns the go directive of this module so fixture modules load

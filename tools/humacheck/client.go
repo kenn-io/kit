@@ -34,9 +34,9 @@ func checkClients(p *program, routes *routeSet) []Diagnostic {
 		})
 	}
 
-	p.eachFunc(func(pkg *packages.Package, _ *ast.File, fn *ast.FuncDecl) {
+	p.eachRoot(func(pkg *packages.Package, root ast.Node, _ []*types.Var) {
 		info := pkg.TypesInfo
-		ast.Inspect(fn.Body, func(n ast.Node) bool {
+		ast.Inspect(root, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
 			if !ok {
 				return true

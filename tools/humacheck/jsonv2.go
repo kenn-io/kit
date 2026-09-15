@@ -1,12 +1,14 @@
 package humacheck
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"go/types"
 	"io/fs"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -15,7 +17,7 @@ import (
 
 const (
 	jsonV1ImportMessage  = "encoding/json (v1) is imported; use encoding/json/v2 and encoding/json/jsontext so Huma payloads get v2 semantics (nil slices encode as [], not null)"
-	jsonV2MissingMessage = "this module builds a Huma API but never installs an encoding/json/v2 huma.Format; set config.Formats[\"application/json\"] (or huma.DefaultJSONFormat) to a huma.Format whose Marshal and Unmarshal use encoding/json/v2"
+	jsonV2MissingMessage = "this module builds a Huma API but never installs an encoding/json/v2 huma.Format; write a huma.Format whose Marshal and Unmarshal use encoding/json/v2 into config.Formats[\"application/json\"] or huma.DefaultFormats[\"application/json\"] (assigning huma.DefaultJSONFormat alone changes nothing: huma.DefaultFormats already copied the v1 value)"
 )
 
 // verdict is a three-valued answer for "does this use JSON v2".
@@ -86,9 +88,13 @@ func takesConfig(fn *types.Func) bool {
 func checkJSONV2(p *program, repo fs.FS, tracked []string, hasAPI bool, goModPath string) ([]Diagnostic, error) {
 	var diags []Diagnostic
 	moduleDir := path.Dir(goModPath)
+	nested := nestedModuleDirs(tracked, moduleDir)
 	for _, name := range tracked {
 		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") || !underDir(name, moduleDir) || excludedDir(name) || strings.Contains("/"+name, "/generated/") {
 			continue
+		}
+		if slices.ContainsFunc(nested, func(dir string) bool { return underDir(name, dir) }) {
+			continue // owned by a nested module
 		}
 		content, err := readTracked(repo, name)
 		if err != nil {
@@ -96,9 +102,12 @@ func checkJSONV2(p *program, repo fs.FS, tracked []string, hasAPI bool, goModPat
 		}
 		fset := token.NewFileSet()
 		file, err := parser.ParseFile(fset, name, content, parser.ImportsOnly|parser.ParseComments)
-		if err != nil || ast.IsGenerated(file) {
-			// A file that does not parse is reported by the Go loader when it
-			// is part of the build; otherwise it cannot import anything.
+		if err != nil {
+			// A file the rule cannot read must not pass silently, and a file
+			// outside the build context is never reported by the loader.
+			return nil, fmt.Errorf("parse %s: %w", name, err)
+		}
+		if ast.IsGenerated(file) {
 			continue
 		}
 		for _, imp := range file.Imports {
@@ -128,10 +137,12 @@ func importPath(imp *ast.ImportSpec) string {
 type formatFinder struct {
 	p           *program
 	formatFuncs map[*types.Func]verdict
-	// defaultOverridden is set when huma.DefaultJSONFormat is assigned a v2
-	// format. That alone installs nothing: huma.DefaultFormats copied the
-	// old value at package init and huma.DefaultConfig reads the map, so the
-	// variable only counts once it is written into a Formats map.
+	// defaultOverridden is set while walking one function body, once
+	// huma.DefaultJSONFormat has been assigned a v2 format earlier in that
+	// body. The assignment alone installs nothing: huma.DefaultFormats
+	// copied the old value at package init and huma.DefaultConfig reads the
+	// map, so the variable only counts when the same body then writes it
+	// into a Formats map.
 	defaultOverridden bool
 }
 
@@ -139,77 +150,153 @@ func newFormatFinder(p *program) *formatFinder {
 	return &formatFinder{p: p, formatFuncs: make(map[*types.Func]verdict)}
 }
 
-// installsV2 reports whether any application/json map install (a Formats or
-// huma.DefaultFormats index assignment or a map literal entry) carries a v2
-// format. A huma.DefaultJSONFormat assignment only makes that variable v2;
-// it must still be written into a map to count.
+// installsV2 reports whether some application/json map install carries a
+// v2 format. Installs are writes to config.Formats["application/json"] or
+// huma.DefaultFormats["application/json"], a Formats map assigned to a
+// huma.Config, and the Formats entry of a huma.Config literal. A format map
+// that never reaches a Config or Huma's defaults does not count.
 func (f *formatFinder) installsV2() bool {
-	// Pass one: does anything replace Huma's default JSON format with v2?
-	f.eachInstall(func(pkg *packages.Package, isDefault bool, value ast.Expr) bool {
-		if isDefault && f.formatExpr(pkg, value, 0) == yes {
-			f.defaultOverridden = true
-			return false
-		}
-		return true
-	})
 	found := false
-	f.eachInstall(func(pkg *packages.Package, isDefault bool, value ast.Expr) bool {
-		if !isDefault && f.formatExpr(pkg, value, 0) == yes {
-			found = true
-			return false
+	f.p.eachRoot(func(pkg *packages.Package, root ast.Node, _ []*types.Var) {
+		if found {
+			return
 		}
-		return true
+		f.defaultOverridden = false
+		ast.Inspect(root, func(n ast.Node) bool {
+			if found {
+				return false
+			}
+			switch node := n.(type) {
+			case *ast.FuncLit:
+				// A closure is its own body for ordering purposes; it is
+				// visited as part of this root but must not inherit or leak
+				// the override flag.
+				saved := f.defaultOverridden
+				f.defaultOverridden = false
+				ast.Inspect(node.Body, func(n ast.Node) bool { return f.visitInstall(pkg, n, &found) })
+				f.defaultOverridden = saved
+				return false
+			default:
+				return f.visitInstall(pkg, n, &found)
+			}
+		})
 	})
 	return found
 }
 
-// eachInstall visits every expression assigned as an application/json
-// format in production code, including package-level initializers. visit
-// returns false to stop.
-func (f *formatFinder) eachInstall(visit func(pkg *packages.Package, isDefault bool, value ast.Expr) bool) {
-	for _, pkg := range f.p.pkgs {
-		info := pkg.TypesInfo
-		for _, file := range pkg.Syntax {
-			if f.p.skipFile(file) {
+// visitInstall handles one node of a body walk in source order: it records
+// a v2 override of huma.DefaultJSONFormat and sets found when a map install
+// carries a v2 format.
+func (f *formatFinder) visitInstall(pkg *packages.Package, n ast.Node, found *bool) bool {
+	info := pkg.TypesInfo
+	switch node := n.(type) {
+	case *ast.AssignStmt:
+		if len(node.Lhs) != len(node.Rhs) {
+			return true
+		}
+		for i := range node.Lhs {
+			lhs, rhs := node.Lhs[i], node.Rhs[i]
+			if isDefault, ok := installTarget(info, lhs); ok {
+				if isDefault {
+					if f.formatExpr(pkg, rhs, 0) == yes {
+						f.defaultOverridden = true
+					}
+				} else if f.formatExpr(pkg, rhs, 0) == yes {
+					*found = true
+				}
 				continue
 			}
-			stop := false
-			ast.Inspect(file, func(n ast.Node) bool {
-				if stop {
-					return false
-				}
-				switch node := n.(type) {
-				case *ast.AssignStmt:
-					if len(node.Lhs) != len(node.Rhs) {
-						return true
-					}
-					for i := range node.Lhs {
-						if isDefault, ok := installTarget(info, node.Lhs[i]); ok && !visit(pkg, isDefault, node.Rhs[i]) {
-							stop = true
-							return false
-						}
-					}
-				case *ast.CompositeLit:
-					if !isFormatMap(info.TypeOf(node)) {
-						return true
-					}
-					for _, elt := range node.Elts {
-						kv, ok := elt.(*ast.KeyValueExpr)
-						if !ok {
-							continue
-						}
-						if key, ok := constString(info, kv.Key); ok && key == "application/json" && !visit(pkg, false, kv.Value) {
-							stop = true
-							return false
-						}
-					}
-				}
-				return true
-			})
-			if stop {
-				return
+			if isFormatsField(info, lhs) && f.mapValue(pkg, rhs, 0) == yes {
+				*found = true
 			}
 		}
+	case *ast.CompositeLit:
+		if !isHumaNamed(info.TypeOf(node), "Config") {
+			return true
+		}
+		for _, elt := range node.Elts {
+			kv, ok := elt.(*ast.KeyValueExpr)
+			if !ok {
+				continue
+			}
+			if key, ok := kv.Key.(*ast.Ident); ok && key.Name == "Formats" && f.mapValue(pkg, kv.Value, 0) == yes {
+				*found = true
+			}
+		}
+	}
+	return true
+}
+
+// isFormatsField reports whether lhs is the Formats field of a huma.Config.
+func isFormatsField(info *types.Info, lhs ast.Expr) bool {
+	sel, ok := ast.Unparen(lhs).(*ast.SelectorExpr)
+	return ok && sel.Sel.Name == "Formats" && isHumaNamed(info.TypeOf(sel.X), "Config")
+}
+
+// mapValue judges a map[string]huma.Format expression by its
+// application/json entry: a literal directly, or a variable through the
+// literals assigned to it anywhere in its package.
+func (f *formatFinder) mapValue(pkg *packages.Package, expr ast.Expr, depth int) verdict {
+	if depth > maxDepth {
+		return unknown
+	}
+	info := pkg.TypesInfo
+	switch e := ast.Unparen(expr).(type) {
+	case *ast.CompositeLit:
+		for _, elt := range e.Elts {
+			kv, ok := elt.(*ast.KeyValueExpr)
+			if !ok {
+				continue
+			}
+			if key, ok := constString(info, kv.Key); ok && key == "application/json" {
+				return f.formatExpr(pkg, kv.Value, depth+1)
+			}
+		}
+		return unknown
+	case *ast.Ident:
+		obj, ok := info.Uses[e].(*types.Var)
+		if !ok {
+			return unknown
+		}
+		result := unknown
+		eachAssignment(pkg, obj, func(rhs ast.Expr) {
+			if lit, ok := ast.Unparen(rhs).(*ast.CompositeLit); ok && f.mapValue(pkg, lit, depth+1) == yes {
+				result = yes
+			}
+		})
+		return result
+	}
+	return unknown
+}
+
+// eachAssignment visits every value assigned to obj in its package,
+// including its declaration initializer.
+func eachAssignment(pkg *packages.Package, obj *types.Var, visit func(rhs ast.Expr)) {
+	info := pkg.TypesInfo
+	for _, file := range pkg.Syntax {
+		ast.Inspect(file, func(n ast.Node) bool {
+			var lhs, rhs []ast.Expr
+			switch node := n.(type) {
+			case *ast.AssignStmt:
+				lhs, rhs = node.Lhs, node.Rhs
+			case *ast.ValueSpec:
+				for _, name := range node.Names {
+					lhs = append(lhs, name)
+				}
+				rhs = node.Values
+			default:
+				return true
+			}
+			if len(lhs) != len(rhs) {
+				return true
+			}
+			for i, l := range lhs {
+				if ident, ok := ast.Unparen(l).(*ast.Ident); ok && (info.Defs[ident] == obj || info.Uses[ident] == obj) {
+					visit(rhs[i])
+				}
+			}
+			return true
+		})
 	}
 }
 
@@ -316,42 +403,17 @@ func (f *formatFinder) formatExpr(pkg *packages.Package, expr ast.Expr, depth in
 // varFormat judges a variable by the values assigned to it anywhere in its
 // package: yes when some assignment is a v2 format and none is v1.
 func (f *formatFinder) varFormat(pkg *packages.Package, obj *types.Var, depth int) verdict {
-	info := pkg.TypesInfo
 	result := unknown
-	for _, file := range pkg.Syntax {
-		ast.Inspect(file, func(n ast.Node) bool {
-			var lhs, rhs []ast.Expr
-			switch node := n.(type) {
-			case *ast.AssignStmt:
-				lhs, rhs = node.Lhs, node.Rhs
-			case *ast.ValueSpec:
-				for _, name := range node.Names {
-					lhs = append(lhs, name)
-				}
-				rhs = node.Values
-			default:
-				return true
+	eachAssignment(pkg, obj, func(rhs ast.Expr) {
+		switch f.formatExpr(pkg, rhs, depth) {
+		case no:
+			result = no
+		case yes:
+			if result == unknown {
+				result = yes
 			}
-			if len(lhs) != len(rhs) {
-				return true
-			}
-			for i, l := range lhs {
-				ident, ok := ast.Unparen(l).(*ast.Ident)
-				if !ok || (info.Defs[ident] != obj && info.Uses[ident] != obj) {
-					continue
-				}
-				switch f.formatExpr(pkg, rhs[i], depth) {
-				case no:
-					result = no
-				case yes:
-					if result == unknown {
-						result = yes
-					}
-				}
-			}
-			return true
-		})
-	}
+		}
+	})
 	return result
 }
 
