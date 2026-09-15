@@ -7,8 +7,8 @@ import (
 )
 
 func testRoutes(paths ...string) *routeSet {
-	rs := &routeSet{prefixes: []string{"", "/api/v1"}, paths: paths}
-	for _, prefix := range rs.prefixes {
+	rs := &routeSet{adapterPrefixes: []string{"", "/api/v1"}, paths: paths}
+	for _, prefix := range rs.adapterPrefixes {
 		for _, path := range rs.paths {
 			rs.concrete = append(rs.concrete, prefix+path)
 		}

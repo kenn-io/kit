@@ -74,6 +74,16 @@ func Raw(base string) (*http.Response, error) {
 	return http.Post(base+"/api/v1/raw/7", "application/json", nil) // want "own Huma route /api/v1/raw/\{param\}"
 }
 
+// Labeled forwards only path into the request; label is a log string.
+func (c *Client) Labeled(ctx context.Context, path, label string) error {
+	_ = label
+	return c.GetJSON(ctx, path, nil)
+}
+
+func UseLabeled(ctx context.Context, c *Client) error {
+	return c.Labeled(ctx, "/api/v1/jobs", "/api/v1/ping") // want "own Huma route /api/v1/jobs"
+}
+
 // Foreign calls another service; its paths are not this module's routes.
 func (c *Client) Foreign(ctx context.Context) error {
 	return c.GetJSON(ctx, "/api/tags", nil)

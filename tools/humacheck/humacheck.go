@@ -1,6 +1,6 @@
 // Package humacheck reports Huma API usage that drifts from the shared
 // contract: APIs must serialize with encoding/json/v2, the generated OpenAPI
-// document must be committed as YAML, clients must come from a supported
+// document must be committed as YAML, clients must come from the standard
 // generator, and nobody may hand-roll HTTP calls against the module's own
 // routes.
 package humacheck
@@ -113,18 +113,19 @@ func Run(ctx context.Context, opts Options) ([]Diagnostic, error) {
 		return nil, err
 	}
 
-	repoRoot, moduleDir, err := repoLayout(ctx, dir, pkgs)
+	layout, err := resolveLayout(ctx, dir, pkgs)
 	if err != nil {
 		return nil, err
 	}
-	tracked, err := trackedFiles(ctx, repoRoot)
+	repo, tracked, closeRepo, err := layout.open(ctx)
 	if err != nil {
 		return nil, err
 	}
+	defer closeRepo()
 
-	diags := check(pkgs, os.DirFS(repoRoot), tracked, moduleGoMod(repoRoot, moduleDir), opts.Disabled)
+	diags := check(pkgs, repo, tracked, layout.goMod, opts.Disabled)
 	for i := range diags {
-		diags[i].Path = displayPath(dir, repoRoot, diags[i].Path)
+		diags[i].Path = displayPath(dir, layout.root, diags[i].Path)
 	}
 	slices.SortFunc(diags, Diagnostic.Compare)
 	return diags, nil
@@ -136,15 +137,17 @@ const loadMode = packages.NeedName | packages.NeedFiles | packages.NeedCompiledG
 
 // check runs every enabled rule over already-loaded packages. Repository rules
 // read tracked files (repo-root-relative, forward slashes) through repo.
-// goModPath is the repo-relative go.mod used to anchor module-wide findings.
+// goModPath is the repo-relative go.mod that anchors module-wide findings and
+// scopes the spec-presence rule.
 func check(pkgs []*packages.Package, repo fs.FS, tracked []string, goModPath string, disabled []string) []Diagnostic {
 	enabled := func(rule string) bool { return !slices.Contains(disabled, rule) }
 	prog := newProgram(pkgs)
+	jsonv2 := newJSONV2Checker(prog)
 
 	var diags []Diagnostic
-	sites := prog.constructionSites()
+	sites := prog.constructionSites(jsonv2)
 	if enabled(RuleJSONV2) {
-		diags = append(diags, checkJSONV2(prog, sites)...)
+		diags = append(diags, jsonv2.check(sites)...)
 	}
 	routes := collectRoutes(prog)
 	if enabled(RuleClient) {
@@ -179,9 +182,16 @@ func packageErrors(pkgs []*packages.Package) error {
 	return fmt.Errorf("packages failed to load: %w", errors.Join(errs...))
 }
 
-// repoLayout returns the repository root and the main module directory.
-func repoLayout(ctx context.Context, dir string, pkgs []*packages.Package) (root, moduleDir string, err error) {
-	moduleDir = dir
+// layout locates the repository and module the checked packages belong to.
+type layout struct {
+	root      string // repository root, or the module directory outside Git
+	moduleDir string
+	goMod     string // repo-relative go.mod path
+	inGit     bool
+}
+
+func resolveLayout(ctx context.Context, dir string, pkgs []*packages.Package) (layout, error) {
+	moduleDir := dir
 	for _, pkg := range pkgs {
 		if pkg.Module != nil && pkg.Module.Main && pkg.Module.Dir != "" {
 			moduleDir = pkg.Module.Dir
@@ -191,22 +201,43 @@ func repoLayout(ctx context.Context, dir string, pkgs []*packages.Package) (root
 	if resolved, err := filepath.EvalSymlinks(moduleDir); err == nil {
 		moduleDir = resolved
 	}
-	root, err = gitTopLevel(ctx, moduleDir)
+	root, inGit, err := gitTopLevel(ctx, moduleDir)
 	if err != nil {
+		return layout{}, err
+	}
+	if !inGit {
 		root = moduleDir
 	}
 	if resolved, err := filepath.EvalSymlinks(root); err == nil {
 		root = resolved
 	}
-	return root, moduleDir, nil
+	l := layout{root: root, moduleDir: moduleDir, inGit: inGit, goMod: "go.mod"}
+	if rel, err := filepath.Rel(root, filepath.Join(moduleDir, "go.mod")); err == nil && !strings.HasPrefix(rel, "..") {
+		l.goMod = filepath.ToSlash(rel)
+	}
+	return l, nil
 }
 
-func moduleGoMod(repoRoot, moduleDir string) string {
-	rel, err := filepath.Rel(repoRoot, filepath.Join(moduleDir, "go.mod"))
-	if err != nil || strings.HasPrefix(rel, "..") {
-		return "go.mod"
+// open returns the repository contents and file list. Inside Git both come
+// from the index, so a pre-commit run judges what will be committed; outside
+// Git the directory tree is used.
+func (l layout) open(ctx context.Context) (fs.FS, []string, func(), error) {
+	if !l.inGit {
+		files, err := walkFiles(l.root)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		return os.DirFS(l.root), files, func() {}, nil
 	}
-	return filepath.ToSlash(rel)
+	tracked, err := trackedFiles(ctx, l.root)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	index, err := newIndexFS(ctx, l.root)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return index, tracked, func() { _ = index.Close() }, nil
 }
 
 // displayPath makes p relative to dir. Repo-relative paths (no separator

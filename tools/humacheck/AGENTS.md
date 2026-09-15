@@ -10,7 +10,7 @@ enforces the shared Huma contract across kenn-io Go modules:
   and Unmarshal reach `encoding/json/v2`, or the module overrides
   `huma.DefaultJSONFormat` in a package the constructing package imports.
 - `spec`: OpenAPI 3 documents tracked in the repository are YAML, and a module
-  that builds a Huma API commits at least one.
+  that builds a Huma API commits at least one under its own module directory.
 - `generator`: the standard client generator is declared somewhere in the
   repository: orval for TypeScript, oapi-codegen-dd v3 for Go. Any other
   generator is reported where it is declared so toolchains do not fragment;
@@ -33,13 +33,33 @@ enforces the shared Huma contract across kenn-io Go modules:
 - Tests (`_test.go`), generated files (`ast.IsGenerated`), and `generated/`
   directories are never judged. Extend `skipFile` rather than adding per-rule
   exceptions.
-- Verdicts are three-valued. Report `no` and `unknown` separately so a
-  config the checker cannot follow says so instead of pretending it is v1.
-- Route matching is exact per prefix: `prefix + path` with `{param}` and
-  format verbs as single segments and a trailing `/` as at least one more
-  segment. A literal made only of placeholders never matches.
-- Requesters and registrars are fixpoints over "forwards a string parameter";
-  keep both symmetric when changing either.
+- Verdicts are three-valued. `no` needs a positively identified v1 codec or
+  Huma default; anything the checker cannot follow is `unknown` and gets the
+  "cannot verify" message, never the v1 message.
+- The JSON v2 analysis is position-aware, not path-sensitive: the latest
+  assignment before the construction call decides, a Formats mutation between
+  that assignment and the call overrides it, every return of a config
+  function must agree, and only `init` functions count as process-wide
+  default overrides. A mutation inside one branch still counts; a mutation
+  after the construction call never does.
+- Route inventory composes adapter prefix + path and adapter prefix + group
+  prefix + path. It does not track which API a route was registered on, so
+  sibling APIs' prefixes can combine; keep that limitation documented in
+  `collectRoutes` rather than adding pairwise prefix composition back.
+- Requesters and registrars are flow sets of parameter indexes: a string
+  parameter is interesting only when it reaches a URL or path position. Only
+  those argument positions are inspected at call sites.
+- Repository rules read file contents from the Git index through
+  `indexFS`, never from the working tree, so a pre-commit run judges what
+  will be committed. The directory walk is only for checkouts outside Git.
+- Git subprocesses run with inherited `GIT_DIR`/`GIT_INDEX_FILE`/
+  `GIT_WORK_TREE` stripped (`gitenv.StripInherited`) so the checker binds to
+  the directory it was given; a parent hook exporting those variables must
+  not redirect it, and tests under such a hook would otherwise read the outer
+  repository.
+- Generator declarations are matched as whole tokens on non-comment lines;
+  Go files contribute only `//go:generate` directives and go.mod skips
+  `// indirect` lines.
 
 ## Tests
 

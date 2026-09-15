@@ -5,6 +5,7 @@ import (
 	"go/constant"
 	"go/token"
 	"go/types"
+	"slices"
 	"strings"
 
 	"golang.org/x/tools/go/packages"
@@ -18,7 +19,8 @@ const (
 )
 
 // program indexes the loaded packages so rules can follow calls into
-// functions declared anywhere in the module.
+// functions declared anywhere in the main module, even when the caller only
+// asked for a subset of packages.
 type program struct {
 	fset  *token.FileSet
 	pkgs  []*packages.Package
@@ -30,17 +32,37 @@ type funcDecl struct {
 	decl *ast.FuncDecl
 }
 
-func newProgram(pkgs []*packages.Package) *program {
+func newProgram(roots []*packages.Package) *program {
 	p := &program{funcs: make(map[*types.Func]*funcDecl)}
-	if len(pkgs) > 0 {
-		p.fset = pkgs[0].Fset
+	if len(roots) > 0 {
+		p.fset = roots[0].Fset
 	}
-	for _, pkg := range pkgs {
-		if pkg.TypesInfo == nil {
-			continue
+	seen := map[*packages.Package]bool{}
+	add := func(pkg *packages.Package) {
+		if seen[pkg] || pkg.TypesInfo == nil {
+			return
 		}
+		seen[pkg] = true
 		p.pkgs = append(p.pkgs, pkg)
+	}
+	for _, pkg := range roots {
+		add(pkg)
+	}
+	// Dependencies inside the main module are part of the program too: a
+	// helper package the roots import still declares routes and wrappers.
+	packages.Visit(roots, nil, func(pkg *packages.Package) {
+		if pkg.Module != nil && pkg.Module.Main {
+			add(pkg)
+		}
+	})
+	for _, pkg := range p.pkgs {
 		for _, file := range pkg.Syntax {
+			// Generated code is never judged and never followed: a generated
+			// client's request helpers must not turn its callers into
+			// hand-rolled clients.
+			if p.skipFile(file) {
+				continue
+			}
 			for _, decl := range file.Decls {
 				fn, ok := decl.(*ast.FuncDecl)
 				if !ok || fn.Body == nil {
@@ -162,7 +184,7 @@ func rootIdent(expr ast.Expr) *ast.Ident {
 }
 
 // selectorOf returns pkg-qualified selector parts for expressions like
-// huma.DefaultFormats: the package object and the selected object.
+// huma.DefaultFormats: the package path and the selected object.
 func selectorOf(info *types.Info, expr ast.Expr) (pkgPath string, obj types.Object) {
 	sel, ok := ast.Unparen(expr).(*ast.SelectorExpr)
 	if !ok {
@@ -234,4 +256,67 @@ func resultObjects(info *types.Info, fn *ast.FuncDecl) []*types.Var {
 		}
 	}
 	return results
+}
+
+// stringParamIndex maps each string-typed parameter of fn to its index.
+func stringParamIndex(info *types.Info, fn *ast.FuncDecl) map[*types.Var]int {
+	params := map[*types.Var]int{}
+	for i, param := range paramObjects(info, fn) {
+		if param == nil {
+			continue
+		}
+		if basic, ok := param.Type().Underlying().(*types.Basic); ok && basic.Kind() == types.String {
+			params[param] = i
+		}
+	}
+	return params
+}
+
+// mentionedParams returns the indexes of the given parameters that expr
+// references.
+func mentionedParams(info *types.Info, expr ast.Expr, params map[*types.Var]int) []int {
+	var found []int
+	ast.Inspect(expr, func(n ast.Node) bool {
+		if ident, ok := n.(*ast.Ident); ok {
+			if v, ok := info.Uses[ident].(*types.Var); ok {
+				if idx, ok := params[v]; ok && !slices.Contains(found, idx) {
+					found = append(found, idx)
+				}
+			}
+		}
+		return true
+	})
+	return found
+}
+
+// flowSet records, per module function, which parameter indexes flow into
+// a position of interest (a request URL or a route path).
+type flowSet map[*types.Func][]int
+
+func (f flowSet) add(fn *types.Func, indexes []int) bool {
+	changed := false
+	for _, idx := range indexes {
+		if !slices.Contains(f[fn], idx) {
+			f[fn] = append(f[fn], idx)
+			changed = true
+		}
+	}
+	return changed
+}
+
+// eachStringConst visits the outermost constant string sub-expressions of
+// expr, so a folded concatenation is seen whole and a format string inside
+// fmt.Sprintf is still reached.
+func eachStringConst(info *types.Info, expr ast.Expr, visit func(ast.Expr)) {
+	ast.Inspect(expr, func(n ast.Node) bool {
+		e, ok := n.(ast.Expr)
+		if !ok {
+			return true
+		}
+		if _, ok := constString(info, e); ok {
+			visit(e)
+			return false
+		}
+		return true
+	})
 }

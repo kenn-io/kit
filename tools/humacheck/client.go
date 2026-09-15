@@ -4,13 +4,12 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
-	"slices"
 
 	"golang.org/x/tools/go/packages"
 )
 
 // checkClients reports string literals that name one of the module's own
-// routes and are handed to code that builds HTTP requests.
+// routes and are handed to code that builds HTTP requests from them.
 func checkClients(p *program, routes *routeSet) []Diagnostic {
 	if routes == nil || len(routes.concrete) == 0 {
 		return nil
@@ -46,15 +45,9 @@ func checkClients(p *program, routes *routeSet) []Diagnostic {
 			if callee == nil {
 				return true
 			}
-			if idx, ok := urlArgIndex(callee); ok {
+			for _, idx := range urlArgIndexes(callee, requesters) {
 				if idx < len(call.Args) {
 					eachStringConst(info, call.Args[idx], func(e ast.Expr) { report(pkg, e) })
-				}
-				return true
-			}
-			if requesters[callee] {
-				for _, arg := range call.Args {
-					eachStringConst(info, arg, func(e ast.Expr) { report(pkg, e) })
 				}
 			}
 			return true
@@ -67,9 +60,19 @@ func formatClientMessage(route string) string {
 	return "hand-rolled HTTP request to this module's own Huma route " + route + "; call it through the generated API client"
 }
 
-// urlArgIndex identifies net/http request builders and the index of their
+// urlArgIndexes returns the argument positions of a call to fn that end up
+// as a request URL: the URL parameter of net/http builders, or the string
+// parameters a module requester forwards into one.
+func urlArgIndexes(fn *types.Func, requesters flowSet) []int {
+	if idx, ok := httpURLArg(fn); ok {
+		return []int{idx}
+	}
+	return requesters[fn]
+}
+
+// httpURLArg identifies net/http request builders and the index of their
 // URL argument.
-func urlArgIndex(fn *types.Func) (int, bool) {
+func httpURLArg(fn *types.Func) (int, bool) {
 	if pkgPathOf(fn) != "net/http" {
 		return 0, false
 	}
@@ -109,19 +112,19 @@ func isNamed(t types.Type, pkgPath, name string) bool {
 	return named.Obj().Name() == name && pkgPathOf(named.Obj()) == pkgPath
 }
 
-// requesters computes the module functions that build HTTP requests from a
-// string parameter, directly or by forwarding the parameter to another
-// requester. Callers of these functions supply the interesting literals.
-func (p *program) requesters() map[*types.Func]bool {
-	set := make(map[*types.Func]bool)
+// requesters computes, for every module function, the string parameters
+// that reach a request URL: directly in a net/http builder, or by being
+// forwarded into a URL position of another requester. Only those argument
+// positions are inspected at call sites, so a body or log string that
+// happens to look like a route is not reported.
+func (p *program) requesters() flowSet {
+	set := flowSet{}
 	for changed := true; changed; {
 		changed = false
 		for fn, fd := range p.funcs {
-			if set[fn] {
-				continue
-			}
-			if forwardsStringParam(fd, set) {
-				set[fn] = true
+			if set.add(fn, forwardedParams(fd, func(callee *types.Func) []int {
+				return urlArgIndexes(callee, set)
+			})) {
 				changed = true
 			}
 		}
@@ -129,21 +132,17 @@ func (p *program) requesters() map[*types.Func]bool {
 	return set
 }
 
-// forwardsStringParam reports whether fd passes one of its own string
-// parameters (possibly inside a larger expression) to a request builder or
-// to an already-known requester.
-func forwardsStringParam(fd *funcDecl, set map[*types.Func]bool) bool {
+// forwardedParams returns the indexes of fd's string parameters that appear
+// inside an argument of interest of some call in its body, where
+// argsOfInterest names the interesting argument positions of a callee.
+func forwardedParams(fd *funcDecl, argsOfInterest func(*types.Func) []int) []int {
 	info := fd.pkg.TypesInfo
-	params := stringParams(info, fd.decl)
+	params := stringParamIndex(info, fd.decl)
 	if len(params) == 0 {
-		return false
+		return nil
 	}
-	mentions := func(expr ast.Expr) bool { return mentionsAny(info, expr, params) }
-	found := false
+	var found []int
 	ast.Inspect(fd.decl.Body, func(n ast.Node) bool {
-		if found {
-			return false
-		}
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true
@@ -152,31 +151,12 @@ func forwardsStringParam(fd *funcDecl, set map[*types.Func]bool) bool {
 		if callee == nil {
 			return true
 		}
-		if idx, ok := urlArgIndex(callee); ok {
-			found = idx < len(call.Args) && mentions(call.Args[idx])
-			return !found
-		}
-		if set[callee] && slices.ContainsFunc(call.Args, mentions) {
-			found = true
-		}
-		return !found
-	})
-	return found
-}
-
-// eachStringConst visits the outermost constant string sub-expressions of
-// expr, so a folded concatenation is seen whole and a format string inside
-// fmt.Sprintf is still reached.
-func eachStringConst(info *types.Info, expr ast.Expr, visit func(ast.Expr)) {
-	ast.Inspect(expr, func(n ast.Node) bool {
-		e, ok := n.(ast.Expr)
-		if !ok {
-			return true
-		}
-		if _, ok := constString(info, e); ok {
-			visit(e)
-			return false
+		for _, idx := range argsOfInterest(callee) {
+			if idx < len(call.Args) {
+				found = append(found, mentionedParams(info, call.Args[idx], params)...)
+			}
 		}
 		return true
 	})
+	return found
 }

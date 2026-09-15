@@ -12,22 +12,26 @@ import (
 
 // routeSet is the inventory of HTTP routes the module registers with Huma.
 type routeSet struct {
-	prefixes []string // adapter prefixes seen, always includes ""
-	paths    []string // registered operation paths
-	concrete []string // prefix+path for every prefix
+	adapterPrefixes []string // mount prefixes of adapters; "" when an adapter is mounted bare
+	groupPrefixes   []string // prefixes given to huma.NewGroup
+	paths           []string // registered operation paths
+	concrete        []string // every reachable prefix + path
 }
 
 var paramPattern = regexp.MustCompile(`\{[^/}]*\}`)
 
 // collectRoutes gathers operation paths from huma.Operation literals, the
-// huma.Get/Post/... helpers, and module helpers that build or register an
-// operation from a path parameter, plus every constant prefix handed to a
-// Huma adapter or huma.NewGroup.
+// huma.Get/Post/... helpers, and module helpers whose string parameter
+// becomes an operation path, plus the mount prefixes of adapters and
+// groups. Routes are composed as adapter prefix + path and adapter prefix
+// + group prefix + path. The checker does not track which API each route
+// was registered on, so prefixes of sibling APIs can combine with each
+// other's paths; that only matters when a literal happens to spell such a
+// combination.
 func collectRoutes(p *program) *routeSet {
-	rs := &routeSet{prefixes: []string{""}}
+	rs := &routeSet{}
 	registrars := p.registrars()
 	seenPath := map[string]bool{}
-	seenPrefix := map[string]bool{"": true}
 	addPath := func(path string) {
 		if path == "" || !strings.HasPrefix(path, "/") || seenPath[path] {
 			return
@@ -35,12 +39,10 @@ func collectRoutes(p *program) *routeSet {
 		seenPath[path] = true
 		rs.paths = append(rs.paths, path)
 	}
-	addPrefix := func(prefix string) {
-		if seenPrefix[prefix] {
-			return
+	addUnique := func(list *[]string, value string) {
+		if !slices.Contains(*list, value) {
+			*list = append(*list, value)
 		}
-		seenPrefix[prefix] = true
-		rs.prefixes = append(rs.prefixes, prefix)
 	}
 
 	p.eachFunc(func(pkg *packages.Package, _ *ast.File, fn *ast.FuncDecl) {
@@ -49,15 +51,9 @@ func collectRoutes(p *program) *routeSet {
 			switch node := n.(type) {
 			case *ast.CompositeLit:
 				if isHumaNamed(info.TypeOf(node), "Operation") {
-					for _, elt := range node.Elts {
-						kv, ok := elt.(*ast.KeyValueExpr)
-						if !ok {
-							continue
-						}
-						if key, ok := kv.Key.(*ast.Ident); ok && key.Name == "Path" {
-							if path, ok := constString(info, kv.Value); ok {
-								addPath(path)
-							}
+					if value := operationPathValue(node); value != nil {
+						if path, ok := constString(info, value); ok {
+							addPath(path)
 						}
 					}
 				}
@@ -68,24 +64,28 @@ func collectRoutes(p *program) *routeSet {
 				}
 				path := pkgPathOf(callee)
 				switch {
-				case path == humaPath && isHumaMethodHelper(callee.Name()):
-					if len(node.Args) > 1 {
-						if route, ok := constString(info, node.Args[1]); ok {
-							addPath(route)
-						}
-					}
-				case (isHumaPkgPath(path) && path != humaPath) || (path == humaPath && callee.Name() == "NewGroup"):
-					// Adapter constructors and huma.NewGroup: any constant
-					// string argument is a mount prefix.
-					for _, arg := range node.Args {
+				case path == humaPath && callee.Name() == "NewGroup":
+					for _, arg := range node.Args[min(1, len(node.Args)):] {
 						if prefix, ok := constString(info, arg); ok && strings.HasPrefix(prefix, "/") {
-							addPrefix(prefix)
+							addUnique(&rs.groupPrefixes, strings.TrimSuffix(prefix, "/"))
 						}
 					}
-				case returnsOperation(callee) || registrars[callee]:
+				case isHumaPkgPath(path) && path != humaPath && constructsAPI(callee):
+					// Adapter constructors: a constant string argument is the
+					// mount prefix; without one the adapter is mounted bare.
+					prefix := ""
 					for _, arg := range node.Args {
-						if route, ok := constString(info, arg); ok && strings.HasPrefix(route, "/") {
-							addPath(route)
+						if value, ok := constString(info, arg); ok {
+							prefix = strings.TrimSuffix(value, "/")
+						}
+					}
+					addUnique(&rs.adapterPrefixes, prefix)
+				default:
+					for _, idx := range pathArgIndexes(callee, registrars) {
+						if idx < len(node.Args) {
+							if route, ok := constString(info, node.Args[idx]); ok {
+								addPath(route)
+							}
 						}
 					}
 				}
@@ -94,22 +94,45 @@ func collectRoutes(p *program) *routeSet {
 		})
 	})
 
-	// Group prefixes nest under adapter prefixes; compose every pair so a
-	// group mounted on a prefixed API is reachable at both spellings.
-	base := slices.Clone(rs.prefixes)
-	for _, outer := range base {
-		for _, inner := range base {
-			if outer != "" && inner != "" && outer != inner {
-				addPrefix(outer + inner)
+	if len(rs.adapterPrefixes) == 0 {
+		rs.adapterPrefixes = []string{""}
+	}
+	for _, adapter := range rs.adapterPrefixes {
+		for _, path := range rs.paths {
+			addUnique(&rs.concrete, adapter+path)
+			for _, group := range rs.groupPrefixes {
+				addUnique(&rs.concrete, adapter+group+path)
 			}
 		}
 	}
-	for _, prefix := range rs.prefixes {
-		for _, path := range rs.paths {
-			rs.concrete = append(rs.concrete, prefix+path)
+	return rs
+}
+
+// constructsAPI reports whether fn returns a Huma API or Adapter, which is
+// what the adapter packages' New, NewWithPrefix, and NewAdapter do.
+func constructsAPI(fn *types.Func) bool {
+	sig, ok := fn.Type().(*types.Signature)
+	if !ok {
+		return false
+	}
+	for res := range sig.Results().Variables() {
+		if isHumaNamed(res.Type(), "API") || isHumaNamed(res.Type(), "Adapter") {
+			return true
 		}
 	}
-	return rs
+	return false
+}
+
+// operationPathValue returns the Path field value of an Operation literal.
+func operationPathValue(lit *ast.CompositeLit) ast.Expr {
+	for _, elt := range lit.Elts {
+		if kv, ok := elt.(*ast.KeyValueExpr); ok {
+			if key, ok := kv.Key.(*ast.Ident); ok && key.Name == "Path" {
+				return kv.Value
+			}
+		}
+	}
+	return nil
 }
 
 func isHumaMethodHelper(name string) bool {
@@ -120,110 +143,49 @@ func isHumaMethodHelper(name string) bool {
 	return false
 }
 
-// registrars computes module functions that register a route from one of
-// their string parameters: the parameter reaches an Operation Path, a Huma
-// method helper, an Operation builder, or another registrar. Constant
-// arguments to these functions are routes.
-func (p *program) registrars() map[*types.Func]bool {
-	set := make(map[*types.Func]bool)
+// pathArgIndexes returns the argument positions of a call to fn that become
+// an operation path: the path argument of huma.Get and friends, or the
+// string parameters a module registrar forwards into one.
+func pathArgIndexes(fn *types.Func, registrars flowSet) []int {
+	if pkgPathOf(fn) == humaPath && isHumaMethodHelper(fn.Name()) {
+		return []int{1}
+	}
+	return registrars[fn]
+}
+
+// registrars computes, for every module function, the string parameters
+// that become an operation path: in an Operation literal's Path field, in a
+// Huma method helper, or forwarded into another registrar. Constant
+// arguments at those positions are routes.
+func (p *program) registrars() flowSet {
+	set := flowSet{}
 	for changed := true; changed; {
 		changed = false
 		for fn, fd := range p.funcs {
-			if set[fn] {
+			info := fd.pkg.TypesInfo
+			params := stringParamIndex(info, fd.decl)
+			if len(params) == 0 {
 				continue
 			}
-			if forwardsPathParam(fd, set) {
-				set[fn] = true
+			var found []int
+			ast.Inspect(fd.decl.Body, func(n ast.Node) bool {
+				lit, ok := n.(*ast.CompositeLit)
+				if ok && isHumaNamed(info.TypeOf(lit), "Operation") {
+					if value := operationPathValue(lit); value != nil {
+						found = append(found, mentionedParams(info, value, params)...)
+					}
+				}
+				return true
+			})
+			found = append(found, forwardedParams(fd, func(callee *types.Func) []int {
+				return pathArgIndexes(callee, set)
+			})...)
+			if set.add(fn, found) {
 				changed = true
 			}
 		}
 	}
 	return set
-}
-
-func forwardsPathParam(fd *funcDecl, set map[*types.Func]bool) bool {
-	info := fd.pkg.TypesInfo
-	params := stringParams(info, fd.decl)
-	if len(params) == 0 {
-		return false
-	}
-	mentions := func(expr ast.Expr) bool { return mentionsAny(info, expr, params) }
-	found := false
-	ast.Inspect(fd.decl.Body, func(n ast.Node) bool {
-		if found {
-			return false
-		}
-		switch node := n.(type) {
-		case *ast.CompositeLit:
-			if !isHumaNamed(info.TypeOf(node), "Operation") {
-				return true
-			}
-			for _, elt := range node.Elts {
-				if kv, ok := elt.(*ast.KeyValueExpr); ok {
-					if key, ok := kv.Key.(*ast.Ident); ok && key.Name == "Path" && mentions(kv.Value) {
-						found = true
-					}
-				}
-			}
-		case *ast.CallExpr:
-			callee := calleeFunc(info, node)
-			if callee == nil {
-				return true
-			}
-			switch {
-			case pkgPathOf(callee) == humaPath && isHumaMethodHelper(callee.Name()):
-				found = len(node.Args) > 1 && mentions(node.Args[1])
-			case returnsOperation(callee) || set[callee]:
-				found = slices.ContainsFunc(node.Args, mentions)
-			}
-		}
-		return !found
-	})
-	return found
-}
-
-// stringParams returns the string-typed parameters of fn.
-func stringParams(info *types.Info, fn *ast.FuncDecl) map[*types.Var]bool {
-	params := map[*types.Var]bool{}
-	for _, param := range paramObjects(info, fn) {
-		if param == nil {
-			continue
-		}
-		if basic, ok := param.Type().Underlying().(*types.Basic); ok && basic.Kind() == types.String {
-			params[param] = true
-		}
-	}
-	return params
-}
-
-// mentionsAny reports whether expr references any of the given variables.
-func mentionsAny(info *types.Info, expr ast.Expr, vars map[*types.Var]bool) bool {
-	found := false
-	ast.Inspect(expr, func(n ast.Node) bool {
-		if found {
-			return false
-		}
-		if ident, ok := n.(*ast.Ident); ok {
-			if v, ok := info.Uses[ident].(*types.Var); ok && vars[v] {
-				found = true
-			}
-		}
-		return !found
-	})
-	return found
-}
-
-func returnsOperation(fn *types.Func) bool {
-	sig, ok := fn.Type().(*types.Signature)
-	if !ok {
-		return false
-	}
-	for res := range sig.Results().Variables() {
-		if isHumaNamed(res.Type(), "Operation") {
-			return true
-		}
-	}
-	return false
 }
 
 // match reports the registered route that a hand-written URL literal hits,

@@ -93,7 +93,7 @@ func goOnly(pkgs []*packages.Package) []Diagnostic {
 func TestJSONV2Rule(t *testing.T) {
 	t.Parallel()
 	for _, fixture := range []string{
-		"v2inline", "v2helper", "v2global", "v2wrapper",
+		"v2inline", "v2helper", "v2global", "v2wrapper", "v2mixed",
 		"v1default", "v1formats", "v1codec", "unknowncfg",
 	} {
 		t.Run(fixture, func(t *testing.T) {
@@ -112,10 +112,15 @@ func TestClientRule(t *testing.T) {
 
 func TestCollectRoutes(t *testing.T) {
 	t.Parallel()
+	assert := assert.New(t)
 	pkgs := loadFixture(t, "routes/server")
 	routes := collectRoutes(newProgram(pkgs))
-	assert.ElementsMatch(t, []string{"", "/api/v1", "/v2", "/api/v1/v2", "/v2/api/v1"}, routes.prefixes)
-	assert.ElementsMatch(t, []string{"/ping", "/accounts/{id}", "/jobs", "/jobs/{id}/review", "/queue", "/raw/{id}", "/grouped"}, routes.paths)
+	assert.Equal([]string{"/api/v1"}, routes.adapterPrefixes)
+	assert.Equal([]string{"/v2"}, routes.groupPrefixes)
+	assert.ElementsMatch([]string{"/ping", "/accounts/{id}", "/jobs", "/jobs/{id}/review", "/queue", "/raw/{id}", "/grouped"}, routes.paths)
+	assert.Contains(routes.concrete, "/api/v1/v2/grouped")
+	assert.NotContains(routes.concrete, "/v2/api/v1/grouped")
+	assert.NotContains(routes.concrete, "/grouped")
 }
 
 func TestConstructionSitesSkipTestsAndGenerated(t *testing.T) {
@@ -131,7 +136,7 @@ func TestConstructionSitesSkipTestsAndGenerated(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 1, skipped, "generated client file is skipped; the _test.go file is not loaded")
-	sites := prog.constructionSites()
+	sites := prog.constructionSites(newJSONV2Checker(prog))
 	require.Len(t, sites, 1)
 	assert.IsType(t, &ast.CallExpr{}, sites[0].call)
 }

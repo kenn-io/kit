@@ -33,12 +33,22 @@ type constructionSite struct {
 	fn   *ast.FuncDecl
 	call *ast.CallExpr
 	args []ast.Expr // config arguments
+	// settled marks config arguments the callee reconfigures itself, so the
+	// argument value does not matter.
+	settled []bool
+}
+
+// sinkParam describes one huma.Config parameter of a module function that
+// flows into a construction call.
+type sinkParam struct {
+	index   int
+	settled bool // the wrapper installs JSON v2 before construction
 }
 
 // constructionSites finds every call that hands a huma.Config to Huma (or to
 // a module function that forwards it to Huma) in production code.
-func (p *program) constructionSites() []constructionSite {
-	sinks := p.configSinks()
+func (p *program) constructionSites(c *jsonV2Checker) []constructionSite {
+	sinks := c.configSinks()
 	var sites []constructionSite
 	p.eachFunc(func(pkg *packages.Package, _ *ast.File, fn *ast.FuncDecl) {
 		ast.Inspect(fn.Body, func(n ast.Node) bool {
@@ -46,9 +56,9 @@ func (p *program) constructionSites() []constructionSite {
 			if !ok {
 				return true
 			}
-			args := configArgs(pkg.TypesInfo, call, sinks)
+			args, settled := configArgs(pkg.TypesInfo, call, sinks)
 			if len(args) > 0 {
-				sites = append(sites, constructionSite{pkg: pkg, fn: fn, call: call, args: args})
+				sites = append(sites, constructionSite{pkg: pkg, fn: fn, call: call, args: args, settled: settled})
 			}
 			return true
 		})
@@ -58,49 +68,56 @@ func (p *program) constructionSites() []constructionSite {
 
 // configArgs returns the arguments of call that are consumed as a
 // huma.Config by Huma itself or by a known sink wrapper.
-func configArgs(info *types.Info, call *ast.CallExpr, sinks map[*types.Func][]int) []ast.Expr {
+func configArgs(info *types.Info, call *ast.CallExpr, sinks map[*types.Func][]sinkParam) ([]ast.Expr, []bool) {
 	fn := calleeFunc(info, call)
 	if fn == nil {
-		return nil
+		return nil, nil
 	}
-	var indexes []int
+	var params []sinkParam
 	if isHumaPkgPath(pkgPathOf(fn)) {
 		sig, ok := fn.Type().(*types.Signature)
 		if !ok {
-			return nil
+			return nil, nil
 		}
 		for i, param := range slices.Collect(sig.Params().Variables()) {
 			if isHumaNamed(param.Type(), "Config") {
-				indexes = append(indexes, i)
+				params = append(params, sinkParam{index: i})
 			}
 		}
 	} else {
-		indexes = sinks[fn]
+		params = sinks[fn]
 	}
 	var args []ast.Expr
-	for _, i := range indexes {
-		if i < len(call.Args) {
-			args = append(args, call.Args[i])
+	var settled []bool
+	for _, param := range params {
+		if param.index < len(call.Args) {
+			args = append(args, call.Args[param.index])
+			settled = append(settled, param.settled)
 		}
 	}
-	return args
+	return args, settled
 }
 
-// configSinks maps module functions to the indexes of their huma.Config
-// parameters that flow into a construction call. Computed to a fixpoint so
-// wrappers of wrappers are recognized.
-func (p *program) configSinks() map[*types.Func][]int {
-	sinks := make(map[*types.Func][]int)
+// configSinks maps module functions to their huma.Config parameters that
+// flow into a construction call, computed to a fixpoint so wrappers of
+// wrappers are recognized. A wrapper that installs JSON v2 on the parameter
+// before constructing settles the verdict for every caller.
+func (c *jsonV2Checker) configSinks() map[*types.Func][]sinkParam {
+	sinks := make(map[*types.Func][]sinkParam)
 	for changed := true; changed; {
 		changed = false
-		for fn, fd := range p.funcs {
+		for fn, fd := range c.p.funcs {
 			params := paramObjects(fd.pkg.TypesInfo, fd.decl)
 			for i, param := range params {
-				if param == nil || !isHumaNamed(param.Type(), "Config") || slices.Contains(sinks[fn], i) {
+				if param == nil || !isHumaNamed(param.Type(), "Config") {
 					continue
 				}
-				if paramFlowsToConfig(fd, param, sinks) {
-					sinks[fn] = append(sinks[fn], i)
+				if slices.ContainsFunc(sinks[fn], func(s sinkParam) bool { return s.index == i }) {
+					continue
+				}
+				if pos, ok := paramFlowsToConfig(fd, param, sinks); ok {
+					settled := c.configVar(fd.pkg, fd.decl, param, pos, 0) == yes
+					sinks[fn] = append(sinks[fn], sinkParam{index: i, settled: settled})
 					changed = true
 				}
 			}
@@ -109,24 +126,27 @@ func (p *program) configSinks() map[*types.Func][]int {
 	return sinks
 }
 
-func paramFlowsToConfig(fd *funcDecl, param *types.Var, sinks map[*types.Func][]int) bool {
-	found := false
+// paramFlowsToConfig reports the first construction call in fd that receives
+// param directly as a config argument.
+func paramFlowsToConfig(fd *funcDecl, param *types.Var, sinks map[*types.Func][]sinkParam) (token.Pos, bool) {
+	var found token.Pos
 	ast.Inspect(fd.decl.Body, func(n ast.Node) bool {
-		if found {
+		if found.IsValid() {
 			return false
 		}
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true
 		}
-		for _, arg := range configArgs(fd.pkg.TypesInfo, call, sinks) {
+		args, _ := configArgs(fd.pkg.TypesInfo, call, sinks)
+		for _, arg := range args {
 			if ident, ok := ast.Unparen(arg).(*ast.Ident); ok && fd.pkg.TypesInfo.Uses[ident] == param {
-				found = true
+				found = call.Pos()
 			}
 		}
-		return !found
+		return !found.IsValid()
 	})
-	return found
+	return found, found.IsValid()
 }
 
 // jsonV2Checker memoizes verdicts across the whole module.
@@ -143,8 +163,8 @@ type jsonV2Checker struct {
 	diags        []Diagnostic
 }
 
-func checkJSONV2(p *program, sites []constructionSite) []Diagnostic {
-	c := &jsonV2Checker{
+func newJSONV2Checker(p *program) *jsonV2Checker {
+	return &jsonV2Checker{
 		p:            p,
 		formatFuncs:  make(map[*types.Func]verdict),
 		configFuncs:  make(map[*types.Func]verdict),
@@ -152,11 +172,17 @@ func checkJSONV2(p *program, sites []constructionSite) []Diagnostic {
 		overriding:   make(map[*types.Package]bool),
 		imports:      make(map[*types.Package]bool),
 	}
+}
+
+func (c *jsonV2Checker) check(sites []constructionSite) []Diagnostic {
 	c.findOverrides()
 	c.findDefaultFormatAssignments()
 	for _, site := range sites {
-		for _, arg := range site.args {
-			v := c.configExpr(site.pkg, site.fn, arg, 0)
+		for i, arg := range site.args {
+			if site.settled[i] {
+				continue
+			}
+			v := c.configExpr(site.pkg, site.fn, arg, site.call.Pos(), 0)
 			if v == yes || v == passthrough || c.importsOverride(site.pkg.Types) {
 				continue
 			}
@@ -175,8 +201,11 @@ func (c *jsonV2Checker) report(pos token.Pos, message string) {
 	c.diags = append(c.diags, Diagnostic{Path: path, Line: line, Column: col, Rule: RuleJSONV2, Message: message})
 }
 
-// configExpr judges an expression of type huma.Config inside fn.
-func (c *jsonV2Checker) configExpr(pkg *packages.Package, fn *ast.FuncDecl, expr ast.Expr, depth int) verdict {
+// configExpr judges an expression of type huma.Config inside fn as it stands
+// at position before. Only assignments and mutations that textually precede
+// that position count, so a reconfiguration after the API is built does not
+// pass the check.
+func (c *jsonV2Checker) configExpr(pkg *packages.Package, fn *ast.FuncDecl, expr ast.Expr, before token.Pos, depth int) verdict {
 	if depth > maxDepth {
 		return unknown
 	}
@@ -193,7 +222,7 @@ func (c *jsonV2Checker) configExpr(pkg *packages.Package, fn *ast.FuncDecl, expr
 		if fd, ok := c.p.funcs[callee]; ok {
 			v := c.configFunc(callee, fd)
 			if idx, ok := c.passthroughs[callee]; v == passthrough && ok && idx < len(e.Args) {
-				return c.configExpr(pkg, fn, e.Args[idx], depth+1)
+				return c.configExpr(pkg, fn, e.Args[idx], before, depth+1)
 			}
 			return v
 		}
@@ -204,9 +233,12 @@ func (c *jsonV2Checker) configExpr(pkg *packages.Package, fn *ast.FuncDecl, expr
 			return unknown
 		}
 		if isParam(info, fn, obj) {
+			if v := c.configVar(pkg, fn, obj, before, depth); v == yes || v == no {
+				return v
+			}
 			return passthrough
 		}
-		return c.configVar(pkg, fn, obj, depth)
+		return c.configVar(pkg, fn, obj, before, depth)
 	case *ast.CompositeLit:
 		if !isHumaNamed(info.TypeOf(e), "Config") {
 			return unknown
@@ -217,86 +249,82 @@ func (c *jsonV2Checker) configExpr(pkg *packages.Package, fn *ast.FuncDecl, expr
 				continue
 			}
 			if key, ok := kv.Key.(*ast.Ident); ok && key.Name == "Formats" {
-				return c.formatsMap(pkg, fn, kv.Value, depth+1)
+				return c.formatsMap(pkg, fn, kv.Value, before, depth+1)
 			}
 		}
 		return no
 	case *ast.UnaryExpr:
 		if e.Op == token.AND {
-			return c.configExpr(pkg, fn, e.X, depth+1)
+			return c.configExpr(pkg, fn, e.X, before, depth+1)
 		}
 	case *ast.StarExpr:
-		return c.configExpr(pkg, fn, e.X, depth+1)
+		return c.configExpr(pkg, fn, e.X, before, depth+1)
 	}
 	return unknown
 }
 
 func isParam(info *types.Info, fn *ast.FuncDecl, obj *types.Var) bool {
-	for _, param := range paramObjects(info, fn) {
-		if param != nil && param == obj {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(paramObjects(info, fn), obj)
 }
 
-// configVar judges a local config variable from its assignments and from
-// any Formats mutation applied to it within fn.
-func (c *jsonV2Checker) configVar(pkg *packages.Package, fn *ast.FuncDecl, obj *types.Var, depth int) verdict {
+// configVar judges a config variable as it stands at position before: the
+// latest preceding assignment decides, and a JSON v2 Formats mutation
+// between that assignment and before upgrades it. A parameter with no
+// assignment is judged by its mutations alone.
+func (c *jsonV2Checker) configVar(pkg *packages.Package, fn *ast.FuncDecl, obj *types.Var, before token.Pos, depth int) verdict {
 	info := pkg.TypesInfo
-	result := unknown
+	var latest ast.Expr
+	var latestPos token.Pos
 	assignments(fn.Body, func(lhs, rhs ast.Expr) {
-		if result == yes {
-			return
-		}
 		ident, ok := ast.Unparen(lhs).(*ast.Ident)
 		if !ok || (info.Defs[ident] != obj && info.Uses[ident] != obj) {
 			return
 		}
-		switch c.configExpr(pkg, fn, rhs, depth+1) {
-		case yes:
-			result = yes
-		case no:
-			if result == unknown {
-				result = no
-			}
+		if lhs.Pos() < before && lhs.Pos() > latestPos {
+			latest, latestPos = rhs, lhs.Pos()
 		}
 	})
-	if result == yes {
-		return yes
+	result := unknown
+	if latest != nil {
+		result = c.configExpr(pkg, fn, latest, latestPos, depth+1)
 	}
-	if c.formatsMutated(pkg, fn, obj, depth) {
-		return yes
+	if v, mutated := c.formatsMutation(pkg, fn, obj, latestPos, before, depth); mutated {
+		return v
 	}
 	return result
 }
 
-// formatsMutated reports whether fn assigns a JSON v2 format into
-// obj.Formats, either wholesale or for the application/json key.
-func (c *jsonV2Checker) formatsMutated(pkg *packages.Package, fn *ast.FuncDecl, obj *types.Var, depth int) bool {
+// formatsMutation reports the effect of the last Formats mutation of obj
+// between after and before: yes for a JSON v2 install, no for Huma's v1
+// defaults, unknown when it cannot be followed. mutated is false when there
+// is no such mutation.
+func (c *jsonV2Checker) formatsMutation(pkg *packages.Package, fn *ast.FuncDecl, obj *types.Var, after, before token.Pos, depth int) (result verdict, mutated bool) {
 	info := pkg.TypesInfo
-	found := false
-	assignments(fn.Body, func(lhs, rhs ast.Expr) {
-		if found {
+	var resultPos token.Pos
+	consider := func(pos token.Pos, v verdict) {
+		if pos <= after || pos >= before || pos < resultPos {
 			return
 		}
+		result, resultPos, mutated = v, pos, true
+	}
+	assignments(fn.Body, func(lhs, rhs ast.Expr) {
 		switch l := ast.Unparen(lhs).(type) {
 		case *ast.SelectorExpr:
 			if l.Sel.Name != "Formats" || !refersTo(info, l.X, obj) {
 				return
 			}
-			found = c.formatsMap(pkg, fn, rhs, depth+1) == yes
+			consider(lhs.Pos(), c.formatsMap(pkg, fn, rhs, lhs.Pos(), depth+1))
 		case *ast.IndexExpr:
 			sel, ok := ast.Unparen(l.X).(*ast.SelectorExpr)
 			if !ok || sel.Sel.Name != "Formats" || !refersTo(info, sel.X, obj) {
 				return
 			}
 			if key, ok := constString(info, l.Index); ok && key == "application/json" {
-				found = c.formatExpr(pkg, fn, rhs, depth+1) == yes
+				consider(lhs.Pos(), c.formatExpr(pkg, fn, rhs, lhs.Pos(), depth+1))
 			}
 		}
 	})
-	return found
+	return result, mutated
 }
 
 func refersTo(info *types.Info, expr ast.Expr, obj *types.Var) bool {
@@ -307,29 +335,18 @@ func refersTo(info *types.Info, expr ast.Expr, obj *types.Var) bool {
 	return info.Uses[ident] == obj || info.Defs[ident] == obj
 }
 
-// configFunc judges a function that returns a huma.Config.
+// configFunc judges a function that returns a huma.Config. Every return
+// must agree: one v1 return makes the function v1, one unverifiable return
+// makes it unverifiable.
 func (c *jsonV2Checker) configFunc(fn *types.Func, fd *funcDecl) verdict {
 	if v, ok := c.configFuncs[fn]; ok {
 		return v
 	}
 	c.configFuncs[fn] = unknown // cycle guard
 	info := fd.pkg.TypesInfo
-	result := unknown
-	consider := func(v verdict) {
-		switch v {
-		case yes:
-			result = yes
-		case no:
-			if result == unknown {
-				result = no
-			}
-		}
-	}
 	params := paramObjects(info, fd.decl)
+	var verdicts []verdict
 	ast.Inspect(fd.decl.Body, func(n ast.Node) bool {
-		if result == yes {
-			return false
-		}
 		if _, ok := n.(*ast.FuncLit); ok {
 			return false
 		}
@@ -340,7 +357,7 @@ func (c *jsonV2Checker) configFunc(fn *types.Func, fd *funcDecl) verdict {
 		if len(ret.Results) == 0 {
 			for _, res := range resultObjects(info, fd.decl) {
 				if res != nil && isHumaNamed(res.Type(), "Config") {
-					consider(c.configVar(fd.pkg, fd.decl, res, 0))
+					verdicts = append(verdicts, c.configVar(fd.pkg, fd.decl, res, ret.Pos(), 0))
 				}
 			}
 			return true
@@ -349,35 +366,47 @@ func (c *jsonV2Checker) configFunc(fn *types.Func, fd *funcDecl) verdict {
 			if !isHumaNamed(info.TypeOf(expr), "Config") {
 				continue
 			}
-			v := c.configExpr(fd.pkg, fd.decl, expr, 1)
-			if v != passthrough {
-				consider(v)
-				continue
-			}
-			// A returned parameter: it may have been reconfigured in place.
-			ident, _ := ast.Unparen(expr).(*ast.Ident)
-			param, _ := info.Uses[ident].(*types.Var)
-			if v := c.configVar(fd.pkg, fd.decl, param, 1); v == yes {
-				result = yes
-				continue
-			}
-			for i, candidate := range params {
-				if candidate == param {
-					c.passthroughs[fn] = i
+			v := c.configExpr(fd.pkg, fd.decl, expr, ret.Pos(), 1)
+			if v == passthrough {
+				ident, _ := ast.Unparen(expr).(*ast.Ident)
+				param, _ := info.Uses[ident].(*types.Var)
+				if idx := slices.Index(params, param); idx >= 0 {
+					c.passthroughs[fn] = idx
 				}
 			}
-			if result == unknown {
-				result = passthrough
-			}
+			verdicts = append(verdicts, v)
 		}
 		return true
 	})
+	result := combine(verdicts)
 	c.configFuncs[fn] = result
 	return result
 }
 
+// combine folds per-path verdicts: any no wins, then any unknown, then
+// passthrough, and yes only when every path is yes.
+func combine(verdicts []verdict) verdict {
+	if len(verdicts) == 0 {
+		return unknown
+	}
+	result := yes
+	for _, v := range verdicts {
+		switch v {
+		case no:
+			return no
+		case unknown:
+			result = unknown
+		case passthrough:
+			if result == yes {
+				result = passthrough
+			}
+		}
+	}
+	return result
+}
+
 // formatsMap judges an expression used as Config.Formats.
-func (c *jsonV2Checker) formatsMap(pkg *packages.Package, fn *ast.FuncDecl, expr ast.Expr, depth int) verdict {
+func (c *jsonV2Checker) formatsMap(pkg *packages.Package, fn *ast.FuncDecl, expr ast.Expr, before token.Pos, depth int) verdict {
 	if depth > maxDepth {
 		return unknown
 	}
@@ -390,7 +419,7 @@ func (c *jsonV2Checker) formatsMap(pkg *packages.Package, fn *ast.FuncDecl, expr
 				continue
 			}
 			if key, ok := constString(info, kv.Key); ok && key == "application/json" {
-				return c.formatExpr(pkg, fn, kv.Value, depth+1)
+				return c.formatExpr(pkg, fn, kv.Value, before, depth+1)
 			}
 		}
 		return no
@@ -404,46 +433,47 @@ func (c *jsonV2Checker) formatsMap(pkg *packages.Package, fn *ast.FuncDecl, expr
 		if !ok {
 			return unknown
 		}
-		return c.mapVar(pkg, fn, obj, depth)
+		return c.mapVar(pkg, fn, obj, before, depth)
 	}
 	return unknown
 }
 
-// mapVar judges a local map[string]huma.Format variable by its literal
-// initializer or by an application/json index assignment.
-func (c *jsonV2Checker) mapVar(pkg *packages.Package, fn *ast.FuncDecl, obj *types.Var, depth int) verdict {
+// mapVar judges a local map[string]huma.Format variable by its latest
+// literal initializer and any later application/json index assignment.
+func (c *jsonV2Checker) mapVar(pkg *packages.Package, fn *ast.FuncDecl, obj *types.Var, before token.Pos, depth int) verdict {
 	info := pkg.TypesInfo
 	result := unknown
-	assignments(fn.Body, func(lhs, rhs ast.Expr) {
-		if result == yes {
+	var resultPos token.Pos
+	consider := func(pos token.Pos, v verdict) {
+		if pos >= before || pos < resultPos || v == unknown {
 			return
 		}
+		result, resultPos = v, pos
+	}
+	assignments(fn.Body, func(lhs, rhs ast.Expr) {
 		switch l := ast.Unparen(lhs).(type) {
 		case *ast.Ident:
 			if info.Defs[l] != obj && info.Uses[l] != obj {
 				return
 			}
 			if lit, ok := ast.Unparen(rhs).(*ast.CompositeLit); ok {
-				if v := c.formatsMap(pkg, fn, lit, depth+1); v != unknown {
-					result = v
-				}
+				consider(lhs.Pos(), c.formatsMap(pkg, fn, lit, lhs.Pos(), depth+1))
 			}
 		case *ast.IndexExpr:
 			if !refersTo(info, l.X, obj) {
 				return
 			}
 			if key, ok := constString(info, l.Index); ok && key == "application/json" {
-				if v := c.formatExpr(pkg, fn, rhs, depth+1); v != unknown {
-					result = v
-				}
+				consider(lhs.Pos(), c.formatExpr(pkg, fn, rhs, lhs.Pos(), depth+1))
 			}
 		}
 	})
 	return result
 }
 
-// formatExpr judges an expression of type huma.Format.
-func (c *jsonV2Checker) formatExpr(pkg *packages.Package, fn *ast.FuncDecl, expr ast.Expr, depth int) verdict {
+// formatExpr judges an expression of type huma.Format: yes only when both
+// codecs are proven v2, no only when either is proven v1, else unknown.
+func (c *jsonV2Checker) formatExpr(pkg *packages.Package, fn *ast.FuncDecl, expr ast.Expr, before token.Pos, depth int) verdict {
 	if depth > maxDepth {
 		return unknown
 	}
@@ -470,11 +500,11 @@ func (c *jsonV2Checker) formatExpr(pkg *packages.Package, fn *ast.FuncDecl, expr
 				unmarshal = c.funcUsesV2(pkg, kv.Value, 0)
 			}
 		}
-		if marshal == yes && unmarshal == yes {
-			return yes
-		}
-		if marshal == no || unmarshal == no || marshal == unknown || unmarshal == unknown {
+		switch {
+		case marshal == no || unmarshal == no:
 			return no
+		case marshal == yes && unmarshal == yes:
+			return yes
 		}
 		return unknown
 	case *ast.SelectorExpr:
@@ -487,18 +517,52 @@ func (c *jsonV2Checker) formatExpr(pkg *packages.Package, fn *ast.FuncDecl, expr
 		if !ok {
 			return unknown
 		}
-		result := unknown
+		if init := packageVarInit(pkg, obj); init != nil {
+			return c.formatExpr(pkg, fn, init, init.Pos(), depth+1)
+		}
+		var latest ast.Expr
+		var latestPos token.Pos
 		assignments(fn.Body, func(lhs, rhs ast.Expr) {
-			if result != unknown {
-				return
-			}
 			if ident, ok := ast.Unparen(lhs).(*ast.Ident); ok && (info.Defs[ident] == obj || info.Uses[ident] == obj) {
-				result = c.formatExpr(pkg, fn, rhs, depth+1)
+				if lhs.Pos() < before && lhs.Pos() > latestPos {
+					latest, latestPos = rhs, lhs.Pos()
+				}
 			}
 		})
-		return result
+		if latest == nil {
+			return unknown
+		}
+		return c.formatExpr(pkg, fn, latest, latestPos, depth+1)
 	}
 	return unknown
+}
+
+// packageVarInit returns the initializer of a package-level variable, or
+// nil when obj is not one or has none.
+func packageVarInit(pkg *packages.Package, obj *types.Var) ast.Expr {
+	if obj.Parent() != pkg.Types.Scope() {
+		return nil
+	}
+	for _, file := range pkg.Syntax {
+		for _, decl := range file.Decls {
+			gen, ok := decl.(*ast.GenDecl)
+			if !ok || gen.Tok != token.VAR {
+				continue
+			}
+			for _, spec := range gen.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok || len(vs.Names) != len(vs.Values) {
+					continue
+				}
+				for i, name := range vs.Names {
+					if pkg.TypesInfo.Defs[name] == obj {
+						return vs.Values[i]
+					}
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // funcUsesV2 judges a Marshal or Unmarshal value: a function literal or a
@@ -595,17 +659,22 @@ func isV1Codec(name string) bool {
 	return false
 }
 
-// findOverrides records packages that replace Huma's process-wide default
-// JSON format with a JSON v2 format. Any package importing one of these
-// (transitively) inherits the override through huma.DefaultConfig.
+// findOverrides records packages whose init functions replace Huma's
+// process-wide default JSON format with a JSON v2 format. Only init runs
+// unconditionally before any API is built, so assignments elsewhere are
+// not trusted. Any package importing an overriding package (transitively)
+// inherits the override through huma.DefaultConfig.
 func (c *jsonV2Checker) findOverrides() {
 	c.p.eachFunc(func(pkg *packages.Package, _ *ast.File, fn *ast.FuncDecl) {
+		if fn.Recv != nil || fn.Name.Name != "init" {
+			return
+		}
 		info := pkg.TypesInfo
-		jsonFormatOverridden := false
+		var jsonFormatOverridden token.Pos
 		assignments(fn.Body, func(lhs, rhs ast.Expr) {
 			if path, obj := selectorOf(info, lhs); path == humaPath && obj.Name() == "DefaultJSONFormat" {
-				if c.formatExpr(pkg, fn, rhs, 0) == yes {
-					jsonFormatOverridden = true
+				if c.formatExpr(pkg, fn, rhs, lhs.Pos(), 0) == yes {
+					jsonFormatOverridden = lhs.Pos()
 				}
 			}
 		})
@@ -621,11 +690,12 @@ func (c *jsonV2Checker) findOverrides() {
 			if key, ok := constString(info, idx.Index); !ok || key != "application/json" {
 				return
 			}
-			if c.formatExpr(pkg, fn, rhs, 0) == yes {
+			if c.formatExpr(pkg, fn, rhs, lhs.Pos(), 0) == yes {
 				c.overriding[pkg.Types] = true
 				return
 			}
-			if p, o := selectorOf(info, rhs); p == humaPath && o.Name() == "DefaultJSONFormat" && jsonFormatOverridden {
+			p, o := selectorOf(info, rhs)
+			if p == humaPath && o.Name() == "DefaultJSONFormat" && jsonFormatOverridden.IsValid() && jsonFormatOverridden < lhs.Pos() {
 				c.overriding[pkg.Types] = true
 			}
 		})
