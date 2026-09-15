@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	specJSONMessage    = "OpenAPI document is stored as JSON; store the generated Huma OpenAPI document as YAML"
-	specMissingMessage = "no OpenAPI YAML document is committed; generate the Huma OpenAPI document and commit it as YAML"
+	specJSONMessage    = "OpenAPI document is stored as JSON; commit the Huma OpenAPI document as YAML only (YAML is what agents and reviewers read, and a JSON copy drifts from it)"
+	specMissingMessage = "no OpenAPI YAML document is committed; generate the Huma OpenAPI document and commit it as YAML so agents and reviewers can read the contract"
 	generatorMissing   = "no supported OpenAPI client generator is configured (expected one of: " + supportedGeneratorList + ")"
 	maxScanBytes       = 4 << 20
 	maxSpecBytes       = 64 << 20
