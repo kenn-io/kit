@@ -20,6 +20,20 @@ func mapFS(files map[string]string) (fstest.MapFS, []string) {
 	return fsys, tracked
 }
 
+func specs(t *testing.T, fsys fstest.MapFS, tracked []string, hasAPI bool, goMod string) []Diagnostic {
+	t.Helper()
+	diags, err := checkSpecs(fsys, tracked, hasAPI, goMod)
+	require.NoError(t, err)
+	return diags
+}
+
+func generators(t *testing.T, fsys fstest.MapFS, tracked []string, hasAPI bool, goMod string) []Diagnostic {
+	t.Helper()
+	diags, err := checkGenerators(fsys, tracked, hasAPI, goMod)
+	require.NoError(t, err)
+	return diags
+}
+
 const yamlSpec = "openapi: 3.1.0\ninfo:\n  title: t\n"
 const jsonSpec = `{"openapi": "3.1.0", "info": {"title": "t"}}`
 
@@ -37,7 +51,7 @@ func TestCheckSpecs(t *testing.T) {
 			"node_modules/dep/openapi.json":    jsonSpec,
 			"testdata/fixture.json":            jsonSpec,
 		})
-		diags := checkSpecs(fsys, tracked, true, "go.mod")
+		diags := specs(t, fsys, tracked, true, "go.mod")
 		require.Len(t, diags, 1)
 		assert.Equal(t, Diagnostic{Path: "internal/client/openapi-3.0.json", Line: 1, Column: 1, Rule: RuleSpec, Message: specJSONMessage}, diags[0])
 	})
@@ -48,18 +62,18 @@ func TestCheckSpecs(t *testing.T) {
 			"go.mod":           "module m\n",
 			"api/openapi.yaml": "components:\n  schemas:\n    A:\n      type: object\ninfo:\n  title: t\nopenapi: 3.1.0\n",
 		})
-		assert.Empty(t, checkSpecs(fsys, tracked, true, "go.mod"))
+		assert.Empty(t, specs(t, fsys, tracked, true, "go.mod"))
 	})
 
 	t.Run("missing document reported at go.mod only with an API", func(t *testing.T) {
 		t.Parallel()
 		assert := assert.New(t)
 		fsys, tracked := mapFS(map[string]string{"go.mod": "module m\n"})
-		diags := checkSpecs(fsys, tracked, true, "go.mod")
+		diags := specs(t, fsys, tracked, true, "go.mod")
 		require.Len(t, diags, 1)
 		assert.Equal("go.mod", diags[0].Path)
 		assert.Equal(specMissingMessage, diags[0].Message)
-		assert.Empty(checkSpecs(fsys, tracked, false, "go.mod"))
+		assert.Empty(specs(t, fsys, tracked, false, "go.mod"))
 	})
 
 	t.Run("sibling module spec does not satisfy a nested module", func(t *testing.T) {
@@ -69,13 +83,36 @@ func TestCheckSpecs(t *testing.T) {
 			"apps/api/go.mod":         "module m\n",
 			"apps/other/openapi.yaml": yamlSpec,
 		})
-		diags := checkSpecs(fsys, tracked, true, "apps/api/go.mod")
+		diags := specs(t, fsys, tracked, true, "apps/api/go.mod")
 		require.Len(t, diags, 1)
 		assert.Equal("apps/api/go.mod", diags[0].Path)
 
 		fsys["apps/api/api/openapi.yaml"] = &fstest.MapFile{Data: []byte(yamlSpec)}
 		tracked = append(tracked, "apps/api/api/openapi.yaml")
-		assert.Empty(checkSpecs(fsys, tracked, true, "apps/api/go.mod"))
+		assert.Empty(specs(t, fsys, tracked, true, "apps/api/go.mod"))
+	})
+
+	t.Run("nested module spec does not satisfy the root module", func(t *testing.T) {
+		t.Parallel()
+		assert := assert.New(t)
+		fsys, tracked := mapFS(map[string]string{
+			"go.mod":                   "module m\n",
+			"tools/gen/go.mod":         "module m/tools/gen\n",
+			"tools/gen/openapi.yaml":   yamlSpec,
+			"testdata/nested/go.mod":   "module ignored\n",
+			"testdata/nested/api.yaml": yamlSpec,
+		})
+		diags := specs(t, fsys, tracked, true, "go.mod")
+		require.Len(t, diags, 1)
+		assert.Equal("go.mod", diags[0].Path)
+		assert.Empty(specs(t, fsys, tracked, true, "tools/gen/go.mod"))
+	})
+
+	t.Run("unreadable tracked file fails the run", func(t *testing.T) {
+		t.Parallel()
+		fsys, _ := mapFS(map[string]string{"go.mod": "module m\n"})
+		_, err := checkSpecs(fsys, []string{"go.mod", "api/openapi.yaml"}, true, "go.mod")
+		require.ErrorContains(t, err, "api/openapi.yaml")
 	})
 }
 
@@ -137,7 +174,7 @@ func TestCheckGenerators(t *testing.T) {
 				"web/package.json": `{"devDependencies": {"openapi-typescript": "7.13.0", "openapi-fetch": "0.17.0"}}`,
 			},
 			hasAPI:   true,
-			wantMsgs: []string{nonstandardGenerators[0].message, nonstandardGenerators[2].message, nonstandardGenerators[3].message, generatorMissing},
+			wantMsgs: []string{nonstandardGenerators[0].message, nonstandardGenerators[3].message, nonstandardGenerators[4].message, generatorMissing},
 		},
 		{
 			name:   "indirect requirement is not a choice",
@@ -148,7 +185,7 @@ func TestCheckGenerators(t *testing.T) {
 			name:     "indirect marker outside go.mod does not suppress",
 			files:    map[string]string{"go.mod": "module m\n\nrequire github.com/doordash-oss/oapi-codegen-dd/v3 v3.75.5\n", "scripts/gen.mjs": "run('openapi-typescript', spec); // indirect\n"},
 			hasAPI:   true,
-			wantMsgs: []string{nonstandardGenerators[2].message},
+			wantMsgs: []string{nonstandardGenerators[3].message},
 		},
 		{
 			name:   "longer names containing a generator name are not matched",
@@ -165,6 +202,35 @@ func TestCheckGenerators(t *testing.T) {
 			wantMsgs: []string{bannedGenerators[0].message, bannedGenerators[2].message},
 		},
 		{
+			name:   "generated file header from oapi-codegen-dd counts as the standard generator",
+			files:  map[string]string{"go.mod": "module m\n", "pkg/client/client.gen.go": "// Package client provides primitives to interact with the openapi HTTP API.\n//\n// Code generated by oapi-codegen. DO NOT EDIT.\npackage client\n"},
+			hasAPI: true,
+		},
+		{
+			name:     "generated file header from oapi-codegen v2 is reported at the file",
+			files:    map[string]string{"go.mod": "module m\n\nrequire github.com/doordash-oss/oapi-codegen-dd/v3 v3.75.5\n", "internal/api/gen.go": "// Package api provides primitives to interact with the openapi HTTP API.\n//\n// Code generated by github.com/oapi-codegen/oapi-codegen/v2 version v2.4.1 DO NOT EDIT.\npackage api\n"},
+			hasAPI:   true,
+			wantMsgs: []string{nonstandardGenerators[0].message},
+		},
+		{
+			name:     "generated file header from ogen is reported",
+			files:    map[string]string{"go.mod": "module m\n\nrequire github.com/doordash-oss/oapi-codegen-dd/v3 v3.75.5\n", "internal/api/oas_client_gen.go": "// Code generated by ogen, DO NOT EDIT.\n\npackage api\n"},
+			hasAPI:   true,
+			wantMsgs: []string{nonstandardGenerators[2].message},
+		},
+		{
+			name:     "generate directive inside a generated file is ignored",
+			files:    map[string]string{"go.mod": "module m\n", "pkg/x/x.gen.go": "// Code generated by sqlc. DO NOT EDIT.\n\npackage x\n\n//go:generate go run github.com/doordash-oss/oapi-codegen-dd/v3/cmd/oapi-codegen -config c.yaml spec.yaml\n"},
+			hasAPI:   true,
+			wantMsgs: []string{generatorMissing},
+		},
+		{
+			name:     "generate directive under a generated directory is ignored",
+			files:    map[string]string{"go.mod": "module m\n", "pkg/generated/x.go": "package generated\n\n//go:generate go run github.com/doordash-oss/oapi-codegen-dd/v3/cmd/oapi-codegen -config c.yaml spec.yaml\n"},
+			hasAPI:   true,
+			wantMsgs: []string{generatorMissing},
+		},
+		{
 			name:   "node_modules ignored",
 			files:  map[string]string{"go.mod": "module m\n\nrequire github.com/doordash-oss/oapi-codegen-dd/v3 v3.75.5\n", "web/node_modules/x/package.json": `{"name": "swagger-typescript-api"}`},
 			hasAPI: true,
@@ -174,7 +240,7 @@ func TestCheckGenerators(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			fsys, tracked := mapFS(tt.files)
-			diags := checkGenerators(fsys, tracked, tt.hasAPI, "go.mod")
+			diags := generators(t, fsys, tracked, tt.hasAPI, "go.mod")
 			var msgs []string
 			for _, d := range diags {
 				assert.Equal(t, RuleGenerator, d.Rule)
@@ -201,13 +267,19 @@ func TestCheckFrontend(t *testing.T) {
 			"  );\n" +
 			"// fetch('/api/v1/jobs') in a comment is ignored\n" +
 			"export const link = '/api/v1/jobs';\n" + // no call
-			"const later = axios.get('/api/v1/jobs');\n",
+			"const later = axios.get('/api/v1/jobs');\n" +
+			"/**\n" +
+			" * Example: fetch('/api/v1/queue')\n" + // block comment
+			" */\n" +
+			"const doc = 'call fetch(\"/api/v1/queue\") first'; // fetch('/api/v1/queue') trailing\n" + // string and trailing comment
+			"const real = fetch('/api/v1/queue'); /* fetch('/api/v1/ping') */\n",
 		"frontend/src/lib/api/generated/client.ts": "fetch('/api/v1/ping');\n",
 		"frontend/src/lib/api/client.test.ts":      "fetch('/api/v1/ping');\n",
 		"frontend/node_modules/x/index.js":         "fetch('/api/v1/ping');\n",
 		"frontend/src/App.svelte":                  "<script>\n  const r = fetch(\"/api/v1/jobs\");\n</script>\n",
 	})
-	diags := checkFrontend(fsys, tracked, routes)
+	diags, err := checkFrontend(fsys, tracked, routes)
+	require.NoError(t, err)
 	var got []string
 	for _, d := range diags {
 		assert.Equal(t, RuleFrontend, d.Rule)
@@ -218,7 +290,19 @@ func TestCheckFrontend(t *testing.T) {
 		"frontend/src/lib/api/client.ts:3:27: " + formatClientMessage("/api/v1/ping") + " (frontend)",
 		"frontend/src/lib/api/client.ts:8:5: " + formatClientMessage("/api/v1/accounts/{param}") + " (frontend)",
 		"frontend/src/lib/api/client.ts:12:25: " + formatClientMessage("/api/v1/jobs") + " (frontend)",
+		"frontend/src/lib/api/client.ts:17:20: " + formatClientMessage("/api/v1/queue") + " (frontend)",
 	}, got)
+}
+
+func TestMaskSource(t *testing.T) {
+	t.Parallel()
+	assert := assert.New(t)
+	src := "a('/x'); // c('/y')\n/* d('/z') */ e(`/${w}`)\nf(\"g('/h')\")"
+	code, calls := maskSource(src)
+	assert.Len(code, len(src))
+	assert.Len(calls, len(src))
+	assert.Equal("a('/x');           \n              e(`/${w}`)\nf(\"g('/h')\")", code)
+	assert.Equal("a('  ');           \n              e(`     `)\nf(\"       \")", calls)
 }
 
 func TestFirstArgumentEnd(t *testing.T) {

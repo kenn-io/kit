@@ -12,6 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/tools/go/packages"
+
+	gittest "go.kenn.io/kit/git/test"
 )
 
 // loadFixture loads GOPATH-style fixture packages from testdata/src.
@@ -86,28 +88,63 @@ func assertDiagnostics(t *testing.T, pkgs []*packages.Package, diags []Diagnosti
 	}
 }
 
-func goOnly(pkgs []*packages.Package) []Diagnostic {
-	return check(pkgs, fstest.MapFS{}, nil, "go.mod", []string{RuleSpec, RuleGenerator, RuleFrontend})
+func goOnly(t *testing.T, pkgs []*packages.Package) []Diagnostic {
+	t.Helper()
+	diags, err := check(pkgs, fstest.MapFS{}, nil, "go.mod", []string{RuleSpec, RuleGenerator, RuleFrontend})
+	require.NoError(t, err)
+	return diags
 }
 
 func TestJSONV2Rule(t *testing.T) {
 	t.Parallel()
-	for _, fixture := range []string{
-		"v2inline", "v2helper", "v2global", "v2wrapper", "v2mixed",
-		"v1default", "v1formats", "v1codec", "unknowncfg",
-	} {
+	for _, fixture := range []string{"v2inline", "v2global", "v1import"} {
 		t.Run(fixture, func(t *testing.T) {
 			t.Parallel()
 			pkgs := loadFixture(t, fixture+"/...")
-			assertDiagnostics(t, pkgs, goOnly(pkgs))
+			assertDiagnostics(t, pkgs, goOnly(t, pkgs))
 		})
 	}
+}
+
+func TestJSONV2MissingInstall(t *testing.T) {
+	t.Parallel()
+	pkgs := loadFixture(t, "nov2/...")
+	diags := goOnly(t, pkgs)
+	require.Len(t, diags, 1)
+	assert.Equal(t, Diagnostic{Path: "go.mod", Line: 1, Column: 1, Rule: RuleJSONV2, Message: jsonV2MissingMessage}, diags[0])
+}
+
+// TestRunUsesStagedGoSources stages a file with a v1 import, then removes the
+// import in the working tree only: the diagnostic must still be reported.
+func TestRunUsesStagedGoSources(t *testing.T) {
+	t.Parallel()
+	repo := gittest.NewRepo(t, gittest.Options{ResolvePath: true})
+	repo.WriteFile("go.mod", "module m\n\ngo "+goVersion(t)+"\n")
+	repo.WriteFile("m.go", "package m\n\nimport \"encoding/json\"\n\nvar _ = json.Marshal\n")
+	repo.Run("add", "-A")
+	repo.WriteFile("m.go", "package m\n")
+
+	diags, err := Run(t.Context(), Options{Dir: repo.Root})
+	require.NoError(t, err)
+	require.Len(t, diags, 1)
+	assert.Equal(t, Diagnostic{Path: "m.go", Line: 3, Column: 8, Rule: RuleJSONV2, Message: jsonV1ImportMessage}, diags[0])
+}
+
+// goVersion returns the go directive of this module so fixture modules load
+// with the same toolchain.
+func goVersion(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile("../../go.mod")
+	require.NoError(t, err)
+	m := regexp.MustCompile(`(?m)^go (\S+)`).FindStringSubmatch(string(data))
+	require.NotNil(t, m)
+	return m[1]
 }
 
 func TestClientRule(t *testing.T) {
 	t.Parallel()
 	pkgs := loadFixture(t, "routes/...")
-	assertDiagnostics(t, pkgs, goOnly(pkgs))
+	assertDiagnostics(t, pkgs, goOnly(t, pkgs))
 }
 
 func TestCollectRoutes(t *testing.T) {
@@ -118,7 +155,14 @@ func TestCollectRoutes(t *testing.T) {
 	assert.Equal([]string{"/api/v1"}, routes.adapterPrefixes)
 	assert.Equal([]string{"/v2"}, routes.groupPrefixes)
 	assert.ElementsMatch([]string{"/ping", "/accounts/{id}", "/jobs", "/jobs/{id}/review", "/queue", "/raw/{id}", "/grouped"}, routes.paths)
+	assert.Equal(receiverGroup, routes.kinds["/grouped"])
+	assert.Equal(receiverAPI, routes.kinds["/ping"])
+	assert.Equal(receiverAPI, routes.kinds["/raw/{id}"], "the helper is called with a plain API")
 	assert.Contains(routes.concrete, "/api/v1/v2/grouped")
+	assert.NotContains(routes.concrete, "/api/v1/grouped", "a grouped path is not mounted bare")
+	assert.NotContains(routes.concrete, "/api/v1/v2/ping", "an ungrouped path is not mounted under the group")
+	assert.Contains(routes.concrete, "/api/v1/raw/{id}")
+	assert.NotContains(routes.concrete, "/api/v1/v2/raw/{id}")
 	assert.NotContains(routes.concrete, "/v2/api/v1/grouped")
 	assert.NotContains(routes.concrete, "/grouped")
 }
@@ -136,7 +180,7 @@ func TestConstructionSitesSkipTestsAndGenerated(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 1, skipped, "generated client file is skipped; the _test.go file is not loaded")
-	sites := prog.constructionSites(newJSONV2Checker(prog))
+	sites := prog.constructionSites()
 	require.Len(t, sites, 1)
 	assert.IsType(t, &ast.CallExpr{}, sites[0].call)
 }

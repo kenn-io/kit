@@ -77,6 +77,30 @@ func trackedFiles(ctx context.Context, root string) ([]string, error) {
 	return files, nil
 }
 
+// unstagedChanges lists tracked files whose working-tree copy differs from
+// the index, including files deleted from the working tree.
+func unstagedChanges(ctx context.Context, root string) ([]string, error) {
+	cmd := gitCommand(ctx, root, "diff-files", "--name-only", "-z")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("git diff-files: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	var files []string
+	for name := range bytes.SplitSeq(out, []byte{0}) {
+		if len(name) == 0 {
+			continue
+		}
+		files = append(files, string(name))
+	}
+	slices.Sort(files)
+	return files, nil
+}
+
 // walkFiles enumerates a directory tree for the non-repository fallback.
 func walkFiles(root string) ([]string, error) {
 	var files []string
@@ -165,6 +189,8 @@ func (x *indexFS) Open(name string) (fs.File, error) {
 		x.err = fmt.Errorf("git cat-file: bad size in %q", strings.TrimSpace(header))
 		return nil, x.err
 	}
+	// Whole blobs are materialized: the rules read entire files, and the
+	// batch protocol has no way to skip a body.
 	data := make([]byte, size+1) // trailing newline
 	if _, err := io.ReadFull(x.stdout, data); err != nil {
 		x.err = fmt.Errorf("git cat-file body: %w", err)

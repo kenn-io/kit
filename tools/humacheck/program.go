@@ -197,28 +197,6 @@ func selectorOf(info *types.Info, expr ast.Expr) (pkgPath string, obj types.Obje
 	return pkgPathOf(obj), obj
 }
 
-// assignments yields every (lhs, rhs) pair from assignment statements and
-// value specs in body, including multi-value forms where counts line up.
-func assignments(body ast.Node, visit func(lhs, rhs ast.Expr)) {
-	ast.Inspect(body, func(n ast.Node) bool {
-		switch node := n.(type) {
-		case *ast.AssignStmt:
-			if len(node.Lhs) == len(node.Rhs) {
-				for i := range node.Lhs {
-					visit(node.Lhs[i], node.Rhs[i])
-				}
-			}
-		case *ast.ValueSpec:
-			if len(node.Names) == len(node.Values) {
-				for i := range node.Names {
-					visit(node.Names[i], node.Values[i])
-				}
-			}
-		}
-		return true
-	})
-}
-
 // paramObjects returns the parameter variables of fn in declaration order.
 func paramObjects(info *types.Info, fn *ast.FuncDecl) []*types.Var {
 	var params []*types.Var
@@ -236,26 +214,6 @@ func paramObjects(info *types.Info, fn *ast.FuncDecl) []*types.Var {
 		}
 	}
 	return params
-}
-
-// resultObjects returns the named result variables of fn, nil entries for
-// unnamed results.
-func resultObjects(info *types.Info, fn *ast.FuncDecl) []*types.Var {
-	if fn.Type.Results == nil {
-		return nil
-	}
-	var results []*types.Var
-	for _, field := range fn.Type.Results.List {
-		if len(field.Names) == 0 {
-			results = append(results, nil)
-			continue
-		}
-		for _, name := range field.Names {
-			v, _ := info.Defs[name].(*types.Var)
-			results = append(results, v)
-		}
-	}
-	return results
 }
 
 // stringParamIndex maps each string-typed parameter of fn to its index.

@@ -16,27 +16,46 @@ type routeSet struct {
 	groupPrefixes   []string // prefixes given to huma.NewGroup
 	paths           []string // registered operation paths
 	concrete        []string // every reachable prefix + path
+	// kinds records the receiver each path was registered on; a path seen
+	// on more than one kind of receiver is receiverUnknown.
+	kinds map[string]receiverKind
 }
+
+// receiverKind classifies the API value an operation was registered on.
+type receiverKind int
+
+const (
+	receiverUnknown receiverKind = iota // not determinable; composed both ways
+	receiverAPI                         // a plain API: adapter prefix + path
+	receiverGroup                       // a *huma.Group: adapter prefix + group prefix + path
+)
 
 var paramPattern = regexp.MustCompile(`\{[^/}]*\}`)
 
 // collectRoutes gathers operation paths from huma.Operation literals, the
 // huma.Get/Post/... helpers, and module helpers whose string parameter
 // becomes an operation path, plus the mount prefixes of adapters and
-// groups. Routes are composed as adapter prefix + path and adapter prefix
-// + group prefix + path. The checker does not track which API each route
-// was registered on, so prefixes of sibling APIs can combine with each
-// other's paths; that only matters when a literal happens to spell such a
-// combination.
+// groups. A path registered on a *huma.Group composes as adapter prefix +
+// group prefix + path; a path registered on a plain API composes as adapter
+// prefix + path; a path whose receiver cannot be determined (a helper's API
+// parameter, a standalone Operation literal) composes both ways. The
+// checker does not track which group or adapter a route belongs to, so with
+// several groups or adapters their prefixes can still combine with each
+// other's paths; that only matters when a literal spells such a combination.
 func collectRoutes(p *program) *routeSet {
-	rs := &routeSet{}
+	rs := &routeSet{kinds: map[string]receiverKind{}}
 	registrars := p.registrars()
-	seenPath := map[string]bool{}
-	addPath := func(path string) {
-		if path == "" || !strings.HasPrefix(path, "/") || seenPath[path] {
+	addPath := func(path string, kind receiverKind) {
+		if path == "" || !strings.HasPrefix(path, "/") {
 			return
 		}
-		seenPath[path] = true
+		if seen, ok := rs.kinds[path]; ok {
+			if seen != kind {
+				rs.kinds[path] = receiverUnknown
+			}
+			return
+		}
+		rs.kinds[path] = kind
 		rs.paths = append(rs.paths, path)
 	}
 	addUnique := func(list *[]string, value string) {
@@ -44,18 +63,50 @@ func collectRoutes(p *program) *routeSet {
 			*list = append(*list, value)
 		}
 	}
+	handled := map[ast.Node]bool{}
 
 	p.eachFunc(func(pkg *packages.Package, _ *ast.File, fn *ast.FuncDecl) {
 		info := pkg.TypesInfo
+		params := paramObjects(info, fn)
+		// pathsIn adds every route spelled inside expr: Operation literal
+		// paths and constant arguments at registrar path positions.
+		pathsIn := func(expr ast.Expr, kind receiverKind) {
+			ast.Inspect(expr, func(n ast.Node) bool {
+				switch node := n.(type) {
+				case *ast.CompositeLit:
+					if isHumaNamed(info.TypeOf(node), "Operation") {
+						handled[node] = true
+						if value := operationPathValue(node); value != nil {
+							if path, ok := constString(info, value); ok {
+								addPath(path, kind)
+							}
+						}
+					}
+				case *ast.CallExpr:
+					callee := calleeFunc(info, node)
+					if callee == nil {
+						return true
+					}
+					for _, idx := range pathArgIndexes(callee, registrars) {
+						handled[node] = true
+						if idx < len(node.Args) {
+							if route, ok := constString(info, node.Args[idx]); ok {
+								addPath(route, kind)
+							}
+						}
+					}
+				}
+				return true
+			})
+		}
 		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			if handled[n] {
+				return true
+			}
 			switch node := n.(type) {
 			case *ast.CompositeLit:
 				if isHumaNamed(info.TypeOf(node), "Operation") {
-					if value := operationPathValue(node); value != nil {
-						if path, ok := constString(info, value); ok {
-							addPath(path)
-						}
-					}
+					pathsIn(node, receiverUnknown)
 				}
 			case *ast.CallExpr:
 				callee := calleeFunc(info, node)
@@ -80,11 +131,16 @@ func collectRoutes(p *program) *routeSet {
 						}
 					}
 					addUnique(&rs.adapterPrefixes, prefix)
-				default:
+				case (path == humaPath && (callee.Name() == "Register" || isHumaMethodHelper(callee.Name()))) || len(pathArgIndexes(callee, registrars)) > 0:
+					kind := receiverKindOf(info, node, params)
+					handled[node] = true
+					for _, arg := range node.Args {
+						pathsIn(arg, kind)
+					}
 					for _, idx := range pathArgIndexes(callee, registrars) {
 						if idx < len(node.Args) {
 							if route, ok := constString(info, node.Args[idx]); ok {
-								addPath(route)
+								addPath(route, kind)
 							}
 						}
 					}
@@ -99,13 +155,40 @@ func collectRoutes(p *program) *routeSet {
 	}
 	for _, adapter := range rs.adapterPrefixes {
 		for _, path := range rs.paths {
-			addUnique(&rs.concrete, adapter+path)
-			for _, group := range rs.groupPrefixes {
-				addUnique(&rs.concrete, adapter+group+path)
+			kind := rs.kinds[path]
+			if kind != receiverGroup {
+				addUnique(&rs.concrete, adapter+path)
+			}
+			if kind != receiverAPI {
+				for _, group := range rs.groupPrefixes {
+					addUnique(&rs.concrete, adapter+group+path)
+				}
 			}
 		}
 	}
 	return rs
+}
+
+// receiverKindOf classifies the API argument of a registration call: the
+// first argument typed as a Huma API or Group. A *huma.Group is a group
+// receiver; a value that came in as a parameter of the enclosing function
+// could be either; anything else is a plain API.
+func receiverKindOf(info *types.Info, call *ast.CallExpr, params []*types.Var) receiverKind {
+	for _, arg := range call.Args {
+		t := info.TypeOf(arg)
+		switch {
+		case isHumaNamed(t, "Group"):
+			return receiverGroup
+		case isHumaNamed(t, "API"):
+			if ident := rootIdent(arg); ident != nil {
+				if v, ok := info.Uses[ident].(*types.Var); ok && slices.Contains(params, v) {
+					return receiverUnknown
+				}
+			}
+			return receiverAPI
+		}
+	}
+	return receiverUnknown
 }
 
 // constructsAPI reports whether fn returns a Huma API or Adapter, which is

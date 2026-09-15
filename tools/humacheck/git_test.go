@@ -32,11 +32,15 @@ func TestIndexFSReadsStagedContent(t *testing.T) {
 	require.NoError(err)
 	assert.Equal([]string{"api/openapi.yaml", "go.mod"}, tracked)
 
+	changed, err := unstagedChanges(ctx, root)
+	require.NoError(err)
+	assert.Equal([]string{"api/openapi.yaml"}, changed)
+
 	index, err := newIndexFS(ctx, root)
 	require.NoError(err)
 	t.Cleanup(func() { _ = index.Close() })
 
-	content, err := readHead(index, "api/openapi.yaml", maxSpecBytes)
+	content, err := fs.ReadFile(index, "api/openapi.yaml")
 	require.NoError(err)
 	assert.Equal("openapi: 3.1.0\n", string(content))
 

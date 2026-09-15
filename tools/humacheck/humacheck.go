@@ -12,6 +12,7 @@ import (
 	"go/token"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -74,6 +75,13 @@ func (d Diagnostic) Compare(other Diagnostic) int {
 
 // Run loads the packages named by opts and returns every finding sorted by
 // position. Paths are relative to opts.Dir when possible.
+//
+// Inside a Git repository every rule judges the index: repository files are
+// read from it, and tracked Go sources whose working-tree copy differs from
+// the index are loaded from the index through a go/packages overlay. Files
+// that are not tracked at all still come from the working tree, and a file
+// removed from the index but left on disk is still loaded; both are outside
+// what an overlay can express.
 func Run(ctx context.Context, opts Options) ([]Diagnostic, error) {
 	dir := opts.Dir
 	if dir == "" {
@@ -105,6 +113,33 @@ func Run(ctx context.Context, opts Options) ([]Diagnostic, error) {
 	if len(opts.BuildTags) > 0 {
 		cfg.BuildFlags = []string{"-tags=" + strings.Join(opts.BuildTags, ",")}
 	}
+
+	root, inGit, err := gitTopLevel(ctx, dir)
+	if err != nil {
+		return nil, err
+	}
+	var repo fs.FS
+	var tracked []string
+	if inGit {
+		if resolved, err := filepath.EvalSymlinks(root); err == nil {
+			root = resolved
+		}
+		tracked, err = trackedFiles(ctx, root)
+		if err != nil {
+			return nil, err
+		}
+		index, err := newIndexFS(ctx, root)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = index.Close() }()
+		repo = index
+		cfg.Overlay, err = stagedOverlay(ctx, root, index)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	pkgs, err := packages.Load(cfg, patterns...)
 	if err != nil {
 		return nil, fmt.Errorf("load packages: %w", err)
@@ -112,20 +147,26 @@ func Run(ctx context.Context, opts Options) ([]Diagnostic, error) {
 	if err := packageErrors(pkgs); err != nil {
 		return nil, err
 	}
+	moduleDir := mainModuleDir(dir, pkgs)
+	if !inGit {
+		root = moduleDir
+		tracked, err = walkFiles(root)
+		if err != nil {
+			return nil, err
+		}
+		repo = os.DirFS(root)
+	}
+	goMod := "go.mod"
+	if rel, err := filepath.Rel(root, filepath.Join(moduleDir, "go.mod")); err == nil && !strings.HasPrefix(rel, "..") {
+		goMod = filepath.ToSlash(rel)
+	}
 
-	layout, err := resolveLayout(ctx, dir, pkgs)
+	diags, err := check(pkgs, repo, tracked, goMod, opts.Disabled)
 	if err != nil {
 		return nil, err
 	}
-	repo, tracked, closeRepo, err := layout.open(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer closeRepo()
-
-	diags := check(pkgs, repo, tracked, layout.goMod, opts.Disabled)
 	for i := range diags {
-		diags[i].Path = displayPath(dir, layout.root, diags[i].Path)
+		diags[i].Path = displayPath(dir, root, diags[i].Path)
 	}
 	slices.SortFunc(diags, Diagnostic.Compare)
 	return diags, nil
@@ -139,31 +180,41 @@ const loadMode = packages.NeedName | packages.NeedFiles | packages.NeedCompiledG
 // read tracked files (repo-root-relative, forward slashes) through repo.
 // goModPath is the repo-relative go.mod that anchors module-wide findings and
 // scopes the spec-presence rule.
-func check(pkgs []*packages.Package, repo fs.FS, tracked []string, goModPath string, disabled []string) []Diagnostic {
+func check(pkgs []*packages.Package, repo fs.FS, tracked []string, goModPath string, disabled []string) ([]Diagnostic, error) {
 	enabled := func(rule string) bool { return !slices.Contains(disabled, rule) }
 	prog := newProgram(pkgs)
-	jsonv2 := newJSONV2Checker(prog)
 
 	var diags []Diagnostic
-	sites := prog.constructionSites(jsonv2)
+	hasAPI := len(prog.constructionSites()) > 0
 	if enabled(RuleJSONV2) {
-		diags = append(diags, jsonv2.check(sites)...)
+		diags = append(diags, checkJSONV2(prog, hasAPI, goModPath)...)
 	}
 	routes := collectRoutes(prog)
 	if enabled(RuleClient) {
 		diags = append(diags, checkClients(prog, routes)...)
 	}
-	hasAPI := len(sites) > 0
 	if enabled(RuleSpec) {
-		diags = append(diags, checkSpecs(repo, tracked, hasAPI, goModPath)...)
+		found, err := checkSpecs(repo, tracked, hasAPI, goModPath)
+		if err != nil {
+			return nil, err
+		}
+		diags = append(diags, found...)
 	}
 	if enabled(RuleGenerator) {
-		diags = append(diags, checkGenerators(repo, tracked, hasAPI, goModPath)...)
+		found, err := checkGenerators(repo, tracked, hasAPI, goModPath)
+		if err != nil {
+			return nil, err
+		}
+		diags = append(diags, found...)
 	}
 	if enabled(RuleFrontend) {
-		diags = append(diags, checkFrontend(repo, tracked, routes)...)
+		found, err := checkFrontend(repo, tracked, routes)
+		if err != nil {
+			return nil, err
+		}
+		diags = append(diags, found...)
 	}
-	return diags
+	return diags, nil
 }
 
 func packageErrors(pkgs []*packages.Package) error {
@@ -182,15 +233,9 @@ func packageErrors(pkgs []*packages.Package) error {
 	return fmt.Errorf("packages failed to load: %w", errors.Join(errs...))
 }
 
-// layout locates the repository and module the checked packages belong to.
-type layout struct {
-	root      string // repository root, or the module directory outside Git
-	moduleDir string
-	goMod     string // repo-relative go.mod path
-	inGit     bool
-}
-
-func resolveLayout(ctx context.Context, dir string, pkgs []*packages.Package) (layout, error) {
+// mainModuleDir returns the directory of the main module the loaded
+// packages belong to, falling back to dir.
+func mainModuleDir(dir string, pkgs []*packages.Package) string {
 	moduleDir := dir
 	for _, pkg := range pkgs {
 		if pkg.Module != nil && pkg.Module.Main && pkg.Module.Dir != "" {
@@ -201,43 +246,31 @@ func resolveLayout(ctx context.Context, dir string, pkgs []*packages.Package) (l
 	if resolved, err := filepath.EvalSymlinks(moduleDir); err == nil {
 		moduleDir = resolved
 	}
-	root, inGit, err := gitTopLevel(ctx, moduleDir)
-	if err != nil {
-		return layout{}, err
-	}
-	if !inGit {
-		root = moduleDir
-	}
-	if resolved, err := filepath.EvalSymlinks(root); err == nil {
-		root = resolved
-	}
-	l := layout{root: root, moduleDir: moduleDir, inGit: inGit, goMod: "go.mod"}
-	if rel, err := filepath.Rel(root, filepath.Join(moduleDir, "go.mod")); err == nil && !strings.HasPrefix(rel, "..") {
-		l.goMod = filepath.ToSlash(rel)
-	}
-	return l, nil
+	return moduleDir
 }
 
-// open returns the repository contents and file list. Inside Git both come
-// from the index, so a pre-commit run judges what will be committed; outside
-// Git the directory tree is used.
-func (l layout) open(ctx context.Context) (fs.FS, []string, func(), error) {
-	if !l.inGit {
-		files, err := walkFiles(l.root)
-		if err != nil {
-			return nil, nil, nil, err
+// stagedOverlay maps every tracked Go source or module file whose
+// working-tree copy differs from the index to its index content, so
+// go/packages sees what will be committed.
+func stagedOverlay(ctx context.Context, root string, index fs.FS) (map[string][]byte, error) {
+	changed, err := unstagedChanges(ctx, root)
+	if err != nil {
+		return nil, err
+	}
+	overlay := map[string][]byte{}
+	for _, name := range changed {
+		switch path.Ext(name) {
+		case ".go", ".mod", ".sum", ".work":
+		default:
+			continue
 		}
-		return os.DirFS(l.root), files, func() {}, nil
+		content, err := fs.ReadFile(index, name)
+		if err != nil {
+			return nil, fmt.Errorf("read staged %s: %w", name, err)
+		}
+		overlay[filepath.Join(root, filepath.FromSlash(name))] = content
 	}
-	tracked, err := trackedFiles(ctx, l.root)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	index, err := newIndexFS(ctx, l.root)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	return index, tracked, func() { _ = index.Close() }, nil
+	return overlay, nil
 }
 
 // displayPath makes p relative to dir. Repo-relative paths (no separator
