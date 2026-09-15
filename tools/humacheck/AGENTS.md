@@ -32,7 +32,14 @@ enforces the shared Huma contract across kenn-io Go modules:
   when they flow into request-building code.
 - `frontend`: the same route match over `fetch`-style calls in browser sources.
 
-`cmd/huma-check` only wraps `Run` for CLI use.
+`cmd/huma-check` wraps `Run` for CLI use. Fixing is on by default
+(`-fix=false` turns it off): every production file with an `encoding/json`
+import is rewritten to `encoding/json/v2`, with `NewEncoder(w).Encode(v)`,
+`NewDecoder(r).Decode(v)`, and `MarshalIndent` mapped to their v2 forms.
+The swap is deliberately blind: the user chose compile errors that an agent
+then fixes over leaving files on v1. Rewritten files are still reported (as
+fixed) so a hook run exits 1 and the files get restaged. The other rules
+have no mechanical fix and stay report-only.
 
 ## Analyzer Rules
 

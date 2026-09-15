@@ -2,6 +2,8 @@ package humacheck
 
 import (
 	"go/ast"
+	"go/parser"
+	"go/token"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -163,6 +165,95 @@ func TestRunUsesStagedGoSources(t *testing.T) {
 		{Path: "m.go", Line: 3, Column: 8, Rule: RuleJSONV2, Message: jsonV1ImportMessage},
 		{Path: "m_plan9.go", Line: 5, Column: 8, Rule: RuleJSONV2, Message: jsonV1ImportMessage},
 	}, diags)
+}
+
+func TestRewriteJSONV1(t *testing.T) {
+	t.Parallel()
+	src := `package m
+
+import (
+	"encoding/json"
+	"io"
+	"net/http"
+)
+
+func write(w http.ResponseWriter, v any) error { return json.NewEncoder(w).Encode(v) }
+
+func read(r io.Reader, v any) error { return json.NewDecoder(r).Decode(v) }
+
+func pretty(v any) ([]byte, error) { return json.MarshalIndent(v, "", "  ") }
+
+func prefixed(v any) ([]byte, error) { return json.MarshalIndent(v, "> ", "\t") }
+
+func plain(v any) ([]byte, error) { return json.Marshal(v) }
+
+var raw json.RawMessage // no v2 equivalent; left for the compiler
+`
+	want := `package m
+
+import (
+	"encoding/json/jsontext"
+	"encoding/json/v2"
+	"io"
+	"net/http"
+)
+
+func write(w http.ResponseWriter, v any) error { return json.MarshalWrite(w, v) }
+
+func read(r io.Reader, v any) error { return json.UnmarshalRead(r, v) }
+
+func pretty(v any) ([]byte, error) { return json.Marshal(v, jsontext.WithIndent("  ")) }
+
+func prefixed(v any) ([]byte, error) {
+	return json.Marshal(v, jsontext.WithIndent("\t"), jsontext.WithIndentPrefix("> "))
+}
+
+func plain(v any) ([]byte, error) { return json.Marshal(v) }
+
+var raw json.RawMessage // no v2 equivalent; left for the compiler
+`
+	assert := assert.New(t)
+	require := require.New(t)
+	out, changed, err := rewriteJSONV1("m.go", []byte(src))
+	require.NoError(err)
+	require.True(changed)
+	assert.Equal([]byte(want), out)
+
+	_, changed, err = rewriteJSONV1("v2.go", []byte("package m\n\nimport \"encoding/json/v2\"\n\nvar _ = json.Marshal\n"))
+	require.NoError(err)
+	assert.False(changed, "a file already on v2 is untouched")
+}
+
+// TestRunFixesJSONV1Imports: with Fix on, the working-tree file is rewritten
+// and reported as fixed; the run still returns the finding so a hook fails
+// and the user restages the file.
+func TestRunFixesJSONV1Imports(t *testing.T) {
+	t.Parallel()
+	assert := assert.New(t)
+	require := require.New(t)
+	repo := gittest.NewRepo(t, gittest.Options{ResolvePath: true})
+	repo.WriteFile("go.mod", "module m\n\ngo "+goVersion(t)+"\n")
+	repo.WriteFile("m.go", "package m\n\nimport \"encoding/json\"\n\nvar _ = json.Marshal\n")
+	repo.Run("add", "-A")
+
+	diags, err := Run(t.Context(), Options{Dir: repo.Root, Fix: true})
+	require.NoError(err)
+	require.Len(diags, 1)
+	assert.Equal(Diagnostic{Path: "m.go", Line: 3, Column: 8, Rule: RuleJSONV2, Message: jsonV1FixedMessage}, diags[0])
+	content, err := os.ReadFile(filepath.Join(repo.Root, "m.go"))
+	require.NoError(err)
+	rewritten, err := parser.ParseFile(token.NewFileSet(), "m.go", content, parser.ImportsOnly)
+	require.NoError(err)
+	require.Len(rewritten.Imports, 1)
+	assert.Equal("encoding/json/v2", importPath(rewritten.Imports[0]))
+
+	// The rewritten file is not staged yet, so a second run judges the old
+	// index content; the working tree is already on v2, so nothing is
+	// rewritten and the import finding is reported as is.
+	diags, err = Run(t.Context(), Options{Dir: repo.Root, Fix: true})
+	require.NoError(err)
+	require.Len(diags, 1)
+	assert.Equal(Diagnostic{Path: "m.go", Line: 3, Column: 8, Rule: RuleJSONV2, Message: jsonV1ImportMessage}, diags[0])
 }
 
 // TestRunFailsOnUnparsableTrackedGoFile: a tracked production file the

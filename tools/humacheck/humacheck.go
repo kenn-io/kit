@@ -43,6 +43,12 @@ type Options struct {
 	BuildTags []string
 	// Disabled lists rule names that must not run.
 	Disabled []string
+	// Fix rewrites files in the working tree where a finding has a
+	// mechanical fix: today, encoding/json (v1) imports become
+	// encoding/json/v2 together with the call sites that map one-to-one.
+	// Rewritten files are still reported (as fixed) so a hook run exits
+	// non-zero and the user restages them.
+	Fix bool
 }
 
 // Diagnostic is one finding.
@@ -165,6 +171,12 @@ func Run(ctx context.Context, opts Options) ([]Diagnostic, error) {
 	if err != nil {
 		return nil, err
 	}
+	if opts.Fix {
+		diags, err = applyJSONFixes(root, diags)
+		if err != nil {
+			return nil, err
+		}
+	}
 	for i := range diags {
 		diags[i].Path = displayPath(dir, root, diags[i].Path)
 	}
@@ -275,6 +287,12 @@ func stagedOverlay(ctx context.Context, root string, index fs.FS) (map[string][]
 		overlay[filepath.Join(root, filepath.FromSlash(name))] = content
 	}
 	return overlay, nil
+}
+
+// joinRepoPath turns a repo-relative, forward-slash path into an absolute
+// working-tree path.
+func joinRepoPath(root, name string) string {
+	return filepath.Join(root, filepath.FromSlash(name))
 }
 
 // displayPath makes p relative to dir. Repo-relative paths (no separator

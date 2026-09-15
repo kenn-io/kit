@@ -22,10 +22,12 @@ func run(args []string) int {
 	flags.SetOutput(os.Stderr)
 	tags := flags.String("tags", "", "comma-separated build tags")
 	disable := flags.String("disable", "", "comma-separated rules to skip ("+strings.Join(humacheck.Rules, ", ")+")")
+	fix := flags.Bool("fix", true, "rewrite encoding/json (v1) imports to encoding/json/v2 in place; remaining compile errors are left for a manual pass")
 	flags.Usage = func() {
 		fmt.Fprintf(os.Stderr, "usage: huma-check [flags] [packages]\n\n")
 		fmt.Fprintf(os.Stderr, "Checks that Huma APIs use encoding/json/v2, commit their OpenAPI document as YAML,\n")
-		fmt.Fprintf(os.Stderr, "use a supported client generator, and never hand-roll requests to their own routes.\n\n")
+		fmt.Fprintf(os.Stderr, "use a supported client generator, and never hand-roll requests to their own routes.\n")
+		fmt.Fprintf(os.Stderr, "Findings with a mechanical fix are rewritten in place unless -fix=false; the run still exits 1 so the files get restaged.\n\n")
 		flags.PrintDefaults()
 	}
 	if err := flags.Parse(args); err != nil {
@@ -38,7 +40,7 @@ func run(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	opts := humacheck.Options{Patterns: flags.Args()}
+	opts := humacheck.Options{Patterns: flags.Args(), Fix: *fix}
 	if *tags != "" {
 		opts.BuildTags = strings.Split(*tags, ",")
 	}
