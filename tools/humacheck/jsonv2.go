@@ -194,13 +194,16 @@ func (f *formatFinder) visitInstall(pkg *packages.Package, n ast.Node, found *bo
 		if len(node.Lhs) != len(node.Rhs) {
 			return true
 		}
+		// Go evaluates every right-hand side before any write, so the
+		// override state changes only after the whole statement.
+		overridden := f.defaultOverridden
 		for i := range node.Lhs {
 			lhs, rhs := node.Lhs[i], node.Rhs[i]
 			if isDefault, ok := installTarget(info, lhs); ok {
 				if isDefault {
 					// The latest assignment in walk order decides; a later
 					// v1 or unknown value clears an earlier override.
-					f.defaultOverridden = f.formatExpr(pkg, rhs, 0) == yes
+					overridden = f.formatExpr(pkg, rhs, 0) == yes
 				} else if f.formatExpr(pkg, rhs, 0) == yes {
 					*found = true
 				}
@@ -210,6 +213,7 @@ func (f *formatFinder) visitInstall(pkg *packages.Package, n ast.Node, found *bo
 				*found = true
 			}
 		}
+		f.defaultOverridden = overridden
 	case *ast.CompositeLit:
 		if !isHumaNamed(info.TypeOf(node), "Config") {
 			return true

@@ -24,8 +24,11 @@ func New() huma.API {
 	return humago.New(http.NewServeMux(), huma.DefaultConfig("unused", "1"))
 }
 
-// An index write into a map that never reaches a Config is not an install
-// either.
+// An index write of a v2 format into a map that never reaches a Config is
+// not an install either.
 func stash() {
-	spare["application/json"] = spare["application/json"]
+	spare["application/json"] = huma.Format{
+		Marshal:   func(w io.Writer, v any) error { return jsonv2.MarshalWrite(w, v) },
+		Unmarshal: func(data []byte, v any) error { return jsonv2.Unmarshal(data, v) },
+	}
 }

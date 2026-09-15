@@ -172,10 +172,7 @@ func Run(ctx context.Context, opts Options) ([]Diagnostic, error) {
 		return nil, err
 	}
 	if opts.Fix {
-		diags, err = applyJSONFixes(root, diags)
-		if err != nil {
-			return nil, err
-		}
+		diags = applyJSONFixes(root, diags)
 	}
 	for i := range diags {
 		diags[i].Path = displayPath(dir, root, diags[i].Path)

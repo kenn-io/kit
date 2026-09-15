@@ -8,6 +8,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 
@@ -63,15 +64,16 @@ func rewriteJSONV1(filename string, src []byte) (out []byte, changed bool, err e
 		if sel, ok := call.Fun.(*ast.SelectorExpr); ok && len(call.Args) == 1 {
 			inner, ok := ast.Unparen(sel.X).(*ast.CallExpr)
 			if ok && len(inner.Args) == 1 {
+				pkgIdent := func() ast.Expr { return ast.Unparen(inner.Fun).(*ast.SelectorExpr).X }
 				switch {
 				case sel.Sel.Name == "Encode" && isJSON(inner.Fun, "NewEncoder"):
 					c.Replace(&ast.CallExpr{
-						Fun:  &ast.SelectorExpr{X: inner.Fun.(*ast.SelectorExpr).X, Sel: ast.NewIdent("MarshalWrite")},
+						Fun:  &ast.SelectorExpr{X: pkgIdent(), Sel: ast.NewIdent("MarshalWrite")},
 						Args: []ast.Expr{inner.Args[0], call.Args[0]},
 					})
 				case sel.Sel.Name == "Decode" && isJSON(inner.Fun, "NewDecoder"):
 					c.Replace(&ast.CallExpr{
-						Fun:  &ast.SelectorExpr{X: inner.Fun.(*ast.SelectorExpr).X, Sel: ast.NewIdent("UnmarshalRead")},
+						Fun:  &ast.SelectorExpr{X: pkgIdent(), Sel: ast.NewIdent("UnmarshalRead")},
 						Args: []ast.Expr{inner.Args[0], call.Args[0]},
 					})
 				}
@@ -92,7 +94,7 @@ func rewriteJSONV1(filename string, src []byte) (out []byte, changed bool, err e
 				})
 			}
 			c.Replace(&ast.CallExpr{
-				Fun:  &ast.SelectorExpr{X: call.Fun.(*ast.SelectorExpr).X, Sel: ast.NewIdent("Marshal")},
+				Fun:  &ast.SelectorExpr{X: ast.Unparen(call.Fun).(*ast.SelectorExpr).X, Sel: ast.NewIdent("Marshal")},
 				Args: args,
 			})
 		}
@@ -109,7 +111,9 @@ func rewriteJSONV1(filename string, src []byte) (out []byte, changed bool, err e
 }
 
 // rewriteJSONV1File rewrites one working-tree file in place, keeping its
-// permissions. It reports false when the file has no v1 import.
+// permissions. The new content goes to a sibling temporary file that
+// replaces the original by rename, so a failed write never leaves a
+// truncated source file. It reports false when the file has no v1 import.
 func rewriteJSONV1File(path string) (bool, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -123,13 +127,32 @@ func rewriteJSONV1File(path string) (bool, error) {
 	if err != nil || !changed {
 		return false, err
 	}
-	return true, os.WriteFile(path, out, info.Mode().Perm())
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".huma-check-*")
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = os.Remove(tmp.Name()) }()
+	if _, err := tmp.Write(out); err != nil {
+		_ = tmp.Close()
+		return false, err
+	}
+	if err := tmp.Chmod(info.Mode().Perm()); err != nil {
+		_ = tmp.Close()
+		return false, err
+	}
+	if err := tmp.Close(); err != nil {
+		return false, err
+	}
+	return true, os.Rename(tmp.Name(), path)
 }
 
 // applyJSONFixes rewrites every file with a v1 import finding and collapses
 // that file's import findings into one "fixed" finding, so the run still
-// exits non-zero and the hook user restages the rewritten file.
-func applyJSONFixes(root string, diags []Diagnostic) ([]Diagnostic, error) {
+// exits non-zero and the hook user restages the rewritten file. The
+// finding comes from the index while the fix lands in the working tree;
+// when the working-tree copy is missing or does not parse, the finding is
+// kept as reported and the run continues.
+func applyJSONFixes(root string, diags []Diagnostic) []Diagnostic {
 	fixed := map[string]bool{}
 	var kept []Diagnostic
 	for _, d := range diags {
@@ -141,10 +164,7 @@ func applyJSONFixes(root string, diags []Diagnostic) ([]Diagnostic, error) {
 			continue
 		}
 		changed, err := rewriteJSONV1File(joinRepoPath(root, d.Path))
-		if err != nil {
-			return nil, fmt.Errorf("fix %s: %w", d.Path, err)
-		}
-		if !changed {
+		if err != nil || !changed {
 			kept = append(kept, d)
 			continue
 		}
@@ -152,5 +172,5 @@ func applyJSONFixes(root string, diags []Diagnostic) ([]Diagnostic, error) {
 		d.Message = jsonV1FixedMessage
 		kept = append(kept, d)
 	}
-	return kept, nil
+	return kept
 }

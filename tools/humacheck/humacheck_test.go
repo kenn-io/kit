@@ -121,13 +121,18 @@ func TestJSONV2Rule(t *testing.T) {
 
 func TestJSONV2MissingInstall(t *testing.T) {
 	t.Parallel()
-	for _, fixture := range []string{"nov2", "defaultvar", "pkglevel", "unusedmap", "lateoverride"} {
+	for _, fixture := range []string{"nov2", "defaultvar", "pkglevel", "unusedmap", "lateoverride", "clearedoverride"} {
 		t.Run(fixture, func(t *testing.T) {
 			t.Parallel()
 			pkgs := loadFixture(t, fixture+"/...")
 			diags := goOnly(t, fixture, pkgs)
-			require.Len(t, diags, 1)
-			assert.Equal(t, Diagnostic{Path: fixture + "/go.mod", Line: 1, Column: 1, Rule: RuleJSONV2, Message: jsonV2MissingMessage}, diags[0])
+			want := Diagnostic{Path: fixture + "/go.mod", Line: 1, Column: 1, Rule: RuleJSONV2, Message: jsonV2MissingMessage}
+			assert.Contains(t, diags, want)
+			for _, d := range diags {
+				if d != want {
+					assert.True(t, strings.HasPrefix(d.Message, "encoding/json (v1) is imported"), "only the fixture's own v1 import may accompany the missing-install finding: %s", d)
+				}
+			}
 		})
 	}
 }
@@ -187,6 +192,8 @@ func prefixed(v any) ([]byte, error) { return json.MarshalIndent(v, "> ", "\t") 
 
 func plain(v any) ([]byte, error) { return json.Marshal(v) }
 
+func parens(w io.Writer, v any) error { return (json.NewEncoder)(w).Encode(v) }
+
 var raw json.RawMessage // no v2 equivalent; left for the compiler
 `
 	want := `package m
@@ -209,6 +216,8 @@ func prefixed(v any) ([]byte, error) {
 }
 
 func plain(v any) ([]byte, error) { return json.Marshal(v) }
+
+func parens(w io.Writer, v any) error { return json.MarshalWrite(w, v) }
 
 var raw json.RawMessage // no v2 equivalent; left for the compiler
 `
@@ -250,6 +259,14 @@ func TestRunFixesJSONV1Imports(t *testing.T) {
 	// The rewritten file is not staged yet, so a second run judges the old
 	// index content; the working tree is already on v2, so nothing is
 	// rewritten and the import finding is reported as is.
+	diags, err = Run(t.Context(), Options{Dir: repo.Root, Fix: true})
+	require.NoError(err)
+	require.Len(diags, 1)
+	assert.Equal(Diagnostic{Path: "m.go", Line: 3, Column: 8, Rule: RuleJSONV2, Message: jsonV1ImportMessage}, diags[0])
+
+	// A working-tree copy that cannot be fixed keeps the staged finding and
+	// does not abort the run.
+	require.NoError(os.Remove(filepath.Join(repo.Root, "m.go")))
 	diags, err = Run(t.Context(), Options{Dir: repo.Root, Fix: true})
 	require.NoError(err)
 	require.Len(diags, 1)
