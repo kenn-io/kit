@@ -72,18 +72,18 @@ func TestCheckGenerators(t *testing.T) {
 		wantMsgs []string
 	}{
 		{
-			name:   "go generator in go.mod satisfies",
+			name:   "standard go generator in go.mod satisfies",
 			files:  map[string]string{"go.mod": "module m\n\nrequire github.com/doordash-oss/oapi-codegen-dd/v3 v3.75.5\n"},
 			hasAPI: true,
 		},
 		{
-			name:   "ts generator in package.json satisfies",
+			name:   "orval in package.json satisfies",
 			files:  map[string]string{"go.mod": "module m\n", "web/package.json": `{"devDependencies": {"orval": "8.26.0"}}`},
 			hasAPI: true,
 		},
 		{
 			name:   "generate directive satisfies",
-			files:  map[string]string{"go.mod": "module m\n", "pkg/client/generate.go": "//go:generate go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen -config c.yaml spec.yaml\n"},
+			files:  map[string]string{"go.mod": "module m\n", "pkg/client/generate.go": "//go:generate go run github.com/doordash-oss/oapi-codegen-dd/v3/cmd/oapi-codegen -config c.yaml spec.yaml\n"},
 			hasAPI: true,
 		},
 		{
@@ -98,6 +98,20 @@ func TestCheckGenerators(t *testing.T) {
 			hasAPI: false,
 		},
 		{
+			name: "nonstandard generators reported and do not satisfy",
+			files: map[string]string{
+				"go.mod":           "module m\n\nrequire github.com/oapi-codegen/oapi-codegen/v2 v2.8.0\n",
+				"web/package.json": `{"devDependencies": {"openapi-typescript": "7.13.0", "openapi-fetch": "0.17.0"}}`,
+			},
+			hasAPI:   true,
+			wantMsgs: []string{nonstandardGenerators[0].message, nonstandardGenerators[2].message, generatorMissing},
+		},
+		{
+			name:   "indirect requirement is not a choice",
+			files:  map[string]string{"go.mod": "module m\n\nrequire (\n\tgithub.com/doordash-oss/oapi-codegen-dd/v3 v3.75.5\n\tgithub.com/oapi-codegen/oapi-codegen/v2 v2.8.0 // indirect\n)\n"},
+			hasAPI: true,
+		},
+		{
 			name: "banned generators flagged",
 			files: map[string]string{
 				"go.mod":           "module m\n\nrequire github.com/deepmap/oapi-codegen v1.16.0\n",
@@ -108,7 +122,7 @@ func TestCheckGenerators(t *testing.T) {
 		},
 		{
 			name:   "node_modules ignored",
-			files:  map[string]string{"go.mod": "module m\n\nrequire github.com/ogen-go/ogen v1.0.0\n", "web/node_modules/x/package.json": `{"name": "swagger-typescript-api"}`},
+			files:  map[string]string{"go.mod": "module m\n\nrequire github.com/doordash-oss/oapi-codegen-dd/v3 v3.75.5\n", "web/node_modules/x/package.json": `{"name": "swagger-typescript-api"}`},
 			hasAPI: true,
 		},
 	}

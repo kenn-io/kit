@@ -11,8 +11,10 @@ enforces the shared Huma contract across kenn-io Go modules:
   `huma.DefaultJSONFormat` in a package the constructing package imports.
 - `spec`: OpenAPI 3 documents tracked in the repository are YAML, and a module
   that builds a Huma API commits at least one.
-- `generator`: a supported client generator is declared somewhere in the
-  repository, and banned generators are reported where they appear.
+- `generator`: the standard client generator is declared somewhere in the
+  repository: orval for TypeScript, oapi-codegen-dd v3 for Go. Any other
+  generator is reported where it is declared so toolchains do not fragment;
+  `// indirect` go.mod lines do not count as a declaration.
 - `client`: string literals naming one of the module's own routes are reported
   when they flow into request-building code.
 - `frontend`: the same route match over `fetch`-style calls in browser sources.

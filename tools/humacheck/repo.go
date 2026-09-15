@@ -13,36 +13,38 @@ import (
 const (
 	specJSONMessage    = "OpenAPI document is stored as JSON; commit the Huma OpenAPI document as YAML only (YAML is what agents and reviewers read, and a JSON copy drifts from it)"
 	specMissingMessage = "no OpenAPI YAML document is committed; generate the Huma OpenAPI document and commit it as YAML so agents and reviewers can read the contract"
-	generatorMissing   = "no supported OpenAPI client generator is configured (expected one of: " + supportedGeneratorList + ")"
+	generatorMissing   = "no standard OpenAPI client generator is configured; use orval for TypeScript clients and github.com/doordash-oss/oapi-codegen-dd/v3 for Go clients"
 	maxScanBytes       = 4 << 20
 	maxSpecBytes       = 64 << 20
 )
-
-// supportedGeneratorList documents the allowlist in diagnostics.
-const supportedGeneratorList = "oapi-codegen-dd/v3, oapi-codegen/v2, ogen, orval, openapi-typescript, @hey-api/openapi-ts"
 
 var (
 	yamlSpecPattern = regexp.MustCompile(`(?m)^openapi:\s*['"]?3\.`)
 	jsonSpecPattern = regexp.MustCompile(`"openapi"\s*:\s*"3\.`)
 
-	// Generators recognized as acceptable. Matched as substrings of the files
-	// that declare toolchains.
-	supportedGenerators = []string{
+	// The one generator per language every repository standardizes on.
+	// Matched as substrings of the files that declare toolchains.
+	standardGenerators = []string{
 		"github.com/doordash-oss/oapi-codegen-dd/v3",
-		"github.com/oapi-codegen/oapi-codegen/v2",
-		"github.com/ogen-go/ogen",
 		`"orval"`,
-		`"openapi-typescript"`,
-		`"@hey-api/openapi-ts"`,
+	}
+	// Generators that work but fragment the toolchain; each finding names
+	// the standard replacement.
+	nonstandardGenerators = []struct{ needle, message string }{
+		{"github.com/oapi-codegen/oapi-codegen/v2", "oapi-codegen v2 is not the standard Go generator; migrate to github.com/doordash-oss/oapi-codegen-dd/v3"},
+		{"github.com/ogen-go/ogen", "ogen is not the standard Go generator; migrate to github.com/doordash-oss/oapi-codegen-dd/v3"},
+		{`"openapi-typescript"`, "openapi-typescript is not the standard TypeScript generator; migrate to orval"},
+		{`"openapi-fetch"`, "openapi-fetch is not the standard TypeScript client; migrate to orval"},
+		{`"@hey-api/openapi-ts"`, "@hey-api/openapi-ts is not the standard TypeScript generator; migrate to orval"},
 	}
 	// Generators that must not be used, with the reason shown in diagnostics.
 	bannedGenerators = []struct{ needle, message string }{
-		{"github.com/deepmap/oapi-codegen", "github.com/deepmap/oapi-codegen is the unmaintained v1 import path; use github.com/doordash-oss/oapi-codegen-dd/v3 or github.com/oapi-codegen/oapi-codegen/v2"},
-		{"github.com/go-swagger/go-swagger", "go-swagger targets Swagger 2.0 and cannot consume Huma's OpenAPI 3 output; use oapi-codegen"},
-		{"openapi-generator-cli", "openapi-generator produces hand-maintenance-heavy clients; use orval, openapi-typescript, or @hey-api/openapi-ts"},
-		{"openapi-generator", "openapi-generator produces hand-maintenance-heavy clients; use orval, openapi-typescript, or @hey-api/openapi-ts"},
-		{"swagger-codegen", "swagger-codegen is unsupported for OpenAPI 3.1; use orval, openapi-typescript, or @hey-api/openapi-ts"},
-		{"swagger-typescript-api", "swagger-typescript-api is not a supported generator; use orval, openapi-typescript, or @hey-api/openapi-ts"},
+		{"github.com/deepmap/oapi-codegen", "github.com/deepmap/oapi-codegen is the unmaintained v1 import path; use github.com/doordash-oss/oapi-codegen-dd/v3"},
+		{"github.com/go-swagger/go-swagger", "go-swagger targets Swagger 2.0 and cannot consume Huma's OpenAPI 3 output; use github.com/doordash-oss/oapi-codegen-dd/v3"},
+		{"openapi-generator-cli", "openapi-generator produces hand-maintenance-heavy clients; use orval"},
+		{"openapi-generator", "openapi-generator produces hand-maintenance-heavy clients; use orval"},
+		{"swagger-codegen", "swagger-codegen is unsupported for OpenAPI 3.1; use orval"},
+		{"swagger-typescript-api", "swagger-typescript-api is not a supported generator; use orval"},
 	}
 )
 
@@ -136,11 +138,11 @@ func generatorDeclarationFile(name string) bool {
 	return false
 }
 
-// checkGenerators flags banned generators and, for modules with a Huma API,
-// the absence of any supported one.
+// checkGenerators flags banned and nonstandard generators where they are
+// declared and, for modules with a Huma API, the absence of a standard one.
 func checkGenerators(repo fs.FS, tracked []string, hasAPI bool, goModPath string) []Diagnostic {
 	var diags []Diagnostic
-	supported := false
+	standard := false
 	for _, name := range tracked {
 		if excludedDir(name) || !generatorDeclarationFile(name) {
 			continue
@@ -149,34 +151,45 @@ func checkGenerators(repo fs.FS, tracked []string, hasAPI bool, goModPath string
 		if err != nil {
 			continue
 		}
-		for _, needle := range supportedGenerators {
-			if bytes.Contains(content, []byte(needle)) {
-				supported = true
+		for _, needle := range standardGenerators {
+			if lineDeclaring(content, needle) != 0 {
+				standard = true
 				break
 			}
 		}
 		reported := map[int]bool{}
-		for _, banned := range bannedGenerators {
-			line := lineContaining(content, banned.needle)
+		report := func(line int, message string) {
 			if line == 0 || reported[line] {
-				continue
+				return
 			}
 			reported[line] = true
-			diags = append(diags, Diagnostic{Path: name, Line: line, Column: 1, Rule: RuleGenerator, Message: banned.message})
+			diags = append(diags, Diagnostic{Path: name, Line: line, Column: 1, Rule: RuleGenerator, Message: message})
+		}
+		for _, banned := range bannedGenerators {
+			report(lineDeclaring(content, banned.needle), banned.message)
+		}
+		for _, other := range nonstandardGenerators {
+			report(lineDeclaring(content, other.needle), other.message)
 		}
 	}
-	if hasAPI && !supported {
+	if hasAPI && !standard {
 		diags = append(diags, Diagnostic{Path: goModPath, Line: 1, Column: 1, Rule: RuleGenerator, Message: generatorMissing})
 	}
 	return diags
 }
 
-func lineContaining(content []byte, needle string) int {
-	before, _, found := bytes.Cut(content, []byte(needle))
-	if !found {
-		return 0
+// lineDeclaring returns the first line that mentions needle as a direct
+// declaration. Lines marked "// indirect" in go.mod are transitive module
+// requirements, not a choice the repository made, and are skipped.
+func lineDeclaring(content []byte, needle string) int {
+	lineNo := 0
+	for line := range bytes.SplitSeq(content, []byte("\n")) {
+		lineNo++
+		if bytes.Contains(line, []byte(needle)) && !bytes.Contains(line, []byte("// indirect")) {
+			return lineNo
+		}
 	}
-	return bytes.Count(before, []byte("\n")) + 1
+	return 0
 }
 
 var (
