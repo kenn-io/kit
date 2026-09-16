@@ -70,6 +70,22 @@ func TestGeometry(t *testing.T) {
 			},
 		},
 		{
+			name:   "mid-range width hands the detail pane its reservation",
+			config: detailFirst, width: 180, height: 40, footerLines: 1,
+			wanted: splitlayout.Geom{
+				ListOuterW: 80, DetailOuterW: 100, BodyH: 37,
+				ListInnerW: 78, ListInnerH: 35, DetailInnerW: 98, DetailInnerH: 35,
+			},
+		},
+		{
+			name:   "mid-range width with the wide-list config",
+			config: wideList, width: 180, height: 40, footerLines: 1,
+			wanted: splitlayout.Geom{
+				ListOuterW: 80, DetailOuterW: 100, BodyH: 37,
+				ListInnerW: 78, ListInnerH: 35, DetailInnerW: 98, DetailInnerH: 35,
+			},
+		},
+		{
 			name:   "list grows with the terminal until its cap",
 			config: detailFirst, width: 200, height: 40, footerLines: 1,
 			wanted: splitlayout.Geom{
