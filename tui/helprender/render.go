@@ -42,15 +42,8 @@ func RenderHelpTable(rows [][]helplayout.HelpItem, st Styles) string {
 		cellWithBorder = cellWithBorder.BorderForeground(st.BorderColor)
 	}
 
-	maxCols := 0
-	for _, row := range rows {
-		maxCols = max(maxCols, len(row))
-	}
 	colMinW := helplayout.ColumnWidths(rows)
-
-	// padded[row][col] marks cells added to square the table; their
-	// borders are suppressed so short rows end cleanly.
-	padded := make([][]bool, len(rows))
+	maxCols := len(colMinW)
 
 	t := table.New().
 		BorderTop(false).
@@ -64,25 +57,22 @@ func RenderHelpTable(rows [][]helplayout.HelpItem, st Styles) string {
 			if col < len(colMinW) {
 				minW = colMinW[col]
 			}
-			if col == 0 || (row < len(padded) && col < len(padded[row]) && padded[row][col]) {
+			// Cells padding a short row to the grid drop the border.
+			if col == 0 || (row < len(rows) && col >= len(rows[row])) {
 				return cellStyle.Width(minW)
 			}
 			return cellWithBorder.Width(minW + ColumnGap)
 		}).
 		Wrap(false)
 
-	for ri, row := range rows {
+	for _, row := range rows {
 		styled := make([]string, maxCols)
-		padded[ri] = make([]bool, maxCols)
 		for i, item := range row {
 			if item.Description != "" {
 				styled[i] = st.Key.Render(item.Key) + " " + st.Description.Render(item.Description)
 			} else {
 				styled[i] = st.Key.Render(item.Key)
 			}
-		}
-		for i := len(row); i < maxCols; i++ {
-			padded[ri][i] = true
 		}
 		t = t.Row(styled...)
 	}
