@@ -9,7 +9,12 @@
 - `lint/<name>/` packages are `go/analysis` analyzers; `lint.Analyzers()` is
   the complete list.
 - `lint/sqlenum` also exposes `Scan` for raw SQL; `kennlint sql` uses it on
-  `.sql` files because golangci-lint only analyzes Go.
+  `.sql` files because golangci-lint only analyzes Go. It matches enum shapes
+  anywhere inside a `CHECK` expression (nullable prefixes, nested `NOT IN`,
+  per-branch `state = 'x'` comparisons, `= ANY (ARRAY[...])`) and
+  `CREATE TYPE ... AS ENUM`; keep the negative table test honest when
+  widening it, since single-literal invariants and range checks must stay
+  unflagged.
 - `lint/gclplugin` registers the analyzers as the `kennlint` golangci-lint
   module plugin.
 - `cmd/kennlint` runs the analyzers and renders or checks the configuration.

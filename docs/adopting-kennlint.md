@@ -22,7 +22,7 @@ and path exclusions work like any other linter.
 | `testifyhelper` | Tests that repeat package-level `assert.X(t, …)`/`require.X(t, …)` calls instead of creating `assert := assert.New(t)` or `require := require.New(t)` once. Any variable bound to `New(t)` counts, so a test whose subtests need their own helper can name the outer one `req` or `asrt` to avoid shadowing the package. |
 | `sleeptest` | `time.Sleep` in a `_test.go` file outside a `synctest.Test` bubble. Wall-clock sleeps make tests slow and timing-dependent. |
 | `errtext` | Deciding on error identity by matching `err.Error()` text: `strings.Contains(err.Error(), …)`, `err.Error() == …`, and similar. Use `errors.Is` or `errors.AsType`. Test files are skipped unless `errtext.include-tests` is set. |
-| `sqlenum` | SQL `CHECK` constraints that hard-code a column's allowed values, such as `CHECK (status IN ('queued', 'done'))`, in Go string literals outside tests. Every new value then needs a migration that rewrites the constraint, so the set belongs in application code or a lookup table. `kennlint sql` applies the same check to `.sql` migration files. |
+| `sqlenum` | SQL that hard-codes a column's allowed values in the schema, in Go string literals outside tests: `CHECK` constraints that compare a column against literals anywhere in the expression (`status IN ('queued', 'done')`, `kind IS NULL OR kind IN (...)`, `(state = 'a' AND ...) OR (state = 'b' AND ...)`, PostgreSQL `= ANY (ARRAY[...])`) and `CREATE TYPE ... AS ENUM`. Every new value then needs a migration that rewrites the constraint or type, so the set belongs in application code or a lookup table. `kennlint sql` applies the same check to `.sql` migration files. |
 | `nohttpmux` | `Handle`/`HandleFunc` on `*http.ServeMux` or the default mux outside tests, for repositories that route every operation through a typed API layer such as Huma. Disable it in repositories that serve plain `net/http`. |
 
 `kennlint analyzers` prints this list from the binary.
@@ -131,9 +131,19 @@ separate scanner:
 go run go.kenn.io/kit/cmd/kennlint@<kit version> sql internal/db/migrations
 ```
 
-It prints `file:line:column: message` for each enum-style `CHECK` and exits
-non-zero when it finds any. Wire it into the lint target or a pre-commit hook
-filtered to `*.sql`.
+It prints `file:line:column: message` for each enum-style `CHECK` and each
+`CREATE TYPE ... AS ENUM`, and exits non-zero when it finds any. Wire it into
+the lint target or a pre-commit hook filtered to `*.sql`.
+
+The scanner flags a `CHECK` whenever any part of its expression enumerates a
+column's values: a literal `IN` or `NOT IN` list, a PostgreSQL `= ANY (ARRAY[...])`,
+or two or more `=` (or `<>`) comparisons of the same column against literals.
+That includes constraints that look like cross-column invariants, such as
+`(state = 'done' AND finished_at IS NOT NULL) OR (state = 'running' AND
+finished_at IS NULL)`: adding a third state still means rewriting the
+constraint. Range checks, length checks, single-literal comparisons, and
+subqueries are not flagged. Where a set really must live in the database, put
+it in a lookup table with a foreign key.
 
 ## Running the analyzers without golangci-lint
 

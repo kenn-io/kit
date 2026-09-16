@@ -27,7 +27,7 @@ import (
 
 const usage = `usage:
   kennlint run [analysis flags] [packages]   run the kit analyzers (go vet style)
-  kennlint sql [path ...]                    report enum-style CHECK constraints in .sql files (default: .)
+  kennlint sql [path ...]                    report enum-style CHECK constraints and enum types in .sql files (default: .)
   kennlint config [flags]                    render .golangci.yml from the canonical config and an overlay
   kennlint analyzers                         list the analyzers and their documentation
 `
