@@ -3,6 +3,7 @@ package logging
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseLevel(t *testing.T) {
@@ -31,12 +34,13 @@ func TestParseLevel(t *testing.T) {
 	for _, tt := range tests {
 		got, valid := ParseLevel(tt.in)
 		if got != tt.want || valid != tt.valid {
-			t.Fatalf("ParseLevel(%q) = (%v, %v), want (%v, %v)", tt.in, got, valid, tt.want, tt.valid)
+			require.FailNow(t, fmt.Sprintf("ParseLevel(%q) = (%v, %v), want (%v, %v)", tt.in, got, valid, tt.want, tt.valid))
 		}
 	}
 }
 
 func TestAutoFormatUsesTerminalDetector(t *testing.T) {
+	require := require.New(t)
 	t.Parallel()
 
 	var text bytes.Buffer
@@ -47,16 +51,16 @@ func TestAutoFormatUsesTerminalDetector(t *testing.T) {
 		IsTerminal: func(io.Writer) bool { return true },
 	})
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(err.Error())
 	}
 	defer func() { _ = textRes.Close() }()
 
 	textLogger.Info("hello", "k", "v")
 	if textRes.Format != FormatText {
-		t.Fatalf("Format = %q, want text", textRes.Format)
+		require.FailNow(fmt.Sprintf("Format = %q, want text", textRes.Format))
 	}
 	if strings.HasPrefix(strings.TrimSpace(text.String()), "{") {
-		t.Fatalf("auto terminal output should be text, got %q", text.String())
+		require.FailNow(fmt.Sprintf("auto terminal output should be text, got %q", text.String()))
 	}
 
 	var jsonBuf bytes.Buffer
@@ -67,16 +71,16 @@ func TestAutoFormatUsesTerminalDetector(t *testing.T) {
 		IsTerminal: func(io.Writer) bool { return false },
 	})
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(err.Error())
 	}
 	defer func() { _ = jsonRes.Close() }()
 
 	jsonLogger.Info("hello", "k", "v")
 	if jsonRes.Format != FormatJSON {
-		t.Fatalf("Format = %q, want json", jsonRes.Format)
+		require.FailNow(fmt.Sprintf("Format = %q, want json", jsonRes.Format))
 	}
 	if !strings.HasPrefix(strings.TrimSpace(jsonBuf.String()), "{") {
-		t.Fatalf("auto non-terminal output should be JSON, got %q", jsonBuf.String())
+		require.FailNow(fmt.Sprintf("auto non-terminal output should be JSON, got %q", jsonBuf.String()))
 	}
 }
 
@@ -91,16 +95,16 @@ func TestEnvLevelOverride(t *testing.T) {
 		EnvLevelVar: "KIT_LOG_LEVEL_TEST",
 	})
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(t, err.Error())
 	}
 	defer func() { _ = res.Close() }()
 
 	if res.Level != slog.LevelDebug {
-		t.Fatalf("Level = %v, want debug", res.Level)
+		require.FailNow(t, fmt.Sprintf("Level = %v, want debug", res.Level))
 	}
 	logger.Debug("visible")
 	if !strings.Contains(stderr.String(), `"msg":"visible"`) {
-		t.Fatalf("debug record missing: %q", stderr.String())
+		require.FailNow(t, fmt.Sprintf("debug record missing: %q", stderr.String()))
 	}
 }
 
@@ -115,21 +119,22 @@ func TestInvalidEnvLevelIsIgnored(t *testing.T) {
 		EnvLevelVar: "KIT_LOG_LEVEL_TEST",
 	})
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(t, err.Error())
 	}
 	defer func() { _ = res.Close() }()
 
 	logger.Info("silent")
 	if stderr.Len() != 0 {
-		t.Fatalf("invalid env override should keep warn level, got %q", stderr.String())
+		require.FailNow(t, fmt.Sprintf("invalid env override should keep warn level, got %q", stderr.String()))
 	}
 	logger.Warn("shown")
 	if !strings.Contains(stderr.String(), `"msg":"shown"`) {
-		t.Fatalf("warn record missing: %q", stderr.String())
+		require.FailNow(t, fmt.Sprintf("warn record missing: %q", stderr.String()))
 	}
 }
 
 func TestFileFanoutRunIDAndDailyPath(t *testing.T) {
+	require := require.New(t)
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -150,34 +155,35 @@ func TestFileFanoutRunIDAndDailyPath(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(err.Error())
 	}
 	defer func() { _ = res.Close() }()
 
 	logger.Info("hello", "answer", 42)
 
 	if !strings.Contains(stderr.String(), "hello") || !strings.Contains(stderr.String(), "run_id=run-123") {
-		t.Fatalf("stderr missing text record or run_id: %q", stderr.String())
+		require.FailNow(fmt.Sprintf("stderr missing text record or run_id: %q", stderr.String()))
 	}
 
 	wantPath := filepath.Join(dir, "kit-2026-05-29.log")
 	if res.FilePath != wantPath {
-		t.Fatalf("FilePath = %q, want %q", res.FilePath, wantPath)
+		require.FailNow(fmt.Sprintf("FilePath = %q, want %q", res.FilePath, wantPath))
 	}
 
 	record := readSingleJSONRecord(t, res.FilePath)
 	if record["msg"] != "hello" {
-		t.Fatalf("msg = %v, want hello", record["msg"])
+		require.FailNow(fmt.Sprintf("msg = %v, want hello", record["msg"]))
 	}
 	if record["run_id"] != "run-123" {
-		t.Fatalf("run_id = %v, want run-123", record["run_id"])
+		require.FailNow(fmt.Sprintf("run_id = %v, want run-123", record["run_id"]))
 	}
 	if record["answer"] != float64(42) {
-		t.Fatalf("answer = %v, want 42", record["answer"])
+		require.FailNow(fmt.Sprintf("answer = %v, want 42", record["answer"]))
 	}
 }
 
 func TestFileRotationAndRetention(t *testing.T) {
+	require := require.New(t)
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -203,22 +209,23 @@ func TestFileRotationAndRetention(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(err.Error())
 	}
 	defer func() { _ = res.Close() }()
 
 	if got := readFile(t, path+".1"); got != strings.Repeat("x", 20) {
-		t.Fatalf(".1 = %q, want rotated current file", got)
+		require.FailNow(fmt.Sprintf(".1 = %q, want rotated current file", got))
 	}
 	if got := readFile(t, path+".2"); got != "old-1" {
-		t.Fatalf(".2 = %q, want previous .1", got)
+		require.FailNow(fmt.Sprintf(".2 = %q, want previous .1", got))
 	}
 	if _, err := os.Stat(path + ".3"); !os.IsNotExist(err) {
-		t.Fatalf(".3 should be pruned, stat err = %v", err)
+		require.FailNow(fmt.Sprintf(".3 should be pruned, stat err = %v", err))
 	}
 }
 
 func TestFileRotatesWhileLogging(t *testing.T) {
+	require := require.New(t)
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -239,7 +246,7 @@ func TestFileRotatesWhileLogging(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(err.Error())
 	}
 	defer func() { _ = res.Close() }()
 
@@ -249,18 +256,19 @@ func TestFileRotatesWhileLogging(t *testing.T) {
 	rotatedPath := res.FilePath + ".1"
 	rotated := readFile(t, rotatedPath)
 	if !strings.Contains(rotated, `"msg":"first"`) {
-		t.Fatalf("rotated file missing first record: %q", rotated)
+		require.FailNow(fmt.Sprintf("rotated file missing first record: %q", rotated))
 	}
 	current := readFile(t, res.FilePath)
 	if !strings.Contains(current, `"msg":"second"`) {
-		t.Fatalf("current file missing second record: %q", current)
+		require.FailNow(fmt.Sprintf("current file missing second record: %q", current))
 	}
 	if strings.Contains(current, `"msg":"first"`) {
-		t.Fatalf("current file should have rotated before second record: %q", current)
+		require.FailNow(fmt.Sprintf("current file should have rotated before second record: %q", current))
 	}
 }
 
 func TestFileLoggingFailureDegradesToStderrOnly(t *testing.T) {
+	require := require.New(t)
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -278,24 +286,25 @@ func TestFileLoggingFailureDegradesToStderrOnly(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(err.Error())
 	}
 	defer func() { _ = res.Close() }()
 
 	if res.FilePath != "" || res.FileHandler != nil {
-		t.Fatalf("file logging should be unavailable, got path %q handler %T", res.FilePath, res.FileHandler)
+		require.FailNow(fmt.Sprintf("file logging should be unavailable, got path %q handler %T", res.FilePath, res.FileHandler))
 	}
 	if !strings.Contains(stderr.String(), "could not prepare log file") {
-		t.Fatalf("stderr missing degradation warning: %q", stderr.String())
+		require.FailNow(fmt.Sprintf("stderr missing degradation warning: %q", stderr.String()))
 	}
 
 	logger.Info("still-visible")
 	if !strings.Contains(stderr.String(), "still-visible") {
-		t.Fatalf("stderr-only handler did not log: %q", stderr.String())
+		require.FailNow(fmt.Sprintf("stderr-only handler did not log: %q", stderr.String()))
 	}
 }
 
 func TestFileLoggingFailureUsesConfiguredFormat(t *testing.T) {
+	require := require.New(t)
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -313,29 +322,30 @@ func TestFileLoggingFailureUsesConfiguredFormat(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(err.Error())
 	}
 	defer func() { _ = res.Close() }()
 
 	var record map[string]any
 	if err := json.Unmarshal(bytes.TrimSpace(stderr.Bytes()), &record); err != nil {
-		t.Fatalf("warning should use JSON format: %v\n%s", err, stderr.String())
+		require.FailNow(fmt.Sprintf("warning should use JSON format: %v\n%s", err, stderr.String()))
 	}
 	if record["level"] != "WARN" {
-		t.Fatalf("level = %v, want WARN", record["level"])
+		require.FailNow(fmt.Sprintf("level = %v, want WARN", record["level"]))
 	}
 	if record["msg"] != "could not prepare log file" {
-		t.Fatalf("msg = %v, want file warning", record["msg"])
+		require.FailNow(fmt.Sprintf("msg = %v, want file warning", record["msg"]))
 	}
 	if record["fallback"] != "stderr-only" {
-		t.Fatalf("fallback = %v, want stderr-only", record["fallback"])
+		require.FailNow(fmt.Sprintf("fallback = %v, want stderr-only", record["fallback"]))
 	}
 	if _, ok := record["error"].(string); !ok {
-		t.Fatalf("error attr missing from warning: %#v", record)
+		require.FailNow(fmt.Sprintf("error attr missing from warning: %#v", record))
 	}
 }
 
 func TestFileOnlyLoggerWritesFileAndDiscardWhenUnavailable(t *testing.T) {
+	require := require.New(t)
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -356,18 +366,18 @@ func TestFileOnlyLoggerWritesFileAndDiscardWhenUnavailable(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(err.Error())
 	}
 	defer func() { _ = res.Close() }()
 
 	res.FileOnlyLogger().Info("file-only")
 	if strings.Contains(stderr.String(), "file-only") {
-		t.Fatalf("file-only logger wrote to stderr: %q", stderr.String())
+		require.FailNow(fmt.Sprintf("file-only logger wrote to stderr: %q", stderr.String()))
 	}
 
 	record := readSingleJSONRecord(t, res.FilePath)
 	if record["msg"] != "file-only" || record["run_id"] != "run-file-only" {
-		t.Fatalf("unexpected file-only record: %#v", record)
+		require.FailNow(fmt.Sprintf("unexpected file-only record: %#v", record))
 	}
 
 	var discard bytes.Buffer
@@ -377,11 +387,11 @@ func TestFileOnlyLoggerWritesFileAndDiscardWhenUnavailable(t *testing.T) {
 		Level:  "info",
 	})
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(err.Error())
 	}
 	noFileRes.FileOnlyLogger().Info("discarded")
 	if discard.Len() != 0 {
-		t.Fatalf("discard file-only logger wrote to stderr: %q", discard.String())
+		require.FailNow(fmt.Sprintf("discard file-only logger wrote to stderr: %q", discard.String()))
 	}
 }
 
@@ -396,13 +406,13 @@ func TestAddSource(t *testing.T) {
 		AddSource: true,
 	})
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(t, err.Error())
 	}
 	defer func() { _ = res.Close() }()
 
 	logger.Info("source")
 	if !strings.Contains(stderr.String(), `"source"`) {
-		t.Fatalf("source annotation missing: %q", stderr.String())
+		require.FailNow(t, fmt.Sprintf("source annotation missing: %q", stderr.String()))
 	}
 }
 
@@ -411,12 +421,12 @@ func readSingleJSONRecord(t *testing.T, path string) map[string]any {
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(t, err.Error())
 	}
 	lines := bytes.Split(bytes.TrimSpace(data), []byte("\n"))
 	record := make(map[string]any)
 	if err := json.Unmarshal(lines[len(lines)-1], &record); err != nil {
-		t.Fatalf("unmarshal %q: %v", lines[len(lines)-1], err)
+		require.FailNow(t, fmt.Sprintf("unmarshal %q: %v", lines[len(lines)-1], err))
 	}
 	return record
 }
@@ -425,7 +435,7 @@ func writeFile(t *testing.T, path string, content string) {
 	t.Helper()
 
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
+		require.FailNow(t, err.Error())
 	}
 }
 
@@ -434,7 +444,7 @@ func readFile(t *testing.T, path string) string {
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(t, err.Error())
 	}
 	return string(data)
 }

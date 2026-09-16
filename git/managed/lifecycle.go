@@ -286,12 +286,12 @@ func (r CreateWorktreeResult) rollbackOwned(ctx context.Context) (RollbackResult
 				ErrWorktreeCleanupIncomplete,
 			)
 		}
-		return remaining, fmt.Errorf("%w: inspect worktree path: %v",
+		return remaining, fmt.Errorf("%w: inspect worktree path: %w",
 			ErrWorktreeCleanupIncomplete, err)
 	}
 	headOID, headRef, err := lifecycleWorktreeHead(ctx, path)
 	if err != nil {
-		return remaining, fmt.Errorf("%w: %v", ErrWorktreeCleanupIncomplete, err)
+		return remaining, fmt.Errorf("%w: %w", ErrWorktreeCleanupIncomplete, err)
 	}
 	if !strings.EqualFold(headOID, r.headOID) || headRef != r.headRef {
 		return remaining, fmt.Errorf(
@@ -301,7 +301,7 @@ func (r CreateWorktreeResult) rollbackOwned(ctx context.Context) (RollbackResult
 	}
 	branchOID, branchExists, branchErr := lifecycleRefOID(ctx, r.projectRoot, branch)
 	if branchErr != nil {
-		return remaining, fmt.Errorf("%w: inspect created branch: %v",
+		return remaining, fmt.Errorf("%w: inspect created branch: %w",
 			ErrWorktreeCleanupIncomplete, branchErr)
 	}
 	if !branchExists || !strings.EqualFold(branchOID, r.branchOID) {
@@ -312,7 +312,7 @@ func (r CreateWorktreeResult) rollbackOwned(ctx context.Context) (RollbackResult
 	}
 	dirty, err := worktreeHasRollbackArtifacts(ctx, path)
 	if err != nil {
-		return remaining, fmt.Errorf("%w: %v", ErrWorktreeCleanupIncomplete, err)
+		return remaining, fmt.Errorf("%w: %w", ErrWorktreeCleanupIncomplete, err)
 	}
 	if dirty {
 		return remaining, fmt.Errorf(
@@ -679,7 +679,7 @@ func requireRootAndBranch(
 	}
 	branch := strings.TrimSpace(rawBranch)
 	if branch == "" {
-		return "", "", fmt.Errorf("branch is required")
+		return "", "", errors.New("branch is required")
 	}
 	return root, branch, nil
 }
@@ -760,17 +760,13 @@ func resolveMergeRequestHookScript(
 		)
 	}
 	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf(
-			"merge request setup hook must be a regular file",
-		)
+		return "", errors.New("merge request setup hook must be a regular file")
 	}
 	if pathWithinRoot(
 		comparableWorktreePath(worktreePath),
 		comparableWorktreePath(resolved),
 	) {
-		return "", fmt.Errorf(
-			"merge request setup hook must be outside its worktree destination",
-		)
+		return "", errors.New("merge request setup hook must be outside its worktree destination")
 	}
 	return resolved, nil
 }

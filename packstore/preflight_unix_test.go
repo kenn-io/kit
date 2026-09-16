@@ -3,7 +3,6 @@
 package packstore
 
 import (
-	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -46,10 +45,10 @@ func TestLooseReadsRejectFIFOWithoutBlocking(t *testing.T) {
 
 			assertFIFOOperationDoesNotBlock(t, path, func() error {
 				if bounded {
-					_, _, err := store.ReadBounded(context.Background(), hash, DefaultLimits().BlobBytes)
+					_, _, err := store.ReadBounded(t.Context(), hash, DefaultLimits().BlobBytes)
 					return err
 				}
-				reader, _, err := store.Open(context.Background(), hash)
+				reader, _, err := store.Open(t.Context(), hash)
 				if reader != nil {
 					err = errors.Join(err, reader.Close())
 				}
@@ -70,7 +69,7 @@ func TestOrdinaryPackedReadRejectsFIFOWithoutBlocking(t *testing.T) {
 	}}, layout)
 
 	assertFIFOOperationDoesNotBlock(t, path, func() error {
-		reader, _, err := store.Open(context.Background(), entry.Hash)
+		reader, _, err := store.Open(t.Context(), entry.Hash)
 		if reader != nil {
 			err = errors.Join(err, reader.Close())
 		}
@@ -109,16 +108,18 @@ func TestPreflightRejectsFIFOReplacedAfterIdentitySnapshot(t *testing.T) {
 
 func assertFIFOOperationDoesNotBlock(t *testing.T, path string, operation func() error) {
 	t.Helper()
+	require := require.New(t)
+	t.Helper()
 	done := make(chan error, 1)
 	go func() { done <- operation() }()
 
 	select {
 	case err := <-done:
-		require.Error(t, err)
+		require.Error(err)
 	case <-time.After(time.Second):
 		writer, err := os.OpenFile(path, os.O_WRONLY, 0)
-		require.NoError(t, err)
-		require.NoError(t, writer.Close())
+		require.NoError(err)
+		require.NoError(writer.Close())
 		<-done
 		assert.Fail(t, "filesystem read blocked opening a FIFO")
 	}

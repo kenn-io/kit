@@ -7,11 +7,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	Require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/require"
 )
 
 func TestVerifyPrivateFileModeRejectsPublicMode(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	path := filepath.Join(t.TempDir(), "record.json")
 	require.NoError(os.WriteFile(path, []byte("{}"), 0o600))
 	require.NoError(os.Chmod(path, 0o666))

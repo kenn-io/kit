@@ -32,6 +32,7 @@ func buildGemini(a *adapter, sessionID string, request Request) (Invocation, err
 		args = append(args, "--approval-mode", "plan")
 	case ApprovalBypass:
 		args = append(args, "--approval-mode", "yolo")
+	default:
 	}
 	stdin, err := stdinPrompt(request.Prompt)
 	if err != nil {

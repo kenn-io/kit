@@ -21,6 +21,8 @@ import (
 // (dbPath, attachmentsDir, dataDir, writer).
 func seedBackupFixture(t *testing.T) (string, string, string, *sql.DB) {
 	t.Helper()
+	require := require.New(t)
+	t.Helper()
 	dataDir := t.TempDir()
 	attachmentsDir := filepath.Join(dataDir, "content")
 	contentA := []byte("first attachment content")
@@ -30,18 +32,18 @@ func seedBackupFixture(t *testing.T) (string, string, string, *sql.DB) {
 
 	dbPath := filepath.Join(dataDir, "app.db")
 	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
-	require.NoError(t, err)
+	require.NoError(err)
 	t.Cleanup(func() { _ = db.Close() })
-	_, err = db.Exec(frozenTestSchema)
-	require.NoError(t, err)
-	_, err = db.Exec(`INSERT INTO notes (created_at) VALUES ('2026-01-01T00:00:00Z')`)
-	require.NoError(t, err)
-	_, err = db.Exec(
+	_, err = db.ExecContext(t.Context(), frozenTestSchema)
+	require.NoError(err)
+	_, err = db.ExecContext(t.Context(), `INSERT INTO notes (created_at) VALUES ('2026-01-01T00:00:00Z')`)
+	require.NoError(err)
+	_, err = db.ExecContext(t.Context(),
 		`INSERT INTO blobs (content_hash, storage_path, size, preview_hash, preview_path)
 		 VALUES (?, ?, ?, '', ''), (?, ?, ?, '', '')`,
 		refA.Hash, refA.Hash[:2]+"/"+refA.Hash, refA.Size,
 		refB.Hash, refB.Hash[:2]+"/"+refB.Hash, refB.Size)
-	require.NoError(t, err)
+	require.NoError(err)
 	return dbPath, attachmentsDir, dataDir, db
 }
 
@@ -64,7 +66,7 @@ func createOpts(dbPath, attachmentsDir, dataDir string, cacheDir string) CreateO
 func TestCreateManifestReaderVersionTracksStoragePaths(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, writer := seedBackupFixture(t)
 	cacheDir := t.TempDir()
@@ -135,7 +137,7 @@ func TestStorePageBlobsJobsSerialMatchesParallel(t *testing.T) {
 	run := func(jobs int) (*PageMap, *Repo, []IndexEntry) {
 		r := initTestRepo(t)
 		appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
-		delta, err := storePageBlobs(context.Background(), f, scan, appender, jobs, newProgressEmitter(nil))
+		delta, err := storePageBlobs(t.Context(), f, scan, appender, jobs, newProgressEmitter(nil))
 		require.NoError(err)
 		_, entries, err := appender.Finish()
 		require.NoError(err)
@@ -166,7 +168,7 @@ func TestCreateInitialSnapshot(t *testing.T) {
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 
-	m, err := Create(context.Background(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
+	m, err := Create(t.Context(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
 	require.NoError(err)
 
 	assert.NotEmpty(m.SnapshotID)
@@ -207,21 +209,21 @@ func TestCreateIncrementalSnapshot(t *testing.T) {
 	dbPath, attachmentsDir, dataDir, db := seedBackupFixture(t)
 	cacheDir := t.TempDir()
 
-	m1, err := Create(context.Background(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
+	m1, err := Create(t.Context(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
 	require.NoError(err)
 
 	// Mutate: new message and a new attachment.
 	contentC := []byte("third attachment added later")
 	refC := writeLooseAttachment(t, attachmentsDir, contentC)
-	_, err = db.Exec(`INSERT INTO notes (created_at) VALUES ('2026-02-01T00:00:00Z')`)
+	_, err = db.ExecContext(t.Context(), `INSERT INTO notes (created_at) VALUES ('2026-02-01T00:00:00Z')`)
 	require.NoError(err)
-	_, err = db.Exec(
+	_, err = db.ExecContext(t.Context(),
 		`INSERT INTO blobs (content_hash, storage_path, size, preview_hash, preview_path)
 		 VALUES (?, ?, ?, '', '')`,
 		refC.Hash, refC.Hash[:2]+"/"+refC.Hash, refC.Size)
 	require.NoError(err)
 
-	m2, err := Create(context.Background(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
+	m2, err := Create(t.Context(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
 	require.NoError(err)
 
 	assert.Equal(m1.SnapshotID, m2.ParentID)
@@ -277,12 +279,12 @@ func TestCreateSameSecondChainOrder(t *testing.T) {
 	dbPath, attachmentsDir, dataDir, db := seedBackupFixture(t)
 	cacheDir := t.TempDir()
 
-	m1, err := Create(context.Background(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
+	m1, err := Create(t.Context(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
 	require.NoError(err)
 
-	_, err = db.Exec(`INSERT INTO notes (created_at) VALUES ('2026-02-01T00:00:00Z')`)
+	_, err = db.ExecContext(t.Context(), `INSERT INTO notes (created_at) VALUES ('2026-02-01T00:00:00Z')`)
 	require.NoError(err)
-	m2, err := Create(context.Background(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
+	m2, err := Create(t.Context(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
 	require.NoError(err)
 
 	assert.Greater(m2.SnapshotID, m1.SnapshotID, "second snapshot's ID must sort after the first")
@@ -292,9 +294,9 @@ func TestCreateSameSecondChainOrder(t *testing.T) {
 	require.NoError(err)
 	assert.Equal(m2.SnapshotID, latest.SnapshotID, "LatestSnapshot must return the true latest, not the older tie")
 
-	_, err = db.Exec(`INSERT INTO notes (created_at) VALUES ('2026-03-01T00:00:00Z')`)
+	_, err = db.ExecContext(t.Context(), `INSERT INTO notes (created_at) VALUES ('2026-03-01T00:00:00Z')`)
 	require.NoError(err)
-	m3, err := Create(context.Background(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
+	m3, err := Create(t.Context(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
 	require.NoError(err)
 
 	assert.Greater(m3.SnapshotID, m2.SnapshotID, "chain must keep extending in strictly increasing order")
@@ -306,6 +308,8 @@ func TestCreateSameSecondChainOrder(t *testing.T) {
 // population (content hash UNION preview hash).
 func seedPreviewFixture(t *testing.T) (string, string, string) {
 	t.Helper()
+	require := require.New(t)
+	t.Helper()
 	dataDir := t.TempDir()
 	attachmentsDir := filepath.Join(dataDir, "content")
 	refA := writeLooseAttachment(t, attachmentsDir, []byte("content with a preview"))
@@ -313,18 +317,18 @@ func seedPreviewFixture(t *testing.T) (string, string, string) {
 
 	dbPath := filepath.Join(dataDir, "app.db")
 	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
-	require.NoError(t, err)
+	require.NoError(err)
 	t.Cleanup(func() { _ = db.Close() })
-	_, err = db.Exec(frozenTestSchema)
-	require.NoError(t, err)
-	_, err = db.Exec(`INSERT INTO notes (created_at) VALUES ('2026-01-01T00:00:00Z')`)
-	require.NoError(t, err)
-	_, err = db.Exec(
+	_, err = db.ExecContext(t.Context(), frozenTestSchema)
+	require.NoError(err)
+	_, err = db.ExecContext(t.Context(), `INSERT INTO notes (created_at) VALUES ('2026-01-01T00:00:00Z')`)
+	require.NoError(err)
+	_, err = db.ExecContext(t.Context(),
 		`INSERT INTO blobs (content_hash, storage_path, size, preview_hash, preview_path)
 		 VALUES (?, ?, ?, ?, ?)`,
 		refA.Hash, refA.Hash[:2]+"/"+refA.Hash, refA.Size,
 		refT.Hash, refT.Hash[:2]+"/"+refT.Hash)
-	require.NoError(t, err)
+	require.NoError(err)
 	return dbPath, attachmentsDir, dataDir
 }
 
@@ -350,14 +354,14 @@ func TestCreatePreviewManifestCountersAgree(t *testing.T) {
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir := seedPreviewFixture(t)
 
-	m, err := Create(context.Background(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
+	m, err := Create(t.Context(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
 	require.NoError(err)
 
 	assert.Equal(int64(2), m.Attachments.Blobs, "one content blob plus one preview blob")
 	assert.Equal(m.Attachments.Blobs, mustParseStats(t, m.Stats).BlobFiles, "stats population must match attachments")
 	assert.Len(listUnion(t, r, m), 2, "list union must match the manifest counter")
 
-	res, err := Verify(context.Background(), r, newTestApp(), VerifyOptions{})
+	res, err := Verify(t.Context(), r, newTestApp(), VerifyOptions{})
 	require.NoError(err)
 	assert.Empty(res.Problems)
 }
@@ -374,22 +378,22 @@ func TestCreateAttachmentDeletionKeepsVerifyClean(t *testing.T) {
 	dbPath, attachmentsDir, dataDir, db := seedBackupFixture(t)
 	cacheDir := t.TempDir()
 
-	m1, err := Create(context.Background(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
+	m1, err := Create(t.Context(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
 	require.NoError(err)
 	require.Equal(int64(2), m1.Attachments.Blobs)
 
 	// Delete attachment B (highest id row) and its loose file.
 	var hashB string
-	require.NoError(db.QueryRow(`SELECT content_hash FROM blobs ORDER BY id DESC LIMIT 1`).Scan(&hashB))
-	_, err = db.Exec(`DELETE FROM blobs WHERE content_hash = ?`, hashB)
+	require.NoError(db.QueryRowContext(t.Context(), `SELECT content_hash FROM blobs ORDER BY id DESC LIMIT 1`).Scan(&hashB))
+	_, err = db.ExecContext(t.Context(), `DELETE FROM blobs WHERE content_hash = ?`, hashB)
 	require.NoError(err)
 	require.NoError(os.Remove(filepath.Join(attachmentsDir, hashB[:2], hashB)))
 
-	m2, err := Create(context.Background(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
+	m2, err := Create(t.Context(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
 	require.NoError(err)
 
 	var hashA string
-	require.NoError(db.QueryRow(`SELECT content_hash FROM blobs`).Scan(&hashA))
+	require.NoError(db.QueryRowContext(t.Context(), `SELECT content_hash FROM blobs`).Scan(&hashA))
 	require.NotEqual(hashB, hashA)
 
 	assert.Equal(int64(1), m2.Attachments.Blobs, "only the surviving attachment is captured")
@@ -397,7 +401,7 @@ func TestCreateAttachmentDeletionKeepsVerifyClean(t *testing.T) {
 	require.Len(union, 1, "snapshot 2 list union must equal exactly the surviving ref")
 	assert.Equal(hashA, union[0].Hash)
 
-	res, err := Verify(context.Background(), r, newTestApp(), VerifyOptions{All: true})
+	res, err := Verify(t.Context(), r, newTestApp(), VerifyOptions{All: true})
 	require.NoError(err)
 	assert.Empty(res.Problems, "both snapshots verify cleanly after a deletion")
 }
@@ -478,7 +482,7 @@ func computeFileHashMap(t *testing.T, path string, pageSize uint32) *PageHashMap
 // cache and forces a repository rebuild instead.
 func TestCreateRejectsForgedParentHashCache(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, db := seedBackupFixture(t)
 	cacheDir := t.TempDir()
@@ -489,9 +493,9 @@ func TestCreateRejectsForgedParentHashCache(t *testing.T) {
 
 	// Edit an existing row in place (same-length value) so page content changes
 	// but the page count does not, then flush the WAL into the main file.
-	_, err = db.Exec(`UPDATE notes SET created_at = '2099-09-09T09:09:09Z' WHERE id = 1`)
+	_, err = db.ExecContext(t.Context(), `UPDATE notes SET created_at = '2099-09-09T09:09:09Z' WHERE id = 1`)
 	require.NoError(err)
-	_, err = db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
+	_, err = db.ExecContext(t.Context(), `PRAGMA wal_checkpoint(TRUNCATE)`)
 	require.NoError(err)
 
 	forged := computeFileHashMap(t, dbPath, m1.DB.PageSize)
@@ -524,7 +528,7 @@ func TestCreateRejectsForgedParentHashCache(t *testing.T) {
 // chain rebuild recovers the true parent hashes and captures the edit.
 func TestCreateRejectsForgedDeltaParentHashCache(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, db := seedBackupFixture(t)
 	cacheDir := t.TempDir()
@@ -535,18 +539,18 @@ func TestCreateRejectsForgedDeltaParentHashCache(t *testing.T) {
 
 	// A first in-place edit produces a delta child so the next parent is a
 	// delta, not a keyframe.
-	_, err = db.Exec(`UPDATE notes SET created_at = '2098-08-08T08:08:08Z' WHERE id = 1`)
+	_, err = db.ExecContext(t.Context(), `UPDATE notes SET created_at = '2098-08-08T08:08:08Z' WHERE id = 1`)
 	require.NoError(err)
-	_, err = db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
+	_, err = db.ExecContext(t.Context(), `PRAGMA wal_checkpoint(TRUNCATE)`)
 	require.NoError(err)
 	m2, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
 	require.NoError(err)
 	require.Positive(m2.DB.MapChainDepth, "the parent of the forged run must be a delta")
 
 	// A second in-place edit is the change the forged cache would hide.
-	_, err = db.Exec(`UPDATE notes SET created_at = '2099-09-09T09:09:09Z' WHERE id = 1`)
+	_, err = db.ExecContext(t.Context(), `UPDATE notes SET created_at = '2099-09-09T09:09:09Z' WHERE id = 1`)
 	require.NoError(err)
-	_, err = db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
+	_, err = db.ExecContext(t.Context(), `PRAGMA wal_checkpoint(TRUNCATE)`)
 	require.NoError(err)
 
 	forged := computeFileHashMap(t, dbPath, m2.DB.PageSize)
@@ -585,7 +589,7 @@ func (a badPackExtApp) PackFileExtension() string { return a.ext }
 // pack.OpenReader derive the wrong pack ID once packs are encrypted.
 func TestFlowsRejectBadPackExtension(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 
@@ -612,7 +616,7 @@ func TestCreateHonorsCancellationAfterAttachments(t *testing.T) {
 	require.NoError(os.MkdirAll(filepath.Join(dataDir, "deletions"), 0o700))
 	require.NoError(os.WriteFile(filepath.Join(dataDir, "deletions", "a.json"), []byte("{}"), 0o600))
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	opts := createOpts(dbPath, attachmentsDir, dataDir, t.TempDir())
 	opts.Progress = func(ev ProgressEvent) {
@@ -635,9 +639,9 @@ func TestCreateNoChanges(t *testing.T) {
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	cacheDir := t.TempDir()
 
-	_, err := Create(context.Background(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
+	_, err := Create(t.Context(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
 	require.NoError(err)
-	m2, err := Create(context.Background(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
+	m2, err := Create(t.Context(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
 	require.NoError(err)
 	// Only the tiny map/hash delta objects are new; no content re-uploaded.
 	assert.Equal(int64(2), m2.Attachments.Blobs)
@@ -656,12 +660,12 @@ func TestCreatePageSizeChangeForcesFullRecapture(t *testing.T) {
 	dbPath, attachmentsDir, dataDir, db := seedBackupFixture(t)
 	cacheDir := t.TempDir()
 
-	m1, err := Create(context.Background(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
+	m1, err := Create(t.Context(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
 	require.NoError(err)
 
 	rebuildAtPageSize(t, db, 8192)
 
-	m2, err := Create(context.Background(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
+	m2, err := Create(t.Context(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
 	require.NoError(err)
 
 	assert.Equal(m1.SnapshotID, m2.ParentID, "lineage still records the true parent snapshot")
@@ -690,18 +694,20 @@ func TestCreatePageSizeChangeForcesFullRecapture(t *testing.T) {
 // pins a single connection and toggles the journal mode around the vacuum.
 func rebuildAtPageSize(t *testing.T, db *sql.DB, pageSize int) {
 	t.Helper()
-	conn, err := db.Conn(context.Background())
-	require.NoError(t, err)
-	defer func() { require.NoError(t, conn.Close()) }()
+	require := require.New(t)
+	t.Helper()
+	conn, err := db.Conn(t.Context())
+	require.NoError(err)
+	defer func() { require.NoError(conn.Close()) }()
 
-	_, err = conn.ExecContext(context.Background(), `PRAGMA journal_mode=DELETE`)
-	require.NoError(t, err)
-	_, err = conn.ExecContext(context.Background(), fmt.Sprintf(`PRAGMA page_size=%d`, pageSize))
-	require.NoError(t, err)
-	_, err = conn.ExecContext(context.Background(), `VACUUM`)
-	require.NoError(t, err)
-	_, err = conn.ExecContext(context.Background(), `PRAGMA journal_mode=WAL`)
-	require.NoError(t, err)
+	_, err = conn.ExecContext(t.Context(), `PRAGMA journal_mode=DELETE`)
+	require.NoError(err)
+	_, err = conn.ExecContext(t.Context(), fmt.Sprintf(`PRAGMA page_size=%d`, pageSize))
+	require.NoError(err)
+	_, err = conn.ExecContext(t.Context(), `VACUUM`)
+	require.NoError(err)
+	_, err = conn.ExecContext(t.Context(), `PRAGMA journal_mode=WAL`)
+	require.NoError(err)
 }
 
 func TestCreateHoldsExclusiveLock(t *testing.T) {
@@ -717,7 +723,7 @@ func TestCreateHoldsExclusiveLock(t *testing.T) {
 	sharedWaitTimeout, sharedWaitPoll = 200*time.Millisecond, 20*time.Millisecond
 	t.Cleanup(func() { sharedWaitTimeout, sharedWaitPoll = oldTimeout, oldPoll })
 
-	_, err = Create(context.Background(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
+	_, err = Create(t.Context(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
 	require.ErrorIs(err, ErrRepoLocked)
 }
 
@@ -727,7 +733,7 @@ func TestCreateHoldsExclusiveLock(t *testing.T) {
 // deadlocking its worker pipeline.
 func TestCreatePhasesHonorCancellation(t *testing.T) {
 	require := require.New(t)
-	canceled, cancel := context.WithCancel(context.Background())
+	canceled, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	pageSize := uint32(4096)

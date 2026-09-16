@@ -39,6 +39,7 @@ const (
 	ProgressStageRestoreStats ProgressStage = "restore_stats"
 	// ProgressStageProof is retained for source compatibility. Restore emits
 	// the more specific IntegrityCheck and RestoreStats stages instead.
+	//
 	// Deprecated: use ProgressStageIntegrityCheck and ProgressStageRestoreStats.
 	ProgressStageProof ProgressStage = "proof"
 )

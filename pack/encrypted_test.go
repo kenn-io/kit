@@ -53,7 +53,7 @@ func TestEncryptedPackAccessControl(t *testing.T) {
 		require.NoError(err)
 		require.NoError(os.WriteFile(renamed, data, 0o600))
 		_, err = OpenReader(renamed, c)
-		assert.ErrorIs(err, ErrDecrypt, "extension %s", ext) //nolint:testifylint // independent non-blocking check
+		assert.ErrorIs(err, ErrDecrypt, "extension %s", ext)
 	}
 }
 

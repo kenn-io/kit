@@ -122,7 +122,7 @@ func (s *restoreState) restorePackedAttachments(
 ) (packedRestoreResult, error) {
 	limits := target.Limits()
 	if limits.BlobBytes < 0 || limits.PackBytes <= 0 || limits.FooterBytes <= 0 || limits.PackEntries <= 0 {
-		return packedRestoreResult{}, fmt.Errorf("backup: packed content target returned invalid limits")
+		return packedRestoreResult{}, errors.New("backup: packed content target returned invalid limits")
 	}
 	inventory, err := s.loadRestoreAttachmentInventory(ctx, app, m)
 	if err != nil {
@@ -137,7 +137,7 @@ func (s *restoreState) restorePackedAttachments(
 		}
 		seenHashes[ref.Hash] = struct{}{}
 		if ref.Size > 0 && result.totalBytes > math.MaxInt64-ref.Size {
-			return packedRestoreResult{}, fmt.Errorf("backup: attachment byte total overflows")
+			return packedRestoreResult{}, errors.New("backup: attachment byte total overflows")
 		}
 		result.totalBytes += ref.Size
 	}
@@ -180,7 +180,7 @@ func (s *restoreState) restorePackedAttachments(
 		packedSet[hash.String()] = struct{}{}
 	}
 	if len(packedSet) != stats.PackedBlobs {
-		return packedRestoreResult{}, fmt.Errorf("backup: packed import reported inconsistent selected hash count")
+		return packedRestoreResult{}, errors.New("backup: packed import reported inconsistent selected hash count")
 	}
 
 	looseGroups := make(map[string][]ContentRef)
@@ -212,7 +212,7 @@ func (s *restoreState) restorePackedAttachments(
 	result.packedBlobs = int64(len(packedSet))
 	result.looseBlobs = result.totalBlobs - result.packedBlobs
 	if result.packedBlobs < 0 || result.looseBlobs < 0 || result.packedBlobs+result.looseBlobs != result.totalBlobs {
-		return packedRestoreResult{}, fmt.Errorf("backup: packed and loose attachment coverage is inconsistent")
+		return packedRestoreResult{}, errors.New("backup: packed and loose attachment coverage is inconsistent")
 	}
 	if result.looseBlobs > 0 {
 		if err := s.syncPackedRestoreContent(); err != nil {
@@ -325,7 +325,7 @@ func (s *restoreState) commitPreparedImport(
 		return fmt.Errorf("backup: opening packed content restore catalog: %w", err)
 	}
 	if catalog == nil {
-		return fmt.Errorf("backup: packed content target returned a nil restore catalog")
+		return errors.New("backup: packed content target returned a nil restore catalog")
 	}
 	if err := prepared.Commit(ctx, catalog); err != nil {
 		return err

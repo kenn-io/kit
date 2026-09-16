@@ -1,7 +1,6 @@
 package backup
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,25 +14,27 @@ import (
 
 func materializeDB(t *testing.T, r *Repo, m *Manifest) []byte {
 	t.Helper()
+	require := require.New(t)
+	t.Helper()
 	known, err := r.LoadBlobIndex()
-	require.NoError(t, err)
+	require.NoError(err)
 	fetch := func(id pack.BlobID) ([]byte, error) { return r.ReadBlob(known, id, nil, testPackExt) }
 	chain, err := r.PageMapChain(m)
-	require.NoError(t, err)
+	require.NoError(err)
 	pm, err := MaterializePageMap(fetch, chain)
-	require.NoError(t, err)
-	require.NoError(t, pm.CheckCoverage())
-	require.Equal(t, m.DB.PageCount, pm.PageCount)
+	require.NoError(err)
+	require.NoError(pm.CheckCoverage())
+	require.Equal(m.DB.PageCount, pm.PageCount)
 
 	blobCache := map[pack.BlobID][]byte{}
 	out := make([]byte, pm.PageCount*uint64(pm.PageSize))
 	for page := range pm.PageCount {
 		id, off, err := pm.Lookup(page)
-		require.NoError(t, err)
+		require.NoError(err)
 		blob, ok := blobCache[id]
 		if !ok {
 			blob, err = fetch(id)
-			require.NoError(t, err)
+			require.NoError(err)
 			blobCache[id] = blob
 		}
 		copy(out[page*uint64(pm.PageSize):], blob[off:off+uint64(pm.PageSize)])
@@ -51,7 +52,7 @@ func snapshotDBFile(t *testing.T, dbPath string) []byte {
 func TestBackupChainEndToEnd(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, db := seedBackupFixture(t)
@@ -65,9 +66,9 @@ func TestBackupChainEndToEnd(t *testing.T) {
 
 	// Mutate the archive: rows and a new attachment.
 	refC := writeLooseAttachment(t, attachmentsDir, []byte("post-snapshot attachment"))
-	_, err = db.Exec(`INSERT INTO notes (created_at) VALUES ('2026-05-01T00:00:00Z')`)
+	_, err = db.ExecContext(t.Context(), `INSERT INTO notes (created_at) VALUES ('2026-05-01T00:00:00Z')`)
 	require.NoError(err)
-	_, err = db.Exec(
+	_, err = db.ExecContext(t.Context(),
 		`INSERT INTO blobs (content_hash, storage_path, size, preview_hash, preview_path)
 		 VALUES (?, ?, ?, '', '')`,
 		refC.Hash, refC.Hash[:2]+"/"+refC.Hash, refC.Size)
@@ -101,7 +102,7 @@ func TestBackupChainEndToEnd(t *testing.T) {
 	// Crash debris: a leftover staging file disappears on the next create.
 	debris := filepath.Join(r.Path("staging"), "crash-leftover.tmp")
 	require.NoError(os.WriteFile(debris, []byte("junk"), 0o600))
-	_, err = db.Exec(`INSERT INTO notes (created_at) VALUES ('2026-06-01T00:00:00Z')`)
+	_, err = db.ExecContext(t.Context(), `INSERT INTO notes (created_at) VALUES ('2026-06-01T00:00:00Z')`)
 	require.NoError(err)
 	m3, err := Create(ctx, r, newTestApp(), opts)
 	require.NoError(err)

@@ -39,10 +39,10 @@ func TestConcurrentSameDestinationConnectsReuseCompletedOperation(t *testing.T) 
 		results <- generation
 		errorsChannel <- err
 	}
-	go connect(context.Background())
+	go connect(t.Context())
 	<-spawnStarted
 	waiterContext := &observedDoneContext{
-		Context: context.Background(), observed: make(chan struct{}),
+		Context: t.Context(), observed: make(chan struct{}),
 	}
 	go connect(waiterContext)
 	<-waiterContext.observed
@@ -65,12 +65,12 @@ func TestConnectWaitingBehindDisconnectReevaluatesState(t *testing.T) {
 	releaseExit := make(chan struct{})
 	fake.setExitGate(exitStarted, releaseExit)
 	disconnectResult := make(chan error, 1)
-	go func() { disconnectResult <- manager.Disconnect(context.Background(), "studio") }()
+	go func() { disconnectResult <- manager.Disconnect(t.Context(), "studio") }()
 	<-exitStarted
 	connectGeneration := make(chan Generation, 1)
 	connectResult := make(chan error, 1)
 	waiterContext := &observedDoneContext{
-		Context: context.Background(), observed: make(chan struct{}),
+		Context: t.Context(), observed: make(chan struct{}),
 	}
 	go func() {
 		generation, err := manager.Connect(waiterContext, "studio", testTarget("wes@studio"))
@@ -95,7 +95,7 @@ func TestConnectionArgumentsRejectGenerationReservedForTeardown(t *testing.T) {
 	fake.setExitGate(exitStarted, releaseExit)
 	disconnectResult := make(chan error, 1)
 	go func() {
-		disconnectResult <- manager.Disconnect(context.Background(), "studio")
+		disconnectResult <- manager.Disconnect(t.Context(), "studio")
 	}()
 	<-exitStarted
 
@@ -113,7 +113,7 @@ func TestStateAccessDoesNotBlockBehindMuxProbe(t *testing.T) {
 	fake.setCheckGate(probeStarted, releaseProbe)
 	result := make(chan error, 1)
 	go func() {
-		_, aliveErr := manager.IsAlive(context.Background(), "studio", generation)
+		_, aliveErr := manager.IsAlive(t.Context(), "studio", generation)
 		result <- aliveErr
 	}()
 	<-probeStarted
@@ -137,12 +137,12 @@ func TestProbeResultCannotApplyAfterDisconnect(t *testing.T) {
 	fake.setCheckGate(probeStarted, releaseProbe)
 	result := make(chan error, 1)
 	go func() {
-		_, aliveErr := manager.IsAlive(context.Background(), "studio", generation)
+		_, aliveErr := manager.IsAlive(t.Context(), "studio", generation)
 		result <- aliveErr
 	}()
 	<-probeStarted
 
-	require.NoError(t, manager.Disconnect(context.Background(), "studio"))
+	require.NoError(t, manager.Disconnect(t.Context(), "studio"))
 	close(releaseProbe)
 
 	require.ErrorIs(t, <-result, ErrConnectionChanged)
@@ -175,7 +175,7 @@ func TestConnectRetriesProbeErrorAfterConnectionReplacement(t *testing.T) {
 		err        error
 	}, 1)
 	go func() {
-		generation, err := manager.Connect(context.Background(), "studio", testTarget("wes@studio"))
+		generation, err := manager.Connect(t.Context(), "studio", testTarget("wes@studio"))
 		result <- struct {
 			generation Generation
 			err        error
@@ -183,9 +183,9 @@ func TestConnectRetriesProbeErrorAfterConnectionReplacement(t *testing.T) {
 	}()
 	<-probeStarted
 
-	require.NoError(manager.Disconnect(context.Background(), "studio"))
+	require.NoError(manager.Disconnect(t.Context(), "studio"))
 	replacementGeneration, err := manager.Connect(
-		context.Background(), "studio", testTarget("wes@studio"),
+		t.Context(), "studio", testTarget("wes@studio"),
 	)
 	require.NoError(err)
 	close(releaseProbe)
@@ -197,10 +197,10 @@ func TestConnectRetriesProbeErrorAfterConnectionReplacement(t *testing.T) {
 
 func TestIsAliveRejectsStaleGeneration(t *testing.T) {
 	_, manager, oldGeneration := newConnectedTestManager(t, "studio", "wes@old")
-	_, err := manager.Connect(context.Background(), "studio", testTarget("wes@new"))
+	_, err := manager.Connect(t.Context(), "studio", testTarget("wes@new"))
 	require.NoError(t, err)
 
-	_, err = manager.IsAlive(context.Background(), "studio", oldGeneration)
+	_, err = manager.IsAlive(t.Context(), "studio", oldGeneration)
 
 	require.ErrorIs(t, err, ErrConnectionChanged)
 	assert.NotErrorIs(t, err, ErrProbeIndeterminate)

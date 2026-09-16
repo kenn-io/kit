@@ -72,6 +72,7 @@ func profileCommands(spec profileSpec, commands Commands) (native, windows strin
 	case windowsCommandPowerShell:
 		native = commands.POSIX
 		windows = commands.PowerShell
+	default:
 	}
 	return native, windows
 }

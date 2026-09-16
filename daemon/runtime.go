@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -85,7 +86,7 @@ func (s RuntimeStore) validatePrefix() (string, error) {
 
 func (s RuntimeStore) prepareDir() error {
 	if s.Dir == "" {
-		return fmt.Errorf("runtime dir is empty")
+		return errors.New("runtime dir is empty")
 	}
 	if !filepath.IsAbs(s.Dir) {
 		return fmt.Errorf("runtime dir %q must be absolute", s.Dir)
@@ -129,7 +130,7 @@ func (s RuntimeStore) Path(pid int) (string, error) {
 		return "", err
 	}
 	if pid <= 0 {
-		return "", fmt.Errorf("pid must be > 0")
+		return "", errors.New("pid must be > 0")
 	}
 	return filepath.Join(s.Dir, fmt.Sprintf("%s.%d.json", prefix, pid)), nil
 }
@@ -165,10 +166,10 @@ func (s RuntimeStore) Write(rec RuntimeRecord) (string, error) {
 		return "", err
 	}
 	if rec.PID <= 0 {
-		return "", fmt.Errorf("pid must be > 0")
+		return "", errors.New("pid must be > 0")
 	}
 	if rec.Address == "" {
-		return "", fmt.Errorf("runtime address is empty")
+		return "", errors.New("runtime address is empty")
 	}
 	if rec.StartedAt.IsZero() {
 		rec.StartedAt = time.Now().UTC()

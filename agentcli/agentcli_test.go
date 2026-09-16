@@ -198,8 +198,12 @@ func TestXHighAndMaximumStayDistinct(t *testing.T) {
 		xhigh, maximum string
 	}{
 		{agentcli.Codex, `model_reasoning_effort="xhigh"`, `model_reasoning_effort="max"`},
-		{agentcli.Claude, "xhigh", "max"}, {agentcli.Pi, "xhigh", "max"}, {agentcli.Copilot, "xhigh", "max"},
-		{agentcli.Kilo, "xhigh", "max"}, {agentcli.Kiro, "xhigh", "max"}, {agentcli.Droid, "xhigh", "max"},
+		{agentcli.Claude, "xhigh", "max"},
+		{agentcli.Pi, "xhigh", "max"},
+		{agentcli.Copilot, "xhigh", "max"},
+		{agentcli.Kilo, "xhigh", "max"},
+		{agentcli.Kiro, "xhigh", "max"},
+		{agentcli.Droid, "xhigh", "max"},
 	}
 	for _, test := range tests {
 		agent := mustAgent(t, test.name, agentcli.Command{})

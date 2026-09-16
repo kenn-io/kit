@@ -87,7 +87,7 @@ func NewReaderFromFile(f *os.File, id string, crypter *Crypter) (*Reader, error)
 // NewReaderFromFileWithOptions is NewReaderFromFile with explicit limits.
 func NewReaderFromFileWithOptions(f *os.File, id string, crypter *Crypter, opts ReaderOptions) (*Reader, error) {
 	if f == nil {
-		return nil, fmt.Errorf("pack: nil file")
+		return nil, errors.New("pack: nil file")
 	}
 	r, err := newReader(f, id, crypter, normalizeReaderLimits(opts.Limits))
 	if err != nil {
@@ -188,7 +188,8 @@ func normalizeReaderLimits(limits ReaderLimits) ReaderLimits {
 // the file. It returns the decoded (and, for encrypted packs, decrypted)
 // footer region and the absolute file offset where that region begins.
 func readFooterRegion(f *os.File, size int64, enc bool, id string,
-	crypter *Crypter, limits ReaderLimits) ([]byte, uint64, error) {
+	crypter *Crypter, limits ReaderLimits,
+) ([]byte, uint64, error) {
 	tailLen := min(size, int64(plainTrailerSize))
 	fixedTail := make([]byte, tailLen)
 	if _, err := f.ReadAt(fixedTail, size-tailLen); err != nil {
@@ -199,7 +200,7 @@ func readFooterRegion(f *os.File, size int64, enc bool, id string,
 		if crypter == nil {
 			return nil, 0, ErrEncrypted
 		}
-		footerOffset, storedLen, err := parseEncryptedTrailer(fixedTail, uint64(size)) //nolint:gosec // size >= 0
+		footerOffset, storedLen, err := parseEncryptedTrailer(fixedTail, uint64(size))
 		if err != nil {
 			return nil, 0, err
 		}
@@ -208,7 +209,7 @@ func readFooterRegion(f *os.File, size int64, enc bool, id string,
 			return nil, 0, &StreamLimitError{Dimension: StreamLimitFooterBytes, Actual: storedLen, Limit: maxStoredFooter}
 		}
 		buf := make([]byte, storedLen+encTrailerSize)
-		if _, err := f.ReadAt(buf, int64(footerOffset)); err != nil { //nolint:gosec // validated below maxFooterLen
+		if _, err := f.ReadAt(buf, int64(footerOffset)); err != nil {
 			return nil, 0, fmt.Errorf("reading footer: %w", err)
 		}
 		sealed, off, err := extractEncryptedFooterShifted(buf, footerOffset)
@@ -222,16 +223,16 @@ func readFooterRegion(f *os.File, size int64, enc bool, id string,
 		return region, off, nil
 	}
 
-	footerLen, _, err := parsePlainTrailer(fixedTail, uint64(size)) //nolint:gosec // size >= 0
+	footerLen, _, err := parsePlainTrailer(fixedTail, uint64(size))
 	if err != nil {
 		return nil, 0, err
 	}
 	if uint64(footerLen) > limits.FooterBytes {
 		return nil, 0, &StreamLimitError{Dimension: StreamLimitFooterBytes, Actual: uint64(footerLen), Limit: limits.FooterBytes}
 	}
-	regionStart := uint64(size) - plainTrailerSize - uint64(footerLen) //nolint:gosec // size >= 0
+	regionStart := uint64(size) - plainTrailerSize - uint64(footerLen)
 	buf := make([]byte, uint64(footerLen)+plainTrailerSize)
-	if _, err := f.ReadAt(buf, int64(regionStart)); err != nil { //nolint:gosec // validated below maxFooterLen
+	if _, err := f.ReadAt(buf, int64(regionStart)); err != nil {
 		return nil, 0, fmt.Errorf("reading footer: %w", err)
 	}
 	region, err := extractPlainFooterRegionShifted(buf, regionStart)
@@ -256,7 +257,7 @@ func (r *Reader) readStored(e Entry) ([]byte, error) {
 		return nil, err
 	}
 	buf := make([]byte, e.StoredLen)
-	//nolint:gosec // e.Offset < footerStart <= file size (int64), per parseFooterRegion
+
 	if _, err := r.f.ReadAt(buf, int64(e.Offset)); err != nil {
 		return nil,
 			fmt.Errorf("%w: reading stored bytes for %s: %w", ErrCorrupt,

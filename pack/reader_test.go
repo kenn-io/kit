@@ -8,25 +8,26 @@ import (
 	"strings"
 	"testing"
 
-	Assert "github.com/stretchr/testify/assert"
-	Require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // buildTestPack writes a pack with the given blobs and returns its final path
 // and entries. crypter may be nil for a plain pack.
 func buildTestPack(t *testing.T, blobs [][]byte,
-	crypter *Crypter) (string, []Entry) {
+	crypter *Crypter,
+) (string, []Entry) {
 	t.Helper()
 	dir := t.TempDir()
 	w, err := NewWriter(dir, WriterOptions{Crypter: crypter})
-	Require.NoError(t, err)
+	require.NoError(t, err)
 	for _, b := range blobs {
 		_, err := w.Append(b)
-		Require.NoError(t, err)
+		require.NoError(t, err)
 	}
 	final := filepath.Join(dir, w.ID()+".mvpack")
 	entries, err := w.Seal(final)
-	Require.NoError(t, err)
+	require.NoError(t, err)
 	return final, entries
 }
 
@@ -34,7 +35,7 @@ func testBlobs(t *testing.T) [][]byte {
 	t.Helper()
 	random := make([]byte, 32*1024)
 	_, err := rand.Read(random)
-	Require.NoError(t, err)
+	require.NoError(t, err)
 	return [][]byte{
 		bytes.Repeat([]byte("compressible text "), 2000),
 		random,
@@ -44,8 +45,8 @@ func testBlobs(t *testing.T) [][]byte {
 }
 
 func TestReaderRoundTripPlain(t *testing.T) {
-	require := Require.New(t)
-	assert := Assert.New(t)
+	require := require.New(t)
+	assert := assert.New(t)
 	blobs := testBlobs(t)
 	path, wrote := buildTestPack(t, blobs, nil)
 
@@ -67,8 +68,8 @@ func TestReaderIDIgnoresExtension(t *testing.T) {
 	// OpenReader derives the pack ID from the filename minus its extension, so
 	// any extension works: the same sealed pack copied under a ".mvpack" name
 	// and a ".kpack" name must both open and report the same ID.
-	require := Require.New(t)
-	assert := Assert.New(t)
+	require := require.New(t)
+	assert := assert.New(t)
 	path, _ := buildTestPack(t, testBlobs(t), nil)
 	id := strings.TrimSuffix(filepath.Base(path), ".mvpack")
 	data, err := os.ReadFile(path)
@@ -85,7 +86,7 @@ func TestReaderIDIgnoresExtension(t *testing.T) {
 }
 
 func TestReaderHeaderValidation(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	path, _ := buildTestPack(t, testBlobs(t), nil)
 	data, err := os.ReadFile(path)
 	require.NoError(err)
@@ -110,8 +111,8 @@ func TestReaderHeaderValidation(t *testing.T) {
 }
 
 func TestReaderBlobCorruption(t *testing.T) {
-	require := Require.New(t)
-	assert := Assert.New(t)
+	require := require.New(t)
+	assert := assert.New(t)
 	path, entries := buildTestPack(t, testBlobs(t), nil)
 	data, err := os.ReadFile(path)
 	require.NoError(err)
@@ -137,8 +138,8 @@ func TestReaderBlobCorruption(t *testing.T) {
 func TestReaderRoundTripLargePack(t *testing.T) {
 	// Build a several-MB pack (much larger than the footer itself) and
 	// confirm opening and reading it back is still correct.
-	require := Require.New(t)
-	assert := Assert.New(t)
+	require := require.New(t)
+	assert := assert.New(t)
 
 	var blobs [][]byte
 	for range 8 {
@@ -174,7 +175,7 @@ func TestReaderRejectsForgedHugeRawLen(t *testing.T) {
 	// entries alike: maxStoredLen exceeds MaxRawLen by the compression/seal
 	// allowances, so an uncompressed entry could otherwise claim a raw length
 	// just past the documented blob limit.
-	require := Require.New(t)
+	require := require.New(t)
 	compressible := bytes.Repeat([]byte("forge me some zstd bytes "), 4096)
 	path, entries := buildTestPack(t, [][]byte{compressible}, nil)
 
@@ -203,7 +204,7 @@ func TestReaderRejectsForgedHugeRawLen(t *testing.T) {
 // entries that never passed footer parsing: the MaxRawLen bound applies to
 // uncompressed frames too, not only the zstd preallocation path.
 func TestDecodeFrameRejectsOversizedRawLen(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	for _, compressed := range []bool{true, false} {
 		_, err := decodeFrame([]byte("stored"), compressed, MaxRawLen+1)
 		require.ErrorIs(err, ErrCorrupt, "compressed=%v", compressed)
@@ -215,7 +216,7 @@ func TestReaderRejectsEncryptedFlagInPlainPack(t *testing.T) {
 	// An entry flagged BlobEncrypted inside a pack whose trailer is plain is
 	// structurally corrupt: the pack-level flag and the entry-level flag
 	// disagree about whether the blob was sealed.
-	require := Require.New(t)
+	require := require.New(t)
 	blobs := [][]byte{[]byte("first"), []byte("second")}
 	path, entries := buildTestPack(t, blobs, nil)
 
@@ -238,7 +239,7 @@ func TestReaderRejectsEncryptedFlagInPlainPack(t *testing.T) {
 }
 
 func TestReaderBlobHashMismatch(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	// A stored frame whose bytes are internally consistent (CRC recomputed to
 	// match) but whose content does not hash to the entry's BlobID must fail
 	// with ErrBlobMismatch. Build it by lying to the footer: swap two entries'

@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	Require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/require"
 
 	gitcmd "go.kenn.io/kit/git/cmd"
 	gitenv "go.kenn.io/kit/git/env"
@@ -19,18 +19,18 @@ import (
 
 func lifecycleGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := exec.CommandContext(t.Context(), "git", args...)
 	cmd.Dir = dir
 	cmd.Env = lifecycleGitEnv(t)
 	out, err := cmd.CombinedOutput()
-	Require.NoError(t, err, "git %v: %s", args, out)
+	require.NoError(t, err, "git %v: %s", args, out)
 	return strings.TrimSpace(string(out))
 }
 
 func isolateLifecycleGitConfig(t *testing.T) {
 	t.Helper()
 	globalConfig := filepath.Join(t.TempDir(), "global.gitconfig")
-	Require.NoError(t, os.WriteFile(globalConfig, nil, 0o600))
+	require.NoError(t, os.WriteFile(globalConfig, nil, 0o600))
 	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 }
@@ -38,7 +38,7 @@ func isolateLifecycleGitConfig(t *testing.T) {
 func lifecycleGitEnv(t *testing.T) []string {
 	t.Helper()
 	globalConfig := os.Getenv("GIT_CONFIG_GLOBAL")
-	Require.NotEmpty(t, globalConfig, "Git fixture config was not isolated")
+	require.NotEmpty(t, globalConfig, "Git fixture config was not isolated")
 	return append(
 		isolatedLifecycleBaseEnv(t),
 		"GIT_CONFIG_GLOBAL="+globalConfig,
@@ -69,7 +69,7 @@ func initLifecycleRepo(t *testing.T) string {
 	}
 	isolateLifecycleGitConfig(t)
 	dir := filepath.Join(t.TempDir(), "repo")
-	Require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.MkdirAll(dir, 0o755))
 	lifecycleGit(t, dir, "init", "-q", "-b", "main")
 	lifecycleGit(t, dir, "config", "user.email", "t@e.st")
 	lifecycleGit(t, dir, "config", "user.name", "Tester")
@@ -80,7 +80,7 @@ func initLifecycleRepo(t *testing.T) string {
 
 func branchExistsInRepo(t *testing.T, repo, branch string) bool {
 	t.Helper()
-	cmd := exec.Command(
+	cmd := exec.CommandContext(t.Context(),
 		"git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch,
 	)
 	cmd.Dir = repo
@@ -104,7 +104,7 @@ func writeHookScript(t *testing.T, dir, outFile string, exitCode int) string {
 	if exitCode != 0 {
 		body += "echo boom >&2\nexit " + string(rune('0'+exitCode)) + "\n"
 	}
-	Require.NoError(t, os.WriteFile(script, []byte(body), 0o755))
+	require.NoError(t, os.WriteFile(script, []byte(body), 0o755))
 	return script
 }
 
@@ -140,10 +140,10 @@ func runTestHook(ctx context.Context, command HookCommand) error {
 
 func TestCreateWorktreeOnDiskDerivesPathAndCreatesBranch(t *testing.T) {
 	assert := assert.New(t)
-	require := Require.New(t)
+	require := require.New(t)
 	repo := initLifecycleRepo(t)
 
-	result, err := CreateWorktreeOnDisk(context.Background(), CreateWorktreeOptions{
+	result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
 		ProjectRoot: repo,
 		Branch:      "feat/new-thing",
 	})
@@ -162,11 +162,11 @@ func TestCreateWorktreeOnDiskDerivesPathAndCreatesBranch(t *testing.T) {
 
 func TestCreateWorktreeOnDiskReportsBranchCreated(t *testing.T) {
 	assert := assert.New(t)
-	require := Require.New(t)
+	require := require.New(t)
 	repo := initLifecycleRepo(t)
 	lifecycleGit(t, repo, "branch", "existing")
 
-	attached, err := CreateWorktreeOnDisk(context.Background(), CreateWorktreeOptions{
+	attached, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
 		ProjectRoot: repo,
 		Branch:      "existing",
 		Path:        filepath.Join(t.TempDir(), "wt-existing"),
@@ -174,7 +174,7 @@ func TestCreateWorktreeOnDiskReportsBranchCreated(t *testing.T) {
 	require.NoError(err)
 	assert.False(attached.BranchCreated)
 
-	created, err := CreateWorktreeOnDisk(context.Background(), CreateWorktreeOptions{
+	created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
 		ProjectRoot: repo,
 		Branch:      "brand-new",
 		Path:        filepath.Join(t.TempDir(), "wt-new"),
@@ -185,19 +185,19 @@ func TestCreateWorktreeOnDiskReportsBranchCreated(t *testing.T) {
 
 func TestCreateWorktreeResultRollbackPreservesPreexistingBranch(t *testing.T) {
 	assert := assert.New(t)
-	require := Require.New(t)
+	require := require.New(t)
 	repo := initLifecycleRepo(t)
 	lifecycleGit(t, repo, "branch", "keep-me")
 
 	dest := filepath.Join(t.TempDir(), "wt")
-	result, err := CreateWorktreeOnDisk(context.Background(), CreateWorktreeOptions{
+	result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
 		ProjectRoot: repo,
 		Branch:      "keep-me",
 		Path:        dest,
 	})
 	require.NoError(err)
 
-	remaining, err := result.Rollback(context.Background())
+	remaining, err := result.Rollback(t.Context())
 	require.NoError(err)
 	assert.Empty(remaining)
 	_, statErr := os.Stat(dest)
@@ -206,7 +206,7 @@ func TestCreateWorktreeResultRollbackPreservesPreexistingBranch(t *testing.T) {
 }
 
 func TestCreateWorktreeResultRollbackIgnoresMutatedPublicOwnership(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	assert := assert.New(t)
 	repo := initLifecycleRepo(t)
 	lifecycleGit(t, repo, "branch", "keep-me")
@@ -231,7 +231,7 @@ func TestCreateWorktreeResultRollbackIgnoresMutatedPublicOwnership(t *testing.T)
 }
 
 func TestCreateWorktreeOnDiskRejectsSymlinkedHookEscape(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	repo := initLifecycleRepo(t)
 
 	outside := filepath.Join(t.TempDir(), "outside.sh")
@@ -241,7 +241,7 @@ func TestCreateWorktreeOnDiskRejectsSymlinkedHookEscape(t *testing.T) {
 	link := filepath.Join(repo, "hook-link.sh")
 	require.NoError(os.Symlink(outside, link))
 
-	_, err := CreateWorktreeOnDisk(context.Background(), CreateWorktreeOptions{
+	_, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
 		ProjectRoot: repo,
 		Branch:      "feat/escape",
 		SetupScript: "hook-link.sh",
@@ -250,7 +250,7 @@ func TestCreateWorktreeOnDiskRejectsSymlinkedHookEscape(t *testing.T) {
 }
 
 func TestCreateWorktreeOnDiskUsesExecutionPolicy(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	assert := assert.New(t)
 	repo := initLifecycleRepo(t)
 	hook := filepath.Join(repo, "setup.sh")
@@ -258,7 +258,7 @@ func TestCreateWorktreeOnDiskUsesExecutionPolicy(t *testing.T) {
 
 	gitRuns := 0
 	hookRuns := 0
-	_, err := CreateWorktreeOnDisk(context.Background(), CreateWorktreeOptions{
+	_, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
 		ProjectRoot: repo,
 		Branch:      "execution-policy",
 		Path:        filepath.Join(t.TempDir(), "wt"),
@@ -281,12 +281,12 @@ func TestCreateWorktreeOnDiskUsesExecutionPolicy(t *testing.T) {
 }
 
 func TestCreateWorktreeOnDiskPreservesRunnerConfigurationWithNilEnv(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	assert := assert.New(t)
 	repo := initLifecycleRepo(t)
 
 	configSeen := false
-	_, err := CreateWorktreeOnDisk(context.Background(), CreateWorktreeOptions{
+	_, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
 		ProjectRoot: repo,
 		Branch:      "configured-runner",
 		Path:        filepath.Join(t.TempDir(), "wt"),
@@ -313,7 +313,7 @@ func TestCreateWorktreeOnDiskPreservesRunnerConfigurationWithNilEnv(t *testing.T
 
 func TestCreateWorktreeResultRollbackPreservesAdvancedBranch(t *testing.T) {
 	assert := assert.New(t)
-	require := Require.New(t)
+	require := require.New(t)
 	repo := initLifecycleRepo(t)
 	result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
 		ProjectRoot: repo,
@@ -336,7 +336,7 @@ func TestCreateWorktreeResultRollbackPreservesAdvancedBranch(t *testing.T) {
 }
 
 func TestCreateWorktreeResultRollbackPreservesDetachedCommit(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	assert := assert.New(t)
 	repo := initLifecycleRepo(t)
 	result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
@@ -359,7 +359,7 @@ func TestCreateWorktreeResultRollbackPreservesDetachedCommit(t *testing.T) {
 
 func TestCreateWorktreeResultRollbackPreservesDirtyWorktree(t *testing.T) {
 	assert := assert.New(t)
-	require := Require.New(t)
+	require := require.New(t)
 	repo := initLifecycleRepo(t)
 	result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
 		ProjectRoot: repo,
@@ -379,7 +379,7 @@ func TestCreateWorktreeResultRollbackPreservesDirtyWorktree(t *testing.T) {
 }
 
 func TestCreateWorktreeResultRollbackPreservesIgnoredArtifacts(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	assert := assert.New(t)
 	repo := initLifecycleRepo(t)
 	require.NoError(os.WriteFile(
@@ -405,7 +405,7 @@ func TestCreateWorktreeResultRollbackPreservesIgnoredArtifacts(t *testing.T) {
 }
 
 func TestCreateWorktreeResultRollbackPreservesInitializedSubmodule(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	assert := assert.New(t)
 
 	moduleOrigin := initLifecycleRepo(t)
@@ -448,7 +448,7 @@ func TestCreateWorktreeResultRollbackPreservesInitializedSubmodule(t *testing.T)
 }
 
 func TestCreateWorktreeOnDiskReportsSnapshotCleanupFailure(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	assert := assert.New(t)
 	repo := initLifecycleRepo(t)
 	runGit := func(
@@ -472,12 +472,13 @@ func TestCreateWorktreeOnDiskReportsSnapshotCleanupFailure(t *testing.T) {
 	})
 
 	require.Error(err)
-	assert.ErrorContains(err, "snapshot failed")
+	require.
+		ErrorContains(err, "snapshot failed")
 	assert.ErrorContains(err, "cleanup failed")
 }
 
 func TestLifecycleWorktreeHeadPropagatesSymbolicRefFailure(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	assert := assert.New(t)
 	repo := initLifecycleRepo(t)
 	ctx := withLifecycleExecution(
@@ -500,13 +501,13 @@ func TestLifecycleWorktreeHeadPropagatesSymbolicRefFailure(t *testing.T) {
 
 func TestCreateWorktreeOnDiskAttachesExistingBranch(t *testing.T) {
 	assert := assert.New(t)
-	require := Require.New(t)
+	require := require.New(t)
 	repo := initLifecycleRepo(t)
 	lifecycleGit(t, repo, "branch", "existing")
 	wantSHA := lifecycleGit(t, repo, "rev-parse", "existing")
 
 	dest := filepath.Join(t.TempDir(), "wt")
-	result, err := CreateWorktreeOnDisk(context.Background(), CreateWorktreeOptions{
+	result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
 		ProjectRoot: repo,
 		Branch:      "existing",
 		Path:        dest,
@@ -520,7 +521,7 @@ func TestCreateWorktreeOnDiskAttachesExistingBranch(t *testing.T) {
 
 func TestCreateWorktreeOnDiskFromBaseRef(t *testing.T) {
 	assert := assert.New(t)
-	require := Require.New(t)
+	require := require.New(t)
 	repo := initLifecycleRepo(t)
 	lifecycleGit(t, repo, "checkout", "-q", "-b", "release")
 	lifecycleGit(t, repo, "commit", "--allow-empty", "-m", "release work")
@@ -528,7 +529,7 @@ func TestCreateWorktreeOnDiskFromBaseRef(t *testing.T) {
 	lifecycleGit(t, repo, "checkout", "-q", "main")
 
 	dest := filepath.Join(t.TempDir(), "wt")
-	result, err := CreateWorktreeOnDisk(context.Background(), CreateWorktreeOptions{
+	result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
 		ProjectRoot: repo,
 		Branch:      "hotfix",
 		Path:        dest,
@@ -543,7 +544,7 @@ func TestCreateWorktreeOnDiskFromBaseRef(t *testing.T) {
 }
 
 func TestCreateWorktreeOnDiskClassifiesExistingBaseRefBranch(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	repo := initLifecycleRepo(t)
 	lifecycleGit(t, repo, "branch", "existing")
 	dest := filepath.Join(t.TempDir(), "wt")
@@ -562,7 +563,7 @@ func TestCreateWorktreeOnDiskClassifiesExistingBaseRefBranch(t *testing.T) {
 
 func TestCreateWorktreeOnDiskRunsSetupHook(t *testing.T) {
 	assert := assert.New(t)
-	require := Require.New(t)
+	require := require.New(t)
 	repo := initLifecycleRepo(t)
 	outFile := filepath.Join(t.TempDir(), "hook.out")
 	script := writeHookScript(t, t.TempDir(), outFile, 0)
@@ -574,7 +575,7 @@ func TestCreateWorktreeOnDiskRunsSetupHook(t *testing.T) {
 
 	dest := filepath.Join(t.TempDir(), "wt")
 	var hookDir string
-	result, err := CreateWorktreeOnDisk(context.Background(), CreateWorktreeOptions{
+	result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
 		ProjectRoot:  repo,
 		Branch:       "feature",
 		Path:         dest,
@@ -608,7 +609,7 @@ func TestCreateWorktreeOnDiskRunsSetupHook(t *testing.T) {
 }
 
 func TestLifecycleHookStripsRepositoryBindingEnvironment(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	assert := assert.New(t)
 	repo := initLifecycleRepo(t)
 	script := filepath.Join(repo, "setup.sh")
@@ -643,7 +644,7 @@ func TestLifecycleHookStripsRepositoryBindingEnvironment(t *testing.T) {
 
 func TestCreateWorktreeOnDiskRollsBackWhenSetupHookFails(t *testing.T) {
 	assert := assert.New(t)
-	require := Require.New(t)
+	require := require.New(t)
 	repo := initLifecycleRepo(t)
 	outFile := filepath.Join(t.TempDir(), "hook.out")
 	script := writeHookScript(t, t.TempDir(), outFile, 3)
@@ -653,7 +654,7 @@ func TestCreateWorktreeOnDiskRollsBackWhenSetupHookFails(t *testing.T) {
 	require.NoError(os.WriteFile(inRepo, data, 0o755))
 
 	dest := filepath.Join(t.TempDir(), "wt")
-	_, err = CreateWorktreeOnDisk(context.Background(), CreateWorktreeOptions{
+	_, err = CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
 		ProjectRoot: repo,
 		Branch:      "feature",
 		Path:        dest,
@@ -674,7 +675,7 @@ func TestCreateWorktreeOnDiskRollsBackWhenSetupHookFails(t *testing.T) {
 
 func TestCreateWorktreeOnDiskKeepsPreexistingBranchOnHookFailure(t *testing.T) {
 	assert := assert.New(t)
-	require := Require.New(t)
+	require := require.New(t)
 	repo := initLifecycleRepo(t)
 	lifecycleGit(t, repo, "branch", "existing")
 	script := filepath.Join(repo, "setup.sh")
@@ -683,7 +684,7 @@ func TestCreateWorktreeOnDiskKeepsPreexistingBranchOnHookFailure(t *testing.T) {
 	))
 
 	dest := filepath.Join(t.TempDir(), "wt")
-	_, err := CreateWorktreeOnDisk(context.Background(), CreateWorktreeOptions{
+	_, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
 		ProjectRoot: repo,
 		Branch:      "existing",
 		Path:        dest,
@@ -697,11 +698,11 @@ func TestCreateWorktreeOnDiskKeepsPreexistingBranchOnHookFailure(t *testing.T) {
 }
 
 func TestCreateWorktreeOnDiskRejectsExistingDestination(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	repo := initLifecycleRepo(t)
 	dest := t.TempDir()
 
-	_, err := CreateWorktreeOnDisk(context.Background(), CreateWorktreeOptions{
+	_, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
 		ProjectRoot: repo,
 		Branch:      "feature",
 		Path:        dest,
@@ -710,11 +711,11 @@ func TestCreateWorktreeOnDiskRejectsExistingDestination(t *testing.T) {
 }
 
 func TestCreateWorktreeOnDiskRejectsBranchCheckedOutElsewhere(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	repo := initLifecycleRepo(t)
 
 	dest := filepath.Join(t.TempDir(), "wt")
-	_, err := CreateWorktreeOnDisk(context.Background(), CreateWorktreeOptions{
+	_, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
 		ProjectRoot: repo,
 		Branch:      "main",
 		Path:        dest,
@@ -725,11 +726,11 @@ func TestCreateWorktreeOnDiskRejectsBranchCheckedOutElsewhere(t *testing.T) {
 
 func TestCreateWorktreeOnDiskRejectsHookOutsideProject(t *testing.T) {
 	assert := assert.New(t)
-	require := Require.New(t)
+	require := require.New(t)
 	repo := initLifecycleRepo(t)
 
 	dest := filepath.Join(t.TempDir(), "wt")
-	_, err := CreateWorktreeOnDisk(context.Background(), CreateWorktreeOptions{
+	_, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
 		ProjectRoot: repo,
 		Branch:      "feature",
 		Path:        dest,
@@ -742,10 +743,10 @@ func TestCreateWorktreeOnDiskRejectsHookOutsideProject(t *testing.T) {
 }
 
 func TestCreateWorktreeOnDiskRejectsInvalidBranchName(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	repo := initLifecycleRepo(t)
 
-	_, err := CreateWorktreeOnDisk(context.Background(), CreateWorktreeOptions{
+	_, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
 		ProjectRoot: repo,
 		Branch:      "bad..name",
 	})
@@ -753,9 +754,9 @@ func TestCreateWorktreeOnDiskRejectsInvalidBranchName(t *testing.T) {
 }
 
 func TestValidateBranchNamePreservesCancellation(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	repo := initLifecycleRepo(t)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	err := validateBranchName(ctx, repo, "feature")
@@ -765,11 +766,11 @@ func TestValidateBranchNamePreservesCancellation(t *testing.T) {
 }
 
 func TestValidateBranchNamePreservesRunnerFailure(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	repo := initLifecycleRepo(t)
 	runnerErr := errors.New("runner unavailable")
 	ctx := withLifecycleExecution(
-		context.Background(), gitcmd.New(),
+		t.Context(), gitcmd.New(),
 		func(
 			context.Context, gitcmd.Runner, string, ...string,
 		) ([]byte, error) {
@@ -785,7 +786,7 @@ func TestValidateBranchNamePreservesRunnerFailure(t *testing.T) {
 }
 
 func TestRunLifecycleGitPreservesCustomRunnerCancellation(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	processErr := errors.New("process killed")
 	ctx, cancel := context.WithCancel(t.Context())
 	ctx = withLifecycleExecution(
@@ -806,7 +807,7 @@ func TestRunLifecycleGitPreservesCustomRunnerCancellation(t *testing.T) {
 }
 
 func TestRunLifecycleGitUsesStableDiagnosticLocale(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	ctx := withLifecycleExecution(
 		t.Context(),
 		gitcmd.Runner{Env: []string{"LC_ALL=fr_FR.UTF-8"}},
@@ -827,12 +828,12 @@ func TestRunLifecycleGitUsesStableDiagnosticLocale(t *testing.T) {
 
 func TestRemoveWorktreeFromDiskRemovesWorktreeAndBranch(t *testing.T) {
 	assert := assert.New(t)
-	require := Require.New(t)
+	require := require.New(t)
 	repo := initLifecycleRepo(t)
 	dest := filepath.Join(t.TempDir(), "wt")
 	lifecycleGit(t, repo, "worktree", "add", "-b", "feature", dest)
 
-	result, err := RemoveWorktreeFromDisk(context.Background(), RemoveWorktreeOptions{
+	result, err := RemoveWorktreeFromDisk(t.Context(), RemoveWorktreeOptions{
 		ProjectRoot:  repo,
 		Path:         dest,
 		Branch:       "feature",
@@ -846,7 +847,7 @@ func TestRemoveWorktreeFromDiskRemovesWorktreeAndBranch(t *testing.T) {
 }
 
 func TestRemoveWorktreeFromDiskNormalizesBranchOnce(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	assert := assert.New(t)
 	repo := initLifecycleRepo(t)
 	dest := filepath.Join(t.TempDir(), "wt")
@@ -875,12 +876,12 @@ func TestPathsEqualForGOOSHonorsWindowsCasing(t *testing.T) {
 
 func TestRemoveWorktreeFromDiskKeepsBranchWithoutRemoveBranch(t *testing.T) {
 	assert := assert.New(t)
-	require := Require.New(t)
+	require := require.New(t)
 	repo := initLifecycleRepo(t)
 	dest := filepath.Join(t.TempDir(), "wt")
 	lifecycleGit(t, repo, "worktree", "add", "-b", "feature", dest)
 
-	_, err := RemoveWorktreeFromDisk(context.Background(), RemoveWorktreeOptions{
+	_, err := RemoveWorktreeFromDisk(t.Context(), RemoveWorktreeOptions{
 		ProjectRoot: repo,
 		Path:        dest,
 		Branch:      "feature",
@@ -891,7 +892,7 @@ func TestRemoveWorktreeFromDiskKeepsBranchWithoutRemoveBranch(t *testing.T) {
 
 func TestRemoveWorktreeFromDiskRunsTeardownHookFirst(t *testing.T) {
 	assert := assert.New(t)
-	require := Require.New(t)
+	require := require.New(t)
 	repo := initLifecycleRepo(t)
 	dest := filepath.Join(t.TempDir(), "wt")
 	lifecycleGit(t, repo, "worktree", "add", "-b", "feature", dest)
@@ -904,7 +905,7 @@ func TestRemoveWorktreeFromDiskRunsTeardownHookFirst(t *testing.T) {
 	require.NoError(os.WriteFile(inRepo, data, 0o755))
 
 	var hookDir string
-	result, err := RemoveWorktreeFromDisk(context.Background(), RemoveWorktreeOptions{
+	result, err := RemoveWorktreeFromDisk(t.Context(), RemoveWorktreeOptions{
 		ProjectRoot:    repo,
 		Path:           dest,
 		Branch:         "feature",
@@ -939,7 +940,7 @@ func TestRemoveWorktreeFromDiskRunsTeardownHookFirst(t *testing.T) {
 }
 
 func TestRemoveWorktreeFromDiskRejectsMismatchedBranchBeforeHook(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	assert := assert.New(t)
 	repo := initLifecycleRepo(t)
 	created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
@@ -966,7 +967,7 @@ func TestRemoveWorktreeFromDiskRejectsMismatchedBranchBeforeHook(t *testing.T) {
 }
 
 func TestRemoveWorktreeFromDiskRejectsDifferentRepositoryBeforeHook(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	assert := assert.New(t)
 	repo := initLifecycleRepo(t)
 	otherRepo := initLifecycleRepo(t)
@@ -994,7 +995,7 @@ func TestRemoveWorktreeFromDiskRejectsDifferentRepositoryBeforeHook(t *testing.T
 }
 
 func TestRemoveWorktreeFromDiskRejectsPrimaryCheckoutBeforeHook(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	assert := assert.New(t)
 	repo := initLifecycleRepo(t)
 	marker := filepath.Join(t.TempDir(), "hook-ran")
@@ -1009,13 +1010,14 @@ func TestRemoveWorktreeFromDiskRejectsPrimaryCheckoutBeforeHook(t *testing.T) {
 	})
 
 	require.Error(err)
-	assert.ErrorContains(err, "primary worktree")
+	require.
+		ErrorContains(err, "primary worktree")
 	assert.NoFileExists(marker)
 	assert.DirExists(repo)
 }
 
 func TestRemoveWorktreeFromDiskRejectsWorktreeSubdirectoryBeforeHook(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	assert := assert.New(t)
 	repo := initLifecycleRepo(t)
 	created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
@@ -1037,14 +1039,15 @@ func TestRemoveWorktreeFromDiskRejectsWorktreeSubdirectoryBeforeHook(t *testing.
 	})
 
 	require.Error(err)
-	assert.ErrorContains(err, "registration not found")
+	require.
+		ErrorContains(err, "registration not found")
 	assert.NoFileExists(marker)
 	assert.DirExists(created.Path)
 }
 
 func TestRemoveWorktreeFromDiskAbortsWhenTeardownHookFails(t *testing.T) {
 	assert := assert.New(t)
-	require := Require.New(t)
+	require := require.New(t)
 	repo := initLifecycleRepo(t)
 	dest := filepath.Join(t.TempDir(), "wt")
 	lifecycleGit(t, repo, "worktree", "add", "-b", "feature", dest)
@@ -1053,7 +1056,7 @@ func TestRemoveWorktreeFromDiskAbortsWhenTeardownHookFails(t *testing.T) {
 		script, []byte("#!/bin/sh\necho nope >&2\nexit 2\n"), 0o755,
 	))
 
-	_, err := RemoveWorktreeFromDisk(context.Background(), RemoveWorktreeOptions{
+	_, err := RemoveWorktreeFromDisk(t.Context(), RemoveWorktreeOptions{
 		ProjectRoot:    repo,
 		Path:           dest,
 		Branch:         "feature",
@@ -1070,7 +1073,7 @@ func TestRemoveWorktreeFromDiskAbortsWhenTeardownHookFails(t *testing.T) {
 }
 
 func TestLifecycleHookPreservesContextCancellation(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	assert := assert.New(t)
 	repo := initLifecycleRepo(t)
 	script := filepath.Join(repo, "hook")
@@ -1083,7 +1086,7 @@ func TestLifecycleHookPreservesContextCancellation(t *testing.T) {
 			_ context.Context, _ HookCommand,
 		) error {
 			cancel()
-			cmd := exec.Command(
+			cmd := exec.CommandContext(t.Context(),
 				os.Args[0], "-test.run=^TestLifecycleHookExitHelper$",
 			)
 			cmd.Env = append(os.Environ(), "KIT_TEST_HOOK_EXIT=1")
@@ -1093,7 +1096,8 @@ func TestLifecycleHookPreservesContextCancellation(t *testing.T) {
 	)
 
 	require.Error(err)
-	assert.ErrorIs(err, context.Canceled)
+	require.
+		ErrorIs(err, context.Canceled)
 	var hookErr *HookError
 	assert.NotErrorAs(err, &hookErr)
 }
@@ -1107,13 +1111,13 @@ func TestLifecycleHookExitHelper(t *testing.T) {
 
 func TestRemoveWorktreeFromDiskPrunesWhenPathAlreadyGone(t *testing.T) {
 	assert := assert.New(t)
-	require := Require.New(t)
+	require := require.New(t)
 	repo := initLifecycleRepo(t)
 	dest := filepath.Join(t.TempDir(), "wt")
 	lifecycleGit(t, repo, "worktree", "add", "-b", "feature", dest)
 	require.NoError(os.RemoveAll(dest))
 
-	_, err := RemoveWorktreeFromDisk(context.Background(), RemoveWorktreeOptions{
+	_, err := RemoveWorktreeFromDisk(t.Context(), RemoveWorktreeOptions{
 		ProjectRoot:  repo,
 		Path:         dest,
 		Branch:       "feature",
@@ -1126,7 +1130,7 @@ func TestRemoveWorktreeFromDiskPrunesWhenPathAlreadyGone(t *testing.T) {
 }
 
 func TestRemoveWorktreeFromDiskRejectsMismatchedStaleRegistration(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	assert := assert.New(t)
 	repo := initLifecycleRepo(t)
 	dest := filepath.Join(t.TempDir(), "wt")
@@ -1148,7 +1152,7 @@ func TestRemoveWorktreeFromDiskRejectsMismatchedStaleRegistration(t *testing.T) 
 
 func TestRemoveMissingWorktreePreservesUnrelatedStaleRegistration(t *testing.T) {
 	assert := assert.New(t)
-	require := Require.New(t)
+	require := require.New(t)
 	repo := initLifecycleRepo(t)
 	target := filepath.Join(t.TempDir(), "target")
 	unrelated := filepath.Join(t.TempDir(), "unrelated")
@@ -1157,7 +1161,7 @@ func TestRemoveMissingWorktreePreservesUnrelatedStaleRegistration(t *testing.T) 
 	require.NoError(os.RemoveAll(target))
 	require.NoError(os.RemoveAll(unrelated))
 
-	_, err := RemoveWorktreeFromDisk(context.Background(), RemoveWorktreeOptions{
+	_, err := RemoveWorktreeFromDisk(t.Context(), RemoveWorktreeOptions{
 		ProjectRoot:  repo,
 		Path:         target,
 		Branch:       "target",
@@ -1172,7 +1176,7 @@ func TestRemoveMissingWorktreePreservesUnrelatedStaleRegistration(t *testing.T) 
 
 func TestRemoveWorktreeFromDiskForceRemovesDirtyWorktree(t *testing.T) {
 	assert := assert.New(t)
-	require := Require.New(t)
+	require := require.New(t)
 	repo := initLifecycleRepo(t)
 	dest := filepath.Join(t.TempDir(), "wt")
 	lifecycleGit(t, repo, "worktree", "add", "-b", "feature", dest)
@@ -1180,7 +1184,7 @@ func TestRemoveWorktreeFromDiskForceRemovesDirtyWorktree(t *testing.T) {
 		filepath.Join(dest, "dirty.txt"), []byte("x\n"), 0o644,
 	))
 
-	_, err := RemoveWorktreeFromDisk(context.Background(), RemoveWorktreeOptions{
+	_, err := RemoveWorktreeFromDisk(t.Context(), RemoveWorktreeOptions{
 		ProjectRoot: repo,
 		Path:        dest,
 		Branch:      "feature",
@@ -1193,7 +1197,7 @@ func TestRemoveWorktreeFromDiskForceRemovesDirtyWorktree(t *testing.T) {
 
 func TestRemoveWorktreeFromDiskForceRemovesLockedWorktree(t *testing.T) {
 	assert := assert.New(t)
-	require := Require.New(t)
+	require := require.New(t)
 	repo := initLifecycleRepo(t)
 	dest := filepath.Join(t.TempDir(), "wt")
 	lifecycleGit(t, repo, "worktree", "add", "-b", "locked", dest)
@@ -1212,28 +1216,28 @@ func TestRemoveWorktreeFromDiskForceRemovesLockedWorktree(t *testing.T) {
 
 func TestWorktreeIsDirty(t *testing.T) {
 	assert := assert.New(t)
-	require := Require.New(t)
+	require := require.New(t)
 	repo := initLifecycleRepo(t)
 	dest := filepath.Join(t.TempDir(), "wt")
 	lifecycleGit(t, repo, "worktree", "add", "-b", "feature", dest)
 
-	dirty, err := WorktreeIsDirty(context.Background(), dest)
+	dirty, err := WorktreeIsDirty(t.Context(), dest)
 	require.NoError(err)
 	assert.False(dirty)
 
 	require.NoError(os.WriteFile(
 		filepath.Join(dest, "scratch.txt"), []byte("x\n"), 0o644,
 	))
-	dirty, err = WorktreeIsDirty(context.Background(), dest)
+	dirty, err = WorktreeIsDirty(t.Context(), dest)
 	require.NoError(err)
 	assert.True(dirty)
 
-	_, err = WorktreeIsDirty(context.Background(), filepath.Join(dest, "missing"))
+	_, err = WorktreeIsDirty(t.Context(), filepath.Join(dest, "missing"))
 	require.Error(err, "a missing path is an error, not clean")
 }
 
 func TestWorktreeIsDirtyIncludesUntrackedFilesWhenConfigHidesThem(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	assert := assert.New(t)
 	repo := initLifecycleRepo(t)
 	lifecycleGit(t, repo, "config", "status.showUntrackedFiles", "no")
@@ -1262,7 +1266,8 @@ func TestDirtyChecksOverrideConfiguredSubmoduleIgnore(t *testing.T) {
 		{
 			name: "modified",
 			change: func(t *testing.T, module string) {
-				Require.NoError(t, os.WriteFile(
+				t.Helper()
+				require.NoError(t, os.WriteFile(
 					filepath.Join(module, "tracked.txt"),
 					[]byte("modified\n"), 0o644,
 				))
@@ -1271,7 +1276,8 @@ func TestDirtyChecksOverrideConfiguredSubmoduleIgnore(t *testing.T) {
 		{
 			name: "untracked",
 			change: func(t *testing.T, module string) {
-				Require.NoError(t, os.WriteFile(
+				t.Helper()
+				require.NoError(t, os.WriteFile(
 					filepath.Join(module, "untracked.txt"),
 					[]byte("new\n"), 0o644,
 				))
@@ -1281,7 +1287,7 @@ func TestDirtyChecksOverrideConfiguredSubmoduleIgnore(t *testing.T) {
 	for _, detector := range detectors {
 		for _, state := range states {
 			t.Run(detector.name+"/"+state.name, func(t *testing.T) {
-				require := Require.New(t)
+				require := require.New(t)
 				assert := assert.New(t)
 				moduleOrigin := initLifecycleRepo(t)
 				require.NoError(os.WriteFile(

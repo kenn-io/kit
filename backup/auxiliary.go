@@ -149,7 +149,7 @@ func captureAuxiliaryArtifacts(
 			return nil, fmt.Errorf("backup: opening auxiliary artifact %q: %w", artifact.Name, err)
 		}
 		if reader == nil || size < 0 || size > maxAuxiliaryBytes-total ||
-			uint64(size) > pack.MaxRawLen { //nolint:gosec // size is non-negative
+			uint64(size) > pack.MaxRawLen {
 			if reader != nil {
 				_ = reader.Close()
 			}
@@ -159,7 +159,7 @@ func captureAuxiliaryArtifacts(
 			)
 		}
 		prepared, prepareErr := pack.PrepareBlob(
-			ctx, reader, uint64(size), zstdLevel, //nolint:gosec // size checked non-negative
+			ctx, reader, uint64(size), zstdLevel,
 			pack.AppendStreamOptions{ScratchDir: repo.Path(stagingDirName)},
 		)
 		closeErr := reader.Close()
@@ -199,7 +199,7 @@ func validateManifestAuxiliary(artifacts []ManifestAuxiliary) error {
 			return fmt.Errorf("backup: invalid auxiliary artifact name %q", artifact.Name)
 		}
 		if artifact.Name <= previous {
-			return fmt.Errorf("backup: auxiliary artifacts are not uniquely sorted by name")
+			return errors.New("backup: auxiliary artifacts are not uniquely sorted by name")
 		}
 		previous = artifact.Name
 		if err := validateAuxiliaryFormat(artifact.Format); err != nil {

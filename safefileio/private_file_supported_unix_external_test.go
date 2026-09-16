@@ -7,12 +7,12 @@ import (
 	"path/filepath"
 	"testing"
 
-	Require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/safefileio"
 )
 
 func TestValidatePrivateCurrentUserFileRejectsPublicMode(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	path := filepath.Join(t.TempDir(), "record.json")
 	require.NoError(os.WriteFile(path, []byte("{}"), 0o600))
 	require.NoError(os.Chmod(path, 0o666))
@@ -28,10 +28,10 @@ func TestValidatePrivateCurrentUserFileRejectsPublicMode(t *testing.T) {
 
 func TestValidatePrivateCurrentUserFileAcceptsPrivateMode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "record.json")
-	Require.NoError(t, os.WriteFile(path, []byte("{}"), 0o600))
+	require.NoError(t, os.WriteFile(path, []byte("{}"), 0o600))
 	file, err := os.OpenFile(path, os.O_RDWR, 0)
-	Require.NoError(t, err)
+	require.NoError(t, err)
 	defer func() { _ = file.Close() }()
 
-	Require.NoError(t, safefileio.ValidatePrivateCurrentUserFile(file))
+	require.NoError(t, safefileio.ValidatePrivateCurrentUserFile(file))
 }

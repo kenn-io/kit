@@ -15,15 +15,15 @@ func TestVec0LoadsHermetically(t *testing.T) {
 	require.NoError(err)
 	t.Cleanup(func() { require.NoError(db.Close()) })
 
-	_, err = db.Exec(`CREATE VIRTUAL TABLE v USING vec0(embedding float[3])`)
+	_, err = db.ExecContext(t.Context(), `CREATE VIRTUAL TABLE v USING vec0(embedding float[3])`)
 	require.NoError(err)
 
-	_, err = db.Exec(`INSERT INTO v(rowid, embedding) VALUES (1, vec_f32(?))`, `[1,2,3]`)
+	_, err = db.ExecContext(t.Context(), `INSERT INTO v(rowid, embedding) VALUES (1, vec_f32(?))`, `[1,2,3]`)
 	require.NoError(err)
 
 	var rowid int64
 	var distance float64
-	err = db.QueryRow(
+	err = db.QueryRowContext(t.Context(),
 		`SELECT rowid, distance FROM v WHERE embedding MATCH vec_f32(?) ORDER BY distance LIMIT 1`,
 		`[1,2,3]`,
 	).Scan(&rowid, &distance)

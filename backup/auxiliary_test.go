@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	Assert "github.com/stretchr/testify/assert"
-	Require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/pack"
 )
 
@@ -48,7 +48,7 @@ func TestValidateAuxiliaryArtifactsRejectsAmbiguousAuthority(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			Assert.ErrorContains(t, validateAuxiliaryArtifacts(test.artifacts), test.want)
+			assert.ErrorContains(t, validateAuxiliaryArtifacts(test.artifacts), test.want)
 		})
 	}
 }
@@ -90,11 +90,11 @@ func TestValidateManifestAuxiliaryRequiresSortedBoundedIdentity(t *testing.T) {
 			want: "invalid size",
 		},
 	}
-	Require.NoError(t, validateManifestAuxiliary([]ManifestAuxiliary{valid}))
+	require.NoError(t, validateManifestAuxiliary([]ManifestAuxiliary{valid}))
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			Assert.ErrorContains(t, validateManifestAuxiliary(test.artifacts), test.want)
+			assert.ErrorContains(t, validateManifestAuxiliary(test.artifacts), test.want)
 		})
 	}
 }
@@ -106,7 +106,7 @@ func TestRestoreAuxiliaryRejectsOversizedFooterBeforePayloadRead(t *testing.T) {
 			name = "unreadable payload"
 		}
 		t.Run(name, func(t *testing.T) {
-			require := Require.New(t)
+			require := require.New(t)
 			repo := initTestRepo(t)
 			known := map[pack.BlobID]IndexEntry{}
 			appender := NewPackAppender(repo, known, pack.DefaultZstdLevel, nil, testPackExt)
@@ -124,10 +124,10 @@ func TestRestoreAuxiliaryRejectsOversizedFooterBeforePayloadRead(t *testing.T) {
 				Bytes: 1, SHA256: id.String(),
 			}}}
 
-			restored, err := state.restoreAuxiliary(context.Background(), manifest)
+			restored, err := state.restoreAuxiliary(t.Context(), manifest)
 
 			require.ErrorContains(err, "is 110592 bytes but manifest records 1")
-			Assert.Nil(t, restored)
+			assert.Nil(t, restored)
 		})
 	}
 }

@@ -13,15 +13,15 @@ func TestCoordinatorAllowsConcurrentMutationsAndWaitsForAll(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
 	c := NewCoordinator()
-	first, err := c.AcquireMutation(context.Background())
+	first, err := c.AcquireMutation(t.Context())
 	require.NoError(err)
-	second, err := c.AcquireMutation(context.Background())
+	second, err := c.AcquireMutation(t.Context())
 	require.NoError(err)
 
 	acquired := make(chan *Lease, 1)
 	errCh := make(chan error, 1)
 	go func() {
-		lease, acquireErr := c.AcquireMaintenance(context.Background())
+		lease, acquireErr := c.AcquireMaintenance(t.Context())
 		if acquireErr != nil {
 			errCh <- acquireErr
 			return
@@ -48,7 +48,7 @@ func TestCoordinatorGivesQueuedMaintenancePriority(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
 	c := NewCoordinator()
-	active, err := c.AcquireMutation(context.Background())
+	active, err := c.AcquireMutation(t.Context())
 	require.NoError(err)
 
 	type leaseResult struct {
@@ -57,14 +57,14 @@ func TestCoordinatorGivesQueuedMaintenancePriority(t *testing.T) {
 	}
 	maintenance := make(chan leaseResult, 1)
 	go func() {
-		lease, acquireErr := c.AcquireMaintenance(context.Background())
+		lease, acquireErr := c.AcquireMaintenance(t.Context())
 		maintenance <- leaseResult{lease: lease, err: acquireErr}
 	}()
 	require.Eventually(func() bool { return c.waitingMaintenanceCount() == 1 }, time.Second, time.Millisecond)
 
 	mutation := make(chan leaseResult, 1)
 	go func() {
-		lease, acquireErr := c.AcquireMutation(context.Background())
+		lease, acquireErr := c.AcquireMutation(t.Context())
 		mutation <- leaseResult{lease: lease, err: acquireErr}
 	}()
 	require.NoError(active.Release())
@@ -94,10 +94,10 @@ func TestCoordinatorGivesQueuedMaintenancePriority(t *testing.T) {
 func TestCoordinatorCancellationRemovesMaintenanceWaiter(t *testing.T) {
 	require := require.New(t)
 	c := NewCoordinator()
-	active, err := c.AcquireMutation(context.Background())
+	active, err := c.AcquireMutation(t.Context())
 	require.NoError(err)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	errCh := make(chan error, 1)
 	go func() {
 		_, acquireErr := c.AcquireMaintenance(ctx)
@@ -108,7 +108,7 @@ func TestCoordinatorCancellationRemovesMaintenanceWaiter(t *testing.T) {
 	require.ErrorIs(<-errCh, context.Canceled)
 	require.Eventually(func() bool { return c.waitingMaintenanceCount() == 0 }, time.Second, time.Millisecond)
 
-	second, err := c.AcquireMutation(context.Background())
+	second, err := c.AcquireMutation(t.Context())
 	require.NoError(err, "canceled maintenance must not keep blocking mutations")
 	require.NoError(second.Release())
 	require.NoError(active.Release())
@@ -117,7 +117,7 @@ func TestCoordinatorCancellationRemovesMaintenanceWaiter(t *testing.T) {
 func TestCoordinatorRejectsCanceledAcquireAndDoubleRelease(t *testing.T) {
 	require := require.New(t)
 	c := NewCoordinator()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	_, err := c.AcquireMutation(ctx)
@@ -125,7 +125,7 @@ func TestCoordinatorRejectsCanceledAcquireAndDoubleRelease(t *testing.T) {
 	_, err = c.AcquireMaintenance(ctx)
 	require.ErrorIs(err, context.Canceled)
 
-	lease, err := c.AcquireMutation(context.Background())
+	lease, err := c.AcquireMutation(t.Context())
 	require.NoError(err)
 	require.NoError(lease.Release())
 	require.ErrorIs(lease.Release(), ErrLeaseReleased)
@@ -136,11 +136,11 @@ func TestCoordinatorRejectsCanceledAcquireAndDoubleRelease(t *testing.T) {
 func TestCoordinatorSupportsIngestThenAutomaticMaintenance(t *testing.T) {
 	require := require.New(t)
 	c := NewCoordinator()
-	ingest, err := c.AcquireMutation(context.Background())
+	ingest, err := c.AcquireMutation(t.Context())
 	require.NoError(err)
 	require.NoError(ingest.Release())
 
-	maintenance, err := c.AcquireMaintenance(context.Background())
+	maintenance, err := c.AcquireMaintenance(t.Context())
 	require.NoError(err)
 	require.NoError(maintenance.Release())
 }
@@ -148,7 +148,7 @@ func TestCoordinatorSupportsIngestThenAutomaticMaintenance(t *testing.T) {
 func TestLeaseValidateAcceptsOnlyLiveLeases(t *testing.T) {
 	require := require.New(t)
 	c := NewCoordinator()
-	live, err := c.AcquireMutation(context.Background())
+	live, err := c.AcquireMutation(t.Context())
 	require.NoError(err)
 
 	require.NoError(live.Validate())
@@ -163,12 +163,12 @@ func TestLeaseValidateAcceptsOnlyLiveLeases(t *testing.T) {
 func TestLeaseValidateMutationRequiresLiveMutationLease(t *testing.T) {
 	require := require.New(t)
 	c := NewCoordinator()
-	mutation, err := c.AcquireMutation(context.Background())
+	mutation, err := c.AcquireMutation(t.Context())
 	require.NoError(err)
 	require.NoError(mutation.ValidateMutation())
 	require.NoError(mutation.Release())
 
-	maintenance, err := c.AcquireMaintenance(context.Background())
+	maintenance, err := c.AcquireMaintenance(t.Context())
 	require.NoError(err)
 	require.ErrorIs(maintenance.ValidateMutation(), ErrWrongLeaseKind)
 	require.NoError(maintenance.Release())

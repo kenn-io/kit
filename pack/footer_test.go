@@ -9,10 +9,14 @@ import (
 
 func testEntries() []Entry {
 	return []Entry{
-		{ID: ComputeBlobID([]byte("a")), Offset: 6, StoredLen: 10, RawLen: 20,
-			Flags: BlobCompressed, CRC32C: 0xDEADBEEF},
-		{ID: ComputeBlobID([]byte("b")), Offset: 16, StoredLen: 4, RawLen: 4,
-			Flags: 0, CRC32C: 1},
+		{
+			ID: ComputeBlobID([]byte("a")), Offset: 6, StoredLen: 10, RawLen: 20,
+			Flags: BlobCompressed, CRC32C: 0xDEADBEEF,
+		},
+		{
+			ID: ComputeBlobID([]byte("b")), Offset: 16, StoredLen: 4, RawLen: 4,
+			Flags: 0, CRC32C: 1,
+		},
 	}
 }
 

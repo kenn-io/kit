@@ -8,11 +8,13 @@ package gittest
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	gitcmd "go.kenn.io/kit/git/cmd"
 )
 
@@ -48,14 +50,14 @@ type Options struct {
 }
 
 // NewRepo creates a git repository with sanitized git environment.
-func NewRepo(t testing.TB, opts Options) *Repo {
-	t.Helper()
+func NewRepo(tb testing.TB, opts Options) *Repo {
+	tb.Helper()
 
 	dir := opts.Dir
 	if dir == "" {
-		dir = t.TempDir()
+		dir = tb.TempDir()
 	} else if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatalf("create repo dir %q: %v", dir, err)
+		require.FailNow(tb, fmt.Sprintf("create repo dir %q: %v", dir, err))
 	}
 	if opts.ResolvePath {
 		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
@@ -63,7 +65,7 @@ func NewRepo(t testing.TB, opts Options) *Repo {
 		}
 	}
 	repo := &Repo{
-		T:      t,
+		T:      tb,
 		Root:   dir,
 		GitDir: filepath.Join(dir, ".git"),
 		Runner: gitcmd.New(),
@@ -80,9 +82,9 @@ func NewRepo(t testing.TB, opts Options) *Repo {
 }
 
 // NewRepoWithCommit creates a repository on main with one commit.
-func NewRepoWithCommit(t testing.TB) *Repo {
-	t.Helper()
-	repo := NewRepo(t, Options{
+func NewRepoWithCommit(tb testing.TB) *Repo {
+	tb.Helper()
+	repo := NewRepo(tb, Options{
 		InitArgs:      []string{"init", "-b", "main"},
 		ConfigureUser: true,
 		ResolvePath:   true,
@@ -92,18 +94,16 @@ func NewRepoWithCommit(t testing.TB) *Repo {
 }
 
 // NewBareRepo creates a bare repository.
-func NewBareRepo(t testing.TB) *Repo {
-	t.Helper()
-	return NewRepo(t, Options{InitArgs: []string{"init", "--bare"}})
+func NewBareRepo(tb testing.TB) *Repo {
+	tb.Helper()
+	return NewRepo(tb, Options{InitArgs: []string{"init", "--bare"}})
 }
 
 // Run runs git in the repo and returns trimmed stdout.
 func (r *Repo) Run(args ...string) string {
 	r.T.Helper()
 	out, _, err := r.RunRaw(args...)
-	if err != nil {
-		r.T.Fatalf("git %v failed: %v", args, err)
-	}
+	require.NoErrorf(r.T, err, "git %v failed", args)
 	return strings.TrimSpace(string(out))
 }
 
@@ -123,12 +123,8 @@ func (r *Repo) Config(key, value string) {
 func (r *Repo) WriteFile(name, content string) {
 	r.T.Helper()
 	path := filepath.Join(r.Root, name)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		r.T.Fatalf("mkdir %q: %v", filepath.Dir(path), err)
-	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		r.T.Fatalf("write %q: %v", path, err)
-	}
+	require.NoErrorf(r.T, os.MkdirAll(filepath.Dir(path), 0o755), "mkdir %q", filepath.Dir(path))
+	require.NoErrorf(r.T, os.WriteFile(path, []byte(content), 0o644), "write %q", path)
 }
 
 // CommitFile writes, stages, commits, and returns HEAD.

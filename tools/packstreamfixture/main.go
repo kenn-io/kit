@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -28,7 +29,7 @@ func (r *noiseReader) Read(p []byte) (int, error) {
 
 func writeFixture(output string) error {
 	if output == "" {
-		return fmt.Errorf("output path is required")
+		return errors.New("output path is required")
 	}
 	dir := filepath.Dir(output)
 	if err := os.MkdirAll(dir, 0o700); err != nil {

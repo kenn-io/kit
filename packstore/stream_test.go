@@ -9,13 +9,14 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"sync"
 	"testing"
 
 	"github.com/klauspost/compress/zstd"
-	Assert "github.com/stretchr/testify/assert"
-	Require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/pack"
 )
 
@@ -23,10 +24,10 @@ func TestStoreOpenStreamLoosePackedParity(t *testing.T) {
 	content := bytes.Repeat([]byte("stream parity "), 1<<14)
 	for _, representation := range []string{"loose", "compressed", "packed"} {
 		t.Run(representation, func(t *testing.T) {
-			assert := Assert.New(t)
-			require := Require.New(t)
+			assert := assert.New(t)
+			require := require.New(t)
 			store, hash := streamStoreForTest(t, representation, content)
-			stream, size, err := store.OpenStream(context.Background(), hash)
+			stream, size, err := store.OpenStream(t.Context(), hash)
 			require.NoError(err)
 			assert.Equal(int64(len(content)), size)
 			prefix := make([]byte, 17)
@@ -35,7 +36,7 @@ func TestStoreOpenStreamLoosePackedParity(t *testing.T) {
 			assert.False(stream.Verified())
 			rest, err := io.ReadAll(stream)
 			require.NoError(err)
-			assert.Equal(content, append(prefix, rest...))
+			assert.Equal(content, slices.Concat(prefix, rest))
 			assert.True(stream.Verified())
 			require.NoError(stream.Verify())
 			require.NoError(stream.Close())
@@ -45,8 +46,8 @@ func TestStoreOpenStreamLoosePackedParity(t *testing.T) {
 }
 
 func TestStoreStreamsLooseObjectAboveMaintenanceLimit(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	content := bytes.Repeat([]byte("oversized loose content "), 16)
 	layout := layoutForStoreTest(t)
 	hash := hashForTest(content)
@@ -60,7 +61,7 @@ func TestStoreStreamsLooseObjectAboveMaintenanceLimit(t *testing.T) {
 	require.NoError(err)
 	t.Cleanup(func() { require.NoError(store.Close()) })
 
-	stream, size, err := store.OpenStream(context.Background(), hash)
+	stream, size, err := store.OpenStream(t.Context(), hash)
 	require.NoError(err)
 	assert.Equal(int64(len(content)), size)
 	got, err := io.ReadAll(stream)
@@ -69,12 +70,12 @@ func TestStoreStreamsLooseObjectAboveMaintenanceLimit(t *testing.T) {
 	require.NoError(stream.Close())
 
 	var copied bytes.Buffer
-	written, err := store.CopyVerified(context.Background(), hash, &copied)
+	written, err := store.CopyVerified(t.Context(), hash, &copied)
 	require.NoError(err)
 	assert.Equal(int64(len(content)), written)
 	assert.Equal(content, copied.Bytes())
 
-	_, _, err = store.ReadBounded(context.Background(), hash, limits.BlobBytes)
+	_, _, err = store.ReadBounded(t.Context(), hash, limits.BlobBytes)
 	var limitErr *LimitError
 	require.ErrorAs(err, &limitErr)
 	assert.Equal(LimitBlobRawBytes, limitErr.Dimension)
@@ -84,16 +85,16 @@ func TestStoreOpenStreamEarlyCloseLoosePackedParity(t *testing.T) {
 	content := []byte("early close content")
 	for _, representation := range []string{"loose", "compressed", "packed"} {
 		t.Run(representation, func(t *testing.T) {
-			require := Require.New(t)
+			require := require.New(t)
 			store, hash := streamStoreForTest(t, representation, content)
-			stream, _, err := store.OpenStream(context.Background(), hash)
+			stream, _, err := store.OpenStream(t.Context(), hash)
 			require.NoError(err)
 			buf := make([]byte, 2)
 			_, err = stream.Read(buf)
 			require.NoError(err)
 			require.ErrorIs(stream.Close(), pack.ErrVerificationIncomplete)
 			require.ErrorIs(stream.Close(), pack.ErrVerificationIncomplete)
-			Assert.False(t, stream.Verified())
+			assert.False(t, stream.Verified())
 			assertPackedLeases(t, store, 0)
 		})
 	}
@@ -107,14 +108,14 @@ func TestStoreRejectsUnknownPackFlags(t *testing.T) {
 		{
 			name: "bounded",
 			read: func(store *Store, hash Hash) error {
-				_, _, err := store.ReadBounded(context.Background(), hash, 1<<20)
+				_, _, err := store.ReadBounded(t.Context(), hash, 1<<20)
 				return err
 			},
 		},
 		{
 			name: "streaming",
 			read: func(store *Store, hash Hash) error {
-				stream, _, err := store.OpenStream(context.Background(), hash)
+				stream, _, err := store.OpenStream(t.Context(), hash)
 				if err != nil {
 					return err
 				}
@@ -124,7 +125,7 @@ func TestStoreRejectsUnknownPackFlags(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require := Require.New(t)
+			require := require.New(t)
 			layout := layoutForStoreTest(t)
 			entry := buildStoreTestPack(t, layout, []byte("unknown pack flags"))
 			f, err := os.OpenFile(layout.PackPath(entry.PackID), os.O_WRONLY, 0)
@@ -151,14 +152,14 @@ func TestStoreRejectsUnknownFlagsOnUnselectedEntry(t *testing.T) {
 		{
 			name: "bounded",
 			read: func(store *Store, hash Hash) error {
-				_, _, err := store.ReadBounded(context.Background(), hash, 1<<20)
+				_, _, err := store.ReadBounded(t.Context(), hash, 1<<20)
 				return err
 			},
 		},
 		{
 			name: "streaming",
 			read: func(store *Store, hash Hash) error {
-				stream, _, err := store.OpenStream(context.Background(), hash)
+				stream, _, err := store.OpenStream(t.Context(), hash)
 				if err != nil {
 					return err
 				}
@@ -168,7 +169,7 @@ func TestStoreRejectsUnknownFlagsOnUnselectedEntry(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require := Require.New(t)
+			require := require.New(t)
 			layout := layoutForStoreTest(t)
 			staging := t.TempDir()
 			writer, err := pack.NewWriter(staging, pack.WriterOptions{})
@@ -208,10 +209,10 @@ func TestStoreCopyVerifiedLoosePackedParity(t *testing.T) {
 		t.Run(representation, func(t *testing.T) {
 			store, hash := streamStoreForTest(t, representation, content)
 			var dst bytes.Buffer
-			written, err := store.CopyVerified(context.Background(), hash, &dst)
-			Require.NoError(t, err)
-			Assert.Equal(t, int64(len(content)), written)
-			Assert.Equal(t, content, dst.Bytes())
+			written, err := store.CopyVerified(t.Context(), hash, &dst)
+			require.NoError(t, err)
+			assert.Equal(t, int64(len(content)), written)
+			assert.Equal(t, content, dst.Bytes())
 			assertPackedLeases(t, store, 0)
 		})
 	}
@@ -222,9 +223,9 @@ func TestStoreCopyVerifiedDestinationFailureReleasesSource(t *testing.T) {
 	store, hash := streamStoreForTest(t, "packed", content)
 	destinationErr := errors.New("destination failed")
 	dst := &failAfterWriter{remaining: 32, err: destinationErr}
-	written, err := store.CopyVerified(context.Background(), hash, dst)
-	Require.ErrorIs(t, err, destinationErr)
-	Assert.Equal(t, int64(32), written)
+	written, err := store.CopyVerified(t.Context(), hash, dst)
+	require.ErrorIs(t, err, destinationErr)
+	assert.Equal(t, int64(32), written)
 	assertPackedLeases(t, store, 0)
 }
 
@@ -257,8 +258,8 @@ func TestStoreOpenStreamTerminalIntegrityErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert := Assert.New(t)
-			require := Require.New(t)
+			assert := assert.New(t)
+			require := require.New(t)
 			layout := layoutForStoreTest(t)
 			hash := hashForTest(content)
 			var entry IndexEntry
@@ -281,7 +282,7 @@ func TestStoreOpenStreamTerminalIntegrityErrors(t *testing.T) {
 				location.Pack = &entry
 			}
 			store := newStoreForTest(t, &mapResolver{locations: map[Hash]Location{hash: location}}, layout)
-			stream, _, err := store.OpenStream(context.Background(), hash)
+			stream, _, err := store.OpenStream(t.Context(), hash)
 			require.NoError(err)
 			got, err := io.ReadAll(stream)
 			require.ErrorIs(err, tt.want)
@@ -295,10 +296,10 @@ func TestStoreOpenStreamTerminalIntegrityErrors(t *testing.T) {
 }
 
 func TestStoreOpenStreamCancellationReleasesPackedLease(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	content := bytes.Repeat([]byte("cancel packed stream "), 4096)
 	store, hash := streamStoreForTest(t, "packed", content)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	stream, _, err := store.OpenStream(ctx, hash)
 	require.NoError(err)
 	buf := make([]byte, 32)
@@ -312,8 +313,8 @@ func TestStoreOpenStreamCancellationReleasesPackedLease(t *testing.T) {
 }
 
 func TestStoreOpenStreamCancellationClosesCompressedLoose(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	content := bytes.Repeat([]byte("cancel compressed stream "), 4096)
 	store, hash := streamStoreForTest(t, "compressed", content)
 	originalReader := newLooseZstdReader
@@ -326,7 +327,7 @@ func TestStoreOpenStreamCancellationClosesCompressedLoose(t *testing.T) {
 		return &closeCountingLooseZstdReader{looseZstdReader: reader, closeCalls: &closeCalls}, nil
 	}
 	t.Cleanup(func() { newLooseZstdReader = originalReader })
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	stream, _, err := store.OpenStream(ctx, hash)
 	require.NoError(err)
 	physical := stream.(*looseVerifiedStream).object.file
@@ -346,7 +347,7 @@ func TestStoreOpenStreamCancellationClosesCompressedLoose(t *testing.T) {
 func TestStoreOpenStreamChecksCancellationBetweenCompressedPayloadReads(t *testing.T) {
 	content := bytes.Repeat([]byte("cancel within compressed payload "), 128)
 	store, hash := streamStoreForTest(t, "compressed", content)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	originalReader := newLooseZstdReader
 	newLooseZstdReader = func(src io.Reader) (looseZstdReader, error) {
 		return &cancelBetweenSourceReadsDecoder{
@@ -356,12 +357,12 @@ func TestStoreOpenStreamChecksCancellationBetweenCompressedPayloadReads(t *testi
 	}
 	t.Cleanup(func() { newLooseZstdReader = originalReader })
 	stream, _, err := store.OpenStream(ctx, hash)
-	Require.NoError(t, err)
+	require.NoError(t, err)
 
 	_, err = stream.Read(make([]byte, 1))
 
-	Require.ErrorIs(t, err, context.Canceled)
-	Require.ErrorIs(t, stream.Close(), context.Canceled)
+	require.ErrorIs(t, err, context.Canceled)
+	require.ErrorIs(t, stream.Close(), context.Canceled)
 }
 
 var errCompressedSourceCancellationMissed = errors.New("compressed source missed cancellation")
@@ -399,8 +400,8 @@ func TestStoreOpenStreamRejectsCompressedLooseIntegrityFailures(t *testing.T) {
 	content := bytes.Repeat([]byte("compressed integrity "), 1024)
 	var emptyFrame bytes.Buffer
 	emptyEncoder, err := zstd.NewWriter(&emptyFrame, zstd.WithEncoderConcurrency(1))
-	Require.NoError(t, err)
-	Require.NoError(t, emptyEncoder.Close())
+	require.NoError(t, err)
+	require.NoError(t, emptyEncoder.Close())
 	emptySkippableFrame := []byte{0x50, 0x2a, 0x4d, 0x18, 0, 0, 0, 0}
 	tests := []struct {
 		name        string
@@ -458,8 +459,8 @@ func TestStoreOpenStreamRejectsCompressedLooseIntegrityFailures(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert := Assert.New(t)
-			require := Require.New(t)
+			assert := assert.New(t)
+			require := require.New(t)
 			layout := layoutForStoreTest(t)
 			hash := hashForTest(content)
 			writeCompressedLooseFixture(t, layout, hash, tt.logicalSize, tt.decoded, tt.mutate)
@@ -467,7 +468,7 @@ func TestStoreOpenStreamRejectsCompressedLooseIntegrityFailures(t *testing.T) {
 				hash: {Member: true},
 			}}, layout)
 
-			stream, size, err := store.OpenStream(context.Background(), hash)
+			stream, size, err := store.OpenStream(t.Context(), hash)
 			require.NoError(err)
 			assert.Equal(tt.logicalSize, size)
 			err = stream.Verify()
@@ -479,8 +480,8 @@ func TestStoreOpenStreamRejectsCompressedLooseIntegrityFailures(t *testing.T) {
 }
 
 func TestStoreOpenStreamRejectsCompressedLooseGrowthAfterOpen(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	content := bytes.Repeat([]byte("compressed growth after open "), 1024)
 	layout := layoutForStoreTest(t)
 	hash := hashForTest(content)
@@ -488,12 +489,12 @@ func TestStoreOpenStreamRejectsCompressedLooseGrowthAfterOpen(t *testing.T) {
 	store := newStoreForTest(t, &mapResolver{locations: map[Hash]Location{
 		hash: {Member: true},
 	}}, layout)
-	stream, size, err := store.OpenStream(context.Background(), hash)
+	stream, size, err := store.OpenStream(t.Context(), hash)
 	require.NoError(err)
 	assert.Equal(int64(len(content)), size)
 	appendFile, err := os.OpenFile(layout.CompressedLoosePath(hash), os.O_APPEND|os.O_WRONLY, 0)
 	require.NoError(err)
-	_, err = appendFile.Write([]byte("trailing physical mutation"))
+	_, err = appendFile.WriteString("trailing physical mutation")
 	require.NoError(err)
 	require.NoError(appendFile.Close())
 
@@ -505,7 +506,7 @@ func TestStoreOpenStreamRejectsCompressedLooseGrowthAfterOpen(t *testing.T) {
 }
 
 func TestStoreOpenStreamRejectsSkippableFrameAfterSingleSegmentRawBlock(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	content := []byte("12345678")
 	frame := []byte{
 		0x28, 0xb5, 0x2f, 0xfd, // zstd magic
@@ -524,9 +525,9 @@ func TestStoreOpenStreamRejectsSkippableFrameAfterSingleSegmentRawBlock(t *testi
 		hash: {Member: true},
 	}}, layout)
 
-	stream, size, err := store.OpenStream(context.Background(), hash)
+	stream, size, err := store.OpenStream(t.Context(), hash)
 	require.NoError(err)
-	Assert.Equal(t, int64(len(content)), size)
+	assert.Equal(t, int64(len(content)), size)
 	require.ErrorIs(stream.Verify(), ErrContentMismatch)
 	require.ErrorIs(stream.Close(), ErrContentMismatch)
 }
@@ -547,13 +548,15 @@ func TestSingleZstdFrameReaderLeavesConcatenatedFrameUnread(t *testing.T) {
 	}
 	encode := func(t *testing.T, opts ...zstd.EOption) []byte {
 		t.Helper()
+		require := require.New(t)
+		t.Helper()
 		encoder, err := zstd.NewWriter(nil, opts...)
-		Require.NoError(t, err)
+		require.NoError(err)
 		frame := encoder.EncodeAll(bytes.Repeat([]byte("compressible block content "), 128), nil)
-		Require.NoError(t, encoder.Close())
+		require.NoError(encoder.Close())
 		var header zstd.Header
-		Require.NoError(t, header.Decode(frame))
-		Require.True(t, header.FirstBlock.Compressed)
+		require.NoError(header.Decode(frame))
+		require.True(header.FirstBlock.Compressed)
 		return frame
 	}
 	tests := []struct {
@@ -578,9 +581,9 @@ func TestSingleZstdFrameReaderLeavesConcatenatedFrameUnread(t *testing.T) {
 			source := &io.LimitedReader{R: bytes.NewReader(physical), N: int64(len(physical))}
 
 			got, err := io.ReadAll(newSingleZstdFrameReader(source))
-			Require.NoError(t, err)
-			Assert.Equal(t, tt.frame, got)
-			Assert.Equal(t, int64(len(skippable)), source.N)
+			require.NoError(t, err)
+			assert.Equal(t, tt.frame, got)
+			assert.Equal(t, int64(len(skippable)), source.N)
 		})
 	}
 }
@@ -604,13 +607,13 @@ func TestSingleZstdFrameReaderLeavesTrailingFrameAfterMaximalHeader(t *testing.T
 
 	got, err := io.ReadAll(newSingleZstdFrameReader(source))
 
-	Require.NoError(t, err)
-	Assert.Equal(t, frame, got)
-	Assert.Equal(t, int64(len(skippable)), source.N)
+	require.NoError(t, err)
+	assert.Equal(t, frame, got)
+	assert.Equal(t, int64(len(skippable)), source.N)
 }
 
 func TestStoreOpenStreamRejectsMalformedCompressedLooseHeader(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	content := []byte("malformed compressed header")
 	layout := layoutForStoreTest(t)
 	hash := hashForTest(content)
@@ -622,13 +625,13 @@ func TestStoreOpenStreamRejectsMalformedCompressedLooseHeader(t *testing.T) {
 		hash: {Member: true},
 	}}, layout)
 
-	stream, _, err := store.OpenStream(context.Background(), hash)
+	stream, _, err := store.OpenStream(t.Context(), hash)
 	require.ErrorIs(err, ErrContentMismatch)
-	Assert.Nil(t, stream)
+	assert.Nil(t, stream)
 }
 
 func TestStoreOpenStreamPrefersCompressedLooseWithoutCorruptFallback(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	content := []byte("preferred compressed loose content")
 	layout := layoutForStoreTest(t)
 	hash := hashForTest(content)
@@ -640,7 +643,7 @@ func TestStoreOpenStreamPrefersCompressedLooseWithoutCorruptFallback(t *testing.
 		hash: {Member: true},
 	}}, layout)
 
-	stream, _, err := store.OpenStream(context.Background(), hash)
+	stream, _, err := store.OpenStream(t.Context(), hash)
 	require.NoError(err)
 	require.ErrorIs(stream.Verify(), ErrContentMismatch)
 	require.ErrorIs(stream.Close(), ErrContentMismatch)
@@ -651,20 +654,21 @@ func TestStoreOpenStreamRetriesAuthorityMoves(t *testing.T) {
 	hash := hashForTest(content)
 
 	t.Run("loose to pack", func(t *testing.T) {
+		require := require.New(t)
 		layout := layoutForStoreTest(t)
 		entry := buildStoreTestPack(t, layout, content)
 		loosePath := layout.LoosePath(hash)
-		Require.NoError(t, os.MkdirAll(filepath.Dir(loosePath), 0o700))
-		Require.NoError(t, os.WriteFile(loosePath, content, 0o600))
+		require.NoError(os.MkdirAll(filepath.Dir(loosePath), 0o700))
+		require.NoError(os.WriteFile(loosePath, content, 0o600))
 		resolver := &sequenceResolver{locations: []Location{{Member: true}, {Member: true, Pack: &entry}}}
-		resolver.beforeFirstReturn = func() { Require.NoError(t, os.Remove(loosePath)) }
+		resolver.beforeFirstReturn = func() { require.NoError(os.Remove(loosePath)) }
 		store := newStoreForTest(t, resolver, layout)
 		assertStreamContent(t, store, hash, content)
-		Assert.Equal(t, 2, resolver.calls)
+		assert.Equal(t, 2, resolver.calls)
 	})
 
 	t.Run("pack to loose", func(t *testing.T) {
-		require := Require.New(t)
+		require := require.New(t)
 		layout := layoutForStoreTest(t)
 		entry := buildStoreTestPack(t, layout, content)
 		loosePath := layout.LoosePath(hash)
@@ -674,37 +678,37 @@ func TestStoreOpenStreamRetriesAuthorityMoves(t *testing.T) {
 		resolver := &sequenceResolver{locations: []Location{{Member: true, Pack: &entry}, {Member: true}}}
 		store := newStoreForTest(t, resolver, layout)
 		assertStreamContent(t, store, hash, content)
-		Assert.Equal(t, 2, resolver.calls)
+		assert.Equal(t, 2, resolver.calls)
 	})
 
 	t.Run("pack to pack", func(t *testing.T) {
 		layout := layoutForStoreTest(t)
 		first := buildStoreTestPack(t, layout, content)
 		second := buildStoreTestPack(t, layout, content)
-		Require.NotEqual(t, first.PackID, second.PackID)
+		require.NotEqual(t, first.PackID, second.PackID)
 		resolver := &sequenceResolver{locations: []Location{{Member: true, Pack: &first}, {Member: true, Pack: &second}}}
-		resolver.beforeFirstReturn = func() { Require.NoError(t, os.Remove(layout.PackPath(first.PackID))) }
+		resolver.beforeFirstReturn = func() { require.NoError(t, os.Remove(layout.PackPath(first.PackID))) }
 		store := newStoreForTest(t, resolver, layout)
 		assertStreamContent(t, store, hash, content)
-		Assert.Equal(t, 2, resolver.calls)
+		assert.Equal(t, 2, resolver.calls)
 	})
 }
 
 func TestStoreConcurrentPackedStreamsShareLeasedReader(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	content := bytes.Repeat([]byte("shared packed stream "), 1<<14)
 	store, hash := streamStoreForTest(t, "packed", content)
 	const streams = 16
 	readers := make([]VerifiedReadCloser, streams)
 	for i := range readers {
-		reader, _, err := store.OpenStream(context.Background(), hash)
+		reader, _, err := store.OpenStream(t.Context(), hash)
 		require.NoError(err)
 		readers[i] = reader
 	}
 	store.mu.Lock()
 	require.Len(store.packReaders, 1)
 	for _, slot := range store.packReaders {
-		Assert.Equal(t, streams, slot.leases)
+		assert.Equal(t, streams, slot.leases)
 	}
 	store.mu.Unlock()
 
@@ -722,7 +726,7 @@ func TestStoreConcurrentPackedStreamsShareLeasedReader(t *testing.T) {
 }
 
 func TestStoreEvictionAndClosePreserveActiveStreams(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	layout := layoutForStoreTest(t)
 	firstContent := bytes.Repeat([]byte("first stream "), 4096)
 	secondContent := bytes.Repeat([]byte("second stream "), 4096)
@@ -735,25 +739,25 @@ func TestStoreEvictionAndClosePreserveActiveStreams(t *testing.T) {
 	require.NoError(err)
 	t.Cleanup(func() { require.NoError(store.Close()) })
 
-	firstStream, _, err := store.OpenStream(context.Background(), first.Hash)
+	firstStream, _, err := store.OpenStream(t.Context(), first.Hash)
 	require.NoError(err)
-	secondStream, _, err := store.OpenStream(context.Background(), second.Hash)
+	secondStream, _, err := store.OpenStream(t.Context(), second.Hash)
 	require.NoError(err)
 	require.Len(store.packReaders, 1)
 	require.NoError(secondStream.Verify())
 	require.NoError(store.Close())
-	Assert.Empty(t, store.packReaders)
+	assert.Empty(t, store.packReaders)
 	require.NoError(firstStream.Verify())
 	require.NoError(firstStream.Close())
 }
 
 func TestStoreRetirePackKeepsActiveStreamReadable(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	content := bytes.Repeat([]byte("retired active stream "), 4096)
 	store, hash := streamStoreForTest(t, "packed", content)
 	location := store.resolver.(*mapResolver).locations[hash]
 	require.NotNil(location.Pack)
-	stream, _, err := store.OpenStream(context.Background(), hash)
+	stream, _, err := store.OpenStream(t.Context(), hash)
 	require.NoError(err)
 	require.NoError(store.RetirePack(location.Pack.PackID))
 	_, err = os.Stat(store.layout.PackPath(location.Pack.PackID))
@@ -763,12 +767,12 @@ func TestStoreRetirePackKeepsActiveStreamReadable(t *testing.T) {
 }
 
 func TestStoreRetirePackErrorsAreTyped(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	content := []byte("typed retirement")
 	store, hash := streamStoreForTest(t, "packed", content)
 	location := store.resolver.(*mapResolver).locations[hash]
 	path := store.layout.PackPath(location.Pack.PackID)
-	stream, _, err := store.OpenStream(context.Background(), hash)
+	stream, _, err := store.OpenStream(t.Context(), hash)
 	require.NoError(err)
 	orphan := path + ".open"
 	require.NoError(os.Rename(path, orphan))
@@ -778,14 +782,14 @@ func TestStoreRetirePackErrorsAreTyped(t *testing.T) {
 	require.ErrorIs(err, ErrPackRetirementDeferred)
 	var retireErr *PackRetirementError
 	require.ErrorAs(err, &retireErr)
-	Assert.Equal(t, location.Pack.PackID, retireErr.PackID)
+	assert.Equal(t, location.Pack.PackID, retireErr.PackID)
 	require.NoError(stream.Verify())
 	require.NoError(stream.Close())
 }
 
 func TestStoreOpenStreamPreservesBufferedContractAndAppliesPolicy(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	content := []byte("container policy")
 	layout := layoutForStoreTest(t)
 	entry := buildStoreTestPack(t, layout, content)
@@ -796,10 +800,10 @@ func TestStoreOpenStreamPreservesBufferedContractAndAppliesPolicy(t *testing.T) 
 	}}, layout, StoreOptions{Limits: limits})
 	require.NoError(err)
 	t.Cleanup(func() { require.NoError(store.Close()) })
-	buffered, _, err := store.Open(context.Background(), entry.Hash)
+	buffered, _, err := store.Open(t.Context(), entry.Hash)
 	require.NoError(err)
 	require.NoError(buffered.Close())
-	_, _, err = store.OpenStream(context.Background(), entry.Hash)
+	_, _, err = store.OpenStream(t.Context(), entry.Hash)
 	var limitErr *LimitError
 	require.ErrorAs(err, &limitErr)
 	assert.Equal(LimitPackContainerBytes, limitErr.Dimension)
@@ -809,7 +813,7 @@ func TestStoreOpenStreamPreservesBufferedContractAndAppliesPolicy(t *testing.T) 
 	}}, layout, StoreOptions{Limits: limits})
 	require.NoError(err)
 	t.Cleanup(func() { require.NoError(strictStore.Close()) })
-	_, _, err = strictStore.OpenStream(context.Background(), entry.Hash)
+	_, _, err = strictStore.OpenStream(t.Context(), entry.Hash)
 	require.ErrorAs(err, &limitErr)
 	assert.Equal(LimitPackContainerBytes, limitErr.Dimension)
 }
@@ -818,16 +822,16 @@ func TestStoreOpenStreamRejectsNonMemberBeforePhysicalRead(t *testing.T) {
 	content := []byte("physical but unauthorized")
 	layout := layoutForStoreTest(t)
 	hash := hashForTest(content)
-	Require.NoError(t, os.MkdirAll(filepath.Dir(layout.LoosePath(hash)), 0o700))
-	Require.NoError(t, os.WriteFile(layout.LoosePath(hash), content, 0o600))
+	require.NoError(t, os.MkdirAll(filepath.Dir(layout.LoosePath(hash)), 0o700))
+	require.NoError(t, os.WriteFile(layout.LoosePath(hash), content, 0o600))
 	store := newStoreForTest(t, &mapResolver{locations: map[Hash]Location{hash: {}}}, layout)
-	_, _, err := store.OpenStream(context.Background(), hash)
-	Require.ErrorIs(t, err, fs.ErrNotExist)
+	_, _, err := store.OpenStream(t.Context(), hash)
+	require.ErrorIs(t, err, fs.ErrNotExist)
 }
 
 func TestStoreOpenWindowPolicyAppliesOnlyToStreaming(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	content := bytes.Repeat([]byte("window policy "), 1<<18)
 	var frame bytes.Buffer
 	encoder, err := zstd.NewWriter(&frame, zstd.WithWindowSize(8<<20), zstd.WithEncoderConcurrency(1))
@@ -857,7 +861,7 @@ func TestStoreOpenWindowPolicyAppliesOnlyToStreaming(t *testing.T) {
 	}}, layout, StoreOptions{Limits: limits})
 	require.NoError(err)
 	t.Cleanup(func() { require.NoError(store.Close()) })
-	buffered, size, err := store.Open(context.Background(), hash)
+	buffered, size, err := store.Open(t.Context(), hash)
 	require.NoError(err)
 	assert.Equal(int64(len(content)), size)
 	actual, err := io.ReadAll(buffered)
@@ -865,14 +869,14 @@ func TestStoreOpenWindowPolicyAppliesOnlyToStreaming(t *testing.T) {
 	require.NoError(buffered.Close())
 	assert.Equal(content, actual)
 
-	_, _, err = store.OpenStream(context.Background(), hash)
+	_, _, err = store.OpenStream(t.Context(), hash)
 	var limitErr *LimitError
 	require.ErrorAs(err, &limitErr)
 	assert.Equal(LimitBlobWindowBytes, limitErr.Dimension)
 }
 
 func TestStoreStreamsPackedObjectAboveDefaultCeiling(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	if testing.Short() {
 		t.Skip("writes a blob above the default 64 MiB policy ceiling")
 	}
@@ -881,8 +885,8 @@ func TestStoreStreamsPackedObjectAboveDefaultCeiling(t *testing.T) {
 	staging := t.TempDir()
 	w, err := pack.NewWriter(staging, pack.WriterOptions{})
 	require.NoError(err)
-	entry, err := w.AppendStream(context.Background(), io.LimitReader(streamZeroReader{}, size), uint64(size), pack.AppendStreamOptions{
-		ScratchDir: staging, ScratchBytes: uint64(size)*2 + 64<<20, //nolint:gosec // helper requires positive size
+	entry, err := w.AppendStream(t.Context(), io.LimitReader(streamZeroReader{}, size), uint64(size), pack.AppendStreamOptions{
+		ScratchDir: staging, ScratchBytes: uint64(size)*2 + 64<<20,
 	})
 	require.NoError(err)
 	packID := w.ID()
@@ -899,9 +903,9 @@ func TestStoreStreamsPackedObjectAboveDefaultCeiling(t *testing.T) {
 	}}, layout, StoreOptions{Limits: limits})
 	require.NoError(err)
 	t.Cleanup(func() { require.NoError(store.Close()) })
-	stream, gotSize, err := store.OpenStream(context.Background(), hash)
+	stream, gotSize, err := store.OpenStream(t.Context(), hash)
 	require.NoError(err)
-	Assert.Equal(t, size, gotSize)
+	assert.Equal(t, size, gotSize)
 	require.NoError(stream.Verify())
 	require.NoError(stream.Close())
 }
@@ -913,8 +917,8 @@ func largeStoreStreamTestBytes(t *testing.T, fallback int64) int64 {
 		return fallback
 	}
 	size, err := strconv.ParseInt(value, 10, 64)
-	Require.NoError(t, err)
-	Require.Positive(t, size)
+	require.NoError(t, err)
+	require.Positive(t, size)
 	return size
 }
 
@@ -932,8 +936,8 @@ func streamStoreForTest(t *testing.T, representation string, content []byte) (*S
 	location := Location{Member: true}
 	switch representation {
 	case "loose":
-		Require.NoError(t, os.MkdirAll(filepath.Dir(layout.LoosePath(hash)), 0o700))
-		Require.NoError(t, os.WriteFile(layout.LoosePath(hash), content, 0o600))
+		require.NoError(t, os.MkdirAll(filepath.Dir(layout.LoosePath(hash)), 0o700))
+		require.NoError(t, os.WriteFile(layout.LoosePath(hash), content, 0o600))
 	case "compressed":
 		writeCompressedLooseFixture(t, layout, hash, int64(len(content)), content, nil)
 	case "packed":
@@ -941,7 +945,7 @@ func streamStoreForTest(t *testing.T, representation string, content []byte) (*S
 		hash = entry.Hash
 		location.Pack = &entry
 	default:
-		Require.FailNow(t, "unknown representation", representation)
+		require.FailNow(t, "unknown representation", representation)
 	}
 	return newStoreForTest(t, &mapResolver{locations: map[Hash]Location{hash: location}}, layout), hash
 }
@@ -955,34 +959,38 @@ func writeCompressedLooseFixture(
 	mutate func([]byte) []byte,
 ) {
 	t.Helper()
-	Require.GreaterOrEqual(t, logicalSize, int64(0))
+	require := require.New(t)
+	t.Helper()
+	require.GreaterOrEqual(logicalSize, int64(0))
 	header := encodeCompressedLooseHeader(uint64(logicalSize))
 	var physical bytes.Buffer
 	_, err := physical.Write(header[:])
-	Require.NoError(t, err)
+	require.NoError(err)
 	encoder, err := zstd.NewWriter(&physical, zstd.WithEncoderConcurrency(1))
-	Require.NoError(t, err)
+	require.NoError(err)
 	_, err = encoder.Write(decoded)
-	Require.NoError(t, err)
-	Require.NoError(t, encoder.Close())
+	require.NoError(err)
+	require.NoError(encoder.Close())
 	data := physical.Bytes()
 	if mutate != nil {
 		data = mutate(bytes.Clone(data))
 	}
 	path := layout.CompressedLoosePath(hash)
-	Require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
-	Require.NoError(t, os.WriteFile(path, data, 0o600))
+	require.NoError(os.MkdirAll(filepath.Dir(path), 0o700))
+	require.NoError(os.WriteFile(path, data, 0o600))
 }
 
 func assertStreamContent(t *testing.T, store *Store, hash Hash, want []byte) {
 	t.Helper()
-	stream, size, err := store.OpenStream(context.Background(), hash)
-	Require.NoError(t, err)
+	require := require.New(t)
+	t.Helper()
+	stream, size, err := store.OpenStream(t.Context(), hash)
+	require.NoError(err)
 	got, err := io.ReadAll(stream)
-	Require.NoError(t, err)
-	Assert.Equal(t, int64(len(want)), size)
-	Assert.Equal(t, want, got)
-	Require.NoError(t, stream.Close())
+	require.NoError(err)
+	assert.Equal(t, int64(len(want)), size)
+	assert.Equal(t, want, got)
+	require.NoError(stream.Close())
 }
 
 func assertPackedLeases(t *testing.T, store *Store, want int) {
@@ -990,6 +998,6 @@ func assertPackedLeases(t *testing.T, store *Store, want int) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	for _, slot := range store.packReaders {
-		Assert.Equal(t, want, slot.leases)
+		assert.Equal(t, want, slot.leases)
 	}
 }

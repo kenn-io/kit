@@ -91,8 +91,8 @@ func ScanPages(
 
 	chunkCount := (pageCount + scanChunkPages - 1) / scanChunkPages
 	workers := runtime.GOMAXPROCS(0)
-	if uint64(workers) > chunkCount { //nolint:gosec // GOMAXPROCS is a small positive int
-		workers = int(chunkCount) //nolint:gosec // chunkCount < workers, a small int
+	if uint64(workers) > chunkCount {
+		workers = int(chunkCount)
 	}
 	workers = max(workers, 1)
 
@@ -240,7 +240,7 @@ func BuildBlobContent(r io.ReaderAt, pageSize uint32, plan BlobPlan) ([]byte, er
 	out := make([]byte, 0, plan.Pages()*uint64(pageSize))
 	for _, pr := range plan.Ranges {
 		buf := make([]byte, pr.Count*uint64(pageSize))
-		if _, err := r.ReadAt(buf, int64(pr.Start)*int64(pageSize)); err != nil { //nolint:gosec
+		if _, err := r.ReadAt(buf, int64(pr.Start)*int64(pageSize)); err != nil {
 			return nil, fmt.Errorf("backup: reading pages %d..%d for blob: %w", pr.Start, pr.Start+pr.Count-1, err)
 		}
 		out = append(out, buf...)
@@ -256,7 +256,7 @@ func RunsForPlan(plan BlobPlan, blobIndex uint32, pageSize uint32) []PageRun {
 	for _, pr := range plan.Ranges {
 		runs = append(runs, PageRun{
 			StartPage:  pr.Start,
-			PageCount:  uint32(pr.Count), //nolint:gosec // plans cap ranges at blobMaxPages
+			PageCount:  uint32(pr.Count),
 			BlobIndex:  blobIndex,
 			BlobOffset: off,
 		})

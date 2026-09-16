@@ -3,7 +3,6 @@
 package sqlitevec_test
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"path/filepath"
@@ -34,13 +33,13 @@ func BenchmarkSQLiteDriverQueryGeneration(b *testing.B) {
 	for _, driver := range sqliteDriverBenches {
 		b.Run(driver.name, func(b *testing.B) {
 			require := require.New(b)
-			ctx := context.Background()
+			ctx := b.Context()
 			_, store := setupBenchmarkStore(b, driver, 1000, 16)
 			query := benchVector(0, 16)
 
 			b.ReportAllocs()
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for range b.N {
 				hits, err := store.QueryGeneration(ctx, int64(1), query, 10)
 				if err != nil {
 					b.StopTimer()
@@ -59,13 +58,13 @@ func BenchmarkSQLiteDriverSaveVectors(b *testing.B) {
 	for _, driver := range sqliteDriverBenches {
 		b.Run(driver.name, func(b *testing.B) {
 			require := require.New(b)
-			ctx := context.Background()
+			ctx := b.Context()
 			documents := 1000
 			_, store := setupBenchmarkStore(b, driver, documents, 16)
 
 			b.ReportAllocs()
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for i := range b.N {
 				doc := int64(i%documents + 1)
 				err := store.SaveVectors(ctx, int64(1), doc, nil, []vector.ChunkVector{{ChunkIndex: 0, Vector: benchVector(i, 16)}})
 				if err != nil {
@@ -80,7 +79,7 @@ func BenchmarkSQLiteDriverSaveVectors(b *testing.B) {
 func setupBenchmarkStore(b *testing.B, driver sqliteDriverBench, documents, dimensions int) (*sql.DB, *sqlitevec.Store[int64, int64]) {
 	b.Helper()
 	require := require.New(b)
-	ctx := context.Background()
+	ctx := b.Context()
 	if driver.setup != nil {
 		driver.setup()
 	}
@@ -101,7 +100,7 @@ func setupBenchmarkStore(b *testing.B, driver sqliteDriverBench, documents, dime
 		_, err = stmt.ExecContext(ctx, i, fmt.Sprintf("document %d", i))
 		require.NoError(err)
 	}
-	require.NoError(stmt.Close())
+	require.NoError(stmt.Close()) //nolint:sqlclosecheck // the statement is closed before the transaction commits on purpose
 	require.NoError(tx.Commit())
 
 	store, err := sqlitevec.New[int64, int64](ctx, db, sqlitevec.Schema{

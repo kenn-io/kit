@@ -33,6 +33,7 @@ func buildCursor(a *adapter, sessionID string, request Request) (Invocation, err
 		args = append(args, "--mode", "plan")
 	case ApprovalBypass:
 		args = append(args, "--force")
+	default:
 	}
 	stdin, err := stdinPrompt(request.Prompt)
 	if err != nil {

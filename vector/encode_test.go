@@ -51,7 +51,7 @@ func TestEncodeBatchedPreservesOrderAcrossBatches(t *testing.T) {
 	})
 
 	in := chunks("a", "bb", "ccc", "dddd", "eeeee")
-	out, err := vector.EncodeBatched(context.Background(), enc, in,
+	out, err := vector.EncodeBatched(t.Context(), enc, in,
 		vector.WithBatchSize(2), vector.WithBatchConcurrency(3))
 	require.NoError(err)
 	require.Len(out, len(in))
@@ -74,7 +74,7 @@ func TestEncodeBatchedCapsBatchSizeByTokenBudget(t *testing.T) {
 	})
 	in := chunks("a", "bb", "ccc", "dddd")
 
-	out, err := vector.EncodeBatched(context.Background(), enc, in,
+	out, err := vector.EncodeBatched(t.Context(), enc, in,
 		vector.WithBatchSize(4),
 		vector.WithBatchTokenBudget(120_000, 32_000),
 	)
@@ -88,12 +88,13 @@ func TestEncodeBatchedRejectsInputAboveTokenBudget(t *testing.T) {
 	var calls atomic.Int64
 	enc := echoEncoder(func([]string) { calls.Add(1) })
 
-	_, err := vector.EncodeBatched(context.Background(), enc, chunks("a"),
+	_, err := vector.EncodeBatched(t.Context(), enc, chunks("a"),
 		vector.WithBatchTokenBudget(31_999, 32_000),
 	)
 
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "token budget")
+	require.
+		ErrorContains(t, err, "token budget")
 	assert.Zero(t, calls.Load(), "a known-oversized input is rejected before the provider call")
 }
 
@@ -119,7 +120,7 @@ func TestEncodeBatchedRespectsConcurrencyBound(t *testing.T) {
 	}
 
 	in := chunks("a", "b", "c", "d", "e", "f", "g", "h")
-	_, err := vector.EncodeBatched(context.Background(), enc, in,
+	_, err := vector.EncodeBatched(t.Context(), enc, in,
 		vector.WithBatchSize(1), vector.WithBatchConcurrency(2))
 	require.NoError(err)
 	assert.LessOrEqual(maxInFlight.Load(), int64(2), "never exceeds the concurrency bound")
@@ -130,7 +131,7 @@ func TestEncodeBatchedSurfacesEncodeError(t *testing.T) {
 	sentinel := errors.New("boom")
 	enc := func(_ context.Context, _ []string) ([][]float32, error) { return nil, sentinel }
 
-	_, err := vector.EncodeBatched(context.Background(), enc, chunks("a", "b"), vector.WithBatchSize(1))
+	_, err := vector.EncodeBatched(t.Context(), enc, chunks("a", "b"), vector.WithBatchSize(1))
 	assert.ErrorIs(err, sentinel)
 }
 
@@ -154,7 +155,7 @@ func TestEncodeBatchedDoesNotLaunchBatchAfterBlockedDispatchSeesError(t *testing
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := vector.EncodeBatched(context.Background(), enc, chunks("a", "b", "c"),
+		_, err := vector.EncodeBatched(t.Context(), enc, chunks("a", "b", "c"),
 			vector.WithBatchSize(1), vector.WithBatchConcurrency(1))
 		done <- err
 	}()
@@ -176,7 +177,7 @@ func TestEncodeBatchedRejectsCountMismatch(t *testing.T) {
 		return [][]float32{{1}}, nil // one vector for two texts
 	}
 
-	_, err := vector.EncodeBatched(context.Background(), enc, chunks("a", "b"))
+	_, err := vector.EncodeBatched(t.Context(), enc, chunks("a", "b"))
 	assert.ErrorContains(err, "vectors for")
 }
 
@@ -196,7 +197,7 @@ func TestEncodeBatchedRejectsNonFiniteComponent(t *testing.T) {
 				return out, nil
 			}
 
-			_, err := vector.EncodeBatched(context.Background(), enc, chunks("a", "b", "c"))
+			_, err := vector.EncodeBatched(t.Context(), enc, chunks("a", "b", "c"))
 			var invalid *vector.InvalidVectorError
 			require.ErrorAs(t, err, &invalid)
 			assert.Equal(t, 2, invalid.Chunk, "chunk index is global, not batch-relative")
@@ -220,7 +221,7 @@ func TestEncodeBatchedRejectsZeroNormVector(t *testing.T) {
 
 	// BatchSize 2 puts the zero vector in the second batch, so a
 	// batch-relative index would wrongly report 0.
-	_, err := vector.EncodeBatched(context.Background(), enc, chunks("a", "b", "c"), vector.WithBatchSize(2))
+	_, err := vector.EncodeBatched(t.Context(), enc, chunks("a", "b", "c"), vector.WithBatchSize(2))
 	var invalid *vector.InvalidVectorError
 	require.ErrorAs(t, err, &invalid)
 	assert.Equal(t, 2, invalid.Chunk)
@@ -228,12 +229,12 @@ func TestEncodeBatchedRejectsZeroNormVector(t *testing.T) {
 }
 
 func TestEncodeBatchedNilEncoder(t *testing.T) {
-	_, err := vector.EncodeBatched(context.Background(), nil, chunks("a"))
+	_, err := vector.EncodeBatched(t.Context(), nil, chunks("a"))
 	assert.Error(t, err)
 }
 
 func TestEncodeBatchedEmptyInput(t *testing.T) {
-	out, err := vector.EncodeBatched(context.Background(), echoEncoder(nil), nil)
+	out, err := vector.EncodeBatched(t.Context(), echoEncoder(nil), nil)
 	require.NoError(t, err)
 	assert.Empty(t, out)
 }
@@ -242,7 +243,7 @@ func TestEncodeBatchedRejectsWhitespaceBeforeCallingEncoder(t *testing.T) {
 	var calls atomic.Int64
 	enc := echoEncoder(func([]string) { calls.Add(1) })
 
-	_, err := vector.EncodeBatched(context.Background(), enc, chunks("alpha", " \t\n\u2003"),
+	_, err := vector.EncodeBatched(t.Context(), enc, chunks("alpha", " \t\n\u2003"),
 		vector.WithBatchSize(1), vector.WithBatchConcurrency(2))
 
 	require.ErrorIs(t, err, vector.ErrEmptyEmbeddingInput)
@@ -257,7 +258,7 @@ func TestEncodeBatchedRejectsInvisibleTextBeforeCallingEncoder(t *testing.T) {
 	var calls atomic.Int64
 	enc := echoEncoder(func([]string) { calls.Add(1) })
 
-	_, err := vector.EncodeBatched(context.Background(), enc,
+	_, err := vector.EncodeBatched(t.Context(), enc,
 		chunks("alpha", "\u200b\ufeff\u200d"),
 		vector.WithBatchSize(1), vector.WithBatchConcurrency(2))
 
@@ -266,7 +267,7 @@ func TestEncodeBatchedRejectsInvisibleTextBeforeCallingEncoder(t *testing.T) {
 }
 
 func TestEncodeBatchedStopsOnCancelledContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	_, err := vector.EncodeBatched(ctx, echoEncoder(nil), chunks("a", "b"), vector.WithBatchSize(1))
 	assert.ErrorIs(t, err, context.Canceled)

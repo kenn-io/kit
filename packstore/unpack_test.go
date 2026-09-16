@@ -19,12 +19,14 @@ func TestUnpackDurablyRestoresAllLiveContentThenClearsMetadata(t *testing.T) {
 		entry := buildStoreTestPack(t, layout, content)
 		catalog.members[entry.Hash] = Reference{Hash: entry.Hash, OriginalHashes: []string{entry.Hash.String()}}
 		catalog.entries[entry.Hash] = entry
-		catalog.packs[entry.PackID] = PackRecord{PackID: entry.PackID, EntryCount: 1,
-			StoredBytes: entry.StoredLen, CreatedAt: time.Now().UTC()}
+		catalog.packs[entry.PackID] = PackRecord{
+			PackID: entry.PackID, EntryCount: 1,
+			StoredBytes: entry.StoredLen, CreatedAt: time.Now().UTC(),
+		}
 	}
 	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
 
-	stats, err := maintainer.Unpack(context.Background())
+	stats, err := maintainer.Unpack(t.Context())
 	require.NoError(err)
 	assert.Equal(2, stats.PacksUnpacked)
 	assert.Equal(2, stats.BlobsRestored)
@@ -48,14 +50,16 @@ func TestUnpackPreflightsEveryPackBeforeWritingLooseContent(t *testing.T) {
 	for _, entry := range []IndexEntry{first, second} {
 		catalog.members[entry.Hash] = Reference{Hash: entry.Hash}
 		catalog.entries[entry.Hash] = entry
-		catalog.packs[entry.PackID] = PackRecord{PackID: entry.PackID, EntryCount: 1,
-			StoredBytes: entry.StoredLen, CreatedAt: time.Now().UTC()}
+		catalog.packs[entry.PackID] = PackRecord{
+			PackID: entry.PackID, EntryCount: 1,
+			StoredBytes: entry.StoredLen, CreatedAt: time.Now().UTC(),
+		}
 	}
 	second.RawLen++
 	catalog.entries[second.Hash] = second
 	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
 
-	_, err := maintainer.Unpack(context.Background())
+	_, err := maintainer.Unpack(t.Context())
 	require.ErrorContains(t, err, "metadata mismatch")
 	assert.NoFileExists(layout.LoosePath(first.Hash))
 	assert.NoFileExists(layout.LoosePath(second.Hash))
@@ -69,20 +73,22 @@ func TestUnpackRejectsOversizedLiveEntryBeforeWrites(t *testing.T) {
 	entry := buildStoreTestPack(t, layout, []byte("ninebytes"))
 	catalog.members[entry.Hash] = Reference{Hash: entry.Hash}
 	catalog.entries[entry.Hash] = entry
-	catalog.packs[entry.PackID] = PackRecord{PackID: entry.PackID, EntryCount: 1,
-		StoredBytes: entry.StoredLen, CreatedAt: time.Now().UTC()}
+	catalog.packs[entry.PackID] = PackRecord{
+		PackID: entry.PackID, EntryCount: 1,
+		StoredBytes: entry.StoredLen, CreatedAt: time.Now().UTC(),
+	}
 	limits := DefaultLimits()
 	limits.BlobBytes = 8
 	maintainer := newMaintainerForTest(t, catalog, layout, limits)
 
-	_, err := maintainer.Unpack(context.Background())
+	_, err := maintainer.Unpack(t.Context())
 	require.ErrorIs(t, err, ErrBlobTooLarge)
 	assert.NoFileExists(t, layout.LoosePath(entry.Hash))
 }
 
 func TestUnpackHonorsCancellationBeforeMutation(t *testing.T) {
 	maintainer := newMaintainerForTest(t, newMaintenanceCatalog(), layoutForStoreTest(t), DefaultLimits())
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	_, err := maintainer.Unpack(ctx)
 	require.ErrorIs(t, err, context.Canceled)

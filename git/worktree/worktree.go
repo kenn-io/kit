@@ -9,6 +9,7 @@ package gitworktree
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -48,7 +49,7 @@ type Options struct {
 // worktree add so user hooks do not run in internal automation checkouts.
 func Create(ctx context.Context, repoPath, ref string, opts Options) (_ *Worktree, err error) {
 	if ref == "" {
-		return nil, fmt.Errorf("ref must not be empty")
+		return nil, errors.New("ref must not be empty")
 	}
 	runner := opts.Runner
 	if runner.Env == nil {
@@ -174,7 +175,7 @@ func ListSubmodulePaths(ctx context.Context, runner gitcmd.Runner, repoPath stri
 
 // IsFileProtocolError reports git's file transport denial.
 func IsFileProtocolError(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "transport 'file' not allowed")
+	return err != nil && strings.Contains(err.Error(), "transport 'file' not allowed") //nolint:kennlint // git stderr text is the only signal for this denial
 }
 
 // CapturePatch stages all changes and returns a binary patch against BaseSHA.

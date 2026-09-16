@@ -115,28 +115,30 @@ func topicEncoder() vector.EncodeFunc {
 
 func setup(t *testing.T) (*sql.DB, *sqlitevec.Store[int64, int64]) {
 	t.Helper()
+	require := require.New(t)
+	t.Helper()
 	db, err := openSQLiteTestDB(t, filepath.Join(t.TempDir(), "vec.db"))
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	require.NoError(err)
+	t.Cleanup(func() { require.NoError(db.Close()) })
 
-	_, err = db.Exec(`CREATE TABLE messages (id INTEGER PRIMARY KEY, body TEXT, embed_gen INTEGER)`)
-	require.NoError(t, err)
+	_, err = db.ExecContext(t.Context(), `CREATE TABLE messages (id INTEGER PRIMARY KEY, body TEXT, embed_gen INTEGER)`)
+	require.NoError(err)
 
-	store, err := sqlitevec.New[int64, int64](context.Background(), db, sqlitevec.Schema{
+	store, err := sqlitevec.New[int64, int64](t.Context(), db, sqlitevec.Schema{
 		DocsTable:      "messages",
 		IDColumn:       "id",
 		ContentColumn:  "body",
 		EmbedGenColumn: "embed_gen",
 		VectorsPrefix:  "message_vectors",
 	})
-	require.NoError(t, err)
+	require.NoError(err)
 	return db, store
 }
 
 func TestStoreFillThenSearch(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	db, store := setup(t)
 
 	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (1, 'a cat sat'), (2, 'a dog ran')`)
@@ -161,7 +163,7 @@ func TestStoreFillThenSearch(t *testing.T) {
 func TestStoreReembeddingReplacesVectors(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	db, store := setup(t)
 
 	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (1, 'a cat sat')`)
@@ -180,7 +182,7 @@ func TestStoreReembeddingReplacesVectors(t *testing.T) {
 func TestStoreSearchUnionsLiveGenerations(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	db, store := setup(t)
 
 	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (1, 'a cat'), (2, 'a dog')`)
@@ -213,7 +215,7 @@ func TestStoreSearchUnionsLiveGenerations(t *testing.T) {
 func TestStorePendingForGenerationUsesPerGenerationStampCoverage(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	db, store := setup(t)
 
 	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (1, 'a cat')`)
@@ -231,7 +233,7 @@ func TestStorePendingForGenerationUsesPerGenerationStampCoverage(t *testing.T) {
 func TestStoreSaveVectorsClearsAllGenerationsAfterNonRevisionInvalidation(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	db, store := setup(t)
 
 	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (1, 'a cat')`)
@@ -267,7 +269,7 @@ func TestStoreSaveVectorsClearsAllGenerationsAfterNonRevisionInvalidation(t *tes
 func TestStoreEnsureGenerationRejectsChangedFingerprint(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	db, store := setup(t)
 
 	require.NoError(store.EnsureGeneration(ctx, 1,
@@ -296,25 +298,27 @@ func TestNewCreatesChunkLookupIndexes(t *testing.T) {
 
 func indexColumns(t *testing.T, db *sql.DB, index string) []string {
 	t.Helper()
-	rows, err := db.QueryContext(context.Background(), fmt.Sprintf(`PRAGMA index_info(%s)`, index))
-	require.NoError(t, err)
-	defer func() { require.NoError(t, rows.Close()) }()
+	require := require.New(t)
+	t.Helper()
+	rows, err := db.QueryContext(t.Context(), fmt.Sprintf(`PRAGMA index_info(%s)`, index))
+	require.NoError(err)
+	defer func() { require.NoError(rows.Close()) }()
 
 	var columns []string
 	for rows.Next() {
 		var seqno, cid int
 		var name string
-		require.NoError(t, rows.Scan(&seqno, &cid, &name))
+		require.NoError(rows.Scan(&seqno, &cid, &name))
 		columns = append(columns, name)
 	}
-	require.NoError(t, rows.Err())
+	require.NoError(rows.Err())
 	return columns
 }
 
 func TestStoreSaveVectorsRejectsMissingDocument(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	_, store := setup(t)
 
 	require.NoError(store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
@@ -331,16 +335,18 @@ func TestStoreSaveVectorsRejectsMissingDocument(t *testing.T) {
 // so SaveVectors stamps optimistically.
 func setupWithRevision(t *testing.T) (*sql.DB, *sqlitevec.Store[int64, int64]) {
 	t.Helper()
+	require := require.New(t)
+	t.Helper()
 	db, err := openSQLiteTestDB(t, filepath.Join(t.TempDir(), "vec.db"))
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	require.NoError(err)
+	t.Cleanup(func() { require.NoError(db.Close()) })
 
-	_, err = db.Exec(`CREATE TABLE messages (
+	_, err = db.ExecContext(t.Context(), `CREATE TABLE messages (
 		id INTEGER PRIMARY KEY, body TEXT, embed_gen INTEGER,
 		last_modified INTEGER NOT NULL DEFAULT 0)`)
-	require.NoError(t, err)
+	require.NoError(err)
 
-	store, err := sqlitevec.New[int64, int64](context.Background(), db, sqlitevec.Schema{
+	store, err := sqlitevec.New[int64, int64](t.Context(), db, sqlitevec.Schema{
 		DocsTable:      "messages",
 		IDColumn:       "id",
 		ContentColumn:  "body",
@@ -348,14 +354,14 @@ func setupWithRevision(t *testing.T) (*sql.DB, *sqlitevec.Store[int64, int64]) {
 		RevisionColumn: "last_modified",
 		VectorsPrefix:  "message_vectors",
 	})
-	require.NoError(t, err)
+	require.NoError(err)
 	return db, store
 }
 
 func TestStoreStaleRevisionLeavesDocumentPending(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	db, store := setupWithRevision(t)
 
 	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body, last_modified) VALUES (1, 'a cat sat', 1)`)
@@ -393,7 +399,7 @@ func TestStoreStaleRevisionLeavesDocumentPending(t *testing.T) {
 func TestStorePendingForGenerationDetectsRevisionEditAfterStamp(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	db, store := setupWithRevision(t)
 
 	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body, last_modified) VALUES (1, 'a cat sat', 1)`)
@@ -423,7 +429,7 @@ func TestStorePendingForGenerationDetectsRevisionEditAfterStamp(t *testing.T) {
 
 func TestStoreSaveVectorsStoresRevisionAfterStampTriggers(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	db, store := setupWithRevision(t)
 
 	_, err := db.ExecContext(ctx, `
@@ -449,7 +455,7 @@ INSERT INTO messages (id, body, last_modified) VALUES (1, 'a cat sat', 1);`)
 
 func TestStoreSaveVectorsAdvancesCoveredGenerationStampsAfterStampTriggers(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	db, store := setupWithRevision(t)
 
 	_, err := db.ExecContext(ctx, `
@@ -483,7 +489,7 @@ INSERT INTO messages (id, body, last_modified) VALUES (1, 'a cat sat', 1);`)
 func TestStoreSaveVectorsClearsAllGenerationsAfterRevisionInvalidation(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	db, store := setupWithRevision(t)
 
 	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body, last_modified) VALUES (1, 'a cat', 1)`)
@@ -520,7 +526,7 @@ func TestStoreSaveVectorsClearsAllGenerationsAfterRevisionInvalidation(t *testin
 func TestStoreSaveVectorsClearsAllGenerationsAfterRevisionOnlyEdit(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	db, store := setupWithRevision(t)
 
 	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body, last_modified) VALUES (1, 'a cat', 1)`)
@@ -557,7 +563,7 @@ func TestStoreSaveVectorsClearsAllGenerationsAfterRevisionOnlyEdit(t *testing.T)
 func TestStoreFillWithRevisionColumn(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	db, store := setupWithRevision(t)
 
 	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body, last_modified) VALUES (1, 'a cat', 3), (2, 'a dog', 4)`)
@@ -576,7 +582,7 @@ func TestStoreFillWithRevisionColumn(t *testing.T) {
 func TestStorePendingForGenerationTreatsNullContentAsEmpty(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	db, store := setup(t)
 
 	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (1, NULL)`)
@@ -592,7 +598,7 @@ func TestStorePendingForGenerationTreatsNullContentAsEmpty(t *testing.T) {
 
 func TestStoreSaveVectorsRevisionRequiresColumn(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	db, store := setup(t)
 
 	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (1, 'a cat')`)
@@ -607,7 +613,7 @@ func TestStoreSaveVectorsRevisionRequiresColumn(t *testing.T) {
 func TestStoreStampOnlySaveDropsDocumentFromPending(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	db, store := setup(t)
 
 	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (1, 'a cat')`)
@@ -628,7 +634,7 @@ func TestStoreStampOnlySaveDropsDocumentFromPending(t *testing.T) {
 func TestStoreQueryGenerationExcludesDeletedDocuments(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	db, store := setup(t)
 
 	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (1, 'a cat sat'), (2, 'a dog ran')`)
@@ -654,7 +660,7 @@ func TestStoreQueryGenerationExcludesDeletedDocuments(t *testing.T) {
 func TestStoreQueryGenerationExcludesEditedDocumentUntilReembedded(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	db, store := setupWithRevision(t)
 
 	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body, last_modified) VALUES (1, 'a cat sat', 1)`)
@@ -683,7 +689,7 @@ func TestStoreQueryGenerationExcludesEditedDocumentUntilReembedded(t *testing.T)
 func TestStoreQueryGenerationExcludesInvalidatedDocumentUntilReembedded(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	db, store := setup(t)
 
 	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (1, 'a cat sat')`)
@@ -713,7 +719,7 @@ func TestStoreQueryGenerationExcludesInvalidatedDocumentUntilReembedded(t *testi
 func TestStoreDeleteVectorsRemovesAllGenerations(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	db, store := setup(t)
 
 	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (1, 'a cat')`)
@@ -738,7 +744,7 @@ func TestStoreDeleteVectorsRemovesAllGenerations(t *testing.T) {
 func TestStoreDeleteVectorsStopsBeforeMutationWhenChunkScanFails(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	rowsErrDeleteCount.Store(0)
 
 	db, err := sql.Open(rowsErrDriverName, "")
@@ -760,7 +766,7 @@ func TestStoreDeleteVectorsStopsBeforeMutationWhenChunkScanFails(t *testing.T) {
 }
 
 func TestNewRejectsUnsafeIdentifiers(t *testing.T) {
-	_, err := sqlitevec.New[int64, int64](context.Background(), nil, sqlitevec.Schema{
+	_, err := sqlitevec.New[int64, int64](t.Context(), nil, sqlitevec.Schema{
 		DocsTable: "messages; DROP TABLE messages",
 	})
 	require.Error(t, err)

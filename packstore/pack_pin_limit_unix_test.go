@@ -21,20 +21,24 @@ func TestPackSourcePinLimitHonorsUnixSoftLimit(t *testing.T) {
 		runPackSourcePinLimitChild(t)
 		return
 	}
-	command := exec.Command(os.Args[0], "-test.run=^TestPackSourcePinLimitHonorsUnixSoftLimit$")
+	command := exec.CommandContext(context.WithoutCancel(t.Context()), os.Args[0], "-test.run=^TestPackSourcePinLimitHonorsUnixSoftLimit$")
 	command.Env = append(os.Environ(), sourcePinLimitChild+"=1")
 	output, err := command.CombinedOutput()
 	require.NoError(t, err, string(output))
 }
 
 func runPackSourcePinLimitChild(t *testing.T) {
+	t.Helper()
+	assert := assert.New(t)
+	require := require.New(t)
+	t.Helper()
 	var processLimit unix.Rlimit
-	require.NoError(t, unix.Getrlimit(unix.RLIMIT_NOFILE, &processLimit))
+	require.NoError(unix.Getrlimit(unix.RLIMIT_NOFILE, &processLimit))
 	if processLimit.Cur < 160 {
 		t.Skip("process soft file limit is already below the controlled fixture")
 	}
 	processLimit.Cur = 160
-	require.NoError(t, unix.Setrlimit(unix.RLIMIT_NOFILE, &processLimit))
+	require.NoError(unix.Setrlimit(unix.RLIMIT_NOFILE, &processLimit))
 
 	layout := layoutForStoreTest(t)
 	catalog := newMaintenanceCatalog()
@@ -47,11 +51,10 @@ func runPackSourcePinLimitChild(t *testing.T) {
 	}
 	catalog.setCandidateOrder(order)
 	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
-	assert.Equal(t, 16, maintainer.packedSourcePinLimit)
+	assert.Equal(16, maintainer.packedSourcePinLimit)
 
-	stats, err := maintainer.Pack(context.Background(), PackOptions{})
-
-	require.NoError(t, err)
-	assert.Equal(t, 40, stats.BlobsPacked)
-	assert.Equal(t, 3, stats.PacksSealed)
+	stats, err := maintainer.Pack(t.Context(), PackOptions{})
+	require.NoError(err)
+	assert.Equal(40, stats.BlobsPacked)
+	assert.Equal(3, stats.PacksSealed)
 }

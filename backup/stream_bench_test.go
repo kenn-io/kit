@@ -36,7 +36,7 @@ func BenchmarkBackupCaptureStream(b *testing.B) {
 				repo, err := Init(filepath.Join(root, fmt.Sprintf("repo-%d", i)))
 				require.NoError(b, err)
 				appender := NewPackAppender(repo, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, ".benchpack")
-				_, err = CaptureAttachments(context.Background(), "", []ContentRef{ref}, map[string]bool{}, appender,
+				_, err = CaptureAttachments(b.Context(), "", []ContentRef{ref}, map[string]bool{}, appender,
 					CaptureOptions{Jobs: 1, Source: benchmarkContentSource{content: content}})
 				require.NoError(b, err)
 				_, _, err = appender.Finish()
@@ -53,22 +53,23 @@ func BenchmarkRepoStreamingReads(b *testing.B) {
 	}
 	for name, content := range contents {
 		b.Run(name, func(b *testing.B) {
+			require := require.New(b)
 			repo, err := Init(filepath.Join(b.TempDir(), "repo"))
-			require.NoError(b, err)
+			require.NoError(err)
 			known := map[pack.BlobID]IndexEntry{}
 			appender := NewPackAppender(repo, known, pack.DefaultZstdLevel, nil, testPackExt)
 			id, _, err := appender.Add(content)
-			require.NoError(b, err)
+			require.NoError(err)
 			_, _, err = appender.Finish()
-			require.NoError(b, err)
+			require.NoError(err)
 			b.ReportAllocs()
 			b.SetBytes(int64(len(content)))
 			b.ResetTimer()
 			for range b.N {
-				reader, err := repo.OpenBlob(context.Background(), known, id, nil, testPackExt)
-				require.NoError(b, err)
+				reader, err := repo.OpenBlob(b.Context(), known, id, nil, testPackExt)
+				require.NoError(err)
 				_, copyErr := io.Copy(io.Discard, reader)
-				require.NoError(b, errors.Join(copyErr, reader.Close()))
+				require.NoError(errors.Join(copyErr, reader.Close()))
 			}
 		})
 	}

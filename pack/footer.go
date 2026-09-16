@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
 )
 
@@ -17,12 +18,12 @@ const (
 // plain pack whose frame data ends at dataEnd and contains entryCount entries.
 func PlainPackSize(dataEnd uint64, entryCount int) (containerBytes, footerBytes uint64, err error) {
 	if dataEnd < headerSize || entryCount < 0 || uint64(entryCount) > uint64(^uint32(0)) {
-		return 0, 0, fmt.Errorf("pack: invalid projected plain pack size")
+		return 0, 0, errors.New("pack: invalid projected plain pack size")
 	}
 	footerBytes = 4 + uint64(entryCount)*entrySize
 	containerBytes = dataEnd + footerBytes + plainTrailerSize
 	if containerBytes < dataEnd {
-		return 0, 0, fmt.Errorf("pack: projected plain pack size overflow")
+		return 0, 0, errors.New("pack: projected plain pack size overflow")
 	}
 	return containerBytes, footerBytes, nil
 }
@@ -43,7 +44,7 @@ type Entry struct {
 // encodeFooterRegion serializes entries as count(u32 LE) || entry*count.
 func encodeFooterRegion(entries []Entry) []byte {
 	buf := make([]byte, 0, 4+len(entries)*entrySize)
-	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(entries))) //nolint:gosec // len(entries) is always valid
+	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(entries)))
 	for _, e := range entries {
 		buf = append(buf, e.ID[:]...)
 		buf = binary.LittleEndian.AppendUint64(buf, e.Offset)
@@ -111,7 +112,7 @@ func parseFooterRegion(region []byte, footerStart uint64) ([]Entry, error) {
 func appendPlainTrailer(region []byte) []byte {
 	out := make([]byte, 0, len(region)+plainTrailerSize)
 	out = append(out, region...)
-	out = binary.LittleEndian.AppendUint32(out, uint32(len(region))) //nolint:gosec // len(region) is always valid
+	out = binary.LittleEndian.AppendUint32(out, uint32(len(region)))
 	sum := sha256.Sum256(out)
 	out = append(out, sum[:]...)
 	return append(out, trailerMagic...)
@@ -124,7 +125,8 @@ func appendPlainTrailer(region []byte) []byte {
 // trailer, so a caller can learn how much of the file to read next before
 // reading it.
 func parsePlainTrailer(trailer []byte, fileSize uint64) (footerLen uint32,
-	checksum [32]byte, err error) {
+	checksum [32]byte, err error,
+) {
 	if len(trailer) < plainTrailerSize {
 		return 0, checksum, fmt.Errorf("%w: %d bytes is too small for a pack",
 			ErrTruncated, len(trailer))
@@ -176,7 +178,8 @@ func extractPlainFooterRegion(file []byte) ([]byte, error) {
 // (backup/FORMAT.md, Pack Files). The trailer is plaintext by necessity; tampering is
 // caught because the footer's AEAD open fails.
 func appendEncryptedTrailer(sealedFooter []byte,
-	footerOffset uint64) []byte {
+	footerOffset uint64,
+) []byte {
 	out := make([]byte, 0, len(sealedFooter)+encTrailerSize)
 	out = append(out, sealedFooter...)
 	out = binary.LittleEndian.AppendUint64(out, footerOffset)
@@ -190,7 +193,8 @@ func appendEncryptedTrailer(sealedFooter []byte,
 // without requiring the footer bytes themselves to be present in trailer, so
 // a caller can learn how much of the file to read next before reading it.
 func parseEncryptedTrailer(trailer []byte, fileSize uint64) (footerOffset,
-	storedLen uint64, err error) {
+	storedLen uint64, err error,
+) {
 	if len(trailer) < encTrailerSize {
 		return 0, 0, ErrTruncated
 	}
@@ -215,7 +219,8 @@ func parseEncryptedTrailer(trailer []byte, fileSize uint64) (footerOffset,
 // that starts at file offset shift rather than zero. tail must contain the
 // sealed footer bytes as well as the trailer.
 func extractEncryptedFooterShifted(tail []byte, shift uint64) ([]byte,
-	uint64, error) {
+	uint64, error,
+) {
 	fileSize := shift + uint64(len(tail))
 	footerOffset, storedLen, err := parseEncryptedTrailer(tail, fileSize)
 	if err != nil {

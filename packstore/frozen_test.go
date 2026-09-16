@@ -1,7 +1,6 @@
 package packstore
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -55,8 +54,10 @@ func TestFrozenMsgvaultV1Pack(t *testing.T) {
 	for _, blob := range manifest.Blobs {
 		hash, parseErr := ParseHash(blob.Hash)
 		require.NoError(parseErr)
-		entry := IndexEntry{Hash: hash, PackID: manifest.PackID, Offset: blob.Offset,
-			StoredLen: blob.StoredLen, RawLen: blob.RawLen, Flags: blob.Flags, CRC32C: blob.CRC32C}
+		entry := IndexEntry{
+			Hash: hash, PackID: manifest.PackID, Offset: blob.Offset,
+			StoredLen: blob.StoredLen, RawLen: blob.RawLen, Flags: blob.Flags, CRC32C: blob.CRC32C,
+		}
 		resolver.locations[hash] = Location{Member: true, Pack: &entry}
 	}
 	store := newStoreForTest(t, resolver, layout)
@@ -65,7 +66,7 @@ func TestFrozenMsgvaultV1Pack(t *testing.T) {
 		require.NoError(parseErr)
 		want, decodeErr := base64.StdEncoding.DecodeString(blob.ContentBase64)
 		require.NoError(decodeErr)
-		reader, size, openErr := store.Open(context.Background(), hash)
+		reader, size, openErr := store.Open(t.Context(), hash)
 		require.NoError(openErr, blob.Name)
 		got, readErr := io.ReadAll(reader)
 		require.NoError(errors.Join(readErr, reader.Close()), blob.Name)

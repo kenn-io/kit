@@ -7,13 +7,13 @@ import (
 	"path/filepath"
 	"testing"
 
-	Assert "github.com/stretchr/testify/assert"
-	Require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestHardlinkIdentityPinCloseCleansOwnedPathWithoutCapturedIdentity(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	dir := filepath.Join(t.TempDir(), "exclusive-pin")
 	require.NoError(os.Mkdir(dir, 0o700))
 	path := filepath.Join(dir, "pinned")
@@ -30,7 +30,7 @@ func TestHardlinkIdentityPinCloseCleansOwnedPathWithoutCapturedIdentity(t *testi
 }
 
 func TestHardlinkIdentityPinStatRejectsPrivatePathReplacement(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	dir := filepath.Join(t.TempDir(), "exclusive-pin")
 	require.NoError(os.Mkdir(dir, 0o700))
 	path := filepath.Join(dir, "pinned")

@@ -165,10 +165,10 @@ func (w *Writer) AppendPrepared(
 	prepared *PreparedBlob,
 ) (entry Entry, resultErr error) {
 	if ctx == nil {
-		return Entry{}, fmt.Errorf("pack: nil context")
+		return Entry{}, errors.New("pack: nil context")
 	}
 	if prepared == nil {
-		return Entry{}, fmt.Errorf("pack: nil prepared blob")
+		return Entry{}, errors.New("pack: nil prepared blob")
 	}
 	f, scratchPath, preparedInfo, err := prepared.take()
 	if err != nil {
@@ -202,7 +202,7 @@ func (w *Writer) AppendPrepared(
 		return Entry{}, fmt.Errorf("pack: stat prepared frame: %w", err)
 	}
 	if !os.SameFile(preparedInfo, info) || info.Size() < 0 || uint64(info.Size()) != prepared.storedLen {
-		return Entry{}, fmt.Errorf("pack: prepared frame identity or length changed")
+		return Entry{}, errors.New("pack: prepared frame identity or length changed")
 	}
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return Entry{}, fmt.Errorf("pack: rewinding prepared frame: %w", err)
@@ -236,13 +236,13 @@ func (w *Writer) AppendPrepared(
 	}
 	entry = Entry{
 		ID:        prepared.id,
-		Offset:    uint64(w.off), //nolint:gosec // w.off is non-negative
+		Offset:    uint64(w.off),
 		StoredLen: prepared.storedLen,
 		RawLen:    prepared.rawLen,
 		Flags:     flags,
 		CRC32C:    prepared.crc,
 	}
-	w.off += int64(prepared.storedLen) //nolint:gosec // bounded by MaxStoredLen
+	w.off += int64(prepared.storedLen)
 	w.entries = append(w.entries, entry)
 	return entry, nil
 }
@@ -267,7 +267,7 @@ func (w *Writer) appendFrame(id BlobID, stored []byte, rawLen uint64, compressed
 	}
 	e := Entry{
 		ID:        id,
-		Offset:    uint64(w.off), //nolint:gosec // w.off >= 0
+		Offset:    uint64(w.off),
 		StoredLen: uint64(len(stored)),
 		RawLen:    rawLen,
 		Flags:     flags,
@@ -303,7 +303,7 @@ func (w *Writer) Seal(finalPath string) ([]Entry, error) {
 		if err != nil {
 			return nil, fmt.Errorf("pack: sealing footer: %w", err)
 		}
-		tail = appendEncryptedTrailer(sealed, uint64(w.off)) //nolint:gosec // w.off >= 0
+		tail = appendEncryptedTrailer(sealed, uint64(w.off))
 	} else {
 		tail = appendPlainTrailer(region)
 	}

@@ -2,7 +2,6 @@ package pack
 
 import (
 	"bytes"
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -15,20 +14,21 @@ func BenchmarkPrepareAndAppendStream(b *testing.B) {
 	}
 	for name, content := range contents {
 		b.Run(name, func(b *testing.B) {
+			require := require.New(b)
 			dir := b.TempDir()
 			b.ReportAllocs()
 			b.SetBytes(int64(len(content)))
 			var scratch, stored uint64
 			for range b.N {
 				writer, err := NewWriter(dir, WriterOptions{})
-				require.NoError(b, err)
-				prepared, err := PrepareBlob(context.Background(), bytes.NewReader(content), uint64(len(content)), DefaultZstdLevel, AppendStreamOptions{ScratchDir: dir})
-				require.NoError(b, err)
+				require.NoError(err)
+				prepared, err := PrepareBlob(b.Context(), bytes.NewReader(content), uint64(len(content)), DefaultZstdLevel, AppendStreamOptions{ScratchDir: dir})
+				require.NoError(err)
 				scratch += prepared.ScratchBytes()
 				stored += prepared.StoredLen()
-				_, err = writer.AppendPrepared(context.Background(), prepared)
-				require.NoError(b, err)
-				require.NoError(b, writer.Abort())
+				_, err = writer.AppendPrepared(b.Context(), prepared)
+				require.NoError(err)
+				require.NoError(writer.Abort())
 			}
 			if b.N > 0 {
 				b.ReportMetric(float64(scratch)/float64(b.N), "scratch-bytes/op")

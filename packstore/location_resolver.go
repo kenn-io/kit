@@ -36,13 +36,13 @@ type ReadLocation struct {
 // physical representation.
 func (l ReadLocation) Validate() error {
 	if l.StoreID == "" {
-		return fmt.Errorf("packstore: empty store id")
+		return errors.New("packstore: empty store id")
 	}
 	if l.Generation == "" {
-		return fmt.Errorf("packstore: empty location generation")
+		return errors.New("packstore: empty location generation")
 	}
 	if (l.Loose == nil) == (l.Pack == nil) {
-		return fmt.Errorf("packstore: location must select exactly one representation")
+		return errors.New("packstore: location must select exactly one representation")
 	}
 	if l.Loose != nil {
 		return l.Loose.validate()
@@ -52,7 +52,7 @@ func (l ReadLocation) Validate() error {
 
 func (l LooseLocation) validate() error {
 	if l.LogicalSize < 0 || l.StoredSize < 0 {
-		return fmt.Errorf("packstore: negative loose location size")
+		return errors.New("packstore: negative loose location size")
 	}
 	if l.Encoding == 0 {
 		if !l.legacy {
@@ -62,7 +62,7 @@ func (l LooseLocation) validate() error {
 			)
 		}
 		if l.LogicalSize != 0 || l.StoredSize != 0 {
-			return fmt.Errorf("packstore: legacy loose location must omit sizes")
+			return errors.New("packstore: legacy loose location must omit sizes")
 		}
 		return nil
 	}
@@ -122,10 +122,10 @@ func NewMultiStore(
 	opts MultiStoreOptions,
 ) (*Store, error) {
 	if resolver == nil {
-		return nil, fmt.Errorf("packstore: location resolver is nil")
+		return nil, errors.New("packstore: location resolver is nil")
 	}
 	if backends == nil {
-		return nil, fmt.Errorf("packstore: backend registry is nil")
+		return nil, errors.New("packstore: backend registry is nil")
 	}
 	store, err := newStoreOptions(opts.Limits, opts.ReaderSlots)
 	if err != nil {
@@ -220,7 +220,7 @@ func attemptResolution[T any](
 
 func validateResolution(hash Hash, resolution Resolution) error {
 	if !resolution.Member && len(resolution.Candidates) != 0 {
-		return fmt.Errorf("packstore: non-member resolution contains physical candidates")
+		return errors.New("packstore: non-member resolution contains physical candidates")
 	}
 	var seen map[locationHealthKey]struct{}
 	if len(resolution.Candidates) > 1 {
@@ -282,7 +282,7 @@ func openBackendStream(
 		return nil, 0, err
 	}
 	if stream == nil {
-		return nil, 0, fmt.Errorf("packstore: backend returned a nil verified stream")
+		return nil, 0, errors.New("packstore: backend returned a nil verified stream")
 	}
 	if size < 0 {
 		return nil, 0, errors.Join(

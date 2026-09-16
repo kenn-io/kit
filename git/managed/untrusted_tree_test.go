@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	Require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/require"
 
 	gitcmd "go.kenn.io/kit/git/cmd"
 	gitenv "go.kenn.io/kit/git/env"
@@ -40,7 +40,7 @@ func TestSupportsUntrustedTreeCheckoutGitVersion(t *testing.T) {
 }
 
 func TestMaterializeUntrustedTreePinsWorktree(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	assert := assert.New(t)
 	repo := initLifecycleRepo(t)
 	require.NoError(os.WriteFile(

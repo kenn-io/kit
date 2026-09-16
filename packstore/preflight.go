@@ -124,7 +124,7 @@ func (r *MaintenancePackReader) OpenBlob(ctx context.Context, hash Hash) (*pack.
 	if !ok {
 		return nil, fmt.Errorf("%w: blob %s is absent from pack footer", fs.ErrNotExist, hash)
 	}
-	limit := uint64(r.limits.BlobBytes) //nolint:gosec // validated non-negative
+	limit := uint64(r.limits.BlobBytes)
 	if entry.RawLen > limit {
 		return nil, newLimitError(LimitBlobRawBytes, entry.RawLen, limit)
 	}
@@ -132,7 +132,7 @@ func (r *MaintenancePackReader) OpenBlob(ctx context.Context, hash Hash) (*pack.
 		return nil, newLimitError(LimitBlobStoredBytes, entry.StoredLen, limit)
 	}
 	if r.reader.streamReader == nil {
-		return nil, fmt.Errorf("packstore: maintenance reader does not support streaming")
+		return nil, errors.New("packstore: maintenance reader does not support streaming")
 	}
 	return r.reader.streamReader.OpenBlobWithOptions(ctx, entry, pack.BlobReaderOptions{
 		WindowBytes: uint64(max(r.limits.BlobBytes, int64(1<<10))),
@@ -144,7 +144,7 @@ func (r *MaintenancePackReader) Close() error { return r.reader.Close() }
 
 func validateLimits(limits Limits) error {
 	if limits.BlobBytes < 0 || limits.PackBytes <= 0 || limits.FooterBytes <= 0 || limits.PackEntries <= 0 {
-		return fmt.Errorf("packstore: invalid maintenance limits")
+		return errors.New("packstore: invalid maintenance limits")
 	}
 	return nil
 }
@@ -166,7 +166,7 @@ func openBoundedPack(path string, limits Limits) (*boundedPackReader, error) {
 		return nil, errors.Join(fmt.Errorf("stat pack for bounded preflight: %w", err), f.Close())
 	}
 	if !os.SameFile(pathInfo, info) {
-		return nil, errors.Join(fmt.Errorf("packstore: pack changed identity during bounded preflight"), f.Close())
+		return nil, errors.Join(errors.New("packstore: pack changed identity during bounded preflight"), f.Close())
 	}
 	reader, err := openBoundedPackFile(f, limits)
 	if err != nil {
@@ -179,7 +179,7 @@ func openBoundedPack(path string, limits Limits) (*boundedPackReader, error) {
 // takes ownership of f whether validation succeeds or fails.
 func openBoundedPackFile(f *os.File, limits Limits) (*boundedPackReader, error) {
 	if f == nil {
-		return nil, fmt.Errorf("packstore: nil bounded pack file")
+		return nil, errors.New("packstore: nil bounded pack file")
 	}
 	keepOpen := false
 	defer func() {
@@ -193,7 +193,7 @@ func openBoundedPackFile(f *os.File, limits Limits) (*boundedPackReader, error) 
 	}
 	size := info.Size()
 	if size > limits.PackBytes {
-		return nil, newLimitError(LimitPackContainerBytes, uint64(size), uint64(limits.PackBytes)) //nolint:gosec
+		return nil, newLimitError(LimitPackContainerBytes, uint64(size), uint64(limits.PackBytes))
 	}
 	if size < plainPackHeaderSize+plainPackTrailerSize {
 		return nil, fmt.Errorf("%w: %d bytes is too small for a plain pack", pack.ErrTruncated, size)
@@ -236,7 +236,7 @@ func openBoundedPackFile(f *os.File, limits Limits) (*boundedPackReader, error) 
 	}
 	footerStart := fileSize - plainPackTrailerSize - footerLen
 	var countBytes [4]byte
-	if err := readBoundedPackAt(f, countBytes[:], int64(footerStart), "footer count"); err != nil { //nolint:gosec
+	if err := readBoundedPackAt(f, countBytes[:], int64(footerStart), "footer count"); err != nil {
 		return nil, err
 	}
 	count := uint64(binary.LittleEndian.Uint32(countBytes[:]))
@@ -248,7 +248,7 @@ func openBoundedPackFile(f *os.File, limits Limits) (*boundedPackReader, error) 
 		return nil, fmt.Errorf("%w: footer length %d, want %d for %d entries", pack.ErrCorrupt, footerLen, wantFooterLen, count)
 	}
 	footer := make([]byte, int(footerLen))
-	if err := readBoundedPackAt(f, footer, int64(footerStart), "footer"); err != nil { //nolint:gosec
+	if err := readBoundedPackAt(f, footer, int64(footerStart), "footer"); err != nil {
 		return nil, err
 	}
 	digest := sha256.New()
@@ -287,7 +287,7 @@ func openBoundedPackFile(f *os.File, limits Limits) (*boundedPackReader, error) 
 		entries[entry.ID] = entry
 	}
 	streamReader, err := pack.NewReaderFromFileWithOptions(f, "", nil, pack.ReaderOptions{Limits: pack.ReaderLimits{
-		ContainerBytes: uint64(limits.PackBytes), //nolint:gosec // validated positive
+		ContainerBytes: uint64(limits.PackBytes),
 		FooterBytes:    uint64(limits.FooterBytes),
 		Entries:        uint64(limits.PackEntries),
 	}})
@@ -309,7 +309,7 @@ func readBoundedPackAt(f *os.File, dst []byte, offset int64, part string) error 
 }
 
 func (r *boundedPackReader) readBlob(entry pack.Entry, maxBytes int64) ([]byte, error) {
-	limit := uint64(maxBytes) //nolint:gosec
+	limit := uint64(maxBytes)
 	if entry.RawLen > limit {
 		return nil, newLimitError(LimitBlobRawBytes, entry.RawLen, limit)
 	}
@@ -323,7 +323,7 @@ func (r *boundedPackReader) readBlob(entry pack.Entry, maxBytes int64) ([]byte, 
 		return nil, newLimitError(LimitBlobStoredBytes, entry.StoredLen, maxPlatformInt)
 	}
 	stored := make([]byte, int(entry.StoredLen))
-	if _, err := r.file.ReadAt(stored, int64(entry.Offset)); err != nil { //nolint:gosec
+	if _, err := r.file.ReadAt(stored, int64(entry.Offset)); err != nil {
 		return nil, fmt.Errorf("%w: read stored bytes for %s: %w", pack.ErrCorrupt, entry.ID, err)
 	}
 	if crc32.Checksum(stored, boundedCRC32CTable) != entry.CRC32C {

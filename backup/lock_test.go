@@ -80,7 +80,7 @@ func TestExclusiveWaitsOutSharedLocks(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond) //nolint:kennlint // exercises a real wait on the shared lock
 		done <- shared.Release()
 	}()
 
@@ -199,7 +199,7 @@ func TestHeartbeatStopsAfterReplant(t *testing.T) {
 
 	// Give the heartbeat goroutine several ticks' worth of time to observe
 	// the mismatch and stop.
-	time.Sleep(10 * lockHeartbeatInterval)
+	time.Sleep(10 * lockHeartbeatInterval) //nolint:kennlint // heartbeat goroutine runs on the wall clock
 
 	info, statErr := os.Stat(l.path)
 	require.NoError(statErr)

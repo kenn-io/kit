@@ -285,7 +285,7 @@ func (r *Repo) LatestSnapshot() (*Manifest, error) {
 		return nil, err
 	}
 	if len(list) == 0 {
-		return nil, nil //nolint:nilnil // empty repo -> no manifest, not an error
+		return nil, nil
 	}
 	return list[len(list)-1], nil
 }

@@ -7,6 +7,7 @@ package gitrepo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -223,7 +224,7 @@ func HooksPath(ctx context.Context, repoPath string) (string, error) {
 func EnsureAbsoluteHooksPath(ctx context.Context, repoPath string) error {
 	out, err := runner.Output(ctx, repoPath, "config", "core.hooksPath")
 	if err != nil {
-		return nil
+		return nil //nolint:nilerr // git exits non-zero when core.hooksPath is unset, which means nothing to rewrite
 	}
 	raw := NormalizePath(string(out))
 	if raw == "" || filepath.IsAbs(raw) || isGitTildePath(raw) {
@@ -270,7 +271,7 @@ func DefaultBranch(ctx context.Context, repoPath string) (string, error) {
 			return branch, nil
 		}
 	}
-	return "", fmt.Errorf("could not detect default branch")
+	return "", errors.New("could not detect default branch")
 }
 
 // ListRemotes returns configured remote names.

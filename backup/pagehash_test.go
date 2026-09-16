@@ -12,7 +12,7 @@ import (
 	"go.kenn.io/kit/pack"
 )
 
-func hashMapOf(t *testing.T, pageSize uint32, pages ...string) *PageHashMap { //nolint:unparam
+func hashMapOf(t *testing.T, pageSize uint32, pages ...string) *PageHashMap { //nolint:unparam // every fixture uses one page size; the parameter keeps the layout explicit
 	t.Helper()
 	m := &PageHashMap{PageSize: pageSize, PageCount: uint64(len(pages))}
 	for _, p := range pages {

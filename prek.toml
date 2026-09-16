@@ -59,14 +59,14 @@ require_serial = true
 priority = 10
 
 [[repos.hooks]]
-id = "testify-helper-check"
-name = "testify helper check"
+id = "kennlint-config"
+name = "kennlint config drift"
 language = "system"
-entry = "go run ./cmd/testify-helper-check ./..."
-files = "^(go\\.mod|go\\.sum|.*_test\\.go|tools/testifyhelpercheck/.*\\.go|cmd/testify-helper-check/.*\\.go)$"
+entry = "make lint-config-check"
+files = "^(\\.golangci\\.yml|\\.golangci\\.overlay\\.yml|lint/config/.*)$"
 pass_filenames = false
 require_serial = true
-priority = 15
+priority = 5
 
 [[repos.hooks]]
 id = "nilaway"

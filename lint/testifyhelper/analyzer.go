@@ -1,4 +1,4 @@
-package testifyhelpercheck
+package testifyhelper
 
 import (
 	"go/ast"
@@ -10,14 +10,21 @@ import (
 
 // Analyzer reports tests that repeatedly call testify's package-level
 // assert/require helpers instead of creating local assertion helpers.
+//
+// A helper is any local variable initialized with assert.New(t) or
+// require.New(t) for the test's own t. The conventional names are assert and
+// require; a different name (for example req) is accepted so that a nested
+// subtest can still reach the package to create its own helper.
 var Analyzer = &analysis.Analyzer{
-	Name: "testifyhelpercheck",
-	Doc:  "checks testify helper usage in tests",
+	Name: "testifyhelper",
+	Doc:  "reports tests that repeat package-level testify calls instead of using a local assert or require helper",
 	Run:  run,
 }
 
-const assertDiagnosticMessage = "test has %d direct testify package calls; create a local assert helper with assert := Assert.New(t) and use it for repeated checks"
-const requireDiagnosticMessage = "test has %d direct testify package calls; create a local require helper with require := require.New(t) and use it for repeated checks"
+const (
+	assertDiagnosticMessage  = "test has %d direct testify package calls; create a local assert helper with assert := assert.New(t) and use it for repeated checks"
+	requireDiagnosticMessage = "test has %d direct testify package calls; create a local require helper with require := require.New(t) and use it for repeated checks"
+)
 
 func run(pass *analysis.Pass) (any, error) {
 	for _, file := range pass.Files {
@@ -130,10 +137,10 @@ func analyzeBody(pass *analysis.Pass, body *ast.BlockStmt, tName string, imports
 					continue
 				}
 				if ident, ok := node.Lhs[i].(*ast.Ident); ok {
-					if ident.Name == "assert" && isAssertNewCall(pass, rhs, tName) {
+					if isAssertNewCall(pass, rhs, tName) {
 						assertHelper.add(identObject(pass, ident))
 					}
-					if ident.Name == "require" && isRequireNewCall(pass, rhs, tName) {
+					if isRequireNewCall(pass, rhs, tName) {
 						requireHelper.add(identObject(pass, ident))
 					}
 				}
@@ -143,10 +150,10 @@ func analyzeBody(pass *analysis.Pass, body *ast.BlockStmt, tName string, imports
 				if i >= len(node.Names) {
 					continue
 				}
-				if node.Names[i].Name == "assert" && isAssertNewCall(pass, value, tName) {
+				if isAssertNewCall(pass, value, tName) {
 					assertHelper.add(identObject(pass, node.Names[i]))
 				}
-				if node.Names[i].Name == "require" && isRequireNewCall(pass, value, tName) {
+				if isRequireNewCall(pass, value, tName) {
 					requireHelper.add(identObject(pass, node.Names[i]))
 				}
 			}
@@ -211,7 +218,7 @@ func (s *helperState) add(obj types.Object) {
 	s.objs[obj] = struct{}{}
 }
 
-func (s helperState) has(obj types.Object) bool {
+func (s *helperState) has(obj types.Object) bool {
 	if obj == nil {
 		return false
 	}

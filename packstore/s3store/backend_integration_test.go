@@ -27,7 +27,7 @@ func TestS3BackendConformance(t *testing.T) {
 	if endpoint == "" {
 		t.Skip("KIT_S3_TEST_ENDPOINT is not configured")
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 	prefix := "kit-conformance/" + pack.NewPackID()
 	config := Config{
 		Endpoint: endpoint, Region: "us-east-1",
@@ -253,21 +253,23 @@ func makePackEntries(
 	contents ...[]byte,
 ) (string, []byte, []packstore.IndexEntry) {
 	t.Helper()
+	require := require.New(t)
+	t.Helper()
 	dir := t.TempDir()
 	writer, err := pack.NewWriter(dir, pack.WriterOptions{})
-	require.NoError(t, err)
+	require.NoError(err)
 	entries := make([]pack.Entry, 0, len(contents))
 	for _, content := range contents {
 		entry, appendErr := writer.Append(content)
-		require.NoError(t, appendErr)
+		require.NoError(appendErr)
 		entries = append(entries, entry)
 	}
 	packID := pack.NewPackID()
 	path := filepath.Join(dir, packID+".pack")
 	_, err = writer.Seal(path)
-	require.NoError(t, err)
+	require.NoError(err)
 	data, err := os.ReadFile(path)
-	require.NoError(t, err)
+	require.NoError(err)
 	indexed := make([]packstore.IndexEntry, 0, len(entries))
 	for i, entry := range entries {
 		indexed = append(indexed, packstore.IndexEntry{

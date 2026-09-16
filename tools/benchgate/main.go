@@ -110,8 +110,10 @@ func evaluate(gate metricGate, oldValues, newValues []float64) (string, *violati
 	if ratio <= gate.maxRatio || !significant {
 		return detail, nil, nil
 	}
-	return detail, &violation{unit: gate.unit, old: oldCenter, new: newCenter,
-		ratio: ratio, maxRatio: gate.maxRatio}, nil
+	return detail, &violation{
+		unit: gate.unit, old: oldCenter, new: newCenter,
+		ratio: ratio, maxRatio: gate.maxRatio,
+	}, nil
 }
 
 func compare(old, next benchmarkSamples, gates []metricGate) ([]string, []violation, []string) {

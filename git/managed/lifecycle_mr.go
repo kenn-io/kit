@@ -127,9 +127,7 @@ func CreateWorktreeFromMergeRequest(
 		return CreateWorktreeResult{}, err
 	}
 	if opts.Number < 1 {
-		return CreateWorktreeResult{}, fmt.Errorf(
-			"merge request number is required",
-		)
+		return CreateWorktreeResult{}, errors.New("merge request number is required")
 	}
 	if err := validateWorktreeConfigCompatibility(ctx, root); err != nil {
 		return CreateWorktreeResult{}, err

@@ -108,7 +108,7 @@ func (p *PreparedBlob) take() (*os.File, string, os.FileInfo, error) {
 		if p.err != nil {
 			return nil, "", nil, p.err
 		}
-		return nil, "", nil, fmt.Errorf("pack: prepared blob already consumed")
+		return nil, "", nil, errors.New("pack: prepared blob already consumed")
 	}
 	p.consumed = true
 	f, path, info := p.f, p.path, p.info
@@ -157,10 +157,10 @@ func PrepareBlob(
 	opts AppendStreamOptions,
 ) (_ *PreparedBlob, resultErr error) {
 	if ctx == nil {
-		return nil, fmt.Errorf("pack: nil context")
+		return nil, errors.New("pack: nil context")
 	}
 	if src == nil {
-		return nil, fmt.Errorf("pack: nil stream source")
+		return nil, errors.New("pack: nil stream source")
 	}
 	if rawLen > MaxRawLen {
 		return nil, &StreamLimitError{Dimension: StreamLimitRawBytes, Actual: rawLen, Limit: MaxRawLen}

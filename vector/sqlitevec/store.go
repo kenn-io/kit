@@ -262,18 +262,17 @@ func (s *Store[K, G]) deleteDocumentVectors(ctx context.Context, tx *sql.Tx, doc
 	if err != nil {
 		return fmt.Errorf("read chunk map: %w", err)
 	}
+	defer func() { _ = rows.Close() }()
 	type chunkRef struct{ ordinal, rowid int64 }
 	var refs []chunkRef
 	for rows.Next() {
 		var ref chunkRef
 		if err := rows.Scan(&ref.ordinal, &ref.rowid); err != nil {
-			_ = rows.Close()
 			return fmt.Errorf("scan chunk rowid: %w", err)
 		}
 		refs = append(refs, ref)
 	}
 	if err := rows.Err(); err != nil {
-		_ = rows.Close()
 		return fmt.Errorf("read chunk map: %w", err)
 	}
 	if err := rows.Close(); err != nil {

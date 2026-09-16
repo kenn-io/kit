@@ -32,6 +32,7 @@ const (
 )
 
 func TestCheckFindsUpdateAndChecksumAsset(t *testing.T) {
+	require := require.New(t)
 	t.Parallel()
 
 	var checksumRequests atomic.Int64
@@ -66,27 +67,27 @@ func TestCheckFindsUpdateAndChecksumAsset(t *testing.T) {
 		Clock:            func() time.Time { return time.Unix(100, 0) },
 	}
 
-	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	info, err := client.Check(t.Context(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
 	if err != nil {
-		t.Fatalf("Check: %v", err)
+		require.FailNow(fmt.Sprintf("Check: %v", err))
 	}
 	if info == nil {
-		t.Fatal("expected update info")
+		require.FailNow("expected update info")
 	}
 	if info.CurrentVersion != "v1.1.0" || info.LatestVersion != "v1.2.0" {
-		t.Fatalf("unexpected versions: %+v", info)
+		require.FailNow(fmt.Sprintf("unexpected versions: %+v", info))
 	}
 	if info.AssetName != "tool_1.2.0_linux_amd64.tar.gz" {
-		t.Fatalf("asset = %q", info.AssetName)
+		require.FailNow(fmt.Sprintf("asset = %q", info.AssetName))
 	}
 	if info.SignatureURL != "https://example.invalid/tool.sig" {
-		t.Fatalf("signature URL = %q", info.SignatureURL)
+		require.FailNow(fmt.Sprintf("signature URL = %q", info.SignatureURL))
 	}
 	if info.Checksum != testHash64 {
-		t.Fatalf("checksum = %q", info.Checksum)
+		require.FailNow(fmt.Sprintf("checksum = %q", info.Checksum))
 	}
 	if checksumRequests.Load() != 1 {
-		t.Fatalf("checksum requests = %d", checksumRequests.Load())
+		require.FailNow(fmt.Sprintf("checksum requests = %d", checksumRequests.Load()))
 	}
 }
 
@@ -133,7 +134,7 @@ func TestCheckDiscoversReleaseThroughWebRedirectByDefault(t *testing.T) {
 		Clock:            func() time.Time { return time.Unix(100, 0) },
 	}
 
-	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	info, err := client.Check(t.Context(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
 	require.NoError(err)
 	require.NotNil(info)
 	assert.Equal("v1.2.0", info.LatestVersion)
@@ -179,7 +180,7 @@ func TestCheckSkipsConventionalAssetProbeWhenWebTagIsCurrent(t *testing.T) {
 		GitHubWebBaseURL: server.URL,
 	}
 
-	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	info, err := client.Check(t.Context(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
 	require.NoError(err)
 	assert.Nil(info)
 	assert.Zero(assetProbeRequests.Load())
@@ -229,7 +230,7 @@ func TestCheckUsesReleaseManifestBeforeNetworkDiscovery(t *testing.T) {
 		HTTPClient:         server.Client(),
 	}
 
-	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	info, err := client.Check(t.Context(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
 	require.NoError(err)
 	require.NotNil(info)
 	assert.Equal("v1.2.0", info.LatestVersion)
@@ -275,7 +276,7 @@ func TestCheckUsesManifestTagWithConventionalAssets(t *testing.T) {
 		HTTPClient:         server.Client(),
 	}
 
-	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	info, err := client.Check(t.Context(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
 	require.NoError(err)
 	require.NotNil(info)
 	assert.Equal(assetName, info.AssetName)
@@ -285,10 +286,11 @@ func TestCheckUsesManifestTagWithConventionalAssets(t *testing.T) {
 }
 
 func TestCheckRejectsHTTPManifestWhenUnsignedChecksumsAllowed(t *testing.T) {
+	require := require.New(t)
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatalf("insecure manifest URL should be rejected before fetch")
+		assert.Fail(t, "insecure manifest URL should be rejected before fetch")
 	}))
 	defer server.Close()
 
@@ -301,17 +303,18 @@ func TestCheckRejectsHTTPManifestWhenUnsignedChecksumsAllowed(t *testing.T) {
 		AllowUnsignedChecksums: true,
 	}
 
-	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
-	require.Error(t, err)
+	info, err := client.Check(t.Context(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	require.Error(err)
 	assert.Nil(t, info)
 	assert.Contains(t, err.Error(), "release manifest URL must use https")
 }
 
 func TestCheckRejectsHTTPManifest(t *testing.T) {
+	require := require.New(t)
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatalf("insecure manifest URL should be rejected before fetch")
+		assert.Fail(t, "insecure manifest URL should be rejected before fetch")
 	}))
 	defer server.Close()
 
@@ -323,8 +326,8 @@ func TestCheckRejectsHTTPManifest(t *testing.T) {
 		ReleaseManifestURL: server.URL + "/latest.json",
 	}
 
-	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
-	require.Error(t, err)
+	info, err := client.Check(t.Context(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	require.Error(err)
 	assert.Nil(t, info)
 	assert.Contains(t, err.Error(), "release manifest URL must use https")
 }
@@ -359,7 +362,7 @@ func TestCheckRejectsHTTPManifestAssetWhenUnsignedChecksumsAllowed(t *testing.T)
 		AllowUnsignedChecksums: true,
 	}
 
-	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	info, err := client.Check(t.Context(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
 	require.Error(t, err)
 	assert.Nil(t, info)
 	assert.Contains(t, err.Error(), "release asset URL for "+assetName+" must use https")
@@ -383,7 +386,7 @@ func TestCheckRejectsHTTPSManifestRedirectToHTTPWhenUnsignedChecksumsAllowed(t *
 		AllowUnsignedChecksums: true,
 	}
 
-	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	info, err := client.Check(t.Context(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
 	require.Error(t, err)
 	assert.Nil(t, info)
 	assert.Contains(t, err.Error(), "redirect to non-HTTPS URL")
@@ -406,7 +409,7 @@ func TestCheckRejectsHTTPSManifestRedirectToHTTP(t *testing.T) {
 		HTTPClient:         server.Client(),
 	}
 
-	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	info, err := client.Check(t.Context(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
 	require.Error(t, err)
 	assert.Nil(t, info)
 	assert.Contains(t, err.Error(), "redirect to non-HTTPS URL")
@@ -444,7 +447,7 @@ func TestCheckRejectsHTTPSChecksumRedirectToHTTPWhenUnsignedChecksumsAllowed(t *
 		AllowUnsignedChecksums: true,
 	}
 
-	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	info, err := client.Check(t.Context(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
 	require.Error(t, err)
 	assert.Nil(t, info)
 	assert.Contains(t, err.Error(), "redirect to non-HTTPS URL")
@@ -493,7 +496,7 @@ func TestCheckUsesConventionalChecksumAndSignatureFallbacks(t *testing.T) {
 		HTTPClient:         server.Client(),
 	}
 
-	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	info, err := client.Check(t.Context(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
 	require.NoError(err)
 	require.NotNil(info)
 	assert.Equal(testHash64, info.Checksum)
@@ -545,7 +548,7 @@ func TestCheckFallsBackToAPIWhenWebConventionalReleaseHasNoChecksum(t *testing.T
 		GitHubWebBaseURL: server.URL,
 	}
 
-	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	info, err := client.Check(t.Context(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
 	require.NoError(err)
 	require.NotNil(info)
 	assert.Equal(testHash64, info.Checksum)
@@ -598,7 +601,7 @@ func TestCheckRejectsHTTPAPIAssetAfterWebChecksumFallbackWhenUnsignedChecksumsAl
 		AllowUnsignedChecksums: true,
 	}
 
-	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	info, err := client.Check(t.Context(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
 	require.Error(t, err)
 	assert.Nil(info)
 	assert.Contains(err.Error(), "release asset URL for "+assetName+" must use https")
@@ -617,7 +620,7 @@ func TestCheckRejectsHTTPWebBaseWhenUnsignedChecksumsAllowed(t *testing.T) {
 		AllowUnsignedChecksums: true,
 	}
 
-	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	info, err := client.Check(t.Context(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
 	require.Error(t, err)
 	assert.Nil(t, info)
 	assert.Contains(t, err.Error(), "GitHub web base URL must use https")
@@ -655,7 +658,7 @@ func TestCheckRejectsWebChecksumHTTPRedirectWhenUnsignedChecksumsAllowed(t *test
 		AllowUnsignedChecksums: true,
 	}
 
-	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	info, err := client.Check(t.Context(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
 	require.Error(t, err)
 	assert.Nil(t, info)
 	assert.Contains(t, err.Error(), "redirect to non-HTTPS URL")
@@ -685,7 +688,7 @@ func TestCheckRejectsWebLatestHTTPRedirectWhenUnsignedChecksumsAllowed(t *testin
 		AllowUnsignedChecksums: true,
 	}
 
-	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	info, err := client.Check(t.Context(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
 	require.Error(t, err)
 	assert.Nil(t, info)
 	assert.Contains(t, err.Error(), "redirect to non-HTTPS URL")
@@ -732,7 +735,7 @@ func TestCheckSendsTokenOnlyToAPIFallback(t *testing.T) {
 		GitHubToken:      "test-token",
 	}
 
-	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	info, err := client.Check(t.Context(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
 	require.NoError(err)
 	require.NotNil(info)
 	assert.Equal(testHash64, info.Checksum)
@@ -746,7 +749,7 @@ func TestCheckRejectsTokenWithHTTPAPIBaseURL(t *testing.T) {
 		case "/kenn/tool/releases/latest":
 			http.Error(w, "web discovery unavailable", http.StatusInternalServerError)
 		case "/repos/kenn/tool/releases/latest":
-			t.Fatalf("token-bearing API request should be rejected before fetch")
+			assert.Fail(t, "token-bearing API request should be rejected before fetch")
 		default:
 			http.NotFound(w, r)
 		}
@@ -763,13 +766,14 @@ func TestCheckRejectsTokenWithHTTPAPIBaseURL(t *testing.T) {
 		GitHubToken:      "test-token",
 	}
 
-	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	info, err := client.Check(t.Context(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
 	require.Error(t, err)
 	assert.Nil(t, info)
 	assert.Contains(t, err.Error(), "GitHub API base URL must use https")
 }
 
 func TestCheckRejectsTokenAPIHTTPRedirect(t *testing.T) {
+	assert := assert.New(t)
 	t.Parallel()
 
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -777,7 +781,7 @@ func TestCheckRejectsTokenAPIHTTPRedirect(t *testing.T) {
 		case "/kenn/tool/releases/latest":
 			http.Error(w, "web discovery unavailable", http.StatusInternalServerError)
 		case "/repos/kenn/tool/releases/latest":
-			assert.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
+			assert.Equal("Bearer test-token", r.Header.Get("Authorization"))
 			http.Redirect(w, r, "http://example.invalid/repos/kenn/tool/releases/latest", http.StatusFound)
 		default:
 			http.NotFound(w, r)
@@ -796,10 +800,10 @@ func TestCheckRejectsTokenAPIHTTPRedirect(t *testing.T) {
 		GitHubToken:      "test-token",
 	}
 
-	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	info, err := client.Check(t.Context(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
 	require.Error(t, err)
-	assert.Nil(t, info)
-	assert.Contains(t, err.Error(), "redirect to non-HTTPS URL")
+	assert.Nil(info)
+	assert.Contains(err.Error(), "redirect to non-HTTPS URL")
 }
 
 func TestCheckRejectsUnsignedAPIHTTPRedirectWithoutToken(t *testing.T) {
@@ -828,7 +832,7 @@ func TestCheckRejectsUnsignedAPIHTTPRedirectWithoutToken(t *testing.T) {
 		AllowUnsignedChecksums: true,
 	}
 
-	info, err := client.Check(context.Background(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
+	info, err := client.Check(t.Context(), CheckOptions{GOOS: "linux", GOARCH: "amd64"})
 	require.Error(t, err)
 	assert.Nil(t, info)
 	assert.Contains(t, err.Error(), "redirect to non-HTTPS URL")
@@ -849,12 +853,13 @@ func TestEnvironmentGitHubToken(t *testing.T) {
 }
 
 func TestCheckUsesReleaseBodyChecksumFallback(t *testing.T) {
+	require := require.New(t)
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(Release{
 			TagName: "v1.2.0",
-			Body:    fmt.Sprintf("%s  custom.tgz", testHashAAAA),
+			Body:    testHashAAAA + "  custom.tgz",
 			Assets: []Asset{
 				{Name: "custom.tgz", Size: 55, BrowserDownloadURL: "https://example.invalid/custom"},
 			},
@@ -873,18 +878,18 @@ func TestCheckUsesReleaseBodyChecksumFallback(t *testing.T) {
 		},
 	}
 
-	info, err := client.Check(context.Background(), CheckOptions{})
+	info, err := client.Check(t.Context(), CheckOptions{})
 	if err != nil {
-		t.Fatalf("Check: %v", err)
+		require.FailNow(fmt.Sprintf("Check: %v", err))
 	}
 	if info == nil {
-		t.Fatal("expected update info")
+		require.FailNow("expected update info")
 	}
 	if info.Checksum != testHashAAAA {
-		t.Fatalf("checksum = %q", info.Checksum)
+		require.FailNow(fmt.Sprintf("checksum = %q", info.Checksum))
 	}
 	if !info.IsDevBuild {
-		t.Fatal("expected dev build")
+		require.FailNow("expected dev build")
 	}
 }
 
@@ -945,6 +950,7 @@ func TestCheckCache(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			require := require.New(t)
 			t.Parallel()
 			cacheDir := t.TempDir()
 			data, err := json.Marshal(cachedCheck{
@@ -952,10 +958,10 @@ func TestCheckCache(t *testing.T) {
 				Version:   tt.cachedVersion,
 			})
 			if err != nil {
-				t.Fatal(err)
+				require.FailNow(err.Error())
 			}
 			if err := os.WriteFile(filepath.Join(cacheDir, defaultCacheFileName), data, 0o600); err != nil {
-				t.Fatal(err)
+				require.FailNow(err.Error())
 			}
 			c := Client{
 				BinaryName: "tool",
@@ -965,13 +971,13 @@ func TestCheckCache(t *testing.T) {
 			cleanVersion := strings.TrimPrefix(tt.currentVersion, "v")
 			info, done := c.checkCache(tt.currentVersion, cleanVersion, tt.isDevBuild)
 			if done != tt.wantDone {
-				t.Fatalf("done = %v, want %v", done, tt.wantDone)
+				require.FailNow(fmt.Sprintf("done = %v, want %v", done, tt.wantDone))
 			}
 			if (info != nil) != tt.wantInfo {
-				t.Fatalf("info nil = %v, wantInfo %v", info == nil, tt.wantInfo)
+				require.FailNow(fmt.Sprintf("info nil = %v, wantInfo %v", info == nil, tt.wantInfo))
 			}
 			if info != nil && info.NeedsRefetch() != tt.wantCacheOnly {
-				t.Fatalf("NeedsRefetch = %v, want %v", info.NeedsRefetch(), tt.wantCacheOnly)
+				require.FailNow(fmt.Sprintf("NeedsRefetch = %v, want %v", info.NeedsRefetch(), tt.wantCacheOnly))
 			}
 		})
 	}
@@ -989,18 +995,19 @@ func TestSaveCacheFilePermissions(t *testing.T) {
 		Clock:    func() time.Time { return time.Unix(1, 0) },
 	}
 	if err := c.saveCache("v1.0.0"); err != nil {
-		t.Fatalf("saveCache: %v", err)
+		require.FailNow(t, fmt.Sprintf("saveCache: %v", err))
 	}
 	info, err := os.Stat(filepath.Join(cacheDir, defaultCacheFileName))
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(t, err.Error())
 	}
 	if got := info.Mode().Perm(); got != 0o600 {
-		t.Fatalf("cache file mode = %04o, want 0600", got)
+		require.FailNow(t, fmt.Sprintf("cache file mode = %04o, want 0600", got))
 	}
 }
 
 func TestInstallDownloadsVerifiesAndInstalls(t *testing.T) {
+	require := require.New(t)
 	t.Parallel()
 
 	binaryName := "tool"
@@ -1013,7 +1020,7 @@ func TestInstallDownloadsVerifiesAndInstalls(t *testing.T) {
 	createTarGz(t, archivePath, []archiveEntry{{Name: binaryName, Content: "new-binary", Mode: 0o755}})
 	checksum, err := HashFile(archivePath)
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(err.Error())
 	}
 	payload := SignaturePayload(SignatureMetadata{
 		Owner:    "kenn",
@@ -1027,7 +1034,7 @@ func TestInstallDownloadsVerifiesAndInstalls(t *testing.T) {
 	publicKey, signature := signPayload(t, payload)
 	archiveBytes, err := os.ReadFile(archivePath)
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(err.Error())
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1050,7 +1057,7 @@ func TestInstallDownloadsVerifiesAndInstalls(t *testing.T) {
 		BinaryName:        "tool",
 		TrustedPublicKeys: []ed25519.PublicKey{publicKey},
 	}
-	err = c.Install(context.Background(), &Info{
+	err = c.Install(t.Context(), &Info{
 		DownloadURL:   server.URL + "/archive",
 		SignatureURL:  server.URL + "/archive.sig",
 		AssetName:     filepath.Base(archivePath),
@@ -1062,22 +1069,22 @@ func TestInstallDownloadsVerifiesAndInstalls(t *testing.T) {
 		Progress: func(downloaded, total int64) {
 			lastProgress = downloaded
 			if total != int64(len(archiveBytes)) {
-				t.Fatalf("progress total = %d", total)
+				require.FailNow(fmt.Sprintf("progress total = %d", total))
 			}
 		},
 	})
 	if err != nil {
-		t.Fatalf("Install: %v", err)
+		require.FailNow(fmt.Sprintf("Install: %v", err))
 	}
 	got, err := os.ReadFile(dstPath)
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(err.Error())
 	}
 	if string(got) != "new-binary" {
-		t.Fatalf("installed content = %q", got)
+		require.FailNow(fmt.Sprintf("installed content = %q", got))
 	}
 	if lastProgress != int64(len(archiveBytes)) {
-		t.Fatalf("last progress = %d", lastProgress)
+		require.FailNow(fmt.Sprintf("last progress = %d", lastProgress))
 	}
 }
 
@@ -1085,15 +1092,16 @@ func TestInstallRefusesUnverifiedOrCachedInfo(t *testing.T) {
 	t.Parallel()
 
 	c := Client{BinaryName: "tool"}
-	if err := c.Install(context.Background(), &Info{AssetName: "tool.tar.gz"}, InstallOptions{}); err == nil {
-		t.Fatal("expected missing checksum error")
+	if err := c.Install(t.Context(), &Info{AssetName: "tool.tar.gz"}, InstallOptions{}); err == nil {
+		require.FailNow(t, "expected missing checksum error")
 	}
-	if err := c.Install(context.Background(), &Info{cacheOnly: true}, InstallOptions{}); err == nil {
-		t.Fatal("expected cache-only error")
+	if err := c.Install(t.Context(), &Info{cacheOnly: true}, InstallOptions{}); err == nil {
+		require.FailNow(t, "expected cache-only error")
 	}
 }
 
 func TestInstallArchiveRequiresSignatureByDefault(t *testing.T) {
+	require := require.New(t)
 	t.Parallel()
 
 	tmpDir := t.TempDir()
@@ -1101,21 +1109,21 @@ func TestInstallArchiveRequiresSignatureByDefault(t *testing.T) {
 	createTarGz(t, archivePath, []archiveEntry{{Name: "tool", Content: "content", Mode: 0o755}})
 	checksum, err := HashFile(archivePath)
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(err.Error())
 	}
 	dstPath := filepath.Join(tmpDir, "dest", "tool")
 	if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
-		t.Fatal(err)
+		require.FailNow(err.Error())
 	}
 	if err := InstallArchive(archivePath, checksum, dstPath, InstallArchiveOptions{}); err != nil {
 		if !strings.Contains(err.Error(), "requires a trusted public key") {
-			t.Fatalf("error = %v", err)
+			require.FailNow(fmt.Sprintf("error = %v", err))
 		}
 	} else {
-		t.Fatal("expected missing signature verification error")
+		require.FailNow("expected missing signature verification error")
 	}
 	if err := InstallArchive(archivePath, checksum, dstPath, InstallArchiveOptions{AllowUnsignedChecksums: true}); err != nil {
-		t.Fatalf("InstallArchive: %v", err)
+		require.FailNow(fmt.Sprintf("InstallArchive: %v", err))
 	}
 }
 
@@ -1130,17 +1138,17 @@ func TestInstallRequiresSignatureBeforeArchiveDownloadByDefault(t *testing.T) {
 	defer server.Close()
 
 	c := Client{BinaryName: "tool"}
-	err := c.Install(context.Background(), &Info{
+	err := c.Install(t.Context(), &Info{
 		LatestVersion: "v1.0.0",
 		DownloadURL:   server.URL,
 		AssetName:     "tool.tar.gz",
 		Checksum:      strings.Repeat("0", 64),
 	}, InstallOptions{DestinationPath: filepath.Join(t.TempDir(), "tool")})
 	if err == nil || !strings.Contains(err.Error(), "trusted public key is required") {
-		t.Fatalf("error = %v", err)
+		require.FailNow(t, fmt.Sprintf("error = %v", err))
 	}
 	if archiveRequests.Load() != 0 {
-		t.Fatalf("archive was downloaded before signature verification")
+		require.FailNow(t, "archive was downloaded before signature verification")
 	}
 }
 
@@ -1148,13 +1156,13 @@ func TestInstallRejectsUnsafeAssetName(t *testing.T) {
 	t.Parallel()
 
 	c := Client{BinaryName: "tool"}
-	err := c.Install(context.Background(), &Info{
+	err := c.Install(t.Context(), &Info{
 		DownloadURL: "https://example.invalid/archive",
 		AssetName:   "../outside.tar.gz",
 		Checksum:    strings.Repeat("0", 64),
 	}, InstallOptions{DestinationPath: filepath.Join(t.TempDir(), "tool")})
 	if err == nil || !strings.Contains(err.Error(), "invalid asset name") {
-		t.Fatalf("error = %v", err)
+		require.FailNow(t, fmt.Sprintf("error = %v", err))
 	}
 }
 
@@ -1177,7 +1185,7 @@ func TestInstallVerifiesSignatureBeforeArchiveDownload(t *testing.T) {
 
 	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(t, err.Error())
 	}
 	c := Client{
 		Owner:             "kenn",
@@ -1185,7 +1193,7 @@ func TestInstallVerifiesSignatureBeforeArchiveDownload(t *testing.T) {
 		BinaryName:        "tool",
 		TrustedPublicKeys: []ed25519.PublicKey{publicKey},
 	}
-	err = c.Install(context.Background(), &Info{
+	err = c.Install(t.Context(), &Info{
 		LatestVersion: "v1.0.0",
 		DownloadURL:   server.URL + "/archive",
 		SignatureURL:  server.URL + "/archive.sig",
@@ -1193,10 +1201,10 @@ func TestInstallVerifiesSignatureBeforeArchiveDownload(t *testing.T) {
 		Checksum:      strings.Repeat("0", 64),
 	}, InstallOptions{DestinationPath: filepath.Join(t.TempDir(), "tool")})
 	if err == nil || !strings.Contains(err.Error(), "invalid format") {
-		t.Fatalf("error = %v", err)
+		require.FailNow(t, fmt.Sprintf("error = %v", err))
 	}
 	if archiveRequests.Load() != 0 {
-		t.Fatalf("archive was downloaded before signature verification")
+		require.FailNow(t, "archive was downloaded before signature verification")
 	}
 }
 
@@ -1208,7 +1216,7 @@ func TestInstallRejectsMismatchedInfoRepository(t *testing.T) {
 		Repo:       "tool",
 		BinaryName: "tool",
 	}
-	err := c.Install(context.Background(), &Info{
+	err := c.Install(t.Context(), &Info{
 		Owner:       "other",
 		Repo:        "tool",
 		DownloadURL: "https://example.invalid/archive",
@@ -1216,7 +1224,7 @@ func TestInstallRejectsMismatchedInfoRepository(t *testing.T) {
 		Checksum:    strings.Repeat("0", 64),
 	}, InstallOptions{DestinationPath: filepath.Join(t.TempDir(), "tool")})
 	if err == nil || !strings.Contains(err.Error(), "does not match client owner") {
-		t.Fatalf("error = %v", err)
+		require.FailNow(t, fmt.Sprintf("error = %v", err))
 	}
 }
 
@@ -1229,14 +1237,14 @@ func TestInstallRejectsDownloadLargerThanExpected(t *testing.T) {
 	defer server.Close()
 
 	c := Client{BinaryName: "tool", HTTPClient: server.Client(), AllowUnsignedChecksums: true}
-	err := c.Install(context.Background(), &Info{
+	err := c.Install(t.Context(), &Info{
 		DownloadURL: server.URL,
 		AssetName:   "tool.tar.gz",
 		Size:        3,
 		Checksum:    strings.Repeat("0", 64),
 	}, InstallOptions{DestinationPath: filepath.Join(t.TempDir(), "tool")})
 	if err == nil || !strings.Contains(err.Error(), "exceeded expected size") {
-		t.Fatalf("error = %v", err)
+		require.FailNow(t, fmt.Sprintf("error = %v", err))
 	}
 }
 
@@ -1249,7 +1257,7 @@ func TestInstallRejectsArchiveHTTPRedirectWhenUnsignedChecksumsAllowed(t *testin
 	defer server.Close()
 
 	c := Client{BinaryName: "tool", HTTPClient: server.Client(), AllowUnsignedChecksums: true}
-	err := c.Install(context.Background(), &Info{
+	err := c.Install(t.Context(), &Info{
 		DownloadURL: server.URL + "/archive.tar.gz",
 		AssetName:   "tool.tar.gz",
 		Checksum:    strings.Repeat("0", 64),
@@ -1269,7 +1277,7 @@ func TestInstallRejectsHTTPArchiveBeforeRequestWhenUnsignedChecksumsAllowed(t *t
 	defer server.Close()
 
 	c := Client{BinaryName: "tool", AllowUnsignedChecksums: true}
-	err := c.Install(context.Background(), &Info{
+	err := c.Install(t.Context(), &Info{
 		DownloadURL: server.URL + "/archive.tar.gz",
 		AssetName:   "tool.tar.gz",
 		Checksum:    strings.Repeat("0", 64),
@@ -1283,6 +1291,7 @@ func TestInstallArchive(t *testing.T) {
 	t.Parallel()
 
 	t.Run("zip happy path with nested binary", func(t *testing.T) {
+		require := require.New(t)
 		t.Parallel()
 		tmpDir := t.TempDir()
 		archivePath := filepath.Join(tmpDir, "test.zip")
@@ -1292,7 +1301,7 @@ func TestInstallArchive(t *testing.T) {
 		})
 		checksum, err := HashFile(archivePath)
 		if err != nil {
-			t.Fatal(err)
+			require.FailNow(err.Error())
 		}
 		payload := SignaturePayload(SignatureMetadata{
 			Version:  "v1.0.0",
@@ -1305,7 +1314,7 @@ func TestInstallArchive(t *testing.T) {
 
 		dstPath := filepath.Join(tmpDir, "dest", "tool")
 		if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
-			t.Fatal(err)
+			require.FailNow(err.Error())
 		}
 		if err := InstallArchive(archivePath, checksum, dstPath, InstallArchiveOptions{
 			ArchiveBinaryName: "tool",
@@ -1313,14 +1322,14 @@ func TestInstallArchive(t *testing.T) {
 			ChecksumSignature: signature,
 			SignaturePayload:  payload,
 		}); err != nil {
-			t.Fatalf("InstallArchive: %v", err)
+			require.FailNow(fmt.Sprintf("InstallArchive: %v", err))
 		}
 		got, err := os.ReadFile(dstPath)
 		if err != nil {
-			t.Fatal(err)
+			require.FailNow(err.Error())
 		}
 		if string(got) != "zip-binary" {
-			t.Fatalf("content = %q", got)
+			require.FailNow(fmt.Sprintf("content = %q", got))
 		}
 	})
 
@@ -1331,36 +1340,37 @@ func TestInstallArchive(t *testing.T) {
 		createTarGz(t, archivePath, []archiveEntry{{Name: "tool", Content: "content", Mode: 0o755}})
 		err := InstallArchive(archivePath, strings.Repeat("0", 64), filepath.Join(tmpDir, "tool"), InstallArchiveOptions{})
 		if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
-			t.Fatalf("error = %v", err)
+			require.FailNow(t, fmt.Sprintf("error = %v", err))
 		}
 	})
 
 	t.Run("walks past top-level directory named binary", func(t *testing.T) {
+		require := require.New(t)
 		t.Parallel()
 		tmpDir := t.TempDir()
 		archivePath := filepath.Join(tmpDir, "nested.tar.gz")
 		createTarGz(t, archivePath, []archiveEntry{{Name: "tool/tool", Content: "nested-binary", Mode: 0o755}})
 		checksum, err := HashFile(archivePath)
 		if err != nil {
-			t.Fatal(err)
+			require.FailNow(err.Error())
 		}
 
 		dstPath := filepath.Join(tmpDir, "dest", "tool")
 		if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
-			t.Fatal(err)
+			require.FailNow(err.Error())
 		}
 		if err := InstallArchive(archivePath, checksum, dstPath, InstallArchiveOptions{
 			ArchiveBinaryName:      "tool",
 			AllowUnsignedChecksums: true,
 		}); err != nil {
-			t.Fatalf("InstallArchive: %v", err)
+			require.FailNow(fmt.Sprintf("InstallArchive: %v", err))
 		}
 		got, err := os.ReadFile(dstPath)
 		if err != nil {
-			t.Fatal(err)
+			require.FailNow(err.Error())
 		}
 		if string(got) != "nested-binary" {
-			t.Fatalf("content = %q", got)
+			require.FailNow(fmt.Sprintf("content = %q", got))
 		}
 	})
 }
@@ -1372,7 +1382,7 @@ func TestInstallArchiveRejectsReplaySignature(t *testing.T) {
 	createZip(t, archivePath, []archiveEntry{{Name: "tool", Content: "content", Mode: 0o755}})
 	checksum, err := HashFile(archivePath)
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(t, err.Error())
 	}
 
 	oldPayload := SignaturePayload(SignatureMetadata{
@@ -1402,7 +1412,7 @@ func TestInstallArchiveRejectsReplaySignature(t *testing.T) {
 		SignaturePayload:  newPayload,
 	})
 	if err == nil || !strings.Contains(err.Error(), "signature verification failed") {
-		t.Fatalf("error = %v", err)
+		require.FailNow(t, fmt.Sprintf("error = %v", err))
 	}
 }
 
@@ -1416,10 +1426,10 @@ func TestExtractTarGzAndZipRejectTraversal(t *testing.T) {
 		createTarGz(t, archivePath, []archiveEntry{{Name: "../pwned", Content: "owned", Mode: 0o644}})
 		err := ExtractTarGz(archivePath, filepath.Join(tmpDir, "extract"))
 		if err == nil {
-			t.Fatal("expected traversal error")
+			require.FailNow(t, "expected traversal error")
 		}
 		if _, err := os.Stat(filepath.Join(tmpDir, "pwned")); !os.IsNotExist(err) {
-			t.Fatalf("outside file exists or stat failed unexpectedly: %v", err)
+			require.FailNow(t, fmt.Sprintf("outside file exists or stat failed unexpectedly: %v", err))
 		}
 	})
 
@@ -1430,21 +1440,22 @@ func TestExtractTarGzAndZipRejectTraversal(t *testing.T) {
 		createZip(t, archivePath, []archiveEntry{{Name: "../pwned", Content: "owned", Mode: 0o644}})
 		err := ExtractZip(archivePath, filepath.Join(tmpDir, "extract"))
 		if err == nil {
-			t.Fatal("expected traversal error")
+			require.FailNow(t, "expected traversal error")
 		}
 		if _, err := os.Stat(filepath.Join(tmpDir, "pwned")); !os.IsNotExist(err) {
-			t.Fatalf("outside file exists or stat failed unexpectedly: %v", err)
+			require.FailNow(t, fmt.Sprintf("outside file exists or stat failed unexpectedly: %v", err))
 		}
 	})
 }
 
 func TestExtractArchivesRejectPreexistingSymlinkPath(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation needs elevated privileges on Windows")
 	}
-	t.Parallel()
 
 	t.Run("tar.gz", func(t *testing.T) {
+		require := require.New(t)
 		t.Parallel()
 		tmpDir := t.TempDir()
 		archivePath := filepath.Join(tmpDir, "symlink-path.tar.gz")
@@ -1452,23 +1463,24 @@ func TestExtractArchivesRejectPreexistingSymlinkPath(t *testing.T) {
 		extractDir := filepath.Join(tmpDir, "extract")
 		outsideDir := filepath.Join(tmpDir, "outside")
 		if err := os.MkdirAll(outsideDir, 0o755); err != nil {
-			t.Fatal(err)
+			require.FailNow(err.Error())
 		}
 		if err := os.MkdirAll(extractDir, 0o755); err != nil {
-			t.Fatal(err)
+			require.FailNow(err.Error())
 		}
 		if err := os.Symlink(outsideDir, filepath.Join(extractDir, "link")); err != nil {
-			t.Fatal(err)
+			require.FailNow(err.Error())
 		}
 		if err := ExtractTarGz(archivePath, extractDir); err == nil {
-			t.Fatal("expected symlink path error")
+			require.FailNow("expected symlink path error")
 		}
 		if _, err := os.Stat(filepath.Join(outsideDir, "payload")); !os.IsNotExist(err) {
-			t.Fatalf("outside file exists or stat failed unexpectedly: %v", err)
+			require.FailNow(fmt.Sprintf("outside file exists or stat failed unexpectedly: %v", err))
 		}
 	})
 
 	t.Run("zip", func(t *testing.T) {
+		require := require.New(t)
 		t.Parallel()
 		tmpDir := t.TempDir()
 		archivePath := filepath.Join(tmpDir, "symlink-path.zip")
@@ -1476,19 +1488,19 @@ func TestExtractArchivesRejectPreexistingSymlinkPath(t *testing.T) {
 		extractDir := filepath.Join(tmpDir, "extract")
 		outsideDir := filepath.Join(tmpDir, "outside")
 		if err := os.MkdirAll(outsideDir, 0o755); err != nil {
-			t.Fatal(err)
+			require.FailNow(err.Error())
 		}
 		if err := os.MkdirAll(extractDir, 0o755); err != nil {
-			t.Fatal(err)
+			require.FailNow(err.Error())
 		}
 		if err := os.Symlink(outsideDir, filepath.Join(extractDir, "link")); err != nil {
-			t.Fatal(err)
+			require.FailNow(err.Error())
 		}
 		if err := ExtractZip(archivePath, extractDir); err == nil {
-			t.Fatal("expected symlink path error")
+			require.FailNow("expected symlink path error")
 		}
 		if _, err := os.Stat(filepath.Join(outsideDir, "payload")); !os.IsNotExist(err) {
-			t.Fatalf("outside file exists or stat failed unexpectedly: %v", err)
+			require.FailNow(fmt.Sprintf("outside file exists or stat failed unexpectedly: %v", err))
 		}
 	})
 }
@@ -1504,14 +1516,15 @@ func TestExtractTarGzSkipsSymlink(t *testing.T) {
 	})
 	extractDir := filepath.Join(tmpDir, "extract")
 	if err := ExtractTarGz(archivePath, extractDir); err != nil {
-		t.Fatalf("ExtractTarGz: %v", err)
+		require.FailNow(t, fmt.Sprintf("ExtractTarGz: %v", err))
 	}
 	if _, err := os.Stat(filepath.Join(extractDir, "evil-link")); !os.IsNotExist(err) {
-		t.Fatalf("symlink exists or stat failed unexpectedly: %v", err)
+		require.FailNow(t, fmt.Sprintf("symlink exists or stat failed unexpectedly: %v", err))
 	}
 }
 
 func TestExtractTarGzMasksDangerousModeBits(t *testing.T) {
+	require := require.New(t)
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix mode bits not meaningful on Windows")
 	}
@@ -1524,17 +1537,17 @@ func TestExtractTarGzMasksDangerousModeBits(t *testing.T) {
 	})
 	extractDir := filepath.Join(tmpDir, "extract")
 	if err := ExtractTarGz(archivePath, extractDir); err != nil {
-		t.Fatalf("ExtractTarGz: %v", err)
+		require.FailNow(fmt.Sprintf("ExtractTarGz: %v", err))
 	}
 	info, err := os.Stat(filepath.Join(extractDir, "tool"))
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(err.Error())
 	}
 	if got := info.Mode(); got&os.ModeSetuid != 0 {
-		t.Fatalf("setuid bit preserved: mode=%v", got)
+		require.FailNow(fmt.Sprintf("setuid bit preserved: mode=%v", got))
 	}
 	if got := info.Mode().Perm(); got != 0o755 {
-		t.Fatalf("permission bits = %04o, want 0755", got)
+		require.FailNow(fmt.Sprintf("permission bits = %04o, want 0755", got))
 	}
 }
 
@@ -1548,14 +1561,14 @@ func TestExtractTarGzExtractsLegacyRegularFiles(t *testing.T) {
 	})
 	extractDir := filepath.Join(tmpDir, "extract")
 	if err := ExtractTarGz(archivePath, extractDir); err != nil {
-		t.Fatalf("ExtractTarGz: %v", err)
+		require.FailNow(t, fmt.Sprintf("ExtractTarGz: %v", err))
 	}
 	got, err := os.ReadFile(filepath.Join(extractDir, "tool"))
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(t, err.Error())
 	}
 	if string(got) != "legacy" {
-		t.Fatalf("content = %q", got)
+		require.FailNow(t, fmt.Sprintf("content = %q", got))
 	}
 }
 
@@ -1568,27 +1581,28 @@ func TestFetchChecksumFromFileLimitsResponseSize(t *testing.T) {
 	defer server.Close()
 
 	c := Client{BinaryName: "tool"}
-	if _, err := c.fetchChecksumFromFile(context.Background(), server.URL, "tool.tar.gz"); err == nil {
-		t.Fatal("expected oversized checksum response error")
+	if _, err := c.fetchChecksumFromFile(t.Context(), server.URL, "tool.tar.gz"); err == nil {
+		require.FailNow(t, "expected oversized checksum response error")
 	}
 }
 
 func TestFetchChecksumFromAssetsPropagatesCanceledContext(t *testing.T) {
+	require := require.New(t)
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatalf("canceled checksum request should not reach server")
+		assert.Fail(t, "canceled checksum request should not reach server")
 	}))
 	defer server.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	c := Client{BinaryName: "tool"}
 	checksum, err := c.fetchChecksumFromAssets(ctx, []*Asset{
 		{Name: "SHA256SUMS", BrowserDownloadURL: server.URL + "/SHA256SUMS"},
 	}, "tool.tar.gz")
-	require.Error(t, err)
+	require.Error(err)
 	assert.Empty(t, checksum)
 	assert.ErrorIs(t, err, context.Canceled)
 }
@@ -1609,7 +1623,7 @@ func TestFetchChecksumFromAssetsPropagatesOversizedChecksum(t *testing.T) {
 	defer server.Close()
 
 	c := Client{BinaryName: "tool"}
-	checksum, err := c.fetchChecksumFromAssets(context.Background(), []*Asset{
+	checksum, err := c.fetchChecksumFromAssets(t.Context(), []*Asset{
 		{Name: "SHA256SUMS", BrowserDownloadURL: server.URL + "/SHA256SUMS"},
 		{Name: "checksums.txt", BrowserDownloadURL: server.URL + "/checksums.txt"},
 	}, "tool.tar.gz")
@@ -1633,7 +1647,7 @@ func TestFetchChecksumFromAssetsFallsBackAfterMissingAsset(t *testing.T) {
 	defer server.Close()
 
 	c := Client{BinaryName: "tool"}
-	checksum, err := c.fetchChecksumFromAssets(context.Background(), []*Asset{
+	checksum, err := c.fetchChecksumFromAssets(t.Context(), []*Asset{
 		{Name: "SHA256SUMS", BrowserDownloadURL: server.URL + "/SHA256SUMS"},
 		{Name: "checksums.txt", BrowserDownloadURL: server.URL + "/checksums.txt"},
 	}, "tool.tar.gz")
@@ -1664,7 +1678,7 @@ func TestSanitizeArchivePath(t *testing.T) {
 			t.Parallel()
 			_, err := SanitizeArchivePath(destDir, tt.path)
 			if (err != nil) != tt.wantErr {
-				t.Fatalf("error = %v, wantErr %v", err, tt.wantErr)
+				require.FailNow(t, fmt.Sprintf("error = %v, wantErr %v", err, tt.wantErr))
 			}
 		})
 	}
@@ -1674,6 +1688,7 @@ func TestInstallBinary(t *testing.T) {
 	t.Parallel()
 
 	t.Run("sets executable mode", func(t *testing.T) {
+		require := require.New(t)
 		if runtime.GOOS == "windows" {
 			t.Skip("Unix mode bits not meaningful on Windows")
 		}
@@ -1682,44 +1697,46 @@ func TestInstallBinary(t *testing.T) {
 		srcPath := filepath.Join(tmpDir, "src")
 		dstPath := filepath.Join(tmpDir, "dst")
 		if err := os.WriteFile(srcPath, []byte("binary"), 0o644); err != nil {
-			t.Fatal(err)
+			require.FailNow(err.Error())
 		}
 		if err := InstallBinary(srcPath, dstPath); err != nil {
-			t.Fatal(err)
+			require.FailNow(err.Error())
 		}
 		info, err := os.Stat(dstPath)
 		if err != nil {
-			t.Fatal(err)
+			require.FailNow(err.Error())
 		}
 		if got := info.Mode().Perm(); got != 0o755 {
-			t.Fatalf("mode = %04o, want 0755", got)
+			require.FailNow(fmt.Sprintf("mode = %04o, want 0755", got))
 		}
 	})
 
 	t.Run("preserves destination on missing source", func(t *testing.T) {
+		require := require.New(t)
 		t.Parallel()
 		tmpDir := t.TempDir()
 		dstPath := filepath.Join(tmpDir, "tool")
 		if err := os.WriteFile(dstPath, []byte("original"), 0o755); err != nil {
-			t.Fatal(err)
+			require.FailNow(err.Error())
 		}
 		err := InstallBinary(filepath.Join(tmpDir, "missing"), dstPath)
 		if err == nil {
-			t.Fatal("expected missing source error")
+			require.FailNow("expected missing source error")
 		}
 		got, err := os.ReadFile(dstPath)
 		if err != nil {
-			t.Fatal(err)
+			require.FailNow(err.Error())
 		}
 		if string(got) != "original" {
-			t.Fatalf("content = %q", got)
+			require.FailNow(fmt.Sprintf("content = %q", got))
 		}
 		if _, err := os.Stat(dstPath + ".new"); !os.IsNotExist(err) {
-			t.Fatalf("staging file exists or stat failed unexpectedly: %v", err)
+			require.FailNow(fmt.Sprintf("staging file exists or stat failed unexpectedly: %v", err))
 		}
 	})
 
 	t.Run("never missing during unix update", func(t *testing.T) {
+		require := require.New(t)
 		if runtime.GOOS == "windows" {
 			t.Skip("Windows moves the running binary aside before replacement")
 		}
@@ -1728,10 +1745,10 @@ func TestInstallBinary(t *testing.T) {
 		srcPath := filepath.Join(tmpDir, "src")
 		dstPath := filepath.Join(tmpDir, "tool")
 		if err := os.WriteFile(srcPath, []byte("new"), 0o755); err != nil {
-			t.Fatal(err)
+			require.FailNow(err.Error())
 		}
 		if err := os.WriteFile(dstPath, []byte("old"), 0o755); err != nil {
-			t.Fatal(err)
+			require.FailNow(err.Error())
 		}
 
 		var observations, missing atomic.Uint64
@@ -1756,7 +1773,7 @@ func TestInstallBinary(t *testing.T) {
 			if err := InstallBinary(srcPath, dstPath); err != nil {
 				close(stop)
 				<-done
-				t.Fatalf("iteration %d: %v", i, err)
+				require.FailNow(fmt.Sprintf("iteration %d: %v", i, err))
 			}
 		}
 		close(stop)
@@ -1766,7 +1783,7 @@ func TestInstallBinary(t *testing.T) {
 			t.Skipf("observer ran only %d times", observations.Load())
 		}
 		if missing.Load() > 0 {
-			t.Fatalf("destination missing observations = %d", missing.Load())
+			require.FailNow(fmt.Sprintf("destination missing observations = %d", missing.Load()))
 		}
 	})
 }
@@ -1780,22 +1797,22 @@ func TestExtractChecksum(t *testing.T) {
 		assetName string
 		want      string
 	}{
-		{"standard", fmt.Sprintf("%s  tool_darwin_arm64.tar.gz", testHash64), "tool_darwin_arm64.tar.gz", testHash64},
+		{"standard", testHash64 + "  tool_darwin_arm64.tar.gz", "tool_darwin_arm64.tar.gz", testHash64},
 		{"uppercase", "ABC123DEF456789012345678901234567890123456789012345678901234ABCD  tool_linux_amd64.tar.gz", "tool_linux_amd64.tar.gz", testHash64},
 		{"multiline", fmt.Sprintf("%s  tool_linux_amd64.tar.gz\n%s  tool_darwin_arm64.tar.gz", testHashAAAA, testHashBBBB), "tool_darwin_arm64.tar.gz", testHashBBBB},
-		{"no match", fmt.Sprintf("%s  tool_linux_amd64.tar.gz", testHash64), "tool_darwin_arm64.tar.gz", ""},
-		{"substring filename", fmt.Sprintf("%s  tool_darwin_arm64.tar.gz.sig", testHash64), "tool_darwin_arm64.tar.gz", ""},
-		{"binary star", fmt.Sprintf("%s *tool_darwin_arm64.tar.gz", testHash64), "tool_darwin_arm64.tar.gz", testHash64},
-		{"leading dot slash", fmt.Sprintf("%s  ./tool_darwin_arm64.tar.gz", testHash64), "tool_darwin_arm64.tar.gz", testHash64},
-		{"binary star leading dot slash", fmt.Sprintf("%s *./tool_darwin_arm64.tar.gz", testHash64), "tool_darwin_arm64.tar.gz", testHash64},
-		{"trailing comment", fmt.Sprintf("%s  tool_darwin_arm64.tar.gz  # comment", testHash64), "tool_darwin_arm64.tar.gz", testHash64},
+		{"no match", testHash64 + "  tool_linux_amd64.tar.gz", "tool_darwin_arm64.tar.gz", ""},
+		{"substring filename", testHash64 + "  tool_darwin_arm64.tar.gz.sig", "tool_darwin_arm64.tar.gz", ""},
+		{"binary star", testHash64 + " *tool_darwin_arm64.tar.gz", "tool_darwin_arm64.tar.gz", testHash64},
+		{"leading dot slash", testHash64 + "  ./tool_darwin_arm64.tar.gz", "tool_darwin_arm64.tar.gz", testHash64},
+		{"binary star leading dot slash", testHash64 + " *./tool_darwin_arm64.tar.gz", "tool_darwin_arm64.tar.gz", testHash64},
+		{"trailing comment", testHash64 + "  tool_darwin_arm64.tar.gz  # comment", "tool_darwin_arm64.tar.gz", testHash64},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			if got := ExtractChecksum(tt.body, tt.assetName); got != tt.want {
-				t.Fatalf("got %q, want %q", got, tt.want)
+				require.FailNow(t, fmt.Sprintf("got %q, want %q", got, tt.want))
 			}
 		})
 	}
@@ -1822,7 +1839,7 @@ func TestVersionHelpers(t *testing.T) {
 		t.Run("dev/"+tt.version, func(t *testing.T) {
 			t.Parallel()
 			if got := IsDevBuildVersion(tt.version); got != tt.want {
-				t.Fatalf("got %v, want %v", got, tt.want)
+				require.FailNow(t, fmt.Sprintf("got %v, want %v", got, tt.want))
 			}
 		})
 	}
@@ -1844,7 +1861,7 @@ func TestVersionHelpers(t *testing.T) {
 		t.Run("newer/"+tt.name, func(t *testing.T) {
 			t.Parallel()
 			if got := IsNewer(tt.v1, tt.v2); got != tt.want {
-				t.Fatalf("got %v, want %v", got, tt.want)
+				require.FailNow(t, fmt.Sprintf("got %v, want %v", got, tt.want))
 			}
 		})
 	}
@@ -1861,7 +1878,7 @@ func TestDefaultAssetNameAndFormatSize(t *testing.T) {
 		Extension:  ".tar.gz",
 	})
 	if name != "tool_1.2.3_linux_amd64.tar.gz" {
-		t.Fatalf("asset name = %q", name)
+		require.FailNow(t, fmt.Sprintf("asset name = %q", name))
 	}
 
 	tests := []struct {
@@ -1878,7 +1895,7 @@ func TestDefaultAssetNameAndFormatSize(t *testing.T) {
 		t.Run(tt.want, func(t *testing.T) {
 			t.Parallel()
 			if got := FormatSize(tt.bytes); got != tt.want {
-				t.Fatalf("got %q, want %q", got, tt.want)
+				require.FailNow(t, fmt.Sprintf("got %q, want %q", got, tt.want))
 			}
 		})
 	}
@@ -1897,7 +1914,7 @@ func createTarGz(t *testing.T, path string, entries []archiveEntry) {
 	t.Helper()
 	f, err := os.Create(path)
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(t, err.Error())
 	}
 	defer f.Close()
 	gw := gzip.NewWriter(f)
@@ -1926,11 +1943,11 @@ func createTarGz(t *testing.T, path string, entries []archiveEntry) {
 			header.Size = 0
 		}
 		if err := tw.WriteHeader(header); err != nil {
-			t.Fatal(err)
+			require.FailNow(t, err.Error())
 		}
 		if typeFlag == tar.TypeReg || typeFlag == legacyTarRegularType {
 			if _, err := tw.Write(data); err != nil {
-				t.Fatal(err)
+				require.FailNow(t, err.Error())
 			}
 		}
 	}
@@ -1940,7 +1957,7 @@ func createZip(t *testing.T, path string, entries []archiveEntry) {
 	t.Helper()
 	f, err := os.Create(path)
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(t, err.Error())
 	}
 	defer f.Close()
 	zw := zip.NewWriter(f)
@@ -1955,10 +1972,10 @@ func createZip(t *testing.T, path string, entries []archiveEntry) {
 		header.SetMode(mode)
 		w, err := zw.CreateHeader(header)
 		if err != nil {
-			t.Fatal(err)
+			require.FailNow(t, err.Error())
 		}
 		if _, err := io.Copy(w, bytes.NewBufferString(entry.Content)); err != nil {
-			t.Fatal(err)
+			require.FailNow(t, err.Error())
 		}
 	}
 }
@@ -1967,7 +1984,7 @@ func signPayload(t *testing.T, payload []byte) (ed25519.PublicKey, []byte) {
 	t.Helper()
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(t, err.Error())
 	}
 	return publicKey, ed25519.Sign(privateKey, payload)
 }

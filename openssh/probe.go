@@ -36,6 +36,7 @@ func (m *PersistentManager) probeControlMasterWithRunner(
 		return probeAbsent, nil
 	case socketStale:
 		return probeStale, nil
+	default:
 	}
 
 	arguments, err := CheckArguments(socketPath, target)

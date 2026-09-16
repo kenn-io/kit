@@ -51,7 +51,7 @@ func sanitize(s string, singleLine, preserveSGR bool) string {
 
 	var b strings.Builder
 	b.Grow(len(s))
-	state := byte(ansi.NormalState)
+	state := ansi.NormalState
 
 	for len(s) > 0 {
 		seq, _, n, nextState := ansi.DecodeSequence(s, state, nil)

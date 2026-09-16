@@ -19,7 +19,7 @@ func TestCancellationHelperProcess(t *testing.T) {
 	if err := os.WriteFile(marker, nil, 0o600); err != nil {
 		os.Exit(2)
 	}
-	time.Sleep(time.Minute)
+	time.Sleep(time.Minute) //nolint:kennlint // helper process must stay alive until it is killed
 }
 
 func TestRunOutputPreservesContextCancellation(t *testing.T) {
@@ -58,7 +58,7 @@ func runCancellationHelper(
 	require.NoError(err)
 	marker := t.TempDir() + "/ready"
 	t.Setenv(cancellationHelperMarker, marker)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	resultChannel := make(chan error, 1)
 	go func() {

@@ -92,7 +92,7 @@ func (b *Backend) objectKey(ref packstore.ObjectRef) (string, error) {
 		}
 		return b.keys.pack(ref.PackID), nil
 	default:
-		return "", fmt.Errorf("s3store: object reference must select one representation")
+		return "", errors.New("s3store: object reference must select one representation")
 	}
 }
 
@@ -126,7 +126,7 @@ func (b *Backend) Probe(ctx context.Context) (report CapabilityReport, resultErr
 	if !published.created {
 		return report, errors.Join(
 			packstore.ErrPhysicalCorrupt,
-			fmt.Errorf("s3store: fresh probe key already exists"),
+			errors.New("s3store: fresh probe key already exists"),
 		)
 	}
 	cleanupPending := true
@@ -168,7 +168,7 @@ func (b *Backend) Probe(ctx context.Context) (report CapabilityReport, resultErr
 	if readErr != nil || closeErr != nil || !bytes.Equal(got, payload[5:21]) {
 		return report, errors.Join(
 			packstore.ErrPhysicalCorrupt, readErr, closeErr,
-			fmt.Errorf("s3store: probe range differs from publication"),
+			errors.New("s3store: probe range differs from publication"),
 		)
 	}
 	report.RangeReads = true
@@ -186,7 +186,7 @@ func (b *Backend) Probe(ctx context.Context) (report CapabilityReport, resultErr
 	if !found {
 		return report, errors.Join(
 			packstore.ErrPhysicalCorrupt,
-			fmt.Errorf("s3store: probe listing omitted published key"),
+			errors.New("s3store: probe listing omitted published key"),
 		)
 	}
 	report.Listing = true
@@ -206,7 +206,7 @@ func (b *Backend) Probe(ctx context.Context) (report CapabilityReport, resultErr
 	if duplicate.created {
 		return report, errors.Join(
 			packstore.ErrPhysicalCorrupt,
-			fmt.Errorf("s3store: endpoint ignored conditional multipart creation"),
+			errors.New("s3store: endpoint ignored conditional multipart creation"),
 		)
 	}
 	probeETag, err := b.verifyProbeObject(ctx, key, payload, "conditional multipart creation")
@@ -234,7 +234,7 @@ func (b *Backend) Probe(ctx context.Context) (report CapabilityReport, resultErr
 		}
 		return report, errors.Join(
 			packstore.ErrPhysicalCorrupt,
-			fmt.Errorf("s3store: endpoint ignored stale conditional replacement"),
+			errors.New("s3store: endpoint ignored stale conditional replacement"),
 		)
 	}
 	if _, err := b.verifyProbeObject(ctx, key, replacement, "stale conditional replacement"); err != nil {
@@ -257,7 +257,7 @@ func (b *Backend) Probe(ctx context.Context) (report CapabilityReport, resultErr
 	if err == nil {
 		return report, errors.Join(
 			packstore.ErrPhysicalCorrupt,
-			fmt.Errorf("s3store: endpoint acknowledged probe deletion but object remains"),
+			errors.New("s3store: endpoint acknowledged probe deletion but object remains"),
 		)
 	}
 	if statusCode(err) != http.StatusNotFound {

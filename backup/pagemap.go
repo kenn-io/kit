@@ -3,6 +3,7 @@ package backup
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"sort"
 
@@ -44,11 +45,11 @@ func EncodePageMap(m *PageMap, delta bool) []byte {
 	buf = binary.LittleEndian.AppendUint16(buf, mapObjectVersion)
 	buf = binary.LittleEndian.AppendUint32(buf, m.PageSize)
 	buf = binary.LittleEndian.AppendUint64(buf, m.PageCount)
-	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(m.Blobs))) //nolint:gosec // blob counts fit u32
+	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(m.Blobs)))
 	for _, b := range m.Blobs {
 		buf = append(buf, b[:]...)
 	}
-	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(m.Runs))) //nolint:gosec // run counts fit u32
+	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(m.Runs)))
 	for _, r := range m.Runs {
 		buf = binary.LittleEndian.AppendUint64(buf, r.StartPage)
 		buf = binary.LittleEndian.AppendUint32(buf, r.PageCount)
@@ -74,7 +75,7 @@ func DecodePageMap(data []byte) (*PageMap, bool, error) {
 		return nil, false, err
 	}
 	if len(body) < 6+4+8+4 {
-		return nil, false, fmt.Errorf("backup: page map truncated") //nolint:perfsprint
+		return nil, false, errors.New("backup: page map truncated")
 	}
 	m := &PageMap{
 		PageSize:  binary.LittleEndian.Uint32(body[6:10]),
@@ -83,7 +84,7 @@ func DecodePageMap(data []byte) (*PageMap, bool, error) {
 	blobCount := binary.LittleEndian.Uint32(body[18:22])
 	off := 22
 	if uint64(len(body)) < uint64(off)+uint64(blobCount)*32+4 {
-		return nil, false, fmt.Errorf("backup: page map blob table truncated") //nolint:perfsprint
+		return nil, false, errors.New("backup: page map blob table truncated")
 	}
 	for i := uint32(0); i < blobCount; i++ { //nolint:intrange,modernize // uint32 iteration requires standard for loop
 		var b pack.BlobID
@@ -93,7 +94,7 @@ func DecodePageMap(data []byte) (*PageMap, bool, error) {
 	}
 	runCount := binary.LittleEndian.Uint32(body[off : off+4])
 	off += 4
-	if uint64(len(body)-off) != uint64(runCount)*pageRunSize { //nolint:gosec // no integer overflow
+	if uint64(len(body)-off) != uint64(runCount)*pageRunSize {
 		return nil, false, fmt.Errorf("backup: page map run table size mismatch (runs %d)", runCount)
 	}
 	var prevEnd uint64
@@ -172,7 +173,7 @@ func ApplyPageMapDelta(base, delta *PageMap) (*PageMap, error) {
 		if i, ok := blobIdx[id]; ok {
 			return i
 		}
-		i := uint32(len(out.Blobs)) //nolint:gosec // blob counts fit u32
+		i := uint32(len(out.Blobs))
 		out.Blobs = append(out.Blobs, id)
 		blobIdx[id] = i
 		return i
@@ -180,7 +181,7 @@ func ApplyPageMapDelta(base, delta *PageMap) (*PageMap, error) {
 	emit := func(br PageRun, fStart, fEnd uint64) {
 		f := PageRun{
 			StartPage:  fStart,
-			PageCount:  uint32(fEnd - fStart), //nolint:gosec // bounded by run length
+			PageCount:  uint32(fEnd - fStart),
 			BlobIndex:  addBlob(base.Blobs[br.BlobIndex]),
 			BlobOffset: br.BlobOffset + (fStart-br.StartPage)*uint64(base.PageSize),
 		}
@@ -188,7 +189,7 @@ func ApplyPageMapDelta(base, delta *PageMap) (*PageMap, error) {
 			return
 		}
 		if fEnd > out.PageCount {
-			f.PageCount = uint32(out.PageCount - f.StartPage) //nolint:gosec // bounded by run length
+			f.PageCount = uint32(out.PageCount - f.StartPage)
 		}
 		out.Runs = append(out.Runs, f)
 	}

@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	Assert "github.com/stretchr/testify/assert"
-	Require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type internalFillProviderError struct{}
@@ -34,8 +34,8 @@ func (noOpFillStore) QueryGeneration(context.Context, int, Vector, int) ([]Hit[i
 }
 
 func TestApplyFillBatchProbeInvalidVectorAddsSliceAndLocalOffsets(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	refs := []fillChunkRef{
 		{doc: 0, chunk: 3, value: Chunk{Index: 3, Text: "d"}},
 		{doc: 0, chunk: 4, value: Chunk{Index: 4, Text: "e"}},
@@ -67,9 +67,9 @@ func TestApplyFillBatchProbeInvalidVectorAddsSliceAndLocalOffsets(t *testing.T) 
 		assert.Equal([]string{"d", "e"}, texts)
 		return [][]float32{{1}, {0}}, nil
 	}
-	batch := encodeFillBatch(context.Background(), enc, refs)
+	batch := encodeFillBatch(t.Context(), enc, refs)
 	var got *InvalidVectorError
-	err := applyFillBatch(context.Background(), noOpFillStore{}, 7,
+	err := applyFillBatch(t.Context(), noOpFillStore{}, 7,
 		fillOptions[int64]{
 			shouldIsolateBatchError: func(err error) bool {
 				var providerErr *internalFillProviderError
@@ -91,8 +91,8 @@ func TestApplyFillBatchProbeInvalidVectorAddsSliceAndLocalOffsets(t *testing.T) 
 }
 
 func TestApplyFillBatchProbeInvalidVectorPreservesCompanionCauses(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	refs := []fillChunkRef{
 		{doc: 0, chunk: 3, value: Chunk{Index: 3, Text: "d"}},
 		{doc: 0, chunk: 4, value: Chunk{Index: 4, Text: "e"}},
@@ -130,9 +130,9 @@ func TestApplyFillBatchProbeInvalidVectorPreservesCompanionCauses(t *testing.T) 
 			sentinel,
 		)
 	}
-	batch := encodeFillBatch(context.Background(), enc, refs)
+	batch := encodeFillBatch(t.Context(), enc, refs)
 	var gotInvalid *InvalidVectorError
-	err := applyFillBatch(context.Background(), noOpFillStore{}, 7,
+	err := applyFillBatch(t.Context(), noOpFillStore{}, 7,
 		fillOptions[int64]{
 			shouldIsolateBatchError: func(err error) bool {
 				var providerErr *internalFillProviderError
@@ -144,7 +144,7 @@ func TestApplyFillBatchProbeInvalidVectorPreservesCompanionCauses(t *testing.T) 
 				require.ErrorAs(err, &gotInvalid)
 				assert.Equal(4, gotInvalid.Chunk)
 				var gotCompanion *internalFillCompanionError
-				assert.ErrorAs(err, &gotCompanion)
+				require.ErrorAs(err, &gotCompanion)
 				assert.Same(companion, gotCompanion)
 				assert.ErrorIs(err, sentinel)
 				return false
@@ -156,7 +156,7 @@ func TestApplyFillBatchProbeInvalidVectorPreservesCompanionCauses(t *testing.T) 
 	assert.Equal(4, gotInvalid.Chunk)
 	assert.Equal(2, calls)
 	var gotCompanion *internalFillCompanionError
-	assert.ErrorAs(err, &gotCompanion)
+	require.ErrorAs(err, &gotCompanion)
 	assert.Same(companion, gotCompanion)
 	assert.ErrorIs(err, sentinel)
 }

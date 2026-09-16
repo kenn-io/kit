@@ -77,7 +77,7 @@ func (o ProbeOptions) timeout() time.Duration {
 // Probe checks that ep answers its ping endpoint.
 func Probe(ctx context.Context, ep Endpoint, opts ProbeOptions) (PingInfo, error) {
 	if ep.Address == "" {
-		return PingInfo{}, fmt.Errorf("empty daemon endpoint address")
+		return PingInfo{}, errors.New("empty daemon endpoint address")
 	}
 	client := ep.HTTPClient(HTTPClientOptions{
 		Timeout:           opts.timeout(),

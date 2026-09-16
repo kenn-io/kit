@@ -67,7 +67,7 @@ func Listen(ctx context.Context, ep Endpoint, options ...ListenOption) (net.List
 		option(&opts)
 	}
 	if !ep.IsUnix() || runtime.GOOS == "windows" {
-		return ep.Listen()
+		return ep.Listen(ctx)
 	}
 	if err := prepareUnixListenEndpoint(ep); err != nil {
 		return nil, err
@@ -84,12 +84,12 @@ func Listen(ctx context.Context, ep Endpoint, options ...ListenOption) (net.List
 	if err := removeStaleUnixSocket(ctx, ep, opts); err != nil {
 		return nil, err
 	}
-	return ep.Listen()
+	return ep.Listen(ctx)
 }
 
 func prepareUnixListenEndpoint(ep Endpoint) error {
 	if ep.Address == "" {
-		return fmt.Errorf("empty daemon endpoint address")
+		return errors.New("empty daemon endpoint address")
 	}
 	if !filepath.IsAbs(ep.Address) {
 		return fmt.Errorf("unix socket path %q must be absolute", ep.Address)
@@ -108,7 +108,7 @@ func (opts listenOptions) listenLockPath(ep Endpoint) (string, error) {
 		return opts.store.ListenLockPath()
 	}
 	if ep.Address == "" {
-		return "", fmt.Errorf("empty daemon endpoint address")
+		return "", errors.New("empty daemon endpoint address")
 	}
 	return ep.Address + ".lock", nil
 }
@@ -122,7 +122,7 @@ func (opts listenOptions) staleProbeTimeout() time.Duration {
 
 func removeStaleUnixSocket(ctx context.Context, ep Endpoint, opts listenOptions) error {
 	if ep.Address == "" {
-		return fmt.Errorf("empty daemon endpoint address")
+		return errors.New("empty daemon endpoint address")
 	}
 	info, err := os.Lstat(ep.Address)
 	if err != nil {

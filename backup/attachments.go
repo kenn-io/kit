@@ -43,7 +43,7 @@ func EncodeAttachmentList(refs []ContentRef) ([]byte, error) {
 	buf := make([]byte, 0, 4+2+4+len(refs)*attachmentEntrySize+trailerHashLen)
 	buf = append(buf, attachmentListMagic...)
 	buf = binary.LittleEndian.AppendUint16(buf, attachmentListVersion)
-	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(refs))) //nolint:gosec // ref counts fit u32
+	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(refs)))
 	for _, ref := range refs {
 		raw, err := hex.DecodeString(ref.Hash)
 		if err != nil || len(raw) != 32 {
@@ -537,10 +537,12 @@ func prepareCaptureFile(
 		after, afterErr := f.Stat()
 		closeErr := f.Close()
 		if verifyErr == nil && (afterErr != nil || !os.SameFile(info, after) || after.Size() != info.Size()) {
-			verifyErr = errors.Join(afterErr, fmt.Errorf("file changed during capture"))
+			verifyErr = errors.Join(afterErr, errors.New("file changed during capture"))
 		}
-		return captureResult{index: index, size: info.Size(), id: id, known: true,
-			err: errors.Join(verifyErr, closeErr)}
+		return captureResult{
+			index: index, size: info.Size(), id: id, known: true,
+			err: errors.Join(verifyErr, closeErr),
+		}
 	}
 	prepared, prepareErr := pack.PrepareBlob(ctx, f, uint64(info.Size()), level, pack.AppendStreamOptions{
 		ExpectedID: &id, ScratchDir: scratchDir,
@@ -548,7 +550,7 @@ func prepareCaptureFile(
 	after, afterErr := f.Stat()
 	closeErr := f.Close()
 	if prepareErr == nil && (afterErr != nil || !os.SameFile(info, after) || after.Size() != info.Size()) {
-		prepareErr = errors.Join(afterErr, fmt.Errorf("file changed during capture"))
+		prepareErr = errors.Join(afterErr, errors.New("file changed during capture"))
 	}
 	if err := errors.Join(prepareErr, closeErr); err != nil {
 		if prepared != nil {
@@ -635,17 +637,17 @@ func parseCanonicalCaptureID(hash string) (pack.BlobID, error) {
 
 func verifyCaptureReader(ctx context.Context, reader io.Reader, size uint64, id pack.BlobID) error {
 	digest := sha256.New()
-	written, err := io.CopyBuffer(digest, io.LimitReader(&captureContextReader{ctx: ctx, reader: reader}, int64(size)+1), make([]byte, 64<<10)) //nolint:gosec // capture size is bounded by format-v1
+	written, err := io.CopyBuffer(digest, io.LimitReader(&captureContextReader{ctx: ctx, reader: reader}, int64(size)+1), make([]byte, 64<<10))
 	if err != nil {
 		return err
 	}
 	if uint64(written) != size {
-		return fmt.Errorf("content size changed during capture")
+		return errors.New("content size changed during capture")
 	}
 	var got pack.BlobID
 	copy(got[:], digest.Sum(nil))
 	if got != id {
-		return fmt.Errorf("content does not match its hash (live store corruption)")
+		return errors.New("content does not match its hash (live store corruption)")
 	}
 	return nil
 }
@@ -750,7 +752,7 @@ func recordCapture(
 				return err
 			}
 		} else {
-			if _, err := appender.AddEncoded(c.id, c.frame, uint64(c.size), c.compressed); err != nil { //nolint:gosec // sizes are non-negative
+			if _, err := appender.AddEncoded(c.id, c.frame, uint64(c.size), c.compressed); err != nil {
 				return err
 			}
 		}

@@ -3,12 +3,12 @@ package gitworktree
 import (
 	"testing"
 
-	Assert "github.com/stretchr/testify/assert"
-	Require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParsePorcelain(t *testing.T) {
-	assert := Assert.New(t)
+	assert := assert.New(t)
 	output := "" +
 		"worktree /repo\nHEAD abc123\nbranch refs/heads/main\n\n" +
 		"worktree /repo/.wt/feature\nHEAD def456\nbranch refs/heads/feature/x\n\n" +
@@ -17,7 +17,7 @@ func TestParsePorcelain(t *testing.T) {
 		"prunable gitdir file points to non-existent location\n"
 
 	entries := ParsePorcelain(output)
-	Require.Len(t, entries, 4)
+	require.Len(t, entries, 4)
 
 	assert.Equal(PorcelainEntry{Path: "/repo", Head: "abc123", Branch: "main"}, entries[0])
 	assert.Equal(PorcelainEntry{Path: "/repo/.wt/feature", Head: "def456", Branch: "feature/x"}, entries[1])
@@ -29,23 +29,23 @@ func TestParsePorcelain(t *testing.T) {
 }
 
 func TestParsePorcelainIgnoresUnknownFieldsAndIncompleteBlocks(t *testing.T) {
-	assert := Assert.New(t)
+	assert := assert.New(t)
 	entries := ParsePorcelain("HEAD ignored\n\nworktree /repo\nlocked reason\ncustom value\n")
 
-	Require.Len(t, entries, 1)
+	require.Len(t, entries, 1)
 	assert.Equal("/repo", entries[0].Path)
 	assert.True(entries[0].Locked)
 	assert.Equal("reason", entries[0].LockedReason)
 }
 
 func TestParsePorcelainHandlesCRLFAndQuotedPaths(t *testing.T) {
-	assert := Assert.New(t)
+	assert := assert.New(t)
 	entries := ParsePorcelain(
 		"worktree /repo\r\nHEAD abc123\r\nbranch refs/heads/main\r\n\r\n" +
 			"worktree \"/repo/quoted\\tpath\"\r\nHEAD def456\r\ndetached\r\n",
 	)
 
-	Require.Len(t, entries, 2)
+	require.Len(t, entries, 2)
 	assert.Equal("/repo", entries[0].Path)
 	assert.Equal("/repo/quoted\tpath", entries[1].Path)
 	assert.True(entries[1].Detached)

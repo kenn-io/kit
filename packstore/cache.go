@@ -44,9 +44,9 @@ func (s *Store) cachedReaderLocked(packID string, enforcePolicy bool) (*cachedPa
 	}
 	readerLimits := pack.ReaderLimits{}
 	if enforcePolicy {
-		readerLimits.ContainerBytes = uint64(s.limits.PackBytes) //nolint:gosec // validated positive
-		readerLimits.FooterBytes = uint64(s.limits.FooterBytes)  //nolint:gosec // validated positive
-		readerLimits.Entries = uint64(s.limits.PackEntries)      //nolint:gosec // validated positive
+		readerLimits.ContainerBytes = uint64(s.limits.PackBytes)
+		readerLimits.FooterBytes = uint64(s.limits.FooterBytes)
+		readerLimits.Entries = uint64(s.limits.PackEntries)
 	}
 	reader, err := pack.NewReaderFromFileWithOptions(f, packID, nil, pack.ReaderOptions{Limits: readerLimits})
 	if err != nil {
@@ -70,13 +70,13 @@ func (s *Store) cachedReaderLocked(packID string, enforcePolicy bool) (*cachedPa
 
 func (s *Store) validatePackPolicy(slot *cachedPackReader) error {
 	metadata := slot.reader.Metadata()
-	if metadata.ContainerBytes > uint64(s.limits.PackBytes) { //nolint:gosec // validated positive
+	if metadata.ContainerBytes > uint64(s.limits.PackBytes) {
 		return newLimitError(LimitPackContainerBytes, metadata.ContainerBytes, uint64(s.limits.PackBytes))
 	}
-	if metadata.FooterBytes > uint64(s.limits.FooterBytes) { //nolint:gosec // validated positive
+	if metadata.FooterBytes > uint64(s.limits.FooterBytes) {
 		return newLimitError(LimitPackFooterBytes, metadata.FooterBytes, uint64(s.limits.FooterBytes))
 	}
-	if metadata.EntryCount > uint64(s.limits.PackEntries) { //nolint:gosec // validated positive
+	if metadata.EntryCount > uint64(s.limits.PackEntries) {
 		return newLimitError(LimitPackEntryCount, metadata.EntryCount, uint64(s.limits.PackEntries))
 	}
 	return nil
@@ -123,8 +123,8 @@ func (s *Store) releasePackReader(slot *cachedPackReader) error {
 }
 
 func mapPackStreamLimit(err error) error {
-	var limit *pack.StreamLimitError
-	if !errors.As(err, &limit) {
+	limit, ok := errors.AsType[*pack.StreamLimitError](err)
+	if !ok {
 		return err
 	}
 	var dimension LimitDimension

@@ -2,6 +2,7 @@ package packstoretest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"sort"
@@ -265,11 +266,11 @@ func (c *MemoryCatalog) CommitRepack(
 		}
 	}
 	if len(expected) != len(moves) {
-		return fmt.Errorf("packstoretest: repack set changed")
+		return errors.New("packstoretest: repack set changed")
 	}
 	for _, move := range moves {
 		if expected[move.NewEntry.Hash] != move.OldPackID {
-			return fmt.Errorf("packstoretest: repack set changed")
+			return errors.New("packstoretest: repack set changed")
 		}
 	}
 	for _, record := range records {
@@ -315,5 +316,7 @@ func sortedEntries(entries map[packstore.Hash]packstore.IndexEntry, packID strin
 	return result
 }
 
-var _ CatalogHarness = (*MemoryCatalog)(nil)
-var _ packstore.Catalog = (*MemoryCatalog)(nil)
+var (
+	_ CatalogHarness    = (*MemoryCatalog)(nil)
+	_ packstore.Catalog = (*MemoryCatalog)(nil)
+)

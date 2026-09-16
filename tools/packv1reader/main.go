@@ -4,6 +4,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -37,7 +38,7 @@ func readFixture(path string) error {
 		}
 	}
 	if !raw || !compressed {
-		return fmt.Errorf("fixture does not contain both raw and compressed entries")
+		return errors.New("fixture does not contain both raw and compressed entries")
 	}
 	return nil
 }

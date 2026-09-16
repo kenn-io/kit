@@ -122,7 +122,7 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 	if err := verifyScanFileIdentity(dbFile, opts.DBPath); err != nil {
 		return nil, err
 	}
-	dbBytes := int64(session.PageCount * uint64(session.PageSize)) //nolint:gosec // page-count*page-size fits int64 for real databases
+	dbBytes := int64(session.PageCount * uint64(session.PageSize))
 	pr.emit(ProgressEvent{
 		Stage: ProgressStageFreeze, Done: 1, Total: 1,
 		BytesDone: dbBytes, BytesTotal: dbBytes, Final: true,
@@ -155,10 +155,10 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 	scan, err := ScanPages(ctx, dbFile, session.PageSize, session.PageCount, parentHash, func(done, total uint64) {
 		pr.emit(ProgressEvent{
 			Stage:      ProgressStageScan,
-			Done:       int64(done),              //nolint:gosec // page counts fit int64 for real databases
-			Total:      int64(total),             //nolint:gosec // page counts fit int64 for real databases
-			BytesDone:  int64(done) * pageBytes,  //nolint:gosec // page counts fit int64 for real databases
-			BytesTotal: int64(total) * pageBytes, //nolint:gosec // page counts fit int64 for real databases
+			Done:       int64(done),
+			Total:      int64(total),
+			BytesDone:  int64(done) * pageBytes,
+			BytesTotal: int64(total) * pageBytes,
 		})
 	})
 	if err != nil {
@@ -166,7 +166,7 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 	}
 
 	pr.emit(ProgressEvent{
-		Stage: ProgressStageScan, Done: int64(scan.PageCount), Total: int64(scan.PageCount), //nolint:gosec // page counts fit int64
+		Stage: ProgressStageScan, Done: int64(scan.PageCount), Total: int64(scan.PageCount),
 		BytesDone: dbBytes, BytesTotal: dbBytes, Final: true,
 	})
 
@@ -378,7 +378,7 @@ func nextCreatedAt(now time.Time, parent *Manifest) (time.Time, error) {
 // for whenever the parent is itself a keyframe.
 func loadParentHashMap(r *Repo, parent *Manifest, cacheDir string, fetch func(pack.BlobID) ([]byte, error)) (*PageHashMap, error) {
 	if parent == nil || parent.Metadata != nil {
-		return nil, nil //nolint:nilnil // no parent snapshot -> no parent hash map, not an error
+		return nil, nil
 	}
 	if cacheDir != "" {
 		snapID, cached, err := LoadHashMapCache(cacheDir, r.Config().RepoID)
@@ -493,7 +493,7 @@ func storePageBlobs(
 	}
 	var totalPages int64
 	for i := range plans {
-		totalPages += int64(plans[i].Pages()) //nolint:gosec // page counts fit int64
+		totalPages += int64(plans[i].Pages())
 	}
 	pageBytes := int64(scan.PageSize)
 	pr.emit(ProgressEvent{Stage: ProgressStagePack, Total: totalPages, BytesTotal: totalPages * pageBytes})
@@ -578,7 +578,7 @@ func storePageBlobs(
 				close(stop)
 				continue
 			}
-			donePages += int64(plans[c.index].Pages()) //nolint:gosec // page counts fit int64
+			donePages += int64(plans[c.index].Pages())
 			pr.emit(ProgressEvent{
 				Stage: ProgressStagePack, Done: donePages, Total: totalPages,
 				BytesDone: donePages * pageBytes, BytesTotal: totalPages * pageBytes,
@@ -615,7 +615,7 @@ func recordPageBlob(
 	}
 	idx, seen := blobIdx[c.id]
 	if !seen {
-		idx = uint32(len(delta.Blobs)) //nolint:gosec // blob counts fit u32
+		idx = uint32(len(delta.Blobs))
 		delta.Blobs = append(delta.Blobs, c.id)
 		blobIdx[c.id] = idx
 	}

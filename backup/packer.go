@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"go.kenn.io/kit/pack"
@@ -90,7 +91,7 @@ func (a *PackAppender) AddEncoded(id pack.BlobID, frame []byte, rawLen uint64, c
 // the blob is already known. Prepared is consumed or closed on every return.
 func (a *PackAppender) AddPrepared(ctx context.Context, prepared *pack.PreparedBlob) (bool, error) {
 	if prepared == nil {
-		return false, fmt.Errorf("backup: nil prepared blob")
+		return false, errors.New("backup: nil prepared blob")
 	}
 	id := prepared.ID()
 	if a.err != nil {

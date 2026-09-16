@@ -11,8 +11,8 @@ import (
 	"go.kenn.io/kit/vector/sqlitevec"
 )
 
-func openSQLiteTestDB(t testing.TB, dsn string) (*sql.DB, error) {
-	t.Helper()
+func openSQLiteTestDB(tb testing.TB, dsn string) (*sql.DB, error) {
+	tb.Helper()
 	sqlitevec.Register()
 	return sql.Open("sqlite3", dsn)
 }

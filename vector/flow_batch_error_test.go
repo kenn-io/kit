@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	Assert "github.com/stretchr/testify/assert"
-	Require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"go.kenn.io/kit/vector"
 )
@@ -33,13 +33,13 @@ func TestFillSharedErrorClassifierFailsClosedWithoutProbes(t *testing.T) {
 		{name: "nil classifier"},
 		{name: "classifier false", wantClassifiers: 1, classifier: func(err error) bool {
 			var got *fillProviderError
-			Require.ErrorAs(t, err, &got)
+			require.ErrorAs(t, err, &got)
 			return false
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			assert := Assert.New(t)
-			require := Require.New(t)
+			assert := assert.New(t)
+			require := require.New(t)
 			store := newMemStore()
 			store.content = map[int64]string{1: "one", 2: "two", 3: "three"}
 			var calls, classifiers, hooks int
@@ -54,7 +54,7 @@ func TestFillSharedErrorClassifierFailsClosedWithoutProbes(t *testing.T) {
 					return tc.classifier(err)
 				}
 			}
-			_, err := vector.Fill(context.Background(), store, 7, enc,
+			_, err := vector.Fill(t.Context(), store, 7, enc,
 				vector.WithFillScanBatch[int64](3),
 				vector.WithFillBatch[int64](vector.WithBatchSize(3)),
 				vector.WithFillBatchErrorIsolation[int64](classifier),
@@ -83,8 +83,8 @@ func TestFillSharedErrorRejectedFirstProbeStopsDiagnosis(t *testing.T) {
 		{name: "false hook", hook: func(int64, error) bool { return false }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			assert := Assert.New(t)
-			require := Require.New(t)
+			assert := assert.New(t)
+			require := require.New(t)
 			store := newMemStore()
 			store.content = map[int64]string{1: "poison one", 2: "poison two"}
 			var calls, classifiers, hooks int
@@ -99,7 +99,7 @@ func TestFillSharedErrorRejectedFirstProbeStopsDiagnosis(t *testing.T) {
 					return tc.hook(doc, err)
 				}
 			}
-			_, err := vector.Fill(context.Background(), store, 7, enc,
+			_, err := vector.Fill(t.Context(), store, 7, enc,
 				vector.WithFillScanBatch[int64](2),
 				vector.WithFillBatch[int64](vector.WithBatchSize(2)),
 				vector.WithFillBatchErrorIsolation[int64](func(error) bool {
@@ -119,7 +119,7 @@ func TestFillSharedErrorRejectedFirstProbeStopsDiagnosis(t *testing.T) {
 }
 
 func TestFillSharedErrorAllowsTwoPoisonDocuments(t *testing.T) {
-	assert := Assert.New(t)
+	assert := assert.New(t)
 	store := newMemStore()
 	store.content = map[int64]string{1: "poison one", 2: "poison two"}
 	var calls int
@@ -128,7 +128,7 @@ func TestFillSharedErrorAllowsTwoPoisonDocuments(t *testing.T) {
 		calls++
 		return nil, &fillProviderError{code: 400}
 	}
-	stats, err := vector.Fill(context.Background(), store, 7, enc,
+	stats, err := vector.Fill(t.Context(), store, 7, enc,
 		vector.WithFillScanBatch[int64](2),
 		vector.WithFillBatch[int64](vector.WithBatchSize(2)),
 		vector.WithFillBatchErrorIsolation[int64](func(error) bool { return true }),
@@ -137,7 +137,7 @@ func TestFillSharedErrorAllowsTwoPoisonDocuments(t *testing.T) {
 			return true
 		}),
 	)
-	Require.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(3, calls)
 	assert.Equal(map[int64]int{1: 1, 2: 1}, hooks)
 	assert.Equal(2, stats.Skipped)
@@ -145,7 +145,7 @@ func TestFillSharedErrorAllowsTwoPoisonDocuments(t *testing.T) {
 }
 
 func TestFillSharedInvalidVectorRejectedWithoutProbe(t *testing.T) {
-	assert := Assert.New(t)
+	assert := assert.New(t)
 	store := newMemStore()
 	store.content = map[int64]string{1: "good", 2: "bad", 3: "later"}
 	var calls, classifiers, hooks int
@@ -153,7 +153,7 @@ func TestFillSharedInvalidVectorRejectedWithoutProbe(t *testing.T) {
 		calls++
 		return [][]float32{{1}, {0}, {1}}, nil
 	}
-	_, err := vector.Fill(context.Background(), store, 7, enc,
+	_, err := vector.Fill(t.Context(), store, 7, enc,
 		vector.WithFillScanBatch[int64](3),
 		vector.WithFillBatch[int64](vector.WithBatchSize(3)),
 		vector.WithFillBatchErrorIsolation[int64](func(error) bool {
@@ -164,12 +164,12 @@ func TestFillSharedInvalidVectorRejectedWithoutProbe(t *testing.T) {
 			hooks++
 			assert.Equal(int64(2), doc)
 			var invalid *vector.InvalidVectorError
-			Require.ErrorAs(t, err, &invalid)
+			require.ErrorAs(t, err, &invalid)
 			assert.Equal(0, invalid.Chunk)
 			return false
 		}),
 	)
-	Require.Error(t, err)
+	require.Error(t, err)
 	assert.Equal(1, calls)
 	assert.Zero(classifiers)
 	assert.Equal(1, hooks)
@@ -183,18 +183,18 @@ func TestFillSharedInvalidVectorNilHookRejectsWithoutProbe(t *testing.T) {
 		calls++
 		return [][]float32{{1}, {0}}, nil
 	}
-	_, err := vector.Fill(context.Background(), store, 7, enc,
+	_, err := vector.Fill(t.Context(), store, 7, enc,
 		vector.WithFillScanBatch[int64](2),
 		vector.WithFillBatch[int64](vector.WithBatchSize(2)),
 		vector.WithFillBatchErrorIsolation[int64](func(error) bool { classifiers++; return true }),
 	)
-	Require.Error(t, err)
-	Assert.Equal(t, 1, calls)
-	Assert.Zero(t, classifiers)
+	require.Error(t, err)
+	assert.Equal(t, 1, calls)
+	assert.Zero(t, classifiers)
 }
 
 func TestFillSharedInvalidVectorRecoversOnlyOtherSlices(t *testing.T) {
-	assert := Assert.New(t)
+	assert := assert.New(t)
 	store := newMemStore()
 	store.content = map[int64]string{1: "good", 2: "bad", 3: "later"}
 	var calls [][]string
@@ -210,7 +210,7 @@ func TestFillSharedInvalidVectorRecoversOnlyOtherSlices(t *testing.T) {
 		}
 		return out, nil
 	}
-	stats, err := vector.Fill(context.Background(), store, 7, enc,
+	stats, err := vector.Fill(t.Context(), store, 7, enc,
 		vector.WithFillScanBatch[int64](3),
 		vector.WithFillBatch[int64](vector.WithBatchSize(3)),
 		vector.WithFillEncodeError[int64](func(doc int64, _ error) bool {
@@ -218,7 +218,7 @@ func TestFillSharedInvalidVectorRecoversOnlyOtherSlices(t *testing.T) {
 			return true
 		}),
 	)
-	Require.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal([][]string{{"good", "bad", "later"}, {"good"}, {"later"}}, calls)
 	assert.Equal(map[int64]int{2: 1}, hooks)
 	assert.Equal(2, stats.Documents)
@@ -226,8 +226,8 @@ func TestFillSharedInvalidVectorRecoversOnlyOtherSlices(t *testing.T) {
 }
 
 func TestFillSharedInvalidRecoveryFailureUsesProbeRules(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	store := newMemStore()
 	store.content = map[int64]string{1: "bad", 2: "neighbor"}
 	var calls, classifiers int
@@ -239,7 +239,7 @@ func TestFillSharedInvalidRecoveryFailureUsesProbeRules(t *testing.T) {
 		}
 		return nil, &fillProviderError{code: 400}
 	}
-	_, err := vector.Fill(context.Background(), store, 7, enc,
+	_, err := vector.Fill(t.Context(), store, 7, enc,
 		vector.WithFillScanBatch[int64](2),
 		vector.WithFillBatch[int64](vector.WithBatchSize(2)),
 		vector.WithFillBatchErrorIsolation[int64](func(error) bool { classifiers++; return true }),
@@ -257,8 +257,8 @@ func TestFillSharedInvalidRecoveryFailureUsesProbeRules(t *testing.T) {
 }
 
 func TestFillSharedInvalidVectorOutOfRangeIsFatal(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	store := newMemStore()
 	store.content = map[int64]string{1: "one", 2: "two"}
 	var calls, classifiers, hooks int
@@ -266,7 +266,7 @@ func TestFillSharedInvalidVectorOutOfRangeIsFatal(t *testing.T) {
 		calls++
 		return nil, &vector.InvalidVectorError{Chunk: 2, Component: -1, Reason: "zero norm"}
 	}
-	_, err := vector.Fill(context.Background(), store, 7, enc,
+	_, err := vector.Fill(t.Context(), store, 7, enc,
 		vector.WithFillScanBatch[int64](2),
 		vector.WithFillBatch[int64](vector.WithBatchSize(2)),
 		vector.WithFillBatchErrorIsolation[int64](func(error) bool { classifiers++; return true }),
@@ -281,8 +281,8 @@ func TestFillSharedInvalidVectorOutOfRangeIsFatal(t *testing.T) {
 }
 
 func TestFillSharedInvalidVectorPreservesCompanionCauses(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	store := newMemStore()
 	store.content = map[int64]string{1: "good", 2: "bad"}
 	providerErr := &fillProviderError{code: 422}
@@ -294,7 +294,7 @@ func TestFillSharedInvalidVectorPreservesCompanionCauses(t *testing.T) {
 			sentinel,
 		)
 	}
-	_, err := vector.Fill(context.Background(), store, 7, enc,
+	_, err := vector.Fill(t.Context(), store, 7, enc,
 		vector.WithFillScanBatch[int64](2),
 		vector.WithFillBatch[int64](vector.WithBatchSize(2)),
 		vector.WithFillEncodeError[int64](func(doc int64, err error) bool {
@@ -303,7 +303,7 @@ func TestFillSharedInvalidVectorPreservesCompanionCauses(t *testing.T) {
 			require.ErrorAs(err, &invalid)
 			assert.Equal(0, invalid.Chunk)
 			var gotProvider *fillProviderError
-			assert.ErrorAs(err, &gotProvider)
+			require.ErrorAs(err, &gotProvider)
 			assert.Same(providerErr, gotProvider)
 			assert.ErrorIs(err, sentinel)
 			return false
@@ -314,18 +314,18 @@ func TestFillSharedInvalidVectorPreservesCompanionCauses(t *testing.T) {
 	require.ErrorAs(err, &invalid)
 	assert.Equal(0, invalid.Chunk)
 	var gotProvider *fillProviderError
-	assert.ErrorAs(err, &gotProvider)
+	require.ErrorAs(err, &gotProvider)
 	assert.Same(providerErr, gotProvider)
 	assert.ErrorIs(err, sentinel)
 }
 
 func TestFillRejectedProbeBackpressuresAndCancelsWorkers(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	store := newMemStore()
 	store.content = map[int64]string{
 		1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six",
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	secondStarted := make(chan struct{})
 	probeStarted := make(chan struct{})
 	releaseProbe := make(chan struct{})
@@ -382,7 +382,7 @@ func TestFillRejectedProbeBackpressuresAndCancelsWorkers(t *testing.T) {
 		select {
 		case <-fillReturned:
 		case <-time.After(5 * time.Second):
-			Assert.Fail(t, "Fill goroutine did not stop during cleanup")
+			assert.Fail(t, "Fill goroutine did not stop during cleanup")
 		}
 	})
 
@@ -410,13 +410,13 @@ func TestFillRejectedProbeBackpressuresAndCancelsWorkers(t *testing.T) {
 	}
 	select {
 	case <-thirdStarted:
-		Assert.Fail(t, "third job started after collection rejected the failure")
+		assert.Fail(t, "third job started after collection rejected the failure")
 	default:
 	}
 }
 
 func TestFillLateSharedFailureFiltersDecidedDocument(t *testing.T) {
-	assert := Assert.New(t)
+	assert := assert.New(t)
 	store := newMemStore()
 	store.content = map[int64]string{1: "abc", 2: "d"}
 	releaseShared := make(chan struct{})
@@ -434,7 +434,7 @@ func TestFillLateSharedFailureFiltersDecidedDocument(t *testing.T) {
 			return nil, fmt.Errorf("unexpected texts %q", texts)
 		}
 	}
-	stats, err := vector.Fill(context.Background(), store, 7, enc,
+	stats, err := vector.Fill(t.Context(), store, 7, enc,
 		vector.WithFillScanBatch[int64](2),
 		vector.WithFillSplit[int64](vector.SplitOptions{MaxRunes: 1}),
 		vector.WithFillBatch[int64](vector.WithBatchSize(2)),
@@ -450,7 +450,7 @@ func TestFillLateSharedFailureFiltersDecidedDocument(t *testing.T) {
 			return true
 		}),
 	)
-	Require.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(int32(1), hookCalls.Load())
 	assert.Equal(int32(1), classifierCalls.Load())
 	assert.Equal(1, stats.Skipped)
@@ -469,15 +469,15 @@ func TestFillWrappedProbeDeadlineAbortsWithoutHook(t *testing.T) {
 		}
 		return nil, fmt.Errorf("encoder timeout: %w", context.DeadlineExceeded)
 	}
-	_, err := vector.Fill(context.Background(), store, 7, enc,
+	_, err := vector.Fill(t.Context(), store, 7, enc,
 		vector.WithFillScanBatch[int64](2),
 		vector.WithFillBatch[int64](vector.WithBatchSize(2)),
 		vector.WithFillBatchErrorIsolation[int64](func(error) bool { return true }),
 		vector.WithFillEncodeError[int64](func(int64, error) bool { hooks++; return true }),
 	)
-	Require.ErrorIs(t, err, context.DeadlineExceeded)
-	Assert.Equal(t, 2, calls)
-	Assert.Zero(t, hooks)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Equal(t, 2, calls)
+	assert.Zero(t, hooks)
 }
 
 func TestFillBatchClassifierExclusions(t *testing.T) {
@@ -503,12 +503,12 @@ func TestFillBatchClassifierExclusions(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			assert := Assert.New(t)
-			require := Require.New(t)
+			assert := assert.New(t)
+			require := require.New(t)
 			store := newMemStore()
 			store.content = tc.content
 			var classifiers, hooks int
-			_, err := vector.Fill(context.Background(), store, 7,
+			_, err := vector.Fill(t.Context(), store, 7,
 				func(context.Context, []string) ([][]float32, error) { return nil, tc.encodeErr },
 				vector.WithFillScanBatch[int64](len(tc.content)),
 				vector.WithFillBatch[int64](vector.WithBatchSize(tc.batchSize)),

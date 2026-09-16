@@ -58,7 +58,7 @@ func verifyLimitedImportPack(
 		return fmt.Errorf("stat pack for import verification: %w", err)
 	}
 	if !os.SameFile(pathInfo, info) {
-		return fmt.Errorf("packstore: pack changed identity during import verification")
+		return errors.New("packstore: pack changed identity during import verification")
 	}
 	size := info.Size()
 	if size < plainPackHeaderSize+plainPackTrailerSize {
@@ -90,7 +90,7 @@ func verifyLimitedImportPack(
 	if footerLen > pack.MaxFooterLen {
 		return fmt.Errorf("%w: footer length %d exceeds format maximum %d", pack.ErrCorrupt, footerLen, uint64(pack.MaxFooterLen))
 	}
-	fileSize := uint64(size) //nolint:gosec // regular file size is non-negative
+	fileSize := uint64(size)
 	if footerLen < 4 || fileSize < plainPackHeaderSize+plainPackTrailerSize+footerLen {
 		return fmt.Errorf("%w: footer length %d is outside %d-byte pack", pack.ErrTruncated, footerLen, size)
 	}
@@ -101,7 +101,7 @@ func verifyLimitedImportPack(
 
 	digest := sha256.New()
 	footer := bufio.NewReaderSize(io.TeeReader(
-		io.NewSectionReader(f, int64(footerStart), int64(footerLen)), //nolint:gosec // bounded by the non-negative file size
+		io.NewSectionReader(f, int64(footerStart), int64(footerLen)),
 		digest,
 	), 64<<10)
 	var countBytes [4]byte
@@ -187,7 +187,7 @@ func verifyLimitedImportPack(
 			return err
 		}
 		entry := found[selectedID(selection)]
-		if entry.RawLen > uint64(limits.BlobBytes) || entry.StoredLen > uint64(limits.BlobBytes) { //nolint:gosec // limits are non-negative
+		if entry.RawLen > uint64(limits.BlobBytes) || entry.StoredLen > uint64(limits.BlobBytes) {
 			continue
 		}
 		if _, err := reader.readBlob(entry, limits.BlobBytes); err != nil {
@@ -256,7 +256,7 @@ func validateSelectedImportEntries(
 			return fmt.Errorf("%w: selected blob %s is absent from pack %s footer", pack.ErrCorrupt, selection.Hash, candidate.PackID)
 		}
 		if selection.RawLen != int64(entry.RawLen) || selection.Offset != entry.Offset ||
-			selection.StoredLen != entry.StoredLen || selection.Flags != uint8(entry.Flags) { //nolint:gosec // format caps RawLen below MaxInt64
+			selection.StoredLen != entry.StoredLen || selection.Flags != uint8(entry.Flags) {
 			return fmt.Errorf("%w: selected metadata for %s does not match pack %s footer", pack.ErrCorrupt, selection.Hash, candidate.PackID)
 		}
 	}

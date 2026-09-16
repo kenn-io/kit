@@ -2,7 +2,6 @@ package packstore
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"io"
 	"os"
@@ -36,43 +35,46 @@ func BenchmarkStorePackedReadsLargeRaw(b *testing.B) {
 
 func benchmarkStorePackedReads(b *testing.B, content []byte) {
 	b.Helper()
+	req := require.New(b)
+	b.Helper()
 	root := b.TempDir()
 	layout, err := NewLayout(root, LayoutOptions{Staging: StagingStoreDirectory, StagingDir: "tmp"})
-	require.NoError(b, err)
+	req.NoError(err)
 	w, err := pack.NewWriter(b.TempDir(), pack.WriterOptions{})
-	require.NoError(b, err)
+	req.NoError(err)
 	entry, err := w.Append(content)
-	require.NoError(b, err)
+	req.NoError(err)
 	packID := w.ID()
-	require.NoError(b, os.MkdirAll(filepath.Dir(layout.PackPath(packID)), 0o700))
+	req.NoError(os.MkdirAll(filepath.Dir(layout.PackPath(packID)), 0o700))
 	_, err = w.Seal(layout.PackPath(packID))
-	require.NoError(b, err)
+	req.NoError(err)
 	hash, err := ParseHash(entry.ID.String())
-	require.NoError(b, err)
+	req.NoError(err)
 	indexed := IndexEntry{Hash: hash, PackID: packID, Offset: int64(entry.Offset), StoredLen: int64(entry.StoredLen), RawLen: int64(entry.RawLen), Flags: uint8(entry.Flags), CRC32C: entry.CRC32C}
 	store, err := NewStore(&mapResolver{locations: map[Hash]Location{
 		hash: {Member: true, Pack: &indexed},
 	}}, layout, StoreOptions{})
-	require.NoError(b, err)
-	b.Cleanup(func() { require.NoError(b, store.Close()) })
+	req.NoError(err)
+	b.Cleanup(func() { req.NoError(store.Close()) })
 
 	for _, mode := range []string{"stream", "buffered"} {
 		b.Run(mode, func(b *testing.B) {
+			require := require.New(b)
 			b.ReportAllocs()
 			b.SetBytes(int64(len(content)))
 			for range b.N {
 				if mode == "stream" {
-					reader, _, openErr := store.OpenStream(context.Background(), hash)
-					require.NoError(b, openErr)
+					reader, _, openErr := store.OpenStream(b.Context(), hash)
+					require.NoError(openErr)
 					_, copyErr := io.Copy(io.Discard, reader)
-					require.NoError(b, errors.Join(copyErr, reader.Close()))
+					require.NoError(errors.Join(copyErr, reader.Close()))
 					continue
 				}
-				reader, _, openErr := store.Open(context.Background(), hash)
-				require.NoError(b, openErr)
+				reader, _, openErr := store.Open(b.Context(), hash)
+				require.NoError(openErr)
 				_, copyErr := io.Copy(io.Discard, reader)
-				require.NoError(b, copyErr)
-				require.NoError(b, reader.Close())
+				require.NoError(copyErr)
+				require.NoError(reader.Close())
 			}
 		})
 	}
@@ -88,14 +90,15 @@ func BenchmarkMaintenancePackUnpack(b *testing.B) {
 		{name: "compressed-1MiB", source: func() io.Reader { return io.LimitReader(streamZeroReader{}, size) }},
 	} {
 		b.Run(tt.name, func(b *testing.B) {
+			require := require.New(b)
 			layout, err := NewLayout(b.TempDir(), LayoutOptions{Staging: StagingStoreDirectory, StagingDir: "tmp"})
-			require.NoError(b, err)
+			require.NoError(err)
 			loose, err := NewLooseStore(layout)
-			require.NoError(b, err)
-			written, err := loose.Write(context.Background(), tt.source(), WriteOptions{
+			require.NoError(err)
+			written, err := loose.Write(b.Context(), tt.source(), WriteOptions{
 				Durability: AtomicPublication, Dedup: VerifyFullHash, MaxBytes: size,
 			})
-			require.NoError(b, err)
+			require.NoError(err)
 			catalog := newMaintenanceCatalog()
 			catalog.addLoose(written.Hash, written.Path)
 			maintainer := newMaintainerForTest(b, catalog, layout, DefaultLimits())
@@ -104,10 +107,10 @@ func BenchmarkMaintenancePackUnpack(b *testing.B) {
 			b.SetBytes(2 * size)
 			b.ResetTimer()
 			for range b.N {
-				_, err := maintainer.Pack(context.Background(), PackOptions{})
-				require.NoError(b, err)
-				_, err = maintainer.Unpack(context.Background())
-				require.NoError(b, err)
+				_, err := maintainer.Pack(b.Context(), PackOptions{})
+				require.NoError(err)
+				_, err = maintainer.Unpack(b.Context())
+				require.NoError(err)
 			}
 		})
 	}

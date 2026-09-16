@@ -26,7 +26,7 @@ var proofEncoding = base64.RawURLEncoding.Strict()
 
 // Proof owns the shared secret used to prove a daemon runtime identity without
 // sending the secret to a candidate endpoint. Construct one with NewProof.
-type Proof struct {
+type Proof struct { //nolint:recvcheck // Format keeps a value receiver so both Proof and *Proof redact when printed
 	key []byte
 }
 

@@ -103,8 +103,10 @@ func TestCheckCoverageAndLookup(t *testing.T) {
 	_, _, err = m.Lookup(5)
 	require.Error(err)
 
-	gap := &PageMap{PageSize: 4096, PageCount: 3, Blobs: m.Blobs,
-		Runs: []PageRun{{StartPage: 0, PageCount: 2, BlobIndex: 0}}}
+	gap := &PageMap{
+		PageSize: 4096, PageCount: 3, Blobs: m.Blobs,
+		Runs: []PageRun{{StartPage: 0, PageCount: 2, BlobIndex: 0}},
+	}
 	require.Error(gap.CheckCoverage())
 	short := &PageMap{PageSize: 4096, PageCount: 3, Blobs: m.Blobs, Runs: m.Runs[:1]}
 	require.Error(short.CheckCoverage())
@@ -233,7 +235,7 @@ func TestApplyPageMapDeltaMatchesReference(t *testing.T) {
 	const pageSize = 4096
 
 	for iter := range 60 {
-		rng := rand.New(rand.NewSource(int64(iter) + 1)) //nolint:gosec // deterministic test RNG, not security
+		rng := rand.New(rand.NewSource(int64(iter) + 1))
 		baseCount := uint64(50 + rng.Intn(250))
 		base, baseOwners := buildRandomKeyframe(rng, fmt.Sprintf("base%d", iter), baseCount, pageSize)
 		require.NoError(base.CheckCoverage(), "iter %d base", iter)

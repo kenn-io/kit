@@ -5,12 +5,12 @@ import (
 	"path/filepath"
 	"testing"
 
-	Require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/pack"
 )
 
 func TestReadFixture(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	dir := t.TempDir()
 	writer, err := pack.NewWriter(dir, pack.WriterOptions{})
 	require.NoError(err)

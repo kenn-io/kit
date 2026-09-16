@@ -7,8 +7,8 @@ import (
 	"io/fs"
 	"testing"
 
-	Assert "github.com/stretchr/testify/assert"
-	Require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/pack"
 )
 
@@ -37,10 +37,10 @@ func TestClassifyPhysicalErrorPreservesControlErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert := Assert.New(t)
+			assert := assert.New(t)
 			err := classifyPhysicalError(tt.input)
 
-			Require.ErrorIs(t, err, tt.input)
+			require.ErrorIs(t, err, tt.input)
 			assert.Equal(tt.unavailable, errors.Is(err, ErrStoreUnavailable))
 			assert.Equal(tt.missing, errors.Is(err, ErrPhysicalMissing))
 			assert.Equal(tt.corrupt, errors.Is(err, ErrPhysicalCorrupt))
@@ -68,8 +68,8 @@ func TestClassifyIntegrityError(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			err := ClassifyIntegrityError(tt.input)
 
-			Assert.Equal(t, tt.corrupt, errors.Is(err, ErrPhysicalCorrupt))
-			Require.ErrorIs(t, err, tt.input)
+			assert.Equal(t, tt.corrupt, errors.Is(err, ErrPhysicalCorrupt))
+			require.ErrorIs(t, err, tt.input)
 		})
 	}
 }
@@ -110,8 +110,8 @@ func TestClassifyRepresentationLimitError(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			err := ClassifyRepresentationLimitError(tt.input)
 
-			Assert.Equal(t, tt.corrupt, errors.Is(err, ErrPhysicalCorrupt))
-			Require.ErrorIs(t, err, tt.input)
+			assert.Equal(t, tt.corrupt, errors.Is(err, ErrPhysicalCorrupt))
+			require.ErrorIs(t, err, tt.input)
 		})
 	}
 }

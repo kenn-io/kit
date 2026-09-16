@@ -165,7 +165,7 @@ func TestMapChainExceedsDepthLimit(t *testing.T) {
 		var parent string
 		var depth int
 		if i < 31 {
-			parent = ids[i+1] //nolint:gosec // i+1 is always < 32 due to loop bounds
+			parent = ids[i+1]
 			depth = 31 - i
 		}
 		id, err := r.WriteManifest(testManifest("2026-07-01T00:00:00Z", parent, depth))

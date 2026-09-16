@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	Assert "github.com/stretchr/testify/assert"
-	Require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type fakeSSH struct {
@@ -45,9 +45,9 @@ func newFakeSSH() *fakeSSH {
 
 func newSocketDir(t *testing.T) string {
 	t.Helper()
-	directory, err := os.MkdirTemp("", "kit-ssh-")
-	Require.NoError(t, err)
-	t.Cleanup(func() { Require.NoError(t, os.RemoveAll(directory)) })
+	directory, err := os.MkdirTemp("", "kit-ssh-") //nolint:usetesting // unix socket paths must stay short, so the test needs a fixed OS temp root
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, os.RemoveAll(directory)) })
 	return directory
 }
 
@@ -59,7 +59,7 @@ func newTestManager(t *testing.T, directory string, fake *fakeSSH) *PersistentMa
 		EstablishPollInterval:   time.Millisecond,
 		EstablishTimeout:        time.Second,
 	})
-	Require.NoError(t, err)
+	require.NoError(t, err)
 	return manager
 }
 
@@ -70,8 +70,8 @@ func newConnectedTestManager(
 	t.Helper()
 	fake := newFakeSSH()
 	manager := newTestManager(t, newSocketDir(t), fake)
-	generation, err := manager.Connect(context.Background(), identity, testTarget(destination))
-	Require.NoError(t, err)
+	generation, err := manager.Connect(t.Context(), identity, testTarget(destination))
+	require.NoError(t, err)
 	t.Cleanup(func() { fake.closeAll() })
 	return fake, manager, generation
 }
@@ -283,26 +283,26 @@ func (f *fakeSSH) setCheckGate(started chan<- struct{}, release <-chan struct{})
 func TestPersistentManagerRejectsSymlinkedDirectoryBeforeSSH(t *testing.T) {
 	target := t.TempDir()
 	directory := filepath.Join(t.TempDir(), "control")
-	Require.NoError(t, os.Symlink(target, directory))
+	require.NoError(t, os.Symlink(target, directory))
 	fake := newFakeSSH()
 	manager := newTestManager(t, directory, fake)
 
-	_, err := manager.Connect(context.Background(), "studio", testTarget("wes@studio"))
+	_, err := manager.Connect(t.Context(), "studio", testTarget("wes@studio"))
 
-	Require.Error(t, err)
-	Assert.Empty(t, fake.callsSnapshot())
+	require.Error(t, err)
+	assert.Empty(t, fake.callsSnapshot())
 }
 
 func TestPersistentManagerAdoptsOwnedMuxSocket(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	directory := newSocketDir(t)
 	fake := newFakeSSH()
 	manager := newTestManager(t, directory, fake)
 	require.NoError(fake.openSocket(manager.SocketPath("studio", testTarget("wes@studio"))))
 	defer fake.closeAll()
 
-	generation, err := manager.Connect(context.Background(), "studio", testTarget("wes@studio"))
+	generation, err := manager.Connect(t.Context(), "studio", testTarget("wes@studio"))
 
 	require.NoError(err)
 	assert.Positive(generation)
@@ -310,13 +310,13 @@ func TestPersistentManagerAdoptsOwnedMuxSocket(t *testing.T) {
 }
 
 func TestPersistentManagerRemovesOnlyPositivelyStaleSocket(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	fake, manager, _ := newConnectedTestManager(t, "studio", "wes@studio")
 	path := manager.SocketPath("studio", testTarget("wes@studio"))
 	require.NoError(fake.closeSocket(path, false))
 
-	generation, err := manager.Connect(context.Background(), "studio", testTarget("wes@studio"))
+	generation, err := manager.Connect(t.Context(), "studio", testTarget("wes@studio"))
 
 	require.NoError(err)
 	assert.Positive(generation)
@@ -324,8 +324,8 @@ func TestPersistentManagerRemovesOnlyPositivelyStaleSocket(t *testing.T) {
 }
 
 func TestPersistentManagerPreservesOccupiedSocket(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	directory := newSocketDir(t)
 	fake := newFakeSSH()
 	manager := newTestManager(t, directory, fake)
@@ -334,7 +334,7 @@ func TestPersistentManagerPreservesOccupiedSocket(t *testing.T) {
 	defer fake.closeAll()
 	fake.setCheckResult(255, errors.New("invalid mux greeting"))
 
-	_, err := manager.Connect(context.Background(), "studio", testTarget("wes@studio"))
+	_, err := manager.Connect(t.Context(), "studio", testTarget("wes@studio"))
 
 	require.ErrorIs(err, ErrControlPathOccupied)
 	assert.FileExists(path)
@@ -342,8 +342,8 @@ func TestPersistentManagerPreservesOccupiedSocket(t *testing.T) {
 }
 
 func TestPersistentManagerPreservesIndeterminateSocket(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	directory := newSocketDir(t)
 	fake := newFakeSSH()
 	manager := newTestManager(t, directory, fake)
@@ -353,7 +353,7 @@ func TestPersistentManagerPreservesIndeterminateSocket(t *testing.T) {
 	sentinel := errors.New("ssh failed to start")
 	fake.setCheckResult(-1, sentinel)
 
-	_, err := manager.Connect(context.Background(), "studio", testTarget("wes@studio"))
+	_, err := manager.Connect(t.Context(), "studio", testTarget("wes@studio"))
 
 	require.ErrorIs(err, ErrProbeIndeterminate)
 	require.ErrorIs(err, sentinel)
@@ -362,12 +362,12 @@ func TestPersistentManagerPreservesIndeterminateSocket(t *testing.T) {
 }
 
 func TestPersistentManagerChangesDestinationByTeardownThenConnect(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	fake, manager, _ := newConnectedTestManager(t, "studio", "wes@old")
 	oldCalls := len(fake.callsSnapshot())
 
-	generation, err := manager.Connect(context.Background(), "studio", testTarget("wes@new"))
+	generation, err := manager.Connect(t.Context(), "studio", testTarget("wes@new"))
 
 	require.NoError(err)
 	assert.Positive(generation)
@@ -376,8 +376,8 @@ func TestPersistentManagerChangesDestinationByTeardownThenConnect(t *testing.T) 
 }
 
 func TestPersistentManagerBindsRunnerToConnectionGeneration(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	defaultRunner := newFakeSSH()
 	boundRunner := newFakeSSH()
 	manager := newTestManager(t, newSocketDir(t), defaultRunner)
@@ -385,13 +385,13 @@ func TestPersistentManagerBindsRunnerToConnectionGeneration(t *testing.T) {
 	t.Cleanup(boundRunner.closeAll)
 
 	generation, err := manager.ConnectWithRunner(
-		context.Background(), "studio", testTarget("wes@studio"), boundRunner.run,
+		t.Context(), "studio", testTarget("wes@studio"), boundRunner.run,
 	)
 	require.NoError(err)
-	alive, err := manager.IsAlive(context.Background(), "studio", generation)
+	alive, err := manager.IsAlive(t.Context(), "studio", generation)
 	require.NoError(err)
 	assert.True(alive)
-	require.NoError(manager.Disconnect(context.Background(), "studio"))
+	require.NoError(manager.Disconnect(t.Context(), "studio"))
 
 	assert.Empty(defaultRunner.callsSnapshot())
 	assert.Equal(
@@ -401,8 +401,8 @@ func TestPersistentManagerBindsRunnerToConnectionGeneration(t *testing.T) {
 }
 
 func TestPersistentManagerUsesOldRunnerForReplacementTeardown(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	defaultRunner := newFakeSSH()
 	oldRunner := newFakeSSH()
 	newRunner := newFakeSSH()
@@ -412,11 +412,11 @@ func TestPersistentManagerUsesOldRunnerForReplacementTeardown(t *testing.T) {
 	t.Cleanup(newRunner.closeAll)
 
 	_, err := manager.ConnectWithRunner(
-		context.Background(), "studio", testTarget("wes@old"), oldRunner.run,
+		t.Context(), "studio", testTarget("wes@old"), oldRunner.run,
 	)
 	require.NoError(err)
 	_, err = manager.ConnectWithRunner(
-		context.Background(), "studio", testTarget("wes@new"), newRunner.run,
+		t.Context(), "studio", testTarget("wes@new"), newRunner.run,
 	)
 	require.NoError(err)
 
@@ -426,15 +426,15 @@ func TestPersistentManagerUsesOldRunnerForReplacementTeardown(t *testing.T) {
 }
 
 func TestPersistentManagerArgumentsRemainBoundToOriginalTarget(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	_, manager, oldGeneration := newConnectedTestManager(t, "studio", "wes@old")
 	oldArguments, err := manager.ConnectionArguments("studio", oldGeneration)
 	require.NoError(err)
 	oldPath := controlPath(oldArguments)
 
 	newGeneration, err := manager.Connect(
-		context.Background(), "studio", testTarget("wes@new"),
+		t.Context(), "studio", testTarget("wes@new"),
 	)
 	require.NoError(err)
 	_, err = manager.ConnectionArguments("studio", oldGeneration)
@@ -448,13 +448,13 @@ func TestPersistentManagerArgumentsRemainBoundToOriginalTarget(t *testing.T) {
 }
 
 func TestPersistentManagerKeepsOldDestinationWhenReplacementTeardownFails(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	fake, manager, _ := newConnectedTestManager(t, "studio", "wes@old")
 	sentinel := errors.New("exit failed")
 	fake.setExitResult(255, sentinel)
 
-	_, err := manager.Connect(context.Background(), "studio", testTarget("wes@new"))
+	_, err := manager.Connect(t.Context(), "studio", testTarget("wes@new"))
 
 	require.ErrorIs(err, sentinel)
 	assert.Equal("wes@old", manager.Destination("studio"))
@@ -463,8 +463,8 @@ func TestPersistentManagerKeepsOldDestinationWhenReplacementTeardownFails(t *tes
 }
 
 func TestDisconnectWaitsForSocketDrainAfterExitReturns(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	fake, manager, _ := newConnectedTestManager(t, "studio", "wes@studio")
 	path := manager.SocketPath("studio", testTarget("wes@studio"))
 	exitReturned := make(chan struct{})
@@ -479,7 +479,7 @@ func TestDisconnectWaitsForSocketDrainAfterExitReturns(t *testing.T) {
 	}
 	disconnectResult := make(chan error, 1)
 	go func() {
-		disconnectResult <- manager.Disconnect(context.Background(), "studio")
+		disconnectResult <- manager.Disconnect(t.Context(), "studio")
 	}()
 	<-exitReturned
 
@@ -499,8 +499,8 @@ func TestDisconnectWaitsForSocketDrainAfterExitReturns(t *testing.T) {
 }
 
 func TestDisconnectBoundsSocketDrainAndPreservesListener(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	fake := newFakeSSH()
 	manager, err := NewPersistentManager(newSocketDir(t), PersistentConfig{
 		RunSSH:                  fake.run,
@@ -509,12 +509,12 @@ func TestDisconnectBoundsSocketDrainAndPreservesListener(t *testing.T) {
 		MaximumControlPathBytes: 1_000,
 	})
 	require.NoError(err)
-	_, err = manager.Connect(context.Background(), "studio", testTarget("wes@studio"))
+	_, err = manager.Connect(t.Context(), "studio", testTarget("wes@studio"))
 	require.NoError(err)
 	t.Cleanup(fake.closeAll)
 	fake.onExit = func(context.Context) (int, error) { return 0, nil }
 
-	err = manager.Disconnect(context.Background(), "studio")
+	err = manager.Disconnect(t.Context(), "studio")
 
 	require.ErrorIs(err, context.DeadlineExceeded)
 	path := manager.SocketPath("studio", testTarget("wes@studio"))
@@ -531,24 +531,24 @@ func TestDisconnectBoundsSocketDrainAndPreservesListener(t *testing.T) {
 	assert.Equal(masterlessArguments, arguments)
 	callsBeforeRecovery := len(fake.callsSnapshot())
 	alive, aliveErr := manager.IsAlive(
-		context.Background(), "studio", stoppingGeneration,
+		t.Context(), "studio", stoppingGeneration,
 	)
 	assert.False(alive)
 	require.ErrorIs(aliveErr, ErrConnectionChanged)
 	assert.Len(fake.callsSnapshot(), callsBeforeRecovery)
-	err = manager.Disconnect(context.Background(), "studio")
+	err = manager.Disconnect(t.Context(), "studio")
 	require.ErrorIs(err, context.DeadlineExceeded)
 	assert.Len(fake.callsSnapshot(), callsBeforeRecovery)
 	assert.Equal(StateStopping, manager.State("studio"))
 
-	_, err = manager.Connect(context.Background(), "studio", testTarget("wes@studio"))
+	_, err = manager.Connect(t.Context(), "studio", testTarget("wes@studio"))
 	require.ErrorIs(err, context.DeadlineExceeded)
 	assert.Len(fake.callsSnapshot(), callsBeforeRecovery)
 	assert.Equal(StateStopping, manager.State("studio"))
 	require.NoError(fake.closeSocket(path, false))
 
 	generation, err := manager.Connect(
-		context.Background(), "studio", testTarget("wes@studio"),
+		t.Context(), "studio", testTarget("wes@studio"),
 	)
 	require.NoError(err)
 	assert.Positive(generation)
@@ -560,8 +560,8 @@ func TestDisconnectBoundsSocketDrainAndPreservesListener(t *testing.T) {
 }
 
 func TestDisconnectBoundsExitCommand(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	fake := newFakeSSH()
 	manager, err := NewPersistentManager(newSocketDir(t), PersistentConfig{
 		RunSSH:                  fake.run,
@@ -570,7 +570,7 @@ func TestDisconnectBoundsExitCommand(t *testing.T) {
 		MaximumControlPathBytes: 1_000,
 	})
 	require.NoError(err)
-	_, err = manager.Connect(context.Background(), "studio", testTarget("wes@studio"))
+	_, err = manager.Connect(t.Context(), "studio", testTarget("wes@studio"))
 	require.NoError(err)
 	t.Cleanup(fake.closeAll)
 	deadlineObserved := make(chan bool, 1)
@@ -581,15 +581,15 @@ func TestDisconnectBoundsExitCommand(t *testing.T) {
 		return -1, ctx.Err()
 	}
 
-	err = manager.Disconnect(context.Background(), "studio")
+	err = manager.Disconnect(t.Context(), "studio")
 
 	require.ErrorIs(err, context.DeadlineExceeded)
 	assert.True(<-deadlineObserved)
 }
 
 func TestPersistentManagerReportsTypedSpawnFailure(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	fake := newFakeSSH()
 	sentinel := errors.New("permission denied")
 	fake.spawnExitCode, fake.spawnErr = 255, sentinel
@@ -601,7 +601,7 @@ func TestPersistentManagerReportsTypedSpawnFailure(t *testing.T) {
 	})
 	require.NoError(err)
 
-	_, err = manager.Connect(context.Background(), "studio", testTarget("wes@studio"))
+	_, err = manager.Connect(t.Context(), "studio", testTarget("wes@studio"))
 
 	var commandErr *CommandError
 	require.ErrorAs(err, &commandErr)
@@ -611,8 +611,8 @@ func TestPersistentManagerReportsTypedSpawnFailure(t *testing.T) {
 }
 
 func TestPersistentManagerFailedStartCleansCreatedSocket(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	fake := newFakeSSH()
 	fake.spawnSocketOnError = true
 	fake.spawnExitCode = 255
@@ -620,7 +620,7 @@ func TestPersistentManagerFailedStartCleansCreatedSocket(t *testing.T) {
 	t.Cleanup(fake.closeAll)
 
 	_, err := manager.Connect(
-		context.Background(), "studio", testTarget("wes@studio"),
+		t.Context(), "studio", testTarget("wes@studio"),
 	)
 
 	require.Error(err)
@@ -629,8 +629,8 @@ func TestPersistentManagerFailedStartCleansCreatedSocket(t *testing.T) {
 }
 
 func TestPersistentManagerFailedStartCleansLateSocket(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	fake := newFakeSSH()
 	fake.spawnWithoutSocket = true
 	directory := newSocketDir(t)
@@ -653,7 +653,7 @@ func TestPersistentManagerFailedStartCleansLateSocket(t *testing.T) {
 		lateSocketErr <- fake.openSocket(path)
 	}()
 
-	_, err = manager.Connect(context.Background(), "studio", target)
+	_, err = manager.Connect(t.Context(), "studio", target)
 
 	require.NoError(<-lateSocketErr)
 	require.ErrorIs(err, context.DeadlineExceeded)
@@ -663,8 +663,8 @@ func TestPersistentManagerFailedStartCleansLateSocket(t *testing.T) {
 }
 
 func TestFailedStartDrainTimeoutQuarantinesSocket(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	fake := newFakeSSH()
 	fake.spawnSocketOnError = true
 	fake.spawnExitCode = 255
@@ -684,7 +684,7 @@ func TestFailedStartDrainTimeoutQuarantinesSocket(t *testing.T) {
 	target := testTarget("wes@studio")
 	path := manager.SocketPath("studio", target)
 
-	_, err = manager.Connect(context.Background(), "studio", target)
+	_, err = manager.Connect(t.Context(), "studio", target)
 
 	require.ErrorIs(err, context.DeadlineExceeded)
 	assert.Equal(StateStopping, manager.State("studio"))
@@ -703,14 +703,14 @@ func TestFailedStartDrainTimeoutQuarantinesSocket(t *testing.T) {
 
 stoppingObserved:
 	callsBeforeRecovery := len(fake.callsSnapshot())
-	_, err = manager.Connect(context.Background(), "studio", target)
+	_, err = manager.Connect(t.Context(), "studio", target)
 	require.ErrorIs(err, context.DeadlineExceeded)
 	assert.Len(fake.callsSnapshot(), callsBeforeRecovery)
 	require.NoError(fake.closeSocket(path, false))
 	fake.spawnSocketOnError = false
 	fake.spawnExitCode = 0
 
-	generation, err := manager.Connect(context.Background(), "studio", target)
+	generation, err := manager.Connect(t.Context(), "studio", target)
 
 	require.NoError(err)
 	assert.Positive(generation)
@@ -722,8 +722,8 @@ stoppingObserved:
 }
 
 func TestPersistentManagerFailedCleanupBlocksTargetReplacement(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	fake := newFakeSSH()
 	fake.spawnSocketOnError = true
 	fake.spawnExitCode = 255
@@ -736,7 +736,7 @@ func TestPersistentManagerFailedCleanupBlocksTargetReplacement(t *testing.T) {
 	oldPath := manager.SocketPath("studio", oldTarget)
 	newPath := manager.SocketPath("studio", newTarget)
 
-	_, err := manager.Connect(context.Background(), "studio", oldTarget)
+	_, err := manager.Connect(t.Context(), "studio", oldTarget)
 	require.ErrorIs(err, firstCleanupErr)
 	assert.FileExists(oldPath)
 
@@ -745,7 +745,7 @@ func TestPersistentManagerFailedCleanupBlocksTargetReplacement(t *testing.T) {
 	secondCleanupErr := errors.New("replacement cleanup failed")
 	fake.exitErr = secondCleanupErr
 	callCount := len(fake.callsSnapshot())
-	_, err = manager.Connect(context.Background(), "studio", newTarget)
+	_, err = manager.Connect(t.Context(), "studio", newTarget)
 
 	require.ErrorIs(err, secondCleanupErr)
 	assert.Equal("wes@old", manager.Destination("studio"))
@@ -753,7 +753,7 @@ func TestPersistentManagerFailedCleanupBlocksTargetReplacement(t *testing.T) {
 	assert.NoFileExists(newPath)
 
 	fake.exitErr = nil
-	_, err = manager.Connect(context.Background(), "studio", newTarget)
+	_, err = manager.Connect(t.Context(), "studio", newTarget)
 	require.NoError(err)
 	assert.NoFileExists(oldPath)
 	assert.FileExists(newPath)
@@ -761,11 +761,11 @@ func TestPersistentManagerFailedCleanupBlocksTargetReplacement(t *testing.T) {
 }
 
 func TestStaleGenerationCannotTouchOrMarkReplacement(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	_, manager, oldGeneration := newConnectedTestManager(t, "studio", "wes@old")
 
-	newGeneration, err := manager.Connect(context.Background(), "studio", testTarget("wes@new"))
+	newGeneration, err := manager.Connect(t.Context(), "studio", testTarget("wes@new"))
 
 	require.NoError(err)
 	assert.NotEqual(oldGeneration, newGeneration)
@@ -777,25 +777,25 @@ func TestStaleGenerationCannotTouchOrMarkReplacement(t *testing.T) {
 func TestDisconnectUnknownIdentityDoesNotTouchFilesystem(t *testing.T) {
 	directory := filepath.Join(t.TempDir(), "does-not-exist")
 	manager, err := NewPersistentManager(directory, PersistentConfig{})
-	Require.NoError(t, err)
+	require.NoError(t, err)
 
-	Require.NoError(t, manager.Disconnect(context.Background(), "unknown"))
+	require.NoError(t, manager.Disconnect(t.Context(), "unknown"))
 
-	Assert.NoDirExists(t, directory)
+	assert.NoDirExists(t, directory)
 }
 
 func TestPersistentManagerRejectsEmptySocketDirectory(t *testing.T) {
 	manager, err := NewPersistentManager("", PersistentConfig{})
 
-	Assert.Nil(t, manager)
+	assert.Nil(t, manager)
 	var pathErr *PathError
-	Require.ErrorAs(t, err, &pathErr)
-	Assert.Equal(t, "empty control directory", pathErr.Reason)
+	require.ErrorAs(t, err, &pathErr)
+	assert.Equal(t, "empty control directory", pathErr.Reason)
 }
 
 func TestPersistentManagerSkipsIdleCandidateRefreshedAfterScan(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	_, manager, generation := newConnectedTestManager(t, "studio", "wes@studio")
 	entry := manager.host("studio", false)
 	entry.mu.Lock()
@@ -805,7 +805,7 @@ func TestPersistentManagerSkipsIdleCandidateRefreshedAfterScan(t *testing.T) {
 
 	require.True(manager.TouchActivity("studio", generation))
 	require.NoError(manager.disconnectIdleCandidate(
-		context.Background(), "studio", idleBefore,
+		t.Context(), "studio", idleBefore,
 	))
 
 	assert.Equal(StateConnected, manager.State("studio"))
@@ -813,8 +813,8 @@ func TestPersistentManagerSkipsIdleCandidateRefreshedAfterScan(t *testing.T) {
 }
 
 func TestPersistentManagerProbeFailureDoesNotRefreshActivity(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	_, manager, generation := newConnectedTestManager(
 		t, "studio", "wes@studio",
 	)
@@ -827,7 +827,7 @@ func TestPersistentManagerProbeFailureDoesNotRefreshActivity(t *testing.T) {
 	require.True(manager.SetProbeFailed("studio", generation, "probe one"))
 	require.True(manager.SetProbeFailed("studio", generation, "probe two"))
 	require.NoError(manager.disconnectIdleCandidate(
-		context.Background(), "studio", idleBefore,
+		t.Context(), "studio", idleBefore,
 	))
 
 	assert.Equal(StateDisconnected, manager.State("studio"))
@@ -835,16 +835,16 @@ func TestPersistentManagerProbeFailureDoesNotRefreshActivity(t *testing.T) {
 }
 
 func TestIdleScanStopsReservingConnectionsAfterCancellation(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	fake := newFakeSSH()
 	manager := newTestManager(t, newSocketDir(t), fake)
 	firstGeneration, err := manager.Connect(
-		context.Background(), "first", testTarget("wes@first"),
+		t.Context(), "first", testTarget("wes@first"),
 	)
 	require.NoError(err)
 	secondGeneration, err := manager.Connect(
-		context.Background(), "second", testTarget("wes@second"),
+		t.Context(), "second", testTarget("wes@second"),
 	)
 	require.NoError(err)
 	t.Cleanup(fake.closeAll)
@@ -854,7 +854,7 @@ func TestIdleScanStopsReservingConnectionsAfterCancellation(t *testing.T) {
 		entry.lastActive = time.Now().Add(-2 * time.Minute)
 		entry.mu.Unlock()
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	fake.onExit = func(exitCtx context.Context) (int, error) {
 		cancel()
 		return -1, exitCtx.Err()
@@ -879,8 +879,8 @@ func TestIdleScanStopsReservingConnectionsAfterCancellation(t *testing.T) {
 }
 
 func TestIdleTeardownFailureEmitsErrorAndPreservesConnection(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	events := make(chan Event, 8)
 	fake := newFakeSSH()
 	manager, err := NewPersistentManager(newSocketDir(t), PersistentConfig{
@@ -893,7 +893,7 @@ func TestIdleTeardownFailureEmitsErrorAndPreservesConnection(t *testing.T) {
 	})
 	require.NoError(err)
 	generation, err := manager.Connect(
-		context.Background(), "studio", testTarget("wes@studio"),
+		t.Context(), "studio", testTarget("wes@studio"),
 	)
 	require.NoError(err)
 	t.Cleanup(fake.closeAll)
@@ -917,7 +917,7 @@ connected:
 	fake.setExitResult(255, sentinel)
 
 	err = manager.disconnectIdleCandidate(
-		context.Background(), "studio", time.Now().Add(-time.Minute),
+		t.Context(), "studio", time.Now().Add(-time.Minute),
 	)
 
 	require.ErrorIs(err, sentinel)
@@ -935,8 +935,8 @@ connected:
 }
 
 func TestEstablishTimeoutUsesBoundedCleanupAndKeepsOriginalError(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	cleanupDeadline := make(chan bool, 1)
 	fake := newFakeSSH()
 	fake.onCheck = func(ctx context.Context) (int, error) {
@@ -958,7 +958,7 @@ func TestEstablishTimeoutUsesBoundedCleanupAndKeepsOriginalError(t *testing.T) {
 	})
 	require.NoError(err)
 
-	_, err = manager.Connect(context.Background(), "studio", testTarget("wes@studio"))
+	_, err = manager.Connect(t.Context(), "studio", testTarget("wes@studio"))
 
 	require.Error(err)
 	assert.Contains(err.Error(), "timeout waiting for control master")
@@ -981,19 +981,19 @@ func TestCanceledEstablishKeepsCancellationWhenCleanupFails(t *testing.T) {
 		CleanupTimeout:          10 * time.Millisecond,
 		MaximumControlPathBytes: 1_000,
 	})
-	Require.NoError(t, err)
-	ctx, cancel := context.WithCancel(context.Background())
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	_, err = manager.Connect(ctx, "studio", testTarget("wes@studio"))
 
-	Require.ErrorIs(t, err, context.Canceled)
-	Require.ErrorIs(t, err, cleanupSentinel)
+	require.ErrorIs(t, err, context.Canceled)
+	require.ErrorIs(t, err, cleanupSentinel)
 }
 
 func TestDisconnectRejectsSocketReplacedAfterExit(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	fake, manager, _ := newConnectedTestManager(t, "studio", "wes@studio")
 	path := manager.SocketPath("studio", testTarget("wes@studio"))
 	fake.onExit = func(context.Context) (int, error) {
@@ -1002,7 +1002,7 @@ func TestDisconnectRejectsSocketReplacedAfterExit(t *testing.T) {
 		return 0, nil
 	}
 
-	err := manager.Disconnect(context.Background(), "studio")
+	err := manager.Disconnect(t.Context(), "studio")
 
 	var securityErr *ControlPathSecurityError
 	require.ErrorAs(err, &securityErr)
@@ -1011,8 +1011,8 @@ func TestDisconnectRejectsSocketReplacedAfterExit(t *testing.T) {
 }
 
 func TestEventsCarryGenerationAndSuppressStaleState(t *testing.T) {
-	require := Require.New(t)
-	assert := Assert.New(t)
+	require := require.New(t)
+	assert := assert.New(t)
 	events := make(chan Event, 8)
 	fake := newFakeSSH()
 	manager, err := NewPersistentManager(newSocketDir(t), PersistentConfig{
@@ -1025,7 +1025,7 @@ func TestEventsCarryGenerationAndSuppressStaleState(t *testing.T) {
 	})
 	require.NoError(err)
 
-	generation, err := manager.Connect(context.Background(), "studio", testTarget("wes@studio"))
+	generation, err := manager.Connect(t.Context(), "studio", testTarget("wes@studio"))
 	require.NoError(err)
 	var received []Event
 	for len(received) == 0 || received[len(received)-1].State != StateConnected {
@@ -1050,8 +1050,8 @@ func TestEventsCarryGenerationAndSuppressStaleState(t *testing.T) {
 }
 
 func TestEventQueueCoalescesWhileCallbackIsBlocked(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	callbackStarted := make(chan struct{})
 	releaseCallback := make(chan struct{})
 	t.Cleanup(func() { close(releaseCallback) })
@@ -1072,7 +1072,7 @@ func TestEventQueueCoalescesWhileCallbackIsBlocked(t *testing.T) {
 	})
 	require.NoError(err)
 	generation, err := manager.Connect(
-		context.Background(), "studio", testTarget("wes@studio"),
+		t.Context(), "studio", testTarget("wes@studio"),
 	)
 	require.NoError(err)
 	t.Cleanup(fake.closeAll)
@@ -1084,7 +1084,7 @@ func TestEventQueueCoalescesWhileCallbackIsBlocked(t *testing.T) {
 	for range 100 {
 		require.True(manager.SetProbeFailed("studio", generation, "probe failed"))
 		recovered, connectErr := manager.Connect(
-			context.Background(), "studio", testTarget("wes@studio"),
+			t.Context(), "studio", testTarget("wes@studio"),
 		)
 		require.NoError(connectErr)
 		assert.Equal(generation, recovered)
@@ -1111,8 +1111,8 @@ func TestEventQueueCoalescesWhileCallbackIsBlocked(t *testing.T) {
 }
 
 func TestConnectEmitsConnectedEventWhenProbeFailureRecovers(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	events := make(chan Event, 8)
 	fake := newFakeSSH()
 	manager, err := NewPersistentManager(newSocketDir(t), PersistentConfig{
@@ -1124,7 +1124,7 @@ func TestConnectEmitsConnectedEventWhenProbeFailureRecovers(t *testing.T) {
 		},
 	})
 	require.NoError(err)
-	generation, err := manager.Connect(context.Background(), "studio", testTarget("wes@studio"))
+	generation, err := manager.Connect(t.Context(), "studio", testTarget("wes@studio"))
 	require.NoError(err)
 	for {
 		select {
@@ -1147,7 +1147,7 @@ initiallyConnected:
 	}
 
 	recoveredGeneration, err := manager.Connect(
-		context.Background(), "studio", testTarget("wes@studio"),
+		t.Context(), "studio", testTarget("wes@studio"),
 	)
 	require.NoError(err)
 	assert.Equal(generation, recoveredGeneration)
@@ -1161,8 +1161,8 @@ initiallyConnected:
 }
 
 func TestPersistentManagerEventCallbackCanDisconnectReentrantly(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	fake := newFakeSSH()
 	callbackResult := make(chan error, 1)
 	var manager *PersistentManager
@@ -1175,7 +1175,7 @@ func TestPersistentManagerEventCallbackCanDisconnectReentrantly(t *testing.T) {
 			if event.State != StateConnecting {
 				return
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
 			defer cancel()
 			callbackResult <- manager.Disconnect(ctx, event.Identity)
 		},
@@ -1183,7 +1183,7 @@ func TestPersistentManagerEventCallbackCanDisconnectReentrantly(t *testing.T) {
 	require.NoError(err)
 	t.Cleanup(fake.closeAll)
 
-	_, err = manager.Connect(context.Background(), "studio", testTarget("wes@studio"))
+	_, err = manager.Connect(t.Context(), "studio", testTarget("wes@studio"))
 
 	require.NoError(err)
 	select {
@@ -1196,8 +1196,8 @@ func TestPersistentManagerEventCallbackCanDisconnectReentrantly(t *testing.T) {
 }
 
 func TestPersistentManagerAcceptsExplicitConnectionOptions(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	fake := newFakeSSH()
 	options := DefaultConnectionOptions()
 	options.TCPKeepAlive = false
@@ -1209,7 +1209,7 @@ func TestPersistentManagerAcceptsExplicitConnectionOptions(t *testing.T) {
 	})
 	require.NoError(err)
 
-	_, err = manager.Connect(context.Background(), "studio", testTarget("wes@studio"))
+	_, err = manager.Connect(t.Context(), "studio", testTarget("wes@studio"))
 
 	require.NoError(err)
 	spawn := fake.callsSnapshot()[0]
@@ -1217,15 +1217,12 @@ func TestPersistentManagerAcceptsExplicitConnectionOptions(t *testing.T) {
 }
 
 func TestPersistentManagerResolvesSocketDirectoryAtConstruction(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
-	originalDirectory, err := os.Getwd()
-	require.NoError(err)
-	t.Cleanup(func() { require.NoError(os.Chdir(originalDirectory)) })
-	temporaryDirectory, err := os.MkdirTemp("/tmp", "kit-cwd-")
+	assert := assert.New(t)
+	require := require.New(t)
+	temporaryDirectory, err := os.MkdirTemp("/tmp", "kit-cwd-") //nolint:usetesting // unix socket paths must stay short, so the test needs a fixed OS temp root
 	require.NoError(err)
 	t.Cleanup(func() { require.NoError(os.RemoveAll(temporaryDirectory)) })
-	require.NoError(os.Chdir(temporaryDirectory))
+	t.Chdir(temporaryDirectory)
 	constructorDirectory, err := os.Getwd()
 	require.NoError(err)
 	fake := newFakeSSH()
@@ -1235,9 +1232,9 @@ func TestPersistentManagerResolvesSocketDirectoryAtConstruction(t *testing.T) {
 		EstablishPollInterval:   time.Millisecond,
 	})
 	require.NoError(err)
-	require.NoError(os.Chdir(t.TempDir()))
+	t.Chdir(t.TempDir())
 
-	_, err = manager.Connect(context.Background(), "studio", testTarget("wes@studio"))
+	_, err = manager.Connect(t.Context(), "studio", testTarget("wes@studio"))
 
 	require.NoError(err)
 	expectedPath := filepath.Join(

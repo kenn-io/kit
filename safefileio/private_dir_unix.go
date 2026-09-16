@@ -3,6 +3,7 @@
 package safefileio
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"syscall"
@@ -12,7 +13,7 @@ import (
 // directory owned by the current user with mode 0700.
 func EnsurePrivateDir(path string) error {
 	if path == "" {
-		return fmt.Errorf("path is empty")
+		return errors.New("path is empty")
 	}
 	if info, err := os.Lstat(path); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
@@ -75,7 +76,7 @@ func EnsurePrivateDir(path string) error {
 // current user with mode 0700. It never creates or chmods the directory.
 func ValidatePrivateDir(path string) error {
 	if path == "" {
-		return fmt.Errorf("path is empty")
+		return errors.New("path is empty")
 	}
 	info, err := os.Lstat(path)
 	if err != nil {

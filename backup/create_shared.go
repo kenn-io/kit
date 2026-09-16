@@ -103,7 +103,7 @@ func preparePortableMetadata(
 		}
 		return pack.BlobID{}, 0, fmt.Errorf("backup: opening portable metadata: %w", err)
 	}
-	if metadataReader == nil || metadataBytes < 0 || uint64(metadataBytes) > pack.MaxRawLen { //nolint:gosec // negative checked first
+	if metadataReader == nil || metadataBytes < 0 || uint64(metadataBytes) > pack.MaxRawLen {
 		if metadataReader != nil {
 			_ = metadataReader.Close()
 		}
@@ -113,7 +113,7 @@ func preparePortableMetadata(
 		Stage: ProgressStageMetadata, Total: 1, BytesTotal: metadataBytes,
 	})
 	prepared, prepareErr := pack.PrepareBlob(
-		ctx, metadataReader, uint64(metadataBytes), opts.ZstdLevel, //nolint:gosec // checked non-negative
+		ctx, metadataReader, uint64(metadataBytes), opts.ZstdLevel,
 		pack.AppendStreamOptions{ScratchDir: r.Path(stagingDirName)})
 	closeErr := metadataReader.Close()
 	if err := errors.Join(prepareErr, closeErr); err != nil {
@@ -123,7 +123,7 @@ func preparePortableMetadata(
 		return pack.BlobID{}, 0, fmt.Errorf("backup: preparing portable metadata: %w", err)
 	}
 	if prepared == nil {
-		return pack.BlobID{}, 0, fmt.Errorf("backup: preparing portable metadata returned no result")
+		return pack.BlobID{}, 0, errors.New("backup: preparing portable metadata returned no result")
 	}
 	metadataID := prepared.ID()
 	if _, err := appender.AddPrepared(ctx, prepared); err != nil {
@@ -151,7 +151,7 @@ func sealSnapshotCapture(
 
 	var bytesAdded int64
 	for _, entry := range newEntries {
-		bytesAdded += int64(entry.StoredLen) //nolint:gosec // stored lengths fit int64
+		bytesAdded += int64(entry.StoredLen)
 	}
 	newIndex := ""
 	if len(newEntries) > 0 {

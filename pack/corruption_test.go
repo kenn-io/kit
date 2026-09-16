@@ -51,16 +51,26 @@ func TestCorruptionMatrix(t *testing.T) {
 			{"flip version byte", flipAt(4)},
 			{"flip first blob byte", flipAt(blobStart)},
 			{"flip footer byte", flipAt(footerStart)},
-			{"flip last byte",
-				func(b []byte) []byte { return flipAt(len(b) - 1)(b) }},
-			{"truncate to header",
-				func(b []byte) []byte { return b[:headerSize] }},
-			{"truncate mid blob",
-				func(b []byte) []byte { return b[:blobStart+1] }},
-			{"truncate mid footer",
-				func(b []byte) []byte { return b[:footerStart+1] }},
-			{"truncate one byte",
-				func(b []byte) []byte { return b[:len(b)-1] }},
+			{
+				"flip last byte",
+				func(b []byte) []byte { return flipAt(len(b) - 1)(b) },
+			},
+			{
+				"truncate to header",
+				func(b []byte) []byte { return b[:headerSize] },
+			},
+			{
+				"truncate mid blob",
+				func(b []byte) []byte { return b[:blobStart+1] },
+			},
+			{
+				"truncate mid footer",
+				func(b []byte) []byte { return b[:footerStart+1] },
+			},
+			{
+				"truncate one byte",
+				func(b []byte) []byte { return b[:len(b)-1] },
+			},
 			{"empty file", func([]byte) []byte { return nil }},
 		}
 		for _, tc := range cases {

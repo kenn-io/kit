@@ -2,7 +2,6 @@ package backup
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -97,7 +96,7 @@ func TestCaptureAttachments(t *testing.T) {
 	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	parentSeen := map[string]bool{refA.Hash: true} // A already listed by the parent
 
-	cap1, err := CaptureAttachments(context.Background(), dir, []ContentRef{refA, refB, thumb}, parentSeen, appender, CaptureOptions{})
+	cap1, err := CaptureAttachments(t.Context(), dir, []ContentRef{refA, refB, thumb}, parentSeen, appender, CaptureOptions{})
 	require.NoError(err)
 	assert.Equal(int64(3), cap1.Blobs)
 	assert.Equal(int64(20+20+15), cap1.BlobBytes)
@@ -158,7 +157,7 @@ func TestCaptureAttachmentsParallelMatchesSerial(t *testing.T) {
 			require.True(wrote)
 		}
 		var doneOrder []int
-		got, err := CaptureAttachments(context.Background(), dir, append([]ContentRef{}, refs...), parentSeen, appender, CaptureOptions{
+		got, err := CaptureAttachments(t.Context(), dir, append([]ContentRef{}, refs...), parentSeen, appender, CaptureOptions{
 			Jobs:     jobs,
 			Progress: func(done, _ int, _ int64) { doneOrder = append(doneOrder, done) },
 		})
@@ -205,7 +204,7 @@ func TestCaptureAttachmentsRejectsCorruptFile(t *testing.T) {
 	require.NoError(os.WriteFile(path, []byte("tampered"), 0o600))
 
 	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
-	_, err := CaptureAttachments(context.Background(), dir, []ContentRef{ref}, map[string]bool{}, appender, CaptureOptions{})
+	_, err := CaptureAttachments(t.Context(), dir, []ContentRef{ref}, map[string]bool{}, appender, CaptureOptions{})
 	require.ErrorContains(err, ref.Hash[:2])
 }
 
@@ -219,7 +218,7 @@ func TestCaptureAttachmentsRejectsNoncanonicalHash(t *testing.T) {
 
 	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	defer appender.Abort()
-	_, err := CaptureAttachments(context.Background(), dir, []ContentRef{ref}, map[string]bool{}, appender, CaptureOptions{})
+	_, err := CaptureAttachments(t.Context(), dir, []ContentRef{ref}, map[string]bool{}, appender, CaptureOptions{})
 	require.ErrorContains(err, "not canonical lowercase hex")
 }
 
@@ -250,7 +249,7 @@ func TestCaptureAttachmentsRejectsOversizedFile(t *testing.T) {
 
 	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	defer appender.Abort()
-	_, err := CaptureAttachments(context.Background(), dir, []ContentRef{ref}, map[string]bool{}, appender, CaptureOptions{})
+	_, err := CaptureAttachments(t.Context(), dir, []ContentRef{ref}, map[string]bool{}, appender, CaptureOptions{})
 	require.ErrorContains(err, "larger than the maximum blob size")
 }
 
@@ -275,7 +274,7 @@ func TestCaptureAttachmentsParallelReportsFirstErrorInRefOrder(t *testing.T) {
 
 	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	defer appender.Abort()
-	_, err := CaptureAttachments(context.Background(), dir, refs, map[string]bool{}, appender, CaptureOptions{Jobs: 8})
+	_, err := CaptureAttachments(t.Context(), dir, refs, map[string]bool{}, appender, CaptureOptions{Jobs: 8})
 	require.ErrorContains(err, refs[corruptAt].Hash,
 		"the lowest-index failure must win, matching serial semantics")
 	require.NotContains(err.Error(), refs[missingAt].Hash)
@@ -296,7 +295,7 @@ func TestCaptureAttachmentsRejectsMalformedHash(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			require := require.New(t)
 			appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
-			_, err := CaptureAttachments(context.Background(), dir, []ContentRef{{Hash: tc.hash, Size: 1}}, map[string]bool{}, appender, CaptureOptions{})
+			_, err := CaptureAttachments(t.Context(), dir, []ContentRef{{Hash: tc.hash, Size: 1}}, map[string]bool{}, appender, CaptureOptions{})
 			require.ErrorContains(err, "too short")
 		})
 	}
@@ -310,7 +309,7 @@ func TestCaptureAttachmentsRejectsMalformedHash(t *testing.T) {
 		require.NoError(os.Remove(filepath.Join(dir, missing.Hash[:2], missing.Hash)))
 		appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 		defer appender.Abort()
-		_, err := CaptureAttachments(context.Background(), dir,
+		_, err := CaptureAttachments(t.Context(), dir,
 			[]ContentRef{missing, {Hash: "a", Size: 1}},
 			map[string]bool{}, appender, CaptureOptions{Jobs: 4})
 		require.ErrorContains(err, missing.Hash)
@@ -337,7 +336,7 @@ func TestCaptureAttachmentsMemoryBudget(t *testing.T) {
 
 	r := initTestRepo(t)
 	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
-	got, err := CaptureAttachments(context.Background(), dir, append([]ContentRef{}, refs...), map[string]bool{}, appender, CaptureOptions{Jobs: 8})
+	got, err := CaptureAttachments(t.Context(), dir, append([]ContentRef{}, refs...), map[string]bool{}, appender, CaptureOptions{Jobs: 8})
 	require.NoError(err)
 	require.Equal(int64(len(refs)), got.Blobs)
 	_, _, err = appender.Finish()
@@ -349,7 +348,7 @@ func TestCaptureAttachmentsMemoryBudget(t *testing.T) {
 	require.NoError(os.Remove(filepath.Join(dir, refs[missingAt].Hash[:2], refs[missingAt].Hash)))
 	failAppender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	defer failAppender.Abort()
-	_, err = CaptureAttachments(context.Background(), dir, append([]ContentRef{}, refs...), map[string]bool{}, failAppender, CaptureOptions{Jobs: 8})
+	_, err = CaptureAttachments(t.Context(), dir, append([]ContentRef{}, refs...), map[string]bool{}, failAppender, CaptureOptions{Jobs: 8})
 	require.ErrorContains(err, refs[missingAt].Hash)
 }
 
@@ -364,7 +363,7 @@ func TestCaptureAttachmentsReadsRecordedStoragePath(t *testing.T) {
 	ref := writeNamespacedAttachment(t, dir, "ns-source", []byte("namespaced attachment content"))
 
 	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
-	got, err := CaptureAttachments(context.Background(), dir, []ContentRef{ref}, map[string]bool{}, appender, CaptureOptions{})
+	got, err := CaptureAttachments(t.Context(), dir, []ContentRef{ref}, map[string]bool{}, appender, CaptureOptions{})
 	require.NoError(err)
 	require.Equal(int64(1), got.Blobs)
 	_, entries, err := appender.Finish()
@@ -390,7 +389,7 @@ func TestCaptureAttachmentsRejectsEscapingStoragePath(t *testing.T) {
 	for _, p := range []string{"../outside", "/etc/passwd", "a/../../outside"} {
 		ref.StoragePath = p
 		appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
-		_, err := CaptureAttachments(context.Background(), dir, []ContentRef{ref}, map[string]bool{}, appender, CaptureOptions{})
+		_, err := CaptureAttachments(t.Context(), dir, []ContentRef{ref}, map[string]bool{}, appender, CaptureOptions{})
 		require.ErrorContains(err, "escapes the attachments directory", "path %q", p)
 		appender.Abort()
 	}
@@ -422,7 +421,7 @@ func TestCaptureAttachmentsRefusesSymlinkEscape(t *testing.T) {
 	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	defer appender.Abort()
 	_, err := CaptureAttachments(
-		context.Background(), dir, []ContentRef{ref}, map[string]bool{}, appender, CaptureOptions{})
+		t.Context(), dir, []ContentRef{ref}, map[string]bool{}, appender, CaptureOptions{})
 	require.ErrorContains(err, "reading attachment",
 		"capture must refuse a symlinked attachment escaping the attachments dir")
 }
@@ -435,7 +434,7 @@ func TestCaptureAttachmentsNoNewList(t *testing.T) {
 
 	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	defer appender.Abort()
-	got, err := CaptureAttachments(context.Background(), dir, []ContentRef{ref}, map[string]bool{ref.Hash: true}, appender, CaptureOptions{})
+	got, err := CaptureAttachments(t.Context(), dir, []ContentRef{ref}, map[string]bool{ref.Hash: true}, appender, CaptureOptions{})
 	require.NoError(err)
 	require.False(got.HasNewList)
 	require.Empty(got.NewList)

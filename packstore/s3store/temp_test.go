@@ -11,15 +11,16 @@ import (
 )
 
 func TestCreatePrivateTempUsesValidatedUserDirectory(t *testing.T) {
+	require := require.New(t)
 	base := t.TempDir()
 	file, err := createPrivateTempIn(base, "stage-*")
-	require.NoError(t, err)
+	require.NoError(err)
 	t.Cleanup(func() {
-		require.NoError(t, file.Close())
-		require.NoError(t, os.Remove(file.Name()))
+		require.NoError(file.Close())
+		require.NoError(os.Remove(file.Name()))
 	})
 
 	dir := filepath.Dir(file.Name())
-	require.NoError(t, safefileio.ValidatePrivateDir(dir))
+	require.NoError(safefileio.ValidatePrivateDir(dir))
 	assert.Equal(t, base, filepath.Dir(dir))
 }

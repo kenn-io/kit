@@ -45,14 +45,14 @@ type Generation struct {
 // All values are JSON encodable, so the marshal and decode errors are
 // unreachable.
 func (g Generation) Fingerprint() string {
-	raw, _ := json.Marshal(g)
+	raw, _ := json.Marshal(g) //nolint:errchkjson // Generation holds only JSON-encodable fields
 
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	var generic any
 	_ = dec.Decode(&generic)
 
-	canonical, _ := json.Marshal(generic)
+	canonical, _ := json.Marshal(generic) //nolint:errchkjson // generic was produced by decoding valid JSON
 	sum := sha256.Sum256(canonical)
 	return hex.EncodeToString(sum[:8])
 }

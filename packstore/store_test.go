@@ -14,14 +14,14 @@ import (
 	"sync"
 	"testing"
 
-	Assert "github.com/stretchr/testify/assert"
-	Require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/pack"
 )
 
 func TestStoreReadsOnlyCatalogMembersFromLooseAndPackedStorage(t *testing.T) {
-	require := Require.New(t)
-	assert := Assert.New(t)
+	require := require.New(t)
+	assert := assert.New(t)
 	layout := layoutForStoreTest(t)
 	loose := []byte("loose bytes")
 	looseHash := hashForTest(loose)
@@ -44,7 +44,7 @@ func TestStoreReadsOnlyCatalogMembersFromLooseAndPackedStorage(t *testing.T) {
 	assert.Equal(int64(len(packed)), size)
 
 	resolver.locations[looseHash] = Location{}
-	_, _, err := store.Open(context.Background(), looseHash)
+	_, _, err := store.Open(t.Context(), looseHash)
 	assert.ErrorIs(err, fs.ErrNotExist)
 }
 
@@ -60,7 +60,7 @@ func TestNewStorePreservesSingleFilesystemFailureShape(t *testing.T) {
 		{
 			name: "seekable",
 			read: func() error {
-				reader, _, err := store.Open(context.Background(), hash)
+				reader, _, err := store.Open(t.Context(), hash)
 				if reader != nil {
 					err = errors.Join(err, reader.Close())
 				}
@@ -70,7 +70,7 @@ func TestNewStorePreservesSingleFilesystemFailureShape(t *testing.T) {
 		{
 			name: "stream",
 			read: func() error {
-				reader, _, err := store.OpenStream(context.Background(), hash)
+				reader, _, err := store.OpenStream(t.Context(), hash)
 				if reader != nil {
 					err = errors.Join(err, reader.Close())
 				}
@@ -80,7 +80,7 @@ func TestNewStorePreservesSingleFilesystemFailureShape(t *testing.T) {
 		{
 			name: "bounded",
 			read: func() error {
-				_, _, err := store.ReadBounded(context.Background(), hash, 1<<20)
+				_, _, err := store.ReadBounded(t.Context(), hash, 1<<20)
 				return err
 			},
 		},
@@ -88,16 +88,16 @@ func TestNewStorePreservesSingleFilesystemFailureShape(t *testing.T) {
 	for _, tt := range reads {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.read()
-			Require.ErrorIs(t, err, fs.ErrNotExist)
+			require.ErrorIs(t, err, fs.ErrNotExist)
 			var exhausted *ExhaustedError
-			Assert.NotErrorAs(t, err, &exhausted)
+			assert.NotErrorAs(t, err, &exhausted)
 		})
 	}
 }
 
 func TestNewStoreLargePackedOpenDoesNotRequireTemporaryStorage(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	content := bytes.Repeat([]byte("large packed compatibility content\n"), 1<<16)
 	layout := layoutForStoreTest(t)
 	entry := buildStoreTestPack(t, layout, content)
@@ -111,7 +111,7 @@ func TestNewStoreLargePackedOpenDoesNotRequireTemporaryStorage(t *testing.T) {
 	}
 	t.Cleanup(func() { createSeekableLooseTemp = originalCreate })
 
-	reader, size, err := store.Open(context.Background(), entry.Hash)
+	reader, size, err := store.Open(t.Context(), entry.Hash)
 	require.NoError(err)
 	t.Cleanup(func() { require.NoError(reader.Close()) })
 	assert.Equal(int64(len(content)), size)
@@ -121,8 +121,8 @@ func TestNewStoreLargePackedOpenDoesNotRequireTemporaryStorage(t *testing.T) {
 }
 
 func TestStoreOpenReadsAndSeeksCompressedLooseContent(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	content := bytes.Repeat([]byte("seekable compressed content "), 1024)
 	layout := layoutForStoreTest(t)
 	hash := hashForTest(content)
@@ -131,7 +131,7 @@ func TestStoreOpenReadsAndSeeksCompressedLooseContent(t *testing.T) {
 		hash: {Member: true},
 	}}, layout)
 
-	reader, size, err := store.Open(context.Background(), hash)
+	reader, size, err := store.Open(t.Context(), hash)
 	require.NoError(err)
 	assert.Equal(int64(len(content)), size)
 	named, ok := reader.(interface{ Name() string })
@@ -162,7 +162,7 @@ func TestStoreOpenReadsAndSeeksCompressedLooseContent(t *testing.T) {
 }
 
 func TestStoreOpenClosePreservesTemporaryPathReplacement(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	content := bytes.Repeat([]byte("seekable replacement-safe content "), 1024)
 	layout := layoutForStoreTest(t)
 	hash := hashForTest(content)
@@ -171,7 +171,7 @@ func TestStoreOpenClosePreservesTemporaryPathReplacement(t *testing.T) {
 		hash: {Member: true},
 	}}, layout)
 
-	reader, _, err := store.Open(context.Background(), hash)
+	reader, _, err := store.Open(t.Context(), hash)
 	require.NoError(err)
 	named, ok := reader.(interface{ Name() string })
 	require.True(ok)
@@ -181,12 +181,12 @@ func TestStoreOpenClosePreservesTemporaryPathReplacement(t *testing.T) {
 
 	require.NoError(reader.Close())
 
-	Assert.Equal(t, replacement, mustReadFile(t, temporaryPath))
+	assert.Equal(t, replacement, mustReadFile(t, temporaryPath))
 }
 
 func TestStoreOpenRejectsCorruptCompressedLooseAndCleansTemporaryFile(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	content := bytes.Repeat([]byte("verify before seekable exposure "), 1024)
 	layout := layoutForStoreTest(t)
 	hash := hashForTest(content)
@@ -196,11 +196,11 @@ func TestStoreOpenRejectsCorruptCompressedLooseAndCleansTemporaryFile(t *testing
 	store := newStoreForTest(t, &mapResolver{locations: map[Hash]Location{
 		hash: {Member: true},
 	}}, layout)
-	pattern := filepath.Join(os.TempDir(), "packstore-loose-open-*")
+	pattern := filepath.Join(os.TempDir(), "packstore-loose-open-*") //nolint:usetesting // the test inspects leftovers in the real OS temp directory
 	before, err := filepath.Glob(pattern)
 	require.NoError(err)
 
-	reader, size, err := store.Open(context.Background(), hash)
+	reader, size, err := store.Open(t.Context(), hash)
 	require.ErrorIs(err, ErrContentMismatch)
 	assert.Nil(reader)
 	assert.Zero(size)
@@ -210,7 +210,7 @@ func TestStoreOpenRejectsCorruptCompressedLooseAndCleansTemporaryFile(t *testing
 }
 
 func TestStoreOpenTemporaryWriteFailureDoesNotDrainCompressedSource(t *testing.T) {
-	assert := Assert.New(t)
+	assert := assert.New(t)
 	content := bytes.Repeat([]byte("do not drain after temporary write failure\n"), 4096)
 	layout := layoutForStoreTest(t)
 	hash := hashForTest(content)
@@ -245,8 +245,8 @@ func TestStoreOpenTemporaryWriteFailureDoesNotDrainCompressedSource(t *testing.T
 	copySeekableLoose = func(io.Writer, io.Reader, []byte) (int64, error) { return 0, writeErr }
 	t.Cleanup(func() { copySeekableLoose = originalCopy })
 
-	reader, _, err := store.Open(context.Background(), hash)
-	Require.ErrorIs(t, err, writeErr)
+	reader, _, err := store.Open(t.Context(), hash)
+	require.ErrorIs(t, err, writeErr)
 	assert.Nil(reader)
 	assert.LessOrEqual(decodedBytes, int64(looseCopyBufferBytes))
 	assert.NoFileExists(temporaryPath)
@@ -280,29 +280,29 @@ func TestStoreOpenFailurePreservesTemporaryPathReplacement(t *testing.T) {
 	}
 	t.Cleanup(func() { copySeekableLoose = originalCopy })
 
-	reader, _, err := store.Open(context.Background(), hash)
+	reader, _, err := store.Open(t.Context(), hash)
 
-	Require.ErrorIs(t, err, writeErr)
-	Assert.Nil(t, reader)
-	Assert.Equal(t, replacement, mustReadFile(t, temporaryPath))
+	require.ErrorIs(t, err, writeErr)
+	assert.Nil(t, reader)
+	assert.Equal(t, replacement, mustReadFile(t, temporaryPath))
 }
 
 func replaceSeekableTemporaryPath(t *testing.T, path string, replacement []byte) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		displaced := path + ".displaced"
-		Require.NoError(t, os.Rename(path, displaced))
+		require.NoError(t, os.Rename(path, displaced))
 		t.Cleanup(func() { _ = os.Remove(displaced) })
 	} else {
 		removeErr := os.Remove(path)
-		Require.True(t, removeErr == nil || errors.Is(removeErr, fs.ErrNotExist), removeErr)
+		require.True(t, removeErr == nil || errors.Is(removeErr, fs.ErrNotExist), removeErr)
 	}
-	Require.NoError(t, os.WriteFile(path, replacement, 0o600))
+	require.NoError(t, os.WriteFile(path, replacement, 0o600))
 	t.Cleanup(func() { _ = os.Remove(path) })
 }
 
 func TestStoreOpenDoesNotRetryTemporaryNotExist(t *testing.T) {
-	assert := Assert.New(t)
+	assert := assert.New(t)
 	content := []byte("temporary creation failure is not migration")
 	layout := layoutForStoreTest(t)
 	hash := hashForTest(content)
@@ -319,8 +319,8 @@ func TestStoreOpenDoesNotRetryTemporaryNotExist(t *testing.T) {
 	createSeekableLooseTemp = func() (*os.File, error) { return nil, stagingErr }
 	t.Cleanup(func() { createSeekableLooseTemp = originalCreate })
 
-	reader, size, err := store.Open(context.Background(), hash)
-	Require.ErrorIs(t, err, stagingErr)
+	reader, size, err := store.Open(t.Context(), hash)
+	require.ErrorIs(t, err, stagingErr)
 	assert.Nil(reader)
 	assert.Zero(size)
 	assert.Equal(1, resolver.calls)
@@ -338,8 +338,8 @@ func (r *countingLooseZstdReader) Read(p []byte) (int, error) {
 }
 
 func TestReadBoundedCompressedLooseParityAndHeaderPreflight(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	content := bytes.Repeat([]byte("bounded compressed content "), 1024)
 	layout := layoutForStoreTest(t)
 	hash := hashForTest(content)
@@ -348,12 +348,12 @@ func TestReadBoundedCompressedLooseParityAndHeaderPreflight(t *testing.T) {
 		hash: {Member: true},
 	}}, layout)
 
-	got, size, err := store.ReadBounded(context.Background(), hash, int64(len(content)))
+	got, size, err := store.ReadBounded(t.Context(), hash, int64(len(content)))
 	require.NoError(err)
 	assert.Equal(content, got)
 	assert.Equal(int64(len(content)), size)
 
-	_, _, err = store.ReadBounded(context.Background(), hash, int64(len(content)-1))
+	_, _, err = store.ReadBounded(t.Context(), hash, int64(len(content)-1))
 	var limitErr *LimitError
 	require.ErrorAs(err, &limitErr)
 	assert.Equal(LimitBlobRawBytes, limitErr.Dimension)
@@ -361,8 +361,8 @@ func TestReadBoundedCompressedLooseParityAndHeaderPreflight(t *testing.T) {
 }
 
 func TestReadBoundedPreflightsCompressedHeaderBeforeDecode(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	content := []byte("preflight identity")
 	layout := layoutForStoreTest(t)
 	hash := hashForTest(content)
@@ -374,7 +374,7 @@ func TestReadBoundedPreflightsCompressedHeaderBeforeDecode(t *testing.T) {
 		hash: {Member: true},
 	}}, layout)
 
-	data, size, err := store.ReadBounded(context.Background(), hash, 16)
+	data, size, err := store.ReadBounded(t.Context(), hash, 16)
 	var limitErr *LimitError
 	require.ErrorAs(err, &limitErr)
 	assert.Equal(LimitBlobRawBytes, limitErr.Dimension)
@@ -384,8 +384,8 @@ func TestReadBoundedPreflightsCompressedHeaderBeforeDecode(t *testing.T) {
 }
 
 func TestReadBoundedPreflightsCompressedStoredSizeBeforeDecode(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	content := []byte("small logical content")
 	layout := layoutForStoreTest(t)
 	hash := hashForTest(content)
@@ -406,7 +406,7 @@ func TestReadBoundedPreflightsCompressedStoredSizeBeforeDecode(t *testing.T) {
 	t.Cleanup(func() { newLooseZstdReader = originalReader })
 	limit := int64(len(content) + 1)
 
-	data, size, err := store.ReadBounded(context.Background(), hash, limit)
+	data, size, err := store.ReadBounded(t.Context(), hash, limit)
 
 	var limitErr *LimitError
 	require.ErrorAs(err, &limitErr)
@@ -419,8 +419,8 @@ func TestReadBoundedPreflightsCompressedStoredSizeBeforeDecode(t *testing.T) {
 }
 
 func TestReadBoundedPreflightsPlatformIntBeforeAllocation(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	content := []byte("platform allocation preflight")
 	layout := layoutForStoreTest(t)
 	hash := hashForTest(content)
@@ -439,7 +439,7 @@ func TestReadBoundedPreflightsPlatformIntBeforeAllocation(t *testing.T) {
 	maxPlatformInt = 1024
 	t.Cleanup(func() { maxPlatformInt = originalMax })
 
-	data, size, err := store.ReadBounded(context.Background(), hash, math.MaxInt64)
+	data, size, err := store.ReadBounded(t.Context(), hash, math.MaxInt64)
 	var limitErr *LimitError
 	require.ErrorAs(err, &limitErr)
 	assert.Equal(LimitBlobRawBytes, limitErr.Dimension)
@@ -450,7 +450,7 @@ func TestReadBoundedPreflightsPlatformIntBeforeAllocation(t *testing.T) {
 }
 
 func TestReadBoundedRejectsCorruptLooseContent(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	layout := layoutForStoreTest(t)
 	content := []byte("expected loose bytes")
 	hash := hashForTest(content)
@@ -463,7 +463,7 @@ func TestReadBoundedRejectsCorruptLooseContent(t *testing.T) {
 		hash: {Member: true},
 	}}, layout)
 
-	data, size, err := store.ReadBounded(context.Background(), hash, int64(len(content)))
+	data, size, err := store.ReadBounded(t.Context(), hash, int64(len(content)))
 	require.ErrorIs(err, ErrContentMismatch)
 	require.Nil(data)
 	require.Zero(size)
@@ -472,17 +472,17 @@ func TestReadBoundedRejectsCorruptLooseContent(t *testing.T) {
 func TestStoreConstructorsRejectZeroLayout(t *testing.T) {
 	t.Run("store", func(t *testing.T) {
 		_, err := NewStore(&mapResolver{}, Layout{}, StoreOptions{})
-		Require.ErrorContains(t, err, "invalid empty layout")
+		require.ErrorContains(t, err, "invalid empty layout")
 	})
 	t.Run("maintainer", func(t *testing.T) {
 		_, err := NewMaintainer(newMaintenanceCatalog(), Layout{}, MaintainerOptions{})
-		Require.ErrorContains(t, err, "invalid empty layout")
+		require.ErrorContains(t, err, "invalid empty layout")
 	})
 }
 
 func TestStoreRetriesLooseToPackAndPackToLooseRacesOnce(t *testing.T) {
-	require := Require.New(t)
-	assert := Assert.New(t)
+	require := require.New(t)
+	assert := assert.New(t)
 	layout := layoutForStoreTest(t)
 	content := []byte("migration race")
 	hash := hashForTest(content)
@@ -517,12 +517,12 @@ func TestStoreRejectsForgedPackIndexMetadata(t *testing.T) {
 		entry.Hash: {Member: true, Pack: &entry},
 	}}, layout)
 
-	_, _, err := store.Open(context.Background(), entry.Hash)
-	Require.ErrorContains(t, err, "metadata mismatch")
+	_, _, err := store.Open(t.Context(), entry.Hash)
+	require.ErrorContains(t, err, "metadata mismatch")
 }
 
 func TestStoreSharesBoundedAndOrdinaryCacheSlotsAndEvicts(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	layout := layoutForStoreTest(t)
 	resolver := &mapResolver{locations: map[Hash]Location{}}
 	store := newStoreForTest(t, resolver, layout)
@@ -531,44 +531,44 @@ func TestStoreSharesBoundedAndOrdinaryCacheSlotsAndEvicts(t *testing.T) {
 		content := []byte{byte(i), byte(i >> 8)}
 		entry := buildStoreTestPack(t, layout, content)
 		resolver.locations[entry.Hash] = Location{Member: true, Pack: &entry}
-		r, _, err := store.Open(context.Background(), entry.Hash)
+		r, _, err := store.Open(t.Context(), entry.Hash)
 		require.NoError(err)
 		require.NoError(r.Close())
-		_, _, err = store.ReadBounded(context.Background(), entry.Hash, int64(len(content)))
+		_, _, err = store.ReadBounded(t.Context(), entry.Hash, int64(len(content)))
 		require.NoError(err)
 		require.LessOrEqual(len(store.packReaders), maxOpenReaders)
 	}
-	Assert.Len(t, store.order, maxOpenReaders)
+	assert.Len(t, store.order, maxOpenReaders)
 	require.NoError(store.Close())
-	Assert.Empty(t, store.order)
+	assert.Empty(t, store.order)
 }
 
 func TestStoreReaderModeConversionPreservesOneCacheSlot(t *testing.T) {
-	require := Require.New(t)
-	assert := Assert.New(t)
+	require := require.New(t)
+	assert := assert.New(t)
 	layout := layoutForStoreTest(t)
 	entry := buildStoreTestPack(t, layout, []byte("one logical cache slot"))
 	store := newStoreForTest(t, &mapResolver{locations: map[Hash]Location{
 		entry.Hash: {Member: true, Pack: &entry},
 	}}, layout)
 
-	reader, _, err := store.Open(context.Background(), entry.Hash)
+	reader, _, err := store.Open(t.Context(), entry.Hash)
 	require.NoError(err)
 	require.NoError(reader.Close())
 	assert.Equal([]string{entry.PackID}, store.order)
 
-	_, _, err = store.ReadBounded(context.Background(), entry.Hash, entry.RawLen)
+	_, _, err = store.ReadBounded(t.Context(), entry.Hash, entry.RawLen)
 	require.NoError(err)
 	assert.Equal([]string{entry.PackID}, store.order)
 
-	reader, _, err = store.Open(context.Background(), entry.Hash)
+	reader, _, err = store.Open(t.Context(), entry.Hash)
 	require.NoError(err)
 	require.NoError(reader.Close())
 	assert.Equal([]string{entry.PackID}, store.order)
 }
 
 func TestStoreConcurrentOrdinaryAndBoundedReads(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	layout := layoutForStoreTest(t)
 	content := bytes.Repeat([]byte("concurrent packed read"), 4096)
 	entry := buildStoreTestPack(t, layout, content)
@@ -581,7 +581,7 @@ func TestStoreConcurrentOrdinaryAndBoundedReads(t *testing.T) {
 	for i := range 32 {
 		wg.Go(func() {
 			if i%2 == 0 {
-				r, _, err := store.Open(context.Background(), entry.Hash)
+				r, _, err := store.Open(t.Context(), entry.Hash)
 				if err == nil {
 					_, err = io.Copy(io.Discard, r)
 					err = errors.Join(err, r.Close())
@@ -589,7 +589,7 @@ func TestStoreConcurrentOrdinaryAndBoundedReads(t *testing.T) {
 				errs <- err
 				return
 			}
-			got, _, err := store.ReadBounded(context.Background(), entry.Hash, int64(len(content)))
+			got, _, err := store.ReadBounded(t.Context(), entry.Hash, int64(len(content)))
 			if err == nil && !bytes.Equal(content, got) {
 				err = errors.New("bounded content mismatch")
 			}
@@ -629,33 +629,35 @@ func (r *sequenceResolver) Resolve(_ context.Context, _ Hash) (Location, error) 
 func layoutForStoreTest(t *testing.T) Layout {
 	t.Helper()
 	layout, err := NewLayout(t.TempDir(), LayoutOptions{Staging: StagingStoreDirectory, StagingDir: "tmp"})
-	Require.NoError(t, err)
+	require.NoError(t, err)
 	return layout
 }
 
 func newStoreForTest(t *testing.T, resolver Resolver, layout Layout) *Store {
 	t.Helper()
 	store, err := NewStore(resolver, layout, StoreOptions{})
-	Require.NoError(t, err)
-	t.Cleanup(func() { Require.NoError(t, store.Close()) })
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
 	return store
 }
 
 func buildStoreTestPack(t *testing.T, layout Layout, content []byte) IndexEntry {
 	t.Helper()
+	require := require.New(t)
+	t.Helper()
 	staging := t.TempDir()
 	w, err := pack.NewWriter(staging, pack.WriterOptions{})
-	Require.NoError(t, err)
+	require.NoError(err)
 	_, err = w.Append(content)
-	Require.NoError(t, err)
+	require.NoError(err)
 	packID := w.ID()
-	Require.NoError(t, os.MkdirAll(filepath.Dir(layout.PackPath(packID)), 0o700))
+	require.NoError(os.MkdirAll(filepath.Dir(layout.PackPath(packID)), 0o700))
 	entries, err := w.Seal(layout.PackPath(packID))
-	Require.NoError(t, err)
-	Require.Len(t, entries, 1)
+	require.NoError(err)
+	require.Len(entries, 1)
 	entry := entries[0]
 	hash, err := ParseHash(entry.ID.String())
-	Require.NoError(t, err)
+	require.NoError(err)
 	return IndexEntry{
 		Hash: hash, PackID: packID, Offset: int64(entry.Offset),
 		StoredLen: int64(entry.StoredLen), RawLen: int64(entry.RawLen),
@@ -665,10 +667,10 @@ func buildStoreTestPack(t *testing.T, layout Layout, content []byte) IndexEntry 
 
 func readStoreTest(t *testing.T, store *Store, hash Hash) ([]byte, int64) {
 	t.Helper()
-	r, size, err := store.Open(context.Background(), hash)
-	Require.NoError(t, err)
+	r, size, err := store.Open(t.Context(), hash)
+	require.NoError(t, err)
 	data, err := io.ReadAll(r)
-	Require.NoError(t, err)
-	Require.NoError(t, r.Close())
+	require.NoError(t, err)
+	require.NoError(t, r.Close())
 	return data, size
 }

@@ -78,7 +78,7 @@ func (m *Maintainer) Unpack(ctx context.Context) (UnpackStats, error) {
 		plans = append(plans, plan)
 	}
 	if len(byPack) != countNonEmptyPlans(plans) {
-		return stats, fmt.Errorf("packstore: indexed mappings reference a missing pack record")
+		return stats, errors.New("packstore: indexed mappings reference a missing pack record")
 	}
 
 	loose, err := NewLooseStore(m.layout)
@@ -155,10 +155,10 @@ func validateUnpackPlan(reader *MaintenancePackReader, plan unpackPlan, limits L
 		if !packIndexMatchesFooter(&indexed, authoritative) {
 			return fmt.Errorf("%w: metadata mismatch for %s", pack.ErrCorrupt, indexed.Hash)
 		}
-		if authoritative.RawLen > uint64(limits.BlobBytes) { //nolint:gosec
+		if authoritative.RawLen > uint64(limits.BlobBytes) {
 			return newLimitError(LimitBlobRawBytes, authoritative.RawLen, uint64(limits.BlobBytes))
 		}
-		if authoritative.StoredLen > uint64(limits.BlobBytes) { //nolint:gosec
+		if authoritative.StoredLen > uint64(limits.BlobBytes) {
 			return newLimitError(LimitBlobStoredBytes, authoritative.StoredLen, uint64(limits.BlobBytes))
 		}
 	}

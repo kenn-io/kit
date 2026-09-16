@@ -3,6 +3,7 @@
 package safefileio
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"syscall"
@@ -12,7 +13,7 @@ import (
 // opened handle is a regular file owned by the current user.
 func OpenCurrentUserFile(path string) (*os.File, error) {
 	if path == "" {
-		return nil, fmt.Errorf("path is empty")
+		return nil, errors.New("path is empty")
 	}
 	file, err := os.OpenFile(path, syscall.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
 	if err != nil {
@@ -35,7 +36,7 @@ func OpenCurrentUserFile(path string) (*os.File, error) {
 // owned by the current user.
 func ValidateCurrentUserFile(file *os.File) error {
 	if file == nil {
-		return fmt.Errorf("file is nil")
+		return errors.New("file is nil")
 	}
 	info, err := file.Stat()
 	if err != nil {

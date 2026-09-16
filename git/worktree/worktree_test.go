@@ -1,7 +1,7 @@
 package gitworktree
 
 import (
-	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,41 +12,42 @@ import (
 )
 
 func TestCreateCaptureAndApplyPatch(t *testing.T) {
-	ctx := context.Background()
+	require := require.New(t)
+	ctx := t.Context()
 	repo := gittest.NewRepoWithCommit(t)
 
 	wt, err := Create(ctx, repo.Root, "HEAD", Options{ParentDir: t.TempDir()})
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(err.Error())
 	}
 	t.Cleanup(func() { _ = wt.Close(ctx) })
 
 	if err := os.WriteFile(filepath.Join(wt.Dir, "base.txt"), []byte("changed\n"), 0o644); err != nil {
-		t.Fatal(err)
+		require.FailNow(err.Error())
 	}
 	patch, err := wt.CapturePatch(ctx)
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(err.Error())
 	}
 	if patch == "" {
-		t.Fatal("expected non-empty patch")
+		require.FailNow("expected non-empty patch")
 	}
 	if err := CheckPatch(ctx, repo.Root, patch); err != nil {
-		t.Fatalf("patch should apply cleanly: %v", err)
+		require.FailNow(fmt.Sprintf("patch should apply cleanly: %v", err))
 	}
 	if err := ApplyPatch(ctx, repo.Root, patch); err != nil {
-		t.Fatal(err)
+		require.FailNow(err.Error())
 	}
 	got, err := os.ReadFile(filepath.Join(repo.Root, "base.txt"))
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(err.Error())
 	}
 	if string(got) != "changed\n" {
-		t.Fatalf("base.txt = %q, want changed", got)
+		require.FailNow(fmt.Sprintf("base.txt = %q, want changed", got))
 	}
 	err = CheckPatch(ctx, repo.Root, patch)
-	require.Error(t, err, "patch should conflict after being applied")
-	require.ErrorAs(t, err, new(*PatchConflictError))
+	require.Error(err, "patch should conflict after being applied")
+	require.ErrorAs(err, new(*PatchConflictError))
 }
 
 func TestGitmodulesFileProtocolDetection(t *testing.T) {
@@ -63,7 +64,7 @@ func TestGitmodulesFileProtocolDetection(t *testing.T) {
 		url, ok := ParseGitmodulesURL(tt.line)
 		got := ok && IsFileProtocolURL(url)
 		if got != tt.want {
-			t.Fatalf("line %q got %v want %v", tt.line, got, tt.want)
+			require.FailNow(t, fmt.Sprintf("line %q got %v want %v", tt.line, got, tt.want))
 		}
 	}
 }

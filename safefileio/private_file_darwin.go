@@ -26,7 +26,7 @@ type darwinACLAPI struct {
 var (
 	darwinACLOnce sync.Once
 	darwinACL     darwinACLAPI
-	darwinACLErr  error
+	errDarwinACL  error
 )
 
 // ValidatePrivateCurrentUserFile verifies that an open current-user-owned file
@@ -37,8 +37,8 @@ func ValidatePrivateCurrentUserFile(file *os.File) error {
 
 func validateDarwinExtendedACL(file *os.File) error {
 	darwinACLOnce.Do(loadDarwinACL)
-	if darwinACLErr != nil {
-		return darwinACLErr
+	if errDarwinACL != nil {
+		return errDarwinACL
 	}
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -69,7 +69,7 @@ func loadDarwinACL() {
 		purego.RTLD_NOW|purego.RTLD_LOCAL,
 	)
 	if err != nil {
-		darwinACLErr = fmt.Errorf("load macOS ACL API: %w", err)
+		errDarwinACL = fmt.Errorf("load macOS ACL API: %w", err)
 		return
 	}
 	for name, target := range map[string]any{
@@ -81,7 +81,7 @@ func loadDarwinACL() {
 		symbol, symbolErr := purego.Dlsym(handle, name)
 		err = symbolErr
 		if err != nil {
-			darwinACLErr = fmt.Errorf("load macOS ACL function %s: %w", name, err)
+			errDarwinACL = fmt.Errorf("load macOS ACL function %s: %w", name, err)
 			return
 		}
 		purego.RegisterFunc(target, symbol)

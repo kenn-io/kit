@@ -68,7 +68,7 @@ func (r *Reader) OpenBlobWithOptions(
 	ctx context.Context, entry Entry, opts BlobReaderOptions,
 ) (*BlobReader, error) {
 	if ctx == nil {
-		return nil, fmt.Errorf("pack: nil context")
+		return nil, errors.New("pack: nil context")
 	}
 	entry, err := r.authoritativeEntry(entry)
 	if err != nil {
@@ -98,7 +98,7 @@ func (r *Reader) OpenBlobWithOptions(
 		}
 	}()
 
-	section := io.NewSectionReader(r.f, int64(entry.Offset), int64(entry.StoredLen)) //nolint:gosec // validated above
+	section := io.NewSectionReader(r.f, int64(entry.Offset), int64(entry.StoredLen))
 	stored := &storedStream{ctx: ctx, r: section, crc: crc32.New(crc32cTable)}
 	result := &BlobReader{
 		parent: r, ctx: ctx, entry: entry, stored: stored, hash: sha256.New(),
@@ -134,12 +134,12 @@ func (r *Reader) OpenBlobWithOptions(
 
 func (r *Reader) streamingWindow(entry Entry) (uint64, error) {
 	headerBytes := make([]byte, min(entry.StoredLen, uint64(zstd.HeaderMaxSize)))
-	if _, err := r.f.ReadAt(headerBytes, int64(entry.Offset)); err != nil { //nolint:gosec // entry offset validated
-		return 0, fmt.Errorf("%w: reading zstd header for blob %s: %v", ErrCorrupt, entry.ID, err)
+	if _, err := r.f.ReadAt(headerBytes, int64(entry.Offset)); err != nil {
+		return 0, fmt.Errorf("%w: reading zstd header for blob %s: %w", ErrCorrupt, entry.ID, err)
 	}
 	var header zstd.Header
 	if err := header.Decode(headerBytes); err != nil {
-		return 0, fmt.Errorf("%w: decoding zstd header for blob %s: %v", ErrCorrupt, entry.ID, err)
+		return 0, fmt.Errorf("%w: decoding zstd header for blob %s: %w", ErrCorrupt, entry.ID, err)
 	}
 	if header.HasFCS && header.FrameContentSize != entry.RawLen {
 		return 0, fmt.Errorf("%w: zstd content size %d differs from raw length %d for blob %s",
@@ -215,7 +215,7 @@ func (r *BlobReader) Read(p []byte) (int, error) {
 		if errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) {
 			return n, r.fail(readErr)
 		}
-		return n, r.fail(fmt.Errorf("%w: decoding blob %s: %v", ErrCorrupt, r.entry.ID, readErr))
+		return n, r.fail(fmt.Errorf("%w: decoding blob %s: %w", ErrCorrupt, r.entry.ID, readErr))
 	}
 	if errors.Is(readErr, io.EOF) && r.rawRead != r.entry.RawLen {
 		return n, r.fail(fmt.Errorf("%w: blob %s decoded to %d bytes, expected %d",
@@ -246,7 +246,7 @@ func (r *BlobReader) finish() error {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return r.fail(err)
 		}
-		return r.fail(fmt.Errorf("%w: finishing blob %s decode: %v", ErrCorrupt, r.entry.ID, err))
+		return r.fail(fmt.Errorf("%w: finishing blob %s decode: %w", ErrCorrupt, r.entry.ID, err))
 	}
 	if r.stored.count != r.entry.StoredLen {
 		return r.fail(fmt.Errorf("%w: blob %s consumed %d stored bytes, expected %d",

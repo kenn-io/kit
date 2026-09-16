@@ -1,10 +1,12 @@
 package gitremote
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 
-	Assert "github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestClonePathRejectsTraversalAndSeparators(t *testing.T) {
@@ -18,7 +20,7 @@ func TestClonePathRejectsTraversalAndSeparators(t *testing.T) {
 	}
 	for _, id := range tests {
 		if _, err := ClonePath(t.TempDir(), id); err == nil {
-			t.Fatalf("ClonePath(%+v) succeeded, want error", id)
+			require.FailNow(t, fmt.Sprintf("ClonePath(%+v) succeeded, want error", id))
 		}
 	}
 }
@@ -27,32 +29,33 @@ func TestClonePathPartitionsByHost(t *testing.T) {
 	base := t.TempDir()
 	path, err := ClonePath(base, Identity{Host: "github.com", Owner: "acme", Name: "widget"})
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(t, err.Error())
 	}
 	want := filepath.Join(base, "github.com", "acme", "widget.git")
 	if path != want {
-		t.Fatalf("path = %q, want %q", path, want)
+		require.FailNow(t, fmt.Sprintf("path = %q, want %q", path, want))
 	}
 }
 
 func TestValidateRemoteIdentity(t *testing.T) {
+	require := require.New(t)
 	id := Identity{Host: "github.com", Owner: "acme", Name: "widget"}
 	if err := ValidateRemoteIdentity(id, "git@github.com:acme/widget.git"); err != nil {
-		t.Fatal(err)
+		require.FailNow(err.Error())
 	}
 	if err := ValidateRemoteIdentity(id, "https://evil.example.com/acme/widget.git"); err == nil {
-		t.Fatal("expected host mismatch")
+		require.FailNow("expected host mismatch")
 	}
 	if err := ValidateRemoteIdentity(id, "https://github.com/other/widget.git"); err == nil {
-		t.Fatal("expected repo mismatch")
+		require.FailNow("expected repo mismatch")
 	}
 	if err := ValidateRemoteIdentity(id, "/tmp/widget.git"); err != nil {
-		t.Fatalf("local paths should be accepted: %v", err)
+		require.FailNow(fmt.Sprintf("local paths should be accepted: %v", err))
 	}
 }
 
 func TestCloneURLIdentityNormalizesHostAndPreservesRepoCase(t *testing.T) {
-	assert := Assert.New(t)
+	assert := assert.New(t)
 	assert.Equal("example.com/Acme/Widget",
 		CloneURLIdentity("https://EXAMPLE.com:443/Acme/Widget.git"),
 	)

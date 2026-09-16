@@ -9,6 +9,7 @@
 package agentcli
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -325,8 +326,10 @@ func (a *adapter) invoke(sessionID string, request Request) (Invocation, error) 
 		name   string
 		values []string
 	}{
-		{"allowed tools", request.AllowedTools}, {"denied tools", request.DeniedTools},
-		{"skill paths", request.SkillPaths}, {"config overrides", request.ConfigOverrides},
+		{"allowed tools", request.AllowedTools},
+		{"denied tools", request.DeniedTools},
+		{"skill paths", request.SkillPaths},
+		{"config overrides", request.ConfigOverrides},
 	} {
 		if err := validateValues(values.name, values.values); err != nil {
 			return Invocation{}, err
@@ -335,7 +338,7 @@ func (a *adapter) invoke(sessionID string, request Request) (Invocation, error) 
 	return a.build(a, sessionID, request)
 }
 
-func (a adapter) base() []string {
+func (a *adapter) base() []string {
 	return append([]string{a.executable}, a.options...)
 }
 
@@ -352,7 +355,7 @@ func invocationMode(mode Mode) (Mode, error) {
 func validateSessionID(sessionID string) (string, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" || strings.HasPrefix(sessionID, "-") {
-		return "", fmt.Errorf("agent resume requires a session ID that does not begin with '-'")
+		return "", errors.New("agent resume requires a session ID that does not begin with '-'")
 	}
 	return sessionID, nil
 }
@@ -426,11 +429,11 @@ func validateSupportedRequest(name Name, mode Mode, request Request, capabilitie
 
 func appendArgumentPrompt(args []string, prompt Prompt, supportsFiles bool) ([]string, error) {
 	if len(prompt.Files) != 0 && !supportsFiles {
-		return nil, fmt.Errorf("agent does not support prompt file arguments")
+		return nil, errors.New("agent does not support prompt file arguments")
 	}
 	for _, file := range prompt.Files {
 		if strings.TrimSpace(file) == "" {
-			return nil, fmt.Errorf("agent prompt file path is empty")
+			return nil, errors.New("agent prompt file path is empty")
 		}
 		args = append(args, "@"+file)
 	}
@@ -442,7 +445,7 @@ func appendArgumentPrompt(args []string, prompt Prompt, supportsFiles bool) ([]s
 
 func stdinPrompt(prompt Prompt) (*string, error) {
 	if len(prompt.Files) != 0 {
-		return nil, fmt.Errorf("agent does not support prompt file arguments")
+		return nil, errors.New("agent does not support prompt file arguments")
 	}
 	if prompt.Text == "" {
 		return nil, nil

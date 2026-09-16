@@ -27,6 +27,7 @@ func (fakeApp) PackFileExtension() string { return ".kpack" }
 func (fakeApp) RestoredContentPaths(context.Context, *sql.DB) (map[string][]string, error) {
 	return nil, nil
 }
+
 func (fakeApp) RestoredStats(ctx context.Context, db *sql.DB) (json.RawMessage, error) {
 	var n int64
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM notes").Scan(&n); err != nil {
@@ -43,6 +44,7 @@ type fakeView struct{ tx *sql.Tx }
 func (v fakeView) ContentInfo(context.Context) (*backup.ContentInfo, error) {
 	return &backup.ContentInfo{}, nil
 }
+
 func (v fakeView) Stats(ctx context.Context) (json.RawMessage, error) {
 	var n int64
 	if err := v.tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM notes").Scan(&n); err != nil {
@@ -62,14 +64,14 @@ func TestGenericAppRoundTrip(t *testing.T) {
 	dbPath := filepath.Join(dataDir, "fake.db")
 	db, err := sql.Open("sqlite3", dbPath)
 	require.NoError(err)
-	_, err = db.Exec(`CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT);
+	_, err = db.ExecContext(t.Context(), `CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT);
 		INSERT INTO notes (body) VALUES ('alpha'), ('beta')`)
 	require.NoError(err)
 	require.NoError(db.Close())
 
 	r, err := backup.Init(filepath.Join(base, "repo"))
 	require.NoError(err)
-	m, err := backup.Create(context.Background(), r, fakeApp{}, backup.CreateOptions{
+	m, err := backup.Create(t.Context(), r, fakeApp{}, backup.CreateOptions{
 		DBPath:     dbPath,
 		ContentDir: contentDir,
 		DataDir:    dataDir,
@@ -79,13 +81,13 @@ func TestGenericAppRoundTrip(t *testing.T) {
 	assert.Equal("fake-1.0", m.AppVersion)
 	assert.JSONEq(`{"notes":2}`, string(m.Stats))
 
-	res, err := backup.Restore(context.Background(), r, fakeApp{}, backup.RestoreOptions{
+	res, err := backup.Restore(t.Context(), r, fakeApp{}, backup.RestoreOptions{
 		TargetDir: filepath.Join(base, "restored"),
 	})
 	require.NoError(err) // Restore's stats proof ran against fakeApp
 	assert.Equal("fake.db", filepath.Base(res.DBPath))
 
-	vres, err := backup.Verify(context.Background(), r, fakeApp{}, backup.VerifyOptions{})
+	vres, err := backup.Verify(t.Context(), r, fakeApp{}, backup.VerifyOptions{})
 	require.NoError(err)
 	assert.Empty(vres.Problems)
 }

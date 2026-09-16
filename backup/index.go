@@ -55,7 +55,7 @@ func EncodeIndex(entries []IndexEntry) ([]byte, error) {
 	)
 	buf = append(buf, indexMagic...)
 	buf = binary.LittleEndian.AppendUint16(buf, indexVersion)
-	//nolint:gosec // entry counts are far below u32 range
+
 	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(sorted)))
 	for _, e := range sorted {
 		u, err := ulid.Parse(strings.ToUpper(e.PackID))
@@ -95,7 +95,7 @@ func DecodeIndex(data []byte) ([]IndexEntry, error) {
 		return nil, fmt.Errorf("backup: unsupported index version %d", v)
 	}
 	count := binary.LittleEndian.Uint32(body[6:10])
-	//nolint:gosec // count is constrained by body size
+
 	if uint64(len(body)-header) != uint64(count)*indexEntrySize {
 		return nil, fmt.Errorf(
 			"backup: index body size mismatch (count %d)",

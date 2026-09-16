@@ -239,7 +239,7 @@ func (m *Maintainer) reconcileOne(ctx context.Context, path, packID string, refs
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		record.StoredBytes += int64(footerEntry.StoredLen) //nolint:gosec
+		record.StoredBytes += int64(footerEntry.StoredLen)
 		hash, err := ParseHash(footerEntry.ID.String())
 		if err != nil {
 			return err
@@ -248,7 +248,7 @@ func (m *Maintainer) reconcileOne(ctx context.Context, path, packID string, refs
 		if !live {
 			continue
 		}
-		if footerEntry.RawLen > uint64(m.limits.BlobBytes) || footerEntry.StoredLen > uint64(m.limits.BlobBytes) { //nolint:gosec
+		if footerEntry.RawLen > uint64(m.limits.BlobBytes) || footerEntry.StoredLen > uint64(m.limits.BlobBytes) {
 			stats.PacksDeferredOversized++
 			return nil
 		}
@@ -373,7 +373,8 @@ func mergeLogicalCandidates(candidates []Candidate) []candidateGroup {
 			byHash[candidate.Hash] = index
 			groups = append(groups, candidateGroup{
 				Hash: candidate.Hash,
-				Size: candidate.Size})
+				Size: candidate.Size,
+			})
 			pathSets = append(pathSets, make(map[string]struct{}, len(candidate.Paths)))
 			aliasSets = append(aliasSets, make(map[string]struct{}, len(candidate.OriginalHashes)))
 		} else if groups[index].Size != candidate.Size {
@@ -505,7 +506,7 @@ func (m *Maintainer) packCandidates(
 			continue
 		}
 		if writer != nil {
-			if err := checkPlainOutput(m.limits, uint64(writer.StoredSize()), prepared.StoredLen(), len(sources)+1); err != nil { //nolint:gosec // writer offsets are non-negative
+			if err := checkPlainOutput(m.limits, uint64(writer.StoredSize()), prepared.StoredLen(), len(sources)+1); err != nil {
 				if err := seal(); err != nil {
 					return errors.Join(err, prepared.Close(), sourcePin.Close())
 				}
@@ -523,7 +524,7 @@ func (m *Maintainer) packCandidates(
 			return errors.Join(err, sourcePin.Close())
 		}
 		sources = append(sources, packedSource{candidate: candidate, path: source, pin: sourcePin, entry: entry})
-		rawBytes += int64(entry.RawLen) //nolint:gosec // bounded by configured limits
+		rawBytes += int64(entry.RawLen)
 		if writer.Full() || (opts.MaxBytes > 0 && rawBytes >= opts.MaxBytes) {
 			if err := seal(); err != nil {
 				return err
@@ -593,7 +594,7 @@ func (m *Maintainer) prepareCandidate(
 				corrupt,
 				newLimitError(
 					LimitBlobStoredBytes,
-					uint64(object.storedSize), //nolint:gosec // file sizes are non-negative
+					uint64(object.storedSize),
 					uint64(m.limits.BlobBytes),
 				),
 				object.file.Close(),
@@ -719,13 +720,13 @@ func openLooseObjectAtPath(
 		header := make([]byte, compressedLooseHeaderSize)
 		if _, err := io.ReadFull(f, header); err != nil {
 			return nil, nil, errors.Join(
-				fmt.Errorf("%w: read compressed loose header: %v", ErrContentMismatch, err),
+				fmt.Errorf("%w: read compressed loose header: %w", ErrContentMismatch, err),
 				f.Close(),
 			)
 		}
 		logicalSize, err = decodeCompressedLooseHeader(header)
 		if err != nil {
-			return nil, nil, errors.Join(fmt.Errorf("%w: %v", ErrContentMismatch, err), f.Close())
+			return nil, nil, errors.Join(fmt.Errorf("%w: %w", ErrContentMismatch, err), f.Close())
 		}
 	}
 	if expectedSize != nil && logicalSize != *expectedSize {
@@ -777,13 +778,13 @@ func verifyLoosePathPinned(
 	size := object.logicalSize
 	if size < 0 || size > limit {
 		return nil, 0, errors.Join(
-			newLimitError(LimitBlobRawBytes, uint64(size), uint64(limit)), //nolint:gosec
+			newLimitError(LimitBlobRawBytes, uint64(size), uint64(limit)),
 			object.file.Close(),
 		)
 	}
 	if object.storedSize > limit {
 		return nil, 0, errors.Join(
-			newLimitError(LimitBlobStoredBytes, uint64(object.storedSize), uint64(limit)), //nolint:gosec
+			newLimitError(LimitBlobStoredBytes, uint64(object.storedSize), uint64(limit)),
 			object.file.Close(),
 		)
 	}
@@ -934,7 +935,7 @@ func (m *Maintainer) sealAndCommit(
 	var cleanupErr error
 	for index := range sources {
 		source := sources[index]
-		stats.BytesPacked += int64(source.entry.RawLen) //nolint:gosec
+		stats.BytesPacked += int64(source.entry.RawLen)
 		if !policy.removeSource {
 			continue
 		}
@@ -1407,9 +1408,11 @@ func canonicalLoosePathEqualForOS(goos, left, right string) bool {
 
 func indexFromPack(packID string, entry pack.Entry) IndexEntry {
 	hash, _ := ParseHash(entry.ID.String())
-	return IndexEntry{Hash: hash, PackID: packID, Offset: int64(entry.Offset),
+	return IndexEntry{
+		Hash: hash, PackID: packID, Offset: int64(entry.Offset),
 		StoredLen: int64(entry.StoredLen), RawLen: int64(entry.RawLen),
-		Flags: uint8(entry.Flags), CRC32C: entry.CRC32C}
+		Flags: uint8(entry.Flags), CRC32C: entry.CRC32C,
+	}
 }
 
 func indexEntriesFromPack(packID string, entries []pack.Entry) []IndexEntry {

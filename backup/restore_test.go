@@ -190,7 +190,7 @@ func snapshotDirHashes(t *testing.T, root string) map[string][32]byte {
 func TestRestoreReproducesArchiveByteForByte(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, writer := seedBackupFixture(t)
 	cacheDir := t.TempDir()
@@ -327,7 +327,7 @@ func (a collidingContentPathApp) RestoredContentPaths(ctx context.Context, db *s
 // the other and still report success.
 func TestRestoreRejectsCollidingAttachmentPaths(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
@@ -369,7 +369,7 @@ func (a caseFoldingContentPathApp) RestoredContentPaths(ctx context.Context, db 
 // rejects the pair up front rather than reporting a lossy success.
 func TestRestoreRejectsCaseFoldingAttachmentPaths(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
@@ -417,7 +417,7 @@ func TestLargePlainAttachmentCaptureVerifyRestore(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			require := require.New(t)
-			ctx := context.Background()
+			ctx := t.Context()
 			r := initTestRepo(t)
 			dbPath, attachmentsDir, dataDir, writer := seedBackupFixture(t)
 			large := writeLargeAttachment(t, attachmentsDir, largeBytes, tc.compressible)
@@ -478,7 +478,7 @@ func largeBackupStreamTestBytes(t *testing.T, fallback int64) int64 {
 // write.
 func TestRestoreRejectsBadAttachmentPaths(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
@@ -497,7 +497,7 @@ func TestRestoreRejectsBadAttachmentPaths(t *testing.T) {
 // so restore would otherwise materialize the archive under the link's target.
 func TestRestoreRefusesSymlinkTarget(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
@@ -519,7 +519,7 @@ func TestRestoreRefusesSymlinkTarget(t *testing.T) {
 
 func TestRestoreRefusesNonEmptyTargetWithoutOverwrite(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
@@ -610,7 +610,7 @@ func TestOpenMissingRestoreTargetPinsExistingAncestorBeforeResolution(t *testing
 
 func TestRestoreCoordinatesPinnedTargetBeforeCleanup(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	_, err := Create(ctx, r, newTestApp(), createOpts(
@@ -692,7 +692,7 @@ func TestRestoreCoordinatesPinnedTargetBeforeCleanup(t *testing.T) {
 
 func TestRestoreRechecksEmptyTargetAfterCoordination(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	_, err := Create(ctx, r, newTestApp(), createOpts(
@@ -729,7 +729,7 @@ func TestRestoreRechecksEmptyTargetAfterCoordination(t *testing.T) {
 // overwrite must remove them even though it merges the rest of the tree.
 func TestRestoreOverwriteRemovesStaleDBSidecars(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
@@ -761,7 +761,7 @@ func TestRestoreOverwriteRemovesStaleDBSidecars(t *testing.T) {
 // leave them to accumulate.
 func TestRestoreOverwriteSweepsOrphanedTempFiles(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
@@ -800,7 +800,7 @@ func TestStageRootDatabaseHasNoPackCeilingAndUsesSweepableName(t *testing.T) {
 	require.NoError(err)
 	st := &restoreState{root: root, target: target}
 
-	canceled, cancel := context.WithCancel(context.Background())
+	canceled, cancel := context.WithCancel(t.Context())
 	cancel()
 	_, err = st.stageRootDatabase(
 		canceled, "app.db", strings.NewReader(""), int64(pack.MaxRawLen)+1)
@@ -808,7 +808,7 @@ func TestStageRootDatabaseHasNoPackCeilingAndUsesSweepableName(t *testing.T) {
 	require.NotContains(err.Error(), "invalid recorded size")
 
 	rel, err := st.stageRootDatabase(
-		context.Background(), "app.db", strings.NewReader("sqlite"), int64(len("sqlite")))
+		t.Context(), "app.db", strings.NewReader("sqlite"), int64(len("sqlite")))
 	require.NoError(err)
 	require.True(strings.HasPrefix(rel, "app.db.restore-"), rel)
 	require.NoError(root.Close())
@@ -825,7 +825,7 @@ func TestStageRootDatabaseHasNoPackCeilingAndUsesSweepableName(t *testing.T) {
 // misparsed as URI query/fragment syntax.
 func TestRestoreTargetPathWithURISyntax(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
@@ -876,7 +876,7 @@ func TestRestoredDBDSNRelativePath(t *testing.T) {
 // directory, not root the relative path at "/".
 func TestRestoreRelativeTarget(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
@@ -904,7 +904,7 @@ func (a callbackUpdateProofApp) RestoredStats(ctx context.Context, db *sql.DB) (
 func TestRestoreBeforePublicationUsesPrivateScratchAndPublishesUpdate(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	_, err := Create(ctx, r, newTestApp(), createOpts(
@@ -936,11 +936,11 @@ func TestRestoreBeforePublicationUsesPrivateScratchAndPublishesUpdate(t *testing
 			if err != nil {
 				return err
 			}
-			if _, err := db.Exec("PRAGMA user_version = 1"); err != nil {
+			if _, err := db.ExecContext(t.Context(), "PRAGMA user_version = 1"); err != nil {
 				_ = db.Close()
 				return err
 			}
-			if _, err := db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+			if _, err := db.ExecContext(t.Context(), "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
 				_ = db.Close()
 				return err
 			}
@@ -953,7 +953,7 @@ func TestRestoreBeforePublicationUsesPrivateScratchAndPublishesUpdate(t *testing
 	require.NoError(err)
 	defer func() { _ = updated.Close() }()
 	var userVersion int
-	require.NoError(updated.QueryRow("PRAGMA user_version").Scan(&userVersion))
+	require.NoError(updated.QueryRowContext(t.Context(), "PRAGMA user_version").Scan(&userVersion))
 	assert.Equal(1, userVersion)
 	info, err := os.Stat(res.DBPath)
 	require.NoError(err)
@@ -964,7 +964,7 @@ func TestRestoreBeforePublicationUsesPrivateScratchAndPublishesUpdate(t *testing
 func TestRestoreBeforePublicationScratchIsOutsideRepositoryTarget(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	_, err := Create(ctx, r, newTestApp(), createOpts(
@@ -990,7 +990,7 @@ func TestRestoreBeforePublicationScratchIsOutsideRepositoryTarget(t *testing.T) 
 
 func TestRestoreScratchRejectsTrustedTempInsideTarget(t *testing.T) {
 	require := require.New(t)
-	target, err := os.OpenRoot(os.TempDir())
+	target, err := os.OpenRoot(os.TempDir()) //nolint:usetesting // the test exercises the real OS temp directory as a trusted scratch root
 	require.NoError(err)
 	t.Cleanup(func() { require.NoError(target.Close()) })
 
@@ -1003,7 +1003,7 @@ func TestRestoreScratchRejectsTrustedTempInsideTarget(t *testing.T) {
 func TestRestoreBeforePublicationFailureLeavesDatabaseUnpublished(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	_, err := Create(ctx, r, newTestApp(), createOpts(
@@ -1051,7 +1051,7 @@ func TestRestoreBeforePublicationCleansReplacementOnCloseFailure(t *testing.T) {
 	t.Cleanup(func() { closePreparedRestoreDatabase = originalClose })
 
 	_, _, err = st.prepareBeforePublication(
-		context.Background(), currentRel, newTestApp().DBFileName(),
+		t.Context(), currentRel, newTestApp().DBFileName(),
 		func(context.Context, RestorePublicationTarget) error { return nil })
 	require.ErrorIs(err, closeErr)
 	assert.Equal(before, restoreDatabaseStageFiles(t, target, newTestApp().DBFileName()))
@@ -1070,7 +1070,7 @@ func TestRestoreBeforePublicationStopsBeforeCallbackWhenCanceled(t *testing.T) {
 	require.NoError(os.WriteFile(filepath.Join(target, currentRel), []byte("database"), 0o600))
 	st := &restoreState{repo: r, root: root, target: target}
 	beforeScratch := restorePublicationScratchDirs(t, r)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	callbackCalled := false
 
@@ -1091,7 +1091,7 @@ func TestRestoreBeforePublicationStopsBeforeCallbackWhenCanceled(t *testing.T) {
 // disagree with the captured pages still fails when integrity_check is omitted.
 func TestRestoreStatsCheckCatchesManifestMismatchWhenIntegritySkipped(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	m, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
@@ -1126,7 +1126,7 @@ func TestRestoreStatsCheckCatchesManifestMismatchWhenIntegritySkipped(t *testing
 func TestRestoreCanSkipIntegrityCheck(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
@@ -1154,7 +1154,7 @@ func TestRestoreCanSkipIntegrityCheck(t *testing.T) {
 
 func TestRestoreDetectsCorruptPack(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	m, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
@@ -1175,7 +1175,7 @@ func TestRestoreDetectsCorruptPack(t *testing.T) {
 // serial and parallel runs produce byte-identical trees.
 func TestRestoreJobsSerialMatchesParallel(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
@@ -1231,7 +1231,7 @@ func TestWriteRootReaderPublishesOnlyExactCompletedContent(t *testing.T) {
 			require.NoError(err)
 			t.Cleanup(func() { require.NoError(root.Close()) })
 			st := &restoreState{root: root, target: target}
-			ctx, cancel := context.WithCancel(context.Background())
+			ctx, cancel := context.WithCancel(t.Context())
 			if tc.cancel {
 				cancel()
 			} else {
@@ -1262,7 +1262,7 @@ func TestWriteRootReaderPublishesOnlyExactCompletedContent(t *testing.T) {
 // followed, so a file outside the target is never truncated or rewritten.
 func TestRestoreRefusesSymlinkEscapeInTarget(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	cacheDir := t.TempDir()
@@ -1316,7 +1316,7 @@ func TestRestoreRefusesSymlinkEscapeInTarget(t *testing.T) {
 // after its database is already gone.
 func TestRestoreOverwritePreflightPreservesTarget(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
@@ -1390,7 +1390,7 @@ func TestRestoreOverwritePreflightPreservesTarget(t *testing.T) {
 // must pass cleanly.
 func TestPreflightSnapshotBlobsChecksAllReferences(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	require.NoError(os.MkdirAll(filepath.Join(dataDir, "deletions"), 0o700))
@@ -1530,7 +1530,7 @@ func seedLiveOverwriteTarget(t *testing.T) (string, func()) {
 func requireOverwriteRestorePreservesTarget(t *testing.T, r *Repo, app App) error {
 	t.Helper()
 	target, checkIntact := seedLiveOverwriteTarget(t)
-	_, err := Restore(context.Background(), r, app,
+	_, err := Restore(t.Context(), r, app,
 		RestoreOptions{TargetDir: target, Overwrite: true})
 	require.Error(t, err)
 	checkIntact()
@@ -1544,7 +1544,7 @@ func requireOverwriteRestorePreservesTarget(t *testing.T, r *Repo, app App) erro
 // WAL exactly as they were.
 func TestRestoreOverwritePreservesTargetOnUnreadablePageBlob(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	m, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
@@ -1569,7 +1569,8 @@ func TestRestoreOverwritePreservesTargetOnUnreadableContentBlob(t *testing.T) {
 	for name, pick := range map[string]func(t *testing.T, r *Repo, m *Manifest,
 		known map[pack.BlobID]IndexEntry) pack.BlobID{
 		"attachment": func(t *testing.T, r *Repo, m *Manifest,
-			known map[pack.BlobID]IndexEntry) pack.BlobID {
+			known map[pack.BlobID]IndexEntry,
+		) pack.BlobID {
 			t.Helper()
 			refs, _, err := LoadListRefs(r, known, m.Attachments.Lists, nil, testPackExt)
 			require.NoError(t, err)
@@ -1579,24 +1580,27 @@ func TestRestoreOverwritePreservesTargetOnUnreadableContentBlob(t *testing.T) {
 			return id
 		},
 		"extras": func(t *testing.T, r *Repo, m *Manifest,
-			known map[pack.BlobID]IndexEntry) pack.BlobID {
+			known map[pack.BlobID]IndexEntry,
+		) pack.BlobID {
 			t.Helper()
-			require.NotEmpty(t, m.Extras.Tree, "fixture must carry an extras tree")
+			require := require.New(t)
+			t.Helper()
+			require.NotEmpty(m.Extras.Tree, "fixture must carry an extras tree")
 			treeID, err := pack.ParseBlobID(m.Extras.Tree)
-			require.NoError(t, err)
+			require.NoError(err)
 			raw, err := r.ReadBlob(known, treeID, nil, testPackExt)
-			require.NoError(t, err)
+			require.NoError(err)
 			var tree ExtrasTree
-			require.NoError(t, json.Unmarshal(raw, &tree))
-			require.NotEmpty(t, tree.Entries)
+			require.NoError(json.Unmarshal(raw, &tree))
+			require.NotEmpty(tree.Entries)
 			id, err := pack.ParseBlobID(tree.Entries[0].Blob)
-			require.NoError(t, err)
+			require.NoError(err)
 			return id
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			require := require.New(t)
-			ctx := context.Background()
+			ctx := t.Context()
 			r := initTestRepo(t)
 			dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 			require.NoError(os.MkdirAll(filepath.Join(dataDir, "deletions"), 0o700))
@@ -1629,7 +1633,7 @@ func (a badStatsApp) RestoredStats(ctx context.Context, db *sql.DB) (json.RawMes
 // untouched, not surface after the swap has already happened.
 func TestRestoreOverwritePreservesTargetOnProofFailure(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
@@ -1646,7 +1650,7 @@ func TestRestoreOverwritePreservesTargetOnProofFailure(t *testing.T) {
 // — and leave no set-aside debris behind.
 func TestRestoreOverwritePreservesSidecarsOnFailedPublish(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
@@ -1682,7 +1686,7 @@ func TestRestoreOverwritePreservesSidecarsOnFailedPublish(t *testing.T) {
 // untouched too — not just the database.
 func TestRestoreOverwritePreservesExtrasOnUnreadableExtrasBlob(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	require.NoError(os.MkdirAll(filepath.Join(dataDir, "deletions"), 0o700))
@@ -1753,7 +1757,7 @@ func (a droppedPathApp) RestoredContentPaths(ctx context.Context, db *sql.DB) (m
 // a worker whose siblings have already published their blobs.
 func TestRestoreRejectsListedRefWithoutPathBeforeWriting(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
@@ -1775,7 +1779,7 @@ func TestRestoreRejectsListedRefWithoutPathBeforeWriting(t *testing.T) {
 // WAL untouched and staging nothing further.
 func TestRestoreHonorsCancellationDuringExtras(t *testing.T) {
 	require := require.New(t)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
@@ -1822,7 +1826,7 @@ func TestRestoreHonorsCancellationDuringExtras(t *testing.T) {
 // writing through the link.
 func TestRestoreOverwriteReplacesSymlinkedDB(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
@@ -1858,7 +1862,7 @@ func TestRestoreOverwriteReplacesSymlinkedDB(t *testing.T) {
 // restore must fail instead and the content tree stay untouched.
 func TestRestoreOverwriteRefusesSymlinkedParentDir(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 
@@ -1891,17 +1895,17 @@ func TestRestoreOverwriteRefusesSymlinkedParentDir(t *testing.T) {
 // destination.
 func TestRestoreRefusesSymlinkTargetWithTrailingSeparator(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
 	require.NoError(err)
 
 	base := t.TempDir()
-	real := filepath.Join(base, "real")
-	require.NoError(os.Mkdir(real, 0o700))
+	realDir := filepath.Join(base, "real")
+	require.NoError(os.Mkdir(realDir, 0o700))
 	link := filepath.Join(base, "link")
-	if err := os.Symlink(real, link); err != nil {
+	if err := os.Symlink(realDir, link); err != nil {
 		t.Skip("symlinks not supported on this platform")
 	}
 
@@ -1909,7 +1913,7 @@ func TestRestoreRefusesSymlinkTargetWithTrailingSeparator(t *testing.T) {
 		_, err := Restore(ctx, r, newTestApp(), RestoreOptions{TargetDir: target})
 		require.ErrorContains(err, "is a symlink", "target %q", target)
 	}
-	entries, err := os.ReadDir(real)
+	entries, err := os.ReadDir(realDir)
 	require.NoError(err)
 	require.Empty(entries, "nothing may be restored through the symlink")
 }
@@ -1988,7 +1992,7 @@ func TestRestoreExtrasEntryRejectsEscapingPaths(t *testing.T) {
 	st := &restoreState{}
 
 	for _, path := range []string{"", "/etc/passwd", "../outside", "a/../../outside", ".."} {
-		_, err := st.stageExtrasEntry(context.Background(), newTestApp(), ExtrasEntry{Path: path, Blob: blobID("x").String()})
+		_, err := st.stageExtrasEntry(t.Context(), newTestApp(), ExtrasEntry{Path: path, Blob: blobID("x").String()})
 		require.ErrorContains(err, "escapes the restore target", "path %q", path)
 	}
 }
@@ -2005,7 +2009,7 @@ func TestRestoreExtrasEntryRejectsArchiveOverlap(t *testing.T) {
 		"app.db", "APP.DB", "app.db-wal", "app.db-shm", "app.db-journal",
 		"content/aa/aa11", "Content/aa/aa11", "content",
 	} {
-		_, err := st.stageExtrasEntry(context.Background(), newTestApp(), ExtrasEntry{Path: path, Blob: blobID("x").String()})
+		_, err := st.stageExtrasEntry(t.Context(), newTestApp(), ExtrasEntry{Path: path, Blob: blobID("x").String()})
 		require.ErrorContains(err, "overlaps restored archive content", "path %q", path)
 	}
 
@@ -2015,7 +2019,7 @@ func TestRestoreExtrasEntryRejectsArchiveOverlap(t *testing.T) {
 	for _, path := range []string{
 		"safe/../app.db", "safe/../APP.DB-wal", "safe/../content/aa/aa11",
 	} {
-		_, err := st.stageExtrasEntry(context.Background(), newTestApp(), ExtrasEntry{Path: path, Blob: blobID("x").String()})
+		_, err := st.stageExtrasEntry(t.Context(), newTestApp(), ExtrasEntry{Path: path, Blob: blobID("x").String()})
 		require.ErrorContains(err, "overlaps restored archive content", "path %q", path)
 	}
 
@@ -2027,17 +2031,17 @@ func TestRestoreExtrasEntryRejectsArchiveOverlap(t *testing.T) {
 		"content.", "content ", "content./aa/aa11", "app.db.", "app.db ",
 		"safe/dir./file", "safe/dir /file",
 	} {
-		_, err := st.stageExtrasEntry(context.Background(), newTestApp(), ExtrasEntry{Path: path, Blob: blobID("x").String()})
+		_, err := st.stageExtrasEntry(t.Context(), newTestApp(), ExtrasEntry{Path: path, Blob: blobID("x").String()})
 		require.ErrorContains(err, "component ending in a dot or space", "path %q", path)
 	}
 
 	// A path that cleans to the target directory itself is rejected outright.
-	_, err := st.stageExtrasEntry(context.Background(), newTestApp(), ExtrasEntry{Path: "safe/..", Blob: blobID("x").String()})
+	_, err := st.stageExtrasEntry(t.Context(), newTestApp(), ExtrasEntry{Path: "safe/..", Blob: blobID("x").String()})
 	require.ErrorContains(err, "escapes the restore target")
 
 	// Legitimate extras still restore fine (proven end-to-end elsewhere);
 	// here just confirm the reserved-name check does not reject them.
-	_, err = st.stageExtrasEntry(context.Background(), newTestApp(), ExtrasEntry{Path: "deletions/manifest-1.json", Blob: "not-a-blob"})
+	_, err = st.stageExtrasEntry(t.Context(), newTestApp(), ExtrasEntry{Path: "deletions/manifest-1.json", Blob: "not-a-blob"})
 	require.NotContains(err.Error(), "overlaps restored archive content")
 }
 
@@ -2068,7 +2072,7 @@ func (a escapingContentPathApp) RestoredContentPaths(ctx context.Context, db *sq
 // invalid.
 func TestRestoreAttachmentsRejectsEscapingContentPath(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	cacheDir := t.TempDir()
@@ -2107,7 +2111,7 @@ func (a extraContentPathApp) RestoredContentPaths(ctx context.Context, db *sql.D
 // pointing at a missing content file.
 func TestRestoreRejectsDBHashAbsentFromLists(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	cacheDir := t.TempDir()

@@ -54,6 +54,7 @@ func (portableApp) CheckManifest(m *backup.Manifest) []string {
 	}
 	return nil
 }
+
 func (portableApp) RestoredContentPaths(ctx context.Context, db *sql.DB) (map[string][]string, error) {
 	rows, err := db.QueryContext(ctx, `SELECT hash, path FROM files ORDER BY hash`)
 	if err != nil {
@@ -70,6 +71,7 @@ func (portableApp) RestoredContentPaths(ctx context.Context, db *sql.DB) (map[st
 	}
 	return paths, rows.Err()
 }
+
 func (portableApp) RestoredStats(ctx context.Context, db *sql.DB) (json.RawMessage, error) {
 	var stats portableStats
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM notes`).Scan(&stats.Notes); err != nil {
@@ -99,6 +101,7 @@ func (s *portableSource) OpenSnapshot(context.Context) (backup.MetadataSnapshot,
 	s.opened = true
 	return s, nil
 }
+
 func (s *portableSource) OpenMetadata(context.Context) (io.ReadCloser, int64, error) {
 	reader := s.metadataReader
 	if reader == nil {
@@ -106,6 +109,7 @@ func (s *portableSource) OpenMetadata(context.Context) (io.ReadCloser, int64, er
 	}
 	return reader, int64(len(s.raw)), s.metadataErr
 }
+
 func (s *portableSource) ContentInfo(context.Context) (*backup.ContentInfo, error) {
 	return s.info, nil
 }
@@ -113,6 +117,7 @@ func (s *portableSource) Stats(context.Context) (json.RawMessage, error) { retur
 func (s *portableSource) AuxiliaryArtifacts(context.Context) ([]backup.AuxiliaryArtifact, error) {
 	return s.auxiliary, nil
 }
+
 func (s *portableSource) Close() error {
 	s.closed = true
 	s.closes++
@@ -209,7 +214,7 @@ func (mismatchedStatsPortableApp) RestoredStats(
 func TestAuxiliaryCaptureVerifyAndRestore(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	base := t.TempDir()
 	repo, err := backup.Init(filepath.Join(base, "repo"))
 	require.NoError(err)
@@ -317,7 +322,7 @@ func TestAuxiliaryCaptureVerifyAndRestore(t *testing.T) {
 func TestRestoreDefersAuxiliaryTargetUntilDatabaseProofSucceeds(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	base := t.TempDir()
 	repo, err := backup.Init(filepath.Join(base, "repo"))
 	require.NoError(err)
@@ -369,7 +374,7 @@ func TestRestoreRollsBackAuxiliaryAfterPostHandoffFailures(t *testing.T) {
 	stats, err := json.Marshal(portableStats{Notes: 1})
 	requirements.NoError(err)
 	artifact := []byte("auxiliary state")
-	_, err = backup.Create(context.Background(), repo, portableApp{}, backup.CreateOptions{
+	_, err = backup.Create(t.Context(), repo, portableApp{}, backup.CreateOptions{
 		MetadataSource: &portableSource{
 			raw: raw, stats: stats, info: &backup.ContentInfo{},
 			auxiliary: []backup.AuxiliaryArtifact{{
@@ -414,7 +419,7 @@ func TestRestoreRollsBackAuxiliaryAfterPostHandoffFailures(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			assert := assert.New(t)
 			require := require.New(t)
-			ctx := context.Background()
+			ctx := t.Context()
 			cancel := func() {}
 			if test.cancelAfterStage {
 				ctx, cancel = context.WithCancel(ctx)
@@ -472,7 +477,7 @@ func (f *countingFreezer) End(context.Context) error   { f.ends++; return nil }
 func TestPortableMetadataCreateVerifyRestoreAndSQLiteSuccessor(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	base := t.TempDir()
 	containingTarget := filepath.Join(base, "containing-target")
 	repo, err := backup.Init(filepath.Join(containingTarget, "repo"))
@@ -657,7 +662,7 @@ func TestPortableMetadataCreateVerifyRestoreAndSQLiteSuccessor(t *testing.T) {
 	require.NoError(err)
 	defer func() { _ = db.Close() }()
 	var noteCount int64
-	require.NoError(db.QueryRow(`SELECT COUNT(*) FROM notes`).Scan(&noteCount))
+	require.NoError(db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM notes`).Scan(&noteCount))
 	assert.Equal(int64(2), noteCount)
 
 	// A legacy SQLite snapshot may follow a portable snapshot in the same
@@ -668,7 +673,7 @@ func TestPortableMetadataCreateVerifyRestoreAndSQLiteSuccessor(t *testing.T) {
 	legacyDB := filepath.Join(legacyDir, "fake.db")
 	legacy, err := sql.Open("sqlite3", legacyDB)
 	require.NoError(err)
-	_, err = legacy.Exec(`CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT);
+	_, err = legacy.ExecContext(t.Context(), `CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT);
 		INSERT INTO notes(body) VALUES('legacy')`)
 	require.NoError(err)
 	require.NoError(legacy.Close())
@@ -681,7 +686,7 @@ func TestPortableMetadataCreateVerifyRestoreAndSQLiteSuccessor(t *testing.T) {
 }
 
 func TestPortableMetadataCaptureClosesPartialResourcesOnce(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	t.Run("metadata open error", func(t *testing.T) {
 		require := require.New(t)

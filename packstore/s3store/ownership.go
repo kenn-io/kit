@@ -52,7 +52,7 @@ func (b *Backend) readOwnership(ctx context.Context) (packstore.Ownership, strin
 	if int64(len(data)) > maxMarkerBytes {
 		return packstore.Ownership{}, "", errors.Join(
 			packstore.ErrPhysicalCorrupt,
-			fmt.Errorf("s3store: ownership marker is too large"),
+			errors.New("s3store: ownership marker is too large"),
 		)
 	}
 	owner, err := packstore.ParseOwnership(data)
@@ -112,7 +112,7 @@ func (b *Backend) requireOwnership(ctx context.Context) (packstore.Ownership, er
 	expected, _ := b.expectedOwnership()
 	if expected == nil {
 		return packstore.Ownership{}, &packstore.OwnershipMismatchError{
-			Err: fmt.Errorf("s3store: backend is not attached"),
+			Err: errors.New("s3store: backend is not attached"),
 		}
 	}
 	actual, etag, err := b.readOwnership(ctx)

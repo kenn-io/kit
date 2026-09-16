@@ -32,7 +32,7 @@ func TestInitAppliesNativeOptionsAndRegistersGlobals(t *testing.T) {
 	var tracerProvider oteltrace.TracerProvider
 	var meterProvider otelmetric.MeterProvider
 	var textMapPropagator propagation.TextMapPropagator
-	shutdown, err := initWithDependencies(context.Background(), initDependencies{
+	shutdown, err := initWithDependencies(t.Context(), initDependencies{
 		newSpanExporter: func(context.Context) (trace.SpanExporter, error) {
 			return nil, nil
 		},
@@ -57,11 +57,11 @@ func TestInitAppliesNativeOptionsAndRegistersGlobals(t *testing.T) {
 	require.NoError(err)
 	require.NotNil(shutdown)
 	t.Cleanup(func() {
-		assert.NoError(shutdown(context.Background()))
+		assert.NoError(shutdown(context.WithoutCancel(t.Context())))
 	})
 
 	require.NotNil(tracerProvider)
-	_, span := tracerProvider.Tracer("go.kenn.io/kit/telemetry/init_test").Start(context.Background(), "test")
+	_, span := tracerProvider.Tracer("go.kenn.io/kit/telemetry/init_test").Start(t.Context(), "test")
 	span.End()
 	spans := spanRecorder.Ended()
 	require.Len(spans, 1)
@@ -72,10 +72,10 @@ func TestInitAppliesNativeOptionsAndRegistersGlobals(t *testing.T) {
 	require.NotNil(meterProvider)
 	counter, err := meterProvider.Meter("go.kenn.io/kit/telemetry/init_test").Int64Counter("test.counter")
 	require.NoError(err)
-	counter.Add(context.Background(), 1)
+	counter.Add(t.Context(), 1)
 
 	var metrics metricdata.ResourceMetrics
-	require.NoError(metricReader.Collect(context.Background(), &metrics))
+	require.NoError(metricReader.Collect(t.Context(), &metrics))
 	require.NotEmpty(metrics.ScopeMetrics)
 	require.NotNil(textMapPropagator)
 	assert.Equal([]string{"test-propagator"}, textMapPropagator.Fields())
@@ -86,7 +86,7 @@ func TestNewResourceAppliesEnvironmentBeforeCallerOptions(t *testing.T) {
 	assert := assert.New(t)
 	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "test.environment=loaded,test.precedence=environment")
 
-	res, err := newResource(context.Background(),
+	res, err := newResource(t.Context(),
 		resource.WithAttributes(attribute.String("test.precedence", "caller")),
 	)
 	require.NoError(err)
@@ -104,18 +104,18 @@ func TestNewResourceDoesNotRetainRemovedEnvironmentAttributes(t *testing.T) {
 	const helperEnv = "KIT_TEST_RESOURCE_ENV_REMOVAL"
 	if os.Getenv(helperEnv) == "1" {
 		t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "test.stale=present")
-		_, err := newResource(context.Background())
+		_, err := newResource(t.Context())
 		require.NoError(err)
 		require.NoError(os.Unsetenv("OTEL_RESOURCE_ATTRIBUTES"))
 
-		res, err := newResource(context.Background())
+		res, err := newResource(t.Context())
 		require.NoError(err)
 		_, ok := res.Set().Value("test.stale")
 		assert.False(t, ok)
 		return
 	}
 
-	cmd := exec.Command(os.Args[0], "-test.run=^TestNewResourceDoesNotRetainRemovedEnvironmentAttributes$")
+	cmd := exec.CommandContext(context.WithoutCancel(t.Context()), os.Args[0], "-test.run=^TestNewResourceDoesNotRetainRemovedEnvironmentAttributes$")
 	cmd.Env = append(os.Environ(), helperEnv+"=1")
 	output, err := cmd.CombinedOutput()
 	require.NoErrorf(err, "helper test failed:\n%s", output)
@@ -126,7 +126,7 @@ func TestNewResourceRetainsValidAttributesFromPartialEnvironment(t *testing.T) {
 	assert := assert.New(t)
 	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "test.valid=value,invalid")
 
-	res, err := newResource(context.Background())
+	res, err := newResource(t.Context())
 	require.NoError(err)
 	value, ok := res.Set().Value("test.valid")
 	require.True(ok)
@@ -140,14 +140,14 @@ func TestNewResourceReturnsCallerDetectorErrorWithPartialEnvironment(t *testing.
 		return "", fatalErr
 	})
 
-	_, err := newResource(context.Background(), resource.WithDetectors(detector))
+	_, err := newResource(t.Context(), resource.WithDetectors(detector))
 	require.ErrorIs(t, err, fatalErr)
 }
 
 func TestNewResourcePreservesServiceInstanceFeatureGate(t *testing.T) {
 	t.Run("disabled", func(t *testing.T) {
 		t.Setenv("OTEL_GO_X_RESOURCE", "")
-		res, err := newResource(context.Background())
+		res, err := newResource(t.Context())
 		require.NoError(t, err)
 		_, ok := res.Set().Value("service.instance.id")
 		assert.False(t, ok)
@@ -155,7 +155,7 @@ func TestNewResourcePreservesServiceInstanceFeatureGate(t *testing.T) {
 
 	t.Run("enabled", func(t *testing.T) {
 		t.Setenv("OTEL_GO_X_RESOURCE", "true")
-		res, err := newResource(context.Background())
+		res, err := newResource(t.Context())
 		require.NoError(t, err)
 		_, ok := res.Set().Value("service.instance.id")
 		assert.True(t, ok)
@@ -168,11 +168,11 @@ func TestDefaultExporterFactoriesDisableEmptySelectors(t *testing.T) {
 	t.Setenv("OTEL_TRACES_EXPORTER", "")
 	t.Setenv("OTEL_METRICS_EXPORTER", "")
 
-	spanExporter, err := newSpanExporterFromEnv(context.Background())
+	spanExporter, err := newSpanExporterFromEnv(t.Context())
 	require.NoError(err)
 	assert.Nil(spanExporter)
 
-	metricReader, err := newMetricReaderFromEnv(context.Background())
+	metricReader, err := newMetricReaderFromEnv(t.Context())
 	require.NoError(err)
 	assert.Nil(metricReader)
 }
@@ -183,11 +183,11 @@ func TestDefaultExporterFactoriesDisableExplicitNone(t *testing.T) {
 	t.Setenv("OTEL_TRACES_EXPORTER", "none")
 	t.Setenv("OTEL_METRICS_EXPORTER", "none")
 
-	spanExporter, err := newSpanExporterFromEnv(context.Background())
+	spanExporter, err := newSpanExporterFromEnv(t.Context())
 	require.NoError(err)
 	assert.Nil(spanExporter)
 
-	metricReader, err := newMetricReaderFromEnv(context.Background())
+	metricReader, err := newMetricReaderFromEnv(t.Context())
 	require.NoError(err)
 	assert.Nil(metricReader)
 }
@@ -200,7 +200,7 @@ func TestInitCleansUpSpanExporterWhenMetricInitializationFails(t *testing.T) {
 	exporter := &testSpanExporter{shutdownErr: cleanupErr}
 	registrations := 0
 
-	shutdown, err := initWithDependencies(context.Background(), initDependencies{
+	shutdown, err := initWithDependencies(t.Context(), initDependencies{
 		newSpanExporter: func(context.Context) (trace.SpanExporter, error) {
 			return exporter, nil
 		},
@@ -230,7 +230,7 @@ func TestShutdownAllAttemptsEveryFunctionAndJoinsErrors(t *testing.T) {
 	tracerErr := errors.New("tracer shutdown failed")
 	calls := []string{}
 
-	err := shutdownAll(context.Background(),
+	err := shutdownAll(t.Context(),
 		func(context.Context) error {
 			calls = append(calls, "meter")
 			return meterErr

@@ -309,10 +309,11 @@ func TestPostHogDisableTransportNoOpsRequestsAfterProcessDisable(t *testing.T) {
 
 	DisablePostHogTelemetry()
 
-	resp, err := transport.RoundTrip(httptest.NewRequest(http.MethodPost, "https://posthog.example.test/batch", nil))
+	resp, err := transport.RoundTrip(httptest.NewRequestWithContext(t.Context(), http.MethodPost, "https://posthog.example.test/batch", nil))
 
 	require.NoError(err)
 	require.NotNil(resp)
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(http.StatusNoContent, resp.StatusCode)
 	assert.False(baseCalled)
 }

@@ -654,6 +654,7 @@ func (m *PersistentManager) stopMaster(
 		return nil
 	case socketStale:
 		return removeControlSocket(socketPath)
+	default:
 	}
 	arguments, err := ExitArguments(socketPath, target)
 	if err != nil {
@@ -705,6 +706,7 @@ func (m *PersistentManager) waitForMasterExit(
 			return nil
 		case socketStale:
 			return removeControlSocket(socketPath)
+		default:
 		}
 
 		select {

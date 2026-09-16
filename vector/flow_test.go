@@ -133,7 +133,7 @@ func textEncoder() vector.EncodeFunc {
 func TestFillEmbedsAllPendingThenStops(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	store := newMemStore()
 	store.content[1] = "alpha"
@@ -159,7 +159,7 @@ func TestFillEmbedsAllPendingThenStops(t *testing.T) {
 func TestFillBatchesChunksAcrossDocumentsWithinTokenBudget(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	store := newMemStore()
 	for doc := int64(1); doc <= 7; doc++ {
@@ -205,7 +205,7 @@ func TestFillRejectsInputAboveTokenBudgetBeforeEncoder(t *testing.T) {
 		return [][]float32{{1}}, nil
 	}
 
-	stats, err := vector.Fill(context.Background(), store, 7, enc,
+	stats, err := vector.Fill(t.Context(), store, 7, enc,
 		vector.WithFillBatch[int64](
 			vector.WithBatchSize(1),
 			vector.WithBatchTokenBudget(31_999, 32_000),
@@ -213,7 +213,8 @@ func TestFillRejectsInputAboveTokenBudgetBeforeEncoder(t *testing.T) {
 	)
 
 	require.Error(err)
-	assert.ErrorContains(err, "token budget")
+	require.
+		ErrorContains(err, "token budget")
 	assert.Zero(calls.Load(), "an invalid budget is rejected before the provider call")
 	assert.Zero(stats.Documents)
 	assert.False(store.embedded[1][7])
@@ -230,7 +231,7 @@ func TestFillDoesNotSkipInvalidTokenBudgetWithoutBatchSize(t *testing.T) {
 		return [][]float32{{1}}, nil
 	}
 
-	stats, err := vector.Fill(context.Background(), store, 7, enc,
+	stats, err := vector.Fill(t.Context(), store, 7, enc,
 		vector.WithFillBatch[int64](
 			vector.WithBatchTokenBudget(31_999, 32_000),
 		),
@@ -241,7 +242,8 @@ func TestFillDoesNotSkipInvalidTokenBudgetWithoutBatchSize(t *testing.T) {
 	)
 
 	require.Error(err)
-	assert.ErrorContains(err, "token budget")
+	require.
+		ErrorContains(err, "token budget")
 	assert.Zero(calls.Load(), "an invalid budget is rejected before the provider call")
 	assert.Zero(hookCalls.Load(), "configuration errors bypass the document error handler")
 	assert.Zero(stats.Documents)
@@ -252,7 +254,7 @@ func TestFillDoesNotSkipInvalidTokenBudgetWithoutBatchSize(t *testing.T) {
 func TestFillCrossDocumentBatchingMatchesPerDocumentVectors(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	contents := map[int64]string{
 		1: "abcde",
 		2: "uvwxyz",
@@ -293,7 +295,7 @@ func TestFillCrossDocumentBatchingMatchesPerDocumentVectors(t *testing.T) {
 }
 
 func TestFillCrossDocumentBatchingMatchesLegacyAcrossConfigurations(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	contents := map[int64]string{
 		1: "",
 		2: "a",
@@ -342,7 +344,7 @@ func TestFillCrossDocumentBatchingMatchesLegacyAcrossConfigurations(t *testing.T
 func TestFillCrossDocumentBatchingIsolatesPoisonDocument(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	store := newMemStore()
 	store.content[1] = "fine one"
@@ -383,7 +385,7 @@ func TestFillCrossDocumentBatchingIsolatesPoisonDocument(t *testing.T) {
 func TestFillCrossDocumentBatchingTranslatesInvalidVectorChunkIndex(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	store := newMemStore()
 	store.content[1] = "x"
@@ -424,7 +426,7 @@ func TestFillCrossDocumentBatchingTranslatesInvalidVectorChunkIndex(t *testing.T
 func TestFillCrossDocumentBatchingLeavesOnlyChangedDocumentPending(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	store := newMemStore()
 	store.content[1] = "alpha"
@@ -458,7 +460,7 @@ func TestFillCrossDocumentBatchingLeavesOnlyChangedDocumentPending(t *testing.T)
 func TestFillCrossDocumentBatchingStampsBlankDocuments(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	store := newMemStore()
 	store.content[1] = " \t\n"
@@ -495,7 +497,7 @@ func TestFillCrossDocumentBatchingRejectsNilEncoderBeforeStampingEmptyDocuments(
 	store.content[1] = ""
 	store.content[2] = ""
 
-	stats, err := vector.Fill(context.Background(), store, 7, nil,
+	stats, err := vector.Fill(t.Context(), store, 7, nil,
 		vector.WithFillScanBatch[int64](2),
 		vector.WithFillBatch[int64](vector.WithBatchSize(2)),
 	)
@@ -509,7 +511,7 @@ func TestFillCrossDocumentBatchingRejectsNilEncoderBeforeStampingEmptyDocuments(
 func TestFillCrossDocumentBatchingEncodeErrorAbortsAtFailedDocument(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	store := newMemStore()
 	store.content[1] = "fine one"
@@ -538,7 +540,7 @@ func TestFillCrossDocumentBatchingEncodeErrorAbortsAtFailedDocument(t *testing.T
 func TestFillCrossDocumentBatchingAbortsUnattributedBatchError(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	store := newMemStore()
 	store.content[1] = "fine one"
@@ -577,7 +579,7 @@ func TestFillCrossDocumentBatchingAbortsUnattributedBatchError(t *testing.T) {
 func TestFillCrossDocumentBatchingDoesNotSkipCancelledEncode(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	store := newMemStore()
 	store.content[1] = "alpha"
@@ -606,7 +608,7 @@ func TestFillCrossDocumentBatchingDoesNotSkipCancelledEncode(t *testing.T) {
 func TestFillLeavesChangedDocumentPending(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	store := newMemStore()
 	store.content[1] = "alpha"
@@ -643,7 +645,7 @@ func TestFillLeavesChangedDocumentPending(t *testing.T) {
 func TestFillSkipHookStampsFailedDocument(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	store := newMemStore()
 	store.content[1] = "poison"
@@ -672,7 +674,7 @@ func TestFillSkipHookStampsFailedDocument(t *testing.T) {
 func TestFillEncodeErrorAbortsWithoutSkip(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	store := newMemStore()
 	store.content[1] = "poison"
@@ -689,7 +691,7 @@ func TestFillEncodeErrorAbortsWithoutSkip(t *testing.T) {
 func TestFillDoesNotSkipCancelledEncode(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	store := newMemStore()
 	store.content[1] = "alpha"
@@ -712,7 +714,7 @@ func TestFillDoesNotSkipCancelledEncode(t *testing.T) {
 func TestFillConcurrencyEncodesDocumentsInParallel(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	const workers = 4
 	store := newMemStore()
@@ -807,7 +809,7 @@ func (s *saveHookStore) SaveVectors(ctx context.Context, gen int, doc int64, rev
 // one goroutine and can never overlap.
 func TestFillDefaultConcurrencyIsSequential(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	store := newMemStore()
 	for doc := int64(1); doc <= 6; doc++ {
@@ -824,7 +826,7 @@ func TestFillDefaultConcurrencyIsSequential(t *testing.T) {
 	}
 	hooked := &saveHookStore{memStore: store, hook: func() {
 		inSave.Store(true)
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond) //nolint:kennlint // widens the save window a concurrent reader must observe
 		inSave.Store(false)
 	}}
 
@@ -838,7 +840,7 @@ func TestFillDefaultConcurrencyIsSequential(t *testing.T) {
 func TestFillCrossDocumentBatchingDoesNotEncodeNextWindowAfterSaveFailure(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	base := newMemStore()
 	for doc := int64(1); doc <= 7; doc++ {
@@ -867,7 +869,7 @@ func TestFillCrossDocumentBatchingDoesNotEncodeNextWindowAfterSaveFailure(t *tes
 func TestFillCrossDocumentBatchingComposesConcurrencyBounds(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	const maxCalls = 4
 	store := newMemStore()
@@ -955,7 +957,7 @@ func TestFillCrossDocumentBatchingConcurrentFailureKeepsAttribution(t *testing.T
 	}
 	done := make(chan fillResult, 1)
 	go func() {
-		stats, err := vector.Fill(context.Background(), store, 7, enc,
+		stats, err := vector.Fill(t.Context(), store, 7, enc,
 			vector.WithFillScanBatch[int64](4),
 			vector.WithFillBatch[int64](
 				vector.WithBatchSize(2), vector.WithBatchConcurrency(1)),
@@ -1004,7 +1006,7 @@ func TestFillCrossDocumentBatchingDoesNotBlockCompletedSaves(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := vector.Fill(context.Background(), store, 7, enc,
+		_, err := vector.Fill(t.Context(), store, 7, enc,
 			vector.WithFillScanBatch[int64](2),
 			vector.WithFillBatch[int64](
 				vector.WithBatchSize(1), vector.WithBatchConcurrency(2)),
@@ -1031,7 +1033,7 @@ func TestFillCrossDocumentBatchingDoesNotBlockCompletedSaves(t *testing.T) {
 func TestFillConcurrencySkipHookStampsFailedDocument(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	store := newMemStore()
 	store.content[1] = "poison"
@@ -1059,7 +1061,7 @@ func TestFillConcurrencySkipHookStampsFailedDocument(t *testing.T) {
 func TestFillConcurrencyEncodeErrorAborts(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	store := newMemStore()
 	store.content[1] = "poison"
@@ -1098,7 +1100,7 @@ func poisonEncoder() vector.EncodeFunc {
 func TestSearchRollsUpAndPrefersBuildingGeneration(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	const active, building = 7, 9
 	store := newMemStore()
@@ -1135,7 +1137,7 @@ func TestSearchRollsUpAndPrefersBuildingGeneration(t *testing.T) {
 }
 
 func TestSearchErrorsWhenNoEncoderForGeneration(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store := newMemStore()
 	store.live = []int{1}
 	store.SaveVectors(ctx, 1, 1, nil, []vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{1}}})

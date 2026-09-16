@@ -226,7 +226,7 @@ func TestPlanInstallQwenUsesClaudeEventsAndMillisecondTimeouts(t *testing.T) {
 	assert.Equal("run_shell_command", entry["matcher"])
 	handlers := entry["hooks"].([]any)
 	handler := handlers[0].(map[string]any)
-	assert.Equal(float64(2000), handler["timeout"])
+	assert.InDelta(float64(2000), handler["timeout"], 0)
 }
 
 func TestPlanInstallAcceptsWholeMillisecondTimeouts(t *testing.T) {
@@ -274,7 +274,7 @@ func TestPlanInstallGeminiTranslatesClaudeEvents(t *testing.T) {
 	beforeTool := hooks["BeforeTool"].([]any)[0].(map[string]any)
 	assert.Equal("run_shell_command", beforeTool["matcher"])
 	handler := beforeTool["hooks"].([]any)[0].(map[string]any)
-	assert.Equal(float64(2000), handler["timeout"])
+	assert.InDelta(float64(2000), handler["timeout"], 0)
 }
 
 func TestInstallCopilotUsesDirectEntriesAndPreservesOtherHooks(t *testing.T) {
@@ -308,7 +308,7 @@ func TestInstallCopilotUsesDirectEntriesAndPreservesOtherHooks(t *testing.T) {
 	assert.True(result.Changed)
 	var root map[string]any
 	require.NoError(json.Unmarshal(result.Data, &root))
-	assert.Equal(float64(1), root["version"])
+	assert.InDelta(float64(1), root["version"], 0)
 	assert.Equal("keep-top-level", root["future"])
 	hooks := root["hooks"].(map[string]any)
 	assert.NotContains(hooks, "SessionStart")
@@ -318,7 +318,7 @@ func TestInstallCopilotUsesDirectEntriesAndPreservesOtherHooks(t *testing.T) {
 	assert.Equal("Bash", preTool["matcher"])
 	assert.Equal(command, preTool["bash"])
 	assert.Equal(commandPowerShell, preTool["powershell"])
-	assert.Equal(float64(2), preTool["timeoutSec"])
+	assert.InDelta(float64(2), preTool["timeoutSec"], 0)
 
 	result, err = Install(AgentCopilot, opts)
 	require.NoError(err)
@@ -465,7 +465,7 @@ func TestPlanInstallCursorUsesNativeDirectEntries(t *testing.T) {
 	require.NoError(err)
 	var root map[string]any
 	require.NoError(json.Unmarshal(result.Data, &root))
-	assert.Equal(float64(1), root["version"])
+	assert.InDelta(float64(1), root["version"], 0)
 	hooks := root["hooks"].(map[string]any)
 	assert.Contains(hooks, "beforeSubmitPrompt")
 	assert.Contains(hooks, "postToolUseFailure")
@@ -476,7 +476,7 @@ func TestPlanInstallCursorUsesNativeDirectEntries(t *testing.T) {
 	assert.Equal("command", preTool["type"])
 	assert.Equal("Shell", preTool["matcher"])
 	assert.Equal("/opt/hook "+testMarker, preTool["command"])
-	assert.Equal(float64(2), preTool["timeout"])
+	assert.InDelta(float64(2), preTool["timeout"], 0)
 	assert.Equal(true, preTool["failClosed"])
 	stop := hooks["stop"].([]any)[0].(map[string]any)
 	assert.NotContains(stop, "failClosed")
@@ -718,11 +718,11 @@ func TestNormalizeRejectsInvalidInput(t *testing.T) {
 	require := require.New(t)
 	_, err := normalize(Agent("unknown"), strings.NewReader(`{}`))
 	require.Error(err)
-	assert.ErrorContains(err, "unsupported agent hook integration")
+	require.ErrorContains(err, "unsupported agent hook integration")
 
 	_, err = normalize(AgentClaude, strings.NewReader(`{"session_id":"s1"} {}`))
 	require.Error(err)
-	assert.ErrorContains(err, "multiple JSON values")
+	require.ErrorContains(err, "multiple JSON values")
 
 	_, err = normalize(AgentHermes, strings.NewReader(`{
   "session_id":"h1",
