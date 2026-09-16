@@ -3,21 +3,20 @@
 package packstore
 
 import (
-	"context"
 	"testing"
 
-	Require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/windows"
 )
 
 func TestRetirePackWindowsSharingViolationIsRetryable(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	layout := layoutForStoreTest(t)
 	entry := buildStoreTestPack(t, layout, []byte("windows sharing retirement"))
 	store := newStoreForTest(t, &mapResolver{locations: map[Hash]Location{
 		entry.Hash: {Member: true, Pack: &entry},
 	}}, layout)
-	stream, _, err := store.OpenStream(context.Background(), entry.Hash)
+	stream, _, err := store.OpenStream(t.Context(), entry.Hash)
 	require.NoError(err)
 	require.NoError(stream.Verify())
 	require.NoError(stream.Close())

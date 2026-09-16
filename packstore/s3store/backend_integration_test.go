@@ -44,7 +44,7 @@ func TestS3BackendConformance(t *testing.T) {
 	backend, err := New(ctx, config)
 	require.NoError(err)
 	ensureBucket(t, ctx, backend)
-	t.Cleanup(func() { cleanPrefix(t, ctx, backend) })
+	t.Cleanup(func() { cleanPrefix(t, context.WithoutCancel(ctx), backend) })
 	empty, err := backend.NamespaceEmpty(ctx)
 	require.NoError(err)
 	assert.True(empty)

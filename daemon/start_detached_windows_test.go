@@ -3,7 +3,6 @@
 package daemon_test
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,7 +36,7 @@ func TestStartDetachedDoesNotExposeConsoleInput(t *testing.T) {
 	require.NoError(t, err)
 	marker := filepath.Join(t.TempDir(), "console-marker")
 
-	err = daemon.StartDetached(context.Background(), daemon.StartDetachedOptions{
+	err = daemon.StartDetached(t.Context(), daemon.StartDetachedOptions{
 		Executable: exe,
 		Args:       []string{"-test.run", "^TestStartDetachedConsoleInputHelper$"},
 		Env:        append(os.Environ(), "KIT_DAEMON_TEST_CONSOLE_MARKER="+marker),
@@ -50,13 +49,11 @@ func TestStartDetachedDoesNotExposeConsoleInput(t *testing.T) {
 
 func waitForMarker(t *testing.T, marker string) string {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		data, err := os.ReadFile(marker)
-		if err == nil {
-			return string(data)
-		}
-		require.True(t, time.Now().Before(deadline), "detached child never wrote marker file")
-		time.Sleep(25 * time.Millisecond)
-	}
+	var data []byte
+	require.Eventually(t, func() bool {
+		var err error
+		data, err = os.ReadFile(marker)
+		return err == nil
+	}, 10*time.Second, 25*time.Millisecond, "detached child never wrote marker file")
+	return string(data)
 }

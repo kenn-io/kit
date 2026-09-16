@@ -13,14 +13,6 @@ const (
 	probeStale
 )
 
-func (m *PersistentManager) probeControlMaster(
-	ctx context.Context,
-	socketPath string,
-	target Target,
-) (masterProbeState, error) {
-	return m.probeControlMasterWithRunner(ctx, socketPath, target, m.config.RunSSH)
-}
-
 func (m *PersistentManager) probeControlMasterWithRunner(
 	ctx context.Context,
 	socketPath string,

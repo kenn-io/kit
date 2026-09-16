@@ -40,8 +40,7 @@ func gitTopLevel(ctx context.Context, dir string) (root string, ok bool, err err
 		if ctx.Err() != nil {
 			return "", false, ctx.Err()
 		}
-		var exit *exec.ExitError
-		if errors.As(err, &exit) && strings.Contains(stderr.String(), "not a git repository") {
+		if _, isExit := errors.AsType[*exec.ExitError](err); isExit && strings.Contains(stderr.String(), "not a git repository") {
 			return "", false, nil
 		}
 		if errors.Is(err, exec.ErrNotFound) {

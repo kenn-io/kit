@@ -127,3 +127,11 @@ func TestProbeControlMasterPreservesCanceledContext(t *testing.T) {
 	require.ErrorIs(err, context.Canceled)
 	require.ErrorIs(err, sentinel)
 }
+
+func (m *PersistentManager) probeControlMaster(
+	ctx context.Context,
+	socketPath string,
+	target Target,
+) (masterProbeState, error) {
+	return m.probeControlMasterWithRunner(ctx, socketPath, target, m.config.RunSSH)
+}

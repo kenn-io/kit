@@ -3,7 +3,7 @@
 package safefileio
 
 import (
-	"fmt"
+	"errors"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -30,11 +30,11 @@ func currentWindowsOwnerSID() (*windows.SID, error) {
 		if err == nil {
 			owner := (*tokenOwner)(unsafe.Pointer(&buf[0]))
 			if owner.Owner == nil {
-				return nil, fmt.Errorf("current token owner is missing")
+				return nil, errors.New("current token owner is missing")
 			}
 			return owner.Owner.Copy()
 		}
-		if err != windows.ERROR_INSUFFICIENT_BUFFER {
+		if !errors.Is(err, windows.ERROR_INSUFFICIENT_BUFFER) {
 			return nil, err
 		}
 		if n <= uint32(len(buf)) {

@@ -3,22 +3,21 @@
 package packstore
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	Assert "github.com/stretchr/testify/assert"
-	Require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/windows"
 )
 
 const windowsFileDeleteChild = 0x40
 
 func TestWindowsPackingReadableNonDeletableLooseCandidate(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	layout := layoutForStoreTest(t)
 	content := []byte("readable packing candidate without deletion permission")
 	hash := writeMaintenanceLoose(t, layout, content)
@@ -37,12 +36,12 @@ func TestWindowsPackingReadableNonDeletableLooseCandidate(t *testing.T) {
 	require.Error(deleteErr, "fixture must deny deletion-capable identity handles")
 	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
 
-	stats, err := maintainer.Pack(context.Background(), PackOptions{})
+	stats, err := maintainer.Pack(t.Context(), PackOptions{})
 
 	require.NoError(err)
 	assert.Equal(1, stats.BlobsPacked)
 	assert.Zero(stats.BlobsCorrupt)
-	location, err := catalog.Resolve(context.Background(), hash)
+	location, err := catalog.Resolve(t.Context(), hash)
 	require.NoError(err)
 	require.NotNil(location.Pack)
 	assert.FileExists(loosePath)
@@ -51,8 +50,8 @@ func TestWindowsPackingReadableNonDeletableLooseCandidate(t *testing.T) {
 }
 
 func TestWindowsRecoveryPacksReadableNonDeletableLooseAuthority(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	layout := layoutForStoreTest(t)
 	content := []byte("readable loose authority without deletion permission")
 	entry := buildStoreTestPack(t, layout, content)
@@ -85,7 +84,7 @@ func TestWindowsRecoveryPacksReadableNonDeletableLooseAuthority(t *testing.T) {
 	require.Error(deleteErr, "fixture must deny deletion-capable identity handles")
 	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
 
-	stats, err := maintainer.Pack(context.Background(), PackOptions{})
+	stats, err := maintainer.Pack(t.Context(), PackOptions{})
 
 	require.NoError(err)
 	assert.Equal(1, stats.BlobsPacked)
@@ -101,11 +100,11 @@ func TestWindowsRecoveryPacksReadableNonDeletableLooseAuthority(t *testing.T) {
 func denyWindowsFileDeletion(t *testing.T, path string) func() {
 	t.Helper()
 	file, err := openWindowsNoFollow(path, windows.READ_CONTROL|windows.WRITE_DAC)
-	Require.NoError(t, err)
+	require.NoError(t, err)
 	parent, err := openWindowsNoFollow(filepath.Dir(path), windows.READ_CONTROL|windows.WRITE_DAC)
-	Require.NoError(t, err)
+	require.NoError(t, err)
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
-	Require.NoError(t, err)
+	require.NoError(t, err)
 	trustee := windows.TRUSTEE{
 		TrusteeForm:  windows.TRUSTEE_IS_SID,
 		TrusteeType:  windows.TRUSTEE_IS_USER,
@@ -125,8 +124,8 @@ func denyWindowsFileDeletion(t *testing.T, path string) func() {
 			Trustee:           trustee,
 		},
 	}, nil)
-	Require.NoError(t, err)
-	Require.NoError(t, windows.SetSecurityInfo(
+	require.NoError(t, err)
+	require.NoError(t, windows.SetSecurityInfo(
 		windows.Handle(file.Fd()),
 		windows.SE_FILE_OBJECT,
 		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
@@ -149,8 +148,8 @@ func denyWindowsFileDeletion(t *testing.T, path string) func() {
 			Trustee:           trustee,
 		},
 	}, nil)
-	Require.NoError(t, err)
-	Require.NoError(t, windows.SetSecurityInfo(
+	require.NoError(t, err)
+	require.NoError(t, windows.SetSecurityInfo(
 		windows.Handle(parent.Fd()),
 		windows.SE_FILE_OBJECT,
 		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
@@ -166,8 +165,8 @@ func denyWindowsFileDeletion(t *testing.T, path string) func() {
 			Inheritance:       windows.NO_INHERITANCE,
 			Trustee:           trustee,
 		}}, nil)
-		Require.NoError(t, aclErr)
-		Require.NoError(t, windows.SetSecurityInfo(
+		require.NoError(t, aclErr)
+		require.NoError(t, windows.SetSecurityInfo(
 			windows.Handle(file.Fd()),
 			windows.SE_FILE_OBJECT,
 			windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
@@ -176,7 +175,7 @@ func denyWindowsFileDeletion(t *testing.T, path string) func() {
 			fullControl,
 			nil,
 		))
-		Require.NoError(t, windows.SetSecurityInfo(
+		require.NoError(t, windows.SetSecurityInfo(
 			windows.Handle(parent.Fd()),
 			windows.SE_FILE_OBJECT,
 			windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
@@ -185,7 +184,7 @@ func denyWindowsFileDeletion(t *testing.T, path string) func() {
 			fullControl,
 			nil,
 		))
-		Require.NoError(t, file.Close())
-		Require.NoError(t, parent.Close())
+		require.NoError(t, file.Close())
+		require.NoError(t, parent.Close())
 	}
 }

@@ -25,3 +25,10 @@ func createSeekableLooseTempPlatform() (*os.File, error) {
 	}
 	return file, nil
 }
+
+// unlinkLoosePathPinned retains ownership of pin after unlink. It is used by
+// Unix seekable temporaries, whose open descriptor remains the only name for
+// the verified bytes until the compatibility reader closes.
+func unlinkLoosePathPinned(path string, pin identityPin) (bool, error) {
+	return removeLoosePathPinnedWithOwnership(path, pin, false)
+}

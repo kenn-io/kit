@@ -5,6 +5,7 @@ package safefileio
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"unsafe"
@@ -17,7 +18,7 @@ import (
 // built-in Administrators with a DACL restricted to those trusted principals.
 func EnsurePrivateDir(path string) error {
 	if path == "" {
-		return fmt.Errorf("path is empty")
+		return errors.New("path is empty")
 	}
 	if err := rejectWindowsReparsePoint(path); err != nil {
 		return err
@@ -60,7 +61,7 @@ func EnsurePrivateDir(path string) error {
 // the directory.
 func ValidatePrivateDir(path string) error {
 	if path == "" {
-		return fmt.Errorf("path is empty")
+		return errors.New("path is empty")
 	}
 	if err := rejectWindowsReparsePoint(path); err != nil {
 		return err
@@ -234,7 +235,7 @@ func verifyWindowsDACL(
 	if err != nil {
 		return err
 	}
-	for i := uint16(0); i < dacl.AceCount; i++ {
+	for i := range dacl.AceCount {
 		var ace *windows.ACCESS_ALLOWED_ACE
 		if err := windows.GetAce(dacl, uint32(i), &ace); err != nil {
 			return err

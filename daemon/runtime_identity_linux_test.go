@@ -6,14 +6,14 @@ import (
 	"encoding/json"
 	"testing"
 
-	Assert "github.com/stretchr/testify/assert"
-	Require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/daemon"
 )
 
 func TestLinuxRuntimeRecordUsesVersionedIdentityWithoutExposingItToOldClients(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	rec := daemon.NewRuntimeRecord("tool", "v1", daemon.Endpoint{
 		Network: daemon.NetworkTCP,
 		Address: "127.0.0.1:1234",
@@ -36,5 +36,5 @@ func TestLinuxLegacyWallClockIdentityFailsClosed(t *testing.T) {
 		PID:             1,
 		ProcessIdentity: "123456789",
 	}
-	Assert.Equal(t, daemon.ProcessIdentityUnknown, daemon.CompareRuntimeProcessIdentity(rec))
+	assert.Equal(t, daemon.ProcessIdentityUnknown, daemon.CompareRuntimeProcessIdentity(rec))
 }

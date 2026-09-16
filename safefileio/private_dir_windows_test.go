@@ -7,13 +7,13 @@ import (
 	"path/filepath"
 	"testing"
 
-	Assert "github.com/stretchr/testify/assert"
-	Require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/windows"
 )
 
 func TestEnsurePrivateDirCreatesOwnedDirectory(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	dir := filepath.Join(t.TempDir(), "runtime")
 
 	require.NoError(EnsurePrivateDir(dir))
@@ -34,13 +34,13 @@ func TestEnsurePrivateDirCreatesOwnedDirectory(t *testing.T) {
 
 func TestValidatePrivateDirAcceptsPrivateDir(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "runtime")
-	Require.NoError(t, EnsurePrivateDir(dir))
+	require.NoError(t, EnsurePrivateDir(dir))
 
-	Require.NoError(t, ValidatePrivateDir(dir))
+	require.NoError(t, ValidatePrivateDir(dir))
 }
 
 func TestValidatePrivateDirRejectsBroadDACL(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	dir := filepath.Join(t.TempDir(), "runtime")
 	require.NoError(EnsurePrivateDir(dir))
 	handle, err := openWindowsDir(dir)
@@ -69,38 +69,38 @@ func TestValidatePrivateDirRejectsBroadDACL(t *testing.T) {
 }
 
 func TestEnsurePrivateDirRejectsEmptyPath(t *testing.T) {
-	Require.Error(t, EnsurePrivateDir(""))
+	require.Error(t, EnsurePrivateDir(""))
 }
 
 func TestEnsurePrivateDirRejectsSymlink(t *testing.T) {
 	base := t.TempDir()
 	target := filepath.Join(base, "target")
 	link := filepath.Join(base, "link")
-	Require.NoError(t, os.Mkdir(target, 0o700))
+	require.NoError(t, os.Mkdir(target, 0o700))
 	if err := os.Symlink(target, link); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
 
-	Require.Error(t, EnsurePrivateDir(link))
+	require.Error(t, EnsurePrivateDir(link))
 }
 
 func TestOpenCurrentUserFileRejectsEmptyPath(t *testing.T) {
 	file, err := OpenCurrentUserFile("")
-	Require.Error(t, err)
-	Require.Nil(t, file)
+	require.Error(t, err)
+	require.Nil(t, file)
 }
 
 func TestOpenCurrentUserFileAcceptsCurrentTokenOwner(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "record.json")
-	Require.NoError(t, os.WriteFile(path, []byte("{}"), 0o600))
+	require.NoError(t, os.WriteFile(path, []byte("{}"), 0o600))
 
 	file, err := OpenCurrentUserFile(path)
-	Require.NoError(t, err)
-	Require.NoError(t, file.Close())
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
 }
 
 func TestValidatePrivateCurrentUserFileRejectsBroadDACL(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	path := filepath.Join(t.TempDir(), "record.json")
 	require.NoError(os.WriteFile(path, []byte("{}"), 0o600))
 	file, err := os.OpenFile(path, os.O_RDWR, 0)
@@ -146,7 +146,7 @@ func TestValidatePrivateCurrentUserFileRejectsBroadDACL(t *testing.T) {
 }
 
 func TestValidatePrivateCurrentUserFileRejectsUnprotectedPrivateDACL(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	dir := filepath.Join(t.TempDir(), "private")
 	require.NoError(EnsurePrivateDir(dir))
 	path := filepath.Join(dir, "record.json")
@@ -187,7 +187,7 @@ func TestValidatePrivateCurrentUserFileRejectsUnprotectedPrivateDACL(t *testing.
 }
 
 func TestValidatePrivateCurrentUserFileAcceptsProtectedPrivateDACL(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	dir := filepath.Join(t.TempDir(), "private")
 	require.NoError(EnsurePrivateDir(dir))
 	path := filepath.Join(dir, "record.json")
@@ -216,8 +216,8 @@ func TestValidatePrivateCurrentUserFileAcceptsProtectedPrivateDACL(t *testing.T)
 }
 
 func TestWindowsOwnerMatchesCurrentUserAndTokenOwner(t *testing.T) {
-	require := Require.New(t)
-	assert := Assert.New(t)
+	require := require.New(t)
+	assert := assert.New(t)
 	userSID, err := windows.CreateWellKnownSid(windows.WinBuiltinUsersSid)
 	require.NoError(err)
 	ownerSID, err := windows.CreateWellKnownSid(windows.WinBuiltinGuestsSid)
@@ -235,7 +235,7 @@ func TestWindowsOwnerMatchesCurrentUserAndTokenOwner(t *testing.T) {
 }
 
 func TestVerifyWindowsDirectoryOwner(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	userSID, err := windows.CreateWellKnownSid(windows.WinBuiltinUsersSid)
 	require.NoError(err)
 	ownerSID, err := windows.CreateWellKnownSid(windows.WinBuiltinGuestsSid)
@@ -270,7 +270,7 @@ func TestVerifyWindowsDirectoryOwner(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert := Assert.New(t)
+			assert := assert.New(t)
 			err := verifyWindowsDirectoryOwner("runtime", tt.owner, userSID, ownerSID)
 			if tt.wantError != "" {
 				assert.EqualError(err, tt.wantError)
@@ -282,7 +282,7 @@ func TestVerifyWindowsDirectoryOwner(t *testing.T) {
 }
 
 func TestCurrentUserIDIsPerUser(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	id, err := CurrentUserID()
 	require.NoError(err)
 	require.NotEmpty(id)
@@ -292,7 +292,7 @@ func TestCurrentUserIDIsPerUser(t *testing.T) {
 
 func TestCurrentWindowsOwnerSIDIsAvailable(t *testing.T) {
 	ownerSID, err := currentWindowsOwnerSID()
-	Require.NoError(t, err)
-	Require.NotNil(t, ownerSID)
-	Require.NotEmpty(t, ownerSID.String())
+	require.NoError(t, err)
+	require.NotNil(t, ownerSID)
+	require.NotEmpty(t, ownerSID.String())
 }
