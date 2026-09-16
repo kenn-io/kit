@@ -90,14 +90,23 @@ func TestRenderHelpTableStylesKeepGeometry(t *testing.T) {
 	reflowed := helplayout.ReflowRows(rows, 60, ColumnGap)
 
 	plain := RenderHelpTable(reflowed, Styles{})
-	styled := RenderHelpTable(reflowed, Styles{
-		Key:         lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("246")),
-		Description: lipgloss.NewStyle().Foreground(lipgloss.Color("240")),
-		BorderColor: lipgloss.Color("242"),
-	})
 
-	assert.NotEqual(t, plain, styled)
-	assert.Equal(t, plain, termtext.StripANSI(styled))
+	tests := []struct {
+		name   string
+		styles Styles
+	}{
+		{"key", Styles{Key: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("246"))}},
+		{"description", Styles{Description: lipgloss.NewStyle().Foreground(lipgloss.Color("240"))}},
+		{"border color", Styles{BorderColor: lipgloss.Color("242")}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			styled := RenderHelpTable(reflowed, test.styles)
+			assert.NotEqual(t, plain, styled)
+			assert.Equal(t, plain, termtext.StripANSI(styled))
+		})
+	}
 }
 
 func TestRenderHelpTableDoesNotMutateInput(t *testing.T) {
