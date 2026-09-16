@@ -87,9 +87,11 @@ var (
 )
 
 // Scan returns every enum-style CHECK constraint and enum type in src.
+// Keywords inside SQL comments or string literals are ignored.
 func Scan(src string) []Finding {
 	var findings []Finding
-	for _, loc := range checkKeyword.FindAllStringIndex(src, -1) {
+	masked := maskCommentsAndStrings(src)
+	for _, loc := range checkKeyword.FindAllStringIndex(masked, -1) {
 		open := loc[1] - 1
 		end := matchParen(src, open)
 		if end < 0 {
@@ -103,7 +105,7 @@ func Scan(src string) []Finding {
 		line, col := position(src, loc[0])
 		findings = append(findings, Finding{Kind: CheckConstraint, Offset: loc[0], Line: line, Column: col, ColumnName: column, Expr: expr})
 	}
-	for _, m := range enumKeyword.FindAllStringSubmatchIndex(src, -1) {
+	for _, m := range enumKeyword.FindAllStringSubmatchIndex(masked, -1) {
 		open := m[1] - 1
 		end := matchParen(src, open)
 		if end < 0 {
@@ -147,6 +149,57 @@ func columnName(ident string) string {
 		ident = strings.TrimSuffix(strings.TrimSpace(ident[i+1:]), ")")
 	}
 	return strings.TrimSpace(ident)
+}
+
+// maskCommentsAndStrings blanks line comments, block comments, and
+// single-quoted strings with spaces so keyword searches skip them. Offsets
+// and newlines are preserved, so positions map back to src.
+func maskCommentsAndStrings(src string) string {
+	out := []byte(src)
+	blank := func(from, to int) {
+		for i := from; i < to && i < len(out); i++ {
+			if out[i] != '\n' {
+				out[i] = ' '
+			}
+		}
+	}
+	for i := 0; i < len(src); {
+		switch {
+		case src[i] == '\'':
+			end := i + 1
+			for end < len(src) {
+				if src[end] == '\'' {
+					if end+1 < len(src) && src[end+1] == '\'' {
+						end += 2
+						continue
+					}
+					break
+				}
+				end++
+			}
+			blank(i, end+1)
+			i = end + 1
+		case strings.HasPrefix(src[i:], "--"):
+			end := strings.IndexByte(src[i:], '\n')
+			if end < 0 {
+				end = len(src) - i
+			}
+			blank(i, i+end)
+			i += end
+		case strings.HasPrefix(src[i:], "/*"):
+			end := strings.Index(src[i+2:], "*/")
+			if end < 0 {
+				end = len(src) - i
+			} else {
+				end += 4
+			}
+			blank(i, i+end)
+			i += end
+		default:
+			i++
+		}
+	}
+	return string(out)
 }
 
 // matchParen returns the index of the parenthesis closing the one at open,

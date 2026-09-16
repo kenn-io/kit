@@ -41,3 +41,25 @@ func TestOtherTimeCallsAreFine(t *testing.T) {
 	defer timer.Stop()
 	<-time.After(0)
 }
+
+func bubbleBody(t *testing.T) {
+	time.Sleep(time.Second)
+}
+
+var packageBubble = func(t *testing.T) {
+	time.Sleep(time.Second)
+}
+
+func TestNamedCallbacksRunInsideBubble(t *testing.T) {
+	synctest.Test(t, bubbleBody)
+	synctest.Test(t, packageBubble)
+	local := func(t *testing.T) {
+		time.Sleep(time.Second)
+	}
+	synctest.Test(t, local)
+	var declared func(*testing.T)
+	declared = func(t *testing.T) {
+		time.Sleep(time.Millisecond) // want "time.Sleep in a test outside a synctest bubble"
+	}
+	synctest.Test(t, declared)
+}

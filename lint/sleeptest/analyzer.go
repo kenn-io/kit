@@ -26,17 +26,25 @@ const diagnosticMessage = "time.Sleep in a test outside a synctest bubble; run t
 func run(pass *analysis.Pass) (any, error) {
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
-	// bubbles holds the source ranges of function literals passed to
-	// synctest.Test. Sleeps inside those ranges are fine.
-	var bubbles []*ast.FuncLit
+	// bubbles holds the source ranges of function bodies passed to
+	// synctest.Test: literals written inline, and the declarations or
+	// literals behind identifiers passed by name. Sleeps inside those ranges
+	// are fine.
+	bodies := functionBodies(pass)
+	var bubbles []ast.Node
 	inspect.Preorder([]ast.Node{(*ast.CallExpr)(nil)}, func(n ast.Node) {
 		call := n.(*ast.CallExpr)
 		if !isPackageFunc(pass, call, "testing/synctest", "Test") {
 			return
 		}
 		for _, arg := range call.Args {
-			if lit, ok := arg.(*ast.FuncLit); ok {
-				bubbles = append(bubbles, lit)
+			switch arg := arg.(type) {
+			case *ast.FuncLit:
+				bubbles = append(bubbles, arg)
+			case *ast.Ident:
+				if body, ok := bodies[pass.TypesInfo.Uses[arg]]; ok {
+					bubbles = append(bubbles, body)
+				}
 			}
 		}
 	})
@@ -55,6 +63,45 @@ func run(pass *analysis.Pass) (any, error) {
 	})
 
 	return nil, nil
+}
+
+// functionBodies maps each function declared in the package, and each
+// variable initialized with a function literal, to the node holding its body.
+func functionBodies(pass *analysis.Pass) map[types.Object]ast.Node {
+	bodies := map[types.Object]ast.Node{}
+	bind := func(name *ast.Ident, value ast.Expr) {
+		if lit, ok := value.(*ast.FuncLit); ok {
+			if obj := pass.TypesInfo.Defs[name]; obj != nil {
+				bodies[obj] = lit
+			}
+		}
+	}
+	for _, file := range pass.Files {
+		ast.Inspect(file, func(n ast.Node) bool {
+			switch n := n.(type) {
+			case *ast.FuncDecl:
+				if obj := pass.TypesInfo.Defs[n.Name]; obj != nil && n.Body != nil {
+					bodies[obj] = n.Body
+				}
+			case *ast.AssignStmt:
+				if len(n.Lhs) == len(n.Rhs) {
+					for i, lhs := range n.Lhs {
+						if name, ok := lhs.(*ast.Ident); ok {
+							bind(name, n.Rhs[i])
+						}
+					}
+				}
+			case *ast.ValueSpec:
+				if len(n.Names) == len(n.Values) {
+					for i, name := range n.Names {
+						bind(name, n.Values[i])
+					}
+				}
+			}
+			return true
+		})
+	}
+	return bodies
 }
 
 func isTestFile(pass *analysis.Pass, n ast.Node) bool {

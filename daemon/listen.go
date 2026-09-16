@@ -67,7 +67,7 @@ func Listen(ctx context.Context, ep Endpoint, options ...ListenOption) (net.List
 		option(&opts)
 	}
 	if !ep.IsUnix() || runtime.GOOS == "windows" {
-		return ep.Listen(ctx)
+		return ep.ListenContext(ctx)
 	}
 	if err := prepareUnixListenEndpoint(ep); err != nil {
 		return nil, err
@@ -84,7 +84,7 @@ func Listen(ctx context.Context, ep Endpoint, options ...ListenOption) (net.List
 	if err := removeStaleUnixSocket(ctx, ep, opts); err != nil {
 		return nil, err
 	}
-	return ep.Listen(ctx)
+	return ep.ListenContext(ctx)
 }
 
 func prepareUnixListenEndpoint(ep Endpoint) error {

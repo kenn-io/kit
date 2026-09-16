@@ -1,9 +1,16 @@
 # Adopting the shared Go lint policy (kennlint)
 
 `go.kenn.io/kit/lint` owns the Go lint policy for kenn-io repositories: a
-canonical golangci-lint configuration, four custom analyzers, and a
+canonical golangci-lint configuration, five custom analyzers, and a
 golangci-lint module plugin that runs them. This document explains how to put a
 repository on the shared policy and how to keep it there.
+
+The policy assumes the Go language version in kit's `go.mod` or newer. Some
+rules point at APIs that older toolchains lack: the `errors.As` ban expects
+`errors.AsType` (Go 1.26), `usetesting` expects `t.Context()` (Go 1.24), and
+`sleeptest` expects `synctest.Test` (Go 1.25). A repository on an older
+language version should raise it before adopting, or disable those rules in
+its overlay until it can.
 
 ## What you get
 
@@ -147,7 +154,7 @@ it in a lookup table with a foreign key.
 
 ## Running the analyzers without golangci-lint
 
-`kennlint run ./...` runs the four analyzers directly through the standard
+`kennlint run ./...` runs the five analyzers directly through the standard
 `go/analysis` multichecker, with the usual `-json`, `-fix`, and per-analyzer
 flags such as `-errtext.include-tests`. It is useful for editors and for
 repositories that cannot build a custom golangci-lint, but it has no `nolint`

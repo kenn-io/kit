@@ -54,6 +54,12 @@ func TestScanIgnoresOtherConstraints(t *testing.T) {
 		"CHECK (status IN (SELECT name FROM statuses))",
 		"CHECK (json_valid(payload))",
 		"-- CHECK the docs",
+		"-- CHECK (kind IN ('a', 'b'))\nCREATE TABLE t (kind TEXT)",
+		"/* CHECK (kind IN ('a')) */ CREATE TABLE t (kind TEXT)",
+		"/* multi\n CHECK (kind IN ('a'))\n line */",
+		"INSERT INTO notes (body) VALUES ('CHECK (kind IN (''a''))')",
+		"-- CREATE TYPE s AS ENUM ('x')",
+		"CREATE TABLE t (kind TEXT) -- was: CHECK (kind IN ('a'))",
 		"CHECK (started_at IS NULL OR finished_at IS NULL OR started_at <= finished_at)",
 		"CHECK ((state = 'done' AND finished_at IS NOT NULL) OR (state <> 'done' AND finished_at IS NULL))",
 		"CHECK (SUBSTR(local_date, 6, 2) IN ('01', '02', '03'))",
@@ -70,7 +76,7 @@ func TestScanIgnoresOtherConstraints(t *testing.T) {
 
 func TestScanReportsPositions(t *testing.T) {
 	assert := assert.New(t)
-	src := "CREATE TABLE t (\n  id INTEGER,\n  status TEXT CHECK (status IN ('a')),\n  other TEXT CHECK (other IN ('b'))\n);"
+	src := "CREATE TABLE t ( -- CHECK (id IN (1))\n  id INTEGER, /* 'CHECK' */\n  status TEXT CHECK (status IN ('a')),\n  other TEXT CHECK (other IN ('b'))\n);"
 	findings := Scan(src)
 	require.Len(t, findings, 2)
 	assert.Equal(3, findings[0].Line)
