@@ -22,12 +22,12 @@ import (
 
 	"go.kenn.io/kit/lint"
 	"go.kenn.io/kit/lint/config"
-	"go.kenn.io/kit/lint/sqlenum"
+	"go.kenn.io/kit/lint/sqlcheck"
 )
 
 const usage = `usage:
   kennlint run [analysis flags] [packages]   run the kit analyzers (go vet style)
-  kennlint sql [path ...]                    report enum-style CHECK constraints and enum types in .sql files (default: .)
+  kennlint sql [path ...]                    report CHECK constraints and enum types in .sql files (default: .)
   kennlint config [flags]                    render .golangci.yml from the canonical config and an overlay
   kennlint analyzers                         list the analyzers and their documentation
 `
@@ -138,7 +138,7 @@ func runSQL(paths []string, stdout io.Writer) (int, error) {
 			if err != nil {
 				return err
 			}
-			for _, f := range sqlenum.Scan(string(src)) {
+			for _, f := range sqlcheck.Scan(string(src)) {
 				total++
 				fmt.Fprintf(stdout, "%s:%d:%d: %s\n", filepath.ToSlash(path), f.Line, f.Column, f.Message())
 			}

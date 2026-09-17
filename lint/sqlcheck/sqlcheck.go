@@ -1,14 +1,16 @@
-// Package sqlenum reports CHECK constraints that hard-code the allowed values
-// of a column, such as CHECK (status IN ('queued', 'done')).
+// Package sqlcheck reports CHECK constraints and enum types in SQL schema
+// and migration text.
 //
-// Such constraints look like validation but behave like a schema lock: every
-// new value needs a migration that drops and recreates the constraint (and on
-// SQLite, often the whole table). The set of values belongs in application
-// code or a lookup table, where it can change without a schema migration.
+// A CHECK constraint bakes a validation rule into the schema: every change to
+// the rule, such as a new allowed value for a status column, needs a migration
+// that drops and recreates the constraint (and on SQLite, often the whole
+// table). The same goes for CREATE TYPE ... AS ENUM. Rules belong in
+// application code or in lookup tables, where they can change without a
+// schema migration, so the package reports every occurrence.
 //
 // The package scans raw SQL (migration files) and, through Analyzer, SQL held
 // in Go string literals.
-package sqlenum
+package sqlcheck
 
 import (
 	"fmt"
@@ -28,14 +30,13 @@ import (
 type Kind int
 
 const (
-	// CheckConstraint is a CHECK (...) that compares a column against a
-	// fixed list of literal values.
+	// CheckConstraint is a CHECK (...) constraint.
 	CheckConstraint Kind = iota
 	// EnumType is a CREATE TYPE ... AS ENUM (...) declaration.
 	EnumType
 )
 
-// Finding is one enum-style schema construct in a SQL source.
+// Finding is one CHECK constraint or enum type in a SQL source.
 type Finding struct {
 	// Kind says whether the finding is a CHECK constraint or an enum type.
 	Kind Kind
@@ -43,9 +44,9 @@ type Finding struct {
 	Offset int
 	// Line and Column are 1-based positions of the keyword.
 	Line, Column int
-	// ColumnName is the column whose values the constraint enumerates, or
-	// the type name for an enum type.
-	ColumnName string
+	// Name is the enum type name, or the first column the constraint
+	// mentions (empty when none can be identified).
+	Name string
 	// Expr is the constraint expression or the enum value list as written.
 	Expr string
 }
@@ -53,9 +54,13 @@ type Finding struct {
 // Message renders the diagnostic for a finding.
 func (f Finding) Message() string {
 	if f.Kind == EnumType {
-		return fmt.Sprintf("enum type %s hard-codes its allowed values in the schema; every new value then needs a migration to alter the type. Store the column as text and validate the set in application code or a lookup table", f.ColumnName)
+		return fmt.Sprintf("enum type %s locks its allowed values into the schema; every new value then needs a migration to alter the type. Store the column as text and validate the set in application code or a lookup table", f.Name)
 	}
-	return fmt.Sprintf("CHECK constraint hard-codes the allowed values of %s; every new value then needs a schema migration to rewrite the constraint. Validate the set in application code or keep it in a lookup table", f.ColumnName)
+	subject := "CHECK constraint"
+	if f.Name != "" {
+		subject += " on " + f.Name
+	}
+	return subject + " locks a validation rule into the schema; every change to the rule then needs a schema migration to rewrite the constraint. Validate in application code or keep allowed values in a lookup table"
 }
 
 var (
@@ -63,30 +68,22 @@ var (
 	enumKeyword  = regexp.MustCompile(`(?i)\bCREATE\s+TYPE\s+(` + name + `)\s+AS\s+ENUM\s*\(`)
 	whitespace   = regexp.MustCompile(`\s+`)
 
-	// name is a possibly quoted or qualified column reference; ident is a
-	// name optionally wrapped in a case-folding function.
-	name  = `(?:"[^"]+"|` + "`[^`]+`" + `|\[[^\]]+\]|[A-Za-z_]\w*)(?:\.(?:"[^"]+"|\w+))*`
-	ident = `(?:(?:lower|upper)\s*\(\s*` + name + `\s*\)|` + name + `)`
-	// literal is a SQL string or integer constant, optionally cast.
-	literal = `(?:'(?:[^']|'')*'|\d+)(?:::\w+(?:\[\])?)?`
-	// literals is a comma-separated list of at least one literal.
-	literals = literal + `(?:\s*,\s*` + literal + `)*`
+	// name is a possibly quoted or qualified identifier.
+	name = `(?:"[^"]+"|` + "`[^`]+`" + `|\[[^\]]+\]|[A-Za-z_]\w*)(?:\.(?:"[^"]+"|\w+))*`
+	// firstColumn finds the first bare identifier in a constraint expression
+	// that is not a SQL keyword or a function call.
+	firstColumn = regexp.MustCompile(`(?i)(?:^|[\s(])(` + name + `)(?:$|[\s),=<>!])`)
 
-	// boundary keeps ident from matching the tail of a longer token such as
-	// a function argument list or a numeric literal.
-	boundary = `(?:^|[\s(])`
-
-	// inList matches "col IN ('a', 'b')" and "col NOT IN (...)".
-	inList = regexp.MustCompile(`(?i)` + boundary + `(` + ident + `)\s+(?:not\s+)?in\s*\(\s*` + literals + `\s*\)`)
-	// anyArray matches the PostgreSQL spellings "col = ANY (ARRAY['a', 'b'])"
-	// and "col = ANY ('{a,b}')".
-	anyArray = regexp.MustCompile(`(?i)` + boundary + `(` + ident + `)\s*(?:=|<>|!=)\s*(?:any|all)\s*\(\s*(?:array\s*\[\s*` + literals + `\s*\]|'\{[^}]*\}'(?:::\w+(?:\[\])?)?)\s*\)`)
-	// comparison matches one "col = 'a'" or "col <> 'a'" term; two or more
-	// on the same column spell out a value list.
-	comparison = regexp.MustCompile(`(?i)` + boundary + `(` + ident + `)\s*(=|<>|!=)\s*` + literal + `(?:$|[\s)])`)
+	keywords = map[string]bool{
+		"not": true, "null": true, "and": true, "or": true, "in": true, "is": true,
+		"between": true, "like": true, "true": true, "false": true, "any": true,
+		"all": true, "array": true, "select": true, "exists": true, "case": true,
+		"when": true, "then": true, "else": true, "end": true, "glob": true,
+		"escape": true, "some": true,
+	}
 )
 
-// Scan returns every enum-style CHECK constraint and enum type in src.
+// Scan returns every CHECK constraint and enum type in src, in source order.
 // Keywords inside SQL comments or string literals are ignored.
 func Scan(src string) []Finding {
 	var findings []Finding
@@ -98,12 +95,8 @@ func Scan(src string) []Finding {
 			continue
 		}
 		expr := strings.TrimSpace(src[open+1 : end])
-		column, ok := enumeratedColumn(expr)
-		if !ok {
-			continue
-		}
 		line, col := position(src, loc[0])
-		findings = append(findings, Finding{Kind: CheckConstraint, Offset: loc[0], Line: line, Column: col, ColumnName: column, Expr: expr})
+		findings = append(findings, Finding{Kind: CheckConstraint, Offset: loc[0], Line: line, Column: col, Name: columnName(expr), Expr: expr})
 	}
 	for _, m := range enumKeyword.FindAllStringSubmatchIndex(masked, -1) {
 		open := m[1] - 1
@@ -112,43 +105,27 @@ func Scan(src string) []Finding {
 			continue
 		}
 		line, col := position(src, m[0])
-		findings = append(findings, Finding{Kind: EnumType, Offset: m[0], Line: line, Column: col, ColumnName: src[m[2]:m[3]], Expr: strings.TrimSpace(src[open+1 : end])})
+		findings = append(findings, Finding{Kind: EnumType, Offset: m[0], Line: line, Column: col, Name: src[m[2]:m[3]], Expr: strings.TrimSpace(src[open+1 : end])})
 	}
 	sort.Slice(findings, func(i, j int) bool { return findings[i].Offset < findings[j].Offset })
 	return findings
 }
 
-// enumeratedColumn reports the first column whose allowed values expr spells
-// out, anywhere inside the expression: a literal IN list, a PostgreSQL ANY
-// array, or two or more equality (or inequality) comparisons against
-// literals on the same column.
-func enumeratedColumn(expr string) (string, bool) {
-	normalized := whitespace.ReplaceAllString(expr, " ")
-	for _, re := range []*regexp.Regexp{inList, anyArray} {
-		if m := re.FindStringSubmatch(normalized); m != nil {
-			return columnName(m[1]), true
+// columnName returns the first column an expression mentions, for the
+// diagnostic. Function names and keywords are skipped.
+func columnName(expr string) string {
+	normalized := whitespace.ReplaceAllString(maskCommentsAndStrings(expr), " ")
+	for _, m := range firstColumn.FindAllStringSubmatchIndex(normalized, -1) {
+		candidate := normalized[m[2]:m[3]]
+		if keywords[strings.ToLower(candidate)] {
+			continue
 		}
-	}
-	counts := map[string]int{}
-	for _, m := range comparison.FindAllStringSubmatch(normalized, -1) {
-		key := columnName(m[1])
-		if m[2] != "=" {
-			key = "<>" + key
+		if rest := strings.TrimLeft(normalized[m[3]:], " "); strings.HasPrefix(rest, "(") {
+			continue // function call
 		}
-		counts[key]++
-		if counts[key] >= 2 {
-			return strings.TrimPrefix(key, "<>"), true
-		}
+		return candidate
 	}
-	return "", false
-}
-
-// columnName strips a lower()/upper() wrapper from a matched ident.
-func columnName(ident string) string {
-	if i := strings.IndexByte(ident, '('); i >= 0 {
-		ident = strings.TrimSuffix(strings.TrimSpace(ident[i+1:]), ")")
-	}
-	return strings.TrimSpace(ident)
+	return ""
 }
 
 // maskCommentsAndStrings blanks line comments, block comments, and
@@ -234,12 +211,12 @@ func position(src string, offset int) (line, column int) {
 	return line, column
 }
 
-// Analyzer reports enum-style CHECK constraints and enum types inside Go
-// string literals in non-test files, where embedded schema and migration SQL
+// Analyzer reports CHECK constraints and enum types inside Go string
+// literals in non-test files, where embedded schema and migration SQL
 // usually lives.
 var Analyzer = &analysis.Analyzer{
-	Name:     "sqlenum",
-	Doc:      "reports SQL CHECK constraints and enum types that hard-code a column's allowed values",
+	Name:     "sqlcheck",
+	Doc:      "reports SQL CHECK constraints and enum types, which lock validation rules into the schema",
 	Requires: []*analysis.Analyzer{inspect.Analyzer},
 	Run:      run,
 }

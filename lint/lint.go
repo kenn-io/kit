@@ -13,7 +13,7 @@ import (
 	"go.kenn.io/kit/lint/errtext"
 	"go.kenn.io/kit/lint/nohttpmux"
 	"go.kenn.io/kit/lint/sleeptest"
-	"go.kenn.io/kit/lint/sqlenum"
+	"go.kenn.io/kit/lint/sqlcheck"
 	"go.kenn.io/kit/lint/testifyhelper"
 )
 
@@ -23,7 +23,7 @@ func Analyzers() []*analysis.Analyzer {
 		errtext.Analyzer,
 		nohttpmux.Analyzer,
 		sleeptest.Analyzer,
-		sqlenum.Analyzer,
+		sqlcheck.Analyzer,
 		testifyhelper.Analyzer,
 	}
 }

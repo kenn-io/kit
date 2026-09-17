@@ -57,7 +57,7 @@ func TestConfigRejectsPositionalArguments(t *testing.T) {
 	assert.ErrorContains(t, err, "unexpected arguments")
 }
 
-func TestSQLReportsEnumChecksInSQLFiles(t *testing.T) {
+func TestSQLReportsCheckConstraintsInSQLFiles(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
 	dir := t.TempDir()
@@ -69,8 +69,9 @@ func TestSQLReportsEnumChecksInSQLFiles(t *testing.T) {
 	var stdout bytes.Buffer
 	n, err := runSQL([]string{dir}, &stdout)
 	require.NoError(err)
-	assert.Equal(1, n)
-	assert.Contains(stdout.String(), "migrations/0001_init.up.sql:2:15: CHECK constraint hard-codes the allowed values of status")
+	assert.Equal(2, n)
+	assert.Contains(stdout.String(), "migrations/0001_init.up.sql:2:15: CHECK constraint on status locks")
+	assert.Contains(stdout.String(), "migrations/0001_init.up.sql:3:13: CHECK constraint on n locks")
 
 	stdout.Reset()
 	n, err = runSQL([]string{filepath.Join(dir, "missing")}, &stdout)

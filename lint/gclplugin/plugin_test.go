@@ -27,7 +27,7 @@ func TestPluginIsRegistered(t *testing.T) {
 	require.NoError(t, err)
 	p, err := newPlugin(nil)
 	require.NoError(t, err)
-	assert.Equal([]string{"errtext", "nohttpmux", "sleeptest", "sqlenum", "testifyhelper"}, analyzerNames(t, p))
+	assert.Equal([]string{"errtext", "nohttpmux", "sleeptest", "sqlcheck", "testifyhelper"}, analyzerNames(t, p))
 	assert.Equal(register.LoadModeTypesInfo, p.GetLoadMode())
 	assert.False(errtext.IncludeTests)
 }
@@ -40,7 +40,7 @@ func TestPluginSettings(t *testing.T) {
 		"errtext": map[string]any{"include-tests": true},
 	})
 	require.NoError(t, err)
-	assert.Equal([]string{"errtext", "sqlenum", "testifyhelper"}, analyzerNames(t, p))
+	assert.Equal([]string{"errtext", "sqlcheck", "testifyhelper"}, analyzerNames(t, p))
 	assert.True(errtext.IncludeTests)
 }
 
