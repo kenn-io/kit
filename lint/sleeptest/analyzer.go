@@ -29,9 +29,16 @@ func run(pass *analysis.Pass) (any, error) {
 	// bubbles holds the source ranges of function bodies passed to
 	// synctest.Test: literals written inline, and the declarations or
 	// literals behind identifiers passed by name. Sleeps inside those ranges
-	// are fine.
+	// are fine when every use of the named callback is through synctest.Test.
 	bodies := functionBodies(pass)
 	var bubbles []ast.Node
+	uses := make(map[types.Object]int, len(bodies))
+	for _, obj := range pass.TypesInfo.Uses {
+		if _, ok := bodies[obj]; ok {
+			uses[obj]++
+		}
+	}
+	callbackUses := make(map[types.Object]int, len(bodies))
 	inspect.Preorder([]ast.Node{(*ast.CallExpr)(nil)}, func(n ast.Node) {
 		call := n.(*ast.CallExpr)
 		if !isPackageFunc(pass, call, "testing/synctest", "Test") {
@@ -42,12 +49,17 @@ func run(pass *analysis.Pass) (any, error) {
 			case *ast.FuncLit:
 				bubbles = append(bubbles, arg)
 			case *ast.Ident:
-				if body, ok := bodies[pass.TypesInfo.Uses[arg]]; ok {
-					bubbles = append(bubbles, body)
+				if obj := pass.TypesInfo.Uses[arg]; bodies[obj] != nil {
+					callbackUses[obj]++
 				}
 			}
 		}
 	})
+	for obj, count := range callbackUses {
+		if count == uses[obj] {
+			bubbles = append(bubbles, bodies[obj])
+		}
+	}
 
 	inspect.Preorder([]ast.Node{(*ast.CallExpr)(nil)}, func(n ast.Node) {
 		call := n.(*ast.CallExpr)

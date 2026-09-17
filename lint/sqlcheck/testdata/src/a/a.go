@@ -7,3 +7,5 @@ var migration = "ALTER TABLE jobs ADD COLUMN kind TEXT CHECK (kind = 'a' OR kind
 var pg = `CREATE TYPE job_status AS ENUM ('queued', 'done');` // want "enum type job_status locks its allowed values"
 
 var fine = "CREATE TABLE ok (name TEXT NOT NULL, UNIQUE (name)) -- CHECK (length(name) > 0) moved to the app"
+
+var prose = "Please CHECK (the generated output)"

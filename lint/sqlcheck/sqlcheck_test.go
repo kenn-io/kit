@@ -33,6 +33,8 @@ func TestScanReportsEveryCheckConstraint(t *testing.T) {
 		{"json", "CHECK (json_valid(payload))", "payload"},
 		{"not null leading", "CHECK (NOT (deleted AND active))", "deleted"},
 		{"table constraint", "CREATE TABLE t (a INT, b INT, CHECK (a < b))", "a"},
+		{"parenthesis in comment", "CHECK (amount > 0 /* see normalize(value */)", "amount"},
+		{"quoted identifier comment marker", `CREATE TABLE t ("--status" TEXT CHECK ("--status" <> ''))`, `"--status"`},
 		{"no column", "CHECK (1 = 1)", ""},
 	}
 	for _, tc := range tests {
@@ -58,6 +60,9 @@ func TestScanIgnoresCommentsStringsAndOtherText(t *testing.T) {
 		"/* CHECK (kind IN ('a')) */ CREATE TABLE t (kind TEXT)",
 		"/* multi\n CHECK (kind IN ('a'))\n line */",
 		"INSERT INTO notes (body) VALUES ('CHECK (kind IN (''a''))')",
+		"SELECT $$CHECK (example)$$",
+		"SELECT $body$CHECK (example)$body$",
+		"/* outer /* CHECK (kind IN ('a')) */ still comment */",
 		"-- CREATE TYPE s AS ENUM ('x')",
 		"CREATE TABLE t (kind TEXT) -- was: CHECK (kind IN ('a'))",
 		"CREATE TABLE checks (id INT); SELECT * FROM checks WHERE checked = 1",

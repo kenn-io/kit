@@ -46,6 +46,10 @@ func bubbleBody(t *testing.T) {
 	time.Sleep(time.Second)
 }
 
+func mixedBubble(t *testing.T) {
+	time.Sleep(time.Second) // want "time.Sleep in a test outside a synctest bubble"
+}
+
 var packageBubble = func(t *testing.T) {
 	time.Sleep(time.Second)
 }
@@ -62,4 +66,6 @@ func TestNamedCallbacksRunInsideBubble(t *testing.T) {
 		time.Sleep(time.Millisecond) // want "time.Sleep in a test outside a synctest bubble"
 	}
 	synctest.Test(t, declared)
+	synctest.Test(t, mixedBubble)
+	mixedBubble(t)
 }

@@ -20,7 +20,7 @@ an overlay with its local additions, and `kennlint config` renders the merged
 `.golangci.yml` from the canonical file plus the overlay. A `-check` mode fails
 CI when the committed file is stale.
 
-**Four analyzers** that off-the-shelf linters do not cover. They ship as the
+**Five analyzers** that off-the-shelf linters do not cover. They ship as the
 `kennlint` linter inside a custom golangci-lint build, so `//nolint:kennlint`
 and path exclusions work like any other linter.
 

@@ -146,6 +146,21 @@ func equalNodes(a, b *yaml.Node) bool {
 	if len(a.Content) != len(b.Content) {
 		return false
 	}
+	if a.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(a.Content); i += 2 {
+			matched := false
+			for j := 0; j+1 < len(b.Content); j += 2 {
+				if equalNodes(a.Content[i], b.Content[j]) && equalNodes(a.Content[i+1], b.Content[j+1]) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return false
+			}
+		}
+		return true
+	}
 	for i := range a.Content {
 		if !equalNodes(a.Content[i], b.Content[i]) {
 			return false

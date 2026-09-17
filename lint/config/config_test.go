@@ -73,6 +73,8 @@ linters:
   settings:
     importas:
       alias:
+        - alias: ""
+          pkg: github.com/stretchr/testify/assert
         - pkg: example.com/x/y
           alias: xy
     forbidigo:
