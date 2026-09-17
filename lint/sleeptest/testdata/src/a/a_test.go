@@ -4,6 +4,8 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	clock "time"
 )
 
 func TestSleepsForReal(t *testing.T) {
@@ -68,4 +70,36 @@ func TestNamedCallbacksRunInsideBubble(t *testing.T) {
 	synctest.Test(t, declared)
 	synctest.Test(t, mixedBubble)
 	mixedBubble(t)
+}
+
+func TestSleepInGoroutineInsideBubble(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		done := make(chan struct{})
+		go func() {
+			time.Sleep(time.Second)
+			close(done)
+		}()
+		<-done
+	})
+}
+
+func TestSleepInGoroutineOutsideBubble(t *testing.T) {
+	done := make(chan struct{})
+	go func() {
+		time.Sleep(time.Millisecond) // want "time.Sleep in a test outside a synctest bubble"
+		close(done)
+	}()
+	<-done
+}
+
+func TestSleepThroughAlias(t *testing.T) {
+	clock.Sleep(time.Millisecond) // want "time.Sleep in a test outside a synctest bubble"
+}
+
+func TestHelperCalledFromBubbleIsStillReported(t *testing.T) {
+	// waitHelper sleeps and is reported at its own body; calls from inside a
+	// bubble cannot lift that (documented limitation).
+	synctest.Test(t, func(t *testing.T) {
+		waitHelper(t)
+	})
 }

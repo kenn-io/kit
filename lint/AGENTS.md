@@ -25,9 +25,15 @@ See `docs/adopting-kennlint.md` for the consumer workflow.
   with `analysistest` fixtures under `testdata/`, including negative cases.
   Do not replace an analyzer with text matching.
 - Analyzers report only in the file kinds they document (test files for
-  `sleeptest` and `testifyhelper`, non-test files for `nohttpmux`, `errtext`
-  unless `include-tests` is set). Path policy beyond that belongs in golangci
-  exclusions, not in analyzer code.
+  `sleeptest` and `testifyhelper`, plus `testutil` and `*test` helper packages
+  for `sleeptest` unless `helper-packages` is off; non-test files for
+  `nohttpmux`, `errtext` unless `include-tests` is set). Path policy beyond
+  that belongs in golangci exclusions, not in analyzer code.
+- `sleeptest` treats a bubble as the body of the function passed to
+  `synctest.Test`, resolved by position for inline literals and by type
+  object for functions passed by name. Helpers called from a bubble are
+  reported on purpose; the fixture documents that limitation. The testify
+  `Eventually` check stays off by default; consumers opt in per repository.
 - Diagnostic strings are asserted in fixture `// want` comments; change both
   together.
 - The canonical configuration must stay valid for the golangci-lint version in

@@ -16,6 +16,9 @@
 //	  disable: [sleeptest]        # analyzer names to leave out
 //	  errtext:
 //	    include-tests: true       # also report err.Error() matching in tests
+//	  sleeptest:
+//	    helper-packages: false    # only check _test.go files (default true)
+//	    eventually: true          # also report testify Eventually outside bubbles
 package gclplugin
 
 import (
@@ -27,6 +30,7 @@ import (
 
 	"go.kenn.io/kit/lint"
 	"go.kenn.io/kit/lint/errtext"
+	"go.kenn.io/kit/lint/sleeptest"
 )
 
 // Name is the linter name used in golangci-lint configuration.
@@ -38,11 +42,23 @@ type Settings struct {
 	Disable []string `json:"disable"`
 	// Errtext configures the errtext analyzer.
 	Errtext ErrtextSettings `json:"errtext"`
+	// Sleeptest configures the sleeptest analyzer.
+	Sleeptest SleeptestSettings `json:"sleeptest"`
 }
 
 // ErrtextSettings configures the errtext analyzer.
 type ErrtextSettings struct {
 	IncludeTests bool `json:"include-tests"`
+}
+
+// SleeptestSettings configures the sleeptest analyzer.
+type SleeptestSettings struct {
+	// HelperPackages also checks packages named testutil or ending in
+	// "test". nil means the analyzer default (true).
+	HelperPackages *bool `json:"helper-packages"`
+	// Eventually also reports testify Eventually, EventuallyWithT, and Never
+	// outside a bubble.
+	Eventually bool `json:"eventually"`
 }
 
 func init() {
@@ -70,6 +86,8 @@ type plugin struct {
 
 func (p *plugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 	errtext.IncludeTests = p.settings.Errtext.IncludeTests
+	sleeptest.HelperPackages = p.settings.Sleeptest.HelperPackages == nil || *p.settings.Sleeptest.HelperPackages
+	sleeptest.Eventually = p.settings.Sleeptest.Eventually
 	var analyzers []*analysis.Analyzer
 	for _, a := range lint.Analyzers() {
 		if slices.Contains(p.settings.Disable, a.Name) {
