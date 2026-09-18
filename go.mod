@@ -23,6 +23,7 @@ require (
 	github.com/posthog/posthog-go v1.12.6
 	github.com/shirou/gopsutil/v4 v4.26.6
 	github.com/stretchr/testify v1.11.1
+	github.com/yuin/goldmark v1.8.5
 	go.opentelemetry.io/contrib/exporters/autoexport v0.69.0
 	go.opentelemetry.io/contrib/propagators/autoprop v0.69.0
 	go.opentelemetry.io/otel v1.44.0
