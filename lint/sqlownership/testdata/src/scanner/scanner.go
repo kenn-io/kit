@@ -18,6 +18,17 @@ func Read(rows Rows) error {
 	return rows.Err()
 }
 func Forward(rows *sql.Rows) error { return Read(rows) }
+func Values(rows Rows) ([]int, error) {
+	var values []int
+	for rows.Next() {
+		var value int
+		if err := rows.Scan(&value); err != nil {
+			return nil, err
+		}
+		values = append(values, value)
+	}
+	return values, rows.Err()
+}
 func Unchecked(rows Rows) error {
 	for rows.Next() {
 		var value int
