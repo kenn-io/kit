@@ -66,3 +66,17 @@ func TestAliasedHelperUsesPackageConstant(t *testing.T) {
 	asrt := assert.New(t) // want "testify assertion object must be named assert"
 	asrt.Equal(assert.AnError, assert.AnError)
 }
+
+func TestPackageFunctionWithoutMatchingMethod(t *testing.T) {
+	assert.True(t, true)
+	assert.True(t, true)
+	assert.True(t, true)
+	assert.True(t, assert.ObjectsAreEqual(1, 1))
+}
+
+func TestMismatchedMethodSignature(t *testing.T) {
+	assert.Mismatched(t, "one")
+	assert.Mismatched(t, "two")
+	assert.Mismatched(t, "three")
+	assert.Mismatched(t, "four")
+}

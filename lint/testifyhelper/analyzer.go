@@ -283,7 +283,7 @@ func callKind(pass *analysis.Pass, call *ast.CallExpr, assertHelper, requireHelp
 	}
 
 	pkgObj, ok := obj.(*types.PkgName)
-	if !ok || sel.Sel.Name == "New" {
+	if !ok || sel.Sel.Name == "New" || !hasMatchingHelperMethod(pass, sel) {
 		return ""
 	}
 
@@ -295,4 +295,35 @@ func callKind(pass *analysis.Pass, call *ast.CallExpr, assertHelper, requireHelp
 	default:
 		return ""
 	}
+}
+
+// hasMatchingHelperMethod proves that removing the testing argument preserves
+// the function's remaining parameter and result types.
+func hasMatchingHelperMethod(pass *analysis.Pass, selector *ast.SelectorExpr) bool {
+	function, ok := pass.TypesInfo.Uses[selector.Sel].(*types.Func)
+	if !ok || function.Pkg() == nil {
+		return false
+	}
+	assertions, ok := function.Pkg().Scope().Lookup("Assertions").(*types.TypeName)
+	if !ok {
+		return false
+	}
+	method, _, _ := types.LookupFieldOrMethod(types.NewPointer(assertions.Type()), true, function.Pkg(), function.Name())
+	if method == nil {
+		return false
+	}
+	functionType, ok := function.Type().(*types.Signature)
+	if !ok {
+		return false
+	}
+	methodType, ok := method.Type().(*types.Signature)
+	if !ok || functionType.Params().Len() != methodType.Params().Len()+1 || functionType.Variadic() != methodType.Variadic() || !types.Identical(functionType.Results(), methodType.Results()) {
+		return false
+	}
+	for i := range methodType.Params().Len() {
+		if !types.Identical(functionType.Params().At(i+1).Type(), methodType.Params().At(i).Type()) {
+			return false
+		}
+	}
+	return true
 }
