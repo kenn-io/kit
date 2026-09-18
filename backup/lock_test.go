@@ -85,8 +85,9 @@ func TestExclusiveWaitsOutSharedLocks(t *testing.T) {
 	}()
 
 	excl, err := r.AcquireExclusiveLock("create", false)
-	require.NoError(err)
+	// A failed release is the cause when the wait times out, so report it first.
 	require.NoError(<-done)
+	require.NoError(err)
 	require.NoError(excl.Release())
 
 	// Mirrors the leave-no-file-behind check in
