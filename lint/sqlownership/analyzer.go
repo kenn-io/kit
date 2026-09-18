@@ -204,9 +204,10 @@ func returned(v ssa.Value, seen map[ssa.Value]bool) bool {
 	return false
 }
 
-// liveLoads returns the loads of slot that can observe the stored value. A
-// later store to the same slot ends the path, so an overwritten resource is
-// not treated as the one that reaches the return.
+// liveLoads returns the loads of slot that observe the stored value. It
+// returns none when any path replaces the value with a later store to the same
+// slot: the replaced resource leaks on that path, so it must not count as the
+// one that reaches the return.
 func liveLoads(store *ssa.Store, slot *ssa.Alloc) []*ssa.UnOp {
 	var loads []*ssa.UnOp
 	// scan reports whether the stored value survives to the end of instrs.
@@ -226,10 +227,10 @@ func liveLoads(store *ssa.Store, slot *ssa.Alloc) []*ssa.UnOp {
 		return true
 	}
 	block := store.Block()
-	var pending []*ssa.BasicBlock
-	if scan(block.Instrs[slices.Index(block.Instrs, ssa.Instruction(store))+1:]) {
-		pending = slices.Clone(block.Succs)
+	if !scan(block.Instrs[slices.Index(block.Instrs, ssa.Instruction(store))+1:]) {
+		return nil
 	}
+	pending := slices.Clone(block.Succs)
 	visited := map[*ssa.BasicBlock]bool{}
 	for len(pending) > 0 {
 		next := pending[len(pending)-1]
@@ -238,9 +239,10 @@ func liveLoads(store *ssa.Store, slot *ssa.Alloc) []*ssa.UnOp {
 			continue
 		}
 		visited[next] = true
-		if scan(next.Instrs) {
-			pending = append(pending, next.Succs...)
+		if !scan(next.Instrs) {
+			return nil
 		}
+		pending = append(pending, next.Succs...)
 	}
 	return loads
 }

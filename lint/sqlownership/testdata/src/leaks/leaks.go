@@ -34,3 +34,12 @@ func Overwritten(ctx context.Context, db *sql.DB, mu *sync.Mutex) (rows *sql.Row
 	rows, err = db.QueryContext(ctx, "SELECT value FROM other")
 	return
 }
+func Replaced(ctx context.Context, db *sql.DB, mu *sync.Mutex, again bool) (rows *sql.Rows, err error) {
+	mu.Lock()
+	defer mu.Unlock()
+	rows, err = db.QueryContext(ctx, "SELECT value FROM items") // want "Rows/Stmt/NamedStmt was not closed"
+	if again {
+		rows, err = db.QueryContext(ctx, "SELECT value FROM other")
+	}
+	return
+}
