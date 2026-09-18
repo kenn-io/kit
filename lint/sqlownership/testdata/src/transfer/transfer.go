@@ -19,6 +19,17 @@ func Named(ctx context.Context, db *sql.DB, mu *sync.Mutex) (rows *sql.Rows, err
 	return
 }
 
+func Either(ctx context.Context, db *sql.DB, mu *sync.Mutex, other bool) (rows *sql.Rows, err error) {
+	mu.Lock()
+	defer mu.Unlock()
+	if other {
+		rows, err = db.QueryContext(ctx, "SELECT value FROM other")
+	} else {
+		rows, err = db.QueryContext(ctx, "SELECT value FROM items")
+	}
+	return
+}
+
 type Row struct {
 	rows *sql.Rows
 	err  error
