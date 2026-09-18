@@ -158,7 +158,7 @@ func (o *owner) leaks(block *cfg.Block, nodes []ast.Node, seen map[*cfg.Block]bo
 		}
 	}
 	for _, next := range block.Succs {
-		if seen[next] || o.failed(next) {
+		if seen[next] || o.failed(block, next) {
 			continue
 		}
 		seen[next] = true
@@ -169,22 +169,39 @@ func (o *owner) leaks(block *cfg.Block, nodes []ast.Node, seen map[*cfg.Block]bo
 	return false
 }
 
-// failed reports whether block runs only when the statement that produced the
-// resource also produced an error. The resource is nil there.
-func (o *owner) failed(block *cfg.Block) bool {
-	branch, ok := block.Stmt.(*ast.IfStmt)
-	if !ok || block.Kind != cfg.KindIfThen || o.err == nil {
+// failed reports whether the edge from one block to the next is taken only
+// when the statement that produced the resource also produced an error. The
+// resource is nil there. It covers both "if err != nil" and "if err == nil".
+func (o *owner) failed(from, to *cfg.Block) bool {
+	if o.err == nil {
 		return false
 	}
-	cond, ok := branch.Cond.(*ast.BinaryExpr)
-	if !ok || cond.Op != token.NEQ {
+	// Only the block that evaluates an if condition has a then-successor.
+	var then *cfg.Block
+	for _, succ := range from.Succs {
+		if succ.Kind == cfg.KindIfThen {
+			then = succ
+		}
+	}
+	if then == nil {
+		return false
+	}
+	cond, ok := then.Stmt.(*ast.IfStmt).Cond.(*ast.BinaryExpr)
+	if !ok {
 		return false
 	}
 	isNil := func(expr ast.Expr) bool {
 		id, ok := expr.(*ast.Ident)
 		return ok && o.info.Uses[id] == types.Universe.Lookup("nil")
 	}
-	return o.variable(cond.X) == o.err && isNil(cond.Y) || o.variable(cond.Y) == o.err && isNil(cond.X)
+	onErr := o.variable(cond.X) == o.err && isNil(cond.Y) || o.variable(cond.Y) == o.err && isNil(cond.X)
+	if !onErr {
+		return false
+	}
+	if cond.Op == token.NEQ {
+		return to == then
+	}
+	return cond.Op == token.EQL && to != then
 }
 
 // mentioned reports whether node returns, stores, passes, or closes the

@@ -51,6 +51,26 @@ func Wrapped(ctx context.Context, db *sql.DB, mu *sync.Mutex) (*Row, error) {
 	return row, nil
 }
 
+func Inverted(ctx context.Context, db *sql.DB, mu *sync.Mutex) (*sql.Rows, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	rows, err := db.QueryContext(ctx, "SELECT value FROM items")
+	if err == nil {
+		return rows, nil
+	}
+	return nil, err
+}
+func InvertedElse(ctx context.Context, db *sql.DB, mu *sync.Mutex) (*sql.Rows, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	rows, err := db.QueryContext(ctx, "SELECT value FROM items")
+	if err == nil {
+		return rows, nil
+	} else {
+		return nil, err
+	}
+}
+
 type Row struct {
 	rows *sql.Rows
 	err  error

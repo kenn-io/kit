@@ -52,3 +52,15 @@ func EarlyExit(ctx context.Context, db *sql.DB, mu *sync.Mutex, skip bool) (*sql
 	}
 	return rows, err
 }
+func InvertedExit(ctx context.Context, db *sql.DB, mu *sync.Mutex, skip bool) (*sql.Rows, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	rows, err := db.QueryContext(ctx, "SELECT value FROM items") // want "Rows/Stmt/NamedStmt was not closed"
+	if err == nil {
+		if skip {
+			return nil, nil
+		}
+		return rows, nil
+	}
+	return nil, err
+}
