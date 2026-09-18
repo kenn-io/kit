@@ -232,7 +232,7 @@ func checked(pass *analysis.Pass, scans summaries, v ssa.Value, seen map[ssa.Val
 				return true
 			}
 			callee := common.StaticCallee()
-			if callee == nil {
+			if callee == nil || ignoresError(r) {
 				continue
 			}
 			for i, arg := range common.Args {
@@ -251,6 +251,30 @@ func checked(pass *analysis.Pass, scans summaries, v ssa.Value, seen map[ssa.Val
 					}
 				}
 			}
+		}
+	}
+	return false
+}
+
+// ignoresError catches discarded scanner errors without trying to prove how
+// callers handle errors they use. Scanners with no error result handle it inside.
+func ignoresError(call *ssa.Call) bool {
+	results := call.Common().Signature().Results()
+	for i := range results.Len() {
+		if !types.Identical(results.At(i).Type(), types.Universe.Lookup("error").Type()) {
+			continue
+		}
+		if results.Len() == 1 {
+			return len(refs(call)) == 0
+		}
+		used := false
+		for _, ref := range refs(call) {
+			if extract, ok := ref.(*ssa.Extract); ok && extract.Index == i && len(refs(extract)) > 0 {
+				used = true
+			}
+		}
+		if !used {
+			return true
 		}
 	}
 	return false
