@@ -43,3 +43,12 @@ func Replaced(ctx context.Context, db *sql.DB, mu *sync.Mutex, again bool) (rows
 	}
 	return
 }
+func EarlyExit(ctx context.Context, db *sql.DB, mu *sync.Mutex, skip bool) (*sql.Rows, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	rows, err := db.QueryContext(ctx, "SELECT value FROM items") // want "Rows/Stmt/NamedStmt was not closed"
+	if skip {
+		return nil, nil
+	}
+	return rows, err
+}

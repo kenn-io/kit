@@ -30,6 +30,27 @@ func Either(ctx context.Context, db *sql.DB, mu *sync.Mutex, other bool) (rows *
 	return
 }
 
+func Guarded(ctx context.Context, db *sql.DB, mu *sync.Mutex) (rows *sql.Rows, err error) {
+	mu.Lock()
+	defer mu.Unlock()
+	rows, err = db.QueryContext(ctx, "SELECT value FROM items")
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+func Wrapped(ctx context.Context, db *sql.DB, mu *sync.Mutex) (*Row, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	rows, err := db.QueryContext(ctx, "SELECT value FROM items")
+	if err != nil {
+		return nil, err
+	}
+	row := &Row{}
+	row.rows = rows
+	return row, nil
+}
+
 type Row struct {
 	rows *sql.Rows
 	err  error

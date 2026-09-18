@@ -12,6 +12,7 @@ import (
 	sqlclose "github.com/ryanrolds/sqlclosecheck/pkg/analyzer"
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/buildssa"
+	"golang.org/x/tools/go/analysis/passes/ctrlflow"
 	"golang.org/x/tools/go/ssa"
 )
 
@@ -26,7 +27,7 @@ type (
 
 var ownership = &analysis.Analyzer{
 	Name: "sqlownership", Doc: "Tracks SQL resource transfers and scanner error checks",
-	Requires:   []*analysis.Analyzer{buildssa.Analyzer},
+	Requires:   []*analysis.Analyzer{buildssa.Analyzer, ctrlflow.Analyzer},
 	FactTypes:  []analysis.Fact{new(scannerFact)},
 	ResultType: reflect.TypeFor[result](), Run: analyze,
 }
@@ -118,7 +119,9 @@ func analyze(pass *analysis.Pass) (any, error) {
 					if !exists {
 						h = handled{returned: true, scanned: true}
 					}
-					transferred := returned(value, map[ssa.Value]bool{})
+					// SSA proves the value flows into a return; the path
+					// search proves no other path drops it.
+					transferred := returned(value, map[ssa.Value]bool{}) && everyPath(pass, call.Pos())
 					h.returned = h.returned && transferred
 					h.scanned = h.scanned && (transferred || checked(pass, scans, value, map[ssa.Value]bool{}))
 					out[call.Pos()] = h
@@ -188,9 +191,9 @@ func returned(v ssa.Value, seen map[ssa.Value]bool) bool {
 				if returned(field.X, seen) {
 					return true
 				}
-			} else if slot, local := r.Addr.(*ssa.Alloc); local {
-				for _, load := range liveLoads(r, slot) {
-					if returned(load, seen) {
+			} else if _, local := r.Addr.(*ssa.Alloc); local {
+				for _, use := range refs(r.Addr) {
+					if load, ok := use.(*ssa.UnOp); ok && load.Op == token.MUL && returned(load, seen) {
 						return true
 					}
 				}
@@ -202,49 +205,6 @@ func returned(v ssa.Value, seen map[ssa.Value]bool) bool {
 		}
 	}
 	return false
-}
-
-// liveLoads returns the loads of slot that observe the stored value. It
-// returns none when any path replaces the value with a later store to the same
-// slot: the replaced resource leaks on that path, so it must not count as the
-// one that reaches the return.
-func liveLoads(store *ssa.Store, slot *ssa.Alloc) []*ssa.UnOp {
-	var loads []*ssa.UnOp
-	// scan reports whether the stored value survives to the end of instrs.
-	scan := func(instrs []ssa.Instruction) bool {
-		for _, instr := range instrs {
-			switch i := instr.(type) {
-			case *ssa.Store:
-				if i.Addr == slot {
-					return false
-				}
-			case *ssa.UnOp:
-				if i.Op == token.MUL && i.X == slot {
-					loads = append(loads, i)
-				}
-			}
-		}
-		return true
-	}
-	block := store.Block()
-	if !scan(block.Instrs[slices.Index(block.Instrs, ssa.Instruction(store))+1:]) {
-		return nil
-	}
-	pending := slices.Clone(block.Succs)
-	visited := map[*ssa.BasicBlock]bool{}
-	for len(pending) > 0 {
-		next := pending[len(pending)-1]
-		pending = pending[:len(pending)-1]
-		if visited[next] {
-			continue
-		}
-		visited[next] = true
-		if !scan(next.Instrs) {
-			return nil
-		}
-		pending = append(pending, next.Succs...)
-	}
-	return loads
 }
 
 func checked(pass *analysis.Pass, scans summaries, v ssa.Value, seen map[ssa.Value]bool) bool {
