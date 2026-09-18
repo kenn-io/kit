@@ -45,5 +45,6 @@ See `docs/adopting-kennlint.md` for the consumer workflow.
   `.golangci.overlay.yml` carries only import aliases and two documented
   carve-outs; do not add disables to it.
 - `testifyhelper` requires canonical `assert` and `require` import and helper
-  names. Parent scopes retain package calls when local helpers would shadow
+  names. Requiring local helpers is opt-in through `require-helpers`, off
+  by default for both libraries. Parent scopes retain package calls when local helpers would shadow
   package access in nested functions. Suggested fixes preserve object identity.

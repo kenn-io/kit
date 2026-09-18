@@ -19,6 +19,8 @@
 //	  sleeptest:
 //	    helper-packages: false    # only check _test.go files (default true)
 //	    eventually: true          # also report testify Eventually outside bubbles
+//	  testifyhelper:
+//	    require-helpers: true     # require assert.New/require.New (default false)
 package gclplugin
 
 import (
@@ -31,6 +33,7 @@ import (
 	"go.kenn.io/kit/lint"
 	"go.kenn.io/kit/lint/errtext"
 	"go.kenn.io/kit/lint/sleeptest"
+	"go.kenn.io/kit/lint/testifyhelper"
 )
 
 // Name is the linter name used in golangci-lint configuration.
@@ -44,6 +47,15 @@ type Settings struct {
 	Errtext ErrtextSettings `json:"errtext"`
 	// Sleeptest configures the sleeptest analyzer.
 	Sleeptest SleeptestSettings `json:"sleeptest"`
+	// Testifyhelper configures the testifyhelper analyzer.
+	Testifyhelper TestifyhelperSettings `json:"testifyhelper"`
+}
+
+// TestifyhelperSettings configures the testifyhelper analyzer.
+type TestifyhelperSettings struct {
+	// RequireHelpers requires local assert and require helpers for repeated calls.
+	// Canonical naming checks remain enabled when false (the default).
+	RequireHelpers bool `json:"require-helpers"`
 }
 
 // ErrtextSettings configures the errtext analyzer.
@@ -92,6 +104,9 @@ func (p *plugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 	for _, a := range lint.Analyzers() {
 		if slices.Contains(p.settings.Disable, a.Name) {
 			continue
+		}
+		if a.Name == testifyhelper.Analyzer.Name {
+			a = testifyhelper.New(p.settings.Testifyhelper.RequireHelpers)
 		}
 		analyzers = append(analyzers, a)
 	}

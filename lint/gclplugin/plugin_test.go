@@ -1,11 +1,13 @@
 package gclplugin
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/golangci/plugin-module-register/register"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/tools/go/analysis/analysistest"
 
 	"go.kenn.io/kit/lint/errtext"
 	"go.kenn.io/kit/lint/sleeptest"
@@ -61,4 +63,30 @@ func TestPluginRejectsUnknownSettings(t *testing.T) {
 
 	_, err = New(map[string]any{"bogus": true})
 	assert.ErrorContains(err, "kennlint settings")
+}
+
+func TestTestifyHelperSettings(t *testing.T) {
+	testdata, err := filepath.Abs(filepath.Join("..", "testifyhelper", "testdata"))
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name     string
+		settings any
+		fixtures []string
+	}{
+		{name: "default", fixtures: []string{"optional", "aliases"}},
+		{name: "disabled", settings: map[string]any{"testifyhelper": map[string]any{"require-helpers": false}}, fixtures: []string{"optional", "aliases"}},
+		{name: "enabled", settings: map[string]any{"testifyhelper": map[string]any{"require-helpers": true}}, fixtures: []string{"a"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := New(tc.settings)
+			require.NoError(t, err)
+			analyzers, err := p.BuildAnalyzers()
+			require.NoError(t, err)
+			for _, a := range analyzers {
+				if a.Name == "testifyhelper" {
+					analysistest.Run(t, testdata, a, tc.fixtures...)
+				}
+			}
+		})
+	}
 }

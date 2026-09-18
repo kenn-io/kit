@@ -8,16 +8,19 @@ import (
 	"golang.org/x/tools/go/analysis"
 )
 
-// Analyzer reports tests that repeatedly call testify's package-level
-// assert/require helpers instead of creating local assertion helpers.
-//
-// Testify imports and assertion objects use the canonical assert and require
-// names. Parent scopes retain package calls when a local helper would shadow
-// a package needed by a nested function.
-var Analyzer = &analysis.Analyzer{
-	Name: "testifyhelper",
-	Doc:  "reports tests that repeat package-level testify calls instead of using a local assert or require helper",
-	Run:  run,
+// Analyzer enforces canonical testify names. Local helpers are optional.
+var Analyzer = New(false)
+
+// New creates an analyzer with optional local-helper requirements for both
+// assert and require. Canonical import and assertion-object names are always checked.
+func New(requireHelpers bool) *analysis.Analyzer {
+	a := &analysis.Analyzer{
+		Name: "testifyhelper",
+		Doc:  "enforces canonical testify names and optionally requires local assertion helpers",
+		Run:  func(pass *analysis.Pass) (any, error) { return run(pass, requireHelpers) },
+	}
+	a.Flags.BoolVar(&requireHelpers, "require-helpers", requireHelpers, "require local assert and require helpers for repeated package calls")
+	return a
 }
 
 const (
@@ -25,10 +28,10 @@ const (
 	requireDiagnosticMessage = "test has %d direct testify package calls; create a local require helper with require := require.New(t) and use it for repeated checks"
 )
 
-func run(pass *analysis.Pass) (any, error) {
+func run(pass *analysis.Pass, requireHelpers bool) (any, error) {
 	for _, file := range pass.Files {
 		checkNames(pass, file)
-		if !strings.HasSuffix(pass.Fset.Position(file.Pos()).Filename, "_test.go") {
+		if !requireHelpers || !strings.HasSuffix(pass.Fset.Position(file.Pos()).Filename, "_test.go") {
 			continue
 		}
 
