@@ -54,3 +54,15 @@ func TestParentHelperWithShadowedT(t *testing.T) {
 		require.NoError(t, nil)
 	})
 }
+
+func TestPackageConstantNeedsName(t *testing.T) {
+	assert.Equal(t, assert.AnError, assert.AnError)
+	assert.True(t, true)
+	assert.True(t, true)
+	assert.True(t, true)
+}
+
+func TestAliasedHelperUsesPackageConstant(t *testing.T) {
+	asrt := assert.New(t) // want "testify assertion object must be named assert"
+	asrt.Equal(assert.AnError, assert.AnError)
+}

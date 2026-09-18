@@ -83,22 +83,27 @@ func renameObject(pass *analysis.Pass, file *ast.File, obj types.Object, name st
 	return edits
 }
 
-func nestedPackageUse(pass *analysis.Pass, body *ast.BlockStmt, name string) bool {
-	found := false
-	ast.Inspect(body, func(n ast.Node) bool {
-		lit, ok := n.(*ast.FuncLit)
-		if !ok {
-			return true
-		}
-		ast.Inspect(lit, func(child ast.Node) bool {
-			if ident, ok := child.(*ast.Ident); ok {
-				if pkg, ok := pass.TypesInfo.Uses[ident].(*types.PkgName); ok && testifyName(pkg.Imported().Path()) == name {
-					found = true
+// packageNeeded keeps package constants, types, constructors, and calls in
+// nested functions accessible when introducing or renaming a local helper.
+func packageNeeded(pass *analysis.Pass, body *ast.BlockStmt, name string, allowed []ast.Node) bool {
+	allowedPackages := map[*ast.Ident]bool{}
+	for _, node := range allowed {
+		if call, ok := node.(*ast.CallExpr); ok {
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+				if ident, ok := sel.X.(*ast.Ident); ok {
+					allowedPackages[ident] = true
 				}
 			}
-			return !found
-		})
-		return false
+		}
+	}
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		if ident, ok := n.(*ast.Ident); ok && !allowedPackages[ident] {
+			if pkg, ok := pass.TypesInfo.Uses[ident].(*types.PkgName); ok && testifyName(pkg.Imported().Path()) == name {
+				found = true
+			}
+		}
+		return !found
 	})
 	return found
 }
@@ -142,8 +147,8 @@ func reportHelper(pass *analysis.Pass, body *ast.BlockStmt, tName, name string, 
 	pass.Report(diagnostic)
 }
 
-// expandHelper preserves access to the package in nested tests by returning
-// this helper's method calls to package calls with their original test argument.
+// expandHelper preserves package access by returning this helper's method
+// calls to package calls with their original test argument.
 func expandHelper(pass *analysis.Pass, file *ast.File, obj types.Object, name string) ([]analysis.TextEdit, bool) {
 	var declaration *ast.AssignStmt
 	var body *ast.BlockStmt
@@ -165,7 +170,7 @@ func expandHelper(pass *analysis.Pass, file *ast.File, obj types.Object, name st
 		}
 		return true
 	})
-	if declaration == nil || body == nil || !nestedPackageUse(pass, body, name) {
+	if declaration == nil || body == nil || !packageNeeded(pass, body, name, []ast.Node{declaration.Rhs[0]}) {
 		return nil, false
 	}
 	call, ok := declaration.Rhs[0].(*ast.CallExpr)

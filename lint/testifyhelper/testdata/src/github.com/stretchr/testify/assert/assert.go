@@ -1,6 +1,11 @@
 package assert
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
+
+var AnError = errors.New("assertion example")
 
 type Assertions struct{}
 
