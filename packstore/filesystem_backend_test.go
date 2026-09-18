@@ -1111,25 +1111,24 @@ func TestMultiStoreFallsBackFromPackFooterCorruption(t *testing.T) {
 
 	for _, condition := range conditions {
 		t.Run(condition.name, func(t *testing.T) {
-			req := require.New(t)
 			primary := attachedFilesystemBackend(t, "primary", "primary-1")
 			secondary := attachedFilesystemBackend(t, "secondary", "secondary-1")
 			primaryPath, primaryID, primaryEntries := buildBackendPackSource(t, condition.primaryData)
 			primarySource, err := os.Open(primaryPath)
-			req.NoError(err)
+			require.NoError(t, err)
 			_, err = primary.PublishPack(ctx, primaryID, primarySource, PublishOptions{})
-			req.NoError(errors.Join(err, primarySource.Close()))
+			require.NoError(t, errors.Join(err, primarySource.Close()))
 			primaryEntry, err := indexEntryFromPack(primaryEntries[0], primaryID)
-			req.NoError(err)
+			require.NoError(t, err)
 			primaryEntry = condition.entry(primaryEntry)
 
 			secondaryPath, secondaryID, secondaryEntries := buildBackendPackSource(t, content)
 			secondarySource, err := os.Open(secondaryPath)
-			req.NoError(err)
+			require.NoError(t, err)
 			_, err = secondary.PublishPack(ctx, secondaryID, secondarySource, PublishOptions{})
-			req.NoError(errors.Join(err, secondarySource.Close()))
+			require.NoError(t, errors.Join(err, secondarySource.Close()))
 			secondaryEntry, err := indexEntryFromPack(secondaryEntries[0], secondaryID)
-			req.NoError(err)
+			require.NoError(t, err)
 
 			for _, operation := range operations {
 				t.Run(operation.name, func(t *testing.T) {

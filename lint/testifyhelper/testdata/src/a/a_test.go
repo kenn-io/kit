@@ -3,8 +3,8 @@ package a
 import (
 	"testing"
 
-	Assert "github.com/stretchr/testify/assert"
-	Require "github.com/stretchr/testify/require"
+	Assert "github.com/stretchr/testify/assert"   // want "testify import must be named assert"
+	Require "github.com/stretchr/testify/require" // want "testify import must be named require"
 )
 
 func TestNeedsHelper(t *testing.T) {
@@ -108,7 +108,7 @@ func TestOuterHelperStillCountsAfterShadowing(t *testing.T) {
 }
 
 func TestHelperWithOtherNameCounts(t *testing.T) {
-	req := Require.New(t)
+	req := Require.New(t) // want "testify assertion object must be named require"
 	req.NoError(nil)
 	req.NotNil(&struct{}{})
 	req.NoError(nil)
@@ -125,7 +125,7 @@ func TestHelperWithOtherNameCounts(t *testing.T) {
 func TestHelperForOtherTDoesNotCount(t *testing.T) {
 	t.Run("outer", func(outer *testing.T) {
 		t.Run("inner", func(t *testing.T) {
-			req := Require.New(outer)
+			req := Require.New(outer) // want "testify assertion object must be named require"
 			req.NoError(nil)
 			Require.NoError(t, nil)
 			Require.NotNil(t, &struct{}{})

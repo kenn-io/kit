@@ -35,27 +35,27 @@ func BenchmarkStorePackedReadsLargeRaw(b *testing.B) {
 
 func benchmarkStorePackedReads(b *testing.B, content []byte) {
 	b.Helper()
-	req := require.New(b)
+
 	b.Helper()
 	root := b.TempDir()
 	layout, err := NewLayout(root, LayoutOptions{Staging: StagingStoreDirectory, StagingDir: "tmp"})
-	req.NoError(err)
+	require.NoError(b, err)
 	w, err := pack.NewWriter(b.TempDir(), pack.WriterOptions{})
-	req.NoError(err)
+	require.NoError(b, err)
 	entry, err := w.Append(content)
-	req.NoError(err)
+	require.NoError(b, err)
 	packID := w.ID()
-	req.NoError(os.MkdirAll(filepath.Dir(layout.PackPath(packID)), 0o700))
+	require.NoError(b, os.MkdirAll(filepath.Dir(layout.PackPath(packID)), 0o700))
 	_, err = w.Seal(layout.PackPath(packID))
-	req.NoError(err)
+	require.NoError(b, err)
 	hash, err := ParseHash(entry.ID.String())
-	req.NoError(err)
+	require.NoError(b, err)
 	indexed := IndexEntry{Hash: hash, PackID: packID, Offset: int64(entry.Offset), StoredLen: int64(entry.StoredLen), RawLen: int64(entry.RawLen), Flags: uint8(entry.Flags), CRC32C: entry.CRC32C}
 	store, err := NewStore(&mapResolver{locations: map[Hash]Location{
 		hash: {Member: true, Pack: &indexed},
 	}}, layout, StoreOptions{})
-	req.NoError(err)
-	b.Cleanup(func() { req.NoError(store.Close()) })
+	require.NoError(b, err)
+	b.Cleanup(func() { require.NoError(b, store.Close()) })
 
 	for _, mode := range []string{"stream", "buffered"} {
 		b.Run(mode, func(b *testing.B) {

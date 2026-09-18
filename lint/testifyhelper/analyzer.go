@@ -11,10 +11,9 @@ import (
 // Analyzer reports tests that repeatedly call testify's package-level
 // assert/require helpers instead of creating local assertion helpers.
 //
-// A helper is any local variable initialized with assert.New(t) or
-// require.New(t) for the test's own t. The conventional names are assert and
-// require; a different name (for example req) is accepted so that a nested
-// subtest can still reach the package to create its own helper.
+// Testify imports and assertion objects use the canonical assert and require
+// names. Parent scopes retain package calls when a local helper would shadow
+// a package needed by a nested function.
 var Analyzer = &analysis.Analyzer{
 	Name: "testifyhelper",
 	Doc:  "reports tests that repeat package-level testify calls instead of using a local assert or require helper",
@@ -28,6 +27,7 @@ const (
 
 func run(pass *analysis.Pass) (any, error) {
 	for _, file := range pass.Files {
+		checkNames(pass, file)
 		if !strings.HasSuffix(pass.Fset.Position(file.Pos()).Filename, "_test.go") {
 			continue
 		}
@@ -194,12 +194,12 @@ func analyzeBody(pass *analysis.Pass, body *ast.BlockStmt, tName string, imports
 	hasAssertHelper := len(assertHelper.objs) > 0 && assertHelper.used
 	hasRequireHelper := len(requireHelper.objs) > 0 && requireHelper.used
 
-	if len(assertCallPositions) >= 2 && !hasAssertHelper {
-		pass.Reportf(assertCallPositions[len(assertCallPositions)-1].Pos(), assertDiagnosticMessage, total)
+	if len(assertCallPositions) >= 2 && !hasAssertHelper && !nestedPackageUse(pass, body, "assert") {
+		reportHelper(pass, body, tName, "assert", assertCallPositions, total, assertDiagnosticMessage)
 	}
 
-	if len(requireCallPositions) >= 2 && !hasRequireHelper {
-		pass.Reportf(requireCallPositions[len(requireCallPositions)-1].Pos(), requireDiagnosticMessage, total)
+	if len(requireCallPositions) >= 2 && !hasRequireHelper && !nestedPackageUse(pass, body, "require") {
+		reportHelper(pass, body, tName, "require", requireCallPositions, total, requireDiagnosticMessage)
 	}
 }
 

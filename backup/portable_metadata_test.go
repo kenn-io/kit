@@ -365,14 +365,13 @@ func TestRestoreDefersAuxiliaryTargetUntilDatabaseProofSucceeds(t *testing.T) {
 }
 
 func TestRestoreRollsBackAuxiliaryAfterPostHandoffFailures(t *testing.T) {
-	requirements := require.New(t)
 	base := t.TempDir()
 	repo, err := backup.Init(filepath.Join(base, "repo"))
-	requirements.NoError(err)
+	require.NoError(t, err)
 	raw, err := json.Marshal(portableRecord{Notes: []string{"snapshot"}})
-	requirements.NoError(err)
+	require.NoError(t, err)
 	stats, err := json.Marshal(portableStats{Notes: 1})
-	requirements.NoError(err)
+	require.NoError(t, err)
 	artifact := []byte("auxiliary state")
 	_, err = backup.Create(t.Context(), repo, portableApp{}, backup.CreateOptions{
 		MetadataSource: &portableSource{
@@ -386,7 +385,7 @@ func TestRestoreRollsBackAuxiliaryAfterPostHandoffFailures(t *testing.T) {
 		},
 		Jobs: 1,
 	})
-	requirements.NoError(err)
+	require.NoError(t, err)
 
 	commitErr := errors.New("commit auxiliary")
 	tests := []struct {

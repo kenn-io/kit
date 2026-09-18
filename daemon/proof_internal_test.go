@@ -36,12 +36,12 @@ func TestProofMACBindsRuntimeIdentity(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assertT := assert.New(t)
-			requireT := require.New(t)
+			assert := assert.New(t)
+			require := require.New(t)
 
 			got, err := proofMAC(key, nonce, tt.rec)
-			requireT.NoError(err)
-			assertT.NotEqual(want, got)
+			require.NoError(err)
+			assert.NotEqual(want, got)
 		})
 	}
 }
