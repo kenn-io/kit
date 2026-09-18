@@ -57,6 +57,9 @@ linters:
       check-blank: false
     testifylint:
       enable-all: true
+      disable:
+        # Identifier names do not prove that an assertion compares encoded data.
+        - encoded-compare
     exhaustive:
       default-signifies-exhaustive: true
     usetesting:
