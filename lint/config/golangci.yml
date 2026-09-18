@@ -20,8 +20,6 @@ linters:
     - noctx
     - durationcheck
     - exhaustive
-    - sqlclosecheck
-    - rowserrcheck
     - gocritic
     - makezero
     - reassign

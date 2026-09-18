@@ -14,6 +14,7 @@ import (
 	"go.kenn.io/kit/lint/nohttpmux"
 	"go.kenn.io/kit/lint/sleeptest"
 	"go.kenn.io/kit/lint/sqlcheck"
+	"go.kenn.io/kit/lint/sqlownership"
 	"go.kenn.io/kit/lint/testifyhelper"
 )
 
@@ -24,6 +25,8 @@ func Analyzers() []*analysis.Analyzer {
 		nohttpmux.Analyzer,
 		sleeptest.Analyzer,
 		sqlcheck.Analyzer,
+		sqlownership.CloseAnalyzer,
+		sqlownership.ErrAnalyzer,
 		testifyhelper.Analyzer,
 	}
 }
