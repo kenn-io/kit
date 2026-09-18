@@ -26,7 +26,8 @@ and path exclusions work like any other linter.
 
 | Analyzer | Reports |
 | --- | --- |
-| `testifyhelper` | Tests that repeat package-level `assert.X(t, …)`/`require.X(t, …)` calls instead of creating `assert := assert.New(t)` or `require := require.New(t)` once. Any variable bound to `New(t)` counts, so a test whose subtests need their own helper can name the outer one `req` or `asrt` to avoid shadowing the package. |
+| `sqlclosecheck`, `rowserrcheck` | SQL resource closure and iteration errors, including returned ownership and shared scanners across packages. The kit versions extend the upstream checks; do not enable the duplicate built-in checks. |
+| `testifyhelper` | Imports and assertion objects must be named `assert` or `require`. Set `testifyhelper.require-helpers: true` in plugin settings to also require local helpers for repeated package calls; the default is false for both libraries. Parent scopes retain package calls when nested functions need package access. Run with `--fix` to apply object-aware renames and, when enabled, local-helper conversions. |
 | `sleeptest` | `time.Sleep` in a `_test.go` file outside a `synctest.Test` bubble. Wall-clock sleeps make tests slow and timing-dependent. A bubble is the body of the function passed to `synctest.Test`, inline or by name, at any nesting depth including goroutines. A helper that sleeps and is only called from inside a bubble is still reported: give it a channel to wait on instead. Packages named `testutil` or ending in `test` are checked too (`helper-packages`, default on). Set `eventually: true` to also report testify `Eventually`, `EventuallyWithT`, and `Never` outside bubbles; that is off by default because some repositories endorse `Eventually` for awaiting a fake's channel. |
 | `errtext` | Deciding on error identity by matching `err.Error()` text: `strings.Contains(err.Error(), …)`, `err.Error() == …`, and similar. Use `errors.Is` or `errors.AsType`. Test files are skipped unless `errtext.include-tests` is set. |
 | `sqlcheck` | SQL `CHECK` constraints and `CREATE TYPE ... AS ENUM` in Go string literals outside tests. A CHECK locks a validation rule into the schema, so every change to the rule (most often a new allowed value for a status-like column) needs a migration that rewrites the constraint. Validate in application code or keep allowed values in a lookup table. `kennlint sql` applies the same check to `.sql` migration files. |
@@ -160,7 +161,7 @@ build a custom binary for nilaway pay nothing extra for the plugin.
 Without a custom binary, `kennlint run ./...` runs the five analyzers directly
 through the standard `go/analysis` multichecker, with the usual `-json`,
 `-fix`, and per-analyzer flags such as `-errtext.include-tests` or
-`-sleeptest.eventually`; `go vet -vettool=$(command -v kennlint) ./...` works
+`-sleeptest.eventually` or `-testifyhelper.require-helpers`; `go vet -vettool=$(command -v kennlint) ./...` works
 too. Both are useful for editors and for repositories that cannot build a
 custom golangci-lint, but neither honors `nolint` comments or golangci path
 exclusions. Rolling `sleeptest` out to a repository with existing sleeps

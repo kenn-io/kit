@@ -23,6 +23,8 @@ var (
 	lockHeartbeatInterval = 30 * time.Second
 	sharedWaitTimeout     = 60 * time.Second
 	sharedWaitPoll        = 200 * time.Millisecond
+	claimBusyTimeout      = 2 * time.Second
+	claimBusyPoll         = 5 * time.Millisecond
 )
 
 const exclusiveLockName = "exclusive.json"
@@ -250,10 +252,19 @@ func claimLockFile(path string) (string, error) {
 		filepath.Dir(path),
 		releasingClaimPrefix+pack.NewPackID()+".json",
 	)
-	if err := os.Rename(path, claim); err != nil {
-		return "", err
+	// A reader elsewhere holds the file only for the length of one read, so a
+	// busy file is retried briefly instead of leaving a released lock in place.
+	deadline := time.Now().Add(claimBusyTimeout)
+	for {
+		err := os.Rename(path, claim)
+		if err == nil {
+			return claim, nil
+		}
+		if !lockFileBusy(err) || time.Now().After(deadline) {
+			return "", err
+		}
+		time.Sleep(claimBusyPoll)
 	}
-	return claim, nil
 }
 
 // returnClaimedLock puts a claimed lock file back at path without clobbering a

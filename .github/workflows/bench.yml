@@ -40,24 +40,29 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Run candidate benchmarks
-        run: |
-          read -r -a packages <<< "${BENCH_PACKAGES}"
-          go test -run '^$' -bench "${BENCH_PATTERN}" -benchmem \
-            -count "${BENCH_COUNT}" -benchtime "${BENCH_TIME}" \
-            "${packages[@]}" | tee "${RUNNER_TEMP}/bench-new.txt"
-
-      - name: Run merge-base benchmarks
+      # Disk latency on shared runners comes in bursts. Alternating single
+      # candidate and merge-base runs spreads a burst over both sides, so it
+      # cannot look like a regression in one of them.
+      - name: Run interleaved candidate and merge-base benchmarks
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
           base=$(git merge-base HEAD "origin/${BASE_REF}")
           git worktree add "${RUNNER_TEMP}/bench-base" "${base}"
           read -r -a packages <<< "${BENCH_PACKAGES}"
-          (cd "${RUNNER_TEMP}/bench-base" && \
-            go test -run '^$' -bench "${BENCH_PATTERN}" -benchmem \
-              -count "${BENCH_COUNT}" -benchtime "${BENCH_TIME}" \
-              "${packages[@]}") > "${RUNNER_TEMP}/bench-old.txt"
+          bench() {
+            (cd "$1" && go test -run '^$' -bench "${BENCH_PATTERN}" -benchmem \
+              -count 1 -benchtime "${BENCH_TIME}" "${packages[@]}")
+          }
+          for i in $(seq "${BENCH_COUNT}"); do
+            if (( i % 2 )); then
+              bench . | tee -a "${RUNNER_TEMP}/bench-new.txt"
+              bench "${RUNNER_TEMP}/bench-base" >> "${RUNNER_TEMP}/bench-old.txt"
+            else
+              bench "${RUNNER_TEMP}/bench-base" >> "${RUNNER_TEMP}/bench-old.txt"
+              bench . | tee -a "${RUNNER_TEMP}/bench-new.txt"
+            fi
+          done
 
       - name: Compare with merge base
         run: go run ./tools/benchgate -old "${RUNNER_TEMP}/bench-old.txt" -new "${RUNNER_TEMP}/bench-new.txt"

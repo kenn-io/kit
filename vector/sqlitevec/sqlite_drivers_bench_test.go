@@ -96,11 +96,12 @@ func setupBenchmarkStore(b *testing.B, driver sqliteDriverBench, documents, dime
 	require.NoError(err)
 	stmt, err := tx.PrepareContext(ctx, `INSERT INTO messages (id, body) VALUES (?, ?)`)
 	require.NoError(err)
+	defer stmt.Close()
 	for i := 1; i <= documents; i++ {
 		_, err = stmt.ExecContext(ctx, i, fmt.Sprintf("document %d", i))
 		require.NoError(err)
 	}
-	require.NoError(stmt.Close()) //nolint:sqlclosecheck // the statement is closed before the transaction commits on purpose
+	require.NoError(stmt.Close())
 	require.NoError(tx.Commit())
 
 	store, err := sqlitevec.New[int64, int64](ctx, db, sqlitevec.Schema{

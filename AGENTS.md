@@ -65,9 +65,9 @@ provider workflows to this repo unless the package already owns that concern.
   `t.FailNow` calls. Existing tests still contain some stdlib assertions; when
   editing those checks, migrate the touched checks to testify if it keeps the
   test readable.
-- When a test repeats package-level testify calls, create local helpers such as
-  `assert := assert.New(t)` or `require := require.New(t)` and use the helper
-  methods for the repeated checks.
+- Package-level testify calls and local helpers are both valid. When using
+  local helpers, name them `assert := assert.New(t)` or
+  `require := require.New(t)`.
 - Prefer table tests when they make input and expected behavior clearer.
 - Use `t.TempDir()` for files created by tests unless the test specifically
   needs a fixed OS temp path to exercise permissions or runtime-dir behavior.

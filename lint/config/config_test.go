@@ -115,7 +115,7 @@ formatters:
 	}
 	assert.Contains(patterns, `^db\.Open$`)
 	assert.Contains(patterns, `^t\.(Fatal|Fatalf|Error|Errorf|Fail|FailNow)$`)
-	assert.Equal(map[string]any{"enable-all": true, "disable": []any{"float-compare"}}, got.Linters.Settings.Testifylint)
+	assert.Equal(map[string]any{"enable-all": true, "disable": []any{"encoded-compare", "float-compare"}}, got.Linters.Settings.Testifylint)
 	assert.Equal("legacy/", got.Linters.Exclusions.Rules[len(got.Linters.Exclusions.Rules)-1]["path"])
 	assert.NotContains(string(out), "disable:\n    - nolintlint")
 }

@@ -15,12 +15,14 @@ require (
 	github.com/ebitengine/purego v0.10.0
 	github.com/gofrs/flock v0.13.0
 	github.com/golangci/plugin-module-register v0.1.2
+	github.com/golangci/rowserrcheck v0.0.0-20260419091836-c5f79b8a11ba
 	github.com/klauspost/compress v1.18.6
 	github.com/leanovate/gopter v0.2.11
 	github.com/mattn/go-runewidth v0.0.24
 	github.com/mattn/go-sqlite3 v1.14.44
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/posthog/posthog-go v1.12.6
+	github.com/ryanrolds/sqlclosecheck v0.6.0
 	github.com/shirou/gopsutil/v4 v4.26.6
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/contrib/exporters/autoexport v0.69.0

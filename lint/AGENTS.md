@@ -25,7 +25,8 @@ See `docs/adopting-kennlint.md` for the consumer workflow.
   with `analysistest` fixtures under `testdata/`, including negative cases.
   Do not replace an analyzer with text matching.
 - Analyzers report only in the file kinds they document (test files for
-  `sleeptest` and `testifyhelper`, plus `testutil` and `*test` helper packages
+  `sleeptest` and `testifyhelper` helper recommendations, all Go files for
+  `testifyhelper` canonical names, plus `testutil` and `*test` helper packages
   for `sleeptest` unless `helper-packages` is off; non-test files for
   `nohttpmux`, `errtext` unless `include-tests` is set). Path policy beyond
   that belongs in golangci exclusions, not in analyzer code.
@@ -43,7 +44,7 @@ See `docs/adopting-kennlint.md` for the consumer workflow.
 - Kit itself lints clean with the rendered configuration. Its overlay in
   `.golangci.overlay.yml` carries only import aliases and two documented
   carve-outs; do not add disables to it.
-- `testifyhelper` accepts any helper name bound to `assert.New(t)` or
-  `require.New(t)`. Use `assert`/`require` by default and a non-shadowing name
-  such as `req` only when a nested subtest must reach the package to build its
-  own helper.
+- `testifyhelper` requires canonical `assert` and `require` import and helper
+  names. Requiring local helpers is opt-in through `require-helpers`, off
+  by default for both libraries. Parent scopes retain package calls when local helpers would shadow
+  package access in nested functions. Suggested fixes preserve object identity.

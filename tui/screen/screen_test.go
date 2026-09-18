@@ -73,12 +73,12 @@ func TestPrefixAndTruncate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			assert := require.New(t)
+			require := require.New(t)
 
 			got, gotWidth := screen.Prefix(tt.in, tt.maxWidth)
-			assert.Equal(tt.want, got)
-			assert.Equal(tt.wantWidth, gotWidth)
-			assert.Equal(tt.want, screen.Truncate(tt.in, tt.maxWidth))
+			require.Equal(tt.want, got)
+			require.Equal(tt.wantWidth, gotWidth)
+			require.Equal(tt.want, screen.Truncate(tt.in, tt.maxWidth))
 		})
 	}
 }

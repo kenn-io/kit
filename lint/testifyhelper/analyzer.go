@@ -8,17 +8,19 @@ import (
 	"golang.org/x/tools/go/analysis"
 )
 
-// Analyzer reports tests that repeatedly call testify's package-level
-// assert/require helpers instead of creating local assertion helpers.
-//
-// A helper is any local variable initialized with assert.New(t) or
-// require.New(t) for the test's own t. The conventional names are assert and
-// require; a different name (for example req) is accepted so that a nested
-// subtest can still reach the package to create its own helper.
-var Analyzer = &analysis.Analyzer{
-	Name: "testifyhelper",
-	Doc:  "reports tests that repeat package-level testify calls instead of using a local assert or require helper",
-	Run:  run,
+// Analyzer enforces canonical testify names. Local helpers are optional.
+var Analyzer = New(false)
+
+// New creates an analyzer with optional local-helper requirements for both
+// assert and require. Canonical import and assertion-object names are always checked.
+func New(requireHelpers bool) *analysis.Analyzer {
+	a := &analysis.Analyzer{
+		Name: "testifyhelper",
+		Doc:  "enforces canonical testify names and optionally requires local assertion helpers",
+		Run:  func(pass *analysis.Pass) (any, error) { return run(pass, requireHelpers) },
+	}
+	a.Flags.BoolVar(&requireHelpers, "require-helpers", requireHelpers, "require local assert and require helpers for repeated package calls")
+	return a
 }
 
 const (
@@ -26,9 +28,10 @@ const (
 	requireDiagnosticMessage = "test has %d direct testify package calls; create a local require helper with require := require.New(t) and use it for repeated checks"
 )
 
-func run(pass *analysis.Pass) (any, error) {
+func run(pass *analysis.Pass, requireHelpers bool) (any, error) {
 	for _, file := range pass.Files {
-		if !strings.HasSuffix(pass.Fset.Position(file.Pos()).Filename, "_test.go") {
+		checkNames(pass, file)
+		if !requireHelpers || !strings.HasSuffix(pass.Fset.Position(file.Pos()).Filename, "_test.go") {
 			continue
 		}
 
@@ -194,12 +197,12 @@ func analyzeBody(pass *analysis.Pass, body *ast.BlockStmt, tName string, imports
 	hasAssertHelper := len(assertHelper.objs) > 0 && assertHelper.used
 	hasRequireHelper := len(requireHelper.objs) > 0 && requireHelper.used
 
-	if len(assertCallPositions) >= 2 && !hasAssertHelper {
-		pass.Reportf(assertCallPositions[len(assertCallPositions)-1].Pos(), assertDiagnosticMessage, total)
+	if len(assertCallPositions) >= 2 && !hasAssertHelper && !packageNeeded(pass, body, "assert", assertCallPositions) {
+		reportHelper(pass, body, tName, "assert", assertCallPositions, total, assertDiagnosticMessage)
 	}
 
-	if len(requireCallPositions) >= 2 && !hasRequireHelper {
-		pass.Reportf(requireCallPositions[len(requireCallPositions)-1].Pos(), requireDiagnosticMessage, total)
+	if len(requireCallPositions) >= 2 && !hasRequireHelper && !packageNeeded(pass, body, "require", requireCallPositions) {
+		reportHelper(pass, body, tName, "require", requireCallPositions, total, requireDiagnosticMessage)
 	}
 }
 
@@ -283,7 +286,7 @@ func callKind(pass *analysis.Pass, call *ast.CallExpr, assertHelper, requireHelp
 	}
 
 	pkgObj, ok := obj.(*types.PkgName)
-	if !ok || sel.Sel.Name == "New" {
+	if !ok || sel.Sel.Name == "New" || !hasMatchingHelperMethod(pass, sel) {
 		return ""
 	}
 
@@ -295,4 +298,35 @@ func callKind(pass *analysis.Pass, call *ast.CallExpr, assertHelper, requireHelp
 	default:
 		return ""
 	}
+}
+
+// hasMatchingHelperMethod proves that removing the testing argument preserves
+// the function's remaining parameter and result types.
+func hasMatchingHelperMethod(pass *analysis.Pass, selector *ast.SelectorExpr) bool {
+	function, ok := pass.TypesInfo.Uses[selector.Sel].(*types.Func)
+	if !ok || function.Pkg() == nil {
+		return false
+	}
+	assertions, ok := function.Pkg().Scope().Lookup("Assertions").(*types.TypeName)
+	if !ok {
+		return false
+	}
+	method, _, _ := types.LookupFieldOrMethod(types.NewPointer(assertions.Type()), true, function.Pkg(), function.Name())
+	if method == nil {
+		return false
+	}
+	functionType, ok := function.Type().(*types.Signature)
+	if !ok {
+		return false
+	}
+	methodType, ok := method.Type().(*types.Signature)
+	if !ok || functionType.Params().Len() != methodType.Params().Len()+1 || functionType.Variadic() != methodType.Variadic() || !types.Identical(functionType.Results(), methodType.Results()) {
+		return false
+	}
+	for i := range methodType.Params().Len() {
+		if !types.Identical(functionType.Params().At(i+1).Type(), methodType.Params().At(i).Type()) {
+			return false
+		}
+	}
+	return true
 }

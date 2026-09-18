@@ -3,8 +3,8 @@ package a
 import (
 	"testing"
 
-	Assert "github.com/stretchr/testify/assert"
-	Require "github.com/stretchr/testify/require"
+	Assert "github.com/stretchr/testify/assert"   // want "testify import must be named assert"
+	Require "github.com/stretchr/testify/require" // want "testify import must be named require"
 )
 
 func TestNeedsHelper(t *testing.T) {
@@ -57,13 +57,13 @@ func TestHasRequireHelper(t *testing.T) {
 	require.NotNil(&struct{}{})
 }
 
-func TestUnusedRequireHelperStillFails(t *testing.T) {
+func TestUnusedHelperPreservesPackageAccess(t *testing.T) {
 	require := Require.New(t)
 	_ = require
 	Require.NoError(t, nil)
 	Require.NotNil(t, &struct{}{})
 	Require.NoError(t, nil)
-	Require.NotNil(t, &struct{}{}) // want "test has 4 direct testify package calls; create a local require helper with require := require.New\\(t\\) and use it for repeated checks"
+	Require.NotNil(t, &struct{}{})
 }
 
 func TestAssertHelperDoesNotHideRequireDrift(t *testing.T) {
@@ -108,7 +108,7 @@ func TestOuterHelperStillCountsAfterShadowing(t *testing.T) {
 }
 
 func TestHelperWithOtherNameCounts(t *testing.T) {
-	req := Require.New(t)
+	req := Require.New(t) // want "testify assertion object must be named require"
 	req.NoError(nil)
 	req.NotNil(&struct{}{})
 	req.NoError(nil)
@@ -122,15 +122,15 @@ func TestHelperWithOtherNameCounts(t *testing.T) {
 	})
 }
 
-func TestHelperForOtherTDoesNotCount(t *testing.T) {
+func TestOtherTestHelperPreservesPackageAccess(t *testing.T) {
 	t.Run("outer", func(outer *testing.T) {
 		t.Run("inner", func(t *testing.T) {
-			req := Require.New(outer)
+			req := Require.New(outer) // want "testify assertion object must be named require"
 			req.NoError(nil)
 			Require.NoError(t, nil)
 			Require.NotNil(t, &struct{}{})
 			Require.NoError(t, nil)
-			Require.NotNil(t, &struct{}{}) // want "test has 4 direct testify package calls; create a local require helper with require := require.New\\(t\\) and use it for repeated checks"
+			Require.NotNil(t, &struct{}{})
 		})
 	})
 }
