@@ -6,16 +6,16 @@ import (
 	"path/filepath"
 	"testing"
 
-	Assert "github.com/stretchr/testify/assert"
-	Require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/safefileio"
 )
 
 func TestValidatePrivateCurrentUserFileRejectsExtendedACL(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	path := filepath.Join(t.TempDir(), "record.json")
 	require.NoError(os.WriteFile(path, []byte("{}"), 0o600))
-	output, err := exec.Command(
+	output, err := exec.CommandContext(t.Context(),
 		"chmod",
 		"+a",
 		"everyone allow read",
@@ -27,7 +27,7 @@ func TestValidatePrivateCurrentUserFileRejectsExtendedACL(t *testing.T) {
 	defer func() { _ = file.Close() }()
 
 	require.Error(safefileio.ValidatePrivateCurrentUserFile(file))
-	listing, err := exec.Command("ls", "-lde", path).CombinedOutput()
+	listing, err := exec.CommandContext(t.Context(), "ls", "-lde", path).CombinedOutput()
 	require.NoError(err, string(listing))
-	Assert.Contains(t, string(listing), "everyone allow read")
+	assert.Contains(t, string(listing), "everyone allow read")
 }

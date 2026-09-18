@@ -7,6 +7,7 @@ verification records belong in kata and pull request discussion.
 ## Adoption
 
 - [Adopting packed content storage](adopting-packstore.md)
+- [Adopting the shared Go lint policy (kennlint)](adopting-kennlint.md)
 
 ## Architecture
 

@@ -1,8 +1,11 @@
 package gittest
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewRepoIgnoresPollutedGitEnvironment(t *testing.T) {
@@ -16,12 +19,12 @@ func TestNewRepoIgnoresPollutedGitEnvironment(t *testing.T) {
 	repo := NewRepoWithCommit(t)
 
 	if repo.Root == parent.Root {
-		t.Fatal("expected a distinct test repo")
+		require.FailNow(t, "expected a distinct test repo")
 	}
 	if got := repo.Run("config", "user.name"); got != UserName {
-		t.Fatalf("user.name = %q, want %q", got, UserName)
+		require.FailNow(t, fmt.Sprintf("user.name = %q, want %q", got, UserName))
 	}
 	if got := filepath.Clean(repo.Run("rev-parse", "--show-toplevel")); got != filepath.Clean(repo.Root) {
-		t.Fatalf("show-toplevel = %q, want %q", got, repo.Root)
+		require.FailNow(t, fmt.Sprintf("show-toplevel = %q, want %q", got, repo.Root))
 	}
 }

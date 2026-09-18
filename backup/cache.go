@@ -53,7 +53,7 @@ func SaveHashMapCache(cacheDir, repoID, snapshotID string, m *PageHashMap) error
 	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
 		return fmt.Errorf("backup: creating cache dir: %w", err)
 	}
-	buf := binary.LittleEndian.AppendUint32(nil, uint32(len(snapshotID))) //nolint:gosec // snapshot ids are short
+	buf := binary.LittleEndian.AppendUint32(nil, uint32(len(snapshotID)))
 	buf = append(buf, snapshotID...)
 	buf = append(buf, EncodeHashKeyframe(m)...)
 	tmp, err := os.CreateTemp(cacheDir, repoID+".hashmap.*")

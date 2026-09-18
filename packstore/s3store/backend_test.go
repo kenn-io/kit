@@ -1,7 +1,6 @@
 package s3store
 
 import (
-	"context"
 	"net/http"
 	"testing"
 
@@ -14,7 +13,7 @@ import (
 )
 
 func TestNewNormalizesDefaultLimits(t *testing.T) {
-	backend, err := New(context.Background(), testConfig())
+	backend, err := New(t.Context(), testConfig())
 
 	require.NoError(t, err)
 	assert.Equal(t, packstore.DefaultLimits(), backend.limits)
@@ -26,7 +25,7 @@ func TestNewRejectsPartialInvalidLimits(t *testing.T) {
 		BlobBytes: 1, PackBytes: 1, FooterBytes: 1,
 	}
 
-	_, err := New(context.Background(), config)
+	_, err := New(t.Context(), config)
 
 	require.ErrorContains(t, err, "invalid")
 }
@@ -35,7 +34,7 @@ func TestNewRejectsPartBytesAboveS3Maximum(t *testing.T) {
 	config := testConfig()
 	config.PartBytes = (5 << 30) + 1
 
-	_, err := New(context.Background(), config)
+	_, err := New(t.Context(), config)
 
 	require.ErrorContains(t, err, "at most 5 GiB")
 }
@@ -86,7 +85,7 @@ func TestNewValidatesEndpointTransport(t *testing.T) {
 			config.Endpoint = tt.endpoint
 			config.AllowInsecureTransport = tt.allow
 
-			_, err := New(context.Background(), config)
+			_, err := New(t.Context(), config)
 
 			if tt.wantErr == "" {
 				require.NoError(t, err)
@@ -111,7 +110,7 @@ func TestNewDoesNotInheritSDKEndpointOverrides(t *testing.T) {
 			t.Setenv("AWS_ENDPOINT_URL_S3", "")
 			t.Setenv(tt.key, "http://objects.example.test")
 
-			backend, err := New(context.Background(), testConfig())
+			backend, err := New(t.Context(), testConfig())
 
 			require.NoError(t, err)
 			assert.Nil(t, backend.client.Options().BaseEndpoint)

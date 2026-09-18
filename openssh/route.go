@@ -2,7 +2,7 @@ package openssh
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"net"
 	"net/url"
 	"strconv"
@@ -117,7 +117,7 @@ func splitHostPort(value string) (string, int, error) {
 	if strings.HasPrefix(value, "[") {
 		end := strings.Index(value, "]")
 		if end < 0 {
-			return "", 0, fmt.Errorf("unclosed IPv6 address")
+			return "", 0, errors.New("unclosed IPv6 address")
 		}
 		host := value[1:end]
 		remainder := value[end+1:]
@@ -125,11 +125,11 @@ func splitHostPort(value string) (string, int, error) {
 			return host, 0, nil
 		}
 		if !strings.HasPrefix(remainder, ":") {
-			return "", 0, fmt.Errorf("invalid bracketed SSH destination")
+			return "", 0, errors.New("invalid bracketed SSH destination")
 		}
 		portValue := strings.TrimPrefix(remainder, ":")
 		if portValue == "" {
-			return "", 0, fmt.Errorf("invalid SSH port")
+			return "", 0, errors.New("invalid SSH port")
 		}
 		port, err := parsePort(portValue)
 		return host, port, err
@@ -137,7 +137,7 @@ func splitHostPort(value string) (string, int, error) {
 	if strings.Count(value, ":") == 1 {
 		host, portValue, _ := strings.Cut(value, ":")
 		if portValue == "" {
-			return "", 0, fmt.Errorf("invalid SSH port")
+			return "", 0, errors.New("invalid SSH port")
 		}
 		port, err := parsePort(portValue)
 		if err != nil {
@@ -154,7 +154,7 @@ func parsePort(value string) (int, error) {
 	}
 	port, err := strconv.Atoi(value)
 	if err != nil || port < 1 || port > 65535 {
-		return 0, fmt.Errorf("invalid SSH port")
+		return 0, errors.New("invalid SSH port")
 	}
 	return port, nil
 }

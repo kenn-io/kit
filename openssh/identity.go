@@ -5,9 +5,9 @@ import (
 	"encoding/base32"
 	"encoding/binary"
 	"encoding/hex"
-	"fmt"
 	"hash"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -23,10 +23,10 @@ func RouteIdentity(scope string, route Route) string {
 	for _, target := range route {
 		writeIdentityValue(digest, target.Target.User)
 		writeIdentityValue(digest, target.Target.Hostname)
-		writeIdentityValue(digest, fmt.Sprintf("%d", target.Target.Port))
+		writeIdentityValue(digest, strconv.Itoa(target.Target.Port))
 		writeIdentityValue(digest, target.Config.User)
 		writeIdentityValue(digest, target.Config.Hostname)
-		writeIdentityValue(digest, fmt.Sprintf("%d", target.Config.Port))
+		writeIdentityValue(digest, strconv.Itoa(target.Config.Port))
 		writeIdentityValue(digest, target.Config.HostKeyAlias)
 		writeIdentityValue(digest, target.Config.StrictHostKeyChecking)
 		writeIdentityValue(digest, target.Config.ProxyJump)
@@ -56,7 +56,7 @@ func controlNameForTarget(identity string, target Target) string {
 	writeIdentityValue(digest, identity)
 	writeIdentityValue(digest, target.User)
 	writeIdentityValue(digest, target.Hostname)
-	writeIdentityValue(digest, fmt.Sprintf("%d", target.Port))
+	writeIdentityValue(digest, strconv.Itoa(target.Port))
 	sum := digest.Sum(nil)
 	return "c-" + controlNameEncoding.EncodeToString(sum[:controlDigestBytes])
 }

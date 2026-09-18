@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 
 	"go.kenn.io/kit/pack"
@@ -95,7 +97,7 @@ func EncodeHashDelta(d *PageHashDelta) []byte {
 	buf = binary.LittleEndian.AppendUint16(buf, mapObjectVersion)
 	buf = binary.LittleEndian.AppendUint32(buf, d.PageSize)
 	buf = binary.LittleEndian.AppendUint64(buf, d.PageCount)
-	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(d.Pages))) //nolint:gosec // page counts fit u32 far below overflow
+	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(d.Pages)))
 	for _, p := range d.Pages {
 		buf = binary.LittleEndian.AppendUint64(buf, p)
 	}
@@ -111,7 +113,7 @@ func DecodeHashDelta(data []byte) (*PageHashDelta, error) {
 		return nil, err
 	}
 	if len(body) < 22 {
-		return nil, fmt.Errorf("backup: hash delta truncated") //nolint:perfsprint
+		return nil, errors.New("backup: hash delta truncated")
 	}
 	d := &PageHashDelta{
 		PageSize:  binary.LittleEndian.Uint32(body[6:10]),
@@ -126,7 +128,7 @@ func DecodeHashDelta(data []byte) (*PageHashDelta, error) {
 	for i := uint32(0); i < count; i++ { //nolint:intrange,modernize // uint32 iteration requires standard for loop
 		p := binary.LittleEndian.Uint64(rest[i*8 : i*8+8])
 		if i > 0 && p <= prev {
-			return nil, fmt.Errorf("backup: hash delta pages not strictly sorted") //nolint:perfsprint
+			return nil, errors.New("backup: hash delta pages not strictly sorted")
 		}
 		prev = p
 		d.Pages = append(d.Pages, p)
@@ -186,7 +188,7 @@ func ApplyHashDelta(base *PageHashMap, d *PageHashDelta) (*PageHashMap, error) {
 		firstAppended := sort.Search(len(d.Pages), func(i int) bool {
 			return d.Pages[i] >= base.PageCount
 		})
-		appended := uint64(len(d.Pages) - firstAppended) //nolint:gosec // Search result is within [0, len]
+		appended := uint64(len(d.Pages) - firstAppended)
 		if appended != grown {
 			return nil, fmt.Errorf(
 				"backup: hash delta grows the map to %d pages but carries hashes for %d of %d appended pages",
@@ -241,8 +243,8 @@ func MaterializeHashMap(
 			if err != nil {
 				return nil, err
 			}
-			for j := len(deltas) - 1; j >= 0; j-- { //nolint:modernize
-				m, err = ApplyHashDelta(m, deltas[j])
+			for _, delta := range slices.Backward(deltas) {
+				m, err = ApplyHashDelta(m, delta)
 				if err != nil {
 					return nil, err
 				}

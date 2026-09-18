@@ -1,10 +1,11 @@
 package telemetry_test
 
 import (
-	"context"
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/telemetry"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/metric"
@@ -16,18 +17,18 @@ func TestDeferredInt64CounterEmitsZeroWhenNoAddsWereQueued(t *testing.T) {
 	provider := metric.NewMeterProvider(metric.WithReader(reader))
 	counter, err := provider.Meter("test").Int64Counter("requests")
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(t, err.Error())
 	}
 
 	instr := telemetry.NewDeferredInt64Counter(counter, attribute.String("route", "/ready"))
-	instr.Emit(context.Background(), attribute.String("result", "ok"))
+	instr.Emit(t.Context(), attribute.String("result", "ok"))
 
 	points := collectInt64Counter(t, reader, "requests")
 	if len(points) != 1 {
-		t.Fatalf("expected 1 data point, got %d", len(points))
+		require.FailNow(t, fmt.Sprintf("expected 1 data point, got %d", len(points)))
 	}
 	if points[0].Value != 0 {
-		t.Fatalf("expected zero value, got %d", points[0].Value)
+		require.FailNow(t, fmt.Sprintf("expected zero value, got %d", points[0].Value))
 	}
 	assertAttr(t, points[0].Attributes, "route", "/ready")
 	assertAttr(t, points[0].Attributes, "result", "ok")
@@ -38,19 +39,19 @@ func TestDeferredInt64CounterEmitsQueuedAddsWithAttributes(t *testing.T) {
 	provider := metric.NewMeterProvider(metric.WithReader(reader))
 	counter, err := provider.Meter("test").Int64Counter("errors")
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(t, err.Error())
 	}
 
 	instr := telemetry.NewDeferredInt64Counter(counter, attribute.String("component", "worker"))
 	instr.Add(1, attribute.String("error.type", "timeout"))
-	instr.Emit(context.Background(), attribute.String("operation", "sync"))
+	instr.Emit(t.Context(), attribute.String("operation", "sync"))
 
 	points := collectInt64Counter(t, reader, "errors")
 	if len(points) != 1 {
-		t.Fatalf("expected 1 data point, got %d", len(points))
+		require.FailNow(t, fmt.Sprintf("expected 1 data point, got %d", len(points)))
 	}
 	if points[0].Value != 1 {
-		t.Fatalf("expected value 1, got %d", points[0].Value)
+		require.FailNow(t, fmt.Sprintf("expected value 1, got %d", points[0].Value))
 	}
 	assertAttr(t, points[0].Attributes, "component", "worker")
 	assertAttr(t, points[0].Attributes, "error.type", "timeout")
@@ -62,64 +63,65 @@ func TestDeferredInt64CounterEmitIsIdempotent(t *testing.T) {
 	provider := metric.NewMeterProvider(metric.WithReader(reader))
 	counter, err := provider.Meter("test").Int64Counter("once")
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(t, err.Error())
 	}
 
 	instr := telemetry.NewDeferredInt64Counter(counter)
 	instr.Add(1)
-	instr.Emit(context.Background())
-	instr.Emit(context.Background())
+	instr.Emit(t.Context())
+	instr.Emit(t.Context())
 
 	points := collectInt64Counter(t, reader, "once")
 	if len(points) != 1 {
-		t.Fatalf("expected 1 data point, got %d", len(points))
+		require.FailNow(t, fmt.Sprintf("expected 1 data point, got %d", len(points)))
 	}
 	if points[0].Value != 1 {
-		t.Fatalf("expected value 1, got %d", points[0].Value)
+		require.FailNow(t, fmt.Sprintf("expected value 1, got %d", points[0].Value))
 	}
 }
 
 func TestDeferredInstrumentTypesEmitZeroWhenUnset(t *testing.T) {
+	require := require.New(t)
 	reader := metric.NewManualReader()
 	provider := metric.NewMeterProvider(metric.WithReader(reader))
 	meter := provider.Meter("test")
 
 	floatCounter, err := meter.Float64Counter("float_counter")
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(err.Error())
 	}
 	intUpDownCounter, err := meter.Int64UpDownCounter("int_up_down_counter")
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(err.Error())
 	}
 	floatUpDownCounter, err := meter.Float64UpDownCounter("float_up_down_counter")
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(err.Error())
 	}
 	intHistogram, err := meter.Int64Histogram("int_histogram")
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(err.Error())
 	}
 	floatHistogram, err := meter.Float64Histogram("float_histogram")
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(err.Error())
 	}
 	intGauge, err := meter.Int64Gauge("int_gauge")
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(err.Error())
 	}
 	floatGauge, err := meter.Float64Gauge("float_gauge")
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(err.Error())
 	}
 
-	telemetry.NewDeferredFloat64Counter(floatCounter).Emit(context.Background())
-	telemetry.NewDeferredInt64UpDownCounter(intUpDownCounter).Emit(context.Background())
-	telemetry.NewDeferredFloat64UpDownCounter(floatUpDownCounter).Emit(context.Background())
-	telemetry.NewDeferredInt64Histogram(intHistogram).Emit(context.Background())
-	telemetry.NewDeferredFloat64Histogram(floatHistogram).Emit(context.Background())
-	telemetry.NewDeferredInt64Gauge(intGauge).Emit(context.Background())
-	telemetry.NewDeferredFloat64Gauge(floatGauge).Emit(context.Background())
+	telemetry.NewDeferredFloat64Counter(floatCounter).Emit(t.Context())
+	telemetry.NewDeferredInt64UpDownCounter(intUpDownCounter).Emit(t.Context())
+	telemetry.NewDeferredFloat64UpDownCounter(floatUpDownCounter).Emit(t.Context())
+	telemetry.NewDeferredInt64Histogram(intHistogram).Emit(t.Context())
+	telemetry.NewDeferredFloat64Histogram(floatHistogram).Emit(t.Context())
+	telemetry.NewDeferredInt64Gauge(intGauge).Emit(t.Context())
+	telemetry.NewDeferredFloat64Gauge(floatGauge).Emit(t.Context())
 
 	rm := collect(t, reader)
 	assertSumPoint(t, findMetric(t, rm, "float_counter"), float64(0))
@@ -132,29 +134,30 @@ func TestDeferredInstrumentTypesEmitZeroWhenUnset(t *testing.T) {
 }
 
 func TestDeferredGaugesEmitLatestSetValue(t *testing.T) {
+	require := require.New(t)
 	reader := metric.NewManualReader()
 	provider := metric.NewMeterProvider(metric.WithReader(reader))
 	gauge, err := provider.Meter("test").Int64Gauge("depth")
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(err.Error())
 	}
 
 	instr := telemetry.NewDeferredInt64Gauge(gauge, attribute.String("queue", "jobs"))
 	instr.Set(3, attribute.String("ignored", "true"))
 	instr.Set(7, attribute.String("ignored", "false"))
-	instr.Emit(context.Background(), attribute.String("host", "local"))
+	instr.Emit(t.Context(), attribute.String("host", "local"))
 
 	rm := collect(t, reader)
 	data := findMetric(t, rm, "depth").Data
 	gaugeData, ok := data.(metricdata.Gauge[int64])
 	if !ok {
-		t.Fatalf("metric data type = %T, want metricdata.Gauge[int64]", data)
+		require.FailNow(fmt.Sprintf("metric data type = %T, want metricdata.Gauge[int64]", data))
 	}
 	if len(gaugeData.DataPoints) != 1 {
-		t.Fatalf("expected 1 data point, got %d", len(gaugeData.DataPoints))
+		require.FailNow(fmt.Sprintf("expected 1 data point, got %d", len(gaugeData.DataPoints)))
 	}
 	if gaugeData.DataPoints[0].Value != 7 {
-		t.Fatalf("expected value 7, got %d", gaugeData.DataPoints[0].Value)
+		require.FailNow(fmt.Sprintf("expected value 7, got %d", gaugeData.DataPoints[0].Value))
 	}
 	assertAttr(t, gaugeData.DataPoints[0].Attributes, "queue", "jobs")
 	assertAttr(t, gaugeData.DataPoints[0].Attributes, "ignored", "false")
@@ -162,33 +165,34 @@ func TestDeferredGaugesEmitLatestSetValue(t *testing.T) {
 }
 
 func TestDeferredTimerRecordsElapsedSeconds(t *testing.T) {
+	require := require.New(t)
 	reader := metric.NewManualReader()
 	provider := metric.NewMeterProvider(metric.WithReader(reader))
 	histogram, err := provider.Meter("test").Float64Histogram("duration")
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(err.Error())
 	}
 
 	timer := telemetry.NewDeferredTimer(histogram, attribute.String("operation", "sync"))
-	time.Sleep(time.Millisecond)
-	timer.Emit(context.Background())
-	timer.Emit(context.Background())
+	time.Sleep(time.Millisecond) //nolint:kennlint // the deferred timer measures the real monotonic clock
+	timer.Emit(t.Context())
+	timer.Emit(t.Context())
 
 	rm := collect(t, reader)
 	data := findMetric(t, rm, "duration").Data
 	histogramData, ok := data.(metricdata.Histogram[float64])
 	if !ok {
-		t.Fatalf("metric data type = %T, want metricdata.Histogram[float64]", data)
+		require.FailNow(fmt.Sprintf("metric data type = %T, want metricdata.Histogram[float64]", data))
 	}
 	if len(histogramData.DataPoints) != 1 {
-		t.Fatalf("expected 1 data point, got %d", len(histogramData.DataPoints))
+		require.FailNow(fmt.Sprintf("expected 1 data point, got %d", len(histogramData.DataPoints)))
 	}
 	point := histogramData.DataPoints[0]
 	if point.Count != 1 {
-		t.Fatalf("expected count 1, got %d", point.Count)
+		require.FailNow(fmt.Sprintf("expected count 1, got %d", point.Count))
 	}
 	if point.Sum <= 0 {
-		t.Fatalf("expected positive elapsed seconds, got %f", point.Sum)
+		require.FailNow(fmt.Sprintf("expected positive elapsed seconds, got %f", point.Sum))
 	}
 	assertAttr(t, point.Attributes, "operation", "sync")
 }
@@ -200,7 +204,7 @@ func collectInt64Counter(t *testing.T, reader *metric.ManualReader, name string)
 	metric := findMetric(t, rm, name)
 	sum, ok := metric.Data.(metricdata.Sum[int64])
 	if !ok {
-		t.Fatalf("metric %q data type = %T, want metricdata.Sum[int64]", name, metric.Data)
+		require.FailNow(t, fmt.Sprintf("metric %q data type = %T, want metricdata.Sum[int64]", name, metric.Data))
 	}
 	return sum.DataPoints
 }
@@ -209,8 +213,8 @@ func collect(t *testing.T, reader *metric.ManualReader) metricdata.ResourceMetri
 	t.Helper()
 
 	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatal(err)
+	if err := reader.Collect(t.Context(), &rm); err != nil {
+		require.FailNow(t, err.Error())
 	}
 	return rm
 }
@@ -225,7 +229,7 @@ func findMetric(t *testing.T, rm metricdata.ResourceMetrics, name string) metric
 			return m
 		}
 	}
-	t.Fatalf("metric %q not found", name)
+	require.FailNow(t, fmt.Sprintf("metric %q not found", name))
 	return metricdata.Metrics{}
 }
 
@@ -234,31 +238,33 @@ func assertSumPoint[N int64 | float64](t *testing.T, metric metricdata.Metrics, 
 
 	sum, ok := metric.Data.(metricdata.Sum[N])
 	if !ok {
-		t.Fatalf("metric %q data type = %T, want metricdata.Sum", metric.Name, metric.Data)
+		require.FailNow(t, fmt.Sprintf("metric %q data type = %T, want metricdata.Sum", metric.Name, metric.Data))
 	}
 	if len(sum.DataPoints) != 1 {
-		t.Fatalf("expected 1 data point, got %d", len(sum.DataPoints))
+		require.FailNow(t, fmt.Sprintf("expected 1 data point, got %d", len(sum.DataPoints)))
 	}
 	if sum.DataPoints[0].Value != want {
-		t.Fatalf("expected value %v, got %v", want, sum.DataPoints[0].Value)
+		require.FailNow(t, fmt.Sprintf("expected value %v, got %v", want, sum.DataPoints[0].Value))
 	}
 }
 
 func assertHistogramPoint[N int64 | float64](t *testing.T, metric metricdata.Metrics, want N) {
 	t.Helper()
+	require := require.New(t)
+	t.Helper()
 
 	histogram, ok := metric.Data.(metricdata.Histogram[N])
 	if !ok {
-		t.Fatalf("metric %q data type = %T, want metricdata.Histogram", metric.Name, metric.Data)
+		require.FailNow(fmt.Sprintf("metric %q data type = %T, want metricdata.Histogram", metric.Name, metric.Data))
 	}
 	if len(histogram.DataPoints) != 1 {
-		t.Fatalf("expected 1 data point, got %d", len(histogram.DataPoints))
+		require.FailNow(fmt.Sprintf("expected 1 data point, got %d", len(histogram.DataPoints)))
 	}
 	if histogram.DataPoints[0].Count != 1 {
-		t.Fatalf("expected count 1, got %d", histogram.DataPoints[0].Count)
+		require.FailNow(fmt.Sprintf("expected count 1, got %d", histogram.DataPoints[0].Count))
 	}
 	if histogram.DataPoints[0].Sum != want {
-		t.Fatalf("expected sum %v, got %v", want, histogram.DataPoints[0].Sum)
+		require.FailNow(fmt.Sprintf("expected sum %v, got %v", want, histogram.DataPoints[0].Sum))
 	}
 }
 
@@ -267,13 +273,13 @@ func assertGaugePoint[N int64 | float64](t *testing.T, metric metricdata.Metrics
 
 	gauge, ok := metric.Data.(metricdata.Gauge[N])
 	if !ok {
-		t.Fatalf("metric %q data type = %T, want metricdata.Gauge", metric.Name, metric.Data)
+		require.FailNow(t, fmt.Sprintf("metric %q data type = %T, want metricdata.Gauge", metric.Name, metric.Data))
 	}
 	if len(gauge.DataPoints) != 1 {
-		t.Fatalf("expected 1 data point, got %d", len(gauge.DataPoints))
+		require.FailNow(t, fmt.Sprintf("expected 1 data point, got %d", len(gauge.DataPoints)))
 	}
 	if gauge.DataPoints[0].Value != want {
-		t.Fatalf("expected value %v, got %v", want, gauge.DataPoints[0].Value)
+		require.FailNow(t, fmt.Sprintf("expected value %v, got %v", want, gauge.DataPoints[0].Value))
 	}
 }
 
@@ -282,9 +288,9 @@ func assertAttr(t *testing.T, set attribute.Set, key attribute.Key, want string)
 
 	value, ok := set.Value(key)
 	if !ok {
-		t.Fatalf("missing attribute %q", key)
+		require.FailNow(t, fmt.Sprintf("missing attribute %q", key))
 	}
 	if got := value.AsString(); got != want {
-		t.Fatalf("attribute %q = %q, want %q", key, got, want)
+		require.FailNow(t, fmt.Sprintf("attribute %q = %q, want %q", key, got, want))
 	}
 }

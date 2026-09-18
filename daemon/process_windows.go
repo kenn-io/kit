@@ -17,7 +17,7 @@ func ProcessAlive(pid int) bool {
 	if err != nil {
 		return errors.Is(err, syscall.ERROR_ACCESS_DENIED)
 	}
-	defer syscall.CloseHandle(handle)
+	defer func() { _ = syscall.CloseHandle(handle) }()
 
 	// A terminated process object remains openable while another handle keeps
 	// it alive. The exit status, not the handle alone, distinguishes that state.

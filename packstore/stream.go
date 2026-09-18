@@ -29,7 +29,7 @@ type VerifiedReadCloser interface {
 // streams retain configured format and decoder limits.
 func (s *Store) OpenStream(ctx context.Context, contentHash Hash) (VerifiedReadCloser, int64, error) {
 	if ctx == nil {
-		return nil, 0, fmt.Errorf("packstore: nil context")
+		return nil, 0, errors.New("packstore: nil context")
 	}
 	if err := contentHash.Validate(); err != nil {
 		return nil, 0, err
@@ -115,7 +115,7 @@ func (s *observedVerifiedStream) observe(err error) {
 // EOF; publication remains a separate caller responsibility.
 func (s *Store) CopyVerified(ctx context.Context, contentHash Hash, dst io.Writer) (written int64, resultErr error) {
 	if dst == nil {
-		return 0, fmt.Errorf("packstore: nil verified-copy destination")
+		return 0, errors.New("packstore: nil verified-copy destination")
 	}
 	stream, _, err := s.OpenStream(ctx, contentHash)
 	if err != nil {
@@ -152,7 +152,7 @@ func (s *Store) openPackedStreamWithPolicy(
 		if err := s.validatePackPolicy(slot); err != nil {
 			return nil, 0, errors.Join(err, release())
 		}
-		limit := uint64(s.limits.BlobBytes) //nolint:gosec // validated non-negative
+		limit := uint64(s.limits.BlobBytes)
 		if footer.RawLen > limit {
 			return nil, 0, errors.Join(newLimitError(LimitBlobRawBytes, footer.RawLen, limit), release())
 		}
@@ -162,13 +162,13 @@ func (s *Store) openPackedStreamWithPolicy(
 	}
 	var streamOptions pack.BlobReaderOptions
 	if enforcePolicy {
-		streamOptions.WindowBytes = uint64(max(s.limits.BlobBytes, int64(1<<10))) //nolint:gosec // limits are non-negative
+		streamOptions.WindowBytes = uint64(max(s.limits.BlobBytes, int64(1<<10)))
 	}
 	stream, err := slot.reader.OpenBlobWithOptions(ctx, footer, streamOptions)
 	if err != nil {
 		return nil, 0, errors.Join(mapPackStreamLimit(err), release())
 	}
-	return &packedVerifiedStream{reader: stream, release: release}, int64(footer.RawLen), nil //nolint:gosec // MaxRawLen fits int64
+	return &packedVerifiedStream{reader: stream, release: release}, int64(footer.RawLen), nil
 }
 
 type packedVerifiedStream struct {
@@ -599,6 +599,7 @@ func (r *singleZstdFrameReader) observe(data []byte) error {
 	case zstdFrameBlockData, zstdFrameChecksum:
 		r.remaining -= int64(len(data))
 		r.finishZstdFramePart()
+	default:
 	}
 	return nil
 }
@@ -627,5 +628,6 @@ func (r *singleZstdFrameReader) finishZstdFramePart() {
 		r.state = zstdFrameDone
 	case zstdFrameChecksum:
 		r.state = zstdFrameDone
+	default:
 	}
 }

@@ -3,6 +3,7 @@
 package safefileio
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -16,7 +17,7 @@ var reOpenFile = windows.NewLazySystemDLL("kernel32.dll").NewProc("ReOpenFile")
 // owner.
 func OpenCurrentUserFile(path string) (*os.File, error) {
 	if path == "" {
-		return nil, fmt.Errorf("path is empty")
+		return nil, errors.New("path is empty")
 	}
 	path16, err := windows.UTF16PtrFromString(path)
 	if err != nil {
@@ -52,7 +53,7 @@ func OpenCurrentUserFile(path string) (*os.File, error) {
 // non-reparse file owned by the current token user or token owner.
 func ValidateCurrentUserFile(file *os.File) error {
 	if file == nil {
-		return fmt.Errorf("file is nil")
+		return errors.New("file is nil")
 	}
 	return validateWindowsFileHandle(file.Name(), windows.Handle(file.Fd()))
 }
@@ -89,7 +90,7 @@ func reopenWindowsFileForDACL(file *os.File) (windows.Handle, error) {
 	)
 	handle := windows.Handle(result)
 	if handle == windows.InvalidHandle {
-		if callErr != windows.ERROR_SUCCESS {
+		if !errors.Is(callErr, windows.ERROR_SUCCESS) {
 			return 0, callErr
 		}
 		return 0, windows.ERROR_INVALID_HANDLE

@@ -3,8 +3,8 @@ package packstore
 import (
 	"testing"
 
-	Assert "github.com/stretchr/testify/assert"
-	Require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLocationHealthPrefersTransientlyUnavailableOverKnownDamage(t *testing.T) {
@@ -23,12 +23,12 @@ func TestLocationHealthPrefersTransientlyUnavailableOverKnownDamage(t *testing.T
 
 	ordered := health.Order(hash, []ReadLocation{corrupt, unavailable})
 
-	Assert.Equal(t, []ReadLocation{unavailable, corrupt}, ordered)
+	assert.Equal(t, []ReadLocation{unavailable, corrupt}, ordered)
 }
 
 func TestLooseLocationHealthIsScopedToContentHash(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	health := NewHealth()
 	firstHash := hashForTest([]byte("first same-sized blob"))
 	secondHash := hashForTest([]byte("other same-sized blob"))

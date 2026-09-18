@@ -142,7 +142,7 @@ func (b *FilesystemBackend) publishLooseRoot(
 	result.StoredSize = size
 	selected := raw
 	if compressed != nil {
-		header := encodeCompressedLooseHeader(uint64(size)) //nolint:gosec // size is non-negative
+		header := encodeCompressedLooseHeader(uint64(size))
 		if _, err := compressed.file.WriteAt(header[:], 0); err != nil {
 			return result, fmt.Errorf("packstore: finalize compressed loose header: %w", err)
 		}

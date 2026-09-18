@@ -71,8 +71,10 @@ func FuzzOpenReader(f *testing.F) {
 // FuzzParseFooterRegion targets the footer table parser directly.
 func FuzzParseFooterRegion(f *testing.F) {
 	f.Add(encodeFooterRegion(nil), uint64(6))
-	f.Add(encodeFooterRegion([]Entry{{ID: ComputeBlobID([]byte("x")),
-		Offset: 6, StoredLen: 1, RawLen: 1}}), uint64(7))
+	f.Add(encodeFooterRegion([]Entry{{
+		ID:     ComputeBlobID([]byte("x")),
+		Offset: 6, StoredLen: 1, RawLen: 1,
+	}}), uint64(7))
 	f.Fuzz(func(t *testing.T, region []byte, footerStart uint64) {
 		_, _ = parseFooterRegion(region, footerStart)
 	})

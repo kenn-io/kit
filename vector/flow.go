@@ -309,8 +309,8 @@ func encodeFillBatch(ctx context.Context, enc EncodeFunc, refs []fillChunkRef) f
 }
 
 func offsetInvalidVectorError(err error, chunkOffset int) error {
-	var invalid *InvalidVectorError
-	if !errors.As(err, &invalid) {
+	invalid, ok := errors.AsType[*InvalidVectorError](err)
+	if !ok {
 		return err
 	}
 	translated := *invalid

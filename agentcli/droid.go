@@ -48,6 +48,7 @@ func buildDroid(a *adapter, sessionID string, request Request) (Invocation, erro
 		args = append(args, "--output-format", "json")
 	case OutputJSONL:
 		args = append(args, "--output-format", "stream-json")
+	default:
 	}
 	stdin, err := stdinPrompt(request.Prompt)
 	if err != nil {

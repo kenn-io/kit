@@ -34,8 +34,10 @@ func generators(t *testing.T, fsys fstest.MapFS, tracked []string, hasAPI bool, 
 	return diags
 }
 
-const yamlSpec = "openapi: 3.1.0\ninfo:\n  title: t\n"
-const jsonSpec = `{"openapi": "3.1.0", "info": {"title": "t"}}`
+const (
+	yamlSpec = "openapi: 3.1.0\ninfo:\n  title: t\n"
+	jsonSpec = `{"openapi": "3.1.0", "info": {"title": "t"}}`
+)
 
 func TestCheckSpecs(t *testing.T) {
 	t.Parallel()

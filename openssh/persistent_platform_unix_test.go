@@ -3,7 +3,6 @@
 package openssh
 
 import (
-	"context"
 	"net"
 	"os"
 	"path/filepath"
@@ -17,7 +16,7 @@ func TestInspectControlSocketRejectsNonSocket(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "control.sock")
 	require.NoError(t, os.WriteFile(path, nil, 0o600))
 
-	_, err := inspectControlSocket(context.Background(), path)
+	_, err := inspectControlSocket(t.Context(), path)
 
 	var securityErr *ControlPathSecurityError
 	require.ErrorAs(t, err, &securityErr)
@@ -27,7 +26,7 @@ func TestInspectControlSocketRejectsNonSocket(t *testing.T) {
 func TestInspectControlSocketDistinguishesListeningAndStale(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
-	directory, err := os.MkdirTemp("", "kit-ssh-")
+	directory, err := os.MkdirTemp("", "kit-ssh-") //nolint:usetesting // unix socket paths must stay short, so the test needs a fixed OS temp root
 	require.NoError(err)
 	t.Cleanup(func() { require.NoError(os.RemoveAll(directory)) })
 
@@ -36,7 +35,7 @@ func TestInspectControlSocketDistinguishesListeningAndStale(t *testing.T) {
 	require.NoError(err)
 	defer listener.Close()
 
-	state, err := inspectControlSocket(context.Background(), listeningPath)
+	state, err := inspectControlSocket(t.Context(), listeningPath)
 	require.NoError(err)
 	assert.Equal(socketListening, state)
 
@@ -46,7 +45,7 @@ func TestInspectControlSocketDistinguishesListeningAndStale(t *testing.T) {
 	stale.SetUnlinkOnClose(false)
 	require.NoError(stale.Close())
 
-	state, err = inspectControlSocket(context.Background(), stalePath)
+	state, err = inspectControlSocket(t.Context(), stalePath)
 	require.NoError(err)
 	assert.Equal(socketStale, state)
 }

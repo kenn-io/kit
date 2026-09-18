@@ -65,12 +65,12 @@ func TestPruneReclaimsSparseAndDeadPacksWithRetainedChain(t *testing.T) {
 	opts := createOpts(dbPath, contentDir, dataDir, t.TempDir())
 	_, err := Create(t.Context(), r, newTestApp(), opts)
 	require.NoError(err)
-	_, err = writer.Exec(`INSERT INTO notes (created_at) VALUES ('2026-02-01T00:00:00Z')`)
+	_, err = writer.ExecContext(t.Context(), `INSERT INTO notes (created_at) VALUES ('2026-02-01T00:00:00Z')`)
 	require.NoError(err)
 	retained, err := Create(t.Context(), r, newTestApp(), opts)
 	require.NoError(err)
 	require.Positive(retained.DB.MapChainDepth)
-	_, err = writer.Exec(`INSERT INTO notes (created_at) VALUES ('2026-03-01T00:00:00Z')`)
+	_, err = writer.ExecContext(t.Context(), `INSERT INTO notes (created_at) VALUES ('2026-03-01T00:00:00Z')`)
 	require.NoError(err)
 	forgotten, err := Create(t.Context(), r, newTestApp(), opts)
 	require.NoError(err)
@@ -94,7 +94,7 @@ func TestPruneReclaimsSparseAndDeadPacksWithRetainedChain(t *testing.T) {
 	assert.Greater(result.BytesRemoved, result.BytesWritten)
 	for _, id := range result.RemovedPacks {
 		_, err = os.Stat(r.packPath(id, testPackExt))
-		assert.ErrorIs(err, os.ErrNotExist)
+		require.ErrorIs(err, os.ErrNotExist)
 	}
 	assertPrunedRestore(t, r, retained.SnapshotID)
 	index, err := r.LoadBlobIndex()

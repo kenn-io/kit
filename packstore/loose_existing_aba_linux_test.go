@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	Assert "github.com/stretchr/testify/assert"
-	Require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLooseWriteFullHashRejectsEqualSizeReplacementAfterVerification(t *testing.T) {
@@ -47,8 +47,8 @@ func TestLooseWriteFullHashRejectsEqualSizeReplacementAfterVerification(t *testi
 			},
 		} {
 			t.Run(encoding.name+"/"+api.name, func(t *testing.T) {
-				assert := Assert.New(t)
-				require := Require.New(t)
+				assert := assert.New(t)
+				require := require.New(t)
 				store := newLooseStoreForTest(t, StagingSameDirectory)
 				opts := WriteOptions{
 					Durability:   AtomicPublication,
@@ -58,7 +58,7 @@ func TestLooseWriteFullHashRejectsEqualSizeReplacementAfterVerification(t *testi
 					SizeKnown:    true,
 					Compression:  encoding.compression,
 				}
-				created, err := store.WriteBytes(context.Background(), content, opts)
+				created, err := store.WriteBytes(t.Context(), content, opts)
 				require.NoError(err)
 				require.Equal(encoding.want, created.Encoding)
 				physical, err := os.ReadFile(created.Path)
@@ -67,7 +67,7 @@ func TestLooseWriteFullHashRejectsEqualSizeReplacementAfterVerification(t *testi
 
 				replacementOutcome := installEqualSizeReplacementAtFinalSnapshot(t, created.Path, replacement)
 
-				result, err := api.write(context.Background(), store, content, opts)
+				result, err := api.write(t.Context(), store, content, opts)
 
 				require.Error(err)
 				assert.True(errors.Is(err, ErrContentMismatch) || errors.Is(err, errIdentityChanged), err)
@@ -96,8 +96,8 @@ func TestLooseDurableTypeAndSizeRejectsEqualSizeReplacementAfterSync(t *testing.
 		},
 	} {
 		t.Run(encoding.name, func(t *testing.T) {
-			assert := Assert.New(t)
-			require := Require.New(t)
+			assert := assert.New(t)
+			require := require.New(t)
 			store := newLooseStoreForTest(t, StagingSameDirectory)
 			createOpts := WriteOptions{
 				Durability:   AtomicPublication,
@@ -107,7 +107,7 @@ func TestLooseDurableTypeAndSizeRejectsEqualSizeReplacementAfterSync(t *testing.
 				SizeKnown:    true,
 				Compression:  encoding.compression,
 			}
-			created, err := store.WriteBytes(context.Background(), content, createOpts)
+			created, err := store.WriteBytes(t.Context(), content, createOpts)
 			require.NoError(err)
 			require.Equal(encoding.want, created.Encoding)
 			physical, err := os.ReadFile(created.Path)
@@ -115,7 +115,7 @@ func TestLooseDurableTypeAndSizeRejectsEqualSizeReplacementAfterSync(t *testing.
 			replacement := bytes.Repeat([]byte{0x5a}, len(physical))
 			replacementOutcome := installEqualSizeReplacementAtFinalSnapshot(t, created.Path, replacement)
 
-			result, err := store.WriteBytes(context.Background(), content, WriteOptions{
+			result, err := store.WriteBytes(t.Context(), content, WriteOptions{
 				Durability:   DurablePublication,
 				Dedup:        VerifyTypeAndSize,
 				ExpectedHash: createOpts.ExpectedHash,
@@ -181,10 +181,10 @@ func installEqualSizeReplacementAtFinalSnapshot(t *testing.T, path string, repla
 			return info, nil
 		}
 		outcome.installed = true
-		Require.NoError(t, os.Remove(gotPath))
-		Require.NoError(t, os.WriteFile(gotPath, replacement, 0o600))
+		require.NoError(t, os.Remove(gotPath))
+		require.NoError(t, os.WriteFile(gotPath, replacement, 0o600))
 		replacementInfo, snapshotErr := originalSnapshot(gotPath)
-		Require.NoError(t, snapshotErr)
+		require.NoError(t, snapshotErr)
 		outcome.pinLiveAtReplacement = pinLive
 		outcome.replacementIdentityChanged = !os.SameFile(originalIdentity, replacementInfo)
 		if !pinLive {

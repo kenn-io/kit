@@ -57,11 +57,11 @@ func TestParseEndpointUnixDefault(t *testing.T) {
 func TestUnixHTTPClientDialsSocket(t *testing.T) {
 	require := require.New(t)
 
-	socketDir, err := os.MkdirTemp("", "kitd")
+	socketDir, err := os.MkdirTemp("", "kitd") //nolint:usetesting // unix socket paths must stay short, so the test needs a fixed OS temp root
 	require.NoError(err)
 	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
 	socketPath := filepath.Join(socketDir, "daemon.sock")
-	listener, err := net.Listen("unix", socketPath)
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", socketPath)
 	require.NoError(err)
 	t.Cleanup(func() {
 		_ = listener.Close()
@@ -72,10 +72,10 @@ func TestUnixHTTPClientDialsSocket(t *testing.T) {
 		_, _ = fmt.Fprint(w, "ok")
 	})}
 	go func() { _ = server.Serve(listener) }()
-	t.Cleanup(func() { _ = server.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = server.Shutdown(context.WithoutCancel(t.Context())) })
 
 	ep := daemon.Endpoint{Network: daemon.NetworkUnix, Address: socketPath}
-	resp, err := ep.HTTPClient(daemon.HTTPClientOptions{}).Get(ep.BaseURL())
+	resp, err := doRequest(t, ep.HTTPClient(daemon.HTTPClientOptions{}), http.MethodGet, ep.BaseURL(), "", nil)
 	require.NoError(err)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)

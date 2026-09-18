@@ -2,7 +2,7 @@ package s3store
 
 import (
 	"bytes"
-	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,17 +10,17 @@ import (
 	"strings"
 	"testing"
 
-	Assert "github.com/stretchr/testify/assert"
-	Require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/packstore"
 )
 
 func TestProbeDisarmsCleanupAfterExplicitDelete(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	state, backend := newProbeHTTPBackend(t, false)
 
-	report, err := backend.Probe(context.Background())
+	report, err := backend.Probe(t.Context())
 
 	require.NoError(err)
 	assert.Equal(CapabilityReport{
@@ -39,25 +39,25 @@ func TestProbeDisarmsCleanupAfterExplicitDelete(t *testing.T) {
 }
 
 func TestProbeRejectsAcknowledgedDeleteThatLeavesObject(t *testing.T) {
-	assert := Assert.New(t)
+	assert := assert.New(t)
 	state, backend := newProbeHTTPBackend(t, false)
 	state.ignoreDelete = true
 
-	report, err := backend.Probe(context.Background())
+	report, err := backend.Probe(t.Context())
 
-	Require.Error(t, err)
+	require.Error(t, err)
 	assert.False(report.Delete)
 	assert.Equal(2, state.deletes, "failed verification must leave cleanup armed")
 	assert.NotNil(state.object)
 }
 
 func TestProbeCleanupUsesFreshDeadline(t *testing.T) {
-	assert := Assert.New(t)
+	assert := assert.New(t)
 	state, backend := newProbeHTTPBackend(t, true)
 
-	_, err := backend.Probe(context.Background())
+	_, err := backend.Probe(t.Context())
 
-	Require.Error(t, err)
+	require.Error(t, err)
 	assert.True(state.cleanupOwnershipHadDeadline)
 	assert.True(state.cleanupDeleteHadDeadline)
 	assert.Equal(1, state.deletes)
@@ -86,9 +86,9 @@ func TestProbeRejectsIgnoredConditionalWrites(t *testing.T) {
 			state, backend := newProbeHTTPBackend(t, false)
 			tt.apply(state)
 
-			_, err := backend.Probe(context.Background())
+			_, err := backend.Probe(t.Context())
 
-			Require.Error(t, err)
+			require.Error(t, err)
 		})
 	}
 }
@@ -97,14 +97,14 @@ func TestProbeRejectsAppliedStaleConditionalReplacement(t *testing.T) {
 	state, backend := newProbeHTTPBackend(t, false)
 	state.applyStaleWrite = true
 
-	_, err := backend.Probe(context.Background())
+	_, err := backend.Probe(t.Context())
 
-	Require.ErrorIs(t, err, packstore.ErrPhysicalCorrupt)
+	require.ErrorIs(t, err, packstore.ErrPhysicalCorrupt)
 }
 
 func TestReadProbeBodyBoundsAndValidatesResponse(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	expected := []byte("probe")
 	got, err := readProbeBody(bytes.NewReader(expected), nil, expected)
 	require.NoError(err)
@@ -152,7 +152,7 @@ func newProbeHTTPBackend(t *testing.T, failFirstProbeRead bool) (*probeHTTPState
 		Epoch:  "epoch-1",
 	}
 	marker, err := packstore.MarshalOwnership(owner)
-	Require.NoError(t, err)
+	require.NoError(t, err)
 	state := &probeHTTPState{
 		t:                  t,
 		marker:             marker,
@@ -227,7 +227,7 @@ func (s *probeHTTPState) roundTrip(request *http.Request) (*http.Response, error
 	case request.Method == http.MethodGet && key == s.probeKey:
 		s.probeReads++
 		if s.failFirstProbeRead {
-			return nil, fmt.Errorf("probe read failed")
+			return nil, errors.New("probe read failed")
 		}
 		if request.Header.Get("Range") == "bytes=5-20" {
 			response := bytesResponse(request, s.object[5:21])

@@ -2,6 +2,7 @@ package s3store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -67,13 +68,13 @@ type Backend struct {
 // performs the mutating endpoint-capability checks separately.
 func New(ctx context.Context, cfg Config) (*Backend, error) {
 	if ctx == nil {
-		return nil, fmt.Errorf("s3store: nil context")
+		return nil, errors.New("s3store: nil context")
 	}
 	if err := validateEndpoint(cfg.Endpoint, cfg.AllowInsecureTransport); err != nil {
 		return nil, err
 	}
 	if cfg.Bucket == "" {
-		return nil, fmt.Errorf("s3store: bucket is required")
+		return nil, errors.New("s3store: bucket is required")
 	}
 	keys, err := newKeyspace(cfg.Prefix)
 	if err != nil {
@@ -92,7 +93,7 @@ func New(ctx context.Context, cfg Config) (*Backend, error) {
 		cfg.InventoryPageSize = defaultInventorySize
 	}
 	if cfg.InventoryPageSize < 1 || cfg.InventoryPageSize > 1000 {
-		return nil, fmt.Errorf("s3store: inventory page size must be between 1 and 1000")
+		return nil, errors.New("s3store: inventory page size must be between 1 and 1000")
 	}
 	cfg.Limits, err = normalizeLimits(cfg.Limits)
 	if err != nil {
@@ -127,21 +128,21 @@ func New(ctx context.Context, cfg Config) (*Backend, error) {
 		part: cfg.PartBytes, page: cfg.InventoryPageSize, limits: cfg.Limits,
 	}
 	if cfg.ExpectedOwnership != nil {
-		copy := *cfg.ExpectedOwnership
-		backend.owner = &copy
+		cloned := *cfg.ExpectedOwnership
+		backend.owner = &cloned
 	}
 	return backend, nil
 }
 
 func validatePartBytes(partBytes int64, platformMaxInt uint64) error {
 	if partBytes < 5<<20 {
-		return fmt.Errorf("s3store: multipart part size must be at least 5 MiB")
+		return errors.New("s3store: multipart part size must be at least 5 MiB")
 	}
 	if partBytes > maximumPartBytes {
-		return fmt.Errorf("s3store: multipart part size must be at most 5 GiB")
+		return errors.New("s3store: multipart part size must be at most 5 GiB")
 	}
-	if uint64(partBytes) > platformMaxInt { //nolint:gosec // positive after the minimum check
-		return fmt.Errorf("s3store: multipart part size exceeds platform int maximum")
+	if uint64(partBytes) > platformMaxInt {
+		return errors.New("s3store: multipart part size exceeds platform int maximum")
 	}
 	return nil
 }
@@ -152,16 +153,14 @@ func validateEndpoint(endpoint string, allowInsecure bool) error {
 	}
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Host == "" {
-		return fmt.Errorf("s3store: endpoint must be an absolute HTTP or HTTPS URL")
+		return errors.New("s3store: endpoint must be an absolute HTTP or HTTPS URL")
 	}
 	scheme := strings.ToLower(parsed.Scheme)
 	if scheme != "http" && scheme != "https" {
-		return fmt.Errorf("s3store: endpoint must be an absolute HTTP or HTTPS URL")
+		return errors.New("s3store: endpoint must be an absolute HTTP or HTTPS URL")
 	}
 	if scheme == "http" && !allowInsecure {
-		return fmt.Errorf(
-			"s3store: insecure HTTP endpoint requires AllowInsecureTransport",
-		)
+		return errors.New("s3store: insecure HTTP endpoint requires AllowInsecureTransport")
 	}
 	return nil
 }
@@ -172,7 +171,7 @@ func normalizeLimits(limits packstore.Limits) (packstore.Limits, error) {
 	}
 	if limits.BlobBytes <= 0 || limits.PackBytes <= 0 ||
 		limits.FooterBytes <= 0 || limits.PackEntries <= 0 {
-		return packstore.Limits{}, fmt.Errorf("s3store: invalid pack reader limits")
+		return packstore.Limits{}, errors.New("s3store: invalid pack reader limits")
 	}
 	return limits, nil
 }
@@ -194,14 +193,14 @@ func (b *Backend) expectedOwnership() (*packstore.Ownership, string) {
 	if b.owner == nil {
 		return nil, ""
 	}
-	copy := *b.owner
-	return &copy, b.etag
+	cloned := *b.owner
+	return &cloned, b.etag
 }
 
 func (b *Backend) setOwnership(owner packstore.Ownership, etag string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	copy := owner
-	b.owner = &copy
+	cloned := owner
+	b.owner = &cloned
 	b.etag = etag
 }

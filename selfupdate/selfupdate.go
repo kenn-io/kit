@@ -267,16 +267,16 @@ func (c Client) Check(ctx context.Context, opts CheckOptions) (*Info, error) {
 // Install downloads, verifies, extracts, and installs info.
 func (c Client) Install(ctx context.Context, info *Info, opts InstallOptions) error {
 	if info == nil {
-		return fmt.Errorf("install: update info is nil")
+		return errors.New("install: update info is nil")
 	}
 	if info.NeedsRefetch() {
-		return fmt.Errorf("install: update info came from cache; re-check with Force before installing")
+		return errors.New("install: update info came from cache; re-check with Force before installing")
 	}
 	if info.Checksum == "" {
 		return fmt.Errorf("no checksum for %s - refusing unverified binary", info.AssetName)
 	}
 	if info.DownloadURL == "" {
-		return fmt.Errorf("install: download URL is empty")
+		return errors.New("install: download URL is empty")
 	}
 	if err := c.validateInfoMetadata(info); err != nil {
 		return err
@@ -349,10 +349,10 @@ type InstallArchiveOptions struct {
 // binary to dstPath.
 func InstallArchive(archivePath, expectedChecksum, dstPath string, opts InstallArchiveOptions) error {
 	if expectedChecksum == "" {
-		return fmt.Errorf("empty checksum - refusing unverified binary")
+		return errors.New("empty checksum - refusing unverified binary")
 	}
 	if dstPath == "" {
-		return fmt.Errorf("destination path is empty")
+		return errors.New("destination path is empty")
 	}
 
 	checksum := opts.PrecomputedChecksum
@@ -471,7 +471,7 @@ func InstallBinary(srcPath, dstPath string) error {
 	if err := os.Rename(tmpPath, dstPath); err != nil {
 		if movedAside {
 			if rbErr := os.Rename(backupPath, dstPath); rbErr != nil {
-				return fmt.Errorf("install: %w (rollback also failed: %v)", err, rbErr)
+				return fmt.Errorf("install: %w (rollback also failed: %w)", err, rbErr)
 			}
 		}
 		return fmt.Errorf("install: %w", err)
@@ -511,7 +511,7 @@ func ExtractTarGz(archivePath, destDir string) error {
 	tr := tar.NewReader(gzr)
 	for {
 		header, err := tr.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -619,16 +619,16 @@ func ExtractZip(archivePath, destDir string) error {
 // traversal.
 func SanitizeArchivePath(destDir, name string) (string, error) {
 	if strings.HasPrefix(name, "/") {
-		return "", fmt.Errorf("absolute path not allowed")
+		return "", errors.New("absolute path not allowed")
 	}
 
 	cleanName := filepath.Clean(name)
 	if filepath.IsAbs(cleanName) {
-		return "", fmt.Errorf("absolute path not allowed")
+		return "", errors.New("absolute path not allowed")
 	}
 	if strings.HasPrefix(cleanName, "..") ||
 		strings.Contains(cleanName, string(filepath.Separator)+"..") {
-		return "", fmt.Errorf("path traversal not allowed")
+		return "", errors.New("path traversal not allowed")
 	}
 
 	target := filepath.Join(destDir, cleanName)
@@ -641,7 +641,7 @@ func SanitizeArchivePath(destDir, name string) (string, error) {
 		return "", err
 	}
 	if !strings.HasPrefix(absTarget, absDestDir+string(filepath.Separator)) && absTarget != absDestDir {
-		return "", fmt.Errorf("path escapes destination directory")
+		return "", errors.New("path escapes destination directory")
 	}
 	return target, nil
 }
@@ -724,13 +724,13 @@ type cachedCheck struct {
 
 func (c Client) validateCheckConfig() error {
 	if c.Owner == "" {
-		return fmt.Errorf("selfupdate: owner is required")
+		return errors.New("selfupdate: owner is required")
 	}
 	if c.Repo == "" {
-		return fmt.Errorf("selfupdate: repo is required")
+		return errors.New("selfupdate: repo is required")
 	}
 	if c.BinaryName == "" {
-		return fmt.Errorf("selfupdate: binary name is required")
+		return errors.New("selfupdate: binary name is required")
 	}
 	return nil
 }
@@ -777,7 +777,7 @@ func (c Client) httpClientRejectingHTTPSDowngrades() *http.Client {
 			return originalCheckRedirect(req, via)
 		}
 		if len(via) >= 10 {
-			return fmt.Errorf("stopped after 10 redirects")
+			return errors.New("stopped after 10 redirects")
 		}
 		return nil
 	}
@@ -1027,7 +1027,7 @@ func (c Client) fetchReleaseManifest(ctx context.Context) (*Release, error) {
 		return nil, err
 	}
 	if release.TagName == "" {
-		return nil, fmt.Errorf("release manifest missing tag_name")
+		return nil, errors.New("release manifest missing tag_name")
 	}
 	return &release, nil
 }
@@ -1276,7 +1276,7 @@ func (c Client) downloadFile(ctx context.Context, url, dest string, totalSize in
 
 func (c Client) downloadChecksumSignature(ctx context.Context, info *Info) ([]byte, error) {
 	if len(c.TrustedPublicKeys) == 0 {
-		return nil, fmt.Errorf("install: trusted public key is required to verify checksum provenance")
+		return nil, errors.New("install: trusted public key is required to verify checksum provenance")
 	}
 	if info.SignatureURL == "" {
 		return nil, fmt.Errorf("install: checksum signature for %s is missing", info.AssetName)
@@ -1477,7 +1477,7 @@ func findExtractedBinary(root, binaryName string) (string, error) {
 
 func movePreviousAside(dstPath, backupPath string) (bool, error) {
 	if _, err := os.Stat(dstPath); err != nil {
-		return false, nil
+		return false, nil //nolint:nilerr // an unreadable or absent destination means there is nothing to move aside
 	}
 	if err := os.Rename(dstPath, backupPath); err != nil {
 		return false, fmt.Errorf("backup: %w", err)
@@ -1490,10 +1490,10 @@ func verifyChecksumTrust(payload, signature []byte, publicKeys []ed25519.PublicK
 		return nil
 	}
 	if len(publicKeys) == 0 {
-		return fmt.Errorf("checksum signature verification requires a trusted public key")
+		return errors.New("checksum signature verification requires a trusted public key")
 	}
 	if len(payload) == 0 {
-		return fmt.Errorf("checksum signature payload is empty")
+		return errors.New("checksum signature payload is empty")
 	}
 
 	sig, err := parseSignature(signature)
@@ -1505,7 +1505,7 @@ func verifyChecksumTrust(payload, signature []byte, publicKeys []ed25519.PublicK
 			return nil
 		}
 	}
-	return fmt.Errorf("checksum signature verification failed")
+	return errors.New("checksum signature verification failed")
 }
 
 // SignatureMetadata is the update metadata covered by a release signature.
@@ -1562,7 +1562,7 @@ func ensureNoSymlinkPath(absDestDir, target string) error {
 		return nil
 	}
 	if strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." || filepath.IsAbs(rel) {
-		return fmt.Errorf("path escapes destination directory")
+		return errors.New("path escapes destination directory")
 	}
 
 	current := absDestDir
@@ -1593,23 +1593,23 @@ func parseSignature(data []byte) ([]byte, error) {
 	if decoded, err := hex.DecodeString(text); err == nil && len(decoded) == ed25519.SignatureSize {
 		return decoded, nil
 	}
-	return nil, fmt.Errorf("checksum signature has invalid format")
+	return nil, errors.New("checksum signature has invalid format")
 }
 
-func readLimited(r io.Reader, max int64) ([]byte, error) {
-	data, err := io.ReadAll(io.LimitReader(r, max+1))
+func readLimited(r io.Reader, limit int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, limit+1))
 	if err != nil {
 		return nil, err
 	}
-	if int64(len(data)) > max {
-		return nil, fmt.Errorf("response exceeds %d byte limit", max)
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("response exceeds %d byte limit", limit)
 	}
 	return data, nil
 }
 
 func safeAssetFileName(name string) (string, error) {
 	if name == "" {
-		return "", fmt.Errorf("install: asset name is empty")
+		return "", errors.New("install: asset name is empty")
 	}
 	if filepath.IsAbs(name) || filepath.Base(name) != name || filepath.Clean(name) != name || name == "." || name == ".." {
 		return "", fmt.Errorf("install: invalid asset name %q", name)

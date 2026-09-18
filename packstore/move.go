@@ -17,13 +17,13 @@ func Move(
 	request MoveRequest,
 ) (receipt MoveReceipt, resultErr error) {
 	if ctx == nil {
-		return MoveReceipt{}, fmt.Errorf("packstore: nil context")
+		return MoveReceipt{}, errors.New("packstore: nil context")
 	}
 	if source == nil {
-		return MoveReceipt{}, fmt.Errorf("packstore: nil move source backend")
+		return MoveReceipt{}, errors.New("packstore: nil move source backend")
 	}
 	if destination == nil {
-		return MoveReceipt{}, fmt.Errorf("packstore: nil move destination backend")
+		return MoveReceipt{}, errors.New("packstore: nil move destination backend")
 	}
 	if err := request.Identity.Validate(); err != nil {
 		return MoveReceipt{}, err
@@ -48,7 +48,7 @@ func Move(
 		)
 	}
 	if request.Source.Pack != nil && request.Source.Pack.Hash != request.Identity.Hash {
-		return MoveReceipt{}, fmt.Errorf("packstore: move source hash does not match identity")
+		return MoveReceipt{}, errors.New("packstore: move source hash does not match identity")
 	}
 	stream, sourceSize, err := openBackendStream(
 		ctx,
@@ -95,7 +95,7 @@ func Move(
 		return MoveReceipt{}, err
 	}
 	if readback == nil {
-		return MoveReceipt{}, fmt.Errorf("packstore: destination returned a nil read-back stream")
+		return MoveReceipt{}, errors.New("packstore: destination returned a nil read-back stream")
 	}
 	defer func() { resultErr = errors.Join(resultErr, readback.Close()) }()
 	if readbackSize != request.Identity.Size {

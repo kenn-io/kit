@@ -1,8 +1,6 @@
 package packstore
 
-import (
-	"fmt"
-)
+import "errors"
 
 // MaintainerOptions configures reusable physical maintenance.
 type MaintainerOptions struct {
@@ -28,7 +26,7 @@ type Maintainer struct {
 // NewMaintainer constructs a lifecycle engine over an application catalog.
 func NewMaintainer(catalog Catalog, layout Layout, opts MaintainerOptions) (*Maintainer, error) {
 	if catalog == nil {
-		return nil, fmt.Errorf("packstore: catalog is nil")
+		return nil, errors.New("packstore: catalog is nil")
 	}
 	if opts.Limits == (Limits{}) {
 		opts.Limits = DefaultLimits()

@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/zstd"
-	Assert "github.com/stretchr/testify/assert"
-	Require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/pack"
 )
 
@@ -59,12 +59,12 @@ func (c *recordingRestoreCatalog) ReplaceRestoredPacks(
 }
 
 func TestPrepareImportPublishesBeforeCatalogAuthority(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	target := openImportTarget(t)
 	source, packID, entries := buildImportTestPack(t, []byte("selected"))
 
-	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+	prepared, err := PrepareImport(t.Context(), target, "content", []ImportPack{{
 		PackID: packID, SourcePath: source, Selections: importSelections(t, entries),
 	}}, ImportOptions{Limits: DefaultLimits(), CreatedAt: time.Now()})
 
@@ -78,16 +78,16 @@ func TestPrepareImportPublishesBeforeCatalogAuthority(t *testing.T) {
 }
 
 func TestPrepareImportReusesByteIdenticalDestination(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	target := openImportTarget(t)
 	source, packID, entries := buildImportTestPack(t, []byte("selected"))
 	input := []ImportPack{{PackID: packID, SourcePath: source, Selections: importSelections(t, entries)}}
 	opts := ImportOptions{Limits: DefaultLimits(), CreatedAt: time.Now()}
-	first, err := PrepareImport(context.Background(), target, "content", input, opts)
+	first, err := PrepareImport(t.Context(), target, "content", input, opts)
 	require.NoError(err)
 
-	second, err := PrepareImport(context.Background(), target, "content", input, opts)
+	second, err := PrepareImport(t.Context(), target, "content", input, opts)
 
 	require.NoError(err)
 	assert.Equal(first.PackedHashes(), second.PackedHashes())
@@ -99,8 +99,8 @@ func TestPrepareImportReuseRequiresDurableDestinationDirectory(t *testing.T) {
 	source, packID, entries := buildImportTestPack(t, []byte("selected"))
 	input := []ImportPack{{PackID: packID, SourcePath: source, Selections: importSelections(t, entries)}}
 	opts := ImportOptions{Limits: DefaultLimits(), CreatedAt: time.Now()}
-	_, err := PrepareImport(context.Background(), target, "content", input, opts)
-	Require.NoError(t, err)
+	_, err := PrepareImport(t.Context(), target, "content", input, opts)
+	require.NoError(t, err)
 	originalSync := syncImportRootDir
 	syncErr := errors.New("reused pack directory sync failed")
 	finalParent := path.Dir(importPackPath("content", packID))
@@ -112,16 +112,16 @@ func TestPrepareImportReuseRequiresDurableDestinationDirectory(t *testing.T) {
 	}
 	t.Cleanup(func() { syncImportRootDir = originalSync })
 
-	prepared, err := PrepareImport(context.Background(), target, "content", input, opts)
+	prepared, err := PrepareImport(t.Context(), target, "content", input, opts)
 
-	Assert.Nil(t, prepared)
-	Require.ErrorIs(t, err, syncErr)
+	assert.Nil(t, prepared)
+	require.ErrorIs(t, err, syncErr)
 	assertNoImportStaging(t, target)
 }
 
 func TestPrepareImportFallsBackWhenHardLinksUnavailable(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	originalLink := importRootLink
 	originalUnsupported := importLinkUnsupported
 	importRootLink = func(*os.Root, string, string) error { return errors.New("hard links unavailable") }
@@ -136,7 +136,7 @@ func TestPrepareImportFallsBackWhenHardLinksUnavailable(t *testing.T) {
 	limits := DefaultLimits()
 	limits.BlobBytes = int64(len(contents[0]))
 
-	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+	prepared, err := PrepareImport(t.Context(), target, "content", []ImportPack{{
 		PackID: packID, SourcePath: source, Selections: importSelections(t, entries),
 	}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
 
@@ -151,8 +151,8 @@ func TestPrepareImportFallsBackWhenHardLinksUnavailable(t *testing.T) {
 }
 
 func TestPrepareImportConcurrentLinkUnsupportedNeverPublishes(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	originalLink := importRootLink
 	originalUnsupported := importLinkUnsupported
 	importRootLink = func(*os.Root, string, string) error { return errors.New("hard links unavailable") }
@@ -173,7 +173,7 @@ func TestPrepareImportConcurrentLinkUnsupportedNeverPublishes(t *testing.T) {
 	var workers sync.WaitGroup
 	for range 16 {
 		workers.Go(func() {
-			prepared, err := PrepareImport(context.Background(), target, "content", input, opts)
+			prepared, err := PrepareImport(t.Context(), target, "content", input, opts)
 			results <- result{prepared: prepared, err: err}
 		})
 	}
@@ -205,29 +205,29 @@ func TestPrepareImportConcurrentSameIDReusesAtomicWinner(t *testing.T) {
 	var workers sync.WaitGroup
 	for range 16 {
 		workers.Go(func() {
-			prepared, err := PrepareImport(context.Background(), target, "content", input, opts)
+			prepared, err := PrepareImport(t.Context(), target, "content", input, opts)
 			results <- result{prepared: prepared, err: err}
 		})
 	}
 	workers.Wait()
 	close(results)
 	for result := range results {
-		Require.NoError(t, result.err)
-		Assert.Equal(t, []Hash{hash}, result.prepared.PackedHashes())
+		require.NoError(t, result.err)
+		assert.Equal(t, []Hash{hash}, result.prepared.PackedHashes())
 	}
 	_, err := target.Stat(importPackPath("content", packID))
-	Require.NoError(t, err)
+	require.NoError(t, err)
 	assertNoImportStaging(t, target)
 }
 
 func TestPrepareImportLinkFallbackRefusesPreexistingDestination(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	target := openImportTarget(t)
 	source, packID, entries := buildImportTestPack(t, []byte("selected"))
 	input := []ImportPack{{PackID: packID, SourcePath: source, Selections: importSelections(t, entries)}}
 	opts := ImportOptions{Limits: DefaultLimits(), CreatedAt: time.Now()}
-	_, err := PrepareImport(context.Background(), target, "content", input, opts)
+	_, err := PrepareImport(t.Context(), target, "content", input, opts)
 	require.NoError(err)
 	final := filepath.Join(target.Name(), filepath.FromSlash(importPackPath("content", packID)))
 	require.NoError(os.WriteFile(final, []byte("preexisting collision"), 0o600))
@@ -240,7 +240,7 @@ func TestPrepareImportLinkFallbackRefusesPreexistingDestination(t *testing.T) {
 		importLinkUnsupported = originalUnsupported
 	})
 
-	prepared, err := PrepareImport(context.Background(), target, "content", input, opts)
+	prepared, err := PrepareImport(t.Context(), target, "content", input, opts)
 
 	assert.Nil(prepared)
 	require.ErrorContains(err, "collision")
@@ -250,8 +250,8 @@ func TestPrepareImportLinkFallbackRefusesPreexistingDestination(t *testing.T) {
 }
 
 func TestPrepareImportLinkUnsupportedPlantedFileIsNeverReplaced(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	target := openImportTarget(t)
 	source, packID, entries := buildImportTestPack(t, []byte("selected"))
 	planted := []byte("planted during publication")
@@ -267,7 +267,7 @@ func TestPrepareImportLinkUnsupportedPlantedFileIsNeverReplaced(t *testing.T) {
 		importLinkUnsupported = originalUnsupported
 	})
 
-	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+	prepared, err := PrepareImport(t.Context(), target, "content", []ImportPack{{
 		PackID: packID, SourcePath: source, Selections: importSelections(t, entries),
 	}}, ImportOptions{Limits: DefaultLimits(), CreatedAt: time.Now()})
 
@@ -279,7 +279,7 @@ func TestPrepareImportLinkUnsupportedPlantedFileIsNeverReplaced(t *testing.T) {
 }
 
 func TestPrepareImportBoundsSourceGrowthAfterPreflight(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	target := openImportTarget(t)
 	source, packID, entries := buildImportTestPack(t, []byte("selected"))
 	info, err := os.Stat(source)
@@ -296,11 +296,11 @@ func TestPrepareImportBoundsSourceGrowthAfterPreflight(t *testing.T) {
 	}
 	t.Cleanup(func() { importAfterSourceOpen = originalAfterOpen })
 
-	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+	prepared, err := PrepareImport(t.Context(), target, "content", []ImportPack{{
 		PackID: packID, SourcePath: source, Selections: importSelections(t, entries),
 	}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
 
-	Assert.Nil(t, prepared)
+	assert.Nil(t, prepared)
 	require.ErrorContains(err, "source mutation")
 	_, statErr := target.Stat(importPackPath("content", packID))
 	require.ErrorIs(statErr, os.ErrNotExist)
@@ -313,9 +313,9 @@ func TestImportBoundedWriterNeverWritesBeyondLimit(t *testing.T) {
 
 	n, err := writer.Write([]byte("ten bytes!"))
 
-	Assert.Equal(t, 4, n)
-	Require.ErrorIs(t, err, errImportSourceExceedsLimit)
-	Assert.Equal(t, "ten ", destination.String())
+	assert.Equal(t, 4, n)
+	require.ErrorIs(t, err, errImportSourceExceedsLimit)
+	assert.Equal(t, "ten ", destination.String())
 }
 
 func TestPrepareImportVerifiesEligibleSelectedPayloadOnce(t *testing.T) {
@@ -333,17 +333,17 @@ func TestPrepareImportVerifiesEligibleSelectedPayloadOnce(t *testing.T) {
 	target := openImportTarget(t)
 	source, packID, entries := buildImportTestPack(t, []byte("selected"))
 
-	_, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+	_, err := PrepareImport(t.Context(), target, "content", []ImportPack{{
 		PackID: packID, SourcePath: source, Selections: importSelections(t, entries),
 	}}, ImportOptions{Limits: DefaultLimits(), CreatedAt: time.Now()})
 
-	Require.NoError(t, err)
-	Assert.Equal(t, 1, calls)
+	require.NoError(t, err)
+	assert.Equal(t, 1, calls)
 }
 
 func TestPrepareImportAcceptsLegacyZstdWindowWithinLimit(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	content := bytes.Repeat([]byte("legacy bounded window "), 128)
 	encoder, err := zstd.NewWriter(nil,
 		zstd.WithEncoderConcurrency(1),
@@ -370,7 +370,7 @@ func TestPrepareImportAcceptsLegacyZstdWindowWithinLimit(t *testing.T) {
 	require.NoError(reader.Close())
 	target := openImportTarget(t)
 
-	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+	prepared, err := PrepareImport(t.Context(), target, "content", []ImportPack{{
 		PackID: writer.ID(), SourcePath: source, Selections: importSelections(t, entries),
 	}}, ImportOptions{Limits: DefaultLimits(), CreatedAt: time.Now()})
 
@@ -381,7 +381,7 @@ func TestPrepareImportAcceptsLegacyZstdWindowWithinLimit(t *testing.T) {
 func TestPrepareImportSurfacesStagingDirectorySyncFailure(t *testing.T) {
 	target := openImportTarget(t)
 	source, packID, entries := buildImportTestPack(t, []byte("selected"))
-	Require.NoError(t, target.MkdirAll(path.Dir(importPackPath("content", packID)), 0o700))
+	require.NoError(t, target.MkdirAll(path.Dir(importPackPath("content", packID)), 0o700))
 	originalSync := syncImportRootDir
 	syncErr := errors.New("staging parent sync failed")
 	syncImportRootDir = func(_ *os.Root, name string) error {
@@ -392,32 +392,32 @@ func TestPrepareImportSurfacesStagingDirectorySyncFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { syncImportRootDir = originalSync })
 
-	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+	prepared, err := PrepareImport(t.Context(), target, "content", []ImportPack{{
 		PackID: packID, SourcePath: source, Selections: importSelections(t, entries),
 	}}, ImportOptions{Limits: DefaultLimits(), CreatedAt: time.Now()})
 
-	Assert.Nil(t, prepared)
-	Require.ErrorIs(t, err, syncErr)
+	assert.Nil(t, prepared)
+	require.ErrorIs(t, err, syncErr)
 	assertNoImportStaging(t, target)
 }
 
 func TestPrepareImportPartialFailureLeavesOnlyEarlierVerifiedOrphan(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	target := openImportTarget(t)
 	firstSource, firstID, firstEntries := buildImportTestPack(t, []byte("first selected"))
 	secondSource, secondID, secondEntries := buildImportTestPack(t, []byte("second selected"))
 	second, err := os.OpenFile(secondSource, os.O_RDWR, 0)
 	require.NoError(err)
-	_, err = second.WriteAt([]byte{0xff}, int64(secondEntries[0].Offset)) //nolint:gosec // test pack is small
+	_, err = second.WriteAt([]byte{0xff}, int64(secondEntries[0].Offset))
 	require.NoError(err)
 	require.NoError(second.Close())
 
-	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{
+	prepared, err := PrepareImport(t.Context(), target, "content", []ImportPack{
 		{PackID: firstID, SourcePath: firstSource, Selections: importSelections(t, firstEntries)},
 		{PackID: secondID, SourcePath: secondSource, Selections: importSelections(t, secondEntries)},
 	}, ImportOptions{Limits: DefaultLimits(), CreatedAt: time.Now()})
 
-	Assert.Nil(t, prepared)
+	assert.Nil(t, prepared)
 	require.ErrorIs(err, pack.ErrCorrupt)
 	_, firstErr := target.Stat(importPackPath("content", firstID))
 	require.NoError(firstErr)
@@ -427,18 +427,18 @@ func TestPrepareImportPartialFailureLeavesOnlyEarlierVerifiedOrphan(t *testing.T
 }
 
 func TestPrepareImportRefusesPackIDCollision(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	target := openImportTarget(t)
 	source, packID, entries := buildImportTestPack(t, []byte("selected"))
 	input := []ImportPack{{PackID: packID, SourcePath: source, Selections: importSelections(t, entries)}}
 	opts := ImportOptions{Limits: DefaultLimits(), CreatedAt: time.Now()}
-	_, err := PrepareImport(context.Background(), target, "content", input, opts)
+	_, err := PrepareImport(t.Context(), target, "content", input, opts)
 	require.NoError(err)
 	final := filepath.Join(target.Name(), filepath.FromSlash(importPackPath("content", packID)))
 	require.NoError(os.WriteFile(final, []byte("different bytes"), 0o600))
 
-	prepared, err := PrepareImport(context.Background(), target, "content", input, opts)
+	prepared, err := PrepareImport(t.Context(), target, "content", input, opts)
 
 	assert.Nil(prepared)
 	require.ErrorContains(err, "collision")
@@ -448,8 +448,8 @@ func TestPrepareImportRefusesPackIDCollision(t *testing.T) {
 }
 
 func TestPrepareImportRejectsOverlappingFullFooterEntries(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	target := openImportTarget(t)
 	source, packID, entries := buildImportTestPack(t, []byte("selected"), []byte("unselected"))
 	data, err := os.ReadFile(source)
@@ -463,7 +463,7 @@ func TestPrepareImportRejectsOverlappingFullFooterEntries(t *testing.T) {
 	copy(data[trailerStart+4:trailerStart+36], digest[:])
 	require.NoError(os.WriteFile(source, data, 0o600))
 
-	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+	prepared, err := PrepareImport(t.Context(), target, "content", []ImportPack{{
 		PackID: packID, SourcePath: source, Selections: importSelections(t, entries[:1]),
 	}}, ImportOptions{Limits: DefaultLimits(), CreatedAt: time.Now()})
 
@@ -487,8 +487,8 @@ func TestImportFooterStoredBytesIgnoresZeroLengthSpans(t *testing.T) {
 				{Offset: test.offset, StoredLen: 0, RawLen: 0},
 			})
 
-			Require.NoError(t, err)
-			Assert.Equal(t, int64(10), stored)
+			require.NoError(t, err)
+			assert.Equal(t, int64(10), stored)
 		})
 	}
 }
@@ -507,6 +507,7 @@ func TestPrepareImportAllowsZeroLengthFooterEntries(t *testing.T) {
 			name:     "within non-empty span",
 			contents: [][]byte{[]byte("selected content"), {}},
 			mutate: func(t *testing.T, packPath string, entries []pack.Entry) {
+				t.Helper()
 				entries[1].Offset = entries[0].Offset + 1
 				mutateImportFooterEntry(t, packPath, 1, func(entry []byte) {
 					binary.LittleEndian.PutUint64(entry[32:], entries[1].Offset)
@@ -521,13 +522,13 @@ func TestPrepareImportAllowsZeroLengthFooterEntries(t *testing.T) {
 				test.mutate(t, packPath, entries)
 			}
 
-			prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+			prepared, err := PrepareImport(t.Context(), target, "content", []ImportPack{{
 				PackID: packID, SourcePath: packPath, Selections: importSelections(t, entries),
 			}}, ImportOptions{Limits: DefaultLimits(), CreatedAt: time.Now()})
 
-			Require.NoError(t, err)
-			Assert.Len(t, prepared.PackedHashes(), len(entries))
-			Assert.Equal(t, ImportStats{PackedPacks: 1, PackedBlobs: len(entries)}, prepared.Stats())
+			require.NoError(t, err)
+			assert.Len(t, prepared.PackedHashes(), len(entries))
+			assert.Equal(t, ImportStats{PackedPacks: 1, PackedBlobs: len(entries)}, prepared.Stats())
 		})
 	}
 }
@@ -538,22 +539,22 @@ func TestPreparedImportRejectsOverflowingFullFooterTotals(t *testing.T) {
 		entries: []pack.Entry{{Offset: pack.MinEntryOffset, StoredLen: ^uint64(0)}},
 	}, time.Now())
 
-	Assert.ErrorIs(t, err, pack.ErrCorrupt)
+	assert.ErrorIs(t, err, pack.ErrCorrupt)
 }
 
 func TestPreparedImportCatalogFailureLeavesPublishedOrphan(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	target := openImportTarget(t)
 	source, packID, entries := buildImportTestPack(t, []byte("selected"))
-	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+	prepared, err := PrepareImport(t.Context(), target, "content", []ImportPack{{
 		PackID: packID, SourcePath: source, Selections: importSelections(t, entries),
 	}}, ImportOptions{Limits: DefaultLimits(), CreatedAt: time.Now()})
 	require.NoError(err)
 	catalogErr := errors.New("transaction failed")
 	catalog := &recordingRestoreCatalog{err: catalogErr}
 
-	err = prepared.Commit(context.Background(), catalog)
+	err = prepared.Commit(t.Context(), catalog)
 
 	require.ErrorIs(err, catalogErr)
 	require.ErrorContains(err, "catalog")
@@ -563,23 +564,23 @@ func TestPreparedImportCatalogFailureLeavesPublishedOrphan(t *testing.T) {
 }
 
 func TestPreparedImportRecordsFullFooterTotalsForSelectedSubset(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	target := openImportTarget(t)
 	source, packID, entries := buildImportTestPack(t, []byte("selected"), []byte("unselected sibling"))
 	createdAt := time.Now().UTC().Truncate(time.Second)
-	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+	prepared, err := PrepareImport(t.Context(), target, "content", []ImportPack{{
 		PackID: packID, SourcePath: source, Selections: importSelections(t, entries[:1]),
 	}}, ImportOptions{Limits: DefaultLimits(), CreatedAt: createdAt})
 	require.NoError(err)
 	catalog := &recordingRestoreCatalog{}
 
-	require.NoError(prepared.Commit(context.Background(), catalog))
+	require.NoError(prepared.Commit(t.Context(), catalog))
 
 	require.Len(catalog.records, 1)
 	assert.Equal(PackRecord{
 		PackID: packID, EntryCount: 2,
-		StoredBytes: int64(entries[0].StoredLen + entries[1].StoredLen), //nolint:gosec // test pack is small
+		StoredBytes: int64(entries[0].StoredLen + entries[1].StoredLen),
 		CreatedAt:   createdAt,
 	}, catalog.records[0])
 	require.Len(catalog.adoptions, 1)
@@ -590,35 +591,35 @@ func TestPreparedImportRecordsFullFooterTotalsForSelectedSubset(t *testing.T) {
 }
 
 func TestPreparedImportCommitValidatesInputsAndAllowsIdempotentRetry(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	var nilPrepared *PreparedImport
-	require.ErrorContains(nilPrepared.Commit(context.Background(), &recordingRestoreCatalog{}), "nil")
+	require.ErrorContains(nilPrepared.Commit(t.Context(), &recordingRestoreCatalog{}), "nil")
 
 	target := openImportTarget(t)
 	source, packID, entries := buildImportTestPack(t, []byte("selected"))
-	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+	prepared, err := PrepareImport(t.Context(), target, "content", []ImportPack{{
 		PackID: packID, SourcePath: source, Selections: importSelections(t, entries),
 	}}, ImportOptions{Limits: DefaultLimits(), CreatedAt: time.Now()})
 	require.NoError(err)
-	require.ErrorContains(prepared.Commit(context.Background(), nil), "nil")
-	canceled, cancel := context.WithCancel(context.Background())
+	require.ErrorContains(prepared.Commit(t.Context(), nil), "nil")
+	canceled, cancel := context.WithCancel(t.Context())
 	cancel()
 	require.ErrorIs(prepared.Commit(canceled, &recordingRestoreCatalog{}), context.Canceled)
 	catalog := &recordingRestoreCatalog{}
-	require.NoError(prepared.Commit(context.Background(), catalog))
-	require.NoError(prepared.Commit(context.Background(), catalog))
-	Assert.Equal(t, 2, catalog.calls)
+	require.NoError(prepared.Commit(t.Context(), catalog))
+	require.NoError(prepared.Commit(t.Context(), catalog))
+	assert.Equal(t, 2, catalog.calls)
 }
 
 func TestPreparedImportRetryAcrossMaintainerOrphanDisposition(t *testing.T) {
 	t.Run("adopted orphan is reusable", func(t *testing.T) {
-		assert := Assert.New(t)
-		require := Require.New(t)
+		assert := assert.New(t)
+		require := require.New(t)
 		target := openImportTarget(t)
 		source, packID, entries := buildImportTestPack(t, []byte("selected"))
 		input := []ImportPack{{PackID: packID, SourcePath: source, Selections: importSelections(t, entries)}}
 		opts := ImportOptions{Limits: DefaultLimits(), CreatedAt: time.Now()}
-		_, err := PrepareImport(context.Background(), target, "content", input, opts)
+		_, err := PrepareImport(t.Context(), target, "content", input, opts)
 		require.NoError(err)
 		catalog := newMaintenanceCatalog()
 		hash := hashFromEntry(t, entries[0])
@@ -627,19 +628,19 @@ func TestPreparedImportRetryAcrossMaintainerOrphanDisposition(t *testing.T) {
 		stats := runImportMaintainer(t, target, catalog, DefaultLimits())
 
 		assert.Equal(1, stats.PacksAdopted)
-		retried, err := PrepareImport(context.Background(), target, "content", input, opts)
+		retried, err := PrepareImport(t.Context(), target, "content", input, opts)
 		require.NoError(err)
 		assert.Equal([]Hash{hash}, retried.PackedHashes())
 	})
 
 	t.Run("removed orphan is recopied", func(t *testing.T) {
-		assert := Assert.New(t)
-		require := Require.New(t)
+		assert := assert.New(t)
+		require := require.New(t)
 		target := openImportTarget(t)
 		source, packID, entries := buildImportTestPack(t, []byte("selected"))
 		input := []ImportPack{{PackID: packID, SourcePath: source, Selections: importSelections(t, entries)}}
 		opts := ImportOptions{Limits: DefaultLimits(), CreatedAt: time.Now()}
-		_, err := PrepareImport(context.Background(), target, "content", input, opts)
+		_, err := PrepareImport(t.Context(), target, "content", input, opts)
 		require.NoError(err)
 
 		stats := runImportMaintainer(t, target, newMaintenanceCatalog(), DefaultLimits())
@@ -647,7 +648,7 @@ func TestPreparedImportRetryAcrossMaintainerOrphanDisposition(t *testing.T) {
 		assert.Equal(1, stats.PacksRemoved)
 		_, err = target.Stat(importPackPath("content", packID))
 		require.ErrorIs(err, os.ErrNotExist)
-		retried, err := PrepareImport(context.Background(), target, "content", input, opts)
+		retried, err := PrepareImport(t.Context(), target, "content", input, opts)
 		require.NoError(err)
 		assert.Equal([]Hash{hashFromEntry(t, entries[0])}, retried.PackedHashes())
 		_, err = target.Stat(importPackPath("content", packID))
@@ -655,13 +656,13 @@ func TestPreparedImportRetryAcrossMaintainerOrphanDisposition(t *testing.T) {
 	})
 
 	t.Run("oversized retained orphan is reusable with compatible target limits", func(t *testing.T) {
-		assert := Assert.New(t)
-		require := Require.New(t)
+		assert := assert.New(t)
+		require := require.New(t)
 		target := openImportTarget(t)
 		source, packID, entries := buildImportTestPack(t, []byte("selected content larger than maintenance ceiling"))
 		input := []ImportPack{{PackID: packID, SourcePath: source, Selections: importSelections(t, entries)}}
 		opts := ImportOptions{Limits: DefaultLimits(), CreatedAt: time.Now()}
-		_, err := PrepareImport(context.Background(), target, "content", input, opts)
+		_, err := PrepareImport(t.Context(), target, "content", input, opts)
 		require.NoError(err)
 		catalog := newMaintenanceCatalog()
 		hash := hashFromEntry(t, entries[0])
@@ -672,23 +673,23 @@ func TestPreparedImportRetryAcrossMaintainerOrphanDisposition(t *testing.T) {
 		stats := runImportMaintainer(t, target, catalog, maintenanceLimits)
 
 		assert.Equal(1, stats.PacksDeferredOversized)
-		retried, err := PrepareImport(context.Background(), target, "content", input, opts)
+		retried, err := PrepareImport(t.Context(), target, "content", input, opts)
 		require.NoError(err)
 		assert.Equal([]Hash{hash}, retried.PackedHashes())
 	})
 
 	t.Run("damaged retained orphan fails current selection verification", func(t *testing.T) {
-		assert := Assert.New(t)
-		require := Require.New(t)
+		assert := assert.New(t)
+		require := require.New(t)
 		target := openImportTarget(t)
 		source, packID, entries := buildImportTestPack(t, []byte("selected"))
 		input := []ImportPack{{PackID: packID, SourcePath: source, Selections: importSelections(t, entries)}}
 		opts := ImportOptions{Limits: DefaultLimits(), CreatedAt: time.Now()}
-		_, err := PrepareImport(context.Background(), target, "content", input, opts)
+		_, err := PrepareImport(t.Context(), target, "content", input, opts)
 		require.NoError(err)
 		final, err := target.OpenFile(importPackPath("content", packID), os.O_RDWR, 0)
 		require.NoError(err)
-		_, err = final.WriteAt([]byte{0xff}, int64(entries[0].Offset)) //nolint:gosec // test pack is small
+		_, err = final.WriteAt([]byte{0xff}, int64(entries[0].Offset))
 		require.NoError(err)
 		require.NoError(final.Close())
 		catalog := newMaintenanceCatalog()
@@ -700,7 +701,7 @@ func TestPreparedImportRetryAcrossMaintainerOrphanDisposition(t *testing.T) {
 		assert.Equal(1, stats.PacksQuarantined)
 		_, err = target.Stat(importPackPath("content", packID))
 		require.NoError(err)
-		prepared, err := PrepareImport(context.Background(), target, "content", input, opts)
+		prepared, err := PrepareImport(t.Context(), target, "content", input, opts)
 		assert.Nil(prepared)
 		assert.ErrorContains(err, "collision")
 	})
@@ -708,15 +709,17 @@ func TestPreparedImportRetryAcrossMaintainerOrphanDisposition(t *testing.T) {
 
 func runImportMaintainer(t *testing.T, target *os.Root, catalog *maintenanceCatalog, limits Limits) PackStats {
 	t.Helper()
+	require := require.New(t)
+	t.Helper()
 	layout, err := NewLayout(filepath.Join(target.Name(), "content"), LayoutOptions{
 		Staging: StagingStoreDirectory, StagingDir: ".staging",
 	})
-	Require.NoError(t, err)
+	require.NoError(err)
 	maintainer, err := NewMaintainer(catalog, layout, MaintainerOptions{Limits: limits})
-	Require.NoError(t, err)
-	t.Cleanup(func() { Require.NoError(t, maintainer.Close()) })
-	stats, err := maintainer.Pack(context.Background(), PackOptions{})
-	Require.NoError(t, err)
+	require.NoError(err)
+	t.Cleanup(func() { require.NoError(maintainer.Close()) })
+	stats, err := maintainer.Pack(t.Context(), PackOptions{})
+	require.NoError(err)
 	return stats
 }
 
@@ -727,18 +730,18 @@ func TestPrepareImportUsesConfiguredLimits(t *testing.T) {
 	limits := DefaultLimits()
 	limits.BlobBytes = int64(len(contents[1]))
 
-	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+	prepared, err := PrepareImport(t.Context(), target, "content", []ImportPack{{
 		PackID: packID, SourcePath: path, Selections: importSelections(t, entries),
 	}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
 
-	Require.NoError(t, err)
-	Assert.ElementsMatch(t, []Hash{hashFromEntry(t, entries[0]), hashFromEntry(t, entries[1])}, prepared.PackedHashes())
-	Assert.Equal(t, ImportStats{PackedPacks: 1, PackedBlobs: 2}, prepared.Stats())
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []Hash{hashFromEntry(t, entries[0]), hashFromEntry(t, entries[1])}, prepared.PackedHashes())
+	assert.Equal(t, ImportStats{PackedPacks: 1, PackedBlobs: 2}, prepared.Stats())
 }
 
 func TestPrepareImportFallsBackWholePackForContainerLimit(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	target := openImportTarget(t)
 	path, packID, entries := buildImportTestPack(t, []byte("first"), []byte("second"))
 	info, err := os.Stat(path)
@@ -746,7 +749,7 @@ func TestPrepareImportFallsBackWholePackForContainerLimit(t *testing.T) {
 	limits := DefaultLimits()
 	limits.PackBytes = info.Size() - 1
 
-	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+	prepared, err := PrepareImport(t.Context(), target, "content", []ImportPack{{
 		PackID: packID, SourcePath: path, Selections: importSelections(t, entries),
 	}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
 
@@ -760,22 +763,22 @@ func TestPrepareImportFallsBackWholePackForContainerLimit(t *testing.T) {
 func TestPrepareImportRejectsOversizedNonPackInsteadOfFallingBack(t *testing.T) {
 	target := openImportTarget(t)
 	path := filepath.Join(t.TempDir(), "not-a-pack")
-	Require.NoError(t, os.WriteFile(path, make([]byte, 1024), 0o600))
+	require.NoError(t, os.WriteFile(path, make([]byte, 1024), 0o600))
 	_, packID, entries := buildImportTestPack(t, []byte("selected"))
 	limits := DefaultLimits()
 	limits.PackBytes = 512
 
-	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+	prepared, err := PrepareImport(t.Context(), target, "content", []ImportPack{{
 		PackID: packID, SourcePath: path, Selections: importSelections(t, entries),
 	}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
 
-	Assert.Nil(t, prepared)
-	Assert.ErrorIs(t, err, pack.ErrBadMagic)
+	assert.Nil(t, prepared)
+	assert.ErrorIs(t, err, pack.ErrBadMagic)
 }
 
 func TestPrepareImportRejectsForgedOversizedFooterLength(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	target := openImportTarget(t)
 	path, packID, entries := buildImportTestPack(t, []byte("selected"))
 	info, err := os.Stat(path)
@@ -790,7 +793,7 @@ func TestPrepareImportRejectsForgedOversizedFooterLength(t *testing.T) {
 	limits := DefaultLimits()
 	limits.FooterBytes = 1
 
-	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+	prepared, err := PrepareImport(t.Context(), target, "content", []ImportPack{{
 		PackID: packID, SourcePath: path, Selections: importSelections(t, entries),
 	}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
 
@@ -799,8 +802,8 @@ func TestPrepareImportRejectsForgedOversizedFooterLength(t *testing.T) {
 }
 
 func TestPrepareImportRejectsForgedOversizedFooterCount(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	target := openImportTarget(t)
 	path, packID, entries := buildImportTestPack(t, []byte("selected"))
 	data, err := os.ReadFile(path)
@@ -813,7 +816,7 @@ func TestPrepareImportRejectsForgedOversizedFooterCount(t *testing.T) {
 	limits := DefaultLimits()
 	limits.PackEntries = 1
 
-	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+	prepared, err := PrepareImport(t.Context(), target, "content", []ImportPack{{
 		PackID: packID, SourcePath: path, Selections: importSelections(t, entries),
 	}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
 
@@ -825,25 +828,25 @@ func TestPrepareImportRejectsMetadataMismatchBehindContainerLimit(t *testing.T) 
 	target := openImportTarget(t)
 	path, packID, entries := buildImportTestPack(t, []byte("selected"))
 	info, err := os.Stat(path)
-	Require.NoError(t, err)
+	require.NoError(t, err)
 	selections := importSelections(t, entries)
 	selections[0].Offset++
 	limits := DefaultLimits()
 	limits.PackBytes = info.Size() - 1
 
-	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+	prepared, err := PrepareImport(t.Context(), target, "content", []ImportPack{{
 		PackID: packID, SourcePath: path, Selections: selections,
 	}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
 
-	Assert.Nil(t, prepared)
-	Assert.ErrorIs(t, err, pack.ErrCorrupt)
+	assert.Nil(t, prepared)
+	assert.ErrorIs(t, err, pack.ErrCorrupt)
 }
 
 func TestPrepareImportFallsBackWholePackForValidFooterLimits(t *testing.T) {
 	for _, dimension := range []string{"footer bytes", "entry count"} {
 		t.Run(dimension, func(t *testing.T) {
-			assert := Assert.New(t)
-			require := Require.New(t)
+			assert := assert.New(t)
+			require := require.New(t)
 			target := openImportTarget(t)
 			path, packID, entries := buildImportTestPack(t, []byte("first"), []byte("second"))
 			limits := DefaultLimits()
@@ -862,7 +865,7 @@ func TestPrepareImportFallsBackWholePackForValidFooterLimits(t *testing.T) {
 				reason = FallbackPackEntryCountLimit
 			}
 
-			prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+			prepared, err := PrepareImport(t.Context(), target, "content", []ImportPack{{
 				PackID: packID, SourcePath: path, Selections: importSelections(t, entries),
 			}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
 
@@ -878,8 +881,8 @@ func TestPrepareImportFallsBackWholePackForValidFooterLimits(t *testing.T) {
 func TestPrepareImportRejectsLimitedVerificationBudgetBeforeScratch(t *testing.T) {
 	for _, dimension := range []string{"footer bytes", "entry count"} {
 		t.Run(dimension, func(t *testing.T) {
-			assert := Assert.New(t)
-			require := Require.New(t)
+			assert := assert.New(t)
+			require := require.New(t)
 			originalFooterBytes := importVerifyMaxFooterBytes
 			originalEntries := importVerifyMaxEntries
 			t.Cleanup(func() {
@@ -893,7 +896,7 @@ func TestPrepareImportRejectsLimitedVerificationBudgetBeforeScratch(t *testing.T
 			require.NoError(err)
 			data, err := os.ReadFile(packPath)
 			require.NoError(err)
-			footerLen := uint64(binary.LittleEndian.Uint32(data[info.Size()-plainPackTrailerSize:])) //nolint:gosec // test pack size is positive
+			footerLen := uint64(binary.LittleEndian.Uint32(data[info.Size()-plainPackTrailerSize:]))
 			limits := DefaultLimits()
 			limits.PackBytes = info.Size() - 1
 			var wantDimension LimitDimension
@@ -909,7 +912,7 @@ func TestPrepareImportRejectsLimitedVerificationBudgetBeforeScratch(t *testing.T
 				wantActual, wantLimit = uint64(len(entries)), importVerifyMaxEntries
 			}
 
-			prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+			prepared, err := PrepareImport(t.Context(), target, "content", []ImportPack{{
 				PackID: packID, SourcePath: packPath, Selections: importSelections(t, entries[:1]),
 			}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
 
@@ -926,7 +929,7 @@ func TestPrepareImportRejectsLimitedVerificationBudgetBeforeScratch(t *testing.T
 }
 
 func TestPrepareImportLimitedVerificationRejectsTruncatedFooterBeforeBudget(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	target := openImportTarget(t)
 	packPath, packID, entries := buildImportTestPack(t, []byte("selected"))
 	info, err := os.Stat(packPath)
@@ -934,26 +937,26 @@ func TestPrepareImportLimitedVerificationRejectsTruncatedFooterBeforeBudget(t *t
 	f, err := os.OpenFile(packPath, os.O_RDWR, 0)
 	require.NoError(err)
 	var forged [4]byte
-	binary.LittleEndian.PutUint32(forged[:], uint32(importVerifyMaxFooterBytes+1)) //nolint:gosec // test ceiling fits uint32
+	binary.LittleEndian.PutUint32(forged[:], uint32(importVerifyMaxFooterBytes+1))
 	_, err = f.WriteAt(forged[:], info.Size()-plainPackTrailerSize)
 	require.NoError(err)
 	require.NoError(f.Close())
 	limits := DefaultLimits()
 	limits.PackBytes = info.Size() - 1
 
-	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+	prepared, err := PrepareImport(t.Context(), target, "content", []ImportPack{{
 		PackID: packID, SourcePath: packPath, Selections: importSelections(t, entries),
 	}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
 
-	Assert.Nil(t, prepared)
+	assert.Nil(t, prepared)
 	require.ErrorIs(err, pack.ErrTruncated)
 	require.NotErrorIs(err, ErrBlobTooLarge)
 	assertNoImportVerificationScratch(t, target)
 }
 
 func TestPrepareImportLimitedVerificationAllowsSparseOversizedContainer(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	target := openImportTarget(t)
 	packPath, packID, entries := buildImportTestPack(t, []byte("selected"))
 	data, err := os.ReadFile(packPath)
@@ -973,7 +976,7 @@ func TestPrepareImportLimitedVerificationAllowsSparseOversizedContainer(t *testi
 	limits := DefaultLimits()
 	limits.PackBytes = packLimit
 
-	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+	prepared, err := PrepareImport(t.Context(), target, "content", []ImportPack{{
 		PackID: packID, SourcePath: packPath, Selections: importSelections(t, entries),
 	}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
 
@@ -995,8 +998,8 @@ func TestPrepareImportFallsBackWholePackForRecognizableUnsupportedEncoding(t *te
 		{name: "flags", offset: 5, value: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			assert := Assert.New(t)
-			require := Require.New(t)
+			assert := assert.New(t)
+			require := require.New(t)
 			target := openImportTarget(t)
 			path, packID, entries := buildImportTestPack(t, []byte("first"), []byte("second"))
 			f, err := os.OpenFile(path, os.O_RDWR, 0)
@@ -1005,7 +1008,7 @@ func TestPrepareImportFallsBackWholePackForRecognizableUnsupportedEncoding(t *te
 			require.NoError(err)
 			require.NoError(f.Close())
 
-			prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+			prepared, err := PrepareImport(t.Context(), target, "content", []ImportPack{{
 				PackID: packID, SourcePath: path, Selections: importSelections(t, entries),
 			}}, ImportOptions{Limits: DefaultLimits(), CreatedAt: time.Now()})
 
@@ -1025,13 +1028,13 @@ func TestPrepareImportFallsBackOnlyOversizedSelectedEntry(t *testing.T) {
 	limits := DefaultLimits()
 	limits.BlobBytes = int64(len(contents[0]))
 
-	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+	prepared, err := PrepareImport(t.Context(), target, "content", []ImportPack{{
 		PackID: packID, SourcePath: path, Selections: importSelections(t, entries),
 	}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
 
-	Require.NoError(t, err)
-	Assert.Equal(t, []Hash{hashFromEntry(t, entries[0])}, prepared.PackedHashes())
-	Assert.Equal(t, ImportStats{
+	require.NoError(t, err)
+	assert.Equal(t, []Hash{hashFromEntry(t, entries[0])}, prepared.PackedHashes())
+	assert.Equal(t, ImportStats{
 		PackedPacks: 1,
 		PackedBlobs: 1,
 		Fallbacks: []ImportFallback{{
@@ -1045,8 +1048,8 @@ func TestPrepareImportFallsBackOnlyOversizedSelectedEntry(t *testing.T) {
 func TestPrepareImportLimitFallbackStillVerifiesSelectedPayload(t *testing.T) {
 	for _, dimension := range []string{"container bytes", "footer bytes", "entry count"} {
 		t.Run(dimension, func(t *testing.T) {
-			assert := Assert.New(t)
-			require := Require.New(t)
+			assert := assert.New(t)
+			require := require.New(t)
 			target := openImportTarget(t)
 			path, packID, entries := buildImportTestPack(t, []byte("selected content"), []byte("sibling"))
 			f, err := os.OpenFile(path, os.O_RDWR, 0)
@@ -1069,7 +1072,7 @@ func TestPrepareImportLimitFallbackStillVerifiesSelectedPayload(t *testing.T) {
 				limits.PackEntries = 1
 			}
 
-			prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+			prepared, err := PrepareImport(t.Context(), target, "content", []ImportPack{{
 				PackID: packID, SourcePath: path, Selections: importSelections(t, entries[:1]),
 			}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
 
@@ -1086,7 +1089,7 @@ func TestPrepareImportLimitFallbackRejectsOverlappingFooterSpans(t *testing.T) {
 
 	for _, dimension := range []string{"container bytes", "footer bytes", "entry count"} {
 		t.Run(dimension, func(t *testing.T) {
-			require := Require.New(t)
+			require := require.New(t)
 			target := openImportTarget(t)
 			packPath, packID, entries := buildImportTestPack(t, []byte("selected content"), []byte("overlapping sibling"))
 			mutateImportFooterEntry(t, packPath, 1, func(entry []byte) {
@@ -1107,11 +1110,11 @@ func TestPrepareImportLimitFallbackRejectsOverlappingFooterSpans(t *testing.T) {
 				limits.PackEntries = 1
 			}
 
-			prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+			prepared, err := PrepareImport(t.Context(), target, "content", []ImportPack{{
 				PackID: packID, SourcePath: packPath, Selections: importSelections(t, entries[:1]),
 			}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
 
-			Assert.Nil(t, prepared)
+			assert.Nil(t, prepared)
 			require.ErrorIs(err, pack.ErrCorrupt)
 			assertNoImportVerificationScratch(t, target)
 		})
@@ -1141,13 +1144,13 @@ func TestPrepareImportLimitFallbackAllowsEmptyFooterSpans(t *testing.T) {
 			limits := DefaultLimits()
 			limits.PackEntries = 1
 
-			prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+			prepared, err := PrepareImport(t.Context(), target, "content", []ImportPack{{
 				PackID: packID, SourcePath: packPath, Selections: importSelections(t, entries[:1]),
 			}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
 
-			Require.NoError(t, err)
-			Assert.Empty(t, prepared.PackedHashes())
-			Assert.Equal(t, ImportStats{
+			require.NoError(t, err)
+			assert.Empty(t, prepared.PackedHashes())
+			assert.Equal(t, ImportStats{
 				Fallbacks: []ImportFallback{{PackID: packID, Reason: FallbackPackEntryCountLimit}},
 			}, prepared.Stats())
 			assertNoImportVerificationScratch(t, target)
@@ -1156,8 +1159,8 @@ func TestPrepareImportLimitFallbackAllowsEmptyFooterSpans(t *testing.T) {
 }
 
 func TestPrepareImportLimitFallbackSkipsOversizedSelectedPayload(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	target := openImportTarget(t)
 	content := []byte("oversized selected content")
 	path, packID, entries := buildImportTestPack(t, content)
@@ -1172,7 +1175,7 @@ func TestPrepareImportLimitFallbackSkipsOversizedSelectedPayload(t *testing.T) {
 	limits.PackBytes = info.Size() - 1
 	limits.BlobBytes = int64(len(content) - 1)
 
-	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+	prepared, err := PrepareImport(t.Context(), target, "content", []ImportPack{{
 		PackID: packID, SourcePath: path, Selections: importSelections(t, entries),
 	}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
 
@@ -1194,16 +1197,16 @@ func TestPrepareImportStreamingVerifierCleansScratch(t *testing.T) {
 		limits := DefaultLimits()
 		limits.PackEntries = 1
 
-		_, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+		_, err := PrepareImport(t.Context(), target, "content", []ImportPack{{
 			PackID: packID, SourcePath: path, Selections: importSelections(t, entries[:1]),
 		}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
 
-		Require.NoError(t, err)
+		require.NoError(t, err)
 		assertNoImportVerificationScratch(t, target)
 	})
 
 	t.Run("cross-run duplicate", func(t *testing.T) {
-		require := Require.New(t)
+		require := require.New(t)
 		target := openImportTarget(t)
 		dir := t.TempDir()
 		writer, err := pack.NewWriter(dir, pack.WriterOptions{})
@@ -1220,11 +1223,11 @@ func TestPrepareImportStreamingVerifierCleansScratch(t *testing.T) {
 		limits := DefaultLimits()
 		limits.PackEntries = 1
 
-		prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+		prepared, err := PrepareImport(t.Context(), target, "content", []ImportPack{{
 			PackID: writer.ID(), SourcePath: packPath, Selections: importSelections(t, []pack.Entry{entry}),
 		}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
 
-		Assert.Nil(t, prepared)
+		assert.Nil(t, prepared)
 		require.ErrorIs(err, pack.ErrCorrupt)
 		assertNoImportVerificationScratch(t, target)
 	})
@@ -1247,9 +1250,9 @@ func TestPrepareImportStreamingSpanVerifierCancelsDuringMerge(t *testing.T) {
 		PackID: packID, SourcePath: packPath, Selections: importSelections(t, entries[:1]),
 	}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
 
-	Assert.Nil(t, prepared)
-	Require.ErrorIs(t, err, context.Canceled)
-	Assert.Equal(t, ctx.cancelAt, ctx.calls)
+	assert.Nil(t, prepared)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, ctx.cancelAt, ctx.calls)
 	assertNoImportVerificationScratch(t, target)
 }
 
@@ -1265,18 +1268,18 @@ func TestPrepareImportStreamingSpanVerifierRejectsWithinRunOverlap(t *testing.T)
 	limits := DefaultLimits()
 	limits.PackEntries = 1
 
-	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+	prepared, err := PrepareImport(t.Context(), target, "content", []ImportPack{{
 		PackID: packID, SourcePath: packPath, Selections: importSelections(t, entries[:1]),
 	}}, ImportOptions{Limits: limits, CreatedAt: time.Now()})
 
-	Assert.Nil(t, prepared)
-	Require.ErrorIs(t, err, pack.ErrCorrupt)
+	assert.Nil(t, prepared)
+	require.ErrorIs(t, err, pack.ErrCorrupt)
 	assertNoImportVerificationScratch(t, target)
 }
 
 func TestPrepareImportRejectsCorruptSourceInsteadOfFallingBack(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	target := openImportTarget(t)
 	path, packID, entries := buildImportTestPack(t, []byte("selected content"), []byte("unselected content"))
 	f, err := os.OpenFile(path, os.O_RDWR, 0)
@@ -1285,7 +1288,7 @@ func TestPrepareImportRejectsCorruptSourceInsteadOfFallingBack(t *testing.T) {
 	require.NoError(err)
 	require.NoError(f.Close())
 
-	prepared, err := PrepareImport(context.Background(), target, "content", []ImportPack{{
+	prepared, err := PrepareImport(t.Context(), target, "content", []ImportPack{{
 		PackID: packID, SourcePath: path, Selections: importSelections(t, entries[:1]),
 	}}, ImportOptions{Limits: DefaultLimits(), CreatedAt: time.Now()})
 
@@ -1297,22 +1300,22 @@ func buildImportTestPack(t *testing.T, contents ...[]byte) (string, string, []pa
 	t.Helper()
 	dir := t.TempDir()
 	writer, err := pack.NewWriter(dir, pack.WriterOptions{})
-	Require.NoError(t, err)
+	require.NoError(t, err)
 	for _, content := range contents {
 		_, err = writer.Append(content)
-		Require.NoError(t, err)
+		require.NoError(t, err)
 	}
 	path := filepath.Join(dir, writer.ID()+PackExt)
 	entries, err := writer.Seal(path)
-	Require.NoError(t, err)
+	require.NoError(t, err)
 	return path, writer.ID(), entries
 }
 
 func openImportTarget(t *testing.T) *os.Root {
 	t.Helper()
 	target, err := os.OpenRoot(t.TempDir())
-	Require.NoError(t, err)
-	t.Cleanup(func() { Require.NoError(t, target.Close()) })
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, target.Close()) })
 	return target
 }
 
@@ -1322,7 +1325,7 @@ func importSelections(t *testing.T, entries []pack.Entry) []ImportSelection {
 	for i, entry := range entries {
 		selections[i] = ImportSelection{
 			Hash:      hashFromEntry(t, entry),
-			RawLen:    int64(entry.RawLen), //nolint:gosec // test packs are small
+			RawLen:    int64(entry.RawLen),
 			Offset:    entry.Offset,
 			StoredLen: entry.StoredLen,
 			Flags:     uint8(entry.Flags),
@@ -1334,14 +1337,14 @@ func importSelections(t *testing.T, entries []pack.Entry) []ImportSelection {
 func hashFromEntry(t *testing.T, entry pack.Entry) Hash {
 	t.Helper()
 	hash, err := ParseHash(entry.ID.String())
-	Require.NoError(t, err)
+	require.NoError(t, err)
 	return hash
 }
 
 func mutateImportFooterEntry(t *testing.T, packPath string, index int, mutate func([]byte)) {
 	t.Helper()
 	data, err := os.ReadFile(packPath)
-	Require.NoError(t, err)
+	require.NoError(t, err)
 	trailerStart := len(data) - plainPackTrailerSize
 	footerLen := int(binary.LittleEndian.Uint32(data[trailerStart:]))
 	footerStart := trailerStart - footerLen
@@ -1349,23 +1352,23 @@ func mutateImportFooterEntry(t *testing.T, packPath string, index int, mutate fu
 	mutate(data[entryStart : entryStart+plainPackEntrySize])
 	digest := sha256.Sum256(data[footerStart : trailerStart+4])
 	copy(data[trailerStart+4:trailerStart+36], digest[:])
-	Require.NoError(t, os.WriteFile(packPath, data, 0o600))
+	require.NoError(t, os.WriteFile(packPath, data, 0o600))
 }
 
 func assertNoImportVerificationScratch(t *testing.T, target *os.Root) {
 	t.Helper()
 	entries, err := os.ReadDir(target.Name())
-	Require.NoError(t, err)
+	require.NoError(t, err)
 	for _, entry := range entries {
-		Assert.False(t, strings.HasPrefix(entry.Name(), importVerifyScratchPrefix), entry.Name())
+		assert.False(t, strings.HasPrefix(entry.Name(), importVerifyScratchPrefix), entry.Name())
 	}
 }
 
 func assertNoImportStaging(t *testing.T, target *os.Root) {
 	t.Helper()
 	packEntries, err := os.ReadDir(filepath.Join(target.Name(), "content", "packs"))
-	Require.NoError(t, err)
+	require.NoError(t, err)
 	for _, entry := range packEntries {
-		Assert.False(t, strings.HasSuffix(entry.Name(), ".staging"), entry.Name())
+		assert.False(t, strings.HasSuffix(entry.Name(), ".staging"), entry.Name())
 	}
 }

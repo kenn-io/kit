@@ -3,7 +3,6 @@
 package packstore
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -14,7 +13,7 @@ func TestFilesystemBackendRetirementClassifiesWindowsSharingViolation(t *testing
 	require := require.New(t)
 	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
 	entry := buildStoreTestPack(t, backend.Layout(), []byte("backend retirement sharing"))
-	stream, _, err := backend.OpenPack(context.Background(), entry.Hash, entry)
+	stream, _, err := backend.OpenPack(t.Context(), entry.Hash, entry)
 	require.NoError(err)
 	require.NoError(stream.Verify())
 	require.NoError(stream.Close())
@@ -32,8 +31,8 @@ func TestFilesystemBackendRetirementClassifiesWindowsSharingViolation(t *testing
 	)
 	require.NoError(err)
 
-	err = backend.Retire(context.Background(), ObjectRef{PackID: entry.PackID})
+	err = backend.Retire(t.Context(), ObjectRef{PackID: entry.PackID})
 	require.ErrorIs(err, ErrPackRetirementDeferred)
 	require.NoError(windows.CloseHandle(handle))
-	require.NoError(backend.Retire(context.Background(), ObjectRef{PackID: entry.PackID}))
+	require.NoError(backend.Retire(t.Context(), ObjectRef{PackID: entry.PackID}))
 }

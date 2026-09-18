@@ -2,7 +2,7 @@ package packstore
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"maps"
 	"os"
 	"sort"
@@ -148,7 +148,7 @@ func (c *maintenanceCatalog) RecordPack(_ context.Context, record PackRecord, ad
 		return c.recordErr
 	}
 	if _, exists := c.packs[record.PackID]; exists {
-		return fmt.Errorf("pack exists")
+		return errors.New("pack exists")
 	}
 	c.recordLocked(record, adoptions, false)
 	return nil
@@ -251,11 +251,11 @@ func (c *maintenanceCatalog) CommitRepack(_ context.Context, sourceIDs []string,
 		}
 	}
 	if len(expected) != len(moves) {
-		return fmt.Errorf("repack set changed")
+		return errors.New("repack set changed")
 	}
 	for _, move := range moves {
 		if expected[move.NewEntry.Hash] != move.OldPackID {
-			return fmt.Errorf("repack set changed")
+			return errors.New("repack set changed")
 		}
 	}
 	for _, record := range records {

@@ -14,7 +14,7 @@ import (
 func TestMoveCrashBeforeVerificationLeavesNoAuthorityReceipt(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	content := []byte("copy requiring destination verification")
 	hash := hashForTest(content)
 	source := attachedFilesystemBackend(t, "source", "source-epoch")
@@ -54,7 +54,7 @@ func TestMoveCrashBeforeVerificationLeavesNoAuthorityReceipt(t *testing.T) {
 func TestMoveCrashAfterVerificationReturnsRecoverableOrphan(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	content := []byte("verified physical orphan")
 	hash := hashForTest(content)
 	source := attachedFilesystemBackend(t, "source", "source-epoch")
@@ -95,7 +95,7 @@ func TestMoveCrashAfterVerificationReturnsRecoverableOrphan(t *testing.T) {
 func TestMoveVerifiesDestinationReadBack(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	content := []byte("destination read-back")
 	hash := hashForTest(content)
 	source := attachedFilesystemBackend(t, "source", "source-epoch")
@@ -131,7 +131,7 @@ func TestMoveVerifiesDestinationReadBack(t *testing.T) {
 func TestMoveRetirementKeepsActiveReaderUsable(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	content := bytes.Repeat([]byte("active packed reader "), 4096)
 	backend := attachedFilesystemBackend(t, "source", "source-epoch")
 	entry := buildStoreTestPack(t, backend.Layout(), content)
@@ -162,7 +162,7 @@ func attachedFilesystemBackend(
 		Store:  store,
 		Epoch:  epoch,
 	}
-	require.NoError(t, backend.ReplaceOwnership(context.Background(), ownership, nil))
+	require.NoError(t, backend.ReplaceOwnership(t.Context(), ownership, nil))
 	return backend
 }
 

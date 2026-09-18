@@ -168,10 +168,10 @@ func (p *PreparedImport) Stats() ImportStats {
 // replacement semantics make identical retries idempotent.
 func (p *PreparedImport) Commit(ctx context.Context, catalog RestoreCatalog) error {
 	if p == nil {
-		return fmt.Errorf("packstore: prepared import is nil")
+		return errors.New("packstore: prepared import is nil")
 	}
 	if catalog == nil {
-		return fmt.Errorf("packstore: restore catalog is nil")
+		return errors.New("packstore: restore catalog is nil")
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -343,7 +343,7 @@ func publishAndVerifyImportPack(
 			return nil, fmt.Errorf("packstore: clean import staging after unsupported link: %w", err)
 		}
 		if !existing {
-			return nil, fmt.Errorf("%w: pack %s: %v", errImportPublicationUnsupported, plan.pack.PackID, linkErr)
+			return nil, fmt.Errorf("%w: pack %s: %w", errImportPublicationUnsupported, plan.pack.PackID, linkErr)
 		}
 	} else {
 		return nil, errors.Join(
@@ -367,7 +367,7 @@ func publishAndVerifyImportPack(
 		finalIdentity, err := reader.reader.file.Stat()
 		if err != nil || !os.SameFile(stagedIdentity, finalIdentity) {
 			_ = reader.Close()
-			return nil, errors.Join(fmt.Errorf("packstore: published pack identity changed before verification"), err)
+			return nil, errors.Join(errors.New("packstore: published pack identity changed before verification"), err)
 		}
 	}
 	entries := reader.Entries()
@@ -420,7 +420,7 @@ func copyImportSource(
 	defer func() { resultErr = errors.Join(resultErr, source.Close()) }()
 	opened, err := source.Stat()
 	if err != nil || !os.SameFile(before, opened) {
-		return result, errors.Join(fmt.Errorf("packstore: import source mutation before copy"), err)
+		return result, errors.Join(errors.New("packstore: import source mutation before copy"), err)
 	}
 	if opened.Size() > maxBytes {
 		return result, fmt.Errorf("packstore: import source mutation exceeds configured pack limit: %d > %d", opened.Size(), maxBytes)
@@ -449,11 +449,11 @@ func copyImportSource(
 	}
 	afterDescriptor, err := source.Stat()
 	if err != nil || !sameImportSourceState(before, opened, afterDescriptor) {
-		return result, errors.Join(fmt.Errorf("packstore: import source mutation during copy"), err)
+		return result, errors.Join(errors.New("packstore: import source mutation during copy"), err)
 	}
 	afterPath, err := snapshotBoundedPackPathIdentity(sourcePath)
 	if err != nil || !sameImportSourceState(before, opened, afterPath) {
-		return result, errors.Join(fmt.Errorf("packstore: import source mutation after copy"), err)
+		return result, errors.Join(errors.New("packstore: import source mutation after copy"), err)
 	}
 	if written != opened.Size() {
 		return result, fmt.Errorf("packstore: import source mutation changed size from %d to %d", opened.Size(), written)
@@ -534,10 +534,10 @@ func verifyOpenImportFinalBytes(
 	}
 	after, err := target.Lstat(name)
 	if err != nil || !os.SameFile(opened, after) {
-		return errors.Join(fmt.Errorf("final pack changed identity during verification"), err)
+		return errors.Join(errors.New("final pack changed identity during verification"), err)
 	}
 	if size != wantSize || !bytes.Equal(hasher.Sum(nil), wantDigest[:]) {
-		return fmt.Errorf("final bytes differ from import source")
+		return errors.New("final bytes differ from import source")
 	}
 	if err := f.Sync(); err != nil {
 		return fmt.Errorf("sync final pack: %w", err)
@@ -551,7 +551,7 @@ func openRootMaintenancePack(target *os.Root, name string, limits Limits) (*Main
 		return nil, err
 	}
 	if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() {
-		return nil, fmt.Errorf("packstore: final pack is not an independent regular file")
+		return nil, errors.New("packstore: final pack is not an independent regular file")
 	}
 	f, err := target.OpenFile(name, os.O_RDWR, 0)
 	if err != nil {
@@ -559,7 +559,7 @@ func openRootMaintenancePack(target *os.Root, name string, limits Limits) (*Main
 	}
 	opened, err := f.Stat()
 	if err != nil || !os.SameFile(before, opened) {
-		return nil, errors.Join(fmt.Errorf("packstore: final pack changed identity before preflight"), err, f.Close())
+		return nil, errors.Join(errors.New("packstore: final pack changed identity before preflight"), err, f.Close())
 	}
 	reader, err := openBoundedPackFile(f, limits)
 	if err != nil {
@@ -610,7 +610,7 @@ func importCatalogPlan(plan preparedImportPack, createdAt time.Time) (PackRecord
 		adoptions = append(adoptions, Adoption{
 			Entry: IndexEntry{
 				Hash: selection.Hash, PackID: plan.pack.PackID,
-				Offset: int64(entry.Offset), StoredLen: int64(entry.StoredLen), RawLen: int64(entry.RawLen), //nolint:gosec // range checked by importFooterStoredBytes
+				Offset: int64(entry.Offset), StoredLen: int64(entry.StoredLen), RawLen: int64(entry.RawLen),
 				Flags: uint8(entry.Flags), CRC32C: entry.CRC32C,
 			},
 			OriginalHashes: []string{selection.Hash.String()},
@@ -641,7 +641,7 @@ func importFooterStoredBytes(entries []pack.Entry) (int64, error) {
 		if entry.StoredLen > 0 {
 			ordered = append(ordered, entry)
 		}
-		stored := int64(entry.StoredLen) //nolint:gosec // range checked above
+		stored := int64(entry.StoredLen)
 		if storedBytes > math.MaxInt64-stored {
 			return 0, fmt.Errorf("%w: imported footer stored-byte total overflows", pack.ErrCorrupt)
 		}
@@ -664,7 +664,7 @@ func importPackPath(contentDir, packID string) string {
 
 func validateImportInputs(target *os.Root, contentDir string, packs []ImportPack, opts ImportOptions) error {
 	if target == nil {
-		return fmt.Errorf("packstore: import target is nil")
+		return errors.New("packstore: import target is nil")
 	}
 	if contentDir == "" || contentDir == ".." || path.IsAbs(contentDir) ||
 		path.Clean(contentDir) != contentDir || strings.Contains(contentDir, `\`) ||
@@ -675,7 +675,7 @@ func validateImportInputs(target *os.Root, contentDir string, packs []ImportPack
 		return err
 	}
 	if opts.CreatedAt.IsZero() {
-		return fmt.Errorf("packstore: import creation time is zero")
+		return errors.New("packstore: import creation time is zero")
 	}
 	for _, candidate := range packs {
 		if !pack.IsValidPackID(candidate.PackID) {
@@ -703,8 +703,8 @@ func importFallbackReason(err error) (FallbackReason, bool) {
 	if errors.Is(err, pack.ErrUnsupportedVersion) || errors.Is(err, errUnsupportedMaintenanceEncoding) {
 		return FallbackPackEncoding, true
 	}
-	var limitErr *LimitError
-	if !errors.As(err, &limitErr) {
+	limitErr, ok := errors.AsType[*LimitError](err)
+	if !ok {
 		return "", false
 	}
 	switch limitErr.Dimension {
@@ -746,7 +746,7 @@ func prepareImportPack(
 		}
 		seenHashes[selection.Hash] = struct{}{}
 		entry := authoritative[selection.Hash]
-		if entry.RawLen > uint64(limits.BlobBytes) || entry.StoredLen > uint64(limits.BlobBytes) { //nolint:gosec // limits are non-negative
+		if entry.RawLen > uint64(limits.BlobBytes) || entry.StoredLen > uint64(limits.BlobBytes) {
 			plan.fallbacks = append(plan.fallbacks, ImportFallback{
 				PackID: candidate.PackID,
 				Hash:   selection.Hash,
@@ -779,7 +779,7 @@ func indexImportSelections(entries []pack.Entry, candidate ImportPack) (map[Hash
 			return nil, fmt.Errorf("%w: selected blob %s is absent from pack %s footer", pack.ErrCorrupt, selection.Hash, candidate.PackID)
 		}
 		if selection.RawLen != int64(entry.RawLen) || selection.Offset != entry.Offset ||
-			selection.StoredLen != entry.StoredLen || selection.Flags != uint8(entry.Flags) { //nolint:gosec // format caps RawLen below MaxInt64
+			selection.StoredLen != entry.StoredLen || selection.Flags != uint8(entry.Flags) {
 			return nil, fmt.Errorf("%w: selected metadata for %s does not match pack %s footer", pack.ErrCorrupt, selection.Hash, candidate.PackID)
 		}
 	}

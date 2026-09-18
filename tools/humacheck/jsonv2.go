@@ -416,6 +416,8 @@ func (f *formatFinder) varFormat(pkg *packages.Package, obj *types.Var, depth in
 			if result == unknown {
 				result = yes
 			}
+		case unknown:
+			// No evidence either way; keep the current verdict.
 		}
 	})
 	return result
@@ -493,6 +495,8 @@ func (f *formatFinder) bodyUsesV2(pkg *packages.Package, body *ast.BlockStmt, de
 					sawV2 = true
 				case no:
 					sawV1 = true
+				case unknown:
+					// The callee gives no evidence either way.
 				}
 			}
 		}

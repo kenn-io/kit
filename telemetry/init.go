@@ -202,7 +202,7 @@ func newResource(ctx context.Context, options ...resource.Option) (*resource.Res
 func defaultServiceName() (string, error) {
 	executable, err := os.Executable()
 	if err != nil {
-		return "unknown_service:go", nil
+		return "unknown_service:go", nil //nolint:nilerr // the executable name is optional metadata; fall back to the generic service name
 	}
 	return "unknown_service:" + filepath.Base(executable), nil
 }

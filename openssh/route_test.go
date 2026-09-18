@@ -131,7 +131,7 @@ func TestResolveRouteEnumeratesDirectProxyJumps(t *testing.T) {
 	}
 
 	route, err := ResolveRoute(
-		context.Background(), Target{Hostname: "app"}, provider,
+		t.Context(), Target{Hostname: "app"}, provider,
 	)
 	require.NoError(err)
 	require.Len(route, 3)
@@ -148,7 +148,7 @@ func TestResolveRouteRejectsUnsafeEndpointBeforeProvider(t *testing.T) {
 	}
 
 	_, err := ResolveRoute(
-		context.Background(),
+		t.Context(),
 		Target{User: "wes;touch", Hostname: "studio"},
 		provider,
 	)
@@ -181,7 +181,7 @@ func TestResolveRouteRejectsRoutesItCannotInspect(t *testing.T) {
 				return test.configs[target.String()], nil
 			}
 			_, err := ResolveRoute(
-				context.Background(), Target{Hostname: "app"}, provider,
+				t.Context(), Target{Hostname: "app"}, provider,
 			)
 			require.ErrorIs(t, err, test.kind)
 			var routeErr *RouteError

@@ -80,7 +80,7 @@ func TestCaptureAttachmentsFromSource(t *testing.T) {
 	src := &mapSource{blobs: map[string][]byte{hashA: a, hashB: b}}
 
 	appender, repo, known := newTestAppenderForSource(t)
-	out, err := CaptureAttachments(context.Background(), "", []ContentRef{refA, refB},
+	out, err := CaptureAttachments(t.Context(), "", []ContentRef{refA, refB},
 		map[string]bool{}, appender, CaptureOptions{Source: src})
 	require.NoError(err)
 	_, _, err = appender.Finish()
@@ -103,7 +103,7 @@ func TestCaptureFromSourceHashMismatch(t *testing.T) {
 
 	appender, _, _ := newTestAppenderForSource(t)
 	defer appender.Abort()
-	_, err := CaptureAttachments(context.Background(), "", []ContentRef{refA},
+	_, err := CaptureAttachments(t.Context(), "", []ContentRef{refA},
 		map[string]bool{}, appender, CaptureOptions{Source: src})
 	require.Error(err)
 	require.Contains(err.Error(), "does not match its hash")
@@ -118,7 +118,7 @@ func TestCaptureFromSourceRejectsNoncanonicalHash(t *testing.T) {
 
 	appender, _, _ := newTestAppenderForSource(t)
 	defer appender.Abort()
-	_, err := CaptureAttachments(context.Background(), "", []ContentRef{ref},
+	_, err := CaptureAttachments(t.Context(), "", []ContentRef{ref},
 		map[string]bool{}, appender, CaptureOptions{Source: src})
 	require.ErrorContains(err, "not canonical lowercase hex")
 }
@@ -131,7 +131,7 @@ func TestCaptureFromSourceMissingBlob(t *testing.T) {
 
 	appender, _, _ := newTestAppenderForSource(t)
 	defer appender.Abort()
-	_, err := CaptureAttachments(context.Background(), "", []ContentRef{refA},
+	_, err := CaptureAttachments(t.Context(), "", []ContentRef{refA},
 		map[string]bool{}, appender, CaptureOptions{Source: src})
 	require.ErrorIs(err, errNotInSource)
 }
@@ -149,7 +149,7 @@ func TestCaptureFromSourceOversizedBlob(t *testing.T) {
 
 	appender, _, _ := newTestAppenderForSource(t)
 	defer appender.Abort()
-	_, err := CaptureAttachments(context.Background(), "", []ContentRef{refA},
+	_, err := CaptureAttachments(t.Context(), "", []ContentRef{refA},
 		map[string]bool{}, appender, CaptureOptions{Source: src})
 	require.Error(err)
 	require.Contains(err.Error(), "maximum blob size")
@@ -167,7 +167,7 @@ func TestCaptureFromSourceIgnoresStoragePath(t *testing.T) {
 
 	appender, _, _ := newTestAppenderForSource(t)
 	defer appender.Abort()
-	out, err := CaptureAttachments(context.Background(), "", []ContentRef{refA},
+	out, err := CaptureAttachments(t.Context(), "", []ContentRef{refA},
 		map[string]bool{}, appender, CaptureOptions{Source: src})
 	require.NoError(err)
 	require.Equal(int64(1), out.Blobs)
@@ -188,7 +188,7 @@ func TestCaptureFromSourceParallel(t *testing.T) {
 
 	appender, _, _ := newTestAppenderForSource(t)
 	defer appender.Abort()
-	out, err := CaptureAttachments(context.Background(), "", refs,
+	out, err := CaptureAttachments(t.Context(), "", refs,
 		map[string]bool{}, appender, CaptureOptions{Source: src, Jobs: 8})
 	require.NoError(err)
 	require.Equal(int64(40), out.Blobs)

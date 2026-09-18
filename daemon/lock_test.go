@@ -16,6 +16,7 @@ import (
 )
 
 func TestTryAcquireStartLockCoordinatesWithManager(t *testing.T) {
+	assert := assert.New(t)
 	require := require.New(t)
 	store := daemon.RuntimeStore{Dir: t.TempDir()}
 	release, acquired, err := store.TryAcquireStartLock(t.Context())
@@ -49,10 +50,11 @@ func TestTryAcquireStartLockCoordinatesWithManager(t *testing.T) {
 		Start: func(ctx context.Context) error {
 			// Manager owns the same local lock while invoking Start.
 			probeRelease, acquired, err := store.TryAcquireStartLock(ctx)
-			assert.NoError(t, err)
-			assert.False(t, acquired)
-			assert.Nil(t, probeRelease)
-			assert.NoFileExists(t, snapshot)
+			require.
+				NoError(err)
+			assert.False(acquired)
+			assert.Nil(probeRelease)
+			assert.NoFileExists(snapshot)
 			ready = true
 			return nil
 		},

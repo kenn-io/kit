@@ -16,7 +16,7 @@ import (
 
 func TestProcessAliveRejectsTerminatedProcessWithRetainedHandle(t *testing.T) {
 	require := require.New(t)
-	cmd := exec.Command(os.Args[0], "-test.run", "^TestProcessAliveHelper$")
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run", "^TestProcessAliveHelper$")
 	cmd.Env = append(os.Environ(), "KIT_PROCESS_ALIVE_HELPER=1")
 	require.NoError(cmd.Start())
 	finished := false

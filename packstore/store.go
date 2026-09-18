@@ -37,8 +37,8 @@ func markPhysicalSourceNotFound(err error) error {
 }
 
 func isPhysicalSourceNotFound(err error) bool {
-	var missing *physicalSourceNotFoundError
-	return errors.As(err, &missing)
+	_, ok := errors.AsType[*physicalSourceNotFoundError](err)
+	return ok
 }
 
 // ErrPackRetirementDeferred identifies a canonical pack removal that callers
@@ -100,10 +100,10 @@ type Store struct {
 // enabled only by NewMultiStore.
 func NewStore(resolver Resolver, layout Layout, opts StoreOptions) (*Store, error) {
 	if resolver == nil {
-		return nil, fmt.Errorf("packstore: resolver is nil")
+		return nil, errors.New("packstore: resolver is nil")
 	}
 	if layout.Root() == "" {
-		return nil, fmt.Errorf("packstore: invalid empty layout")
+		return nil, errors.New("packstore: invalid empty layout")
 	}
 	store, err := newStoreOptions(opts.Limits, opts.ReaderSlots)
 	if err != nil {
@@ -131,7 +131,7 @@ func newStoreOptions(limits Limits, readerSlots int) (*Store, error) {
 		readerSlots = maxOpenReaders
 	}
 	if readerSlots < 1 {
-		return nil, fmt.Errorf("packstore: reader slots must be positive")
+		return nil, errors.New("packstore: reader slots must be positive")
 	}
 	return &Store{
 		limits: limits, slots: readerSlots, openLooseFile: openLooseFile,
@@ -146,7 +146,7 @@ func newStoreOptions(limits Limits, readerSlots int) (*Store, error) {
 // selected physical source.
 func (s *Store) Open(ctx context.Context, hash Hash) (io.ReadSeekCloser, int64, error) {
 	if ctx == nil {
-		return nil, 0, fmt.Errorf("packstore: nil context")
+		return nil, 0, errors.New("packstore: nil context")
 	}
 	if err := hash.Validate(); err != nil {
 		return nil, 0, err
@@ -269,13 +269,13 @@ func materializeSeekable(
 // allocations. Packed cache misses also preflight container and footer limits.
 func (s *Store) ReadBounded(ctx context.Context, hash Hash, maxBytes int64) ([]byte, int64, error) {
 	if ctx == nil {
-		return nil, 0, fmt.Errorf("packstore: nil context")
+		return nil, 0, errors.New("packstore: nil context")
 	}
 	if err := hash.Validate(); err != nil {
 		return nil, 0, err
 	}
 	if maxBytes < 0 {
-		return nil, 0, fmt.Errorf("packstore: bounded read limit must be nonnegative")
+		return nil, 0, errors.New("packstore: bounded read limit must be nonnegative")
 	}
 	if maxBytes > s.limits.BlobBytes {
 		maxBytes = s.limits.BlobBytes
@@ -395,8 +395,8 @@ func preflightBoundedStoredSize(location ReadLocation, maxBytes int64) error {
 	if logicalSize <= maxBytes && storedSize > maxBytes {
 		return ClassifyRepresentationLimitError(newLimitError(
 			LimitBlobStoredBytes,
-			uint64(storedSize), //nolint:gosec // locations reject negative sizes
-			uint64(maxBytes),   //nolint:gosec // ReadBounded rejects negative limits
+			uint64(storedSize),
+			uint64(maxBytes),
 		))
 	}
 	return nil
@@ -415,7 +415,7 @@ func consumeBounded(
 	}
 	if size > maxBytes {
 		return nil, 0, errors.Join(
-			newLimitError(LimitBlobRawBytes, uint64(size), uint64(maxBytes)), //nolint:gosec
+			newLimitError(LimitBlobRawBytes, uint64(size), uint64(maxBytes)),
 			stream.Close(),
 		)
 	}
@@ -458,7 +458,7 @@ func (s *Store) Close() error {
 // deliberately does not alter catalog authority.
 func (s *Store) RetirePack(packID string) error {
 	if s.filesystem == nil {
-		return fmt.Errorf("packstore: pack retirement requires a filesystem backend")
+		return errors.New("packstore: pack retirement requires a filesystem backend")
 	}
 	return s.filesystem.retirePack(packID)
 }
@@ -492,12 +492,12 @@ func (s *Store) openLooseObjectAt(
 			return nil, markPhysicalSourceNotFound(err)
 		}
 		if info == nil {
-			return nil, errors.Join(fmt.Errorf("packstore: compressed loose object has no file identity"), f.Close())
+			return nil, errors.Join(errors.New("packstore: compressed loose object has no file identity"), f.Close())
 		}
 		header := make([]byte, compressedLooseHeaderSize)
 		if _, readErr := io.ReadFull(f, header); readErr != nil {
 			return nil, errors.Join(
-				fmt.Errorf("%w: read compressed loose header: %v", ErrContentMismatch, readErr),
+				fmt.Errorf("%w: read compressed loose header: %w", ErrContentMismatch, readErr),
 				f.Close(),
 			)
 		}
@@ -518,7 +518,7 @@ func (s *Store) openLooseObjectAt(
 			return nil, markPhysicalSourceNotFound(err)
 		}
 		if info == nil {
-			return nil, errors.Join(fmt.Errorf("packstore: raw loose object has no file identity"), f.Close())
+			return nil, errors.Join(errors.New("packstore: raw loose object has no file identity"), f.Close())
 		}
 		return &looseObject{
 			file: f, encoding: LooseEncodingRaw,
@@ -614,13 +614,13 @@ func (s *Store) readLooseBounded(ctx context.Context, hash Hash, maxBytes int64)
 	}
 	if size > maxBytes {
 		return nil, 0, errors.Join(
-			newLimitError(LimitBlobRawBytes, uint64(size), uint64(maxBytes)), //nolint:gosec
+			newLimitError(LimitBlobRawBytes, uint64(size), uint64(maxBytes)),
 			object.file.Close(),
 		)
 	}
 	if object.storedSize > maxBytes {
 		return nil, 0, errors.Join(
-			newLimitError(LimitBlobStoredBytes, uint64(object.storedSize), uint64(maxBytes)), //nolint:gosec
+			newLimitError(LimitBlobStoredBytes, uint64(object.storedSize), uint64(maxBytes)),
 			object.file.Close(),
 		)
 	}
@@ -700,7 +700,7 @@ func (s *Store) readPackedBounded(
 	if err := s.validatePackPolicy(slot); err != nil {
 		return nil, 0, err
 	}
-	limit := uint64(maxBytes) //nolint:gosec // validated non-negative by caller
+	limit := uint64(maxBytes)
 	if footerEntry.RawLen > limit {
 		return nil, 0, newLimitError(LimitBlobRawBytes, footerEntry.RawLen, limit)
 	}

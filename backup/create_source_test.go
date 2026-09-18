@@ -1,7 +1,6 @@
 package backup
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
@@ -53,12 +52,12 @@ func TestCreateWithContentSource(t *testing.T) {
 	opts := createOpts(dbPath, contentDir, dataDir, t.TempDir())
 	opts.ContentSource = src
 
-	m, err := Create(context.Background(), r, newTestApp(), opts)
+	m, err := Create(t.Context(), r, newTestApp(), opts)
 	require.NoError(err)
 	require.NotNil(m)
 	require.Equal(int64(2), m.Attachments.Blobs)
 
-	res, err := Verify(context.Background(), r, newTestApp(), VerifyOptions{})
+	res, err := Verify(t.Context(), r, newTestApp(), VerifyOptions{})
 	require.NoError(err)
 	require.Empty(res.Problems)
 	_ = db

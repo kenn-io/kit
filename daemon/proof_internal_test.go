@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -60,7 +59,7 @@ func TestProofPingHandlerRejectsMalformedChallenge(t *testing.T) {
 	})
 	require.NoError(err)
 
-	req := httptest.NewRequest(http.MethodGet, DefaultPingPath, nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, DefaultPingPath, nil)
 	req.Header.Set(proofChallengeHeader, "not-a-valid-challenge")
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
@@ -85,7 +84,7 @@ func TestProofProbeRejectsMalformedResponse(t *testing.T) {
 	}
 	proof, err := NewProof([]byte("client-proof-key"))
 	require.NoError(t, err)
-	_, err = proof.probeHTTP(context.Background(), server.Client(), server.URL, rec, ProbeOptions{
+	_, err = proof.probeHTTP(t.Context(), server.Client(), server.URL, rec, ProbeOptions{
 		ExpectedService: "tool",
 	})
 	require.Error(t, err)
@@ -115,11 +114,11 @@ func TestProofProbeRejectsReplayedResponse(t *testing.T) {
 	client.Transport = &replayProofTransport{base: client.Transport}
 	clientProof, err := NewProof(key)
 	require.NoError(err)
-	_, err = clientProof.probeHTTP(context.Background(), &client, server.URL, rec, ProbeOptions{
+	_, err = clientProof.probeHTTP(t.Context(), &client, server.URL, rec, ProbeOptions{
 		ExpectedService: "tool",
 	})
 	require.NoError(err)
-	_, err = clientProof.probeHTTP(context.Background(), &client, server.URL, rec, ProbeOptions{
+	_, err = clientProof.probeHTTP(t.Context(), &client, server.URL, rec, ProbeOptions{
 		ExpectedService: "tool",
 	})
 	require.Error(err)

@@ -40,7 +40,7 @@ func StartDetached(ctx context.Context, opts StartDetachedOptions) error {
 	if opts.RefuseEphemeral && IsEphemeralExecutable(exe) {
 		return fmt.Errorf("refusing to auto-start daemon from ephemeral binary %s", filepath.Base(exe))
 	}
-	cmd := exec.Command(exe, opts.Args...)
+	cmd := exec.Command(exe, opts.Args...) //nolint:forbidigo,noctx // the detached daemon must outlive the caller's context
 	cmd.Dir = opts.Dir
 	if opts.Env != nil {
 		cmd.Env = opts.Env

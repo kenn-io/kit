@@ -48,7 +48,7 @@ func TestManagerEnsureStartsAndPollsForCompatibleDaemon(t *testing.T) {
 		},
 	}
 
-	rec, info, err := manager.Ensure(context.Background(), time.Second)
+	rec, info, err := manager.Ensure(t.Context(), time.Second)
 	require.NoError(t, err)
 	assert.True(started)
 	assert.Equal("tool", rec.Service)
@@ -79,7 +79,7 @@ func TestManagerFindSkipsIncompatibleDaemon(t *testing.T) {
 		},
 	}
 
-	_, _, ok, err := manager.Find(context.Background())
+	_, _, ok, err := manager.Find(t.Context())
 	require.NoError(t, err)
 	assert.False(t, ok)
 }
@@ -112,7 +112,7 @@ func TestManagerEnsureDoesNotStartWhenDiscoveryIsUnreachable(t *testing.T) {
 		},
 	}
 
-	_, _, err = manager.Ensure(context.Background(), time.Second)
+	_, _, err = manager.Ensure(t.Context(), time.Second)
 	require.Error(err)
 	require.ErrorIs(err, daemon.ErrDaemonUnreachable)
 	assert.False(started)
@@ -159,7 +159,7 @@ func TestManagerFindScansPastIncompatibleDaemon(t *testing.T) {
 		},
 	}
 
-	rec, info, ok, err := manager.Find(context.Background())
+	rec, info, ok, err := manager.Find(t.Context())
 	require.NoError(err)
 	require.True(ok)
 	assert.Equal(listenerAddr(t, newServer), rec.Address)
@@ -194,7 +194,7 @@ func TestManagerFindUsesCustomDiscovery(t *testing.T) {
 		Store:    store,
 		FindFunc: discoverWithHeader(store, "X-Test-Probe", "present"),
 	}
-	rec, info, ok, err := manager.Find(context.Background())
+	rec, info, ok, err := manager.Find(t.Context())
 	require.NoError(err)
 	require.True(ok)
 	assert.Equal(listenerAddr(t, server), rec.Address)
@@ -214,7 +214,7 @@ func TestManagerEnsureSerializesConcurrentStarts(t *testing.T) {
 		Discover: daemon.DiscoverOptions{Probe: daemon.ProbeOptions{ExpectedService: "tool"}},
 		Start: func(context.Context) error {
 			starts.Add(1)
-			time.Sleep(20 * time.Millisecond)
+			time.Sleep(20 * time.Millisecond) //nolint:kennlint // simulates a slow start hook the manager must wait on
 			_, err := store.Write(daemon.RuntimeRecord{
 				PID:       os.Getpid(),
 				Network:   daemon.NetworkTCP,
@@ -230,7 +230,7 @@ func TestManagerEnsureSerializesConcurrentStarts(t *testing.T) {
 	errs := make(chan error, 2)
 	for range 2 {
 		go func() {
-			_, _, err := manager.Ensure(context.Background(), time.Second)
+			_, _, err := manager.Ensure(t.Context(), time.Second)
 			errs <- err
 		}()
 	}
@@ -243,11 +243,11 @@ func TestManagerEnsureSerializesConcurrentStarts(t *testing.T) {
 
 func TestRuntimeStoreOwnerLockExcludesASecondOwner(t *testing.T) {
 	store := daemon.RuntimeStore{Dir: t.TempDir(), Prefix: "tool"}
-	release, err := store.AcquireOwnerLock(context.Background())
+	release, err := store.AcquireOwnerLock(t.Context())
 	require.NoError(t, err)
 	defer release()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
 	_, err = store.AcquireOwnerLock(ctx)
 	require.Error(t, err)
@@ -256,7 +256,7 @@ func TestRuntimeStoreOwnerLockExcludesASecondOwner(t *testing.T) {
 
 func TestRuntimeStoreStartLockIsPubliclyAcquirable(t *testing.T) {
 	store := daemon.RuntimeStore{Dir: t.TempDir(), Prefix: "tool"}
-	release, err := store.AcquireStartLock(context.Background())
+	release, err := store.AcquireStartLock(t.Context())
 	require.NoError(t, err)
 	release()
 }
@@ -264,12 +264,12 @@ func TestRuntimeStoreStartLockIsPubliclyAcquirable(t *testing.T) {
 func TestRuntimeStoreOwnerLockDoesNotBlockAnotherPrefixStartLock(t *testing.T) {
 	dir := t.TempDir()
 	ownerStore := daemon.RuntimeStore{Dir: dir, Prefix: "tool"}
-	releaseOwner, err := ownerStore.AcquireOwnerLock(context.Background())
+	releaseOwner, err := ownerStore.AcquireOwnerLock(t.Context())
 	require.NoError(t, err)
 	defer releaseOwner()
 
 	startStore := daemon.RuntimeStore{Dir: dir, Prefix: "tool.owner"}
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
 	releaseStart, err := startStore.AcquireStartLock(ctx)
 	require.NoError(t, err)
@@ -341,7 +341,7 @@ func TestManagerEnsureSerializesConcurrentStartsWithCustomDiscovery(t *testing.T
 	}
 	results := make(chan result, 2)
 	ensure := func() {
-		rec, info, err := manager.Ensure(context.Background(), 2*time.Second)
+		rec, info, err := manager.Ensure(t.Context(), 2*time.Second)
 		results <- result{rec: rec, info: info, err: err}
 	}
 
@@ -377,13 +377,13 @@ func TestManagerEnsureAppliesTimeoutToStartLock(t *testing.T) {
 	manager := daemon.Manager{
 		Store: store,
 		Start: func(context.Context) error {
-			t.Fatal("start should not run while lock is held")
+			require.FailNow("start should not run while lock is held")
 			return nil
 		},
 	}
 
 	startedAt := time.Now()
-	_, _, err = manager.Ensure(context.Background(), 50*time.Millisecond)
+	_, _, err = manager.Ensure(t.Context(), 50*time.Millisecond)
 	require.Error(err)
 	assert.Less(t, time.Since(startedAt), 500*time.Millisecond)
 }

@@ -171,7 +171,7 @@ type filesystemLooseStore struct {
 
 func newFilesystemLooseStore(layout Layout) (*filesystemLooseStore, error) {
 	if layout.Root() == "" {
-		return nil, fmt.Errorf("packstore: invalid empty layout")
+		return nil, errors.New("packstore: invalid empty layout")
 	}
 	return &filesystemLooseStore{layout: layout}, nil
 }
@@ -421,7 +421,7 @@ func (s *filesystemLooseStore) publish(
 		selected = compressed
 	}
 	if selected == nil {
-		return identity, fmt.Errorf("packstore: no loose staging file selected")
+		return identity, errors.New("packstore: no loose staging file selected")
 	}
 	if opts.Durability == DurablePublication {
 		if err := syncLooseFile(selected.file); err != nil {
@@ -480,7 +480,7 @@ func (s *filesystemLooseStore) publish(
 		}
 		current, err := snapshotLoosePathIdentity(selected.path)
 		if err != nil {
-			return identity, fmt.Errorf("%w: recheck staged loose repair identity: %v", ErrContentMismatch, err)
+			return identity, fmt.Errorf("%w: recheck staged loose repair identity: %w", ErrContentMismatch, err)
 		}
 		if !sameLooseFileState(pin.identity, current) {
 			return identity, fmt.Errorf("%w: %w", ErrContentMismatch, errIdentityChanged)
@@ -491,7 +491,7 @@ func (s *filesystemLooseStore) publish(
 		}
 		if !publication.Created {
 			if publicationErr == nil {
-				publicationErr = fmt.Errorf("repair publisher did not create canonical content")
+				publicationErr = errors.New("repair publisher did not create canonical content")
 			}
 			durabilityErr := syncLooseRepairPublication(opts.Durability, publication, shard, stagingDir)
 			return identity, errors.Join(
@@ -588,14 +588,14 @@ func verifyStagedLooseRepairPath(ctx context.Context, path string, identity Writ
 		header := make([]byte, compressedLooseHeaderSize)
 		if _, err := io.ReadFull(file, header); err != nil {
 			return errors.Join(
-				fmt.Errorf("%w: read compressed loose header: %v", ErrContentMismatch, err),
+				fmt.Errorf("%w: read compressed loose header: %w", ErrContentMismatch, err),
 				file.Close(),
 			)
 		}
 		logicalSize, err := decodeCompressedLooseHeader(header)
 		if err != nil {
 			return errors.Join(
-				fmt.Errorf("%w: decode compressed loose header: %v", ErrContentMismatch, err),
+				fmt.Errorf("%w: decode compressed loose header: %w", ErrContentMismatch, err),
 				file.Close(),
 			)
 		}
@@ -912,11 +912,11 @@ func (s *filesystemLooseStore) verifyCompressedPath(ctx context.Context, path st
 	}()
 	header := make([]byte, compressedLooseHeaderSize)
 	if _, err := io.ReadFull(f, header); err != nil {
-		return nil, errors.Join(fmt.Errorf("%w: read compressed loose header: %v", ErrContentMismatch, err), f.Close())
+		return nil, errors.Join(fmt.Errorf("%w: read compressed loose header: %w", ErrContentMismatch, err), f.Close())
 	}
 	logicalSize, err := decodeCompressedLooseHeader(header)
 	if err != nil {
-		return nil, errors.Join(fmt.Errorf("%w: %v", ErrContentMismatch, err), f.Close())
+		return nil, errors.Join(fmt.Errorf("%w: %w", ErrContentMismatch, err), f.Close())
 	}
 	if logicalSize != expectedSize {
 		return nil, errors.Join(fmt.Errorf("%w: existing logical size is %d, want %d", ErrContentMismatch, logicalSize, expectedSize), f.Close())
@@ -1082,7 +1082,7 @@ func validateRegularNoFollow(path string, info fs.FileInfo) error {
 		return fmt.Errorf("%w: %s is not an independent regular file", ErrContentMismatch, path)
 	}
 	if err := validatePlatformFileInfo(info); err != nil {
-		return fmt.Errorf("%w: %s: %v", ErrContentMismatch, path, err)
+		return fmt.Errorf("%w: %s: %w", ErrContentMismatch, path, err)
 	}
 	return nil
 }

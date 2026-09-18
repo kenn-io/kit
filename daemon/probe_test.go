@@ -35,7 +35,7 @@ func TestNewPingHandlerEmitsRequiredPingInfo(t *testing.T) {
 	}))
 	defer server.Close()
 
-	resp, err := server.Client().Get(server.URL)
+	resp, err := doRequest(t, server.Client(), http.MethodGet, server.URL, "", nil)
 	require.NoError(err)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(http.StatusOK, resp.StatusCode)
@@ -52,7 +52,7 @@ func TestNewPingHandlerRejectsNonGET(t *testing.T) {
 	server := httptest.NewServer(daemon.NewPingHandler(daemon.PingHandlerOptions{}))
 	defer server.Close()
 
-	resp, err := server.Client().Post(server.URL, "application/json", nil)
+	resp, err := doRequest(t, server.Client(), http.MethodPost, server.URL, "application/json", nil)
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
@@ -68,7 +68,7 @@ func TestProbeHTTPRequiresOKTrue(t *testing.T) {
 	}))
 	defer server.Close()
 
-	info, err := daemon.ProbeHTTP(context.Background(), server.Client(), server.URL, daemon.ProbeOptions{
+	info, err := daemon.ProbeHTTP(t.Context(), server.Client(), server.URL, daemon.ProbeOptions{
 		ExpectedService: "roborev",
 	})
 	require.NoError(t, err)
@@ -84,7 +84,7 @@ func TestProbeHTTPRejectsOKOmitted(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := daemon.ProbeHTTP(context.Background(), server.Client(), server.URL, daemon.ProbeOptions{
+	_, err := daemon.ProbeHTTP(t.Context(), server.Client(), server.URL, daemon.ProbeOptions{
 		ExpectedService: "kata",
 	})
 	require.Error(t, err)
@@ -96,7 +96,7 @@ func TestProbeHTTPRejectsOKFalse(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := daemon.ProbeHTTP(context.Background(), server.Client(), server.URL, daemon.ProbeOptions{
+	_, err := daemon.ProbeHTTP(t.Context(), server.Client(), server.URL, daemon.ProbeOptions{
 		ExpectedService: "kata",
 	})
 	require.Error(t, err)
@@ -104,12 +104,12 @@ func TestProbeHTTPRejectsOKFalse(t *testing.T) {
 
 func TestProbeHTTPAppliesTimeoutOption(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond) //nolint:kennlint // server-side delay drives the real HTTP client timeout
 		_, _ = fmt.Fprint(w, `{"ok":true,"service":"kata"}`)
 	}))
 	defer server.Close()
 
-	_, err := daemon.ProbeHTTP(context.Background(), server.Client(), server.URL, daemon.ProbeOptions{
+	_, err := daemon.ProbeHTTP(t.Context(), server.Client(), server.URL, daemon.ProbeOptions{
 		Timeout: time.Millisecond,
 	})
 	require.Error(t, err)
@@ -136,7 +136,7 @@ func TestDiscoverFindsResponsiveRuntime(t *testing.T) {
 	})
 	require.NoError(err)
 
-	rec, info, ok, err := daemon.Discover(context.Background(), store, daemon.DiscoverOptions{
+	rec, info, ok, err := daemon.Discover(t.Context(), store, daemon.DiscoverOptions{
 		Probe:           daemon.ProbeOptions{ExpectedService: "kata"},
 		RequirePIDAlive: true,
 	})
@@ -162,7 +162,7 @@ func TestDiscoverRejectsPIDMismatchWhenRequiringLivePID(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, _, ok, err := daemon.Discover(context.Background(), store, daemon.DiscoverOptions{
+	_, _, ok, err := daemon.Discover(t.Context(), store, daemon.DiscoverOptions{
 		Probe:           daemon.ProbeOptions{ExpectedService: "kata"},
 		RequirePIDAlive: true,
 	})
@@ -198,7 +198,7 @@ func TestDiscoverSkipsMismatchedProcessIdentityWithoutProbing(t *testing.T) {
 	})
 	require.NoError(err)
 
-	_, _, found, err := daemon.Discover(context.Background(), store, daemon.DiscoverOptions{
+	_, _, found, err := daemon.Discover(t.Context(), store, daemon.DiscoverOptions{
 		Probe:           daemon.ProbeOptions{ExpectedService: "kata"},
 		RequirePIDAlive: true,
 	})
@@ -220,7 +220,7 @@ func TestDiscoverWithoutPIDCheckKeepsFailedProbeAsAbsence(t *testing.T) {
 	}))
 	require.NoError(t, err)
 
-	_, _, found, err := daemon.Discover(context.Background(), store, daemon.DiscoverOptions{
+	_, _, found, err := daemon.Discover(t.Context(), store, daemon.DiscoverOptions{
 		Probe: daemon.ProbeOptions{ExpectedService: "kata"},
 	})
 	require.NoError(t, err)
@@ -244,7 +244,7 @@ func TestDiscoverReturnsUnreachableErrorForLiveRuntime(t *testing.T) {
 	_, err := store.Write(rec)
 	require.NoError(err)
 
-	_, _, ok, err := daemon.Discover(context.Background(), store, daemon.DiscoverOptions{
+	_, _, ok, err := daemon.Discover(t.Context(), store, daemon.DiscoverOptions{
 		Probe:           daemon.ProbeOptions{ExpectedService: "kata"},
 		RequirePIDAlive: true,
 	})
@@ -295,7 +295,7 @@ func TestDiscoverScansPastUnreachableLiveRuntime(t *testing.T) {
 	_, err = store.Write(reachable)
 	require.NoError(err)
 
-	found, info, ok, err := daemon.Discover(context.Background(), store, daemon.DiscoverOptions{
+	found, info, ok, err := daemon.Discover(t.Context(), store, daemon.DiscoverOptions{
 		Probe:           daemon.ProbeOptions{ExpectedService: "kata"},
 		RequirePIDAlive: true,
 	})
@@ -347,7 +347,7 @@ func TestManagerFindDoesNotDiscloseCredentialBeforeProof(t *testing.T) {
 		},
 	}
 
-	_, _, ok, err := manager.Find(context.Background())
+	_, _, ok, err := manager.Find(t.Context())
 	require.Error(err)
 	assert.False(ok)
 	require.ErrorIs(err, daemon.ErrDaemonUnreachable)
@@ -372,7 +372,7 @@ func TestDiscoverAcceptsValidRuntimeProof(t *testing.T) {
 	_, err := store.Write(rec)
 	require.NoError(err)
 
-	found, info, ok, err := daemon.Discover(context.Background(), store, daemon.DiscoverOptions{
+	found, info, ok, err := daemon.Discover(t.Context(), store, daemon.DiscoverOptions{
 		Probe:           daemon.ProbeOptions{ExpectedService: "tool"},
 		RequirePIDAlive: true,
 		Proof:           newDaemonProof(t, key),
@@ -394,7 +394,7 @@ func TestProofPingHandlerPreservesStandardReadiness(t *testing.T) {
 	}, newDaemonProof(t, []byte("readiness-proof-key")))
 	defer server.Close()
 
-	info, err := daemon.Probe(context.Background(), rec.Endpoint(), daemon.ProbeOptions{
+	info, err := daemon.Probe(t.Context(), rec.Endpoint(), daemon.ProbeOptions{
 		ExpectedService: "tool",
 	})
 	require.NoError(t, err)
@@ -413,7 +413,7 @@ func TestProofProbeRejectsWrongKey(t *testing.T) {
 	defer server.Close()
 
 	clientProof := newDaemonProof(t, []byte("different-proof-key"))
-	_, err := clientProof.Probe(context.Background(), rec, daemon.ProbeOptions{
+	_, err := clientProof.Probe(t.Context(), rec, daemon.ProbeOptions{
 		ExpectedService: "tool",
 	})
 	require.Error(t, err)
@@ -452,7 +452,7 @@ func TestLivePIDHelper(t *testing.T) {
 }
 
 func TestDiscoverPropagatesContextCancellation(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	_, _, _, err := daemon.Discover(ctx, daemon.RuntimeStore{Dir: t.TempDir()}, daemon.DiscoverOptions{})
@@ -489,7 +489,7 @@ func TestDiscoverSkipsPerProbeTimeouts(t *testing.T) {
 	})
 	require.NoError(err)
 
-	_, info, ok, err := daemon.Discover(context.Background(), store, daemon.DiscoverOptions{
+	_, info, ok, err := daemon.Discover(t.Context(), store, daemon.DiscoverOptions{
 		Probe: daemon.ProbeOptions{ExpectedService: "kata", Timeout: 100 * time.Millisecond},
 	})
 	require.NoError(err)
@@ -500,11 +500,11 @@ func TestDiscoverSkipsPerProbeTimeouts(t *testing.T) {
 func TestProbeDialsUnixEndpoint(t *testing.T) {
 	require := require.New(t)
 
-	socketDir, err := os.MkdirTemp("", "kitd")
+	socketDir, err := os.MkdirTemp("", "kitd") //nolint:usetesting // unix socket paths must stay short, so the test needs a fixed OS temp root
 	require.NoError(err)
 	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
 	socketPath := filepath.Join(socketDir, "daemon.sock")
-	listener, err := net.Listen("unix", socketPath)
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", socketPath)
 	require.NoError(err)
 	t.Cleanup(func() {
 		_ = listener.Close()
@@ -515,9 +515,9 @@ func TestProbeDialsUnixEndpoint(t *testing.T) {
 		_, _ = fmt.Fprint(w, `{"ok":true,"service":"kata"}`)
 	})}
 	go func() { _ = server.Serve(listener) }()
-	t.Cleanup(func() { _ = server.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = server.Shutdown(context.WithoutCancel(t.Context())) })
 
-	_, err = daemon.Probe(context.Background(), daemon.Endpoint{
+	_, err = daemon.Probe(t.Context(), daemon.Endpoint{
 		Network: daemon.NetworkUnix,
 		Address: socketPath,
 	}, daemon.ProbeOptions{ExpectedService: "kata"})
@@ -538,7 +538,7 @@ func startLivePIDHelper(t *testing.T) int {
 	t.Helper()
 	require := require.New(t)
 
-	cmd := exec.Command(os.Args[0], "-test.run=^TestLivePIDHelper$")
+	cmd := exec.CommandContext(context.WithoutCancel(t.Context()), os.Args[0], "-test.run=^TestLivePIDHelper$")
 	cmd.Env = append(os.Environ(), "KIT_DAEMON_LIVE_PID_HELPER=1")
 	stdin, err := cmd.StdinPipe()
 	require.NoError(err)
@@ -589,4 +589,16 @@ func startProofServer(t *testing.T, rec daemon.RuntimeRecord, proof *daemon.Proo
 	server.Config.Handler = handler
 	server.Start()
 	return server, rec
+}
+
+// doRequest issues a request bound to the test context so the linters see
+// cancellation plumbed through instead of the context-free Get/Post helpers.
+func doRequest(t *testing.T, client *http.Client, method, url, contentType string, body io.Reader) (*http.Response, error) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), method, url, body)
+	require.NoError(t, err)
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	return client.Do(req)
 }

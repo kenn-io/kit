@@ -21,12 +21,12 @@ func TestForgetPreservesRetainedIncrementalRestore(t *testing.T) {
 	opts := createOpts(dbPath, contentDir, dataDir, t.TempDir())
 	first, err := Create(ctx, r, newTestApp(), opts)
 	require.NoError(err)
-	_, err = writer.Exec(`INSERT INTO notes (created_at) VALUES ('2026-02-01T00:00:00Z')`)
+	_, err = writer.ExecContext(t.Context(), `INSERT INTO notes (created_at) VALUES ('2026-02-01T00:00:00Z')`)
 	require.NoError(err)
 	second, err := Create(ctx, r, newTestApp(), opts)
 	require.NoError(err)
 	require.Positive(second.DB.MapChainDepth)
-	_, err = writer.Exec(`INSERT INTO notes (created_at) VALUES ('2026-03-01T00:00:00Z')`)
+	_, err = writer.ExecContext(t.Context(), `INSERT INTO notes (created_at) VALUES ('2026-03-01T00:00:00Z')`)
 	require.NoError(err)
 	third, err := Create(ctx, r, newTestApp(), opts)
 	require.NoError(err)
@@ -136,7 +136,7 @@ func TestForgetRejectsSymlinkedSnapshots(t *testing.T) {
 			_, err = Forget(t.Context(), r, ForgetOptions{
 				SnapshotIDs: []string{id}, AllowEmpty: true, DryRun: dryRun,
 			})
-			assert.Error(err)
+			require.Error(err)
 			_, err = other.LoadManifest(id)
 			assert.NoError(err, "another repository's manifest must remain untouched")
 		})

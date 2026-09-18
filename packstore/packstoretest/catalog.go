@@ -4,7 +4,6 @@
 package packstoretest
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -50,7 +49,7 @@ func RunCatalogContract(t *testing.T, factory func(*testing.T) CatalogHarness, o
 
 	t.Run("resolution follows membership and mapping", func(t *testing.T) {
 		h := factory(t)
-		ctx := context.Background()
+		ctx := t.Context()
 		h.SetMember(hashA, true)
 
 		loc, err := h.Catalog().Resolve(ctx, hashA)
@@ -75,7 +74,7 @@ func RunCatalogContract(t *testing.T, factory func(*testing.T) CatalogHarness, o
 
 	t.Run("inventory separates unpacked and indexed members", func(t *testing.T) {
 		h := factory(t)
-		ctx := context.Background()
+		ctx := t.Context()
 		h.SetMember(hashA, true)
 		h.SetMember(hashB, true)
 		candidate := packstore.Candidate{
@@ -112,7 +111,7 @@ func RunCatalogContract(t *testing.T, factory func(*testing.T) CatalogHarness, o
 
 	t.Run("record adopt and prune preserve authority", func(t *testing.T) {
 		h := factory(t)
-		ctx := context.Background()
+		ctx := t.Context()
 		h.SetMember(hashA, true)
 		h.SetMember(hashB, true)
 
@@ -143,7 +142,7 @@ func RunCatalogContract(t *testing.T, factory func(*testing.T) CatalogHarness, o
 
 	t.Run("repack is exact and old record retires only when empty", func(t *testing.T) {
 		h := factory(t)
-		ctx := context.Background()
+		ctx := t.Context()
 		h.SetMember(hashA, true)
 		oldID := opts.NewPackID()
 		oldEntry := contractEntry(hashA, oldID, 6, 13)
@@ -200,7 +199,7 @@ func RunCatalogContract(t *testing.T, factory func(*testing.T) CatalogHarness, o
 		for _, tt := range cases {
 			t.Run(tt.name, func(t *testing.T) {
 				h := factory(t)
-				ctx := context.Background()
+				ctx := t.Context()
 				h.SetMember(hashA, true)
 				oldID := opts.NewPackID()
 				oldEntry := contractEntry(hashA, oldID, 6, 13)
@@ -222,7 +221,7 @@ func RunCatalogContract(t *testing.T, factory func(*testing.T) CatalogHarness, o
 
 	t.Run("explicit deletion and reset remove packed authority", func(t *testing.T) {
 		h := factory(t)
-		ctx := context.Background()
+		ctx := t.Context()
 		h.SetMember(hashA, true)
 		h.SetMember(hashB, true)
 		packID := opts.NewPackID()

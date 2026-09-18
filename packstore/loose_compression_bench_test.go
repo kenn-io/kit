@@ -2,7 +2,6 @@ package packstore
 
 import (
 	"bytes"
-	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -20,11 +19,14 @@ func BenchmarkLooseWriteCompressed(b *testing.B) {
 }
 
 func benchmarkLooseWrite(b *testing.B, compressed bool) {
+	b.Helper()
+	require := require.New(b)
+	b.Helper()
 	content := representativeNDJSON(4_000)
 	layout, err := NewLayout(b.TempDir(), LayoutOptions{Staging: StagingStoreDirectory, StagingDir: "tmp"})
-	require.NoError(b, err)
+	require.NoError(err)
 	loose, err := NewLooseStore(layout)
-	require.NoError(b, err)
+	require.NoError(err)
 	opts := WriteOptions{
 		Durability: AtomicPublication,
 		Dedup:      VerifyFullHash,
@@ -36,46 +38,48 @@ func benchmarkLooseWrite(b *testing.B, compressed bool) {
 	b.SetBytes(int64(len(content)))
 	b.ResetTimer()
 	for range b.N {
-		result, writeErr := loose.WriteBytes(context.Background(), content, opts)
-		require.NoError(b, writeErr)
+		result, writeErr := loose.WriteBytes(b.Context(), content, opts)
+		require.NoError(writeErr)
 		b.StopTimer()
-		require.NoError(b, loose.Remove(result.Hash, BestEffortRemoval))
+		require.NoError(loose.Remove(result.Hash, BestEffortRemoval))
 		b.StartTimer()
 	}
 }
 
 func BenchmarkCompressedLooseStreamingRead(b *testing.B) {
+	require := require.New(b)
 	content := representativeNDJSON(8_000)
 	layout, err := NewLayout(b.TempDir(), LayoutOptions{Staging: StagingStoreDirectory, StagingDir: "tmp"})
-	require.NoError(b, err)
+	require.NoError(err)
 	loose, err := NewLooseStore(layout)
-	require.NoError(b, err)
-	result, err := loose.WriteBytes(context.Background(), content, WriteOptions{
+	require.NoError(err)
+	result, err := loose.WriteBytes(b.Context(), content, WriteOptions{
 		Durability: AtomicPublication,
 		Dedup:      VerifyFullHash,
 		Compression: LooseCompressionOptions{
 			Enabled: true,
 		},
 	})
-	require.NoError(b, err)
+	require.NoError(err)
 	resolver := &mapResolver{locations: map[Hash]Location{result.Hash: {Member: true}}}
 	store, err := NewStore(resolver, layout, StoreOptions{})
-	require.NoError(b, err)
-	b.Cleanup(func() { require.NoError(b, store.Close()) })
+	require.NoError(err)
+	b.Cleanup(func() { require.NoError(store.Close()) })
 	buffer := make([]byte, 64<<10)
 	b.ReportAllocs()
 	b.SetBytes(int64(len(content)))
 	b.ResetTimer()
 	for range b.N {
-		stream, _, openErr := store.OpenStream(context.Background(), result.Hash)
-		require.NoError(b, openErr)
+		stream, _, openErr := store.OpenStream(b.Context(), result.Hash)
+		require.NoError(openErr)
 		_, copyErr := io.CopyBuffer(io.Discard, stream, buffer)
-		require.NoError(b, copyErr)
-		require.NoError(b, stream.Close())
+		require.NoError(copyErr)
+		require.NoError(stream.Close())
 	}
 }
 
 func BenchmarkCompressedLoosePackIngestion(b *testing.B) {
+	require := require.New(b)
 	content := bytes.Repeat([]byte("{\"type\":\"message\",\"content\":\"pack ingestion benchmark\"}\n"), 8_000)
 	base := b.TempDir()
 	b.ReportAllocs()
@@ -83,20 +87,20 @@ func BenchmarkCompressedLoosePackIngestion(b *testing.B) {
 	b.ResetTimer()
 	for range b.N {
 		b.StopTimer()
-		root, err := os.MkdirTemp(base, "iteration-")
-		require.NoError(b, err)
+		root, err := os.MkdirTemp(base, "iteration-") //nolint:usetesting // each benchmark iteration needs its own root outside b.TempDir cleanup ordering
+		require.NoError(err)
 		layout, err := NewLayout(root, LayoutOptions{Staging: StagingStoreDirectory, StagingDir: "tmp"})
-		require.NoError(b, err)
+		require.NoError(err)
 		loose, err := NewLooseStore(layout)
-		require.NoError(b, err)
-		written, err := loose.WriteBytes(context.Background(), content, WriteOptions{
+		require.NoError(err)
+		written, err := loose.WriteBytes(b.Context(), content, WriteOptions{
 			Durability: AtomicPublication,
 			Dedup:      VerifyFullHash,
 			Compression: LooseCompressionOptions{
 				Enabled: true,
 			},
 		})
-		require.NoError(b, err)
+		require.NoError(err)
 		catalog := newMaintenanceCatalog()
 		catalog.members[written.Hash] = Reference{
 			Hash: written.Hash, OriginalHashes: []string{written.Hash.String()},
@@ -106,16 +110,16 @@ func BenchmarkCompressedLoosePackIngestion(b *testing.B) {
 			Paths: []string{filepath.Clean(written.Path)}, Size: written.Size,
 		}
 		maintainer, err := NewMaintainer(catalog, layout, MaintainerOptions{})
-		require.NoError(b, err)
+		require.NoError(err)
 		b.StartTimer()
 
-		stats, packErr := maintainer.Pack(context.Background(), PackOptions{})
-		require.NoError(b, packErr)
-		require.Equal(b, 1, stats.BlobsPacked)
+		stats, packErr := maintainer.Pack(b.Context(), PackOptions{})
+		require.NoError(packErr)
+		require.Equal(1, stats.BlobsPacked)
 
 		b.StopTimer()
-		require.NoError(b, maintainer.Close())
-		require.NoError(b, os.RemoveAll(root))
+		require.NoError(maintainer.Close())
+		require.NoError(os.RemoveAll(root))
 		b.StartTimer()
 	}
 }

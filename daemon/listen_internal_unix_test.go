@@ -3,7 +3,6 @@
 package daemon
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,11 +13,11 @@ import (
 )
 
 func TestUnixSocketStaleTreatsMissingSocketAsStale(t *testing.T) {
-	dir, err := os.MkdirTemp("/tmp", "kitd-probe")
+	dir, err := os.MkdirTemp("/tmp", "kitd-probe") //nolint:usetesting // unix socket paths must stay short, so the test needs a fixed OS temp root
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
-	stale, err := unixSocketStale(context.Background(), filepath.Join(dir, "missing.sock"), 50*time.Millisecond)
+	stale, err := unixSocketStale(t.Context(), filepath.Join(dir, "missing.sock"), 50*time.Millisecond)
 
 	require.NoError(t, err)
 	assert.True(t, stale)

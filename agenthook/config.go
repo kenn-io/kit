@@ -163,14 +163,12 @@ func prepareInstall(agent Agent, opts InstallOptions) (profileSpec, string, []na
 		}
 		timeout := int(hook.Timeout / spec.timeoutUnit)
 		if spec.format == formatHermesYAML && hook.Timeout > 300*time.Second {
-			return profileSpec{}, "", nil, fmt.Errorf("Hermes hook timeout must not exceed 300 seconds")
+			return profileSpec{}, "", nil, errors.New("Hermes hook timeout must not exceed 300 seconds")
 		}
 		matcher := nativeMatcher(spec, strings.TrimSpace(hook.Matcher))
 		if spec.format == formatHermesYAML && matcher != "" &&
 			hook.Event != EventPreToolUse && hook.Event != EventPostToolUse {
-			return profileSpec{}, "", nil, fmt.Errorf(
-				"Hermes only supports matchers on PreToolUse and PostToolUse hooks",
-			)
+			return profileSpec{}, "", nil, errors.New("Hermes only supports matchers on PreToolUse and PostToolUse hooks")
 		}
 		key := string(hook.Event) + "\x00" + matcher
 		if _, exists := seen[key]; exists {

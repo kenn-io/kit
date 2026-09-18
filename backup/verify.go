@@ -383,7 +383,7 @@ func (s *verifyState) blob(id pack.BlobID, snapshotID string, readContent bool) 
 	}
 	if !s.readDone[id] {
 		s.readDone[id] = true
-		s.result.BytesRead += int64(entry.RawLen) //nolint:gosec // raw lengths fit int64
+		s.result.BytesRead += int64(entry.RawLen)
 	}
 	return raw, true
 }
@@ -603,13 +603,13 @@ func (s *verifyState) verifyGroupBlob(
 	s.mu.Lock()
 	if !s.readDone[rd.id] {
 		s.readDone[rd.id] = true
-		s.result.BytesRead += int64(entry.RawLen) //nolint:gosec // raw lengths fit int64
+		s.result.BytesRead += int64(entry.RawLen)
 	}
 	s.readVerdict[rd.id] = ""
 	// The read re-derived the blob's SHA-256 identity, so this length is the
 	// authenticated content length; checkAttachmentSizes compares listed
 	// sizes against it.
-	s.readLen[rd.id] = int64(entry.RawLen) //nolint:gosec // format-v1 lengths fit int64
+	s.readLen[rd.id] = int64(entry.RawLen)
 	s.contentReads++
 	// Run this blob's queued page-map run checks now, while its bytes are in
 	// hand, so page blobs are not re-read after the drain just to hash their

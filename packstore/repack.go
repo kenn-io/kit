@@ -209,10 +209,10 @@ func (m *Maintainer) preflightRepackSource(packID string, entries []IndexEntry) 
 		if !ok || !packIndexMatchesFooter(&indexed, authoritative) {
 			return fmt.Errorf("%w: source %s metadata mismatch for %s", pack.ErrCorrupt, packID, indexed.Hash)
 		}
-		if authoritative.RawLen > uint64(m.limits.BlobBytes) { //nolint:gosec
+		if authoritative.RawLen > uint64(m.limits.BlobBytes) {
 			return newLimitError(LimitBlobRawBytes, authoritative.RawLen, uint64(m.limits.BlobBytes))
 		}
-		if authoritative.StoredLen > uint64(m.limits.BlobBytes) { //nolint:gosec
+		if authoritative.StoredLen > uint64(m.limits.BlobBytes) {
 			return newLimitError(LimitBlobStoredBytes, authoritative.StoredLen, uint64(m.limits.BlobBytes))
 		}
 	}
@@ -255,7 +255,7 @@ func (m *Maintainer) rewriteSource(ctx context.Context, oldPackID string, entrie
 			return err
 		}
 		if len(sealed) != len(current) {
-			return fmt.Errorf("packstore: replacement entry count changed")
+			return errors.New("packstore: replacement entry count changed")
 		}
 		record := PackRecord{PackID: packID, EntryCount: int64(len(sealed)), CreatedAt: time.Now().UTC()}
 		for i, entry := range sealed {
@@ -290,7 +290,7 @@ func (m *Maintainer) rewriteSource(ctx context.Context, oldPackID string, entrie
 		}
 		prepared, prepareErr := pack.PrepareBlob(ctx, stream, uint64(size), pack.DefaultZstdLevel, pack.AppendStreamOptions{
 			ExpectedID: &id, ScratchDir: m.layout.PacksDir(),
-		}) //nolint:gosec // size is a validated non-negative catalog length
+		})
 		streamErr := stream.Close()
 		if err := errors.Join(prepareErr, streamErr); err != nil {
 			if prepared != nil {
@@ -306,7 +306,7 @@ func (m *Maintainer) rewriteSource(ctx context.Context, oldPackID string, entrie
 			return result, err
 		}
 		if writer != nil {
-			if err := checkPlainOutput(m.limits, uint64(writer.StoredSize()), prepared.StoredLen(), len(current)+1); err != nil { //nolint:gosec // writer offsets are non-negative
+			if err := checkPlainOutput(m.limits, uint64(writer.StoredSize()), prepared.StoredLen(), len(current)+1); err != nil {
 				if err := seal(); err != nil {
 					_ = prepared.Close()
 					return result, err
@@ -351,12 +351,14 @@ func (m *Maintainer) retireEmpty(ctx context.Context, packID string, stats *Repa
 }
 
 func isSourceContentError(err error) bool {
-	for _, known := range []error{fs.ErrNotExist, pack.ErrBadMagic, pack.ErrUnsupportedVersion,
-		pack.ErrTruncated, pack.ErrChecksum, pack.ErrCorrupt, pack.ErrBlobMismatch, ErrContentMismatch} {
+	for _, known := range []error{
+		fs.ErrNotExist, pack.ErrBadMagic, pack.ErrUnsupportedVersion,
+		pack.ErrTruncated, pack.ErrChecksum, pack.ErrCorrupt, pack.ErrBlobMismatch, ErrContentMismatch,
+	} {
 		if errors.Is(err, known) {
 			return true
 		}
 	}
-	var pathErr *os.PathError
-	return errors.As(err, &pathErr) && errors.Is(pathErr, fs.ErrNotExist)
+	pathErr, ok := errors.AsType[*os.PathError](err)
+	return ok && errors.Is(pathErr, fs.ErrNotExist)
 }

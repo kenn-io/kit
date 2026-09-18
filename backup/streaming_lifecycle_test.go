@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	Assert "github.com/stretchr/testify/assert"
-	Require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"go.kenn.io/kit/packstore"
 	"go.kenn.io/kit/packstore/packstoretest"
@@ -39,11 +39,11 @@ func addLifecycleCandidate(t *testing.T, catalog *packstoretest.MemoryCatalog, h
 
 func readLifecycleBlob(t *testing.T, store *packstore.Store, hash packstore.Hash) []byte {
 	t.Helper()
-	reader, size, err := store.OpenStream(context.Background(), hash)
-	Require.NoError(t, err)
+	reader, size, err := store.OpenStream(t.Context(), hash)
+	require.NoError(t, err)
 	content, readErr := io.ReadAll(reader)
-	Require.NoError(t, errors.Join(readErr, reader.Close()))
-	Assert.Equal(t, size, int64(len(content)))
+	require.NoError(t, errors.Join(readErr, reader.Close()))
+	assert.Equal(t, size, int64(len(content)))
 	return content
 }
 
@@ -51,9 +51,9 @@ func readLifecycleBlob(t *testing.T, store *packstore.Store, hash packstore.Hash
 // focused package tests intentionally split apart: mixed reads, sparse repack,
 // unpack, backup capture and verification, then loose and pack-native restore.
 func TestStreamingLifecycleGate(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
-	ctx := context.Background()
+	assert := assert.New(t)
+	require := require.New(t)
+	ctx := t.Context()
 	dbPath, contentDir, dataDir, _ := seedBackupFixture(t)
 	layout, err := packstore.NewLayout(contentDir, packstore.LayoutOptions{
 		Staging: packstore.StagingSameDirectory,

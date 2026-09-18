@@ -22,6 +22,7 @@ package sqlitevec
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"regexp"
 
@@ -95,7 +96,7 @@ func New[K, G comparable](ctx context.Context, db *sql.DB, schema Schema) (*Stor
 		return nil, err
 	}
 	if db == nil {
-		return nil, fmt.Errorf("db is nil")
+		return nil, errors.New("db is nil")
 	}
 	s := &Store[K, G]{db: db, schema: schema}
 	if _, err := db.ExecContext(ctx, fmt.Sprintf(`
@@ -141,6 +142,7 @@ func (s *Store[K, G]) chunksByDocIndex() string { return s.schema.VectorsPrefix 
 func (s *Store[K, G]) stampsByDocRevisionIndex() string {
 	return s.schema.VectorsPrefix + "_stamps_by_doc_revision"
 }
+
 func (s *Store[K, G]) vecTable(ordinal int64) string {
 	return fmt.Sprintf("%s_v%d", s.schema.VectorsPrefix, ordinal)
 }

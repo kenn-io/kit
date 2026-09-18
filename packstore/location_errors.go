@@ -82,14 +82,14 @@ func newExhaustedError(attempts []AttemptError) *ExhaustedError {
 }
 
 func candidateFailureRank(err error) int {
-	switch err {
-	case ErrPhysicalCorrupt:
+	switch {
+	case errors.Is(err, ErrPhysicalCorrupt):
 		return 4
-	case ErrPhysicalMissing:
+	case errors.Is(err, ErrPhysicalMissing):
 		return 3
-	case ErrStoreFenced:
+	case errors.Is(err, ErrStoreFenced):
 		return 2
-	case ErrStoreUnavailable:
+	case errors.Is(err, ErrStoreUnavailable):
 		return 1
 	default:
 		return 0
@@ -139,8 +139,8 @@ func ClassifyRepresentationLimitError(err error) error {
 	if err == nil || isCandidateFailure(err) {
 		return err
 	}
-	var limit *LimitError
-	if !errors.As(err, &limit) {
+	limit, ok := errors.AsType[*LimitError](err)
+	if !ok {
 		return err
 	}
 	switch limit.Dimension {

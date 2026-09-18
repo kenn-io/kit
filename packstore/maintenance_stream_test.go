@@ -1,20 +1,19 @@
 package packstore
 
 import (
-	"context"
 	"io"
 	"os"
 	"testing"
 	"time"
 
-	Assert "github.com/stretchr/testify/assert"
-	Require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/pack"
 )
 
 func TestPackAndUnpackStreamAboveFormerCeiling(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	if testing.Short() {
 		t.Skip("streams an object above the former 64 MiB maintenance ceiling")
 	}
@@ -22,7 +21,7 @@ func TestPackAndUnpackStreamAboveFormerCeiling(t *testing.T) {
 	layout := layoutForStoreTest(t)
 	loose, err := NewLooseStore(layout)
 	require.NoError(err)
-	written, err := loose.Write(context.Background(), io.LimitReader(streamZeroReader{}, size), WriteOptions{
+	written, err := loose.Write(t.Context(), io.LimitReader(streamZeroReader{}, size), WriteOptions{
 		Durability: AtomicPublication, Dedup: VerifyFullHash, MaxBytes: size,
 	})
 	require.NoError(err)
@@ -34,26 +33,26 @@ func TestPackAndUnpackStreamAboveFormerCeiling(t *testing.T) {
 	limits.BlobBytes = size
 	maintainer := newMaintainerForTest(t, catalog, layout, limits)
 
-	packed, err := maintainer.Pack(context.Background(), PackOptions{})
+	packed, err := maintainer.Pack(t.Context(), PackOptions{})
 	require.NoError(err)
 	assert.Equal(1, packed.BlobsPacked)
 	assert.Equal(size, packed.BytesPacked)
 	assert.NoFileExists(written.Path)
 
-	unpacked, err := maintainer.Unpack(context.Background())
+	unpacked, err := maintainer.Unpack(t.Context())
 	require.NoError(err)
 	assert.Equal(1, unpacked.BlobsRestored)
 	assert.Equal(size, unpacked.BytesRestored)
 	info, err := os.Stat(written.Path)
 	require.NoError(err)
 	assert.Equal(size, info.Size())
-	err = verifyLoosePath(context.Background(), written.Path, written.Hash, size)
+	err = verifyLoosePath(t.Context(), written.Path, written.Hash, size)
 	require.NoError(err)
 }
 
 func TestPackCompressedLooseStreamAboveFormerCeiling(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	if testing.Short() {
 		t.Skip("streams a compressed object above the former 64 MiB maintenance ceiling")
 	}
@@ -61,7 +60,7 @@ func TestPackCompressedLooseStreamAboveFormerCeiling(t *testing.T) {
 	layout := layoutForStoreTest(t)
 	loose, err := NewLooseStore(layout)
 	require.NoError(err)
-	written, err := loose.Write(context.Background(), io.LimitReader(streamZeroReader{}, size), WriteOptions{
+	written, err := loose.Write(t.Context(), io.LimitReader(streamZeroReader{}, size), WriteOptions{
 		Durability:  AtomicPublication,
 		Dedup:       VerifyFullHash,
 		MaxBytes:    size,
@@ -79,13 +78,13 @@ func TestPackCompressedLooseStreamAboveFormerCeiling(t *testing.T) {
 	limits.BlobBytes = size
 	maintainer := newMaintainerForTest(t, catalog, layout, limits)
 
-	stats, err := maintainer.Pack(context.Background(), PackOptions{})
+	stats, err := maintainer.Pack(t.Context(), PackOptions{})
 
 	require.NoError(err)
 	assert.Equal(1, stats.BlobsPacked)
 	assert.Equal(size, stats.BytesPacked)
 	assert.NoFileExists(written.Path)
-	stream, gotSize, err := maintainer.store.OpenStream(context.Background(), written.Hash)
+	stream, gotSize, err := maintainer.store.OpenStream(t.Context(), written.Hash)
 	require.NoError(err)
 	assert.Equal(size, gotSize)
 	require.NoError(stream.Verify())
@@ -93,8 +92,8 @@ func TestPackCompressedLooseStreamAboveFormerCeiling(t *testing.T) {
 }
 
 func TestRepackStreamsAboveFormerCeiling(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	if testing.Short() {
 		t.Skip("streams an object above the former 64 MiB maintenance ceiling")
 	}
@@ -103,7 +102,7 @@ func TestRepackStreamsAboveFormerCeiling(t *testing.T) {
 	require.NoError(os.MkdirAll(layout.PacksDir(), 0o700))
 	writer, err := pack.NewWriter(layout.PacksDir(), pack.WriterOptions{})
 	require.NoError(err)
-	live, err := writer.AppendStream(context.Background(), io.LimitReader(streamZeroReader{}, size), uint64(size), pack.AppendStreamOptions{
+	live, err := writer.AppendStream(t.Context(), io.LimitReader(streamZeroReader{}, size), uint64(size), pack.AppendStreamOptions{
 		ScratchDir: layout.PacksDir(),
 	})
 	require.NoError(err)
@@ -121,21 +120,21 @@ func TestRepackStreamsAboveFormerCeiling(t *testing.T) {
 	catalog.entries[indexed.Hash] = indexed
 	record := PackRecord{PackID: packID, EntryCount: int64(len(entries)), CreatedAt: time.Now().Add(-time.Hour)}
 	for _, entry := range entries {
-		record.StoredBytes += int64(entry.StoredLen) //nolint:gosec // test entries are bounded
+		record.StoredBytes += int64(entry.StoredLen)
 	}
 	catalog.packs[packID] = record
 	limits := DefaultLimits()
 	limits.BlobBytes = size
 	maintainer := newMaintainerForTest(t, catalog, layout, limits)
 
-	stats, err := maintainer.Repack(context.Background(), RepackOptions{
+	stats, err := maintainer.Repack(t.Context(), RepackOptions{
 		Now: time.Now(), Selection: RepackSelection{MinAge: time.Nanosecond, MinDeadStored: 1},
 	})
 	require.NoError(err)
 	assert.Equal(1, stats.BlobsRepacked)
 	assert.Equal(size, stats.BytesRepacked)
 	assert.NoFileExists(layout.PackPath(packID))
-	stream, gotSize, err := maintainer.store.OpenStream(context.Background(), indexed.Hash)
+	stream, gotSize, err := maintainer.store.OpenStream(t.Context(), indexed.Hash)
 	require.NoError(err)
 	assert.Equal(size, gotSize)
 	require.NoError(stream.Verify())

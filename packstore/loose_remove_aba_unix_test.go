@@ -3,22 +3,21 @@
 package packstore
 
 import (
-	"context"
 	"os"
 	"testing"
 	"time"
 
-	Assert "github.com/stretchr/testify/assert"
-	Require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLooseRemovePreservesExactSizeReplacementAtClaimBoundary(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	layout := layoutForStoreTest(t)
 	store, err := NewLooseStore(layout)
 	require.NoError(err)
 	content := []byte("original exact-size loose source")
-	written, err := store.WriteBytes(context.Background(), content, WriteOptions{
+	written, err := store.WriteBytes(t.Context(), content, WriteOptions{
 		Durability: AtomicPublication, Dedup: VerifyFullHash,
 	})
 	require.NoError(err)
@@ -29,13 +28,13 @@ func TestLooseRemovePreservesExactSizeReplacementAtClaimBoundary(t *testing.T) {
 	err = store.Remove(written.Hash, BestEffortRemoval)
 
 	require.ErrorIs(err, errIdentityChanged)
-	Assert.Equal(t, replacement, mustReadFile(t, written.Path))
+	assert.Equal(t, replacement, mustReadFile(t, written.Path))
 	assertNoLooseRemovalClaims(t, written.Path)
 }
 
 func TestPackSweepPreservesExactSizeReplacementAtClaimBoundary(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	layout := layoutForStoreTest(t)
 	content := []byte("original exact-size sweep source")
 	entry := buildStoreTestPack(t, layout, content)
@@ -52,7 +51,7 @@ func TestPackSweepPreservesExactSizeReplacementAtClaimBoundary(t *testing.T) {
 	installExactSizeRemovalReplacement(t, path, replacement)
 	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
 
-	stats, err := maintainer.Pack(context.Background(), PackOptions{})
+	stats, err := maintainer.Pack(t.Context(), PackOptions{})
 
 	require.ErrorIs(err, errIdentityChanged)
 	assert.Zero(stats.LooseSwept)
@@ -69,9 +68,9 @@ func installExactSizeRemovalReplacement(t *testing.T, path string, replacement [
 			return
 		}
 		triggered = true
-		Require.NoError(t, os.Remove(path))
-		Require.NoError(t, os.WriteFile(path, replacement, 0o600))
+		require.NoError(t, os.Remove(path))
+		require.NoError(t, os.WriteFile(path, replacement, 0o600))
 	}
 	t.Cleanup(func() { beforeLooseRemovalClaim = originalHook })
-	t.Cleanup(func() { Assert.True(t, triggered, "removal reached the exact-size replacement boundary") })
+	t.Cleanup(func() { assert.True(t, triggered, "removal reached the exact-size replacement boundary") })
 }

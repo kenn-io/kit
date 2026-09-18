@@ -18,7 +18,7 @@ const (
 func TestDetachChildDetachesWithoutConsole(t *testing.T) {
 	assert := assert.New(t)
 
-	cmd := exec.Command("cmd.exe")
+	cmd := exec.CommandContext(t.Context(), "cmd.exe")
 	detachChild(cmd)
 
 	flags := cmd.SysProcAttr.CreationFlags
@@ -31,7 +31,7 @@ func TestDetachChildPreservesExistingSysProcAttr(t *testing.T) {
 	assert := assert.New(t)
 
 	const createSuspended = 0x00000004
-	cmd := exec.Command("cmd.exe")
+	cmd := exec.CommandContext(t.Context(), "cmd.exe")
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createSuspended}
 	detachChild(cmd)
 

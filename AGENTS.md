@@ -50,6 +50,12 @@ provider workflows to this repo unless the package already owns that concern.
 - Avoid broad cleanup or mutation. Operate on exact paths, runtime records, and
   repositories that the caller supplied or the test created.
 
+## Lint
+
+- `.golangci.yml` is generated: run `make lint-config` after editing
+  `.golangci.overlay.yml` or `lint/config/golangci.yml`. The shared policy and
+  the custom analyzers live in `lint/`; see `lint/AGENTS.md`.
+
 ## Tests
 
 - Use `github.com/stretchr/testify` for new and changed tests. Prefer

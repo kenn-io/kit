@@ -196,7 +196,7 @@ func copyPruneBlob(ctx context.Context, r *Repo, known map[pack.BlobID]IndexEntr
 	if err != nil {
 		return err
 	}
-	prepared, prepareErr := pack.PrepareBlob(ctx, source, uint64(source.Size()), pack.DefaultZstdLevel, pack.AppendStreamOptions{ //nolint:gosec // footer sizes are non-negative
+	prepared, prepareErr := pack.PrepareBlob(ctx, source, uint64(source.Size()), pack.DefaultZstdLevel, pack.AppendStreamOptions{
 		ExpectedID: &id, ScratchDir: r.Path(stagingDirName),
 	})
 	if err := errors.Join(prepareErr, source.Close()); err != nil {

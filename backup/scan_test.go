@@ -2,7 +2,6 @@ package backup
 
 import (
 	"bytes"
-	"context"
 	"crypto/rand"
 	"fmt"
 	"testing"
@@ -26,7 +25,7 @@ func TestScanPagesFullAndIncremental(t *testing.T) {
 
 	const pageSize = 512
 	db := fakeDB(t, pageSize, 10)
-	res, err := ScanPages(context.Background(), bytes.NewReader(db), pageSize, 10, nil, nil)
+	res, err := ScanPages(t.Context(), bytes.NewReader(db), pageSize, 10, nil, nil)
 	require.NoError(err)
 	assert.Equal(uint64(10), res.PageCount)
 	assert.Len(res.Hashes, 10*pageHashSize)
@@ -36,7 +35,7 @@ func TestScanPagesFullAndIncremental(t *testing.T) {
 	parent := &PageHashMap{PageSize: pageSize, PageCount: 10, Hashes: res.Hashes}
 
 	// No changes: clean incremental scan.
-	res2, err := ScanPages(context.Background(), bytes.NewReader(db), pageSize, 10, parent, nil)
+	res2, err := ScanPages(t.Context(), bytes.NewReader(db), pageSize, 10, parent, nil)
 	require.NoError(err)
 	assert.Empty(res2.Dirty)
 
@@ -45,18 +44,18 @@ func TestScanPagesFullAndIncremental(t *testing.T) {
 	db2[2*pageSize] ^= 0xff
 	db2[3*pageSize] ^= 0xff
 	db2[7*pageSize] ^= 0xff
-	res3, err := ScanPages(context.Background(), bytes.NewReader(db2), pageSize, 10, parent, nil)
+	res3, err := ScanPages(t.Context(), bytes.NewReader(db2), pageSize, 10, parent, nil)
 	require.NoError(err)
 	assert.Equal([]PageRange{{Start: 2, Count: 2}, {Start: 7, Count: 1}}, res3.Dirty)
 
 	// Growth: pages beyond the parent count are dirty.
 	db3 := append(append([]byte{}, db...), fakeDB(t, pageSize, 2)...)
-	res4, err := ScanPages(context.Background(), bytes.NewReader(db3), pageSize, 12, parent, nil)
+	res4, err := ScanPages(t.Context(), bytes.NewReader(db3), pageSize, 12, parent, nil)
 	require.NoError(err)
 	assert.Equal([]PageRange{{Start: 10, Count: 2}}, res4.Dirty)
 
 	// Page size mismatch errors.
-	_, err = ScanPages(context.Background(), bytes.NewReader(db), 1024, 5, parent, nil)
+	_, err = ScanPages(t.Context(), bytes.NewReader(db), 1024, 5, parent, nil)
 	require.Error(err)
 }
 
@@ -72,7 +71,7 @@ func TestScanPagesMultiChunkMatchesBruteForce(t *testing.T) {
 	const pageCount = 4*scanChunkPages + 37 // 5 chunks, last one partial
 	db := fakeDB(t, pageSize, pageCount)
 
-	base, err := ScanPages(context.Background(), bytes.NewReader(db), pageSize, pageCount, nil, nil)
+	base, err := ScanPages(t.Context(), bytes.NewReader(db), pageSize, pageCount, nil, nil)
 	require.NoError(err)
 	require.Len(base.Hashes, pageCount*pageHashSize)
 	require.Equal([]PageRange{{Start: 0, Count: pageCount}}, base.Dirty)
@@ -90,14 +89,18 @@ func TestScanPagesMultiChunkMatchesBruteForce(t *testing.T) {
 		db2[p*pageSize] ^= 0xff
 	}
 	var progressCalls []uint64
-	res, err := ScanPages(context.Background(), bytes.NewReader(db2), pageSize, pageCount, parent, func(done, total uint64) {
+	res, err := ScanPages(t.Context(), bytes.NewReader(db2), pageSize, pageCount, parent, func(done, total uint64) {
 		require.Equal(uint64(pageCount), total)
 		progressCalls = append(progressCalls, done)
 	})
 	require.NoError(err)
 	assert.Equal([]PageRange{
-		{Start: 0, Count: 1}, {Start: 511, Count: 1}, {Start: 1023, Count: 3},
-		{Start: 2048, Count: 1}, {Start: 3000, Count: 2}, {Start: pageCount - 1, Count: 1},
+		{Start: 0, Count: 1},
+		{Start: 511, Count: 1},
+		{Start: 1023, Count: 3},
+		{Start: 2048, Count: 1},
+		{Start: 3000, Count: 2},
+		{Start: pageCount - 1, Count: 1},
 	}, res.Dirty)
 
 	// Progress arrives strictly in chunk order despite out-of-order hashing.
@@ -132,7 +135,7 @@ func TestScanPagesPropagatesMidScanReadError(t *testing.T) {
 	// The second chunk's read fails; the error must surface, not hang or be
 	// swallowed by the concurrent pipeline.
 	r := &failAfterReader{data: db, failAt: int64(scanChunkPages * pageSize)}
-	_, err := ScanPages(context.Background(), r, pageSize, pageCount, nil, nil)
+	_, err := ScanPages(t.Context(), r, pageSize, pageCount, nil, nil)
 	require.ErrorIs(err, assert.AnError)
 	require.ErrorContains(err, "reading DB pages")
 }
@@ -201,7 +204,7 @@ func TestBuildHashDelta(t *testing.T) {
 	require := require.New(t)
 	const pageSize = 512
 	db := fakeDB(t, pageSize, 6)
-	res, err := ScanPages(context.Background(), bytes.NewReader(db), pageSize, 6, nil, nil)
+	res, err := ScanPages(t.Context(), bytes.NewReader(db), pageSize, 6, nil, nil)
 	require.NoError(err)
 
 	d := BuildHashDelta(res)

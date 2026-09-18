@@ -3,12 +3,14 @@ package managedworktree
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -98,12 +100,9 @@ func validateUntrustedTreeCheckoutGitVersion(
 	out, err := runLifecycleGit(ctx, root, "version")
 	if err != nil {
 		return &ChangeRequestError{
-			Kind: ChangeRequestUnsupportedGit,
-			Message: fmt.Sprintf(
-				"determine Git version before untrusted-tree checkout: %s",
-				strings.TrimSpace(string(out)),
-			),
-			Cause: err,
+			Kind:    ChangeRequestUnsupportedGit,
+			Message: "determine Git version before untrusted-tree checkout: " + strings.TrimSpace(string(out)),
+			Cause:   err,
 		}
 	}
 	if supportsUntrustedTreeCheckoutGitVersion(string(out), runtime.GOOS) {
@@ -168,9 +167,7 @@ func validateWorktreeConfigCompatibility(
 	); err != nil {
 		return err
 	} else if present && strings.EqualFold(value, "true") {
-		return fmt.Errorf(
-			"cannot enable worktree-scoped configuration while shared core.bare=true",
-		)
+		return errors.New("cannot enable worktree-scoped configuration while shared core.bare=true")
 	}
 	return nil
 }
@@ -337,7 +334,7 @@ func completeUntrustedTreeIsolation(
 	if err != nil {
 		return untrustedTreeIsolation{}, err
 	}
-	keys := append(checkoutKeys, ambientKeys...)
+	keys := slices.Concat(checkoutKeys, ambientKeys)
 	if hooks := configuredGitHooks(keys); len(hooks) != 0 {
 		return untrustedTreeIsolation{}, fmt.Errorf(
 			"configured Git hooks are unsupported for untrusted tree imports: %s",

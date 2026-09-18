@@ -43,7 +43,7 @@ func TestHandleNormalizesAndDispatchesTypedPostToolUse(t *testing.T) {
 	var output bytes.Buffer
 
 	err := Handle(
-		context.Background(),
+		t.Context(),
 		AgentHermes,
 		strings.NewReader(`{
   "session_id":"h1",
@@ -77,7 +77,7 @@ func TestHandleDispatchesTypedStop(t *testing.T) {
 	var output bytes.Buffer
 
 	err := Handle(
-		context.Background(),
+		t.Context(),
 		AgentGemini,
 		strings.NewReader(`{
   "session_id":"g1",
@@ -103,7 +103,7 @@ func TestNoopHandlerImplementsEveryTypedEvent(t *testing.T) {
 	var output bytes.Buffer
 
 	err := Handle(
-		context.Background(),
+		t.Context(),
 		AgentClaude,
 		strings.NewReader(`{"session_id":"c1","hook_event_name":"Notification","message":"ready","notification_type":"idle_prompt"}`),
 		&output,
@@ -118,7 +118,7 @@ func TestHandleRejectsUnknownEventsBeforeCallingHandler(t *testing.T) {
 	var output bytes.Buffer
 
 	err := Handle(
-		context.Background(),
+		t.Context(),
 		AgentClaude,
 		strings.NewReader(`{"session_id":"c1","hook_event_name":"FutureEvent"}`),
 		&output,
@@ -126,7 +126,8 @@ func TestHandleRejectsUnknownEventsBeforeCallingHandler(t *testing.T) {
 	)
 
 	require.Error(t, err)
-	assert.ErrorContains(t, err, `unsupported Claude hook event "FutureEvent"`)
+	require.
+		ErrorContains(t, err, `unsupported Claude hook event "FutureEvent"`)
 	assert.Empty(t, output.String())
 }
 
@@ -151,7 +152,7 @@ func TestHandleEncodesTypedClaudePermissionDecision(t *testing.T) {
 	}}
 
 	err := Handle(
-		context.Background(),
+		t.Context(),
 		AgentClaude,
 		strings.NewReader(`{
   "session_id":"c1",
@@ -183,7 +184,7 @@ func TestHandleEncodesTypedCopilotPermissionDecision(t *testing.T) {
 	}}
 
 	err := Handle(
-		context.Background(),
+		t.Context(),
 		AgentCopilot,
 		strings.NewReader(`{
   "session_id":"c1",
@@ -211,7 +212,7 @@ func TestHandleEncodesGeminiToolDenial(t *testing.T) {
 	}}
 
 	err := Handle(
-		context.Background(),
+		t.Context(),
 		AgentGemini,
 		strings.NewReader(`{
   "session_id":"g1",
@@ -237,7 +238,7 @@ func TestHandleEncodesGeminiToolRewrite(t *testing.T) {
 	}}
 
 	err := Handle(
-		context.Background(),
+		t.Context(),
 		AgentGemini,
 		strings.NewReader(`{
   "session_id":"g1",
@@ -314,12 +315,13 @@ func TestHandleRejectsNonObjectToolRewrite(t *testing.T) {
 			}}
 
 			err := Handle(
-				context.Background(), tt.agent, strings.NewReader(tt.payload),
+				t.Context(), tt.agent, strings.NewReader(tt.payload),
 				&output, handler,
 			)
 
 			require.Error(t, err)
-			assert.ErrorContains(t, err, "PreToolUse updatedInput must be a JSON object")
+			require.
+				ErrorContains(t, err, "PreToolUse updatedInput must be a JSON object")
 			assert.Empty(t, output.String())
 		})
 	}
@@ -365,7 +367,7 @@ func TestHandleEncodesHermesPromptContext(t *testing.T) {
 	}}
 
 	err := Handle(
-		context.Background(),
+		t.Context(),
 		AgentHermes,
 		strings.NewReader(`{
   "session_id":"h1",
@@ -388,7 +390,7 @@ func TestHandleRejectsHermesStopContextWithExplicitAllow(t *testing.T) {
 	}}
 
 	err := Handle(
-		context.Background(),
+		t.Context(),
 		AgentHermes,
 		strings.NewReader(`{
   "session_id":"h1",
@@ -399,7 +401,8 @@ func TestHandleRejectsHermesStopContextWithExplicitAllow(t *testing.T) {
 	)
 
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "Hermes Stop output does not support decision \"allow\"")
+	require.
+		ErrorContains(t, err, "Hermes Stop output does not support decision \"allow\"")
 	assert.Empty(t, output.String())
 }
 
@@ -411,7 +414,7 @@ func TestHandleEncodesCursorToolDenial(t *testing.T) {
 	}}
 
 	err := Handle(
-		context.Background(),
+		t.Context(),
 		AgentCursor,
 		strings.NewReader(`{
   "conversation_id":"c1",
@@ -438,7 +441,7 @@ func TestHandleEncodesCursorToolRewrite(t *testing.T) {
 	}}
 
 	err := Handle(
-		context.Background(),
+		t.Context(),
 		AgentCursor,
 		strings.NewReader(`{
   "conversation_id":"c1",
@@ -462,7 +465,7 @@ func TestHandleEncodesCursorPromptBlock(t *testing.T) {
 	}}
 
 	err := Handle(
-		context.Background(),
+		t.Context(),
 		AgentCursor,
 		strings.NewReader(`{
   "conversation_id":"c1",
@@ -484,7 +487,7 @@ func TestHandleRejectsIncompleteToolInput(t *testing.T) {
 	var output bytes.Buffer
 
 	err := Handle(
-		context.Background(),
+		t.Context(),
 		AgentClaude,
 		strings.NewReader(`{
   "session_id":"c1",
@@ -496,7 +499,8 @@ func TestHandleRejectsIncompleteToolInput(t *testing.T) {
 	)
 
 	require.Error(t, err)
-	assert.ErrorContains(t, err, `PreToolUse input missing tool_name`)
+	require.
+		ErrorContains(t, err, `PreToolUse input missing tool_name`)
 	assert.Empty(t, output.String())
 }
 
@@ -504,7 +508,7 @@ func TestHandleRejectsMissingSessionID(t *testing.T) {
 	var output bytes.Buffer
 
 	err := Handle(
-		context.Background(),
+		t.Context(),
 		AgentClaude,
 		strings.NewReader(`{
   "hook_event_name":"PreToolUse",
@@ -516,7 +520,8 @@ func TestHandleRejectsMissingSessionID(t *testing.T) {
 	)
 
 	require.Error(t, err)
-	assert.ErrorContains(t, err, `PreToolUse input missing session_id`)
+	require.
+		ErrorContains(t, err, `PreToolUse input missing session_id`)
 	assert.Empty(t, output.String())
 }
 
@@ -566,12 +571,13 @@ func TestHandleRejectsMissingRequiredEventFields(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var output bytes.Buffer
 			err := Handle(
-				context.Background(), AgentClaude, strings.NewReader(tt.payload),
+				t.Context(), AgentClaude, strings.NewReader(tt.payload),
 				&output, NoopHandler{},
 			)
 
 			require.Error(t, err)
-			assert.ErrorContains(t, err, tt.want)
+			require.
+				ErrorContains(t, err, tt.want)
 			assert.Empty(t, output.String())
 		})
 	}
@@ -616,6 +622,7 @@ func TestHandleAllowsNativeLifecyclePayloadWithoutClaudeEquivalent(t *testing.T)
   "composer_mode":"agent"
 }`,
 			check: func(t *testing.T, handler *lifecycleHandler) {
+				t.Helper()
 				require.NotNil(t, handler.sessionStart)
 				assert.Empty(t, handler.sessionStart.Source)
 			},
@@ -630,6 +637,7 @@ func TestHandleAllowsNativeLifecyclePayloadWithoutClaudeEquivalent(t *testing.T)
   "completed":true
 }`,
 			check: func(t *testing.T, handler *lifecycleHandler) {
+				t.Helper()
 				require.NotNil(t, handler.sessionEnd)
 				assert.Empty(t, handler.sessionEnd.Reason)
 			},
@@ -642,7 +650,7 @@ func TestHandleAllowsNativeLifecyclePayloadWithoutClaudeEquivalent(t *testing.T)
 			handler := &lifecycleHandler{}
 
 			err := Handle(
-				context.Background(), tt.agent, strings.NewReader(tt.payload),
+				t.Context(), tt.agent, strings.NewReader(tt.payload),
 				&output, handler,
 			)
 
@@ -663,13 +671,14 @@ func TestHandleRejectsUnsupportedClaudeStyleDecision(t *testing.T) {
 			}}
 
 			err := Handle(
-				context.Background(), agent,
+				t.Context(), agent,
 				strings.NewReader(`{"session_id":"s1","hook_event_name":"Stop"}`),
 				&output, handler,
 			)
 
 			require.Error(t, err)
-			assert.ErrorContains(t, err, `Stop output does not support decision "deny"`)
+			require.
+				ErrorContains(t, err, `Stop output does not support decision "deny"`)
 			assert.Empty(t, output.String())
 		})
 	}
@@ -685,7 +694,7 @@ func TestHandleRejectsNonObjectPermissionRequestRewrite(t *testing.T) {
 	}}
 
 	err := Handle(
-		context.Background(), AgentClaude,
+		t.Context(), AgentClaude,
 		strings.NewReader(`{
   "session_id":"c1",
   "hook_event_name":"PermissionRequest",
@@ -696,7 +705,8 @@ func TestHandleRejectsNonObjectPermissionRequestRewrite(t *testing.T) {
 	)
 
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "PermissionRequest updatedInput must be a JSON object")
+	require.
+		ErrorContains(t, err, "PermissionRequest updatedInput must be a JSON object")
 	assert.Empty(t, output.String())
 }
 
@@ -711,7 +721,8 @@ func TestEncodeResponseRejectsUnspecifiedProfileFormat(t *testing.T) {
 	response, err := encodeResponse(spec, EventStop, handledOutput{value: StopOutput{}})
 
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "unsupported agent hook response format")
+	require.
+		ErrorContains(t, err, "unsupported agent hook response format")
 	assert.Empty(t, response)
 }
 
@@ -747,7 +758,7 @@ func TestHandleRejectsDenyWithoutReason(t *testing.T) {
 	}}
 
 	err := Handle(
-		context.Background(),
+		t.Context(),
 		AgentClaude,
 		strings.NewReader(`{
   "session_id":"c1",
@@ -760,7 +771,8 @@ func TestHandleRejectsDenyWithoutReason(t *testing.T) {
 	)
 
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "deny output requires a reason")
+	require.
+		ErrorContains(t, err, "deny output requires a reason")
 	assert.Empty(t, output.String())
 }
 
@@ -812,12 +824,13 @@ func TestHandleRejectsInvalidTypedOutput(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var output bytes.Buffer
 			err := Handle(
-				context.Background(), AgentClaude, strings.NewReader(tt.payload),
+				t.Context(), AgentClaude, strings.NewReader(tt.payload),
 				&output, tt.handler,
 			)
 
 			require.Error(t, err)
-			assert.ErrorContains(t, err, tt.want)
+			require.
+				ErrorContains(t, err, tt.want)
 			assert.Empty(t, output.String())
 		})
 	}
@@ -828,7 +841,7 @@ func TestHandleRejectsOversizedPayload(t *testing.T) {
 		strings.Repeat("x", maxHookPayloadBytes) + `"}`
 
 	err := Handle(
-		context.Background(), AgentClaude, strings.NewReader(payload),
+		t.Context(), AgentClaude, strings.NewReader(payload),
 		&bytes.Buffer{}, NoopHandler{},
 	)
 

@@ -1,7 +1,6 @@
 package sqlitevec_test
 
 import (
-	"context"
 	"slices"
 	"strings"
 	"testing"
@@ -23,7 +22,7 @@ import (
 func TestQueryGenerationPlanScansKNNOnce(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	db, store := setup(t)
 
 	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (1, 'a cat sat'), (2, 'a dog ran')`)

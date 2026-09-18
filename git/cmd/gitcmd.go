@@ -435,8 +435,8 @@ func (e *GitError) ExitCode() (int, bool) {
 
 // IsExitCode reports whether err is a GitError with code.
 func IsExitCode(err error, code int) bool {
-	var gitErr *GitError
-	return errors.As(err, &gitErr) && func() bool {
+	gitErr, ok := errors.AsType[*GitError](err)
+	return ok && func() bool {
 		got, ok := gitErr.ExitCode()
 		return ok && got == code
 	}()

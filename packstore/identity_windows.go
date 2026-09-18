@@ -4,7 +4,6 @@ package packstore
 
 import (
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
 	"syscall"
@@ -72,7 +71,7 @@ func openWindowsNoFollow(path string, access uint32) (*os.File, error) {
 	f := os.NewFile(uintptr(handle), path)
 	if f == nil {
 		_ = windows.CloseHandle(handle)
-		return nil, fmt.Errorf("packstore: create file for Windows handle")
+		return nil, errors.New("packstore: create file for Windows handle")
 	}
 	return f, nil
 }
@@ -80,10 +79,10 @@ func openWindowsNoFollow(path string, access uint32) (*os.File, error) {
 func validatePlatformFileInfo(info fs.FileInfo) error {
 	attributes, ok := info.Sys().(*syscall.Win32FileAttributeData)
 	if !ok {
-		return fmt.Errorf("cannot inspect Windows file attributes")
+		return errors.New("cannot inspect Windows file attributes")
 	}
 	if attributes.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-		return fmt.Errorf("is a Windows reparse point")
+		return errors.New("is a Windows reparse point")
 	}
 	return nil
 }

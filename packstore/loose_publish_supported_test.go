@@ -8,13 +8,13 @@ import (
 	"path/filepath"
 	"testing"
 
-	Assert "github.com/stretchr/testify/assert"
-	Require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLoosePublicationFallbackNeverReplacesExistingDestination(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	dir := t.TempDir()
 	staging := filepath.Join(dir, "staging")
 	final := filepath.Join(dir, "final")

@@ -1,19 +1,20 @@
 package gitlock
 
 import (
-	"context"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestUnlockRejectsDoubleRelease(t *testing.T) {
-	locker, err := New("").Acquire(context.Background(), t.TempDir())
+	locker, err := New("").Acquire(t.Context(), t.TempDir())
 	if err != nil {
-		t.Fatal(err)
+		require.FailNow(t, err.Error())
 	}
 	if err := locker.Unlock(); err != nil {
-		t.Fatal(err)
+		require.FailNow(t, err.Error())
 	}
 	if err := locker.Unlock(); err == nil {
-		t.Fatal("second Unlock succeeded, want error")
+		require.FailNow(t, "second Unlock succeeded, want error")
 	}
 }

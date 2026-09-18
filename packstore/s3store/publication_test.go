@@ -13,8 +13,8 @@ import (
 	"testing"
 
 	"github.com/klauspost/compress/zstd"
-	Assert "github.com/stretchr/testify/assert"
-	Require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/pack"
 	"go.kenn.io/kit/packstore"
 )
@@ -31,13 +31,13 @@ func TestVerifyPackObjectRejectsMismatchedContentLengthBeforeRead(t *testing.T) 
 	})
 
 	_, _, err := backend.verifyPackObject(
-		context.Background(),
+		t.Context(),
 		"0123456789abcdef0123456789abcdef",
 		1,
 	)
 
-	Require.ErrorIs(t, err, packstore.ErrPhysicalCorrupt)
-	Assert.Zero(t, body.read)
+	require.ErrorIs(t, err, packstore.ErrPhysicalCorrupt)
+	assert.Zero(t, body.read)
 }
 
 func TestVerifyPackObjectBoundsReadWhenContentLengthMissing(t *testing.T) {
@@ -51,13 +51,13 @@ func TestVerifyPackObjectBoundsReadWhenContentLengthMissing(t *testing.T) {
 	})
 
 	_, _, err := backend.verifyPackObject(
-		context.Background(),
+		t.Context(),
 		"0123456789abcdef0123456789abcdef",
 		expectedSize,
 	)
 
-	Require.ErrorIs(t, err, packstore.ErrPhysicalCorrupt)
-	Assert.LessOrEqual(t, body.read, expectedSize+1)
+	require.ErrorIs(t, err, packstore.ErrPhysicalCorrupt)
+	assert.LessOrEqual(t, body.read, expectedSize+1)
 }
 
 func TestVerifyRawObjectBoundsReadWhenContentLengthMissing(t *testing.T) {
@@ -71,14 +71,14 @@ func TestVerifyRawObjectBoundsReadWhenContentLengthMissing(t *testing.T) {
 	})
 
 	err := backend.verifyRawObject(
-		context.Background(),
+		t.Context(),
 		"loose/test",
 		packstore.Hash("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
 		expectedSize,
 	)
 
-	Require.ErrorIs(t, err, packstore.ErrPhysicalCorrupt)
-	Assert.LessOrEqual(t, body.read, expectedSize+1)
+	require.ErrorIs(t, err, packstore.ErrPhysicalCorrupt)
+	assert.LessOrEqual(t, body.read, expectedSize+1)
 }
 
 func TestVerifyPackObjectEnforcesConfiguredBlobLimit(t *testing.T) {
@@ -97,15 +97,15 @@ func TestVerifyPackObjectEnforcesConfiguredBlobLimit(t *testing.T) {
 	})
 
 	_, _, err := backend.verifyPackObject(
-		context.Background(),
+		t.Context(),
 		packID,
 		int64(len(packBytes)),
 	)
 
-	Require.ErrorIs(t, err, packstore.ErrBlobTooLarge)
+	require.ErrorIs(t, err, packstore.ErrBlobTooLarge)
 	var limit *packstore.LimitError
-	Require.ErrorAs(t, err, &limit)
-	Assert.Equal(t, packstore.LimitBlobRawBytes, limit.Dimension)
+	require.ErrorAs(t, err, &limit)
+	assert.Equal(t, packstore.LimitBlobRawBytes, limit.Dimension)
 }
 
 func TestVerifyPackObjectEnforcesConfiguredDecoderWindowLimit(t *testing.T) {
@@ -129,15 +129,15 @@ func TestVerifyPackObjectEnforcesConfiguredDecoderWindowLimit(t *testing.T) {
 	})
 
 	_, _, err := backend.verifyPackObject(
-		context.Background(),
+		t.Context(),
 		packID,
 		int64(len(packBytes)),
 	)
 
-	Require.ErrorIs(t, err, packstore.ErrBlobTooLarge)
+	require.ErrorIs(t, err, packstore.ErrBlobTooLarge)
 	var limit *packstore.LimitError
-	Require.ErrorAs(t, err, &limit)
-	Assert.Equal(t, packstore.LimitBlobWindowBytes, limit.Dimension)
+	require.ErrorAs(t, err, &limit)
+	assert.Equal(t, packstore.LimitBlobWindowBytes, limit.Dimension)
 }
 
 func TestVerifyPackObjectRejectsDecodedLengthMismatch(t *testing.T) {
@@ -166,20 +166,20 @@ func TestVerifyPackObjectRejectsDecodedLengthMismatch(t *testing.T) {
 			)
 
 			_, _, err := backend.verifyPackObject(
-				context.Background(),
+				t.Context(),
 				packID,
 				int64(len(packBytes)),
 			)
 
-			Require.ErrorIs(t, err, pack.ErrCorrupt)
-			Require.ErrorIs(t, err, packstore.ErrPhysicalCorrupt)
+			require.ErrorIs(t, err, pack.ErrCorrupt)
+			require.ErrorIs(t, err, packstore.ErrPhysicalCorrupt)
 		})
 	}
 }
 
 func TestPublishPackRejectsKnownConfiguredLimitBeforeMultipart(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	limits := packstore.DefaultLimits()
 	limits.PackBytes = 8
 	owner := packstore.Ownership{
@@ -214,7 +214,7 @@ func TestPublishPackRejectsKnownConfiguredLimitBeforeMultipart(t *testing.T) {
 	}
 
 	_, err = backend.PublishPack(
-		context.Background(),
+		t.Context(),
 		pack.NewPackID(),
 		source,
 		packstore.PublishOptions{
@@ -231,8 +231,8 @@ func TestPublishPackRejectsKnownConfiguredLimitBeforeMultipart(t *testing.T) {
 }
 
 func TestPublishPackCapsCallerLimitBeforeMultipart(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	limits := packstore.DefaultLimits()
 	limits.PackBytes = 8
 	owner := packstore.Ownership{
@@ -281,7 +281,7 @@ func TestPublishPackCapsCallerLimitBeforeMultipart(t *testing.T) {
 	backend.setOwnership(owner, `"owner-etag"`)
 
 	_, err = backend.PublishPack(
-		context.Background(),
+		t.Context(),
 		pack.NewPackID(),
 		bytes.NewReader(bytes.Repeat([]byte("x"), 9)),
 		packstore.PublishOptions{MaxBytes: 100},
@@ -305,7 +305,7 @@ func TestPublishPackRejectsExactSizeMismatchBeforeMultipart(t *testing.T) {
 		Epoch:  "epoch-1",
 	}
 	marker, err := packstore.MarshalOwnership(owner)
-	Require.NoError(t, err)
+	require.NoError(t, err)
 	for _, tt := range []struct {
 		name         string
 		expectedSize int64
@@ -314,7 +314,7 @@ func TestPublishPackRejectsExactSizeMismatchBeforeMultipart(t *testing.T) {
 		{name: "source is overlong", expectedSize: 4},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			assert := Assert.New(t)
+			assert := assert.New(t)
 			var creates, uploads, completes, aborts int
 			backend := newHTTPBackend(packstore.DefaultLimits(), func(request *http.Request) (*http.Response, error) {
 				query := request.URL.Query()
@@ -353,13 +353,13 @@ func TestPublishPackRejectsExactSizeMismatchBeforeMultipart(t *testing.T) {
 			backend.setOwnership(owner, `"owner-etag"`)
 
 			_, err := backend.PublishPack(
-				context.Background(),
+				t.Context(),
 				pack.NewPackID(),
 				strings.NewReader("hello"),
 				packstore.PublishOptions{ExpectedSize: tt.expectedSize, SizeKnown: true},
 			)
 
-			Require.ErrorIs(t, err, packstore.ErrContentMismatch)
+			require.ErrorIs(t, err, packstore.ErrContentMismatch)
 			assert.Zero(creates)
 			assert.Zero(uploads)
 			assert.Zero(completes)
@@ -376,7 +376,7 @@ func TestPublishPackValidatesEveryEntryBeforeMultipart(t *testing.T) {
 		Epoch:  "epoch-1",
 	}
 	marker, err := packstore.MarshalOwnership(owner)
-	Require.NoError(t, err)
+	require.NoError(t, err)
 	forgedLimits := packstore.DefaultLimits()
 	forgedLimits.BlobBytes = 16
 	forgedID, forgedBytes := makeEncodedPack(t, []byte("x"), 17, 0)
@@ -409,8 +409,8 @@ func TestPublishPackValidatesEveryEntryBeforeMultipart(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert := Assert.New(t)
-			require := Require.New(t)
+			assert := assert.New(t)
+			require := require.New(t)
 			var gets, multipartCreates, multipartCompletes int
 			backend := newHTTPBackend(tt.limits, func(request *http.Request) (*http.Response, error) {
 				query := request.URL.Query()
@@ -455,7 +455,7 @@ func TestPublishPackValidatesEveryEntryBeforeMultipart(t *testing.T) {
 			backend.setOwnership(owner, `"owner-etag"`)
 
 			_, err := backend.PublishPack(
-				context.Background(),
+				t.Context(),
 				tt.packID,
 				bytes.NewReader(tt.packBytes),
 				packstore.PublishOptions{},
@@ -474,8 +474,8 @@ func TestPublishPackValidatesEveryEntryBeforeMultipart(t *testing.T) {
 }
 
 func TestPublishPackRejectsInvalidDurabilityBeforeStaging(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	owner := packstore.Ownership{
 		Format: packstore.OwnershipFormatV1,
 		Vault:  "test-vault",
@@ -506,7 +506,7 @@ func TestPublishPackRejectsInvalidDurabilityBeforeStaging(t *testing.T) {
 	source := &countingReadCloser{reader: bytes.NewReader(packBytes)}
 
 	_, err = backend.PublishPack(
-		context.Background(), packID, source,
+		t.Context(), packID, source,
 		packstore.PublishOptions{Durability: packstore.Durability(99)},
 	)
 
@@ -523,7 +523,7 @@ func TestPublishLooseRejectsInvalidOptionsBeforeMultipart(t *testing.T) {
 		Epoch:  "epoch-1",
 	}
 	marker, err := packstore.MarshalOwnership(owner)
-	Require.NoError(t, err)
+	require.NoError(t, err)
 	content := []byte("hello")
 	hash := hashOf(content)
 	for _, tt := range []struct {
@@ -562,11 +562,11 @@ func TestPublishLooseRejectsInvalidOptionsBeforeMultipart(t *testing.T) {
 			backend.setOwnership(owner, `"owner-etag"`)
 
 			_, err := backend.PublishLoose(
-				context.Background(), hash, bytes.NewReader(content), tt.opts,
+				t.Context(), hash, bytes.NewReader(content), tt.opts,
 			)
 
-			Require.ErrorIs(t, err, packstore.ErrInvalidPolicy)
-			Assert.Zero(t, multipartCreates)
+			require.ErrorIs(t, err, packstore.ErrInvalidPolicy)
+			assert.Zero(t, multipartCreates)
 		})
 	}
 }
@@ -579,7 +579,7 @@ func TestRepairLooseAcceptsMaxInt64Limit(t *testing.T) {
 		Epoch:  "epoch-1",
 	}
 	marker, err := packstore.MarshalOwnership(owner)
-	Require.NoError(t, err)
+	require.NoError(t, err)
 	content := []byte("hello")
 	hash := hashOf(content)
 	var gets int
@@ -608,7 +608,7 @@ func TestRepairLooseAcceptsMaxInt64Limit(t *testing.T) {
 	backend.setOwnership(owner, `"owner-etag"`)
 
 	receipt, err := backend.RepairLoose(
-		context.Background(),
+		t.Context(),
 		hash,
 		bytes.NewReader(content),
 		packstore.PublishOptions{
@@ -617,12 +617,12 @@ func TestRepairLooseAcceptsMaxInt64Limit(t *testing.T) {
 		},
 	)
 
-	Require.NoError(t, err)
-	Assert.Equal(t, int64(len(content)), receipt.Location.LogicalSize)
+	require.NoError(t, err)
+	assert.Equal(t, int64(len(content)), receipt.Location.LogicalSize)
 }
 
 func TestMultipartPublishBoundsPartBufferByPublicationLimit(t *testing.T) {
-	assert := Assert.New(t)
+	assert := assert.New(t)
 	var uploaded int64
 	backend := newHTTPBackend(packstore.DefaultLimits(), func(request *http.Request) (*http.Response, error) {
 		query := request.URL.Query()
@@ -653,11 +653,11 @@ func TestMultipartPublishBoundsPartBufferByPublicationLimit(t *testing.T) {
 	source := &requestedReadRecorder{reader: strings.NewReader("hi")}
 
 	result, err := backend.multipartPublish(
-		context.Background(), "packs/test", source,
+		t.Context(), "packs/test", source,
 		multipartPublishOptions{maxBytes: 2},
 	)
 
-	Require.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(int64(2), result.size)
 	assert.Equal(int64(2), uploaded)
 	assert.Equal(3, source.maxRequest)
@@ -692,21 +692,21 @@ func TestMultipartPublishAbortsDeduplicatedUpload(t *testing.T) {
 	})
 
 	result, err := backend.multipartPublish(
-		context.Background(),
+		t.Context(),
 		"packs/test",
 		strings.NewReader("hello"),
 		multipartPublishOptions{maxBytes: 5},
 	)
 
-	Require.NoError(t, err)
-	Assert.False(t, result.created)
-	Assert.Equal(t, 1, aborts)
+	require.NoError(t, err)
+	assert.False(t, result.created)
+	assert.Equal(t, 1, aborts)
 }
 
 func TestRepairLooseCancelStopsBeforePut(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
-	ctx, cancel := context.WithCancel(context.Background())
+	assert := assert.New(t)
+	require := require.New(t)
+	ctx, cancel := context.WithCancel(t.Context())
 	source := &cancelAfterFirstRead{
 		cancel: cancel,
 		reader: strings.NewReader("hello"),
@@ -751,8 +751,8 @@ func TestRepairLooseCancelStopsBeforePut(t *testing.T) {
 }
 
 func TestRepairLooseReadsOnlyOneByteBeyondExpectedSize(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	expected := []byte("known")
 	sourceBytes := append(bytes.Clone(expected), bytes.Repeat([]byte("x"), 1<<20)...)
 	source := &countingReadCloser{reader: bytes.NewReader(sourceBytes)}
@@ -784,7 +784,7 @@ func TestRepairLooseReadsOnlyOneByteBeyondExpectedSize(t *testing.T) {
 	backend.setOwnership(owner, `"owner-etag"`)
 
 	_, err = backend.RepairLoose(
-		context.Background(),
+		t.Context(),
 		hashOf(expected),
 		source,
 		packstore.PublishOptions{
@@ -799,8 +799,8 @@ func TestRepairLooseReadsOnlyOneByteBeyondExpectedSize(t *testing.T) {
 }
 
 func TestMultipartPublishCancelAbortsWithBoundedContext(t *testing.T) {
-	assert := Assert.New(t)
-	ctx, cancel := context.WithCancel(context.Background())
+	assert := assert.New(t)
+	ctx, cancel := context.WithCancel(t.Context())
 	source := &cancelAfterFirstRead{
 		cancel: cancel,
 		reader: strings.NewReader("hello"),
@@ -822,7 +822,7 @@ func TestMultipartPublishCancelAbortsWithBoundedContext(t *testing.T) {
 			completes++
 			return xmlResponse(request, http.StatusOK, ""), nil
 		case request.Method == http.MethodDelete && query.Get("uploadId") == "upload-1":
-			Require.NoError(t, request.Context().Err())
+			require.NoError(t, request.Context().Err())
 			_, hasDeadline := request.Context().Deadline()
 			assert.True(hasDeadline)
 			aborts++
@@ -837,7 +837,7 @@ func TestMultipartPublishCancelAbortsWithBoundedContext(t *testing.T) {
 		ctx, "packs/test", source, multipartPublishOptions{maxBytes: 5},
 	)
 
-	Require.ErrorIs(t, err, context.Canceled)
+	require.ErrorIs(t, err, context.Canceled)
 	assert.Equal(1, source.reads)
 	assert.Zero(uploads)
 	assert.Zero(completes)
@@ -845,7 +845,7 @@ func TestMultipartPublishCancelAbortsWithBoundedContext(t *testing.T) {
 }
 
 func TestMultipartPublishReadsOnlyOneByteBeyondLimit(t *testing.T) {
-	assert := Assert.New(t)
+	assert := assert.New(t)
 	source := &countingReadCloser{reader: strings.NewReader("0123456789abcdefghij")}
 	var uploads, aborts int
 	backend := newHTTPBackend(packstore.DefaultLimits(), func(request *http.Request) (*http.Response, error) {
@@ -873,11 +873,11 @@ func TestMultipartPublishReadsOnlyOneByteBeyondLimit(t *testing.T) {
 	backend.part = 5
 
 	_, err := backend.multipartPublish(
-		context.Background(), "packs/test", source,
+		t.Context(), "packs/test", source,
 		multipartPublishOptions{maxBytes: 7},
 	)
 
-	Require.ErrorIs(t, err, packstore.ErrBlobTooLarge)
+	require.ErrorIs(t, err, packstore.ErrBlobTooLarge)
 	assert.Equal(int64(8), source.read)
 	assert.Equal(1, uploads)
 	assert.Equal(1, aborts)
@@ -931,32 +931,34 @@ func makeEncodedPack(
 	windowBytes int,
 ) (string, []byte) {
 	t.Helper()
+	require := require.New(t)
+	t.Helper()
 	var frame bytes.Buffer
 	options := []zstd.EOption{zstd.WithEncoderConcurrency(1)}
 	if windowBytes > 0 {
 		options = append(options, zstd.WithWindowSize(windowBytes))
 	}
 	encoder, err := zstd.NewWriter(&frame, options...)
-	Require.NoError(t, err)
+	require.NoError(err)
 	_, err = encoder.Write(content)
-	Require.NoError(t, err)
-	Require.NoError(t, encoder.Close())
+	require.NoError(err)
+	require.NoError(encoder.Close())
 	staging := t.TempDir()
 	writer, err := pack.NewWriter(staging, pack.WriterOptions{})
-	Require.NoError(t, err)
+	require.NoError(err)
 	_, err = writer.AppendEncoded(
 		pack.ComputeBlobID(content),
 		frame.Bytes(),
 		rawLen,
 		true,
 	)
-	Require.NoError(t, err)
+	require.NoError(err)
 	packID := writer.ID()
 	packPath := filepath.Join(staging, packID+".pack")
 	_, err = writer.Seal(packPath)
-	Require.NoError(t, err)
+	require.NoError(err)
 	packBytes, err := os.ReadFile(packPath)
-	Require.NoError(t, err)
+	require.NoError(err)
 	return packID, packBytes
 }
 

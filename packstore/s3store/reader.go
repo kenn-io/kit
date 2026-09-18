@@ -80,7 +80,7 @@ func (b *Backend) OpenPack(
 		return nil, 0, err
 	}
 	if entry.Hash != expected {
-		return nil, 0, fmt.Errorf("s3store: indexed hash does not match requested hash")
+		return nil, 0, errors.New("s3store: indexed hash does not match requested hash")
 	}
 	if err := b.requireAttached(); err != nil {
 		return nil, 0, err
@@ -114,7 +114,7 @@ func (b *Backend) OpenPack(
 		return nil, 0, errors.Join(
 			packstore.ErrPhysicalCorrupt,
 			errors.Join(reader.Close(), os.Remove(path)),
-			fmt.Errorf("s3store: pack entry differs from catalog authority"),
+			errors.New("s3store: pack entry differs from catalog authority"),
 		)
 	}
 	if err := b.checkSelectedPackEntryLimits(canonical); err != nil {
@@ -150,14 +150,14 @@ func (b *Backend) downloadPackRanges(
 	if head.ContentLength == nil || *head.ContentLength < 0 {
 		return nil, "", errors.Join(
 			packstore.ErrPhysicalCorrupt,
-			fmt.Errorf("s3store: pack has invalid content length"),
+			errors.New("s3store: pack has invalid content length"),
 		)
 	}
 	if *head.ContentLength > b.limits.PackBytes {
 		limitErr := &packstore.LimitError{
 			Dimension: packstore.LimitPackContainerBytes,
-			Actual:    uint64(*head.ContentLength), //nolint:gosec // checked non-negative
-			Limit:     uint64(b.limits.PackBytes),  //nolint:gosec // validated positive
+			Actual:    uint64(*head.ContentLength),
+			Limit:     uint64(b.limits.PackBytes),
 		}
 		return nil, "", errors.Join(packstore.ErrPhysicalCorrupt, limitErr)
 	}
@@ -207,15 +207,15 @@ func (b *Backend) downloadPackRanges(
 
 func (b *Backend) packReaderOptions() pack.ReaderOptions {
 	return pack.ReaderOptions{Limits: pack.ReaderLimits{
-		ContainerBytes: uint64(b.limits.PackBytes),   //nolint:gosec // validated positive
-		FooterBytes:    uint64(b.limits.FooterBytes), //nolint:gosec // validated positive
+		ContainerBytes: uint64(b.limits.PackBytes),
+		FooterBytes:    uint64(b.limits.FooterBytes),
 		Entries:        uint64(b.limits.PackEntries),
 		WindowBytes:    uint64(max(b.limits.BlobBytes, int64(1<<10))),
 	}}
 }
 
 func (b *Backend) checkSelectedPackEntryLimits(entry pack.Entry) error {
-	limit := uint64(b.limits.BlobBytes) //nolint:gosec // validated positive
+	limit := uint64(b.limits.BlobBytes)
 	if entry.RawLen > limit {
 		return &packstore.LimitError{
 			Dimension: packstore.LimitBlobRawBytes,
@@ -234,8 +234,8 @@ func (b *Backend) checkSelectedPackEntryLimits(entry pack.Entry) error {
 }
 
 func mapPackLimit(err error) (error, bool) {
-	var limit *pack.StreamLimitError
-	if !errors.As(err, &limit) {
+	limit, ok := errors.AsType[*pack.StreamLimitError](err)
+	if !ok {
 		return nil, false
 	}
 	var dimension packstore.LimitDimension
@@ -265,9 +265,9 @@ func mapPackLimit(err error) (error, bool) {
 func findPackEntry(entries []pack.Entry, indexed packstore.IndexEntry) (pack.Entry, bool) {
 	for _, entry := range entries {
 		if entry.ID.String() == indexed.Hash.String() &&
-			entry.Offset == uint64(indexed.Offset) && //nolint:gosec
-			entry.StoredLen == uint64(indexed.StoredLen) && //nolint:gosec
-			entry.RawLen == uint64(indexed.RawLen) && //nolint:gosec
+			entry.Offset == uint64(indexed.Offset) &&
+			entry.StoredLen == uint64(indexed.StoredLen) &&
+			entry.RawLen == uint64(indexed.RawLen) &&
 			uint8(entry.Flags) == indexed.Flags &&
 			entry.CRC32C == indexed.CRC32C {
 			return entry, true

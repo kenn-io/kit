@@ -62,7 +62,7 @@ func TestRestoreBeforePublicationRejectsInvalidPrivateOutput(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			require := require.New(t)
 			assert := assert.New(t)
-			ctx := context.Background()
+			ctx := t.Context()
 			r := initTestRepo(t)
 			dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 			_, err := Create(ctx, r, newTestApp(), createOpts(
@@ -95,7 +95,7 @@ func TestRestoreBeforePublicationRejectsInvalidPrivateOutput(t *testing.T) {
 
 func TestRestoreBeforePublicationCannotWriteReplacedTargetNamespace(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	_, err := Create(ctx, r, newTestApp(), createOpts(
@@ -116,7 +116,7 @@ func TestRestoreBeforePublicationCannotWriteReplacedTargetNamespace(t *testing.T
 			attacker, err := sql.Open("sqlite3", attackerDB)
 			require.NoError(err)
 			require.NoError(func() error {
-				_, err := attacker.Exec("PRAGMA user_version = 99")
+				_, err := attacker.ExecContext(t.Context(), "PRAGMA user_version = 99")
 				return err
 			}())
 			require.NoError(attacker.Close())
@@ -124,7 +124,7 @@ func TestRestoreBeforePublicationCannotWriteReplacedTargetNamespace(t *testing.T
 			callbackDB, err := sql.Open("sqlite3", staged.DBPath)
 			require.NoError(err)
 			require.NoError(func() error {
-				_, err := callbackDB.Exec("PRAGMA user_version = 1")
+				_, err := callbackDB.ExecContext(t.Context(), "PRAGMA user_version = 1")
 				return err
 			}())
 			require.NoError(callbackDB.Close())
@@ -137,13 +137,13 @@ func TestRestoreBeforePublicationCannotWriteReplacedTargetNamespace(t *testing.T
 	require.NoError(err)
 	defer func() { _ = attacker.Close() }()
 	var userVersion int
-	require.NoError(attacker.QueryRow("PRAGMA user_version").Scan(&userVersion))
+	require.NoError(attacker.QueryRowContext(t.Context(), "PRAGMA user_version").Scan(&userVersion))
 	require.Equal(99, userVersion, "callback writes must not reach the attacker-selected database")
 }
 
 func TestRestoreBeforePublicationResolvedStagingCannotBeRedirected(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	_, err := Create(ctx, r, newTestApp(), createOpts(
@@ -172,7 +172,7 @@ func TestRestoreBeforePublicationResolvedStagingCannotBeRedirected(t *testing.T)
 			attacker, err := sql.Open("sqlite3", attackerDB)
 			require.NoError(err)
 			require.NoError(func() error {
-				_, err := attacker.Exec("PRAGMA user_version = 99")
+				_, err := attacker.ExecContext(t.Context(), "PRAGMA user_version = 99")
 				return err
 			}())
 			require.NoError(attacker.Close())
@@ -180,7 +180,7 @@ func TestRestoreBeforePublicationResolvedStagingCannotBeRedirected(t *testing.T)
 			callbackDB, err := sql.Open("sqlite3", staged.DBPath)
 			require.NoError(err)
 			require.NoError(func() error {
-				_, err := callbackDB.Exec("PRAGMA user_version = 1")
+				_, err := callbackDB.ExecContext(t.Context(), "PRAGMA user_version = 1")
 				return err
 			}())
 			require.NoError(callbackDB.Close())
@@ -193,13 +193,13 @@ func TestRestoreBeforePublicationResolvedStagingCannotBeRedirected(t *testing.T)
 	require.NoError(err)
 	defer func() { _ = attacker.Close() }()
 	var userVersion int
-	require.NoError(attacker.QueryRow("PRAGMA user_version").Scan(&userVersion))
+	require.NoError(attacker.QueryRowContext(t.Context(), "PRAGMA user_version").Scan(&userVersion))
 	require.Equal(99, userVersion, "callback writes must not reach the symlinked-staging namespace")
 }
 
 func TestRestoreBeforePublicationRelativeTargetCannotReachNestedRepositoryStaging(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	base := t.TempDir()
 	t.Chdir(base)
 	target := "target"
@@ -229,7 +229,7 @@ func TestRestoreBeforePublicationRelativeTargetCannotReachNestedRepositoryStagin
 			attacker, err := sql.Open("sqlite3", attackerDB)
 			require.NoError(err)
 			require.NoError(func() error {
-				_, err := attacker.Exec("PRAGMA user_version = 99")
+				_, err := attacker.ExecContext(t.Context(), "PRAGMA user_version = 99")
 				return err
 			}())
 			require.NoError(attacker.Close())
@@ -237,7 +237,7 @@ func TestRestoreBeforePublicationRelativeTargetCannotReachNestedRepositoryStagin
 			callbackDB, err := sql.Open("sqlite3", staged.DBPath)
 			require.NoError(err)
 			require.NoError(func() error {
-				_, err := callbackDB.Exec("PRAGMA user_version = 1")
+				_, err := callbackDB.ExecContext(t.Context(), "PRAGMA user_version = 1")
 				return err
 			}())
 			require.NoError(callbackDB.Close())
@@ -250,7 +250,7 @@ func TestRestoreBeforePublicationRelativeTargetCannotReachNestedRepositoryStagin
 	require.NoError(err)
 	defer func() { _ = attacker.Close() }()
 	var userVersion int
-	require.NoError(attacker.QueryRow("PRAGMA user_version").Scan(&userVersion))
+	require.NoError(attacker.QueryRowContext(t.Context(), "PRAGMA user_version").Scan(&userVersion))
 	require.Equal(99, userVersion, "callback writes must not reach nested repository staging through a relative target")
 }
 
@@ -266,7 +266,7 @@ func TestPrepareBeforePublicationRemovesStagedReplacementAfterScratchCleanupFail
 	var blockedDir string
 
 	_, _, err = st.prepareBeforePublication(
-		context.Background(), currentRel, "app.db",
+		t.Context(), currentRel, "app.db",
 		func(_ context.Context, staged RestorePublicationTarget) error {
 			blockedDir = filepath.Join(filepath.Dir(staged.DBPath), "blocked")
 			if err := os.Mkdir(blockedDir, 0o700); err != nil {

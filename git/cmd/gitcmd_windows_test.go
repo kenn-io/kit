@@ -3,7 +3,6 @@
 package gitcmd
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -12,7 +11,7 @@ import (
 )
 
 func TestRunnerCommandHidesGitConsoleWindow(t *testing.T) {
-	cmd := New().Command(context.Background(), "", "status")
+	cmd := New().Command(t.Context(), "", "status")
 
 	require.NotNil(t, cmd.SysProcAttr)
 	assert.NotZero(t, cmd.SysProcAttr.CreationFlags&windows.CREATE_NO_WINDOW, "git subprocesses must not flash console windows")
@@ -22,7 +21,7 @@ func TestRunnerCommandAllowsConsoleWindowForTerminalPrompts(t *testing.T) {
 	runner := New()
 	runner.TerminalPrompt = true
 
-	cmd := runner.Command(context.Background(), "", "fetch")
+	cmd := runner.Command(t.Context(), "", "fetch")
 
 	if cmd.SysProcAttr != nil {
 		assert.Zero(t, cmd.SysProcAttr.CreationFlags&windows.CREATE_NO_WINDOW, "interactive git prompts should be able to use the console")

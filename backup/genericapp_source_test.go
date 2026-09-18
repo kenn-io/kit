@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -110,7 +111,7 @@ type fakeContentSource struct {
 	opens atomic.Int64
 }
 
-var errBlobNotInFakeSource = fmt.Errorf("fakeContentSource: blob not found")
+var errBlobNotInFakeSource = errors.New("fakeContentSource: blob not found")
 
 func (s *fakeContentSource) Open(_ context.Context, ref backup.ContentRef) (io.ReadCloser, error) {
 	s.opens.Add(1)
@@ -148,7 +149,7 @@ func TestGenericAppRoundTripContentSource(t *testing.T) {
 	dbPath := filepath.Join(dataDir, "fakecontent.db")
 	db, err := sql.Open("sqlite3", dbPath)
 	require.NoError(err)
-	_, err = db.Exec(`CREATE TABLE files (id INTEGER PRIMARY KEY, hash TEXT, size INTEGER);
+	_, err = db.ExecContext(t.Context(), `CREATE TABLE files (id INTEGER PRIMARY KEY, hash TEXT, size INTEGER);
 		INSERT INTO files (hash, size) VALUES (?, ?), (?, ?)`,
 		hashA, len(alpha), hashB, len(bravo))
 	require.NoError(err)
@@ -158,7 +159,7 @@ func TestGenericAppRoundTripContentSource(t *testing.T) {
 
 	r, err := backup.Init(filepath.Join(base, "repo"))
 	require.NoError(err)
-	m, err := backup.Create(context.Background(), r, fakeContentApp{}, backup.CreateOptions{
+	m, err := backup.Create(t.Context(), r, fakeContentApp{}, backup.CreateOptions{
 		DBPath:        dbPath,
 		ContentDir:    contentDir,
 		ContentSource: src,
@@ -173,12 +174,12 @@ func TestGenericAppRoundTripContentSource(t *testing.T) {
 	_, err = os.Stat(contentDir)
 	assert.True(os.IsNotExist(err), "ContentDir must never be created when ContentSource is set")
 
-	vres, err := backup.Verify(context.Background(), r, fakeContentApp{}, backup.VerifyOptions{})
+	vres, err := backup.Verify(t.Context(), r, fakeContentApp{}, backup.VerifyOptions{})
 	require.NoError(err)
 	assert.Empty(vres.Problems)
 
 	target := filepath.Join(base, "restored")
-	res, err := backup.Restore(context.Background(), r, fakeContentApp{}, backup.RestoreOptions{
+	res, err := backup.Restore(t.Context(), r, fakeContentApp{}, backup.RestoreOptions{
 		TargetDir: target,
 	})
 	require.NoError(err) // Restore's stats proof ran against fakeContentApp

@@ -1,7 +1,6 @@
 package backup
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -35,7 +34,7 @@ func TestCreateEmitsProgressEventsInOrderWithFinalValues(t *testing.T) {
 	opts := createOpts(dbPath, attachmentsDir, dataDir, t.TempDir())
 	opts.Progress = func(ev ProgressEvent) { events = append(events, ev) }
 
-	m, err := Create(context.Background(), r, newTestApp(), opts)
+	m, err := Create(t.Context(), r, newTestApp(), opts)
 	require.NoError(err)
 	require.NotEmpty(events)
 
@@ -106,7 +105,7 @@ func TestCreateEmitsProgressEventsInOrderWithFinalValues(t *testing.T) {
 // bar would only be noise.
 func TestCreateNoChangeSkipsPackStage(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	cacheDir := t.TempDir()
@@ -132,7 +131,7 @@ func TestCreateProgressNilCallbackIsSilent(t *testing.T) {
 	opts := createOpts(dbPath, attachmentsDir, dataDir, t.TempDir())
 	require.Nil(opts.Progress)
 
-	_, err := Create(context.Background(), r, newTestApp(), opts)
+	_, err := Create(t.Context(), r, newTestApp(), opts)
 	require.NoError(err)
 }
 
@@ -143,7 +142,7 @@ func TestVerifyEmitsProgressEventsWithFinalValues(t *testing.T) {
 	r, _ := buildVerifyFixture(t)
 
 	var events []ProgressEvent
-	res, err := Verify(context.Background(), r, newTestApp(), VerifyOptions{
+	res, err := Verify(t.Context(), r, newTestApp(), VerifyOptions{
 		Progress: func(ev ProgressEvent) { events = append(events, ev) },
 	})
 	require.NoError(err)
@@ -187,7 +186,7 @@ func TestVerifyProgressNilCallbackIsSilent(t *testing.T) {
 	require := require.New(t)
 	r, _ := buildVerifyFixture(t)
 
-	res, err := Verify(context.Background(), r, newTestApp(), VerifyOptions{})
+	res, err := Verify(t.Context(), r, newTestApp(), VerifyOptions{})
 	require.NoError(err)
 	require.Empty(res.Problems)
 }

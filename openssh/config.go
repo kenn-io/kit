@@ -6,7 +6,6 @@ package openssh
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os/exec"
 	"sort"
 	"strconv"
@@ -168,7 +167,7 @@ func runOutput(
 	argv []string,
 ) ([]byte, []byte, int, error) {
 	if len(argv) == 0 {
-		return nil, nil, -1, fmt.Errorf("empty command")
+		return nil, nil, -1, errors.New("empty command")
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	var stdout, stderr strings.Builder
@@ -181,8 +180,8 @@ func runOutput(
 			return []byte(stdout.String()), []byte(stderr.String()), -1,
 				errors.Join(contextErr, err)
 		}
-		var exitErr *exec.ExitError
-		if !errors.As(err, &exitErr) {
+		exitErr, ok := errors.AsType[*exec.ExitError](err)
+		if !ok {
 			return []byte(stdout.String()), []byte(stderr.String()), -1, err
 		}
 		exitCode = exitErr.ExitCode()

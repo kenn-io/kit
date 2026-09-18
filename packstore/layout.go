@@ -1,6 +1,7 @@
 package packstore
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -34,7 +35,7 @@ type Layout struct {
 // NewLayout validates root and its staging policy.
 func NewLayout(root string, opts LayoutOptions) (Layout, error) {
 	if root == "" {
-		return Layout{}, fmt.Errorf("packstore: storage root is empty")
+		return Layout{}, errors.New("packstore: storage root is empty")
 	}
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
@@ -44,7 +45,7 @@ func NewLayout(root string, opts LayoutOptions) (Layout, error) {
 	switch opts.Staging {
 	case StagingSameDirectory:
 		if opts.StagingDir != "" {
-			return Layout{}, fmt.Errorf("packstore: same-directory staging does not accept a staging directory")
+			return Layout{}, errors.New("packstore: same-directory staging does not accept a staging directory")
 		}
 	case StagingStoreDirectory:
 		if !validStagingDir(opts.StagingDir) {

@@ -41,16 +41,14 @@ func (b *Backend) PublishLoose(
 		return packstore.LooseReceipt{}, err
 	}
 	if src == nil {
-		return packstore.LooseReceipt{}, fmt.Errorf("s3store: nil loose publication source")
+		return packstore.LooseReceipt{}, errors.New("s3store: nil loose publication source")
 	}
 	opts, err = normalizeLoosePublishOptions(opts)
 	if err != nil {
 		return packstore.LooseReceipt{}, err
 	}
 	if opts.Compression.Enabled {
-		return packstore.LooseReceipt{}, fmt.Errorf(
-			"s3store: compressed loose publication is not supported",
-		)
+		return packstore.LooseReceipt{}, errors.New("s3store: compressed loose publication is not supported")
 	}
 	key := b.keys.loose(hash, packstore.LooseEncodingRaw)
 	result, err := b.multipartPublish(ctx, key, src, multipartPublishOptions{
@@ -190,7 +188,7 @@ func (b *Backend) PublishPack(
 		return packstore.PackReceipt{}, fmt.Errorf("s3store: invalid pack id %q", packID)
 	}
 	if src == nil {
-		return packstore.PackReceipt{}, fmt.Errorf("s3store: nil pack publication source")
+		return packstore.PackReceipt{}, errors.New("s3store: nil pack publication source")
 	}
 	if opts.Durability == 0 {
 		opts.Durability = packstore.DurablePublication
@@ -253,7 +251,7 @@ func (b *Backend) PublishPack(
 	if digest != stagedDigest || result.digest != stagedDigest {
 		return packstore.PackReceipt{}, errors.Join(
 			packstore.ErrPhysicalCorrupt,
-			fmt.Errorf("s3store: canonical pack differs from published bytes"),
+			errors.New("s3store: canonical pack differs from published bytes"),
 		)
 	}
 	generation, err := newGeneration()
@@ -312,8 +310,8 @@ func stagePackPublication(
 	if size > maxBytes {
 		return "", 0, digest, &packstore.LimitError{
 			Dimension: packstore.LimitPackContainerBytes,
-			Actual:    uint64(size),     //nolint:gosec // size is non-negative
-			Limit:     uint64(maxBytes), //nolint:gosec // validated positive
+			Actual:    uint64(size),
+			Limit:     uint64(maxBytes),
 		}
 	}
 	if sizeKnown && size != exactSize {
@@ -443,8 +441,8 @@ func (b *Backend) multipartPublish(
 		if opts.maxBytes > 0 && result.size > opts.maxBytes {
 			return publicationResult{}, &packstore.LimitError{
 				Dimension: packstore.LimitPackContainerBytes,
-				Actual:    uint64(result.size),   //nolint:gosec // non-negative
-				Limit:     uint64(opts.maxBytes), //nolint:gosec // validated positive
+				Actual:    uint64(result.size),
+				Limit:     uint64(opts.maxBytes),
 			}
 		}
 		if opts.sizeKnown && result.size > opts.exactSize {
@@ -549,8 +547,8 @@ func effectivePackPublicationLimit(
 	if sizeKnown && expectedSize > effective {
 		return 0, &packstore.LimitError{
 			Dimension: packstore.LimitPackContainerBytes,
-			Actual:    uint64(expectedSize), //nolint:gosec // validated non-negative
-			Limit:     uint64(effective),    //nolint:gosec // validated positive
+			Actual:    uint64(expectedSize),
+			Limit:     uint64(effective),
 		}
 	}
 	return effective, nil
@@ -608,7 +606,7 @@ func (b *Backend) verifyRawObject(
 	if size != expectedSize || hex.EncodeToString(hasher.Sum(nil)) != hash.String() {
 		return errors.Join(
 			packstore.ErrPhysicalCorrupt,
-			fmt.Errorf("s3store: loose read-back does not match canonical identity"),
+			errors.New("s3store: loose read-back does not match canonical identity"),
 		)
 	}
 	return nil
@@ -622,8 +620,8 @@ func (b *Backend) verifyPackObject(
 	if expectedSize > b.limits.PackBytes {
 		return 0, digest, &packstore.LimitError{
 			Dimension: packstore.LimitPackContainerBytes,
-			Actual:    uint64(expectedSize),       //nolint:gosec // checked non-negative below
-			Limit:     uint64(b.limits.PackBytes), //nolint:gosec // validated positive
+			Actual:    uint64(expectedSize),
+			Limit:     uint64(b.limits.PackBytes),
 		}
 	}
 	output, err := b.client.GetObject(ctx, &s3.GetObjectInput{
@@ -678,8 +676,8 @@ func (b *Backend) verifyPackObject(
 
 func (b *Backend) validatePackFile(ctx context.Context, file *os.File, packID string) error {
 	limits := packvalidate.BlobLimits{
-		RawBytes:    uint64(b.limits.BlobBytes), //nolint:gosec // validated non-negative
-		StoredBytes: uint64(b.limits.BlobBytes), //nolint:gosec // validated non-negative
+		RawBytes:    uint64(b.limits.BlobBytes),
+		StoredBytes: uint64(b.limits.BlobBytes),
 	}
 	if err := packvalidate.File(ctx, file, packID, b.packReaderOptions(), limits); err != nil {
 		if mapped, ok := mapPackLimit(err); ok {

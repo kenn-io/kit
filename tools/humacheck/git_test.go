@@ -55,7 +55,7 @@ func TestIndexFSReadsStagedContent(t *testing.T) {
 	require.NoError(f.Close())
 
 	_, err = index.Open("missing.txt")
-	assert.ErrorIs(err, fs.ErrNotExist)
+	require.ErrorIs(err, fs.ErrNotExist)
 	_, err = index.Open("../escape")
 	assert.ErrorIs(err, fs.ErrInvalid)
 }

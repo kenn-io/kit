@@ -4,19 +4,19 @@ package packstore
 
 import (
 	"bytes"
-	"context"
 	"os"
+	"slices"
 	"testing"
 	"unsafe"
 
-	Assert "github.com/stretchr/testify/assert"
-	Require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/windows"
 )
 
 func TestStoreOpenWindowsTemporaryRejectsWritersAndPreservesReplacement(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	content := bytes.Repeat([]byte("verified seekable Windows content "), 1024)
 	layout := layoutForStoreTest(t)
 	hash := hashForTest(content)
@@ -25,7 +25,7 @@ func TestStoreOpenWindowsTemporaryRejectsWritersAndPreservesReplacement(t *testi
 		hash: {Member: true},
 	}}, layout)
 
-	reader, _, err := store.Open(context.Background(), hash)
+	reader, _, err := store.Open(t.Context(), hash)
 	require.NoError(err)
 	named, ok := reader.(interface{ Name() string })
 	require.True(ok)
@@ -84,33 +84,28 @@ func assertWindowsSeekableTempDACL(t *testing.T, handle windows.Handle) {
 		windows.SE_FILE_OBJECT,
 		windows.DACL_SECURITY_INFORMATION,
 	)
-	Require.NoError(t, err)
+	require.NoError(t, err)
 	control, _, err := descriptor.Control()
-	Require.NoError(t, err)
-	Assert.NotZero(t, control&windows.SE_DACL_PROTECTED)
+	require.NoError(t, err)
+	assert.NotZero(t, control&windows.SE_DACL_PROTECTED)
 	dacl, _, err := descriptor.DACL()
-	Require.NoError(t, err)
-	Require.NotNil(t, dacl)
+	require.NoError(t, err)
+	require.NotNil(t, dacl)
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
-	Require.NoError(t, err)
+	require.NoError(t, err)
 	system, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
-	Require.NoError(t, err)
+	require.NoError(t, err)
 	admins, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
-	Require.NoError(t, err)
+	require.NoError(t, err)
 	allowed := []*windows.SID{user.User.Sid, system, admins}
-	Require.Positive(t, dacl.AceCount)
-	for index := uint16(0); index < dacl.AceCount; index++ {
+	require.Positive(t, dacl.AceCount)
+	for index := range dacl.AceCount {
 		var ace *windows.ACCESS_ALLOWED_ACE
-		Require.NoError(t, windows.GetAce(dacl, uint32(index), &ace))
-		Require.Equal(t, uint8(windows.ACCESS_ALLOWED_ACE_TYPE), ace.Header.AceType)
+		require.NoError(t, windows.GetAce(dacl, uint32(index), &ace))
+		require.Equal(t, uint8(windows.ACCESS_ALLOWED_ACE_TYPE), ace.Header.AceType)
 		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
-		Assert.Condition(t, func() bool {
-			for _, trusted := range allowed {
-				if sid.Equals(trusted) {
-					return true
-				}
-			}
-			return false
+		assert.Condition(t, func() bool {
+			return slices.ContainsFunc(allowed, sid.Equals)
 		}, "temporary DACL grants access only to trusted principals")
 	}
 }

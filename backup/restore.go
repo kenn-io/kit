@@ -277,7 +277,7 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *R
 		DBPath:     filepath.Join(opts.TargetDir, app.DBFileName()),
 	}
 	if pm != nil {
-		res.DBBytes = int64(pm.PageCount * uint64(pm.PageSize)) //nolint:gosec // geometry checked against the manifest
+		res.DBBytes = int64(pm.PageCount * uint64(pm.PageSize))
 	}
 	// The database stays in its staging temp until attachments and extras
 	// have fully materialized: every one of those reads re-derives its
@@ -287,7 +287,7 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *R
 	var tmpRel string
 	if m.Metadata == nil {
 		if pm == nil {
-			return nil, fmt.Errorf("backup: snapshot has no page map")
+			return nil, errors.New("backup: snapshot has no page map")
 		}
 		tmpRel, err = st.restoreDB(ctx, app.DBFileName(), pm, hm)
 	} else {
@@ -1080,7 +1080,7 @@ func (s *restoreState) restoreDB(ctx context.Context, dbRel string, pm *PageMap,
 			_ = s.root.Remove(tmpRel)
 		}
 	}()
-	size := int64(pm.PageCount * uint64(pm.PageSize)) //nolint:gosec // geometry checked against the manifest
+	size := int64(pm.PageCount * uint64(pm.PageSize))
 	if err := f.Truncate(size); err != nil {
 		return "", fmt.Errorf("backup: sizing restored database: %w", err)
 	}
@@ -1104,7 +1104,7 @@ func (s *restoreState) restoreDB(ctx context.Context, dbRel string, pm *PageMap,
 
 	s.done, s.doneByte = 0, 0
 	s.progress.emit(ProgressEvent{
-		Stage: ProgressStageRestoreDB, Total: int64(pm.PageCount), BytesTotal: size, //nolint:gosec // page counts fit int64
+		Stage: ProgressStageRestoreDB, Total: int64(pm.PageCount), BytesTotal: size,
 	})
 	err = s.runPackGroups(ctx, order, func(packID string) {
 		s.restorePackPages(f, packID, groups[packID], pm.PageSize, hm)
@@ -1120,7 +1120,7 @@ func (s *restoreState) restoreDB(ctx context.Context, dbRel string, pm *PageMap,
 	}
 	materialized = true
 	s.progress.emit(ProgressEvent{
-		Stage: ProgressStageRestoreDB, Done: int64(pm.PageCount), Total: int64(pm.PageCount), //nolint:gosec // page counts fit int64
+		Stage: ProgressStageRestoreDB, Done: int64(pm.PageCount), Total: int64(pm.PageCount),
 		BytesDone: size, BytesTotal: size, Final: true,
 	})
 	return tmpRel, nil
@@ -1468,7 +1468,7 @@ func openRestoreScratchCandidate(
 		break
 	}
 	if !created {
-		return closeOnError(fmt.Errorf("backup: exhausted publication scratch name attempts"))
+		return closeOnError(errors.New("backup: exhausted publication scratch name attempts"))
 	}
 	operationPath := filepath.Join(scratchPath, operationRel)
 	cleanupOperation := func(operationRoot *os.Root, cause error) (*restoreScratch, error) {
@@ -1499,7 +1499,7 @@ func openRestoreScratchCandidate(
 	pathOperation, err := os.Stat(operationPath)
 	if err != nil || !os.SameFile(heldOperation, pathOperation) {
 		return cleanupOperation(operationRoot, errors.Join(
-			fmt.Errorf("backup: private publication scratch changed while opening it"), err))
+			errors.New("backup: private publication scratch changed while opening it"), err))
 	}
 	return &restoreScratch{
 		base: baseRoot, root: operationRoot, path: operationPath, relative: operationRel,
@@ -1539,7 +1539,7 @@ func (s *restoreScratch) mkdir(prefix string) (relative string, absolute string,
 		}
 		return name, filepath.Join(s.path, name), nil
 	}
-	return "", "", fmt.Errorf("backup: exhausted private scratch name attempts")
+	return "", "", errors.New("backup: exhausted private scratch name attempts")
 }
 
 func (s *restoreScratch) close() error {
@@ -1669,16 +1669,16 @@ func (s *restoreState) writeRun(f *os.File, raw []byte, id pack.BlobID, run Page
 			return fmt.Errorf("backup: restored page %d does not match the snapshot's page hash map", p)
 		}
 	}
-	if _, err := f.WriteAt(segment, int64(run.StartPage)*int64(pageSize)); err != nil { //nolint:gosec // page*pageSize fits int64
+	if _, err := f.WriteAt(segment, int64(run.StartPage)*int64(pageSize)); err != nil {
 		return fmt.Errorf("backup: writing pages %d..%d: %w", run.StartPage, run.StartPage+uint64(run.PageCount)-1, err)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.done += int64(run.PageCount)
-	s.doneByte += int64(length) //nolint:gosec // run lengths fit int64
+	s.doneByte += int64(length)
 	s.progress.emit(ProgressEvent{
-		Stage: ProgressStageRestoreDB, Done: s.done, Total: int64(hm.PageCount), //nolint:gosec // page counts fit int64
-		BytesDone: s.doneByte, BytesTotal: int64(hm.PageCount) * int64(pageSize), //nolint:gosec // page counts fit int64
+		Stage: ProgressStageRestoreDB, Done: s.done, Total: int64(hm.PageCount),
+		BytesDone: s.doneByte, BytesTotal: int64(hm.PageCount) * int64(pageSize),
 	})
 	return nil
 }
@@ -1862,7 +1862,7 @@ func (s *restoreState) restorePackAttachments(
 			s.fail(fmt.Errorf("backup: attachment %s index entry disagrees with pack %s footer", ref.Hash, packID))
 			return
 		}
-		if int64(entry.RawLen) != ref.Size { //nolint:gosec // format-v1 raw lengths fit int64
+		if int64(entry.RawLen) != ref.Size {
 			s.fail(fmt.Errorf(
 				"backup: attachment %s is %d bytes but its list records %d", ref.Hash, entry.RawLen, ref.Size))
 			return
@@ -2234,7 +2234,7 @@ func (s *restoreState) stageRootReaderWithOptions(
 	tempPrefix string, maxBytes uint64,
 ) (string, error) {
 	if ctx == nil {
-		return "", fmt.Errorf("backup: nil restore context")
+		return "", errors.New("backup: nil restore context")
 	}
 	if expected < 0 || (maxBytes > 0 && uint64(expected) > maxBytes) {
 		return "", fmt.Errorf("backup: restored file %s has invalid recorded size %d", rel, expected)

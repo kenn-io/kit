@@ -29,7 +29,7 @@ func openFilesystemRoot(layout Layout) (*os.Root, error) {
 	current, currentErr := os.Stat(resolved)
 	if heldErr != nil || currentErr != nil || !os.SameFile(held, current) {
 		return nil, errors.Join(
-			fmt.Errorf("packstore: filesystem root changed while opening it"),
+			errors.New("packstore: filesystem root changed while opening it"),
 			heldErr, currentErr, root.Close(),
 		)
 	}

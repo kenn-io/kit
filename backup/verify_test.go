@@ -58,7 +58,7 @@ func buildVerifyFixture(t *testing.T) (*Repo, *Manifest) {
 	t.Helper()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
-	m, err := Create(context.Background(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
+	m, err := Create(t.Context(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
 	require.NoError(t, err)
 	return r, m
 }
@@ -69,7 +69,7 @@ func TestVerifyCleanRepo(t *testing.T) {
 	r, m := buildVerifyFixture(t)
 
 	for _, quick := range []bool{true, false} {
-		res, err := Verify(context.Background(), r, newTestApp(), VerifyOptions{Quick: quick})
+		res, err := Verify(t.Context(), r, newTestApp(), VerifyOptions{Quick: quick})
 		require.NoError(err)
 		assert.Empty(res.Problems)
 		assert.Equal([]string{m.SnapshotID}, res.Snapshots)
@@ -81,14 +81,14 @@ func TestVerifySelection(t *testing.T) {
 	require := require.New(t)
 	r, m := buildVerifyFixture(t)
 
-	res, err := Verify(context.Background(), r, newTestApp(), VerifyOptions{SnapshotID: m.SnapshotID, Quick: true})
+	res, err := Verify(t.Context(), r, newTestApp(), VerifyOptions{SnapshotID: m.SnapshotID, Quick: true})
 	require.NoError(err)
 	require.Equal([]string{m.SnapshotID}, res.Snapshots)
 
-	_, err = Verify(context.Background(), r, newTestApp(), VerifyOptions{SnapshotID: "20990101T000000Z-deadbeef"})
+	_, err = Verify(t.Context(), r, newTestApp(), VerifyOptions{SnapshotID: "20990101T000000Z-deadbeef"})
 	require.Error(err)
 
-	res, err = Verify(context.Background(), r, newTestApp(), VerifyOptions{All: true, Quick: true})
+	res, err = Verify(t.Context(), r, newTestApp(), VerifyOptions{All: true, Quick: true})
 	require.NoError(err)
 	require.Equal([]string{m.SnapshotID}, res.Snapshots)
 }
@@ -106,7 +106,7 @@ func TestVerifyNamesCorruptBlob(t *testing.T) {
 	data[len(data)/3] ^= 0x01
 	require.NoError(os.WriteFile(path, data, 0o600))
 
-	res, err := Verify(context.Background(), r, newTestApp(), VerifyOptions{})
+	res, err := Verify(t.Context(), r, newTestApp(), VerifyOptions{})
 	require.NoError(err)
 	require.NotEmpty(res.Problems)
 	found := false
@@ -129,7 +129,7 @@ func TestVerifyJobsSerialMatchesParallel(t *testing.T) {
 	r, m := buildVerifyFixture(t)
 
 	run := func(jobs int) *VerifyResult {
-		res, err := Verify(context.Background(), r, newTestApp(), VerifyOptions{Jobs: jobs})
+		res, err := Verify(t.Context(), r, newTestApp(), VerifyOptions{Jobs: jobs})
 		require.NoError(err)
 		return res
 	}
@@ -190,7 +190,7 @@ func TestVerifyFlagsPageMapGeometryMismatch(t *testing.T) {
 func TestVerifyAllProgressIsMonotonic(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, writer := seedBackupFixture(t)
 	cacheDir := t.TempDir()
@@ -241,7 +241,7 @@ func TestVerifyQuickCatchesMissingPack(t *testing.T) {
 	packID := m.NewPacks[0]
 	require.NoError(os.Remove(r.Path("packs", packID[:2], packID+testPackExt)))
 
-	res, err := Verify(context.Background(), r, newTestApp(), VerifyOptions{Quick: true})
+	res, err := Verify(t.Context(), r, newTestApp(), VerifyOptions{Quick: true})
 	require.NoError(err)
 	require.NotEmpty(res.Problems)
 }
@@ -254,13 +254,13 @@ func TestVerifyRefusesUnderExclusiveLock(t *testing.T) {
 	require.NoError(err)
 	defer func() { require.NoError(l.Release()) }()
 
-	_, err = Verify(context.Background(), r, newTestApp(), VerifyOptions{Quick: true})
+	_, err = Verify(t.Context(), r, newTestApp(), VerifyOptions{Quick: true})
 	require.ErrorIs(err, ErrRepoLocked)
 }
 
 func TestVerifyEmptyRepo(t *testing.T) {
 	r := initTestRepo(t)
-	_, err := Verify(context.Background(), r, newTestApp(), VerifyOptions{})
+	_, err := Verify(t.Context(), r, newTestApp(), VerifyOptions{})
 	require.Error(t, err)
 }
 
@@ -268,22 +268,24 @@ func TestVerifyEmptyRepo(t *testing.T) {
 // so the repository holds at least the given number of distinct packs.
 func buildMultiPackRepo(t *testing.T, minPacks int) *Repo {
 	t.Helper()
+	require := require.New(t)
+	t.Helper()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, db := seedBackupFixture(t)
 	cacheDir := t.TempDir()
-	_, err := Create(context.Background(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
-	require.NoError(t, err)
+	_, err := Create(t.Context(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
+	require.NoError(err)
 	for i := 0; len(distinctPackIDs(t, r)) < minPacks; i++ {
-		require.Less(t, i, 20, "expected distinct packs to accumulate")
+		require.Less(i, 20, "expected distinct packs to accumulate")
 		content := []byte(strings.Repeat("x", i+1) + "-attachment")
 		ref := writeLooseAttachment(t, attachmentsDir, content)
-		_, err = db.Exec(
+		_, err = db.ExecContext(t.Context(),
 			`INSERT INTO blobs (content_hash, storage_path, size, preview_hash, preview_path)
 			 VALUES (?, ?, ?, '', '')`,
 			ref.Hash, ref.Hash[:2]+"/"+ref.Hash, ref.Size)
-		require.NoError(t, err)
-		_, err = Create(context.Background(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
-		require.NoError(t, err)
+		require.NoError(err)
+		_, err = Create(t.Context(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
+		require.NoError(err)
 	}
 	return r
 }
@@ -339,13 +341,13 @@ func TestVerifyMemoizesSharedContentReads(t *testing.T) {
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	cacheDir := t.TempDir()
 
-	m1, err := Create(context.Background(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
+	m1, err := Create(t.Context(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
 	require.NoError(err)
 	// No source changes: snapshot 2 shares every content blob with snapshot 1.
-	m2, err := Create(context.Background(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
+	m2, err := Create(t.Context(), r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, cacheDir))
 	require.NoError(err)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	st1 := newTestVerifyState(t, r, false)
 	st1.verifySnapshot(m1)
 	require.NoError(st1.drainContentReads(ctx))
@@ -377,7 +379,7 @@ func TestVerifyFlagsForgedAttachmentListSize(t *testing.T) {
 	require.NoError(err)
 	require.NotEmpty(refs)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	st := newTestVerifyState(t, r, false)
 	st.verifySnapshot(m)
 	require.NoError(st.drainContentReads(ctx))
@@ -428,7 +430,7 @@ func TestVerifyFlagsBadExtrasTree(t *testing.T) {
 	st := newTestVerifyState(t, r, false)
 	m := &Manifest{SnapshotID: "test-snapshot", Extras: ManifestExtras{Tree: treeID.String()}}
 	st.checkExtrasTree(m)
-	require.NoError(st.drainContentReads(context.Background()))
+	require.NoError(st.drainContentReads(t.Context()))
 	st.checkListedSizes()
 
 	var details []string
@@ -454,7 +456,7 @@ func TestVerifyFlagsOverrunningPageRun(t *testing.T) {
 	require := require.New(t)
 	r, m := buildVerifyFixture(t)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	st := newTestVerifyState(t, r, false)
 	st.verifySnapshot(m)
 	require.NoError(st.drainContentReads(ctx))
@@ -494,7 +496,7 @@ func TestVerifyDrainSurfacesLateCancellation(t *testing.T) {
 	require.NotEmpty(pm.Blobs)
 	require.Empty(st.result.Problems)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	st.progress = newProgressEmitter(func(ev ProgressEvent) {
 		if ev.Done > 0 {
@@ -516,7 +518,7 @@ func TestVerifyDrainSurfacesLateCancellation(t *testing.T) {
 func TestVerifyFlagsPageHashMapMismatch(t *testing.T) {
 	require := require.New(t)
 	r, m := buildVerifyFixture(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	st := newTestVerifyState(t, r, false)
 	hm := st.checkHashMapChain(m)
@@ -585,7 +587,7 @@ func TestVerifyDetectsHashMapGeometryMismatch(t *testing.T) {
 	require.NoError(os.Remove(path))
 	require.NoError(os.WriteFile(r.Path(snapshotsDirName, forgedID+manifestExt), out, 0o600))
 
-	res, err := Verify(context.Background(), r, newTestApp(), VerifyOptions{})
+	res, err := Verify(t.Context(), r, newTestApp(), VerifyOptions{})
 	require.NoError(err)
 	found := false
 	for _, p := range res.Problems {

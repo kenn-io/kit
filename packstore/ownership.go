@@ -15,8 +15,10 @@ import (
 	"go.kenn.io/kit/safefileio"
 )
 
-const ownershipMarkerName = ".packstore-owner.json"
-const maxOwnershipMarkerBytes = 4096
+const (
+	ownershipMarkerName     = ".packstore-owner.json"
+	maxOwnershipMarkerBytes = 4096
+)
 
 // Ownership is the fencing term for one application-owned store namespace.
 type Ownership struct {
@@ -32,18 +34,18 @@ func (o Ownership) Validate() error {
 		return fmt.Errorf("packstore: unsupported ownership format %d", o.Format)
 	}
 	if o.Vault == "" {
-		return fmt.Errorf("packstore: empty ownership vault")
+		return errors.New("packstore: empty ownership vault")
 	}
 	if o.Store == "" {
-		return fmt.Errorf("packstore: empty ownership store")
+		return errors.New("packstore: empty ownership store")
 	}
 	if o.Epoch == "" {
-		return fmt.Errorf("packstore: empty ownership epoch")
+		return errors.New("packstore: empty ownership epoch")
 	}
 	if !utf8.ValidString(o.Vault) ||
 		!utf8.ValidString(string(o.Store)) ||
 		!utf8.ValidString(o.Epoch) {
-		return fmt.Errorf("packstore: ownership identity is not valid UTF-8")
+		return errors.New("packstore: ownership identity is not valid UTF-8")
 	}
 	return nil
 }
@@ -91,8 +93,8 @@ type ownershipState struct {
 func (s *ownershipState) set(expected Ownership) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	copy := expected
-	s.expected = &copy
+	cloned := expected
+	s.expected = &cloned
 }
 
 func (s *ownershipState) get() *Ownership {
@@ -101,8 +103,8 @@ func (s *ownershipState) get() *Ownership {
 	if s.expected == nil {
 		return nil
 	}
-	copy := *s.expected
-	return &copy
+	cloned := *s.expected
+	return &cloned
 }
 
 // MarshalOwnership returns the canonical ownership-marker representation.
@@ -135,14 +137,14 @@ func ParseOwnership(data []byte) (Ownership, error) {
 		return Ownership{}, fmt.Errorf("packstore: decode ownership marker: %w", err)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return Ownership{}, fmt.Errorf("packstore: ownership marker contains trailing JSON")
+		return Ownership{}, errors.New("packstore: ownership marker contains trailing JSON")
 	}
 	canonical, err := MarshalOwnership(value)
 	if err != nil {
 		return Ownership{}, err
 	}
 	if !bytes.Equal(data, canonical) {
-		return Ownership{}, fmt.Errorf("packstore: ownership marker is not canonical")
+		return Ownership{}, errors.New("packstore: ownership marker is not canonical")
 	}
 	return value, nil
 }

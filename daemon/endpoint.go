@@ -3,6 +3,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -60,7 +61,7 @@ func ParseEndpoint(raw string, opts ParseEndpointOptions) (Endpoint, error) {
 		raw = opts.DefaultTCPAddress
 	}
 	if raw == "" {
-		return Endpoint{}, fmt.Errorf("empty daemon address")
+		return Endpoint{}, errors.New("empty daemon address")
 	}
 	if after, ok := strings.CutPrefix(raw, "http://"); ok {
 		raw = after
@@ -88,13 +89,13 @@ func parseTCPEndpoint(addr string, policy TCPAddressPolicy) (Endpoint, error) {
 
 func parseUnixEndpoint(path string) (Endpoint, error) {
 	if path == "" {
-		return Endpoint{}, fmt.Errorf("empty unix socket path")
+		return Endpoint{}, errors.New("empty unix socket path")
 	}
 	if !filepath.IsAbs(path) {
 		return Endpoint{}, fmt.Errorf("unix socket path %q must be absolute", path)
 	}
 	if strings.ContainsRune(path, 0) {
-		return Endpoint{}, fmt.Errorf("unix socket path contains null byte")
+		return Endpoint{}, errors.New("unix socket path contains null byte")
 	}
 	if len(path) >= MaxUnixPathLen {
 		return Endpoint{}, fmt.Errorf(
@@ -187,15 +188,22 @@ func (e Endpoint) Port() int {
 	return port
 }
 
-// Listen binds a listener for the endpoint.
+// Listen binds a listener for the endpoint without a setup deadline. Prefer
+// ListenContext when a context is available.
 func (e Endpoint) Listen() (net.Listener, error) {
+	return e.ListenContext(context.Background())
+}
+
+// ListenContext binds a listener for the endpoint. The context bounds
+// listener setup only; it does not close the returned listener.
+func (e Endpoint) ListenContext(ctx context.Context) (net.Listener, error) {
 	if e.Network == "" {
-		return nil, fmt.Errorf("empty daemon endpoint network")
+		return nil, errors.New("empty daemon endpoint network")
 	}
 	if e.Address == "" {
-		return nil, fmt.Errorf("empty daemon endpoint address")
+		return nil, errors.New("empty daemon endpoint address")
 	}
-	return net.Listen(e.Network, e.Address)
+	return (&net.ListenConfig{}).Listen(ctx, e.Network, e.Address)
 }
 
 // HTTPClientOptions configures HTTPClient.

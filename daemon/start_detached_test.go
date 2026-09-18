@@ -1,7 +1,6 @@
 package daemon_test
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -27,7 +26,7 @@ func TestStartDetachedRunsChild(t *testing.T) {
 	require.NoError(t, err)
 	marker := filepath.Join(t.TempDir(), "marker")
 
-	err = daemon.StartDetached(context.Background(), daemon.StartDetachedOptions{
+	err = daemon.StartDetached(t.Context(), daemon.StartDetachedOptions{
 		Executable: exe,
 		Args:       []string{"-test.run", "^TestStartDetachedHelper$"},
 		Env:        append(os.Environ(), "KIT_DAEMON_TEST_MARKER="+marker),
@@ -40,6 +39,6 @@ func TestStartDetachedRunsChild(t *testing.T) {
 			return
 		}
 		require.True(t, time.Now().Before(deadline), "detached child never wrote marker file")
-		time.Sleep(25 * time.Millisecond)
+		time.Sleep(25 * time.Millisecond) //nolint:kennlint // polls a marker written by a detached child process
 	}
 }

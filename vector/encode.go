@@ -107,7 +107,7 @@ func encodeBatched(
 	ctx context.Context, enc EncodeFunc, chunks []Chunk, o batchOptions,
 ) ([]Vector, error) {
 	if enc == nil {
-		return nil, fmt.Errorf("encode func is nil")
+		return nil, errors.New("encode func is nil")
 	}
 	if err := o.validate(); err != nil {
 		return nil, err

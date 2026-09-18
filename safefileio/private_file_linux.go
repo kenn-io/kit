@@ -19,7 +19,7 @@ func validateLinuxPrivateAccess(file *os.File) error {
 	if err := unix.Fstatfs(int(file.Fd()), &status); err != nil {
 		return fmt.Errorf("inspect file filesystem: %w", err)
 	}
-	if linuxFilesystemHasExternalAccessPolicy(int64(status.Type)) {
+	if linuxFilesystemHasExternalAccessPolicy(int64(status.Type)) { //nolint:unconvert // Statfs_t.Type is int32 on 32-bit Linux targets.
 		return errors.New(
 			"safefileio: private current-user file validation is unsupported " +
 				"on filesystems with external access policy",

@@ -14,6 +14,7 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/ebitengine/purego v0.10.0
 	github.com/gofrs/flock v0.13.0
+	github.com/golangci/plugin-module-register v0.1.2
 	github.com/klauspost/compress v1.18.6
 	github.com/leanovate/gopter v0.2.11
 	github.com/mattn/go-runewidth v0.0.24

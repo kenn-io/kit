@@ -50,7 +50,7 @@ func NewFilesystemBackend(
 	opts FilesystemBackendOptions,
 ) (*FilesystemBackend, error) {
 	if layout.Root() == "" {
-		return nil, fmt.Errorf("packstore: invalid empty layout")
+		return nil, errors.New("packstore: invalid empty layout")
 	}
 	if opts.ExpectedOwnership != nil {
 		if err := opts.ExpectedOwnership.Validate(); err != nil {
@@ -107,7 +107,7 @@ func (b *FilesystemBackend) Close() error { return b.reader.Close() }
 // Ownership reads and strictly validates the live canonical marker.
 func (b *FilesystemBackend) Ownership(ctx context.Context) (Ownership, error) {
 	if ctx == nil {
-		return Ownership{}, fmt.Errorf("packstore: nil context")
+		return Ownership{}, errors.New("packstore: nil context")
 	}
 	if err := ctx.Err(); err != nil {
 		return Ownership{}, err
@@ -130,7 +130,7 @@ func (b *FilesystemBackend) ReplaceOwnership(
 	expected *Ownership,
 ) error {
 	if ctx == nil {
-		return fmt.Errorf("packstore: nil context")
+		return errors.New("packstore: nil context")
 	}
 	if expected == nil {
 		if err := os.MkdirAll(b.layout.Root(), 0o700); err != nil {
@@ -156,7 +156,7 @@ func (b *FilesystemBackend) requireOwnershipRoot(
 	expected := b.ownership.get()
 	if expected == nil {
 		return Ownership{}, &OwnershipMismatchError{
-			Err: fmt.Errorf("packstore: filesystem backend is not attached"),
+			Err: errors.New("packstore: filesystem backend is not attached"),
 		}
 	}
 	if err := ctx.Err(); err != nil {
@@ -302,7 +302,7 @@ func (b *FilesystemBackend) PublishLoose(
 	opts PublishOptions,
 ) (receipt LooseReceipt, resultErr error) {
 	if src == nil {
-		return LooseReceipt{}, fmt.Errorf("packstore: nil loose publication source")
+		return LooseReceipt{}, errors.New("packstore: nil loose publication source")
 	}
 	if err := hash.Validate(); err != nil {
 		return LooseReceipt{}, err
@@ -350,7 +350,7 @@ func (b *FilesystemBackend) RepairLoose(
 	opts PublishOptions,
 ) (receipt LooseReceipt, resultErr error) {
 	if src == nil {
-		return LooseReceipt{}, fmt.Errorf("packstore: nil loose repair source")
+		return LooseReceipt{}, errors.New("packstore: nil loose repair source")
 	}
 	if err := hash.Validate(); err != nil {
 		return LooseReceipt{}, err
@@ -434,7 +434,7 @@ func (b *FilesystemBackend) PublishPack(
 		return PackReceipt{}, fmt.Errorf("packstore: invalid pack id %q", packID)
 	}
 	if src == nil {
-		return PackReceipt{}, fmt.Errorf("packstore: nil pack publication source")
+		return PackReceipt{}, errors.New("packstore: nil pack publication source")
 	}
 	if opts.Durability == 0 {
 		opts.Durability = DurablePublication
@@ -587,8 +587,8 @@ func copyBoundedContext(
 	if written > maxBytes {
 		return written, newLimitError(
 			LimitPackContainerBytes,
-			uint64(written),  //nolint:gosec // written is non-negative
-			uint64(maxBytes), //nolint:gosec // validated positive
+			uint64(written),
+			uint64(maxBytes),
 		)
 	}
 	return written, nil
@@ -610,8 +610,8 @@ func effectivePackPublicationLimit(
 	if sizeKnown && expectedSize > effective {
 		return 0, newLimitError(
 			LimitPackContainerBytes,
-			uint64(expectedSize), //nolint:gosec // validated non-negative
-			uint64(effective),    //nolint:gosec // validated positive
+			uint64(expectedSize),
+			uint64(effective),
 		)
 	}
 	return effective, nil
@@ -688,7 +688,7 @@ func validateFilesystemPackFile(
 
 func filesystemPackReaderOptions(limits Limits) pack.ReaderOptions {
 	return pack.ReaderOptions{Limits: pack.ReaderLimits{
-		ContainerBytes: uint64(limits.PackBytes), //nolint:gosec
+		ContainerBytes: uint64(limits.PackBytes),
 		FooterBytes:    uint64(limits.FooterBytes),
 		Entries:        uint64(limits.PackEntries),
 		RawBytes:       uint64(limits.BlobBytes),
@@ -699,8 +699,8 @@ func filesystemPackReaderOptions(limits Limits) pack.ReaderOptions {
 
 func filesystemPackBlobLimits(limits Limits) packvalidate.BlobLimits {
 	return packvalidate.BlobLimits{
-		RawBytes:    uint64(limits.BlobBytes), //nolint:gosec // validated non-negative
-		StoredBytes: uint64(limits.BlobBytes), //nolint:gosec // validated non-negative
+		RawBytes:    uint64(limits.BlobBytes),
+		StoredBytes: uint64(limits.BlobBytes),
 	}
 }
 
@@ -731,7 +731,7 @@ func (b *FilesystemBackend) Retire(
 	case ref.LooseHash == "" && ref.LooseEncoding == 0 && ref.PackID != "":
 		return b.retirePackRoot(root, ref.PackID)
 	default:
-		return fmt.Errorf("packstore: object reference must select exactly one representation")
+		return errors.New("packstore: object reference must select exactly one representation")
 	}
 }
 
@@ -831,7 +831,7 @@ func (b *FilesystemBackend) Inventory(
 	cursor InventoryCursor,
 ) (InventoryPage, error) {
 	if cursor != "" {
-		return InventoryPage{}, fmt.Errorf("packstore: invalid filesystem inventory cursor")
+		return InventoryPage{}, errors.New("packstore: invalid filesystem inventory cursor")
 	}
 	var page InventoryPage
 	walkRoot, err := filepath.EvalSymlinks(b.layout.Root())

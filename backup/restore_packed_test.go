@@ -5,15 +5,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	Assert "github.com/stretchr/testify/assert"
-	Require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"go.kenn.io/kit/pack"
 	"go.kenn.io/kit/packstore"
@@ -59,22 +58,22 @@ var defaultTestPackedRestoreCoordinator = packstore.NewCoordinator()
 
 func createPackedRestoreFixture(t *testing.T) (*Repo, App, *Manifest, string) {
 	t.Helper()
-	ctx := context.Background()
+	ctx := t.Context()
 	r := initTestRepo(t)
 	app := packedExtensionApp{App: newTestApp()}
 	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
 	m, err := Create(ctx, r, app, createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
-	Require.NoError(t, err)
+	require.NoError(t, err)
 	return r, app, m, attachmentsDir
 }
 
 func TestRestoreWithoutPackedTargetRemainsFullyLoose(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	r, app, m, sourceContent := createPackedRestoreFixture(t)
 	target := filepath.Join(t.TempDir(), "restore")
 
-	res, err := Restore(context.Background(), r, app, RestoreOptions{TargetDir: target})
+	res, err := Restore(t.Context(), r, app, RestoreOptions{TargetDir: target})
 	require.NoError(err)
 	assert.Zero(res.PackedAttachmentBlobs)
 	assert.Equal(m.Attachments.Blobs, res.LooseAttachmentBlobs)
@@ -113,14 +112,17 @@ func TestRestorePackedTargetRejectsInvalidRestoreLeaseBeforePackPublication(t *t
 			}
 			return lease, nil
 		}, wantErr: packstore.ErrLeaseReleased},
-		{name: "maintenance lease", acquire: maintenanceCoordinator.AcquireMaintenance,
+		{
+			name: "maintenance lease", acquire: maintenanceCoordinator.AcquireMaintenance,
 			wantErr: packstore.ErrWrongLeaseKind, after: func(t *testing.T) {
-				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				t.Helper()
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 				defer cancel()
 				lease, err := maintenanceCoordinator.AcquireMutation(ctx)
-				Require.NoError(t, err, "rejected maintenance lease must be released")
-				Require.NoError(t, lease.Release())
-			}},
+				require.NoError(t, err, "rejected maintenance lease must be released")
+				require.NoError(t, lease.Release())
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -136,13 +138,13 @@ func TestRestorePackedTargetRejectsInvalidRestoreLeaseBeforePackPublication(t *t
 				},
 			}
 
-			_, err := Restore(context.Background(), r, app, RestoreOptions{
+			_, err := Restore(t.Context(), r, app, RestoreOptions{
 				TargetDir: target, PackedContent: packed,
 			})
-			Require.ErrorIs(t, err, tt.wantErr)
-			Assert.False(t, catalogOpened)
+			require.ErrorIs(t, err, tt.wantErr)
+			assert.False(t, catalogOpened)
 			_, err = os.Stat(filepath.Join(target, "content", "packs"))
-			Require.ErrorIs(t, err, os.ErrNotExist)
+			require.ErrorIs(t, err, os.ErrNotExist)
 			if tt.after != nil {
 				tt.after(t)
 			}
@@ -151,8 +153,8 @@ func TestRestorePackedTargetRejectsInvalidRestoreLeaseBeforePackPublication(t *t
 }
 
 func TestRestorePackedTargetPublishesThenCommitsBeforeProof(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	r, app, m, _ := createPackedRestoreFixture(t)
 	target := filepath.Join(t.TempDir(), "restore")
 	committed := false
@@ -182,7 +184,7 @@ func TestRestorePackedTargetPublishesThenCommitsBeforeProof(t *testing.T) {
 	proofApp := proofObservingApp{App: app, beforeStats: func() { require.True(committed) }}
 	sawAttachmentStart := false
 
-	res, err := Restore(context.Background(), r, proofApp, RestoreOptions{
+	res, err := Restore(t.Context(), r, proofApp, RestoreOptions{
 		TargetDir: target, PackedContent: packed,
 		Progress: func(event ProgressEvent) {
 			if event.Stage == ProgressStageAttachments && event.Done == 0 && !sawAttachmentStart {
@@ -204,7 +206,7 @@ func TestRestorePackedTargetPublishesThenCommitsBeforeProof(t *testing.T) {
 	require.NoError(err)
 	t.Cleanup(func() { _ = published.Close() })
 	var publishedPacked int64
-	require.NoError(published.QueryRow("SELECT packed_blobs FROM restored_pack_authority").Scan(&publishedPacked))
+	require.NoError(published.QueryRowContext(t.Context(), "SELECT packed_blobs FROM restored_pack_authority").Scan(&publishedPacked))
 	assert.Equal(m.Attachments.Blobs, publishedPacked)
 }
 
@@ -236,26 +238,26 @@ func (c *maintenanceQueueContext) Err() error {
 
 func assertMaintenanceBlocked(t *testing.T, acquired <-chan leaseResult, where string) {
 	t.Helper()
-	Assert.Empty(t, acquired, where)
+	assert.Empty(t, acquired, where)
 }
 
 func requireMaintenanceLease(t *testing.T, acquired <-chan leaseResult) *packstore.Lease {
 	t.Helper()
 	select {
 	case result := <-acquired:
-		Require.NoError(t, result.err)
-		Require.NotNil(t, result.lease)
+		require.NoError(t, result.err)
+		require.NotNil(t, result.lease)
 		return result.lease
 	case <-time.After(time.Second):
-		Require.Fail(t, "maintenance did not acquire after restore lease release")
+		require.Fail(t, "maintenance did not acquire after restore lease release")
 		return nil
 	}
 }
 
 // Not parallel: this test injects the package-global directory sync hook.
 func TestRestorePackedTargetHoldsLeaseThroughCatalogProofPublicationAndFinalSync(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	r, app, _, _ := createPackedRestoreFixture(t)
 	target := filepath.Join(t.TempDir(), "restore")
 	coordinator := packstore.NewCoordinator()
@@ -294,7 +296,7 @@ func TestRestorePackedTargetHoldsLeaseThroughCatalogProofPublicationAndFinalSync
 	}
 	t.Cleanup(func() { pack.SyncDir = originalSync })
 
-	_, err := Restore(context.Background(), r, restoreApp, RestoreOptions{
+	_, err := Restore(t.Context(), r, restoreApp, RestoreOptions{
 		TargetDir: target, PackedContent: packed,
 	})
 	require.NoError(err)
@@ -329,18 +331,19 @@ func TestRestorePackedTargetReleasesLeaseAfterPostPublicationFailure(t *testing.
 	}
 	t.Cleanup(func() { pack.SyncDir = originalSync })
 
-	_, err := Restore(context.Background(), r, app, RestoreOptions{
+	_, err := Restore(t.Context(), r, app, RestoreOptions{
 		TargetDir: target, PackedContent: packed,
 	})
-	Require.ErrorIs(t, err, publicationErr)
-	acquireCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	require.ErrorIs(t, err, publicationErr)
+	acquireCtx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	maintenance, acquireErr := coordinator.AcquireMaintenance(acquireCtx)
-	Require.NoError(t, acquireErr)
-	Require.NoError(t, maintenance.Release())
+	require.NoError(t, acquireErr)
+	require.NoError(t, maintenance.Release())
 }
 
 func TestRestorePackedTargetJoinsReleaseErrorWithPrimaryError(t *testing.T) {
+	require := require.New(t)
 	r, app, _, _ := createPackedRestoreFixture(t)
 	target := filepath.Join(t.TempDir(), "restore")
 	coordinator := packstore.NewCoordinator()
@@ -355,18 +358,18 @@ func TestRestorePackedTargetJoinsReleaseErrorWithPrimaryError(t *testing.T) {
 		},
 		open: func(context.Context, *sql.DB) (packstore.RestoreCatalog, error) {
 			return restoreCatalogFunc(func(context.Context, []packstore.PackRecord, []packstore.Adoption) error {
-				Require.NoError(t, restoreLease.Release())
+				require.NoError(restoreLease.Release())
 				return primaryErr
 			}), nil
 		},
 	}
 
-	_, err := Restore(context.Background(), r, app, RestoreOptions{
+	_, err := Restore(t.Context(), r, app, RestoreOptions{
 		TargetDir: target, PackedContent: packed,
 	})
-	Require.ErrorIs(t, err, primaryErr)
-	Require.ErrorIs(t, err, packstore.ErrLeaseReleased)
-	Assert.ErrorContains(t, err, "releasing packed restore lease")
+	require.ErrorIs(err, primaryErr)
+	require.ErrorIs(err, packstore.ErrLeaseReleased)
+	assert.ErrorContains(t, err, "releasing packed restore lease")
 }
 
 type proofObservingApp struct {
@@ -402,7 +405,7 @@ func (a proofObservingApp) RestoredStats(ctx context.Context, db *sql.DB) (json.
 }
 
 func TestRestorePackedTargetFallsBackDeclinedEntriesLoose(t *testing.T) {
-	assert := Assert.New(t)
+	assert := assert.New(t)
 	r, app, m, sourceContent := createPackedRestoreFixture(t)
 	target := filepath.Join(t.TempDir(), "restore")
 	limits := packstore.DefaultLimits()
@@ -415,8 +418,8 @@ func TestRestorePackedTargetFallsBackDeclinedEntriesLoose(t *testing.T) {
 		}), nil
 	}}
 
-	res, err := Restore(context.Background(), r, app, RestoreOptions{TargetDir: target, PackedContent: packed})
-	Require.NoError(t, err)
+	res, err := Restore(t.Context(), r, app, RestoreOptions{TargetDir: target, PackedContent: packed})
+	require.NoError(t, err)
 	assert.Positive(res.PackedAttachmentBlobs)
 	assert.Positive(res.LooseAttachmentBlobs)
 	assert.Equal(m.Attachments.Blobs, res.PackedAttachmentBlobs+res.LooseAttachmentBlobs)
@@ -455,10 +458,10 @@ func TestRestorePackedTargetCatalogFailureDoesNotPublishDatabase(t *testing.T) {
 		}), nil
 	}}
 
-	_, err := Restore(context.Background(), r, app, RestoreOptions{
+	_, err := Restore(t.Context(), r, app, RestoreOptions{
 		TargetDir: target, Overwrite: true, PackedContent: packed,
 	})
-	Require.ErrorContains(t, err, "catalog rejected restore")
+	require.ErrorContains(t, err, "catalog rejected restore")
 	checkIntact()
 }
 
@@ -478,12 +481,13 @@ func stagedCatalogPath(t *testing.T, ctx context.Context, db *sql.DB) string {
 	t.Helper()
 	var sequence int
 	var name, filename string
-	Require.NoError(t, db.QueryRowContext(ctx, "PRAGMA database_list").Scan(&sequence, &name, &filename))
+	require.NoError(t, db.QueryRowContext(ctx, "PRAGMA database_list").Scan(&sequence, &name, &filename))
 	return filename
 }
 
 // Not parallel: these tests inject package-global staged catalog file hooks.
 func TestRestorePackedTargetSyncsClosedStagedCatalogBeforeProofAndPublication(t *testing.T) {
+	require := require.New(t)
 	installStagedCatalogFileHooks(t)
 	r, app, _, _ := createPackedRestoreFixture(t)
 	target := filepath.Join(t.TempDir(), "restore")
@@ -499,12 +503,12 @@ func TestRestorePackedTargetSyncsClosedStagedCatalogBeforeProofAndPublication(t 
 	}}
 	originalSync := syncStagedCatalogFile
 	syncStagedCatalogFile = func(file *os.File) error {
-		Require.Error(t, catalogDB.PingContext(context.Background()), "SQLite must be closed before file sync")
+		require.Error(catalogDB.PingContext(t.Context()), "SQLite must be closed before file sync")
 		openedInfo, err := file.Stat()
-		Require.NoError(t, err)
+		require.NoError(err)
 		stagedInfo, err := os.Stat(stagedPath)
-		Require.NoError(t, err)
-		Require.True(t, os.SameFile(openedInfo, stagedInfo), "sync handle must name the staged database")
+		require.NoError(err)
+		require.True(os.SameFile(openedInfo, stagedInfo), "sync handle must name the staged database")
 		syncedFile = file
 		synced = true
 		return originalSync(file)
@@ -516,16 +520,16 @@ func TestRestorePackedTargetSyncsClosedStagedCatalogBeforeProofAndPublication(t 
 		return err
 	}
 	proofApp := proofObservingApp{App: app, beforeStats: func() {
-		Require.True(t, synced, "staged database must be synced before proof")
-		Require.True(t, closed, "synced staged database handle must be closed before proof")
+		require.True(synced, "staged database must be synced before proof")
+		require.True(closed, "synced staged database handle must be closed before proof")
 		_, err := syncedFile.Stat()
-		Require.Error(t, err)
+		require.Error(err)
 	}}
 
-	_, err := Restore(context.Background(), r, proofApp, RestoreOptions{TargetDir: target, PackedContent: packed})
-	Require.NoError(t, err)
-	Assert.True(t, synced)
-	Assert.True(t, closed)
+	_, err := Restore(t.Context(), r, proofApp, RestoreOptions{TargetDir: target, PackedContent: packed})
+	require.NoError(err)
+	assert.True(t, synced)
+	assert.True(t, closed)
 }
 
 // Not parallel: this test injects package-global staged catalog file hooks.
@@ -543,16 +547,16 @@ func TestRestorePackedTargetCatalogReplacementFailureDoesNotSyncStagedCatalog(t 
 		return restoreCatalogFunc(func(context.Context, []packstore.PackRecord, []packstore.Adoption) error { return replaceErr }), nil
 	}}
 
-	_, err := Restore(context.Background(), r, app, RestoreOptions{TargetDir: target, Overwrite: true, PackedContent: packed})
-	Require.ErrorIs(t, err, replaceErr)
-	Assert.False(t, syncCalled)
+	_, err := Restore(t.Context(), r, app, RestoreOptions{TargetDir: target, Overwrite: true, PackedContent: packed})
+	require.ErrorIs(t, err, replaceErr)
+	assert.False(t, syncCalled)
 	checkIntact()
 }
 
 // Not parallel: this test injects package-global staged catalog file hooks.
 func TestRestorePackedTargetStagedCatalogSyncFailurePreventsProofAndPublication(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	installStagedCatalogFileHooks(t)
 	r, app, _, _ := createPackedRestoreFixture(t)
 	target, checkIntact := seedLiveOverwriteTarget(t)
@@ -575,7 +579,7 @@ func TestRestorePackedTargetStagedCatalogSyncFailurePreventsProofAndPublication(
 		return restoreCatalogFunc(func(context.Context, []packstore.PackRecord, []packstore.Adoption) error { return nil }), nil
 	}}
 
-	_, err := Restore(context.Background(), r, proofApp, RestoreOptions{TargetDir: target, Overwrite: true, PackedContent: packed})
+	_, err := Restore(t.Context(), r, proofApp, RestoreOptions{TargetDir: target, Overwrite: true, PackedContent: packed})
 	require.ErrorIs(err, syncErr)
 	assert.False(proofCalled)
 	assert.True(closed)
@@ -599,14 +603,15 @@ func TestRestorePackedTargetJoinsStagedCatalogSyncAndCloseFailures(t *testing.T)
 		return restoreCatalogFunc(func(context.Context, []packstore.PackRecord, []packstore.Adoption) error { return nil }), nil
 	}}
 
-	_, err := Restore(context.Background(), r, app, RestoreOptions{TargetDir: target, Overwrite: true, PackedContent: packed})
-	Require.ErrorIs(t, err, syncErr)
-	Require.ErrorIs(t, err, closeErr)
+	_, err := Restore(t.Context(), r, app, RestoreOptions{TargetDir: target, Overwrite: true, PackedContent: packed})
+	require.ErrorIs(t, err, syncErr)
+	require.ErrorIs(t, err, closeErr)
 	checkIntact()
 }
 
 // Not parallel: this test injects package-global staged catalog file hooks.
 func TestRestorePackedTargetStagedCatalogCloseFailurePreventsProofAndPublication(t *testing.T) {
+	require := require.New(t)
 	installStagedCatalogFileHooks(t)
 	r, app, _, _ := createPackedRestoreFixture(t)
 	target, checkIntact := seedLiveOverwriteTarget(t)
@@ -614,7 +619,7 @@ func TestRestorePackedTargetStagedCatalogCloseFailurePreventsProofAndPublication
 	var closedFile *os.File
 	closeStagedCatalogFile = func(file *os.File) error {
 		closedFile = file
-		Require.NoError(t, file.Close())
+		require.NoError(file.Close())
 		return closeErr
 	}
 	proofCalled := false
@@ -623,11 +628,11 @@ func TestRestorePackedTargetStagedCatalogCloseFailurePreventsProofAndPublication
 		return restoreCatalogFunc(func(context.Context, []packstore.PackRecord, []packstore.Adoption) error { return nil }), nil
 	}}
 
-	_, err := Restore(context.Background(), r, proofApp, RestoreOptions{TargetDir: target, Overwrite: true, PackedContent: packed})
-	Require.ErrorIs(t, err, closeErr)
-	Assert.False(t, proofCalled)
+	_, err := Restore(t.Context(), r, proofApp, RestoreOptions{TargetDir: target, Overwrite: true, PackedContent: packed})
+	require.ErrorIs(err, closeErr)
+	assert.False(t, proofCalled)
 	_, statErr := closedFile.Stat()
-	Require.Error(t, statErr)
+	require.Error(statErr)
 	checkIntact()
 }
 
@@ -638,21 +643,23 @@ func TestRestorePackedTargetRejectsNonRegularStagedCatalogBeforeOpen(t *testing.
 		plant func(*testing.T, string)
 	}{
 		{name: "symlink", plant: func(t *testing.T, staged string) {
+			t.Helper()
 			victim := filepath.Join(t.TempDir(), "victim.db")
-			Require.NoError(t, os.WriteFile(victim, []byte("victim"), 0o600))
-			Require.NoError(t, os.Remove(staged))
+			require.NoError(t, os.WriteFile(victim, []byte("victim"), 0o600))
+			require.NoError(t, os.Remove(staged))
 			if err := os.Symlink(victim, staged); err != nil {
 				t.Skip("symlinks not supported on this platform")
 			}
 		}},
 		{name: "directory", plant: func(t *testing.T, staged string) {
-			Require.NoError(t, os.Remove(staged))
-			Require.NoError(t, os.Mkdir(staged, 0o700))
+			t.Helper()
+			require.NoError(t, os.Remove(staged))
+			require.NoError(t, os.Mkdir(staged, 0o700))
 		}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			assert := Assert.New(t)
-			require := Require.New(t)
+			assert := assert.New(t)
+			require := require.New(t)
 			installStagedCatalogFileHooks(t)
 			target := t.TempDir()
 			staged := filepath.Join(target, "staged.db")
@@ -682,8 +689,8 @@ func TestRestorePackedTargetRejectsNonRegularStagedCatalogBeforeOpen(t *testing.
 
 // Not parallel: this test injects package-global staged catalog file hooks.
 func TestRestorePackedTargetRejectsOpenedStagedCatalogIdentityMismatchAndJoinsCloseFailure(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	installStagedCatalogFileHooks(t)
 	r, app, _, _ := createPackedRestoreFixture(t)
 	target, checkIntact := seedLiveOverwriteTarget(t)
@@ -705,7 +712,7 @@ func TestRestorePackedTargetRejectsOpenedStagedCatalogIdentityMismatchAndJoinsCl
 		return restoreCatalogFunc(func(context.Context, []packstore.PackRecord, []packstore.Adoption) error { return nil }), nil
 	}}
 
-	_, err := Restore(context.Background(), r, app, RestoreOptions{TargetDir: target, Overwrite: true, PackedContent: packed})
+	_, err := Restore(t.Context(), r, app, RestoreOptions{TargetDir: target, Overwrite: true, PackedContent: packed})
 	require.ErrorContains(err, "identity")
 	require.ErrorIs(err, closeErr)
 	assert.False(syncCalled)
@@ -715,8 +722,8 @@ func TestRestorePackedTargetRejectsOpenedStagedCatalogIdentityMismatchAndJoinsCl
 
 // Not parallel: this test injects package-global staged catalog file hooks.
 func TestRestorePackedTargetRejectsStagedCatalogReplacedDuringSync(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	installStagedCatalogFileHooks(t)
 	r, app, _, _ := createPackedRestoreFixture(t)
 	target, checkIntact := seedLiveOverwriteTarget(t)
@@ -753,7 +760,7 @@ func TestRestorePackedTargetRejectsStagedCatalogReplacedDuringSync(t *testing.T)
 		return restoreCatalogFunc(func(context.Context, []packstore.PackRecord, []packstore.Adoption) error { return nil }), nil
 	}}
 
-	_, err := Restore(context.Background(), r, proofApp, RestoreOptions{TargetDir: target, Overwrite: true, PackedContent: packed})
+	_, err := Restore(t.Context(), r, proofApp, RestoreOptions{TargetDir: target, Overwrite: true, PackedContent: packed})
 	require.ErrorContains(err, "identity")
 	assert.False(proofCalled)
 	assert.True(closed)
@@ -773,37 +780,38 @@ func TestRestorePackedTargetProofFailureKeepsVisibleDatabase(t *testing.T) {
 		}), nil
 	}}
 
-	_, err := Restore(context.Background(), r, proofObservingApp{App: app, badStats: true}, RestoreOptions{
+	_, err := Restore(t.Context(), r, proofObservingApp{App: app, badStats: true}, RestoreOptions{
 		TargetDir: target, Overwrite: true, PackedContent: packed,
 	})
-	Require.ErrorContains(t, err, "do not match manifest stats")
-	Assert.True(t, committed)
+	require.ErrorContains(t, err, "do not match manifest stats")
+	assert.True(t, committed)
 	checkIntact()
 }
 
 func TestRestorePackedTargetOverwriteKeepsOldDatabaseUntilPublish(t *testing.T) {
+	require := require.New(t)
 	r, app, _, _ := createPackedRestoreFixture(t)
 	target, _ := seedLiveOverwriteTarget(t)
 	packed := testPackedTarget{limits: packstore.DefaultLimits(), open: func(context.Context, *sql.DB) (packstore.RestoreCatalog, error) {
 		return restoreCatalogFunc(func(context.Context, []packstore.PackRecord, []packstore.Adoption) error {
 			got, err := os.ReadFile(filepath.Join(target, "app.db"))
-			Require.NoError(t, err)
-			Require.Equal(t, []byte("live database bytes"), got)
+			require.NoError(err)
+			require.Equal([]byte("live database bytes"), got)
 			return nil
 		}), nil
 	}}
 
-	_, err := Restore(context.Background(), r, app, RestoreOptions{
+	_, err := Restore(t.Context(), r, app, RestoreOptions{
 		TargetDir: target, Overwrite: true, PackedContent: packed,
 	})
-	Require.NoError(t, err)
+	require.NoError(err)
 	got, err := os.ReadFile(filepath.Join(target, "app.db"))
-	Require.NoError(t, err)
-	Assert.NotEqual(t, []byte("live database bytes"), got)
+	require.NoError(err)
+	assert.NotEqual(t, []byte("live database bytes"), got)
 }
 
 func TestRestorePackedTargetCorruptSelectedSourceKeepsVisibleDatabase(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	r, app, m, _ := createPackedRestoreFixture(t)
 	known, err := r.LoadBlobIndex()
 	require.NoError(err)
@@ -822,7 +830,7 @@ func TestRestorePackedTargetCorruptSelectedSourceKeepsVisibleDatabase(t *testing
 		return restoreCatalogFunc(func(context.Context, []packstore.PackRecord, []packstore.Adoption) error { return nil }), nil
 	}}
 
-	_, err = Restore(context.Background(), r, app, RestoreOptions{
+	_, err = Restore(t.Context(), r, app, RestoreOptions{
 		TargetDir: target, Overwrite: true, PackedContent: packed,
 	})
 	require.Error(err)
@@ -830,9 +838,9 @@ func TestRestorePackedTargetCorruptSelectedSourceKeepsVisibleDatabase(t *testing
 }
 
 func TestRestorePackedTargetIncompatibleExtensionRestoresFullyLooseAndClearsAuthority(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
-	ctx := context.Background()
+	assert := assert.New(t)
+	require := require.New(t)
+	ctx := t.Context()
 	r := initTestRepo(t)
 	app := newTestApp()
 	dbPath, sourceContent, dataDir, _ := seedBackupFixture(t)
@@ -866,7 +874,7 @@ func TestRestorePackedTargetIncompatibleExtensionRestoresFullyLooseAndClearsAuth
 }
 
 func TestRestorePackedTargetUnsupportedEncodingStillRequiresLooseVerification(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	r, app, m, sourceContent := createPackedRestoreFixture(t)
 	known, err := r.LoadBlobIndex()
 	require.NoError(err)
@@ -910,17 +918,17 @@ func TestRestorePackedTargetUnsupportedEncodingStillRequiresLooseVerification(t 
 		return nil, errors.New("catalog must not open when loose verification fails")
 	}}
 
-	_, err = Restore(context.Background(), r, app, RestoreOptions{
+	_, err = Restore(t.Context(), r, app, RestoreOptions{
 		TargetDir: target, Overwrite: true, PackedContent: packed,
 	})
 	require.ErrorContains(err, "opening pack")
-	Assert.NotContains(t, err.Error(), "preparing packed attachment restore")
+	assert.NotContains(t, err.Error(), "preparing packed attachment restore")
 	checkIntact()
 }
 
 func TestRestorePackedTargetZeroBlobLimitRestoresFullyLoose(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	r, app, m, sourceContent := createPackedRestoreFixture(t)
 	target := filepath.Join(t.TempDir(), "restore")
 	limits := packstore.DefaultLimits()
@@ -935,7 +943,7 @@ func TestRestorePackedTargetZeroBlobLimitRestoresFullyLoose(t *testing.T) {
 		}), nil
 	}}
 
-	res, err := Restore(context.Background(), r, app, RestoreOptions{TargetDir: target, PackedContent: packed})
+	res, err := Restore(t.Context(), r, app, RestoreOptions{TargetDir: target, PackedContent: packed})
 	require.NoError(err)
 	assert.True(committed)
 	assert.Zero(res.PackedAttachmentBlobs)
@@ -954,17 +962,17 @@ func TestRestorePackedTargetRejectsNegativeBlobLimitBeforePublishingContent(t *t
 		return nil, errors.New("must not open")
 	}}
 
-	_, err := Restore(context.Background(), r, app, RestoreOptions{TargetDir: target, PackedContent: packed})
-	Require.ErrorContains(t, err, "invalid limits")
+	_, err := Restore(t.Context(), r, app, RestoreOptions{TargetDir: target, PackedContent: packed})
+	require.ErrorContains(t, err, "invalid limits")
 	_, err = os.Stat(filepath.Join(target, "content", "packs"))
-	Require.ErrorIs(t, err, os.ErrNotExist)
+	require.ErrorIs(t, err, os.ErrNotExist)
 }
 
 func TestRestorePackedTargetRejectsPortablePackSubtreeAliasesBeforePublication(t *testing.T) {
 	for _, reserved := range []string{"packs", "PACKS", `PaCkS\shard`} {
 		t.Run(strings.ReplaceAll(reserved, `\`, "-"), func(t *testing.T) {
-			assert := Assert.New(t)
-			require := Require.New(t)
+			assert := assert.New(t)
+			require := require.New(t)
 			r, app, m, _ := createPackedRestoreFixture(t)
 			known, err := r.LoadBlobIndex()
 			require.NoError(err)
@@ -1002,7 +1010,7 @@ func TestRestorePackedTargetRejectsPortablePackSubtreeAliasesBeforePublication(t
 				paths[declined.Hash] = []string{prefix + "/" + packID + packstore.PackExt}
 			}}
 
-			_, err = Restore(context.Background(), r, restoreApp, RestoreOptions{
+			_, err = Restore(t.Context(), r, restoreApp, RestoreOptions{
 				TargetDir: target, Overwrite: true, PackedContent: packed,
 			})
 			require.ErrorContains(err, "reserved packed-content subtree")
@@ -1016,8 +1024,8 @@ func TestRestorePackedTargetRejectsPortablePackSubtreeAliasesBeforePublication(t
 }
 
 func TestRestoreWithoutPackedTargetAllowsHistoricalPackNamedPath(t *testing.T) {
-	assert := Assert.New(t)
-	require := Require.New(t)
+	assert := assert.New(t)
+	require := require.New(t)
 	r, app, m, _ := createPackedRestoreFixture(t)
 	known, err := r.LoadBlobIndex()
 	require.NoError(err)
@@ -1030,7 +1038,7 @@ func TestRestoreWithoutPackedTargetAllowsHistoricalPackNamedPath(t *testing.T) {
 	}}
 	target := filepath.Join(t.TempDir(), "restore")
 
-	res, err := Restore(context.Background(), r, restoreApp, RestoreOptions{TargetDir: target})
+	res, err := Restore(t.Context(), r, restoreApp, RestoreOptions{TargetDir: target})
 	require.NoError(err)
 	assert.Equal(m.Attachments.Blobs, res.LooseAttachmentBlobs)
 	got, err := os.ReadFile(filepath.Join(target, "content", rel))
@@ -1039,7 +1047,7 @@ func TestRestoreWithoutPackedTargetAllowsHistoricalPackNamedPath(t *testing.T) {
 }
 
 func TestRestorePackedTargetCatalogWriteFailureCleansOnlyStagedSidecars(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	r, app, _, _ := createPackedRestoreFixture(t)
 	target, checkIntact := seedLiveOverwriteTarget(t)
 	packed := testPackedTarget{limits: packstore.DefaultLimits(), open: func(_ context.Context, db *sql.DB) (packstore.RestoreCatalog, error) {
@@ -1052,7 +1060,7 @@ func TestRestorePackedTargetCatalogWriteFailureCleansOnlyStagedSidecars(t *testi
 		}), nil
 	}}
 
-	_, err := Restore(context.Background(), r, app, RestoreOptions{
+	_, err := Restore(t.Context(), r, app, RestoreOptions{
 		TargetDir: target, Overwrite: true, PackedContent: packed,
 	})
 	require.ErrorContains(err, "catalog failed after write")
@@ -1060,7 +1068,7 @@ func TestRestorePackedTargetCatalogWriteFailureCleansOnlyStagedSidecars(t *testi
 	entries, err := os.ReadDir(target)
 	require.NoError(err)
 	for _, entry := range entries {
-		Assert.False(t, strings.HasPrefix(entry.Name(), "app.db.restore-"), entry.Name())
+		assert.False(t, strings.HasPrefix(entry.Name(), "app.db.restore-"), entry.Name())
 	}
 	_, err = os.Stat(filepath.Join(target, "app.db-wal"))
 	require.NoError(err, "the visible database sidecar must not be cleaned")
@@ -1068,7 +1076,7 @@ func TestRestorePackedTargetCatalogWriteFailureCleansOnlyStagedSidecars(t *testi
 
 // Not parallel: this test injects the package-global directory sync hook.
 func TestRestorePackedTargetLooseDurabilityFailurePreventsCatalogAuthority(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	r, app, m, _ := createPackedRestoreFixture(t)
 	known, err := r.LoadBlobIndex()
 	require.NoError(err)
@@ -1093,16 +1101,16 @@ func TestRestorePackedTargetLooseDurabilityFailurePreventsCatalogAuthority(t *te
 	originalSync := pack.SyncDir
 	pack.SyncDir = func(dir string) error {
 		if dir == filepath.Join(target, "content") {
-			return fmt.Errorf("injected content durability failure")
+			return errors.New("injected content durability failure")
 		}
 		return originalSync(dir)
 	}
 	t.Cleanup(func() { pack.SyncDir = originalSync })
 
-	_, err = Restore(context.Background(), r, app, RestoreOptions{
+	_, err = Restore(t.Context(), r, app, RestoreOptions{
 		TargetDir: target, Overwrite: true, PackedContent: packed,
 	})
 	require.ErrorContains(err, "injected content durability failure")
-	Assert.False(t, catalogCalled)
+	assert.False(t, catalogCalled)
 	checkIntact()
 }

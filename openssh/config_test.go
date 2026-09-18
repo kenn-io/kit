@@ -54,7 +54,7 @@ func TestResolverKeepsExecutionPolicyInjectable(t *testing.T) {
 	}
 
 	config, err := resolver.Resolve(
-		context.Background(),
+		t.Context(),
 		Target{User: "wes", Hostname: "studio", Port: 2222},
 	)
 	require.NoError(t, err)
@@ -78,7 +78,7 @@ func TestResolverReportsTypedCommandFailure(t *testing.T) {
 	}}
 
 	_, err := resolver.Resolve(
-		context.Background(),
+		t.Context(),
 		Target{Hostname: "studio"},
 	)
 	var commandErr *CommandError
@@ -99,7 +99,7 @@ func TestResolverRejectsUnsafeTargetBeforeInvocation(t *testing.T) {
 	}}
 
 	_, err := resolver.Resolve(
-		context.Background(),
+		t.Context(),
 		Target{User: "wes;touch", Hostname: "studio"},
 	)
 	var configErr *ConfigError

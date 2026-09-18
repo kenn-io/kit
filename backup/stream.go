@@ -60,7 +60,7 @@ func (r *Repo) OpenBlob(
 	if err != nil {
 		return nil, errors.Join(err, reader.Close())
 	}
-	return &BlobStream{blob: blob, reader: reader, size: int64(authoritative.RawLen)}, nil //nolint:gosec // format-v1 raw lengths fit int64
+	return &BlobStream{blob: blob, reader: reader, size: int64(authoritative.RawLen)}, nil
 }
 
 // Read implements io.Reader.

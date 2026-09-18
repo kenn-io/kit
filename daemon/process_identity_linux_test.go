@@ -8,12 +8,12 @@ import (
 	"path/filepath"
 	"testing"
 
-	Assert "github.com/stretchr/testify/assert"
-	Require "github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestReadLinuxProcessIdentityUsesInspectableTargetNamespace(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	proc := t.TempDir()
 	require.NoError(os.MkdirAll(filepath.Join(proc, "sys/kernel/random"), 0o755))
 	require.NoError(os.MkdirAll(filepath.Join(proc, "42/ns"), 0o755))
@@ -31,11 +31,11 @@ func TestReadLinuxProcessIdentityUsesInspectableTargetNamespace(t *testing.T) {
 
 	identity, ok := readLinuxProcessIdentity(proc, 42)
 	require.True(ok)
-	Assert.Equal(t, ProcessIdentity("linux-v1:b08745a1-625b-4f8b-8ab9-0123456789ab:4026532448:202"), identity)
+	assert.Equal(t, ProcessIdentity("linux-v1:b08745a1-625b-4f8b-8ab9-0123456789ab:4026532448:202"), identity)
 }
 
 func TestReadLinuxProcessIdentityRejectsMalformedTargetNamespace(t *testing.T) {
-	require := Require.New(t)
+	require := require.New(t)
 	proc := t.TempDir()
 	require.NoError(os.MkdirAll(filepath.Join(proc, "sys/kernel/random"), 0o755))
 	require.NoError(os.MkdirAll(filepath.Join(proc, "42/ns"), 0o755))
@@ -52,7 +52,7 @@ func TestReadLinuxProcessIdentityRejectsMalformedTargetNamespace(t *testing.T) {
 	require.NoError(os.Symlink("pid:not-an-inode", filepath.Join(proc, "42/ns/pid")))
 
 	_, ok := readLinuxProcessIdentity(proc, 42)
-	Assert.False(t, ok)
+	assert.False(t, ok)
 }
 
 func TestLinuxProcessIdentityCompatibilityRejectsMalformedValues(t *testing.T) {
@@ -69,14 +69,14 @@ func TestLinuxProcessIdentityCompatibilityRejectsMalformedValues(t *testing.T) {
 		"linux-v1:b08745a1-625b-4f8b-8ab9-0123456789ab:4026532448:202:extra",
 	}
 	for _, identity := range tests {
-		Assert.False(t, processIdentityCompatible(identity), string(identity))
-		Assert.Equal(t, ProcessIdentityUnknown, CompareProcessIdentity(os.Getpid(), identity), string(identity))
+		assert.False(t, processIdentityCompatible(identity), string(identity))
+		assert.Equal(t, ProcessIdentityUnknown, CompareProcessIdentity(os.Getpid(), identity), string(identity))
 	}
 }
 
 func TestParseLinuxProcessStartTicksRejectsMalformedStat(t *testing.T) {
 	_, err := parseLinuxProcessStartTicks([]byte("42 malformed"))
-	Require.Error(t, err)
+	require.Error(t, err)
 }
 
 func linuxStatFixture(pid int, command, startTicks string) string {

@@ -2,8 +2,8 @@ package packstore
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -19,7 +19,7 @@ import (
 func TestOldLayoutRawLooseObjectNeedsNoMigration(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	layout := layoutForStoreTest(t)
 	content := bytes.Repeat([]byte("raw loose bytes written before compressed storage existed\n"), 64)
 	hash := hashForTest(content)
@@ -103,7 +103,7 @@ func TestLooseCompressionPreservesRepresentativeLogicalIdentity(t *testing.T) {
 			layout := layoutForStoreTest(t)
 			loose, err := NewLooseStore(layout)
 			require.NoError(err)
-			result, err := loose.WriteBytes(context.Background(), tt.content, WriteOptions{
+			result, err := loose.WriteBytes(t.Context(), tt.content, WriteOptions{
 				Durability: AtomicPublication,
 				Dedup:      VerifyFullHash,
 				Compression: LooseCompressionOptions{
@@ -114,12 +114,12 @@ func TestLooseCompressionPreservesRepresentativeLogicalIdentity(t *testing.T) {
 			assert.Equal(LooseEncodingZstd, result.Encoding)
 			assert.Less(result.StoredSize, result.Size/4, "representative structured data should save at least 75 percent")
 			expectedDigest := sha256.Sum256(tt.content)
-			assert.Equal(fmt.Sprintf("%x", expectedDigest), result.Hash.String())
+			assert.Equal(hex.EncodeToString(expectedDigest[:]), result.Hash.String())
 
 			store := newStoreForTest(t, &mapResolver{locations: map[Hash]Location{
 				result.Hash: {Member: true},
 			}}, layout)
-			stream, logicalSize, err := store.OpenStream(context.Background(), result.Hash)
+			stream, logicalSize, err := store.OpenStream(t.Context(), result.Hash)
 			require.NoError(err)
 			decodedDigest := sha256.New()
 			decodedSize, err := io.Copy(decodedDigest, stream)
@@ -179,7 +179,7 @@ func TestCompressedLooseReadsLegacyLargerWindow(t *testing.T) {
 	store := newStoreForTest(t, &mapResolver{locations: map[Hash]Location{
 		hash: {Member: true},
 	}}, layout)
-	stream, size, err := store.OpenStream(context.Background(), hash)
+	stream, size, err := store.OpenStream(t.Context(), hash)
 	require.NoError(err)
 	got, err := io.ReadAll(stream)
 	require.NoError(err)
@@ -193,7 +193,7 @@ func compressedLooseReadBytesPerOp(t *testing.T, content []byte) int64 {
 	layout := layoutForStoreTest(t)
 	loose, err := NewLooseStore(layout)
 	require.NoError(t, err)
-	result, err := loose.WriteBytes(context.Background(), content, WriteOptions{
+	result, err := loose.WriteBytes(t.Context(), content, WriteOptions{
 		Durability: AtomicPublication,
 		Dedup:      VerifyFullHash,
 		Compression: LooseCompressionOptions{
@@ -207,11 +207,12 @@ func compressedLooseReadBytesPerOp(t *testing.T, content []byte) int64 {
 	}}, layout)
 
 	resultBenchmark := testing.Benchmark(func(b *testing.B) {
+		b.Helper()
 		buffer := make([]byte, 64<<10)
 		b.ReportAllocs()
 		b.SetBytes(int64(len(content)))
 		for range b.N {
-			stream, _, openErr := store.OpenStream(context.Background(), result.Hash)
+			stream, _, openErr := store.OpenStream(t.Context(), result.Hash)
 			require.NoError(b, openErr)
 			_, copyErr := io.CopyBuffer(io.Discard, stream, buffer)
 			require.NoError(b, copyErr)

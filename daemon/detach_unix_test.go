@@ -10,7 +10,7 @@ import (
 )
 
 func TestDetachChildStartsNewSession(t *testing.T) {
-	cmd := exec.Command("/bin/sh")
+	cmd := exec.CommandContext(t.Context(), "/bin/sh")
 	detachChild(cmd)
 
 	assert.True(t, cmd.SysProcAttr.Setsid, "child must start its own session")
