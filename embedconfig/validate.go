@@ -22,6 +22,8 @@ func (m Model) Prepared() (Model, error) {
 }
 
 // Validate checks the model controls that define a vector space.
+// Only cosine is storable. Dot-product and L2 stay named on Metric and fail
+// here because the vector pipeline compares cosine distance only.
 func (m Model) Validate() error {
 	if strings.TrimSpace(m.Name) == "" {
 		return errors.New("embed model name is required")
@@ -29,10 +31,8 @@ func (m Model) Validate() error {
 	if m.Dimensions <= 0 {
 		return errors.New("embed model dimensions must be positive")
 	}
-	switch m.Metric {
-	case MetricCosine, MetricDotProduct, MetricL2:
-	default:
-		return errors.New("embed model metric must be cosine, dot_product, or l2")
+	if m.Metric != MetricCosine {
+		return errors.New("embed model metric must be cosine; dot_product and l2 are not storable yet")
 	}
 	switch m.Normalization {
 	case NormalizationNone, NormalizationL2:
@@ -187,6 +187,7 @@ func (in InputLimits) Validate() error {
 	if in.OverlapTokens < 0 || in.OverlapTokens >= in.MaxTokens {
 		return errors.New("embed input overlap must be at least zero and below max tokens")
 	}
+	// MaxSpans zero is unlimited, not unset, and stays valid inside a window.
 	if in.MaxSpans < 0 {
 		return errors.New("embed input max spans must be at least zero")
 	}

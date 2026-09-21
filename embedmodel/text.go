@@ -137,10 +137,16 @@ func (s SourceSpan) Validate() error {
 }
 
 // EmbedText returns the text the shared client can encode.
-// Image and file parts return ErrUnsupportedContent.
+// A top-level image or file kind returns ErrUnsupportedContent even when
+// Text is set. Parts of those kinds do the same. Those kinds stay valid
+// descriptions for callers that encode them elsewhere.
 func (c Content) EmbedText() (string, error) {
 	if err := c.Validate(); err != nil {
 		return "", err
+	}
+	switch c.Kind {
+	case KindImage, KindFile:
+		return "", ErrUnsupportedContent
 	}
 	if len(c.Parts) == 0 {
 		return c.Text, nil

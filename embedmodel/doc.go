@@ -7,8 +7,9 @@
 // without changing vectors. An API key, timeout, or batch size changes neither.
 //
 // Content is not a bare list of strings. Text is the first encoded form.
-// Image and file parts remain valid descriptions so callers can keep those
-// paths, and the shared text client reports that it does not encode them.
+// Image and file content remains a valid description so callers can keep
+// those paths. The shared text client does not encode a top-level image or
+// file, even when Text is set, or a part of those kinds.
 // Source spans are coordinates into the caller's source, not into the
 // formatted request.
 package embedmodel

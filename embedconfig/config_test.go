@@ -82,6 +82,29 @@ func TestPreparedRejectsIncompleteSettings(t *testing.T) {
 	}
 }
 
+func TestModelRejectsMetricsTheVectorPipelineCannotStore(t *testing.T) {
+	for _, metric := range []embedconfig.Metric{embedconfig.MetricDotProduct, embedconfig.MetricL2} {
+		model := cosineModel()
+		model.Metric = metric
+		err := model.Validate()
+		require.Error(t, err)
+		require.ErrorContains(t, err, "not storable")
+	}
+	require.NoError(t, cosineModel().Validate())
+}
+
+func TestMaxSpansZeroIsUnlimited(t *testing.T) {
+	window := embedconfig.InputLimits{
+		Recipe:     "v2",
+		Tokenizer:  "bge-m3",
+		ContentID:  "body",
+		MaxTokens:  512,
+		Truncation: embedconfig.TruncationReject,
+		MaxSpans:   0,
+	}
+	require.NoError(t, window.Validate(), "MaxSpans 0 is valid and means no span cap")
+}
+
 func TestCanonicalEndpoint(t *testing.T) {
 	got, err := embedconfig.CanonicalEndpoint("HTTPS://Example.TEST:443/v1/", false)
 	require.NoError(t, err)
@@ -159,4 +182,13 @@ func TestCanonicalEndpointHostAndIPv6Zone(t *testing.T) {
 	trustedAgain, err := embedconfig.CanonicalEndpoint(trusted, true)
 	require.NoError(t, err)
 	assert.Equal(t, trusted, trustedAgain)
+}
+
+func cosineModel() embedconfig.Model {
+	return embedconfig.Model{
+		Name:          "text-embedding-3-small",
+		Dimensions:    1536,
+		Metric:        embedconfig.MetricCosine,
+		Normalization: embedconfig.NormalizationL2,
+	}
 }

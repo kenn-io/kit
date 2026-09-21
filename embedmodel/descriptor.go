@@ -55,14 +55,11 @@ func (d Descriptor) InputIdentity() (string, error) {
 }
 
 // Generation returns the kit generation for this descriptor.
-// The parameters carry the vector-space id and the input-recipe id. They do
-// not carry the lexical analyzer, batch size, timeout, or retrieval budget.
+// Params carries only the vector-space id under "vector_space".
+// The input recipe stays on InputIdentity. Params does not carry the lexical
+// analyzer, batch size, timeout, or retrieval budget.
 func (d Descriptor) Generation() (vector.Generation, error) {
 	space, err := d.VectorIdentity()
-	if err != nil {
-		return vector.Generation{}, err
-	}
-	recipe, err := d.InputIdentity()
 	if err != nil {
 		return vector.Generation{}, err
 	}
@@ -71,7 +68,6 @@ func (d Descriptor) Generation() (vector.Generation, error) {
 		Dimensions: d.Model.Dimensions,
 		Params: map[string]string{
 			"vector_space": space,
-			"input_recipe": recipe,
 		},
 	}, nil
 }

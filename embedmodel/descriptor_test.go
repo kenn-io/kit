@@ -47,6 +47,26 @@ func TestTextAndPartsStayDistinct(t *testing.T) {
 	require.ErrorIs(t, err, embedmodel.ErrUnsupportedContent)
 }
 
+func TestTopLevelImageWithTextIsNotEncoded(t *testing.T) {
+	image := embedmodel.Content{
+		Role: embedconfig.RoleDocument,
+		Kind: embedmodel.KindImage,
+		Text: "caption",
+	}
+	require.NoError(t, image.Validate())
+	_, err := image.EmbedText()
+	require.ErrorIs(t, err, embedmodel.ErrUnsupportedContent)
+
+	file := embedmodel.Content{
+		Role: embedconfig.RoleDocument,
+		Kind: embedmodel.KindFile,
+		Text: "caption",
+	}
+	require.NoError(t, file.Validate())
+	_, err = file.EmbedText()
+	require.ErrorIs(t, err, embedmodel.ErrUnsupportedContent)
+}
+
 func TestBlankTextMatchesTheEmbeddingRule(t *testing.T) {
 	assert.True(t, embedmodel.BlankText(""))
 	assert.True(t, embedmodel.BlankText(" \t\n\u200b\ufeff"))
@@ -62,6 +82,10 @@ func TestDescriptorIdentitiesStaySeparate(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "bge-m3", generation.Model)
 	assert.Equal(t, 1024, generation.Dimensions)
+	space, err := document.VectorIdentity()
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"vector_space": space}, generation.Params)
+	assert.NotContains(t, generation.Params, "input_recipe")
 
 	lexical := document.Lexical
 	lexical.DictionaryRevision = "dict-2"
@@ -78,12 +102,29 @@ func TestDescriptorIdentitiesStaySeparate(t *testing.T) {
 	assert.NotEqual(t, left, right)
 	assert.NotContains(t, generation.Params, "lexical")
 
+	inputID, err := document.InputIdentity()
+	require.NoError(t, err)
 	wider := document
 	wider.Input.OverlapTokens = 8
+	widerID, err := wider.InputIdentity()
+	require.NoError(t, err)
+	assert.NotEqual(t, inputID, widerID)
 	widerGeneration, err := wider.Generation()
 	require.NoError(t, err)
-	assert.NotEqual(t, generation.Fingerprint(), widerGeneration.Fingerprint())
-	assert.Equal(t, generation.Params["vector_space"], widerGeneration.Params["vector_space"])
+	assert.Equal(t, generation.Fingerprint(), widerGeneration.Fingerprint())
+	assert.Equal(t, generation.Params, widerGeneration.Params)
+}
+
+func TestDescriptorRejectsMetricsTheVectorPipelineCannotStore(t *testing.T) {
+	for _, metric := range []embedconfig.Metric{embedconfig.MetricDotProduct, embedconfig.MetricL2} {
+		descriptor := sampleDescriptor()
+		descriptor.Model.Metric = metric
+		err := descriptor.Validate()
+		require.Error(t, err)
+		require.ErrorContains(t, err, "cosine")
+		_, err = descriptor.Generation()
+		require.Error(t, err)
+	}
 }
 
 func TestQueryCompatibilityIgnoresInputWindow(t *testing.T) {
