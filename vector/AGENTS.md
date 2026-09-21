@@ -132,6 +132,13 @@ pipeline. Preserve these invariants when changing it.
 
 ## Hits come from live, current documents
 
+- Revision-aware backends return the indexed revision in `Hit.Revision` in
+  the same query as its score. Hydration must not pair an old score with a
+  newer source revision.
+- sqlitevec ordinary, composable and probed queries share candidate SQL and
+  freshness checks. Raw probes survive source filtering; an empty result
+  window can still have more raw neighbors. Candidate limits precede source
+  filters; result limits follow them.
 - Backends must not return hits whose source row no longer exists; the
   caller may delete documents without telling the store, so
   `QueryGeneration` joins back to the documents table.
