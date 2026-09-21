@@ -13,7 +13,7 @@ type fillOptions[K comparable] struct {
 	split                   SplitOptions
 	batch                   batchOptions
 	concurrency             int
-	prepare                 func(Pending[K]) ([]PreparedChunk, error)
+	prepare                 func(context.Context, Pending[K]) ([]PreparedChunk, error)
 	onProgress              func(FillProgress[K])
 	onEncodeError           func(doc K, err error) bool
 	shouldIsolateBatchError func(error) bool
@@ -75,11 +75,13 @@ func WithFillDocumentLimit[K comparable](n int) FillOption[K] {
 }
 
 // WithFillPrepared supplies the chunks for each pending document and
-// replaces WithFillSplit for that Fill call. An empty chunk list is a
-// stamp-only save. An error aborts the fill before any document in the
-// current page is encoded or stamped. Span and Truncated are reported
-// through WithFillProgress and are not stored.
-func WithFillPrepared[K comparable](prepare func(Pending[K]) ([]PreparedChunk, error)) FillOption[K] {
+// replaces WithFillSplit for that Fill call. The callback receives Fill's
+// context. Fill does not call it for a later document in the page when that
+// context is already cancelled, and it does not encode or stamp the page.
+// An empty chunk list is a stamp-only save. An error aborts the fill before
+// any document in the current page is encoded or stamped. Span and Truncated
+// are reported through WithFillProgress and are not stored.
+func WithFillPrepared[K comparable](prepare func(context.Context, Pending[K]) ([]PreparedChunk, error)) FillOption[K] {
 	return func(o *fillOptions[K]) { o.prepare = prepare }
 }
 
@@ -141,9 +143,11 @@ type FillStats struct {
 // document-level retries. WithFillEncodeError remains the sole authority for
 // skip-stamping an attributed document.
 //
-// WithFillPrepared replaces rune-window splitting for the call. WithFillDocumentLimit
-// bounds how many pending documents the call starts. WithFillProgress reports each
-// document after its save succeeds.
+// WithFillPrepared replaces rune-window splitting for the call. Its callback
+// receives the Fill context, and a cancelled context stops the page before
+// later documents are prepared. WithFillDocumentLimit bounds how many pending
+// documents the call starts. WithFillProgress reports each document after its
+// save succeeds.
 func Fill[K, G comparable](
 	ctx context.Context, store Store[K, G], gen G, enc EncodeFunc,
 	options ...FillOption[K],
@@ -219,9 +223,9 @@ type preparedDocument[K comparable] struct {
 	prepared []PreparedChunk
 }
 
-func prepareFillChunks[K comparable](pending Pending[K], o fillOptions[K]) ([]Chunk, []PreparedChunk, error) {
+func prepareFillChunks[K comparable](ctx context.Context, pending Pending[K], o fillOptions[K]) ([]Chunk, []PreparedChunk, error) {
 	if o.prepare != nil {
-		prepared, err := o.prepare(pending)
+		prepared, err := o.prepare(ctx, pending)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -268,7 +272,14 @@ func fillPage[K, G comparable](
 ) error {
 	prepared := make([]preparedDocument[K], len(docs))
 	for i, doc := range docs {
-		chunks, chunksPrepared, err := prepareFillChunks(doc, o)
+		// Do not call the prepare callback for a later document once Fill's
+		// context is cancelled. Leave this page unencoded and unstamped.
+		if o.prepare != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		}
+		chunks, chunksPrepared, err := prepareFillChunks(ctx, doc, o)
 		if err != nil {
 			return fmt.Errorf("prepare document %v: %w", doc.Doc, err)
 		}

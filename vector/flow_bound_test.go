@@ -108,9 +108,11 @@ func TestFillPreparedChunksKeepSourceSpanAndEncoderText(t *testing.T) {
 	span := &vector.SourceSpan{Start: 0, End: 6}
 	var progressed []vector.FillProgress[int64]
 
-	stats, err := vector.Fill(t.Context(), store, 1, enc,
+	ctx := t.Context()
+	stats, err := vector.Fill(ctx, store, 1, enc,
 		vector.WithFillBatch[int64](vector.WithBatchSize(10)),
-		vector.WithFillPrepared[int64](func(pending vector.Pending[int64]) ([]vector.PreparedChunk, error) {
+		vector.WithFillPrepared[int64](func(got context.Context, pending vector.Pending[int64]) ([]vector.PreparedChunk, error) {
+			require.Equal(ctx, got)
 			if pending.Doc == 2 {
 				return nil, nil
 			}
@@ -157,7 +159,7 @@ func TestFillPreparedErrorStampsNothing(t *testing.T) {
 	}
 
 	_, err := vector.Fill(t.Context(), store, 1, enc,
-		vector.WithFillPrepared[int64](func(pending vector.Pending[int64]) ([]vector.PreparedChunk, error) {
+		vector.WithFillPrepared[int64](func(_ context.Context, pending vector.Pending[int64]) ([]vector.PreparedChunk, error) {
 			if pending.Doc == 2 {
 				return nil, prepareErr
 			}
@@ -174,7 +176,7 @@ func TestFillPreparedBlankTextIsAnEncodeError(t *testing.T) {
 	store := newMemStore()
 	store.content[1] = "source"
 	_, err := vector.Fill(t.Context(), store, 1, lenEncoder(),
-		vector.WithFillPrepared[int64](func(vector.Pending[int64]) ([]vector.PreparedChunk, error) {
+		vector.WithFillPrepared[int64](func(context.Context, vector.Pending[int64]) ([]vector.PreparedChunk, error) {
 			return []vector.PreparedChunk{{Index: 0, Text: " \n"}}, nil
 		}),
 	)
@@ -192,4 +194,63 @@ func TestFillNegativeDocumentLimitDoesNotStopEarly(t *testing.T) {
 	)
 	require.NoError(err)
 	assert.Equal(t, 2, stats.Documents)
+}
+
+// cancelOnPendingScan cancels after the pending scan returns so the page
+// loop observes a context that is already done.
+type cancelOnPendingScan struct {
+	*memStore
+	cancel context.CancelFunc
+}
+
+func (s cancelOnPendingScan) PendingForGeneration(ctx context.Context, gen int, limit int) ([]vector.Pending[int64], error) {
+	pending, err := s.memStore.PendingForGeneration(ctx, gen, limit)
+	s.cancel()
+	return pending, err
+}
+
+func TestFillPreparedPassesFillContextAndStopsWhenCancelled(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	store := newMemStore()
+	store.content[1] = "one"
+	store.content[2] = "two"
+	store.content[3] = "three"
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	var calls []int64
+	_, err := vector.Fill(ctx, store, 1, lenEncoder(),
+		vector.WithFillPrepared[int64](func(got context.Context, pending vector.Pending[int64]) ([]vector.PreparedChunk, error) {
+			require.Equal(ctx, got)
+			calls = append(calls, pending.Doc)
+			if pending.Doc == 1 {
+				cancel()
+			}
+			return []vector.PreparedChunk{{Index: 0, Text: pending.Content}}, nil
+		}),
+	)
+	require.ErrorIs(err, context.Canceled)
+	assert.Equal([]int64{1}, calls)
+	assert.Empty(store.embedded)
+}
+
+func TestFillPreparedSkipsCallbackWhenPageContextIsAlreadyCancelled(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	base := newMemStore()
+	base.content[1] = "one"
+	base.content[2] = "two"
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	calls := 0
+	_, err := vector.Fill(ctx, cancelOnPendingScan{memStore: base, cancel: cancel}, 1, lenEncoder(),
+		vector.WithFillPrepared[int64](func(context.Context, vector.Pending[int64]) ([]vector.PreparedChunk, error) {
+			calls++
+			return []vector.PreparedChunk{{Index: 0, Text: "kept"}}, nil
+		}),
+	)
+	require.ErrorIs(err, context.Canceled)
+	assert.Zero(calls)
+	assert.Empty(base.embedded)
 }
