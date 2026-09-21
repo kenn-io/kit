@@ -350,7 +350,7 @@ func TestNewRejectsNonCosineMetric(t *testing.T) {
 				Model:      model,
 				Deployment: embedconfig.Deployment{BaseURL: "https://example.test/v1"},
 			})
-			require.EqualError(t, err, "embed model metric must be cosine")
+			require.EqualError(t, err, "embed model metric must be cosine; dot_product and l2 are not storable yet")
 		})
 	}
 }
