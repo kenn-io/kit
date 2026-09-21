@@ -45,7 +45,8 @@ type Column struct {
 }
 
 // Predicate is trusted SQL over alias d. Use anonymous ? placeholders.
-// User values belong in Args.
+// A ? inside a quote, dollar quote, or comment stays literal, and ?? outside
+// those regions is one literal ?. User values belong in Args.
 type Predicate struct {
 	SQL  string
 	Args []any
@@ -53,8 +54,8 @@ type Predicate struct {
 
 // LexicalRequest is one bounded full-text candidate query.
 // Set Text or TSQuery, not both. TSQuery is trusted SQL of type tsquery and
-// uses ? placeholders. It exists for callers whose analyzer emits a tsquery
-// the plain constructors cannot represent.
+// uses the same ? placeholders as Predicate. It exists for callers whose
+// analyzer emits a tsquery the plain constructors cannot represent.
 type LexicalRequest struct {
 	Mapping         LexicalMapping
 	Config          string
@@ -91,7 +92,7 @@ func BuildLexical(req LexicalRequest) (sqlquery.Query, error) {
 	if config == "" {
 		config = "simple"
 	}
-	if err := checkIdentifier("text search config", config); err != nil {
+	if err := checkTextSearchConfig(config); err != nil {
 		return sqlquery.Query{}, err
 	}
 	rank, err := rankFunc(req.Rank)
@@ -172,6 +173,19 @@ func BuildLexical(req LexicalRequest) (sqlquery.Query, error) {
 	}
 	fmt.Fprintf(&b, " ORDER BY score DESC, doc_key ASC LIMIT $%d", n)
 	return sqlquery.Query{SQL: b.String(), Args: args}, nil
+}
+
+func checkTextSearchConfig(value string) error {
+	parts := strings.Split(value, ".")
+	if len(parts) > 2 {
+		return fmt.Errorf("postgres: invalid text search config %q", value)
+	}
+	for _, part := range parts {
+		if !validIdentifier(part) {
+			return fmt.Errorf("postgres: invalid text search config %q", value)
+		}
+	}
+	return nil
 }
 
 func rankFunc(rank Rank) (string, error) {
