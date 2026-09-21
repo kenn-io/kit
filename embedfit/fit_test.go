@@ -114,6 +114,39 @@ func TestPolicyFromUsesInputLimits(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestPreparedIgnoresALongerPrefixThanFitCounted(t *testing.T) {
+	fittedPrefix := "P "
+	longerPrefix := "P P P "
+	got, err := embedfit.Fit("aa", fittedPrefix, " Z", words{}, policy(3, 0, 0, embedconfig.TruncationReject))
+	require.NoError(t, err)
+	require.Len(t, got.Spans, 1)
+
+	prepared := got.Prepared(longerPrefix, " Z Z")
+	require.Len(t, prepared, 1)
+	assert.Equal(t, fittedPrefix+"aa"+" Z", prepared[0].Text)
+	assert.NotEqual(t, longerPrefix+"aa"+" Z Z", prepared[0].Text)
+	fittedCount, err := words{}.Count(prepared[0].Text)
+	require.NoError(t, err)
+	assert.LessOrEqual(t, fittedCount, 3)
+	longerCount, err := words{}.Count(longerPrefix + "aa" + " Z Z")
+	require.NoError(t, err)
+	assert.Greater(t, longerCount, 3)
+}
+
+func TestFitAcceptsASeparatorAtTheStartOfThePreferredWindow(t *testing.T) {
+	// The fitted window is "abc " and its last quarter is only that space,
+	// so the only separator is at index 0. Reject mode must keep the term
+	// after the break instead of failing as a hard cut.
+	got, err := embedfit.Fit("abc def", "", "", words{}, policy(1, 0, 0, embedconfig.TruncationReject))
+	require.NoError(t, err)
+	require.Len(t, got.Spans, 2)
+	assert.Equal(t, "abc ", got.Spans[0].Text)
+	assert.False(t, got.Spans[0].Truncated)
+	assert.Equal(t, "def", got.Spans[1].Text)
+	assert.False(t, got.Spans[1].Truncated)
+	assert.False(t, got.TailDropped)
+}
+
 func policy(maxTokens, overlap, maxSpans int, truncation embedconfig.Truncation) embedfit.Policy {
 	return embedfit.Policy{
 		MaxTokens: maxTokens, OverlapTokens: overlap, MaxSpans: maxSpans, Truncation: truncation,

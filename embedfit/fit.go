@@ -45,10 +45,12 @@ type Span struct {
 }
 
 // Result is the fitted source. TailDropped is true when source text remains
-// after the emitted spans.
+// after the emitted spans. prefix and suffix are the pair Fit counted.
 type Result struct {
 	Spans       []Span
 	TailDropped bool
+	prefix      string
+	suffix      string
 }
 
 // Prepared is one model input plus the source coordinate it came from.
@@ -95,7 +97,7 @@ func Fit(source, prefix, suffix string, tok Tokenizer, policy Policy) (Result, e
 		return Result{}, errors.New("embed tokenizer is required")
 	}
 	if embedmodel.BlankText(source) {
-		return Result{}, nil
+		return Result{prefix: prefix, suffix: suffix}, nil
 	}
 	offsets := runeOffsets(source)
 	total := len(offsets) - 1
@@ -104,14 +106,14 @@ func Fit(source, prefix, suffix string, tok Tokenizer, policy Policy) (Result, e
 		return Result{}, err
 	}
 	if whole <= policy.MaxTokens {
-		return Result{Spans: []Span{spanAt(source, offsets, 0, total, false)}}, nil
+		return Result{Spans: []Span{spanAt(source, offsets, 0, total, false)}, prefix: prefix, suffix: suffix}, nil
 	}
 
 	var spans []Span
 	cursor := 0
 	for cursor < total {
 		if policy.MaxSpans > 0 && len(spans) >= policy.MaxSpans {
-			return finish(spans, true, policy.Truncation)
+			return finish(spans, true, policy.Truncation, prefix, suffix)
 		}
 		end, err := farthest(tok, prefix, suffix, source, offsets, cursor, total, policy.MaxTokens)
 		if err != nil {
@@ -119,7 +121,7 @@ func Fit(source, prefix, suffix string, tok Tokenizer, policy Policy) (Result, e
 		}
 		if end <= cursor {
 			if policy.Truncation == embedconfig.TruncationDropTail && len(spans) > 0 {
-				return finish(spans, true, policy.Truncation)
+				return finish(spans, true, policy.Truncation, prefix, suffix)
 			}
 			return Result{}, ErrInputTooLong
 		}
@@ -137,7 +139,7 @@ func Fit(source, prefix, suffix string, tok Tokenizer, policy Policy) (Result, e
 		}
 		spans = append(spans, spanAt(source, offsets, cursor, cut, !natural))
 		if cut >= total {
-			return Result{Spans: spans}, nil
+			return Result{Spans: spans, prefix: prefix, suffix: suffix}, nil
 		}
 		next, err := nextStart(tok, source, offsets, cursor, cut, total, policy.OverlapTokens)
 		if err != nil {
@@ -148,11 +150,16 @@ func Fit(source, prefix, suffix string, tok Tokenizer, policy Policy) (Result, e
 		}
 		cursor = next
 	}
-	return Result{Spans: spans}, nil
+	return Result{Spans: spans, prefix: prefix, suffix: suffix}, nil
 }
 
-// Prepared formats the spans with prefix and suffix.
+// Prepared formats the spans with the prefix and suffix Fit counted.
+// A different prefix or suffix is ignored. The fitted budget is the one
+// that matters.
 func (r Result) Prepared(prefix, suffix string) []Prepared {
+	if prefix != r.prefix || suffix != r.suffix {
+		prefix, suffix = r.prefix, r.suffix
+	}
 	out := make([]Prepared, len(r.Spans))
 	for i, span := range r.Spans {
 		out[i] = Prepared{
@@ -170,11 +177,11 @@ func (r Result) Prepared(prefix, suffix string) []Prepared {
 	return out
 }
 
-func finish(spans []Span, tail bool, truncation embedconfig.Truncation) (Result, error) {
+func finish(spans []Span, tail bool, truncation embedconfig.Truncation, prefix, suffix string) (Result, error) {
 	if tail && truncation == embedconfig.TruncationReject {
 		return Result{}, ErrTailDropped
 	}
-	return Result{Spans: spans, TailDropped: tail}, nil
+	return Result{Spans: spans, TailDropped: tail, prefix: prefix, suffix: suffix}, nil
 }
 
 func farthest(tok Tokenizer, prefix, suffix, source string, offsets []int, start, total, maxTokens int) (int, error) {
@@ -288,7 +295,7 @@ func softEnd(source string, offsets []int, start, end int) (int, bool) {
 	if best > 0 {
 		return runeAt(offsets, base+best), true
 	}
-	if i := strings.LastIndexByte(window, ' '); i > 0 {
+	if i := strings.LastIndexByte(window, ' '); i >= 0 {
 		return runeAt(offsets, base+i+1), true
 	}
 	return end, false
