@@ -10,13 +10,14 @@ import (
 )
 
 func TestBuildAndCompose(t *testing.T) {
-	q, err := sqlitefts.Build(sqlitefts.Request{
-		Mapping:         sqlitefts.Mapping{IndexTable: "docs_fts", IndexKey: "source_id", SourceTable: "docs", SourceKey: "id"},
+	h := newHelper(t, "docs_fts", "source_id", "docs", "id")
+	q, err := h.Build(sqlitefts.Request{
 		Match:           "alpha",
 		SourcePredicate: sqlitefts.Predicate{SQL: "d.tenant_id = ?", Args: []any{"tenant"}},
 		ExtraSourceCols: []sqlitefts.Column{{Name: "title", As: "title"}}, Limit: 4,
 	})
 	require.NoError(t, err)
+	require.Contains(t, q.SQL, `-bm25("docs_fts")`)
 
 	db, err := sql.Open("sqlite", ":memory:")
 	require.NoError(t, err)
@@ -52,9 +53,8 @@ CREATE VIRTUAL TABLE docs_fts USING fts5(body);
 INSERT INTO docs VALUES (1,'other','excluded'), (2,'tenant','kept');
 INSERT INTO docs_fts(rowid,body) VALUES (1,'alpha alpha'), (2,'alpha');`)
 	require.NoError(t, err)
-	q, err := sqlitefts.Build(sqlitefts.Request{
-		Mapping: sqlitefts.Mapping{IndexTable: "docs_fts", IndexKey: "rowid", SourceTable: "docs", SourceKey: "id"},
-		Match:   "alpha", SourcePredicate: sqlitefts.Predicate{SQL: "d.tenant = ?", Args: []any{"tenant"}}, Limit: 1,
+	q, err := newHelper(t, "docs_fts", "rowid", "docs", "id").Build(sqlitefts.Request{
+		Match: "alpha", SourcePredicate: sqlitefts.Predicate{SQL: "d.tenant = ?", Args: []any{"tenant"}}, Limit: 1,
 	})
 	require.NoError(t, err)
 	tx, err := db.BeginTx(t.Context(), nil)
@@ -71,17 +71,42 @@ INSERT INTO docs_fts(rowid,body) VALUES (1,'alpha alpha'), (2,'alpha');`)
 }
 
 func TestBuildRejectsCaseInsensitiveFixedAliasCollision(t *testing.T) {
-	_, err := sqlitefts.Build(sqlitefts.Request{
-		Mapping: sqlitefts.Mapping{IndexTable: "fts", IndexKey: "rowid", SourceTable: "docs", SourceKey: "id"},
-		Match:   "x", ExtraSourceCols: []sqlitefts.Column{{Name: "title", As: "DOC_KEY"}}, Limit: 1,
+	_, err := newHelper(t, "fts", "rowid", "docs", "id").Build(sqlitefts.Request{
+		Match: "x", ExtraSourceCols: []sqlitefts.Column{{Name: "title", As: "DOC_KEY"}}, Limit: 1,
 	})
 	require.Error(t, err)
 }
 
 func TestBuildRejectsPredicateArgsWithoutSQL(t *testing.T) {
-	_, err := sqlitefts.Build(sqlitefts.Request{
-		Mapping: sqlitefts.Mapping{IndexTable: "fts", IndexKey: "source_id", SourceTable: "docs", SourceKey: "id"},
-		Match:   "x", SourcePredicate: sqlitefts.Predicate{Args: []any{"tenant"}}, Limit: 1,
+	_, err := newHelper(t, "fts", "source_id", "docs", "id").Build(sqlitefts.Request{
+		Match: "x", SourcePredicate: sqlitefts.Predicate{Args: []any{"tenant"}}, Limit: 1,
 	})
 	require.Error(t, err)
+}
+
+func TestRankFunctionDefaultsToBM25AndCanBeReplaced(t *testing.T) {
+	custom := newHelper(t, "docs_fts", "rowid", "docs", "id", sqlitefts.WithRankFunction("rank"))
+	q, err := custom.Build(sqlitefts.Request{Match: "alpha", Limit: 1})
+	require.NoError(t, err)
+	require.Contains(t, q.SQL, `-rank("docs_fts")`)
+	require.NotContains(t, q.SQL, "bm25")
+
+	_, err = sqlitefts.New(sqlitefts.WithRankFunction("bm25("))
+	require.Error(t, err)
+	_, err = sqlitefts.New(sqlitefts.WithIndexTable("docs_fts"), sqlitefts.WithIndexKey("rowid"))
+	require.Error(t, err)
+}
+
+func newHelper(t *testing.T, indexTable, indexKey, sourceTable, sourceKey string, extra ...sqlitefts.Option) sqlitefts.Helper {
+	t.Helper()
+	opts := []sqlitefts.Option{
+		sqlitefts.WithIndexTable(indexTable),
+		sqlitefts.WithIndexKey(indexKey),
+		sqlitefts.WithSourceTable(sourceTable),
+		sqlitefts.WithSourceKey(sourceKey),
+	}
+	opts = append(opts, extra...)
+	h, err := sqlitefts.New(opts...)
+	require.NoError(t, err)
+	return h
 }
