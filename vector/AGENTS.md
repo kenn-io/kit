@@ -75,6 +75,17 @@ pipeline. Preserve these invariants when changing it.
 - With multiple fill workers, save a completed document without waiting for an
   unrelated earlier batch. Saves remain serialized even when encode calls
   complete out of order.
+- `WithFillDocumentLimit` bounds how many pending documents one Fill starts.
+  A document that returns `ErrStale` still counts. The next Fill continues
+  with what is still pending. A limit of zero or less does not bound the run.
+- `WithFillProgress` runs only after `SaveVectors` succeeds, including a
+  stamp-only save. It does not run when the save returns `ErrStale`.
+- `WithFillPrepared` replaces `Split` for that call. Text is the encoder
+  input and may differ from the source. `SourceSpan` and `Truncated` come
+  back through progress and are not stored. An empty chunk list is a
+  stamp-only save. An error from the prepare function aborts the page
+  before any of its documents are encoded or stamped. A blank prepared
+  text is still `ErrEmptyEmbeddingInput`.
 
 ## Keys and generations are opaque
 

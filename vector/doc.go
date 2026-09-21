@@ -4,6 +4,7 @@
 // It is organized in three layers:
 //
 //   - Transforms and value types: Split windows content into chunks,
+//     PreparedChunk carries caller-built inputs and source spans,
 //     Generation identifies an embedding model, EncodeBatched batches
 //     encode calls, and RollupByDocument and Merge reduce and combine
 //     search results across generations. These are pure functions.
