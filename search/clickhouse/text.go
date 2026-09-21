@@ -46,7 +46,7 @@ type Predicate struct {
 
 // TextRequest is one bounded text candidate query.
 // Set Text or Tokens. Tokens are sent as an array and are not tokenized
-// again. MatchToken accepts Text only.
+// again. An empty token list is rejected. MatchToken accepts Text only.
 type TextRequest struct {
 	Table           string
 	Key             string
@@ -93,6 +93,9 @@ func BuildText(req TextRequest) (sqlquery.Query, error) {
 	}
 	if useTokens && req.Match == MatchToken {
 		return sqlquery.Query{}, errors.New("clickhouse: token match requires text")
+	}
+	if useTokens && len(req.Tokens) == 0 {
+		return sqlquery.Query{}, errors.New("clickhouse: token list is empty")
 	}
 	if !useTokens && strings.TrimSpace(req.Text) == "" {
 		return sqlquery.Query{}, errors.New("clickhouse: query text is empty")

@@ -60,3 +60,27 @@ func TestBuildVectorKeepsCandidateLimitAndProbeSetting(t *testing.T) {
 	})
 	require.Error(t, err)
 }
+
+func TestBuildTextRejectsEmptyTokenList(t *testing.T) {
+	_, err := clickhouse.BuildText(clickhouse.TextRequest{
+		Table: "docs", Key: "id", TextColumn: "body",
+		Tokens: []string{}, Limit: 1,
+	})
+	require.Error(t, err)
+
+	tokens, err := clickhouse.BuildText(clickhouse.TextRequest{
+		Table: "docs", Key: "id", TextColumn: "body",
+		Tokens: []string{"a"}, Limit: 1,
+	})
+	require.NoError(t, err)
+	assert.Contains(t, tokens.SQL, "hasAllTokens(t.`body`, ?)")
+	assert.Equal(t, []any{[]string{"a"}, 1}, tokens.Args)
+
+	text, err := clickhouse.BuildText(clickhouse.TextRequest{
+		Table: "docs", Key: "id", TextColumn: "body",
+		Text: "a", Limit: 1,
+	})
+	require.NoError(t, err)
+	assert.Contains(t, text.SQL, "hasAllTokens(t.`body`, ?)")
+	assert.Equal(t, []any{"a", 1}, text.Args)
+}
