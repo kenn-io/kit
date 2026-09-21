@@ -14,10 +14,14 @@ import (
 
 func TestRunFusesBackendQueriesAndReportsWindows(t *testing.T) {
 	db := openDocs(t)
-	lexical, err := sqlitefts.Build(sqlitefts.Request{
-		Mapping: sqlitefts.Mapping{IndexTable: "docs_fts", IndexKey: "rowid", SourceTable: "docs", SourceKey: "id"},
-		Match:   "alpha", Limit: 2,
-	})
+	fts, err := sqlitefts.New(
+		sqlitefts.WithIndexTable("docs_fts"),
+		sqlitefts.WithIndexKey("rowid"),
+		sqlitefts.WithSourceTable("docs"),
+		sqlitefts.WithSourceKey("id"),
+	)
+	require.NoError(t, err)
+	lexical, err := fts.Build(sqlitefts.Request{Match: "alpha", Limit: 2})
 	require.NoError(t, err)
 	vector := sqlquery.Query{SQL: `SELECT id AS doc_key, 0.0 AS score FROM docs WHERE id IN (2, 3) ORDER BY id DESC`}
 
