@@ -2,8 +2,11 @@ package embedclient_test
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -290,6 +293,85 @@ func TestEmbedRejectsOversizedResponse(t *testing.T) {
 	require.NoError(t, err)
 	_, err = limited.Embed(t.Context(), oneText())
 	require.EqualError(t, err, "embed response exceeds the configured cap")
+}
+
+func TestEmbedSplitsOneRoleWhenTokenBudgetIsSmall(t *testing.T) {
+	var sizes []int
+	client := newClient(t, unitModel(), embedconfig.Roles{}, embedconfig.Batch{
+		Items: 8, MaxTokens: 5, InputTokenUpperBound: 2,
+	}, func(w http.ResponseWriter, r *http.Request) {
+		body := readBody(t, r)
+		inputs := body["input"].([]any)
+		sizes = append(sizes, len(inputs))
+		data := make([]map[string]any, len(inputs))
+		for i := range inputs {
+			data[i] = map[string]any{"index": i, "embedding": []float64{1, 0}}
+		}
+		writeJSON(t, w, map[string]any{"data": data})
+	})
+	vectors, err := client.Embed(t.Context(), []embedmodel.Content{
+		{Role: embedconfig.RoleDocument, Kind: embedmodel.KindText, Text: "one"},
+		{Role: embedconfig.RoleDocument, Kind: embedmodel.KindText, Text: "two"},
+		{Role: embedconfig.RoleDocument, Kind: embedmodel.KindText, Text: "three"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []int{2, 1}, sizes)
+	require.Len(t, vectors, 3)
+}
+
+func TestEmbedDecodesBase64Float32Payload(t *testing.T) {
+	want := []float32{1.25, -3.5}
+	raw := make([]byte, 8)
+	binary.LittleEndian.PutUint32(raw[0:4], math.Float32bits(want[0]))
+	binary.LittleEndian.PutUint32(raw[4:8], math.Float32bits(want[1]))
+	encoded := base64.StdEncoding.EncodeToString(raw)
+	model := unitModel()
+	model.Normalization = embedconfig.NormalizationNone
+	model.EncodingFormat = "base64"
+	client := newClient(t, model, embedconfig.Roles{}, embedconfig.Batch{}, func(w http.ResponseWriter, r *http.Request) {
+		body := readBody(t, r)
+		assert.Equal(t, "base64", body["encoding_format"])
+		writeJSON(t, w, map[string]any{
+			"data": []map[string]any{{"embedding": encoded}},
+		})
+	})
+	vectors, err := client.Embed(t.Context(), oneText())
+	require.NoError(t, err)
+	require.Len(t, vectors, 1)
+	assert.InDeltaSlice(t, want, vectors[0], 0)
+}
+
+func TestNewRejectsNonCosineMetric(t *testing.T) {
+	for _, metric := range []embedconfig.Metric{embedconfig.MetricDotProduct, embedconfig.MetricL2} {
+		t.Run(string(metric), func(t *testing.T) {
+			model := unitModel()
+			model.Metric = metric
+			_, err := embedclient.New(embedclient.Options{
+				Model:      model,
+				Deployment: embedconfig.Deployment{BaseURL: "https://example.test/v1"},
+			})
+			require.EqualError(t, err, "embed model metric must be cosine")
+		})
+	}
+}
+
+func TestNewRejectsUnsupportedEncodingFormat(t *testing.T) {
+	model := unitModel()
+	model.EncodingFormat = "bytes"
+	_, err := embedclient.New(embedclient.Options{
+		Model:      model,
+		Deployment: embedconfig.Deployment{BaseURL: "https://example.test/v1"},
+	})
+	require.EqualError(t, err, "embed encoding format must be empty, float, or base64")
+}
+
+func TestNewRejectsTokenBoundAboveTheBudget(t *testing.T) {
+	_, err := embedclient.New(embedclient.Options{
+		Model:      unitModel(),
+		Deployment: embedconfig.Deployment{BaseURL: "https://example.test/v1"},
+		Batch:      embedconfig.Batch{Items: 4, MaxTokens: 3, InputTokenUpperBound: 4},
+	})
+	require.EqualError(t, err, "embed batch per-input token bound must fit in the aggregate cap")
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

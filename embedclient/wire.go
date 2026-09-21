@@ -1,6 +1,8 @@
 package embedclient
 
 import (
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json/jsontext"
 	"errors"
 	"fmt"
@@ -24,8 +26,79 @@ type wireResponse struct {
 }
 
 type wireItem struct {
-	Embedding jsontext.Value `json:"embedding"`
-	Index     *int           `json:"index"`
+	Embedding wireEmbedding `json:"embedding"`
+	Index     *int          `json:"index"`
+}
+
+// wireEmbedding is one returned vector. Providers send a JSON array of finite
+// numbers or a base64 string of little-endian float32 values.
+type wireEmbedding struct {
+	values []float32
+	err    error
+}
+
+func (e *wireEmbedding) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
+	switch dec.PeekKind() {
+	case '[':
+		var elements []*float64
+		if err := jsonv2.UnmarshalDecode(dec, &elements); err != nil {
+			return errors.New("vector is invalid")
+		}
+		e.values, e.err = finiteFloat32s(elements)
+		return nil
+	case '"':
+		return e.unmarshalBase64(dec)
+	default:
+		if err := dec.SkipValue(); err != nil {
+			return err
+		}
+		e.err = errors.New("vector is invalid")
+		return nil
+	}
+}
+
+func (e *wireEmbedding) unmarshalBase64(dec *jsontext.Decoder) error {
+	tok, err := dec.ReadToken()
+	if err != nil {
+		return err
+	}
+	if tok.Kind() != '"' {
+		e.err = errors.New("vector is invalid")
+		return nil
+	}
+	decoded, err := base64.StdEncoding.DecodeString(tok.String())
+	if err != nil {
+		return errors.New("vector is invalid")
+	}
+	if len(decoded)%4 != 0 {
+		return errors.New("vector is invalid")
+	}
+	out := make([]float32, len(decoded)/4)
+	for i := range out {
+		value := math.Float32frombits(binary.LittleEndian.Uint32(decoded[i*4 : (i+1)*4]))
+		if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {
+			e.err = fmt.Errorf("component %d is not finite", i)
+			return nil
+		}
+		out[i] = value
+	}
+	e.values = out
+	return nil
+}
+
+func finiteFloat32s(elements []*float64) ([]float32, error) {
+	out := make([]float32, len(elements))
+	for i, element := range elements {
+		if element == nil {
+			return nil, fmt.Errorf("component %d is null", i)
+		}
+		value := float32(*element)
+		if math.IsNaN(*element) || math.IsInf(*element, 0) || math.IsInf(float64(value), 0) {
+			return nil, fmt.Errorf("component %d is not finite", i)
+		}
+		out[i] = value
+	}
+	return out, nil
 }
 
 func (c *Client) decode(payload []byte, count int) ([][]float32, error) {
@@ -48,7 +121,7 @@ func (c *Client) decode(payload []byte, count int) ([][]float32, error) {
 	return out, nil
 }
 
-func orderItems(items []wireItem, count int) ([]jsontext.Value, error) {
+func orderItems(items []wireItem, count int) ([]wireEmbedding, error) {
 	if len(items) != count {
 		return nil, fmt.Errorf("embed response contained %d vectors for %d inputs", len(items), count)
 	}
@@ -58,7 +131,7 @@ func orderItems(items []wireItem, count int) ([]jsontext.Value, error) {
 			missing++
 		}
 	}
-	out := make([]jsontext.Value, count)
+	out := make([]wireEmbedding, count)
 	if missing == count {
 		for i, item := range items {
 			out[i] = item.Embedding
@@ -83,22 +156,17 @@ func orderItems(items []wireItem, count int) ([]jsontext.Value, error) {
 	return out, nil
 }
 
-func decodeVector(raw jsontext.Value, dims int, normalization embedconfig.Normalization) ([]float32, error) {
-	var elements []*float64
-	if err := jsonv2.Unmarshal(raw, &elements); err != nil || len(raw) == 0 {
-		return nil, errors.New("vector is invalid")
+func decodeVector(raw wireEmbedding, dims int, normalization embedconfig.Normalization) ([]float32, error) {
+	if raw.err != nil {
+		return nil, raw.err
 	}
-	if len(elements) != dims {
-		return nil, fmt.Errorf("has %d dimensions, expected %d", len(elements), dims)
+	if len(raw.values) != dims {
+		return nil, fmt.Errorf("has %d dimensions, expected %d", len(raw.values), dims)
 	}
-	out := make([]float32, len(elements))
+	out := make([]float32, len(raw.values))
 	var sumSquares float64
-	for i, element := range elements {
-		if element == nil {
-			return nil, fmt.Errorf("component %d is null", i)
-		}
-		value := float32(*element)
-		if math.IsNaN(*element) || math.IsInf(*element, 0) || math.IsInf(float64(value), 0) {
+	for i, value := range raw.values {
+		if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {
 			return nil, fmt.Errorf("component %d is not finite", i)
 		}
 		out[i] = value

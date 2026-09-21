@@ -38,14 +38,19 @@ type Client struct {
 	endpoint    string
 	model       embedconfig.Model
 	roles       embedconfig.Roles
-	batchItems  int
+	batchItems  int // same-role cap after applying a token budget
 	maxResponse int64
 }
 
 // New validates opts and returns a client pinned to the deployment origin.
+// The metric must be cosine, and the encoding format must be empty, float,
+// or base64. A token budget lowers the same-role item cap.
 func New(opts Options) (*Client, error) {
 	model, err := opts.Model.Prepared()
 	if err != nil {
+		return nil, err
+	}
+	if err := validateEncodedModel(model); err != nil {
 		return nil, err
 	}
 	roles, err := opts.Roles.Prepared()
@@ -57,6 +62,10 @@ func New(opts Options) (*Client, error) {
 		return nil, err
 	}
 	batch, err := opts.Batch.Prepared()
+	if err != nil {
+		return nil, err
+	}
+	items, err := batchItemCap(batch)
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +90,7 @@ func New(opts Options) (*Client, error) {
 		endpoint:    embeddingsURL(canonical),
 		model:       model,
 		roles:       roles,
-		batchItems:  batch.Items,
+		batchItems:  items,
 		maxResponse: int64(transport.MaxResponseBytes),
 	}, nil
 }
@@ -120,6 +129,8 @@ func (c *Client) Embed(ctx context.Context, inputs []embedmodel.Content) ([][]fl
 }
 
 // EncodeFunc adapts one role to vector.EncodeFunc.
+// New rejects every metric other than cosine, so this cannot feed the
+// cosine pipeline from a different distance.
 func (c *Client) EncodeFunc(role embedconfig.Role) vector.EncodeFunc {
 	return func(ctx context.Context, texts []string) ([][]float32, error) {
 		inputs := make([]embedmodel.Content, len(texts))
@@ -215,4 +226,37 @@ func (c *Client) requestBody(role embedconfig.Role, texts []string) ([]byte, err
 		return nil, fmt.Errorf("embed request encoding failed: %w", err)
 	}
 	return body, nil
+}
+
+func validateEncodedModel(model embedconfig.Model) error {
+	if model.Metric != embedconfig.MetricCosine {
+		return errors.New("embed model metric must be cosine")
+	}
+	switch model.EncodingFormat {
+	case "", "float", "base64":
+		return nil
+	default:
+		return errors.New("embed encoding format must be empty, float, or base64")
+	}
+}
+
+// batchItemCap is how many same-role inputs fit in one request.
+// With a token budget the cap is min(Items, MaxTokens/InputTokenUpperBound).
+// An input that cannot fit in MaxTokens is an error, not a one-item request.
+func batchItemCap(batch embedconfig.Batch) (int, error) {
+	if batch.MaxTokens == 0 && batch.InputTokenUpperBound == 0 {
+		return batch.Items, nil
+	}
+	if batch.MaxTokens <= 0 || batch.InputTokenUpperBound <= 0 || batch.InputTokenUpperBound > batch.MaxTokens {
+		return 0, errors.New("embed batch per-input token bound must fit in the aggregate cap")
+	}
+	byTokens := batch.MaxTokens / batch.InputTokenUpperBound
+	if byTokens < 1 {
+		return 0, errors.New("embed batch per-input token bound must fit in the aggregate cap")
+	}
+	items := min(batch.Items, byTokens)
+	if items < 1 {
+		return 0, errors.New("embed batch items must be positive")
+	}
+	return items, nil
 }
