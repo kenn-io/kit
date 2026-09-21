@@ -272,3 +272,16 @@ func TestEncodeBatchedStopsOnCancelledContext(t *testing.T) {
 	_, err := vector.EncodeBatched(ctx, echoEncoder(nil), chunks("a", "b"), vector.WithBatchSize(1))
 	assert.ErrorIs(t, err, context.Canceled)
 }
+
+func TestEncodeOneReturnsTheSingleVector(t *testing.T) {
+	require := require.New(t)
+	ctx := t.Context()
+	var batches [][]string
+	vec, err := vector.EncodeOne(ctx, echoEncoder(func(batch []string) { batches = append(batches, batch) }), "hello")
+	require.NoError(err)
+	require.Len(vec, 1)
+	require.Equal([][]string{{"hello"}}, batches)
+
+	_, err = vector.EncodeOne(ctx, echoEncoder(nil), "   ")
+	require.ErrorIs(err, vector.ErrEmptyEmbeddingInput)
+}

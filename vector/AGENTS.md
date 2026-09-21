@@ -117,6 +117,19 @@ pipeline. Preserve these invariants when changing it.
   `Search` must keep querying every generation `LiveGenerations` returns,
   in the order it returns them.
 
+## Snapshots export what search would see
+
+- `sqlitevec.Snapshot` is the read surface for replicating a generation
+  elsewhere. `CoveredDocs` and `UncoveredCount` are built on the same
+  `coveredPredicate` as `PendingForGeneration` and `QueryGeneration`; a
+  caller must never re-derive the freshness rule or the managed table
+  names from `VectorsPrefix` to export vectors.
+- A snapshot holds one read transaction until `Close`, so the documents,
+  their chunks, and the readiness count describe one instant. Rows from
+  `CoveredDocs` must be closed before the snapshot.
+- `Chunks` reads whatever the generation holds for a document. Only export
+  documents that `CoveredDocs` returned from the same snapshot.
+
 ## Hits come from live, current documents
 
 - Backends must not return hits whose source row no longer exists; the
