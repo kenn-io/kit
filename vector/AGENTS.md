@@ -116,6 +116,10 @@ pipeline. Preserve these invariants when changing it.
   building generation while the active generation still serves the bulk.
   `Search` must keep querying every generation `LiveGenerations` returns,
   in the order it returns them.
+- sqlitevec `Activate` publishes a generation only when that generation's
+  vec0 table still exists. `Reclaim` drops the table and keeps the
+  generation row. An empty corpus must not mark the reclaimed generation
+  active, and `Activate` must not recreate the table.
 
 ## Snapshots export what search would see
 

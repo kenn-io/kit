@@ -81,12 +81,14 @@ SELECT
 }
 
 // Activate publishes gen as the active generation when every document is
-// covered, and retires every other building or active generation, in one
-// transaction. A non-zero backlog returns an error wrapping ErrUncovered
-// and leaves every state unchanged. Activation does not drop storage;
-// call Reclaim for a retired generation. LiveGenerations still returns
-// building and active generations, so callers that serve only the active
-// generation select it themselves.
+// covered and gen's vec0 table still exists, and retires every other
+// building or active generation, in one transaction. A non-zero backlog
+// returns an error wrapping ErrUncovered and leaves every state unchanged.
+// A missing vec0 table, including one Reclaim has dropped, also leaves
+// every state unchanged. Activate does not recreate the table. Activation
+// does not drop storage; call Reclaim for a retired generation.
+// LiveGenerations still returns building and active generations, so
+// callers that serve only the active generation select it themselves.
 func (s *Store[K, G]) Activate(ctx context.Context, gen G) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -112,6 +114,15 @@ func (s *Store[K, G]) Activate(ctx context.Context, gen G) error {
 	if coverage.Backlog != 0 {
 		return &UncoveredError{Backlog: coverage.Backlog}
 	}
+	// Reclaim drops this table and leaves the generation row. An empty
+	// corpus has no backlog, so publication has to see the table itself.
+	exists, err := s.vecTableExists(ctx, tx, ordinal)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("generation %v vec0 table %s is missing", gen, s.vecTable(ordinal))
+	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
 UPDATE %s
    SET state = CASE WHEN gen_key = ? THEN ? ELSE ? END
@@ -124,6 +135,55 @@ UPDATE %s
 		return fmt.Errorf("commit generation activation: %w", err)
 	}
 	return nil
+}
+
+// vecTableExists reports whether the vec0 table EnsureGeneration created
+// for ordinal is still present. The name is the store's own vecTable name.
+func (s *Store[K, G]) vecTableExists(ctx context.Context, q rowQueryer, ordinal int64) (bool, error) {
+	var one int
+	err := q.QueryRowContext(ctx, `SELECT 1 FROM sqlite_master WHERE name = ?`, s.vecTable(ordinal)).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("check vec0 table %s: %w", s.vecTable(ordinal), err)
+	}
+	return true, nil
+}
+
+// GenerationInfo describes one registered generation.
+type GenerationInfo[G comparable] struct {
+	Key         G
+	Fingerprint string
+	Dimension   int
+	State       State
+}
+
+// Generations lists every registered generation in creation order,
+// whatever its state. LiveGenerations remains the search-time view.
+func (s *Store[K, G]) Generations(ctx context.Context) ([]GenerationInfo[G], error) {
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(
+		`SELECT gen_key, fingerprint, dimension, state FROM %s ORDER BY ordinal`,
+		s.generationsTable()))
+	if err != nil {
+		return nil, fmt.Errorf("list generations: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var gens []GenerationInfo[G]
+	for rows.Next() {
+		var info GenerationInfo[G]
+		var state string
+		if err := rows.Scan(&info.Key, &info.Fingerprint, &info.Dimension, &state); err != nil {
+			return nil, fmt.Errorf("scan generation: %w", err)
+		}
+		info.State = State(state)
+		gens = append(gens, info)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list generations: %w", err)
+	}
+	return gens, nil
 }
 
 // ActiveGeneration returns the newest active generation. Newest means the
