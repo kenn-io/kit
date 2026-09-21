@@ -79,11 +79,7 @@ func (a Analyzer) PrepareLiteral(text string) (Prepared, error) {
 	fields := strings.Fields(text)
 	parts := make([]string, 0, len(fields))
 	for _, field := range fields {
-		part, err := a.renderTerm(field)
-		if err != nil {
-			return Prepared{}, err
-		}
-		parts = append(parts, part)
+		parts = append(parts, a.renderTerm(field))
 	}
 	return Prepared{
 		Match:       strings.Join(parts, " "),
@@ -106,11 +102,7 @@ func (a Analyzer) PreparePhrase(text string) (Prepared, error) {
 	flat := strings.Join(strings.Fields(text), " ")
 	match := quote(flat)
 	if a.Identity.Kind == KindCharacterPhrase {
-		var err error
-		match, err = a.renderTerm(flat)
-		if err != nil {
-			return Prepared{}, err
-		}
+		match = a.renderTerm(flat)
 	}
 	return Prepared{Match: match, Identity: a.Identity, SnippetTerm: flat}, nil
 }
@@ -173,11 +165,11 @@ func (a Analyzer) segmented(text string) (Prepared, error) {
 	}, nil
 }
 
-func (a Analyzer) renderTerm(term string) (string, error) {
+func (a Analyzer) renderTerm(term string) string {
 	if a.Identity.Kind == KindCharacterPhrase && containsCJK(term) {
-		return quote(characterPhrase(term)), nil
+		return quote(characterPhrase(term))
 	}
-	return quote(term), nil
+	return quote(term)
 }
 
 func (a Analyzer) valid() error {
