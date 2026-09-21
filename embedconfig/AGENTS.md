@@ -15,5 +15,8 @@
   of both identities.
 - API keys are not fields of these types. Callers resolve secrets and pass
   them to the HTTP client.
+- `CanonicalEndpoint` and `Origin` reject an empty hostname, including a
+  port with no host. An IPv6 zone is not lowercased; its percent signs are
+  encoded as `%25`. Link-local checks use the address without the zone.
 - `vector.Split` remains a rune window helper. Token limits here do not
   require that splitter.

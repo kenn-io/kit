@@ -1,6 +1,7 @@
 package embedconfig_test
 
 import (
+	"net/url"
 	"testing"
 	"time"
 
@@ -167,6 +168,46 @@ func TestCanonicalEndpoint(t *testing.T) {
 	loopback, err := embedconfig.CanonicalEndpoint("http://127.0.0.1:8080/v1", false)
 	require.NoError(t, err)
 	assert.Equal(t, "http://127.0.0.1:8080/v1", loopback)
+}
+
+func TestCanonicalEndpointHostAndIPv6Zone(t *testing.T) {
+	_, err := embedconfig.CanonicalEndpoint("https://:443/v1", false)
+	require.Error(t, err)
+	portOnly, err := url.Parse("https://:443/v1")
+	require.NoError(t, err)
+	_, err = embedconfig.Origin(portOnly)
+	require.Error(t, err)
+
+	plain, err := embedconfig.CanonicalEndpoint("https://[::1]:443/v1/", false)
+	require.NoError(t, err)
+	assert.Equal(t, "https://[::1]/v1", plain)
+
+	const want = "https://[fe80::1%25Eth0]/v1"
+	got, err := embedconfig.CanonicalEndpoint("https://[fe80::1%Eth0]/v1", false)
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
+	encoded, err := embedconfig.CanonicalEndpoint("https://[FE80::1%25Eth0]/v1/", false)
+	require.NoError(t, err)
+	assert.Equal(t, want, encoded)
+	again, err := embedconfig.CanonicalEndpoint(got, false)
+	require.NoError(t, err)
+	assert.Equal(t, got, again)
+	assert.Contains(t, again, "Eth0")
+
+	parsed, err := url.Parse(got)
+	require.NoError(t, err)
+	origin, err := embedconfig.Origin(parsed)
+	require.NoError(t, err)
+	assert.Equal(t, "https://[fe80::1%25Eth0]", origin)
+
+	_, err = embedconfig.CanonicalEndpoint("http://[fe80::1%eth0]/v1", false)
+	require.Error(t, err)
+	trusted, err := embedconfig.CanonicalEndpoint("http://[fe80::1%Eth0]:8080/v1/", true)
+	require.NoError(t, err)
+	assert.Equal(t, "http://[fe80::1%25Eth0]:8080/v1", trusted)
+	trustedAgain, err := embedconfig.CanonicalEndpoint(trusted, true)
+	require.NoError(t, err)
+	assert.Equal(t, trusted, trustedAgain)
 }
 
 func endpointRetrievalSetup() embedconfig.Setup {
