@@ -1,0 +1,166 @@
+package embedmodel_test
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"go.kenn.io/kit/embedconfig"
+	"go.kenn.io/kit/embedmodel"
+)
+
+func TestTextAndPartsStayDistinct(t *testing.T) {
+	text := embedmodel.Content{
+		Role: embedconfig.RoleDocument,
+		Kind: embedmodel.KindText,
+		Text: "alpha",
+		Spans: []embedmodel.SourceSpan{{
+			ByteStart: 0, ByteEnd: 5, RuneStart: 0, RuneEnd: 5, Label: "body",
+		}},
+	}
+	got, err := text.EmbedText()
+	require.NoError(t, err)
+	assert.Equal(t, "alpha", got)
+
+	parts := embedmodel.Content{
+		Role: embedconfig.RoleQuery,
+		Kind: embedmodel.KindText,
+		Parts: []embedmodel.Part{
+			{Kind: embedmodel.KindText, Text: "one"},
+			{Kind: embedmodel.KindText, Text: "two"},
+		},
+	}
+	got, err = parts.EmbedText()
+	require.NoError(t, err)
+	assert.Equal(t, "one\ntwo", got)
+
+	image := embedmodel.Content{
+		Role: embedconfig.RoleDocument,
+		Kind: embedmodel.KindImage,
+		Parts: []embedmodel.Part{{
+			Kind: embedmodel.KindImage, MediaType: "image/png",
+		}},
+	}
+	require.NoError(t, image.Validate())
+	_, err = image.EmbedText()
+	require.ErrorIs(t, err, embedmodel.ErrUnsupportedContent)
+}
+
+func TestBlankTextMatchesTheEmbeddingRule(t *testing.T) {
+	assert.True(t, embedmodel.BlankText(""))
+	assert.True(t, embedmodel.BlankText(" \t\n\u200b\ufeff"))
+	assert.False(t, embedmodel.BlankText("\u2800"))
+	assert.False(t, embedmodel.BlankText("a"))
+}
+
+func TestDescriptorIdentitiesStaySeparate(t *testing.T) {
+	document := sampleDescriptor()
+	require.NoError(t, document.Validate())
+
+	generation, err := document.Generation()
+	require.NoError(t, err)
+	assert.Equal(t, "bge-m3", generation.Model)
+	assert.Equal(t, 1024, generation.Dimensions)
+
+	lexical := document.Lexical
+	lexical.DictionaryRevision = "dict-2"
+	changed := document
+	changed.Lexical = lexical
+	changedGeneration, err := changed.Generation()
+	require.NoError(t, err)
+	assert.Equal(t, generation.Fingerprint(), changedGeneration.Fingerprint())
+
+	left, err := document.Lexical.Identity()
+	require.NoError(t, err)
+	right, err := changed.Lexical.Identity()
+	require.NoError(t, err)
+	assert.NotEqual(t, left, right)
+	assert.NotContains(t, generation.Params, "lexical")
+
+	wider := document
+	wider.Input.OverlapTokens = 8
+	widerGeneration, err := wider.Generation()
+	require.NoError(t, err)
+	assert.NotEqual(t, generation.Fingerprint(), widerGeneration.Fingerprint())
+	assert.Equal(t, generation.Params["vector_space"], widerGeneration.Params["vector_space"])
+}
+
+func TestQueryCompatibilityIgnoresInputWindow(t *testing.T) {
+	document := sampleDescriptor()
+	query := document
+	query.Input.MaxTokens = 64
+	query.Input.OverlapTokens = 0
+	query.Input.MaxSpans = 1
+	require.NoError(t, embedmodel.Compatible(document, query))
+
+	query.Model.Dimensions = 768
+	err := embedmodel.Compatible(document, query)
+	require.ErrorIs(t, err, embedmodel.ErrIncompatible)
+}
+
+func TestCoordinatesRequireSpansForText(t *testing.T) {
+	descriptor := sampleDescriptor()
+	descriptor.Coordinates = true
+	missing := embedmodel.Content{
+		Role: embedconfig.RoleDocument,
+		Kind: embedmodel.KindText,
+		Text: "alpha",
+	}
+	require.Error(t, descriptor.ValidateContent(missing))
+
+	missing.Spans = []embedmodel.SourceSpan{{ByteEnd: 5, RuneEnd: 5}}
+	require.NoError(t, descriptor.ValidateContent(missing))
+
+	image := embedmodel.Content{
+		Role: embedconfig.RoleDocument,
+		Kind: embedmodel.KindImage,
+		Parts: []embedmodel.Part{{
+			Kind: embedmodel.KindImage, MediaType: "image/png",
+		}},
+	}
+	require.NoError(t, descriptor.ValidateContent(image))
+}
+
+func TestFormatUsesLiteralAffixes(t *testing.T) {
+	roles := embedconfig.Roles{DocumentPrefix: "doc: ", QuerySuffix: " ?"}
+	got, err := embedmodel.Format(embedconfig.RoleDocument, "alpha", roles)
+	require.NoError(t, err)
+	assert.Equal(t, "doc: alpha", got)
+	got, err = embedmodel.Format(embedconfig.RoleQuery, "alpha", roles)
+	require.NoError(t, err)
+	assert.Equal(t, "alpha ?", got)
+}
+
+func sampleDescriptor() embedmodel.Descriptor {
+	return embedmodel.Descriptor{
+		Model: embedconfig.Model{
+			Name:          "bge-m3",
+			Revision:      "weights-epoch",
+			Dimensions:    1024,
+			Metric:        embedconfig.MetricCosine,
+			Normalization: embedconfig.NormalizationL2,
+			Pooling:       "cls",
+		},
+		Roles: embedconfig.Roles{
+			DocumentPrefix: "search_document: ",
+			QueryPrefix:    "search_query: ",
+		},
+		Deployment: embedconfig.Deployment{BaseURL: "http://127.0.0.1:11434/v1"},
+		Input: embedconfig.InputLimits{
+			Recipe:            "v2",
+			Tokenizer:         "bge-m3",
+			TokenizerRevision: "rev",
+			ContentID:         "body",
+			MaxTokens:         512,
+			OverlapTokens:     64,
+			MaxSpans:          50,
+			Truncation:        embedconfig.TruncationDropTail,
+		},
+		Lexical: embedmodel.LexicalAnalyzer{
+			Name:               "unicode-words",
+			Revision:           "1",
+			DictionaryRevision: "dict-1",
+		},
+	}
+}
