@@ -18,6 +18,8 @@ import (
 // in which case private, link-local, unspecified, and carrier-grade NAT
 // addresses are also allowed. The zone is removed before that check.
 // A DNS name other than localhost is never treated as private.
+// A parent step is a decoded path piece that is exactly "..". A name that
+// contains two dots, such as "v1..2", is kept.
 func CanonicalEndpoint(raw string, trustPrivateNetwork bool) (string, error) {
 	parsed, err := parseEndpoint(strings.TrimSpace(raw))
 	if err != nil {
@@ -36,13 +38,24 @@ func CanonicalEndpoint(raw string, trustPrivateNetwork bool) (string, error) {
 	if parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", errors.New("embed endpoint must not include a query or fragment")
 	}
-	if strings.Contains(parsed.EscapedPath(), "..") {
+	if pathHasParentSegment(parsed.Path) {
 		return "", errors.New("embed endpoint path must not contain a parent segment")
 	}
 	if parsed.Scheme == "http" && !plaintextAllowed(addr, trustPrivateNetwork) {
 		return "", errors.New("embed plaintext http requires loopback or an explicitly trusted private address")
 	}
 	return schemeHost(parsed) + strings.TrimRight(parsed.EscapedPath(), "/"), nil
+}
+
+// pathHasParentSegment reports a decoded path piece that is exactly "..".
+// A name that merely contains two dots, such as "v1..2", is kept.
+func pathHasParentSegment(path string) bool {
+	for seg := range strings.SplitSeq(path, "/") {
+		if seg == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 // Origin returns the canonical scheme and host of u, without a path.

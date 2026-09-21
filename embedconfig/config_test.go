@@ -168,6 +168,14 @@ func TestCanonicalEndpoint(t *testing.T) {
 	loopback, err := embedconfig.CanonicalEndpoint("http://127.0.0.1:8080/v1", false)
 	require.NoError(t, err)
 	assert.Equal(t, "http://127.0.0.1:8080/v1", loopback)
+
+	_, err = embedconfig.CanonicalEndpoint("https://example.test/v1/../admin", false)
+	require.Error(t, err)
+	_, err = embedconfig.CanonicalEndpoint("https://example.test/v1/%2e%2e/admin", false)
+	require.Error(t, err)
+	dotted, err := embedconfig.CanonicalEndpoint("https://example.test/v1..2/models/", false)
+	require.NoError(t, err)
+	assert.Equal(t, "https://example.test/v1..2/models", dotted)
 }
 
 func TestCanonicalEndpointHostAndIPv6Zone(t *testing.T) {
