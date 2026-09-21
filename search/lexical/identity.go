@@ -1,0 +1,123 @@
+package lexical
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"strings"
+)
+
+const (
+	// KindLiteral quotes search terms and leaves tokenization to the index.
+	KindLiteral = "literal"
+	// KindCharacterPhrase splits Han, Hiragana, Katakana, and Hangul into
+	// adjacent character tokens. It does not apply a morphological dictionary.
+	KindCharacterPhrase = "character-phrase"
+	// KindChinese is caller-supplied Chinese segmentation, typically cppjieba.
+	// The runtime fingerprint distinguishes dictionary and library revisions.
+	KindChinese = "chinese-cppjieba"
+)
+
+const (
+	literalVersion         = "v1"
+	characterPhraseVersion = "v1"
+	// ChineseQueryVersion is the query-format revision mixed into a Chinese
+	// runtime fingerprint by callers. Dictionary bytes are hashed separately.
+	ChineseQueryVersion = "chinese-cppjieba-v1"
+)
+
+// Identity is the analyzer contract shared by indexing and query preparation.
+// Equal identities are required before a prepared query is safe to run.
+// Operational limits such as candidate windows are not part of it.
+type Identity struct {
+	Kind    string
+	Version string
+	// Runtime is empty for analyzers that have no external dictionary.
+	// For Chinese segmentation it is the runtime fingerprint.
+	Runtime string
+}
+
+func (id Identity) equal(other Identity) bool {
+	return id.Kind == other.Kind && id.Version == other.Version && id.Runtime == other.Runtime
+}
+
+// Same reports whether an index identity and a query identity can be used
+// together. A mismatch means the query tokens are not the index tokens.
+func Same(index, query Identity) error {
+	if index.equal(query) {
+		return nil
+	}
+	return fmt.Errorf("lexical: analyzer identity mismatch: index %s, query %s", index, query)
+}
+
+func (id Identity) String() string {
+	parts := []string{id.Kind, id.Version}
+	if id.Runtime != "" {
+		parts = append(parts, id.Runtime)
+	}
+	return strings.Join(parts, "/")
+}
+
+func literalIdentity() Identity {
+	return Identity{Kind: KindLiteral, Version: literalVersion}
+}
+
+func characterPhraseIdentity() Identity {
+	return Identity{Kind: KindCharacterPhrase, Version: characterPhraseVersion}
+}
+
+// RuntimeFile is one named blob that participates in a Chinese runtime
+// fingerprint. Name is the file's base name. Data is its full contents.
+type RuntimeFile struct {
+	Name string
+	Data []byte
+}
+
+// FingerprintRuntime hashes a schema version and ordered runtime files.
+// Changing the version, a file name, file order, or any byte changes the
+// result. The caller supplies library and dictionary bytes; nothing is read
+// from disk. Typical cppjieba inputs are the extension library plus
+// hmm_model.utf8, idf.utf8, jieba.dict.utf8, stop_words.utf8, and
+// user.dict.utf8.
+func FingerprintRuntime(version string, files []RuntimeFile) (string, error) {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		return "", errors.New("lexical: runtime fingerprint version is required")
+	}
+	if len(files) == 0 {
+		return "", errors.New("lexical: runtime fingerprint requires files")
+	}
+	h := sha256.New()
+	if _, err := io.WriteString(h, version); err != nil {
+		return "", err
+	}
+	if _, err := h.Write([]byte{0}); err != nil {
+		return "", err
+	}
+	seen := make(map[string]struct{}, len(files))
+	for _, file := range files {
+		name := strings.TrimSpace(file.Name)
+		if name == "" || strings.Contains(name, "/") || strings.Contains(name, `\`) {
+			return "", fmt.Errorf("lexical: invalid runtime file name %q", file.Name)
+		}
+		if _, ok := seen[name]; ok {
+			return "", fmt.Errorf("lexical: duplicate runtime file %q", name)
+		}
+		seen[name] = struct{}{}
+		if _, err := io.WriteString(h, name); err != nil {
+			return "", err
+		}
+		if _, err := h.Write([]byte{0}); err != nil {
+			return "", err
+		}
+		if _, err := h.Write(file.Data); err != nil {
+			return "", err
+		}
+		if _, err := h.Write([]byte{0}); err != nil {
+			return "", err
+		}
+	}
+	return version + ":" + hex.EncodeToString(h.Sum(nil)), nil
+}
