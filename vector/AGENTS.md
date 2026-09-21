@@ -130,6 +130,23 @@ pipeline. Preserve these invariants when changing it.
 - `Chunks` reads whatever the generation holds for a document. Only export
   documents that `CoveredDocs` returned from the same snapshot.
 
+## Publication checks coverage; reclamation is explicit
+
+- `Coverage` counts embedded, stamp-only, and uncovered documents with
+  `coveredPredicate`. A stamp-only document is covered. A stale revision is
+  uncovered even when its old vectors are still stored. Callers use this
+  count instead of reading the stamps or chunks tables.
+- `Activate` publishes one generation only when its backlog is zero, in the
+  same transaction as that count. It marks that generation active and retires
+  other building and active generations. It does not drop their storage, and
+  it does not change which generations `Search` queries.
+- `Reclaim` drops one retired generation's vec0 table, chunk rows, and stamps.
+  The generation row stays retired. Reclaiming a generation that is not
+  retired fails. Calling it again after success is safe.
+- `ActiveGeneration` returns the newest active generation by ordinal.
+  `LiveGenerations` still returns building generations ahead of active ones.
+  Callers that serve only the active generation select it themselves.
+
 ## Hits come from live, current documents
 
 - Revision-aware backends return the indexed revision in `Hit.Revision` in
