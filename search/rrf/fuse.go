@@ -3,6 +3,7 @@ package rrf
 import (
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 )
 
@@ -29,11 +30,12 @@ type Leg[K comparable] struct {
 	Keys   []K
 }
 
-// Fuse combines legs. k must be positive. Every leg needs a unique name and
-// a positive weight. The result is every key that appeared, highest score
-// first. Fuse does not apply a result limit; callers limit after eligibility.
+// Fuse combines legs. k must be finite and positive. Every leg needs a unique
+// name and a finite, positive weight. The result is every key that appeared,
+// highest score first. Fuse does not apply a result limit; callers limit after
+// eligibility.
 func Fuse[K comparable](k float64, legs []Leg[K]) ([]Hit[K], error) {
-	if k <= 0 {
+	if !positiveFinite(k) {
 		return nil, errors.New("rrf: k must be positive")
 	}
 	if err := validateLegs(len(legs), func(i int) (string, float64) {
@@ -73,6 +75,9 @@ func Fuse[K comparable](k float64, legs []Leg[K]) ([]Hit[K], error) {
 	}
 	slices.SortStableFunc(order, func(a, b K) int {
 		left, right := states[a], states[b]
+		if left == nil || right == nil {
+			return 0
+		}
 		if left.hit.Score > right.hit.Score {
 			return -1
 		}
@@ -83,7 +88,11 @@ func Fuse[K comparable](k float64, legs []Leg[K]) ([]Hit[K], error) {
 	})
 	hits := make([]Hit[K], len(order))
 	for i, key := range order {
-		hits[i] = states[key].hit
+		state := states[key]
+		if state == nil {
+			continue
+		}
+		hits[i] = state.hit
 	}
 	return hits, nil
 }
@@ -120,7 +129,7 @@ type GroupLeg[G, M comparable] struct {
 // A later duplicate of the same group in one leg does not add another
 // contribution; its members are appended.
 func FuseGroups[G, M comparable](k float64, legs []GroupLeg[G, M]) ([]GroupHit[G, M], error) {
-	if k <= 0 {
+	if !positiveFinite(k) {
 		return nil, errors.New("rrf: k must be positive")
 	}
 	if err := validateLegs(len(legs), func(i int) (string, float64) {
@@ -165,6 +174,9 @@ func FuseGroups[G, M comparable](k float64, legs []GroupLeg[G, M]) ([]GroupHit[G
 	}
 	slices.SortStableFunc(order, func(a, b G) int {
 		left, right := states[a], states[b]
+		if left == nil || right == nil {
+			return 0
+		}
 		if left.hit.Score > right.hit.Score {
 			return -1
 		}
@@ -175,7 +187,11 @@ func FuseGroups[G, M comparable](k float64, legs []GroupLeg[G, M]) ([]GroupHit[G
 	})
 	hits := make([]GroupHit[G, M], len(order))
 	for i, key := range order {
-		hits[i] = states[key].hit
+		state := states[key]
+		if state == nil {
+			continue
+		}
+		hits[i] = state.hit
 	}
 	return hits, nil
 }
@@ -191,9 +207,13 @@ func validateLegs(n int, leg func(int) (string, float64)) error {
 			return fmt.Errorf("rrf: duplicate leg %q", name)
 		}
 		names[name] = struct{}{}
-		if weight <= 0 {
+		if !positiveFinite(weight) {
 			return fmt.Errorf("rrf: leg %q weight must be positive", name)
 		}
 	}
 	return nil
+}
+
+func positiveFinite(v float64) bool {
+	return !math.IsNaN(v) && !math.IsInf(v, 0) && v > 0
 }

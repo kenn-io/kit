@@ -1,6 +1,7 @@
 package rrf_test
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -83,4 +84,45 @@ func TestFuseGroupsKeepsAlternatesUntilTheCallerFilters(t *testing.T) {
 	}, hits[0].Alternates)
 	assert.Equal(t, "g2", hits[1].Group)
 	assert.Len(t, hits[1].Contributions, 1)
+}
+
+func TestFuseRejectsNonFiniteKAndWeight(t *testing.T) {
+	tests := []struct {
+		name   string
+		k      float64
+		weight float64
+	}{
+		{name: "nan k", k: math.NaN(), weight: 1},
+		{name: "+inf k", k: math.Inf(1), weight: 1},
+		{name: "nan weight", k: 60, weight: math.NaN()},
+		{name: "+inf weight", k: 60, weight: math.Inf(1)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := rrf.Fuse(tt.k, []rrf.Leg[string]{{
+				Name: "lexical", Weight: tt.weight, Keys: []string{"a"},
+			}})
+			require.Error(t, err)
+
+			_, err = rrf.FuseGroups(tt.k, []rrf.GroupLeg[string, string]{{
+				Name:   "lexical",
+				Weight: tt.weight,
+				Groups: []rrf.Group[string, string]{{Key: "g"}},
+			}})
+			require.Error(t, err)
+		})
+	}
+
+	hits, err := rrf.Fuse(60, []rrf.Leg[string]{
+		{Name: "lexical", Weight: 1, Keys: []string{"a", "b"}},
+		{Name: "vector", Weight: 2, Keys: []string{"b"}},
+	})
+	require.NoError(t, err)
+	var got float64
+	for _, hit := range hits {
+		if hit.Key == "b" {
+			got = hit.Score
+		}
+	}
+	assert.InDelta(t, 1.0/(60+2)+2.0/(60+1), got, 1e-12)
 }
