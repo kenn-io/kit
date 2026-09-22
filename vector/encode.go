@@ -103,6 +103,19 @@ func EncodeBatched(
 	return encodeBatched(ctx, enc, chunks, applyBatchOptions(options))
 }
 
+// EncodeOne encodes a single text, typically a search query, with the same
+// blank-input and invalid-vector checks EncodeBatched applies.
+func EncodeOne(ctx context.Context, enc EncodeFunc, text string, options ...BatchOption) (Vector, error) {
+	vectors, err := EncodeBatched(ctx, enc, []Chunk{{Index: 0, Text: text}}, options...)
+	if err != nil {
+		return nil, err
+	}
+	if len(vectors) != 1 {
+		return nil, fmt.Errorf("encoder returned %d vectors for one text", len(vectors))
+	}
+	return vectors[0], nil
+}
+
 func encodeBatched(
 	ctx context.Context, enc EncodeFunc, chunks []Chunk, o batchOptions,
 ) ([]Vector, error) {
