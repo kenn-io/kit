@@ -30,16 +30,25 @@ type Options struct {
 	// HTTP is an optional caller-owned client. New clones it and leaves the
 	// original unchanged. Nil builds a client from Transport.Timeout.
 	HTTP *http.Client
+	// OllamaMetalRecovery recovers a response that contains an unusable
+	// vector when the endpoint is an Ollama /v1 URL. Valid vectors are kept.
+	// The bad inputs are sent to Ollama's native embed route, which unloads
+	// the current runner, retries that runner once, and then tries once with
+	// the GPU disabled. Ordinary failures are not retried. The switch does
+	// not change the vector identity.
+	OllamaMetalRecovery bool
 }
 
 // Client sends text embedding requests.
 type Client struct {
-	http        *http.Client
-	endpoint    string
-	model       embedconfig.Model
-	roles       embedconfig.Roles
-	batchItems  int // same-role cap after applying a token budget
-	maxResponse int64
+	http           *http.Client
+	endpoint       string
+	model          embedconfig.Model
+	roles          embedconfig.Roles
+	batchItems     int // same-role cap after applying a token budget
+	maxResponse    int64
+	serviceURL     string
+	ollamaRecovery bool
 }
 
 // New validates opts and returns a client pinned to the deployment origin.
@@ -77,6 +86,11 @@ func New(opts Options) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	if opts.OllamaMetalRecovery {
+		if err := validateOllamaService(canonical); err != nil {
+			return nil, err
+		}
+	}
 	parsed, err := url.Parse(canonical)
 	if err != nil {
 		return nil, fmt.Errorf("embed endpoint is invalid: %w", err)
@@ -86,12 +100,14 @@ func New(opts Options) (*Client, error) {
 		return nil, err
 	}
 	return &Client{
-		http:        pinClient(opts.HTTP, origin, opts.APIKey, transport.Timeout),
-		endpoint:    embeddingsURL(canonical),
-		model:       model,
-		roles:       roles,
-		batchItems:  items,
-		maxResponse: int64(transport.MaxResponseBytes),
+		http:           pinClient(opts.HTTP, origin, opts.APIKey, transport.Timeout),
+		endpoint:       embeddingsURL(canonical),
+		serviceURL:     canonical,
+		ollamaRecovery: opts.OllamaMetalRecovery,
+		model:          model,
+		roles:          roles,
+		batchItems:     items,
+		maxResponse:    int64(transport.MaxResponseBytes),
 	}, nil
 }
 
@@ -199,7 +215,17 @@ func (c *Client) post(ctx context.Context, role embedconfig.Role, texts []string
 	if int64(len(payload)) > c.maxResponse {
 		return nil, errors.New("embed response exceeds the configured cap")
 	}
-	return c.decode(payload, len(texts))
+	vectors, problems, err := c.classify(payload, len(texts))
+	if err != nil {
+		return nil, err
+	}
+	if len(problems) == 0 {
+		return vectors, nil
+	}
+	if !c.ollamaRecovery {
+		return nil, problems[0]
+	}
+	return c.recoverOllama(ctx, texts, vectors, problems)
 }
 
 func embeddingsURL(canonical string) string {

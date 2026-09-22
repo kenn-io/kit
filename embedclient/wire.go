@@ -101,24 +101,26 @@ func finiteFloat32s(elements []*float64) ([]float32, error) {
 	return out, nil
 }
 
-func (c *Client) decode(payload []byte, count int) ([][]float32, error) {
+func (c *Client) classify(payload []byte, count int) ([][]float32, []error, error) {
 	var decoded wireResponse
 	if err := jsonv2.Unmarshal(payload, &decoded); err != nil {
-		return nil, errors.New("embed response is invalid")
+		return nil, nil, errors.New("embed response is invalid")
 	}
 	raw, err := orderItems(decoded.Data, count)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	out := make([][]float32, len(raw))
+	var problems []error
 	for i, item := range raw {
 		vector, err := decodeVector(item, c.model.Dimensions, c.model.Normalization)
 		if err != nil {
-			return nil, fmt.Errorf("embed vector %d: %w", i, err)
+			problems = append(problems, fmt.Errorf("embed vector %d: %w", i, err))
+			continue
 		}
 		out[i] = vector
 	}
-	return out, nil
+	return out, problems, nil
 }
 
 func orderItems(items []wireItem, count int) ([]wireEmbedding, error) {

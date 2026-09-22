@@ -2,8 +2,12 @@
 //
 // The caller owns the HTTP client when it supplies one. This package clones
 // that client, pins requests to the configured origin, and can attach a bearer
-// token. It does not retry. A non-2xx response, a short body, or a vector that
-// fails validation fails the whole call. Response indexes are applied inside
+// token. It does not retry ordinary failures. OllamaMetalRecovery is the
+// exception: a response that mixes usable vectors with unusable ones keeps
+// the usable vectors and asks Ollama to reload the runner, then to encode
+// the bad inputs once without the GPU. A non-2xx response, a short body, or
+// a vector that fails validation fails the whole call when that recovery is
+// off. Response indexes are applied inside
 // each request. A missing index on every item means the provider kept request
 // order.
 //
