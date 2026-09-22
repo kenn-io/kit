@@ -394,12 +394,11 @@ func TestANSIWrappedLinesRejectsUnsafeSGR(t *testing.T) {
 }
 
 func TestRenderOptions(t *testing.T) {
-	assertions := assert.New(t)
 	background := "236"
 	emptyBackground := ""
 
-	assertions.Equal("236", CodeBlockBackground(true))
-	assertions.Equal("252", CodeBlockBackground(false))
+	assert.Equal(t, "236", CodeBlockBackground(true))
+	assert.Equal(t, "252", CodeBlockBackground(false))
 
 	tests := []struct {
 		name       string
@@ -469,5 +468,5 @@ func TestRenderOptions(t *testing.T) {
 
 	lines, err := RenderLines(" \n\t", Options{Width: 80})
 	require.NoError(t, err)
-	assertions.Nil(lines)
+	assert.Nil(t, lines)
 }
