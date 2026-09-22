@@ -10,6 +10,14 @@ const (
 	IndexCJK
 )
 
+// String returns "cjk" or "ordinary".
+func (i Index) String() string {
+	if i == IndexCJK {
+		return "cjk"
+	}
+	return "ordinary"
+}
+
 // CJK is the optional Chinese, Japanese, and Korean search index.
 // The zero value is off, so every query uses IndexOrdinary.
 // Turning it on does not create storage and does not fetch dictionaries.

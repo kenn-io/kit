@@ -8,12 +8,33 @@
 // dictionary fingerprint is part of the identity. This package does not
 // install that runtime.
 //
-// CJK search is off on the zero CJK value. EnableCharacterPhrase or
-// EnableChinese turns on a second index that the caller creates and names.
-// The ordinary full-text index stays. IndexFor sends a query to the CJK
-// index when the text contains Han, Hangul, Hiragana, or Katakana, including
-// a mixed query such as "run 搜索". Other queries stay on the ordinary index.
+// CJK search is off on the zero CJK value. The ordinary full-text index
+// answers every query until the caller turns the second index on:
+//
+//	cjk := lexical.EnableCharacterPhrase()
+//	switch cjk.IndexFor(query) {
+//	case lexical.IndexOrdinary:
+//	    // Query the stock full-text index.
+//	case lexical.IndexCJK:
+//	    analyzer, _ := cjk.Analyzer(query)
+//	    prepared, _ := analyzer.PrepareLiteral(query)
+//	    // Query the caller's CJK index with prepared.Match.
+//	}
+//
+// IndexFor chooses the CJK index when the text contains Han, Hangul,
+// Hiragana, or Katakana. A mixed query such as "run 搜索" uses that index
+// too. Digits, punctuation, and ordinary words stay on the stock index.
+// The caller creates the second index and names it. sqlitefts.New receives
+// it through WithIndexTable. postgres.LexicalMapping.Vector names the stored
+// search vector. clickhouse.TextRequest names Table and TextColumn. This
+// package does not create those indexes.
+//
+// EnableCharacterPhrase stores Han, kana, and Hangul as adjacent characters
+// and keeps a Latin run as one word. EnableChinese is the same switch with
+// a caller-supplied dictionary cutter for Han text. Kana and Hangul stay
+// unsegmented, and the caller keeps the dictionary files. Index and query
+// preparation must use the same identity.
 //
 // Intentional query syntax uses PrepareAdvanced and is not inferred from
-// punctuation. Index and query preparation must use the same identity.
+// punctuation.
 package lexical
