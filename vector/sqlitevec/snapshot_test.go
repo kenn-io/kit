@@ -140,16 +140,16 @@ func TestSnapshotRejectsBadIdentifiersAndUseAfterClose(t *testing.T) {
 	snap, err := store.Snapshot(ctx, 1)
 	require.NoError(err)
 	rows, err := snap.CoveredDocs(ctx, sqlitevec.DocQuery{Columns: []string{"topic; DROP TABLE messages"}}) //nolint:kennlint // a validation error returns nil rows, nothing to check or close
-	require.ErrorContains(err, "invalid column")
+	require.ErrorContains(err, "invalid identifier")
 	require.Nil(rows)
 	rows, err = snap.CoveredDocs(ctx, sqlitevec.DocQuery{OrderBy: []string{"id DESC"}}) //nolint:kennlint // same: nil rows on a validation error
-	require.ErrorContains(err, "invalid order by column")
+	require.ErrorContains(err, "invalid identifier")
 	require.Nil(rows)
 
 	require.NoError(snap.Close())
 	require.NoError(snap.Close())
 	_, err = snap.Chunks(ctx, 1)
-	require.ErrorContains(err, "closed")
+	require.ErrorIs(err, sql.ErrTxDone)
 	_, err = snap.UncoveredCount(ctx, "")
-	require.ErrorContains(err, "closed")
+	require.ErrorIs(err, sql.ErrTxDone)
 }

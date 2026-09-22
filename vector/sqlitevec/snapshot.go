@@ -7,8 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
-	"sync"
 
 	"go.kenn.io/kit/vector"
 )
@@ -35,11 +35,9 @@ func (s *Store[K, G]) Generations(ctx context.Context) ([]GenerationInfo[G], err
 	var gens []GenerationInfo[G]
 	for rows.Next() {
 		var g GenerationInfo[G]
-		var state string
-		if err := rows.Scan(&g.Key, &g.Fingerprint, &g.Dimension, &state); err != nil {
+		if err := rows.Scan(&g.Key, &g.Fingerprint, &g.Dimension, &g.State); err != nil {
 			return nil, fmt.Errorf("scan generation: %w", err)
 		}
-		g.State = State(state)
 		gens = append(gens, g)
 	}
 	return gens, rows.Err()
@@ -48,15 +46,12 @@ func (s *Store[K, G]) Generations(ctx context.Context) ([]GenerationInfo[G], err
 // Snapshot is one read transaction pinned to a generation. It lets a
 // caller export the generation's covered documents and their vectors as
 // they stood at one instant, for replication to another backend. Close it
-// when done; every method fails after Close.
+// when done; every method fails with sql.ErrTxDone after Close.
 type Snapshot[K, G comparable] struct {
 	store   *Store[K, G]
 	tx      *sql.Tx
 	gen     GenerationInfo[G]
 	ordinal int64
-
-	mu     sync.Mutex
-	closed bool
 }
 
 // Snapshot opens a read transaction over gen. The returned Snapshot holds
@@ -68,10 +63,9 @@ func (s *Store[K, G]) Snapshot(ctx context.Context, gen G) (*Snapshot[K, G], err
 	}
 	var info GenerationInfo[G]
 	var ordinal int64
-	var state string
 	err = tx.QueryRowContext(ctx, fmt.Sprintf(
 		`SELECT ordinal, gen_key, fingerprint, dimension, state FROM %s WHERE gen_key = ?`,
-		s.generationsTable()), gen).Scan(&ordinal, &info.Key, &info.Fingerprint, &info.Dimension, &state)
+		s.generationsTable()), gen).Scan(&ordinal, &info.Key, &info.Fingerprint, &info.Dimension, &info.State)
 	if err != nil {
 		_ = tx.Rollback()
 		if errors.Is(err, sql.ErrNoRows) {
@@ -79,7 +73,6 @@ func (s *Store[K, G]) Snapshot(ctx context.Context, gen G) (*Snapshot[K, G], err
 		}
 		return nil, fmt.Errorf("lookup generation %v: %w", gen, err)
 	}
-	info.State = State(state)
 	return &Snapshot[K, G]{store: s, tx: tx, gen: info, ordinal: ordinal}, nil
 }
 
@@ -88,20 +81,8 @@ func (sn *Snapshot[K, G]) Generation() GenerationInfo[G] { return sn.gen }
 
 // Close ends the read transaction. Calling it again is a no-op.
 func (sn *Snapshot[K, G]) Close() error {
-	sn.mu.Lock()
-	defer sn.mu.Unlock()
-	if sn.closed {
-		return nil
-	}
-	sn.closed = true
-	return sn.tx.Rollback()
-}
-
-func (sn *Snapshot[K, G]) ensureOpen() error {
-	sn.mu.Lock()
-	defer sn.mu.Unlock()
-	if sn.closed {
-		return errors.New("snapshot is closed")
+	if err := sn.tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+		return err
 	}
 	return nil
 }
@@ -118,17 +99,21 @@ type DocQuery struct {
 }
 
 func (q DocQuery) validate() error {
-	for _, c := range q.Columns {
+	for _, c := range slices.Concat(q.Columns, q.OrderBy) {
 		if !identifierPattern.MatchString(c) {
-			return fmt.Errorf("invalid column %q", c)
-		}
-	}
-	for _, c := range q.OrderBy {
-		if !identifierPattern.MatchString(c) {
-			return fmt.Errorf("invalid order by column %q", c)
+			return fmt.Errorf("invalid identifier %q", c)
 		}
 	}
 	return nil
+}
+
+// qualify joins cols as columns of the documents table alias d.
+func qualify(cols []string) string {
+	out := make([]string, len(cols))
+	for i, c := range cols {
+		out[i] = "d." + c
+	}
+	return strings.Join(out, ", ")
 }
 
 // CoveredDocs streams the documents the generation currently covers: the
@@ -138,25 +123,13 @@ func (q DocQuery) validate() error {
 // row holds the document key followed by q.Columns in order, sorted by
 // q.OrderBy or, when empty, by key. Close the rows before the Snapshot.
 func (sn *Snapshot[K, G]) CoveredDocs(ctx context.Context, q DocQuery) (*sql.Rows, error) {
-	if err := sn.ensureOpen(); err != nil {
-		return nil, err
-	}
 	if err := q.validate(); err != nil {
 		return nil, err
 	}
 	schema := sn.store.schema
-	columns := make([]string, 0, len(q.Columns)+1)
-	columns = append(columns, "d."+schema.IDColumn)
-	for _, c := range q.Columns {
-		columns = append(columns, "d."+c)
-	}
 	orderBy := q.OrderBy
 	if len(orderBy) == 0 {
 		orderBy = []string{schema.IDColumn}
-	}
-	order := make([]string, len(orderBy))
-	for i, c := range orderBy {
-		order[i] = "d." + c
 	}
 	where := sn.store.coveredPredicate("d", "stamp")
 	if q.Where != "" {
@@ -168,8 +141,8 @@ SELECT %s
   LEFT JOIN %s stamp ON stamp.ordinal = ? AND stamp.doc_key = d.%s
  WHERE %s
  ORDER BY %s`,
-		strings.Join(columns, ", "), schema.DocsTable, sn.store.stampsTable(), schema.IDColumn,
-		where, strings.Join(order, ", "))
+		qualify(append([]string{schema.IDColumn}, q.Columns...)), schema.DocsTable, sn.store.stampsTable(),
+		schema.IDColumn, where, qualify(orderBy))
 	rows, err := sn.tx.QueryContext(ctx, query, append([]any{sn.ordinal}, q.Args...)...)
 	if err != nil {
 		return nil, fmt.Errorf("covered documents: %w", err)
@@ -183,9 +156,6 @@ SELECT %s
 // uncovered document. A caller checks it before exporting so a generation
 // still being filled is not replicated as complete.
 func (sn *Snapshot[K, G]) UncoveredCount(ctx context.Context, where string, args ...any) (int64, error) {
-	if err := sn.ensureOpen(); err != nil {
-		return 0, err
-	}
 	schema := sn.store.schema
 	predicate := "NOT " + sn.store.coveredPredicate("d", "stamp")
 	if where != "" {
@@ -209,9 +179,6 @@ SELECT COUNT(*)
 // pair it with CoveredDocs from the same Snapshot so only current
 // documents are exported.
 func (sn *Snapshot[K, G]) Chunks(ctx context.Context, doc K) ([]vector.ChunkVector, error) {
-	if err := sn.ensureOpen(); err != nil {
-		return nil, err
-	}
 	rows, err := sn.tx.QueryContext(ctx, fmt.Sprintf(`
 SELECT c.chunk_index, v.embedding
   FROM %s c
