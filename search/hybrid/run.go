@@ -30,8 +30,10 @@ type GroupLeg[G, M comparable] struct {
 	Scan           func(*sql.Rows) (G, M, error)
 }
 
-// Report describes one executed leg. FullWindow means the candidate limit
-// was reached. It does not mean the source has no further matches.
+// Report describes one executed leg. FullWindow means the raw candidate
+// window was filled before source filters, or, when the backend does not
+// say, that the returned row count reached the candidate limit. It does
+// not mean the source has no further matches.
 type Report struct {
 	Name           string
 	Returned       int
@@ -72,7 +74,11 @@ func Run[K comparable](ctx context.Context, db sqlquery.Queryer, k float64, legs
 			return Result[K]{}, fmt.Errorf("hybrid: leg %q: %w", leg.Name, err)
 		}
 		ranked[i] = rrf.Leg[K]{Name: leg.Name, Weight: leg.Weight, Keys: keys}
-		reports[i] = report(leg.Name, leg.CandidateLimit, len(keys))
+		full, err := windowFull(ctx, db, leg.Query, leg.CandidateLimit, len(keys))
+		if err != nil {
+			return Result[K]{}, fmt.Errorf("hybrid: leg %q window: %w", leg.Name, err)
+		}
+		reports[i] = report(leg.Name, leg.CandidateLimit, len(keys), full)
 	}
 	hits, err := rrf.Fuse(k, ranked)
 	if err != nil {
@@ -117,7 +123,11 @@ func RunGroups[G, M comparable](ctx context.Context, db sqlquery.Queryer, k floa
 			groups[last].Members = append(groups[last].Members, item.member)
 		}
 		ranked[i] = rrf.GroupLeg[G, M]{Name: leg.Name, Weight: leg.Weight, Groups: groups}
-		reports[i] = report(leg.Name, leg.CandidateLimit, len(rows))
+		full, err := windowFull(ctx, db, leg.Query, leg.CandidateLimit, len(rows))
+		if err != nil {
+			return GroupResult[G, M]{}, fmt.Errorf("hybrid: leg %q window: %w", leg.Name, err)
+		}
+		reports[i] = report(leg.Name, leg.CandidateLimit, len(rows), full)
 	}
 	hits, err := rrf.FuseGroups(k, ranked)
 	if err != nil {
@@ -126,13 +136,20 @@ func RunGroups[G, M comparable](ctx context.Context, db sqlquery.Queryer, k floa
 	return GroupResult[G, M]{Hits: hits, Legs: reports}, nil
 }
 
-func report(name string, limit, returned int) Report {
+func report(name string, limit, returned int, full bool) Report {
 	return Report{
 		Name:           name,
 		Returned:       returned,
 		CandidateLimit: limit,
-		FullWindow:     limit > 0 && returned >= limit,
+		FullWindow:     full,
 	}
+}
+
+func windowFull(ctx context.Context, db sqlquery.Queryer, query sqlquery.Query, limit, returned int) (bool, error) {
+	if query.RawWindow != nil {
+		return query.RawWindow(ctx, db)
+	}
+	return limit > 0 && returned >= limit, nil
 }
 
 func scanKeys[T any](ctx context.Context, db sqlquery.Queryer, query sqlquery.Query, scan func(*sql.Rows) (T, error)) ([]T, error) {

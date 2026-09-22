@@ -87,7 +87,29 @@ func (s *Store[K, G]) BuildCandidateQuery(ctx context.Context, db sqlquery.Query
 		text += " LIMIT ?"
 		args = append(args, q.ResultLimit)
 	}
-	return sqlquery.Query{SQL: text, Args: args}, nil
+	rawSQL := fmt.Sprintf(`SELECT count(*) FROM (SELECT rowid FROM %s WHERE embedding MATCH %s ORDER BY distance LIMIT ?)`, s.vecTable(ordinal), expr)
+	rawArgs := []any{value, q.CandidateLimit}
+	limit := q.CandidateLimit
+	return sqlquery.Query{
+		SQL: text, Args: args,
+		RawWindow: func(ctx context.Context, db sqlquery.Queryer) (bool, error) {
+			rows, err := db.QueryContext(ctx, rawSQL, rawArgs...)
+			if err != nil {
+				return false, err
+			}
+			defer func() { _ = rows.Close() }()
+			var n int
+			if rows.Next() {
+				if err := rows.Scan(&n); err != nil {
+					return false, err
+				}
+			}
+			if err := rows.Err(); err != nil {
+				return false, err
+			}
+			return n >= limit, nil
+		},
+	}, nil
 }
 
 // QueryGenerationWindow returns at most limit current candidates plus a raw

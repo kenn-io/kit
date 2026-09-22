@@ -1,6 +1,7 @@
 package hybrid_test
 
 import (
+	"context"
 	"database/sql"
 	"testing"
 
@@ -38,6 +39,23 @@ func TestRunFusesBackendQueriesAndReportsWindows(t *testing.T) {
 	assert.Equal(t, 2, result.Legs[0].Returned)
 	assert.False(t, result.Legs[1].FullWindow)
 	assert.Equal(t, 2, result.Legs[1].Returned)
+}
+
+func TestRunTrustsARawWindowProbe(t *testing.T) {
+	db := openDocs(t)
+	query := sqlquery.Query{
+		SQL: `SELECT id AS doc_key, 0.0 AS score FROM docs WHERE id = 2`,
+		RawWindow: func(context.Context, sqlquery.Queryer) (bool, error) {
+			return true, nil
+		},
+	}
+	result, err := hybrid.Run(t.Context(), db, 60, []hybrid.Leg[int]{
+		{Name: "vector", Weight: 1, Query: query, CandidateLimit: 5, Scan: scanKey},
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Legs, 1)
+	assert.Equal(t, 1, result.Legs[0].Returned)
+	assert.True(t, result.Legs[0].FullWindow)
 }
 
 func TestRunGroupsRetainsAlternateMembers(t *testing.T) {

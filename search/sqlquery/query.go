@@ -15,6 +15,10 @@ import (
 type Query struct {
 	SQL  string
 	Args []any
+	// RawWindow, when set, reports whether the backend filled its raw
+	// candidate window before source filters removed rows. Hybrid uses it
+	// instead of comparing the returned row count with the candidate limit.
+	RawWindow func(context.Context, Queryer) (bool, error)
 }
 
 // Column projects a source column under an explicit result alias.
