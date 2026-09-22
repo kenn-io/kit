@@ -613,6 +613,9 @@ func saveReadyDocuments[K, G comparable](
 	states []fillDocumentState[K], ordered bool, stale map[K]struct{}, stats *FillStats,
 ) error {
 	for i := range states {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		state := &states[i]
 		if state.saved {
 			continue
