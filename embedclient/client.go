@@ -118,7 +118,11 @@ func (c *Client) Embed(ctx context.Context, inputs []embedmodel.Content) ([][]fl
 	if len(inputs) == 0 {
 		return nil, nil
 	}
-	prepared, err := c.prepare(inputs)
+	return c.embed(ctx, inputs, true)
+}
+
+func (c *Client) embed(ctx context.Context, inputs []embedmodel.Content, format bool) ([][]float32, error) {
+	prepared, err := c.prepare(inputs, format)
 	if err != nil {
 		return nil, err
 	}
@@ -145,15 +149,28 @@ func (c *Client) Embed(ctx context.Context, inputs []embedmodel.Content) ([][]fl
 }
 
 // EncodeFunc adapts one role to vector.EncodeFunc.
+// The texts are sent as given. A fitter's prepared text already includes
+// its role prefix and suffix, so this path does not add them again.
 // New rejects every metric other than cosine, so this cannot feed the
 // cosine pipeline from a different distance.
 func (c *Client) EncodeFunc(role embedconfig.Role) vector.EncodeFunc {
 	return func(ctx context.Context, texts []string) ([][]float32, error) {
+		if len(texts) == 0 {
+			return nil, nil
+		}
+		switch role {
+		case embedconfig.RoleDocument, embedconfig.RoleQuery:
+		default:
+			return nil, errors.New("embed role must be document or query")
+		}
 		inputs := make([]embedmodel.Content, len(texts))
 		for i, text := range texts {
+			if embedmodel.BlankText(text) {
+				return nil, fmt.Errorf("embed input %d: %w", i, vector.ErrEmptyEmbeddingInput)
+			}
 			inputs[i] = embedmodel.Content{Role: role, Kind: embedmodel.KindText, Text: text}
 		}
-		return c.Embed(ctx, inputs)
+		return c.embed(ctx, inputs, false)
 	}
 }
 
@@ -163,7 +180,7 @@ type encoded struct {
 	text  string
 }
 
-func (c *Client) prepare(inputs []embedmodel.Content) ([]encoded, error) {
+func (c *Client) prepare(inputs []embedmodel.Content, format bool) ([]encoded, error) {
 	out := make([]encoded, len(inputs))
 	for i, input := range inputs {
 		text, err := input.EmbedText()
@@ -173,14 +190,16 @@ func (c *Client) prepare(inputs []embedmodel.Content) ([]encoded, error) {
 		if embedmodel.BlankText(text) {
 			return nil, fmt.Errorf("embed input %d: %w", i, vector.ErrEmptyEmbeddingInput)
 		}
-		formatted, err := embedmodel.Format(input.Role, text, c.roles)
-		if err != nil {
-			return nil, fmt.Errorf("embed input %d: %w", i, err)
+		if format {
+			text, err = embedmodel.Format(input.Role, text, c.roles)
+			if err != nil {
+				return nil, fmt.Errorf("embed input %d: %w", i, err)
+			}
+			if embedmodel.BlankText(text) {
+				return nil, fmt.Errorf("embed input %d: %w", i, vector.ErrEmptyEmbeddingInput)
+			}
 		}
-		if embedmodel.BlankText(formatted) {
-			return nil, fmt.Errorf("embed input %d: %w", i, vector.ErrEmptyEmbeddingInput)
-		}
-		out[i] = encoded{index: i, role: input.Role, text: formatted}
+		out[i] = encoded{index: i, role: input.Role, text: text}
 	}
 	return out, nil
 }

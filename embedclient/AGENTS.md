@@ -8,7 +8,11 @@
 - Do not return a short vector slice. A failed request fails the call.
 - Reorder by the per-request `index`. Do not treat that index as an offset
   into a larger `vector.EncodeBatched` input.
-- Apply role prefixes here. Count those same strings in embedfit.
+- `Embed` applies role prefixes to raw content. `EncodeFunc` sends the
+  strings it is given, because fitted text already includes them.
+- A 400 is `InputRejected` and `Definitive`. A 401 or 403 is
+  `CredentialsRejected` and is not a reason to skip one document. Do not
+  copy the provider body into either error.
 - Normalize with L2 only when the model normalization says so. Always reject
   a non-finite component, a null component, or a zero norm.
 - Do not copy provider bodies into errors.

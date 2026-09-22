@@ -20,15 +20,22 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("embed endpoint returned %d", e.StatusCode)
 }
 
-// Definitive reports that the same request will fail until the caller changes
-// the input or the credentials.
+// InputRejected reports that this input was refused. The same input will
+// fail again. The provider body is not included.
+func (e *APIError) InputRejected() bool {
+	return e.StatusCode == http.StatusBadRequest
+}
+
+// CredentialsRejected reports that the key or the permission was refused.
+// That is not a reason to skip one document. The provider body is not included.
+func (e *APIError) CredentialsRejected() bool {
+	return e.StatusCode == http.StatusUnauthorized || e.StatusCode == http.StatusForbidden
+}
+
+// Definitive reports that this input was rejected. A credential failure is
+// not definitive: the caller should stop, not skip the document.
 func (e *APIError) Definitive() bool {
-	switch e.StatusCode {
-	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound:
-		return true
-	default:
-		return false
-	}
+	return e.InputRejected()
 }
 
 func retryAfter(header string) time.Duration {

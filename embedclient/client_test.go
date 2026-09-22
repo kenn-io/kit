@@ -137,6 +137,18 @@ func TestEmbedFailedResponseDoesNotEchoTheBody(t *testing.T) {
 	_, err = denied.Embed(t.Context(), oneText())
 	require.ErrorAs(t, err, &api)
 	assert.True(t, api.Definitive())
+	assert.True(t, api.InputRejected())
+	assert.False(t, api.CredentialsRejected())
+	assert.NotContains(t, err.Error(), "secret")
+
+	unauthorized := newClient(t, unitModel(), embedconfig.Roles{}, embedconfig.Batch{}, func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "secret prompt alpha", http.StatusUnauthorized)
+	})
+	_, err = unauthorized.Embed(t.Context(), oneText())
+	require.ErrorAs(t, err, &api)
+	assert.False(t, api.Definitive())
+	assert.False(t, api.InputRejected())
+	assert.True(t, api.CredentialsRejected())
 	assert.NotContains(t, err.Error(), "secret")
 }
 
@@ -265,6 +277,20 @@ func TestEmbedRejectsBlankAndNonTextBeforeTheRequest(t *testing.T) {
 	}})
 	require.ErrorIs(t, err, embedmodel.ErrUnsupportedContent)
 	assert.False(t, called)
+}
+
+func TestEncodeFuncSendsPreparedTextUnchanged(t *testing.T) {
+	var got []any
+	client := newClient(t, unitModel(), embedconfig.Roles{DocumentPrefix: "doc: ", DocumentSuffix: " END"}, embedconfig.Batch{Items: 4}, func(w http.ResponseWriter, r *http.Request) {
+		body := readBody(t, r)
+		got = body["input"].([]any)
+		writeJSON(t, w, map[string]any{"data": []map[string]any{
+			{"embedding": []float64{1, 0}},
+		}})
+	})
+	_, err := client.EncodeFunc(embedconfig.RoleDocument)(t.Context(), []string{"doc: ab END"})
+	require.NoError(t, err)
+	require.Equal(t, []any{"doc: ab END"}, got)
 }
 
 func TestEncodeFuncPreservesOrder(t *testing.T) {
