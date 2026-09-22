@@ -100,6 +100,13 @@ func TestFuseRejectsANaNKey(t *testing.T) {
 	require.ErrorContains(t, err, "NaN")
 	assert.Empty(t, groups)
 
+	members, err := rrf.FuseGroups(60, []rrf.GroupLeg[string, float64]{{
+		Name: "lexical", Weight: 1,
+		Groups: []rrf.Group[string, float64]{{Key: "g", Members: []float64{1, math.NaN()}}},
+	}})
+	require.ErrorContains(t, err, "NaN")
+	assert.Empty(t, members)
+
 	hits, err = rrf.Fuse(60, []rrf.Leg[float64]{{
 		Name: "lexical", Weight: 1, Keys: []float64{1, 2},
 	}})

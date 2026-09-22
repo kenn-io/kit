@@ -32,7 +32,8 @@ type Leg[K comparable] struct {
 
 // Fuse combines legs. k must be finite and positive. Every leg needs a unique
 // name and a finite, positive weight. A key that is not equal to itself,
-// including NaN, is rejected. The result is every key that appeared, highest
+// including NaN, is an error and is not stored. The result is every key that
+// appeared, highest
 // score first. Fuse does not apply a result limit; callers limit after
 // eligibility.
 func Fuse[K comparable](k float64, legs []Leg[K]) ([]Hit[K], error) {
@@ -55,7 +56,7 @@ func Fuse[K comparable](k float64, legs []Leg[K]) ([]Hit[K], error) {
 		seen := make(map[K]struct{}, len(leg.Keys))
 		rank := 0
 		for _, key := range leg.Keys {
-			if err := rejectNaNKey(key); err != nil {
+			if err := rejectNaN(key); err != nil {
 				return nil, err
 			}
 			if _, ok := seen[key]; ok {
@@ -131,8 +132,8 @@ type GroupLeg[G, M comparable] struct {
 
 // FuseGroups ranks each group once per leg and keeps every alternate member.
 // A later duplicate of the same group in one leg does not add another
-// contribution; its members are appended. A group key that is not equal to
-// itself, including NaN, is rejected.
+// contribution; its members are appended. A group key or member that is not
+// equal to itself, including NaN, is an error and is not stored.
 func FuseGroups[G, M comparable](k float64, legs []GroupLeg[G, M]) ([]GroupHit[G, M], error) {
 	if !positiveFinite(k) {
 		return nil, errors.New("rrf: k must be positive")
@@ -153,8 +154,13 @@ func FuseGroups[G, M comparable](k float64, legs []GroupLeg[G, M]) ([]GroupHit[G
 		seen := make(map[G]struct{}, len(leg.Groups))
 		rank := 0
 		for _, group := range leg.Groups {
-			if err := rejectNaNKey(group.Key); err != nil {
+			if err := rejectNaN(group.Key); err != nil {
 				return nil, err
+			}
+			for _, member := range group.Members {
+				if err := rejectNaN(member); err != nil {
+					return nil, err
+				}
 			}
 			_, ranked := seen[group.Key]
 			if !ranked {
@@ -226,12 +232,12 @@ func positiveFinite(v float64) bool {
 	return !math.IsNaN(v) && !math.IsInf(v, 0) && v > 0
 }
 
-// rejectNaNKey reports a key that cannot be stored in a map. NaN is not equal
-// to itself, and neither is a struct or array that contains NaN.
-func rejectNaNKey[K comparable](key K) error {
-	other := key
-	if key == other {
+// rejectNaN reports a value that cannot be stored. NaN is not equal to itself,
+// and neither is a struct or array that contains NaN.
+func rejectNaN[K comparable](value K) error {
+	other := value
+	if value == other {
 		return nil
 	}
-	return errors.New("rrf: NaN key is not comparable")
+	return errors.New("rrf: NaN cannot be stored")
 }
