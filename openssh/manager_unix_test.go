@@ -670,9 +670,10 @@ func TestFailedStartDrainTimeoutQuarantinesSocket(t *testing.T) {
 	fake.spawnExitCode = 255
 	fake.onExit = func(context.Context) (int, error) { return 0, nil }
 	events := make(chan Event, 4)
+	// Allow socket inspection to finish before testing the post-exit drain timeout.
 	manager, err := NewPersistentManager(newSocketDir(t), PersistentConfig{
 		RunSSH:                  fake.run,
-		CleanupTimeout:          5 * time.Millisecond,
+		CleanupTimeout:          time.Second,
 		EstablishPollInterval:   time.Millisecond,
 		MaximumControlPathBytes: 1_000,
 		OnEvent: func(event Event) {
@@ -687,7 +688,7 @@ func TestFailedStartDrainTimeoutQuarantinesSocket(t *testing.T) {
 	_, err = manager.Connect(t.Context(), "studio", target)
 
 	require.ErrorIs(err, context.DeadlineExceeded)
-	assert.Equal(StateStopping, manager.State("studio"))
+	require.Equal(StateStopping, manager.State("studio"), "cleanup error: %v; operations: %v", err, fake.operationKinds())
 	assert.FileExists(path)
 	for {
 		select {
