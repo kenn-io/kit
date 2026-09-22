@@ -35,7 +35,7 @@ type ollamaEmbedOptions struct {
 }
 
 type ollamaEmbedResponse struct {
-	Embeddings [][]float64 `json:"embeddings"`
+	Embeddings [][]*float64 `json:"embeddings"`
 }
 
 type ollamaProcessResponse struct {
@@ -182,12 +182,8 @@ func (c *Client) ollamaNativeEmbed(ctx context.Context, embedURL string, inputs 
 	return out, nil
 }
 
-func normalizeNative(row []float64, dims int, normalization embedconfig.Normalization) ([]float32, error) {
-	elements := make([]*float64, len(row))
-	for i := range row {
-		elements[i] = &row[i]
-	}
-	values, err := finiteFloat32s(elements)
+func normalizeNative(row []*float64, dims int, normalization embedconfig.Normalization) ([]float32, error) {
+	values, err := finiteFloat32s(row)
 	if err != nil {
 		return nil, err
 	}
