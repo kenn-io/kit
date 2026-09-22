@@ -86,6 +86,27 @@ func TestFuseGroupsKeepsAlternatesUntilTheCallerFilters(t *testing.T) {
 	assert.Len(t, hits[1].Contributions, 1)
 }
 
+func TestFuseRejectsANaNKey(t *testing.T) {
+	hits, err := rrf.Fuse(60, []rrf.Leg[float64]{{
+		Name: "lexical", Weight: 1, Keys: []float64{1, math.NaN()},
+	}})
+	require.ErrorContains(t, err, "NaN")
+	assert.Empty(t, hits)
+
+	groups, err := rrf.FuseGroups(60, []rrf.GroupLeg[float64, string]{{
+		Name: "lexical", Weight: 1,
+		Groups: []rrf.Group[float64, string]{{Key: math.NaN(), Members: []string{"fresh"}}},
+	}})
+	require.ErrorContains(t, err, "NaN")
+	assert.Empty(t, groups)
+
+	hits, err = rrf.Fuse(60, []rrf.Leg[float64]{{
+		Name: "lexical", Weight: 1, Keys: []float64{1, 2},
+	}})
+	require.NoError(t, err)
+	assert.Equal(t, []float64{1, 2}, []float64{hits[0].Key, hits[1].Key})
+}
+
 func TestFuseRejectsNonFiniteKAndWeight(t *testing.T) {
 	tests := []struct {
 		name   string
