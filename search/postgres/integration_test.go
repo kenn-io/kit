@@ -21,16 +21,19 @@ func TestPostgreSQLLexicalAndVector(t *testing.T) {
 	db, err := sql.Open("pgx", dsn)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
-	_, err = db.ExecContext(t.Context(), `CREATE EXTENSION IF NOT EXISTS vector;
-DROP TABLE IF EXISTS docs;
-CREATE TABLE docs (
+	_, err = db.ExecContext(t.Context(), `CREATE EXTENSION IF NOT EXISTS vector`)
+	require.NoError(t, err)
+	tx, err := db.BeginTx(t.Context(), nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tx.Rollback() })
+	_, err = tx.ExecContext(t.Context(), `CREATE TEMP TABLE docs (
 	id text PRIMARY KEY,
 	tenant text NOT NULL,
 	title text NOT NULL,
 	body text NOT NULL,
 	revision int NOT NULL,
 	embedding vector(2) NOT NULL
-);`)
+) ON COMMIT DROP`)
 	require.NoError(t, err)
 
 	phrase := lexical.CharacterPhrase()
@@ -41,7 +44,7 @@ CREATE TABLE docs (
 	queryText, err := phrase.IndexText("かな")
 	require.NoError(t, err)
 
-	_, err = db.ExecContext(t.Context(), `INSERT INTO docs (id, tenant, title, body, revision, embedding) VALUES
+	_, err = tx.ExecContext(t.Context(), `INSERT INTO docs (id, tenant, title, body, revision, embedding) VALUES
 		('near', 'other', 'alpha', 'other', 1, '[1,0]'),
 		('title', 't1', 'alpha contract', 'notes', 7, '[0,1]'),
 		('body', 't1', 'notes', 'alpha contract details', 8, '[0.2,0.8]'),
@@ -60,7 +63,7 @@ CREATE TABLE docs (
 		Limit:           5,
 	})
 	require.NoError(t, err)
-	hits := scanLexical(t, db, lexicalQuery)
+	hits := scanLexical(t, tx, lexicalQuery)
 	require.Len(t, hits, 2)
 	assert.Equal(t, "title", hits[0].id)
 	assert.Greater(t, hits[0].score, hits[1].score)
@@ -75,7 +78,7 @@ CREATE TABLE docs (
 		Limit:          5,
 	})
 	require.NoError(t, err)
-	phraseHits := scanPhrase(t, db, phraseQuery)
+	phraseHits := scanPhrase(t, tx, phraseQuery)
 	require.Len(t, phraseHits, 1)
 	assert.Equal(t, "kana", phraseHits[0].id)
 	assert.Equal(t, 3, phraseHits[0].revision)
@@ -88,7 +91,7 @@ CREATE TABLE docs (
 		Limit:          1,
 	})
 	require.NoError(t, err)
-	vectorHits := scanVector(t, db, nearest)
+	vectorHits := scanVector(t, tx, nearest)
 	require.Len(t, vectorHits, 1)
 	assert.Equal(t, "near", vectorHits[0].id)
 	assert.Equal(t, 1, vectorHits[0].revision)
@@ -102,19 +105,19 @@ CREATE TABLE docs (
 		Limit:           1,
 	})
 	require.NoError(t, err)
-	filteredHits := scanVector(t, db, filtered)
+	filteredHits := scanVector(t, tx, filtered)
 	require.Len(t, filteredHits, 1)
 	assert.NotEqual(t, "near", filteredHits[0].id)
 
-	_, err = db.ExecContext(t.Context(), `UPDATE docs SET revision = 11 WHERE id = $1`, filteredHits[0].id)
+	_, err = tx.ExecContext(t.Context(), `UPDATE docs SET revision = 11 WHERE id = $1`, filteredHits[0].id)
 	require.NoError(t, err)
-	after := scanVector(t, db, filtered)
+	after := scanVector(t, tx, filtered)
 	require.Len(t, after, 1)
 	assert.Equal(t, filteredHits[0].id, after[0].id)
 	assert.Equal(t, 11, after[0].revision)
 
 	var plan string
-	require.NoError(t, db.QueryRowContext(t.Context(), "EXPLAIN "+filtered.SQL, filtered.Args...).Scan(&plan))
+	require.NoError(t, tx.QueryRowContext(t.Context(), "EXPLAIN "+filtered.SQL, filtered.Args...).Scan(&plan))
 	assert.NotEmpty(t, plan)
 }
 
@@ -124,7 +127,7 @@ type lexicalRow struct {
 	revision  int
 }
 
-func scanPhrase(t *testing.T, db *sql.DB, q sqlquery.Query) []lexicalRow {
+func scanPhrase(t *testing.T, db sqlquery.Queryer, q sqlquery.Query) []lexicalRow {
 	t.Helper()
 	rows, err := q.All(t.Context(), db, func(rows *sql.Rows) (lexicalRow, error) {
 		var row lexicalRow
@@ -135,7 +138,7 @@ func scanPhrase(t *testing.T, db *sql.DB, q sqlquery.Query) []lexicalRow {
 	return rows
 }
 
-func scanLexical(t *testing.T, db *sql.DB, q sqlquery.Query) []lexicalRow {
+func scanLexical(t *testing.T, db sqlquery.Queryer, q sqlquery.Query) []lexicalRow {
 	t.Helper()
 	rows, err := q.All(t.Context(), db, func(rows *sql.Rows) (lexicalRow, error) {
 		var row lexicalRow
@@ -152,7 +155,7 @@ type vectorRow struct {
 	score    float64
 }
 
-func scanVector(t *testing.T, db *sql.DB, q sqlquery.Query) []vectorRow {
+func scanVector(t *testing.T, db sqlquery.Queryer, q sqlquery.Query) []vectorRow {
 	t.Helper()
 	rows, err := q.All(t.Context(), db, func(rows *sql.Rows) (vectorRow, error) {
 		var row vectorRow

@@ -53,6 +53,12 @@ func TestRebaseKeepsLiteralsAndNumbersPlaceholders(t *testing.T) {
 			last: 1,
 		},
 		{
+			name: "escape string keeps a backslash quote",
+			in:   `note = E'it\'s a ?' AND a = ?`,
+			want: `note = E'it\'s a ?' AND a = $1`,
+			last: 1,
+		},
+		{
 			name: "dollar quote",
 			in:   "$$what?$$ = ?",
 			want: "$$what?$$ = $1",

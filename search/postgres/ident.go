@@ -21,8 +21,8 @@ func validIdentifier(s string) bool {
 func quote(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
 
 // rebase replaces anonymous ? placeholders with PostgreSQL $n placeholders.
-// A ? inside a string, dollar quote, quoted identifier, or comment stays
-// literal. ?? outside those regions is one literal ? and does not consume a
+// A ? inside a string, escape string, dollar quote, quoted identifier, or
+// comment stays literal. ?? outside those regions is one literal ? and does not consume a
 // placeholder number. n is the last used index and the result is the new one.
 func rebase(fragment string, n int) (string, int) {
 	var b strings.Builder
@@ -50,10 +50,12 @@ func rebase(fragment string, n int) (string, int) {
 	return b.String(), n
 }
 
-// literalEnd reports the exclusive end of a quote, dollar quote, or comment
-// that starts at i.
+// literalEnd reports the exclusive end of a quote, escape string, dollar
+// quote, or comment that starts at i.
 func literalEnd(s string, i int) (int, bool) {
 	switch {
+	case escapeStringStart(s, i):
+		return escapeStringEnd(s, i), true
 	case hasPrefixAt(s, i, "--"):
 		return lineCommentEnd(s, i), true
 	case hasPrefixAt(s, i, "/*"):
@@ -66,6 +68,34 @@ func literalEnd(s string, i int) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+func escapeStringStart(s string, i int) bool {
+	if i+1 >= len(s) || (s[i] != 'E' && s[i] != 'e') || s[i+1] != '\'' {
+		return false
+	}
+	if i == 0 {
+		return true
+	}
+	prev := s[i-1]
+	letter := (prev >= 'a' && prev <= 'z') || (prev >= 'A' && prev <= 'Z') || prev == '_'
+	digit := prev >= '0' && prev <= '9'
+	return !letter && !digit
+}
+
+func escapeStringEnd(s string, i int) int {
+	j := i + 2
+	for j < len(s) {
+		if s[j] == '\\' && j+1 < len(s) {
+			j += 2
+			continue
+		}
+		if s[j] == '\'' {
+			return j + 1
+		}
+		j++
+	}
+	return len(s)
 }
 
 func hasPrefixAt(s string, i int, prefix string) bool {
