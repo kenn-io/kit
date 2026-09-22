@@ -52,12 +52,12 @@ type SourcePredicate struct {
 // cosine similarity, higher first. Equal scores use vector rowid order within
 // the retrieved window. Outer queries must specify their own ordering.
 //
-// Generation metadata is resolved through the store's database while building.
-// Build before acquiring a transaction on a single-connection pool. Execute
-// the returned query against that same database, optionally through a transaction.
-// A short result does not establish exhaustion; QueryGenerationWindow exposes
-// the raw boundary when a caller needs to expand the candidate window.
-func (s *Store[K, G]) BuildCandidateQuery(ctx context.Context, gen G, query vector.Vector, q CandidateQuery) (sqlquery.Query, error) {
+// The caller supplies the generation ordinal and dimension from its own read.
+// This method does not use the database. Execute the returned query on the
+// caller's handle, including inside a transaction. A short result does not
+// establish exhaustion; QueryGenerationWindow exposes the raw boundary when
+// a caller needs to expand the candidate window.
+func (s *Store[K, G]) BuildCandidateQuery(ordinal int64, dimension int, query vector.Vector, q CandidateQuery) (sqlquery.Query, error) {
 	if q.CandidateLimit <= 0 {
 		return sqlquery.Query{}, errors.New("candidate limit must be positive")
 	}
@@ -79,9 +79,15 @@ func (s *Store[K, G]) BuildCandidateQuery(ctx context.Context, gen G, query vect
 		fmt.Fprintf(&projection, ", d.\"%s\" AS \"%s\"", col.Name, col.As)
 		fmt.Fprintf(&columns, ", \"%s\"", col.As)
 	}
-	ordinal, expr, value, err := s.prepareQuery(ctx, gen, query)
+	if ordinal <= 0 {
+		return sqlquery.Query{}, errors.New("generation ordinal must be positive")
+	}
+	if len(query) != dimension {
+		return sqlquery.Query{}, fmt.Errorf("query has %d dimensions, generation expects %d", len(query), dimension)
+	}
+	expr, value, err := vectorValue(query)
 	if err != nil {
-		return sqlquery.Query{}, err
+		return sqlquery.Query{}, fmt.Errorf("serialize query: %w", err)
 	}
 	text := s.candidateCTEs(ordinal, expr, projection.String(), predicate, false)
 	text += " SELECT doc_key, chunk_index, revision, 1 - distance AS score" + columns.String() + " FROM candidates ORDER BY distance, vec_rowid"

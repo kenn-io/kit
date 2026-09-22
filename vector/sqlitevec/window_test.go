@@ -37,7 +37,9 @@ func TestBuildCandidateQueryComposesAndAppliesFilterBeforeResultLimit(t *testing
 	_, err = vector.Fill(ctx, store, 1, topicEncoder())
 	require.NoError(t, err)
 
-	q, err := store.BuildCandidateQuery(ctx, 1, vector.Vector{1, 0, 0}, sqlitevec.CandidateQuery{
+	var ordinal int64
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT ordinal FROM message_vectors_generations WHERE gen_key = ?`, 1).Scan(&ordinal))
+	q, err := store.BuildCandidateQuery(ordinal, 3, vector.Vector{1, 0, 0}, sqlitevec.CandidateQuery{
 		CandidateLimit:  2,
 		ExtraSourceCols: []sqlitevec.SourceColumn{{Name: "body", As: "text"}},
 		ResultLimit:     1,
@@ -46,14 +48,14 @@ func TestBuildCandidateQueryComposesAndAppliesFilterBeforeResultLimit(t *testing
 	require.NoError(t, err)
 	// Compose the generated relation while preserving its binding order.
 	q.SQL = "SELECT doc_key, chunk_index, revision, score, text FROM (" + q.SQL + ") AS matches ORDER BY score DESC, doc_key"
-	narrow, err := store.BuildCandidateQuery(ctx, 1, vector.Vector{1, 0, 0}, sqlitevec.CandidateQuery{
+	narrow, err := store.BuildCandidateQuery(ordinal, 3, vector.Vector{1, 0, 0}, sqlitevec.CandidateQuery{
 		CandidateLimit: 1, ResultLimit: 1,
 		SourcePredicate: sqlitevec.SourcePredicate{SQL: "d.id = ?", Args: []any{int64(2)}},
 	})
 	require.NoError(t, err)
 	tx, err := db.BeginTx(ctx, nil)
 	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, tx.Rollback()) })
+	defer func() { _ = tx.Rollback() }()
 	type result struct {
 		doc      int64
 		chunk    int
