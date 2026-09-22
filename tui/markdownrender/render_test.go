@@ -121,7 +121,7 @@ func TestTerminalRendererRendersTableAtWidth(t *testing.T) {
 	input := "| A | B |\n| --- | --- |\n| x | y |\n"
 	got, err := renderMarkdownDocument(input, Options{Width: 20})
 	require.NoError(t, err)
-	for _, line := range strings.Split(got, "\n") {
+	for line := range strings.SplitSeq(got, "\n") {
 		if line != "" {
 			assert.LessOrEqual(t, ansi.StringWidth(line), 20)
 		}
