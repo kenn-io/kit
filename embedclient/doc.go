@@ -2,14 +2,31 @@
 //
 // The caller owns the HTTP client when it supplies one. This package clones
 // that client, pins requests to the configured origin, and can attach a bearer
-// token. It does not retry ordinary failures. OllamaMetalRecovery is the
-// exception: a response that mixes usable vectors with unusable ones keeps
-// the usable vectors and asks Ollama to reload the runner, then to encode
-// the bad inputs once without the GPU. A non-2xx response, a short body, or
-// a vector that fails validation fails the whole call when that recovery is
-// off. Response indexes are applied inside
-// each request. A missing index on every item means the provider kept request
-// order.
+// token. Ordinary failures are not retried. A non-2xx response, a short body,
+// or a vector that fails validation fails the whole call. Response indexes
+// are applied inside each request. A missing index on every item means the
+// provider kept request order.
+//
+// Ollama on Apple Metal can answer HTTP 200 with a vector that is not a real
+// number. Set OllamaMetalRecovery to keep the usable vectors and send only
+// the bad inputs to Ollama's native embed route. That request unloads the
+// current runner, retries it once, and then encodes those inputs once with
+// the GPU off. The endpoint path must end in /v1. The switch is not part of
+// the vector identity.
+//
+//	client, err := embedclient.New(embedclient.Options{
+//	    Model: embedconfig.Model{
+//	        Name: "nomic-embed-text", Dimensions: 768,
+//	        Metric: embedconfig.MetricCosine,
+//	        Normalization: embedconfig.NormalizationNone,
+//	    },
+//	    Deployment: embedconfig.Deployment{
+//	        BaseURL: "http://127.0.0.1:11434/v1",
+//	    },
+//	    OllamaMetalRecovery: true,
+//	})
+//
+// Leave the switch off for every other endpoint.
 //
 // New accepts only a cosine metric. A token budget lowers how many inputs
 // share one request. Response embeddings are a JSON array of finite numbers
