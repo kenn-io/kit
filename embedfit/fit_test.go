@@ -29,6 +29,11 @@ func TestFitKeepsAShortSourceWhole(t *testing.T) {
 	assert.Empty(t, blank.Spans)
 }
 
+func TestFitRejectsASpanThatIsOnlySpace(t *testing.T) {
+	_, err := embedfit.Fit("  hello", "doc:", "", words{}, policy(1, 0, 0, embedconfig.TruncationReject))
+	require.ErrorIs(t, err, embedfit.ErrInputTooLong)
+}
+
 func TestFitPrefersAParagraphBoundary(t *testing.T) {
 	source := "aaaa bbbb\n\ncccc dddd"
 	got, err := embedfit.Fit(source, "", "", words{}, policy(2, 0, 0, embedconfig.TruncationDropTail))

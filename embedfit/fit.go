@@ -137,7 +137,14 @@ func Fit(source, prefix, suffix string, tok Tokenizer, policy Policy) (Result, e
 		if !natural && policy.Truncation == embedconfig.TruncationReject {
 			return Result{}, ErrHardCut
 		}
-		spans = append(spans, spanAt(source, offsets, cursor, cut, !natural))
+		span := spanAt(source, offsets, cursor, cut, !natural)
+		if strings.TrimSpace(span.Text) == "" {
+			if policy.Truncation == embedconfig.TruncationDropTail && len(spans) > 0 {
+				return finish(spans, true, policy.Truncation, prefix, suffix)
+			}
+			return Result{}, ErrInputTooLong
+		}
+		spans = append(spans, span)
 		if cut >= total {
 			return Result{Spans: spans, prefix: prefix, suffix: suffix}, nil
 		}
