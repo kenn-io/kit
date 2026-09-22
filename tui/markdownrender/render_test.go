@@ -86,23 +86,46 @@ func TestTerminalRendererFormatsIssueMarkdown(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	want := `Steps
-| Keep context
-
-1. Open issue https://example.com
-2. [x] Comment with ` + "`kata comment`" + `
-
-fmt.Println("ok")
-
-| Field | Value |
-| --- | --- |
-| Status | open |
-
-[image: diagram] https://example.com/diagram.png`
-	assert.Equal(want, termtext.StripANSI(strings.TrimSpace(got)))
+	stripped := termtext.StripANSI(strings.TrimSpace(got))
+	for _, sub := range []string{
+		"Steps", "| Keep context",
+		"1. Open issue", "2. [x] Comment with", "`kata comment`",
+		"fmt.Println(\"ok\")",
+		"╭", "╰", "│Field", "│Value", "│Status", "│open",
+		"[image: diagram]", "https://example.com/diagram.png",
+	} {
+		assert.Contains(stripped, sub)
+	}
 	assert.Contains(got, "\x1b[1mSteps\x1b[22m")
 	assert.Contains(got, "issue \x1b[4mhttps://example.com\x1b[24m")
 	assert.Contains(got, "\x1b[48;5;236mfmt.Println(\"ok\")\x1b[49m")
+}
+
+func TestTerminalRendererRendersTableWithBorders(t *testing.T) {
+	assert := assert.New(t)
+	input := "| Name | Count |\n| --- | --- |\n| alpha | 1 |\n| beta | 2 |\n"
+	got, err := renderMarkdownDocument(input, Options{Width: 40})
+	require.NoError(t, err)
+	stripped := termtext.StripANSI(got)
+	assert.Contains(stripped, "╭")
+	assert.Contains(stripped, "╰")
+	assert.Contains(stripped, "│")
+	assert.Contains(stripped, "├")
+	assert.Contains(stripped, "Name")
+	assert.Contains(stripped, "alpha")
+	assert.Contains(stripped, "beta")
+	assert.NotContains(stripped, "| --- |")
+}
+
+func TestTerminalRendererRendersTableAtWidth(t *testing.T) {
+	input := "| A | B |\n| --- | --- |\n| x | y |\n"
+	got, err := renderMarkdownDocument(input, Options{Width: 20})
+	require.NoError(t, err)
+	for _, line := range strings.Split(got, "\n") {
+		if line != "" {
+			assert.LessOrEqual(t, ansi.StringWidth(line), 20)
+		}
+	}
 }
 
 func TestTerminalRendererKeepsHeadingBoldAfterNestedStrong(t *testing.T) {

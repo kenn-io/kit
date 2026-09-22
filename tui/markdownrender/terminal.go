@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	lipgloss "charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/table"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
@@ -306,23 +308,25 @@ func isASCIIAlpha(char byte) bool {
 	return char >= 'A' && char <= 'Z' || char >= 'a' && char <= 'z'
 }
 
-func (r terminalRenderer) renderTable(table *extast.Table) string {
-	rows := make([]string, 0, table.ChildCount()+1)
-	for child := table.FirstChild(); child != nil; child = child.NextSibling() {
+func (r terminalRenderer) renderTable(tbl *extast.Table) string {
+	var headers []string
+	var rows [][]string
+	for child := tbl.FirstChild(); child != nil; child = child.NextSibling() {
 		cells := make([]string, 0, child.ChildCount())
 		for cell := child.FirstChild(); cell != nil; cell = cell.NextSibling() {
 			cells = append(cells, r.renderInlines(cell))
 		}
-		rows = append(rows, "| "+strings.Join(cells, " | ")+" |")
 		if _, ok := child.(*extast.TableHeader); ok {
-			separators := make([]string, len(cells))
-			for i := range separators {
-				separators[i] = "---"
-			}
-			rows = append(rows, "| "+strings.Join(separators, " | ")+" |")
+			headers = cells
+		} else {
+			rows = append(rows, cells)
 		}
 	}
-	return strings.Join(rows, "\n")
+	t := table.New().
+		Border(lipgloss.RoundedBorder()).
+		Headers(headers...).
+		Rows(rows...)
+	return t.String()
 }
 
 func (r terminalRenderer) renderDefinitionList(list *extast.DefinitionList) string {
