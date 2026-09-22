@@ -14,10 +14,12 @@ import (
 // lowercased, and each percent sign in it is encoded as %25.
 // Userinfo, query, and fragment are rejected so a credential or a
 // cache-buster cannot hide inside the endpoint.
-// Plaintext HTTP is limited to loopback unless trustPrivateNetwork is set,
-// in which case private, link-local, unspecified, and carrier-grade NAT
-// addresses are also allowed. The zone is removed before that check.
-// A DNS name other than localhost is never treated as private.
+// Plaintext HTTP is limited to loopback unless trustPrivateNetwork is set.
+// With that opt-in, private, link-local, unspecified, and carrier-grade NAT
+// addresses are allowed, and so is a DNS name. A name is not classified as
+// public or private. The opt-in is the caller's statement that the name is
+// on a network they trust. Without the opt-in, a name other than localhost
+// is rejected. The zone is removed before the address check.
 // A parent step is a decoded path piece that is exactly "..". A name that
 // contains two dots, such as "v1..2", is kept.
 func CanonicalEndpoint(raw string, trustPrivateNetwork bool) (string, error) {
@@ -180,7 +182,7 @@ func plaintextAllowed(host string, trustPrivateNetwork bool) bool {
 	}
 	ip := net.ParseIP(host)
 	if ip == nil {
-		return false
+		return trustPrivateNetwork
 	}
 	if ip.IsLoopback() {
 		return true

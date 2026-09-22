@@ -11,7 +11,8 @@ import (
 
 // VectorIdentity identifies a comparable vector space.
 // Empty input type is treated as none. The endpoint is included only when
-// PinEndpoint is set. Batch, transport, retrieval, and serving are not inputs.
+// PinEndpoint is set. Batch, transport, retrieval, serving, and the wire
+// encoding format are not inputs. Float and base64 are the same numbers.
 func VectorIdentity(m Model, r Roles, d Deployment) (string, error) {
 	fields, err := vectorFields(m, r, d)
 	if err != nil {
@@ -78,7 +79,6 @@ func vectorFields(m Model, r Roles, d Deployment) (map[string]string, error) {
 	}
 	add(fields, "revision", m.Revision)
 	add(fields, "pooling", m.Pooling)
-	add(fields, "encoding_format", m.EncodingFormat)
 	if m.RequestDimensions {
 		fields["request_dimensions"] = "1"
 	}

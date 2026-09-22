@@ -86,6 +86,14 @@ func TestOperationalSettingsDoNotChangeIdentity(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, vectorID, gotVector)
 	assert.Equal(t, inputID, gotInput)
+
+	changed.Model.EncodingFormat = "base64"
+	gotVector, err = embedconfig.VectorIdentity(changed.Model, changed.Roles, changed.Deployment)
+	require.NoError(t, err)
+	gotInput, err = embedconfig.InputIdentity(changed.Model, changed.Roles, changed.Deployment, changed.Input)
+	require.NoError(t, err)
+	assert.Equal(t, vectorID, gotVector, "wire encoding is not part of the vector identity")
+	assert.Equal(t, inputID, gotInput)
 }
 
 func TestInputWindowChangesInputIdentityOnly(t *testing.T) {
@@ -168,6 +176,12 @@ func TestCanonicalEndpoint(t *testing.T) {
 	loopback, err := embedconfig.CanonicalEndpoint("http://127.0.0.1:8080/v1", false)
 	require.NoError(t, err)
 	assert.Equal(t, "http://127.0.0.1:8080/v1", loopback)
+
+	_, err = embedconfig.CanonicalEndpoint("http://gpu-box.local/v1", false)
+	require.Error(t, err)
+	named, err := embedconfig.CanonicalEndpoint("http://gpu-box.local:11434/v1", true)
+	require.NoError(t, err)
+	assert.Equal(t, "http://gpu-box.local:11434/v1", named)
 
 	_, err = embedconfig.CanonicalEndpoint("https://example.test/v1/../admin", false)
 	require.Error(t, err)
