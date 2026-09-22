@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -663,62 +664,82 @@ func TestPersistentManagerFailedStartCleansLateSocket(t *testing.T) {
 }
 
 func TestFailedStartDrainTimeoutQuarantinesSocket(t *testing.T) {
-	assert := assert.New(t)
-	require := require.New(t)
 	fake := newFakeSSH()
-	fake.spawnSocketOnError = true
-	fake.spawnExitCode = 255
-	fake.onExit = func(context.Context) (int, error) { return 0, nil }
-	events := make(chan Event, 4)
-	manager, err := NewPersistentManager(newSocketDir(t), PersistentConfig{
-		RunSSH:                  fake.run,
-		CleanupTimeout:          5 * time.Millisecond,
-		EstablishPollInterval:   time.Millisecond,
-		MaximumControlPathBytes: 1_000,
-		OnEvent: func(event Event) {
-			events <- event
-		},
-	})
-	require.NoError(err)
 	t.Cleanup(fake.closeAll)
-	target := testTarget("wes@studio")
-	path := manager.SocketPath("studio", target)
-
-	_, err = manager.Connect(t.Context(), "studio", target)
-
-	require.ErrorIs(err, context.DeadlineExceeded)
-	assert.Equal(StateStopping, manager.State("studio"))
-	assert.FileExists(path)
-	for {
-		select {
-		case event := <-events:
-			if event.State == StateStopping {
-				assert.Equal(err.Error(), event.Message)
-				goto stoppingObserved
-			}
-		case <-time.After(time.Second):
-			require.Fail("failed-start stopping event was not delivered")
+	// Real socket accept loops must stay outside the fake-clock bubble.
+	calls := make(chan func())
+	done := make(chan struct{})
+	go func() {
+		for call := range calls {
+			call()
+			done <- struct{}{}
 		}
+	}()
+	defer close(calls)
+	run := func(ctx context.Context, arguments []string) (int, error) {
+		var code int
+		var err error
+		calls <- func() { code, err = fake.run(ctx, arguments) }
+		<-done
+		return code, err
 	}
+	synctest.Test(t, func(t *testing.T) {
+		assert := assert.New(t)
+		require := require.New(t)
+		fake.spawnSocketOnError = true
+		fake.spawnExitCode = 255
+		fake.onExit = func(context.Context) (int, error) { return 0, nil }
+		events := make(chan Event, 4)
+		manager, err := NewPersistentManager(newSocketDir(t), PersistentConfig{
+			RunSSH:                  run,
+			CleanupTimeout:          5 * time.Millisecond,
+			EstablishPollInterval:   time.Millisecond,
+			MaximumControlPathBytes: 1_000,
+			OnEvent: func(event Event) {
+				events <- event
+			},
+		})
+		require.NoError(err)
+		target := testTarget("wes@studio")
+		path := manager.SocketPath("studio", target)
 
-stoppingObserved:
-	callsBeforeRecovery := len(fake.callsSnapshot())
-	_, err = manager.Connect(t.Context(), "studio", target)
-	require.ErrorIs(err, context.DeadlineExceeded)
-	assert.Len(fake.callsSnapshot(), callsBeforeRecovery)
-	require.NoError(fake.closeSocket(path, false))
-	fake.spawnSocketOnError = false
-	fake.spawnExitCode = 0
+		_, err = manager.Connect(t.Context(), "studio", target)
 
-	generation, err := manager.Connect(t.Context(), "studio", target)
+		require.ErrorIs(err, context.DeadlineExceeded)
+		assert.Equal(StateStopping, manager.State("studio"))
+		assert.Equal([]string{"spawn", "exit"}, fake.operationKinds())
+		assert.FileExists(path)
+		for {
+			select {
+			case event := <-events:
+				if event.State == StateStopping {
+					assert.Equal(err.Error(), event.Message)
+					goto stoppingObserved
+				}
+			case <-time.After(time.Second):
+				require.Fail("failed-start stopping event was not delivered")
+			}
+		}
 
-	require.NoError(err)
-	assert.Positive(generation)
-	assert.Equal(StateConnected, manager.State("studio"))
-	assert.Equal(
-		[]string{"spawn", "check"},
-		fake.operationKinds()[callsBeforeRecovery:],
-	)
+	stoppingObserved:
+		callsBeforeRecovery := len(fake.callsSnapshot())
+		_, err = manager.Connect(t.Context(), "studio", target)
+		require.ErrorIs(err, context.DeadlineExceeded)
+		assert.Len(fake.callsSnapshot(), callsBeforeRecovery)
+		require.NoError(fake.closeSocket(path, false))
+		fake.spawnSocketOnError = false
+		fake.spawnExitCode = 0
+
+		generation, err := manager.Connect(t.Context(), "studio", target)
+
+		require.NoError(err)
+		assert.Positive(generation)
+		assert.Equal(StateConnected, manager.State("studio"))
+		assert.Equal(
+			[]string{"spawn", "check"},
+			fake.operationKinds()[callsBeforeRecovery:],
+		)
+	})
 }
 
 func TestPersistentManagerFailedCleanupBlocksTargetReplacement(t *testing.T) {
