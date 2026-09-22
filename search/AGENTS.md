@@ -13,6 +13,11 @@ execution-plan framework or an ORM.
 - Chinese segmentation is a caller-supplied segmenter. The runtime fingerprint
   covers the library and dictionary bytes. This module does not install that
   runtime. Hiragana, Katakana, and Hangul queries are not sent to it.
+- CJK search is off until the caller enables it. Enabling it adds a second
+  index the caller creates and names. The ordinary index stays.
+- IndexFor sends a query to the CJK index when the text contains Han, Hangul,
+  Hiragana, or Katakana. Other queries use the ordinary index. A mixed query
+  uses the CJK index.
 - `PrepareAdvanced` returns caller syntax unchanged. Do not infer it from a
   leading quote.
 
