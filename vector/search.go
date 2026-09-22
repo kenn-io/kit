@@ -1,6 +1,10 @@
 package vector
 
-import "sort"
+import (
+	"errors"
+	"math"
+	"sort"
+)
 
 // Hit is a single search result identifying the document it belongs to. K
 // is the caller's document key type (for example int64 or a UUID); this
@@ -22,10 +26,16 @@ type Hit[K comparable] struct {
 // RollupByDocument reduces chunk-level hits to one hit per document,
 // keeping the highest-scoring chunk for each, and returns them sorted by
 // score descending. It is the chunk->document step a caller applies to a
-// single generation's results before merging across generations.
-func RollupByDocument[K comparable](hits []Hit[K]) []Hit[K] {
+// single generation's results before merging across generations. A NaN
+// document key or score is an error and is not stored.
+func RollupByDocument[K comparable](hits []Hit[K]) ([]Hit[K], error) {
 	if len(hits) == 0 {
-		return nil
+		return nil, nil
+	}
+	for _, h := range hits {
+		if err := rejectStoredNaN(h.Doc, h.Score); err != nil {
+			return nil, err
+		}
 	}
 	best := make(map[K]Hit[K], len(hits))
 	order := make([]K, 0, len(hits))
@@ -45,7 +55,7 @@ func RollupByDocument[K comparable](hits []Hit[K]) []Hit[K] {
 		out = append(out, best[k])
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
-	return out
+	return out, nil
 }
 
 // MergeStrategy selects how Merge orders documents drawn from different
@@ -71,7 +81,7 @@ type MergeOptions struct {
 	// MergeNormalizedScore.
 	Strategy MergeStrategy
 	// RankConstant is the k term in reciprocal-rank fusion. Values <= 0
-	// use 60.
+	// use 60. NaN is an error.
 	RankConstant float64
 	// Limit caps the number of returned hits. Values <= 0 return all.
 	Limit int
@@ -85,8 +95,20 @@ type MergeOptions struct {
 // generation is never dropped.
 //
 // Each surviving hit's Score is set to the merged score under the chosen
-// strategy, and the result is ordered by that score descending.
-func Merge[K comparable](perGeneration [][]Hit[K], o MergeOptions) []Hit[K] {
+// strategy, and the result is ordered by that score descending. A NaN
+// document key, score, or reciprocal-rank constant is an error and is not
+// stored.
+func Merge[K comparable](perGeneration [][]Hit[K], o MergeOptions) ([]Hit[K], error) {
+	for _, list := range perGeneration {
+		for _, h := range list {
+			if err := rejectStoredNaN(h.Doc, h.Score); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if o.Strategy == MergeReciprocalRank && math.IsNaN(o.RankConstant) {
+		return nil, errors.New("vector: NaN cannot be stored")
+	}
 	rep := make(map[K]Hit[K])
 	order := make([]K, 0)
 	score := make(map[K]float64)
@@ -146,7 +168,18 @@ func Merge[K comparable](perGeneration [][]Hit[K], o MergeOptions) []Hit[K] {
 	if o.Limit > 0 && len(out) > o.Limit {
 		out = out[:o.Limit]
 	}
-	return out
+	return out, nil
+}
+
+// rejectStoredNaN reports a document key or score that cannot be put in a
+// result map. NaN is not equal to itself, and neither is a key that contains
+// NaN.
+func rejectStoredNaN[K comparable](key K, score float32) error {
+	other := key
+	if key != other || math.IsNaN(float64(score)) {
+		return errors.New("vector: NaN cannot be stored")
+	}
+	return nil
 }
 
 func scoreRange[K comparable](hits []Hit[K]) (lo, hi float32) {

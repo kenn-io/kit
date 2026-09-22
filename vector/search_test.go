@@ -1,9 +1,11 @@
 package vector_test
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"go.kenn.io/kit/vector"
 )
@@ -25,7 +27,8 @@ func TestRollupByDocumentKeepsBestChunkPerDoc(t *testing.T) {
 		{Doc: 2, ChunkIndex: 1, Score: 0.4},
 	}
 
-	got := vector.RollupByDocument(hits)
+	got, err := vector.RollupByDocument(hits)
+	require.NoError(t, err)
 
 	assert.Equal([]int64{2, 1}, docs(got), "one hit per doc, ordered by score desc")
 	assert.Equal(3, got[1].ChunkIndex, "doc 1 keeps its highest-scoring chunk")
@@ -44,7 +47,8 @@ func TestMergeUnionsAndPrefersEarlierGeneration(t *testing.T) {
 		{Doc: "old-only", Score: 0.80},
 	}
 
-	got := vector.Merge([][]vector.Hit[string]{building, active}, vector.MergeOptions{Strategy: vector.MergeRawScore})
+	got, err := vector.Merge([][]vector.Hit[string]{building, active}, vector.MergeOptions{Strategy: vector.MergeRawScore})
+	require.NoError(t, err)
 
 	assert.ElementsMatch([]string{"shared", "new-only", "old-only"}, docs(got), "coverage is a union")
 	for _, h := range got {
@@ -68,7 +72,8 @@ func TestMergeNormalizedScoreIsDefault(t *testing.T) {
 		{Doc: 4, Score: 0.10},
 	}
 
-	got := vector.Merge([][]vector.Hit[int]{building, active}, vector.MergeOptions{})
+	got, err := vector.Merge([][]vector.Hit[int]{building, active}, vector.MergeOptions{})
+	require.NoError(t, err)
 
 	// Each generation's best-normalized hit should reach the top band.
 	top := got[0]
@@ -89,7 +94,8 @@ func TestMergeReciprocalRankFusesAcrossGenerations(t *testing.T) {
 		{Doc: 20, Score: 0.49},
 	}
 
-	got := vector.Merge([][]vector.Hit[int]{a, b}, vector.MergeOptions{Strategy: vector.MergeReciprocalRank})
+	got, err := vector.Merge([][]vector.Hit[int]{a, b}, vector.MergeOptions{Strategy: vector.MergeReciprocalRank})
+	require.NoError(t, err)
 
 	assert.Equal(99, got[0].Doc, "the doc found in both generations ranks first")
 }
@@ -98,12 +104,35 @@ func TestMergeRespectsLimit(t *testing.T) {
 	assert := assert.New(t)
 	list := []vector.Hit[int]{{Doc: 1, Score: 0.9}, {Doc: 2, Score: 0.8}, {Doc: 3, Score: 0.7}}
 
-	got := vector.Merge([][]vector.Hit[int]{list}, vector.MergeOptions{Strategy: vector.MergeRawScore, Limit: 2})
+	got, err := vector.Merge([][]vector.Hit[int]{list}, vector.MergeOptions{Strategy: vector.MergeRawScore, Limit: 2})
+	require.NoError(t, err)
 
 	assert.Len(got, 2)
 	assert.Equal([]int{1, 2}, docs(got))
 }
 
 func TestMergeEmpty(t *testing.T) {
-	assert.Empty(t, vector.Merge[int](nil, vector.MergeOptions{}))
+	got, err := vector.Merge[int](nil, vector.MergeOptions{})
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}
+
+func TestRollupAndMergeRejectNaN(t *testing.T) {
+	got, err := vector.RollupByDocument([]vector.Hit[int64]{{Doc: 1, Score: float32(math.NaN())}})
+	require.ErrorContains(t, err, "NaN")
+	assert.Empty(t, got)
+
+	byDoc, err := vector.RollupByDocument([]vector.Hit[float64]{{Doc: math.NaN(), Score: 1}})
+	require.ErrorContains(t, err, "NaN")
+	assert.Empty(t, byDoc)
+
+	merged, err := vector.Merge([][]vector.Hit[int]{{{Doc: 1, Score: float32(math.NaN())}}}, vector.MergeOptions{Strategy: vector.MergeRawScore})
+	require.ErrorContains(t, err, "NaN")
+	assert.Empty(t, merged)
+
+	_, err = vector.Merge([][]vector.Hit[int]{{{Doc: 1, Score: 1}}}, vector.MergeOptions{
+		Strategy:     vector.MergeReciprocalRank,
+		RankConstant: math.NaN(),
+	})
+	require.ErrorContains(t, err, "NaN")
 }

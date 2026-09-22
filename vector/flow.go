@@ -854,7 +854,11 @@ func Search[K, G comparable](
 		if err != nil {
 			return nil, fmt.Errorf("query generation %v: %w", gen, err)
 		}
-		lists = append(lists, RollupByDocument(hits))
+		rolled, err := RollupByDocument(hits)
+		if err != nil {
+			return nil, err
+		}
+		lists = append(lists, rolled)
 	}
-	return Merge(lists, o.Merge), nil
+	return Merge(lists, o.Merge)
 }
