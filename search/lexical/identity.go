@@ -2,10 +2,11 @@ package lexical
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
+	"hash"
 	"strings"
 )
 
@@ -90,10 +91,10 @@ func FingerprintRuntime(version string, files []RuntimeFile) (string, error) {
 		return "", errors.New("lexical: runtime fingerprint requires files")
 	}
 	h := sha256.New()
-	if _, err := io.WriteString(h, version); err != nil {
+	if err := writeLenBytes(h, []byte(version)); err != nil {
 		return "", err
 	}
-	if _, err := h.Write([]byte{0}); err != nil {
+	if err := writeLen(h, len(files)); err != nil {
 		return "", err
 	}
 	seen := make(map[string]struct{}, len(files))
@@ -106,18 +107,27 @@ func FingerprintRuntime(version string, files []RuntimeFile) (string, error) {
 			return "", fmt.Errorf("lexical: duplicate runtime file %q", name)
 		}
 		seen[name] = struct{}{}
-		if _, err := io.WriteString(h, name); err != nil {
+		if err := writeLenBytes(h, []byte(name)); err != nil {
 			return "", err
 		}
-		if _, err := h.Write([]byte{0}); err != nil {
-			return "", err
-		}
-		if _, err := h.Write(file.Data); err != nil {
-			return "", err
-		}
-		if _, err := h.Write([]byte{0}); err != nil {
+		if err := writeLenBytes(h, file.Data); err != nil {
 			return "", err
 		}
 	}
 	return version + ":" + hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func writeLenBytes(h hash.Hash, data []byte) error {
+	if err := writeLen(h, len(data)); err != nil {
+		return err
+	}
+	_, err := h.Write(data)
+	return err
+}
+
+func writeLen(h hash.Hash, n int) error {
+	var buf [binary.MaxVarintLen64]byte
+	written := binary.PutUvarint(buf[:], uint64(n))
+	_, err := h.Write(buf[:written])
+	return err
 }

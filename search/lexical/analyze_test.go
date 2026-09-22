@@ -130,6 +130,19 @@ func TestChineseSegmentsHanAndNotKana(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEqual(t, runtime, changed)
 
+	// A zero byte inside a file must not make two different file lists match.
+	left, err := lexical.FingerprintRuntime(lexical.ChineseQueryVersion, []lexical.RuntimeFile{
+		{Name: "a", Data: []byte("x\x00y")},
+		{Name: "b", Data: []byte("z")},
+	})
+	require.NoError(t, err)
+	right, err := lexical.FingerprintRuntime(lexical.ChineseQueryVersion, []lexical.RuntimeFile{
+		{Name: "a", Data: []byte("x")},
+		{Name: "b\x00y", Data: []byte("z")},
+	})
+	require.NoError(t, err)
+	assert.NotEqual(t, left, right)
+
 	blank, err := lexical.Chinese(runtime, func(string) ([]lexical.Token, error) { return nil, nil })
 	require.NoError(t, err)
 	_, err = blank.PrepareLiteral("法国")
