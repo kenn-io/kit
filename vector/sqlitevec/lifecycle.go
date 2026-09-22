@@ -85,7 +85,9 @@ SELECT
 // building or active generation, in one transaction. A non-zero backlog
 // returns an error wrapping ErrUncovered and leaves every state unchanged.
 // A missing vec0 table, including one Reclaim has dropped, also leaves
-// every state unchanged. Activate does not recreate the table. Activation
+// every state unchanged. A retired generation is refused, so publishing
+// it cannot retire the generation that is active now. Activate does not
+// recreate the table. Activation
 // does not drop storage; call Reclaim for a retired generation.
 // LiveGenerations still returns building and active generations, so
 // callers that serve only the active generation select it themselves.
@@ -106,6 +108,14 @@ func (s *Store[K, G]) Activate(ctx context.Context, gen G) error {
 	ordinal, _, err := s.lookupGenerationTx(ctx, tx, gen)
 	if err != nil {
 		return err
+	}
+	var state string
+	if err := tx.QueryRowContext(ctx, fmt.Sprintf(
+		`SELECT state FROM %s WHERE gen_key = ?`, s.generationsTable()), gen).Scan(&state); err != nil {
+		return fmt.Errorf("read generation %v state: %w", gen, err)
+	}
+	if State(state) == StateRetired {
+		return fmt.Errorf("generation %v is retired", gen)
 	}
 	coverage, err := s.coverageOn(ctx, tx, ordinal, "", nil)
 	if err != nil {

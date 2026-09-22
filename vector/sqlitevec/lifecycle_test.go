@@ -143,7 +143,7 @@ func TestActivateRefusesAReclaimedGeneration(t *testing.T) {
 	require.NoError(store.Reclaim(ctx, 1))
 
 	err := store.Activate(ctx, 1)
-	require.ErrorContains(err, "vec0 table message_vectors_v1 is missing")
+	require.ErrorContains(err, "generation 1 is retired")
 	require.NotErrorIs(err, sqlitevec.ErrUncovered)
 	assert.Equal(sqlitevec.StateRetired, generationByKey(t, store, 1).State)
 	assert.Equal(sqlitevec.StateActive, generationByKey(t, store, 2).State)
@@ -156,6 +156,24 @@ func TestActivateRefusesAReclaimedGeneration(t *testing.T) {
 	var vecTable string
 	err = db.QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE name = 'message_vectors_v1'`).Scan(&vecTable)
 	require.ErrorIs(err, sql.ErrNoRows)
+}
+
+func TestActivateRefusesARetiredGeneration(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	ctx := t.Context()
+	_, store := setupWithRevision(t)
+	model := vector.Generation{Model: "m", Dimensions: 3}
+	require.NoError(store.EnsureGeneration(ctx, 1, model, sqlitevec.StateActive))
+	require.NoError(store.EnsureGeneration(ctx, 2, model, sqlitevec.StateBuilding))
+	fillGeneration(t, store, 1)
+	fillGeneration(t, store, 2)
+	require.NoError(store.Activate(ctx, 2))
+
+	err := store.Activate(ctx, 1)
+	require.ErrorContains(err, "generation 1 is retired")
+	assert.Equal(sqlitevec.StateRetired, generationByKey(t, store, 1).State)
+	assert.Equal(sqlitevec.StateActive, generationByKey(t, store, 2).State)
 }
 
 func TestActivateAllowsAnEmptyCorpus(t *testing.T) {
