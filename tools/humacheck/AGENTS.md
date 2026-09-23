@@ -50,6 +50,13 @@ have no mechanical fix and stay report-only.
   any module package can be followed by `*types.Func` identity. Do not switch
   to `go/analysis` facts: the client rule needs route inventory from packages
   the client does not import.
+- Files under GOROOT or GOMODCACHE are parsed without function bodies
+  (`dependencyFiles.parseFile`): `NeedDeps` type-checks every dependency from
+  source, and no rule reads syntax outside the main module. Everything else,
+  including workspace modules, local replacements, and vendored copies, keeps
+  its bodies. The soft type errors that stripping causes (unused imports,
+  bodiless init and generic functions) are dropped only when they sit in a
+  stripped file; every error in a kept file still fails the run.
 - Tests (`_test.go`), generated files (`ast.IsGenerated`), and `generated/`
   directories are never judged by the semantic Go rules or the import ban.
   Extend `skipFile` rather than adding per-rule exceptions. The one explicit

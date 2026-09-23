@@ -7,7 +7,6 @@ package humacheck
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"go/token"
 	"io/fs"
@@ -110,11 +109,9 @@ func Run(ctx context.Context, opts Options) ([]Diagnostic, error) {
 		patterns = []string{"./..."}
 	}
 
-	cfg := &packages.Config{
-		Context: ctx,
-		Dir:     dir,
-		Mode:    loadMode,
-		Tests:   false,
+	cfg, deps, err := loadConfig(ctx, dir, nil)
+	if err != nil {
+		return nil, err
 	}
 	if len(opts.BuildTags) > 0 {
 		cfg.BuildFlags = []string{"-tags=" + strings.Join(opts.BuildTags, ",")}
@@ -150,7 +147,7 @@ func Run(ctx context.Context, opts Options) ([]Diagnostic, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load packages: %w", err)
 	}
-	if err := packageErrors(pkgs); err != nil {
+	if err := packageErrors(pkgs, deps); err != nil {
 		return nil, err
 	}
 	moduleDir := mainModuleDir(dir, pkgs)
@@ -228,22 +225,6 @@ func check(pkgs []*packages.Package, repo fs.FS, tracked []string, goModPath str
 		diags = append(diags, found...)
 	}
 	return diags, nil
-}
-
-func packageErrors(pkgs []*packages.Package) error {
-	var errs []error
-	packages.Visit(pkgs, nil, func(pkg *packages.Package) {
-		for _, e := range pkg.Errors {
-			errs = append(errs, errors.New(e.Error()))
-		}
-	})
-	if len(errs) == 0 {
-		return nil
-	}
-	if len(errs) > 20 {
-		errs = append(errs[:20], fmt.Errorf("%d more errors", len(errs)-20))
-	}
-	return fmt.Errorf("packages failed to load: %w", errors.Join(errs...))
 }
 
 // mainModuleDir returns the directory of the main module the loaded
