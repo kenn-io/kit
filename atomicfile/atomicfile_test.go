@@ -76,9 +76,13 @@ func TestCreateAbortLeavesTargetAndDirectoryUnchanged(t *testing.T) {
 	file, err := atomicfile.Create(target)
 	require.NoError(err)
 	assert.Equal(t, target, file.Name())
-	realDir, err := filepath.EvalSymlinks(dir)
+	// atomicfile stages in the resolved directory, which can be spelled
+	// differently from dir (/private/var on macOS, RUNNER~1 on Windows).
+	dirInfo, err := os.Stat(dir)
 	require.NoError(err)
-	require.Equal(realDir, filepath.Dir(file.TempName()))
+	stagingInfo, err := os.Stat(filepath.Dir(file.TempName()))
+	require.NoError(err)
+	require.True(os.SameFile(dirInfo, stagingInfo), "staged in %s, want %s", file.TempName(), dir)
 	require.True(strings.HasPrefix(filepath.Base(file.TempName()), ".target.tmp-"), file.TempName())
 	_, err = file.WriteString("new")
 	require.NoError(err)

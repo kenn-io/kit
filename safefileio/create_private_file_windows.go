@@ -52,7 +52,14 @@ func CreatePrivateFile(path string) (*os.File, error) {
 		0,
 	)
 	if err != nil {
-		// ERROR_FILE_EXISTS and ERROR_ALREADY_EXISTS match fs.ErrExist.
+		// ERROR_FILE_EXISTS and ERROR_ALREADY_EXISTS match fs.ErrExist. A
+		// directory at path, including a directory junction or symlink,
+		// fails with ERROR_ACCESS_DENIED instead; report that as existing.
+		if errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+			if _, statErr := os.Lstat(path); statErr == nil {
+				err = errors.Join(fs.ErrExist, err)
+			}
+		}
 		return nil, &fs.PathError{Op: "create", Path: path, Err: err}
 	}
 	if err := verifyCreatedWindowsFile(path, handle, userSID, ownerSID); err != nil {

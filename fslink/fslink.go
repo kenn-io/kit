@@ -277,7 +277,13 @@ func openDir(dir *os.Root, name string) (*os.Root, error) {
 func openFinal(dir *os.Root, name string, flag int, perm fs.FileMode) (*os.File, error) {
 	if flag&(os.O_CREATE|os.O_EXCL) == os.O_CREATE|os.O_EXCL {
 		// An exclusive create fails on any existing entry, links included.
-		return dir.OpenFile(name, flag, perm)
+		file, err := dir.OpenFile(name, flag, perm)
+		if err != nil && !errors.Is(err, fs.ErrExist) && entryExists(dir, name) {
+			// os.Root on Windows reports an existing directory link as
+			// "is a directory"; report every existing entry as fs.ErrExist.
+			err = errors.Join(fs.ErrExist, err)
+		}
+		return file, err
 	}
 	ent, err := lstatAt(dir, name)
 	if errors.Is(err, fs.ErrNotExist) && flag&os.O_CREATE != 0 {
@@ -301,6 +307,12 @@ func openFinal(dir *os.Root, name string, flag int, perm fs.FileMode) (*os.File,
 		}
 	}
 	return file, nil
+}
+
+// entryExists reports whether anything, a link included, is at name in dir.
+func entryExists(dir *os.Root, name string) bool {
+	_, err := lstatAt(dir, name)
+	return !errors.Is(err, fs.ErrNotExist)
 }
 
 func checkSame(ent entry, file *os.File) error {
