@@ -23,14 +23,12 @@ func loadFixture(t *testing.T, patterns ...string) []*packages.Package {
 	t.Helper()
 	dir, err := filepath.Abs("testdata")
 	require.NoError(t, err)
-	cfg := &packages.Config{
-		Mode: loadMode,
-		Dir:  dir,
-		Env:  append(os.Environ(), "GOPATH="+dir, "GO111MODULE=off", "GOWORK=off", "GOFLAGS=", "GOPROXY=off"),
-	}
+	env := append(os.Environ(), "GOPATH="+dir, "GO111MODULE=off", "GOWORK=off", "GOFLAGS=", "GOPROXY=off")
+	cfg, deps, err := loadConfig(t.Context(), dir, env)
+	require.NoError(t, err)
 	pkgs, err := packages.Load(cfg, patterns...)
 	require.NoError(t, err)
-	require.NoError(t, packageErrors(pkgs))
+	require.NoError(t, packageErrors(pkgs, deps))
 	return pkgs
 }
 
@@ -285,6 +283,26 @@ func TestRunFailsOnUnparsableTrackedGoFile(t *testing.T) {
 
 	_, err := Run(t.Context(), Options{Dir: repo.Root})
 	require.ErrorContains(t, err, "m_plan9.go")
+}
+
+// Dependency files load without function bodies, which leaves go/types soft
+// errors (unused imports, bodiless init) in the standard library. Those must
+// not fail the run, while the same kind of error in a module file still does.
+func TestRunReportsModuleSoftErrorsButNotStrippedDependencies(t *testing.T) {
+	t.Parallel()
+	repo := gittest.NewRepo(t, gittest.Options{ResolvePath: true})
+	repo.WriteFile("go.mod", "module m\n\ngo "+goVersion(t)+"\n")
+	repo.WriteFile("m.go", "package m\n\nimport \"net/http\"\n\nvar _ = http.MethodGet\n")
+	repo.Run("add", "-A")
+
+	diags, err := Run(t.Context(), Options{Dir: repo.Root})
+	require.NoError(t, err)
+	assert.Empty(t, diags)
+
+	repo.WriteFile("m.go", "package m\n\nimport (\n\t\"net/http\"\n\t\"os\"\n)\n\nvar _ = http.MethodGet\n")
+	repo.Run("add", "-A")
+	_, err = Run(t.Context(), Options{Dir: repo.Root})
+	require.ErrorContains(t, err, `"os" imported and not used`)
 }
 
 // goVersion returns the go directive of this module so fixture modules load
