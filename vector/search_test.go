@@ -150,9 +150,17 @@ func TestRollupAndMergeRejectNaN(t *testing.T) {
 	require.ErrorContains(t, err, "non-finite")
 	assert.Empty(t, infinite)
 
-	_, err = vector.Merge([][]vector.Hit[int]{{{Doc: 1, Score: 1}}}, vector.MergeOptions{
+	for _, constant := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		_, err = vector.Merge([][]vector.Hit[int]{{{Doc: 1, Score: 1}}}, vector.MergeOptions{
+			Strategy:     vector.MergeReciprocalRank,
+			RankConstant: constant,
+		})
+		require.ErrorContains(t, err, "non-finite")
+	}
+	defaulted, err := vector.Merge([][]vector.Hit[int]{{{Doc: 1, Score: 1}}}, vector.MergeOptions{
 		Strategy:     vector.MergeReciprocalRank,
-		RankConstant: math.NaN(),
+		RankConstant: 0,
 	})
-	require.ErrorContains(t, err, "non-finite")
+	require.NoError(t, err)
+	require.Len(t, defaulted, 1)
 }

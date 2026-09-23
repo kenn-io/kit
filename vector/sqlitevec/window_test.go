@@ -55,7 +55,7 @@ func TestBuildCandidateQueryComposesAndAppliesFilterBeforeResultLimit(t *testing
 	require.NoError(t, err)
 	assert.True(t, full, "the raw neighbor window was full even though the filter keeps one row")
 	// Compose the generated relation while preserving its binding order.
-	q.SQL = "SELECT doc_key, chunk_index, revision, score, text FROM (" + q.SQL + ") AS matches ORDER BY score DESC, doc_key"
+	q.SQL = "SELECT doc_key, chunk_index, revision, distance, text FROM (" + q.SQL + ") AS matches ORDER BY distance, doc_key"
 	narrow, err := store.BuildCandidateQuery(ctx, tx, 1, vector.Vector{1, 0, 0}, sqlitevec.CandidateQuery{
 		CandidateLimit: 1, ResultLimit: 1,
 		SourcePredicate: sqlquery.Predicate{SQL: "d.id = ?", Args: []any{int64(2)}},
@@ -65,23 +65,40 @@ func TestBuildCandidateQueryComposesAndAppliesFilterBeforeResultLimit(t *testing
 		doc      int64
 		chunk    int
 		revision int64
-		score    float64
+		distance float64
 		text     string
 	}
 	results, err := q.All(ctx, tx, func(rows *sql.Rows) (result, error) {
 		var r result
-		err := rows.Scan(&r.doc, &r.chunk, &r.revision, &r.score, &r.text)
-		return r, err
+		err := rows.Scan(&r.doc, &r.chunk, &r.revision, &r.distance, &r.text)
+		if err != nil {
+			return r, err
+		}
+		if _, err := sqlitevec.ScoreFromDistance(r.distance); err != nil {
+			return r, err
+		}
+		return r, nil
 	})
 	require.NoError(t, err)
-	require.Equal(t, []result{{doc: 2, chunk: 0, revision: 1, text: "a dog ran"}}, results)
+	require.Len(t, results, 1)
+	assert.Equal(t, int64(2), results[0].doc)
+	assert.Equal(t, 0, results[0].chunk)
+	assert.Equal(t, int64(1), results[0].revision)
+	assert.Equal(t, "a dog ran", results[0].text)
 
 	// The smaller raw window contains only the cat, which the predicate
 	// excludes. It does not expand to fetch the eligible dog document.
 	results, err = narrow.All(ctx, tx, func(rows *sql.Rows) (result, error) {
 		var r result
-		err := rows.Scan(&r.doc, &r.chunk, &r.revision, &r.score)
-		return r, err
+		var distance float64
+		err := rows.Scan(&r.doc, &r.chunk, &r.revision, &distance)
+		if err != nil {
+			return r, err
+		}
+		if _, err := sqlitevec.ScoreFromDistance(distance); err != nil {
+			return r, err
+		}
+		return r, nil
 	})
 	require.NoError(t, err)
 	require.Empty(t, results)

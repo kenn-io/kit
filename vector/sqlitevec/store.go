@@ -416,8 +416,13 @@ func (s *Store[K, G]) QueryGeneration(ctx context.Context, gen G, query vector.V
 	return hits, rows.Err()
 }
 
-// scoreFromDistance turns a raw distance into the similarity stored on a hit.
-// A NaN or infinite distance makes the score non-finite, which is an error.
+// ScoreFromDistance turns a raw neighbor distance into the similarity stored
+// on a hit. A NaN or infinite distance makes the score non-finite, which is
+// an error and is not stored.
+func ScoreFromDistance(distance float64) (float32, error) {
+	return scoreFromDistance(distance)
+}
+
 func scoreFromDistance(distance float64) (float32, error) {
 	score := float32(1 - distance)
 	if math.IsNaN(float64(score)) || math.IsInf(float64(score), 0) {

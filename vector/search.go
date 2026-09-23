@@ -80,8 +80,8 @@ type MergeOptions struct {
 	// Strategy selects the ordering policy. The zero value is
 	// MergeNormalizedScore.
 	Strategy MergeStrategy
-	// RankConstant is the k term in reciprocal-rank fusion. Values <= 0
-	// use 60. NaN is an error.
+	// RankConstant is the k term in reciprocal-rank fusion. Finite values
+	// <= 0 use 60. NaN and either infinity are errors.
 	RankConstant float64
 	// Limit caps the number of returned hits. Values <= 0 return all.
 	Limit int

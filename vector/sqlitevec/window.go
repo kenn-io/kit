@@ -29,7 +29,7 @@ type CandidateQuery struct {
 	// ResultLimit bounds eligible results within that window. Zero returns all
 	// eligible candidates; it does not expand the raw candidate window.
 	ResultLimit int
-	// ExtraSourceCols follow doc_key, chunk_index, revision and score.
+	// ExtraSourceCols follow doc_key, chunk_index, revision and distance.
 	ExtraSourceCols []sqlquery.Column
 	// SourcePredicate runs after the raw KNN limit but before ResultLimit and
 	// is passed to SQLite unchanged. EXISTS predicates can constrain related
@@ -38,9 +38,10 @@ type CandidateQuery struct {
 }
 
 // BuildCandidateQuery returns a composable SELECT with columns doc_key,
-// chunk_index, revision, score, then the requested source columns. Scores are
-// cosine similarity, higher first. Equal scores use vector rowid order within
-// the retrieved window. Outer queries must specify their own ordering.
+// chunk_index, revision, distance, then the requested source columns. Distance
+// is the raw neighbor distance. Callers convert it with ScoreFromDistance
+// before storing a score. Equal distances use vector rowid order within the
+// retrieved window. Outer queries must specify their own ordering.
 //
 // BuildCandidateQuery reads gen's layout on db, the caller's handle, so the
 // lookup and the returned query can share one transaction. It does not use
@@ -81,7 +82,7 @@ func (s *Store[K, G]) BuildCandidateQuery(ctx context.Context, db sqlquery.Query
 		return sqlquery.Query{}, fmt.Errorf("serialize query: %w", err)
 	}
 	text := s.candidateCTEs(ordinal, expr, projection.String(), predicate, false)
-	text += " SELECT doc_key, chunk_index, revision, 1 - distance AS score" + columns.String() + " FROM candidates ORDER BY distance, vec_rowid"
+	text += " SELECT doc_key, chunk_index, revision, distance" + columns.String() + " FROM candidates ORDER BY distance, vec_rowid"
 	args := append([]any{value, q.CandidateLimit, ordinal}, q.SourcePredicate.Args...)
 	if q.ResultLimit > 0 {
 		text += " LIMIT ?"
@@ -127,10 +128,10 @@ func (s *Store[K, G]) QueryGenerationWindow(ctx context.Context, gen G, query ve
 		return Window[K]{}, err
 	}
 	text := s.candidateCTEs(ordinal, expr, "", "", true) + `
-SELECT doc_key, chunk_index, revision, 1 - distance AS score, 0 AS is_probe, vec_rowid FROM candidates
+SELECT doc_key, chunk_index, revision, distance, 0 AS is_probe, vec_rowid FROM candidates
 UNION ALL
-SELECT NULL, NULL, NULL, 1 - distance, 1, rowid FROM ranked WHERE raw_rank = ?
-ORDER BY is_probe, score DESC, vec_rowid`
+SELECT NULL, NULL, NULL, distance, 1, rowid FROM ranked WHERE raw_rank = ?
+ORDER BY is_probe, distance, vec_rowid`
 	rows, err := s.db.QueryContext(ctx, text, value, limit+1, ordinal, limit, limit)
 	if err != nil {
 		return Window[K]{}, fmt.Errorf("query generation window: %w", err)
@@ -141,15 +142,21 @@ ORDER BY is_probe, score DESC, vec_rowid`
 		var doc sql.Null[K]
 		var chunk sql.Null[int]
 		var candidate vector.Hit[K]
+		var distance float64
 		var isProbe bool
 		var rowid int64
-		if err := rows.Scan(&doc, &chunk, &candidate.Revision, &candidate.Score, &isProbe, &rowid); err != nil {
+		if err := rows.Scan(&doc, &chunk, &candidate.Revision, &distance, &isProbe, &rowid); err != nil {
 			return Window[K]{}, fmt.Errorf("scan generation window: %w", err)
 		}
+		score, err := scoreFromDistance(distance)
+		if err != nil {
+			return Window[K]{}, err
+		}
 		if isProbe {
-			out.ProbeScore, out.HasProbe = candidate.Score, true
+			out.ProbeScore, out.HasProbe = score, true
 		} else {
 			candidate.Doc, candidate.ChunkIndex = doc.V, chunk.V
+			candidate.Score = score
 			out.Hits = append(out.Hits, candidate)
 		}
 	}
