@@ -73,16 +73,22 @@ func checkPath(path string, windows bool, cfg pathConfig) error {
 		if err := Check(elem); err != nil {
 			return fmt.Errorf("path %q: %w", path, err)
 		}
-		if windows && !cfg.allowShortName && shortName.MatchString(elem) {
+		if windows && !cfg.allowShortName && isShortName(elem) {
 			return fmt.Errorf("%w: path %q: %q looks like an 8.3 short name", ErrNotPortable, path, elem)
 		}
 	}
 	return nil
 }
 
-// shortName matches the 8.3 aliases Windows generates: up to six characters,
-// a tilde and a digit sequence, and an optional extension of up to three.
+// shortName matches the shape of the 8.3 aliases Windows generates: up to six
+// characters, a tilde and a digit sequence, and an optional extension of up to
+// three. isShortName also enforces the 8-character stem limit.
 var shortName = regexp.MustCompile(`^[^~.]{1,6}~[0-9]+(\.[^.]{0,3})?$`)
+
+func isShortName(elem string) bool {
+	stem, _, _ := strings.Cut(elem, ".")
+	return len(stem) <= 8 && shortName.MatchString(elem)
+}
 
 // checkWindowsPrefix validates the volume and root of a Windows path and
 // returns the remainder whose elements CheckPath checks one by one.
@@ -96,7 +102,18 @@ func checkWindowsPrefix(path string, cfg pathConfig) (string, error) {
 			return "", fmt.Errorf("%w: path %q uses the \\\\?\\ long-path form", ErrNotPortable, path)
 		}
 		norm = norm[len(`\\?\`):]
-		if unc, ok := strings.CutPrefix(norm, `UNC\`); ok {
+		// Windows skips path normalization after \\?\, so "/" and "." or ".."
+		// elements are taken literally and the open would fail.
+		if strings.Contains(path, "/") {
+			return "", fmt.Errorf("%w: path %q uses / after the \\\\?\\ long-path prefix", ErrNotPortable, path)
+		}
+		for elem := range strings.SplitSeq(norm, `\`) {
+			if elem == "." || elem == ".." {
+				return "", fmt.Errorf("%w: path %q uses %q after the \\\\?\\ long-path prefix", ErrNotPortable, path, elem)
+			}
+		}
+		if len(norm) >= 4 && strings.EqualFold(norm[:4], `UNC\`) {
+			unc := norm[4:]
 			if !cfg.allowUNC {
 				return "", fmt.Errorf("%w: path %q is a network share", ErrNotPortable, path)
 			}

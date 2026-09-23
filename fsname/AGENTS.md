@@ -31,8 +31,10 @@ FUSE versus local kernel), not whether a path is portable.
   who never considered a form does not accept it silently.
 - Keep the Windows rules in `checkPath(path, windows, cfg)` so they are
   tested on every platform, not only in Windows CI.
-- `Remote`/`RemoteFile` never guess: a platform without a detection method
-  returns an error wrapping `errors.ErrUnsupported`, never false. Callers
+- `Remote`/`RemoteFile` are best effort: they recognize common network and
+  FUSE file systems, and an unrecognized one reports false. Do not grow
+  them toward completeness. A platform with no detection method at all
+  returns an error wrapping `errors.ErrUnsupported`. Callers
   holding private runtime state, lock files or sockets should refuse remote
   file systems; general data writes may allow them.
 - The Linux network/FUSE magic list lives only in `linuxRemoteType`.

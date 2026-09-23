@@ -62,7 +62,11 @@ func TestCheckPathWindows(t *testing.T) {
 		{name: "device namespace", path: `\\.\PhysicalDrive0`, cfg: pathConfig{allowLongPath: true, allowUNC: true}, wantErr: "device namespace"},
 		{name: "nt namespace", path: `\??\C:\x`, cfg: pathConfig{allowLongPath: true}, wantErr: "device namespace"},
 		{name: "short name", path: `C:\PROGRA~1\app`, wantErr: "8.3 short name"},
-		{name: "short name with extension", path: `C:\data\REPORT~12.TXT`, wantErr: "8.3 short name"},
+		{name: "short name with extension", path: `C:\data\REPORT~1.TXT`, wantErr: "8.3 short name"},
+		{name: "long name with tilde past eight characters", path: `C:\data\REPORT~12.TXT`},
+		{name: "long path with slash", path: `\\?\C:/data/x`, cfg: pathConfig{allowLongPath: true}, wantErr: "uses / after"},
+		{name: "long path with dot dot", path: `\\?\C:\data\..\x`, cfg: pathConfig{allowLongPath: true}, wantErr: `".." after`},
+		{name: "long unc lower case", path: `\\?\unc\server\share\x`, cfg: pathConfig{allowLongPath: true, allowUNC: true}},
 		{name: "short name allowed", path: `C:\PROGRA~1\app`, cfg: pathConfig{allowShortName: true}},
 		{name: "long tilde name", path: `C:\data\backup~2024-01.tar`},
 	}

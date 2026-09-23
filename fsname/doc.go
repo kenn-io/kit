@@ -14,7 +14,8 @@
 // whether it is a network or user-space (FUSE) file system whose access
 // checks, locking and durability the local kernel does not enforce. Callers
 // holding private runtime state, lock files or sockets should refuse remote
-// file systems; general data writes may allow them. On platforms where the
-// answer is unknown they fail with an error wrapping errors.ErrUnsupported
-// rather than guess.
+// file systems; general data writes may allow them. The check is best
+// effort: it recognizes common network and FUSE file systems, and on
+// platforms with no detection method it fails with an error wrapping
+// errors.ErrUnsupported.
 package fsname

@@ -8,8 +8,13 @@ package fsname
 // Remote inspects the file system that contains path, following symbolic
 // links: a link on a local disk that points into a network mount is remote.
 // It reports the file system's location, not whether path is portable. A
-// missing path returns the error. On platforms where kit cannot tell, Remote
-// returns an error wrapping errors.ErrUnsupported instead of guessing.
+// missing path returns the error.
+//
+// The check is best effort. It recognizes common network and FUSE file
+// systems; one it does not know, such as a less common cluster file system on
+// Linux or a drive Windows cannot classify, reports false. On platforms with
+// no detection method at all, Remote returns an error wrapping
+// errors.ErrUnsupported.
 //
 // On Windows, Remote reports a volume whose drive type is DRIVE_REMOTE
 // (network shares, mapped drives, and mount folders onto them). User-space
