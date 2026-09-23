@@ -616,22 +616,22 @@ func ExtractZip(archivePath, destDir string) error {
 }
 
 // SanitizeArchivePath validates an archive entry path to prevent directory
-// traversal.
+// traversal. The slash-separated name must be local in the sense of
+// [filepath.IsLocal] on the current platform, which rejects empty names,
+// ".." escapes, absolute and volume-relative paths, and on Windows reserved
+// device names such as NUL. The check is lexical; callers must still guard
+// against symlinks inside destDir.
 func SanitizeArchivePath(destDir, name string) (string, error) {
 	if strings.HasPrefix(name, "/") {
 		return "", errors.New("absolute path not allowed")
 	}
 
-	cleanName := filepath.Clean(name)
-	if filepath.IsAbs(cleanName) {
-		return "", errors.New("absolute path not allowed")
-	}
-	if strings.HasPrefix(cleanName, "..") ||
-		strings.Contains(cleanName, string(filepath.Separator)+"..") {
-		return "", errors.New("path traversal not allowed")
+	localName := filepath.FromSlash(name)
+	if !filepath.IsLocal(localName) {
+		return "", errors.New("non-local path not allowed")
 	}
 
-	target := filepath.Join(destDir, cleanName)
+	target := filepath.Join(destDir, localName)
 	absTarget, err := filepath.Abs(target)
 	if err != nil {
 		return "", err

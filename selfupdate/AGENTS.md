@@ -16,6 +16,10 @@ executable path.
   the update request. Do not let metadata from one asset authorize another.
 - Archive extraction must not write outside the chosen destination or preserve
   privilege-changing file modes.
+- `SanitizeArchivePath` decides locality with `filepath.IsLocal` on the
+  platform path, not hand-rolled ".." string checks: names like `..foo` are
+  valid, while empty names, Windows drive-relative, UNC, and reserved device
+  names are refused. Keep the absolute-path containment check after it.
 - Install through a staging path and atomic replacement where the platform
   allows it. Do not leave a half-written destination on ordinary failures.
 - Keep cache-only update metadata from being installable; force a fresh check
