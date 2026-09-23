@@ -43,11 +43,14 @@ func (k Kind) String() string {
 }
 
 // ErrIsLink reports that an open refused to follow a link. Functions return
-// it wrapped in an *fs.PathError naming the path.
+// it wrapped in an *fs.PathError naming the path. An exclusive create
+// (O_CREATE|O_EXCL) never reports ErrIsLink: it fails on any existing entry,
+// links included, with an error wrapping fs.ErrExist, as os.OpenFile does.
 var ErrIsLink = errors.New("fslink: path is a symlink or junction")
 
 var (
 	errNotLink    = errors.New("fslink: not a symlink or junction")
+	errOtherLink  = fmt.Errorf("fslink: reading %s destinations: %w", OtherLink, errors.ErrUnsupported)
 	errNotLocal   = errors.New("fslink: path is not local to the root")
 	errNotRegular = errors.New("fslink: not a regular file")
 	errChanged    = errors.New("fslink: path changed while it was being opened")
@@ -69,15 +72,22 @@ func IsLink(path string) (bool, error) {
 	return kind != NotLink, nil
 }
 
-// Readlink returns the destination of the link at path. It returns an error
-// when path is not a link on every platform.
+// Readlink returns the destination of the Symlink or Junction at path. It
+// returns an error when path is not a link, and an error wrapping
+// errors.ErrUnsupported when Classify reports OtherLink. That includes volume
+// mount points, which os.Readlink could decode, so that Readlink succeeds
+// exactly for the kinds whose destination is a path.
 func Readlink(path string) (string, error) {
 	kind, err := Classify(path)
 	if err != nil {
 		return "", err
 	}
-	if kind == NotLink {
+	switch kind {
+	case NotLink:
 		return "", &fs.PathError{Op: "readlink", Path: path, Err: errNotLink}
+	case OtherLink:
+		return "", &fs.PathError{Op: "readlink", Path: path, Err: errOtherLink}
+	case Symlink, Junction:
 	}
 	return os.Readlink(path)
 }
@@ -105,6 +115,14 @@ func LinkDir(target, link string) (Kind, error) {
 // OpenFile is like os.OpenFile but refuses to follow a link in path's final
 // component, returning an error wrapping ErrIsLink. Links in earlier
 // components are followed. O_TRUNC never truncates a link's destination.
+// O_CREATE|O_EXCL on an existing entry, a link included, returns an error
+// wrapping fs.ErrExist rather than ErrIsLink.
+//
+// On Windows a non-link reparse point (cloud placeholder, dedup, WOF) opens
+// normally. With O_APPEND the returned handle lacks FILE_WRITE_DATA, so every
+// write appends even after a Seek. Go does not know the file is in append
+// mode (os.NewFile cannot set it), so File.WriteAt is not rejected as it is
+// for os.OpenFile; the OS still appends its data.
 func OpenFile(path string, flag int, perm fs.FileMode) (*os.File, error) {
 	return openFile(path, flag, perm)
 }
@@ -131,19 +149,33 @@ func ReadFile(path string) (data []byte, err error) {
 
 // OpenInRoot opens name inside root like root.OpenFile, but refuses a link
 // in any component of name, returning an error wrapping ErrIsLink. name must
-// satisfy filepath.IsLocal.
+// satisfy filepath.IsLocal. O_CREATE|O_EXCL on an existing entry, a link
+// included, returns an error wrapping fs.ErrExist rather than ErrIsLink.
 //
 // Each component is inspected without following it, opened through root,
-// and then compared with the inspected entry by file identity. A link swapped
-// in between the two steps makes the open fail instead of silently following
-// it. O_TRUNC is applied only after that check, and O_CREATE creates only
-// with O_EXCL semantics, so a racing link never causes a truncation or a
-// create through it. Residual races: a swapped-in link is still followed for
-// the open itself before the identity check rejects it, so an in-root
-// destination may observe an open (for example, a FIFO may block the caller),
-// and an O_CREATE open fails rather than retries when an entry appears
-// between inspection and creation.
+// and then compared with the inspected entry by file identity. The guarantee
+// is that every component opened is the same file object that was inspected
+// and found not to be a link, and that nothing resolves outside root. A
+// component swapped for a link to a different object makes the open fail. A
+// component swapped for a link to the same object is not detected; it is
+// harmless because the object opened is still the one inspected. O_TRUNC is
+// applied only after the identity check, and O_CREATE creates only with
+// O_EXCL semantics, so a racing link never causes a truncation or a create
+// through it. Residual races: a swapped-in link is still followed for the open
+// itself before the identity check rejects it, so an in-root destination may
+// observe an open (for example, a FIFO may block the caller), and an O_CREATE
+// open fails rather than retries when an entry appears between inspection and
+// creation.
+//
+// On Windows this builds on os.Root, which refuses every reparse point, so
+// OpenInRoot refuses cloud-file placeholders, deduplicated files, and
+// WOF-compressed files in any component even though OpenFile accepts them.
+// Such an entry returns an error naming the path that says it is a reparse
+// point refused under a root.
 func OpenInRoot(root *os.Root, name string, flag int, perm fs.FileMode) (*os.File, error) {
+	if err := platformSupport(); err != nil {
+		return nil, &fs.PathError{Op: "open", Path: name, Err: err}
+	}
 	parts, err := localParts(name)
 	if err != nil {
 		return nil, err
@@ -167,9 +199,12 @@ func OpenInRoot(root *os.Root, name string, flag int, perm fs.FileMode) (*os.Fil
 
 // OpenRootNoFollow opens the directory name inside root as a new root,
 // refusing a link in any component of name. name must satisfy
-// filepath.IsLocal. The same identity check and residual race described on
-// OpenInRoot apply to every component.
+// filepath.IsLocal. The identity guarantee, residual race, and Windows
+// reparse-point refusal described on OpenInRoot apply to every component.
 func OpenRootNoFollow(root *os.Root, name string) (*os.Root, error) {
+	if err := platformSupport(); err != nil {
+		return nil, &fs.PathError{Op: "openroot", Path: name, Err: err}
+	}
 	parts, err := localParts(name)
 	if err != nil {
 		return nil, err

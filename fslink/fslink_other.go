@@ -52,3 +52,5 @@ func lstatAt(_ *os.Root, name string) (entry, error) {
 func (entry) isDir() bool { return false }
 
 func (entry) sameFile(*os.File) (bool, error) { return false, errPlatform }
+
+func platformSupport() error { return errPlatform }

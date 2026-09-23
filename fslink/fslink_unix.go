@@ -100,3 +100,5 @@ func (e entry) sameFile(file *os.File) (bool, error) {
 	}
 	return os.SameFile(e.info, info), nil
 }
+
+func platformSupport() error { return nil }

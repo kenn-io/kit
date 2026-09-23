@@ -186,13 +186,58 @@ func makeJunction(target, link string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.Mkdir(link, 0o777); err != nil {
+	absLink, err := filepath.Abs(link)
+	if err != nil {
 		return err
 	}
-	if err := setReparsePoint(link, buf); err != nil {
-		return errors.Join(err, os.Remove(link))
+	// Create the directory and keep the handle that created it, so the
+	// reparse data and any rollback reach this directory and never whatever
+	// else a concurrent rename puts at the same path.
+	handle, err := createDir(filepath.Dir(absLink), filepath.Base(absLink))
+	if err != nil {
+		return err
 	}
-	return nil
+	if err := setReparsePoint(handle, buf); err != nil {
+		return errors.Join(err, deleteAndClose(handle))
+	}
+	return windows.CloseHandle(handle)
+}
+
+// createDir creates the directory name inside parent and returns a handle to
+// it. It fails with an error wrapping fs.ErrExist when any entry, links
+// included, already has that name.
+func createDir(parent, name string) (windows.Handle, error) {
+	parent16, err := windows.UTF16PtrFromString(parent)
+	if err != nil {
+		return windows.InvalidHandle, err
+	}
+	dir, err := windows.CreateFile(
+		parent16,
+		windows.FILE_GENERIC_READ,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil,
+		windows.OPEN_EXISTING,
+		windows.FILE_FLAG_BACKUP_SEMANTICS,
+		0,
+	)
+	if err != nil {
+		return windows.InvalidHandle, err
+	}
+	defer func() { _ = windows.CloseHandle(dir) }()
+	return ntCreateAt(dir, name,
+		windows.FILE_GENERIC_WRITE|windows.DELETE|windows.FILE_READ_ATTRIBUTES,
+		0,
+		windows.FILE_CREATE,
+		windows.FILE_DIRECTORY_FILE|windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT,
+	)
+}
+
+// deleteAndClose marks the file behind handle for deletion and closes it,
+// removing exactly the entry handle names.
+func deleteAndClose(handle windows.Handle) error {
+	deleteFile := uint8(1) // FILE_DISPOSITION_INFO.DeleteFile
+	err := windows.SetFileInformationByHandle(handle, windows.FileDispositionInfo, &deleteFile, 1)
+	return errors.Join(err, windows.CloseHandle(handle))
 }
 
 // requireLocalVolume rejects targets a junction cannot name: junctions must
@@ -241,25 +286,9 @@ func mountPointBuffer(abs string) ([]byte, error) {
 	return buf, nil
 }
 
-func setReparsePoint(dir string, buf []byte) error {
-	dir16, err := windows.UTF16PtrFromString(dir)
-	if err != nil {
-		return err
-	}
-	handle, err := windows.CreateFile(
-		dir16,
-		windows.GENERIC_WRITE,
-		0,
-		nil,
-		windows.OPEN_EXISTING,
-		windows.FILE_FLAG_OPEN_REPARSE_POINT|windows.FILE_FLAG_BACKUP_SEMANTICS,
-		0,
-	)
-	if err != nil {
-		return err
-	}
+func setReparsePoint(handle windows.Handle, buf []byte) error {
 	var n uint32
-	err = windows.DeviceIoControl(
+	return windows.DeviceIoControl(
 		handle,
 		windows.FSCTL_SET_REPARSE_POINT,
 		&buf[0],
@@ -269,7 +298,6 @@ func setReparsePoint(dir string, buf []byte) error {
 		&n,
 		nil,
 	)
-	return errors.Join(err, windows.CloseHandle(handle))
 }
 
 func linkDir(target, link string) (Kind, error) {
@@ -414,10 +442,21 @@ func openHandle(path string, flag int, perm fs.FileMode) (windows.Handle, error)
 		// bypasses. Reopen it normally and keep the new handle only if it
 		// names the same file, so a link swapped in meanwhile is not
 		// followed.
-		handle, err = reopenSame(handle, path16, access, share, attrs)
+		handle, err = reopenVerified(handle, func() (windows.Handle, error) {
+			return windows.CreateFile(path16, access, share, nil, windows.OPEN_EXISTING, attrs, 0)
+		})
 	}
 	if err == nil && flag&os.O_TRUNC != 0 && disk && !info.isDir() {
 		err = windows.Ftruncate(handle, 0)
+		if err == nil && flag&os.O_APPEND != 0 {
+			// Truncation needed FILE_WRITE_DATA. Drop it now: without it the
+			// OS appends every write, even after a Seek, which os.NewFile
+			// cannot enforce because it does not know about O_APPEND.
+			handle, err = reopenVerified(handle, func() (windows.Handle, error) {
+				return reOpenFile(handle, access&^windows.GENERIC_WRITE, share,
+					attrs&(windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_WRITE_THROUGH))
+			})
+		}
 	}
 	if err != nil {
 		_ = windows.CloseHandle(handle)
@@ -444,16 +483,16 @@ func checkOpened(handle windows.Handle, flag int) (fileAttributeTagInfo, bool, e
 	return info, disk, nil
 }
 
-// reopenSame opens path16 again without FILE_FLAG_OPEN_REPARSE_POINT and
-// returns the new handle if it names the same file as inspected. It always
-// consumes inspected: on success inspected is closed, and on failure the
-// returned handle is inspected so the caller closes it.
-func reopenSame(inspected windows.Handle, path16 *uint16, access, share, attrs uint32) (windows.Handle, error) {
+// reopenVerified opens a second handle with reopen and returns it if it names
+// the same file as inspected. It always consumes inspected: on success
+// inspected is closed, and on failure the returned handle is inspected so the
+// caller closes it.
+func reopenVerified(inspected windows.Handle, reopen func() (windows.Handle, error)) (windows.Handle, error) {
 	want, err := handleID(inspected)
 	if err != nil {
 		return inspected, err
 	}
-	reopened, err := windows.CreateFile(path16, access, share, nil, windows.OPEN_EXISTING, attrs, 0)
+	reopened, err := reopen()
 	if err != nil {
 		return inspected, err
 	}
@@ -469,6 +508,20 @@ func reopenSame(inspected windows.Handle, path16 *uint16, access, share, attrs u
 	return reopened, nil
 }
 
+var procReOpenFile = windows.NewLazySystemDLL("kernel32.dll").NewProc("ReOpenFile")
+
+// reOpenFile calls ReOpenFile, which golang.org/x/sys/windows does not wrap.
+func reOpenFile(handle windows.Handle, access, share, flags uint32) (windows.Handle, error) {
+	r, _, err := procReOpenFile.Call(uintptr(handle), uintptr(access), uintptr(share), uintptr(flags))
+	if windows.Handle(r) == windows.InvalidHandle {
+		if errno, ok := errors.AsType[windows.Errno](err); ok && errno != 0 {
+			return windows.InvalidHandle, errno
+		}
+		return windows.InvalidHandle, windows.ERROR_INVALID_HANDLE
+	}
+	return windows.Handle(r), nil
+}
+
 type fileID struct {
 	volume, indexHigh, indexLow uint32
 }
@@ -478,6 +531,10 @@ type entry struct {
 	id  fileID
 }
 
+// errReparseInRoot reports a non-link reparse point (cloud placeholder, dedup,
+// WOF) under a root: os.Root refuses every reparse point on Windows.
+var errReparseInRoot = errors.New("fslink: reparse point refused under a root")
+
 // lstatAt inspects name relative to dir's own handle, so no absolute path is
 // reopened between the check and the caller's open through dir.
 func lstatAt(dir *os.Root, name string) (entry, error) {
@@ -486,7 +543,12 @@ func lstatAt(dir *os.Root, name string) (entry, error) {
 		return entry{}, err
 	}
 	defer func() { _ = parent.Close() }()
-	handle, err := openAt(windows.Handle(parent.Fd()), name)
+	handle, err := ntCreateAt(windows.Handle(parent.Fd()), name,
+		windows.FILE_READ_ATTRIBUTES,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		windows.FILE_OPEN,
+		windows.FILE_OPEN_REPARSE_POINT|windows.FILE_OPEN_FOR_BACKUP_INTENT|windows.FILE_SYNCHRONOUS_IO_NONALERT,
+	)
 	if err != nil {
 		return entry{}, &fs.PathError{Op: "lstat", Path: name, Err: err}
 	}
@@ -498,6 +560,11 @@ func lstatAt(dir *os.Root, name string) (entry, error) {
 	if info.isLink() {
 		return entry{}, ErrIsLink
 	}
+	if info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		// os.Root opens every component with OBJ_DONT_REPARSE, so it would
+		// refuse this entry anyway; say why instead of reporting ELOOP.
+		return entry{}, errReparseInRoot
+	}
 	id, err := handleID(handle)
 	if err != nil {
 		return entry{}, err
@@ -505,7 +572,10 @@ func lstatAt(dir *os.Root, name string) (entry, error) {
 	return entry{dir: info.isDir(), id: id}, nil
 }
 
-func openAt(parent windows.Handle, name string) (windows.Handle, error) {
+// ntCreateAt calls NtCreateFile for name relative to the parent handle and
+// maps a failing NTSTATUS to its Win32 error, so errors.Is sees fs.ErrExist
+// and fs.ErrNotExist.
+func ntCreateAt(parent windows.Handle, name string, access, share, disposition, options uint32) (windows.Handle, error) {
 	objectName, err := windows.NewNTUnicodeString(name)
 	if err != nil {
 		return windows.InvalidHandle, err
@@ -519,14 +589,14 @@ func openAt(parent windows.Handle, name string) (windows.Handle, error) {
 	var handle windows.Handle
 	err = windows.NtCreateFile(
 		&handle,
-		windows.FILE_READ_ATTRIBUTES|windows.SYNCHRONIZE,
+		access|windows.SYNCHRONIZE,
 		attrs,
 		&windows.IO_STATUS_BLOCK{},
 		nil,
 		0,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
-		windows.FILE_OPEN,
-		windows.FILE_OPEN_REPARSE_POINT|windows.FILE_OPEN_FOR_BACKUP_INTENT|windows.FILE_SYNCHRONOUS_IO_NONALERT,
+		share,
+		disposition,
+		options,
 		0,
 		0,
 	)
@@ -562,3 +632,5 @@ func (e entry) sameFile(file *os.File) (bool, error) {
 	}
 	return id == e.id, nil
 }
+
+func platformSupport() error { return nil }

@@ -162,6 +162,35 @@ func TestOpenFilePlainPaths(t *testing.T) {
 	})
 }
 
+// Every write to an O_APPEND file lands at the end, even after a Seek and
+// even when O_TRUNC emptied the file first.
+func TestOpenFileAppendIgnoresSeek(t *testing.T) {
+	cases := []struct {
+		name string
+		flag int
+		want string
+	}{
+		{name: "append", flag: os.O_WRONLY | os.O_APPEND, want: "helloab"},
+		{name: "append truncate", flag: os.O_WRONLY | os.O_APPEND | os.O_TRUNC, want: "ab"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require := require.New(t)
+			path := filepath.Join(newTree(t), "file.txt")
+			file, err := fslink.OpenFile(path, tc.flag, 0)
+			require.NoError(err)
+			_, err = file.WriteString("a")
+			require.NoError(err)
+			_, err = file.Seek(0, io.SeekStart)
+			require.NoError(err)
+			_, err = file.WriteString("b")
+			require.NoError(err)
+			require.NoError(file.Close())
+			assertFileContent(t, path, tc.want)
+		})
+	}
+}
+
 func TestOpenRegular(t *testing.T) {
 	t.Run("regular file", func(t *testing.T) {
 		file, err := fslink.OpenRegular(filepath.Join(newTree(t), "file.txt"))
@@ -273,6 +302,51 @@ func TestOpenInRootRefusesLinks(t *testing.T) {
 				}
 				require.ErrorIs(t, err, fslink.ErrIsLink)
 				assertTreeUntouched(t, dir)
+			})
+		}
+	}
+}
+
+// An exclusive create never follows a link and reports it the way it reports
+// any existing entry: fs.ErrExist, not ErrIsLink.
+func TestExclusiveCreateOnLinkReportsExist(t *testing.T) {
+	const flag = os.O_WRONLY | os.O_CREATE | os.O_EXCL
+	opens := []struct {
+		name string
+		open func(t *testing.T, dir string) (*os.File, error)
+	}{
+		{name: "OpenFile", open: func(t *testing.T, dir string) (*os.File, error) {
+			t.Helper()
+			return fslink.OpenFile(filepath.Join(dir, "link"), flag, 0o600)
+		}},
+		{name: "OpenInRoot", open: func(t *testing.T, dir string) (*os.File, error) {
+			t.Helper()
+			root, err := os.OpenRoot(dir)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = root.Close() })
+			return fslink.OpenInRoot(root, "link", flag, 0o600)
+		}},
+	}
+	for _, maker := range linkMakers() {
+		for _, op := range opens {
+			t.Run(op.name+"/"+maker.name, func(t *testing.T) {
+				assert := assert.New(t)
+				dir := newTree(t)
+				target := maker.create(t, dir, "link")
+
+				file, err := op.open(t, dir)
+				if file != nil {
+					_ = file.Close()
+				}
+				require.ErrorIs(t, err, fs.ErrExist)
+				require.NotErrorIs(t, err, fslink.ErrIsLink)
+				assertTreeUntouched(t, dir)
+				kind, err := fslink.Classify(filepath.Join(dir, "link"))
+				require.NoError(t, err)
+				assert.Equal(maker.kind, kind)
+				got, err := fslink.Readlink(filepath.Join(dir, "link"))
+				require.NoError(t, err)
+				assert.Equal(target, got)
 			})
 		}
 	}
