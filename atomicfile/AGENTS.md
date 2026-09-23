@@ -10,6 +10,10 @@ no file formats, locking, or caller policy. Link inspection belongs to
 
 ## Invariants
 
+- On Windows, every Win32 call that takes a caller's path converts it with
+  `internal/winpath.UTF16Ptr`, which adds the `\\?\` prefix to long paths as
+  the os package does. Without it a path that `os.OpenFile` accepts past
+  MAX_PATH fails here.
 - Readers see the old or the new content, never a partial file: stage in a
   temporary file, fsync (unless `WithoutSync`), close, then rename.
 - Never fall back to copying. Replacement uses `os.Rename` on Unix and
