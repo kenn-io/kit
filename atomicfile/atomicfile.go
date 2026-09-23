@@ -252,6 +252,12 @@ func writeNew(path string, data []byte, opts []Option) error {
 	if cfg.followLink {
 		return errors.New("WithFollowLink cannot be used with WriteNew")
 	}
+	// Stage, publish and sync in the directory the kernel resolves path to,
+	// as WriteFile does; see canonicalPath.
+	path, err = canonicalPath(path)
+	if err != nil {
+		return err
+	}
 	staged, err := stage(cfg, path, cfg.perm)
 	if err != nil {
 		return err

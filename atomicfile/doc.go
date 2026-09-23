@@ -7,8 +7,10 @@
 // junction at the target unless WithFollowLink asks to write through it, and
 // neither ever falls back to copying across volumes.
 //
-// A failure after the new content became visible at the target, such as a
-// failed directory sync, wraps ErrNotDurable.
+// A failure after the new content became visible at the target wraps
+// ErrPublished; a failed directory sync also wraps ErrNotDurable. With
+// WithoutSync no directory is synced, so the absence of ErrNotDurable then
+// says nothing about durability.
 //
 // atomicfile assumes the target and staging directories cannot be modified by
 // untrusted users. The link refusal is a check at Create and just before
