@@ -7,6 +7,10 @@ import (
 	"os"
 )
 
+// privateFileCreationSupported reports that private files can be verified
+// here, so CreatePrivateFile may create one.
+func privateFileCreationSupported() error { return nil }
+
 func validatePrivateCurrentUserFile(
 	file *os.File,
 	validatePlatformAccess func(*os.File) error,

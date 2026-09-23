@@ -11,6 +11,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"go.kenn.io/kit/atomicfile"
+	"go.kenn.io/kit/fsname"
 )
 
 // RuntimeRecord is the on-disk daemon.<pid>.json shape used for discovery.
@@ -65,7 +68,12 @@ type RuntimeStore struct {
 	Prefix string
 }
 
-const runtimeWriteCheckPattern = ".%s.write-check-*"
+const (
+	runtimeWriteCheckPattern = ".%s.write-check-*"
+	// maxRuntimePrefixBytes leaves room in the portable 255-byte component
+	// limit for .<prefix>.<19-digit PID>.json.tmp-<10-digit random value>.
+	maxRuntimePrefixBytes = 214
+)
 
 func (s RuntimeStore) prefix() string {
 	if s.Prefix == "" {
@@ -76,10 +84,17 @@ func (s RuntimeStore) prefix() string {
 
 func (s RuntimeStore) validatePrefix() (string, error) {
 	prefix := s.prefix()
-	if prefix == "." || prefix == ".." ||
-		strings.ContainsAny(prefix, `/\`) ||
-		filepath.Base(prefix) != prefix {
-		return "", fmt.Errorf("runtime prefix %q must be a basename", prefix)
+	// The prefix becomes part of every runtime file name, so it must be a
+	// name that works on every OS: "a:b" would name an NTFS stream and
+	// "NUL" a device on Windows.
+	if err := fsname.Check(prefix); err != nil {
+		return "", fmt.Errorf("runtime prefix %q must be a portable basename: %w", prefix, err)
+	}
+	if len(prefix) > maxRuntimePrefixBytes {
+		return "", fmt.Errorf(
+			"runtime prefix %q exceeds %d bytes: %w",
+			prefix, maxRuntimePrefixBytes, fsname.ErrNotPortable,
+		)
 	}
 	return prefix, nil
 }
@@ -174,10 +189,6 @@ func (s RuntimeStore) Write(rec RuntimeRecord) (string, error) {
 	if rec.StartedAt.IsZero() {
 		rec.StartedAt = time.Now().UTC()
 	}
-	prefix, err := s.validatePrefix()
-	if err != nil {
-		return "", err
-	}
 	final, err := s.Path(rec.PID)
 	if err != nil {
 		return "", err
@@ -186,34 +197,16 @@ func (s RuntimeStore) Write(rec RuntimeRecord) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("marshal runtime record: %w", err)
 	}
-	tmp, err := os.CreateTemp(s.Dir, fmt.Sprintf("%s.%d.*.json.tmp", prefix, rec.PID))
-	if err != nil {
-		return "", fmt.Errorf("create runtime temp file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	success := false
-	defer func() {
-		if !success {
-			_ = os.Remove(tmpPath)
+	if err := writeAtomicFile(final, body, atomicfile.WithPerm(0o644)); err != nil {
+		if errors.Is(err, atomicfile.ErrPublished) {
+			return final, fmt.Errorf("write runtime file: %w", err)
 		}
-	}()
-	if _, err := tmp.Write(body); err != nil {
-		_ = tmp.Close()
-		return "", fmt.Errorf("write runtime temp file: %w", err)
+		return "", fmt.Errorf("write runtime file: %w", err)
 	}
-	if err := tmp.Chmod(0o644); err != nil {
-		_ = tmp.Close()
-		return "", fmt.Errorf("chmod runtime temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return "", fmt.Errorf("close runtime temp file: %w", err)
-	}
-	if err := os.Rename(tmpPath, final); err != nil {
-		return "", fmt.Errorf("rename runtime file: %w", err)
-	}
-	success = true
 	return final, nil
 }
+
+var writeAtomicFile = atomicfile.WriteFile
 
 // Read parses one runtime file.
 func (s RuntimeStore) Read(path string) (RuntimeRecord, error) {

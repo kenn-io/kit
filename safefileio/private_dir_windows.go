@@ -261,20 +261,7 @@ func windowsAnyOwnerMatches(owner *windows.SID, allowed []*windows.SID) bool {
 }
 
 func restrictWindowsDir(handle windows.Handle, userSID *windows.SID) error {
-	system, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
-	if err != nil {
-		return err
-	}
-	admins, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
-	if err != nil {
-		return err
-	}
-	entries := []windows.EXPLICIT_ACCESS{
-		allowFullControl(userSID, windows.TRUSTEE_IS_USER),
-		allowFullControl(system, windows.TRUSTEE_IS_USER),
-		allowFullControl(admins, windows.TRUSTEE_IS_GROUP),
-	}
-	acl, err := windows.ACLFromEntries(entries, nil)
+	acl, err := privateWindowsACL(userSID, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT)
 	if err != nil {
 		return err
 	}
@@ -289,11 +276,34 @@ func restrictWindowsDir(handle windows.Handle, userSID *windows.SID) error {
 	)
 }
 
-func allowFullControl(sid *windows.SID, trusteeType windows.TRUSTEE_TYPE) windows.EXPLICIT_ACCESS {
+// privateWindowsACL grants full control to the current user, LocalSystem, and
+// built-in Administrators with the given ACE inheritance flags.
+func privateWindowsACL(userSID *windows.SID, inheritance uint32) (*windows.ACL, error) {
+	system, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
+	if err != nil {
+		return nil, err
+	}
+	admins, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+	if err != nil {
+		return nil, err
+	}
+	entries := []windows.EXPLICIT_ACCESS{
+		allowFullControl(userSID, windows.TRUSTEE_IS_USER, inheritance),
+		allowFullControl(system, windows.TRUSTEE_IS_USER, inheritance),
+		allowFullControl(admins, windows.TRUSTEE_IS_GROUP, inheritance),
+	}
+	return windows.ACLFromEntries(entries, nil)
+}
+
+func allowFullControl(
+	sid *windows.SID,
+	trusteeType windows.TRUSTEE_TYPE,
+	inheritance uint32,
+) windows.EXPLICIT_ACCESS {
 	return windows.EXPLICIT_ACCESS{
 		AccessPermissions: windows.GENERIC_ALL,
 		AccessMode:        windows.GRANT_ACCESS,
-		Inheritance:       windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+		Inheritance:       inheritance,
 		Trustee: windows.TRUSTEE{
 			TrusteeForm:  windows.TRUSTEE_IS_SID,
 			TrusteeType:  trusteeType,

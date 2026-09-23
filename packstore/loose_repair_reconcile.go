@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+
+	"go.kenn.io/kit/atomicfile"
 )
 
 var (
 	linkLooseRepairRecoveryFile   = os.Link
-	renameLooseRepairRecoveryFile = renameLoosePublicationNoReplace
+	renameLooseRepairRecoveryFile = atomicfile.RenameNoReplace
 	removeLooseRepairBackupFile   = os.Remove
 )
 

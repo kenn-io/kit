@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"unsafe"
 
+	"go.kenn.io/kit/atomicfile"
 	"golang.org/x/sys/windows"
 )
 
@@ -56,7 +57,7 @@ func replaceLooseRepairFile(staging, final string, verified fs.FileInfo) (looseR
 		return looseRepairPublishResult{Created: true, SyncShard: true}, nil
 	}
 	if !isWindowsExist(linkErr) {
-		renameErr := renameLoosePublicationNoReplace(staging, final)
+		renameErr := atomicfile.RenameNoReplace(staging, final)
 		if renameErr == nil {
 			return looseRepairPublishResult{Created: true, SyncShard: true}, nil
 		}

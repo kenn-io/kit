@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"go.kenn.io/kit/atomicfile"
 )
 
 // LoadHashMapCache reads the disposable local hash-map cache. Any read or
@@ -56,21 +58,12 @@ func SaveHashMapCache(cacheDir, repoID, snapshotID string, m *PageHashMap) error
 	buf := binary.LittleEndian.AppendUint32(nil, uint32(len(snapshotID)))
 	buf = append(buf, snapshotID...)
 	buf = append(buf, EncodeHashKeyframe(m)...)
-	tmp, err := os.CreateTemp(cacheDir, repoID+".hashmap.*")
-	if err != nil {
-		return fmt.Errorf("backup: creating cache temp file: %w", err)
-	}
-	if _, err := tmp.Write(buf); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmp.Name())
-		return fmt.Errorf("backup: writing cache: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmp.Name())
-		return fmt.Errorf("backup: closing cache: %w", err)
-	}
-	if err := os.Rename(tmp.Name(), filepath.Join(cacheDir, repoID+".hashmap")); err != nil {
-		_ = os.Remove(tmp.Name())
+	// The cache is disposable, so the write skips fsync: a crash may lose
+	// it, but readers never see a partial file.
+	if err := atomicfile.WriteFile(
+		filepath.Join(cacheDir, repoID+".hashmap"), buf,
+		atomicfile.WithPerm(0o600), atomicfile.WithoutSync(),
+	); err != nil {
 		return fmt.Errorf("backup: publishing cache: %w", err)
 	}
 	return nil

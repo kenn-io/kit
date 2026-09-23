@@ -217,7 +217,9 @@ func TestLooseWritePublicationFailureCleansStaging(t *testing.T) {
 	}
 }
 
-func TestLooseWriteFallsBackWhenHardLinksAreUnsupported(t *testing.T) {
+// Without hard links, atomicfile.PublishNoReplace renames staging onto the
+// canonical name, so the write must tolerate its staging file being consumed.
+func TestLooseWriteToleratesPublicationThatConsumesStaging(t *testing.T) {
 	content := bytes.Repeat([]byte("portable no-replace publication\n"), 4096)
 	for _, compression := range []LooseCompressionOptions{
 		{},
@@ -231,13 +233,13 @@ func TestLooseWriteFallsBackWhenHardLinksAreUnsupported(t *testing.T) {
 			assert := assert.New(t)
 			require := require.New(t)
 			store := newLooseStoreForTest(t, StagingStoreDirectory)
-			originalLink := linkLoosePublicationFile
-			linkCalls := 0
-			linkLoosePublicationFile = func(string, string) error {
-				linkCalls++
-				return fs.ErrInvalid
+			originalPublish := publishLooseFile
+			publishCalls := 0
+			publishLooseFile = func(staging, final string) error {
+				publishCalls++
+				return os.Rename(staging, final)
 			}
-			t.Cleanup(func() { linkLoosePublicationFile = originalLink })
+			t.Cleanup(func() { publishLooseFile = originalPublish })
 
 			result, err := store.WriteBytes(t.Context(), content, WriteOptions{
 				Durability:   AtomicPublication,
@@ -249,7 +251,7 @@ func TestLooseWriteFallsBackWhenHardLinksAreUnsupported(t *testing.T) {
 			require.NoError(err)
 			assert.True(result.Created)
 			assert.FileExists(result.Path)
-			assert.Equal(1, linkCalls)
+			assert.Equal(1, publishCalls)
 			assert.Empty(matchingFiles(t, store.layout.LooseStagingDir(result.Hash), ".staging-"))
 
 			deduplicated, err := store.WriteBytes(t.Context(), content, WriteOptions{
@@ -261,7 +263,7 @@ func TestLooseWriteFallsBackWhenHardLinksAreUnsupported(t *testing.T) {
 			require.NoError(err)
 			assert.False(deduplicated.Created)
 			assert.Equal(result.Path, deduplicated.Path)
-			assert.Equal(1, linkCalls, "deduplication does not attempt publication")
+			assert.Equal(1, publishCalls, "deduplication does not attempt publication")
 		})
 	}
 }

@@ -19,3 +19,18 @@ func ValidatePrivateCurrentUserFile(file *os.File) error {
 		runtime.GOOS,
 	)
 }
+
+// privateFileCreationSupported fails, because ValidatePrivateCurrentUserFile
+// cannot pass here and a created file would only be left behind.
+func privateFileCreationSupported() error {
+	return fmt.Errorf(
+		"safefileio: private current-user file validation is unsupported on %s",
+		runtime.GOOS,
+	)
+}
+
+// verifyParentAccessPolicy is unreachable here, since creation fails first,
+// and refuses in case that changes.
+func verifyParentAccessPolicy(*os.File) error {
+	return privateFileCreationSupported()
+}

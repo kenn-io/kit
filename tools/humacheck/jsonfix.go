@@ -2,16 +2,17 @@ package humacheck
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/format"
 	"go/parser"
 	"go/token"
 	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 
+	"go.kenn.io/kit/atomicfile"
 	"golang.org/x/tools/go/ast/astutil"
 )
 
@@ -111,14 +112,11 @@ func rewriteJSONV1(filename string, src []byte) (out []byte, changed bool, err e
 }
 
 // rewriteJSONV1File rewrites one working-tree file in place, keeping its
-// permissions. The new content goes to a sibling temporary file that
-// replaces the original by rename, so a failed write never leaves a
-// truncated source file. It reports false when the file has no v1 import.
+// permissions. The file is replaced atomically, so a failed write never
+// leaves a truncated source file; a symlink at path is refused rather than
+// replaced or written through. It reports false when the file has no v1
+// import.
 func rewriteJSONV1File(path string) (bool, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return false, err
-	}
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return false, err
@@ -127,24 +125,13 @@ func rewriteJSONV1File(path string) (bool, error) {
 	if err != nil || !changed {
 		return false, err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".huma-check-*")
-	if err != nil {
-		return false, err
+	if err := writeAtomicFile(path, out, atomicfile.WithPreserveMode()); err != nil {
+		return errors.Is(err, atomicfile.ErrPublished), err
 	}
-	defer func() { _ = os.Remove(tmp.Name()) }()
-	if _, err := tmp.Write(out); err != nil {
-		_ = tmp.Close()
-		return false, err
-	}
-	if err := tmp.Chmod(info.Mode().Perm()); err != nil {
-		_ = tmp.Close()
-		return false, err
-	}
-	if err := tmp.Close(); err != nil {
-		return false, err
-	}
-	return true, os.Rename(tmp.Name(), path)
+	return true, nil
 }
+
+var writeAtomicFile = atomicfile.WriteFile
 
 // applyJSONFixes rewrites every file with a v1 import finding and collapses
 // that file's import findings into one "fixed" finding, so the run still
@@ -164,7 +151,7 @@ func applyJSONFixes(root string, diags []Diagnostic) []Diagnostic {
 			continue
 		}
 		changed, err := rewriteJSONV1File(joinRepoPath(root, d.Path))
-		if err != nil || !changed {
+		if (err != nil && !errors.Is(err, atomicfile.ErrPublished)) || !changed {
 			kept = append(kept, d)
 			continue
 		}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.kenn.io/kit/atomicfile"
 	"gopkg.in/yaml.v3"
 )
 
@@ -203,6 +204,33 @@ func TestInstallJSONPreservesOtherHooksAndReplacesOwnedHooks(t *testing.T) {
 	require.NoError(err)
 	assert.Contains(string(data), "keep-me")
 	assert.NotContains(string(data), testMarker)
+}
+
+func TestInstallReturnsResultWhenConfigWasPublishedButNotDurable(t *testing.T) {
+	require := require.New(t)
+	path := filepath.Join(t.TempDir(), "hooks.json")
+	original := writeAtomicFile
+	writeAtomicFile = func(path string, data []byte, opts ...atomicfile.Option) error {
+		if err := original(path, data, opts...); err != nil {
+			return err
+		}
+		return fmt.Errorf("%w: injected directory sync failure", atomicfile.ErrNotDurable)
+	}
+	t.Cleanup(func() { writeAtomicFile = original })
+
+	result, err := Install(AgentCodex, InstallOptions{
+		ConfigPath: path,
+		Command:    "/opt/hook " + testMarker,
+		Marker:     testMarker,
+		Hooks:      []Hook{{Event: EventStop}},
+	})
+
+	require.ErrorIs(err, atomicfile.ErrNotDurable)
+	assert.True(t, result.Changed)
+	assert.Equal(t, path, result.ConfigPath)
+	data, readErr := os.ReadFile(path)
+	require.NoError(readErr)
+	assert.Equal(t, result.Data, data)
 }
 
 func TestPlanInstallQwenUsesClaudeEventsAndMillisecondTimeouts(t *testing.T) {
@@ -795,4 +823,31 @@ func TestInstallPreservesConfigSymlink(t *testing.T) {
 	data, err := os.ReadFile(target)
 	require.NoError(err)
 	assert.Contains(string(data), testMarker)
+}
+
+func TestWriteConfigRefusesLinkSwappedInForRegularConfig(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating a symlink may need a privilege Windows CI lacks")
+	}
+	require := require.New(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hooks.json")
+	other := filepath.Join(dir, "other.json")
+	require.NoError(os.WriteFile(path, []byte("{}"), 0o600))
+	require.NoError(os.WriteFile(other, []byte("other"), 0o600))
+	original := writeAtomicFile
+	writeAtomicFile = func(path string, data []byte, opts ...atomicfile.Option) error {
+		// Swap the regular config for a link after writeConfig inspected it.
+		require.NoError(os.Remove(path))
+		require.NoError(os.Symlink(other, path))
+		return original(path, data, opts...)
+	}
+	t.Cleanup(func() { writeAtomicFile = original })
+
+	err := writeConfig(path, []byte("new"))
+
+	require.Error(err)
+	data, err := os.ReadFile(other)
+	require.NoError(err)
+	assert.Equal(t, "other", string(data))
 }

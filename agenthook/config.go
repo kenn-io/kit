@@ -1,7 +1,6 @@
 package agenthook
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -9,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"go.kenn.io/kit/atomicfile"
 )
 
 // Hook describes one command registration using Claude Code event and matcher
@@ -80,6 +81,9 @@ func Install(agent Agent, opts InstallOptions) (Result, error) {
 		return result, err
 	}
 	if err := writeConfig(result.ConfigPath, result.Data); err != nil {
+		if errors.Is(err, atomicfile.ErrPublished) {
+			return result, err
+		}
 		return Result{}, err
 	}
 	return result, nil
@@ -116,6 +120,9 @@ func Uninstall(agent Agent, configPath, marker string) (Result, error) {
 		return result, err
 	}
 	if err := writeConfig(result.ConfigPath, result.Data); err != nil {
+		if errors.Is(err, atomicfile.ErrPublished) {
+			return result, err
+		}
 		return Result{}, err
 	}
 	return result, nil
@@ -219,47 +226,30 @@ func planConfig(
 
 func writeConfig(path string, data []byte) error {
 	writePath := path
+	opts := []atomicfile.Option{atomicfile.WithPerm(0o600), atomicfile.WithPreserveMode()}
 	info, err := os.Lstat(path)
-	mode := os.FileMode(0o600)
 	switch {
 	case err == nil && info.Mode()&os.ModeSymlink != 0:
+		// Write through the original path so atomicfile resolves the link
+		// chain again at commit and refuses if it was retargeted. Follow
+		// links only here: a path that was not a link keeps atomicfile's
+		// default, which refuses a link swapped in before the write.
+		opts = append(opts, atomicfile.WithFollowLink())
 		writePath, err = filepath.EvalSymlinks(path)
 		if err != nil {
 			return fmt.Errorf("resolve agent hook config symlink %s: %w", path, err)
 		}
-		if targetInfo, statErr := os.Stat(writePath); statErr == nil {
-			mode = targetInfo.Mode().Perm()
-		}
-	case err == nil:
-		mode = info.Mode().Perm()
-	case !errors.Is(err, os.ErrNotExist):
+	case err != nil && !errors.Is(err, os.ErrNotExist):
 		return fmt.Errorf("inspect agent hook config %s: %w", path, err)
 	}
 	dir := filepath.Dir(writePath)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create agent hook config directory %s: %w", dir, err)
 	}
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(writePath)+".tmp-*")
-	if err != nil {
-		return fmt.Errorf("create temporary agent hook config: %w", err)
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-	closeWithError := func(writeErr error) error {
-		_ = tmp.Close()
-		return writeErr
-	}
-	if err := tmp.Chmod(mode); err != nil {
-		return closeWithError(fmt.Errorf("set temporary agent hook config mode: %w", err))
-	}
-	if _, err := bytes.NewReader(data).WriteTo(tmp); err != nil {
-		return closeWithError(fmt.Errorf("write temporary agent hook config: %w", err))
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temporary agent hook config: %w", err)
-	}
-	if err := replaceConfigFile(tmpPath, writePath); err != nil {
+	if err := writeAtomicFile(path, data, opts...); err != nil {
 		return fmt.Errorf("replace agent hook config %s: %w", path, err)
 	}
 	return nil
 }
+
+var writeAtomicFile = atomicfile.WriteFile

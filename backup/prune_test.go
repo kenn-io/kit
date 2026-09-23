@@ -14,6 +14,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.kenn.io/kit/atomicfile"
 	"go.kenn.io/kit/pack"
 )
 
@@ -220,18 +221,23 @@ func TestPruneFailedIndexSyncDoesNotRetireOldPacks(t *testing.T) {
 	consolidatePruneFixture(t, r, 256<<10)
 	preview, err := Prune(t.Context(), r, newTestApp(), PruneOptions{DryRun: true})
 	require.NoError(err)
-	originalSync := pack.SyncDir
-	t.Cleanup(func() { pack.SyncDir = originalSync })
+	// The merged index reaches disk but its publication reports failure,
+	// as when the directory sync after the rename fails.
+	originalPublish := publishFile
+	t.Cleanup(func() { publishFile = originalPublish })
 	wantErr := errors.New("injected index directory sync failure")
-	pack.SyncDir = func(dir string) error {
-		if dir == r.Path(indexesDirName) {
+	publishFile = func(path string, data []byte, opts ...atomicfile.Option) error {
+		if err := originalPublish(path, data, opts...); err != nil {
+			return err
+		}
+		if filepath.Dir(path) == r.Path(indexesDirName) {
 			return wantErr
 		}
-		return originalSync(dir)
+		return nil
 	}
 	_, err = Prune(t.Context(), r, newTestApp(), PruneOptions{})
 	require.ErrorIs(err, wantErr)
-	pack.SyncDir = originalSync
+	publishFile = originalPublish
 	for _, id := range preview.PacksToRemove {
 		_, err = os.Stat(r.packPath(id, testPackExt))
 		require.NoError(err)

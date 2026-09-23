@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/zstd"
+	"go.kenn.io/kit/atomicfile"
 	"go.kenn.io/kit/pack"
 )
 
@@ -65,8 +66,7 @@ var (
 	openLooseVerificationIdentityPin = func(path string) (looseVerificationIdentityPin, fs.FileInfo, error) {
 		return openLooseRepairPin(path)
 	}
-	linkLoosePublicationFile         = os.Link
-	publishLooseFile                 = publishLooseFileNoReplace
+	publishLooseFile                 = atomicfile.PublishNoReplace
 	publishLooseRepairFile           = replaceLooseRepairFile
 	beforeLoosePublish               = func(Hash, LooseEncoding) {}
 	afterLooseStripeAcquire          = func(Hash, LooseEncoding) {}

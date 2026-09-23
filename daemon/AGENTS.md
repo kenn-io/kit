@@ -24,6 +24,17 @@ databases, command parsing, and shutdown policy belong to the caller.
   broad bind behavior without an explicit caller option.
 - Unix sockets and runtime records must live under private current-user
   directories.
+- Runtime records are written with `atomicfile.WriteFile` (mode 0644, fsynced).
+  Its `.<name>.tmp-*` staging files and the write-check probe must stay outside
+  the `<prefix>.<pid>.json` namespace that `List` and `CleanupDead` match, so
+  leftovers are never read or removed as records.
+- When a runtime write returns an error wrapping `atomicfile.ErrPublished`,
+  `RuntimeStore.Write` returns the final path with that error because the
+  record is already visible there.
+- `RuntimeStore.Prefix` must pass `fsname.Check` and be at most 214 bytes so
+  generated staging names stay within the portable 255-byte component limit.
+  It becomes part of every runtime file name, so reject it rather than rename
+  it.
 - Do not remove an existing path unless it is known to be the stale Unix socket
   this package created. Refuse paths whose type or ownership does not match
   that intent.

@@ -40,5 +40,14 @@
 - Do not silently enable an agent's hook auto-approval setting. Installation
   writes registrations; the harness remains responsible for user consent.
 - JSON and YAML writes must preserve symlinked config paths and existing file
-  mode bits. Keep replacement behavior explicit on Unix and Windows; callers
-  must serialize mutations that target the same config path.
+  mode bits. `writeConfig` resolves a symlinked path only to create the
+  target's directory, then writes through the original path with
+  `atomicfile.WriteFile(..., WithFollowLink())` so a link retargeted before
+  commit is refused rather than writing the stale destination. Pass
+  `WithFollowLink` only when the first `Lstat` saw a symlink; a config that
+  was a regular file or absent keeps atomicfile's default, which refuses a
+  link swapped in before the write. Callers must serialize mutations that
+  target the same config path.
+- When a config write returns an error wrapping `atomicfile.ErrPublished`,
+  `Install` and `Uninstall` return the populated `Result` with that error so
+  callers know the planned mutation became visible.

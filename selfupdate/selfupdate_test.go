@@ -1660,28 +1660,51 @@ func TestSanitizeArchivePath(t *testing.T) {
 
 	destDir := t.TempDir()
 	tests := []struct {
-		name    string
-		path    string
-		wantErr bool
+		name string
+		path string
+		// want is the expected target relative to destDir, in slash form.
+		// Empty means the path must be rejected.
+		want string
 	}{
-		{"normal", "tool", false},
-		{"nested", "bin/tool", false},
-		{"absolute", "/etc/passwd", true},
-		{"traversal", "../../../etc/passwd", true},
-		{"hidden traversal", "foo/../../../etc/passwd", true},
-		{"dot", ".", false},
-		{"double dot", "..", true},
-		{"empty", "", false},
+		{name: "normal", path: "tool", want: "tool"},
+		{name: "nested", path: "bin/tool", want: "bin/tool"},
+		{name: "dot", path: ".", want: "."},
+		{name: "dot slash directory", path: "./", want: "."},
+		{name: "inner dot dot staying inside", path: "a/b/../tool", want: "a/tool"},
+		{name: "leading dots in name", path: "..foo", want: "..foo"},
+		{name: "dots prefix in nested name", path: "a/..b", want: "a/..b"},
+		{name: "absolute", path: "/etc/passwd"},
+		{name: "absolute root", path: "/"},
+		{name: "double slash unc form", path: "//server/share/x"},
+		{name: "empty", path: ""},
+		{name: "double dot", path: ".."},
+		{name: "parent", path: "../x"},
+		{name: "deep traversal", path: "../../../etc/passwd"},
+		{name: "hidden traversal", path: "a/../../x"},
+		{name: "nested hidden traversal", path: "foo/../../../etc/passwd"},
+		{name: "trailing parent", path: "a/../.."},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := SanitizeArchivePath(destDir, tt.path)
-			if (err != nil) != tt.wantErr {
-				require.FailNow(t, fmt.Sprintf("error = %v, wantErr %v", err, tt.wantErr))
-			}
+			assertSanitizedArchivePath(t, destDir, tt.path, tt.want)
 		})
 	}
+}
+
+// assertSanitizedArchivePath checks SanitizeArchivePath(destDir, path). An
+// empty want means the path must be rejected; otherwise want is the expected
+// slash-separated target relative to destDir.
+func assertSanitizedArchivePath(t *testing.T, destDir, path, want string) {
+	t.Helper()
+	got, err := SanitizeArchivePath(destDir, path)
+	if want == "" {
+		require.Error(t, err, "path %q", path)
+		assert.Empty(t, got)
+		return
+	}
+	require.NoError(t, err, "path %q", path)
+	assert.Equal(t, filepath.Join(destDir, filepath.FromSlash(want)), got)
 }
 
 func TestInstallBinary(t *testing.T) {
