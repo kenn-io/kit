@@ -33,7 +33,8 @@ func PolicyFrom(in embedconfig.InputLimits) Policy {
 	}
 }
 
-// Span is one fitted piece of source text.
+// Span is one fitted piece of source text. It never starts or ends with
+// blank text, and its coordinates cover only the trimmed text.
 type Span struct {
 	Text      string
 	ByteStart int
@@ -100,17 +101,17 @@ func Fit(source, prefix, suffix string, tok Tokenizer, policy Policy) (Result, e
 		return Result{prefix: prefix, suffix: suffix}, nil
 	}
 	offsets := runeOffsets(source)
-	total := len(offsets) - 1
-	whole, err := countFormatted(tok, prefix, source, suffix)
+	first, total := trim(source, offsets, 0, len(offsets)-1)
+	whole, err := countRange(tok, prefix, suffix, source, offsets, first, total)
 	if err != nil {
 		return Result{}, err
 	}
 	if whole <= policy.MaxTokens {
-		return Result{Spans: []Span{spanAt(source, offsets, 0, total, false)}, prefix: prefix, suffix: suffix}, nil
+		return Result{Spans: []Span{spanAt(source, offsets, first, total, false)}, prefix: prefix, suffix: suffix}, nil
 	}
 
 	var spans []Span
-	cursor := 0
+	cursor := first
 	for cursor < total {
 		if policy.MaxSpans > 0 && len(spans) >= policy.MaxSpans {
 			return finish(spans, true, policy.Truncation, prefix, suffix)
@@ -127,7 +128,7 @@ func Fit(source, prefix, suffix string, tok Tokenizer, policy Policy) (Result, e
 		}
 		cut, natural := end, end == total
 		if end < total {
-			if soft, ok := softEnd(source, offsets, cursor, end); ok && soft > cursor && soft <= end {
+			if soft, ok := softEnd(source, offsets, cursor, end, total); ok && soft > cursor {
 				cut = soft
 				natural = true
 			} else {
@@ -137,14 +138,10 @@ func Fit(source, prefix, suffix string, tok Tokenizer, policy Policy) (Result, e
 		if !natural && policy.Truncation == embedconfig.TruncationReject {
 			return Result{}, ErrHardCut
 		}
-		span := spanAt(source, offsets, cursor, cut, !natural)
-		if strings.TrimSpace(span.Text) == "" {
-			if policy.Truncation == embedconfig.TruncationDropTail && len(spans) > 0 {
-				return finish(spans, true, policy.Truncation, prefix, suffix)
-			}
-			return Result{}, ErrInputTooLong
-		}
-		spans = append(spans, span)
+		// cursor is not blank, so the trimmed span keeps at least one rune.
+		// Trimming only removes a tail, so the span stays within budget.
+		start, stop := trim(source, offsets, cursor, cut)
+		spans = append(spans, spanAt(source, offsets, start, stop, !natural))
 		if cut >= total {
 			return Result{Spans: spans, prefix: prefix, suffix: suffix}, nil
 		}
@@ -155,7 +152,7 @@ func Fit(source, prefix, suffix string, tok Tokenizer, policy Policy) (Result, e
 		if next <= cursor {
 			return Result{}, errors.New("embed fit made no progress")
 		}
-		cursor = next
+		cursor, _ = trim(source, offsets, next, total)
 	}
 	return Result{Spans: spans, prefix: prefix, suffix: suffix}, nil
 }
@@ -277,7 +274,11 @@ func runeOffsets(source string) []int {
 	return offsets
 }
 
-func softEnd(source string, offsets []int, start, end int) (int, bool) {
+// softEnd finds a natural cut for the window [start, end). Every boundary
+// ends in a space or newline, so it may look one rune past end: a window
+// that ends on "." followed by a space still ends a sentence. A cut at
+// end+1 only adds that separator, which the caller trims.
+func softEnd(source string, offsets []int, start, end, total int) (int, bool) {
 	if end-start < 2 {
 		return end, false
 	}
@@ -288,7 +289,11 @@ func softEnd(source string, offsets []int, start, end int) (int, bool) {
 	if floor >= end {
 		return end, false
 	}
-	window := source[offsets[floor]:offsets[end]]
+	limit := end
+	if end < total {
+		limit = end + 1
+	}
+	window := source[offsets[floor]:offsets[limit]]
 	base := offsets[floor]
 	if p := strings.LastIndex(window, "\n\n"); p >= 0 {
 		return runeAt(offsets, base+p+2), true
@@ -306,6 +311,18 @@ func softEnd(source string, offsets []int, start, end int) (int, bool) {
 		return runeAt(offsets, base+i+1), true
 	}
 	return end, false
+}
+
+// trim narrows [start, end) past blank runes at both ends, using the
+// embedmodel.BlankText rule. A range that is all blank returns start == end.
+func trim(source string, offsets []int, start, end int) (int, int) {
+	for start < end && embedmodel.BlankText(source[offsets[start]:offsets[start+1]]) {
+		start++
+	}
+	for end > start && embedmodel.BlankText(source[offsets[end-1]:offsets[end]]) {
+		end--
+	}
+	return start, end
 }
 
 func snapForward(source string, offsets []int, pos, end int) int {
