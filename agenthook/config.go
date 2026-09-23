@@ -234,8 +234,11 @@ func writeConfig(path string, data []byte) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create agent hook config directory %s: %w", dir, err)
 	}
+	// Write through the original path so atomicfile resolves the link chain
+	// again at commit and refuses if it was retargeted after the check above.
 	if err := atomicfile.WriteFile(
-		writePath, data, atomicfile.WithPerm(0o600), atomicfile.WithPreserveMode(),
+		path, data, atomicfile.WithFollowLink(),
+		atomicfile.WithPerm(0o600), atomicfile.WithPreserveMode(),
 	); err != nil {
 		return fmt.Errorf("replace agent hook config %s: %w", path, err)
 	}
