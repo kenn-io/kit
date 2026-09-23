@@ -20,8 +20,16 @@ open safety belong to `fslink/`.
   (`CONIN$`, `CONOUT$`) are added here; remove an addition once pathologize
   covers it instead of keeping both.
 - `Join` output must always satisfy `filepath.IsLocal`.
+- `CheckPath` rejects Windows path forms that read differently from how they
+  resolve: the device namespace (`\\.\`, `\??\`), drive-relative (`C:x`) and
+  driveless rooted (`\x`) paths always; network shares, `\\?\` long paths and
+  8.3 short names unless the caller opts in. Defaults refuse, so a caller
+  who never considered a form does not accept it silently.
+- Keep the Windows rules in `checkPath(path, windows, cfg)` so they are
+  tested on every platform, not only in Windows CI.
 
 ## Tests
 
 - Use testify and table tests. Cover every reserved-name addition with and
-  without an extension and in mixed case.
+  without an extension and in mixed case, and every CheckPath form both
+  refused and, where an option exists, allowed.
