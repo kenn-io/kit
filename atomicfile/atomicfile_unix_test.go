@@ -79,3 +79,26 @@ func TestSyncDirReportsMissingDirectory(t *testing.T) {
 
 	require.ErrorIs(t, err, fs.ErrNotExist)
 }
+
+// A relative destination's ".." applies after the directory symlink before
+// it resolves, as the kernel does, not lexically: link -> hop/../target.txt
+// with hop -> other/sub names other/target.txt, not the sibling target.txt.
+func TestWriteFileWithFollowLinkAppliesDotDotAfterDirectorySymlink(t *testing.T) {
+	require := require.New(t)
+	dir := t.TempDir()
+	require.NoError(os.MkdirAll(filepath.Join(dir, "other", "sub"), 0o700))
+	resolved := writeString(t, filepath.Join(dir, "other"), "target.txt", "old")
+	lexical := writeString(t, dir, "target.txt", "lexical")
+	require.NoError(os.Symlink(filepath.Join("other", "sub"), filepath.Join(dir, "hop")))
+	link := filepath.Join(dir, "link")
+	require.NoError(os.Symlink("hop/../target.txt", link))
+
+	require.NoError(atomicfile.WriteFile(link, []byte("new"), atomicfile.WithFollowLink()))
+
+	assert.Equal(t, "new", readString(t, link))
+	assert.Equal(t, "new", readString(t, resolved))
+	assert.Equal(t, "lexical", readString(t, lexical))
+	dest, err := os.Readlink(link)
+	require.NoError(err)
+	assert.Equal(t, "hop/../target.txt", dest)
+}

@@ -6,4 +6,13 @@
 // when nothing exists at the target. Both refuse to replace a symlink or
 // junction at the target unless WithFollowLink asks to write through it, and
 // neither ever falls back to copying across volumes.
+//
+// A failure after the new content became visible at the target, such as a
+// failed directory sync, wraps ErrNotDurable.
+//
+// atomicfile assumes the target and staging directories cannot be modified by
+// untrusted users. The link refusal is a check at Create and just before
+// publication, not an atomic guarantee against a link installed concurrently;
+// anyone able to rename entries in those directories could replace the
+// published file directly anyway.
 package atomicfile

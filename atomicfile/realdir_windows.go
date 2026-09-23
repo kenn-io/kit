@@ -4,10 +4,33 @@ package atomicfile
 
 import (
 	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"golang.org/x/sys/windows"
 )
+
+// resolveLinkDest returns the path named by a link in linkDir whose
+// destination is dest. A relative dest is joined to linkDir's real directory,
+// since links in linkDir itself are resolved before the destination is
+// applied. Joining applies ".." in dest lexically, which matches Windows:
+// Win32 path normalization removes ".." before the kernel resolves any
+// reparse point in the remaining path. A destination rooted without a volume
+// (`\dir`) names a path on the link's volume.
+func resolveLinkDest(linkDir, dest string) (string, error) {
+	if filepath.IsAbs(dest) {
+		return dest, nil
+	}
+	dir, err := realDir(linkDir)
+	if err != nil {
+		return "", err
+	}
+	if filepath.VolumeName(dest) == "" && dest != "" && os.IsPathSeparator(dest[0]) {
+		return filepath.VolumeName(dir) + dest, nil
+	}
+	return filepath.Join(dir, dest), nil
+}
 
 // realDir returns the final path of the directory dir after the system
 // resolves every symlink and junction in it, which is the directory a link

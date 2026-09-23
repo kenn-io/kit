@@ -47,9 +47,11 @@ func WithPrivate() Option {
 
 // WithFollowLink writes through a symlink or junction at the target's final
 // component: the link chain is resolved (at most 40 links, relative
-// destinations against the link's directory) and the file it names is
-// replaced, leaving the links in place. Without it a link at the target is
-// refused with an error wrapping fslink.ErrIsLink. WriteNew rejects it.
+// destinations the way the system resolves them) and the file it names is
+// replaced, leaving the links in place. Commit resolves the chain again and
+// fails without writing if it no longer leads to the file chosen at Create.
+// Without it a link at the target is refused with an error wrapping
+// fslink.ErrIsLink. WriteNew rejects it.
 func WithFollowLink() Option {
 	return func(c *config) { c.followLink = true }
 }
@@ -63,7 +65,10 @@ func WithoutSync() Option {
 
 // WithStagingDir stages the temporary file in dir instead of the target's
 // directory. dir must be on the same volume as the target: a cross-volume
-// rename fails and its error is returned; the content is never copied.
+// rename fails and its error is returned; the content is never copied. When
+// dir differs from the target's directory, both are fsynced after
+// publication. Like the target's directory, dir must not be modifiable by
+// untrusted users: the staging file is handled by pathname.
 func WithStagingDir(dir string) Option {
 	return func(c *config) { c.stagingDir = dir }
 }

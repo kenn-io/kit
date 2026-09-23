@@ -16,16 +16,33 @@ import (
 // SYMLOOP_MAX.
 const maxLinkHops = 40
 
+// ErrNotDurable marks a failure that happened after the new content became
+// visible at the target: a directory sync, or removal of a leftover staging
+// name. The target already holds the new content, but a crash may still lose
+// it. Callers must not retry blindly: a retry of WriteNew fails with
+// fs.ErrExist, and a retry of WriteFile rewrites content that is already
+// visible. Errors wrapping ErrNotDurable also wrap the underlying cause.
+var ErrNotDurable = errors.New("atomicfile: published but not confirmed durable")
+
 var (
 	errTooManyLinks = errors.New("too many levels of symlinks or junctions")
 	errIsDir        = errors.New("target is a directory")
 	errFinished     = errors.New("file already committed or aborted")
+	errLinkChanged  = errors.New("link changed since Create")
 )
+
+// syncDir is SyncDir, replaced by tests to inject a directory sync failure.
+var syncDir = SyncDir
 
 // WriteFile atomically replaces the file at path with data. It stages data in
 // a temporary file, fsyncs and closes it, renames it over path, and fsyncs
-// path's directory. Readers see the old or the new content, never a partial
+// path's directory (and the staging directory when WithStagingDir names a
+// different one). Readers see the old or the new content, never a partial
 // file. Parent directories are not created.
+//
+// An error wrapping ErrNotDurable means the new content is already visible at
+// path; see ErrNotDurable. The link refusal is a check, not an atomic
+// guarantee; see Create.
 func WriteFile(path string, data []byte, opts ...Option) (err error) {
 	file, err := Create(path, opts...)
 	if err != nil {
@@ -41,8 +58,10 @@ func WriteFile(path string, data []byte, opts ...Option) (err error) {
 }
 
 // File is a staged replacement for a target file. Content written to it
-// becomes visible at the target only when Commit succeeds. Callers should
-// defer Abort, which is a no-op after Commit.
+// becomes visible at the target when Commit publishes it: on success, or on an
+// error wrapping ErrNotDurable, which means the content is visible but not
+// confirmed durable. Callers should defer Abort, which is a no-op after
+// Commit.
 type File struct {
 	file   *os.File
 	path   string
@@ -56,6 +75,13 @@ type File struct {
 // link (unless WithFollowLink) or a directory at the target fails. The
 // rename itself never follows a link, so a link swapped in after the Commit
 // check is replaced rather than written through.
+//
+// atomicfile assumes the target and staging directories cannot be modified by
+// untrusted users. The link refusal is a check at Create and just before
+// publication, not an atomic guarantee against a link installed concurrently:
+// the check and the rename are separate steps, and the staging file is handled
+// by pathname. Anyone who can rename entries in those directories can replace
+// the published file directly anyway.
 func Create(path string, opts ...Option) (*File, error) {
 	cfg, err := newConfig(opts)
 	if err != nil {
@@ -96,8 +122,12 @@ func (f *File) WriteString(s string) (int, error) { return f.file.WriteString(s)
 func (f *File) ReadFrom(r io.Reader) (int64, error) { return f.file.ReadFrom(r) }
 
 // Commit fsyncs and closes the staging file, renames it over the target, and
-// fsyncs the target's directory. On failure before the rename the staging
-// file is removed and the target is untouched. Commit may be called once;
+// fsyncs the target's directory (and a different staging directory). On
+// failure before the rename the staging file is removed and the target is
+// untouched. With WithFollowLink the link chain is resolved again first, and
+// Commit fails without writing if it now leads somewhere other than at
+// Create. An error wrapping ErrNotDurable means the new content is already
+// visible at the target; do not retry blindly. Commit may be called once;
 // later calls, or a call after Abort, return an error.
 func (f *File) Commit() error {
 	if f.done {
@@ -112,6 +142,9 @@ func (f *File) Commit() error {
 
 func (f *File) publish() error {
 	err := finishStaged(f.file, f.cfg)
+	if err == nil && f.cfg.followLink {
+		err = f.checkLinkUnchanged()
+	}
 	if err == nil {
 		_, err = checkTarget(f.target)
 	}
@@ -121,19 +154,48 @@ func (f *File) publish() error {
 	if err != nil {
 		return discardStaged(f.file, err)
 	}
-	if f.cfg.noSync {
-		return nil
-	}
-	return syncPublishedDir(f.target)
+	return syncPublished(f.cfg, f.target, nil)
 }
 
-// syncPublishedDir reports a directory sync failure as one that happened
-// after publication, so callers do not treat the published file as absent.
-func syncPublishedDir(path string) error {
-	if err := SyncDir(filepath.Dir(path)); err != nil {
-		return fmt.Errorf("published, but directory sync failed (entry may not be durable): %w", err)
+// checkLinkUnchanged resolves the original path's link chain again and fails
+// when it no longer leads to the destination chosen at Create.
+func (f *File) checkLinkUnchanged() error {
+	target, err := resolveTarget(f.path, true)
+	if err != nil {
+		return err
+	}
+	if target != f.target {
+		return fmt.Errorf("%w: resolved to %s at Create, now %s", errLinkChanged, f.target, target)
 	}
 	return nil
+}
+
+// syncPublished fsyncs the target's directory and, when it differs, the
+// staging directory, both of which publication changed. It reports any of
+// those failures, and an earlier post-publication failure, as ErrNotDurable,
+// since the new content is already visible at target.
+func syncPublished(cfg config, target string, published error) error {
+	errs := []error{published}
+	if !cfg.noSync {
+		dir := filepath.Dir(target)
+		errs = append(errs, syncDir(dir))
+		if cfg.stagingDir != "" && !sameDir(cfg.stagingDir, dir) {
+			errs = append(errs, syncDir(cfg.stagingDir))
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return fmt.Errorf("%w: %w", ErrNotDurable, err)
+	}
+	return nil
+}
+
+// sameDir reports whether a and b name the same directory by their cleaned
+// absolute paths. When either cannot be made absolute it reports false, so
+// both get synced.
+func sameDir(a, b string) bool {
+	absA, errA := filepath.Abs(a)
+	absB, errB := filepath.Abs(b)
+	return errA == nil && errB == nil && absA == absB
 }
 
 // Abort closes and removes the staging file, leaving the target untouched.
@@ -150,11 +212,17 @@ func (f *File) Abort() error {
 }
 
 // WriteNew atomically creates the file at path with data only when nothing
-// exists there. The staged file is fsynced and published with
-// PublishNoReplace, the leftover staging name is removed, and path's
-// directory is fsynced. An existing entry at path, including a link, fails
-// with an error wrapping fs.ErrExist and is left untouched. WithFollowLink is
+// exists there. The staged file is fsynced and published without replacing
+// anything: with PublishNoReplace on Unix, and with RenameNoReplace on
+// Windows, where a hard link is not written through. Any leftover staging
+// name is removed, and path's directory (and a different staging directory)
+// is fsynced. An existing entry at path, including a link, fails with an
+// error wrapping fs.ErrExist and is left untouched. WithFollowLink is
 // rejected.
+//
+// An error wrapping ErrNotDurable means path already holds data; a retry
+// would fail with fs.ErrExist. atomicfile assumes path's directory and the
+// staging directory cannot be modified by untrusted users; see Create.
 func WriteNew(path string, data []byte, opts ...Option) error {
 	if err := writeNew(path, data, opts); err != nil {
 		return fmt.Errorf("atomicfile: write new %s: %w", path, err)
@@ -180,16 +248,14 @@ func writeNew(path string, data []byte, opts []Option) error {
 	if err := finishStaged(staged, cfg); err != nil {
 		return discardStaged(staged, err)
 	}
-	if err := PublishNoReplace(staged.Name(), path); err != nil {
+	if err := publishNew(staged.Name(), path); err != nil {
 		return discardStaged(staged, err)
 	}
+	var removeErr error
 	if err := os.Remove(staged.Name()); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("remove staging file after publishing: %w", err)
+		removeErr = fmt.Errorf("remove staging file after publishing: %w", err)
 	}
-	if cfg.noSync {
-		return nil
-	}
-	return syncPublishedDir(path)
+	return syncPublished(cfg, path, removeErr)
 }
 
 // PublishNoReplace publishes staging at final only when final does not
@@ -241,27 +307,14 @@ func resolveTarget(path string, follow bool) (string, error) {
 	return "", &fs.PathError{Op: "replace", Path: path, Err: errTooManyLinks}
 }
 
-// linkDest returns the path the link at link names, resolving a relative
-// destination the way the system does: against the link's real parent
-// directory, not its lexical one, since ".." in the destination climbs out of
-// wherever links in the parent lead. A rooted destination without a volume
-// (`\dir` on Windows) names a path on the link's volume.
+// linkDest returns the path the link at link names, resolved the way the
+// system resolves it; see resolveLinkDest.
 func linkDest(link string) (string, error) {
 	dest, err := fslink.Readlink(link)
 	if err != nil {
 		return "", err
 	}
-	if filepath.IsAbs(dest) {
-		return dest, nil
-	}
-	dir, err := realDir(filepath.Dir(link))
-	if err != nil {
-		return "", err
-	}
-	if filepath.VolumeName(dest) == "" && dest != "" && os.IsPathSeparator(dest[0]) {
-		return filepath.VolumeName(dir) + dest, nil
-	}
-	return filepath.Join(dir, dest), nil
+	return resolveLinkDest(filepath.Dir(link), dest)
 }
 
 // checkTarget fails when target's entry is a link or a directory and returns

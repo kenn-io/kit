@@ -223,6 +223,30 @@ func TestWriteFileWithFollowLinkResolvesDotDotFromRealParent(t *testing.T) {
 	assert.ElementsMatch(t, []string{"s.json"}, entryNames(t, filepath.Join(realDir, "cfg")))
 }
 
+// Commit refuses to write the destination chosen at Create once the link
+// has been retargeted, rather than writing a file the link no longer names.
+func TestCommitWithFollowLinkRefusesRetargetedLink(t *testing.T) {
+	require := require.New(t)
+	dir := t.TempDir()
+	a := writeString(t, dir, "a", "a-old")
+	b := writeString(t, dir, "b", "b-old")
+	link := filepath.Join(dir, "link")
+	symlinkOrSkip(t, "a", link)
+	file, err := atomicfile.Create(link, atomicfile.WithFollowLink())
+	require.NoError(err)
+	_, err = file.WriteString("new")
+	require.NoError(err)
+	require.NoError(os.Remove(link))
+	symlinkOrSkip(t, "b", link)
+
+	err = file.Commit()
+
+	require.ErrorContains(err, "link changed")
+	assert.Equal(t, "a-old", readString(t, a))
+	assert.Equal(t, "b-old", readString(t, b))
+	assert.ElementsMatch(t, []string{"a", "b", "link"}, entryNames(t, dir))
+}
+
 func TestWriteFileWithFollowLinkCreatesDanglingLinkTarget(t *testing.T) {
 	require := require.New(t)
 	dir := t.TempDir()
