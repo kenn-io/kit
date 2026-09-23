@@ -39,8 +39,13 @@ callers responsible for their own file formats and higher-level policy.
   open or repair an existing file: anything already at the path, including a
   dangling symlink or junction, fails with an error wrapping `fs.ErrExist`.
 - When post-creation validation fails, `CreatePrivateFile` fails closed and
-  deletes only the file it created: Unix removes the path only while it still
-  names the created inode; Windows marks the created handle for deletion.
+  deletes only the file it created: Windows marks the created handle for
+  deletion. Unix cannot unlink by handle, so it removes the path only while
+  it still names the created inode and only when the parent directory is
+  owned by the current user or root and denies group/other write or is
+  sticky. In a shared parent it leaves the empty private file in place and
+  says so in the error, because another user could swap the entry between
+  the identity check and the removal.
   Platforms that cannot validate private files must fail creation the same way.
 
 ## Tests
