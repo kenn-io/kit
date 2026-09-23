@@ -124,7 +124,16 @@ func (f *File) publish() error {
 	if f.cfg.noSync {
 		return nil
 	}
-	return SyncDir(filepath.Dir(f.target))
+	return syncPublishedDir(f.target)
+}
+
+// syncPublishedDir reports a directory sync failure as one that happened
+// after publication, so callers do not treat the published file as absent.
+func syncPublishedDir(path string) error {
+	if err := SyncDir(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("published, but directory sync failed (entry may not be durable): %w", err)
+	}
+	return nil
 }
 
 // Abort closes and removes the staging file, leaving the target untouched.
@@ -180,7 +189,7 @@ func writeNew(path string, data []byte, opts []Option) error {
 	if cfg.noSync {
 		return nil
 	}
-	return SyncDir(filepath.Dir(path))
+	return syncPublishedDir(path)
 }
 
 // PublishNoReplace publishes staging at final only when final does not
