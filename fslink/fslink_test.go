@@ -398,6 +398,51 @@ func TestOpenRootNoFollow(t *testing.T) {
 	}
 }
 
+func TestOpenRoot(t *testing.T) {
+	t.Run("directory", func(t *testing.T) {
+		dir := newTree(t)
+		root, err := fslink.OpenRoot(filepath.Join(dir, "sub"))
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = root.Close() })
+		data, err := root.ReadFile("inner.txt")
+		require.NoError(t, err)
+		assert.Equal(t, "inner", string(data))
+	})
+	t.Run("link in an earlier component is followed", func(t *testing.T) {
+		for _, maker := range dirLinkMakers() {
+			t.Run(maker.name, func(t *testing.T) {
+				dir := newTree(t)
+				require.NoError(t, os.Mkdir(filepath.Join(dir, "sub", "deeper"), 0o755))
+				maker.create(t, dir, "link")
+				root, err := fslink.OpenRoot(filepath.Join(dir, "link", "deeper"))
+				require.NoError(t, err)
+				assert.NoError(t, root.Close())
+			})
+		}
+	})
+	t.Run("final link is refused", func(t *testing.T) {
+		for _, maker := range dirLinkMakers() {
+			t.Run(maker.name, func(t *testing.T) {
+				dir := newTree(t)
+				maker.create(t, dir, "link")
+				root, err := fslink.OpenRoot(filepath.Join(dir, "link"))
+				assert.Nil(t, root)
+				require.ErrorIs(t, err, fslink.ErrIsLink)
+			})
+		}
+	})
+	t.Run("regular file", func(t *testing.T) {
+		root, err := fslink.OpenRoot(filepath.Join(newTree(t), "file.txt"))
+		assert.Nil(t, root)
+		require.Error(t, err)
+	})
+	t.Run("missing", func(t *testing.T) {
+		root, err := fslink.OpenRoot(filepath.Join(newTree(t), "missing"))
+		assert.Nil(t, root)
+		require.ErrorIs(t, err, fs.ErrNotExist)
+	})
+}
+
 func TestLinkDirResolvesRelativeTarget(t *testing.T) {
 	assert := assert.New(t)
 	dir := newTree(t)

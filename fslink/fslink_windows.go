@@ -359,6 +359,24 @@ func openFile(path string, flag int, perm fs.FileMode) (*os.File, error) {
 	return os.NewFile(uintptr(handle), path), nil
 }
 
+// openDirPath opens the directory at path without following a link in its
+// final component.
+func openDirPath(path string) (*os.File, error) {
+	file, err := openFile(path, os.O_RDONLY, 0)
+	if err != nil {
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err == nil && !info.IsDir() {
+		err = &fs.PathError{Op: "open", Path: path, Err: syscall.ENOTDIR}
+	}
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return file, nil
+}
+
 func openRegular(path string) (*os.File, error) {
 	handle, err := openHandle(path, os.O_RDONLY, 0)
 	if err != nil {

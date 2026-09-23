@@ -21,8 +21,10 @@ file formats, or ownership rules belong here (see `safefileio/` for those).
   both report `ModeIrregular`.
 - `IO_REPARSE_TAG_MOUNT_POINT` is `Junction` unless its substitute name is a
   `\??\Volume{...}` path, which is `OtherLink`.
-- `Classify`, `IsLink`, `Readlink`, `OpenFile`, `OpenRegular`, and `ReadFile`
-  judge only the final path component; earlier components may be links.
+- `Classify`, `IsLink`, `Readlink`, `OpenFile`, `OpenRegular`, `ReadFile`, and
+  `OpenRoot` judge only the final path component; earlier components may be
+  links. `OpenRoot` compares the opened root with the inspected directory by
+  file identity, and must not block on a FIFO at the path.
 - `OpenInRoot` and `OpenRootNoFollow` guarantee that every component they
   open is the same file object that was inspected (without following it) and
   found not to be a link, and that nothing resolves outside the root. Each

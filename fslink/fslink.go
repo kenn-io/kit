@@ -153,6 +153,48 @@ func ReadFile(path string) (data []byte, err error) {
 	return io.ReadAll(file)
 }
 
+// OpenRoot is like os.OpenRoot but refuses to follow a link in path's final
+// component, returning an error wrapping ErrIsLink. Links in earlier
+// components are followed. path must name a directory. The returned root is
+// compared by file identity with the directory that was inspected, so a link
+// swapped in during the open fails the call instead of being followed.
+//
+// On Windows a non-link reparse point (cloud placeholder, dedup) opens
+// normally as a root, but OpenInRoot and OpenRootNoFollow still refuse
+// reparse points below it.
+func OpenRoot(path string) (*os.Root, error) {
+	if err := platformSupport(); err != nil {
+		return nil, &fs.PathError{Op: "openroot", Path: path, Err: err}
+	}
+	dir, err := openDirPath(path)
+	if err != nil {
+		return nil, err
+	}
+	want, err := dir.Stat()
+	err = errors.Join(err, dir.Close())
+	if err != nil {
+		return nil, err
+	}
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		return nil, err
+	}
+	self, err := root.Open(".")
+	if err == nil {
+		var got fs.FileInfo
+		got, err = self.Stat()
+		if err == nil && !os.SameFile(want, got) {
+			err = &fs.PathError{Op: "openroot", Path: path, Err: errChanged}
+		}
+		err = errors.Join(err, self.Close())
+	}
+	if err != nil {
+		_ = root.Close()
+		return nil, err
+	}
+	return root, nil
+}
+
 // OpenInRoot opens name inside root like root.OpenFile, but refuses a link
 // in any component of name, returning an error wrapping ErrIsLink. name must
 // satisfy filepath.IsLocal. O_CREATE|O_EXCL on an existing entry, a link

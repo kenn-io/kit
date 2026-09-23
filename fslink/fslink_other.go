@@ -39,6 +39,10 @@ func openFile(path string, _ int, _ fs.FileMode) (*os.File, error) {
 	return nil, &fs.PathError{Op: "open", Path: path, Err: errPlatform}
 }
 
+func openDirPath(path string) (*os.File, error) {
+	return nil, &fs.PathError{Op: "open", Path: path, Err: errPlatform}
+}
+
 func openRegular(path string) (*os.File, error) {
 	return nil, &fs.PathError{Op: "open", Path: path, Err: errPlatform}
 }
