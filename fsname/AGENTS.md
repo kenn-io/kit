@@ -4,8 +4,12 @@
 
 `fsname/` decides whether a single file or directory name is portable across
 modern operating systems and file systems, and derives a portable name from an
-outside string. It is lexical: it never touches the file system. Link and
-open safety belong to `fslink/`.
+outside string. `Check`, `Clean`, `Join` and `CheckPath` are lexical: they
+never touch the file system. Link and open safety belong to `fslink/`.
+
+`Remote` and `RemoteFile` are the only functions that touch the file system.
+They report where the containing file system lives (network or user-space
+FUSE versus local kernel), not whether a path is portable.
 
 ## Invariants
 
@@ -27,9 +31,20 @@ open safety belong to `fslink/`.
   who never considered a form does not accept it silently.
 - Keep the Windows rules in `checkPath(path, windows, cfg)` so they are
   tested on every platform, not only in Windows CI.
+- `Remote`/`RemoteFile` never guess: a platform without a detection method
+  returns an error wrapping `errors.ErrUnsupported`, never false. Callers
+  holding private runtime state, lock files or sockets should refuse remote
+  file systems; general data writes may allow them.
+- The Linux network/FUSE magic list lives only in `linuxRemoteType`.
+  `safefileio` reuses it through `RemoteFile`; do not copy it elsewhere.
+- BSD and macOS treat a mount as remote when it lacks `MNT_LOCAL` or its type
+  name is FUSE (FUSE mounts can carry `MNT_LOCAL`). Windows reports only
+  `DRIVE_REMOTE` volumes; WinFsp-style user-space file systems read as local.
 
 ## Tests
 
 - Use testify and table tests. Cover every reserved-name addition with and
   without an extension and in mixed case, and every CheckPath form both
   refused and, where an option exists, allowed.
+- Remote tests must not depend on real network mounts: test the classifier
+  functions with literal inputs and `t.TempDir()` as the local case.
