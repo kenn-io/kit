@@ -39,7 +39,9 @@ import is rewritten to `encoding/json/v2`, with `NewEncoder(w).Encode(v)`,
 The swap is deliberately blind: the user chose compile errors that an agent
 then fixes over leaving files on v1. Rewritten files are still reported (as
 fixed) so a hook run exits 1 and the files get restaged. The other rules
-have no mechanical fix and stay report-only.
+have no mechanical fix and stay report-only. The fix replaces a file with
+`atomicfile.WriteFile`, keeping its mode; a symlinked source file is refused
+and its finding is kept as reported.
 
 ## Analyzer Rules
 

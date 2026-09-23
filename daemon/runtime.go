@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"go.kenn.io/kit/atomicfile"
 )
 
 // RuntimeRecord is the on-disk daemon.<pid>.json shape used for discovery.
@@ -174,10 +176,6 @@ func (s RuntimeStore) Write(rec RuntimeRecord) (string, error) {
 	if rec.StartedAt.IsZero() {
 		rec.StartedAt = time.Now().UTC()
 	}
-	prefix, err := s.validatePrefix()
-	if err != nil {
-		return "", err
-	}
 	final, err := s.Path(rec.PID)
 	if err != nil {
 		return "", err
@@ -186,32 +184,9 @@ func (s RuntimeStore) Write(rec RuntimeRecord) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("marshal runtime record: %w", err)
 	}
-	tmp, err := os.CreateTemp(s.Dir, fmt.Sprintf("%s.%d.*.json.tmp", prefix, rec.PID))
-	if err != nil {
-		return "", fmt.Errorf("create runtime temp file: %w", err)
+	if err := atomicfile.WriteFile(final, body, atomicfile.WithPerm(0o644)); err != nil {
+		return "", fmt.Errorf("write runtime file: %w", err)
 	}
-	tmpPath := tmp.Name()
-	success := false
-	defer func() {
-		if !success {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-	if _, err := tmp.Write(body); err != nil {
-		_ = tmp.Close()
-		return "", fmt.Errorf("write runtime temp file: %w", err)
-	}
-	if err := tmp.Chmod(0o644); err != nil {
-		_ = tmp.Close()
-		return "", fmt.Errorf("chmod runtime temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return "", fmt.Errorf("close runtime temp file: %w", err)
-	}
-	if err := os.Rename(tmpPath, final); err != nil {
-		return "", fmt.Errorf("rename runtime file: %w", err)
-	}
-	success = true
 	return final, nil
 }
 

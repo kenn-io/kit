@@ -155,3 +155,37 @@ func TestRuntimeStoreCheckWritableRejectsNonDirectory(t *testing.T) {
 	require.Error(err)
 	assert.Contains(err.Error(), "prepare runtime dir")
 }
+
+func TestRuntimeStoreIgnoresStagingFiles(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+
+	store := daemon.RuntimeStore{Dir: t.TempDir()}
+	deadPID := 999999
+	if daemon.ProcessAlive(deadPID) {
+		t.Skipf("pid %d is alive on this host", deadPID)
+	}
+	// An interrupted Write leaves its staging file behind under this name.
+	staging := filepath.Join(store.Dir, ".daemon.999999.json.tmp-123456")
+	body := []byte(`{"pid":999999,"address":"127.0.0.1:7474"}`)
+	require.NoError(os.WriteFile(staging, body, 0o644))
+
+	records, err := store.List()
+	require.NoError(err)
+	assert.Empty(records)
+	removed, err := store.CleanupDead()
+	require.NoError(err)
+	assert.Zero(removed)
+	_, err = os.Stat(staging)
+	require.NoError(err)
+
+	_, err = store.Write(daemon.RuntimeRecord{PID: deadPID, Address: "127.0.0.1:7475"})
+	require.NoError(err)
+	entries, err := os.ReadDir(store.Dir)
+	require.NoError(err)
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	assert.ElementsMatch([]string{".daemon.999999.json.tmp-123456", "daemon.999999.json"}, names)
+}
