@@ -65,12 +65,18 @@ func Fuse[K comparable](k float64, legs []Leg[K]) ([]Hit[K], error) {
 			seen[key] = struct{}{}
 			rank++
 			term := leg.Weight / (k + float64(rank))
+			if err := finiteValue(term); err != nil {
+				return nil, err
+			}
 			item := states[key]
 			if item == nil {
 				seq++
 				item = &state{hit: Hit[K]{Key: key}, first: seq}
 				states[key] = item
 				order = append(order, key)
+			}
+			if err := finiteValue(item.hit.Score + term); err != nil {
+				return nil, err
 			}
 			item.hit.Score += term
 			item.hit.Contributions = append(item.hit.Contributions, Contribution{
@@ -176,6 +182,12 @@ func FuseGroups[G, M comparable](k float64, legs []GroupLeg[G, M]) ([]GroupHit[G
 			}
 			if !ranked {
 				term := leg.Weight / (k + float64(rank))
+				if err := finiteValue(term); err != nil {
+					return nil, err
+				}
+				if err := finiteValue(item.hit.Score + term); err != nil {
+					return nil, err
+				}
 				item.hit.Score += term
 				item.hit.Contributions = append(item.hit.Contributions, Contribution{
 					Leg: leg.Name, Rank: rank, Weight: leg.Weight, Term: term,
@@ -230,6 +242,13 @@ func validateLegs(n int, leg func(int) (string, float64)) error {
 
 func positiveFinite(v float64) bool {
 	return !math.IsNaN(v) && !math.IsInf(v, 0) && v > 0
+}
+
+func finiteValue(v float64) error {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return errors.New("rrf: non-finite value cannot be stored")
+	}
+	return nil
 }
 
 // rejectNaN reports a value that cannot be stored. NaN is not equal to itself,

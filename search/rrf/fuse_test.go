@@ -1,6 +1,7 @@
 package rrf_test
 
 import (
+	"fmt"
 	"math"
 	"testing"
 
@@ -84,6 +85,18 @@ func TestFuseGroupsKeepsAlternatesUntilTheCallerFilters(t *testing.T) {
 	}, hits[0].Alternates)
 	assert.Equal(t, "g2", hits[1].Group)
 	assert.Len(t, hits[1].Contributions, 1)
+}
+
+func TestFuseRejectsAScoreThatOverflows(t *testing.T) {
+	legs := make([]rrf.Leg[string], 62)
+	for i := range legs {
+		legs[i] = rrf.Leg[string]{
+			Name: fmt.Sprintf("leg-%d", i), Weight: math.MaxFloat64, Keys: []string{"doc"},
+		}
+	}
+	hits, err := rrf.Fuse(60, legs)
+	require.ErrorContains(t, err, "non-finite")
+	assert.Empty(t, hits)
 }
 
 func TestFuseRejectsANaNKey(t *testing.T) {
