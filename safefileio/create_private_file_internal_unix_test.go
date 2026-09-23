@@ -6,7 +6,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -56,22 +58,29 @@ func TestDiscardCreatedFileLeavesFileInSharedParent(t *testing.T) {
 
 func TestRequireUnsharedParent(t *testing.T) {
 	tests := []struct {
-		name    string
-		mode    fs.FileMode
-		wantErr string
+		name       string
+		mode       fs.FileMode
+		createdUID int
+		wantErr    string
 	}{
-		{name: "private", mode: 0o700},
-		{name: "group readable", mode: 0o750},
-		{name: "sticky shared", mode: 0o777 | fs.ModeSticky},
-		{name: "group writable", mode: 0o770, wantErr: "other users can rename entries"},
-		{name: "world writable", mode: 0o777, wantErr: "other users can rename entries"},
+		{name: "private", mode: 0o700, createdUID: os.Getuid()},
+		{name: "group readable", mode: 0o750, createdUID: os.Getuid()},
+		{name: "sticky shared", mode: 0o777 | fs.ModeSticky, createdUID: os.Getuid()},
+		{name: "sticky shared with root-owned file", mode: 0o777 | fs.ModeSticky, createdUID: 0},
+		{name: "sticky shared with foreign file", mode: 0o777 | fs.ModeSticky, createdUID: os.Getuid() + 1, wantErr: "created file has an untrusted owner"},
+		{name: "group writable", mode: 0o770, createdUID: os.Getuid(), wantErr: "other users can rename entries"},
+		{name: "world writable", mode: 0o777, createdUID: os.Getuid(), wantErr: "other users can rename entries"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			require := require.New(t)
 			dir := t.TempDir()
-			require.NoError(t, os.Chmod(dir, tt.mode))
+			require.NoError(os.Chmod(dir, tt.mode))
+			dirInfo, err := os.Stat(dir)
+			require.NoError(err)
+			created := ownedInfo{uid: uint32(tt.createdUID)}
 
-			err := requireUnsharedParent(dir)
+			err = requireUnsharedParent(dirInfo, created)
 
 			if tt.wantErr == "" {
 				assert.NoError(t, err)
@@ -81,3 +90,14 @@ func TestRequireUnsharedParent(t *testing.T) {
 		})
 	}
 }
+
+// ownedInfo is a regular-file FileInfo whose owner is uid, for owners a test
+// process cannot create files as.
+type ownedInfo struct{ uid uint32 }
+
+func (i ownedInfo) Name() string       { return "created" }
+func (i ownedInfo) Size() int64        { return 0 }
+func (i ownedInfo) Mode() fs.FileMode  { return 0o600 }
+func (i ownedInfo) ModTime() time.Time { return time.Time{} }
+func (i ownedInfo) IsDir() bool        { return false }
+func (i ownedInfo) Sys() any           { return &syscall.Stat_t{Uid: i.uid} }

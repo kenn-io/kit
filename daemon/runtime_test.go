@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -201,4 +202,23 @@ func TestRuntimeStoreRejectsNonPortablePrefix(t *testing.T) {
 			require.ErrorIs(t, err, fsname.ErrNotPortable)
 		})
 	}
+}
+
+func TestRuntimeStorePrefixReservesPortableStagingSuffix(t *testing.T) {
+	require := require.New(t)
+	dir := t.TempDir()
+	store := daemon.RuntimeStore{Dir: dir, Prefix: strings.Repeat("a", 214)}
+
+	path, err := store.Write(daemon.RuntimeRecord{
+		PID:     1,
+		Network: daemon.NetworkTCP,
+		Address: "127.0.0.1:7474",
+	})
+	require.NoError(err)
+	_, err = os.Stat(path)
+	require.NoError(err)
+
+	store.Prefix = strings.Repeat("a", 215)
+	_, err = store.Path(1)
+	require.ErrorIs(err, fsname.ErrNotPortable)
 }

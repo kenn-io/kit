@@ -41,7 +41,9 @@ then fixes over leaving files on v1. Rewritten files are still reported (as
 fixed) so a hook run exits 1 and the files get restaged. The other rules
 have no mechanical fix and stay report-only. The fix replaces a file with
 `atomicfile.WriteFile`, keeping its mode; a symlinked source file is refused
-and its finding is kept as reported.
+and its finding is kept as reported. An error wrapping
+`atomicfile.ErrPublished` still reports the finding as fixed because the
+rewrite is already visible, even when its durability could not be confirmed.
 
 ## Analyzer Rules
 

@@ -68,7 +68,12 @@ type RuntimeStore struct {
 	Prefix string
 }
 
-const runtimeWriteCheckPattern = ".%s.write-check-*"
+const (
+	runtimeWriteCheckPattern = ".%s.write-check-*"
+	// maxRuntimePrefixBytes leaves room in the portable 255-byte component
+	// limit for .<prefix>.<19-digit PID>.json.tmp-<10-digit random value>.
+	maxRuntimePrefixBytes = 214
+)
 
 func (s RuntimeStore) prefix() string {
 	if s.Prefix == "" {
@@ -84,6 +89,12 @@ func (s RuntimeStore) validatePrefix() (string, error) {
 	// "NUL" a device on Windows.
 	if err := fsname.Check(prefix); err != nil {
 		return "", fmt.Errorf("runtime prefix %q must be a portable basename: %w", prefix, err)
+	}
+	if len(prefix) > maxRuntimePrefixBytes {
+		return "", fmt.Errorf(
+			"runtime prefix %q exceeds %d bytes: %w",
+			prefix, maxRuntimePrefixBytes, fsname.ErrNotPortable,
+		)
 	}
 	return prefix, nil
 }
@@ -186,11 +197,16 @@ func (s RuntimeStore) Write(rec RuntimeRecord) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("marshal runtime record: %w", err)
 	}
-	if err := atomicfile.WriteFile(final, body, atomicfile.WithPerm(0o644)); err != nil {
+	if err := writeAtomicFile(final, body, atomicfile.WithPerm(0o644)); err != nil {
+		if errors.Is(err, atomicfile.ErrPublished) {
+			return final, fmt.Errorf("write runtime file: %w", err)
+		}
 		return "", fmt.Errorf("write runtime file: %w", err)
 	}
 	return final, nil
 }
+
+var writeAtomicFile = atomicfile.WriteFile
 
 // Read parses one runtime file.
 func (s RuntimeStore) Read(path string) (RuntimeRecord, error) {

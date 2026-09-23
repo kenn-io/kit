@@ -42,13 +42,16 @@ callers responsible for their own file formats and higher-level policy.
   dangling symlink or junction, fails with an error wrapping `fs.ErrExist`.
 - When post-creation validation fails, `CreatePrivateFile` fails closed and
   deletes only the file it created: Windows marks the created handle for
-  deletion. Unix cannot unlink by handle, so it removes the path only while
-  it still names the created inode and only when the parent directory is
-  owned by the current user or root and denies group/other write or is
-  sticky. In a shared parent it leaves the empty private file in place and
-  says so in the error, because another user could swap the entry between
-  the identity check and the removal.
-  Platforms that cannot validate private files must fail creation the same way.
+  deletion. Unix cannot unlink by handle, so it pins the parent directory as
+  an `os.Root` and does the identity check and removal through that handle.
+  It removes only when the pinned parent is owned by the current user or
+  root, denies group/other write (or is sticky while the created file is
+  owned by the current user or root), is not on a network or FUSE file system
+  (`fsname.RemoteFile`), and on macOS has no extended ACL. Otherwise it
+  leaves the empty private file in place and says so in the error, because
+  another user could swap the entry between the check and the removal.
+- Platforms that cannot validate private files refuse in `CreatePrivateFile`
+  before creating anything, since every create would fail validation.
 
 ## Tests
 

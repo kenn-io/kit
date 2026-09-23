@@ -2,6 +2,7 @@ package humacheck
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/format"
@@ -124,11 +125,13 @@ func rewriteJSONV1File(path string) (bool, error) {
 	if err != nil || !changed {
 		return false, err
 	}
-	if err := atomicfile.WriteFile(path, out, atomicfile.WithPreserveMode()); err != nil {
-		return false, err
+	if err := writeAtomicFile(path, out, atomicfile.WithPreserveMode()); err != nil {
+		return errors.Is(err, atomicfile.ErrPublished), err
 	}
 	return true, nil
 }
+
+var writeAtomicFile = atomicfile.WriteFile
 
 // applyJSONFixes rewrites every file with a v1 import finding and collapses
 // that file's import findings into one "fixed" finding, so the run still
@@ -148,7 +151,7 @@ func applyJSONFixes(root string, diags []Diagnostic) []Diagnostic {
 			continue
 		}
 		changed, err := rewriteJSONV1File(joinRepoPath(root, d.Path))
-		if err != nil || !changed {
+		if (err != nil && !errors.Is(err, atomicfile.ErrPublished)) || !changed {
 			kept = append(kept, d)
 			continue
 		}

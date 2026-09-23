@@ -81,6 +81,9 @@ func Install(agent Agent, opts InstallOptions) (Result, error) {
 		return result, err
 	}
 	if err := writeConfig(result.ConfigPath, result.Data); err != nil {
+		if errors.Is(err, atomicfile.ErrPublished) {
+			return result, err
+		}
 		return Result{}, err
 	}
 	return result, nil
@@ -117,6 +120,9 @@ func Uninstall(agent Agent, configPath, marker string) (Result, error) {
 		return result, err
 	}
 	if err := writeConfig(result.ConfigPath, result.Data); err != nil {
+		if errors.Is(err, atomicfile.ErrPublished) {
+			return result, err
+		}
 		return Result{}, err
 	}
 	return result, nil
@@ -236,7 +242,7 @@ func writeConfig(path string, data []byte) error {
 	}
 	// Write through the original path so atomicfile resolves the link chain
 	// again at commit and refuses if it was retargeted after the check above.
-	if err := atomicfile.WriteFile(
+	if err := writeAtomicFile(
 		path, data, atomicfile.WithFollowLink(),
 		atomicfile.WithPerm(0o600), atomicfile.WithPreserveMode(),
 	); err != nil {
@@ -244,3 +250,5 @@ func writeConfig(path string, data []byte) error {
 	}
 	return nil
 }
+
+var writeAtomicFile = atomicfile.WriteFile

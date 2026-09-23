@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.kenn.io/kit/atomicfile"
 	"gopkg.in/yaml.v3"
 )
 
@@ -203,6 +204,33 @@ func TestInstallJSONPreservesOtherHooksAndReplacesOwnedHooks(t *testing.T) {
 	require.NoError(err)
 	assert.Contains(string(data), "keep-me")
 	assert.NotContains(string(data), testMarker)
+}
+
+func TestInstallReturnsResultWhenConfigWasPublishedButNotDurable(t *testing.T) {
+	require := require.New(t)
+	path := filepath.Join(t.TempDir(), "hooks.json")
+	original := writeAtomicFile
+	writeAtomicFile = func(path string, data []byte, opts ...atomicfile.Option) error {
+		if err := original(path, data, opts...); err != nil {
+			return err
+		}
+		return fmt.Errorf("%w: injected directory sync failure", atomicfile.ErrNotDurable)
+	}
+	t.Cleanup(func() { writeAtomicFile = original })
+
+	result, err := Install(AgentCodex, InstallOptions{
+		ConfigPath: path,
+		Command:    "/opt/hook " + testMarker,
+		Marker:     testMarker,
+		Hooks:      []Hook{{Event: EventStop}},
+	})
+
+	require.ErrorIs(err, atomicfile.ErrNotDurable)
+	assert.True(t, result.Changed)
+	assert.Equal(t, path, result.ConfigPath)
+	data, readErr := os.ReadFile(path)
+	require.NoError(readErr)
+	assert.Equal(t, result.Data, data)
 }
 
 func TestPlanInstallQwenUsesClaudeEventsAndMillisecondTimeouts(t *testing.T) {

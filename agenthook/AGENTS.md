@@ -45,3 +45,6 @@
   `atomicfile.WriteFile(..., WithFollowLink())` so a link retargeted before
   commit is refused rather than writing the stale destination. Callers must
   serialize mutations that target the same config path.
+- When a config write returns an error wrapping `atomicfile.ErrPublished`,
+  `Install` and `Uninstall` return the populated `Result` with that error so
+  callers know the planned mutation became visible.
