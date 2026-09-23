@@ -15,6 +15,7 @@ type Option func(*config)
 type config struct {
 	perm         fs.FileMode
 	permSet      bool
+	createPerm   bool
 	preserveMode bool
 	private      bool
 	followLink   bool
@@ -28,6 +29,17 @@ func WithPerm(perm fs.FileMode) Option {
 	return func(c *config) {
 		c.perm = perm
 		c.permSet = true
+	}
+}
+
+// WithCreatePerm sets the permission of a newly created file the way the
+// perm argument of os.WriteFile does: the process umask filters it. Add
+// WithPreserveMode to keep an existing target's mode, as os.WriteFile does.
+// It cannot be combined with WithPerm or WithPrivate.
+func WithCreatePerm(perm fs.FileMode) Option {
+	return func(c *config) {
+		c.perm = perm
+		c.createPerm = true
 	}
 }
 
@@ -78,8 +90,11 @@ func newConfig(opts []Option) (config, error) {
 	for _, opt := range opts {
 		opt(&cfg)
 	}
-	if cfg.private && (cfg.permSet || cfg.preserveMode) {
-		return config{}, errors.New("WithPrivate cannot be combined with WithPerm or WithPreserveMode")
+	if cfg.private && (cfg.permSet || cfg.createPerm || cfg.preserveMode) {
+		return config{}, errors.New("WithPrivate cannot be combined with WithPerm, WithCreatePerm or WithPreserveMode")
+	}
+	if cfg.permSet && cfg.createPerm {
+		return config{}, errors.New("WithPerm cannot be combined with WithCreatePerm")
 	}
 	return cfg, nil
 }

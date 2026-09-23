@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"go.kenn.io/kit/fslink"
 	"go.kenn.io/kit/safefileio"
@@ -105,11 +108,11 @@ func Create(path string, opts ...Option) (*File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("atomicfile: create %s: %w", path, err)
 	}
-	perm := cfg.perm
+	perm, umask := cfg.perm, cfg.createPerm
 	if cfg.preserveMode && info != nil && info.Mode().IsRegular() {
-		perm = info.Mode().Perm()
+		perm, umask = info.Mode().Perm(), false
 	}
-	staged, err := stage(cfg, target, perm)
+	staged, err := stage(cfg, target, perm, umask)
 	if err != nil {
 		return nil, fmt.Errorf("atomicfile: create %s: %w", path, err)
 	}
@@ -258,7 +261,7 @@ func writeNew(path string, data []byte, opts []Option) error {
 	if err != nil {
 		return err
 	}
-	staged, err := stage(cfg, path, cfg.perm)
+	staged, err := stage(cfg, path, cfg.perm, cfg.createPerm)
 	if err != nil {
 		return err
 	}
@@ -367,14 +370,18 @@ func checkTarget(target string) (fs.FileInfo, error) {
 }
 
 // stage creates the staging file for target with perm, or a private file
-// when cfg.private is set.
-func stage(cfg config, target string, perm fs.FileMode) (*os.File, error) {
+// when cfg.private is set. With umask the process umask filters perm, as it
+// does for os.WriteFile; otherwise perm is applied exactly.
+func stage(cfg config, target string, perm fs.FileMode, umask bool) (*os.File, error) {
 	dir, pattern := filepath.Dir(target), "."+filepath.Base(target)+".tmp-*"
 	if cfg.stagingDir != "" {
 		dir, pattern = cfg.stagingDir, filepath.Base(target)+".tmp-*"
 	}
 	if cfg.private {
 		return safefileio.CreatePrivateTemp(dir, pattern)
+	}
+	if umask {
+		return createTemp(dir, pattern, perm)
 	}
 	file, err := os.CreateTemp(dir, pattern)
 	if err != nil {
@@ -384,6 +391,24 @@ func stage(cfg config, target string, perm fs.FileMode) (*os.File, error) {
 		return nil, discardStaged(file, err)
 	}
 	return file, nil
+}
+
+// createTempAttempts matches the retry budget of os.CreateTemp.
+const createTempAttempts = 10000
+
+// createTemp is os.CreateTemp with a caller-chosen perm that the process
+// umask filters, as os.OpenFile does. pattern holds one "*" and no separator.
+func createTemp(dir, pattern string, perm fs.FileMode) (*os.File, error) {
+	prefix, suffix, _ := strings.Cut(pattern, "*")
+	for range createTempAttempts {
+		name := filepath.Join(dir, prefix+strconv.FormatUint(uint64(rand.Uint32()), 10)+suffix)
+		file, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, perm)
+		if errors.Is(err, fs.ErrExist) {
+			continue
+		}
+		return file, err
+	}
+	return nil, &fs.PathError{Op: "createtemp", Path: filepath.Join(dir, pattern), Err: fs.ErrExist}
 }
 
 func finishStaged(file *os.File, cfg config) error {
