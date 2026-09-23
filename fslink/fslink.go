@@ -281,6 +281,10 @@ func openFinal(dir *os.Root, name string, flag int, perm fs.FileMode) (*os.File,
 		if err != nil && !errors.Is(err, fs.ErrExist) && entryExists(dir, name) {
 			// os.Root on Windows reports an existing directory link as
 			// "is a directory"; report every existing entry as fs.ErrExist.
+			// Drop the inner PathError so pathError keeps fs.ErrExist.
+			if pathErr, ok := errors.AsType[*fs.PathError](err); ok {
+				err = pathErr.Err
+			}
 			err = errors.Join(fs.ErrExist, err)
 		}
 		return file, err
