@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"unicode/utf8"
 )
 
 // PathOption relaxes CheckPath for a path form the caller expects.
@@ -87,7 +88,7 @@ var shortName = regexp.MustCompile(`^[^~.]{1,6}~[0-9]+(\.[^.]{0,3})?$`)
 
 func isShortName(elem string) bool {
 	stem, _, _ := strings.Cut(elem, ".")
-	return len(stem) <= 8 && shortName.MatchString(elem)
+	return utf8.RuneCountInString(stem) <= 8 && shortName.MatchString(elem)
 }
 
 // checkWindowsPrefix validates the volume and root of a Windows path and
