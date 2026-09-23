@@ -52,6 +52,54 @@ func TestOllamaMetalRecoveryKeepsTheGoodVector(t *testing.T) {
 	assert.Contains(t, nativeBodies[0], `"input":["beta"]`)
 }
 
+func TestOllamaRecoverySendsDimensionsOnlyWhenRequested(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		request bool
+	}{
+		{name: "provider default", request: false},
+		{name: "requested", request: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var nativeBodies []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/v1/embeddings":
+					_, _ = io.WriteString(w, `{"data":[{"embedding":[null,1]}]}`)
+				case "/api/embed":
+					body, _ := io.ReadAll(r.Body)
+					nativeBodies = append(nativeBodies, string(body))
+					_, _ = io.WriteString(w, `{"embeddings":[[3,4]]}`)
+				case "/api/ps":
+					_, _ = io.WriteString(w, `{"models":[]}`)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(srv.Close)
+			model := unitModel()
+			model.RequestDimensions = tc.request
+			client, err := embedclient.New(embedclient.Options{
+				Model:               model,
+				Deployment:          embedconfig.Deployment{BaseURL: srv.URL + "/v1"},
+				Batch:               embedconfig.Batch{Items: 4},
+				OllamaMetalRecovery: true,
+			})
+			require.NoError(t, err)
+			_, err = client.Embed(t.Context(), oneText())
+			require.NoError(t, err)
+			require.NotEmpty(t, nativeBodies)
+			for _, body := range nativeBodies {
+				if tc.request {
+					assert.Contains(t, body, `"dimensions":2`)
+				} else {
+					assert.NotContains(t, body, `"dimensions"`)
+				}
+			}
+		})
+	}
+}
+
 func TestOllamaNativeRejectsANullComponent(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

@@ -135,7 +135,7 @@ func (c *Client) ollamaNativeEmbed(ctx context.Context, embedURL string, inputs 
 		Model: c.model.Name, Input: inputs, Truncate: false,
 		Options: options, KeepAlive: keepAlive,
 	}
-	if c.model.Dimensions > 0 {
+	if c.model.RequestDimensions {
 		body.Dimensions = c.model.Dimensions
 	}
 	payload, err := jsonv2.Marshal(body)
