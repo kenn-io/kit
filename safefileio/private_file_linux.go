@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"go.kenn.io/kit/fsname"
 	"golang.org/x/sys/unix"
 )
 
@@ -15,11 +16,15 @@ func ValidatePrivateCurrentUserFile(file *os.File) error {
 }
 
 func validateLinuxPrivateAccess(file *os.File) error {
+	remote, err := fsname.RemoteFile(file)
+	if err != nil {
+		return fmt.Errorf("inspect file filesystem: %w", err)
+	}
 	var status unix.Statfs_t
 	if err := unix.Fstatfs(int(file.Fd()), &status); err != nil {
 		return fmt.Errorf("inspect file filesystem: %w", err)
 	}
-	if linuxFilesystemHasExternalAccessPolicy(int64(status.Type)) { //nolint:unconvert // Statfs_t.Type is int32 on 32-bit Linux targets.
+	if linuxFilesystemHasExternalAccessPolicy(remote, int64(status.Type)) { //nolint:unconvert // Statfs_t.Type is int32 on 32-bit Linux targets.
 		return errors.New(
 			"safefileio: private current-user file validation is unsupported " +
 				"on filesystems with external access policy",
@@ -28,24 +33,12 @@ func validateLinuxPrivateAccess(file *os.File) error {
 	return validateLinuxAccessACLs(file)
 }
 
-func linuxFilesystemHasExternalAccessPolicy(filesystemType int64) bool {
-	switch uint32(filesystemType) {
-	case uint32(unix.AAFS_MAGIC),
-		uint32(unix.AFS_FS_MAGIC),
-		uint32(unix.AFS_SUPER_MAGIC),
-		uint32(unix.CEPH_SUPER_MAGIC),
-		uint32(unix.CIFS_SUPER_MAGIC),
-		uint32(unix.CODA_SUPER_MAGIC),
-		uint32(unix.FUSE_SUPER_MAGIC),
-		uint32(unix.NCP_SUPER_MAGIC),
-		uint32(unix.NFS_SUPER_MAGIC),
-		uint32(unix.SMB_SUPER_MAGIC),
-		uint32(unix.SMB2_SUPER_MAGIC),
-		uint32(unix.V9FS_MAGIC):
-		return true
-	default:
-		return false
-	}
+// linuxFilesystemHasExternalAccessPolicy reports whether local mode bits and
+// access ACLs cannot establish who may open the file: network and FUSE file
+// systems (remote, as fsname.RemoteFile reports them), and AppArmor's
+// securityfs, which is local but applies its own access policy.
+func linuxFilesystemHasExternalAccessPolicy(remote bool, filesystemType int64) bool {
+	return remote || uint32(filesystemType) == uint32(unix.AAFS_MAGIC)
 }
 
 func validateLinuxAccessACLs(file *os.File) error {

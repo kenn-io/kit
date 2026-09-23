@@ -25,7 +25,9 @@ callers responsible for their own file formats and higher-level policy.
   produced handles that no in-place repair can revoke.
 - On supported Unix platforms, require exact mode 0600 and no access ACL.
   Reject Linux network and user-space filesystems whose effective access policy
-  cannot be verified through local mode and access-ACL operations.
+  cannot be verified through local mode and access-ACL operations, using
+  `fsname.RemoteFile` (the list lives only in `fsname`), plus AppArmor's
+  securityfs (`AAFS_MAGIC`), which is local but has its own access policy.
 - On Windows, require a protected DACL that grants access only to the current
   user and trusted administrative principals. Callers recovering a broad or
   inheritable file must create a private replacement rather than repair it in
