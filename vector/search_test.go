@@ -117,6 +117,22 @@ func TestMergeEmpty(t *testing.T) {
 	assert.Empty(t, got)
 }
 
+func TestMergeNormalizedScoreKeepsExtremeFiniteScoresFinite(t *testing.T) {
+	got, err := vector.Merge([][]vector.Hit[int]{{
+		{Doc: 1, Score: math.MaxFloat32},
+		{Doc: 2, Score: -math.MaxFloat32},
+	}}, vector.MergeOptions{})
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, 1, got[0].Doc)
+	assert.InDelta(t, 1, float64(got[0].Score), 1e-5)
+	assert.Equal(t, 2, got[1].Doc)
+	assert.InDelta(t, 0, float64(got[1].Score), 1e-5)
+	for _, hit := range got {
+		assert.False(t, math.IsNaN(float64(hit.Score)))
+	}
+}
+
 func TestRollupAndMergeRejectNaN(t *testing.T) {
 	got, err := vector.RollupByDocument([]vector.Hit[int64]{{Doc: 1, Score: float32(math.NaN())}})
 	require.ErrorContains(t, err, "NaN")

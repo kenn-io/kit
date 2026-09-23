@@ -142,18 +142,23 @@ func Merge[K comparable](perGeneration [][]Hit[K], o MergeOptions) ([]Hit[K], er
 	default: // MergeNormalizedScore
 		for _, list := range perGeneration {
 			lo, hi := scoreRange(list)
-			span := hi - lo
+			// Subtract in float64. MaxFloat32 minus its negation overflows
+			// float32 to +Inf, and Inf/Inf is NaN.
+			span := float64(hi) - float64(lo)
 			for _, h := range list {
 				if _, ok := rep[h.Doc]; ok {
 					continue
 				}
+				normalized := 1.0
+				if span > 0 {
+					normalized = (float64(h.Score) - float64(lo)) / span
+				}
+				if math.IsNaN(normalized) {
+					return nil, errors.New("vector: NaN cannot be stored")
+				}
 				rep[h.Doc] = h
 				order = append(order, h.Doc)
-				if span > 0 {
-					score[h.Doc] = float64(h.Score-lo) / float64(span)
-				} else {
-					score[h.Doc] = 1
-				}
+				score[h.Doc] = normalized
 			}
 		}
 	}
