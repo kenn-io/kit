@@ -561,10 +561,6 @@ type entry struct {
 	id  fileID
 }
 
-// errReparseInRoot reports a non-link reparse point (cloud placeholder, dedup,
-// WOF) under a root: os.Root refuses every reparse point on Windows.
-var errReparseInRoot = fmt.Errorf("fslink: reparse point refused under a root: %w", errors.ErrUnsupported)
-
 // lstatAt inspects name relative to dir's own handle, so no absolute path is
 // reopened between the check and the caller's open through dir.
 func lstatAt(dir *os.Root, name string) (entry, error) {

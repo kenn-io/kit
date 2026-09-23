@@ -54,6 +54,10 @@ var (
 	errNotLocal   = errors.New("fslink: path is not local to the root")
 	errNotRegular = errors.New("fslink: not a regular file")
 	errChanged    = errors.New("fslink: path changed while it was being opened")
+	// errReparseInRoot reports a non-link reparse point (cloud placeholder,
+	// dedup, WOF) under a root: os.Root refuses every reparse point on
+	// Windows. Only the Windows lstatAt returns it.
+	errReparseInRoot = fmt.Errorf("fslink: reparse point refused under a root: %w", errors.ErrUnsupported)
 )
 
 // Classify reports the link kind of path's final component without
@@ -313,11 +317,12 @@ func openFinal(dir *os.Root, name string, flag int, perm fs.FileMode) (*os.File,
 	return file, nil
 }
 
-// entryExists reports whether lstatAt found an entry, a link included, at
-// name in dir. A failed lookup proves nothing, so it reports false.
+// entryExists reports whether lstatAt found an entry, a link or reparse
+// point included, at name in dir. A failed lookup proves nothing, so it
+// reports false.
 func entryExists(dir *os.Root, name string) bool {
 	_, err := lstatAt(dir, name)
-	return err == nil || errors.Is(err, ErrIsLink)
+	return err == nil || errors.Is(err, ErrIsLink) || errors.Is(err, errReparseInRoot)
 }
 
 func checkSame(ent entry, file *os.File) error {
