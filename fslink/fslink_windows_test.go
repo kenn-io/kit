@@ -3,6 +3,7 @@
 package fslink_test
 
 import (
+	"errors"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -128,6 +129,7 @@ func TestOpenInRootRefusesNonLinkReparsePoint(t *testing.T) {
 	if file != nil {
 		_ = file.Close()
 	}
+	require.ErrorIs(t, err, errors.ErrUnsupported)
 	require.ErrorContains(t, err, "reparse point refused under a root")
 	require.ErrorContains(t, err, "compressed.txt")
 	require.NotErrorIs(t, err, fslink.ErrIsLink)

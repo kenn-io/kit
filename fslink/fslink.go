@@ -72,11 +72,13 @@ func IsLink(path string) (bool, error) {
 	return kind != NotLink, nil
 }
 
-// Readlink returns the destination of the Symlink or Junction at path. It
+// Readlink returns the destination of the Symlink or Junction at path: a
+// location in the directory tree that callers can open or join against. It
 // returns an error when path is not a link, and an error wrapping
-// errors.ErrUnsupported when Classify reports OtherLink. That includes volume
-// mount points, which os.Readlink could decode, so that Readlink succeeds
-// exactly for the kinds whose destination is a path.
+// errors.ErrUnsupported when Classify reports OtherLink. A volume mount point
+// names a volume (\\?\Volume{GUID}\) rather than a directory-tree location,
+// and other name-surrogate tags have no format Readlink can decode, so the
+// Kind alone decides whether Readlink succeeds.
 func Readlink(path string) (string, error) {
 	kind, err := Classify(path)
 	if err != nil {

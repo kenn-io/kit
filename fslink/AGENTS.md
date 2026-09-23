@@ -29,13 +29,17 @@ file formats, or ownership rules belong here (see `safefileio/` for those).
 - On Windows the root-confined functions refuse every reparse point, not just
   name surrogates: `os.Root` opens each component with `OBJ_DONT_REPARSE`.
   Do not reimplement `os.Root` to lift this. `lstatAt` rejects a non-link
-  reparse point up front with `errReparseInRoot` so callers get a clear error
-  instead of `ELOOP`.
+  reparse point up front with `errReparseInRoot`, which wraps
+  `errors.ErrUnsupported`, so callers can classify it instead of seeing
+  `ELOOP`.
 - An exclusive create (`O_CREATE|O_EXCL`) on an existing entry, a link
   included, fails with `fs.ErrExist`, not `ErrIsLink`, in both `OpenFile` and
   `OpenInRoot`. Keep that precedence; it matches `os.OpenFile`.
-- Never follow a link in the components these functions guard. A refused link
-  returns an `*fs.PathError` wrapping `ErrIsLink`.
+- A link found when a guarded component is inspected is refused with an
+  `*fs.PathError` wrapping `ErrIsLink`. A link swapped in after inspection
+  may be resolved transiently during the open, but the result is accepted
+  only when it is the object already inspected, and nothing is created or
+  truncated before that check passes.
 - Never truncate or create through a link: `O_TRUNC` is applied only after the
   opened handle is verified, and root-confined creation uses `O_EXCL`.
 - `OpenRegular` must not block on FIFOs (Unix opens with `O_NONBLOCK`) and must

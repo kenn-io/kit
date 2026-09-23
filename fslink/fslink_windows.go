@@ -211,9 +211,12 @@ func createDir(parent, name string) (windows.Handle, error) {
 	if err != nil {
 		return windows.InvalidHandle, err
 	}
+	// The relative create needs only a handle to the parent; the file system
+	// checks FILE_ADD_SUBDIRECTORY against the parent's own DACL, so do not
+	// ask for listing or read rights the caller may lack.
 	dir, err := windows.CreateFile(
 		parent16,
-		windows.FILE_GENERIC_READ,
+		windows.FILE_TRAVERSE|windows.SYNCHRONIZE,
 		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
 		nil,
 		windows.OPEN_EXISTING,
@@ -225,7 +228,7 @@ func createDir(parent, name string) (windows.Handle, error) {
 	}
 	defer func() { _ = windows.CloseHandle(dir) }()
 	return ntCreateAt(dir, name,
-		windows.FILE_GENERIC_WRITE|windows.DELETE|windows.FILE_READ_ATTRIBUTES,
+		windows.FILE_GENERIC_WRITE|windows.DELETE,
 		0,
 		windows.FILE_CREATE,
 		windows.FILE_DIRECTORY_FILE|windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT,
@@ -447,15 +450,11 @@ func openHandle(path string, flag int, perm fs.FileMode) (windows.Handle, error)
 		})
 	}
 	if err == nil && flag&os.O_TRUNC != 0 && disk && !info.isDir() {
-		err = windows.Ftruncate(handle, 0)
-		if err == nil && flag&os.O_APPEND != 0 {
-			// Truncation needed FILE_WRITE_DATA. Drop it now: without it the
-			// OS appends every write, even after a Seek, which os.NewFile
-			// cannot enforce because it does not know about O_APPEND.
-			handle, err = reopenVerified(handle, func() (windows.Handle, error) {
-				return reOpenFile(handle, access&^windows.GENERIC_WRITE, share,
-					attrs&(windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_WRITE_THROUGH))
-			})
+		if flag&os.O_APPEND != 0 {
+			handle, err = truncateToAppendOnly(handle, access&^windows.GENERIC_WRITE, share,
+				attrs&(windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_WRITE_THROUGH))
+		} else {
+			err = windows.Ftruncate(handle, 0)
 		}
 	}
 	if err != nil {
@@ -508,6 +507,37 @@ func reopenVerified(inspected windows.Handle, reopen func() (windows.Handle, err
 	return reopened, nil
 }
 
+// truncateToAppendOnly truncates the file behind handle and returns an
+// append-only handle to it. Truncation needs FILE_WRITE_DATA, but a handle
+// without it makes the OS append every write, even after a Seek, which
+// os.NewFile cannot enforce because it does not know about O_APPEND. The
+// append-only handle is opened and verified first, so a failure leaves the
+// file untouched. Like reopenVerified it consumes handle: on success handle
+// is closed, and on failure handle is returned for the caller to close.
+func truncateToAppendOnly(handle windows.Handle, access, share, flags uint32) (windows.Handle, error) {
+	want, err := handleID(handle)
+	if err != nil {
+		return handle, err
+	}
+	appendOnly, err := reOpenFile(handle, access, share, flags)
+	if err != nil {
+		return handle, err
+	}
+	got, err := handleID(appendOnly)
+	if err == nil && got != want {
+		err = errChanged
+	}
+	if err == nil {
+		err = windows.Ftruncate(handle, 0)
+	}
+	if err != nil {
+		_ = windows.CloseHandle(appendOnly)
+		return handle, err
+	}
+	_ = windows.CloseHandle(handle)
+	return appendOnly, nil
+}
+
 var procReOpenFile = windows.NewLazySystemDLL("kernel32.dll").NewProc("ReOpenFile")
 
 // reOpenFile calls ReOpenFile, which golang.org/x/sys/windows does not wrap.
@@ -533,7 +563,7 @@ type entry struct {
 
 // errReparseInRoot reports a non-link reparse point (cloud placeholder, dedup,
 // WOF) under a root: os.Root refuses every reparse point on Windows.
-var errReparseInRoot = errors.New("fslink: reparse point refused under a root")
+var errReparseInRoot = fmt.Errorf("fslink: reparse point refused under a root: %w", errors.ErrUnsupported)
 
 // lstatAt inspects name relative to dir's own handle, so no absolute path is
 // reopened between the check and the caller's open through dir.
