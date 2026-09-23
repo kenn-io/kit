@@ -1,0 +1,80 @@
+package atomicfile
+
+import (
+	"errors"
+	"io/fs"
+)
+
+// defaultPerm is the permission of a newly created file when no option
+// chooses another.
+const defaultPerm fs.FileMode = 0o600
+
+// Option configures WriteFile, Create, and WriteNew.
+type Option func(*config)
+
+type config struct {
+	perm         fs.FileMode
+	permSet      bool
+	preserveMode bool
+	private      bool
+	followLink   bool
+	noSync       bool
+	stagingDir   string
+}
+
+// WithPerm sets the permission bits of the written file. The bits are
+// applied exactly, without the process umask. The default is 0600.
+func WithPerm(perm fs.FileMode) Option {
+	return func(c *config) {
+		c.perm = perm
+		c.permSet = true
+	}
+}
+
+// WithPreserveMode keeps the permission bits of the existing target when it
+// is a regular file. Otherwise the WithPerm value or the default applies.
+func WithPreserveMode() Option {
+	return func(c *config) { c.preserveMode = true }
+}
+
+// WithPrivate stages the file with safefileio.CreatePrivateTemp, so the
+// result is private to the current user: mode 0600 on Unix, a protected
+// current-user DACL on Windows. It cannot be combined with WithPerm or
+// WithPreserveMode.
+func WithPrivate() Option {
+	return func(c *config) { c.private = true }
+}
+
+// WithFollowLink writes through a symlink or junction at the target's final
+// component: the link chain is resolved (at most 40 links, relative
+// destinations against the link's directory) and the file it names is
+// replaced, leaving the links in place. Without it a link at the target is
+// refused with an error wrapping fslink.ErrIsLink. WriteNew rejects it.
+func WithFollowLink() Option {
+	return func(c *config) { c.followLink = true }
+}
+
+// WithoutSync skips the file and directory fsyncs. The write is still atomic
+// for readers but may not survive a crash; use it only for disposable data
+// such as caches.
+func WithoutSync() Option {
+	return func(c *config) { c.noSync = true }
+}
+
+// WithStagingDir stages the temporary file in dir instead of the target's
+// directory. dir must be on the same volume as the target: a cross-volume
+// rename fails and its error is returned; the content is never copied.
+func WithStagingDir(dir string) Option {
+	return func(c *config) { c.stagingDir = dir }
+}
+
+func newConfig(opts []Option) (config, error) {
+	cfg := config{perm: defaultPerm}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	if cfg.private && (cfg.permSet || cfg.preserveMode) {
+		return config{}, errors.New("WithPrivate cannot be combined with WithPerm or WithPreserveMode")
+	}
+	return cfg, nil
+}

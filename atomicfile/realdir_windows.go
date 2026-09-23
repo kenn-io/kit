@@ -1,0 +1,45 @@
+//go:build windows
+
+package atomicfile
+
+import (
+	"io/fs"
+	"strings"
+
+	"golang.org/x/sys/windows"
+)
+
+// realDir returns the final path of the directory dir after the system
+// resolves every symlink and junction in it, which is the directory a link
+// inside dir resolves its relative destination against.
+// filepath.EvalSymlinks does not traverse junctions.
+func realDir(dir string) (string, error) {
+	dir16, err := windows.UTF16PtrFromString(dir)
+	if err != nil {
+		return "", &fs.PathError{Op: "realpath", Path: dir, Err: err}
+	}
+	handle, err := windows.CreateFile(
+		dir16,
+		windows.FILE_READ_ATTRIBUTES,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil,
+		windows.OPEN_EXISTING,
+		windows.FILE_FLAG_BACKUP_SEMANTICS,
+		0,
+	)
+	if err != nil {
+		return "", &fs.PathError{Op: "realpath", Path: dir, Err: err}
+	}
+	defer func() { _ = windows.CloseHandle(handle) }()
+	buf := make([]uint16, windows.MAX_LONG_PATH)
+	// Flags 0 is FILE_NAME_NORMALIZED|VOLUME_NAME_DOS: a `\\?\` path.
+	n, err := windows.GetFinalPathNameByHandle(handle, &buf[0], uint32(len(buf)), 0)
+	if err != nil {
+		return "", &fs.PathError{Op: "realpath", Path: dir, Err: err}
+	}
+	final := windows.UTF16ToString(buf[:n])
+	if rest, ok := strings.CutPrefix(final, `\\?\UNC\`); ok {
+		return `\\` + rest, nil
+	}
+	return strings.TrimPrefix(final, `\\?\`), nil
+}
