@@ -39,6 +39,19 @@ func TestBuildTextUsesNativePredicatesWithoutARank(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, clickhouse.TokenizersQuery().SQL, "system.tokenizers")
+
+	substring, err := clickhouse.BuildText(clickhouse.TextRequest{
+		Table: "docs", Key: "id", TextColumn: "body",
+		Match: clickhouse.MatchSubstring, Text: "かな", Limit: 10,
+	})
+	require.NoError(t, err)
+	assert.Contains(t, substring.SQL, "positionUTF8(t.`body`, ?) > 0")
+	assert.Equal(t, []any{"かな", 10}, substring.Args)
+	_, err = clickhouse.BuildText(clickhouse.TextRequest{
+		Table: "docs", Key: "id", TextColumn: "body",
+		Match: clickhouse.MatchSubstring, Tokens: []string{"か"}, Limit: 1,
+	})
+	require.Error(t, err)
 }
 
 func TestBuildVectorKeepsCandidateLimitAndProbeSetting(t *testing.T) {

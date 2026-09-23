@@ -1,12 +1,14 @@
 // Package clickhouse builds mapped ClickHouse text and vector queries.
 //
-// Text predicates use hasToken, hasAnyTokens, or hasAllTokens. ClickHouse
-// 26.2.19's system.tokenizers lists splitByNonAlpha, splitByString, ngrams,
-// sparseGrams, array, and bloom-filter variants. It does not list asciiCJK,
-// and hasPhrase is not available. splitByNonAlpha keeps a CJK run as one
-// token. ngrams(1) matches characters without regard to order. Neither is
-// cppjieba segmentation or a BM25 rank. Text rows are ordered by the source
-// key. Do not treat that order as relevance.
+// Text predicates use hasToken, hasAnyTokens, hasAllTokens, or positionUTF8.
+// ClickHouse 26.2.19's system.tokenizers lists splitByNonAlpha, splitByString,
+// ngrams, sparseGrams, array, and bloom-filter variants. It does not list
+// asciiCJK, and hasPhrase is not available. splitByNonAlpha keeps a CJK run
+// as one token, so hasToken('かな') does not match 'かなを探します'.
+// MatchSubstring uses positionUTF8 and matches that sequence in order.
+// ngrams(1) with hasAllTokens matches characters without regard to order.
+// Neither is cppjieba segmentation or a BM25 rank. Text rows are ordered by
+// the source key. Do not treat that order as relevance.
 //
 // Vector queries use the native distance function in ORDER BY so an HNSW
 // index can match. Cosine and L2 scores are higher-is-better conversions of

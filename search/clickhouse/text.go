@@ -30,6 +30,10 @@ const (
 	// MatchToken requires one exact token. Use it when the index tokenizer
 	// emits the whole term, such as a CJK run under splitByNonAlpha.
 	MatchToken TextMatch = "token"
+	// MatchSubstring requires the query text to occur in order. A CJK run
+	// stored as one splitByNonAlpha token still matches a shorter sequence
+	// inside it. hasToken does not.
+	MatchSubstring TextMatch = "substring"
 )
 
 // Column projects a source column under an explicit result alias.
@@ -80,7 +84,7 @@ func BuildText(req TextRequest) (sqlquery.Query, error) {
 	if err := checkIdentifier("text column", req.TextColumn); err != nil {
 		return sqlquery.Query{}, err
 	}
-	fn, err := textFunc(req.Match)
+	predicateFn, err := textPredicate(req.Match, quote(req.TextColumn))
 	if err != nil {
 		return sqlquery.Query{}, err
 	}
@@ -91,8 +95,8 @@ func BuildText(req TextRequest) (sqlquery.Query, error) {
 	if useTokens && strings.TrimSpace(req.Text) != "" {
 		return sqlquery.Query{}, errors.New("clickhouse: set text or tokens, not both")
 	}
-	if useTokens && req.Match == MatchToken {
-		return sqlquery.Query{}, errors.New("clickhouse: token match requires text")
+	if useTokens && (req.Match == MatchToken || req.Match == MatchSubstring) {
+		return sqlquery.Query{}, errors.New("clickhouse: this match requires text")
 	}
 	if useTokens && len(req.Tokens) == 0 {
 		return sqlquery.Query{}, errors.New("clickhouse: token list is empty")
@@ -134,8 +138,8 @@ func BuildText(req TextRequest) (sqlquery.Query, error) {
 	args = append(args, req.Limit)
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "SELECT %s FROM %s AS t WHERE %s(t.%s, ?)",
-		strings.Join(projection, ", "), quote(req.Table), fn, quote(req.TextColumn))
+	fmt.Fprintf(&b, "SELECT %s FROM %s AS t WHERE %s",
+		strings.Join(projection, ", "), quote(req.Table), predicateFn)
 	if predicate != "" {
 		b.WriteString(" AND (")
 		b.WriteString(predicate)
@@ -145,14 +149,16 @@ func BuildText(req TextRequest) (sqlquery.Query, error) {
 	return sqlquery.Query{SQL: b.String(), Args: args}, nil
 }
 
-func textFunc(match TextMatch) (string, error) {
+func textPredicate(match TextMatch, column string) (string, error) {
 	switch match {
 	case "", MatchAll:
-		return "hasAllTokens", nil
+		return "hasAllTokens(t." + column + ", ?)", nil
 	case MatchAny:
-		return "hasAnyTokens", nil
+		return "hasAnyTokens(t." + column + ", ?)", nil
 	case MatchToken:
-		return "hasToken", nil
+		return "hasToken(t." + column + ", ?)", nil
+	case MatchSubstring:
+		return "positionUTF8(t." + column + ", ?) > 0", nil
 	default:
 		return "", fmt.Errorf("clickhouse: unknown text match %q", match)
 	}

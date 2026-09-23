@@ -77,10 +77,16 @@ CREATE TABLE docs (
 
 	substring, err := clickhouse.BuildText(clickhouse.TextRequest{
 		Table: "docs", Key: "id", TextColumn: "body",
-		Match: clickhouse.MatchToken, Text: "かな", Limit: 10,
+		Match: clickhouse.MatchSubstring, Text: "かな", Limit: 10,
 	})
 	require.NoError(t, err)
-	assert.Empty(t, scanIDs(t, ctx, db, substring), "splitByNonAlpha does not split a CJK run")
+	assert.Equal(t, []string{"kana"}, scanIDs(t, ctx, db, substring))
+	reversed, err := clickhouse.BuildText(clickhouse.TextRequest{
+		Table: "docs", Key: "id", TextColumn: "body",
+		Match: clickhouse.MatchSubstring, Text: "なか", Limit: 10,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"reverse"}, scanIDs(t, ctx, db, reversed))
 
 	literal, err := clickhouse.BuildText(clickhouse.TextRequest{
 		Table: "docs", Key: "id", TextColumn: "body",
