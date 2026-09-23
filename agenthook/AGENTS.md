@@ -43,8 +43,11 @@
   mode bits. `writeConfig` resolves a symlinked path only to create the
   target's directory, then writes through the original path with
   `atomicfile.WriteFile(..., WithFollowLink())` so a link retargeted before
-  commit is refused rather than writing the stale destination. Callers must
-  serialize mutations that target the same config path.
+  commit is refused rather than writing the stale destination. Pass
+  `WithFollowLink` only when the first `Lstat` saw a symlink; a config that
+  was a regular file or absent keeps atomicfile's default, which refuses a
+  link swapped in before the write. Callers must serialize mutations that
+  target the same config path.
 - When a config write returns an error wrapping `atomicfile.ErrPublished`,
   `Install` and `Uninstall` return the populated `Result` with that error so
   callers know the planned mutation became visible.

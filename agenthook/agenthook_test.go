@@ -824,3 +824,30 @@ func TestInstallPreservesConfigSymlink(t *testing.T) {
 	require.NoError(err)
 	assert.Contains(string(data), testMarker)
 }
+
+func TestWriteConfigRefusesLinkSwappedInForRegularConfig(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating a symlink may need a privilege Windows CI lacks")
+	}
+	require := require.New(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hooks.json")
+	other := filepath.Join(dir, "other.json")
+	require.NoError(os.WriteFile(path, []byte("{}"), 0o600))
+	require.NoError(os.WriteFile(other, []byte("other"), 0o600))
+	original := writeAtomicFile
+	writeAtomicFile = func(path string, data []byte, opts ...atomicfile.Option) error {
+		// Swap the regular config for a link after writeConfig inspected it.
+		require.NoError(os.Remove(path))
+		require.NoError(os.Symlink(other, path))
+		return original(path, data, opts...)
+	}
+	t.Cleanup(func() { writeAtomicFile = original })
+
+	err := writeConfig(path, []byte("new"))
+
+	require.Error(err)
+	data, err := os.ReadFile(other)
+	require.NoError(err)
+	assert.Equal(t, "other", string(data))
+}

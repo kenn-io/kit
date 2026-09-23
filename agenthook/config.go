@@ -226,9 +226,15 @@ func planConfig(
 
 func writeConfig(path string, data []byte) error {
 	writePath := path
+	opts := []atomicfile.Option{atomicfile.WithPerm(0o600), atomicfile.WithPreserveMode()}
 	info, err := os.Lstat(path)
 	switch {
 	case err == nil && info.Mode()&os.ModeSymlink != 0:
+		// Write through the original path so atomicfile resolves the link
+		// chain again at commit and refuses if it was retargeted. Follow
+		// links only here: a path that was not a link keeps atomicfile's
+		// default, which refuses a link swapped in before the write.
+		opts = append(opts, atomicfile.WithFollowLink())
 		writePath, err = filepath.EvalSymlinks(path)
 		if err != nil {
 			return fmt.Errorf("resolve agent hook config symlink %s: %w", path, err)
@@ -240,12 +246,7 @@ func writeConfig(path string, data []byte) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create agent hook config directory %s: %w", dir, err)
 	}
-	// Write through the original path so atomicfile resolves the link chain
-	// again at commit and refuses if it was retargeted after the check above.
-	if err := writeAtomicFile(
-		path, data, atomicfile.WithFollowLink(),
-		atomicfile.WithPerm(0o600), atomicfile.WithPreserveMode(),
-	); err != nil {
+	if err := writeAtomicFile(path, data, opts...); err != nil {
 		return fmt.Errorf("replace agent hook config %s: %w", path, err)
 	}
 	return nil
