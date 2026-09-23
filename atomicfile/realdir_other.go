@@ -32,3 +32,24 @@ func resolveLinkDest(linkDir, dest string) (string, error) {
 	}
 	return filepath.Join(resolved, base), nil
 }
+
+// canonicalPath returns path with its parent resolved the way the kernel
+// resolves it and made absolute. filepath.Dir would clean the caller's path
+// first, so `a/hop/../x` with hop a directory symlink would name a sibling
+// of a instead of the directory the kernel reaches; staging, link
+// resolution and the link recheck at Commit all work from this form.
+func canonicalPath(path string) (string, error) {
+	parent, base := ".", path
+	if i := strings.LastIndexByte(path, '/'); i >= 0 {
+		parent, base = path[:i+1], path[i+1:]
+	}
+	resolved, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return "", err
+	}
+	abs, err := filepath.Abs(resolved)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(abs, base), nil
+}

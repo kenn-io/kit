@@ -102,3 +102,45 @@ func TestWriteFileWithFollowLinkAppliesDotDotAfterDirectorySymlink(t *testing.T)
 	require.NoError(err)
 	assert.Equal(t, "hop/../target.txt", dest)
 }
+
+func TestWriteFileResolvesDirectorySymlinkBeforeDotDotInPath(t *testing.T) {
+	require := require.New(t)
+	root := t.TempDir()
+	require.NoError(os.MkdirAll(filepath.Join(root, "x", "sub"), 0o700))
+	require.NoError(os.Mkdir(filepath.Join(root, "a"), 0o700))
+	require.NoError(os.Symlink(filepath.Join(root, "x", "sub"), filepath.Join(root, "a", "hop")))
+	path := filepath.Join(root, "a", "hop") + "/../target"
+
+	require.NoError(atomicfile.WriteFile(path, []byte("new")))
+
+	data, err := os.ReadFile(filepath.Join(root, "x", "target"))
+	require.NoError(err)
+	assert.Equal(t, "new", string(data))
+	entries, err := os.ReadDir(filepath.Join(root, "a"))
+	require.NoError(err)
+	require.Len(entries, 1, "only the hop link may remain in a")
+	assert.Equal(t, "hop", entries[0].Name())
+}
+
+func TestCommitWithFollowLinkAcceptsSameTargetSpelledDifferently(t *testing.T) {
+	require := require.New(t)
+	dir := t.TempDir()
+	t.Chdir(dir)
+	target := filepath.Join(dir, "target")
+	require.NoError(os.WriteFile(target, []byte("old"), 0o600))
+	link := "link"
+	require.NoError(os.Symlink("target", link))
+	file, err := atomicfile.Create(link, atomicfile.WithFollowLink())
+	require.NoError(err)
+	defer func() { _ = file.Abort() }()
+	require.NoError(os.Remove(link))
+	require.NoError(os.Symlink(target, link))
+	_, err = file.WriteString("new")
+	require.NoError(err)
+
+	require.NoError(file.Commit())
+
+	data, err := os.ReadFile(target)
+	require.NoError(err)
+	assert.Equal(t, "new", string(data))
+}

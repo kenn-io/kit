@@ -54,7 +54,7 @@ func TestSyncFailureAfterPublishReportsNotDurable(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			require := require.New(t)
-			dir := t.TempDir()
+			dir := realTempDir(t)
 			target := filepath.Join(dir, "target")
 			cause := errors.New("injected sync failure")
 			var synced []string
@@ -81,7 +81,7 @@ func TestPublishSyncsDifferentStagingDir(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			require := require.New(t)
-			root := t.TempDir()
+			root := realTempDir(t)
 			staging := filepath.Join(root, "staging")
 			out := filepath.Join(root, "out")
 			require.NoError(os.Mkdir(staging, 0o700))
@@ -110,7 +110,7 @@ func TestPublishSyncsDifferentStagingDir(t *testing.T) {
 
 func TestPublishSyncsStagingDirOnceWhenSameAsTargetDir(t *testing.T) {
 	require := require.New(t)
-	dir := t.TempDir()
+	dir := realTempDir(t)
 	target := filepath.Join(dir, "target")
 	var synced []string
 	injectSyncDir(t, func(d string) error {
@@ -122,4 +122,34 @@ func TestPublishSyncsStagingDirOnceWhenSameAsTargetDir(t *testing.T) {
 
 	assert.Equal(t, []string{dir}, synced)
 	assert.Equal(t, "new", readFile(t, target))
+}
+
+// realTempDir returns t.TempDir() with its links resolved, the form atomicfile
+// uses for the target's directory (on macOS /var is a link to /private/var).
+func realTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	return dir
+}
+
+func TestWriteNewCleanupFailureIsPublishedButDurable(t *testing.T) {
+	require := require.New(t)
+	dir := realTempDir(t)
+	target := filepath.Join(dir, "target")
+	cause := errors.New("injected staging removal failure")
+	original := removeFile
+	removeFile = func(string) error { return cause }
+	t.Cleanup(func() { removeFile = original })
+
+	err := WriteNew(target, []byte("new"))
+
+	require.ErrorIs(err, ErrPublished)
+	require.ErrorIs(err, cause)
+	require.NotErrorIs(err, ErrNotDurable)
+	assert.Equal(t, "new", readFile(t, target))
+}
+
+func TestNotDurableIsPublished(t *testing.T) {
+	require.ErrorIs(t, ErrNotDurable, ErrPublished)
 }

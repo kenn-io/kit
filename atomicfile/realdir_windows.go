@@ -66,3 +66,9 @@ func realDir(dir string) (string, error) {
 	}
 	return strings.TrimPrefix(final, `\\?\`), nil
 }
+
+// canonicalPath returns path made absolute. Win32 normalization applies ".."
+// lexically before reparse points resolve, so cleaning matches the system.
+func canonicalPath(path string) (string, error) {
+	return filepath.Abs(path)
+}

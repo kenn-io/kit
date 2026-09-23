@@ -16,13 +16,19 @@ import (
 // SYMLOOP_MAX.
 const maxLinkHops = 40
 
-// ErrNotDurable marks a failure that happened after the new content became
-// visible at the target: a directory sync, or removal of a leftover staging
-// name. The target already holds the new content, but a crash may still lose
-// it. Callers must not retry blindly: a retry of WriteNew fails with
-// fs.ErrExist, and a retry of WriteFile rewrites content that is already
-// visible. Errors wrapping ErrNotDurable also wrap the underlying cause.
-var ErrNotDurable = errors.New("atomicfile: published but not confirmed durable")
+// ErrPublished marks a failure that happened after the new content became
+// visible at the target. Callers must not retry blindly: a retry of WriteNew
+// fails with fs.ErrExist, and a retry of WriteFile rewrites content that is
+// already visible. An error wrapping only ErrPublished, not ErrNotDurable,
+// means the target is durable and only cleanup failed, such as removing
+// WriteNew's leftover staging name. Errors wrapping ErrPublished also wrap
+// the underlying cause.
+var ErrPublished = errors.New("atomicfile: published")
+
+// ErrNotDurable marks a post-publication directory sync failure: the target
+// already holds the new content, but a crash may still lose it. It wraps
+// ErrPublished.
+var ErrNotDurable = fmt.Errorf("%w but not confirmed durable", ErrPublished)
 
 var (
 	errTooManyLinks = errors.New("too many levels of symlinks or junctions")
@@ -31,8 +37,12 @@ var (
 	errLinkChanged  = errors.New("link changed since Create")
 )
 
-// syncDir is SyncDir, replaced by tests to inject a directory sync failure.
-var syncDir = SyncDir
+// syncDir and removeFile are replaced by tests to inject failures after
+// publication.
+var (
+	syncDir    = SyncDir
+	removeFile = os.Remove
+)
 
 // WriteFile atomically replaces the file at path with data. It stages data in
 // a temporary file, fsyncs and closes it, renames it over path, and fsyncs
@@ -40,9 +50,9 @@ var syncDir = SyncDir
 // different one). Readers see the old or the new content, never a partial
 // file. Parent directories are not created.
 //
-// An error wrapping ErrNotDurable means the new content is already visible at
-// path; see ErrNotDurable. The link refusal is a check, not an atomic
-// guarantee; see Create.
+// An error wrapping ErrPublished means the new content is already visible at
+// path; see ErrPublished and ErrNotDurable. The link refusal is a check, not
+// an atomic guarantee; see Create.
 func WriteFile(path string, data []byte, opts ...Option) (err error) {
 	file, err := Create(path, opts...)
 	if err != nil {
@@ -59,8 +69,8 @@ func WriteFile(path string, data []byte, opts ...Option) (err error) {
 
 // File is a staged replacement for a target file. Content written to it
 // becomes visible at the target when Commit publishes it: on success, or on an
-// error wrapping ErrNotDurable, which means the content is visible but not
-// confirmed durable. Callers should defer Abort, which is a no-op after
+// error wrapping ErrPublished, which means the content is visible but a later
+// step failed. Callers should defer Abort, which is a no-op after
 // Commit.
 type File struct {
 	file   *os.File
@@ -126,7 +136,7 @@ func (f *File) ReadFrom(r io.Reader) (int64, error) { return f.file.ReadFrom(r) 
 // failure before the rename the staging file is removed and the target is
 // untouched. With WithFollowLink the link chain is resolved again first, and
 // Commit fails without writing if it now leads somewhere other than at
-// Create. An error wrapping ErrNotDurable means the new content is already
+// Create. An error wrapping ErrPublished means the new content is already
 // visible at the target; do not retry blindly. Commit may be called once;
 // later calls, or a call after Abort, return an error.
 func (f *File) Commit() error {
@@ -171,31 +181,35 @@ func (f *File) checkLinkUnchanged() error {
 }
 
 // syncPublished fsyncs the target's directory and, when it differs, the
-// staging directory, both of which publication changed. It reports any of
-// those failures, and an earlier post-publication failure, as ErrNotDurable,
-// since the new content is already visible at target.
-func syncPublished(cfg config, target string, published error) error {
-	errs := []error{published}
+// staging directory, both of which publication changed. A sync failure is
+// reported as ErrNotDurable; a cleanup failure after a successful publish,
+// passed in as cleanupErr, is reported as ErrPublished alone.
+func syncPublished(cfg config, target string, cleanupErr error) error {
+	var syncErrs []error
 	if !cfg.noSync {
 		dir := filepath.Dir(target)
-		errs = append(errs, syncDir(dir))
+		syncErrs = append(syncErrs, syncDir(dir))
 		if cfg.stagingDir != "" && !sameDir(cfg.stagingDir, dir) {
-			errs = append(errs, syncDir(cfg.stagingDir))
+			syncErrs = append(syncErrs, syncDir(cfg.stagingDir))
 		}
 	}
-	if err := errors.Join(errs...); err != nil {
-		return fmt.Errorf("%w: %w", ErrNotDurable, err)
+	if err := errors.Join(syncErrs...); err != nil {
+		return fmt.Errorf("%w: %w", ErrNotDurable, errors.Join(err, cleanupErr))
+	}
+	if cleanupErr != nil {
+		return fmt.Errorf("%w: %w", ErrPublished, cleanupErr)
 	}
 	return nil
 }
 
-// sameDir reports whether a and b name the same directory by their cleaned
-// absolute paths. When either cannot be made absolute it reports false, so
-// both get synced.
+// sameDir reports whether a and b are the same directory. It compares file
+// identity, since the target's directory is resolved while a staging
+// directory keeps the caller's spelling. When either cannot be inspected it
+// reports false, so both get synced.
 func sameDir(a, b string) bool {
-	absA, errA := filepath.Abs(a)
-	absB, errB := filepath.Abs(b)
-	return errA == nil && errB == nil && absA == absB
+	infoA, errA := os.Stat(a)
+	infoB, errB := os.Stat(b)
+	return errA == nil && errB == nil && os.SameFile(infoA, infoB)
 }
 
 // Abort closes and removes the staging file, leaving the target untouched.
@@ -220,7 +234,7 @@ func (f *File) Abort() error {
 // error wrapping fs.ErrExist and is left untouched. WithFollowLink is
 // rejected.
 //
-// An error wrapping ErrNotDurable means path already holds data; a retry
+// An error wrapping ErrPublished means path already holds data; a retry
 // would fail with fs.ErrExist. atomicfile assumes path's directory and the
 // staging directory cannot be modified by untrusted users; see Create.
 func WriteNew(path string, data []byte, opts ...Option) error {
@@ -252,7 +266,7 @@ func writeNew(path string, data []byte, opts []Option) error {
 		return discardStaged(staged, err)
 	}
 	var removeErr error
-	if err := os.Remove(staged.Name()); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err := removeFile(staged.Name()); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		removeErr = fmt.Errorf("remove staging file after publishing: %w", err)
 	}
 	return syncPublished(cfg, path, removeErr)
@@ -284,7 +298,10 @@ var linkFile = os.Link
 // path's final component is refused unless follow is set, in which case the
 // chain is resolved.
 func resolveTarget(path string, follow bool) (string, error) {
-	current := path
+	current, err := canonicalPath(path)
+	if err != nil {
+		return "", err
+	}
 	for range maxLinkHops + 1 {
 		kind, err := fslink.Classify(current)
 		if errors.Is(err, fs.ErrNotExist) {

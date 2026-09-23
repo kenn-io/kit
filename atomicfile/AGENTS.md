@@ -59,10 +59,17 @@ no file formats, locking, or caller policy. Link inspection belongs to
   names a different directory (by cleaned absolute path), the staging
   directory too. Call directory sync through the `syncDir` variable so tests
   can inject failures.
-- Every failure after the target became visible (directory sync, removing
-  `WriteNew`'s leftover staging name) wraps both `ErrNotDurable` and its
-  cause, so callers can tell "published but not durable" from "not
-  published".
+- Every failure after the target became visible wraps `ErrPublished` and its
+  cause, so callers can tell "published" from "not published". A directory
+  sync failure also wraps `ErrNotDurable` (which wraps `ErrPublished`); a
+  cleanup failure alone, such as removing `WriteNew`'s leftover staging name
+  after the syncs succeeded, does not, because the target is durable.
+- Resolve the caller's path before taking its directory: `canonicalPath`
+  resolves the parent (`EvalSymlinks` on the unclean parent on Unix, `Abs` on
+  Windows) and makes it absolute, so `a/hop/../x` stages and publishes in the
+  directory the kernel reaches and the `WithFollowLink` recheck compares
+  equal spellings equally. Compare directories by identity (`os.SameFile`),
+  not by string.
 
 ## Tests
 
