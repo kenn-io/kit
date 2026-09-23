@@ -161,41 +161,6 @@ func (s *Store[K, G]) vecTableExists(ctx context.Context, q rowQueryer, ordinal 
 	return true, nil
 }
 
-// GenerationInfo describes one registered generation.
-type GenerationInfo[G comparable] struct {
-	Key         G
-	Fingerprint string
-	Dimension   int
-	State       State
-}
-
-// Generations lists every registered generation in creation order,
-// whatever its state. LiveGenerations remains the search-time view.
-func (s *Store[K, G]) Generations(ctx context.Context) ([]GenerationInfo[G], error) {
-	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(
-		`SELECT gen_key, fingerprint, dimension, state FROM %s ORDER BY ordinal`,
-		s.generationsTable()))
-	if err != nil {
-		return nil, fmt.Errorf("list generations: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var gens []GenerationInfo[G]
-	for rows.Next() {
-		var info GenerationInfo[G]
-		var state string
-		if err := rows.Scan(&info.Key, &info.Fingerprint, &info.Dimension, &state); err != nil {
-			return nil, fmt.Errorf("scan generation: %w", err)
-		}
-		info.State = State(state)
-		gens = append(gens, info)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list generations: %w", err)
-	}
-	return gens, nil
-}
-
 // ActiveGeneration returns the newest active generation. Newest means the
 // highest ordinal, which is the tiebreak when more than one row is active.
 // ok is false when no generation is active.
