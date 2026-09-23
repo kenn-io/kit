@@ -106,8 +106,8 @@ func Merge[K comparable](perGeneration [][]Hit[K], o MergeOptions) ([]Hit[K], er
 			}
 		}
 	}
-	if o.Strategy == MergeReciprocalRank && math.IsNaN(o.RankConstant) {
-		return nil, errors.New("vector: NaN cannot be stored")
+	if o.Strategy == MergeReciprocalRank && !isFinite(o.RankConstant) {
+		return nil, errNonFinite
 	}
 	rep := make(map[K]Hit[K])
 	order := make([]K, 0)
@@ -121,11 +121,14 @@ func Merge[K comparable](perGeneration [][]Hit[K], o MergeOptions) ([]Hit[K], er
 		}
 		for _, list := range perGeneration {
 			for rank, h := range list {
+				term := 1.0 / (k + float64(rank) + 1.0)
+				if err := storeScore(score, h.Doc, score[h.Doc]+term); err != nil {
+					return nil, err
+				}
 				if _, ok := rep[h.Doc]; !ok {
 					rep[h.Doc] = h
 					order = append(order, h.Doc)
 				}
-				score[h.Doc] += 1.0 / (k + float64(rank) + 1.0)
 			}
 		}
 	case MergeRawScore:
@@ -134,9 +137,11 @@ func Merge[K comparable](perGeneration [][]Hit[K], o MergeOptions) ([]Hit[K], er
 				if _, ok := rep[h.Doc]; ok {
 					continue
 				}
+				if err := storeScore(score, h.Doc, float64(h.Score)); err != nil {
+					return nil, err
+				}
 				rep[h.Doc] = h
 				order = append(order, h.Doc)
-				score[h.Doc] = float64(h.Score)
 			}
 		}
 	default: // MergeNormalizedScore
@@ -153,12 +158,11 @@ func Merge[K comparable](perGeneration [][]Hit[K], o MergeOptions) ([]Hit[K], er
 				if span > 0 {
 					normalized = (float64(h.Score) - float64(lo)) / span
 				}
-				if math.IsNaN(normalized) {
-					return nil, errors.New("vector: NaN cannot be stored")
+				if err := storeScore(score, h.Doc, normalized); err != nil {
+					return nil, err
 				}
 				rep[h.Doc] = h
 				order = append(order, h.Doc)
-				score[h.Doc] = normalized
 			}
 		}
 	}
@@ -166,7 +170,11 @@ func Merge[K comparable](perGeneration [][]Hit[K], o MergeOptions) ([]Hit[K], er
 	out := make([]Hit[K], 0, len(order))
 	for _, doc := range order {
 		h := rep[doc]
-		h.Score = float32(score[doc])
+		stored := float32(score[doc])
+		if !isFinite(float64(stored)) {
+			return nil, errNonFinite
+		}
+		h.Score = stored
 		out = append(out, h)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
@@ -176,14 +184,29 @@ func Merge[K comparable](perGeneration [][]Hit[K], o MergeOptions) ([]Hit[K], er
 	return out, nil
 }
 
+var errNonFinite = errors.New("vector: non-finite value cannot be stored")
+
 // rejectStoredNaN reports a document key or score that cannot be put in a
 // result map. NaN is not equal to itself, and neither is a key that contains
-// NaN.
+// NaN. An infinite score is rejected too, because later arithmetic turns
+// infinities into NaN.
 func rejectStoredNaN[K comparable](key K, score float32) error {
 	other := key
-	if key != other || math.IsNaN(float64(score)) {
-		return errors.New("vector: NaN cannot be stored")
+	if key != other || !isFinite(float64(score)) {
+		return errNonFinite
 	}
+	return nil
+}
+
+func isFinite(v float64) bool {
+	return !math.IsNaN(v) && !math.IsInf(v, 0)
+}
+
+func storeScore[K comparable](scores map[K]float64, key K, value float64) error {
+	if !isFinite(value) {
+		return errNonFinite
+	}
+	scores[key] = value
 	return nil
 }
 

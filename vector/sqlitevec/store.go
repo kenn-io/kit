@@ -3,7 +3,9 @@ package sqlitevec
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"math"
 
 	"go.kenn.io/kit/vector"
 )
@@ -405,9 +407,23 @@ func (s *Store[K, G]) QueryGeneration(ctx context.Context, gen G, query vector.V
 		if err := rows.Scan(&doc, &chunkIndex, &distance, &revision); err != nil {
 			return nil, fmt.Errorf("scan hit: %w", err)
 		}
-		hits = append(hits, vector.Hit[K]{Doc: doc, ChunkIndex: chunkIndex, Revision: revision, Score: float32(1 - distance)})
+		score, err := scoreFromDistance(distance)
+		if err != nil {
+			return nil, err
+		}
+		hits = append(hits, vector.Hit[K]{Doc: doc, ChunkIndex: chunkIndex, Revision: revision, Score: score})
 	}
 	return hits, rows.Err()
+}
+
+// scoreFromDistance turns a raw distance into the similarity stored on a hit.
+// A NaN or infinite distance makes the score non-finite, which is an error.
+func scoreFromDistance(distance float64) (float32, error) {
+	score := float32(1 - distance)
+	if math.IsNaN(float64(score)) || math.IsInf(float64(score), 0) {
+		return 0, errors.New("sqlitevec: non-finite score cannot be stored")
+	}
+	return score, nil
 }
 
 // txQuerier is the read surface shared by *sql.DB and *sql.Tx.

@@ -135,20 +135,24 @@ func TestMergeNormalizedScoreKeepsExtremeFiniteScoresFinite(t *testing.T) {
 
 func TestRollupAndMergeRejectNaN(t *testing.T) {
 	got, err := vector.RollupByDocument([]vector.Hit[int64]{{Doc: 1, Score: float32(math.NaN())}})
-	require.ErrorContains(t, err, "NaN")
+	require.ErrorContains(t, err, "non-finite")
 	assert.Empty(t, got)
 
 	byDoc, err := vector.RollupByDocument([]vector.Hit[float64]{{Doc: math.NaN(), Score: 1}})
-	require.ErrorContains(t, err, "NaN")
+	require.ErrorContains(t, err, "non-finite")
 	assert.Empty(t, byDoc)
 
 	merged, err := vector.Merge([][]vector.Hit[int]{{{Doc: 1, Score: float32(math.NaN())}}}, vector.MergeOptions{Strategy: vector.MergeRawScore})
-	require.ErrorContains(t, err, "NaN")
+	require.ErrorContains(t, err, "non-finite")
 	assert.Empty(t, merged)
+
+	infinite, err := vector.Merge([][]vector.Hit[int]{{{Doc: 1, Score: float32(math.Inf(1))}}}, vector.MergeOptions{Strategy: vector.MergeRawScore})
+	require.ErrorContains(t, err, "non-finite")
+	assert.Empty(t, infinite)
 
 	_, err = vector.Merge([][]vector.Hit[int]{{{Doc: 1, Score: 1}}}, vector.MergeOptions{
 		Strategy:     vector.MergeReciprocalRank,
 		RankConstant: math.NaN(),
 	})
-	require.ErrorContains(t, err, "NaN")
+	require.ErrorContains(t, err, "non-finite")
 }
