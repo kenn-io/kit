@@ -43,6 +43,7 @@ func TestLongPaths(t *testing.T) {
 	require.NoError(err)
 	assert.Equal(fslink.Junction, kind)
 
+	// An absolute long target, which CreateSymbolicLink needs prefixed.
 	kind, err = fslink.LinkDir(filepath.Join(dir, "target"), filepath.Join(dir, "dirlink"))
 	require.NoError(err)
 	assert.Contains([]fslink.Kind{fslink.Symlink, fslink.Junction}, kind)

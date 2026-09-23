@@ -431,6 +431,17 @@ func TestOpenRoot(t *testing.T) {
 			})
 		}
 	})
+	t.Run("final link with a trailing separator is refused", func(t *testing.T) {
+		for _, maker := range dirLinkMakers() {
+			t.Run(maker.name, func(t *testing.T) {
+				dir := newTree(t)
+				maker.create(t, dir, "link")
+				root, err := fslink.OpenRoot(filepath.Join(dir, "link") + string(filepath.Separator))
+				assert.Nil(t, root)
+				require.ErrorIs(t, err, fslink.ErrIsLink)
+			})
+		}
+	})
 	t.Run("regular file", func(t *testing.T) {
 		root, err := fslink.OpenRoot(filepath.Join(newTree(t), "file.txt"))
 		assert.Nil(t, root)

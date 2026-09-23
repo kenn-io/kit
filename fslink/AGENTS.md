@@ -11,8 +11,8 @@ file formats, or ownership rules belong here (see `safefileio/` for those).
 - On Windows, every Win32 call that takes a caller's path converts it with
   `internal/winpath.UTF16Ptr`, which adds the `\\?\` prefix to long paths as
   the os package does. Without it a path that `os.OpenFile` accepts past
-  MAX_PATH fails here. A symlink target is stored, not opened, so it is
-  passed through unchanged.
+  MAX_PATH fails here. A symlink target gets the prefix only when it is
+  absolute, as in `os.Symlink`; a relative target is stored unchanged.
 - On Windows, "is a link" means a name-surrogate reparse tag
   (`tag & 0x20000000 != 0`), read from a handle opened with
   `FILE_FLAG_OPEN_REPARSE_POINT`. Do not treat every reparse point as a link:

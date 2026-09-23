@@ -155,9 +155,12 @@ func ReadFile(path string) (data []byte, err error) {
 
 // OpenRoot is like os.OpenRoot but refuses to follow a link in path's final
 // component, returning an error wrapping ErrIsLink. Links in earlier
-// components are followed. path must name a directory. The returned root is
-// compared by file identity with the directory that was inspected, so a link
-// swapped in during the open fails the call instead of being followed.
+// components are followed. path must name a directory; a trailing separator
+// does not make OpenRoot follow a final link. The returned root is compared
+// by file identity with the directory that was inspected, so a link swapped
+// in during the open that names a different directory fails the call. A
+// link to the inspected directory itself is not detected, and is harmless:
+// the root is still that directory.
 //
 // On Windows a non-link reparse point (cloud placeholder, dedup) opens
 // normally as a root, but OpenInRoot and OpenRootNoFollow still refuse
@@ -166,12 +169,17 @@ func OpenRoot(path string) (*os.Root, error) {
 	if err := platformSupport(); err != nil {
 		return nil, &fs.PathError{Op: "openroot", Path: path, Err: err}
 	}
+	// Clean drops a trailing separator, which would make the kernel resolve
+	// a final link before the no-follow open sees it.
+	path = filepath.Clean(path)
 	dir, err := openDirPath(path)
 	if err != nil {
 		return nil, err
 	}
+	// Hold the inspected directory open until the comparison, so its file
+	// identity cannot be reused by a replacement.
+	defer func() { _ = dir.Close() }()
 	want, err := dir.Stat()
-	err = errors.Join(err, dir.Close())
 	if err != nil {
 		return nil, err
 	}

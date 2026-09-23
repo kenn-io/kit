@@ -328,7 +328,14 @@ func createDirSymlink(target, link string) error {
 	if err != nil {
 		return err
 	}
-	target16, err := windows.UTF16PtrFromString(target)
+	// As os.Symlink does, prefix only an absolute target: a relative one
+	// would become absolute, and CreateSymbolicLink accepts long relative
+	// targets as they are.
+	convert := windows.UTF16PtrFromString
+	if filepath.IsAbs(target) {
+		convert = winpath.UTF16Ptr
+	}
+	target16, err := convert(target)
 	if err != nil {
 		return err
 	}
