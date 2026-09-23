@@ -28,6 +28,8 @@ databases, command parsing, and shutdown policy belong to the caller.
   Its `.<name>.tmp-*` staging files and the write-check probe must stay outside
   the `<prefix>.<pid>.json` namespace that `List` and `CleanupDead` match, so
   leftovers are never read or removed as records.
+- `RuntimeStore.Prefix` must pass `fsname.Check`. It becomes part of every
+  runtime file name, so reject it rather than rename it.
 - Do not remove an existing path unless it is known to be the stale Unix socket
   this package created. Refuse paths whose type or ownership does not match
   that intent.

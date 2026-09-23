@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/daemon"
+	"go.kenn.io/kit/fsname"
 )
 
 func TestRuntimeStoreWriteListAndRead(t *testing.T) {
@@ -188,4 +189,16 @@ func TestRuntimeStoreIgnoresStagingFiles(t *testing.T) {
 		names = append(names, entry.Name())
 	}
 	assert.ElementsMatch([]string{".daemon.999999.json.tmp-123456", "daemon.999999.json"}, names)
+}
+
+func TestRuntimeStoreRejectsNonPortablePrefix(t *testing.T) {
+	for _, prefix := range []string{"a:b", "NUL", "con", "CONIN$", "tool.", "tool "} {
+		t.Run(prefix, func(t *testing.T) {
+			store := daemon.RuntimeStore{Dir: t.TempDir(), Prefix: prefix}
+
+			_, err := store.Path(123)
+
+			require.ErrorIs(t, err, fsname.ErrNotPortable)
+		})
+	}
 }

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"go.kenn.io/kit/atomicfile"
+	"go.kenn.io/kit/fsname"
 )
 
 // RuntimeRecord is the on-disk daemon.<pid>.json shape used for discovery.
@@ -78,10 +79,11 @@ func (s RuntimeStore) prefix() string {
 
 func (s RuntimeStore) validatePrefix() (string, error) {
 	prefix := s.prefix()
-	if prefix == "." || prefix == ".." ||
-		strings.ContainsAny(prefix, `/\`) ||
-		filepath.Base(prefix) != prefix {
-		return "", fmt.Errorf("runtime prefix %q must be a basename", prefix)
+	// The prefix becomes part of every runtime file name, so it must be a
+	// name that works on every OS: "a:b" would name an NTFS stream and
+	// "NUL" a device on Windows.
+	if err := fsname.Check(prefix); err != nil {
+		return "", fmt.Errorf("runtime prefix %q must be a portable basename: %w", prefix, err)
 	}
 	return prefix, nil
 }
