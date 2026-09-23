@@ -34,3 +34,12 @@ func ValidatePrivateCurrentUserFile(*os.File) error {
 		runtime.GOOS,
 	)
 }
+
+// CreatePrivateFile fails closed when the platform cannot create a file with
+// verified current-user-only access.
+func CreatePrivateFile(string) (*os.File, error) {
+	return nil, fmt.Errorf(
+		"safefileio: private file creation is unsupported on %s",
+		runtime.GOOS,
+	)
+}

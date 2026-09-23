@@ -51,8 +51,8 @@ func TestValidatePrivateDirRejectsBroadDACL(t *testing.T) {
 	world, err := windows.CreateWellKnownSid(windows.WinWorldSid)
 	require.NoError(err)
 	acl, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{
-		allowFullControl(userSID, windows.TRUSTEE_IS_USER),
-		allowFullControl(world, windows.TRUSTEE_IS_WELL_KNOWN_GROUP),
+		allowFullControl(userSID, windows.TRUSTEE_IS_USER, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT),
+		allowFullControl(world, windows.TRUSTEE_IS_WELL_KNOWN_GROUP, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT),
 	}, nil)
 	require.NoError(err)
 	require.NoError(windows.SetSecurityInfo(
@@ -126,8 +126,8 @@ func TestValidatePrivateCurrentUserFileRejectsBroadDACL(t *testing.T) {
 	world, err := windows.CreateWellKnownSid(windows.WinWorldSid)
 	require.NoError(err)
 	acl, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{
-		allowFullControl(userSID, windows.TRUSTEE_IS_USER),
-		allowFullControl(world, windows.TRUSTEE_IS_WELL_KNOWN_GROUP),
+		allowFullControl(userSID, windows.TRUSTEE_IS_USER, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT),
+		allowFullControl(world, windows.TRUSTEE_IS_WELL_KNOWN_GROUP, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT),
 	}, nil)
 	require.NoError(err)
 	require.NoError(windows.SetSecurityInfo(
@@ -170,7 +170,7 @@ func TestValidatePrivateCurrentUserFileRejectsUnprotectedPrivateDACL(t *testing.
 	userSID, err := currentWindowsUserSID()
 	require.NoError(err)
 	acl, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{
-		allowFullControl(userSID, windows.TRUSTEE_IS_USER),
+		allowFullControl(userSID, windows.TRUSTEE_IS_USER, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT),
 	}, nil)
 	require.NoError(err)
 	require.NoError(windows.SetSecurityInfo(

@@ -30,6 +30,18 @@ callers responsible for their own file formats and higher-level policy.
   user and trusted administrative principals. Callers recovering a broad or
   inheritable file must create a private replacement rather than repair it in
   place.
+- `CreatePrivateFile` (and `CreatePrivateTemp`, which retries it under
+  random names) is the sanctioned way to make a private file. It creates the
+  file exclusively without following links, private from the moment it exists
+  (Unix: `O_EXCL|O_NOFOLLOW` with mode 0600; Windows: `CREATE_NEW` with a
+  protected, non-inheritable DACL in the creation security attributes), then
+  validates the new handle with the same private-file checks. It must never
+  open or repair an existing file: anything already at the path, including a
+  dangling symlink or junction, fails with an error wrapping `fs.ErrExist`.
+- When post-creation validation fails, `CreatePrivateFile` fails closed and
+  deletes only the file it created: Unix removes the path only while it still
+  names the created inode; Windows marks the created handle for deletion.
+  Platforms that cannot validate private files must fail creation the same way.
 
 ## Tests
 
@@ -38,3 +50,6 @@ callers responsible for their own file formats and higher-level policy.
 - Permission tests may use fixed paths under the OS temp directory when
   `t.TempDir()` starts from permissions that hide the behavior under test.
 - Clean up every path created outside `t.TempDir()`.
+- Windows link cases: symlink tests skip on `ERROR_PRIVILEGE_NOT_HELD`, so
+  every link guarantee also needs a junction case (`fslink.CreateJunction`,
+  from an external `safefileio_test` file) that never skips.
