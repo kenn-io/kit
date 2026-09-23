@@ -13,4 +13,8 @@
 // Group fusion keeps every alternate member. Callers decide eligibility after
 // fusion. A group contributes at most once per leg, at the rank of its first
 // occurrence in that leg.
+//
+// FuseEvery treats each leg as a required concept and keeps only groups that
+// every leg found. Different members of a group may carry the evidence for
+// different legs.
 package rrf

@@ -102,6 +102,57 @@ func TestRunGroupsRetainsAlternateMembers(t *testing.T) {
 	assert.False(t, result.Legs[0].FullWindow)
 }
 
+func TestRunEveryKeepsGroupsWithEvidenceForEveryConcept(t *testing.T) {
+	db := openDocs(t)
+	_, err := db.ExecContext(t.Context(), `CREATE TABLE hits (concept TEXT, session TEXT, ord INTEGER, score REAL);
+INSERT INTO hits VALUES
+	('auth', 's1', 3, 0.9), ('auth', 's2', 5, 0.8), ('auth', 's3', 1, 0.4),
+	('retry', 's2', 9, 0.7), ('retry', 's1', 8, 0.6), ('retry', 's4', 2, 0.5)`)
+	require.NoError(t, err)
+	type evidence struct {
+		Ordinal int
+		Score   float64
+	}
+	leg := func(concept string, limit int) hybrid.GroupLeg[string, evidence] {
+		return hybrid.GroupLeg[string, evidence]{
+			Name: concept, Weight: 1, CandidateLimit: limit,
+			Query: sqlquery.Query{
+				SQL:  `SELECT session, ord, score FROM hits WHERE concept = ? ORDER BY score DESC LIMIT ?`,
+				Args: []any{concept, limit},
+			},
+			Scan: func(rows *sql.Rows) (string, evidence, error) {
+				var session string
+				var ev evidence
+				err := rows.Scan(&session, &ev.Ordinal, &ev.Score)
+				return session, ev, err
+			},
+		}
+	}
+
+	result, err := hybrid.RunEvery(t.Context(), db, 60, []hybrid.GroupLeg[string, evidence]{
+		leg("auth", 10), leg("retry", 10),
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Hits, 2, "s3 and s4 match one concept each")
+	assert.ElementsMatch(t, []string{"s1", "s2"}, []string{result.Hits[0].Group, result.Hits[1].Group})
+	for _, hit := range result.Hits {
+		require.Len(t, hit.Alternates, 2)
+		assert.Equal(t, "auth", hit.Alternates[0].Leg)
+		assert.Equal(t, "retry", hit.Alternates[1].Leg)
+	}
+	assert.False(t, result.AnyFullWindow())
+
+	// A retry window of one row holds only s2, so s1 drops out of the
+	// intersection. The full window tells the caller the result may be short.
+	result, err = hybrid.RunEvery(t.Context(), db, 60, []hybrid.GroupLeg[string, evidence]{
+		leg("auth", 10), leg("retry", 1),
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Hits, 1)
+	assert.Equal(t, "s2", result.Hits[0].Group)
+	assert.True(t, result.AnyFullWindow())
+}
+
 func scanKey(rows *sql.Rows) (int, error) {
 	var key int
 	var score float64
