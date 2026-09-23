@@ -352,6 +352,20 @@ func TestExclusiveCreateOnLinkReportsExist(t *testing.T) {
 	}
 }
 
+// A create that fails for another reason must not claim the name is taken:
+// callers retry under a new name on fs.ErrExist.
+func TestExclusiveCreateFailureWithoutEntryIsNotExist(t *testing.T) {
+	root, err := os.OpenRoot(t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, root.Close())
+
+	file, err := fslink.OpenInRoot(root, "new", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+
+	require.Error(t, err)
+	assert.Nil(t, file)
+	assert.NotErrorIs(t, err, fs.ErrExist)
+}
+
 func TestOpenRootNoFollow(t *testing.T) {
 	t.Run("plain dir", func(t *testing.T) {
 		_, root := openTreeRoot(t)

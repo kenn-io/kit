@@ -313,10 +313,11 @@ func openFinal(dir *os.Root, name string, flag int, perm fs.FileMode) (*os.File,
 	return file, nil
 }
 
-// entryExists reports whether anything, a link included, is at name in dir.
+// entryExists reports whether lstatAt found an entry, a link included, at
+// name in dir. A failed lookup proves nothing, so it reports false.
 func entryExists(dir *os.Root, name string) bool {
 	_, err := lstatAt(dir, name)
-	return !errors.Is(err, fs.ErrNotExist)
+	return err == nil || errors.Is(err, ErrIsLink)
 }
 
 func checkSame(ent entry, file *os.File) error {
