@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"go.kenn.io/kit/atomicfile"
 )
 
 // osLink is the hard-link primitive publishNoClobber uses. It is a var so
@@ -381,15 +383,17 @@ func (w *Writer) Abort() error {
 	return nil
 }
 
-// SyncDir fsyncs a directory so a rename into it is durable. On Windows it
-// is a no-op (see syncdir_windows.go).
+// SyncDir fsyncs a directory so a rename into it is durable. It is
+// atomicfile.SyncDir, which is a no-op on Windows because Windows cannot
+// fsync a directory handle; pack durability there relies on fsyncing the
+// pack file before it is published.
 //
 // SyncDir is a variable ONLY so tests — including this package's consumers'
 // tests — can inject fsync failures, which cannot be provoked portably any
 // other way. It is a test seam, not a configuration point: production code
 // must never reassign it, and it carries no compatibility guarantee beyond
 // being callable as a function.
-var SyncDir = syncDirPlatform
+var SyncDir = atomicfile.SyncDir
 
 // MkdirAllSynced creates dir and every missing ancestor, fsyncing each
 // created directory so the entries are durable.
