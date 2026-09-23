@@ -24,6 +24,7 @@ require (
 	github.com/posthog/posthog-go v1.12.6
 	github.com/ryanrolds/sqlclosecheck v0.6.0
 	github.com/shirou/gopsutil/v4 v4.26.6
+	github.com/spf13/pathologize v1.1.0
 	github.com/stretchr/testify v1.11.1
 	github.com/yuin/goldmark v1.8.5
 	go.opentelemetry.io/contrib/exporters/autoexport v0.69.0
