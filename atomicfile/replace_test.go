@@ -68,7 +68,7 @@ func TestReplace(t *testing.T) {
 					writeString(t, dst, "inner", "inner")
 				}
 
-				require.Error(t, atomicfile.Replace(src, dst))
+				require.ErrorIs(t, atomicfile.Replace(src, dst), fs.ErrExist)
 
 				assert.Equal(t, "new", readString(t, src))
 				info, err := os.Lstat(dst)
@@ -88,6 +88,28 @@ func TestReplace(t *testing.T) {
 
 		assert.Equal(t, "inner", readString(t, filepath.Join(dst, "inner")))
 		assert.Equal(t, []string{"dst"}, entryNames(t, dir))
+	})
+	t.Run("refuses to replace a directory with a directory", func(t *testing.T) {
+		for _, name := range []string{"empty", "full"} {
+			t.Run(name, func(t *testing.T) {
+				dir := t.TempDir()
+				src := filepath.Join(dir, "src")
+				require.NoError(t, os.Mkdir(src, 0o700))
+				writeString(t, src, "inner", "new")
+				dst := filepath.Join(dir, "dst")
+				require.NoError(t, os.Mkdir(dst, 0o700))
+				want := []string{}
+				if name == "full" {
+					writeString(t, dst, "other", "old")
+					want = []string{"other"}
+				}
+
+				require.ErrorIs(t, atomicfile.Replace(src, dst), fs.ErrExist)
+
+				assert.Equal(t, "new", readString(t, filepath.Join(src, "inner")))
+				assert.Equal(t, want, entryNames(t, dst))
+			})
+		}
 	})
 	t.Run("replaces a symlink at the target without following it", func(t *testing.T) {
 		dir := t.TempDir()

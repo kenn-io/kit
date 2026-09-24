@@ -13,6 +13,7 @@ import (
 	"golang.org/x/sys/windows"
 
 	"go.kenn.io/kit/atomicfile"
+	"go.kenn.io/kit/fslink"
 )
 
 // openShareAll opens path for reading with FILE_SHARE_READ, FILE_SHARE_WRITE,
@@ -75,7 +76,7 @@ func TestReplaceTargetOpenWithShareDelete(t *testing.T) {
 }
 
 // os.Open shares read and write but not delete, so a reader holding the
-// target that way still blocks Replace.
+// target that way still blocks Replace, with a sharing violation.
 func TestReplaceTargetOpenWithoutShareDelete(t *testing.T) {
 	dir := t.TempDir()
 	src := writeString(t, dir, "src", "new")
@@ -86,7 +87,7 @@ func TestReplaceTargetOpenWithoutShareDelete(t *testing.T) {
 
 	err = atomicfile.Replace(src, dst)
 
-	require.ErrorIs(t, err, windows.ERROR_ACCESS_DENIED)
+	require.ErrorIs(t, err, windows.ERROR_SHARING_VIOLATION)
 	assert.Equal(t, "new", readString(t, src))
 	assert.Equal(t, "old", readString(t, dst))
 }
@@ -120,32 +121,21 @@ func TestReplaceSourceOpen(t *testing.T) {
 	})
 }
 
-func TestReplaceDirectoryOverDirectory(t *testing.T) {
-	dir := t.TempDir()
-	src := filepath.Join(dir, "src")
-	require.NoError(t, os.Mkdir(src, 0o700))
-	writeString(t, src, "inner", "new")
-	dst := filepath.Join(dir, "dst")
-	require.NoError(t, os.Mkdir(dst, 0o700))
-
-	err := atomicfile.Replace(src, dst)
-
-	require.ErrorIs(t, err, windows.ERROR_ACCESS_DENIED)
-	assert.Equal(t, "new", readString(t, filepath.Join(src, "inner")))
-	assert.Empty(t, entryNames(t, dst))
-}
-
-// A junction is a directory, so Replace refuses it like any directory, and
-// never writes through it.
+// A junction at the target is replaced as an entry, like a symlink; the
+// directory it names is never written through.
 func TestReplaceJunctionTarget(t *testing.T) {
 	dir, link, target := newJunction(t)
 	src := writeString(t, t.TempDir(), "src", "new")
 
-	err := atomicfile.Replace(src, link)
+	require.NoError(t, atomicfile.Replace(src, link))
 
-	require.ErrorIs(t, err, windows.ERROR_ACCESS_DENIED)
-	assert.Equal(t, "new", readString(t, src))
-	assertJunctionUntouched(t, dir, link, target)
+	kind, err := fslink.Classify(link)
+	require.NoError(t, err)
+	assert.Equal(t, fslink.NotLink, kind)
+	assert.Equal(t, "new", readString(t, link))
+	assert.Equal(t, []string{"inner.txt"}, entryNames(t, target))
+	assert.Equal(t, "inner", readString(t, filepath.Join(target, "inner.txt")))
+	assert.ElementsMatch(t, []string{"link", "target"}, entryNames(t, dir))
 }
 
 func TestReplaceRelativePaths(t *testing.T) {
@@ -158,4 +148,18 @@ func TestReplaceRelativePaths(t *testing.T) {
 
 	assert.Equal(t, "new", readString(t, filepath.Join(dir, "dst")))
 	assert.Equal(t, []string{"dst"}, entryNames(t, dir))
+}
+
+// Windows names are case-insensitive, so a case-only rename of a directory
+// finds the directory itself at newpath and must still go ahead.
+func TestReplaceCaseOnlyDirectoryRename(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "Data")
+	require.NoError(t, os.Mkdir(src, 0o700))
+	writeString(t, src, "inner", "inner")
+
+	require.NoError(t, atomicfile.Replace(src, filepath.Join(dir, "data")))
+
+	assert.Equal(t, []string{"data"}, entryNames(t, dir))
+	assert.Equal(t, "inner", readString(t, filepath.Join(dir, "data", "inner")))
 }
