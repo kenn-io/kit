@@ -76,11 +76,6 @@ func checkNotDirectory(oldpath, newpath string) error {
 	return nil
 }
 
-// replaceFile renames staging over target for WriteFile and Commit.
-func replaceFile(staging, target string) error {
-	return Replace(staging, target)
-}
-
 // setRenameInfo is SetFileInformationByHandle for the rename; tests replace
 // it to exercise the fallback.
 var setRenameInfo = windows.SetFileInformationByHandle
