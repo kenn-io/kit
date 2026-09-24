@@ -53,4 +53,14 @@ func TestLongPaths(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "data", string(got))
 	})
+	t.Run("Replace", func(t *testing.T) {
+		dir := longDir(t)
+		from, to := filepath.Join(dir, "from"), filepath.Join(dir, "to")
+		require.NoError(t, os.WriteFile(from, []byte("new"), 0o600))
+		require.NoError(t, os.WriteFile(to, []byte("old"), 0o600))
+		require.NoError(t, atomicfile.Replace(from, to))
+		got, err := os.ReadFile(to)
+		require.NoError(t, err)
+		assert.Equal(t, "new", string(got))
+	})
 }
