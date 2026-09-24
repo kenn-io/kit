@@ -14,6 +14,7 @@ import (
 
 	"go.kenn.io/kit/atomicfile"
 	"go.kenn.io/kit/fslink"
+	"go.kenn.io/kit/internal/winpath"
 )
 
 // openShareAll opens path for reading with FILE_SHARE_READ, FILE_SHARE_WRITE,
@@ -148,8 +149,10 @@ func TestReplaceRelativePaths(t *testing.T) {
 	dst := writeString(t, filepath.Join(dir, "sub"), "dst", "old")
 	held := openShareAll(t, dst)
 	t.Chdir(dir)
+	rel := filepath.Join("sub", "dst")
+	require.Equal(t, rel, winpath.Long(rel), "the target must stay relative")
 
-	require.NoError(t, atomicfile.Replace("src", filepath.Join("sub", "dst")))
+	require.NoError(t, atomicfile.Replace("src", rel))
 
 	assert.Equal(t, "new", readString(t, dst))
 	assert.Equal(t, "old", readAll(t, held))
