@@ -44,15 +44,16 @@ func WithCreatePerm(perm fs.FileMode) Option {
 }
 
 // WithPreserveMode keeps the permission bits of the existing target when it
-// is a regular file. Otherwise the WithPerm value or the default applies.
+// is a regular file. Otherwise the WithPerm value, the WithCreatePerm value
+// filtered by the umask, or the default applies.
 func WithPreserveMode() Option {
 	return func(c *config) { c.preserveMode = true }
 }
 
 // WithPrivate stages the file with safefileio.CreatePrivateTemp, so the
 // result is private to the current user: mode 0600 on Unix, a protected
-// current-user DACL on Windows. It cannot be combined with WithPerm or
-// WithPreserveMode.
+// current-user DACL on Windows. It cannot be combined with WithPerm,
+// WithCreatePerm or WithPreserveMode.
 func WithPrivate() Option {
 	return func(c *config) { c.private = true }
 }
