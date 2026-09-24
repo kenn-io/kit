@@ -169,9 +169,7 @@ func OpenRoot(path string) (*os.Root, error) {
 	if err := platformSupport(); err != nil {
 		return nil, &fs.PathError{Op: "openroot", Path: path, Err: err}
 	}
-	// Clean drops a trailing separator, which would make the kernel resolve
-	// a final link before the no-follow open sees it.
-	path = filepath.Clean(path)
+	path = trimTrailingSeparators(path)
 	dir, err := openDirPath(path)
 	if err != nil {
 		return nil, err
@@ -201,6 +199,20 @@ func OpenRoot(path string) (*os.Root, error) {
 		return nil, err
 	}
 	return root, nil
+}
+
+// trimTrailingSeparators drops separators after the final element, which
+// would make the kernel resolve a final link before a no-follow open sees
+// it. It keeps a root ("/", `C:\`) and leaves every other element alone:
+// filepath.Clean would also collapse "link/.." lexically, before the kernel
+// resolves the link.
+func trimTrailingSeparators(path string) string {
+	vol := filepath.VolumeName(path)
+	rest := path[len(vol):]
+	for len(rest) > 1 && os.IsPathSeparator(rest[len(rest)-1]) {
+		rest = rest[:len(rest)-1]
+	}
+	return vol + rest
 }
 
 // OpenInRoot opens name inside root like root.OpenFile, but refuses a link

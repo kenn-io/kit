@@ -447,6 +447,11 @@ func TestOpenRoot(t *testing.T) {
 		assert.Nil(t, root)
 		require.Error(t, err)
 	})
+	t.Run("empty path", func(t *testing.T) {
+		root, err := fslink.OpenRoot("")
+		assert.Nil(t, root)
+		require.Error(t, err)
+	})
 	t.Run("missing", func(t *testing.T) {
 		root, err := fslink.OpenRoot(filepath.Join(newTree(t), "missing"))
 		assert.Nil(t, root)
