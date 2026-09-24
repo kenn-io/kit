@@ -17,6 +17,8 @@ import (
 const jsonV1Source = "package m\n\nimport \"encoding/json\"\n\nvar _ = json.Marshal\n"
 
 func TestRewriteJSONV1FileKeepsMode(t *testing.T) {
+	t.Parallel()
+
 	assert := assert.New(t)
 	require := require.New(t)
 	path := filepath.Join(t.TempDir(), "m.go")
@@ -38,6 +40,7 @@ func TestRewriteJSONV1FileKeepsMode(t *testing.T) {
 	assert.Len(entries, 1, "no staging file is left behind")
 }
 
+//nolint:paralleltest // swaps package-global writeAtomicFile to inject a durability failure
 func TestApplyJSONFixesReportsPublishedRewriteAsFixed(t *testing.T) {
 	require := require.New(t)
 	dir := t.TempDir()
@@ -66,6 +69,8 @@ func TestApplyJSONFixesReportsPublishedRewriteAsFixed(t *testing.T) {
 }
 
 func TestRewriteJSONV1FileRefusesSymlink(t *testing.T) {
+	t.Parallel()
+
 	assert := assert.New(t)
 	require := require.New(t)
 	dir := t.TempDir()

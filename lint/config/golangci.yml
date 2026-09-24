@@ -41,6 +41,7 @@ linters:
     - testifylint
     - usetesting
     - thelper
+    - paralleltest
     - tparallel
     - testableexamples
     # Policy
@@ -60,6 +61,8 @@ linters:
       disable:
         # Identifier names do not prove that an assertion compares encoded data.
         - encoded-compare
+    paralleltest:
+      ignore-missing-subtests: true
     exhaustive:
       default-signifies-exhaustive: true
     usetesting:

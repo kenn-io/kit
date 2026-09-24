@@ -42,8 +42,10 @@ See `docs/adopting-kennlint.md` for the consumer workflow.
   Adding a linter to the canonical config affects every consuming repository;
   measure the finding count on at least two consumers before adding one.
 - Kit itself lints clean with the rendered configuration. Its overlay in
-  `.golangci.overlay.yml` carries only import aliases and two documented
-  carve-outs; do not add disables to it.
+  `.golangci.overlay.yml` carries import aliases, the existing linter carve-outs,
+  and the `paralleltest` scope for `selfupdate`, `tools/humacheck`, `logging`,
+  and `tui/screen`; preserve that scope, require reasoned test-level suppressions
+  for sequential shared-state cases, and do not add disables to it.
 - `testifyhelper` requires canonical `assert` and `require` import and helper
   names. Requiring local helpers is opt-in through `require-helpers`, off
   by default for both libraries. Parent scopes retain package calls when local helpers would shadow

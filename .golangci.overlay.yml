@@ -26,3 +26,7 @@ linters:
           - staticcheck
         path: ^(agenthook/|git/managed/untrusted_tree\.go$)
         text: "ST1005:"
+      # These packages opt in except for locally justified sequential cases.
+      - linters:
+          - paralleltest
+        path-except: ^(selfupdate|tools/humacheck|logging|tui/screen)/

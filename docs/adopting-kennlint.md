@@ -130,6 +130,30 @@ cleanup unless they use the same uncancelled context.
 The canonical `nolintlint` settings require the linter name and an explanation
 and reject directives that no longer suppress anything.
 
+## Parallel tests
+
+`paralleltest` reports top-level tests that do not call `t.Parallel()`. Set
+`ignore-missing-subtests: true` when adopting it so sequential subtests remain
+covered by the existing `tparallel` check. The canonical config has no package
+paths because each repository chooses which packages are ready for parallel
+tests.
+
+A repository can scope the linter in its overlay:
+
+```yaml
+linters:
+  exclusions:
+    rules:
+      - linters: [paralleltest]
+        path-except: ^(internal/cache|internal/parser)/
+```
+
+`path-except` lists the paths where `paralleltest` stays active. A repository
+with no ready package can use `linters.disable: [paralleltest]` while it works
+through its backlog. A test that must stay sequential because it mutates shared
+state can use a reasoned `//nolint:paralleltest` comment. Add the scope or
+disable while bumping Kit, then regenerate `.golangci.yml`.
+
 ## Checking SQL migration files
 
 golangci-lint only sees Go, so migrations kept as `.sql` files need the

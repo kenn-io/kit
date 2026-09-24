@@ -13,6 +13,9 @@ type rendered struct {
 	Linters struct {
 		Enable   []string `yaml:"enable"`
 		Settings struct {
+			Paralleltest struct {
+				IgnoreMissingSubtests bool `yaml:"ignore-missing-subtests"`
+			} `yaml:"paralleltest"`
 			Importas struct {
 				Alias []struct {
 					Pkg   string `yaml:"pkg"`
@@ -56,6 +59,9 @@ func TestRenderWithoutOverlayIsCanonical(t *testing.T) {
 	assert.Equal(canonical, got)
 	assert.Contains(got.Linters.Enable, "kennlint")
 	assert.Contains(got.Linters.Enable, "testifylint")
+	assert.Contains(got.Linters.Enable, "paralleltest")
+	assert.Contains(got.Linters.Enable, "tparallel")
+	assert.True(got.Linters.Settings.Paralleltest.IgnoreMissingSubtests)
 	assert.Equal([]string{"gofmt", "goimports", "gofumpt"}, got.Formatters.Enable)
 }
 
@@ -70,6 +76,7 @@ linters:
     - errcheck
   disable:
     - nolintlint
+    - paralleltest
   settings:
     importas:
       alias:
@@ -100,6 +107,8 @@ formatters:
 	assert.Equal("20m", got.Run.Timeout)
 	assert.Contains(got.Linters.Enable, "gosec")
 	assert.NotContains(got.Linters.Enable, "nolintlint")
+	assert.NotContains(got.Linters.Enable, "paralleltest")
+	assert.Contains(got.Linters.Enable, "tparallel")
 	assert.Equal(1, countOf(got.Linters.Enable, "errcheck"), "existing entries are not duplicated")
 	assert.Equal([]string{"gofmt", "goimports"}, got.Formatters.Enable)
 
