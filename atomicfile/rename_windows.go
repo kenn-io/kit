@@ -23,27 +23,55 @@ func RenameNoReplace(oldpath, newpath string) error {
 	return nil
 }
 
-// Replace renames oldpath to newpath, atomically replacing a file already at
-// newpath. It never copies, so a rename across volumes fails. A link at
-// either path is renamed or replaced itself, never followed.
+// Replace renames oldpath to newpath, atomically replacing an existing file
+// at newpath. It never copies, so a rename across volumes fails. A symlink or
+// junction at either path is renamed or replaced as an entry, never followed.
+// A directory at newpath is never replaced: Replace fails with an error
+// wrapping fs.ErrExist, as os.Rename does. That is a check just before the
+// rename, not an atomic guarantee.
 //
-// On Windows it first renames with POSIX semantics
-// (SetFileInformationByHandle with FileRenameInfoEx and
-// FILE_RENAME_FLAG_POSIX_SEMANTICS). That succeeds while another handle
-// holds newpath open with FILE_SHARE_DELETE, as os.Root and CreateFile with
-// all three share flags open files; the holder keeps reading the old
-// content. A handle opened without FILE_SHARE_DELETE, as os.Open opens
-// files, still makes Replace fail. When the file system or Windows version
-// does not support that rename, Replace falls back to MoveFileEx with
-// MOVEFILE_REPLACE_EXISTING and MOVEFILE_WRITE_THROUGH, without
-// MOVEFILE_COPY_ALLOWED; an open handle to newpath then makes it fail.
+// On Windows it first renames with POSIX semantics (SetFileInformationByHandle
+// with FileRenameInfoEx and FILE_RENAME_FLAG_POSIX_SEMANTICS). That succeeds
+// while another handle holds newpath open with FILE_SHARE_DELETE, as os.Root
+// and CreateFile with all three share flags open files; the holder keeps
+// reading the old content. A handle opened without FILE_SHARE_DELETE, as
+// os.Open opens files, still makes Replace fail with ERROR_SHARING_VIOLATION.
+// When Windows or the file system reports that rename as unsupported, Replace
+// falls back to MoveFileEx with MOVEFILE_REPLACE_EXISTING and
+// MOVEFILE_WRITE_THROUGH, without MOVEFILE_COPY_ALLOWED, which fails while
+// any other handle holds newpath open.
 func Replace(oldpath, newpath string) error {
+	if err := checkNotDirectory(oldpath, newpath); err != nil {
+		return err
+	}
 	err := renamePOSIX(oldpath, newpath)
 	if err == nil || !posixRenameUnsupported(err) {
 		return err
 	}
 	if err := moveFileEx(oldpath, newpath, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH); err != nil {
 		return &os.LinkError{Op: "MoveFileExW", Old: oldpath, New: newpath, Err: err}
+	}
+	return nil
+}
+
+// checkNotDirectory refuses a directory at newpath the way os.Rename does
+// on Unix, because POSIX semantics would let a directory replace an empty
+// one. A junction or symlink is a link, not a directory, and os.Lstat does
+// not report it as one. Like os.Rename it reports a missing oldpath first,
+// and allows a case-only rename of a directory to itself.
+func checkNotDirectory(oldpath, newpath string) error {
+	// A missing or unreadable target is left for the rename to report.
+	if fi, err := os.Lstat(newpath); err == nil && fi.IsDir() {
+		ofi, err := os.Lstat(oldpath)
+		if err != nil {
+			if pathErr, ok := errors.AsType[*os.PathError](err); ok {
+				err = pathErr.Err
+			}
+			return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: err}
+		}
+		if newpath == oldpath || !os.SameFile(fi, ofi) {
+			return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: windows.ERROR_ALREADY_EXISTS}
+		}
 	}
 	return nil
 }

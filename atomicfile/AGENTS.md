@@ -16,10 +16,32 @@ no file formats, locking, or caller policy. Link inspection belongs to
   MAX_PATH fails here.
 - Readers see the old or the new content, never a partial file: stage in a
   temporary file, fsync (unless `WithoutSync`), close, then rename.
-- Never fall back to copying. Replacement uses `os.Rename` on Unix and
-  `MoveFileEx(MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)` on Windows;
+- Never fall back to copying. `WriteFile` and `Commit` publish through the
+  exported `Replace`: `os.Rename` on Unix; on Windows a POSIX-semantics rename
+  first, then `MoveFileEx(MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)`.
   `RenameNoReplace` on Windows uses `MOVEFILE_WRITE_THROUGH` only. Never add
   `MOVEFILE_COPY_ALLOWED`: a cross-volume staging directory must fail.
+- Windows `Replace` opens the source with `DELETE` only, all three share
+  flags, `FILE_FLAG_OPEN_REPARSE_POINT` (a link is renamed, not followed),
+  `FILE_FLAG_BACKUP_SEMANTICS`, and `FILE_FLAG_WRITE_THROUGH` (the
+  write-through that `MOVEFILE_WRITE_THROUGH` also uses; `FileRenameInfoEx`
+  has no flag for it, and `FlushFileBuffers` needs write access that a
+  read-only file refuses). It then sets `FileRenameInfoEx` with
+  `REPLACE_IF_EXISTS|POSIX_SEMANTICS`, a Win32 target path, and a NULL
+  `RootDirectory`. Fall back to `MoveFileEx` only when that call fails with
+  `ERROR_INVALID_PARAMETER`, `ERROR_INVALID_FUNCTION`, or
+  `ERROR_NOT_SUPPORTED`; never on access or sharing errors.
+- What POSIX semantics buys, as the Windows tests show: a reader holding the
+  target open with `FILE_SHARE_DELETE` (`os.Root`, or `CreateFile` with all
+  share flags) no longer blocks `Replace` and keeps reading the old content;
+  `MoveFileEx` fails there with `ERROR_ACCESS_DENIED`. A reader that opened
+  the target without `FILE_SHARE_DELETE` (`os.Open`) still blocks it with
+  `ERROR_SHARING_VIOLATION`. Do not document more than that.
+- POSIX semantics would let a directory replace an empty directory and a
+  file replace a junction. `Replace` refuses a directory target on every
+  platform with an error wrapping `fs.ErrExist`, by an `os.Lstat` check as
+  `os.Rename` makes on Unix (a case-only rename of the same directory is
+  allowed). A junction or symlink target is replaced as an entry.
 - Trust boundary: the target and staging directories are assumed not to be
   modifiable by untrusted users. Do not add defenses against an attacker who
   can rename entries there; they could replace the published file directly.
@@ -61,7 +83,7 @@ no file formats, locking, or caller policy. Link inspection belongs to
   directories.
 - `SyncDir` fsyncs a directory on Unix and is a documented no-op on Windows,
   which cannot fsync a directory handle. Durability there rests on the file
-  fsync and `MOVEFILE_WRITE_THROUGH`.
+  fsync and a write-through rename.
 - After publication, sync the target's directory and, when `WithStagingDir`
   names a different directory (by cleaned absolute path), the staging
   directory too. Call directory sync through the `syncDir` variable so tests
