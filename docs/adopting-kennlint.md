@@ -132,11 +132,11 @@ and reject directives that no longer suppress anything.
 
 ## Parallel tests
 
-`paralleltest` reports top-level tests that do not call `t.Parallel()`. Set
-`ignore-missing-subtests: true` when adopting it so sequential subtests remain
-covered by the existing `tparallel` check. The canonical config has no package
-paths because each repository chooses which packages are ready for parallel
-tests.
+The canonical config enables `paralleltest` with `ignore-missing-subtests: true`,
+so it reports missing calls only on top-level tests. The existing `tparallel`
+check still reports a parallel parent with sequential subtests. The canonical
+config has no package paths because each repository chooses which packages are
+ready for parallel tests.
 
 A repository can scope the linter in its overlay:
 
