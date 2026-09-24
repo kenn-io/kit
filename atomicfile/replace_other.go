@@ -12,6 +12,8 @@ import "os"
 // rename, not an atomic guarantee.
 //
 // On Unix it is os.Rename; rename(2) fails with EXDEV across devices. On
+// other platforms it is also os.Rename, which is not atomic everywhere: on
+// Plan 9 it removes an existing target before renaming. On
 // Windows it first renames with POSIX semantics, which succeeds while another
 // handle holds newpath open with FILE_SHARE_DELETE (the holder keeps reading
 // the old content), and falls back to MoveFileEx where Windows or the file
@@ -19,9 +21,4 @@ import "os"
 // FILE_SHARE_DELETE, as os.Open opens files, still makes Replace fail.
 func Replace(oldpath, newpath string) error {
 	return os.Rename(oldpath, newpath)
-}
-
-// replaceFile renames staging over target for WriteFile and Commit.
-func replaceFile(staging, target string) error {
-	return Replace(staging, target)
 }

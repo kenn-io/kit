@@ -8,8 +8,9 @@
 // neither ever falls back to copying across volumes.
 //
 // Callers that stage a file themselves can publish it with Replace, the
-// rename WriteFile and Commit use, or with RenameNoReplace. On Windows,
-// Replace succeeds while readers hold the target open with FILE_SHARE_DELETE.
+// rename WriteFile and Commit use, or with RenameNoReplace. On Windows
+// versions and file systems that support POSIX-semantics renames, Replace
+// succeeds while readers hold the target open with FILE_SHARE_DELETE.
 //
 // A failure after the new content became visible at the target wraps
 // ErrPublished; a failed directory sync also wraps ErrNotDurable. With

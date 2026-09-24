@@ -138,16 +138,22 @@ func TestReplaceJunctionTarget(t *testing.T) {
 	assert.ElementsMatch(t, []string{"link", "target"}, entryNames(t, dir))
 }
 
+// A relative target reaches FileRenameInfoEx as given. The held reader
+// proves the POSIX-semantics rename took it: the MoveFileEx fallback would
+// fail.
 func TestReplaceRelativePaths(t *testing.T) {
 	dir := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "sub"), 0o700))
 	writeString(t, dir, "src", "new")
-	writeString(t, dir, "dst", "old")
+	dst := writeString(t, filepath.Join(dir, "sub"), "dst", "old")
+	held := openShareAll(t, dst)
 	t.Chdir(dir)
 
-	require.NoError(t, atomicfile.Replace("src", "dst"))
+	require.NoError(t, atomicfile.Replace("src", filepath.Join("sub", "dst")))
 
-	assert.Equal(t, "new", readString(t, filepath.Join(dir, "dst")))
-	assert.Equal(t, []string{"dst"}, entryNames(t, dir))
+	assert.Equal(t, "new", readString(t, dst))
+	assert.Equal(t, "old", readAll(t, held))
+	assert.Equal(t, []string{"sub"}, entryNames(t, dir))
 }
 
 // Windows names are case-insensitive, so a case-only rename of a directory
