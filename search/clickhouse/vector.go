@@ -10,7 +10,9 @@ import (
 )
 
 // Distance selects the ClickHouse function used both for scoring and for the
-// index match. The zero value is cosine, as in the other backends.
+// index match. ClickHouse has no default distance; the zero value here is
+// cosine, as in the other backends. An HNSW index built for L2Distance does
+// not serve a cosine query, so set Distance to the index's function.
 // Cosine score is one minus cosineDistance. L2 score is the negated
 // L2Distance. Inner-product score is dotProduct.
 type Distance string
@@ -22,10 +24,12 @@ const (
 )
 
 // VectorRequest is one bounded vector candidate query. SourcePredicate is
-// passed to ClickHouse unchanged. Query is the reference vector. CandidateLimit is the SQL LIMIT. Probes, when positive, sets
-// hnsw_candidate_list_size_for_search. Approximate does not change the SQL
-// shape; it records that the caller expects an HNSW index and requires the
-// distance function to match that index.
+// passed to ClickHouse unchanged. Query is the reference vector.
+// CandidateLimit is the SQL LIMIT. Probes, when positive, sets
+// hnsw_candidate_list_size_for_search; otherwise the server default (256)
+// applies. Approximate does not change the SQL shape; it records that the
+// caller expects an HNSW index and requires the distance function to match
+// that index.
 type VectorRequest struct {
 	SourceTable     string
 	SourceKey       string
