@@ -121,7 +121,7 @@ func TestHooksPathAndEnsureAbsoluteHooksPath(t *testing.T) {
 		track string
 		// anchored reports whether the value becomes absolute under the
 		// main checkout.
-		anchored bool
+		anchored  bool
 		wantHooks func(main, wt string) string
 	}{
 		{
