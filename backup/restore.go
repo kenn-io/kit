@@ -22,6 +22,7 @@ import (
 
 	"go.kenn.io/kit/pack"
 	"go.kenn.io/kit/packstore"
+	"go.kenn.io/kit/pathresolve"
 	"go.kenn.io/kit/safefileio"
 )
 
@@ -595,7 +596,7 @@ func openRestoreTarget(target string, overwrite bool) (*os.Root, bool, error) {
 	case errors.Is(err, os.ErrNotExist):
 		existed = false
 		root, createErr := openMissingRestoreTarget(
-			target, enterRestoreDir, filepath.EvalSymlinks)
+			target, enterRestoreDir, pathresolve.EvalSymlinks)
 		if createErr != nil {
 			return nil, false, createErr
 		}
@@ -1431,7 +1432,7 @@ func openRestoreScratchCandidate(
 	if err != nil {
 		return nil, fmt.Errorf("backup: resolving restore scratch %s: %w", candidate, err)
 	}
-	scratchPath, err = filepath.EvalSymlinks(scratchPath)
+	scratchPath, err = pathresolve.EvalSymlinks(scratchPath)
 	if err != nil {
 		return nil, fmt.Errorf("backup: resolving restore scratch %s: %w", candidate, err)
 	}

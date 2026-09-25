@@ -14,6 +14,7 @@ import (
 
 	gitcmd "go.kenn.io/kit/git/cmd"
 	gitworktree "go.kenn.io/kit/git/worktree"
+	"go.kenn.io/kit/pathresolve"
 )
 
 // Sentinel errors for worktree lifecycle failures the HTTP layer maps to
@@ -634,9 +635,9 @@ func comparableWorktreePath(path string) string {
 	if err != nil {
 		absolute = filepath.Clean(path)
 	}
-	if resolved, resolveErr := filepath.EvalSymlinks(absolute); resolveErr == nil {
+	if resolved, resolveErr := pathresolve.EvalSymlinks(absolute); resolveErr == nil {
 		absolute = resolved
-	} else if parent, parentErr := filepath.EvalSymlinks(
+	} else if parent, parentErr := pathresolve.EvalSymlinks(
 		filepath.Dir(absolute),
 	); parentErr == nil {
 		absolute = filepath.Join(parent, filepath.Base(absolute))
@@ -664,7 +665,7 @@ func lifecycleCommonGitDir(ctx context.Context, path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve common Git directory path: %w", err)
 	}
-	if resolved, resolveErr := filepath.EvalSymlinks(common); resolveErr == nil {
+	if resolved, resolveErr := pathresolve.EvalSymlinks(common); resolveErr == nil {
 		common = resolved
 	}
 	return filepath.Clean(common), nil
@@ -747,7 +748,7 @@ func resolveMergeRequestHookScript(
 	if err != nil || script == "" {
 		return script, err
 	}
-	resolved, err := filepath.EvalSymlinks(script)
+	resolved, err := pathresolve.EvalSymlinks(script)
 	if err != nil {
 		return "", fmt.Errorf(
 			"merge request setup hook must already exist: %w", err,
@@ -775,7 +776,7 @@ func resolveMergeRequestHookScript(
 // not exist yet (or cannot be resolved) keeps its lexical form, which fails
 // later at execution time rather than here.
 func canonicalizePath(path string) string {
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+	if resolved, err := pathresolve.EvalSymlinks(path); err == nil {
 		return resolved
 	}
 	return path
@@ -813,7 +814,7 @@ func resolveWorktreeDestination(
 		}
 		// Canonicalize the base so derived paths agree with what git
 		// and discovery report (macOS /tmp vs /private/tmp).
-		if resolved, err := filepath.EvalSymlinks(base); err == nil {
+		if resolved, err := pathresolve.EvalSymlinks(base); err == nil {
 			base = resolved
 		}
 		slug := strings.ReplaceAll(branch, "/", "-")
