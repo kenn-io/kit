@@ -147,20 +147,18 @@ jobs:
           cache: true
 
       - name: Start S3-compatible service
-        # MinIO no longer publishes images on quay.io or Docker Hub. pgsty/minio
-        # is a community build of the same AGPL server
-        # (RELEASE.2026-08-04T00-00-00Z), pinned by digest.
+        # MinIO no longer publishes images, so conformance runs against
+        # RustFS 1.0.0, pinned by digest.
         run: |
           docker run --detach --rm \
             --name kit-s3-conformance \
             --publish 9000:9000 \
-            --env MINIO_ROOT_USER=kit-test \
-            --env MINIO_ROOT_PASSWORD=kit-test-secret \
-            docker.io/pgsty/minio@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372 \
-            server /data
+            --env RUSTFS_ACCESS_KEY=kit-test \
+            --env RUSTFS_SECRET_KEY=kit-test-secret \
+            docker.io/rustfs/rustfs@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff
           for attempt in $(seq 1 30); do
             if curl --fail --silent --show-error \
-              http://127.0.0.1:9000/minio/health/ready >/dev/null; then
+              http://127.0.0.1:9000/health >/dev/null; then
               exit 0
             fi
             sleep 1
