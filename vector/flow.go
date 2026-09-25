@@ -78,7 +78,9 @@ func WithFillDocumentLimit[K comparable](n int) FillOption[K] {
 // replaces WithFillSplit for that Fill call. The callback receives Fill's
 // context. Fill does not call it for a later document in the page when that
 // context is already cancelled, and it does not encode or stamp the page.
-// An empty chunk list is a stamp-only save. An error aborts the fill before
+// An empty chunk list is a stamp-only save; return one to skip a document
+// the callback cannot prepare. Chunk indexes must be non-negative and unique
+// within the document. An error, including a bad index, aborts the fill before
 // any document in the current page is encoded or stamped. Span and Truncated
 // are reported through WithFillProgress and are not stored.
 func WithFillPrepared[K comparable](prepare func(context.Context, Pending[K]) ([]PreparedChunk, error)) FillOption[K] {
@@ -228,6 +230,16 @@ func prepareFillChunks[K comparable](ctx context.Context, pending Pending[K], o 
 		prepared, err := o.prepare(ctx, pending)
 		if err != nil {
 			return nil, nil, err
+		}
+		seen := make(map[int]struct{}, len(prepared))
+		for _, chunk := range prepared {
+			if chunk.Index < 0 {
+				return nil, nil, fmt.Errorf("prepared chunk index %d is negative", chunk.Index)
+			}
+			if _, ok := seen[chunk.Index]; ok {
+				return nil, nil, fmt.Errorf("prepared chunk index %d repeats", chunk.Index)
+			}
+			seen[chunk.Index] = struct{}{}
 		}
 		chunks := make([]Chunk, len(prepared))
 		for i, chunk := range prepared {

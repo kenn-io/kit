@@ -254,3 +254,36 @@ func TestFillPreparedSkipsCallbackWhenPageContextIsAlreadyCancelled(t *testing.T
 	assert.Zero(calls)
 	assert.Empty(base.embedded)
 }
+
+func TestFillRejectsBadPreparedIndexesBeforeEncoding(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		indexes []int
+		want    string
+	}{
+		{name: "repeated", indexes: []int{0, 0}, want: "prepared chunk index 0 repeats"},
+		{name: "negative", indexes: []int{-1}, want: "prepared chunk index -1 is negative"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMemStore()
+			store.content[1] = "doc"
+			encoded := 0
+			enc := func(ctx context.Context, texts []string) ([][]float32, error) {
+				encoded++
+				return lenEncoder()(ctx, texts)
+			}
+			_, err := vector.Fill(t.Context(), store, 1, enc,
+				vector.WithFillPrepared(func(context.Context, vector.Pending[int64]) ([]vector.PreparedChunk, error) {
+					chunks := make([]vector.PreparedChunk, len(tc.indexes))
+					for i, index := range tc.indexes {
+						chunks[i] = vector.PreparedChunk{Index: index, Text: "text"}
+					}
+					return chunks, nil
+				}),
+			)
+			require.ErrorContains(t, err, "prepare document 1: "+tc.want)
+			assert.Zero(t, encoded, "a bad index fails before the encode is paid for")
+			assert.Nil(t, store.embedded[1])
+		})
+	}
+}
