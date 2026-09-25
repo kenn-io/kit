@@ -11,9 +11,8 @@
 // number. Set OllamaMetalRecovery to keep the usable vectors and send only
 // the bad inputs to Ollama's native embed route. That request unloads the
 // current runner, retries it once, and then encodes those inputs once with
-// the GPU off. Those recovery requests are bounded only by the caller's
-// context, not by the per-request timeout, because a CPU pass can take
-// minutes. The endpoint path must end in /v1. The switch is not part of the
+// the GPU off. Those recovery requests use a 30 minute timeout instead of
+// the per-request timeout, because a CPU pass can take many minutes. The endpoint path must end in /v1. The switch is not part of the
 // vector identity.
 //
 //	client, err := embedclient.New(embedclient.Options{

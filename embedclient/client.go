@@ -34,8 +34,9 @@ type Options struct {
 	// vector when the endpoint is an Ollama /v1 URL. Valid vectors are kept.
 	// The bad inputs are sent to Ollama's native embed route, which unloads
 	// the current runner, retries that runner once, and then tries once with
-	// the GPU disabled. Those recovery requests ignore Transport.Timeout and
-	// the caller's client timeout; only the Embed context bounds them.
+	// the GPU disabled. Those recovery requests use a 30 minute timeout in
+	// place of Transport.Timeout and the caller's client timeout; the Embed
+	// context still bounds them.
 	// Ordinary failures are not retried. The switch does not change the
 	// vector identity.
 	OllamaMetalRecovery bool
@@ -44,7 +45,7 @@ type Options struct {
 // Client sends text embedding requests.
 type Client struct {
 	http           *http.Client
-	recoveryHTTP   *http.Client // no client timeout; bounded by the caller's context
+	recoveryHTTP   *http.Client // ollamaRecoveryTimeout instead of Transport.Timeout
 	endpoint       string
 	model          embedconfig.Model
 	roles          embedconfig.Roles
@@ -104,9 +105,9 @@ func New(opts Options) (*Client, error) {
 	}
 	pinned := pinClient(opts.HTTP, origin, opts.APIKey, transport.Timeout)
 	// A CPU re-encode or a model reload can take minutes, far past a
-	// per-request timeout, so recovery answers only to the caller's context.
+	// per-request timeout, so recovery has its own, much longer bound.
 	recovery := *pinned
-	recovery.Timeout = 0
+	recovery.Timeout = ollamaRecoveryTimeout
 	return &Client{
 		http:           pinned,
 		recoveryHTTP:   &recovery,

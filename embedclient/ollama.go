@@ -22,6 +22,11 @@ import (
 // GPU retry and goes straight to the CPU pass.
 const ollamaUnloadTimeout = 10 * time.Second
 
+// ollamaRecoveryTimeout bounds each recovery embed request in place of the
+// per-request timeout. A model reload or a CPU re-encode can take many
+// minutes; this only stops a server that never answers.
+const ollamaRecoveryTimeout = 30 * time.Minute
+
 var ollamaRecoveryGates sync.Map
 
 type ollamaEmbedRequest struct {
