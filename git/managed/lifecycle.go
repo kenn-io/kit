@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -772,14 +773,26 @@ func resolveMergeRequestHookScript(
 	return resolved, nil
 }
 
-// canonicalizePath resolves symlinks when the path exists; a path that does
-// not exist yet (or cannot be resolved) keeps its lexical form, which fails
-// later at execution time rather than here.
+// canonicalizePath resolves symlinks and junctions in the deepest existing
+// parent of path and re-appends the part that does not exist yet. A missing
+// hook then compares in the same spelling as its resolved project root and
+// fails later at execution time rather than here. A path that cannot be
+// resolved for any other reason keeps its lexical form.
 func canonicalizePath(path string) string {
-	if resolved, err := pathresolve.EvalSymlinks(path); err == nil {
-		return resolved
+	current := filepath.Clean(path)
+	missing := ""
+	for {
+		resolved, err := pathresolve.EvalSymlinks(current)
+		if err == nil {
+			return filepath.Join(resolved, missing)
+		}
+		parent := filepath.Dir(current)
+		if !errors.Is(err, fs.ErrNotExist) || parent == current {
+			return path
+		}
+		missing = filepath.Join(filepath.Base(current), missing)
+		current = parent
 	}
-	return path
 }
 
 func pathWithinRoot(root, path string) bool {

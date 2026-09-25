@@ -114,7 +114,13 @@ func followFirstReparsePoint(current string) (string, bool) {
 		if err != nil {
 			continue
 		}
-		if !filepath.IsAbs(target) {
+		switch {
+		case filepath.IsAbs(target):
+		case filepath.VolumeName(target) == "" && target != "" && os.IsPathSeparator(target[0]):
+			// A rooted target such as `\shared` names the link's own volume,
+			// not a path below the link's directory.
+			target = volume + target
+		default:
 			target = filepath.Join(filepath.Dir(prefix), target)
 		}
 		return filepath.Clean(target + tail[i:]), true

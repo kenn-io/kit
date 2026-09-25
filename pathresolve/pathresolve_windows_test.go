@@ -45,8 +45,8 @@ func TestEvalSymlinksTraversesJunction(t *testing.T) {
 
 // TestEvalSymlinksResolvesTrailingJunction pins the resolution to the file
 // location rather than to where in the path the junction sits. Plain
-// filepath.EvalSymlinks resolves a trailing junction but fails below one, so
-// the two spellings of one directory would otherwise disagree.
+// filepath.EvalSymlinks leaves a trailing junction unresolved and fails below
+// one, so the two spellings of one directory would otherwise disagree.
 func TestEvalSymlinksResolvesTrailingJunction(t *testing.T) {
 	target := t.TempDir()
 	link := filepath.Join(t.TempDir(), "junction")
@@ -68,6 +68,29 @@ func TestEvalSymlinksJunctionAboveMissingElement(t *testing.T) {
 	require.Error(t, err)
 	assert.Empty(t, got)
 	assert.ErrorIs(t, err, os.ErrNotExist)
+}
+
+// TestEvalSymlinksRootedSymlinkTarget covers a symlink whose target is rooted
+// but has no volume, such as `\shared`. Windows resolves it on the link's
+// volume, so a same-named directory below the link's own directory is a decoy
+// the result must not land on.
+func TestEvalSymlinksRootedSymlinkTarget(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "target")
+	require.NoError(t, os.Mkdir(target, 0o755))
+	rooted := target[len(filepath.VolumeName(target)):]
+
+	linkDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(linkDir, rooted), 0o755))
+	link := filepath.Join(linkDir, "link")
+	if err := os.Symlink(rooted, link); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	got, err := pathresolve.EvalSymlinks(link)
+	require.NoError(t, err)
+	want, err := filepath.EvalSymlinks(target)
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
 }
 
 // TestEvalSymlinksReparsePointCycle covers two junctions that refer to each
