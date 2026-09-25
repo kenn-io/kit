@@ -157,13 +157,10 @@ func Fit(source, prefix, suffix string, tok Tokenizer, policy Policy) (Result, e
 	return Result{Spans: spans, prefix: prefix, suffix: suffix}, nil
 }
 
-// Prepared formats the spans with the prefix and suffix Fit counted.
-// A different prefix or suffix is ignored. The fitted budget is the one
-// that matters.
-func (r Result) Prepared(prefix, suffix string) []Prepared {
-	if prefix != r.prefix || suffix != r.suffix {
-		prefix, suffix = r.prefix, r.suffix
-	}
+// Prepared formats the spans with the prefix and suffix Fit counted, so
+// each text is the one that fit the budget.
+func (r Result) Prepared() []Prepared {
+	prefix, suffix := r.prefix, r.suffix
 	out := make([]Prepared, len(r.Spans))
 	for i, span := range r.Spans {
 		out[i] = Prepared{
@@ -293,11 +290,17 @@ func softEnd(source string, offsets []int, start, end, total int) (int, bool) {
 	if end < total {
 		limit = end + 1
 	}
+	// A paragraph break may start one rune before floor; its cut still lands
+	// inside the preferred window.
+	paragraph := floor
+	if paragraph-1 > start {
+		paragraph--
+	}
+	if p := strings.LastIndex(source[offsets[paragraph]:offsets[limit]], "\n\n"); p >= 0 {
+		return runeAt(offsets, offsets[paragraph]+p+2), true
+	}
 	window := source[offsets[floor]:offsets[limit]]
 	base := offsets[floor]
-	if p := strings.LastIndex(window, "\n\n"); p >= 0 {
-		return runeAt(offsets, base+p+2), true
-	}
 	best := -1
 	for _, term := range []string{". ", "? ", "! ", ".\n", "?\n", "!\n"} {
 		if i := strings.LastIndex(window, term); i >= 0 && i+len(term) > best {

@@ -83,7 +83,7 @@ func TestFitCountsPrefixAndSuffix(t *testing.T) {
 	require.NotEmpty(t, got.Spans)
 	assert.Equal(t, "aa", strings.TrimSpace(got.Spans[0].Text))
 	assertBudget(t, got, "P Q ", " END", words{}, 4)
-	prepared := got.Prepared("P Q ", " END")
+	prepared := got.Prepared()
 	assert.Equal(t, "P Q "+got.Spans[0].Text+" END", prepared[0].Text)
 	assert.Equal(t, got.Spans[0].ByteStart, prepared[0].Span.ByteStart)
 	assert.Equal(t, got.Spans[0].RuneEnd, prepared[0].Span.RuneEnd)
@@ -151,23 +151,16 @@ func TestPolicyFromUsesInputLimits(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestPreparedIgnoresALongerPrefixThanFitCounted(t *testing.T) {
-	fittedPrefix := "P "
-	longerPrefix := "P P P "
-	got, err := embedfit.Fit("aa", fittedPrefix, " Z", words{}, policy(3, 0, 0, embedconfig.TruncationReject))
+func TestFitCutsAtAParagraphBreakThatStartsBeforeThePreferredWindow(t *testing.T) {
+	// The window is 20 runes and its preferred part starts at rune 15. The
+	// break occupies runes 14 and 15, so its first newline sits just before
+	// that part. A later space must not win over the paragraph break.
+	source := strings.Repeat("a", 14) + "\n\n" + "bb cc" + strings.Repeat("x", 20)
+	got, err := embedfit.Fit(source, "", "", runes{}, policy(20, 0, 0, embedconfig.TruncationDropTail))
 	require.NoError(t, err)
-	require.Len(t, got.Spans, 1)
-
-	prepared := got.Prepared(longerPrefix, " Z Z")
-	require.Len(t, prepared, 1)
-	assert.Equal(t, fittedPrefix+"aa"+" Z", prepared[0].Text)
-	assert.NotEqual(t, longerPrefix+"aa"+" Z Z", prepared[0].Text)
-	fittedCount, err := words{}.Count(prepared[0].Text)
-	require.NoError(t, err)
-	assert.LessOrEqual(t, fittedCount, 3)
-	longerCount, err := words{}.Count(longerPrefix + "aa" + " Z Z")
-	require.NoError(t, err)
-	assert.Greater(t, longerCount, 3)
+	require.NotEmpty(t, got.Spans)
+	assert.Equal(t, strings.Repeat("a", 14), got.Spans[0].Text)
+	assert.False(t, got.Spans[0].Truncated)
 }
 
 func TestFitAcceptsASeparatorAtTheStartOfThePreferredWindow(t *testing.T) {

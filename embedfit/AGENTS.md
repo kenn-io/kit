@@ -7,8 +7,8 @@
   dropped tail. `drop_tail` may hard-cut, sets `Truncated` on that span, and
   sets `TailDropped` when source remains.
 - Source coordinates refer to the original string. `Prepared.Text` is the
-  formatted model input using the prefix and suffix Fit counted. Prepared
-  ignores a different pair.
+  formatted model input using the prefix and suffix Fit counted. `Prepared`
+  takes no arguments so a caller cannot format with a different pair.
 - A separator at the start of the preferred window is a valid soft cut.
   The text after it stays in the fit. Boundaries remain paragraph breaks,
   sentence endings, and ASCII spaces. A separator just past the window
