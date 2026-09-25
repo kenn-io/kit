@@ -28,8 +28,9 @@ type VectorMapping struct {
 }
 
 // VectorRequest is one bounded pgvector candidate query. Filters in
-// SourcePredicate are applied before Limit. Limit bounds returned rows; it
-// does not report whether an ANN index has further neighbors.
+// SourcePredicate are applied before CandidateLimit and follow the
+// placeholder rules on LexicalRequest. CandidateLimit bounds returned rows;
+// it does not report whether an ANN index has further neighbors.
 type VectorRequest struct {
 	Mapping  VectorMapping
 	Distance Distance
@@ -37,9 +38,9 @@ type VectorRequest struct {
 	// accepts as vector.
 	Query           any
 	RevisionColumn  string
-	SourcePredicate Predicate
-	ExtraSourceCols []Column
-	Limit           int
+	SourcePredicate sqlquery.Predicate
+	ExtraSourceCols []sqlquery.Column
+	CandidateLimit  int
 }
 
 // BuildVector returns a candidate SELECT. Query is bound as $1 and cast to
@@ -62,8 +63,8 @@ func BuildVector(req VectorRequest) (sqlquery.Query, error) {
 	if text, ok := req.Query.(string); ok && strings.TrimSpace(text) == "" {
 		return sqlquery.Query{}, errors.New("postgres: query vector is required")
 	}
-	if req.Limit <= 0 {
-		return sqlquery.Query{}, errors.New("postgres: limit must be positive")
+	if req.CandidateLimit <= 0 {
+		return sqlquery.Query{}, errors.New("postgres: candidate limit must be positive")
 	}
 	op, score, err := distanceSQL(req.Distance)
 	if err != nil {
@@ -104,7 +105,7 @@ func BuildVector(req VectorRequest) (sqlquery.Query, error) {
 		args = append(args, req.SourcePredicate.Args...)
 	}
 	n++
-	args = append(args, req.Limit)
+	args = append(args, req.CandidateLimit)
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "SELECT %s FROM %s AS d WHERE TRUE", strings.Join(projection, ", "), quote(req.Mapping.SourceTable))

@@ -94,9 +94,9 @@ func TestRebaseKeepsLiteralsAndNumbersPlaceholders(t *testing.T) {
 
 func TestLexicalConfigAllowsOneSchemaQualifier(t *testing.T) {
 	base := LexicalRequest{
-		Mapping: LexicalMapping{SourceTable: "docs", SourceKey: "id", Vector: "d.body_tsv"},
-		Text:    "alpha",
-		Limit:   1,
+		Mapping:        LexicalMapping{SourceTable: "docs", SourceKey: "id", Vector: "d.body_tsv"},
+		Text:           "alpha",
+		CandidateLimit: 1,
 	}
 	accepted := base
 	accepted.Config = "pg_catalog.simple"

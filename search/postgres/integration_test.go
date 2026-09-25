@@ -58,9 +58,9 @@ func TestPostgreSQLLexicalAndVector(t *testing.T) {
 		Query:           postgres.QueryPlain,
 		Text:            "alpha contract",
 		RevisionColumn:  "revision",
-		SourcePredicate: postgres.Predicate{SQL: "d.tenant = ?", Args: []any{"t1"}},
-		ExtraSourceCols: []postgres.Column{{Name: "title", As: "title"}},
-		Limit:           5,
+		SourcePredicate: sqlquery.Predicate{SQL: "d.tenant = ?", Args: []any{"t1"}},
+		ExtraSourceCols: []sqlquery.Column{{Name: "title", As: "title"}},
+		CandidateLimit:  5,
 	})
 	require.NoError(t, err)
 	hits := scanLexical(t, tx, lexicalQuery)
@@ -75,7 +75,7 @@ func TestPostgreSQLLexicalAndVector(t *testing.T) {
 		Query:          postgres.QueryPhrase,
 		Text:           queryText,
 		RevisionColumn: "revision",
-		Limit:          5,
+		CandidateLimit: 5,
 	})
 	require.NoError(t, err)
 	phraseHits := scanPhrase(t, tx, phraseQuery)
@@ -88,7 +88,7 @@ func TestPostgreSQLLexicalAndVector(t *testing.T) {
 		Distance:       postgres.DistanceCosine,
 		Query:          "[1,0]",
 		RevisionColumn: "revision",
-		Limit:          1,
+		CandidateLimit: 1,
 	})
 	require.NoError(t, err)
 	vectorHits := scanVector(t, tx, nearest)
@@ -101,8 +101,8 @@ func TestPostgreSQLLexicalAndVector(t *testing.T) {
 		Distance:        postgres.DistanceCosine,
 		Query:           "[1,0]",
 		RevisionColumn:  "revision",
-		SourcePredicate: postgres.Predicate{SQL: "d.tenant = ?", Args: []any{"t1"}},
-		Limit:           1,
+		SourcePredicate: sqlquery.Predicate{SQL: "d.tenant = ?", Args: []any{"t1"}},
+		CandidateLimit:  1,
 	})
 	require.NoError(t, err)
 	filteredHits := scanVector(t, tx, filtered)
@@ -131,7 +131,7 @@ func scanPhrase(t *testing.T, db sqlquery.Queryer, q sqlquery.Query) []lexicalRo
 	t.Helper()
 	rows, err := q.All(t.Context(), db, func(rows *sql.Rows) (lexicalRow, error) {
 		var row lexicalRow
-		err := rows.Scan(&row.id, &row.score, &row.revision)
+		err := rows.Scan(&row.id, &row.revision, &row.score)
 		return row, err
 	})
 	require.NoError(t, err)
@@ -142,7 +142,7 @@ func scanLexical(t *testing.T, db sqlquery.Queryer, q sqlquery.Query) []lexicalR
 	t.Helper()
 	rows, err := q.All(t.Context(), db, func(rows *sql.Rows) (lexicalRow, error) {
 		var row lexicalRow
-		err := rows.Scan(&row.id, &row.score, &row.revision, &row.title)
+		err := rows.Scan(&row.id, &row.revision, &row.score, &row.title)
 		return row, err
 	})
 	require.NoError(t, err)

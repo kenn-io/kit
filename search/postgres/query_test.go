@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/search/postgres"
+	"go.kenn.io/kit/search/sqlquery"
 )
 
 func TestBuildLexicalPlacesFilterBeforeLimit(t *testing.T) {
@@ -21,15 +22,19 @@ func TestBuildLexicalPlacesFilterBeforeLimit(t *testing.T) {
 		Text:            "alpha",
 		Rank:            postgres.RankCover,
 		RevisionColumn:  "revision",
-		SourcePredicate: postgres.Predicate{SQL: "d.tenant = ?", Args: []any{"t1"}},
-		ExtraSourceCols: []postgres.Column{{Name: "title", As: "title"}},
-		Limit:           4,
+		SourcePredicate: sqlquery.Predicate{SQL: "d.tenant = ?", Args: []any{"t1"}},
+		ExtraSourceCols: []sqlquery.Column{{Name: "title", As: "title"}},
+		CandidateLimit:  4,
 	})
 	require.NoError(t, err)
 	assert.Contains(t, q.SQL, "ts_rank_cd(")
 	assert.Contains(t, q.SQL, "setweight(to_tsvector('simple', d.title), 'A')")
 	assert.Contains(t, q.SQL, `d."revision" AS revision`)
 	assert.Contains(t, q.SQL, `d."title" AS "title"`)
+	// Lexical and vector rows share one column order, so one scanner reads both.
+	assert.Less(t, strings.Index(q.SQL, " AS doc_key"), strings.Index(q.SQL, " AS revision"))
+	assert.Less(t, strings.Index(q.SQL, " AS revision"), strings.Index(q.SQL, " AS score"))
+	assert.Less(t, strings.Index(q.SQL, " AS score"), strings.Index(q.SQL, ` AS "title"`))
 	where := strings.Index(q.SQL, " WHERE ")
 	order := strings.Index(q.SQL, " ORDER BY ")
 	limit := strings.Index(q.SQL, " LIMIT ")
@@ -43,14 +48,14 @@ func TestBuildLexicalPlacesFilterBeforeLimit(t *testing.T) {
 func TestBuildLexicalAcceptsCallerTSQuery(t *testing.T) {
 	q, err := postgres.BuildLexical(postgres.LexicalRequest{
 		Mapping: postgres.LexicalMapping{SourceTable: "docs", SourceKey: "id", Vector: "d.body_tsv"},
-		TSQuery: "phraseto_tsquery('simple', ?)", TSQueryArgs: []any{"か な"}, Limit: 2,
+		TSQuery: "phraseto_tsquery('simple', ?)", TSQueryArgs: []any{"か な"}, CandidateLimit: 2,
 	})
 	require.NoError(t, err)
 	assert.Contains(t, q.SQL, "phraseto_tsquery('simple', $1)")
 	assert.Equal(t, []any{"か な", 2}, q.Args)
 	_, err = postgres.BuildLexical(postgres.LexicalRequest{
 		Mapping: postgres.LexicalMapping{SourceTable: "docs", SourceKey: "id", Vector: "d.body_tsv"},
-		Text:    "alpha", TSQuery: "d.body_tsv", Limit: 1,
+		Text:    "alpha", TSQuery: "d.body_tsv", CandidateLimit: 1,
 	})
 	require.Error(t, err)
 }
@@ -61,8 +66,8 @@ func TestBuildVectorFiltersBeforeLimitAndKeepsRevision(t *testing.T) {
 		Distance:        postgres.DistanceCosine,
 		Query:           "[1,0]",
 		RevisionColumn:  "revision",
-		SourcePredicate: postgres.Predicate{SQL: "d.tenant = ?", Args: []any{"t1"}},
-		Limit:           1,
+		SourcePredicate: sqlquery.Predicate{SQL: "d.tenant = ?", Args: []any{"t1"}},
+		CandidateLimit:  1,
 	})
 	require.NoError(t, err)
 	assert.Contains(t, q.SQL, `1 - (d."embedding" <=> $1::vector) AS score`)
@@ -72,7 +77,7 @@ func TestBuildVectorFiltersBeforeLimitAndKeepsRevision(t *testing.T) {
 	assert.Equal(t, []any{"[1,0]", "t1", 1}, q.Args)
 	_, err = postgres.BuildVector(postgres.VectorRequest{
 		Mapping: postgres.VectorMapping{SourceTable: "docs", SourceKey: "id", VectorColumn: "embedding"},
-		Query:   "  ", Limit: 1,
+		Query:   "  ", CandidateLimit: 1,
 	})
 	require.Error(t, err)
 }

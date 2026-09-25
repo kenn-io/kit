@@ -38,23 +38,11 @@ type LexicalMapping struct {
 	Vector      string
 }
 
-// Column projects a source column under an explicit result alias.
-type Column struct {
-	Name string
-	As   string
-}
-
-// Predicate is trusted SQL over alias d. Use anonymous ? placeholders.
-// A ? inside a quote, dollar quote, or comment stays literal, and ?? outside
-// those regions is one literal ?. User values belong in Args.
-type Predicate struct {
-	SQL  string
-	Args []any
-}
-
 // LexicalRequest is one bounded full-text candidate query.
 // Set Text or TSQuery, not both. TSQuery is trusted SQL of type tsquery and
-// uses the same ? placeholders as Predicate. It exists for callers whose
+// uses the same ? placeholders as SourcePredicate. In both, a ? inside a
+// quote, dollar quote, or comment stays literal, and ?? outside those
+// regions is one literal ?. Each remaining ? becomes the next $n. It exists for callers whose
 // analyzer emits a tsquery the plain constructors cannot represent.
 type LexicalRequest struct {
 	Mapping         LexicalMapping
@@ -65,13 +53,14 @@ type LexicalRequest struct {
 	TSQueryArgs     []any
 	Rank            Rank
 	RevisionColumn  string
-	SourcePredicate Predicate
-	ExtraSourceCols []Column
-	Limit           int
+	SourcePredicate sqlquery.Predicate
+	ExtraSourceCols []sqlquery.Column
+	CandidateLimit  int
 }
 
-// BuildLexical returns a candidate SELECT. Output columns are doc_key, score,
-// then revision when requested, then the extra columns. Score is the native
+// BuildLexical returns a candidate SELECT. Output columns are doc_key,
+// revision when requested, score, then the extra columns, the same order as
+// BuildVector. Score is the native
 // rank, higher first. Ties break by source key. Outer queries must set their
 // own order.
 func BuildLexical(req LexicalRequest) (sqlquery.Query, error) {
@@ -85,8 +74,8 @@ func BuildLexical(req LexicalRequest) (sqlquery.Query, error) {
 	if vector == "" {
 		return sqlquery.Query{}, errors.New("postgres: tsvector expression is required")
 	}
-	if req.Limit <= 0 {
-		return sqlquery.Query{}, errors.New("postgres: limit must be positive")
+	if req.CandidateLimit <= 0 {
+		return sqlquery.Query{}, errors.New("postgres: candidate limit must be positive")
 	}
 	config := req.Config
 	if config == "" {
@@ -129,13 +118,11 @@ func BuildLexical(req LexicalRequest) (sqlquery.Query, error) {
 		return sqlquery.Query{}, errors.New("postgres: tsquery args require SQL")
 	}
 
-	projection := []string{
-		"d." + quote(req.Mapping.SourceKey) + " AS doc_key",
-		rank + "(" + vector + ", q.tsq) AS score",
-	}
+	projection := []string{"d." + quote(req.Mapping.SourceKey) + " AS doc_key"}
 	if req.RevisionColumn != "" {
 		projection = append(projection, "d."+quote(req.RevisionColumn)+" AS revision")
 	}
+	projection = append(projection, rank+"("+vector+", q.tsq) AS score")
 	for _, col := range req.ExtraSourceCols {
 		projection = append(projection, "d."+quote(col.Name)+" AS "+quote(col.As))
 	}
@@ -161,7 +148,7 @@ func BuildLexical(req LexicalRequest) (sqlquery.Query, error) {
 		args = append(args, req.SourcePredicate.Args...)
 	}
 	n++
-	args = append(args, req.Limit)
+	args = append(args, req.CandidateLimit)
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "SELECT %s FROM %s AS d CROSS JOIN (SELECT %s AS tsq) AS q WHERE %s @@ q.tsq",
