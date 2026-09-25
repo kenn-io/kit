@@ -225,7 +225,13 @@ func TestOllamaRecoveryIsNotBoundByTheRequestTimeout(t *testing.T) {
 		case "/v1/embeddings":
 			_, _ = io.WriteString(w, `{"data":[{"embedding":[null,1]}]}`)
 		case "/api/embed":
-			time.Sleep(300 * time.Millisecond) // a slow reload or CPU pass
+			// A slow reload or CPU pass: answer well after the 50ms
+			// request timeout, unless the client gives up first.
+			select {
+			case <-time.After(300 * time.Millisecond):
+			case <-r.Context().Done():
+				return
+			}
 			_, _ = io.WriteString(w, `{"embeddings":[[3,4]]}`)
 		case "/api/ps":
 			_, _ = io.WriteString(w, `{"models":[]}`)
