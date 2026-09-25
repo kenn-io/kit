@@ -30,21 +30,11 @@ type CandidateQuery struct {
 	// eligible candidates; it does not expand the raw candidate window.
 	ResultLimit int
 	// ExtraSourceCols follow doc_key, chunk_index, revision and score.
-	ExtraSourceCols []SourceColumn
-	SourcePredicate SourcePredicate
-}
-
-// SourceColumn projects a source column under an explicit result alias.
-type SourceColumn struct{ Name, As string }
-
-// SourcePredicate is trusted application SQL over source alias d, using only
-// anonymous ? placeholders. Args are bound in textual order. Values from users
-// belong in Args, never in SQL. The predicate runs after the raw KNN limit but
-// before ResultLimit. EXISTS predicates can constrain related rows without
-// multiplying candidates.
-type SourcePredicate struct {
-	SQL  string
-	Args []any
+	ExtraSourceCols []sqlquery.Column
+	// SourcePredicate runs after the raw KNN limit but before ResultLimit and
+	// is passed to SQLite unchanged. EXISTS predicates can constrain related
+	// rows without multiplying candidates.
+	SourcePredicate sqlquery.Predicate
 }
 
 // BuildCandidateQuery returns a composable SELECT with columns doc_key,
@@ -52,35 +42,36 @@ type SourcePredicate struct {
 // cosine similarity, higher first. Equal scores use vector rowid order within
 // the retrieved window. Outer queries must specify their own ordering.
 //
-// The caller supplies the generation ordinal and dimension from its own read.
-// This method does not use the database. Execute the returned query on the
-// caller's handle, including inside a transaction. A short result does not
-// establish exhaustion; QueryGenerationWindow exposes the raw boundary when
-// a caller needs to expand the candidate window.
-func (s *Store[K, G]) BuildCandidateQuery(ordinal int64, dimension int, query vector.Vector, q CandidateQuery) (sqlquery.Query, error) {
+// BuildCandidateQuery reads gen's layout on db, the caller's handle, so the
+// lookup and the returned query can share one transaction. It does not use
+// the store's own connection. Execute the returned query on the same handle.
+// A short result does not establish exhaustion; QueryGenerationWindow exposes
+// the raw boundary when a caller needs to expand the candidate window.
+func (s *Store[K, G]) BuildCandidateQuery(ctx context.Context, db sqlquery.Queryer, gen G, query vector.Vector, q CandidateQuery) (sqlquery.Query, error) {
 	if q.CandidateLimit <= 0 {
-		return sqlquery.Query{}, errors.New("candidate limit must be positive")
+		return sqlquery.Query{}, errors.New("sqlitevec: candidate limit must be positive")
 	}
 	if q.ResultLimit < 0 || q.ResultLimit > q.CandidateLimit {
-		return sqlquery.Query{}, errors.New("result limit must be between zero and candidate limit")
+		return sqlquery.Query{}, errors.New("sqlitevec: result limit must be between zero and candidate limit")
 	}
 	predicate := strings.TrimSpace(q.SourcePredicate.SQL)
 	if predicate == "" && len(q.SourcePredicate.Args) != 0 {
-		return sqlquery.Query{}, errors.New("source predicate arguments require SQL")
+		return sqlquery.Query{}, errors.New("sqlitevec: source predicate arguments require SQL")
 	}
 	aliases := map[string]bool{"doc_key": true, "chunk_index": true, "revision": true, "score": true, "distance": true, "vec_rowid": true}
 	var projection, columns strings.Builder
 	for _, col := range q.ExtraSourceCols {
 		alias := strings.ToLower(col.As)
 		if !identifierPattern.MatchString(col.Name) || !identifierPattern.MatchString(col.As) || aliases[alias] {
-			return sqlquery.Query{}, fmt.Errorf("invalid or conflicting source column %q AS %q", col.Name, col.As)
+			return sqlquery.Query{}, fmt.Errorf("sqlitevec: invalid or conflicting source column %q AS %q", col.Name, col.As)
 		}
 		aliases[alias] = true
 		fmt.Fprintf(&projection, ", d.\"%s\" AS \"%s\"", col.Name, col.As)
 		fmt.Fprintf(&columns, ", \"%s\"", col.As)
 	}
-	if ordinal <= 0 {
-		return sqlquery.Query{}, errors.New("generation ordinal must be positive")
+	ordinal, dimension, err := s.lookupGenerationOn(ctx, db, gen)
+	if err != nil {
+		return sqlquery.Query{}, err
 	}
 	if len(query) != dimension {
 		return sqlquery.Query{}, fmt.Errorf("query has %d dimensions, generation expects %d", len(query), dimension)
@@ -188,4 +179,29 @@ func (s *Store[K, G]) candidateCTEs(ordinal int64, expr, projection, predicate s
 		text += " AND (" + predicate + ")"
 	}
 	return text + ")"
+}
+
+// lookupGenerationOn reads gen's layout through a caller's handle, which may
+// be a transaction the store does not own.
+func (s *Store[K, G]) lookupGenerationOn(ctx context.Context, db sqlquery.Queryer, gen G) (int64, int, error) {
+	if db == nil {
+		return 0, 0, errors.New("sqlitevec: query handle is required")
+	}
+	rows, err := db.QueryContext(ctx, fmt.Sprintf(`SELECT ordinal, dimension FROM %s WHERE gen_key = ?`, s.generationsTable()), gen)
+	if err != nil {
+		return 0, 0, fmt.Errorf("sqlitevec: lookup generation %v: %w", gen, err)
+	}
+	defer func() { _ = rows.Close() }()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return 0, 0, fmt.Errorf("sqlitevec: lookup generation %v: %w", gen, err)
+		}
+		return 0, 0, fmt.Errorf("generation %v not ensured", gen)
+	}
+	var ordinal int64
+	var dimension int
+	if err := rows.Scan(&ordinal, &dimension); err != nil {
+		return 0, 0, fmt.Errorf("sqlitevec: lookup generation %v: %w", gen, err)
+	}
+	return ordinal, dimension, nil
 }
