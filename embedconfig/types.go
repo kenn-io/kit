@@ -2,12 +2,16 @@ package embedconfig
 
 import "time"
 
-// DefaultBatchItems is the item cap used when Batch.Items is zero.
-// Count-only batches of this size match the duplicated HTTP clients. Other
-// sizes stay explicit.
-const DefaultBatchItems = 64
+// DefaultBatchItems is the item cap used when Batch.Items is zero. 32 is the
+// largest request Hugging Face Text Embeddings Inference accepts by default,
+// and at about 512 tokens per input it stays under the smallest per-request
+// token caps of hosted providers. Items cannot bound tokens; set a token
+// budget in Batch when inputs are long.
+const DefaultBatchItems = 32
 
 // DefaultTimeout is the HTTP timeout used when Transport.Timeout is zero.
+// A local server encoding a large batch, or on CPU, can take longer; set
+// Transport.Timeout for those deployments.
 const DefaultTimeout = 30 * time.Second
 
 // DefaultMaxResponseBytes bounds an embedding response when

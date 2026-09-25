@@ -8,8 +8,8 @@
 // change vectors or force a rebuild. Batch size and timeouts do not.
 // embedmodel.Descriptor combines them and computes the identities.
 //
-// Dimensions and truncation have no default. Batch size defaults to 64
-// items and the transport timeout defaults to 30 seconds because those are
-// the values the duplicated HTTP clients already used. Deployments that use 32 or 128 items, or a 45 second timeout,
-// set those values explicitly.
+// Dimensions and truncation have no default. Batch size defaults to 32
+// items, which every common embedding server and provider accepts, and the
+// transport timeout defaults to 30 seconds. Deployments that need other
+// values, such as 128 items or a 45 second timeout, set them explicitly.
 package embedconfig

@@ -4,7 +4,7 @@
   them into one flat configuration struct of scalars.
 - Do not default dimensions or truncation. Those choices change
   compatibility.
-- `ApplyDefaults` may fill batch size 64, transport timeout 30s, and a 32 MiB
+- `ApplyDefaults` may fill batch size 32, transport timeout 30s, and a 32 MiB
   response cap. It must not invent a model, a dimension, or a chunk limit.
 - Identities live on `embedmodel.Descriptor`, not here. Keep query-side
   policy such as retrieval budgets and generation serving out of this
