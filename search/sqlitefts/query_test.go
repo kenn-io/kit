@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/search/sqlitefts"
+	"go.kenn.io/kit/search/sqlquery"
 	_ "modernc.org/sqlite"
 )
 
@@ -13,8 +14,8 @@ func TestBuildAndCompose(t *testing.T) {
 	h := newHelper(t, "docs_fts", "source_id", "docs", "id")
 	q, err := h.Build(sqlitefts.Request{
 		Match:           "alpha",
-		SourcePredicate: sqlitefts.Predicate{SQL: "d.tenant_id = ?", Args: []any{"tenant"}},
-		ExtraSourceCols: []sqlitefts.Column{{Name: "title", As: "title"}}, Limit: 4,
+		SourcePredicate: sqlquery.Predicate{SQL: "d.tenant_id = ?", Args: []any{"tenant"}},
+		ExtraSourceCols: []sqlquery.Column{{Name: "title", As: "title"}}, CandidateLimit: 4,
 	})
 	require.NoError(t, err)
 	require.Contains(t, q.SQL, `-bm25("docs_fts")`)
@@ -54,7 +55,7 @@ INSERT INTO docs VALUES (1,'other','excluded'), (2,'tenant','kept');
 INSERT INTO docs_fts(rowid,body) VALUES (1,'alpha alpha'), (2,'alpha');`)
 	require.NoError(t, err)
 	q, err := newHelper(t, "docs_fts", "rowid", "docs", "id").Build(sqlitefts.Request{
-		Match: "alpha", SourcePredicate: sqlitefts.Predicate{SQL: "d.tenant = ?", Args: []any{"tenant"}}, Limit: 1,
+		Match: "alpha", SourcePredicate: sqlquery.Predicate{SQL: "d.tenant = ?", Args: []any{"tenant"}}, CandidateLimit: 1,
 	})
 	require.NoError(t, err)
 	tx, err := db.BeginTx(t.Context(), nil)
@@ -72,21 +73,21 @@ INSERT INTO docs_fts(rowid,body) VALUES (1,'alpha alpha'), (2,'alpha');`)
 
 func TestBuildRejectsCaseInsensitiveFixedAliasCollision(t *testing.T) {
 	_, err := newHelper(t, "fts", "rowid", "docs", "id").Build(sqlitefts.Request{
-		Match: "x", ExtraSourceCols: []sqlitefts.Column{{Name: "title", As: "DOC_KEY"}}, Limit: 1,
+		Match: "x", ExtraSourceCols: []sqlquery.Column{{Name: "title", As: "DOC_KEY"}}, CandidateLimit: 1,
 	})
 	require.Error(t, err)
 }
 
 func TestBuildRejectsPredicateArgsWithoutSQL(t *testing.T) {
 	_, err := newHelper(t, "fts", "source_id", "docs", "id").Build(sqlitefts.Request{
-		Match: "x", SourcePredicate: sqlitefts.Predicate{Args: []any{"tenant"}}, Limit: 1,
+		Match: "x", SourcePredicate: sqlquery.Predicate{Args: []any{"tenant"}}, CandidateLimit: 1,
 	})
 	require.Error(t, err)
 }
 
 func TestRankFunctionDefaultsToBM25AndCanBeReplaced(t *testing.T) {
 	custom := newHelper(t, "docs_fts", "rowid", "docs", "id", sqlitefts.WithRankFunction("rank"))
-	q, err := custom.Build(sqlitefts.Request{Match: "alpha", Limit: 1})
+	q, err := custom.Build(sqlitefts.Request{Match: "alpha", CandidateLimit: 1})
 	require.NoError(t, err)
 	require.Contains(t, q.SQL, `-rank("docs_fts")`)
 	require.NotContains(t, q.SQL, "bm25")

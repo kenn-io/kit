@@ -80,28 +80,14 @@ func New(opts ...Option) (Helper, error) {
 	return h, nil
 }
 
-// Column projects a source column under an explicit result alias.
-type Column struct {
-	Name string
-	As   string
-}
-
-// Predicate is a trusted SQL fragment over source alias d and its positional
-// arguments. The fragment is placed inside the candidate query before ORDER
-// BY and LIMIT. Since source rows always use the fixed alias d, predicates
-// should refer to columns as d.<column> and use anonymous ? placeholders.
-// User values belong in Args, never in SQL.
-type Predicate struct {
-	SQL  string
-	Args []any
-}
-
 // Request describes one bounded FTS5 candidate query.
+// SourcePredicate is placed before ORDER BY and LIMIT and passed to SQLite
+// unchanged, so each ? binds the next argument.
 type Request struct {
 	Match           string
-	SourcePredicate Predicate
-	ExtraSourceCols []Column
-	Limit           int
+	SourcePredicate sqlquery.Predicate
+	ExtraSourceCols []sqlquery.Column
+	CandidateLimit  int
 }
 
 // Build returns a mapped FTS5 candidate SELECT. Scores are higher-is-better
@@ -113,8 +99,8 @@ func (h Helper) Build(req Request) (sqlquery.Query, error) {
 	if err := h.valid(); err != nil {
 		return sqlquery.Query{}, err
 	}
-	if req.Limit <= 0 {
-		return sqlquery.Query{}, errors.New("sqlitefts: limit must be positive")
+	if req.CandidateLimit <= 0 {
+		return sqlquery.Query{}, errors.New("sqlitefts: candidate limit must be positive")
 	}
 	aliases := map[string]bool{"doc_key": true, "score": true}
 	for _, col := range req.ExtraSourceCols {
@@ -146,7 +132,7 @@ func (h Helper) Build(req Request) (sqlquery.Query, error) {
 		return sqlquery.Query{}, errors.New("sqlitefts: source predicate args require SQL")
 	}
 	b.WriteString(" ORDER BY score DESC, doc_key ASC LIMIT ?")
-	args = append(args, req.Limit)
+	args = append(args, req.CandidateLimit)
 	return sqlquery.Query{SQL: b.String(), Args: args}, nil
 }
 
