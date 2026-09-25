@@ -107,39 +107,56 @@ func TestLooksLikeSHAUsesLengthAndHexPattern(t *testing.T) {
 func TestHooksPathAndEnsureAbsoluteHooksPath(t *testing.T) {
 	gitDirHooks := filepath.Join(".git", "custom-hooks")
 	outsideHooks := filepath.Join("..", "shared-hooks")
+	mainCopy := func(rel string) func(main, _ string) string {
+		return func(main, _ string) string { return filepath.Join(main, rel) }
+	}
+	ownCopy := func(rel string) func(_, wt string) string {
+		return func(_, wt string) string { return filepath.Join(wt, rel) }
+	}
 	for _, tc := range []struct {
 		name string
 		raw  string
-		// wantConfig is empty when the configured value must stay as set.
-		wantConfig func(main string) string
-		wantHooks  func(main, wt string) string
+		// track commits a hook under this directory before the worktree
+		// is created.
+		track string
+		// anchored reports whether the value becomes absolute under the
+		// main checkout.
+		anchored bool
+		wantHooks func(main, wt string) string
 	}{
 		{
-			name:      "working tree path stays relative",
+			name:      "untracked working tree dir uses main checkout",
 			raw:       ".githooks",
-			wantHooks: func(_, wt string) string { return filepath.Join(wt, ".githooks") },
+			anchored:  true,
+			wantHooks: mainCopy(".githooks"),
 		},
 		{
-			name:      "unclean working tree path stays relative",
+			name:      "git dir path uses main checkout",
+			raw:       gitDirHooks,
+			anchored:  true,
+			wantHooks: mainCopy(gitDirHooks),
+		},
+		{
+			name:      "outside path uses main checkout",
+			raw:       outsideHooks,
+			anchored:  true,
+			wantHooks: mainCopy(outsideHooks),
+		},
+		{
+			name:      "tracked dir stays per worktree",
+			raw:       ".githooks",
+			track:     ".githooks",
+			wantHooks: ownCopy(".githooks"),
+		},
+		{
+			name:      "unclean tracked dir stays per worktree",
 			raw:       "./tools/../.githooks",
-			wantHooks: func(_, wt string) string { return filepath.Join(wt, ".githooks") },
+			track:     ".githooks",
+			wantHooks: ownCopy(".githooks"),
 		},
 		{
-			name:       "git dir path anchors to main root",
-			raw:        gitDirHooks,
-			wantConfig: func(main string) string { return filepath.Join(main, gitDirHooks) },
-			wantHooks:  func(main, _ string) string { return filepath.Join(main, gitDirHooks) },
-		},
-		{
-			name:       "outside path anchors to main root",
-			raw:        outsideHooks,
-			wantConfig: func(main string) string { return filepath.Join(main, outsideHooks) },
-			wantHooks:  func(main, _ string) string { return filepath.Join(main, outsideHooks) },
-		},
-		{
-			name:      "tilde path is left for git",
-			raw:       "~/hooks",
-			wantHooks: nil,
+			name: "tilde path is left for git",
+			raw:  "~/hooks",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -149,32 +166,33 @@ func TestHooksPathAndEnsureAbsoluteHooksPath(t *testing.T) {
 			// from Git and from the fixture compare equal.
 			repo := gittest.NewRepo(t, gittest.Options{ConfigureUser: true, ResolvePath: true})
 			repo.CommitFile("a.txt", "a\n", "initial")
+			if tc.track != "" {
+				repo.CommitFile(filepath.Join(tc.track, "pre-commit"), "#!/bin/sh\n", "add hooks")
+			}
 			main := repo.Root
 			wt := repo.AddWorktree("feature")
 			repo.Config("core.hooksPath", tc.raw)
 
 			if tc.wantHooks != nil {
-				// Before and after normalization, the hooks directory
-				// is the one Git runs from the linked worktree.
 				got, err := HooksPath(ctx, wt)
 				require.NoError(err)
-				assert.Equal(t, tc.wantHooks(main, wt), got)
+				assert.Equal(t, tc.wantHooks(main, wt), got, "before normalization")
 			}
 
 			require.NoError(EnsureAbsoluteHooksPath(ctx, wt))
 			want := tc.raw
-			if tc.wantConfig != nil {
-				want = tc.wantConfig(main)
+			if tc.anchored {
+				want = filepath.Join(main, tc.raw)
 			}
 			assert.Equal(t, want, repo.Run("config", "--local", "core.hooksPath"))
 
 			if tc.wantHooks != nil {
 				got, err := HooksPath(ctx, wt)
 				require.NoError(err)
-				assert.Equal(t, tc.wantHooks(main, wt), got)
-				got, err = HooksPath(ctx, repo.Root)
+				assert.Equal(t, tc.wantHooks(main, wt), got, "linked worktree")
+				got, err = HooksPath(ctx, main)
 				require.NoError(err)
-				assert.Equal(t, tc.wantHooks(main, main), got)
+				assert.Equal(t, tc.wantHooks(main, main), got, "main checkout")
 			}
 		})
 	}
