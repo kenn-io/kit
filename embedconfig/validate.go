@@ -5,44 +5,6 @@ import (
 	"strings"
 )
 
-// Prepare applies operational defaults and validates s.
-// The returned setup is the value callers should keep. Serving is required.
-// Input limits and retrieval budgets may stay at the zero value.
-func (s Setup) Prepare() (Setup, error) {
-	var err error
-	s.Model, err = s.Model.Prepared()
-	if err != nil {
-		return Setup{}, err
-	}
-	s.Roles, err = s.Roles.Prepared()
-	if err != nil {
-		return Setup{}, err
-	}
-	s.Deployment, err = s.Deployment.Prepared()
-	if err != nil {
-		return Setup{}, err
-	}
-	s.Batch, err = s.Batch.Prepared()
-	if err != nil {
-		return Setup{}, err
-	}
-	s.Transport, err = s.Transport.Prepared()
-	if err != nil {
-		return Setup{}, err
-	}
-	s.Input, err = s.Input.Prepared()
-	if err != nil {
-		return Setup{}, err
-	}
-	if err := s.Retrieval.Validate(); err != nil {
-		return Setup{}, err
-	}
-	if err := s.Serving.Validate(); err != nil {
-		return Setup{}, err
-	}
-	return s, nil
-}
-
 func (m Model) normalize() Model {
 	m.Name = strings.TrimSpace(m.Name)
 	m.Revision = strings.TrimSpace(m.Revision)
@@ -237,32 +199,4 @@ func (in InputLimits) Validate() error {
 		return errors.New("embed input tokenizer is required when a token window is set")
 	}
 	return nil
-}
-
-// Validate allows an unset retrieval budget. A set budget needs both limits,
-// and the raw candidate window must be at least the final result limit.
-func (r Retrieval) Validate() error {
-	if r == (Retrieval{}) {
-		return nil
-	}
-	if r.RawCandidates <= 0 || r.Results <= 0 {
-		return errors.New("embed retrieval needs a positive raw candidate limit and result limit")
-	}
-	if r.RawCandidates < r.Results {
-		return errors.New("embed retrieval raw candidate limit must cover the result limit")
-	}
-	if r.Timeout < 0 {
-		return errors.New("embed retrieval timeout must be at least zero")
-	}
-	return nil
-}
-
-// Validate requires an explicit serving policy.
-func (s Serving) Validate() error {
-	switch s {
-	case ServeListed, ServeActive:
-		return nil
-	default:
-		return errors.New("embed serving policy must be listed or active")
-	}
 }

@@ -60,20 +60,6 @@ const (
 	TruncationDropTail Truncation = "drop_tail"
 )
 
-// Serving chooses which generations a caller queries.
-// The zero value is not a policy. Kit's own Search walks every listed
-// generation, including a generation that is still building. Some indexes
-// query only the active generation and use another retrieval path during
-// replacement. Those policies are not interchangeable.
-type Serving string
-
-const (
-	// ServeListed queries every generation the store reports as live.
-	ServeListed Serving = "listed"
-	// ServeActive queries only the generation the caller has marked active.
-	ServeActive Serving = "active"
-)
-
 // Model is the embedding model and the vector-space controls that travel
 // with it. Revision is the caller's weights or deployment epoch, including
 // a salt when the same model name can mean different weights.
@@ -145,27 +131,4 @@ type InputLimits struct {
 	OverlapTokens     int
 	MaxSpans          int
 	Truncation        Truncation
-}
-
-// Retrieval separates the raw candidate window from the final result limit.
-// A zero value means this process is not configuring retrieval. Timeout is
-// the query budget. Zero timeout means the caller uses its context deadline.
-type Retrieval struct {
-	RawCandidates int
-	Results       int
-	Timeout       time.Duration
-}
-
-// Setup is the composition of the cohesive settings. It is not a flat list
-// of unrelated knobs. Prepare fills the documented operational defaults and
-// validates the parts the caller set.
-type Setup struct {
-	Model      Model
-	Roles      Roles
-	Deployment Deployment
-	Batch      Batch
-	Transport  Transport
-	Input      InputLimits
-	Retrieval  Retrieval
-	Serving    Serving
 }

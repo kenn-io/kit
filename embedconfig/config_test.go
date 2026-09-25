@@ -11,144 +11,73 @@ import (
 	"go.kenn.io/kit/embedconfig"
 )
 
-func TestPrepareEndpointRetrievalSetup(t *testing.T) {
-	got, err := endpointRetrievalSetup().Prepare()
+func TestPreparedFillsOnlyOperationalDefaults(t *testing.T) {
+	batch, err := embedconfig.Batch{}.Prepared()
 	require.NoError(t, err)
+	assert.Equal(t, embedconfig.DefaultBatchItems, batch.Items)
+	transport, err := embedconfig.Transport{}.Prepared()
+	require.NoError(t, err)
+	assert.Equal(t, embedconfig.DefaultTimeout, transport.Timeout)
+	assert.Equal(t, embedconfig.DefaultMaxResponseBytes, transport.MaxResponseBytes)
 
-	assert.Equal(t, embedconfig.DefaultBatchItems, got.Batch.Items)
-	assert.Equal(t, embedconfig.DefaultTimeout, got.Transport.Timeout)
-	assert.Equal(t, embedconfig.DefaultMaxResponseBytes, got.Transport.MaxResponseBytes)
-	assert.Equal(t, 1536, got.Model.Dimensions)
-	assert.Equal(t, embedconfig.InputTypeRetrieval, got.Roles.InputType)
-	assert.Equal(t, embedconfig.ServeListed, got.Serving)
-	assert.Equal(t, 1000, got.Retrieval.RawCandidates)
-	assert.Equal(t, 20, got.Retrieval.Results)
-	assert.True(t, got.Deployment.PinEndpoint)
+	batch, err = embedconfig.Batch{Items: 32, MaxTokens: 8192, InputTokenUpperBound: 512}.Prepared()
+	require.NoError(t, err)
+	assert.Equal(t, 32, batch.Items)
+	transport, err = embedconfig.Transport{Timeout: 45 * time.Second}.Prepared()
+	require.NoError(t, err)
+	assert.Equal(t, 45*time.Second, transport.Timeout)
 
-	identity, err := embedconfig.VectorIdentity(got.Model, got.Roles, got.Deployment)
+	model, err := embedconfig.Model{Name: " bge-m3 ", Dimensions: 1024, Metric: " cosine ", Normalization: embedconfig.NormalizationL2}.Prepared()
 	require.NoError(t, err)
-	moved := got
-	moved.Deployment.BaseURL = "https://example.test:443/moved"
-	movedIdentity, err := embedconfig.VectorIdentity(moved.Model, moved.Roles, moved.Deployment)
+	assert.Equal(t, "bge-m3", model.Name)
+	assert.Equal(t, embedconfig.MetricCosine, model.Metric)
+	roles, err := embedconfig.Roles{}.Prepared()
 	require.NoError(t, err)
-	assert.NotEqual(t, identity, movedIdentity)
+	assert.Equal(t, embedconfig.InputTypeNone, roles.InputType)
 }
 
-func TestPreparePrefixedInputSetup(t *testing.T) {
-	got, err := prefixedInputSetup().Prepare()
-	require.NoError(t, err)
-
-	assert.Equal(t, 32, got.Batch.Items)
-	assert.Equal(t, 45*time.Second, got.Transport.Timeout)
-	assert.Equal(t, 8192, got.Batch.MaxTokens)
-	assert.Equal(t, 512, got.Input.MaxTokens)
-	assert.Equal(t, embedconfig.TruncationDropTail, got.Input.Truncation)
-	assert.Equal(t, embedconfig.ServeActive, got.Serving)
-	assert.False(t, got.Deployment.PinEndpoint)
-	assert.Equal(t, "http://127.0.0.1:11434/v1", got.Deployment.BaseURL)
-
-	vectorID, err := embedconfig.VectorIdentity(got.Model, got.Roles, got.Deployment)
-	require.NoError(t, err)
-	inputID, err := embedconfig.InputIdentity(got.Model, got.Roles, got.Deployment, got.Input)
-	require.NoError(t, err)
-	assert.NotEqual(t, vectorID, inputID)
-
-	relocated := got
-	relocated.Deployment.BaseURL = "http://127.0.0.1:11435/v1"
-	relocatedID, err := embedconfig.VectorIdentity(relocated.Model, relocated.Roles, relocated.Deployment)
-	require.NoError(t, err)
-	assert.Equal(t, vectorID, relocatedID, "unpinned endpoint move keeps the vector identity")
-}
-
-func TestOperationalSettingsDoNotChangeIdentity(t *testing.T) {
-	setup, err := prefixedInputSetup().Prepare()
-	require.NoError(t, err)
-	vectorID, err := embedconfig.VectorIdentity(setup.Model, setup.Roles, setup.Deployment)
-	require.NoError(t, err)
-	inputID, err := embedconfig.InputIdentity(setup.Model, setup.Roles, setup.Deployment, setup.Input)
-	require.NoError(t, err)
-
-	changed := setup
-	changed.Batch.Items = 128
-	changed.Batch.MaxTokens = 16000
-	changed.Batch.InputTokenUpperBound = 256
-	changed.Transport.Timeout = 45 * time.Second
-	changed.Transport.MaxResponseBytes = 1024
-	changed.Retrieval.RawCandidates = 10
-	changed.Retrieval.Results = 4
-	changed.Retrieval.Timeout = time.Second
-	changed.Serving = embedconfig.ServeListed
-	changed.Deployment.TrustPrivateNetwork = true
-
-	gotVector, err := embedconfig.VectorIdentity(changed.Model, changed.Roles, changed.Deployment)
-	require.NoError(t, err)
-	gotInput, err := embedconfig.InputIdentity(changed.Model, changed.Roles, changed.Deployment, changed.Input)
-	require.NoError(t, err)
-	assert.Equal(t, vectorID, gotVector)
-	assert.Equal(t, inputID, gotInput)
-
-	changed.Model.EncodingFormat = "base64"
-	gotVector, err = embedconfig.VectorIdentity(changed.Model, changed.Roles, changed.Deployment)
-	require.NoError(t, err)
-	gotInput, err = embedconfig.InputIdentity(changed.Model, changed.Roles, changed.Deployment, changed.Input)
-	require.NoError(t, err)
-	assert.Equal(t, vectorID, gotVector, "wire encoding is not part of the vector identity")
-	assert.Equal(t, inputID, gotInput)
-}
-
-func TestInputWindowChangesInputIdentityOnly(t *testing.T) {
-	setup, err := prefixedInputSetup().Prepare()
-	require.NoError(t, err)
-	vectorID, err := embedconfig.VectorIdentity(setup.Model, setup.Roles, setup.Deployment)
-	require.NoError(t, err)
-	inputID, err := embedconfig.InputIdentity(setup.Model, setup.Roles, setup.Deployment, setup.Input)
-	require.NoError(t, err)
-
-	changed := setup.Input
-	changed.OverlapTokens = 32
-	gotVector, err := embedconfig.VectorIdentity(setup.Model, setup.Roles, setup.Deployment)
-	require.NoError(t, err)
-	gotInput, err := embedconfig.InputIdentity(setup.Model, setup.Roles, setup.Deployment, changed)
-	require.NoError(t, err)
-	assert.Equal(t, vectorID, gotVector)
-	assert.NotEqual(t, inputID, gotInput)
-}
-
-func TestPrepareRejectsIncompleteModelAndBudgets(t *testing.T) {
+func TestPreparedRejectsIncompleteSettings(t *testing.T) {
+	model := embedconfig.Model{Name: "m", Dimensions: 3, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationL2}
 	tests := []struct {
-		name   string
-		mutate func(*embedconfig.Setup)
+		name    string
+		prepare func() error
 	}{
-		{name: "missing dimensions", mutate: func(s *embedconfig.Setup) { s.Model.Dimensions = 0 }},
-		{name: "missing metric", mutate: func(s *embedconfig.Setup) { s.Model.Metric = "" }},
-		{name: "negative batch", mutate: func(s *embedconfig.Setup) { s.Batch.Items = -1 }},
-		{name: "token bound exceeds cap", mutate: func(s *embedconfig.Setup) {
-			s.Batch.MaxTokens = 10
-			s.Batch.InputTokenUpperBound = 11
+		{name: "missing dimensions", prepare: func() error {
+			m := model
+			m.Dimensions = 0
+			_, err := m.Prepared()
+			return err
 		}},
-		{name: "negative timeout", mutate: func(s *embedconfig.Setup) { s.Transport.Timeout = -time.Second }},
-		{name: "missing serving", mutate: func(s *embedconfig.Setup) { s.Serving = "" }},
-		{name: "raw window below results", mutate: func(s *embedconfig.Setup) {
-			s.Retrieval.RawCandidates = 2
-			s.Retrieval.Results = 5
+		{name: "missing metric", prepare: func() error {
+			m := model
+			m.Metric = ""
+			_, err := m.Prepared()
+			return err
 		}},
-		{name: "partial retrieval", mutate: func(s *embedconfig.Setup) {
-			s.Retrieval = embedconfig.Retrieval{Results: 5}
+		{name: "negative batch", prepare: func() error {
+			_, err := embedconfig.Batch{Items: -1}.Prepared()
+			return err
 		}},
-		{name: "token window without truncation", mutate: func(s *embedconfig.Setup) {
-			s.Input.MaxTokens = 128
-			s.Input.Tokenizer = "piece"
+		{name: "token bound exceeds cap", prepare: func() error {
+			_, err := embedconfig.Batch{MaxTokens: 10, InputTokenUpperBound: 11}.Prepared()
+			return err
 		}},
-		{name: "plaintext public endpoint", mutate: func(s *embedconfig.Setup) {
-			s.Deployment.BaseURL = "http://example.test/v1"
+		{name: "negative timeout", prepare: func() error {
+			_, err := embedconfig.Transport{Timeout: -time.Second}.Prepared()
+			return err
+		}},
+		{name: "token window without truncation", prepare: func() error {
+			_, err := embedconfig.InputLimits{MaxTokens: 128, Tokenizer: "piece"}.Prepared()
+			return err
+		}},
+		{name: "plaintext public endpoint", prepare: func() error {
+			_, err := embedconfig.Deployment{BaseURL: "http://example.test/v1"}.Prepared()
+			return err
 		}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			setup := endpointRetrievalSetup()
-			test.mutate(&setup)
-			_, err := setup.Prepare()
-			require.Error(t, err)
+			require.Error(t, test.prepare())
 		})
 	}
 }
@@ -230,61 +159,4 @@ func TestCanonicalEndpointHostAndIPv6Zone(t *testing.T) {
 	trustedAgain, err := embedconfig.CanonicalEndpoint(trusted, true)
 	require.NoError(t, err)
 	assert.Equal(t, trusted, trustedAgain)
-}
-
-func endpointRetrievalSetup() embedconfig.Setup {
-	return embedconfig.Setup{
-		Model: embedconfig.Model{
-			Name:              "text-embedding-3-small",
-			Dimensions:        1536,
-			Metric:            embedconfig.MetricCosine,
-			Normalization:     embedconfig.NormalizationL2,
-			RequestDimensions: true,
-			EncodingFormat:    "float",
-		},
-		Roles:      embedconfig.Roles{InputType: embedconfig.InputTypeRetrieval},
-		Deployment: embedconfig.Deployment{BaseURL: "https://example.test/v1", PinEndpoint: true},
-		Retrieval: embedconfig.Retrieval{
-			RawCandidates: 1000,
-			Results:       20,
-			Timeout:       3 * time.Second,
-		},
-		Serving: embedconfig.ServeListed,
-	}
-}
-
-func prefixedInputSetup() embedconfig.Setup {
-	return embedconfig.Setup{
-		Model: embedconfig.Model{
-			Name:          "bge-m3",
-			Revision:      "weights-epoch",
-			Dimensions:    1024,
-			Metric:        embedconfig.MetricCosine,
-			Normalization: embedconfig.NormalizationL2,
-			Pooling:       "cls",
-		},
-		Roles: embedconfig.Roles{
-			DocumentPrefix: "search_document: ",
-			QueryPrefix:    "search_query: ",
-		},
-		Deployment: embedconfig.Deployment{BaseURL: "http://127.0.0.1:11434/v1"},
-		Batch: embedconfig.Batch{
-			Items:                32,
-			MaxTokens:            8192,
-			InputTokenUpperBound: 512,
-		},
-		Transport: embedconfig.Transport{Timeout: 45 * time.Second},
-		Input: embedconfig.InputLimits{
-			Recipe:            "v2",
-			Tokenizer:         "bge-m3",
-			TokenizerRevision: "rev",
-			ContentID:         "body",
-			MaxTokens:         512,
-			OverlapTokens:     64,
-			MaxSpans:          50,
-			Truncation:        embedconfig.TruncationDropTail,
-		},
-		Retrieval: embedconfig.Retrieval{RawCandidates: 200, Results: 50},
-		Serving:   embedconfig.ServeActive,
-	}
 }

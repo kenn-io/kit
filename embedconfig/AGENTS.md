@@ -2,17 +2,13 @@
 
 - Keep model, role, and input settings in their own types. Do not collapse
   them into one flat configuration struct of scalars.
-- Do not default dimensions, truncation, retrieval limits, or generation
-  serving. Those choices change compatibility or recall.
+- Do not default dimensions or truncation. Those choices change
+  compatibility.
 - `ApplyDefaults` may fill batch size 64, transport timeout 30s, and a 32 MiB
   response cap. It must not invent a model, a dimension, or a chunk limit.
-- `VectorIdentity` includes model, metric, normalization, pooling, role
-  affixes and formatters, input type, encoding format, requested dimensions,
-  and the endpoint only when `PinEndpoint` is set.
-- `InputIdentity` includes the vector identity plus recipe, tokenizer,
-  content selection, and token-window limits. Batch size, timeout, response
-  cap, retrieval budgets, serving policy, and `TrustPrivateNetwork` stay out
-  of both identities.
+- Identities live on `embedmodel.Descriptor`, not here. Keep query-side
+  policy such as retrieval budgets and generation serving out of this
+  package until a kit package consumes it.
 - API keys are not fields of these types. Callers resolve secrets and pass
   them to the HTTP client.
 - `CanonicalEndpoint` and `Origin` reject an empty hostname, including a
