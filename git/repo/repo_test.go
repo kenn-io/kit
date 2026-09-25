@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	gittest "go.kenn.io/kit/git/test"
 )
@@ -101,4 +102,91 @@ func TestLooksLikeSHAUsesLengthAndHexPattern(t *testing.T) {
 			require.FailNow(t, fmt.Sprintf("%q should not look like a SHA", value))
 		}
 	}
+}
+
+func TestHooksPathAndEnsureAbsoluteHooksPath(t *testing.T) {
+	gitDirHooks := filepath.Join(".git", "custom-hooks")
+	outsideHooks := filepath.Join("..", "shared-hooks")
+	for _, tc := range []struct {
+		name string
+		raw  string
+		// wantConfig is empty when the configured value must stay as set.
+		wantConfig func(main string) string
+		wantHooks  func(main, wt string) string
+	}{
+		{
+			name:      "working tree path stays relative",
+			raw:       ".githooks",
+			wantHooks: func(_, wt string) string { return filepath.Join(wt, ".githooks") },
+		},
+		{
+			name:      "unclean working tree path stays relative",
+			raw:       "./tools/../.githooks",
+			wantHooks: func(_, wt string) string { return filepath.Join(wt, ".githooks") },
+		},
+		{
+			name:       "git dir path anchors to main root",
+			raw:        gitDirHooks,
+			wantConfig: func(main string) string { return filepath.Join(main, gitDirHooks) },
+			wantHooks:  func(main, _ string) string { return filepath.Join(main, gitDirHooks) },
+		},
+		{
+			name:       "outside path anchors to main root",
+			raw:        outsideHooks,
+			wantConfig: func(main string) string { return filepath.Join(main, outsideHooks) },
+			wantHooks:  func(main, _ string) string { return filepath.Join(main, outsideHooks) },
+		},
+		{
+			name:      "tilde path is left for git",
+			raw:       "~/hooks",
+			wantHooks: nil,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require := require.New(t)
+			ctx := t.Context()
+			// Resolve symlinks (macOS /var -> /private/var) so paths
+			// from Git and from the fixture compare equal.
+			repo := gittest.NewRepo(t, gittest.Options{ConfigureUser: true, ResolvePath: true})
+			repo.CommitFile("a.txt", "a\n", "initial")
+			main := repo.Root
+			wt := repo.AddWorktree("feature")
+			repo.Config("core.hooksPath", tc.raw)
+
+			if tc.wantHooks != nil {
+				// Before and after normalization, the hooks directory
+				// is the one Git runs from the linked worktree.
+				got, err := HooksPath(ctx, wt)
+				require.NoError(err)
+				assert.Equal(t, tc.wantHooks(main, wt), got)
+			}
+
+			require.NoError(EnsureAbsoluteHooksPath(ctx, wt))
+			want := tc.raw
+			if tc.wantConfig != nil {
+				want = tc.wantConfig(main)
+			}
+			assert.Equal(t, want, repo.Run("config", "--local", "core.hooksPath"))
+
+			if tc.wantHooks != nil {
+				got, err := HooksPath(ctx, wt)
+				require.NoError(err)
+				assert.Equal(t, tc.wantHooks(main, wt), got)
+				got, err = HooksPath(ctx, repo.Root)
+				require.NoError(err)
+				assert.Equal(t, tc.wantHooks(main, main), got)
+			}
+		})
+	}
+}
+
+func TestHooksPathDefaultsToCommonGitDir(t *testing.T) {
+	repo := gittest.NewRepoWithCommit(t)
+	main, err := filepath.EvalSymlinks(repo.Root)
+	require.NoError(t, err)
+	wt := repo.AddWorktree("feature")
+
+	got, err := HooksPath(t.Context(), wt)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(main, ".git", "hooks"), got)
 }
