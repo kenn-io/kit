@@ -147,17 +147,20 @@ jobs:
           cache: true
 
       - name: Start S3-compatible service
+        # MinIO no longer publishes images, so conformance runs against
+        # RustFS 1.0.0, pinned by digest. Docker picks a free host port.
         run: |
           docker run --detach --rm \
             --name kit-s3-conformance \
-            --publish 9000:9000 \
-            --env MINIO_ROOT_USER=kit-test \
-            --env MINIO_ROOT_PASSWORD=kit-test-secret \
-            quay.io/minio/minio@sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e \
-            server /data
+            --publish 127.0.0.1::9000 \
+            --env RUSTFS_ACCESS_KEY=kit-test \
+            --env RUSTFS_SECRET_KEY=kit-test-secret \
+            docker.io/rustfs/rustfs@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff
+          endpoint="http://$(docker port kit-s3-conformance 9000/tcp)"
+          echo "KIT_S3_TEST_ENDPOINT=${endpoint}" >> "${GITHUB_ENV}"
           for attempt in $(seq 1 30); do
             if curl --fail --silent --show-error \
-              http://127.0.0.1:9000/minio/health/ready >/dev/null; then
+              "${endpoint}/health" >/dev/null; then
               exit 0
             fi
             sleep 1
@@ -167,7 +170,6 @@ jobs:
 
       - name: Run real-service conformance
         env:
-          KIT_S3_TEST_ENDPOINT: http://127.0.0.1:9000
           KIT_S3_TEST_ACCESS_KEY: kit-test
           KIT_S3_TEST_SECRET_KEY: kit-test-secret
           KIT_S3_TEST_BUCKET: kit-conformance
