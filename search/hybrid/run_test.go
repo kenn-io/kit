@@ -129,7 +129,7 @@ INSERT INTO hits VALUES
 		}
 	}
 
-	result, err := hybrid.RunEvery(t.Context(), db, 60, []hybrid.GroupLeg[string, evidence]{
+	result, err := hybrid.RunGroupsEvery(t.Context(), db, 60, []hybrid.GroupLeg[string, evidence]{
 		leg("auth", 10), leg("retry", 10),
 	})
 	require.NoError(t, err)
@@ -144,7 +144,7 @@ INSERT INTO hits VALUES
 
 	// A retry window of one row holds only s2, so s1 drops out of the
 	// intersection. The full window tells the caller the result may be short.
-	result, err = hybrid.RunEvery(t.Context(), db, 60, []hybrid.GroupLeg[string, evidence]{
+	result, err = hybrid.RunGroupsEvery(t.Context(), db, 60, []hybrid.GroupLeg[string, evidence]{
 		leg("auth", 10), leg("retry", 1),
 	})
 	require.NoError(t, err)

@@ -102,13 +102,13 @@ func RunGroups[G rrf.Key, M comparable](ctx context.Context, db sqlquery.Queryer
 	return runGroups(ctx, db, k, legs, rrf.FuseGroups[G, M])
 }
 
-// RunEvery executes group legs and keeps only groups that every leg found.
-// Each leg is one required concept. Different members may carry the evidence
+// RunGroupsEvery executes group legs and keeps only groups that every leg
+// found. Each leg is one required concept. Different members may carry the evidence
 // for different legs. A leg with a full window may have missed a group, and
 // then the intersection drops it too, so check AnyFullWindow before treating
 // the result as complete.
-func RunEvery[G rrf.Key, M comparable](ctx context.Context, db sqlquery.Queryer, k float64, legs []GroupLeg[G, M]) (GroupResult[G, M], error) {
-	return runGroups(ctx, db, k, legs, rrf.FuseEvery[G, M])
+func RunGroupsEvery[G rrf.Key, M comparable](ctx context.Context, db sqlquery.Queryer, k float64, legs []GroupLeg[G, M]) (GroupResult[G, M], error) {
+	return runGroups(ctx, db, k, legs, rrf.FuseGroupsEvery[G, M])
 }
 
 // AnyFullWindow reports whether any leg filled its candidate window.

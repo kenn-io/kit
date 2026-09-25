@@ -216,13 +216,13 @@ func FuseGroups[G Key, M comparable](k float64, legs []GroupLeg[G, M]) ([]GroupH
 	return hits, nil
 }
 
-// FuseEvery is FuseGroups restricted to groups that every leg found. Use it
-// when each leg is one required concept and a group must show evidence for
+// FuseGroupsEvery is FuseGroups restricted to groups that every leg found.
+// Use it when each leg is one required concept and a group must show evidence for
 // all of them, even when different members carry that evidence. Scores,
 // contributions, and alternates match FuseGroups, so the surviving groups
 // keep reciprocal-rank order. Each leg's best member for a group is that
 // leg's first alternate.
-func FuseEvery[G Key, M comparable](k float64, legs []GroupLeg[G, M]) ([]GroupHit[G, M], error) {
+func FuseGroupsEvery[G Key, M comparable](k float64, legs []GroupLeg[G, M]) ([]GroupHit[G, M], error) {
 	hits, err := FuseGroups(k, legs)
 	if err != nil {
 		return nil, err

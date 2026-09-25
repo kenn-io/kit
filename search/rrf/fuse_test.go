@@ -102,7 +102,7 @@ func TestFuseEveryKeepsOnlyGroupsEveryLegFound(t *testing.T) {
 			{Key: "s1", Members: []string{"m12"}},
 		}},
 	}
-	hits, err := rrf.FuseEvery(60, legs)
+	hits, err := rrf.FuseGroupsEvery(60, legs)
 	require.NoError(t, err)
 	require.Len(t, hits, 2)
 
@@ -128,13 +128,13 @@ func TestFuseEveryWithOneLegMatchesFuseGroups(t *testing.T) {
 			{Key: "b", Members: []string{"y"}},
 		}},
 	}
-	every, err := rrf.FuseEvery(60, legs)
+	every, err := rrf.FuseGroupsEvery(60, legs)
 	require.NoError(t, err)
 	groups, err := rrf.FuseGroups(60, legs)
 	require.NoError(t, err)
 	assert.Equal(t, groups, every)
 
-	_, err = rrf.FuseEvery(60, []rrf.GroupLeg[string, string]{
+	_, err = rrf.FuseGroupsEvery(60, []rrf.GroupLeg[string, string]{
 		{Name: "dup", Weight: 1}, {Name: "dup", Weight: 1},
 	})
 	require.Error(t, err)
