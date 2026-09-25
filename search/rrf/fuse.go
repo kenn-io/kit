@@ -15,8 +15,16 @@ type Contribution struct {
 	Term   float64
 }
 
+// Key is a fusion key or group identity: a string, an integer, or a 16-byte
+// id such as a UUID. The set excludes interface types, whose dynamic value
+// may not be comparable, and floats, whose NaN is not equal to itself.
+type Key interface {
+	~string | ~int | ~int8 | ~int16 | ~int32 | ~int64 |
+		~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64 | ~[16]byte
+}
+
 // Hit is a fused key. Contributions follow leg order.
-type Hit[K comparable] struct {
+type Hit[K Key] struct {
 	Key           K
 	Score         float64
 	Contributions []Contribution
@@ -24,23 +32,17 @@ type Hit[K comparable] struct {
 
 // Leg is one ranked list, best key first. A repeated key keeps its earliest
 // rank and does not contribute twice.
-type Leg[K comparable] struct {
+type Leg[K Key] struct {
 	Name   string
 	Weight float64
 	Keys   []K
 }
 
-// Fuse combines legs. k must be finite and positive. Every leg needs a unique
-// name and a finite, positive weight. A key that is not equal to itself,
-// including NaN, is an error and is not stored. The result is every key that
-// appeared, highest
-// score first. Fuse does not apply a result limit; callers limit after
-// eligibility.
-func Fuse[K comparable](k float64, legs []Leg[K]) ([]Hit[K], error) {
-	if !positiveFinite(k) {
-		return nil, errors.New("rrf: k must be positive")
-	}
-	if err := validateLegs(len(legs), func(i int) (string, float64) {
+// Fuse combines legs. ValidateLegs describes the rules for k, names and
+// weights. The result is every key that appeared, highest score first. Fuse
+// does not apply a result limit; callers limit after eligibility.
+func Fuse[K Key](k float64, legs []Leg[K]) ([]Hit[K], error) {
+	if err := ValidateLegs(k, len(legs), func(i int) (string, float64) {
 		return legs[i].Name, legs[i].Weight
 	}); err != nil {
 		return nil, err
@@ -56,9 +58,6 @@ func Fuse[K comparable](k float64, legs []Leg[K]) ([]Hit[K], error) {
 		seen := make(map[K]struct{}, len(leg.Keys))
 		rank := 0
 		for _, key := range leg.Keys {
-			if err := rejectNaN(key); err != nil {
-				return nil, err
-			}
 			if _, ok := seen[key]; ok {
 				continue
 			}
@@ -116,7 +115,7 @@ type Alternate[M comparable] struct {
 
 // GroupHit is a fused group. Alternates are retained in discovery order and
 // are not deduplicated across legs. Eligibility is the caller's decision.
-type GroupHit[G, M comparable] struct {
+type GroupHit[G Key, M comparable] struct {
 	Group         G
 	Score         float64
 	Contributions []Contribution
@@ -124,13 +123,13 @@ type GroupHit[G, M comparable] struct {
 }
 
 // Group is one ranked group and the members observed in that occurrence.
-type Group[G, M comparable] struct {
+type Group[G Key, M comparable] struct {
 	Key     G
 	Members []M
 }
 
 // GroupLeg is one ranked list of groups, best group first.
-type GroupLeg[G, M comparable] struct {
+type GroupLeg[G Key, M comparable] struct {
 	Name   string
 	Weight float64
 	Groups []Group[G, M]
@@ -138,13 +137,11 @@ type GroupLeg[G, M comparable] struct {
 
 // FuseGroups ranks each group once per leg and keeps every alternate member.
 // A later duplicate of the same group in one leg does not add another
-// contribution; its members are appended. A group key or member that is not
-// equal to itself, including NaN, is an error and is not stored.
-func FuseGroups[G, M comparable](k float64, legs []GroupLeg[G, M]) ([]GroupHit[G, M], error) {
-	if !positiveFinite(k) {
-		return nil, errors.New("rrf: k must be positive")
-	}
-	if err := validateLegs(len(legs), func(i int) (string, float64) {
+// contribution; its members are appended. A member that is not equal to
+// itself, such as a struct holding NaN, or that holds an uncomparable
+// interface value, is an error and is not stored.
+func FuseGroups[G Key, M comparable](k float64, legs []GroupLeg[G, M]) ([]GroupHit[G, M], error) {
+	if err := ValidateLegs(k, len(legs), func(i int) (string, float64) {
 		return legs[i].Name, legs[i].Weight
 	}); err != nil {
 		return nil, err
@@ -160,11 +157,8 @@ func FuseGroups[G, M comparable](k float64, legs []GroupLeg[G, M]) ([]GroupHit[G
 		seen := make(map[G]struct{}, len(leg.Groups))
 		rank := 0
 		for _, group := range leg.Groups {
-			if err := rejectNaN(group.Key); err != nil {
-				return nil, err
-			}
 			for _, member := range group.Members {
-				if err := rejectNaN(member); err != nil {
+				if err := checkMember(member); err != nil {
 					return nil, err
 				}
 			}
@@ -222,7 +216,14 @@ func FuseGroups[G, M comparable](k float64, legs []GroupLeg[G, M]) ([]GroupHit[G
 	return hits, nil
 }
 
-func validateLegs(n int, leg func(int) (string, float64)) error {
+// ValidateLegs checks fusion arguments without fusing. k must be finite and
+// positive. leg returns the name and weight of leg i; every leg needs a
+// unique, non-empty name and a finite, positive weight. Callers that run
+// queries to build legs can reject bad arguments before any query runs.
+func ValidateLegs(k float64, n int, leg func(i int) (name string, weight float64)) error {
+	if !positiveFinite(k) {
+		return errors.New("rrf: k must be positive")
+	}
 	names := make(map[string]struct{}, n)
 	for i := range n {
 		name, weight := leg(i)
@@ -251,12 +252,18 @@ func finiteValue(v float64) error {
 	return nil
 }
 
-// rejectNaN reports a value that cannot be stored. NaN is not equal to itself,
-// and neither is a struct or array that contains NaN.
-func rejectNaN[K comparable](value K) error {
+// checkMember reports a member that cannot be compared. NaN is not equal to
+// itself, and neither is a struct or array that contains NaN. An interface
+// holding a slice, map or func panics on comparison; that becomes an error.
+func checkMember[M comparable](value M) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = fmt.Errorf("rrf: member of type %T is not comparable", value)
+		}
+	}()
 	other := value
-	if value == other {
-		return nil
+	if value != other {
+		return errors.New("rrf: NaN member cannot be stored")
 	}
-	return errors.New("rrf: NaN cannot be stored")
+	return nil
 }

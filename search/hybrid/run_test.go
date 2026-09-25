@@ -22,7 +22,7 @@ func TestRunFusesBackendQueriesAndReportsWindows(t *testing.T) {
 		sqlitefts.WithSourceKey("id"),
 	)
 	require.NoError(t, err)
-	lexical, err := fts.Build(sqlitefts.Request{Match: "alpha", Limit: 2})
+	lexical, err := fts.Build(sqlitefts.Request{Match: "alpha", CandidateLimit: 2})
 	require.NoError(t, err)
 	vector := sqlquery.Query{SQL: `SELECT id AS doc_key, 0.0 AS score FROM docs WHERE id IN (2, 3) ORDER BY id DESC`}
 
@@ -56,6 +56,28 @@ func TestRunTrustsARawWindowProbe(t *testing.T) {
 	require.Len(t, result.Legs, 1)
 	assert.Equal(t, 1, result.Legs[0].Returned)
 	assert.True(t, result.Legs[0].FullWindow)
+}
+
+type countingQueryer struct{ calls int }
+
+func (q *countingQueryer) QueryContext(context.Context, string, ...any) (*sql.Rows, error) {
+	q.calls++
+	return nil, sql.ErrConnDone
+}
+
+func TestRunRejectsBadArgumentsBeforeAnyQuery(t *testing.T) {
+	db := &countingQueryer{}
+	query := sqlquery.Query{SQL: `SELECT 1`}
+	_, err := hybrid.Run(t.Context(), db, 60, []hybrid.Leg[int]{
+		{Name: "vector", Weight: 1, Query: query, Scan: scanKey},
+		{Name: "vector", Weight: 1, Query: query, Scan: scanKey},
+	})
+	require.ErrorContains(t, err, `hybrid: rrf: duplicate leg "vector"`)
+	_, err = hybrid.RunGroups(t.Context(), db, 0, []hybrid.GroupLeg[string, string]{
+		{Name: "lexical", Weight: 1, Query: query, Scan: func(*sql.Rows) (string, string, error) { return "", "", nil }},
+	})
+	require.ErrorContains(t, err, "k must be positive")
+	assert.Zero(t, db.calls, "no leg query runs before the arguments are valid")
 }
 
 func TestRunGroupsRetainsAlternateMembers(t *testing.T) {

@@ -99,20 +99,7 @@ func TestFuseRejectsAScoreThatOverflows(t *testing.T) {
 	assert.Empty(t, hits)
 }
 
-func TestFuseRejectsANaNKey(t *testing.T) {
-	hits, err := rrf.Fuse(60, []rrf.Leg[float64]{{
-		Name: "lexical", Weight: 1, Keys: []float64{1, math.NaN()},
-	}})
-	require.ErrorContains(t, err, "NaN")
-	assert.Empty(t, hits)
-
-	groups, err := rrf.FuseGroups(60, []rrf.GroupLeg[float64, string]{{
-		Name: "lexical", Weight: 1,
-		Groups: []rrf.Group[float64, string]{{Key: math.NaN(), Members: []string{"fresh"}}},
-	}})
-	require.ErrorContains(t, err, "NaN")
-	assert.Empty(t, groups)
-
+func TestFuseGroupsRejectsAMemberThatCannotBeCompared(t *testing.T) {
 	members, err := rrf.FuseGroups(60, []rrf.GroupLeg[string, float64]{{
 		Name: "lexical", Weight: 1,
 		Groups: []rrf.Group[string, float64]{{Key: "g", Members: []float64{1, math.NaN()}}},
@@ -120,11 +107,22 @@ func TestFuseRejectsANaNKey(t *testing.T) {
 	require.ErrorContains(t, err, "NaN")
 	assert.Empty(t, members)
 
-	hits, err = rrf.Fuse(60, []rrf.Leg[float64]{{
-		Name: "lexical", Weight: 1, Keys: []float64{1, 2},
+	// A driver can scan text into an interface as []byte, which panics when
+	// compared.
+	members2, err := rrf.FuseGroups(60, []rrf.GroupLeg[string, any]{{
+		Name: "lexical", Weight: 1,
+		Groups: []rrf.Group[string, any]{{Key: "g", Members: []any{[]byte("body")}}},
 	}})
+	require.ErrorContains(t, err, "not comparable")
+	assert.Empty(t, members2)
+}
+
+func TestFuseAcceptsAUUIDKey(t *testing.T) {
+	type id [16]byte
+	hits, err := rrf.Fuse(60, []rrf.Leg[id]{{Name: "lexical", Weight: 1, Keys: []id{{1}, {2}}}})
 	require.NoError(t, err)
-	assert.Equal(t, []float64{1, 2}, []float64{hits[0].Key, hits[1].Key})
+	require.Len(t, hits, 2)
+	assert.Equal(t, id{1}, hits[0].Key)
 }
 
 func TestFuseRejectsNonFiniteKAndWeight(t *testing.T) {

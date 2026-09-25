@@ -13,7 +13,7 @@ import (
 // Leg is one retrieval query in rank order. Scan reads the current row and
 // returns the fusion key. CandidateLimit is the bound the caller placed in
 // Query. Zero means the bound is unknown and the window is not reported full.
-type Leg[K comparable] struct {
+type Leg[K rrf.Key] struct {
 	Name           string
 	Weight         float64
 	Query          sqlquery.Query
@@ -22,7 +22,7 @@ type Leg[K comparable] struct {
 }
 
 // GroupLeg scans a group key and one alternate member from each row.
-type GroupLeg[G, M comparable] struct {
+type GroupLeg[G rrf.Key, M comparable] struct {
 	Name           string
 	Weight         float64
 	Query          sqlquery.Query
@@ -42,23 +42,29 @@ type Report struct {
 }
 
 // Result is the fused ranking plus per-leg window metadata.
-type Result[K comparable] struct {
+type Result[K rrf.Key] struct {
 	Hits []rrf.Hit[K]
 	Legs []Report
 }
 
 // GroupResult keeps alternate members for a later eligibility check.
-type GroupResult[G, M comparable] struct {
+type GroupResult[G rrf.Key, M comparable] struct {
 	Hits []rrf.GroupHit[G, M]
 	Legs []Report
 }
 
 // Run executes legs sequentially through db and fuses their key order.
 // k is the reciprocal-rank constant. Legs stop when ctx is cancelled.
-// A scan or query error returns no fused result.
-func Run[K comparable](ctx context.Context, db sqlquery.Queryer, k float64, legs []Leg[K]) (Result[K], error) {
+// A scan or query error returns no fused result. k, leg names and weights
+// follow rrf.ValidateLegs and are checked before any query runs.
+func Run[K rrf.Key](ctx context.Context, db sqlquery.Queryer, k float64, legs []Leg[K]) (Result[K], error) {
 	if db == nil {
 		return Result[K]{}, errors.New("hybrid: database handle is required")
+	}
+	if err := rrf.ValidateLegs(k, len(legs), func(i int) (string, float64) {
+		return legs[i].Name, legs[i].Weight
+	}); err != nil {
+		return Result[K]{}, fmt.Errorf("hybrid: %w", err)
 	}
 	ranked := make([]rrf.Leg[K], len(legs))
 	reports := make([]Report, len(legs))
@@ -82,7 +88,7 @@ func Run[K comparable](ctx context.Context, db sqlquery.Queryer, k float64, legs
 	}
 	hits, err := rrf.Fuse(k, ranked)
 	if err != nil {
-		return Result[K]{}, err
+		return Result[K]{}, fmt.Errorf("hybrid: %w", err)
 	}
 	return Result[K]{Hits: hits, Legs: reports}, nil
 }
@@ -90,9 +96,14 @@ func Run[K comparable](ctx context.Context, db sqlquery.Queryer, k float64, legs
 // RunGroups executes legs that return group and member columns. Members stay
 // attached to the fused group so a caller can drop ineligible alternates
 // before choosing a representative.
-func RunGroups[G, M comparable](ctx context.Context, db sqlquery.Queryer, k float64, legs []GroupLeg[G, M]) (GroupResult[G, M], error) {
+func RunGroups[G rrf.Key, M comparable](ctx context.Context, db sqlquery.Queryer, k float64, legs []GroupLeg[G, M]) (GroupResult[G, M], error) {
 	if db == nil {
 		return GroupResult[G, M]{}, errors.New("hybrid: database handle is required")
+	}
+	if err := rrf.ValidateLegs(k, len(legs), func(i int) (string, float64) {
+		return legs[i].Name, legs[i].Weight
+	}); err != nil {
+		return GroupResult[G, M]{}, fmt.Errorf("hybrid: %w", err)
 	}
 	ranked := make([]rrf.GroupLeg[G, M], len(legs))
 	reports := make([]Report, len(legs))
@@ -131,7 +142,7 @@ func RunGroups[G, M comparable](ctx context.Context, db sqlquery.Queryer, k floa
 	}
 	hits, err := rrf.FuseGroups(k, ranked)
 	if err != nil {
-		return GroupResult[G, M]{}, err
+		return GroupResult[G, M]{}, fmt.Errorf("hybrid: %w", err)
 	}
 	return GroupResult[G, M]{Hits: hits, Legs: reports}, nil
 }
