@@ -110,18 +110,18 @@ func (c *Client) recoverOllama(ctx context.Context, texts []string, vectors [][]
 	batchIndex := func(i int) int { return indexes[i] }
 
 	recovered, unloadErr := c.ollamaNativeEmbed(ctx, embedURL, inputs, nil, "0s")
-	unloadErr = remapVectorIndex(unloadErr, batchIndex)
 	waitErr := c.waitForOllamaUnload(ctx, psURL)
 	if unloadErr == nil && waitErr == nil {
 		return mergeVectors(vectors, indexes, recovered), nil
 	}
+	unloadErr = remapVectorIndex(unloadErr, batchIndex)
 	var reloadErr error
 	if waitErr == nil {
 		recovered, reloadErr = c.ollamaNativeEmbed(ctx, embedURL, inputs, nil, "")
-		reloadErr = remapVectorIndex(reloadErr, batchIndex)
 		if reloadErr == nil {
 			return mergeVectors(vectors, indexes, recovered), nil
 		}
+		reloadErr = remapVectorIndex(reloadErr, batchIndex)
 	}
 	recovered, cpuErr := c.ollamaNativeEmbed(ctx, embedURL, inputs, &ollamaEmbedOptions{NumGPU: 0}, "0s")
 	if cpuErr != nil {
