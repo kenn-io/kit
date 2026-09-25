@@ -13,8 +13,10 @@
 - A 400 is `InputRejected`. A 401 or 403 is `CredentialsRejected` and is
   not a reason to skip one document. 408, 429, and 5xx are `Retryable`. Do
   not copy the provider body into any error.
-- A transport failure is a `*TransportError`. Its message stays generic
-  because the cause can name internal hosts; `Unwrap` keeps the cause.
+- A transport failure is a `*TransportError`, including a failure while
+  reading a response body. Its message stays generic because the cause can
+  name internal hosts; `Unwrap` keeps the cause, so a deadline or cancel
+  still matches `errors.Is`.
 - An invalid vector is a `*VectorError` whose `Index` is the caller's input
   position, not the position inside one request. Recovery reads the index
   with `errors.AsType`, never by parsing the message.

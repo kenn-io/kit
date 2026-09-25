@@ -310,6 +310,20 @@ func TestEncodeFuncPreservesOrder(t *testing.T) {
 	assert.InDeltaSlice(t, []float32{0, 1}, vectors[1], 1e-6)
 }
 
+func TestEmbedKeepsADeadlineThatHitsWhileReadingTheBody(t *testing.T) {
+	client := newClient(t, unitModel(), embedconfig.Roles{}, embedconfig.Batch{}, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"data":[`)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done() // stall mid-body until the client gives up
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	_, err := client.Embed(ctx, oneText())
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	var transport *embedclient.TransportError
+	require.ErrorAs(t, err, &transport)
+}
+
 func TestEmbedRejectsOversizedResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `{"data":[{"index":0,"embedding":[1,0]}]}`)

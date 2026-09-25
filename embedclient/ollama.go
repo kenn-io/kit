@@ -17,6 +17,9 @@ import (
 	"go.kenn.io/kit/embedconfig"
 )
 
+// ollamaUnloadTimeout bounds the wait for Ollama to unload the runner after
+// a keep_alive of 0. A large model may take longer; recovery then skips the
+// GPU retry and goes straight to the CPU pass.
 const ollamaUnloadTimeout = 10 * time.Second
 
 var ollamaRecoveryGates sync.Map
@@ -163,7 +166,7 @@ func (c *Client) ollamaNativeEmbed(ctx context.Context, embedURL string, inputs 
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, c.maxResponse+1))
 	if err != nil {
-		return nil, errors.New("embed response is invalid")
+		return nil, &TransportError{Err: err}
 	}
 	if int64(len(raw)) > c.maxResponse {
 		return nil, ErrResponseTooLarge
@@ -232,7 +235,7 @@ func (c *Client) ollamaModelLoaded(ctx context.Context, psURL string) (bool, err
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, c.maxResponse+1))
 	if err != nil {
-		return false, errors.New("embed response is invalid")
+		return false, &TransportError{Err: err}
 	}
 	var decoded ollamaProcessResponse
 	if err := jsonv2.Unmarshal(raw, &decoded); err != nil {

@@ -240,7 +240,7 @@ func (c *Client) post(ctx context.Context, role embedconfig.Role, texts []string
 	}
 	payload, err := io.ReadAll(io.LimitReader(resp.Body, c.maxResponse+1))
 	if err != nil {
-		return nil, errors.New("embed response is invalid")
+		return nil, &TransportError{Err: err}
 	}
 	if int64(len(payload)) > c.maxResponse {
 		return nil, ErrResponseTooLarge
