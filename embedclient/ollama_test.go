@@ -218,3 +218,30 @@ func TestOllamaRecoveryWaitHonorsTheCallerContext(t *testing.T) {
 	close(release)
 	require.NoError(t, <-first)
 }
+
+func TestOllamaRecoveryIsNotBoundByTheRequestTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/embeddings":
+			_, _ = io.WriteString(w, `{"data":[{"embedding":[null,1]}]}`)
+		case "/api/embed":
+			time.Sleep(300 * time.Millisecond) // a slow reload or CPU pass
+			_, _ = io.WriteString(w, `{"embeddings":[[3,4]]}`)
+		case "/api/ps":
+			_, _ = io.WriteString(w, `{"models":[]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	client, err := embedclient.New(embedclient.Options{
+		Model:               unitModel(),
+		Deployment:          embedconfig.Deployment{BaseURL: srv.URL + "/v1"},
+		Transport:           embedconfig.Transport{Timeout: 50 * time.Millisecond},
+		OllamaMetalRecovery: true,
+	})
+	require.NoError(t, err)
+	got, err := client.Embed(t.Context(), oneText())
+	require.NoError(t, err)
+	assert.InDelta(t, 0.6, got[0][0], 0.0001)
+}

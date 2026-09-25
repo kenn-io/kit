@@ -22,6 +22,9 @@
   with `errors.AsType`, never by parsing the message.
 - A request waiting for Ollama recovery on another request returns when its
   own context ends.
+- Ollama recovery embeds (unload, retry, CPU pass) do not use the per-request
+  client timeout. A CPU re-encode or model reload can take minutes; only the
+  caller's context bounds them.
 - Normalize with L2 only when the model normalization says so. Always reject
   a non-finite component, a null component, or a zero norm.
 - Do not copy provider bodies into errors.

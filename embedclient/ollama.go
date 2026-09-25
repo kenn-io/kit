@@ -152,7 +152,7 @@ func (c *Client) ollamaNativeEmbed(ctx context.Context, embedURL string, inputs 
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	resp, err := c.http.Do(req)
+	resp, err := c.recoveryHTTP.Do(req)
 	if err != nil {
 		return nil, classifyTransport(err)
 	}
