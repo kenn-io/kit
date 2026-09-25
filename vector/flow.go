@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"unicode/utf8"
 )
 
 type fillOptions[K comparable] struct {
@@ -34,13 +35,24 @@ func WithFillSplit[K comparable](options SplitOptions) FillOption[K] {
 	return func(o *fillOptions[K]) { o.split = options }
 }
 
-// DefaultFillBatchSize is the number of chunks Fill packs into one encode call
-// when WithBatchSize is not positive. WithBatchTokenBudget can lower it.
-const DefaultFillBatchSize = 64
+// DefaultFillBatchSize is the most chunks Fill packs into one encode call
+// when WithBatchSize is not positive. 32 is the largest request common
+// embedding servers accept by default.
+const DefaultFillBatchSize = 32
+
+// DefaultFillBatchTokens is the estimated token total Fill packs into one
+// encode call when WithBatchTokenBudget is not set. It stays under the
+// smallest per-request token caps that hosted embedding providers publish.
+// Fill estimates tokens conservatively: an ASCII rune counts as a quarter
+// token and any other rune as one, so CJK text is not undercounted. A chunk
+// whose estimate alone exceeds the budget is sent by itself.
+const DefaultFillBatchTokens = 16384
 
 // WithFillBatch controls how chunks are grouped into encode calls. Fill packs
-// chunks across documents within each scan page, DefaultFillBatchSize at a
-// time unless WithBatchSize sets another positive size.
+// chunks across documents within each scan page. A call holds at most
+// DefaultFillBatchSize chunks, or the positive WithBatchSize, and at most
+// DefaultFillBatchTokens estimated tokens unless WithBatchTokenBudget sets
+// the caller's own bound.
 func WithFillBatch[K comparable](options ...BatchOption) FillOption[K] {
 	return func(o *fillOptions[K]) { o.batch = applyBatchOptions(options) }
 }
@@ -352,7 +364,11 @@ func fillPageAcrossDocuments[K, G comparable](
 	}
 
 	batchConcurrency := max(o.batch.concurrency, 1)
-	batches := splitFillRefs(refs, batchSize)
+	tokenBudget := 0
+	if !o.batch.tokenBudgetSet {
+		tokenBudget = DefaultFillBatchTokens
+	}
+	batches := splitFillRefs(refs, batchSize, tokenBudget)
 	encode := func(workCtx context.Context, batch []fillChunkRef) fillBatchResult {
 		return encodeFillBatch(workCtx, enc, batch)
 	}
@@ -407,12 +423,43 @@ func fillPageAcrossDocuments[K, G comparable](
 	return nil
 }
 
-func splitFillRefs(refs []fillChunkRef, size int) [][]fillChunkRef {
+// splitFillRefs cuts refs into encode calls of at most size chunks. A
+// positive tokenBudget also ends a call before its estimated tokens would
+// exceed the budget; a single chunk over the budget forms its own call.
+func splitFillRefs(refs []fillChunkRef, size, tokenBudget int) [][]fillChunkRef {
 	parts := make([][]fillChunkRef, 0, 1+(len(refs)-1)/size)
-	for start := 0; start < len(refs); start += size {
-		parts = append(parts, refs[start:min(start+size, len(refs))])
+	start, tokens := 0, 0
+	for i, ref := range refs {
+		estimate := 0
+		if tokenBudget > 0 {
+			estimate = estimateTokens(ref.value.Text)
+		}
+		full := i-start >= size || (tokenBudget > 0 && i > start && tokens+estimate > tokenBudget)
+		if full {
+			parts = append(parts, refs[start:i])
+			start, tokens = i, 0
+		}
+		tokens += estimate
+	}
+	if start < len(refs) {
+		parts = append(parts, refs[start:])
 	}
 	return parts
+}
+
+// estimateTokens is a conservative token count for batching. English-like
+// text averages about four characters per token; other scripts, such as CJK,
+// average about one token per character, so they count in full.
+func estimateTokens(text string) int {
+	ascii, other := 0, 0
+	for _, r := range text {
+		if r < utf8.RuneSelf {
+			ascii++
+		} else {
+			other++
+		}
+	}
+	return (ascii+3)/4 + other
 }
 
 func activeFillRefs[K comparable](refs []fillChunkRef, states []fillDocumentState[K]) []fillChunkRef {

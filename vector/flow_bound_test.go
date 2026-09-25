@@ -3,6 +3,7 @@ package vector_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -321,4 +322,64 @@ func TestFillStillSkipsOneBadDocumentByDefault(t *testing.T) {
 	assert.Equal(t, 1, stats.Skipped)
 	assert.True(t, store.embedded[1][1])
 	assert.True(t, store.embedded[3][1])
+}
+
+func TestFillPacksEncodeCallsByCountAndEstimatedTokens(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		docs    []string
+		options []vector.BatchOption
+		want    []int
+	}{
+		{
+			name: "at most 32 chunks per call",
+			docs: repeatDocs(40, "short text"),
+			want: []int{32, 8},
+		},
+		{
+			// 6000 CJK runes estimate 6000 tokens each, so two fit under
+			// 16384. A flat runes/4 estimate would pack all three.
+			name: "CJK text counts one token per rune",
+			docs: repeatDocs(3, strings.Repeat("語", 6000)),
+			want: []int{2, 1},
+		},
+		{
+			name: "a chunk over the budget goes alone",
+			docs: repeatDocs(2, strings.Repeat("a", 80000)),
+			want: []int{1, 1},
+		},
+		{
+			name:    "a caller budget replaces the estimate",
+			docs:    repeatDocs(3, strings.Repeat("語", 6000)),
+			options: []vector.BatchOption{vector.WithBatchTokenBudget(1<<20, 1)},
+			want:    []int{3},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMemStore()
+			for i, text := range tc.docs {
+				store.content[int64(i+1)] = text
+			}
+			var sizes []int
+			enc := func(ctx context.Context, texts []string) ([][]float32, error) {
+				sizes = append(sizes, len(texts))
+				return lenEncoder()(ctx, texts)
+			}
+			options := []vector.FillOption[int64]{vector.WithFillScanBatch[int64](len(tc.docs))}
+			if tc.options != nil {
+				options = append(options, vector.WithFillBatch[int64](tc.options...))
+			}
+			_, err := vector.Fill(t.Context(), store, 1, enc, options...)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, sizes)
+		})
+	}
+}
+
+func repeatDocs(n int, text string) []string {
+	docs := make([]string, n)
+	for i := range docs {
+		docs[i] = text
+	}
+	return docs
 }

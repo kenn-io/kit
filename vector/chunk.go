@@ -30,7 +30,8 @@ type PreparedChunk struct {
 // SplitOptions controls how Split windows content into chunks.
 type SplitOptions struct {
 	// MaxRunes bounds the number of runes in each chunk. Values <= 0
-	// disable splitting and return the content as a single chunk.
+	// disable splitting and return the content as a single chunk, which
+	// can exceed a model's per-input limit (often 512 to 8192 tokens).
 	MaxRunes int
 	// Overlap is the number of runes shared between consecutive chunks.
 	// It is clamped to the range [0, MaxRunes-1].

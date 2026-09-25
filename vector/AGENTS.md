@@ -38,16 +38,18 @@ pipeline. Preserve these invariants when changing it.
 
 ## Fill batches without losing document boundaries
 
-- Fill packs chunks across documents in one scan page, `DefaultFillBatchSize`
-  (64) at a time unless `WithFillBatch(WithBatchSize(n))` sets a positive `n`.
-  `WithBatchSize` remains the maximum texts in one `EncodeFunc` call. The
-  per-document path runs only for a nil encoder.
+- Fill packs chunks across documents in one scan page. A call holds at most
+  `DefaultFillBatchSize` (32) chunks, or a positive `WithBatchSize`, and at
+  most `DefaultFillBatchTokens` (16384) estimated tokens. The estimate counts
+  an ASCII rune as a quarter token and any other rune as one, so CJK text is
+  never undercounted. A chunk over the budget goes alone. The per-document
+  path runs only for a nil encoder.
 - Without `WithFillBatchErrorIsolation`, a shared-call error is diagnosed per
   document only when `WithFillEncodeError` is set, so one bad document stays
   skippable. An explicit nil classifier diagnoses nothing.
-- `WithBatchTokenBudget` is opt-in and further reduces the effective batch
-  size from the caller's conservative per-input token upper bound. The vector
-  package does not choose a tokenizer, infer model limits, or alter input text.
+- `WithBatchTokenBudget` replaces Fill's estimate with the caller's
+  conservative per-input token upper bound. The vector package does not choose
+  a tokenizer or alter input text; the estimate only sizes encode calls.
   Reject a configured upper bound that cannot fit one input before calling the
   encoder.
 - Vectors from a shared encode batch must be scattered back to their exact
