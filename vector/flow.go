@@ -17,6 +17,7 @@ type fillOptions[K comparable] struct {
 	onProgress              func(FillProgress[K])
 	onEncodeError           func(doc K, err error) bool
 	shouldIsolateBatchError func(error) bool
+	isolationSet            bool
 }
 
 // FillOption configures a Fill call.
@@ -33,9 +34,13 @@ func WithFillSplit[K comparable](options SplitOptions) FillOption[K] {
 	return func(o *fillOptions[K]) { o.split = options }
 }
 
-// WithFillBatch controls how chunks are grouped into encode calls. A positive
-// WithBatchSize packs chunks across documents within each scan page. Omitting
-// it preserves the per-document encode unit.
+// DefaultFillBatchSize is the number of chunks Fill packs into one encode call
+// when WithBatchSize is not positive. WithBatchTokenBudget can lower it.
+const DefaultFillBatchSize = 64
+
+// WithFillBatch controls how chunks are grouped into encode calls. Fill packs
+// chunks across documents within each scan page, DefaultFillBatchSize at a
+// time unless WithBatchSize sets another positive size.
 func WithFillBatch[K comparable](options ...BatchOption) FillOption[K] {
 	return func(o *fillOptions[K]) { o.batch = applyBatchOptions(options) }
 }
@@ -62,8 +67,15 @@ func WithFillEncodeError[K comparable](handler func(doc K, err error) bool) Fill
 // diagnosis only; WithFillEncodeError still decides whether to skip an
 // attributed document. Fill bypasses this handler for single-document calls,
 // context errors, and errors with an exact *InvalidVectorError position.
+// A nil classify diagnoses nothing. Without this option, Fill diagnoses every
+// shared-call error when WithFillEncodeError is set, so one bad document can
+// still be skipped, and diagnoses none otherwise, because the first
+// attributed error would abort.
 func WithFillBatchErrorIsolation[K comparable](classify func(error) bool) FillOption[K] {
-	return func(o *fillOptions[K]) { o.shouldIsolateBatchError = classify }
+	return func(o *fillOptions[K]) {
+		o.shouldIsolateBatchError = classify
+		o.isolationSet = true
+	}
 }
 
 // WithFillDocumentLimit stops Fill after it has started n pending documents.
@@ -137,13 +149,12 @@ type FillStats struct {
 // pending and not retried until the next Fill call, so an actively edited
 // document cannot starve the loop.
 //
-// When WithFillBatch includes a positive WithBatchSize, chunks from adjacent
-// documents in one scan page may share an encode call. Errors with exact
-// document attribution go directly to the WithFillEncodeError handler. Other
-// shared-call errors are diagnosed at document-slice granularity only when
-// WithFillBatchErrorIsolation permits it. Omitting that option aborts without
-// document-level retries. WithFillEncodeError remains the sole authority for
-// skip-stamping an attributed document.
+// Chunks from adjacent documents in one scan page may share an encode call.
+// Errors with exact document attribution go directly to the
+// WithFillEncodeError handler. Other shared-call errors are diagnosed at
+// document-slice granularity as WithFillBatchErrorIsolation describes.
+// WithFillEncodeError remains the sole authority for skip-stamping an
+// attributed document.
 //
 // WithFillPrepared replaces rune-window splitting for the call. Its callback
 // receives the Fill context, and a cancelled context stops the page before
@@ -160,6 +171,12 @@ func Fill[K, G comparable](
 	}
 	if err := o.batch.validate(); err != nil {
 		return FillStats{}, err
+	}
+	if o.batch.batchSize <= 0 {
+		o.batch.batchSize = DefaultFillBatchSize
+	}
+	if !o.isolationSet && o.onEncodeError != nil {
+		o.shouldIsolateBatchError = func(error) bool { return true }
 	}
 	scanBatch := o.scanBatch
 	if scanBatch <= 0 {

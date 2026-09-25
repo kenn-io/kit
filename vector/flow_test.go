@@ -762,6 +762,7 @@ func TestFillConcurrencyEncodesDocumentsInParallel(t *testing.T) {
 	}
 
 	stats, err := vector.Fill(ctx, store, 7, enc,
+		vector.WithFillBatch[int64](vector.WithBatchSize(1)),
 		vector.WithFillConcurrency[int64](workers))
 	require.NoError(err)
 
@@ -1089,7 +1090,7 @@ func TestFillConcurrencyEncodeErrorAborts(t *testing.T) {
 
 	_, err := vector.Fill(ctx, store, 7, poisonEncoder(),
 		vector.WithFillConcurrency[int64](4))
-	require.ErrorContains(err, "encode document")
+	require.ErrorContains(err, "input rejected by model")
 	assert.False(store.embedded[1][7], "the failed doc is neither embedded nor stamped")
 
 	// The failed document stays pending: a later run with a working encoder

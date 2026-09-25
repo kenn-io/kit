@@ -287,3 +287,38 @@ func TestFillRejectsBadPreparedIndexesBeforeEncoding(t *testing.T) {
 		})
 	}
 }
+
+func TestFillBatchesAcrossDocumentsByDefault(t *testing.T) {
+	store := newMemStore()
+	for id := int64(1); id <= 3; id++ {
+		store.content[id] = "doc"
+	}
+	var sizes []int
+	enc := func(ctx context.Context, texts []string) ([][]float32, error) {
+		sizes = append(sizes, len(texts))
+		return lenEncoder()(ctx, texts)
+	}
+	stats, err := vector.Fill(t.Context(), store, 1, enc)
+	require.NoError(t, err)
+	assert.Equal(t, 3, stats.Documents)
+	assert.Equal(t, []int{3}, sizes, "one encode call carries every document in the page")
+}
+
+func TestFillStillSkipsOneBadDocumentByDefault(t *testing.T) {
+	store := newMemStore()
+	store.content[1] = "fine"
+	store.content[2] = "poison"
+	store.content[3] = "fine"
+	var skipped []int64
+	stats, err := vector.Fill(t.Context(), store, 1, poisonEncoder(),
+		vector.WithFillEncodeError[int64](func(doc int64, _ error) bool {
+			skipped = append(skipped, doc)
+			return true
+		}),
+	)
+	require.NoError(t, err)
+	assert.Equal(t, []int64{2}, skipped, "the shared failure is traced to the one bad document")
+	assert.Equal(t, 1, stats.Skipped)
+	assert.True(t, store.embedded[1][1])
+	assert.True(t, store.embedded[3][1])
+}

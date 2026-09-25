@@ -38,10 +38,13 @@ pipeline. Preserve these invariants when changing it.
 
 ## Fill batches without losing document boundaries
 
-- `WithFillBatch(WithBatchSize(n))` with a positive `n` packs chunks across
-  documents in one scan page. Omitting it preserves the legacy per-document
-  encode unit. `WithBatchSize` remains the maximum texts in one `EncodeFunc`
-  call.
+- Fill packs chunks across documents in one scan page, `DefaultFillBatchSize`
+  (64) at a time unless `WithFillBatch(WithBatchSize(n))` sets a positive `n`.
+  `WithBatchSize` remains the maximum texts in one `EncodeFunc` call. The
+  per-document path runs only for a nil encoder.
+- Without `WithFillBatchErrorIsolation`, a shared-call error is diagnosed per
+  document only when `WithFillEncodeError` is set, so one bad document stays
+  skippable. An explicit nil classifier diagnoses nothing.
 - `WithBatchTokenBudget` is opt-in and further reduces the effective batch
   size from the caller's conservative per-input token upper bound. The vector
   package does not choose a tokenizer, infer model limits, or alter input text.
