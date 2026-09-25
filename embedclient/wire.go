@@ -115,7 +115,7 @@ func (c *Client) classify(payload []byte, count int) ([][]float32, []error, erro
 	for i, item := range raw {
 		vector, err := decodeVector(item, c.model.Dimensions, c.model.Normalization)
 		if err != nil {
-			problems = append(problems, fmt.Errorf("embed vector %d: %w", i, err))
+			problems = append(problems, &VectorError{Index: i, Err: err})
 			continue
 		}
 		out[i] = vector

@@ -1,10 +1,12 @@
 package embedclient_test
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -169,4 +171,50 @@ func TestNewRejectsOllamaRecoveryWithoutAV1Path(t *testing.T) {
 		OllamaMetalRecovery: true,
 	})
 	require.Error(t, err)
+}
+
+func TestOllamaRecoveryWaitHonorsTheCallerContext(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/embeddings":
+			_, _ = io.WriteString(w, `{"data":[{"embedding":[null,1]}]}`)
+		case "/api/embed":
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
+			<-release
+			_, _ = io.WriteString(w, `{"embeddings":[[3,4]]}`)
+		case "/api/ps":
+			_, _ = io.WriteString(w, `{"models":[]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	client, err := embedclient.New(embedclient.Options{
+		Model:               unitModel(),
+		Deployment:          embedconfig.Deployment{BaseURL: srv.URL + "/v1"},
+		OllamaMetalRecovery: true,
+	})
+	require.NoError(t, err)
+
+	first := make(chan error, 1)
+	go func() {
+		_, err := client.Embed(context.Background(), oneText())
+		first <- err
+	}()
+	<-entered // the first recovery holds the gate
+
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err = client.Embed(ctx, oneText())
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Less(t, time.Since(start), 5*time.Second, "the waiter returns when its context ends")
+
+	close(release)
+	require.NoError(t, <-first)
 }

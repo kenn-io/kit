@@ -10,9 +10,16 @@
   into a larger `vector.EncodeBatched` input.
 - `Embed` applies role prefixes to raw content. `EncodeFunc` sends the
   strings it is given, because fitted text already includes them.
-- A 400 is `InputRejected` and `Definitive`. A 401 or 403 is
-  `CredentialsRejected` and is not a reason to skip one document. Do not
-  copy the provider body into either error.
+- A 400 is `InputRejected`. A 401 or 403 is `CredentialsRejected` and is
+  not a reason to skip one document. 408, 429, and 5xx are `Retryable`. Do
+  not copy the provider body into any error.
+- A transport failure is a `*TransportError`. Its message stays generic
+  because the cause can name internal hosts; `Unwrap` keeps the cause.
+- An invalid vector is a `*VectorError` whose `Index` is the caller's input
+  position, not the position inside one request. Recovery reads the index
+  with `errors.As`, never by parsing the message.
+- A request waiting for Ollama recovery on another request returns when its
+  own context ends.
 - Normalize with L2 only when the model normalization says so. Always reject
   a non-finite component, a null component, or a zero norm.
 - Do not copy provider bodies into errors.

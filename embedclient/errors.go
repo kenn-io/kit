@@ -1,7 +1,6 @@
 package embedclient
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -9,6 +8,41 @@ import (
 	"strings"
 	"time"
 )
+
+// ErrInvalidVector reports that the provider returned a vector that failed
+// validation: wrong width, a null or non-finite component, or a zero norm.
+// A *VectorError carries the input it belongs to.
+var ErrInvalidVector = errors.New("embed vector is invalid")
+
+// ErrResponseTooLarge reports a response body above Transport.MaxResponseBytes.
+var ErrResponseTooLarge = errors.New("embed response exceeds the configured cap")
+
+// VectorError is an invalid vector for one input. Index is the position in
+// the inputs passed to Embed, EmbedTexts, or the EncodeFunc call. It matches
+// ErrInvalidVector with errors.Is.
+type VectorError struct {
+	Index int
+	Err   error
+}
+
+func (e *VectorError) Error() string {
+	return fmt.Sprintf("embed vector %d: %v", e.Index, e.Err)
+}
+
+func (e *VectorError) Unwrap() []error { return []error{ErrInvalidVector, e.Err} }
+
+// TransportError is a request that did not produce an HTTP response, such as
+// a DNS, connection, or TLS failure. Its message omits the cause, because
+// transport errors can name internal hosts. Unwrap returns the cause, so
+// errors.As and errors.Is still reach it. Cancellation and deadline errors
+// are returned wrapped in TransportError too.
+type TransportError struct {
+	Err error
+}
+
+func (e *TransportError) Error() string { return "embed request failed" }
+
+func (e *TransportError) Unwrap() error { return e.Err }
 
 // APIError is a non-2xx embedding response. The provider body is discarded.
 type APIError struct {
@@ -32,10 +66,10 @@ func (e *APIError) CredentialsRejected() bool {
 	return e.StatusCode == http.StatusUnauthorized || e.StatusCode == http.StatusForbidden
 }
 
-// Definitive reports that this input was rejected. A credential failure is
-// not definitive: the caller should stop, not skip the document.
-func (e *APIError) Definitive() bool {
-	return e.InputRejected()
+// Retryable reports a response that may succeed later: 408, 429, or a 5xx.
+// Check RetryAfter for the delay the provider asked for.
+func (e *APIError) Retryable() bool {
+	return e.StatusCode == http.StatusRequestTimeout || e.StatusCode == http.StatusTooManyRequests || e.StatusCode >= 500
 }
 
 func retryAfter(header string) time.Duration {
@@ -57,14 +91,18 @@ func retryAfter(header string) time.Duration {
 }
 
 func classifyTransport(err error) error {
-	if errors.Is(err, ErrOrigin) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		if errors.Is(err, context.Canceled) {
-			return fmt.Errorf("embed request failed: %w", context.Canceled)
-		}
-		if errors.Is(err, context.DeadlineExceeded) {
-			return fmt.Errorf("embed request failed: %w", context.DeadlineExceeded)
-		}
+	if errors.Is(err, ErrOrigin) {
 		return ErrOrigin
 	}
-	return errors.New("embed request failed")
+	return &TransportError{Err: err}
+}
+
+// remapVectorIndex rewrites the index of a VectorError in err with index.
+// Each request numbers its own inputs; callers see their own positions.
+func remapVectorIndex(err error, index func(int) int) error {
+	var vectorErr *VectorError
+	if errors.As(err, &vectorErr) {
+		vectorErr.Index = index(vectorErr.Index)
+	}
+	return err
 }

@@ -127,7 +127,8 @@ func TestEmbedFailedResponseDoesNotEchoTheBody(t *testing.T) {
 	require.ErrorAs(t, err, &api)
 	assert.Equal(t, http.StatusTooManyRequests, api.StatusCode)
 	assert.Equal(t, 3*time.Second, api.RetryAfter)
-	assert.False(t, api.Definitive())
+	assert.True(t, api.Retryable())
+	assert.False(t, api.InputRejected())
 	assert.NotContains(t, err.Error(), "secret")
 	assert.NotContains(t, err.Error(), "alpha")
 
@@ -136,7 +137,7 @@ func TestEmbedFailedResponseDoesNotEchoTheBody(t *testing.T) {
 	})
 	_, err = denied.Embed(t.Context(), oneText())
 	require.ErrorAs(t, err, &api)
-	assert.True(t, api.Definitive())
+	assert.False(t, api.Retryable())
 	assert.True(t, api.InputRejected())
 	assert.False(t, api.CredentialsRejected())
 	assert.NotContains(t, err.Error(), "secret")
@@ -146,7 +147,7 @@ func TestEmbedFailedResponseDoesNotEchoTheBody(t *testing.T) {
 	})
 	_, err = unauthorized.Embed(t.Context(), oneText())
 	require.ErrorAs(t, err, &api)
-	assert.False(t, api.Definitive())
+	assert.False(t, api.Retryable())
 	assert.False(t, api.InputRejected())
 	assert.True(t, api.CredentialsRejected())
 	assert.NotContains(t, err.Error(), "secret")
@@ -244,6 +245,9 @@ func TestEmbedStripsTransportDetails(t *testing.T) {
 	require.NoError(t, err)
 	_, err = client.Embed(t.Context(), oneText())
 	require.EqualError(t, err, "embed request failed")
+	var transport *embedclient.TransportError
+	require.ErrorAs(t, err, &transport)
+	assert.ErrorContains(t, transport.Err, "secret-host.example", "the cause stays reachable for retry decisions")
 
 	owned.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return nil, context.Canceled
@@ -318,7 +322,42 @@ func TestEmbedRejectsOversizedResponse(t *testing.T) {
 	})
 	require.NoError(t, err)
 	_, err = limited.Embed(t.Context(), oneText())
-	require.EqualError(t, err, "embed response exceeds the configured cap")
+	require.ErrorIs(t, err, embedclient.ErrResponseTooLarge)
+}
+
+func TestEmbedReportsABadVectorAtTheCallerIndex(t *testing.T) {
+	requests := 0
+	client := newClient(t, unitModel(), embedconfig.Roles{}, embedconfig.Batch{Items: 2}, func(w http.ResponseWriter, r *http.Request) {
+		body := readBody(t, r)
+		requests++
+		if requests == 2 {
+			_, _ = io.WriteString(w, `{"data":[{"embedding":[null,1]}]}`)
+			return
+		}
+		data := make([]map[string]any, len(body["input"].([]any)))
+		for i := range data {
+			data[i] = map[string]any{"index": i, "embedding": []float64{1, 0}}
+		}
+		writeJSON(t, w, map[string]any{"data": data})
+	})
+	inputs := append(twoTexts(), embedmodel.Content{Role: embedconfig.RoleDocument, Text: "gamma"})
+	_, err := client.Embed(t.Context(), inputs)
+	require.ErrorIs(t, err, embedclient.ErrInvalidVector)
+	var vectorErr *embedclient.VectorError
+	require.ErrorAs(t, err, &vectorErr)
+	assert.Equal(t, 2, vectorErr.Index, "the third input, not the first of the second request")
+}
+
+func TestEmbedTextsAppliesTheRoleAffixes(t *testing.T) {
+	var sent []any
+	client := newClient(t, unitModel(), embedconfig.Roles{QueryPrefix: "q: "}, embedconfig.Batch{}, func(w http.ResponseWriter, r *http.Request) {
+		sent = readBody(t, r)["input"].([]any)
+		writeJSON(t, w, map[string]any{"data": []map[string]any{{"index": 0, "embedding": []float64{1, 0}}}})
+	})
+	vectors, err := client.EmbedTexts(t.Context(), embedconfig.RoleQuery, []string{"alpha"})
+	require.NoError(t, err)
+	require.Len(t, vectors, 1)
+	assert.Equal(t, []any{"q: alpha"}, sent)
 }
 
 func TestEmbedSplitsOneRoleWhenTokenBudgetIsSmall(t *testing.T) {

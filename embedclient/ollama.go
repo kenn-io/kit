@@ -89,21 +89,28 @@ func (c *Client) recoverOllama(ctx context.Context, texts []string, vectors [][]
 		return nil, err
 	}
 	gate := ollamaGate(embedURL)
-	gate.Lock()
-	defer gate.Unlock()
+	select {
+	case gate <- struct{}{}:
+	case <-ctx.Done():
+		return nil, &TransportError{Err: ctx.Err()}
+	}
+	defer func() { <-gate }()
 
 	indexes := make([]int, len(problems))
 	inputs := make([]string, len(problems))
 	for i, problem := range problems {
-		index, err := vectorIndex(problem)
-		if err != nil {
+		var vectorErr *VectorError
+		if !errors.As(problem, &vectorErr) {
 			return nil, problem
 		}
-		indexes[i] = index
-		inputs[i] = texts[index]
+		indexes[i] = vectorErr.Index
+		inputs[i] = texts[vectorErr.Index]
 	}
+	// Recovery requests number only the bad inputs; report batch positions.
+	batchIndex := func(i int) int { return indexes[i] }
 
 	recovered, unloadErr := c.ollamaNativeEmbed(ctx, embedURL, inputs, nil, "0s")
+	unloadErr = remapVectorIndex(unloadErr, batchIndex)
 	waitErr := c.waitForOllamaUnload(ctx, psURL)
 	if unloadErr == nil && waitErr == nil {
 		return mergeVectors(vectors, indexes, recovered), nil
@@ -111,23 +118,17 @@ func (c *Client) recoverOllama(ctx context.Context, texts []string, vectors [][]
 	var reloadErr error
 	if waitErr == nil {
 		recovered, reloadErr = c.ollamaNativeEmbed(ctx, embedURL, inputs, nil, "")
+		reloadErr = remapVectorIndex(reloadErr, batchIndex)
 		if reloadErr == nil {
 			return mergeVectors(vectors, indexes, recovered), nil
 		}
 	}
 	recovered, cpuErr := c.ollamaNativeEmbed(ctx, embedURL, inputs, &ollamaEmbedOptions{NumGPU: 0}, "0s")
 	if cpuErr != nil {
+		cpuErr = remapVectorIndex(cpuErr, batchIndex)
 		return nil, errors.Join(unloadErr, waitErr, reloadErr, fmt.Errorf("ollama CPU recovery: %w", cpuErr))
 	}
 	return mergeVectors(vectors, indexes, recovered), nil
-}
-
-func vectorIndex(err error) (int, error) {
-	var index int
-	if _, scanErr := fmt.Sscanf(err.Error(), "embed vector %d:", &index); scanErr != nil {
-		return 0, err
-	}
-	return index, nil
 }
 
 func (c *Client) ollamaNativeEmbed(ctx context.Context, embedURL string, inputs []string, options *ollamaEmbedOptions, keepAlive string) ([][]float32, error) {
@@ -155,14 +156,17 @@ func (c *Client) ollamaNativeEmbed(ctx context.Context, embedURL string, inputs 
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-		return nil, &APIError{StatusCode: resp.StatusCode}
+		return nil, &APIError{
+			StatusCode: resp.StatusCode,
+			RetryAfter: retryAfter(resp.Header.Get("Retry-After")),
+		}
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, c.maxResponse+1))
 	if err != nil {
 		return nil, errors.New("embed response is invalid")
 	}
 	if int64(len(raw)) > c.maxResponse {
-		return nil, errors.New("embed response exceeds the configured cap")
+		return nil, ErrResponseTooLarge
 	}
 	var decoded ollamaEmbedResponse
 	if err := jsonv2.Unmarshal(raw, &decoded); err != nil {
@@ -175,7 +179,7 @@ func (c *Client) ollamaNativeEmbed(ctx context.Context, embedURL string, inputs 
 	for i, row := range decoded.Embeddings {
 		vector, err := normalizeNative(row, c.model.Dimensions, c.model.Normalization)
 		if err != nil {
-			return nil, fmt.Errorf("embed vector %d: %w", i, err)
+			return nil, &VectorError{Index: i, Err: err}
 		}
 		out[i] = vector
 	}
@@ -273,7 +277,9 @@ func mergeVectors(primary [][]float32, indexes []int, recovered [][]float32) [][
 	return merged
 }
 
-func ollamaGate(embedURL string) *sync.Mutex {
-	gate, _ := ollamaRecoveryGates.LoadOrStore(embedURL, &sync.Mutex{})
-	return gate.(*sync.Mutex)
+// ollamaGate returns a one-slot semaphore for embedURL. A channel lets a
+// waiting request give up when its context ends.
+func ollamaGate(embedURL string) chan struct{} {
+	gate, _ := ollamaRecoveryGates.LoadOrStore(embedURL, make(chan struct{}, 1))
+	return gate.(chan struct{})
 }

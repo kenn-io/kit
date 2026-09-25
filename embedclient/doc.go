@@ -33,9 +33,14 @@
 // or a base64 string of little-endian float32 values. The encoding format is
 // empty, float, or base64.
 //
-// Embed applies the role prefix and suffix to raw content. EncodeFunc
-// sends its strings unchanged, so text from embedfit.Prepared is not
-// wrapped a second time.
+// Failures are typed. APIError reports the status and whether a retry may
+// help. TransportError keeps the network cause behind a generic message.
+// VectorError names the input whose vector failed validation, and matches
+// ErrInvalidVector.
+//
+// Embed and EmbedTexts apply the role prefix and suffix to raw content.
+// EncodeFunc sends its strings unchanged, so text from embedfit.Prepared is
+// not wrapped a second time.
 //
 // Text is the only encoded form. Image and file content returns
 // embedmodel.ErrUnsupportedContent so those callers can keep their own path.

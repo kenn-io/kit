@@ -138,7 +138,8 @@ func (c *Client) embed(ctx context.Context, inputs []embedmodel.Content, format 
 		}
 		vectors, err := c.post(ctx, prepared[start].role, texts)
 		if err != nil {
-			return nil, err
+			first := start
+			return nil, remapVectorIndex(err, func(i int) int { return prepared[first+i].index })
 		}
 		for i, vec := range vectors {
 			out[prepared[start+i].index] = vec
@@ -146,6 +147,16 @@ func (c *Client) embed(ctx context.Context, inputs []embedmodel.Content, format 
 		start = end
 	}
 	return out, nil
+}
+
+// EmbedTexts encodes plain texts for one role, like Embed with a text Content
+// per string. The role prefix and suffix are applied.
+func (c *Client) EmbedTexts(ctx context.Context, role embedconfig.Role, texts []string) ([][]float32, error) {
+	inputs := make([]embedmodel.Content, len(texts))
+	for i, text := range texts {
+		inputs[i] = embedmodel.Content{Role: role, Text: text}
+	}
+	return c.Embed(ctx, inputs)
 }
 
 // EncodeFunc adapts one role to vector.EncodeFunc.
@@ -232,7 +243,7 @@ func (c *Client) post(ctx context.Context, role embedconfig.Role, texts []string
 		return nil, errors.New("embed response is invalid")
 	}
 	if int64(len(payload)) > c.maxResponse {
-		return nil, errors.New("embed response exceeds the configured cap")
+		return nil, ErrResponseTooLarge
 	}
 	vectors, problems, err := c.classify(payload, len(texts))
 	if err != nil {
