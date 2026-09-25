@@ -36,32 +36,21 @@ const (
 	MatchSubstring TextMatch = "substring"
 )
 
-// Column projects a source column under an explicit result alias.
-type Column struct {
-	Name string
-	As   string
-}
-
-// Predicate is trusted SQL over alias t. Use anonymous ? placeholders.
-type Predicate struct {
-	SQL  string
-	Args []any
-}
-
-// TextRequest is one bounded text candidate query.
+// TextRequest is one bounded text candidate query. SourcePredicate is
+// passed to ClickHouse unchanged, so each ? binds the next argument.
 // Set Text or Tokens. Tokens are sent as an array and are not tokenized
 // again. An empty token list is rejected. MatchToken accepts Text only.
 type TextRequest struct {
-	Table           string
-	Key             string
+	SourceTable     string
+	SourceKey       string
 	TextColumn      string
 	Match           TextMatch
 	Text            string
 	Tokens          []string
 	RevisionColumn  string
-	SourcePredicate Predicate
-	ExtraCols       []Column
-	Limit           int
+	SourcePredicate sqlquery.Predicate
+	ExtraSourceCols []sqlquery.Column
+	CandidateLimit  int
 }
 
 // TokenizersQuery reads system.tokenizers. Compare the names with the
@@ -75,10 +64,10 @@ func TokenizersQuery() sqlquery.Query {
 // requested, then extra columns. Rows are ordered by doc_key. There is no
 // native text rank column.
 func BuildText(req TextRequest) (sqlquery.Query, error) {
-	if err := checkIdentifier("table", req.Table); err != nil {
+	if err := checkIdentifier("source table", req.SourceTable); err != nil {
 		return sqlquery.Query{}, err
 	}
-	if err := checkIdentifier("key", req.Key); err != nil {
+	if err := checkIdentifier("source key", req.SourceKey); err != nil {
 		return sqlquery.Query{}, err
 	}
 	if err := checkIdentifier("text column", req.TextColumn); err != nil {
@@ -88,8 +77,8 @@ func BuildText(req TextRequest) (sqlquery.Query, error) {
 	if err != nil {
 		return sqlquery.Query{}, err
 	}
-	if req.Limit <= 0 {
-		return sqlquery.Query{}, errors.New("clickhouse: limit must be positive")
+	if req.CandidateLimit <= 0 {
+		return sqlquery.Query{}, errors.New("clickhouse: candidate limit must be positive")
 	}
 	useTokens := req.Tokens != nil
 	if useTokens && strings.TrimSpace(req.Text) != "" {
@@ -110,7 +99,7 @@ func BuildText(req TextRequest) (sqlquery.Query, error) {
 		}
 	}
 	aliases := map[string]bool{"doc_key": true, "revision": true}
-	for _, col := range req.ExtraCols {
+	for _, col := range req.ExtraSourceCols {
 		if err := checkIdentifier("extra column", col.Name); err != nil || !validIdentifier(col.As) || aliases[strings.ToLower(col.As)] {
 			return sqlquery.Query{}, fmt.Errorf("clickhouse: invalid or conflicting extra column %q AS %q", col.Name, col.As)
 		}
@@ -121,12 +110,12 @@ func BuildText(req TextRequest) (sqlquery.Query, error) {
 		return sqlquery.Query{}, errors.New("clickhouse: source predicate args require SQL")
 	}
 
-	projection := []string{"t." + quote(req.Key) + " AS doc_key"}
+	projection := []string{"d." + quote(req.SourceKey) + " AS doc_key"}
 	if req.RevisionColumn != "" {
-		projection = append(projection, "t."+quote(req.RevisionColumn)+" AS revision")
+		projection = append(projection, "d."+quote(req.RevisionColumn)+" AS revision")
 	}
-	for _, col := range req.ExtraCols {
-		projection = append(projection, "t."+quote(col.Name)+" AS "+quote(col.As))
+	for _, col := range req.ExtraSourceCols {
+		projection = append(projection, "d."+quote(col.Name)+" AS "+quote(col.As))
 	}
 	args := []any{}
 	if useTokens {
@@ -135,11 +124,11 @@ func BuildText(req TextRequest) (sqlquery.Query, error) {
 		args = append(args, req.Text)
 	}
 	args = append(args, req.SourcePredicate.Args...)
-	args = append(args, req.Limit)
+	args = append(args, req.CandidateLimit)
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "SELECT %s FROM %s AS t WHERE %s",
-		strings.Join(projection, ", "), quote(req.Table), predicateFn)
+	fmt.Fprintf(&b, "SELECT %s FROM %s AS d WHERE %s",
+		strings.Join(projection, ", "), quote(req.SourceTable), predicateFn)
 	if predicate != "" {
 		b.WriteString(" AND (")
 		b.WriteString(predicate)
@@ -152,13 +141,13 @@ func BuildText(req TextRequest) (sqlquery.Query, error) {
 func textPredicate(match TextMatch, column string) (string, error) {
 	switch match {
 	case "", MatchAll:
-		return "hasAllTokens(t." + column + ", ?)", nil
+		return "hasAllTokens(d." + column + ", ?)", nil
 	case MatchAny:
-		return "hasAnyTokens(t." + column + ", ?)", nil
+		return "hasAnyTokens(d." + column + ", ?)", nil
 	case MatchToken:
-		return "hasToken(t." + column + ", ?)", nil
+		return "hasToken(d." + column + ", ?)", nil
 	case MatchSubstring:
-		return "positionUTF8(t." + column + ", ?) > 0", nil
+		return "positionUTF8(d." + column + ", ?) > 0", nil
 	default:
 		return "", fmt.Errorf("clickhouse: unknown text match %q", match)
 	}

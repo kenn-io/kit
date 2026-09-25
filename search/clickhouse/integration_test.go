@@ -65,9 +65,9 @@ CREATE TABLE docs (
 	require.NoError(t, err)
 
 	whole, err := clickhouse.BuildText(clickhouse.TextRequest{
-		Table: "docs", Key: "id", TextColumn: "body",
+		SourceTable: "docs", SourceKey: "id", TextColumn: "body",
 		Match: clickhouse.MatchToken, Text: "かなを探します。",
-		RevisionColumn: "revision", Limit: 10,
+		RevisionColumn: "revision", CandidateLimit: 10,
 	})
 	require.NoError(t, err)
 	wholeHits := scanText(t, ctx, db, whole)
@@ -76,49 +76,49 @@ CREATE TABLE docs (
 	assert.Equal(t, uint32(3), wholeHits[0].revision)
 
 	substring, err := clickhouse.BuildText(clickhouse.TextRequest{
-		Table: "docs", Key: "id", TextColumn: "body",
-		Match: clickhouse.MatchSubstring, Text: "かな", Limit: 10,
+		SourceTable: "docs", SourceKey: "id", TextColumn: "body",
+		Match: clickhouse.MatchSubstring, Text: "かな", CandidateLimit: 10,
 	})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"kana"}, scanIDs(t, ctx, db, substring))
 	reversed, err := clickhouse.BuildText(clickhouse.TextRequest{
-		Table: "docs", Key: "id", TextColumn: "body",
-		Match: clickhouse.MatchSubstring, Text: "なか", Limit: 10,
+		SourceTable: "docs", SourceKey: "id", TextColumn: "body",
+		Match: clickhouse.MatchSubstring, Text: "なか", CandidateLimit: 10,
 	})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"reverse"}, scanIDs(t, ctx, db, reversed))
 
 	literal, err := clickhouse.BuildText(clickhouse.TextRequest{
-		Table: "docs", Key: "id", TextColumn: "body",
+		SourceTable: "docs", SourceKey: "id", TextColumn: "body",
 		Match: clickhouse.MatchAll, Text: "error-401",
-		SourcePredicate: clickhouse.Predicate{SQL: "t.tenant = ?", Args: []any{"t1"}},
-		Limit:           10,
+		SourcePredicate: sqlquery.Predicate{SQL: "d.tenant = ?", Args: []any{"t1"}},
+		CandidateLimit:  10,
 	})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"literal"}, scanIDs(t, ctx, db, literal))
 
 	unordered, err := clickhouse.BuildText(clickhouse.TextRequest{
-		Table: "docs", Key: "id", TextColumn: "chars",
-		Match: clickhouse.MatchAll, Tokens: []string{"か", "な"}, Limit: 10,
+		SourceTable: "docs", SourceKey: "id", TextColumn: "chars",
+		Match: clickhouse.MatchAll, Tokens: []string{"か", "な"}, CandidateLimit: 10,
 	})
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{"kana", "reverse"}, scanIDs(t, ctx, db, unordered))
 
 	vectorQuery, err := clickhouse.BuildVector(clickhouse.VectorRequest{
-		Table: "docs", Key: "id", VectorColumn: "embedding",
-		Distance: clickhouse.VectorCosine, Query: []float32{1, 0},
+		SourceTable: "docs", SourceKey: "id", VectorColumn: "embedding",
+		Distance: clickhouse.DistanceCosine, Query: []float32{1, 0},
 		RevisionColumn: "revision", CandidateLimit: 1,
-		SourcePredicate: clickhouse.Predicate{SQL: "t.tenant = ?", Args: []any{"t1"}},
+		SourcePredicate: sqlquery.Predicate{SQL: "d.tenant = ?", Args: []any{"t1"}},
 	})
 	require.NoError(t, err)
 	// Limit 1 with a predicate can be empty: the HNSW candidate is the other
 	// tenant, and the predicate removes it. That is not exhaustion.
 	assert.Empty(t, scanVector(t, ctx, db, vectorQuery))
 	wider, err := clickhouse.BuildVector(clickhouse.VectorRequest{
-		Table: "docs", Key: "id", VectorColumn: "embedding",
-		Distance: clickhouse.VectorCosine, Query: []float32{1, 0},
+		SourceTable: "docs", SourceKey: "id", VectorColumn: "embedding",
+		Distance: clickhouse.DistanceCosine, Query: []float32{1, 0},
 		RevisionColumn: "revision", CandidateLimit: 5,
-		SourcePredicate: clickhouse.Predicate{SQL: "t.tenant = ?", Args: []any{"t1"}},
+		SourcePredicate: sqlquery.Predicate{SQL: "d.tenant = ?", Args: []any{"t1"}},
 	})
 	require.NoError(t, err)
 	widerHits := scanVector(t, ctx, db, wider)
@@ -130,8 +130,8 @@ CREATE TABLE docs (
 	explained := explain(t, ctx, db, "EXPLAIN indexes = 1 "+unordered.SQL, unordered.Args)
 	assert.Contains(t, explained, "chars_text")
 	nearest, err := clickhouse.BuildVector(clickhouse.VectorRequest{
-		Table: "docs", Key: "id", VectorColumn: "embedding",
-		Distance: clickhouse.VectorCosine, Query: []float32{1, 0},
+		SourceTable: "docs", SourceKey: "id", VectorColumn: "embedding",
+		Distance: clickhouse.DistanceCosine, Query: []float32{1, 0},
 		RevisionColumn: "revision", CandidateLimit: 1,
 	})
 	require.NoError(t, err)
