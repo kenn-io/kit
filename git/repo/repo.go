@@ -213,22 +213,28 @@ func HooksPath(ctx context.Context, repoPath string) (string, error) {
 		return "", fmt.Errorf("git rev-parse --git-path hooks: %w", err)
 	}
 	hooksPath := NormalizePath(string(out))
-	if !filepath.IsAbs(hooksPath) && trackedHooksPath(ctx, repoPath) {
-		// git reports the path relative to its working directory.
-		absRepo, err := filepath.Abs(repoPath)
-		if err != nil {
-			return "", fmt.Errorf("resolve repo path: %w", err)
-		}
-		return filepath.Join(absRepo, hooksPath), nil
+	if filepath.IsAbs(hooksPath) {
+		return hooksPath, nil
 	}
-	if !filepath.IsAbs(hooksPath) {
-		root, err := MainRoot(ctx, repoPath)
-		if err != nil {
-			return "", fmt.Errorf("resolve main repo root for hooks path: %w", err)
-		}
-		hooksPath = filepath.Join(root, hooksPath)
+	// git reports the path relative to repoPath, which may be a
+	// subdirectory; rebase it onto the worktree root.
+	prefix, err := runner.Output(ctx, repoPath, "rev-parse", "--show-prefix")
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse --show-prefix: %w", err)
 	}
-	return hooksPath, nil
+	hooksPath = filepath.Join(NormalizePath(string(prefix)), hooksPath)
+	if trackedHooksPath(ctx, repoPath) {
+		root, err := Root(ctx, repoPath)
+		if err != nil {
+			return "", fmt.Errorf("resolve worktree root for hooks path: %w", err)
+		}
+		return filepath.Join(root, hooksPath), nil
+	}
+	root, err := MainRoot(ctx, repoPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve main repo root for hooks path: %w", err)
+	}
+	return filepath.Join(root, hooksPath), nil
 }
 
 // EnsureAbsoluteHooksPath rewrites relative core.hooksPath to an absolute path

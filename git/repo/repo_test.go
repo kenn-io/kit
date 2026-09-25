@@ -165,7 +165,7 @@ func TestHooksPathAndEnsureAbsoluteHooksPath(t *testing.T) {
 			// Resolve symlinks (macOS /var -> /private/var) so paths
 			// from Git and from the fixture compare equal.
 			repo := gittest.NewRepo(t, gittest.Options{ConfigureUser: true, ResolvePath: true})
-			repo.CommitFile("a.txt", "a\n", "initial")
+			repo.CommitFile(filepath.Join("sub", "a.txt"), "a\n", "initial")
 			if tc.track != "" {
 				repo.CommitFile(filepath.Join(tc.track, "pre-commit"), "#!/bin/sh\n", "add hooks")
 			}
@@ -177,6 +177,9 @@ func TestHooksPathAndEnsureAbsoluteHooksPath(t *testing.T) {
 				got, err := HooksPath(ctx, wt)
 				require.NoError(err)
 				assert.Equal(t, tc.wantHooks(main, wt), got, "before normalization")
+				got, err = HooksPath(ctx, filepath.Join(wt, "sub"))
+				require.NoError(err)
+				assert.Equal(t, tc.wantHooks(main, wt), got, "nested dir before normalization")
 			}
 
 			require.NoError(EnsureAbsoluteHooksPath(ctx, wt))
@@ -190,6 +193,9 @@ func TestHooksPathAndEnsureAbsoluteHooksPath(t *testing.T) {
 				got, err := HooksPath(ctx, wt)
 				require.NoError(err)
 				assert.Equal(t, tc.wantHooks(main, wt), got, "linked worktree")
+				got, err = HooksPath(ctx, filepath.Join(wt, "sub"))
+				require.NoError(err)
+				assert.Equal(t, tc.wantHooks(main, wt), got, "linked worktree nested dir")
 				got, err = HooksPath(ctx, main)
 				require.NoError(err)
 				assert.Equal(t, tc.wantHooks(main, main), got, "main checkout")
