@@ -203,7 +203,7 @@ func TestOllamaRecoveryWaitHonorsTheCallerContext(t *testing.T) {
 
 	first := make(chan error, 1)
 	go func() {
-		_, err := client.Embed(context.Background(), oneText())
+		_, err := client.Embed(t.Context(), oneText())
 		first <- err
 	}()
 	<-entered // the first recovery holds the gate

@@ -247,7 +247,7 @@ func TestEmbedStripsTransportDetails(t *testing.T) {
 	require.EqualError(t, err, "embed request failed")
 	var transport *embedclient.TransportError
 	require.ErrorAs(t, err, &transport)
-	assert.ErrorContains(t, transport.Err, "secret-host.example", "the cause stays reachable for retry decisions")
+	require.ErrorContains(t, transport.Err, "secret-host.example", "the cause stays reachable for retry decisions")
 
 	owned.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return nil, context.Canceled

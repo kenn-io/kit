@@ -99,8 +99,8 @@ func (c *Client) recoverOllama(ctx context.Context, texts []string, vectors [][]
 	indexes := make([]int, len(problems))
 	inputs := make([]string, len(problems))
 	for i, problem := range problems {
-		var vectorErr *VectorError
-		if !errors.As(problem, &vectorErr) {
+		vectorErr, ok := errors.AsType[*VectorError](problem)
+		if !ok {
 			return nil, problem
 		}
 		indexes[i] = vectorErr.Index

@@ -17,7 +17,7 @@
   because the cause can name internal hosts; `Unwrap` keeps the cause.
 - An invalid vector is a `*VectorError` whose `Index` is the caller's input
   position, not the position inside one request. Recovery reads the index
-  with `errors.As`, never by parsing the message.
+  with `errors.AsType`, never by parsing the message.
 - A request waiting for Ollama recovery on another request returns when its
   own context ends.
 - Normalize with L2 only when the model normalization says so. Always reject

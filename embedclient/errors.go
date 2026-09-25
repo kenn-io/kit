@@ -100,8 +100,7 @@ func classifyTransport(err error) error {
 // remapVectorIndex rewrites the index of a VectorError in err with index.
 // Each request numbers its own inputs; callers see their own positions.
 func remapVectorIndex(err error, index func(int) int) error {
-	var vectorErr *VectorError
-	if errors.As(err, &vectorErr) {
+	if vectorErr, ok := errors.AsType[*VectorError](err); ok {
 		vectorErr.Index = index(vectorErr.Index)
 	}
 	return err
