@@ -10,9 +10,7 @@ import (
 )
 
 // Distance selects the ClickHouse function used both for scoring and for the
-// index match. ClickHouse has no default distance; the zero value here is
-// cosine, as in the other backends. An HNSW index built for L2Distance does
-// not serve a cosine query, so set Distance to the index's function.
+// index match. The zero value is cosine, as in the other backends.
 // Cosine score is one minus cosineDistance. L2 score is the negated
 // L2Distance. Inner-product score is dotProduct.
 type Distance string
