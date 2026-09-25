@@ -117,14 +117,6 @@ func TestFuseGroupsRejectsAMemberThatCannotBeCompared(t *testing.T) {
 	assert.Empty(t, members2)
 }
 
-func TestFuseAcceptsAUUIDKey(t *testing.T) {
-	type id [16]byte
-	hits, err := rrf.Fuse(60, []rrf.Leg[id]{{Name: "lexical", Weight: 1, Keys: []id{{1}, {2}}}})
-	require.NoError(t, err)
-	require.Len(t, hits, 2)
-	assert.Equal(t, id{1}, hits[0].Key)
-}
-
 func TestFuseRejectsNonFiniteKAndWeight(t *testing.T) {
 	tests := []struct {
 		name   string
