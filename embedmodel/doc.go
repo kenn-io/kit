@@ -1,12 +1,13 @@
 // Package embedmodel describes a vector space, an indexed-input recipe, and
 // the content those inputs carry.
 //
-// Vector-space identity, input-recipe identity, and lexical-analyzer identity
-// answer different questions. A chunk-window change rebuilds inputs inside
-// the same comparison space. A dictionary change rebuilds a lexical index
-// without changing vectors. An API key, timeout, or batch size changes neither.
+// Vector-space identity and input-recipe identity answer different
+// questions. A chunk-window change rebuilds inputs inside the same comparison
+// space. An API key, timeout, or batch size changes neither. The lexical
+// analyzer identity lives in search/lexical.
 //
-// Content is not a bare list of strings. Text is the first encoded form.
+// Content is not a bare list of strings. Text is the first encoded form, and
+// an empty Kind means text.
 // Image and file content remains a valid description so callers can keep
 // those paths. The shared text client does not encode a top-level image or
 // file, even when Text is set, or a part of those kinds.

@@ -40,8 +40,8 @@ type SourceSpan struct {
 	Label     string
 }
 
-// Content is one embedding input. Set Text, or set Parts, not both.
-// Spans locate the input in the source the caller indexed.
+// Content is one embedding input. Set Text, or set Parts, not both. An empty
+// Kind means text. Spans locate the input in the source the caller indexed.
 type Content struct {
 	Role  embedconfig.Role
 	Kind  string
@@ -86,9 +86,6 @@ func (c Content) Validate() error {
 	case embedconfig.RoleDocument, embedconfig.RoleQuery:
 	default:
 		return errors.New("embed content role must be document or query")
-	}
-	if strings.TrimSpace(c.Kind) == "" {
-		return errors.New("embed content kind is required")
 	}
 	if c.Text != "" && len(c.Parts) > 0 {
 		return errors.New("embed content sets text and parts")

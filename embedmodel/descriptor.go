@@ -13,51 +13,43 @@ var ErrIncompatible = errors.New("embed descriptors use different vector spaces"
 
 // Descriptor binds a model, the role controls that change its inputs, and the
 // input recipe used to produce those inputs. Coordinates requires source spans
-// on non-blank text. Lexical is recorded beside the descriptor so callers can
-// see that it is a different identity.
+// on non-blank text.
 type Descriptor struct {
 	Model       embedconfig.Model
 	Roles       embedconfig.Roles
 	Deployment  embedconfig.Deployment
 	Input       embedconfig.InputLimits
-	Lexical     LexicalAnalyzer
 	Coordinates bool
 }
 
-// Validate checks the descriptor parts. An empty deployment is allowed when
-// the caller has not pinned an endpoint yet.
+// Validate checks the descriptor parts after trimming them, the same way the
+// identities read them. An empty deployment is allowed when the caller has
+// not pinned an endpoint yet.
 func (d Descriptor) Validate() error {
-	if err := d.Model.Validate(); err != nil {
+	if _, _, _, err := prepareSpace(d.Model, d.Roles, d.Deployment); err != nil {
 		return err
 	}
-	if err := d.Roles.Validate(); err != nil {
-		return err
-	}
-	if strings.TrimSpace(d.Deployment.BaseURL) != "" || d.Deployment.PinEndpoint {
-		if err := d.Deployment.Validate(); err != nil {
-			return err
-		}
-	}
-	if err := d.Input.Validate(); err != nil {
-		return err
-	}
-	return d.Lexical.Validate()
+	_, err := d.Input.Prepared()
+	return err
 }
 
-// VectorIdentity returns the comparable vector-space id.
+// VectorIdentity returns the comparable vector-space id. It covers the model,
+// metric, normalization, pooling, requested dimensions, role affixes and
+// formatters, input type, and the endpoint only when PinEndpoint is set.
 func (d Descriptor) VectorIdentity() (string, error) {
-	return embedconfig.VectorIdentity(d.Model, d.Roles, d.Deployment)
+	return vectorIdentity(d.Model, d.Roles, d.Deployment)
 }
 
-// InputIdentity returns the indexed-input id.
+// InputIdentity returns the indexed-input id: the vector-space fields plus
+// the recipe, tokenizer, content selection, and token window.
 func (d Descriptor) InputIdentity() (string, error) {
-	return embedconfig.InputIdentity(d.Model, d.Roles, d.Deployment, d.Input)
+	return inputIdentity(d.Model, d.Roles, d.Deployment, d.Input)
 }
 
 // Generation returns the kit generation for this descriptor.
 // Params carries only the vector-space id under "vector_space".
-// The input recipe stays on InputIdentity. Params does not carry the lexical
-// analyzer, batch size, timeout, or retrieval budget.
+// The input recipe stays on InputIdentity. Params does not carry batch size
+// or timeout.
 func (d Descriptor) Generation() (vector.Generation, error) {
 	space, err := d.VectorIdentity()
 	if err != nil {
@@ -94,7 +86,7 @@ func (d Descriptor) ValidateContent(content Content) error {
 }
 
 // Compatible reports whether document and query vectors can be compared.
-// Input windows may differ. Lexical analyzers are ignored.
+// Input windows may differ.
 func Compatible(document, query Descriptor) error {
 	if err := document.Validate(); err != nil {
 		return err

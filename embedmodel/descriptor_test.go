@@ -87,21 +87,6 @@ func TestDescriptorIdentitiesStaySeparate(t *testing.T) {
 	assert.Equal(t, map[string]string{"vector_space": space}, generation.Params)
 	assert.NotContains(t, generation.Params, "input_recipe")
 
-	lexical := document.Lexical
-	lexical.DictionaryRevision = "dict-2"
-	changed := document
-	changed.Lexical = lexical
-	changedGeneration, err := changed.Generation()
-	require.NoError(t, err)
-	assert.Equal(t, generation.Fingerprint(), changedGeneration.Fingerprint())
-
-	left, err := document.Lexical.Identity()
-	require.NoError(t, err)
-	right, err := changed.Lexical.Identity()
-	require.NoError(t, err)
-	assert.NotEqual(t, left, right)
-	assert.NotContains(t, generation.Params, "lexical")
-
 	inputID, err := document.InputIdentity()
 	require.NoError(t, err)
 	wider := document
@@ -198,10 +183,74 @@ func sampleDescriptor() embedmodel.Descriptor {
 			MaxSpans:          50,
 			Truncation:        embedconfig.TruncationDropTail,
 		},
-		Lexical: embedmodel.LexicalAnalyzer{
-			Name:               "unicode-words",
-			Revision:           "1",
-			DictionaryRevision: "dict-1",
-		},
 	}
+}
+
+func TestVectorIdentityPinsTheEndpointOnlyOnRequest(t *testing.T) {
+	document := sampleDescriptor()
+	id, err := document.VectorIdentity()
+	require.NoError(t, err)
+	moved := document
+	moved.Deployment.BaseURL = "http://127.0.0.1:11435/v1"
+	movedID, err := moved.VectorIdentity()
+	require.NoError(t, err)
+	assert.Equal(t, id, movedID, "an unpinned endpoint move keeps the vector space")
+
+	document.Deployment.PinEndpoint = true
+	pinned, err := document.VectorIdentity()
+	require.NoError(t, err)
+	moved.Deployment.PinEndpoint = true
+	movedPinned, err := moved.VectorIdentity()
+	require.NoError(t, err)
+	assert.NotEqual(t, pinned, movedPinned)
+}
+
+func TestIdentitiesIgnoreWireAndTrustSettings(t *testing.T) {
+	document := sampleDescriptor()
+	vectorID, err := document.VectorIdentity()
+	require.NoError(t, err)
+	inputID, err := document.InputIdentity()
+	require.NoError(t, err)
+
+	changed := document
+	changed.Model.EncodingFormat = "base64"
+	changed.Deployment.TrustPrivateNetwork = true
+	gotVector, err := changed.VectorIdentity()
+	require.NoError(t, err)
+	gotInput, err := changed.InputIdentity()
+	require.NoError(t, err)
+	assert.Equal(t, vectorID, gotVector, "wire encoding is not part of the vector identity")
+	assert.Equal(t, inputID, gotInput)
+}
+
+func TestInputIdentityTreatsZeroMaxSpansAsASetting(t *testing.T) {
+	open := sampleDescriptor()
+	open.Input.MaxSpans = 0
+	capped := open
+	capped.Input.MaxSpans = 1
+	openID, err := open.InputIdentity()
+	require.NoError(t, err)
+	cappedID, err := capped.InputIdentity()
+	require.NoError(t, err)
+	assert.NotEqual(t, openID, cappedID, "a zero span cap is a real unlimited setting, not an omitted field")
+}
+
+func TestValidateTrimsLikeTheIdentities(t *testing.T) {
+	document := sampleDescriptor()
+	padded := document
+	padded.Model.Metric = " cosine "
+	require.NoError(t, padded.Validate())
+	want, err := document.VectorIdentity()
+	require.NoError(t, err)
+	got, err := padded.VectorIdentity()
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
+}
+
+func TestContentWithoutKindIsText(t *testing.T) {
+	content := embedmodel.Content{Role: embedconfig.RoleDocument, Text: "plain"}
+	require.NoError(t, content.Validate())
+	text, err := content.EmbedText()
+	require.NoError(t, err)
+	assert.Equal(t, "plain", text)
 }

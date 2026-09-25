@@ -1,9 +1,15 @@
 # embedmodel invariants
 
-- Keep vector-space, input-recipe, and lexical-analyzer identities separate.
+- Keep vector-space and input-recipe identities separate.
   `Generation.Params` carries only the vector-space id, under `vector_space`.
-  It must not carry `input_recipe` or the lexical identity. `InputIdentity`
-  stays the separate input id.
+  It must not carry `input_recipe`. `InputIdentity` stays the separate input
+  id. The lexical analyzer identity is `search/lexical.Identity`; do not add
+  a second one here.
+- `VectorIdentity` covers model, metric, normalization, pooling, requested
+  dimensions, role affixes and formatters, input type, and the endpoint only
+  when `PinEndpoint` is set. The wire encoding format, batch size, timeout,
+  response cap, and `TrustPrivateNetwork` stay out of both identities.
+- `Validate` and the identities read the same trimmed values.
 - Do not require `[]string` or `vector.Split`. Text content, text parts, and
   caller-prepared source spans are all valid inputs.
 - Only cosine validates. `MetricDotProduct` and `MetricL2` remain named, and
