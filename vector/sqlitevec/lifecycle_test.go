@@ -158,6 +158,31 @@ func TestActivateRefusesAReclaimedGeneration(t *testing.T) {
 	require.ErrorIs(err, sql.ErrNoRows)
 }
 
+func TestOlderStateMethodsCannotReviveAReclaimedGeneration(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	ctx := t.Context()
+	db, store := setupWithRevision(t)
+	model := vector.Generation{Model: "m", Dimensions: 3}
+	require.NoError(store.EnsureGeneration(ctx, 1, model, sqlitevec.StateBuilding))
+	require.NoError(store.EnsureGeneration(ctx, 2, model, sqlitevec.StateBuilding))
+	require.NoError(store.Activate(ctx, 2))
+	require.NoError(store.Reclaim(ctx, 1))
+
+	require.ErrorContains(store.SetGenerationState(ctx, 1, sqlitevec.StateActive), "generation 1 is retired")
+	require.ErrorContains(store.EnsureGeneration(ctx, 1, model, sqlitevec.StateBuilding), "generation 1 is retired")
+	require.NoError(store.EnsureGeneration(ctx, 1, model, sqlitevec.StateRetired))
+	require.NoError(store.SetGenerationState(ctx, 1, sqlitevec.StateRetired))
+	assert.Equal(sqlitevec.StateRetired, generationByKey(t, store, 1).State)
+
+	live, err := store.LiveGenerations(ctx)
+	require.NoError(err)
+	assert.Equal([]int64{2}, live, "search never reaches the dropped table")
+	var vecTable string
+	err = db.QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE name = 'message_vectors_v1'`).Scan(&vecTable)
+	require.ErrorIs(err, sql.ErrNoRows, "ensuring a retired generation does not recreate its storage")
+}
+
 func TestActivateRefusesARetiredGeneration(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)

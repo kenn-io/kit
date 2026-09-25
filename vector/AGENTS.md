@@ -147,6 +147,9 @@ pipeline. Preserve these invariants when changing it.
 - `Reclaim` drops one retired generation's vec0 table, chunk rows, and stamps.
   The generation row stays retired. Reclaiming a generation that is not
   retired fails. Calling it again after success is safe.
+- A retired generation never leaves retired. `SetGenerationState` and
+  `EnsureGeneration` refuse any other state, and ensuring it as retired does
+  not recreate reclaimed storage.
 - `ActiveGeneration` returns the newest active generation by ordinal.
   `LiveGenerations` still returns building generations ahead of active ones.
   Callers that serve only the active generation select it themselves.

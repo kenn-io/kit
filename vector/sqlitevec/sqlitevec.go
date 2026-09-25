@@ -150,7 +150,9 @@ func (s *Store[K, G]) vecTable(ordinal int64) string {
 // EnsureGeneration registers gen with model's vector-space fingerprint,
 // dimension, and the given state, creating its vec0 table on first use.
 // Calling it again updates only the state; a generation's vector space is
-// fixed once created.
+// fixed once created. A retired generation stays retired: ensuring it as
+// retired is a no-op that does not recreate reclaimed storage, and any other
+// state is an error. Use Activate to publish a covered generation.
 func (s *Store[K, G]) EnsureGeneration(ctx context.Context, gen G, model vector.Generation, state State) error {
 	if model.Dimensions <= 0 {
 		return fmt.Errorf("generation dimension must be positive, got %d", model.Dimensions)
@@ -161,6 +163,17 @@ func (s *Store[K, G]) EnsureGeneration(ctx context.Context, gen G, model vector.
 		return fmt.Errorf("begin ensure generation: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	current, found, err := s.generationStateTx(ctx, tx, gen)
+	if err != nil {
+		return err
+	}
+	if found && current == StateRetired {
+		if state == StateRetired {
+			return nil
+		}
+		return fmt.Errorf("generation %v is retired and cannot become %s", gen, state)
+	}
 
 	res, err := tx.ExecContext(ctx, fmt.Sprintf(`
 INSERT INTO %s (gen_key, fingerprint, dimension, state) VALUES (?, ?, ?, ?)
@@ -192,18 +205,49 @@ WHERE fingerprint = excluded.fingerprint AND dimension = excluded.dimension`, s.
 }
 
 // SetGenerationState transitions gen to state. The caller owns the
-// active/building lifecycle; this only records the decision.
+// active/building lifecycle; this only records the decision. A retired
+// generation cannot leave retired, because Reclaim may already have dropped
+// its vectors. Activate is the checked way to publish a generation.
 func (s *Store[K, G]) SetGenerationState(ctx context.Context, gen G, state State) error {
-	res, err := s.db.ExecContext(ctx,
-		fmt.Sprintf(`UPDATE %s SET state = ? WHERE gen_key = ?`, s.generationsTable()),
-		string(state), gen)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("set generation state: %w", err)
+		return fmt.Errorf("begin set generation state: %w", err)
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	defer func() { _ = tx.Rollback() }()
+	current, found, err := s.generationStateTx(ctx, tx, gen)
+	if err != nil {
+		return err
+	}
+	if !found {
 		return fmt.Errorf("generation %v not found", gen)
 	}
+	if current == StateRetired && state != StateRetired {
+		return fmt.Errorf("generation %v is retired and cannot become %s", gen, state)
+	}
+	if _, err := tx.ExecContext(ctx,
+		fmt.Sprintf(`UPDATE %s SET state = ? WHERE gen_key = ?`, s.generationsTable()),
+		string(state), gen); err != nil {
+		return fmt.Errorf("set generation state: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit generation state: %w", err)
+	}
 	return nil
+}
+
+// generationStateTx reads gen's state inside tx. found is false when gen was
+// never ensured.
+func (s *Store[K, G]) generationStateTx(ctx context.Context, tx *sql.Tx, gen G) (State, bool, error) {
+	var state string
+	err := tx.QueryRowContext(ctx, fmt.Sprintf(
+		`SELECT state FROM %s WHERE gen_key = ?`, s.generationsTable()), gen).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("read generation %v state: %w", gen, err)
+	}
+	return State(state), true, nil
 }
 
 func (s *Store[K, G]) lookupGeneration(ctx context.Context, gen G) (ordinal int64, dimension int, err error) {
