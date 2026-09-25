@@ -17,6 +17,22 @@ type Query struct {
 	Args []any
 }
 
+// Column projects a source column under an explicit result alias.
+// Backends quote Name and As as identifiers.
+type Column struct {
+	Name string
+	As   string
+}
+
+// Predicate is a trusted SQL filter over the source row, which every backend
+// aliases as d. Refer to columns as d.<column> and bind values with anonymous
+// ? placeholders. Args are bound in textual order. User values belong in
+// Args, never in SQL. Each backend documents how it rewrites placeholders.
+type Predicate struct {
+	SQL  string
+	Args []any
+}
+
 // Queryer is the query capability shared by *sql.DB, *sql.Tx and *sql.Conn.
 // The caller retains ownership of the handle and any transaction.
 type Queryer interface {
