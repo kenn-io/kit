@@ -95,17 +95,17 @@ func (s *Store[K, G]) BuildCandidateQuery(ctx context.Context, db sqlquery.Query
 		RawWindow: func(ctx context.Context, db sqlquery.Queryer) (bool, error) {
 			rows, err := db.QueryContext(ctx, rawSQL, rawArgs...)
 			if err != nil {
-				return false, err
+				return false, fmt.Errorf("sqlitevec: probe raw window: %w", err)
 			}
 			defer func() { _ = rows.Close() }()
 			var n int
 			if rows.Next() {
 				if err := rows.Scan(&n); err != nil {
-					return false, err
+					return false, fmt.Errorf("sqlitevec: scan raw window: %w", err)
 				}
 			}
 			if err := rows.Err(); err != nil {
-				return false, err
+				return false, fmt.Errorf("sqlitevec: read raw window: %w", err)
 			}
 			return n >= limit, nil
 		},

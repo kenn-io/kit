@@ -16,8 +16,14 @@ type Query struct {
 	SQL  string
 	Args []any
 	// RawWindow, when set, reports whether the backend filled its raw
-	// candidate window before source filters removed rows. Hybrid uses it
-	// instead of comparing the returned row count with the candidate limit.
+	// candidate window before source filters removed rows. A caller that
+	// needs to know whether a short result is complete should use it instead
+	// of comparing the returned row count with the candidate limit.
+	//
+	// RawWindow is a separate statement. It describes the same window as SQL
+	// only when both run on one snapshot, such as one transaction. It probes
+	// the backend's own window, so wrapping SQL in an outer query or adding
+	// an outer filter does not change what it reports.
 	RawWindow func(context.Context, Queryer) (bool, error)
 }
 
