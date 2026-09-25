@@ -78,7 +78,9 @@ func TestPostgreSQLLexicalAndVector(t *testing.T) {
 		CandidateLimit: 5,
 	})
 	require.NoError(t, err)
-	phraseHits := scanPhrase(t, tx, phraseQuery)
+	// Lexical and vector rows share one column order, so the vector scanner
+	// reads a lexical query.
+	phraseHits := scanVector(t, tx, phraseQuery)
 	require.Len(t, phraseHits, 1)
 	assert.Equal(t, "kana", phraseHits[0].id)
 	assert.Equal(t, 3, phraseHits[0].revision)
@@ -125,17 +127,6 @@ type lexicalRow struct {
 	id, title string
 	score     float64
 	revision  int
-}
-
-func scanPhrase(t *testing.T, db sqlquery.Queryer, q sqlquery.Query) []lexicalRow {
-	t.Helper()
-	rows, err := q.All(t.Context(), db, func(rows *sql.Rows) (lexicalRow, error) {
-		var row lexicalRow
-		err := rows.Scan(&row.id, &row.revision, &row.score)
-		return row, err
-	})
-	require.NoError(t, err)
-	return rows
 }
 
 func scanLexical(t *testing.T, db sqlquery.Queryer, q sqlquery.Query) []lexicalRow {

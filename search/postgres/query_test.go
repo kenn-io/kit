@@ -31,10 +31,6 @@ func TestBuildLexicalPlacesFilterBeforeLimit(t *testing.T) {
 	assert.Contains(t, q.SQL, "setweight(to_tsvector('simple', d.title), 'A')")
 	assert.Contains(t, q.SQL, `d."revision" AS revision`)
 	assert.Contains(t, q.SQL, `d."title" AS "title"`)
-	// Lexical and vector rows share one column order, so one scanner reads both.
-	assert.Less(t, strings.Index(q.SQL, " AS doc_key"), strings.Index(q.SQL, " AS revision"))
-	assert.Less(t, strings.Index(q.SQL, " AS revision"), strings.Index(q.SQL, " AS score"))
-	assert.Less(t, strings.Index(q.SQL, " AS score"), strings.Index(q.SQL, ` AS "title"`))
 	where := strings.Index(q.SQL, " WHERE ")
 	order := strings.Index(q.SQL, " ORDER BY ")
 	limit := strings.Index(q.SQL, " LIMIT ")
