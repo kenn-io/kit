@@ -22,9 +22,14 @@ const DefaultMaxResponseBytes = 32 << 20
 type Metric string
 
 const (
-	MetricCosine     Metric = "cosine"
+	// MetricCosine is the distance the vector pipeline can store.
+	MetricCosine Metric = "cosine"
+	// MetricDotProduct names a distance this pipeline cannot store yet.
+	// Validation rejects it.
 	MetricDotProduct Metric = "dot_product"
-	MetricL2         Metric = "l2"
+	// MetricL2 names a distance this pipeline cannot store yet.
+	// Validation rejects it.
+	MetricL2 Metric = "l2"
 )
 
 // Normalization is applied to accepted vectors before they are returned.
@@ -124,8 +129,8 @@ type Transport struct {
 }
 
 // InputLimits identifies the indexed-input recipe and, when MaxTokens is
-// positive, the token window used to fit that recipe. Zero means the caller
-// is not using this token window.
+// positive, the token window used to fit that recipe. A zero MaxTokens means
+// the caller is not using this token window.
 type InputLimits struct {
 	Recipe            string
 	Tokenizer         string
@@ -133,6 +138,8 @@ type InputLimits struct {
 	ContentID         string
 	MaxTokens         int
 	OverlapTokens     int
-	MaxSpans          int
-	Truncation        Truncation
+	// MaxSpans caps source spans inside a token window.
+	// Zero means unlimited, not an unset limit, and validation accepts it.
+	MaxSpans   int
+	Truncation Truncation
 }
