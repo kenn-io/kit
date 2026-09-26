@@ -30,6 +30,12 @@ execution-plan framework or an ORM.
 - Ties follow input order. Do not range over a map to order hits.
 - Leg scores are ranks, not raw distances. Do not compare BM25 with `ts_rank`
   or a vector distance by their numeric values.
+- `FuseGroupsEvery` and `RunGroupsEvery` intersect legs: a group must
+  appear in every leg. They still rank by reciprocal rank. A caller whose legs share one
+  score scale, such as vector legs on one generation, may carry the score in
+  the member and re-rank by it. Do not build that into fusion.
+- An intersection is only as complete as its narrowest leg. Any full window
+  can hide a group, so report it rather than calling the result exhaustive.
 
 ## Backend SQL
 

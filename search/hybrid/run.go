@@ -99,6 +99,32 @@ func Run[K rrf.Key](ctx context.Context, db sqlquery.Queryer, k float64, legs []
 // attached to the fused group so a caller can drop ineligible alternates
 // before choosing a representative.
 func RunGroups[G rrf.Key, M comparable](ctx context.Context, db sqlquery.Queryer, k float64, legs []GroupLeg[G, M]) (GroupResult[G, M], error) {
+	return runGroups(ctx, db, k, legs, rrf.FuseGroups[G, M])
+}
+
+// RunGroupsEvery executes group legs and keeps only groups that every leg
+// found. Each leg is one required concept. Different members may carry the evidence
+// for different legs. A leg with a full window may have missed a group, and
+// then the intersection drops it too, so check AnyFullWindow before treating
+// the result as complete.
+func RunGroupsEvery[G rrf.Key, M comparable](ctx context.Context, db sqlquery.Queryer, k float64, legs []GroupLeg[G, M]) (GroupResult[G, M], error) {
+	return runGroups(ctx, db, k, legs, rrf.FuseGroupsEvery[G, M])
+}
+
+// AnyFullWindow reports whether any leg filled its candidate window.
+func (r GroupResult[G, M]) AnyFullWindow() bool {
+	for _, leg := range r.Legs {
+		if leg.FullWindow {
+			return true
+		}
+	}
+	return false
+}
+
+func runGroups[G rrf.Key, M comparable](
+	ctx context.Context, db sqlquery.Queryer, k float64, legs []GroupLeg[G, M],
+	fuse func(float64, []rrf.GroupLeg[G, M]) ([]rrf.GroupHit[G, M], error),
+) (GroupResult[G, M], error) {
 	if db == nil {
 		return GroupResult[G, M]{}, errors.New("hybrid: database handle is required")
 	}
@@ -142,7 +168,7 @@ func RunGroups[G rrf.Key, M comparable](ctx context.Context, db sqlquery.Queryer
 		}
 		reports[i] = report(leg.Name, leg.CandidateLimit, len(rows), full)
 	}
-	hits, err := rrf.FuseGroups(k, ranked)
+	hits, err := fuse(k, ranked)
 	if err != nil {
 		return GroupResult[G, M]{}, fmt.Errorf("hybrid: %w", err)
 	}

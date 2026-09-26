@@ -87,6 +87,59 @@ func TestFuseGroupsKeepsAlternatesUntilTheCallerFilters(t *testing.T) {
 	assert.Len(t, hits[1].Contributions, 1)
 }
 
+func TestFuseEveryKeepsOnlyGroupsEveryLegFound(t *testing.T) {
+	// s1 has evidence for both concepts in different members. s2 repeats in
+	// the first leg but never appears in the second, so it is dropped.
+	legs := []rrf.GroupLeg[string, string]{
+		{Name: "auth", Weight: 1, Groups: []rrf.Group[string, string]{
+			{Key: "s2", Members: []string{"m1"}},
+			{Key: "s1", Members: []string{"m4", "m9"}},
+			{Key: "s3", Members: []string{"m2"}},
+			{Key: "s2", Members: []string{"m7"}},
+		}},
+		{Name: "retry", Weight: 1, Groups: []rrf.Group[string, string]{
+			{Key: "s3", Members: []string{"m8"}},
+			{Key: "s1", Members: []string{"m12"}},
+		}},
+	}
+	hits, err := rrf.FuseGroupsEvery(60, legs)
+	require.NoError(t, err)
+	require.Len(t, hits, 2)
+
+	// s3 ranks 3 and 1, s1 ranks 2 and 2. With k = 60, 1/63 + 1/61 is
+	// slightly larger than 2/62, so s3 leads.
+	assert.Equal(t, "s3", hits[0].Group)
+	assert.Equal(t, "s1", hits[1].Group)
+	for _, hit := range hits {
+		assert.Len(t, hit.Contributions, 2)
+	}
+	s1 := hits[1]
+	assert.Equal(t, []rrf.Alternate[string]{
+		{Member: "m4", Leg: "auth"},
+		{Member: "m9", Leg: "auth"},
+		{Member: "m12", Leg: "retry"},
+	}, s1.Alternates)
+}
+
+func TestFuseEveryWithOneLegMatchesFuseGroups(t *testing.T) {
+	legs := []rrf.GroupLeg[string, string]{
+		{Name: "only", Weight: 1, Groups: []rrf.Group[string, string]{
+			{Key: "a", Members: []string{"x"}},
+			{Key: "b", Members: []string{"y"}},
+		}},
+	}
+	every, err := rrf.FuseGroupsEvery(60, legs)
+	require.NoError(t, err)
+	groups, err := rrf.FuseGroups(60, legs)
+	require.NoError(t, err)
+	assert.Equal(t, groups, every)
+
+	_, err = rrf.FuseGroupsEvery(60, []rrf.GroupLeg[string, string]{
+		{Name: "dup", Weight: 1}, {Name: "dup", Weight: 1},
+	})
+	require.Error(t, err)
+}
+
 func TestFuseRejectsAScoreThatOverflows(t *testing.T) {
 	legs := make([]rrf.Leg[string], 62)
 	for i := range legs {

@@ -216,6 +216,24 @@ func FuseGroups[G Key, M comparable](k float64, legs []GroupLeg[G, M]) ([]GroupH
 	return hits, nil
 }
 
+// FuseGroupsEvery is FuseGroups restricted to groups that every leg found.
+// Use it when each leg is one required concept and a group must show evidence for
+// all of them, even when different members carry that evidence. Scores,
+// contributions, and alternates match FuseGroups, so the surviving groups
+// keep reciprocal-rank order. Each leg's best member for a group is that
+// leg's first alternate.
+func FuseGroupsEvery[G Key, M comparable](k float64, legs []GroupLeg[G, M]) ([]GroupHit[G, M], error) {
+	hits, err := FuseGroups(k, legs)
+	if err != nil {
+		return nil, err
+	}
+	// FuseGroups adds at most one contribution per leg, and leg names are
+	// unique, so a full set of contributions means every leg found the group.
+	return slices.DeleteFunc(hits, func(hit GroupHit[G, M]) bool {
+		return len(hit.Contributions) != len(legs)
+	}), nil
+}
+
 // ValidateLegs checks fusion arguments without fusing. k must be finite and
 // positive. leg returns the name and weight of leg i; every leg needs a
 // unique, non-empty name and a finite, positive weight. Callers that run
