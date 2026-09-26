@@ -103,3 +103,12 @@ func TestQueryGenerationWindowReturnsRevisionAndExhaustion(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, w.Hits, hits, "ordinary and window queries share revision-bearing results")
 }
+
+func TestQueryGenerationWindowRejectsANonpositiveLimit(t *testing.T) {
+	_, store := setupWithRevision(t)
+	require.NoError(t, store.EnsureGeneration(t.Context(), 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
+	for _, limit := range []int{0, -1} {
+		_, err := store.QueryGenerationWindow(t.Context(), 1, vector.Vector{1, 0, 0}, limit)
+		require.ErrorContains(t, err, "window limit must be positive")
+	}
+}

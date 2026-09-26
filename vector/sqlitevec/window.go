@@ -92,13 +92,13 @@ func (s *Store[K, G]) BuildCandidateQuery(ctx context.Context, db sqlquery.Query
 
 // QueryGenerationWindow returns at most limit current candidates plus a raw
 // boundary probe, using one materialized KNN scan. Revision, score and probe
-// come from the same statement. A nonpositive limit returns an empty window.
+// come from the same statement. limit must be positive.
 func (s *Store[K, G]) QueryGenerationWindow(ctx context.Context, gen G, query vector.Vector, limit int) (Window[K], error) {
 	if limit <= 0 {
-		return Window[K]{}, nil
+		return Window[K]{}, errors.New("sqlitevec: window limit must be positive")
 	}
 	if limit == math.MaxInt {
-		return Window[K]{}, errors.New("query limit too large")
+		return Window[K]{}, errors.New("sqlitevec: window limit too large")
 	}
 	ordinal, expr, value, err := s.prepareQuery(ctx, gen, query)
 	if err != nil {
