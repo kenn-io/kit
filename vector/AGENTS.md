@@ -116,6 +116,10 @@ pipeline. Preserve these invariants when changing it.
   building generation while the active generation still serves the bulk.
   `Search` must keep querying every generation `LiveGenerations` returns,
   in the order it returns them.
+- sqlitevec `Activate` publishes a generation only when that generation's
+  vec0 table still exists. `Reclaim` drops the table and keeps the
+  generation row. An empty corpus must not mark the reclaimed generation
+  active, and `Activate` must not recreate the table.
 
 ## Snapshots export what search would see
 
@@ -129,6 +133,29 @@ pipeline. Preserve these invariants when changing it.
   `CoveredDocs` must be closed before the snapshot.
 - `Chunks` reads whatever the generation holds for a document. Only export
   documents that `CoveredDocs` returned from the same snapshot.
+
+## Publication checks coverage; reclamation is explicit
+
+- `Coverage` counts embedded, stamp-only, and uncovered documents with
+  `coveredPredicate`. A stamp-only document is covered. A stale revision is
+  uncovered even when its old vectors are still stored. Callers use this
+  count instead of reading the stamps or chunks tables.
+- `Activate` publishes one generation only when its backlog is zero, in the
+  same transaction as that count. It marks that generation active and retires
+  other building and active generations. It does not drop their storage, and
+  it does not change which generations `Search` queries.
+- `Reclaim` drops one retired generation's vec0 table, chunk rows, and stamps.
+  The generation row stays retired. Reclaiming a generation that is not
+  retired fails. Calling it again after success is safe.
+- Lifecycle errors wrap `ErrGenerationNotFound` for a key never ensured and
+  `ErrRetired` for a retired generation used as live, so callers match them
+  with `errors.Is`.
+- A retired generation never leaves retired. `SetGenerationState` and
+  `EnsureGeneration` refuse any other state, and ensuring it as retired does
+  not recreate reclaimed storage.
+- `ActiveGeneration` returns the newest active generation by ordinal.
+  `LiveGenerations` still returns building generations ahead of active ones.
+  Callers that serve only the active generation select it themselves.
 
 ## Hits come from live, current documents
 

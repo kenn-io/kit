@@ -218,7 +218,7 @@ func (s *Store[K, G]) lookupGenerationOn(ctx context.Context, db sqlquery.Querye
 		if err := rows.Err(); err != nil {
 			return 0, 0, fmt.Errorf("sqlitevec: lookup generation %v: %w", gen, err)
 		}
-		return 0, 0, fmt.Errorf("generation %v not ensured", gen)
+		return 0, 0, fmt.Errorf("generation %v: %w", gen, ErrGenerationNotFound)
 	}
 	var ordinal int64
 	var dimension int
