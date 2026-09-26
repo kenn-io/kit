@@ -56,7 +56,7 @@ func TestCoverageSeparatesVectorsStampsAndStaleDocuments(t *testing.T) {
 	assert.Equal(sqlitevec.Coverage{Embedded: 1}, filtered)
 
 	_, err = store.Coverage(ctx, 9, "")
-	require.ErrorContains(err, "not ensured")
+	require.ErrorIs(err, sqlitevec.ErrGenerationNotFound)
 }
 
 func TestActivateRefusesAGenerationWithAStaleDocument(t *testing.T) {
@@ -143,7 +143,7 @@ func TestActivateRefusesAReclaimedGeneration(t *testing.T) {
 	require.NoError(store.Reclaim(ctx, 1))
 
 	err := store.Activate(ctx, 1)
-	require.ErrorContains(err, "generation 1 is retired")
+	require.ErrorIs(err, sqlitevec.ErrRetired)
 	require.NotErrorIs(err, sqlitevec.ErrUncovered)
 	assert.Equal(sqlitevec.StateRetired, generationByKey(t, store, 1).State)
 	assert.Equal(sqlitevec.StateActive, generationByKey(t, store, 2).State)
@@ -169,8 +169,8 @@ func TestOlderStateMethodsCannotReviveAReclaimedGeneration(t *testing.T) {
 	require.NoError(store.Activate(ctx, 2))
 	require.NoError(store.Reclaim(ctx, 1))
 
-	require.ErrorContains(store.SetGenerationState(ctx, 1, sqlitevec.StateActive), "generation 1 is retired")
-	require.ErrorContains(store.EnsureGeneration(ctx, 1, model, sqlitevec.StateBuilding), "generation 1 is retired")
+	require.ErrorIs(store.SetGenerationState(ctx, 1, sqlitevec.StateActive), sqlitevec.ErrRetired)
+	require.ErrorIs(store.EnsureGeneration(ctx, 1, model, sqlitevec.StateBuilding), sqlitevec.ErrRetired)
 	require.NoError(store.EnsureGeneration(ctx, 1, model, sqlitevec.StateRetired))
 	require.NoError(store.SetGenerationState(ctx, 1, sqlitevec.StateRetired))
 	assert.Equal(sqlitevec.StateRetired, generationByKey(t, store, 1).State)
@@ -196,7 +196,7 @@ func TestActivateRefusesARetiredGeneration(t *testing.T) {
 	require.NoError(store.Activate(ctx, 2))
 
 	err := store.Activate(ctx, 1)
-	require.ErrorContains(err, "generation 1 is retired")
+	require.ErrorIs(err, sqlitevec.ErrRetired)
 	assert.Equal(sqlitevec.StateRetired, generationByKey(t, store, 1).State)
 	assert.Equal(sqlitevec.StateActive, generationByKey(t, store, 2).State)
 }
@@ -280,13 +280,13 @@ func TestReclaimDropsRetiredStorageAndLeavesTheGenerationRow(t *testing.T) {
 	require.ErrorIs(err, sql.ErrNoRows)
 
 	err = store.Reclaim(ctx, 9)
-	require.ErrorContains(err, "not ensured")
+	require.ErrorIs(err, sqlitevec.ErrGenerationNotFound)
 }
 
 func TestActivateReportsAMissingGeneration(t *testing.T) {
 	require := require.New(t)
 	_, store := setup(t)
 	err := store.Activate(t.Context(), 4)
-	require.ErrorContains(err, "not ensured")
+	require.ErrorIs(err, sqlitevec.ErrGenerationNotFound)
 	require.NotErrorIs(err, sqlitevec.ErrUncovered)
 }

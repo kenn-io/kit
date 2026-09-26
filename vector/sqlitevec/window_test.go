@@ -43,7 +43,7 @@ func TestBuildCandidateQueryComposesAndAppliesFilterBeforeResultLimit(t *testing
 	require.NoError(t, err)
 	defer func() { _ = tx.Rollback() }()
 	_, err = store.BuildCandidateQuery(ctx, tx, 99, vector.Vector{1, 0, 0}, sqlitevec.CandidateQuery{CandidateLimit: 1})
-	require.ErrorContains(t, err, "generation 99 not ensured")
+	require.ErrorIs(t, err, sqlitevec.ErrGenerationNotFound)
 	q, err := store.BuildCandidateQuery(ctx, tx, 1, vector.Vector{1, 0, 0}, sqlitevec.CandidateQuery{
 		CandidateLimit:  2,
 		ExtraSourceCols: []sqlquery.Column{{Name: "body", As: "text"}},

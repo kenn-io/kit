@@ -172,7 +172,7 @@ func (s *Store[K, G]) EnsureGeneration(ctx context.Context, gen G, model vector.
 		if state == StateRetired {
 			return nil
 		}
-		return fmt.Errorf("generation %v is retired and cannot become %s", gen, state)
+		return fmt.Errorf("generation %v: %w and cannot become %s", gen, ErrRetired, state)
 	}
 
 	res, err := tx.ExecContext(ctx, fmt.Sprintf(`
@@ -219,10 +219,10 @@ func (s *Store[K, G]) SetGenerationState(ctx context.Context, gen G, state State
 		return err
 	}
 	if !found {
-		return fmt.Errorf("generation %v not found", gen)
+		return fmt.Errorf("generation %v: %w", gen, ErrGenerationNotFound)
 	}
 	if current == StateRetired && state != StateRetired {
-		return fmt.Errorf("generation %v is retired and cannot become %s", gen, state)
+		return fmt.Errorf("generation %v: %w and cannot become %s", gen, ErrRetired, state)
 	}
 	if _, err := tx.ExecContext(ctx,
 		fmt.Sprintf(`UPDATE %s SET state = ? WHERE gen_key = ?`, s.generationsTable()),
@@ -265,7 +265,7 @@ func (s *Store[K, G]) scanGeneration(row *sql.Row, gen G) (int64, int, error) {
 	var dimension int
 	if err := row.Scan(&ordinal, &dimension); err != nil {
 		if err == sql.ErrNoRows {
-			return 0, 0, fmt.Errorf("generation %v not ensured", gen)
+			return 0, 0, fmt.Errorf("generation %v: %w", gen, ErrGenerationNotFound)
 		}
 		return 0, 0, fmt.Errorf("lookup generation %v: %w", gen, err)
 	}

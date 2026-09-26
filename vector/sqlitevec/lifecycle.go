@@ -12,6 +12,14 @@ import (
 // The state change is not committed. Callers retry after a later fill.
 var ErrUncovered = errors.New("generation has uncovered documents")
 
+// ErrGenerationNotFound reports a generation key that EnsureGeneration never
+// registered.
+var ErrGenerationNotFound = errors.New("generation not ensured")
+
+// ErrRetired reports a retired generation used where only a building or
+// active one is allowed. A retired generation never becomes live again.
+var ErrRetired = errors.New("generation is retired")
+
 // UncoveredError is the Activate failure for an incomplete generation.
 // Backlog is the number of documents that still need a current stamp.
 type UncoveredError struct {
@@ -115,7 +123,7 @@ func (s *Store[K, G]) Activate(ctx context.Context, gen G) error {
 		return fmt.Errorf("read generation %v state: %w", gen, err)
 	}
 	if State(state) == StateRetired {
-		return fmt.Errorf("generation %v is retired", gen)
+		return fmt.Errorf("generation %v: %w", gen, ErrRetired)
 	}
 	coverage, err := s.coverageOn(ctx, tx, ordinal, "", nil)
 	if err != nil {
@@ -200,7 +208,7 @@ func (s *Store[K, G]) Reclaim(ctx context.Context, gen G) error {
 	err = tx.QueryRowContext(ctx, fmt.Sprintf(
 		`SELECT ordinal, state FROM %s WHERE gen_key = ?`, s.generationsTable()), gen).Scan(&ordinal, &state)
 	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("generation %v not ensured", gen)
+		return fmt.Errorf("generation %v: %w", gen, ErrGenerationNotFound)
 	}
 	if err != nil {
 		return fmt.Errorf("read generation %v: %w", gen, err)

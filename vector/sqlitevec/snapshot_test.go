@@ -135,7 +135,7 @@ func TestSnapshotRejectsBadIdentifiersAndUseAfterClose(t *testing.T) {
 	require.NoError(store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
 
 	_, err := store.Snapshot(ctx, 7)
-	require.ErrorContains(err, "not ensured")
+	require.ErrorIs(err, sqlitevec.ErrGenerationNotFound)
 
 	snap, err := store.Snapshot(ctx, 1)
 	require.NoError(err)

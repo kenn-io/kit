@@ -147,6 +147,9 @@ pipeline. Preserve these invariants when changing it.
 - `Reclaim` drops one retired generation's vec0 table, chunk rows, and stamps.
   The generation row stays retired. Reclaiming a generation that is not
   retired fails. Calling it again after success is safe.
+- Lifecycle errors wrap `ErrGenerationNotFound` for a key never ensured and
+  `ErrRetired` for a retired generation used as live, so callers match them
+  with `errors.Is`.
 - A retired generation never leaves retired. `SetGenerationState` and
   `EnsureGeneration` refuse any other state, and ensuring it as retired does
   not recreate reclaimed storage.
