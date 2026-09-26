@@ -8,6 +8,7 @@ import (
 
 	"go.kenn.io/kit/embedconfig"
 	"go.kenn.io/kit/embedmodel"
+	"go.kenn.io/kit/vector"
 )
 
 func TestTextAndPartsStayDistinct(t *testing.T) {
@@ -253,4 +254,44 @@ func TestContentWithoutKindIsText(t *testing.T) {
 	text, err := content.EmbedText()
 	require.NoError(t, err)
 	assert.Equal(t, "plain", text)
+}
+
+func TestMatchesKeepsLegacyGenerationsAndUsesKitFormForNewOnes(t *testing.T) {
+	assert := assert.New(t)
+	// The fingerprint a consumer's existing generation was stored under,
+	// in the consumer's own format.
+	legacy := vector.Generation{
+		Model: "bge-m3", Dimensions: 1024,
+		Params: map[string]string{"max_input_chars": "2000", "doc_unit_scheme": "run_v1"},
+	}.Fingerprint()
+	plain := sampleDescriptor()
+	adopting := plain
+	adopting.Legacy = []string{legacy, "bge-m3:1024:v1:c2000"}
+
+	current, err := adopting.Generation()
+	require.NoError(t, err)
+	kitForm, err := plain.Generation()
+	require.NoError(t, err)
+	assert.Equal(kitForm.Fingerprint(), current.Fingerprint(), "new generations use kit's form")
+
+	for _, fingerprint := range []string{legacy, "bge-m3:1024:v1:c2000", current.Fingerprint()} {
+		ok, err := adopting.Matches(fingerprint)
+		require.NoError(t, err)
+		assert.True(ok, "fingerprint %q stays current", fingerprint)
+	}
+	ok, err := plain.Matches(legacy)
+	require.NoError(t, err)
+	assert.False(ok, "without Legacy an old fingerprint is a different generation")
+
+	changed := adopting
+	changed.Model.Name = "other-model"
+	ok, err = changed.Matches(current.Fingerprint())
+	require.NoError(t, err)
+	assert.False(ok, "a model change is a new vector space")
+}
+
+func TestValidateRejectsAnEmptyLegacyFingerprint(t *testing.T) {
+	d := sampleDescriptor()
+	d.Legacy = []string{"  "}
+	require.ErrorContains(t, d.Validate(), "legacy fingerprint 0 is empty")
 }
