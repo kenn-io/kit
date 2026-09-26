@@ -38,13 +38,18 @@ pipeline. Preserve these invariants when changing it.
 
 ## Fill batches without losing document boundaries
 
-- `WithFillBatch(WithBatchSize(n))` with a positive `n` packs chunks across
-  documents in one scan page. Omitting it preserves the legacy per-document
-  encode unit. `WithBatchSize` remains the maximum texts in one `EncodeFunc`
-  call.
-- `WithBatchTokenBudget` is opt-in and further reduces the effective batch
-  size from the caller's conservative per-input token upper bound. The vector
-  package does not choose a tokenizer, infer model limits, or alter input text.
+- Fill packs chunks across documents in one scan page. A call holds at most
+  `DefaultFillBatchSize` (32) chunks, or a positive `WithBatchSize`, and at
+  most `DefaultFillBatchTokens` (16384) estimated tokens. The estimate counts
+  an ASCII rune as a quarter token and any other rune as one, so CJK text is
+  never undercounted. A chunk over the budget goes alone. The per-document
+  path runs only for a nil encoder.
+- Without `WithFillBatchErrorIsolation`, a shared-call error is diagnosed per
+  document only when `WithFillEncodeError` is set, so one bad document stays
+  skippable. An explicit nil classifier diagnoses nothing.
+- `WithBatchTokenBudget` replaces Fill's estimate with the caller's
+  conservative per-input token upper bound. The vector package does not choose
+  a tokenizer or alter input text; the estimate only sizes encode calls.
   Reject a configured upper bound that cannot fit one input before calling the
   encoder.
 - Vectors from a shared encode batch must be scattered back to their exact
@@ -75,6 +80,19 @@ pipeline. Preserve these invariants when changing it.
 - With multiple fill workers, save a completed document without waiting for an
   unrelated earlier batch. Saves remain serialized even when encode calls
   complete out of order.
+- `WithFillDocumentLimit` bounds how many pending documents one Fill starts.
+  A document that returns `ErrStale` still counts. The next Fill continues
+  with what is still pending. A limit of zero or less does not bound the run.
+- `WithFillProgress` runs only after `SaveVectors` succeeds, including a
+  stamp-only save. It does not run when the save returns `ErrStale`.
+- `WithFillPrepared` replaces `Split` for that call. The callback receives
+  Fill's context. Fill does not call it for a later document in the page
+  when that context is already cancelled, and it does not encode or stamp
+  that page. Text is the encoder input and may differ from the source.
+  `SourceSpan` and `Truncated` come back through progress and are not
+  stored. An empty chunk list is a stamp-only save. An error from the
+  prepare function aborts the page before any of its documents are encoded
+  or stamped. A blank prepared text is still `ErrEmptyEmbeddingInput`.
 
 ## Keys and generations are opaque
 
