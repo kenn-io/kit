@@ -2,6 +2,8 @@ package embedmodel
 
 import (
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 
 	"go.kenn.io/kit/embedconfig"
@@ -14,12 +16,19 @@ var ErrIncompatible = errors.New("embed descriptors use different vector spaces"
 // Descriptor binds a model, the role controls that change its inputs, and the
 // input recipe used to produce those inputs. Coordinates requires source spans
 // on non-blank text.
+//
+// Legacy lists generation fingerprints, in the consumer's own format, that
+// this descriptor also owns. A consumer adopting kit sets it to the
+// fingerprint its existing generations were stored under, so Matches keeps
+// recognizing them and nothing has to be re-embedded. New generations use
+// Generation, kit's form.
 type Descriptor struct {
 	Model       embedconfig.Model
 	Roles       embedconfig.Roles
 	Deployment  embedconfig.Deployment
 	Input       embedconfig.InputLimits
 	Coordinates bool
+	Legacy      []string
 }
 
 // Validate checks the descriptor parts after trimming them, the same way the
@@ -29,8 +38,15 @@ func (d Descriptor) Validate() error {
 	if _, _, _, err := prepareSpace(d.Model, d.Roles, d.Deployment); err != nil {
 		return err
 	}
-	_, err := d.Input.Prepared()
-	return err
+	if _, err := d.Input.Prepared(); err != nil {
+		return err
+	}
+	for i, fingerprint := range d.Legacy {
+		if strings.TrimSpace(fingerprint) == "" {
+			return fmt.Errorf("embed legacy fingerprint %d is empty", i)
+		}
+	}
+	return nil
 }
 
 // VectorIdentity returns the comparable vector-space id. It covers the model,
@@ -62,6 +78,24 @@ func (d Descriptor) Generation() (vector.Generation, error) {
 			"vector_space": space,
 		},
 	}, nil
+}
+
+// Matches reports whether a stored generation fingerprint belongs to this
+// descriptor: kit's own form from Generation, or one of Legacy. A consumer
+// keeps using a matching generation. A fingerprint that matches neither is a
+// different vector space or recipe and needs its own generation.
+func (d Descriptor) Matches(fingerprint string) (bool, error) {
+	if err := d.Validate(); err != nil {
+		return false, err
+	}
+	if slices.Contains(d.Legacy, fingerprint) {
+		return true, nil
+	}
+	gen, err := d.Generation()
+	if err != nil {
+		return false, err
+	}
+	return fingerprint == gen.Fingerprint(), nil
 }
 
 // ValidateContent checks one input against this descriptor.

@@ -10,6 +10,11 @@
   when `PinEndpoint` is set. The wire encoding format, batch size, timeout,
   response cap, and `TrustPrivateNetwork` stay out of both identities.
 - `Validate` and the identities read the same trimmed values.
+- Adopting kit must never force a re-embed. `Descriptor.Legacy` carries the
+  fingerprints a consumer's existing generations use, in the consumer's own
+  format, and `Matches` accepts them alongside kit's form. `Generation`
+  always returns kit's form, which new generations use. Do not make kit's
+  identity the only accepted form.
 - Do not require `[]string` or `vector.Split`. Text content, text parts, and
   caller-prepared source spans are all valid inputs.
 - Only cosine validates. `MetricDotProduct` and `MetricL2` remain named, and
