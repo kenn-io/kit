@@ -8,6 +8,10 @@ callers responsible for their own file formats and higher-level policy.
 
 ## Invariants
 
+- On Windows, every Win32 call that takes a caller's path converts it with
+  `internal/winpath.UTF16Ptr`, which adds the `\\?\` prefix to long paths as
+  the os package does. Without it a path that `os.OpenFile` accepts past
+  MAX_PATH fails here.
 - Treat ambiguous paths as unsafe. Empty paths, symlinks, and non-regular files
   should fail before callers can write runtime state through them.
 - Runtime directory validation should judge the directory entry the caller

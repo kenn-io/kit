@@ -8,6 +8,8 @@ import (
 	"os"
 
 	"golang.org/x/sys/windows"
+
+	"go.kenn.io/kit/internal/winpath"
 )
 
 var reOpenFile = windows.NewLazySystemDLL("kernel32.dll").NewProc("ReOpenFile")
@@ -19,7 +21,7 @@ func OpenCurrentUserFile(path string) (*os.File, error) {
 	if path == "" {
 		return nil, errors.New("path is empty")
 	}
-	path16, err := windows.UTF16PtrFromString(path)
+	path16, err := winpath.UTF16Ptr(path)
 	if err != nil {
 		return nil, err
 	}

@@ -15,6 +15,7 @@ type Option func(*config)
 type config struct {
 	perm         fs.FileMode
 	permSet      bool
+	createPerm   bool
 	preserveMode bool
 	private      bool
 	followLink   bool
@@ -31,16 +32,28 @@ func WithPerm(perm fs.FileMode) Option {
 	}
 }
 
+// WithCreatePerm sets the permission of a newly created file the way the
+// perm argument of os.WriteFile does: the process umask filters it. Add
+// WithPreserveMode to keep an existing target's mode, as os.WriteFile does.
+// It cannot be combined with WithPerm or WithPrivate.
+func WithCreatePerm(perm fs.FileMode) Option {
+	return func(c *config) {
+		c.perm = perm
+		c.createPerm = true
+	}
+}
+
 // WithPreserveMode keeps the permission bits of the existing target when it
-// is a regular file. Otherwise the WithPerm value or the default applies.
+// is a regular file. Otherwise the WithPerm value, the WithCreatePerm value
+// filtered by the umask, or the default applies.
 func WithPreserveMode() Option {
 	return func(c *config) { c.preserveMode = true }
 }
 
 // WithPrivate stages the file with safefileio.CreatePrivateTemp, so the
 // result is private to the current user: mode 0600 on Unix, a protected
-// current-user DACL on Windows. It cannot be combined with WithPerm or
-// WithPreserveMode.
+// current-user DACL on Windows. It cannot be combined with WithPerm,
+// WithCreatePerm or WithPreserveMode.
 func WithPrivate() Option {
 	return func(c *config) { c.private = true }
 }
@@ -78,8 +91,11 @@ func newConfig(opts []Option) (config, error) {
 	for _, opt := range opts {
 		opt(&cfg)
 	}
-	if cfg.private && (cfg.permSet || cfg.preserveMode) {
-		return config{}, errors.New("WithPrivate cannot be combined with WithPerm or WithPreserveMode")
+	if cfg.private && (cfg.permSet || cfg.createPerm || cfg.preserveMode) {
+		return config{}, errors.New("WithPrivate cannot be combined with WithPerm, WithCreatePerm or WithPreserveMode")
+	}
+	if cfg.permSet && cfg.createPerm {
+		return config{}, errors.New("WithPerm cannot be combined with WithCreatePerm")
 	}
 	return cfg, nil
 }

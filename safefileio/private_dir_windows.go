@@ -11,6 +11,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"go.kenn.io/kit/internal/winpath"
 )
 
 // EnsurePrivateDir creates path when needed and verifies it is a non-reparse
@@ -114,7 +116,7 @@ func rejectWindowsReparsePoint(path string) error {
 	if info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("%s is a symlink", path)
 	}
-	path16, err := windows.UTF16PtrFromString(path)
+	path16, err := winpath.UTF16Ptr(path)
 	if err != nil {
 		return err
 	}
@@ -129,7 +131,7 @@ func rejectWindowsReparsePoint(path string) error {
 }
 
 func openWindowsDir(path string) (windows.Handle, error) {
-	path16, err := windows.UTF16PtrFromString(path)
+	path16, err := winpath.UTF16Ptr(path)
 	if err != nil {
 		return 0, err
 	}

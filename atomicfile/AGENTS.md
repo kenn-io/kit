@@ -10,6 +10,10 @@ no file formats, locking, or caller policy. Link inspection belongs to
 
 ## Invariants
 
+- On Windows, every Win32 call that takes a caller's path converts it with
+  `internal/winpath.UTF16Ptr`, which adds the `\\?\` prefix to long paths as
+  the os package does. Without it a path that `os.OpenFile` accepts past
+  MAX_PATH fails here.
 - Readers see the old or the new content, never a partial file: stage in a
   temporary file, fsync (unless `WithoutSync`), close, then rename.
 - Never fall back to copying. Replacement uses `os.Rename` on Unix and
@@ -47,9 +51,12 @@ no file formats, locking, or caller policy. Link inspection belongs to
   `RenameNoReplace` on Windows, because `CreateHardLink` has no
   write-through and `SyncDir` cannot make the new name durable there.
 - Never repair permissions of an existing file. The staged file gets its mode
-  before any data is written (exact `WithPerm`, default 0600, or the existing
-  regular target's bits with `WithPreserveMode`); `WithPrivate` stages through
-  `safefileio.CreatePrivateTemp` and cannot be combined with those options.
+  before any data is written (exact `WithPerm`, default 0600, the existing
+  regular target's bits with `WithPreserveMode`, or `WithCreatePerm` bits
+  filtered by the umask because the staging file is created with them, as
+  `os.WriteFile` does; never chmod after a `WithCreatePerm` create).
+  `WithPrivate` stages through `safefileio.CreatePrivateTemp` and cannot be
+  combined with those options.
 - Remove the staging file on every failure path, and never create parent
   directories.
 - `SyncDir` fsyncs a directory on Unix and is a documented no-op on Windows,

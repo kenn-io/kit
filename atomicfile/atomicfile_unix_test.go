@@ -47,6 +47,14 @@ func TestWriteFilePermissions(t *testing.T) {
 			opts: []atomicfile.Option{atomicfile.WithPreserveMode(), atomicfile.WithPerm(0o640)},
 			want: 0o640,
 		},
+		{name: "WithCreatePerm applies the umask", opts: []atomicfile.Option{atomicfile.WithCreatePerm(0o644)}, want: 0o600},
+		{name: "WithCreatePerm replaces existing mode", existing: 0o640, opts: []atomicfile.Option{atomicfile.WithCreatePerm(0o644)}, want: 0o600},
+		{
+			name:     "WithCreatePerm with WithPreserveMode keeps existing mode",
+			existing: 0o640,
+			opts:     []atomicfile.Option{atomicfile.WithCreatePerm(0o644), atomicfile.WithPreserveMode()},
+			want:     0o640,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -72,6 +80,25 @@ func TestWriteNewAppliesPerm(t *testing.T) {
 	require.NoError(t, atomicfile.WriteNew(target, []byte("data"), atomicfile.WithPerm(0o644)))
 
 	assert.Equal(t, fs.FileMode(0o644), modeOf(t, target))
+}
+
+// WithCreatePerm matches os.WriteFile under the same umask, for a new file
+// written either way.
+func TestWithCreatePermMatchesOSWriteFile(t *testing.T) {
+	for _, mask := range []int{0o022, 0o077} {
+		setUmask(t, mask)
+		dir := t.TempDir()
+		want := filepath.Join(dir, "os")
+		require.NoError(t, os.WriteFile(want, []byte("data"), 0o644))
+
+		replaced := filepath.Join(dir, "writefile")
+		require.NoError(t, atomicfile.WriteFile(replaced, []byte("data"), atomicfile.WithCreatePerm(0o644)))
+		created := filepath.Join(dir, "writenew")
+		require.NoError(t, atomicfile.WriteNew(created, []byte("data"), atomicfile.WithCreatePerm(0o644)))
+
+		assert.Equal(t, modeOf(t, want), modeOf(t, replaced), "umask %#o", mask)
+		assert.Equal(t, modeOf(t, want), modeOf(t, created), "umask %#o", mask)
+	}
 }
 
 func TestSyncDirReportsMissingDirectory(t *testing.T) {
