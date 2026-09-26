@@ -2,9 +2,10 @@
 //
 // The caller owns the HTTP client when it supplies one. This package clones
 // that client, pins requests to the configured origin, and can attach a bearer
-// token. Ordinary failures are not retried. A non-2xx response, a short body,
-// or a vector that fails validation fails the whole call. Response indexes
-// are applied inside each request. A missing index on every item means the
+// token. Failures are not retried unless the caller sets Options.Retry,
+// which retries only failures that may succeed later. A non-2xx response, a
+// short body, or a vector that fails validation fails the whole call.
+// Response indexes are applied inside each request. A missing index on every item means the
 // provider kept request order.
 //
 // Ollama on Apple Metal can answer HTTP 200 with a vector that is not a real
