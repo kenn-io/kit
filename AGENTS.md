@@ -25,10 +25,10 @@ provider workflows to this repo unless the package already owns that concern.
 
 ## Supported Environments
 
-- Kit targets releases of its libraries, runtimes, and external services
-  (databases, search engines, embedding servers) from roughly the last one to
-  two years, running with their default settings. Anything older, and any
-  legacy compatibility mode or deprecated setting, is out of scope.
+- Kit targets the latest releases of its libraries, runtimes, and external
+  services (databases, search engines, embedding servers), running with their
+  default settings. One to two years old is the outer limit; anything older,
+  and any legacy compatibility mode or deprecated setting, is out of scope.
 - Do not add code, tests, or documentation to handle them, and do not raise
   them as open questions. For example, PostgreSQL's
   `standard_conforming_strings=off` is out of scope.
