@@ -51,6 +51,9 @@ func TestBuildCandidateQueryComposesAndAppliesFilterBeforeResultLimit(t *testing
 		SourcePredicate: sqlquery.Predicate{SQL: "d.id = ?", Args: []any{int64(2)}},
 	})
 	require.NoError(t, err)
+	full, err := q.RawWindow(ctx, db)
+	require.NoError(t, err)
+	assert.True(t, full, "the raw neighbor window was full even though the filter keeps one row")
 	// Compose the generated relation while preserving its binding order.
 	q.SQL = "SELECT doc_key, chunk_index, revision, score, text FROM (" + q.SQL + ") AS matches ORDER BY score DESC, doc_key"
 	narrow, err := store.BuildCandidateQuery(ctx, tx, 1, vector.Vector{1, 0, 0}, sqlitevec.CandidateQuery{
