@@ -16,6 +16,7 @@ require (
 	github.com/gofrs/flock v0.13.0
 	github.com/golangci/plugin-module-register v0.1.2
 	github.com/golangci/rowserrcheck v0.0.0-20260419091836-c5f79b8a11ba
+	github.com/jackc/pgx/v5 v5.11.0
 	github.com/klauspost/compress v1.18.6
 	github.com/leanovate/gopter v0.2.11
 	github.com/mattn/go-runewidth v0.0.24
@@ -85,6 +86,9 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.0 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
