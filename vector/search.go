@@ -10,6 +10,10 @@ type Hit[K comparable] struct {
 	Doc K
 	// ChunkIndex is the chunk within Doc that matched.
 	ChunkIndex int
+	// Revision identifies the indexed content that produced Score. Backends
+	// without revision tracking leave it nil. Hydration must not attach this
+	// score to a different revision of the document.
+	Revision any
 	// Score is the backend's similarity score for this chunk. Merge
 	// overwrites it with the merged score under the chosen strategy.
 	Score float32

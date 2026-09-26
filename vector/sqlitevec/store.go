@@ -379,31 +379,14 @@ SELECT gen_key FROM %s
 // and CROSS JOIN pins knn as the outermost loop so the chunk map is probed
 // by its (ordinal, vec_rowid) index limit times, never the reverse.
 func (s *Store[K, G]) queryGenerationSQL(ordinal int64, expr string) string {
-	return fmt.Sprintf(`
-WITH knn AS MATERIALIZED (
-    SELECT rowid, distance FROM %s WHERE embedding MATCH %s ORDER BY distance LIMIT ?
-)
-SELECT c.doc_key, c.chunk_index, knn.distance
-  FROM knn
-  CROSS JOIN %s c ON c.ordinal = ? AND c.vec_rowid = knn.rowid
-  JOIN %s d ON d.%s = c.doc_key
-  LEFT JOIN %s stamp ON stamp.ordinal = c.ordinal AND stamp.doc_key = c.doc_key
- WHERE %s
- ORDER BY knn.distance`, s.vecTable(ordinal), expr, s.chunksTable(), s.schema.DocsTable, s.schema.IDColumn,
-		s.stampsTable(), s.coveredPredicate("d", "stamp"))
+	return s.candidateCTEs(ordinal, expr, "", "", false) +
+		" SELECT doc_key, chunk_index, distance, revision FROM candidates ORDER BY distance, vec_rowid"
 }
 
 func (s *Store[K, G]) QueryGeneration(ctx context.Context, gen G, query vector.Vector, limit int) ([]vector.Hit[K], error) {
-	ordinal, dimension, err := s.lookupGeneration(ctx, gen)
+	ordinal, expr, value, err := s.prepareQuery(ctx, gen, query)
 	if err != nil {
 		return nil, err
-	}
-	if len(query) != dimension {
-		return nil, fmt.Errorf("query has %d dimensions, generation expects %d", len(query), dimension)
-	}
-	expr, value, err := vectorValue(query)
-	if err != nil {
-		return nil, fmt.Errorf("serialize query: %w", err)
 	}
 	rows, err := s.db.QueryContext(ctx, s.queryGenerationSQL(ordinal, expr), value, limit, ordinal)
 	if err != nil {
@@ -417,11 +400,12 @@ func (s *Store[K, G]) QueryGeneration(ctx context.Context, gen G, query vector.V
 			doc        K
 			chunkIndex int
 			distance   float64
+			revision   any
 		)
-		if err := rows.Scan(&doc, &chunkIndex, &distance); err != nil {
+		if err := rows.Scan(&doc, &chunkIndex, &distance, &revision); err != nil {
 			return nil, fmt.Errorf("scan hit: %w", err)
 		}
-		hits = append(hits, vector.Hit[K]{Doc: doc, ChunkIndex: chunkIndex, Score: float32(1 - distance)})
+		hits = append(hits, vector.Hit[K]{Doc: doc, ChunkIndex: chunkIndex, Revision: revision, Score: float32(1 - distance)})
 	}
 	return hits, rows.Err()
 }
