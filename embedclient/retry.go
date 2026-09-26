@@ -21,7 +21,8 @@ type Retry struct {
 	// InitialBackoff is the wait before the first retry. Later retries grow
 	// it exponentially with jitter. Zero uses 500ms.
 	InitialBackoff time.Duration
-	// MaxBackoff caps the growing backoff. Zero uses 30s.
+	// MaxBackoff caps the growing backoff before jitter, so one wait can
+	// reach 1.5 times this value. Zero uses 30s.
 	MaxBackoff time.Duration
 	// MaxRetryAfter caps how long a provider's Retry-After can make a retry
 	// wait. Zero uses 60s.
