@@ -120,8 +120,8 @@ func TestChineseSegmentsHanAndNotKana(t *testing.T) {
 
 	_, err = a.IndexText("中文")
 	require.Error(t, err)
-	require.Error(t, lexical.Same(lexical.CharacterPhrase().Identity, a.Identity))
-	require.NoError(t, lexical.Same(a.Identity, han.Identity))
+	require.ErrorIs(t, lexical.CheckCompatible(lexical.CharacterPhrase().Identity, a.Identity), lexical.ErrIdentityMismatch)
+	require.NoError(t, lexical.CheckCompatible(a.Identity, han.Identity))
 
 	changed, err := lexical.FingerprintRuntime(lexical.ChineseQueryVersion, []lexical.RuntimeFile{
 		{Name: "library", Data: []byte("runtime-a")},
@@ -233,7 +233,7 @@ CREATE VIRTUAL TABLE docs_fts USING fts5(body, tokenize='unicode61');`)
 				prepared, err = a.PrepareLiteral(tc.query)
 			}
 			require.NoError(t, err)
-			require.NoError(t, lexical.Same(a.Identity, prepared.Identity))
+			require.NoError(t, lexical.CheckCompatible(a.Identity, prepared.Identity))
 			hits := matchBodies(t, db, prepared.Match)
 			for _, body := range tc.want {
 				assert.Contains(t, hits, body)

@@ -40,17 +40,18 @@ type Identity struct {
 	Runtime string
 }
 
-func (id Identity) equal(other Identity) bool {
-	return id.Kind == other.Kind && id.Version == other.Version && id.Runtime == other.Runtime
-}
+// ErrIdentityMismatch reports that a query was prepared by a different
+// analyzer than the index, so its tokens are not the index tokens.
+var ErrIdentityMismatch = errors.New("lexical: analyzer identity mismatch")
 
-// Same reports whether an index identity and a query identity can be used
-// together. A mismatch means the query tokens are not the index tokens.
-func Same(index, query Identity) error {
-	if index.equal(query) {
+// CheckCompatible returns an error wrapping ErrIdentityMismatch unless an
+// index identity and a query identity can be used together. Identity values
+// are comparable, so == is the plain yes/no test.
+func CheckCompatible(index, query Identity) error {
+	if index == query {
 		return nil
 	}
-	return fmt.Errorf("lexical: analyzer identity mismatch: index %s, query %s", index, query)
+	return fmt.Errorf("%w: index %s, query %s", ErrIdentityMismatch, index, query)
 }
 
 func (id Identity) String() string {
