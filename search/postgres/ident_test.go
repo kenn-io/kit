@@ -82,6 +82,12 @@ func TestRebaseKeepsLiteralsAndNumbersPlaceholders(t *testing.T) {
 			want: "a = $1 /* what? */ AND b = $2",
 			last: 2,
 		},
+		{
+			name: "nested block comment",
+			in:   "a = ? /* outer /* inner */ still? */ AND b = ?",
+			want: "a = $1 /* outer /* inner */ still? */ AND b = $2",
+			last: 2,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -133,6 +133,9 @@ func BuildLexical(req LexicalRequest) (sqlquery.Query, error) {
 	if strings.TrimSpace(req.TSQuery) != "" {
 		var last int
 		querySQL, last = rebase(req.TSQuery, 0)
+		if err := checkArgs("tsquery", last, len(req.TSQueryArgs)); err != nil {
+			return sqlquery.Query{}, err
+		}
 		n = last
 		args = append(args, req.TSQueryArgs...)
 	} else {
@@ -144,6 +147,9 @@ func BuildLexical(req LexicalRequest) (sqlquery.Query, error) {
 	if predicate != "" {
 		var last int
 		predSQL, last = rebase(predicate, n)
+		if err := checkArgs("source predicate", last-n, len(req.SourcePredicate.Args)); err != nil {
+			return sqlquery.Query{}, err
+		}
 		n = last
 		args = append(args, req.SourcePredicate.Args...)
 	}

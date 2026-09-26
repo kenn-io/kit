@@ -77,3 +77,28 @@ func TestBuildVectorFiltersBeforeLimitAndKeepsRevision(t *testing.T) {
 	})
 	require.Error(t, err)
 }
+
+func TestBuildersRejectAPlaceholderArgumentMismatch(t *testing.T) {
+	_, err := postgres.BuildLexical(postgres.LexicalRequest{
+		Mapping:         postgres.LexicalMapping{SourceTable: "docs", SourceKey: "id", Vector: "d.body_tsv"},
+		Text:            "alpha",
+		SourcePredicate: sqlquery.Predicate{SQL: "d.tenant = ? AND d.kind = ?", Args: []any{"t1"}},
+		CandidateLimit:  1,
+	})
+	require.ErrorContains(t, err, "source predicate has 2 placeholders and 1 args")
+
+	_, err = postgres.BuildLexical(postgres.LexicalRequest{
+		Mapping:        postgres.LexicalMapping{SourceTable: "docs", SourceKey: "id", Vector: "d.body_tsv"},
+		TSQuery:        "to_tsquery('simple', ?)",
+		CandidateLimit: 1,
+	})
+	require.ErrorContains(t, err, "tsquery has 1 placeholders and 0 args")
+
+	_, err = postgres.BuildVector(postgres.VectorRequest{
+		Mapping:         postgres.VectorMapping{SourceTable: "docs", SourceKey: "id", VectorColumn: "embedding"},
+		Query:           "[1,0]",
+		SourcePredicate: sqlquery.Predicate{SQL: "d.tenant = 'x'", Args: []any{"extra"}},
+		CandidateLimit:  1,
+	})
+	require.ErrorContains(t, err, "source predicate has 0 placeholders and 1 args")
+}

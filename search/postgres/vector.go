@@ -101,7 +101,12 @@ func BuildVector(req VectorRequest) (sqlquery.Query, error) {
 	n := 1
 	var predSQL string
 	if predicate != "" {
-		predSQL, n = rebase(predicate, n)
+		var last int
+		predSQL, last = rebase(predicate, n)
+		if err := checkArgs("source predicate", last-n, len(req.SourcePredicate.Args)); err != nil {
+			return sqlquery.Query{}, err
+		}
+		n = last
 		args = append(args, req.SourcePredicate.Args...)
 	}
 	n++

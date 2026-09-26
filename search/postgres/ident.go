@@ -22,8 +22,9 @@ func quote(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"
 
 // rebase replaces anonymous ? placeholders with PostgreSQL $n placeholders.
 // A ? inside a string, escape string, dollar quote, quoted identifier, or
-// comment stays literal. ?? outside those regions is one literal ? and does not consume a
-// placeholder number. n is the last used index and the result is the new one.
+// comment stays literal. ?? outside those regions is one literal ? and does
+// not consume a placeholder number. n is the last used index and the result
+// is the new one.
 func rebase(fragment string, n int) (string, int) {
 	var b strings.Builder
 	b.Grow(len(fragment))
@@ -109,9 +110,24 @@ func lineCommentEnd(s string, i int) int {
 	return len(s)
 }
 
+// blockCommentEnd finds the end of a block comment. PostgreSQL block
+// comments nest, so each /* needs its own */.
 func blockCommentEnd(s string, i int) int {
-	if j := strings.Index(s[i+2:], "*/"); j >= 0 {
-		return i + 2 + j + 2
+	depth := 0
+	for j := i; j+1 < len(s); {
+		switch {
+		case s[j] == '/' && s[j+1] == '*':
+			depth++
+			j += 2
+		case s[j] == '*' && s[j+1] == '/':
+			depth--
+			j += 2
+			if depth == 0 {
+				return j
+			}
+		default:
+			j++
+		}
 	}
 	return len(s)
 }
@@ -167,6 +183,15 @@ func dollarTagByte(c byte, first bool) bool {
 func checkIdentifier(kind, value string) error {
 	if !validIdentifier(value) {
 		return fmt.Errorf("postgres: invalid %s %q", kind, value)
+	}
+	return nil
+}
+
+// checkArgs reports a fragment whose placeholder count differs from its
+// arguments. A mismatch would bind every later argument to the wrong $n.
+func checkArgs(what string, placeholders, args int) error {
+	if placeholders != args {
+		return fmt.Errorf("postgres: %s has %d placeholders and %d args", what, placeholders, args)
 	}
 	return nil
 }
