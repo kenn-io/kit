@@ -111,3 +111,11 @@ func newHelper(t *testing.T, indexTable, indexKey, sourceTable, sourceKey string
 	require.NoError(t, err)
 	return h
 }
+
+func TestBuildRejectsEmptyMatchText(t *testing.T) {
+	h := newHelper(t, "docs_fts", "source_id", "docs", "id")
+	for _, match := range []string{"", "   "} {
+		_, err := h.Build(sqlitefts.Request{Match: match, CandidateLimit: 1})
+		require.ErrorContains(t, err, "match text is empty")
+	}
+}

@@ -102,6 +102,9 @@ func (h Helper) Build(req Request) (sqlquery.Query, error) {
 	if req.CandidateLimit <= 0 {
 		return sqlquery.Query{}, errors.New("sqlitefts: candidate limit must be positive")
 	}
+	if strings.TrimSpace(req.Match) == "" {
+		return sqlquery.Query{}, errors.New("sqlitefts: match text is empty")
+	}
 	aliases := map[string]bool{"doc_key": true, "score": true}
 	for _, col := range req.ExtraSourceCols {
 		if !validIdentifier(col.Name) || !validIdentifier(col.As) || aliases[strings.ToLower(col.As)] {
