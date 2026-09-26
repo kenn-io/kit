@@ -24,6 +24,8 @@ import (
 	"time"
 
 	"golang.org/x/mod/semver"
+
+	"go.kenn.io/kit/pathresolve"
 )
 
 const (
@@ -1409,7 +1411,7 @@ func (c Client) defaultDestinationPath() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("find current executable: %w", err)
 	}
-	currentExe, err = filepath.EvalSymlinks(currentExe)
+	currentExe, err = pathresolve.EvalSymlinks(currentExe)
 	if err != nil {
 		return "", fmt.Errorf("resolve symlinks: %w", err)
 	}

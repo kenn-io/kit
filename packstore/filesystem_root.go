@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"go.kenn.io/kit/pack"
+	"go.kenn.io/kit/pathresolve"
 )
 
 var syncFilesystemRootDir = syncRootDir
@@ -17,7 +18,7 @@ var syncFilesystemRootDir = syncRootDir
 // descriptor back to that resolved pathname. Canonical descendants must be
 // opened separately without following links.
 func openFilesystemRoot(layout Layout) (*os.Root, error) {
-	resolved, err := filepath.EvalSymlinks(layout.Root())
+	resolved, err := pathresolve.EvalSymlinks(layout.Root())
 	if err != nil {
 		return nil, err
 	}
