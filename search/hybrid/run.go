@@ -12,7 +12,9 @@ import (
 
 // Leg is one retrieval query in rank order. Scan reads the current row and
 // returns the fusion key. CandidateLimit is the bound the caller placed in
-// Query. Zero means the bound is unknown and the window is not reported full.
+// Query. A RawWindow probe on Query decides whether the window was full;
+// without one, zero means the bound is unknown and the window is not
+// reported full.
 type Leg[K rrf.Key] struct {
 	Name           string
 	Weight         float64
@@ -75,7 +77,7 @@ func Run[K rrf.Key](ctx context.Context, db sqlquery.Queryer, k float64, legs []
 		if leg.CandidateLimit < 0 {
 			return Result[K]{}, fmt.Errorf("hybrid: leg %q candidate limit is negative", leg.Name)
 		}
-		keys, err := scanKeys(ctx, db, leg.Query, func(rows *sql.Rows) (K, error) { return leg.Scan(rows) })
+		keys, err := leg.Query.All(ctx, db, leg.Scan)
 		if err != nil {
 			return Result[K]{}, fmt.Errorf("hybrid: leg %q: %w", leg.Name, err)
 		}
@@ -118,7 +120,7 @@ func RunGroups[G rrf.Key, M comparable](ctx context.Context, db sqlquery.Queryer
 			group  G
 			member M
 		}
-		rows, err := scanKeys(ctx, db, leg.Query, func(rows *sql.Rows) (row, error) {
+		rows, err := leg.Query.All(ctx, db, func(rows *sql.Rows) (row, error) {
 			group, member, err := leg.Scan(rows)
 			return row{group: group, member: member}, err
 		})
@@ -161,24 +163,4 @@ func windowFull(ctx context.Context, db sqlquery.Queryer, query sqlquery.Query, 
 		return query.RawWindow(ctx, db)
 	}
 	return limit > 0 && returned >= limit, nil
-}
-
-func scanKeys[T any](ctx context.Context, db sqlquery.Queryer, query sqlquery.Query, scan func(*sql.Rows) (T, error)) ([]T, error) {
-	rows, err := db.QueryContext(ctx, query.SQL, query.Args...)
-	if err != nil {
-		return nil, fmt.Errorf("search query: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	var out []T
-	for rows.Next() {
-		value, err := scan(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan search row: %w", err)
-		}
-		out = append(out, value)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read search rows: %w", err)
-	}
-	return out, nil
 }
