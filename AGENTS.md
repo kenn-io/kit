@@ -23,6 +23,18 @@ provider workflows to this repo unless the package already owns that concern.
   commands. Do not duplicate command recipes here unless the command carries a
   repo-specific intent that is not encoded elsewhere.
 
+## Supported Environments
+
+- Kit targets the latest releases of its libraries, runtimes, and external
+  services (databases, search engines, embedding servers), running with their
+  default settings. One to two years old is the outer limit; anything older,
+  and any legacy compatibility mode or deprecated setting, is out of scope.
+- Do not add code, tests, or documentation to handle them, and do not raise
+  them as open questions. For example, PostgreSQL's
+  `standard_conforming_strings=off` is out of scope.
+- A review finding that only applies to an unsupported version, mode, or
+  setting is not an issue. Record it as such without asking the user.
+
 ## Roborev
 
 - Never invoke the `roborev review` CLI command in any form unless the user
