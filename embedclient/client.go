@@ -37,9 +37,11 @@ type Options struct {
 	// the GPU disabled. Those recovery requests use a 30 minute timeout in
 	// place of Transport.Timeout and the caller's client timeout; the Embed
 	// context still bounds them.
-	// Ordinary failures are not retried. The switch does not change the
-	// vector identity.
+	// The switch does not change the vector identity.
 	OllamaMetalRecovery bool
+	// Retry retries requests that fail in a way that may succeed later. The
+	// zero value does not retry.
+	Retry Retry
 }
 
 // Client sends text embedding requests.
@@ -53,6 +55,7 @@ type Client struct {
 	maxResponse    int64
 	serviceURL     string
 	ollamaRecovery bool
+	retry          Retry
 }
 
 // New validates opts and returns a client pinned to the deployment origin.
@@ -114,6 +117,7 @@ func New(opts Options) (*Client, error) {
 		endpoint:       embeddingsURL(canonical),
 		serviceURL:     canonical,
 		ollamaRecovery: opts.OllamaMetalRecovery,
+		retry:          opts.Retry,
 		model:          model,
 		roles:          roles,
 		batchItems:     items,
@@ -146,7 +150,10 @@ func (c *Client) embed(ctx context.Context, inputs []embedmodel.Content, format 
 		for i := start; i < end; i++ {
 			texts[i-start] = prepared[i].text
 		}
-		vectors, err := c.post(ctx, prepared[start].role, texts)
+		role := prepared[start].role
+		vectors, err := c.retry.do(ctx, func() ([][]float32, error) {
+			return c.post(ctx, role, texts)
+		})
 		if err != nil {
 			first := start
 			return nil, remapVectorIndex(err, func(i int) int { return prepared[first+i].index })

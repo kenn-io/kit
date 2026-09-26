@@ -2,9 +2,12 @@
 
 - Accept a caller-owned `*http.Client` without modifying it. A nil client
   uses Transport.Timeout from embedconfig.
-- Do not retry ordinary failures. Put `Retry-After` on `APIError` and let
-  the caller decide. `OllamaMetalRecovery` is the one exception: keep usable
-  vectors and recover the others through Ollama's native embed route.
+- Do not retry unless the caller sets `Options.Retry`; its zero value never
+  retries. When set, retry only a `Retryable` `APIError` and a
+  `TransportError`, never an input or credential rejection, and stop when the
+  context ends. `Retry-After` stays on `APIError` either way.
+  `OllamaMetalRecovery` is separate: keep usable vectors and recover the
+  others through Ollama's native embed route.
 - Do not return a short vector slice. A failed request fails the call.
 - Reorder by the per-request `index`. Do not treat that index as an offset
   into a larger `vector.EncodeBatched` input.
