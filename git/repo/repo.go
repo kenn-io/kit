@@ -203,24 +203,47 @@ func WorktreePathForBranch(ctx context.Context, repoPath, branch string) (string
 
 // HooksPath returns the effective hooks directory, resolving relative paths
 // against the main repository root so linked worktrees share hooks correctly.
+//
+// The exception is a relative core.hooksPath naming a directory tracked by
+// git, such as a committed .githooks. Git resolves it from the root of the
+// worktree running the hook, so each worktree uses the copy on its own branch.
 func HooksPath(ctx context.Context, repoPath string) (string, error) {
 	out, err := runner.Output(ctx, repoPath, "rev-parse", "--git-path", "hooks")
 	if err != nil {
 		return "", fmt.Errorf("git rev-parse --git-path hooks: %w", err)
 	}
 	hooksPath := NormalizePath(string(out))
-	if !filepath.IsAbs(hooksPath) {
-		root, err := MainRoot(ctx, repoPath)
-		if err != nil {
-			return "", fmt.Errorf("resolve main repo root for hooks path: %w", err)
-		}
-		hooksPath = filepath.Join(root, hooksPath)
+	if filepath.IsAbs(hooksPath) {
+		return hooksPath, nil
 	}
-	return hooksPath, nil
+	// git reports the path relative to repoPath, which may be a
+	// subdirectory; rebase it onto the worktree root.
+	prefix, err := runner.Output(ctx, repoPath, "rev-parse", "--show-prefix")
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse --show-prefix: %w", err)
+	}
+	hooksPath = filepath.Join(NormalizePath(string(prefix)), hooksPath)
+	if trackedHooksPath(ctx, repoPath) {
+		root, err := Root(ctx, repoPath)
+		if err != nil {
+			return "", fmt.Errorf("resolve worktree root for hooks path: %w", err)
+		}
+		return filepath.Join(root, hooksPath), nil
+	}
+	root, err := MainRoot(ctx, repoPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve main repo root for hooks path: %w", err)
+	}
+	return filepath.Join(root, hooksPath), nil
 }
 
 // EnsureAbsoluteHooksPath rewrites relative core.hooksPath to an absolute path
 // rooted at the main repository, avoiding broken hooks in linked worktrees.
+//
+// A relative path naming a directory tracked by git is left alone. Its hooks
+// are branch content and every worktree already runs its own checked-out
+// copy; anchoring the shared value would make linked worktrees run the main
+// checkout's hooks instead.
 func EnsureAbsoluteHooksPath(ctx context.Context, repoPath string) error {
 	out, err := runner.Output(ctx, repoPath, "config", "core.hooksPath")
 	if err != nil {
@@ -228,6 +251,9 @@ func EnsureAbsoluteHooksPath(ctx context.Context, repoPath string) error {
 	}
 	raw := NormalizePath(string(out))
 	if raw == "" || filepath.IsAbs(raw) || isGitTildePath(raw) {
+		return nil
+	}
+	if trackedHooksPath(ctx, repoPath) {
 		return nil
 	}
 	root, err := MainRoot(ctx, repoPath)
@@ -238,6 +264,28 @@ func EnsureAbsoluteHooksPath(ctx context.Context, repoPath string) error {
 		return fmt.Errorf("update core.hooksPath to absolute: %w", err)
 	}
 	return nil
+}
+
+// trackedHooksPath reports whether core.hooksPath is a relative path naming a
+// directory with files tracked in repoPath's worktree. Paths under .git or
+// outside the working tree are never tracked.
+func trackedHooksPath(ctx context.Context, repoPath string) bool {
+	out, err := runner.Output(ctx, repoPath, "config", "core.hooksPath")
+	if err != nil {
+		return false
+	}
+	raw := NormalizePath(string(out))
+	if raw == "" || filepath.IsAbs(raw) || isGitTildePath(raw) {
+		return false
+	}
+	root, err := Root(ctx, repoPath)
+	if err != nil {
+		return false
+	}
+	// Git resolves a relative hooks path from the worktree root.
+	rel := filepath.ToSlash(filepath.Clean(raw))
+	files, err := runner.Output(ctx, root, "ls-files", "-z", "--", ":(literal)"+rel)
+	return err == nil && len(files) > 0
 }
 
 func isGitTildePath(s string) bool {
