@@ -107,7 +107,7 @@ func Merge[K comparable](perGeneration [][]Hit[K], o MergeOptions) ([]Hit[K], er
 		}
 	}
 	if o.Strategy == MergeReciprocalRank && !isFinite(o.RankConstant) {
-		return nil, errNonFinite
+		return nil, ErrNonFinite
 	}
 	rep := make(map[K]Hit[K])
 	order := make([]K, 0)
@@ -172,7 +172,7 @@ func Merge[K comparable](perGeneration [][]Hit[K], o MergeOptions) ([]Hit[K], er
 		h := rep[doc]
 		stored := float32(score[doc])
 		if !isFinite(float64(stored)) {
-			return nil, errNonFinite
+			return nil, ErrNonFinite
 		}
 		h.Score = stored
 		out = append(out, h)
@@ -184,7 +184,10 @@ func Merge[K comparable](perGeneration [][]Hit[K], o MergeOptions) ([]Hit[K], er
 	return out, nil
 }
 
-var errNonFinite = errors.New("vector: non-finite value cannot be stored")
+// ErrNonFinite reports a NaN or infinite score, or a key that is not equal to
+// itself, in search results. A store returned a distance or score that
+// cannot be ranked.
+var ErrNonFinite = errors.New("vector: non-finite score or key")
 
 // rejectStoredNaN reports a document key or score that cannot be put in a
 // result map. NaN is not equal to itself, and neither is a key that contains
@@ -193,7 +196,7 @@ var errNonFinite = errors.New("vector: non-finite value cannot be stored")
 func rejectStoredNaN[K comparable](key K, score float32) error {
 	other := key
 	if key != other || !isFinite(float64(score)) {
-		return errNonFinite
+		return ErrNonFinite
 	}
 	return nil
 }
@@ -204,7 +207,7 @@ func isFinite(v float64) bool {
 
 func storeScore[K comparable](scores map[K]float64, key K, value float64) error {
 	if !isFinite(value) {
-		return errNonFinite
+		return ErrNonFinite
 	}
 	scores[key] = value
 	return nil

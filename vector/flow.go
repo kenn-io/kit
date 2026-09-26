@@ -932,9 +932,13 @@ func Search[K, G comparable](
 		}
 		rolled, err := RollupByDocument(hits)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("rank generation %v: %w", gen, err)
 		}
 		lists = append(lists, rolled)
 	}
-	return Merge(lists, o.Merge)
+	merged, err := Merge(lists, o.Merge)
+	if err != nil {
+		return nil, fmt.Errorf("merge generations: %w", err)
+	}
+	return merged, nil
 }

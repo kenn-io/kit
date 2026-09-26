@@ -3,7 +3,6 @@ package sqlitevec
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"math"
 
@@ -426,7 +425,7 @@ func ScoreFromDistance(distance float64) (float32, error) {
 func scoreFromDistance(distance float64) (float32, error) {
 	score := float32(1 - distance)
 	if math.IsNaN(float64(score)) || math.IsInf(float64(score), 0) {
-		return 0, errors.New("sqlitevec: non-finite score cannot be stored")
+		return 0, fmt.Errorf("sqlitevec: %w", vector.ErrNonFinite)
 	}
 	return score, nil
 }
