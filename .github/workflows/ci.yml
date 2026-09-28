@@ -43,6 +43,11 @@ jobs:
       - name: Run golangci-lint
         run: make lint
 
+      - name: Run golangci-lint for Windows
+        env:
+          GOOS: windows
+        run: ./custom-gcl run ./...
+
   test:
     name: Go tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
