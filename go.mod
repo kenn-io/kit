@@ -14,6 +14,7 @@ require (
 	github.com/aws/smithy-go v1.27.5
 	github.com/cenkalti/backoff/v7 v7.0.0
 	github.com/charmbracelet/x/ansi v0.11.7
+	github.com/creachadair/tomledit v0.0.29
 	github.com/ebitengine/purego v0.10.1
 	github.com/gofrs/flock v0.13.0
 	github.com/golangci/plugin-module-register v0.1.2
@@ -29,6 +30,7 @@ require (
 	github.com/shirou/gopsutil/v4 v4.26.6
 	github.com/spf13/pathologize v1.1.0
 	github.com/stretchr/testify v1.11.1
+	github.com/tailscale/hujson v0.0.0-20260727124030-b80ff77dac4f
 	github.com/yuin/goldmark v1.8.5
 	go.opentelemetry.io/contrib/exporters/autoexport v0.69.0
 	go.opentelemetry.io/contrib/propagators/autoprop v0.69.0
