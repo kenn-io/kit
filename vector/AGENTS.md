@@ -38,13 +38,18 @@ pipeline. Preserve these invariants when changing it.
 
 ## Fill batches without losing document boundaries
 
-- `WithFillBatch(WithBatchSize(n))` with a positive `n` packs chunks across
-  documents in one scan page. Omitting it preserves the legacy per-document
-  encode unit. `WithBatchSize` remains the maximum texts in one `EncodeFunc`
-  call.
-- `WithBatchTokenBudget` is opt-in and further reduces the effective batch
-  size from the caller's conservative per-input token upper bound. The vector
-  package does not choose a tokenizer, infer model limits, or alter input text.
+- Fill packs chunks across documents in one scan page. A call holds at most
+  `DefaultFillBatchSize` (32) chunks, or a positive `WithBatchSize`, and at
+  most `DefaultFillBatchTokens` (16384) estimated tokens. The estimate counts
+  an ASCII rune as a quarter token and any other rune as one, so CJK text is
+  never undercounted. A chunk over the budget goes alone. The per-document
+  path runs only for a nil encoder.
+- Without `WithFillBatchErrorIsolation`, a shared-call error is diagnosed per
+  document only when `WithFillEncodeError` is set, so one bad document stays
+  skippable. An explicit nil classifier diagnoses nothing.
+- `WithBatchTokenBudget` replaces Fill's estimate with the caller's
+  conservative per-input token upper bound. The vector package does not choose
+  a tokenizer or alter input text; the estimate only sizes encode calls.
   Reject a configured upper bound that cannot fit one input before calling the
   encoder.
 - Vectors from a shared encode batch must be scattered back to their exact
@@ -75,6 +80,19 @@ pipeline. Preserve these invariants when changing it.
 - With multiple fill workers, save a completed document without waiting for an
   unrelated earlier batch. Saves remain serialized even when encode calls
   complete out of order.
+- `WithFillDocumentLimit` bounds how many pending documents one Fill starts.
+  A document that returns `ErrStale` still counts. The next Fill continues
+  with what is still pending. A limit of zero or less does not bound the run.
+- `WithFillProgress` runs only after `SaveVectors` succeeds, including a
+  stamp-only save. It does not run when the save returns `ErrStale`.
+- `WithFillPrepared` replaces `Split` for that call. The callback receives
+  Fill's context. Fill does not call it for a later document in the page
+  when that context is already cancelled, and it does not encode or stamp
+  that page. Text is the encoder input and may differ from the source.
+  `SourceSpan` and `Truncated` come back through progress and are not
+  stored. An empty chunk list is a stamp-only save. An error from the
+  prepare function aborts the page before any of its documents are encoded
+  or stamped. A blank prepared text is still `ErrEmptyEmbeddingInput`.
 
 ## Keys and generations are opaque
 
@@ -116,6 +134,10 @@ pipeline. Preserve these invariants when changing it.
   building generation while the active generation still serves the bulk.
   `Search` must keep querying every generation `LiveGenerations` returns,
   in the order it returns them.
+- sqlitevec `Activate` publishes a generation only when that generation's
+  vec0 table still exists. `Reclaim` drops the table and keeps the
+  generation row. An empty corpus must not mark the reclaimed generation
+  active, and `Activate` must not recreate the table.
 
 ## Snapshots export what search would see
 
@@ -130,8 +152,38 @@ pipeline. Preserve these invariants when changing it.
 - `Chunks` reads whatever the generation holds for a document. Only export
   documents that `CoveredDocs` returned from the same snapshot.
 
+## Publication checks coverage; reclamation is explicit
+
+- `Coverage` counts embedded, stamp-only, and uncovered documents with
+  `coveredPredicate`. A stamp-only document is covered. A stale revision is
+  uncovered even when its old vectors are still stored. Callers use this
+  count instead of reading the stamps or chunks tables.
+- `Activate` publishes one generation only when its backlog is zero, in the
+  same transaction as that count. It marks that generation active and retires
+  other building and active generations. It does not drop their storage, and
+  it does not change which generations `Search` queries.
+- `Reclaim` drops one retired generation's vec0 table, chunk rows, and stamps.
+  The generation row stays retired. Reclaiming a generation that is not
+  retired fails. Calling it again after success is safe.
+- Lifecycle errors wrap `ErrGenerationNotFound` for a key never ensured and
+  `ErrRetired` for a retired generation used as live, so callers match them
+  with `errors.Is`.
+- A retired generation never leaves retired. `SetGenerationState` and
+  `EnsureGeneration` refuse any other state, and ensuring it as retired does
+  not recreate reclaimed storage.
+- `ActiveGeneration` returns the newest active generation by ordinal.
+  `LiveGenerations` still returns building generations ahead of active ones.
+  Callers that serve only the active generation select it themselves.
+
 ## Hits come from live, current documents
 
+- Revision-aware backends return the indexed revision in `Hit.Revision` in
+  the same query as its score. Hydration must not pair an old score with a
+  newer source revision.
+- sqlitevec ordinary, composable and probed queries share candidate SQL and
+  freshness checks. Raw probes survive source filtering; an empty result
+  window can still have more raw neighbors. Candidate limits precede source
+  filters; result limits follow them.
 - Backends must not return hits whose source row no longer exists; the
   caller may delete documents without telling the store, so
   `QueryGeneration` joins back to the documents table.

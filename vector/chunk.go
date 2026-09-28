@@ -7,10 +7,31 @@ type Chunk struct {
 	Text  string
 }
 
+// SourceSpan is a half-open rune range in caller-owned source text.
+// Start is inclusive and End is exclusive. The encoded text may include
+// formatting that is not a substring of this range.
+type SourceSpan struct {
+	Start int
+	End   int
+}
+
+// PreparedChunk is one encode input the caller built. Text is sent to the
+// encoder unchanged. Index is stored with the vector. Span is nil when the
+// caller has no coordinates. Truncated is the caller's statement that Text
+// omits source content. Fill reports the chunk through progress and does
+// not persist Span or Truncated.
+type PreparedChunk struct {
+	Index     int
+	Text      string
+	Span      *SourceSpan
+	Truncated bool
+}
+
 // SplitOptions controls how Split windows content into chunks.
 type SplitOptions struct {
 	// MaxRunes bounds the number of runes in each chunk. Values <= 0
-	// disable splitting and return the content as a single chunk.
+	// disable splitting and return the content as a single chunk, which
+	// can exceed a model's per-input limit (often 512 to 8192 tokens).
 	MaxRunes int
 	// Overlap is the number of runes shared between consecutive chunks.
 	// It is clamped to the range [0, MaxRunes-1].

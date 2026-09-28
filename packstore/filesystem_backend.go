@@ -17,6 +17,7 @@ import (
 
 	"go.kenn.io/kit/pack"
 	"go.kenn.io/kit/packstore/internal/packvalidate"
+	"go.kenn.io/kit/pathresolve"
 )
 
 // FilesystemBackendOptions configures one filesystem store binding. An absent
@@ -834,7 +835,7 @@ func (b *FilesystemBackend) Inventory(
 		return InventoryPage{}, errors.New("packstore: invalid filesystem inventory cursor")
 	}
 	var page InventoryPage
-	walkRoot, err := filepath.EvalSymlinks(b.layout.Root())
+	walkRoot, err := pathresolve.EvalSymlinks(b.layout.Root())
 	if errors.Is(err, fs.ErrNotExist) {
 		return page, nil
 	}
@@ -879,7 +880,7 @@ func (b *FilesystemBackend) Inventory(
 // NamespaceEmpty reports whether the configured root contains any file or
 // non-directory entry. Empty directory scaffolding is not physical authority.
 func (b *FilesystemBackend) NamespaceEmpty(ctx context.Context) (bool, error) {
-	walkRoot, err := filepath.EvalSymlinks(b.layout.Root())
+	walkRoot, err := pathresolve.EvalSymlinks(b.layout.Root())
 	if errors.Is(err, fs.ErrNotExist) {
 		return true, nil
 	}

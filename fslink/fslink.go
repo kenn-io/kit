@@ -153,6 +153,68 @@ func ReadFile(path string) (data []byte, err error) {
 	return io.ReadAll(file)
 }
 
+// OpenRoot is like os.OpenRoot but refuses to follow a link in path's final
+// component, returning an error wrapping ErrIsLink. Links in earlier
+// components are followed. path must name a directory; a trailing separator
+// does not make OpenRoot follow a final link. The returned root is compared
+// by file identity with the directory that was inspected, so a link swapped
+// in during the open that names a different directory fails the call. A
+// link to the inspected directory itself is not detected, and is harmless:
+// the root is still that directory.
+//
+// On Windows a non-link reparse point (cloud placeholder, dedup) opens
+// normally as a root, but OpenInRoot and OpenRootNoFollow still refuse
+// reparse points below it.
+func OpenRoot(path string) (*os.Root, error) {
+	if err := platformSupport(); err != nil {
+		return nil, &fs.PathError{Op: "openroot", Path: path, Err: err}
+	}
+	path = trimTrailingSeparators(path)
+	dir, err := openDirPath(path)
+	if err != nil {
+		return nil, err
+	}
+	// Hold the inspected directory open until the comparison, so its file
+	// identity cannot be reused by a replacement.
+	defer func() { _ = dir.Close() }()
+	want, err := dir.Stat()
+	if err != nil {
+		return nil, err
+	}
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		return nil, err
+	}
+	self, err := root.Open(".")
+	if err == nil {
+		var got fs.FileInfo
+		got, err = self.Stat()
+		if err == nil && !os.SameFile(want, got) {
+			err = &fs.PathError{Op: "openroot", Path: path, Err: errChanged}
+		}
+		err = errors.Join(err, self.Close())
+	}
+	if err != nil {
+		_ = root.Close()
+		return nil, err
+	}
+	return root, nil
+}
+
+// trimTrailingSeparators drops separators after the final element, which
+// would make the kernel resolve a final link before a no-follow open sees
+// it. It keeps a root ("/", `C:\`) and leaves every other element alone:
+// filepath.Clean would also collapse "link/.." lexically, before the kernel
+// resolves the link.
+func trimTrailingSeparators(path string) string {
+	vol := filepath.VolumeName(path)
+	rest := path[len(vol):]
+	for len(rest) > 1 && os.IsPathSeparator(rest[len(rest)-1]) {
+		rest = rest[:len(rest)-1]
+	}
+	return vol + rest
+}
+
 // OpenInRoot opens name inside root like root.OpenFile, but refuses a link
 // in any component of name, returning an error wrapping ErrIsLink. name must
 // satisfy filepath.IsLocal. O_CREATE|O_EXCL on an existing entry, a link

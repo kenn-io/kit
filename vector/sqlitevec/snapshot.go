@@ -69,7 +69,7 @@ func (s *Store[K, G]) Snapshot(ctx context.Context, gen G) (*Snapshot[K, G], err
 	if err != nil {
 		_ = tx.Rollback()
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("generation %v not ensured", gen)
+			return nil, fmt.Errorf("generation %v: %w", gen, ErrGenerationNotFound)
 		}
 		return nil, fmt.Errorf("lookup generation %v: %w", gen, err)
 	}

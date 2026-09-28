@@ -17,6 +17,8 @@ import (
 	"strings"
 
 	"golang.org/x/tools/go/packages"
+
+	"go.kenn.io/kit/pathresolve"
 )
 
 // Rule names accepted by Options.Disabled.
@@ -96,7 +98,7 @@ func Run(ctx context.Context, opts Options) ([]Diagnostic, error) {
 		}
 		dir = wd
 	}
-	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+	if resolved, err := pathresolve.EvalSymlinks(dir); err == nil {
 		dir = resolved
 	}
 	for _, rule := range opts.Disabled {
@@ -124,7 +126,7 @@ func Run(ctx context.Context, opts Options) ([]Diagnostic, error) {
 	var repo fs.FS
 	var tracked []string
 	if inGit {
-		if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		if resolved, err := pathresolve.EvalSymlinks(root); err == nil {
 			root = resolved
 		}
 		tracked, err = trackedFiles(ctx, root)
@@ -237,7 +239,7 @@ func mainModuleDir(dir string, pkgs []*packages.Package) string {
 			break
 		}
 	}
-	if resolved, err := filepath.EvalSymlinks(moduleDir); err == nil {
+	if resolved, err := pathresolve.EvalSymlinks(moduleDir); err == nil {
 		moduleDir = resolved
 	}
 	return moduleDir

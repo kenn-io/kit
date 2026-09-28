@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"golang.org/x/sys/windows"
+
+	"go.kenn.io/kit/internal/winpath"
 )
 
 // resolveLinkDest returns the path named by a link in linkDir whose
@@ -37,7 +39,7 @@ func resolveLinkDest(linkDir, dest string) (string, error) {
 // inside dir resolves its relative destination against.
 // filepath.EvalSymlinks does not traverse junctions.
 func realDir(dir string) (string, error) {
-	dir16, err := windows.UTF16PtrFromString(dir)
+	dir16, err := winpath.UTF16Ptr(dir)
 	if err != nil {
 		return "", &fs.PathError{Op: "realpath", Path: dir, Err: err}
 	}

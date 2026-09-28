@@ -75,9 +75,10 @@ func WithBatchConcurrency(concurrency int) BatchOption {
 //
 // The option caps the batch at maxBatchTokens / inputTokenUpperBound inputs,
 // or fewer when BatchSize is smaller. The caller must choose a conservative
-// per-input bound from its model and chunking rules. This package does not
+// per-input bound from its model and chunking rules. EncodeBatched does not
 // count tokens, so a conservative bound can intentionally leave some request
-// capacity unused. Both values must be positive, and one input must fit within
+// capacity unused. Fill uses this bound instead of its own token estimate
+// when the option is set. Both values must be positive, and one input must fit within
 // maxBatchTokens.
 func WithBatchTokenBudget(maxBatchTokens, inputTokenUpperBound int) BatchOption {
 	return func(o *batchOptions) {

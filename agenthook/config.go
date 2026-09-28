@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"go.kenn.io/kit/atomicfile"
+	"go.kenn.io/kit/pathresolve"
 )
 
 // Hook describes one command registration using Claude Code event and matcher
@@ -235,7 +236,7 @@ func writeConfig(path string, data []byte) error {
 		// links only here: a path that was not a link keeps atomicfile's
 		// default, which refuses a link swapped in before the write.
 		opts = append(opts, atomicfile.WithFollowLink())
-		writePath, err = filepath.EvalSymlinks(path)
+		writePath, err = pathresolve.EvalSymlinks(path)
 		if err != nil {
 			return fmt.Errorf("resolve agent hook config symlink %s: %w", path, err)
 		}

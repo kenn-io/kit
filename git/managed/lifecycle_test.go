@@ -249,6 +249,23 @@ func TestCreateWorktreeOnDiskRejectsSymlinkedHookEscape(t *testing.T) {
 	require.ErrorIs(err, ErrHookOutsideProject)
 }
 
+// TestResolveHookScriptAcceptsMissingHookUnderLinkedRoot covers a project root
+// reached through a link: the root resolves to its target, so a hook that does
+// not exist yet must be compared in that spelling too.
+func TestResolveHookScriptAcceptsMissingHookUnderLinkedRoot(t *testing.T) {
+	require := require.New(t)
+	target := t.TempDir()
+	root := filepath.Join(t.TempDir(), "project")
+	if err := os.Symlink(target, root); err != nil {
+		t.Skipf("cannot create directory symlink: %v", err)
+	}
+
+	script, err := resolveHookScript(root, "hooks/setup.sh")
+
+	require.NoError(err)
+	require.Equal(filepath.Join(root, "hooks", "setup.sh"), script)
+}
+
 func TestCreateWorktreeOnDiskUsesExecutionPolicy(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)

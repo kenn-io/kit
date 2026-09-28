@@ -16,6 +16,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"go.kenn.io/kit/internal/winpath"
 )
 
 // reparseTagNameSurrogate is the IsReparseTagNameSurrogate bit: the reparse
@@ -51,7 +53,7 @@ func classify(path string) (Kind, error) {
 }
 
 func classifyPath(path string) (Kind, error) {
-	path16, err := windows.UTF16PtrFromString(path)
+	path16, err := winpath.UTF16Ptr(path)
 	if err != nil {
 		return NotLink, err
 	}
@@ -207,7 +209,7 @@ func makeJunction(target, link string) error {
 // it. It fails with an error wrapping fs.ErrExist when any entry, links
 // included, already has that name.
 func createDir(parent, name string) (windows.Handle, error) {
-	parent16, err := windows.UTF16PtrFromString(parent)
+	parent16, err := winpath.UTF16Ptr(parent)
 	if err != nil {
 		return windows.InvalidHandle, err
 	}
@@ -322,11 +324,18 @@ func linkDir(target, link string) (Kind, error) {
 // traverse once the directory appears.
 func createDirSymlink(target, link string) error {
 	target = filepath.FromSlash(target)
-	link16, err := windows.UTF16PtrFromString(link)
+	link16, err := winpath.UTF16Ptr(link)
 	if err != nil {
 		return err
 	}
-	target16, err := windows.UTF16PtrFromString(target)
+	// As os.Symlink does, prefix only an absolute target: a relative one
+	// would become absolute, and CreateSymbolicLink accepts long relative
+	// targets as they are.
+	convert := windows.UTF16PtrFromString
+	if filepath.IsAbs(target) {
+		convert = winpath.UTF16Ptr
+	}
+	target16, err := convert(target)
 	if err != nil {
 		return err
 	}
@@ -357,6 +366,24 @@ func openFile(path string, flag int, perm fs.FileMode) (*os.File, error) {
 	return os.NewFile(uintptr(handle), path), nil
 }
 
+// openDirPath opens the directory at path without following a link in its
+// final component.
+func openDirPath(path string) (*os.File, error) {
+	file, err := openFile(path, os.O_RDONLY, 0)
+	if err != nil {
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err == nil && !info.IsDir() {
+		err = &fs.PathError{Op: "open", Path: path, Err: syscall.ENOTDIR}
+	}
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return file, nil
+}
+
 func openRegular(path string) (*os.File, error) {
 	handle, err := openHandle(path, os.O_RDONLY, 0)
 	if err != nil {
@@ -385,7 +412,7 @@ func openHandle(path string, flag int, perm fs.FileMode) (windows.Handle, error)
 	if path == "" {
 		return windows.InvalidHandle, windows.ERROR_FILE_NOT_FOUND
 	}
-	path16, err := windows.UTF16PtrFromString(path)
+	path16, err := winpath.UTF16Ptr(path)
 	if err != nil {
 		return windows.InvalidHandle, err
 	}

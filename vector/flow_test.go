@@ -711,6 +711,24 @@ func TestFillDoesNotSkipCancelledEncode(t *testing.T) {
 	assert.False(store.embedded[1][7], "a cancelled document is not stamped as handled")
 }
 
+func TestFillDoesNotStampACanceledPreparedPage(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	store := newMemStore()
+	store.content[1] = "alpha"
+	_, err := vector.Fill(ctx, store, 7, func(context.Context, []string) ([][]float32, error) {
+		return [][]float32{{1, 0, 0}}, nil
+	}, vector.WithFillPrepared(func(context.Context, vector.Pending[int64]) ([]vector.PreparedChunk, error) {
+		cancel()
+		return nil, nil
+	}))
+	require.ErrorIs(err, context.Canceled)
+	assert.False(store.embedded[1][7], "a canceled prepared page is not stamped")
+}
+
 func TestFillConcurrencyEncodesDocumentsInParallel(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
@@ -744,6 +762,7 @@ func TestFillConcurrencyEncodesDocumentsInParallel(t *testing.T) {
 	}
 
 	stats, err := vector.Fill(ctx, store, 7, enc,
+		vector.WithFillBatch[int64](vector.WithBatchSize(1)),
 		vector.WithFillConcurrency[int64](workers))
 	require.NoError(err)
 
@@ -1071,7 +1090,7 @@ func TestFillConcurrencyEncodeErrorAborts(t *testing.T) {
 
 	_, err := vector.Fill(ctx, store, 7, poisonEncoder(),
 		vector.WithFillConcurrency[int64](4))
-	require.ErrorContains(err, "encode document")
+	require.ErrorContains(err, "input rejected by model")
 	assert.False(store.embedded[1][7], "the failed doc is neither embedded nor stamped")
 
 	// The failed document stays pending: a later run with a working encoder
