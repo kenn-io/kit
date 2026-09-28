@@ -8,6 +8,11 @@ file formats, or ownership rules belong here (see `safefileio/` for those).
 
 ## Invariants
 
+- On Windows, every Win32 call that takes a caller's path converts it with
+  `internal/winpath.UTF16Ptr`, which adds the `\\?\` prefix to long paths as
+  the os package does. Without it a path that `os.OpenFile` accepts past
+  MAX_PATH fails here. A symlink target gets the prefix only when it is
+  absolute, as in `os.Symlink`; a relative target is stored unchanged.
 - On Windows, "is a link" means a name-surrogate reparse tag
   (`tag & 0x20000000 != 0`), read from a handle opened with
   `FILE_FLAG_OPEN_REPARSE_POINT`. Do not treat every reparse point as a link:
@@ -16,8 +21,10 @@ file formats, or ownership rules belong here (see `safefileio/` for those).
   both report `ModeIrregular`.
 - `IO_REPARSE_TAG_MOUNT_POINT` is `Junction` unless its substitute name is a
   `\??\Volume{...}` path, which is `OtherLink`.
-- `Classify`, `IsLink`, `Readlink`, `OpenFile`, `OpenRegular`, and `ReadFile`
-  judge only the final path component; earlier components may be links.
+- `Classify`, `IsLink`, `Readlink`, `OpenFile`, `OpenRegular`, `ReadFile`, and
+  `OpenRoot` judge only the final path component; earlier components may be
+  links. `OpenRoot` compares the opened root with the inspected directory by
+  file identity, and must not block on a FIFO at the path.
 - `OpenInRoot` and `OpenRootNoFollow` guarantee that every component they
   open is the same file object that was inspected (without following it) and
   found not to be a link, and that nothing resolves outside the root. Each

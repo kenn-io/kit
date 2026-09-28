@@ -45,6 +45,24 @@ func openFile(path string, flag int, perm fs.FileMode) (*os.File, error) {
 	return file, nil
 }
 
+// openDirPath opens the directory at path without following a link in its
+// final component. O_DIRECTORY fails on a FIFO before the open could wait
+// for a writer.
+func openDirPath(path string) (*os.File, error) {
+	file, err := os.OpenFile(path, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if errors.Is(err, syscall.ENOTDIR) {
+		// Some kernels check O_DIRECTORY before O_NOFOLLOW; report a link
+		// as a link.
+		if info, lerr := os.Lstat(path); lerr == nil && info.Mode()&fs.ModeSymlink != 0 {
+			return nil, &fs.PathError{Op: "open", Path: path, Err: ErrIsLink}
+		}
+	}
+	if err != nil {
+		return nil, linkOpenError(path, err)
+	}
+	return file, nil
+}
+
 func openRegular(path string) (*os.File, error) {
 	// O_NONBLOCK keeps a FIFO open from waiting for a writer; the file-type
 	// check below rejects it before any read.

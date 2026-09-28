@@ -6,6 +6,8 @@ import (
 	"os"
 
 	"golang.org/x/sys/windows"
+
+	"go.kenn.io/kit/internal/winpath"
 )
 
 // RenameNoReplace atomically renames oldpath to newpath, failing with an
@@ -30,11 +32,11 @@ func replaceFile(staging, target string) error {
 }
 
 func moveFileEx(from, to string, flags uint32) error {
-	fromPtr, err := windows.UTF16PtrFromString(from)
+	fromPtr, err := winpath.UTF16Ptr(from)
 	if err != nil {
 		return err
 	}
-	toPtr, err := windows.UTF16PtrFromString(to)
+	toPtr, err := winpath.UTF16Ptr(to)
 	if err != nil {
 		return err
 	}
