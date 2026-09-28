@@ -209,7 +209,7 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *R
 	} else if opts.MetadataRestorer == nil {
 		return nil, errors.New("backup: portable metadata snapshot requires a MetadataRestorer")
 	}
-	if err := st.preflightSnapshotBlobs(m, pm); err != nil {
+	if err := st.preflightSnapshotBlobs(ctx, m, pm); err != nil {
 		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
@@ -793,6 +793,7 @@ func verifyRestoreRoot(target string, root *os.Root) error {
 // restoreState carries the shared read machinery for one Restore run. mu
 // guards progress counters and the first-error slot while pack workers run.
 type restoreState struct {
+	recipes  map[pack.BlobID]objectRecipe
 	repo     *Repo
 	app      App
 	known    map[pack.BlobID]IndexEntry
@@ -888,7 +889,12 @@ func (s *restoreState) materializeMaps(m *Manifest) (*PageHashMap, *PageMap, err
 // and hash-verifies them as they are written); the small metadata blobs the
 // pass re-reads — attachment lists and the extras tree — are cheap next to
 // the content reads restore performs anyway.
-func (s *restoreState) preflightSnapshotBlobs(m *Manifest, pm *PageMap) error {
+func (s *restoreState) preflightSnapshotBlobs(ctx context.Context, m *Manifest, pm *PageMap) error {
+	var err error
+	s.recipes, err = loadObjectRecipes(ctx, s.repo, s.known, m, s.app.PackFileExtension())
+	if err != nil {
+		return err
+	}
 	if pm != nil {
 		for _, id := range pm.Blobs {
 			if _, ok := s.known[id]; !ok {
@@ -901,8 +907,8 @@ func (s *restoreState) preflightSnapshotBlobs(m *Manifest, pm *PageMap) error {
 		if err != nil {
 			return fmt.Errorf("backup: portable metadata blob id %q: %w", m.Metadata.Blob, err)
 		}
-		if _, ok := s.known[id]; !ok {
-			return fmt.Errorf("backup: portable metadata blob %s not present in any index", id)
+		if err := s.checkObject(id, m.Metadata.Bytes); err != nil {
+			return fmt.Errorf("backup: portable metadata blob %s: %w", id, err)
 		}
 	}
 	for _, artifact := range m.Auxiliary {
@@ -929,8 +935,8 @@ func (s *restoreState) preflightSnapshotBlobs(m *Manifest, pm *PageMap) error {
 		if err != nil {
 			return fmt.Errorf("backup: attachment content hash %q: %w", ref.Hash, err)
 		}
-		if _, ok := s.known[id]; !ok {
-			return fmt.Errorf("backup: attachment blob %s not present in any index", ref.Hash)
+		if err := s.checkObject(id, ref.Size); err != nil {
+			return fmt.Errorf("backup: attachment blob %s: %w", ref.Hash, err)
 		}
 	}
 	if m.Extras.Tree == "" {
@@ -1154,7 +1160,7 @@ func (s *restoreState) restorePortableMetadata(
 	if err != nil {
 		return "", 0, fmt.Errorf("backup: portable metadata blob id %q: %w", metadata.Blob, err)
 	}
-	stream, err := s.repo.OpenBlob(ctx, s.known, id, nil, s.app.PackFileExtension())
+	stream, err := openObject(ctx, s.repo, s.known, id, s.recipes, s.app.PackFileExtension())
 	if err != nil {
 		return "", 0, err
 	}
@@ -1703,6 +1709,9 @@ func (s *restoreState) restoreAttachments(ctx context.Context, app App, m *Manif
 		s.restorePackAttachments(ctx, contentDir, packID, inventory.groups[packID], inventory.paths, int64(len(inventory.refs)), m.Attachments.BlobBytes)
 	})
 	if err != nil {
+		return 0, 0, err
+	}
+	if err := s.restoreChunkedAttachments(ctx, contentDir, inventory, m.Attachments.BlobBytes); err != nil {
 		return 0, 0, err
 	}
 	var totalBytes int64

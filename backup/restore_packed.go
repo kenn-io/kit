@@ -17,10 +17,11 @@ import (
 )
 
 type restoreAttachmentInventory struct {
-	refs   []ContentRef
-	paths  map[string][]string
-	groups map[string][]ContentRef
-	order  []string
+	chunked []ContentRef
+	refs    []ContentRef
+	paths   map[string][]string
+	groups  map[string][]ContentRef
+	order   []string
 }
 
 type packedRestoreResult struct {
@@ -95,10 +96,15 @@ func (s *restoreState) loadRestoreAttachmentInventory(
 	}
 	groups := make(map[string][]ContentRef)
 	var order []string
+	var chunked []ContentRef
 	for _, ref := range refs {
 		id, err := pack.ParseBlobID(ref.Hash)
 		if err != nil {
 			return restoreAttachmentInventory{}, fmt.Errorf("backup: attachment content hash %q: %w", ref.Hash, err)
+		}
+		if _, ok := s.recipes[id]; ok {
+			chunked = append(chunked, ref)
+			continue
 		}
 		entry, ok := s.known[id]
 		if !ok {
@@ -109,7 +115,7 @@ func (s *restoreState) loadRestoreAttachmentInventory(
 		}
 		groups[entry.PackID] = append(groups[entry.PackID], ref)
 	}
-	return restoreAttachmentInventory{refs: refs, paths: paths, groups: groups, order: order}, nil
+	return restoreAttachmentInventory{refs: refs, paths: paths, groups: groups, order: order, chunked: chunked}, nil
 }
 
 func (s *restoreState) restorePackedAttachments(
@@ -207,6 +213,9 @@ func (s *restoreState) restorePackedAttachments(
 	if err := s.runPackGroups(ctx, looseOrder, func(packID string) {
 		s.restorePackAttachments(ctx, contentDir, packID, looseGroups[packID], inventory.paths, result.totalBlobs, result.totalBytes)
 	}); err != nil {
+		return packedRestoreResult{}, err
+	}
+	if err := s.restoreChunkedAttachments(ctx, contentDir, inventory, result.totalBytes); err != nil {
 		return packedRestoreResult{}, err
 	}
 	result.packedBlobs = int64(len(packedSet))

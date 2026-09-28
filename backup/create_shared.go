@@ -90,50 +90,35 @@ func captureSnapshotFiles(
 
 func preparePortableMetadata(
 	ctx context.Context,
-	r *Repo,
 	snapshot MetadataSnapshot,
-	opts CreateOptions,
 	appender *PackAppender,
 	progress *progressEmitter,
-) (pack.BlobID, int64, error) {
+) (pack.BlobID, int64, string, error) {
 	metadataReader, metadataBytes, err := snapshot.OpenMetadata(ctx)
 	if err != nil {
 		if metadataReader != nil {
 			err = errors.Join(err, metadataReader.Close())
 		}
-		return pack.BlobID{}, 0, fmt.Errorf("backup: opening portable metadata: %w", err)
+		return pack.BlobID{}, 0, "", fmt.Errorf("backup: opening portable metadata: %w", err)
 	}
-	if metadataReader == nil || metadataBytes < 0 || uint64(metadataBytes) > pack.MaxRawLen {
+	if metadataReader == nil || metadataBytes < 0 || metadataBytes > MaxObjectBytes {
 		if metadataReader != nil {
 			_ = metadataReader.Close()
 		}
-		return pack.BlobID{}, 0, fmt.Errorf("backup: invalid portable metadata size %d", metadataBytes)
+		return pack.BlobID{}, 0, "", fmt.Errorf("backup: invalid portable metadata size %d", metadataBytes)
 	}
 	progress.emit(ProgressEvent{
 		Stage: ProgressStageMetadata, Total: 1, BytesTotal: metadataBytes,
 	})
-	prepared, prepareErr := pack.PrepareBlob(
-		ctx, metadataReader, uint64(metadataBytes), opts.ZstdLevel,
-		pack.AppendStreamOptions{ScratchDir: r.Path(stagingDirName)})
-	closeErr := metadataReader.Close()
-	if err := errors.Join(prepareErr, closeErr); err != nil {
-		if prepared != nil {
-			_ = prepared.Close()
-		}
-		return pack.BlobID{}, 0, fmt.Errorf("backup: preparing portable metadata: %w", err)
-	}
-	if prepared == nil {
-		return pack.BlobID{}, 0, errors.New("backup: preparing portable metadata returned no result")
-	}
-	metadataID := prepared.ID()
-	if _, err := appender.AddPrepared(ctx, prepared); err != nil {
-		return pack.BlobID{}, 0, err
+	metadataID, size, recipe, captureErr := captureObject(ctx, metadataReader, metadataBytes, nil, appender)
+	if err := errors.Join(captureErr, metadataReader.Close()); err != nil {
+		return pack.BlobID{}, 0, "", fmt.Errorf("backup: preparing portable metadata: %w", err)
 	}
 	progress.emit(ProgressEvent{
 		Stage: ProgressStageMetadata, Done: 1, Total: 1,
 		BytesDone: metadataBytes, BytesTotal: metadataBytes, Final: true,
 	})
-	return metadataID, metadataBytes, nil
+	return metadataID, size, recipe, nil
 }
 
 func sealSnapshotCapture(

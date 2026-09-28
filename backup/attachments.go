@@ -105,6 +105,7 @@ func DecodeAttachmentList(data []byte) ([]ContentRef, error) {
 
 // AttachmentCapture reports one snapshot's attachment capture results.
 type AttachmentCapture struct {
+	Recipes     []string
 	NewList     []ContentRef
 	NewListBlob pack.BlobID
 	HasNewList  bool
@@ -226,9 +227,27 @@ func CaptureAttachments(
 	attachmentsDir string, refs []ContentRef, parentSeen map[string]bool, appender *PackAppender,
 	opts CaptureOptions,
 ) (*AttachmentCapture, error) {
-	out := &AttachmentCapture{}
-	if err := captureContents(ctx, attachmentsDir, refs, parentSeen, appender, opts, out); err != nil {
-		return nil, err
+	out := &AttachmentCapture{Recipes: []string{}}
+	for start := 0; start < len(refs); {
+		end := start
+		for end < len(refs) && refs[end].Size >= 0 && refs[end].Size <= objectChunkBytes {
+			end++
+		}
+		batchOpts := opts
+		if opts.Progress != nil {
+			batchOpts.Progress = func(done, total int, bytes int64) { opts.Progress(start+done, len(refs), bytes) }
+		}
+		if end > start {
+			if err := captureContents(ctx, attachmentsDir, refs[start:end], parentSeen, appender, batchOpts, out); err != nil {
+				return nil, err
+			}
+		} else {
+			if err := captureLargeAttachment(ctx, attachmentsDir, refs[start], parentSeen, appender, batchOpts, out); err != nil {
+				return nil, err
+			}
+			end++
+		}
+		start = end
 	}
 	if len(out.NewList) > 0 {
 		data, err := EncodeAttachmentList(out.NewList)

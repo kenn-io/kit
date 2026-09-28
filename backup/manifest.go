@@ -52,6 +52,7 @@ type ManifestMetadata struct {
 	Format string `json:"format"`
 	Blob   string `json:"blob"`
 	Bytes  int64  `json:"bytes"`
+	Recipe string `json:"recipe,omitempty"`
 }
 
 func validatePortableManifest(m *Manifest) error {
@@ -131,6 +132,9 @@ func ComputeSnapshotID(createdAt time.Time, m *Manifest) (string, error) {
 // WriteManifest fills the snapshot ID and publishes the manifest. It must be
 // the final write of a backup: a manifest's existence asserts closure.
 func (r *Repo) WriteManifest(m *Manifest) (string, error) {
+	if err := validateObjectManifest(m); err != nil {
+		return "", err
+	}
 	if err := validateAuxiliaryManifest(m); err != nil {
 		return "", err
 	}
@@ -228,6 +232,9 @@ func loadManifest(snapshots fs.FS, id string) (*Manifest, error) {
 			"backup: snapshot %s failed its content-derived ID check "+
 				"(computed %s, embedded %q); the manifest file is corrupted, renamed, or forged",
 			id, computed, m.SnapshotID)
+	}
+	if err := validateObjectManifest(&m); err != nil {
+		return nil, err
 	}
 	if err := validatePortableManifest(&m); err != nil {
 		return nil, fmt.Errorf("backup: snapshot %s: %w", id, err)
@@ -359,4 +366,23 @@ func walkManifestChain(head *Manifest, load func(string) (*Manifest, error)) ([]
 		}
 		m = parent
 	}
+}
+
+func validateObjectManifest(m *Manifest) error {
+	ids := append([]string(nil), m.Attachments.Recipes...)
+	if m.Metadata != nil && m.Metadata.Recipe != "" {
+		ids = append(ids, m.Metadata.Recipe)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	if m.FormatVersion < chunkedObjectManifestVersion || m.MinReaderVersion < chunkedObjectManifestVersion {
+		return errors.New("backup: object recipes require manifest and reader version 5")
+	}
+	for _, id := range ids {
+		if _, err := pack.ParseBlobID(id); err != nil {
+			return fmt.Errorf("backup: invalid object recipe identity: %w", err)
+		}
+	}
+	return nil
 }

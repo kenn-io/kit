@@ -433,6 +433,13 @@ func TestLargePlainAttachmentCaptureVerifyRestore(t *testing.T) {
 			require.NoError(err)
 			known, err := r.LoadBlobIndex()
 			require.NoError(err)
+			recipes, err := loadObjectRecipes(ctx, r, known, first, testPackExt)
+			require.NoError(err)
+			recipe, chunked := recipes[id]
+			if chunked {
+				id, err = pack.ParseBlobID(recipe.Chunks[0].Blob)
+				require.NoError(err)
+			}
 			require.Equal(tc.wantFlag, known[id].Flags&pack.BlobCompressed != 0)
 
 			second, err := Create(ctx, r, newTestApp(), opts)
@@ -1408,7 +1415,7 @@ func TestPreflightSnapshotBlobsChecksAllReferences(t *testing.T) {
 	st := newState()
 	_, pm, err := st.materializeMaps(m)
 	require.NoError(err)
-	require.NoError(st.preflightSnapshotBlobs(m, pm), "an intact snapshot must preflight cleanly")
+	require.NoError(st.preflightSnapshotBlobs(t.Context(), m, pm), "an intact snapshot must preflight cleanly")
 
 	refs, _, err := LoadListRefs(r, known, m.Attachments.Lists, nil, testPackExt)
 	require.NoError(err)
@@ -1433,7 +1440,7 @@ func TestPreflightSnapshotBlobsChecksAllReferences(t *testing.T) {
 	} {
 		st := newState()
 		delete(st.known, missing)
-		err := st.preflightSnapshotBlobs(m, pm)
+		err := st.preflightSnapshotBlobs(t.Context(), m, pm)
 		require.ErrorContains(err, what, "missing %s must fail preflight", what)
 		require.ErrorContains(err, "not present in any index")
 	}
@@ -1478,7 +1485,7 @@ func TestPreflightSnapshotBlobsRejectsBadExtrasPaths(t *testing.T) {
 	for want, treeID := range trees {
 		st := &restoreState{repo: r, app: newTestApp(), known: known}
 		m := &Manifest{Extras: ManifestExtras{Tree: treeID.String()}}
-		err := st.preflightSnapshotBlobs(m, &PageMap{})
+		err := st.preflightSnapshotBlobs(t.Context(), m, &PageMap{})
 		require.ErrorContains(err, want, "tree with %s path must fail preflight", want)
 	}
 }
