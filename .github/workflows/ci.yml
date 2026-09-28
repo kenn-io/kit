@@ -20,7 +20,7 @@ concurrency:
 jobs:
   hygiene:
     name: Go hygiene
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-4cpu
     timeout-minutes: 10
 
     steps:
@@ -50,15 +50,18 @@ jobs:
 
   test:
     name: Go tests (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-latest
-          - macos-latest
-          - windows-latest
+        include:
+          - os: ubuntu-latest
+            runner: namespace-profile-linux-8cpu
+          - os: macos-latest
+            runner: namespace-profile-mac-6cpu
+          - os: windows-latest
+            runner: namespace-profile-windows-4cpu
 
     steps:
       - name: Check out repository
@@ -86,7 +89,7 @@ jobs:
 
   streaming-gates:
     name: Streaming race and portability gates
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-8cpu
     timeout-minutes: 25
 
     steps:
@@ -136,7 +139,7 @@ jobs:
 
   s3-conformance:
     name: S3-compatible backend conformance
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-4cpu
     timeout-minutes: 15
 
     steps:
@@ -182,7 +185,7 @@ jobs:
 
   search-backends:
     name: Search backend conformance
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-4cpu
     timeout-minutes: 20
 
     steps:
