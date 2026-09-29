@@ -3,9 +3,10 @@ package embedconfig
 import (
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
+
+	"go.kenn.io/kit/secretref"
 )
 
 // Embedder is the standard configuration-file shape for one embedding
@@ -22,12 +23,11 @@ type Embedder struct {
 	Model string `toml:"model"`
 	// Dims is the vector width the provider returns.
 	Dims int `toml:"dims"`
-	// APIKey is an inline bearer token. Prefer APIKeyEnv; the two are
-	// mutually exclusive. The sensitive tag marks it for redaction by
+	// APIKey is the bearer token as a secret reference: "env:NAME",
+	// "file:PATH", or the token itself. Leave it empty for an endpoint that
+	// needs no authentication. The sensitive tag marks it for redaction by
 	// applications that display configuration.
-	APIKey string `toml:"api_key" sensitive:"true"`
-	// APIKeyEnv names the environment variable that holds the bearer token.
-	APIKeyEnv string `toml:"api_key_env"`
+	APIKey secretref.Ref `toml:"api_key" sensitive:"true"`
 	// FingerprintSalt marks a different vector space for the same model name,
 	// such as retrained weights. Changing it starts a new generation.
 	FingerprintSalt string `toml:"fingerprint_salt"`
@@ -76,8 +76,8 @@ func (e Embedder) Validate() error {
 	if strings.TrimSpace(e.BaseURL) == "" || strings.TrimSpace(e.Model) == "" || e.Dims <= 0 {
 		return errors.New("embed base_url, model, and positive dims must be configured together")
 	}
-	if e.APIKey != "" && strings.TrimSpace(e.APIKeyEnv) != "" {
-		return errors.New("embed api_key and api_key_env are mutually exclusive")
+	if err := e.APIKey.Validate(); err != nil {
+		return fmt.Errorf("embed api_key: %w", err)
 	}
 	if e.BatchSize < 0 || e.ModelContextTokens < 0 || e.MaxBatchTokens < 0 || e.TimeoutSeconds < 0 {
 		return errors.New("embed batch_size, model_context_tokens, max_batch_tokens, and timeout_seconds must not be negative")
@@ -120,23 +120,14 @@ func (e Embedder) Parts() (Parts, error) {
 	return Parts{Model: model, Roles: roles, Deployment: deployment, Batch: batch, Transport: transport}, nil
 }
 
-// ResolveAPIKey returns the inline key or reads APIKeyEnv. A configured
-// variable that is missing or blank is an error, so a daemon never starts
-// making unauthenticated calls by accident. No key configured returns "".
-func (e Embedder) ResolveAPIKey() (string, error) {
-	if e.APIKey != "" && strings.TrimSpace(e.APIKeyEnv) != "" {
-		return "", errors.New("embed api_key and api_key_env are mutually exclusive")
+// ResolveAPIKey reads the API key reference. A source that yields no key is
+// not an error: the Secret's Reason says why, so an application can keep
+// running without the provider and report it. An empty reference resolves
+// to an empty Secret. Only a malformed reference is an error.
+func (e Embedder) ResolveAPIKey() (secretref.Secret, error) {
+	secret, err := e.APIKey.Resolve()
+	if err != nil {
+		return secretref.Secret{}, fmt.Errorf("embed api_key: %w", err)
 	}
-	if e.APIKey != "" {
-		return e.APIKey, nil
-	}
-	name := strings.TrimSpace(e.APIKeyEnv)
-	if name == "" {
-		return "", nil
-	}
-	value, ok := os.LookupEnv(name)
-	if !ok || strings.TrimSpace(value) == "" {
-		return "", fmt.Errorf("embed api key environment variable %q is missing or empty", name)
-	}
-	return value, nil
+	return secret, nil
 }
