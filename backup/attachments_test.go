@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -429,6 +430,9 @@ func TestCaptureAttachmentsRefusesSymlinkEscape(t *testing.T) {
 }
 
 func TestCaptureLargeAttachmentKeepsOpenedRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not allow renaming an open root directory")
+	}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	repo := initTestRepo(t)
