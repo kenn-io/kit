@@ -23,8 +23,9 @@ type Embedder struct {
 	// Dims is the vector width the provider returns.
 	Dims int `toml:"dims"`
 	// APIKey is an inline bearer token. Prefer APIKeyEnv; the two are
-	// mutually exclusive.
-	APIKey string `toml:"api_key"`
+	// mutually exclusive. The sensitive tag marks it for redaction by
+	// applications that display configuration.
+	APIKey string `toml:"api_key" sensitive:"true"`
 	// APIKeyEnv names the environment variable that holds the bearer token.
 	APIKeyEnv string `toml:"api_key_env"`
 	// FingerprintSalt marks a different vector space for the same model name,
