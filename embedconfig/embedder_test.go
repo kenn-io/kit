@@ -125,4 +125,3 @@ func TestEmbedderResolveAPIKey(t *testing.T) {
 	_, err = embedconfig.Embedder{APIKey: "inline", APIKeyEnv: "KIT_TEST_EMBED_KEY"}.ResolveAPIKey()
 	require.Error(t, err)
 }
-
