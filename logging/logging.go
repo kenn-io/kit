@@ -30,6 +30,9 @@ const (
 	FormatJSON Format = "json"
 	// FormatText writes human-readable text records.
 	FormatText Format = "text"
+	// FormatGCP writes JSON records in the shape Google Cloud Logging parses.
+	// See NewCloudLoggingHandler.
+	FormatGCP Format = "gcp"
 )
 
 const (
@@ -158,6 +161,8 @@ func ParseFormat(s string) (Format, bool) {
 		return FormatJSON, true
 	case "text":
 		return FormatText, true
+	case "gcp":
+		return FormatGCP, true
 	default:
 		return "", false
 	}
@@ -305,10 +310,14 @@ func (r *Result) Close() error {
 }
 
 func newHandler(w io.Writer, format Format, opts *slog.HandlerOptions) slog.Handler {
-	if format == FormatJSON {
+	switch format {
+	case FormatJSON:
 		return slog.NewJSONHandler(w, opts)
+	case FormatGCP:
+		return NewCloudLoggingHandler(w, opts)
+	default:
+		return slog.NewTextHandler(w, opts)
 	}
-	return slog.NewTextHandler(w, opts)
 }
 
 func emitFileLoggingWarning(handler slog.Handler, target string, err error) {
