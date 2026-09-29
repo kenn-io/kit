@@ -1,15 +1,71 @@
 package secretref_test
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"testing"
 
+	"github.com/BurntSushi/toml"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"go.kenn.io/kit/safefileio"
 	"go.kenn.io/kit/secretref"
 )
+
+type document struct {
+	Key secretref.Ref `toml:"key" json:"key"`
+}
+
+func TestRefDecodesEveryFormFromTOMLAndJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		toml string
+		json string
+		want secretref.Ref
+	}{
+		{name: "literal", toml: `key = "sk-inline"`, json: `{"key":"sk-inline"}`, want: secretref.Literal("sk-inline")},
+		{name: "env", toml: `key = { env = "APP_KEY" }`, json: `{"key":{"env":"APP_KEY"}}`, want: secretref.Ref{Env: "APP_KEY"}},
+		{name: "file", toml: `key = { file = "~/app.key" }`, json: `{"key":{"file":"~/app.key"}}`, want: secretref.Ref{File: "~/app.key"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var fromTOML document
+			meta, err := toml.Decode(test.toml, &fromTOML)
+			require.NoError(t, err)
+			assert.Empty(t, meta.Undecoded())
+			assert.Equal(t, test.want, fromTOML.Key)
+
+			var fromJSON document
+			require.NoError(t, json.Unmarshal([]byte(test.json), &fromJSON))
+			assert.Equal(t, test.want, fromJSON.Key)
+
+			encoded, err := toml.Marshal(fromTOML)
+			require.NoError(t, err)
+			var again document
+			_, err = toml.Decode(string(encoded), &again)
+			require.NoError(t, err)
+			assert.Equal(t, test.want, again.Key, "encoded as %s", encoded)
+		})
+	}
+}
+
+func TestRefRejectsAmbiguousOrUnknownSources(t *testing.T) {
+	for _, input := range []string{
+		`key = { env = "A", file = "~/a.key" }`,
+		`key = { vault = "app/key" }`,
+		`key = { env = 1 }`,
+		`key = 1`,
+	} {
+		var decoded document
+		_, err := toml.Decode(input, &decoded)
+		require.Error(t, err, input)
+	}
+	var decoded document
+	require.Error(t, json.Unmarshal([]byte(`{"key":{"env":"A","file":"~/a.key"}}`), &decoded))
+	require.Error(t, json.Unmarshal([]byte(`{"key":{"vault":"app/key"}}`), &decoded))
+	require.Error(t, secretref.Ref{Env: "A", File: "~/a.key"}.Validate())
+}
 
 func TestRefResolve(t *testing.T) {
 	t.Setenv("KIT_TEST_SECRET", "from-env")
@@ -22,22 +78,26 @@ func TestRefResolve(t *testing.T) {
 	absent := filepath.Join(dir, "absent.key")
 
 	tests := []struct {
+		name string
 		ref  secretref.Ref
 		want secretref.Secret
 	}{
-		{ref: "", want: secretref.Secret{}},
-		{ref: "sk-inline", want: secretref.Secret{Value: "sk-inline", Source: "inline"}},
-		{ref: " ", want: secretref.Secret{Source: "inline", Reason: "inline value is empty"}},
-		{ref: "env:KIT_TEST_SECRET", want: secretref.Secret{Value: "from-env", Source: "env:KIT_TEST_SECRET"}},
-		{ref: "env:KIT_TEST_EMPTY", want: secretref.Secret{
+		{name: "unset", ref: secretref.Ref{}, want: secretref.Secret{}},
+		{name: "literal", ref: secretref.Literal("sk-inline"), want: secretref.Secret{Value: "sk-inline", Source: "inline"}},
+		{name: "literal is not expanded", ref: secretref.Literal("${KIT_TEST_SECRET}"), want: secretref.Secret{
+			Value: "${KIT_TEST_SECRET}", Source: "inline",
+		}},
+		{name: "blank literal", ref: secretref.Literal(" "), want: secretref.Secret{Source: "inline", Reason: "inline value is empty"}},
+		{name: "env", ref: secretref.Ref{Env: "KIT_TEST_SECRET"}, want: secretref.Secret{Value: "from-env", Source: "env:KIT_TEST_SECRET"}},
+		{name: "empty env", ref: secretref.Ref{Env: "KIT_TEST_EMPTY"}, want: secretref.Secret{
 			Source: "env:KIT_TEST_EMPTY", Reason: "env KIT_TEST_EMPTY is unset or empty",
 		}},
-		{ref: secretref.Ref("file:" + keyFile), want: secretref.Secret{Value: "from-file", Source: "file:" + keyFile}},
-		{ref: secretref.Ref("file:" + absent), want: secretref.Secret{Source: "file:" + absent, Reason: "file is missing"}},
-		{ref: secretref.Ref("file:" + emptyFile), want: secretref.Secret{Source: "file:" + emptyFile, Reason: "file is empty"}},
+		{name: "file", ref: secretref.Ref{File: keyFile}, want: secretref.Secret{Value: "from-file", Source: "file:" + keyFile}},
+		{name: "missing file", ref: secretref.Ref{File: absent}, want: secretref.Secret{Source: "file:" + absent, Reason: "file is missing"}},
+		{name: "empty file", ref: secretref.Ref{File: emptyFile}, want: secretref.Secret{Source: "file:" + emptyFile, Reason: "file is empty"}},
 	}
 	for _, test := range tests {
-		t.Run(string(test.ref), func(t *testing.T) {
+		t.Run(test.name, func(t *testing.T) {
 			got, err := test.ref.Resolve()
 			require.NoError(t, err)
 			assert.Equal(t, test.want, got)
@@ -51,23 +111,9 @@ func TestRefFileExpandsHome(t *testing.T) {
 	t.Setenv("USERPROFILE", home)
 	writePrivateFile(t, filepath.Join(home, "app.key"), "from-home")
 
-	got, err := secretref.Ref("file:~/app.key").Resolve()
+	got, err := secretref.Ref{File: "~/app.key"}.Resolve()
 	require.NoError(t, err)
 	assert.Equal(t, secretref.Secret{Value: "from-home", Source: "file:~/app.key"}, got)
-}
-
-func TestRefRejectsMalformedReferences(t *testing.T) {
-	for _, ref := range []secretref.Ref{"vault:app/key", "https://example.test", "env:", "file: "} {
-		t.Run(string(ref), func(t *testing.T) {
-			require.Error(t, ref.Validate())
-			_, err := ref.Resolve()
-			require.Error(t, err)
-		})
-	}
-	// A value whose prefix is not a lowercase word is an inline secret.
-	for _, ref := range []secretref.Ref{"Bearer:abc", "sk-proj:abc", "pa-9f2c"} {
-		require.NoError(t, ref.Validate(), string(ref))
-	}
 }
 
 func writePrivateFile(t *testing.T, path, contents string) {

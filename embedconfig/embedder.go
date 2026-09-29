@@ -23,10 +23,11 @@ type Embedder struct {
 	Model string `toml:"model"`
 	// Dims is the vector width the provider returns.
 	Dims int `toml:"dims"`
-	// APIKey is the bearer token as a secret reference: "env:NAME",
-	// "file:PATH", or the token itself. Leave it empty for an endpoint that
-	// needs no authentication. The sensitive tag marks it for redaction by
-	// applications that display configuration.
+	// APIKey is the bearer token: the token itself as a string, or a table
+	// naming its source, such as { env = "NAME" } or { file = "PATH" }.
+	// Leave it unset for an endpoint that needs no authentication. The
+	// sensitive tag marks it for redaction by applications that display
+	// configuration.
 	APIKey secretref.Ref `toml:"api_key" sensitive:"true"`
 	// FingerprintSalt marks a different vector space for the same model name,
 	// such as retrained weights. Changing it starts a new generation.
@@ -120,10 +121,10 @@ func (e Embedder) Parts() (Parts, error) {
 	return Parts{Model: model, Roles: roles, Deployment: deployment, Batch: batch, Transport: transport}, nil
 }
 
-// ResolveAPIKey reads the API key reference. A source that yields no key is
-// not an error: the Secret's Reason says why, so an application can keep
-// running without the provider and report it. An empty reference resolves
-// to an empty Secret. Only a malformed reference is an error.
+// ResolveAPIKey reads the API key. A source that yields no key is not an
+// error: the Secret's Reason says why, so an application can keep running
+// without the provider and report it. An unset key resolves to an empty
+// Secret. Only a key that names more than one source is an error.
 func (e Embedder) ResolveAPIKey() (secretref.Secret, error) {
 	secret, err := e.APIKey.Resolve()
 	if err != nil {

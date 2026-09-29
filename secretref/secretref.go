@@ -1,18 +1,21 @@
-// Package secretref reads secrets named by a single configuration value.
+// Package secretref reads a secret named by one typed configuration value.
 //
-// A Ref says where a secret comes from, so one config key covers every
-// source:
+// In TOML a Ref is either the secret itself or a table naming its source:
 //
-//	api_key = "env:OPENAI_API_KEY"       # environment variable
-//	api_key = "file:~/.config/app.key"   # private file; ~/ is home
-//	api_key = "sk-inline-value"          # the secret itself
+//	api_key = "sk-inline-value"              # the secret itself
+//	api_key = { env = "OPENAI_API_KEY" }     # environment variable
+//	api_key = { file = "~/.config/app.key" } # private file; ~/ is home
 //
-// A value shaped like "scheme:rest" with a scheme this package does not know
-// is rejected rather than read as an inline secret, so adding a scheme later
-// never changes what an existing value means.
+// A string is always the literal secret. Every other source is a table field,
+// so a new kind of source, such as a secret manager or a credential helper,
+// is a new field and never changes what an existing value means.
+//
+// Ref decodes with any TOML library that supports encoding.TextUnmarshaler
+// for strings and tagged struct fields for tables, and with encoding/json.
 package secretref
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -24,8 +27,20 @@ import (
 	"go.kenn.io/kit/safefileio"
 )
 
-// Ref is a configuration value that holds a secret or names its source.
-type Ref string
+// Ref holds a secret or names where it comes from. The zero value is unset.
+// Set at most one source; Validate reports more than one.
+type Ref struct { //nolint:recvcheck // decoders need pointer receivers; values marshal and resolve as copies
+	// Env names an environment variable that holds the secret.
+	Env string `toml:"env,omitempty" json:"env,omitempty"`
+	// File is a private file that holds the secret. A leading ~/ means the
+	// user's home directory.
+	File string `toml:"file,omitempty" json:"file,omitempty"`
+
+	literal string
+}
+
+// Literal returns a Ref that holds the secret itself.
+func Literal(secret string) Ref { return Ref{literal: secret} }
 
 // Secret is a resolved Ref. Value goes only to the code that uses the
 // secret. Source names where it came from ("inline", "env:NAME", or
@@ -37,81 +52,127 @@ type Secret struct {
 	Reason string
 }
 
-// Validate reports a malformed reference without reading any secret.
+// IsZero reports whether the reference is unset.
+func (r Ref) IsZero() bool { return r == Ref{} }
+
+// Validate reports a reference that names more than one source.
 func (r Ref) Validate() error {
-	_, _, err := r.parse()
-	return err
+	var sources []string
+	if r.literal != "" {
+		sources = append(sources, "a literal value")
+	}
+	if r.Env != "" {
+		sources = append(sources, "env")
+	}
+	if r.File != "" {
+		sources = append(sources, "file")
+	}
+	if len(sources) > 1 {
+		return fmt.Errorf("secretref: set one source, not %s", strings.Join(sources, " and "))
+	}
+	return nil
 }
 
-// IsSet reports whether the reference names any source.
-func (r Ref) IsSet() bool { return r != "" }
+// UnmarshalText decodes the string form: the secret itself.
+func (r *Ref) UnmarshalText(text []byte) error {
+	*r = Literal(string(text))
+	return nil
+}
+
+// UnmarshalTOML decodes a string or a table for TOML decoders that call it
+// before trying encoding.TextUnmarshaler, which would reject a table.
+func (r *Ref) UnmarshalTOML(data any) error {
+	switch v := data.(type) {
+	case string:
+		*r = Literal(v)
+		return nil
+	case map[string]any:
+		var ref Ref
+		for key, raw := range v {
+			value, ok := raw.(string)
+			if !ok {
+				return fmt.Errorf("secretref: %s must be a string", key)
+			}
+			switch key {
+			case "env":
+				ref.Env = value
+			case "file":
+				ref.File = value
+			default:
+				return fmt.Errorf("secretref: unknown secret source %q", key)
+			}
+		}
+		*r = ref
+		return r.Validate()
+	default:
+		return fmt.Errorf("secretref: a secret is a string or a table, got %T", data)
+	}
+}
+
+// UnmarshalJSON decodes a JSON string or object.
+func (r *Ref) UnmarshalJSON(data []byte) error {
+	var literal string
+	if err := json.Unmarshal(data, &literal); err == nil {
+		*r = Literal(literal)
+		return nil
+	}
+	type fields struct {
+		Env  string `json:"env"`
+		File string `json:"file"`
+	}
+	var decoded fields
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return fmt.Errorf("secretref: a secret is a string or an object: %w", err)
+	}
+	*r = Ref{Env: decoded.Env, File: decoded.File}
+	return r.Validate()
+}
+
+// MarshalTOML encodes the reference in the form the decoders read.
+func (r Ref) MarshalTOML() ([]byte, error) {
+	switch {
+	case r.Env != "":
+		return []byte("{ env = " + quote(r.Env) + " }"), nil
+	case r.File != "":
+		return []byte("{ file = " + quote(r.File) + " }"), nil
+	default:
+		return []byte(quote(r.literal)), nil
+	}
+}
 
 // Resolve reads the secret. A source that yields nothing is not an error:
 // Value is empty and Reason says why, so callers can keep running without
-// the secret and report the reason. An empty Ref resolves to an empty
-// Secret. Only a malformed reference is an error.
+// the secret and report the reason. An unset Ref resolves to an empty
+// Secret. Only a reference that names more than one source is an error.
 //
 // A file must be a regular, private file owned by the current user, as
 // safefileio verifies; a symlink or FIFO is refused without blocking.
 // Trailing newlines are removed.
 func (r Ref) Resolve() (Secret, error) {
-	scheme, rest, err := r.parse()
-	if err != nil {
+	if err := r.Validate(); err != nil {
 		return Secret{}, err
 	}
-	switch scheme {
-	case "":
-		if r == "" {
-			return Secret{}, nil
-		}
-		if strings.TrimSpace(rest) == "" {
-			return Secret{Source: "inline", Reason: "inline value is empty"}, nil
-		}
-		return Secret{Value: rest, Source: "inline"}, nil
-	case "env":
-		source := "env:" + rest
-		value := os.Getenv(rest)
+	switch {
+	case r.IsZero():
+		return Secret{}, nil
+	case r.Env != "":
+		name := strings.TrimSpace(r.Env)
+		source := "env:" + name
+		value := os.Getenv(name)
 		if strings.TrimSpace(value) == "" {
-			return Secret{Source: source, Reason: "env " + rest + " is unset or empty"}, nil
+			return Secret{Source: source, Reason: "env " + name + " is unset or empty"}, nil
 		}
 		return Secret{Value: value, Source: source}, nil
+	case r.File != "":
+		return resolveFile(strings.TrimSpace(r.File)), nil
 	default:
-		return resolveFile(rest), nil
-	}
-}
-
-// parse splits a reference into a known scheme and its argument. An inline
-// value has no scheme.
-func (r Ref) parse() (string, string, error) {
-	value := string(r)
-	scheme, rest, found := strings.Cut(value, ":")
-	if !found || !isScheme(scheme) {
-		return "", value, nil
-	}
-	rest = strings.TrimSpace(rest)
-	switch scheme {
-	case "env", "file":
-		if rest == "" {
-			return "", "", fmt.Errorf("secretref: %s: reference is empty", scheme)
+		if strings.TrimSpace(r.literal) == "" {
+			return Secret{Source: "inline", Reason: "inline value is empty"}, nil
 		}
-		return scheme, rest, nil
-	default:
-		return "", "", fmt.Errorf("secretref: unknown scheme %q; use env:, file:, or an inline value", scheme)
+		return Secret{Value: r.literal, Source: "inline"}, nil
 	}
-}
-
-// isScheme matches a lowercase word, the shape of a reference scheme. Inline
-// secrets rarely start that way; one that does must not use a colon there.
-func isScheme(value string) bool {
-	if value == "" {
-		return false
-	}
-	for _, r := range value {
-		if r < 'a' || r > 'z' {
-			return false
-		}
-	}
-	return true
 }
 
 func resolveFile(configured string) Secret {
@@ -146,4 +207,23 @@ func resolveFile(configured string) Secret {
 		return unavailable("file is empty")
 	}
 	return Secret{Value: value, Source: "file:" + configured}
+}
+
+// quote returns a TOML basic string.
+func quote(value string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range value {
+		switch {
+		case r == '"' || r == '\\':
+			b.WriteByte('\\')
+			b.WriteRune(r)
+		case r < 0x20 || r == 0x7f:
+			fmt.Fprintf(&b, `\u%04X`, r)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
 }

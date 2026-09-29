@@ -23,7 +23,7 @@ func TestEmbedderDecodesTheStandardKeys(t *testing.T) {
 base_url = "https://api.example.test/v1"
 model = "embed-large"
 dims = 1024
-api_key = "env:EMBED_KEY"
+api_key = { env = "EMBED_KEY" }
 fingerprint_salt = "weights-2"
 input_type_mode = "retrieval"
 batch_size = 16
@@ -37,6 +37,7 @@ trust_private_network = true
 
 	embedder := file.Search.Embeddings
 	require.NoError(t, embedder.Validate())
+	assert.Equal(t, secretref.Ref{Env: "EMBED_KEY"}, embedder.APIKey)
 	parts, err := embedder.Parts()
 	require.NoError(t, err)
 	assert.Equal(t, embedconfig.Model{
@@ -79,7 +80,9 @@ func TestEmbedderValidate(t *testing.T) {
 		{name: "setting without endpoint", embedder: embedconfig.Embedder{BatchSize: 8}},
 		{name: "missing dims", embedder: with(func(e *embedconfig.Embedder) { e.Dims = 0 })},
 		{name: "missing model", embedder: with(func(e *embedconfig.Embedder) { e.Model = "" })},
-		{name: "unknown key scheme", embedder: with(func(e *embedconfig.Embedder) { e.APIKey = "vault:embed" })},
+		{name: "two key sources", embedder: with(func(e *embedconfig.Embedder) {
+			e.APIKey = secretref.Ref{Env: "EMBED_KEY", File: "~/embed.key"}
+		})},
 		{name: "unknown input type", embedder: with(func(e *embedconfig.Embedder) { e.InputTypeMode = "search" })},
 		{name: "negative batch", embedder: with(func(e *embedconfig.Embedder) { e.BatchSize = -1 })},
 		{name: "negative timeout", embedder: with(func(e *embedconfig.Embedder) { e.TimeoutSeconds = -1 })},
@@ -105,7 +108,7 @@ func TestEmbedderValidate(t *testing.T) {
 
 func TestEmbedderResolvesItsAPIKeyReference(t *testing.T) {
 	t.Setenv("KIT_TEST_EMBED_KEY", "from-env")
-	secret, err := embedconfig.Embedder{APIKey: "env:KIT_TEST_EMBED_KEY"}.ResolveAPIKey()
+	secret, err := embedconfig.Embedder{APIKey: secretref.Ref{Env: "KIT_TEST_EMBED_KEY"}}.ResolveAPIKey()
 	require.NoError(t, err)
 	assert.Equal(t, secretref.Secret{Value: "from-env", Source: "env:KIT_TEST_EMBED_KEY"}, secret)
 
@@ -114,7 +117,8 @@ func TestEmbedderResolvesItsAPIKeyReference(t *testing.T) {
 	assert.Equal(t, secretref.Secret{}, secret, "an endpoint without authentication needs no key")
 
 	invalid := embedconfig.Embedder{
-		BaseURL: "https://api.example.test/v1", Model: "m", Dims: 8, APIKey: "vault:embed",
+		BaseURL: "https://api.example.test/v1", Model: "m", Dims: 8,
+		APIKey: secretref.Ref{Env: "EMBED_KEY", File: "~/embed.key"},
 	}
 	require.ErrorContains(t, invalid.Validate(), "embed api_key")
 	_, err = invalid.ResolveAPIKey()

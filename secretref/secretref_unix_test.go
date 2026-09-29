@@ -29,7 +29,7 @@ func TestRefFileMustBePrivateAndNotALink(t *testing.T) {
 		shared: "file must be private to its owner (mode 0600)",
 		link:   "file must be a regular file owned by the current user",
 	} {
-		got, err := secretref.Ref("file:" + path).Resolve()
+		got, err := secretref.Ref{File: path}.Resolve()
 		require.NoError(t, err)
 		assert.Empty(t, got.Value)
 		assert.Equal(t, reason, got.Reason)
@@ -41,7 +41,7 @@ func TestRefFileRefusesAFIFOWithoutBlocking(t *testing.T) {
 	require.NoError(t, syscall.Mkfifo(path, 0o600))
 	done := make(chan secretref.Secret, 1)
 	go func() {
-		secret, _ := secretref.Ref("file:" + path).Resolve()
+		secret, _ := secretref.Ref{File: path}.Resolve()
 		done <- secret
 	}()
 	select {
