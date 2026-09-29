@@ -218,7 +218,7 @@ func loadObjectRecipes(ctx context.Context, repo *Repo, known map[pack.BlobID]In
 	return recipes, nil
 }
 
-func captureLargeAttachment(ctx context.Context, directory string, refs []ContentRef, index int, parentSeen map[string]bool, appender *PackAppender, opts CaptureOptions, out *AttachmentCapture) error {
+func captureLargeAttachment(ctx context.Context, root *os.Root, refs []ContentRef, index int, parentSeen map[string]bool, appender *PackAppender, opts CaptureOptions, out *AttachmentCapture) error {
 	ref := refs[index]
 	if ref.Size < -1 || ref.Size > MaxObjectBytes {
 		return fmt.Errorf("backup: invalid attachment size %d", ref.Size)
@@ -232,11 +232,6 @@ func captureLargeAttachment(ctx context.Context, directory string, refs []Conten
 	if opts.Source != nil {
 		reader, err = opts.Source.Open(ctx, ref)
 	} else {
-		root, rootErr := os.OpenRoot(directory)
-		if rootErr != nil {
-			return rootErr
-		}
-		defer func() { _ = root.Close() }()
 		rel, pathErr := captureRelPath(ref)
 		if pathErr != nil {
 			return pathErr

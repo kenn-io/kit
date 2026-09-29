@@ -405,7 +405,7 @@ func captureContents(
 			if c.err != nil {
 				firstErr = c.err
 			} else if c.chunked {
-				firstErr = captureLargeAttachment(ctx, attachmentsDir, refs, c.index, parentSeen, appender, opts, out)
+				firstErr = captureLargeAttachment(ctx, root, refs, c.index, parentSeen, appender, opts, out)
 			} else {
 				firstErr = recordCapture(ctx, c, refs, parentSeen, appender, opts, out)
 			}
