@@ -20,6 +20,10 @@ type StartDetachedOptions struct {
 	Stderr          io.Writer
 	RefuseEphemeral bool
 	AfterStart      func(*exec.Cmd)
+	// Exited, when set, receives the child's exit result once the child
+	// exits. A caller waiting for the daemon to become reachable uses it to
+	// stop waiting for a child that has already died.
+	Exited func(error)
 }
 
 // StartDetached starts a child process detached from the caller's process
@@ -54,7 +58,12 @@ func StartDetached(ctx context.Context, opts StartDetachedOptions) error {
 	if opts.AfterStart != nil {
 		opts.AfterStart(cmd)
 	}
-	go func() { _ = cmd.Wait() }()
+	go func() {
+		err := cmd.Wait()
+		if opts.Exited != nil {
+			opts.Exited(err)
+		}
+	}()
 	return nil
 }
 
