@@ -21,3 +21,6 @@
 - Files open through `safefileio.OpenCurrentUserFile` and must pass
   `safefileio.ValidatePrivateCurrentUserFile`. Do not follow symlinks, block
   on a FIFO, or repair permissions here.
+- The literal secret is also the exported `Value` field, so encoders that
+  write struct fields instead of calling `MarshalTOML` still keep it; they
+  write `{ value = "..." }`, which every decoder reads back.

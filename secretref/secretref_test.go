@@ -27,6 +27,7 @@ func TestRefDecodesEveryFormFromTOMLAndJSON(t *testing.T) {
 		{name: "literal", toml: `key = "sk-inline"`, json: `{"key":"sk-inline"}`, want: secretref.Literal("sk-inline")},
 		{name: "env", toml: `key = { env = "APP_KEY" }`, json: `{"key":{"env":"APP_KEY"}}`, want: secretref.Ref{Env: "APP_KEY"}},
 		{name: "file", toml: `key = { file = "~/app.key" }`, json: `{"key":{"file":"~/app.key"}}`, want: secretref.Ref{File: "~/app.key"}},
+		{name: "value table", toml: `key = { value = "sk-inline" }`, json: `{"key":{"value":"sk-inline"}}`, want: secretref.Literal("sk-inline")},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -53,6 +54,7 @@ func TestRefDecodesEveryFormFromTOMLAndJSON(t *testing.T) {
 func TestRefRejectsAmbiguousOrUnknownSources(t *testing.T) {
 	for _, input := range []string{
 		`key = { env = "A", file = "~/a.key" }`,
+		`key = { value = "sk", env = "A" }`,
 		`key = { vault = "app/key" }`,
 		`key = { env = 1 }`,
 		`key = 1`,

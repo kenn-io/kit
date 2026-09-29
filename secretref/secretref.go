@@ -8,7 +8,9 @@
 //
 // A string is always the literal secret. Every other source is a table field,
 // so a new kind of source, such as a secret manager or a credential helper,
-// is a new field and never changes what an existing value means.
+// is a new field and never changes what an existing value means. The table
+// form { value = "..." } also holds the literal secret; encoders that write
+// struct fields instead of calling MarshalTOML produce it.
 //
 // Ref decodes with any TOML library that supports encoding.TextUnmarshaler
 // for strings and tagged struct fields for tables, and with encoding/json.
@@ -30,17 +32,17 @@ import (
 // Ref holds a secret or names where it comes from. The zero value is unset.
 // Set at most one source; Validate reports more than one.
 type Ref struct { //nolint:recvcheck // decoders need pointer receivers; values marshal and resolve as copies
+	// Value is the secret itself.
+	Value string `toml:"value,omitempty" json:"value,omitempty"`
 	// Env names an environment variable that holds the secret.
 	Env string `toml:"env,omitempty" json:"env,omitempty"`
 	// File is a private file that holds the secret. A leading ~/ means the
 	// user's home directory.
 	File string `toml:"file,omitempty" json:"file,omitempty"`
-
-	literal string
 }
 
 // Literal returns a Ref that holds the secret itself.
-func Literal(secret string) Ref { return Ref{literal: secret} }
+func Literal(secret string) Ref { return Ref{Value: secret} }
 
 // Secret is a resolved Ref. Value goes only to the code that uses the
 // secret. Source names where it came from ("inline", "env:NAME", or
@@ -58,8 +60,8 @@ func (r Ref) IsZero() bool { return r == Ref{} }
 // Validate reports a reference that names more than one source.
 func (r Ref) Validate() error {
 	var sources []string
-	if r.literal != "" {
-		sources = append(sources, "a literal value")
+	if r.Value != "" {
+		sources = append(sources, "value")
 	}
 	if r.Env != "" {
 		sources = append(sources, "env")
@@ -94,6 +96,8 @@ func (r *Ref) UnmarshalTOML(data any) error {
 				return fmt.Errorf("secretref: %s must be a string", key)
 			}
 			switch key {
+			case "value":
+				ref.Value = value
 			case "env":
 				ref.Env = value
 			case "file":
@@ -117,8 +121,9 @@ func (r *Ref) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	type fields struct {
-		Env  string `json:"env"`
-		File string `json:"file"`
+		Value string `json:"value"`
+		Env   string `json:"env"`
+		File  string `json:"file"`
 	}
 	var decoded fields
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
@@ -126,7 +131,7 @@ func (r *Ref) UnmarshalJSON(data []byte) error {
 	if err := decoder.Decode(&decoded); err != nil {
 		return fmt.Errorf("secretref: a secret is a string or an object: %w", err)
 	}
-	*r = Ref{Env: decoded.Env, File: decoded.File}
+	*r = Ref(decoded)
 	return r.Validate()
 }
 
@@ -138,7 +143,7 @@ func (r Ref) MarshalTOML() ([]byte, error) {
 	case r.File != "":
 		return []byte("{ file = " + quote(r.File) + " }"), nil
 	default:
-		return []byte(quote(r.literal)), nil
+		return []byte(quote(r.Value)), nil
 	}
 }
 
@@ -168,10 +173,10 @@ func (r Ref) Resolve() (Secret, error) {
 	case r.File != "":
 		return resolveFile(strings.TrimSpace(r.File)), nil
 	default:
-		if strings.TrimSpace(r.literal) == "" {
+		if strings.TrimSpace(r.Value) == "" {
 			return Secret{Source: "inline", Reason: "inline value is empty"}, nil
 		}
-		return Secret{Value: r.literal, Source: "inline"}, nil
+		return Secret{Value: r.Value, Source: "inline"}, nil
 	}
 }
 
