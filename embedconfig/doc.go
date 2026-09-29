@@ -1,8 +1,9 @@
 // Package embedconfig holds reusable embedding settings.
 //
-// Applications own files, environment, flags, secret resolution, and
-// persistence. This package owns the value types, defaults, and validation
-// those applications were copying.
+// Applications own files, flags, and persistence. This package owns the value
+// types, defaults, and validation those applications were copying, and
+// Embedder, the standard configuration-file shape for one embedding endpoint,
+// so every application reads the same keys.
 //
 // The types stay separate on purpose. Model, role, and input settings can
 // change vectors or force a rebuild. Batch size and timeouts do not.
