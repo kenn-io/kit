@@ -50,6 +50,7 @@ func TestChunkedBackupRestoreAndPrune(t *testing.T) {
 	second, err := backup.Create(ctx, repo, portableApp{}, backup.CreateOptions{MetadataSource: source, ContentDir: contentDir, Jobs: 1})
 	require.NoError(t, err)
 	assert.Equal(t, manifest.SnapshotID, second.ParentID)
+	assert.Equal(t, int64(len(content)), source.info.Refs[0].Size, "capture backfills unknown sizes in the caller's refs")
 	assert.Equal(t, manifest.Attachments.Recipes, second.Attachments.Recipes)
 	assert.Zero(t, second.BytesAdded, "unchanged chunks and recipes must deduplicate")
 	for _, quick := range []bool{true, false} {

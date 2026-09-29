@@ -25,7 +25,9 @@ const (
 )
 
 // ContentRef identifies one attachment (or thumbnail) content blob by its
-// SHA-256 and size. Size -1 means unknown until read from disk.
+// SHA-256 and size. Size -1 means unknown until read. Unknown-size ContentSource
+// references use the parallel single-blob path, capped at pack.MaxRawLen;
+// sources must declare larger sizes to select chunked capture.
 //
 // StoragePath is the blob's location relative to the attachments directory
 // as recorded in the archive database; importers may namespace it (for
@@ -156,6 +158,7 @@ type captureResult struct {
 	prepared   *pack.PreparedBlob
 	compressed bool
 	known      bool
+	chunked    bool
 	err        error
 }
 
@@ -219,6 +222,9 @@ func (g *byteGate) stop() {
 // match a serial capture exactly. Blobs already stored in the repository are
 // detected before compression and skip it entirely, keeping the no-change
 // incremental case cheap.
+// Chunked files are streamed by the collector, one at a time, while the
+// same worker pool prepares ordinary files. Directory refs use their stat
+// sizes to select chunking even when the caller does not know their size.
 //
 // attachmentsDir is ignored entirely when opts.Source is non-nil; content is
 // read through the source instead.
@@ -228,26 +234,8 @@ func CaptureAttachments(
 	opts CaptureOptions,
 ) (*AttachmentCapture, error) {
 	out := &AttachmentCapture{Recipes: []string{}}
-	for start := 0; start < len(refs); {
-		end := start
-		for end < len(refs) && refs[end].Size >= 0 && refs[end].Size <= objectChunkBytes {
-			end++
-		}
-		batchOpts := opts
-		if opts.Progress != nil {
-			batchOpts.Progress = func(done, total int, bytes int64) { opts.Progress(start+done, len(refs), bytes) }
-		}
-		if end > start {
-			if err := captureContents(ctx, attachmentsDir, refs[start:end], parentSeen, appender, batchOpts, out); err != nil {
-				return nil, err
-			}
-		} else {
-			if err := captureLargeAttachment(ctx, attachmentsDir, refs[start], parentSeen, appender, batchOpts, out); err != nil {
-				return nil, err
-			}
-			end++
-		}
-		start = end
+	if err := captureContents(ctx, attachmentsDir, refs, parentSeen, appender, opts, out); err != nil {
+		return nil, err
 	}
 	if len(out.NewList) > 0 {
 		data, err := EncodeAttachmentList(out.NewList)
@@ -319,8 +307,8 @@ func captureContents(
 	tokens := make(chan struct{}, inflight)
 	gate := newByteGate(captureMemoryBudget)
 	// weights[i] is written by the dispatcher before index i is dispatched
-	// and read by the collector only after i's result arrives; the channel
-	// sends order those accesses.
+	// and read by workers and the collector after dispatch; the channel sends
+	// order those accesses.
 	weights := make([]int64, len(refs))
 
 	go func() {
@@ -362,7 +350,16 @@ func captureContents(
 	for range workers {
 		wg.Go(func() {
 			for i := range work {
-				if opts.Source != nil {
+				if refs[i].Size < -1 || refs[i].Size > MaxObjectBytes {
+					results <- captureResult{index: i, err: fmt.Errorf("backup: invalid attachment size %d", refs[i].Size)}
+				} else if weights[i] > objectChunkBytes {
+					// The collector streams chunks directly into the appender,
+					// keeping scratch independent of the logical file's size.
+					// Small files continue through this same worker pool.
+					// ponytail: chunked capture stays serial; prepare chunks in
+					// workers if large-file throughput requires it.
+					results <- captureResult{index: i, chunked: true}
+				} else if opts.Source != nil {
 					results <- captureRefFromSource(ctx, opts.Source, refs[i], i, preKnown, level, streaming, scratchDir)
 				} else {
 					results <- captureRef(ctx, root, refs[i], i, preKnown, level, streaming, scratchDir)
@@ -407,6 +404,8 @@ func captureContents(
 			<-tokens
 			if c.err != nil {
 				firstErr = c.err
+			} else if c.chunked {
+				firstErr = captureLargeAttachment(ctx, attachmentsDir, refs, c.index, parentSeen, appender, opts, out)
 			} else {
 				firstErr = recordCapture(ctx, c, refs, parentSeen, appender, opts, out)
 			}

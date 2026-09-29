@@ -258,8 +258,8 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 		manifestMinReader = max(manifestMinReader, auxiliaryManifestVersion)
 	}
 	if len(capture.Recipes) > 0 {
-		manifestVersion = chunkedObjectManifestVersion
-		manifestMinReader = chunkedObjectManifestVersion
+		manifestVersion = max(manifestVersion, chunkedObjectManifestVersion)
+		manifestMinReader = max(manifestMinReader, chunkedObjectManifestVersion)
 	}
 	m := &Manifest{
 		FormatVersion:    manifestVersion,

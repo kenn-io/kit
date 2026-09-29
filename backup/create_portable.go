@@ -123,7 +123,7 @@ func createPortable(
 		manifestVersion = auxiliaryManifestVersion
 	}
 	if metadataRecipe != "" || len(capture.Recipes) > 0 {
-		manifestVersion = chunkedObjectManifestVersion
+		manifestVersion = max(manifestVersion, chunkedObjectManifestVersion)
 	}
 	m := &Manifest{
 		FormatVersion:    manifestVersion,

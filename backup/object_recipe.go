@@ -21,8 +21,7 @@ const (
 	maxRecipeBytes   = 128 << 20
 	// MaxObjectBytes bounds a logical object represented by one bounded recipe.
 	// Individual pack frames remain limited independently by kit/pack.
-	MaxObjectBytes               int64 = objectChunkBytes * maxObjectChunks
-	chunkedObjectManifestVersion       = 5
+	MaxObjectBytes int64 = objectChunkBytes * maxObjectChunks
 )
 
 type objectChunk struct {
@@ -46,18 +45,28 @@ func captureObject(ctx context.Context, source io.Reader, expected int64, expect
 	}
 	digest := sha256.New()
 	recipe := objectRecipe{Version: 1}
-	bufferSize := int64(objectChunkBytes)
+	var buffer []byte
 	if expected >= 0 {
-		bufferSize = min(bufferSize, expected+1)
+		buffer = make([]byte, min(int64(objectChunkBytes), expected+1))
 	}
-	buffer := make([]byte, bufferSize)
 	reader := &captureContextReader{ctx: ctx, reader: source}
 	for {
-		n, err := io.ReadFull(reader, buffer)
+		var n int
+		var err error
+		if buffer == nil {
+			// Grow the first chunk with the source, then reuse its buffer.
+			buffer, err = io.ReadAll(io.LimitReader(reader, objectChunkBytes))
+			n = len(buffer)
+			if err == nil && n < objectChunkBytes {
+				err = io.EOF
+			}
+		} else {
+			n, err = io.ReadFull(reader, buffer)
+		}
 		if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 			return pack.BlobID{}, 0, "", fmt.Errorf("backup: reading logical object: %w", err)
 		}
-		if n > 0 {
+		if n > 0 && len(buffer) > 0 {
 			if len(recipe.Chunks) == maxObjectChunks {
 				return pack.BlobID{}, 0, "", errors.New("backup: logical object exceeds chunk limit")
 			}
@@ -180,7 +189,8 @@ func loadObjectRecipes(ctx context.Context, repo *Repo, known map[pack.BlobID]In
 	return recipes, nil
 }
 
-func captureLargeAttachment(ctx context.Context, directory string, ref ContentRef, parentSeen map[string]bool, appender *PackAppender, opts CaptureOptions, out *AttachmentCapture) error {
+func captureLargeAttachment(ctx context.Context, directory string, refs []ContentRef, index int, parentSeen map[string]bool, appender *PackAppender, opts CaptureOptions, out *AttachmentCapture) error {
+	ref := refs[index]
 	if ref.Size < -1 || ref.Size > MaxObjectBytes {
 		return fmt.Errorf("backup: invalid attachment size %d", ref.Size)
 	}
@@ -229,7 +239,7 @@ func captureLargeAttachment(ctx context.Context, directory string, ref ContentRe
 	if recipe != "" {
 		out.Recipes = append(out.Recipes, recipe)
 	}
-	return recordCapture(ctx, captureResult{index: 0, id: id, size: size, known: true}, []ContentRef{ref}, parentSeen, appender, opts, out)
+	return recordCapture(ctx, captureResult{index: index, id: id, size: size, known: true}, refs, parentSeen, appender, opts, out)
 }
 
 type verifiedObjectStream interface {
@@ -350,12 +360,26 @@ func (s *restoreState) checkObject(id pack.BlobID, size int64) error {
 }
 
 func (s *restoreState) restoreChunkedAttachments(ctx context.Context, directory string, inventory restoreAttachmentInventory, totalBytes int64) error {
+	var staged []stagedFile
+	defer func() { s.removeStagedFiles(staged) }()
 	for _, ref := range inventory.chunked {
 		id, _ := pack.ParseBlobID(ref.Hash)
 		for _, path := range inventory.paths[ref.Hash] {
-			stream, err := openObject(ctx, s.repo, s.known, id, s.recipes, s.app.PackFileExtension())
-			if err != nil {
-				return err
+			var stream io.ReadCloser
+			if len(staged) == 0 {
+				object, err := openObject(ctx, s.repo, s.known, id, s.recipes, s.app.PackFileExtension())
+				if err != nil {
+					return err
+				}
+				stream = object
+			} else {
+				// Copy the verified private file for additional paths instead
+				// of reading and decompressing the backup again.
+				file, err := s.root.Open(staged[0].tmpRel)
+				if err != nil {
+					return err
+				}
+				stream = file
 			}
 			rel := filepath.Join(directory, path)
 			tmp, stageErr := s.stageRootReaderWithOptions(ctx, rel, stream, ref.Size, 0o600, ".restore-", uint64(MaxObjectBytes))
@@ -365,11 +389,14 @@ func (s *restoreState) restoreChunkedAttachments(ctx context.Context, directory 
 				}
 				return err
 			}
-			if err := s.promoteRootFile(tmp, rel); err != nil {
-				_ = s.root.Remove(tmp)
+			staged = append(staged, stagedFile{rel: rel, tmpRel: tmp})
+		}
+		for _, file := range staged {
+			if err := s.promoteRootFile(file.tmpRel, file.rel); err != nil {
 				return err
 			}
 		}
+		staged = staged[:0]
 		s.done++
 		s.doneByte += ref.Size
 		s.progress.emit(ProgressEvent{Stage: ProgressStageAttachments, Done: s.done, Total: int64(len(inventory.refs)), BytesDone: s.doneByte, BytesTotal: totalBytes})
@@ -398,12 +425,26 @@ func (s *verifyState) checkObjectRecipes(m *Manifest) bool {
 		}
 		verdict, checked := s.recipeVerdicts[recipe.recordID]
 		if !checked {
+			// ponytail: recipes verify serially; use the read pool if throughput requires it.
 			stream, openErr := openObject(s.ctx, s.repo, s.known, id, s.recipes, s.app.PackFileExtension())
 			verdict = openErr
 			if openErr == nil {
-				n, readErr := io.Copy(io.Discard, stream)
+				s.drainTotal++
+				var readErr error
+				for readErr == nil {
+					var n int64
+					n, readErr = io.CopyN(io.Discard, stream, objectChunkBytes)
+					s.result.BytesRead += n
+					if n > 0 {
+						s.emitDrainProgressLocked()
+					}
+				}
+				if errors.Is(readErr, io.EOF) {
+					readErr = nil
+				}
 				verdict = errors.Join(readErr, stream.Close())
-				s.result.BytesRead += n
+				s.drainDone++
+				s.emitDrainProgressLocked()
 			}
 			s.recipeVerdicts[recipe.recordID] = verdict
 		}

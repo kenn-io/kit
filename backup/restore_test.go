@@ -436,10 +436,9 @@ func TestLargePlainAttachmentCaptureVerifyRestore(t *testing.T) {
 			recipes, err := loadObjectRecipes(ctx, r, known, first, testPackExt)
 			require.NoError(err)
 			recipe, chunked := recipes[id]
-			if chunked {
-				id, err = pack.ParseBlobID(recipe.Chunks[0].Blob)
-				require.NoError(err)
-			}
+			require.True(chunked, "large attachments must use chunk recipes")
+			id, err = pack.ParseBlobID(recipe.Chunks[0].Blob)
+			require.NoError(err)
 			require.Equal(tc.wantFlag, known[id].Flags&pack.BlobCompressed != 0)
 
 			second, err := Create(ctx, r, newTestApp(), opts)
@@ -448,9 +447,18 @@ func TestLargePlainAttachmentCaptureVerifyRestore(t *testing.T) {
 			require.Less(second.BytesAdded, large.Size,
 				"incremental capture must reuse the verified large content blob")
 
-			verified, err := Verify(ctx, r, newTestApp(), VerifyOptions{SnapshotID: second.SnapshotID, Jobs: 2})
+			sawPartialObjectProgress := false
+			verified, err := Verify(ctx, r, newTestApp(), VerifyOptions{
+				SnapshotID: second.SnapshotID, Jobs: 2,
+				Progress: func(event ProgressEvent) {
+					if event.BytesDone > 0 && event.BytesDone < large.Size {
+						sawPartialObjectProgress = true
+					}
+				},
+			})
 			require.NoError(err)
 			require.Empty(verified.Problems)
+			require.True(sawPartialObjectProgress, "verification must report bytes before a large object finishes")
 
 			target := filepath.Join(t.TempDir(), "large-restore")
 			_, err = Restore(ctx, r, newTestApp(), RestoreOptions{

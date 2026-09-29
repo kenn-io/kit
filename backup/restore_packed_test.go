@@ -67,6 +67,45 @@ func createPackedRestoreFixture(t *testing.T) (*Repo, App, *Manifest, string) {
 	return r, app, m, attachmentsDir
 }
 
+func TestRestorePackedTargetKeepsChunkedContentLoose(t *testing.T) {
+	ctx := t.Context()
+	repo := initTestRepo(t)
+	app := packedExtensionApp{App: newTestApp()}
+	dbPath, contentDir, dataDir, writer := seedBackupFixture(t)
+	large := writeLargeAttachment(t, contentDir, 64<<20+1, true)
+	_, err := writer.ExecContext(ctx,
+		`INSERT INTO blobs (content_hash, storage_path, size, preview_hash, preview_path)
+		 VALUES (?, ?, ?, ?, 'large-copy.bin')`, large.Hash, large.StoragePath, large.Size, large.Hash)
+	require.NoError(t, err)
+	manifest, err := Create(ctx, repo, app, createOpts(dbPath, contentDir, dataDir, t.TempDir()))
+	require.NoError(t, err)
+	require.NotEmpty(t, manifest.Attachments.Recipes)
+	var adopted []packstore.Adoption
+	packed := testPackedTarget{
+		limits: packstore.DefaultLimits(),
+		open: func(context.Context, *sql.DB) (packstore.RestoreCatalog, error) {
+			return restoreCatalogFunc(func(_ context.Context, _ []packstore.PackRecord, entries []packstore.Adoption) error {
+				adopted = entries
+				return nil
+			}), nil
+		},
+	}
+	target := filepath.Join(t.TempDir(), "restore")
+	result, err := Restore(ctx, repo, app, RestoreOptions{TargetDir: target, PackedContent: packed})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), result.LooseAttachmentBlobs)
+	assert.Equal(t, manifest.Attachments.Blobs-1, result.PackedAttachmentBlobs)
+	require.NotEmpty(t, adopted, "small attachments must still be adopted into managed packs")
+	for _, entry := range adopted {
+		assert.NotContains(t, entry.OriginalHashes, large.Hash)
+	}
+	for _, rel := range []string{large.StoragePath, "large-copy.bin"} {
+		size, hash := hashFileStream(t, filepath.Join(target, "content", rel))
+		assert.Equal(t, large.Size, size)
+		assert.Equal(t, large.Hash, hash)
+	}
+}
+
 func TestRestoreWithoutPackedTargetRemainsFullyLoose(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)

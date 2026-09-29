@@ -198,8 +198,8 @@ database remains unpublished.
 
 ## Large Logical Objects
 
-Version-5 snapshots split content and portable metadata larger than 64 MiB into
-ordered chunks of at most 64 MiB. Each chunk is an ordinary hash-addressed pack
+Version-5 snapshots split known-size content and portable metadata larger than
+64 MiB into ordered chunks of at most 64 MiB. Each chunk is an ordinary hash-addressed pack
 entry; pack format v1 and its frame limits are unchanged. Content hashes still
 identify the complete original file.
 
@@ -216,14 +216,23 @@ length. Metadata recipes must match the manifest's whole-object identity and
 length. Snapshots with recipes require reader version 5; older readers refuse
 them. Existing snapshots and small-object encodings remain readable.
 
-Capture reads large objects sequentially with one chunk buffer and checks the
-whole-file hash before publishing a manifest. An unknown-size content source
-uses the same bounded path. Incremental snapshots reuse chunks and recipes by
-hash; each snapshot carries recipes for its current content population.
+Capture reads chunked objects sequentially with one reusable chunk buffer and
+checks the whole-file hash before publishing a manifest. Ordinary files use one
+parallel worker pool for the entire capture. Directory reads use the file's stat
+size to select chunking. Unknown-size `ContentSource` references retain the
+parallel single-blob path and its 4 GiB limit; sources must declare larger sizes.
+Incremental snapshots reuse chunks and recipes by hash; each snapshot carries
+recipes for its current content population.
+
+The first capture in this format writes chunks for large files previously
+stored as single blobs by older snapshots. It cannot reuse those whole-file
+blobs as chunks. Plan for that one-time write and storage cost; older retained
+snapshots continue to reference their original blobs.
 
 Quick verification checks recipe hashes and every referenced chunk's index and
-pack footer. Full verification and restore also verify each chunk's bytes and
-the concatenated object's length and hash through terminal EOF. Prune follows
+pack footer. Full verification reads logical objects serially and reports bytes
+after each 64 MiB read. Full verification and restore verify each chunk's bytes
+and the concatenated object's length and hash through terminal EOF. Prune follows
 recipe references, keeping their chunks reachable. Restore rebuilds chunked
 content as complete loose objects even when small objects restore into managed
 packs. The rebuilt metadata database remains unpublished on verification failure.
