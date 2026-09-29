@@ -29,11 +29,46 @@ type objectChunk struct {
 	Bytes int64  `json:"bytes"`
 }
 
+type objectChunks []objectChunk
+
+// UnmarshalJSON validates entries before retaining them and stops at the count
+// limit. The recipe's byte limit alone does not bound decoded array allocation.
+func (chunks *objectChunks) UnmarshalJSON(raw []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if token != json.Delim('[') {
+		return errors.New("backup: object chunks must be an array")
+	}
+	*chunks = nil
+	for decoder.More() {
+		if len(*chunks) == maxObjectChunks {
+			return errors.New("backup: object recipe exceeds chunk limit")
+		}
+		var chunk objectChunk
+		if err := decoder.Decode(&chunk); err != nil {
+			return err
+		}
+		if chunk.Bytes <= 0 || chunk.Bytes > objectChunkBytes {
+			return errors.New("backup: invalid object chunk size")
+		}
+		if _, err := pack.ParseBlobID(chunk.Blob); err != nil {
+			return fmt.Errorf("backup: object chunk identity: %w", err)
+		}
+		*chunks = append(*chunks, chunk)
+	}
+	_, err = decoder.Token()
+	return err
+}
+
 type objectRecipe struct {
-	Version  int           `json:"version"`
-	Blob     string        `json:"blob"`
-	Bytes    int64         `json:"bytes"`
-	Chunks   []objectChunk `json:"chunks"`
+	Version  int          `json:"version"`
+	Blob     string       `json:"blob"`
+	Bytes    int64        `json:"bytes"`
+	Chunks   objectChunks `json:"chunks"`
 	recordID pack.BlobID
 }
 
@@ -117,10 +152,10 @@ func decodeObjectRecipe(raw []byte) (objectRecipe, error) {
 	if err := decoder.Decode(&recipe); err != nil {
 		return recipe, fmt.Errorf("backup: decoding object recipe: %w", err)
 	}
-	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
 		return recipe, errors.New("backup: trailing object recipe data")
 	}
-	if recipe.Version != 1 || recipe.Bytes <= 0 || recipe.Bytes > MaxObjectBytes || len(recipe.Chunks) < 2 || len(recipe.Chunks) > maxObjectChunks {
+	if recipe.Version != 1 || recipe.Bytes <= 0 || recipe.Bytes > MaxObjectBytes || len(recipe.Chunks) < 2 {
 		return recipe, errors.New("backup: invalid object recipe version, size or chunk count")
 	}
 	if _, err := pack.ParseBlobID(recipe.Blob); err != nil {
@@ -128,12 +163,6 @@ func decodeObjectRecipe(raw []byte) (objectRecipe, error) {
 	}
 	var total int64
 	for _, chunk := range recipe.Chunks {
-		if chunk.Bytes <= 0 || chunk.Bytes > objectChunkBytes {
-			return recipe, errors.New("backup: invalid object chunk size")
-		}
-		if _, err := pack.ParseBlobID(chunk.Blob); err != nil {
-			return recipe, fmt.Errorf("backup: object chunk identity: %w", err)
-		}
 		total += chunk.Bytes
 	}
 	if total != recipe.Bytes {

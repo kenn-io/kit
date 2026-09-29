@@ -216,6 +216,10 @@ length. Metadata recipes must match the manifest's whole-object identity and
 length. Snapshots with recipes require reader version 5; older readers refuse
 them. Existing snapshots and small-object encodings remain readable.
 
+Recipe decoding validates each chunk before retaining it and stops at the
+chunk-count limit. The encoded byte limit alone cannot bound the memory used
+by an array of many short or invalid entries.
+
 Capture reads chunked objects sequentially with one reusable chunk buffer and
 checks the whole-file hash before publishing a manifest. Ordinary files use one
 parallel worker pool for the entire capture. Directory reads use the file's stat
@@ -273,7 +277,11 @@ Every repository file is published atomically: written to `staging/`, fsynced, r
 2. Index object written,
 3. Manifest written **last**.
 
-A crash at any point leaves either a complete snapshot or no snapshot — never a manifest referencing missing data. Data orphaned before the manifest write (sealed packs, an index) is unreferenced garbage: harmless, deduplicated against by later runs, and reclaimable by `Prune`.
+A crash at any point leaves either a complete snapshot or no snapshot, never a
+manifest referencing missing data. A failed capture can leave sealed packs even
+when a source fails whole-file hash or length verification. `Abort` discards only
+the open pack; sealed packs and any index written before the manifest remain
+unreferenced and reclaimable by `Prune`.
 
 ## Locking
 
