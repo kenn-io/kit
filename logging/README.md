@@ -6,6 +6,10 @@ and services.
 It supports:
 
 - `json`, `text`, and TTY-aware `auto` stderr formatting.
+- `gcp` stderr formatting: JSON that Google Cloud Logging parses into
+  severity, message, timestamp, source location, and OpenTelemetry trace and
+  span fields. It only formats output, so it needs no Google Cloud client or
+  credentials. `NewCloudLoggingHandler` builds the same handler directly.
 - `debug`, `info`, `warn` / `warning`, and `error` levels.
 - Optional environment level override with a caller-supplied env var name.
 - Optional JSON file logging with daily paths, size rotation, retained rotated
