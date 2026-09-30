@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"go.kenn.io/kit/secretref"
@@ -29,25 +28,22 @@ func TestRefFileMustBePrivateAndNotALink(t *testing.T) {
 		shared: "file must be private to its owner (mode 0600)",
 		link:   "file must be a regular file owned by the current user",
 	} {
-		got, err := secretref.Ref{File: path}.Resolve()
-		require.NoError(t, err)
-		assert.Empty(t, got.Value)
-		assert.Equal(t, reason, got.Reason)
+		_, err := secretref.Ref{File: path}.Resolve()
+		require.ErrorContains(t, err, reason)
 	}
 }
 
 func TestRefFileRefusesAFIFOWithoutBlocking(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "key.pipe")
 	require.NoError(t, syscall.Mkfifo(path, 0o600))
-	done := make(chan secretref.Secret, 1)
+	done := make(chan error, 1)
 	go func() {
-		secret, _ := secretref.Ref{File: path}.Resolve()
-		done <- secret
+		_, err := secretref.Ref{File: path}.Resolve()
+		done <- err
 	}()
 	select {
-	case got := <-done:
-		assert.Empty(t, got.Value)
-		assert.Equal(t, "file must be a regular file owned by the current user", got.Reason)
+	case err := <-done:
+		require.ErrorContains(t, err, "file must be a regular file owned by the current user")
 	case <-time.After(5 * time.Second):
 		// A blocked open waits for a FIFO writer, kernel state that synctest
 		// cannot observe, so this wait is wall-clock. Open a writer to

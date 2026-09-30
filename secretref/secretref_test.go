@@ -80,9 +80,10 @@ func TestRefResolve(t *testing.T) {
 	absent := filepath.Join(dir, "absent.key")
 
 	tests := []struct {
-		name string
-		ref  secretref.Ref
-		want secretref.Secret
+		name    string
+		ref     secretref.Ref
+		want    secretref.Secret
+		wantErr string
 	}{
 		{name: "unset", ref: secretref.Ref{}, want: secretref.Secret{}},
 		{name: "literal", ref: secretref.Literal("sk-inline"), want: secretref.Secret{Value: "sk-inline", Source: "inline"}},
@@ -91,16 +92,18 @@ func TestRefResolve(t *testing.T) {
 		}},
 		{name: "blank literal", ref: secretref.Literal(" "), want: secretref.Secret{Source: "inline", Reason: "inline value is empty"}},
 		{name: "env", ref: secretref.Ref{Env: "KIT_TEST_SECRET"}, want: secretref.Secret{Value: "from-env", Source: "env:KIT_TEST_SECRET"}},
-		{name: "empty env", ref: secretref.Ref{Env: "KIT_TEST_EMPTY"}, want: secretref.Secret{
-			Source: "env:KIT_TEST_EMPTY", Reason: "env KIT_TEST_EMPTY is unset or empty",
-		}},
+		{name: "empty env", ref: secretref.Ref{Env: "KIT_TEST_EMPTY"}, wantErr: "KIT_TEST_EMPTY"},
 		{name: "file", ref: secretref.Ref{File: keyFile}, want: secretref.Secret{Value: "from-file", Source: "file:" + keyFile}},
-		{name: "missing file", ref: secretref.Ref{File: absent}, want: secretref.Secret{Source: "file:" + absent, Reason: "file is missing"}},
-		{name: "empty file", ref: secretref.Ref{File: emptyFile}, want: secretref.Secret{Source: "file:" + emptyFile, Reason: "file is empty"}},
+		{name: "missing file", ref: secretref.Ref{File: absent}, wantErr: "file is missing"},
+		{name: "empty file", ref: secretref.Ref{File: emptyFile}, wantErr: "file is empty"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			got, err := test.ref.Resolve()
+			if test.wantErr != "" {
+				require.ErrorContains(t, err, test.wantErr)
+				return
+			}
 			require.NoError(t, err)
 			assert.Equal(t, test.want, got)
 		})

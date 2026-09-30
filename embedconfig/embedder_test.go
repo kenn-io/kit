@@ -116,6 +116,11 @@ func TestEmbedderResolvesItsAPIKeyReference(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, secretref.Secret{}, secret, "an endpoint without authentication needs no key")
 
+	t.Setenv("KIT_TEST_EMBED_KEY", "")
+	_, err = embedconfig.Embedder{APIKey: secretref.Ref{Env: "KIT_TEST_EMBED_KEY"}}.ResolveAPIKey()
+	require.ErrorContains(t, err, "embed api_key")
+	require.ErrorContains(t, err, "KIT_TEST_EMBED_KEY")
+
 	invalid := embedconfig.Embedder{
 		BaseURL: "https://api.example.test/v1", Model: "m", Dims: 8,
 		APIKey: secretref.Ref{Env: "EMBED_KEY", File: "~/embed.key"},

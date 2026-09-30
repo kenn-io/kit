@@ -147,10 +147,10 @@ func (r Ref) MarshalTOML() ([]byte, error) {
 	}
 }
 
-// Resolve reads the secret. A source that yields nothing is not an error:
-// Value is empty and Reason says why, so callers can keep running without
-// the secret and report the reason. An unset Ref resolves to an empty
-// Secret. Only a reference that names more than one source is an error.
+// Resolve reads the secret. An unset Ref resolves to an empty Secret.
+// A configured environment or file source that is missing, empty, or
+// unreadable returns an error. A reference naming more than one source
+// also returns an error.
 //
 // A file must be a regular, private file owned by the current user, as
 // safefileio verifies; a symlink or FIFO is refused without blocking.
@@ -167,11 +167,15 @@ func (r Ref) Resolve() (Secret, error) {
 		source := "env:" + name
 		value := os.Getenv(name)
 		if strings.TrimSpace(value) == "" {
-			return Secret{Source: source, Reason: "env " + name + " is unset or empty"}, nil
+			return Secret{}, fmt.Errorf("secretref: env %q is unset or empty", name)
 		}
 		return Secret{Value: value, Source: source}, nil
 	case r.File != "":
-		return resolveFile(strings.TrimSpace(r.File)), nil
+		secret := resolveFile(strings.TrimSpace(r.File))
+		if secret.Reason != "" {
+			return Secret{}, fmt.Errorf("secretref: %s: %s", secret.Source, secret.Reason)
+		}
+		return secret, nil
 	default:
 		if strings.TrimSpace(r.Value) == "" {
 			return Secret{Source: "inline", Reason: "inline value is empty"}, nil

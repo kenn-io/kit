@@ -121,10 +121,9 @@ func (e Embedder) Parts() (Parts, error) {
 	return Parts{Model: model, Roles: roles, Deployment: deployment, Batch: batch, Transport: transport}, nil
 }
 
-// ResolveAPIKey reads the API key. A source that yields no key is not an
-// error: the Secret's Reason says why, so an application can keep running
-// without the provider and report it. An unset key resolves to an empty
-// Secret. Only a key that names more than one source is an error.
+// ResolveAPIKey reads the API key. An unset key resolves to an empty Secret.
+// A configured environment or file source that cannot provide a key
+// returns an error.
 func (e Embedder) ResolveAPIKey() (secretref.Secret, error) {
 	secret, err := e.APIKey.Resolve()
 	if err != nil {

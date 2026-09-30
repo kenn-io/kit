@@ -14,8 +14,9 @@
   import a TOML library here.
 - A table names exactly one source. More than one, or an unknown field, is an
   error.
-- A source that yields nothing is not an error. `Resolve` returns an empty
-  `Value` and a `Reason`, so a caller can keep running without the secret.
+- An unset reference resolves successfully without a secret. A configured
+  environment or file source that is missing, empty, or unreadable is an
+  error. Callers decide whether to keep running without the provider.
 - `Source` and `Reason` never contain the secret. They may name the variable
   or the configured path.
 - Files open through `safefileio.OpenCurrentUserFile` and must pass
