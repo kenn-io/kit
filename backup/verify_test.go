@@ -77,6 +77,83 @@ func TestVerifyCleanRepo(t *testing.T) {
 	}
 }
 
+func TestVerifyContinuesAfterBadObjectRecipe(t *testing.T) {
+	for _, metadata := range []bool{false, true} {
+		name := "sqlite"
+		if metadata {
+			name = "portable"
+		}
+		t.Run(name, func(t *testing.T) {
+			r, m := buildVerifyFixture(t)
+			known, err := r.LoadBlobIndex()
+			require.NoError(t, err)
+			refs, _, err := LoadListRefs(r, known, m.Attachments.Lists, nil, testPackExt)
+			require.NoError(t, err)
+			require.NotEmpty(t, refs)
+
+			appender := NewPackAppender(r, known, pack.DefaultZstdLevel, nil, testPackExt)
+			t.Cleanup(appender.Abort)
+			recipe, _, err := appender.Add([]byte("{"))
+			require.NoError(t, err)
+			tree, err := json.Marshal(ExtrasTree{Entries: []ExtrasEntry{
+				{Path: "../escape", Blob: refs[0].Hash, Size: refs[0].Size},
+			}})
+			require.NoError(t, err)
+			treeID, _, err := appender.Add(tree)
+			require.NoError(t, err)
+			// A recipe-backed logical object has no plain blob in the index.
+			refs[0].Hash = blobID("logical attachment").String()
+			list, err := EncodeAttachmentList(refs)
+			require.NoError(t, err)
+			listID, _, err := appender.Add(list)
+			require.NoError(t, err)
+			_, entries, err := appender.Finish()
+			require.NoError(t, err)
+			_, err = r.WriteIndex(entries)
+			require.NoError(t, err)
+
+			m.FormatVersion, m.MinReaderVersion = chunkedObjectManifestVersion, chunkedObjectManifestVersion
+			m.Attachments.Recipes = []string{recipe.String()}
+			m.Attachments.Lists = []string{listID.String()}
+			m.Extras.Tree = treeID.String()
+			if metadata {
+				m.DB = ManifestDB{}
+				m.Metadata = &ManifestMetadata{
+					Format: "test-v1", Blob: refs[0].Hash, Bytes: refs[0].Size, Recipe: recipe.String(),
+				}
+			}
+			id, err := r.WriteManifest(m)
+			require.NoError(t, err)
+
+			for _, quick := range []bool{true, false} {
+				result, err := Verify(t.Context(), r, newTestApp(), VerifyOptions{SnapshotID: id, Quick: quick})
+				require.NoError(t, err)
+				var details []string
+				for _, problem := range result.Problems {
+					assert.Equal(t, id, problem.SnapshotID)
+					details = append(details, problem.Detail)
+				}
+				joined := strings.Join(details, "\n")
+				assert.Contains(t, joined, "decoding object recipe")
+				assert.Contains(t, joined, "escapes the restore target")
+				assert.NotContains(t, joined, refs[0].Hash, "failed recipes must not produce missing plain-blob errors")
+			}
+
+			before, err := r.LoadBlobIndex()
+			require.NoError(t, err)
+			_, err = Prune(t.Context(), r, newTestApp(), PruneOptions{})
+			require.ErrorContains(t, err, "cannot prune snapshot")
+			require.ErrorContains(t, err, "decoding object recipe")
+			after, err := r.LoadBlobIndex()
+			require.NoError(t, err)
+			assert.Equal(t, before, after)
+			for _, packID := range distinctPackIDs(t, r) {
+				assert.FileExists(t, r.packPath(packID, testPackExt))
+			}
+		})
+	}
+}
+
 func TestVerifySelection(t *testing.T) {
 	require := require.New(t)
 	r, m := buildVerifyFixture(t)

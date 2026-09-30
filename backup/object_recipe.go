@@ -80,24 +80,14 @@ func captureObject(ctx context.Context, source io.Reader, expected int64, expect
 	}
 	digest := sha256.New()
 	recipe := objectRecipe{Version: 1}
-	var buffer []byte
+	bufferSize := int64(objectChunkBytes)
 	if expected >= 0 {
-		buffer = make([]byte, min(int64(objectChunkBytes), expected+1))
+		bufferSize = min(bufferSize, expected+1)
 	}
+	buffer := make([]byte, bufferSize)
 	reader := &captureContextReader{ctx: ctx, reader: source}
 	for {
-		var n int
-		var err error
-		if buffer == nil {
-			// Grow the first chunk with the source, then reuse its buffer.
-			buffer, err = io.ReadAll(io.LimitReader(reader, objectChunkBytes))
-			n = len(buffer)
-			if err == nil && n < objectChunkBytes {
-				err = io.EOF
-			}
-		} else {
-			n, err = io.ReadFull(reader, buffer)
-		}
+		n, err := io.ReadFull(reader, buffer)
 		if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 			return pack.BlobID{}, 0, "", fmt.Errorf("backup: reading logical object: %w", err)
 		}

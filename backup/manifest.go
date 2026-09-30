@@ -234,7 +234,7 @@ func loadManifest(snapshots fs.FS, id string) (*Manifest, error) {
 			id, computed, m.SnapshotID)
 	}
 	if err := validateObjectManifest(&m); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("backup: snapshot %s: %w", id, err)
 	}
 	if err := validatePortableManifest(&m); err != nil {
 		return nil, fmt.Errorf("backup: snapshot %s: %w", id, err)

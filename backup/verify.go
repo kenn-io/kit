@@ -774,9 +774,7 @@ func (s *verifyState) fetcher(snapshotID string) func(pack.BlobID) ([]byte, erro
 // map's blob table, attachment lists and the content blobs they name, and
 // the extras tree and the blobs it names.
 func (s *verifyState) verifySnapshot(m *Manifest) {
-	if !s.checkObjectRecipes(m) {
-		return
-	}
+	recipesOK := s.checkObjectRecipes(m)
 	if m.Metadata == nil {
 		hashMap := s.checkHashMapChain(m)
 
@@ -788,12 +786,12 @@ func (s *verifyState) verifySnapshot(m *Manifest) {
 				s.queuePageRunChecks(m, pageMap, hashMap)
 			}
 		}
-	} else {
+	} else if recipesOK || m.Metadata.Recipe == "" {
 		s.checkPortableMetadata(m)
 	}
 	s.checkAuxiliary(m)
 
-	refs := s.checkAttachmentLists(m)
+	refs := s.checkAttachmentLists(m, recipesOK)
 	if !s.quick {
 		s.checkAttachmentConsistency(m, refs)
 	}
@@ -915,9 +913,9 @@ func (s *verifyState) checkPageMapCoverage(m *Manifest, pm *PageMap) {
 }
 
 // checkAttachmentLists decodes every attachment list blob the manifest names
-// and checks every content blob those lists reference, returning the union
-// of decoded refs for the full-mode consistency check.
-func (s *verifyState) checkAttachmentLists(m *Manifest) []ContentRef {
+// and checks their content when recipes loaded, returning the union of decoded
+// refs for the full-mode consistency check even when content cannot be resolved.
+func (s *verifyState) checkAttachmentLists(m *Manifest, recipesOK bool) []ContentRef {
 	var refs []ContentRef
 	for _, listBlob := range m.Attachments.Lists {
 		id, err := pack.ParseBlobID(listBlob)
@@ -939,6 +937,10 @@ func (s *verifyState) checkAttachmentLists(m *Manifest) []ContentRef {
 			contentID, err := pack.ParseBlobID(ref.Hash)
 			if err != nil {
 				s.problem(m.SnapshotID, fmt.Sprintf("attachment content hash %q: %v", ref.Hash, err))
+				continue
+			}
+			if !recipesOK && len(m.Attachments.Recipes) > 0 {
+				// A failed recipe must not look like a missing plain content blob.
 				continue
 			}
 			if s.checkRecipeSize(contentID, ref.Size, m.SnapshotID) {

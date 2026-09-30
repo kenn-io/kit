@@ -198,10 +198,10 @@ database remains unpublished.
 
 ## Large Logical Objects
 
-Version-5 snapshots split known-size content and portable metadata larger than
-64 MiB into ordered chunks of at most 64 MiB. Each chunk is an ordinary hash-addressed pack
-entry; pack format v1 and its frame limits are unchanged. Content hashes still
-identify the complete original file.
+Version-5 snapshots split new known-size content and portable metadata larger
+than 64 MiB into ordered chunks of at most 64 MiB. Each chunk is an ordinary
+hash-addressed pack entry; pack format v1 and its frame limits are unchanged.
+Content hashes still identify the complete original file.
 
 `attachments.recipes` lists the hashes of content recipe objects. Portable
 metadata uses the optional `metadata.recipe` field. Each recipe is JSON:
@@ -221,17 +221,19 @@ chunk-count limit. The encoded byte limit alone cannot bound the memory used
 by an array of many short or invalid entries.
 
 Capture reads chunked objects sequentially with one reusable chunk buffer and
-checks the whole-file hash before publishing a manifest. Ordinary files use one
-parallel worker pool for the entire capture. Directory reads use the file's stat
-size to select chunking. Unknown-size `ContentSource` references retain the
-parallel single-blob path and its 4 GiB limit; sources must declare larger sizes.
+checks the whole-file hash before publishing a manifest. Chunked files reserve
+one 64 MiB buffer against the capture budget, allowing ordinary file workers to
+continue alongside them. Ordinary files use one parallel worker pool for the
+entire capture. Directory reads use the file's stat size to select chunking.
+Unknown-size `ContentSource` references retain the parallel single-blob path and
+its 4 GiB limit; sources must declare larger sizes.
 Incremental snapshots reuse chunks and recipes by hash; each snapshot carries
 recipes for its current content population.
 
-The first capture in this format writes chunks for large files previously
-stored as single blobs by older snapshots. It cannot reuse those whole-file
-blobs as chunks. Plan for that one-time write and storage cost; older retained
-snapshots continue to reference their original blobs.
+Existing whole content blobs within the 4 GiB frame limit are reused after
+verifying the source again. They do not acquire recipes or force a snapshot to
+require reader version 5. A snapshot may contain both whole blobs and chunked
+objects; only objects with recipes use chunk reconstruction.
 
 Quick verification checks recipe hashes and every referenced chunk's index and
 pack footer. Full verification reads logical objects serially and reports bytes
