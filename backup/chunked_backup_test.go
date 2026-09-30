@@ -53,6 +53,23 @@ func TestChunkedBackupRestoreAndPrune(t *testing.T) {
 	assert.Equal(t, int64(len(content)), source.info.Refs[0].Size, "capture backfills unknown sizes in the caller's refs")
 	assert.Equal(t, manifest.Attachments.Recipes, second.Attachments.Recipes)
 	assert.Zero(t, second.BytesAdded, "unchanged chunks and recipes must deduplicate")
+	source.info.Refs[0].Size = -1
+	contentSource := &fakeContentSource{blobs: map[string][]byte{hash: content}}
+	third, err := backup.Create(ctx, repo, portableApp{}, backup.CreateOptions{
+		MetadataSource: source, ContentSource: contentSource, Jobs: 1,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, second.SnapshotID, third.ParentID)
+	assert.Equal(t, manifest.Attachments.Recipes, third.Attachments.Recipes)
+	assert.Zero(t, third.BytesAdded, "unknown source sizes must preserve chunk deduplication")
+	assert.Equal(t, int64(len(content)), source.info.Refs[0].Size)
+
+	source.info.Refs[0].Size = -1
+	contentSource.blobs[hash] = []byte("changed content")
+	_, err = backup.Create(ctx, repo, portableApp{}, backup.CreateOptions{
+		MetadataSource: source, ContentSource: contentSource, Jobs: 1,
+	})
+	require.ErrorContains(t, err, "does not match its hash", "recorded sizes must not bypass source verification")
 	for _, quick := range []bool{true, false} {
 		result, err := backup.Verify(ctx, repo, portableApp{}, backup.VerifyOptions{Quick: quick, All: true})
 		require.NoError(t, err)
@@ -63,7 +80,7 @@ func TestChunkedBackupRestoreAndPrune(t *testing.T) {
 	require.NoError(t, err)
 	target := filepath.Join(base, "restored")
 	result, err := backup.Restore(ctx, repo, portableApp{}, backup.RestoreOptions{
-		SnapshotID: manifest.SnapshotID, TargetDir: target, MetadataRestorer: portableRestorer{},
+		SnapshotID: third.SnapshotID, TargetDir: target, MetadataRestorer: portableRestorer{},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, int64(len(content)), result.AttachmentBytes)

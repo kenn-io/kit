@@ -225,8 +225,9 @@ checks the whole-file hash before publishing a manifest. Chunked files reserve
 one 64 MiB buffer against the capture budget, allowing ordinary file workers to
 continue alongside them. Ordinary files use one parallel worker pool for the
 entire capture. Directory reads use the file's stat size to select chunking.
-Unknown-size `ContentSource` references retain the parallel single-blob path and
-its 4 GiB limit; sources must declare larger sizes.
+Unknown-size `ContentSource` references reuse their recorded sizes from the
+parent snapshot when available. Otherwise they retain the parallel single-blob
+path and its 4 GiB limit; sources must declare larger sizes on first capture.
 Incremental snapshots reuse chunks and recipes by hash; each snapshot carries
 recipes for its current content population.
 

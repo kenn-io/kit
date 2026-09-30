@@ -28,10 +28,26 @@ func captureSnapshotFiles(
 	parentSeen := map[string]bool{}
 	if parent != nil {
 		var err error
-		_, parentSeen, err = LoadListRefs(
+		var parentRefs []ContentRef
+		parentRefs, parentSeen, err = LoadListRefs(
 			r, known, parent.Attachments.Lists, nil, app.PackFileExtension())
 		if err != nil {
 			return nil, nil, pack.BlobID{}, false, err
+		}
+		if opts.ContentSource != nil {
+			// Reuse recorded sizes to keep unchanged chunked objects on the
+			// same capture path. Capture still reads and verifies their bytes.
+			sizes := make(map[string]int64, len(parentRefs))
+			for _, ref := range parentRefs {
+				sizes[ref.Hash] = ref.Size
+			}
+			for i := range info.Refs {
+				if info.Refs[i].Size == -1 {
+					if size, ok := sizes[info.Refs[i].Hash]; ok {
+						info.Refs[i].Size = size
+					}
+				}
+			}
 		}
 	}
 	// Inherit lists only while the parent union remains a subset of the
