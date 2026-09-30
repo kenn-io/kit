@@ -137,6 +137,9 @@ func (r *Ref) UnmarshalJSON(data []byte) error {
 
 // MarshalTOML encodes the reference in the form the decoders read.
 func (r Ref) MarshalTOML() ([]byte, error) {
+	if err := r.Validate(); err != nil {
+		return nil, err
+	}
 	switch {
 	case r.Env != "":
 		return []byte("{ env = " + quote(r.Env) + " }"), nil

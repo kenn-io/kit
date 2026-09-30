@@ -66,7 +66,15 @@ func TestRefRejectsAmbiguousOrUnknownSources(t *testing.T) {
 	var decoded document
 	require.Error(t, json.Unmarshal([]byte(`{"key":{"env":"A","file":"~/a.key"}}`), &decoded))
 	require.Error(t, json.Unmarshal([]byte(`{"key":{"vault":"app/key"}}`), &decoded))
-	require.Error(t, secretref.Ref{Env: "A", File: "~/a.key"}.Validate())
+	for _, ref := range []secretref.Ref{
+		{Value: "sk", Env: "A"},
+		{Value: "sk", File: "~/a.key"},
+		{Env: "A", File: "~/a.key"},
+	} {
+		require.Error(t, ref.Validate())
+		_, err := ref.MarshalTOML()
+		require.Error(t, err)
+	}
 }
 
 func TestRefResolve(t *testing.T) {
