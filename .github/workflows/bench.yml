@@ -24,7 +24,7 @@ env:
 jobs:
   benchmark:
     name: Streaming benchmark regression gate
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-8cpu
     timeout-minutes: 25
 
     steps:

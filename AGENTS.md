@@ -86,6 +86,13 @@ provider workflows to this repo unless the package already owns that concern.
 - Tests must not depend on the user's git config, global credentials, real
   repositories, home directory state, or live provider availability.
 
+## CI runners
+
+Public CI profiles use Namespace's
+[Restricted access level](https://namespace.so/docs/solutions/github-actions/runner-controls/access-levels),
+which disables workload access to Namespace features and APIs. GitHub fork
+approvals, token permissions, and secrets are separate controls.
+
 ## Git Workflow
 
 - Do not change branches unless the user explicitly asks.
