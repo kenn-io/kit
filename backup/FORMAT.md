@@ -173,7 +173,7 @@ supported platform.
 
 ## Auxiliary Artifacts
 
-A version-4 snapshot may carry a bounded, name-sorted list of
+A version-4 or newer snapshot may carry a bounded, name-sorted list of
 application-defined artifacts alongside either metadata representation. Each
 manifest entry records a canonical name, an opaque format identifier, byte
 length, blob identity, and SHA-256 digest. The artifact bytes use the same
@@ -195,6 +195,55 @@ bounded context independent of caller cancellation. `Commit` runs only after
 the restored target is published, synced, and released from restore
 coordination. A missing target or staging error fails while the restored
 database remains unpublished.
+
+## Large Logical Objects
+
+Version-5 snapshots split new known-size content and portable metadata larger
+than 64 MiB into ordered chunks of at most 64 MiB. Each chunk is an ordinary
+hash-addressed pack entry; pack format v1 and its frame limits are unchanged.
+Content hashes still identify the complete original file.
+
+`attachments.recipes` lists the hashes of content recipe objects. Portable
+metadata uses the optional `metadata.recipe` field. Each recipe is JSON:
+
+```json
+{"version":1,"blob":"<whole-object-sha256>","bytes":67108865,"chunks":[{"blob":"<chunk-sha256>","bytes":67108864},{"blob":"<chunk-sha256>","bytes":1}]}
+```
+
+A recipe has at most 1,048,576 chunks and 128 MiB of encoded metadata, bounding a
+logical object at 64 TiB. Chunk lengths must be positive and sum to the object
+length. Metadata recipes must match the manifest's whole-object identity and
+length. Snapshots with recipes require reader version 5; older readers refuse
+them. Existing snapshots and small-object encodings remain readable.
+
+Recipe decoding validates each chunk before retaining it and stops at the
+chunk-count limit. The encoded byte limit alone cannot bound the memory used
+by an array of many short or invalid entries.
+
+Capture reads chunked objects sequentially with one reusable chunk buffer and
+checks the whole-file hash before publishing a manifest. Chunked files reserve
+one 64 MiB buffer against the capture budget, allowing ordinary file workers to
+continue alongside them. Ordinary files use one parallel worker pool for the
+entire capture. Directory reads use the file's stat size to select chunking.
+Unknown-size `ContentSource` references reuse their recorded sizes from the
+parent snapshot when available. Otherwise they retain the parallel single-blob
+path and its 4 GiB limit; sources must declare larger sizes on first capture.
+Incremental snapshots reuse chunks and recipes by hash; each snapshot carries
+recipes for its current content population.
+
+Existing whole content blobs within the 4 GiB frame limit are reused after
+verifying the source again. They do not acquire recipes or force a snapshot to
+require reader version 5. A snapshot may contain both whole blobs and chunked
+objects; only objects with recipes use chunk reconstruction.
+
+Quick verification checks recipe hashes and every referenced chunk's index and
+pack footer. Full verification reads logical objects serially and reports bytes
+after each 64 MiB read. Full verification and restore verify each chunk's bytes
+and the concatenated object's length and hash through terminal EOF. Prune follows
+recipe references, keeping their chunks reachable. Restore rebuilds chunked
+content as complete loose objects even when small objects restore into managed
+packs. The rebuilt metadata database remains unpublished on verification failure.
+Auxiliary artifacts and operational extras retain their separate size limits.
 
 ## Attachment Lists (magic `MVAL`)
 
@@ -231,7 +280,11 @@ Every repository file is published atomically: written to `staging/`, fsynced, r
 2. Index object written,
 3. Manifest written **last**.
 
-A crash at any point leaves either a complete snapshot or no snapshot — never a manifest referencing missing data. Data orphaned before the manifest write (sealed packs, an index) is unreferenced garbage: harmless, deduplicated against by later runs, and reclaimable by `Prune`.
+A crash at any point leaves either a complete snapshot or no snapshot, never a
+manifest referencing missing data. A failed capture can leave sealed packs even
+when a source fails whole-file hash or length verification. `Abort` discards only
+the open pack; sealed packs and any index written before the manifest remain
+unreferenced and reclaimable by `Prune`.
 
 ## Locking
 

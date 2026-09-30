@@ -88,8 +88,8 @@ func createPortable(
 		}
 	}()
 
-	metadataID, metadataBytes, err := preparePortableMetadata(
-		ctx, r, snapshot, opts, appender, pr)
+	metadataID, metadataBytes, metadataRecipe, err := preparePortableMetadata(
+		ctx, snapshot, appender, pr)
 	if err != nil {
 		return nil, err
 	}
@@ -122,6 +122,9 @@ func createPortable(
 	if len(manifestAuxiliary) > 0 {
 		manifestVersion = auxiliaryManifestVersion
 	}
+	if metadataRecipe != "" || len(capture.Recipes) > 0 {
+		manifestVersion = max(manifestVersion, chunkedObjectManifestVersion)
+	}
 	m := &Manifest{
 		FormatVersion:    manifestVersion,
 		MinReaderVersion: manifestVersion,
@@ -133,11 +136,11 @@ func createPortable(
 			ZstdLevel:     opts.ZstdLevel,
 			Tag:           opts.Tag,
 		},
-		Metadata:  &ManifestMetadata{Format: format, Blob: metadataID.String(), Bytes: metadataBytes},
+		Metadata:  &ManifestMetadata{Format: format, Blob: metadataID.String(), Bytes: metadataBytes, Recipe: metadataRecipe},
 		Auxiliary: manifestAuxiliary,
 		Attachments: ManifestAttachments{
 			Layout: []string{"loose"}, Rows: info.Rows, Blobs: capture.Blobs,
-			BlobBytes: capture.BlobBytes, Recipes: []string{}, Lists: lists,
+			BlobBytes: capture.BlobBytes, Recipes: capture.Recipes, Lists: lists,
 		},
 		Excluded: app.ExcludedPaths(), Stats: statsRaw,
 		NewPacks: sealed.newPacks, NewIndex: sealed.newIndex,

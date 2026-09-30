@@ -25,7 +25,9 @@ const (
 )
 
 // ContentRef identifies one attachment (or thumbnail) content blob by its
-// SHA-256 and size. Size -1 means unknown until read from disk.
+// SHA-256 and size. Size -1 means unknown until read. Unknown-size ContentSource
+// references use the parallel single-blob path, capped at pack.MaxRawLen;
+// sources must declare larger sizes to select chunked capture.
 //
 // StoragePath is the blob's location relative to the attachments directory
 // as recorded in the archive database; importers may namespace it (for
@@ -105,6 +107,7 @@ func DecodeAttachmentList(data []byte) ([]ContentRef, error) {
 
 // AttachmentCapture reports one snapshot's attachment capture results.
 type AttachmentCapture struct {
+	Recipes     []string
 	NewList     []ContentRef
 	NewListBlob pack.BlobID
 	HasNewList  bool
@@ -155,14 +158,14 @@ type captureResult struct {
 	prepared   *pack.PreparedBlob
 	compressed bool
 	known      bool
+	chunked    bool
 	err        error
 }
 
-// captureMemoryBudget bounds the declared attachment bytes admitted into the
-// capture pipeline at once. For plain packs it paces concurrent source and
-// preparation scratch work; encrypted v1 still holds whole authenticated
-// frames, so it also remains a heap admission limit there. A var so tests can
-// shrink it.
+// captureMemoryBudget paces concurrent source and preparation scratch work.
+// Chunked objects reserve one chunk buffer; ordinary objects reserve their
+// declared size (also bounding whole-frame encrypted-v1 heap). A var so tests
+// can shrink it.
 var captureMemoryBudget int64 = 1 << 30
 
 // byteGate admits work under a byte budget. A request larger than the whole
@@ -218,6 +221,9 @@ func (g *byteGate) stop() {
 // match a serial capture exactly. Blobs already stored in the repository are
 // detected before compression and skip it entirely, keeping the no-change
 // incremental case cheap.
+// Chunked files are streamed by the collector, one at a time, while the
+// same worker pool prepares ordinary files. Directory refs use their stat
+// sizes to select chunking even when the caller does not know their size.
 //
 // attachmentsDir is ignored entirely when opts.Source is non-nil; content is
 // read through the source instead.
@@ -226,7 +232,7 @@ func CaptureAttachments(
 	attachmentsDir string, refs []ContentRef, parentSeen map[string]bool, appender *PackAppender,
 	opts CaptureOptions,
 ) (*AttachmentCapture, error) {
-	out := &AttachmentCapture{}
+	out := &AttachmentCapture{Recipes: []string{}}
 	if err := captureContents(ctx, attachmentsDir, refs, parentSeen, appender, opts, out); err != nil {
 		return nil, err
 	}
@@ -289,8 +295,8 @@ func captureContents(
 	scratchDir := appender.repo.Path(stagingDirName)
 
 	// inflight bounds dispatched-but-unrecorded refs; the byte gate below
-	// additionally bounds their cumulative declared size, since a count bound
-	// alone allows excessive concurrent scratch work (and encrypted-v1 heap).
+	// additionally bounds their cumulative scratch or chunk-buffer budget,
+	// since a count bound alone allows excessive concurrent scratch work.
 	// results has the same capacity as tokens, so workers never block
 	// on a stalled collector.
 	inflight := workers + 2
@@ -299,10 +305,10 @@ func captureContents(
 	results := make(chan captureResult, inflight)
 	tokens := make(chan struct{}, inflight)
 	gate := newByteGate(captureMemoryBudget)
-	// weights[i] is written by the dispatcher before index i is dispatched
-	// and read by the collector only after i's result arrives; the channel
-	// sends order those accesses.
+	// The dispatcher records routing and budget before dispatch; channel sends
+	// order the workers' and collector's reads of these slices.
 	weights := make([]int64, len(refs))
+	chunked := make([]bool, len(refs))
 
 	go func() {
 		defer close(work)
@@ -317,6 +323,18 @@ func captureContents(
 				}
 				// A stat failure dispatches at weight zero; captureRef
 				// reports the real error at the right position.
+			}
+			chunked[i] = weights[i] > objectChunkBytes
+			if chunked[i] && weights[i] <= maxCaptureRawLen {
+				id, err := parseCanonicalCaptureID(refs[i].Hash)
+				if _, known := preKnown[id]; err == nil && known {
+					// Reverify an existing whole blob through the ordinary path.
+					// Re-encoding it as chunks would duplicate retained content.
+					chunked[i] = false
+				}
+			}
+			if chunked[i] {
+				weights[i] = objectChunkBytes
 			}
 			gate.acquire(weights[i])
 			select {
@@ -343,7 +361,16 @@ func captureContents(
 	for range workers {
 		wg.Go(func() {
 			for i := range work {
-				if opts.Source != nil {
+				if refs[i].Size < -1 || refs[i].Size > MaxObjectBytes {
+					results <- captureResult{index: i, err: fmt.Errorf("backup: invalid attachment size %d", refs[i].Size)}
+				} else if chunked[i] {
+					// The collector streams chunks directly into the appender,
+					// keeping scratch independent of the logical file's size.
+					// Small files continue through this same worker pool.
+					// ponytail: chunked capture stays serial; prepare chunks in
+					// workers if large-file throughput requires it.
+					results <- captureResult{index: i, chunked: true}
+				} else if opts.Source != nil {
 					results <- captureRefFromSource(ctx, opts.Source, refs[i], i, preKnown, level, streaming, scratchDir)
 				} else {
 					results <- captureRef(ctx, root, refs[i], i, preKnown, level, streaming, scratchDir)
@@ -388,6 +415,8 @@ func captureContents(
 			<-tokens
 			if c.err != nil {
 				firstErr = c.err
+			} else if c.chunked {
+				firstErr = captureLargeAttachment(ctx, root, refs, c.index, parentSeen, appender, opts, out)
 			} else {
 				firstErr = recordCapture(ctx, c, refs, parentSeen, appender, opts, out)
 			}

@@ -196,6 +196,52 @@ func TestLoadManifestRejectsNewerMinReaderVersion(t *testing.T) {
 	require.ErrorContains(err, "upgrade the reader")
 }
 
+func TestManifestRejectsObjectRecipesBeforeVersion5(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		format    int
+		minReader int
+		metadata  bool
+	}{
+		{name: "attachments format", format: 4, minReader: 5},
+		{name: "attachments reader", format: 5, minReader: 4},
+		{name: "metadata format", format: 4, minReader: 5, metadata: true},
+		{name: "metadata reader", format: 5, minReader: 4, metadata: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := initTestRepo(t)
+			created := time.Date(2026, 7, 3, 12, 30, 15, 0, time.UTC)
+			m := testManifest(created.Format(time.RFC3339), "", 0)
+			m.FormatVersion = tc.format
+			m.MinReaderVersion = tc.minReader
+			recipe := blobID("object recipe").String()
+			if tc.metadata {
+				m.DB = ManifestDB{}
+				m.Metadata = &ManifestMetadata{
+					Format: "test-json-v1", Blob: blobID("metadata").String(), Recipe: recipe,
+				}
+			} else {
+				m.Attachments.Recipes = []string{recipe}
+			}
+
+			_, err := repo.WriteManifest(m)
+			require.ErrorContains(t, err, "object recipes require manifest and reader version 5")
+
+			// Bypass the writer with a correctly hashed fixture so loading reaches
+			// the version gate instead of failing the content-derived ID check.
+			m.SnapshotID, err = ComputeSnapshotID(created, m)
+			require.NoError(t, err)
+			data, err := json.Marshal(m)
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(repo.Path(snapshotsDirName, m.SnapshotID+manifestExt), data, 0o600))
+
+			_, err = repo.LoadManifest(m.SnapshotID)
+			require.ErrorContains(t, err, "object recipes require manifest and reader version 5")
+			assert.ErrorContains(t, err, "snapshot "+m.SnapshotID+":")
+		})
+	}
+}
+
 // TestLoadManifestRejectsCorruptedOrRenamedManifest pins LoadManifest's
 // content-derived ID recomputation: a manifest whose body was edited after
 // writing, or a valid manifest served under a different snapshot ID, must be

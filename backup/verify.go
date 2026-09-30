@@ -199,23 +199,25 @@ var maxOpenPackReaders = 64
 // readVerdict, readerErrs, contentReads, progress emission); the serial
 // phases run alone and need no locking.
 type verifyState struct {
-	ctx          context.Context
-	app          App
-	repo         *Repo
-	known        map[pack.BlobID]IndexEntry
-	quick        bool
-	jobs         int
-	readers      map[string]*pack.Reader
-	readerOrder  []string // LRU order, least-recently-used first
-	readerErrs   map[string]error
-	checked      map[pack.BlobID]bool
-	readDone     map[pack.BlobID]bool
-	readVerdict  map[pack.BlobID]string // "" ok, else the cached problem detail
-	readLen      map[pack.BlobID]int64  // actual content length of cleanly read blobs
-	contentReads int
-	result       *VerifyResult
-	progress     *progressEmitter
-	mu           sync.Mutex
+	recipes        map[pack.BlobID]objectRecipe
+	recipeVerdicts map[pack.BlobID]error
+	ctx            context.Context
+	app            App
+	repo           *Repo
+	known          map[pack.BlobID]IndexEntry
+	quick          bool
+	jobs           int
+	readers        map[string]*pack.Reader
+	readerOrder    []string // LRU order, least-recently-used first
+	readerErrs     map[string]error
+	checked        map[pack.BlobID]bool
+	readDone       map[pack.BlobID]bool
+	readVerdict    map[pack.BlobID]string // "" ok, else the cached problem detail
+	readLen        map[pack.BlobID]int64  // actual content length of cleanly read blobs
+	contentReads   int
+	result         *VerifyResult
+	progress       *progressEmitter
+	mu             sync.Mutex
 	// pendingReads/pendingSet queue the current snapshot's content blobs for
 	// the drain; pendingSet dedupes repeat references within one snapshot.
 	pendingReads []pendingRead
@@ -772,6 +774,7 @@ func (s *verifyState) fetcher(snapshotID string) func(pack.BlobID) ([]byte, erro
 // map's blob table, attachment lists and the content blobs they name, and
 // the extras tree and the blobs it names.
 func (s *verifyState) verifySnapshot(m *Manifest) {
+	recipesOK := s.checkObjectRecipes(m)
 	if m.Metadata == nil {
 		hashMap := s.checkHashMapChain(m)
 
@@ -783,12 +786,12 @@ func (s *verifyState) verifySnapshot(m *Manifest) {
 				s.queuePageRunChecks(m, pageMap, hashMap)
 			}
 		}
-	} else {
+	} else if recipesOK || m.Metadata.Recipe == "" {
 		s.checkPortableMetadata(m)
 	}
 	s.checkAuxiliary(m)
 
-	refs := s.checkAttachmentLists(m)
+	refs := s.checkAttachmentLists(m, recipesOK)
 	if !s.quick {
 		s.checkAttachmentConsistency(m, refs)
 	}
@@ -823,6 +826,9 @@ func (s *verifyState) checkPortableMetadata(m *Manifest) {
 	id, err := pack.ParseBlobID(m.Metadata.Blob)
 	if err != nil {
 		s.problem(m.SnapshotID, fmt.Sprintf("portable metadata blob id %q: %v", m.Metadata.Blob, err))
+		return
+	}
+	if s.checkRecipeSize(id, m.Metadata.Bytes, m.SnapshotID) {
 		return
 	}
 	s.verifyContentBlob(id, m.SnapshotID)
@@ -907,9 +913,9 @@ func (s *verifyState) checkPageMapCoverage(m *Manifest, pm *PageMap) {
 }
 
 // checkAttachmentLists decodes every attachment list blob the manifest names
-// and checks every content blob those lists reference, returning the union
-// of decoded refs for the full-mode consistency check.
-func (s *verifyState) checkAttachmentLists(m *Manifest) []ContentRef {
+// and checks their content when recipes loaded, returning the union of decoded
+// refs for the full-mode consistency check even when content cannot be resolved.
+func (s *verifyState) checkAttachmentLists(m *Manifest, recipesOK bool) []ContentRef {
 	var refs []ContentRef
 	for _, listBlob := range m.Attachments.Lists {
 		id, err := pack.ParseBlobID(listBlob)
@@ -931,6 +937,13 @@ func (s *verifyState) checkAttachmentLists(m *Manifest) []ContentRef {
 			contentID, err := pack.ParseBlobID(ref.Hash)
 			if err != nil {
 				s.problem(m.SnapshotID, fmt.Sprintf("attachment content hash %q: %v", ref.Hash, err))
+				continue
+			}
+			if !recipesOK && len(m.Attachments.Recipes) > 0 {
+				// A failed recipe must not look like a missing plain content blob.
+				continue
+			}
+			if s.checkRecipeSize(contentID, ref.Size, m.SnapshotID) {
 				continue
 			}
 			s.verifyContentBlob(contentID, m.SnapshotID)

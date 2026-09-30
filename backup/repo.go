@@ -13,8 +13,9 @@
 // and are not exposed as verified-prefix streams.
 //
 // Existing Create, Verify, and Restore callers receive the plain-content
-// streaming implementation without changing repository format or application
-// adapters. Repo.OpenBlob is available to sequential consumers; bytes from it
+// streaming implementation without changing application adapters. Snapshots
+// containing large logical objects use version-5 chunk recipes. Repo.OpenBlob
+// is available to sequential consumers; bytes from it
 // become authoritative only after terminal EOF or a successful Verify, and an
 // early Close reports incomplete verification. Capture preparation trades
 // object-sized heap for private repository scratch, so callers must provision
@@ -58,7 +59,7 @@ const (
 	// release may read formats newer than the one it writes, or vice versa.
 	// Repo.Open and LoadManifest refuse anything whose min_reader_version
 	// exceeds this.
-	SupportedReaderVersion = 4
+	SupportedReaderVersion = 5
 
 	// dbPathManifestVersion marks snapshots whose attachment population
 	// records storage paths beyond the canonical loose "<aa>/<hash>"
@@ -75,6 +76,8 @@ const (
 	// auxiliaryManifestVersion marks snapshots carrying application-defined
 	// auxiliary artifacts alongside logical metadata and content.
 	auxiliaryManifestVersion = 4
+	// chunkedObjectManifestVersion marks snapshots with logical-object recipes.
+	chunkedObjectManifestVersion = 5
 
 	repoConfigName   = "config.toml"
 	snapshotsDirName = "snapshots"

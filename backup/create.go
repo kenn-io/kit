@@ -257,6 +257,10 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 		manifestVersion = max(manifestVersion, auxiliaryManifestVersion)
 		manifestMinReader = max(manifestMinReader, auxiliaryManifestVersion)
 	}
+	if len(capture.Recipes) > 0 {
+		manifestVersion = max(manifestVersion, chunkedObjectManifestVersion)
+		manifestMinReader = max(manifestMinReader, chunkedObjectManifestVersion)
+	}
 	m := &Manifest{
 		FormatVersion:    manifestVersion,
 		MinReaderVersion: manifestMinReader,
@@ -282,7 +286,7 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 			Rows:      info.Rows,
 			Blobs:     capture.Blobs,
 			BlobBytes: capture.BlobBytes,
-			Recipes:   []string{},
+			Recipes:   capture.Recipes,
 			Lists:     lists,
 		},
 		Excluded:        app.ExcludedPaths(),

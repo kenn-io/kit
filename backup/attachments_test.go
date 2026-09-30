@@ -2,11 +2,14 @@ package backup
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -424,6 +427,63 @@ func TestCaptureAttachmentsRefusesSymlinkEscape(t *testing.T) {
 		t.Context(), dir, []ContentRef{ref}, map[string]bool{}, appender, CaptureOptions{})
 	require.ErrorContains(err, "reading attachment",
 		"capture must refuse a symlinked attachment escaping the attachments dir")
+}
+
+func TestCaptureLargeAttachmentKeepsOpenedRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not allow renaming an open root directory")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	repo := initTestRepo(t)
+	base := t.TempDir()
+	dir := filepath.Join(base, "content")
+	replacement := filepath.Join(base, "replacement")
+	small := writeLooseAttachment(t, dir, []byte("first attachment"))
+	large := writeLargeAttachment(t, dir, 64<<20+1, true)
+	outside := writeLargeAttachment(t, replacement, large.Size, false)
+	require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(replacement, large.StoragePath)), 0o700))
+	require.NoError(t, os.Rename(filepath.Join(replacement, outside.StoragePath), filepath.Join(replacement, large.StoragePath)))
+	known := map[pack.BlobID]IndexEntry{}
+	appender := NewPackAppender(repo, known, pack.DefaultZstdLevel, nil, testPackExt)
+	defer appender.Abort()
+	var renameErr error
+	capture, err := CaptureAttachments(ctx, dir, []ContentRef{small, large}, nil, appender, CaptureOptions{
+		Jobs: 1,
+		Progress: func(done, _ int, _ int64) {
+			if done != 1 {
+				return
+			}
+			// The first attachment proves the root is open. Replace its path
+			// before the collector starts reading the large attachment.
+			renameErr = os.Rename(dir, filepath.Join(base, "original"))
+			if renameErr == nil {
+				renameErr = os.Rename(replacement, dir)
+			}
+			if renameErr != nil {
+				cancel()
+			}
+		},
+	})
+	require.NoError(t, renameErr)
+	require.NoError(t, err, "capture must keep reading the originally opened directory")
+	_, _, err = appender.Finish()
+	require.NoError(t, err)
+	recipes, err := loadObjectRecipes(ctx, repo, known, &Manifest{
+		Attachments: ManifestAttachments{Recipes: capture.Recipes},
+	}, testPackExt)
+	require.NoError(t, err)
+	id, err := pack.ParseBlobID(large.Hash)
+	require.NoError(t, err)
+	stream, err := openObject(ctx, repo, known, id, recipes, testPackExt)
+	require.NoError(t, err)
+	digest := sha256.New()
+	size, readErr := io.Copy(digest, stream)
+	closeErr := stream.Close()
+	require.NoError(t, readErr)
+	require.NoError(t, closeErr)
+	assert.Equal(t, large.Size, size)
+	assert.Equal(t, large.Hash, hex.EncodeToString(digest.Sum(nil)))
 }
 
 func TestCaptureAttachmentsNoNewList(t *testing.T) {

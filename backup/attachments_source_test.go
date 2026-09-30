@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -147,12 +148,15 @@ func TestCaptureFromSourceOversizedBlob(t *testing.T) {
 	refA, hashA := sourceRef(content)
 	src := &mapSource{blobs: map[string][]byte{hashA: content}}
 
-	appender, _, _ := newTestAppenderForSource(t)
-	defer appender.Abort()
-	_, err := CaptureAttachments(t.Context(), "", []ContentRef{refA},
-		map[string]bool{}, appender, CaptureOptions{Source: src})
-	require.Error(err)
-	require.Contains(err.Error(), "maximum blob size")
+	for _, size := range []int64{refA.Size, -1} {
+		refA.Size = size
+		appender, _, _ := newTestAppenderForSource(t)
+		defer appender.Abort()
+		_, err := CaptureAttachments(t.Context(), "", []ContentRef{refA},
+			map[string]bool{}, appender, CaptureOptions{Source: src})
+		require.Error(err)
+		require.Contains(err.Error(), "maximum blob size")
+	}
 }
 
 func TestCaptureFromSourceIgnoresStoragePath(t *testing.T) {
@@ -195,5 +199,62 @@ func TestCaptureFromSourceParallel(t *testing.T) {
 	// Ordered collector: list order matches ref order regardless of Jobs.
 	for i, ref := range refs {
 		require.Equal(ref.Hash, out.NewList[i].Hash)
+	}
+}
+
+type captureSourceFunc func(context.Context, ContentRef) (io.ReadCloser, error)
+
+func (f captureSourceFunc) Open(ctx context.Context, ref ContentRef) (io.ReadCloser, error) {
+	return f(ctx, ref)
+}
+
+func TestCaptureUnknownSourceUsesWorkerPool(t *testing.T) {
+	const jobs = 8
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	started := make(chan struct{}, jobs)
+	release := make(chan struct{})
+	src := &mapSource{blobs: map[string][]byte{}}
+	var refs []ContentRef
+	for i := range jobs {
+		body := fmt.Appendf(nil, "thumbnail %d", i)
+		ref, hash := sourceRef(body)
+		ref.Size = -1
+		refs = append(refs, ref)
+		src.blobs[hash] = body
+	}
+	blocked := captureSourceFunc(func(ctx context.Context, ref ContentRef) (io.ReadCloser, error) {
+		started <- struct{}{}
+		select {
+		case <-release:
+			return src.Open(ctx, ref)
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	})
+	appender, repo, known := newTestAppenderForSource(t)
+	defer appender.Abort()
+	finished := make(chan error, 1)
+	go func() {
+		_, err := CaptureAttachments(ctx, "", refs, nil, appender, CaptureOptions{Jobs: jobs, Source: blocked})
+		finished <- err
+	}()
+	opened := 0
+	for opened < jobs && ctx.Err() == nil {
+		select {
+		case <-started:
+			opened++
+		case <-ctx.Done():
+		}
+	}
+	close(release)
+	err := <-finished
+	require.Equal(t, jobs, opened, "unknown sizes must use the requested capture workers")
+	require.NoError(t, err)
+	_, _, err = appender.Finish()
+	require.NoError(t, err)
+	for _, ref := range refs {
+		assert.Equal(t, int64(len(src.blobs[ref.Hash])), ref.Size)
+		assertRepoHoldsBlob(t, repo, known, ref.Hash, src.blobs[ref.Hash])
 	}
 }
