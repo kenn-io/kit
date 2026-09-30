@@ -56,6 +56,8 @@ databases, command parsing, and shutdown policy belong to the caller.
   process exit status for `STILL_ACTIVE`.
 - Auto-start goes through the caller-provided `StartFunc`; this package must not
   invent application launch commands.
+- `StartDetached` reaps the child itself, so a caller cannot call `Wait`. A
+  caller that needs to know the child died during startup uses `Exited`.
 - Windows detached children use `DETACHED_PROCESS`, not `CREATE_NO_WINDOW`.
   Hidden consoles expose `CONIN$`, which can make terminal-probing libraries
   block forever at daemon startup. Non-interactive console-subsystem
