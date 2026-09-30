@@ -15,8 +15,10 @@
   package until a kit package consumes it.
 - API keys are not fields of the value types (`Model`, `Roles`, `Deployment`,
   `Batch`, `Transport`). Callers resolve secrets and pass them to the HTTP
-  client. `Embedder` is the configuration-file shape; it names the secret
-  source (`api_key`, `api_key_env`) and `ResolveAPIKey` reads it.
+  client. `Embedder` is the configuration-file shape; its single `api_key`
+  is a `secretref.Ref` (a literal string or a one-source table), and
+  `ResolveAPIKey` reads it. Do not add separate keys for other secret
+  sources; extend `secretref` instead.
 - `Embedder` owns the standard TOML keys for one embedding endpoint. Every
   application decodes this type instead of declaring its own keys. Add a key
   here only when it is endpoint configuration any application can use; an

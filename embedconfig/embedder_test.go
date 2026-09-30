@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"go.kenn.io/kit/embedconfig"
+	"go.kenn.io/kit/secretref"
 )
 
 func TestEmbedderDecodesTheStandardKeys(t *testing.T) {
@@ -22,7 +23,7 @@ func TestEmbedderDecodesTheStandardKeys(t *testing.T) {
 base_url = "https://api.example.test/v1"
 model = "embed-large"
 dims = 1024
-api_key_env = "EMBED_KEY"
+api_key = { env = "EMBED_KEY" }
 fingerprint_salt = "weights-2"
 input_type_mode = "retrieval"
 batch_size = 16
@@ -36,6 +37,7 @@ trust_private_network = true
 
 	embedder := file.Search.Embeddings
 	require.NoError(t, embedder.Validate())
+	assert.Equal(t, secretref.Ref{Env: "EMBED_KEY"}, embedder.APIKey)
 	parts, err := embedder.Parts()
 	require.NoError(t, err)
 	assert.Equal(t, embedconfig.Model{
@@ -78,8 +80,8 @@ func TestEmbedderValidate(t *testing.T) {
 		{name: "setting without endpoint", embedder: embedconfig.Embedder{BatchSize: 8}},
 		{name: "missing dims", embedder: with(func(e *embedconfig.Embedder) { e.Dims = 0 })},
 		{name: "missing model", embedder: with(func(e *embedconfig.Embedder) { e.Model = "" })},
-		{name: "both key sources", embedder: with(func(e *embedconfig.Embedder) {
-			e.APIKey, e.APIKeyEnv = "secret", "EMBED_KEY"
+		{name: "two key sources", embedder: with(func(e *embedconfig.Embedder) {
+			e.APIKey = secretref.Ref{Env: "EMBED_KEY", File: "~/embed.key"}
 		})},
 		{name: "unknown input type", embedder: with(func(e *embedconfig.Embedder) { e.InputTypeMode = "search" })},
 		{name: "negative batch", embedder: with(func(e *embedconfig.Embedder) { e.BatchSize = -1 })},
@@ -104,24 +106,26 @@ func TestEmbedderValidate(t *testing.T) {
 	}
 }
 
-func TestEmbedderResolveAPIKey(t *testing.T) {
-	key, err := embedconfig.Embedder{APIKey: "inline"}.ResolveAPIKey()
-	require.NoError(t, err)
-	assert.Equal(t, "inline", key)
-
-	key, err = embedconfig.Embedder{}.ResolveAPIKey()
-	require.NoError(t, err)
-	assert.Empty(t, key)
-
+func TestEmbedderResolvesItsAPIKeyReference(t *testing.T) {
 	t.Setenv("KIT_TEST_EMBED_KEY", "from-env")
-	key, err = embedconfig.Embedder{APIKeyEnv: "KIT_TEST_EMBED_KEY"}.ResolveAPIKey()
+	secret, err := embedconfig.Embedder{APIKey: secretref.Ref{Env: "KIT_TEST_EMBED_KEY"}}.ResolveAPIKey()
 	require.NoError(t, err)
-	assert.Equal(t, "from-env", key)
+	assert.Equal(t, secretref.Secret{Value: "from-env", Source: "env:KIT_TEST_EMBED_KEY"}, secret)
 
-	t.Setenv("KIT_TEST_EMBED_KEY", " ")
-	_, err = embedconfig.Embedder{APIKeyEnv: "KIT_TEST_EMBED_KEY"}.ResolveAPIKey()
+	secret, err = embedconfig.Embedder{}.ResolveAPIKey()
+	require.NoError(t, err)
+	assert.Equal(t, secretref.Secret{}, secret, "an endpoint without authentication needs no key")
+
+	t.Setenv("KIT_TEST_EMBED_KEY", "")
+	_, err = embedconfig.Embedder{APIKey: secretref.Ref{Env: "KIT_TEST_EMBED_KEY"}}.ResolveAPIKey()
+	require.ErrorContains(t, err, "embed api_key")
 	require.ErrorContains(t, err, "KIT_TEST_EMBED_KEY")
 
-	_, err = embedconfig.Embedder{APIKey: "inline", APIKeyEnv: "KIT_TEST_EMBED_KEY"}.ResolveAPIKey()
+	invalid := embedconfig.Embedder{
+		BaseURL: "https://api.example.test/v1", Model: "m", Dims: 8,
+		APIKey: secretref.Ref{Env: "EMBED_KEY", File: "~/embed.key"},
+	}
+	require.ErrorContains(t, invalid.Validate(), "embed api_key")
+	_, err = invalid.ResolveAPIKey()
 	require.Error(t, err)
 }
