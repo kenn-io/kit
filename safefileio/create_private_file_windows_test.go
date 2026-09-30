@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"unsafe"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -36,12 +37,22 @@ func TestCreatePrivateFileCreatesProtectedPrivateFile(t *testing.T) {
 	dacl, _, err := descriptor.DACL()
 	require.NoError(err)
 	require.NotNil(dacl)
-	assert.Equal(t, uint16(3), dacl.AceCount)
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	require.NoError(err)
+	// The current user can also be LocalSystem; compare principals, not ACE counts.
+	wantPrincipals := map[string]bool{
+		user.User.Sid.String(): true,
+		"S-1-5-18":             true, // LocalSystem
+		"S-1-5-32-544":         true, // Built-in Administrators
+	}
+	principals := make(map[string]bool)
 	for i := range dacl.AceCount {
 		var ace *windows.ACCESS_ALLOWED_ACE
 		require.NoError(windows.GetAce(dacl, uint32(i), &ace))
+		principals[(*windows.SID)(unsafe.Pointer(&ace.SidStart)).String()] = true
 		assert.Zero(t, ace.Header.AceFlags&(windows.OBJECT_INHERIT_ACE|windows.CONTAINER_INHERIT_ACE|windows.INHERITED_ACE))
 	}
+	assert.Equal(t, wantPrincipals, principals)
 
 	_, err = file.WriteString("{}")
 	require.NoError(err)
