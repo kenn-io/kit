@@ -162,7 +162,7 @@ func (f *File) publish() error {
 		_, err = checkTarget(f.target)
 	}
 	if err == nil {
-		err = replaceFile(f.file.Name(), f.target)
+		err = Replace(f.file.Name(), f.target)
 	}
 	if err != nil {
 		return discardStaged(f.file, err)
