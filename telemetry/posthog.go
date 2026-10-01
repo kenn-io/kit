@@ -391,10 +391,6 @@ func (r *PostHogReporter) Close() error {
 	if !r.activeLocked() {
 		return nil
 	}
-	if r.stopTimer != nil {
-		r.stopTimer()
-		r.stopTimer = nil
-	}
 	var releaseErr error
 	if !r.holdingLocked(r.clock()) && !PostHogTelemetryDisabled() {
 		releaseErr = r.releaseHeldLocked()
@@ -405,6 +401,11 @@ func (r *PostHogReporter) Close() error {
 			return errors.Join(releaseErr, err)
 		}
 		return err
+	}
+	// The timer stays armed after a failed Close so later captures still release.
+	if r.stopTimer != nil {
+		r.stopTimer()
+		r.stopTimer = nil
 	}
 	r.deactivateLocked()
 	return releaseErr

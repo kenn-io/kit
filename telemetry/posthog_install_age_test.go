@@ -15,6 +15,7 @@ type recordingPostHogClient struct {
 	mu       sync.Mutex
 	messages []posthog.Capture
 	closed   bool
+	closeErr error
 }
 
 func (c *recordingPostHogClient) Enqueue(message posthog.Message) error {
@@ -27,6 +28,9 @@ func (c *recordingPostHogClient) Enqueue(message posthog.Message) error {
 func (c *recordingPostHogClient) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.closeErr != nil {
+		return c.closeErr
+	}
 	c.closed = true
 	return nil
 }
@@ -212,6 +216,26 @@ func TestPostHogReporterCloseBefore24HoursDropsHeldEvents(t *testing.T) {
 	clock.Advance(postHogInstallHoldPeriod)
 	timer.fire()
 	assert.Empty(client.messages)
+}
+
+func TestPostHogReporterFailedCloseKeepsReleaseTimer(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+
+	reporter, client, clock, timers := newInstallAgeTestReporter(t, postHogTestStart)
+	timer := timers.last(t)
+	closeErr := errors.New("close failed")
+	client.closeErr = closeErr
+
+	require.NoError(reporter.Capture("daemon_started", nil))
+	require.ErrorIs(reporter.Close(), closeErr)
+	assert.False(timer.stopped)
+	assert.True(reporter.Enabled())
+
+	require.NoError(reporter.Capture("daemon_active", nil))
+	clock.Advance(postHogInstallHoldPeriod)
+	timer.fire()
+	assert.Equal([]string{"daemon_active"}, capturedEvents(client.messages))
 }
 
 func TestPostHogReporterCloseAfter24HoursSendsHeldEvents(t *testing.T) {
