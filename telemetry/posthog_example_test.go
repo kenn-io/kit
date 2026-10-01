@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"go.kenn.io/kit/telemetry"
 )
@@ -26,11 +27,18 @@ func captureDaemonActive() error {
 	}
 	defer func() { _ = os.Unsetenv("KATA_TELEMETRY_ENABLED") }()
 
+	// Real callers load this from the state file that stores DistinctID.
+	installedAt := time.Date(2026, time.January, 2, 15, 4, 5, 0, time.UTC)
+
 	reporter, err := telemetry.NewPostHogReporter(telemetry.PostHogOptions{
 		APIKey:      "caller-owned-posthog-project-api-key",
 		Application: "kata",
 		EnvPrefix:   "KATA",
 		DistinctID:  "anonymous-instance-id",
+		// Persist this beside DistinctID when the ID is first created. Events
+		// from installs younger than a day are held until the install reaches
+		// that age, and dropped if it never does.
+		InstalledAt: installedAt,
 		Version:     "v1.2.3",
 		Commit:      "abc1234",
 	}, telemetry.WithAllowedEvent("daemon_active",
