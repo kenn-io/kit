@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/cenkalti/backoff/v7"
 )
 
 // FreezeCoordinator brackets the freeze window: Begin drains and holds the
@@ -124,26 +126,28 @@ func openPinnedSession(ctx context.Context, dbPath string, opener SQLiteOpener) 
 	db.SetMaxOpenConns(1)
 	s := &FrozenSession{db: db}
 
-	var busy, logFrames, checkpointed int
-	for attempt := 0; ; attempt++ {
+	_, err = backoff.Retry(ctx, func() (struct{}, error) {
+		var busy, logFrames, checkpointed int
 		row := db.QueryRowContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)")
 		if err := row.Scan(&busy, &logFrames, &checkpointed); err != nil {
-			_ = s.Close()
-			return nil, fmt.Errorf("backup: wal_checkpoint: %w", err)
+			return struct{}{}, backoff.Permanent(fmt.Errorf("backup: wal_checkpoint: %w", err))
 		}
-		if busy == 0 {
-			break
+		if busy != 0 {
+			return struct{}{}, errors.New("backup: wal_checkpoint busy")
 		}
-		if attempt >= checkpointRetries {
-			_ = s.Close()
-			return nil, fmt.Errorf("backup: wal_checkpoint stayed busy after %d attempts (long-running reader?)", attempt)
+		return struct{}{}, nil
+	}, backoff.WithBackOff(backoff.NewConstantBackOff(checkpointBackoff)),
+		backoff.WithMaxTries(checkpointRetries+1), backoff.WithMaxElapsedTime(0))
+	if err != nil {
+		_ = s.Close()
+		retryErr := backoff.AsRetryError(err)
+		if errors.Is(retryErr.Cause, backoff.ErrExhausted) {
+			return nil, fmt.Errorf("backup: wal_checkpoint stayed busy after %d attempts (long-running reader?)", checkpointRetries)
 		}
-		select {
-		case <-ctx.Done():
-			_ = s.Close()
-			return nil, ctx.Err()
-		case <-time.After(checkpointBackoff):
+		if errors.Is(retryErr.Cause, backoff.ErrPermanent) {
+			return nil, retryErr.LastErr
 		}
+		return nil, ctx.Err()
 	}
 
 	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
