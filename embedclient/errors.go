@@ -3,6 +3,7 @@ package embedclient
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -44,24 +45,72 @@ func (e *TransportError) Error() string { return "embed request failed" }
 
 func (e *TransportError) Unwrap() error { return e.Err }
 
-// APIError is a non-2xx embedding response. The provider body is discarded.
+// Reason is the kind of failure an embedding endpoint reported. Kit derives
+// it from the status and the provider's error body, then discards the body.
+type Reason int
+
+const (
+	// ReasonUnknown is a failure Kit could not classify. Callers should not
+	// treat it as a rejection of one input.
+	ReasonUnknown Reason = iota
+	// ReasonInputTooLong is an input over the model's token or context limit.
+	ReasonInputTooLong
+	// ReasonContentPolicy is an input the provider refused under its content
+	// policy.
+	ReasonContentPolicy
+	// ReasonInvalidRequest is a request the endpoint can never accept as
+	// sent, whatever the input: an unknown model, a wrong route, or an
+	// unsupported field. It points at configuration.
+	ReasonInvalidRequest
+	// ReasonCredentials is a refused key or permission (401 or 403).
+	ReasonCredentials
+	// ReasonRateLimited is a 429.
+	ReasonRateLimited
+	// ReasonUnavailable is a timeout or server failure (408 or 5xx).
+	ReasonUnavailable
+)
+
+func (r Reason) String() string {
+	switch r {
+	case ReasonInputTooLong:
+		return "input too long"
+	case ReasonContentPolicy:
+		return "content refused by policy"
+	case ReasonInvalidRequest:
+		return "invalid request"
+	case ReasonCredentials:
+		return "credentials rejected"
+	case ReasonRateLimited:
+		return "rate limited"
+	case ReasonUnavailable:
+		return "unavailable"
+	default:
+		return "unknown"
+	}
+}
+
+// APIError is a non-2xx embedding response. Reason classifies it; the
+// provider body is read only to classify and is never kept or echoed.
 type APIError struct {
 	StatusCode int
 	RetryAfter time.Duration
+	Reason     Reason
 }
 
 func (e *APIError) Error() string {
-	return fmt.Sprintf("embed endpoint returned %d", e.StatusCode)
+	return fmt.Sprintf("embed endpoint returned %d (%s)", e.StatusCode, e.Reason)
 }
 
-// InputRejected reports that this input was refused. The same input will
-// fail again. The provider body is not included.
+// InputRejected reports that the endpoint refused this input itself: it is
+// too long or refused by policy. The same input will fail again, and other
+// inputs may succeed. A 400 Kit cannot attribute to the input is not an input
+// rejection.
 func (e *APIError) InputRejected() bool {
-	return e.StatusCode == http.StatusBadRequest
+	return e.Reason == ReasonInputTooLong || e.Reason == ReasonContentPolicy
 }
 
 // CredentialsRejected reports that the key or the permission was refused.
-// That is not a reason to skip one document. The provider body is not included.
+// That is not a reason to skip one document.
 func (e *APIError) CredentialsRejected() bool {
 	return e.StatusCode == http.StatusUnauthorized || e.StatusCode == http.StatusForbidden
 }
@@ -70,6 +119,20 @@ func (e *APIError) CredentialsRejected() bool {
 // Check RetryAfter for the delay the provider asked for.
 func (e *APIError) Retryable() bool {
 	return e.StatusCode == http.StatusRequestTimeout || e.StatusCode == http.StatusTooManyRequests || e.StatusCode >= 500
+}
+
+// maxErrorBody bounds how much of a failed response Kit reads to classify it.
+const maxErrorBody = 4096
+
+// newAPIError reads up to maxErrorBody bytes of a non-2xx response to
+// classify it. The body is not kept.
+func newAPIError(resp *http.Response) *APIError {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+	return &APIError{
+		StatusCode: resp.StatusCode,
+		RetryAfter: retryAfter(resp.Header.Get("Retry-After")),
+		Reason:     classifyFailure(resp.StatusCode, body),
+	}
 }
 
 func retryAfter(header string) time.Duration {

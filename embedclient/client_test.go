@@ -154,7 +154,8 @@ func TestEmbedFailedResponseDoesNotEchoTheBody(t *testing.T) {
 	_, err = denied.Embed(t.Context(), oneText())
 	require.ErrorAs(t, err, &api)
 	assert.False(t, api.Retryable())
-	assert.True(t, api.InputRejected())
+	assert.False(t, api.InputRejected(), "a 400 that names no input problem is not an input rejection")
+	assert.Equal(t, embedclient.ReasonUnknown, api.Reason)
 	assert.False(t, api.CredentialsRejected())
 	assert.NotContains(t, err.Error(), "secret")
 
@@ -530,4 +531,131 @@ func writeJSON(t *testing.T, w http.ResponseWriter, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	_, err = w.Write(payload)
 	require.NoError(t, err)
+}
+
+// TestEmbedClassifiesFailedResponses pins how a failed response becomes a
+// Reason: the status decides most classes, and for 400, 413, and 422 the
+// provider's error code or message separates an input the endpoint refuses
+// from a request it never accepts. Only an input rejection may skip a
+// document, so an unrecognized 400 must not become one.
+func TestEmbedClassifiesFailedResponses(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+		want   embedclient.Reason
+	}{
+		{
+			"structured context length code", http.StatusBadRequest,
+			`{"error":{"message":"This model's maximum context length is 8192 tokens","type":"invalid_request_error","code":"context_length_exceeded"}}`,
+			embedclient.ReasonInputTooLong,
+		},
+		{
+			"structured model code", http.StatusBadRequest,
+			`{"error":{"message":"The model does not exist","code":"model_not_found"}}`,
+			embedclient.ReasonInvalidRequest,
+		},
+		{
+			"plain error string over the context", http.StatusBadRequest,
+			`{"error":"maximum context length is 8192 tokens"}`, embedclient.ReasonInputTooLong,
+		},
+		{"text body token overflow", http.StatusBadRequest, "token window overflow", embedclient.ReasonInputTooLong},
+		{"payload too large", http.StatusRequestEntityTooLarge, "input too large", embedclient.ReasonInputTooLong},
+		{"payload too large without a body", http.StatusRequestEntityTooLarge, "", embedclient.ReasonInputTooLong},
+		{"content policy", http.StatusUnprocessableEntity, "content policy violation", embedclient.ReasonContentPolicy},
+		{
+			"unsupported dimensions", http.StatusBadRequest,
+			`{"error":"input exceeds supported dimensions"}`, embedclient.ReasonInvalidRequest,
+		},
+		{"unknown model", http.StatusBadRequest, `{"error":"model \"x\" not found"}`, embedclient.ReasonInvalidRequest},
+		// Bodies below follow the error shapes each server sends.
+		{
+			"openai context length with a null code", http.StatusBadRequest,
+			`{"error":{"message":"Invalid 'input': maximum context length is 8192 tokens.","type":"invalid_request_error","param":null,"code":null}}`,
+			embedclient.ReasonInputTooLong,
+		},
+		{
+			"openai unsupported dimensions", http.StatusBadRequest,
+			`{"error":{"message":"This model does not support specifying dimensions.","type":"invalid_request_error","param":null,"code":null}}`,
+			embedclient.ReasonInvalidRequest,
+		},
+		{
+			"openai model without access", http.StatusForbidden,
+			`{"error":{"message":"The model does not exist or you do not have access to it.","code":"model_not_found"}}`,
+			embedclient.ReasonInvalidRequest,
+		},
+		{
+			"ollama native context length", http.StatusBadRequest,
+			`{"error":"the input length exceeds the context length"}`, embedclient.ReasonInputTooLong,
+		},
+		{
+			"ollama openai route invalid input", http.StatusBadRequest,
+			`{"error":{"message":"invalid input","type":"invalid_request_error","param":null,"code":null}}`,
+			embedclient.ReasonUnknown,
+		},
+		{
+			"tei token limit", http.StatusUnprocessableEntity,
+			`{"message":"Input validation error: ` + "`inputs`" + ` must have less than 512 tokens. Given: 600","code":422,"type":"Validation"}`,
+			embedclient.ReasonInputTooLong,
+		},
+		{
+			"tei batch limit", http.StatusUnprocessableEntity,
+			`{"message":"batch size 64 > maximum allowed batch size 32","code":422,"type":"Validation"}`,
+			embedclient.ReasonUnknown,
+		},
+		{
+			"tei plain text rejection", http.StatusUnprocessableEntity,
+			"Failed to deserialize the JSON body into the target type", embedclient.ReasonUnknown,
+		},
+		{
+			"vllm context length", http.StatusBadRequest,
+			`{"error":{"message":"This model's maximum context length is 512 tokens. However, you requested 600 tokens.","type":"BadRequestError","param":"input_tokens","code":400}}`,
+			embedclient.ReasonInputTooLong,
+		},
+		{
+			"vllm matryoshka dimensions", http.StatusBadRequest,
+			`{"error":{"message":"Model 'x' does not support Matryoshka embeddings; dimensions must be unset","type":"BadRequestError","param":null,"code":400}}`,
+			embedclient.ReasonInvalidRequest,
+		},
+		{
+			"litellm context window", http.StatusBadRequest,
+			`{"error":{"message":"litellm.ContextWindowExceededError: input too long","type":null,"param":null,"code":"400"}}`,
+			embedclient.ReasonInputTooLong,
+		},
+		{
+			"request input count", http.StatusBadRequest,
+			`{"error":{"message":"Too many inputs. The max number of inputs is 2048.","code":null}}`,
+			embedclient.ReasonUnknown,
+		},
+		{
+			"request token total", http.StatusBadRequest,
+			`{"error":{"message":"Requested 400000 tokens, max 300000 tokens per request","code":null}}`,
+			embedclient.ReasonUnknown,
+		},
+		{"empty 400", http.StatusBadRequest, "", embedclient.ReasonUnknown},
+		{"route text", http.StatusBadRequest, "no route", embedclient.ReasonUnknown},
+		{"invalid token wording", http.StatusBadRequest, "invalid token", embedclient.ReasonUnknown},
+		{"unsupported content type", http.StatusUnprocessableEntity, "unsupported content type", embedclient.ReasonUnknown},
+		{"not found", http.StatusNotFound, "model not found", embedclient.ReasonInvalidRequest},
+		{"unauthorized", http.StatusUnauthorized, "invalid token", embedclient.ReasonCredentials},
+		{"forbidden", http.StatusForbidden, "forbidden", embedclient.ReasonCredentials},
+		{"rate limited", http.StatusTooManyRequests, "input rate limited", embedclient.ReasonRateLimited},
+		{"server error", http.StatusInternalServerError, "token error", embedclient.ReasonUnavailable},
+		{"bad gateway", http.StatusBadGateway, "", embedclient.ReasonUnavailable},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := newClient(t, unitModel(), embedconfig.Roles{}, embedconfig.Batch{}, func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(test.status)
+				_, _ = io.WriteString(w, test.body)
+			})
+			_, err := client.Embed(t.Context(), oneText())
+			api, ok := errors.AsType[*embedclient.APIError](err)
+			require.True(t, ok, "got %v", err)
+			assert.Equal(t, test.want, api.Reason)
+			assert.Equal(t, test.want == embedclient.ReasonInputTooLong || test.want == embedclient.ReasonContentPolicy,
+				api.InputRejected())
+			assert.Contains(t, err.Error(), test.want.String())
+		})
+	}
 }

@@ -35,8 +35,9 @@
 // or a base64 string of little-endian float32 values. The encoding format is
 // empty, float, or base64.
 //
-// Failures are typed. APIError reports the status and whether a retry may
-// help. TransportError keeps the network cause behind a generic message.
+// Failures are typed. APIError reports the status, a Reason derived from the
+// status and the provider's error code or message, and whether a retry may
+// help. The provider body itself is never kept. TransportError keeps the network cause behind a generic message.
 // VectorError names the input whose vector failed validation, and matches
 // ErrInvalidVector.
 //

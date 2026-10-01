@@ -13,9 +13,15 @@
   into a larger `vector.EncodeBatched` input.
 - `Embed` applies role prefixes to raw content. `EncodeFunc` sends the
   strings it is given, because fitted text already includes them.
-- A 400 is `InputRejected`. A 401 or 403 is `CredentialsRejected` and is
-  not a reason to skip one document. 408, 429, and 5xx are `Retryable`. Do
-  not copy the provider body into any error.
+- Every non-2xx response is an `APIError` with a `Reason`. Kit reads at
+  most 4 KiB of the body to classify it and keeps none of it. Only
+  `ReasonInputTooLong` and `ReasonContentPolicy` are `InputRejected`; a 400
+  Kit cannot attribute to the input is `ReasonUnknown` or
+  `ReasonInvalidRequest`, so a misconfigured endpoint never looks like a bad
+  document. A 401 or 403 is `CredentialsRejected` and is not a reason to
+  skip one document. 408, 429, and 5xx are `Retryable`.
+  `CredentialsRejected` and `Retryable` read the status, so they hold for an
+  `APIError` built from a status alone.
 - A transport failure is a `*TransportError`, including a failure while
   reading a response body. Its message stays generic because the cause can
   name internal hosts; `Unwrap` keeps the cause, so a deadline or cancel
