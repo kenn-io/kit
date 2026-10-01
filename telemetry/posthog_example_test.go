@@ -35,9 +35,9 @@ func captureDaemonActive() error {
 		Application: "kata",
 		EnvPrefix:   "KATA",
 		DistinctID:  "anonymous-instance-id",
-		// Persist this beside DistinctID when the ID is first created. Events
-		// from installs younger than a day are held until the install reaches
-		// that age, and dropped if it never does.
+		// Persist this beside DistinctID when the ID is first created; each
+		// event then carries install_age_hours so reports can filter young
+		// installs.
 		InstalledAt: installedAt,
 		Version:     "v1.2.3",
 		Commit:      "abc1234",
