@@ -20,6 +20,13 @@ const (
 	// GenericTelemetryEnabledEnv disables telemetry for callers that honor the
 	// conventional unprefixed variable.
 	GenericTelemetryEnabledEnv = "TELEMETRY_ENABLED"
+
+	// postHogInstallHoldPeriod is how long after PostHogOptions.InstalledAt a
+	// reporter holds events instead of sending them.
+	postHogInstallHoldPeriod = 24 * time.Hour
+	// postHogMaxHeldEvents caps the events a young install holds in memory;
+	// later events are dropped so the first ones, such as a start event, survive.
+	postHogMaxHeldEvents = 256
 )
 
 // ErrUnsupportedTelemetryEvent is returned when an event is not in a reporter's
@@ -67,6 +74,14 @@ type PostHogOptions struct {
 	Commit     string
 	// Source defaults to "daemon" when empty.
 	Source string
+	// InstalledAt is when DistinctID was first created, usually persisted
+	// beside it. While the install is younger than 24 hours, Capture holds up
+	// to 256 events in memory; once the install reaches 24 hours old, the
+	// reporter sends them with their original capture times. Installs that
+	// never reach that age, such as sandboxes and test harnesses that start
+	// from an empty home directory, send nothing. Zero sends every event
+	// immediately.
+	InstalledAt time.Time
 }
 
 // PostHogReporter sanitizes and submits anonymous telemetry events to PostHog.
@@ -80,7 +95,16 @@ type PostHogReporter struct {
 	source        string
 	allowedEvents map[string]map[string]TelemetryPropertyFilter
 	enabled       bool
+	now           func() time.Time
+	afterFunc     postHogAfterFunc
+	// holdUntil is zero once the install is old enough to send events.
+	holdUntil time.Time
+	held      []posthog.Capture
+	stopTimer func() bool
 }
+
+// postHogAfterFunc runs f after d and returns a function that cancels it.
+type postHogAfterFunc func(d time.Duration, f func()) (stop func() bool)
 
 type postHogEnqueueCloser interface {
 	Enqueue(posthog.Message) error
@@ -91,6 +115,8 @@ type postHogClientFactory func(apiKey string, config posthog.Config) (postHogEnq
 
 type postHogReporterConfig struct {
 	allowedEvents map[string]map[string]TelemetryPropertyFilter
+	now           func() time.Time
+	afterFunc     postHogAfterFunc
 }
 
 type postHogOptionFunc func(*postHogReporterConfig)
@@ -180,7 +206,8 @@ func PostHogTelemetryDisabled() bool {
 }
 
 // NewPostHogReporter builds an enabled reporter or returns a disabled reporter
-// when telemetry is opted out by build tag or environment variable.
+// when telemetry is opted out by build tag or environment variable. Callers
+// should set PostHogOptions.InstalledAt so short-lived installs never report.
 func NewPostHogReporter(opts PostHogOptions, options ...PostHogOption) (*PostHogReporter, error) {
 	return newPostHogReporter(opts, func(apiKey string, config posthog.Config) (postHogEnqueueCloser, error) {
 		return posthog.NewWithConfig(apiKey, config)
@@ -232,7 +259,7 @@ func newPostHogReporter(opts PostHogOptions, newClient postHogClientFactory, opt
 		return nil, err
 	}
 
-	return &PostHogReporter{
+	reporter := &PostHogReporter{
 		client:        client,
 		distinctID:    strings.TrimSpace(opts.DistinctID),
 		version:       opts.Version,
@@ -241,7 +268,25 @@ func newPostHogReporter(opts PostHogOptions, newClient postHogClientFactory, opt
 		source:        defaultString(strings.TrimSpace(opts.Source), "daemon"),
 		allowedEvents: allowedEvents,
 		enabled:       true,
-	}, nil
+		now:           config.now,
+		afterFunc:     config.afterFunc,
+	}
+	if !opts.InstalledAt.IsZero() {
+		now := reporter.clock()
+		installedAt := opts.InstalledAt
+		// A future install time means the wall clock moved back; count the
+		// install as new instead of holding events for more than a day.
+		if installedAt.After(now) {
+			installedAt = now
+		}
+		if holdUntil := installedAt.Add(postHogInstallHoldPeriod); now.Before(holdUntil) {
+			reporter.mu.Lock()
+			reporter.holdUntil = holdUntil
+			reporter.scheduleReleaseLocked(holdUntil.Sub(now))
+			reporter.mu.Unlock()
+		}
+	}
+	return reporter, nil
 }
 
 // DisabledPostHogReporter returns a reporter that drops events without network calls.
@@ -313,15 +358,27 @@ func (r *PostHogReporter) Capture(event string, properties map[string]any) error
 		return err
 	}
 
-	return r.client.Enqueue(posthog.Capture{
+	now := r.clock()
+	message := posthog.Capture{
 		DistinctId: r.distinctID,
 		Event:      event,
-		Timestamp:  time.Now().UTC(),
+		Timestamp:  now.UTC(),
 		Properties: posthog.Properties(props),
-	})
+	}
+	if r.holdingLocked(now) {
+		if len(r.held) < postHogMaxHeldEvents {
+			r.held = append(r.held, message)
+		}
+		return nil
+	}
+	if err := r.releaseHeldLocked(); err != nil {
+		return errors.Join(err, r.client.Enqueue(message))
+	}
+	return r.client.Enqueue(message)
 }
 
 // Close stops the underlying telemetry client when the reporter is enabled.
+// Events held for an install younger than 24 hours are dropped.
 // Reporter-created PostHog clients use a process-disable-aware transport, so
 // Close can drain the SDK locally without network sends after telemetry is
 // disabled for the process.
@@ -334,11 +391,24 @@ func (r *PostHogReporter) Close() error {
 	if !r.activeLocked() {
 		return nil
 	}
+	var releaseErr error
+	if !r.holdingLocked(r.clock()) && !PostHogTelemetryDisabled() {
+		releaseErr = r.releaseHeldLocked()
+	}
+	r.held = nil
 	if err := r.client.Close(); err != nil {
+		if releaseErr != nil {
+			return errors.Join(releaseErr, err)
+		}
 		return err
 	}
+	// The timer stays armed after a failed Close so later captures still release.
+	if r.stopTimer != nil {
+		r.stopTimer()
+		r.stopTimer = nil
+	}
 	r.deactivateLocked()
-	return nil
+	return releaseErr
 }
 
 func (r *PostHogReporter) activeLocked() bool {
@@ -348,6 +418,66 @@ func (r *PostHogReporter) activeLocked() bool {
 func (r *PostHogReporter) deactivateLocked() {
 	r.enabled = false
 	r.client = nil
+}
+
+func (r *PostHogReporter) clock() time.Time {
+	if r.now != nil {
+		return r.now()
+	}
+	return time.Now()
+}
+
+// holdingLocked reports whether the install is still too young to send events.
+func (r *PostHogReporter) holdingLocked(now time.Time) bool {
+	return !r.holdUntil.IsZero() && now.Before(r.holdUntil)
+}
+
+// releaseHeldLocked sends held events in capture order and stops holding.
+func (r *PostHogReporter) releaseHeldLocked() error {
+	r.holdUntil = time.Time{}
+	held := r.held
+	r.held = nil
+	var errs []error
+	for _, message := range held {
+		if err := r.client.Enqueue(message); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (r *PostHogReporter) scheduleReleaseLocked(d time.Duration) {
+	afterFunc := r.afterFunc
+	if afterFunc == nil {
+		afterFunc = func(d time.Duration, f func()) func() bool {
+			return time.AfterFunc(d, f).Stop
+		}
+	}
+	r.stopTimer = afterFunc(d, r.releaseWhenOldEnough)
+}
+
+// releaseWhenOldEnough sends held events once the install is 24 hours old, so
+// a daemon that captures nothing after its first day still reports that day.
+func (r *PostHogReporter) releaseWhenOldEnough() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.stopTimer = nil
+	if !r.activeLocked() || r.holdUntil.IsZero() {
+		return
+	}
+	if PostHogTelemetryDisabled() {
+		r.held = nil
+		return
+	}
+	now := r.clock()
+	if r.holdingLocked(now) {
+		// The timer counts elapsed time; wait out any wall-clock difference.
+		r.scheduleReleaseLocked(r.holdUntil.Sub(now))
+		return
+	}
+	// Timer callbacks have no caller to report to; Enqueue only fails after the
+	// client closes, and Close holds the lock while it does that.
+	_ = r.releaseHeldLocked()
 }
 
 type postHogDisableTransport struct {
