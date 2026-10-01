@@ -54,6 +54,22 @@ func TestEmbedReordersIndexedResponses(t *testing.T) {
 	assert.Equal(t, "float", got["encoding_format"])
 }
 
+func TestEmbedOmitsDimensionsUnlessRequested(t *testing.T) {
+	var body map[string]any
+	client := newClient(t, unitModel(), embedconfig.Roles{}, embedconfig.Batch{}, func(w http.ResponseWriter, r *http.Request) {
+		body = readBody(t, r)
+		writeJSON(t, w, map[string]any{
+			"data": []map[string]any{{"index": 0, "embedding": []float64{1, 0}}},
+		})
+	})
+	_, err := client.Embed(t.Context(), oneText())
+	require.NoError(t, err)
+	assert.NotContains(t, body, "dimensions",
+		"a provider without dimension selection must not receive the field")
+	assert.NotContains(t, body, "encoding_format")
+	assert.NotContains(t, body, "input_type")
+}
+
 func TestEmbedKeepsPositionalOrderWhenIndexIsAbsent(t *testing.T) {
 	client := newClient(t, unitModel(), embedconfig.Roles{DocumentPrefix: "doc: "}, embedconfig.Batch{}, func(w http.ResponseWriter, r *http.Request) {
 		body := readBody(t, r)

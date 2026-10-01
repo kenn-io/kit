@@ -17,7 +17,7 @@ type wireRequest struct {
 	Model          string   `json:"model"`
 	Input          []string `json:"input"`
 	InputType      string   `json:"input_type,omitempty"`
-	Dimensions     int      `json:"dimensions,omitempty"`
+	Dimensions     int      `json:"dimensions,omitzero"`
 	EncodingFormat string   `json:"encoding_format,omitempty"`
 }
 
