@@ -17,7 +17,6 @@ type recordingPostHogClient struct {
 	mu       sync.Mutex
 	messages []posthog.Capture
 	closes   int
-	closeErr error
 }
 
 func (c *recordingPostHogClient) Enqueue(message posthog.Message) error {
@@ -30,9 +29,6 @@ func (c *recordingPostHogClient) Enqueue(message posthog.Message) error {
 func (c *recordingPostHogClient) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closeErr != nil {
-		return c.closeErr
-	}
 	c.closes++
 	return nil
 }
