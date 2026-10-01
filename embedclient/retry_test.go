@@ -52,6 +52,7 @@ func TestRetryStopsOnAnInputRejection(t *testing.T) {
 		func(w http.ResponseWriter, _ *http.Request) {
 			calls.Add(1)
 			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":{"message":"input too long","code":"context_length_exceeded"}}`)
 		})
 	_, err := client.Embed(t.Context(), oneText())
 	var apiErr *embedclient.APIError
