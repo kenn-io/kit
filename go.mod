@@ -2,6 +2,8 @@ module go.kenn.io/kit
 
 go 1.27.0
 
+toolchain go1.27.1
+
 require (
 	charm.land/lipgloss/v2 v2.0.5
 	github.com/BurntSushi/toml v1.6.0
