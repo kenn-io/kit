@@ -1958,8 +1958,6 @@ func (s *restoreState) stageExtras(ctx context.Context, app App, m *Manifest) ([
 		}
 	}()
 	for i, entry := range tree.Entries {
-		// Checked per entry: extras staging is a serial blob-fetch-and-write
-		// loop, so this is its only cancellation point.
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}

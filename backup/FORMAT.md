@@ -256,7 +256,15 @@ Files at most 64 MiB retain their single-blob representation and do not raise
 the minimum reader version. Restore, full verification, and prune follow
 extras recipes just as they do content recipes. A snapshot containing chunked
 extras requires reader version 6, since older readers do not follow
-`extras.recipes`.
+`extras.recipes`. Once such a snapshot exists, older readers cannot list
+snapshots, create backups, prune, or select the latest snapshot for restore or
+verification; verifying all snapshots also fails. Restore and verification of
+an older supported snapshot still work when its ID is supplied explicitly.
+Upgrade every reader before writing chunked extras to a shared repository.
+
+Restore stages each extra as a complete temporary file before replacing its
+destination. Allow temporary disk space for all extras being restored; during
+an overwrite restore, their old files remain until the replacements are staged.
 
 Extras capture has no pre-recorded content hash. Existing extras larger than
 64 MiB are stored as chunks on their first capture with this writer, even when

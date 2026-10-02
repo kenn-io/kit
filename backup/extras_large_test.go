@@ -110,6 +110,10 @@ func TestChunkedExtrasRejectCorruptObjects(t *testing.T) {
 			target := filepath.Join(t.TempDir(), "restore")
 			_, err = Restore(t.Context(), r, newTestApp(), RestoreOptions{SnapshotID: id, TargetDir: target})
 			require.Error(t, err)
+			if fault == "size" {
+				require.ErrorContains(t, err, "object recipe differs from recorded size")
+				require.NoDirExists(t, target, "preflight must reject the size before creating the target")
+			}
 			require.NoFileExists(t, filepath.Join(target, "app.db"))
 			require.NoFileExists(t, filepath.Join(target, "recovery", "history.db"))
 			staged, err := filepath.Glob(filepath.Join(target, "recovery", ".restore-*"))
