@@ -5,14 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-
-	"go.kenn.io/kit/pack"
 )
 
 // ExtrasDirSpec walks one DataDir-relative directory recursively; every
@@ -142,10 +139,11 @@ func enterExtrasDir(cur *os.Root, comp string) (*os.Root, error) {
 	return sub, nil
 }
 
-// readExtrasLeafNoFollow reads one file directly inside dir, refusing a
+// openExtrasLeafNoFollow opens one file directly inside dir, refusing a
 // symlink at the name: the lstat rejects one present up front, and SameFile
 // against the opened descriptor rejects one raced in between lstat and open.
-func readExtrasLeafNoFollow(dir *os.Root, name string) ([]byte, os.FileInfo, error) {
+// The caller owns the returned file.
+func openExtrasLeafNoFollow(dir *os.Root, name string) (*os.File, os.FileInfo, error) {
 	li, err := dir.Lstat(name)
 	if err != nil {
 		return nil, nil, err
@@ -157,32 +155,17 @@ func readExtrasLeafNoFollow(dir *os.Root, name string) ([]byte, os.FileInfo, err
 	if err != nil {
 		return nil, nil, err
 	}
-	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, errors.Join(err, f.Close())
 	}
 	if !os.SameFile(li, info) {
-		return nil, nil, fmt.Errorf("%q changed during capture", name)
+		return nil, nil, errors.Join(fmt.Errorf("%q changed during capture", name), f.Close())
 	}
-	if info.Size() > maxCaptureRawLen {
-		return nil, nil, fmt.Errorf("%q is %d bytes, larger than the maximum blob size %d",
-			name, info.Size(), maxCaptureRawLen)
-	}
-	// As in readRegularFile: the stat bound is advisory, the limited read is
-	// the guarantee the buffer cannot exceed the cap.
-	data, err := io.ReadAll(io.LimitReader(f, maxCaptureRawLen+1))
-	if err != nil {
-		return nil, nil, err
-	}
-	if int64(len(data)) > maxCaptureRawLen {
-		return nil, nil, fmt.Errorf("%q grew past the maximum blob size %d during capture",
-			name, maxCaptureRawLen)
-	}
-	return data, info, nil
+	return f, info, nil
 }
 
-// readExtrasNoFollow reads rel beneath root with symlink resolution refused
+// openExtrasNoFollow opens rel beneath root with symlink resolution refused
 // at every path component. Unlike attachment reads — whose bytes are
 // hash-verified against the database's recorded content hash, so a raced-in
 // symlink yields a loud mismatch — extras have no expected hash: a symlink
@@ -193,7 +176,7 @@ func readExtrasLeafNoFollow(dir *os.Root, name string) ([]byte, os.FileInfo, err
 // through its own verified sub-root and the leaf is tied to its lstat by
 // descriptor identity; a swap at any component fails closed instead of being
 // followed.
-func readExtrasNoFollow(root *os.Root, rel string) ([]byte, os.FileInfo, error) {
+func openExtrasNoFollow(root *os.Root, rel string) (*os.File, os.FileInfo, error) {
 	rel = filepath.Clean(rel)
 	if !filepath.IsLocal(rel) {
 		return nil, nil, fmt.Errorf("extras path %q is not local", rel)
@@ -215,25 +198,26 @@ func readExtrasNoFollow(root *os.Root, rel string) ([]byte, os.FileInfo, error) 
 		}
 		cur = sub
 	}
-	return readExtrasLeafNoFollow(cur, comps[len(comps)-1])
+	return openExtrasLeafNoFollow(cur, comps[len(comps)-1])
 }
 
-// CaptureExtras stores extras file blobs and the tree object. ctx is checked
-// before each file read, so a canceled backup stops within one file instead
-// of walking and reading every remaining extras source.
-func CaptureExtras(ctx context.Context, opts ExtrasOptions, appender *PackAppender) (pack.BlobID, bool, error) {
+// CaptureExtras streams extras files and stores their tree and chunk recipes.
+// Cancellation is checked throughout each file read.
+// An empty Tree means the selection contained no files. The returned recipes
+// must be included in the snapshot's Extras; they require reader version 6.
+func CaptureExtras(ctx context.Context, opts ExtrasOptions, appender *PackAppender) (ManifestExtras, error) {
 	if err := ctx.Err(); err != nil {
-		return pack.BlobID{}, false, err
+		return ManifestExtras{}, err
 	}
 	if opts.Spec.empty() {
-		return pack.BlobID{}, false, nil
+		return ManifestExtras{}, nil
 	}
 	// Sensitive sources (application secrets: tokens, credentials, config
 	// files carrying API keys) on an unencrypted repository need the explicit
 	// plaintext override. Fail safe by naming what triggered the guard.
 	if sensitive := opts.Spec.sensitiveSources(); len(sensitive) > 0 &&
 		!opts.Encrypted && !opts.AllowPlaintextSecrets {
-		return pack.BlobID{}, false, fmt.Errorf(
+		return ManifestExtras{}, fmt.Errorf(
 			"backup: capturing %s requires an encrypted repository "+
 				"(set AllowPlaintextSecrets to override)",
 			strings.Join(sensitive, ", "))
@@ -243,7 +227,7 @@ func CaptureExtras(ctx context.Context, opts ExtrasOptions, appender *PackAppend
 	// file swapped for a symlink between the walk/glob check and the read (a
 	// TOCTOU the plain os.ReadFile below used to lose) cannot pull a host file
 	// from outside DataDir into the extras blob. os.Root refuses any path that
-	// escapes the root, and readExtrasNoFollow additionally refuses symlink
+	// escapes the root, and openExtrasNoFollow additionally refuses symlink
 	// resolution at every path component, so a raced-in symlink cannot
 	// redirect the read even to a target still inside DataDir — extras bytes
 	// carry no expected hash, so unlike attachment reads a redirect would be
@@ -252,7 +236,7 @@ func CaptureExtras(ctx context.Context, opts ExtrasOptions, appender *PackAppend
 	if opts.DataDir != "" {
 		dr, err := os.OpenRoot(opts.DataDir)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return pack.BlobID{}, false, fmt.Errorf("backup: opening data dir for extras: %w", err)
+			return ManifestExtras{}, fmt.Errorf("backup: opening data dir for extras: %w", err)
 		}
 		if err == nil {
 			dataRoot = dr
@@ -260,9 +244,10 @@ func CaptureExtras(ctx context.Context, opts ExtrasOptions, appender *PackAppend
 		}
 	}
 	var entries []ExtrasEntry
+	var recipes []string
 	seen := map[string]string{}
 	// addFile reads recordPath's bytes through readRoot with no symlink
-	// resolution at any component (readExtrasNoFollow) and records the tree
+	// resolution at any component (openExtrasNoFollow) and records the tree
 	// entry under recordPath. readRel is recordPath's location relative to
 	// readRoot. A record path selected twice (overlapping globs, a Files spec
 	// duplicating a walk), or two paths that fold to one file on a
@@ -291,18 +276,21 @@ func CaptureExtras(ctx context.Context, opts ExtrasOptions, appender *PackAppend
 				other, slashPath)
 		}
 		seen[key] = slashPath
-		content, info, err := readExtrasNoFollow(readRoot, readRel)
+		file, info, err := openExtrasNoFollow(readRoot, readRel)
 		if err != nil {
 			return fmt.Errorf("backup: reading extras file %s: %w", recordPath, err)
 		}
-		id, _, err := appender.Add(content)
-		if err != nil {
-			return err
+		id, size, recipe, captureErr := captureObject(ctx, file, info.Size(), nil, appender)
+		if err := errors.Join(captureErr, file.Close()); err != nil {
+			return fmt.Errorf("backup: capturing extras file %s: %w", recordPath, err)
+		}
+		if recipe != "" {
+			recipes = append(recipes, recipe)
 		}
 		entries = append(entries, ExtrasEntry{
 			Path: filepath.ToSlash(recordPath),
 			Mode: uint32(info.Mode().Perm()),
-			Size: int64(len(content)),
+			Size: size,
 			Blob: id.String(),
 		})
 		return nil
@@ -344,12 +332,12 @@ func CaptureExtras(ctx context.Context, opts ExtrasOptions, appender *PackAppend
 	}
 	for _, d := range opts.Spec.Dirs {
 		if err := addDir(d.Name); err != nil {
-			return pack.BlobID{}, false, err
+			return ManifestExtras{}, err
 		}
 	}
 	for _, f := range opts.Spec.Files {
 		if !filepath.IsLocal(filepath.FromSlash(f.RecordAs)) {
-			return pack.BlobID{}, false, fmt.Errorf(
+			return ManifestExtras{}, fmt.Errorf(
 				"backup: extras file record path %q is not a local relative path", f.RecordAs)
 		}
 		// The file may live outside DataDir, so confine the read to its own
@@ -357,12 +345,12 @@ func CaptureExtras(ctx context.Context, opts ExtrasOptions, appender *PackAppend
 		// rather than followed to an arbitrary host file.
 		fileRoot, err := os.OpenRoot(filepath.Dir(f.Path))
 		if err != nil {
-			return pack.BlobID{}, false, fmt.Errorf("backup: opening extras file dir for %s: %w", f.RecordAs, err)
+			return ManifestExtras{}, fmt.Errorf("backup: opening extras file dir for %s: %w", f.RecordAs, err)
 		}
 		err = addFile(fileRoot, filepath.Base(f.Path), f.RecordAs)
 		_ = fileRoot.Close()
 		if err != nil {
-			return pack.BlobID{}, false, err
+			return ManifestExtras{}, err
 		}
 	}
 	// Glob matching only makes sense with a confined root to read through:
@@ -376,18 +364,18 @@ func CaptureExtras(ctx context.Context, opts ExtrasOptions, appender *PackAppend
 		// no directory part, so they never interact with the data dir path.
 		dirEntries, err := fs.ReadDir(dataRoot.FS(), ".")
 		if err != nil {
-			return pack.BlobID{}, false, fmt.Errorf("backup: reading data dir for extras globs: %w", err)
+			return ManifestExtras{}, fmt.Errorf("backup: reading data dir for extras globs: %w", err)
 		}
 		for _, g := range opts.Spec.Globs {
 			if strings.ContainsAny(g.Pattern, `/\`) {
-				return pack.BlobID{}, false, fmt.Errorf(
+				return ManifestExtras{}, fmt.Errorf(
 					"backup: extras glob pattern %q must be a pure basename", g.Pattern)
 			}
 			for _, e := range dirEntries {
 				name := e.Name()
 				match, err := filepath.Match(g.Pattern, name)
 				if err != nil {
-					return pack.BlobID{}, false, fmt.Errorf("backup: extras glob %q: %w", g.Pattern, err)
+					return ManifestExtras{}, fmt.Errorf("backup: extras glob %q: %w", g.Pattern, err)
 				}
 				if !match {
 					continue
@@ -398,25 +386,25 @@ func CaptureExtras(ctx context.Context, opts ExtrasOptions, appender *PackAppend
 				// through dataRoot is the authoritative guard against a
 				// symlink raced in after this check.
 				if !e.Type().IsRegular() {
-					return pack.BlobID{}, false, fmt.Errorf("extras: %s is not a regular file", name)
+					return ManifestExtras{}, fmt.Errorf("extras: %s is not a regular file", name)
 				}
 				if err := addFile(dataRoot, name, name); err != nil {
-					return pack.BlobID{}, false, err
+					return ManifestExtras{}, err
 				}
 			}
 		}
 	}
 	if len(entries) == 0 {
-		return pack.BlobID{}, false, nil
+		return ManifestExtras{}, nil
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
 	data, err := json.MarshalIndent(&ExtrasTree{Entries: entries}, "", "  ")
 	if err != nil {
-		return pack.BlobID{}, false, fmt.Errorf("backup: marshaling extras tree: %w", err)
+		return ManifestExtras{}, fmt.Errorf("backup: marshaling extras tree: %w", err)
 	}
 	id, _, err := appender.Add(data)
 	if err != nil {
-		return pack.BlobID{}, false, err
+		return ManifestExtras{}, err
 	}
-	return id, true, nil
+	return ManifestExtras{Tree: id.String(), Recipes: recipes}, nil
 }

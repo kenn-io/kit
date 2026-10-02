@@ -1018,6 +1018,9 @@ func (s *verifyState) checkExtrasTree(m *Manifest) {
 			s.problem(m.SnapshotID, fmt.Sprintf("extras entry %s blob id %q: %v", entry.Path, entry.Blob, err))
 			continue
 		}
+		if s.checkRecipeSize(blobID, entry.Size, m.SnapshotID) {
+			continue
+		}
 		s.verifyContentBlob(blobID, m.SnapshotID)
 		if !s.quick {
 			s.pendingSizeChecks = append(s.pendingSizeChecks, listedSizeCheck{

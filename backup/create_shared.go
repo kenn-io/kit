@@ -24,7 +24,7 @@ func captureSnapshotFiles(
 	info *ContentInfo,
 	appender *PackAppender,
 	progress *progressEmitter,
-) (*AttachmentCapture, []string, pack.BlobID, bool, error) {
+) (*AttachmentCapture, []string, ManifestExtras, error) {
 	parentSeen := map[string]bool{}
 	if parent != nil {
 		var err error
@@ -32,7 +32,7 @@ func captureSnapshotFiles(
 		parentRefs, parentSeen, err = LoadListRefs(
 			r, known, parent.Attachments.Lists, nil, app.PackFileExtension())
 		if err != nil {
-			return nil, nil, pack.BlobID{}, false, err
+			return nil, nil, ManifestExtras{}, err
 		}
 		if opts.ContentSource != nil {
 			// Reuse recorded sizes to keep unchanged chunked objects on the
@@ -70,7 +70,7 @@ func captureSnapshotFiles(
 			},
 		})
 	if err != nil {
-		return nil, nil, pack.BlobID{}, false, err
+		return nil, nil, ManifestExtras{}, err
 	}
 	progress.emit(ProgressEvent{
 		Stage: ProgressStageAttachments, Done: capture.Blobs, Total: capture.Blobs,
@@ -90,7 +90,7 @@ func captureSnapshotFiles(
 		}
 	}
 
-	treeBlob, hasTree, err := CaptureExtras(ctx, ExtrasOptions{
+	extras, err := CaptureExtras(ctx, ExtrasOptions{
 		DataDir:               opts.DataDir,
 		Spec:                  opts.Extras,
 		AllowPlaintextSecrets: opts.AllowPlaintextSecrets,
@@ -99,9 +99,9 @@ func captureSnapshotFiles(
 		DBFileName:            app.DBFileName(),
 	}, appender)
 	if err != nil {
-		return nil, nil, pack.BlobID{}, false, err
+		return nil, nil, ManifestExtras{}, err
 	}
-	return capture, lists, treeBlob, hasTree, nil
+	return capture, lists, extras, nil
 }
 
 func preparePortableMetadata(

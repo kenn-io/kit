@@ -243,7 +243,23 @@ and the concatenated object's length and hash through terminal EOF. Prune follow
 recipe references, keeping their chunks reachable. Restore rebuilds chunked
 content as complete loose objects even when small objects restore into managed
 packs. The rebuilt metadata database remains unpublished on verification failure.
-Auxiliary artifacts and operational extras retain their separate size limits.
+Auxiliary artifacts retain their separate size limit.
+
+Version-6 snapshots extend the same recipe format to operational extras larger
+than 64 MiB. `extras.recipes` lists their recipe hashes; the extras tree still
+records each complete file's hash, length, path, and mode. Capture streams each
+file through one chunk buffer and checks its length against the opened file's
+size. Files at most 64 MiB retain their single-blob representation and do not
+raise the minimum reader version. Restore, full verification, and prune follow
+extras recipes just as they do content recipes. A snapshot containing chunked
+extras requires reader version 6, since older readers do not follow
+`extras.recipes`.
+
+Extras capture has no pre-recorded content hash. Existing extras larger than
+64 MiB are stored as chunks on their first capture with this writer, even when
+an older snapshot holds the complete file as one blob. That blob remains until
+the older snapshot is forgotten and its unreferenced data is pruned. Subsequent
+captures reuse identical chunks by hash.
 
 ## Attachment Lists (magic `MVAL`)
 

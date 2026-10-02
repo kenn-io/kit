@@ -196,13 +196,16 @@ func TestLoadManifestRejectsNewerMinReaderVersion(t *testing.T) {
 	require.ErrorContains(err, "upgrade the reader")
 }
 
-func TestManifestRejectsObjectRecipesBeforeVersion5(t *testing.T) {
+func TestManifestRejectsRecipesBelowRequiredVersion(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		format    int
 		minReader int
 		metadata  bool
+		extras    bool
 	}{
+		{name: "extras format", format: 5, minReader: 6, extras: true},
+		{name: "extras reader", format: 6, minReader: 5, extras: true},
 		{name: "attachments format", format: 4, minReader: 5},
 		{name: "attachments reader", format: 5, minReader: 4},
 		{name: "metadata format", format: 4, minReader: 5, metadata: true},
@@ -215,7 +218,11 @@ func TestManifestRejectsObjectRecipesBeforeVersion5(t *testing.T) {
 			m.FormatVersion = tc.format
 			m.MinReaderVersion = tc.minReader
 			recipe := blobID("object recipe").String()
-			if tc.metadata {
+			wantError := "object recipes require manifest and reader version 5"
+			if tc.extras {
+				m.Extras.Recipes = []string{recipe}
+				wantError = "extras recipes require manifest and reader version 6"
+			} else if tc.metadata {
 				m.DB = ManifestDB{}
 				m.Metadata = &ManifestMetadata{
 					Format: "test-json-v1", Blob: blobID("metadata").String(), Recipe: recipe,
@@ -225,7 +232,7 @@ func TestManifestRejectsObjectRecipesBeforeVersion5(t *testing.T) {
 			}
 
 			_, err := repo.WriteManifest(m)
-			require.ErrorContains(t, err, "object recipes require manifest and reader version 5")
+			require.ErrorContains(t, err, wantError)
 
 			// Bypass the writer with a correctly hashed fixture so loading reaches
 			// the version gate instead of failing the content-derived ID check.
@@ -236,7 +243,7 @@ func TestManifestRejectsObjectRecipesBeforeVersion5(t *testing.T) {
 			require.NoError(t, os.WriteFile(repo.Path(snapshotsDirName, m.SnapshotID+manifestExt), data, 0o600))
 
 			_, err = repo.LoadManifest(m.SnapshotID)
-			require.ErrorContains(t, err, "object recipes require manifest and reader version 5")
+			require.ErrorContains(t, err, wantError)
 			assert.ErrorContains(t, err, "snapshot "+m.SnapshotID+":")
 		})
 	}

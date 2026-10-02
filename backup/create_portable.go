@@ -104,7 +104,7 @@ func createPortable(
 		return nil, fmt.Errorf("backup: closing portable metadata snapshot: %w", err)
 	}
 
-	capture, lists, treeBlob, hasTree, err := captureSnapshotFiles(
+	capture, lists, extras, err := captureSnapshotFiles(
 		ctx, r, app, opts, parent, known, info, appender, pr)
 	if err != nil {
 		return nil, err
@@ -124,6 +124,9 @@ func createPortable(
 	}
 	if metadataRecipe != "" || len(capture.Recipes) > 0 {
 		manifestVersion = max(manifestVersion, chunkedObjectManifestVersion)
+	}
+	if len(extras.Recipes) > 0 {
+		manifestVersion = max(manifestVersion, chunkedExtrasManifestVersion)
 	}
 	m := &Manifest{
 		FormatVersion:    manifestVersion,
@@ -149,9 +152,7 @@ func createPortable(
 	if parent != nil {
 		m.ParentID = parent.SnapshotID
 	}
-	if hasTree {
-		m.Extras.Tree = treeBlob.String()
-	}
+	m.Extras = extras
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

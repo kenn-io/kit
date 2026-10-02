@@ -163,6 +163,7 @@ func decodeObjectRecipe(raw []byte) (objectRecipe, error) {
 
 func loadObjectRecipes(ctx context.Context, repo *Repo, known map[pack.BlobID]IndexEntry, manifest *Manifest, ext string) (map[pack.BlobID]objectRecipe, error) {
 	ids := append([]string(nil), manifest.Attachments.Recipes...)
+	ids = append(ids, manifest.Extras.Recipes...)
 	if manifest.Metadata != nil && manifest.Metadata.Recipe != "" {
 		ids = append(ids, manifest.Metadata.Recipe)
 	}

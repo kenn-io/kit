@@ -222,7 +222,7 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 		return nil, err
 	}
 
-	capture, lists, treeBlob, hasTree, err := captureSnapshotFiles(
+	capture, lists, extras, err := captureSnapshotFiles(
 		ctx, r, app, opts, parent, known, info, appender, pr)
 	if err != nil {
 		return nil, err
@@ -260,6 +260,10 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 	if len(capture.Recipes) > 0 {
 		manifestVersion = max(manifestVersion, chunkedObjectManifestVersion)
 		manifestMinReader = max(manifestMinReader, chunkedObjectManifestVersion)
+	}
+	if len(extras.Recipes) > 0 {
+		manifestVersion = max(manifestVersion, chunkedExtrasManifestVersion)
+		manifestMinReader = max(manifestMinReader, chunkedExtrasManifestVersion)
 	}
 	m := &Manifest{
 		FormatVersion:    manifestVersion,
@@ -299,9 +303,7 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 	if parent != nil {
 		m.ParentID = parent.SnapshotID
 	}
-	if hasTree {
-		m.Extras.Tree = treeBlob.String()
-	}
+	m.Extras = extras
 	// Final gate: packs and index are durable at this point (harmless
 	// unreferenced data if abandoned, like a crash here), but the manifest is
 	// what makes the snapshot exist. Never publish one after cancellation.

@@ -59,7 +59,7 @@ const (
 	// release may read formats newer than the one it writes, or vice versa.
 	// Repo.Open and LoadManifest refuse anything whose min_reader_version
 	// exceeds this.
-	SupportedReaderVersion = 5
+	SupportedReaderVersion = 6
 
 	// dbPathManifestVersion marks snapshots whose attachment population
 	// records storage paths beyond the canonical loose "<aa>/<hash>"
@@ -78,6 +78,8 @@ const (
 	auxiliaryManifestVersion = 4
 	// chunkedObjectManifestVersion marks snapshots with logical-object recipes.
 	chunkedObjectManifestVersion = 5
+	// chunkedExtrasManifestVersion extends recipes to operational extras.
+	chunkedExtrasManifestVersion = 6
 
 	repoConfigName   = "config.toml"
 	snapshotsDirName = "snapshots"
