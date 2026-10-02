@@ -238,7 +238,9 @@ func newPostHogReporter(opts PostHogOptions, newClient postHogClientFactory, opt
 	client, err := newClient(strings.TrimSpace(opts.APIKey), posthog.Config{
 		Endpoint:     endpoint,
 		DisableGeoIP: &disableGeoIP,
-		Transport:    postHogDisableTransport{},
+		// Reporters run in CLIs and daemons on user machines, not servers.
+		IsServer:  new(false),
+		Transport: postHogDisableTransport{},
 	})
 	if err != nil {
 		return nil, err
