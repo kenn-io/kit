@@ -96,6 +96,13 @@ func TestChunkedExtrasRejectCorruptObjects(t *testing.T) {
 			verified, err := Verify(t.Context(), r, newTestApp(), VerifyOptions{SnapshotID: id})
 			require.NoError(t, err)
 			require.NotEmpty(t, verified.Problems)
+			if fault == "missing chunk" {
+				require.Len(t, verified.Problems, 1, "a missing chunk must not also report a missing whole-file blob")
+				require.Contains(t, verified.Problems[0].Detail, "object chunk "+recipe.Chunks[1].Blob+" not present in any index")
+				quick, err := Verify(t.Context(), r, newTestApp(), VerifyOptions{SnapshotID: id, Quick: true})
+				require.NoError(t, err)
+				require.Equal(t, verified.Problems, quick.Problems)
+			}
 			target := filepath.Join(t.TempDir(), "restore")
 			_, err = Restore(t.Context(), r, newTestApp(), RestoreOptions{SnapshotID: id, TargetDir: target})
 			require.Error(t, err)
@@ -104,6 +111,48 @@ func TestChunkedExtrasRejectCorruptObjects(t *testing.T) {
 			staged, err := filepath.Glob(filepath.Join(target, "recovery", ".restore-*"))
 			require.NoError(t, err)
 			require.Empty(t, staged)
+		})
+	}
+}
+
+// Not parallel: the pack sync hook changes the real source file after its
+// first chunk has been read, so no sleep or racing writer is needed.
+func TestCaptureExtrasRejectsSizeChanges(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		delta   int64
+		wantErr string
+	}{
+		{name: "growth", delta: 1, wantErr: "exceeds declared size"},
+		{name: "shrinkage", delta: -1, wantErr: "differs from declared size"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := initTestRepo(t)
+			path := filepath.Join(t.TempDir(), "history.db")
+			require.NoError(t, os.WriteFile(path, nil, 0o600))
+			const size = int64(64<<20 + 2)
+			require.NoError(t, os.Truncate(path, size))
+			a := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
+			t.Cleanup(a.Abort)
+			a.targetSize = 1 // Seal the first chunk before reading the rest.
+			originalSync := pack.SyncDir
+			t.Cleanup(func() { pack.SyncDir = originalSync })
+			changed := false
+			pack.SyncDir = func(dir string) error {
+				if !changed {
+					changed = true
+					if err := os.Truncate(path, size+tc.delta); err != nil {
+						return err
+					}
+				}
+				return originalSync(dir)
+			}
+			captured, err := CaptureExtras(t.Context(), ExtrasOptions{
+				Spec: ExtrasSpec{Files: []ExtrasFileSpec{{Path: path, RecordAs: "history.db"}}},
+			}, a)
+			require.True(t, changed)
+			require.ErrorContains(t, err, tc.wantErr)
+			require.Empty(t, captured.Tree)
 		})
 	}
 }
