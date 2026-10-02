@@ -106,7 +106,8 @@ type ManifestAttachments struct {
 }
 
 type ManifestExtras struct {
-	Tree string `json:"tree"`
+	Tree    string   `json:"tree"`
+	Recipes []string `json:"recipes,omitempty"`
 }
 
 const manifestExt = ".mvmanifest"
@@ -369,7 +370,12 @@ func walkManifestChain(head *Manifest, load func(string) (*Manifest, error)) ([]
 }
 
 func validateObjectManifest(m *Manifest) error {
+	if len(m.Extras.Recipes) > 0 &&
+		(m.FormatVersion < chunkedExtrasManifestVersion || m.MinReaderVersion < chunkedExtrasManifestVersion) {
+		return errors.New("backup: extras recipes require manifest and reader version 6")
+	}
 	ids := append([]string(nil), m.Attachments.Recipes...)
+	ids = append(ids, m.Extras.Recipes...)
 	if m.Metadata != nil && m.Metadata.Recipe != "" {
 		ids = append(ids, m.Metadata.Recipe)
 	}

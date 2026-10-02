@@ -47,7 +47,7 @@ Compatibility is enforced at three levels, all of which must pass:
 
 1. **Repository level.** `config.toml` records `repo_id` (a lowercase-hex UUID; readers refuse any other shape, because the ID is embedded verbatim in local cache filenames), `format_version` (what wrote it), and `min_reader_version` (the oldest format a reader must understand). `Open` refuses a repository whose `min_reader_version` exceeds the reader's supported version, with an explicit error telling the caller to upgrade the reader. A future format change that old readers can safely ignore bumps only `format_version`; a change they cannot safely ignore also bumps `min_reader_version`.
 2. **Object level.** Every binary object begins with a 4-byte magic and a version field, and every decoder rejects an unknown magic or version. A reader can therefore never misparse an object from a future format as if it were current.
-3. **Snapshot level.** Each manifest records its own `format_version`, `min_reader_version`, and the application version string that wrote it (wire key `msgvault_version`, frozen for compatibility across every application built on this engine), so compatibility can evolve per-snapshot within one repository (for example, when a future version introduces encrypted snapshots alongside existing plaintext ones). Version 2 marks snapshots whose attachment population records storage paths beyond the canonical `<aa>/<hash>` derivation: version-1 readers placed every restored attachment at the canonical path and would materialize a database pointing at files that do not exist, so they must refuse these snapshots. Snapshots whose recorded paths are all canonical keep version 1. Version 3 marks snapshots whose application metadata is a portable logical blob rather than SQLite page-map chains. Version 4 marks snapshots with application-defined auxiliary artifacts. A manifest whose `min_reader_version` a reader accepts must contain only fields that reader knows: the content-derived ID covers only known fields, so an unknown field would otherwise ride along in an authenticated manifest, and readers refuse it as forged rather than ignore it.
+3. **Snapshot level.** Each manifest records its own `format_version`, `min_reader_version`, and the application version string that wrote it (wire key `msgvault_version`, frozen for compatibility across every application built on this engine), so compatibility can evolve per-snapshot within one repository (for example, when a future version introduces encrypted snapshots alongside existing plaintext ones). Version 2 marks snapshots whose attachment population records storage paths beyond the canonical `<aa>/<hash>` derivation: version-1 readers placed every restored attachment at the canonical path and would materialize a database pointing at files that do not exist, so they must refuse these snapshots. Snapshots whose recorded paths are all canonical keep version 1. Version 3 marks snapshots whose application metadata is a portable logical blob rather than SQLite page-map chains. Version 4 marks snapshots with application-defined auxiliary artifacts. Version 5 adds chunk recipes for content and portable metadata; version 6 extends recipes to operational extras (see [Large Logical Objects](#large-logical-objects)). A manifest whose `min_reader_version` a reader accepts must contain only fields that reader knows: the content-derived ID covers only known fields, so an unknown field would otherwise ride along in an authenticated manifest, and readers refuse it as forged rather than ignore it.
 
 Integrity is separate from versioning: every metadata object ends with a SHA-256 trailer over everything before it, checked before any field is interpreted, and pack entries carry CRC32-C over the stored bytes.
 
@@ -243,7 +243,34 @@ and the concatenated object's length and hash through terminal EOF. Prune follow
 recipe references, keeping their chunks reachable. Restore rebuilds chunked
 content as complete loose objects even when small objects restore into managed
 packs. The rebuilt metadata database remains unpublished on verification failure.
-Auxiliary artifacts and operational extras retain their separate size limits.
+Auxiliary artifacts retain their separate size limit.
+
+Version-6 snapshots extend the same recipe format to operational extras larger
+than 64 MiB. `extras.recipes` lists their recipe hashes; the extras tree still
+records each complete file's hash, length, path, and mode. Capture streams each
+file through one chunk buffer and checks its length against the opened file's
+size. If the bytes read differ from that opening size, the entire backup fails,
+including for small extras. Callers must provide stable files or consistent
+database snapshots; matching length alone does not detect in-place writes.
+Files at most 64 MiB retain their single-blob representation and do not raise
+the minimum reader version. Restore, full verification, and prune follow
+extras recipes just as they do content recipes. A snapshot containing chunked
+extras requires reader version 6, since older readers do not follow
+`extras.recipes`. Once such a snapshot exists, older readers cannot list
+snapshots, create backups, prune, or select the latest snapshot for restore or
+verification; verifying all snapshots also fails. Restore and verification of
+an older supported snapshot still work when its ID is supplied explicitly.
+Upgrade every reader before writing chunked extras to a shared repository.
+
+Restore stages each extra as a complete temporary file before replacing its
+destination. Allow temporary disk space for all extras being restored; during
+an overwrite restore, their old files remain until the replacements are staged.
+
+Extras capture has no pre-recorded content hash. Existing extras larger than
+64 MiB are stored as chunks on their first capture with this writer, even when
+an older snapshot holds the complete file as one blob. That blob remains until
+the older snapshot is forgotten and its unreferenced data is pruned. Subsequent
+captures reuse identical chunks by hash.
 
 ## Attachment Lists (magic `MVAL`)
 

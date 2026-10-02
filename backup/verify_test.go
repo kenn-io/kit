@@ -506,7 +506,7 @@ func TestVerifyFlagsBadExtrasTree(t *testing.T) {
 
 	st := newTestVerifyState(t, r, false)
 	m := &Manifest{SnapshotID: "test-snapshot", Extras: ManifestExtras{Tree: treeID.String()}}
-	st.checkExtrasTree(m)
+	st.checkExtrasTree(m, true)
 	require.NoError(st.drainContentReads(t.Context()))
 	st.checkListedSizes()
 
