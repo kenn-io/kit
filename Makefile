@@ -1,4 +1,5 @@
-GOLANGCI_LINT_VERSION ?= v2.13.1
+# .custom-gcl.yml owns the golangci-lint version so Renovate updates one place.
+GOLANGCI_LINT_VERSION ?= $(shell sed -n 's/^version: //p' .custom-gcl.yml)
 CUSTOM_GCL_DIR ?= .
 CUSTOM_GCL := $(CUSTOM_GCL_DIR)/custom-gcl
 
