@@ -2,9 +2,7 @@ package telemetry
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
-	"strings"
 )
 
 type postHogCaptureRequest struct {
@@ -47,8 +45,7 @@ func NewPostHogCaptureHandler(reporter *PostHogReporter) http.Handler {
 			http.Error(w, "invalid telemetry request", http.StatusBadRequest)
 			return
 		}
-		event := strings.TrimSpace(req.Event)
-		if event == "" || !reporter.EventAllowed(event) {
+		if !reporter.EventAllowed(req.Event) {
 			http.Error(w, ErrUnsupportedTelemetryEvent.Error(), http.StatusBadRequest)
 			return
 		}
@@ -56,11 +53,7 @@ func NewPostHogCaptureHandler(reporter *PostHogReporter) http.Handler {
 			writePostHogCaptureStatus(w, "disabled")
 			return
 		}
-		if err := reporter.Capture(event, req.Properties); err != nil {
-			if errors.Is(err, ErrUnsupportedTelemetryEvent) {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
+		if err := reporter.Capture(req.Event, req.Properties); err != nil {
 			http.Error(w, "capture telemetry event failed", http.StatusInternalServerError)
 			return
 		}
