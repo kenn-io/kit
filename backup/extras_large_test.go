@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -44,9 +45,12 @@ func TestLargeExtrasCaptureVerifyPruneRestore(t *testing.T) {
 	gotSize, gotHash := hashFileStream(t, restored)
 	require.Equal(t, size, gotSize)
 	require.Equal(t, extra.Hash, gotHash)
-	info, err := os.Stat(restored)
-	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		// Windows reports 0666 for writable files, not POSIX permissions.
+		info, err := os.Stat(restored)
+		require.NoError(t, err)
+		require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	}
 }
 
 func TestChunkedExtrasRejectCorruptObjects(t *testing.T) {
