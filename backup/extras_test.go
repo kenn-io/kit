@@ -1,8 +1,8 @@
 package backup
 
 import (
-	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -35,7 +35,7 @@ func TestCaptureExtrasDeletionsAndConfig(t *testing.T) {
 	require.NoError(os.WriteFile(cfgPath, []byte("x = 1\n"), 0o600))
 
 	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
-	treeID, hasTree, err := CaptureExtras(t.Context(), ExtrasOptions{
+	captured, err := CaptureExtras(t.Context(), ExtrasOptions{
 		DataDir: dataDir,
 		Spec: ExtrasSpec{
 			Dirs:  []ExtrasDirSpec{{Name: "deletions"}},
@@ -44,7 +44,7 @@ func TestCaptureExtrasDeletionsAndConfig(t *testing.T) {
 		AllowPlaintextSecrets: true,
 	}, appender)
 	require.NoError(err)
-	require.True(hasTree)
+	require.NotEmpty(captured.Tree)
 
 	packs, entries, err := appender.Finish()
 	require.NoError(err)
@@ -53,6 +53,8 @@ func TestCaptureExtrasDeletionsAndConfig(t *testing.T) {
 	for _, e := range entries {
 		known[e.Blob] = e
 	}
+	treeID, err := pack.ParseBlobID(captured.Tree)
+	require.NoError(err)
 	treeData, err := r.ReadBlob(known, treeID, nil, testPackExt)
 	require.NoError(err)
 	var tree ExtrasTree
@@ -70,14 +72,14 @@ func TestCaptureExtrasDeletionsAndConfig(t *testing.T) {
 	}
 }
 
-// TestReadExtrasNoFollowRejectsSymlinks pins that extras reads never resolve
+// TestOpenExtrasNoFollowRejectsSymlinks pins that extras reads never resolve
 // a symlink at any path component, even one whose target stays inside the
 // root: extras bytes carry no expected hash, so a followed link would
 // silently capture another in-DataDir file (tokens, client secrets) under a
 // deletions path. The capture walk rejects pre-existing links; this reader
 // is the guard for links raced in after the walk, so it must reject them
 // independently.
-func TestReadExtrasNoFollowRejectsSymlinks(t *testing.T) {
+func TestOpenExtrasNoFollowRejectsSymlinks(t *testing.T) {
 	require := require.New(t)
 	dir := t.TempDir()
 	require.NoError(os.MkdirAll(filepath.Join(dir, "real"), 0o700))
@@ -92,17 +94,20 @@ func TestReadExtrasNoFollowRejectsSymlinks(t *testing.T) {
 	require.NoError(err)
 	defer func() { _ = root.Close() }()
 
-	content, _, err := readExtrasNoFollow(root, filepath.Join("real", "f.json"))
+	file, _, err := openExtrasNoFollow(root, filepath.Join("real", "f.json"))
 	require.NoError(err)
+	content, err := io.ReadAll(file)
+	require.NoError(err)
+	require.NoError(file.Close())
 	require.Equal([]byte("ok"), content)
 
 	// A symlink leaf inside the root must be refused, not followed to its
 	// in-root target.
-	_, _, err = readExtrasNoFollow(root, filepath.Join("real", "link.json"))
+	_, _, err = openExtrasNoFollow(root, filepath.Join("real", "link.json"))
 	require.ErrorContains(err, "not a regular file")
 
 	// A symlinked directory component inside the root must be refused too.
-	_, _, err = readExtrasNoFollow(root, filepath.Join("dirlink", "f.json"))
+	_, _, err = openExtrasNoFollow(root, filepath.Join("dirlink", "f.json"))
 	require.ErrorContains(err, "not a real directory")
 }
 
@@ -123,7 +128,7 @@ func TestCaptureExtrasRejectsCaseCollidingPaths(t *testing.T) {
 
 	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	defer appender.Abort()
-	_, _, err := CaptureExtras(t.Context(), ExtrasOptions{
+	_, err := CaptureExtras(t.Context(), ExtrasOptions{
 		Spec: ExtrasSpec{Files: []ExtrasFileSpec{
 			{Path: a, RecordAs: "config.toml"},
 			{Path: b, RecordAs: "Config.TOML"},
@@ -132,7 +137,7 @@ func TestCaptureExtrasRejectsCaseCollidingPaths(t *testing.T) {
 	require.ErrorContains(err, "collide")
 
 	// An exact duplicate keeps its own, more precise message.
-	_, _, err = CaptureExtras(t.Context(), ExtrasOptions{
+	_, err = CaptureExtras(t.Context(), ExtrasOptions{
 		Spec: ExtrasSpec{Files: []ExtrasFileSpec{
 			{Path: a, RecordAs: "config.toml"},
 			{Path: b, RecordAs: "config.toml"},
@@ -160,7 +165,7 @@ func TestCaptureExtrasRejectsReservedRecordPaths(t *testing.T) {
 		"safe./x.json":   "component ending in a dot or space",
 	} {
 		appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
-		_, _, err := CaptureExtras(t.Context(), ExtrasOptions{
+		_, err := CaptureExtras(t.Context(), ExtrasOptions{
 			Spec:           ExtrasSpec{Files: []ExtrasFileSpec{{Path: src, RecordAs: path}}},
 			ContentDirName: "content",
 			DBFileName:     "app.db",
@@ -170,44 +175,20 @@ func TestCaptureExtrasRejectsReservedRecordPaths(t *testing.T) {
 	}
 }
 
-// TestCaptureExtrasRejectsOversizedFile pins the same fstat guard on the
-// extras leaf reader: extras files share the pack layer's per-blob raw limit
-// and must be rejected before capture buffers the content.
-func TestCaptureExtrasRejectsOversizedFile(t *testing.T) {
-	require := require.New(t)
-	r := initTestRepo(t)
-	dataDir := t.TempDir()
-	require.NoError(os.MkdirAll(filepath.Join(dataDir, "deletions"), 0o700))
-	require.NoError(os.WriteFile(
-		filepath.Join(dataDir, "deletions", "big.json"), bytes.Repeat([]byte("x"), 17), 0o600))
-
-	old := maxCaptureRawLen
-	maxCaptureRawLen = 16
-	t.Cleanup(func() { maxCaptureRawLen = old })
-
-	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
-	defer appender.Abort()
-	_, _, err := CaptureExtras(t.Context(), ExtrasOptions{
-		DataDir: dataDir,
-		Spec:    ExtrasSpec{Dirs: []ExtrasDirSpec{{Name: "deletions"}}},
-	}, appender)
-	require.ErrorContains(err, "larger than the maximum blob size")
-}
-
 func TestCaptureExtrasEmpty(t *testing.T) {
 	require := require.New(t)
 	r := initTestRepo(t)
 	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
-	_, hasTree, err := CaptureExtras(t.Context(), ExtrasOptions{
+	captured, err := CaptureExtras(t.Context(), ExtrasOptions{
 		DataDir: t.TempDir(), Spec: ExtrasSpec{Dirs: []ExtrasDirSpec{{Name: "deletions"}}},
 	}, appender)
 	require.NoError(err)
-	require.False(hasTree)
+	require.Empty(captured.Tree)
 
 	// An empty spec selects nothing, whatever DataDir holds.
-	_, hasTree, err = CaptureExtras(t.Context(), ExtrasOptions{DataDir: t.TempDir()}, appender)
+	captured, err = CaptureExtras(t.Context(), ExtrasOptions{DataDir: t.TempDir()}, appender)
 	require.NoError(err)
-	require.False(hasTree)
+	require.Empty(captured.Tree)
 }
 
 func TestCaptureExtrasTokensWithoutDataDir(t *testing.T) {
@@ -219,12 +200,12 @@ func TestCaptureExtrasTokensWithoutDataDir(t *testing.T) {
 	require.NoError(os.WriteFile(filepath.Join(cwd, "client_secret_x.json"), []byte("{}"), 0o600))
 	t.Chdir(cwd)
 	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
-	_, hasTree, err := CaptureExtras(t.Context(), ExtrasOptions{
+	captured, err := CaptureExtras(t.Context(), ExtrasOptions{
 		Spec:                  msgvaultTokensSpec(),
 		AllowPlaintextSecrets: true,
 	}, appender)
 	require.NoError(err)
-	require.False(hasTree)
+	require.Empty(captured.Tree)
 }
 
 func TestCaptureExtrasTokensGuard(t *testing.T) {
@@ -236,7 +217,7 @@ func TestCaptureExtrasTokensGuard(t *testing.T) {
 	require.NoError(os.WriteFile(filepath.Join(dataDir, "client_secret_web.json"), []byte("{}"), 0o600))
 
 	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
-	_, _, err := CaptureExtras(t.Context(), ExtrasOptions{DataDir: dataDir, Spec: msgvaultTokensSpec()}, appender)
+	_, err := CaptureExtras(t.Context(), ExtrasOptions{DataDir: dataDir, Spec: msgvaultTokensSpec()}, appender)
 	require.ErrorContains(err, "encrypted repository")
 	require.ErrorContains(err, "tokens")
 
@@ -245,20 +226,20 @@ func TestCaptureExtrasTokensGuard(t *testing.T) {
 	cfgPath := filepath.Join(dataDir, "config.toml")
 	require.NoError(os.WriteFile(cfgPath, []byte("[server]\napi_key = \"secret\"\n"), 0o600))
 	cfgSpec := ExtrasSpec{Files: []ExtrasFileSpec{{Path: cfgPath, RecordAs: "config.toml", Sensitive: true}}}
-	_, _, err = CaptureExtras(t.Context(), ExtrasOptions{DataDir: dataDir, Spec: cfgSpec}, appender)
+	_, err = CaptureExtras(t.Context(), ExtrasOptions{DataDir: dataDir, Spec: cfgSpec}, appender)
 	require.ErrorContains(err, "encrypted repository")
 	require.ErrorContains(err, "config.toml")
 
-	_, _, err = CaptureExtras(t.Context(), ExtrasOptions{
+	_, err = CaptureExtras(t.Context(), ExtrasOptions{
 		DataDir: dataDir, Spec: cfgSpec, AllowPlaintextSecrets: true,
 	}, appender)
 	require.NoError(err)
 
-	treeID, hasTree, err := CaptureExtras(t.Context(), ExtrasOptions{
+	captured, err := CaptureExtras(t.Context(), ExtrasOptions{
 		DataDir: dataDir, Spec: msgvaultTokensSpec(), AllowPlaintextSecrets: true,
 	}, appender)
 	require.NoError(err)
-	require.True(hasTree)
+	require.NotEmpty(captured.Tree)
 
 	_, entries, err := appender.Finish()
 	require.NoError(err)
@@ -266,6 +247,8 @@ func TestCaptureExtrasTokensGuard(t *testing.T) {
 	for _, e := range entries {
 		known[e.Blob] = e
 	}
+	treeID, err := pack.ParseBlobID(captured.Tree)
+	require.NoError(err)
 	treeData, err := r.ReadBlob(known, treeID, nil, testPackExt)
 	require.NoError(err)
 	var tree ExtrasTree
@@ -299,7 +282,7 @@ func TestCaptureExtrasConfigSymlinkEscapeRefused(t *testing.T) {
 
 	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	defer appender.Abort()
-	_, _, err := CaptureExtras(t.Context(), ExtrasOptions{
+	_, err := CaptureExtras(t.Context(), ExtrasOptions{
 		DataDir:               dataDir,
 		Spec:                  ExtrasSpec{Files: []ExtrasFileSpec{{Path: cfgPath, RecordAs: "config.toml", Sensitive: true}}},
 		AllowPlaintextSecrets: true,
@@ -341,7 +324,7 @@ func TestCaptureExtrasRejectsSymlinks(t *testing.T) {
 	}
 
 	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
-	_, _, err = CaptureExtras(t.Context(), ExtrasOptions{
+	_, err = CaptureExtras(t.Context(), ExtrasOptions{
 		DataDir: dataDir, Spec: ExtrasSpec{Dirs: []ExtrasDirSpec{{Name: "deletions"}}},
 	}, appender)
 	require.Error(err)
@@ -385,7 +368,7 @@ func TestCaptureExtrasRejectsGlobbedSymlinks(t *testing.T) {
 
 	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
 	defer appender.Abort()
-	_, _, err = CaptureExtras(t.Context(), ExtrasOptions{
+	_, err = CaptureExtras(t.Context(), ExtrasOptions{
 		DataDir: dataDir, Spec: msgvaultTokensSpec(), AllowPlaintextSecrets: true,
 	}, appender)
 	require.Error(err)
@@ -421,11 +404,11 @@ func TestCaptureExtrasTokensDataDirWithGlobMetacharacters(t *testing.T) {
 	require.NoError(os.WriteFile(filepath.Join(dataDir, "client_secret_web.json"), []byte("{}"), 0o600))
 
 	appender := NewPackAppender(r, map[pack.BlobID]IndexEntry{}, pack.DefaultZstdLevel, nil, testPackExt)
-	treeID, hasTree, err := CaptureExtras(t.Context(), ExtrasOptions{
+	captured, err := CaptureExtras(t.Context(), ExtrasOptions{
 		DataDir: dataDir, Spec: msgvaultTokensSpec(), AllowPlaintextSecrets: true,
 	}, appender)
 	require.NoError(err)
-	require.True(hasTree)
+	require.NotEmpty(captured.Tree)
 
 	_, entries, err := appender.Finish()
 	require.NoError(err)
@@ -433,6 +416,8 @@ func TestCaptureExtrasTokensDataDirWithGlobMetacharacters(t *testing.T) {
 	for _, e := range entries {
 		known[e.Blob] = e
 	}
+	treeID, err := pack.ParseBlobID(captured.Tree)
+	require.NoError(err)
 	treeData, err := r.ReadBlob(known, treeID, nil, testPackExt)
 	require.NoError(err)
 	var tree ExtrasTree

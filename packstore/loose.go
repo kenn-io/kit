@@ -30,6 +30,23 @@ var looseCopyBufferPool = sync.Pool{
 	New: func() any { return new([looseCopyBufferBytes]byte) },
 }
 
+var looseZstdEncoderPool sync.Pool
+
+// Loose publication closes each looseZstdWriter exactly once. Detach the
+// staging file before pooling so an idle encoder retains no file handle.
+type looseZstdWriter struct {
+	*zstd.Encoder
+}
+
+func (w *looseZstdWriter) Close() error {
+	if err := w.Encoder.Close(); err != nil {
+		return err
+	}
+	w.Reset(nil)
+	looseZstdEncoderPool.Put(w.Encoder)
+	return nil
+}
+
 type looseVerificationIdentityPin interface {
 	Stat() (fs.FileInfo, error)
 	Close() error
@@ -47,10 +64,19 @@ var (
 	syncLooseFile             = func(file *os.File) error { return file.Sync() }
 	snapshotLoosePathIdentity = snapshotPathIdentity
 	newLooseZstdWriter        = func(dst io.Writer) (io.WriteCloser, error) {
-		return zstd.NewWriter(dst,
+		if cached := looseZstdEncoderPool.Get(); cached != nil {
+			encoder := cached.(*zstd.Encoder)
+			encoder.Reset(dst)
+			return &looseZstdWriter{Encoder: encoder}, nil
+		}
+		encoder, err := zstd.NewWriter(dst,
 			zstd.WithEncoderConcurrency(1),
 			zstd.WithWindowSize(looseZstdWindowBytes),
 		)
+		if err != nil {
+			return nil, err
+		}
+		return &looseZstdWriter{Encoder: encoder}, nil
 	}
 	newLooseZstdReader = func(src io.Reader) (looseZstdReader, error) {
 		return zstd.NewReader(src,

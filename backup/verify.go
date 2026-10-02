@@ -796,7 +796,7 @@ func (s *verifyState) verifySnapshot(m *Manifest) {
 		s.checkAttachmentConsistency(m, refs)
 	}
 
-	s.checkExtrasTree(m)
+	s.checkExtrasTree(m, recipesOK)
 }
 
 func (s *verifyState) checkAuxiliary(m *Manifest) {
@@ -982,7 +982,7 @@ func (s *verifyState) checkAttachmentConsistency(m *Manifest, refs []ContentRef)
 
 // checkExtrasTree decodes the extras tree blob (if any) and checks every
 // blob it names.
-func (s *verifyState) checkExtrasTree(m *Manifest) {
+func (s *verifyState) checkExtrasTree(m *Manifest, recipesOK bool) {
 	if m.Extras.Tree == "" {
 		return
 	}
@@ -1016,6 +1016,13 @@ func (s *verifyState) checkExtrasTree(m *Manifest) {
 		blobID, err := pack.ParseBlobID(entry.Blob)
 		if err != nil {
 			s.problem(m.SnapshotID, fmt.Sprintf("extras entry %s blob id %q: %v", entry.Path, entry.Blob, err))
+			continue
+		}
+		if !recipesOK && len(m.Extras.Recipes) > 0 {
+			// A failed recipe must not look like a missing whole-file blob.
+			continue
+		}
+		if s.checkRecipeSize(blobID, entry.Size, m.SnapshotID) {
 			continue
 		}
 		s.verifyContentBlob(blobID, m.SnapshotID)

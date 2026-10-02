@@ -970,8 +970,8 @@ func (s *restoreState) preflightSnapshotBlobs(ctx context.Context, m *Manifest, 
 		if err != nil {
 			return fmt.Errorf("backup: extras entry %s blob id %q: %w", entry.Path, entry.Blob, err)
 		}
-		if _, ok := s.known[id]; !ok {
-			return fmt.Errorf("backup: extras blob %s not present in any index", entry.Blob)
+		if err := s.checkObject(id, entry.Size); err != nil {
+			return fmt.Errorf("backup: extras blob %s (%s): %w", entry.Blob, entry.Path, err)
 		}
 	}
 	return nil
@@ -1958,8 +1958,6 @@ func (s *restoreState) stageExtras(ctx context.Context, app App, m *Manifest) ([
 		}
 	}()
 	for i, entry := range tree.Entries {
-		// Checked per entry: extras staging is a serial blob-fetch-and-write
-		// loop, so this is its only cancellation point.
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -2110,7 +2108,7 @@ func (s *restoreState) stageExtrasEntry(ctx context.Context, app App, entry Extr
 		return stagedFile{}, fmt.Errorf(
 			"backup: extras entry %s blob id %q: %w", entry.Path, entry.Blob, err)
 	}
-	stream, err := s.repo.OpenBlob(ctx, s.known, id, nil, s.app.PackFileExtension())
+	stream, err := openObject(ctx, s.repo, s.known, id, s.recipes, s.app.PackFileExtension())
 	if err != nil {
 		return stagedFile{}, err
 	}
@@ -2118,8 +2116,11 @@ func (s *restoreState) stageExtrasEntry(ctx context.Context, app App, entry Extr
 	if mode == 0 {
 		mode = 0o600
 	}
-	tmpRel, stageErr := s.stageRootReader(ctx, rel, stream, entry.Size, mode)
+	tmpRel, stageErr := s.stageRootReaderWithOptions(ctx, rel, stream, entry.Size, mode, ".restore-", uint64(MaxObjectBytes))
 	if err := errors.Join(stageErr, stream.Close()); err != nil {
+		if tmpRel != "" {
+			_ = s.root.Remove(tmpRel)
+		}
 		return stagedFile{}, fmt.Errorf("backup: restoring extras entry %s: %w", entry.Path, err)
 	}
 	return stagedFile{rel: rel, tmpRel: tmpRel}, nil

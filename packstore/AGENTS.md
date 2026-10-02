@@ -2,6 +2,9 @@
 
 ## Loose publication
 
+- Reused compression encoders must start independent streams. Return an encoder
+  to the pool only after a successful close, and detach its destination before
+  pooling so idle encoders retain no staging file handles.
 - New loose content publishes with `atomicfile.PublishNoReplace`. Publication
   must never replace or copy over an existing canonical name: a lost race is
   resolved by verifying the existing object, not by overwriting it.
