@@ -8,7 +8,9 @@
   automerge: false,
 
   // Let a release age before adopting it, so a compromised fresh publish is
-  // less likely to land. Security fixes skip the wait.
+  // less likely to land. Security fixes skip the wait. The age comes from the
+  // registry's timestamp. GitHub Actions tags use the tagged commit's date,
+  // which the publisher sets, so for Actions the PR review is the check.
   minimumReleaseAge: '7 days',
   minimumReleaseAgeBehaviour: 'timestamp-required',
   // strict keeps Renovate from creating a branch until the wait has passed.
