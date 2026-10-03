@@ -23,7 +23,17 @@ func captureHandlerTestOption() PostHogOption {
 
 func postCapture(t *testing.T, h http.Handler, method, body string) *httptest.ResponseRecorder {
 	t.Helper()
+	return postCaptureAs(t, h, method, "application/json", body)
+}
+
+func postCaptureAs(
+	t *testing.T, h http.Handler, method, contentType, body string,
+) *httptest.ResponseRecorder {
+	t.Helper()
 	req := httptest.NewRequestWithContext(t.Context(), method, "/telemetry/events", strings.NewReader(body))
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
@@ -235,6 +245,8 @@ func TestPostHogCaptureHandlerRejectsMalformedBody(t *testing.T) {
 		`[]`,
 		`{"event":"app_opened","properties":"view"}`,
 		`{"event":7}`,
+		`{"event":"app_opened"} trailing`,
+		`{"event":"app_opened"}{"event":"app_opened"}`,
 	}
 	for _, body := range bodies {
 		t.Run(body, func(t *testing.T) {
@@ -270,4 +282,50 @@ func TestPostHogCaptureHandlerReportsEnqueueFailure(t *testing.T) {
 
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 	assert.NotContains(t, rec.Body.String(), "queued")
+}
+
+func TestPostHogCaptureHandlerRequiresJSONContentType(t *testing.T) {
+	contentTypes := []string{
+		"",
+		"text/plain",
+		"application/x-www-form-urlencoded",
+		"multipart/form-data; boundary=x",
+		"application/json; charset",
+	}
+	for _, contentType := range contentTypes {
+		t.Run(contentType, func(t *testing.T) {
+			reporter, client, _ := newInstallAgeTestReporter(t, postHogTestStart, captureHandlerTestOption())
+
+			rec := postCaptureAs(t, NewPostHogCaptureHandler(reporter), http.MethodPost, contentType,
+				`{"event":"app_opened"}`)
+
+			assert.Equal(t, http.StatusUnsupportedMediaType, rec.Code)
+			assert.Empty(t, client.messages)
+		})
+	}
+}
+
+func TestPostHogCaptureHandlerAcceptsJSONContentTypeVariants(t *testing.T) {
+	for _, contentType := range []string{"application/json; charset=utf-8", "Application/JSON"} {
+		t.Run(contentType, func(t *testing.T) {
+			reporter, client, _ := newInstallAgeTestReporter(t, postHogTestStart, captureHandlerTestOption())
+
+			rec := postCaptureAs(t, NewPostHogCaptureHandler(reporter), http.MethodPost, contentType,
+				"{\"event\":\"app_opened\"}\n")
+
+			require.Equal(t, http.StatusAccepted, rec.Code)
+			assert.Equal(t, "queued", decodeStatus(t, rec))
+			assert.Len(t, client.messages, 1)
+		})
+	}
+}
+
+func TestPostHogCaptureHandlerRejectsOversizedBody(t *testing.T) {
+	reporter, client, _ := newInstallAgeTestReporter(t, postHogTestStart, captureHandlerTestOption())
+	body := `{"event":"app_opened","properties":{"view":"` + strings.Repeat("a", 64<<10) + `"}}`
+
+	rec := postCapture(t, NewPostHogCaptureHandler(reporter), http.MethodPost, body)
+
+	assert.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+	assert.Empty(t, client.messages)
 }
