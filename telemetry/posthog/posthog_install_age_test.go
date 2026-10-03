@@ -298,5 +298,6 @@ func TestPostHogReporterReturnsClientErrorsUnwrapped(t *testing.T) {
 
 	assert.Equal(t, enqueueErr, reporter.Capture("daemon_active", nil))
 	assert.Equal(t, closeErr, reporter.Close())
-	assert.True(t, reporter.Enabled())
+	assert.False(t, reporter.Enabled())
+	assert.NoError(t, reporter.Close())
 }

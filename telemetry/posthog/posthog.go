@@ -372,11 +372,10 @@ func (r *Reporter) Close() error {
 	if !r.activeLocked() {
 		return nil
 	}
-	if err := r.client.Close(); err != nil {
-		return err
-	}
+	// The SDK refuses a second Close, so a timed-out reporter is done too.
+	err := r.client.Close()
 	r.deactivateLocked()
-	return nil
+	return err
 }
 
 func (r *Reporter) activeLocked() bool {

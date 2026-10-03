@@ -113,6 +113,7 @@ func TestReporterCloseGivesUpAfterShutdownTimeout(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Less(t, time.Since(start), ShutdownTimeout+time.Second)
+	assert.False(t, reporter.Enabled())
 }
 
 func TestPostHogTelemetryEnabledFromEnvHonorsProcessDisable(t *testing.T) {
