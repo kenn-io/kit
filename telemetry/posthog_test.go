@@ -88,6 +88,55 @@ func TestNewPostHogReporterDisabledByEnvSkipsRequiredFields(t *testing.T) {
 	assert.False(t, reporter.Enabled())
 }
 
+func TestNewPostHogReporterDisabledRetainsAllowlist(t *testing.T) {
+	tests := []struct {
+		name    string
+		disable func(t *testing.T)
+	}{
+		{name: "generic_env", disable: func(t *testing.T) {
+			t.Helper()
+			t.Setenv(GenericTelemetryEnabledEnv, " 0 ")
+			t.Setenv("KATA_TELEMETRY_ENABLED", "1")
+		}},
+		{name: "prefixed_env", disable: func(t *testing.T) {
+			t.Helper()
+			t.Setenv(GenericTelemetryEnabledEnv, "1")
+			t.Setenv("KATA_TELEMETRY_ENABLED", " 0")
+		}},
+		{name: "process_disable", disable: func(t *testing.T) {
+			t.Helper()
+			t.Setenv(GenericTelemetryEnabledEnv, "1")
+			t.Setenv("KATA_TELEMETRY_ENABLED", "1")
+			DisablePostHogTelemetry()
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			enablePostHogTelemetryForTest()
+			t.Cleanup(enablePostHogTelemetryForTest)
+			tt.disable(t)
+			options := []PostHogOption{nil, WithAllowedEvent("app_opened")}
+
+			nilFactoryReporter, err := newPostHogReporter(PostHogOptions{EnvPrefix: "KATA"}, nil, options...)
+			require.NoError(t, err)
+			assert.True(t, nilFactoryReporter.EventAllowed("app_opened"))
+
+			factoryCalls := 0
+			reporter, err := newPostHogReporter(PostHogOptions{EnvPrefix: "KATA"}, func(string, posthog.Config) (postHogEnqueueCloser, error) {
+				factoryCalls++
+				return &recordingPostHogClient{}, nil
+			}, options...)
+			require.NoError(t, err)
+
+			assert.False(t, reporter.Enabled())
+			assert.True(t, reporter.EventAllowed("app_opened"))
+			assert.False(t, reporter.EventAllowed("app_closed"))
+			require.NoError(t, reporter.Capture("app_closed", nil))
+			assert.Zero(t, factoryCalls)
+		})
+	}
+}
+
 func TestNewPostHogReporterRequiresCallerOwnedConfigurationWhenEnabled(t *testing.T) {
 	enablePostHogTelemetryForTest()
 	t.Cleanup(enablePostHogTelemetryForTest)

@@ -192,7 +192,9 @@ func PostHogTelemetryDisabled() bool {
 }
 
 // NewPostHogReporter builds an enabled reporter or returns a disabled reporter
-// when telemetry is opted out by build tag or environment variable.
+// when telemetry is opted out by build tag or environment variable. The
+// disabled reporter keeps its configured events, so a capture handler can still
+// reject unknown ones.
 func NewPostHogReporter(opts PostHogOptions, options ...PostHogOption) (*PostHogReporter, error) {
 	return newPostHogReporter(opts, func(apiKey string, config posthog.Config) (postHogEnqueueCloser, error) {
 		return posthog.NewWithConfig(apiKey, config)
@@ -200,8 +202,15 @@ func NewPostHogReporter(opts PostHogOptions, options ...PostHogOption) (*PostHog
 }
 
 func newPostHogReporter(opts PostHogOptions, newClient postHogClientFactory, options ...PostHogOption) (*PostHogReporter, error) {
+	config := postHogReporterConfig{}
+	for _, option := range options {
+		if option != nil {
+			option.applyPostHogOption(&config)
+		}
+	}
+	allowedEvents := cloneAllowedTelemetryEvents(config.allowedEvents)
 	if !PostHogTelemetryEnabledFromEnv(opts.EnvPrefix) {
-		return DisabledPostHogReporter(), nil
+		return &PostHogReporter{allowedEvents: allowedEvents}, nil
 	}
 	if newClient == nil {
 		return nil, errors.New("posthog client factory is required")
@@ -219,13 +228,6 @@ func newPostHogReporter(opts PostHogOptions, newClient postHogClientFactory, opt
 		return nil, errors.New("telemetry distinct id is required")
 	}
 
-	config := postHogReporterConfig{}
-	for _, option := range options {
-		if option != nil {
-			option.applyPostHogOption(&config)
-		}
-	}
-	allowedEvents := cloneAllowedTelemetryEvents(config.allowedEvents)
 	if len(allowedEvents) == 0 {
 		return nil, errors.New("telemetry allowed events are required")
 	}
