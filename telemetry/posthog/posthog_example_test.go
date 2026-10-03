@@ -1,4 +1,4 @@
-package telemetry_test
+package posthog_test
 
 import (
 	"errors"
@@ -6,10 +6,10 @@ import (
 	"os"
 	"time"
 
-	"go.kenn.io/kit/telemetry"
+	"go.kenn.io/kit/telemetry/posthog"
 )
 
-func ExamplePostHogReporter_Capture_daemonActive() {
+func ExampleReporter_Capture_daemonActive() {
 	if err := captureDaemonActive(); err != nil {
 		fmt.Println("error:", err)
 	}
@@ -30,7 +30,7 @@ func captureDaemonActive() error {
 	// Real callers load this from the state file that stores DistinctID.
 	installedAt := time.Date(2026, time.January, 2, 15, 4, 5, 0, time.UTC)
 
-	reporter, err := telemetry.NewPostHogReporter(telemetry.PostHogOptions{
+	reporter, err := posthog.NewReporter(posthog.Options{
 		APIKey:      "caller-owned-posthog-project-api-key",
 		Application: "kata",
 		EnvPrefix:   "KATA",
@@ -41,8 +41,8 @@ func captureDaemonActive() error {
 		InstalledAt: installedAt,
 		Version:     "v1.2.3",
 		Commit:      "abc1234",
-	}, telemetry.WithAllowedEvent("daemon_active",
-		telemetry.AllowTelemetryProperty("project_count", telemetry.AllowTelemetryNumber),
+	}, posthog.WithAllowedEvent("daemon_active",
+		posthog.AllowProperty("project_count", posthog.AllowNumber),
 	))
 	if err != nil {
 		return err

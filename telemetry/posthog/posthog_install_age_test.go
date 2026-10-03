@@ -1,4 +1,4 @@
-package telemetry
+package posthog
 
 import (
 	"errors"
@@ -8,21 +8,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/posthog/posthog-go"
+	phsdk "github.com/posthog/posthog-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 type recordingPostHogClient struct {
 	mu       sync.Mutex
-	messages []posthog.Capture
+	messages []phsdk.Capture
 	closes   int
 }
 
-func (c *recordingPostHogClient) Enqueue(message posthog.Message) error {
+func (c *recordingPostHogClient) Enqueue(message phsdk.Message) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.messages = append(c.messages, message.(posthog.Capture))
+	c.messages = append(c.messages, message.(phsdk.Capture))
 	return nil
 }
 
@@ -43,18 +43,18 @@ func (c *fakePostHogClock) Advance(d time.Duration) { c.now = c.now.Add(d) }
 
 var postHogTestStart = time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 
-func newInstallAgeTestReporter(t *testing.T, installedAt time.Time, options ...PostHogOption) (*PostHogReporter, *recordingPostHogClient, *fakePostHogClock) {
+func newInstallAgeTestReporter(t *testing.T, installedAt time.Time, options ...Option) (*Reporter, *recordingPostHogClient, *fakePostHogClock) {
 	t.Helper()
 	client := &recordingPostHogClient{}
 	reporter, clock := newInstallAgeTestReporterWithClient(t, client, installedAt, options...)
 	return reporter, client, clock
 }
 
-func newInstallAgeTestReporterWithClient(t *testing.T, client postHogEnqueueCloser, installedAt time.Time, options ...PostHogOption) (*PostHogReporter, *fakePostHogClock) {
+func newInstallAgeTestReporterWithClient(t *testing.T, client postHogEnqueueCloser, installedAt time.Time, options ...Option) (*Reporter, *fakePostHogClock) {
 	t.Helper()
 	enablePostHogTelemetryForTest()
 	t.Cleanup(enablePostHogTelemetryForTest)
-	t.Setenv(GenericTelemetryEnabledEnv, "1")
+	t.Setenv(GenericEnabledEnv, "1")
 	t.Setenv("KATA_TELEMETRY_ENABLED", "1")
 
 	clock := &fakePostHogClock{now: postHogTestStart}
@@ -62,20 +62,20 @@ func newInstallAgeTestReporterWithClient(t *testing.T, client postHogEnqueueClos
 		config.now = clock.Now
 	}))
 	allOptions = append(allOptions, options...)
-	reporter, err := newPostHogReporter(PostHogOptions{
+	reporter, err := newPostHogReporter(Options{
 		APIKey:      "caller-owned-key",
 		Application: "kata",
 		EnvPrefix:   "KATA",
 		DistinctID:  "anonymous-instance-id",
 		InstalledAt: installedAt,
-	}, func(string, posthog.Config) (postHogEnqueueCloser, error) {
+	}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
 		return client, nil
 	}, allOptions...)
 	require.NoError(t, err)
 	return reporter, clock
 }
 
-func capturedEvents(messages []posthog.Capture) []string {
+func capturedEvents(messages []phsdk.Capture) []string {
 	events := make([]string, 0, len(messages))
 	for _, message := range messages {
 		events = append(events, message.Event)
@@ -148,7 +148,7 @@ func TestPostHogReporterZeroInstalledAtOmitsInstallAge(t *testing.T) {
 	require.NoError(reporter.Capture("daemon_started", map[string]any{"sync_enabled": true}))
 
 	require.Len(client.messages, 1)
-	assert.Equal(t, posthog.Properties{
+	assert.Equal(t, phsdk.Properties{
 		"$process_person_profile": false,
 		"$geoip_disable":          true,
 		"application":             "kata",
@@ -176,7 +176,7 @@ func TestPostHogReporterOwnsInstallAgeProperty(t *testing.T) {
 			require := require.New(t)
 
 			reporter, client, _ := newInstallAgeTestReporter(t, tt.installedAt,
-				WithAllowedEvent("daemon_active", AllowTelemetryProperty("install_age_hours", allowAnyTelemetryValue)))
+				WithAllowedEvent("daemon_active", AllowProperty("install_age_hours", allowAnyTelemetryValue)))
 
 			require.NoError(reporter.Capture("daemon_active", map[string]any{
 				"install_age_hours":   9999,
@@ -202,7 +202,7 @@ func TestPostHogReporterSanitizePropertiesOmitsInstallAge(t *testing.T) {
 	require := require.New(t)
 
 	reporter, _, _ := newInstallAgeTestReporter(t, postHogTestStart.Add(-25*time.Hour),
-		WithAllowedEvent("daemon_active", AllowTelemetryProperty("install_age_hours", allowAnyTelemetryValue)))
+		WithAllowedEvent("daemon_active", AllowProperty("install_age_hours", allowAnyTelemetryValue)))
 
 	props, err := reporter.SanitizeProperties("daemon_active", map[string]any{
 		"install_age_hours": 9999,
@@ -250,16 +250,16 @@ func TestPostHogReporterInstalledAtHonorsOptOut(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			enablePostHogTelemetryForTest()
 			t.Cleanup(enablePostHogTelemetryForTest)
-			t.Setenv(GenericTelemetryEnabledEnv, tt.generic)
+			t.Setenv(GenericEnabledEnv, tt.generic)
 			t.Setenv("KATA_TELEMETRY_ENABLED", tt.prefixed)
 
-			reporter, err := newPostHogReporter(PostHogOptions{
+			reporter, err := newPostHogReporter(Options{
 				APIKey:      "caller-owned-key",
 				Application: "kata",
 				EnvPrefix:   "KATA",
 				DistinctID:  "anonymous-instance-id",
 				InstalledAt: postHogTestStart.Add(-7 * time.Minute),
-			}, func(string, posthog.Config) (postHogEnqueueCloser, error) {
+			}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
 				assert.Fail(t, "client factory called despite opt-out")
 				return nil, errors.New("client factory called")
 			}, testAllowedTelemetryOptions()...)
@@ -273,7 +273,7 @@ func TestPostHogReporterInstalledAtHonorsOptOut(t *testing.T) {
 	t.Run("process_disable", func(t *testing.T) {
 		reporter, client, _ := newInstallAgeTestReporter(t, postHogTestStart.Add(-61*time.Minute))
 
-		DisablePostHogTelemetry()
+		DisableProcess()
 
 		require.NoError(t, reporter.Capture("daemon_active", map[string]any{"project_count": 1}))
 		assert.Empty(t, client.messages)
@@ -286,7 +286,7 @@ type failingPostHogClient struct {
 	closeErr   error
 }
 
-func (c failingPostHogClient) Enqueue(posthog.Message) error { return c.enqueueErr }
+func (c failingPostHogClient) Enqueue(phsdk.Message) error { return c.enqueueErr }
 
 func (c failingPostHogClient) Close() error { return c.closeErr }
 

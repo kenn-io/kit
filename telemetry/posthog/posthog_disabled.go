@@ -1,7 +1,7 @@
 //go:build kit_posthog_disabled
 
-package telemetry
+package posthog
 
 func init() {
-	DisablePostHogTelemetry()
+	DisableProcess()
 }

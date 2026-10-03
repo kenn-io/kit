@@ -1,4 +1,4 @@
-package telemetry
+package posthog
 
 import (
 	"encoding/json"
@@ -21,7 +21,7 @@ type postHogCaptureResponse struct {
 	Status string `json:"status"`
 }
 
-// NewPostHogCaptureHandler returns a handler that lets an application's own UI
+// NewCaptureHandler returns a handler that lets an application's own UI
 // report events through reporter, so the browser holds no analytics key and
 // loads no provider script. It accepts POST {"event": "...", "properties": {...}}
 // as application/json, which makes browsers preflight cross-origin posts. The
@@ -39,11 +39,11 @@ type postHogCaptureResponse struct {
 // reporter closed or disabled between the enabled check and Capture answers
 // queued while Capture's own guard sends nothing.
 //
-// A nil reporter or DisabledPostHogReporter admits no event. Construct an
+// A nil reporter or DisabledReporter admits no event. Construct an
 // opted-out reporter with the same WithAllowedEvent options as an enabled one.
 // Callers mount the handler on their own router, inside the authentication
 // that router already applies to UI routes.
-func NewPostHogCaptureHandler(reporter *PostHogReporter) http.Handler {
+func NewCaptureHandler(reporter *Reporter) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
@@ -65,7 +65,7 @@ func NewPostHogCaptureHandler(reporter *PostHogReporter) http.Handler {
 			return
 		}
 		if !reporter.EventAllowed(req.Event) {
-			http.Error(w, ErrUnsupportedTelemetryEvent.Error(), http.StatusBadRequest)
+			http.Error(w, ErrUnsupportedEvent.Error(), http.StatusBadRequest)
 			return
 		}
 		if !reporter.Enabled() {

@@ -1,4 +1,4 @@
-package telemetry
+package posthog
 
 import (
 	"encoding/json"
@@ -9,15 +9,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/posthog/posthog-go"
+	phsdk "github.com/posthog/posthog-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func captureHandlerTestOption() PostHogOption {
+func captureHandlerTestOption() Option {
 	return WithAllowedEvent("app_opened",
-		AllowTelemetryProperty("view", AllowTelemetryStringValues("sessions", "search")),
-		AllowTelemetryProperty("count", AllowTelemetryNumber),
+		AllowProperty("view", AllowStringValues("sessions", "search")),
+		AllowProperty("count", AllowNumber),
 	)
 }
 
@@ -49,19 +49,19 @@ func decodeStatus(t *testing.T, rec *httptest.ResponseRecorder) string {
 
 // newOptedOutCaptureTestReporter builds a reporter opted out by the prefixed
 // environment variable and returns how often its client factory ran.
-func newOptedOutCaptureTestReporter(t *testing.T) (*PostHogReporter, *int) {
+func newOptedOutCaptureTestReporter(t *testing.T) (*Reporter, *int) {
 	t.Helper()
 	enablePostHogTelemetryForTest()
 	t.Cleanup(enablePostHogTelemetryForTest)
-	t.Setenv(GenericTelemetryEnabledEnv, "1")
+	t.Setenv(GenericEnabledEnv, "1")
 	t.Setenv("KATA_TELEMETRY_ENABLED", "0")
 	factoryCalls := 0
-	reporter, err := newPostHogReporter(PostHogOptions{
+	reporter, err := newPostHogReporter(Options{
 		APIKey:      "caller-owned-key",
 		Application: "kata",
 		EnvPrefix:   "KATA",
 		DistinctID:  "anonymous-instance-id",
-	}, func(string, posthog.Config) (postHogEnqueueCloser, error) {
+	}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
 		factoryCalls++
 		return &recordingPostHogClient{}, nil
 	}, captureHandlerTestOption())
@@ -71,11 +71,11 @@ func newOptedOutCaptureTestReporter(t *testing.T) (*PostHogReporter, *int) {
 
 type captureHandlerTestState struct {
 	name  string
-	build func(t *testing.T) (reporter *PostHogReporter, sent func() int, factoryCalls func() int)
+	build func(t *testing.T) (reporter *Reporter, sent func() int, factoryCalls func() int)
 }
 
 func optedOutCaptureState() captureHandlerTestState {
-	return captureHandlerTestState{name: "env_opt_out", build: func(t *testing.T) (*PostHogReporter, func() int, func() int) {
+	return captureHandlerTestState{name: "env_opt_out", build: func(t *testing.T) (*Reporter, func() int, func() int) {
 		t.Helper()
 		reporter, calls := newOptedOutCaptureTestReporter(t)
 		return reporter, func() int { return 0 }, func() int { return *calls }
@@ -83,17 +83,17 @@ func optedOutCaptureState() captureHandlerTestState {
 }
 
 func processDisabledCaptureState() captureHandlerTestState {
-	return captureHandlerTestState{name: "process_disabled", build: func(t *testing.T) (*PostHogReporter, func() int, func() int) {
+	return captureHandlerTestState{name: "process_disabled", build: func(t *testing.T) (*Reporter, func() int, func() int) {
 		t.Helper()
 		reporter, client, _ := newInstallAgeTestReporter(t, postHogTestStart, captureHandlerTestOption())
-		DisablePostHogTelemetry()
+		DisableProcess()
 		t.Cleanup(enablePostHogTelemetryForTest)
 		return reporter, func() int { return len(client.messages) }, nil
 	}}
 }
 
 func closedCaptureState() captureHandlerTestState {
-	return captureHandlerTestState{name: "closed", build: func(t *testing.T) (*PostHogReporter, func() int, func() int) {
+	return captureHandlerTestState{name: "closed", build: func(t *testing.T) (*Reporter, func() int, func() int) {
 		t.Helper()
 		reporter, client, _ := newInstallAgeTestReporter(t, postHogTestStart, captureHandlerTestOption())
 		require.NoError(t, reporter.Close())
@@ -104,7 +104,7 @@ func closedCaptureState() captureHandlerTestState {
 func TestPostHogCaptureHandlerCapturesAllowedEventWithAllowedProperties(t *testing.T) {
 	reporter, client, _ := newInstallAgeTestReporter(t, postHogTestStart.Add(-30*time.Hour), captureHandlerTestOption())
 
-	rec := postCapture(t, NewPostHogCaptureHandler(reporter), http.MethodPost,
+	rec := postCapture(t, NewCaptureHandler(reporter), http.MethodPost,
 		`{"event":"app_opened","properties":{"view":"sessions","count":2,"path":"/Users/example/private","query":"secret"}}`)
 
 	require.Equal(t, http.StatusAccepted, rec.Code)
@@ -124,7 +124,7 @@ func TestPostHogCaptureHandlerCapturesAllowedEventWithAllowedProperties(t *testi
 
 func TestPostHogCaptureHandlerRejectsUnknownEventInEveryState(t *testing.T) {
 	states := []captureHandlerTestState{
-		{name: "enabled", build: func(t *testing.T) (*PostHogReporter, func() int, func() int) {
+		{name: "enabled", build: func(t *testing.T) (*Reporter, func() int, func() int) {
 			t.Helper()
 			reporter, client, _ := newInstallAgeTestReporter(t, postHogTestStart, captureHandlerTestOption())
 			return reporter, func() int { return len(client.messages) }, nil
@@ -132,10 +132,10 @@ func TestPostHogCaptureHandlerRejectsUnknownEventInEveryState(t *testing.T) {
 		optedOutCaptureState(),
 		processDisabledCaptureState(),
 		closedCaptureState(),
-		{name: "disabled_reporter", build: func(*testing.T) (*PostHogReporter, func() int, func() int) {
-			return DisabledPostHogReporter(), func() int { return 0 }, nil
+		{name: "disabled_reporter", build: func(*testing.T) (*Reporter, func() int, func() int) {
+			return DisabledReporter(), func() int { return 0 }, nil
 		}},
-		{name: "nil_reporter", build: func(*testing.T) (*PostHogReporter, func() int, func() int) {
+		{name: "nil_reporter", build: func(*testing.T) (*Reporter, func() int, func() int) {
 			return nil, func() int { return 0 }, nil
 		}},
 	}
@@ -149,7 +149,7 @@ func TestPostHogCaptureHandlerRejectsUnknownEventInEveryState(t *testing.T) {
 	for _, state := range states {
 		t.Run(state.name, func(t *testing.T) {
 			reporter, sent, factoryCalls := state.build(t)
-			handler := NewPostHogCaptureHandler(reporter)
+			handler := NewCaptureHandler(reporter)
 			for _, body := range bodies {
 				rec := postCapture(t, handler, http.MethodPost, body)
 				assert.Equal(t, http.StatusBadRequest, rec.Code, body)
@@ -172,7 +172,7 @@ func TestPostHogCaptureHandlerDisabledReporterAnswersDisabled(t *testing.T) {
 		t.Run(state.name, func(t *testing.T) {
 			reporter, sent, factoryCalls := state.build(t)
 
-			rec := postCapture(t, NewPostHogCaptureHandler(reporter), http.MethodPost,
+			rec := postCapture(t, NewCaptureHandler(reporter), http.MethodPost,
 				`{"event":"app_opened","properties":{"view":"sessions"}}`)
 
 			require.Equal(t, http.StatusAccepted, rec.Code)
@@ -188,16 +188,16 @@ func TestPostHogCaptureHandlerDisabledReporterAnswersDisabled(t *testing.T) {
 func TestPostHogCaptureHandlerKeepsReporterOwnedProperties(t *testing.T) {
 	reporter, client, _ := newInstallAgeTestReporter(t, postHogTestStart.Add(-30*time.Hour),
 		WithAllowedEvent("app_opened",
-			AllowTelemetryProperty("application", allowAnyTelemetryValue),
-			AllowTelemetryProperty("version", allowAnyTelemetryValue),
-			AllowTelemetryProperty("source", allowAnyTelemetryValue),
-			AllowTelemetryProperty(postHogInstallAgeProperty, allowAnyTelemetryValue),
-			AllowTelemetryProperty("$process_person_profile", allowAnyTelemetryValue),
-			AllowTelemetryProperty("$geoip_disable", allowAnyTelemetryValue),
-			AllowTelemetryProperty("goos", allowAnyTelemetryValue),
+			AllowProperty("application", allowAnyTelemetryValue),
+			AllowProperty("version", allowAnyTelemetryValue),
+			AllowProperty("source", allowAnyTelemetryValue),
+			AllowProperty(postHogInstallAgeProperty, allowAnyTelemetryValue),
+			AllowProperty("$process_person_profile", allowAnyTelemetryValue),
+			AllowProperty("$geoip_disable", allowAnyTelemetryValue),
+			AllowProperty("goos", allowAnyTelemetryValue),
 		))
 
-	rec := postCapture(t, NewPostHogCaptureHandler(reporter), http.MethodPost,
+	rec := postCapture(t, NewCaptureHandler(reporter), http.MethodPost,
 		`{"event":"app_opened","properties":{"application":"spoof","version":"spoof","source":"browser","install_age_hours":0,"$process_person_profile":true,"$geoip_disable":false,"goos":"plan9"}}`)
 
 	require.Equal(t, http.StatusAccepted, rec.Code)
@@ -229,7 +229,7 @@ func TestPostHogCaptureHandlerDropsUnsafePropertyValues(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			reporter, client, _ := newInstallAgeTestReporter(t, postHogTestStart, captureHandlerTestOption())
 
-			rec := postCapture(t, NewPostHogCaptureHandler(reporter), http.MethodPost, tt.body)
+			rec := postCapture(t, NewCaptureHandler(reporter), http.MethodPost, tt.body)
 
 			require.Equal(t, http.StatusAccepted, rec.Code)
 			assert.Equal(t, "queued", decodeStatus(t, rec))
@@ -252,7 +252,7 @@ func TestPostHogCaptureHandlerRejectsMalformedBody(t *testing.T) {
 		t.Run(body, func(t *testing.T) {
 			reporter, client, _ := newInstallAgeTestReporter(t, postHogTestStart, captureHandlerTestOption())
 
-			rec := postCapture(t, NewPostHogCaptureHandler(reporter), http.MethodPost, body)
+			rec := postCapture(t, NewCaptureHandler(reporter), http.MethodPost, body)
 
 			assert.Equal(t, http.StatusBadRequest, rec.Code)
 			assert.Empty(t, client.messages)
@@ -265,7 +265,7 @@ func TestPostHogCaptureHandlerRejectsNonPost(t *testing.T) {
 		t.Run(method, func(t *testing.T) {
 			reporter, client, _ := newInstallAgeTestReporter(t, postHogTestStart, captureHandlerTestOption())
 
-			rec := postCapture(t, NewPostHogCaptureHandler(reporter), method, `{"event":"app_opened"}`)
+			rec := postCapture(t, NewCaptureHandler(reporter), method, `{"event":"app_opened"}`)
 
 			assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
 			assert.Equal(t, http.MethodPost, rec.Header().Get("Allow"))
@@ -276,9 +276,9 @@ func TestPostHogCaptureHandlerRejectsNonPost(t *testing.T) {
 
 func TestPostHogCaptureHandlerReportsEnqueueFailure(t *testing.T) {
 	reporter, _ := newInstallAgeTestReporterWithClient(t,
-		failingPostHogClient{enqueueErr: posthog.ErrQueueFull}, postHogTestStart, captureHandlerTestOption())
+		failingPostHogClient{enqueueErr: phsdk.ErrQueueFull}, postHogTestStart, captureHandlerTestOption())
 
-	rec := postCapture(t, NewPostHogCaptureHandler(reporter), http.MethodPost, `{"event":"app_opened"}`)
+	rec := postCapture(t, NewCaptureHandler(reporter), http.MethodPost, `{"event":"app_opened"}`)
 
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 	assert.NotContains(t, rec.Body.String(), "queued")
@@ -296,7 +296,7 @@ func TestPostHogCaptureHandlerRequiresJSONContentType(t *testing.T) {
 		t.Run(contentType, func(t *testing.T) {
 			reporter, client, _ := newInstallAgeTestReporter(t, postHogTestStart, captureHandlerTestOption())
 
-			rec := postCaptureAs(t, NewPostHogCaptureHandler(reporter), http.MethodPost, contentType,
+			rec := postCaptureAs(t, NewCaptureHandler(reporter), http.MethodPost, contentType,
 				`{"event":"app_opened"}`)
 
 			assert.Equal(t, http.StatusUnsupportedMediaType, rec.Code)
@@ -310,7 +310,7 @@ func TestPostHogCaptureHandlerAcceptsJSONContentTypeVariants(t *testing.T) {
 		t.Run(contentType, func(t *testing.T) {
 			reporter, client, _ := newInstallAgeTestReporter(t, postHogTestStart, captureHandlerTestOption())
 
-			rec := postCaptureAs(t, NewPostHogCaptureHandler(reporter), http.MethodPost, contentType,
+			rec := postCaptureAs(t, NewCaptureHandler(reporter), http.MethodPost, contentType,
 				"{\"event\":\"app_opened\"}\n")
 
 			require.Equal(t, http.StatusAccepted, rec.Code)
@@ -324,7 +324,7 @@ func TestPostHogCaptureHandlerRejectsOversizedBody(t *testing.T) {
 	reporter, client, _ := newInstallAgeTestReporter(t, postHogTestStart, captureHandlerTestOption())
 	body := `{"event":"app_opened","properties":{"view":"` + strings.Repeat("a", 64<<10) + `"}}`
 
-	rec := postCapture(t, NewPostHogCaptureHandler(reporter), http.MethodPost, body)
+	rec := postCapture(t, NewCaptureHandler(reporter), http.MethodPost, body)
 
 	assert.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
 	assert.Empty(t, client.messages)
