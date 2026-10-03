@@ -1,3 +1,8 @@
+---
+title: "Path Resolution Instructions"
+description: "Rules for filesystem path canonicalization, identity and containment, symlink traversal, and Windows reparse points."
+last_edited: 2026-09-26
+---
 # Path Resolution Instructions
 
 ## Scope

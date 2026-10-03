@@ -1,3 +1,8 @@
+---
+title: "Adopting packed content storage"
+description: "Integration guide for packed content storage, catalog authority, streaming reads, maintenance, restore, and resource limits."
+last_edited: 2026-07-12
+---
 # Adopting packed content storage
 
 This guide is for applications moving a content-addressed file tree onto

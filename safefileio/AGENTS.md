@@ -1,3 +1,8 @@
+---
+title: "Safe File I/O Instructions"
+description: "Invariants for private file creation, runtime directory validation, ownership, ACLs, and cross-platform link safety."
+last_edited: 2026-09-27
+---
 # Safe File I/O Instructions
 
 ## Scope

@@ -1,3 +1,8 @@
+---
+title: "atomicfile Instructions"
+description: "Cross-platform invariants for atomic publication, no-replace writes, symlink handling, permissions, and durability."
+last_edited: 2026-09-30
+---
 # atomicfile Instructions
 
 ## Scope

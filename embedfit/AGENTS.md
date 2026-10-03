@@ -1,3 +1,8 @@
+---
+title: "embedfit invariants"
+description: "Invariants for token-budget fitting, truncation, overlap, source coordinates, formatting, and tokenizer behavior."
+last_edited: 2026-09-25
+---
 # embedfit invariants
 
 - Count tokens on the formatted string: prefix, source slice, suffix.

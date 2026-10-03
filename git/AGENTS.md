@@ -1,3 +1,8 @@
+---
+title: "Git Package Instructions"
+description: "Rules for reusable Git subprocesses, repository mechanics, managed worktrees, untrusted imports, tracking, and rollback."
+last_edited: 2026-09-12
+---
 # Git Package Instructions
 
 ## Scope

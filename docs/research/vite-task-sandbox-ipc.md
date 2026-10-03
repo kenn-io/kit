@@ -1,3 +1,8 @@
+---
+title: "Vite Task's sandbox-compatible IPC changes"
+description: "Research on Vite Task named-pipe and file-tracking changes, sandbox behavior, and lessons for local daemon IPC."
+last_edited: 2026-08-24
+---
 # Vite Task's sandbox-compatible IPC changes
 
 ## Scope

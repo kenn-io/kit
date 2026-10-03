@@ -1,3 +1,8 @@
+---
+title: "Agent CLI command construction"
+description: "Command construction, prompt delivery, capabilities, and caller integration for supported coding-agent CLIs."
+last_edited: 2026-09-08
+---
 # Agent CLI command construction
 
 `agentcli` builds argument vectors for coding-agent CLIs. It supplies defaults,

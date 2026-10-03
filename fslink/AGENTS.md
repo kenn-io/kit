@@ -1,3 +1,8 @@
+---
+title: "fslink Instructions"
+description: "Cross-platform rules for symlinks, Windows junctions, root-confined access, path identity, and link-safe file operations."
+last_edited: 2026-09-27
+---
 # fslink Instructions
 
 ## Scope

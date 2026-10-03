@@ -1,3 +1,8 @@
+---
+title: "Lint Package Instructions"
+description: "Shared Go lint policy ownership, analyzer invariants, configuration generation, and consumer integration rules."
+last_edited: 2026-09-18
+---
 # Lint Package Instructions
 
 ## Scope

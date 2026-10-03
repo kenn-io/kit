@@ -1,3 +1,8 @@
+---
+title: "Adopting the shared Go lint policy (kennlint)"
+description: "Adoption and maintenance guide for the shared Go lint policy, custom analyzers, configuration overlays, and CI integration."
+last_edited: 2026-09-18
+---
 # Adopting the shared Go lint policy (kennlint)
 
 `go.kenn.io/kit/lint` owns the Go lint policy for kenn-io repositories: a

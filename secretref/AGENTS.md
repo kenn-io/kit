@@ -1,3 +1,8 @@
+---
+title: "secretref invariants"
+description: "Rules for literal and referenced secrets, configuration decoding, source validation, error context, and private file access."
+last_edited: 2026-09-30
+---
 # secretref invariants
 
 - One configuration value holds a secret or names its source. A string is

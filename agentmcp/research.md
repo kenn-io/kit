@@ -1,3 +1,8 @@
+---
+title: "MCP registration research"
+description: "Research on native MCP client configuration, registration formats, transport mappings, and preservation requirements."
+last_edited: 2026-09-28
+---
 # MCP registration research
 
 Checked primary sources on 2026-09-26. This note informs the eight clients already

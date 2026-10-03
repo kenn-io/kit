@@ -1,3 +1,8 @@
+---
+title: "Streaming pack I/O"
+description: "Design contracts for bounded-memory format-v1 pack I/O, verification, descriptor leases, publication, and compatibility."
+last_edited: 2026-07-12
+---
 # Streaming pack I/O
 
 Kit reads and writes format-v1 packs without requiring memory proportional to

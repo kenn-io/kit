@@ -1,3 +1,8 @@
+---
+title: "fsname Instructions"
+description: "Invariants for portable names, lexical path validation, remote filesystem detection, and cross-platform behavior."
+last_edited: 2026-09-23
+---
 # fsname Instructions
 
 ## Scope

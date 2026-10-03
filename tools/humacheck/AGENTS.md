@@ -1,3 +1,8 @@
+---
+title: "Huma Checker Instructions"
+description: "Contracts for the Huma checker, API and client rules, source fixes, index-based analysis, and diagnostic fixtures."
+last_edited: 2026-09-23
+---
 # Huma Checker Instructions
 
 ## Scope

@@ -1,3 +1,8 @@
+---
+title: "embedconfig invariants"
+description: "Rules for embedding configuration types, operational defaults, endpoint identities, input limits, and secret resolution."
+last_edited: 2026-09-30
+---
 # embedconfig invariants
 
 - Keep model, role, and input settings in their own types. Do not collapse

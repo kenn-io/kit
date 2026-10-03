@@ -1,3 +1,8 @@
+---
+title: "Self-update migration notes"
+description: "Migration guide for shared CLI self-update checks, binary installation, release discovery, manifests, and application integration."
+last_edited: 2026-06-15
+---
 # Migration Notes
 
 `go.kenn.io/kit/selfupdate` is intended to replace the duplicated

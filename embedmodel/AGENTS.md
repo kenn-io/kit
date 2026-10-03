@@ -1,3 +1,8 @@
+---
+title: "embedmodel invariants"
+description: "Invariants for vector-space and input-recipe identities, compatibility fingerprints, validation, and caller-owned content."
+last_edited: 2026-09-25
+---
 # embedmodel invariants
 
 - Keep vector-space and input-recipe identities separate.

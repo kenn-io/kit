@@ -1,3 +1,8 @@
+---
+title: "Self-Update Instructions"
+description: "Scope and security invariants for release discovery, checksum verification, archives, caching, and binary installation."
+last_edited: 2026-09-23
+---
 # Self-Update Instructions
 
 ## Scope

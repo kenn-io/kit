@@ -1,3 +1,8 @@
+---
+title: "Logging setup and migration"
+description: "Shared slog configuration, stderr and file formats, rotation, run attributes, and migration guidance for Go applications."
+last_edited: 2026-09-29
+---
 # logging
 
 Package `logging` centralizes the shared `slog` setup used by kenn-io Go CLIs

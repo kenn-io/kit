@@ -1,3 +1,8 @@
+---
+title: "OpenSSH Package Invariants"
+description: "Invariants for OpenSSH command construction, target validation, persistent ControlMaster ownership, and safe teardown."
+last_edited: 2026-08-16
+---
 # OpenSSH Package Invariants
 
 - This package orchestrates the caller's OpenSSH executable. Do not replace

@@ -1,3 +1,8 @@
+---
+title: "Testify Helper Analyzer Instructions"
+description: "Scope, analyzer rules, object-aware fixes, and fixture requirements for the testify helper analyzer."
+last_edited: 2026-09-17
+---
 # Testify Helper Analyzer Instructions
 
 ## Scope

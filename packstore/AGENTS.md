@@ -1,3 +1,8 @@
+---
+title: "packstore publication invariants"
+description: "Publication and recovery invariants for loose packed-content objects, compression reuse, and cross-platform repair."
+last_edited: 2026-10-02
+---
 # packstore
 
 ## Loose publication

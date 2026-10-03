@@ -1,3 +1,8 @@
+---
+title: "Telemetry package invariants"
+description: "Ownership rules for telemetry admission, property filtering, identities, HTTP capture, opt-out behavior, and application wiring."
+last_edited: 2026-10-02
+---
 # Telemetry
 
 The reporter owns event admission, property filtering, identity and default

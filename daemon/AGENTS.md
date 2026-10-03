@@ -1,3 +1,8 @@
+---
+title: "Daemon Package Instructions"
+description: "Invariants for local daemon discovery, authenticated probes, runtime records, startup locks, and process lifecycle."
+last_edited: 2026-09-30
+---
 # Daemon Package Instructions
 
 ## Scope

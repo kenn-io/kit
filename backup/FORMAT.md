@@ -1,3 +1,8 @@
+---
+title: "Backup Repository Format"
+description: "On-disk backup repository layout, binary object formats, integrity checks, snapshot versioning, locking, and restore contracts."
+last_edited: 2026-10-02
+---
 # Backup Repository Format
 
 On-disk format reference for repositories created by the `backup` and `pack`

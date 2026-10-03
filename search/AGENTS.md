@@ -1,3 +1,8 @@
+---
+title: "search package invariants"
+description: "Invariants for query construction, analysis identities, CJK handling, reciprocal rank fusion, and backend SQL."
+last_edited: 2026-09-25
+---
 # search package invariants
 
 Shared query construction lives under `search/`. Callers own database handles,

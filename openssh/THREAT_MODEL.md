@@ -1,3 +1,8 @@
+---
+title: "OpenSSH Package Threat Model"
+description: "Security goals and trust boundaries for OpenSSH destinations, control sockets, lifecycle ownership, and caller policy."
+last_edited: 2026-08-13
+---
 # OpenSSH Package Threat Model
 
 This package constructs OpenSSH commands, resolves effective configuration,
