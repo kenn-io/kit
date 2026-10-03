@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gofrs/flock"
+
 	"go.kenn.io/kit/atomicfile"
 )
 
@@ -28,19 +30,23 @@ type Install struct {
 
 // LoadOrCreateInstall returns the install stored in dir, creating
 // InstallFileName as a private file on first use. A file that does not parse
-// is replaced with a new install. Processes that share dir get the same
-// install: a creator that loses the race reads the winner's file.
+// is replaced with a new install. Creation and replacement hold a lock file
+// beside it, so processes that share dir get the same install.
 func LoadOrCreateInstall(dir string) (Install, error) {
 	path := filepath.Join(dir, InstallFileName)
-	inst, err := readInstall(path)
-	switch {
-	case err == nil:
+	if inst, err := readInstall(path); err == nil {
 		return inst, nil
-	case errors.Is(err, errInvalidInstall):
-		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return Install{}, fmt.Errorf("replace telemetry install file: %w", err)
-		}
-	case !errors.Is(err, fs.ErrNotExist):
+	}
+	lock := flock.New(path + ".lock")
+	if err := lock.Lock(); err != nil {
+		return Install{}, fmt.Errorf("lock telemetry install file: %w", err)
+	}
+	defer func() { _ = lock.Unlock() }()
+	inst, err := readInstall(path)
+	if err == nil {
+		return inst, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, errInvalidInstall) {
 		return Install{}, fmt.Errorf("read telemetry install file: %w", err)
 	}
 	inst = Install{ID: rand.Text(), InstalledAt: time.Now().UTC()}
@@ -48,11 +54,8 @@ func LoadOrCreateInstall(dir string) (Install, error) {
 	if err != nil {
 		return Install{}, fmt.Errorf("encode telemetry install file: %w", err)
 	}
-	if err := atomicfile.WriteNew(path, data, atomicfile.WithPrivate()); err != nil {
-		if errors.Is(err, fs.ErrExist) {
-			return readInstall(path)
-		}
-		return Install{}, fmt.Errorf("create telemetry install file: %w", err)
+	if err := atomicfile.WriteFile(path, data, atomicfile.WithPrivate()); err != nil {
+		return Install{}, fmt.Errorf("write telemetry install file: %w", err)
 	}
 	return inst, nil
 }

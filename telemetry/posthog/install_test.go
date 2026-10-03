@@ -25,7 +25,19 @@ func TestLoadOrCreateInstallKeepsTheFirstInstall(t *testing.T) {
 }
 
 func TestLoadOrCreateInstallSharesOneInstallAcrossConcurrentCallers(t *testing.T) {
-	dir := t.TempDir()
+	for name, content := range map[string]string{"absent": "", "garbage": "not json"} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if content != "" {
+				require.NoError(t, os.WriteFile(filepath.Join(dir, InstallFileName), []byte(content), 0o600))
+			}
+			assertOneInstall(t, dir)
+		})
+	}
+}
+
+func assertOneInstall(t *testing.T, dir string) {
+	t.Helper()
 	ids := make([]string, 16)
 	var wg sync.WaitGroup
 	for i := range ids {
