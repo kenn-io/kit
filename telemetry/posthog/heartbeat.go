@@ -26,7 +26,7 @@ func runHeartbeat(ctx context.Context, client Client, ticks <-chan time.Time, lo
 	if logger == nil {
 		logger = slog.Default()
 	}
-	for {
+	for ctx.Err() == nil {
 		if err := client.Capture(EventDaemonActive, nil); err != nil {
 			logger.Warn("telemetry heartbeat failed", "event", EventDaemonActive, "error", err)
 		}

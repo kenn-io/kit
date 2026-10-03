@@ -73,3 +73,13 @@ func TestRunHeartbeatLogsCaptureErrorsAndKeepsRunning(t *testing.T) {
 
 	assert.Contains(t, logs.String(), "queue full")
 }
+
+func TestRunHeartbeatSendsNothingOnceCanceled(t *testing.T) {
+	client := &heartbeatClient{}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	RunHeartbeat(ctx, client, nil)
+
+	assert.Zero(t, client.count())
+}
