@@ -30,13 +30,11 @@ type Install struct {
 
 // LoadOrCreateInstall returns the install stored in dir, creating
 // InstallFileName as a private file on first use. A file that does not parse
-// is replaced with a new install. Creation and replacement hold a lock file
-// beside it, so processes that share dir get the same install.
+// is replaced with a new install. Every call holds a lock file beside it, so
+// processes that share dir get the same install.
 func LoadOrCreateInstall(dir string) (Install, error) {
 	path := filepath.Join(dir, InstallFileName)
-	if inst, err := readInstall(path); err == nil {
-		return inst, nil
-	}
+	// Reads take the lock too: Windows can't replace a file another caller has open.
 	lock := flock.New(path + ".lock")
 	if err := lock.Lock(); err != nil {
 		return Install{}, fmt.Errorf("lock telemetry install file: %w", err)
