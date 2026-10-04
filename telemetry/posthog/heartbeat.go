@@ -9,26 +9,32 @@ import (
 const (
 	// EventDaemonActive is the event RunHeartbeat sends.
 	EventDaemonActive = "daemon_active"
-	// HeartbeatInterval is how often RunHeartbeat repeats EventDaemonActive.
-	HeartbeatInterval = 24 * time.Hour
+	// HeartbeatInterval is how often RunHeartbeat checks the current UTC date.
+	HeartbeatInterval = time.Hour
 )
 
-// RunHeartbeat sends EventDaemonActive through client at once and then every
-// HeartbeatInterval until ctx ends. The client must allow the event. Capture
+// RunHeartbeat sends EventDaemonActive through client at once, then on the
+// first hourly check of a later UTC day until ctx ends. The client must allow the event. Capture
 // errors are logged to logger, or slog.Default when logger is nil.
 func RunHeartbeat(ctx context.Context, client Client, logger *slog.Logger) {
 	ticker := time.NewTicker(HeartbeatInterval)
 	defer ticker.Stop()
-	runHeartbeat(ctx, client, ticker.C, logger)
+	runHeartbeat(ctx, client, ticker.C, time.Now, logger)
 }
 
-func runHeartbeat(ctx context.Context, client Client, ticks <-chan time.Time, logger *slog.Logger) {
+func runHeartbeat(ctx context.Context, client Client, ticks <-chan time.Time, now func() time.Time, logger *slog.Logger) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	var lastDay time.Time
 	for ctx.Err() == nil {
-		if err := client.Capture(EventDaemonActive, nil); err != nil {
-			logger.Warn("telemetry heartbeat failed", "event", EventDaemonActive, "error", err)
+		// Read wall time afresh: a ticker may carry an old timestamp after sleep.
+		day := now().UTC().Truncate(24 * time.Hour)
+		if day.After(lastDay) {
+			if err := client.Capture(EventDaemonActive, nil); err != nil {
+				logger.Warn("telemetry heartbeat failed", "event", EventDaemonActive, "error", err)
+			}
+			lastDay = day
 		}
 		select {
 		case <-ctx.Done():
