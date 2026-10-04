@@ -1,4 +1,4 @@
-package telemetry
+package posthog
 
 import (
 	"net/http"
@@ -8,17 +8,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/posthog/posthog-go"
+	phsdk "github.com/posthog/posthog-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 type fakePostHogClient struct {
-	message posthog.Message
+	message phsdk.Message
 	closed  bool
 }
 
-func (f *fakePostHogClient) Enqueue(message posthog.Message) error {
+func (f *fakePostHogClient) Enqueue(message phsdk.Message) error {
 	f.message = message
 	return nil
 }
@@ -29,13 +29,13 @@ func (f *fakePostHogClient) Close() error {
 }
 
 type blockingPostHogClient struct {
-	message        posthog.Message
+	message        phsdk.Message
 	enqueueStarted chan struct{}
 	unblockEnqueue chan struct{}
 	closeCalled    atomic.Bool
 }
 
-func (b *blockingPostHogClient) Enqueue(message posthog.Message) error {
+func (b *blockingPostHogClient) Enqueue(message phsdk.Message) error {
 	b.message = message
 	close(b.enqueueStarted)
 	<-b.unblockEnqueue
@@ -48,9 +48,9 @@ func (b *blockingPostHogClient) Close() error {
 }
 
 func TestPrefixedTelemetryEnabledEnv(t *testing.T) {
-	assert.Equal(t, "KATA_TELEMETRY_ENABLED", PrefixedTelemetryEnabledEnv(" kata "))
-	assert.Equal(t, "ROBOREV_TELEMETRY_ENABLED", PrefixedTelemetryEnabledEnv("ROBOREV"))
-	assert.Empty(t, PrefixedTelemetryEnabledEnv(""))
+	assert.Equal(t, "KATA_TELEMETRY_ENABLED", PrefixedEnabledEnv(" kata "))
+	assert.Equal(t, "ROBOREV_TELEMETRY_ENABLED", PrefixedEnabledEnv("ROBOREV"))
+	assert.Empty(t, PrefixedEnabledEnv(""))
 }
 
 func TestPostHogTelemetryEnabledFromEnvHonorsPrefixAndGenericDisable(t *testing.T) {
@@ -58,31 +58,80 @@ func TestPostHogTelemetryEnabledFromEnvHonorsPrefixAndGenericDisable(t *testing.
 	t.Cleanup(enablePostHogTelemetryForTest)
 
 	t.Setenv("KATA_TELEMETRY_ENABLED", "0")
-	assert.False(t, PostHogTelemetryEnabledFromEnv("kata"))
+	assert.False(t, EnabledFromEnv("kata"))
 
 	t.Setenv("KATA_TELEMETRY_ENABLED", "1")
-	assert.True(t, PostHogTelemetryEnabledFromEnv("kata"))
+	assert.True(t, EnabledFromEnv("kata"))
 
-	t.Setenv(GenericTelemetryEnabledEnv, "0")
-	assert.False(t, PostHogTelemetryEnabledFromEnv("kata"))
+	t.Setenv(GenericEnabledEnv, "0")
+	assert.False(t, EnabledFromEnv("kata"))
+}
+
+func TestEnabledFromEnvOptOutSpellings(t *testing.T) {
+	enablePostHogTelemetryForTest()
+	t.Cleanup(enablePostHogTelemetryForTest)
+	for _, value := range []string{"0", "false", "no", "off", " FALSE ", "Off"} {
+		for _, env := range []string{GenericEnabledEnv, "KATA_TELEMETRY_ENABLED"} {
+			t.Run(env+"="+value, func(t *testing.T) {
+				t.Setenv(GenericEnabledEnv, "1")
+				t.Setenv("KATA_TELEMETRY_ENABLED", "1")
+				t.Setenv(env, value)
+
+				reporter, err := NewReporter(Options{EnvPrefix: "KATA"}, WithAllowedEvent("daemon_active"))
+				require.NoError(t, err)
+				assert.False(t, reporter.Enabled())
+				assert.True(t, reporter.EventAllowed("daemon_active"))
+			})
+		}
+	}
+	for _, value := range []string{"", "1", "true", "yes", "on"} {
+		t.Setenv(GenericEnabledEnv, value)
+		t.Setenv("KATA_TELEMETRY_ENABLED", value)
+		assert.True(t, EnabledFromEnv("kata"), "value %q", value)
+	}
+}
+
+func TestReporterCloseGivesUpAfterShutdownTimeout(t *testing.T) {
+	enablePostHogTelemetryForTest()
+	t.Cleanup(enablePostHogTelemetryForTest)
+	t.Setenv(GenericEnabledEnv, "1")
+	t.Setenv("KATA_TELEMETRY_ENABLED", "1")
+	// A server that never answers stands in for a network that drops packets.
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-release }))
+	t.Cleanup(server.Close)
+	t.Cleanup(func() { close(release) })
+	reporter, err := NewReporter(Options{
+		APIKey: "phc_test", Endpoint: server.URL, Application: "kata",
+		EnvPrefix: "KATA", DistinctID: "anonymous-instance-id",
+	}, WithAllowedEvent("daemon_active"))
+	require.NoError(t, err)
+	require.NoError(t, reporter.Capture("daemon_active", nil))
+
+	start := time.Now()
+	err = reporter.Close()
+
+	require.Error(t, err)
+	assert.Less(t, time.Since(start), ShutdownTimeout+time.Second)
+	assert.False(t, reporter.Enabled())
 }
 
 func TestPostHogTelemetryEnabledFromEnvHonorsProcessDisable(t *testing.T) {
-	DisablePostHogTelemetry()
+	DisableProcess()
 	t.Cleanup(enablePostHogTelemetryForTest)
 
 	t.Setenv("KATA_TELEMETRY_ENABLED", "1")
-	t.Setenv(GenericTelemetryEnabledEnv, "1")
+	t.Setenv(GenericEnabledEnv, "1")
 
-	assert.False(t, PostHogTelemetryEnabledFromEnv("kata"))
+	assert.False(t, EnabledFromEnv("kata"))
 }
 
 func TestNewPostHogReporterDisabledByEnvSkipsRequiredFields(t *testing.T) {
 	enablePostHogTelemetryForTest()
 	t.Cleanup(enablePostHogTelemetryForTest)
-	t.Setenv(GenericTelemetryEnabledEnv, "0")
+	t.Setenv(GenericEnabledEnv, "0")
 
-	reporter, err := NewPostHogReporter(PostHogOptions{})
+	reporter, err := NewReporter(Options{})
 
 	require.NoError(t, err)
 	assert.False(t, reporter.Enabled())
@@ -95,19 +144,19 @@ func TestNewPostHogReporterDisabledRetainsAllowlist(t *testing.T) {
 	}{
 		{name: "generic_env", disable: func(t *testing.T) {
 			t.Helper()
-			t.Setenv(GenericTelemetryEnabledEnv, " 0 ")
+			t.Setenv(GenericEnabledEnv, " 0 ")
 			t.Setenv("KATA_TELEMETRY_ENABLED", "1")
 		}},
 		{name: "prefixed_env", disable: func(t *testing.T) {
 			t.Helper()
-			t.Setenv(GenericTelemetryEnabledEnv, "1")
+			t.Setenv(GenericEnabledEnv, "1")
 			t.Setenv("KATA_TELEMETRY_ENABLED", " 0")
 		}},
 		{name: "process_disable", disable: func(t *testing.T) {
 			t.Helper()
-			t.Setenv(GenericTelemetryEnabledEnv, "1")
+			t.Setenv(GenericEnabledEnv, "1")
 			t.Setenv("KATA_TELEMETRY_ENABLED", "1")
-			DisablePostHogTelemetry()
+			DisableProcess()
 		}},
 	}
 	for _, tt := range tests {
@@ -115,14 +164,14 @@ func TestNewPostHogReporterDisabledRetainsAllowlist(t *testing.T) {
 			enablePostHogTelemetryForTest()
 			t.Cleanup(enablePostHogTelemetryForTest)
 			tt.disable(t)
-			options := []PostHogOption{nil, WithAllowedEvent("app_opened")}
+			options := []Option{nil, WithAllowedEvent("app_opened")}
 
-			nilFactoryReporter, err := newPostHogReporter(PostHogOptions{EnvPrefix: "KATA"}, nil, options...)
+			nilFactoryReporter, err := newPostHogReporter(Options{EnvPrefix: "KATA"}, nil, options...)
 			require.NoError(t, err)
 			assert.True(t, nilFactoryReporter.EventAllowed("app_opened"))
 
 			factoryCalls := 0
-			reporter, err := newPostHogReporter(PostHogOptions{EnvPrefix: "KATA"}, func(string, posthog.Config) (postHogEnqueueCloser, error) {
+			reporter, err := newPostHogReporter(Options{EnvPrefix: "KATA"}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
 				factoryCalls++
 				return &recordingPostHogClient{}, nil
 			}, options...)
@@ -140,14 +189,14 @@ func TestNewPostHogReporterDisabledRetainsAllowlist(t *testing.T) {
 func TestNewPostHogReporterRequiresCallerOwnedConfigurationWhenEnabled(t *testing.T) {
 	enablePostHogTelemetryForTest()
 	t.Cleanup(enablePostHogTelemetryForTest)
-	t.Setenv(GenericTelemetryEnabledEnv, "1")
+	t.Setenv(GenericEnabledEnv, "1")
 	t.Setenv("KATA_TELEMETRY_ENABLED", "1")
 
-	_, err := newPostHogReporter(PostHogOptions{
+	_, err := newPostHogReporter(Options{
 		Application: "kata",
 		EnvPrefix:   "KATA",
 		DistinctID:  "anonymous-instance-id",
-	}, func(string, posthog.Config) (postHogEnqueueCloser, error) {
+	}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
 		return &fakePostHogClient{}, nil
 	}, testAllowedTelemetryOptions()...)
 
@@ -161,18 +210,18 @@ func TestNewPostHogReporterPassesMandatoryAPIKeyAndEndpointToPostHog(t *testing.
 
 	enablePostHogTelemetryForTest()
 	t.Cleanup(enablePostHogTelemetryForTest)
-	t.Setenv(GenericTelemetryEnabledEnv, "1")
+	t.Setenv(GenericEnabledEnv, "1")
 	t.Setenv("KATA_TELEMETRY_ENABLED", "1")
 
 	var gotAPIKey string
-	var gotConfig posthog.Config
-	reporter, err := newPostHogReporter(PostHogOptions{
+	var gotConfig phsdk.Config
+	reporter, err := newPostHogReporter(Options{
 		APIKey:      "caller-owned-key",
 		Endpoint:    "https://posthog.example.test",
 		Application: "kata",
 		EnvPrefix:   "KATA",
 		DistinctID:  "anonymous-instance-id",
-	}, func(apiKey string, config posthog.Config) (postHogEnqueueCloser, error) {
+	}, func(apiKey string, config phsdk.Config) (postHogEnqueueCloser, error) {
 		gotAPIKey = apiKey
 		gotConfig = config
 		return &fakePostHogClient{}, nil
@@ -191,7 +240,7 @@ func TestPostHogReporterCaptureUsesAnonymousDistinctIDAndPrivacyDefaults(t *test
 	require := require.New(t)
 
 	client := &fakePostHogClient{}
-	reporter := &PostHogReporter{
+	reporter := &Reporter{
 		client:        client,
 		distinctID:    "anonymous-instance-id",
 		application:   "kata",
@@ -214,7 +263,7 @@ func TestPostHogReporterCaptureUsesAnonymousDistinctIDAndPrivacyDefaults(t *test
 	})
 
 	require.NoError(err)
-	capture, ok := client.message.(posthog.Capture)
+	capture, ok := client.message.(phsdk.Capture)
 	require.True(ok)
 	assert.Equal("anonymous-instance-id", capture.DistinctId)
 	assert.Equal("daemon_started", capture.Event)
@@ -234,7 +283,7 @@ func TestPostHogReporterCaptureUsesAnonymousDistinctIDAndPrivacyDefaults(t *test
 }
 
 func TestPostHogReporterCaptureRejectsUnsupportedEvents(t *testing.T) {
-	reporter := &PostHogReporter{
+	reporter := &Reporter{
 		client:        &fakePostHogClient{},
 		distinctID:    "anonymous-instance-id",
 		application:   "kata",
@@ -244,7 +293,7 @@ func TestPostHogReporterCaptureRejectsUnsupportedEvents(t *testing.T) {
 
 	err := reporter.Capture("issue_created", map[string]any{"project_count": 1})
 
-	require.ErrorIs(t, err, ErrUnsupportedTelemetryEvent)
+	require.ErrorIs(t, err, ErrUnsupportedEvent)
 }
 
 func TestPostHogReporterCaptureDropsUnsafePropertyValues(t *testing.T) {
@@ -252,7 +301,7 @@ func TestPostHogReporterCaptureDropsUnsafePropertyValues(t *testing.T) {
 	require := require.New(t)
 
 	client := &fakePostHogClient{}
-	reporter := &PostHogReporter{
+	reporter := &Reporter{
 		client:        client,
 		distinctID:    "anonymous-instance-id",
 		application:   "kata",
@@ -268,7 +317,7 @@ func TestPostHogReporterCaptureDropsUnsafePropertyValues(t *testing.T) {
 	})
 
 	require.NoError(err)
-	capture, ok := client.message.(posthog.Capture)
+	capture, ok := client.message.(phsdk.Capture)
 	require.True(ok)
 	assert.NotContains(capture.Properties, "project_count")
 	assert.NotContains(capture.Properties, "sync_enabled")
@@ -281,18 +330,18 @@ func TestPostHogReporterAllowsDefaultPropertiesOnlyEvents(t *testing.T) {
 
 	enablePostHogTelemetryForTest()
 	t.Cleanup(enablePostHogTelemetryForTest)
-	t.Setenv(GenericTelemetryEnabledEnv, "1")
+	t.Setenv(GenericEnabledEnv, "1")
 	t.Setenv("KATA_TELEMETRY_ENABLED", "1")
 
 	client := &fakePostHogClient{}
-	reporter, err := newPostHogReporter(PostHogOptions{
+	reporter, err := newPostHogReporter(Options{
 		APIKey:      "caller-owned-key",
 		Application: "kata",
 		EnvPrefix:   "KATA",
 		DistinctID:  "anonymous-instance-id",
 		Version:     "v-test",
 		Commit:      "abc123",
-	}, func(string, posthog.Config) (postHogEnqueueCloser, error) {
+	}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
 		return client, nil
 	}, WithAllowedEvent("event_without_properties"))
 	require.NoError(err)
@@ -302,7 +351,7 @@ func TestPostHogReporterAllowsDefaultPropertiesOnlyEvents(t *testing.T) {
 	})
 	require.NoError(err)
 
-	capture, ok := client.message.(posthog.Capture)
+	capture, ok := client.message.(phsdk.Capture)
 	require.True(ok)
 	assert.Equal("event_without_properties", capture.Event)
 	assert.NotContains(capture.Properties, "private_path")
@@ -319,7 +368,7 @@ func TestPostHogReporterCaptureHonorsProcessDisableAfterCreation(t *testing.T) {
 	require := require.New(t)
 
 	client := &fakePostHogClient{}
-	reporter := &PostHogReporter{
+	reporter := &Reporter{
 		client:        client,
 		distinctID:    "anonymous-instance-id",
 		application:   "kata",
@@ -328,7 +377,7 @@ func TestPostHogReporterCaptureHonorsProcessDisableAfterCreation(t *testing.T) {
 	}
 	require.True(reporter.Enabled())
 
-	DisablePostHogTelemetry()
+	DisableProcess()
 	t.Cleanup(enablePostHogTelemetryForTest)
 
 	assert.False(reporter.Enabled())
@@ -356,7 +405,7 @@ func TestPostHogDisableTransportNoOpsRequestsAfterProcessDisable(t *testing.T) {
 		}),
 	}
 
-	DisablePostHogTelemetry()
+	DisableProcess()
 
 	resp, err := transport.RoundTrip(httptest.NewRequestWithContext(t.Context(), http.MethodPost, "https://posthog.example.test/batch", nil))
 
@@ -372,7 +421,7 @@ func TestPostHogReporterCloseAfterProcessDisableDoesNotFlushQueuedEvent(t *testi
 	require := require.New(t)
 
 	client := &fakePostHogClient{}
-	reporter := &PostHogReporter{
+	reporter := &Reporter{
 		client:        client,
 		distinctID:    "anonymous-instance-id",
 		application:   "kata",
@@ -383,7 +432,7 @@ func TestPostHogReporterCloseAfterProcessDisableDoesNotFlushQueuedEvent(t *testi
 	require.NoError(reporter.Capture("daemon_active", map[string]any{"project_count": 1}))
 	require.NotNil(client.message)
 
-	DisablePostHogTelemetry()
+	DisableProcess()
 	t.Cleanup(enablePostHogTelemetryForTest)
 
 	require.NoError(reporter.Close())
@@ -399,7 +448,7 @@ func TestPostHogReporterCloseWaitsForInFlightCapture(t *testing.T) {
 		enqueueStarted: make(chan struct{}),
 		unblockEnqueue: make(chan struct{}),
 	}
-	reporter := &PostHogReporter{
+	reporter := &Reporter{
 		client:        client,
 		distinctID:    "anonymous-instance-id",
 		application:   "kata",
@@ -428,7 +477,7 @@ func TestPostHogReporterCloseWaitsForInFlightCapture(t *testing.T) {
 }
 
 func TestAllowTelemetryStringValues(t *testing.T) {
-	filter := AllowTelemetryStringValues("pulls.list")
+	filter := AllowStringValues("pulls.list")
 
 	value, ok := filter(" pulls.list ")
 	require.True(t, ok)
@@ -438,30 +487,30 @@ func TestAllowTelemetryStringValues(t *testing.T) {
 	assert.False(t, ok)
 }
 
-func testAllowedTelemetryOptions() []PostHogOption {
-	return []PostHogOption{
+func testAllowedTelemetryOptions() []Option {
+	return []Option{
 		WithAllowedEvent("daemon_active",
-			AllowTelemetryProperty("project_count", AllowTelemetryNumber),
-			AllowTelemetryProperty("sync_enabled", AllowTelemetryBool),
-			AllowTelemetryProperty("view", AllowTelemetryStringValues("dashboard", "summary")),
+			AllowProperty("project_count", AllowNumber),
+			AllowProperty("sync_enabled", AllowBool),
+			AllowProperty("view", AllowStringValues("dashboard", "summary")),
 		),
 		WithAllowedEvent("daemon_started",
-			AllowTelemetryProperty("project_count", AllowTelemetryNumber),
-			AllowTelemetryProperty("sync_enabled", AllowTelemetryBool),
+			AllowProperty("project_count", AllowNumber),
+			AllowProperty("sync_enabled", AllowBool),
 		),
 	}
 }
 
-func testAllowedTelemetryEvents() map[string]map[string]TelemetryPropertyFilter {
-	return map[string]map[string]TelemetryPropertyFilter{
+func testAllowedTelemetryEvents() map[string]map[string]PropertyFilter {
+	return map[string]map[string]PropertyFilter{
 		"daemon_active": {
-			"project_count": AllowTelemetryNumber,
-			"sync_enabled":  AllowTelemetryBool,
-			"view":          AllowTelemetryStringValues("dashboard", "summary"),
+			"project_count": AllowNumber,
+			"sync_enabled":  AllowBool,
+			"view":          AllowStringValues("dashboard", "summary"),
 		},
 		"daemon_started": {
-			"project_count": AllowTelemetryNumber,
-			"sync_enabled":  AllowTelemetryBool,
+			"project_count": AllowNumber,
+			"sync_enabled":  AllowBool,
 		},
 	}
 }
