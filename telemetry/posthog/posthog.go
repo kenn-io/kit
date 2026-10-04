@@ -2,6 +2,7 @@ package posthog
 
 import (
 	"errors"
+	"log/slog"
 	"math"
 	"net/http"
 	"os"
@@ -58,6 +59,8 @@ type Client interface {
 
 // Options configures a PostHog telemetry reporter.
 type Options struct {
+	// Logger receives SDK logs. Nil uses slog.Default().
+	Logger *slog.Logger
 	// APIKey is the PostHog project API key. It is a public ingest identifier,
 	// but callers must still pass it explicitly so kit never embeds app keys.
 	APIKey string
@@ -249,7 +252,12 @@ func newPostHogReporter(opts Options, newClient postHogClientFactory, options ..
 		endpoint = DefaultEndpoint
 	}
 	disableGeoIP := true
+	logger := opts.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 	client, err := newClient(strings.TrimSpace(opts.APIKey), phsdk.Config{
+		Logger:       sdkLogger{logger.With("component", "posthog")},
 		Endpoint:     endpoint,
 		DisableGeoIP: &disableGeoIP,
 		// Reporters run in CLIs and daemons on user machines, not servers.

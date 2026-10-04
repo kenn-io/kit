@@ -1,6 +1,8 @@
 package posthog
 
 import (
+	"bytes"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -523,4 +525,53 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+func TestReporterRoutesSDKLogsToSlog(t *testing.T) {
+	enablePostHogTelemetryForTest()
+	t.Cleanup(enablePostHogTelemetryForTest)
+	t.Setenv(GenericEnabledEnv, "1")
+	t.Setenv("TEST_TELEMETRY_ENABLED", "1")
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "synthetic ingest rejection", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	reporter, err := NewReporter(Options{
+		APIKey: "phc_test", Endpoint: server.URL, Application: "test",
+		EnvPrefix: "TEST", DistinctID: "synthetic-install",
+	}, WithAllowedEvent(EventDaemonActive))
+	require.NoError(t, err)
+	require.NoError(t, reporter.Capture(EventDaemonActive, nil))
+	_ = reporter.Close()
+	assert.Contains(t, logs.String(), `"level":"INFO"`)
+	assert.Contains(t, logs.String(), `"component":"posthog"`)
+	assert.Contains(t, logs.String(), "synthetic ingest rejection")
+}
+
+func TestReporterPreservesSDKLogLevelsWithCustomLogger(t *testing.T) {
+	enablePostHogTelemetryForTest()
+	t.Cleanup(enablePostHogTelemetryForTest)
+	t.Setenv(GenericEnabledEnv, "1")
+	t.Setenv("TEST_TELEMETRY_ENABLED", "1")
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	reporter, err := newPostHogReporter(Options{
+		APIKey: "phc_test", Application: "test", EnvPrefix: "TEST", DistinctID: "synthetic-install", Logger: logger,
+	}, func(_ string, config phsdk.Config) (postHogEnqueueCloser, error) {
+		require.NotNil(t, config.Logger)
+		config.Logger.Debugf("debug %d", 1)
+		config.Logger.Logf("info %d", 2)
+		config.Logger.Warnf("warning %d", 3)
+		config.Logger.Errorf("error %d", 4)
+		return &fakePostHogClient{}, nil
+	}, WithAllowedEvent(EventDaemonActive))
+	require.NoError(t, err)
+	require.NoError(t, reporter.Close())
+	for _, pair := range [][2]string{{"DEBUG", "debug 1"}, {"INFO", "info 2"}, {"WARN", "warning 3"}, {"ERROR", "error 4"}} {
+		assert.Contains(t, logs.String(), `"level":"`+pair[0]+`","msg":"`+pair[1]+`","component":"posthog"`)
+	}
 }
