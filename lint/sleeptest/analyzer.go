@@ -150,7 +150,7 @@ func functionBodies(pass *analysis.Pass) map[types.Object]ast.Node {
 			case *ast.AssignStmt:
 				if len(n.Lhs) == len(n.Rhs) {
 					for i, lhs := range n.Lhs {
-						if name, ok := ast.Unparen(lhs).(*ast.Ident); ok {
+						if name, ok := lhs.(*ast.Ident); ok {
 							bind(name, n.Rhs[i])
 						}
 					}

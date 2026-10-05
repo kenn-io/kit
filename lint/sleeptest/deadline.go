@@ -21,7 +21,7 @@ var DeadlineAnalyzer = &analysis.Analyzer{
 	Run:      runDeadline,
 }
 
-const deadlineMessage = "%s with a %s budget in a test outside a synctest bubble races the wall clock; wait on a real event, or run the test under testing/synctest"
+const deadlineMessage = "%s with budget %s in a test outside a synctest bubble races the wall clock; wait on a real event, or run the test under testing/synctest"
 
 func runDeadline(pass *analysis.Pass) (any, error) {
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)

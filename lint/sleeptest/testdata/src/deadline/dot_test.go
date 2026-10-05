@@ -8,5 +8,5 @@ import (
 )
 
 func TestDotImportedAssertion(t *testing.T) {
-	Eventually(t, ready, 80*time.Millisecond, time.Millisecond) // want "assert.Eventually with a 80ms budget"
+	Eventually(t, ready, 80*time.Millisecond, time.Millisecond) // want "assert.Eventually with budget 80ms"
 }
