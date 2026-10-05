@@ -1,7 +1,7 @@
 # Adopting the shared Go lint policy (kennlint)
 
 `go.kenn.io/kit/lint` owns the Go lint policy for kenn-io repositories: a
-canonical golangci-lint configuration, five custom analyzers, and a
+canonical golangci-lint configuration, eight custom analyzers, and a
 golangci-lint module plugin that runs them. This document explains how to put a
 repository on the shared policy and how to keep it there.
 
@@ -20,7 +20,7 @@ an overlay with its local additions, and `kennlint config` renders the merged
 `.golangci.yml` from the canonical file plus the overlay. A `-check` mode fails
 CI when the committed file is stale.
 
-**Five analyzers** that off-the-shelf linters do not cover. They ship as the
+**Eight analyzers** that off-the-shelf linters do not cover. They ship as the
 `kennlint` linter inside a custom golangci-lint build, so `//nolint:kennlint`
 and path exclusions work like any other linter.
 
@@ -29,6 +29,7 @@ and path exclusions work like any other linter.
 | `sqlclosecheck`, `rowserrcheck` | SQL resource closure and iteration errors, including returned ownership and shared scanners across packages. The kit versions extend the upstream checks; do not enable the duplicate built-in checks. |
 | `testifyhelper` | Imports and assertion objects must be named `assert` or `require`. Set `testifyhelper.require-helpers: true` in plugin settings to also require local helpers for repeated package calls; the default is false for both libraries. Parent scopes retain package calls when nested functions need package access. Run with `--fix` to apply object-aware renames and, when enabled, local-helper conversions. |
 | `sleeptest` | `time.Sleep` in a `_test.go` file outside a `synctest.Test` bubble. Wall-clock sleeps make tests slow and timing-dependent. A bubble is the body of the function passed to `synctest.Test`, inline or by name, at any nesting depth including goroutines. A helper that sleeps and is only called from inside a bubble is still reported: give it a channel to wait on instead. Packages named `testutil` or ending in `test` are checked too (`helper-packages`, default on). Set `eventually: true` to also report testify `Eventually`, `EventuallyWithT`, and `Never` outside bubbles; that is off by default because some repositories endorse `Eventually` for awaiting a fake's channel. |
+| `deadlinetest` | Sub-second wall-clock budgets in a `_test.go` file outside a `synctest.Test` bubble: `context.WithTimeout` and `WithTimeoutCause`, `context.WithDeadline` and `WithDeadlineCause` written as `time.Now().Add(d)`, `time.After`, `time.NewTimer`, `time.AfterFunc`, and the `waitFor` of testify's `Eventually`, `EventuallyWithT`, and `Never` and their `f` variants. A budget under 1s fails on a loaded CI runner even when the code is right; wait on a real event or run the test in a bubble. Only constant budgets above zero are reported. A repository with a backlog can list `deadlinetest` under `disable` while it burns it down. |
 | `errtext` | Deciding on error identity by matching `err.Error()` text: `strings.Contains(err.Error(), …)`, `err.Error() == …`, and similar. Use `errors.Is` or `errors.AsType`. Test files are skipped unless `errtext.include-tests` is set. |
 | `sqlcheck` | SQL `CHECK` constraints and `CREATE TYPE ... AS ENUM` in Go string literals outside tests. A CHECK locks a validation rule into the schema, so every change to the rule (most often a new allowed value for a status-like column) needs a migration that rewrites the constraint. Validate in application code or keep allowed values in a lookup table. `kennlint sql` applies the same check to `.sql` migration files. |
 | `nohttpmux` | `Handle`/`HandleFunc` on `*http.ServeMux` or the default mux outside tests, for repositories that route every operation through a typed API layer such as Huma. Disable it in repositories that serve plain `net/http`. |
@@ -158,7 +159,7 @@ its only extension points are the module plugin used here, which needs the
 `golangci-lint custom` build, and Go `.so` plugins. Repositories that already
 build a custom binary for nilaway pay nothing extra for the plugin.
 
-Without a custom binary, `kennlint run ./...` runs the five analyzers directly
+Without a custom binary, `kennlint run ./...` runs the eight analyzers directly
 through the standard `go/analysis` multichecker, with the usual `-json`,
 `-fix`, and per-analyzer flags such as `-errtext.include-tests` or
 `-sleeptest.eventually` or `-testifyhelper.require-helpers`; `go vet -vettool=$(command -v kennlint) ./...` works

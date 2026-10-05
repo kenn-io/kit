@@ -80,7 +80,7 @@ func TestRetryWaitEndsWithTheContext(t *testing.T) {
 		func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		})
-	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond) //nolint:kennlint // the deadline is the expected result; the hour-long backoff ends only when the context does
 	defer cancel()
 	_, err := client.Embed(ctx, oneText())
 	require.ErrorIs(t, err, context.DeadlineExceeded)

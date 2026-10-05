@@ -10,3 +10,7 @@ func Eventually(t TestingT, cond func() bool, waitFor, tick time.Duration, msgAn
 }
 
 func Equal(t TestingT, expected, actual any, msgAndArgs ...any) bool { return true }
+
+func Never(t TestingT, cond func() bool, waitFor, tick time.Duration, msgAndArgs ...any) bool {
+	return true
+}

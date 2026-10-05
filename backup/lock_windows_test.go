@@ -47,7 +47,7 @@ func TestReleaseWaitsOutReaderOfLockFile(t *testing.T) {
 	require.NoError(err)
 	handle := openLikeReader(t, shared.path)
 	closed := make(chan error, 1)
-	time.AfterFunc(50*time.Millisecond, func() { closed <- windows.CloseHandle(handle) })
+	time.AfterFunc(50*time.Millisecond, func() { closed <- windows.CloseHandle(handle) }) //nolint:kennlint // keeps a real Windows reader handle open while Release retries; the OS sharing violation can't run in a bubble
 
 	require.NoError(shared.Release())
 	require.NoError(<-closed)

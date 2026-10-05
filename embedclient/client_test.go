@@ -333,7 +333,7 @@ func TestEmbedKeepsADeadlineThatHitsWhileReadingTheBody(t *testing.T) {
 		w.(http.Flusher).Flush()
 		<-r.Context().Done() // stall mid-body until the client gives up
 	})
-	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond) //nolint:kennlint // the deadline is the expected result; the server stalls mid-body until the client gives up
 	defer cancel()
 	_, err := client.Embed(ctx, oneText())
 	require.ErrorIs(t, err, context.DeadlineExceeded)

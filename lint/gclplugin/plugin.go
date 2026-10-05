@@ -13,7 +13,7 @@
 // type "module". Settings:
 //
 //	settings:
-//	  disable: [sleeptest]        # analyzer names to leave out
+//	  disable: [deadlinetest]     # analyzer names to leave out
 //	  errtext:
 //	    include-tests: true       # also report err.Error() matching in tests
 //	  sleeptest:

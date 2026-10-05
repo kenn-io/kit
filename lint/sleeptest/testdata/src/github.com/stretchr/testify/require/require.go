@@ -19,3 +19,6 @@ type Assertions struct{}
 func New(t TestingT) *Assertions { return &Assertions{} }
 
 func (a *Assertions) Eventually(cond func() bool, waitFor, tick time.Duration, msgAndArgs ...any) {}
+
+func Eventuallyf(t TestingT, cond func() bool, waitFor, tick time.Duration, msg string, args ...any) {
+}

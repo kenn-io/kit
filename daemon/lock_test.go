@@ -59,7 +59,7 @@ func TestTryAcquireStartLockCoordinatesWithManager(t *testing.T) {
 			return nil
 		},
 	}
-	ctx, cancel = context.WithTimeout(t.Context(), 20*time.Millisecond)
+	ctx, cancel = context.WithTimeout(t.Context(), 20*time.Millisecond) //nolint:kennlint // the deadline is the expected result; the test holds the start lock, so Ensure can only stop when it fires
 	defer cancel()
 	_, _, err = manager.Ensure(ctx, time.Second)
 	require.ErrorIs(err, context.DeadlineExceeded)

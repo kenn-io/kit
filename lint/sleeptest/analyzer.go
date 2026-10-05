@@ -13,9 +13,16 @@
 // Test files are *_test.go files. With the helper-packages flag (on by
 // default) files in packages named testutil or ending in "test", such as
 // pkgtest, are checked too. The eventually flag (off by default) also
-// reports testify's Eventually, EventuallyWithT, and Never outside bubbles,
-// for repositories that decide polling assertions should be replaced by
-// signals.
+// reports testify's Eventually, EventuallyWithT, and Never, and their f
+// variants, outside bubbles, for repositories that decide polling assertions
+// should be replaced by signals.
+//
+// DeadlineAnalyzer (deadlinetest) reports sub-second wall-clock budgets in
+// _test.go files outside a bubble: context.WithTimeout and WithDeadline,
+// time.After, NewTimer, and AfterFunc, and the waitFor argument of testify's
+// polling assertions. Only constant budgets between zero and one second are
+// reported; a short budget fails on a loaded CI runner even when the code is
+// correct.
 package sleeptest
 
 import (
@@ -55,11 +62,32 @@ const eventuallyMessage = "%s in a test outside a synctest bubble polls the wall
 
 func run(pass *analysis.Pass) (any, error) {
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	inBubble := bubbleChecker(pass, inspect)
+	helperPackage := HelperPackages && isHelperPackage(pass.Pkg.Name())
+	inspect.Preorder([]ast.Node{(*ast.CallExpr)(nil)}, func(n ast.Node) {
+		call := n.(*ast.CallExpr)
+		if !helperPackage && !isTestFile(pass, call) {
+			return
+		}
+		switch {
+		case isPackageFunc(pass, call, "time", "Sleep"):
+			if !inBubble(call) {
+				pass.Reportf(call.Pos(), "%s", diagnosticMessage)
+			}
+		case Eventually && isPollingAssertion(pass, call):
+			if !inBubble(call) {
+				pass.Reportf(call.Pos(), eventuallyMessage, calleeName(pass, call))
+			}
+		}
+	})
 
-	// bubbles holds the source ranges of function bodies passed to
-	// synctest.Test: literals written inline, and the declarations or
-	// literals behind identifiers passed by name. Sleeps inside those ranges
-	// are fine when every use of the named callback is through synctest.Test.
+	return nil, nil
+}
+
+// bubbleChecker reports whether a node lies inside a synctest bubble: a
+// literal passed inline to synctest.Test, or the declaration or literal behind
+// an identifier passed by name when every use of it is through synctest.Test.
+func bubbleChecker(pass *analysis.Pass, inspect *inspector.Inspector) func(ast.Node) bool {
 	bodies := functionBodies(pass)
 	var bubbles []ast.Node
 	uses := make(map[types.Object]int, len(bodies))
@@ -90,34 +118,14 @@ func run(pass *analysis.Pass) (any, error) {
 			bubbles = append(bubbles, bodies[obj])
 		}
 	}
-
-	inBubble := func(call *ast.CallExpr) bool {
+	return func(n ast.Node) bool {
 		for _, bubble := range bubbles {
-			if call.Pos() >= bubble.Pos() && call.End() <= bubble.End() {
+			if n.Pos() >= bubble.Pos() && n.End() <= bubble.End() {
 				return true
 			}
 		}
 		return false
 	}
-	helperPackage := HelperPackages && isHelperPackage(pass.Pkg.Name())
-	inspect.Preorder([]ast.Node{(*ast.CallExpr)(nil)}, func(n ast.Node) {
-		call := n.(*ast.CallExpr)
-		if !helperPackage && !isTestFile(pass, call) {
-			return
-		}
-		switch {
-		case isPackageFunc(pass, call, "time", "Sleep"):
-			if !inBubble(call) {
-				pass.Reportf(call.Pos(), "%s", diagnosticMessage)
-			}
-		case Eventually && isPollingAssertion(pass, call):
-			if !inBubble(call) {
-				pass.Reportf(call.Pos(), eventuallyMessage, calleeName(pass, call))
-			}
-		}
-	})
-
-	return nil, nil
 }
 
 // functionBodies maps each function declared in the package, and each
@@ -164,9 +172,11 @@ func isHelperPackage(name string) bool {
 	return name == "testutil" || strings.HasSuffix(name, "test")
 }
 
+var pollingAssertions = []string{"Eventually", "Eventuallyf", "EventuallyWithT", "EventuallyWithTf", "Never", "Neverf"}
+
 func isPollingAssertion(pass *analysis.Pass, call *ast.CallExpr) bool {
 	for _, path := range []string{"github.com/stretchr/testify/assert", "github.com/stretchr/testify/require"} {
-		if isPackageFunc(pass, call, path, "Eventually", "EventuallyWithT", "Never") {
+		if isPackageFunc(pass, call, path, pollingAssertions...) {
 			return true
 		}
 	}
