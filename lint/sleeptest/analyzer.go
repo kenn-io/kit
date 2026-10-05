@@ -20,9 +20,9 @@
 // DeadlineAnalyzer (deadlinetest) reports sub-second wall-clock budgets in
 // _test.go files outside a bubble: context.WithTimeout and WithDeadline,
 // time.After, NewTimer, and AfterFunc, and the waitFor argument of testify's
-// polling assertions. Only constant budgets between zero and one second are
-// reported; a short budget fails on a loaded CI runner even when the code is
-// correct.
+// polling assertions. Only constant budgets under one second are reported,
+// and zero or negative ones only for polling assertions; a short budget fails
+// on a loaded CI runner even when the code is correct.
 package sleeptest
 
 import (
@@ -104,7 +104,7 @@ func bubbleChecker(pass *analysis.Pass, inspect *inspector.Inspector) func(ast.N
 			return
 		}
 		for _, arg := range call.Args {
-			switch arg := arg.(type) {
+			switch arg := ast.Unparen(arg).(type) {
 			case *ast.FuncLit:
 				bubbles = append(bubbles, arg)
 			case *ast.Ident:
@@ -134,7 +134,7 @@ func bubbleChecker(pass *analysis.Pass, inspect *inspector.Inspector) func(ast.N
 func functionBodies(pass *analysis.Pass) map[types.Object]ast.Node {
 	bodies := map[types.Object]ast.Node{}
 	bind := func(name *ast.Ident, value ast.Expr) {
-		if lit, ok := value.(*ast.FuncLit); ok {
+		if lit, ok := ast.Unparen(value).(*ast.FuncLit); ok {
 			if obj := pass.TypesInfo.Defs[name]; obj != nil {
 				bodies[obj] = lit
 			}
@@ -150,7 +150,7 @@ func functionBodies(pass *analysis.Pass) map[types.Object]ast.Node {
 			case *ast.AssignStmt:
 				if len(n.Lhs) == len(n.Rhs) {
 					for i, lhs := range n.Lhs {
-						if name, ok := lhs.(*ast.Ident); ok {
+						if name, ok := ast.Unparen(lhs).(*ast.Ident); ok {
 							bind(name, n.Rhs[i])
 						}
 					}

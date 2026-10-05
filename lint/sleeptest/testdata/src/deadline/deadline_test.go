@@ -45,6 +45,25 @@ func TestShortBudgetsOutsideBubble(t *testing.T) {
 	defer cancel()
 }
 
+func TestZeroAndNegativePollingBudgets(t *testing.T) {
+	require.Eventually(t, ready, 0, time.Millisecond)           // want "require.Eventually with a 0s budget"
+	assert.Never(t, ready, -time.Millisecond, time.Millisecond) // want "assert.Never with a -1ms budget"
+}
+
+func TestParenthesizedBubble(t *testing.T) {
+	synctest.Test(t, (func(t *testing.T) {
+		<-time.After(75 * time.Millisecond)
+	}))
+}
+
+var parenBubble = (func(t *testing.T) {
+	<-time.After(75 * time.Millisecond)
+})
+
+func TestParenthesizedNamedBubble(t *testing.T) {
+	synctest.Test(t, parenBubble)
+}
+
 func TestShortBudgetsInsideBubble(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := context.Background()

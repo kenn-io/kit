@@ -31,12 +31,13 @@ func runDeadline(pass *analysis.Pass) (any, error) {
 		if !isTestFile(pass, call) {
 			return
 		}
-		arg := budgetArg(pass, call)
+		arg, polling := budgetArg(pass, call)
 		if arg == nil {
 			return
 		}
 		budget, ok := constantDuration(pass, arg)
-		if !ok || budget <= 0 || budget >= time.Second || inBubble(call) {
+		// A zero or negative timer is deterministic; a zero polling budget still passes or fails by timing.
+		if !ok || (budget <= 0 && !polling) || budget >= time.Second || inBubble(call) {
 			return
 		}
 		pass.Reportf(call.Pos(), deadlineMessage, calleeName(pass, call), budget)
@@ -45,19 +46,20 @@ func runDeadline(pass *analysis.Pass) (any, error) {
 }
 
 // budgetArg returns the duration argument of a call that waits on the wall
-// clock, or nil when the call is not one of those.
-func budgetArg(pass *analysis.Pass, call *ast.CallExpr) ast.Expr {
+// clock, or nil when the call is not one of those, and whether the call is a
+// testify polling assertion.
+func budgetArg(pass *analysis.Pass, call *ast.CallExpr) (ast.Expr, bool) {
 	switch {
 	case isPackageFunc(pass, call, "context", "WithTimeout", "WithTimeoutCause"):
-		return argAt(call, 1)
+		return argAt(call, 1), false
 	case isPackageFunc(pass, call, "context", "WithDeadline", "WithDeadlineCause"):
-		return nowPlus(pass, argAt(call, 1))
+		return nowPlus(pass, argAt(call, 1)), false
 	case isPackageFunc(pass, call, "time", "After", "NewTimer", "AfterFunc"):
-		return argAt(call, 0)
+		return argAt(call, 0), false
 	case isPollingAssertion(pass, call):
-		return argAt(call, waitForIndex(pass, call))
+		return argAt(call, waitForIndex(pass, call)), true
 	}
-	return nil
+	return nil, false
 }
 
 // nowPlus returns d when expr is written directly as time.Now().Add(d).

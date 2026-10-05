@@ -35,8 +35,9 @@ See `docs/adopting-kennlint.md` for the consumer workflow.
   body of the function passed to `synctest.Test`, resolved by position for
   inline literals and by type object for functions passed by name. Helpers
   called from a bubble are reported on purpose; the fixture documents that
-  limitation. The testify `Eventually` check stays off by default; consumers
-  opt in per repository.
+  limitation. `sleeptest`'s testify `Eventually` check stays off by default;
+  consumers opt in per repository. `deadlinetest` checks testify `waitFor`
+  budgets by default.
 - Diagnostic strings are asserted in fixture `// want` comments; change both
   together.
 - The canonical configuration must stay valid for the golangci-lint version in
