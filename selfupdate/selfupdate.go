@@ -25,6 +25,7 @@ import (
 
 	"golang.org/x/mod/semver"
 
+	"go.kenn.io/kit/atomicfile"
 	"go.kenn.io/kit/pathresolve"
 )
 
@@ -470,9 +471,9 @@ func InstallBinary(srcPath, dstPath string) error {
 		movedAside = aside
 	}
 
-	if err := os.Rename(tmpPath, dstPath); err != nil {
+	if err := atomicfile.Replace(tmpPath, dstPath); err != nil {
 		if movedAside {
-			if rbErr := os.Rename(backupPath, dstPath); rbErr != nil {
+			if rbErr := atomicfile.Replace(backupPath, dstPath); rbErr != nil {
 				return fmt.Errorf("install: %w (rollback also failed: %w)", err, rbErr)
 			}
 		}
@@ -1481,7 +1482,7 @@ func movePreviousAside(dstPath, backupPath string) (bool, error) {
 	if _, err := os.Stat(dstPath); err != nil {
 		return false, nil //nolint:nilerr // an unreadable or absent destination means there is nothing to move aside
 	}
-	if err := os.Rename(dstPath, backupPath); err != nil {
+	if err := atomicfile.Replace(dstPath, backupPath); err != nil {
 		return false, fmt.Errorf("backup: %w", err)
 	}
 	return true, nil

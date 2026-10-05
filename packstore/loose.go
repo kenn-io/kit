@@ -101,7 +101,7 @@ var (
 	removeLooseStagingFile           = os.Remove
 	removeLooseAlternateFile         = os.Remove
 	removeLooseCanonicalFile         = os.Remove
-	claimLooseRemovalPath            = os.Rename
+	claimLooseRemovalPath            = atomicfile.Replace
 	createLooseRemovalAside          = func(path string) error { return os.Mkdir(path, 0o700) }
 	removeLooseRemovalAside          = os.Remove
 	publishLooseRemovalRestoreFile   = os.Link

@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"golang.org/x/term"
+
+	"go.kenn.io/kit/atomicfile"
 )
 
 // Format selects the serialization used by the stderr handler.
@@ -481,7 +483,7 @@ func rotate(path string, keep int) error {
 			}
 			return err
 		}
-		if err := os.Rename(src, dst); err != nil {
+		if err := atomicfile.Replace(src, dst); err != nil {
 			return err
 		}
 	}

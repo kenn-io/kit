@@ -11,10 +11,11 @@
 - `PublishNoReplace` may either leave the staging file in place (hard link) or
   consume it (no-replace rename). Staging cleanup must treat a missing staging
   file as success.
-- Repair publication deliberately replaces: Unix uses `os.Rename`, Windows uses
-  `ReplaceFileW` so readers holding the old file keep a stable handle. Do not
-  route repair through `atomicfile` replace helpers without preserving those
-  handle semantics and the reconcile/backup recovery paths.
+- Repair publication deliberately replaces: Unix uses `atomicfile.Replace`
+  (`os.Rename` there), Windows uses `ReplaceFileW` so readers holding the old
+  file keep a stable handle. Do not route Windows repair through `atomicfile`
+  replace helpers without preserving those handle semantics and the
+  reconcile/backup recovery paths.
 - Repair recovery and the Windows absent-target path use
   `atomicfile.RenameNoReplace` behind package-level seams
   (`linkLooseRepairRecoveryFile`, `renameLooseRepairRecoveryFile`,
