@@ -20,6 +20,8 @@ env:
   BENCH_PATTERN: ^(BenchmarkPrepareAndAppendStream|BenchmarkStorePackedReads|BenchmarkStorePackedReadsRaw|BenchmarkMaintenancePackUnpack|BenchmarkBackupCaptureStream|BenchmarkRepoStreamingReads)$
   BENCH_COUNT: "6"
   BENCH_TIME: 5x
+  # "|" falls back to the source repo on any proxy error, including HTTP/2 stream resets mid-download.
+  GOPROXY: https://proxy.golang.org|direct
 
 jobs:
   benchmark:
