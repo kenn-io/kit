@@ -39,6 +39,9 @@ databases, command parsing, and shutdown policy belong to the caller.
   this package created. Refuse paths whose type or ownership does not match
   that intent.
 - Use listen locks to serialize startup and bind attempts.
+- Unix-socket `Listen` runs the same lock, probe, remove, and bind sequence on
+  Windows. A process killed there leaves its AF_UNIX socket file behind, and
+  bind fails until the file is removed.
 - Hold the owner lock for the daemon's full writable lifetime; use the start
   lock only to serialize discovery, replacement, and launch decisions.
 - Keep blocking and nonblocking start-lock acquisition on the same local
