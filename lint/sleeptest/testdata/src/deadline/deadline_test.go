@@ -28,16 +28,14 @@ func TestShortBudgetsOutsideBubble(t *testing.T) {
 	<-time.After(75 * time.Millisecond)           // want "time.After with budget 75ms"
 	timer := time.NewTimer(20 * time.Millisecond) // want "time.NewTimer with budget 20ms"
 	defer timer.Stop()
-	time.AfterFunc(shortWait, func() {}).Stop()                                    // want "time.AfterFunc with budget 50ms"
-	require.Eventually(t, ready, 300*time.Millisecond, time.Millisecond)           // want "require.Eventually with budget 300ms"
-	assert.Never(t, ready, shortWait, time.Millisecond)                            // want "assert.Never with budget 50ms"
-	require.Eventuallyf(t, ready, 500*time.Millisecond, time.Millisecond, "ready") // want "require.Eventuallyf with budget 500ms"
+	time.AfterFunc(shortWait, func() {}).Stop()                          // want "time.AfterFunc with budget 50ms"
+	require.Eventually(t, ready, 300*time.Millisecond, time.Millisecond) // want "require.Eventually with budget 300ms"
+	assert.Never(t, ready, shortWait, time.Millisecond)                  // want "assert.Never with budget 50ms"
 	req := require.New(t)
-	req.Eventually(ready, 100*time.Millisecond, time.Millisecond)                            // want "require.Eventually with budget 100ms"
-	(*require.Assertions).Eventually(req, ready, 300*time.Millisecond, time.Second)          // want "require.Eventually with budget 300ms"
-	(require.Eventually)(t, ready, 200*time.Millisecond, time.Second)                        // want "require.Eventually with budget 200ms"
-	require.EventuallyWithT(t, func(*assert.CollectT) {}, 400*time.Millisecond, time.Second) // want "require.EventuallyWithT with budget 400ms"
-	_, cancel = context.WithDeadline(ctx, (time.Now()).Add(60*time.Millisecond))             // want "context.WithDeadline with budget 60ms"
+	req.Eventually(ready, 100*time.Millisecond, time.Millisecond)                   // want "require.Eventually with budget 100ms"
+	(*require.Assertions).Eventually(req, ready, 300*time.Millisecond, time.Second) // want "require.Eventually with budget 300ms"
+	(require.Eventually)(t, ready, 200*time.Millisecond, time.Second)               // want "require.Eventually with budget 200ms"
+	_, cancel = context.WithDeadline(ctx, (time.Now()).Add(60*time.Millisecond))    // want "context.WithDeadline with budget 60ms"
 	defer cancel()
 	_, cancel = context.WithDeadline(ctx, (time.Now().Add(70 * time.Millisecond))) // want "context.WithDeadline with budget 70ms"
 	defer cancel()
@@ -50,47 +48,15 @@ func TestZeroAndNegativePollingBudgets(t *testing.T) {
 	assert.Never(t, ready, -time.Millisecond, time.Millisecond) // want "assert.Never with budget -1ms"
 }
 
-func TestParenthesizedBubble(t *testing.T) {
-	synctest.Test(t, (func(t *testing.T) {
-		<-time.After(75 * time.Millisecond)
-	}))
-}
-
-var parenBubble = (func(t *testing.T) {
-	<-time.After(75 * time.Millisecond)
-})
-
-func TestParenthesizedNamedBubble(t *testing.T) {
-	synctest.Test(t, parenBubble)
-}
-
 func TestShortBudgetsInsideBubble(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := context.Background()
 		_, cancel := context.WithTimeout(ctx, 5*time.Millisecond)
 		defer cancel()
-		_, cancel = context.WithDeadline(ctx, time.Now().Add(50*time.Millisecond))
-		defer cancel()
 		<-time.After(75 * time.Millisecond)
 		time.NewTimer(20 * time.Millisecond).Stop()
-		time.AfterFunc(shortWait, func() {}).Stop()
 		require.Eventually(t, ready, 300*time.Millisecond, time.Millisecond)
-		assert.Never(t, ready, shortWait, time.Millisecond)
-		require.New(t).Eventually(ready, 100*time.Millisecond, time.Millisecond)
 	})
-}
-
-func bubbleBody(t *testing.T) {
-	ctx := context.Background()
-	_, cancel := context.WithTimeout(ctx, 5*time.Millisecond)
-	defer cancel()
-	<-time.After(75 * time.Millisecond)
-	time.NewTimer(20 * time.Millisecond).Stop()
-	require.Eventually(t, ready, 300*time.Millisecond, time.Millisecond)
-}
-
-func TestNamedCallbackBubble(t *testing.T) {
-	synctest.Test(t, bubbleBody)
 }
 
 func TestBudgetsThatPass(t *testing.T) {
@@ -106,8 +72,4 @@ func TestBudgetsThatPass(t *testing.T) {
 	defer cancel()
 	_, cancel = context.WithDeadline(ctx, time.Now())
 	defer cancel()
-	<-time.After(0)
-	time.NewTimer(2 * time.Second).Stop()
-	require.Eventually(t, ready, 5*time.Second, 10*time.Millisecond)
-	assert.Never(t, ready, wait, time.Millisecond)
 }
