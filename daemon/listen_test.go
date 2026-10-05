@@ -162,12 +162,10 @@ type listenResult struct {
 func staleUnixSocket(t *testing.T) string {
 	t.Helper()
 	socketPath := unixSocketPath(t)
-	listener, err := (&net.ListenConfig{}).Listen(t.Context(), daemon.NetworkUnix, socketPath)
+	listener, err := net.ListenUnix(daemon.NetworkUnix, &net.UnixAddr{Name: socketPath, Net: daemon.NetworkUnix})
 	require.NoError(t, err)
-	unixListener, ok := listener.(*net.UnixListener)
-	require.True(t, ok, "unix listen returned %T", listener)
-	unixListener.SetUnlinkOnClose(false)
-	require.NoError(t, unixListener.Close())
+	listener.SetUnlinkOnClose(false)
+	require.NoError(t, listener.Close())
 	_, err = os.Lstat(socketPath)
 	require.NoError(t, err, "closed listener did not leave a socket path")
 	return socketPath
