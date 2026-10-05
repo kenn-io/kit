@@ -361,7 +361,7 @@ func publishNoClobber(staging, finalPath string) error {
 		return fmt.Errorf("a pack already exists at %s; refusing to overwrite it", finalPath)
 	}
 	// Link is unsupported or unreliable on this filesystem: fall back to
-	// check-then-rename.
+	// check-then-rename. RenameNoReplace fails on the same filesystems.
 	if _, err := os.Lstat(finalPath); err == nil {
 		return fmt.Errorf("a pack already exists at %s; refusing to overwrite it", finalPath)
 	} else if !errors.Is(err, os.ErrNotExist) {

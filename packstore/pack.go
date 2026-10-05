@@ -1285,8 +1285,8 @@ func removeLoosePathPinnedWithOwnership(
 }
 
 // makeLooseRemovalAside uses an exclusive directory rather than renaming
-// directly to a random sibling file. os.Rename replaces existing destinations
-// on Unix; the private directory makes the final claim name known-absent.
+// directly to a random sibling file. atomicfile.Replace replaces existing
+// destinations; the private directory makes the final claim name known-absent.
 func makeLooseRemovalAside(path string) (string, error) {
 	const attempts = 8
 	for range attempts {
