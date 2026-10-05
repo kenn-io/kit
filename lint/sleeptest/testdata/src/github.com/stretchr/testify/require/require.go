@@ -22,3 +22,8 @@ func (a *Assertions) Eventually(cond func() bool, waitFor, tick time.Duration, m
 
 func Eventuallyf(t TestingT, cond func() bool, waitFor, tick time.Duration, msg string, args ...any) {
 }
+
+func EventuallyWithTf(t TestingT, cond func(*CollectT), waitFor, tick time.Duration, msg string, args ...any) {
+}
+
+func Neverf(t TestingT, cond func() bool, waitFor, tick time.Duration, msg string, args ...any) {}

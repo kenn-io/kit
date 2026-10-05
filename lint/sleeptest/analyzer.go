@@ -33,6 +33,7 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+	"golang.org/x/tools/go/types/typeutil"
 )
 
 // Analyzer reports time.Sleep calls in _test.go files outside synctest bubbles.
@@ -184,8 +185,10 @@ func isPollingAssertion(pass *analysis.Pass, call *ast.CallExpr) bool {
 }
 
 func calleeName(pass *analysis.Pass, call *ast.CallExpr) string {
-	sel := call.Fun.(*ast.SelectorExpr)
-	fn := pass.TypesInfo.Uses[sel.Sel].(*types.Func)
+	fn := typeutil.StaticCallee(pass.TypesInfo, call)
+	if fn == nil || fn.Pkg() == nil {
+		return "call"
+	}
 	return fn.Pkg().Name() + "." + fn.Name()
 }
 
@@ -194,12 +197,9 @@ func isTestFile(pass *analysis.Pass, n ast.Node) bool {
 }
 
 func isPackageFunc(pass *analysis.Pass, call *ast.CallExpr, pkgPath string, names ...string) bool {
-	sel, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok {
-		return false
-	}
-	fn, ok := pass.TypesInfo.Uses[sel.Sel].(*types.Func)
-	if !ok || fn.Pkg() == nil || fn.Pkg().Path() != pkgPath {
+	// StaticCallee also resolves parenthesized callees, dot imports, and method expressions.
+	fn := typeutil.StaticCallee(pass.TypesInfo, call)
+	if fn == nil || fn.Pkg() == nil || fn.Pkg().Path() != pkgPath {
 		return false
 	}
 	for _, name := range names {

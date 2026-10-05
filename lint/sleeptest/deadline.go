@@ -61,7 +61,7 @@ func budgetArg(pass *analysis.Pass, call *ast.CallExpr) ast.Expr {
 
 // nowPlus returns d when expr is written directly as time.Now().Add(d).
 func nowPlus(pass *analysis.Pass, expr ast.Expr) ast.Expr {
-	add, ok := expr.(*ast.CallExpr)
+	add, ok := ast.Unparen(expr).(*ast.CallExpr)
 	if !ok {
 		return nil
 	}
@@ -69,22 +69,22 @@ func nowPlus(pass *analysis.Pass, expr ast.Expr) ast.Expr {
 	if !ok || sel.Sel.Name != "Add" {
 		return nil
 	}
-	now, ok := sel.X.(*ast.CallExpr)
+	now, ok := ast.Unparen(sel.X).(*ast.CallExpr)
 	if !ok || !isPackageFunc(pass, now, "time", "Now") {
 		return nil
 	}
 	return argAt(add, 0)
 }
 
-// waitForIndex finds the waitFor parameter by name so package functions and
-// *Assertions methods, which differ by the leading t, resolve alike.
+// waitForIndex finds the waitFor parameter by name in the call's own
+// signature, so package functions, *Assertions methods, and method
+// expressions, which differ by a leading t or receiver, resolve alike.
 func waitForIndex(pass *analysis.Pass, call *ast.CallExpr) int {
-	sel := call.Fun.(*ast.SelectorExpr)
-	fn, ok := pass.TypesInfo.Uses[sel.Sel].(*types.Func)
+	sig, ok := pass.TypesInfo.TypeOf(call.Fun).(*types.Signature)
 	if !ok {
 		return -1
 	}
-	params := fn.Signature().Params()
+	params := sig.Params()
 	for i := range params.Len() {
 		if params.At(i).Name() == "waitFor" {
 			return i
@@ -101,9 +101,6 @@ func argAt(call *ast.CallExpr, i int) ast.Expr {
 }
 
 func constantDuration(pass *analysis.Pass, expr ast.Expr) (time.Duration, bool) {
-	if expr == nil {
-		return 0, false
-	}
 	value := pass.TypesInfo.Types[expr].Value
 	if value == nil {
 		return 0, false
