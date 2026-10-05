@@ -73,7 +73,7 @@ and path exclusions work like any other linter.
    Add `custom-gcl` to `.gitignore`. golangci-lint caches the build and skips it
    when the plugin list is unchanged.
 
-5. Wire the two commands into the repository's lint target and pre-commit
+5. Wire the two commands into the repository's lint target and git
    hooks, and add a drift check to CI:
 
    ```sh
