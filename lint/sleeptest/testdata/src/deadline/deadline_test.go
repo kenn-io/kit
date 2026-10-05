@@ -33,13 +33,15 @@ func TestShortBudgetsOutsideBubble(t *testing.T) {
 	assert.Never(t, ready, shortWait, time.Millisecond)                            // want "assert.Never with a 50ms budget"
 	require.Eventuallyf(t, ready, 500*time.Millisecond, time.Millisecond, "ready") // want "require.Eventuallyf with a 500ms budget"
 	req := require.New(t)
-	req.Eventually(ready, 100*time.Millisecond, time.Millisecond)                             // want "require.Eventually with a 100ms budget"
-	(*require.Assertions).Eventually(req, ready, 300*time.Millisecond, time.Second)           // want "require.Eventually with a 300ms budget"
-	(require.Eventually)(t, ready, 200*time.Millisecond, time.Second)                         // want "require.Eventually with a 200ms budget"
-	require.EventuallyWithT(t, func(*require.CollectT) {}, 400*time.Millisecond, time.Second) // want "require.EventuallyWithT with a 400ms budget"
-	_, cancel = context.WithDeadline(ctx, (time.Now()).Add(60*time.Millisecond))              // want "context.WithDeadline with a 60ms budget"
+	req.Eventually(ready, 100*time.Millisecond, time.Millisecond)                            // want "require.Eventually with a 100ms budget"
+	(*require.Assertions).Eventually(req, ready, 300*time.Millisecond, time.Second)          // want "require.Eventually with a 300ms budget"
+	(require.Eventually)(t, ready, 200*time.Millisecond, time.Second)                        // want "require.Eventually with a 200ms budget"
+	require.EventuallyWithT(t, func(*assert.CollectT) {}, 400*time.Millisecond, time.Second) // want "require.EventuallyWithT with a 400ms budget"
+	_, cancel = context.WithDeadline(ctx, (time.Now()).Add(60*time.Millisecond))             // want "context.WithDeadline with a 60ms budget"
 	defer cancel()
 	_, cancel = context.WithDeadline(ctx, (time.Now().Add(70 * time.Millisecond))) // want "context.WithDeadline with a 70ms budget"
+	defer cancel()
+	_, cancel = context.WithDeadline(ctx, (time.Now().Add)(90*time.Millisecond)) // want "context.WithDeadline with a 90ms budget"
 	defer cancel()
 }
 

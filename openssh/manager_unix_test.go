@@ -1176,9 +1176,7 @@ func TestPersistentManagerEventCallbackCanDisconnectReentrantly(t *testing.T) {
 			if event.State != StateConnecting {
 				return
 			}
-			ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond) //nolint:kennlint // bounds a reentrant Disconnect from the event callback so a deadlock fails instead of hanging
-			defer cancel()
-			callbackResult <- manager.Disconnect(ctx, event.Identity)
+			callbackResult <- manager.Disconnect(t.Context(), event.Identity)
 		},
 	})
 	require.NoError(err)

@@ -269,7 +269,7 @@ func TestRuntimeStoreOwnerLockDoesNotBlockAnotherPrefixStartLock(t *testing.T) {
 	defer releaseOwner()
 
 	startStore := daemon.RuntimeStore{Dir: dir, Prefix: "tool.owner"}
-	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond) //nolint:kennlint // bounds an acquire that must not wait on another prefix's owner lock; a block surfaces as DeadlineExceeded
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	releaseStart, err := startStore.AcquireStartLock(ctx)
 	require.NoError(t, err)

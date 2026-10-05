@@ -186,9 +186,6 @@ func isPollingAssertion(pass *analysis.Pass, call *ast.CallExpr) bool {
 
 func calleeName(pass *analysis.Pass, call *ast.CallExpr) string {
 	fn := typeutil.StaticCallee(pass.TypesInfo, call)
-	if fn == nil || fn.Pkg() == nil {
-		return "call"
-	}
 	return fn.Pkg().Name() + "." + fn.Name()
 }
 
