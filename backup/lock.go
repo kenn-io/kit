@@ -14,6 +14,7 @@ import (
 
 	"github.com/cenkalti/backoff/v7"
 
+	"go.kenn.io/kit/atomicfile"
 	"go.kenn.io/kit/pack"
 )
 
@@ -258,7 +259,7 @@ func claimLockFile(path string) (string, error) {
 	// busy file is retried briefly instead of leaving a released lock in place.
 	deadline := time.Now().Add(claimBusyTimeout)
 	claimed, err := backoff.Retry(context.Background(), func() (string, error) {
-		err := os.Rename(path, claim)
+		err := atomicfile.Replace(path, claim)
 		if err == nil {
 			return claim, nil
 		}
