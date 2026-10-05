@@ -8,9 +8,9 @@ repository on the shared policy and how to keep it there.
 The policy assumes the Go language version in kit's `go.mod` or newer. Some
 rules point at APIs that older toolchains lack: the `errors.As` ban expects
 `errors.AsType` (Go 1.26), `usetesting` expects `t.Context()` (Go 1.24), and
-`sleeptest` expects `synctest.Test` (Go 1.25). A repository on an older
-language version should raise it before adopting, or disable those rules in
-its overlay until it can.
+`sleeptest` and `deadlinetest` expect `synctest.Test` (Go 1.25). A repository
+on an older language version should raise it before adopting, or disable those
+rules in its overlay until it can.
 
 ## What you get
 

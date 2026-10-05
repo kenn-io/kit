@@ -9,7 +9,6 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
-	"golang.org/x/tools/go/types/typeutil"
 )
 
 // DeadlineAnalyzer reports sub-second wall-clock budgets in _test.go files
@@ -68,8 +67,7 @@ func nowPlus(pass *analysis.Pass, expr ast.Expr) ast.Expr {
 	if !ok {
 		return nil
 	}
-	fn := typeutil.StaticCallee(pass.TypesInfo, add)
-	if fn == nil || fn.Pkg() == nil || fn.Pkg().Path() != "time" || fn.Name() != "Add" {
+	if !isPackageFunc(pass, add, "time", "Add") {
 		return nil
 	}
 	sel, ok := ast.Unparen(add.Fun).(*ast.SelectorExpr)
