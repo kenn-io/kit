@@ -29,9 +29,11 @@ const (
 	Kilo     Name = "kilo"
 	Kiro     Name = "kiro"
 	Droid    Name = "droid"
+	Hermes   Name = "hermes"
+	Qwen     Name = "qwen"
 )
 
-var supportedNames = []Name{Codex, Claude, Gemini, Copilot, OpenCode, Cursor, Kiro, Kilo, Droid, Pi}
+var supportedNames = []Name{Codex, Claude, Gemini, Copilot, OpenCode, Cursor, Kiro, Kilo, Droid, Pi, Hermes, Qwen}
 
 // Names returns the CLI families with concrete adapters.
 func Names() []Name {
@@ -61,6 +63,10 @@ func New(name Name, command Command) (Adapter, error) {
 		return NewDroid(command)
 	case Pi:
 		return NewPi(command)
+	case Hermes:
+		return NewHermes(command)
+	case Qwen:
+		return NewQwen(command)
 	default:
 		return nil, fmt.Errorf("unsupported agent CLI %q", name)
 	}

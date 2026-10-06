@@ -18,7 +18,7 @@ func mustAgent(t *testing.T, name agentcli.Name, command agentcli.Command) agent
 func TestSupportedAgents(t *testing.T) {
 	t.Parallel()
 	assert := assert.New(t)
-	want := []agentcli.Name{agentcli.Codex, agentcli.Claude, agentcli.Gemini, agentcli.Copilot, agentcli.OpenCode, agentcli.Cursor, agentcli.Kiro, agentcli.Kilo, agentcli.Droid, agentcli.Pi}
+	want := []agentcli.Name{agentcli.Codex, agentcli.Claude, agentcli.Gemini, agentcli.Copilot, agentcli.OpenCode, agentcli.Cursor, agentcli.Kiro, agentcli.Kilo, agentcli.Droid, agentcli.Pi, agentcli.Hermes, agentcli.Qwen}
 	assert.Equal(want, agentcli.Names())
 	for _, name := range want {
 		assert.Equal(name, mustAgent(t, name, agentcli.Command{}).Name())
@@ -42,6 +42,7 @@ func TestInvocationContracts(t *testing.T) {
 		{agentcli.Codex, "thread-id", agentcli.Request{Mode: agentcli.NonInteractive, Prompt: agentcli.Prompt{Text: prompt}, Model: "gpt-test", Reasoning: agentcli.ReasoningXHigh, OutputFormat: agentcli.OutputJSONL, Sandbox: agentcli.SandboxReadOnly, Approval: agentcli.ApprovalNever, DisableSkills: true, DisableHooks: true, DisableUserConfig: true, DisableSessionStorage: true, ConfigOverrides: []string{"feature.test=true"}}, []string{"codex", "exec", "resume", "-c", "feature.test=true", "--ignore-user-config", "-c", "skills.include_instructions=false", "--disable", "hooks", "--ephemeral", "--model", "gpt-test", "-c", `model_reasoning_effort="xhigh"`, "-c", `sandbox_mode="read-only"`, "-c", `approval_policy="never"`, "--json", "thread-id", "-"}},
 		{agentcli.Claude, "", agentcli.Request{Mode: agentcli.NonInteractive, Prompt: agentcli.Prompt{Text: prompt}, Model: "sonnet", Reasoning: agentcli.ReasoningHigh, OutputFormat: agentcli.OutputJSONL, Schema: agentcli.JSONSchema{Inline: `{"type":"object"}`}, Approval: agentcli.ApprovalNever, AllowedTools: []string{"Read", "Glob"}, DeniedTools: []string{"Bash"}, DisableSkills: true}, []string{"claude", "--print", "--verbose", "--output-format", "stream-json", "--json-schema", `{"type":"object"}`, "--model", "sonnet", "--effort", "high", "--disable-slash-commands", "--permission-mode", "dontAsk", "--allowedTools", "Read,Glob", "--disallowedTools", "Bash"}},
 		{agentcli.Gemini, "session-1", agentcli.Request{Mode: agentcli.NonInteractive, Prompt: agentcli.Prompt{Text: prompt}, Model: "gemini-test", OutputFormat: agentcli.OutputJSONL, Approval: agentcli.ApprovalNever}, []string{"gemini", "--output-format", "stream-json", "--resume", "session-1", "--model", "gemini-test", "--approval-mode", "plan", "--prompt", ""}},
+		{agentcli.Qwen, "session-1", agentcli.Request{Mode: agentcli.NonInteractive, Prompt: agentcli.Prompt{Text: prompt}, Model: "qwen-test", OutputFormat: agentcli.OutputJSONL, Approval: agentcli.ApprovalNever}, []string{"qwen", "--output-format", "stream-json", "--resume", "session-1", "--model", "qwen-test", "--approval-mode", "plan", "--prompt", ""}},
 		{agentcli.Copilot, "session-1", agentcli.Request{Mode: agentcli.NonInteractive, Prompt: agentcli.Prompt{Text: prompt}, Model: "copilot-test", Reasoning: agentcli.ReasoningXHigh, OutputFormat: agentcli.OutputJSONL, Approval: agentcli.ApprovalBypass, DeniedTools: []string{"write"}, DisableBuiltInMCPs: true, DisableContextFiles: true}, []string{"copilot", "--silent", "--allow-all-tools", "--stream", "off", "--output-format", "json", "--resume=session-1", "--model", "copilot-test", "--reasoning-effort", "xhigh", "--allow-all", "--deny-tool", "write", "--disable-builtin-mcps", "--no-custom-instructions", "--prompt", prompt}},
 		{agentcli.OpenCode, "session-1", agentcli.Request{Mode: agentcli.NonInteractive, Prompt: agentcli.Prompt{Text: prompt}, Model: "provider/model", OutputFormat: agentcli.OutputJSONL}, []string{"opencode", "run", "--format", "json", "--session", "session-1", "--model", "provider/model"}},
 		{agentcli.Cursor, "session-1", agentcli.Request{Mode: agentcli.NonInteractive, Prompt: agentcli.Prompt{Text: prompt}, Model: "cursor-test", OutputFormat: agentcli.OutputJSONL, Approval: agentcli.ApprovalNever}, []string{"agent", "--print", "--output-format", "stream-json", "--resume", "session-1", "--model", "cursor-test", "--mode", "plan"}},
@@ -65,7 +66,7 @@ func TestInvocationContracts(t *testing.T) {
 			}
 			require.NoError(err)
 			assert.Equal(test.want, got.Argv)
-			if test.name == agentcli.Codex || test.name == agentcli.Claude || test.name == agentcli.Gemini || test.name == agentcli.OpenCode || test.name == agentcli.Cursor || test.name == agentcli.Kilo || test.name == agentcli.Droid {
+			if test.name == agentcli.Codex || test.name == agentcli.Claude || test.name == agentcli.Gemini || test.name == agentcli.Qwen || test.name == agentcli.OpenCode || test.name == agentcli.Cursor || test.name == agentcli.Kilo || test.name == agentcli.Droid {
 				require.NotNil(got.Stdin)
 				assert.Equal(test.request.Prompt.Text, *got.Stdin)
 			} else {
@@ -90,6 +91,8 @@ func TestInteractiveResumePreservesConfiguredOptions(t *testing.T) {
 		{agentcli.Cursor, agentcli.Command{Executable: "cursor-agent", Options: []string{"--workspace", "repo"}}, agentcli.Request{}, []string{"cursor-agent", "--workspace", "repo", "--resume", "session-1"}},
 		{agentcli.Droid, agentcli.Command{Executable: "droid-custom", Options: []string{"--append-system-prompt", "Run tests."}}, agentcli.Request{Autonomy: agentcli.AutonomyLow, DisableSkills: true}, []string{"droid-custom", "--append-system-prompt", "Run tests.", "--resume", "session-1", "--auto", "low", "--disable-builtin-skills"}},
 		{agentcli.Gemini, agentcli.Command{Executable: "gemini-custom", Options: []string{"--sandbox"}}, agentcli.Request{}, []string{"gemini-custom", "--sandbox", "--resume", "session-1"}},
+		{agentcli.Qwen, agentcli.Command{Executable: "qwen-custom", Options: []string{"--sandbox"}}, agentcli.Request{}, []string{"qwen-custom", "--sandbox", "--resume", "session-1"}},
+		{agentcli.Hermes, agentcli.Command{Executable: "hermes-custom", Options: []string{"--tui"}}, agentcli.Request{}, []string{"hermes-custom", "--tui", "--resume", "session-1"}},
 	}
 	for _, test := range tests {
 		got, err := mustAgent(t, test.name, test.command).Resume("session-1", test.request)
@@ -120,6 +123,9 @@ func TestUnsupportedRequestsReturnTypedErrors(t *testing.T) {
 		{agentcli.Droid, agentcli.Request{DeniedTools: []string{"Execute"}}, "tools"},
 		{agentcli.Cursor, agentcli.Request{Prompt: agentcli.Prompt{Text: "review"}}, "prompt"},
 		{agentcli.Copilot, agentcli.Request{Prompt: agentcli.Prompt{Text: "review"}}, "prompt"},
+		{agentcli.Qwen, agentcli.Request{Prompt: agentcli.Prompt{Text: "review"}}, "prompt"},
+		{agentcli.Hermes, agentcli.Request{Prompt: agentcli.Prompt{Text: "review"}}, "prompt"},
+		{agentcli.Hermes, agentcli.Request{Mode: agentcli.NonInteractive}, "mode"},
 	}
 	for _, test := range tests {
 		_, err := mustAgent(t, test.name, agentcli.Command{}).Start(test.request)
@@ -176,11 +182,12 @@ func TestConfiguredArgumentsPassThrough(t *testing.T) {
 			assert := assert.New(t)
 			require := require.New(t)
 			options := []string{"--future-flag", "value with spaces", "--model", "configured", "--", "", "operand"}
-			request := agentcli.Request{Mode: agentcli.NonInteractive}
-			if name != agentcli.Kiro {
+			agent := mustAgent(t, name, agentcli.Command{Executable: "custom-worker", Options: options})
+			capabilities := agent.Capabilities()
+			request := agentcli.Request{Mode: capabilities.Modes[len(capabilities.Modes)-1]}
+			if capabilities.Model {
 				request.Model = "requested"
 			}
-			agent := mustAgent(t, name, agentcli.Command{Executable: "custom-worker", Options: options})
 			for _, resume := range []bool{false, true} {
 				var got agentcli.Invocation
 				var err error

@@ -15,7 +15,7 @@ var geminiCapabilities = Capabilities{
 
 func buildGemini(a *adapter, sessionID string, request Request) (Invocation, error) {
 	if request.Mode == Interactive {
-		if err := rejectInteractivePrompt(Gemini, request); err != nil {
+		if err := rejectInteractivePrompt(a.name, request); err != nil {
 			return Invocation{}, err
 		}
 	}
@@ -41,7 +41,7 @@ func buildGemini(a *adapter, sessionID string, request Request) (Invocation, err
 	}
 	stdin, err := stdinPrompt(request.Prompt)
 	if err != nil {
-		return Invocation{}, fmt.Errorf("build %s invocation: %w", Gemini, err)
+		return Invocation{}, fmt.Errorf("build %s invocation: %w", a.name, err)
 	}
 	if stdin != nil {
 		args = append(args, "--prompt", "")
