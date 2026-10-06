@@ -20,6 +20,14 @@ type rootStagedLoose struct {
 	closed bool
 }
 
+type loosePublicationMode uint8
+
+const (
+	loosePublish loosePublicationMode = iota
+	looseRepair
+	looseRestore
+)
+
 func (f *rootStagedLoose) close() error {
 	if f == nil || f.closed {
 		return nil
@@ -48,7 +56,7 @@ func (b *FilesystemBackend) publishLooseRoot(
 	hash Hash,
 	src io.Reader,
 	opts WriteOptions,
-	repair bool,
+	mode loosePublicationMode,
 ) (result WriteResult, resultErr error) {
 	result.Hash = hash
 	if err := ctx.Err(); err != nil {
@@ -182,9 +190,16 @@ func (b *FilesystemBackend) publishLooseRoot(
 		return result, fmt.Errorf("packstore: prepare loose shard: %w", err)
 	}
 	defer func() { resultErr = errors.Join(resultErr, finalRoot.Close()) }()
-	if !repair {
+	replace := mode == looseRepair
+	if !replace {
 		if existing, exists, err := existingRootLoose(ctx, finalRoot, b.layout, hash, size, durable); err != nil {
-			return result, err
+			if mode != looseRestore || ctx.Err() != nil || !repairableLooseError(err) {
+				return result, err
+			}
+			// Restore has verified the backup bytes and may repair a damaged
+			// destination. Keep valid alternate representations: the old database
+			// remains authoritative until the restored catalog is published.
+			replace = true
 		} else if exists {
 			return existing, nil
 		}
@@ -195,7 +210,7 @@ func (b *FilesystemBackend) publishLooseRoot(
 	}
 	stageRel := rootRelativeJoin(stagingRel, selected.name)
 	finalRel := filepath.Join(hash.String()[:2], finalName)
-	if repair {
+	if replace {
 		if _, _, err := verifyRootLoose(
 			ctx, stagingRoot, selected.name, hash, size, result.Encoding, false,
 		); err != nil {
@@ -214,19 +229,34 @@ func (b *FilesystemBackend) publishLooseRoot(
 		selected.name = ""
 		result.Created = true
 		alternate := hash.String() + ".zst"
+		alternateEncoding := LooseEncodingZstd
 		if result.Encoding == LooseEncodingZstd {
 			alternate = hash.String()
+			alternateEncoding = LooseEncodingRaw
 		}
-		if info, err := finalRoot.Lstat(alternate); err == nil {
-			alternatePath := filepath.Join(filepath.Dir(result.Path), alternate)
-			if validationErr := validateRegularNoFollow(alternatePath, info); validationErr != nil {
-				return result, validationErr
+		removeAlternate := mode == looseRepair
+		if mode == looseRestore {
+			if _, _, err := verifyRootLoose(ctx, finalRoot, alternate, hash, size, alternateEncoding, false); err != nil {
+				if ctx.Err() != nil || !repairableLooseError(err) {
+					return result, err
+				}
+				// Damaged bytes cannot serve the old catalog and must not mask
+				// the repaired encoding in readers that probe both paths.
+				removeAlternate = true
 			}
-			if err := finalRoot.Remove(alternate); err != nil {
-				return result, fmt.Errorf("packstore: remove alternate loose representation: %w", err)
+		}
+		if removeAlternate {
+			if info, err := finalRoot.Lstat(alternate); err == nil {
+				alternatePath := filepath.Join(filepath.Dir(result.Path), alternate)
+				if validationErr := validateRegularNoFollow(alternatePath, info); validationErr != nil {
+					return result, validationErr
+				}
+				if err := finalRoot.Remove(alternate); err != nil {
+					return result, fmt.Errorf("packstore: remove alternate loose representation: %w", err)
+				}
+			} else if !errors.Is(err, fs.ErrNotExist) {
+				return result, err
 			}
-		} else if !errors.Is(err, fs.ErrNotExist) {
-			return result, err
 		}
 	} else {
 		if err := root.Link(stageRel, finalRel); err != nil {
@@ -330,11 +360,14 @@ func verifyRootLoose(
 	if encoding == LooseEncodingZstd {
 		header := make([]byte, compressedLooseHeaderSize)
 		if _, err := io.ReadFull(file, header); err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				err = fmt.Errorf("%w: read compressed loose header: %w", ErrContentMismatch, err)
+			}
 			return 0, false, errors.Join(err, file.Close())
 		}
 		logicalSize, err = decodeCompressedLooseHeader(header)
 		if err != nil {
-			return 0, false, errors.Join(err, file.Close())
+			return 0, false, errors.Join(fmt.Errorf("%w: decode compressed loose header: %w", ErrContentMismatch, err), file.Close())
 		}
 	}
 	if logicalSize != expectedSize {
@@ -354,4 +387,10 @@ func verifyRootLoose(
 		return 0, false, err
 	}
 	return info.Size(), true, nil
+}
+
+// A filesystem read/close error does not establish that stored bytes are bad.
+func repairableLooseError(err error) bool {
+	_, filesystemError := errors.AsType[*fs.PathError](err)
+	return errors.Is(err, ErrContentMismatch) && !filesystemError
 }

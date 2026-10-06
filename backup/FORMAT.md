@@ -353,6 +353,19 @@ runs the normal integrity and statistics proof before canonical publication. A
 callback error or invalid output therefore leaves the canonical database
 unpublished.
 
+`RestoreOptions.LooseCompression` opts into Kit's canonical loose-file
+encoding for every attachment that is not imported as a pack, including
+chunked objects. It requires one `<hash[:2]>/<hash>` path per object and a
+`BeforePublication` callback. The callback receives verified `LooseContent`
+receipts and must record their encoding and stored length in the unpublished
+catalog. Compressible content uses the existing `.zst` representation; the
+backup format and reader version do not change. Extras and the database are
+unaffected. Existing verified objects are reused without changing encoding.
+Overwrite repair removes damaged alternates. Valid alternate encodings remain
+until the new catalog is durably published, then Restore removes and syncs them.
+Memory is bounded while streaming, but each in-flight loose write temporarily
+stages both raw bytes and a compressed candidate before keeping one.
+
 ### Optional packed-content restore
 
 Repository attachment membership is representation-neutral: the snapshot's

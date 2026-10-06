@@ -396,6 +396,13 @@ func (s *restoreState) restoreChunkedAttachments(ctx context.Context, directory 
 				}
 				stream = file
 			}
+			if s.compression.Enabled {
+				writeErr := s.restoreCompressedContent(ctx, directory, ref, stream)
+				if err := errors.Join(writeErr, stream.Close()); err != nil {
+					return err
+				}
+				continue
+			}
 			rel := filepath.Join(directory, path)
 			tmp, stageErr := s.stageRootReaderWithOptions(ctx, rel, stream, ref.Size, 0o600, ".restore-", uint64(MaxObjectBytes))
 			if err := errors.Join(stageErr, stream.Close()); err != nil {
