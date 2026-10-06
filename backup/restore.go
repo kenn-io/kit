@@ -66,6 +66,11 @@ type RestoreOptions struct {
 	// When non-nil, "packs" is reserved as the first component below the
 	// application's content directory.
 	PackedContent PackedContentTarget
+	// LooseCompression applies Kit's canonical loose encoding to content not
+	// imported as packs. It requires canonical <hash[:2]>/<hash> restore paths
+	// and BeforePublication to record the returned LooseContent receipts in the
+	// staged catalog. Extras and the database remain ordinary files.
+	LooseCompression packstore.LooseCompressionOptions
 	// TargetCoordinator optionally acquires application-owned coordination
 	// against the exact pre-opened target root Restore will mutate. This closes
 	// the pathname gap that would exist if a caller locked TargetDir before Kit
@@ -93,6 +98,9 @@ type RestoreOptions struct {
 type RestorePublicationTarget struct {
 	TargetDir string
 	DBPath    string
+	// LooseContent reports verified physical representations when
+	// LooseCompression is enabled, including objects retained without compression.
+	LooseContent []packstore.WriteResult
 }
 
 // RestoreResult reports what Restore materialized and proved.
@@ -142,6 +150,12 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *R
 	if opts.TargetDir == "" {
 		return nil, errors.New("backup: restore target directory is required")
 	}
+	if opts.LooseCompression.Enabled && opts.BeforePublication == nil {
+		return nil, errors.New("backup: loose compression requires BeforePublication to record physical content")
+	}
+	if opts.LooseCompression.MinBytes < 0 || opts.LooseCompression.MinSavingsPercent < 0 || opts.LooseCompression.MinSavingsPercent > 100 {
+		return nil, errors.New("backup: invalid loose compression policy")
+	}
 	// Normalize the target once, before anything resolves it: with a trailing
 	// separator ("link/", "link/.") POSIX resolves a final-component symlink
 	// during lstat, so openRestoreRoot's leaf check — and verifyHeldTarget's
@@ -181,13 +195,14 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *R
 		jobs = runtime.GOMAXPROCS(0)
 	}
 	st := &restoreState{
-		repo:     r,
-		app:      app,
-		known:    known,
-		jobs:     jobs,
-		progress: newProgressEmitter(opts.Progress),
-		target:   opts.TargetDir,
-		sqlite:   sqliteOpener(opts.SQLiteOpener),
+		repo:        r,
+		app:         app,
+		known:       known,
+		jobs:        jobs,
+		progress:    newProgressEmitter(opts.Progress),
+		target:      opts.TargetDir,
+		sqlite:      sqliteOpener(opts.SQLiteOpener),
+		compression: opts.LooseCompression,
 	}
 
 	// Source preflight runs BEFORE the target is touched: materializing the
@@ -793,12 +808,14 @@ func verifyRestoreRoot(target string, root *os.Root) error {
 // restoreState carries the shared read machinery for one Restore run. mu
 // guards progress counters and the first-error slot while pack workers run.
 type restoreState struct {
-	recipes  map[pack.BlobID]objectRecipe
-	repo     *Repo
-	app      App
-	known    map[pack.BlobID]IndexEntry
-	jobs     int
-	progress *progressEmitter
+	compression  packstore.LooseCompressionOptions
+	looseContent []packstore.WriteResult // protected by mu while pack workers run
+	recipes      map[pack.BlobID]objectRecipe
+	repo         *Repo
+	app          App
+	known        map[pack.BlobID]IndexEntry
+	jobs         int
+	progress     *progressEmitter
 	// root confines every restore write beneath the verified target directory;
 	// its methods refuse any path that escapes via symlink. target is the
 	// caller-supplied path root was opened at; SQLite opens must go by path,
@@ -1344,7 +1361,7 @@ func (s *restoreState) prepareBeforePublication(
 	if err := ctx.Err(); err != nil {
 		return "", 0, err
 	}
-	if err := callback(ctx, RestorePublicationTarget{TargetDir: s.target, DBPath: privateDB}); err != nil {
+	if err := callback(ctx, RestorePublicationTarget{TargetDir: s.target, DBPath: privateDB, LooseContent: s.looseContent}); err != nil {
 		return "", 0, fmt.Errorf("backup: preparing restored application state: %w", err)
 	}
 	info, err := scratch.root.Lstat(privateDBRel)
@@ -1894,7 +1911,12 @@ func (s *restoreState) restorePackAttachments(
 				s.fail(fmt.Errorf("backup: opening attachment %s from pack %s: %w", ref.Hash, packID, err))
 				return
 			}
-			writeErr := s.writeRootReader(ctx, filepath.Join(contentDir, rel), stream, ref.Size, 0o600)
+			var writeErr error
+			if s.compression.Enabled {
+				writeErr = s.restoreCompressedContent(ctx, contentDir, ref, stream)
+			} else {
+				writeErr = s.writeRootReader(ctx, filepath.Join(contentDir, rel), stream, ref.Size, 0o600)
+			}
 			if err := errors.Join(writeErr, stream.Close()); err != nil {
 				s.fail(err)
 				return

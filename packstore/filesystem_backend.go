@@ -325,7 +325,7 @@ func (b *FilesystemBackend) PublishLoose(
 	if err != nil {
 		return LooseReceipt{}, err
 	}
-	result, err := b.publishLooseRoot(ctx, root, hash, src, writeOpts, false)
+	result, err := b.publishLooseRoot(ctx, root, hash, src, writeOpts, loosePublish)
 	if err != nil {
 		return LooseReceipt{}, err
 	}
@@ -386,7 +386,7 @@ func (b *FilesystemBackend) RepairLoose(
 	if err != nil {
 		return LooseReceipt{}, err
 	}
-	result, err := b.publishLooseRoot(ctx, root, hash, src, writeOpts, true)
+	result, err := b.publishLooseRoot(ctx, root, hash, src, writeOpts, looseRepair)
 	if err != nil {
 		return LooseReceipt{}, err
 	}

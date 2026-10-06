@@ -20,3 +20,6 @@
   `atomicfile.RenameNoReplace` behind package-level seams
   (`linkLooseRepairRecoveryFile`, `renameLooseRepairRecoveryFile`,
   `linkLooseRepairFileWindows`) that tests use to force each branch.
+- Restore may replace damaged loose content after verifying the backup bytes,
+  but must retain alternate encodings until the restored catalog is published:
+  the old catalog may still reference them.

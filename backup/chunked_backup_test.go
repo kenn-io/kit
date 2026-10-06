@@ -2,6 +2,7 @@ package backup_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -15,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/backup"
 	"go.kenn.io/kit/pack"
+	"go.kenn.io/kit/packstore"
 )
 
 func TestChunkedBackupRestoreAndPrune(t *testing.T) {
@@ -132,13 +134,18 @@ func TestChunkedBackupRestoreAndPrune(t *testing.T) {
 			verified, err := backup.Verify(t.Context(), repo, portableApp{}, backup.VerifyOptions{SnapshotID: snapshotID})
 			require.NoError(t, err)
 			require.NotEmpty(t, verified.Problems)
-			failedTarget := filepath.Join(t.TempDir(), "failed")
-			_, err = backup.Restore(t.Context(), repo, portableApp{}, backup.RestoreOptions{
-				SnapshotID: snapshotID, TargetDir: failedTarget, MetadataRestorer: portableRestorer{},
-			})
-			require.Error(t, err)
-			assert.NoFileExists(t, filepath.Join(failedTarget, portableApp{}.DBFileName()), "failed chunk verification must not publish database authority")
-			assert.NoFileExists(t, filepath.Join(failedTarget, "content", rel))
+			for _, compressed := range []bool{false, true} {
+				failedTarget := filepath.Join(t.TempDir(), "failed")
+				_, err = backup.Restore(t.Context(), repo, portableApp{}, backup.RestoreOptions{
+					SnapshotID: snapshotID, TargetDir: failedTarget, MetadataRestorer: portableRestorer{},
+					LooseCompression:  packstore.LooseCompressionOptions{Enabled: compressed},
+					BeforePublication: func(context.Context, backup.RestorePublicationTarget) error { return nil },
+				})
+				require.Error(t, err)
+				assert.NoFileExists(t, filepath.Join(failedTarget, portableApp{}.DBFileName()), "failed chunk verification must not publish database authority")
+				assert.NoFileExists(t, filepath.Join(failedTarget, "content", rel))
+				assert.NoFileExists(t, filepath.Join(failedTarget, "content", rel+".zst"))
+			}
 		})
 	}
 }
