@@ -848,3 +848,109 @@ func TestHandleRejectsOversizedPayload(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "hook payload exceeds")
 }
+
+type piHandler struct {
+	NoopHandler
+	sessionStart *SessionStartInput
+	prompt       *UserPromptSubmitInput
+	stop         *StopInput
+	stopOutput   StopOutput
+}
+
+func (h *piHandler) SessionStart(_ context.Context, input SessionStartInput) (SessionStartOutput, error) {
+	h.sessionStart = &input
+	return SessionStartOutput{}, nil
+}
+
+func (h *piHandler) UserPromptSubmit(
+	_ context.Context,
+	input UserPromptSubmitInput,
+) (UserPromptSubmitOutput, error) {
+	h.prompt = &input
+	return UserPromptSubmitOutput{}, nil
+}
+
+func (h *piHandler) Stop(_ context.Context, input StopInput) (StopOutput, error) {
+	h.stop = &input
+	return h.stopOutput, nil
+}
+
+func TestHandleDispatchesPiEvents(t *testing.T) {
+	const common = `"session_id":"pi-1","cwd":"/work","transcript_path":"/s/1.jsonl"`
+	tests := []struct {
+		name    string
+		payload string
+		check   func(*testing.T, *piHandler)
+	}{
+		{
+			name: "startup", payload: `"hook_event_name":"session_start","reason":"startup"`,
+			check: func(t *testing.T, h *piHandler) {
+				t.Helper()
+				require.NotNil(t, h.sessionStart)
+				assert.Equal(t, SessionSourceStartup, h.sessionStart.Source)
+				assert.Equal(t, "pi-1", h.sessionStart.SessionID)
+			},
+		},
+		{
+			name: "new", payload: `"hook_event_name":"session_start","reason":"new"`,
+			check: func(t *testing.T, h *piHandler) {
+				t.Helper()
+				require.NotNil(t, h.sessionStart)
+				assert.Equal(t, SessionSourceClear, h.sessionStart.Source)
+			},
+		},
+		{
+			name: "reload", payload: `"hook_event_name":"session_start","reason":"reload"`,
+			check: func(t *testing.T, h *piHandler) {
+				t.Helper()
+				require.NotNil(t, h.sessionStart)
+				assert.Empty(t, h.sessionStart.Source)
+			},
+		},
+		{
+			name: "prompt", payload: `"hook_event_name":"before_agent_start","prompt":"fix it"`,
+			check: func(t *testing.T, h *piHandler) {
+				t.Helper()
+				require.NotNil(t, h.prompt)
+				assert.Equal(t, "fix it", h.prompt.Prompt)
+			},
+		},
+		{
+			name: "settled", payload: `"hook_event_name":"agent_settled"`,
+			check: func(t *testing.T, h *piHandler) {
+				t.Helper()
+				require.NotNil(t, h.stop)
+				assert.Equal(t, EventStop, h.stop.HookEventName)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var output bytes.Buffer
+			handler := &piHandler{}
+
+			err := Handle(
+				t.Context(), AgentPi, strings.NewReader("{"+common+","+tt.payload+"}"),
+				&output, handler,
+			)
+
+			require.NoError(t, err)
+			tt.check(t, handler)
+			assert.JSONEq(t, `{}`, output.String())
+		})
+	}
+}
+
+func TestHandleRejectsPiControlOutput(t *testing.T) {
+	var output bytes.Buffer
+	handler := &piHandler{stopOutput: StopOutput{Decision: DecisionBlock, Reason: "work remains"}}
+
+	err := Handle(
+		t.Context(), AgentPi,
+		strings.NewReader(`{"session_id":"pi-1","hook_event_name":"agent_settled"}`),
+		&output, handler,
+	)
+
+	require.ErrorContains(t, err, "does not support Stop control output")
+	assert.Empty(t, output.String())
+}

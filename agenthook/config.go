@@ -90,12 +90,20 @@ func PlanInstall(agent Agent, opts InstallOptions) (Result, error) {
 // writes a command string on this platform.
 func execArgv(spec profileSpec, opts InstallOptions) ([]string, error) {
 	executable := strings.TrimSpace(opts.Executable)
-	if executable == "" || spec.windowsCommandStyle != windowsCommandExec ||
-		runtime.GOOS != "windows" {
+	if spec.format == formatScript && executable == "" {
+		return nil, fmt.Errorf(
+			"%s hooks need Executable and Arguments; a raw command needs a shell",
+			spec.profile.DisplayName,
+		)
+	}
+	if spec.format != formatScript && (executable == "" ||
+		spec.windowsCommandStyle != windowsCommandExec || runtime.GOOS != "windows") {
 		return nil, nil
 	}
-	if ext := filepath.Ext(executable); strings.EqualFold(ext, ".cmd") ||
-		strings.EqualFold(ext, ".bat") {
+	// Node refuses to spawn .cmd and .bat files without a shell:
+	// https://nodejs.org/en/blog/vulnerability/april-2024-security-releases-2
+	if ext := filepath.Ext(executable); runtime.GOOS == "windows" &&
+		(strings.EqualFold(ext, ".cmd") || strings.EqualFold(ext, ".bat")) {
 		return nil, fmt.Errorf(
 			"%s hooks on Windows cannot run %s shim %s without a shell; "+
 				"pass the executable it launches",
@@ -205,6 +213,9 @@ func prepareInstall(agent Agent, opts InstallOptions) (profileSpec, string, []na
 			return profileSpec{}, "", nil, errors.New("Hermes hook timeout must not exceed 300 seconds")
 		}
 		matcher := nativeMatcher(spec, strings.TrimSpace(hook.Matcher))
+		if spec.format == formatScript && matcher != "" {
+			return profileSpec{}, "", nil, fmt.Errorf("%s hooks do not support matchers", spec.profile.DisplayName)
+		}
 		if spec.format == formatHermesYAML && matcher != "" &&
 			hook.Event != EventPreToolUse && hook.Event != EventPostToolUse {
 			return profileSpec{}, "", nil, errors.New("Hermes only supports matchers on PreToolUse and PostToolUse hooks")
@@ -252,6 +263,8 @@ func planConfig(
 		)
 	case formatHermesYAML:
 		return planHermesConfig(path, marker, command, hooks, uninstall)
+	case formatScript:
+		return planScriptConfig(spec, path, marker, argv, hooks, uninstall)
 	default:
 		return nil, false, errors.New("unsupported agent hook config format")
 	}

@@ -3,7 +3,9 @@ package agenthook
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -24,7 +26,7 @@ func TestProfilesExposeClaudeStyleEvents(t *testing.T) {
 	require := require.New(t)
 
 	profiles := Profiles()
-	require.Len(profiles, 8)
+	require.Len(profiles, 9)
 	assert.Equal([]Agent{
 		AgentClaude,
 		AgentCodex,
@@ -33,6 +35,7 @@ func TestProfilesExposeClaudeStyleEvents(t *testing.T) {
 		AgentDroid,
 		AgentGemini,
 		AgentHermes,
+		AgentPi,
 		AgentQwen,
 	}, []Agent{
 		profiles[0].Agent,
@@ -43,10 +46,12 @@ func TestProfilesExposeClaudeStyleEvents(t *testing.T) {
 		profiles[5].Agent,
 		profiles[6].Agent,
 		profiles[7].Agent,
+		profiles[8].Agent,
 	})
 	assert.Contains(profiles[6].SupportedEvents, EventPreToolUse)
 	assert.NotContains(profiles[6].SupportedEvents, EventNotification)
-	assert.Contains(profiles[7].SupportedEvents, EventPermissionRequest)
+	assert.Equal([]Event{EventSessionStart, EventUserPromptSubmit, EventStop}, profiles[7].SupportedEvents)
+	assert.Contains(profiles[8].SupportedEvents, EventPermissionRequest)
 }
 
 func TestPlanInstallDefaultsToEveryProfileEvent(t *testing.T) {
@@ -139,21 +144,23 @@ func TestPlanInstallBuildsCommandFromExecutable(t *testing.T) {
 	assert.NotContains(t, handler, "args")
 }
 
-func TestPlanInstallRejectsWindowsShimForClaude(t *testing.T) {
+func TestPlanInstallRejectsWindowsShim(t *testing.T) {
 	if runtime.GOOS != "windows" {
-		t.Skip("Claude exec form is written only on Windows")
+		t.Skip("shims need a shell only on Windows")
 	}
-	for _, executable := range []string{`C:\tools\hook.cmd`, `C:\tools\hook.BAT`} {
-		t.Run(executable, func(t *testing.T) {
-			_, err := PlanInstall(AgentClaude, InstallOptions{
-				ConfigPath: filepath.Join(t.TempDir(), "settings.json"),
-				Executable: executable,
-				Arguments:  []string{"agent-hook", "run", "--source", "shared-agent-hook-test"},
-				Marker:     testMarker,
-			})
+	for _, agent := range []Agent{AgentClaude, AgentPi} {
+		for _, executable := range []string{`C:\tools\hook.cmd`, `C:\tools\hook.BAT`} {
+			t.Run(string(agent)+" "+executable, func(t *testing.T) {
+				_, err := PlanInstall(agent, InstallOptions{
+					ConfigPath: filepath.Join(t.TempDir(), "hook-config"),
+					Executable: executable,
+					Arguments:  []string{"agent-hook", "run", "--source", "shared-agent-hook-test"},
+					Marker:     testMarker,
+				})
 
-			require.ErrorContains(t, err, "pass the executable it launches")
-		})
+				require.ErrorContains(t, err, "pass the executable it launches")
+			})
+		}
 	}
 }
 
@@ -184,6 +191,7 @@ func TestConfigPathHonorsAgentHomes(t *testing.T) {
 		{agent: AgentCopilot, env: "COPILOT_HOME", path: filepath.Join("hooks", "agenthook.json")},
 		{agent: AgentGemini, env: "GEMINI_CLI_HOME", path: filepath.Join(".gemini", "settings.json")},
 		{agent: AgentHermes, env: "HERMES_HOME", path: "config.yaml"},
+		{agent: AgentPi, env: "PI_CODING_AGENT_DIR", path: filepath.Join("extensions", "agenthook.js")},
 		{agent: AgentQwen, env: "QWEN_HOME", path: "settings.json"},
 	}
 	for _, tt := range tests {
@@ -906,4 +914,214 @@ func TestWriteConfigRefusesLinkSwappedInForRegularConfig(t *testing.T) {
 	data, err := os.ReadFile(other)
 	require.NoError(err)
 	assert.Equal(t, "other", string(data))
+}
+
+func TestConfigPathExpandsPiAgentDirTilde(t *testing.T) {
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	t.Setenv("PI_CODING_AGENT_DIR", "~/pi-agent")
+
+	path, err := ConfigPath(AgentPi)
+
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(home, "pi-agent", "extensions", "agenthook.js"), path)
+}
+
+// piScriptHooks parses the registration block of a generated Pi extension.
+func piScriptHooks(t *testing.T, path string) map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	block, err := scriptBlock(data, path)
+	require.NoError(t, err)
+	var root map[string]any
+	require.NoError(t, json.Unmarshal(block, &root))
+	hooks, _ := root["hooks"].(map[string]any)
+	return hooks
+}
+
+func piCommands(hooks map[string]any, event string) []string {
+	var commands []string
+	entries, _ := hooks[event].([]any)
+	for _, entry := range entries {
+		handlers, _ := entry.(map[string]any)["hooks"].([]any)
+		for _, handler := range handlers {
+			fields, _ := handler.(map[string]any)
+			command, _ := fields["command"].(string)
+			argv := []string{command}
+			args, _ := fields["args"].([]any)
+			for _, arg := range args {
+				argv = append(argv, arg.(string))
+			}
+			commands = append(commands, strings.Join(argv, " "))
+		}
+	}
+	return commands
+}
+
+func TestInstallPiKeepsOtherApplicationsCommands(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	path := filepath.Join(t.TempDir(), "extensions", "agenthook.js")
+	install := func(executable, source string) {
+		_, err := Install(AgentPi, InstallOptions{
+			ConfigPath: path,
+			Executable: executable,
+			Arguments:  []string{"agent-hook", "--source", source},
+			Marker:     "--source " + source,
+		})
+		require.NoError(err)
+	}
+
+	install("/opt/a", "a-hook")
+	install("/opt/b", "b-hook")
+	assert.Equal(
+		[]string{"/opt/a agent-hook --source a-hook", "/opt/b agent-hook --source b-hook"},
+		piCommands(piScriptHooks(t, path), "session_start"),
+	)
+
+	install("/moved/a", "a-hook")
+	hooks := piScriptHooks(t, path)
+	assert.Equal(
+		[]string{"/opt/b agent-hook --source b-hook", "/moved/a agent-hook --source a-hook"},
+		piCommands(hooks, "agent_settled"),
+	)
+	assert.Len(piCommands(hooks, "before_agent_start"), 2)
+
+	result, err := Uninstall(AgentPi, path, "--source a-hook")
+	require.NoError(err)
+	assert.True(result.Changed)
+	assert.Equal(
+		[]string{"/opt/b agent-hook --source b-hook"},
+		piCommands(piScriptHooks(t, path), "session_start"),
+	)
+
+	result, err = Uninstall(AgentPi, path, "--source b-hook")
+	require.NoError(err)
+	assert.True(result.Changed)
+	assert.Empty(piScriptHooks(t, path))
+
+	result, err = Uninstall(AgentPi, filepath.Join(t.TempDir(), "missing.js"), "--source b-hook")
+	require.NoError(err)
+	assert.False(result.Changed)
+}
+
+func TestPlanInstallPiRefusesForeignFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agenthook.js")
+	original := []byte("export default function (pi) {}\n")
+	require.NoError(t, os.WriteFile(path, original, 0o600))
+
+	_, err := Install(AgentPi, InstallOptions{
+		ConfigPath: path,
+		Executable: "/opt/hook",
+		Arguments:  []string{"--source", "shared-agent-hook-test"},
+		Marker:     testMarker,
+	})
+
+	require.ErrorContains(t, err, "not written by agenthook")
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, original, data)
+}
+
+func TestPlanInstallPiRequiresExecutableWithoutMatchers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agenthook.js")
+
+	_, err := PlanInstall(AgentPi, InstallOptions{
+		ConfigPath: path,
+		Command:    "/opt/hook " + testMarker,
+		Marker:     testMarker,
+	})
+	require.ErrorContains(t, err, "need Executable and Arguments")
+
+	_, err = PlanInstall(AgentPi, InstallOptions{
+		ConfigPath: path,
+		Executable: "/opt/hook",
+		Arguments:  []string{"--source", "shared-agent-hook-test"},
+		Marker:     testMarker,
+		Hooks:      []Hook{{Event: EventSessionStart, Matcher: "startup"}},
+	})
+	require.ErrorContains(t, err, "do not support matchers")
+}
+
+func TestPiExtensionHelper(t *testing.T) {
+	out := os.Getenv("KIT_AGENTHOOK_PI_HELPER_OUT")
+	if out == "" {
+		return
+	}
+	payload, err := io.ReadAll(os.Stdin)
+	require.NoError(t, err)
+	file, err := os.OpenFile(out, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	require.NoError(t, err)
+	_, err = file.Write(append(payload, '\n'))
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
+	if strings.Contains(string(payload), "agent_settled") {
+		// Outlive the 1s hook timeout so the extension has to kill this process.
+		<-time.After(time.Minute)
+	}
+}
+
+const piExtensionDriver = `
+import { pathToFileURL } from "node:url";
+const extension = await import(pathToFileURL(process.argv[2]).href);
+const handlers = {};
+extension.default({ on: (name, handler) => { handlers[name] = handler; } });
+const ctx = (mode) => ({
+	mode,
+	cwd: "/work",
+	sessionManager: { getSessionId: () => "pi-session-1", getSessionFile: () => "/sessions/1.jsonl" },
+});
+await handlers.session_start({ type: "session_start", reason: "startup" }, ctx("tui"));
+await handlers.session_start({ type: "session_start", reason: "startup" }, ctx("json"));
+await handlers.agent_settled({ type: "agent_settled" }, ctx("tui"));
+`
+
+func TestPiExtensionRunsRegisteredCommand(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not available")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agenthook.js")
+	_, err = Install(AgentPi, InstallOptions{
+		ConfigPath: path,
+		Executable: os.Args[0],
+		Arguments:  []string{"-test.run=^TestPiExtensionHelper$", "--", "--source", "shared-agent-hook-test"},
+		Marker:     testMarker,
+		Hooks: []Hook{
+			{Event: EventSessionStart},
+			{Event: EventStop, Timeout: time.Second},
+		},
+	})
+	require.NoError(err)
+	data, err := os.ReadFile(path)
+	require.NoError(err)
+	module := filepath.Join(dir, "extension.mjs")
+	require.NoError(os.WriteFile(module, data, 0o600))
+	driver := filepath.Join(dir, "driver.mjs")
+	require.NoError(os.WriteFile(driver, []byte(piExtensionDriver), 0o600))
+	out := filepath.Join(dir, "payloads.jsonl")
+	cmd := exec.CommandContext(t.Context(), node, driver, module)
+	cmd.Env = append(os.Environ(), "KIT_AGENTHOOK_PI_HELPER_OUT="+out)
+
+	started := time.Now()
+	output, err := cmd.CombinedOutput()
+
+	require.NoError(err, string(output))
+	assert.Less(time.Since(started), 30*time.Second, "the timed-out command was not killed")
+	payloads, err := os.ReadFile(out)
+	require.NoError(err)
+	lines := strings.Split(strings.TrimSpace(string(payloads)), "\n")
+	require.Len(lines, 2)
+	assert.JSONEq(`{
+  "hook_event_name":"session_start",
+  "session_id":"pi-session-1",
+  "transcript_path":"/sessions/1.jsonl",
+  "cwd":"/work",
+  "reason":"startup"
+}`, lines[0])
+	assert.Contains(lines[1], `"agent_settled"`)
 }
