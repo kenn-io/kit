@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 )
 
 func planNestedJSONConfig(
+	spec profileSpec,
 	path, marker, command, commandWindows string,
 	hooks []nativeHook,
 	uninstall bool,
@@ -46,8 +48,14 @@ func planNestedJSONConfig(
 				"type":    "command",
 				"command": command,
 			}
-			if commandWindows != "" {
-				handler["commandWindows"] = commandWindows
+			switch {
+			case spec.windowsCommandStyle != windowsCommandPowerShell:
+				if commandWindows != "" {
+					handler["commandWindows"] = commandWindows
+				}
+			case runtime.GOOS == "windows" && commandWindows != "":
+				handler["command"] = commandWindows
+				handler["shell"] = "powershell"
 			}
 			if hook.timeout > 0 {
 				handler["timeout"] = hook.timeout
@@ -165,7 +173,7 @@ func removeOwnedJSONHooks(hooks map[string]any, marker, path string) error {
 			for _, rawHandler := range handlers {
 				handler, ok := rawHandler.(map[string]any)
 				command, _ := handler["command"].(string)
-				if ok && strings.Contains(command, marker) {
+				if ok && commandContainsMarker(command, marker) {
 					continue
 				}
 				keptHandlers = append(keptHandlers, rawHandler)

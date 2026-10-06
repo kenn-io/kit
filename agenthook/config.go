@@ -213,7 +213,7 @@ func planConfig(
 ) ([]byte, bool, error) {
 	switch spec.format {
 	case formatNestedJSON:
-		return planNestedJSONConfig(path, marker, command, commandWindows, hooks, uninstall)
+		return planNestedJSONConfig(spec, path, marker, command, commandWindows, hooks, uninstall)
 	case formatDirectJSON:
 		return planDirectJSONConfig(
 			spec, path, marker, command, commandWindows, hooks, uninstall,

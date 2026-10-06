@@ -77,6 +77,19 @@ func profileCommands(spec profileSpec, commands Commands) (native, windows strin
 	return native, windows
 }
 
+// commandContainsMarker reports whether command carries marker as written or as
+// the PowerShell-quoted arguments BuildCommand makes of it.
+func commandContainsMarker(command, marker string) bool {
+	if strings.Contains(command, marker) {
+		return true
+	}
+	fields := strings.Fields(marker)
+	for i, field := range fields {
+		fields[i] = quotePowerShellArgument(field)
+	}
+	return len(fields) > 0 && strings.Contains(command, strings.Join(fields, " "))
+}
+
 func quotePOSIXArgument(arg string) string {
 	if arg != "" && strings.IndexFunc(arg, unsafePOSIXArgumentRune) == -1 {
 		return arg
