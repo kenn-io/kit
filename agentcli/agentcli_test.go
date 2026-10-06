@@ -131,6 +131,7 @@ func TestUnsupportedRequestsReturnTypedErrors(t *testing.T) {
 		_, err := mustAgent(t, test.name, agentcli.Command{}).Start(test.request)
 		var unsupported *agentcli.UnsupportedOptionError
 		require.ErrorAs(err, &unsupported)
+		assert.Equal(test.name, unsupported.Agent)
 		assert.Equal(test.option, unsupported.Option)
 		assert.NotEmpty(unsupported.Hint)
 	}

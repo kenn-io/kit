@@ -11,8 +11,8 @@ var hermesCapabilities = Capabilities{
 }
 
 func buildHermes(a *adapter, sessionID string, request Request) (Invocation, error) {
-	if err := rejectInteractivePrompt(Hermes, request); err != nil {
-		return Invocation{}, err
+	if request.Prompt.Text != "" {
+		return Invocation{}, unsupported(Hermes, Interactive, "prompt", "", "start or resume without a prompt and type it in the terminal UI")
 	}
 	args := a.base()
 	if sessionID != "" {
