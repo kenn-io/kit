@@ -30,7 +30,8 @@ type Hook struct {
 // Executable. Marker must be a stable, application-namespaced substring unique
 // to commands the caller owns; it identifies those commands across binary path
 // changes. On Windows, Claude Code hooks built from Executable are written in
-// exec form, and the marker matches the executable and arguments joined by
+// exec form, which needs an executable such as an .exe rather than a .cmd or
+// .bat shim, and the marker matches the executable and arguments joined by
 // spaces. Hooks defaults to every event supported by the selected profile.
 type InstallOptions struct {
 	ConfigPath        string
