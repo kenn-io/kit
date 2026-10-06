@@ -681,6 +681,16 @@ func TestHandleAllowsNativeLifecyclePayloadWithoutClaudeEquivalent(t *testing.T)
 				assert.Nil(t, handler.sessionStart)
 			},
 		},
+		{
+			name:    "OpenCode root replaced",
+			agent:   AgentOpenCode,
+			payload: `{"session_id":"ses_1","hook_event_name":"SessionEnd","reason":"other"}`,
+			check: func(t *testing.T, handler *lifecycleHandler) {
+				t.Helper()
+				require.NotNil(t, handler.sessionEnd)
+				assert.Equal(t, SessionEndOther, handler.sessionEnd.Reason)
+			},
+		},
 	}
 
 	for _, tt := range tests {

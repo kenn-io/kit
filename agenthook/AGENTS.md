@@ -39,6 +39,9 @@
   A script profile must run its hook commands from the process the user's
   terminal started, never from a shared server, so each report carries that
   terminal's environment.
+  The OpenCode module retires its reported root with SessionEnd as soon as
+  its terminal shows a session with another root, and never from cleanup,
+  which also runs on hot reload and reinstall.
 - Keep each harness profile in its own agent-named file (`claude.go`,
   `codex.go`, and so on). `profile.go` owns only the shared vocabulary,
   registry, and lookup behavior.

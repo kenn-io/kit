@@ -15,6 +15,7 @@ var openCodeCapabilities = Capabilities{
 }
 
 func buildOpenCode(a *adapter, sessionID string, request Request) (Invocation, error) {
+	args := a.base()
 	if request.Mode == Interactive {
 		if err := rejectInteractivePrompt(OpenCode, request); err != nil {
 			return Invocation{}, err
@@ -23,15 +24,11 @@ func buildOpenCode(a *adapter, sessionID string, request Request) (Invocation, e
 		if request.Model != "" {
 			return Invocation{}, unsupported(OpenCode, Interactive, "model", "", "use noninteractive mode")
 		}
-		args := a.base()
-		if sessionID != "" {
-			args = append(args, "--session", sessionID)
+	} else {
+		args = append(args, "run")
+		if request.OutputFormat == OutputJSONL {
+			args = append(args, "--format", "json")
 		}
-		return Invocation{Argv: args}, nil
-	}
-	args := append(a.base(), "run")
-	if request.OutputFormat == OutputJSONL {
-		args = append(args, "--format", "json")
 	}
 	if sessionID != "" {
 		args = append(args, "--session", sessionID)

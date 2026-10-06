@@ -17,7 +17,8 @@
 // and a --no-session run reports nothing. A root index.ts, index.js, or
 // package.json pi.extensions in Pi's extensions directory stops Pi from loading
 // the module. It needs Pi 0.80.4 or later. The OpenCode module is a 2.x TUI
-// plugin that reports the root session its terminal shows.
+// plugin that reports the root session its terminal shows, and ends that
+// session's report when the terminal moves to another root.
 //
 // Applications identify their hooks with a stable marker embedded in the
 // command. Reinstalling replaces commands carrying that marker even when the

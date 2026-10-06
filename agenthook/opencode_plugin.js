@@ -8,10 +8,11 @@ export default {
 		// The TUI hears every terminal's sessions, so report only the root of the
 		// session this terminal shows; subagents are child sessions with parentID.
 		let root;
-		let cwd;
 		let pending = Promise.resolve();
-		const emit = (event, fields) => {
-			const payload = { hook_event_name: event, session_id: root, cwd, ...fields };
+		const emit = (event, sessionID, fields) => {
+			// Read cwd per payload so a /cd in the session is reflected.
+			const cwd = api.data.session.get(sessionID)?.location?.directory;
+			const payload = { hook_event_name: event, session_id: sessionID, cwd, ...fields };
 			// A failed report must not block later ones; OpenCode shows plugin
 			// errors as error toasts, so this one does too:
 			// https://github.com/anomalyco/opencode/blob/v2.0.24/packages/plugin/src/tui/context.ts#L271-L282
@@ -24,15 +25,23 @@ export default {
 					} catch {}
 				});
 		};
+		// A session route with another root retires the reported one at once, so
+		// its later events stay silent even before the new root resolves. The
+		// plugin can't tell /new from opening an existing session, so the reason
+		// is other. The home route keeps the root, since a turn may finish there.
 		const sync = () => {
 			const route = api.ui.router.current();
 			if (route?.type !== "session") return;
 			const id = api.data.session.root(route.sessionID);
+			if (id === root) return;
+			if (root !== undefined) {
+				emit("SessionEnd", root, { reason: "other" });
+				root = undefined;
+			}
 			const info = api.data.session.get(id);
-			if (!info || info.parentID || id === root) return;
+			if (!info || info.parentID) return;
 			root = id;
-			cwd = info.location?.directory;
-			emit("SessionStart", {});
+			emit("SessionStart", root, {});
 		};
 		// Interrupted and failed runs stay unmapped: Claude's Stop skips user
 		// interrupts, and API failures are StopFailure:
@@ -45,15 +54,15 @@ export default {
 				const item = details.data.item;
 				const text = item?.payload?.text;
 				if (item?.type === "user" && typeof text === "string" && text !== "") {
-					emit("UserPromptSubmit", { prompt: text });
+					emit("UserPromptSubmit", root, { prompt: text });
 				}
 			} else if (details.type === "session.execution.succeeded") {
-				emit("Stop", {});
+				emit("Stop", root, {});
 			}
 		});
 		const timer = setInterval(sync, routePollMilliseconds);
 		sync();
-		// SessionEnd stays unmapped: cleanup also runs on every hot reload,
+		// Cleanup sends no SessionEnd: it also runs on every hot reload,
 		// including the one a reinstall triggers.
 		return () => {
 			clearInterval(timer);

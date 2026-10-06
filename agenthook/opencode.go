@@ -20,8 +20,10 @@ func openCodeProfile() profileSpec {
 			// https://github.com/anomalyco/opencode/blob/v2.0.24/packages/tui/src/plugin/discovery.ts#L24-L58
 			// https://github.com/anomalyco/opencode/blob/v2.0.24/packages/tui/src/plugin/context.tsx#L670
 			// https://github.com/anomalyco/opencode/blob/v2.0.24/packages/plugin/src/host.ts#L43
-			ConfigFilename:  filepath.Join("plugins", "agenthook", "tui.js"),
-			SupportedEvents: []Event{EventSessionStart, EventUserPromptSubmit, EventStop},
+			ConfigFilename: filepath.Join("plugins", "agenthook", "tui.js"),
+			SupportedEvents: []Event{
+				EventSessionStart, EventUserPromptSubmit, EventStop, EventSessionEnd,
+			},
 		},
 		formatScript,
 		"",
@@ -33,6 +35,9 @@ func openCodeProfile() profileSpec {
 	// The plugin reports a root session when the terminal shows it, which has
 	// no Claude source.
 	spec.sessionSourceRequirement = inputOptional
+	// The plugin sends SessionEnd only when its terminal moves to another root,
+	// always with reason other.
+	spec.sessionEndReasonRequirement = inputRequired
 	return spec
 }
 

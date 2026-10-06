@@ -54,11 +54,12 @@ func TestProfilesExposeClaudeStyleEvents(t *testing.T) {
 	})
 	assert.Contains(profiles[6].SupportedEvents, EventPreToolUse)
 	assert.NotContains(profiles[6].SupportedEvents, EventNotification)
-	assert.Equal([]Event{EventSessionStart, EventUserPromptSubmit, EventStop}, profiles[7].SupportedEvents)
-	assert.Equal(
-		[]Event{EventSessionStart, EventUserPromptSubmit, EventStop, EventSessionEnd},
-		profiles[8].SupportedEvents,
-	)
+	for _, profile := range profiles[7:9] {
+		assert.Equal(
+			[]Event{EventSessionStart, EventUserPromptSubmit, EventStop, EventSessionEnd},
+			profile.SupportedEvents,
+		)
+	}
 	assert.Contains(profiles[9].SupportedEvents, EventPermissionRequest)
 }
 
@@ -1306,11 +1307,13 @@ const plugin = (await import(pathToFileURL(process.argv[2]).href)).default;
 const sessions = {
 	ses_root: { id: "ses_root", location: { directory: "/work" } },
 	ses_child: { id: "ses_child", parentID: "ses_root", location: { directory: "/work" } },
+	ses_b: { id: "ses_b", location: { directory: "/b" } },
 };
+let route = { type: "session", sessionID: "ses_child" };
 let listener;
 const api = {
 	ui: {
-		router: { current: () => ({ type: "session", sessionID: "ses_child" }) },
+		router: { current: () => route },
 		toast: { show: (toast) => console.log(toast.variant + " toast: " + toast.message) },
 	},
 	data: {
@@ -1322,11 +1325,29 @@ const api = {
 	},
 };
 const fire = (type, sessionID, fields) => listener({ details: { type, data: { sessionID, ...fields } } });
+const prompt = (sessionID, text) =>
+	fire("session.inbox.enqueued", sessionID, { item: { type: "user", payload: { text } } });
+const stop = (sessionID) => fire("session.execution.succeeded", sessionID);
 const cleanup = await plugin.setup(api);
-fire("session.inbox.enqueued", "ses_root", { item: { type: "user", payload: { text: "fix it" } } });
-fire("session.execution.succeeded", "ses_child");
-fire("session.execution.succeeded", "ses_other");
-fire("session.execution.succeeded", "ses_root");
+// Let the route poll run on an unchanged root.
+await new Promise((resolve) => setTimeout(resolve, 600));
+prompt("ses_root", "fix it");
+stop("ses_child");
+stop("ses_other");
+// /cd, then the home route, which keeps the root.
+sessions.ses_root.location.directory = "/work/sub";
+route = { type: "home" };
+stop("ses_root");
+route = { type: "session", sessionID: "ses_b" };
+stop("ses_root");
+// A root whose metadata has not loaded yet.
+route = { type: "session", sessionID: "ses_new" };
+stop("ses_b");
+stop("ses_new");
+sessions.ses_new = { id: "ses_new", location: { directory: "/n" } };
+stop("ses_new");
+route = { type: "session", sessionID: "ses_root" };
+prompt("ses_root", "again");
 await cleanup();
 `
 
@@ -1373,12 +1394,22 @@ func TestOpenCodePluginReportsRootSession(t *testing.T) {
 	payloads, err := os.ReadFile(out)
 	require.NoError(err)
 	lines := strings.Split(strings.TrimSpace(string(payloads)), "\n")
-	require.Len(lines, 3)
-	assert.JSONEq(`{"hook_event_name":"SessionStart","session_id":"ses_root","cwd":"/work"}`, lines[0])
-	assert.JSONEq(
+	want := []string{
+		`{"hook_event_name":"SessionStart","session_id":"ses_root","cwd":"/work"}`,
 		`{"hook_event_name":"UserPromptSubmit","session_id":"ses_root","cwd":"/work","prompt":"fix it"}`,
-		lines[1],
-	)
-	assert.JSONEq(`{"hook_event_name":"Stop","session_id":"ses_root","cwd":"/work"}`, lines[2])
-	assert.Equal(3, strings.Count(string(output), "error toast: kenn.agenthook: agenthook"), string(output))
+		`{"hook_event_name":"Stop","session_id":"ses_root","cwd":"/work/sub"}`,
+		`{"hook_event_name":"SessionEnd","session_id":"ses_root","cwd":"/work/sub","reason":"other"}`,
+		`{"hook_event_name":"SessionStart","session_id":"ses_b","cwd":"/b"}`,
+		`{"hook_event_name":"SessionEnd","session_id":"ses_b","cwd":"/b","reason":"other"}`,
+		`{"hook_event_name":"SessionStart","session_id":"ses_new","cwd":"/n"}`,
+		`{"hook_event_name":"Stop","session_id":"ses_new","cwd":"/n"}`,
+		`{"hook_event_name":"SessionEnd","session_id":"ses_new","cwd":"/n","reason":"other"}`,
+		`{"hook_event_name":"SessionStart","session_id":"ses_root","cwd":"/work/sub"}`,
+		`{"hook_event_name":"UserPromptSubmit","session_id":"ses_root","cwd":"/work/sub","prompt":"again"}`,
+	}
+	require.Len(lines, len(want), string(payloads))
+	for i := range want {
+		assert.JSONEq(want[i], lines[i])
+	}
+	assert.Equal(len(want), strings.Count(string(output), "error toast: kenn.agenthook: agenthook"), string(output))
 }
