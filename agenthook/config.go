@@ -28,7 +28,9 @@ type Hook struct {
 // Win32 argv, and PowerShell forms respectively; do not combine them with
 // Executable. Marker must be a stable, application-namespaced substring unique
 // to commands the caller owns; it identifies those commands across binary path
-// changes. Hooks defaults to every event supported by the selected profile.
+// changes. Claude Code on Windows gets the PowerShell form with
+// "shell": "powershell", and the marker matches its unquoted arguments.
+// Hooks defaults to every event supported by the selected profile.
 type InstallOptions struct {
 	ConfigPath        string
 	Executable        string

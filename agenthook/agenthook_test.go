@@ -897,3 +897,19 @@ func TestWriteConfigRefusesLinkSwappedInForRegularConfig(t *testing.T) {
 	require.NoError(err)
 	assert.Equal(t, "other", string(data))
 }
+
+func TestCommandContainsMarkerReadsPowerShellArguments(t *testing.T) {
+	for _, test := range []struct {
+		marker string
+		want   bool
+	}{
+		{"--source example-agent-hook", true},
+		{"--label My App", true},
+		{"it's", true},
+		{"--source other", false},
+	} {
+		assert.Equal(t, test.want, commandContainsMarker(
+			`& 'D:\hook.exe' '--source' 'example-agent-hook-v1' '--label' 'My App' 'it''s'`, test.marker,
+		), test.marker)
+	}
+}

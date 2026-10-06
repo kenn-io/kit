@@ -36,7 +36,7 @@
 - A marker is a caller-provided, application-namespaced unique substring that
   identifies application-owned commands. Install and uninstall may replace or
   remove only matching commands and must preserve unrelated hooks and top-level
-  config.
+  config. A command written in a quoted form matches on its unquoted arguments.
 - Do not silently enable an agent's hook auto-approval setting. Installation
   writes registrations; the harness remains responsible for user consent.
 - JSON and YAML writes must preserve symlinked config paths and existing file

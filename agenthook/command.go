@@ -77,17 +77,47 @@ func profileCommands(spec profileSpec, commands Commands) (native, windows strin
 	return native, windows
 }
 
-// commandContainsMarker reports whether command carries marker as written or as
-// the PowerShell-quoted arguments BuildCommand makes of it.
+// commandContainsMarker reports whether command carries marker as written or,
+// for the PowerShell form BuildCommand writes, in its unquoted arguments.
 func commandContainsMarker(command, marker string) bool {
 	if strings.Contains(command, marker) {
 		return true
 	}
-	fields := strings.Fields(marker)
-	for i, field := range fields {
-		fields[i] = quotePowerShellArgument(field)
+	args, ok := unquotePowerShellCommand(command)
+	return ok && strings.Contains(strings.Join(args, " "), marker)
+}
+
+// unquotePowerShellCommand reverses BuildCommand's "& 'a' 'b'" form.
+func unquotePowerShellCommand(command string) ([]string, bool) {
+	rest, ok := strings.CutPrefix(command, "& ")
+	if !ok {
+		return nil, false
 	}
-	return len(fields) > 0 && strings.Contains(command, strings.Join(fields, " "))
+	var args []string
+	for rest != "" {
+		if rest[0] != '\'' {
+			return nil, false
+		}
+		var arg strings.Builder
+		i := 1
+		for {
+			end := strings.IndexByte(rest[i:], '\'')
+			if end < 0 {
+				return nil, false
+			}
+			arg.WriteString(rest[i : i+end])
+			i += end + 1
+			if i < len(rest) && rest[i] == '\'' {
+				arg.WriteByte('\'')
+				i++
+				continue
+			}
+			break
+		}
+		args = append(args, arg.String())
+		rest = strings.TrimPrefix(rest[i:], " ")
+	}
+	return args, true
 }
 
 func quotePOSIXArgument(arg string) string {
