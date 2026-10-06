@@ -88,7 +88,7 @@ func TestInteractiveResumePreservesConfiguredOptions(t *testing.T) {
 		{agentcli.Pi, agentcli.Command{Executable: "pi-custom", Options: []string{"--offline"}}, agentcli.Request{}, []string{"pi-custom", "--offline", "--session", "session-1"}},
 		{agentcli.Copilot, agentcli.Command{Executable: "copilot-custom", Options: []string{"--add-dir", "shared"}}, agentcli.Request{}, []string{"copilot-custom", "--add-dir", "shared", "--resume=session-1"}},
 		{agentcli.Cursor, agentcli.Command{Executable: "cursor-agent", Options: []string{"--workspace", "repo"}}, agentcli.Request{}, []string{"cursor-agent", "--workspace", "repo", "--resume", "session-1"}},
-		{agentcli.Droid, agentcli.Command{Executable: "droid-custom", Options: []string{"--cwd", "repo"}}, agentcli.Request{Autonomy: agentcli.AutonomyLow, DisableSkills: true}, []string{"droid-custom", "--cwd", "repo", "--resume", "session-1", "--auto", "low", "--disable-builtin-skills"}},
+		{agentcli.Droid, agentcli.Command{Executable: "droid-custom", Options: []string{"--append-system-prompt", "Run tests."}}, agentcli.Request{Autonomy: agentcli.AutonomyLow, DisableSkills: true}, []string{"droid-custom", "--append-system-prompt", "Run tests.", "--resume", "session-1", "--auto", "low", "--disable-builtin-skills"}},
 		{agentcli.Gemini, agentcli.Command{Executable: "gemini-custom", Options: []string{"--sandbox"}}, agentcli.Request{}, []string{"gemini-custom", "--sandbox", "--resume", "session-1"}},
 	}
 	for _, test := range tests {
@@ -117,6 +117,7 @@ func TestUnsupportedRequestsReturnTypedErrors(t *testing.T) {
 		{agentcli.Droid, agentcli.Request{Model: "droid-test"}, "model"},
 		{agentcli.Droid, agentcli.Request{Approval: agentcli.ApprovalBypass}, "approval mode"},
 		{agentcli.Droid, agentcli.Request{AllowedTools: []string{"Read"}}, "tools"},
+		{agentcli.Droid, agentcli.Request{DeniedTools: []string{"Execute"}}, "tools"},
 		{agentcli.Cursor, agentcli.Request{Prompt: agentcli.Prompt{Text: "review"}}, "prompt"},
 		{agentcli.Copilot, agentcli.Request{Prompt: agentcli.Prompt{Text: "review"}}, "prompt"},
 	}

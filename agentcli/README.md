@@ -9,7 +9,9 @@ or manage terminals and persistent state.
 parse these arguments, restrict them to known flags, or reject overlap with
 `Request` fields. Callers own explicitly supplied arguments; the CLI interprets
 them. Configured arguments precede request-generated arguments, after the fixed
-subcommand for Kiro and noninteractive Droid.
+subcommand for Kiro and noninteractive Droid. Droid's REPL and `exec` read
+some flags differently, such as `-r`, so Droid options must suit both commands
+when a caller uses one `Command` for both modes.
 
 Use `Request.Prompt` for kit-managed prompt delivery; its zero value means no
 prompt. The adapter chooses the CLI's normal argument or stdin transport. Use
@@ -60,10 +62,9 @@ of those typed request checks.
 
 `Names` returns ten concrete CLI adapters. The modes below describe this
 package, not every mode offered by the underlying command. Interactive mode
-resumes a session in the agent's own terminal UI and takes no prompt for
-Gemini, GitHub Copilot, Cursor Agent, and Factory Droid. Interactive Droid
-accepts only autonomy and the built-in skills control; its other controls are
-`exec` flags.
+opens the agent's own terminal UI and takes no prompt for Gemini, GitHub
+Copilot, Cursor Agent, and Factory Droid. Interactive Droid accepts only
+autonomy and the built-in skills control; its other controls are `exec` flags.
 
 | Agent | Modes | Prompt | Resume | Output | Reasoning |
 | --- | --- | --- | --- | --- | --- |
@@ -75,7 +76,7 @@ accepts only autonomy and the built-in skills control; its other controls are
 | Cursor Agent | interactive, noninteractive | stdin, noninteractive only | `--resume ID` | text, JSON, JSONL | none |
 | Kiro | noninteractive | argument | `chat --resume-id ID` | text | low, medium, high, xhigh, maximum |
 | Kilo | noninteractive | stdin | `run --session ID` | text, JSONL | low, medium, high, xhigh, maximum |
-| Factory Droid | interactive, noninteractive | stdin, noninteractive only | `--resume ID`, `exec --session-id ID` | text, JSON, JSONL | low, medium, high, xhigh, maximum |
+| Factory Droid | interactive, noninteractive | stdin, noninteractive only | `--resume ID`, `exec --session-id ID` | text, JSON, JSONL | low, medium, high, xhigh, maximum, noninteractive only |
 | Pi | interactive, noninteractive | argument and `@file` | `--session ID` | text, JSONL | low, medium, high, xhigh, maximum |
 
 `ReasoningXHigh` and `ReasoningMaximum` are distinct. Adapters with a native
