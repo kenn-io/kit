@@ -1,6 +1,7 @@
 package agentcli_test
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -154,27 +155,6 @@ func TestCapabilitiesAreExplicitAndIndependent(t *testing.T) {
 	assert.Equal(agentcli.ReasoningLow, codex.Capabilities().ReasoningLevels[0])
 }
 
-func TestConfiguredOptionsKeepTheirArityAndOrder(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name    agentcli.Name
-		command agentcli.Command
-		mode    agentcli.Mode
-		want    []string
-	}{
-		{agentcli.Codex, agentcli.Command{Executable: "codex-custom", Options: []string{"--profile=team", "-c", "feature.test=true", "--add-dir", "-shared"}}, "", []string{"codex-custom", "--profile=team", "-c", "feature.test=true", "--add-dir", "-shared", "resume", "session-1"}},
-		{agentcli.Claude, agentcli.Command{Options: []string{"--setting-sources=project", "--plugin-dir", "one", "--plugin-dir", "-two"}}, "", []string{"claude", "--setting-sources=project", "--plugin-dir", "one", "--plugin-dir", "-two", "--resume", "session-1"}},
-		{agentcli.Pi, agentcli.Command{Options: []string{"-ne", "--tui-mode", "fullscreen", "--offline"}}, "", []string{"pi", "-ne", "--tui-mode", "fullscreen", "--offline", "--session", "session-1"}},
-		{agentcli.Kiro, agentcli.Command{Executable: "kiro-custom", Options: []string{"--wrap", "never"}}, agentcli.NonInteractive, []string{"kiro-custom", "chat", "--wrap", "never", "--no-interactive", "--resume-id", "session-1"}},
-		{agentcli.Droid, agentcli.Command{Executable: "droid-custom", Options: []string{"--append-system-prompt", "review only"}}, agentcli.NonInteractive, []string{"droid-custom", "exec", "--append-system-prompt", "review only", "--session-id", "session-1"}},
-	}
-	for _, test := range tests {
-		got, err := mustAgent(t, test.name, test.command).Resume("session-1", agentcli.Request{Mode: test.mode})
-		require.NoError(t, err)
-		assert.Equal(t, test.want, got.Argv)
-	}
-}
-
 func TestConfiguredArgumentsPassThrough(t *testing.T) {
 	t.Parallel()
 	for _, name := range agentcli.Names() {
@@ -185,7 +165,10 @@ func TestConfiguredArgumentsPassThrough(t *testing.T) {
 			options := []string{"--future-flag", "value with spaces", "--model", "configured", "--", "", "operand"}
 			agent := mustAgent(t, name, agentcli.Command{Executable: "custom-worker", Options: options})
 			capabilities := agent.Capabilities()
-			request := agentcli.Request{Mode: capabilities.Modes[len(capabilities.Modes)-1]}
+			request := agentcli.Request{Mode: agentcli.Interactive}
+			if slices.Contains(capabilities.Modes, agentcli.NonInteractive) {
+				request.Mode = agentcli.NonInteractive
+			}
 			if capabilities.Model {
 				request.Model = "requested"
 			}
