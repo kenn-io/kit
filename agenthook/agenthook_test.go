@@ -991,8 +991,8 @@ func TestConfigPathNormalizesPiAgentDirAsPiDoes(t *testing.T) {
 	}
 }
 
-// piScriptHooks parses the registration block of a generated Pi extension.
-func piScriptHooks(t *testing.T, path string) map[string]any {
+// scriptHooks parses the registration block of a generated script module.
+func scriptHooks(t *testing.T, path string) map[string]any {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
@@ -1004,7 +1004,7 @@ func piScriptHooks(t *testing.T, path string) map[string]any {
 	return hooks
 }
 
-func piCommands(hooks map[string]any, event string) []string {
+func scriptCommands(hooks map[string]any, event string) []string {
 	var commands []string
 	entries, _ := hooks[event].([]any)
 	for _, entry := range entries {
@@ -1044,27 +1044,27 @@ func TestInstallPiKeepsOtherApplicationsCommands(t *testing.T) {
 	install("/opt/b", "b-hook", scriptBlockEnd)
 	assert.Equal(
 		[]string{"/opt/a agent-hook --source a-hook", bCommand},
-		piCommands(piScriptHooks(t, path), "session_start"),
+		scriptCommands(scriptHooks(t, path), "session_start"),
 	)
 	assert.False(install("/opt/b", "b-hook", scriptBlockEnd).Changed)
 
 	install("/moved/a", "a-hook")
-	hooks := piScriptHooks(t, path)
+	hooks := scriptHooks(t, path)
 	assert.Equal(
 		[]string{bCommand, "/moved/a agent-hook --source a-hook"},
-		piCommands(hooks, "agent_settled"),
+		scriptCommands(hooks, "agent_settled"),
 	)
-	assert.Len(piCommands(hooks, "before_agent_start"), 2)
+	assert.Len(scriptCommands(hooks, "before_agent_start"), 2)
 
 	result, err := Uninstall(AgentPi, path, "--source a-hook")
 	require.NoError(err)
 	assert.True(result.Changed)
-	assert.Equal([]string{bCommand}, piCommands(piScriptHooks(t, path), "session_start"))
+	assert.Equal([]string{bCommand}, scriptCommands(scriptHooks(t, path), "session_start"))
 
 	result, err = Uninstall(AgentPi, path, "--source b-hook")
 	require.NoError(err)
 	assert.True(result.Changed)
-	assert.Empty(piScriptHooks(t, path))
+	assert.Empty(scriptHooks(t, path))
 
 	result, err = Uninstall(AgentPi, filepath.Join(t.TempDir(), "missing.js"), "--source b-hook")
 	require.NoError(err)
@@ -1109,8 +1109,8 @@ func TestPlanInstallPiRequiresExecutableWithoutMatchers(t *testing.T) {
 	require.ErrorContains(t, err, "do not support matchers")
 }
 
-func TestPiExtensionHelper(t *testing.T) {
-	out := os.Getenv("KIT_AGENTHOOK_PI_HELPER_OUT")
+func TestScriptHookHelper(t *testing.T) {
+	out := os.Getenv("KIT_AGENTHOOK_HELPER_OUT")
 	if out == "" {
 		return
 	}
@@ -1160,7 +1160,7 @@ const fire = async (pi, name, event, context) => {
 	}
 };
 const nothingSent = (when) => {
-	if (existsSync(process.env.KIT_AGENTHOOK_PI_HELPER_OUT)) console.log("sent " + when);
+	if (existsSync(process.env.KIT_AGENTHOOK_HELPER_OUT)) console.log("sent " + when);
 };
 
 // --no-session: Pi never writes a session file, so nothing is reported.
@@ -1218,7 +1218,7 @@ func TestPiExtensionReportsResumableSessions(t *testing.T) {
 	_, err = Install(AgentPi, InstallOptions{
 		ConfigPath: path,
 		Executable: os.Args[0],
-		Arguments:  []string{"-test.run=^TestPiExtensionHelper$", "--", "--source", "shared-agent-hook-test"},
+		Arguments:  []string{"-test.run=^TestScriptHookHelper$", "--", "--source", "shared-agent-hook-test"},
 		Marker:     testMarker,
 		Hooks: []Hook{
 			{Event: EventSessionStart},
@@ -1236,7 +1236,7 @@ func TestPiExtensionReportsResumableSessions(t *testing.T) {
 	require.NoError(os.WriteFile(driver, []byte(piExtensionDriver), 0o600))
 	out := filepath.Join(dir, "payloads.jsonl")
 	cmd := exec.CommandContext(t.Context(), node, driver, module, dir)
-	cmd.Env = append(os.Environ(), "KIT_AGENTHOOK_PI_HELPER_OUT="+out)
+	cmd.Env = append(os.Environ(), "KIT_AGENTHOOK_HELPER_OUT="+out)
 
 	started := time.Now()
 	output, err := cmd.CombinedOutput()
@@ -1289,7 +1289,7 @@ func TestPiExtensionReportsResumableSessions(t *testing.T) {
 	assert.Contains(failures[1], "agent_settled: agenthook agent_settled commands failed: ")
 	assert.Contains(failures[1], "timed out after 1s")
 	assert.Contains(failures[2], "session_start: "+failed)
-	assert.NotContains(string(output), "TestPiExtensionHelper$ -- --source shared-agent-hook-test: could not start")
+	assert.NotContains(string(output), "TestScriptHookHelper$ -- --source shared-agent-hook-test: could not start")
 }
 
 const openCodePluginDriver = `
@@ -1418,7 +1418,7 @@ func TestOpenCodePluginReportsRootSession(t *testing.T) {
 	_, err = Install(AgentOpenCode, InstallOptions{
 		ConfigPath: path,
 		Executable: os.Args[0],
-		Arguments:  []string{"-test.run=^TestPiExtensionHelper$", "--", "--source", "shared-agent-hook-test"},
+		Arguments:  []string{"-test.run=^TestScriptHookHelper$", "--", "--source", "shared-agent-hook-test"},
 		Marker:     testMarker,
 	})
 	require.NoError(t, err)
@@ -1465,7 +1465,7 @@ func TestOpenCodePluginReportsRootSession(t *testing.T) {
 			cmd.Dir = cwd
 			// The helper finds its output path only in the terminal's env, so each
 			// payload proves the hook ran with that env.
-			cmd.Env = append(os.Environ(), "KIT_AGENTHOOK_PI_HELPER_OUT="+out)
+			cmd.Env = append(os.Environ(), "KIT_AGENTHOOK_HELPER_OUT="+out)
 
 			output, err := cmd.CombinedOutput()
 
