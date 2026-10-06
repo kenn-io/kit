@@ -60,8 +60,8 @@ func buildDroid(a *adapter, sessionID string, request Request) (Invocation, erro
 	return Invocation{Argv: args, Stdin: stdin}, nil
 }
 
-// buildDroidInteractive starts the Droid REPL. Factory documents only
-// --resume and --disable-builtin-skills for it; the other controls are exec flags.
+// buildDroidInteractive starts the Droid REPL, whose help lists --resume,
+// --auto and --disable-builtin-skills; the other controls are exec flags.
 func buildDroidInteractive(a *adapter, sessionID string, request Request) (Invocation, error) {
 	if err := rejectInteractivePrompt(Droid, request); err != nil {
 		return Invocation{}, err
@@ -72,7 +72,6 @@ func buildDroidInteractive(a *adapter, sessionID string, request Request) (Invoc
 	}{
 		{request.Model != "", "model"},
 		{request.Reasoning != ReasoningDefault, "reasoning"},
-		{request.Autonomy != AutonomyDefault, "autonomy"},
 		{request.Approval != ApprovalDefault, "approval mode"},
 		{len(request.AllowedTools) != 0 || len(request.DeniedTools) != 0, "tools"},
 	} {
@@ -83,6 +82,9 @@ func buildDroidInteractive(a *adapter, sessionID string, request Request) (Invoc
 	args := a.base()
 	if sessionID != "" {
 		args = append(args, "--resume", sessionID)
+	}
+	if request.Autonomy != AutonomyDefault {
+		args = append(args, "--auto", string(request.Autonomy))
 	}
 	if request.DisableSkills {
 		args = append(args, "--disable-builtin-skills")

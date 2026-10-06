@@ -96,6 +96,9 @@ func TestInteractiveResumePreservesConfiguredOptions(t *testing.T) {
 		assert.Equal(t, test.want, got.Argv)
 		assert.Nil(t, got.Stdin)
 	}
+	got, err := mustAgent(t, agentcli.Droid, agentcli.Command{}).Resume("session-1", agentcli.Request{Autonomy: agentcli.AutonomyLow, DisableSkills: true})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"droid", "--resume", "session-1", "--auto", "low", "--disable-builtin-skills"}, got.Argv)
 }
 
 func TestUnsupportedRequestsReturnTypedErrors(t *testing.T) {
@@ -114,6 +117,9 @@ func TestUnsupportedRequestsReturnTypedErrors(t *testing.T) {
 		{agentcli.Gemini, agentcli.Request{Prompt: agentcli.Prompt{Text: "review"}}, "prompt"},
 		{agentcli.Droid, agentcli.Request{Reasoning: agentcli.ReasoningHigh}, "reasoning"},
 		{agentcli.Droid, agentcli.Request{Model: "droid-test"}, "model"},
+		{agentcli.Droid, agentcli.Request{Approval: agentcli.ApprovalBypass}, "approval mode"},
+		{agentcli.Droid, agentcli.Request{AllowedTools: []string{"Read"}}, "tools"},
+		{agentcli.Cursor, agentcli.Request{Prompt: agentcli.Prompt{Text: "review"}}, "prompt"},
 	}
 	for _, test := range tests {
 		_, err := mustAgent(t, test.name, agentcli.Command{}).Start(test.request)
