@@ -397,7 +397,7 @@ func unsupported(name Name, mode Mode, option, value, hint string) error {
 // interactive prompt transport, where it would select noninteractive mode.
 func rejectInteractivePrompt(name Name, request Request) error {
 	if request.Prompt.Text != "" {
-		return unsupported(name, Interactive, "prompt", "", "use noninteractive mode")
+		return unsupported(name, Interactive, "prompt", "", "omit the prompt, or use noninteractive mode where Capabilities lists it")
 	}
 	return nil
 }

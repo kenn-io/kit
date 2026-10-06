@@ -80,7 +80,7 @@ accepts only autonomy and the built-in skills control; its other controls are
 | Factory Droid | interactive, noninteractive | stdin, noninteractive only | `--resume ID`, `exec --session-id ID` | text, JSON, JSONL | low, medium, high, xhigh, maximum, noninteractive only |
 | Pi | interactive, noninteractive | argument and `@file` | `--session ID` | text, JSONL | low, medium, high, xhigh, maximum |
 | Hermes | interactive | none | `--resume ID` | text | none |
-| Qwen Code | interactive, noninteractive | stdin through `--prompt`, noninteractive only | `--resume ID` | text, JSON, JSONL | none |
+| Qwen Code | interactive | none | `--resume ID` | text | none |
 
 `ReasoningXHigh` and `ReasoningMaximum` are distinct. Adapters with a native
 `max` value, including Codex, map only `ReasoningMaximum` to it. Droid accepts
@@ -103,7 +103,7 @@ The remaining controls are intentionally uneven:
 | Factory Droid | none | tool allowlist and denylist; low, medium, or high autonomy; permission bypass | disable built-in skills |
 | Pi | inline schema through an explicit extension and output file | allow, deny, or disable built-in tools | skill paths; disable skills, extensions, prompt templates, themes, context files, hooks through extension discovery, or session storage |
 | Hermes | none | none | none |
-| Qwen Code | none | plan or bypass approval mode | none |
+| Qwen Code | none | none | none |
 
 The adapters reflect these CLI contracts:
 
