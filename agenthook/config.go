@@ -212,7 +212,7 @@ func prepareInstall(agent Agent, opts InstallOptions) (profileSpec, string, []na
 		if spec.format == formatHermesYAML && hook.Timeout > 300*time.Second {
 			return profileSpec{}, "", nil, errors.New("Hermes hook timeout must not exceed 300 seconds")
 		}
-		// Check the caller's matcher: Bash translates to Pi's empty shell tool.
+		// The generated module runs every command for its event, so a matcher would be dropped silently.
 		if spec.format == formatScript && strings.TrimSpace(hook.Matcher) != "" {
 			return profileSpec{}, "", nil, fmt.Errorf("%s hooks do not support matchers", spec.profile.DisplayName)
 		}

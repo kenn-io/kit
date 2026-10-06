@@ -1,6 +1,7 @@
 package agenthook
 
 import (
+	"bytes"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -157,6 +158,9 @@ func piExtensionLoads(path string) error {
 				Extensions []string `json:"extensions"`
 			} `json:"pi"`
 		}
+		// Pi strips a UTF-8 BOM before parsing:
+		// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/pi-manifest.ts#L19
+		data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
 		if json.Unmarshal(data, &manifest) == nil {
 			listed := false
 			for _, entry := range manifest.Pi.Extensions {

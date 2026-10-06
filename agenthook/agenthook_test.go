@@ -1116,6 +1116,11 @@ func TestInstallPiRefusesDirectoryThatSkipsTheModule(t *testing.T) {
 			blocker: "package.json",
 		},
 		{
+			name:    "manifest with a byte order mark",
+			files:   map[string]string{"package.json": "\ufeff" + `{"pi":{"extensions":["main.js"]}}`, "main.js": ""},
+			blocker: "package.json",
+		},
+		{
 			name:  "manifest listing the module before it exists",
 			files: map[string]string{"package.json": `{"pi":{"extensions":["agenthook.js"]}}`, "index.js": ""},
 		},
@@ -1153,6 +1158,12 @@ func TestPiExtensionHelper(t *testing.T) {
 	}
 	payload, err := io.ReadAll(os.Stdin)
 	require.NoError(t, err)
+	var fields map[string]any
+	require.NoError(t, json.Unmarshal(payload, &fields))
+	fields["helper_cwd"], err = os.Getwd()
+	require.NoError(t, err)
+	payload, err = json.Marshal(fields)
+	require.NoError(t, err)
 	file, err := os.OpenFile(out, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	require.NoError(t, err)
 	_, err = file.Write(append(payload, '\n'))
@@ -1180,7 +1191,7 @@ const runtime = () => {
 };
 const ctx = (id, file, mode = "tui") => ({
 	mode,
-	cwd: "/work",
+	cwd: process.argv[3],
 	sessionManager: { getSessionId: () => id, getSessionFile: () => file },
 });
 const fire = async (pi, name, event, context) => {
@@ -1282,11 +1293,16 @@ func TestPiExtensionReportsResumableSessions(t *testing.T) {
 		Transcript string `json:"transcript_path"`
 		Reason     string `json:"reason"`
 		Prompt     string `json:"prompt"`
+		Cwd        string `json:"cwd"`
+		HelperCwd  string `json:"helper_cwd"`
 	}
 	var reports []report
 	for line := range strings.Lines(strings.TrimSpace(string(payloads))) {
 		var r report
 		require.NoError(json.Unmarshal([]byte(line), &r))
+		assert.Equal(dir, r.Cwd)
+		assert.Equal(r.Cwd, r.HelperCwd, "the hook ran outside the session's directory")
+		r.Cwd, r.HelperCwd = "", ""
 		reports = append(reports, r)
 	}
 	fileA := filepath.Join(dir, "a.jsonl")

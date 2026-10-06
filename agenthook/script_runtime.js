@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 
 const defaultTimeoutSeconds = 60;
 
-// Runs one argv without a shell, writing the payload to stdin, and resolves to
+// Runs one argv without a shell in the payload's directory, writing the payload to stdin, and resolves to
 // a failure description or null. At its timeout the child is force-killed and
 // the wait ends even if it has not exited, so a child that ignores SIGTERM
 // cannot block later commands or the harness.
@@ -10,7 +10,8 @@ function runCommand(handler, payload) {
 	return new Promise((resolve) => {
 		let child;
 		try {
-			child = spawn(handler.command, handler.args, { stdio: ["pipe", "ignore", "ignore"] });
+			// Pi changes ctx.cwd on a cross-project resume without changing the process directory.
+			child = spawn(handler.command, handler.args, { cwd: payload.cwd, stdio: ["pipe", "ignore", "ignore"] });
 		} catch (error) {
 			resolve(`could not start: ${error.message}`);
 			return;
