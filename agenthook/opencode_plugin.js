@@ -10,9 +10,6 @@ export default {
 		// reload or reinstall re-sends nothing for an unchanged root:
 		// https://github.com/anomalyco/opencode/blob/v2.0.24/packages/plugin/src/tui/context.ts#L42-L52
 		const [state, update] = api.storage.memory("kenn.agenthook", { initial: { root: null, cwd: null } });
-		const confirmed = new Set(state.root === null ? [] : [state.root]);
-		const checking = new Set();
-		let closed = false;
 		let pending = Promise.resolve();
 		const emit = (event, fields) => {
 			const payload = { hook_event_name: event, session_id: state.root, cwd: state.cwd ?? undefined, ...fields };
@@ -28,29 +25,8 @@ export default {
 					} catch {}
 				});
 		};
-		// The client admits a new session before the server creates it and drops
-		// it if creation fails, so a root is adopted only once the server returns
-		// it:
-		// https://github.com/anomalyco/opencode/blob/v2.0.24/packages/client/src/solid/data.ts#L1445-L1499
-		// https://github.com/anomalyco/opencode/blob/v2.0.24/packages/client/src/promise/generated/client.ts#L631-L641
-		const confirm = (id) => {
-			if (checking.has(id)) return;
-			checking.add(id);
-			Promise.resolve()
-				.then(() => api.client.session.get({ sessionID: id }))
-				.then(
-					(info) => {
-						checking.delete(id);
-						// A child whose parent the TUI has not loaded resolves later.
-						if (info && !info.parentID) confirmed.add(id);
-						if (!closed) sync();
-					},
-					// The route poll retries a session the server does not have yet.
-					() => checking.delete(id),
-				);
-		};
 		// A session route with another root retires the reported one at once, so
-		// its later events stay silent before the new root is confirmed. The
+		// its later events stay silent before the new root's record loads. The
 		// plugin can't tell /new from opening an existing session, so the reason
 		// is other. The home route keeps the root, since a turn may finish there.
 		const sync = () => {
@@ -65,15 +41,13 @@ export default {
 					draft.cwd = null;
 				});
 			}
-			if (!confirmed.has(id)) {
-				confirm(id);
-				return;
-			}
+			const info = api.data.session.get(id);
+			if (!info) return;
 			// Keep the adoption-time cwd: consumers match reports to a workspace by
 			// exact cwd, so a later /cd must not move this root's reports.
 			update((draft) => {
 				draft.root = id;
-				draft.cwd = api.data.session.get(id)?.location?.directory ?? null;
+				draft.cwd = info.location?.directory ?? null;
 			});
 			emit("SessionStart", {});
 		};
@@ -99,7 +73,6 @@ export default {
 		// Cleanup sends no SessionEnd: it also runs on every hot reload,
 		// including the one a reinstall triggers.
 		return () => {
-			closed = true;
 			clearInterval(timer);
 			unsubscribe();
 			return pending;

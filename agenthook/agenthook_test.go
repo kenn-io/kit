@@ -1309,7 +1309,6 @@ const sessions = {
 	ses_child: { id: "ses_child", parentID: "ses_root", location: { directory: "/work" } },
 	ses_b: { id: "ses_b", location: { directory: "/b" } },
 };
-const server = new Set(["ses_root", "ses_child", "ses_b"]);
 const memory = {};
 let route = { type: "session", sessionID: "ses_child" };
 let listener;
@@ -1324,14 +1323,6 @@ const api = {
 			return [memory[key], (mutation) => mutation(memory[key])];
 		},
 	},
-	client: {
-		session: {
-			get: async ({ sessionID }) => {
-				if (!server.has(sessionID)) throw new Error("session not found");
-				return structuredClone(sessions[sessionID]);
-			},
-		},
-	},
 	data: {
 		session: { get: (id) => sessions[id], root: (id) => sessions[id]?.parentID ?? id },
 		listen: (handler) => {
@@ -1344,15 +1335,12 @@ const fire = (type, sessionID, fields) => listener({ details: { type, data: { se
 const prompt = (sessionID, text) =>
 	fire("session.inbox.enqueued", sessionID, { item: { type: "user", payload: { text } } });
 const stop = (sessionID) => fire("session.execution.succeeded", sessionID);
-const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 const poll = () => new Promise((resolve) => setTimeout(resolve, 600));
 let cleanup = await plugin.setup(api);
-await settle();
 // The route poll and a hot reload on an unchanged root re-send nothing.
 await poll();
 await cleanup();
 cleanup = await plugin.setup(api);
-await settle();
 prompt("ses_root", "fix it");
 stop("ses_child");
 stop("ses_other");
@@ -1362,20 +1350,11 @@ route = { type: "home" };
 stop("ses_root");
 route = { type: "session", sessionID: "ses_b" };
 stop("ses_root");
-await settle();
-// An optimistic session the server never creates reports nothing.
-sessions.ses_opt = { id: "ses_opt", location: { directory: "/o" } };
-route = { type: "session", sessionID: "ses_opt" };
-stop("ses_b");
-await settle();
-stop("ses_opt");
-delete sessions.ses_opt;
-// A session the server confirms only after a later poll.
-sessions.ses_new = { id: "ses_new", location: { directory: "/n" } };
+// A root whose record has not loaded retires B and reports nothing until it loads.
 route = { type: "session", sessionID: "ses_new" };
+stop("ses_b");
 stop("ses_new");
-await settle();
-server.add("ses_new");
+sessions.ses_new = { id: "ses_new", location: { directory: "/n" } };
 await poll();
 stop("ses_new");
 route = { type: "session", sessionID: "ses_root" };
