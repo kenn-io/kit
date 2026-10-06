@@ -171,10 +171,13 @@ func removeOwnedJSONHooks(hooks map[string]any, marker, path string) error {
 				command, _ := handler["command"].(string)
 				// Exec-form hooks keep their arguments in a separate array.
 				if args, isArray := handler["args"].([]any); isArray {
+					var joined strings.Builder
+					joined.WriteString(command)
 					for _, arg := range args {
 						text, _ := arg.(string)
-						command += " " + text
+						joined.WriteString(" " + text)
 					}
+					command = joined.String()
 				}
 				if ok && strings.Contains(command, marker) {
 					continue
