@@ -11,8 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-
-	"github.com/klauspost/compress/zstd"
 )
 
 // ReaderLimits bounds format-controlled quantities before allocation or
@@ -174,7 +172,12 @@ func normalizeReaderLimits(limits ReaderLimits) ReaderLimits {
 	limits.Entries = set(limits.Entries, MaxFooterLen/entrySize)
 	limits.RawBytes = set(limits.RawBytes, MaxRawLen)
 	limits.StoredBytes = set(limits.StoredBytes, MaxStoredLen)
-	limits.WindowBytes = set(limits.WindowBytes, zstd.MaxWindowSize)
+	// A single-segment frame declares no window, so its effective window is the
+	// whole frame content size. Capping the default at zstd.MaxWindowSize
+	// (512 MiB) therefore makes every larger blob unreadable, including ones
+	// this package wrote itself. Allow the format's own raw-length ceiling;
+	// decoder memory remains bounded by WithDecoderMaxMemory in openBlob.
+	limits.WindowBytes = set(limits.WindowBytes, MaxRawLen)
 	return limits
 }
 

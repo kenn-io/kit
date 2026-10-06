@@ -12,15 +12,44 @@ import (
 var (
 	zstdEncMu sync.Mutex
 	zstdEncs  = map[int]*zstd.Encoder{}
-	zstdDec   = func() *zstd.Decoder {
+	// Encoders for blobs too large for single-segment framing.
+	zstdEncsMulti = map[int]*zstd.Encoder{}
+	zstdDec       = func() *zstd.Decoder {
 		d, err := zstd.NewReader(nil,
-			zstd.WithDecoderConcurrency(0), zstd.WithDecoderMaxMemory(1<<32))
+			zstd.WithDecoderConcurrency(0), zstd.WithDecoderMaxMemory(1<<32),
+			// Single-segment frames carry a window equal to their content
+			// size; the 512 MiB default would reject blobs this package
+			// itself produced.
+			zstd.WithDecoderMaxWindow(MaxRawLen))
 		if err != nil {
 			panic(fmt.Sprintf("pack: initializing zstd decoder: %v", err))
 		}
 		return d
 	}()
 )
+
+// zstdEncoderMultiSegment returns an encoder that does not use single-segment
+// framing. A single-segment frame's window is its entire content size, which
+// every decoder must then be willing to hold; above zstd.MaxWindowSize no
+// stock decoder accepts it. Blobs that large get explicit window descriptors
+// instead, so they stay readable.
+func zstdEncoderMultiSegment(level int) *zstd.Encoder {
+	if level <= 0 {
+		level = DefaultZstdLevel
+	}
+	zstdEncMu.Lock()
+	defer zstdEncMu.Unlock()
+	if enc, ok := zstdEncsMulti[level]; ok {
+		return enc
+	}
+	enc, err := zstd.NewWriter(nil,
+		zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(level)))
+	if err != nil {
+		panic(fmt.Sprintf("pack: initializing multi-segment zstd encoder level %d: %v", level, err))
+	}
+	zstdEncsMulti[level] = enc
+	return enc
+}
 
 func zstdEncoder(level int) *zstd.Encoder {
 	if level <= 0 {
@@ -60,7 +89,13 @@ func encodeFrame(raw []byte, level int) (stored []byte, compressed bool) {
 	if len(raw) < zstd.MinWindowSize {
 		return raw, false
 	}
-	c := zstdEncoder(level).EncodeAll(raw, make([]byte, 0, len(raw)))
+	encoder := zstdEncoder(level)
+	if uint64(len(raw)) > uint64(zstd.MaxWindowSize) {
+		// Single-segment framing would demand a window this large of every
+		// reader; stay within what a stock decoder accepts.
+		encoder = zstdEncoderMultiSegment(level)
+	}
+	c := encoder.EncodeAll(raw, make([]byte, 0, len(raw)))
 	minSavings := minCompressionSavings(len(raw))
 	if len(c) > len(raw)-minSavings {
 		return raw, false
