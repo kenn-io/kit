@@ -876,3 +876,28 @@ func TestWriteConfigRefusesLinkSwappedInForRegularConfig(t *testing.T) {
 	require.NoError(err)
 	assert.Equal(t, "other", string(data))
 }
+
+func TestClaudeExecFormHooksKeepOwnershipOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("exec form is written only on Windows")
+	}
+	assert := assert.New(t)
+	require := require.New(t)
+	path := filepath.Join(t.TempDir(), "settings.json")
+	opts := InstallOptions{
+		ConfigPath: path,
+		Executable: `C:\Program Files\hook.exe`,
+		Arguments:  []string{"agent-hook", "--source", "owner's app"},
+		Marker:     "--source owner's app",
+		Hooks:      []Hook{{Event: EventStop}},
+	}
+
+	_, err := Install(AgentClaude, opts)
+	require.NoError(err)
+	again, err := Install(AgentClaude, opts)
+	require.NoError(err)
+	assert.False(again.Changed)
+	removed, err := Uninstall(AgentClaude, path, opts.Marker)
+	require.NoError(err)
+	assert.NotContains(string(removed.Data), "agent-hook")
+}

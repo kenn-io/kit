@@ -7,12 +7,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"runtime"
 	"strings"
 )
 
 func planNestedJSONConfig(
-	spec profileSpec,
 	path, marker, command, commandWindows string,
 	argv []string,
 	hooks []nativeHook,
@@ -49,7 +47,7 @@ func planNestedJSONConfig(
 				"type":    "command",
 				"command": command,
 			}
-			if spec.windowsCommandStyle == windowsCommandExec && runtime.GOOS == "windows" && len(argv) > 0 {
+			if len(argv) > 0 {
 				handler["command"] = argv[0]
 				handler["args"] = argv[1:]
 			} else if commandWindows != "" {

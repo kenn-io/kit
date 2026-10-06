@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -64,8 +65,11 @@ func PlanInstall(agent Agent, opts InstallOptions) (Result, error) {
 	}
 	opts.Command, opts.CommandWindows = profileCommands(spec, commands)
 	var argv []string
-	if executable := strings.TrimSpace(opts.Executable); executable != "" {
+	if executable := strings.TrimSpace(opts.Executable); executable != "" &&
+		spec.windowsCommandStyle == windowsCommandExec && runtime.GOOS == "windows" {
 		argv = append([]string{executable}, opts.Arguments...)
+		// Removal matches the written argv joined by spaces, so validate that.
+		opts.Command = strings.Join(argv, " ")
 	}
 	spec, path, hooks, err := prepareInstall(agent, opts)
 	if err != nil {
@@ -220,7 +224,7 @@ func planConfig(
 ) ([]byte, bool, error) {
 	switch spec.format {
 	case formatNestedJSON:
-		return planNestedJSONConfig(spec, path, marker, command, commandWindows, argv, hooks, uninstall)
+		return planNestedJSONConfig(path, marker, command, commandWindows, argv, hooks, uninstall)
 	case formatDirectJSON:
 		return planDirectJSONConfig(
 			spec, path, marker, command, commandWindows, hooks, uninstall,
