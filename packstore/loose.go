@@ -62,6 +62,7 @@ var looseWriteStripes = func() [256]chan struct{} {
 
 var (
 	syncLooseFile             = func(file *os.File) error { return file.Sync() }
+	lstatLooseDirectory       = os.Lstat
 	snapshotLoosePathIdentity = snapshotPathIdentity
 	newLooseZstdWriter        = func(dst io.Writer) (io.WriteCloser, error) {
 		if cached := looseZstdEncoderPool.Get(); cached != nil {
@@ -337,7 +338,11 @@ func (s *filesystemLooseStore) publish(
 	if known != nil {
 		identity = *known
 	}
-	if err := ensureDirectory(stagingDir, opts.Durability); err != nil {
+	// A store staging child and the final shard share the root as parent.
+	// Shard preparation syncs it before publication or repair recovery, so an
+	// existing staging child needs no separate parent sync.
+	deferStagingParentSync := s.layout.staging == StagingStoreDirectory && stagingDir != s.layout.Root()
+	if err := ensureDirectory(stagingDir, opts.Durability, deferStagingParentSync); err != nil {
 		return identity, fmt.Errorf("packstore: prepare loose staging: %w", err)
 	}
 	var staged []*stagedLooseFile
@@ -483,8 +488,8 @@ func (s *filesystemLooseStore) publish(
 
 	final := identity.Path
 	shard := filepath.Dir(final)
-	if filepath.Clean(shard) != filepath.Clean(stagingDir) {
-		if err := ensureDirectory(shard, opts.Durability); err != nil {
+	if deferStagingParentSync || filepath.Clean(shard) != filepath.Clean(stagingDir) {
+		if err := ensureDirectory(shard, opts.Durability, false); err != nil {
 			return identity, fmt.Errorf("packstore: prepare loose shard: %w", err)
 		}
 	}
@@ -1113,13 +1118,26 @@ func validateRegularNoFollow(path string, info fs.FileInfo) error {
 	return nil
 }
 
-func ensureDirectory(path string, durability Durability) error {
-	info, err := os.Lstat(path)
+// deferParentSync applies only to existing directories. Creation still syncs
+// every missing ancestor; the caller must sync the existing parent before use
+// that requires durability, including publication and repair recovery.
+func ensureDirectory(path string, durability Durability, deferParentSync bool) error {
+	info, err := lstatLooseDirectory(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		if durability == DurablePublication {
-			return pack.MkdirAllSynced(path)
+		if durability != DurablePublication {
+			return os.MkdirAll(path, 0o700)
 		}
-		return os.MkdirAll(path, 0o700)
+		if err := pack.MkdirAllSynced(filepath.Dir(path)); err != nil {
+			return err
+		}
+		if err := os.Mkdir(path, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+			return err
+		}
+		// Another writer may have created the entry after our first Lstat.
+		// Validate it and sync its parent ourselves, even if Mkdir lost that
+		// race. Creating just the leaf avoids a redundant creation sync.
+		info, err = lstatLooseDirectory(path)
+		deferParentSync = false
 	}
 	if err != nil {
 		return err
@@ -1127,7 +1145,7 @@ func ensureDirectory(path string, durability Durability) error {
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return fmt.Errorf("%s is not an independent directory", path)
 	}
-	if durability == DurablePublication {
+	if durability == DurablePublication && !deferParentSync {
 		if err := pack.SyncDir(filepath.Dir(path)); err != nil {
 			return fmt.Errorf("packstore: sync loose directory parent: %w", err)
 		}
