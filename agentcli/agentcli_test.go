@@ -120,6 +120,7 @@ func TestUnsupportedRequestsReturnTypedErrors(t *testing.T) {
 		{agentcli.Droid, agentcli.Request{Approval: agentcli.ApprovalBypass}, "approval mode"},
 		{agentcli.Droid, agentcli.Request{AllowedTools: []string{"Read"}}, "tools"},
 		{agentcli.Cursor, agentcli.Request{Prompt: agentcli.Prompt{Text: "review"}}, "prompt"},
+		{agentcli.Copilot, agentcli.Request{Prompt: agentcli.Prompt{Text: "review"}}, "prompt"},
 	}
 	for _, test := range tests {
 		_, err := mustAgent(t, test.name, agentcli.Command{}).Start(test.request)

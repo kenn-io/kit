@@ -17,13 +17,20 @@ var droidCapabilities = Capabilities{
 }
 
 func buildDroid(a *adapter, sessionID string, request Request) (Invocation, error) {
+	var args []string
 	if request.Mode == Interactive {
-		return buildDroidInteractive(a, sessionID, request)
-	}
-	args := []string{a.executable, "exec"}
-	args = append(args, a.options...)
-	if sessionID != "" {
-		args = append(args, "--session-id", sessionID)
+		if err := validateDroidInteractive(request); err != nil {
+			return Invocation{}, err
+		}
+		args = a.base()
+		if sessionID != "" {
+			args = append(args, "--resume", sessionID)
+		}
+	} else {
+		args = append([]string{a.executable, "exec"}, a.options...)
+		if sessionID != "" {
+			args = append(args, "--session-id", sessionID)
+		}
 	}
 	if request.Model != "" {
 		args = append(args, "--model", request.Model)
@@ -60,11 +67,11 @@ func buildDroid(a *adapter, sessionID string, request Request) (Invocation, erro
 	return Invocation{Argv: args, Stdin: stdin}, nil
 }
 
-// buildDroidInteractive starts the Droid REPL, whose help lists --resume,
-// --auto and --disable-builtin-skills; the other controls are exec flags.
-func buildDroidInteractive(a *adapter, sessionID string, request Request) (Invocation, error) {
+// validateDroidInteractive allows what the Droid REPL's help lists (--resume,
+// --auto and --disable-builtin-skills); the other controls are exec flags.
+func validateDroidInteractive(request Request) error {
 	if err := rejectInteractivePrompt(Droid, request); err != nil {
-		return Invocation{}, err
+		return err
 	}
 	for _, control := range []struct {
 		requested bool
@@ -76,18 +83,8 @@ func buildDroidInteractive(a *adapter, sessionID string, request Request) (Invoc
 		{len(request.AllowedTools) != 0 || len(request.DeniedTools) != 0, "tools"},
 	} {
 		if control.requested {
-			return Invocation{}, unsupported(Droid, Interactive, control.option, "", "use noninteractive mode")
+			return unsupported(Droid, Interactive, control.option, "", "use noninteractive mode")
 		}
 	}
-	args := a.base()
-	if sessionID != "" {
-		args = append(args, "--resume", sessionID)
-	}
-	if request.Autonomy != AutonomyDefault {
-		args = append(args, "--auto", string(request.Autonomy))
-	}
-	if request.DisableSkills {
-		args = append(args, "--disable-builtin-skills")
-	}
-	return Invocation{Argv: args}, nil
+	return nil
 }
