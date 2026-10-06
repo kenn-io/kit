@@ -182,6 +182,9 @@ func TestRestoreLooseCompressionOverwrite(t *testing.T) {
 				if mode == "repair" {
 					assert.NoFileExists(t, raw)
 				} else {
+					retained, err := os.ReadFile(raw)
+					require.NoError(t, err)
+					assert.Equal(t, content, retained)
 					assert.NoFileExists(t, raw+".zst")
 				}
 			}

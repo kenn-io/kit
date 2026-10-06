@@ -236,7 +236,7 @@ func (b *FilesystemBackend) publishLooseRoot(
 		}
 		removeAlternate := mode == looseRepair
 		if mode == looseRestore {
-			if _, _, err := verifyRootLoose(ctx, finalRoot, alternate, hash, size, alternateEncoding, durable); err != nil {
+			if _, _, err := verifyRootLoose(ctx, finalRoot, alternate, hash, size, alternateEncoding, false); err != nil {
 				if ctx.Err() != nil || !repairableLooseError(err) {
 					return result, err
 				}
