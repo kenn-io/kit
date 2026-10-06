@@ -12,8 +12,9 @@ import (
 // It does not attach ownership or grant catalog authority. The caller must own
 // the restore target exclusively and record the receipt in its unpublished
 // catalog before publishing that catalog. Existing objects are fully verified
-// and reused without replacing either encoding. Damaged objects are repaired
-// without removing alternate representations that an older catalog may use.
+// and reused without replacing either encoding. Repair removes damaged
+// alternates. Valid alternates remain for the old catalog; the caller must
+// remove them only after durably publishing the new catalog's chosen encoding.
 func RestoreLoose(ctx context.Context, root *os.Root, hash Hash, src io.Reader, opts WriteOptions) (WriteResult, error) {
 	if root == nil || src == nil {
 		return WriteResult{}, errors.New("packstore: restore requires a root and content reader")

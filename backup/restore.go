@@ -459,6 +459,9 @@ func Restore(ctx context.Context, r *Repo, app App, opts RestoreOptions) (res *R
 	if err := syncRestoredTree(opts.TargetDir, syncCeiling); err != nil {
 		return nil, err
 	}
+	if err := st.removeLooseAlternates(ctx); err != nil {
+		return res, err
+	}
 	if err := releasePackedRestoreLease(); err != nil {
 		return res, err
 	}

@@ -21,5 +21,7 @@
   (`linkLooseRepairRecoveryFile`, `renameLooseRepairRecoveryFile`,
   `linkLooseRepairFileWindows`) that tests use to force each branch.
 - Restore may replace damaged loose content after verifying the backup bytes,
-  but must retain alternate encodings until the restored catalog is published:
-  the old catalog may still reference them.
+  and removes damaged alternates. Valid alternate encodings must remain until
+  the restored catalog is durable: the old catalog may still reference them.
+  `backup.Restore` removes these valid alternates after its catalog sync; direct
+  `RestoreLoose` callers own that cleanup.

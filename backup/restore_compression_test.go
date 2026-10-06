@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -25,7 +26,7 @@ func TestRestoreLooseCompression(t *testing.T) {
 	for _, ref := range refs {
 		_, err := writer.ExecContext(t.Context(),
 			`INSERT INTO blobs (content_hash, storage_path, size) VALUES (?, ?, ?)`,
-			ref.Hash, ref.StoragePath, ref.Size)
+			ref.Hash, ref.Hash[:2]+"/"+ref.Hash, ref.Size)
 		require.NoError(t, err)
 	}
 	manifest, err := Create(t.Context(), repo, app, createOpts(dbPath, contentDir, dataDir, t.TempDir()))
@@ -107,4 +108,83 @@ func TestRestoreLooseCompressionRequiresCatalogAndCanonicalPaths(t *testing.T) {
 	_, err = Restore(t.Context(), repo, badContentPathApp{App: app, path: "custom.bin"}, opts)
 	require.ErrorContains(t, err, "requires one canonical restore path")
 	assert.NoFileExists(t, filepath.Join(target, app.DBFileName()))
+}
+
+func TestRestoreLooseCompressionOverwrite(t *testing.T) {
+	repo := initTestRepo(t)
+	app := newTestApp()
+	dbPath, contentDir, dataDir, writer := seedBackupFixture(t)
+	content := bytes.Repeat([]byte("recoverable content\n"), 4096)
+	ref := writeLooseAttachment(t, contentDir, content)
+	_, err := writer.ExecContext(t.Context(),
+		`INSERT INTO blobs (content_hash, storage_path, size) VALUES (?, ?, ?)`,
+		ref.Hash, ref.Hash[:2]+"/"+ref.Hash, ref.Size)
+	require.NoError(t, err)
+	_, err = Create(t.Context(), repo, app, createOpts(dbPath, contentDir, dataDir, t.TempDir()))
+	require.NoError(t, err)
+	for _, mode := range []string{"reuse raw", "repair", "publication failure"} {
+		t.Run(mode, func(t *testing.T) {
+			target := filepath.Join(t.TempDir(), "restored")
+			_, err := Restore(t.Context(), repo, app, RestoreOptions{TargetDir: target})
+			require.NoError(t, err)
+			raw := filepath.Join(target, app.ContentDirName(), ref.Hash[:2], ref.Hash)
+			if mode != "reuse raw" {
+				require.NoError(t, os.WriteFile(raw+".zst", []byte("damaged"), 0o600))
+			}
+			oldDB, err := os.ReadFile(filepath.Join(target, app.DBFileName()))
+			require.NoError(t, err)
+			rejected := errors.New("reject publication")
+			seen := false
+			_, err = Restore(t.Context(), repo, app, RestoreOptions{
+				TargetDir: target, Overwrite: true,
+				LooseCompression: packstore.LooseCompressionOptions{Enabled: true},
+				BeforePublication: func(_ context.Context, staged RestorePublicationTarget) error {
+					for _, receipt := range staged.LooseContent {
+						if receipt.Hash.String() != ref.Hash {
+							continue
+						}
+						seen = true
+						retained, err := os.ReadFile(raw)
+						require.NoError(t, err)
+						assert.Equal(t, content, retained, "old catalog must retain its readable encoding until publication")
+						if mode == "reuse raw" {
+							assert.Equal(t, packstore.LooseEncodingRaw, receipt.Encoding)
+						} else {
+							assert.Equal(t, packstore.LooseEncodingZstd, receipt.Encoding)
+						}
+					}
+					if mode == "publication failure" {
+						return rejected
+					}
+					return nil
+				},
+			})
+			require.True(t, seen)
+			if mode == "publication failure" {
+				require.ErrorIs(t, err, rejected)
+				retained, err := os.ReadFile(raw)
+				require.NoError(t, err)
+				assert.Equal(t, content, retained)
+				currentDB, err := os.ReadFile(filepath.Join(target, app.DBFileName()))
+				require.NoError(t, err)
+				assert.Equal(t, oldDB, currentDB)
+				// A retry must clean the retained raw encoding even though it now
+				// reuses the verified zstd object instead of repairing anything.
+				_, err = Restore(t.Context(), repo, app, RestoreOptions{
+					TargetDir: target, Overwrite: true,
+					LooseCompression:  packstore.LooseCompressionOptions{Enabled: true},
+					BeforePublication: func(context.Context, RestorePublicationTarget) error { return nil },
+				})
+				require.NoError(t, err)
+				assert.NoFileExists(t, raw)
+			} else {
+				require.NoError(t, err)
+				if mode == "repair" {
+					assert.NoFileExists(t, raw)
+				} else {
+					assert.NoFileExists(t, raw+".zst")
+				}
+			}
+		})
+	}
 }
