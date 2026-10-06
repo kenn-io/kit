@@ -1458,8 +1458,10 @@ func TestOpenCodePluginReportsRootSession(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// The terminal's directory differs from every session's.
-			cwd := t.TempDir()
+			// The terminal's directory differs from every session's. macOS reports
+			// the working directory through /tmp's symlink target.
+			cwd, err := filepath.EvalSymlinks(t.TempDir())
+			require.NoError(t, err)
 			out := filepath.Join(cwd, "payloads.jsonl")
 			cmd := exec.CommandContext(t.Context(), node, driver, module, tt.name)
 			cmd.Dir = cwd
