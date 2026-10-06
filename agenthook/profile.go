@@ -14,15 +14,16 @@ import (
 type Agent string
 
 const (
-	AgentClaude  Agent = "claude"
-	AgentCodex   Agent = "codex"
-	AgentCopilot Agent = "copilot"
-	AgentCursor  Agent = "cursor"
-	AgentDroid   Agent = "droid"
-	AgentGemini  Agent = "gemini"
-	AgentHermes  Agent = "hermes"
-	AgentPi      Agent = "pi"
-	AgentQwen    Agent = "qwen"
+	AgentClaude   Agent = "claude"
+	AgentCodex    Agent = "codex"
+	AgentCopilot  Agent = "copilot"
+	AgentCursor   Agent = "cursor"
+	AgentDroid    Agent = "droid"
+	AgentGemini   Agent = "gemini"
+	AgentHermes   Agent = "hermes"
+	AgentOpenCode Agent = "opencode"
+	AgentPi       Agent = "pi"
+	AgentQwen     Agent = "qwen"
 )
 
 // Event is a Claude Code lifecycle event name. Profiles translate events to
@@ -125,20 +126,22 @@ var profileOrder = []Agent{
 	AgentDroid,
 	AgentGemini,
 	AgentHermes,
+	AgentOpenCode,
 	AgentPi,
 	AgentQwen,
 }
 
 var profiles = map[Agent]profileSpec{
-	AgentClaude:  claudeProfile(),
-	AgentCodex:   codexProfile(),
-	AgentCopilot: copilotProfile(),
-	AgentCursor:  cursorProfile(),
-	AgentDroid:   droidProfile(),
-	AgentGemini:  geminiProfile(),
-	AgentHermes:  hermesProfile(),
-	AgentPi:      piProfile(),
-	AgentQwen:    qwenProfile(),
+	AgentClaude:   claudeProfile(),
+	AgentCodex:    codexProfile(),
+	AgentCopilot:  copilotProfile(),
+	AgentCursor:   cursorProfile(),
+	AgentDroid:    droidProfile(),
+	AgentGemini:   geminiProfile(),
+	AgentHermes:   hermesProfile(),
+	AgentOpenCode: openCodeProfile(),
+	AgentPi:       piProfile(),
+	AgentQwen:     qwenProfile(),
 }
 
 func newProfileSpec(

@@ -30,12 +30,15 @@
   timeout units, timeout fields, failure policy, and cross-platform command
   fields. Decision-bearing Cursor registrations are fail-closed because Cursor
   otherwise allows the operation when a hook crashes or emits invalid JSON.
-- Script profiles (Pi) own one kit-named module. Edit only its delimited
+- Script profiles (Pi, OpenCode) own one kit-named module. Edit only its delimited
   registration block, refuse a file without that block, rewrite the runtime
   on every write, and spawn registered argv without a shell on every OS.
   The Pi module reports only from Pi's interactive terminal (`ctx.mode` is
   `tui`), so print, json, and rpc runs, subagents included, stay silent. It
   needs Pi 0.80.4 or later (`ctx.mode` 0.78.1, `agent_settled` 0.80.4).
+  A script profile must run its hook commands from the process the user's
+  terminal started, never from a shared server, so each report carries that
+  terminal's environment.
 - Keep each harness profile in its own agent-named file (`claude.go`,
   `codex.go`, and so on). `profile.go` owns only the shared vocabulary,
   registry, and lookup behavior.

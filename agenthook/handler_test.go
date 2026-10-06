@@ -652,6 +652,35 @@ func TestHandleAllowsNativeLifecyclePayloadWithoutClaudeEquivalent(t *testing.T)
 				assert.Empty(t, handler.sessionEnd.Reason)
 			},
 		},
+		{
+			name:    "OpenCode session start without source",
+			agent:   AgentOpenCode,
+			payload: `{"session_id":"ses_1","hook_event_name":"SessionStart","cwd":"/work"}`,
+			check: func(t *testing.T, handler *lifecycleHandler) {
+				t.Helper()
+				require.NotNil(t, handler.sessionStart)
+				assert.Empty(t, handler.sessionStart.Source)
+				assert.Equal(t, "/work", handler.sessionStart.CWD)
+			},
+		},
+		{
+			name:    "OpenCode prompt",
+			agent:   AgentOpenCode,
+			payload: `{"session_id":"ses_1","hook_event_name":"UserPromptSubmit","prompt":"fix it"}`,
+			check: func(t *testing.T, handler *lifecycleHandler) {
+				t.Helper()
+				assert.Nil(t, handler.sessionStart)
+			},
+		},
+		{
+			name:    "OpenCode stop",
+			agent:   AgentOpenCode,
+			payload: `{"session_id":"ses_1","hook_event_name":"Stop"}`,
+			check: func(t *testing.T, handler *lifecycleHandler) {
+				t.Helper()
+				assert.Nil(t, handler.sessionStart)
+			},
+		},
 	}
 
 	for _, tt := range tests {
