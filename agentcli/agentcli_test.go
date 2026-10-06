@@ -80,16 +80,22 @@ func TestInteractiveResumePreservesConfiguredOptions(t *testing.T) {
 	tests := []struct {
 		name    agentcli.Name
 		command agentcli.Command
+		request agentcli.Request
 		want    []string
 	}{
-		{agentcli.Codex, agentcli.Command{Executable: "codex-custom", Options: []string{"--full-auto", "--profile", "team"}}, []string{"codex-custom", "--full-auto", "--profile", "team", "resume", "session-1"}},
-		{agentcli.Claude, agentcli.Command{Executable: "claude-custom", Options: []string{"--setting-sources", "project"}}, []string{"claude-custom", "--setting-sources", "project", "--resume", "session-1"}},
-		{agentcli.Pi, agentcli.Command{Executable: "pi-custom", Options: []string{"--offline"}}, []string{"pi-custom", "--offline", "--session", "session-1"}},
+		{agentcli.Codex, agentcli.Command{Executable: "codex-custom", Options: []string{"--full-auto", "--profile", "team"}}, agentcli.Request{}, []string{"codex-custom", "--full-auto", "--profile", "team", "resume", "session-1"}},
+		{agentcli.Claude, agentcli.Command{Executable: "claude-custom", Options: []string{"--setting-sources", "project"}}, agentcli.Request{}, []string{"claude-custom", "--setting-sources", "project", "--resume", "session-1"}},
+		{agentcli.Pi, agentcli.Command{Executable: "pi-custom", Options: []string{"--offline"}}, agentcli.Request{}, []string{"pi-custom", "--offline", "--session", "session-1"}},
+		{agentcli.Copilot, agentcli.Command{Executable: "copilot-custom", Options: []string{"--add-dir", "shared"}}, agentcli.Request{}, []string{"copilot-custom", "--add-dir", "shared", "--resume=session-1"}},
+		{agentcli.Cursor, agentcli.Command{Executable: "cursor-agent", Options: []string{"--workspace", "repo"}}, agentcli.Request{}, []string{"cursor-agent", "--workspace", "repo", "--resume", "session-1"}},
+		{agentcli.Droid, agentcli.Command{Executable: "droid-custom", Options: []string{"--append-system-prompt", "Run tests."}}, agentcli.Request{Autonomy: agentcli.AutonomyLow, DisableSkills: true}, []string{"droid-custom", "--append-system-prompt", "Run tests.", "--resume", "session-1", "--auto", "low", "--disable-builtin-skills"}},
+		{agentcli.Gemini, agentcli.Command{Executable: "gemini-custom", Options: []string{"--sandbox"}}, agentcli.Request{}, []string{"gemini-custom", "--sandbox", "--resume", "session-1"}},
 	}
 	for _, test := range tests {
-		got, err := mustAgent(t, test.name, test.command).Resume("session-1", agentcli.Request{})
+		got, err := mustAgent(t, test.name, test.command).Resume("session-1", test.request)
 		require.NoError(t, err)
 		assert.Equal(t, test.want, got.Argv)
+		assert.Nil(t, got.Stdin)
 	}
 }
 
@@ -105,6 +111,15 @@ func TestUnsupportedRequestsReturnTypedErrors(t *testing.T) {
 		{agentcli.Codex, agentcli.Request{Mode: agentcli.NonInteractive, OutputFormat: agentcli.OutputJSON}, "output format"},
 		{agentcli.Claude, agentcli.Request{Sandbox: agentcli.SandboxReadOnly}, "sandbox"},
 		{agentcli.Pi, agentcli.Request{Approval: agentcli.ApprovalNever}, "approval mode"},
+		{agentcli.Copilot, agentcli.Request{OutputFormat: agentcli.OutputJSONL}, "output format"},
+		{agentcli.Gemini, agentcli.Request{Prompt: agentcli.Prompt{Text: "review"}}, "prompt"},
+		{agentcli.Droid, agentcli.Request{Reasoning: agentcli.ReasoningHigh}, "reasoning"},
+		{agentcli.Droid, agentcli.Request{Model: "droid-test"}, "model"},
+		{agentcli.Droid, agentcli.Request{Approval: agentcli.ApprovalBypass}, "approval mode"},
+		{agentcli.Droid, agentcli.Request{AllowedTools: []string{"Read"}}, "tools"},
+		{agentcli.Droid, agentcli.Request{DeniedTools: []string{"Execute"}}, "tools"},
+		{agentcli.Cursor, agentcli.Request{Prompt: agentcli.Prompt{Text: "review"}}, "prompt"},
+		{agentcli.Copilot, agentcli.Request{Prompt: agentcli.Prompt{Text: "review"}}, "prompt"},
 	}
 	for _, test := range tests {
 		_, err := mustAgent(t, test.name, agentcli.Command{}).Start(test.request)

@@ -8,13 +8,20 @@ func NewCursor(command Command) (Adapter, error) {
 }
 
 var cursorCapabilities = Capabilities{
-	Modes: []Mode{NonInteractive}, Resume: true,
+	Modes: []Mode{Interactive, NonInteractive}, Resume: true,
 	OutputFormats: []OutputFormat{OutputText, OutputJSON, OutputJSONL}, Model: true,
 	ApprovalModes: []ApprovalMode{ApprovalNever, ApprovalBypass},
 }
 
 func buildCursor(a *adapter, sessionID string, request Request) (Invocation, error) {
-	args := append(a.base(), "--print")
+	args := a.base()
+	if request.Mode == Interactive {
+		if err := rejectInteractivePrompt(Cursor, request); err != nil {
+			return Invocation{}, err
+		}
+	} else {
+		args = append(args, "--print")
+	}
 	if request.OutputFormat != OutputDefault && request.OutputFormat != OutputText {
 		format := string(request.OutputFormat)
 		if request.OutputFormat == OutputJSONL {

@@ -322,6 +322,9 @@ func (a *adapter) invoke(sessionID string, request Request) (Invocation, error) 
 	if err := validateSupportedRequest(a.name, mode, request, a.capabilities); err != nil {
 		return Invocation{}, err
 	}
+	if mode == Interactive && request.OutputFormat != OutputDefault && request.OutputFormat != OutputText {
+		return Invocation{}, unsupported(a.name, mode, "output format", string(request.OutputFormat), "use noninteractive mode for machine-readable output")
+	}
 	for _, values := range []struct {
 		name   string
 		values []string
@@ -382,6 +385,15 @@ func reasoningValue(level ReasoningLevel) string {
 
 func unsupported(name Name, mode Mode, option, value, hint string) error {
 	return &UnsupportedOptionError{Agent: name, Option: option, Value: value, Mode: mode, Hint: hint}
+}
+
+// rejectInteractivePrompt keeps a prompt out of adapters that build no
+// interactive prompt transport, where it would select noninteractive mode.
+func rejectInteractivePrompt(name Name, request Request) error {
+	if request.Prompt.Text != "" {
+		return unsupported(name, Interactive, "prompt", "", "use noninteractive mode")
+	}
+	return nil
 }
 
 func validateSupportedRequest(name Name, mode Mode, request Request, capabilities Capabilities) error {
