@@ -1160,7 +1160,9 @@ pi = runtime();
 await fire(pi, "session_start", { reason: "startup" }, ctx("a", fileA));
 await fire(pi, "before_agent_start", { prompt: "one" }, ctx("a", fileA));
 nothingSent("before the session file existed");
-writeFileSync(fileA, "{}\n");
+// The header line Pi's SessionManager writes first:
+// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/session-manager.ts#L1061-L1071
+writeFileSync(fileA, JSON.stringify({ type: "session", version: 3, id: "a", timestamp: new Date().toISOString(), cwd: "/work" }) + "\n");
 await fire(pi, "context", { messages: [] }, ctx("a", fileA));
 await fire(pi, "agent_settled", {}, ctx("a", fileA));
 

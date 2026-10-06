@@ -17,6 +17,8 @@ export default function (pi) {
 	let heldStart = null;
 	const heldPrompts = [];
 
+	// Pi names no file with --no-session, so nothing would ever flush.
+	const persisting = (ctx) => Boolean(ctx.sessionManager.getSessionFile());
 	const saved = (ctx) => {
 		const file = ctx.sessionManager.getSessionFile();
 		return Boolean(file) && existsSync(file);
@@ -56,6 +58,7 @@ export default function (pi) {
 		});
 
 	on("session_start", async (event, ctx, failures) => {
+		if (!persisting(ctx)) return;
 		heldStart = payloadFor("session_start", ctx, { reason: event.reason });
 		await flush(ctx, failures);
 	});
@@ -64,6 +67,7 @@ export default function (pi) {
 	// first prompt waits for the next event:
 	// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/agent-session.ts#L2060-L2109
 	on("before_agent_start", async (event, ctx, failures) => {
+		if (!persisting(ctx)) return;
 		if (typeof event.prompt === "string" && event.prompt !== "") {
 			heldPrompts.push(payloadFor("before_agent_start", ctx, { prompt: event.prompt }));
 		}
