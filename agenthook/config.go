@@ -65,10 +65,11 @@ func PlanInstall(agent Agent, opts InstallOptions) (Result, error) {
 		return Result{}, fmt.Errorf("unsupported agent hook integration %q", agent)
 	}
 	opts.Command, opts.CommandWindows = profileCommands(spec, commands)
-	var argv []string
-	if executable := strings.TrimSpace(opts.Executable); executable != "" &&
-		spec.windowsCommandStyle == windowsCommandExec && runtime.GOOS == "windows" {
-		argv = append([]string{executable}, opts.Arguments...)
+	argv, err := execArgv(spec, opts)
+	if err != nil {
+		return Result{}, err
+	}
+	if argv != nil {
 		// Removal matches the written argv joined by spaces, so validate that.
 		opts.Command = strings.Join(argv, " ")
 	}
@@ -83,6 +84,25 @@ func PlanInstall(agent Agent, opts InstallOptions) (Result, error) {
 		return Result{}, err
 	}
 	return Result{Agent: agent, ConfigPath: path, Changed: changed, Data: data}, nil
+}
+
+// execArgv returns the argv to write in exec form, or nil when the profile
+// writes a command string on this platform.
+func execArgv(spec profileSpec, opts InstallOptions) ([]string, error) {
+	executable := strings.TrimSpace(opts.Executable)
+	if executable == "" || spec.windowsCommandStyle != windowsCommandExec ||
+		runtime.GOOS != "windows" {
+		return nil, nil
+	}
+	if ext := filepath.Ext(executable); strings.EqualFold(ext, ".cmd") ||
+		strings.EqualFold(ext, ".bat") {
+		return nil, fmt.Errorf(
+			"%s hooks on Windows cannot run %s shim %s without a shell; "+
+				"pass the executable it launches",
+			spec.profile.DisplayName, ext, executable,
+		)
+	}
+	return append([]string{executable}, opts.Arguments...), nil
 }
 
 // Install merges the application's hooks into the selected agent config.

@@ -37,6 +37,10 @@
   identifies application-owned commands. Install and uninstall may replace or
   remove only matching commands and must preserve unrelated hooks and top-level
   config.
+- Claude exec-form hooks store the executable in `command` and its arguments
+  in `args`. Install validation and removal must both match the marker against
+  `command` and `args` joined by single spaces; changing one join without the
+  other leaves installed hooks that uninstall cannot find.
 - Do not silently enable an agent's hook auto-approval setting. Installation
   writes registrations; the harness remains responsible for user consent.
 - JSON and YAML writes must preserve symlinked config paths and existing file

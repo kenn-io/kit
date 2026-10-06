@@ -139,6 +139,24 @@ func TestPlanInstallBuildsCommandFromExecutable(t *testing.T) {
 	assert.NotContains(t, handler, "args")
 }
 
+func TestPlanInstallRejectsWindowsShimForClaude(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Claude exec form is written only on Windows")
+	}
+	for _, executable := range []string{`C:\tools\hook.cmd`, `C:\tools\hook.BAT`} {
+		t.Run(executable, func(t *testing.T) {
+			_, err := PlanInstall(AgentClaude, InstallOptions{
+				ConfigPath: filepath.Join(t.TempDir(), "settings.json"),
+				Executable: executable,
+				Arguments:  []string{"agent-hook", "run", "--source", "shared-agent-hook-test"},
+				Marker:     testMarker,
+			})
+
+			require.ErrorContains(t, err, "pass the executable it launches")
+		})
+	}
+}
+
 func TestUninstallMatchesMarkerAcrossExecFormArguments(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
