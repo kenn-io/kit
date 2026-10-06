@@ -12,6 +12,7 @@ import (
 
 func planNestedJSONConfig(
 	path, marker, command, commandWindows string,
+	argv []string,
 	hooks []nativeHook,
 	uninstall bool,
 ) ([]byte, bool, error) {
@@ -46,7 +47,10 @@ func planNestedJSONConfig(
 				"type":    "command",
 				"command": command,
 			}
-			if commandWindows != "" {
+			if len(argv) > 0 {
+				handler["command"] = argv[0]
+				handler["args"] = argv[1:]
+			} else if commandWindows != "" {
 				handler["commandWindows"] = commandWindows
 			}
 			if hook.timeout > 0 {
@@ -165,6 +169,16 @@ func removeOwnedJSONHooks(hooks map[string]any, marker, path string) error {
 			for _, rawHandler := range handlers {
 				handler, ok := rawHandler.(map[string]any)
 				command, _ := handler["command"].(string)
+				// Exec-form hooks keep their arguments in a separate array.
+				if args, isArray := handler["args"].([]any); isArray {
+					var joined strings.Builder
+					joined.WriteString(command)
+					for _, arg := range args {
+						text, _ := arg.(string)
+						joined.WriteString(" " + text)
+					}
+					command = joined.String()
+				}
 				if ok && strings.Contains(command, marker) {
 					continue
 				}

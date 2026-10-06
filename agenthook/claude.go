@@ -22,5 +22,9 @@ func claudeProfile() profileSpec {
 	// https://code.claude.com/docs/en/hooks#hook-inputs
 	spec.sessionSourceRequirement = inputRequired
 	spec.sessionEndReasonRequirement = inputRequired
+	// Windows Claude runs a command string through Git Bash, which strips
+	// backslashes, or PowerShell; the exec form ("command" plus "args") runs the
+	// executable directly: https://code.claude.com/docs/en/hooks#command-hook-fields
+	spec.windowsCommandStyle = windowsCommandExec
 	return spec
 }

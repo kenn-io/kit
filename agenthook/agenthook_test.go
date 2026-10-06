@@ -113,8 +113,64 @@ func TestPlanInstallBuildsCommandFromExecutable(t *testing.T) {
 	})
 
 	require.NoError(t, err)
-	assert.Contains(t, string(result.Data), "Example Agent")
-	assert.Contains(t, string(result.Data), testMarker)
+	var root map[string]any
+	require.NoError(t, json.Unmarshal(result.Data, &root))
+	handler := root["hooks"].(map[string]any)["SessionStart"].([]any)[0].(map[string]any)["hooks"].([]any)[0].(map[string]any)
+	if runtime.GOOS == "windows" {
+		// A command string would reach Git Bash or PowerShell; exec form reaches neither.
+		assert.Equal(t, "/opt/Example Agent/hook", handler["command"])
+		assert.Equal(t, []any{"agent-hook", "run", "--source", "shared-agent-hook-test"}, handler["args"])
+		// Ownership checks the joined argv, so a marker spanning quoted characters matches.
+		opts := InstallOptions{
+			ConfigPath: filepath.Join(t.TempDir(), "settings.json"),
+			Executable: "/opt/Example Agent/hook",
+			Arguments:  []string{"agent-hook", "--source", "owner's app"},
+			Marker:     "--source owner's app",
+			Hooks:      []Hook{{Event: EventStop}},
+		}
+		_, err := Install(AgentClaude, opts)
+		require.NoError(t, err)
+		again, err := Install(AgentClaude, opts)
+		require.NoError(t, err)
+		assert.False(t, again.Changed)
+		return
+	}
+	assert.Equal(t, "'/opt/Example Agent/hook' agent-hook run --source shared-agent-hook-test", handler["command"])
+	assert.NotContains(t, handler, "args")
+}
+
+func TestPlanInstallRejectsWindowsShimForClaude(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Claude exec form is written only on Windows")
+	}
+	for _, executable := range []string{`C:\tools\hook.cmd`, `C:\tools\hook.BAT`} {
+		t.Run(executable, func(t *testing.T) {
+			_, err := PlanInstall(AgentClaude, InstallOptions{
+				ConfigPath: filepath.Join(t.TempDir(), "settings.json"),
+				Executable: executable,
+				Arguments:  []string{"agent-hook", "run", "--source", "shared-agent-hook-test"},
+				Marker:     testMarker,
+			})
+
+			require.ErrorContains(t, err, "pass the executable it launches")
+		})
+	}
+}
+
+func TestUninstallMatchesMarkerAcrossExecFormArguments(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	path := filepath.Join(t.TempDir(), "settings.json")
+	require.NoError(os.WriteFile(path, []byte(`{"hooks": {"Stop": [{"hooks": [
+  {"type": "command", "command": "C:\\hook.exe", "args": ["agent-hook", "--source", "shared-agent-hook-test"]},
+  {"type": "command", "command": "keep-me"}
+]}]}}`), 0o600))
+
+	result, err := Uninstall(AgentClaude, path, testMarker)
+
+	require.NoError(err)
+	assert.NotContains(string(result.Data), "agent-hook")
+	assert.Contains(string(result.Data), "keep-me")
 }
 
 func TestConfigPathHonorsAgentHomes(t *testing.T) {
