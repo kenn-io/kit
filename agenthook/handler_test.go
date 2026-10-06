@@ -586,7 +586,16 @@ func TestHandleRejectsMissingRequiredEventFields(t *testing.T) {
 type lifecycleHandler struct {
 	NoopHandler
 	sessionStart *SessionStartInput
+	prompt       *UserPromptSubmitInput
 	sessionEnd   *SessionEndInput
+}
+
+func (h *lifecycleHandler) UserPromptSubmit(
+	_ context.Context,
+	input UserPromptSubmitInput,
+) (UserPromptSubmitOutput, error) {
+	h.prompt = &input
+	return UserPromptSubmitOutput{}, nil
 }
 
 func (h *lifecycleHandler) SessionStart(
@@ -909,7 +918,10 @@ func TestHandleDispatchesPiEvents(t *testing.T) {
 			name: "prompt", payload: `"hook_event_name":"before_agent_start","prompt":"fix it"`,
 			check: func(t *testing.T, h *lifecycleHandler) {
 				t.Helper()
-				assert.Nil(t, h.sessionStart)
+				require.NotNil(t, h.prompt)
+				assert.Equal(t, "fix it", h.prompt.Prompt)
+				assert.Equal(t, "pi-1", h.prompt.SessionID)
+				assert.Equal(t, EventUserPromptSubmit, h.prompt.HookEventName)
 			},
 		},
 	}

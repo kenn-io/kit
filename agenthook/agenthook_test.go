@@ -942,8 +942,6 @@ func TestConfigPathNormalizesPiAgentDirAsPiDoes(t *testing.T) {
 		{env: "/mnt/d/pi", want: pick(`D:\pi`, "/mnt/d/pi")},
 		{env: "/cygdrive/e", want: pick(`E:\`, "/cygdrive/e")},
 		{env: "//server/share", want: "//server/share"},
-		{env: pick("file:///C:/pi/agent", "file:///pi/agent"), want: pick(`C:\pi\agent`, "/pi/agent")},
-		{env: pick("file://LOCALHOST/C:/pi/agent", "file://LOCALHOST/pi/agent"), want: pick(`C:\pi\agent`, "/pi/agent")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.env, func(t *testing.T) {
@@ -1097,33 +1095,6 @@ func TestInstallPiKeepsArgumentThatLooksLikeBlockMarker(t *testing.T) {
 	_, err = Uninstall(AgentPi, path, testMarker)
 	require.NoError(err)
 	assert.Empty(t, piScriptHooks(t, path))
-}
-
-func TestInstallPiRefusesDirectoryPiLoadsOnlyEntriesFrom(t *testing.T) {
-	tests := map[string]map[string]string{
-		"index.js":     {"index.js": "export default () => {};\n"},
-		"index.ts":     {"index.ts": "export default () => {};\n"},
-		"package.json": {"package.json": `{"pi":{"extensions":["main.js"]}}`, "main.js": ""},
-	}
-	for name, files := range tests {
-		t.Run(name, func(t *testing.T) {
-			dir := t.TempDir()
-			for file, content := range files {
-				require.NoError(t, os.WriteFile(filepath.Join(dir, file), []byte(content), 0o600))
-			}
-			path := filepath.Join(dir, "agenthook.js")
-
-			_, err := Install(AgentPi, InstallOptions{
-				ConfigPath: path,
-				Executable: "/opt/hook",
-				Arguments:  []string{"--source", "shared-agent-hook-test"},
-				Marker:     testMarker,
-			})
-
-			require.ErrorContains(t, err, "would never load agenthook.js")
-			assert.NoFileExists(t, path)
-		})
-	}
 }
 
 func TestPiExtensionHelper(t *testing.T) {

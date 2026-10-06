@@ -4,7 +4,6 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -24,6 +23,8 @@ func piProfile() profileSpec {
 			// and skips dotfiles, so atomicfile's staging file is never loaded:
 			// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/package-manager.ts#L603-L640
 			ConfigFilename: filepath.Join("extensions", "agenthook.js"),
+			// SessionEnd fires only when another session replaces this one (new,
+			// resume, fork), never on quit or reload, so a stopped Pi stays resumable.
 			SupportedEvents: []Event{
 				EventSessionStart, EventUserPromptSubmit, EventStop, EventSessionEnd,
 			},
@@ -35,7 +36,6 @@ func piProfile() profileSpec {
 	spec.configEnvDir = piAgentDir
 	spec.eventName = piEventName
 	spec.script = piExtension
-	spec.checkScriptLoads = piExtensionLoads
 	// Pi extension handlers run in-process; the generated extension ignores
 	// command output, so control decisions have nowhere to go.
 	spec.responseFormat = responseObservational
@@ -69,8 +69,8 @@ func piEventName(event Event) string {
 
 var piWindowsShellPath = regexp.MustCompile(`(?i)^/(?:mnt/|cygdrive/)?([a-z])(?:/(.*))?$`)
 
-// piAgentDir mirrors Pi's normalizePath for PI_CODING_AGENT_DIR: Git Bash,
-// MSYS, Cygwin, and WSL drive paths on Windows, then ~, then file: URLs:
+// piAgentDir follows Pi's normalizePath for PI_CODING_AGENT_DIR: Git Bash,
+// MSYS, Cygwin, and WSL drive paths on Windows, then ~:
 // https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/utils/paths.ts#L67-L101
 func piAgentDir(dir string) (string, error) {
 	if runtime.GOOS == "windows" && strings.HasPrefix(dir, "/") &&
@@ -91,29 +91,7 @@ func piAgentDir(dir string) (string, error) {
 		}
 		return filepath.Join(home, rest), nil
 	}
-	if strings.HasPrefix(dir, "file://") {
-		return fileURLPath(dir)
-	}
 	return dir, nil
-}
-
-// fileURLPath follows Node's fileURLToPath for the cases Pi accepts.
-func fileURLPath(raw string) (string, error) {
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return "", err
-	}
-	remote := parsed.Host != "" && !strings.EqualFold(parsed.Host, "localhost")
-	if runtime.GOOS != "windows" {
-		if remote {
-			return "", fmt.Errorf("file URL host must be localhost or empty: %s", raw)
-		}
-		return parsed.Path, nil
-	}
-	if remote {
-		return `\\` + parsed.Host + filepath.FromSlash(parsed.Path), nil
-	}
-	return filepath.FromSlash(strings.TrimPrefix(parsed.Path, "/")), nil
 }
 
 // promotePiReason maps Pi's reason field to Claude's. session_start reasons
@@ -161,53 +139,5 @@ func promotePiReason(payload map[string]json.RawMessage) error {
 		return err
 	}
 	payload[field] = encoded
-	return nil
-}
-
-// piExtensionLoads refuses a directory whose package.json pi.extensions or
-// index.ts/index.js makes Pi load only those entries, which would leave the
-// generated extension silently unloaded:
-// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/package-manager.ts#L563-L601
-func piExtensionLoads(path string) error {
-	dir := filepath.Dir(path)
-	var entries []string
-	if data, err := os.ReadFile(filepath.Join(dir, "package.json")); err == nil {
-		var manifest struct {
-			Pi struct {
-				Extensions []string `json:"extensions"`
-			} `json:"pi"`
-		}
-		if json.Unmarshal(data, &manifest) == nil {
-			for _, entry := range manifest.Pi.Extensions {
-				resolved := entry
-				if !filepath.IsAbs(resolved) {
-					resolved = filepath.Join(dir, entry)
-				}
-				if _, err := os.Stat(resolved); err == nil {
-					entries = append(entries, resolved)
-				}
-			}
-		}
-	}
-	if len(entries) == 0 {
-		for _, name := range []string{"index.ts", "index.js"} {
-			if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
-				entries = []string{filepath.Join(dir, name)}
-				break
-			}
-		}
-	}
-	for _, entry := range entries {
-		if filepath.Clean(entry) == filepath.Clean(path) {
-			return nil
-		}
-	}
-	if len(entries) > 0 {
-		return fmt.Errorf(
-			"Pi loads only %s from %s, so it would never load %s; "+
-				"add it to package.json pi.extensions or install to another directory",
-			strings.Join(entries, ", "), dir, filepath.Base(path),
-		)
-	}
 	return nil
 }
