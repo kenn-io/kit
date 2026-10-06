@@ -1118,7 +1118,7 @@ func TestPiExtensionHelper(t *testing.T) {
 }
 
 const piExtensionDriver = `
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 const extension = await import(pathToFileURL(process.argv[2]).href);
@@ -1141,15 +1141,30 @@ const fire = async (pi, name, event, context) => {
 		console.log(name + ": " + error.message);
 	}
 };
+const nothingSent = (when) => {
+	if (existsSync(process.env.KIT_AGENTHOOK_PI_HELPER_OUT)) console.log("sent " + when);
+};
 
-// Fresh start: Pi has no session file yet, so SessionStart waits for the first prompt.
+// --no-session: Pi never writes a session file, so nothing is reported.
 let pi = runtime();
+await fire(pi, "session_start", { reason: "startup" }, ctx("memory", undefined));
+await fire(pi, "before_agent_start", { prompt: "zero" }, ctx("memory", undefined));
+await fire(pi, "context", { messages: [] }, ctx("memory", undefined));
+await fire(pi, "agent_settled", {}, ctx("memory", undefined));
+await fire(pi, "session_shutdown", { reason: "new" }, ctx("memory", undefined));
+nothingSent("without a session file");
+
+// Fresh start: SessionStart and the first prompt wait until Pi appends the user
+// message, which happens before the first context event.
+pi = runtime();
 await fire(pi, "session_start", { reason: "startup" }, ctx("a", fileA));
 await fire(pi, "before_agent_start", { prompt: "one" }, ctx("a", fileA));
+nothingSent("before the session file existed");
 writeFileSync(fileA, "{}\n");
+await fire(pi, "context", { messages: [] }, ctx("a", fileA));
 await fire(pi, "agent_settled", {}, ctx("a", fileA));
 
-// /new: the replaced session ends; the new one never gets a prompt, so its replacement sends nothing.
+// /new: the replaced session ends; the new one is replaced before Pi saves it, so it sends nothing.
 await fire(pi, "session_shutdown", { reason: "new" }, ctx("a", fileA));
 pi = runtime();
 await fire(pi, "session_start", { reason: "new" }, ctx("b", fileB));
@@ -1224,6 +1239,9 @@ func TestPiExtensionReportsResumableSessions(t *testing.T) {
 		reports = append(reports, r)
 	}
 	fileA := filepath.Join(dir, "a.jsonl")
+	for _, r := range reports {
+		assert.FileExists(r.Transcript, "reported %s for an unsaved session", r.Event)
+	}
 	assert.Equal([]report{
 		{Event: "session_start", SessionID: "a", Transcript: fileA, Reason: "startup"},
 		{Event: "before_agent_start", SessionID: "a", Transcript: fileA, Prompt: "one"},
@@ -1235,7 +1253,7 @@ func TestPiExtensionReportsResumableSessions(t *testing.T) {
 	failed := "agenthook session_start commands failed: " + missing + " --source missing-hook: could not start"
 	failures := strings.Split(strings.TrimSpace(string(output)), "\n")
 	require.Len(failures, 3, string(output))
-	assert.Contains(failures[0], "before_agent_start: "+failed)
+	assert.Contains(failures[0], "context: "+failed)
 	assert.Contains(failures[1], "agent_settled: agenthook agent_settled commands failed: ")
 	assert.Contains(failures[1], "timed out after 1s")
 	assert.Contains(failures[2], "session_start: "+failed)

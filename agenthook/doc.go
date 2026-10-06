@@ -11,11 +11,12 @@
 // runs the registered commands. That module reports only from Pi's interactive
 // terminal, so print, json, and rpc runs, subagents included, stay silent. Its
 // SessionEnd fires only when another session replaces the current one (new,
-// resume, or fork), never on quit or reload. A new session reports its
-// SessionStart with its first prompt, once Pi has saved the session so its ID
-// resumes. A root index.ts, index.js, or package.json pi.extensions in Pi's
-// extensions directory stops Pi from loading the module. It needs Pi 0.80.4 or
-// later.
+// resume, or fork), never on quit or reload. The module reports an event only
+// once Pi has saved the session file, so every reported ID resumes: a new
+// session's SessionStart and first prompt wait for that save, and a
+// --no-session run reports nothing. A root index.ts, index.js, or package.json
+// pi.extensions in Pi's extensions directory stops Pi from loading the module.
+// It needs Pi 0.80.4 or later.
 //
 // Applications identify their hooks with a stable marker embedded in the
 // command. Reinstalling replaces commands carrying that marker even when the
