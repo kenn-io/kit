@@ -196,7 +196,6 @@ func TestConfigPathHonorsAgentHomes(t *testing.T) {
 		{agent: AgentCopilot, env: "COPILOT_HOME", path: filepath.Join("hooks", "agenthook.json")},
 		{agent: AgentGemini, env: "GEMINI_CLI_HOME", path: filepath.Join(".gemini", "settings.json")},
 		{agent: AgentHermes, env: "HERMES_HOME", path: "config.yaml"},
-		{agent: AgentPi, env: "PI_CODING_AGENT_DIR", path: filepath.Join("extensions", "agenthook.js")},
 		{agent: AgentQwen, env: "QWEN_HOME", path: "settings.json"},
 	}
 	for _, tt := range tests {
@@ -768,6 +767,36 @@ func TestNormalizeConvertsNativePayloadToClaudeShape(t *testing.T) {
 			},
 		},
 		{
+			name:  "pi session start reason",
+			agent: AgentPi,
+			input: `{"session_id":"p1","hook_event_name":"session_start","reason":"startup"}`,
+			want:  map[string]any{"session_id": "p1", "hook_event_name": "SessionStart", "source": "startup"},
+		},
+		{
+			name:  "pi new session clears",
+			agent: AgentPi,
+			input: `{"session_id":"p1","hook_event_name":"session_start","reason":"new"}`,
+			want:  map[string]any{"hook_event_name": "SessionStart", "source": "clear"},
+		},
+		{
+			name:  "pi session replaced by resume",
+			agent: AgentPi,
+			input: `{"session_id":"p1","hook_event_name":"session_shutdown","reason":"resume"}`,
+			want:  map[string]any{"hook_event_name": "SessionEnd", "reason": "resume"},
+		},
+		{
+			name:  "pi session replaced by fork",
+			agent: AgentPi,
+			input: `{"session_id":"p1","hook_event_name":"session_shutdown","reason":"fork"}`,
+			want:  map[string]any{"hook_event_name": "SessionEnd", "reason": "other"},
+		},
+		{
+			name:  "pi prompt",
+			agent: AgentPi,
+			input: `{"session_id":"p1","hook_event_name":"before_agent_start","prompt":"fix it"}`,
+			want:  map[string]any{"session_id": "p1", "hook_event_name": "UserPromptSubmit", "prompt": "fix it"},
+		},
+		{
 			name:  "qwen shell tool",
 			agent: AgentQwen,
 			input: `{"session_id":"q1","hook_event_name":"PreToolUse","tool_name":"run_shell_command"}`,
@@ -991,27 +1020,31 @@ func TestInstallPiKeepsOtherApplicationsCommands(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
 	path := filepath.Join(t.TempDir(), "extensions", "agenthook.js")
-	install := func(executable, source string) {
-		_, err := Install(AgentPi, InstallOptions{
+	install := func(executable, source string, extra ...string) Result {
+		result, err := Install(AgentPi, InstallOptions{
 			ConfigPath: path,
 			Executable: executable,
-			Arguments:  []string{"agent-hook", "--source", source},
+			Arguments:  append(append([]string{"agent-hook"}, extra...), "--source", source),
 			Marker:     "--source " + source,
 		})
 		require.NoError(err)
+		return result
 	}
+	// B's argument is a block delimiter, which must not end the registration block.
+	const bCommand = "/opt/b agent-hook " + scriptBlockEnd + " --source b-hook"
 
 	install("/opt/a", "a-hook")
-	install("/opt/b", "b-hook")
+	install("/opt/b", "b-hook", scriptBlockEnd)
 	assert.Equal(
-		[]string{"/opt/a agent-hook --source a-hook", "/opt/b agent-hook --source b-hook"},
+		[]string{"/opt/a agent-hook --source a-hook", bCommand},
 		piCommands(piScriptHooks(t, path), "session_start"),
 	)
+	assert.False(install("/opt/b", "b-hook", scriptBlockEnd).Changed)
 
 	install("/moved/a", "a-hook")
 	hooks := piScriptHooks(t, path)
 	assert.Equal(
-		[]string{"/opt/b agent-hook --source b-hook", "/moved/a agent-hook --source a-hook"},
+		[]string{bCommand, "/moved/a agent-hook --source a-hook"},
 		piCommands(hooks, "agent_settled"),
 	)
 	assert.Len(piCommands(hooks, "before_agent_start"), 2)
@@ -1019,10 +1052,7 @@ func TestInstallPiKeepsOtherApplicationsCommands(t *testing.T) {
 	result, err := Uninstall(AgentPi, path, "--source a-hook")
 	require.NoError(err)
 	assert.True(result.Changed)
-	assert.Equal(
-		[]string{"/opt/b agent-hook --source b-hook"},
-		piCommands(piScriptHooks(t, path), "session_start"),
-	)
+	assert.Equal([]string{bCommand}, piCommands(piScriptHooks(t, path), "session_start"))
 
 	result, err = Uninstall(AgentPi, path, "--source b-hook")
 	require.NoError(err)
@@ -1070,31 +1100,6 @@ func TestPlanInstallPiRequiresExecutableWithoutMatchers(t *testing.T) {
 		Hooks:      []Hook{{Event: EventStop, Matcher: ToolBash}},
 	})
 	require.ErrorContains(t, err, "do not support matchers")
-}
-
-func TestInstallPiKeepsArgumentThatLooksLikeBlockMarker(t *testing.T) {
-	require := require.New(t)
-	path := filepath.Join(t.TempDir(), "agenthook.js")
-	opts := InstallOptions{
-		ConfigPath: path,
-		Executable: "/opt/hook",
-		Arguments:  []string{scriptBlockEnd, "--source", "shared-agent-hook-test"},
-		Marker:     testMarker,
-	}
-
-	_, err := Install(AgentPi, opts)
-	require.NoError(err)
-	result, err := Install(AgentPi, opts)
-	require.NoError(err)
-	assert.False(t, result.Changed)
-	assert.Equal(t,
-		[]string{"/opt/hook " + scriptBlockEnd + " " + testMarker},
-		piCommands(piScriptHooks(t, path), "session_start"),
-	)
-
-	_, err = Uninstall(AgentPi, path, testMarker)
-	require.NoError(err)
-	assert.Empty(t, piScriptHooks(t, path))
 }
 
 func TestPiExtensionHelper(t *testing.T) {

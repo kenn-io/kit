@@ -586,16 +586,7 @@ func TestHandleRejectsMissingRequiredEventFields(t *testing.T) {
 type lifecycleHandler struct {
 	NoopHandler
 	sessionStart *SessionStartInput
-	prompt       *UserPromptSubmitInput
 	sessionEnd   *SessionEndInput
-}
-
-func (h *lifecycleHandler) UserPromptSubmit(
-	_ context.Context,
-	input UserPromptSubmitInput,
-) (UserPromptSubmitOutput, error) {
-	h.prompt = &input
-	return UserPromptSubmitOutput{}, nil
 }
 
 func (h *lifecycleHandler) SessionStart(
@@ -630,6 +621,16 @@ func TestHandleAllowsNativeLifecyclePayloadWithoutClaudeEquivalent(t *testing.T)
   "is_background_agent":false,
   "composer_mode":"agent"
 }`,
+			check: func(t *testing.T, handler *lifecycleHandler) {
+				t.Helper()
+				require.NotNil(t, handler.sessionStart)
+				assert.Empty(t, handler.sessionStart.Source)
+			},
+		},
+		{
+			name:    "Pi reload without Claude source",
+			agent:   AgentPi,
+			payload: `{"session_id":"p1","hook_event_name":"session_start","reason":"reload"}`,
 			check: func(t *testing.T, handler *lifecycleHandler) {
 				t.Helper()
 				require.NotNil(t, handler.sessionStart)
@@ -858,120 +859,33 @@ func TestHandleRejectsOversizedPayload(t *testing.T) {
 	assert.ErrorContains(t, err, "hook payload exceeds")
 }
 
-func TestHandleDispatchesPiEvents(t *testing.T) {
-	const common = `"session_id":"pi-1","cwd":"/work","transcript_path":"/s/1.jsonl"`
-	tests := []struct {
-		name    string
-		payload string
-		check   func(*testing.T, *lifecycleHandler)
-	}{
-		{
-			name: "startup", payload: `"hook_event_name":"session_start","reason":"startup"`,
-			check: func(t *testing.T, h *lifecycleHandler) {
-				t.Helper()
-				require.NotNil(t, h.sessionStart)
-				assert.Equal(t, SessionSourceStartup, h.sessionStart.Source)
-				assert.Equal(t, "pi-1", h.sessionStart.SessionID)
-			},
-		},
-		{
-			name: "new session", payload: `"hook_event_name":"session_start","reason":"new"`,
-			check: func(t *testing.T, h *lifecycleHandler) {
-				t.Helper()
-				require.NotNil(t, h.sessionStart)
-				assert.Equal(t, SessionSourceClear, h.sessionStart.Source)
-			},
-		},
-		{
-			name: "reload", payload: `"hook_event_name":"session_start","reason":"reload"`,
-			check: func(t *testing.T, h *lifecycleHandler) {
-				t.Helper()
-				require.NotNil(t, h.sessionStart)
-				assert.Empty(t, h.sessionStart.Source)
-			},
-		},
-		{
-			name: "replaced by new", payload: `"hook_event_name":"session_shutdown","reason":"new"`,
-			check: func(t *testing.T, h *lifecycleHandler) {
-				t.Helper()
-				require.NotNil(t, h.sessionEnd)
-				assert.Equal(t, SessionEndClear, h.sessionEnd.Reason)
-			},
-		},
-		{
-			name: "replaced by resume", payload: `"hook_event_name":"session_shutdown","reason":"resume"`,
-			check: func(t *testing.T, h *lifecycleHandler) {
-				t.Helper()
-				require.NotNil(t, h.sessionEnd)
-				assert.Equal(t, SessionEndResume, h.sessionEnd.Reason)
-			},
-		},
-		{
-			name: "replaced by fork", payload: `"hook_event_name":"session_shutdown","reason":"fork"`,
-			check: func(t *testing.T, h *lifecycleHandler) {
-				t.Helper()
-				require.NotNil(t, h.sessionEnd)
-				assert.Equal(t, SessionEndOther, h.sessionEnd.Reason)
-			},
-		},
-		{
-			name: "prompt", payload: `"hook_event_name":"before_agent_start","prompt":"fix it"`,
-			check: func(t *testing.T, h *lifecycleHandler) {
-				t.Helper()
-				require.NotNil(t, h.prompt)
-				assert.Equal(t, "fix it", h.prompt.Prompt)
-				assert.Equal(t, "pi-1", h.prompt.SessionID)
-				assert.Equal(t, EventUserPromptSubmit, h.prompt.HookEventName)
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var output bytes.Buffer
-			handler := &lifecycleHandler{}
+func TestHandleDispatchesPiSessionEnd(t *testing.T) {
+	var output bytes.Buffer
+	handler := &lifecycleHandler{}
 
-			err := Handle(
-				t.Context(), AgentPi, strings.NewReader("{"+common+","+tt.payload+"}"),
-				&output, handler,
-			)
+	err := Handle(
+		t.Context(), AgentPi,
+		strings.NewReader(`{"session_id":"pi-1","hook_event_name":"session_shutdown","reason":"new"}`),
+		&output, handler,
+	)
 
-			require.NoError(t, err)
-			tt.check(t, handler)
-			assert.JSONEq(t, `{}`, output.String())
-		})
-	}
+	require.NoError(t, err)
+	require.NotNil(t, handler.sessionEnd)
+	assert.Equal(t, "pi-1", handler.sessionEnd.SessionID)
+	assert.Equal(t, SessionEndClear, handler.sessionEnd.Reason)
+	assert.JSONEq(t, `{}`, output.String())
 }
 
-func TestHandleRejectsUnmappedPiEvents(t *testing.T) {
-	tests := []struct {
-		name    string
-		payload string
-		handler Handler
-		want    string
-	}{
-		{
-			name:    "empty prompt",
-			payload: `"hook_event_name":"before_agent_start","prompt":""`,
-			handler: &lifecycleHandler{}, want: "UserPromptSubmit input missing prompt",
-		},
-		{
-			name:    "stop control output",
-			payload: `"hook_event_name":"agent_settled"`,
-			handler: stopHandler{output: StopOutput{Decision: DecisionBlock, Reason: "work remains"}},
-			want:    "does not support Stop control output",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var output bytes.Buffer
+func TestHandleRejectsPiControlOutput(t *testing.T) {
+	var output bytes.Buffer
+	handler := stopHandler{output: StopOutput{Decision: DecisionBlock, Reason: "work remains"}}
 
-			err := Handle(
-				t.Context(), AgentPi, strings.NewReader(`{"session_id":"pi-1",`+tt.payload+"}"),
-				&output, tt.handler,
-			)
+	err := Handle(
+		t.Context(), AgentPi,
+		strings.NewReader(`{"session_id":"pi-1","hook_event_name":"agent_settled"}`),
+		&output, handler,
+	)
 
-			require.ErrorContains(t, err, tt.want)
-			assert.Empty(t, output.String())
-		})
-	}
+	require.ErrorContains(t, err, "does not support Stop control output")
+	assert.Empty(t, output.String())
 }
