@@ -39,6 +39,11 @@ func planScriptConfig(
 	if !exists && uninstall {
 		return nil, false, nil
 	}
+	if !uninstall && spec.checkScriptLoads != nil {
+		if err := spec.checkScriptLoads(path); err != nil {
+			return nil, false, err
+		}
+	}
 	root := map[string]any{}
 	if exists {
 		block, err := scriptBlock(existing, path)

@@ -75,6 +75,24 @@ func TestInvocationContracts(t *testing.T) {
 	}
 }
 
+func TestPiResumeSendsPathsToSessionAndIDsToSessionID(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		session string
+		flag    string
+	}{
+		{session: "019a-session", flag: "--session-id"},
+		{session: "/home/me/.pi/agent/sessions/1.jsonl", flag: "--session"},
+		{session: `C:\Users\me\.pi\agent\sessions\1.jsonl`, flag: "--session"},
+		{session: "1.jsonl", flag: "--session"},
+	}
+	for _, test := range tests {
+		got, err := mustAgent(t, agentcli.Pi, agentcli.Command{}).Resume(test.session, agentcli.Request{})
+		require.NoError(t, err)
+		assert.Equal(t, []string{"pi", test.flag, test.session}, got.Argv)
+	}
+}
+
 func TestInteractiveResumePreservesConfiguredOptions(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

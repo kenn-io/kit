@@ -943,6 +943,7 @@ func TestConfigPathNormalizesPiAgentDirAsPiDoes(t *testing.T) {
 		{env: "/cygdrive/e", want: pick(`E:\`, "/cygdrive/e")},
 		{env: "//server/share", want: "//server/share"},
 		{env: pick("file:///C:/pi/agent", "file:///pi/agent"), want: pick(`C:\pi\agent`, "/pi/agent")},
+		{env: pick("file://LOCALHOST/C:/pi/agent", "file://LOCALHOST/pi/agent"), want: pick(`C:\pi\agent`, "/pi/agent")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.env, func(t *testing.T) {
@@ -1098,6 +1099,33 @@ func TestInstallPiKeepsArgumentThatLooksLikeBlockMarker(t *testing.T) {
 	assert.Empty(t, piScriptHooks(t, path))
 }
 
+func TestInstallPiRefusesDirectoryPiLoadsOnlyEntriesFrom(t *testing.T) {
+	tests := map[string]map[string]string{
+		"index.js":     {"index.js": "export default () => {};\n"},
+		"index.ts":     {"index.ts": "export default () => {};\n"},
+		"package.json": {"package.json": `{"pi":{"extensions":["main.js"]}}`, "main.js": ""},
+	}
+	for name, files := range tests {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			for file, content := range files {
+				require.NoError(t, os.WriteFile(filepath.Join(dir, file), []byte(content), 0o600))
+			}
+			path := filepath.Join(dir, "agenthook.js")
+
+			_, err := Install(AgentPi, InstallOptions{
+				ConfigPath: path,
+				Executable: "/opt/hook",
+				Arguments:  []string{"--source", "shared-agent-hook-test"},
+				Marker:     testMarker,
+			})
+
+			require.ErrorContains(t, err, "would never load agenthook.js")
+			assert.NoFileExists(t, path)
+		})
+	}
+}
+
 func TestPiExtensionHelper(t *testing.T) {
 	out := os.Getenv("KIT_AGENTHOOK_PI_HELPER_OUT")
 	if out == "" {
@@ -1128,11 +1156,18 @@ const ctx = (mode) => ({
 	cwd: "/work",
 	sessionManager: { getSessionId: () => "pi-session-1", getSessionFile: () => "/sessions/1.jsonl" },
 });
-await handlers.session_start({ type: "session_start", reason: "startup" }, ctx("tui"));
-await handlers.session_start({ type: "session_start", reason: "startup" }, ctx("json"));
-await handlers.session_shutdown({ type: "session_shutdown", reason: "quit" }, ctx("tui"));
-await handlers.session_shutdown({ type: "session_shutdown", reason: "new" }, ctx("tui"));
-await handlers.agent_settled({ type: "agent_settled" }, ctx("tui"));
+const fire = async (name, event, mode) => {
+	try {
+		await handlers[name](event, ctx(mode));
+	} catch (error) {
+		console.log(error.message);
+	}
+};
+await fire("session_start", { type: "session_start", reason: "startup" }, "tui");
+await fire("session_start", { type: "session_start", reason: "startup" }, "json");
+await fire("session_shutdown", { type: "session_shutdown", reason: "quit" }, "tui");
+await fire("session_shutdown", { type: "session_shutdown", reason: "new" }, "tui");
+await fire("agent_settled", { type: "agent_settled" }, "tui");
 `
 
 func TestPiExtensionRunsRegisteredCommand(t *testing.T) {
@@ -1144,6 +1179,15 @@ func TestPiExtensionRunsRegisteredCommand(t *testing.T) {
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agenthook.js")
+	missing := filepath.Join(dir, "missing-hook")
+	_, err = Install(AgentPi, InstallOptions{
+		ConfigPath: path,
+		Executable: missing,
+		Arguments:  []string{"--source", "missing-hook"},
+		Marker:     "--source missing-hook",
+		Hooks:      []Hook{{Event: EventSessionStart}},
+	})
+	require.NoError(err)
 	_, err = Install(AgentPi, InstallOptions{
 		ConfigPath: path,
 		Executable: os.Args[0],
@@ -1184,4 +1228,11 @@ func TestPiExtensionRunsRegisteredCommand(t *testing.T) {
 }`, lines[0])
 	assert.Contains(lines[1], `"reason":"new"`)
 	assert.Contains(lines[2], `"agent_settled"`)
+	// A failed command is reported once its event's other commands have run.
+	failures := strings.Split(strings.TrimSpace(string(output)), "\n")
+	require.Len(failures, 2, string(output))
+	assert.Contains(failures[0], "agenthook session_start commands failed: "+missing+" --source missing-hook: could not start")
+	assert.NotContains(failures[0], "TestPiExtensionHelper")
+	assert.Contains(failures[1], "agenthook agent_settled commands failed: ")
+	assert.Contains(failures[1], "timed out after 1s")
 }

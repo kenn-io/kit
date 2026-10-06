@@ -77,7 +77,7 @@ autonomy and the built-in skills control; its other controls are `exec` flags.
 | Kiro | noninteractive | argument | `chat --resume-id ID` | text | low, medium, high, xhigh, maximum |
 | Kilo | noninteractive | stdin | `run --session ID` | text, JSONL | low, medium, high, xhigh, maximum |
 | Factory Droid | interactive, noninteractive | stdin, noninteractive only | `--resume ID`, `exec --session-id ID` | text, JSON, JSONL | low, medium, high, xhigh, maximum, noninteractive only |
-| Pi | interactive, noninteractive | argument and `@file` | `--session-id ID` (Pi 0.76.0 or later) | text, JSONL | low, medium, high, xhigh, maximum |
+| Pi | interactive, noninteractive | argument and `@file` | `--session-id ID` (Pi 0.76.0 or later), `--session PATH` for a path or `.jsonl` file | text, JSONL | low, medium, high, xhigh, maximum |
 
 `ReasoningXHigh` and `ReasoningMaximum` are distinct. Adapters with a native
 `max` value, including Codex, map only `ReasoningMaximum` to it. Droid accepts

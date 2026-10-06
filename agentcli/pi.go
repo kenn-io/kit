@@ -82,10 +82,7 @@ func buildPi(a *adapter, sessionID string, request Request) (Invocation, error) 
 		args = append(args, "--mode", "json")
 	}
 	if sessionID != "" {
-		// --session-id opens the exact project-local session or creates it, so a
-		// session Pi has not saved yet still resumes; --session would fail:
-		// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/cli.md
-		args = append(args, "--session-id", sessionID)
+		args = append(args, piSessionFlag(sessionID), sessionID)
 	}
 	if request.Provider != "" {
 		args = append(args, "--provider", request.Provider)
@@ -130,4 +127,17 @@ func validatePiRequest(mode Mode, request Request) error {
 		return fmt.Errorf("agent %q schema extension options require Schema.Inline", Pi)
 	}
 	return nil
+}
+
+// piSessionFlag follows Pi's own test for a session path. A path goes to
+// --session, which rejects nothing; an ID goes to --session-id, which opens the
+// exact project-local session or creates it, so a session Pi has not saved yet
+// still resumes:
+// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/main.ts#L252-L256
+// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/cli.md
+func piSessionFlag(session string) string {
+	if strings.ContainsAny(session, "/\\") || strings.HasSuffix(session, ".jsonl") {
+		return "--session"
+	}
+	return "--session-id"
 }

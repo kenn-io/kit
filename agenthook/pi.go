@@ -35,6 +35,7 @@ func piProfile() profileSpec {
 	spec.configEnvDir = piAgentDir
 	spec.eventName = piEventName
 	spec.script = piExtension
+	spec.checkScriptLoads = piExtensionLoads
 	// Pi extension handlers run in-process; the generated extension ignores
 	// command output, so control decisions have nowhere to go.
 	spec.responseFormat = responseObservational
@@ -102,7 +103,7 @@ func fileURLPath(raw string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	remote := parsed.Host != "" && parsed.Host != "localhost"
+	remote := parsed.Host != "" && !strings.EqualFold(parsed.Host, "localhost")
 	if runtime.GOOS != "windows" {
 		if remote {
 			return "", fmt.Errorf("file URL host must be localhost or empty: %s", raw)
@@ -118,8 +119,8 @@ func fileURLPath(raw string) (string, error) {
 // promotePiReason maps Pi's reason field to Claude's. session_start reasons
 // become source (Pi's /new starts a fresh session as Claude's /clear does;
 // reload has no equivalent), and session_shutdown reasons for a replaced
-// session become SessionEnd reasons. A shutdown for quit or reload loses its
-// reason so Handle refuses it rather than retiring a resumable session.
+// session become SessionEnd reasons. The extension reports no shutdown for
+// quit or reload.
 func promotePiReason(payload map[string]json.RawMessage) error {
 	var event, reason string
 	if raw, ok := payload["hook_event_name"]; ok {
@@ -149,9 +150,6 @@ func promotePiReason(payload map[string]json.RawMessage) error {
 			"resume": string(SessionEndResume),
 			"fork":   string(SessionEndOther),
 		}[reason]
-		if value == "" {
-			delete(payload, "reason")
-		}
 	default:
 		return nil
 	}
@@ -163,5 +161,53 @@ func promotePiReason(payload map[string]json.RawMessage) error {
 		return err
 	}
 	payload[field] = encoded
+	return nil
+}
+
+// piExtensionLoads refuses a directory whose package.json pi.extensions or
+// index.ts/index.js makes Pi load only those entries, which would leave the
+// generated extension silently unloaded:
+// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/package-manager.ts#L563-L601
+func piExtensionLoads(path string) error {
+	dir := filepath.Dir(path)
+	var entries []string
+	if data, err := os.ReadFile(filepath.Join(dir, "package.json")); err == nil {
+		var manifest struct {
+			Pi struct {
+				Extensions []string `json:"extensions"`
+			} `json:"pi"`
+		}
+		if json.Unmarshal(data, &manifest) == nil {
+			for _, entry := range manifest.Pi.Extensions {
+				resolved := entry
+				if !filepath.IsAbs(resolved) {
+					resolved = filepath.Join(dir, entry)
+				}
+				if _, err := os.Stat(resolved); err == nil {
+					entries = append(entries, resolved)
+				}
+			}
+		}
+	}
+	if len(entries) == 0 {
+		for _, name := range []string{"index.ts", "index.js"} {
+			if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+				entries = []string{filepath.Join(dir, name)}
+				break
+			}
+		}
+	}
+	for _, entry := range entries {
+		if filepath.Clean(entry) == filepath.Clean(path) {
+			return nil
+		}
+	}
+	if len(entries) > 0 {
+		return fmt.Errorf(
+			"Pi loads only %s from %s, so it would never load %s; "+
+				"add it to package.json pi.extensions or install to another directory",
+			strings.Join(entries, ", "), dir, filepath.Base(path),
+		)
+	}
 	return nil
 }

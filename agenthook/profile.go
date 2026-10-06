@@ -115,6 +115,7 @@ type profileSpec struct {
 	sessionSourceRequirement    inputRequirement
 	sessionEndReasonRequirement inputRequirement
 	script                      string
+	checkScriptLoads            func(path string) error
 }
 
 var profileOrder = []Agent{

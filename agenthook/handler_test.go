@@ -938,11 +938,6 @@ func TestHandleRejectsUnmappedPiEvents(t *testing.T) {
 		want    string
 	}{
 		{
-			name:    "quit keeps the session",
-			payload: `"hook_event_name":"session_shutdown","reason":"quit"`,
-			handler: &lifecycleHandler{}, want: "SessionEnd input missing reason",
-		},
-		{
 			name:    "empty prompt",
 			payload: `"hook_event_name":"before_agent_start","prompt":""`,
 			handler: &lifecycleHandler{}, want: "UserPromptSubmit input missing prompt",

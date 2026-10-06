@@ -1,4 +1,8 @@
 // Pi extension API: https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md
+// Pi reports a handler's thrown error as an extension error and still runs the
+// event and its other handlers:
+// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/extensions/runner.ts#L1089-L1117
+// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/extensions/runner.ts#L1458-L1466
 const replacedSessionReasons = ["new", "resume", "fork"];
 
 export default function (pi) {
