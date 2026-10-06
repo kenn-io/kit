@@ -10,9 +10,7 @@ function runCommand(handler, payload) {
 	return new Promise((resolve) => {
 		let child;
 		try {
-			child = spawn(handler.command, Array.isArray(handler.args) ? handler.args : [], {
-				stdio: ["pipe", "ignore", "ignore"],
-			});
+			child = spawn(handler.command, handler.args, { stdio: ["pipe", "ignore", "ignore"] });
 		} catch (error) {
 			resolve(`could not start: ${error.message}`);
 			return;
@@ -31,10 +29,8 @@ function runCommand(handler, payload) {
 			if (signal) finish(`killed by ${signal}`);
 			else finish(code === 0 ? null : `exited with status ${code}`);
 		});
-		if (child.stdin) {
-			child.stdin.on("error", () => {});
-			child.stdin.end(JSON.stringify(payload));
-		}
+		child.stdin.on("error", () => {});
+		child.stdin.end(JSON.stringify(payload));
 	});
 }
 
@@ -42,16 +38,10 @@ function runCommand(handler, payload) {
 // error naming each command that failed so the harness reports it.
 async function runHooks(event, payload) {
 	const failures = [];
-	const entries = (config.hooks ?? {})[event];
-	for (const entry of Array.isArray(entries) ? entries : []) {
-		for (const handler of Array.isArray(entry?.hooks) ? entry.hooks : []) {
-			if (handler?.type === "command" && typeof handler.command === "string") {
-				const failure = await runCommand(handler, payload);
-				if (failure) {
-					const argv = [handler.command, ...(Array.isArray(handler.args) ? handler.args : [])];
-					failures.push(`${argv.join(" ")}: ${failure}`);
-				}
-			}
+	for (const entry of config.hooks?.[event] ?? []) {
+		for (const handler of entry.hooks) {
+			const failure = await runCommand(handler, payload);
+			if (failure) failures.push(`${[handler.command, ...handler.args].join(" ")}: ${failure}`);
 		}
 	}
 	if (failures.length > 0) {

@@ -1118,30 +1118,51 @@ func TestPiExtensionHelper(t *testing.T) {
 }
 
 const piExtensionDriver = `
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 const extension = await import(pathToFileURL(process.argv[2]).href);
-const handlers = {};
-extension.default({ on: (name, handler) => { handlers[name] = handler; } });
-const ctx = (mode) => ({
+const fileA = join(process.argv[3], "a.jsonl");
+const fileB = join(process.argv[3], "b.jsonl");
+const runtime = () => {
+	const handlers = {};
+	extension.default({ on: (name, handler) => { handlers[name] = handler; } });
+	return handlers;
+};
+const ctx = (id, file, mode = "tui") => ({
 	mode,
 	cwd: "/work",
-	sessionManager: { getSessionId: () => "pi-session-1", getSessionFile: () => "/sessions/1.jsonl" },
+	sessionManager: { getSessionId: () => id, getSessionFile: () => file },
 });
-const fire = async (name, event, mode) => {
+const fire = async (pi, name, event, context) => {
 	try {
-		await handlers[name](event, ctx(mode));
+		await pi[name]({ type: name, ...event }, context);
 	} catch (error) {
-		console.log(error.message);
+		console.log(name + ": " + error.message);
 	}
 };
-await fire("session_start", { type: "session_start", reason: "startup" }, "tui");
-await fire("session_start", { type: "session_start", reason: "startup" }, "json");
-await fire("session_shutdown", { type: "session_shutdown", reason: "quit" }, "tui");
-await fire("session_shutdown", { type: "session_shutdown", reason: "new" }, "tui");
-await fire("agent_settled", { type: "agent_settled" }, "tui");
+
+// Fresh start: Pi has no session file yet, so SessionStart waits for the first prompt.
+let pi = runtime();
+await fire(pi, "session_start", { reason: "startup" }, ctx("a", fileA));
+await fire(pi, "before_agent_start", { prompt: "one" }, ctx("a", fileA));
+writeFileSync(fileA, "{}\n");
+await fire(pi, "agent_settled", {}, ctx("a", fileA));
+
+// /new: the replaced session ends; the new one never gets a prompt, so its replacement sends nothing.
+await fire(pi, "session_shutdown", { reason: "new" }, ctx("a", fileA));
+pi = runtime();
+await fire(pi, "session_start", { reason: "new" }, ctx("b", fileB));
+await fire(pi, "session_shutdown", { reason: "resume" }, ctx("b", fileB));
+
+// Resume: the session file exists, so SessionStart reports at once; other modes and quit stay silent.
+pi = runtime();
+await fire(pi, "session_start", { reason: "resume" }, ctx("a", fileA, "json"));
+await fire(pi, "session_start", { reason: "resume" }, ctx("a", fileA));
+await fire(pi, "session_shutdown", { reason: "quit" }, ctx("a", fileA));
 `
 
-func TestPiExtensionRunsRegisteredCommand(t *testing.T) {
+func TestPiExtensionReportsResumableSessions(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
 	node, err := exec.LookPath("node")
@@ -1166,6 +1187,7 @@ func TestPiExtensionRunsRegisteredCommand(t *testing.T) {
 		Marker:     testMarker,
 		Hooks: []Hook{
 			{Event: EventSessionStart},
+			{Event: EventUserPromptSubmit},
 			{Event: EventSessionEnd},
 			{Event: EventStop, Timeout: time.Second},
 		},
@@ -1178,7 +1200,7 @@ func TestPiExtensionRunsRegisteredCommand(t *testing.T) {
 	driver := filepath.Join(dir, "driver.mjs")
 	require.NoError(os.WriteFile(driver, []byte(piExtensionDriver), 0o600))
 	out := filepath.Join(dir, "payloads.jsonl")
-	cmd := exec.CommandContext(t.Context(), node, driver, module)
+	cmd := exec.CommandContext(t.Context(), node, driver, module, dir)
 	cmd.Env = append(os.Environ(), "KIT_AGENTHOOK_PI_HELPER_OUT="+out)
 
 	started := time.Now()
@@ -1188,22 +1210,34 @@ func TestPiExtensionRunsRegisteredCommand(t *testing.T) {
 	assert.Less(time.Since(started), 30*time.Second, "the timed-out command was not killed")
 	payloads, err := os.ReadFile(out)
 	require.NoError(err)
-	lines := strings.Split(strings.TrimSpace(string(payloads)), "\n")
-	require.Len(lines, 3)
-	assert.JSONEq(`{
-  "hook_event_name":"session_start",
-  "session_id":"pi-session-1",
-  "transcript_path":"/sessions/1.jsonl",
-  "cwd":"/work",
-  "reason":"startup"
-}`, lines[0])
-	assert.Contains(lines[1], `"reason":"new"`)
-	assert.Contains(lines[2], `"agent_settled"`)
+	type report struct {
+		Event      string `json:"hook_event_name"`
+		SessionID  string `json:"session_id"`
+		Transcript string `json:"transcript_path"`
+		Reason     string `json:"reason"`
+		Prompt     string `json:"prompt"`
+	}
+	var reports []report
+	for line := range strings.Lines(strings.TrimSpace(string(payloads))) {
+		var r report
+		require.NoError(json.Unmarshal([]byte(line), &r))
+		reports = append(reports, r)
+	}
+	fileA := filepath.Join(dir, "a.jsonl")
+	assert.Equal([]report{
+		{Event: "session_start", SessionID: "a", Transcript: fileA, Reason: "startup"},
+		{Event: "before_agent_start", SessionID: "a", Transcript: fileA, Prompt: "one"},
+		{Event: "agent_settled", SessionID: "a", Transcript: fileA},
+		{Event: "session_shutdown", SessionID: "a", Transcript: fileA, Reason: "new"},
+		{Event: "session_start", SessionID: "a", Transcript: fileA, Reason: "resume"},
+	}, reports)
 	// A failed command is reported once its event's other commands have run.
+	failed := "agenthook session_start commands failed: " + missing + " --source missing-hook: could not start"
 	failures := strings.Split(strings.TrimSpace(string(output)), "\n")
-	require.Len(failures, 2, string(output))
-	assert.Contains(failures[0], "agenthook session_start commands failed: "+missing+" --source missing-hook: could not start")
-	assert.NotContains(failures[0], "TestPiExtensionHelper")
-	assert.Contains(failures[1], "agenthook agent_settled commands failed: ")
+	require.Len(failures, 3, string(output))
+	assert.Contains(failures[0], "before_agent_start: "+failed)
+	assert.Contains(failures[1], "agent_settled: agenthook agent_settled commands failed: ")
 	assert.Contains(failures[1], "timed out after 1s")
+	assert.Contains(failures[2], "session_start: "+failed)
+	assert.NotContains(string(output), "TestPiExtensionHelper$ -- --source shared-agent-hook-test: could not start")
 }
