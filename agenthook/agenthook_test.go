@@ -6,9 +6,11 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -50,7 +52,10 @@ func TestProfilesExposeClaudeStyleEvents(t *testing.T) {
 	})
 	assert.Contains(profiles[6].SupportedEvents, EventPreToolUse)
 	assert.NotContains(profiles[6].SupportedEvents, EventNotification)
-	assert.Equal([]Event{EventSessionStart, EventUserPromptSubmit, EventStop}, profiles[7].SupportedEvents)
+	assert.Equal(
+		[]Event{EventSessionStart, EventUserPromptSubmit, EventStop, EventSessionEnd},
+		profiles[7].SupportedEvents,
+	)
 	assert.Contains(profiles[8].SupportedEvents, EventPermissionRequest)
 }
 
@@ -916,15 +921,39 @@ func TestWriteConfigRefusesLinkSwappedInForRegularConfig(t *testing.T) {
 	assert.Equal(t, "other", string(data))
 }
 
-func TestConfigPathExpandsPiAgentDirTilde(t *testing.T) {
+func TestConfigPathNormalizesPiAgentDirAsPiDoes(t *testing.T) {
 	home, err := os.UserHomeDir()
 	require.NoError(t, err)
-	t.Setenv("PI_CODING_AGENT_DIR", "~/pi-agent")
+	windows := runtime.GOOS == "windows"
+	pick := func(onWindows, elsewhere string) string {
+		if windows {
+			return onWindows
+		}
+		return elsewhere
+	}
+	tests := []struct {
+		env  string
+		want string
+	}{
+		{env: "~", want: home},
+		{env: "~/pi-agent", want: filepath.Join(home, "pi-agent")},
+		{env: `~\pi-agent`, want: pick(filepath.Join(home, "pi-agent"), `~\pi-agent`)},
+		{env: "/c/Users/me/pi", want: pick(`C:\Users\me\pi`, "/c/Users/me/pi")},
+		{env: "/mnt/d/pi", want: pick(`D:\pi`, "/mnt/d/pi")},
+		{env: "/cygdrive/e", want: pick(`E:\`, "/cygdrive/e")},
+		{env: "//server/share", want: "//server/share"},
+		{env: pick("file:///C:/pi/agent", "file:///pi/agent"), want: pick(`C:\pi\agent`, "/pi/agent")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.env, func(t *testing.T) {
+			t.Setenv("PI_CODING_AGENT_DIR", tt.env)
 
-	path, err := ConfigPath(AgentPi)
+			path, err := ConfigPath(AgentPi)
 
-	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(home, "pi-agent", "extensions", "agenthook.js"), path)
+			require.NoError(t, err)
+			assert.Equal(t, filepath.Join(tt.want, "extensions", "agenthook.js"), path)
+		})
+	}
 }
 
 // piScriptHooks parses the registration block of a generated Pi extension.
@@ -1039,9 +1068,34 @@ func TestPlanInstallPiRequiresExecutableWithoutMatchers(t *testing.T) {
 		Executable: "/opt/hook",
 		Arguments:  []string{"--source", "shared-agent-hook-test"},
 		Marker:     testMarker,
-		Hooks:      []Hook{{Event: EventSessionStart, Matcher: "startup"}},
+		Hooks:      []Hook{{Event: EventStop, Matcher: ToolBash}},
 	})
 	require.ErrorContains(t, err, "do not support matchers")
+}
+
+func TestInstallPiKeepsArgumentThatLooksLikeBlockMarker(t *testing.T) {
+	require := require.New(t)
+	path := filepath.Join(t.TempDir(), "agenthook.js")
+	opts := InstallOptions{
+		ConfigPath: path,
+		Executable: "/opt/hook",
+		Arguments:  []string{scriptBlockEnd, "--source", "shared-agent-hook-test"},
+		Marker:     testMarker,
+	}
+
+	_, err := Install(AgentPi, opts)
+	require.NoError(err)
+	result, err := Install(AgentPi, opts)
+	require.NoError(err)
+	assert.False(t, result.Changed)
+	assert.Equal(t,
+		[]string{"/opt/hook " + scriptBlockEnd + " " + testMarker},
+		piCommands(piScriptHooks(t, path), "session_start"),
+	)
+
+	_, err = Uninstall(AgentPi, path, testMarker)
+	require.NoError(err)
+	assert.Empty(t, piScriptHooks(t, path))
 }
 
 func TestPiExtensionHelper(t *testing.T) {
@@ -1057,7 +1111,9 @@ func TestPiExtensionHelper(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, file.Close())
 	if strings.Contains(string(payload), "agent_settled") {
-		// Outlive the 1s hook timeout so the extension has to kill this process.
+		// Ignore SIGTERM and outlive the 1s hook timeout, so only a forced kill
+		// with an unconditional deadline keeps the extension from waiting.
+		signal.Ignore(syscall.SIGTERM)
 		<-time.After(time.Minute)
 	}
 }
@@ -1074,6 +1130,8 @@ const ctx = (mode) => ({
 });
 await handlers.session_start({ type: "session_start", reason: "startup" }, ctx("tui"));
 await handlers.session_start({ type: "session_start", reason: "startup" }, ctx("json"));
+await handlers.session_shutdown({ type: "session_shutdown", reason: "quit" }, ctx("tui"));
+await handlers.session_shutdown({ type: "session_shutdown", reason: "new" }, ctx("tui"));
 await handlers.agent_settled({ type: "agent_settled" }, ctx("tui"));
 `
 
@@ -1093,6 +1151,7 @@ func TestPiExtensionRunsRegisteredCommand(t *testing.T) {
 		Marker:     testMarker,
 		Hooks: []Hook{
 			{Event: EventSessionStart},
+			{Event: EventSessionEnd},
 			{Event: EventStop, Timeout: time.Second},
 		},
 	})
@@ -1115,7 +1174,7 @@ func TestPiExtensionRunsRegisteredCommand(t *testing.T) {
 	payloads, err := os.ReadFile(out)
 	require.NoError(err)
 	lines := strings.Split(strings.TrimSpace(string(payloads)), "\n")
-	require.Len(lines, 2)
+	require.Len(lines, 3)
 	assert.JSONEq(`{
   "hook_event_name":"session_start",
   "session_id":"pi-session-1",
@@ -1123,5 +1182,6 @@ func TestPiExtensionRunsRegisteredCommand(t *testing.T) {
   "cwd":"/work",
   "reason":"startup"
 }`, lines[0])
-	assert.Contains(lines[1], `"agent_settled"`)
+	assert.Contains(lines[1], `"reason":"new"`)
+	assert.Contains(lines[2], `"agent_settled"`)
 }

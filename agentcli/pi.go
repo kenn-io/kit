@@ -82,7 +82,10 @@ func buildPi(a *adapter, sessionID string, request Request) (Invocation, error) 
 		args = append(args, "--mode", "json")
 	}
 	if sessionID != "" {
-		args = append(args, "--session", sessionID)
+		// --session-id opens the exact project-local session or creates it, so a
+		// session Pi has not saved yet still resumes; --session would fail:
+		// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/cli.md
+		args = append(args, "--session-id", sessionID)
 	}
 	if request.Provider != "" {
 		args = append(args, "--provider", request.Provider)

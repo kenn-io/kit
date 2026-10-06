@@ -33,6 +33,8 @@
 - Script profiles (Pi) own one kit-named module. Edit only its delimited
   registration block, refuse a file without that block, rewrite the runtime
   on every write, and spawn registered argv without a shell on every OS.
+  The Pi module reports only from Pi's interactive terminal (`ctx.mode` is
+  `tui`), so print, json, and rpc runs, subagents included, stay silent.
 - Keep each harness profile in its own agent-named file (`claude.go`,
   `codex.go`, and so on). `profile.go` owns only the shared vocabulary,
   registry, and lookup behavior.

@@ -68,16 +68,26 @@ func planScriptConfig(
 
 // scriptBlock returns the JSON between the registration markers and refuses a
 // file agenthook did not write, so a user's module at the path is never lost.
+// Markers match whole lines only; JSON escapes newlines, so a hook argument
+// that contains a marker can never form one.
 func scriptBlock(data []byte, path string) ([]byte, error) {
-	text := string(data)
-	_, rest, foundBegin := strings.Cut(text, scriptBlockBegin)
-	block, _, foundEnd := strings.Cut(rest, scriptBlockEnd)
-	if !foundBegin || !foundEnd {
+	lines := strings.Split(string(data), "\n")
+	begin, end := -1, -1
+	for i, line := range lines {
+		line = strings.TrimSuffix(line, "\r")
+		if begin < 0 && line == scriptBlockBegin {
+			begin = i
+		} else if begin >= 0 && line == scriptBlockEnd {
+			end = i
+			break
+		}
+	}
+	if begin < 0 || end < 0 {
 		return nil, fmt.Errorf("agent hook config %s was not written by agenthook", path)
 	}
-	block = strings.TrimSpace(block)
+	block := strings.TrimSpace(strings.Join(lines[begin+1:end], "\n"))
 	block, foundDecl := strings.CutPrefix(block, scriptConfigDecl)
-	block, foundEnd = strings.CutSuffix(block, ";")
+	block, foundEnd := strings.CutSuffix(block, ";")
 	if !foundDecl || !foundEnd {
 		return nil, fmt.Errorf("agent hook config %s has a malformed registration block", path)
 	}

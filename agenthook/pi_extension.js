@@ -1,11 +1,16 @@
-// Pi extension API: https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/extensions.md
+// Pi extension API: https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md
+const replacedSessionReasons = ["new", "resume", "fork"];
+
 export default function (pi) {
 	for (const name of Object.keys(config.hooks ?? {})) {
 		pi.on(name, async (event, ctx) => {
 			// Subagents run Pi in json or print mode with global extensions loaded;
 			// only the interactive session is one the user can resume:
-			// https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/extensions/types.ts#L323-L335
+			// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/extensions/types.ts#L323-L335
 			if (ctx.mode !== "tui") return;
+			// Report a shutdown only when another session replaces this one; quit
+			// and reload keep the session resumable.
+			if (name === "session_shutdown" && !replacedSessionReasons.includes(event.reason)) return;
 			const payload = {
 				hook_event_name: name,
 				session_id: ctx.sessionManager.getSessionId(),

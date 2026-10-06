@@ -48,7 +48,7 @@ func normalize(agent Agent, input io.Reader) ([]byte, error) {
 		}
 	}
 	if agent == AgentPi {
-		if err := promotePiSource(payload); err != nil {
+		if err := promotePiReason(payload); err != nil {
 			return nil, fmt.Errorf("normalize Pi hook payload: %w", err)
 		}
 	}

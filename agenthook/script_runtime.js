@@ -2,8 +2,9 @@ import { spawn } from "node:child_process";
 
 const defaultTimeoutSeconds = 60;
 
-// Runs one argv without a shell, writing the payload to stdin. A child that
-// outlives its timeout is killed; failures never reach the harness.
+// Runs one argv without a shell, writing the payload to stdin. At its timeout
+// the child is force-killed and the wait ends even if it has not exited, so a
+// child that ignores SIGTERM cannot block later commands or the harness.
 function runCommand(handler, payload) {
 	return new Promise((resolve) => {
 		let child;
@@ -16,7 +17,10 @@ function runCommand(handler, payload) {
 			return;
 		}
 		const seconds = handler.timeout > 0 ? handler.timeout : defaultTimeoutSeconds;
-		const timer = setTimeout(() => child.kill(), seconds * 1000);
+		const timer = setTimeout(() => {
+			child.kill("SIGKILL");
+			resolve();
+		}, seconds * 1000);
 		const done = () => {
 			clearTimeout(timer);
 			resolve();

@@ -85,7 +85,7 @@ func TestInteractiveResumePreservesConfiguredOptions(t *testing.T) {
 	}{
 		{agentcli.Codex, agentcli.Command{Executable: "codex-custom", Options: []string{"--full-auto", "--profile", "team"}}, agentcli.Request{}, []string{"codex-custom", "--full-auto", "--profile", "team", "resume", "session-1"}},
 		{agentcli.Claude, agentcli.Command{Executable: "claude-custom", Options: []string{"--setting-sources", "project"}}, agentcli.Request{}, []string{"claude-custom", "--setting-sources", "project", "--resume", "session-1"}},
-		{agentcli.Pi, agentcli.Command{Executable: "pi-custom", Options: []string{"--offline"}}, agentcli.Request{}, []string{"pi-custom", "--offline", "--session", "session-1"}},
+		{agentcli.Pi, agentcli.Command{Executable: "pi-custom", Options: []string{"--offline"}}, agentcli.Request{}, []string{"pi-custom", "--offline", "--session-id", "session-1"}},
 		{agentcli.Copilot, agentcli.Command{Executable: "copilot-custom", Options: []string{"--add-dir", "shared"}}, agentcli.Request{}, []string{"copilot-custom", "--add-dir", "shared", "--resume=session-1"}},
 		{agentcli.Cursor, agentcli.Command{Executable: "cursor-agent", Options: []string{"--workspace", "repo"}}, agentcli.Request{}, []string{"cursor-agent", "--workspace", "repo", "--resume", "session-1"}},
 		{agentcli.Droid, agentcli.Command{Executable: "droid-custom", Options: []string{"--append-system-prompt", "Run tests."}}, agentcli.Request{Autonomy: agentcli.AutonomyLow, DisableSkills: true}, []string{"droid-custom", "--append-system-prompt", "Run tests.", "--resume", "session-1", "--auto", "low", "--disable-builtin-skills"}},
@@ -157,7 +157,7 @@ func TestConfiguredOptionsKeepTheirArityAndOrder(t *testing.T) {
 	}{
 		{agentcli.Codex, agentcli.Command{Executable: "codex-custom", Options: []string{"--profile=team", "-c", "feature.test=true", "--add-dir", "-shared"}}, "", []string{"codex-custom", "--profile=team", "-c", "feature.test=true", "--add-dir", "-shared", "resume", "session-1"}},
 		{agentcli.Claude, agentcli.Command{Options: []string{"--setting-sources=project", "--plugin-dir", "one", "--plugin-dir", "-two"}}, "", []string{"claude", "--setting-sources=project", "--plugin-dir", "one", "--plugin-dir", "-two", "--resume", "session-1"}},
-		{agentcli.Pi, agentcli.Command{Options: []string{"-ne", "--tui-mode", "fullscreen", "--offline"}}, "", []string{"pi", "-ne", "--tui-mode", "fullscreen", "--offline", "--session", "session-1"}},
+		{agentcli.Pi, agentcli.Command{Options: []string{"-ne", "--tui-mode", "fullscreen", "--offline"}}, "", []string{"pi", "-ne", "--tui-mode", "fullscreen", "--offline", "--session-id", "session-1"}},
 		{agentcli.Kiro, agentcli.Command{Executable: "kiro-custom", Options: []string{"--wrap", "never"}}, agentcli.NonInteractive, []string{"kiro-custom", "chat", "--wrap", "never", "--no-interactive", "--resume-id", "session-1"}},
 		{agentcli.Droid, agentcli.Command{Executable: "droid-custom", Options: []string{"--append-system-prompt", "review only"}}, agentcli.NonInteractive, []string{"droid-custom", "exec", "--append-system-prompt", "review only", "--session-id", "session-1"}},
 	}

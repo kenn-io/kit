@@ -8,7 +8,8 @@
 // Profiles are provided for Claude Code, Codex, GitHub Copilot CLI, Cursor,
 // Factory Droid, Gemini CLI, Hermes Agent, Pi, and Qwen Code. Pi has no
 // command-hook config, so its profile writes a kit-owned extension module that
-// runs the registered commands.
+// runs the registered commands. That module reports only from Pi's interactive
+// terminal, so print, json, and rpc runs, subagents included, stay silent.
 //
 // Applications identify their hooks with a stable marker embedded in the
 // command. Reinstalling replaces commands carrying that marker even when the

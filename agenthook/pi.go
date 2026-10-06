@@ -4,8 +4,11 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"strings"
 )
 
@@ -19,32 +22,34 @@ func piProfile() profileSpec {
 			ConfigEnvironment: "PI_CODING_AGENT_DIR",
 			// Pi loads top-level *.js and *.ts files from <agent dir>/extensions
 			// and skips dotfiles, so atomicfile's staging file is never loaded:
-			// https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/package-manager.ts#L603-L640
+			// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/package-manager.ts#L603-L640
 			ConfigFilename: filepath.Join("extensions", "agenthook.js"),
-			// SessionEnd is left out: Pi emits session_shutdown on SIGTERM and
-			// SIGHUP, so an application stopping Pi would erase the ID it resumes:
-			// https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/modes/interactive/interactive-mode.ts#L4258-L4270
-			SupportedEvents: []Event{EventSessionStart, EventUserPromptSubmit, EventStop},
+			SupportedEvents: []Event{
+				EventSessionStart, EventUserPromptSubmit, EventStop, EventSessionEnd,
+			},
 		},
 		formatScript,
 		"",
 		func() (string, error) { return userDotDir(filepath.Join(".pi", "agent")) },
 	)
-	spec.configEnvDir = expandPiAgentDir
+	spec.configEnvDir = piAgentDir
 	spec.eventName = piEventName
 	spec.script = piExtension
 	// Pi extension handlers run in-process; the generated extension ignores
 	// command output, so control decisions have nowhere to go.
 	spec.responseFormat = responseObservational
-	// session_start carries a reason that maps to source except for reload:
-	// https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/extensions/types.ts#L733-L741
+	// session_start carries a reason that maps to source except for reload, and
+	// the extension reports session_shutdown only for reasons that map to one:
+	// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/extensions/types.ts#L733-L741
+	// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/extensions/types.ts#L802-L808
 	spec.sessionSourceRequirement = inputOptional
+	spec.sessionEndReasonRequirement = inputRequired
 	return spec
 }
 
 // piEventName maps Claude events to Pi extension events:
-// https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/extensions/types.ts#L911-L922
-// https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/extensions/types.ts#L997-L1000
+// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/extensions/types.ts#L911-L922
+// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/extensions/types.ts#L997-L1000
 func piEventName(event Event) string {
 	switch event {
 	case EventSessionStart:
@@ -54,57 +59,109 @@ func piEventName(event Event) string {
 	case EventStop:
 		// agent_settled fires once no retry, compaction, or queued turn follows.
 		return "agent_settled"
+	case EventSessionEnd:
+		return "session_shutdown"
 	default:
 		return string(event)
 	}
 }
 
-// expandPiAgentDir follows Pi's tilde expansion of PI_CODING_AGENT_DIR:
-// https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/config.ts#L588-L611
-func expandPiAgentDir(dir string) (string, error) {
-	rest, ok := strings.CutPrefix(dir, "~")
-	if !ok || (rest != "" && rest[0] != '/' && rest[0] != filepath.Separator) {
-		return dir, nil
+var piWindowsShellPath = regexp.MustCompile(`(?i)^/(?:mnt/|cygdrive/)?([a-z])(?:/(.*))?$`)
+
+// piAgentDir mirrors Pi's normalizePath for PI_CODING_AGENT_DIR: Git Bash,
+// MSYS, Cygwin, and WSL drive paths on Windows, then ~, then file: URLs:
+// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/utils/paths.ts#L67-L101
+func piAgentDir(dir string) (string, error) {
+	if runtime.GOOS == "windows" && strings.HasPrefix(dir, "/") &&
+		!strings.HasPrefix(dir, "//") && !strings.Contains(dir, `\`) {
+		if match := piWindowsShellPath.FindStringSubmatch(dir); match != nil {
+			return strings.ToUpper(match[1]) + `:\` + strings.ReplaceAll(match[2], "/", `\`), nil
+		}
 	}
-	home, err := os.UserHomeDir()
+	if dir == "~" || strings.HasPrefix(dir, "~/") ||
+		(runtime.GOOS == "windows" && strings.HasPrefix(dir, `~\`)) {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		rest := ""
+		if len(dir) > 2 {
+			rest = dir[2:]
+		}
+		return filepath.Join(home, rest), nil
+	}
+	if strings.HasPrefix(dir, "file://") {
+		return fileURLPath(dir)
+	}
+	return dir, nil
+}
+
+// fileURLPath follows Node's fileURLToPath for the cases Pi accepts.
+func fileURLPath(raw string) (string, error) {
+	parsed, err := url.Parse(raw)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, rest), nil
+	remote := parsed.Host != "" && parsed.Host != "localhost"
+	if runtime.GOOS != "windows" {
+		if remote {
+			return "", fmt.Errorf("file URL host must be localhost or empty: %s", raw)
+		}
+		return parsed.Path, nil
+	}
+	if remote {
+		return `\\` + parsed.Host + filepath.FromSlash(parsed.Path), nil
+	}
+	return filepath.FromSlash(strings.TrimPrefix(parsed.Path, "/")), nil
 }
 
-// promotePiSource maps session_start's reason to Claude's source. Pi's /new
-// starts a fresh session as Claude's /clear does; reload has no equivalent.
-func promotePiSource(payload map[string]json.RawMessage) error {
-	if _, exists := payload["source"]; exists {
-		return nil
-	}
+// promotePiReason maps Pi's reason field to Claude's. session_start reasons
+// become source (Pi's /new starts a fresh session as Claude's /clear does;
+// reload has no equivalent), and session_shutdown reasons for a replaced
+// session become SessionEnd reasons. A shutdown for quit or reload loses its
+// reason so Handle refuses it rather than retiring a resumable session.
+func promotePiReason(payload map[string]json.RawMessage) error {
 	var event, reason string
 	if raw, ok := payload["hook_event_name"]; ok {
 		if err := json.Unmarshal(raw, &event); err != nil {
 			return fmt.Errorf("field %q must be a string: %w", "hook_event_name", err)
 		}
 	}
-	raw, ok := payload["reason"]
-	if event != "session_start" || !ok {
+	if raw, ok := payload["reason"]; ok {
+		if err := json.Unmarshal(raw, &reason); err != nil {
+			return fmt.Errorf("field %q must be a string: %w", "reason", err)
+		}
+	}
+	var field, value string
+	switch event {
+	case "session_start":
+		field = "source"
+		value = map[string]string{
+			"startup": string(SessionSourceStartup),
+			"resume":  string(SessionSourceResume),
+			"fork":    string(SessionSourceFork),
+			"new":     string(SessionSourceClear),
+		}[reason]
+	case "session_shutdown":
+		field = "reason"
+		value = map[string]string{
+			"new":    string(SessionEndClear),
+			"resume": string(SessionEndResume),
+			"fork":   string(SessionEndOther),
+		}[reason]
+		if value == "" {
+			delete(payload, "reason")
+		}
+	default:
 		return nil
 	}
-	if err := json.Unmarshal(raw, &reason); err != nil {
-		return fmt.Errorf("field %q must be a string: %w", "reason", err)
-	}
-	source := map[string]SessionSource{
-		"startup": SessionSourceStartup,
-		"resume":  SessionSourceResume,
-		"fork":    SessionSourceFork,
-		"new":     SessionSourceClear,
-	}[reason]
-	if source == "" {
+	if value == "" {
 		return nil
 	}
-	encoded, err := json.Marshal(source)
+	encoded, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
-	payload["source"] = encoded
+	payload[field] = encoded
 	return nil
 }
