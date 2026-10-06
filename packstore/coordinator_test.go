@@ -31,7 +31,7 @@ func TestCoordinatorAllowsConcurrentMutationsAndWaitsForAll(t *testing.T) {
 	require.Eventually(func() bool { return c.waitingMaintenanceCount() == 1 }, time.Second, time.Millisecond)
 
 	require.NoError(first.Release())
-	assert.Never(func() bool { return len(acquired) != 0 }, 20*time.Millisecond, time.Millisecond) //nolint:kennlint // shows maintenance stays queued while the second lease is held; an absence has no event to wait on
+	assert.Never(func() bool { return len(acquired) != 0 }, 20*time.Millisecond, time.Millisecond)
 	require.NoError(second.Release())
 
 	select {
@@ -79,7 +79,7 @@ func TestCoordinatorGivesQueuedMaintenancePriority(t *testing.T) {
 	case <-time.After(time.Second):
 		require.Fail("neither queued lease acquired")
 	}
-	assert.Never(func() bool { return len(mutation) != 0 }, 20*time.Millisecond, time.Millisecond) //nolint:kennlint // shows the new mutation stays queued behind maintenance; an absence has no event to wait on
+	assert.Never(func() bool { return len(mutation) != 0 }, 20*time.Millisecond, time.Millisecond)
 	require.NoError(maintenanceLease.Release())
 
 	select {

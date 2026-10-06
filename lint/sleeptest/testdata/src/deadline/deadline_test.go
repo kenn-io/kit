@@ -30,7 +30,6 @@ func TestShortBudgetsOutsideBubble(t *testing.T) {
 	defer timer.Stop()
 	time.AfterFunc(shortWait, func() {}).Stop()                          // want "time.AfterFunc with budget 50ms"
 	require.Eventually(t, ready, 300*time.Millisecond, time.Millisecond) // want "require.Eventually with budget 300ms"
-	assert.Never(t, ready, shortWait, time.Millisecond)                  // want "assert.Never with budget 50ms"
 	req := require.New(t)
 	req.Eventually(ready, 100*time.Millisecond, time.Millisecond)                   // want "require.Eventually with budget 100ms"
 	(*require.Assertions).Eventually(req, ready, 300*time.Millisecond, time.Second) // want "require.Eventually with budget 300ms"
@@ -46,6 +45,7 @@ func TestShortBudgetsOutsideBubble(t *testing.T) {
 func TestZeroAndNegativePollingBudgets(t *testing.T) {
 	require.Eventually(t, ready, 0, time.Millisecond)           // want "require.Eventually with budget 0s"
 	assert.Never(t, ready, -time.Millisecond, time.Millisecond) // want "assert.Never with budget -1ms"
+	require.Neverf(t, ready, 0, time.Millisecond, "idle")       // want "require.Neverf with budget 0s"
 }
 
 func TestShortBudgetsInsideBubble(t *testing.T) {
@@ -72,4 +72,6 @@ func TestBudgetsThatPass(t *testing.T) {
 	defer cancel()
 	_, cancel = context.WithDeadline(ctx, time.Now())
 	defer cancel()
+	assert.Never(t, ready, shortWait, time.Millisecond)
+	require.Neverf(t, ready, 20*time.Millisecond, time.Millisecond, "idle")
 }

@@ -37,7 +37,8 @@ See `docs/adopting-kennlint.md` for the consumer workflow.
   called from a bubble are reported on purpose; the fixture documents that
   limitation. `sleeptest`'s testify `Eventually` check stays off by default;
   consumers opt in per repository. `deadlinetest` checks testify `waitFor`
-  budgets by default.
+  budgets by default, but reports `Never` and `Neverf` only for zero or
+  negative budgets: a short positive window cannot fail under load.
 - Diagnostic strings are asserted in fixture `// want` comments; change both
   together.
 - The canonical configuration must stay valid for the golangci-lint version in

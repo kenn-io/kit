@@ -30,13 +30,12 @@ func runDeadline(pass *analysis.Pass) (any, error) {
 		if !isTestFile(pass, call) {
 			return
 		}
-		arg, polling := budgetArg(pass, call)
+		arg, kind := budgetArg(pass, call)
 		if arg == nil {
 			return
 		}
 		budget, ok := constantDuration(pass, arg)
-		// A zero or negative timer is deterministic; a zero polling budget still passes or fails by timing.
-		if !ok || (budget <= 0 && !polling) || budget >= time.Second || inBubble(call) {
+		if !ok || !kind.reports(budget) || inBubble(call) {
 			return
 		}
 		pass.Reportf(call.Pos(), deadlineMessage, calleeName(pass, call), budget)
@@ -44,21 +43,50 @@ func runDeadline(pass *analysis.Pass) (any, error) {
 	return nil, nil
 }
 
+// budgetKind says which constant budgets of a wall-clock call are reported.
+type budgetKind int
+
+const (
+	// timerBudget reports positive sub-second budgets; a zero or negative
+	// timer fires at once, so its outcome does not depend on timing.
+	timerBudget budgetKind = iota
+	// pollingBudget reports every sub-second budget; a zero one still passes
+	// or fails by timing.
+	pollingBudget
+	// absenceBudget reports zero and negative budgets, which pass vacuously.
+	// A short positive one checks fewer times under load but cannot fail.
+	absenceBudget
+)
+
+func (k budgetKind) reports(budget time.Duration) bool {
+	switch k {
+	case timerBudget:
+		return budget > 0 && budget < time.Second
+	case pollingBudget:
+		return budget < time.Second
+	case absenceBudget:
+		return budget <= 0
+	}
+	return false
+}
+
 // budgetArg returns the duration argument of a call that waits on the wall
-// clock, or nil when the call is not one of those, and whether the call is a
-// testify polling assertion.
-func budgetArg(pass *analysis.Pass, call *ast.CallExpr) (ast.Expr, bool) {
+// clock, or nil when the call is not one of those, and which of its budgets
+// are reported.
+func budgetArg(pass *analysis.Pass, call *ast.CallExpr) (ast.Expr, budgetKind) {
 	switch {
 	case isPackageFunc(pass, call, "context", "WithTimeout", "WithTimeoutCause"):
-		return argAt(call, 1), false
+		return argAt(call, 1), timerBudget
 	case isPackageFunc(pass, call, "context", "WithDeadline", "WithDeadlineCause"):
-		return nowPlus(pass, argAt(call, 1)), false
+		return nowPlus(pass, argAt(call, 1)), timerBudget
 	case isPackageFunc(pass, call, "time", "After", "NewTimer", "AfterFunc"):
-		return argAt(call, 0), false
-	case isPollingAssertion(pass, call):
-		return argAt(call, waitForIndex(pass, call)), true
+		return argAt(call, 0), timerBudget
+	case isTestifyFunc(pass, call, "Never", "Neverf"):
+		return argAt(call, waitForIndex(pass, call)), absenceBudget
+	case isTestifyFunc(pass, call, pollingAssertions...):
+		return argAt(call, waitForIndex(pass, call)), pollingBudget
 	}
-	return nil, false
+	return nil, timerBudget
 }
 
 // nowPlus returns d when expr is written directly as time.Now().Add(d).

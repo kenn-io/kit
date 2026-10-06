@@ -469,7 +469,7 @@ func TestPostHogReporterCloseWaitsForInFlightCapture(t *testing.T) {
 		closeErr <- reporter.Close()
 	}()
 
-	assert.Never(client.closeCalled.Load, 50*time.Millisecond, 5*time.Millisecond) //nolint:kennlint // shows Close waits for the blocked enqueue; an absence has no event to wait on
+	assert.Never(client.closeCalled.Load, 50*time.Millisecond, 5*time.Millisecond)
 
 	close(client.unblockEnqueue)
 	require.NoError(<-captureErr)
