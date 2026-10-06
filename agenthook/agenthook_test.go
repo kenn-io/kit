@@ -104,63 +104,42 @@ func TestBuildCommandQuotesPowerShellArguments(t *testing.T) {
 }
 
 func TestPlanInstallBuildsCommandFromExecutable(t *testing.T) {
-	assert := assert.New(t)
-	require := require.New(t)
 	result, err := PlanInstall(AgentClaude, InstallOptions{
 		ConfigPath: filepath.Join(t.TempDir(), "settings.json"),
-		Executable: `D:\Example Agent\hook.exe`,
+		Executable: "/opt/Example Agent/hook",
 		Arguments:  []string{"agent-hook", "run", "--source", "shared-agent-hook-test"},
 		Marker:     testMarker,
 		Hooks:      []Hook{{Event: EventSessionStart}},
 	})
 
-	require.NoError(err)
+	require.NoError(t, err)
 	var root map[string]any
-	require.NoError(json.Unmarshal(result.Data, &root))
+	require.NoError(t, json.Unmarshal(result.Data, &root))
 	handler := root["hooks"].(map[string]any)["SessionStart"].([]any)[0].(map[string]any)["hooks"].([]any)[0].(map[string]any)
-	assert.NotContains(handler, "commandWindows")
 	if runtime.GOOS == "windows" {
-		// Git Bash would read the backslashes as escapes.
-		assert.Equal(`& 'D:\Example Agent\hook.exe' 'agent-hook' 'run' '--source' 'shared-agent-hook-test'`, handler["command"])
-		assert.Equal("powershell", handler["shell"])
+		// A command string would reach Git Bash or PowerShell; exec form reaches neither.
+		assert.Equal(t, "/opt/Example Agent/hook", handler["command"])
+		assert.Equal(t, []any{"agent-hook", "run", "--source", "shared-agent-hook-test"}, handler["args"])
 		return
 	}
-	assert.Equal(`'D:\Example Agent\hook.exe' agent-hook run --source shared-agent-hook-test`, handler["command"])
-	assert.NotContains(handler, "shell")
+	assert.Equal(t, "'/opt/Example Agent/hook' agent-hook run --source shared-agent-hook-test", handler["command"])
+	assert.NotContains(t, handler, "args")
 }
 
-func TestClaudePowerShellHooksKeepOwnership(t *testing.T) {
+func TestUninstallMatchesMarkerAcrossExecFormArguments(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
 	path := filepath.Join(t.TempDir(), "settings.json")
-	owned := `& 'D:\hook.exe' 'agent-hook' 'run' '--source' 'shared-agent-hook-test'`
-	data, err := json.Marshal(map[string]any{"hooks": map[string]any{
-		"Stop": []any{map[string]any{"hooks": []any{
-			map[string]any{"type": "command", "command": owned, "shell": "powershell"},
-			map[string]any{"type": "command", "command": "keep-me"},
-		}}},
-	}})
-	require.NoError(err)
-	require.NoError(os.WriteFile(path, data, 0o600))
-	opts := InstallOptions{
-		ConfigPath: path,
-		Executable: `D:\hook.exe`,
-		Arguments:  []string{"agent-hook", "run", "--source", "shared-agent-hook-test"},
-		Marker:     testMarker,
-		Hooks:      []Hook{{Event: EventStop}},
-	}
+	require.NoError(os.WriteFile(path, []byte(`{"hooks": {"Stop": [{"hooks": [
+  {"type": "command", "command": "C:\\hook.exe", "args": ["agent-hook", "--source", "shared-agent-hook-test"]},
+  {"type": "command", "command": "keep-me"}
+]}]}}`), 0o600))
 
-	_, err = Install(AgentClaude, opts)
-	require.NoError(err)
-	again, err := Install(AgentClaude, opts)
-	require.NoError(err)
-	assert.False(again.Changed)
-	assert.Equal(1, strings.Count(string(again.Data), "shared-agent-hook-test"))
+	result, err := Uninstall(AgentClaude, path, testMarker)
 
-	removed, err := Uninstall(AgentClaude, path, testMarker)
 	require.NoError(err)
-	assert.NotContains(string(removed.Data), "shared-agent-hook-test")
-	assert.Contains(string(removed.Data), "keep-me")
+	assert.NotContains(string(result.Data), "agent-hook")
+	assert.Contains(string(result.Data), "keep-me")
 }
 
 func TestConfigPathHonorsAgentHomes(t *testing.T) {
@@ -896,20 +875,4 @@ func TestWriteConfigRefusesLinkSwappedInForRegularConfig(t *testing.T) {
 	data, err := os.ReadFile(other)
 	require.NoError(err)
 	assert.Equal(t, "other", string(data))
-}
-
-func TestCommandContainsMarkerReadsPowerShellArguments(t *testing.T) {
-	for _, test := range []struct {
-		marker string
-		want   bool
-	}{
-		{"--source example-agent-hook", true},
-		{"--label My App", true},
-		{"it's", true},
-		{"--source other", false},
-	} {
-		assert.Equal(t, test.want, commandContainsMarker(
-			`& 'D:\hook.exe' '--source' 'example-agent-hook-v1' '--label' 'My App' 'it''s'`, test.marker,
-		), test.marker)
-	}
 }

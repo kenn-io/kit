@@ -28,9 +28,9 @@ type Hook struct {
 // Win32 argv, and PowerShell forms respectively; do not combine them with
 // Executable. Marker must be a stable, application-namespaced substring unique
 // to commands the caller owns; it identifies those commands across binary path
-// changes. Claude Code on Windows gets the PowerShell form with
-// "shell": "powershell", and the marker matches its unquoted arguments.
-// Hooks defaults to every event supported by the selected profile.
+// changes. On Windows, Claude Code hooks built from Executable are written in
+// exec form, and the marker matches the executable and arguments joined by
+// spaces. Hooks defaults to every event supported by the selected profile.
 type InstallOptions struct {
 	ConfigPath        string
 	Executable        string
@@ -63,12 +63,16 @@ func PlanInstall(agent Agent, opts InstallOptions) (Result, error) {
 		return Result{}, fmt.Errorf("unsupported agent hook integration %q", agent)
 	}
 	opts.Command, opts.CommandWindows = profileCommands(spec, commands)
+	var argv []string
+	if executable := strings.TrimSpace(opts.Executable); executable != "" {
+		argv = append([]string{executable}, opts.Arguments...)
+	}
 	spec, path, hooks, err := prepareInstall(agent, opts)
 	if err != nil {
 		return Result{}, err
 	}
 	data, changed, err := planConfig(
-		spec, path, opts.Marker, opts.Command, opts.CommandWindows, hooks, false,
+		spec, path, opts.Marker, opts.Command, opts.CommandWindows, argv, hooks, false,
 	)
 	if err != nil {
 		return Result{}, err
@@ -107,7 +111,7 @@ func PlanUninstall(agent Agent, configPath, marker string) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	data, changed, err := planConfig(spec, path, marker, "", "", nil, true)
+	data, changed, err := planConfig(spec, path, marker, "", "", nil, nil, true)
 	if err != nil {
 		return Result{}, err
 	}
@@ -210,12 +214,13 @@ func resolveConfigPath(agent Agent, override string) (string, error) {
 func planConfig(
 	spec profileSpec,
 	path, marker, command, commandWindows string,
+	argv []string,
 	hooks []nativeHook,
 	uninstall bool,
 ) ([]byte, bool, error) {
 	switch spec.format {
 	case formatNestedJSON:
-		return planNestedJSONConfig(spec, path, marker, command, commandWindows, hooks, uninstall)
+		return planNestedJSONConfig(spec, path, marker, command, commandWindows, argv, hooks, uninstall)
 	case formatDirectJSON:
 		return planDirectJSONConfig(
 			spec, path, marker, command, commandWindows, hooks, uninstall,

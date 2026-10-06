@@ -72,52 +72,11 @@ func profileCommands(spec profileSpec, commands Commands) (native, windows strin
 	case windowsCommandPowerShell:
 		native = commands.POSIX
 		windows = commands.PowerShell
+	case windowsCommandExec:
+		native = commands.POSIX
 	default:
 	}
 	return native, windows
-}
-
-// commandContainsMarker reports whether command carries marker as written or,
-// for the PowerShell form BuildCommand writes, in its unquoted arguments.
-func commandContainsMarker(command, marker string) bool {
-	if strings.Contains(command, marker) {
-		return true
-	}
-	args, ok := unquotePowerShellCommand(command)
-	return ok && strings.Contains(strings.Join(args, " "), marker)
-}
-
-// unquotePowerShellCommand reverses BuildCommand's "& 'a' 'b'" form.
-func unquotePowerShellCommand(command string) ([]string, bool) {
-	rest, ok := strings.CutPrefix(command, "& ")
-	if !ok {
-		return nil, false
-	}
-	var args []string
-	for rest != "" {
-		if rest[0] != '\'' {
-			return nil, false
-		}
-		var arg strings.Builder
-		i := 1
-		for {
-			end := strings.IndexByte(rest[i:], '\'')
-			if end < 0 {
-				return nil, false
-			}
-			arg.WriteString(rest[i : i+end])
-			i += end + 1
-			if i < len(rest) && rest[i] == '\'' {
-				arg.WriteByte('\'')
-				i++
-				continue
-			}
-			break
-		}
-		args = append(args, arg.String())
-		rest = strings.TrimPrefix(rest[i:], " ")
-	}
-	return args, true
 }
 
 func quotePOSIXArgument(arg string) string {

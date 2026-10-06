@@ -69,6 +69,9 @@ const (
 	windowsCommandNone windowsCommandStyle = iota
 	windowsCommandNested
 	windowsCommandPowerShell
+	// windowsCommandExec writes an executable and its arguments as separate
+	// fields on Windows, so no shell parses them.
+	windowsCommandExec
 )
 
 type responseFormat uint8
