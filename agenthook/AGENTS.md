@@ -41,7 +41,8 @@
   terminal's environment.
   The OpenCode module retires its reported root with SessionEnd as soon as
   its terminal shows a session with another root, and never from cleanup,
-  which also runs on hot reload and reinstall.
+  which also runs on hot reload and reinstall. Several terminals can report
+  one OpenCode root, so consumers key terminal state by runtime key.
 - Keep each harness profile in its own agent-named file (`claude.go`,
   `codex.go`, and so on). `profile.go` owns only the shared vocabulary,
   registry, and lookup behavior.

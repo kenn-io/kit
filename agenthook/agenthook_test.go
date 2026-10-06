@@ -1309,12 +1309,28 @@ const sessions = {
 	ses_child: { id: "ses_child", parentID: "ses_root", location: { directory: "/work" } },
 	ses_b: { id: "ses_b", location: { directory: "/b" } },
 };
+const server = new Set(["ses_root", "ses_child", "ses_b"]);
+const memory = {};
 let route = { type: "session", sessionID: "ses_child" };
 let listener;
 const api = {
 	ui: {
 		router: { current: () => route },
 		toast: { show: (toast) => console.log(toast.variant + " toast: " + toast.message) },
+	},
+	storage: {
+		memory: (key, { initial }) => {
+			memory[key] ??= structuredClone(initial);
+			return [memory[key], (mutation) => mutation(memory[key])];
+		},
+	},
+	client: {
+		session: {
+			get: async ({ sessionID }) => {
+				if (!server.has(sessionID)) throw new Error("session not found");
+				return structuredClone(sessions[sessionID]);
+			},
+		},
 	},
 	data: {
 		session: { get: (id) => sessions[id], root: (id) => sessions[id]?.parentID ?? id },
@@ -1328,23 +1344,39 @@ const fire = (type, sessionID, fields) => listener({ details: { type, data: { se
 const prompt = (sessionID, text) =>
 	fire("session.inbox.enqueued", sessionID, { item: { type: "user", payload: { text } } });
 const stop = (sessionID) => fire("session.execution.succeeded", sessionID);
-const cleanup = await plugin.setup(api);
-// Let the route poll run on an unchanged root.
-await new Promise((resolve) => setTimeout(resolve, 600));
+const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+const poll = () => new Promise((resolve) => setTimeout(resolve, 600));
+let cleanup = await plugin.setup(api);
+await settle();
+// The route poll and a hot reload on an unchanged root re-send nothing.
+await poll();
+await cleanup();
+cleanup = await plugin.setup(api);
+await settle();
 prompt("ses_root", "fix it");
 stop("ses_child");
 stop("ses_other");
-// /cd, then the home route, which keeps the root.
+// /cd keeps the adopted cwd, and the home route keeps the root.
 sessions.ses_root.location.directory = "/work/sub";
 route = { type: "home" };
 stop("ses_root");
 route = { type: "session", sessionID: "ses_b" };
 stop("ses_root");
-// A root whose metadata has not loaded yet.
-route = { type: "session", sessionID: "ses_new" };
+await settle();
+// An optimistic session the server never creates reports nothing.
+sessions.ses_opt = { id: "ses_opt", location: { directory: "/o" } };
+route = { type: "session", sessionID: "ses_opt" };
 stop("ses_b");
-stop("ses_new");
+await settle();
+stop("ses_opt");
+delete sessions.ses_opt;
+// A session the server confirms only after a later poll.
 sessions.ses_new = { id: "ses_new", location: { directory: "/n" } };
+route = { type: "session", sessionID: "ses_new" };
+stop("ses_new");
+await settle();
+server.add("ses_new");
+await poll();
 stop("ses_new");
 route = { type: "session", sessionID: "ses_root" };
 prompt("ses_root", "again");
@@ -1397,8 +1429,8 @@ func TestOpenCodePluginReportsRootSession(t *testing.T) {
 	want := []string{
 		`{"hook_event_name":"SessionStart","session_id":"ses_root","cwd":"/work"}`,
 		`{"hook_event_name":"UserPromptSubmit","session_id":"ses_root","cwd":"/work","prompt":"fix it"}`,
-		`{"hook_event_name":"Stop","session_id":"ses_root","cwd":"/work/sub"}`,
-		`{"hook_event_name":"SessionEnd","session_id":"ses_root","cwd":"/work/sub","reason":"other"}`,
+		`{"hook_event_name":"Stop","session_id":"ses_root","cwd":"/work"}`,
+		`{"hook_event_name":"SessionEnd","session_id":"ses_root","cwd":"/work","reason":"other"}`,
 		`{"hook_event_name":"SessionStart","session_id":"ses_b","cwd":"/b"}`,
 		`{"hook_event_name":"SessionEnd","session_id":"ses_b","cwd":"/b","reason":"other"}`,
 		`{"hook_event_name":"SessionStart","session_id":"ses_new","cwd":"/n"}`,

@@ -586,7 +586,22 @@ func TestHandleRejectsMissingRequiredEventFields(t *testing.T) {
 type lifecycleHandler struct {
 	NoopHandler
 	sessionStart *SessionStartInput
+	prompt       *UserPromptSubmitInput
+	stop         *StopInput
 	sessionEnd   *SessionEndInput
+}
+
+func (h *lifecycleHandler) Stop(_ context.Context, input StopInput) (StopOutput, error) {
+	h.stop = &input
+	return StopOutput{}, nil
+}
+
+func (h *lifecycleHandler) UserPromptSubmit(
+	_ context.Context,
+	input UserPromptSubmitInput,
+) (UserPromptSubmitOutput, error) {
+	h.prompt = &input
+	return UserPromptSubmitOutput{}, nil
 }
 
 func (h *lifecycleHandler) SessionStart(
@@ -669,7 +684,9 @@ func TestHandleAllowsNativeLifecyclePayloadWithoutClaudeEquivalent(t *testing.T)
 			payload: `{"session_id":"ses_1","hook_event_name":"UserPromptSubmit","prompt":"fix it"}`,
 			check: func(t *testing.T, handler *lifecycleHandler) {
 				t.Helper()
-				assert.Nil(t, handler.sessionStart)
+				require.NotNil(t, handler.prompt)
+				assert.Equal(t, "fix it", handler.prompt.Prompt)
+				assert.Equal(t, "ses_1", handler.prompt.SessionID)
 			},
 		},
 		{
@@ -678,7 +695,8 @@ func TestHandleAllowsNativeLifecyclePayloadWithoutClaudeEquivalent(t *testing.T)
 			payload: `{"session_id":"ses_1","hook_event_name":"Stop"}`,
 			check: func(t *testing.T, handler *lifecycleHandler) {
 				t.Helper()
-				assert.Nil(t, handler.sessionStart)
+				require.NotNil(t, handler.stop)
+				assert.Equal(t, "ses_1", handler.stop.SessionID)
 			},
 		},
 		{

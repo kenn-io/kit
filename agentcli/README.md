@@ -65,7 +65,8 @@ package, not every mode offered by the underlying command. Interactive mode
 opens the agent's own terminal UI and takes no prompt for Gemini, GitHub
 Copilot, OpenCode, Cursor Agent, and Factory Droid. Interactive Droid accepts
 only autonomy and the built-in skills control; its other controls are `exec`
-flags. Interactive OpenCode takes no model.
+flags. This package passes no prompt or model to interactive OpenCode, though
+OpenCode itself accepts `--prompt`.
 
 | Agent | Modes | Prompt | Resume | Output | Reasoning |
 | --- | --- | --- | --- | --- | --- |
