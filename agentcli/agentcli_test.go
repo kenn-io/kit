@@ -85,11 +85,16 @@ func TestInteractiveResumePreservesConfiguredOptions(t *testing.T) {
 		{agentcli.Codex, agentcli.Command{Executable: "codex-custom", Options: []string{"--full-auto", "--profile", "team"}}, []string{"codex-custom", "--full-auto", "--profile", "team", "resume", "session-1"}},
 		{agentcli.Claude, agentcli.Command{Executable: "claude-custom", Options: []string{"--setting-sources", "project"}}, []string{"claude-custom", "--setting-sources", "project", "--resume", "session-1"}},
 		{agentcli.Pi, agentcli.Command{Executable: "pi-custom", Options: []string{"--offline"}}, []string{"pi-custom", "--offline", "--session", "session-1"}},
+		{agentcli.Copilot, agentcli.Command{Executable: "copilot-custom", Options: []string{"--add-dir", "shared"}}, []string{"copilot-custom", "--add-dir", "shared", "--resume=session-1"}},
+		{agentcli.Cursor, agentcli.Command{Executable: "cursor-agent", Options: []string{"--workspace", "repo"}}, []string{"cursor-agent", "--workspace", "repo", "--resume", "session-1"}},
+		{agentcli.Droid, agentcli.Command{Executable: "droid-custom", Options: []string{"--cwd", "repo"}}, []string{"droid-custom", "--cwd", "repo", "--resume", "session-1"}},
+		{agentcli.Gemini, agentcli.Command{Executable: "gemini-custom", Options: []string{"--sandbox"}}, []string{"gemini-custom", "--sandbox", "--resume", "session-1"}},
 	}
 	for _, test := range tests {
 		got, err := mustAgent(t, test.name, test.command).Resume("session-1", agentcli.Request{})
 		require.NoError(t, err)
 		assert.Equal(t, test.want, got.Argv)
+		assert.Nil(t, got.Stdin)
 	}
 }
 
@@ -105,6 +110,9 @@ func TestUnsupportedRequestsReturnTypedErrors(t *testing.T) {
 		{agentcli.Codex, agentcli.Request{Mode: agentcli.NonInteractive, OutputFormat: agentcli.OutputJSON}, "output format"},
 		{agentcli.Claude, agentcli.Request{Sandbox: agentcli.SandboxReadOnly}, "sandbox"},
 		{agentcli.Pi, agentcli.Request{Approval: agentcli.ApprovalNever}, "approval mode"},
+		{agentcli.Copilot, agentcli.Request{OutputFormat: agentcli.OutputJSONL}, "output format"},
+		{agentcli.Gemini, agentcli.Request{Prompt: agentcli.Prompt{Text: "review"}}, "prompt"},
+		{agentcli.Droid, agentcli.Request{Reasoning: agentcli.ReasoningHigh}, "reasoning"},
 	}
 	for _, test := range tests {
 		_, err := mustAgent(t, test.name, agentcli.Command{}).Start(test.request)

@@ -8,7 +8,7 @@ func NewDroid(command Command) (Adapter, error) {
 }
 
 var droidCapabilities = Capabilities{
-	Modes: []Mode{NonInteractive}, Resume: true,
+	Modes: []Mode{Interactive, NonInteractive}, Resume: true,
 	OutputFormats: []OutputFormat{OutputText, OutputJSON, OutputJSONL}, Model: true,
 	ReasoningLevels: []ReasoningLevel{ReasoningLow, ReasoningMedium, ReasoningHigh, ReasoningXHigh, ReasoningMaximum},
 	AutonomyLevels:  []AutonomyLevel{AutonomyLow, AutonomyMedium, AutonomyHigh},
@@ -17,6 +17,9 @@ var droidCapabilities = Capabilities{
 }
 
 func buildDroid(a *adapter, sessionID string, request Request) (Invocation, error) {
+	if request.Mode == Interactive {
+		return buildDroidInteractive(a, sessionID, request)
+	}
 	args := []string{a.executable, "exec"}
 	args = append(args, a.options...)
 	if sessionID != "" {
@@ -55,4 +58,38 @@ func buildDroid(a *adapter, sessionID string, request Request) (Invocation, erro
 		return Invocation{}, fmt.Errorf("build %s invocation: %w", Droid, err)
 	}
 	return Invocation{Argv: args, Stdin: stdin}, nil
+}
+
+// buildDroidInteractive starts the Droid REPL, whose resume flag is --resume;
+// reasoning, permission bypass and output format exist only under exec.
+func buildDroidInteractive(a *adapter, sessionID string, request Request) (Invocation, error) {
+	if err := validateInteractiveRequest(Droid, request); err != nil {
+		return Invocation{}, err
+	}
+	if request.Reasoning != ReasoningDefault {
+		return Invocation{}, unsupported(Droid, Interactive, "reasoning", string(request.Reasoning), "use noninteractive mode")
+	}
+	if request.Approval != ApprovalDefault {
+		return Invocation{}, unsupported(Droid, Interactive, "approval mode", string(request.Approval), "use noninteractive mode")
+	}
+	args := a.base()
+	if sessionID != "" {
+		args = append(args, "--resume", sessionID)
+	}
+	if request.Model != "" {
+		args = append(args, "--model", request.Model)
+	}
+	if request.Autonomy != AutonomyDefault {
+		args = append(args, "--auto", string(request.Autonomy))
+	}
+	if len(request.AllowedTools) != 0 {
+		args = append(args, "--restrict-tools", joinComma(request.AllowedTools))
+	}
+	if len(request.DeniedTools) != 0 {
+		args = append(args, "--disabled-tools", joinComma(request.DeniedTools))
+	}
+	if request.DisableSkills {
+		args = append(args, "--disable-builtin-skills")
+	}
+	return Invocation{Argv: args}, nil
 }

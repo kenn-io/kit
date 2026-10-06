@@ -8,12 +8,17 @@ func NewGemini(command Command) (Adapter, error) {
 }
 
 var geminiCapabilities = Capabilities{
-	Modes: []Mode{NonInteractive}, Resume: true,
+	Modes: []Mode{Interactive, NonInteractive}, Resume: true,
 	OutputFormats: []OutputFormat{OutputText, OutputJSON, OutputJSONL}, Model: true,
 	ApprovalModes: []ApprovalMode{ApprovalNever, ApprovalBypass},
 }
 
 func buildGemini(a *adapter, sessionID string, request Request) (Invocation, error) {
+	if request.Mode == Interactive {
+		if err := validateInteractiveRequest(Gemini, request); err != nil {
+			return Invocation{}, err
+		}
+	}
 	args := a.base()
 	if request.OutputFormat == OutputJSON {
 		args = append(args, "--output-format", "json")

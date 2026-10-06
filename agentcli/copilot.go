@@ -10,7 +10,7 @@ func NewCopilot(command Command) (Adapter, error) {
 }
 
 var copilotCapabilities = Capabilities{
-	Modes: []Mode{NonInteractive}, Resume: true,
+	Modes: []Mode{Interactive, NonInteractive}, Resume: true,
 	OutputFormats:      []OutputFormat{OutputText, OutputJSONL},
 	Model:              true,
 	ReasoningLevels:    []ReasoningLevel{ReasoningLow, ReasoningMedium, ReasoningHigh, ReasoningXHigh, ReasoningMaximum},
@@ -20,9 +20,16 @@ var copilotCapabilities = Capabilities{
 }
 
 func buildCopilot(a *adapter, sessionID string, request Request) (Invocation, error) {
-	// Copilot requires --allow-all-tools in noninteractive prompt mode. Callers
-	// can still restrict automatic tool use with --deny-tool rules.
-	args := append(a.base(), "--silent", "--allow-all-tools")
+	args := a.base()
+	if request.Mode == Interactive {
+		if err := validateInteractiveRequest(Copilot, request); err != nil {
+			return Invocation{}, err
+		}
+	} else {
+		// Copilot requires --allow-all-tools in noninteractive prompt mode. Callers
+		// can still restrict automatic tool use with --deny-tool rules.
+		args = append(args, "--silent", "--allow-all-tools")
+	}
 	if request.OutputFormat == OutputJSONL {
 		args = append(args, "--stream", "off", "--output-format", "json")
 	}

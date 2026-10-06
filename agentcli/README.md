@@ -9,7 +9,7 @@ or manage terminals and persistent state.
 parse these arguments, restrict them to known flags, or reject overlap with
 `Request` fields. Callers own explicitly supplied arguments; the CLI interprets
 them. Configured arguments precede request-generated arguments, after the fixed
-subcommand for Kiro and Droid.
+subcommand for Kiro and noninteractive Droid.
 
 Use `Request.Prompt` for kit-managed prompt delivery; its zero value means no
 prompt. The adapter chooses the CLI's normal argument or stdin transport. Use
@@ -59,21 +59,21 @@ of those typed request checks.
 ## Supported agents
 
 `Names` returns ten concrete CLI adapters. The modes below describe this
-package, not every mode offered by the underlying command. Beyond Forge's
-current three CLI families, the adapters expose the noninteractive command
-shape that RoboRev currently needs.
+package, not every mode offered by the underlying command. Interactive mode
+resumes a session in the agent's own terminal UI and takes no prompt for
+Gemini, GitHub Copilot, Cursor Agent, and Factory Droid.
 
 | Agent | Modes | Prompt | Resume | Output | Reasoning |
 | --- | --- | --- | --- | --- | --- |
 | Codex | interactive, noninteractive | argument when interactive, stdin when noninteractive | `resume ID`, `exec resume ID` | text, JSONL | low, medium, high, xhigh, maximum |
 | Claude Code | interactive, noninteractive | argument when interactive, stdin when noninteractive | `--resume ID` | text, JSON, JSONL | low, medium, high, xhigh, maximum |
-| Gemini | noninteractive | stdin through `--prompt` | `--resume ID` | text, JSON, JSONL | none |
-| GitHub Copilot | noninteractive | `--prompt` | `--resume=ID` | text, JSONL | low, medium, high, xhigh, maximum |
+| Gemini | interactive, noninteractive | stdin through `--prompt`, noninteractive only | `--resume ID` | text, JSON, JSONL | none |
+| GitHub Copilot | interactive, noninteractive | `--prompt`, noninteractive only | `--resume=ID` | text, JSONL | low, medium, high, xhigh, maximum |
 | OpenCode | noninteractive | stdin | `run --session ID` | text, JSONL | none |
-| Cursor Agent | noninteractive | stdin | `--resume ID` | text, JSON, JSONL | none |
+| Cursor Agent | interactive, noninteractive | stdin, noninteractive only | `--resume ID` | text, JSON, JSONL | none |
 | Kiro | noninteractive | argument | `chat --resume-id ID` | text | low, medium, high, xhigh, maximum |
 | Kilo | noninteractive | stdin | `run --session ID` | text, JSONL | low, medium, high, xhigh, maximum |
-| Factory Droid | noninteractive | stdin | `exec --session-id ID` | text, JSON, JSONL | low, medium, high, xhigh, maximum |
+| Factory Droid | interactive, noninteractive | stdin, noninteractive only | `--resume ID`, `exec --session-id ID` | text, JSON, JSONL | low, medium, high, xhigh, maximum |
 | Pi | interactive, noninteractive | argument and `@file` | `--session ID` | text, JSONL | low, medium, high, xhigh, maximum |
 
 `ReasoningXHigh` and `ReasoningMaximum` are distinct. Adapters with a native

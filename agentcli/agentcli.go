@@ -384,6 +384,18 @@ func unsupported(name Name, mode Mode, option, value, hint string) error {
 	return &UnsupportedOptionError{Agent: name, Option: option, Value: value, Mode: mode, Hint: hint}
 }
 
+// validateInteractiveRequest rejects what adapters without an interactive
+// prompt transport accept only noninteractively: a prompt and structured output.
+func validateInteractiveRequest(name Name, request Request) error {
+	if request.Prompt.Text != "" || len(request.Prompt.Files) != 0 {
+		return unsupported(name, Interactive, "prompt", "", "use noninteractive mode")
+	}
+	if request.OutputFormat != OutputDefault && request.OutputFormat != OutputText {
+		return unsupported(name, Interactive, "output format", string(request.OutputFormat), "use noninteractive mode")
+	}
+	return nil
+}
+
 func validateSupportedRequest(name Name, mode Mode, request Request, capabilities Capabilities) error {
 	checks := []struct {
 		requested bool
