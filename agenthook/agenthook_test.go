@@ -1309,7 +1309,10 @@ const sessions = {
 };
 let listener;
 const api = {
-	ui: { router: { current: () => ({ type: "session", sessionID: "ses_child" }) } },
+	ui: {
+		router: { current: () => ({ type: "session", sessionID: "ses_child" }) },
+		toast: { show: (toast) => console.log(toast.variant + " toast: " + toast.message) },
+	},
 	data: {
 		session: { get: (id) => sessions[id], root: (id) => sessions[id]?.parentID ?? id },
 		listen: (handler) => {
@@ -1336,6 +1339,15 @@ func TestOpenCodePluginReportsRootSession(t *testing.T) {
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "plugins", "agenthook", "tui.js")
+	// A command that cannot start runs first, so every later report must still
+	// reach the working one.
+	_, err = Install(AgentOpenCode, InstallOptions{
+		ConfigPath: path,
+		Executable: filepath.Join(dir, "missing-hook"),
+		Arguments:  []string{"--source", "failing-hook"},
+		Marker:     "--source failing-hook",
+	})
+	require.NoError(err)
 	_, err = Install(AgentOpenCode, InstallOptions{
 		ConfigPath: path,
 		Executable: os.Args[0],
@@ -1368,4 +1380,5 @@ func TestOpenCodePluginReportsRootSession(t *testing.T) {
 		lines[1],
 	)
 	assert.JSONEq(`{"hook_event_name":"Stop","session_id":"ses_root","cwd":"/work"}`, lines[2])
+	assert.Equal(3, strings.Count(string(output), "error toast: kenn.agenthook: agenthook"), string(output))
 }

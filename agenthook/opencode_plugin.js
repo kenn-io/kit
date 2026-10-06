@@ -12,7 +12,17 @@ export default {
 		let pending = Promise.resolve();
 		const emit = (event, fields) => {
 			const payload = { hook_event_name: event, session_id: root, cwd, ...fields };
-			pending = pending.then(() => runHooks(event, payload));
+			// A failed report must not block later ones; OpenCode shows plugin
+			// errors as error toasts, so this one does too:
+			// https://github.com/anomalyco/opencode/blob/v2.0.24/packages/plugin/src/tui/context.ts#L271-L282
+			// https://github.com/anomalyco/opencode/blob/v2.0.24/packages/tui/src/plugin/context.tsx#L235-L238
+			pending = pending
+				.then(() => runHooks(event, payload))
+				.catch((error) => {
+					try {
+						api.ui.toast.show({ variant: "error", title: "Plugin", message: `kenn.agenthook: ${error.message}` });
+					} catch {}
+				});
 		};
 		const sync = () => {
 			const route = api.ui.router.current();
