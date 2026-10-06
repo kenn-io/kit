@@ -1247,12 +1247,17 @@ func TestPiExtensionReportsResumableSessions(t *testing.T) {
 		Cwd        string `json:"cwd"`
 		HelperCwd  string `json:"helper_cwd"`
 	}
+	// macOS reports the working directory through /tmp's symlink target.
+	realDir, err := filepath.EvalSymlinks(dir)
+	require.NoError(err)
 	var reports []report
 	for line := range strings.Lines(strings.TrimSpace(string(payloads))) {
 		var r report
 		require.NoError(json.Unmarshal([]byte(line), &r))
 		assert.Equal(dir, r.Cwd)
-		assert.Equal(r.Cwd, r.HelperCwd, "the hook ran outside the session's directory")
+		helperDir, err := filepath.EvalSymlinks(r.HelperCwd)
+		require.NoError(err)
+		assert.Equal(realDir, helperDir, "the hook ran outside the session's directory")
 		r.Cwd, r.HelperCwd = "", ""
 		reports = append(reports, r)
 	}
