@@ -1478,6 +1478,8 @@ func TestOpenCodePluginReportsRootSession(t *testing.T) {
 				var expected, got map[string]any
 				require.NoError(t, json.Unmarshal([]byte(want), &expected))
 				expected["cwd"] = cwd
+				// The runtime spawns each hook in the payload's cwd.
+				expected["helper_cwd"] = cwd
 				require.NoError(t, json.Unmarshal([]byte(lines[i]), &got))
 				assert.Equal(t, expected, got)
 			}
