@@ -62,6 +62,7 @@ var looseWriteStripes = func() [256]chan struct{} {
 
 var (
 	syncLooseFile             = func(file *os.File) error { return file.Sync() }
+	lstatLooseDirectory       = os.Lstat
 	snapshotLoosePathIdentity = snapshotPathIdentity
 	newLooseZstdWriter        = func(dst io.Writer) (io.WriteCloser, error) {
 		if cached := looseZstdEncoderPool.Get(); cached != nil {
@@ -338,8 +339,8 @@ func (s *filesystemLooseStore) publish(
 		identity = *known
 	}
 	// A store staging child and the final shard share the root as parent.
-	// Shard preparation (or durable dedup verification) syncs it before we
-	// publish, so an existing staging child needs no separate parent sync.
+	// Shard preparation syncs it before publication or repair recovery, so an
+	// existing staging child needs no separate parent sync.
 	deferStagingParentSync := s.layout.staging == StagingStoreDirectory && stagingDir != s.layout.Root()
 	if err := ensureDirectory(stagingDir, opts.Durability, deferStagingParentSync); err != nil {
 		return identity, fmt.Errorf("packstore: prepare loose staging: %w", err)
@@ -1121,12 +1122,22 @@ func validateRegularNoFollow(path string, info fs.FileInfo) error {
 // every missing ancestor; the caller must sync the existing parent before use
 // that requires durability, including publication and repair recovery.
 func ensureDirectory(path string, durability Durability, deferParentSync bool) error {
-	info, err := os.Lstat(path)
+	info, err := lstatLooseDirectory(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		if durability == DurablePublication {
-			return pack.MkdirAllSynced(path)
+		if durability != DurablePublication {
+			return os.MkdirAll(path, 0o700)
 		}
-		return os.MkdirAll(path, 0o700)
+		if err := pack.MkdirAllSynced(filepath.Dir(path)); err != nil {
+			return err
+		}
+		if err := os.Mkdir(path, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+			return err
+		}
+		// Another writer may have created the entry after our first Lstat.
+		// Validate it and sync its parent ourselves, even if Mkdir lost that
+		// race. Creating just the leaf avoids a redundant creation sync.
+		info, err = lstatLooseDirectory(path)
+		deferParentSync = false
 	}
 	if err != nil {
 		return err

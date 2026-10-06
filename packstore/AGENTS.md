@@ -4,9 +4,11 @@
 
 - Store-directory staging and the final shard can share a parent durability
   sync. Defer only the parent sync of an existing staging child: directory
-  creation still syncs missing ancestors, and shard preparation or durable
-  dedup verification must sync the root before publication or repair recovery.
-  Staging at the root itself requires its own parent sync.
+  creation still syncs missing ancestors, and shard preparation must sync the
+  root before publication or repair recovery. A concurrent creator does not
+  establish durability for our write: recheck a newly created leaf and sync
+  its parent even if our Mkdir finds it already exists. Staging at the root
+  itself requires its own parent sync.
 - Reused compression encoders must start independent streams. Return an encoder
   to the pool only after a successful close, and detach its destination before
   pooling so idle encoders retain no staging file handles.
