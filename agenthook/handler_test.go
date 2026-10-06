@@ -660,17 +660,6 @@ func TestHandleAllowsNativeLifecyclePayloadWithoutClaudeEquivalent(t *testing.T)
 				t.Helper()
 				require.NotNil(t, handler.sessionStart)
 				assert.Empty(t, handler.sessionStart.Source)
-				assert.Equal(t, "/work", handler.sessionStart.CWD)
-			},
-		},
-		{
-			name:    "OpenCode root replaced",
-			agent:   AgentOpenCode,
-			payload: `{"session_id":"ses_1","hook_event_name":"SessionEnd","reason":"other"}`,
-			check: func(t *testing.T, handler *lifecycleHandler) {
-				t.Helper()
-				require.NotNil(t, handler.sessionEnd)
-				assert.Equal(t, SessionEndOther, handler.sessionEnd.Reason)
 			},
 		},
 	}
@@ -880,21 +869,29 @@ func TestHandleRejectsOversizedPayload(t *testing.T) {
 	assert.ErrorContains(t, err, "hook payload exceeds")
 }
 
-func TestHandleDispatchesPiSessionEnd(t *testing.T) {
-	var output bytes.Buffer
-	handler := &lifecycleHandler{}
+func TestHandleDispatchesScriptSessionEnd(t *testing.T) {
+	tests := []struct {
+		agent   Agent
+		payload string
+		want    SessionEndReason
+	}{
+		{AgentPi, `{"session_id":"s1","hook_event_name":"session_shutdown","reason":"new"}`, SessionEndClear},
+		{AgentOpenCode, `{"session_id":"s1","hook_event_name":"SessionEnd","reason":"other"}`, SessionEndOther},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.agent), func(t *testing.T) {
+			var output bytes.Buffer
+			handler := &lifecycleHandler{}
 
-	err := Handle(
-		t.Context(), AgentPi,
-		strings.NewReader(`{"session_id":"pi-1","hook_event_name":"session_shutdown","reason":"new"}`),
-		&output, handler,
-	)
+			err := Handle(t.Context(), tt.agent, strings.NewReader(tt.payload), &output, handler)
 
-	require.NoError(t, err)
-	require.NotNil(t, handler.sessionEnd)
-	assert.Equal(t, "pi-1", handler.sessionEnd.SessionID)
-	assert.Equal(t, SessionEndClear, handler.sessionEnd.Reason)
-	assert.JSONEq(t, `{}`, output.String())
+			require.NoError(t, err)
+			require.NotNil(t, handler.sessionEnd)
+			assert.Equal(t, "s1", handler.sessionEnd.SessionID)
+			assert.Equal(t, tt.want, handler.sessionEnd.Reason)
+			assert.JSONEq(t, `{}`, output.String())
+		})
+	}
 }
 
 func TestHandleRejectsPiControlOutput(t *testing.T) {

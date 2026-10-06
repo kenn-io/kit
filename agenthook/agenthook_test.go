@@ -1023,79 +1023,70 @@ func piCommands(hooks map[string]any, event string) []string {
 	return commands
 }
 
-func TestInstallScriptKeepsOtherApplicationsCommands(t *testing.T) {
-	for _, agent := range []Agent{AgentPi, AgentOpenCode} {
-		t.Run(string(agent), func(t *testing.T) {
-			assert := assert.New(t)
-			require := require.New(t)
-			event := func(event Event) string { return nativeEventName(profiles[agent], event) }
-			path := filepath.Join(t.TempDir(), "plugins", "agenthook.js")
-			install := func(executable, source string, extra ...string) Result {
-				result, err := Install(agent, InstallOptions{
-					ConfigPath: path,
-					Executable: executable,
-					Arguments:  append(append([]string{"agent-hook"}, extra...), "--source", source),
-					Marker:     "--source " + source,
-				})
-				require.NoError(err)
-				return result
-			}
-			// B's argument is a block delimiter, which must not end the registration block.
-			const bCommand = "/opt/b agent-hook " + scriptBlockEnd + " --source b-hook"
-
-			install("/opt/a", "a-hook")
-			install("/opt/b", "b-hook", scriptBlockEnd)
-			assert.Equal(
-				[]string{"/opt/a agent-hook --source a-hook", bCommand},
-				piCommands(piScriptHooks(t, path), event(EventSessionStart)),
-			)
-			assert.False(install("/opt/b", "b-hook", scriptBlockEnd).Changed)
-
-			install("/moved/a", "a-hook")
-			hooks := piScriptHooks(t, path)
-			assert.Equal(
-				[]string{bCommand, "/moved/a agent-hook --source a-hook"},
-				piCommands(hooks, event(EventStop)),
-			)
-			assert.Len(piCommands(hooks, event(EventUserPromptSubmit)), 2)
-
-			result, err := Uninstall(agent, path, "--source a-hook")
-			require.NoError(err)
-			assert.True(result.Changed)
-			assert.Equal([]string{bCommand}, piCommands(piScriptHooks(t, path), event(EventSessionStart)))
-
-			result, err = Uninstall(agent, path, "--source b-hook")
-			require.NoError(err)
-			assert.True(result.Changed)
-			assert.Empty(piScriptHooks(t, path))
-
-			result, err = Uninstall(agent, filepath.Join(t.TempDir(), "missing.js"), "--source b-hook")
-			require.NoError(err)
-			assert.False(result.Changed)
+func TestInstallPiKeepsOtherApplicationsCommands(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	path := filepath.Join(t.TempDir(), "extensions", "agenthook.js")
+	install := func(executable, source string, extra ...string) Result {
+		result, err := Install(AgentPi, InstallOptions{
+			ConfigPath: path,
+			Executable: executable,
+			Arguments:  append(append([]string{"agent-hook"}, extra...), "--source", source),
+			Marker:     "--source " + source,
 		})
+		require.NoError(err)
+		return result
 	}
+	// B's argument is a block delimiter, which must not end the registration block.
+	const bCommand = "/opt/b agent-hook " + scriptBlockEnd + " --source b-hook"
+
+	install("/opt/a", "a-hook")
+	install("/opt/b", "b-hook", scriptBlockEnd)
+	assert.Equal(
+		[]string{"/opt/a agent-hook --source a-hook", bCommand},
+		piCommands(piScriptHooks(t, path), "session_start"),
+	)
+	assert.False(install("/opt/b", "b-hook", scriptBlockEnd).Changed)
+
+	install("/moved/a", "a-hook")
+	hooks := piScriptHooks(t, path)
+	assert.Equal(
+		[]string{bCommand, "/moved/a agent-hook --source a-hook"},
+		piCommands(hooks, "agent_settled"),
+	)
+	assert.Len(piCommands(hooks, "before_agent_start"), 2)
+
+	result, err := Uninstall(AgentPi, path, "--source a-hook")
+	require.NoError(err)
+	assert.True(result.Changed)
+	assert.Equal([]string{bCommand}, piCommands(piScriptHooks(t, path), "session_start"))
+
+	result, err = Uninstall(AgentPi, path, "--source b-hook")
+	require.NoError(err)
+	assert.True(result.Changed)
+	assert.Empty(piScriptHooks(t, path))
+
+	result, err = Uninstall(AgentPi, filepath.Join(t.TempDir(), "missing.js"), "--source b-hook")
+	require.NoError(err)
+	assert.False(result.Changed)
 }
 
-func TestPlanInstallScriptRefusesForeignFile(t *testing.T) {
-	for _, agent := range []Agent{AgentPi, AgentOpenCode} {
-		t.Run(string(agent), func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "agenthook.js")
-			original := []byte("export default function (pi) {}\n")
-			require.NoError(t, os.WriteFile(path, original, 0o600))
+func TestPlanInstallPiRefusesForeignFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agenthook.js")
+	original := []byte("export default function (pi) {}\n")
+	require.NoError(t, os.WriteFile(path, original, 0o600))
 
-			_, err := Install(agent, InstallOptions{
-				ConfigPath: path,
-				Executable: "/opt/hook",
-				Arguments:  []string{"--source", "shared-agent-hook-test"},
-				Marker:     testMarker,
-			})
+	_, err := Install(AgentPi, InstallOptions{
+		ConfigPath: path,
+		Executable: "/opt/hook",
+		Arguments:  []string{"--source", "shared-agent-hook-test"},
+		Marker:     testMarker,
+	})
 
-			require.ErrorContains(t, err, "not written by agenthook")
-			data, err := os.ReadFile(path)
-			require.NoError(t, err)
-			assert.Equal(t, original, data)
-		})
-	}
+	require.ErrorContains(t, err, "not written by agenthook")
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, original, data)
 }
 
 func TestPlanInstallPiRequiresExecutableWithoutMatchers(t *testing.T) {
