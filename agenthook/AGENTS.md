@@ -40,8 +40,10 @@
   terminal started, never from a shared server, so each report carries that
   terminal's environment.
   The OpenCode module retires its reported root with SessionEnd as soon as
-  its terminal shows a session with another root, and never from cleanup,
-  which also runs on hot reload and reinstall. Several terminals can report
+  its terminal shows a session with another root or that root is deleted,
+  and never from cleanup, which also runs on hot reload and reinstall. Setup
+  re-sends SessionStart for a still-shown idle root, and cwd is the TUI's
+  launch directory. Several terminals can report
   one OpenCode root, so consumers key terminal state by runtime key.
 - Keep each harness profile in its own agent-named file (`claude.go`,
   `codex.go`, and so on). `profile.go` owns only the shared vocabulary,

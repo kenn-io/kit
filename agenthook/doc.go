@@ -20,8 +20,11 @@
 // plugin that reports the root session its terminal shows, and ends that
 // session's report when the terminal moves to another root. Switching session
 // tabs counts as such a move, so a background tab's finished turn sends no
-// Stop. Several terminals can show one OpenCode root, so key terminal state by
-// the terminal's runtime key rather than the session ID.
+// Stop. It also ends the report when that root is deleted, re-sends
+// SessionStart after a reload unless a turn is running, and reports the
+// directory the terminal launched OpenCode in as cwd. Several terminals can
+// show one OpenCode root, so key terminal state by the terminal's runtime key
+// rather than the session ID.
 //
 // Applications identify their hooks with a stable marker embedded in the
 // command. Reinstalling replaces commands carrying that marker even when the
