@@ -14,8 +14,9 @@
 // resume, or fork), never on quit or reload. The module reports an event only
 // once Pi has saved the session file, so every reported ID resumes: a new
 // session's SessionStart and first prompt wait for that save, and a
-// --no-session run reports nothing. A root index.ts, index.js, or package.json
-// pi.extensions in Pi's extensions directory stops Pi from loading the module.
+// --no-session run reports nothing. Install refuses an extensions directory
+// with a root index.ts or index.js, or a package.json pi.extensions list that
+// leaves the module out, since Pi would then never load it.
 // It needs Pi 0.80.4 or later.
 //
 // Applications identify their hooks with a stable marker embedded in the

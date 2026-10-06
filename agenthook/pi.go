@@ -36,6 +36,7 @@ func piProfile() profileSpec {
 	spec.configEnvDir = piAgentDir
 	spec.eventName = piEventName
 	spec.script = piExtension
+	spec.checkScriptLoads = piExtensionLoads
 	// Pi extension handlers run in-process; the generated extension ignores
 	// command output, so control decisions have nowhere to go.
 	spec.responseFormat = responseObservational
@@ -140,4 +141,57 @@ func promotePiReason(payload map[string]json.RawMessage) error {
 	}
 	payload[field] = encoded
 	return nil
+}
+
+// piExtensionLoads refuses an extensions directory where Pi would load only a
+// package.json pi.extensions list or a root index.ts or index.js, which would
+// leave the generated module silently unloaded. A manifest entry counts when
+// its file exists or it names the module about to be written:
+// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/package-manager.ts#L563-L601
+func piExtensionLoads(path string) error {
+	dir := filepath.Dir(path)
+	manifestPath := filepath.Join(dir, "package.json")
+	if data, err := os.ReadFile(manifestPath); err == nil {
+		var manifest struct {
+			Pi struct {
+				Extensions []string `json:"extensions"`
+			} `json:"pi"`
+		}
+		if json.Unmarshal(data, &manifest) == nil {
+			listed := false
+			for _, entry := range manifest.Pi.Extensions {
+				resolved := entry
+				if !filepath.IsAbs(resolved) {
+					resolved = filepath.Join(dir, entry)
+				}
+				if filepath.Clean(resolved) == filepath.Clean(path) {
+					return nil
+				}
+				if _, err := os.Stat(resolved); err == nil {
+					listed = true
+				}
+			}
+			if listed {
+				return piExtensionBlocked(manifestPath, path)
+			}
+		}
+	}
+	for _, name := range []string{"index.ts", "index.js"} {
+		if index := filepath.Join(dir, name); fileExists(index) {
+			return piExtensionBlocked(index, path)
+		}
+	}
+	return nil
+}
+
+func piExtensionBlocked(blocker, path string) error {
+	return fmt.Errorf(
+		"Pi loads only %s from %s, so it would never load %s; list %s in package.json pi.extensions or remove %s",
+		filepath.Base(blocker), filepath.Dir(path), filepath.Base(path), filepath.Base(path), blocker,
+	)
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }

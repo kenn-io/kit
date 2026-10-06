@@ -1102,6 +1102,50 @@ func TestPlanInstallPiRequiresExecutableWithoutMatchers(t *testing.T) {
 	require.ErrorContains(t, err, "do not support matchers")
 }
 
+func TestInstallPiRefusesDirectoryThatSkipsTheModule(t *testing.T) {
+	tests := []struct {
+		name    string
+		files   map[string]string
+		blocker string
+	}{
+		{name: "index.js", files: map[string]string{"index.js": ""}, blocker: "index.js"},
+		{name: "index.ts", files: map[string]string{"index.ts": ""}, blocker: "index.ts"},
+		{
+			name:    "manifest without the module",
+			files:   map[string]string{"package.json": `{"pi":{"extensions":["main.js"]}}`, "main.js": ""},
+			blocker: "package.json",
+		},
+		{
+			name:  "manifest listing the module before it exists",
+			files: map[string]string{"package.json": `{"pi":{"extensions":["agenthook.js"]}}`, "index.js": ""},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for name, content := range tt.files {
+				require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600))
+			}
+			path := filepath.Join(dir, "agenthook.js")
+
+			_, err := Install(AgentPi, InstallOptions{
+				ConfigPath: path,
+				Executable: "/opt/hook",
+				Arguments:  []string{"--source", "shared-agent-hook-test"},
+				Marker:     testMarker,
+			})
+
+			if tt.blocker == "" {
+				require.NoError(t, err)
+				assert.FileExists(t, path)
+				return
+			}
+			require.ErrorContains(t, err, "Pi loads only "+tt.blocker)
+			assert.NoFileExists(t, path)
+		})
+	}
+}
+
 func TestPiExtensionHelper(t *testing.T) {
 	out := os.Getenv("KIT_AGENTHOOK_PI_HELPER_OUT")
 	if out == "" {
