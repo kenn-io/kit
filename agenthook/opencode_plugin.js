@@ -55,9 +55,10 @@ export default {
 			});
 			emit("SessionStart", {});
 		};
-		// Interrupted and failed runs stay unmapped: Claude's Stop skips user
-		// interrupts, and API failures are StopFailure:
+		// Every turn that ends waiting for the user sends Stop. A shutdown
+		// interrupt doesn't, since the server resumes that turn on restart:
 		// https://github.com/anomalyco/opencode/blob/v2.0.24/packages/schema/src/session-event.ts#L177-L258
+		// https://github.com/anomalyco/opencode/blob/v2.0.24/packages/core/src/session/execution.ts#L128-L139
 		const unsubscribe = api.data.listen(({ details }) => {
 			// The record is already gone, so this precedes the route check:
 			// https://github.com/anomalyco/opencode/blob/v2.0.24/packages/tui/src/app.tsx#L1281-L1291
@@ -74,7 +75,12 @@ export default {
 				if (item.type === "user" && item.payload.text !== "") {
 					emit("UserPromptSubmit", { prompt: item.payload.text });
 				}
-			} else if (details.type === "session.execution.succeeded") {
+			} else if (
+				details.type === "session.execution.succeeded" ||
+				details.type === "session.execution.failed" ||
+				(details.type === "session.execution.interrupted" &&
+					(details.data.reason === "user" || details.data.reason === "inactivity"))
+			) {
 				emit("Stop", {});
 			}
 		});

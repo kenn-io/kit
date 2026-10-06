@@ -1365,6 +1365,13 @@ const scenarios = {
 		stop("ses_other");
 		stop("ses_root");
 	},
+	"turn endings stop": async () => {
+		fire("session.execution.failed", "ses_root", { error: { type: "unknown", message: "boom" } });
+		fire("session.execution.failed", "ses_child", { error: { type: "unknown", message: "boom" } });
+		for (const reason of ["user", "inactivity", "shutdown", "superseded"]) {
+			fire("session.execution.interrupted", "ses_root", { reason });
+		}
+	},
 	"home keeps root": async () => {
 		show(null);
 		stop("ses_root");
@@ -1446,6 +1453,8 @@ func TestOpenCodePluginReportsRootSession(t *testing.T) {
 			`{"hook_event_name":"UserPromptSubmit","session_id":"ses_root","prompt":"fix it"}`,
 			stopRoot,
 		}},
+		// failed, then user and inactivity interrupts; shutdown resumes on restart.
+		{"turn endings stop", []string{startRoot, stopRoot, stopRoot, stopRoot}},
 		{"home keeps root", []string{startRoot, stopRoot}},
 		{"route change retires", []string{startRoot, endRoot, startB}},
 		{"loading route forwards nothing", []string{
