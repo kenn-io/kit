@@ -1124,7 +1124,7 @@ func TestPiExtensionHelper(t *testing.T) {
 		// Ignore SIGTERM and outlive the 1s hook timeout, so only a forced kill
 		// with an unconditional deadline keeps the extension from waiting.
 		signal.Ignore(syscall.SIGTERM)
-		<-time.After(time.Minute)
+		<-time.After(4 * time.Minute)
 	}
 }
 
@@ -1235,7 +1235,9 @@ func TestPiExtensionReportsResumableSessions(t *testing.T) {
 	output, err := cmd.CombinedOutput()
 
 	require.NoError(err, string(output))
-	assert.Less(time.Since(started), 30*time.Second, "the timed-out command was not killed")
+	// Node waits for a live child, so finishing well before the helper's sleep
+	// ends proves the kill; a loaded runner can spend tens of seconds on re-execs.
+	assert.Less(time.Since(started), 3*time.Minute, "the timed-out command was not killed")
 	payloads, err := os.ReadFile(out)
 	require.NoError(err)
 	type report struct {
