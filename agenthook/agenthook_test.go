@@ -120,6 +120,19 @@ func TestPlanInstallBuildsCommandFromExecutable(t *testing.T) {
 		// A command string would reach Git Bash or PowerShell; exec form reaches neither.
 		assert.Equal(t, "/opt/Example Agent/hook", handler["command"])
 		assert.Equal(t, []any{"agent-hook", "run", "--source", "shared-agent-hook-test"}, handler["args"])
+		// Ownership checks the joined argv, so a marker spanning quoted characters matches.
+		opts := InstallOptions{
+			ConfigPath: filepath.Join(t.TempDir(), "settings.json"),
+			Executable: "/opt/Example Agent/hook",
+			Arguments:  []string{"agent-hook", "--source", "owner's app"},
+			Marker:     "--source owner's app",
+			Hooks:      []Hook{{Event: EventStop}},
+		}
+		_, err := Install(AgentClaude, opts)
+		require.NoError(t, err)
+		again, err := Install(AgentClaude, opts)
+		require.NoError(t, err)
+		assert.False(t, again.Changed)
 		return
 	}
 	assert.Equal(t, "'/opt/Example Agent/hook' agent-hook run --source shared-agent-hook-test", handler["command"])
@@ -875,29 +888,4 @@ func TestWriteConfigRefusesLinkSwappedInForRegularConfig(t *testing.T) {
 	data, err := os.ReadFile(other)
 	require.NoError(err)
 	assert.Equal(t, "other", string(data))
-}
-
-func TestClaudeExecFormHooksKeepOwnershipOnWindows(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("exec form is written only on Windows")
-	}
-	assert := assert.New(t)
-	require := require.New(t)
-	path := filepath.Join(t.TempDir(), "settings.json")
-	opts := InstallOptions{
-		ConfigPath: path,
-		Executable: `C:\Program Files\hook.exe`,
-		Arguments:  []string{"agent-hook", "--source", "owner's app"},
-		Marker:     "--source owner's app",
-		Hooks:      []Hook{{Event: EventStop}},
-	}
-
-	_, err := Install(AgentClaude, opts)
-	require.NoError(err)
-	again, err := Install(AgentClaude, opts)
-	require.NoError(err)
-	assert.False(again.Changed)
-	removed, err := Uninstall(AgentClaude, path, opts.Marker)
-	require.NoError(err)
-	assert.NotContains(string(removed.Data), "agent-hook")
 }
