@@ -61,7 +61,8 @@ of those typed request checks.
 `Names` returns ten concrete CLI adapters. The modes below describe this
 package, not every mode offered by the underlying command. Interactive mode
 resumes a session in the agent's own terminal UI and takes no prompt for
-Gemini, GitHub Copilot, Cursor Agent, and Factory Droid.
+Gemini, GitHub Copilot, Cursor Agent, and Factory Droid. Interactive Droid
+accepts only the built-in skills control; its other controls are `exec` flags.
 
 | Agent | Modes | Prompt | Resume | Output | Reasoning |
 | --- | --- | --- | --- | --- | --- |

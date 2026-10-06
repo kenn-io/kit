@@ -96,9 +96,6 @@ func validateClaudeRequest(mode Mode, request Request) error {
 		return fmt.Errorf("agent %q cannot disable built-in tools and set an allowed tool list", Claude)
 	}
 	if mode == Interactive {
-		if request.OutputFormat != OutputDefault && request.OutputFormat != OutputText {
-			return unsupported(Claude, mode, "output format", string(request.OutputFormat), "use noninteractive mode")
-		}
 		if request.Schema.Inline != "" || request.DisableSessionStorage {
 			return unsupported(Claude, mode, "automation-only output controls", "", "use noninteractive mode")
 		}

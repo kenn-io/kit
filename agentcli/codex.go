@@ -115,9 +115,6 @@ func validateCodexRequest(mode Mode, request Request) error {
 		return fmt.Errorf("agent %q received conflicting output paths", Codex)
 	}
 	if mode == Interactive {
-		if request.OutputFormat != OutputDefault && request.OutputFormat != OutputText {
-			return unsupported(Codex, mode, "output format", string(request.OutputFormat), "use noninteractive mode for machine-readable output")
-		}
 		if request.Schema.Path != "" || request.OutputPath != "" || request.Schema.OutputPath != "" {
 			return unsupported(Codex, mode, "structured output", "", "use noninteractive mode")
 		}

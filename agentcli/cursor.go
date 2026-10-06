@@ -16,7 +16,7 @@ var cursorCapabilities = Capabilities{
 func buildCursor(a *adapter, sessionID string, request Request) (Invocation, error) {
 	args := a.base()
 	if request.Mode == Interactive {
-		if err := validateInteractiveRequest(Cursor, request); err != nil {
+		if err := rejectInteractivePrompt(Cursor, request); err != nil {
 			return Invocation{}, err
 		}
 	} else {

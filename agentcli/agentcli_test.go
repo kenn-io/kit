@@ -113,6 +113,7 @@ func TestUnsupportedRequestsReturnTypedErrors(t *testing.T) {
 		{agentcli.Copilot, agentcli.Request{OutputFormat: agentcli.OutputJSONL}, "output format"},
 		{agentcli.Gemini, agentcli.Request{Prompt: agentcli.Prompt{Text: "review"}}, "prompt"},
 		{agentcli.Droid, agentcli.Request{Reasoning: agentcli.ReasoningHigh}, "reasoning"},
+		{agentcli.Droid, agentcli.Request{Model: "droid-test"}, "model"},
 	}
 	for _, test := range tests {
 		_, err := mustAgent(t, test.name, agentcli.Command{}).Start(test.request)

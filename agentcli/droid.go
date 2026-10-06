@@ -60,33 +60,29 @@ func buildDroid(a *adapter, sessionID string, request Request) (Invocation, erro
 	return Invocation{Argv: args, Stdin: stdin}, nil
 }
 
-// buildDroidInteractive starts the Droid REPL, whose resume flag is --resume;
-// reasoning, permission bypass and output format exist only under exec.
+// buildDroidInteractive starts the Droid REPL. Factory documents only
+// --resume and --disable-builtin-skills for it; the other controls are exec flags.
 func buildDroidInteractive(a *adapter, sessionID string, request Request) (Invocation, error) {
-	if err := validateInteractiveRequest(Droid, request); err != nil {
+	if err := rejectInteractivePrompt(Droid, request); err != nil {
 		return Invocation{}, err
 	}
-	if request.Reasoning != ReasoningDefault {
-		return Invocation{}, unsupported(Droid, Interactive, "reasoning", string(request.Reasoning), "use noninteractive mode")
-	}
-	if request.Approval != ApprovalDefault {
-		return Invocation{}, unsupported(Droid, Interactive, "approval mode", string(request.Approval), "use noninteractive mode")
+	for _, control := range []struct {
+		requested bool
+		option    string
+	}{
+		{request.Model != "", "model"},
+		{request.Reasoning != ReasoningDefault, "reasoning"},
+		{request.Autonomy != AutonomyDefault, "autonomy"},
+		{request.Approval != ApprovalDefault, "approval mode"},
+		{len(request.AllowedTools) != 0 || len(request.DeniedTools) != 0, "tools"},
+	} {
+		if control.requested {
+			return Invocation{}, unsupported(Droid, Interactive, control.option, "", "use noninteractive mode")
+		}
 	}
 	args := a.base()
 	if sessionID != "" {
 		args = append(args, "--resume", sessionID)
-	}
-	if request.Model != "" {
-		args = append(args, "--model", request.Model)
-	}
-	if request.Autonomy != AutonomyDefault {
-		args = append(args, "--auto", string(request.Autonomy))
-	}
-	if len(request.AllowedTools) != 0 {
-		args = append(args, "--restrict-tools", joinComma(request.AllowedTools))
-	}
-	if len(request.DeniedTools) != 0 {
-		args = append(args, "--disabled-tools", joinComma(request.DeniedTools))
 	}
 	if request.DisableSkills {
 		args = append(args, "--disable-builtin-skills")

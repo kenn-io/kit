@@ -22,7 +22,7 @@ var copilotCapabilities = Capabilities{
 func buildCopilot(a *adapter, sessionID string, request Request) (Invocation, error) {
 	args := a.base()
 	if request.Mode == Interactive {
-		if err := validateInteractiveRequest(Copilot, request); err != nil {
+		if err := rejectInteractivePrompt(Copilot, request); err != nil {
 			return Invocation{}, err
 		}
 	} else {
