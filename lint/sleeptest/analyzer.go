@@ -13,9 +13,19 @@
 // Test files are *_test.go files. With the helper-packages flag (on by
 // default) files in packages named testutil or ending in "test", such as
 // pkgtest, are checked too. The eventually flag (off by default) also
-// reports testify's Eventually, EventuallyWithT, and Never outside bubbles,
-// for repositories that decide polling assertions should be replaced by
-// signals.
+// reports testify's Eventually, EventuallyWithT, and Never, and their f
+// variants, outside bubbles, for repositories that decide polling assertions
+// should be replaced by signals.
+//
+// DeadlineAnalyzer (deadlinetest) reports sub-second wall-clock budgets in
+// _test.go files outside a bubble: context.WithTimeout, WithTimeoutCause,
+// WithDeadline, and WithDeadlineCause, time.After, NewTimer, and AfterFunc,
+// and the waitFor argument of testify's Eventually and EventuallyWithT and
+// their f variants; a short budget fails on a loaded CI runner even when the
+// code is correct. Only constant budgets are reported. Zero and negative
+// budgets are reported only for polling assertions, and Never and Neverf
+// budgets only when zero or negative: a short Never checks fewer times under
+// load but cannot fail, while one with no budget passes vacuously.
 package sleeptest
 
 import (
@@ -26,6 +36,7 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+	"golang.org/x/tools/go/types/typeutil"
 )
 
 // Analyzer reports time.Sleep calls in _test.go files outside synctest bubbles.
@@ -55,11 +66,32 @@ const eventuallyMessage = "%s in a test outside a synctest bubble polls the wall
 
 func run(pass *analysis.Pass) (any, error) {
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	inBubble := bubbleChecker(pass, inspect)
+	helperPackage := HelperPackages && isHelperPackage(pass.Pkg.Name())
+	inspect.Preorder([]ast.Node{(*ast.CallExpr)(nil)}, func(n ast.Node) {
+		call := n.(*ast.CallExpr)
+		if !helperPackage && !isTestFile(pass, call) {
+			return
+		}
+		switch {
+		case isPackageFunc(pass, call, "time", "Sleep"):
+			if !inBubble(call) {
+				pass.Reportf(call.Pos(), "%s", diagnosticMessage)
+			}
+		case Eventually && isTestifyFunc(pass, call, pollingAssertions...):
+			if !inBubble(call) {
+				pass.Reportf(call.Pos(), eventuallyMessage, calleeName(pass, call))
+			}
+		}
+	})
 
-	// bubbles holds the source ranges of function bodies passed to
-	// synctest.Test: literals written inline, and the declarations or
-	// literals behind identifiers passed by name. Sleeps inside those ranges
-	// are fine when every use of the named callback is through synctest.Test.
+	return nil, nil
+}
+
+// bubbleChecker reports whether a node lies inside a synctest bubble: a
+// literal passed inline to synctest.Test, or the declaration or literal behind
+// an identifier passed by name when every use of it is through synctest.Test.
+func bubbleChecker(pass *analysis.Pass, inspect *inspector.Inspector) func(ast.Node) bool {
 	bodies := functionBodies(pass)
 	var bubbles []ast.Node
 	uses := make(map[types.Object]int, len(bodies))
@@ -75,7 +107,7 @@ func run(pass *analysis.Pass) (any, error) {
 			return
 		}
 		for _, arg := range call.Args {
-			switch arg := arg.(type) {
+			switch arg := ast.Unparen(arg).(type) {
 			case *ast.FuncLit:
 				bubbles = append(bubbles, arg)
 			case *ast.Ident:
@@ -90,34 +122,14 @@ func run(pass *analysis.Pass) (any, error) {
 			bubbles = append(bubbles, bodies[obj])
 		}
 	}
-
-	inBubble := func(call *ast.CallExpr) bool {
+	return func(n ast.Node) bool {
 		for _, bubble := range bubbles {
-			if call.Pos() >= bubble.Pos() && call.End() <= bubble.End() {
+			if n.Pos() >= bubble.Pos() && n.End() <= bubble.End() {
 				return true
 			}
 		}
 		return false
 	}
-	helperPackage := HelperPackages && isHelperPackage(pass.Pkg.Name())
-	inspect.Preorder([]ast.Node{(*ast.CallExpr)(nil)}, func(n ast.Node) {
-		call := n.(*ast.CallExpr)
-		if !helperPackage && !isTestFile(pass, call) {
-			return
-		}
-		switch {
-		case isPackageFunc(pass, call, "time", "Sleep"):
-			if !inBubble(call) {
-				pass.Reportf(call.Pos(), "%s", diagnosticMessage)
-			}
-		case Eventually && isPollingAssertion(pass, call):
-			if !inBubble(call) {
-				pass.Reportf(call.Pos(), eventuallyMessage, calleeName(pass, call))
-			}
-		}
-	})
-
-	return nil, nil
 }
 
 // functionBodies maps each function declared in the package, and each
@@ -125,7 +137,7 @@ func run(pass *analysis.Pass) (any, error) {
 func functionBodies(pass *analysis.Pass) map[types.Object]ast.Node {
 	bodies := map[types.Object]ast.Node{}
 	bind := func(name *ast.Ident, value ast.Expr) {
-		if lit, ok := value.(*ast.FuncLit); ok {
+		if lit, ok := ast.Unparen(value).(*ast.FuncLit); ok {
 			if obj := pass.TypesInfo.Defs[name]; obj != nil {
 				bodies[obj] = lit
 			}
@@ -164,9 +176,11 @@ func isHelperPackage(name string) bool {
 	return name == "testutil" || strings.HasSuffix(name, "test")
 }
 
-func isPollingAssertion(pass *analysis.Pass, call *ast.CallExpr) bool {
+var pollingAssertions = []string{"Eventually", "Eventuallyf", "EventuallyWithT", "EventuallyWithTf", "Never", "Neverf"}
+
+func isTestifyFunc(pass *analysis.Pass, call *ast.CallExpr, names ...string) bool {
 	for _, path := range []string{"github.com/stretchr/testify/assert", "github.com/stretchr/testify/require"} {
-		if isPackageFunc(pass, call, path, "Eventually", "EventuallyWithT", "Never") {
+		if isPackageFunc(pass, call, path, names...) {
 			return true
 		}
 	}
@@ -174,8 +188,7 @@ func isPollingAssertion(pass *analysis.Pass, call *ast.CallExpr) bool {
 }
 
 func calleeName(pass *analysis.Pass, call *ast.CallExpr) string {
-	sel := call.Fun.(*ast.SelectorExpr)
-	fn := pass.TypesInfo.Uses[sel.Sel].(*types.Func)
+	fn := typeutil.StaticCallee(pass.TypesInfo, call)
 	return fn.Pkg().Name() + "." + fn.Name()
 }
 
@@ -184,12 +197,9 @@ func isTestFile(pass *analysis.Pass, n ast.Node) bool {
 }
 
 func isPackageFunc(pass *analysis.Pass, call *ast.CallExpr, pkgPath string, names ...string) bool {
-	sel, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok {
-		return false
-	}
-	fn, ok := pass.TypesInfo.Uses[sel.Sel].(*types.Func)
-	if !ok || fn.Pkg() == nil || fn.Pkg().Path() != pkgPath {
+	// StaticCallee also resolves parenthesized callees, dot imports, and method expressions.
+	fn := typeutil.StaticCallee(pass.TypesInfo, call)
+	if fn == nil || fn.Pkg() == nil || fn.Pkg().Path() != pkgPath {
 		return false
 	}
 	for _, name := range names {

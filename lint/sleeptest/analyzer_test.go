@@ -41,3 +41,7 @@ func TestAnalyzerIgnoresPollingAssertionsByDefault(t *testing.T) {
 type silentT struct{ *testing.T }
 
 func (silentT) Errorf(string, ...any) {}
+
+func TestDeadlineAnalyzer(t *testing.T) {
+	analysistest.Run(t, analysistest.TestData(), DeadlineAnalyzer, "deadline")
+}

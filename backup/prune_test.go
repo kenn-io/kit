@@ -309,7 +309,7 @@ func TestPruneCancelsWhileRepositoryReaderHoldsLock(t *testing.T) {
 	lock, err := r.AcquireSharedLock("verify", false)
 	require.NoError(err)
 	defer func() { require.NoError(lock.Release()) }()
-	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond) //nolint:kennlint // the deadline is the expected result; the held reader lock keeps Prune blocked until it fires
 	defer cancel()
 	_, err = Prune(ctx, r, newTestApp(), PruneOptions{})
 	require.ErrorIs(err, context.DeadlineExceeded)

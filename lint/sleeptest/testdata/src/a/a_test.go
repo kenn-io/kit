@@ -12,6 +12,12 @@ func TestSleepsForReal(t *testing.T) {
 	time.Sleep(10 * time.Millisecond) // want "time.Sleep in a test outside a synctest bubble"
 }
 
+func TestSleepsInsideParenthesizedBubble(t *testing.T) {
+	synctest.Test(t, (func(t *testing.T) {
+		time.Sleep(time.Second)
+	}))
+}
+
 func TestSleepsInsideBubble(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		time.Sleep(time.Second)
@@ -63,6 +69,10 @@ func TestNamedCallbacksRunInsideBubble(t *testing.T) {
 		time.Sleep(time.Second)
 	}
 	synctest.Test(t, local)
+	var paren = (func(t *testing.T) {
+		time.Sleep(time.Second)
+	})
+	synctest.Test(t, paren)
 	var declared func(*testing.T)
 	declared = func(t *testing.T) {
 		time.Sleep(time.Millisecond) // want "time.Sleep in a test outside a synctest bubble"

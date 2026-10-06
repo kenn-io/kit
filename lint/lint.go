@@ -24,6 +24,7 @@ func Analyzers() []*analysis.Analyzer {
 		errtext.Analyzer,
 		nohttpmux.Analyzer,
 		sleeptest.Analyzer,
+		sleeptest.DeadlineAnalyzer,
 		sqlcheck.Analyzer,
 		sqlownership.CloseAnalyzer,
 		sqlownership.ErrAnalyzer,

@@ -487,7 +487,7 @@ func TestDisconnectWaitsForSocketDrainAfterExitReturns(t *testing.T) {
 	select {
 	case <-disconnectResult:
 		returnedEarly = true
-	case <-time.After(50 * time.Millisecond):
+	case <-time.After(50 * time.Millisecond): //nolint:kennlint // shows Disconnect stays blocked while the fake still holds the socket; an absence has no event to wait on
 	}
 	close(releaseSocket)
 	if !returnedEarly {
@@ -647,7 +647,7 @@ func TestPersistentManagerFailedStartCleansLateSocket(t *testing.T) {
 	path := manager.SocketPath("studio", target)
 	lateSocketErr := make(chan error, 1)
 	go func() {
-		timer := time.NewTimer(20 * time.Millisecond)
+		timer := time.NewTimer(20 * time.Millisecond) //nolint:kennlint // lands the fake socket after the 5ms establish timeout so Connect must clean up a late socket
 		defer timer.Stop()
 		<-timer.C
 		lateSocketErr <- fake.openSocket(path)
@@ -1176,9 +1176,7 @@ func TestPersistentManagerEventCallbackCanDisconnectReentrantly(t *testing.T) {
 			if event.State != StateConnecting {
 				return
 			}
-			ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
-			defer cancel()
-			callbackResult <- manager.Disconnect(ctx, event.Identity)
+			callbackResult <- manager.Disconnect(t.Context(), event.Identity)
 		},
 	})
 	require.NoError(err)

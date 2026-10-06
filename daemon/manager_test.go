@@ -247,7 +247,7 @@ func TestRuntimeStoreOwnerLockExcludesASecondOwner(t *testing.T) {
 	require.NoError(t, err)
 	defer release()
 
-	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond) //nolint:kennlint // the deadline is the expected result; the first owner's file lock blocks the second acquire until it fires
 	defer cancel()
 	_, err = store.AcquireOwnerLock(ctx)
 	require.Error(t, err)
@@ -269,7 +269,7 @@ func TestRuntimeStoreOwnerLockDoesNotBlockAnotherPrefixStartLock(t *testing.T) {
 	defer releaseOwner()
 
 	startStore := daemon.RuntimeStore{Dir: dir, Prefix: "tool.owner"}
-	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	releaseStart, err := startStore.AcquireStartLock(ctx)
 	require.NoError(t, err)

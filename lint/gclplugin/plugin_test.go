@@ -30,7 +30,7 @@ func TestPluginIsRegistered(t *testing.T) {
 	require.NoError(t, err)
 	p, err := newPlugin(nil)
 	require.NoError(t, err)
-	assert.Equal([]string{"errtext", "nohttpmux", "sleeptest", "sqlcheck", "sqlclosecheck", "rowserrcheck", "testifyhelper"}, analyzerNames(t, p))
+	assert.Equal([]string{"errtext", "nohttpmux", "sleeptest", "deadlinetest", "sqlcheck", "sqlclosecheck", "rowserrcheck", "testifyhelper"}, analyzerNames(t, p))
 	assert.Equal(register.LoadModeTypesInfo, p.GetLoadMode())
 	assert.False(errtext.IncludeTests)
 	assert.True(sleeptest.HelperPackages)
@@ -50,7 +50,7 @@ func TestPluginSettings(t *testing.T) {
 		"sleeptest": map[string]any{"helper-packages": false, "eventually": true},
 	})
 	require.NoError(t, err)
-	assert.Equal([]string{"errtext", "sqlcheck", "sqlclosecheck", "rowserrcheck", "testifyhelper"}, analyzerNames(t, p))
+	assert.Equal([]string{"errtext", "deadlinetest", "sqlcheck", "sqlclosecheck", "rowserrcheck", "testifyhelper"}, analyzerNames(t, p))
 	assert.True(errtext.IncludeTests)
 	assert.False(sleeptest.HelperPackages)
 	assert.True(sleeptest.Eventually)
