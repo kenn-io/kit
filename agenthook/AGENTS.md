@@ -42,9 +42,15 @@
   The OpenCode module retires its reported root with SessionEnd as soon as
   its terminal shows a session with another root or that root is deleted,
   and never from cleanup, which also runs on hot reload and reinstall. Setup
-  re-sends SessionStart for a still-shown idle root, and cwd is the TUI's
-  launch directory. Several terminals can report
-  one OpenCode root, so consumers key terminal state by runtime key.
+  re-sends SessionStart for a tracked root with a record, even on the home route,
+  then reports UserPromptSubmit if it's running. A missing record sends SessionEnd.
+  The plugin sends UserPromptSubmit, without a prompt, when the shown root starts
+  running, including a turn already running when the terminal adopts it.
+  Working state follows OpenCode's running state; a transition to idle sends
+  Stop, including shutdown interrupts.
+  Cwd is the TUI's launch directory. Each report comes from one terminal process.
+  Several terminals can report the same session_id, so hosts should keep one
+  record per terminal rather than one per session ID.
 - Keep each harness profile in its own agent-named file (`claude.go`,
   `codex.go`, and so on). `profile.go` owns only the shared vocabulary,
   registry, and lookup behavior.

@@ -1302,6 +1302,7 @@ const sessions = {
 	ses_b: { id: "ses_b", location: { directory: "/elsewhere" } },
 };
 const running = new Set();
+const setRunning = (id) => running.add(id);
 const memory = {};
 let route = { type: "session", sessionID: "ses_child" };
 let listener;
@@ -1330,45 +1331,58 @@ const api = {
 		},
 		listen: (handler) => {
 			listener = handler;
-			return () => {};
+			return () => { listener = undefined; };
 		},
 	},
 };
-const fire = (type, sessionID, fields) => listener({ details: { type, data: { sessionID, ...fields } } });
-const prompt = (sessionID, text) =>
-	fire("session.inbox.enqueued", sessionID, { item: { type: "user", payload: { text } } });
+const fire = (type, sessionID) => {
+	if (type === "session.execution.started") setRunning(sessionID);
+	if (type === "session.execution.succeeded") running.delete(sessionID);
+	listener?.({ details: { type, data: { sessionID } } });
+};
 const stop = (sessionID) => fire("session.execution.succeeded", sessionID);
 const show = (sessionID) => {
 	route = sessionID ? { type: "session", sessionID } : { type: "home" };
 	poll();
 };
+if (process.argv[3] === "child route of running root") {
+	setRunning("ses_root");
+}
 let cleanup = await plugin.setup(api);
 const reload = async () => {
 	await cleanup();
 	cleanup = await plugin.setup(api);
 };
 const scenarios = {
-	"adopts shown root": async () => {
+	"late running snapshot": async () => {
 		poll();
-		prompt("ses_root", "fix it");
-		prompt("ses_root", "");
+		setRunning("ses_root");
+		poll();
+		poll();
 		stop("ses_child");
 		stop("ses_other");
 		stop("ses_root");
 	},
-	"turn endings stop": async () => {
-		fire("session.execution.failed", "ses_root", { error: { type: "unknown", message: "boom" } });
-		fire("session.execution.failed", "ses_child", { error: { type: "unknown", message: "boom" } });
-		for (const reason of ["user", "inactivity", "shutdown", "superseded"]) {
-			fire("session.execution.interrupted", "ses_root", { reason });
-		}
+	"idle snapshot stops": async () => {
+		fire("session.execution.started", "ses_root");
+		running.delete("ses_root");
+		poll();
+		poll();
 	},
-	"home keeps root": async () => {
-		show(null);
+	"child route of running root": async () => {
+		poll();
 		stop("ses_root");
 	},
-	"route change retires": async () => {
+	"navigation to running root": async () => {
+		setRunning("ses_b");
 		show("ses_b");
+		stop("ses_root");
+		poll();
+		stop("ses_b");
+	},
+	"home keeps root": async () => {
+		fire("session.execution.started", "ses_root");
+		show(null);
 		stop("ses_root");
 	},
 	"loading route forwards nothing": async () => {
@@ -1383,16 +1397,33 @@ const scenarios = {
 		show(null);
 		stop("ses_root");
 	},
-	"reload resends idle root": reload,
-	"reload keeps running root": async () => {
-		running.add("ses_root");
-		await reload();
+	"reinstall resends running root": async () => {
+		fire("session.execution.started", "ses_root");
+		await cleanup();
+		const reinstalled = (await import(pathToFileURL(process.argv[4]).href)).default;
+		cleanup = await reinstalled.setup(api);
+		poll();
 		stop("ses_root");
+	},
+	"turn ends during reload": async () => {
+		fire("session.execution.started", "ses_root");
+		await cleanup();
+		stop("ses_root");
+		cleanup = await plugin.setup(api);
+		poll();
 	},
 	"reload on home": async () => {
 		show(null);
 		await reload();
 		show("ses_b");
+	},
+	"reload on home after deletion": async () => {
+		show(null);
+		await cleanup();
+		delete sessions.ses_root;
+		fire("session.deleted", "ses_root");
+		cleanup = await plugin.setup(api);
+		poll();
 	},
 };
 await scenarios[process.argv[3]]();
@@ -1426,35 +1457,62 @@ func TestOpenCodePluginReportsRootSession(t *testing.T) {
 	require.NoError(t, err)
 	module := filepath.Join(dir, "plugin.mjs")
 	require.NoError(t, os.WriteFile(module, data, 0o600))
+	_, err = Install(AgentOpenCode, InstallOptions{
+		ConfigPath: path,
+		Executable: os.Args[0],
+		Arguments:  []string{"-test.run=^TestScriptHookHelper$", "--", "--source", "shared-agent-hook-test", "--reinstalled"},
+		Marker:     testMarker,
+	})
+	require.NoError(t, err)
+	data, err = os.ReadFile(path)
+	require.NoError(t, err)
+	reinstalledModule := filepath.Join(dir, "reinstalled.mjs")
+	require.NoError(t, os.WriteFile(reinstalledModule, data, 0o600))
 	driver := filepath.Join(dir, "driver.mjs")
 	require.NoError(t, os.WriteFile(driver, []byte(openCodePluginDriver), 0o600))
 
 	const (
-		startRoot = `{"hook_event_name":"SessionStart","session_id":"ses_root"}`
-		endRoot   = `{"hook_event_name":"SessionEnd","session_id":"ses_root","reason":"other"}`
-		stopRoot  = `{"hook_event_name":"Stop","session_id":"ses_root"}`
-		startB    = `{"hook_event_name":"SessionStart","session_id":"ses_b"}`
+		startRoot  = `{"hook_event_name":"SessionStart","session_id":"ses_root"}`
+		endRoot    = `{"hook_event_name":"SessionEnd","session_id":"ses_root","reason":"other"}`
+		stopRoot   = `{"hook_event_name":"Stop","session_id":"ses_root"}`
+		startB     = `{"hook_event_name":"SessionStart","session_id":"ses_b"}`
+		promptRoot = `{"hook_event_name":"UserPromptSubmit","session_id":"ses_root"}`
 	)
 	tests := []struct {
 		name string
 		want []string
 	}{
-		{"adopts shown root", []string{
+		{"late running snapshot", []string{
 			startRoot,
-			`{"hook_event_name":"UserPromptSubmit","session_id":"ses_root","prompt":"fix it"}`,
+			promptRoot,
 			stopRoot,
 		}},
-		// failed, then user and inactivity interrupts; shutdown resumes on restart.
-		{"turn endings stop", []string{startRoot, stopRoot, stopRoot, stopRoot}},
-		{"home keeps root", []string{startRoot, stopRoot}},
-		{"route change retires", []string{startRoot, endRoot, startB}},
+		{"idle snapshot stops", []string{startRoot, promptRoot, stopRoot}},
+		{"child route of running root", []string{
+			startRoot,
+			promptRoot,
+			stopRoot,
+		}},
+		{"navigation to running root", []string{
+			startRoot, endRoot, startB,
+			`{"hook_event_name":"UserPromptSubmit","session_id":"ses_b"}`,
+			`{"hook_event_name":"Stop","session_id":"ses_b"}`,
+		}},
+		{"home keeps root", []string{startRoot, promptRoot, stopRoot}},
 		{"loading route forwards nothing", []string{
 			startRoot, endRoot, `{"hook_event_name":"SessionStart","session_id":"ses_new"}`,
 		}},
 		{"deleted root retires", []string{startRoot, endRoot}},
-		{"reload resends idle root", []string{startRoot, startRoot}},
-		{"reload keeps running root", []string{startRoot, stopRoot}},
+		{"reinstall resends running root", []string{
+			startRoot,
+			promptRoot,
+			startRoot,
+			promptRoot,
+			stopRoot,
+		}},
+		{"turn ends during reload", []string{startRoot, promptRoot, startRoot}},
 		{"reload on home", []string{startRoot, startRoot, endRoot, startB}},
+		{"reload on home after deletion", []string{startRoot, endRoot}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1463,7 +1521,7 @@ func TestOpenCodePluginReportsRootSession(t *testing.T) {
 			cwd, err := filepath.EvalSymlinks(t.TempDir())
 			require.NoError(t, err)
 			out := filepath.Join(cwd, "payloads.jsonl")
-			cmd := exec.CommandContext(t.Context(), node, driver, module, tt.name)
+			cmd := exec.CommandContext(t.Context(), node, driver, module, tt.name, reinstalledModule)
 			cmd.Dir = cwd
 			// The helper finds its output path only in the terminal's env, so each
 			// payload proves the hook ran with that env.

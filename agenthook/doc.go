@@ -16,16 +16,10 @@
 // ID resumes: a new session's SessionStart and first prompt wait for that save,
 // and a --no-session run reports nothing. A root index.ts, index.js, or
 // package.json pi.extensions in Pi's extensions directory stops Pi from loading
-// the module. It needs Pi 0.80.4 or later. The OpenCode module is a 2.x TUI
-// plugin that reports the root session its terminal shows, and ends that
-// session's report when the terminal moves to another root. Switching session
-// tabs counts as such a move, so a background tab's finished turn sends no
-// Stop. It also ends the report when that root is deleted, re-sends
-// SessionStart after a reload unless a turn is running, and reports the
-// directory the terminal launched OpenCode in as cwd. Opening a root whose turn
-// is already running reports it idle until that turn's Stop. Several terminals
-// can show one OpenCode root, so key terminal state by the terminal's runtime
-// key rather than the session ID.
+// the module. It needs Pi 0.80.4 or later. The OpenCode 2.x TUI plugin reports
+// the root session its terminal shows and that session's lifecycle events.
+// Several terminals can report the same session_id, so hosts should keep one
+// record per terminal.
 //
 // Applications identify their hooks with a stable marker embedded in the
 // command. Reinstalling replaces commands carrying that marker even when the

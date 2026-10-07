@@ -114,6 +114,7 @@ type profileSpec struct {
 	failClosedEvents            []Event
 	requireVersion              bool
 	sessionSourceRequirement    inputRequirement
+	userPromptRequirement       inputRequirement
 	sessionEndReasonRequirement inputRequirement
 	script                      string
 }
@@ -152,8 +153,9 @@ func newProfileSpec(
 ) profileSpec {
 	return profileSpec{
 		profile: profile, format: format, shellTool: shellTool,
-		shellToolName: shellTool,
-		defaultDir:    defaultDir, timeoutUnit: time.Second, timeoutField: "timeout",
+		shellToolName:         shellTool,
+		userPromptRequirement: inputRequired,
+		defaultDir:            defaultDir, timeoutUnit: time.Second, timeoutField: "timeout",
 	}
 }
 

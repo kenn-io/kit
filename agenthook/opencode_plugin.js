@@ -9,9 +9,14 @@ export default {
 		// terminal shows. Memory survives hot reloads, so a reload on the home
 		// route still knows the root a running turn belongs to:
 		// https://github.com/anomalyco/opencode/blob/v2.0.24/packages/plugin/src/tui/context.ts#L43-L52
-		const [state, update] = api.storage.memory("kenn.agenthook", { initial: { root: null } });
+		const [state, update] = api.storage.memory("kenn.agenthook", { initial: { root: null, working: false } });
 		let pending = Promise.resolve();
 		const emit = (event, fields) => {
+			if (event === "UserPromptSubmit" || event === "Stop" || event === "SessionStart") {
+				update((draft) => {
+					draft.working = event === "UserPromptSubmit";
+				});
+			}
 			// The TUI's cwd is the directory the terminal launched it in; it never
 			// changes after startup, so it matches through /cd and moved sessions:
 			// https://github.com/anomalyco/opencode/blob/v2.0.24/packages/cli/src/commands/handlers/default.ts#L23
@@ -48,17 +53,21 @@ export default {
 		};
 		const sync = () => {
 			const id = shown();
-			if (id === null || id === state.root) return;
-			if (state.root !== null) retire();
-			update((draft) => {
-				draft.root = id;
-			});
-			emit("SessionStart", {});
+			if (id === null) return;
+			if (id !== state.root) {
+				if (state.root !== null) retire();
+				update((draft) => {
+					draft.root = id;
+				});
+				emit("SessionStart", {});
+			}
+			// status reads the running state that setSessionActive updates:
+			// https://github.com/anomalyco/opencode/blob/v2.0.24/packages/client/src/solid/data.ts#L257-L260
+			// https://github.com/anomalyco/opencode/blob/v2.0.24/packages/client/src/solid/data.ts#L1378-L1380
+			const status = api.data.session.status(id);
+			if (!state.working && status === "running") emit("UserPromptSubmit", {});
+			if (state.working && status === "idle") emit("Stop", {});
 		};
-		// Every turn that ends waiting for the user sends Stop. A shutdown
-		// interrupt doesn't, since the server resumes that turn on restart:
-		// https://github.com/anomalyco/opencode/blob/v2.0.24/packages/schema/src/session-event.ts#L177-L258
-		// https://github.com/anomalyco/opencode/blob/v2.0.24/packages/core/src/session/execution.ts#L128-L139
 		const unsubscribe = api.data.listen(({ details }) => {
 			// The record is already gone, so this precedes the route check:
 			// https://github.com/anomalyco/opencode/blob/v2.0.24/packages/tui/src/app.tsx#L1281-L1291
@@ -67,28 +76,12 @@ export default {
 				return;
 			}
 			sync();
-			if (state.root === null || shown() === null || details.data.sessionID !== state.root) return;
-			if (details.type === "session.inbox.enqueued") {
-				// Kit's handler refuses an empty prompt:
-				// https://github.com/anomalyco/opencode/blob/v2.0.24/packages/schema/src/session-inbox.ts#L37
-				const item = details.data.item;
-				if (item.type === "user" && item.payload.text !== "") {
-					emit("UserPromptSubmit", { prompt: item.payload.text });
-				}
-			} else if (
-				details.type === "session.execution.succeeded" ||
-				details.type === "session.execution.failed" ||
-				(details.type === "session.execution.interrupted" &&
-					(details.data.reason === "user" || details.data.reason === "inactivity"))
-			) {
-				emit("Stop", {});
-			}
 		});
-		// A reload or reinstall re-announces a still-shown idle root, so a newly
-		// registered command learns it; a running turn keeps its state until Stop:
+		// Setup re-announces a tracked root with a record, or retires a deleted root:
 		// https://github.com/anomalyco/opencode/blob/v2.0.24/packages/plugin/src/tui/context.ts#L75
-		if (state.root !== null && shown() === state.root && api.data.session.status(state.root) !== "running") {
-			emit("SessionStart", {});
+		if (state.root !== null) {
+			if (api.data.session.get(state.root)) emit("SessionStart", {});
+			else retire();
 		}
 		const timer = setInterval(sync, routePollMilliseconds);
 		sync();

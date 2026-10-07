@@ -35,6 +35,8 @@ func openCodeProfile() profileSpec {
 	// The plugin reports a root session when the terminal shows it, which has
 	// no Claude source.
 	spec.sessionSourceRequirement = inputOptional
+	// The plugin reports a running turn from execution status, which carries no prompt.
+	spec.userPromptRequirement = inputOptional
 	// The plugin sends SessionEnd only when its terminal moves to another root or
 	// the root is deleted, always with reason other.
 	spec.sessionEndReasonRequirement = inputRequired
