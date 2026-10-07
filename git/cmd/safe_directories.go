@@ -37,6 +37,24 @@ func safeDirectoryScopes(env []string) []string {
 	return []string{"system", "global"}
 }
 
+func globalConfigPathsReusable(env []string) bool {
+	global, override := envValue(env, "GIT_CONFIG_GLOBAL")
+	paths := []string{global}
+	if !override {
+		home, _ := envValue(env, "HOME")
+		xdg, _ := envValue(env, "XDG_CONFIG_HOME")
+		paths = []string{home, xdg}
+	}
+	for _, path := range paths {
+		for _, component := range strings.FieldsFunc(path, func(r rune) bool { return r == '/' || r == '\\' && os.PathSeparator == '\\' }) {
+			if component == ".." {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // read reuses include-free scopes while their root bytes stay unchanged; includes always run Git.
 func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string) []string {
 	if c == nil {
@@ -44,6 +62,9 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 	}
 	if ctx.Err() != nil {
 		return nil
+	}
+	if !globalConfigPathsReusable(env) {
+		return readSafeDirectories(ctx, env, dir)
 	}
 	cmd := gitCommand(ctx, true)
 	info, err := os.Stat(cmd.Path)
