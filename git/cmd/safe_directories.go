@@ -92,7 +92,7 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 		s = &safeDirectoryScope{paths: s.paths}
 		next.scopes[scope] = s
 		out, probeErr := safeDirectoryOutput(ctx, env, dir, "config", "--"+scope, "--includes", "-z", "--get-regexp", `^(safe\.directory|include\.path|includeif\..*\.path)$`)
-		if probeErr != nil && (!IsExitCode(probeErr, 1) || len(out) != 0) {
+		if probeErr != nil && !IsExitCode(probeErr, 1) {
 			continue
 		}
 		var entries []string
@@ -146,6 +146,13 @@ func safeDirectoryFingerprint(paths []string, dir string) ([32]byte, error) {
 		path, err := filepath.Abs(path)
 		if err != nil {
 			return [32]byte{}, err
+		}
+		info, err := os.Stat(path)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return [32]byte{}, err
+		}
+		if err == nil && !info.Mode().IsRegular() {
+			return [32]byte{}, fmt.Errorf("%s: not a regular file", path)
 		}
 		contents, err := os.ReadFile(path)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {

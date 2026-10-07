@@ -8,12 +8,42 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestSafeDirectoryFingerprintRejectsFIFO(t *testing.T) {
+	mkfifo, err := exec.LookPath("mkfifo")
+	if err != nil {
+		t.Skip("mkfifo unavailable")
+	}
+	path := filepath.Join(t.TempDir(), "gitconfig")
+	require.NoError(t, exec.CommandContext(t.Context(), mkfifo, path).Run())
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeNamedPipe == 0 {
+		t.Skip("mkfifo does not create native pipes")
+	}
+	done := make(chan error, 1)
+	go func() {
+		writer, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err == nil {
+			err = writer.Close()
+		}
+		done <- err
+	}()
+	t.Cleanup(func() {
+		reader, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+		require.NoError(t, err)
+		require.NoError(t, <-done)
+		require.NoError(t, reader.Close())
+	})
+	_, err = safeDirectoryFingerprint([]string{path}, "")
+	require.ErrorContains(t, err, "not a regular file")
+}
 
 func TestCachedTrust(t *testing.T) {
 	originalTimeout := safeDirectoryProbeTimeout
