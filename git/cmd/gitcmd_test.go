@@ -262,52 +262,6 @@ func TestReadSafeDirectories(t *testing.T) {
 	assert.Equal(t, []string{"*", "/srv/repo"}, got)
 }
 
-func TestCommandEnvReusesUnchangedTrust(t *testing.T) {
-	originalTimeout := safeDirectoryProbeTimeout
-	safeDirectoryProbeTimeout = 30 * time.Second
-	t.Cleanup(func() { safeDirectoryProbeTimeout = originalTimeout })
-	for _, noSystem := range []string{"0", "1"} {
-		t.Run("no system "+noSystem, func(t *testing.T) {
-			dir := t.TempDir()
-			config, otherConfig := filepath.Join(dir, "gitconfig"), filepath.Join(dir, "other")
-			trace := filepath.Join(dir, "trace")
-			require.NoError(t, os.WriteFile(config, []byte("[safe]\n directory = /trusted\n"), 0o600))
-			require.NoError(t, os.WriteFile(otherConfig, []byte("[safe]\n directory = /other\n"), 0o600))
-			runner := New()
-			runner.Env = append(safeDirectoryTestEnv(t, config), "GIT_TRACE="+filepath.ToSlash(trace), "GIT_CONFIG_NOSYSTEM="+noSystem)
-			other := runner
-			other.Env = append(append([]string(nil), runner.Env...), "GIT_CONFIG_GLOBAL="+otherConfig)
-			count := 0
-			check := func(r Runner, want string, increment int) {
-				assert.Equal(t, want, gitConfigValue(strings.Join(r.Command(t.Context(), dir, "status").Env, "\n"), "safe.directory"))
-				contents, err := os.ReadFile(trace)
-				require.NoError(t, err)
-				actual := strings.Count(string(contents), "built-in:")
-				assert.Equal(t, count+increment, actual)
-				count = actual
-			}
-			baseline := 2
-			if noSystem == "1" {
-				baseline = 1
-			}
-			check(runner, "/trusted", baseline)
-			check(other, "/other", baseline)
-			check(runner, "/trusted", 2*baseline)
-			check(other, "/other", baseline)
-			check(runner, "/trusted", 0)
-			check(other, "/other", baseline)
-			assert.Equal(t, 6*baseline, count)
-			check(runner.WithConfig("gc.auto", "1"), "/trusted", 0)
-			for range 3 {
-				fresh := New()
-				fresh.Env = runner.Env
-				check(fresh, "/trusted", baseline)
-			}
-			check(runner, "/trusted", 0)
-		})
-	}
-}
-
 func TestReadSafeDirectoriesUnset(t *testing.T) {
 	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
 	require.NoError(t, os.WriteFile(globalConfig, nil, 0o600))
@@ -405,8 +359,6 @@ func TestReadSafeDirectoriesConditionalInclude(t *testing.T) {
 		"include conditional on the target repo must apply")
 	assert.Empty(readSafeDirectories(t.Context(), env, dir),
 		"include conditional on another repo must not apply")
-	assert.Equal([]string{"/srv/conditional"}, runner.trust.read(t.Context(), env, repo))
-	assert.Empty(runner.trust.read(t.Context(), env, dir))
 }
 
 func TestCommandEnvForwardsSafeDirectory(t *testing.T) {

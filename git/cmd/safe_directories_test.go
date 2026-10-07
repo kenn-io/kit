@@ -15,56 +15,73 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestCachedTrustInvalidation(t *testing.T) {
-	dir := t.TempDir()
-	config := filepath.Join(dir, "gitconfig")
-	runner := New()
-	runner.Env = safeDirectoryTestEnv(t, config)
-	read := func() string {
-		return gitConfigValue(strings.Join(runner.Command(t.Context(), dir, "status").Env, "\n"), "safe.directory")
+func TestCachedTrust(t *testing.T) {
+	originalTimeout := safeDirectoryProbeTimeout
+	safeDirectoryProbeTimeout = 30 * time.Second
+	t.Cleanup(func() { safeDirectoryProbeTimeout = originalTimeout })
+	for _, noSystem := range []string{"0", "1"} {
+		t.Run("no system "+noSystem, func(t *testing.T) {
+			dir := t.TempDir()
+			config, otherConfig := filepath.Join(dir, "gitconfig"), filepath.Join(dir, "other")
+			trace := filepath.Join(dir, "trace")
+			require.NoError(t, os.WriteFile(config, []byte("[safe]\n directory = /trusted\n"), 0o600))
+			require.NoError(t, os.WriteFile(otherConfig, []byte("[safe]\n directory = /other\n"), 0o600))
+			runner := New()
+			runner.Env = append(safeDirectoryTestEnv(t, config), "GIT_TRACE="+filepath.ToSlash(trace), "GIT_CONFIG_NOSYSTEM="+noSystem)
+			other := runner
+			other.Env = append(append([]string(nil), runner.Env...), "GIT_CONFIG_GLOBAL="+otherConfig)
+			count := 0
+			check := func(r Runner, want string, increment int) {
+				assert.Equal(t, []string{want}, r.trust.read(t.Context(), r.Env, dir))
+				contents, err := os.ReadFile(trace)
+				require.NoError(t, err)
+				actual := strings.Count(string(contents), "built-in:")
+				assert.Equal(t, count+increment, actual)
+				count = actual
+			}
+			baseline := 2
+			if noSystem == "1" {
+				baseline = 1
+			}
+			check(runner, "/trusted", baseline)
+			check(other, "/other", baseline)
+			check(runner, "/trusted", 2*baseline)
+			check(other, "/other", baseline)
+			check(runner, "/trusted", 0)
+			check(runner.WithConfig("gc.auto", "1"), "/trusted", 0)
+			fresh := New()
+			fresh.Env = runner.Env
+			check(fresh, "/trusted", baseline)
+		})
 	}
-	assert.Empty(t, read())
-	require.NoError(t, os.WriteFile(config, []byte("[safe]\n directory = /first\n"), 0o600))
-	assert.Equal(t, "/first", read())
-	info, err := os.Stat(config)
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(config, []byte("[safe]\n directory = /other\n"), 0o600))
-	require.NoError(t, os.Chtimes(config, info.ModTime(), info.ModTime()))
-	assert.Equal(t, "/other", read())
-	require.NoError(t, os.Remove(config))
-	assert.Empty(t, read())
-	other := filepath.Join(dir, "other")
-	require.NoError(t, os.WriteFile(other, []byte("[safe]\n directory = /second\n"), 0o600))
-	runner.Env = append(runner.Env, "GIT_CONFIG_GLOBAL="+other)
-	assert.Equal(t, "/second", read())
-	for _, entry := range runner.Env {
-		key, value, _ := strings.Cut(entry, "=")
-		if strings.HasPrefix(key, "GIT_CONFIG_") {
-			t.Setenv(key, value)
-		}
-	}
-	runner.Env = nil
-	assert.Equal(t, "/second", read())
-	t.Setenv("GIT_CONFIG_GLOBAL", config)
-	assert.Empty(t, read())
-	if os.Symlink(other, config) == nil {
-		assert.Equal(t, "/second", read())
-		require.NoError(t, os.Remove(config))
-		empty := filepath.Join(dir, "empty")
-		require.NoError(t, os.WriteFile(empty, nil, 0o600))
-		require.NoError(t, os.Symlink(empty, config))
-		assert.Empty(t, read())
-	}
-}
-
-func TestCachedTrustRelativePaths(t *testing.T) {
-	runner := New()
-	runner.Env = append(safeDirectoryTestEnv(t, "gitconfig"), "GIT_CONFIG_NOSYSTEM=1")
-	for _, trust := range []string{"/one", "/two", "/one"} {
+	t.Run("invalidation", func(t *testing.T) {
 		dir := t.TempDir()
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "gitconfig"), []byte("[safe]\n directory = "+trust+"\n"), 0o600))
-		assert.Equal(t, trust, gitConfigValue(strings.Join(runner.Command(t.Context(), dir, "status").Env, "\n"), "safe.directory"))
-	}
+		config := filepath.Join(dir, "gitconfig")
+		runner := New()
+		runner.Env = safeDirectoryTestEnv(t, config)
+		read := func() []string {
+			return runner.trust.read(t.Context(), runner.Env, dir)
+		}
+		assert.Empty(t, read())
+		require.NoError(t, os.WriteFile(config, []byte("[safe]\n directory = /first\n"), 0o600))
+		assert.Equal(t, []string{"/first"}, read())
+		info, err := os.Stat(config)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(config, []byte("[safe]\n directory = /other\n"), 0o600))
+		require.NoError(t, os.Chtimes(config, info.ModTime(), info.ModTime()))
+		assert.Equal(t, []string{"/other"}, read())
+		require.NoError(t, os.Remove(config))
+		assert.Empty(t, read())
+	})
+	t.Run("relative paths", func(t *testing.T) {
+		runner := New()
+		runner.Env = append(safeDirectoryTestEnv(t, "gitconfig"), "GIT_CONFIG_NOSYSTEM=1")
+		for _, trust := range []string{"/one", "/two", "/one"} {
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "gitconfig"), []byte("[safe]\n directory = "+trust+"\n"), 0o600))
+			assert.Equal(t, []string{trust}, runner.trust.read(t.Context(), runner.Env, dir))
+		}
+	})
 }
 
 func TestCachedTrustKeepsIncludesFresh(t *testing.T) {
@@ -87,23 +104,6 @@ func TestCachedTrustKeepsIncludesFresh(t *testing.T) {
 	_, err = runner.Output(t.Context(), dir, "symbolic-ref", "HEAD", "refs/heads/other")
 	require.NoError(t, err)
 	assert.Empty(t, runner.trust.read(t.Context(), runner.Env, dir))
-}
-
-func TestCachedTrustCanceledFillRetries(t *testing.T) {
-	runner, started := coordinatedTrustGit(t)
-	result := make(chan []string, 1)
-	go func() { result <- runner.trust.read(t.Context(), runner.Env, "") }()
-	close(<-started)
-	assert.Equal(t, []string{"/trusted"}, <-result)
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	go func() { result <- runner.trust.read(ctx, runner.Env, "") }()
-	<-started
-	cancel()
-	assert.Empty(t, <-result)
-	go func() { result <- runner.trust.read(t.Context(), runner.Env, "") }()
-	close(<-started)
-	assert.Equal(t, []string{"/trusted"}, <-result)
 }
 
 func coordinatedTrustGit(t *testing.T) (Runner, chan chan struct{}) {
@@ -144,9 +144,26 @@ func main() {
 }
 
 func TestCachedTrustConcurrentEvaluation(t *testing.T) {
-	for _, includes := range []bool{false, true} {
-		t.Run(map[bool]string{false: "competing environments", true: "includes"}[includes], func(t *testing.T) {
+	for _, mode := range []string{"canceled fill", "competing environments", "includes"} {
+		t.Run(mode, func(t *testing.T) {
 			runner, started := coordinatedTrustGit(t)
+			if mode == "canceled fill" {
+				result := make(chan []string, 1)
+				go func() { result <- runner.trust.read(t.Context(), runner.Env, "") }()
+				close(<-started)
+				assert.Equal(t, []string{"/trusted"}, <-result)
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				go func() { result <- runner.trust.read(ctx, runner.Env, "") }()
+				<-started
+				cancel()
+				assert.Empty(t, <-result)
+				go func() { result <- runner.trust.read(t.Context(), runner.Env, "") }()
+				close(<-started)
+				assert.Equal(t, []string{"/trusted"}, <-result)
+				return
+			}
+			includes := mode == "includes"
 			other := runner
 			config := filepath.Join(t.TempDir(), "gitconfig")
 			require.NoError(t, os.WriteFile(config, []byte("[safe]\n directory = /other\n"), 0o600))

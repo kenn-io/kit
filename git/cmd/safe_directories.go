@@ -75,7 +75,7 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 	} else {
 		for _, scope := range safeDirectoryScopes(env) {
 			out, err := safeDirectoryOutput(ctx, env, dir, "var", "GIT_CONFIG_"+strings.ToUpper(scope))
-			if err != nil || ctx.Err() != nil {
+			if err != nil {
 				return readSafeDirectories(ctx, env, dir)
 			}
 			next.scopes[scope] = &safeDirectoryScope{paths: strings.FieldsFunc(strings.TrimRight(string(out), "\r\n"), func(r rune) bool { return r == '\n' || r == '\r' })}
@@ -84,13 +84,7 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 	var values []string
 	for _, scope := range safeDirectoryScopes(env) {
 		s := next.scopes[scope]
-		if s == nil || ctx.Err() != nil {
-			continue
-		}
 		before, err := safeDirectoryFingerprint(s.paths, dir)
-		if ctx.Err() != nil {
-			return nil
-		}
 		if err == nil && s.valid && before == s.fingerprint {
 			values = append(values, s.values...)
 			continue
@@ -115,9 +109,6 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 			}
 		}
 		after, afterErr := safeDirectoryFingerprint(s.paths, dir)
-		if ctx.Err() != nil {
-			return nil
-		}
 		if !includes && err == nil && afterErr == nil && before == after {
 			s.fingerprint, s.values, s.valid = after, entries, true
 		}

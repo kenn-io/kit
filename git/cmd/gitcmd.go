@@ -67,8 +67,9 @@ type Runner struct {
 }
 
 // New returns a Runner with safe automation defaults.
-// Copies share trust reuse for the first observed environment and Git executable.
-// Other identities read fresh config; edits affect the next command in either case.
+// Trust reuse is pinned to the first observed environment and Git executable
+// for the lifetime of this runner and its copies. Other identities always read
+// fresh config. Edits affect the next command in either case.
 func New() Runner {
 	return Runner{
 		Env:              os.Environ(),
