@@ -63,6 +63,7 @@ type Runner struct {
 	DisableSafeDirectoryForward bool
 
 	basicAuth *basicAuth
+	trust     *safeDirectoryCache
 }
 
 // New returns a Runner with safe automation defaults.
@@ -72,6 +73,7 @@ func New() Runner {
 		StripEnv:         true,
 		NullGlobalConfig: true,
 		NoSystemConfig:   true,
+		trust:            &safeDirectoryCache{gate: make(chan struct{}, 1)},
 	}
 }
 
@@ -232,10 +234,9 @@ func nullGlobalConfigPath() string {
 // config using env, in git's evaluation order. git only honors safe.directory
 // from protected configuration (system, global, and command scope), so these
 // are the entries the sanitized environment would otherwise hide. Entries are
-// read fresh on every call, like git itself reads config on every invocation:
-// no cache means no stale trust entries in long-lived processes and no
-// retained copies of caller environments. Best effort: scopes that are unset
-// or unreadable contribute nothing. Empty values are kept because an empty
+// checked on every call; runners reuse include-free scopes while their root
+// file bytes stay unchanged. Includes retain fresh Git evaluation. Unset or
+// unreadable scopes contribute nothing. Empty values are kept because an empty
 // safe.directory resets the list, and replaying entries in order preserves
 // that semantic at command scope.
 //
@@ -332,7 +333,7 @@ func (r Runner) commandEnv(ctx context.Context, dir string) ([]string, func()) {
 		// Read from the runner's base env before stripping, so the entries come
 		// from the configuration this runner's environment would see, not from
 		// the process environment.
-		for _, trusted := range readSafeDirectories(ctx, base, dir) {
+		for _, trusted := range r.trust.read(ctx, base, dir) {
 			config = append(config, Config{Key: "safe.directory", Value: trusted})
 		}
 	}

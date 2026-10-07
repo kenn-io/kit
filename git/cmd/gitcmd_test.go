@@ -262,6 +262,25 @@ func TestReadSafeDirectories(t *testing.T) {
 	assert.Equal(t, []string{"*", "/srv/repo"}, got)
 }
 
+func TestCommandEnvReusesUnchangedTrust(t *testing.T) {
+	dir := t.TempDir()
+	config := filepath.Join(dir, "gitconfig")
+	trace := filepath.Join(dir, "trace")
+	require.NoError(t, os.WriteFile(config, []byte("[safe]\n directory = /trusted\n"), 0o600))
+	runner := New()
+	runner.Env = append(safeDirectoryTestEnv(t, config), "GIT_TRACE="+filepath.ToSlash(trace))
+	for range 2 {
+		assert.Equal(t, "/trusted", gitConfigValue(strings.Join(runner.Command(t.Context(), dir, "status").Env, "\n"), "safe.directory"))
+	}
+	contents, err := os.ReadFile(trace)
+	require.NoError(t, err)
+	assert.Equal(t, 2, strings.Count(string(contents), "built-in: git config"))
+	runner.WithConfig("safe.directory", "").Command(t.Context(), dir, "status")
+	contents, err = os.ReadFile(trace)
+	require.NoError(t, err)
+	assert.Equal(t, 2, strings.Count(string(contents), "built-in: git config"))
+}
+
 func TestReadSafeDirectoriesUnset(t *testing.T) {
 	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
 	require.NoError(t, os.WriteFile(globalConfig, nil, 0o600))
@@ -359,6 +378,8 @@ func TestReadSafeDirectoriesConditionalInclude(t *testing.T) {
 		"include conditional on the target repo must apply")
 	assert.Empty(readSafeDirectories(t.Context(), env, dir),
 		"include conditional on another repo must not apply")
+	assert.Equal([]string{"/srv/conditional"}, runner.trust.read(t.Context(), env, repo))
+	assert.Empty(runner.trust.read(t.Context(), env, dir))
 }
 
 func TestCommandEnvForwardsSafeDirectory(t *testing.T) {
