@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -55,10 +56,8 @@ func configPathsReusable(env []string) bool {
 		if strings.ContainsAny(path, "\r\n") {
 			return false
 		}
-		for _, component := range strings.FieldsFunc(path, func(r rune) bool { return r == '/' || r == '\\' && os.PathSeparator == '\\' }) {
-			if component == ".." {
-				return false
-			}
+		if slices.Contains(strings.FieldsFunc(path, func(r rune) bool { return r == '/' || r == '\\' && os.PathSeparator == '\\' }), "..") {
+			return false
 		}
 	}
 	return true
@@ -109,9 +108,6 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 				return readSafeDirectories(ctx, env, dir)
 			}
 			paths := strings.TrimSuffix(string(out), "\n")
-			if scope == "system" && strings.ContainsAny(paths, "\r\n") {
-				return readSafeDirectories(ctx, env, dir)
-			}
 			next.scopes[scope] = safeDirectoryScope{paths: strings.FieldsFunc(strings.TrimRight(paths, "\r\n"), func(r rune) bool { return r == '\n' || r == '\r' })}
 		}
 	}
