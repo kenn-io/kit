@@ -2,7 +2,10 @@ package gitcmd
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -86,30 +89,99 @@ func TestCachedTrustKeepsIncludesFresh(t *testing.T) {
 	assert.Empty(t, runner.trust.read(t.Context(), runner.Env, dir))
 }
 
-func TestCachedTrustCanceledWaitRetries(t *testing.T) {
-	runner := New()
-	config := filepath.Join(t.TempDir(), "gitconfig")
-	require.NoError(t, os.WriteFile(config, []byte("[safe]\n directory = /trusted\n"), 0o600))
-	runner.Env = safeDirectoryTestEnv(t, config)
-	runner.trust.gate <- struct{}{}
+func TestCachedTrustCanceledFillRetries(t *testing.T) {
+	runner, started := coordinatedTrustGit(t)
 	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	result := make(chan []string, 1)
+	go func() { result <- runner.trust.read(ctx, runner.Env, "") }()
+	<-started
 	cancel()
-	assert.Empty(t, runner.trust.read(ctx, runner.Env, ""))
-	<-runner.trust.gate
-	assert.Empty(t, runner.trust.read(ctx, runner.Env, ""))
-	assert.Equal(t, []string{"/trusted"}, runner.trust.read(t.Context(), runner.Env, ""))
+	assert.Empty(t, <-result)
+	go func() { result <- runner.trust.read(t.Context(), runner.Env, "") }()
+	close(<-started)
+	assert.Equal(t, []string{"/trusted"}, <-result)
 }
 
-func TestCachedTrustCanceledFillRetries(t *testing.T) {
-	path := os.Getenv("PATH")
-	t.Setenv("PATH", buildSleepingGit(t)+string(os.PathListSeparator)+path)
-	runner := New()
-	ctx, cancel := context.WithTimeout(t.Context(), time.Millisecond)
-	defer cancel()
-	assert.Empty(t, runner.trust.read(ctx, runner.Env, ""))
-	t.Setenv("PATH", path)
+func coordinatedTrustGit(t *testing.T) (Runner, chan chan struct{}) {
+	t.Helper()
+	originalTimeout := safeDirectoryProbeTimeout
+	safeDirectoryProbeTimeout = 30 * time.Second
+	t.Cleanup(func() { safeDirectoryProbeTimeout = originalTimeout })
+	realGit, err := exec.LookPath("git")
+	require.NoError(t, err)
+	started := make(chan chan struct{}, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		release := make(chan struct{})
+		started <- release
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(server.Close)
+	bin := buildTestGit(t, `package main
+import ("net/http"; "os"; "os/exec")
+func main() {
+ if len(os.Args) > 1 && os.Args[1] == "config" {
+  response, err := http.Get(os.Getenv("TRUST_TEST_URL"))
+  if err != nil { os.Exit(2) }; response.Body.Close()
+ }
+ cmd := exec.Command(os.Getenv("TRUST_TEST_GIT"), os.Args[1:]...)
+ cmd.Stdout, cmd.Stderr, cmd.Env = os.Stdout, os.Stderr, os.Environ()
+ if err := cmd.Run(); err != nil { os.Exit(1) }
+}
+`)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	config := filepath.Join(t.TempDir(), "gitconfig")
 	require.NoError(t, os.WriteFile(config, []byte("[safe]\n directory = /trusted\n"), 0o600))
-	runner.Env = safeDirectoryTestEnv(t, config)
-	assert.Equal(t, []string{"/trusted"}, runner.trust.read(t.Context(), runner.Env, ""))
+	runner := New()
+	runner.Env = append(safeDirectoryTestEnv(t, config), "GIT_CONFIG_NOSYSTEM=1", "TRUST_TEST_URL="+server.URL, "TRUST_TEST_GIT="+realGit)
+	return runner, started
+}
+
+func TestCachedTrustConcurrentEvaluation(t *testing.T) {
+	for _, includes := range []bool{false, true} {
+		t.Run(map[bool]string{false: "competing environments", true: "includes"}[includes], func(t *testing.T) {
+			runner, started := coordinatedTrustGit(t)
+			other := runner
+			config := filepath.Join(t.TempDir(), "gitconfig")
+			require.NoError(t, os.WriteFile(config, []byte("[safe]\n directory = /other\n"), 0o600))
+			other.Env = append(append([]string(nil), runner.Env...), "GIT_CONFIG_GLOBAL="+config)
+			if includes {
+				require.NoError(t, os.WriteFile(config, []byte("[include]\n path = missing\n[safe]\n directory = /other\n"), 0o600))
+				runner = other
+			}
+			one, two := make(chan []string, 1), make(chan []string, 1)
+			go func() { one <- runner.trust.read(t.Context(), runner.Env, "") }()
+			first := <-started
+			go func() { two <- other.trust.read(t.Context(), other.Env, "") }()
+			second := <-started
+			close(second)
+			assert.Equal(t, []string{"/other"}, <-two)
+			close(first)
+			want := "/trusted"
+			if includes {
+				want = "/other"
+			}
+			assert.Equal(t, []string{want}, <-one)
+			go func() { one <- runner.trust.read(t.Context(), runner.Env, "") }()
+			close(<-started)
+			assert.Equal(t, []string{want}, <-one)
+		})
+	}
+}
+
+func TestGitExecutableReplacementIdentity(t *testing.T) {
+	first, second := filepath.Join(t.TempDir(), "first"), filepath.Join(t.TempDir(), "second")
+	require.NoError(t, os.WriteFile(first, []byte("git"), 0o600))
+	require.NoError(t, os.WriteFile(second, []byte("git"), 0o600))
+	one, err := os.Stat(first)
+	require.NoError(t, err)
+	require.NoError(t, os.Chtimes(second, one.ModTime(), one.ModTime()))
+	two, err := os.Stat(second)
+	require.NoError(t, err)
+	assert.Equal(t, one.Size(), two.Size())
+	assert.Equal(t, one.ModTime(), two.ModTime())
+	assert.False(t, os.SameFile(one, two))
 }

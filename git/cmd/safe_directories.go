@@ -5,9 +5,11 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 type safeDirectoryScope struct {
@@ -18,21 +20,27 @@ type safeDirectoryScope struct {
 }
 
 type safeDirectoryCache struct {
-	gate       chan struct{}
+	mu      sync.Mutex
+	current *safeDirectorySnapshot
+}
+
+type safeDirectorySnapshot struct {
 	identity   [32]byte
 	executable os.FileInfo
 	scopes     map[string]*safeDirectoryScope
 }
 
+func safeDirectoryScopes(env []string) []string {
+	if gitEnvBool(env, "GIT_CONFIG_NOSYSTEM") {
+		return []string{"global"}
+	}
+	return []string{"system", "global"}
+}
+
+// read reuses include-free scopes while their root bytes stay unchanged; includes always run Git.
 func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string) []string {
 	if c == nil {
 		return readSafeDirectories(ctx, env, dir)
-	}
-	select {
-	case c.gate <- struct{}{}:
-		defer func() { <-c.gate }()
-	case <-ctx.Done():
-		return nil
 	}
 	if ctx.Err() != nil {
 		return nil
@@ -43,27 +51,24 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 		return readSafeDirectories(ctx, env, dir)
 	}
 	identity := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%d\x00%s", cmd.Path, info.Size(), info.ModTime().UnixNano(), strings.Join(env, "\x00"))))
-	if identity != c.identity || c.executable == nil || !os.SameFile(info, c.executable) {
-		c.identity, c.scopes = identity, nil
-		c.executable = info
-	}
-	if c.scopes == nil {
-		scopes := make(map[string]*safeDirectoryScope)
-		for _, scope := range []string{"system", "global"} {
-			if scope == "system" && gitEnvBool(env, "GIT_CONFIG_NOSYSTEM") {
-				continue
-			}
+	c.mu.Lock()
+	previous := c.current
+	c.mu.Unlock()
+	next := &safeDirectorySnapshot{identity: identity, executable: info, scopes: make(map[string]*safeDirectoryScope)}
+	if previous != nil && identity == previous.identity && os.SameFile(info, previous.executable) {
+		maps.Copy(next.scopes, previous.scopes)
+	} else {
+		for _, scope := range safeDirectoryScopes(env) {
 			out, err := safeDirectoryOutput(ctx, env, dir, "var", "GIT_CONFIG_"+strings.ToUpper(scope))
 			if err != nil || ctx.Err() != nil {
 				return readSafeDirectories(ctx, env, dir)
 			}
-			scopes[scope] = &safeDirectoryScope{paths: strings.FieldsFunc(strings.TrimRight(string(out), "\r\n"), func(r rune) bool { return r == '\n' || r == '\r' })}
+			next.scopes[scope] = &safeDirectoryScope{paths: strings.FieldsFunc(strings.TrimRight(string(out), "\r\n"), func(r rune) bool { return r == '\n' || r == '\r' })}
 		}
-		c.scopes = scopes
 	}
 	var values []string
-	for _, scope := range []string{"system", "global"} {
-		s := c.scopes[scope]
+	for _, scope := range safeDirectoryScopes(env) {
+		s := next.scopes[scope]
 		if s == nil || ctx.Err() != nil {
 			continue
 		}
@@ -75,9 +80,10 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 			values = append(values, s.values...)
 			continue
 		}
-		s.valid = false
+		s = &safeDirectoryScope{paths: s.paths}
+		next.scopes[scope] = s
 		out, probeErr := safeDirectoryOutput(ctx, env, dir, "config", "--"+scope, "--includes", "-z", "--get-regexp", `^(safe\.directory|include\.path|includeif\..*\.path)$`)
-		if probeErr != nil && !(IsExitCode(probeErr, 1) && len(out) == 0) {
+		if probeErr != nil && (!IsExitCode(probeErr, 1) || len(out) != 0) {
 			continue
 		}
 		var entries []string
@@ -102,6 +108,14 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 		}
 		values = append(values, entries...)
 	}
+	if ctx.Err() != nil {
+		return nil
+	}
+	c.mu.Lock()
+	if c.current == previous {
+		c.current = next
+	}
+	c.mu.Unlock()
 	return values
 }
 

@@ -263,6 +263,9 @@ func TestReadSafeDirectories(t *testing.T) {
 }
 
 func TestCommandEnvReusesUnchangedTrust(t *testing.T) {
+	originalTimeout := safeDirectoryProbeTimeout
+	safeDirectoryProbeTimeout = 30 * time.Second
+	t.Cleanup(func() { safeDirectoryProbeTimeout = originalTimeout })
 	dir := t.TempDir()
 	config := filepath.Join(dir, "gitconfig")
 	trace := filepath.Join(dir, "trace")
@@ -671,6 +674,14 @@ func captureGitEnv(t *testing.T, runner Runner) string {
 
 func buildSleepingGit(t *testing.T) string {
 	t.Helper()
+	return buildTestGit(t, `package main
+import "time"
+func main() { time.Sleep(10 * time.Second) }
+`)
+}
+
+func buildTestGit(t *testing.T, source string) string {
+	t.Helper()
 	binDir := t.TempDir()
 	exeName := "git"
 	if runtime.GOOS == "windows" {
@@ -678,14 +689,7 @@ func buildSleepingGit(t *testing.T) string {
 	}
 	exePath := filepath.Join(binDir, exeName)
 	srcPath := filepath.Join(t.TempDir(), "main.go")
-	require.NoError(t, os.WriteFile(srcPath, []byte(`package main
-
-import "time"
-
-func main() {
-	time.Sleep(10 * time.Second)
-}
-`), 0o600))
+	require.NoError(t, os.WriteFile(srcPath, []byte(source), 0o600))
 	cmd := exec.CommandContext(t.Context(), "go", "build", "-o", exePath, srcPath)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
