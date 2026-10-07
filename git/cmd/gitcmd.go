@@ -254,13 +254,11 @@ func nullGlobalConfigPath() string {
 func readSafeDirectories(ctx context.Context, env []string, dir string) []string {
 	var dirs []string
 	for _, scope := range safeDirectoryScopes(env) {
-		// --includes is required for explicit-scope reads to honor include.path
-		// and includeIf directives the way git's default config sequence does.
-		out, err := safeDirectoryOutput(ctx, env, dir, "config", "--"+scope, "--includes", "-z", "--get-all", "safe.directory")
-		if err != nil || len(out) == 0 {
+		entries, _, err := readSafeDirectoryScope(ctx, env, dir, scope)
+		if err != nil {
 			continue
 		}
-		dirs = append(dirs, strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00")...)
+		dirs = append(dirs, entries...)
 	}
 	return dirs
 }

@@ -43,7 +43,7 @@ func TestSafeDirectoryFingerprintRejectsFIFO(t *testing.T) {
 		require.NoError(t, <-done)
 		require.NoError(t, reader.Close())
 	})
-	_, err = safeDirectoryFingerprint([]string{path}, "")
+	_, err = safeDirectoryFingerprint([]string{path})
 	require.ErrorContains(t, err, "not a regular file")
 }
 
@@ -59,7 +59,14 @@ func TestCachedTrust(t *testing.T) {
 			require.NoError(t, os.WriteFile(config, []byte("[safe]\n directory = /trusted\n"), 0o600))
 			require.NoError(t, os.WriteFile(otherConfig, []byte("[safe]\n directory = /other\n"), 0o600))
 			runner := New()
-			runner.Env = append(safeDirectoryTestEnv(t, config), "GIT_TRACE="+filepath.ToSlash(trace), "GIT_CONFIG_NOSYSTEM="+noSystem, "HOME="+dir+"/unused/..", "XDG_CONFIG_HOME="+dir+"/unused/..")
+			runner.Env = append(safeDirectoryTestEnv(t, config), "GIT_TRACE="+filepath.ToSlash(trace), "GIT_CONFIG_NOSYSTEM="+noSystem, "HOME="+dir+"/unused/..\n", "XDG_CONFIG_HOME="+dir+"/unused/..\r")
+			system, _ := envValue(runner.Env, "GIT_CONFIG_SYSTEM")
+			if noSystem == "0" {
+				system = filepath.Dir(system) + "/unused/../" + filepath.Base(system)
+			} else {
+				system = "/inactive\nconfig\r"
+			}
+			runner.Env = append(runner.Env, "GIT_CONFIG_SYSTEM="+system)
 			other := runner
 			other.Env = append(append([]string(nil), runner.Env...), "GIT_CONFIG_GLOBAL="+otherConfig)
 			count := 0
@@ -106,13 +113,24 @@ func TestCachedTrust(t *testing.T) {
 		assert.Empty(t, read())
 	})
 	t.Run("relative paths", func(t *testing.T) {
+		dir := t.TempDir()
+		sub := filepath.Join(dir, "sub")
+		require.NoError(t, os.Mkdir(sub, 0o700))
+		for _, path := range []string{filepath.Join(dir, "gitconfig"), filepath.Join(sub, "gitconfig")} {
+			require.NoError(t, os.WriteFile(path, []byte("[safe]\n directory = /trusted\n"), 0o600))
+		}
 		runner := New()
 		runner.Env = append(safeDirectoryTestEnv(t, "gitconfig"), "GIT_CONFIG_NOSYSTEM=1")
-		for _, trust := range []string{"/one", "/two", "/one"} {
-			dir := t.TempDir()
-			require.NoError(t, os.WriteFile(filepath.Join(dir, "gitconfig"), []byte("[safe]\n directory = "+trust+"\n"), 0o600))
-			assert.Equal(t, []string{trust}, runner.trust.read(t.Context(), runner.Env, dir))
+		runner.DisableSafeDirectoryForward = true
+		_, err := runner.Output(t.Context(), dir, "init")
+		require.NoError(t, err)
+		for range 3 {
+			assert.Equal(t, []string{"/trusted"}, runner.trust.read(t.Context(), runner.Env, sub))
 		}
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "gitconfig"), nil, 0o600))
+		fresh := readSafeDirectories(t.Context(), runner.Env, sub)
+		assert.Empty(t, fresh)
+		assert.Equal(t, fresh, runner.trust.read(t.Context(), runner.Env, sub))
 	})
 	t.Run("includes", func(t *testing.T) {
 		dir := t.TempDir()
@@ -135,29 +153,45 @@ func TestCachedTrust(t *testing.T) {
 		require.NoError(t, err)
 		assert.Empty(t, runner.trust.read(t.Context(), runner.Env, dir))
 	})
-	t.Run("parent paths", func(t *testing.T) {
+	t.Run("ambiguous paths", func(t *testing.T) {
 		if runtime.GOOS == "windows" {
 			t.Skip("requires native Unix path resolution")
 		}
-		for _, tc := range []struct{ key, suffix string }{
-			{"GIT_CONFIG_GLOBAL", "config"}, {"HOME", ".gitconfig"}, {"XDG_CONFIG_HOME", "git/config"},
+		for _, tc := range []struct{ key, suffix, component string }{
+			{"GIT_CONFIG_GLOBAL", "config", "link/.."},
+			{"HOME", ".gitconfig", "link/.."},
+			{"XDG_CONFIG_HOME", "git/config", "link/.."},
+			{"GIT_CONFIG_GLOBAL", "config", "line\npart"},
+			{"HOME", ".gitconfig", "line\npart"},
+			{"XDG_CONFIG_HOME", "git/config", "line\npart"},
+			{"GIT_CONFIG_SYSTEM", "config", "line\npart"},
+			{"GIT_CONFIG_GLOBAL", "config", "line\rpart"},
+			{"HOME", ".gitconfig", "line\rpart"},
+			{"XDG_CONFIG_HOME", "git/config", "line\rpart"},
+			{"GIT_CONFIG_SYSTEM", "config", "line\rpart"},
 		} {
-			t.Run(tc.key, func(t *testing.T) {
+			t.Run(tc.key+" "+strings.ReplaceAll(strings.ReplaceAll(tc.component, "\n", "LF"), "\r", "CR"), func(t *testing.T) {
 				dir := t.TempDir()
-				target := filepath.Join(dir, "target")
-				require.NoError(t, os.MkdirAll(filepath.Join(target, "nested"), 0o700))
-				require.NoError(t, os.Symlink(filepath.Join(target, "nested"), filepath.Join(dir, "link")))
+				target := filepath.Join(dir, tc.component)
+				if tc.component == "link/.." {
+					target = filepath.Join(dir, "target")
+					require.NoError(t, os.MkdirAll(filepath.Join(target, "nested"), 0o700))
+					require.NoError(t, os.Symlink(filepath.Join(target, "nested"), filepath.Join(dir, "link")))
+				}
 				actual, decoy := filepath.Join(target, tc.suffix), filepath.Join(dir, tc.suffix)
 				for _, path := range []string{actual, decoy} {
 					require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
 					require.NoError(t, os.WriteFile(path, []byte("[safe]\n directory = /trusted\n"), 0o600))
 				}
-				raw := dir + "/link/.."
-				if tc.key == "GIT_CONFIG_GLOBAL" {
+				raw := dir + "/" + tc.component
+				if tc.key == "GIT_CONFIG_GLOBAL" || tc.key == "GIT_CONFIG_SYSTEM" {
 					raw += "/" + tc.suffix
 				}
 				env := slices.DeleteFunc(safeDirectoryTestEnv(t, actual), func(entry string) bool { return strings.HasPrefix(entry, "GIT_CONFIG_GLOBAL=") })
 				env = append(env, "HOME="+dir, "XDG_CONFIG_HOME="+filepath.Join(dir, "xdg"), tc.key+"="+raw)
+				if tc.key == "GIT_CONFIG_SYSTEM" {
+					env = append(env, "GIT_CONFIG_GLOBAL="+filepath.Join(dir, "absent"))
+				}
 				runner := New()
 				runner.Env = env
 				for range 3 {
@@ -167,6 +201,8 @@ func TestCachedTrust(t *testing.T) {
 				fresh := readSafeDirectories(t.Context(), env, dir)
 				assert.Empty(t, fresh)
 				assert.Equal(t, fresh, runner.trust.read(t.Context(), env, dir))
+				require.NoError(t, os.WriteFile(actual, []byte("[safe]\n directory = /updated\n"), 0o600))
+				assert.Equal(t, []string{"/updated"}, runner.trust.read(t.Context(), env, dir))
 			})
 		}
 	})

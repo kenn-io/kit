@@ -37,7 +37,13 @@ func safeDirectoryScopes(env []string) []string {
 	return []string{"system", "global"}
 }
 
-func globalConfigPathsReusable(env []string) bool {
+func configPathsReusable(env []string) bool {
+	if !gitEnvBool(env, "GIT_CONFIG_NOSYSTEM") {
+		system, _ := envValue(env, "GIT_CONFIG_SYSTEM")
+		if strings.ContainsAny(system, "\r\n") {
+			return false
+		}
+	}
 	global, override := envValue(env, "GIT_CONFIG_GLOBAL")
 	paths := []string{global}
 	if !override {
@@ -46,6 +52,9 @@ func globalConfigPathsReusable(env []string) bool {
 		paths = []string{home, xdg}
 	}
 	for _, path := range paths {
+		if strings.ContainsAny(path, "\r\n") {
+			return false
+		}
 		for _, component := range strings.FieldsFunc(path, func(r rune) bool { return r == '/' || r == '\\' && os.PathSeparator == '\\' }) {
 			if component == ".." {
 				return false
@@ -63,7 +72,7 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 	if ctx.Err() != nil {
 		return nil
 	}
-	if !globalConfigPathsReusable(env) {
+	if !configPathsReusable(env) {
 		return readSafeDirectories(ctx, env, dir)
 	}
 	cmd := gitCommand(ctx, true)
@@ -99,37 +108,28 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 			if err != nil {
 				return readSafeDirectories(ctx, env, dir)
 			}
-			next.scopes[scope] = safeDirectoryScope{paths: strings.FieldsFunc(strings.TrimRight(string(out), "\r\n"), func(r rune) bool { return r == '\n' || r == '\r' })}
+			paths := strings.TrimSuffix(string(out), "\n")
+			if scope == "system" && strings.ContainsAny(paths, "\r\n") {
+				return readSafeDirectories(ctx, env, dir)
+			}
+			next.scopes[scope] = safeDirectoryScope{paths: strings.FieldsFunc(strings.TrimRight(paths, "\r\n"), func(r rune) bool { return r == '\n' || r == '\r' })}
 		}
 	}
 	var values []string
 	for _, scope := range safeDirectoryScopes(env) {
 		s := next.scopes[scope]
-		before, err := safeDirectoryFingerprint(s.paths, dir)
+		before, err := safeDirectoryFingerprint(s.paths)
 		if err == nil && s.valid && before == s.fingerprint {
 			values = append(values, s.values...)
 			continue
 		}
 		s = safeDirectoryScope{paths: s.paths}
-		out, probeErr := safeDirectoryOutput(ctx, env, dir, "config", "--"+scope, "--includes", "-z", "--get-regexp", `^(safe\.directory|include\.path|includeif\..*\.path)$`)
+		entries, includes, probeErr := readSafeDirectoryScope(ctx, env, dir, scope)
 		if probeErr != nil && !IsExitCode(probeErr, 1) {
 			next.scopes[scope] = s
 			continue
 		}
-		var entries []string
-		includes := false
-		for entry := range strings.SplitSeq(strings.TrimSuffix(string(out), "\x00"), "\x00") {
-			key, value, _ := strings.Cut(entry, "\n")
-			if key == "" {
-				continue
-			}
-			if key == "safe.directory" {
-				entries = append(entries, value)
-			} else {
-				includes = true
-			}
-		}
-		after, afterErr := safeDirectoryFingerprint(s.paths, dir)
+		after, afterErr := safeDirectoryFingerprint(s.paths)
 		if !includes && err == nil && afterErr == nil && before == after {
 			s.fingerprint, s.values, s.valid = after, entries, true
 		}
@@ -147,6 +147,24 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 	return values
 }
 
+func readSafeDirectoryScope(ctx context.Context, env []string, dir, scope string) ([]string, bool, error) {
+	out, err := safeDirectoryOutput(ctx, env, dir, "config", "--"+scope, "--includes", "-z", "--get-regexp", `^(safe\.directory|include\.path|includeif\..*\.path)$`)
+	var entries []string
+	includes := false
+	for entry := range strings.SplitSeq(strings.TrimSuffix(string(out), "\x00"), "\x00") {
+		key, value, _ := strings.Cut(entry, "\n")
+		if key == "" {
+			continue
+		}
+		if key == "safe.directory" {
+			entries = append(entries, value)
+		} else {
+			includes = true
+		}
+	}
+	return entries, includes, err
+}
+
 func safeDirectoryOutput(ctx context.Context, env []string, dir string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, safeDirectoryProbeTimeout)
 	defer cancel()
@@ -159,15 +177,11 @@ func safeDirectoryOutput(ctx context.Context, env []string, dir string, args ...
 	return out, nil
 }
 
-func safeDirectoryFingerprint(paths []string, dir string) ([32]byte, error) {
+func safeDirectoryFingerprint(paths []string) ([32]byte, error) {
 	h := sha256.New()
 	for _, path := range paths {
 		if !filepath.IsAbs(path) {
-			path = filepath.Join(dir, path)
-		}
-		path, err := filepath.Abs(path)
-		if err != nil {
-			return [32]byte{}, err
+			return [32]byte{}, fmt.Errorf("%s: not an absolute path", path)
 		}
 		info, err := os.Stat(path)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
