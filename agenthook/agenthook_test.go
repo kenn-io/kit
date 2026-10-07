@@ -28,7 +28,7 @@ func TestProfilesExposeClaudeStyleEvents(t *testing.T) {
 	require := require.New(t)
 
 	profiles := Profiles()
-	require.Len(profiles, 9)
+	require.Len(profiles, 10)
 	assert.Equal([]Agent{
 		AgentClaude,
 		AgentCodex,
@@ -37,6 +37,7 @@ func TestProfilesExposeClaudeStyleEvents(t *testing.T) {
 		AgentDroid,
 		AgentGemini,
 		AgentHermes,
+		AgentOpenCode,
 		AgentPi,
 		AgentQwen,
 	}, []Agent{
@@ -49,14 +50,17 @@ func TestProfilesExposeClaudeStyleEvents(t *testing.T) {
 		profiles[6].Agent,
 		profiles[7].Agent,
 		profiles[8].Agent,
+		profiles[9].Agent,
 	})
 	assert.Contains(profiles[6].SupportedEvents, EventPreToolUse)
 	assert.NotContains(profiles[6].SupportedEvents, EventNotification)
-	assert.Equal(
-		[]Event{EventSessionStart, EventUserPromptSubmit, EventStop, EventSessionEnd},
-		profiles[7].SupportedEvents,
-	)
-	assert.Contains(profiles[8].SupportedEvents, EventPermissionRequest)
+	for _, profile := range profiles[7:9] {
+		assert.Equal(
+			[]Event{EventSessionStart, EventUserPromptSubmit, EventStop, EventSessionEnd},
+			profile.SupportedEvents,
+		)
+	}
+	assert.Contains(profiles[9].SupportedEvents, EventPermissionRequest)
 }
 
 func TestPlanInstallDefaultsToEveryProfileEvent(t *testing.T) {
@@ -196,11 +200,14 @@ func TestConfigPathHonorsAgentHomes(t *testing.T) {
 		{agent: AgentCopilot, env: "COPILOT_HOME", path: filepath.Join("hooks", "agenthook.json")},
 		{agent: AgentGemini, env: "GEMINI_CLI_HOME", path: filepath.Join(".gemini", "settings.json")},
 		{agent: AgentHermes, env: "HERMES_HOME", path: "config.yaml"},
+		{agent: AgentOpenCode, env: "OPENCODE_CONFIG_DIR", path: filepath.Join("plugins", "agenthook", "tui.js")},
+		{agent: AgentOpenCode, env: "XDG_CONFIG_HOME", path: filepath.Join("opencode", "plugins", "agenthook", "tui.js")},
 		{agent: AgentQwen, env: "QWEN_HOME", path: "settings.json"},
 	}
 	for _, tt := range tests {
-		t.Run(string(tt.agent), func(t *testing.T) {
+		t.Run(string(tt.agent)+" "+tt.env, func(t *testing.T) {
 			dir := t.TempDir()
+			t.Setenv(profiles[tt.agent].profile.ConfigEnvironment, "")
 			t.Setenv(tt.env, dir)
 
 			path, err := ConfigPath(tt.agent)
@@ -984,8 +991,8 @@ func TestConfigPathNormalizesPiAgentDirAsPiDoes(t *testing.T) {
 	}
 }
 
-// piScriptHooks parses the registration block of a generated Pi extension.
-func piScriptHooks(t *testing.T, path string) map[string]any {
+// scriptHooks parses the registration block of a generated script module.
+func scriptHooks(t *testing.T, path string) map[string]any {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
@@ -997,7 +1004,7 @@ func piScriptHooks(t *testing.T, path string) map[string]any {
 	return hooks
 }
 
-func piCommands(hooks map[string]any, event string) []string {
+func scriptCommands(hooks map[string]any, event string) []string {
 	var commands []string
 	entries, _ := hooks[event].([]any)
 	for _, entry := range entries {
@@ -1037,27 +1044,27 @@ func TestInstallPiKeepsOtherApplicationsCommands(t *testing.T) {
 	install("/opt/b", "b-hook", scriptBlockEnd)
 	assert.Equal(
 		[]string{"/opt/a agent-hook --source a-hook", bCommand},
-		piCommands(piScriptHooks(t, path), "session_start"),
+		scriptCommands(scriptHooks(t, path), "session_start"),
 	)
 	assert.False(install("/opt/b", "b-hook", scriptBlockEnd).Changed)
 
 	install("/moved/a", "a-hook")
-	hooks := piScriptHooks(t, path)
+	hooks := scriptHooks(t, path)
 	assert.Equal(
 		[]string{bCommand, "/moved/a agent-hook --source a-hook"},
-		piCommands(hooks, "agent_settled"),
+		scriptCommands(hooks, "agent_settled"),
 	)
-	assert.Len(piCommands(hooks, "before_agent_start"), 2)
+	assert.Len(scriptCommands(hooks, "before_agent_start"), 2)
 
 	result, err := Uninstall(AgentPi, path, "--source a-hook")
 	require.NoError(err)
 	assert.True(result.Changed)
-	assert.Equal([]string{bCommand}, piCommands(piScriptHooks(t, path), "session_start"))
+	assert.Equal([]string{bCommand}, scriptCommands(scriptHooks(t, path), "session_start"))
 
 	result, err = Uninstall(AgentPi, path, "--source b-hook")
 	require.NoError(err)
 	assert.True(result.Changed)
-	assert.Empty(piScriptHooks(t, path))
+	assert.Empty(scriptHooks(t, path))
 
 	result, err = Uninstall(AgentPi, filepath.Join(t.TempDir(), "missing.js"), "--source b-hook")
 	require.NoError(err)
@@ -1102,8 +1109,8 @@ func TestPlanInstallPiRequiresExecutableWithoutMatchers(t *testing.T) {
 	require.ErrorContains(t, err, "do not support matchers")
 }
 
-func TestPiExtensionHelper(t *testing.T) {
-	out := os.Getenv("KIT_AGENTHOOK_PI_HELPER_OUT")
+func TestScriptHookHelper(t *testing.T) {
+	out := os.Getenv("KIT_AGENTHOOK_HELPER_OUT")
 	if out == "" {
 		return
 	}
@@ -1153,7 +1160,7 @@ const fire = async (pi, name, event, context) => {
 	}
 };
 const nothingSent = (when) => {
-	if (existsSync(process.env.KIT_AGENTHOOK_PI_HELPER_OUT)) console.log("sent " + when);
+	if (existsSync(process.env.KIT_AGENTHOOK_HELPER_OUT)) console.log("sent " + when);
 };
 
 // --no-session: Pi never writes a session file, so nothing is reported.
@@ -1211,7 +1218,7 @@ func TestPiExtensionReportsResumableSessions(t *testing.T) {
 	_, err = Install(AgentPi, InstallOptions{
 		ConfigPath: path,
 		Executable: os.Args[0],
-		Arguments:  []string{"-test.run=^TestPiExtensionHelper$", "--", "--source", "shared-agent-hook-test"},
+		Arguments:  []string{"-test.run=^TestScriptHookHelper$", "--", "--source", "shared-agent-hook-test"},
 		Marker:     testMarker,
 		Hooks: []Hook{
 			{Event: EventSessionStart},
@@ -1229,7 +1236,7 @@ func TestPiExtensionReportsResumableSessions(t *testing.T) {
 	require.NoError(os.WriteFile(driver, []byte(piExtensionDriver), 0o600))
 	out := filepath.Join(dir, "payloads.jsonl")
 	cmd := exec.CommandContext(t.Context(), node, driver, module, dir)
-	cmd.Env = append(os.Environ(), "KIT_AGENTHOOK_PI_HELPER_OUT="+out)
+	cmd.Env = append(os.Environ(), "KIT_AGENTHOOK_HELPER_OUT="+out)
 
 	started := time.Now()
 	output, err := cmd.CombinedOutput()
@@ -1282,5 +1289,262 @@ func TestPiExtensionReportsResumableSessions(t *testing.T) {
 	assert.Contains(failures[1], "agent_settled: agenthook agent_settled commands failed: ")
 	assert.Contains(failures[1], "timed out after 1s")
 	assert.Contains(failures[2], "session_start: "+failed)
-	assert.NotContains(string(output), "TestPiExtensionHelper$ -- --source shared-agent-hook-test: could not start")
+	assert.NotContains(string(output), "TestScriptHookHelper$ -- --source shared-agent-hook-test: could not start")
+}
+
+const openCodePluginDriver = `
+import { pathToFileURL } from "node:url";
+const plugin = (await import(pathToFileURL(process.argv[2]).href)).default;
+// Session directories differ from the terminal's, which payloads must carry.
+const sessions = {
+	ses_root: { id: "ses_root", location: { directory: "/elsewhere" } },
+	ses_child: { id: "ses_child", parentID: "ses_root", location: { directory: "/elsewhere" } },
+	ses_b: { id: "ses_b", location: { directory: "/elsewhere" } },
+};
+const running = new Set();
+const setRunning = (id) => running.add(id);
+const memory = {};
+let route = { type: "session", sessionID: "ses_child" };
+let listener;
+let poll;
+globalThis.setInterval = (callback) => {
+	poll = callback;
+	return 0;
+};
+globalThis.clearInterval = () => {};
+const api = {
+	ui: {
+		router: { current: () => route },
+		toast: { show: (toast) => console.log(toast.variant + " toast: " + toast.message) },
+	},
+	storage: {
+		memory: (key, { initial }) => {
+			memory[key] ??= structuredClone(initial);
+			return [memory[key], (mutation) => mutation(memory[key])];
+		},
+	},
+	data: {
+		session: {
+			get: (id) => sessions[id],
+			root: (id) => sessions[id]?.parentID ?? id,
+			status: (id) => (running.has(id) ? "running" : "idle"),
+		},
+		listen: (handler) => {
+			listener = handler;
+			return () => { listener = undefined; };
+		},
+	},
+};
+const fire = (type, sessionID) => {
+	if (type === "session.execution.started") setRunning(sessionID);
+	if (type === "session.execution.succeeded") running.delete(sessionID);
+	listener?.({ details: { type, data: { sessionID } } });
+};
+const stop = (sessionID) => fire("session.execution.succeeded", sessionID);
+const show = (sessionID) => {
+	route = sessionID ? { type: "session", sessionID } : { type: "home" };
+	poll();
+};
+if (process.argv[3] === "child route of running root") {
+	setRunning("ses_root");
+}
+let cleanup = await plugin.setup(api);
+const reload = async () => {
+	await cleanup();
+	cleanup = await plugin.setup(api);
+};
+const scenarios = {
+	"late running snapshot": async () => {
+		poll();
+		setRunning("ses_root");
+		poll();
+		poll();
+		stop("ses_child");
+		stop("ses_other");
+		stop("ses_root");
+	},
+	"idle snapshot stops": async () => {
+		fire("session.execution.started", "ses_root");
+		running.delete("ses_root");
+		poll();
+		poll();
+	},
+	"child route of running root": async () => {
+		poll();
+		stop("ses_root");
+	},
+	"navigation to running root": async () => {
+		setRunning("ses_b");
+		show("ses_b");
+		stop("ses_root");
+		poll();
+		stop("ses_b");
+	},
+	"home keeps root": async () => {
+		fire("session.execution.started", "ses_root");
+		show(null);
+		stop("ses_root");
+	},
+	"loading route forwards nothing": async () => {
+		show("ses_new");
+		stop("ses_root");
+		sessions.ses_new = { id: "ses_new", location: { directory: "/elsewhere" } };
+		poll();
+	},
+	"deleted root retires": async () => {
+		delete sessions.ses_root;
+		fire("session.deleted", "ses_root");
+		show(null);
+		stop("ses_root");
+	},
+	"reinstall resends running root": async () => {
+		fire("session.execution.started", "ses_root");
+		await cleanup();
+		const reinstalled = (await import(pathToFileURL(process.argv[4]).href)).default;
+		cleanup = await reinstalled.setup(api);
+		poll();
+		stop("ses_root");
+	},
+	"turn ends during reload": async () => {
+		fire("session.execution.started", "ses_root");
+		await cleanup();
+		stop("ses_root");
+		cleanup = await plugin.setup(api);
+		poll();
+	},
+	"reload on home": async () => {
+		show(null);
+		await reload();
+		show("ses_b");
+	},
+	"reload on home after deletion": async () => {
+		show(null);
+		await cleanup();
+		delete sessions.ses_root;
+		fire("session.deleted", "ses_root");
+		cleanup = await plugin.setup(api);
+		poll();
+	},
+};
+await scenarios[process.argv[3]]();
+await cleanup();
+`
+
+func TestOpenCodePluginReportsRootSession(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not available")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "plugins", "agenthook", "tui.js")
+	// A command that cannot start runs first, so every later report must still
+	// reach the working one.
+	_, err = Install(AgentOpenCode, InstallOptions{
+		ConfigPath: path,
+		Executable: filepath.Join(dir, "missing-hook"),
+		Arguments:  []string{"--source", "failing-hook"},
+		Marker:     "--source failing-hook",
+	})
+	require.NoError(t, err)
+	_, err = Install(AgentOpenCode, InstallOptions{
+		ConfigPath: path,
+		Executable: os.Args[0],
+		Arguments:  []string{"-test.run=^TestScriptHookHelper$", "--", "--source", "shared-agent-hook-test"},
+		Marker:     testMarker,
+	})
+	require.NoError(t, err)
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	module := filepath.Join(dir, "plugin.mjs")
+	require.NoError(t, os.WriteFile(module, data, 0o600))
+	_, err = Install(AgentOpenCode, InstallOptions{
+		ConfigPath: path,
+		Executable: os.Args[0],
+		Arguments:  []string{"-test.run=^TestScriptHookHelper$", "--", "--source", "shared-agent-hook-test", "--reinstalled"},
+		Marker:     testMarker,
+	})
+	require.NoError(t, err)
+	data, err = os.ReadFile(path)
+	require.NoError(t, err)
+	reinstalledModule := filepath.Join(dir, "reinstalled.mjs")
+	require.NoError(t, os.WriteFile(reinstalledModule, data, 0o600))
+	driver := filepath.Join(dir, "driver.mjs")
+	require.NoError(t, os.WriteFile(driver, []byte(openCodePluginDriver), 0o600))
+
+	const (
+		startRoot  = `{"hook_event_name":"SessionStart","session_id":"ses_root"}`
+		endRoot    = `{"hook_event_name":"SessionEnd","session_id":"ses_root","reason":"other"}`
+		stopRoot   = `{"hook_event_name":"Stop","session_id":"ses_root"}`
+		startB     = `{"hook_event_name":"SessionStart","session_id":"ses_b"}`
+		promptRoot = `{"hook_event_name":"UserPromptSubmit","session_id":"ses_root"}`
+	)
+	tests := []struct {
+		name string
+		want []string
+	}{
+		{"late running snapshot", []string{
+			startRoot,
+			promptRoot,
+			stopRoot,
+		}},
+		{"idle snapshot stops", []string{startRoot, promptRoot, stopRoot}},
+		{"child route of running root", []string{
+			startRoot,
+			promptRoot,
+			stopRoot,
+		}},
+		{"navigation to running root", []string{
+			startRoot, endRoot, startB,
+			`{"hook_event_name":"UserPromptSubmit","session_id":"ses_b"}`,
+			`{"hook_event_name":"Stop","session_id":"ses_b"}`,
+		}},
+		{"home keeps root", []string{startRoot, promptRoot, stopRoot}},
+		{"loading route forwards nothing", []string{
+			startRoot, endRoot, `{"hook_event_name":"SessionStart","session_id":"ses_new"}`,
+		}},
+		{"deleted root retires", []string{startRoot, endRoot}},
+		{"reinstall resends running root", []string{
+			startRoot,
+			promptRoot,
+			startRoot,
+			promptRoot,
+			stopRoot,
+		}},
+		{"turn ends during reload", []string{startRoot, promptRoot, startRoot}},
+		{"reload on home", []string{startRoot, startRoot, endRoot, startB}},
+		{"reload on home after deletion", []string{startRoot, endRoot}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// The terminal's directory differs from every session's. macOS reports
+			// the working directory through /tmp's symlink target.
+			cwd, err := filepath.EvalSymlinks(t.TempDir())
+			require.NoError(t, err)
+			out := filepath.Join(cwd, "payloads.jsonl")
+			cmd := exec.CommandContext(t.Context(), node, driver, module, tt.name, reinstalledModule)
+			cmd.Dir = cwd
+			// The helper finds its output path only in the terminal's env, so each
+			// payload proves the hook ran with that env.
+			cmd.Env = append(os.Environ(), "KIT_AGENTHOOK_HELPER_OUT="+out)
+
+			output, err := cmd.CombinedOutput()
+
+			require.NoError(t, err, string(output))
+			payloads, err := os.ReadFile(out)
+			require.NoError(t, err)
+			lines := strings.Split(strings.TrimSpace(string(payloads)), "\n")
+			require.Len(t, lines, len(tt.want), string(payloads))
+			for i, want := range tt.want {
+				var expected, got map[string]any
+				require.NoError(t, json.Unmarshal([]byte(want), &expected))
+				expected["cwd"] = cwd
+				// The runtime spawns each hook in the payload's cwd.
+				expected["helper_cwd"] = cwd
+				require.NoError(t, json.Unmarshal([]byte(lines[i]), &got))
+				assert.Equal(t, expected, got)
+			}
+			// One error toast per event shows the failing command never blocks the next.
+			assert.Equal(t, len(tt.want), strings.Count(string(output), "error toast: kenn.agenthook: agenthook"), string(output))
+		})
+	}
 }

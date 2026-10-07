@@ -63,8 +63,10 @@ of those typed request checks.
 `Names` returns ten concrete CLI adapters. The modes below describe this
 package, not every mode offered by the underlying command. Interactive mode
 opens the agent's own terminal UI and takes no prompt for Gemini, GitHub
-Copilot, Cursor Agent, and Factory Droid. Interactive Droid accepts only
-autonomy and the built-in skills control; its other controls are `exec` flags.
+Copilot, OpenCode, Cursor Agent, and Factory Droid. Interactive Droid accepts
+only autonomy and the built-in skills control; its other controls are `exec`
+flags. This package passes no prompt or model to interactive OpenCode, though
+OpenCode itself accepts `--prompt`.
 
 | Agent | Modes | Prompt | Resume | Output | Reasoning |
 | --- | --- | --- | --- | --- | --- |
@@ -72,7 +74,7 @@ autonomy and the built-in skills control; its other controls are `exec` flags.
 | Claude Code | interactive, noninteractive | argument when interactive, stdin when noninteractive | `--resume ID` | text, JSON, JSONL | low, medium, high, xhigh, maximum |
 | Gemini | interactive, noninteractive | stdin through `--prompt`, noninteractive only | `--resume ID` | text, JSON, JSONL | none |
 | GitHub Copilot | interactive, noninteractive | `--prompt`, noninteractive only | `--resume=ID` | text, JSONL | low, medium, high, xhigh, maximum |
-| OpenCode | noninteractive | stdin | `run --session ID` | text, JSONL | none |
+| OpenCode | interactive, noninteractive | stdin, noninteractive only | `--session ID`, `run --session ID` | text, JSONL | none |
 | Cursor Agent | interactive, noninteractive | stdin, noninteractive only | `--resume ID` | text, JSON, JSONL | none |
 | Kiro | noninteractive | argument | `chat --resume-id ID` | text | low, medium, high, xhigh, maximum |
 | Kilo | noninteractive | stdin | `run --session ID` | text, JSONL | low, medium, high, xhigh, maximum |

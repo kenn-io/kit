@@ -239,9 +239,7 @@ func validateTypedInput(spec profileSpec, event Event, input any) error {
 			spec, event, "source", spec.sessionSourceRequirement, value.Source == "",
 		)
 	case *UserPromptSubmitInput:
-		if value.Prompt == "" {
-			return errors.New("UserPromptSubmit input missing prompt")
-		}
+		return validateInputRequirement(spec, event, "prompt", spec.userPromptRequirement, value.Prompt == "")
 	case *PreToolUseInput:
 		return missingToolInput(value.ToolName, value.ToolInput)
 	case *PostToolUseInput:
