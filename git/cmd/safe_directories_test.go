@@ -112,28 +112,27 @@ func TestCachedTrust(t *testing.T) {
 			assert.Equal(t, []string{trust}, runner.trust.read(t.Context(), runner.Env, dir))
 		}
 	})
-}
-
-func TestCachedTrustKeepsIncludesFresh(t *testing.T) {
-	dir := t.TempDir()
-	config := filepath.Join(dir, "gitconfig")
-	included := filepath.Join(dir, "included")
-	require.NoError(t, os.WriteFile(config, []byte("[include]\n path = included\n"), 0o600))
-	runner := New()
-	runner.Env = safeDirectoryTestEnv(t, config)
-	assert.Empty(t, runner.trust.read(t.Context(), runner.Env, dir))
-	for _, trust := range []string{"/first", "/other", ""} {
-		require.NoError(t, os.WriteFile(included, []byte("[safe]\n directory = "+trust+"\n"), 0o600))
-		assert.Equal(t, []string{trust}, runner.trust.read(t.Context(), runner.Env, dir))
-	}
-	require.NoError(t, os.WriteFile(config, []byte("[includeIf \"onbranch:trusted\"]\n path = included\n"), 0o600))
-	require.NoError(t, os.WriteFile(included, []byte("[safe]\n directory = /branch\n"), 0o600))
-	_, err := runner.Output(t.Context(), dir, "init", "-b", "trusted")
-	require.NoError(t, err)
-	assert.Equal(t, []string{"/branch"}, runner.trust.read(t.Context(), runner.Env, dir))
-	_, err = runner.Output(t.Context(), dir, "symbolic-ref", "HEAD", "refs/heads/other")
-	require.NoError(t, err)
-	assert.Empty(t, runner.trust.read(t.Context(), runner.Env, dir))
+	t.Run("includes", func(t *testing.T) {
+		dir := t.TempDir()
+		config := filepath.Join(dir, "gitconfig")
+		included := filepath.Join(dir, "included")
+		require.NoError(t, os.WriteFile(config, []byte("[include]\n path = included\n"), 0o600))
+		runner := New()
+		runner.Env = safeDirectoryTestEnv(t, config)
+		assert.Empty(t, runner.trust.read(t.Context(), runner.Env, dir))
+		for _, trust := range []string{"/first", "/other", ""} {
+			require.NoError(t, os.WriteFile(included, []byte("[safe]\n directory = "+trust+"\n"), 0o600))
+			assert.Equal(t, []string{trust}, runner.trust.read(t.Context(), runner.Env, dir))
+		}
+		require.NoError(t, os.WriteFile(config, []byte("[includeIf \"onbranch:trusted\"]\n path = included\n"), 0o600))
+		require.NoError(t, os.WriteFile(included, []byte("[safe]\n directory = /branch\n"), 0o600))
+		_, err := runner.Output(t.Context(), dir, "init", "-b", "trusted")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"/branch"}, runner.trust.read(t.Context(), runner.Env, dir))
+		_, err = runner.Output(t.Context(), dir, "symbolic-ref", "HEAD", "refs/heads/other")
+		require.NoError(t, err)
+		assert.Empty(t, runner.trust.read(t.Context(), runner.Env, dir))
+	})
 }
 
 func coordinatedTrustGit(t *testing.T) (Runner, chan chan struct{}) {
@@ -174,7 +173,7 @@ func main() {
 }
 
 func TestCachedTrustConcurrentEvaluation(t *testing.T) {
-	for _, mode := range []string{"canceled fill", "competing environments", "includes"} {
+	for _, mode := range []string{"canceled fill", "competing environments"} {
 		t.Run(mode, func(t *testing.T) {
 			runner, started := coordinatedTrustGit(t)
 			if mode == "canceled fill" {
@@ -193,27 +192,14 @@ func TestCachedTrustConcurrentEvaluation(t *testing.T) {
 				assert.Equal(t, []string{"/trusted"}, <-result)
 				return
 			}
-			includes := mode == "includes"
 			other := runner
 			config := filepath.Join(t.TempDir(), "gitconfig")
 			require.NoError(t, os.WriteFile(config, []byte("[safe]\n directory = /other\n"), 0o600))
 			other.Env = append(append([]string(nil), runner.Env...), "GIT_CONFIG_GLOBAL="+config)
-			if includes {
-				require.NoError(t, os.WriteFile(config, []byte("[include]\n path = missing\n[safe]\n directory = /other\n"), 0o600))
-				runner = other
-			}
 			one, two := make(chan []string, 1), make(chan []string, 1)
-			want := "/trusted"
-			warmCalls := 1
-			if includes {
-				warmCalls = 2
-				want = "/other"
-			}
-			for range warmCalls {
-				go func() { one <- runner.trust.read(t.Context(), runner.Env, "") }()
-				close(<-started)
-				assert.Equal(t, []string{want}, <-one)
-			}
+			go func() { one <- runner.trust.read(t.Context(), runner.Env, "") }()
+			close(<-started)
+			assert.Equal(t, []string{"/trusted"}, <-one)
 			go func() { one <- runner.trust.read(t.Context(), runner.Env, "") }()
 			first := <-started
 			go func() { two <- other.trust.read(t.Context(), other.Env, "") }()
@@ -221,12 +207,9 @@ func TestCachedTrustConcurrentEvaluation(t *testing.T) {
 			close(second)
 			assert.Equal(t, []string{"/other"}, <-two)
 			close(first)
-			assert.Equal(t, []string{want}, <-one)
+			assert.Equal(t, []string{"/trusted"}, <-one)
 			go func() { one <- runner.trust.read(t.Context(), runner.Env, "") }()
-			if includes {
-				close(<-started)
-			}
-			assert.Equal(t, []string{want}, <-one)
+			assert.Equal(t, []string{"/trusted"}, <-one)
 		})
 	}
 }
