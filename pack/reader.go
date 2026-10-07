@@ -14,14 +14,20 @@ import (
 )
 
 // ReaderLimits bounds format-controlled quantities before allocation or
-// exposure. Zero fields select the corresponding format maximum.
+// exposure. Zero fields select the corresponding format maximum, except for
+// the decoder window's lower ceiling on 32-bit systems.
 type ReaderLimits struct {
 	ContainerBytes uint64
 	FooterBytes    uint64
 	Entries        uint64
 	RawBytes       uint64
 	StoredBytes    uint64
-	WindowBytes    uint64
+
+	// WindowBytes limits each streaming decoder's window. Zero allows up to
+	// MaxRawLen (4 GiB) on 64-bit systems, or 512 MiB on 32-bit systems. Old
+	// single-segment frames can require their full raw size as a window.
+	// Set a smaller limit to bound that memory use.
+	WindowBytes uint64
 }
 
 // ReaderOptions configures bounded pack opening.
@@ -174,10 +180,11 @@ func normalizeReaderLimits(limits ReaderLimits) ReaderLimits {
 	limits.StoredBytes = set(limits.StoredBytes, MaxStoredLen)
 	// A single-segment frame declares no window, so its effective window is the
 	// whole frame content size. Capping the default at zstd.MaxWindowSize
-	// (512 MiB) therefore makes every larger blob unreadable, including ones
-	// this package wrote itself. Allow the format's own raw-length ceiling;
-	// decoder memory remains bounded by WithDecoderMaxMemory in openBlob.
-	limits.WindowBytes = set(limits.WindowBytes, MaxRawLen)
+	// (512 MiB) rejected larger single-segment blobs this package wrote itself.
+	// The format ceiling allows those reads at the cost of a potentially
+	// blob-sized decoder window. OpenBlobWithOptions enforces explicit lower
+	// window limits before creating the decoder.
+	limits.WindowBytes = set(limits.WindowBytes, maxDecoderWindow())
 	return limits
 }
 

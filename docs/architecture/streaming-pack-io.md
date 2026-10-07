@@ -1,9 +1,9 @@
 # Streaming pack I/O
 
-Kit reads and writes format-v1 packs without requiring memory proportional to
-the largest object. This document describes the contracts and ownership rules
-that keep the implementation bounded, verifiable, and safe during concurrent
-maintenance.
+Kit streams format-v1 packs with memory bounded by buffers, decoder windows,
+and concurrency. Legacy single-segment frames can require a decoder window as
+large as the object. This document describes the contracts and ownership rules
+for verification and concurrent maintenance.
 
 The on-disk representation remains the format described by the
 [backup repository and pack format](../../backup/FORMAT.md). Streaming changes
@@ -13,8 +13,7 @@ how bytes move through the implementation, not how existing packs are encoded.
 
 Streaming pack I/O is designed to:
 
-- bound heap use by configured buffers, decoder windows, and concurrency rather
-  than object size;
+- bound heap use by configured buffers, decoder windows, and concurrency;
 - preserve format-v1 compatibility and the existing buffered APIs;
 - verify stored and decoded bytes before treating output as authoritative;
 - keep resource-policy limits explicit and independently configurable; and
@@ -158,9 +157,15 @@ Resource limits describe distinct risks and should remain distinct:
 - scratch-space limits bound preparation and staging disk use; and
 - concurrency limits bound aggregate buffers and open descriptors.
 
-Compressed entries use a bounded decoder window. Legacy format-v1 entries may
-declare a window related to their raw size; when that exceeds policy, the read
-fails with a typed policy error instead of silently increasing memory use.
+With default `pack.ReaderLimits`, compressed streams allow decoder windows up to
+`pack.MaxRawLen` (4 GiB) on 64-bit systems. On 32-bit systems, both buffered and
+streaming decoders retain a 512 MiB window ceiling to avoid codec integer
+overflow. Legacy single-segment frames can require a window as large as the
+blob, so their streaming reads can allocate that much memory.
+Set `ReaderLimits.WindowBytes` or a narrower `BlobReaderOptions.WindowBytes`
+to impose a lower ceiling; a stream exceeding it fails with a typed policy error.
+These window limits do not apply to buffered `Reader.ReadBlob` calls.
+New buffered writes over 512 MiB use an explicit, smaller window.
 
 Format-v1 encrypted entries remain buffered because their whole-entry
 authenticated-encryption construction cannot authenticate a streamed prefix.
@@ -168,8 +173,9 @@ True encrypted streaming requires a chunk-authenticated representation in a
 future format.
 
 The format-v1 length fields also impose their existing object-size ceiling.
-Streaming removes heap proportionality within that ceiling; it does not extend
-the wire format beyond it.
+Streaming avoids whole-object output buffers, but legacy decoder windows can
+still require memory proportional to object size. It does not extend the wire
+format's size ceiling.
 
 ## Implementation evidence
 
