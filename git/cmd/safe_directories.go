@@ -54,8 +54,23 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 	c.mu.Lock()
 	previous := c.current
 	c.mu.Unlock()
+	if previous == nil {
+		values := readSafeDirectories(ctx, env, dir)
+		if ctx.Err() != nil {
+			return nil
+		}
+		c.mu.Lock()
+		if c.current == nil {
+			c.current = &safeDirectorySnapshot{identity: identity, executable: info}
+		}
+		c.mu.Unlock()
+		return values
+	}
+	if identity != previous.identity || !os.SameFile(info, previous.executable) {
+		return readSafeDirectories(ctx, env, dir)
+	}
 	next := &safeDirectorySnapshot{identity: identity, executable: info, scopes: make(map[string]*safeDirectoryScope)}
-	if previous != nil && identity == previous.identity && os.SameFile(info, previous.executable) {
+	if previous.scopes != nil {
 		maps.Copy(next.scopes, previous.scopes)
 	} else {
 		for _, scope := range safeDirectoryScopes(env) {

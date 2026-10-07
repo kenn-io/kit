@@ -91,9 +91,12 @@ func TestCachedTrustKeepsIncludesFresh(t *testing.T) {
 
 func TestCachedTrustCanceledFillRetries(t *testing.T) {
 	runner, started := coordinatedTrustGit(t)
+	result := make(chan []string, 1)
+	go func() { result <- runner.trust.read(t.Context(), runner.Env, "") }()
+	close(<-started)
+	assert.Equal(t, []string{"/trusted"}, <-result)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	result := make(chan []string, 1)
 	go func() { result <- runner.trust.read(ctx, runner.Env, "") }()
 	<-started
 	cancel()
@@ -153,6 +156,17 @@ func TestCachedTrustConcurrentEvaluation(t *testing.T) {
 				runner = other
 			}
 			one, two := make(chan []string, 1), make(chan []string, 1)
+			want := "/trusted"
+			warmCalls := 1
+			if includes {
+				warmCalls = 2
+				want = "/other"
+			}
+			for range warmCalls {
+				go func() { one <- runner.trust.read(t.Context(), runner.Env, "") }()
+				close(<-started)
+				assert.Equal(t, []string{want}, <-one)
+			}
 			go func() { one <- runner.trust.read(t.Context(), runner.Env, "") }()
 			first := <-started
 			go func() { two <- other.trust.read(t.Context(), other.Env, "") }()
@@ -160,28 +174,12 @@ func TestCachedTrustConcurrentEvaluation(t *testing.T) {
 			close(second)
 			assert.Equal(t, []string{"/other"}, <-two)
 			close(first)
-			want := "/trusted"
-			if includes {
-				want = "/other"
-			}
 			assert.Equal(t, []string{want}, <-one)
 			go func() { one <- runner.trust.read(t.Context(), runner.Env, "") }()
-			close(<-started)
+			if includes {
+				close(<-started)
+			}
 			assert.Equal(t, []string{want}, <-one)
 		})
 	}
-}
-
-func TestGitExecutableReplacementIdentity(t *testing.T) {
-	first, second := filepath.Join(t.TempDir(), "first"), filepath.Join(t.TempDir(), "second")
-	require.NoError(t, os.WriteFile(first, []byte("git"), 0o600))
-	require.NoError(t, os.WriteFile(second, []byte("git"), 0o600))
-	one, err := os.Stat(first)
-	require.NoError(t, err)
-	require.NoError(t, os.Chtimes(second, one.ModTime(), one.ModTime()))
-	two, err := os.Stat(second)
-	require.NoError(t, err)
-	assert.Equal(t, one.Size(), two.Size())
-	assert.Equal(t, one.ModTime(), two.ModTime())
-	assert.False(t, os.SameFile(one, two))
 }

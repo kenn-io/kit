@@ -67,6 +67,8 @@ type Runner struct {
 }
 
 // New returns a Runner with safe automation defaults.
+// Copies share trust reuse for the first observed environment and Git executable.
+// Other identities read fresh config; edits affect the next command in either case.
 func New() Runner {
 	return Runner{
 		Env:              os.Environ(),
@@ -234,8 +236,8 @@ func nullGlobalConfigPath() string {
 // config using env, in git's evaluation order. git only honors safe.directory
 // from protected configuration (system, global, and command scope), so these
 // are the entries the sanitized environment would otherwise hide. Entries are
-// read fresh on every call. Unset or
-// unreadable scopes contribute nothing. Empty values are kept because an empty
+// read fresh on every call. Unset or unreadable scopes contribute nothing.
+// Empty values are kept because an empty
 // safe.directory resets the list, and replaying entries in order preserves
 // that semantic at command scope.
 //
