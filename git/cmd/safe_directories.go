@@ -27,7 +27,7 @@ type safeDirectoryCache struct {
 type safeDirectorySnapshot struct {
 	identity   [32]byte
 	executable os.FileInfo
-	scopes     map[string]*safeDirectoryScope
+	scopes     map[string]safeDirectoryScope
 }
 
 func safeDirectoryScopes(env []string) []string {
@@ -69,7 +69,7 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 	if identity != previous.identity || !os.SameFile(info, previous.executable) {
 		return readSafeDirectories(ctx, env, dir)
 	}
-	next := &safeDirectorySnapshot{identity: identity, executable: info, scopes: make(map[string]*safeDirectoryScope)}
+	next := &safeDirectorySnapshot{identity: identity, executable: info, scopes: make(map[string]safeDirectoryScope)}
 	if previous.scopes != nil {
 		maps.Copy(next.scopes, previous.scopes)
 	} else {
@@ -78,7 +78,7 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 			if err != nil {
 				return readSafeDirectories(ctx, env, dir)
 			}
-			next.scopes[scope] = &safeDirectoryScope{paths: strings.FieldsFunc(strings.TrimRight(string(out), "\r\n"), func(r rune) bool { return r == '\n' || r == '\r' })}
+			next.scopes[scope] = safeDirectoryScope{paths: strings.FieldsFunc(strings.TrimRight(string(out), "\r\n"), func(r rune) bool { return r == '\n' || r == '\r' })}
 		}
 	}
 	var values []string
@@ -89,10 +89,10 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 			values = append(values, s.values...)
 			continue
 		}
-		s = &safeDirectoryScope{paths: s.paths}
-		next.scopes[scope] = s
+		s = safeDirectoryScope{paths: s.paths}
 		out, probeErr := safeDirectoryOutput(ctx, env, dir, "config", "--"+scope, "--includes", "-z", "--get-regexp", `^(safe\.directory|include\.path|includeif\..*\.path)$`)
 		if probeErr != nil && !IsExitCode(probeErr, 1) {
+			next.scopes[scope] = s
 			continue
 		}
 		var entries []string
@@ -112,6 +112,7 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 		if !includes && err == nil && afterErr == nil && before == after {
 			s.fingerprint, s.values, s.valid = after, entries, true
 		}
+		next.scopes[scope] = s
 		values = append(values, entries...)
 	}
 	if ctx.Err() != nil {
