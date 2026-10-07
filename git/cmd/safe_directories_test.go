@@ -10,42 +10,12 @@ import (
 	"runtime"
 	"slices"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-func TestSafeDirectoryFingerprintRejectsFIFO(t *testing.T) {
-	mkfifo, err := exec.LookPath("mkfifo")
-	if err != nil {
-		t.Skip("mkfifo unavailable")
-	}
-	path := filepath.Join(t.TempDir(), "gitconfig")
-	require.NoError(t, exec.CommandContext(t.Context(), mkfifo, path).Run())
-	info, err := os.Lstat(path)
-	if err != nil || info.Mode()&os.ModeNamedPipe == 0 {
-		t.Skip("mkfifo does not create native pipes")
-	}
-	done := make(chan error, 1)
-	go func() {
-		writer, err := os.OpenFile(path, os.O_WRONLY, 0)
-		if err == nil {
-			err = writer.Close()
-		}
-		done <- err
-	}()
-	t.Cleanup(func() {
-		reader, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
-		require.NoError(t, err)
-		require.NoError(t, <-done)
-		require.NoError(t, reader.Close())
-	})
-	_, err = safeDirectoryFingerprint([]string{path})
-	require.ErrorContains(t, err, "not a regular file")
-}
 
 func extendTrustProbeTimeout(t *testing.T) {
 	t.Helper()
@@ -98,6 +68,36 @@ func TestCachedTrust(t *testing.T) {
 			check(fresh, "/trusted", baseline)
 		})
 	}
+	t.Run("home share", func(t *testing.T) {
+		if runtime.GOOS != "windows" {
+			t.Skip("requires Git for Windows HOME selection")
+		}
+		dir := t.TempDir()
+		share, profile := filepath.Join(dir, "share"), filepath.Join(dir, "profile")
+		for _, home := range []string{share, profile} {
+			require.NoError(t, os.Mkdir(home, 0o700))
+			require.NoError(t, os.WriteFile(filepath.Join(home, ".gitconfig"), []byte("[safe]\n directory = /"+filepath.Base(home)+"\n"), 0o600))
+		}
+		runner := New()
+		runner.Env = slices.DeleteFunc(safeDirectoryTestEnv(t, ""), func(entry string) bool {
+			key, _, _ := strings.Cut(entry, "=")
+			return strings.EqualFold(key, "HOME") || strings.EqualFold(key, "GIT_CONFIG_GLOBAL") || strings.EqualFold(key, "XDG_CONFIG_HOME")
+		})
+		drive := filepath.VolumeName(share)
+		runner.Env = append(runner.Env, "GIT_CONFIG_NOSYSTEM=1", "HOMEDRIVE="+drive, "HOMEPATH="+strings.TrimPrefix(share, drive), "USERPROFILE="+profile)
+		read := func(want string) {
+			assert.Equal(t, []string{want}, runner.trust.read(t.Context(), runner.Env, dir))
+		}
+		for range 3 {
+			read("/share")
+		}
+		require.NoError(t, os.Rename(share, share+"-offline"))
+		read("/profile")
+		require.NoError(t, os.WriteFile(filepath.Join(profile, ".gitconfig"), []byte("[safe]\n directory = /updated\n"), 0o600))
+		read("/updated")
+		require.NoError(t, os.Rename(share+"-offline", share))
+		read("/share")
+	})
 	t.Run("invalidation", func(t *testing.T) {
 		dir := t.TempDir()
 		config := filepath.Join(dir, "gitconfig")

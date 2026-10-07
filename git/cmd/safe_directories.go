@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -63,6 +64,21 @@ func configPathsReusable(env []string) bool {
 	return true
 }
 
+func windowsHomeAvailable(env []string) bool {
+	_, homeSet := envValue(env, "HOME")
+	_, globalSet := envValue(env, "GIT_CONFIG_GLOBAL")
+	drive, driveSet := envValue(env, "HOMEDRIVE")
+	path, pathSet := envValue(env, "HOMEPATH")
+	if runtime.GOOS != "windows" || homeSet || globalSet || !driveSet || !pathSet {
+		return false
+	}
+	info, err := os.Stat(drive + path)
+	if err != nil {
+		return false
+	}
+	return info.IsDir()
+}
+
 // read reuses include-free scopes while their root bytes stay unchanged; includes always run Git.
 func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string) []string {
 	if c == nil {
@@ -79,7 +95,8 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 	if err != nil {
 		return readSafeDirectories(ctx, env, dir)
 	}
-	identity := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%d\x00%s", cmd.Path, info.Size(), info.ModTime().UnixNano(), strings.Join(env, "\x00"))))
+	homeAvailable := windowsHomeAvailable(env)
+	identity := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%d\x00%s\x00%t", cmd.Path, info.Size(), info.ModTime().UnixNano(), strings.Join(env, "\x00"), homeAvailable)))
 	c.mu.Lock()
 	previous := c.current
 	c.mu.Unlock()
@@ -87,6 +104,9 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 		values := readSafeDirectories(ctx, env, dir)
 		if ctx.Err() != nil {
 			return nil
+		}
+		if windowsHomeAvailable(env) != homeAvailable {
+			return readSafeDirectories(ctx, env, dir)
 		}
 		c.mu.Lock()
 		if c.current == nil {
@@ -134,6 +154,9 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 	}
 	if ctx.Err() != nil {
 		return nil
+	}
+	if windowsHomeAvailable(env) != homeAvailable {
+		return readSafeDirectories(ctx, env, dir)
 	}
 	c.mu.Lock()
 	if c.current == previous {
