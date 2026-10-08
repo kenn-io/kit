@@ -71,6 +71,12 @@ func minCompressionSavings(rawLen int) int {
 	return max(1, (rawLen*3+99)/100)
 }
 
+// maxSingleSegmentLen is the largest blob encodeFrame writes as a
+// single-segment frame. Single-segment frames use their content size as the
+// window. Above the klauspost decoder's default 512 MiB limit, use an explicit
+// window instead. Tests lower it to exercise the boundary with small blobs.
+var maxSingleSegmentLen = zstd.MaxWindowSize
+
 // encodeFrame trial-compresses raw. It returns the compressed frame only when
 // zstd saves at least 3% (backup/FORMAT.md, Pack Files); otherwise it returns raw as-is.
 func encodeFrame(raw []byte, level int) (stored []byte, compressed bool) {
@@ -80,9 +86,7 @@ func encodeFrame(raw []byte, level int) (stored []byte, compressed bool) {
 	if len(raw) < zstd.MinWindowSize {
 		return raw, false
 	}
-	// Single-segment frames use their content size as the window. Above the
-	// klauspost decoder's default 512 MiB limit, use an explicit window instead.
-	singleSegment := uint64(len(raw)) <= uint64(zstd.MaxWindowSize)
+	singleSegment := len(raw) <= maxSingleSegmentLen
 	encoder := zstdEncoder(level, singleSegment)
 	c := encoder.EncodeAll(raw, make([]byte, 0, len(raw)))
 	minSavings := minCompressionSavings(len(raw))
