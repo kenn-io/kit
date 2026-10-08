@@ -143,9 +143,6 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 		return readSafeDirectories(ctx, env, dir)
 	}
 	fresh := func() []string {
-		if ctx.Err() != nil {
-			return nil
-		}
 		return readSafeDirectories(ctx, env, dir)
 	}
 	if !configPathsReusable(env) {
