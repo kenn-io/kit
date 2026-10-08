@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 
+	"go.kenn.io/kit/internal/contextio"
 	"go.kenn.io/kit/pack"
 	"go.kenn.io/kit/packstore/internal/packvalidate"
 	"go.kenn.io/kit/pathresolve"
@@ -576,7 +577,7 @@ func copyBoundedContext(
 	src io.Reader,
 	maxBytes int64,
 ) (int64, error) {
-	reader := io.Reader(&contextReader{ctx: ctx, reader: src})
+	reader := io.Reader(&contextio.Reader{Context: ctx, Reader: src})
 	if maxBytes == 0 || maxBytes == math.MaxInt64 {
 		return io.CopyBuffer(dst, reader, make([]byte, 64<<10))
 	}
@@ -644,7 +645,7 @@ func verifyFilesystemPack(
 	hasher := sha256.New()
 	if _, err := io.CopyBuffer(
 		hasher,
-		&contextReader{ctx: ctx, reader: file},
+		&contextio.Reader{Context: ctx, Reader: file},
 		make([]byte, 64<<10),
 	); err != nil {
 		return 0, errors.Join(err, file.Close())

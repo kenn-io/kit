@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"go.kenn.io/kit/internal/contextio"
 	"go.kenn.io/kit/pack"
 )
 
@@ -867,7 +868,7 @@ func verifyLooseFile(ctx context.Context, f *os.File, info fs.FileInfo, hash Has
 	size := info.Size()
 	digest := sha256.New()
 	buffer := make([]byte, 64<<10)
-	source := &contextReader{ctx: ctx, reader: f}
+	source := &contextio.Reader{Context: ctx, Reader: f}
 	reader := io.LimitReader(source, size)
 	written, err := io.CopyBuffer(digest, reader, buffer)
 	if err != nil {

@@ -20,6 +20,7 @@ import (
 
 	"golang.org/x/text/unicode/norm"
 
+	"go.kenn.io/kit/internal/contextio"
 	"go.kenn.io/kit/pack"
 	"go.kenn.io/kit/packstore"
 	"go.kenn.io/kit/pathresolve"
@@ -1335,7 +1336,7 @@ func (s *restoreState) prepareBeforePublication(
 			resultErr = errors.Join(resultErr, private.Close())
 		}
 	}()
-	written, err := io.Copy(private, restoreContextReader{ctx: ctx, r: source})
+	written, err := io.Copy(private, &contextio.Reader{Context: ctx, Reader: source})
 	if err != nil {
 		return "", 0, fmt.Errorf("backup: copying private publication database: %w", err)
 	}
@@ -2233,18 +2234,6 @@ func (s *restoreState) writeRootReader(
 	return nil
 }
 
-type restoreContextReader struct {
-	ctx context.Context
-	r   io.Reader
-}
-
-func (r restoreContextReader) Read(p []byte) (int, error) {
-	if err := r.ctx.Err(); err != nil {
-		return 0, err
-	}
-	return r.r.Read(p)
-}
-
 // stageRootReader writes to a fresh, unpredictably named temp entered through
 // verified directory components. Reading one byte beyond the recorded size
 // distinguishes a forged short size from verified EOF without allowing an
@@ -2297,7 +2286,7 @@ func (s *restoreState) stageRootReaderWithOptions(
 		_ = f.Close()
 		return "", fmt.Errorf("backup: setting mode on restored file %s: %w", rel, err)
 	}
-	reader := restoreContextReader{ctx: ctx, r: src}
+	reader := &contextio.Reader{Context: ctx, Reader: src}
 	written, copyErr := io.CopyBuffer(f, io.LimitReader(reader, expected), make([]byte, 64<<10))
 	if copyErr != nil {
 		_ = f.Close()

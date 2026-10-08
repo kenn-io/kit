@@ -1,0 +1,18 @@
+package contextio
+
+import (
+	"context"
+	"io"
+)
+
+type Reader struct {
+	Context context.Context
+	Reader  io.Reader
+}
+
+func (r *Reader) Read(p []byte) (int, error) {
+	if err := r.Context.Err(); err != nil {
+		return 0, err
+	}
+	return r.Reader.Read(p)
+}

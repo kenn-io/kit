@@ -18,6 +18,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 	"go.kenn.io/kit/atomicfile"
+	"go.kenn.io/kit/internal/contextio"
 	"go.kenn.io/kit/pack"
 )
 
@@ -85,7 +86,7 @@ var (
 			zstd.WithDecoderMaxMemory(64<<20))
 	}
 	newLooseHashReader = func(ctx context.Context, src io.Reader) io.Reader {
-		return &contextReader{ctx: ctx, reader: src}
+		return &contextio.Reader{Context: ctx, Reader: src}
 	}
 	// Verification pins deliberately reuse the non-removal repair handle. In
 	// particular, Windows deduplication must not require DELETE access merely
@@ -386,7 +387,7 @@ func (s *filesystemLooseStore) publish(
 	if encoder != nil {
 		writers = append(writers, encoder)
 	}
-	reader := io.Reader(&contextReader{ctx: ctx, reader: src})
+	reader := io.Reader(&contextio.Reader{Context: ctx, Reader: src})
 	if opts.MaxBytes > 0 && opts.MaxBytes < math.MaxInt64 {
 		reader = io.LimitReader(reader, opts.MaxBytes+1)
 	}
@@ -1151,16 +1152,4 @@ func ensureDirectory(path string, durability Durability, deferParentSync bool) e
 		}
 	}
 	return nil
-}
-
-type contextReader struct {
-	ctx    context.Context
-	reader io.Reader
-}
-
-func (r *contextReader) Read(p []byte) (int, error) {
-	if err := r.ctx.Err(); err != nil {
-		return 0, err
-	}
-	return r.reader.Read(p)
 }

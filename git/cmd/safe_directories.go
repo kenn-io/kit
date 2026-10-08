@@ -14,6 +14,8 @@ import (
 	"slices"
 	"strings"
 	"sync"
+
+	"go.kenn.io/kit/internal/contextio"
 )
 
 type safeDirectoryScope struct {
@@ -86,10 +88,9 @@ func evaluateFilesystem(ctx context.Context, evaluate func(context.Context)) boo
 }
 
 type safeDirectorySnapshot struct {
-	identity        [32]byte
-	executable      os.FileInfo
-	scopes          map[string]safeDirectoryScope
-	discoveryFailed bool
+	identity   [32]byte
+	executable os.FileInfo
+	scopes     map[string]safeDirectoryScope
 }
 
 func safeDirectoryScopes(env []string) []string {
@@ -206,9 +207,6 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 	if identity != previous.identity || !sameFile {
 		return fresh()
 	}
-	if previous.discoveryFailed {
-		return fresh()
-	}
 	next := &safeDirectorySnapshot{identity: identity, executable: info, scopes: make(map[string]safeDirectoryScope)}
 	if previous.scopes != nil {
 		maps.Copy(next.scopes, previous.scopes)
@@ -216,24 +214,20 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 		for _, scope := range safeDirectoryScopes(env) {
 			out, err := safeDirectoryOutput(ctx, env, dir, "var", "GIT_CONFIG_"+strings.ToUpper(scope))
 			if err != nil {
-				next.discoveryFailed = true
-				break
+				return fresh()
 			}
 			paths := strings.TrimSuffix(string(out), "\n")
 			next.scopes[scope] = safeDirectoryScope{paths: strings.FieldsFunc(strings.TrimRight(paths, "\r\n"), func(r rune) bool { return r == '\n' || r == '\r' })}
 		}
 	}
 	var values []string
-	scopes := safeDirectoryScopes(env)
-	if next.discoveryFailed {
-		values = readSafeDirectories(ctx, env, dir)
-		scopes = nil
-	}
-	for _, scope := range scopes {
+	for _, scope := range safeDirectoryScopes(env) {
 		s := next.scopes[scope]
 		var cached safeDirectoryScope
 		var cacheErr error
-		if !evaluateFilesystem(ctx, func(checkCtx context.Context) {
+		if s.includes {
+			cached = safeDirectoryScope{paths: s.paths, includes: true}
+		} else if !evaluateFilesystem(ctx, func(checkCtx context.Context) {
 			cached, cacheErr = readSafeDirectorySnapshot(checkCtx, env, dir, scope, s)
 		}) {
 			return fresh()
@@ -244,17 +238,17 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 				cached = safeDirectoryScope{paths: s.paths}
 			}
 			var probeErr error
-			entries, _, probeErr = readSafeDirectoryScope(ctx, env, dir, scope)
+			var includes bool
+			entries, includes, probeErr = readSafeDirectoryScope(ctx, env, dir, scope)
 			if probeErr != nil && !IsExitCode(probeErr, 1) {
+				cached.valid = false
 				next.scopes[scope] = cached
 				continue
 			}
+			cached = safeDirectoryScope{paths: s.paths, includes: includes}
 		}
 		next.scopes[scope] = cached
 		values = append(values, entries...)
-	}
-	if next.discoveryFailed {
-		next.scopes = nil
 	}
 	if ctx.Err() != nil {
 		return nil
@@ -354,7 +348,7 @@ func readSafeDirectorySnapshot(ctx context.Context, env []string, dir, scope str
 	}
 	defer file.Close()
 	hash := sha256.New()
-	size, err := io.Copy(hash, &safeDirectoryContextReader{ctx: ctx, reader: file})
+	size, err := io.Copy(hash, &contextio.Reader{Context: ctx, Reader: file})
 	if ctx.Err() != nil {
 		return next, ctx.Err()
 	}
@@ -386,7 +380,7 @@ func readSafeDirectorySnapshot(ctx context.Context, env []string, dir, scope str
 		return next, err
 	}
 	hash.Reset()
-	size, copyErr := io.Copy(stdin, io.TeeReader(&safeDirectoryContextReader{ctx: ctx, reader: file}, hash))
+	size, copyErr := io.Copy(stdin, io.TeeReader(&contextio.Reader{Context: ctx, Reader: file}, hash))
 	copyErr = errors.Join(copyErr, file.Close(), stdin.Close())
 	if copyErr != nil {
 		cancel()
@@ -409,16 +403,4 @@ func readSafeDirectorySnapshot(ctx context.Context, env []string, dir, scope str
 
 func fingerprintSafeDirectoryBytes(path string, size int64, digest []byte) [32]byte {
 	return sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%x", path, size, digest)))
-}
-
-type safeDirectoryContextReader struct {
-	ctx    context.Context
-	reader io.Reader
-}
-
-func (r *safeDirectoryContextReader) Read(p []byte) (int, error) {
-	if err := r.ctx.Err(); err != nil {
-		return 0, err
-	}
-	return r.reader.Read(p)
 }
