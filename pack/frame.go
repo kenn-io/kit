@@ -2,19 +2,30 @@ package pack
 
 import (
 	"fmt"
+	"strconv"
 	"sync"
 
 	"github.com/klauspost/compress/zstd"
 )
 
+type zstdEncoderKey struct {
+	level         int
+	singleSegment bool
+}
+
 // Shared zstd codecs. EncodeAll/DecodeAll are safe for concurrent use on a
-// single Encoder/Decoder, so one instance per level serves all writers.
+// single Encoder/Decoder, so one instance per level and framing mode serves
+// all writers.
 var (
 	zstdEncMu sync.Mutex
-	zstdEncs  = map[int]*zstd.Encoder{}
+	zstdEncs  = map[zstdEncoderKey]*zstd.Encoder{}
 	zstdDec   = func() *zstd.Decoder {
 		d, err := zstd.NewReader(nil,
-			zstd.WithDecoderConcurrency(0), zstd.WithDecoderMaxMemory(1<<32))
+			zstd.WithDecoderConcurrency(0), zstd.WithDecoderMaxMemory(1<<32),
+			// Single-segment frames carry a window equal to their content
+			// size; the 512 MiB default would reject blobs this package
+			// itself produced.
+			zstd.WithDecoderMaxWindow(maxDecoderWindow()))
 		if err != nil {
 			panic(fmt.Sprintf("pack: initializing zstd decoder: %v", err))
 		}
@@ -22,22 +33,32 @@ var (
 	}()
 )
 
-func zstdEncoder(level int) *zstd.Encoder {
+func maxDecoderWindow() uint64 {
+	// The codec uses int for history-buffer sizes and adds space beyond the
+	// window. Retain its default on 32-bit systems to avoid integer overflow.
+	if strconv.IntSize == 32 {
+		return zstd.MaxWindowSize
+	}
+	return MaxRawLen
+}
+
+func zstdEncoder(level int, singleSegment bool) *zstd.Encoder {
 	if level <= 0 {
 		level = DefaultZstdLevel
 	}
+	key := zstdEncoderKey{level: level, singleSegment: singleSegment}
 	zstdEncMu.Lock()
 	defer zstdEncMu.Unlock()
-	if enc, ok := zstdEncs[level]; ok {
+	if enc, ok := zstdEncs[key]; ok {
 		return enc
 	}
 	enc, err := zstd.NewWriter(nil,
 		zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(level)),
-		zstd.WithSingleSegment(true))
+		zstd.WithSingleSegment(singleSegment))
 	if err != nil {
 		panic(fmt.Sprintf("pack: initializing zstd encoder level %d: %v", level, err))
 	}
-	zstdEncs[level] = enc
+	zstdEncs[key] = enc
 	return enc
 }
 
@@ -55,12 +76,15 @@ func minCompressionSavings(rawLen int) int {
 func encodeFrame(raw []byte, level int) (stored []byte, compressed bool) {
 	// Legacy bounded readers cap decoder memory at RawLen. A zstd frame always
 	// needs at least MinWindowSize, so smaller blobs must remain raw for
-	// downgrade compatibility. Single-segment frames keep larger windows tied
-	// to the authoritative content length.
+	// downgrade compatibility.
 	if len(raw) < zstd.MinWindowSize {
 		return raw, false
 	}
-	c := zstdEncoder(level).EncodeAll(raw, make([]byte, 0, len(raw)))
+	// Single-segment frames use their content size as the window. Above the
+	// klauspost decoder's default 512 MiB limit, use an explicit window instead.
+	singleSegment := uint64(len(raw)) <= uint64(zstd.MaxWindowSize)
+	encoder := zstdEncoder(level, singleSegment)
+	c := encoder.EncodeAll(raw, make([]byte, 0, len(raw)))
 	minSavings := minCompressionSavings(len(raw))
 	if len(c) > len(raw)-minSavings {
 		return raw, false
