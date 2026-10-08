@@ -26,37 +26,60 @@ type safeDirectoryCache struct {
 	current *safeDirectorySnapshot
 }
 
-// The slot bounds unfinished trust-cache filesystem checks to one per process.
-var safeDirectoryFilesystemSlot = make(chan struct{}, 1)
+// Admission bounds unfinished trust-cache filesystem checks to one per process.
+var safeDirectoryFilesystem = &safeDirectoryFilesystemAdmission{}
+
+type safeDirectoryFilesystemAdmission struct {
+	mu         sync.Mutex
+	done       chan struct{}
+	ownerEnded <-chan struct{}
+}
 
 func evaluateFilesystem(ctx context.Context, evaluate func()) bool {
 	ctx, cancel := context.WithTimeout(ctx, safeDirectoryProbeTimeout)
 	defer cancel()
-	slot := safeDirectoryFilesystemSlot
-	if ctx.Err() != nil {
-		return false
+	admission := safeDirectoryFilesystem
+	for ctx.Err() == nil {
+		admission.mu.Lock()
+		if ctx.Err() != nil {
+			admission.mu.Unlock()
+			break
+		}
+		pending, ended := admission.done, admission.ownerEnded
+		if pending == nil {
+			done := make(chan struct{})
+			admission.done, admission.ownerEnded = done, ctx.Done()
+			admission.mu.Unlock()
+			go func() {
+				evaluate()
+				admission.mu.Lock()
+				admission.done, admission.ownerEnded = nil, nil
+				close(done)
+				admission.mu.Unlock()
+			}()
+			select {
+			case <-done:
+				return ctx.Err() == nil
+			case <-ctx.Done():
+				return false
+			}
+		}
+		admission.mu.Unlock()
+		select {
+		case <-pending:
+			continue
+		case <-ended:
+			select {
+			case <-pending:
+				continue
+			default:
+				return false
+			}
+		case <-ctx.Done():
+			return false
+		}
 	}
-	select {
-	case slot <- struct{}{}:
-	case <-ctx.Done():
-		return false
-	}
-	if ctx.Err() != nil {
-		<-slot
-		return false
-	}
-	done := make(chan struct{})
-	go func() {
-		evaluate()
-		<-slot
-		close(done)
-	}()
-	select {
-	case <-done:
-		return ctx.Err() == nil
-	case <-ctx.Done():
-		return false
-	}
+	return false
 }
 
 type safeDirectorySnapshot struct {

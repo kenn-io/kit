@@ -238,9 +238,8 @@ func nullGlobalConfigPath() string {
 // from protected configuration (system, global, and command scope), so these
 // are the entries the sanitized environment would otherwise hide. Entries are
 // read fresh on every call. Unset or unreadable scopes contribute nothing.
-// Empty values are kept because an empty
-// safe.directory resets the list, and replaying entries in order preserves
-// that semantic at command scope.
+// Empty values are kept because an empty safe.directory resets the list.
+// Replaying entries in order preserves that semantic at command scope.
 //
 // The probes run in dir, the same directory as the git command being built,
 // so conditional includes (includeIf "gitdir:...") resolve exactly as they

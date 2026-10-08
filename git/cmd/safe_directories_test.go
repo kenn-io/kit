@@ -23,9 +23,9 @@ func TestCachedTrustFilesystemBound(t *testing.T) {
 	for _, mode := range []string{"cancel", "timeout", "contention"} {
 		t.Run(mode, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				originalSlot := safeDirectoryFilesystemSlot
-				safeDirectoryFilesystemSlot = make(chan struct{}, 1)
-				t.Cleanup(func() { safeDirectoryFilesystemSlot = originalSlot })
+				originalAdmission := safeDirectoryFilesystem
+				safeDirectoryFilesystem = &safeDirectoryFilesystemAdmission{}
+				t.Cleanup(func() { safeDirectoryFilesystem = originalAdmission })
 				original := &safeDirectorySnapshot{}
 				cache := &safeDirectoryCache{current: original}
 				ctx, cancel := context.WithCancel(t.Context())
@@ -60,6 +60,13 @@ func TestCachedTrustFilesystemBound(t *testing.T) {
 					assert.Same(t, original, cache.current)
 					return
 				}
+				called := false
+				go func() {
+					result <- evaluateFilesystem(t.Context(), func() { called = true })
+				}()
+				synctest.Wait()
+				assert.Empty(t, result)
+				endedAt := time.Now()
 				if mode == "cancel" {
 					cancel()
 				} else {
@@ -67,8 +74,13 @@ func TestCachedTrustFilesystemBound(t *testing.T) {
 				}
 				synctest.Wait()
 				require.False(t, <-result)
-				called := false
+				require.False(t, <-result)
+				if mode == "cancel" {
+					assert.Zero(t, time.Since(endedAt))
+				}
+				before := time.Now()
 				assert.False(t, evaluateFilesystem(t.Context(), func() { called = true }))
+				assert.Zero(t, time.Since(before))
 				assert.False(t, called)
 				assert.Same(t, original, cache.current)
 				close(release)
