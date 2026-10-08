@@ -4,15 +4,114 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	gitcmd "go.kenn.io/kit/git/cmd"
 )
+
+func TestConfiguredPushUsesSelectedUpstream(t *testing.T) {
+	for _, scope := range []UpstreamScope{UpstreamWorktree, UpstreamRepository} {
+		t.Run(map[UpstreamScope]string{UpstreamWorktree: "worktree", UpstreamRepository: "repository"}[scope], func(t *testing.T) {
+			_, clone := initOriginAndClone(t)
+			created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+				ProjectRoot: clone, Path: filepath.Join(t.TempDir(), "checkout"), Branch: "topic", Runner: lifecycleTestRunner(t),
+			})
+			require.NoError(t, err)
+			lifecycleGit(t, clone, "config", "extensions.worktreeConfig", "true")
+			lifecycleGit(t, clone, "config", "--global", "push.default", "simple")
+			lifecycleGit(t, clone, "config", "--local", "push.default", "current")
+			lifecycleGit(t, created.Path, "config", "--worktree", "push.default", "current")
+			err = SetWorktreeUpstream(t.Context(), WorktreeUpstreamOptions{
+				ProjectRoot: clone, Path: created.Path, Runner: lifecycleTestRunner(t),
+				Policy: UpstreamPolicy{Action: UpstreamTrack, Scope: scope, Remote: "origin", Ref: "refs/heads/main", ConfigurePush: true},
+			})
+			require.NoError(t, err)
+			push := lifecycleGit(t, created.Path, "push", "--dry-run", "--porcelain")
+			assert.Contains(t, push, "refs/heads/topic:refs/heads/main")
+			assert.NotContains(t, push, "refs/heads/topic:refs/heads/topic")
+		})
+	}
+}
+
+func TestConfiguredPushRejectsCommandOverrideBeforeChangingRouting(t *testing.T) {
+	for _, source := range []string{"runner", "environment"} {
+		t.Run(source, func(t *testing.T) {
+			_, clone := initOriginAndClone(t)
+			created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+				ProjectRoot: clone, Path: filepath.Join(t.TempDir(), "checkout"), Branch: "topic", Runner: lifecycleTestRunner(t),
+			})
+			require.NoError(t, err)
+			runner := lifecycleTestRunner(t)
+			if source == "runner" {
+				runner = runner.WithConfig("push.default", "current")
+			} else {
+				runner.Env = append(runner.Env, "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=push.default", "GIT_CONFIG_VALUE_0=current")
+			}
+			before, err := os.ReadFile(filepath.Join(clone, ".git", "config"))
+			require.NoError(t, err)
+			err = SetWorktreeUpstream(t.Context(), WorktreeUpstreamOptions{
+				ProjectRoot: clone, Path: created.Path, Runner: runner,
+				Policy: UpstreamPolicy{Action: UpstreamTrack, Scope: UpstreamRepository, Remote: "origin", Ref: "refs/heads/main", ConfigurePush: true},
+			})
+			require.ErrorIs(t, err, ErrInvalidWorktreeOptions)
+			after, err := os.ReadFile(filepath.Join(clone, ".git", "config"))
+			require.NoError(t, err)
+			assert.Equal(t, before, after)
+		})
+	}
+}
+
+func TestLifecycleExecutionOptionsPreserveInheritedConfig(t *testing.T) {
+	if os.Getenv("KIT_TEST_INHERITED_CONFIG") != "1" {
+		// A nil runner environment must inherit the process environment. Use a
+		// child with fixture-only Git settings so host bindings cannot escape.
+		isolateLifecycleGitConfig(t)
+		executable, err := os.Executable()
+		require.NoError(t, err)
+		cmd := exec.CommandContext(t.Context(), executable, "-test.run=^TestLifecycleExecutionOptionsPreserveInheritedConfig$")
+		cmd.Env = append(lifecycleGitEnv(t), "KIT_TEST_INHERITED_CONFIG=1",
+			"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=fixture.value", "GIT_CONFIG_VALUE_0=inherited")
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "%s", out)
+		return
+	}
+	for _, tc := range []struct {
+		name   string
+		runner gitcmd.Runner
+	}{
+		{"wait delay", gitcmd.Runner{WaitDelay: time.Second}},
+		{"stdout limit", gitcmd.Runner{StdoutLimit: 1 << 20}},
+		{"stderr limit", gitcmd.Runner{StderrLimit: 1 << 20}},
+		{"accept wait delay", gitcmd.Runner{AcceptSuccessfulWaitDelay: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := initLifecycleRepo(t)
+			observed := false
+			_, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+				ProjectRoot: root, Path: filepath.Join(t.TempDir(), "checkout"), Branch: "topic", Runner: tc.runner,
+				RunGit: func(ctx context.Context, runner gitcmd.Runner, dir string, args ...string) ([]byte, error) {
+					if !observed {
+						out, err := runner.Output(ctx, dir, "config", "--get", "fixture.value")
+						require.NoError(t, err)
+						assert.Equal(t, "inherited\n", string(out))
+						observed = true
+					}
+					out, stderr, err := runner.Run(ctx, dir, nil, args...)
+					return append(out, stderr...), err
+				},
+			})
+			require.NoError(t, err)
+			assert.True(t, observed)
+		})
+	}
+}
 
 func TestCreateExplicitCheckoutModes(t *testing.T) {
 	for _, bare := range []bool{false, true} {

@@ -594,12 +594,19 @@ func RemoveWorktreeFromDisk(
 		return result, ErrWorktreeCleanupIncomplete
 	}
 	for _, removal := range branches {
-		if err := removeBranch(ctx, root, removal); err != nil {
-			return result, err
+		removeErr := removeBranch(ctx, root, removal)
+		if removeErr != nil {
+			exists, inspectErr := localBranchExists(ctx, root, removal.Name)
+			if inspectErr != nil || exists {
+				return result, errors.Join(removeErr, inspectErr)
+			}
 		}
 		result.BranchesRemoved = append(result.BranchesRemoved, removal.Name)
 		result.BranchesRemaining = result.BranchesRemaining[1:]
 		result.setRemainingBranch()
+		if removeErr != nil {
+			return result, removeErr
+		}
 	}
 	return result, nil
 }

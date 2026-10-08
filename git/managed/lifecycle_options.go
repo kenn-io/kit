@@ -178,6 +178,17 @@ func (e lifecycleExecution) setUpstream(ctx context.Context, root, path string, 
 	if policy.ConfigurePush {
 		entries = append(entries, gitcmd.Config{Key: "branch." + branch + ".pushRemote", Value: remote})
 	}
+	configurePush := policy.Action == UpstreamTrack && policy.ConfigurePush
+	if configurePush {
+		out, err := e.run(ctx, path, "config", "--show-scope", "--get", "push.default")
+		if err != nil && !gitcmd.IsExitCode(err, 1) {
+			return err
+		}
+		scope, value, _ := strings.Cut(strings.TrimSpace(string(out)), "\t")
+		if scope == "command" && value != "upstream" {
+			return fmt.Errorf("%w: command-scope push.default overrides upstream routing", ErrInvalidWorktreeOptions)
+		}
+	}
 	registration, err := e.run(ctx, path, "rev-parse", "--absolute-git-dir")
 	if err != nil {
 		return err
@@ -230,10 +241,25 @@ func (e lifecycleExecution) setUpstream(ctx context.Context, root, path string, 
 			}
 		}
 	}
-	if policy.Action == UpstreamTrack && policy.ConfigurePush {
-		_, err = e.run(ctx, path, "config", scope, "push.default", "upstream")
+	if configurePush {
+		if scope == "--local" && worktreeConfigEnabled {
+			_, err := e.run(ctx, path, "config", "--worktree", "--unset-all", "push.default")
+			if err != nil && !gitcmd.IsExitCode(err, 5) {
+				return err
+			}
+		}
+		if _, err := e.run(ctx, path, "config", scope, "--replace-all", "push.default", "upstream"); err != nil {
+			return err
+		}
+		out, err := e.run(ctx, path, "config", "--get", "push.default")
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(string(out)) != "upstream" {
+			return fmt.Errorf("%w: effective push.default overrides upstream routing", ErrInvalidWorktreeOptions)
+		}
 	}
-	return err
+	return nil
 }
 
 // trackingOID resolves a selected remote branch through its positive fetch
@@ -313,7 +339,8 @@ func (e lifecycleExecution) runWithRunner(ctx context.Context, runner gitcmd.Run
 func newLifecycleExecution(runner gitcmd.Runner, runGit GitRunner, runHook HookRunner) lifecycleExecution {
 	if runner.Env == nil {
 		isZero := len(runner.Config) == 0 && !runner.StripEnv && !runner.TerminalPrompt &&
-			!runner.NullGlobalConfig && !runner.NoSystemConfig && !runner.DisableSafeDirectoryForward
+			!runner.NullGlobalConfig && !runner.NoSystemConfig && !runner.DisableSafeDirectoryForward &&
+			runner.WaitDelay == 0 && runner.StdoutLimit == 0 && runner.StderrLimit == 0 && !runner.AcceptSuccessfulWaitDelay
 		runner.Env = os.Environ()
 		if isZero {
 			runner.StripEnv = true

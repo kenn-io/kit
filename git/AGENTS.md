@@ -74,10 +74,13 @@ specific application or forge workflow.
   selected branch's old repository/worktree routing. Do not mask inherited merge
   refs with empty values. Reject routing inherited from other config files or
   command options instead of changing those sources.
+  Explicit push routing must take effect across repository/worktree scopes;
+  reject conflicting command overrides before changing branch routing.
 - Lifecycle hooks must resolve inside the project tree. Applications may
   supply Git and hook runners to retain their process limits and
   platform-specific execution policy. Prepared hooks retain the same validation
   and environment while allowing execution outside application repository locks.
+  Configuring execution limits alone must not change inherited Git settings.
 
 ## Tests
 
