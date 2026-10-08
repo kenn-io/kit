@@ -408,7 +408,7 @@ func readSafeDirectorySnapshot(ctx context.Context, env []string, dir, scope str
 }
 
 func fingerprintSafeDirectoryBytes(path string, size int64, digest []byte) [32]byte {
-	return sha256.Sum256([]byte(fmt.Sprintf("%s\x00%t\x00%d\x00%x", path, true, size, digest)))
+	return sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%x", path, size, digest)))
 }
 
 type safeDirectoryContextReader struct {
