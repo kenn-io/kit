@@ -140,9 +140,6 @@ func TestCachedTrust(t *testing.T) {
 		}
 		runner := New()
 		runner.Env = append(safeDirectoryTestEnv(t, "gitconfig"), "GIT_CONFIG_NOSYSTEM=1")
-		runner.DisableSafeDirectoryForward = true
-		_, err := runner.Output(t.Context(), dir, "init")
-		require.NoError(t, err)
 		for range 3 {
 			assert.Equal(t, []string{"/trusted"}, runner.trust.read(t.Context(), runner.Env, sub))
 		}

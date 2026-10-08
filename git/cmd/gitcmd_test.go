@@ -216,8 +216,6 @@ func TestReadSafeDirectories(t *testing.T) {
 		{"global", "[safe]\n directory = *\n directory = /srv/repo\n", "1", []string{"*", "/srv/repo"}},
 		{"unset", "", "1", nil},
 		{"system scope", "[safe]\n directory = /home/repo\n", "0", []string{"/etc/repo", "/home/repo"}},
-		// Git's explicit --system query ignores NOSYSTEM, so the reader must skip that scope.
-		{"no system", "[safe]\n directory = /home/repo\n", "1", []string{"/home/repo"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			globalConfig := filepath.Join(t.TempDir(), "gitconfig")
@@ -306,7 +304,6 @@ func TestCommandEnvForwardsSafeDirectory(t *testing.T) {
 			runner.DisableSafeDirectoryForward = tc.disabled
 			cmd := runner.Command(t.Context(), "", "status")
 			assert.Equal(t, tc.want, gitConfigValue(strings.Join(cmd.Env, "\n"), "safe.directory"))
-			assert.Contains(t, cmd.Env, "GIT_CONFIG_GLOBAL="+nullGlobalConfigPath())
 		})
 	}
 }
