@@ -61,6 +61,18 @@ type Runner struct {
 	// repositories owned by another user ("detected dubious ownership"), even
 	// though plain git works for the same user.
 	DisableSafeDirectoryForward bool
+	// WaitDelay bounds pipe draining after Git exits or is canceled. Zero
+	// preserves the default of one second.
+	WaitDelay time.Duration
+	// StdoutLimit and StderrLimit bound captured output in Run and Output.
+	// Nonpositive values are unlimited. Excess bytes are drained and discarded;
+	// the result includes the corresponding limit error even if Git succeeds.
+	StdoutLimit int
+	StderrLimit int
+	// AcceptSuccessfulWaitDelay accepts a successful Git exit whose inherited
+	// output pipes did not close before WaitDelay. Cancellation and nonzero
+	// process exits still fail. This does not affect Command's caller-owned Wait.
+	AcceptSuccessfulWaitDelay bool
 
 	basicAuth *basicAuth
 }
@@ -98,6 +110,9 @@ func (r Runner) Command(ctx context.Context, dir string, args ...string) *exec.C
 		panic("gitcmd: Command cannot be used with WithBasicAuth; use Run or Output so credentials can be cleaned up")
 	}
 	cmd := gitCommand(ctx, !r.TerminalPrompt, args...)
+	if r.WaitDelay != 0 {
+		cmd.WaitDelay = r.WaitDelay
+	}
 	cmd.Dir = dir
 	cmd.Env, _ = r.commandEnv(ctx, dir)
 	return cmd
@@ -112,27 +127,67 @@ func (r Runner) Output(ctx context.Context, dir string, args ...string) ([]byte,
 // Run runs git and returns stdout, stderr, and a *GitError on failure.
 func (r Runner) Run(ctx context.Context, dir string, stdin io.Reader, args ...string) ([]byte, []byte, error) {
 	cmd := gitCommand(ctx, !r.TerminalPrompt, args...)
+	if r.WaitDelay != 0 {
+		cmd.WaitDelay = r.WaitDelay
+	}
 	cmd.Dir = dir
 	var cleanup func()
 	cmd.Env, cleanup = r.commandEnv(ctx, dir)
 	defer cleanup()
 	cmd.Stdin = stdin
 
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
+	stdout := outputBuffer{limit: r.StdoutLimit}
+	stderr := outputBuffer{limit: r.StderrLimit}
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	err := cmd.Run()
+	if err != nil && ctx.Err() != nil {
+		err = errors.Join(err, ctx.Err())
+	} else if r.AcceptSuccessfulWaitDelay && errors.Is(err, exec.ErrWaitDelay) &&
+		cmd.ProcessState != nil && cmd.ProcessState.Success() {
+		err = nil
+	}
+	if stdout.exceeded {
+		err = errors.Join(err, ErrStdoutLimitExceeded)
+	}
+	if stderr.exceeded {
+		err = errors.Join(err, ErrStderrLimitExceeded)
+	}
 	if err != nil {
-		return stdout.Bytes(), stderr.Bytes(), &GitError{
+		return stdout.buffer.Bytes(), stderr.buffer.Bytes(), &GitError{
 			Dir:    dir,
 			Args:   append([]string(nil), args...),
-			Stderr: strings.TrimSpace(stderr.String()),
+			Stderr: strings.TrimSpace(stderr.buffer.String()),
 			Err:    err,
 		}
 	}
-	return stdout.Bytes(), stderr.Bytes(), nil
+	return stdout.buffer.Bytes(), stderr.buffer.Bytes(), nil
+}
+
+var (
+	// ErrStdoutLimitExceeded reports truncated captured standard output.
+	ErrStdoutLimitExceeded = errors.New("git stdout limit exceeded")
+	// ErrStderrLimitExceeded reports truncated captured standard error.
+	ErrStderrLimitExceeded = errors.New("git stderr limit exceeded")
+)
+
+// outputBuffer keeps a prefix while continuing to drain a subprocess pipe.
+// Do not embed bytes.Buffer: its promoted ReadFrom would bypass the limit.
+type outputBuffer struct {
+	buffer   bytes.Buffer
+	limit    int
+	exceeded bool
+}
+
+func (b *outputBuffer) Write(p []byte) (int, error) {
+	n := len(p)
+	if b.limit > 0 && n > b.limit-b.buffer.Len() {
+		b.exceeded = true
+		p = p[:b.limit-b.buffer.Len()]
+	}
+	_, err := b.buffer.Write(p)
+	return n, err
 }
 
 func gitCommand(ctx context.Context, hideConsoleWindow bool, args ...string) *exec.Cmd {

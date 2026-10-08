@@ -115,7 +115,7 @@ func TestRunnerCancellationStopsGitHTTPSubprocesses(t *testing.T) {
 
 	select {
 	case err := <-result:
-		require.Error(err)
+		require.ErrorIs(err, context.Canceled)
 	case <-time.After(3 * time.Second):
 		close(release)
 		require.Error(<-result)
