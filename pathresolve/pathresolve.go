@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"syscall"
 )
 
 // maxLinks bounds reparse-point hops so a link cycle fails instead of spinning.
@@ -97,16 +98,19 @@ func EvalSymlinksAllowMissing(path string) (string, error) {
 // whether it followed at least one, so callers can tell a junction-free path
 // from a resolved one.
 func resolveReparsePoints(path string) (string, bool, error) {
-	absolute, err := filepath.Abs(path)
+	absolute, err := absoluteWithoutCleaning(path)
 	if err != nil {
 		return "", false, err
 	}
-	current := filepath.Clean(absolute)
+	current := absolute
 	followed := false
 	for range maxLinks {
-		next, ok := followFirstReparsePoint(current)
+		next, ok, err := followFirstReparsePoint(current)
+		if err != nil {
+			return "", false, err
+		}
 		if !ok {
-			return current, followed, nil
+			return next, followed, nil
 		}
 		current = next
 		followed = true
@@ -120,7 +124,7 @@ func resolveReparsePoints(path string) (string, bool, error) {
 //
 // os.Lstat cannot see a junction, so the reparse points here are found with
 // os.Readlink, which reads the target of both tag kinds.
-func followFirstReparsePoint(current string) (string, bool) {
+func followFirstReparsePoint(current string) (string, bool, error) {
 	volume := filepath.VolumeName(current)
 	tail := current[len(volume):]
 	prefix := volume
@@ -138,25 +142,57 @@ func followFirstReparsePoint(current string) (string, bool) {
 		if start == i {
 			break
 		}
-		if len(prefix) > 0 && !os.IsPathSeparator(prefix[len(prefix)-1]) {
-			prefix += string(filepath.Separator)
+		prefix = filepath.Join(prefix, tail[start:i])
+		info, err := os.Lstat(prefix)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
 		}
-		prefix += tail[start:i]
-
+		if err != nil {
+			return "", false, err
+		}
 		target, err := os.Readlink(prefix)
 		if err != nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return "", false, err
+			}
+			if i < len(tail) && !info.IsDir() {
+				return "", false, &os.PathError{Op: "lstat", Path: prefix, Err: syscall.ENOTDIR}
+			}
 			continue
 		}
 		switch {
 		case filepath.IsAbs(target):
 		case filepath.VolumeName(target) == "" && target != "" && os.IsPathSeparator(target[0]):
-			// A rooted target such as `\shared` names the link's own volume,
-			// not a path below the link's directory.
+			// A rooted target such as `\shared` names the link's own volume.
 			target = volume + target
+		case filepath.VolumeName(target) != "":
+			target, err = absoluteWithoutCleaning(target)
+			if err != nil {
+				return "", false, err
+			}
 		default:
-			target = filepath.Join(filepath.Dir(prefix), target)
+			target = filepath.Dir(prefix) + string(filepath.Separator) + target
 		}
-		return filepath.Clean(target + tail[i:]), true
+		// Keep target and suffix components intact until their links are followed.
+		return target + tail[i:], true, nil
 	}
-	return current, false
+	return prefix, false, nil
+}
+
+// absoluteWithoutCleaning anchors relative paths without collapsing link/.. .
+func absoluteWithoutCleaning(path string) (string, error) {
+	if filepath.IsAbs(path) {
+		return path, nil
+	}
+	volume := filepath.VolumeName(path)
+	tail := path[len(volume):]
+	if tail != "" && os.IsPathSeparator(tail[0]) {
+		root, err := filepath.Abs(string(filepath.Separator))
+		return filepath.VolumeName(root) + tail, err
+	}
+	base, err := filepath.Abs(volume + ".")
+	if err != nil {
+		return "", err
+	}
+	return base + string(filepath.Separator) + tail, nil
 }

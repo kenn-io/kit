@@ -49,5 +49,7 @@ point is a symbolic link.
   junction does not weaken that, and `safefileio` keeps its own stricter rule.
 - `EvalSymlinksAllowMissing` is for containment checks before creation. Follow
   existing links on every platform, including dangling links, then retain the
-  missing suffix. Reject cycles, unreadable paths, and non-directory parents.
+  missing suffix. Resolve each link before applying later `..` components,
+  including those in link targets; do not clean an unresolved path first.
+  Reject cycles, unreadable paths, and non-directory parents.
   Keep `EvalSymlinks`'s existing missing-path error contract unchanged.

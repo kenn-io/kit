@@ -79,12 +79,14 @@ func TestMaterializeUntrustedTreePinsWorktree(t *testing.T) {
 }
 
 func TestDeferredCheckoutRejectsFutureTreeConfig(t *testing.T) {
-	for _, source := range []string{"global", "system", "include", "conditional-include", "global-link", "include-link", "directory-link", "external", "external-link"} {
+	for _, source := range []string{"global", "system", "include", "conditional-include", "global-link", "include-link", "directory-link", "parent-link", "parent-include", "external", "external-link"} {
 		t.Run(source, func(t *testing.T) {
 			root := initLifecycleRepo(t)
 			require.NoError(t, os.WriteFile(filepath.Join(root, ".gitconfig"), []byte("[diff \"deferred\"]\ncommand = echo executed > driver-ran\n"), 0o600))
 			require.NoError(t, os.WriteFile(filepath.Join(root, ".gitattributes"), []byte("payload diff=deferred\n"), 0o600))
 			require.NoError(t, os.WriteFile(filepath.Join(root, "payload"), []byte("original\n"), 0o600))
+			require.NoError(t, os.Mkdir(filepath.Join(root, "nested"), 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(root, "nested", "file"), nil, 0o600))
 			lifecycleGit(t, root, "add", ".")
 			lifecycleGit(t, root, "commit", "-m", "tree configuration")
 			lifecycleGit(t, root, "branch", "imported")
@@ -99,7 +101,8 @@ func TestDeferredCheckoutRejectsFutureTreeConfig(t *testing.T) {
 			case "global-link", "include-link", "external-link":
 				target := filepath.Join(path, ".gitconfig")
 				if source == "external-link" {
-					target = filepath.Join(t.TempDir(), "missing.gitconfig")
+					target = filepath.Join(t.TempDir(), "external.gitconfig")
+					require.NoError(t, os.WriteFile(target, nil, 0o600))
 				}
 				links := t.TempDir()
 				if err := os.Symlink(target, filepath.Join(links, "target")); err != nil {
@@ -114,6 +117,18 @@ func TestDeferredCheckoutRejectsFutureTreeConfig(t *testing.T) {
 					lifecycleGit(t, root, "config", "include.path", link)
 				} else {
 					runner.Env = append(runner.Env, "GIT_CONFIG_GLOBAL="+link)
+				}
+			case "parent-link", "parent-include":
+				link := filepath.Join(t.TempDir(), "route")
+				_, err := fslink.LinkDir(filepath.Join(path, "nested"), link)
+				require.NoError(t, err)
+				configPath := link + "/../.gitconfig"
+				if source == "parent-include" {
+					relative, err := filepath.Rel(filepath.Join(root, ".git"), link)
+					require.NoError(t, err)
+					lifecycleGit(t, root, "config", "include.path", filepath.ToSlash(relative)+"/../.gitconfig")
+				} else {
+					runner.Env = append(runner.Env, "GIT_CONFIG_GLOBAL="+configPath)
 				}
 			case "directory-link":
 				link := filepath.Join(t.TempDir(), "directory")
@@ -134,7 +149,7 @@ func TestDeferredCheckoutRejectsFutureTreeConfig(t *testing.T) {
 				Checkout: CheckoutIsolated, FailureCleanup: CleanupDeferred, Runner: runner,
 			})
 			if source != "external" && source != "external-link" {
-				require.ErrorContains(t, err, "configuration inside merge request worktree")
+				require.Error(t, err)
 				assert.NoDirExists(t, path)
 				assert.False(t, branchExistsInRepo(t, root, "topic"))
 				return

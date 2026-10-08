@@ -507,7 +507,7 @@ func rejectConfigSourcesInsideWorktree(
 	lexicalWorktree := lexicalWorktreePath(worktreePath)
 	checkPath := func(configPath string) error {
 		if !filepath.IsAbs(configPath) {
-			configPath = filepath.Join(worktreePath, configPath)
+			configPath = worktreePath + string(filepath.Separator) + configPath
 		}
 		resolved, err := pathresolve.EvalSymlinksAllowMissing(configPath)
 		if err != nil {
@@ -529,7 +529,17 @@ func rejectConfigSourcesInsideWorktree(
 		if err != nil {
 			return fmt.Errorf("inspect %s: %w", selector, err)
 		}
-		for path := range strings.SplitSeq(strings.TrimSuffix(string(out), "\n"), "\n") {
+		paths := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
+		// git var cleans parent components, but Git opens an explicit selector
+		// as written. Preserve that spelling until links have been resolved.
+		for _, entry := range slices.Backward(runner.Env) {
+			key, value, _ := strings.Cut(entry, "=")
+			if key == selector || (runtime.GOOS == "windows" && strings.EqualFold(key, selector)) {
+				paths = []string{value}
+				break
+			}
+		}
+		for _, path := range paths {
 			if err := checkPath(path); err != nil {
 				return err
 			}
@@ -554,7 +564,7 @@ func rejectConfigSourcesInsideWorktree(
 		}
 		configPath := strings.TrimPrefix(origin, "file:")
 		if !filepath.IsAbs(configPath) {
-			configPath = filepath.Join(dir, configPath)
+			configPath = dir + string(filepath.Separator) + configPath
 		}
 		if err := checkPath(configPath); err != nil {
 			return err
@@ -577,9 +587,10 @@ func rejectConfigSourcesInsideWorktree(
 				return errors.New("relative config includes must come from files")
 			}
 			if !filepath.IsAbs(origin) {
-				origin = filepath.Join(dir, origin)
+				origin = dir + string(filepath.Separator) + origin
 			}
-			configPath = filepath.Join(filepath.Dir(origin), configPath)
+			originDir, _ := filepath.Split(origin)
+			configPath = originDir + configPath
 		}
 		if err := checkPath(configPath); err != nil {
 			return err
