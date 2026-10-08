@@ -1,0 +1,230 @@
+package managedworktree
+
+import (
+	"context"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	gitcmd "go.kenn.io/kit/git/cmd"
+)
+
+func TestRollbackPoliciesPreserveUnownedArtifacts(t *testing.T) {
+	for _, policy := range []RollbackPolicy{RollbackUnchanged, RollbackFreshOwned} {
+		for _, replacement := range []string{"directory", "repository", "registration", "unverified"} {
+			t.Run(map[RollbackPolicy]string{RollbackUnchanged: "unchanged", RollbackFreshOwned: "fresh"}[policy]+"/"+replacement, func(t *testing.T) {
+				root := initLifecycleRepo(t)
+				path := filepath.Join(t.TempDir(), "checkout")
+				result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+					ProjectRoot: root, Path: path, Branch: "topic", Runner: lifecycleTestRunner(t),
+					FailureCleanup: CleanupDeferred,
+					RunGit: func(ctx context.Context, runner gitcmd.Runner, dir string, args ...string) ([]byte, error) {
+						stdout, stderr, err := runner.Run(ctx, dir, nil, args...)
+						if replacement == "unverified" && slices.Contains(args, "--absolute-git-dir") {
+							return stdout, errors.New("fixture evidence failure")
+						}
+						return append(stdout, stderr...), err
+					},
+				})
+				if replacement == "unverified" {
+					require.Error(t, err)
+				} else {
+					require.NoError(t, err)
+				}
+				oid := lifecycleGit(t, root, "rev-parse", "topic")
+				switch replacement {
+				case "directory":
+					require.NoError(t, os.Rename(path, path+"-original"))
+					require.NoError(t, os.Mkdir(path, 0o700))
+				case "repository":
+					require.NoError(t, os.Rename(path, path+"-original"))
+					other := initLifecycleRepo(t)
+					require.NoError(t, os.Rename(other, path))
+				case "registration":
+					registration := lifecycleGit(t, path, "rev-parse", "--absolute-git-dir")
+					require.NoError(t, os.Rename(registration, registration+"-original"))
+					require.NoError(t, os.CopyFS(registration, os.DirFS(registration+"-original")))
+				}
+				remaining, err := result.Rollback(t.Context(), policy)
+				require.ErrorIs(t, err, ErrWorktreeCleanupIncomplete)
+				assert.True(t, remaining.Unverified)
+				assert.Equal(t, path, remaining.Path)
+				assert.DirExists(t, path)
+				assert.Equal(t, oid, lifecycleGit(t, root, "rev-parse", "topic"))
+			})
+		}
+	}
+}
+
+func TestFreshRollbackDeletesOnlyAcquiredBranch(t *testing.T) {
+	root := initLifecycleRepo(t)
+	lifecycleGit(t, root, "branch", "keep")
+	result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: root, Path: filepath.Join(t.TempDir(), "checkout"), Branch: "owned", Runner: lifecycleTestRunner(t),
+	})
+	require.NoError(t, err)
+	path := result.Path
+	lifecycleGit(t, path, "checkout", "keep")
+	require.NoError(t, os.WriteFile(filepath.Join(path, "setup-output"), []byte("partial setup"), 0o600))
+	result.Path, result.Branch, result.BranchCreated = root, "main", false
+	remaining, err := result.Rollback(t.Context(), RollbackFreshOwned)
+	require.NoError(t, err)
+	assert.Empty(t, remaining)
+	assert.NoDirExists(t, path)
+	assert.False(t, branchExistsInRepo(t, root, "owned"))
+	assert.True(t, branchExistsInRepo(t, root, "keep"))
+	assert.DirExists(t, root)
+}
+
+func TestBranchCleanupWaitsForCheckoutRemoval(t *testing.T) {
+	root := initLifecycleRepo(t)
+	created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: root, Path: filepath.Join(t.TempDir(), "checkout"), Branch: "topic", Runner: lifecycleTestRunner(t),
+	})
+	require.NoError(t, err)
+	failure := errors.New("fixture remove failure")
+	result, err := RemoveWorktreeFromDisk(t.Context(), RemoveWorktreeOptions{
+		ProjectRoot: root, Path: created.Path, Branch: "topic", Force: true, Runner: lifecycleTestRunner(t),
+		Branches: []BranchRemoval{{Name: "topic", Force: true}},
+		RunGit: func(ctx context.Context, runner gitcmd.Runner, dir string, args ...string) ([]byte, error) {
+			if len(args) > 1 && args[0] == "worktree" && args[1] == "remove" {
+				return nil, failure
+			}
+			stdout, stderr, err := runner.Run(ctx, dir, nil, args...)
+			return append(stdout, stderr...), err
+		},
+	})
+	require.ErrorIs(t, err, failure)
+	assert.False(t, result.CheckoutRemoved)
+	assert.False(t, result.RegistrationRemoved)
+	assert.Empty(t, result.BranchesRemoved)
+	assert.DirExists(t, created.Path)
+	assert.True(t, branchExistsInRepo(t, root, "topic"))
+}
+
+func TestRemovalReportsPartialArtifacts(t *testing.T) {
+	root := initLifecycleRepo(t)
+	created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: root, Path: filepath.Join(t.TempDir(), "checkout"), Branch: "topic", Runner: lifecycleTestRunner(t),
+	})
+	require.NoError(t, err)
+	failure := errors.New("fixture residual directory")
+	result, err := RemoveWorktreeFromDisk(t.Context(), RemoveWorktreeOptions{
+		ProjectRoot: root, Path: created.Path, Branch: "topic", Force: true, Runner: lifecycleTestRunner(t),
+		Branches: []BranchRemoval{{Name: "topic", Force: true}},
+		RunGit: func(ctx context.Context, runner gitcmd.Runner, dir string, args ...string) ([]byte, error) {
+			stdout, stderr, err := runner.Run(ctx, dir, nil, args...)
+			if err == nil && len(args) > 1 && args[0] == "worktree" && args[1] == "remove" {
+				err = errors.Join(failure, os.Mkdir(created.Path, 0o700))
+			}
+			return append(stdout, stderr...), err
+		},
+	})
+	require.ErrorIs(t, err, failure)
+	assert.False(t, result.CheckoutRemoved)
+	assert.True(t, result.RegistrationRemoved)
+	assert.Empty(t, result.BranchesRemoved)
+	assert.Equal(t, created.Path, result.Remaining.Path)
+	assert.Equal(t, "topic", result.Remaining.Branch)
+	assert.Empty(t, result.Remaining.Registration)
+	assert.DirExists(t, created.Path)
+	assert.True(t, branchExistsInRepo(t, root, "topic"))
+}
+
+func TestRemovalBranchPolicy(t *testing.T) {
+	for _, kind := range []string{"merged-only", "force", "changed-oid"} {
+		t.Run(kind, func(t *testing.T) {
+			root := initLifecycleRepo(t)
+			created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+				ProjectRoot: root, Path: filepath.Join(t.TempDir(), "checkout"), Branch: "topic", Runner: lifecycleTestRunner(t),
+			})
+			require.NoError(t, err)
+			old := lifecycleGit(t, created.Path, "rev-parse", "HEAD")
+			lifecycleGit(t, created.Path, "commit", "--allow-empty", "-m", "new work")
+			head := lifecycleGit(t, created.Path, "rev-parse", "HEAD")
+			expected := head
+			if kind == "changed-oid" {
+				expected = old
+			}
+			result, err := RemoveWorktreeFromDisk(t.Context(), RemoveWorktreeOptions{
+				ProjectRoot: root, Path: created.Path, Branch: "topic", Runner: lifecycleTestRunner(t),
+				Branches: []BranchRemoval{{Name: "topic", Force: kind != "merged-only", ExpectedOID: expected}},
+			})
+			assert.True(t, result.CheckoutRemoved)
+			assert.True(t, result.RegistrationRemoved)
+			if kind == "force" {
+				require.NoError(t, err)
+				assert.Equal(t, []string{"topic"}, result.BranchesRemoved)
+				assert.False(t, branchExistsInRepo(t, root, "topic"))
+			} else {
+				require.Error(t, err)
+				assert.Empty(t, result.BranchesRemoved)
+				assert.Equal(t, head, lifecycleGit(t, root, "rev-parse", "topic"))
+			}
+		})
+	}
+}
+
+func TestRollbackPoliciesAfterHeadChanges(t *testing.T) {
+	for _, kind := range []string{"staged", "advanced-branch", "detached", "attached"} {
+		for _, policy := range []RollbackPolicy{RollbackUnchanged, RollbackFreshOwned} {
+			t.Run(kind+"/"+map[RollbackPolicy]string{RollbackUnchanged: "unchanged", RollbackFreshOwned: "fresh"}[policy], func(t *testing.T) {
+				root := initLifecycleRepo(t)
+				if kind == "attached" {
+					lifecycleGit(t, root, "branch", "topic")
+				}
+				created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+					ProjectRoot: root, Path: filepath.Join(t.TempDir(), "checkout"), Branch: "topic", Runner: lifecycleTestRunner(t),
+				})
+				require.NoError(t, err)
+				switch kind {
+				case "staged":
+					require.NoError(t, os.WriteFile(filepath.Join(created.Path, "staged"), []byte("work"), 0o600))
+					lifecycleGit(t, created.Path, "add", "staged")
+				case "advanced-branch":
+					lifecycleGit(t, created.Path, "commit", "--allow-empty", "-m", "work")
+				case "detached":
+					lifecycleGit(t, created.Path, "checkout", "--detach")
+					lifecycleGit(t, created.Path, "commit", "--allow-empty", "-m", "detached work")
+				}
+				head := lifecycleGit(t, root, "rev-parse", "topic")
+				remaining, err := created.Rollback(t.Context(), policy)
+				if policy == RollbackUnchanged && kind != "attached" {
+					require.ErrorIs(t, err, ErrWorktreeCleanupIncomplete)
+					assert.DirExists(t, remaining.Path)
+				} else if kind == "advanced-branch" {
+					require.ErrorIs(t, err, ErrWorktreeCleanupIncomplete)
+					assert.Empty(t, remaining.Path)
+					assert.Equal(t, "topic", remaining.Branch)
+					assert.Equal(t, head, lifecycleGit(t, root, "rev-parse", "topic"))
+				} else {
+					require.NoError(t, err)
+					assert.Empty(t, remaining)
+					assert.NoDirExists(t, created.Path)
+					assert.Equal(t, kind == "attached", branchExistsInRepo(t, root, "topic"))
+				}
+			})
+		}
+	}
+}
+
+func TestPreparedHookRetainsExitCause(t *testing.T) {
+	root := initLifecycleRepo(t)
+	script := writeHookScript(t, root, filepath.Join(t.TempDir(), "hook-output"), 7)
+	hook, err := PrepareWorktreeHook(t.Context(), WorktreeHookOptions{
+		ProjectRoot: root, Path: root, Script: script, RunHook: testHookRunner(),
+	})
+	require.NoError(t, err)
+	err = hook.Run(t.Context())
+	var classified *HookError
+	require.ErrorAs(t, err, &classified)
+	var process *exec.ExitError
+	require.ErrorAs(t, err, &process)
+	assert.Equal(t, 7, process.ExitCode())
+	assert.Equal(t, 7, classified.ExitCode)
+}

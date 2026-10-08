@@ -55,7 +55,10 @@ type HookError struct {
 	Script   string
 	ExitCode int
 	Stderr   string
+	Cause    error
 }
+
+func (e *HookError) Unwrap() error { return e.Cause }
 
 // GitRunner runs one Git command under an application's process policy.
 //
@@ -168,14 +171,27 @@ type CreateWorktreeResult struct {
 
 // RollbackResult identifies worktree artifacts that remained after rollback.
 type RollbackResult struct {
-	Path   string
-	Branch string
+	Path         string
+	Branch       string
+	Registration string
+	// Unverified means acquisition evidence was absent or no longer matched.
+	Unverified bool
 }
 
 // Rollback unwinds the worktree represented by this creation result.
-func (r CreateWorktreeResult) Rollback(ctx context.Context) (RollbackResult, error) {
+func (r CreateWorktreeResult) Rollback(ctx context.Context, policies ...RollbackPolicy) (RollbackResult, error) {
+	policy := RollbackUnchanged
+	if len(policies) > 1 {
+		return r.remaining(), ErrInvalidWorktreeOptions
+	}
+	if len(policies) == 1 {
+		policy = policies[0]
+	}
+	if policy > RollbackFreshOwned {
+		return r.remaining(), ErrInvalidWorktreeOptions
+	}
 	ctx = withLifecycleExecution(ctx, r.runner, r.runGit, r.runHook)
-	return r.rollbackOwned(ctx)
+	return r.rollbackOwned(ctx, policy)
 }
 
 // CreateWorktreeOnDisk performs the git side of worktree creation: it
@@ -362,77 +378,46 @@ func snapshotCreateWorktreeResult(ctx context.Context, root, path, branch string
 	return snapshotAcquisition(ctx, result)
 }
 
-func (r CreateWorktreeResult) rollbackOwned(ctx context.Context) (RollbackResult, error) {
-	path := r.ownedPath
-	branch := r.ownedBranch
-	branchCreated := r.ownedBranchCreated
-	remaining := RollbackResult{Path: path}
-	if branchCreated {
-		remaining.Branch = branch
+func (r CreateWorktreeResult) rollbackOwned(ctx context.Context, policy RollbackPolicy) (RollbackResult, error) {
+	remaining := r.remaining()
+	if err := r.verifyAcquisition(ctx); err != nil {
+		remaining.Unverified = true
+		return remaining, errors.Join(ErrWorktreeCleanupIncomplete, err)
 	}
-	if strings.TrimSpace(r.projectRoot) == "" || strings.TrimSpace(path) == "" {
-		return remaining, fmt.Errorf(
-			"%w: creation result is incomplete", ErrWorktreeCleanupIncomplete,
-		)
-	}
-	if _, err := os.Stat(path); err != nil {
-		if os.IsNotExist(err) {
-			return remaining, fmt.Errorf(
-				"%w: worktree path disappeared; preserving its branch",
-				ErrWorktreeCleanupIncomplete,
-			)
-		}
-		return remaining, fmt.Errorf("%w: inspect worktree path: %w",
-			ErrWorktreeCleanupIncomplete, err)
-	}
-	headOID, headRef, err := lifecycleWorktreeHead(ctx, path)
+	headOID, headRef, err := lifecycleWorktreeHead(ctx, r.ownedPath)
 	if err != nil {
-		return remaining, fmt.Errorf("%w: %w", ErrWorktreeCleanupIncomplete, err)
+		return remaining, errors.Join(ErrWorktreeCleanupIncomplete, err)
 	}
-	if !strings.EqualFold(headOID, r.headOID) || headRef != r.headRef {
-		return remaining, fmt.Errorf(
-			"%w: worktree HEAD changed; preserving it",
-			ErrWorktreeCleanupIncomplete,
-		)
-	}
-	branchOID, branchExists, branchErr := lifecycleRefOID(ctx, r.projectRoot, branch)
-	if branchErr != nil {
-		return remaining, fmt.Errorf("%w: inspect created branch: %w",
-			ErrWorktreeCleanupIncomplete, branchErr)
-	}
-	if !branchExists || !strings.EqualFold(branchOID, r.branchOID) {
-		return remaining, fmt.Errorf(
-			"%w: created worktree branch changed; preserving it",
-			ErrWorktreeCleanupIncomplete,
-		)
-	}
-	dirty, err := worktreeHasRollbackArtifacts(ctx, path)
-	if err != nil {
-		return remaining, fmt.Errorf("%w: %w", ErrWorktreeCleanupIncomplete, err)
-	}
-	if dirty {
-		return remaining, fmt.Errorf(
-			"%w: created worktree contains changes; preserving it",
-			ErrWorktreeCleanupIncomplete,
-		)
-	}
-	if out, err := runLifecycleGit(
-		ctx, r.projectRoot, "worktree", "remove", "--force", path,
-	); err != nil {
-		return remaining, fmt.Errorf("remove created worktree: %w: %s",
-			err, strings.TrimSpace(string(out)))
-	}
-	remaining.Path = ""
-	if branchCreated {
-		if out, err := runLifecycleGit(
-			ctx, r.projectRoot, "branch", "-D", "--", branch,
-		); err != nil {
-			return remaining, fmt.Errorf("delete created branch: %w: %s",
-				err, strings.TrimSpace(string(out)))
+	if policy == RollbackUnchanged {
+		if !strings.EqualFold(headOID, r.headOID) || headRef != r.headRef {
+			return remaining, fmt.Errorf("%w: worktree HEAD changed", ErrWorktreeCleanupIncomplete)
 		}
-		remaining.Branch = ""
+		if r.ownedBranch != "" {
+			oid, exists, err := lifecycleRefOID(ctx, r.projectRoot, r.ownedBranch)
+			if err != nil || !exists || !strings.EqualFold(oid, r.branchOID) {
+				return remaining, fmt.Errorf("created worktree branch changed: %w", errors.Join(ErrWorktreeCleanupIncomplete, err))
+			}
+		}
+		dirty, err := worktreeHasRollbackArtifacts(ctx, r.ownedPath)
+		if err != nil {
+			return remaining, errors.Join(ErrWorktreeCleanupIncomplete, err)
+		}
+		if dirty {
+			return remaining, fmt.Errorf("%w: created worktree contains changes", ErrWorktreeCleanupIncomplete)
+		}
 	}
-	return remaining, nil
+	var branches []BranchRemoval
+	if r.ownedBranchCreated {
+		branches = []BranchRemoval{{Name: r.ownedBranch, ExpectedOID: r.branchOID, Force: true}}
+	}
+	result, err := RemoveWorktreeFromDisk(ctx, RemoveWorktreeOptions{
+		ProjectRoot: r.projectRoot, Path: r.ownedPath, Branch: strings.TrimPrefix(headRef, "refs/heads/"),
+		Force: true, Branches: branches, Runner: r.runner, RunGit: r.runGit,
+	})
+	if err != nil {
+		err = errors.Join(ErrWorktreeCleanupIncomplete, err)
+	}
+	return result.Remaining, err
 }
 
 func lifecycleRefOID(ctx context.Context, root, branch string) (string, bool, error) {
@@ -482,6 +467,9 @@ type RemoveWorktreeOptions struct {
 	// force) belong to the caller.
 	Force        bool
 	RemoveBranch bool
+	// Branches lists refs authorized for cleanup independently of Branch.
+	// It cannot be combined with RemoveBranch.
+	Branches []BranchRemoval
 	// TeardownScript, when set, runs in the worktree before removal.
 	// Relative paths resolve against ProjectRoot and must stay inside the
 	// project tree. A non-zero exit aborts the removal. The hook is
@@ -500,6 +488,13 @@ type RemoveWorktreeOptions struct {
 type RemoveWorktreeResult struct {
 	HookRan    bool
 	HookScript string
+	// These fields report absence after removal, including an already absent
+	// checkout. An error may accompany either completed effect.
+	CheckoutRemoved     bool
+	RegistrationRemoved bool
+	BranchesRemoved     []string
+	BranchesRemaining   []string
+	Remaining           RollbackResult
 }
 
 // RemoveWorktreeFromDisk performs the git side of worktree removal: it
@@ -524,68 +519,75 @@ func RemoveWorktreeFromDisk(
 		return RemoveWorktreeResult{}, err
 	}
 
-	pathExists := true
-	if _, statErr := os.Stat(path); statErr != nil {
-		if !os.IsNotExist(statErr) {
-			return RemoveWorktreeResult{}, fmt.Errorf(
-				"stat worktree path: %w", statErr,
-			)
-		}
-		pathExists = false
+	branches, err := prepareBranchRemovals(ctx, root, branch, opts)
+	if err != nil {
+		return RemoveWorktreeResult{}, err
 	}
-
-	result := RemoveWorktreeResult{}
-	if hookScript != "" && pathExists {
-		if err := verifyRemovalTarget(ctx, root, path, branch); err != nil {
-			return RemoveWorktreeResult{}, err
-		}
-		if hookErr := runLifecycleHook(
-			ctx, hookScript, root, path, branch, opts.WorktreeName,
-			opts.HookEnvironmentPrefix,
-		); hookErr != nil {
-			return RemoveWorktreeResult{}, hookErr
-		}
-		result.HookRan = true
-		result.HookScript = hookScript
+	info, statErr := os.Lstat(path)
+	pathExists := statErr == nil
+	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return RemoveWorktreeResult{}, fmt.Errorf("stat worktree path: %w", statErr)
 	}
-
+	if statErr == nil && !info.IsDir() {
+		return RemoveWorktreeResult{}, fmt.Errorf("worktree path is not a directory: %s", path)
+	}
 	if pathExists {
-		if err := verifyRemovalTarget(ctx, root, path, branch); err != nil {
-			return result, err
-		}
-		args := []string{"worktree", "remove"}
-		if opts.Force {
-			// Git requires force twice to remove a locked worktree.
-			args = append(args, "--force", "--force")
-		}
-		args = append(args, path)
-		if out, err := runLifecycleGit(ctx, root, args...); err != nil {
-			return result, classifyWorktreeGitError(out, err)
-		}
+		err = verifyRemovalTarget(ctx, root, path, branch)
 	} else {
-		if err := verifyRegisteredRemovalTarget(
-			ctx, root, path, branch,
-		); err != nil {
+		err = verifyRegisteredRemovalTarget(ctx, root, path, branch)
+	}
+	if err != nil {
+		return RemoveWorktreeResult{}, err
+	}
+	registration, err := removalRegistration(ctx, root, path)
+	if err != nil {
+		return RemoveWorktreeResult{}, err
+	}
+	result := RemoveWorktreeResult{Remaining: RollbackResult{Path: path, Registration: registration}}
+	for _, removal := range branches {
+		result.BranchesRemaining = append(result.BranchesRemaining, removal.Name)
+	}
+	result.setRemainingBranch()
+	if !pathExists {
+		result.CheckoutRemoved, result.Remaining.Path = true, ""
+	}
+	if hookScript != "" && pathExists {
+		if hookErr := runLifecycleHook(ctx, hookScript, root, path, branch, opts.WorktreeName, opts.HookEnvironmentPrefix); hookErr != nil {
+			return result, hookErr
+		}
+		result.HookRan, result.HookScript = true, hookScript
+	}
+	if pathExists {
+		err = verifyRemovalTarget(ctx, root, path, branch)
+	} else {
+		err = verifyRegisteredRemovalTarget(ctx, root, path, branch)
+	}
+	if err != nil {
+		return result, err
+	}
+	args := []string{"worktree", "remove"}
+	if opts.Force {
+		// Git requires force twice to remove a locked worktree.
+		args = append(args, "--force", "--force")
+	} else if !pathExists {
+		args = append(args, "--force")
+	}
+	args = append(args, path)
+	out, removeErr := runLifecycleGit(ctx, root, args...)
+	inspectErr := result.inspectRemovedArtifacts(path, registration)
+	if removeErr != nil || inspectErr != nil {
+		return result, errors.Join(classifyWorktreeGitError(out, removeErr), inspectErr)
+	}
+	if !result.CheckoutRemoved || !result.RegistrationRemoved {
+		return result, ErrWorktreeCleanupIncomplete
+	}
+	for _, removal := range branches {
+		if err := removeBranch(ctx, root, removal); err != nil {
 			return result, err
 		}
-		// The directory is gone but git may still hold a stale
-		// registration that would block branch deletion and re-creation.
-		args := []string{"worktree", "remove", "--force"}
-		if opts.Force {
-			args = append(args, "--force")
-		}
-		args = append(args, path)
-		if out, err := runLifecycleGit(ctx, root, args...); err != nil {
-			return result, classifyWorktreeGitError(out, err)
-		}
-	}
-
-	if opts.RemoveBranch && branch != "" {
-		if out, err := runLifecycleGit(
-			ctx, root, "branch", "-D", "--", branch,
-		); err != nil {
-			return result, classifyWorktreeGitError(out, err)
-		}
+		result.BranchesRemoved = append(result.BranchesRemoved, removal.Name)
+		result.BranchesRemaining = result.BranchesRemaining[1:]
+		result.setRemainingBranch()
 	}
 	return result, nil
 }
@@ -1002,6 +1004,9 @@ func lifecycleHookRunner(ctx context.Context) HookRunner {
 // package sentinels so the HTTP layer can answer with distinct problem
 // codes instead of a generic failure.
 func classifyWorktreeGitError(out []byte, err error) error {
+	if err == nil {
+		return nil
+	}
 	detail := strings.TrimSpace(string(out))
 	switch {
 	// "'X' is already checked out at ..." (older git, worktree add),
@@ -1009,12 +1014,12 @@ func classifyWorktreeGitError(out []byte, err error) error {
 	// "cannot delete branch 'X' used by worktree at ..." (branch -D).
 	case strings.Contains(detail, "is already checked out at"),
 		strings.Contains(detail, "used by worktree at"):
-		return fmt.Errorf("%w: %s", ErrBranchInUse, detail)
+		return fmt.Errorf("%w: %w: %s", ErrBranchInUse, err, detail)
 	case strings.Contains(detail, "a branch named") &&
 		strings.Contains(detail, "already exists"):
-		return fmt.Errorf("%w: %s", ErrBranchAlreadyExists, detail)
+		return fmt.Errorf("%w: %w: %s", ErrBranchAlreadyExists, err, detail)
 	case strings.Contains(detail, "already exists"):
-		return fmt.Errorf("%w: %s", ErrWorktreeDestinationExists, detail)
+		return fmt.Errorf("%w: %w: %s", ErrWorktreeDestinationExists, err, detail)
 	}
 	return fmt.Errorf("git: %w: %s", err, detail)
 }
@@ -1067,36 +1072,17 @@ func executeLifecycleHook(
 	}
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return fmt.Errorf("run lifecycle hook %s: %w", script, ctxErr)
+			return fmt.Errorf("run lifecycle hook %s: %w", script, errors.Join(ctxErr, err))
 		}
 		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 			return &HookError{
 				Script:   script,
 				ExitCode: exitErr.ExitCode(),
 				Stderr:   strings.TrimSpace(stderr.String()),
+				Cause:    err,
 			}
 		}
 		return fmt.Errorf("run lifecycle hook %s: %w", script, err)
 	}
 	return nil
-}
-
-func rollbackCreatedWorktreeWithResult(
-	ctx context.Context, root, path, branch string, deleteBranch bool,
-) (RollbackResult, error) {
-	var result RollbackResult
-	var errs []error
-	if out, err := runLifecycleGit(
-		ctx, root, "worktree", "remove", "--force", path,
-	); err != nil {
-		result.Path = path
-		errs = append(errs, fmt.Errorf("remove created worktree: %w: %s", err, strings.TrimSpace(string(out))))
-	}
-	if deleteBranch {
-		if out, err := runLifecycleGit(ctx, root, "branch", "-D", "--", branch); err != nil {
-			result.Branch = branch
-			errs = append(errs, fmt.Errorf("delete created branch: %w: %s", err, strings.TrimSpace(string(out))))
-		}
-	}
-	return result, errors.Join(errs...)
 }

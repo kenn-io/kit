@@ -59,14 +59,19 @@ specific application or forge workflow.
   creating the local branch or materializing a worktree.
 - Rollback after a completed create is conservative about ordinary user work:
   preserve a dirty worktree, an initialized submodule, or an advanced branch
-  and report `ErrWorktreeCleanupIncomplete`. Cleanup performed immediately
-  after an in-operation failure may force-remove artifacts created by that
-  operation.
+  and report `ErrWorktreeCleanupIncomplete`. Fresh-owned rollback may discard
+  setup changes in the acquired checkout, but both policies require matching
+  private directory and registration evidence. Preserve artifacts if evidence
+  is incomplete. Never delete an acquired branch after it advances, or continue
+  branch cleanup after failed checkout removal. Report partial removal effects.
 - Configure merge-request tracking in worktree-scoped Git configuration so
   removing a worktree does not leave branch routing behind in shared config.
+  Explicit upstream policy chooses configuration scope and whether to configure
+  push routing. Leave must make no tracking writes; choose policy before create.
 - Lifecycle hooks must resolve inside the project tree. Applications may
   supply Git and hook runners to retain their process limits and
-  platform-specific execution policy.
+  platform-specific execution policy. Prepared hooks retain the same validation
+  and environment while allowing execution outside application repository locks.
 
 ## Tests
 

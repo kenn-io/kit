@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"go.kenn.io/kit/fslink"
 	gitcmd "go.kenn.io/kit/git/cmd"
 )
 
@@ -273,7 +274,7 @@ func (r CreateWorktreeResult) creationFailure(ctx context.Context, policy Failur
 	if policy == CleanupDeferred {
 		return r, cause
 	}
-	_, cleanupErr := rollbackCreatedWorktreeWithResult(context.WithoutCancel(ctx), r.projectRoot, r.ownedPath, r.ownedBranch, r.ownedBranchCreated)
+	_, cleanupErr := r.Rollback(context.WithoutCancel(ctx), RollbackFreshOwned)
 	return r, errors.Join(cause, cleanupErr)
 }
 
@@ -294,4 +295,172 @@ func snapshotAcquisition(ctx context.Context, r CreateWorktreeResult) (CreateWor
 	}
 	r.verified = true
 	return r, nil
+}
+
+// RollbackPolicy selects which changes a caller authorizes rollback to discard.
+type RollbackPolicy uint8
+
+const (
+	// RollbackUnchanged preserves changes, ignored files, initialized submodules,
+	// advanced refs, and a changed HEAD. This is the default for completed creates.
+	RollbackUnchanged RollbackPolicy = iota
+	// RollbackFreshOwned may discard setup output and changes to HEAD, but still
+	// requires the acquired directory and registration. It deletes only the
+	// acquired branch, and only if that branch remains at its acquisition commit.
+	RollbackFreshOwned
+)
+
+// BranchRemoval authorizes cleanup of one local branch after checkout removal.
+// ExpectedOID, when set, must still match. Force selects -D instead of -d.
+type BranchRemoval struct {
+	Name        string
+	ExpectedOID string
+	Force       bool
+}
+
+func (r CreateWorktreeResult) remaining() RollbackResult {
+	remaining := RollbackResult{Path: r.ownedPath, Registration: r.registration}
+	if r.ownedBranchCreated {
+		remaining.Branch = r.ownedBranch
+	}
+	return remaining
+}
+
+func (r CreateWorktreeResult) verifyAcquisition(ctx context.Context) error {
+	if !r.verified || r.pathInfo == nil || r.registrationInfo == nil {
+		return errors.New("creation evidence is incomplete")
+	}
+	info, err := os.Lstat(r.ownedPath)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || !os.SameFile(r.pathInfo, info) {
+		return errors.New("acquired worktree directory changed")
+	}
+	info, err = os.Lstat(r.registration)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || !os.SameFile(r.registrationInfo, info) {
+		return errors.New("acquired worktree registration changed")
+	}
+	registration, err := runLifecycleGit(ctx, r.ownedPath, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		return err
+	}
+	if comparableWorktreePath(strings.TrimSpace(string(registration))) != comparableWorktreePath(r.registration) {
+		return errors.New("worktree registration no longer matches acquisition")
+	}
+	_, headRef, err := lifecycleWorktreeHead(ctx, r.ownedPath)
+	if err != nil {
+		return err
+	}
+	return verifyRemovalTarget(ctx, r.projectRoot, r.ownedPath, strings.TrimPrefix(headRef, "refs/heads/"))
+}
+
+func prepareBranchRemovals(ctx context.Context, root, observedBranch string, opts RemoveWorktreeOptions) ([]BranchRemoval, error) {
+	if opts.RemoveBranch && len(opts.Branches) != 0 {
+		return nil, ErrInvalidWorktreeOptions
+	}
+	branches := append([]BranchRemoval(nil), opts.Branches...)
+	if opts.RemoveBranch && observedBranch != "" {
+		branches = []BranchRemoval{{Name: observedBranch, Force: true}}
+	}
+	seen := make(map[string]bool, len(branches))
+	for index := range branches {
+		branch := &branches[index]
+		if err := validateBranchName(ctx, root, branch.Name); err != nil {
+			return nil, err
+		}
+		if seen[branch.Name] {
+			return nil, fmt.Errorf("%w: duplicate cleanup branch", ErrInvalidWorktreeOptions)
+		}
+		seen[branch.Name] = true
+		if branch.ExpectedOID != "" {
+			oid, err := resolveMergeRequestOID(ctx, root, branch.ExpectedOID)
+			if err != nil {
+				return nil, err
+			}
+			branch.ExpectedOID = oid
+		}
+	}
+	return branches, nil
+}
+
+func removeBranch(ctx context.Context, root string, removal BranchRemoval) error {
+	if removal.ExpectedOID != "" {
+		oid, exists, err := lifecycleRefOID(ctx, root, removal.Name)
+		if err != nil {
+			return err
+		}
+		if !exists || !strings.EqualFold(oid, removal.ExpectedOID) {
+			return fmt.Errorf("%w: branch %s changed", ErrWorktreeCleanupIncomplete, removal.Name)
+		}
+	}
+	flag := "-d"
+	if removal.Force {
+		flag = "-D"
+	}
+	out, err := runLifecycleGit(ctx, root, "branch", flag, "--", removal.Name)
+	if err != nil {
+		return classifyWorktreeGitError(out, err)
+	}
+	return nil
+}
+
+func (r *RemoveWorktreeResult) setRemainingBranch() {
+	r.Remaining.Branch = ""
+	if len(r.BranchesRemaining) != 0 {
+		r.Remaining.Branch = r.BranchesRemaining[0]
+	}
+}
+
+func (r *RemoveWorktreeResult) inspectRemovedArtifacts(path, registration string) error {
+	var errs []error
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		r.CheckoutRemoved, r.Remaining.Path = true, ""
+	} else if err != nil {
+		errs = append(errs, err)
+	}
+	if _, err := os.Lstat(registration); errors.Is(err, os.ErrNotExist) {
+		r.RegistrationRemoved, r.Remaining.Registration = true, ""
+	} else if err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+func removalRegistration(ctx context.Context, root, path string) (string, error) {
+	common, err := lifecycleCommonGitDir(ctx, root)
+	if err != nil {
+		return "", err
+	}
+	entries, err := os.ReadDir(filepath.Join(common, "worktrees"))
+	if err != nil {
+		return "", err
+	}
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if !entry.IsDir() {
+			continue
+		}
+		registration := filepath.Join(common, "worktrees", entry.Name())
+		data, err := fslink.ReadFile(filepath.Join(registration, "gitdir"))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		target := strings.TrimSpace(string(data))
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(registration, target)
+		}
+		if comparableWorktreePath(target) == comparableWorktreePath(filepath.Join(path, ".git")) {
+			return registration, nil
+		}
+	}
+	return "", fmt.Errorf("worktree registration not found: %s", path)
 }

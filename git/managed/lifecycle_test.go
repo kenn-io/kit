@@ -349,7 +349,7 @@ func TestCreateWorktreeResultRollbackPreservesAdvancedBranch(t *testing.T) {
 	remaining, err := result.Rollback(t.Context())
 
 	require.Error(err)
-	assert.Equal(RollbackResult{Path: result.Path, Branch: result.Branch}, remaining)
+	assert.Equal(RollbackResult{Path: result.Path, Branch: result.Branch, Registration: lifecycleGit(t, result.Path, "rev-parse", "--absolute-git-dir")}, remaining)
 	assert.FileExists(filepath.Join(result.Path, "review.txt"))
 	assert.Equal(advancedOID, lifecycleGit(t, repo, "rev-parse", "refs/heads/"+result.Branch))
 }
@@ -372,7 +372,7 @@ func TestCreateWorktreeResultRollbackPreservesDetachedCommit(t *testing.T) {
 	remaining, err := result.Rollback(t.Context())
 
 	require.ErrorIs(err, ErrWorktreeCleanupIncomplete)
-	assert.Equal(RollbackResult{Path: result.Path, Branch: result.Branch}, remaining)
+	assert.Equal(RollbackResult{Path: result.Path, Branch: result.Branch, Registration: lifecycleGit(t, result.Path, "rev-parse", "--absolute-git-dir")}, remaining)
 	assert.Equal(detachedOID, lifecycleGit(t, result.Path, "rev-parse", "HEAD"))
 }
 
@@ -393,7 +393,7 @@ func TestCreateWorktreeResultRollbackPreservesDirtyWorktree(t *testing.T) {
 	remaining, err := result.Rollback(t.Context())
 
 	require.Error(err)
-	assert.Equal(RollbackResult{Path: result.Path, Branch: result.Branch}, remaining)
+	assert.Equal(RollbackResult{Path: result.Path, Branch: result.Branch, Registration: lifecycleGit(t, result.Path, "rev-parse", "--absolute-git-dir")}, remaining)
 	assert.FileExists(marker)
 }
 
@@ -419,7 +419,7 @@ func TestCreateWorktreeResultRollbackPreservesIgnoredArtifacts(t *testing.T) {
 	remaining, err := result.Rollback(t.Context())
 
 	require.ErrorIs(err, ErrWorktreeCleanupIncomplete)
-	assert.Equal(RollbackResult{Path: result.Path, Branch: result.Branch}, remaining)
+	assert.Equal(RollbackResult{Path: result.Path, Branch: result.Branch, Registration: lifecycleGit(t, result.Path, "rev-parse", "--absolute-git-dir")}, remaining)
 	assert.FileExists(filepath.Join(result.Path, "scratch.log"))
 }
 
@@ -460,40 +460,34 @@ func TestCreateWorktreeResultRollbackPreservesInitializedSubmodule(t *testing.T)
 
 	require.ErrorIs(err, ErrWorktreeCleanupIncomplete)
 	assert.Equal(RollbackResult{
-		Path: result.Path, Branch: result.Branch,
+		Path: result.Path, Branch: result.Branch, Registration: lifecycleGit(t, result.Path, "rev-parse", "--absolute-git-dir"),
 	}, remaining)
 	assert.DirExists(result.Path)
 	assert.FileExists(artifact)
 }
 
-func TestCreateWorktreeOnDiskReportsSnapshotCleanupFailure(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
+func TestCreateWorktreeOnDiskPreservesUnverifiedAcquisition(t *testing.T) {
 	repo := initLifecycleRepo(t)
-	runGit := func(
-		ctx context.Context, runner gitcmd.Runner, dir string, args ...string,
-	) ([]byte, error) {
-		if len(args) >= 2 && args[0] == "rev-parse" &&
-			args[1] == "--verify" && dir != repo {
-			return nil, errors.New("snapshot failed")
+	failure := errors.New("snapshot failed")
+	cleanupCalled := false
+	runGit := func(ctx context.Context, runner gitcmd.Runner, dir string, args ...string) ([]byte, error) {
+		if len(args) >= 2 && args[0] == "rev-parse" && args[1] == "--verify" && dir != repo {
+			return nil, failure
 		}
 		if len(args) >= 2 && args[0] == "worktree" && args[1] == "remove" {
-			return nil, errors.New("cleanup failed")
+			cleanupCalled = true
 		}
 		stdout, stderr, err := runner.Run(ctx, dir, nil, args...)
 		return append(stdout, stderr...), err
 	}
-
-	_, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
-		ProjectRoot: repo,
-		Branch:      "snapshot-cleanup-failure",
-		RunGit:      runGit,
+	result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: repo, Branch: "snapshot-failure", RunGit: runGit,
 	})
-
-	require.Error(err)
-	require.
-		ErrorContains(err, "snapshot failed")
-	assert.ErrorContains(err, "cleanup failed")
+	require.ErrorIs(t, err, failure)
+	require.ErrorIs(t, err, ErrWorktreeCleanupIncomplete)
+	assert.False(t, cleanupCalled)
+	assert.DirExists(t, result.Path)
+	assert.True(t, branchExistsInRepo(t, repo, result.Branch))
 }
 
 func TestLifecycleWorktreeHeadPropagatesSymbolicRefFailure(t *testing.T) {
