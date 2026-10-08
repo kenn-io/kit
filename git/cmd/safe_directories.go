@@ -122,19 +122,22 @@ func configPathsReusable(env []string) bool {
 	return true
 }
 
-func windowsHomeAvailable(ctx context.Context, env []string) bool {
+func windowsHomeAvailable(ctx context.Context, env []string) (available, applicable bool) {
 	_, homeSet := envValue(env, "HOME")
 	_, globalSet := envValue(env, "GIT_CONFIG_GLOBAL")
 	drive, driveSet := envValue(env, "HOMEDRIVE")
 	path, pathSet := envValue(env, "HOMEPATH")
-	if ctx.Err() != nil || runtime.GOOS != "windows" || homeSet || globalSet || !driveSet || !pathSet {
-		return false
+	if runtime.GOOS != "windows" || homeSet || globalSet || !driveSet || !pathSet {
+		return false, false
+	}
+	if ctx.Err() != nil {
+		return false, true
 	}
 	info, err := os.Stat(drive + path)
 	if err != nil {
-		return false
+		return false, true
 	}
-	return info.IsDir()
+	return info.IsDir(), true
 }
 
 // read reuses include-free scopes while their root bytes stay unchanged; includes always run Git.
@@ -154,7 +157,7 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 	var path string
 	var info os.FileInfo
 	var err error
-	var homeAvailable bool
+	var homeAvailable, homeApplicable bool
 	var sameFile bool
 	if !evaluateFilesystem(ctx, func(checkCtx context.Context) {
 		if checkCtx.Err() != nil {
@@ -168,7 +171,7 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 		if checkCtx.Err() != nil || err != nil {
 			return
 		}
-		homeAvailable = windowsHomeAvailable(checkCtx, env)
+		homeAvailable, homeApplicable = windowsHomeAvailable(checkCtx, env)
 		if checkCtx.Err() == nil && previous != nil {
 			sameFile = os.SameFile(info, previous.executable)
 		}
@@ -176,8 +179,11 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 		return fresh()
 	}
 	homeUnchanged := func() bool {
+		if !homeApplicable {
+			return true
+		}
 		var available bool
-		return evaluateFilesystem(ctx, func(checkCtx context.Context) { available = windowsHomeAvailable(checkCtx, env) }) && available == homeAvailable
+		return evaluateFilesystem(ctx, func(checkCtx context.Context) { available, _ = windowsHomeAvailable(checkCtx, env) }) && available == homeAvailable
 	}
 	identity := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%d\x00%s\x00%t", path, info.Size(), info.ModTime().UnixNano(), strings.Join(env, "\x00"), homeAvailable)))
 	if previous == nil {
@@ -237,13 +243,15 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 			next.scopes[scope] = s
 			continue
 		}
-		var after [32]byte
-		var afterErr error
-		if !evaluateFilesystem(ctx, func(checkCtx context.Context) { after, afterErr = safeDirectoryFingerprint(checkCtx, s.paths) }) {
-			return fresh()
-		}
-		if !includes && err == nil && afterErr == nil && before == after {
-			s.fingerprint, s.values, s.valid = after, entries, true
+		if !includes && err == nil {
+			var after [32]byte
+			var afterErr error
+			if !evaluateFilesystem(ctx, func(checkCtx context.Context) { after, afterErr = safeDirectoryFingerprint(checkCtx, s.paths) }) {
+				return fresh()
+			}
+			if afterErr == nil && before == after {
+				s.fingerprint, s.values, s.valid = after, entries, true
+			}
 		}
 		next.scopes[scope] = s
 		values = append(values, entries...)
