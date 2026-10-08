@@ -3,11 +3,13 @@ package managedworktree
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"go.kenn.io/kit/fslink"
 	gitcmd "go.kenn.io/kit/git/cmd"
 	gitenv "go.kenn.io/kit/git/env"
 )
@@ -77,7 +79,7 @@ func TestMaterializeUntrustedTreePinsWorktree(t *testing.T) {
 }
 
 func TestDeferredCheckoutRejectsFutureTreeConfig(t *testing.T) {
-	for _, source := range []string{"global", "system", "include", "conditional-include", "external"} {
+	for _, source := range []string{"global", "system", "include", "conditional-include", "global-link", "include-link", "directory-link", "external", "external-link"} {
 		t.Run(source, func(t *testing.T) {
 			root := initLifecycleRepo(t)
 			require.NoError(t, os.WriteFile(filepath.Join(root, ".gitconfig"), []byte("[diff \"deferred\"]\ncommand = echo executed > driver-ran\n"), 0o600))
@@ -94,6 +96,30 @@ func TestDeferredCheckoutRejectsFutureTreeConfig(t *testing.T) {
 				runner.Env = append(runner.Env, "GIT_CONFIG_GLOBAL=.gitconfig")
 			case "system":
 				runner.Env = append(runner.Env, "GIT_CONFIG_NOSYSTEM=0", "GIT_CONFIG_SYSTEM="+filepath.Join(path, ".gitconfig"))
+			case "global-link", "include-link", "external-link":
+				target := filepath.Join(path, ".gitconfig")
+				if source == "external-link" {
+					target = filepath.Join(t.TempDir(), "missing.gitconfig")
+				}
+				links := t.TempDir()
+				if err := os.Symlink(target, filepath.Join(links, "target")); err != nil {
+					if runtime.GOOS == "windows" {
+						t.Skipf("cannot create file symlink: %v", err)
+					}
+					require.NoError(t, err)
+				}
+				link := filepath.Join(links, "config")
+				require.NoError(t, os.Symlink("target", link))
+				if source == "include-link" {
+					lifecycleGit(t, root, "config", "include.path", link)
+				} else {
+					runner.Env = append(runner.Env, "GIT_CONFIG_GLOBAL="+link)
+				}
+			case "directory-link":
+				link := filepath.Join(t.TempDir(), "directory")
+				_, err := fslink.LinkDir(path, link)
+				require.NoError(t, err)
+				runner.Env = append(runner.Env, "GIT_CONFIG_GLOBAL="+filepath.Join(link, ".gitconfig"))
 			case "include", "conditional-include":
 				key := "include.path"
 				if source == "conditional-include" {
@@ -107,16 +133,19 @@ func TestDeferredCheckoutRejectsFutureTreeConfig(t *testing.T) {
 				ProjectRoot: root, Path: path, Branch: "topic", BaseRef: "imported", NoCheckout: true,
 				Checkout: CheckoutIsolated, FailureCleanup: CleanupDeferred, Runner: runner,
 			})
-			if source != "external" {
+			if source != "external" && source != "external-link" {
 				require.ErrorContains(t, err, "configuration inside merge request worktree")
 				assert.NoDirExists(t, path)
 				assert.False(t, branchExistsInRepo(t, root, "topic"))
 				return
 			}
 			require.NoError(t, err)
-			lifecycleGit(t, path, "reset", "--hard", "HEAD")
+			_, stderr, err := runner.Run(t.Context(), path, nil, "reset", "--hard", "HEAD")
+			require.NoError(t, err, "%s", stderr)
 			require.NoError(t, os.WriteFile(filepath.Join(path, "payload"), []byte("changed\n"), 0o600))
-			assert.Contains(t, lifecycleGit(t, path, "diff", "--", "payload"), "+changed")
+			out, stderr, err := runner.Run(t.Context(), path, nil, "diff", "--", "payload")
+			require.NoError(t, err, "%s", stderr)
+			assert.Contains(t, string(out), "+changed")
 			assert.NoFileExists(t, filepath.Join(path, "driver-ran"))
 		})
 	}

@@ -52,7 +52,8 @@ specific application or forge workflow.
   enforce.
 - Reject config selectors and includes into an isolated checkout before creating
   it, even when their files do not exist yet. Deferred materialization must not
-  turn tracked files into newly active Git configuration.
+  turn tracked files into newly active Git configuration. Resolve dangling links
+  with `pathresolve.EvalSymlinksAllowMissing` before checking containment.
 - The default lifecycle-hook runner is for trusted native executables. Callers
   that need process-tree supervision or cross-platform script dispatch must
   supply `RunHook`; do not grow those application policies into this package.

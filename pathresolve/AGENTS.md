@@ -18,7 +18,7 @@ point is a symbolic link.
   the location the OS opens, not the spelling the caller used. Do not
   "simplify" this back to `filepath.EvalSymlinks`, and do not use this package
   where the requirement is to not follow a link.
-- Only Windows needs the extra pass. A directory junction is a reparse point
+- For `EvalSymlinks`, only Windows needs the extra pass. A directory junction is a reparse point
   tagged `IO_REPARSE_TAG_MOUNT_POINT`. Since Go 1.23 (`winsymlink` default,
   go#63703) `os.Lstat` calls it `ModeIrregular` — neither a symlink
   (`IO_REPARSE_TAG_SYMLINK`) nor a directory — while `os.Readlink` still reads
@@ -47,3 +47,7 @@ point is a symbolic link.
 - Junctions are resolved, not rejected. Callers that must refuse a symlinked
   path for safety judge the directory entry they were handed; resolving a
   junction does not weaken that, and `safefileio` keeps its own stricter rule.
+- `EvalSymlinksAllowMissing` is for containment checks before creation. Follow
+  existing links on every platform, including dangling links, then retain the
+  missing suffix. Reject cycles, unreadable paths, and non-directory parents.
+  Keep `EvalSymlinks`'s existing missing-path error contract unchanged.

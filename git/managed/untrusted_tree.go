@@ -17,6 +17,7 @@ import (
 
 	gitcmd "go.kenn.io/kit/git/cmd"
 	"go.kenn.io/kit/git/internal/shellquote"
+	"go.kenn.io/kit/pathresolve"
 )
 
 // untrustedTreeIsolation neutralizes Git programs that a fetched tree can
@@ -498,14 +499,22 @@ func rejectConfigSourcesInsideWorktree(
 	runner.StripEnv = false
 	runner.NullGlobalConfig = false
 	runner.NoSystemConfig = false
-	worktree := comparableWorktreePath(worktreePath)
+	worktree, err := pathresolve.EvalSymlinksAllowMissing(worktreePath)
+	if err != nil {
+		return fmt.Errorf("resolve worktree configuration boundary: %w", err)
+	}
+	worktree = lexicalWorktreePath(worktree)
 	lexicalWorktree := lexicalWorktreePath(worktreePath)
 	checkPath := func(configPath string) error {
 		if !filepath.IsAbs(configPath) {
 			configPath = filepath.Join(worktreePath, configPath)
 		}
+		resolved, err := pathresolve.EvalSymlinksAllowMissing(configPath)
+		if err != nil {
+			return fmt.Errorf("resolve Git configuration path: %w", err)
+		}
 		if pathWithinRoot(lexicalWorktree, lexicalWorktreePath(configPath)) ||
-			pathWithinRoot(worktree, comparableWorktreePath(configPath)) ||
+			pathWithinRoot(worktree, lexicalWorktreePath(resolved)) ||
 			pathWithinRootByIdentity(worktreePath, configPath) {
 			return fmt.Errorf("Git configuration inside merge request worktree is not allowed: %s", configPath)
 		}

@@ -59,6 +59,39 @@ func EvalSymlinks(path string) (string, error) {
 	return resolved, err
 }
 
+// EvalSymlinksAllowMissing resolves existing symbolic links and Windows junctions
+// to an absolute path, retaining any missing target or trailing components.
+// Unlike EvalSymlinks, it can compare paths before their files are created.
+// Cycles, inaccessible paths, and non-directory parent components still fail.
+func EvalSymlinksAllowMissing(path string) (string, error) {
+	resolved, _, err := resolveReparsePoints(path)
+	if err != nil {
+		return "", err
+	}
+	canonical, originalErr := EvalSymlinks(resolved)
+	if originalErr == nil {
+		return canonical, nil
+	}
+	var tail string
+	for current := resolved; ; current = filepath.Dir(current) {
+		info, statErr := os.Lstat(current)
+		if statErr == nil {
+			if tail != "" && !info.IsDir() {
+				return "", originalErr
+			}
+			canonical, err := EvalSymlinks(current)
+			if err != nil {
+				return "", err
+			}
+			return filepath.Join(canonical, tail), nil
+		}
+		if !errors.Is(statErr, os.ErrNotExist) || filepath.Dir(current) == current {
+			return "", statErr
+		}
+		tail = filepath.Join(filepath.Base(current), tail)
+	}
+}
+
 // resolveReparsePoints rewrites path element by element, following each
 // reparse point os.Readlink can read until no element is one. It reports
 // whether it followed at least one, so callers can tell a junction-free path
