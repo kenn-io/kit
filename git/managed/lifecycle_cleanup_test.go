@@ -11,8 +11,30 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.kenn.io/kit/fslink"
 	gitcmd "go.kenn.io/kit/git/cmd"
 )
+
+func TestRemoveMissingWorktreeThroughLinkedParent(t *testing.T) {
+	root := initLifecycleRepo(t)
+	base := t.TempDir()
+	actual := filepath.Join(base, "actual")
+	alias := filepath.Join(base, "alias")
+	require.NoError(t, os.Mkdir(actual, 0o700))
+	_, err := fslink.LinkDir(actual, alias)
+	require.NoError(t, err)
+	path := filepath.Join(alias, "checkout")
+	lifecycleGit(t, root, "worktree", "add", "-b", "topic", path)
+	registration := filepath.Clean(lifecycleGit(t, path, "rev-parse", "--absolute-git-dir"))
+	require.NoError(t, os.RemoveAll(path))
+	result, err := RemoveWorktreeFromDisk(t.Context(), RemoveWorktreeOptions{
+		ProjectRoot: root, Path: path, Branch: "topic", RemoveBranch: true, Runner: lifecycleTestRunner(t),
+	})
+	require.NoError(t, err)
+	assert.True(t, result.RegistrationRemoved)
+	assert.NoDirExists(t, registration)
+	assert.False(t, branchExistsInRepo(t, root, "topic"))
+}
 
 func TestRollbackPoliciesPreserveUnownedArtifacts(t *testing.T) {
 	for _, policy := range []RollbackPolicy{RollbackUnchanged, RollbackFreshOwned} {
@@ -245,7 +267,7 @@ func TestRollbackKeepsEvidenceWhenRemovalPreflightFails(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	registration := lifecycleGit(t, created.Path, "rev-parse", "--absolute-git-dir")
+	registration := filepath.Clean(lifecycleGit(t, created.Path, "rev-parse", "--absolute-git-dir"))
 	rollingBack = true
 	remaining, err := created.Rollback(ctx, RollbackFreshOwned)
 	require.ErrorIs(t, err, context.Canceled)

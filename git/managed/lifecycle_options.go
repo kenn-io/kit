@@ -370,6 +370,11 @@ func snapshotAcquisition(ctx context.Context, r CreateWorktreeResult) (CreateWor
 	if err != nil {
 		return r, err
 	}
+	// Windows Stat loads file identity lazily. Capture it now, while these
+	// paths still name the acquired directories, instead of during rollback.
+	if !os.SameFile(r.pathInfo, r.pathInfo) || !os.SameFile(r.registrationInfo, r.registrationInfo) {
+		return r, fmt.Errorf("capture worktree directory identity: %w", ErrWorktreeCleanupIncomplete)
+	}
 	r.verified = true
 	return r, nil
 }
@@ -535,7 +540,10 @@ func removalRegistration(ctx context.Context, root, path string) (string, error)
 		if !filepath.IsAbs(target) {
 			target = filepath.Join(registration, target)
 		}
-		if comparableWorktreePath(target) == comparableWorktreePath(filepath.Join(path, ".git")) {
+		// Resolve the checkout path before appending .git: when the checkout
+		// is gone, resolving its missing .git path cannot reach a linked parent.
+		if filepath.Base(target) == ".git" &&
+			comparableWorktreePath(filepath.Dir(target)) == comparableWorktreePath(path) {
 			return registration, nil
 		}
 	}

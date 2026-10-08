@@ -109,7 +109,9 @@ func TestRunnerWaitDelayWithInheritedPipe(t *testing.T) {
 			runner.AcceptSuccessfulWaitDelay = accept
 			require.Equal(t, 100*time.Millisecond, runner.Command(t.Context(), t.TempDir(), "version").WaitDelay)
 			result := make(chan error, 1)
-			dir := t.TempDir()
+			// This command creates no files. Its background helper must not hold
+			// a fixture directory open when Windows runs TempDir cleanup.
+			dir := os.TempDir() //nolint:usetesting // The pipe holder outlives fixture cleanup and writes no files.
 			go func() {
 				_, _, runErr := runner.Run(t.Context(), dir, nil, "hold-pipe")
 				result <- runErr

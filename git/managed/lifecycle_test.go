@@ -349,7 +349,7 @@ func TestCreateWorktreeResultRollbackPreservesAdvancedBranch(t *testing.T) {
 	remaining, err := result.Rollback(t.Context())
 
 	require.Error(err)
-	assert.Equal(RollbackResult{Path: result.Path, Branch: result.Branch, Registration: lifecycleGit(t, result.Path, "rev-parse", "--absolute-git-dir")}, remaining)
+	assert.Equal(RollbackResult{Path: result.Path, Branch: result.Branch, Registration: filepath.Clean(lifecycleGit(t, result.Path, "rev-parse", "--absolute-git-dir"))}, remaining)
 	assert.FileExists(filepath.Join(result.Path, "review.txt"))
 	assert.Equal(advancedOID, lifecycleGit(t, repo, "rev-parse", "refs/heads/"+result.Branch))
 }
@@ -372,7 +372,7 @@ func TestCreateWorktreeResultRollbackPreservesDetachedCommit(t *testing.T) {
 	remaining, err := result.Rollback(t.Context())
 
 	require.ErrorIs(err, ErrWorktreeCleanupIncomplete)
-	assert.Equal(RollbackResult{Path: result.Path, Branch: result.Branch, Registration: lifecycleGit(t, result.Path, "rev-parse", "--absolute-git-dir")}, remaining)
+	assert.Equal(RollbackResult{Path: result.Path, Branch: result.Branch, Registration: filepath.Clean(lifecycleGit(t, result.Path, "rev-parse", "--absolute-git-dir"))}, remaining)
 	assert.Equal(detachedOID, lifecycleGit(t, result.Path, "rev-parse", "HEAD"))
 }
 
@@ -393,7 +393,7 @@ func TestCreateWorktreeResultRollbackPreservesDirtyWorktree(t *testing.T) {
 	remaining, err := result.Rollback(t.Context())
 
 	require.Error(err)
-	assert.Equal(RollbackResult{Path: result.Path, Branch: result.Branch, Registration: lifecycleGit(t, result.Path, "rev-parse", "--absolute-git-dir")}, remaining)
+	assert.Equal(RollbackResult{Path: result.Path, Branch: result.Branch, Registration: filepath.Clean(lifecycleGit(t, result.Path, "rev-parse", "--absolute-git-dir"))}, remaining)
 	assert.FileExists(marker)
 }
 
@@ -419,7 +419,7 @@ func TestCreateWorktreeResultRollbackPreservesIgnoredArtifacts(t *testing.T) {
 	remaining, err := result.Rollback(t.Context())
 
 	require.ErrorIs(err, ErrWorktreeCleanupIncomplete)
-	assert.Equal(RollbackResult{Path: result.Path, Branch: result.Branch, Registration: lifecycleGit(t, result.Path, "rev-parse", "--absolute-git-dir")}, remaining)
+	assert.Equal(RollbackResult{Path: result.Path, Branch: result.Branch, Registration: filepath.Clean(lifecycleGit(t, result.Path, "rev-parse", "--absolute-git-dir"))}, remaining)
 	assert.FileExists(filepath.Join(result.Path, "scratch.log"))
 }
 
@@ -460,7 +460,7 @@ func TestCreateWorktreeResultRollbackPreservesInitializedSubmodule(t *testing.T)
 
 	require.ErrorIs(err, ErrWorktreeCleanupIncomplete)
 	assert.Equal(RollbackResult{
-		Path: result.Path, Branch: result.Branch, Registration: lifecycleGit(t, result.Path, "rev-parse", "--absolute-git-dir"),
+		Path: result.Path, Branch: result.Branch, Registration: filepath.Clean(lifecycleGit(t, result.Path, "rev-parse", "--absolute-git-dir")),
 	}, remaining)
 	assert.DirExists(result.Path)
 	assert.FileExists(artifact)

@@ -64,6 +64,8 @@ specific application or forge workflow.
   private directory and registration evidence. Preserve artifacts if evidence
   is incomplete. Never delete an acquired branch after it advances, or continue
   branch cleanup after failed checkout removal. Report partial removal effects.
+  Capture directory identities at acquisition time: Windows `os.Stat` can defer
+  reading file IDs until `os.SameFile`, after a path has already been replaced.
 - Configure merge-request tracking in worktree-scoped Git configuration so
   removing a worktree does not leave branch routing behind in shared config.
   Explicit upstream policy chooses configuration scope and whether to configure
