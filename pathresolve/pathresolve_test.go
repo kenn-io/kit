@@ -122,6 +122,16 @@ func TestEvalSymlinksAllowMissingResolvesLinksBeforeParent(t *testing.T) {
 			}
 			for name, target := range map[string]string{"absolute": raw, "relative": "route/../config"} {
 				t.Run(name, func(t *testing.T) {
+					if runtime.GOOS == "windows" && name == "absolute" {
+						// Windows cleans absolute link targets at creation. Put the
+						// parent traversal in a relative target behind the absolute link.
+						intermediate := filepath.Join(dir, "intermediate")
+						if err := os.Symlink("route/../config", intermediate); err != nil {
+							t.Skipf("cannot create file symlink: %v", err)
+						}
+						t.Cleanup(func() { require.NoError(t, os.Remove(intermediate)) })
+						target = intermediate
+					}
 					outer := filepath.Join(dir, "outer")
 					if err := os.Symlink(target, outer); err != nil {
 						if runtime.GOOS == "windows" {
