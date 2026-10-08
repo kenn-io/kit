@@ -70,6 +70,8 @@ specific application or forge workflow.
   removing a worktree does not leave branch routing behind in shared config.
   Explicit upstream policy chooses configuration scope and whether to configure
   push routing. Leave must make no tracking writes; choose policy before create.
+  Ordinary creation preserves Git's default tracking even with isolated checkout;
+  merge-request import chooses an explicit tracking action before creation.
   Git combines branch.merge across scopes: track and clear must remove the
   selected branch's old repository/worktree routing. Do not mask inherited merge
   refs with empty values. Reject routing inherited from other config files or

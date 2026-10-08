@@ -266,6 +266,20 @@ func TestImportExplicitUpstreamPolicy(t *testing.T) {
 	}
 }
 
+func TestIsolatedCreationPreservesDefaultTracking(t *testing.T) {
+	origin, clone := initOriginAndClone(t)
+	created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: clone, Path: filepath.Join(t.TempDir(), "checkout"), Branch: "topic",
+		BaseRef: "origin/main", Checkout: CheckoutIsolated, Runner: lifecycleTestRunner(t),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "refs/remotes/origin/main", lifecycleGit(t, created.Path, "rev-parse", "--symbolic-full-name", "@{upstream}"))
+	lifecycleGit(t, origin, "commit", "--allow-empty", "-m", "remote update")
+	want := lifecycleGit(t, origin, "rev-parse", "HEAD")
+	lifecycleGit(t, created.Path, "pull", "--ff-only")
+	assert.Equal(t, want, lifecycleGit(t, created.Path, "rev-parse", "HEAD"))
+}
+
 func TestExplicitUpstreamScopeAndHeadCondition(t *testing.T) {
 	for _, condition := range []TrackingCondition{TrackingExplicit, TrackingIfHeadMatches} {
 		t.Run(map[TrackingCondition]string{TrackingExplicit: "explicit", TrackingIfHeadMatches: "matching"}[condition], func(t *testing.T) {

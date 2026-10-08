@@ -294,7 +294,7 @@ func createWorktreeOnDisk(ctx context.Context, opts CreateWorktreeOptions, prepa
 	if opts.LockReason != "" {
 		args = append(args, "--lock", "--reason", opts.LockReason)
 	}
-	if mode == CheckoutNewBranch && (opts.Upstream.Action != UpstreamDefault || opts.Checkout == CheckoutIsolated) {
+	if mode == CheckoutNewBranch && opts.Upstream.Action != UpstreamDefault {
 		args = append(args, "--no-track")
 	}
 	if mode == CheckoutDetached {
