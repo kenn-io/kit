@@ -12,6 +12,10 @@
 // changes in the acquired checkout, but preserves an advanced owned branch.
 // Missing evidence preserves artifacts and reports incomplete cleanup.
 //
+// Explicit tracking and clearing replace the selected branch's routing in the
+// repository and worktree configuration files. Routing inherited from other
+// files or command options is rejected; leaving tracking makes no writes.
+//
 // Removal distinguishes checkout, registration, and branch outcomes, including
 // effects completed before a Git error. Branch cleanup starts only after the
 // checkout and registration are gone. These operations take no repository lock;

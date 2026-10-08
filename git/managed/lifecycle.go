@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 
 	gitcmd "go.kenn.io/kit/git/cmd"
@@ -417,7 +418,18 @@ func (r CreateWorktreeResult) rollbackOwned(ctx context.Context, policy Rollback
 	if err != nil {
 		err = errors.Join(ErrWorktreeCleanupIncomplete, err)
 	}
-	return result.Remaining, err
+	// Removal may fail before constructing its own report. Acquisition evidence
+	// remains authoritative until an individual removal effect is confirmed.
+	if result.CheckoutRemoved {
+		remaining.Path = ""
+	}
+	if result.RegistrationRemoved {
+		remaining.Registration = ""
+	}
+	if slices.Contains(result.BranchesRemoved, r.ownedBranch) {
+		remaining.Branch = ""
+	}
+	return remaining, err
 }
 
 func lifecycleRefOID(ctx context.Context, root, branch string) (string, bool, error) {

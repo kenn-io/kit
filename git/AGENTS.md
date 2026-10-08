@@ -68,6 +68,10 @@ specific application or forge workflow.
   removing a worktree does not leave branch routing behind in shared config.
   Explicit upstream policy chooses configuration scope and whether to configure
   push routing. Leave must make no tracking writes; choose policy before create.
+  Git combines branch.merge across scopes: track and clear must remove the
+  selected branch's old repository/worktree routing. Do not mask inherited merge
+  refs with empty values. Reject routing inherited from other config files or
+  command options instead of changing those sources.
 - Lifecycle hooks must resolve inside the project tree. Applications may
   supply Git and hook runners to retain their process limits and
   platform-specific execution policy. Prepared hooks retain the same validation

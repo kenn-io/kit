@@ -228,3 +228,32 @@ func TestPreparedHookRetainsExitCause(t *testing.T) {
 	assert.Equal(t, 7, process.ExitCode())
 	assert.Equal(t, 7, classified.ExitCode)
 }
+
+func TestRollbackKeepsEvidenceWhenRemovalPreflightFails(t *testing.T) {
+	root := initLifecycleRepo(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	rollingBack := false
+	created, err := CreateWorktreeOnDisk(ctx, CreateWorktreeOptions{
+		ProjectRoot: root, Path: filepath.Join(t.TempDir(), "checkout"), Branch: "topic", Runner: lifecycleTestRunner(t),
+		RunGit: func(ctx context.Context, runner gitcmd.Runner, dir string, args ...string) ([]byte, error) {
+			if rollingBack && len(args) != 0 && args[0] == "check-ref-format" {
+				cancel()
+			}
+			stdout, stderr, err := runner.Run(ctx, dir, nil, args...)
+			return append(stdout, stderr...), err
+		},
+	})
+	require.NoError(t, err)
+	registration := lifecycleGit(t, created.Path, "rev-parse", "--absolute-git-dir")
+	rollingBack = true
+	remaining, err := created.Rollback(ctx, RollbackFreshOwned)
+	require.ErrorIs(t, err, context.Canceled)
+	require.ErrorIs(t, err, ErrWorktreeCleanupIncomplete)
+	assert.Equal(t, created.Path, remaining.Path)
+	assert.Equal(t, "topic", remaining.Branch)
+	assert.Equal(t, registration, remaining.Registration)
+	assert.DirExists(t, created.Path)
+	assert.DirExists(t, registration)
+	assert.True(t, branchExistsInRepo(t, root, "topic"))
+}

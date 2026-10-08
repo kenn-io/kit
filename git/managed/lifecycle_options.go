@@ -1,6 +1,7 @@
 package managedworktree
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -66,6 +67,9 @@ const (
 
 // UpstreamPolicy selects tracking before any tracking mutation occurs.
 // Ref is a full refs/heads/ name on Remote. Leave never changes tracking config.
+// Track and Clear replace the selected branch's repository and worktree routing;
+// Scope chooses where Track writes the replacement. Routing inherited from other
+// configuration files is rejected rather than changing those files.
 // Default preserves the entry point's ordinary tracking behavior.
 type UpstreamPolicy struct {
 	Action    UpstreamAction
@@ -152,15 +156,7 @@ func (e lifecycleExecution) setUpstream(ctx context.Context, root, path string, 
 			return err
 		}
 		if policy.Condition == TrackingIfHeadMatches {
-			// Ask Git to map the remote ref through its configured fetch refspecs
-			// without first writing branch configuration.
-			probe := e.runner.WithConfig("branch."+branch+".remote", remote).
-				WithConfig("branch."+branch+".merge", ref)
-			trackingRef, err := e.runWithRunner(ctx, probe, path, "for-each-ref", "--format=%(upstream)", "refs/heads/"+branch)
-			if err != nil {
-				return err
-			}
-			trackingOID, err := e.run(ctx, root, "rev-parse", "--verify", strings.TrimSpace(string(trackingRef))+"^{commit}")
+			trackingOID, err := e.trackingOID(ctx, root, remote, ref)
 			if err != nil {
 				return err
 			}
@@ -168,13 +164,32 @@ func (e lifecycleExecution) setUpstream(ctx context.Context, root, path string, 
 			if err != nil {
 				return err
 			}
-			if strings.TrimSpace(string(trackingOID)) != strings.TrimSpace(string(headOID)) {
+			if trackingOID != strings.TrimSpace(string(headOID)) {
 				return nil
 			}
 		}
 	} else {
 		remote, ref = "", ""
 	}
+	entries := []gitcmd.Config{
+		{Key: "branch." + branch + ".remote", Value: remote},
+		{Key: "branch." + branch + ".merge", Value: ref},
+	}
+	if policy.ConfigurePush {
+		entries = append(entries, gitcmd.Config{Key: "branch." + branch + ".pushRemote", Value: remote})
+	}
+	registration, err := e.run(ctx, path, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		return err
+	}
+	if err := e.validateRoutingOrigins(ctx, path, strings.TrimSpace(string(rootCommon)), strings.TrimSpace(string(registration)), entries); err != nil {
+		return err
+	}
+	enabled, configErr := e.run(ctx, path, "config", "--type=bool", "--get", "extensions.worktreeConfig")
+	if configErr != nil && !gitcmd.IsExitCode(configErr, 1) {
+		return configErr
+	}
+	worktreeConfigEnabled := strings.TrimSpace(string(enabled)) == "true"
 	scope := "--local"
 	if policy.Scope == UpstreamWorktree {
 		// Shared core.bare/core.worktree require a caller-directed migration;
@@ -187,34 +202,96 @@ func (e lifecycleExecution) setUpstream(ctx context.Context, root, path string, 
 			return err
 		}
 		scope = "--worktree"
+		if !worktreeConfigEnabled {
+			// Enabling the extension can expose a previously inactive config file.
+			if err := e.validateRoutingOrigins(ctx, path, strings.TrimSpace(string(rootCommon)), strings.TrimSpace(string(registration)), entries); err != nil {
+				return err
+			}
+		}
+		worktreeConfigEnabled = true
 	}
-	entries := []gitcmd.Config{
-		{Key: "branch." + branch + ".remote", Value: remote},
-		{Key: "branch." + branch + ".merge", Value: ref},
-	}
-	if policy.ConfigurePush {
-		entries = append(entries, gitcmd.Config{Key: "branch." + branch + ".pushRemote", Value: remote})
+	oldScopes := []string{"--local"}
+	if worktreeConfigEnabled {
+		oldScopes = append(oldScopes, "--worktree")
 	}
 	for _, entry := range entries {
-		if policy.Action == UpstreamClear {
-			_, err := e.run(ctx, path, "config", scope, "--unset-all", entry.Key)
+		// Git combines branch.merge across scopes. Neither a new value nor an
+		// empty value masks an inherited target. Remove old branch routing
+		// from both writable scopes before recording the selected policy.
+		for _, oldScope := range oldScopes {
+			_, err := e.run(ctx, path, "config", oldScope, "--unset-all", entry.Key)
 			if err != nil && !gitcmd.IsExitCode(err, 5) {
 				return err
 			}
-			if policy.Scope == UpstreamRepository {
-				continue
-			}
-			// An empty worktree value masks inherited routing without changing
-			// another checkout's repository configuration.
 		}
-		if _, err := e.run(ctx, path, "config", scope, "--replace-all", entry.Key, entry.Value); err != nil {
-			return err
+		if policy.Action == UpstreamTrack {
+			if _, err := e.run(ctx, path, "config", scope, "--replace-all", entry.Key, entry.Value); err != nil {
+				return err
+			}
 		}
 	}
 	if policy.Action == UpstreamTrack && policy.ConfigurePush {
 		_, err = e.run(ctx, path, "config", scope, "push.default", "upstream")
 	}
 	return err
+}
+
+// trackingOID resolves a selected remote branch through its positive fetch
+// mappings, without reading or changing the local branch's current upstream.
+func (e lifecycleExecution) trackingOID(ctx context.Context, root, remote, ref string) (string, error) {
+	out, err := e.run(ctx, root, "config", "--get-all", "remote."+remote+".fetch")
+	if err != nil {
+		return "", err
+	}
+	for spec := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
+		source, target, ok := strings.Cut(strings.TrimPrefix(spec, "+"), ":")
+		if !ok || target == "" {
+			continue
+		}
+		if prefix, suffix, wildcard := strings.Cut(source, "*"); wildcard {
+			if len(ref) < len(prefix)+len(suffix) || !strings.HasPrefix(ref, prefix) || !strings.HasSuffix(ref, suffix) {
+				continue
+			}
+			target = strings.Replace(target, "*", ref[len(prefix):len(ref)-len(suffix)], 1)
+		} else if source != ref {
+			continue
+		}
+		oid, err := e.run(ctx, root, "rev-parse", "--verify", "--end-of-options", target+"^{commit}")
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(string(oid)), nil
+	}
+	return "", fmt.Errorf("%w: remote %s has no tracking ref for %s", ErrInvalidWorktreeOptions, remote, ref)
+}
+
+func (e lifecycleExecution) validateRoutingOrigins(ctx context.Context, path, common, registration string, entries []gitcmd.Config) error {
+	localConfig := comparableWorktreePath(filepath.Join(common, "config"))
+	worktreeConfig := comparableWorktreePath(filepath.Join(registration, "config.worktree"))
+	for _, entry := range entries {
+		out, err := e.run(ctx, path, "config", "--null", "--show-origin", "--get-all", entry.Key)
+		if gitcmd.IsExitCode(err, 1) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		fields := bytes.Split(out, []byte{0})
+		for index := 0; index+1 < len(fields); index += 2 {
+			origin, file := strings.CutPrefix(string(fields[index]), "file:")
+			if !file {
+				return fmt.Errorf("%w: %s is configured outside repository or worktree files", ErrInvalidWorktreeOptions, entry.Key)
+			}
+			if !filepath.IsAbs(origin) {
+				origin = filepath.Join(path, origin)
+			}
+			origin = comparableWorktreePath(origin)
+			if origin != localConfig && origin != worktreeConfig {
+				return fmt.Errorf("%w: %s is configured outside repository or worktree files", ErrInvalidWorktreeOptions, entry.Key)
+			}
+		}
+	}
+	return nil
 }
 
 func (e lifecycleExecution) run(ctx context.Context, dir string, args ...string) ([]byte, error) {
