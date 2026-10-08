@@ -50,6 +50,9 @@ specific application or forge workflow.
   worktree configuration cannot outrank it. Explicit command-scope overrides
   on later Git commands are caller policy, not a sandbox boundary Kit can
   enforce.
+- Reject config selectors and includes into an isolated checkout before creating
+  it, even when their files do not exist yet. Deferred materialization must not
+  turn tracked files into newly active Git configuration.
 - The default lifecycle-hook runner is for trusted native executables. Callers
   that need process-tree supervision or cross-platform script dispatch must
   supply `RunHook`; do not grow those application policies into this package.
@@ -64,6 +67,8 @@ specific application or forge workflow.
   private directory and registration evidence. Preserve artifacts if evidence
   is incomplete. Never delete an acquired branch after it advances, or continue
   branch cleanup after failed checkout removal. Report partial removal effects.
+  After a branch deletion error, inspect its effect with a bounded context
+  independent of caller cancellation, retain the error, and stop further cleanup.
   Capture directory identities at acquisition time: Windows `os.Stat` can defer
   reading file IDs until `os.SameFile`, after a path has already been replaced.
 - Configure merge-request tracking in worktree-scoped Git configuration so
@@ -72,6 +77,8 @@ specific application or forge workflow.
   push routing. Leave must make no tracking writes; choose policy before create.
   Ordinary creation preserves Git's default tracking even with isolated checkout;
   merge-request import chooses an explicit tracking action before creation.
+  Resolve remote URLs and fetch mappings from the destination worktree's effective
+  configuration; a linked worktree can define its own remotes.
   Git combines branch.merge across scopes: track and clear must remove the
   selected branch's old repository/worktree routing. Do not mask inherited merge
   refs with empty values. Reject routing inherited from other config files or

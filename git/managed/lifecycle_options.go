@@ -152,11 +152,11 @@ func (e lifecycleExecution) setUpstream(ctx context.Context, root, path string, 
 		if _, err := e.run(ctx, root, "check-ref-format", ref); err != nil {
 			return err
 		}
-		if _, err := e.run(ctx, root, "remote", "get-url", "--", remote); err != nil {
+		if _, err := e.run(ctx, path, "remote", "get-url", "--", remote); err != nil {
 			return err
 		}
 		if policy.Condition == TrackingIfHeadMatches {
-			trackingOID, err := e.trackingOID(ctx, root, remote, ref)
+			trackingOID, err := e.trackingOID(ctx, path, remote, ref)
 			if err != nil {
 				return err
 			}

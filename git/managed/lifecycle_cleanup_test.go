@@ -16,39 +16,52 @@ import (
 )
 
 func TestCleanupReportsBranchDeletedBeforeExecutionError(t *testing.T) {
-	for _, rollback := range []bool{false, true} {
-		t.Run(map[bool]string{false: "remove", true: "rollback"}[rollback], func(t *testing.T) {
-			root := initLifecycleRepo(t)
-			runGit := func(ctx context.Context, runner gitcmd.Runner, dir string, args ...string) ([]byte, error) {
-				if len(args) > 1 && args[0] == "branch" && args[1] == "-D" {
-					runner.StdoutLimit = 1
+	for _, failure := range []string{"output-limit", "cancellation"} {
+		for _, rollback := range []bool{false, true} {
+			t.Run(failure+"/"+map[bool]string{false: "remove", true: "rollback"}[rollback], func(t *testing.T) {
+				root := initLifecycleRepo(t)
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				wantErr := gitcmd.ErrStdoutLimitExceeded
+				if failure == "cancellation" {
+					wantErr = context.Canceled
 				}
-				out, stderr, err := runner.Run(ctx, dir, nil, args...)
-				return append(out, stderr...), err
-			}
-			created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
-				ProjectRoot: root, Path: filepath.Join(t.TempDir(), "checkout"), Branch: "topic", Runner: lifecycleTestRunner(t), RunGit: runGit,
-			})
-			require.NoError(t, err)
-			if rollback {
-				remaining, err := created.Rollback(t.Context(), RollbackFreshOwned)
-				require.ErrorIs(t, err, gitcmd.ErrStdoutLimitExceeded)
-				assert.Empty(t, remaining)
-			} else {
-				lifecycleGit(t, root, "branch", "later")
-				result, err := RemoveWorktreeFromDisk(t.Context(), RemoveWorktreeOptions{
-					ProjectRoot: root, Path: created.Path, Branch: "topic", Force: true, Runner: lifecycleTestRunner(t), RunGit: runGit,
-					Branches: []BranchRemoval{{Name: "topic", Force: true}, {Name: "later", Force: true}},
+				runGit := func(ctx context.Context, runner gitcmd.Runner, dir string, args ...string) ([]byte, error) {
+					deleting := len(args) > 1 && args[0] == "branch" && args[1] == "-D"
+					if deleting && failure == "output-limit" {
+						runner.StdoutLimit = 1
+					}
+					out, stderr, err := runner.Run(ctx, dir, nil, args...)
+					if deleting && failure == "cancellation" && err == nil {
+						cancel()
+						err = ctx.Err()
+					}
+					return append(out, stderr...), err
+				}
+				created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+					ProjectRoot: root, Path: filepath.Join(t.TempDir(), "checkout"), Branch: "topic", Runner: lifecycleTestRunner(t), RunGit: runGit,
 				})
-				require.ErrorIs(t, err, gitcmd.ErrStdoutLimitExceeded)
-				assert.Equal(t, []string{"topic"}, result.BranchesRemoved)
-				assert.Equal(t, []string{"later"}, result.BranchesRemaining)
-				assert.Equal(t, "later", result.Remaining.Branch)
-				assert.True(t, branchExistsInRepo(t, root, "later"))
-			}
-			assert.NoDirExists(t, created.Path)
-			assert.False(t, branchExistsInRepo(t, root, "topic"))
-		})
+				require.NoError(t, err)
+				if rollback {
+					remaining, err := created.Rollback(ctx, RollbackFreshOwned)
+					require.ErrorIs(t, err, wantErr)
+					assert.Empty(t, remaining)
+				} else {
+					lifecycleGit(t, root, "branch", "later")
+					result, err := RemoveWorktreeFromDisk(ctx, RemoveWorktreeOptions{
+						ProjectRoot: root, Path: created.Path, Branch: "topic", Force: true, Runner: lifecycleTestRunner(t), RunGit: runGit,
+						Branches: []BranchRemoval{{Name: "topic", Force: true}, {Name: "later", Force: true}},
+					})
+					require.ErrorIs(t, err, wantErr)
+					assert.Equal(t, []string{"topic"}, result.BranchesRemoved)
+					assert.Equal(t, []string{"later"}, result.BranchesRemaining)
+					assert.Equal(t, "later", result.Remaining.Branch)
+					assert.True(t, branchExistsInRepo(t, root, "later"))
+				}
+				assert.NoDirExists(t, created.Path)
+				assert.False(t, branchExistsInRepo(t, root, "topic"))
+			})
+		}
 	}
 }
 

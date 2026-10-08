@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"time"
 
 	gitcmd "go.kenn.io/kit/git/cmd"
 	gitworktree "go.kenn.io/kit/git/worktree"
@@ -276,6 +277,11 @@ func createWorktreeOnDisk(ctx context.Context, opts CreateWorktreeOptions, prepa
 			return CreateWorktreeResult{}, err
 		}
 	}
+	if opts.Checkout == CheckoutIsolated {
+		if err := rejectConfigSourcesInsideWorktree(ctx, root, path, isolation.runner); err != nil {
+			return CreateWorktreeResult{}, err
+		}
+	}
 	startRef := opts.BaseRef
 	if mode == CheckoutExistingBranch {
 		startRef = "refs/heads/" + branch
@@ -342,7 +348,7 @@ func createWorktreeOnDisk(ctx context.Context, opts CreateWorktreeOptions, prepa
 			err = materializeUntrustedTree(ctx, path, isolation)
 		}
 		if err == nil {
-			err = rejectConfigOriginsInsideWorktree(ctx, path, isolation.runner)
+			err = rejectConfigSourcesInsideWorktree(ctx, path, path, isolation.runner)
 		}
 		result.runner = isolation.runner
 		if err != nil {
@@ -596,7 +602,10 @@ func RemoveWorktreeFromDisk(
 	for _, removal := range branches {
 		removeErr := removeBranch(ctx, root, removal)
 		if removeErr != nil {
-			exists, inspectErr := localBranchExists(ctx, root, removal.Name)
+			// Cancellation may follow the deletion; inspect its effect without resuming cleanup.
+			inspectCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			exists, inspectErr := localBranchExists(inspectCtx, root, removal.Name)
+			cancel()
 			if inspectErr != nil || exists {
 				return result, errors.Join(removeErr, inspectErr)
 			}

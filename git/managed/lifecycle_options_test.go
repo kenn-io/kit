@@ -280,6 +280,32 @@ func TestIsolatedCreationPreservesDefaultTracking(t *testing.T) {
 	assert.Equal(t, want, lifecycleGit(t, created.Path, "rev-parse", "HEAD"))
 }
 
+func TestUpstreamUsesWorktreeRemote(t *testing.T) {
+	for _, condition := range []TrackingCondition{TrackingExplicit, TrackingIfHeadMatches} {
+		t.Run(map[TrackingCondition]string{TrackingExplicit: "explicit", TrackingIfHeadMatches: "matching"}[condition], func(t *testing.T) {
+			origin, clone := initOriginAndClone(t)
+			created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+				ProjectRoot: clone, Path: filepath.Join(t.TempDir(), "checkout"), Branch: "topic", Runner: lifecycleTestRunner(t),
+			})
+			require.NoError(t, err)
+			lifecycleGit(t, clone, "config", "extensions.worktreeConfig", "true")
+			lifecycleGit(t, created.Path, "config", "--worktree", "remote.worktree-only.url", origin)
+			lifecycleGit(t, created.Path, "config", "--worktree", "remote.worktree-only.fetch", "+refs/heads/*:refs/remotes/worktree-only/*")
+			lifecycleGit(t, created.Path, "fetch", "worktree-only")
+			err = SetWorktreeUpstream(t.Context(), WorktreeUpstreamOptions{
+				ProjectRoot: clone, Path: created.Path, Runner: lifecycleTestRunner(t),
+				Policy: UpstreamPolicy{Action: UpstreamTrack, Condition: condition, Remote: "worktree-only", Ref: "refs/heads/main"},
+			})
+			require.NoError(t, err)
+			assert.Equal(t, "refs/remotes/worktree-only/main", lifecycleGit(t, created.Path, "rev-parse", "--symbolic-full-name", "@{upstream}"))
+			lifecycleGit(t, origin, "commit", "--allow-empty", "-m", "remote update")
+			want := lifecycleGit(t, origin, "rev-parse", "HEAD")
+			lifecycleGit(t, created.Path, "pull", "--ff-only")
+			assert.Equal(t, want, lifecycleGit(t, created.Path, "rev-parse", "HEAD"))
+		})
+	}
+}
+
 func TestExplicitUpstreamScopeAndHeadCondition(t *testing.T) {
 	for _, condition := range []TrackingCondition{TrackingExplicit, TrackingIfHeadMatches} {
 		t.Run(map[TrackingCondition]string{TrackingExplicit: "explicit", TrackingIfHeadMatches: "matching"}[condition], func(t *testing.T) {

@@ -75,3 +75,49 @@ func TestMaterializeUntrustedTreePinsWorktree(t *testing.T) {
 	require.NoError(err)
 	assert.Equal("preserve", string(externalContents))
 }
+
+func TestDeferredCheckoutRejectsFutureTreeConfig(t *testing.T) {
+	for _, source := range []string{"global", "system", "include", "conditional-include", "external"} {
+		t.Run(source, func(t *testing.T) {
+			root := initLifecycleRepo(t)
+			require.NoError(t, os.WriteFile(filepath.Join(root, ".gitconfig"), []byte("[diff \"deferred\"]\ncommand = echo executed > driver-ran\n"), 0o600))
+			require.NoError(t, os.WriteFile(filepath.Join(root, ".gitattributes"), []byte("payload diff=deferred\n"), 0o600))
+			require.NoError(t, os.WriteFile(filepath.Join(root, "payload"), []byte("original\n"), 0o600))
+			lifecycleGit(t, root, "add", ".")
+			lifecycleGit(t, root, "commit", "-m", "tree configuration")
+			lifecycleGit(t, root, "branch", "imported")
+			lifecycleGit(t, root, "reset", "--hard", "HEAD^")
+			path := filepath.Join(t.TempDir(), "checkout")
+			runner := lifecycleTestRunner(t)
+			switch source {
+			case "global":
+				runner.Env = append(runner.Env, "GIT_CONFIG_GLOBAL=.gitconfig")
+			case "system":
+				runner.Env = append(runner.Env, "GIT_CONFIG_NOSYSTEM=0", "GIT_CONFIG_SYSTEM="+filepath.Join(path, ".gitconfig"))
+			case "include", "conditional-include":
+				key := "include.path"
+				if source == "conditional-include" {
+					key = "includeIf.onbranch:topic.path"
+				}
+				relative, err := filepath.Rel(filepath.Join(root, ".git"), filepath.Join(path, ".gitconfig"))
+				require.NoError(t, err)
+				lifecycleGit(t, root, "config", key, filepath.ToSlash(relative))
+			}
+			_, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+				ProjectRoot: root, Path: path, Branch: "topic", BaseRef: "imported", NoCheckout: true,
+				Checkout: CheckoutIsolated, FailureCleanup: CleanupDeferred, Runner: runner,
+			})
+			if source != "external" {
+				require.ErrorContains(t, err, "configuration inside merge request worktree")
+				assert.NoDirExists(t, path)
+				assert.False(t, branchExistsInRepo(t, root, "topic"))
+				return
+			}
+			require.NoError(t, err)
+			lifecycleGit(t, path, "reset", "--hard", "HEAD")
+			require.NoError(t, os.WriteFile(filepath.Join(path, "payload"), []byte("changed\n"), 0o600))
+			assert.Contains(t, lifecycleGit(t, path, "diff", "--", "payload"), "+changed")
+			assert.NoFileExists(t, filepath.Join(path, "driver-ran"))
+		})
+	}
+}

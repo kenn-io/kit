@@ -491,15 +491,43 @@ func ambientGitConfigKeys(
 	return gitConfigKeys(ctx, worktreePath, runner)
 }
 
-func rejectConfigOriginsInsideWorktree(
-	ctx context.Context, worktreePath string, runner gitcmd.Runner,
+func rejectConfigSourcesInsideWorktree(
+	ctx context.Context, dir, worktreePath string, runner gitcmd.Runner,
 ) error {
 	runner.Env = withoutGitRepositoryBindings(runner.Env)
 	runner.StripEnv = false
 	runner.NullGlobalConfig = false
 	runner.NoSystemConfig = false
+	worktree := comparableWorktreePath(worktreePath)
+	lexicalWorktree := lexicalWorktreePath(worktreePath)
+	checkPath := func(configPath string) error {
+		if !filepath.IsAbs(configPath) {
+			configPath = filepath.Join(worktreePath, configPath)
+		}
+		if pathWithinRoot(lexicalWorktree, lexicalWorktreePath(configPath)) ||
+			pathWithinRoot(worktree, comparableWorktreePath(configPath)) ||
+			pathWithinRootByIdentity(worktreePath, configPath) {
+			return fmt.Errorf("Git configuration inside merge request worktree is not allowed: %s", configPath)
+		}
+		return nil
+	}
+	// Unlike config origins, Git's selected paths include files that do not yet exist.
+	for _, selector := range []string{"GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"} {
+		out, err := runLifecycleGitWithRunner(ctx, runner, dir, "var", selector)
+		if gitcmd.IsExitCode(err, 1) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("inspect %s: %w", selector, err)
+		}
+		for path := range strings.SplitSeq(strings.TrimSuffix(string(out), "\n"), "\n") {
+			if err := checkPath(path); err != nil {
+				return err
+			}
+		}
+	}
 	out, err := runLifecycleGitWithRunner(
-		ctx, runner, worktreePath,
+		ctx, runner, dir,
 		"config", "--null", "--show-origin", "--name-only",
 		"--includes", "--list",
 	)
@@ -510,8 +538,6 @@ func rejectConfigOriginsInsideWorktree(
 		)
 	}
 	fields := bytes.Split(out, []byte{0})
-	worktree := comparableWorktreePath(worktreePath)
-	lexicalWorktree := lexicalWorktreePath(worktreePath)
 	for index := 0; index+1 < len(fields); index += 2 {
 		origin := string(fields[index])
 		if !strings.HasPrefix(origin, "file:") {
@@ -519,17 +545,35 @@ func rejectConfigOriginsInsideWorktree(
 		}
 		configPath := strings.TrimPrefix(origin, "file:")
 		if !filepath.IsAbs(configPath) {
-			configPath = filepath.Join(worktreePath, configPath)
+			configPath = filepath.Join(dir, configPath)
 		}
-		if pathWithinRoot(
-			lexicalWorktree, lexicalWorktreePath(configPath),
-		) || pathWithinRoot(
-			worktree, comparableWorktreePath(configPath),
-		) || pathWithinRootByIdentity(worktreePath, configPath) {
-			return fmt.Errorf(
-				"Git configuration inside merge request worktree is not allowed: %s",
-				configPath,
-			)
+		if err := checkPath(configPath); err != nil {
+			return err
+		}
+	}
+	out, err = runLifecycleGitWithRunner(ctx, runner, dir,
+		"config", "--null", "--show-origin", "--includes", "--path", "--get-regexp", `^(include\.path|includeif\..*\.path)$`)
+	if gitcmd.IsExitCode(err, 1) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect Git configuration includes: %w", err)
+	}
+	fields = bytes.Split(out, []byte{0})
+	for index := 0; index+1 < len(fields); index += 2 {
+		_, configPath, _ := strings.Cut(string(fields[index+1]), "\n")
+		if !filepath.IsAbs(configPath) {
+			origin, file := strings.CutPrefix(string(fields[index]), "file:")
+			if !file {
+				return errors.New("relative config includes must come from files")
+			}
+			if !filepath.IsAbs(origin) {
+				origin = filepath.Join(dir, origin)
+			}
+			configPath = filepath.Join(filepath.Dir(origin), configPath)
+		}
+		if err := checkPath(configPath); err != nil {
+			return err
 		}
 	}
 	return nil
