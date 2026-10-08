@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -19,24 +20,46 @@ import (
 )
 
 func TestCachedTrustFilesystemBound(t *testing.T) {
-	for _, mode := range []string{"cancel", "timeout"} {
+	for _, mode := range []string{"cancel", "timeout", "contention"} {
 		t.Run(mode, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
+				originalSlot := safeDirectoryFilesystemSlot
+				safeDirectoryFilesystemSlot = make(chan struct{}, 1)
+				t.Cleanup(func() { safeDirectoryFilesystemSlot = originalSlot })
 				original := &safeDirectorySnapshot{}
 				cache := &safeDirectoryCache{current: original}
 				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
 				started, release := make(chan struct{}), make(chan struct{})
-				result := make(chan bool, 1)
+				result := make(chan bool, 3)
 				var late *safeDirectorySnapshot
 				go func() {
-					result <- cache.evaluateFilesystem(ctx, func() {
+					result <- evaluateFilesystem(ctx, func() {
 						close(started)
 						<-release
 						late = &safeDirectorySnapshot{discoveryFailed: true}
 					})
 				}()
 				<-started
+				if mode == "contention" {
+					completed := make(chan struct{}, 2)
+					for range 2 {
+						go func() {
+							result <- evaluateFilesystem(t.Context(), func() { completed <- struct{}{} })
+						}()
+					}
+					synctest.Wait()
+					assert.Empty(t, completed)
+					assert.Empty(t, result)
+					close(release)
+					for range 3 {
+						assert.True(t, <-result)
+					}
+					synctest.Wait()
+					assert.Len(t, completed, 2)
+					assert.Same(t, original, cache.current)
+					return
+				}
 				if mode == "cancel" {
 					cancel()
 				} else {
@@ -45,14 +68,14 @@ func TestCachedTrustFilesystemBound(t *testing.T) {
 				synctest.Wait()
 				require.False(t, <-result)
 				called := false
-				assert.False(t, cache.evaluateFilesystem(t.Context(), func() { called = true }))
+				assert.False(t, evaluateFilesystem(t.Context(), func() { called = true }))
 				assert.False(t, called)
 				assert.Same(t, original, cache.current)
 				close(release)
 				synctest.Wait()
 				assert.NotNil(t, late)
 				assert.Same(t, original, cache.current)
-				assert.True(t, cache.evaluateFilesystem(t.Context(), func() { called = true }))
+				assert.True(t, evaluateFilesystem(t.Context(), func() { called = true }))
 				assert.True(t, called)
 			})
 		})
@@ -117,6 +140,16 @@ func TestCachedTrust(t *testing.T) {
 			check(other, "/other", baseline)
 			check(runner, "/trusted", 2*baseline)
 			check(other, "/other", baseline)
+			check(runner, "/trusted", 0)
+			var calls sync.WaitGroup
+			for range 8 {
+				calls.Go(func() {
+					for range 10 {
+						assert.Equal(t, []string{"/trusted"}, runner.trust.read(t.Context(), runner.Env, dir))
+					}
+				})
+			}
+			calls.Wait()
 			check(runner, "/trusted", 0)
 			check(runner.WithConfig("gc.auto", "1"), "/trusted", 0)
 			fresh := New()

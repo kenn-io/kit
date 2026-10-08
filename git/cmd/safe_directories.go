@@ -24,25 +24,31 @@ type safeDirectoryScope struct {
 type safeDirectoryCache struct {
 	mu      sync.Mutex
 	current *safeDirectorySnapshot
-	pending bool
 }
 
-func (c *safeDirectoryCache) evaluateFilesystem(ctx context.Context, evaluate func()) bool {
+// The slot bounds unfinished trust-cache filesystem checks to one per process.
+var safeDirectoryFilesystemSlot = make(chan struct{}, 1)
+
+func evaluateFilesystem(ctx context.Context, evaluate func()) bool {
 	ctx, cancel := context.WithTimeout(ctx, safeDirectoryProbeTimeout)
 	defer cancel()
-	c.mu.Lock()
-	if c.pending || ctx.Err() != nil {
-		c.mu.Unlock()
+	slot := safeDirectoryFilesystemSlot
+	if ctx.Err() != nil {
 		return false
 	}
-	c.pending = true
-	c.mu.Unlock()
+	select {
+	case slot <- struct{}{}:
+	case <-ctx.Done():
+		return false
+	}
+	if ctx.Err() != nil {
+		<-slot
+		return false
+	}
 	done := make(chan struct{})
 	go func() {
 		evaluate()
-		c.mu.Lock()
-		c.pending = false
-		c.mu.Unlock()
+		<-slot
 		close(done)
 	}()
 	select {
@@ -129,7 +135,7 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 	var err error
 	var homeAvailable bool
 	var sameFile bool
-	if !c.evaluateFilesystem(ctx, func() {
+	if !evaluateFilesystem(ctx, func() {
 		path = gitCommand(ctx, true).Path
 		info, err = os.Stat(path)
 		homeAvailable = windowsHomeAvailable(env)
@@ -141,7 +147,7 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 	}
 	homeUnchanged := func() bool {
 		var available bool
-		return c.evaluateFilesystem(ctx, func() { available = windowsHomeAvailable(env) }) && available == homeAvailable
+		return evaluateFilesystem(ctx, func() { available = windowsHomeAvailable(env) }) && available == homeAvailable
 	}
 	identity := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%d\x00%s\x00%t", path, info.Size(), info.ModTime().UnixNano(), strings.Join(env, "\x00"), homeAvailable)))
 	if previous == nil {
@@ -188,7 +194,7 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 	for _, scope := range scopes {
 		s := next.scopes[scope]
 		var before [32]byte
-		if !c.evaluateFilesystem(ctx, func() { before, err = safeDirectoryFingerprint(s.paths) }) {
+		if !evaluateFilesystem(ctx, func() { before, err = safeDirectoryFingerprint(s.paths) }) {
 			return fresh()
 		}
 		if err == nil && s.valid && before == s.fingerprint {
@@ -203,7 +209,7 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 		}
 		var after [32]byte
 		var afterErr error
-		if !c.evaluateFilesystem(ctx, func() { after, afterErr = safeDirectoryFingerprint(s.paths) }) {
+		if !evaluateFilesystem(ctx, func() { after, afterErr = safeDirectoryFingerprint(s.paths) }) {
 			return fresh()
 		}
 		if !includes && err == nil && afterErr == nil && before == after {
