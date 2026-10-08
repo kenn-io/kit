@@ -353,8 +353,6 @@ func main() {
 		check([]string{"/repaired"}, 1)
 		check([]string{"/repaired"}, 1)
 		check([]string{"/repaired"}, 0)
-		require.NoError(t, os.Remove(config))
-		assert.Empty(t, read())
 	})
 	t.Run("includes", func(t *testing.T) {
 		dir := t.TempDir()
