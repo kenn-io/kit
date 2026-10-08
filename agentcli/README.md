@@ -60,11 +60,12 @@ of those typed request checks.
 
 ## Supported agents
 
-`Names` returns ten concrete CLI adapters. The modes below describe this
+`Names` returns twelve concrete CLI adapters. The modes below describe this
 package, not every mode offered by the underlying command. Interactive mode
 opens the agent's own terminal UI and takes no prompt for Gemini, GitHub
-Copilot, Cursor Agent, and Factory Droid. Interactive Droid accepts only
-autonomy and the built-in skills control; its other controls are `exec` flags.
+Copilot, Cursor Agent, Factory Droid, Hermes, and Qwen Code. Interactive Droid
+accepts only autonomy and the built-in skills control; its other controls are
+`exec` flags.
 
 | Agent | Modes | Prompt | Resume | Output | Reasoning |
 | --- | --- | --- | --- | --- | --- |
@@ -78,6 +79,8 @@ autonomy and the built-in skills control; its other controls are `exec` flags.
 | Kilo | noninteractive | stdin | `run --session ID` | text, JSONL | low, medium, high, xhigh, maximum |
 | Factory Droid | interactive, noninteractive | stdin, noninteractive only | `--resume ID`, `exec --session-id ID` | text, JSON, JSONL | low, medium, high, xhigh, maximum, noninteractive only |
 | Pi | interactive, noninteractive | argument and `@file` | `--session ID` | text, JSONL | low, medium, high, xhigh, maximum |
+| Hermes | interactive | none | `--resume ID` | text | none |
+| Qwen Code | interactive | none | `--resume ID` | text | none |
 
 `ReasoningXHigh` and `ReasoningMaximum` are distinct. Adapters with a native
 `max` value, including Codex, map only `ReasoningMaximum` to it. Droid accepts
@@ -99,6 +102,8 @@ The remaining controls are intentionally uneven:
 | Kilo | none | automatic approval | none |
 | Factory Droid | none | tool allowlist and denylist; low, medium, or high autonomy; permission bypass | disable built-in skills |
 | Pi | inline schema through an explicit extension and output file | allow, deny, or disable built-in tools | skill paths; disable skills, extensions, prompt templates, themes, context files, hooks through extension discovery, or session storage |
+| Hermes | none | none | none |
+| Qwen Code | none | none | none |
 
 The adapters reflect these CLI contracts:
 
@@ -113,6 +118,8 @@ The adapters reflect these CLI contracts:
 - [Kilo CLI source](https://github.com/Kilo-Org/kilocode)
 - [Factory Droid CLI reference](https://docs.factory.ai/droid-cli/cli-reference)
 - [Pi README](https://github.com/earendil-works/pi/tree/main/packages/coding-agent)
+- [Hermes CLI source](https://github.com/NousResearch/hermes-agent)
+- [Qwen Code source](https://github.com/QwenLM/qwen-code)
 
 The first consumer migrations should replace Forge's temporary command-option
 validator together with its interactive resume switch; Forge should pass its
