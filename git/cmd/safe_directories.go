@@ -24,6 +24,33 @@ type safeDirectoryScope struct {
 type safeDirectoryCache struct {
 	mu      sync.Mutex
 	current *safeDirectorySnapshot
+	pending bool
+}
+
+func (c *safeDirectoryCache) evaluateFilesystem(ctx context.Context, evaluate func()) bool {
+	ctx, cancel := context.WithTimeout(ctx, safeDirectoryProbeTimeout)
+	defer cancel()
+	c.mu.Lock()
+	if c.pending || ctx.Err() != nil {
+		c.mu.Unlock()
+		return false
+	}
+	c.pending = true
+	c.mu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		evaluate()
+		c.mu.Lock()
+		c.pending = false
+		c.mu.Unlock()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return ctx.Err() == nil
+	case <-ctx.Done():
+		return false
+	}
 }
 
 type safeDirectorySnapshot struct {
@@ -85,42 +112,58 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 	if c == nil {
 		return readSafeDirectories(ctx, env, dir)
 	}
-	if ctx.Err() != nil {
-		return nil
+	fresh := func() []string {
+		if ctx.Err() != nil {
+			return nil
+		}
+		return readSafeDirectories(ctx, env, dir)
 	}
 	if !configPathsReusable(env) {
-		return readSafeDirectories(ctx, env, dir)
+		return fresh()
 	}
-	cmd := gitCommand(ctx, true)
-	info, err := os.Stat(cmd.Path)
-	if err != nil {
-		return readSafeDirectories(ctx, env, dir)
-	}
-	homeAvailable := windowsHomeAvailable(env)
-	identity := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%d\x00%s\x00%t", cmd.Path, info.Size(), info.ModTime().UnixNano(), strings.Join(env, "\x00"), homeAvailable)))
 	c.mu.Lock()
 	previous := c.current
 	c.mu.Unlock()
+	var path string
+	var info os.FileInfo
+	var err error
+	var homeAvailable bool
+	var sameFile bool
+	if !c.evaluateFilesystem(ctx, func() {
+		path = gitCommand(ctx, true).Path
+		info, err = os.Stat(path)
+		homeAvailable = windowsHomeAvailable(env)
+		if err == nil && previous != nil {
+			sameFile = os.SameFile(info, previous.executable)
+		}
+	}) || err != nil || info == nil {
+		return fresh()
+	}
+	homeUnchanged := func() bool {
+		var available bool
+		return c.evaluateFilesystem(ctx, func() { available = windowsHomeAvailable(env) }) && available == homeAvailable
+	}
+	identity := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%d\x00%s\x00%t", path, info.Size(), info.ModTime().UnixNano(), strings.Join(env, "\x00"), homeAvailable)))
 	if previous == nil {
 		values := readSafeDirectories(ctx, env, dir)
 		if ctx.Err() != nil {
 			return nil
 		}
-		if windowsHomeAvailable(env) != homeAvailable {
-			return readSafeDirectories(ctx, env, dir)
+		if !homeUnchanged() {
+			return fresh()
 		}
 		c.mu.Lock()
-		if c.current == nil {
+		if c.current == nil && ctx.Err() == nil {
 			c.current = &safeDirectorySnapshot{identity: identity, executable: info}
 		}
 		c.mu.Unlock()
 		return values
 	}
-	if identity != previous.identity || !os.SameFile(info, previous.executable) {
-		return readSafeDirectories(ctx, env, dir)
+	if identity != previous.identity || !sameFile {
+		return fresh()
 	}
 	if previous.discoveryFailed {
-		return readSafeDirectories(ctx, env, dir)
+		return fresh()
 	}
 	next := &safeDirectorySnapshot{identity: identity, executable: info, scopes: make(map[string]safeDirectoryScope)}
 	if previous.scopes != nil {
@@ -144,7 +187,10 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 	}
 	for _, scope := range scopes {
 		s := next.scopes[scope]
-		before, err := safeDirectoryFingerprint(s.paths)
+		var before [32]byte
+		if !c.evaluateFilesystem(ctx, func() { before, err = safeDirectoryFingerprint(s.paths) }) {
+			return fresh()
+		}
 		if err == nil && s.valid && before == s.fingerprint {
 			values = append(values, s.values...)
 			continue
@@ -155,7 +201,11 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 			next.scopes[scope] = s
 			continue
 		}
-		after, afterErr := safeDirectoryFingerprint(s.paths)
+		var after [32]byte
+		var afterErr error
+		if !c.evaluateFilesystem(ctx, func() { after, afterErr = safeDirectoryFingerprint(s.paths) }) {
+			return fresh()
+		}
 		if !includes && err == nil && afterErr == nil && before == after {
 			s.fingerprint, s.values, s.valid = after, entries, true
 		}
@@ -168,11 +218,11 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 	if ctx.Err() != nil {
 		return nil
 	}
-	if windowsHomeAvailable(env) != homeAvailable {
-		return readSafeDirectories(ctx, env, dir)
+	if !homeUnchanged() {
+		return fresh()
 	}
 	c.mu.Lock()
-	if c.current == previous {
+	if c.current == previous && ctx.Err() == nil {
 		c.current = next
 	}
 	c.mu.Unlock()

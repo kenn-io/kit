@@ -11,11 +11,53 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestCachedTrustFilesystemBound(t *testing.T) {
+	for _, mode := range []string{"cancel", "timeout"} {
+		t.Run(mode, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				original := &safeDirectorySnapshot{}
+				cache := &safeDirectoryCache{current: original}
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				started, release := make(chan struct{}), make(chan struct{})
+				result := make(chan bool, 1)
+				var late *safeDirectorySnapshot
+				go func() {
+					result <- cache.evaluateFilesystem(ctx, func() {
+						close(started)
+						<-release
+						late = &safeDirectorySnapshot{discoveryFailed: true}
+					})
+				}()
+				<-started
+				if mode == "cancel" {
+					cancel()
+				} else {
+					time.Sleep(safeDirectoryProbeTimeout)
+				}
+				synctest.Wait()
+				require.False(t, <-result)
+				called := false
+				assert.False(t, cache.evaluateFilesystem(t.Context(), func() { called = true }))
+				assert.False(t, called)
+				assert.Same(t, original, cache.current)
+				close(release)
+				synctest.Wait()
+				assert.NotNil(t, late)
+				assert.Same(t, original, cache.current)
+				assert.True(t, cache.evaluateFilesystem(t.Context(), func() { called = true }))
+				assert.True(t, called)
+			})
+		})
+	}
+}
 
 func extendTrustProbeTimeout(t *testing.T) {
 	t.Helper()
