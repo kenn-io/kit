@@ -27,20 +27,16 @@ func TestCachedTrustFilesystemBound(t *testing.T) {
 				originalAdmission := safeDirectoryFilesystem
 				safeDirectoryFilesystem = &safeDirectoryFilesystemAdmission{}
 				t.Cleanup(func() { safeDirectoryFilesystem = originalAdmission })
-				original := &safeDirectorySnapshot{}
-				cache := &safeDirectoryCache{current: original}
 				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
 				started, release := make(chan struct{}), make(chan struct{})
 				result := make(chan bool, 3)
-				var late *safeDirectorySnapshot
 				var callbackErr error
 				followed := false
 				go func() {
 					result <- evaluateFilesystem(ctx, func(checkCtx context.Context) {
 						close(started)
 						<-release
-						late = &safeDirectorySnapshot{discoveryFailed: true}
 						callbackErr = checkCtx.Err()
 						if callbackErr == nil {
 							followed = true
@@ -66,7 +62,6 @@ func TestCachedTrustFilesystemBound(t *testing.T) {
 					assert.Len(t, completed, 2)
 					require.NoError(t, callbackErr)
 					assert.True(t, followed)
-					assert.Same(t, original, cache.current)
 					return
 				}
 				called := false
@@ -91,13 +86,10 @@ func TestCachedTrustFilesystemBound(t *testing.T) {
 				assert.False(t, evaluateFilesystem(t.Context(), func(context.Context) { called = true }))
 				assert.Zero(t, time.Since(before))
 				assert.False(t, called)
-				assert.Same(t, original, cache.current)
 				close(release)
 				synctest.Wait()
-				assert.NotNil(t, late)
 				require.Error(t, callbackErr)
 				assert.False(t, followed)
-				assert.Same(t, original, cache.current)
 				assert.True(t, evaluateFilesystem(t.Context(), func(context.Context) { called = true }))
 				assert.True(t, called)
 			})
