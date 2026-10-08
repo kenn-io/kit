@@ -218,6 +218,19 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 			}
 			paths := strings.TrimSuffix(string(out), "\n")
 			next.scopes[scope] = safeDirectoryScope{paths: strings.FieldsFunc(strings.TrimRight(paths, "\r\n"), func(r rune) bool { return r == '\n' || r == '\r' })}
+			if scope == "global" && homeApplicable {
+				home, _ := envValue(env, "USERPROFILE")
+				if homeAvailable {
+					drive, _ := envValue(env, "HOMEDRIVE")
+					path, _ := envValue(env, "HOMEPATH")
+					home = drive + path
+				}
+				expected := filepath.Join(home, ".gitconfig")
+				discovered := next.scopes[scope].paths
+				if !filepath.IsAbs(expected) || len(discovered) != 2 || filepath.ToSlash(filepath.Clean(discovered[1])) != filepath.ToSlash(filepath.Clean(expected)) {
+					return fresh()
+				}
+			}
 		}
 	}
 	var values []string

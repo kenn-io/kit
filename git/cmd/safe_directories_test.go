@@ -434,7 +434,7 @@ func main() {
  cmd := exec.Command(os.Getenv("TRUST_TEST_GIT"), os.Args[1:]...)
  cmd.Stdin, cmd.Stdout, cmd.Stderr, cmd.Env = os.Stdin, os.Stdout, os.Stderr, os.Environ()
  if err := cmd.Run(); err != nil { if exit, ok := err.(*exec.ExitError); ok { os.Exit(exit.ExitCode()) }; os.Exit(2) }
- if len(os.Args) > 1 && os.Args[1] == "config" && os.Getenv("TRUST_TEST_BLOCK_AFTER") == "1" { response, err := http.Get(os.Getenv("TRUST_TEST_URL")); if err != nil { os.Exit(2) }; response.Body.Close() }
+ if len(os.Args) > 1 && (os.Args[1] == "config" && os.Getenv("TRUST_TEST_BLOCK_AFTER") == "1" || os.Args[1] == "var" && os.Getenv("TRUST_TEST_BLOCK_VAR_AFTER") == "1") { response, err := http.Get(os.Getenv("TRUST_TEST_URL")); if err != nil { os.Exit(2) }; response.Body.Close() }
 }
 `)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -446,9 +446,58 @@ func main() {
 }
 
 func TestCachedTrustConcurrentEvaluation(t *testing.T) {
-	for _, mode := range []string{"canceled fill", "canceled discovery", "competing environments", "reverted edit", "reverted missing"} {
+	for _, mode := range []string{"canceled fill", "canceled discovery", "competing environments", "reverted edit", "reverted missing", "home interruption"} {
 		t.Run(mode, func(t *testing.T) {
+			if mode == "home interruption" && runtime.GOOS != "windows" {
+				t.Skip("requires Git for Windows HOME selection")
+			}
 			runner, started := coordinatedTrustGit(t)
+			if mode == "home interruption" {
+				dir := t.TempDir()
+				share, profile := filepath.Join(dir, "share"), filepath.Join(dir, "profile")
+				for _, home := range []string{share, profile} {
+					require.NoError(t, os.Mkdir(home, 0o700))
+					require.NoError(t, os.WriteFile(filepath.Join(home, ".gitconfig"), []byte("[safe]\n directory = /"+filepath.Base(home)+"\n"), 0o600))
+				}
+				runner.Env = slices.DeleteFunc(runner.Env, func(entry string) bool {
+					key, _, _ := strings.Cut(entry, "=")
+					return strings.EqualFold(key, "HOME") || strings.EqualFold(key, "GIT_CONFIG_GLOBAL") || strings.EqualFold(key, "XDG_CONFIG_HOME")
+				})
+				drive := filepath.VolumeName(share)
+				trace := filepath.Join(dir, "trace")
+				runner.Env = append(runner.Env, "HOMEDRIVE="+drive, "HOMEPATH="+strings.TrimPrefix(share, drive), "USERPROFILE="+profile, "GIT_TRACE="+filepath.ToSlash(trace), "TRUST_TEST_BLOCK_VAR=1", "TRUST_TEST_BLOCK_VAR_AFTER=1")
+				result := make(chan []string, 1)
+				read := func() { go func() { result <- runner.trust.read(t.Context(), runner.Env, dir) }() }
+				read()
+				close(<-started)
+				assert.Equal(t, []string{"/share"}, <-result)
+				read()
+				before := <-started
+				require.NoError(t, os.Rename(share, share+"-offline"))
+				close(before)
+				after := <-started
+				require.NoError(t, os.Rename(share+"-offline", share))
+				close(after)
+				close(<-started)
+				assert.Equal(t, []string{"/share"}, <-result)
+				require.Nil(t, runner.trust.current.scopes)
+				read()
+				close(<-started)
+				close(<-started)
+				close(<-started)
+				assert.Equal(t, []string{"/share"}, <-result)
+				require.NoError(t, os.WriteFile(filepath.Join(share, ".gitconfig"), []byte("[safe]\n directory = /updated\n"), 0o600))
+				read()
+				close(<-started)
+				assert.Equal(t, []string{"/updated"}, <-result)
+				beforeTrace, err := os.ReadFile(trace)
+				require.NoError(t, err)
+				assert.Equal(t, []string{"/updated"}, runner.trust.read(t.Context(), runner.Env, dir))
+				afterTrace, err := os.ReadFile(trace)
+				require.NoError(t, err)
+				assert.Equal(t, beforeTrace, afterTrace)
+				return
+			}
 			missing := mode == "reverted missing"
 			if missing {
 				config, _ := envValue(runner.Env, "GIT_CONFIG_GLOBAL")
