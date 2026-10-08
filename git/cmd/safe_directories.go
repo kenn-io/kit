@@ -1,6 +1,7 @@
 package gitcmd
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -20,6 +21,7 @@ type safeDirectoryScope struct {
 	fingerprint [32]byte
 	values      []string
 	valid       bool
+	includes    bool
 }
 
 type safeDirectoryCache struct {
@@ -229,31 +231,26 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 	}
 	for _, scope := range scopes {
 		s := next.scopes[scope]
-		var before [32]byte
-		if !evaluateFilesystem(ctx, func(checkCtx context.Context) { before, err = safeDirectoryFingerprint(checkCtx, s.paths) }) {
+		var cached safeDirectoryScope
+		var cacheErr error
+		if !evaluateFilesystem(ctx, func(checkCtx context.Context) {
+			cached, cacheErr = readSafeDirectorySnapshot(checkCtx, env, dir, scope, s)
+		}) {
 			return fresh()
 		}
-		if err == nil && s.valid && before == s.fingerprint {
-			values = append(values, s.values...)
-			continue
-		}
-		s = safeDirectoryScope{paths: s.paths}
-		entries, includes, probeErr := readSafeDirectoryScope(ctx, env, dir, scope)
-		if probeErr != nil && !IsExitCode(probeErr, 1) {
-			next.scopes[scope] = s
-			continue
-		}
-		if !includes && err == nil {
-			var after [32]byte
-			var afterErr error
-			if !evaluateFilesystem(ctx, func(checkCtx context.Context) { after, afterErr = safeDirectoryFingerprint(checkCtx, s.paths) }) {
-				return fresh()
+		entries := cached.values
+		if cacheErr != nil || cached.includes {
+			if cacheErr != nil {
+				cached = safeDirectoryScope{paths: s.paths}
 			}
-			if afterErr == nil && before == after {
-				s.fingerprint, s.values, s.valid = after, entries, true
+			var probeErr error
+			entries, _, probeErr = readSafeDirectoryScope(ctx, env, dir, scope)
+			if probeErr != nil && !IsExitCode(probeErr, 1) {
+				next.scopes[scope] = cached
+				continue
 			}
 		}
-		next.scopes[scope] = s
+		next.scopes[scope] = cached
 		values = append(values, entries...)
 	}
 	if next.discoveryFailed {
@@ -273,8 +270,15 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 	return values
 }
 
+const safeDirectoryKeys = `^(safe\.directory|include\.path|includeif\..*\.path)$`
+
 func readSafeDirectoryScope(ctx context.Context, env []string, dir, scope string) ([]string, bool, error) {
-	out, err := safeDirectoryOutput(ctx, env, dir, "config", "--"+scope, "--includes", "-z", "--get-regexp", `^(safe\.directory|include\.path|includeif\..*\.path)$`)
+	out, err := safeDirectoryOutput(ctx, env, dir, "config", "--"+scope, "--includes", "-z", "--get-regexp", safeDirectoryKeys)
+	entries, includes := decodeSafeDirectoryOutput(out)
+	return entries, includes, err
+}
+
+func decodeSafeDirectoryOutput(out []byte) ([]string, bool) {
 	var entries []string
 	includes := false
 	for entry := range strings.SplitSeq(strings.TrimSuffix(string(out), "\x00"), "\x00") {
@@ -288,7 +292,7 @@ func readSafeDirectoryScope(ctx context.Context, env []string, dir, scope string
 			includes = true
 		}
 	}
-	return entries, includes, err
+	return entries, includes
 }
 
 func safeDirectoryOutput(ctx context.Context, env []string, dir string, args ...string) ([]byte, error) {
@@ -303,60 +307,108 @@ func safeDirectoryOutput(ctx context.Context, env []string, dir string, args ...
 	return out, nil
 }
 
-func safeDirectoryFingerprint(ctx context.Context, paths []string) ([32]byte, error) {
-	h := sha256.New()
-	for _, path := range paths {
+func readSafeDirectorySnapshot(ctx context.Context, env []string, dir, scope string, previous safeDirectoryScope) (safeDirectoryScope, error) {
+	next := safeDirectoryScope{paths: previous.paths}
+	expected := 1
+	if _, override := envValue(env, "GIT_CONFIG_GLOBAL"); scope == "global" && !override {
+		expected = 2
+	}
+	if len(previous.paths) != expected {
+		return next, errors.ErrUnsupported
+	}
+	var file *os.File
+	var path string
+	for _, candidate := range slices.Backward(previous.paths) {
 		if err := ctx.Err(); err != nil {
-			return [32]byte{}, err
+			return next, err
 		}
+		path = candidate
 		if !filepath.IsAbs(path) {
-			return [32]byte{}, fmt.Errorf("%s: not an absolute path", path)
+			return next, errors.ErrUnsupported
 		}
-		digest, size, err := safeDirectoryFileDigest(ctx, path)
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return [32]byte{}, err
-		}
-		fmt.Fprintf(h, "%s\x00%t\x00%d\x00", path, err == nil, size)
-		h.Write(digest[:])
-	}
-	return [32]byte(h.Sum(nil)), nil
-}
-
-func safeDirectoryFileDigest(ctx context.Context, path string) ([32]byte, int64, error) {
-	if err := ctx.Err(); err != nil {
-		return [32]byte{}, 0, err
-	}
-	info, err := os.Stat(path)
-	if ctx.Err() != nil {
-		return [32]byte{}, 0, ctx.Err()
-	}
-	if err != nil {
-		return [32]byte{}, 0, err
-	}
-	if !info.Mode().IsRegular() {
-		return [32]byte{}, 0, fmt.Errorf("%s: not a regular file", path)
-	}
-	if err := ctx.Err(); err != nil {
-		return [32]byte{}, 0, err
-	}
-	file, err := os.Open(path)
-	if err != nil {
+		info, err := os.Stat(path)
 		if ctx.Err() != nil {
-			return [32]byte{}, 0, ctx.Err()
+			return next, ctx.Err()
 		}
-		return [32]byte{}, 0, err
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return next, err
+		}
+		if !info.Mode().IsRegular() {
+			return next, fmt.Errorf("%s: not a regular file", path)
+		}
+		file, err = os.Open(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return next, err
+		}
+		break
+	}
+	if file == nil {
+		next.valid = ctx.Err() == nil
+		return next, ctx.Err()
 	}
 	defer file.Close()
 	hash := sha256.New()
-	fmt.Fprintf(hash, "%d\x00", info.ModTime().UnixNano())
 	size, err := io.Copy(hash, &safeDirectoryContextReader{ctx: ctx, reader: file})
 	if ctx.Err() != nil {
-		return [32]byte{}, 0, ctx.Err()
+		return next, ctx.Err()
 	}
 	if err != nil {
-		return [32]byte{}, 0, err
+		return next, err
 	}
-	return [32]byte(hash.Sum(nil)), size, nil
+	fingerprint := fingerprintSafeDirectoryBytes(path, size, hash.Sum(nil))
+	if previous.valid && previous.fingerprint == fingerprint {
+		return previous, nil
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return next, err
+	}
+	if ctx.Err() != nil {
+		return next, ctx.Err()
+	}
+	parseCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cmd := gitCommand(parseCtx, true, "config", "--no-includes", "--file", "-", "-z", "--get-regexp", safeDirectoryKeys)
+	cmd.Env, cmd.Dir = env, dir
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return next, err
+	}
+	if err := cmd.Start(); err != nil {
+		stdin.Close()
+		return next, err
+	}
+	hash.Reset()
+	size, copyErr := io.Copy(stdin, io.TeeReader(&safeDirectoryContextReader{ctx: ctx, reader: file}, hash))
+	copyErr = errors.Join(copyErr, file.Close(), stdin.Close())
+	if copyErr != nil {
+		cancel()
+	}
+	waitErr := cmd.Wait()
+	if ctx.Err() != nil {
+		return next, ctx.Err()
+	}
+	if copyErr != nil {
+		return next, copyErr
+	}
+	if waitErr != nil && !IsExitCode(&GitError{Err: waitErr}, 1) {
+		return next, waitErr
+	}
+	next.fingerprint = fingerprintSafeDirectoryBytes(path, size, hash.Sum(nil))
+	next.values, next.includes = decodeSafeDirectoryOutput(output.Bytes())
+	next.valid = true
+	return next, nil
+}
+
+func fingerprintSafeDirectoryBytes(path string, size int64, digest []byte) [32]byte {
+	return sha256.Sum256([]byte(fmt.Sprintf("%s\x00%t\x00%d\x00%x", path, true, size, digest)))
 }
 
 type safeDirectoryContextReader struct {

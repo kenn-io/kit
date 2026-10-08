@@ -99,21 +99,26 @@ func TestCachedTrustFilesystemBound(t *testing.T) {
 
 func TestSafeDirectoryFingerprintStreaming(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "gitconfig")
-	missing, err := safeDirectoryFingerprint(t.Context(), []string{path})
+	env := safeDirectoryTestEnv(t, path)
+	fingerprint := func() ([32]byte, error) {
+		snapshot, err := readSafeDirectorySnapshot(t.Context(), env, "", "global", safeDirectoryScope{paths: []string{path}})
+		return snapshot.fingerprint, err
+	}
+	missing, err := fingerprint()
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(path, []byte(strings.Repeat("# comment\n", 1<<15)), 0o600))
-	before, err := safeDirectoryFingerprint(t.Context(), []string{path})
+	before, err := fingerprint()
 	require.NoError(t, err)
-	again, err := safeDirectoryFingerprint(t.Context(), []string{path})
+	again, err := fingerprint()
 	require.NoError(t, err)
 	assert.Equal(t, before, again)
 	assert.NotEqual(t, missing, before)
 	require.NoError(t, os.WriteFile(path, []byte(strings.Repeat("# changed\n", 1<<15)), 0o600))
-	after, err := safeDirectoryFingerprint(t.Context(), []string{path})
+	after, err := fingerprint()
 	require.NoError(t, err)
 	assert.NotEqual(t, before, after)
 	require.NoError(t, os.Remove(path))
-	after, err = safeDirectoryFingerprint(t.Context(), []string{path})
+	after, err = fingerprint()
 	require.NoError(t, err)
 	assert.Equal(t, missing, after)
 	ctx, cancel := context.WithCancel(t.Context())
@@ -205,12 +210,38 @@ func TestCachedTrust(t *testing.T) {
 			}
 			calls.Wait()
 			check(runner, "/trusted", 0)
+			require.NoError(t, os.WriteFile(config, []byte("[safe]\n directory = /trusted\n"), 0o600))
+			check(runner, "/trusted", 0)
 			check(runner.WithConfig("gc.auto", "1"), "/trusted", 0)
 			fresh := New()
 			fresh.Env = runner.Env
 			check(fresh, "/trusted", baseline)
 		})
 	}
+	t.Run("global selection", func(t *testing.T) {
+		dir := t.TempDir()
+		home, xdg := filepath.Join(dir, "home"), filepath.Join(dir, "xdg")
+		user, fallback := filepath.Join(home, ".gitconfig"), filepath.Join(xdg, "git", "config")
+		for _, path := range []string{user, fallback} {
+			require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+		}
+		require.NoError(t, os.WriteFile(user, []byte("[safe]\n directory = /home\n directory =\n directory = /after\n"), 0o600))
+		require.NoError(t, os.WriteFile(fallback, []byte("[safe]\n directory = /xdg\n"), 0o600))
+		runner := New()
+		runner.Env = slices.DeleteFunc(safeDirectoryTestEnv(t, ""), func(entry string) bool { return strings.HasPrefix(entry, "GIT_CONFIG_GLOBAL=") })
+		runner.Env = append(runner.Env, "HOME="+home, "XDG_CONFIG_HOME="+xdg, "GIT_CONFIG_NOSYSTEM=1")
+		for range 3 {
+			assert.Equal(t, []string{"/home", "", "/after"}, runner.trust.read(t.Context(), runner.Env, dir))
+		}
+		require.NoError(t, os.Remove(user))
+		assert.Equal(t, []string{"/xdg"}, runner.trust.read(t.Context(), runner.Env, dir))
+		require.NoError(t, os.WriteFile(user, []byte("[safe]\n directory = /preferred\n"), 0o600))
+		assert.Equal(t, []string{"/preferred"}, runner.trust.read(t.Context(), runner.Env, dir))
+		assert.Equal(t, readSafeDirectories(t.Context(), runner.Env, dir), runner.trust.read(t.Context(), runner.Env, dir))
+		require.NoError(t, os.Remove(user))
+		require.NoError(t, os.Remove(fallback))
+		assert.Empty(t, runner.trust.read(t.Context(), runner.Env, dir))
+	})
 	t.Run("home share", func(t *testing.T) {
 		if runtime.GOOS != "windows" {
 			t.Skip("requires Git for Windows HOME selection")
@@ -373,8 +404,8 @@ func main() {
   if err != nil { os.Exit(2) }; response.Body.Close()
  }
  cmd := exec.Command(os.Getenv("TRUST_TEST_GIT"), os.Args[1:]...)
- cmd.Stdout, cmd.Stderr, cmd.Env = os.Stdout, os.Stderr, os.Environ()
- if err := cmd.Run(); err != nil { os.Exit(1) }
+ cmd.Stdin, cmd.Stdout, cmd.Stderr, cmd.Env = os.Stdin, os.Stdout, os.Stderr, os.Environ()
+ if err := cmd.Run(); err != nil { if exit, ok := err.(*exec.ExitError); ok { os.Exit(exit.ExitCode()) }; os.Exit(2) }
  if len(os.Args) > 1 && os.Args[1] == "config" && os.Getenv("TRUST_TEST_BLOCK_AFTER") == "1" { response, err := http.Get(os.Getenv("TRUST_TEST_URL")); if err != nil { os.Exit(2) }; response.Body.Close() }
 }
 `)
@@ -387,11 +418,17 @@ func main() {
 }
 
 func TestCachedTrustConcurrentEvaluation(t *testing.T) {
-	for _, mode := range []string{"canceled fill", "canceled discovery", "competing environments", "reverted edit"} {
+	for _, mode := range []string{"canceled fill", "canceled discovery", "competing environments", "reverted edit", "reverted missing"} {
 		t.Run(mode, func(t *testing.T) {
 			runner, started := coordinatedTrustGit(t)
+			missing := mode == "reverted missing"
+			if missing {
+				config, _ := envValue(runner.Env, "GIT_CONFIG_GLOBAL")
+				require.NoError(t, os.Remove(config))
+			}
+
 			if mode != "competing environments" {
-				if mode == "reverted edit" {
+				if strings.HasPrefix(mode, "reverted") {
 					runner.Env = append(runner.Env, "TRUST_TEST_BLOCK_AFTER=1")
 				}
 				if mode == "canceled discovery" {
@@ -400,35 +437,46 @@ func TestCachedTrustConcurrentEvaluation(t *testing.T) {
 				result := make(chan []string, 1)
 				go func() { result <- runner.trust.read(t.Context(), runner.Env, "") }()
 				close(<-started)
-				if mode == "reverted edit" {
+				if strings.HasPrefix(mode, "reverted") && !missing {
 					close(<-started)
 				}
-				assert.Equal(t, []string{"/trusted"}, <-result)
-				if mode == "reverted edit" {
+				want := []string{"/trusted"}
+				if missing {
+					want = nil
+				}
+				assert.Equal(t, want, <-result)
+				if strings.HasPrefix(mode, "reverted") {
 					config, _ := envValue(runner.Env, "GIT_CONFIG_GLOBAL")
-					original, err := os.ReadFile(config)
-					require.NoError(t, err)
-					info, err := os.Stat(config)
-					require.NoError(t, err)
 					go func() { result <- runner.trust.read(t.Context(), runner.Env, "") }()
-					before := <-started
+					if !missing {
+						close(<-started)
+						close(<-started)
+					}
+					assert.Equal(t, want, <-result)
+					if !missing {
+						require.NoError(t, os.Rename(config, config+".original"))
+					}
 					require.NoError(t, os.WriteFile(config, []byte("[safe]\n directory = /b\n"), 0o600))
-					close(before)
+					go func() { result <- runner.trust.read(t.Context(), runner.Env, "") }()
+					close(<-started)
 					after := <-started
-					require.NoError(t, os.WriteFile(config, original, 0o600))
-					require.NoError(t, os.Chtimes(config, info.ModTime(), info.ModTime().Add(time.Second)))
+					require.NoError(t, os.Remove(config))
+					if !missing {
+						require.NoError(t, os.Rename(config+".original", config))
+					}
 					close(after)
 					assert.Equal(t, []string{"/b"}, <-result)
 					go func() { result <- runner.trust.read(t.Context(), runner.Env, "") }()
-					select {
-					case values := <-result:
-						assert.Equal(t, []string{"/trusted"}, values)
-					case release := <-started:
-						close(release)
+					if !missing {
 						close(<-started)
-						assert.Equal(t, []string{"/trusted"}, <-result)
+						close(<-started)
 					}
+					assert.Equal(t, want, <-result)
 					return
+				}
+				if mode == "canceled fill" {
+					config, _ := envValue(runner.Env, "GIT_CONFIG_GLOBAL")
+					require.NoError(t, os.WriteFile(config, []byte(strings.Repeat("# comment\n", 1<<15)+"[safe]\n directory = /trusted\n"), 0o600))
 				}
 				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
@@ -456,11 +504,11 @@ func TestCachedTrustConcurrentEvaluation(t *testing.T) {
 			go func() { one <- runner.trust.read(t.Context(), runner.Env, "") }()
 			first := <-started
 			go func() { two <- other.trust.read(t.Context(), other.Env, "") }()
+			close(first)
+			assert.Equal(t, []string{"/trusted"}, <-one)
 			second := <-started
 			close(second)
 			assert.Equal(t, []string{"/other"}, <-two)
-			close(first)
-			assert.Equal(t, []string{"/trusted"}, <-one)
 			go func() { one <- runner.trust.read(t.Context(), runner.Env, "") }()
 			assert.Equal(t, []string{"/trusted"}, <-one)
 		})
