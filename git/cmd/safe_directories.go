@@ -340,6 +340,7 @@ func safeDirectoryFileDigest(ctx context.Context, path string) ([32]byte, int64,
 	}
 	defer file.Close()
 	hash := sha256.New()
+	fmt.Fprintf(hash, "%d\x00", info.ModTime().UnixNano())
 	size, err := io.Copy(hash, &safeDirectoryContextReader{ctx: ctx, reader: file})
 	if ctx.Err() != nil {
 		return [32]byte{}, 0, ctx.Err()

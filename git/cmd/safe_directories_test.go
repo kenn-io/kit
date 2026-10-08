@@ -375,6 +375,7 @@ func main() {
  cmd := exec.Command(os.Getenv("TRUST_TEST_GIT"), os.Args[1:]...)
  cmd.Stdout, cmd.Stderr, cmd.Env = os.Stdout, os.Stderr, os.Environ()
  if err := cmd.Run(); err != nil { os.Exit(1) }
+ if len(os.Args) > 1 && os.Args[1] == "config" && os.Getenv("TRUST_TEST_BLOCK_AFTER") == "1" { response, err := http.Get(os.Getenv("TRUST_TEST_URL")); if err != nil { os.Exit(2) }; response.Body.Close() }
 }
 `)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -386,17 +387,49 @@ func main() {
 }
 
 func TestCachedTrustConcurrentEvaluation(t *testing.T) {
-	for _, mode := range []string{"canceled fill", "canceled discovery", "competing environments"} {
+	for _, mode := range []string{"canceled fill", "canceled discovery", "competing environments", "reverted edit"} {
 		t.Run(mode, func(t *testing.T) {
 			runner, started := coordinatedTrustGit(t)
 			if mode != "competing environments" {
+				if mode == "reverted edit" {
+					runner.Env = append(runner.Env, "TRUST_TEST_BLOCK_AFTER=1")
+				}
 				if mode == "canceled discovery" {
 					runner.Env = append(runner.Env, "TRUST_TEST_BLOCK_VAR=1")
 				}
 				result := make(chan []string, 1)
 				go func() { result <- runner.trust.read(t.Context(), runner.Env, "") }()
 				close(<-started)
+				if mode == "reverted edit" {
+					close(<-started)
+				}
 				assert.Equal(t, []string{"/trusted"}, <-result)
+				if mode == "reverted edit" {
+					config, _ := envValue(runner.Env, "GIT_CONFIG_GLOBAL")
+					original, err := os.ReadFile(config)
+					require.NoError(t, err)
+					info, err := os.Stat(config)
+					require.NoError(t, err)
+					go func() { result <- runner.trust.read(t.Context(), runner.Env, "") }()
+					before := <-started
+					require.NoError(t, os.WriteFile(config, []byte("[safe]\n directory = /b\n"), 0o600))
+					close(before)
+					after := <-started
+					require.NoError(t, os.WriteFile(config, original, 0o600))
+					require.NoError(t, os.Chtimes(config, info.ModTime(), info.ModTime().Add(time.Second)))
+					close(after)
+					assert.Equal(t, []string{"/b"}, <-result)
+					go func() { result <- runner.trust.read(t.Context(), runner.Env, "") }()
+					select {
+					case values := <-result:
+						assert.Equal(t, []string{"/trusted"}, values)
+					case release := <-started:
+						close(release)
+						close(<-started)
+						assert.Equal(t, []string{"/trusted"}, <-result)
+					}
+					return
+				}
 				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
 				go func() { result <- runner.trust.read(ctx, runner.Env, "") }()
