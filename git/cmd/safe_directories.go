@@ -27,9 +27,10 @@ type safeDirectoryCache struct {
 }
 
 type safeDirectorySnapshot struct {
-	identity   [32]byte
-	executable os.FileInfo
-	scopes     map[string]safeDirectoryScope
+	identity        [32]byte
+	executable      os.FileInfo
+	scopes          map[string]safeDirectoryScope
+	discoveryFailed bool
 }
 
 func safeDirectoryScopes(env []string) []string {
@@ -118,6 +119,9 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 	if identity != previous.identity || !os.SameFile(info, previous.executable) {
 		return readSafeDirectories(ctx, env, dir)
 	}
+	if previous.discoveryFailed {
+		return readSafeDirectories(ctx, env, dir)
+	}
 	next := &safeDirectorySnapshot{identity: identity, executable: info, scopes: make(map[string]safeDirectoryScope)}
 	if previous.scopes != nil {
 		maps.Copy(next.scopes, previous.scopes)
@@ -125,14 +129,20 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 		for _, scope := range safeDirectoryScopes(env) {
 			out, err := safeDirectoryOutput(ctx, env, dir, "var", "GIT_CONFIG_"+strings.ToUpper(scope))
 			if err != nil {
-				return readSafeDirectories(ctx, env, dir)
+				next.discoveryFailed = true
+				break
 			}
 			paths := strings.TrimSuffix(string(out), "\n")
 			next.scopes[scope] = safeDirectoryScope{paths: strings.FieldsFunc(strings.TrimRight(paths, "\r\n"), func(r rune) bool { return r == '\n' || r == '\r' })}
 		}
 	}
 	var values []string
-	for _, scope := range safeDirectoryScopes(env) {
+	scopes := safeDirectoryScopes(env)
+	if next.discoveryFailed {
+		values = readSafeDirectories(ctx, env, dir)
+		scopes = nil
+	}
+	for _, scope := range scopes {
 		s := next.scopes[scope]
 		before, err := safeDirectoryFingerprint(s.paths)
 		if err == nil && s.valid && before == s.fingerprint {
@@ -151,6 +161,9 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 		}
 		next.scopes[scope] = s
 		values = append(values, entries...)
+	}
+	if next.discoveryFailed {
+		next.scopes = nil
 	}
 	if ctx.Err() != nil {
 		return nil

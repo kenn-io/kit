@@ -26,8 +26,12 @@ func extendTrustProbeTimeout(t *testing.T) {
 
 func TestCachedTrust(t *testing.T) {
 	extendTrustProbeTimeout(t)
-	for _, noSystem := range []string{"0", "1"} {
-		t.Run("no system "+noSystem, func(t *testing.T) {
+	for _, tc := range []struct {
+		name, noSystem string
+		discoveryFails bool
+	}{{"no system 0", "0", false}, {"no system 1", "1", false}, {"failed discovery", "0", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			noSystem := tc.noSystem
 			dir := t.TempDir()
 			config, otherConfig := filepath.Join(dir, "config..old"), filepath.Join(dir, "other")
 			trace := filepath.Join(dir, "trace")
@@ -42,6 +46,9 @@ func TestCachedTrust(t *testing.T) {
 				system = "/inactive\nconfig\r"
 			}
 			runner.Env = append(runner.Env, "GIT_CONFIG_SYSTEM="+system)
+			if tc.discoveryFails {
+				runner.Env = append(runner.Env, "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.autocrlf", "GIT_CONFIG_VALUE_0=garbage")
+			}
 			other := runner
 			other.Env = append(append([]string(nil), runner.Env...), "GIT_CONFIG_GLOBAL="+otherConfig)
 			count := 0
@@ -58,6 +65,13 @@ func TestCachedTrust(t *testing.T) {
 				baseline = 1
 			}
 			check(runner, "/trusted", baseline)
+			if tc.discoveryFails {
+				check(runner, "/trusted", baseline+1)
+				check(runner, "/trusted", baseline)
+				require.NoError(t, os.WriteFile(config, []byte("[safe]\n directory = /updated\n"), 0o600))
+				check(runner, "/updated", baseline)
+				return
+			}
 			check(other, "/other", baseline)
 			check(runner, "/trusted", 2*baseline)
 			check(other, "/other", baseline)
@@ -227,7 +241,7 @@ func coordinatedTrustGit(t *testing.T) (Runner, chan chan struct{}) {
 	bin := buildTestGit(t, `package main
 import ("net/http"; "os"; "os/exec")
 func main() {
- if len(os.Args) > 1 && os.Args[1] == "config" {
+ if len(os.Args) > 1 && (os.Args[1] == "config" || os.Args[1] == "var" && os.Getenv("TRUST_TEST_BLOCK_VAR") == "1") {
   response, err := http.Get(os.Getenv("TRUST_TEST_URL"))
   if err != nil { os.Exit(2) }; response.Body.Close()
  }
@@ -245,10 +259,13 @@ func main() {
 }
 
 func TestCachedTrustConcurrentEvaluation(t *testing.T) {
-	for _, mode := range []string{"canceled fill", "competing environments"} {
+	for _, mode := range []string{"canceled fill", "canceled discovery", "competing environments"} {
 		t.Run(mode, func(t *testing.T) {
 			runner, started := coordinatedTrustGit(t)
-			if mode == "canceled fill" {
+			if mode != "competing environments" {
+				if mode == "canceled discovery" {
+					runner.Env = append(runner.Env, "TRUST_TEST_BLOCK_VAR=1")
+				}
 				result := make(chan []string, 1)
 				go func() { result <- runner.trust.read(t.Context(), runner.Env, "") }()
 				close(<-started)
@@ -259,8 +276,12 @@ func TestCachedTrustConcurrentEvaluation(t *testing.T) {
 				<-started
 				cancel()
 				assert.Empty(t, <-result)
+				assert.False(t, runner.trust.current.discoveryFailed)
 				go func() { result <- runner.trust.read(t.Context(), runner.Env, "") }()
 				close(<-started)
+				if mode == "canceled discovery" {
+					close(<-started)
+				}
 				assert.Equal(t, []string{"/trusted"}, <-result)
 				return
 			}
