@@ -2,16 +2,20 @@
 // sqlite-vec extension. It is a reference backend: a worked example of the
 // storage contract the vector flows depend on, built against sqlite-vec.
 //
-// On Unix platforms with cgo, call Register before opening a mattn/go-sqlite3
-// database:
+// The caller selects the SQLite driver and registers its sqlite-vec extension.
+// Driver selection is independent of whether the application enables cgo.
+// For modernc.org/sqlite, import both the driver and its extension:
+//
+//	import _ "modernc.org/sqlite"
+//	import _ "modernc.org/sqlite/vec"
+//	db, _ := sql.Open("sqlite", path)
+//
+// For github.com/mattn/go-sqlite3, register its extension before opening:
 //
 //	import _ "github.com/mattn/go-sqlite3"
-//	sqlitevec.Register()
+//	import vecext "github.com/asg017/sqlite-vec-go-bindings/cgo"
+//	vecext.Auto()
 //	db, _ := sql.Open("sqlite3", path)
-//
-// On Windows or without cgo, import modernc.org/sqlite and open databases with
-// the "sqlite" driver. The sqlite-vec extension is registered during package
-// initialization in that build.
 //
 // The caller owns the documents table; this package owns a small set of
 // vector tables derived from VectorsPrefix. Each generation gets its own
