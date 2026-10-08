@@ -23,7 +23,7 @@ type safeDirectoryScope struct {
 	fingerprint [32]byte
 	values      []string
 	valid       bool
-	includes    bool
+	native      bool
 }
 
 type safeDirectoryCache struct {
@@ -238,15 +238,15 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 		s := next.scopes[scope]
 		var cached safeDirectoryScope
 		var cacheErr error
-		if s.includes {
-			cached = safeDirectoryScope{paths: s.paths, includes: true}
+		if s.native {
+			cached = safeDirectoryScope{paths: s.paths, native: true}
 		} else if !evaluateFilesystem(ctx, func(checkCtx context.Context) {
 			cached, cacheErr = readSafeDirectorySnapshot(checkCtx, env, dir, scope, s)
 		}) {
 			return fresh()
 		}
 		entries := cached.values
-		if cacheErr != nil || cached.includes {
+		if cacheErr != nil || cached.native {
 			if cacheErr != nil {
 				cached = safeDirectoryScope{paths: s.paths}
 			}
@@ -254,11 +254,11 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 			var includes bool
 			entries, includes, probeErr = readSafeDirectoryScope(ctx, env, dir, scope)
 			if probeErr != nil && !IsExitCode(probeErr, 1) {
-				cached.valid = false
+				cached = safeDirectoryScope{paths: s.paths, native: true}
 				next.scopes[scope] = cached
 				continue
 			}
-			cached = safeDirectoryScope{paths: s.paths, includes: includes}
+			cached = safeDirectoryScope{paths: s.paths, native: includes}
 		}
 		next.scopes[scope] = cached
 		values = append(values, entries...)
@@ -409,7 +409,7 @@ func readSafeDirectorySnapshot(ctx context.Context, env []string, dir, scope str
 		return next, waitErr
 	}
 	next.fingerprint = fingerprintSafeDirectoryBytes(path, size, hash.Sum(nil))
-	next.values, next.includes = decodeSafeDirectoryOutput(output.Bytes())
+	next.values, next.native = decodeSafeDirectoryOutput(output.Bytes())
 	next.valid = true
 	return next, nil
 }

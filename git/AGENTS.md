@@ -13,6 +13,7 @@ specific application or forge workflow.
 - Do not call `exec.Command("git", ...)` directly in package code unless the
   direct call is the behavior being tested.
 - Pass `context.Context` through Git operations that can block.
+- Runner copies share trust caching for the first observed identity; evaluate includes fresh and apply trust edits on the next command.
 - Cancel the whole child process tree for non-interactive Git commands, and
   bound pipe draining after cancellation. Interactive Unix Git must stay in
   the caller's terminal process group.
