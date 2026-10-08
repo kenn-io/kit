@@ -4,6 +4,8 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"slices"
+	"strings"
 
 	"golang.org/x/tools/go/packages"
 )
@@ -116,12 +118,18 @@ func isNamed(t types.Type, pkgPath, name string) bool {
 // that reach a request URL: directly in a net/http builder, or by being
 // forwarded into a URL position of another requester. Only those argument
 // positions are inspected at call sites, so a body or log string that
-// happens to look like a route is not reported.
+// happens to look like a route is not reported. A //huma-check:external
+// declaration marks a requester for a separate API, excluding its parameters.
 func (p *program) requesters() flowSet {
 	set := flowSet{}
 	for changed := true; changed; {
 		changed = false
 		for fn, fd := range p.funcs {
+			if fd.decl.Doc != nil && slices.ContainsFunc(fd.decl.Doc.List, func(comment *ast.Comment) bool {
+				return strings.TrimSpace(strings.TrimPrefix(comment.Text, "//")) == "huma-check:external"
+			}) {
+				continue
+			}
 			if set.add(fn, forwardedParams(fd, func(callee *types.Func) []int {
 				return urlArgIndexes(callee, set)
 			})) {

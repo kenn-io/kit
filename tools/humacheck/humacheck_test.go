@@ -329,7 +329,7 @@ func TestCollectRoutes(t *testing.T) {
 	routes := collectRoutes(newProgram(pkgs))
 	assert.Equal([]string{"/api/v1"}, routes.adapterPrefixes)
 	assert.Equal([]string{"/v2"}, routes.groupPrefixes)
-	assert.ElementsMatch([]string{"/ping", "/accounts/{id}", "/jobs", "/jobs/{id}/review", "/queue", "/raw/{id}", "/grouped"}, routes.paths)
+	assert.ElementsMatch([]string{"/ping", "/accounts/{id}", "/jobs", "/jobs/{id}/review", "/projects/{project}/issues/{issue}/actions/close", "/projects/{project}", "/queue", "/raw/{id}", "/grouped"}, routes.paths)
 	assert.Equal(receiverGroup, routes.kinds["/grouped"])
 	assert.Equal(receiverAPI, routes.kinds["/ping"])
 	assert.Equal(receiverAPI, routes.kinds["/raw/{id}"], "the helper is called with a plain API")
