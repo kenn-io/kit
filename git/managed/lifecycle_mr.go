@@ -53,7 +53,12 @@ func (e *ChangeRequestError) Unwrap() error { return e.Cause }
 // ProjectRepoIdentity is the CloneURLIdentity-normalized identity of the
 // project's own repository, used to recognize same-repo merge requests.
 type MergeRequestWorktreeOptions struct {
-	ProjectRoot string
+	// Mode defaults to creating a new branch. Import never trusts the fetched tree.
+	Mode           CheckoutMode
+	NoCheckout     bool
+	Upstream       UpstreamPolicy
+	FailureCleanup FailureCleanup
+	ProjectRoot    string
 	// ProjectRemote names the trusted project remote used for branch and
 	// provider request-ref fetches. It defaults to "origin".
 	ProjectRemote string
@@ -120,11 +125,23 @@ func CreateWorktreeFromMergeRequest(
 	ctx context.Context, opts MergeRequestWorktreeOptions,
 ) (CreateWorktreeResult, error) {
 	ctx = withLifecycleExecution(ctx, opts.Runner, opts.RunGit, opts.RunHook)
-	root, branch, err := requireRootAndBranch(
-		opts.ProjectRoot, opts.Branch,
-	)
+	root, err := absRequired(opts.ProjectRoot, "project root")
 	if err != nil {
 		return CreateWorktreeResult{}, err
+	}
+	branch := strings.TrimSpace(opts.Branch)
+	mode := opts.Mode
+	if mode == CheckoutAuto {
+		mode = CheckoutNewBranch
+	}
+	if mode > CheckoutDetached || opts.FailureCleanup > CleanupDeferred {
+		return CreateWorktreeResult{}, ErrInvalidWorktreeOptions
+	}
+	if err := validateUpstreamPolicy(opts.Upstream); err != nil {
+		return CreateWorktreeResult{}, err
+	}
+	if mode == CheckoutDetached && (branch != "" || opts.Path == "" || opts.Upstream.Action == UpstreamTrack) {
+		return CreateWorktreeResult{}, ErrInvalidWorktreeOptions
 	}
 	if opts.Number < 1 {
 		return CreateWorktreeResult{}, errors.New("merge request number is required")
@@ -132,8 +149,10 @@ func CreateWorktreeFromMergeRequest(
 	if err := validateWorktreeConfigCompatibility(ctx, root); err != nil {
 		return CreateWorktreeResult{}, err
 	}
-	if err := validateBranchName(ctx, root, branch); err != nil {
-		return CreateWorktreeResult{}, err
+	if mode != CheckoutDetached {
+		if err := validateBranchName(ctx, root, branch); err != nil {
+			return CreateWorktreeResult{}, err
+		}
 	}
 	if err := validateUntrustedTreeCheckoutGitVersion(ctx, root); err != nil {
 		return CreateWorktreeResult{}, err
@@ -144,14 +163,17 @@ func CreateWorktreeFromMergeRequest(
 	if err != nil {
 		return CreateWorktreeResult{}, err
 	}
-	branchExisted, err := localBranchExists(ctx, root, branch)
-	if err != nil {
-		return CreateWorktreeResult{}, err
-	}
-	if branchExisted {
-		return CreateWorktreeResult{}, fmt.Errorf(
-			"%w: %s", ErrBranchAlreadyExists, branch,
-		)
+	if mode != CheckoutDetached {
+		branchExisted, err := localBranchExists(ctx, root, branch)
+		if err != nil {
+			return CreateWorktreeResult{}, err
+		}
+		if mode == CheckoutNewBranch && branchExisted {
+			return CreateWorktreeResult{}, fmt.Errorf("%w: %s", ErrBranchAlreadyExists, branch)
+		}
+		if mode == CheckoutExistingBranch && !branchExisted {
+			return CreateWorktreeResult{}, fmt.Errorf("%w: %s", ErrBranchNotFound, branch)
+		}
 	}
 	hookScript, err := resolveMergeRequestHookScript(
 		root, path, opts.SetupScript,
@@ -227,7 +249,7 @@ func CreateWorktreeFromMergeRequest(
 			}
 		}
 	}
-	trackingEnabled := target.trackingRemote != "" &&
+	trackingEnabled := opts.Upstream.Action == UpstreamDefault && mode != CheckoutDetached && target.trackingRemote != "" &&
 		target.trackingMergeRef != ""
 	if trackingEnabled && len(target.trackingFetch) > 0 {
 		// The tracking fetch is best-effort: a fork that has vanished
@@ -256,91 +278,31 @@ func CreateWorktreeFromMergeRequest(
 		}
 	}
 
-	// --no-track: tracking is configured explicitly below; without it git
-	// auto-tracks the remote-tracking start point (e.g. the read-only
-	// pull ref), which is wrong for pushes.
-	if out, err := runLifecycleGitWithRunner(
-		ctx, isolation.runner, root,
-		"worktree", "add", "--no-checkout", "--no-track", "-b", branch, path,
-		"--", checkoutOID,
-	); err != nil {
-		return CreateWorktreeResult{}, classifyWorktreeGitError(out, err)
-	}
-	if err := rejectCommandScopeIsolationOverrides(
-		ctx, path, lifecycleRunner(ctx),
-	); err != nil {
-		_, cleanupErr := rollbackCreatedWorktreeWithResult(
-			context.WithoutCancel(ctx), root, path, branch, true,
-		)
-		return CreateWorktreeResult{}, errors.Join(err, cleanupErr)
-	}
-	isolation, err = completeUntrustedTreeIsolation(ctx, path, isolation)
-	if err != nil {
-		_, cleanupErr := rollbackCreatedWorktreeWithResult(
-			context.WithoutCancel(ctx), root, path, branch, true,
-		)
-		return CreateWorktreeResult{}, errors.Join(err, cleanupErr)
-	}
-	if err := persistUntrustedTreeIsolation(
-		ctx, root, path, isolation,
-	); err != nil {
-		_, cleanupErr := rollbackCreatedWorktreeWithResult(
-			context.WithoutCancel(ctx), root, path, branch, true,
-		)
-		return CreateWorktreeResult{}, errors.Join(err, cleanupErr)
-	}
-	if err := materializeUntrustedTree(ctx, path, isolation); err != nil {
-		_, cleanupErr := rollbackCreatedWorktreeWithResult(
-			context.WithoutCancel(ctx), root, path, branch, true,
-		)
-		return CreateWorktreeResult{}, errors.Join(err, cleanupErr)
-	}
-	if err := rejectConfigOriginsInsideWorktree(
-		ctx, path, isolation.runner,
-	); err != nil {
-		_, cleanupErr := rollbackCreatedWorktreeWithResult(
-			context.WithoutCancel(ctx), root, path, branch, true,
-		)
-		return CreateWorktreeResult{}, errors.Join(err, cleanupErr)
-	}
-	isolatedCtx := withLifecycleExecution(
-		ctx, isolation.runner, lifecycleGitRunner(ctx), lifecycleHookRunner(ctx),
-	)
-	result, err := snapshotCreateWorktreeResult(
-		isolatedCtx, root, path, branch, true,
-	)
-	if err != nil {
-		_, cleanupErr := rollbackCreatedWorktreeWithResult(
-			context.WithoutCancel(ctx), root, path, branch, true,
-		)
-		return CreateWorktreeResult{}, errors.Join(err, cleanupErr)
-	}
-
-	if trackingEnabled {
-		if err := configureMergeRequestTracking(
-			ctx, root, path, branch, target,
-		); err != nil {
-			_, cleanupErr := rollbackCreatedWorktreeWithResult(
-				context.WithoutCancel(ctx), root, path, branch, true,
-			)
-			return result, errors.Join(err, cleanupErr)
+	upstream := opts.Upstream
+	if upstream.Action == UpstreamDefault {
+		upstream.Action = UpstreamLeave
+		if trackingEnabled {
+			upstream = UpstreamPolicy{Action: UpstreamTrack, Remote: target.trackingRemote, Ref: target.trackingMergeRef, ConfigurePush: true}
 		}
 	}
-
-	if hookScript != "" {
-		if hookErr := runLifecycleHook(
-			ctx, hookScript, root, path, branch, opts.WorktreeName,
-			opts.HookEnvironmentPrefix,
-		); hookErr != nil {
-			_, cleanupErr := rollbackCreatedWorktreeWithResult(
-				context.WithoutCancel(ctx), root, path, branch, true,
-			)
-			return result, errors.Join(hookErr, cleanupErr)
+	baseRef := checkoutOID
+	if mode == CheckoutExistingBranch {
+		oid, err := resolveMergeRequestOID(ctx, root, "refs/heads/"+branch)
+		if err != nil {
+			return CreateWorktreeResult{}, err
 		}
-		result.HookRan = true
-		result.HookScript = hookScript
+		if oid != checkoutOID {
+			return CreateWorktreeResult{}, &ChangeRequestError{Kind: ChangeRequestHeadChanged, Message: "existing branch differs from fetched request head"}
+		}
+		baseRef = ""
 	}
-	return result, nil
+	return createWorktreeOnDisk(ctx, CreateWorktreeOptions{
+		ProjectRoot: root, Branch: branch, Path: path, BaseRef: baseRef,
+		Mode: mode, Checkout: CheckoutIsolated, NoCheckout: opts.NoCheckout,
+		Upstream: upstream, FailureCleanup: opts.FailureCleanup, SetupScript: hookScript,
+		WorktreeName: opts.WorktreeName, HookEnvironmentPrefix: opts.HookEnvironmentPrefix,
+		Runner: opts.Runner, RunGit: opts.RunGit, RunHook: opts.RunHook,
+	}, &isolation)
 }
 
 // prepareMergeRequestRemote decides how to fetch the merge request head.
@@ -495,49 +457,6 @@ func mergeRequestHeadRef(platform string, number int) string {
 		return fmt.Sprintf("refs/merge-requests/%d/head", number)
 	}
 	return fmt.Sprintf("refs/pull/%d/head", number)
-}
-
-// configureMergeRequestTracking points the imported branch at its upstream
-// using worktree-scoped config, so `git push`/`git pull` in the worktree
-// target the merge request head without affecting the primary checkout.
-func configureMergeRequestTracking(
-	ctx context.Context,
-	root, worktreePath, branch string,
-	target mergeRequestRemoteTarget,
-) error {
-	steps := []struct {
-		dir  string
-		args []string
-	}{
-		{root, []string{"config", "extensions.worktreeConfig", "true"}},
-		{worktreePath, []string{
-			"config", "--worktree",
-			"branch." + branch + ".remote", target.trackingRemote,
-		}},
-		{worktreePath, []string{
-			"config", "--worktree",
-			"branch." + branch + ".merge", target.trackingMergeRef,
-		}},
-		{worktreePath, []string{
-			"config", "--worktree",
-			"branch." + branch + ".pushRemote", target.trackingRemote,
-		}},
-		{worktreePath, []string{
-			"config", "--worktree", "push.default", "upstream",
-		}},
-	}
-	for _, step := range steps {
-		if out, err := runLifecycleGit(
-			ctx, step.dir, step.args...,
-		); err != nil {
-			return fmt.Errorf(
-				"configure merge request tracking (git %s): %w: %s",
-				strings.Join(step.args, " "), err,
-				strings.TrimSpace(string(out)),
-			)
-		}
-	}
-	return nil
 }
 
 func canonicalizeMergeRequestCloneURL(root, raw string) (string, error) {

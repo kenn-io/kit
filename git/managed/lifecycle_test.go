@@ -50,6 +50,8 @@ func isolatedLifecycleBaseEnv(t *testing.T) []string {
 	t.Helper()
 	return append(
 		gitenv.StripAll(os.Environ()),
+		"HOME="+t.TempDir(),
+		"USERPROFILE="+t.TempDir(),
 		"XDG_CONFIG_HOME="+t.TempDir(),
 	)
 }

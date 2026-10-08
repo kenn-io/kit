@@ -581,6 +581,8 @@ func TestWithBasicAuthRejectsCommand(t *testing.T) {
 }
 
 func TestWithBasicAuthRemovesCredentialResponseAfterRun(t *testing.T) {
+	// The process-wide config must outlive this fixture's temporary directory.
+	_ = nullGlobalConfigPath()
 	tempDir := t.TempDir()
 	t.Setenv("TMPDIR", tempDir)
 	t.Setenv("TMP", tempDir)
@@ -594,6 +596,7 @@ func TestWithBasicAuthRemovesCredentialResponseAfterRun(t *testing.T) {
 }
 
 func TestWithBasicAuthRemovesCredentialResponseAfterGitFailure(t *testing.T) {
+	_ = nullGlobalConfigPath()
 	require := require.New(t)
 	tempDir := t.TempDir()
 	t.Setenv("TMPDIR", tempDir)
