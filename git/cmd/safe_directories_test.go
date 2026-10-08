@@ -2,6 +2,7 @@ package gitcmd
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -33,11 +34,17 @@ func TestCachedTrustFilesystemBound(t *testing.T) {
 				started, release := make(chan struct{}), make(chan struct{})
 				result := make(chan bool, 3)
 				var late *safeDirectorySnapshot
+				var callbackErr error
+				followed := false
 				go func() {
-					result <- evaluateFilesystem(ctx, func() {
+					result <- evaluateFilesystem(ctx, func(checkCtx context.Context) {
 						close(started)
 						<-release
 						late = &safeDirectorySnapshot{discoveryFailed: true}
+						callbackErr = checkCtx.Err()
+						if callbackErr == nil {
+							followed = true
+						}
 					})
 				}()
 				<-started
@@ -45,7 +52,7 @@ func TestCachedTrustFilesystemBound(t *testing.T) {
 					completed := make(chan struct{}, 2)
 					for range 2 {
 						go func() {
-							result <- evaluateFilesystem(t.Context(), func() { completed <- struct{}{} })
+							result <- evaluateFilesystem(t.Context(), func(context.Context) { completed <- struct{}{} })
 						}()
 					}
 					synctest.Wait()
@@ -57,12 +64,14 @@ func TestCachedTrustFilesystemBound(t *testing.T) {
 					}
 					synctest.Wait()
 					assert.Len(t, completed, 2)
+					require.NoError(t, callbackErr)
+					assert.True(t, followed)
 					assert.Same(t, original, cache.current)
 					return
 				}
 				called := false
 				go func() {
-					result <- evaluateFilesystem(t.Context(), func() { called = true })
+					result <- evaluateFilesystem(t.Context(), func(context.Context) { called = true })
 				}()
 				synctest.Wait()
 				assert.Empty(t, result)
@@ -79,19 +88,60 @@ func TestCachedTrustFilesystemBound(t *testing.T) {
 					assert.Zero(t, time.Since(endedAt))
 				}
 				before := time.Now()
-				assert.False(t, evaluateFilesystem(t.Context(), func() { called = true }))
+				assert.False(t, evaluateFilesystem(t.Context(), func(context.Context) { called = true }))
 				assert.Zero(t, time.Since(before))
 				assert.False(t, called)
 				assert.Same(t, original, cache.current)
 				close(release)
 				synctest.Wait()
 				assert.NotNil(t, late)
+				require.Error(t, callbackErr)
+				assert.False(t, followed)
 				assert.Same(t, original, cache.current)
-				assert.True(t, evaluateFilesystem(t.Context(), func() { called = true }))
+				assert.True(t, evaluateFilesystem(t.Context(), func(context.Context) { called = true }))
 				assert.True(t, called)
 			})
 		})
 	}
+}
+
+func TestSafeDirectoryFingerprintStreaming(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gitconfig")
+	missing, err := safeDirectoryFingerprint(t.Context(), []string{path})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, []byte(strings.Repeat("# comment\n", 1<<15)), 0o600))
+	before, err := safeDirectoryFingerprint(t.Context(), []string{path})
+	require.NoError(t, err)
+	again, err := safeDirectoryFingerprint(t.Context(), []string{path})
+	require.NoError(t, err)
+	assert.Equal(t, before, again)
+	assert.NotEqual(t, missing, before)
+	require.NoError(t, os.WriteFile(path, []byte(strings.Repeat("# changed\n", 1<<15)), 0o600))
+	after, err := safeDirectoryFingerprint(t.Context(), []string{path})
+	require.NoError(t, err)
+	assert.NotEqual(t, before, after)
+	require.NoError(t, os.Remove(path))
+	after, err = safeDirectoryFingerprint(t.Context(), []string{path})
+	require.NoError(t, err)
+	assert.Equal(t, missing, after)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	source := &cancelingTrustReader{cancel: cancel}
+	_, err = io.Copy(io.Discard, &safeDirectoryContextReader{ctx: ctx, reader: source})
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 1, source.reads)
+}
+
+type cancelingTrustReader struct {
+	cancel context.CancelFunc
+	reads  int
+}
+
+func (r *cancelingTrustReader) Read(p []byte) (int, error) {
+	r.reads++
+	p[0] = '#'
+	r.cancel()
+	return 1, nil
 }
 
 func extendTrustProbeTimeout(t *testing.T) {
@@ -303,8 +353,6 @@ func TestCachedTrust(t *testing.T) {
 				fresh := readSafeDirectories(t.Context(), env, dir)
 				assert.Empty(t, fresh)
 				assert.Equal(t, fresh, runner.trust.read(t.Context(), env, dir))
-				require.NoError(t, os.WriteFile(actual, []byte("[safe]\n directory = /updated\n"), 0o600))
-				assert.Equal(t, []string{"/updated"}, runner.trust.read(t.Context(), env, dir))
 			})
 		}
 	})

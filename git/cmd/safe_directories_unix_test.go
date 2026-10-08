@@ -33,6 +33,6 @@ func TestSafeDirectoryFingerprintRejectsFIFO(t *testing.T) {
 		require.NoError(t, <-done)
 		require.NoError(t, reader.Close())
 	})
-	_, err = safeDirectoryFingerprint([]string{path})
+	_, err = safeDirectoryFingerprint(t.Context(), []string{path})
 	require.ErrorContains(t, err, "not a regular file")
 }

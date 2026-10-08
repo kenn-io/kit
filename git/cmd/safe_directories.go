@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -35,7 +36,7 @@ type safeDirectoryFilesystemAdmission struct {
 	ownerEnded <-chan struct{}
 }
 
-func evaluateFilesystem(ctx context.Context, evaluate func()) bool {
+func evaluateFilesystem(ctx context.Context, evaluate func(context.Context)) bool {
 	ctx, cancel := context.WithTimeout(ctx, safeDirectoryProbeTimeout)
 	defer cancel()
 	admission := safeDirectoryFilesystem
@@ -51,7 +52,7 @@ func evaluateFilesystem(ctx context.Context, evaluate func()) bool {
 			admission.done, admission.ownerEnded = done, ctx.Done()
 			admission.mu.Unlock()
 			go func() {
-				evaluate()
+				evaluate(ctx)
 				admission.mu.Lock()
 				admission.done, admission.ownerEnded = nil, nil
 				close(done)
@@ -121,12 +122,12 @@ func configPathsReusable(env []string) bool {
 	return true
 }
 
-func windowsHomeAvailable(env []string) bool {
+func windowsHomeAvailable(ctx context.Context, env []string) bool {
 	_, homeSet := envValue(env, "HOME")
 	_, globalSet := envValue(env, "GIT_CONFIG_GLOBAL")
 	drive, driveSet := envValue(env, "HOMEDRIVE")
 	path, pathSet := envValue(env, "HOMEPATH")
-	if runtime.GOOS != "windows" || homeSet || globalSet || !driveSet || !pathSet {
+	if ctx.Err() != nil || runtime.GOOS != "windows" || homeSet || globalSet || !driveSet || !pathSet {
 		return false
 	}
 	info, err := os.Stat(drive + path)
@@ -158,11 +159,20 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 	var err error
 	var homeAvailable bool
 	var sameFile bool
-	if !evaluateFilesystem(ctx, func() {
-		path = gitCommand(ctx, true).Path
+	if !evaluateFilesystem(ctx, func(checkCtx context.Context) {
+		if checkCtx.Err() != nil {
+			return
+		}
+		path = gitCommand(checkCtx, true).Path
+		if checkCtx.Err() != nil {
+			return
+		}
 		info, err = os.Stat(path)
-		homeAvailable = windowsHomeAvailable(env)
-		if err == nil && previous != nil {
+		if checkCtx.Err() != nil || err != nil {
+			return
+		}
+		homeAvailable = windowsHomeAvailable(checkCtx, env)
+		if checkCtx.Err() == nil && previous != nil {
 			sameFile = os.SameFile(info, previous.executable)
 		}
 	}) || err != nil || info == nil {
@@ -170,7 +180,7 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 	}
 	homeUnchanged := func() bool {
 		var available bool
-		return evaluateFilesystem(ctx, func() { available = windowsHomeAvailable(env) }) && available == homeAvailable
+		return evaluateFilesystem(ctx, func(checkCtx context.Context) { available = windowsHomeAvailable(checkCtx, env) }) && available == homeAvailable
 	}
 	identity := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%d\x00%s\x00%t", path, info.Size(), info.ModTime().UnixNano(), strings.Join(env, "\x00"), homeAvailable)))
 	if previous == nil {
@@ -217,7 +227,7 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 	for _, scope := range scopes {
 		s := next.scopes[scope]
 		var before [32]byte
-		if !evaluateFilesystem(ctx, func() { before, err = safeDirectoryFingerprint(s.paths) }) {
+		if !evaluateFilesystem(ctx, func(checkCtx context.Context) { before, err = safeDirectoryFingerprint(checkCtx, s.paths) }) {
 			return fresh()
 		}
 		if err == nil && s.valid && before == s.fingerprint {
@@ -232,7 +242,7 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 		}
 		var after [32]byte
 		var afterErr error
-		if !evaluateFilesystem(ctx, func() { after, afterErr = safeDirectoryFingerprint(s.paths) }) {
+		if !evaluateFilesystem(ctx, func(checkCtx context.Context) { after, afterErr = safeDirectoryFingerprint(checkCtx, s.paths) }) {
 			return fresh()
 		}
 		if !includes && err == nil && afterErr == nil && before == after {
@@ -288,25 +298,69 @@ func safeDirectoryOutput(ctx context.Context, env []string, dir string, args ...
 	return out, nil
 }
 
-func safeDirectoryFingerprint(paths []string) ([32]byte, error) {
+func safeDirectoryFingerprint(ctx context.Context, paths []string) ([32]byte, error) {
 	h := sha256.New()
 	for _, path := range paths {
+		if err := ctx.Err(); err != nil {
+			return [32]byte{}, err
+		}
 		if !filepath.IsAbs(path) {
 			return [32]byte{}, fmt.Errorf("%s: not an absolute path", path)
 		}
-		info, err := os.Stat(path)
+		digest, size, err := safeDirectoryFileDigest(ctx, path)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return [32]byte{}, err
 		}
-		if err == nil && !info.Mode().IsRegular() {
-			return [32]byte{}, fmt.Errorf("%s: not a regular file", path)
-		}
-		contents, err := os.ReadFile(path)
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return [32]byte{}, err
-		}
-		fmt.Fprintf(h, "%s\x00%t\x00%d\x00", path, err == nil, len(contents))
-		h.Write(contents)
+		fmt.Fprintf(h, "%s\x00%t\x00%d\x00", path, err == nil, size)
+		h.Write(digest[:])
 	}
 	return [32]byte(h.Sum(nil)), nil
+}
+
+func safeDirectoryFileDigest(ctx context.Context, path string) ([32]byte, int64, error) {
+	if err := ctx.Err(); err != nil {
+		return [32]byte{}, 0, err
+	}
+	info, err := os.Stat(path)
+	if ctx.Err() != nil {
+		return [32]byte{}, 0, ctx.Err()
+	}
+	if err != nil {
+		return [32]byte{}, 0, err
+	}
+	if !info.Mode().IsRegular() {
+		return [32]byte{}, 0, fmt.Errorf("%s: not a regular file", path)
+	}
+	if err := ctx.Err(); err != nil {
+		return [32]byte{}, 0, err
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		if ctx.Err() != nil {
+			return [32]byte{}, 0, ctx.Err()
+		}
+		return [32]byte{}, 0, err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	size, err := io.Copy(hash, &safeDirectoryContextReader{ctx: ctx, reader: file})
+	if ctx.Err() != nil {
+		return [32]byte{}, 0, ctx.Err()
+	}
+	if err != nil {
+		return [32]byte{}, 0, err
+	}
+	return [32]byte(hash.Sum(nil)), size, nil
+}
+
+type safeDirectoryContextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r *safeDirectoryContextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(p)
 }
