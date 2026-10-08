@@ -5,6 +5,7 @@ import (
 	"io"
 )
 
+// Reader checks cancellation before each underlying read.
 type Reader struct {
 	Context context.Context
 	Reader  io.Reader

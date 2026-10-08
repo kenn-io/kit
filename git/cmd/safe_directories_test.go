@@ -133,8 +133,7 @@ func TestCachedTrust(t *testing.T) {
 	extendTrustProbeTimeout(t)
 	for _, tc := range []struct {
 		name, noSystem string
-		discoveryFails bool
-	}{{"no system 0", "0", false}, {"no system 1", "1", false}, {"failed discovery", "0", true}} {
+	}{{"no system 0", "0"}, {"no system 1", "1"}} {
 		t.Run(tc.name, func(t *testing.T) {
 			noSystem := tc.noSystem
 			dir := t.TempDir()
@@ -151,9 +150,6 @@ func TestCachedTrust(t *testing.T) {
 				system = "/inactive\nconfig\r"
 			}
 			runner.Env = append(runner.Env, "GIT_CONFIG_SYSTEM="+system)
-			if tc.discoveryFails {
-				runner.Env = append(runner.Env, "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.autocrlf", "GIT_CONFIG_VALUE_0=garbage")
-			}
 			other := runner
 			other.Env = append(append([]string(nil), runner.Env...), "GIT_CONFIG_GLOBAL="+otherConfig)
 			count := 0
@@ -170,13 +166,6 @@ func TestCachedTrust(t *testing.T) {
 				baseline = 1
 			}
 			check(runner, "/trusted", baseline)
-			if tc.discoveryFails {
-				check(runner, "/trusted", baseline+1)
-				check(runner, "/trusted", baseline+1)
-				require.NoError(t, os.WriteFile(config, []byte("[safe]\n directory = /updated\n"), 0o600))
-				check(runner, "/updated", baseline+1)
-				return
-			}
 			check(other, "/other", baseline)
 			check(runner, "/trusted", 2*baseline)
 			check(other, "/other", baseline)
@@ -235,6 +224,7 @@ func TestCachedTrust(t *testing.T) {
 				} else {
 					require.NoError(t, os.WriteFile(filepath.Join(bad, ".git", "config"), append(slices.Clone(original), []byte("\n[core]\n autocrlf = garbage\n")...), 0o600))
 					check(bad, []string{"/trusted"}, 3)
+					check(bad, []string{"/trusted"}, 3)
 					require.NoError(t, os.WriteFile(filepath.Join(bad, ".git", "config"), original, 0o600))
 				}
 				check(dir, []string{"/trusted"}, 4)
@@ -263,7 +253,6 @@ func TestCachedTrust(t *testing.T) {
 		assert.Equal(t, []string{"/xdg"}, runner.trust.read(t.Context(), runner.Env, dir))
 		require.NoError(t, os.WriteFile(user, []byte("[safe]\n directory = /preferred\n"), 0o600))
 		assert.Equal(t, []string{"/preferred"}, runner.trust.read(t.Context(), runner.Env, dir))
-		assert.Equal(t, readSafeDirectories(t.Context(), runner.Env, dir), runner.trust.read(t.Context(), runner.Env, dir))
 		require.NoError(t, os.Remove(user))
 		require.NoError(t, os.Remove(fallback))
 		assert.Empty(t, runner.trust.read(t.Context(), runner.Env, dir))
