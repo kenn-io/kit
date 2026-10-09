@@ -11,8 +11,12 @@ import (
 )
 
 // PostEvent reports through an application's capture route and returns acceptance.
+// The caller supplies a nonnil HTTP client and owns its timeouts.
 // Callers retry errors on later interaction; the server owns daily deduplication.
 func PostEvent(ctx context.Context, client *http.Client, url, event string, properties map[string]any) (Status, error) {
+	if client == nil {
+		return "", errors.New("send telemetry report: HTTP client is required")
+	}
 	body, err := json.Marshal(postHogCaptureRequest{Event: event, Properties: properties})
 	if err != nil {
 		return "", fmt.Errorf("encode telemetry report: %w", err)
@@ -22,9 +26,6 @@ func PostEvent(ctx context.Context, client *http.Client, url, event string, prop
 		return "", fmt.Errorf("create telemetry report: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if client == nil {
-		client = http.DefaultClient
-	}
 	response, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("send telemetry report: %w", err)

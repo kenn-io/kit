@@ -13,6 +13,11 @@ import (
 )
 
 func TestPostEventResults(t *testing.T) {
+	t.Run("missing client", func(t *testing.T) {
+		status, err := PostEvent(t.Context(), nil, "http://localhost/events", "screen_viewed", nil)
+		require.ErrorContains(t, err, "HTTP client is required")
+		assert.Empty(t, status)
+	})
 	for _, tc := range []struct {
 		name, body string
 		code       int
@@ -34,12 +39,15 @@ func TestPostEventResults(t *testing.T) {
 				assert.Equal(t, http.MethodPost, r.Method)
 				assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
 				var request postHogCaptureRequest
-				require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+				if err := json.NewDecoder(r.Body).Decode(&request); !assert.NoError(t, err) {
+					http.Error(w, "invalid event", http.StatusBadRequest)
+					return
+				}
 				assert.Equal(t, "screen_viewed", request.Event)
 				assert.Equal(t, map[string]any{"screen": "queue"}, request.Properties)
 				w.WriteHeader(tc.code)
 				_, err := w.Write([]byte(tc.body))
-				require.NoError(t, err)
+				assert.NoError(t, err)
 			}))
 			t.Cleanup(srv.Close)
 			status, err := PostEvent(t.Context(), srv.Client(), srv.URL, "screen_viewed", map[string]any{"screen": "queue"})

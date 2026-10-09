@@ -113,7 +113,7 @@ func (d *DailyClaims) report(ctx context.Context, identity, event, key string, n
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	encoded, _ := json.Marshal([]string{identity, event, key})
+	encoded, _ := json.Marshal([]string{identity, event, key}) //nolint:errchkjson // strings always encode as JSON
 	claim := string(encoded)
 	timestamp := now().UTC()
 	day := timestamp.Format(time.DateOnly)

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -32,14 +33,16 @@ func TestDailyCaptureValidatesBeforeClaim(t *testing.T) {
 		ctype, body string
 		code        int
 	}{
-		{"text/plain", body, 415}, {"", body, 415}, {"application/json", body + " {}", 400},
+		{"text/plain", body, 415},
+		{"", body, 415},
+		{"application/json", body + " {}", 400},
 		{"application/json", `{"event":"screen_viewed","properties":{"screen":"unknown"}}`, 400},
 		{"application/json", `{"event":"screen_viewed"}`, 400},
 	} {
 		assert.Equal(t, tc.code, postCaptureAs(t, h, http.MethodPost, tc.ctype, tc.body).Code)
 		assert.Empty(t, client.messages)
 		_, err := os.Stat(path)
-		assert.ErrorIs(t, err, os.ErrNotExist)
+		require.ErrorIs(t, err, os.ErrNotExist)
 	}
 	assert.Equal(t, "queued", decodeStatus(t, postCapture(t, h, http.MethodPost, body)))
 	assert.Equal(t, "skipped", decodeStatus(t, postCapture(t, h, http.MethodPost, body)))
@@ -52,7 +55,7 @@ func TestDailyCaptureValidatesBeforeClaim(t *testing.T) {
 		disable(reporter)
 		assert.Equal(t, "disabled", decodeStatus(t, postCapture(t, NewCaptureHandler(reporter), http.MethodPost, body)))
 		_, err := os.Stat(path)
-		assert.ErrorIs(t, err, os.ErrNotExist)
+		require.ErrorIs(t, err, os.ErrNotExist)
 		enablePostHogTelemetryForTest()
 	}
 }
@@ -97,7 +100,7 @@ func TestDailyClaimsRecoveryAndIsolation(t *testing.T) {
 
 func TestDailyClaimsSerializeRejectedCapture(t *testing.T) {
 	for _, shared := range []bool{false, true} {
-		t.Run(fmt.Sprint(shared), func(t *testing.T) {
+		t.Run(strconv.FormatBool(shared), func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "days.json")
 			claims := NewDailyClaims(path)
 			nextClaims := func() *DailyClaims {
@@ -109,7 +112,7 @@ func TestDailyClaimsSerializeRejectedCapture(t *testing.T) {
 			started, release := make(chan struct{}), make(chan struct{})
 			first := make(chan error, 1)
 			go func() {
-				_, err := nextClaims().report(context.Background(), "id", "screen", "queue", time.Now, func(time.Time) (Status, error) { close(started); <-release; return "", errors.New("rejected") })
+				_, err := nextClaims().report(t.Context(), "id", "screen", "queue", time.Now, func(time.Time) (Status, error) { close(started); <-release; return "", errors.New("rejected") })
 				first <- err
 			}()
 			<-started
@@ -120,7 +123,7 @@ func TestDailyClaimsSerializeRejectedCapture(t *testing.T) {
 			second := make(chan Status, 1)
 			failures := make(chan error, 1)
 			go func() {
-				status, err := nextClaims().report(context.Background(), "id", "screen", "queue", time.Now, func(time.Time) (Status, error) { return StatusQueued, nil })
+				status, err := nextClaims().report(t.Context(), "id", "screen", "queue", time.Now, func(time.Time) (Status, error) { return StatusQueued, nil })
 				second <- status
 				failures <- err
 			}()
@@ -183,10 +186,10 @@ func TestDailyClaimsClockAfterLock(t *testing.T) {
 func TestDailyClaimsInvalidStateAndCancellation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "days.json")
 	for _, body := range []string{`{`, `{"version":2,"days":{}}`, `{"version":1,"days":{"key":["tomorrow"]}}`, `null`, `{}`, `{"days":{}}`, `{"version":1}`, `{"version":1,"days":null}`} {
-		require.NoError(t, os.WriteFile(path, []byte(body), 0600))
+		require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 		sends := 0
 		_, err := NewDailyClaims(path).report(t.Context(), "id", "screen", "queue", time.Now, func(time.Time) (Status, error) { sends++; return StatusQueued, nil })
-		assert.Error(t, err, body)
+		require.Error(t, err, body)
 		assert.Zero(t, sends, body)
 		data, err := os.ReadFile(path)
 		require.NoError(t, err)
@@ -203,7 +206,7 @@ func TestDailyClaimsInvalidStateAndCancellation(t *testing.T) {
 
 func TestDailyClaimsCleanupPreservesNewerAcceptedDay(t *testing.T) {
 	for _, newer := range []bool{false, true} {
-		t.Run(fmt.Sprint(newer), func(t *testing.T) {
+		t.Run(strconv.FormatBool(newer), func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "days.json")
 			claims := NewDailyClaims(path)
 			clock := &fakePostHogClock{now: postHogTestStart}
@@ -293,7 +296,7 @@ func TestReporterConfigurationValidation(t *testing.T) {
 			{"blank then valid", []Option{WithAllowedEvent("screen_viewed", blank), allowed}, true},
 			{"invalid optional", []Option{WithAllowedEvent("screen_viewed", AllowProperty("screen", nil), AllowProperty(" ", AllowStringValues("queue")))}, false},
 		} {
-			t.Run(tc.name+fmt.Sprint(disabled), func(t *testing.T) {
+			t.Run(tc.name+strconv.FormatBool(disabled), func(t *testing.T) {
 				t.Setenv(GenericEnabledEnv, "1")
 				t.Setenv("KATA_TELEMETRY_ENABLED", "1")
 				if disabled {
@@ -409,10 +412,10 @@ func TestDailyReportSerializationFailureThenSameDayRetry(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, reporter.Close()) })
 	failure := errors.New("cannot encode filtered value")
 	status, err := reporter.Report(t.Context(), "screen_viewed", map[string]any{"screen": "queue", "value": failingDailyJSON{failure}})
-	assert.ErrorIs(t, err, failure)
+	require.ErrorIs(t, err, failure)
 	assert.Empty(t, status)
 	_, err = os.Stat(path)
-	assert.ErrorIs(t, err, os.ErrNotExist)
+	require.ErrorIs(t, err, os.ErrNotExist)
 	status, err = reporter.Report(t.Context(), "screen_viewed", map[string]any{"screen": "queue", "value": "corrected"})
 	require.NoError(t, err)
 	assert.Equal(t, StatusQueued, status)
