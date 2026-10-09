@@ -1,6 +1,8 @@
 package posthog
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -101,6 +103,7 @@ type Reporter struct {
 	source         string
 	allowedEvents  map[string]map[string]PropertyFilter
 	requiredEvents map[string]map[string]bool
+	dailyEvents    map[string]dailyEvent
 	enabled        bool
 	now            func() time.Time
 	installedAt    time.Time
@@ -116,6 +119,7 @@ type postHogClientFactory func(apiKey string, config phsdk.Config) (postHogEnque
 type postHogReporterConfig struct {
 	allowedEvents  map[string]map[string]PropertyFilter
 	requiredEvents map[string]map[string]bool
+	dailyEvents    map[string]dailyEvent
 	now            func() time.Time
 }
 
@@ -257,8 +261,25 @@ func newPostHogReporter(opts Options, newClient postHogClientFactory, options ..
 		}
 	}
 	allowedEvents := cloneAllowedTelemetryEvents(config.allowedEvents)
+	defaults := make(map[string]any)
+	(&Reporter{}).addDefaultProperties(defaults)
+	for event, daily := range config.dailyEvents {
+		properties, allowed := allowedEvents[event]
+		if !allowed {
+			return nil, fmt.Errorf("daily telemetry event %q is not allowed", event)
+		}
+		if properties[daily.key] == nil {
+			return nil, fmt.Errorf("daily telemetry key %q is not allowed for %q", daily.key, event)
+		}
+		if _, owned := defaults[daily.key]; owned || daily.key == postHogInstallAgeProperty {
+			return nil, fmt.Errorf("daily telemetry key %q is reporter-owned", daily.key)
+		}
+		if daily.claims == nil || strings.TrimSpace(daily.claims.path) == "" {
+			return nil, errors.New("daily telemetry state path is required")
+		}
+	}
 	if !EnabledFromEnv(opts.EnvPrefix) {
-		return &Reporter{allowedEvents: allowedEvents, requiredEvents: config.requiredEvents}, nil
+		return &Reporter{allowedEvents: allowedEvents, requiredEvents: config.requiredEvents, dailyEvents: config.dailyEvents}, nil
 	}
 	if newClient == nil {
 		return nil, errors.New("posthog client factory is required")
@@ -311,6 +332,7 @@ func newPostHogReporter(opts Options, newClient postHogClientFactory, options ..
 		source:         defaultString(strings.TrimSpace(opts.Source), "daemon"),
 		allowedEvents:  allowedEvents,
 		requiredEvents: config.requiredEvents,
+		dailyEvents:    config.dailyEvents,
 		enabled:        true,
 		now:            config.now,
 		installedAt:    opts.InstalledAt,
@@ -374,25 +396,57 @@ func (r *Reporter) SanitizeProperties(event string, properties map[string]any) (
 // Capture sanitizes and queues an anonymous telemetry event. When
 // Options.InstalledAt is set, the event carries install_age_hours.
 func (r *Reporter) Capture(event string, properties map[string]any) error {
-	if r == nil {
+	if !r.Enabled() {
 		return nil
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if !r.activeLocked() || ProcessDisabled() {
-		return nil
-	}
-	event = strings.TrimSpace(event)
-	if event == "" {
-		return errors.New("telemetry event is required")
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), ShutdownTimeout)
+	defer cancel()
+	_, err := r.Report(ctx, event, properties)
+	return err
+}
 
+// Report validates and reports an event, returning its queue acceptance status.
+func (r *Reporter) Report(ctx context.Context, event string, properties map[string]any) (Status, error) {
+	event = strings.TrimSpace(event)
 	props, err := r.SanitizeProperties(event, properties)
 	if err != nil {
-		return err
+		return "", err
 	}
+	daily, limited := r.dailyEvents[event]
+	var key string
+	if limited {
+		key, _ = props[daily.key].(string)
+		if key == "" {
+			return "", fmt.Errorf("%w: %s", ErrInvalidProperty, daily.key)
+		}
+	}
+	if !r.Enabled() {
+		return StatusDisabled, nil
+	}
+	if _, err := json.Marshal(props); err != nil {
+		return "", fmt.Errorf("encode telemetry properties: %w", err)
+	}
+	send := func(now time.Time) (Status, error) {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if !r.activeLocked() || ProcessDisabled() {
+			return StatusDisabled, nil
+		}
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if err := r.enqueue(event, props, now); err != nil {
+			return "", err
+		}
+		return StatusQueued, nil
+	}
+	if limited {
+		return daily.claims.report(ctx, r.distinctID, event, key, r.clock, send)
+	}
+	return send(r.clock())
+}
 
-	now := r.clock()
+func (r *Reporter) enqueue(event string, props map[string]any, now time.Time) error {
 	if !r.installedAt.IsZero() {
 		// A future InstalledAt means the clock moved back; count the install as new.
 		props[postHogInstallAgeProperty] = int64(max(now.Sub(r.installedAt), 0) / time.Hour)
