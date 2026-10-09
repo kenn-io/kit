@@ -28,6 +28,9 @@ func TestConfiguredPushUsesSelectedUpstream(t *testing.T) {
 			lifecycleGit(t, clone, "config", "--global", "push.default", "simple")
 			lifecycleGit(t, clone, "config", "--local", "push.default", "current")
 			lifecycleGit(t, created.Path, "config", "--worktree", "push.default", "current")
+			other := filepath.Join(t.TempDir(), "other")
+			lifecycleGit(t, clone, "branch", "--track", "other", "origin/main")
+			lifecycleGit(t, clone, "worktree", "add", other, "other")
 			err = SetWorktreeUpstream(t.Context(), WorktreeUpstreamOptions{
 				ProjectRoot: clone, Path: created.Path, Runner: lifecycleTestRunner(t),
 				Policy: UpstreamPolicy{Action: UpstreamTrack, Scope: scope, Remote: "origin", Ref: "refs/heads/main", ConfigurePush: true},
@@ -36,6 +39,13 @@ func TestConfiguredPushUsesSelectedUpstream(t *testing.T) {
 			push := lifecycleGit(t, created.Path, "push", "--dry-run", "--porcelain")
 			assert.Contains(t, push, "refs/heads/topic:refs/heads/main")
 			assert.NotContains(t, push, "refs/heads/topic:refs/heads/topic")
+			assert.Contains(t, lifecycleGit(t, other, "push", "--dry-run", "--porcelain"), "refs/heads/other:refs/heads/other")
+			_, err = RemoveWorktreeFromDisk(t.Context(), RemoveWorktreeOptions{
+				ProjectRoot: clone, Path: created.Path, Branch: "topic", Runner: lifecycleTestRunner(t),
+			})
+			require.NoError(t, err)
+			assert.Equal(t, "current", lifecycleGit(t, clone, "config", "--local", "push.default"))
+			assert.Contains(t, lifecycleGit(t, other, "push", "--dry-run", "--porcelain"), "refs/heads/other:refs/heads/other")
 		})
 	}
 }
@@ -245,7 +255,7 @@ func TestImportExplicitUpstreamPolicy(t *testing.T) {
 				ProjectRoot: clone, Branch: "topic", Path: filepath.Join(t.TempDir(), "checkout"),
 				Number: 7, HeadBranch: "main", HeadRepoCloneURL: origin, ProjectRepoIdentity: origin,
 				Runner: lifecycleTestRunner(t), FailureCleanup: CleanupDeferred,
-				Upstream: UpstreamPolicy{Action: action, Remote: "selected", Ref: "refs/heads/main"},
+				Upstream: UpstreamPolicy{Action: action, Scope: UpstreamRepository, Remote: "selected", Ref: "refs/heads/main"},
 			})
 			require.NoError(t, err)
 			assert.NotEqual(t, lifecycleGit(t, clone, "rev-parse", "selected/main"), lifecycleGit(t, result.Path, "rev-parse", "HEAD"))
@@ -259,8 +269,8 @@ func TestImportExplicitUpstreamPolicy(t *testing.T) {
 				assert.Empty(t, worktreeConfig(t, result.Path, "branch.topic.remote"))
 				assert.Empty(t, worktreeConfig(t, result.Path, "branch.topic.merge"))
 			case UpstreamTrack:
-				assert.Equal(t, "selected", worktreeOnlyConfig(t, result.Path, "branch.topic.remote"))
-				assert.Equal(t, "refs/heads/main", worktreeOnlyConfig(t, result.Path, "branch.topic.merge"))
+				assert.Equal(t, "selected", lifecycleGit(t, clone, "config", "--local", "branch.topic.remote"))
+				assert.Equal(t, "refs/heads/main", lifecycleGit(t, clone, "config", "--local", "branch.topic.merge"))
 			}
 		})
 	}
@@ -370,20 +380,26 @@ func TestImportExplicitCheckoutModes(t *testing.T) {
 	}
 }
 
-func TestUpstreamActionsReplaceInheritedRouting(t *testing.T) {
+func TestUpstreamScopeControlsSharedRouting(t *testing.T) {
 	for _, scope := range []UpstreamScope{UpstreamWorktree, UpstreamRepository} {
 		t.Run(map[UpstreamScope]string{UpstreamWorktree: "worktree", UpstreamRepository: "repository"}[scope], func(t *testing.T) {
 			origin, clone := initOriginAndClone(t)
 			lifecycleGit(t, origin, "checkout", "-b", "other")
 			lifecycleGit(t, origin, "commit", "--allow-empty", "-m", "other work")
 			lifecycleGit(t, clone, "fetch", "origin")
+			lifecycleGit(t, clone, "branch", "topic", "origin/other")
 			lifecycleGit(t, clone, "config", "branch.topic.remote", "origin")
 			lifecycleGit(t, clone, "config", "branch.topic.merge", "refs/heads/main")
 			created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
-				ProjectRoot: clone, Path: filepath.Join(t.TempDir(), "checkout"), Branch: "topic", BaseRef: "origin/other",
+				ProjectRoot: clone, Path: filepath.Join(t.TempDir(), "checkout"), Branch: "topic", Mode: CheckoutExistingBranch,
 				Runner:   lifecycleTestRunner(t),
 				Upstream: UpstreamPolicy{Action: UpstreamTrack, Scope: scope, Remote: "origin", Ref: "refs/heads/other"},
 			})
+			if scope == UpstreamWorktree {
+				require.ErrorIs(t, err, ErrInvalidWorktreeOptions)
+				assert.Equal(t, "refs/remotes/origin/main", lifecycleGit(t, clone, "rev-parse", "--symbolic-full-name", "topic@{upstream}"))
+				return
+			}
 			require.NoError(t, err)
 			assert.Equal(t, "refs/remotes/origin/other", lifecycleGit(t, created.Path, "rev-parse", "--symbolic-full-name", "@{upstream}"))
 			lifecycleGit(t, created.Path, "pull", "--ff-only")
@@ -428,19 +444,18 @@ func TestConditionalTrackingUsesRequestedTarget(t *testing.T) {
 	}
 }
 
-func TestWorktreeUpstreamClearRemovesInheritedRouting(t *testing.T) {
+func TestWorktreeUpstreamClearPreservesInheritedRouting(t *testing.T) {
 	origin, clone := initOriginAndClone(t)
 	created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
 		ProjectRoot: clone, Path: filepath.Join(t.TempDir(), "checkout"), Branch: "topic", Runner: lifecycleTestRunner(t),
 		Upstream: UpstreamPolicy{Action: UpstreamTrack, Scope: UpstreamRepository, Remote: "origin", Ref: "refs/heads/main"},
 	})
 	require.NoError(t, err)
-	require.NoError(t, SetWorktreeUpstream(t.Context(), WorktreeUpstreamOptions{
+	require.ErrorIs(t, SetWorktreeUpstream(t.Context(), WorktreeUpstreamOptions{
 		ProjectRoot: clone, Path: created.Path, Runner: lifecycleTestRunner(t),
 		Policy: UpstreamPolicy{Action: UpstreamClear},
-	}))
-	_, _, err = lifecycleTestRunner(t).Run(t.Context(), created.Path, nil, "rev-parse", "--verify", "@{upstream}")
-	require.True(t, gitcmd.IsExitCode(err, 128), "expected an ordinary no-upstream error: %v", err)
+	}), ErrInvalidWorktreeOptions)
+	assert.Equal(t, "refs/remotes/origin/main", lifecycleGit(t, created.Path, "rev-parse", "--symbolic-full-name", "@{upstream}"))
 	assert.Equal(t, origin, lifecycleGit(t, clone, "remote", "get-url", "origin"))
 }
 
@@ -481,5 +496,108 @@ func TestUpstreamRefusesRoutingFromOtherConfigFiles(t *testing.T) {
 				assert.Equal(t, contents, after)
 			})
 		}
+	}
+}
+
+func TestCreateOutputLimitRetainsCleanupEvidence(t *testing.T) {
+	for _, cleanup := range []FailureCleanup{CleanupAutomatic, CleanupDeferred} {
+		t.Run(map[FailureCleanup]string{CleanupAutomatic: "automatic", CleanupDeferred: "deferred"}[cleanup], func(t *testing.T) {
+			root := initLifecycleRepo(t)
+			hook := filepath.Join(root, ".git", "hooks", "post-checkout")
+			require.NoError(t, os.WriteFile(hook, []byte("#!/bin/sh\nprintf '%s' '"+strings.Repeat("x", 200000)+"' >&2\n"), 0o700))
+			runner := lifecycleTestRunner(t)
+			runner.StderrLimit = 4096
+			path := filepath.Join(t.TempDir(), "checkout")
+			created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+				ProjectRoot: root, Path: path, Branch: "topic", Runner: runner, FailureCleanup: cleanup,
+			})
+			require.ErrorIs(t, err, gitcmd.ErrStderrLimitExceeded)
+			require.NotErrorIs(t, err, ErrWorktreeCleanupIncomplete)
+			if cleanup == CleanupDeferred {
+				require.DirExists(t, path)
+				_, err = created.Rollback(t.Context())
+				require.NoError(t, err)
+			}
+			assert.NoDirExists(t, path)
+			_, _, err = runner.Run(t.Context(), root, nil, "show-ref", "--verify", "--quiet", "refs/heads/topic")
+			require.True(t, gitcmd.IsExitCode(err, 1))
+			require.NoError(t, os.Remove(hook))
+			_, err = CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+				ProjectRoot: root, Path: path, Branch: "topic", Runner: runner,
+			})
+			require.NoError(t, err, "the same creation can be retried after cleanup")
+		})
+	}
+}
+
+func TestWorktreeTrackingPreservesExistingBranchUpstream(t *testing.T) {
+	_, clone := initOriginAndClone(t)
+	lifecycleGit(t, clone, "branch", "--track", "topic", "origin/main")
+	created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+		ProjectRoot: clone, Path: filepath.Join(t.TempDir(), "checkout"), Branch: "topic",
+		Mode: CheckoutExistingBranch, Runner: lifecycleTestRunner(t),
+		Upstream: UpstreamPolicy{Action: UpstreamTrack, Remote: "origin", Ref: "refs/heads/main", ConfigurePush: true},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "refs/remotes/origin/main", lifecycleGit(t, created.Path, "rev-parse", "--symbolic-full-name", "@{upstream}"))
+	lifecycleGit(t, created.Path, "pull", "--ff-only")
+	_, err = RemoveWorktreeFromDisk(t.Context(), RemoveWorktreeOptions{ProjectRoot: clone, Path: created.Path, Branch: "topic", Runner: lifecycleTestRunner(t)})
+	require.NoError(t, err)
+	assert.Equal(t, "refs/remotes/origin/main", lifecycleGit(t, clone, "rev-parse", "--symbolic-full-name", "topic@{upstream}"))
+	assert.Equal(t, "refs/heads/main", lifecycleGit(t, clone, "config", "--local", "branch.topic.merge"))
+}
+
+func TestForkImportFetchesExplicitConditionalUpstream(t *testing.T) {
+	for _, scenario := range []string{"matching", "stale", "mismatched", "leave", "clear"} {
+		t.Run(scenario, func(t *testing.T) {
+			origin, clone := initOriginAndClone(t)
+			fork := filepath.Join(t.TempDir(), "fork")
+			lifecycleGit(t, clone, "clone", "-q", origin, fork)
+			lifecycleGit(t, fork, "config", "user.name", "Tester")
+			lifecycleGit(t, fork, "config", "user.email", "test@example.invalid")
+			lifecycleGit(t, fork, "checkout", "-b", "contribution")
+			lifecycleGit(t, fork, "commit", "--allow-empty", "-m", "contribution")
+			head := lifecycleGit(t, fork, "rev-parse", "HEAD")
+			lifecycleGit(t, origin, "fetch", fork, "+refs/heads/contribution:refs/pull/9/head")
+			lifecycleGit(t, clone, "remote", "add", "fork", fork)
+			// The requested tracking target differs from the inferred fork route.
+			selected := filepath.Join(t.TempDir(), "selected")
+			lifecycleGit(t, clone, "clone", "-q", fork, selected)
+			start := head
+			if scenario == "mismatched" {
+				start = head + "^"
+			}
+			lifecycleGit(t, selected, "branch", "selected-topic", start)
+			lifecycleGit(t, clone, "remote", "add", "selected", selected)
+			lifecycleGit(t, clone, "config", "remote.selected.fetch", "+refs/heads/*:refs/tracked/selected/*")
+			if scenario == "stale" {
+				lifecycleGit(t, clone, "update-ref", "refs/tracked/selected/selected-topic", "HEAD")
+			}
+			action := UpstreamTrack
+			switch scenario {
+			case "leave":
+				action = UpstreamLeave
+			case "clear":
+				action = UpstreamClear
+			}
+			created, err := CreateWorktreeFromMergeRequest(t.Context(), MergeRequestWorktreeOptions{
+				ProjectRoot: clone, Path: filepath.Join(t.TempDir(), "checkout"), Branch: "topic", Runner: lifecycleTestRunner(t),
+				Number: 9, HeadBranch: "contribution", HeadRepoCloneURL: fork, ProjectRepoIdentity: origin,
+				Upstream: UpstreamPolicy{Action: action, Condition: TrackingIfHeadMatches, Remote: "selected", Ref: "refs/heads/selected-topic"},
+			})
+			require.NoError(t, err)
+			assert.Equal(t, head, lifecycleGit(t, created.Path, "rev-parse", "HEAD"))
+			if scenario == "matching" || scenario == "stale" {
+				assert.Equal(t, "refs/tracked/selected/selected-topic", lifecycleGit(t, created.Path, "rev-parse", "--symbolic-full-name", "@{upstream}"))
+				assert.Equal(t, head, lifecycleGit(t, created.Path, "rev-parse", "@{upstream}"))
+			} else {
+				_, _, err = lifecycleTestRunner(t).Run(t.Context(), created.Path, nil, "rev-parse", "--verify", "@{upstream}")
+				assert.True(t, gitcmd.IsExitCode(err, 128), "no tracking for a mismatch, Leave or Clear")
+			}
+			if action != UpstreamTrack {
+				_, _, err = lifecycleTestRunner(t).Run(t.Context(), clone, nil, "show-ref", "--verify", "--quiet", "refs/tracked/selected/selected-topic")
+				assert.True(t, gitcmd.IsExitCode(err, 1), "Leave and Clear must not fetch the requested tracking target")
+			}
+		})
 	}
 }

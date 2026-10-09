@@ -12,9 +12,11 @@
 // changes in the acquired checkout, but preserves an advanced owned branch.
 // Missing evidence preserves artifacts and reports incomplete cleanup.
 //
-// Explicit tracking and clearing replace the selected branch's routing in the
-// repository and worktree configuration files. Routing inherited from other
-// files or command options is rejected; leaving tracking makes no writes.
+// Worktree-scoped tracking preserves compatible shared branch routing and
+// rejects conflicts. Changing or clearing shared routing requires repository
+// scope. Routing inherited from other files or command options is rejected;
+// leaving tracking makes no writes. Explicit push defaults stay worktree-local
+// even when branch routing uses repository scope.
 //
 // Removal distinguishes checkout, registration, and branch outcomes, including
 // effects completed before a Git error. Branch cleanup starts only after the

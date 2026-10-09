@@ -279,6 +279,15 @@ func CreateWorktreeFromMergeRequest(
 	}
 
 	upstream := opts.Upstream
+	if upstream.Action == UpstreamTrack && upstream.Condition == TrackingIfHeadMatches {
+		// Explicit policy can name a different remote/ref than the inferred
+		// fork route. Fetch it through that remote's configured ref mapping
+		// before comparing tips; a cached ref may be absent or stale.
+		if _, err := runLifecycleGit(ctx, root, "fetch", "--no-tags", "--no-write-fetch-head",
+			"--no-recurse-submodules", "--", upstream.Remote, upstream.Ref); err != nil {
+			return CreateWorktreeResult{}, err
+		}
+	}
 	if upstream.Action == UpstreamDefault {
 		upstream.Action = UpstreamLeave
 		if trackingEnabled {

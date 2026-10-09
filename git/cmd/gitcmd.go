@@ -156,10 +156,11 @@ func (r Runner) Run(ctx context.Context, dir string, stdin io.Reader, args ...st
 	}
 	if err != nil {
 		return stdout.buffer.Bytes(), stderr.buffer.Bytes(), &GitError{
-			Dir:    dir,
-			Args:   append([]string(nil), args...),
-			Stderr: strings.TrimSpace(stderr.buffer.String()),
-			Err:    err,
+			Dir:          dir,
+			Args:         append([]string(nil), args...),
+			Stderr:       strings.TrimSpace(stderr.buffer.String()),
+			Err:          err,
+			processState: cmd.ProcessState,
 		}
 	}
 	return stdout.buffer.Bytes(), stderr.buffer.Bytes(), nil
@@ -465,8 +466,10 @@ type GitError struct {
 	Args []string
 	// Stderr is the trimmed stderr captured from git.
 	Stderr string
-	// Err is the underlying process error.
+	// Err is the underlying execution or output-capture error.
 	Err error
+
+	processState *os.ProcessState
 }
 
 func (e *GitError) Error() string {
@@ -480,8 +483,12 @@ func (e *GitError) Unwrap() error {
 	return e.Err
 }
 
-// ExitCode returns git's process exit code when available.
+// ExitCode returns git's process exit code when available, including zero when
+// Git succeeded but output capture reported an error.
 func (e *GitError) ExitCode() (int, bool) {
+	if e.processState != nil {
+		return e.processState.ExitCode(), true
+	}
 	if exitErr, ok := errors.AsType[*exec.ExitError](e.Err); ok {
 		return exitErr.ExitCode(), true
 	}

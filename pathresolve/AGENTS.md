@@ -9,10 +9,12 @@ point is a symbolic link.
 
 ## Invariants
 
-- `EvalSymlinks` is a drop-in for `filepath.EvalSymlinks` for a path with no
-  reparse point in it, on every platform. The result must be identical there,
-  including volume case normalization. Delegate to `filepath.EvalSymlinks` for
-  canonicalization; this package only decides what it is handed.
+- For paths without reparse points, `EvalSymlinks` delegates canonicalization
+  to `filepath.EvalSymlinks`, including volume case normalization. On Windows,
+  clean parent components first, matching native path opening: `junction/../file` opens the lexical parent's file. Apply the
+  same normalization to resolved link targets. `EvalSymlinksAllowMissing` keeps
+  conservative link-before-parent traversal for containment checks; it does not
+  define the native Windows identity contract.
 - A path that contains a reparse point is resolved here, and that is the whole
   point of the package: a canonical path for identity or containment has to be
   the location the OS opens, not the spelling the caller used. Do not
@@ -34,7 +36,7 @@ point is a symbolic link.
   in.
 - Never turn a real failure into a success-shaped answer. A path that does not
   exist, or that has a non-directory element, reports the error
-  `filepath.EvalSymlinks` reports for the caller's own path. Note that on
+  `filepath.EvalSymlinks` reports (after Windows lexical normalization). On
   Windows `syscall.ENOTDIR` is `Errno(3)`, so such an error also satisfies
   `errors.Is(err, fs.ErrNotExist)`; callers must not treat that as proof the
   path is absent.

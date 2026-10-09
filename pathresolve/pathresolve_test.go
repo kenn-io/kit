@@ -114,7 +114,11 @@ func TestEvalSymlinksResolvesLinksBeforeParent(t *testing.T) {
 	assert.Equal(t, want, got)
 	got, err = pathresolve.EvalSymlinks(raw)
 	require.NoError(t, err)
-	assert.Equal(t, want, got)
+	strictWant := want
+	if runtime.GOOS == "windows" {
+		strictWant = filepath.Join(canonical, "config")
+	}
+	assert.Equal(t, strictWant, got)
 	// The public resolver must identify the file that the OS actually opens.
 	rawInfo, err := os.Stat(raw)
 	require.NoError(t, err)

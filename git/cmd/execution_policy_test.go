@@ -35,6 +35,7 @@ func TestRunnerWorktreeExecutionPolicy(t *testing.T) {
 		runner.StdoutLimit = 1 << 20
 		stdout, stderr, err := runner.Run(t.Context(), dir, nil, "cat-file", "blob", strings.TrimSpace(string(oid)))
 		require.ErrorIs(t, err, ErrStdoutLimitExceeded)
+		assert.True(t, IsExitCode(err, 0), "truncation must retain the successful Git exit")
 		assert.Equal(t, strings.Repeat("x", 1<<20), string(stdout))
 		assert.Empty(t, stderr)
 		runner.StdoutLimit = len(contents)

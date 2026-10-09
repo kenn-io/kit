@@ -81,6 +81,9 @@ specific application or forge workflow.
   An untouched deferred checkout has no index and contains only its `.git`
   registration file; default rollback must recognize that initial state without
   treating missing tracked files as edits. Preserve actual file or index changes.
+  A successful Git exit with an output-capture error still acquired the worktree:
+  capture ownership evidence, retain the error, and apply the selected cleanup
+  policy. A failed or unknown process outcome grants no cleanup authority.
 - Configure merge-request tracking in worktree-scoped Git configuration so
   removing a worktree does not leave branch routing behind in shared config.
   Explicit upstream policy chooses configuration scope and whether to configure
@@ -89,12 +92,18 @@ specific application or forge workflow.
   merge-request import chooses an explicit tracking action before creation.
   Resolve remote URLs and fetch mappings from the destination worktree's effective
   configuration; a linked worktree can define its own remotes.
-  Git combines branch.merge across scopes: track and clear must remove the
-  selected branch's old repository/worktree routing. Do not mask inherited merge
-  refs with empty values. Reject routing inherited from other config files or
-  command options instead of changing those sources.
-  Explicit push routing must take effect across repository/worktree scopes;
-  reject conflicting command overrides before changing branch routing.
+  Explicit conditional import tracking fetches the requested remote branch
+  before comparing tips, including custom fetch mappings and stale cached refs.
+  Leave/Clear do not fetch a tracking target; default fork tracking remains
+  best-effort when the fork is unavailable.
+  Git combines branch.merge across scopes: worktree scope preserves compatible
+  shared routing without duplicating it, and rejects conflicting inherited
+  routing before changing config. Clearing shared routing requires repository
+  scope. Do not mask inherited merge refs with empty values. Reject routing from
+  other config files or command options instead of changing those sources.
+  ConfigurePush always writes push.default in worktree config, even with
+  repository-scoped branch routing, so other worktrees keep their push behavior.
+  Reject conflicting command overrides before changing branch routing.
 - Lifecycle hooks must resolve inside the project tree. Applications may
   supply Git and hook runners to retain their process limits and
   platform-specific execution policy. Prepared hooks retain the same validation

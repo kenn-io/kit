@@ -318,14 +318,15 @@ func createWorktreeOnDisk(ctx context.Context, opts CreateWorktreeOptions, prepa
 	if opts.Checkout == CheckoutIsolated {
 		addRunner = isolation.runner
 	}
-	if out, addErr := runLifecycleGitWithRunner(ctx, addRunner, root, args...); addErr != nil {
+	out, addErr := runLifecycleGitWithRunner(ctx, addRunner, root, args...)
+	if addErr != nil && !gitcmd.IsExitCode(addErr, 0) {
 		return failedWorktreeAdd(ctx, root, path, branch, mode == CheckoutNewBranch), classifyWorktreeGitError(out, addErr)
 	}
 	evidenceCtx := withLifecycleExecution(ctx, addRunner, lifecycleGitRunner(ctx), lifecycleHookRunner(ctx))
 	result, err := snapshotCreateWorktreeResult(evidenceCtx, root, path, branch, mode == CheckoutNewBranch)
 	result.checkoutDeferred = opts.NoCheckout
 	if err != nil {
-		return result.creationFailure(ctx, opts.FailureCleanup, err)
+		return result.creationFailure(ctx, opts.FailureCleanup, errors.Join(addErr, err))
 	}
 	// Checkout hooks may move HEAD. Keep the acquired commit and branch as the
 	// cleanup anchors, independently of later materialization and hooks.
@@ -333,6 +334,11 @@ func createWorktreeOnDisk(ctx context.Context, opts CreateWorktreeOptions, prepa
 	result.headRef = ""
 	if branch != "" {
 		result.headRef = "refs/heads/" + branch
+	}
+	if addErr != nil {
+		// A zero-exit add can still report an output-capture error. Retain
+		// both the error and the evidence needed for the selected cleanup.
+		return result.creationFailure(ctx, opts.FailureCleanup, addErr)
 	}
 	if opts.Checkout == CheckoutIsolated {
 		// Registration makes the directory identity available for case aliases.

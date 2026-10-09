@@ -67,9 +67,10 @@ const (
 
 // UpstreamPolicy selects tracking before any tracking mutation occurs.
 // Ref is a full refs/heads/ name on Remote. Leave never changes tracking config.
-// Track and Clear replace the selected branch's repository and worktree routing;
-// Scope chooses where Track writes the replacement. Routing inherited from other
-// configuration files is rejected rather than changing those files.
+// Worktree scope preserves compatible repository routing and rejects conflicts;
+// Clear rejects inherited repository routing that worktree config cannot mask.
+// Repository scope permits replacing routing in both writable scopes. Routing
+// inherited from other configuration files is rejected rather than changed.
 // Default preserves the entry point's ordinary tracking behavior.
 type UpstreamPolicy struct {
 	Action    UpstreamAction
@@ -77,7 +78,8 @@ type UpstreamPolicy struct {
 	Scope     UpstreamScope
 	Remote    string
 	Ref       string
-	// ConfigurePush also selects branch.pushRemote and push.default=upstream.
+	// ConfigurePush also selects branch.pushRemote and worktree-local
+	// push.default=upstream, regardless of the branch routing scope.
 	// Leave and an unmatched head never change either fetch or push routing.
 	ConfigurePush bool
 }
@@ -196,13 +198,30 @@ func (e lifecycleExecution) setUpstream(ctx context.Context, root, path string, 
 	if err := e.validateRoutingOrigins(ctx, path, strings.TrimSpace(string(rootCommon)), strings.TrimSpace(string(registration)), entries); err != nil {
 		return err
 	}
+	inherited := make(map[string]bool)
+	if policy.Scope == UpstreamWorktree {
+		for _, entry := range entries {
+			out, err := e.run(ctx, path, "config", "--local", "--null", "--get-all", entry.Key)
+			if gitcmd.IsExitCode(err, 1) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			for value := range strings.SplitSeq(strings.TrimSuffix(string(out), "\x00"), "\x00") {
+				if policy.Action == UpstreamClear || value != entry.Value {
+					return fmt.Errorf("%w: %s requires repository scope to change inherited routing", ErrInvalidWorktreeOptions, entry.Key)
+				}
+			}
+			inherited[entry.Key] = true
+		}
+	}
 	enabled, configErr := e.run(ctx, path, "config", "--type=bool", "--get", "extensions.worktreeConfig")
 	if configErr != nil && !gitcmd.IsExitCode(configErr, 1) {
 		return configErr
 	}
 	worktreeConfigEnabled := strings.TrimSpace(string(enabled)) == "true"
-	scope := "--local"
-	if policy.Scope == UpstreamWorktree {
+	if policy.Scope == UpstreamWorktree || configurePush {
 		// Shared core.bare/core.worktree require a caller-directed migration;
 		// never change their meaning merely to configure tracking.
 		checkCtx := withLifecycleExecution(ctx, e.runner, e.runGit, e.runHook)
@@ -212,7 +231,6 @@ func (e lifecycleExecution) setUpstream(ctx context.Context, root, path string, 
 		if _, err := e.run(ctx, root, "config", "extensions.worktreeConfig", "true"); err != nil {
 			return err
 		}
-		scope = "--worktree"
 		if !worktreeConfigEnabled {
 			// Enabling the extension can expose a previously inactive config file.
 			if err := e.validateRoutingOrigins(ctx, path, strings.TrimSpace(string(rootCommon)), strings.TrimSpace(string(registration)), entries); err != nil {
@@ -221,34 +239,32 @@ func (e lifecycleExecution) setUpstream(ctx context.Context, root, path string, 
 		}
 		worktreeConfigEnabled = true
 	}
-	oldScopes := []string{"--local"}
-	if worktreeConfigEnabled {
-		oldScopes = append(oldScopes, "--worktree")
+	scope := "--worktree"
+	oldScopes := []string{"--worktree"}
+	if policy.Scope == UpstreamRepository {
+		scope = "--local"
+		oldScopes = []string{"--local"}
+		if worktreeConfigEnabled {
+			oldScopes = append(oldScopes, "--worktree")
+		}
 	}
 	for _, entry := range entries {
-		// Git combines branch.merge across scopes. Neither a new value nor an
-		// empty value masks an inherited target. Remove old branch routing
-		// from both writable scopes before recording the selected policy.
+		// Git combines branch.merge across scopes. Preserve compatible shared
+		// entries without duplicating them in worktree config.
 		for _, oldScope := range oldScopes {
 			_, err := e.run(ctx, path, "config", oldScope, "--unset-all", entry.Key)
 			if err != nil && !gitcmd.IsExitCode(err, 5) {
 				return err
 			}
 		}
-		if policy.Action == UpstreamTrack {
+		if policy.Action == UpstreamTrack && !inherited[entry.Key] {
 			if _, err := e.run(ctx, path, "config", scope, "--replace-all", entry.Key, entry.Value); err != nil {
 				return err
 			}
 		}
 	}
 	if configurePush {
-		if scope == "--local" && worktreeConfigEnabled {
-			_, err := e.run(ctx, path, "config", "--worktree", "--unset-all", "push.default")
-			if err != nil && !gitcmd.IsExitCode(err, 5) {
-				return err
-			}
-		}
-		if _, err := e.run(ctx, path, "config", scope, "--replace-all", "push.default", "upstream"); err != nil {
+		if _, err := e.run(ctx, path, "config", "--worktree", "--replace-all", "push.default", "upstream"); err != nil {
 			return err
 		}
 		out, err := e.run(ctx, path, "config", "--get", "push.default")

@@ -16,10 +16,10 @@ const maxLinks = 255
 // EvalSymlinks returns the cleaned, absolute form of path with symbolic links
 // and Windows directory junctions resolved.
 //
-// Without a reparse point anywhere in the path, and on every platform other
-// than Windows, the result is identical to filepath.EvalSymlinks, including
-// its volume case normalization. filepath.EvalSymlinks still owns that
-// canonicalization here; this package only decides what it is handed.
+// On non-Windows platforms the result is identical to filepath.EvalSymlinks.
+// On Windows, parent components are cleaned first to match native path opening.
+// Without a reparse point, that normalized path is handed to filepath.EvalSymlinks,
+// which still owns canonicalization, including volume case normalization.
 //
 // On Windows the difference is deliberate. A directory junction is a reparse
 // point tagged IO_REPARSE_TAG_MOUNT_POINT, and Go 1.23 stopped reporting it as
@@ -44,13 +44,17 @@ const maxLinks = 255
 // partial rewrite.
 //
 // A path that does not exist, or that has a non-directory element, reports the
-// same error filepath.EvalSymlinks reports for the caller's own path.
+// same error filepath.EvalSymlinks reports after any Windows normalization.
 func EvalSymlinks(path string) (string, error) {
+	if runtime.GOOS == "windows" && path != "" {
+		// Win32 normalizes parent components before opening the path.
+		path = filepath.Clean(path)
+	}
 	resolved, err := filepath.EvalSymlinks(path)
-	if runtime.GOOS != "windows" {
+	if runtime.GOOS != "windows" || path == "" {
 		return resolved, err
 	}
-	junctionFree, followed, resolveErr := resolveReparsePoints(path)
+	junctionFree, followed, resolveErr := resolveReparsePoints(path, false)
 	if resolveErr != nil || !followed {
 		return resolved, err
 	}
@@ -63,11 +67,13 @@ func EvalSymlinks(path string) (string, error) {
 // EvalSymlinksAllowMissing resolves existing symbolic links and Windows junctions
 // to an absolute path, retaining any missing target or trailing components.
 // Unlike EvalSymlinks, it can compare paths before their files are created.
+// It follows links before parent components on every platform; on Windows this
+// is a conservative containment check, not the native path-opening order.
 // Cycles, inaccessible paths, and non-directory parent components still fail.
 // Parent traversal after a missing component also fails: that component could
 // become a link, so its parent cannot be determined before it exists.
 func EvalSymlinksAllowMissing(path string) (string, error) {
-	resolved, _, err := resolveReparsePoints(path)
+	resolved, _, err := resolveReparsePoints(path, true)
 	if err != nil {
 		return "", err
 	}
@@ -99,7 +105,7 @@ func EvalSymlinksAllowMissing(path string) (string, error) {
 // reparse point os.Readlink can read until no element is one. It reports
 // whether it followed at least one, so callers can tell a junction-free path
 // from a resolved one.
-func resolveReparsePoints(path string) (string, bool, error) {
+func resolveReparsePoints(path string, preserveParents bool) (string, bool, error) {
 	absolute, err := absoluteWithoutCleaning(path)
 	if err != nil {
 		return "", false, err
@@ -107,6 +113,9 @@ func resolveReparsePoints(path string) (string, bool, error) {
 	current := absolute
 	followed := false
 	for range maxLinks {
+		if !preserveParents {
+			current = filepath.Clean(current)
+		}
 		next, ok, err := followFirstReparsePoint(current)
 		if err != nil {
 			return "", false, err
