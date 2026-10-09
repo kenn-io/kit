@@ -2,7 +2,7 @@ package contextio
 
 import (
 	"context"
-	"io"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -12,20 +12,16 @@ import (
 func TestReaderStopsAfterCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	source := &cancelingReader{cancel: cancel}
-	_, err := io.Copy(io.Discard, &Reader{Context: ctx, Reader: source})
+	source := strings.NewReader("ab")
+	reader := &Reader{Context: ctx, Reader: source}
+	buffer := make([]byte, 1)
+	n, err := reader.Read(buffer)
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+	assert.Equal(t, byte('a'), buffer[0])
+	cancel()
+	n, err = reader.Read(buffer)
 	require.ErrorIs(t, err, context.Canceled)
-	assert.Equal(t, 1, source.reads)
-}
-
-type cancelingReader struct {
-	cancel context.CancelFunc
-	reads  int
-}
-
-func (r *cancelingReader) Read(p []byte) (int, error) {
-	r.reads++
-	p[0] = '#'
-	r.cancel()
-	return 1, nil
+	assert.Zero(t, n)
+	assert.Equal(t, 1, source.Len())
 }

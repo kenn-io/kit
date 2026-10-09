@@ -14,7 +14,8 @@ specific application or forge workflow.
   direct call is the behavior being tested.
 - Pass `context.Context` through Git operations that can block.
 - Runner copies share trust caching for the first observed identity. Evaluate
-  includes fresh and apply trust edits on the next command.
+  includes fresh and apply trust edits on the next command. Use native scoped
+  reads whenever `GIT_CONFIG` is set, including an empty value.
 - Cancel the whole child process tree for non-interactive Git commands, and
   bound pipe draining after cancellation. Interactive Unix Git must stay in
   the caller's terminal process group.

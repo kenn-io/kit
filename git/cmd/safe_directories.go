@@ -116,6 +116,9 @@ func safeDirectoryScopes(env []string) []string {
 }
 
 func configPathsReusable(env []string) bool {
+	if _, set := envValue(env, "GIT_CONFIG"); set {
+		return false
+	}
 	if !gitEnvBool(env, "GIT_CONFIG_NOSYSTEM") {
 		system, _ := envValue(env, "GIT_CONFIG_SYSTEM")
 		if strings.ContainsAny(system, "\r\n") {

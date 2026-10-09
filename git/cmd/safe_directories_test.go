@@ -164,6 +164,43 @@ func trustHomeShare(t *testing.T, env []string) ([]string, string, string) {
 	return env, share, profile
 }
 
+func TestCachedTrustWithGitConfig(t *testing.T) {
+	extendTrustProbeTimeout(t)
+	for _, mode := range []string{"file", "empty"} {
+		t.Run(mode, func(t *testing.T) {
+			dir := t.TempDir()
+			config, trace := filepath.Join(dir, "global"), filepath.Join(dir, "trace")
+			require.NoError(t, os.WriteFile(config, []byte("[safe]\n directory = *\n"), 0o600))
+			runner := New()
+			runner.Env = safeDirectoryTestEnv(t, config)
+			init := gitCommand(t.Context(), true, "init", dir)
+			init.Env = runner.Env
+			require.NoError(t, init.Run())
+			control := New()
+			control.Env = runner.Env
+			trusted := control.Command(t.Context(), dir, "status")
+			trusted.Env = append(trusted.Env, "GIT_TEST_ASSUME_DIFFERENT_OWNER=1")
+			require.NoError(t, trusted.Run())
+			value := config
+			if mode == "empty" {
+				value = ""
+			}
+			runner.Env = append(runner.Env, "GIT_CONFIG="+value, "GIT_TRACE="+filepath.ToSlash(trace))
+			checkTrace := trustTrace(t, trace)
+			for range 3 {
+				cmd := runner.Command(t.Context(), dir, "status")
+				assert.Empty(t, gitConfigValue(strings.Join(cmd.Env, "\n"), "safe.directory"))
+				checkTrace(2)
+				cmd.Env = append(cmd.Env, "GIT_TEST_ASSUME_DIFFERENT_OWNER=1")
+				output, err := cmd.CombinedOutput()
+				require.Error(t, err)
+				assert.Contains(t, string(output), "detected dubious ownership")
+				checkTrace(0)
+			}
+		})
+	}
+}
+
 func TestCachedTrust(t *testing.T) {
 	extendTrustProbeTimeout(t)
 	for _, tc := range []struct {
@@ -202,10 +239,11 @@ func TestCachedTrust(t *testing.T) {
 			check(other, "/other", baseline)
 			check(runner, "/trusted", 0)
 			var calls sync.WaitGroup
-			for range 8 {
+			for worker := range 8 {
 				calls.Go(func() {
-					for range 10 {
-						assert.Equal(t, []string{"/trusted"}, runner.trust.read(t.Context(), runner.Env, dir))
+					for i := worker; i < 1369; i += 8 {
+						cmd := runner.Command(t.Context(), dir, "status")
+						assert.Equal(t, "/trusted", gitConfigValue(strings.Join(cmd.Env, "\n"), "safe.directory"))
 					}
 				})
 			}
@@ -316,11 +354,9 @@ import ("os"; "os/exec")
 func main() {
  file, err := os.OpenFile(os.Getenv("TRUST_TEST_TRACE"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
  if err != nil { os.Exit(2) }; file.WriteString("start\n"); file.Close()
- cmd := exec.Command(os.Getenv("TRUST_TEST_GIT"), os.Args[1:]...)
- cmd.Stdin, cmd.Stdout, cmd.Stderr, cmd.Env = os.Stdin, os.Stdout, os.Stderr, os.Environ()
- if err := cmd.Run(); err != nil { if exit, ok := err.(*exec.ExitError); ok { os.Exit(exit.ExitCode()) }; os.Exit(2) }
+ forwardGit()
 }
-`)
+`+trustGitForwarder)
 		t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 		runner := New()
 		runner.Env = append(safeDirectoryTestEnv(t, config), "TRUST_TEST_TRACE="+trace, "TRUST_TEST_GIT="+realGit)
@@ -448,6 +484,14 @@ func main() {
 	})
 }
 
+const trustGitForwarder = `
+func forwardGit() {
+ cmd := exec.Command(os.Getenv("TRUST_TEST_GIT"), os.Args[1:]...)
+ cmd.Stdin, cmd.Stdout, cmd.Stderr, cmd.Env = os.Stdin, os.Stdout, os.Stderr, os.Environ()
+ if err := cmd.Run(); err != nil { if exit, ok := err.(*exec.ExitError); ok { os.Exit(exit.ExitCode()) }; os.Exit(2) }
+}
+`
+
 func coordinatedTrustGit(t *testing.T) (Runner, chan chan struct{}) {
 	t.Helper()
 	extendTrustProbeTimeout(t)
@@ -470,12 +514,10 @@ func main() {
   response, err := http.Get(os.Getenv("TRUST_TEST_URL"))
   if err != nil { os.Exit(2) }; response.Body.Close()
  }
- cmd := exec.Command(os.Getenv("TRUST_TEST_GIT"), os.Args[1:]...)
- cmd.Stdin, cmd.Stdout, cmd.Stderr, cmd.Env = os.Stdin, os.Stdout, os.Stderr, os.Environ()
- if err := cmd.Run(); err != nil { if exit, ok := err.(*exec.ExitError); ok { os.Exit(exit.ExitCode()) }; os.Exit(2) }
+ forwardGit()
  if len(os.Args) > 1 && (os.Args[1] == "config" && os.Getenv("TRUST_TEST_BLOCK_AFTER") == "1" || os.Args[1] == "var" && os.Getenv("TRUST_TEST_BLOCK_VAR_AFTER") == "1") { response, err := http.Get(os.Getenv("TRUST_TEST_URL")); if err != nil { os.Exit(2) }; response.Body.Close() }
 }
-`)
+`+trustGitForwarder)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	config := filepath.Join(t.TempDir(), "gitconfig")
 	require.NoError(t, os.WriteFile(config, []byte("[safe]\n directory = /trusted\n"), 0o600))
