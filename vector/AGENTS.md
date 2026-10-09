@@ -16,6 +16,11 @@ pipeline. Preserve these invariants when changing it.
   `vec0 MATCH`, pgvector `<=>`, and duckdb `array_distance` belong behind
   `QueryGeneration`, never in the core flows.
 
+- `sqlitevec` never imports a SQLite driver or extension binding. Callers
+  register the extension for their chosen driver; CGO settings do not choose
+  a driver. Keep the modernc consumer test in a separate package so a mattn
+  test import cannot conceal a link dependency.
+
 ## Encoded vectors must be usable for cosine distance
 
 - Blank text is never sent to an encoder. `Split` omits blank windows so `Fill`
