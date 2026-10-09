@@ -6,7 +6,17 @@
 // and file format used by each harness. This lets applications describe one set
 // of lifecycle hooks while support for new agents stays centralized in kit.
 // Profiles are provided for Claude Code, Codex, GitHub Copilot CLI, Cursor,
-// Factory Droid, Gemini CLI, Hermes Agent, and Qwen Code.
+// Factory Droid, Gemini CLI, Hermes Agent, Pi, and Qwen Code. Pi has no
+// command-hook config, so its profile writes a kit-owned extension module that
+// runs the registered commands. That module reports only from Pi's interactive
+// terminal, so print, json, and rpc runs, subagents included, stay silent. Its
+// SessionEnd fires only when another session replaces the current one (new,
+// resume, or fork), never on quit or reload. The module reports an event only
+// once Pi has saved the session file, so every reported ID resumes: a new
+// session's SessionStart and first prompt wait for that save, and a
+// --no-session run reports nothing. A root index.ts, index.js, or package.json
+// pi.extensions in Pi's extensions directory stops Pi from loading the module.
+// It needs Pi 0.80.4 or later.
 //
 // Applications identify their hooks with a stable marker embedded in the
 // command. Reinstalling replaces commands carrying that marker even when the
