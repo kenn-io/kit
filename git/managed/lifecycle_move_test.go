@@ -26,6 +26,8 @@ func TestMoveWorktreeReturnsRollbackEvidence(t *testing.T) {
 			require.NoError(t, os.WriteFile(filepath.Join(source, "retained"), []byte("prepared content"), 0o600))
 			before, err := os.Stat(filepath.Join(source, "retained"))
 			require.NoError(t, err)
+			// Windows loads file identity lazily; capture it before the old path moves.
+			require.True(t, os.SameFile(before, before))
 			result, err := MoveWorktreeOnDisk(t.Context(), MoveWorktreeOptions{ProjectRoot: root, Source: source, Path: destination, Runner: lifecycleTestRunner(t)})
 			require.NoError(t, err)
 			require.Equal(t, destination, result.Path)
