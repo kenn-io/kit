@@ -22,8 +22,11 @@ type safeDirectoryScope struct {
 	paths       []string
 	fingerprint [32]byte
 	values      []string
-	valid       bool
-	native      bool
+	// valid reports that fingerprint and values describe the scope's file.
+	valid bool
+	// readWithGit makes the next read ask Git directly, because the scope has
+	// includes or its last read failed.
+	readWithGit bool
 }
 
 type safeDirectoryCache struct {
@@ -40,6 +43,9 @@ type safeDirectoryFilesystemAdmission struct {
 	ownerEnded <-chan struct{}
 }
 
+// evaluateFilesystem runs evaluate under the process-wide admission and a
+// probe timeout. It returns false when the check was abandoned; evaluate may
+// then still be running, so callers must not read anything it writes.
 func evaluateFilesystem(ctx context.Context, evaluate func(context.Context)) bool {
 	ctx, cancel := context.WithTimeout(ctx, safeDirectoryProbeTimeout)
 	defer cancel()
@@ -93,6 +99,15 @@ type safeDirectorySnapshot struct {
 	scopes     map[string]safeDirectoryScope
 }
 
+// trustObservation is the per-call view of what a cached snapshot depends on.
+type trustObservation struct {
+	identity       [32]byte
+	executable     os.FileInfo
+	sameExecutable bool
+	homeAvailable  bool
+	homeApplicable bool
+}
+
 func safeDirectoryScopes(env []string) []string {
 	if gitEnvBool(env, "GIT_CONFIG_NOSYSTEM") {
 		return []string{"global"}
@@ -115,14 +130,22 @@ func configPathsReusable(env []string) bool {
 		paths = []string{home, xdg}
 	}
 	for _, path := range paths {
-		if strings.ContainsAny(path, "\r\n") {
-			return false
-		}
-		if slices.Contains(strings.FieldsFunc(path, func(r rune) bool { return r == '/' || r == '\\' && os.PathSeparator == '\\' }), "..") {
+		if strings.ContainsAny(path, "\r\n") || hasParentComponent(path) {
 			return false
 		}
 	}
 	return true
+}
+
+func hasParentComponent(path string) bool {
+	isSeparator := func(r rune) bool {
+		return r == '/' || os.PathSeparator == '\\' && r == '\\'
+	}
+	return slices.Contains(strings.FieldsFunc(path, isSeparator), "..")
+}
+
+func isLineBreak(r rune) bool {
+	return r == '\n' || r == '\r'
 }
 
 func windowsHomeAvailable(ctx context.Context, env []string) (available, applicable bool) {
@@ -143,131 +166,34 @@ func windowsHomeAvailable(ctx context.Context, env []string) (available, applica
 	return info.IsDir(), true
 }
 
-// read reuses include-free scopes while their root bytes stay unchanged; includes always run Git.
+// read reuses include-free scopes while their root bytes stay unchanged;
+// includes always run Git.
 func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string) []string {
-	if c == nil {
+	if c == nil || !configPathsReusable(env) {
 		return readSafeDirectories(ctx, env, dir)
-	}
-	fresh := func() []string {
-		return readSafeDirectories(ctx, env, dir)
-	}
-	if !configPathsReusable(env) {
-		return fresh()
 	}
 	c.mu.Lock()
 	previous := c.current
 	c.mu.Unlock()
-	var path string
-	var info os.FileInfo
-	var err error
-	var homeAvailable, homeApplicable bool
-	var sameFile bool
-	if !evaluateFilesystem(ctx, func(checkCtx context.Context) {
-		if checkCtx.Err() != nil {
-			return
-		}
-		path = gitCommand(checkCtx, true).Path
-		if checkCtx.Err() != nil {
-			return
-		}
-		info, err = os.Stat(path)
-		if checkCtx.Err() != nil || err != nil {
-			return
-		}
-		homeAvailable, homeApplicable = windowsHomeAvailable(checkCtx, env)
-		if checkCtx.Err() == nil && previous != nil {
-			sameFile = os.SameFile(info, previous.executable)
-		}
-	}) || err != nil || info == nil {
-		return fresh()
+	observed, ok := observeTrust(ctx, env, previous)
+	if !ok {
+		return readSafeDirectories(ctx, env, dir)
 	}
-	homeUnchanged := func() bool {
-		if !homeApplicable {
-			return true
-		}
-		var available bool
-		return evaluateFilesystem(ctx, func(checkCtx context.Context) { available, _ = windowsHomeAvailable(checkCtx, env) }) && available == homeAvailable
-	}
-	identity := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%d\x00%s\x00%t", path, info.Size(), info.ModTime().UnixNano(), strings.Join(env, "\x00"), homeAvailable)))
-	if previous == nil {
-		values := readSafeDirectories(ctx, env, dir)
-		if ctx.Err() != nil {
-			return nil
-		}
-		if !homeUnchanged() {
-			return fresh()
-		}
-		c.mu.Lock()
-		if c.current == nil && ctx.Err() == nil {
-			c.current = &safeDirectorySnapshot{identity: identity, executable: info}
-		}
-		c.mu.Unlock()
-		return values
-	}
-	if identity != previous.identity || !sameFile {
-		return fresh()
-	}
-	next := &safeDirectorySnapshot{identity: identity, executable: info, scopes: make(map[string]safeDirectoryScope)}
-	if previous.scopes != nil {
-		maps.Copy(next.scopes, previous.scopes)
-	} else {
-		for _, scope := range safeDirectoryScopes(env) {
-			out, err := safeDirectoryOutput(ctx, env, dir, "var", "GIT_CONFIG_"+strings.ToUpper(scope))
-			if err != nil {
-				return fresh()
-			}
-			paths := strings.TrimSuffix(string(out), "\n")
-			next.scopes[scope] = safeDirectoryScope{paths: strings.FieldsFunc(strings.TrimRight(paths, "\r\n"), func(r rune) bool { return r == '\n' || r == '\r' })}
-			if scope == "global" && homeApplicable {
-				home, _ := envValue(env, "USERPROFILE")
-				if homeAvailable {
-					drive, _ := envValue(env, "HOMEDRIVE")
-					path, _ := envValue(env, "HOMEPATH")
-					home = drive + path
-				}
-				expected := filepath.Join(home, ".gitconfig")
-				discovered := next.scopes[scope].paths
-				if !filepath.IsAbs(expected) || len(discovered) != 2 || filepath.ToSlash(filepath.Clean(discovered[1])) != filepath.ToSlash(filepath.Clean(expected)) {
-					return fresh()
-				}
-			}
-		}
-	}
+	next := &safeDirectorySnapshot{identity: observed.identity, executable: observed.executable}
 	var values []string
-	for _, scope := range safeDirectoryScopes(env) {
-		s := next.scopes[scope]
-		var cached safeDirectoryScope
-		var cacheErr error
-		if s.native {
-			cached = safeDirectoryScope{paths: s.paths, native: true}
-		} else if !evaluateFilesystem(ctx, func(checkCtx context.Context) {
-			cached, cacheErr = readSafeDirectorySnapshot(checkCtx, env, dir, scope, s)
-		}) {
-			return fresh()
+	if previous == nil {
+		values = readSafeDirectories(ctx, env, dir)
+	} else {
+		next.scopes, values, ok = reuseSafeDirectoryScopes(ctx, env, dir, observed, previous)
+		if !ok {
+			return readSafeDirectories(ctx, env, dir)
 		}
-		entries := cached.values
-		if cacheErr != nil || cached.native {
-			if cacheErr != nil {
-				cached = safeDirectoryScope{paths: s.paths}
-			}
-			var probeErr error
-			var includes bool
-			entries, includes, probeErr = readSafeDirectoryScope(ctx, env, dir, scope)
-			if probeErr != nil && !IsExitCode(probeErr, 1) {
-				cached = safeDirectoryScope{paths: s.paths, native: true}
-				next.scopes[scope] = cached
-				continue
-			}
-			cached = safeDirectoryScope{paths: s.paths, native: includes}
-		}
-		next.scopes[scope] = cached
-		values = append(values, entries...)
 	}
 	if ctx.Err() != nil {
 		return nil
 	}
-	if !homeUnchanged() {
-		return fresh()
+	if !observed.homeUnchanged(ctx, env) {
+		return readSafeDirectories(ctx, env, dir)
 	}
 	c.mu.Lock()
 	if c.current == previous && ctx.Err() == nil {
@@ -277,10 +203,150 @@ func (c *safeDirectoryCache) read(ctx context.Context, env []string, dir string)
 	return values
 }
 
+// reuseSafeDirectoryScopes reads every scope through the previous snapshot. It
+// returns false when the snapshot does not apply or a check was abandoned.
+func reuseSafeDirectoryScopes(
+	ctx context.Context,
+	env []string,
+	dir string,
+	observed trustObservation,
+	previous *safeDirectorySnapshot,
+) (map[string]safeDirectoryScope, []string, bool) {
+	if observed.identity != previous.identity || !observed.sameExecutable {
+		return nil, nil, false
+	}
+	scopes, ok := nextSafeDirectoryScopes(ctx, env, dir, observed, previous)
+	if !ok {
+		return nil, nil, false
+	}
+	var values []string
+	for _, scope := range safeDirectoryScopes(env) {
+		var entries []string
+		scopes[scope], entries, ok = readCachedScope(ctx, env, dir, scope, scopes[scope])
+		if !ok {
+			return nil, nil, false
+		}
+		values = append(values, entries...)
+	}
+	return scopes, values, true
+}
+
+// observeTrust identifies the Git executable, environment, and Windows home
+// selection that cached scopes depend on.
+func observeTrust(
+	ctx context.Context, env []string, previous *safeDirectorySnapshot,
+) (trustObservation, bool) {
+	var observed trustObservation
+	var path string
+	var err error
+	if !evaluateFilesystem(ctx, func(checkCtx context.Context) {
+		if checkCtx.Err() != nil {
+			return
+		}
+		path = gitCommand(checkCtx, true).Path
+		if checkCtx.Err() != nil {
+			return
+		}
+		observed.executable, err = os.Stat(path)
+		if checkCtx.Err() != nil || err != nil {
+			return
+		}
+		observed.homeAvailable, observed.homeApplicable = windowsHomeAvailable(checkCtx, env)
+		if checkCtx.Err() == nil && previous != nil {
+			observed.sameExecutable = os.SameFile(observed.executable, previous.executable)
+		}
+	}) || err != nil || observed.executable == nil {
+		return trustObservation{}, false
+	}
+	info := observed.executable
+	observed.identity = sha256.Sum256(fmt.Appendf(nil, "%s\x00%d\x00%d\x00%s\x00%t",
+		path, info.Size(), info.ModTime().UnixNano(), strings.Join(env, "\x00"), observed.homeAvailable))
+	return observed, true
+}
+
+func (o trustObservation) homeUnchanged(ctx context.Context, env []string) bool {
+	if !o.homeApplicable {
+		return true
+	}
+	var available bool
+	return evaluateFilesystem(ctx, func(checkCtx context.Context) {
+		available, _ = windowsHomeAvailable(checkCtx, env)
+	}) && available == o.homeAvailable
+}
+
+// nextSafeDirectoryScopes copies the previous scopes, discovering their file
+// paths with git var on the first reuse.
+func nextSafeDirectoryScopes(
+	ctx context.Context,
+	env []string,
+	dir string,
+	observed trustObservation,
+	previous *safeDirectorySnapshot,
+) (map[string]safeDirectoryScope, bool) {
+	if previous.scopes != nil {
+		return maps.Clone(previous.scopes), true
+	}
+	scopes := make(map[string]safeDirectoryScope)
+	for _, scope := range safeDirectoryScopes(env) {
+		out, err := safeDirectoryOutput(ctx, env, dir, "var", "GIT_CONFIG_"+strings.ToUpper(scope))
+		if err != nil {
+			return nil, false
+		}
+		paths := strings.FieldsFunc(string(out), isLineBreak)
+		if scope == "global" && observed.homeApplicable &&
+			!discoveredWindowsHome(env, observed.homeAvailable, paths) {
+			return nil, false
+		}
+		scopes[scope] = safeDirectoryScope{paths: paths}
+	}
+	return scopes, true
+}
+
+// discoveredWindowsHome reports whether Git chose the home directory that
+// Git for Windows selects from HOMEDRIVE/HOMEPATH or USERPROFILE.
+func discoveredWindowsHome(env []string, homeAvailable bool, paths []string) bool {
+	home, _ := envValue(env, "USERPROFILE")
+	if homeAvailable {
+		drive, _ := envValue(env, "HOMEDRIVE")
+		path, _ := envValue(env, "HOMEPATH")
+		home = drive + path
+	}
+	expected := filepath.Join(home, ".gitconfig")
+	return filepath.IsAbs(expected) && len(paths) == 2 &&
+		filepath.ToSlash(filepath.Clean(paths[1])) == filepath.ToSlash(filepath.Clean(expected))
+}
+
+// readCachedScope returns the scope's next cache state and its entries. It
+// returns false when the filesystem check was abandoned.
+func readCachedScope(
+	ctx context.Context, env []string, dir, scope string, previous safeDirectoryScope,
+) (safeDirectoryScope, []string, bool) {
+	if !previous.readWithGit {
+		var cached safeDirectoryScope
+		var err error
+		if !evaluateFilesystem(ctx, func(checkCtx context.Context) {
+			cached, err = readSafeDirectorySnapshot(checkCtx, env, dir, scope, previous)
+		}) {
+			return safeDirectoryScope{}, nil, false
+		}
+		if err == nil && !cached.readWithGit {
+			return cached, cached.values, true
+		}
+	}
+	entries, includes, err := readSafeDirectoryScope(ctx, env, dir, scope)
+	if err != nil && !IsExitCode(err, 1) {
+		return safeDirectoryScope{paths: previous.paths, readWithGit: true}, nil, true
+	}
+	return safeDirectoryScope{paths: previous.paths, readWithGit: includes}, entries, true
+}
+
 const safeDirectoryKeys = `^(safe\.directory|include\.path|includeif\..*\.path)$`
 
-func readSafeDirectoryScope(ctx context.Context, env []string, dir, scope string) ([]string, bool, error) {
-	out, err := safeDirectoryOutput(ctx, env, dir, "config", "--"+scope, "--includes", "-z", "--get-regexp", safeDirectoryKeys)
+func readSafeDirectoryScope(
+	ctx context.Context, env []string, dir, scope string,
+) ([]string, bool, error) {
+	out, err := safeDirectoryOutput(ctx, env, dir,
+		"config", "--"+scope, "--includes", "-z", "--get-regexp", safeDirectoryKeys)
 	entries, includes := decodeSafeDirectoryOutput(out)
 	return entries, includes, err
 }
@@ -302,7 +368,9 @@ func decodeSafeDirectoryOutput(out []byte) ([]string, bool) {
 	return entries, includes
 }
 
-func safeDirectoryOutput(ctx context.Context, env []string, dir string, args ...string) ([]byte, error) {
+func safeDirectoryOutput(
+	ctx context.Context, env []string, dir string, args ...string,
+) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, safeDirectoryProbeTimeout)
 	defer cancel()
 	cmd := gitCommand(ctx, true, args...)
@@ -314,7 +382,9 @@ func safeDirectoryOutput(ctx context.Context, env []string, dir string, args ...
 	return out, nil
 }
 
-func readSafeDirectorySnapshot(ctx context.Context, env []string, dir, scope string, previous safeDirectoryScope) (safeDirectoryScope, error) {
+func readSafeDirectorySnapshot(
+	ctx context.Context, env []string, dir, scope string, previous safeDirectoryScope,
+) (safeDirectoryScope, error) {
 	next := safeDirectoryScope{paths: previous.paths}
 	expected := 1
 	if _, override := envValue(env, "GIT_CONFIG_GLOBAL"); scope == "global" && !override {
@@ -380,7 +450,8 @@ func readSafeDirectorySnapshot(ctx context.Context, env []string, dir, scope str
 	}
 	parseCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	cmd := gitCommand(parseCtx, true, "config", "--no-includes", "--file", "-", "-z", "--get-regexp", safeDirectoryKeys)
+	cmd := gitCommand(parseCtx, true,
+		"config", "--no-includes", "--file", "-", "-z", "--get-regexp", safeDirectoryKeys)
 	cmd.Env, cmd.Dir = env, dir
 	var output bytes.Buffer
 	cmd.Stdout = &output
@@ -409,7 +480,7 @@ func readSafeDirectorySnapshot(ctx context.Context, env []string, dir, scope str
 		return next, waitErr
 	}
 	next.fingerprint = fingerprintSafeDirectoryBytes(path, size, hash.Sum(nil))
-	next.values, next.native = decodeSafeDirectoryOutput(output.Bytes())
+	next.values, next.readWithGit = decodeSafeDirectoryOutput(output.Bytes())
 	next.valid = true
 	return next, nil
 }

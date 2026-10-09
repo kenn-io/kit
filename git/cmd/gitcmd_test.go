@@ -304,7 +304,30 @@ func TestCommandEnvForwardsSafeDirectory(t *testing.T) {
 			runner.DisableSafeDirectoryForward = tc.disabled
 			cmd := runner.Command(t.Context(), "", "status")
 			assert.Equal(t, tc.want, gitConfigValue(strings.Join(cmd.Env, "\n"), "safe.directory"))
+			assert.Contains(t, cmd.Env, "GIT_CONFIG_GLOBAL="+nullGlobalConfigPath(),
+				"the sanitized environment must still hide the user's global config")
 		})
+	}
+}
+
+func TestCommandEnvReadsSafeDirectoryFromRunnerEnv(t *testing.T) {
+	dir := t.TempDir()
+	trusted := filepath.Join(dir, "trusted-gitconfig")
+	require.NoError(t, os.WriteFile(trusted, []byte("[safe]\n directory = /trusted/repo\n"), 0o600))
+	empty := filepath.Join(dir, "empty-gitconfig")
+	require.NoError(t, os.WriteFile(empty, nil, 0o600))
+	trustedRunner := New()
+	trustedRunner.Env = safeDirectoryTestEnv(t, trusted)
+	emptyRunner := New()
+	emptyRunner.Env = safeDirectoryTestEnv(t, empty)
+	forwarded := func(runner Runner) string {
+		cmd := runner.Command(t.Context(), "", "status")
+		return gitConfigValue(strings.Join(cmd.Env, "\n"), "safe.directory")
+	}
+	// Repeat past cache warmup so reused entries cannot leak between runners.
+	for range 3 {
+		assert.Equal(t, "/trusted/repo", forwarded(trustedRunner))
+		assert.Empty(t, forwarded(emptyRunner))
 	}
 }
 
