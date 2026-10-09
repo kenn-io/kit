@@ -548,7 +548,7 @@ func TestWorktreeTrackingPreservesExistingBranchUpstream(t *testing.T) {
 }
 
 func TestForkImportFetchesExplicitConditionalUpstream(t *testing.T) {
-	for _, scenario := range []string{"matching", "stale", "mismatched", "leave", "clear"} {
+	for _, scenario := range []string{"matching", "stale", "mismatched", "leave", "clear", "branch config", "branch config deferred"} {
 		t.Run(scenario, func(t *testing.T) {
 			origin, clone := initOriginAndClone(t)
 			fork := filepath.Join(t.TempDir(), "fork")
@@ -568,8 +568,15 @@ func TestForkImportFetchesExplicitConditionalUpstream(t *testing.T) {
 				start = head + "^"
 			}
 			lifecycleGit(t, selected, "branch", "selected-topic", start)
-			lifecycleGit(t, clone, "remote", "add", "selected", selected)
-			lifecycleGit(t, clone, "config", "remote.selected.fetch", "+refs/heads/*:refs/tracked/selected/*")
+			if strings.HasPrefix(scenario, "branch config") {
+				external := filepath.Join(t.TempDir(), "tracking.config")
+				lifecycleGit(t, clone, "config", "--file", external, "remote.selected.url", selected)
+				lifecycleGit(t, clone, "config", "--file", external, "remote.selected.fetch", "+refs/heads/*:refs/tracked/selected/*")
+				lifecycleGit(t, clone, "config", "includeIf.onbranch:topic.path", external)
+			} else {
+				lifecycleGit(t, clone, "remote", "add", "selected", selected)
+				lifecycleGit(t, clone, "config", "remote.selected.fetch", "+refs/heads/*:refs/tracked/selected/*")
+			}
 			if scenario == "stale" {
 				lifecycleGit(t, clone, "update-ref", "refs/tracked/selected/selected-topic", "HEAD")
 			}
@@ -583,11 +590,12 @@ func TestForkImportFetchesExplicitConditionalUpstream(t *testing.T) {
 			created, err := CreateWorktreeFromMergeRequest(t.Context(), MergeRequestWorktreeOptions{
 				ProjectRoot: clone, Path: filepath.Join(t.TempDir(), "checkout"), Branch: "topic", Runner: lifecycleTestRunner(t),
 				Number: 9, HeadBranch: "contribution", HeadRepoCloneURL: fork, ProjectRepoIdentity: origin,
-				Upstream: UpstreamPolicy{Action: action, Condition: TrackingIfHeadMatches, Remote: "selected", Ref: "refs/heads/selected-topic"},
+				NoCheckout: scenario == "branch config deferred",
+				Upstream:   UpstreamPolicy{Action: action, Condition: TrackingIfHeadMatches, Remote: "selected", Ref: "refs/heads/selected-topic"},
 			})
 			require.NoError(t, err)
 			assert.Equal(t, head, lifecycleGit(t, created.Path, "rev-parse", "HEAD"))
-			if scenario == "matching" || scenario == "stale" {
+			if scenario == "matching" || scenario == "stale" || strings.HasPrefix(scenario, "branch config") {
 				assert.Equal(t, "refs/tracked/selected/selected-topic", lifecycleGit(t, created.Path, "rev-parse", "--symbolic-full-name", "@{upstream}"))
 				assert.Equal(t, head, lifecycleGit(t, created.Path, "rev-parse", "@{upstream}"))
 			} else {
@@ -598,6 +606,75 @@ func TestForkImportFetchesExplicitConditionalUpstream(t *testing.T) {
 				_, _, err = lifecycleTestRunner(t).Run(t.Context(), clone, nil, "show-ref", "--verify", "--quiet", "refs/tracked/selected/selected-topic")
 				assert.True(t, gitcmd.IsExitCode(err, 1), "Leave and Clear must not fetch the requested tracking target")
 			}
+		})
+	}
+}
+
+func TestCreateCancellationRetainsCleanupEvidence(t *testing.T) {
+	for _, timing := range []string{"after add", "during snapshot"} {
+		for _, cleanup := range []FailureCleanup{CleanupAutomatic, CleanupDeferred} {
+			t.Run(timing+"/"+map[FailureCleanup]string{CleanupAutomatic: "automatic", CleanupDeferred: "deferred"}[cleanup], func(t *testing.T) {
+				root := initLifecycleRepo(t)
+				path := filepath.Join(t.TempDir(), "checkout")
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				added := false
+				created, err := CreateWorktreeOnDisk(ctx, CreateWorktreeOptions{
+					ProjectRoot: root, Path: path, Branch: "topic", Runner: lifecycleTestRunner(t), FailureCleanup: cleanup,
+					RunGit: func(commandCtx context.Context, runner gitcmd.Runner, dir string, args ...string) ([]byte, error) {
+						if added && timing == "during snapshot" {
+							cancel()
+						}
+						out, stderr, err := runner.Run(commandCtx, dir, nil, args...)
+						if err == nil && len(args) > 1 && args[0] == "worktree" && args[1] == "add" {
+							added = true
+							if timing == "after add" {
+								cancel()
+							}
+						}
+						return append(out, stderr...), err
+					},
+				})
+				require.True(t, added)
+				require.ErrorIs(t, err, context.Canceled)
+				require.NotErrorIs(t, err, ErrWorktreeCleanupIncomplete)
+				if cleanup == CleanupDeferred {
+					require.DirExists(t, path)
+					_, err = created.Rollback(t.Context())
+					require.NoError(t, err)
+				}
+				assert.NoDirExists(t, path)
+				_, _, err = lifecycleTestRunner(t).Run(t.Context(), root, nil, "show-ref", "--verify", "--quiet", "refs/heads/topic")
+				require.True(t, gitcmd.IsExitCode(err, 1))
+				_, err = CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+					ProjectRoot: root, Path: path, Branch: "topic", Runner: lifecycleTestRunner(t),
+				})
+				require.NoError(t, err, "creation can be retried after canceled acquisition is cleaned up")
+			})
+		}
+	}
+}
+
+func TestConditionalImportFetchFailureUsesCleanupPolicy(t *testing.T) {
+	for _, cleanup := range []FailureCleanup{CleanupAutomatic, CleanupDeferred} {
+		t.Run(map[FailureCleanup]string{CleanupAutomatic: "automatic", CleanupDeferred: "deferred"}[cleanup], func(t *testing.T) {
+			origin, clone := initOriginAndClone(t)
+			path := filepath.Join(t.TempDir(), "checkout")
+			created, err := CreateWorktreeFromMergeRequest(t.Context(), MergeRequestWorktreeOptions{
+				ProjectRoot: clone, Path: path, Branch: "topic", Runner: lifecycleTestRunner(t), FailureCleanup: cleanup,
+				Number: 1, HeadBranch: "main", HeadRepoCloneURL: origin, ProjectRepoIdentity: origin, NoCheckout: true,
+				Upstream: UpstreamPolicy{Action: UpstreamTrack, Condition: TrackingIfHeadMatches, Remote: "origin", Ref: "refs/heads/missing"},
+			})
+			require.True(t, gitcmd.IsExitCode(err, 128), "fetching a missing remote branch must fail: %v", err)
+			require.NotErrorIs(t, err, ErrWorktreeCleanupIncomplete)
+			if cleanup == CleanupDeferred {
+				require.DirExists(t, path)
+				_, err = created.Rollback(t.Context())
+				require.NoError(t, err)
+			}
+			assert.NoDirExists(t, path)
+			_, _, err = lifecycleTestRunner(t).Run(t.Context(), clone, nil, "show-ref", "--verify", "--quiet", "refs/heads/topic")
+			require.True(t, gitcmd.IsExitCode(err, 1))
 		})
 	}
 }

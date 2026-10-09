@@ -83,7 +83,9 @@ specific application or forge workflow.
   treating missing tracked files as edits. Preserve actual file or index changes.
   A successful Git exit with an output-capture error still acquired the worktree:
   capture ownership evidence, retain the error, and apply the selected cleanup
-  policy. A failed or unknown process outcome grants no cleanup authority.
+  policy. Capture evidence after confirmed success with a bounded context
+  independent of caller cancellation, then report cancellation and apply cleanup.
+  A failed or unknown process outcome grants no cleanup authority.
 - Configure merge-request tracking in worktree-scoped Git configuration so
   removing a worktree does not leave branch routing behind in shared config.
   Explicit upstream policy chooses configuration scope and whether to configure
@@ -93,7 +95,10 @@ specific application or forge workflow.
   Resolve remote URLs and fetch mappings from the destination worktree's effective
   configuration; a linked worktree can define its own remotes.
   Explicit conditional import tracking fetches the requested remote branch
-  before comparing tips, including custom fetch mappings and stale cached refs.
+  from the registered, isolated destination before comparing tips. Branch- and
+  directory-conditional config can select its remotes; this also applies before
+  deferred checkout. Honor custom fetch mappings and refresh stale cached refs.
+  Fetch failures after acquisition use the caller's cleanup policy.
   Leave/Clear do not fetch a tracking target; default fork tracking remains
   best-effort when the fork is unavailable.
   Git combines branch.merge across scopes: worktree scope preserves compatible

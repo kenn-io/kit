@@ -206,10 +206,10 @@ func (r CreateWorktreeResult) Rollback(ctx context.Context, policies ...Rollback
 func CreateWorktreeOnDisk(
 	ctx context.Context, opts CreateWorktreeOptions,
 ) (CreateWorktreeResult, error) {
-	return createWorktreeOnDisk(ctx, opts, nil)
+	return createWorktreeOnDisk(ctx, opts, nil, false)
 }
 
-func createWorktreeOnDisk(ctx context.Context, opts CreateWorktreeOptions, preparedIsolation *untrustedTreeIsolation) (CreateWorktreeResult, error) {
+func createWorktreeOnDisk(ctx context.Context, opts CreateWorktreeOptions, preparedIsolation *untrustedTreeIsolation, fetchUpstream bool) (CreateWorktreeResult, error) {
 	ctx = withLifecycleExecution(ctx, opts.Runner, opts.RunGit, opts.RunHook)
 	root, err := absRequired(opts.ProjectRoot, "project root")
 	if err != nil {
@@ -322,11 +322,16 @@ func createWorktreeOnDisk(ctx context.Context, opts CreateWorktreeOptions, prepa
 	if addErr != nil && !gitcmd.IsExitCode(addErr, 0) {
 		return failedWorktreeAdd(ctx, root, path, branch, mode == CheckoutNewBranch), classifyWorktreeGitError(out, addErr)
 	}
-	evidenceCtx := withLifecycleExecution(ctx, addRunner, lifecycleGitRunner(ctx), lifecycleHookRunner(ctx))
+	// Git has acquired the checkout. Caller cancellation must not prevent us
+	// from recording the evidence needed to honor the cleanup policy.
+	captureCtx, cancelCapture := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	evidenceCtx := withLifecycleExecution(captureCtx, addRunner, lifecycleGitRunner(ctx), lifecycleHookRunner(ctx))
 	result, err := snapshotCreateWorktreeResult(evidenceCtx, root, path, branch, mode == CheckoutNewBranch)
+	cancelCapture()
+	cause := errors.Join(addErr, ctx.Err(), err)
 	result.checkoutDeferred = opts.NoCheckout
 	if err != nil {
-		return result.creationFailure(ctx, opts.FailureCleanup, errors.Join(addErr, err))
+		return result.creationFailure(ctx, opts.FailureCleanup, cause)
 	}
 	// Checkout hooks may move HEAD. Keep the acquired commit and branch as the
 	// cleanup anchors, independently of later materialization and hooks.
@@ -335,10 +340,8 @@ func createWorktreeOnDisk(ctx context.Context, opts CreateWorktreeOptions, prepa
 	if branch != "" {
 		result.headRef = "refs/heads/" + branch
 	}
-	if addErr != nil {
-		// A zero-exit add can still report an output-capture error. Retain
-		// both the error and the evidence needed for the selected cleanup.
-		return result.creationFailure(ctx, opts.FailureCleanup, addErr)
+	if cause != nil {
+		return result.creationFailure(ctx, opts.FailureCleanup, cause)
 	}
 	if opts.Checkout == CheckoutIsolated {
 		// Registration makes the directory identity available for case aliases.
@@ -369,6 +372,15 @@ func createWorktreeOnDisk(ctx context.Context, opts CreateWorktreeOptions, prepa
 		}
 	}
 	execution := newLifecycleExecution(result.runner, result.runGit, result.runHook)
+	if fetchUpstream && opts.Upstream.Action == UpstreamTrack && opts.Upstream.Condition == TrackingIfHeadMatches {
+		// Imports compare a fresh tip using the destination's effective remote
+		// configuration, which can depend on the new branch or git directory.
+		// Run only after isolation is installed, including deferred checkouts.
+		if _, err := execution.run(ctx, path, "fetch", "--no-tags", "--no-write-fetch-head",
+			"--no-recurse-submodules", "--", opts.Upstream.Remote, opts.Upstream.Ref); err != nil {
+			return result.creationFailure(ctx, opts.FailureCleanup, err)
+		}
+	}
 	if err := execution.setUpstream(ctx, root, path, opts.Upstream); err != nil {
 		return result.creationFailure(ctx, opts.FailureCleanup, err)
 	}
