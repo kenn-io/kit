@@ -96,6 +96,7 @@ func TestEvalSymlinksResolvesLinksBeforeParent(t *testing.T) {
 	target := filepath.Join(dir, "destination", "nested")
 	require.NoError(t, os.MkdirAll(target, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "destination", "config"), nil, 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config"), nil, 0o600))
 	link := filepath.Join(dir, "route")
 	_, err := fslink.LinkDir(target, link)
 	require.NoError(t, err)
@@ -114,6 +115,12 @@ func TestEvalSymlinksResolvesLinksBeforeParent(t *testing.T) {
 	got, err = pathresolve.EvalSymlinks(raw)
 	require.NoError(t, err)
 	assert.Equal(t, want, got)
+	// The public resolver must identify the file that the OS actually opens.
+	rawInfo, err := os.Stat(raw)
+	require.NoError(t, err)
+	resolvedInfo, err := os.Stat(got)
+	require.NoError(t, err)
+	assert.True(t, os.SameFile(rawInfo, resolvedInfo), "raw path and resolved path must identify the same file")
 	for name, target := range map[string]string{"absolute": raw, "relative": "route/../config"} {
 		t.Run(name, func(t *testing.T) {
 			if runtime.GOOS == "windows" && name == "absolute" {
