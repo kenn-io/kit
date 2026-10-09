@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"go.kenn.io/kit/internal/contextio"
 	"go.kenn.io/kit/pack"
 	"go.kenn.io/kit/packstore"
 	"go.kenn.io/kit/packstore/internal/packvalidate"
@@ -119,7 +120,7 @@ func (b *Backend) RepairLoose(
 		)
 	}
 	hasher := sha256.New()
-	reader := io.Reader(&publicationContextReader{ctx: ctx, src: src})
+	reader := io.Reader(&contextio.Reader{Context: ctx, Reader: src})
 	readLimit := opts.ExpectedSize
 	if opts.MaxBytes > 0 {
 		readLimit = min(readLimit, opts.MaxBytes)
@@ -292,7 +293,7 @@ func stagePackPublication(
 		return "", 0, digest, fmt.Errorf("s3store: protect pack publication staging: %w", err)
 	}
 	hasher := sha256.New()
-	reader := io.Reader(&publicationContextReader{ctx: ctx, src: src})
+	reader := io.Reader(&contextio.Reader{Context: ctx, Reader: src})
 	if maxBytes < math.MaxInt64 {
 		reader = io.LimitReader(reader, maxBytes+1)
 	}
@@ -346,18 +347,6 @@ type multipartPublishOptions struct {
 	expectedDigest string
 }
 
-type publicationContextReader struct {
-	ctx context.Context
-	src io.Reader
-}
-
-func (r *publicationContextReader) Read(p []byte) (int, error) {
-	if err := r.ctx.Err(); err != nil {
-		return 0, err
-	}
-	return r.src.Read(p)
-}
-
 func (b *Backend) multipartPublish(
 	ctx context.Context,
 	key string,
@@ -399,7 +388,7 @@ func (b *Backend) multipartPublish(
 		bufferBytes = opts.exactSize + 1
 	}
 	buffer := make([]byte, int(bufferBytes))
-	reader := &publicationContextReader{ctx: ctx, src: src}
+	reader := &contextio.Reader{Context: ctx, Reader: src}
 	var parts []types.CompletedPart
 	for partNumber := int32(1); ; partNumber++ {
 		readBytes := int64(len(buffer))

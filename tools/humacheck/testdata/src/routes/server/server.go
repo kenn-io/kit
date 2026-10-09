@@ -41,6 +41,8 @@ func New(mux *http.ServeMux) huma.API {
 	huma.Register(api, huma.Operation{Method: http.MethodGet, Path: accountsPath + "/{id}"}, handler)
 	huma.Get(api, "/jobs", handler)
 	huma.Post(api, "/jobs/{id}/review", handler)
+	huma.Post(api, "/projects/{project}/issues/{issue}/actions/close", handler)
+	huma.Get(api, "/projects/{project}", handler)
 	huma.Register(api, apiOperation(http.MethodGet, "/queue", "get-queue"), handler)
 	registerRaw(api, http.MethodPost, "/raw/{id}", "raw")
 	group := huma.NewGroup(api, "/v2")

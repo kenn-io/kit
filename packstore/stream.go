@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/klauspost/compress/zstd"
+	"go.kenn.io/kit/internal/contextio"
 	"go.kenn.io/kit/pack"
 )
 
@@ -290,7 +291,7 @@ func newLooseVerifiedStreamWithDurability(
 			)
 		}
 		stream.payload = &io.LimitedReader{
-			R: &contextReader{ctx: ctx, reader: object.file},
+			R: &contextio.Reader{Context: ctx, Reader: object.file},
 			N: payloadSize,
 		}
 		decoder, decoderErr := newLooseZstdReader(newSingleZstdFrameReader(stream.payload))

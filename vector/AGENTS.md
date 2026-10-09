@@ -16,6 +16,11 @@ pipeline. Preserve these invariants when changing it.
   `vec0 MATCH`, pgvector `<=>`, and duckdb `array_distance` belong behind
   `QueryGeneration`, never in the core flows.
 
+- `sqlitevec` never imports a SQLite driver or extension binding. Callers
+  register the extension for their chosen driver; CGO settings do not choose
+  a driver. Keep the modernc consumer test in a separate package so a mattn
+  test import cannot conceal a link dependency.
+
 ## Encoded vectors must be usable for cosine distance
 
 - Blank text is never sent to an encoder. `Split` omits blank windows so `Fill`
@@ -184,6 +189,11 @@ pipeline. Preserve these invariants when changing it.
   freshness checks. Raw probes survive source filtering; an empty result
   window can still have more raw neighbors. Candidate limits precede source
   filters; result limits follow them.
+- `BuildFilteredQuery` is the exact alternative to raw KNN windows: apply
+  source eligibility and the shared freshness predicate before scoring, select
+  the best chunk per optional source group, then limit results. Its work scales
+  with eligible chunks; a result limit is not a work bound. Keep ties stable by
+  document key and chunk index and preserve the winning evidence identity.
 - Backends must not return hits whose source row no longer exists; the
   caller may delete documents without telling the store, so
   `QueryGeneration` joins back to the documents table.

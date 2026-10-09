@@ -8,11 +8,10 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"go.kenn.io/kit/vector/sqlitevec"
+	_ "modernc.org/sqlite/vec"
 )
 
 func openSQLiteTestDB(tb testing.TB, dsn string) (*sql.DB, error) {
 	tb.Helper()
-	sqlitevec.Register()
 	return sql.Open("sqlite", dsn)
 }

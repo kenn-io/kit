@@ -193,7 +193,8 @@ required. Opt into bounded-memory writing with `Writer.AppendStream`, or
 prepare entries concurrently with `PrepareBlob` and append the resulting
 `PreparedBlob` values in deterministic order with `AppendPrepared`.
 
-Use `Reader.OpenBlob` for bounded-memory plain reads. The supplied `Entry` must
+Use `Reader.OpenBlob` for streaming plain reads. Legacy single-segment frames
+can still require a decoder window as large as the blob. The supplied `Entry` must
 come from that reader's immutable `Entries` result; caller-constructed offsets
 are rejected. `BlobReader` has the same terminal verification and early-close
 contract as `Store.OpenStream`. Use `ReaderOptions` and `BlobReaderOptions` to
@@ -262,9 +263,13 @@ of exact-owned staging files in recovery.
 `ReaderSlots` bounds idle cached descriptors, not all live descriptors. Each
 active stream holds a lease even after eviction, so budget file descriptors as
 `ReaderSlots + maximum concurrent streams`, plus unrelated application use.
-Compressed reads also enforce a decoder-window limit. A legacy format-v1 frame
-whose declared window exceeds policy fails with a typed limit error rather
-than increasing memory implicitly.
+Packed `OpenStream` and `ReadBounded` reads also enforce a decoder-window limit
+derived from the blob policy. A legacy format-v1 frame whose declared window
+exceeds that limit fails with a typed limit error. Direct `pack` readers with
+zero `ReaderLimits.WindowBytes` allow windows up to 4 GiB on 64-bit systems,
+so a legacy single-segment frame can require memory proportional to its full
+raw size. The decoder window ceiling remains 512 MiB on 32-bit systems.
+The buffered compatibility path `Store.Open` uses that default as well.
 
 Format v1 represents raw lengths up to 4 GiB. Its encrypted frames use
 whole-entry authenticated encryption and cannot safely expose streamed

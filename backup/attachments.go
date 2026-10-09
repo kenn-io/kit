@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"sync"
 
+	"go.kenn.io/kit/internal/contextio"
 	"go.kenn.io/kit/pack"
 )
 
@@ -609,7 +610,7 @@ func prepareCaptureSource(
 		_ = os.Remove(tmpPath)
 	}()
 	digest := sha256.New()
-	reader := io.LimitReader(&captureContextReader{ctx: ctx, reader: rc}, maxCaptureRawLen+1)
+	reader := io.LimitReader(&contextio.Reader{Context: ctx, Reader: rc}, maxCaptureRawLen+1)
 	size, copyErr := io.CopyBuffer(io.MultiWriter(tmp, digest), reader, make([]byte, 64<<10))
 	closeErr := rc.Close()
 	if err := errors.Join(copyErr, closeErr); err != nil {
@@ -666,7 +667,7 @@ func parseCanonicalCaptureID(hash string) (pack.BlobID, error) {
 
 func verifyCaptureReader(ctx context.Context, reader io.Reader, size uint64, id pack.BlobID) error {
 	digest := sha256.New()
-	written, err := io.CopyBuffer(digest, io.LimitReader(&captureContextReader{ctx: ctx, reader: reader}, int64(size)+1), make([]byte, 64<<10))
+	written, err := io.CopyBuffer(digest, io.LimitReader(&contextio.Reader{Context: ctx, Reader: reader}, int64(size)+1), make([]byte, 64<<10))
 	if err != nil {
 		return err
 	}
@@ -679,18 +680,6 @@ func verifyCaptureReader(ctx context.Context, reader io.Reader, size uint64, id 
 		return errors.New("content does not match its hash (live store corruption)")
 	}
 	return nil
-}
-
-type captureContextReader struct {
-	ctx    context.Context
-	reader io.Reader
-}
-
-func (r *captureContextReader) Read(p []byte) (int, error) {
-	if err := r.ctx.Err(); err != nil {
-		return 0, err
-	}
-	return r.reader.Read(p)
 }
 
 // readSourceBlob reads one blob from source under the same cap

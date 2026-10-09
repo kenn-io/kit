@@ -75,15 +75,20 @@ type Runner struct {
 	AcceptSuccessfulWaitDelay bool
 
 	basicAuth *basicAuth
+	trust     *safeDirectoryCache
 }
 
 // New returns a Runner with safe automation defaults.
+// Trust reuse is pinned to the first observed environment and Git executable
+// for the lifetime of this runner and its copies. Other identities always read
+// fresh config. Edits affect the next command in either case.
 func New() Runner {
 	return Runner{
 		Env:              os.Environ(),
 		StripEnv:         true,
 		NullGlobalConfig: true,
 		NoSystemConfig:   true,
+		trust:            &safeDirectoryCache{},
 	}
 }
 
@@ -288,12 +293,9 @@ func nullGlobalConfigPath() string {
 // config using env, in git's evaluation order. git only honors safe.directory
 // from protected configuration (system, global, and command scope), so these
 // are the entries the sanitized environment would otherwise hide. Entries are
-// read fresh on every call, like git itself reads config on every invocation:
-// no cache means no stale trust entries in long-lived processes and no
-// retained copies of caller environments. Best effort: scopes that are unset
-// or unreadable contribute nothing. Empty values are kept because an empty
-// safe.directory resets the list, and replaying entries in order preserves
-// that semantic at command scope.
+// read fresh on every call. Unset or unreadable scopes contribute nothing.
+// Empty values are kept because an empty safe.directory resets the list.
+// Replaying entries in order preserves that semantic at command scope.
 //
 // The probes run in dir, the same directory as the git command being built,
 // so conditional includes (includeIf "gitdir:...") resolve exactly as they
@@ -305,24 +307,13 @@ func nullGlobalConfigPath() string {
 // system scope is skipped here explicitly: git running with this env would
 // not honor those entries, and they must not be forwarded on its behalf.
 func readSafeDirectories(ctx context.Context, env []string, dir string) []string {
-	scopes := []string{"--system", "--global"}
-	if gitEnvBool(env, "GIT_CONFIG_NOSYSTEM") {
-		scopes = scopes[1:]
-	}
 	var dirs []string
-	for _, scope := range scopes {
-		// --includes is required for explicit-scope reads to honor include.path
-		// and includeIf directives the way git's default config sequence does.
-		probeCtx, cancel := context.WithTimeout(ctx, safeDirectoryProbeTimeout)
-		cmd := gitCommand(probeCtx, true, "config", scope, "--includes", "-z", "--get-all", "safe.directory")
-		cmd.Dir = dir
-		cmd.Env = env
-		out, err := cmd.Output()
-		cancel()
-		if err != nil || len(out) == 0 {
+	for _, scope := range safeDirectoryScopes(env) {
+		entries, _, err := readSafeDirectoryScope(ctx, env, dir, scope)
+		if err != nil {
 			continue
 		}
-		dirs = append(dirs, strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00")...)
+		dirs = append(dirs, entries...)
 	}
 	return dirs
 }
@@ -388,7 +379,7 @@ func (r Runner) commandEnv(ctx context.Context, dir string) ([]string, func()) {
 		// Read from the runner's base env before stripping, so the entries come
 		// from the configuration this runner's environment would see, not from
 		// the process environment.
-		for _, trusted := range readSafeDirectories(ctx, base, dir) {
+		for _, trusted := range r.trust.read(ctx, base, dir) {
 			config = append(config, Config{Key: "safe.directory", Value: trusted})
 		}
 	}

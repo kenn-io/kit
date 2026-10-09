@@ -1,6 +1,7 @@
 package agentcli_test
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -18,7 +19,7 @@ func mustAgent(t *testing.T, name agentcli.Name, command agentcli.Command) agent
 func TestSupportedAgents(t *testing.T) {
 	t.Parallel()
 	assert := assert.New(t)
-	want := []agentcli.Name{agentcli.Codex, agentcli.Claude, agentcli.Gemini, agentcli.Copilot, agentcli.OpenCode, agentcli.Cursor, agentcli.Kiro, agentcli.Kilo, agentcli.Droid, agentcli.Pi}
+	want := []agentcli.Name{agentcli.Codex, agentcli.Claude, agentcli.Gemini, agentcli.Copilot, agentcli.OpenCode, agentcli.Cursor, agentcli.Kiro, agentcli.Kilo, agentcli.Droid, agentcli.Pi, agentcli.Hermes, agentcli.Qwen}
 	assert.Equal(want, agentcli.Names())
 	for _, name := range want {
 		assert.Equal(name, mustAgent(t, name, agentcli.Command{}).Name())
@@ -90,6 +91,8 @@ func TestInteractiveResumePreservesConfiguredOptions(t *testing.T) {
 		{agentcli.Cursor, agentcli.Command{Executable: "cursor-agent", Options: []string{"--workspace", "repo"}}, agentcli.Request{}, []string{"cursor-agent", "--workspace", "repo", "--resume", "session-1"}},
 		{agentcli.Droid, agentcli.Command{Executable: "droid-custom", Options: []string{"--append-system-prompt", "Run tests."}}, agentcli.Request{Autonomy: agentcli.AutonomyLow, DisableSkills: true}, []string{"droid-custom", "--append-system-prompt", "Run tests.", "--resume", "session-1", "--auto", "low", "--disable-builtin-skills"}},
 		{agentcli.Gemini, agentcli.Command{Executable: "gemini-custom", Options: []string{"--sandbox"}}, agentcli.Request{}, []string{"gemini-custom", "--sandbox", "--resume", "session-1"}},
+		{agentcli.Qwen, agentcli.Command{Executable: "qwen-custom", Options: []string{"--sandbox"}}, agentcli.Request{}, []string{"qwen-custom", "--sandbox", "--resume", "session-1"}},
+		{agentcli.Hermes, agentcli.Command{Executable: "hermes-custom", Options: []string{"--tui"}}, agentcli.Request{}, []string{"hermes-custom", "--tui", "--resume", "session-1"}},
 	}
 	for _, test := range tests {
 		got, err := mustAgent(t, test.name, test.command).Resume("session-1", test.request)
@@ -120,11 +123,16 @@ func TestUnsupportedRequestsReturnTypedErrors(t *testing.T) {
 		{agentcli.Droid, agentcli.Request{DeniedTools: []string{"Execute"}}, "tools"},
 		{agentcli.Cursor, agentcli.Request{Prompt: agentcli.Prompt{Text: "review"}}, "prompt"},
 		{agentcli.Copilot, agentcli.Request{Prompt: agentcli.Prompt{Text: "review"}}, "prompt"},
+		{agentcli.Qwen, agentcli.Request{Prompt: agentcli.Prompt{Text: "review"}}, "prompt"},
+		{agentcli.Hermes, agentcli.Request{Prompt: agentcli.Prompt{Text: "review"}}, "prompt"},
+		{agentcli.Hermes, agentcli.Request{Mode: agentcli.NonInteractive}, "mode"},
+		{agentcli.Qwen, agentcli.Request{Mode: agentcli.NonInteractive}, "mode"},
 	}
 	for _, test := range tests {
 		_, err := mustAgent(t, test.name, agentcli.Command{}).Start(test.request)
 		var unsupported *agentcli.UnsupportedOptionError
 		require.ErrorAs(err, &unsupported)
+		assert.Equal(test.name, unsupported.Agent)
 		assert.Equal(test.option, unsupported.Option)
 		assert.NotEmpty(unsupported.Hint)
 	}
@@ -147,27 +155,6 @@ func TestCapabilitiesAreExplicitAndIndependent(t *testing.T) {
 	assert.Equal(agentcli.ReasoningLow, codex.Capabilities().ReasoningLevels[0])
 }
 
-func TestConfiguredOptionsKeepTheirArityAndOrder(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name    agentcli.Name
-		command agentcli.Command
-		mode    agentcli.Mode
-		want    []string
-	}{
-		{agentcli.Codex, agentcli.Command{Executable: "codex-custom", Options: []string{"--profile=team", "-c", "feature.test=true", "--add-dir", "-shared"}}, "", []string{"codex-custom", "--profile=team", "-c", "feature.test=true", "--add-dir", "-shared", "resume", "session-1"}},
-		{agentcli.Claude, agentcli.Command{Options: []string{"--setting-sources=project", "--plugin-dir", "one", "--plugin-dir", "-two"}}, "", []string{"claude", "--setting-sources=project", "--plugin-dir", "one", "--plugin-dir", "-two", "--resume", "session-1"}},
-		{agentcli.Pi, agentcli.Command{Options: []string{"-ne", "--tui-mode", "fullscreen", "--offline"}}, "", []string{"pi", "-ne", "--tui-mode", "fullscreen", "--offline", "--session", "session-1"}},
-		{agentcli.Kiro, agentcli.Command{Executable: "kiro-custom", Options: []string{"--wrap", "never"}}, agentcli.NonInteractive, []string{"kiro-custom", "chat", "--wrap", "never", "--no-interactive", "--resume-id", "session-1"}},
-		{agentcli.Droid, agentcli.Command{Executable: "droid-custom", Options: []string{"--append-system-prompt", "review only"}}, agentcli.NonInteractive, []string{"droid-custom", "exec", "--append-system-prompt", "review only", "--session-id", "session-1"}},
-	}
-	for _, test := range tests {
-		got, err := mustAgent(t, test.name, test.command).Resume("session-1", agentcli.Request{Mode: test.mode})
-		require.NoError(t, err)
-		assert.Equal(t, test.want, got.Argv)
-	}
-}
-
 func TestConfiguredArgumentsPassThrough(t *testing.T) {
 	t.Parallel()
 	for _, name := range agentcli.Names() {
@@ -176,11 +163,15 @@ func TestConfiguredArgumentsPassThrough(t *testing.T) {
 			assert := assert.New(t)
 			require := require.New(t)
 			options := []string{"--future-flag", "value with spaces", "--model", "configured", "--", "", "operand"}
-			request := agentcli.Request{Mode: agentcli.NonInteractive}
-			if name != agentcli.Kiro {
+			agent := mustAgent(t, name, agentcli.Command{Executable: "custom-worker", Options: options})
+			capabilities := agent.Capabilities()
+			request := agentcli.Request{Mode: agentcli.Interactive}
+			if slices.Contains(capabilities.Modes, agentcli.NonInteractive) {
+				request.Mode = agentcli.NonInteractive
+			}
+			if capabilities.Model {
 				request.Model = "requested"
 			}
-			agent := mustAgent(t, name, agentcli.Command{Executable: "custom-worker", Options: options})
 			for _, resume := range []bool{false, true} {
 				var got agentcli.Invocation
 				var err error

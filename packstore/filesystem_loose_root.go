@@ -11,6 +11,8 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+
+	"go.kenn.io/kit/internal/contextio"
 )
 
 type rootStagedLoose struct {
@@ -109,7 +111,7 @@ func (b *FilesystemBackend) publishLooseRoot(
 	if encoder != nil {
 		writers = append(writers, encoder)
 	}
-	reader := io.Reader(&contextReader{ctx: ctx, reader: src})
+	reader := io.Reader(&contextio.Reader{Context: ctx, Reader: src})
 	readLimit := opts.MaxBytes
 	readLimitKnown := readLimit > 0
 	if opts.SizeKnown && (!readLimitKnown || opts.ExpectedSize < readLimit) {

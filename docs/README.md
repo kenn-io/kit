@@ -8,6 +8,7 @@ verification records belong in kata and pull request discussion.
 
 - [Adopting packed content storage](adopting-packstore.md)
 - [Adopting the shared Go lint policy (kennlint)](adopting-kennlint.md)
+- [Daily screen reports](https://github.com/kenn-io/kit/blob/main/telemetry/posthog/daily.md)
 
 ## Architecture
 

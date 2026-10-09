@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"go.kenn.io/kit/internal/contextio"
 	"go.kenn.io/kit/pack"
 )
 
@@ -85,7 +86,7 @@ func captureObject(ctx context.Context, source io.Reader, expected int64, expect
 		bufferSize = min(bufferSize, expected+1)
 	}
 	buffer := make([]byte, bufferSize)
-	reader := &captureContextReader{ctx: ctx, reader: source}
+	reader := &contextio.Reader{Context: ctx, Reader: source}
 	for {
 		n, err := io.ReadFull(reader, buffer)
 		if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
