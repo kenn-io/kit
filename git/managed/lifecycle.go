@@ -169,6 +169,7 @@ type CreateWorktreeResult struct {
 	pathInfo           fs.FileInfo
 	registrationInfo   fs.FileInfo
 	verified           bool
+	checkoutDeferred   bool
 }
 
 // RollbackResult identifies worktree artifacts that remained after rollback.
@@ -322,6 +323,7 @@ func createWorktreeOnDisk(ctx context.Context, opts CreateWorktreeOptions, prepa
 	}
 	evidenceCtx := withLifecycleExecution(ctx, addRunner, lifecycleGitRunner(ctx), lifecycleHookRunner(ctx))
 	result, err := snapshotCreateWorktreeResult(evidenceCtx, root, path, branch, mode == CheckoutNewBranch)
+	result.checkoutDeferred = opts.NoCheckout
 	if err != nil {
 		return result.creationFailure(ctx, opts.FailureCleanup, err)
 	}
@@ -410,7 +412,7 @@ func (r CreateWorktreeResult) rollbackOwned(ctx context.Context, policy Rollback
 				return remaining, fmt.Errorf("created worktree branch changed: %w", errors.Join(ErrWorktreeCleanupIncomplete, err))
 			}
 		}
-		dirty, err := worktreeHasRollbackArtifacts(ctx, r.ownedPath)
+		dirty, err := r.hasRollbackArtifacts(ctx)
 		if err != nil {
 			return remaining, errors.Join(ErrWorktreeCleanupIncomplete, err)
 		}
@@ -441,6 +443,29 @@ func (r CreateWorktreeResult) rollbackOwned(ctx context.Context, policy Rollback
 		remaining.Branch = ""
 	}
 	return remaining, err
+}
+
+func (r CreateWorktreeResult) hasRollbackArtifacts(ctx context.Context) (bool, error) {
+	if r.checkoutDeferred {
+		// With --no-checkout Git leaves the index absent, so status describes
+		// tracked files as deleted even though nothing has changed since create.
+		out, err := runLifecycleGit(ctx, r.ownedPath, "rev-parse", "--path-format=absolute", "--git-path", "index")
+		if err != nil {
+			return false, fmt.Errorf("locate deferred worktree index: %w", err)
+		}
+		_, err = os.Lstat(strings.TrimSpace(string(out)))
+		if errors.Is(err, os.ErrNotExist) {
+			entries, err := os.ReadDir(r.ownedPath)
+			if err != nil {
+				return false, fmt.Errorf("inspect deferred worktree contents: %w", err)
+			}
+			return len(entries) != 1 || entries[0].Name() != ".git", nil
+		}
+		if err != nil {
+			return false, fmt.Errorf("inspect deferred worktree index: %w", err)
+		}
+	}
+	return worktreeHasRollbackArtifacts(ctx, r.ownedPath)
 }
 
 func lifecycleRefOID(ctx context.Context, root, branch string) (string, bool, error) {

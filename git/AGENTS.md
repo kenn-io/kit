@@ -54,8 +54,9 @@ specific application or forge workflow.
   it, even when their files do not exist yet. Deferred materialization must not
   turn tracked files into newly active Git configuration. Resolve dangling links
   with `pathresolve.EvalSymlinksAllowMissing` before checking containment. Keep
-  parent components intact until then, including explicit selectors that
-  `git var` would otherwise clean. Refuse parent traversal through missing
+  parent components intact until then, including explicit selectors and raw
+  HOME/XDG default paths that `git var` would otherwise clean. An explicit
+  global selector replaces those defaults. Refuse parent traversal through missing
   components rather than guessing how future tree links will resolve. Compare
   resolved ancestor identities for case aliases, and check again after
   registration, before materialization, when the directory identity exists.
@@ -77,6 +78,9 @@ specific application or forge workflow.
   independent of caller cancellation, retain the error, and stop further cleanup.
   Capture directory identities at acquisition time: Windows `os.Stat` can defer
   reading file IDs until `os.SameFile`, after a path has already been replaced.
+  An untouched deferred checkout has no index and contains only its `.git`
+  registration file; default rollback must recognize that initial state without
+  treating missing tracked files as edits. Preserve actual file or index changes.
 - Configure merge-request tracking in worktree-scoped Git configuration so
   removing a worktree does not leave branch routing behind in shared config.
   Explicit upstream policy chooses configuration scope and whether to configure

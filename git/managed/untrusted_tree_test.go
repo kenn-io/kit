@@ -217,3 +217,66 @@ func TestIsolatedCheckoutRejectsConfigCaseAliasBeforeMaterializing(t *testing.T)
 		})
 	}
 }
+
+func TestDeferredCheckoutChecksDefaultConfigPaths(t *testing.T) {
+	for _, source := range []string{"home", "xdg", "home-xdg"} {
+		for _, override := range []bool{false, true} {
+			name := source
+			if override {
+				name += "/explicit-global"
+			}
+			t.Run(name, func(t *testing.T) {
+				root := initLifecycleRepo(t)
+				for _, config := range []string{".gitconfig", "git/config", ".config/git/config"} {
+					path := filepath.Join(root, config)
+					require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+					require.NoError(t, os.WriteFile(path, []byte("[fixture]\nvalue = imported\n"), 0o600))
+				}
+				require.NoError(t, os.MkdirAll(filepath.Join(root, "nested", "deeper"), 0o755))
+				require.NoError(t, os.WriteFile(filepath.Join(root, "nested", "deeper", "file"), nil, 0o600))
+				if err := os.Symlink("nested/deeper", filepath.Join(root, "route")); err != nil {
+					if runtime.GOOS == "windows" {
+						t.Skipf("cannot create symlink: %v", err)
+					}
+					require.NoError(t, err)
+				}
+				lifecycleGit(t, root, "add", ".")
+				lifecycleGit(t, root, "commit", "-m", "tree configuration")
+				lifecycleGit(t, root, "branch", "imported")
+				lifecycleGit(t, root, "reset", "--hard", "HEAD^")
+				path := filepath.Join(t.TempDir(), "checkout")
+				runner := lifecycleTestRunner(t)
+				runner.Env = append(gitenv.StripAll(runner.Env), "GIT_CONFIG_NOSYSTEM=1")
+				selector := "HOME"
+				switch source {
+				case "xdg":
+					selector = "XDG_CONFIG_HOME"
+				case "home-xdg":
+					runner.Env = append(runner.Env, "XDG_CONFIG_HOME=")
+				}
+				runner.Env = append(runner.Env, selector+"="+path+"/route/../..")
+				if override {
+					global := filepath.Join(t.TempDir(), "global")
+					require.NoError(t, os.WriteFile(global, []byte("[fixture]\nvalue = external\n"), 0o600))
+					runner.Env = append(runner.Env, "GIT_CONFIG_GLOBAL="+global)
+				}
+				_, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+					ProjectRoot: root, Path: path, Branch: "topic", BaseRef: "imported", NoCheckout: true,
+					Checkout: CheckoutIsolated, FailureCleanup: CleanupDeferred, Runner: runner,
+				})
+				if !override {
+					require.Error(t, err)
+					assert.NoDirExists(t, path)
+					assert.False(t, branchExistsInRepo(t, root, "topic"))
+					return
+				}
+				require.NoError(t, err)
+				_, stderr, err := runner.Run(t.Context(), path, nil, "reset", "--hard", "HEAD")
+				require.NoError(t, err, "%s", stderr)
+				out, stderr, err := runner.Run(t.Context(), path, nil, "config", "--get", "fixture.value")
+				require.NoError(t, err, "%s", stderr)
+				assert.Equal(t, "external\n", string(out))
+			})
+		}
+	}
+}

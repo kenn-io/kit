@@ -521,6 +521,15 @@ func rejectConfigSourcesInsideWorktree(
 		}
 		return nil
 	}
+	envValue := func(name string) (string, bool) {
+		for _, entry := range slices.Backward(runner.Env) {
+			key, value, _ := strings.Cut(entry, "=")
+			if key == name || (runtime.GOOS == "windows" && strings.EqualFold(key, name)) {
+				return value, true
+			}
+		}
+		return "", false
+	}
 	// Unlike config origins, Git's selected paths include files that do not yet exist.
 	for _, selector := range []string{"GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"} {
 		out, err := runLifecycleGitWithRunner(ctx, runner, dir, "var", selector)
@@ -531,13 +540,20 @@ func rejectConfigSourcesInsideWorktree(
 			return fmt.Errorf("inspect %s: %w", selector, err)
 		}
 		paths := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
-		// git var cleans parent components, but Git opens an explicit selector
-		// as written. Preserve that spelling until links have been resolved.
-		for _, entry := range slices.Backward(runner.Env) {
-			key, value, _ := strings.Cut(entry, "=")
-			if key == selector || (runtime.GOOS == "windows" && strings.EqualFold(key, selector)) {
-				paths = []string{value}
-				break
+		// git var cleans parent components, but Git opens configuration paths
+		// as written. Preserve both explicit selectors and raw default paths.
+		if value, explicit := envValue(selector); explicit {
+			paths = []string{value}
+		} else if selector == "GIT_CONFIG_GLOBAL" {
+			home, hasHome := envValue("HOME")
+			if hasHome {
+				paths = append(paths, home+"/.gitconfig")
+			}
+			xdg, _ := envValue("XDG_CONFIG_HOME")
+			if xdg != "" {
+				paths = append(paths, xdg+"/git/config")
+			} else if hasHome {
+				paths = append(paths, home+"/.config/git/config")
 			}
 		}
 		for _, path := range paths {

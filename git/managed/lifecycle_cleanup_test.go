@@ -15,6 +15,77 @@ import (
 	gitcmd "go.kenn.io/kit/git/cmd"
 )
 
+func TestDeferredCheckoutRollbackPreservesChanges(t *testing.T) {
+	for _, checkout := range []CheckoutPolicy{CheckoutTrusted, CheckoutIsolated} {
+		for _, state := range []string{"untouched", "inspected", "untracked", "ignored", "empty-directory", "staged-only", "staged-deletion", "materialized", "edited"} {
+			t.Run(map[CheckoutPolicy]string{CheckoutTrusted: "native", CheckoutIsolated: "isolated"}[checkout]+"/"+state, func(t *testing.T) {
+				root := initLifecycleRepo(t)
+				require.NoError(t, os.WriteFile(filepath.Join(root, "tracked"), []byte("original\n"), 0o600))
+				lifecycleGit(t, root, "add", ".")
+				lifecycleGit(t, root, "commit", "-m", "tracked file")
+				created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+					ProjectRoot: root, Path: filepath.Join(t.TempDir(), "checkout"), Branch: "topic",
+					NoCheckout: true, Checkout: checkout, Runner: lifecycleTestRunner(t),
+				})
+				require.NoError(t, err)
+				registration := lifecycleGit(t, created.Path, "rev-parse", "--absolute-git-dir")
+				note := filepath.Join(created.Path, "note")
+				switch state {
+				case "inspected":
+					lifecycleGit(t, created.Path, "status", "--porcelain")
+				case "untracked", "ignored", "staged-only":
+					require.NoError(t, os.WriteFile(note, []byte("preserve\n"), 0o600))
+					switch state {
+					case "ignored":
+						require.NoError(t, os.WriteFile(filepath.Join(root, ".git", "info", "exclude"), []byte("note\n"), 0o600))
+					case "staged-only":
+						lifecycleGit(t, created.Path, "add", "note")
+						require.NoError(t, os.Remove(note))
+					}
+				case "empty-directory":
+					require.NoError(t, os.Mkdir(note, 0o755))
+				case "staged-deletion":
+					lifecycleGit(t, created.Path, "read-tree", "--empty")
+				case "materialized", "edited":
+					lifecycleGit(t, created.Path, "reset", "--hard", "HEAD")
+					if state == "edited" {
+						require.NoError(t, os.WriteFile(filepath.Join(created.Path, "tracked"), []byte("preserve\n"), 0o600))
+					}
+				}
+				remaining, err := created.Rollback(t.Context())
+				if state == "untouched" || state == "inspected" || state == "materialized" {
+					require.NoError(t, err)
+					assert.Empty(t, remaining)
+					assert.NoDirExists(t, created.Path)
+					assert.NoDirExists(t, registration)
+					assert.False(t, branchExistsInRepo(t, root, "topic"))
+					return
+				}
+				require.ErrorIs(t, err, ErrWorktreeCleanupIncomplete)
+				assert.Equal(t, created.Path, remaining.Path)
+				assert.DirExists(t, registration)
+				assert.True(t, branchExistsInRepo(t, root, "topic"))
+				switch state {
+				case "untracked", "ignored":
+					contents, err := os.ReadFile(note)
+					require.NoError(t, err)
+					assert.Equal(t, "preserve\n", string(contents))
+				case "empty-directory":
+					assert.DirExists(t, note)
+				case "staged-only":
+					assert.Equal(t, "preserve", lifecycleGit(t, created.Path, "show", ":note"))
+				case "staged-deletion":
+					assert.Equal(t, "D\ttracked", lifecycleGit(t, created.Path, "diff", "--cached", "--name-status"))
+				case "edited":
+					contents, err := os.ReadFile(filepath.Join(created.Path, "tracked"))
+					require.NoError(t, err)
+					assert.Equal(t, "preserve\n", string(contents))
+				}
+			})
+		}
+	}
+}
+
 func TestCleanupReportsBranchDeletedBeforeExecutionError(t *testing.T) {
 	for _, failure := range []string{"output-limit", "cancellation"} {
 		for _, rollback := range []bool{false, true} {
