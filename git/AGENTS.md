@@ -86,6 +86,9 @@ specific application or forge workflow.
   policy. Capture evidence after confirmed success with a bounded context
   independent of caller cancellation, then report cancellation and apply cleanup.
   A failed or unknown process outcome grants no cleanup authority.
+- Moving a linked checkout returns acquisition evidence for the new destination.
+  Explicit rollback removes that checkout and preserves its preexisting branch;
+  it never silently moves it back. Preserve and report an unknown move outcome.
 - Configure merge-request tracking in worktree-scoped Git configuration so
   removing a worktree does not leave branch routing behind in shared config.
   Explicit upstream policy chooses configuration scope and whether to configure
