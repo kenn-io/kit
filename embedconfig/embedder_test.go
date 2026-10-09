@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"go.kenn.io/kit/embedconfig"
+	"go.kenn.io/kit/embedmodel"
 	"go.kenn.io/kit/secretref"
 )
 
@@ -50,6 +51,163 @@ trust_private_network = true
 	}, parts.Deployment)
 	assert.Equal(t, embedconfig.Batch{Items: 16, MaxTokens: 8192, InputTokenUpperBound: 512}, parts.Batch)
 	assert.Equal(t, 45*time.Second, parts.Transport.Timeout)
+}
+
+func TestEmbedderLiteralRoleSettings(t *testing.T) {
+	var embedder embedconfig.Embedder
+	meta, err := toml.Decode(`
+base_url = "https://api.example.test/v1"
+model = "embed-text"
+dims = 768
+document_prefix = "title: none | text: "
+document_suffix = " \n"
+query_prefix = "task: search result | query: "
+query_suffix = "\t "
+request_dimensions = true
+`, &embedder)
+	require.NoError(t, err)
+	assert.Empty(t, meta.Undecoded())
+	require.NoError(t, embedder.Validate())
+	parts, err := embedder.Parts()
+	require.NoError(t, err)
+	assert.True(t, parts.Model.RequestDimensions)
+	assert.Equal(t, 768, parts.Model.Dimensions)
+	for _, test := range []struct {
+		role embedconfig.Role
+		want string
+	}{
+		{embedconfig.RoleDocument, "title: none | text: hello \n"},
+		{embedconfig.RoleQuery, "task: search result | query: hello\t "},
+	} {
+		text, err := embedmodel.Format(test.role, "hello", parts.Roles)
+		require.NoError(t, err)
+		assert.Equal(t, test.want, text)
+	}
+}
+
+func TestEmbedderRoleSettingsRequireEndpoint(t *testing.T) {
+	for _, setting := range []string{
+		`document_prefix = " "`, `document_suffix = " "`,
+		`query_prefix = " "`, `query_suffix = " "`, `request_dimensions = true`,
+	} {
+		t.Run(setting, func(t *testing.T) {
+			var embedder embedconfig.Embedder
+			_, err := toml.Decode(setting, &embedder)
+			require.NoError(t, err)
+			assert.Error(t, embedder.Validate())
+		})
+	}
+}
+
+func TestEmbedderPreservesDefaultIdentities(t *testing.T) {
+	const oldIdentity = "75da3207794697849064648e84a8e02dd2f873ea3690159bfc067972f0e1bb37"
+	const config = `base_url = "https://api.example.test/v1"
+model = "embed-text"
+dims = 768
+`
+	for _, settings := range []string{"", `document_prefix = ""
+document_suffix = ""
+query_prefix = ""
+query_suffix = ""
+request_dimensions = false
+`} {
+		desc := embedderDescriptor(t, config+settings)
+		space, err := desc.VectorIdentity()
+		require.NoError(t, err)
+		assert.Equal(t, oldIdentity, space)
+		input, err := desc.InputIdentity()
+		require.NoError(t, err)
+		assert.Equal(t, oldIdentity, input)
+		gen, err := desc.Generation()
+		require.NoError(t, err)
+		assert.Equal(t, "ea14a3d46851bf40", gen.Fingerprint())
+		assert.False(t, desc.Model.RequestDimensions)
+	}
+	for _, settings := range []string{
+		`document_prefix = " "`, `document_suffix = " "`,
+		`query_prefix = " "`, `query_suffix = " "`,
+		`request_dimensions = true`, `fingerprint_salt = "weights-2"`,
+	} {
+		t.Run(settings, func(t *testing.T) {
+			desc := embedderDescriptor(t, config+settings)
+			space, err := desc.VectorIdentity()
+			require.NoError(t, err)
+			assert.NotEqual(t, oldIdentity, space)
+			input, err := desc.InputIdentity()
+			require.NoError(t, err)
+			assert.NotEqual(t, oldIdentity, input)
+			gen, err := desc.Generation()
+			require.NoError(t, err)
+			assert.NotEqual(t, "ea14a3d46851bf40", gen.Fingerprint())
+		})
+	}
+}
+
+func embedderDescriptor(t *testing.T, config string) embedmodel.Descriptor {
+	t.Helper()
+	var embedder embedconfig.Embedder
+	_, err := toml.Decode(config, &embedder)
+	require.NoError(t, err)
+	parts, err := embedder.Parts()
+	require.NoError(t, err)
+	return embedmodel.Descriptor{Model: parts.Model, Roles: parts.Roles, Deployment: parts.Deployment}
+}
+
+func FuzzEmbedderLiteralAffixes(f *testing.F) {
+	f.Add("title: none | text: ", "\n", "task: search result | query: ", " ", "hello")
+	f.Add("", "", "", "", "")
+	f.Add("\x00\n=\\", " \t", "é", "\xff", "文")
+	f.Fuzz(func(t *testing.T, documentPrefix, documentSuffix, queryPrefix, querySuffix, text string) {
+		parts, err := embedconfig.Embedder{
+			BaseURL: "https://api.example.test/v1", Model: "embed-text", Dims: 768,
+			DocumentPrefix: documentPrefix, DocumentSuffix: documentSuffix,
+			QueryPrefix: queryPrefix, QuerySuffix: querySuffix,
+		}.Parts()
+		require.NoError(t, err)
+		for _, test := range []struct {
+			role embedconfig.Role
+			want string
+		}{
+			{embedconfig.RoleDocument, documentPrefix + text + documentSuffix},
+			{embedconfig.RoleQuery, queryPrefix + text + querySuffix},
+		} {
+			got, err := embedmodel.Format(test.role, text, parts.Roles)
+			require.NoError(t, err)
+			assert.Equal(t, test.want, got)
+		}
+	})
+}
+
+func FuzzEmbedderAffixIdentities(f *testing.F) {
+	f.Add("", "", "", "", false)
+	f.Add("\n=\\", "\x00", "query: ", "\xff", true)
+	f.Fuzz(func(t *testing.T, documentPrefix, documentSuffix, queryPrefix, querySuffix string, requestDimensions bool) {
+		embedder := embedconfig.Embedder{
+			BaseURL: "https://api.example.test/v1", Model: "embed-text", Dims: 768,
+			DocumentPrefix: documentPrefix, DocumentSuffix: documentSuffix,
+			QueryPrefix: queryPrefix, QuerySuffix: querySuffix, RequestDimensions: requestDimensions,
+		}
+		identity := func(e embedconfig.Embedder) string {
+			parts, err := e.Parts()
+			require.NoError(t, err)
+			got, err := (embedmodel.Descriptor{Model: parts.Model, Roles: parts.Roles}).VectorIdentity()
+			require.NoError(t, err)
+			return got
+		}
+		original := identity(embedder)
+		for _, change := range []func(*embedconfig.Embedder){
+			func(e *embedconfig.Embedder) { e.DocumentPrefix += " " },
+			func(e *embedconfig.Embedder) { e.DocumentSuffix += " " },
+			func(e *embedconfig.Embedder) { e.QueryPrefix += " " },
+			func(e *embedconfig.Embedder) { e.QuerySuffix += " " },
+			func(e *embedconfig.Embedder) { e.RequestDimensions = !e.RequestDimensions },
+			func(e *embedconfig.Embedder) { e.Dims = 512 },
+		} {
+			changed := embedder
+			change(&changed)
+			assert.NotEqual(t, original, identity(changed))
+		}
+	})
 }
 
 func TestEmbedderPartsFillOnlyOperationalDefaults(t *testing.T) {

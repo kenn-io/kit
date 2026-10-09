@@ -23,6 +23,11 @@ type Embedder struct {
 	Model string `toml:"model"`
 	// Dims is the vector width the provider returns.
 	Dims int `toml:"dims"`
+	// RequestDimensions sends Dims as the dimensions field on each request.
+	// Set it only when the endpoint supports requesting that width. False
+	// leaves the provider default; Dims still validates the returned width.
+	// The client never truncates vectors to fit Dims.
+	RequestDimensions bool `toml:"request_dimensions"`
 	// APIKey is the bearer token: the token itself as a string, or a table
 	// naming its source, such as { env = "NAME" } or { file = "PATH" }.
 	// Leave it unset for an endpoint that needs no authentication. The
@@ -35,6 +40,14 @@ type Embedder struct {
 	// InputTypeMode is "none" (the default) or "retrieval". Retrieval sends
 	// input_type document or query on each request.
 	InputTypeMode string `toml:"input_type_mode"`
+	// DocumentPrefix, DocumentSuffix, QueryPrefix, and QuerySuffix are
+	// literal role affixes. Whitespace, including trailing spaces, is kept.
+	// They change vector identity and are applied to raw text by EmbedTexts
+	// and Embed; EncodeFunc expects text that is already formatted.
+	DocumentPrefix string `toml:"document_prefix"`
+	DocumentSuffix string `toml:"document_suffix"`
+	QueryPrefix    string `toml:"query_prefix"`
+	QuerySuffix    string `toml:"query_suffix"`
 	// BatchSize caps inputs per request. Zero uses DefaultBatchItems.
 	BatchSize int `toml:"batch_size"`
 	// ModelContextTokens is the most tokens one input can hold, and
@@ -91,16 +104,23 @@ func (e Embedder) Validate() error {
 // only operational defaults: batch size and timeout.
 func (e Embedder) Parts() (Parts, error) {
 	model, err := Model{
-		Name:          e.Model,
-		Revision:      e.FingerprintSalt,
-		Dimensions:    e.Dims,
-		Metric:        MetricCosine,
-		Normalization: NormalizationL2,
+		Name:              e.Model,
+		Revision:          e.FingerprintSalt,
+		Dimensions:        e.Dims,
+		Metric:            MetricCosine,
+		Normalization:     NormalizationL2,
+		RequestDimensions: e.RequestDimensions,
 	}.Prepared()
 	if err != nil {
 		return Parts{}, err
 	}
-	roles, err := Roles{InputType: InputType(strings.TrimSpace(e.InputTypeMode))}.Prepared()
+	roles, err := Roles{
+		InputType:      InputType(strings.TrimSpace(e.InputTypeMode)),
+		DocumentPrefix: e.DocumentPrefix,
+		DocumentSuffix: e.DocumentSuffix,
+		QueryPrefix:    e.QueryPrefix,
+		QuerySuffix:    e.QuerySuffix,
+	}.Prepared()
 	if err != nil {
 		return Parts{}, err
 	}
