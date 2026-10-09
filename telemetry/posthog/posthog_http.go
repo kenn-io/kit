@@ -30,14 +30,13 @@ type postHogCaptureResponse struct {
 // age. JSON numbers arrive as float64.
 //
 // Responses: 202 {"status":"queued"} when the reporter accepted the capture;
+// 202 {"status":"skipped"} when the installation already reported that key today;
 // 202 {"status":"disabled"} when the event is allowed but telemetry is opted
 // out, disabled for the process or the reporter is closed, so nothing is sent;
 // 400 for a malformed body, data after the JSON object, a blank event or an
-// event the allowlist omits, in every reporter state; 405 for other methods;
+// event the allowlist omits or a required property is invalid, in every reporter state; 405 for other methods;
 // 413 for a body over 64 KiB; 415 for a content type other than
-// application/json; 500 when Capture fails. The status is best effort: a
-// reporter closed or disabled between the enabled check and Capture answers
-// queued while Capture's own guard sends nothing.
+// application/json; 500 when reservation storage or capture fails.
 //
 // A nil reporter or DisabledReporter admits no event. Construct an
 // opted-out reporter with the same WithAllowedEvent options as an enabled one.
@@ -64,19 +63,16 @@ func NewCaptureHandler(reporter *Reporter) http.Handler {
 			http.Error(w, "invalid telemetry request", http.StatusBadRequest)
 			return
 		}
-		if !reporter.EventAllowed(req.Event) {
-			http.Error(w, ErrUnsupportedEvent.Error(), http.StatusBadRequest)
+		status, err := reporter.Report(r.Context(), req.Event, req.Properties)
+		if errors.Is(err, ErrUnsupportedEvent) || errors.Is(err, ErrInvalidProperty) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if !reporter.Enabled() {
-			writePostHogCaptureStatus(w, "disabled")
-			return
-		}
-		if err := reporter.Capture(req.Event, req.Properties); err != nil {
+		if err != nil {
 			http.Error(w, "capture telemetry event failed", http.StatusInternalServerError)
 			return
 		}
-		writePostHogCaptureStatus(w, "queued")
+		writePostHogCaptureStatus(w, string(status))
 	})
 }
 
