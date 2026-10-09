@@ -3,6 +3,7 @@ package packstore
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -209,5 +210,61 @@ func TestLooseDurableWriteRequiresExistingDirectoryParentSync(t *testing.T) {
 			require.NoError(err)
 			assert.Equal(t, content, stored)
 		})
+	}
+}
+
+func TestLooseStreamDuplicateSyncsOnlyRetainedFile(t *testing.T) {
+	for _, compressed := range []bool{false, true} {
+		for _, verification := range []DedupVerification{VerifyTypeAndSize, VerifyFullHash} {
+			t.Run(fmt.Sprintf("compressed=%t/verification=%d", compressed, verification), func(t *testing.T) {
+				store := newLooseStoreForTest(t, StagingStoreDirectory)
+				content := bytes.Repeat([]byte("duplicate stream\n"), 1024)
+				opts := WriteOptions{
+					Durability:  DurablePublication,
+					Dedup:       verification,
+					Compression: LooseCompressionOptions{Enabled: compressed},
+				}
+				first, err := store.WriteBytes(t.Context(), content, opts)
+				require.NoError(t, err)
+				if compressed {
+					require.Equal(t, LooseEncodingZstd, first.Encoding)
+				} else {
+					require.Equal(t, LooseEncodingRaw, first.Encoding)
+				}
+				before, err := os.ReadFile(first.Path)
+				require.NoError(t, err)
+
+				originalSync := syncLooseFile
+				t.Cleanup(func() { syncLooseFile = originalSync })
+				var retainedSyncs int
+				var retainedErr error
+				syncLooseFile = func(file *os.File) error {
+					if file.Name() != first.Path {
+						return errors.New("discarded staging file must not be synced")
+					}
+					retainedSyncs++
+					if retainedErr != nil {
+						return retainedErr
+					}
+					return originalSync(file)
+				}
+				reader := bytes.NewReader(content)
+				duplicate, err := store.Write(t.Context(), reader, opts)
+				require.NoError(t, err)
+				assert.Zero(t, reader.Len())
+				first.Created = false
+				assert.Equal(t, first, duplicate)
+				assert.Positive(t, retainedSyncs)
+				after, err := os.ReadFile(first.Path)
+				require.NoError(t, err)
+				assert.Equal(t, before, after)
+				assert.Empty(t, matchingFiles(t, store.layout.LooseStagingDir(first.Hash), ".staging-"))
+
+				retainedErr = errors.New("retained file sync failed")
+				_, err = store.Write(t.Context(), bytes.NewReader(content), opts)
+				require.ErrorIs(t, err, retainedErr)
+				assert.Empty(t, matchingFiles(t, store.layout.LooseStagingDir(first.Hash), ".staging-"))
+			})
+		}
 	}
 }
