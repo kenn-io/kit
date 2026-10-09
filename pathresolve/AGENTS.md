@@ -51,5 +51,6 @@ point is a symbolic link.
   existing links on every platform, including dangling links, then retain the
   missing suffix. Resolve each link before applying later `..` components,
   including those in link targets; do not clean an unresolved path first.
-  Reject cycles, unreadable paths, and non-directory parents.
+  Reject cycles, unreadable paths, non-directory parents, and parent traversal
+  after a missing component: a future link could change which parent it means.
   Keep `EvalSymlinks`'s existing missing-path error contract unchanged.

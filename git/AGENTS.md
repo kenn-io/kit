@@ -55,7 +55,10 @@ specific application or forge workflow.
   turn tracked files into newly active Git configuration. Resolve dangling links
   with `pathresolve.EvalSymlinksAllowMissing` before checking containment. Keep
   parent components intact until then, including explicit selectors that
-  `git var` would otherwise clean.
+  `git var` would otherwise clean. Refuse parent traversal through missing
+  components rather than guessing how future tree links will resolve. Compare
+  resolved ancestor identities for case aliases, and check again after
+  registration, before materialization, when the directory identity exists.
 - The default lifecycle-hook runner is for trusted native executables. Callers
   that need process-tree supervision or cross-platform script dispatch must
   supply `RunHook`; do not grow those application policies into this package.

@@ -515,7 +515,8 @@ func rejectConfigSourcesInsideWorktree(
 		}
 		if pathWithinRoot(lexicalWorktree, lexicalWorktreePath(configPath)) ||
 			pathWithinRoot(worktree, lexicalWorktreePath(resolved)) ||
-			pathWithinRootByIdentity(worktreePath, configPath) {
+			pathWithinRootByIdentity(worktreePath, configPath) ||
+			pathWithinRootByIdentity(worktreePath, resolved) {
 			return fmt.Errorf("Git configuration inside merge request worktree is not allowed: %s", configPath)
 		}
 		return nil

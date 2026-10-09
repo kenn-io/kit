@@ -91,60 +91,65 @@ func TestEvalSymlinksAllowMissingRejectsInvalidPaths(t *testing.T) {
 	}
 }
 
-func TestEvalSymlinksAllowMissingResolvesLinksBeforeParent(t *testing.T) {
-	for _, state := range []string{"missing", "existing"} {
-		t.Run(state, func(t *testing.T) {
-			dir := t.TempDir()
-			target := filepath.Join(dir, "destination", "nested")
-			if state == "existing" {
-				require.NoError(t, os.MkdirAll(target, 0o755))
-				require.NoError(t, os.WriteFile(filepath.Join(dir, "destination", "config"), nil, 0o600))
+func TestEvalSymlinksResolvesLinksBeforeParent(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "destination", "nested")
+	require.NoError(t, os.MkdirAll(target, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "destination", "config"), nil, 0o600))
+	link := filepath.Join(dir, "route")
+	_, err := fslink.LinkDir(target, link)
+	require.NoError(t, err)
+	canonical, err := pathresolve.EvalSymlinks(dir)
+	require.NoError(t, err)
+	want := filepath.Join(canonical, "destination", "config")
+	// Keep the parent component intact so resolution must traverse route first.
+	raw := link + string(filepath.Separator) + ".." + string(filepath.Separator) + "config"
+	got, err := pathresolve.EvalSymlinksAllowMissing(raw)
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
+	t.Chdir(dir)
+	got, err = pathresolve.EvalSymlinksAllowMissing("route/../config")
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
+	got, err = pathresolve.EvalSymlinks(raw)
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
+	for name, target := range map[string]string{"absolute": raw, "relative": "route/../config"} {
+		t.Run(name, func(t *testing.T) {
+			if runtime.GOOS == "windows" && name == "absolute" {
+				// Windows cleans absolute link targets at creation. Put the
+				// parent traversal in a relative target behind the absolute link.
+				intermediate := filepath.Join(dir, "intermediate")
+				if err := os.Symlink("route/../config", intermediate); err != nil {
+					t.Skipf("cannot create file symlink: %v", err)
+				}
+				t.Cleanup(func() { require.NoError(t, os.Remove(intermediate)) })
+				target = intermediate
 			}
-			link := filepath.Join(dir, "route")
-			_, err := fslink.LinkDir(target, link)
-			require.NoError(t, err)
-			canonical, err := pathresolve.EvalSymlinks(dir)
-			require.NoError(t, err)
-			want := filepath.Join(canonical, "destination", "config")
-			// Keep the parent component intact so resolution must traverse route first.
-			raw := link + string(filepath.Separator) + ".." + string(filepath.Separator) + "config"
-			got, err := pathresolve.EvalSymlinksAllowMissing(raw)
-			require.NoError(t, err)
-			assert.Equal(t, want, got)
-			t.Chdir(dir)
-			got, err = pathresolve.EvalSymlinksAllowMissing("route/../config")
-			require.NoError(t, err)
-			assert.Equal(t, want, got)
-			if state == "existing" {
-				got, err = pathresolve.EvalSymlinks(raw)
+			outer := filepath.Join(dir, "outer")
+			if err := os.Symlink(target, outer); err != nil {
+				if runtime.GOOS == "windows" {
+					t.Skipf("cannot create file symlink: %v", err)
+				}
 				require.NoError(t, err)
-				assert.Equal(t, want, got)
 			}
-			for name, target := range map[string]string{"absolute": raw, "relative": "route/../config"} {
-				t.Run(name, func(t *testing.T) {
-					if runtime.GOOS == "windows" && name == "absolute" {
-						// Windows cleans absolute link targets at creation. Put the
-						// parent traversal in a relative target behind the absolute link.
-						intermediate := filepath.Join(dir, "intermediate")
-						if err := os.Symlink("route/../config", intermediate); err != nil {
-							t.Skipf("cannot create file symlink: %v", err)
-						}
-						t.Cleanup(func() { require.NoError(t, os.Remove(intermediate)) })
-						target = intermediate
-					}
-					outer := filepath.Join(dir, "outer")
-					if err := os.Symlink(target, outer); err != nil {
-						if runtime.GOOS == "windows" {
-							t.Skipf("cannot create file symlink: %v", err)
-						}
-						require.NoError(t, err)
-					}
-					t.Cleanup(func() { require.NoError(t, os.Remove(outer)) })
-					got, err := pathresolve.EvalSymlinksAllowMissing(outer)
-					require.NoError(t, err)
-					assert.Equal(t, want, got)
-				})
-			}
+			t.Cleanup(func() { require.NoError(t, os.Remove(outer)) })
+			got, err := pathresolve.EvalSymlinksAllowMissing(outer)
+			require.NoError(t, err)
+			assert.Equal(t, want, got)
 		})
+	}
+}
+
+func TestEvalSymlinksAllowMissingRejectsParentAfterMissing(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(dir, "route")
+	_, err := fslink.LinkDir(filepath.Join(dir, "missing", "nested"), link)
+	require.NoError(t, err)
+	t.Chdir(dir)
+	for _, path := range []string{"missing/../config", "route/../config", link + "/../config"} {
+		got, err := pathresolve.EvalSymlinksAllowMissing(path)
+		require.Error(t, err, "cannot resolve a parent through a missing component: %s", path)
+		assert.Empty(t, got)
 	}
 }

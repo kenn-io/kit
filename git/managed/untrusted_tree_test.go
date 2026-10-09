@@ -79,14 +79,22 @@ func TestMaterializeUntrustedTreePinsWorktree(t *testing.T) {
 }
 
 func TestDeferredCheckoutRejectsFutureTreeConfig(t *testing.T) {
-	for _, source := range []string{"global", "system", "include", "conditional-include", "global-link", "include-link", "directory-link", "parent-link", "parent-include", "external", "external-link"} {
+	for _, source := range []string{"global", "system", "include", "conditional-include", "global-link", "include-link", "directory-link", "parent-link", "parent-include", "future-link", "future-include", "external", "external-link"} {
 		t.Run(source, func(t *testing.T) {
 			root := initLifecycleRepo(t)
 			require.NoError(t, os.WriteFile(filepath.Join(root, ".gitconfig"), []byte("[diff \"deferred\"]\ncommand = echo executed > driver-ran\n"), 0o600))
 			require.NoError(t, os.WriteFile(filepath.Join(root, ".gitattributes"), []byte("payload diff=deferred\n"), 0o600))
 			require.NoError(t, os.WriteFile(filepath.Join(root, "payload"), []byte("original\n"), 0o600))
-			require.NoError(t, os.Mkdir(filepath.Join(root, "nested"), 0o755))
-			require.NoError(t, os.WriteFile(filepath.Join(root, "nested", "file"), nil, 0o600))
+			require.NoError(t, os.MkdirAll(filepath.Join(root, "nested", "deeper"), 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(root, "nested", "deeper", "file"), nil, 0o600))
+			if source == "future-link" || source == "future-include" {
+				if err := os.Symlink("nested/deeper", filepath.Join(root, "route")); err != nil {
+					if runtime.GOOS == "windows" {
+						t.Skipf("cannot create symlink: %v", err)
+					}
+					require.NoError(t, err)
+				}
+			}
 			lifecycleGit(t, root, "add", ".")
 			lifecycleGit(t, root, "commit", "-m", "tree configuration")
 			lifecycleGit(t, root, "branch", "imported")
@@ -130,6 +138,13 @@ func TestDeferredCheckoutRejectsFutureTreeConfig(t *testing.T) {
 				} else {
 					runner.Env = append(runner.Env, "GIT_CONFIG_GLOBAL="+configPath)
 				}
+			case "future-link", "future-include":
+				configPath := path + "/route/../../.gitconfig"
+				if source == "future-include" {
+					lifecycleGit(t, root, "config", "include.path", filepath.ToSlash(configPath))
+				} else {
+					runner.Env = append(runner.Env, "GIT_CONFIG_GLOBAL="+configPath)
+				}
 			case "directory-link":
 				link := filepath.Join(t.TempDir(), "directory")
 				_, err := fslink.LinkDir(path, link)
@@ -162,6 +177,43 @@ func TestDeferredCheckoutRejectsFutureTreeConfig(t *testing.T) {
 			require.NoError(t, err, "%s", stderr)
 			assert.Contains(t, string(out), "+changed")
 			assert.NoFileExists(t, filepath.Join(path, "driver-ran"))
+		})
+	}
+}
+
+func TestIsolatedCheckoutRejectsConfigCaseAliasBeforeMaterializing(t *testing.T) {
+	for _, mode := range []string{"immediate", "deferred"} {
+		t.Run(mode, func(t *testing.T) {
+			base := t.TempDir()
+			probe := filepath.Join(base, "probe")
+			require.NoError(t, os.Mkdir(probe, 0o755))
+			if _, err := os.Stat(filepath.Join(base, "PROBE")); os.IsNotExist(err) {
+				t.Skip("requires a case-insensitive filesystem")
+			} else {
+				require.NoError(t, err)
+			}
+			root := initLifecycleRepo(t)
+			require.NoError(t, os.WriteFile(filepath.Join(root, ".gitconfig"), []byte("[fixture]\nvalue = imported\n"), 0o600))
+			lifecycleGit(t, root, "add", ".")
+			lifecycleGit(t, root, "commit", "-m", "tree configuration")
+			lifecycleGit(t, root, "branch", "imported")
+			lifecycleGit(t, root, "reset", "--hard", "HEAD^")
+			path := filepath.Join(base, "checkout")
+			link := filepath.Join(t.TempDir(), "config")
+			if err := os.Symlink(filepath.Join(base, "CHECKOUT", ".gitconfig"), link); err != nil {
+				if runtime.GOOS == "windows" {
+					t.Skipf("cannot create symlink: %v", err)
+				}
+				require.NoError(t, err)
+			}
+			runner := lifecycleTestRunner(t)
+			runner.Env = append(runner.Env, "GIT_CONFIG_GLOBAL="+link)
+			_, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+				ProjectRoot: root, Path: path, Branch: "topic", BaseRef: "imported", NoCheckout: mode == "deferred",
+				Checkout: CheckoutIsolated, FailureCleanup: CleanupDeferred, Runner: runner,
+			})
+			require.Error(t, err)
+			assert.NoFileExists(t, filepath.Join(path, ".gitconfig"))
 		})
 	}
 }

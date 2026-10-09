@@ -333,7 +333,12 @@ func createWorktreeOnDisk(ctx context.Context, opts CreateWorktreeOptions, prepa
 		result.headRef = "refs/heads/" + branch
 	}
 	if opts.Checkout == CheckoutIsolated {
-		err = rejectCommandScopeIsolationOverrides(ctx, path, lifecycleRunner(ctx))
+		// Registration makes the directory identity available for case aliases.
+		// Check before materialization can activate any files from the tree.
+		err = rejectConfigSourcesInsideWorktree(ctx, path, path, isolation.runner)
+		if err == nil {
+			err = rejectCommandScopeIsolationOverrides(ctx, path, lifecycleRunner(ctx))
+		}
 		if err == nil {
 			var completed untrustedTreeIsolation
 			completed, err = completeUntrustedTreeIsolation(ctx, path, isolation)

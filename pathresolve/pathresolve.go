@@ -64,6 +64,8 @@ func EvalSymlinks(path string) (string, error) {
 // to an absolute path, retaining any missing target or trailing components.
 // Unlike EvalSymlinks, it can compare paths before their files are created.
 // Cycles, inaccessible paths, and non-directory parent components still fail.
+// Parent traversal after a missing component also fails: that component could
+// become a link, so its parent cannot be determined before it exists.
 func EvalSymlinksAllowMissing(path string) (string, error) {
 	resolved, _, err := resolveReparsePoints(path)
 	if err != nil {
@@ -131,6 +133,7 @@ func followFirstReparsePoint(current string) (string, bool, error) {
 	if tail != "" && os.IsPathSeparator(tail[0]) {
 		prefix += string(filepath.Separator)
 	}
+	missing := false
 	for i := 0; i < len(tail); {
 		for i < len(tail) && os.IsPathSeparator(tail[i]) {
 			i++
@@ -142,9 +145,16 @@ func followFirstReparsePoint(current string) (string, bool, error) {
 		if start == i {
 			break
 		}
+		if tail[start:i] == ".." && missing {
+			return "", false, &os.PathError{
+				Op: "evalsymlinks", Path: current,
+				Err: errors.New("parent traversal after a missing component"),
+			}
+		}
 		prefix = filepath.Join(prefix, tail[start:i])
 		info, err := os.Lstat(prefix)
 		if errors.Is(err, os.ErrNotExist) {
+			missing = true
 			continue
 		}
 		if err != nil {
