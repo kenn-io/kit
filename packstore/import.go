@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"go.kenn.io/kit/internal/contextio"
 	"go.kenn.io/kit/pack"
 )
 
@@ -440,7 +441,7 @@ func copyImportSource(
 	}()
 	hasher := sha256.New()
 	boundedWriter := &importBoundedWriter{writer: io.MultiWriter(staged, hasher), remaining: maxBytes}
-	written, err := io.CopyBuffer(boundedWriter, &contextReader{ctx: ctx, reader: source}, make([]byte, 64<<10))
+	written, err := io.CopyBuffer(boundedWriter, &contextio.Reader{Context: ctx, Reader: source}, make([]byte, 64<<10))
 	if err != nil {
 		if errors.Is(err, errImportSourceExceedsLimit) {
 			return result, fmt.Errorf("packstore: import source mutation exceeds configured pack limit: %w", err)
@@ -528,7 +529,7 @@ func verifyOpenImportFinalBytes(
 	}
 	hasher := sha256.New()
 	section := io.NewSectionReader(f, 0, opened.Size())
-	size, err := io.CopyBuffer(hasher, &contextReader{ctx: ctx, reader: section}, make([]byte, 64<<10))
+	size, err := io.CopyBuffer(hasher, &contextio.Reader{Context: ctx, Reader: section}, make([]byte, 64<<10))
 	if err != nil {
 		return fmt.Errorf("hash final pack: %w", err)
 	}
