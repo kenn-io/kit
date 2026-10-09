@@ -2,6 +2,7 @@ package posthog
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"math"
 	"net/http"
@@ -34,6 +35,9 @@ const (
 // event allowlist.
 var ErrUnsupportedEvent = errors.New("unsupported telemetry event")
 
+// ErrInvalidProperty marks a missing or rejected required event property.
+var ErrInvalidProperty = errors.New("invalid telemetry property")
+
 var postHogTelemetryDisabled atomic.Bool
 
 // PropertyFilter validates and returns a safe event property value.
@@ -41,8 +45,9 @@ type PropertyFilter func(any) (any, bool)
 
 // AllowedProperty configures one safe property for an allowed event.
 type AllowedProperty struct {
-	name   string
-	filter PropertyFilter
+	name     string
+	filter   PropertyFilter
+	required bool
 }
 
 // Option customizes a PostHog telemetry reporter.
@@ -87,17 +92,18 @@ type Options struct {
 
 // Reporter sanitizes and submits anonymous telemetry events to PostHog.
 type Reporter struct {
-	mu            sync.Mutex
-	client        postHogEnqueueCloser
-	distinctID    string
-	version       string
-	commit        string
-	application   string
-	source        string
-	allowedEvents map[string]map[string]PropertyFilter
-	enabled       bool
-	now           func() time.Time
-	installedAt   time.Time
+	mu             sync.Mutex
+	client         postHogEnqueueCloser
+	distinctID     string
+	version        string
+	commit         string
+	application    string
+	source         string
+	allowedEvents  map[string]map[string]PropertyFilter
+	requiredEvents map[string]map[string]bool
+	enabled        bool
+	now            func() time.Time
+	installedAt    time.Time
 }
 
 type postHogEnqueueCloser interface {
@@ -108,8 +114,9 @@ type postHogEnqueueCloser interface {
 type postHogClientFactory func(apiKey string, config phsdk.Config) (postHogEnqueueCloser, error)
 
 type postHogReporterConfig struct {
-	allowedEvents map[string]map[string]PropertyFilter
-	now           func() time.Time
+	allowedEvents  map[string]map[string]PropertyFilter
+	requiredEvents map[string]map[string]bool
+	now            func() time.Time
 }
 
 type postHogOptionFunc func(*postHogReporterConfig)
@@ -126,7 +133,16 @@ func AllowProperty(name string, filter PropertyFilter) AllowedProperty {
 	}
 }
 
+// RequireProperty rejects an event when name is missing or its filter rejects it.
+// Its declaration requires a nonblank name and nonnil filter.
+func RequireProperty(name string, filter PropertyFilter) AllowedProperty {
+	property := AllowProperty(name, filter)
+	property.required = true
+	return property
+}
+
 // WithAllowedEvent allows event and the listed sanitized properties.
+// Requiredness survives later declarations; the latest valid filter applies.
 func WithAllowedEvent(event string, properties ...AllowedProperty) Option {
 	return postHogOptionFunc(func(config *postHogReporterConfig) {
 		if config == nil {
@@ -145,6 +161,16 @@ func WithAllowedEvent(event string, properties ...AllowedProperty) Option {
 			config.allowedEvents[event] = allowedProperties
 		}
 		for _, property := range properties {
+			if property.required {
+				if config.requiredEvents == nil {
+					config.requiredEvents = make(map[string]map[string]bool)
+				}
+				if config.requiredEvents[event] == nil {
+					config.requiredEvents[event] = make(map[string]bool)
+				}
+				valid, declared := config.requiredEvents[event][property.name]
+				config.requiredEvents[event][property.name] = property.name != "" && property.filter != nil && (!declared || valid)
+			}
 			if property.name == "" || property.filter == nil {
 				continue
 			}
@@ -223,9 +249,16 @@ func newPostHogReporter(opts Options, newClient postHogClientFactory, options ..
 			option.applyPostHogOption(&config)
 		}
 	}
+	for event, properties := range config.requiredEvents {
+		for property, valid := range properties {
+			if !valid {
+				return nil, fmt.Errorf("required telemetry property %q for %q needs a nonblank name and nonnil filter", property, event)
+			}
+		}
+	}
 	allowedEvents := cloneAllowedTelemetryEvents(config.allowedEvents)
 	if !EnabledFromEnv(opts.EnvPrefix) {
-		return &Reporter{allowedEvents: allowedEvents}, nil
+		return &Reporter{allowedEvents: allowedEvents, requiredEvents: config.requiredEvents}, nil
 	}
 	if newClient == nil {
 		return nil, errors.New("posthog client factory is required")
@@ -270,16 +303,17 @@ func newPostHogReporter(opts Options, newClient postHogClientFactory, options ..
 	}
 
 	return &Reporter{
-		client:        client,
-		distinctID:    strings.TrimSpace(opts.DistinctID),
-		version:       opts.Version,
-		commit:        opts.Commit,
-		application:   strings.TrimSpace(opts.Application),
-		source:        defaultString(strings.TrimSpace(opts.Source), "daemon"),
-		allowedEvents: allowedEvents,
-		enabled:       true,
-		now:           config.now,
-		installedAt:   opts.InstalledAt,
+		client:         client,
+		distinctID:     strings.TrimSpace(opts.DistinctID),
+		version:        opts.Version,
+		commit:         opts.Commit,
+		application:    strings.TrimSpace(opts.Application),
+		source:         defaultString(strings.TrimSpace(opts.Source), "daemon"),
+		allowedEvents:  allowedEvents,
+		requiredEvents: config.requiredEvents,
+		enabled:        true,
+		now:            config.now,
+		installedAt:    opts.InstalledAt,
 	}, nil
 }
 
@@ -326,6 +360,11 @@ func (r *Reporter) SanitizeProperties(event string, properties map[string]any) (
 		}
 		if safeValue, ok := filter(value); ok {
 			safeProperties[key] = safeValue
+		}
+	}
+	for key := range r.requiredEvents[strings.TrimSpace(event)] {
+		if _, present := safeProperties[key]; !present {
+			return nil, fmt.Errorf("%w: %s", ErrInvalidProperty, key)
 		}
 	}
 	r.addDefaultProperties(safeProperties)

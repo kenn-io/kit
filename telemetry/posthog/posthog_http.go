@@ -68,6 +68,10 @@ func NewCaptureHandler(reporter *Reporter) http.Handler {
 			http.Error(w, ErrUnsupportedEvent.Error(), http.StatusBadRequest)
 			return
 		}
+		if _, err := reporter.SanitizeProperties(req.Event, req.Properties); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		if !reporter.Enabled() {
 			writePostHogCaptureStatus(w, "disabled")
 			return
