@@ -65,19 +65,25 @@ func (d *DailyClaims) report(ctx context.Context, identity, event, key string, n
 	var state dailyState
 	data, err := os.ReadFile(d.path)
 	if err == nil {
-		if err = json.Unmarshal(data, &state); err != nil || state.Version != 1 || state.Days == nil {
-			return "", errors.New("invalid daily telemetry state")
+		if err = json.Unmarshal(data, &state); state.Version > 1 {
+			return "", fmt.Errorf("unsupported daily telemetry version %d", state.Version)
 		}
+		valid := err == nil && state.Version == 1 && state.Days != nil
 		for _, days := range state.Days {
 			for _, day := range days {
 				if _, err := time.Parse(time.DateOnly, day); err != nil {
-					return "", errors.New("invalid daily telemetry date")
+					valid = false
+					break
 				}
 			}
 		}
+		if !valid {
+			state = dailyState{}
+		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", fmt.Errorf("read daily telemetry: %w", err)
-	} else {
+	}
+	if state.Days == nil {
 		state = dailyState{Version: 1, Days: make(map[string][]string)}
 	}
 	save := func() error {
@@ -123,7 +129,11 @@ func (d *DailyClaims) report(ctx context.Context, identity, event, key string, n
 	d.pending = &dailyReservation{key: claim, day: day}
 	state.Days[claim] = append(state.Days[claim], day)
 	if err := save(); err != nil {
-		if !errors.Is(err, atomicfile.ErrPublished) {
+		if errors.Is(err, atomicfile.ErrPublished) {
+			if releaseErr := rollback(); releaseErr != nil {
+				return "", errors.Join(fmt.Errorf("reserve daily telemetry: %w", err), fmt.Errorf("release daily telemetry: %w", releaseErr))
+			}
+		} else {
 			d.pending = nil
 		}
 		return "", fmt.Errorf("reserve daily telemetry: %w", err)

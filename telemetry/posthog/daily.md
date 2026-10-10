@@ -15,14 +15,16 @@ one JSON value and a body of at most 64 KiB. Applications own routes and
 authentication.
 
 Keep daily event and key allowlists finite. Reporter construction rejects an
-unknown daily event, an unlisted key property or missing state path, including
-when opted out. `Report` and enabled `Capture` return `ErrUnsupportedEvent`
+unknown daily event, an unlisted key property, missing state path or blank
+`Options.DistinctID`, including when opted out. `Report` and enabled `Capture` return `ErrUnsupportedEvent`
 for blank events.
 Daily keys must be caller-owned properties; reporter defaults cannot identify a daily claim.
 
 The state file reserves each installation, event and screen before SDK enqueue.
 The file lock covers reservation, enqueue and rollback. A rejected enqueue
-releases its claim. A storage failure returns an error for a later retry.
+releases its claim. A failed reservation save releases any published claim
+under the same lock. Storage failures return errors for a later retry; if
+release also fails, the error includes both failures.
 Claims retain accepted UTC dates, so correcting a future clock permits an
 unreported date and returning to a counted date skips it. Dates remain in the
 file because pruning could repeat a count after clock correction. The file
@@ -30,15 +32,16 @@ grows by one date per accepted installation, event, key and day. Reservation,
 event timestamp and installation age use one time sampled under the claim lock.
 
 Use `Report` with a caller context. `Capture` bounds daily lock waiting with
-`ShutdownTimeout`. The versioned file rejects malformed or future versions.
+`ShutdownTimeout`. A malformed state file starts with empty claims; the next
+save replaces it. A newer format version returns an error and leaves the file intact.
 Request lock waits follow caller cancellation and deadlines; HTTP owners should bound request contexts as needed.
 A report racing `Close` can hold the daily file lock while waiting for SDK shutdown, up to `ShutdownTimeout`, so other writers can time out and retry.
-For corruption, stop writers and restore a valid backup. Removing state forgets
-accepted dates and can count them again.
+Recovering damaged state forgets accepted dates and can count them again.
 
 Accepted reports mean SDK queue acceptance. A crash between reservation and
-acceptance can lose a count. A failed rollback followed by process exit can
-leave a reservation. The SDK can also fail network delivery after acceptance.
+acceptance can lose a count. If release fails before publication, the same
+`DailyClaims` object retries cleanup on its next call; process exit before that
+cleanup can leave a reservation. The SDK can also fail network delivery after acceptance.
 
 Report screens on later focus, navigation or terminal interaction,
 independently of app-open reporting. Use delivery results to detect failures
