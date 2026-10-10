@@ -22,7 +22,10 @@ Daily keys must be caller-owned properties; reporter defaults cannot identify a 
 
 The state file reserves each installation, event and screen before SDK enqueue.
 The file lock covers reservation, enqueue and rollback. A rejected enqueue
-releases its claim. A storage failure returns an error for a later retry.
+releases its claim. A failed reservation save releases any published claim
+under the same lock. Storage failures return errors for a later retry; if
+release fails before publication, the error includes both failures. If release
+publishes despite an error, only the reservation error returns.
 Claims retain accepted UTC dates, so correcting a future clock permits an
 unreported date and returning to a counted date skips it. Dates remain in the
 file because pruning could repeat a count after clock correction. The file
@@ -30,15 +33,19 @@ grows by one date per accepted installation, event, key and day. Reservation,
 event timestamp and installation age use one time sampled under the claim lock.
 
 Use `Report` with a caller context. `Capture` bounds daily lock waiting with
-`ShutdownTimeout`. The versioned file rejects malformed or future versions.
+`ShutdownTimeout`. Version 1 is read. A numeric version that may be 1 or more but
+isn't written as `1`, for example `2` or `1.0`, is refused and the file left
+unchanged. Any other unreadable content resets to empty claims. Read errors other
+than a missing file are returned.
 Request lock waits follow caller cancellation and deadlines; HTTP owners should bound request contexts as needed.
 A report racing `Close` can hold the daily file lock while waiting for SDK shutdown, up to `ShutdownTimeout`, so other writers can time out and retry.
-For corruption, stop writers and restore a valid backup. Removing state forgets
-accepted dates and can count them again.
+Recovering damaged state forgets accepted dates and can count them again.
 
 Accepted reports mean SDK queue acceptance. A crash between reservation and
-acceptance can lose a count. A failed rollback followed by process exit can
-leave a reservation. The SDK can also fail network delivery after acceptance.
+acceptance can lose a count. If release fails before publication, the same
+`DailyClaims` object retries cleanup on its next call; process exit before that
+cleanup can leave a reservation. The SDK can also fail network delivery after
+acceptance.
 
 Report screens on later focus, navigation or terminal interaction,
 independently of app-open reporting. Use delivery results to detect failures

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -185,11 +184,42 @@ func TestDailyClaimsClockAfterLock(t *testing.T) {
 
 func TestDailyClaimsInvalidStateAndCancellation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "days.json")
-	for _, body := range []string{`{`, `{"version":2,"days":{}}`, `{"version":1,"days":{"key":["tomorrow"]}}`, `null`, `{}`, `{"days":{}}`, `{"version":1}`, `{"version":1,"days":null}`} {
+	clock := &fakePostHogClock{now: postHogTestStart}
+	for _, body := range []string{
+		`{`, `null`, `{}`, `{"version":"damaged","days":{}}`, `{"version":0}`, `{"version":-1e99999999999}`,
+		`{"version":"1","days":{"[\"id\",\"screen\",\"queue\"]":["` + clock.Now().UTC().Format(time.DateOnly) + `"]}}`,
+		`{"version":1,"days":{"key":["2026-10-08","tomorrow"]}}`, `{"version":1,"days":null}`,
+		`{"version":2,"version":1,"days":null}`,
+	} {
 		require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 		sends := 0
-		_, err := NewDailyClaims(path).report(t.Context(), "id", "screen", "queue", time.Now, func(time.Time) (Status, error) { sends++; return StatusQueued, nil })
-		require.Error(t, err, body)
+		status, err := NewDailyClaims(path).report(t.Context(), "id", "screen", "queue", clock.Now, func(time.Time) (Status, error) { sends++; return StatusQueued, nil })
+		require.NoError(t, err, body)
+		assert.Equal(t, StatusQueued, status, body)
+		assert.Equal(t, 1, sends, body)
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		var state dailyState
+		require.NoError(t, json.Unmarshal(data, &state))
+		assert.Equal(t, 1, state.Version)
+		assert.Len(t, state.Days, 1)
+		status, err = NewDailyClaims(path).report(t.Context(), "id", "screen", "queue", clock.Now, func(time.Time) (Status, error) { sends++; return StatusQueued, nil })
+		require.NoError(t, err)
+		assert.Equal(t, StatusSkipped, status)
+		assert.Equal(t, 1, sends)
+	}
+	for _, body := range []string{
+		`{"version":2}`, `{"version":2,"days":`, `{"version":2,"days":{"key":["tomorrow"]}}`, `{"version":2.0}`, `{"version":1.0}`, `{"version":1.0000000000000001}`, `{"version":1e99999999999}`, `{"version":2} trailing bytes`,
+		`{"Version":2,"days":{}}`, `{"version":1,"version":2,"days":{}}`,
+		`{"version":2,"version":null,"days":{}}`,
+	} {
+		require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+		sends := 0
+		_, err := NewDailyClaims(path).report(t.Context(), "id", "screen", "queue", time.Now, func(time.Time) (Status, error) {
+			sends++
+			return StatusQueued, nil
+		})
+		require.ErrorContains(t, err, "unsupported daily telemetry version")
 		assert.Zero(t, sends, body)
 		data, err := os.ReadFile(path)
 		require.NoError(t, err)
@@ -205,41 +235,28 @@ func TestDailyClaimsInvalidStateAndCancellation(t *testing.T) {
 }
 
 func TestDailyClaimsCleanupPreservesNewerAcceptedDay(t *testing.T) {
-	for _, newer := range []bool{false, true} {
-		t.Run(strconv.FormatBool(newer), func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "days.json")
-			claims := NewDailyClaims(path)
-			clock := &fakePostHogClock{now: postHogTestStart}
-			writes := 0
-			claims.write = func(p string, b []byte, o ...atomicfile.Option) error {
-				writes++
-				if writes == 2 {
-					return errors.New("rollback failed")
-				}
-				return atomicfile.WriteFile(p, b, o...)
-			}
-			_, err := claims.report(t.Context(), "id", "screen", "queue", clock.Now, func(time.Time) (Status, error) { return "", errors.New("rejected") })
-			require.Error(t, err)
-			if newer {
-				clock.Advance(24 * time.Hour)
-			}
-			send := func(time.Time) (Status, error) { return StatusQueued, nil }
-			if !newer {
-				status, err := claims.report(t.Context(), "id", "screen", "queue", clock.Now, send)
-				require.NoError(t, err)
-				assert.Equal(t, StatusQueued, status)
-				assert.Nil(t, claims.pending)
-				return
-			}
-			status, err := NewDailyClaims(path).report(t.Context(), "id", "screen", "queue", clock.Now, send)
-			require.NoError(t, err)
-			assert.Equal(t, StatusQueued, status)
-			status, err = claims.report(t.Context(), "id", "screen", "queue", clock.Now, func(time.Time) (Status, error) { assert.Fail(t, "newer day was erased"); return StatusQueued, nil })
-			require.NoError(t, err)
-			assert.Equal(t, StatusSkipped, status)
-			assert.Nil(t, claims.pending)
-		})
+	path := filepath.Join(t.TempDir(), "days.json")
+	claims := NewDailyClaims(path)
+	clock := &fakePostHogClock{now: postHogTestStart}
+	writes := 0
+	claims.write = func(p string, b []byte, o ...atomicfile.Option) error {
+		writes++
+		if writes == 2 {
+			return errors.New("rollback failed")
+		}
+		return atomicfile.WriteFile(p, b, o...)
 	}
+	_, err := claims.report(t.Context(), "id", "screen", "queue", clock.Now, func(time.Time) (Status, error) { return "", errors.New("rejected") })
+	require.Error(t, err)
+	clock.Advance(24 * time.Hour)
+	send := func(time.Time) (Status, error) { return StatusQueued, nil }
+	status, err := NewDailyClaims(path).report(t.Context(), "id", "screen", "queue", clock.Now, send)
+	require.NoError(t, err)
+	assert.Equal(t, StatusQueued, status)
+	status, err = claims.report(t.Context(), "id", "screen", "queue", clock.Now, func(time.Time) (Status, error) { assert.Fail(t, "newer day was erased"); return StatusQueued, nil })
+	require.NoError(t, err)
+	assert.Equal(t, StatusSkipped, status)
+	assert.Nil(t, claims.pending)
 }
 
 func TestDailyReportKeepsReservationTimestamp(t *testing.T) {
@@ -322,53 +339,80 @@ func TestReporterConfigurationValidation(t *testing.T) {
 
 func TestDailyClaimsPublicationRecovery(t *testing.T) {
 	for _, publishedErr := range []error{atomicfile.ErrPublished, atomicfile.ErrNotDurable} {
-		for _, failure := range []string{"unpublished reservation", "published rollback", "published deferred cleanup", "published reservation"} {
-			t.Run(failure+publishedErr.Error(), func(t *testing.T) {
+		releaseErr := errors.New("release failed before publication")
+		for _, tc := range []struct {
+			name        string
+			errors      []error
+			wantErrors  []error
+			omitError   error
+			retryError  error
+			retry       bool
+			freshStatus Status
+		}{
+			{name: "published reservation", errors: []error{publishedErr}, wantErrors: []error{publishedErr}, freshStatus: StatusQueued},
+			{name: "unpublished reservation", errors: []error{releaseErr}, wantErrors: []error{releaseErr}, freshStatus: StatusQueued},
+			{name: "published rollback", errors: []error{nil, publishedErr}, wantErrors: []error{publishedErr}, freshStatus: StatusQueued},
+			{name: "published deferred cleanup", errors: []error{nil, releaseErr, publishedErr}, wantErrors: []error{releaseErr}, retryError: publishedErr, freshStatus: StatusQueued},
+			{name: "unpublished reservation release", errors: []error{publishedErr, releaseErr}, wantErrors: []error{publishedErr, releaseErr}, retry: true, freshStatus: StatusSkipped},
+			{name: "published reservation release", errors: []error{publishedErr, errors.Join(releaseErr, publishedErr)}, wantErrors: []error{publishedErr}, omitError: releaseErr, freshStatus: StatusQueued},
+		} {
+			t.Run(tc.name+publishedErr.Error(), func(t *testing.T) {
 				path := filepath.Join(t.TempDir(), "days.json")
 				claims := NewDailyClaims(path)
+				clock := &fakePostHogClock{now: postHogTestStart}
 				writes, accepted := 0, 0
 				claims.write = func(p string, data []byte, options ...atomicfile.Option) error {
 					writes++
-					if failure == "unpublished reservation" && writes == 1 || failure == "published deferred cleanup" && writes == 2 {
-						return errors.New("write failed before publication")
+					var failure error
+					if writes <= len(tc.errors) {
+						failure = tc.errors[writes-1]
+					}
+					if failure != nil && !errors.Is(failure, atomicfile.ErrPublished) {
+						return failure
 					}
 					if err := atomicfile.WriteFile(p, data, options...); err != nil {
 						return err
 					}
-					if failure == "published rollback" && writes == 2 || failure == "published deferred cleanup" && writes == 3 || failure == "published reservation" && writes == 1 {
-						return fmt.Errorf("write failed after publication: %w", publishedErr)
-					}
-					return nil
+					return failure
 				}
 				send := func(time.Time) (Status, error) { accepted++; return StatusQueued, nil }
 				report := func(c *DailyClaims, callback func(time.Time) (Status, error)) (Status, error) {
-					return c.report(t.Context(), "id", "screen", "queue", time.Now, callback)
+					return c.report(t.Context(), "id", "screen", "queue", clock.Now, callback)
 				}
 				_, err := report(claims, func(time.Time) (Status, error) {
-					if failure == "published reservation" || failure == "unpublished reservation" {
+					if tc.errors[0] != nil {
 						assert.Fail(t, "capture after failed reservation")
 					}
 					return "", errors.New("rejected")
 				})
 				require.Error(t, err)
+				for _, failure := range tc.wantErrors {
+					require.ErrorIs(t, err, failure)
+				}
+				if tc.omitError != nil {
+					require.NotErrorIs(t, err, tc.omitError)
+				}
 				assert.Zero(t, accepted)
-				if failure == "published reservation" {
+				if len(tc.errors) > 1 {
+					assert.Equal(t, 2, writes)
+				}
+				if tc.retryError != nil {
+					require.NotNil(t, claims.pending)
+					_, err = report(claims, send)
+					require.ErrorIs(t, err, tc.retryError)
+					assert.Zero(t, accepted)
+				}
+				if tc.retry {
 					require.NotNil(t, claims.pending)
 					status, err := report(claims, send)
 					require.NoError(t, err)
 					assert.Equal(t, StatusQueued, status)
-				} else {
-					if failure == "published deferred cleanup" {
-						_, err = report(claims, send)
-						require.Error(t, err)
-						assert.Zero(t, accepted)
-					}
-					assert.Nil(t, claims.pending)
-					status, err := report(NewDailyClaims(path), send)
-					require.NoError(t, err)
-					assert.Equal(t, StatusQueued, status)
 				}
-				status, err := report(claims, send)
+				assert.Nil(t, claims.pending)
+				status, err := report(NewDailyClaims(path), send)
+				require.NoError(t, err)
+				assert.Equal(t, tc.freshStatus, status)
+				status, err = report(claims, send)
 				require.NoError(t, err)
 				assert.Equal(t, StatusSkipped, status)
 				assert.Equal(t, 1, accepted)
