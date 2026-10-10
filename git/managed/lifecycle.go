@@ -467,23 +467,34 @@ func (r CreateWorktreeResult) hasRollbackArtifacts(ctx context.Context) (bool, e
 	if r.checkoutDeferred {
 		// With --no-checkout Git leaves the index absent, so status describes
 		// tracked files as deleted even though nothing has changed since create.
-		out, err := runLifecycleGit(ctx, r.ownedPath, "rev-parse", "--path-format=absolute", "--git-path", "index")
+		absent, err := worktreeIndexAbsent(ctx, r.ownedPath)
 		if err != nil {
-			return false, fmt.Errorf("locate deferred worktree index: %w", err)
+			return false, err
 		}
-		_, err = os.Lstat(strings.TrimSpace(string(out)))
-		if errors.Is(err, os.ErrNotExist) {
+		if absent {
 			entries, err := os.ReadDir(r.ownedPath)
 			if err != nil {
 				return false, fmt.Errorf("inspect deferred worktree contents: %w", err)
 			}
 			return len(entries) != 1 || entries[0].Name() != ".git", nil
 		}
-		if err != nil {
-			return false, fmt.Errorf("inspect deferred worktree index: %w", err)
-		}
 	}
 	return worktreeHasRollbackArtifacts(ctx, r.ownedPath)
+}
+
+func worktreeIndexAbsent(ctx context.Context, path string) (bool, error) {
+	out, err := runLifecycleGit(ctx, path, "rev-parse", "--path-format=absolute", "--git-path", "index")
+	if err != nil {
+		return false, fmt.Errorf("locate deferred worktree index: %w", err)
+	}
+	_, err = os.Lstat(strings.TrimSpace(string(out)))
+	if errors.Is(err, os.ErrNotExist) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect deferred worktree index: %w", err)
+	}
+	return false, nil
 }
 
 func lifecycleRefOID(ctx context.Context, root, branch string) (string, bool, error) {
@@ -724,23 +735,8 @@ func worktreeHasInitializedSubmodules(
 func verifyRemovalTarget(
 	ctx context.Context, root, path, expectedBranch string,
 ) error {
-	if err := verifyRegisteredRemovalTarget(
-		ctx, root, path, expectedBranch,
-	); err != nil {
+	if err := verifyRemovalTargetRepository(ctx, root, path, expectedBranch); err != nil {
 		return err
-	}
-	rootCommon, err := lifecycleCommonGitDir(ctx, root)
-	if err != nil {
-		return err
-	}
-	pathCommon, err := lifecycleCommonGitDir(ctx, path)
-	if err != nil {
-		return fmt.Errorf("inspect worktree repository: %w", err)
-	}
-	if !pathsEqualForGOOS(rootCommon, pathCommon, runtime.GOOS) {
-		return fmt.Errorf(
-			"worktree path belongs to a different repository: %s", path,
-		)
 	}
 	_, headRef, err := lifecycleWorktreeHead(ctx, path)
 	if err != nil {
@@ -754,6 +750,28 @@ func verifyRemovalTarget(
 		return fmt.Errorf(
 			"worktree branch changed: expected %q, found %q",
 			wantRef, headRef,
+		)
+	}
+	return nil
+}
+
+// verifyRemovalTargetRepository checks the registration and repository of a
+// linked checkout. Callers that already read HEAD compare its branch themselves.
+func verifyRemovalTargetRepository(ctx context.Context, root, path, expectedBranch string) error {
+	if err := verifyRegisteredRemovalTarget(ctx, root, path, expectedBranch); err != nil {
+		return err
+	}
+	rootCommon, err := lifecycleCommonGitDir(ctx, root)
+	if err != nil {
+		return err
+	}
+	pathCommon, err := lifecycleCommonGitDir(ctx, path)
+	if err != nil {
+		return fmt.Errorf("inspect worktree repository: %w", err)
+	}
+	if !pathsEqualForGOOS(rootCommon, pathCommon, runtime.GOOS) {
+		return fmt.Errorf(
+			"worktree path belongs to a different repository: %s", path,
 		)
 	}
 	return nil

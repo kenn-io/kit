@@ -198,6 +198,8 @@ func CreateWorktreeFromMergeRequest(
 	if err != nil {
 		return CreateWorktreeResult{}, err
 	}
+	// Fetches and temporary-ref cleanup also write refs in the source repository.
+	ctx = withLifecycleExecution(ctx, isolation.runner, opts.RunGit, opts.RunHook)
 	target, err := prepareMergeRequestRemote(ctx, root, opts)
 	if err != nil {
 		return CreateWorktreeResult{}, err
