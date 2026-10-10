@@ -68,6 +68,8 @@ func piEventName(event Event) string {
 	}
 }
 
+var piFileURLDrive = regexp.MustCompile(`^file:///?([A-Za-z])[:|](/|$)`)
+
 var piWindowsShellPath = regexp.MustCompile(`(?i)^/(?:mnt/|cygdrive/)?([a-z])(?:/(.*))?$`)
 
 // piAgentDir follows Pi's normalizePath for PI_CODING_AGENT_DIR: Git Bash,
@@ -102,7 +104,9 @@ func piAgentDir(dir string) (string, error) {
 // where it throws, since Pi then cannot start:
 // https://github.com/nodejs/node/blob/v24.0.0/lib/internal/url.js#L1450-L1512
 func piFileURLPath(raw string) (string, error) {
-	parsed, err := url.Parse(raw)
+	// The WHATWG URL parser Node uses reads a drive letter after file:// as the
+	// path's first segment and writes C| as C:, while Go reads C: as a host.
+	parsed, err := url.Parse(piFileURLDrive.ReplaceAllString(raw, "file:///$1:$2"))
 	if err != nil {
 		return "", fmt.Errorf("parse file URL %q: %w", raw, err)
 	}
@@ -111,8 +115,8 @@ func piFileURLPath(raw string) (string, error) {
 		(runtime.GOOS == "windows" && strings.Contains(escaped, "%5c")) {
 		return "", fmt.Errorf("file URL %q must not encode path separators", raw)
 	}
-	// The WHATWG URL parser Node uses drops a file URL's localhost host.
-	host := parsed.Host
+	// WHATWG parsing also lowercases the host and drops localhost.
+	host := strings.ToLower(parsed.Host)
 	if host == "localhost" {
 		host = ""
 	}

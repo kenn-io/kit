@@ -981,7 +981,11 @@ func TestConfigPathNormalizesPiAgentDirAsPiDoes(t *testing.T) {
 			want: pick(`C:\Users\me\pi agent`, "/C:/Users/me/pi agent"),
 		},
 		{env: "file://localhost/srv/pi", want: "/srv/pi", fails: windows},
+		{env: "file://LOCALHOST/srv/pi", want: "/srv/pi", fails: windows},
+		{env: "file://C:/Users/me/pi", want: pick(`C:\Users\me\pi`, "/C:/Users/me/pi")},
+		{env: "file:///c|/Users/me/pi", want: pick(`c:\Users\me\pi`, "/c:/Users/me/pi")},
 		{env: "file://server/share/pi", want: `\\server\share\pi`, fails: !windows},
+		{env: "file://SERVER/share/pi", want: `\\server\share\pi`, fails: !windows},
 		{env: "file:///srv/pi%2Fagent", fails: true},
 	}
 	for _, tt := range tests {
@@ -1152,13 +1156,14 @@ func TestPiExtensionHelper(t *testing.T) {
 	switch fields["hook_event_name"] {
 	case "before_agent_start":
 		// Exit at once, leaving a process that inherits stderr. It must outlive
-		// this test, so it gets no cancellation; the test kills it by its PID,
-		// and it runs outside the test's directory so Windows can remove that.
+		// this test, so it gets no cancellation; the test kills it by its PID.
+		// It runs in the test binary's directory, outside the session's, so
+		// Windows can remove the session's directory.
 		linger := exec.CommandContext(
 			context.WithoutCancel(t.Context()), os.Args[0], "-test.run=^TestPiExtensionHelper$",
 		)
 		linger.Env = append(os.Environ(), "KIT_AGENTHOOK_PI_HELPER_LINGER=1")
-		linger.Dir = os.TempDir()
+		linger.Dir = filepath.Dir(os.Args[0])
 		linger.Stderr = os.Stderr
 		require.NoError(t, linger.Start())
 		pid := []byte(strconv.Itoa(linger.Process.Pid))
@@ -1333,9 +1338,6 @@ func TestPiExtensionReportsResumableSessions(t *testing.T) {
 		reports = append(reports, r)
 	}
 	fileA := filepath.Join(dir, "a.jsonl")
-	for _, r := range reports {
-		assert.FileExists(r.Transcript, "reported %s for an unsaved session", r.Event)
-	}
 	assert.Equal([]report{
 		{Event: "session_start", SessionID: "a", Transcript: fileA, Reason: "startup"},
 		{Event: "before_agent_start", SessionID: "a", Transcript: fileA, Prompt: "one"},

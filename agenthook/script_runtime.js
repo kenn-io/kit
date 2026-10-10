@@ -52,6 +52,8 @@ function runCommand(handler, payload) {
 		});
 		child.once("error", (error) => finish(`could not start: ${error.message}`));
 		child.once("exit", (code, signal) => {
+			// The command finished in time, so only the stderr wait remains.
+			clearTimeout(timer);
 			grace = setTimeout(() => finish(exitFailure(code, signal)), stderrGraceMs);
 		});
 		child.once("close", (code, signal) => finish(exitFailure(code, signal)));
