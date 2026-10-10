@@ -153,42 +153,29 @@ func declaresScanner(pass *analysis.Pass) bool {
 	return false
 }
 
-// rowsMethods is the union of the method sets of the row resources:
-// database/sql and sqlx Rows and the pgx Rows interface. Only rows have Err,
-// so only they can reach a scanner, and an interface they implement declares
-// no other methods.
-var rowsMethods = map[string]bool{
-	"Close": true, "ColumnTypes": true, "Columns": true, "Err": true, "Next": true, "NextResultSet": true, "Scan": true,
-	"MapScan": true, "SliceScan": true, "StructScan": true,
-	"CommandTag": true, "Conn": true, "FieldDescriptions": true, "RawValues": true, "TypeMap": true, "Values": true,
-}
-
 // mayHoldRows reports whether a parameter of type t can receive rows that the
-// scanner analysis follows: a resource, a defined type converted from one, or
-// an interface or type parameter with Err that rows implement. Every other
-// parameter, such as a context.Context, cannot be a scanner parameter.
+// scanner analysis follows: a resource or a type converted from one, or an
+// interface or type parameter with Err() error. A defined row type can add
+// any methods, so the rest of the interface does not matter. The exception
+// is context.Context: no row type is also a context, and treating every
+// context parameter as a possible scanner would build SSA for nearly every
+// package.
 func mayHoldRows(t types.Type) bool {
 	t = types.Unalias(t)
+	u := t.Underlying()
 	// A type parameter's underlying type is its constraint interface.
-	if iface, ok := t.Underlying().(*types.Interface); ok {
-		hasErr := false
-		for m := range iface.Methods() {
-			if !rowsMethods[m.Name()] {
-				return false
-			}
-			hasErr = hasErr || m.Name() == "Err"
-		}
-		return hasErr
+	if iface, ok := u.(*types.Interface); ok {
+		return !isContext(t) && hasErr(iface)
 	}
-	if resource(t) {
+	if resource(t) || resource(u) {
 		return true
 	}
 	// A defined type over a resource shares its unexported fields, which
 	// belong to the resource's package.
-	if p, ok := t.(*types.Pointer); ok {
-		t = p.Elem()
+	if p, ok := u.(*types.Pointer); ok {
+		u = p.Elem().Underlying()
 	}
-	if s, ok := t.Underlying().(*types.Struct); ok {
+	if s, ok := u.(*types.Struct); ok {
 		for field := range s.Fields() {
 			if !field.Exported() && field.Pkg() != nil && resourcePackage(field.Pkg().Path()) {
 				return true
@@ -196,6 +183,20 @@ func mayHoldRows(t types.Type) bool {
 		}
 	}
 	return false
+}
+
+func hasErr(iface *types.Interface) bool {
+	for m := range iface.Methods() {
+		if m.Name() == "Err" && m.Signature().Params().Len() == 0 && returnsError(m.Signature()) {
+			return true
+		}
+	}
+	return false
+}
+
+func isContext(t types.Type) bool {
+	n, ok := t.(*types.Named)
+	return ok && n.Obj().Pkg() != nil && n.Obj().Pkg().Path() == "context" && n.Obj().Name() == "Context"
 }
 
 // summarize finds the parameters each function checks as a scanner. It

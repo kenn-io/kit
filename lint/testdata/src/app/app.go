@@ -13,8 +13,5 @@ func Count(ctx context.Context, db *sql.DB) (int, error) {
 		return 0, err
 	}
 	defer rows.Close()
-	if err := dep.Wait(ctx); err != nil {
-		return 0, err
-	}
 	return dep.Count(rows)
 }

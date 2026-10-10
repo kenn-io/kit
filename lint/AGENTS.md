@@ -48,9 +48,10 @@ See `docs/adopting-kennlint.md` for the consumer workflow.
   `kennlint profile` splits a consumer's run between its packages and its
   dependencies.
 - `sqlscanners` builds SSA only for packages declaring an exported function
-  with a parameter that can receive rows (`mayHoldRows`). Parameters that
-  cannot, such as a `context.Context`, never carry scanner facts. Keep
-  `rowsMethods` in step with the row types in `resource`.
+  with a parameter that can receive rows (`mayHoldRows`): a row type, a type
+  converted from one, or any interface with `Err() error` except
+  `context.Context`. Do not narrow interfaces by their other methods; a
+  defined row type can add any method.
 - Diagnostic strings are asserted in fixture `// want` comments; change both
   together.
 - The canonical configuration must stay valid for the golangci-lint version in
