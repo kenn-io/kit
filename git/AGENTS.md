@@ -89,6 +89,11 @@ specific application or forge workflow.
   policy. Capture evidence after confirmed success with a bounded context
   independent of caller cancellation, then report cancellation and apply cleanup.
   A failed or unknown process outcome grants no cleanup authority.
+- Isolated creation disables configured Git hooks with command-scoped settings
+  before creating refs, then persists those settings in the new worktree.
+  Re-read configuration after attachment to cover branch-conditional hooks.
+  Merge-request fetches and temporary-ref cleanup use the same hook policy.
+  Keep the original checkout's hook configuration unchanged.
 - Moving a linked checkout returns acquisition evidence for the new destination.
   Explicit rollback removes that checkout and preserves its preexisting branch;
   it never silently moves it back. Preserve and report an unknown move outcome.

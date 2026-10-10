@@ -3,6 +3,7 @@ package managedworktree
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"os/exec"
@@ -1015,31 +1016,53 @@ func TestCreateWorktreeFromMergeRequestRejectsInheritedCommandScopeConfig(
 	}
 }
 
-func TestCreateWorktreeFromMergeRequestRejectsConfiguredHooks(t *testing.T) {
+func TestCreateWorktreeFromMergeRequestDisablesConfiguredHooks(t *testing.T) {
 	require := require.New(t)
-	assert := assert.New(t)
 	origin, clone := initOriginAndClone(t)
 	lifecycleGit(t, origin, "checkout", "-q", "-b", "configured-hook")
 	lifecycleGit(t, origin, "commit", "--allow-empty", "-m", "configured hook")
 	headSHA := lifecycleGit(t, origin, "rev-parse", "HEAD")
 	lifecycleGit(t, origin, "checkout", "-q", "main")
-	lifecycleGit(t, clone, "config", "hook.import.command", "./import-hook")
-	lifecycleGit(t, clone, "config", "--add", "hook.import.event", "post-checkout")
-
+	marker := filepath.Join(t.TempDir(), "hook-ran")
+	hook := filepath.Join(t.TempDir(), "configured-hook")
+	require.NoError(os.WriteFile(hook, fmt.Appendf(nil, "#!/bin/sh\nprintf ran > %q\n", filepath.ToSlash(marker)), 0o755))
+	lifecycleGit(t, clone, "config", "hook.import.command", filepath.ToSlash(hook))
+	for _, event := range []string{"post-checkout", "post-index-change", "reference-transaction"} {
+		lifecycleGit(t, clone, "config", "--add", "hook.import.event", event)
+	}
+	conditional := filepath.Join(t.TempDir(), "conditional.config")
+	lifecycleGit(t, clone, "config", "--file", conditional, "hook.branch-specific.command", filepath.ToSlash(hook))
+	lifecycleGit(t, clone, "config", "--file", conditional, "hook.branch-specific.event", "post-index-change")
+	lifecycleGit(t, clone, "config", "includeIf.onbranch:pr-configured-hook.path", filepath.ToSlash(conditional))
+	// Verify the installed Git actually executes this fixture where supported.
+	_, listErr := lifecycleTestRunner(t).Output(t.Context(), clone, "hook", "list", "post-checkout")
+	if listErr == nil {
+		lifecycleGit(t, clone, "hook", "run", "post-checkout")
+		require.FileExists(marker)
+		require.NoError(os.Remove(marker))
+	}
 	dest := filepath.Join(t.TempDir(), "wt")
-	_, err := CreateWorktreeFromMergeRequest(
-		t.Context(), MergeRequestWorktreeOptions{
-			Runner:      lifecycleTestRunner(t),
-			ProjectRoot: clone, Branch: "pr-configured-hook", Path: dest,
-			Number: 34, HeadBranch: "configured-hook",
-			HeadRepoCloneURL: origin, ProjectRepoIdentity: identityOfCloneURL(origin),
-			ExpectedHeadSHA: headSHA,
-		})
-
-	require.Error(err)
-	require.ErrorContains(err, "configured Git hooks are unsupported")
-	assert.NoDirExists(dest)
-	assert.False(branchExistsInRepo(t, clone, "pr-configured-hook"))
+	created, err := CreateWorktreeFromMergeRequest(t.Context(), MergeRequestWorktreeOptions{
+		Runner: lifecycleTestRunner(t), ProjectRoot: clone, Branch: "pr-configured-hook", Path: dest,
+		Number: 34, HeadBranch: "configured-hook", HeadRepoCloneURL: origin,
+		ProjectRepoIdentity: identityOfCloneURL(origin), ExpectedHeadSHA: headSHA,
+	})
+	require.NoError(err)
+	require.Equal(headSHA, lifecycleGit(t, dest, "rev-parse", "HEAD"))
+	require.NoFileExists(marker)
+	// Persisted isolation also covers later native commands in the checkout.
+	lifecycleGit(t, dest, "reset", "--hard", "HEAD")
+	require.NoFileExists(marker)
+	require.Equal("false", lifecycleGit(t, dest, "config", "--get", "hook.import.enabled"))
+	require.Equal("false", lifecycleGit(t, dest, "config", "--get", "hook.branch-specific.enabled"))
+	require.Equal(filepath.ToSlash(hook), lifecycleGit(t, clone, "config", "--get", "hook.import.command"))
+	_, err = created.Rollback(t.Context(), RollbackFreshOwned)
+	require.NoError(err)
+	require.NoFileExists(marker)
+	if listErr == nil {
+		lifecycleGit(t, clone, "hook", "run", "post-checkout")
+		require.FileExists(marker)
+	}
 }
 
 func TestIsolationSensitiveConfigKeyIncludesConfiguredHooks(t *testing.T) {
