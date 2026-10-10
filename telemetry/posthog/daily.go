@@ -65,9 +65,16 @@ func (d *DailyClaims) report(ctx context.Context, identity, event, key string, n
 	var state dailyState
 	data, err := os.ReadFile(d.path)
 	if err == nil {
-		if err = json.Unmarshal(data, &state); state.Version > 1 {
-			return "", fmt.Errorf("unsupported daily telemetry version %d", state.Version)
+		var header struct {
+			Version json.Number `json:"version"`
 		}
+		if json.Unmarshal(data, &header) == nil {
+			version, _ := header.Version.Float64() // Overflow yields +Inf, which is also newer.
+			if version > 1 {
+				return "", fmt.Errorf("unsupported daily telemetry version %s", header.Version)
+			}
+		}
+		err = json.Unmarshal(data, &state)
 		valid := err == nil && state.Version == 1 && state.Days != nil
 		for _, days := range state.Days {
 			for _, day := range days {

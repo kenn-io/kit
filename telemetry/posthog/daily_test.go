@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -185,10 +184,11 @@ func TestDailyClaimsClockAfterLock(t *testing.T) {
 
 func TestDailyClaimsInvalidStateAndCancellation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "days.json")
+	clock := &fakePostHogClock{now: postHogTestStart}
 	for _, body := range []string{`{`, `{"version":1,"days":{"key":["tomorrow"]}}`, `null`, `{}`, `{"days":{}}`, `{"version":0,"days":{}}`, `{"version":-1,"days":{}}`, `{"version":1}`, `{"version":1,"days":null}`} {
 		require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 		sends := 0
-		status, err := NewDailyClaims(path).report(t.Context(), "id", "screen", "queue", time.Now, func(time.Time) (Status, error) { sends++; return StatusQueued, nil })
+		status, err := NewDailyClaims(path).report(t.Context(), "id", "screen", "queue", clock.Now, func(time.Time) (Status, error) { sends++; return StatusQueued, nil })
 		require.NoError(t, err, body)
 		assert.Equal(t, StatusQueued, status, body)
 		assert.Equal(t, 1, sends, body)
@@ -198,12 +198,12 @@ func TestDailyClaimsInvalidStateAndCancellation(t *testing.T) {
 		require.NoError(t, json.Unmarshal(data, &state))
 		assert.Equal(t, 1, state.Version)
 		assert.Len(t, state.Days, 1)
-		status, err = NewDailyClaims(path).report(t.Context(), "id", "screen", "queue", time.Now, func(time.Time) (Status, error) { sends++; return StatusQueued, nil })
+		status, err = NewDailyClaims(path).report(t.Context(), "id", "screen", "queue", clock.Now, func(time.Time) (Status, error) { sends++; return StatusQueued, nil })
 		require.NoError(t, err)
 		assert.Equal(t, StatusSkipped, status)
 		assert.Equal(t, 1, sends)
 	}
-	for _, body := range []string{`{"version":2,"days":{}}`, `{"version":2}`, `{"version":2,"days":{"key":["tomorrow"]}}`, `{"version":2,"days":[]}`} {
+	for _, body := range []string{`{"version":2,"days":{}}`, `{"version":2}`, `{"version":2,"days":{"key":["tomorrow"]}}`, `{"version":2,"days":[]}`, `{"version":2.0}`, `{"version":"2"}`, `{"version":1e400}`, `{"version":99999999999999999999}`} {
 		require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 		_, err := NewDailyClaims(path).report(t.Context(), "id", "screen", "queue", time.Now, func(time.Time) (Status, error) {
 			assert.Fail(t, "capture with newer state version")
@@ -221,25 +221,6 @@ func TestDailyClaimsInvalidStateAndCancellation(t *testing.T) {
 	_, err := NewDailyClaims(path).report(ctx, "id", "screen", "queue", time.Now, func(time.Time) (Status, error) { return StatusQueued, nil })
 	require.ErrorIs(t, err, context.Canceled)
 	require.NoError(t, lock.Unlock())
-}
-
-func TestDailyReporterRequiresDistinctID(t *testing.T) {
-	for _, disabled := range []bool{false, true} {
-		for _, id := range []string{"", " \t"} {
-			t.Run(strconv.FormatBool(disabled)+strconv.Quote(id), func(t *testing.T) {
-				t.Setenv(GenericEnabledEnv, "1")
-				t.Setenv("KATA_TELEMETRY_ENABLED", "1")
-				if disabled {
-					t.Setenv("KATA_TELEMETRY_ENABLED", "0")
-				}
-				_, err := newPostHogReporter(Options{APIKey: "caller-owned-key", Application: "kata", EnvPrefix: "KATA", DistinctID: id}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
-					assert.Fail(t, "client created with blank daily identity")
-					return &recordingPostHogClient{}, nil
-				}, WithAllowedEvent("screen_viewed", RequireProperty("screen", AllowStringValues("queue"))), WithDailyEvent("screen_viewed", "screen", NewDailyClaims(filepath.Join(t.TempDir(), "days.json"))))
-				require.ErrorContains(t, err, "distinct id is required")
-			})
-		}
-	}
 }
 
 func TestDailyClaimsCleanupPreservesNewerAcceptedDay(t *testing.T) {
@@ -356,99 +337,98 @@ func TestReporterConfigurationValidation(t *testing.T) {
 			})
 		}
 	}
+	for _, id := range []string{"", " \t"} {
+		t.Run("opted out blank identity "+strconv.Quote(id), func(t *testing.T) {
+			t.Setenv(GenericEnabledEnv, "1")
+			t.Setenv("KATA_TELEMETRY_ENABLED", "0")
+			_, err := newPostHogReporter(Options{EnvPrefix: "KATA", DistinctID: id}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
+				assert.Fail(t, "client created with blank daily identity")
+				return &recordingPostHogClient{}, nil
+			}, allowed, WithDailyEvent("screen_viewed", "screen", claims))
+			require.ErrorContains(t, err, "distinct id is required")
+		})
+	}
 }
 
 func TestDailyClaimsPublicationRecovery(t *testing.T) {
 	for _, publishedErr := range []error{atomicfile.ErrPublished, atomicfile.ErrNotDurable} {
-		for _, failure := range []string{"unpublished reservation", "published rollback", "published deferred cleanup", "published reservation"} {
-			t.Run(failure+publishedErr.Error(), func(t *testing.T) {
+		releaseErr := errors.New("release failed before publication")
+		for _, tc := range []struct {
+			name   string
+			errors []error
+		}{
+			{"published reservation", []error{publishedErr}},
+			{"unpublished reservation", []error{releaseErr}},
+			{"published rollback", []error{nil, publishedErr}},
+			{"published deferred cleanup", []error{nil, releaseErr, publishedErr}},
+			{"unpublished reservation release", []error{publishedErr, releaseErr}},
+			{"published reservation release", []error{publishedErr, errors.Join(releaseErr, publishedErr)}},
+		} {
+			t.Run(tc.name+publishedErr.Error(), func(t *testing.T) {
 				path := filepath.Join(t.TempDir(), "days.json")
 				claims := NewDailyClaims(path)
+				clock := &fakePostHogClock{now: postHogTestStart}
 				writes, accepted := 0, 0
 				claims.write = func(p string, data []byte, options ...atomicfile.Option) error {
 					writes++
-					if failure == "unpublished reservation" && writes == 1 || failure == "published deferred cleanup" && writes == 2 {
-						return errors.New("write failed before publication")
+					var failure error
+					if writes <= len(tc.errors) {
+						failure = tc.errors[writes-1]
+					}
+					if failure != nil && !errors.Is(failure, atomicfile.ErrPublished) {
+						return failure
 					}
 					if err := atomicfile.WriteFile(p, data, options...); err != nil {
 						return err
 					}
-					if failure == "published rollback" && writes == 2 || failure == "published deferred cleanup" && writes == 3 || failure == "published reservation" && writes == 1 {
-						return fmt.Errorf("write failed after publication: %w", publishedErr)
-					}
-					return nil
+					return failure
 				}
 				send := func(time.Time) (Status, error) { accepted++; return StatusQueued, nil }
 				report := func(c *DailyClaims, callback func(time.Time) (Status, error)) (Status, error) {
-					return c.report(t.Context(), "id", "screen", "queue", time.Now, callback)
+					return c.report(t.Context(), "id", "screen", "queue", clock.Now, callback)
 				}
 				_, err := report(claims, func(time.Time) (Status, error) {
-					if failure == "published reservation" || failure == "unpublished reservation" {
+					if tc.errors[0] != nil {
 						assert.Fail(t, "capture after failed reservation")
 					}
 					return "", errors.New("rejected")
 				})
 				require.Error(t, err)
+				for _, failure := range tc.errors[:min(2, len(tc.errors))] {
+					if failure != nil {
+						require.ErrorIs(t, err, failure)
+					}
+				}
 				assert.Zero(t, accepted)
-				if failure == "published deferred cleanup" {
+				if len(tc.errors) > 1 {
+					assert.Equal(t, 2, writes)
+				}
+				if tc.name == "published deferred cleanup" {
+					require.NotNil(t, claims.pending)
 					_, err = report(claims, send)
-					require.Error(t, err)
+					require.ErrorIs(t, err, publishedErr)
 					assert.Zero(t, accepted)
+				}
+				if tc.name == "unpublished reservation release" {
+					require.NotNil(t, claims.pending)
+					status, err := report(claims, send)
+					require.NoError(t, err)
+					assert.Equal(t, StatusQueued, status)
 				}
 				assert.Nil(t, claims.pending)
 				status, err := report(NewDailyClaims(path), send)
 				require.NoError(t, err)
-				assert.Equal(t, StatusQueued, status)
+				if tc.name == "unpublished reservation release" {
+					assert.Equal(t, StatusSkipped, status)
+				} else {
+					assert.Equal(t, StatusQueued, status)
+				}
 				status, err = report(claims, send)
 				require.NoError(t, err)
 				assert.Equal(t, StatusSkipped, status)
 				assert.Equal(t, 1, accepted)
 			})
 		}
-	}
-}
-
-func TestDailyClaimsFailedReservationRelease(t *testing.T) {
-	for _, published := range []bool{false, true} {
-		t.Run(strconv.FormatBool(published), func(t *testing.T) {
-			claims := NewDailyClaims(filepath.Join(t.TempDir(), "days.json"))
-			failure := errors.New("release failed")
-			writes := 0
-			claims.write = func(p string, data []byte, options ...atomicfile.Option) error {
-				writes++
-				if writes == 2 && !published {
-					return failure
-				}
-				if err := atomicfile.WriteFile(p, data, options...); err != nil {
-					return err
-				}
-				if writes == 1 {
-					return fmt.Errorf("reservation failed: %w", atomicfile.ErrNotDurable)
-				}
-				if writes == 2 {
-					return errors.Join(failure, atomicfile.ErrPublished)
-				}
-				return nil
-			}
-			send := func(time.Time) (Status, error) { return StatusQueued, nil }
-			_, err := claims.report(t.Context(), "id", "screen", "queue", time.Now, func(time.Time) (Status, error) {
-				assert.Fail(t, "capture after failed reservation")
-				return StatusQueued, nil
-			})
-			require.ErrorIs(t, err, atomicfile.ErrNotDurable)
-			require.ErrorIs(t, err, failure)
-			assert.Equal(t, 2, writes)
-			if published {
-				assert.Nil(t, claims.pending)
-				claims = NewDailyClaims(claims.path)
-			} else {
-				require.NotNil(t, claims.pending)
-			}
-			status, err := claims.report(t.Context(), "id", "screen", "queue", time.Now, send)
-			require.NoError(t, err)
-			assert.Equal(t, StatusQueued, status)
-			assert.Nil(t, claims.pending)
-		})
 	}
 }
 

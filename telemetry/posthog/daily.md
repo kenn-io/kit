@@ -16,9 +16,9 @@ authentication.
 
 Keep daily event and key allowlists finite. Reporter construction rejects an
 unknown daily event, an unlisted key property, missing state path or blank
-`Options.DistinctID`, including when opted out. `Report` and enabled `Capture` return `ErrUnsupportedEvent`
-for blank events.
-Daily keys must be caller-owned properties; reporter defaults cannot identify a daily claim.
+`Options.DistinctID`, including when opted out. `Report` and enabled `Capture`
+return `ErrUnsupportedEvent` for blank events. Daily keys must be caller-owned
+properties; reporter defaults cannot identify a daily claim.
 
 The state file reserves each installation, event and screen before SDK enqueue.
 The file lock covers reservation, enqueue and rollback. A rejected enqueue

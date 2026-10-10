@@ -263,10 +263,10 @@ func newPostHogReporter(opts Options, newClient postHogClientFactory, options ..
 	allowedEvents := cloneAllowedTelemetryEvents(config.allowedEvents)
 	defaults := make(map[string]any)
 	(&Reporter{}).addDefaultProperties(defaults)
+	if len(config.dailyEvents) > 0 && strings.TrimSpace(opts.DistinctID) == "" {
+		return nil, errors.New("telemetry distinct id is required")
+	}
 	for event, daily := range config.dailyEvents {
-		if strings.TrimSpace(opts.DistinctID) == "" {
-			return nil, errors.New("telemetry distinct id is required")
-		}
 		properties, allowed := allowedEvents[event]
 		if !allowed {
 			return nil, fmt.Errorf("daily telemetry event %q is not allowed", event)
