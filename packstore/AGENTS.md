@@ -2,14 +2,15 @@
 
 ## Loose publication
 
-- Durable streaming duplicate detection precedes syncing the selected staging file.
+- Durable streaming duplicate detection precedes syncing the selected staging file
+  when the caller could not check the hash and size before staging.
   A duplicate verifies and, for durable writes, syncs the retained canonical
-  object; its discarded staging bytes need no sync. New writes and repairs
-  still sync and close the selected file before taking the publication stripe,
-  then recheck for a concurrent publication under the stripe. All paths retain
-  durable staging-entry cleanup and propagate its errors. Like the known-hash
-  fast paths, the early check can report an identity-change error if repair
-  replaces the canonical object during verification.
+  object; its discarded staging bytes need no sync. The early check holds the
+  publication stripe so repair cannot replace or remove the object during
+  verification, and releases it before staging sync. New writes and repairs
+  still sync and close the selected file before taking the stripe for publication.
+  New writes recheck for a concurrent publication there. All paths retain
+  durable staging-entry cleanup and propagate its errors.
 
 - Store-directory staging and the final shard can share a parent durability
   sync. Defer only the parent sync of an existing staging child: directory

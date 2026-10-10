@@ -455,10 +455,18 @@ func (s *filesystemLooseStore) publish(
 	if selected == nil {
 		return identity, errors.New("packstore: no loose staging file selected")
 	}
-	// Discarded duplicate staging needs no sync. Recheck under the write
-	// stripe below because another writer can publish after this lookup.
-	if !replace && opts.Durability == DurablePublication {
-		existing, exists, err := s.existing(ctx, identity.Hash, identity.Size, opts.Dedup, opts.Durability)
+	// Discarded duplicate staging needs no sync. Serialize the lookup with
+	// repairs, but release the stripe before syncing new staging bytes.
+	alreadyChecked := known != nil || (opts.ExpectedHash != "" && opts.SizeKnown)
+	if !replace && !alreadyChecked && opts.Durability == DurablePublication {
+		existing, exists, err := func() (WriteResult, bool, error) {
+			releaseStripe, err := acquireLooseWriteStripe(ctx, identity.Hash)
+			if err != nil {
+				return WriteResult{}, false, err
+			}
+			defer releaseStripe()
+			return s.existing(ctx, identity.Hash, identity.Size, opts.Dedup, opts.Durability)
+		}()
 		if err != nil {
 			return identity, err
 		}
