@@ -211,7 +211,8 @@ func TestDailyClaimsInvalidStateAndCancellation(t *testing.T) {
 	for _, body := range []string{
 		`{"version":2}`, `{"version":2,"days":`, `{"version":2,"days":{"key":["tomorrow"]}}`, `{"version":2.0}`, `{"version":1.0}`, `{"version":1.0000000000000001}`, `{"version":1e99999999999}`, `{"version":2} trailing bytes`,
 		`{"Version":2,"days":{}}`, `{"version":1,"version":2,"days":{}}`,
-		`{"version":2,"version":null,"days":{}}`,
+		`{"version":2,"version":null,"days":{}}`, `{"version":2,"Version":"damaged","days":{}}`,
+		`{"version":2,"version":true,"days":{}}`,
 	} {
 		require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 		sends := 0

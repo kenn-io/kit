@@ -68,21 +68,38 @@ func newerDailyVersion(data []byte) (json.Number, bool) {
 			if err != nil {
 				break
 			}
-			var value any
+			var value json.RawMessage
 			if err := decoder.Decode(&value); err != nil {
 				break
 			}
-			if strings.EqualFold(key.(string), "version") && value != nil {
-				number, _ = value.(json.Number)
+			// Like encoding/json, a non-numeric duplicate leaves an earlier number in place.
+			if !strings.EqualFold(key.(string), "version") {
+				continue
+			}
+			if literal, ok := jsonNumber(value); ok {
+				number = literal
 			}
 		}
 	}
 	if number != "" && number != "1" {
 		version, parseErr := strconv.ParseFloat(string(number), 64)
-		// Refuse integer versions above 1 and other numeric literals we can't prove at most 1; strings and other shapes are damage.
-		return number, (parseErr == nil && version >= 1) || (errors.Is(parseErr, strconv.ErrRange) && math.IsInf(version, 1))
+		// Refuse numeric literals that may be above 1; strings and other shapes are damage.
+		atLeastOne := parseErr == nil && version >= 1
+		overflowed := errors.Is(parseErr, strconv.ErrRange) && math.IsInf(version, 1)
+		return number, atLeastOne || overflowed
 	}
 	return "", false
+}
+
+func jsonNumber(value json.RawMessage) (json.Number, bool) {
+	decoder := json.NewDecoder(bytes.NewReader(value))
+	decoder.UseNumber()
+	var decoded any
+	if err := decoder.Decode(&decoded); err != nil {
+		return "", false
+	}
+	number, ok := decoded.(json.Number)
+	return number, ok
 }
 
 func (d *DailyClaims) report(ctx context.Context, identity, event, key string, now func() time.Time, send func(time.Time) (Status, error)) (Status, error) {
@@ -161,8 +178,12 @@ func (d *DailyClaims) report(ctx context.Context, identity, event, key string, n
 	state.Days[claim] = append(state.Days[claim], day)
 	if err := save(); err != nil {
 		if errors.Is(err, atomicfile.ErrPublished) {
-			if releaseErr := rollback(); d.pending != nil {
-				return "", errors.Join(fmt.Errorf("reserve daily telemetry: %w", err), fmt.Errorf("release daily telemetry: %w", releaseErr))
+			releaseErr := rollback()
+			if d.pending != nil {
+				return "", errors.Join(
+					fmt.Errorf("reserve daily telemetry: %w", err),
+					fmt.Errorf("release daily telemetry: %w", releaseErr),
+				)
 			}
 		} else {
 			d.pending = nil
