@@ -33,11 +33,8 @@ grows by one date per accepted installation, event, key and day. Reservation,
 event timestamp and installation age use one time sampled under the claim lock.
 
 Use `Report` with a caller context. `Capture` bounds daily lock waiting with
-`ShutdownTimeout`. A version above 1 returns an error and leaves the file intact.
-Any other damage, including one invalid date, resets the whole file to empty
-claims; the next save replaces it.
-A file with no readable version, for example a truncated file, counts as damaged.
-Atomic writes never leave partial files.
+`ShutdownTimeout`. A numeric version above 1 returns an error and leaves the file intact.
+Any other unreadable or damaged file resets to empty claims; the next save replaces it.
 Request lock waits follow caller cancellation and deadlines; HTTP owners should bound request contexts as needed.
 A report racing `Close` can hold the daily file lock while waiting for SDK shutdown, up to `ShutdownTimeout`, so other writers can time out and retry.
 Recovering damaged state forgets accepted dates and can count them again.

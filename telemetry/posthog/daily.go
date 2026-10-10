@@ -77,11 +77,12 @@ func (d *DailyClaims) report(ctx context.Context, identity, event, key string, n
 			}
 		}
 		valid := json.Unmarshal(data, &state) == nil && state.Version == 1 && state.Days != nil
+	validateDates:
 		for _, days := range state.Days {
 			for _, day := range days {
 				if _, err := time.Parse(time.DateOnly, day); err != nil {
 					valid = false
-					break
+					break validateDates
 				}
 			}
 		}
@@ -138,7 +139,7 @@ func (d *DailyClaims) report(ctx context.Context, identity, event, key string, n
 	state.Days[claim] = append(state.Days[claim], day)
 	if err := save(); err != nil {
 		if errors.Is(err, atomicfile.ErrPublished) {
-			if releaseErr := rollback(); releaseErr != nil && !errors.Is(releaseErr, atomicfile.ErrPublished) {
+			if releaseErr := rollback(); d.pending != nil {
 				return "", errors.Join(fmt.Errorf("reserve daily telemetry: %w", err), fmt.Errorf("release daily telemetry: %w", releaseErr))
 			}
 		} else {
