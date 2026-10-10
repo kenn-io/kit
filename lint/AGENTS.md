@@ -39,6 +39,18 @@ See `docs/adopting-kennlint.md` for the consumer workflow.
   consumers opt in per repository. `deadlinetest` checks testify `waitFor`
   budgets by default, but reports `Never` and `Neverf` only for zero or
   negative budgets: a short positive window cannot fail under load.
+- An analyzer that declares facts runs, with everything it requires, on every
+  dependency: the standard library and third-party modules included. Fact
+  analyzers must not require `buildssa` or other heavy passes; build what
+  they need lazily, only in packages that can export a fact, as
+  `sqlownership`'s `sqlscanners` does. `TestAnalyzersBuildSSAOnlyForLintedPackages`
+  guards this, `BenchmarkAnalyzers` tracks per-analyzer cost on kit, and
+  `kennlint profile` splits a consumer's run between its packages and its
+  dependencies.
+- `sqlscanners` builds SSA only for packages declaring an exported function
+  with a parameter that can receive rows (`mayHoldRows`). Parameters that
+  cannot, such as a `context.Context`, never carry scanner facts. Keep
+  `rowsMethods` in step with the row types in `resource`.
 - Diagnostic strings are asserted in fixture `// want` comments; change both
   together.
 - The canonical configuration must stay valid for the golangci-lint version in
