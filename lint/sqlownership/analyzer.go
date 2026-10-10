@@ -3,6 +3,7 @@
 package sqlownership
 
 import (
+	"go/ast"
 	"go/token"
 	"go/types"
 	"reflect"
@@ -23,12 +24,25 @@ func (*scannerFact) AFact() {}
 type (
 	handled struct{ returned, scanned bool }
 	result  map[token.Pos]handled
+	// imported maps functions from any package, the current one included,
+	// to the parameters they check as scanners.
+	imported map[*types.Func][]int
 )
 
+// scanners exports scanner facts. Facts make it run on every dependency, so
+// it does not require buildssa: it builds SSA itself, and only for packages
+// that declare an exported function taking rows.
+var scanners = &analysis.Analyzer{
+	Name: "sqlscanners", Doc: "Summarizes functions that check SQL rows iteration errors",
+	Requires:   []*analysis.Analyzer{ctrlflow.Analyzer},
+	FactTypes:  []analysis.Fact{new(scannerFact)},
+	ResultType: reflect.TypeFor[imported](), Run: exportScanners,
+}
+
+// ownership has no facts, so it and buildssa run only on analyzed packages.
 var ownership = &analysis.Analyzer{
 	Name: "sqlownership", Doc: "Tracks SQL resource transfers and scanner error checks",
-	Requires:   []*analysis.Analyzer{buildssa.Analyzer, ctrlflow.Analyzer},
-	FactTypes:  []analysis.Fact{new(scannerFact)},
+	Requires:   []*analysis.Analyzer{buildssa.Analyzer, ctrlflow.Analyzer, scanners},
 	ResultType: reflect.TypeFor[result](), Run: analyze,
 }
 
@@ -58,18 +72,144 @@ func extend(base *analysis.Analyzer, iteration bool) *analysis.Analyzer {
 
 type summaries map[*ssa.Function]map[int]bool
 
-func analyze(pass *analysis.Pass) (any, error) {
-	program := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
+func exportScanners(pass *analysis.Pass) (any, error) {
+	if declaresScanner(pass) {
+		prog := ssa.NewProgram(pass.Fset, ssa.BuilderMode(0))
+		prog.SetNoReturn(pass.ResultOf[ctrlflow.Analyzer].(*ctrlflow.CFGs).NoReturn)
+		for _, p := range pass.Pkg.Imports() {
+			prog.CreatePackage(p, nil, nil, true)
+		}
+		pkg := prog.CreatePackage(pass.Pkg, pass.Files, pass.TypesInfo, false)
+		pkg.Build()
+		// The source functions in source order, as buildssa lists them.
+		var funcs []*ssa.Function
+		for _, file := range pass.Files {
+			for _, decl := range file.Decls {
+				if decl, ok := decl.(*ast.FuncDecl); ok {
+					funcs = appendWithAnons(funcs, prog.FuncValue(pass.TypesInfo.Defs[decl.Name].(*types.Func)))
+				}
+			}
+		}
+		lookup := func(obj *types.Func) []int {
+			var fact scannerFact
+			if pass.ImportObjectFact(obj, &fact) {
+				return fact.Parameters
+			}
+			return nil
+		}
+		scans := summarize(funcs, lookup)
+		for _, fn := range funcs {
+			obj, ok := fn.Object().(*types.Func)
+			if !ok {
+				continue
+			}
+			fact := new(scannerFact)
+			for i := range fn.Params {
+				if scans[fn][i] {
+					fact.Parameters = append(fact.Parameters, i)
+				}
+			}
+			if len(fact.Parameters) > 0 {
+				pass.ExportObjectFact(obj, fact)
+			}
+		}
+	}
+	known := imported{}
+	for _, f := range pass.AllObjectFacts() {
+		if obj, ok := f.Object.(*types.Func); ok {
+			known[obj] = f.Fact.(*scannerFact).Parameters
+		}
+	}
+	return known, nil
+}
+
+func appendWithAnons(funcs []*ssa.Function, fn *ssa.Function) []*ssa.Function {
+	funcs = append(funcs, fn)
+	for _, anon := range fn.AnonFuncs {
+		funcs = appendWithAnons(funcs, anon)
+	}
+	return funcs
+}
+
+// declaresScanner reports whether the package declares an exported function
+// or method with a parameter that can receive rows. Only those can carry a
+// fact another package uses; packages without one skip SSA construction.
+func declaresScanner(pass *analysis.Pass) bool {
+	for _, obj := range pass.TypesInfo.Defs {
+		fn, ok := obj.(*types.Func)
+		if !ok || !fn.Exported() {
+			continue
+		}
+		sig := fn.Signature()
+		if recv := sig.Recv(); recv != nil && mayHoldRows(recv.Type()) {
+			return true
+		}
+		for param := range sig.Params().Variables() {
+			if mayHoldRows(param.Type()) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// rowsMethods is the union of the method sets of the row resources:
+// database/sql and sqlx Rows and the pgx Rows interface. Only rows have Err,
+// so only they can reach a scanner, and an interface they implement declares
+// no other methods.
+var rowsMethods = map[string]bool{
+	"Close": true, "ColumnTypes": true, "Columns": true, "Err": true, "Next": true, "NextResultSet": true, "Scan": true,
+	"MapScan": true, "SliceScan": true, "StructScan": true,
+	"CommandTag": true, "Conn": true, "FieldDescriptions": true, "RawValues": true, "TypeMap": true, "Values": true,
+}
+
+// mayHoldRows reports whether a parameter of type t can receive rows that the
+// scanner analysis follows: a resource, a defined type converted from one, or
+// an interface or type parameter with Err that rows implement. Every other
+// parameter, such as a context.Context, cannot be a scanner parameter.
+func mayHoldRows(t types.Type) bool {
+	t = types.Unalias(t)
+	// A type parameter's underlying type is its constraint interface.
+	if iface, ok := t.Underlying().(*types.Interface); ok {
+		hasErr := false
+		for m := range iface.Methods() {
+			if !rowsMethods[m.Name()] {
+				return false
+			}
+			hasErr = hasErr || m.Name() == "Err"
+		}
+		return hasErr
+	}
+	if resource(t) {
+		return true
+	}
+	// A defined type over a resource shares its unexported fields, which
+	// belong to the resource's package.
+	if p, ok := t.(*types.Pointer); ok {
+		t = p.Elem()
+	}
+	if s, ok := t.Underlying().(*types.Struct); ok {
+		for field := range s.Fields() {
+			if !field.Exported() && field.Pkg() != nil && resourcePackage(field.Pkg().Path()) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// summarize finds the parameters each function checks as a scanner. It
+// reaches a fixed point for scanners forwarding to other local scanners.
+func summarize(funcs []*ssa.Function, lookup func(*types.Func) []int) summaries {
 	scans := summaries{}
-	// Reach a fixed point for scanners forwarding to other local scanners.
 	for changed := true; changed; {
 		changed = false
-		for _, fn := range program.SrcFuncs {
+		for _, fn := range funcs {
 			for i, param := range fn.Params {
-				if scans[fn][i] {
+				if scans[fn][i] || !mayHoldRows(param.Type()) {
 					continue
 				}
-				if checked(pass, scans, param, map[ssa.Value]bool{}) {
+				if checked(scans, lookup, param, map[ssa.Value]bool{}) {
 					if scans[fn] == nil {
 						scans[fn] = map[int]bool{}
 					}
@@ -79,21 +219,14 @@ func analyze(pass *analysis.Pass) (any, error) {
 			}
 		}
 	}
-	for _, fn := range program.SrcFuncs {
-		obj, ok := fn.Object().(*types.Func)
-		if !ok {
-			continue
-		}
-		fact := new(scannerFact)
-		for i := range fn.Params {
-			if scans[fn][i] {
-				fact.Parameters = append(fact.Parameters, i)
-			}
-		}
-		if len(fact.Parameters) > 0 {
-			pass.ExportObjectFact(obj, fact)
-		}
-	}
+	return scans
+}
+
+func analyze(pass *analysis.Pass) (any, error) {
+	program := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
+	known := pass.ResultOf[scanners].(imported)
+	lookup := func(obj *types.Func) []int { return known[obj] }
+	scans := summarize(program.SrcFuncs, lookup)
 	out := result{}
 	for _, fn := range program.SrcFuncs {
 		for _, block := range fn.Blocks {
@@ -123,7 +256,7 @@ func analyze(pass *analysis.Pass) (any, error) {
 					// search proves no other path drops it.
 					transferred := returned(value, map[ssa.Value]bool{}) && everyPath(pass, call.Pos())
 					h.returned = h.returned && transferred
-					h.scanned = h.scanned && (transferred || checked(pass, scans, value, map[ssa.Value]bool{}))
+					h.scanned = h.scanned && (transferred || checked(scans, lookup, value, map[ssa.Value]bool{}))
 					out[call.Pos()] = h
 				}
 			}
@@ -144,15 +277,20 @@ func resource(t types.Type) bool {
 		t = p.Elem()
 	}
 	n, ok := t.(*types.Named)
-	if !ok || n.Obj().Pkg() == nil {
+	if !ok || n.Obj().Pkg() == nil || !resourcePackage(n.Obj().Pkg().Path()) {
 		return false
 	}
-	switch n.Obj().Pkg().Path() {
+	switch n.Obj().Name() {
+	case "Rows", "Stmt", "NamedStmt":
+		return true
+	}
+	return false
+}
+
+func resourcePackage(path string) bool {
+	switch path {
 	case "database/sql", "github.com/jmoiron/sqlx", "github.com/jackc/pgx/v5", "github.com/jackc/pgx/v5/pgxpool":
-		switch n.Obj().Name() {
-		case "Rows", "Stmt", "NamedStmt":
-			return true
-		}
+		return true
 	}
 	return false
 }
@@ -207,7 +345,7 @@ func returned(v ssa.Value, seen map[ssa.Value]bool) bool {
 	return false
 }
 
-func checked(pass *analysis.Pass, scans summaries, v ssa.Value, seen map[ssa.Value]bool) bool {
+func checked(scans summaries, lookup func(*types.Func) []int, v ssa.Value, seen map[ssa.Value]bool) bool {
 	if seen[v] {
 		return false
 	}
@@ -215,15 +353,15 @@ func checked(pass *analysis.Pass, scans summaries, v ssa.Value, seen map[ssa.Val
 	for _, ref := range refs(v) {
 		switch r := ref.(type) {
 		case *ssa.MakeInterface:
-			if checked(pass, scans, r, seen) {
+			if checked(scans, lookup, r, seen) {
 				return true
 			}
 		case *ssa.ChangeType:
-			if checked(pass, scans, r, seen) {
+			if checked(scans, lookup, r, seen) {
 				return true
 			}
 		case *ssa.Phi:
-			if checked(pass, scans, r, seen) {
+			if checked(scans, lookup, r, seen) {
 				return true
 			}
 		case *ssa.Call:
@@ -242,13 +380,8 @@ func checked(pass *analysis.Pass, scans summaries, v ssa.Value, seen map[ssa.Val
 				if scans[callee][i] {
 					return true
 				}
-				if obj, ok := callee.Object().(*types.Func); ok {
-					var fact scannerFact
-					if pass.ImportObjectFact(obj, &fact) {
-						if slices.Contains(fact.Parameters, i) {
-							return true
-						}
-					}
+				if obj, ok := callee.Object().(*types.Func); ok && slices.Contains(lookup(obj), i) {
+					return true
 				}
 			}
 		}

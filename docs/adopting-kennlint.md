@@ -169,6 +169,17 @@ exclusions. Rolling `sleeptest` out to a repository with existing sleeps
 works best through golangci-lint's `new-from-rev` so new sleeps are blocked
 while the backlog is burned down.
 
+## Measuring lint cost
+
+`kennlint profile ./...` runs the analyzers once and prints the time each one,
+prerequisites such as `buildssa` included, spent on your packages and on the
+dependencies it ran on because some analyzer in the run declares facts. Pass
+`-tags` to match the build tags in `.golangci.yml`, `-disable` to match the
+plugin settings, and `-cpuprofile` to dig into one analyzer. Times are
+sequential by default so they add up; `-parallel` shows real wall time instead.
+golangci-lint's `-v` output prints a coarser per-analyzer total for the whole
+run.
+
 ## Changing the policy
 
 The canonical configuration is `lint/config/golangci.yml`. Analyzers live in

@@ -31,3 +31,12 @@ func Values(ctx context.Context, db *sql.DB) ([]int, error) {
 	defer rows.Close()
 	return scanner.Values(rows)
 }
+
+func Defined(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, "SELECT value FROM items")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	return scanner.ReadDefined((*scanner.Defined)(rows))
+}

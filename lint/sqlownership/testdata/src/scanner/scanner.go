@@ -38,3 +38,8 @@ func Unchecked(rows Rows) error {
 	}
 	return nil
 }
+
+// Defined converts to and from *sql.Rows.
+type Defined sql.Rows
+
+func ReadDefined(rows *Defined) error { return (*sql.Rows)(rows).Err() }
