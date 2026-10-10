@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -240,6 +241,39 @@ func TestPreparedHookRetainsValidationAndEnvironment(t *testing.T) {
 		ProjectRoot: root, Path: path, Script: filepath.Join(path, "hook"), MergeRequest: true,
 	})
 	require.Error(t, err)
+}
+
+func TestPreparedHookUsesCreationDestination(t *testing.T) {
+	for _, derived := range []bool{false, true} {
+		t.Run(strconv.FormatBool(derived), func(t *testing.T) {
+			require := require.New(t)
+			root := initLifecycleRepo(t)
+			base := filepath.Join(t.TempDir(), "checkouts")
+			path := filepath.Join(base, "feature-topic")
+			output := filepath.Join(t.TempDir(), "hook-output")
+			script := writeHookScript(t, root, output, 0)
+			opts := WorktreeHookOptions{
+				ProjectRoot: root, Path: path, Branch: "feature/topic", BaseDir: base,
+				Script: script, RunHook: testHookRunner(),
+			}
+			if derived {
+				opts.Path = ""
+			}
+			prepared, err := PrepareWorktreeHook(t.Context(), opts)
+			require.NoError(err)
+			require.NoDirExists(path)
+			created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
+				ProjectRoot: root, Path: prepared.WorktreePath(), Branch: opts.Branch,
+				Runner: lifecycleTestRunner(t),
+			})
+			require.NoError(err)
+			require.NoError(prepared.Run(t.Context()))
+			contents, err := os.ReadFile(output)
+			require.NoError(err)
+			require.Contains(string(contents), created.Path)
+			require.Equal("feature-topic", filepath.Base(created.Path))
+		})
+	}
 }
 
 func TestImportExplicitUpstreamPolicy(t *testing.T) {

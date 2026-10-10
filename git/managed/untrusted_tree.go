@@ -220,11 +220,16 @@ func prepareUntrustedTreeIsolation(
 	for _, entry := range config {
 		runner = runner.WithConfig(entry.Key, entry.Value)
 	}
-	return untrustedTreeIsolation{
-		runner:             runner,
-		config:             config,
-		mergeDriverCommand: safeMergeDriverCommand(gitPath, hooksPath),
-	}, nil
+	keys, err := isolationConfigKeys(ctx, root, runner)
+	if err != nil {
+		return untrustedTreeIsolation{}, err
+	}
+	for _, name := range configuredGitHooks(keys) {
+		entry := gitcmd.Config{Key: "hook." + name + ".enabled", Value: "false"}
+		config = append(config, entry)
+		runner = runner.WithConfig(entry.Key, entry.Value)
+	}
+	return untrustedTreeIsolation{runner: runner, config: config, mergeDriverCommand: safeMergeDriverCommand(gitPath, hooksPath)}, nil
 }
 
 func rejectCommandScopeIsolationOverrides(
@@ -323,28 +328,16 @@ func managedEmptyHooksPath(ctx context.Context, root string) (string, error) {
 func completeUntrustedTreeIsolation(
 	ctx context.Context, worktreePath string, isolation untrustedTreeIsolation,
 ) (untrustedTreeIsolation, error) {
-	checkoutKeys, err := gitConfigKeys(
-		ctx, worktreePath, isolation.runner,
-	)
+	keys, err := isolationConfigKeys(ctx, worktreePath, isolation.runner)
 	if err != nil {
 		return untrustedTreeIsolation{}, err
-	}
-	ambientKeys, err := ambientGitConfigKeys(
-		ctx, worktreePath, isolation.runner,
-	)
-	if err != nil {
-		return untrustedTreeIsolation{}, err
-	}
-	keys := slices.Concat(checkoutKeys, ambientKeys)
-	if hooks := configuredGitHooks(keys); len(hooks) != 0 {
-		return untrustedTreeIsolation{}, fmt.Errorf(
-			"configured Git hooks are unsupported for untrusted tree imports: %s",
-			strings.Join(hooks, ", "),
-		)
 	}
 	drivers := neutralizeAttributeDrivers(
 		configuredAttributeDrivers(keys), isolation.mergeDriverCommand,
 	)
+	for _, name := range configuredGitHooks(keys) {
+		drivers = append(drivers, gitcmd.Config{Key: "hook." + name + ".enabled", Value: "false"})
+	}
 	submodules, err := submoduleFetchRecurseConfig(
 		ctx, worktreePath, isolation.runner,
 	)
@@ -365,6 +358,18 @@ func completeUntrustedTreeIsolation(
 		isolation.runner = isolation.runner.WithConfig(entry.Key, entry.Value)
 	}
 	return isolation, nil
+}
+
+func isolationConfigKeys(ctx context.Context, path string, runner gitcmd.Runner) ([]string, error) {
+	checkoutKeys, err := gitConfigKeys(ctx, path, runner)
+	if err != nil {
+		return nil, err
+	}
+	ambientKeys, err := ambientGitConfigKeys(ctx, path, runner)
+	if err != nil {
+		return nil, err
+	}
+	return slices.Concat(checkoutKeys, ambientKeys), nil
 }
 
 func configuredGitHooks(keys []string) []string {

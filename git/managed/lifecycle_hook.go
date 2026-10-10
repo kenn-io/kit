@@ -10,8 +10,11 @@ import (
 // of a Git mutation. MergeRequest requires the script to already exist outside
 // the destination. RunHook supplies application process and platform policy.
 type WorktreeHookOptions struct {
-	ProjectRoot       string
-	Path              string
+	ProjectRoot string
+	Path        string
+	// BaseDir selects the creation destination when Path is empty. The same
+	// default directory and branch slug as CreateWorktreeOnDisk are used.
+	BaseDir           string
 	Branch            string
 	Script            string
 	WorktreeName      string
@@ -36,7 +39,11 @@ func PrepareWorktreeHook(ctx context.Context, opts WorktreeHookOptions) (*Prepar
 	if err != nil {
 		return nil, err
 	}
-	opts.Path, err = absRequired(opts.Path, "worktree path")
+	if strings.TrimSpace(opts.Path) == "" {
+		opts.Path, err = resolveWorktreeDestination(opts.ProjectRoot, strings.TrimSpace(opts.Branch), "", opts.BaseDir)
+	} else {
+		opts.Path, err = absRequired(opts.Path, "worktree path")
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -51,6 +58,10 @@ func PrepareWorktreeHook(ctx context.Context, opts WorktreeHookOptions) (*Prepar
 	opts.Branch = strings.TrimSpace(opts.Branch)
 	return &PreparedWorktreeHook{options: opts}, nil
 }
+
+// WorktreePath returns the destination validated with the script. Pass it to
+// creation so script preparation and Git use the same resolved destination.
+func (h *PreparedWorktreeHook) WorktreePath() string { return h.options.Path }
 
 // Run executes the prepared script without taking a Git lock or rolling back.
 func (h *PreparedWorktreeHook) Run(ctx context.Context) error {
