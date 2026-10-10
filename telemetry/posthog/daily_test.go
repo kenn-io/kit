@@ -186,7 +186,7 @@ func TestDailyClaimsInvalidStateAndCancellation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "days.json")
 	clock := &fakePostHogClock{now: postHogTestStart}
 	for _, body := range []string{
-		`{`, `null`, `{}`, `{"version":"damaged","days":{}}`, `{"version":0}`, `{"version":1.0}`,
+		`{`, `null`, `{}`, `{"version":"damaged","days":{}}`, `{"version":0}`, `{"version":-1e99999999999}`,
 		`{"version":"1","days":{"[\"id\",\"screen\",\"queue\"]":["` + clock.Now().UTC().Format(time.DateOnly) + `"]}}`,
 		`{"version":1,"days":{"key":["2026-10-08","tomorrow"]}}`, `{"version":1,"days":null}`,
 	} {
@@ -207,7 +207,7 @@ func TestDailyClaimsInvalidStateAndCancellation(t *testing.T) {
 		assert.Equal(t, StatusSkipped, status)
 		assert.Equal(t, 1, sends)
 	}
-	for _, body := range []string{`{"version":2}`, `{"version":2,"days":`, `{"version":2,"days":{"key":["tomorrow"]}}`, `{"version":2.0}`, `{"version":1e99999999999}`, `{"version":2} trailing bytes`} {
+	for _, body := range []string{`{"version":2}`, `{"version":2,"days":`, `{"version":2,"days":{"key":["tomorrow"]}}`, `{"version":2.0}`, `{"version":1.0}`, `{"version":1.0000000000000001}`, `{"version":1e99999999999}`, `{"version":2} trailing bytes`} {
 		require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 		sends := 0
 		_, err := NewDailyClaims(path).report(t.Context(), "id", "screen", "queue", time.Now, func(time.Time) (Status, error) {

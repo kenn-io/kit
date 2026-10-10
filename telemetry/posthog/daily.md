@@ -33,7 +33,7 @@ grows by one date per accepted installation, event, key and day. Reservation,
 event timestamp and installation age use one time sampled under the claim lock.
 
 Use `Report` with a caller context. `Capture` bounds daily lock waiting with
-`ShutdownTimeout`. A numeric version above 1 returns an error and leaves the file intact.
+`ShutdownTimeout`. Numeric versions other than the literal `1` that may be above 1 are refused and left intact.
 A file with damaged content resets to empty claims; the next save replaces it.
 Read errors other than a missing file are returned.
 Request lock waits follow caller cancellation and deadlines; HTTP owners should bound request contexts as needed.

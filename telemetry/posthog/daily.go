@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"slices"
 	"strconv"
@@ -57,6 +58,33 @@ type dailyState struct {
 	Days    map[string][]string `json:"days"`
 }
 
+func newerDailyVersion(data []byte) (json.Number, bool) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if token, err := decoder.Token(); err == nil && token == json.Delim('{') {
+		for decoder.More() {
+			key, err := decoder.Token()
+			if err != nil {
+				break
+			}
+			if key == "version" {
+				token, err := decoder.Token()
+				if number, ok := token.(json.Number); err == nil && ok && number != "1" {
+					version, parseErr := strconv.ParseFloat(string(number), 64)
+					// Refuse integer versions above 1 and other numeric literals we can't prove at most 1; strings and other shapes are damage.
+					return number, (parseErr == nil && version >= 1) || (errors.Is(parseErr, strconv.ErrRange) && math.IsInf(version, 1))
+				}
+				break
+			}
+			var value json.RawMessage
+			if err := decoder.Decode(&value); err != nil {
+				break
+			}
+		}
+	}
+	return "", false
+}
+
 func (d *DailyClaims) report(ctx context.Context, identity, event, key string, now func() time.Time, send func(time.Time) (Status, error)) (Status, error) {
 	lock := flock.New(d.path + ".lock")
 	_, err := lock.TryLockContext(ctx, 10*time.Millisecond)
@@ -67,30 +95,8 @@ func (d *DailyClaims) report(ctx context.Context, identity, event, key string, n
 	var state dailyState
 	data, err := os.ReadFile(d.path)
 	if err == nil {
-		decoder := json.NewDecoder(bytes.NewReader(data))
-		decoder.UseNumber()
-		if token, err := decoder.Token(); err == nil && token == json.Delim('{') {
-			for decoder.More() {
-				key, err := decoder.Token()
-				if err != nil {
-					break
-				}
-				if key == "version" {
-					token, err := decoder.Token()
-					if number, ok := token.(json.Number); err == nil && ok {
-						version, parseErr := strconv.ParseFloat(string(number), 64)
-						if (parseErr == nil && version > 1) || errors.Is(parseErr, strconv.ErrRange) {
-							return "", fmt.Errorf("unsupported daily telemetry version %s", number)
-						}
-					}
-					// Only json.Marshal of an int writes version, so non-integer and string versions are damage.
-					break
-				}
-				var value json.RawMessage
-				if err := decoder.Decode(&value); err != nil {
-					break
-				}
-			}
+		if number, newer := newerDailyVersion(data); newer {
+			return "", fmt.Errorf("unsupported daily telemetry version %s", number)
 		}
 		valid := json.Unmarshal(data, &state) == nil && state.Version == 1 && state.Days != nil
 	validateDates:
