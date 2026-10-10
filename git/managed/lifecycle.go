@@ -735,23 +735,8 @@ func worktreeHasInitializedSubmodules(
 func verifyRemovalTarget(
 	ctx context.Context, root, path, expectedBranch string,
 ) error {
-	if err := verifyRegisteredRemovalTarget(
-		ctx, root, path, expectedBranch,
-	); err != nil {
+	if err := verifyRemovalTargetRepository(ctx, root, path, expectedBranch); err != nil {
 		return err
-	}
-	rootCommon, err := lifecycleCommonGitDir(ctx, root)
-	if err != nil {
-		return err
-	}
-	pathCommon, err := lifecycleCommonGitDir(ctx, path)
-	if err != nil {
-		return fmt.Errorf("inspect worktree repository: %w", err)
-	}
-	if !pathsEqualForGOOS(rootCommon, pathCommon, runtime.GOOS) {
-		return fmt.Errorf(
-			"worktree path belongs to a different repository: %s", path,
-		)
 	}
 	_, headRef, err := lifecycleWorktreeHead(ctx, path)
 	if err != nil {
@@ -765,6 +750,28 @@ func verifyRemovalTarget(
 		return fmt.Errorf(
 			"worktree branch changed: expected %q, found %q",
 			wantRef, headRef,
+		)
+	}
+	return nil
+}
+
+// verifyRemovalTargetRepository checks the registration and repository of a
+// linked checkout. Callers that already read HEAD compare its branch themselves.
+func verifyRemovalTargetRepository(ctx context.Context, root, path, expectedBranch string) error {
+	if err := verifyRegisteredRemovalTarget(ctx, root, path, expectedBranch); err != nil {
+		return err
+	}
+	rootCommon, err := lifecycleCommonGitDir(ctx, root)
+	if err != nil {
+		return err
+	}
+	pathCommon, err := lifecycleCommonGitDir(ctx, path)
+	if err != nil {
+		return fmt.Errorf("inspect worktree repository: %w", err)
+	}
+	if !pathsEqualForGOOS(rootCommon, pathCommon, runtime.GOOS) {
+		return fmt.Errorf(
+			"worktree path belongs to a different repository: %s", path,
 		)
 	}
 	return nil

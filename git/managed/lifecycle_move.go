@@ -66,7 +66,8 @@ func MoveWorktreeOnDisk(ctx context.Context, opts MoveWorktreeOptions) (CreateWo
 		return empty, err
 	}
 	branch := strings.TrimPrefix(headRef, "refs/heads/")
-	if err = verifyRemovalTarget(ctx, root, source, branch); err != nil {
+	// HEAD was just read, so check only the registration and repository here.
+	if err = verifyRemovalTargetRepository(ctx, root, source, branch); err != nil {
 		return empty, err
 	}
 	var prepared CreateWorktreeResult
@@ -101,9 +102,8 @@ func MoveWorktreeOnDisk(ctx context.Context, opts MoveWorktreeOptions) (CreateWo
 			return failedWorktreeAdd(ctx, root, source, branch, true), classifyWorktreeGitError(out, checkoutErr)
 		}
 		captureCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		prepared, err = snapshotCreateWorktreeResult(captureCtx, root, source, branch, true)
+		prepared, err = snapshotNewBranchAcquisition(captureCtx, root, source, branch, oid)
 		cancel()
-		prepared.headOID, prepared.branchOID, prepared.headRef = oid, oid, "refs/heads/"+branch
 		if cause := errors.Join(checkoutErr, ctx.Err(), err); cause != nil {
 			return prepared, cause
 		}
@@ -121,10 +121,12 @@ func MoveWorktreeOnDisk(ctx context.Context, opts MoveWorktreeOptions) (CreateWo
 	}
 	captureCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	result, captureErr := snapshotCreateWorktreeResult(captureCtx, root, path, branch, opts.NewBranch != "")
+	var result CreateWorktreeResult
+	var captureErr error
 	if opts.NewBranch != "" {
-		result.headOID, result.branchOID, result.headRef = prepared.headOID, prepared.branchOID, prepared.headRef
+		result, captureErr = snapshotNewBranchAcquisition(captureCtx, root, path, branch, prepared.headOID)
 	} else {
+		result, captureErr = snapshotCreateWorktreeResult(captureCtx, root, path, branch, false)
 		// A moved checkout created with NoCheckout keeps its absent index; let
 		// rollback recognize that untouched state instead of seeing deletions.
 		var deferredErr error
@@ -132,4 +134,13 @@ func MoveWorktreeOnDisk(ctx context.Context, opts MoveWorktreeOptions) (CreateWo
 		captureErr = errors.Join(captureErr, deferredErr)
 	}
 	return result, errors.Join(moveErr, ctx.Err(), captureErr)
+}
+
+// snapshotNewBranchAcquisition records a branch this call created at oid.
+// Rollback anchors on that acquired commit rather than on later reads, so only
+// the registration and directory identities need capturing.
+func snapshotNewBranchAcquisition(ctx context.Context, root, path, branch, oid string) (CreateWorktreeResult, error) {
+	result := creationResult(ctx, root, path, branch, true)
+	result.headOID, result.branchOID, result.headRef = oid, oid, "refs/heads/"+branch
+	return snapshotAcquisition(ctx, result)
 }
