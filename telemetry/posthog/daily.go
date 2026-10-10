@@ -67,13 +67,29 @@ func (d *DailyClaims) report(ctx context.Context, identity, event, key string, n
 	var state dailyState
 	data, err := os.ReadFile(d.path)
 	if err == nil {
-		var header struct {
-			Version json.RawMessage `json:"version"`
-		}
-		if err := json.NewDecoder(bytes.NewReader(data)).Decode(&header); err == nil {
-			version, parseErr := strconv.ParseFloat(string(header.Version), 64)
-			if (parseErr == nil || errors.Is(parseErr, strconv.ErrRange)) && version > 1 {
-				return "", fmt.Errorf("unsupported daily telemetry version %s", header.Version)
+		decoder := json.NewDecoder(bytes.NewReader(data))
+		decoder.UseNumber()
+		if token, err := decoder.Token(); err == nil && token == json.Delim('{') {
+			for decoder.More() {
+				key, err := decoder.Token()
+				if err != nil {
+					break
+				}
+				if key == "version" {
+					token, err := decoder.Token()
+					if number, ok := token.(json.Number); err == nil && ok {
+						version, parseErr := strconv.ParseFloat(string(number), 64)
+						if (parseErr == nil && version > 1) || errors.Is(parseErr, strconv.ErrRange) {
+							return "", fmt.Errorf("unsupported daily telemetry version %s", number)
+						}
+					}
+					// Only json.Marshal of an int writes version, so non-integer and string versions are damage.
+					break
+				}
+				var value json.RawMessage
+				if err := decoder.Decode(&value); err != nil {
+					break
+				}
 			}
 		}
 		valid := json.Unmarshal(data, &state) == nil && state.Version == 1 && state.Days != nil

@@ -22,6 +22,7 @@ by membership. Reservation and enqueue use one time sampled under the lock.
 Rejected captures release their reservation; storage failures return errors.
 Failed reservation saves release published claims under the same lock.
 Pending cleanup follows visible publication, including durability failures.
-A numeric version above 1 is refused and left intact; any other unreadable or damaged file resets to empty state.
+A numeric version above 1 is refused and left intact. A file with damaged
+content resets to empty state. Read errors other than a missing file are returned.
 Applications own finite property enums and client retries. Queue acceptance does
 not guarantee eventual network delivery.
