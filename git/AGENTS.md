@@ -96,7 +96,10 @@ specific application or forge workflow.
   Keep the original checkout's hook configuration unchanged.
 - Moving a linked checkout returns acquisition evidence for the new destination.
   Explicit rollback removes that checkout and preserves its preexisting branch;
-  it never silently moves it back. Preserve and report an unknown move outcome.
+  it never silently moves it back. A requested new branch is acquired during the
+  prepared checkout and may be removed only while unchanged. After a failed move,
+  retain evidence at the source only when that acquired checkout remains there.
+  Preserve and report an unknown move outcome.
 - Configure merge-request tracking in worktree-scoped Git configuration so
   removing a worktree does not leave branch routing behind in shared config.
   Explicit upstream policy chooses configuration scope and whether to configure

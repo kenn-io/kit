@@ -126,3 +126,65 @@ func TestMoveWorktreeUnknownOutcomePreservesDestination(t *testing.T) {
 	require.Equal(t, destination, remaining.Path)
 	require.DirExists(t, destination)
 }
+
+func TestMovePreparedWorktreeCreatesOwnedBranch(t *testing.T) {
+	for _, outcome := range []string{"success", "move failure", "unknown move", "branch exists"} {
+		t.Run(outcome, func(t *testing.T) {
+			root := initLifecycleRepo(t)
+			source := filepath.Join(t.TempDir(), "prepared")
+			destination := filepath.Join(t.TempDir(), "workspace")
+			lifecycleGit(t, root, "worktree", "add", "--detach", source, "HEAD")
+			before, err := os.Stat(source)
+			require.NoError(t, err)
+			require.True(t, os.SameFile(before, before))
+			failure := errors.New("move interrupted")
+			if outcome == "branch exists" {
+				lifecycleGit(t, root, "branch", "topic")
+			}
+			result, err := MoveWorktreeOnDisk(t.Context(), MoveWorktreeOptions{
+				ProjectRoot: root, Source: source, Path: destination, NewBranch: "topic", BaseRef: "HEAD", Runner: lifecycleTestRunner(t),
+				RunGit: func(ctx context.Context, runner gitcmd.Runner, dir string, args ...string) ([]byte, error) {
+					moving := len(args) > 1 && args[0] == "worktree" && args[1] == "move"
+					if moving && outcome == "move failure" {
+						return nil, failure
+					}
+					out, err := runner.Output(ctx, dir, args...)
+					if moving && err == nil && outcome == "unknown move" {
+						return out, failure
+					}
+					return out, err
+				},
+			})
+			if outcome == "branch exists" {
+				require.ErrorIs(t, err, ErrBranchAlreadyExists)
+				require.DirExists(t, source)
+				require.Empty(t, result.Path)
+				return
+			}
+			if outcome == "success" {
+				require.NoError(t, err)
+			} else {
+				require.ErrorIs(t, err, failure)
+			}
+			require.True(t, result.BranchCreated)
+			path := destination
+			if outcome == "move failure" {
+				path = source
+			}
+			after, err := os.Stat(path)
+			require.NoError(t, err)
+			require.True(t, os.SameFile(before, after))
+			remaining, err := result.Rollback(t.Context(), RollbackUnchanged)
+			if outcome == "unknown move" {
+				require.ErrorIs(t, err, ErrWorktreeCleanupIncomplete)
+				require.True(t, remaining.Unverified)
+				require.DirExists(t, path)
+				require.True(t, branchExistsInRepo(t, root, "topic"))
+			} else {
+				require.NoError(t, err)
+				require.NoDirExists(t, path)
+				require.False(t, branchExistsInRepo(t, root, "topic"))
+			}
+		})
+	}
+}
