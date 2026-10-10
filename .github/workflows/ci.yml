@@ -108,8 +108,8 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Run streaming race tests
-        run: go test -race ./pack ./packstore ./backup
+      - name: Run storage and PostHog race tests
+        run: go test -race ./pack ./packstore ./backup ./telemetry/posthog/...
 
       - name: Compile streaming packages for Linux 386
         env:
