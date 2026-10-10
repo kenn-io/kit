@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/big"
 	"os"
 	"slices"
 	"strings"
@@ -67,9 +66,7 @@ func (d *DailyClaims) report(ctx context.Context, identity, event, key string, n
 	data, err := os.ReadFile(d.path)
 	if err == nil {
 		err = json.Unmarshal(data, &state)
-		// Round upward so versions just above 1 remain newer at this precision.
-		version, _, _ := big.ParseFloat(string(state.Version), 10, 64, big.ToPositiveInf)
-		if version != nil && version.Cmp(big.NewFloat(1)) > 0 {
+		if state.Version != "" && state.Version != "1" {
 			return "", fmt.Errorf("unsupported daily telemetry version %s", state.Version)
 		}
 		valid := err == nil && state.Version == "1" && state.Days != nil

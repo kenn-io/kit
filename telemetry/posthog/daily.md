@@ -16,9 +16,9 @@ authentication.
 
 Keep daily event and key allowlists finite. Reporter construction rejects an
 unknown daily event, an unlisted key property or missing state path, including
-when opted out. `Report` and enabled `Capture`
-return `ErrUnsupportedEvent` for blank events. Daily keys must be caller-owned
-properties; reporter defaults cannot identify a daily claim.
+when opted out. `Report` and enabled `Capture` return `ErrUnsupportedEvent`
+for blank events.
+Daily keys must be caller-owned properties; reporter defaults cannot identify a daily claim.
 
 The state file reserves each installation, event and screen before SDK enqueue.
 The file lock covers reservation, enqueue and rollback. A rejected enqueue
@@ -34,7 +34,7 @@ event timestamp and installation age use one time sampled under the claim lock.
 
 Use `Report` with a caller context. `Capture` bounds daily lock waiting with
 `ShutdownTimeout`. A malformed state file starts with empty claims; the next
-save replaces it. A newer format version returns an error and leaves the file intact.
+save replaces it. Any version other than 1 returns an error and leaves the file intact.
 Request lock waits follow caller cancellation and deadlines; HTTP owners should bound request contexts as needed.
 A report racing `Close` can hold the daily file lock while waiting for SDK shutdown, up to `ShutdownTimeout`, so other writers can time out and retry.
 Recovering damaged state forgets accepted dates and can count them again.

@@ -185,7 +185,7 @@ func TestDailyClaimsClockAfterLock(t *testing.T) {
 func TestDailyClaimsInvalidStateAndCancellation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "days.json")
 	clock := &fakePostHogClock{now: postHogTestStart}
-	for _, body := range []string{`{`, `{"version":1,"days":{"key":["tomorrow"]}}`, `null`, `{}`, `{"days":{}}`, `{"version":0,"days":{}}`, `{"version":-1,"days":{}}`, `{"version":0.5,"days":{}}`, `{"version":"damaged","days":{}}`, `{"version":1}`, `{"version":1,"days":null}`} {
+	for _, body := range []string{`{`, `{"version":1,"days":{"key":["tomorrow"]}}`, `null`, `{}`, `{"days":{}}`, `{"version":"damaged","days":{}}`, `{"version":1}`, `{"version":1,"days":null}`} {
 		require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 		sends := 0
 		status, err := NewDailyClaims(path).report(t.Context(), "id", "screen", "queue", clock.Now, func(time.Time) (Status, error) { sends++; return StatusQueued, nil })
@@ -203,10 +203,10 @@ func TestDailyClaimsInvalidStateAndCancellation(t *testing.T) {
 		assert.Equal(t, StatusSkipped, status)
 		assert.Equal(t, 1, sends)
 	}
-	for _, body := range []string{`{"version":2,"days":{}}`, `{"version":2}`, `{"version":2,"days":{"key":["tomorrow"]}}`, `{"version":2,"days":[]}`, `{"version":2.0}`, `{"version":"2"}`, `{"version":1e400}`, `{"version":99999999999999999999}`, `{"version":1.00000000000000000001}`} {
+	for _, body := range []string{`{"version":2,"days":{}}`, `{"version":2}`, `{"version":2,"days":{"key":["tomorrow"]}}`, `{"version":2,"days":[]}`, `{"version":2.0}`, `{"version":"2"}`, `{"version":0}`, `{"version":-1}`, `{"version":0.5}`, `{"version":1.0}`, `{"version":1e400}`, `{"version":1e2147483648,"days":{}}`} {
 		require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 		_, err := NewDailyClaims(path).report(t.Context(), "id", "screen", "queue", time.Now, func(time.Time) (Status, error) {
-			assert.Fail(t, "capture with newer state version")
+			assert.Fail(t, "capture with unsupported state version")
 			return StatusQueued, nil
 		})
 		require.ErrorContains(t, err, "unsupported daily telemetry version")
@@ -343,15 +343,20 @@ func TestDailyClaimsPublicationRecovery(t *testing.T) {
 	for _, publishedErr := range []error{atomicfile.ErrPublished, atomicfile.ErrNotDurable} {
 		releaseErr := errors.New("release failed before publication")
 		for _, tc := range []struct {
-			name   string
-			errors []error
+			name        string
+			errors      []error
+			wantErrors  []error
+			omitError   error
+			retryError  error
+			retry       bool
+			freshStatus Status
 		}{
-			{"published reservation", []error{publishedErr}},
-			{"unpublished reservation", []error{releaseErr}},
-			{"published rollback", []error{nil, publishedErr}},
-			{"published deferred cleanup", []error{nil, releaseErr, publishedErr}},
-			{"unpublished reservation release", []error{publishedErr, releaseErr}},
-			{"published reservation release", []error{publishedErr, errors.Join(releaseErr, publishedErr)}},
+			{name: "published reservation", errors: []error{publishedErr}, wantErrors: []error{publishedErr}, freshStatus: StatusQueued},
+			{name: "unpublished reservation", errors: []error{releaseErr}, wantErrors: []error{releaseErr}, freshStatus: StatusQueued},
+			{name: "published rollback", errors: []error{nil, publishedErr}, wantErrors: []error{publishedErr}, freshStatus: StatusQueued},
+			{name: "published deferred cleanup", errors: []error{nil, releaseErr, publishedErr}, wantErrors: []error{releaseErr}, retryError: publishedErr, freshStatus: StatusQueued},
+			{name: "unpublished reservation release", errors: []error{publishedErr, releaseErr}, wantErrors: []error{publishedErr, releaseErr}, retry: true, freshStatus: StatusSkipped},
+			{name: "published reservation release", errors: []error{publishedErr, errors.Join(releaseErr, publishedErr)}, wantErrors: []error{publishedErr}, omitError: releaseErr, freshStatus: StatusQueued},
 		} {
 			t.Run(tc.name+publishedErr.Error(), func(t *testing.T) {
 				path := filepath.Join(t.TempDir(), "days.json")
@@ -383,27 +388,23 @@ func TestDailyClaimsPublicationRecovery(t *testing.T) {
 					return "", errors.New("rejected")
 				})
 				require.Error(t, err)
-				for _, failure := range tc.errors[:min(2, len(tc.errors))] {
-					if failure != nil {
-						if tc.name == "published reservation release" && failure == tc.errors[1] {
-							assert.NotErrorIs(t, err, failure)
-							assert.NotErrorIs(t, err, releaseErr)
-							continue
-						}
-						require.ErrorIs(t, err, failure)
-					}
+				for _, failure := range tc.wantErrors {
+					require.ErrorIs(t, err, failure)
+				}
+				if tc.omitError != nil {
+					assert.NotErrorIs(t, err, tc.omitError)
 				}
 				assert.Zero(t, accepted)
 				if len(tc.errors) > 1 {
 					assert.Equal(t, 2, writes)
 				}
-				if tc.name == "published deferred cleanup" {
+				if tc.retryError != nil {
 					require.NotNil(t, claims.pending)
 					_, err = report(claims, send)
-					require.ErrorIs(t, err, publishedErr)
+					require.ErrorIs(t, err, tc.retryError)
 					assert.Zero(t, accepted)
 				}
-				if tc.name == "unpublished reservation release" {
+				if tc.retry {
 					require.NotNil(t, claims.pending)
 					status, err := report(claims, send)
 					require.NoError(t, err)
@@ -412,11 +413,7 @@ func TestDailyClaimsPublicationRecovery(t *testing.T) {
 				assert.Nil(t, claims.pending)
 				status, err := report(NewDailyClaims(path), send)
 				require.NoError(t, err)
-				if tc.name == "unpublished reservation release" {
-					assert.Equal(t, StatusSkipped, status)
-				} else {
-					assert.Equal(t, StatusQueued, status)
-				}
+				assert.Equal(t, tc.freshStatus, status)
 				status, err = report(claims, send)
 				require.NoError(t, err)
 				assert.Equal(t, StatusSkipped, status)
