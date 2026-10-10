@@ -84,6 +84,8 @@ specific application or forge workflow.
   An untouched deferred checkout has no index and contains only its `.git`
   registration file; default rollback must recognize that initial state without
   treating missing tracked files as edits. Preserve actual file or index changes.
+  Moving a checkout keeps that deferred state, and a move's ProjectRoot must not
+  move with its source: Git runs there for move evidence and later rollback.
   A successful Git exit with an output-capture error still acquired the worktree:
   capture ownership evidence, retain the error, and apply the selected cleanup
   policy. Capture evidence after confirmed success with a bounded context

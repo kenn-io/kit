@@ -44,6 +44,10 @@ func MoveWorktreeOnDisk(ctx context.Context, opts MoveWorktreeOptions) (CreateWo
 	if err != nil {
 		return empty, err
 	}
+	// Git runs from ProjectRoot after the move to capture evidence and roll back.
+	if pathWithinRoot(comparableWorktreePath(source), comparableWorktreePath(root)) || pathWithinRootByIdentity(source, root) {
+		return empty, fmt.Errorf("project root must not move with the source worktree: %w", ErrInvalidWorktreeOptions)
+	}
 	ctx = withLifecycleExecution(ctx, opts.Runner, opts.RunGit, nil)
 	info, err := os.Lstat(source)
 	if err != nil {
@@ -120,6 +124,12 @@ func MoveWorktreeOnDisk(ctx context.Context, opts MoveWorktreeOptions) (CreateWo
 	result, captureErr := snapshotCreateWorktreeResult(captureCtx, root, path, branch, opts.NewBranch != "")
 	if opts.NewBranch != "" {
 		result.headOID, result.branchOID, result.headRef = prepared.headOID, prepared.branchOID, prepared.headRef
+	} else {
+		// A moved checkout created with NoCheckout keeps its absent index; let
+		// rollback recognize that untouched state instead of seeing deletions.
+		var deferredErr error
+		result.checkoutDeferred, deferredErr = worktreeIndexAbsent(captureCtx, path)
+		captureErr = errors.Join(captureErr, deferredErr)
 	}
 	return result, errors.Join(moveErr, ctx.Err(), captureErr)
 }

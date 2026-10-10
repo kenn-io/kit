@@ -188,3 +188,46 @@ func TestMovePreparedWorktreeCreatesOwnedBranch(t *testing.T) {
 		})
 	}
 }
+
+// The project root must survive the move: Git runs from it to capture rollback
+// evidence and later to roll back the moved checkout.
+func TestMoveWorktreeRejectsProjectRootThatMovesWithSource(t *testing.T) {
+	for _, spelling := range []string{"same", "symlink"} {
+		t.Run(spelling, func(t *testing.T) {
+			root := initLifecycleRepo(t)
+			source := filepath.Join(t.TempDir(), "prepared")
+			lifecycleGit(t, root, "worktree", "add", "--detach", source, "HEAD")
+			projectRoot := source
+			if spelling == "symlink" {
+				projectRoot = filepath.Join(t.TempDir(), "alias")
+				if err := os.Symlink(source, projectRoot); err != nil {
+					t.Skipf("symlink unavailable: %v", err)
+				}
+			}
+			destination := filepath.Join(t.TempDir(), "workspace")
+
+			_, err := MoveWorktreeOnDisk(t.Context(), MoveWorktreeOptions{ProjectRoot: projectRoot, Source: source, Path: destination, Runner: lifecycleTestRunner(t)})
+
+			require.ErrorIs(t, err, ErrInvalidWorktreeOptions)
+			require.DirExists(t, source)
+			require.NoDirExists(t, destination)
+		})
+	}
+}
+
+func TestMoveDeferredWorktreeRollsBackUntouchedCheckout(t *testing.T) {
+	root := initLifecycleRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "tracked"), []byte("tracked\n"), 0o600))
+	lifecycleGit(t, root, "add", "tracked")
+	lifecycleGit(t, root, "commit", "-q", "-m", "tracked file")
+	source := filepath.Join(t.TempDir(), "prepared")
+	lifecycleGit(t, root, "worktree", "add", "--detach", "--no-checkout", source, "HEAD")
+	destination := filepath.Join(t.TempDir(), "workspace")
+	result, err := MoveWorktreeOnDisk(t.Context(), MoveWorktreeOptions{ProjectRoot: root, Source: source, Path: destination, Runner: lifecycleTestRunner(t)})
+	require.NoError(t, err)
+
+	_, err = result.Rollback(t.Context(), RollbackUnchanged)
+
+	require.NoError(t, err)
+	require.NoDirExists(t, destination)
+}
