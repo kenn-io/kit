@@ -53,7 +53,7 @@ func WithDailyEvent(event, keyProperty string, claims *DailyClaims) Option {
 }
 
 type dailyState struct {
-	Version json.Number         `json:"version"`
+	Version int                 `json:"version"`
 	Days    map[string][]string `json:"days"`
 }
 
@@ -68,14 +68,16 @@ func (d *DailyClaims) report(ctx context.Context, identity, event, key string, n
 	data, err := os.ReadFile(d.path)
 	if err == nil {
 		var header struct {
-			Version json.Number `json:"version"`
+			Version json.RawMessage `json:"version"`
 		}
 		err = json.NewDecoder(bytes.NewReader(data)).Decode(&header)
-		version, _ := strconv.ParseInt(string(header.Version), 10, 64)
-		if err == nil && version > 1 && !strings.ContainsAny(string(header.Version), ".eE") {
-			return "", fmt.Errorf("unsupported daily telemetry version %s", header.Version)
+		if err == nil && len(header.Version) > 0 && (header.Version[0] == '-' || header.Version[0] >= '0' && header.Version[0] <= '9') {
+			version, parseErr := strconv.ParseFloat(string(header.Version), 64)
+			if (parseErr == nil || errors.Is(parseErr, strconv.ErrRange)) && version > 1 {
+				return "", fmt.Errorf("unsupported daily telemetry version %s", header.Version)
+			}
 		}
-		valid := err == nil && header.Version == "1" && json.Unmarshal(data, &state) == nil && state.Days != nil
+		valid := json.Unmarshal(data, &state) == nil && state.Version == 1 && state.Days != nil
 		for _, days := range state.Days {
 			for _, day := range days {
 				if _, err := time.Parse(time.DateOnly, day); err != nil {
@@ -91,7 +93,7 @@ func (d *DailyClaims) report(ctx context.Context, identity, event, key string, n
 		return "", fmt.Errorf("read daily telemetry: %w", err)
 	}
 	if state.Days == nil {
-		state = dailyState{Version: "1", Days: make(map[string][]string)}
+		state = dailyState{Version: 1, Days: make(map[string][]string)}
 	}
 	save := func() error {
 		data, err := json.Marshal(state)

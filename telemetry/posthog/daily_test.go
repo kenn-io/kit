@@ -185,7 +185,11 @@ func TestDailyClaimsClockAfterLock(t *testing.T) {
 func TestDailyClaimsInvalidStateAndCancellation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "days.json")
 	clock := &fakePostHogClock{now: postHogTestStart}
-	for _, body := range []string{`{`, `null`, `{}`, `{"version":"damaged","days":{}}`, `{"version":0}`, `{"version":1.0}`, `{"version":1,"days":{"key":["2026-10-08","tomorrow"]}}`, `{"version":1,"days":null}`} {
+	for _, body := range []string{
+		`{`, `null`, `{}`, `{"version":"damaged","days":{}}`, `{"version":0}`, `{"version":1.0}`,
+		`{"version":"1","days":{"[\"id\",\"screen\",\"queue\"]":["` + clock.Now().UTC().Format(time.DateOnly) + `"]}}`,
+		`{"version":1,"days":{"key":["2026-10-08","tomorrow"]}}`, `{"version":1,"days":null}`,
+	} {
 		require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 		sends := 0
 		status, err := NewDailyClaims(path).report(t.Context(), "id", "screen", "queue", clock.Now, func(time.Time) (Status, error) { sends++; return StatusQueued, nil })
@@ -196,14 +200,14 @@ func TestDailyClaimsInvalidStateAndCancellation(t *testing.T) {
 		require.NoError(t, err)
 		var state dailyState
 		require.NoError(t, json.Unmarshal(data, &state))
-		assert.Equal(t, json.Number("1"), state.Version)
+		assert.Equal(t, 1, state.Version)
 		assert.Len(t, state.Days, 1)
 		status, err = NewDailyClaims(path).report(t.Context(), "id", "screen", "queue", clock.Now, func(time.Time) (Status, error) { sends++; return StatusQueued, nil })
 		require.NoError(t, err)
 		assert.Equal(t, StatusSkipped, status)
 		assert.Equal(t, 1, sends)
 	}
-	for _, body := range []string{`{"version":2}`, `{"version":2,"days":{"key":["tomorrow"]}}`, `{"version":9223372036854775808}`, `{"version":2} trailing bytes`} {
+	for _, body := range []string{`{"version":2}`, `{"version":2.0}`, `{"version":2e0}`, `{"version":1e99999999999}`, `{"version":2,"days":{"key":["tomorrow"]}}`, `{"version":9223372036854775808}`, `{"version":2} trailing bytes`} {
 		require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 		sends := 0
 		_, err := NewDailyClaims(path).report(t.Context(), "id", "screen", "queue", time.Now, func(time.Time) (Status, error) {
