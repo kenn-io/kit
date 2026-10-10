@@ -4,6 +4,7 @@
 //	kennlint run [analysis flags] ./...
 //	kennlint sql [path ...]
 //	kennlint config [-overlay FILE] [-out FILE] [-check]
+//	kennlint profile [-tags LIST] [-disable LIST] [-parallel] [-cpuprofile FILE] [packages]
 //	kennlint analyzers
 package main
 
@@ -29,6 +30,7 @@ const usage = `usage:
   kennlint run [analysis flags] [packages]   run the kit analyzers (go vet style)
   kennlint sql [path ...]                    report CHECK constraints and enum types in .sql files (default: .)
   kennlint config [flags]                    render .golangci.yml from the canonical config and an overlay
+  kennlint profile [flags] [packages]        time each analyzer, split between packages and dependencies
   kennlint analyzers                         list the analyzers and their documentation
 `
 
@@ -54,6 +56,11 @@ func main() {
 	case "config":
 		if err := runConfig(os.Args[2:], os.Stdout, os.Stderr); err != nil {
 			fmt.Fprintf(os.Stderr, "kennlint config: %v\n", err)
+			os.Exit(1)
+		}
+	case "profile":
+		if err := runProfile(os.Args[2:], os.Stdout, os.Stderr); err != nil {
+			fmt.Fprintf(os.Stderr, "kennlint profile: %v\n", err)
 			os.Exit(1)
 		}
 	case "analyzers":
