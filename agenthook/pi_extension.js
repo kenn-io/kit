@@ -1,10 +1,10 @@
 import { existsSync } from "node:fs";
 
-// Pi extension API: https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md
+// Pi extension API: https://github.com/earendil-works/pi/blob/e37cdc420669e48b4df4bbce0fb2617fc3c71328/packages/coding-agent/docs/extensions.md
 // Pi reports a handler's thrown error as an extension error and still runs the
 // event and its other handlers:
-// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/extensions/runner.ts#L1089-L1117
-// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/extensions/runner.ts#L1458-L1466
+// https://github.com/earendil-works/pi/blob/e37cdc420669e48b4df4bbce0fb2617fc3c71328/packages/coding-agent/src/core/extensions/runner.ts#L1089-L1117
+// https://github.com/earendil-works/pi/blob/e37cdc420669e48b4df4bbce0fb2617fc3c71328/packages/coding-agent/src/core/extensions/runner.ts#L1458-L1466
 const replacedSessionReasons = ["new", "resume", "fork"];
 
 // Pi calls this once per session runtime and tears the runtime down when
@@ -13,7 +13,7 @@ export default function (pi) {
 	// Events wait until the session file exists, so every reported ID resumes
 	// with pi --session. Pi writes the file once the session holds a user
 	// message, and never with --no-session:
-	// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/session-manager.ts#L1160-L1185
+	// https://github.com/earendil-works/pi/blob/e37cdc420669e48b4df4bbce0fb2617fc3c71328/packages/coding-agent/src/core/session-manager.ts#L1160-L1189
 	let heldStart = null;
 	const heldPrompts = [];
 
@@ -48,7 +48,7 @@ export default function (pi) {
 
 	// Subagents run Pi in json or print mode with global extensions loaded;
 	// only the interactive session is one the user can resume:
-	// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/extensions/types.ts#L323-L335
+	// https://github.com/earendil-works/pi/blob/e37cdc420669e48b4df4bbce0fb2617fc3c71328/packages/coding-agent/src/core/extensions/types.ts#L323-L335
 	const on = (name, handler) =>
 		pi.on(name, async (event, ctx) => {
 			if (ctx.mode !== "tui") return;
@@ -57,15 +57,19 @@ export default function (pi) {
 			if (failures.length > 0) throw new Error(failures.join("; "));
 		});
 
+	// Pi reports startup even when it opens a saved session (pi --session or
+	// --continue); a session file that already exists means a resume:
+	// https://github.com/earendil-works/pi/blob/e37cdc420669e48b4df4bbce0fb2617fc3c71328/packages/coding-agent/src/core/agent-session.ts#L509
 	on("session_start", async (event, ctx, failures) => {
 		if (!persisting(ctx)) return;
-		heldStart = payloadFor("session_start", ctx, { reason: event.reason });
+		const reason = event.reason === "startup" && saved(ctx) ? "resume" : event.reason;
+		heldStart = payloadFor("session_start", ctx, { reason });
 		await flush(ctx, failures);
 	});
 
 	// before_agent_start runs before Pi appends the turn's user message, so a
 	// first prompt waits for the next event:
-	// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/agent-session.ts#L2060-L2109
+	// https://github.com/earendil-works/pi/blob/e37cdc420669e48b4df4bbce0fb2617fc3c71328/packages/coding-agent/src/core/agent-session.ts#L2059-L2111
 	on("before_agent_start", async (event, ctx, failures) => {
 		if (!persisting(ctx)) return;
 		if (typeof event.prompt === "string" && event.prompt !== "") {
@@ -77,10 +81,10 @@ export default function (pi) {
 	// context fires before each model call. Pi has appended the user message by
 	// the first one: extensions see message_end before Pi persists it, and the
 	// agent loop awaits that before streaming the response:
-	// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/agent-session.ts#L1137-L1161
-	// https://github.com/earendil-works/pi/blob/main/packages/agent/src/agent-loop.ts#L117-L124
-	// https://github.com/earendil-works/pi/blob/main/packages/agent/src/agent-loop.ts#L388-L392
-	// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/sdk.ts#L436-L440
+	// https://github.com/earendil-works/pi/blob/e37cdc420669e48b4df4bbce0fb2617fc3c71328/packages/coding-agent/src/core/agent-session.ts#L1140-L1162
+	// https://github.com/earendil-works/pi/blob/e37cdc420669e48b4df4bbce0fb2617fc3c71328/packages/agent/src/agent-loop.ts#L117-L124
+	// https://github.com/earendil-works/pi/blob/e37cdc420669e48b4df4bbce0fb2617fc3c71328/packages/agent/src/agent-loop.ts#L388-L391
+	// https://github.com/earendil-works/pi/blob/e37cdc420669e48b4df4bbce0fb2617fc3c71328/packages/coding-agent/src/core/sdk.ts#L436-L440
 	on("context", async (_event, ctx, failures) => {
 		if (heldStart || heldPrompts.length > 0) await flush(ctx, failures);
 	});

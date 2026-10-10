@@ -32,7 +32,9 @@ type Hook struct {
 // changes. On Windows, Claude Code hooks built from Executable are written in
 // exec form, which needs an executable such as an .exe rather than a .cmd or
 // .bat shim, and the marker matches the executable and arguments joined by
-// spaces. Hooks defaults to every event supported by the selected profile.
+// spaces. Pi hooks always use exec form on every OS: they require Executable,
+// reject raw commands and matchers, and match the marker the same way. Hooks
+// defaults to every event supported by the selected profile.
 type InstallOptions struct {
 	ConfigPath        string
 	Executable        string
@@ -46,6 +48,8 @@ type InstallOptions struct {
 
 // Result reports the planned or completed config mutation. Data contains the
 // complete resulting config and can be used by command-line dump operations.
+// Data is nil when an uninstall removes a kit-owned config file, such as Pi's
+// extension module once no application's hooks remain.
 type Result struct {
 	Agent      Agent
 	ConfigPath string
@@ -152,12 +156,19 @@ func PlanUninstall(agent Agent, configPath, marker string) (Result, error) {
 }
 
 // Uninstall removes every command containing marker from the selected agent
-// config while preserving hooks owned by other applications. Callers must
-// serialize concurrent mutations of the same config path.
+// config while preserving hooks owned by other applications. It deletes a
+// kit-owned config file, such as Pi's extension module, once no hooks remain.
+// Callers must serialize concurrent mutations of the same config path.
 func Uninstall(agent Agent, configPath, marker string) (Result, error) {
 	result, err := PlanUninstall(agent, configPath, marker)
 	if err != nil || !result.Changed {
 		return result, err
+	}
+	if result.Data == nil {
+		if err := os.Remove(result.ConfigPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return Result{}, fmt.Errorf("remove agent hook config %s: %w", result.ConfigPath, err)
+		}
+		return result, nil
 	}
 	if err := writeConfig(result.ConfigPath, result.Data); err != nil {
 		if errors.Is(err, atomicfile.ErrPublished) {

@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -21,7 +22,7 @@ func piProfile() profileSpec {
 			ConfigEnvironment: "PI_CODING_AGENT_DIR",
 			// Pi loads top-level *.js and *.ts files from <agent dir>/extensions
 			// and skips dotfiles, so atomicfile's staging file is never loaded:
-			// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/package-manager.ts#L603-L640
+			// https://github.com/earendil-works/pi/blob/e37cdc420669e48b4df4bbce0fb2617fc3c71328/packages/coding-agent/src/core/package-manager.ts#L592-L645
 			ConfigFilename: filepath.Join("extensions", "agenthook.js"),
 			// SessionEnd fires only when another session replaces this one (new,
 			// resume, fork), never on quit or reload, so a stopped Pi stays resumable.
@@ -41,16 +42,16 @@ func piProfile() profileSpec {
 	spec.responseFormat = responseObservational
 	// session_start carries a reason that maps to source except for reload, and
 	// the extension reports session_shutdown only for reasons that map to one:
-	// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/extensions/types.ts#L733-L741
-	// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/extensions/types.ts#L802-L808
+	// https://github.com/earendil-works/pi/blob/e37cdc420669e48b4df4bbce0fb2617fc3c71328/packages/coding-agent/src/core/extensions/types.ts#L741-L747
+	// https://github.com/earendil-works/pi/blob/e37cdc420669e48b4df4bbce0fb2617fc3c71328/packages/coding-agent/src/core/extensions/types.ts#L810-L815
 	spec.sessionSourceRequirement = inputOptional
 	spec.sessionEndReasonRequirement = inputRequired
 	return spec
 }
 
 // piEventName maps Claude events to Pi extension events:
-// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/extensions/types.ts#L911-L922
-// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/extensions/types.ts#L997-L1000
+// https://github.com/earendil-works/pi/blob/e37cdc420669e48b4df4bbce0fb2617fc3c71328/packages/coding-agent/src/core/extensions/types.ts#L919-L929
+// https://github.com/earendil-works/pi/blob/e37cdc420669e48b4df4bbce0fb2617fc3c71328/packages/coding-agent/src/core/extensions/types.ts#L1005-L1010
 func piEventName(event Event) string {
 	switch event {
 	case EventSessionStart:
@@ -70,8 +71,8 @@ func piEventName(event Event) string {
 var piWindowsShellPath = regexp.MustCompile(`(?i)^/(?:mnt/|cygdrive/)?([a-z])(?:/(.*))?$`)
 
 // piAgentDir follows Pi's normalizePath for PI_CODING_AGENT_DIR: Git Bash,
-// MSYS, Cygwin, and WSL drive paths on Windows, then ~:
-// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/utils/paths.ts#L67-L101
+// MSYS, Cygwin, and WSL drive paths on Windows, then ~, then file URLs:
+// https://github.com/earendil-works/pi/blob/e37cdc420669e48b4df4bbce0fb2617fc3c71328/packages/coding-agent/src/utils/paths.ts#L67-L101
 func piAgentDir(dir string) (string, error) {
 	if runtime.GOOS == "windows" && strings.HasPrefix(dir, "/") &&
 		!strings.HasPrefix(dir, "//") && !strings.Contains(dir, `\`) {
@@ -91,7 +92,44 @@ func piAgentDir(dir string) (string, error) {
 		}
 		return filepath.Join(home, rest), nil
 	}
+	if strings.HasPrefix(dir, "file://") {
+		return piFileURLPath(dir)
+	}
 	return dir, nil
+}
+
+// piFileURLPath converts a file URL as Node's fileURLToPath does, failing
+// where it throws, since Pi then cannot start:
+// https://github.com/nodejs/node/blob/v24.0.0/lib/internal/url.js#L1450-L1512
+func piFileURLPath(raw string) (string, error) {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("parse file URL %q: %w", raw, err)
+	}
+	escaped := strings.ToLower(parsed.EscapedPath())
+	if strings.Contains(escaped, "%2f") ||
+		(runtime.GOOS == "windows" && strings.Contains(escaped, "%5c")) {
+		return "", fmt.Errorf("file URL %q must not encode path separators", raw)
+	}
+	// The WHATWG URL parser Node uses drops a file URL's localhost host.
+	host := parsed.Host
+	if host == "localhost" {
+		host = ""
+	}
+	if runtime.GOOS != "windows" {
+		if host != "" {
+			return "", fmt.Errorf("file URL %q names host %q; it must name a local path", raw, host)
+		}
+		return parsed.Path, nil
+	}
+	path := filepath.FromSlash(parsed.Path)
+	if host != "" {
+		return `\\` + host + path, nil
+	}
+	if len(path) < 3 || path[2] != ':' || path[1]|0x20 < 'a' || path[1]|0x20 > 'z' {
+		return "", fmt.Errorf("file URL %q must name an absolute path with a drive letter", raw)
+	}
+	return path[1:], nil
 }
 
 // promotePiReason maps Pi's reason field to Claude's. session_start reasons

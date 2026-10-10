@@ -14,7 +14,11 @@
 // resume, or fork), never on quit or reload. The module reports an event only
 // once Pi has saved the session file, so every reported ID resumes: a new
 // session's SessionStart and first prompt wait for that save, and a
-// --no-session run reports nothing. A root index.ts, index.js, or package.json
+// --no-session run reports nothing. Pi reports startup when it opens a saved
+// session (pi --session or --continue), so the module reports that SessionStart
+// with source resume. A failed command's error ends with the tail of its stderr.
+// Uninstall deletes the module once no application's hooks remain. A root
+// index.ts, index.js, or package.json
 // pi.extensions in Pi's extensions directory stops Pi from loading the module.
 // It needs Pi 0.80.4 or later.
 //

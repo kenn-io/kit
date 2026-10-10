@@ -1,7 +1,9 @@
 package agenthook
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -9,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -961,8 +964,9 @@ func TestConfigPathNormalizesPiAgentDirAsPiDoes(t *testing.T) {
 		return elsewhere
 	}
 	tests := []struct {
-		env  string
-		want string
+		env   string
+		want  string
+		fails bool
 	}{
 		{env: "~", want: home},
 		{env: "~/pi-agent", want: filepath.Join(home, "pi-agent")},
@@ -971,6 +975,14 @@ func TestConfigPathNormalizesPiAgentDirAsPiDoes(t *testing.T) {
 		{env: "/mnt/d/pi", want: pick(`D:\pi`, "/mnt/d/pi")},
 		{env: "/cygdrive/e", want: pick(`E:\`, "/cygdrive/e")},
 		{env: "//server/share", want: "//server/share"},
+		// File URLs resolve as Node's fileURLToPath does, and fail where it throws.
+		{
+			env:  "file:///C:/Users/me/pi%20agent",
+			want: pick(`C:\Users\me\pi agent`, "/C:/Users/me/pi agent"),
+		},
+		{env: "file://localhost/srv/pi", want: "/srv/pi", fails: windows},
+		{env: "file://server/share/pi", want: `\\server\share\pi`, fails: !windows},
+		{env: "file:///srv/pi%2Fagent", fails: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.env, func(t *testing.T) {
@@ -978,6 +990,10 @@ func TestConfigPathNormalizesPiAgentDirAsPiDoes(t *testing.T) {
 
 			path, err := ConfigPath(AgentPi)
 
+			if tt.fails {
+				require.ErrorContains(t, err, "file URL")
+				return
+			}
 			require.NoError(t, err)
 			assert.Equal(t, filepath.Join(tt.want, "extensions", "agenthook.js"), path)
 		})
@@ -1054,10 +1070,18 @@ func TestInstallPiKeepsOtherApplicationsCommands(t *testing.T) {
 	assert.True(result.Changed)
 	assert.Equal([]string{bCommand}, piCommands(piScriptHooks(t, path), "session_start"))
 
+	// Removing the last hook deletes the module so Pi stops loading it; a plan
+	// reports that without touching the file.
+	result, err = PlanUninstall(AgentPi, path, "--source b-hook")
+	require.NoError(err)
+	assert.True(result.Changed)
+	assert.Nil(result.Data)
+	assert.FileExists(path)
+
 	result, err = Uninstall(AgentPi, path, "--source b-hook")
 	require.NoError(err)
 	assert.True(result.Changed)
-	assert.Empty(piScriptHooks(t, path))
+	assert.NoFileExists(path)
 
 	result, err = Uninstall(AgentPi, filepath.Join(t.TempDir(), "missing.js"), "--source b-hook")
 	require.NoError(err)
@@ -1103,6 +1127,11 @@ func TestPlanInstallPiRequiresExecutableWithoutMatchers(t *testing.T) {
 }
 
 func TestPiExtensionHelper(t *testing.T) {
+	if os.Getenv("KIT_AGENTHOOK_PI_HELPER_LINGER") != "" {
+		// A background process the hook started, holding the hook's stderr open.
+		<-time.After(4 * time.Minute)
+		return
+	}
 	out := os.Getenv("KIT_AGENTHOOK_PI_HELPER_OUT")
 	if out == "" {
 		return
@@ -1120,9 +1149,25 @@ func TestPiExtensionHelper(t *testing.T) {
 	_, err = file.Write(append(payload, '\n'))
 	require.NoError(t, err)
 	require.NoError(t, file.Close())
-	if strings.Contains(string(payload), "agent_settled") {
+	switch fields["hook_event_name"] {
+	case "before_agent_start":
+		// Exit at once, leaving a process that inherits stderr. It must outlive
+		// this test, so it gets no cancellation; the test kills it by its PID,
+		// and it runs outside the test's directory so Windows can remove that.
+		linger := exec.CommandContext(
+			context.WithoutCancel(t.Context()), os.Args[0], "-test.run=^TestPiExtensionHelper$",
+		)
+		linger.Env = append(os.Environ(), "KIT_AGENTHOOK_PI_HELPER_LINGER=1")
+		linger.Dir = os.TempDir()
+		linger.Stderr = os.Stderr
+		require.NoError(t, linger.Start())
+		pid := []byte(strconv.Itoa(linger.Process.Pid))
+		require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(out), "linger.pid"), pid, 0o600))
+		require.NoError(t, linger.Process.Release())
+	case "agent_settled":
 		// Ignore SIGTERM and outlive the 1s hook timeout, so only a forced kill
 		// with an unconditional deadline keeps the extension from waiting.
+		fmt.Fprintln(os.Stderr, "helper still settling")
 		signal.Ignore(syscall.SIGTERM)
 		<-time.After(4 * time.Minute)
 	}
@@ -1172,7 +1217,7 @@ await fire(pi, "session_start", { reason: "startup" }, ctx("a", fileA));
 await fire(pi, "before_agent_start", { prompt: "one" }, ctx("a", fileA));
 nothingSent("before the session file existed");
 // The header line Pi's SessionManager writes first:
-// https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/session-manager.ts#L1061-L1071
+// https://github.com/earendil-works/pi/blob/e37cdc420669e48b4df4bbce0fb2617fc3c71328/packages/coding-agent/src/core/session-manager.ts#L1063-L1070
 writeFileSync(fileA, JSON.stringify({ type: "session", version: 3, id: "a", timestamp: new Date().toISOString(), cwd: "/work" }) + "\n");
 await fire(pi, "context", { messages: [] }, ctx("a", fileA));
 await fire(pi, "agent_settled", {}, ctx("a", fileA));
@@ -1188,6 +1233,10 @@ pi = runtime();
 await fire(pi, "session_start", { reason: "resume" }, ctx("a", fileA, "json"));
 await fire(pi, "session_start", { reason: "resume" }, ctx("a", fileA));
 await fire(pi, "session_shutdown", { reason: "quit" }, ctx("a", fileA));
+
+// pi --session: Pi reports startup for a saved session, which resumes it.
+pi = runtime();
+await fire(pi, "session_start", { reason: "startup" }, ctx("a", fileA));
 `
 
 func TestPiExtensionReportsResumableSessions(t *testing.T) {
@@ -1215,7 +1264,8 @@ func TestPiExtensionReportsResumableSessions(t *testing.T) {
 		Marker:     testMarker,
 		Hooks: []Hook{
 			{Event: EventSessionStart},
-			{Event: EventUserPromptSubmit},
+			// Shorter than the background process's life, so waiting for stderr to close fails.
+			{Event: EventUserPromptSubmit, Timeout: 2 * time.Second},
 			{Event: EventSessionEnd},
 			{Event: EventStop, Timeout: time.Second},
 		},
@@ -1230,14 +1280,33 @@ func TestPiExtensionReportsResumableSessions(t *testing.T) {
 	out := filepath.Join(dir, "payloads.jsonl")
 	cmd := exec.CommandContext(t.Context(), node, driver, module, dir)
 	cmd.Env = append(os.Environ(), "KIT_AGENTHOOK_PI_HELPER_OUT="+out)
+	t.Cleanup(func() {
+		pid, err := os.ReadFile(filepath.Join(dir, "linger.pid"))
+		if errors.Is(err, os.ErrNotExist) {
+			return
+		}
+		require.NoError(err)
+		id, err := strconv.Atoi(string(pid))
+		require.NoError(err)
+		linger, err := os.FindProcess(id)
+		require.NoError(err)
+		if err := linger.Kill(); !errors.Is(err, os.ErrProcessDone) {
+			assert.NoError(err)
+		}
+	})
 
 	started := time.Now()
 	output, err := cmd.CombinedOutput()
 
 	require.NoError(err, string(output))
-	// Node waits for a live child, so finishing well before the helper's sleep
-	// ends proves the kill; a loaded runner can spend tens of seconds on re-execs.
-	assert.Less(time.Since(started), 3*time.Minute, "the timed-out command was not killed")
+	// Node waits for a live child or a referenced pipe, so finishing well before
+	// the helpers' sleeps end proves the kill and that a background process
+	// holding stderr does not keep Pi waiting; a loaded runner can spend tens of
+	// seconds on re-execs.
+	assert.Less(
+		time.Since(started), 3*time.Minute,
+		"a hook process or its stderr kept the extension waiting",
+	)
 	payloads, err := os.ReadFile(out)
 	require.NoError(err)
 	type report struct {
@@ -1273,14 +1342,18 @@ func TestPiExtensionReportsResumableSessions(t *testing.T) {
 		{Event: "agent_settled", SessionID: "a", Transcript: fileA},
 		{Event: "session_shutdown", SessionID: "a", Transcript: fileA, Reason: "new"},
 		{Event: "session_start", SessionID: "a", Transcript: fileA, Reason: "resume"},
+		{Event: "session_start", SessionID: "a", Transcript: fileA, Reason: "resume"},
 	}, reports)
 	// A failed command is reported once its event's other commands have run.
 	failed := "agenthook session_start commands failed: " + missing + " --source missing-hook: could not start"
 	failures := strings.Split(strings.TrimSpace(string(output)), "\n")
-	require.Len(failures, 3, string(output))
+	require.Len(failures, 4, string(output))
 	assert.Contains(failures[0], "context: "+failed)
 	assert.Contains(failures[1], "agent_settled: agenthook agent_settled commands failed: ")
-	assert.Contains(failures[1], "timed out after 1s")
+	assert.Contains(failures[1], "timed out after 1s: helper still settling")
 	assert.Contains(failures[2], "session_start: "+failed)
+	assert.Contains(failures[3], "session_start: "+failed)
+	// The prompt's command exited at once, though a process it started still holds stderr.
+	assert.NotContains(string(output), "before_agent_start commands failed")
 	assert.NotContains(string(output), "TestPiExtensionHelper$ -- --source shared-agent-hook-test: could not start")
 }

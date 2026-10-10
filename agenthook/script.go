@@ -23,7 +23,9 @@ const (
 
 // planScriptConfig rewrites a kit-owned module whose registration block holds
 // Claude-style nested hooks JSON. The runtime and profile glue are rewritten
-// on every write, so a reinstall also upgrades them.
+// on every write, so a reinstall also upgrades them. An uninstall that removes
+// the last hook returns nil data so the caller deletes the module, which the
+// harness would otherwise keep loading.
 func planScriptConfig(
 	spec profileSpec,
 	path, marker string,
@@ -51,6 +53,9 @@ func planScriptConfig(
 	}
 	if err := applyNestedJSONHooks(root, path, marker, "", "", argv, hooks, uninstall); err != nil {
 		return nil, false, err
+	}
+	if remaining, _ := root["hooks"].(map[string]any); uninstall && len(remaining) == 0 {
+		return nil, true, nil
 	}
 	encoded, err := marshalJSONConfig(root)
 	if err != nil {
