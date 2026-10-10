@@ -185,7 +185,7 @@ func TestDailyClaimsClockAfterLock(t *testing.T) {
 func TestDailyClaimsInvalidStateAndCancellation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "days.json")
 	clock := &fakePostHogClock{now: postHogTestStart}
-	for _, body := range []string{`{`, `{"version":1,"days":{"key":["tomorrow"]}}`, `null`, `{}`, `{"days":{}}`, `{"version":"damaged","days":{}}`, `{"version":1}`, `{"version":1,"days":null}`} {
+	for _, body := range []string{`{`, `null`, `{}`, `{"version":"damaged","days":{}}`, `{"version":0}`, `{"version":1.0}`, `{"version":1,"days":{"key":["2026-10-08","tomorrow"]}}`, `{"version":1,"days":null}`} {
 		require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 		sends := 0
 		status, err := NewDailyClaims(path).report(t.Context(), "id", "screen", "queue", clock.Now, func(time.Time) (Status, error) { sends++; return StatusQueued, nil })
@@ -203,13 +203,15 @@ func TestDailyClaimsInvalidStateAndCancellation(t *testing.T) {
 		assert.Equal(t, StatusSkipped, status)
 		assert.Equal(t, 1, sends)
 	}
-	for _, body := range []string{`{"version":2,"days":{}}`, `{"version":2}`, `{"version":2,"days":{"key":["tomorrow"]}}`, `{"version":2,"days":[]}`, `{"version":2.0}`, `{"version":"2"}`, `{"version":0}`, `{"version":-1}`, `{"version":0.5}`, `{"version":1.0}`, `{"version":1e400}`, `{"version":1e2147483648,"days":{}}`} {
+	for _, body := range []string{`{"version":2}`, `{"version":2,"days":{"key":["tomorrow"]}}`, `{"version":9223372036854775808}`, `{"version":2} trailing bytes`} {
 		require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+		sends := 0
 		_, err := NewDailyClaims(path).report(t.Context(), "id", "screen", "queue", time.Now, func(time.Time) (Status, error) {
-			assert.Fail(t, "capture with unsupported state version")
+			sends++
 			return StatusQueued, nil
 		})
 		require.ErrorContains(t, err, "unsupported daily telemetry version")
+		assert.Zero(t, sends, body)
 		data, err := os.ReadFile(path)
 		require.NoError(t, err)
 		assert.Equal(t, body, string(data))

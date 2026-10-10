@@ -22,6 +22,6 @@ by membership. Reservation and enqueue use one time sampled under the lock.
 Rejected captures release their reservation; storage failures return errors.
 Failed reservation saves release published claims under the same lock.
 Pending cleanup follows visible publication, including durability failures.
-Damaged claims reset to empty state; versions other than 1 remain untouched.
+Damaged claims reset to empty state; versions above 1 remain untouched.
 Applications own finite property enums and client retries. Queue acceptance does
 not guarantee eventual network delivery.

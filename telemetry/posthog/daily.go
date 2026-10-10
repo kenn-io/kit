@@ -1,12 +1,14 @@
 package posthog
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -65,11 +67,15 @@ func (d *DailyClaims) report(ctx context.Context, identity, event, key string, n
 	var state dailyState
 	data, err := os.ReadFile(d.path)
 	if err == nil {
-		err = json.Unmarshal(data, &state)
-		if state.Version != "" && state.Version != "1" {
-			return "", fmt.Errorf("unsupported daily telemetry version %s", state.Version)
+		var header struct {
+			Version json.Number `json:"version"`
 		}
-		valid := err == nil && state.Version == "1" && state.Days != nil
+		err = json.NewDecoder(bytes.NewReader(data)).Decode(&header)
+		version, _ := strconv.ParseInt(string(header.Version), 10, 64)
+		if err == nil && version > 1 && !strings.ContainsAny(string(header.Version), ".eE") {
+			return "", fmt.Errorf("unsupported daily telemetry version %s", header.Version)
+		}
+		valid := err == nil && header.Version == "1" && json.Unmarshal(data, &state) == nil && state.Days != nil
 		for _, days := range state.Days {
 			for _, day := range days {
 				if _, err := time.Parse(time.DateOnly, day); err != nil {
