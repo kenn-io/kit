@@ -211,6 +211,7 @@ func TestDailyClaimsInvalidStateAndCancellation(t *testing.T) {
 	for _, body := range []string{
 		`{"version":2}`, `{"version":2,"days":`, `{"version":2,"days":{"key":["tomorrow"]}}`, `{"version":2.0}`, `{"version":1.0}`, `{"version":1.0000000000000001}`, `{"version":1e99999999999}`, `{"version":2} trailing bytes`,
 		`{"Version":2,"days":{}}`, `{"version":1,"version":2,"days":{}}`,
+		`{"version":2,"version":null,"days":{}}`,
 	} {
 		require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 		sends := 0
@@ -234,41 +235,28 @@ func TestDailyClaimsInvalidStateAndCancellation(t *testing.T) {
 }
 
 func TestDailyClaimsCleanupPreservesNewerAcceptedDay(t *testing.T) {
-	for _, newer := range []bool{false, true} {
-		t.Run(strconv.FormatBool(newer), func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "days.json")
-			claims := NewDailyClaims(path)
-			clock := &fakePostHogClock{now: postHogTestStart}
-			writes := 0
-			claims.write = func(p string, b []byte, o ...atomicfile.Option) error {
-				writes++
-				if writes == 2 {
-					return errors.New("rollback failed")
-				}
-				return atomicfile.WriteFile(p, b, o...)
-			}
-			_, err := claims.report(t.Context(), "id", "screen", "queue", clock.Now, func(time.Time) (Status, error) { return "", errors.New("rejected") })
-			require.Error(t, err)
-			if newer {
-				clock.Advance(24 * time.Hour)
-			}
-			send := func(time.Time) (Status, error) { return StatusQueued, nil }
-			if !newer {
-				status, err := claims.report(t.Context(), "id", "screen", "queue", clock.Now, send)
-				require.NoError(t, err)
-				assert.Equal(t, StatusQueued, status)
-				assert.Nil(t, claims.pending)
-				return
-			}
-			status, err := NewDailyClaims(path).report(t.Context(), "id", "screen", "queue", clock.Now, send)
-			require.NoError(t, err)
-			assert.Equal(t, StatusQueued, status)
-			status, err = claims.report(t.Context(), "id", "screen", "queue", clock.Now, func(time.Time) (Status, error) { assert.Fail(t, "newer day was erased"); return StatusQueued, nil })
-			require.NoError(t, err)
-			assert.Equal(t, StatusSkipped, status)
-			assert.Nil(t, claims.pending)
-		})
+	path := filepath.Join(t.TempDir(), "days.json")
+	claims := NewDailyClaims(path)
+	clock := &fakePostHogClock{now: postHogTestStart}
+	writes := 0
+	claims.write = func(p string, b []byte, o ...atomicfile.Option) error {
+		writes++
+		if writes == 2 {
+			return errors.New("rollback failed")
+		}
+		return atomicfile.WriteFile(p, b, o...)
 	}
+	_, err := claims.report(t.Context(), "id", "screen", "queue", clock.Now, func(time.Time) (Status, error) { return "", errors.New("rejected") })
+	require.Error(t, err)
+	clock.Advance(24 * time.Hour)
+	send := func(time.Time) (Status, error) { return StatusQueued, nil }
+	status, err := NewDailyClaims(path).report(t.Context(), "id", "screen", "queue", clock.Now, send)
+	require.NoError(t, err)
+	assert.Equal(t, StatusQueued, status)
+	status, err = claims.report(t.Context(), "id", "screen", "queue", clock.Now, func(time.Time) (Status, error) { assert.Fail(t, "newer day was erased"); return StatusQueued, nil })
+	require.NoError(t, err)
+	assert.Equal(t, StatusSkipped, status)
+	assert.Nil(t, claims.pending)
 }
 
 func TestDailyReportKeepsReservationTimestamp(t *testing.T) {

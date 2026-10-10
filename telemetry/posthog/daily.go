@@ -72,7 +72,7 @@ func newerDailyVersion(data []byte) (json.Number, bool) {
 			if err := decoder.Decode(&value); err != nil {
 				break
 			}
-			if strings.EqualFold(key.(string), "version") {
+			if strings.EqualFold(key.(string), "version") && value != nil {
 				number, _ = value.(json.Number)
 			}
 		}
