@@ -185,7 +185,7 @@ func TestDailyClaimsClockAfterLock(t *testing.T) {
 func TestDailyClaimsInvalidStateAndCancellation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "days.json")
 	clock := &fakePostHogClock{now: postHogTestStart}
-	for _, body := range []string{`{`, `{"version":1,"days":{"key":["tomorrow"]}}`, `null`, `{}`, `{"days":{}}`, `{"version":0,"days":{}}`, `{"version":-1,"days":{}}`, `{"version":1}`, `{"version":1,"days":null}`} {
+	for _, body := range []string{`{`, `{"version":1,"days":{"key":["tomorrow"]}}`, `null`, `{}`, `{"days":{}}`, `{"version":0,"days":{}}`, `{"version":-1,"days":{}}`, `{"version":0.5,"days":{}}`, `{"version":"damaged","days":{}}`, `{"version":1}`, `{"version":1,"days":null}`} {
 		require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 		sends := 0
 		status, err := NewDailyClaims(path).report(t.Context(), "id", "screen", "queue", clock.Now, func(time.Time) (Status, error) { sends++; return StatusQueued, nil })
@@ -196,14 +196,14 @@ func TestDailyClaimsInvalidStateAndCancellation(t *testing.T) {
 		require.NoError(t, err)
 		var state dailyState
 		require.NoError(t, json.Unmarshal(data, &state))
-		assert.Equal(t, 1, state.Version)
+		assert.Equal(t, json.Number("1"), state.Version)
 		assert.Len(t, state.Days, 1)
 		status, err = NewDailyClaims(path).report(t.Context(), "id", "screen", "queue", clock.Now, func(time.Time) (Status, error) { sends++; return StatusQueued, nil })
 		require.NoError(t, err)
 		assert.Equal(t, StatusSkipped, status)
 		assert.Equal(t, 1, sends)
 	}
-	for _, body := range []string{`{"version":2,"days":{}}`, `{"version":2}`, `{"version":2,"days":{"key":["tomorrow"]}}`, `{"version":2,"days":[]}`, `{"version":2.0}`, `{"version":"2"}`, `{"version":1e400}`, `{"version":99999999999999999999}`} {
+	for _, body := range []string{`{"version":2,"days":{}}`, `{"version":2}`, `{"version":2,"days":{"key":["tomorrow"]}}`, `{"version":2,"days":[]}`, `{"version":2.0}`, `{"version":"2"}`, `{"version":1e400}`, `{"version":99999999999999999999}`, `{"version":1.00000000000000000001}`} {
 		require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 		_, err := NewDailyClaims(path).report(t.Context(), "id", "screen", "queue", time.Now, func(time.Time) (Status, error) {
 			assert.Fail(t, "capture with newer state version")
@@ -337,17 +337,6 @@ func TestReporterConfigurationValidation(t *testing.T) {
 			})
 		}
 	}
-	for _, id := range []string{"", " \t"} {
-		t.Run("opted out blank identity "+strconv.Quote(id), func(t *testing.T) {
-			t.Setenv(GenericEnabledEnv, "1")
-			t.Setenv("KATA_TELEMETRY_ENABLED", "0")
-			_, err := newPostHogReporter(Options{EnvPrefix: "KATA", DistinctID: id}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
-				assert.Fail(t, "client created with blank daily identity")
-				return &recordingPostHogClient{}, nil
-			}, allowed, WithDailyEvent("screen_viewed", "screen", claims))
-			require.ErrorContains(t, err, "distinct id is required")
-		})
-	}
 }
 
 func TestDailyClaimsPublicationRecovery(t *testing.T) {
@@ -396,6 +385,11 @@ func TestDailyClaimsPublicationRecovery(t *testing.T) {
 				require.Error(t, err)
 				for _, failure := range tc.errors[:min(2, len(tc.errors))] {
 					if failure != nil {
+						if tc.name == "published reservation release" && failure == tc.errors[1] {
+							assert.NotErrorIs(t, err, failure)
+							assert.NotErrorIs(t, err, releaseErr)
+							continue
+						}
 						require.ErrorIs(t, err, failure)
 					}
 				}

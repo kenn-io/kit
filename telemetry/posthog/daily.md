@@ -15,8 +15,8 @@ one JSON value and a body of at most 64 KiB. Applications own routes and
 authentication.
 
 Keep daily event and key allowlists finite. Reporter construction rejects an
-unknown daily event, an unlisted key property, missing state path or blank
-`Options.DistinctID`, including when opted out. `Report` and enabled `Capture`
+unknown daily event, an unlisted key property or missing state path, including
+when opted out. `Report` and enabled `Capture`
 return `ErrUnsupportedEvent` for blank events. Daily keys must be caller-owned
 properties; reporter defaults cannot identify a daily claim.
 
@@ -24,7 +24,8 @@ The state file reserves each installation, event and screen before SDK enqueue.
 The file lock covers reservation, enqueue and rollback. A rejected enqueue
 releases its claim. A failed reservation save releases any published claim
 under the same lock. Storage failures return errors for a later retry; if
-release also fails, the error includes both failures.
+release fails before publication, the error includes both failures. If release
+publishes despite an error, only the reservation error returns.
 Claims retain accepted UTC dates, so correcting a future clock permits an
 unreported date and returning to a counted date skips it. Dates remain in the
 file because pruning could repeat a count after clock correction. The file

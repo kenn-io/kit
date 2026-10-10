@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"os"
 	"slices"
 	"strings"
@@ -51,7 +52,7 @@ func WithDailyEvent(event, keyProperty string, claims *DailyClaims) Option {
 }
 
 type dailyState struct {
-	Version int                 `json:"version"`
+	Version json.Number         `json:"version"`
 	Days    map[string][]string `json:"days"`
 }
 
@@ -65,17 +66,13 @@ func (d *DailyClaims) report(ctx context.Context, identity, event, key string, n
 	var state dailyState
 	data, err := os.ReadFile(d.path)
 	if err == nil {
-		var header struct {
-			Version json.Number `json:"version"`
-		}
-		if json.Unmarshal(data, &header) == nil {
-			version, _ := header.Version.Float64() // Overflow yields +Inf, which is also newer.
-			if version > 1 {
-				return "", fmt.Errorf("unsupported daily telemetry version %s", header.Version)
-			}
-		}
 		err = json.Unmarshal(data, &state)
-		valid := err == nil && state.Version == 1 && state.Days != nil
+		// Round upward so versions just above 1 remain newer at this precision.
+		version, _, _ := big.ParseFloat(string(state.Version), 10, 64, big.ToPositiveInf)
+		if version != nil && version.Cmp(big.NewFloat(1)) > 0 {
+			return "", fmt.Errorf("unsupported daily telemetry version %s", state.Version)
+		}
+		valid := err == nil && state.Version == "1" && state.Days != nil
 		for _, days := range state.Days {
 			for _, day := range days {
 				if _, err := time.Parse(time.DateOnly, day); err != nil {
@@ -91,7 +88,7 @@ func (d *DailyClaims) report(ctx context.Context, identity, event, key string, n
 		return "", fmt.Errorf("read daily telemetry: %w", err)
 	}
 	if state.Days == nil {
-		state = dailyState{Version: 1, Days: make(map[string][]string)}
+		state = dailyState{Version: "1", Days: make(map[string][]string)}
 	}
 	save := func() error {
 		data, err := json.Marshal(state)
@@ -137,7 +134,7 @@ func (d *DailyClaims) report(ctx context.Context, identity, event, key string, n
 	state.Days[claim] = append(state.Days[claim], day)
 	if err := save(); err != nil {
 		if errors.Is(err, atomicfile.ErrPublished) {
-			if releaseErr := rollback(); releaseErr != nil {
+			if releaseErr := rollback(); releaseErr != nil && !errors.Is(releaseErr, atomicfile.ErrPublished) {
 				return "", errors.Join(fmt.Errorf("reserve daily telemetry: %w", err), fmt.Errorf("release daily telemetry: %w", releaseErr))
 			}
 		} else {
