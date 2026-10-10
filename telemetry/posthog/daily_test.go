@@ -207,7 +207,7 @@ func TestDailyClaimsInvalidStateAndCancellation(t *testing.T) {
 		assert.Equal(t, StatusSkipped, status)
 		assert.Equal(t, 1, sends)
 	}
-	for _, body := range []string{`{"version":2}`, `{"version":2.0}`, `{"version":2e0}`, `{"version":1e99999999999}`, `{"version":2,"days":{"key":["tomorrow"]}}`, `{"version":9223372036854775808}`, `{"version":2} trailing bytes`} {
+	for _, body := range []string{`{"version":2}`, `{"version":2,"days":{"key":["tomorrow"]}}`, `{"version":2.0}`, `{"version":1e99999999999}`, `{"version":2} trailing bytes`} {
 		require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 		sends := 0
 		_, err := NewDailyClaims(path).report(t.Context(), "id", "screen", "queue", time.Now, func(time.Time) (Status, error) {

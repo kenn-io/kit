@@ -18,8 +18,7 @@ Keep daily event and key allowlists finite. Reporter construction rejects an
 unknown daily event, an unlisted key property or missing state path, including
 when opted out. `Report` and enabled `Capture` return `ErrUnsupportedEvent`
 for blank events.
-Daily keys must be caller-owned properties; reporter defaults cannot identify a
-daily claim.
+Daily keys must be caller-owned properties; reporter defaults cannot identify a daily claim.
 
 The state file reserves each installation, event and screen before SDK enqueue.
 The file lock covers reservation, enqueue and rollback. A rejected enqueue
@@ -37,10 +36,10 @@ Use `Report` with a caller context. `Capture` bounds daily lock waiting with
 `ShutdownTimeout`. A version above 1 returns an error and leaves the file intact.
 Any other damage, including one invalid date, resets the whole file to empty
 claims; the next save replaces it.
-Request lock waits follow caller cancellation and deadlines; HTTP owners should
-bound request contexts as needed.
-A report racing `Close` can hold the daily file lock while waiting for SDK
-shutdown, up to `ShutdownTimeout`, so other writers can time out and retry.
+A file with no readable version, for example a truncated file, counts as damaged.
+Atomic writes never leave partial files.
+Request lock waits follow caller cancellation and deadlines; HTTP owners should bound request contexts as needed.
+A report racing `Close` can hold the daily file lock while waiting for SDK shutdown, up to `ShutdownTimeout`, so other writers can time out and retry.
 Recovering damaged state forgets accepted dates and can count them again.
 
 Accepted reports mean SDK queue acceptance. A crash between reservation and
@@ -54,8 +53,7 @@ independently of app-open reporting. Use delivery results to detect failures
 and retry on later interaction. Report the initial terminal queue and use its
 acceptance result. A split pane showing queue
 and review reports both screen keys. Daily deduplication belongs to the server.
-`queued`, `skipped` and `disabled` complete the current attempt; retry errors on
-later interaction.
+`queued`, `skipped` and `disabled` complete the current attempt; retry errors on later interaction.
 
 When adopting this API, remove copied daily gates, use `Report` or `PostEvent`
 results for retries, and transfer existing same-day claims if upgrade continuity

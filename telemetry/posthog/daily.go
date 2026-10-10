@@ -70,8 +70,7 @@ func (d *DailyClaims) report(ctx context.Context, identity, event, key string, n
 		var header struct {
 			Version json.RawMessage `json:"version"`
 		}
-		err = json.NewDecoder(bytes.NewReader(data)).Decode(&header)
-		if err == nil && len(header.Version) > 0 && (header.Version[0] == '-' || header.Version[0] >= '0' && header.Version[0] <= '9') {
+		if err := json.NewDecoder(bytes.NewReader(data)).Decode(&header); err == nil {
 			version, parseErr := strconv.ParseFloat(string(header.Version), 64)
 			if (parseErr == nil || errors.Is(parseErr, strconv.ErrRange)) && version > 1 {
 				return "", fmt.Errorf("unsupported daily telemetry version %s", header.Version)
