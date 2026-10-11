@@ -7,11 +7,13 @@ import (
 	lipgloss "charm.land/lipgloss/v2"
 	"charm.land/lipgloss/v2/table"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/yuin/goldmark"
-	"github.com/yuin/goldmark/ast"
-	"github.com/yuin/goldmark/extension"
-	extast "github.com/yuin/goldmark/extension/ast"
-	"github.com/yuin/goldmark/text"
+	"github.com/yuin/goldmark/v2/ast"
+	"github.com/yuin/goldmark/v2/extension"
+	extast "github.com/yuin/goldmark/v2/extension/ast"
+	"github.com/yuin/goldmark/v2/parser"
+	"github.com/yuin/goldmark/v2/text"
+
+	"go.kenn.io/kit/tui/termtext"
 )
 
 const (
@@ -46,11 +48,11 @@ type listItemLine struct {
 
 func renderMarkdownDocument(markdown string, opts Options) (string, error) {
 	source := []byte(markdown)
-	parser := goldmark.New(goldmark.WithExtensions(
-		extension.GFM,
-		extension.DefinitionList,
-	)).Parser()
-	document := parser.Parse(text.NewReader(source))
+	p := parser.New(parser.WithExtensions(
+		extension.GFMParser,
+		extension.DefinitionListParser,
+	))
+	document := p.Parse(source)
 	renderer := terminalRenderer{source: source, opts: opts}
 	out := strings.TrimRight(renderer.renderBlocks(document), "\n")
 	if out == "" {
@@ -84,12 +86,10 @@ func (r terminalRenderer) renderBlock(node ast.Node) string {
 	switch node := node.(type) {
 	case *ast.Heading:
 		return ansiBoldOn + r.renderInlinesStyled(node, inlineBold) + ansiBoldOff
-	case *ast.Paragraph, *ast.TextBlock:
+	case *ast.Paragraph:
 		return r.wrap(r.renderInlines(node), r.opts.Width)
 	case *ast.CodeBlock:
-		return r.renderCodeBlock(node.Lines())
-	case *ast.FencedCodeBlock:
-		return r.renderCodeBlock(node.Lines())
+		return r.renderCodeBlock(node.Value)
 	case *ast.HTMLBlock:
 		return r.renderHTMLBlock(node)
 	case *ast.Blockquote:
@@ -143,7 +143,6 @@ func (r terminalRenderer) renderList(list *ast.List, indentWidth int) string {
 			item,
 			continuationWidth,
 			max(1, r.opts.Width-continuationWidth),
-			taskMarker,
 			!list.IsTight,
 		)
 		if len(itemLines) == 0 {
@@ -165,15 +164,11 @@ func (r terminalRenderer) renderList(list *ast.List, indentWidth int) string {
 }
 
 func taskListMarker(item *ast.ListItem) string {
-	firstBlock := item.FirstChild()
-	if firstBlock == nil {
-		return ""
-	}
-	checkbox, ok := firstBlock.FirstChild().(*extast.TaskCheckBox)
+	status, ok := extension.TaskStatusOf(item)
 	if !ok {
 		return ""
 	}
-	if checkbox.IsChecked {
+	if status == extension.TaskStatusCompleted {
 		return "[x] "
 	}
 	return "[ ] "
@@ -182,7 +177,6 @@ func taskListMarker(item *ast.ListItem) string {
 func (r terminalRenderer) renderListItem(
 	item *ast.ListItem,
 	nestedIndent, width int,
-	taskMarker string,
 	separateBlocks bool,
 ) []listItemLine {
 	var lines []listItemLine
@@ -190,12 +184,8 @@ func (r terminalRenderer) renderListItem(
 		var childLines []string
 		hasParentIndent := false
 		switch child := child.(type) {
-		case *ast.Paragraph, *ast.TextBlock:
+		case *ast.Paragraph:
 			content := r.renderInlines(child)
-			if taskMarker != "" {
-				content = strings.TrimPrefix(content, taskMarker)
-				taskMarker = ""
-			}
 			paragraph := r.wrap(content, width)
 			childLines = strings.Split(paragraph, "\n")
 		case *ast.List:
@@ -227,13 +217,8 @@ func (r terminalRenderer) renderListItem(
 	return lines
 }
 
-func (r terminalRenderer) renderCodeBlock(segments *text.Segments) string {
-	var code strings.Builder
-	for i := range segments.Len() {
-		segment := segments.At(i)
-		code.Write(segment.Value(r.source))
-	}
-	raw := strings.TrimSuffix(code.String(), "\n")
+func (r terminalRenderer) renderCodeBlock(value text.Lines) string {
+	raw := strings.TrimSuffix(value.Str(r.source), "\n")
 	if r.opts.CodeBlockBackground == nil || *r.opts.CodeBlockBackground == "" {
 		return raw
 	}
@@ -246,15 +231,7 @@ func (r terminalRenderer) renderCodeBlock(segments *text.Segments) string {
 }
 
 func (r terminalRenderer) renderHTMLBlock(block *ast.HTMLBlock) string {
-	var raw strings.Builder
-	for i := range block.Lines().Len() {
-		segment := block.Lines().At(i)
-		raw.Write(segment.Value(r.source))
-	}
-	if block.HasClosure() {
-		raw.Write(block.ClosureLine.Value(r.source))
-	}
-	return stripHTMLTags(raw.String())
+	return stripHTMLTags(block.Value.Str(r.source))
 }
 
 func stripHTMLTags(value string) string {
@@ -311,15 +288,21 @@ func isASCIIAlpha(char byte) bool {
 func (r terminalRenderer) renderTable(tbl *extast.Table) string {
 	var headers []string
 	var rows [][]string
-	for child := tbl.FirstChild(); child != nil; child = child.NextSibling() {
-		cells := make([]string, 0, child.ChildCount())
-		for cell := child.FirstChild(); cell != nil; cell = cell.NextSibling() {
+	renderCells := func(row ast.Node) []string {
+		cells := make([]string, 0, row.ChildCount())
+		for cell := row.FirstChild(); cell != nil; cell = cell.NextSibling() {
 			cells = append(cells, r.renderInlines(cell))
 		}
-		if _, ok := child.(*extast.TableHeader); ok {
-			headers = cells
-		} else {
-			rows = append(rows, cells)
+		return cells
+	}
+	for child := tbl.FirstChild(); child != nil; child = child.NextSibling() {
+		switch child := child.(type) {
+		case *extast.TableHeader:
+			headers = renderCells(child)
+		case *extast.TableBody:
+			for row := child.FirstChild(); row != nil; row = row.NextSibling() {
+				rows = append(rows, renderCells(row))
+			}
 		}
 	}
 	t := table.New().
@@ -355,39 +338,35 @@ func (r terminalRenderer) renderInlinesStyled(parent ast.Node, active inlineStyl
 	for node := parent.FirstChild(); node != nil; node = node.NextSibling() {
 		switch node := node.(type) {
 		case *ast.Text:
-			out.WriteString(unescapeTerminalText(string(node.Segment.Value(r.source))))
+			out.WriteString(termtext.SanitizeBlock(node.Value.Value(r.source)))
 			if node.HardLineBreak() || node.SoftLineBreak() {
 				out.WriteByte('\n')
 			}
-		case *ast.String:
-			out.WriteString(unescapeTerminalText(string(node.Value)))
 		case *ast.CodeSpan:
-			out.WriteString(r.renderCodeSpan(node))
+			out.WriteString("`" + node.Value.Value(r.source) + "`")
+		case *ast.Strong:
+			out.WriteString(r.renderInlineStyle(
+				node, active, inlineBold, ansiBoldOn, ansiBoldOff,
+			))
 		case *ast.Emphasis:
-			if node.Level == 2 {
-				out.WriteString(r.renderInlineStyle(
-					node, active, inlineBold, ansiBoldOn, ansiBoldOff,
-				))
-			} else {
-				out.WriteString(r.renderInlineStyle(
-					node, active, inlineItalic, ansiItalicOn, ansiItalicOff,
-				))
-			}
+			out.WriteString(r.renderInlineStyle(
+				node, active, inlineItalic, ansiItalicOn, ansiItalicOff,
+			))
 		case *ast.Link:
 			out.WriteString(r.renderInlinesStyled(node, active))
-			if destination := visibleLinkDestination(node.Destination); destination != "" {
+			if destination := visibleLinkDestination(node.Destination.Value(r.source)); destination != "" {
 				out.WriteByte(' ')
 				out.WriteString(ansiUnderlineOn + destination + ansiUnderlineOff)
 			}
 		case *ast.Image:
 			out.WriteString("[image: " + r.renderInlinesStyled(node, active) + "]")
-			if destination := unescapeTerminalText(string(node.Destination)); destination != "" {
+			if destination := termtext.SanitizeBlock(node.Destination.Value(r.source)); destination != "" {
 				out.WriteByte(' ')
 				out.WriteString(destination)
 			}
 		case *ast.AutoLink:
-			label := unescapeTerminalText(string(node.Label(r.source)))
-			if node.AutoLinkType == ast.AutoLinkEmail {
+			label := termtext.SanitizeBlock(node.Label.Value(r.source))
+			if strings.HasPrefix(node.Destination.Value(r.source), "mailto:") {
 				out.WriteString(label)
 			} else {
 				out.WriteString(ansiUnderlineOn + label + ansiUnderlineOff)
@@ -398,12 +377,6 @@ func (r terminalRenderer) renderInlinesStyled(parent ast.Node, active inlineStyl
 			out.WriteString(r.renderInlineStyle(
 				node, active, inlineStrike, ansiStrikeOn, ansiStrikeOff,
 			))
-		case *extast.TaskCheckBox:
-			if node.IsChecked {
-				out.WriteString("[x] ")
-			} else {
-				out.WriteString("[ ] ")
-			}
 		default:
 			if node.HasChildren() {
 				out.WriteString(r.renderInlinesStyled(node, active))
@@ -413,30 +386,8 @@ func (r terminalRenderer) renderInlinesStyled(parent ast.Node, active inlineStyl
 	return out.String()
 }
 
-func (r terminalRenderer) renderCodeSpan(node *ast.CodeSpan) string {
-	var out strings.Builder
-	out.WriteByte('`')
-	for child := node.FirstChild(); child != nil; child = child.NextSibling() {
-		textNode := child.(*ast.Text)
-		value := textNode.Segment.Value(r.source)
-		if len(value) > 0 && value[len(value)-1] == '\n' {
-			out.Write(value[:len(value)-1])
-			out.WriteByte(' ')
-		} else {
-			out.Write(value)
-		}
-	}
-	out.WriteByte('`')
-	return out.String()
-}
-
 func (r terminalRenderer) renderRawHTML(node *ast.RawHTML) string {
-	var raw strings.Builder
-	for i := range node.Segments.Len() {
-		segment := node.Segments.At(i)
-		raw.Write(segment.Value(r.source))
-	}
-	value := raw.String()
+	value := node.Value.Str(r.source)
 	trimmed := strings.TrimSpace(value)
 	if len(trimmed) >= 3 && trimmed[0] == '<' && trimmed[len(trimmed)-1] == '>' {
 		fields := strings.Fields(strings.TrimSpace(trimmed[1 : len(trimmed)-1]))
@@ -447,8 +398,8 @@ func (r terminalRenderer) renderRawHTML(node *ast.RawHTML) string {
 	return stripHTMLTags(value)
 }
 
-func visibleLinkDestination(destination []byte) string {
-	value := unescapeTerminalText(string(destination))
+func visibleLinkDestination(destination string) string {
+	value := termtext.SanitizeBlock(destination)
 	if strings.HasPrefix(value, "#") {
 		return ""
 	}
