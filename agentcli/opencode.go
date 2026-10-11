@@ -8,16 +8,27 @@ func NewOpenCode(command Command) (Adapter, error) {
 }
 
 var openCodeCapabilities = Capabilities{
-	Modes:         []Mode{NonInteractive},
+	Modes:         []Mode{Interactive, NonInteractive},
 	Resume:        true,
 	OutputFormats: []OutputFormat{OutputText, OutputJSONL},
 	Model:         true,
 }
 
 func buildOpenCode(a *adapter, sessionID string, request Request) (Invocation, error) {
-	args := append(a.base(), "run")
-	if request.OutputFormat == OutputJSONL {
-		args = append(args, "--format", "json")
+	args := a.base()
+	if request.Mode == Interactive {
+		if err := rejectInteractivePrompt(OpenCode, request); err != nil {
+			return Invocation{}, err
+		}
+		// The 2.x TUI takes --session but no --model (opencode --help, v2.0.14).
+		if request.Model != "" {
+			return Invocation{}, unsupported(OpenCode, Interactive, "model", "", "use noninteractive mode")
+		}
+	} else {
+		args = append(args, "run")
+		if request.OutputFormat == OutputJSONL {
+			args = append(args, "--format", "json")
+		}
 	}
 	if sessionID != "" {
 		args = append(args, "--session", sessionID)

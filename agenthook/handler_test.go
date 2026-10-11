@@ -652,6 +652,21 @@ func TestHandleAllowsNativeLifecyclePayloadWithoutClaudeEquivalent(t *testing.T)
 				assert.Empty(t, handler.sessionEnd.Reason)
 			},
 		},
+		{
+			name:    "OpenCode session start without source",
+			agent:   AgentOpenCode,
+			payload: `{"session_id":"ses_1","hook_event_name":"SessionStart","cwd":"/work"}`,
+			check: func(t *testing.T, handler *lifecycleHandler) {
+				t.Helper()
+				require.NotNil(t, handler.sessionStart)
+				assert.Empty(t, handler.sessionStart.Source)
+			},
+		},
+		{
+			name:    "OpenCode user prompt without prompt",
+			agent:   AgentOpenCode,
+			payload: `{"session_id":"ses_1","hook_event_name":"UserPromptSubmit"}`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -665,7 +680,9 @@ func TestHandleAllowsNativeLifecyclePayloadWithoutClaudeEquivalent(t *testing.T)
 			)
 
 			require.NoError(t, err)
-			tt.check(t, handler)
+			if tt.check != nil {
+				tt.check(t, handler)
+			}
 			assert.JSONEq(t, `{}`, output.String())
 		})
 	}

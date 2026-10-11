@@ -93,6 +93,7 @@ func TestInteractiveResumePreservesConfiguredOptions(t *testing.T) {
 		{agentcli.Gemini, agentcli.Command{Executable: "gemini-custom", Options: []string{"--sandbox"}}, agentcli.Request{}, []string{"gemini-custom", "--sandbox", "--resume", "session-1"}},
 		{agentcli.Qwen, agentcli.Command{Executable: "qwen-custom", Options: []string{"--sandbox"}}, agentcli.Request{}, []string{"qwen-custom", "--sandbox", "--resume", "session-1"}},
 		{agentcli.Hermes, agentcli.Command{Executable: "hermes-custom", Options: []string{"--tui"}}, agentcli.Request{}, []string{"hermes-custom", "--tui", "--resume", "session-1"}},
+		{agentcli.OpenCode, agentcli.Command{Executable: "opencode-custom", Options: []string{"--auto"}}, agentcli.Request{}, []string{"opencode-custom", "--auto", "--session", "session-1"}},
 	}
 	for _, test := range tests {
 		got, err := mustAgent(t, test.name, test.command).Resume("session-1", test.request)
@@ -127,6 +128,8 @@ func TestUnsupportedRequestsReturnTypedErrors(t *testing.T) {
 		{agentcli.Hermes, agentcli.Request{Prompt: agentcli.Prompt{Text: "review"}}, "prompt"},
 		{agentcli.Hermes, agentcli.Request{Mode: agentcli.NonInteractive}, "mode"},
 		{agentcli.Qwen, agentcli.Request{Mode: agentcli.NonInteractive}, "mode"},
+		{agentcli.OpenCode, agentcli.Request{Prompt: agentcli.Prompt{Text: "review"}}, "prompt"},
+		{agentcli.OpenCode, agentcli.Request{Model: "provider/model"}, "model"},
 	}
 	for _, test := range tests {
 		_, err := mustAgent(t, test.name, agentcli.Command{}).Start(test.request)
