@@ -21,18 +21,24 @@ for blank events.
 Daily keys must be caller-owned properties; reporter defaults cannot identify a daily claim.
 
 The state file reserves each installation, event and screen before SDK enqueue.
-The file lock covers reservation, enqueue and rollback. A rejected enqueue
-releases its claim. A storage failure returns an error for a later retry.
+The in-process semaphore and file lock cover reservation, enqueue and rollback.
+A rejected enqueue releases its claim. A storage failure returns an error for
+a later retry.
 Claims retain accepted UTC dates, so correcting a future clock permits an
 unreported date and returning to a counted date skips it. Dates remain in the
 file because pruning could repeat a count after clock correction. The file
 grows by one date per accepted installation, event, key and day. Reservation,
 event timestamp and installation age use one time sampled under the claim lock.
 
-Use `Report` with a caller context. `Capture` bounds daily lock waiting with
-`ShutdownTimeout`. The versioned file rejects malformed or future versions.
+Use `Report` with a caller context. Reports on the same `DailyClaims` instance
+wait on an in-process semaphore before the file lock. Both waits honor the
+caller's context; `Capture` bounds them with `ShutdownTimeout`. The versioned
+file rejects malformed or future versions.
 Request lock waits follow caller cancellation and deadlines; HTTP owners should bound request contexts as needed.
-A report racing `Close` can hold the daily file lock while waiting for SDK shutdown, up to `ShutdownTimeout`, so other writers can time out and retry.
+A report racing `Close` can hold the in-process semaphore and daily file lock
+while waiting for SDK shutdown, up to `ShutdownTimeout`. Other reports on the
+same instance wait on the semaphore with the same context bound, so they and
+other writers can time out and retry.
 For corruption, stop writers and restore a valid backup. Removing state forgets
 accepted dates and can count them again.
 

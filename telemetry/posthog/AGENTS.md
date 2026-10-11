@@ -16,9 +16,10 @@ The heartbeat checks wall-clock UTC dates hourly so system sleep does not turn
 daily activity into a count of awake hours. SDK logs use the supplied slog
 logger (or slog.Default), preserving levels and the application's log sink.
 
-Daily claims hold a context-aware file lock through queue acceptance and
-rollback. Reserve durably before enqueue; retain accepted dates and deduplicate
-by membership. Reservation and enqueue use one time sampled under the lock.
+Daily claims take a context-aware instance semaphore and file lock and hold
+both through queue acceptance and rollback. Reserve durably before enqueue;
+retain accepted dates and deduplicate by membership. Reservation and enqueue
+use one time sampled under the lock.
 Rejected captures release their reservation; storage failures return errors.
 Pending cleanup follows visible publication, including durability failures.
 Applications own finite property enums and client retries. Queue acceptance does

@@ -60,6 +60,141 @@ func TestDailyCaptureValidatesBeforeClaim(t *testing.T) {
 	}
 }
 
+func TestDailyReportConcurrentCaptures(t *testing.T) {
+	for _, tc := range []struct {
+		name                            string
+		shared, rejected, cancelWaiting bool
+	}{
+		{"separate accepted", false, false, false},
+		{"shared accepted", true, false, false},
+		{"separate rejected", false, true, false},
+		{"shared rejected", true, true, false},
+		{"cancel while waiting", true, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "days.json")
+			claims := NewDailyClaims(path)
+			secondClaims := claims
+			if !tc.shared {
+				secondClaims = NewDailyClaims(path)
+			}
+			clock := func() time.Time { return postHogTestStart }
+			started, release := make(chan struct{}), make(chan struct{})
+			var releaseOnce sync.Once
+			unblock := func() { releaseOnce.Do(func() { close(release) }) }
+			t.Cleanup(unblock)
+			var markers []string
+			var markersMu sync.Mutex
+			mark := func(marker string) {
+				// Shared-instance markers expose broken serialization to the race detector.
+				if !tc.shared {
+					markersMu.Lock()
+					defer markersMu.Unlock()
+				}
+				markers = append(markers, marker)
+			}
+			first := make(chan error, 1)
+			rejection := errors.New("queue rejected")
+			go func() {
+				_, err := claims.report(t.Context(), "id", "screen", "queue", clock, func(time.Time) (Status, error) {
+					mark("first entered")
+					pending := claims.pending
+					assert.NotNil(t, pending)
+					close(started)
+					<-release
+					assert.Same(t, pending, claims.pending, "waiting report must preserve the active reservation")
+					mark("first returning")
+					if tc.rejected {
+						return "", rejection
+					}
+					return StatusQueued, nil
+				})
+				first <- err
+			}()
+			select {
+			case <-started:
+			case err := <-first:
+				require.NoError(t, err)
+				require.FailNow(t, "first report returned without entering capture")
+			case <-time.After(5 * time.Second):
+				require.FailNow(t, "first report did not enter capture")
+			}
+			lock := flock.New(path + ".lock")
+			locked, err := lock.TryLock()
+			require.NoError(t, err)
+			if locked {
+				require.NoError(t, lock.Unlock())
+			}
+			require.False(t, locked, "claim lock must remain held through capture")
+			secondKey := "detail"
+			if tc.rejected || tc.cancelWaiting {
+				secondKey = "queue"
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			waitContext := &dailyWaitContext{Context: ctx, doneCalled: make(chan struct{})}
+			type result struct {
+				status Status
+				err    error
+			}
+			second := make(chan result, 1)
+			entered := make(chan struct{}, 1)
+			go func() {
+				status, err := secondClaims.report(waitContext, "id", "screen", secondKey, clock, func(time.Time) (Status, error) {
+					mark("second entered")
+					entered <- struct{}{}
+					return StatusQueued, nil
+				})
+				second <- result{status, err}
+			}()
+			select {
+			case <-waitContext.doneCalled:
+			case <-time.After(5 * time.Second):
+				require.FailNow(t, "second report did not start waiting")
+			}
+			select {
+			case <-entered:
+				assert.Fail(t, "second capture entered before the first returned")
+			case got := <-second:
+				assert.Fail(t, "second report returned before the first capture", "%+v", got)
+				second <- got
+			case <-time.After(time.Second):
+			}
+			if tc.cancelWaiting {
+				cancel()
+				select {
+				case got := <-second:
+					require.ErrorIs(t, got.err, context.Canceled)
+					require.ErrorContains(t, got.err, "lock daily telemetry")
+				case <-time.After(time.Second):
+					require.FailNow(t, "canceled report remained blocked")
+				}
+				unblock()
+				require.NoError(t, <-first)
+				return
+			}
+			unblock()
+			if tc.rejected {
+				require.ErrorIs(t, <-first, rejection)
+			} else {
+				require.NoError(t, <-first)
+			}
+			got := <-second
+			require.NoError(t, got.err)
+			assert.Equal(t, StatusQueued, got.status)
+			assert.Equal(t, []string{"first entered", "first returning", "second entered"}, markers)
+			for _, key := range []string{"queue", secondKey} {
+				status, err := claims.report(t.Context(), "id", "screen", key, clock, func(time.Time) (Status, error) {
+					assert.Fail(t, "accepted claim must skip capture")
+					return StatusQueued, nil
+				})
+				require.NoError(t, err)
+				assert.Equal(t, StatusSkipped, status)
+			}
+		})
+	}
+}
+
 func TestDailyClaimsRecoveryAndIsolation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "days.json")
 	claims := NewDailyClaims(path)
@@ -98,51 +233,19 @@ func TestDailyClaimsRecoveryAndIsolation(t *testing.T) {
 	assert.Equal(t, 5, sends)
 }
 
-func TestDailyClaimsSerializeRejectedCapture(t *testing.T) {
-	for _, shared := range []bool{false, true} {
-		t.Run(strconv.FormatBool(shared), func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "days.json")
-			claims := NewDailyClaims(path)
-			nextClaims := func() *DailyClaims {
-				if shared {
-					return claims
-				}
-				return NewDailyClaims(path)
-			}
-			started, release := make(chan struct{}), make(chan struct{})
-			first := make(chan error, 1)
-			go func() {
-				_, err := nextClaims().report(t.Context(), "id", "screen", "queue", time.Now, func(time.Time) (Status, error) { close(started); <-release; return "", errors.New("rejected") })
-				first <- err
-			}()
-			<-started
-			lock := flock.New(path + ".lock")
-			locked, err := lock.TryLock()
-			require.NoError(t, err)
-			require.False(t, locked, "claim lock must remain held through capture")
-			second := make(chan Status, 1)
-			failures := make(chan error, 1)
-			go func() {
-				status, err := nextClaims().report(t.Context(), "id", "screen", "queue", time.Now, func(time.Time) (Status, error) { return StatusQueued, nil })
-				second <- status
-				failures <- err
-			}()
-			close(release)
-			require.Error(t, <-first)
-			require.NoError(t, <-failures)
-			assert.Equal(t, StatusQueued, <-second)
-		})
-	}
-}
-
-type dailyLockWaitContext struct {
+type dailyWaitContext struct {
 	context.Context
-	waiting chan struct{}
-	once    sync.Once
+	doneCalled    chan struct{}
+	once          sync.Once
+	skipDoneCalls int
 }
 
-func (c *dailyLockWaitContext) Done() <-chan struct{} {
-	c.once.Do(func() { close(c.waiting) })
+func (c *dailyWaitContext) Done() <-chan struct{} {
+	if c.skipDoneCalls > 0 {
+		c.skipDoneCalls--
+		return c.Context.Done()
+	}
+	c.once.Do(func() { close(c.doneCalled) })
 	return c.Context.Done()
 }
 
@@ -164,7 +267,8 @@ func TestDailyClaimsClockAfterLock(t *testing.T) {
 		ctx, cancel = context.WithDeadline(ctx, deadline)
 		t.Cleanup(cancel)
 	}
-	waitContext := &dailyLockWaitContext{Context: ctx, waiting: make(chan struct{})}
+	// semaphore.Acquire calls ctx.Done once on an uncontended acquire; skip it to signal the file lock wait.
+	waitContext := &dailyWaitContext{Context: ctx, doneCalled: make(chan struct{}), skipDoneCalls: 1}
 	result := make(chan Status, 1)
 	failures := make(chan error, 1)
 	go func() {
@@ -173,7 +277,7 @@ func TestDailyClaimsClockAfterLock(t *testing.T) {
 		failures <- err
 	}()
 	select {
-	case <-waitContext.waiting:
+	case <-waitContext.doneCalled:
 	case <-ctx.Done():
 		require.NoError(t, ctx.Err())
 	}
@@ -197,11 +301,27 @@ func TestDailyClaimsInvalidStateAndCancellation(t *testing.T) {
 	}
 	lock := flock.New(path + ".lock")
 	require.NoError(t, lock.Lock())
+	t.Cleanup(func() { require.NoError(t, lock.Unlock()) })
 	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	waitContext := &dailyWaitContext{Context: ctx, doneCalled: make(chan struct{}), skipDoneCalls: 1}
+	result := make(chan error, 1)
+	go func() {
+		_, err := NewDailyClaims(path).report(waitContext, "id", "screen", "queue", time.Now, func(time.Time) (Status, error) { return StatusQueued, nil })
+		result <- err
+	}()
+	select {
+	case <-waitContext.doneCalled:
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "report did not wait for the file lock")
+	}
 	cancel()
-	_, err := NewDailyClaims(path).report(ctx, "id", "screen", "queue", time.Now, func(time.Time) (Status, error) { return StatusQueued, nil })
-	require.ErrorIs(t, err, context.Canceled)
-	require.NoError(t, lock.Unlock())
+	select {
+	case err := <-result:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(time.Second):
+		require.FailNow(t, "canceled report remained blocked")
+	}
 }
 
 func TestDailyClaimsCleanupPreservesNewerAcceptedDay(t *testing.T) {
