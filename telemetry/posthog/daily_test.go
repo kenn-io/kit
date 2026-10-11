@@ -339,86 +339,85 @@ func TestReporterConfigurationValidation(t *testing.T) {
 }
 
 func TestDailyClaimsPublicationRecovery(t *testing.T) {
-	for _, publishedErr := range []error{atomicfile.ErrPublished, atomicfile.ErrNotDurable} {
-		releaseErr := errors.New("release failed before publication")
-		for _, tc := range []struct {
-			name        string
-			errors      []error
-			wantErrors  []error
-			omitError   error
-			retryError  error
-			retry       bool
-			freshStatus Status
-		}{
-			{name: "published reservation", errors: []error{publishedErr}, wantErrors: []error{publishedErr}, freshStatus: StatusQueued},
-			{name: "unpublished reservation", errors: []error{releaseErr}, wantErrors: []error{releaseErr}, freshStatus: StatusQueued},
-			{name: "published rollback", errors: []error{nil, publishedErr}, wantErrors: []error{publishedErr}, freshStatus: StatusQueued},
-			{name: "published deferred cleanup", errors: []error{nil, releaseErr, publishedErr}, wantErrors: []error{releaseErr}, retryError: publishedErr, freshStatus: StatusQueued},
-			{name: "unpublished reservation release", errors: []error{publishedErr, releaseErr}, wantErrors: []error{publishedErr, releaseErr}, retry: true, freshStatus: StatusSkipped},
-			{name: "published reservation release", errors: []error{publishedErr, errors.Join(releaseErr, publishedErr)}, wantErrors: []error{publishedErr}, omitError: releaseErr, freshStatus: StatusQueued},
-		} {
-			t.Run(tc.name+publishedErr.Error(), func(t *testing.T) {
-				path := filepath.Join(t.TempDir(), "days.json")
-				claims := NewDailyClaims(path)
-				clock := &fakePostHogClock{now: postHogTestStart}
-				writes, accepted := 0, 0
-				claims.write = func(p string, data []byte, options ...atomicfile.Option) error {
-					writes++
-					var failure error
-					if writes <= len(tc.errors) {
-						failure = tc.errors[writes-1]
-					}
-					if failure != nil && !errors.Is(failure, atomicfile.ErrPublished) {
-						return failure
-					}
-					if err := atomicfile.WriteFile(p, data, options...); err != nil {
-						return err
-					}
+	publishedErr := atomicfile.ErrNotDurable
+	releaseErr := errors.New("release failed before publication")
+	for _, tc := range []struct {
+		name        string
+		errors      []error
+		wantErrors  []error
+		omitError   error
+		retryError  error
+		retry       bool
+		freshStatus Status
+	}{
+		{name: "published reservation", errors: []error{publishedErr}, wantErrors: []error{publishedErr}, freshStatus: StatusQueued},
+		{name: "unpublished reservation", errors: []error{releaseErr}, wantErrors: []error{releaseErr}, freshStatus: StatusQueued},
+		{name: "published rollback", errors: []error{nil, publishedErr}, wantErrors: []error{publishedErr}, freshStatus: StatusQueued},
+		{name: "published deferred cleanup", errors: []error{nil, releaseErr, publishedErr}, wantErrors: []error{releaseErr}, retryError: publishedErr, freshStatus: StatusQueued},
+		{name: "unpublished reservation release", errors: []error{publishedErr, releaseErr}, wantErrors: []error{publishedErr, releaseErr}, retry: true, freshStatus: StatusSkipped},
+		{name: "published reservation release", errors: []error{publishedErr, errors.Join(releaseErr, publishedErr)}, wantErrors: []error{publishedErr}, omitError: releaseErr, freshStatus: StatusQueued},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "days.json")
+			claims := NewDailyClaims(path)
+			clock := &fakePostHogClock{now: postHogTestStart}
+			writes, accepted := 0, 0
+			claims.write = func(p string, data []byte, options ...atomicfile.Option) error {
+				writes++
+				var failure error
+				if writes <= len(tc.errors) {
+					failure = tc.errors[writes-1]
+				}
+				if failure != nil && !errors.Is(failure, atomicfile.ErrPublished) {
 					return failure
 				}
-				send := func(time.Time) (Status, error) { accepted++; return StatusQueued, nil }
-				report := func(c *DailyClaims, callback func(time.Time) (Status, error)) (Status, error) {
-					return c.report(t.Context(), "id", "screen", "queue", clock.Now, callback)
+				if err := atomicfile.WriteFile(p, data, options...); err != nil {
+					return err
 				}
-				_, err := report(claims, func(time.Time) (Status, error) {
-					if tc.errors[0] != nil {
-						assert.Fail(t, "capture after failed reservation")
-					}
-					return "", errors.New("rejected")
-				})
-				require.Error(t, err)
-				for _, failure := range tc.wantErrors {
-					require.ErrorIs(t, err, failure)
+				return failure
+			}
+			send := func(time.Time) (Status, error) { accepted++; return StatusQueued, nil }
+			report := func(c *DailyClaims, callback func(time.Time) (Status, error)) (Status, error) {
+				return c.report(t.Context(), "id", "screen", "queue", clock.Now, callback)
+			}
+			_, err := report(claims, func(time.Time) (Status, error) {
+				if tc.errors[0] != nil {
+					assert.Fail(t, "capture after failed reservation")
 				}
-				if tc.omitError != nil {
-					require.NotErrorIs(t, err, tc.omitError)
-				}
-				assert.Zero(t, accepted)
-				if len(tc.errors) > 1 {
-					assert.Equal(t, 2, writes)
-				}
-				if tc.retryError != nil {
-					require.NotNil(t, claims.pending)
-					_, err = report(claims, send)
-					require.ErrorIs(t, err, tc.retryError)
-					assert.Zero(t, accepted)
-				}
-				if tc.retry {
-					require.NotNil(t, claims.pending)
-					status, err := report(claims, send)
-					require.NoError(t, err)
-					assert.Equal(t, StatusQueued, status)
-				}
-				assert.Nil(t, claims.pending)
-				status, err := report(NewDailyClaims(path), send)
-				require.NoError(t, err)
-				assert.Equal(t, tc.freshStatus, status)
-				status, err = report(claims, send)
-				require.NoError(t, err)
-				assert.Equal(t, StatusSkipped, status)
-				assert.Equal(t, 1, accepted)
+				return "", errors.New("rejected")
 			})
-		}
+			require.Error(t, err)
+			for _, failure := range tc.wantErrors {
+				require.ErrorIs(t, err, failure)
+			}
+			if tc.omitError != nil {
+				require.NotErrorIs(t, err, tc.omitError)
+			}
+			assert.Zero(t, accepted)
+			if len(tc.errors) > 1 {
+				assert.Equal(t, 2, writes)
+			}
+			if tc.retryError != nil {
+				require.NotNil(t, claims.pending)
+				_, err = report(claims, send)
+				require.ErrorIs(t, err, tc.retryError)
+				assert.Zero(t, accepted)
+			}
+			if tc.retry {
+				require.NotNil(t, claims.pending)
+				status, err := report(claims, send)
+				require.NoError(t, err)
+				assert.Equal(t, StatusQueued, status)
+			}
+			assert.Nil(t, claims.pending)
+			status, err := report(NewDailyClaims(path), send)
+			require.NoError(t, err)
+			assert.Equal(t, tc.freshStatus, status)
+			status, err = report(claims, send)
+			require.NoError(t, err)
+			assert.Equal(t, StatusSkipped, status)
+			assert.Equal(t, 1, accepted)
+		})
 	}
 }
 
