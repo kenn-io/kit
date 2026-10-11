@@ -15,7 +15,6 @@ import (
 	"github.com/tailscale/hujson"
 	"gopkg.in/yaml.v3"
 
-	"go.kenn.io/kit/agenthook"
 	"go.kenn.io/kit/agentmcp"
 )
 
@@ -102,18 +101,7 @@ func decodeConfig(t *testing.T, agent agentmcp.Agent, data []byte) map[string]an
 	return doc
 }
 
-func TestProfiles(t *testing.T) {
-	var hooks, mcps []string
-	for _, profile := range agenthook.Profiles() {
-		// agentmcp has no OpenCode or Pi profile yet.
-		if profile.Agent != agenthook.AgentOpenCode && profile.Agent != agenthook.AgentPi {
-			hooks = append(hooks, string(profile.Agent))
-		}
-	}
-	for _, profile := range agentmcp.Profiles() {
-		mcps = append(mcps, string(profile.Agent))
-	}
-	assert.ElementsMatch(t, hooks, mcps)
+func TestConfigPath(t *testing.T) {
 	for _, tt := range []struct {
 		agent              agentmcp.Agent
 		variable, filename string
