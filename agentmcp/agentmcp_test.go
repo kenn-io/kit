@@ -105,7 +105,10 @@ func decodeConfig(t *testing.T, agent agentmcp.Agent, data []byte) map[string]an
 func TestProfiles(t *testing.T) {
 	var hooks, mcps []string
 	for _, profile := range agenthook.Profiles() {
-		hooks = append(hooks, string(profile.Agent))
+		// agentmcp has no Pi profile yet.
+		if profile.Agent != agenthook.AgentPi {
+			hooks = append(hooks, string(profile.Agent))
+		}
 	}
 	for _, profile := range agentmcp.Profiles() {
 		mcps = append(mcps, string(profile.Agent))

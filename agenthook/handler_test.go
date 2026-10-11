@@ -628,6 +628,16 @@ func TestHandleAllowsNativeLifecyclePayloadWithoutClaudeEquivalent(t *testing.T)
 			},
 		},
 		{
+			name:    "Pi reload without Claude source",
+			agent:   AgentPi,
+			payload: `{"session_id":"p1","hook_event_name":"session_start","reason":"reload"}`,
+			check: func(t *testing.T, handler *lifecycleHandler) {
+				t.Helper()
+				require.NotNil(t, handler.sessionStart)
+				assert.Empty(t, handler.sessionStart.Source)
+			},
+		},
+		{
 			name:  "Hermes session end without Claude reason",
 			agent: AgentHermes,
 			payload: `{
@@ -847,4 +857,35 @@ func TestHandleRejectsOversizedPayload(t *testing.T) {
 
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "hook payload exceeds")
+}
+
+func TestHandleDispatchesPiSessionEnd(t *testing.T) {
+	var output bytes.Buffer
+	handler := &lifecycleHandler{}
+
+	err := Handle(
+		t.Context(), AgentPi,
+		strings.NewReader(`{"session_id":"pi-1","hook_event_name":"session_shutdown","reason":"new"}`),
+		&output, handler,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, handler.sessionEnd)
+	assert.Equal(t, "pi-1", handler.sessionEnd.SessionID)
+	assert.Equal(t, SessionEndClear, handler.sessionEnd.Reason)
+	assert.JSONEq(t, `{}`, output.String())
+}
+
+func TestHandleRejectsPiControlOutput(t *testing.T) {
+	var output bytes.Buffer
+	handler := stopHandler{output: StopOutput{Decision: DecisionBlock, Reason: "work remains"}}
+
+	err := Handle(
+		t.Context(), AgentPi,
+		strings.NewReader(`{"session_id":"pi-1","hook_event_name":"agent_settled"}`),
+		&output, handler,
+	)
+
+	require.ErrorContains(t, err, "does not support Stop control output")
+	assert.Empty(t, output.String())
 }

@@ -32,7 +32,9 @@ type Hook struct {
 // changes. On Windows, Claude Code hooks built from Executable are written in
 // exec form, which needs an executable such as an .exe rather than a .cmd or
 // .bat shim, and the marker matches the executable and arguments joined by
-// spaces. Hooks defaults to every event supported by the selected profile.
+// spaces. Pi hooks always use exec form on every OS: they require Executable,
+// reject raw commands and matchers, and match the marker the same way. Hooks
+// defaults to every event supported by the selected profile.
 type InstallOptions struct {
 	ConfigPath        string
 	Executable        string
@@ -46,6 +48,8 @@ type InstallOptions struct {
 
 // Result reports the planned or completed config mutation. Data contains the
 // complete resulting config and can be used by command-line dump operations.
+// Data is nil when an uninstall removes a kit-owned config file, such as Pi's
+// extension module once no application's hooks remain.
 type Result struct {
 	Agent      Agent
 	ConfigPath string
@@ -90,12 +94,20 @@ func PlanInstall(agent Agent, opts InstallOptions) (Result, error) {
 // writes a command string on this platform.
 func execArgv(spec profileSpec, opts InstallOptions) ([]string, error) {
 	executable := strings.TrimSpace(opts.Executable)
-	if executable == "" || spec.windowsCommandStyle != windowsCommandExec ||
-		runtime.GOOS != "windows" {
+	if spec.format == formatScript && executable == "" {
+		return nil, fmt.Errorf(
+			"%s hooks need Executable and Arguments; a raw command needs a shell",
+			spec.profile.DisplayName,
+		)
+	}
+	if spec.format != formatScript && (executable == "" ||
+		spec.windowsCommandStyle != windowsCommandExec || runtime.GOOS != "windows") {
 		return nil, nil
 	}
-	if ext := filepath.Ext(executable); strings.EqualFold(ext, ".cmd") ||
-		strings.EqualFold(ext, ".bat") {
+	// Node refuses to spawn .cmd and .bat files without a shell:
+	// https://nodejs.org/en/blog/vulnerability/april-2024-security-releases-2
+	if ext := filepath.Ext(executable); runtime.GOOS == "windows" &&
+		(strings.EqualFold(ext, ".cmd") || strings.EqualFold(ext, ".bat")) {
 		return nil, fmt.Errorf(
 			"%s hooks on Windows cannot run %s shim %s without a shell; "+
 				"pass the executable it launches",
@@ -144,12 +156,19 @@ func PlanUninstall(agent Agent, configPath, marker string) (Result, error) {
 }
 
 // Uninstall removes every command containing marker from the selected agent
-// config while preserving hooks owned by other applications. Callers must
-// serialize concurrent mutations of the same config path.
+// config while preserving hooks owned by other applications. It deletes a
+// kit-owned config file, such as Pi's extension module, once no hooks remain.
+// Callers must serialize concurrent mutations of the same config path.
 func Uninstall(agent Agent, configPath, marker string) (Result, error) {
 	result, err := PlanUninstall(agent, configPath, marker)
 	if err != nil || !result.Changed {
 		return result, err
+	}
+	if result.Data == nil {
+		if err := os.Remove(result.ConfigPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return Result{}, fmt.Errorf("remove agent hook config %s: %w", result.ConfigPath, err)
+		}
+		return result, nil
 	}
 	if err := writeConfig(result.ConfigPath, result.Data); err != nil {
 		if errors.Is(err, atomicfile.ErrPublished) {
@@ -204,6 +223,10 @@ func prepareInstall(agent Agent, opts InstallOptions) (profileSpec, string, []na
 		if spec.format == formatHermesYAML && hook.Timeout > 300*time.Second {
 			return profileSpec{}, "", nil, errors.New("Hermes hook timeout must not exceed 300 seconds")
 		}
+		// The generated module runs every command for its event, so a matcher would be dropped silently.
+		if spec.format == formatScript && strings.TrimSpace(hook.Matcher) != "" {
+			return profileSpec{}, "", nil, fmt.Errorf("%s hooks do not support matchers", spec.profile.DisplayName)
+		}
 		matcher := nativeMatcher(spec, strings.TrimSpace(hook.Matcher))
 		if spec.format == formatHermesYAML && matcher != "" &&
 			hook.Event != EventPreToolUse && hook.Event != EventPostToolUse {
@@ -252,6 +275,8 @@ func planConfig(
 		)
 	case formatHermesYAML:
 		return planHermesConfig(path, marker, command, hooks, uninstall)
+	case formatScript:
+		return planScriptConfig(spec, path, marker, argv, hooks, uninstall)
 	default:
 		return nil, false, errors.New("unsupported agent hook config format")
 	}

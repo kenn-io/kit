@@ -24,46 +24,10 @@ func planNestedJSONConfig(
 	if err != nil {
 		return nil, false, fmt.Errorf("encode existing agent hook config %s: %w", path, err)
 	}
-
-	hooksObject, err := jsonHooksObject(root, path, !uninstall)
-	if err != nil {
+	if err := applyNestedJSONHooks(
+		root, path, marker, command, commandWindows, argv, hooks, uninstall,
+	); err != nil {
 		return nil, false, err
-	}
-	if hooksObject != nil {
-		if err := removeOwnedJSONHooks(hooksObject, marker, path); err != nil {
-			return nil, false, err
-		}
-	}
-	if !uninstall {
-		if hooksObject == nil {
-			return nil, false, fmt.Errorf("agent hook config %s has no hooks object", path)
-		}
-		for _, hook := range hooks {
-			entry := map[string]any{}
-			if hook.matcher != "" {
-				entry["matcher"] = hook.matcher
-			}
-			handler := map[string]any{
-				"type":    "command",
-				"command": command,
-			}
-			if len(argv) > 0 {
-				handler["command"] = argv[0]
-				handler["args"] = argv[1:]
-			} else if commandWindows != "" {
-				handler["commandWindows"] = commandWindows
-			}
-			if hook.timeout > 0 {
-				handler["timeout"] = hook.timeout
-			}
-			entry["hooks"] = []any{handler}
-			event := hook.name
-			entries, err := jsonEventEntries(hooksObject, event, path)
-			if err != nil {
-				return nil, false, err
-			}
-			hooksObject[event] = append(entries, entry)
-		}
 	}
 	after, err := marshalJSONConfig(root)
 	if err != nil {
@@ -76,6 +40,59 @@ func planNestedJSONConfig(
 	return after, changed, nil
 }
 
+// applyNestedJSONHooks replaces the commands owned by marker in root's
+// Claude-style hooks object, or removes them on uninstall.
+func applyNestedJSONHooks(
+	root map[string]any,
+	path, marker, command, commandWindows string,
+	argv []string,
+	hooks []nativeHook,
+	uninstall bool,
+) error {
+	hooksObject, err := jsonHooksObject(root, path, !uninstall)
+	if err != nil {
+		return err
+	}
+	if hooksObject != nil {
+		if err := removeOwnedJSONHooks(hooksObject, marker, path); err != nil {
+			return err
+		}
+	}
+	if uninstall {
+		return nil
+	}
+	if hooksObject == nil {
+		return fmt.Errorf("agent hook config %s has no hooks object", path)
+	}
+	for _, hook := range hooks {
+		entry := map[string]any{}
+		if hook.matcher != "" {
+			entry["matcher"] = hook.matcher
+		}
+		handler := map[string]any{
+			"type":    "command",
+			"command": command,
+		}
+		if len(argv) > 0 {
+			handler["command"] = argv[0]
+			handler["args"] = argv[1:]
+		} else if commandWindows != "" {
+			handler["commandWindows"] = commandWindows
+		}
+		if hook.timeout > 0 {
+			handler["timeout"] = hook.timeout
+		}
+		entry["hooks"] = []any{handler}
+		event := hook.name
+		entries, err := jsonEventEntries(hooksObject, event, path)
+		if err != nil {
+			return err
+		}
+		hooksObject[event] = append(entries, entry)
+	}
+	return nil
+}
+
 func readJSONConfig(path string) (map[string]any, bool, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -84,14 +101,22 @@ func readJSONConfig(path string) (map[string]any, bool, error) {
 	if err != nil {
 		return nil, false, fmt.Errorf("read agent hook config %s: %w", path, err)
 	}
+	root, err := decodeJSONConfig(path, data)
+	if err != nil {
+		return nil, false, err
+	}
+	return root, true, nil
+}
+
+func decodeJSONConfig(path string, data []byte) (map[string]any, error) {
 	if len(strings.TrimSpace(string(data))) == 0 {
-		return map[string]any{}, true, nil
+		return map[string]any{}, nil
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
 	var root map[string]any
 	if err := decoder.Decode(&root); err != nil {
-		return nil, false, fmt.Errorf("decode agent hook config %s: %w", path, err)
+		return nil, fmt.Errorf("decode agent hook config %s: %w", path, err)
 	}
 	if root == nil {
 		root = map[string]any{}
@@ -101,9 +126,9 @@ func readJSONConfig(path string) (map[string]any, bool, error) {
 		if err == nil {
 			err = errors.New("multiple JSON values")
 		}
-		return nil, false, fmt.Errorf("decode agent hook config %s: %w", path, err)
+		return nil, fmt.Errorf("decode agent hook config %s: %w", path, err)
 	}
-	return root, true, nil
+	return root, nil
 }
 
 func marshalJSONConfig(root map[string]any) ([]byte, error) {
