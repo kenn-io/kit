@@ -92,6 +92,16 @@ func New() Runner {
 	}
 }
 
+// WithEnv returns a copy of r with a snapshot of env and an independent trust
+// cache. Use it when changing the environment of an already-used runner so the
+// new environment can reuse trust reads without affecting the original runner.
+// A nil env retains the default of using os.Environ when each command runs.
+func (r Runner) WithEnv(env []string) Runner {
+	r.Env = slices.Clone(env)
+	r.trust = &safeDirectoryCache{}
+	return r
+}
+
 // WithConfig returns a copy of r with an additional temporary git config value.
 func (r Runner) WithConfig(key, value string) Runner {
 	r.Config = append(append([]Config(nil), r.Config...), Config{Key: key, Value: value})
@@ -145,6 +155,14 @@ func (r Runner) Run(ctx context.Context, dir string, stdin io.Reader, args ...st
 	stderr := outputBuffer{limit: r.StderrLimit}
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	// bytes.Buffer.ReadFrom avoids io.Copy's 32 KiB scratch allocation for
+	// each pipe. Only use it when there is no capture limit to enforce.
+	if r.StdoutLimit <= 0 {
+		cmd.Stdout = &stdout.buffer
+	}
+	if r.StderrLimit <= 0 {
+		cmd.Stderr = &stderr.buffer
+	}
 
 	err := cmd.Run()
 	if err != nil && ctx.Err() != nil {

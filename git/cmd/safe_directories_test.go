@@ -147,6 +147,40 @@ func trustTrace(t *testing.T, path string) func(int) {
 	}
 }
 
+func TestRunnerWithEnvKeepsIndependentTrustCaches(t *testing.T) {
+	extendTrustProbeTimeout(t)
+	dir := t.TempDir()
+	config, otherConfig := filepath.Join(dir, "global"), filepath.Join(dir, "other")
+	trace := filepath.Join(dir, "trace")
+	require.NoError(t, os.WriteFile(config, []byte("[safe]\n directory = /original\n"), 0o600))
+	require.NoError(t, os.WriteFile(otherConfig, []byte("[safe]\n directory = /other\n"), 0o600))
+	runner := New()
+	runner.Env = append(safeDirectoryTestEnv(t, config), "GIT_CONFIG_NOSYSTEM=1", "GIT_TRACE="+filepath.ToSlash(trace))
+	checkTrace := trustTrace(t, trace)
+	check := func(r Runner, want string, probes int) {
+		t.Helper()
+		out, err := r.Output(t.Context(), dir, "config", "--get-all", "safe.directory")
+		require.NoError(t, err)
+		assert.Equal(t, want+"\n", string(out))
+		checkTrace(probes)
+	}
+	check(runner, "/original", 1)
+	check(runner, "/original", 2)
+	check(runner, "/original", 0)
+	env := append(slices.Clone(runner.Env), "GIT_CONFIG_GLOBAL="+otherConfig)
+	other := runner.WithEnv(env)
+	// WithEnv takes a snapshot, so later caller edits cannot change it.
+	env[len(env)-1] = "GIT_CONFIG_GLOBAL=" + config
+	check(other, "/other", 1)
+	check(other, "/other", 2)
+	check(other, "/other", 0)
+	check(runner, "/original", 0)
+	require.NoError(t, os.WriteFile(otherConfig, []byte("[safe]\n directory = /edited\n"), 0o600))
+	check(other, "/edited", 1)
+	check(other, "/edited", 0)
+	check(runner, "/original", 0)
+}
+
 func trustHomeShare(t *testing.T, env []string) ([]string, string, string) {
 	t.Helper()
 	dir := t.TempDir()

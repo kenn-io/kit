@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"go.kenn.io/kit/fslink"
@@ -361,6 +362,12 @@ func newLifecycleExecution(runner gitcmd.Runner, runGit GitRunner, runHook HookR
 		if isZero {
 			runner.StripEnv = true
 		}
+	}
+	// Set the diagnostic locale before the first lifecycle command. The
+	// caller may have already populated its cache under a different locale;
+	// this environment needs its own cache, retained by nested operations.
+	if len(runner.Env) == 0 || runner.Env[len(runner.Env)-1] != "LC_ALL=C" {
+		runner = runner.WithEnv(slices.Concat(runner.Env, []string{"LC_ALL=C"}))
 	}
 	return lifecycleExecution{runner: runner, runGit: runGit, runHook: runHook}
 }

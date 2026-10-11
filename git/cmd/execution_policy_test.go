@@ -45,17 +45,32 @@ func TestRunnerWorktreeExecutionPolicy(t *testing.T) {
 	})
 	t.Run("independent limits preserve process failure", func(t *testing.T) {
 		t.Parallel()
-		runner := New().WithConfig("alias.emit", "!printf abcdef; printf ghijkl >&2; exit 3")
-		runner.DisableSafeDirectoryForward = true
-		runner.StdoutLimit = 3
-		runner.StderrLimit = 4
-		stdout, stderr, err := runner.Run(t.Context(), t.TempDir(), nil, "emit")
-		require.ErrorIs(t, err, ErrStdoutLimitExceeded)
-		require.ErrorIs(t, err, ErrStderrLimitExceeded)
-		assert.True(t, IsExitCode(err, 3))
-		assert.Equal(t, "abc", string(stdout))
-		assert.Equal(t, "ghij", string(stderr))
-		assert.Contains(t, err.Error(), "ghij")
+		for _, tc := range []struct {
+			name                     string
+			stdoutLimit, stderrLimit int
+			stdout, stderr           string
+		}{
+			{"both limited", 3, 4, "abc", "ghij"},
+			{"stdout limited", 3, 0, "abc", "ghijkl"},
+			{"stderr limited", 0, 4, "abcdef", "ghij"},
+			{"zero is unlimited", 0, 0, "abcdef", "ghijkl"},
+			{"negative is unlimited", -1, -1, "abcdef", "ghijkl"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				runner := New().WithConfig("alias.emit", "!printf abcdef; printf ghijkl >&2; exit 3")
+				runner.DisableSafeDirectoryForward = true
+				runner.StdoutLimit, runner.StderrLimit = tc.stdoutLimit, tc.stderrLimit
+				stdout, stderr, err := runner.Run(t.Context(), t.TempDir(), nil, "emit")
+				require.Error(t, err)
+				assert.Equal(t, tc.stdoutLimit > 0, errors.Is(err, ErrStdoutLimitExceeded))
+				assert.Equal(t, tc.stderrLimit > 0, errors.Is(err, ErrStderrLimitExceeded))
+				assert.True(t, IsExitCode(err, 3))
+				assert.Equal(t, tc.stdout, string(stdout))
+				assert.Equal(t, tc.stderr, string(stderr))
+				assert.Contains(t, err.Error(), tc.stderr)
+			})
+		}
 	})
 	t.Run("inherited config remains selectable", func(t *testing.T) {
 		t.Parallel()
@@ -160,4 +175,25 @@ func TestRunnerOutputLimitCleansCredentials(t *testing.T) {
 	files, err := filepath.Glob(filepath.Join(dir, "gitcmd-credential-response-*"))
 	require.NoError(t, err)
 	assert.Empty(t, files)
+}
+
+func BenchmarkRunnerCapture(b *testing.B) {
+	for _, limit := range []int{0, 4096} {
+		name := "unlimited"
+		if limit > 0 {
+			name = "limited"
+		}
+		b.Run(name, func(b *testing.B) {
+			runner := New()
+			runner.DisableSafeDirectoryForward = true
+			runner.StdoutLimit, runner.StderrLimit = limit, limit
+			dir := b.TempDir()
+			b.ReportAllocs()
+			for b.Loop() {
+				out, err := runner.Output(b.Context(), dir, "version")
+				require.NoError(b, err)
+				require.Contains(b, string(out), "git version")
+			}
+		})
+	}
 }

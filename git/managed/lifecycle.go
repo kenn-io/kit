@@ -1054,12 +1054,7 @@ func runLifecycleGit(
 func runLifecycleGitWithRunner(
 	ctx context.Context, runner gitcmd.Runner, dir string, args ...string,
 ) ([]byte, error) {
-	baseEnv := runner.Env
-	if baseEnv == nil {
-		baseEnv = os.Environ()
-	}
-	runner.Env = append(append([]string(nil), baseEnv...), "LC_ALL=C")
-	execution := lifecycleExecution{runner: runner, runGit: lifecycleGitRunner(ctx)}
+	execution := newLifecycleExecution(runner, lifecycleGitRunner(ctx), nil)
 	return execution.run(ctx, dir, args...)
 }
 
