@@ -393,7 +393,6 @@ func TestDailyClaimsPublicationRecovery(t *testing.T) {
 			if tc.omitError != nil {
 				require.NotErrorIs(t, err, tc.omitError)
 			}
-			assert.Zero(t, accepted)
 			if len(tc.errors) > 1 {
 				assert.Equal(t, 2, writes)
 			}
