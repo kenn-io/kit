@@ -1585,7 +1585,7 @@ func TestOpenCodePluginReportsRootSession(t *testing.T) {
 			promptRoot,
 			stopRoot,
 		}},
-		{"turn ends during reload", []string{startRoot, promptRoot, startRoot}},
+		{"turn ends during reload", []string{startRoot, promptRoot, startRoot, stopRoot}},
 		{"reload on home", []string{startRoot, startRoot, endRoot, startB}},
 		{"reload on home after deletion", []string{startRoot, endRoot}},
 	}

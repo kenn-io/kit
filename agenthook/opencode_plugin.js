@@ -80,8 +80,12 @@ export default {
 		// Setup re-announces a tracked root with a record, or retires a deleted root:
 		// https://github.com/anomalyco/opencode/blob/v2.0.24/packages/plugin/src/tui/context.ts#L75
 		if (state.root !== null) {
-			if (api.data.session.get(state.root)) emit("SessionStart", {});
-			else retire();
+			if (api.data.session.get(state.root)) {
+				// Reannouncement must not erase a completion missed during cleanup.
+				const wasWorking = state.working;
+				emit("SessionStart", {});
+				if (wasWorking && api.data.session.status(state.root) === "idle") emit("Stop", {});
+			} else retire();
 		}
 		const timer = setInterval(sync, routePollMilliseconds);
 		sync();

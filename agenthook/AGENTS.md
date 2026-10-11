@@ -46,7 +46,8 @@
   its terminal shows a session with another root or that root is deleted,
   and never from cleanup, which also runs on hot reload and reinstall. Setup
   re-sends SessionStart for a tracked root with a record, even on the home route,
-  then reports UserPromptSubmit if it's running. A missing record sends SessionEnd.
+  then reports UserPromptSubmit if it's running, or Stop if a previously running
+  turn became idle during reload. A missing record sends SessionEnd.
   The plugin sends UserPromptSubmit, without a prompt, when the shown root starts
   running, including a turn already running when the terminal adopts it.
   Working state follows OpenCode's running state; a transition to idle sends
