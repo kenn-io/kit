@@ -16,6 +16,9 @@ specific application or forge workflow.
 - Runner copies share trust caching for the first observed identity. Evaluate
   includes fresh and apply trust edits on the next command. Use native scoped
   reads whenever `GIT_CONFIG` is set, including an empty value.
+  Use `WithEnv` to give a changed environment its own cache. The managed
+  lifecycle sets its C diagnostic locale before populating that cache and
+  retains the normalized runner across nested operations.
 - Cancel the whole child process tree for non-interactive Git commands, and
   bound pipe draining after cancellation. Interactive Unix Git must stay in
   the caller's terminal process group.
