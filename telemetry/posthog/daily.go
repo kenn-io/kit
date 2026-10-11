@@ -15,6 +15,7 @@ import (
 
 	"github.com/gofrs/flock"
 	"go.kenn.io/kit/atomicfile"
+	"golang.org/x/sync/semaphore"
 )
 
 // Status describes SDK queue acceptance, daily deduplication, or disabled telemetry.
@@ -28,6 +29,7 @@ const (
 
 // DailyClaims persists installation-scoped UTC daily claims at a caller-owned path.
 type DailyClaims struct {
+	sem     *semaphore.Weighted
 	path    string
 	pending *dailyReservation
 	write   func(string, []byte, ...atomicfile.Option) error
@@ -36,7 +38,9 @@ type DailyClaims struct {
 type dailyReservation struct{ key, day string }
 
 // NewDailyClaims uses path and its adjacent lock file; its parent must exist.
-func NewDailyClaims(path string) *DailyClaims { return &DailyClaims{path: path} }
+func NewDailyClaims(path string) *DailyClaims {
+	return &DailyClaims{path: path, sem: semaphore.NewWeighted(1)}
+}
 
 type dailyEvent struct {
 	key    string
@@ -103,6 +107,11 @@ func jsonNumber(value json.RawMessage) (json.Number, bool) {
 }
 
 func (d *DailyClaims) report(ctx context.Context, identity, event, key string, now func() time.Time, send func(time.Time) (Status, error)) (Status, error) {
+	if err := d.sem.Acquire(ctx, 1); err != nil {
+		return "", fmt.Errorf("lock daily telemetry: %w", err)
+	}
+	defer d.sem.Release(1)
+
 	lock := flock.New(d.path + ".lock")
 	_, err := lock.TryLockContext(ctx, 10*time.Millisecond)
 	if err != nil {

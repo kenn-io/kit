@@ -400,3 +400,31 @@ func TestRollbackKeepsEvidenceWhenRemovalPreflightFails(t *testing.T) {
 	assert.DirExists(t, registration)
 	assert.True(t, branchExistsInRepo(t, root, "topic"))
 }
+
+func TestRemoveBranchAfterRegistrationCleanup(t *testing.T) {
+	for _, state := range []string{"unused", "checked-out", "changed"} {
+		t.Run(state, func(t *testing.T) {
+			require := require.New(t)
+			root := initLifecycleRepo(t)
+			head := lifecycleGit(t, root, "rev-parse", "HEAD")
+			lifecycleGit(t, root, "branch", "topic")
+			switch state {
+			case "checked-out":
+				lifecycleGit(t, root, "worktree", "add", filepath.Join(t.TempDir(), "topic"), "topic")
+			case "changed":
+				lifecycleGit(t, root, "commit", "--allow-empty", "-m", "advance")
+				lifecycleGit(t, root, "branch", "-f", "topic", "HEAD")
+			}
+			removed, err := RemoveBranch(t.Context(), RemoveBranchOptions{ProjectRoot: root, Branch: BranchRemoval{Name: "topic", Force: true, ExpectedOID: head}, Runner: lifecycleTestRunner(t)})
+			if state == "unused" {
+				require.NoError(err)
+				require.True(removed)
+				require.False(branchExistsInRepo(t, root, "topic"))
+			} else {
+				require.Error(err)
+				require.False(removed)
+				require.True(branchExistsInRepo(t, root, "topic"))
+			}
+		})
+	}
+}

@@ -2,6 +2,8 @@ package packstore
 
 import (
 	"bytes"
+	"encoding/binary"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -121,5 +123,39 @@ func BenchmarkCompressedLoosePackIngestion(b *testing.B) {
 		require.NoError(maintainer.Close())
 		require.NoError(os.RemoveAll(root))
 		b.StartTimer()
+	}
+}
+
+// Set TMPDIR to disk-backed storage to measure durable filesystem costs.
+func BenchmarkLooseStreamDurableWrite(b *testing.B) {
+	for _, compressed := range []bool{false, true} {
+		for _, duplicate := range []bool{false, true} {
+			b.Run(fmt.Sprintf("compressed=%t/duplicate=%t", compressed, duplicate), func(b *testing.B) {
+				store := newLooseStoreForTest(b, StagingStoreDirectory)
+				content := bytes.Repeat([]byte("streaming benchmark content\n"), 320)
+				opts := WriteOptions{
+					Durability:  DurablePublication,
+					Dedup:       VerifyTypeAndSize,
+					Compression: LooseCompressionOptions{Enabled: compressed},
+				}
+				if duplicate {
+					_, err := store.WriteBytes(b.Context(), content, opts)
+					require.NoError(b, err)
+				}
+				b.SetBytes(int64(len(content)))
+				b.ReportAllocs()
+				var sequence uint64
+				for b.Loop() {
+					if !duplicate {
+						binary.LittleEndian.PutUint64(content, sequence)
+						sequence++
+					}
+					result, err := store.Write(b.Context(), bytes.NewReader(content), opts)
+					require.NoError(b, err)
+					require.Equal(b, !duplicate, result.Created)
+					require.Equal(b, int64(len(content)), result.Size)
+				}
+			})
+		}
 	}
 }

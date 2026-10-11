@@ -21,6 +21,7 @@ const (
 	AgentDroid   Agent = "droid"
 	AgentGemini  Agent = "gemini"
 	AgentHermes  Agent = "hermes"
+	AgentPi      Agent = "pi"
 	AgentQwen    Agent = "qwen"
 )
 
@@ -61,6 +62,8 @@ const (
 	formatNestedJSON configFormat = iota
 	formatDirectJSON
 	formatHermesYAML
+	// formatScript writes a kit-owned JavaScript module the harness loads.
+	formatScript
 )
 
 type windowsCommandStyle uint8
@@ -101,6 +104,7 @@ type profileSpec struct {
 	shellToolName               string
 	defaultDir                  func() (string, error)
 	configEnvSubdir             string
+	configEnvDir                func(string) (string, error)
 	eventName                   func(Event) string
 	timeoutUnit                 time.Duration
 	timeoutField                string
@@ -110,6 +114,7 @@ type profileSpec struct {
 	requireVersion              bool
 	sessionSourceRequirement    inputRequirement
 	sessionEndReasonRequirement inputRequirement
+	script                      string
 }
 
 var profileOrder = []Agent{
@@ -120,6 +125,7 @@ var profileOrder = []Agent{
 	AgentDroid,
 	AgentGemini,
 	AgentHermes,
+	AgentPi,
 	AgentQwen,
 }
 
@@ -131,6 +137,7 @@ var profiles = map[Agent]profileSpec{
 	AgentDroid:   droidProfile(),
 	AgentGemini:  geminiProfile(),
 	AgentHermes:  hermesProfile(),
+	AgentPi:      piProfile(),
 	AgentQwen:    qwenProfile(),
 }
 
@@ -189,6 +196,12 @@ func ConfigPath(agent Agent) (string, error) {
 		dir = strings.TrimSpace(os.Getenv(spec.profile.ConfigEnvironment))
 		if dir != "" && spec.configEnvSubdir != "" {
 			dir = filepath.Join(dir, spec.configEnvSubdir)
+		}
+		if dir != "" && spec.configEnvDir != nil {
+			var err error
+			if dir, err = spec.configEnvDir(dir); err != nil {
+				return "", fmt.Errorf("resolve %s config directory: %w", spec.profile.DisplayName, err)
+			}
 		}
 	}
 	if dir == "" {
