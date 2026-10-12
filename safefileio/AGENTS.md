@@ -27,6 +27,8 @@ callers responsible for their own file formats and higher-level policy.
 - Private-file validation must inspect the same open handle used by the caller
   and must never mutate permissions. Existing broad access may already have
   produced handles that no in-place repair can revoke.
+- On macOS, capture ACL errno before returning to Go; locking an OS thread
+  does not prevent the runtime from overwriting errno.
 - On supported Unix platforms, require exact mode 0600 and no access ACL.
   Reject Linux network and user-space filesystems whose effective access policy
   cannot be verified through local mode and access-ACL operations, using
