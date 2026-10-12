@@ -17,10 +17,9 @@ const (
 )
 
 type darwinACLAPI struct {
-	getFD    func(int32, int32) uintptr
+	getFD    uintptr
 	getEntry func(uintptr, int32, *uintptr) int32
 	free     func(uintptr) int32
-	errno    func() *int32
 }
 
 var (
@@ -40,13 +39,13 @@ func validateDarwinExtendedACL(file *os.File) error {
 	if errDarwinACL != nil {
 		return errDarwinACL
 	}
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-	errno := darwinACL.errno()
-	*errno = 0
-	acl := darwinACL.getFD(int32(file.Fd()), darwinACLExtended)
+	// Capture errno before resuming Go: even a locked thread's errno can be
+	// changed by the runtime between the native call and a later read.
+	acl, _, errno := purego.SyscallN(darwinACL.getFD, file.Fd(), darwinACLExtended)
+	runtime.KeepAlive(file)
 	if acl == 0 {
-		callErr := syscall.Errno(*errno)
+		// Darwin errno is a C int; the native trampoline returns a word.
+		callErr := syscall.Errno(uint32(errno))
 		if callErr == syscall.ENOENT {
 			return nil
 		}
@@ -72,11 +71,14 @@ func loadDarwinACL() {
 		errDarwinACL = fmt.Errorf("load macOS ACL API: %w", err)
 		return
 	}
+	darwinACL.getFD, err = purego.Dlsym(handle, "acl_get_fd_np")
+	if err != nil {
+		errDarwinACL = fmt.Errorf("load macOS ACL function acl_get_fd_np: %w", err)
+		return
+	}
 	for name, target := range map[string]any{
-		"acl_get_fd_np": &darwinACL.getFD,
 		"acl_get_entry": &darwinACL.getEntry,
 		"acl_free":      &darwinACL.free,
-		"__error":       &darwinACL.errno,
 	} {
 		symbol, symbolErr := purego.Dlsym(handle, name)
 		err = symbolErr
