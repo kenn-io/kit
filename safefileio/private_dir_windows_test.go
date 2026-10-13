@@ -13,6 +13,25 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+func TestPrivateWindowsACLDeduplicatesLocalSystem(t *testing.T) {
+	require := require.New(t)
+	system, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
+	require.NoError(err)
+	admins, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+	require.NoError(err)
+	acl, err := privateWindowsACL(system, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT)
+	require.NoError(err)
+	require.Equal(uint16(2), acl.AceCount)
+	principals := make(map[string]bool)
+	for i := range acl.AceCount {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		require.NoError(windows.GetAce(acl, uint32(i), &ace))
+		require.NotNil(ace)
+		principals[(*windows.SID)(unsafe.Pointer(&ace.SidStart)).String()] = true
+	}
+	assert.Equal(t, map[string]bool{system.String(): true, admins.String(): true}, principals)
+}
+
 func TestEnsurePrivateDirCreatesOwnedDirectory(t *testing.T) {
 	require := require.New(t)
 	dir := filepath.Join(t.TempDir(), "runtime")

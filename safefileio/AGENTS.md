@@ -20,7 +20,7 @@ callers responsible for their own file formats and higher-level policy.
   On Windows, it always rewrites the DACL to repair inherited child permissions.
   `EnsurePrivateDirShallow` skips writes only when the protected ACL exactly
   matches; use it for directories whose children carry no data.
-  Use concrete file rights so Windows preserves the ACL's byte representation.
+  Use concrete file rights and unique principals so Windows preserves the ACL's byte representation.
   `ValidatePrivateDir` must report problems without repairing them.
 - Keep file ownership checks tied to current-user-only runtime state. On
   Windows, private directories may also be owned by LocalSystem or built-in

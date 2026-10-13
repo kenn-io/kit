@@ -335,8 +335,12 @@ func privateWindowsACL(userSID *windows.SID, inheritance uint32) (*windows.ACL, 
 	}
 	entries := []windows.EXPLICIT_ACCESS{
 		allowFullControl(userSID, windows.TRUSTEE_IS_USER, inheritance),
-		allowFullControl(system, windows.TRUSTEE_IS_USER, inheritance),
-		allowFullControl(admins, windows.TRUSTEE_IS_GROUP, inheritance),
+	}
+	if !userSID.Equals(system) {
+		entries = append(entries, allowFullControl(system, windows.TRUSTEE_IS_USER, inheritance))
+	}
+	if !userSID.Equals(admins) {
+		entries = append(entries, allowFullControl(admins, windows.TRUSTEE_IS_GROUP, inheritance))
 	}
 	return windows.ACLFromEntries(entries, nil)
 }
