@@ -72,6 +72,11 @@ func EnsurePrivateDir(path string) error {
 	return nil
 }
 
+// EnsurePrivateDirShallow creates and secures path like EnsurePrivateDir.
+func EnsurePrivateDirShallow(path string) error {
+	return EnsurePrivateDir(path)
+}
+
 // ValidatePrivateDir verifies path is a non-symlink directory owned by the
 // current user with mode 0700. It never creates or chmods the directory.
 func ValidatePrivateDir(path string) error {

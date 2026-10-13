@@ -29,6 +29,19 @@ func TestEnsurePrivateDirRepairsPublicDir(t *testing.T) {
 	require.Equal(os.FileMode(0o700), info.Mode().Perm())
 }
 
+func TestEnsurePrivateDirShallowRepairsPublicDir(t *testing.T) {
+	require := require.New(t)
+	dir := filepath.Join(t.TempDir(), "runtime")
+	require.NoError(os.Mkdir(dir, 0o700))
+	require.NoError(os.Chmod(dir, 0o755))
+
+	require.NoError(safefileio.EnsurePrivateDirShallow(dir))
+
+	info, err := os.Stat(dir)
+	require.NoError(err)
+	require.Equal(os.FileMode(0o700), info.Mode().Perm())
+}
+
 func TestValidatePrivateDirRejectsWithoutRepairingPublicDir(t *testing.T) {
 	require := require.New(t)
 

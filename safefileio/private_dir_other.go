@@ -16,6 +16,11 @@ func EnsurePrivateDir(string) error {
 	)
 }
 
+// EnsurePrivateDirShallow fails closed like EnsurePrivateDir.
+func EnsurePrivateDirShallow(path string) error {
+	return EnsurePrivateDir(path)
+}
+
 // ValidatePrivateDir fails closed when ownership and link-safe directory
 // validation are unavailable.
 func ValidatePrivateDir(string) error {

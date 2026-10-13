@@ -17,8 +17,9 @@ callers responsible for their own file formats and higher-level policy.
 - Runtime directory validation should judge the directory entry the caller
   supplied, not a symlink target reached after traversal.
 - `EnsurePrivateDir` may repair a real directory's permissions when that is safe.
-  On Windows, skip DACL writes only when the protected ACL exactly matches the
-  private directory ACL, including inheritance flags, to avoid walking children.
+  On Windows, it always rewrites the DACL to repair inherited child permissions.
+  `EnsurePrivateDirShallow` skips writes only when the protected ACL exactly
+  matches; use it for directories whose children carry no data.
   Use concrete file rights so Windows preserves the ACL's byte representation.
   `ValidatePrivateDir` must report problems without repairing them.
 - Keep file ownership checks tied to current-user-only runtime state. On

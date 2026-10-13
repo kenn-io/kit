@@ -20,7 +20,20 @@ import (
 // EnsurePrivateDir creates path when needed and verifies it is a non-reparse
 // directory owned by the current token user, token owner, LocalSystem, or
 // built-in Administrators with a DACL restricted to those trusted principals.
+// It rewrites the DACL on every call to repair inherited child permissions.
 func EnsurePrivateDir(path string) error {
+	return ensurePrivateDir(path, false)
+}
+
+// EnsurePrivateDirShallow creates and secures path like EnsurePrivateDir, but
+// skips rewriting a protected DACL that exactly matches the private directory ACL.
+// It doesn't repair children moved in with other permissions. Use it only for
+// directories whose children carry no data.
+func EnsurePrivateDirShallow(path string) error {
+	return ensurePrivateDir(path, true)
+}
+
+func ensurePrivateDir(path string, keepMatching bool) error {
 	if path == "" {
 		return errors.New("path is empty")
 	}
@@ -59,6 +72,9 @@ func EnsurePrivateDir(path string) error {
 	acl, err := privateWindowsACL(userSID, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT)
 	if err != nil {
 		return err
+	}
+	if !keepMatching {
+		return restrictWindowsDir(handle, acl)
 	}
 	descriptor, err := windows.GetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
