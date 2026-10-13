@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"unsafe"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -57,8 +58,13 @@ func TestEnsurePrivateDirShallowLeavesMatchingDACLUntouched(t *testing.T) {
 	sourceHandle, err := openWindowsDir(source)
 	require.NoError(err)
 	defer func() { _ = windows.CloseHandle(sourceHandle) }()
+	world, err := windows.CreateWellKnownSid(windows.WinWorldSid)
+	require.NoError(err)
+	worldRead := allowFullControl(world, windows.TRUSTEE_IS_WELL_KNOWN_GROUP, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT)
+	worldRead.AccessPermissions = windows.FILE_GENERIC_READ
 	acl, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{
 		allowFullControl(userSID, windows.TRUSTEE_IS_USER, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT),
+		worldRead,
 	}, nil)
 	require.NoError(err)
 	require.NoError(restrictWindowsDir(sourceHandle, acl))
@@ -72,16 +78,34 @@ func TestEnsurePrivateDirShallowLeavesMatchingDACLUntouched(t *testing.T) {
 	control, _, err := before.Control()
 	require.NoError(err)
 	require.Zero(control & windows.SE_DACL_PROTECTED)
+	outsiderAccess := func(descriptor *windows.SECURITY_DESCRIPTOR) uint32 {
+		dacl, _, err := descriptor.DACL()
+		require.NoError(err)
+		require.NotNil(dacl)
+		var access uint32
+		for i := range dacl.AceCount {
+			var ace *windows.ACCESS_ALLOWED_ACE
+			require.NoError(windows.GetAce(dacl, uint32(i), &ace))
+			require.NotNil(ace)
+			if ace.Header.AceType == windows.ACCESS_ALLOWED_ACE_TYPE && world.Equals((*windows.SID)(unsafe.Pointer(&ace.SidStart))) {
+				require.NotZero(ace.Header.AceFlags & windows.INHERITED_ACE)
+				access |= uint32(ace.Mask)
+			}
+		}
+		return access
+	}
+	require.Equal(uint32(windows.FILE_GENERIC_READ), outsiderAccess(before))
 
 	require.NoError(EnsurePrivateDirShallow(dir))
 	after, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
 	require.NoError(err)
 	assert.Equal(t, before.String(), after.String())
+	assert.Equal(t, uint32(windows.FILE_GENERIC_READ), outsiderAccess(after))
 
 	require.NoError(EnsurePrivateDir(dir))
 	propagated, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
 	require.NoError(err)
-	assert.NotEqual(t, before.String(), propagated.String())
+	assert.Zero(t, outsiderAccess(propagated))
 }
 
 func TestEnsurePrivateDirShallowRewritesDifferentPrivateDACL(t *testing.T) {
