@@ -88,25 +88,51 @@ func TestEnsurePrivateDirLeavesMatchingDACLUntouched(t *testing.T) {
 }
 
 func TestEnsurePrivateDirRewritesDifferentPrivateDACL(t *testing.T) {
-	require := require.New(t)
-	dir := filepath.Join(t.TempDir(), "runtime")
-	require.NoError(EnsurePrivateDir(dir))
-	handle, err := openWindowsDir(dir)
-	require.NoError(err)
-	defer func() { _ = windows.CloseHandle(handle) }()
 	userSID, err := currentWindowsUserSID()
-	require.NoError(err)
-	descriptor, err := windows.SecurityDescriptorFromString("D:P(A;;GA;;;" + userSID.String() + ")(A;OIIO;GR;;;" + userSID.String() + ")")
-	require.NoError(err)
-	acl, _, err := descriptor.DACL()
-	require.NoError(err)
-	require.NoError(restrictWindowsDir(handle, acl))
-	require.NoError(ValidatePrivateDir(dir))
+	require.NoError(t, err)
+	wanted, err := privateWindowsACL(userSID, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT)
+	require.NoError(t, err)
 
-	require.NoError(EnsurePrivateDir(dir))
-	path := filepath.Join(dir, "record")
-	require.NoError(os.WriteFile(path, []byte("first"), 0o600))
-	assert.NoError(t, os.WriteFile(path, []byte("second"), 0o600))
+	tests := []struct {
+		name string
+		sddl string
+	}{
+		{"read-only children", "D:P(A;;GA;;;" + userSID.String() + ")(A;OIIO;GR;;;" + userSID.String() + ")"},
+		{"generic full control", "D:P(A;OICI;GA;;;" + userSID.String() + ")(A;OICI;GA;;;SY)(A;OICI;GA;;;BA)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require := require.New(t)
+			dir := filepath.Join(t.TempDir(), "runtime")
+			require.NoError(os.Mkdir(dir, 0o700))
+			handle, err := openWindowsDir(dir)
+			require.NoError(err)
+			defer func() { _ = windows.CloseHandle(handle) }()
+			descriptor, err := windows.SecurityDescriptorFromString(tt.sddl)
+			require.NoError(err)
+			acl, _, err := descriptor.DACL()
+			require.NoError(err)
+			require.NoError(restrictWindowsDir(handle, acl))
+			require.NoError(ValidatePrivateDir(dir))
+			before, err := windows.GetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+			require.NoError(err)
+			current, _, err := before.DACL()
+			require.NoError(err)
+			require.NotNil(current)
+			require.NotEqual(windowsACLBytes(wanted), windowsACLBytes(current))
+
+			require.NoError(EnsurePrivateDir(dir))
+			after, err := windows.GetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+			require.NoError(err)
+			control, _, err := after.Control()
+			require.NoError(err)
+			assert.NotZero(t, control&windows.SE_DACL_PROTECTED)
+			current, _, err = after.DACL()
+			require.NoError(err)
+			require.NotNil(current)
+			assert.Equal(t, windowsACLBytes(wanted), windowsACLBytes(current))
+		})
+	}
 }
 
 func TestValidatePrivateDirRejectsBroadDACL(t *testing.T) {

@@ -330,8 +330,8 @@ func allowFullControl(
 	trusteeType windows.TRUSTEE_TYPE,
 	inheritance uint32,
 ) windows.EXPLICIT_ACCESS {
-	// FILE_ALL_ACCESS avoids Windows splitting generic inheritable ACEs.
-	const fileAllAccess = windows.STANDARD_RIGHTS_REQUIRED | windows.SYNCHRONIZE | 0x1ff
+	// FILE_ALL_ACCESS (0x1F01FF) avoids Windows splitting generic inheritable ACEs.
+	const fileAllAccess = 0x1F01FF
 	return windows.EXPLICIT_ACCESS{
 		AccessPermissions: fileAllAccess,
 		AccessMode:        windows.GRANT_ACCESS,
