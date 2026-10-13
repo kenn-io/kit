@@ -18,7 +18,7 @@ func TestEnsurePrivateDirRepairsPublicDir(t *testing.T) {
 		name   string
 		ensure func(string) error
 	}{
-		{name: "recursive", ensure: safefileio.EnsurePrivateDir},
+		{name: "ensure", ensure: safefileio.EnsurePrivateDir},
 		{name: "shallow", ensure: safefileio.EnsurePrivateDirShallow},
 	}
 	for _, tt := range tests {

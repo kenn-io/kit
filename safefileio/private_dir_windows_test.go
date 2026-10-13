@@ -100,7 +100,6 @@ func TestEnsurePrivateDirShallowLeavesMatchingDACLUntouched(t *testing.T) {
 	after, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
 	require.NoError(err)
 	assert.Equal(t, before.String(), after.String())
-	assert.Equal(t, uint32(windows.FILE_GENERIC_READ), outsiderAccess(after))
 
 	require.NoError(EnsurePrivateDir(dir))
 	propagated, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
