@@ -73,26 +73,26 @@ func ensurePrivateDir(path string, keepMatching bool) error {
 	if err != nil {
 		return err
 	}
-	if !keepMatching {
-		return restrictWindowsDir(handle, acl)
-	}
-	descriptor, err := windows.GetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
-	if err != nil {
-		return err
-	}
-	control, _, err := descriptor.Control()
-	if err != nil {
-		return err
-	}
-	dacl, _, err := descriptor.DACL()
-	if err != nil {
-		return err
-	}
-	// Rewriting an inheritable DACL makes Windows walk every existing child.
-	if control&windows.SE_DACL_PROTECTED != 0 && dacl != nil && bytes.Equal(windowsACLBytes(dacl), windowsACLBytes(acl)) {
+	if keepMatching && windowsDirDACLMatches(handle, acl) {
 		return nil
 	}
 	return restrictWindowsDir(handle, acl)
+}
+
+func windowsDirDACLMatches(handle windows.Handle, acl *windows.ACL) bool {
+	descriptor, err := windows.GetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return false
+	}
+	control, _, err := descriptor.Control()
+	if err != nil {
+		return false
+	}
+	dacl, _, err := descriptor.DACL()
+	if err != nil {
+		return false
+	}
+	return control&windows.SE_DACL_PROTECTED != 0 && dacl != nil && bytes.Equal(windowsACLBytes(dacl), windowsACLBytes(acl))
 }
 
 // ValidatePrivateDir verifies path is a non-reparse directory owned by the

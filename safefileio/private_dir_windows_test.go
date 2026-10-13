@@ -140,6 +140,7 @@ func TestEnsurePrivateDirShallowRewritesDifferentPrivateDACL(t *testing.T) {
 		{name: "read-only children", sddl: "D:P(A;;GA;;;" + userSID.String() + ")(A;OIIO;GR;;;" + userSID.String() + ")"},
 		{name: "generic full control", sddl: "D:P(A;OICI;GA;;;" + userSID.String() + ")(A;OICI;GA;;;SY)(A;OICI;GA;;;BA)"},
 		{name: "unprotected matching", sddl: "D:(A;OICI;FA;;;" + userSID.String() + ")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)", unprotected: true},
+		{name: "null DACL"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -155,12 +156,18 @@ func TestEnsurePrivateDirShallowRewritesDifferentPrivateDACL(t *testing.T) {
 			handle, err := openWindowsDir(dir)
 			require.NoError(err)
 			defer func() { _ = windows.CloseHandle(handle) }()
-			descriptor, err := windows.SecurityDescriptorFromString(tt.sddl)
-			require.NoError(err)
-			acl, _, err := descriptor.DACL()
-			require.NoError(err)
+			var acl *windows.ACL
+			if tt.sddl != "" {
+				descriptor, err := windows.SecurityDescriptorFromString(tt.sddl)
+				require.NoError(err)
+				acl, _, err = descriptor.DACL()
+				require.NoError(err)
+			}
 			if tt.unprotected {
 				require.NoError(windows.SetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.UNPROTECTED_DACL_SECURITY_INFORMATION, nil, nil, acl, nil))
+				require.Error(ValidatePrivateDir(dir))
+			} else if acl == nil {
+				require.NoError(windows.SetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, nil, nil))
 				require.Error(ValidatePrivateDir(dir))
 			} else {
 				require.NoError(restrictWindowsDir(handle, acl))
@@ -169,14 +176,21 @@ func TestEnsurePrivateDirShallowRewritesDifferentPrivateDACL(t *testing.T) {
 			before, err := windows.GetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
 			require.NoError(err)
 			current, _, err := before.DACL()
-			require.NoError(err)
-			require.NotNil(current)
-			if tt.unprotected {
+			if acl == nil {
+				if err != nil {
+					require.ErrorIs(err, windows.ERROR_OBJECT_NOT_FOUND)
+				}
+				require.Nil(current)
+			} else if tt.unprotected {
+				require.NoError(err)
+				require.NotNil(current)
 				control, _, err := before.Control()
 				require.NoError(err)
 				require.Zero(control & windows.SE_DACL_PROTECTED)
 				require.Equal(windowsACLBytes(wanted), windowsACLBytes(current))
 			} else {
+				require.NoError(err)
+				require.NotNil(current)
 				require.NotEqual(windowsACLBytes(wanted), windowsACLBytes(current))
 			}
 
