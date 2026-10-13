@@ -3,7 +3,9 @@
 package safefileio
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -54,7 +56,27 @@ func EnsurePrivateDir(path string) error {
 	if err := verifyWindowsDirHandle(path, handle, userSID, ownerSID); err != nil {
 		return err
 	}
-	return restrictWindowsDir(handle, userSID)
+	acl, err := privateWindowsACL(userSID, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT)
+	if err != nil {
+		return err
+	}
+	descriptor, err := windows.GetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return err
+	}
+	control, _, err := descriptor.Control()
+	if err != nil {
+		return err
+	}
+	dacl, _, err := descriptor.DACL()
+	if err != nil {
+		return err
+	}
+	// Rewriting an inheritable DACL makes Windows walk every existing child.
+	if control&windows.SE_DACL_PROTECTED != 0 && dacl != nil && bytes.Equal(windowsACLBytes(dacl), windowsACLBytes(acl)) {
+		return nil
+	}
+	return restrictWindowsDir(handle, acl)
 }
 
 // ValidatePrivateDir verifies path is a non-reparse directory owned by the
@@ -242,6 +264,9 @@ func verifyWindowsDACL(
 		if err := windows.GetAce(dacl, uint32(i), &ace); err != nil {
 			return err
 		}
+		if ace == nil {
+			return fmt.Errorf("%s DACL ACE is missing", path)
+		}
 		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
 			return fmt.Errorf("%s DACL contains non-allow ACE", path)
 		}
@@ -262,11 +287,14 @@ func windowsAnyOwnerMatches(owner *windows.SID, allowed []*windows.SID) bool {
 	return false
 }
 
-func restrictWindowsDir(handle windows.Handle, userSID *windows.SID) error {
-	acl, err := privateWindowsACL(userSID, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT)
-	if err != nil {
-		return err
-	}
+func windowsACLBytes(acl *windows.ACL) []byte {
+	header := unsafe.Slice((*byte)(unsafe.Pointer(acl)), unsafe.Sizeof(*acl))
+	// AclSize is the uint16 at offset 2 in the Win32 ACL header.
+	size := binary.LittleEndian.Uint16(header[2:4])
+	return unsafe.Slice((*byte)(unsafe.Pointer(acl)), size)
+}
+
+func restrictWindowsDir(handle windows.Handle, acl *windows.ACL) error {
 	return windows.SetSecurityInfo(
 		handle,
 		windows.SE_FILE_OBJECT,
@@ -302,8 +330,10 @@ func allowFullControl(
 	trusteeType windows.TRUSTEE_TYPE,
 	inheritance uint32,
 ) windows.EXPLICIT_ACCESS {
+	// FILE_ALL_ACCESS avoids Windows splitting generic inheritable ACEs.
+	const fileAllAccess = windows.STANDARD_RIGHTS_REQUIRED | windows.SYNCHRONIZE | 0x1ff
 	return windows.EXPLICIT_ACCESS{
-		AccessPermissions: windows.GENERIC_ALL,
+		AccessPermissions: fileAllAccess,
 		AccessMode:        windows.GRANT_ACCESS,
 		Inheritance:       inheritance,
 		Trustee: windows.TRUSTEE{

@@ -39,6 +39,76 @@ func TestValidatePrivateDirAcceptsPrivateDir(t *testing.T) {
 	require.NoError(t, ValidatePrivateDir(dir))
 }
 
+func TestEnsurePrivateDirLeavesMatchingDACLUntouched(t *testing.T) {
+	require := require.New(t)
+	dir := filepath.Join(t.TempDir(), "runtime")
+	require.NoError(EnsurePrivateDir(dir))
+	userSID, err := currentWindowsUserSID()
+	require.NoError(err)
+	wanted, err := privateWindowsACL(userSID, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT)
+	require.NoError(err)
+	parent, err := windows.GetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	require.NoError(err)
+	current, _, err := parent.DACL()
+	require.NoError(err)
+	require.Equal(windowsACLBytes(wanted), windowsACLBytes(current))
+	source := filepath.Join(t.TempDir(), "source")
+	require.NoError(EnsurePrivateDir(source))
+	sourceHandle, err := openWindowsDir(source)
+	require.NoError(err)
+	defer func() { _ = windows.CloseHandle(sourceHandle) }()
+	acl, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{
+		allowFullControl(userSID, windows.TRUSTEE_IS_USER, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT),
+	}, nil)
+	require.NoError(err)
+	require.NoError(restrictWindowsDir(sourceHandle, acl))
+	original := filepath.Join(source, "record")
+	require.NoError(os.WriteFile(original, nil, 0o600))
+	path := filepath.Join(dir, "record")
+	// A move on the same volume preserves the child's original inherited ACL.
+	require.NoError(os.Rename(original, path))
+	before, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	require.NoError(err)
+	control, _, err := before.Control()
+	require.NoError(err)
+	require.Zero(control & windows.SE_DACL_PROTECTED)
+
+	require.NoError(EnsurePrivateDir(dir))
+	after, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	require.NoError(err)
+	assert.Equal(t, before.String(), after.String())
+
+	dirHandle, err := openWindowsDir(dir)
+	require.NoError(err)
+	defer func() { _ = windows.CloseHandle(dirHandle) }()
+	require.NoError(restrictWindowsDir(dirHandle, wanted))
+	propagated, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	require.NoError(err)
+	assert.NotEqual(t, before.String(), propagated.String())
+}
+
+func TestEnsurePrivateDirRewritesDifferentPrivateDACL(t *testing.T) {
+	require := require.New(t)
+	dir := filepath.Join(t.TempDir(), "runtime")
+	require.NoError(EnsurePrivateDir(dir))
+	handle, err := openWindowsDir(dir)
+	require.NoError(err)
+	defer func() { _ = windows.CloseHandle(handle) }()
+	userSID, err := currentWindowsUserSID()
+	require.NoError(err)
+	descriptor, err := windows.SecurityDescriptorFromString("D:P(A;;GA;;;" + userSID.String() + ")(A;OIIO;GR;;;" + userSID.String() + ")")
+	require.NoError(err)
+	acl, _, err := descriptor.DACL()
+	require.NoError(err)
+	require.NoError(restrictWindowsDir(handle, acl))
+	require.NoError(ValidatePrivateDir(dir))
+
+	require.NoError(EnsurePrivateDir(dir))
+	path := filepath.Join(dir, "record")
+	require.NoError(os.WriteFile(path, []byte("first"), 0o600))
+	assert.NoError(t, os.WriteFile(path, []byte("second"), 0o600))
+}
+
 func TestValidatePrivateDirRejectsBroadDACL(t *testing.T) {
 	require := require.New(t)
 	dir := filepath.Join(t.TempDir(), "runtime")
@@ -210,7 +280,9 @@ func TestValidatePrivateCurrentUserFileAcceptsProtectedPrivateDACL(t *testing.T)
 	defer func() { _ = windows.CloseHandle(handle) }()
 	userSID, err := currentWindowsUserSID()
 	require.NoError(err)
-	require.NoError(restrictWindowsDir(handle, userSID))
+	acl, err := privateWindowsACL(userSID, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT)
+	require.NoError(err)
+	require.NoError(restrictWindowsDir(handle, acl))
 
 	require.NoError(ValidatePrivateCurrentUserFile(file))
 }
