@@ -3,7 +3,9 @@
 package safefileio
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -18,7 +20,20 @@ import (
 // EnsurePrivateDir creates path when needed and verifies it is a non-reparse
 // directory owned by the current token user, token owner, LocalSystem, or
 // built-in Administrators with a DACL restricted to those trusted principals.
+// It rewrites the DACL on every call to repair inherited child permissions.
 func EnsurePrivateDir(path string) error {
+	return ensurePrivateDir(path, false)
+}
+
+// EnsurePrivateDirShallow creates and secures path like EnsurePrivateDir, but
+// skips rewriting a protected DACL that exactly matches the private directory ACL.
+// It doesn't repair children moved in with other permissions. Use it only for
+// directories whose children carry no data.
+func EnsurePrivateDirShallow(path string) error {
+	return ensurePrivateDir(path, true)
+}
+
+func ensurePrivateDir(path string, keepMatching bool) error {
 	if path == "" {
 		return errors.New("path is empty")
 	}
@@ -54,7 +69,30 @@ func EnsurePrivateDir(path string) error {
 	if err := verifyWindowsDirHandle(path, handle, userSID, ownerSID); err != nil {
 		return err
 	}
-	return restrictWindowsDir(handle, userSID)
+	acl, err := privateWindowsACL(userSID, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT)
+	if err != nil {
+		return err
+	}
+	if keepMatching && windowsDirDACLMatches(handle, acl) {
+		return nil
+	}
+	return restrictWindowsDir(handle, acl)
+}
+
+func windowsDirDACLMatches(handle windows.Handle, acl *windows.ACL) bool {
+	descriptor, err := windows.GetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return false
+	}
+	control, _, err := descriptor.Control()
+	if err != nil {
+		return false
+	}
+	dacl, _, err := descriptor.DACL()
+	if err != nil {
+		return false
+	}
+	return control&windows.SE_DACL_PROTECTED != 0 && dacl != nil && bytes.Equal(windowsACLBytes(dacl), windowsACLBytes(acl))
 }
 
 // ValidatePrivateDir verifies path is a non-reparse directory owned by the
@@ -242,6 +280,9 @@ func verifyWindowsDACL(
 		if err := windows.GetAce(dacl, uint32(i), &ace); err != nil {
 			return err
 		}
+		if ace == nil {
+			return fmt.Errorf("%s DACL ACE is missing", path)
+		}
 		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
 			return fmt.Errorf("%s DACL contains non-allow ACE", path)
 		}
@@ -262,11 +303,14 @@ func windowsAnyOwnerMatches(owner *windows.SID, allowed []*windows.SID) bool {
 	return false
 }
 
-func restrictWindowsDir(handle windows.Handle, userSID *windows.SID) error {
-	acl, err := privateWindowsACL(userSID, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT)
-	if err != nil {
-		return err
-	}
+func windowsACLBytes(acl *windows.ACL) []byte {
+	header := unsafe.Slice((*byte)(unsafe.Pointer(acl)), unsafe.Sizeof(*acl))
+	// AclSize is the uint16 at offset 2 in the Win32 ACL header.
+	size := binary.LittleEndian.Uint16(header[2:4])
+	return unsafe.Slice((*byte)(unsafe.Pointer(acl)), size)
+}
+
+func restrictWindowsDir(handle windows.Handle, acl *windows.ACL) error {
 	return windows.SetSecurityInfo(
 		handle,
 		windows.SE_FILE_OBJECT,
@@ -291,8 +335,12 @@ func privateWindowsACL(userSID *windows.SID, inheritance uint32) (*windows.ACL, 
 	}
 	entries := []windows.EXPLICIT_ACCESS{
 		allowFullControl(userSID, windows.TRUSTEE_IS_USER, inheritance),
-		allowFullControl(system, windows.TRUSTEE_IS_USER, inheritance),
-		allowFullControl(admins, windows.TRUSTEE_IS_GROUP, inheritance),
+	}
+	if !userSID.Equals(system) {
+		entries = append(entries, allowFullControl(system, windows.TRUSTEE_IS_USER, inheritance))
+	}
+	if !userSID.Equals(admins) {
+		entries = append(entries, allowFullControl(admins, windows.TRUSTEE_IS_GROUP, inheritance))
 	}
 	return windows.ACLFromEntries(entries, nil)
 }
@@ -302,8 +350,10 @@ func allowFullControl(
 	trusteeType windows.TRUSTEE_TYPE,
 	inheritance uint32,
 ) windows.EXPLICIT_ACCESS {
+	// FILE_ALL_ACCESS (0x1F01FF) avoids Windows splitting generic inheritable ACEs.
+	const fileAllAccess = 0x1F01FF
 	return windows.EXPLICIT_ACCESS{
-		AccessPermissions: windows.GENERIC_ALL,
+		AccessPermissions: fileAllAccess,
 		AccessMode:        windows.GRANT_ACCESS,
 		Inheritance:       inheritance,
 		Trustee: windows.TRUSTEE{

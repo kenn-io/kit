@@ -14,19 +14,29 @@ import (
 )
 
 func TestEnsurePrivateDirRepairsPublicDir(t *testing.T) {
-	require := require.New(t)
+	tests := []struct {
+		name   string
+		ensure func(string) error
+	}{
+		{name: "ensure", ensure: safefileio.EnsurePrivateDir},
+		{name: "shallow", ensure: safefileio.EnsurePrivateDirShallow},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require := require.New(t)
+			dir := filepath.Join("/tmp", fmt.Sprintf("kit-safefileio-public-%s-%d", tt.name, os.Getpid()))
+			t.Cleanup(func() { _ = os.RemoveAll(dir) })
+			require.NoError(os.RemoveAll(dir))
+			require.NoError(os.MkdirAll(dir, 0o700))
+			require.NoError(os.Chmod(dir, 0o777))
 
-	dir := filepath.Join("/tmp", fmt.Sprintf("kit-safefileio-public-%d", os.Getpid()))
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	require.NoError(os.RemoveAll(dir))
-	require.NoError(os.MkdirAll(dir, 0o700))
-	require.NoError(os.Chmod(dir, 0o777))
+			require.NoError(tt.ensure(dir))
 
-	require.NoError(safefileio.EnsurePrivateDir(dir))
-
-	info, err := os.Stat(dir)
-	require.NoError(err)
-	require.Equal(os.FileMode(0o700), info.Mode().Perm())
+			info, err := os.Stat(dir)
+			require.NoError(err)
+			require.Equal(os.FileMode(0o700), info.Mode().Perm())
+		})
+	}
 }
 
 func TestValidatePrivateDirRejectsWithoutRepairingPublicDir(t *testing.T) {
