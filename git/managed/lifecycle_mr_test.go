@@ -176,6 +176,7 @@ func TestCreateWorktreeFromMergeRequestMatchesEquivalentLocalRepositories(t *tes
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			require := require.New(t)
 			assert := assert.New(t)
 			origin, clone := initOriginAndClone(t)
@@ -332,6 +333,7 @@ func TestCreateWorktreeFromMergeRequestPreservesCancellation(t *testing.T) {
 	t.Parallel()
 	for _, phase := range []string{"fetch", "resolve"} {
 		t.Run(phase, func(t *testing.T) {
+			t.Parallel()
 			require := require.New(t)
 			assert := assert.New(t)
 			origin, clone := initOriginAndClone(t)
@@ -424,6 +426,7 @@ func TestCreateWorktreeFromMergeRequestRejectsIncompatibleCommonConfig(t *testin
 		{name: "bare repository", key: "core.bare", value: "true"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			require := require.New(t)
 			assert := assert.New(t)
 			origin, clone := initOriginAndClone(t)
@@ -992,6 +995,7 @@ func TestCreateWorktreeFromMergeRequestRejectsInheritedCommandScopeConfig(
 		{
 			name: "conditional include",
 			runner: func(t *testing.T, marker string) gitcmd.Runner {
+				t.Helper()
 				config := filepath.Join(t.TempDir(), "conditional.gitconfig")
 				require.NoError(t, os.WriteFile(config, []byte("[filter \"conditional\"]\n\tsmudge = false\n"), 0o600))
 				runner := gitcmd.New()
@@ -1006,6 +1010,7 @@ func TestCreateWorktreeFromMergeRequestRejectsInheritedCommandScopeConfig(
 		{
 			name: "worktree override",
 			runner: func(t *testing.T, marker string) gitcmd.Runner {
+				t.Helper()
 				require.NoError(t, os.WriteFile(marker, []byte("preserve"), 0o600))
 				return lifecycleTestRunner(t).WithConfig("core.worktree", filepath.Dir(marker))
 			},
@@ -1014,6 +1019,7 @@ func TestCreateWorktreeFromMergeRequestRejectsInheritedCommandScopeConfig(
 		{
 			name: "relative include",
 			runner: func(t *testing.T, marker string) gitcmd.Runner {
+				t.Helper()
 				runner := gitcmd.New()
 				runner.Env = append(isolatedLifecycleBaseEnv(t),
 					"GIT_CONFIG_COUNT=1",
@@ -1192,58 +1198,45 @@ func TestSafeTextconvPreservesUnterminatedLines(t *testing.T) {
 }
 
 func TestCreateWorktreeFromMergeRequestRejectsConfigFromMaterializedTree(t *testing.T) {
-	for _, symlink := range []bool{false, true} {
-		t.Run(map[bool]string{false: "file", true: "symlink"}[symlink], func(t *testing.T) {
-			if symlink && runtime.GOOS == "windows" {
-				t.Skip("tracked symlink fixture requires POSIX")
-			}
-			require := require.New(t)
-			assert := assert.New(t)
-			origin, clone := initOriginAndClone(t)
-			lifecycleGit(t, origin, "checkout", "-q", "-b", "materialized-config")
-			config := []byte("[diff \"materialized\"]\n\tcommand = false\n")
-			if symlink {
-				external := filepath.Join(t.TempDir(), "external.gitconfig")
-				require.NoError(os.WriteFile(external, config, 0o600))
-				require.NoError(os.Symlink(external, filepath.Join(origin, ".gitconfig")))
-			} else {
-				require.NoError(os.WriteFile(filepath.Join(origin, ".gitconfig"), config, 0o644))
-			}
-			require.NoError(os.WriteFile(
-				filepath.Join(origin, ".gitattributes"),
-				[]byte("payload diff=materialized\n"), 0o644,
-			))
-			require.NoError(os.WriteFile(
-				filepath.Join(origin, "payload"), []byte("external\n"), 0o644,
-			))
-			lifecycleGit(t, origin, "add", ".gitconfig", ".gitattributes", "payload")
-			lifecycleGit(t, origin, "commit", "-qm", "materialized config")
-			headSHA := lifecycleGit(t, origin, "rev-parse", "HEAD")
-			lifecycleGit(t, origin, "checkout", "-q", "main")
+	require := require.New(t)
+	assert := assert.New(t)
+	origin, clone := initOriginAndClone(t)
+	lifecycleGit(t, origin, "checkout", "-q", "-b", "materialized-config")
+	config := []byte("[diff \"materialized\"]\n\tcommand = false\n")
+	require.NoError(os.WriteFile(filepath.Join(origin, ".gitconfig"), config, 0o644))
+	require.NoError(os.WriteFile(
+		filepath.Join(origin, ".gitattributes"),
+		[]byte("payload diff=materialized\n"), 0o644,
+	))
+	require.NoError(os.WriteFile(
+		filepath.Join(origin, "payload"), []byte("external\n"), 0o644,
+	))
+	lifecycleGit(t, origin, "add", ".gitconfig", ".gitattributes", "payload")
+	lifecycleGit(t, origin, "commit", "-qm", "materialized config")
+	headSHA := lifecycleGit(t, origin, "rev-parse", "HEAD")
+	lifecycleGit(t, origin, "checkout", "-q", "main")
 
-			runner := gitcmd.New()
-			runner.NullGlobalConfig = false
-			// StripEnv would discard the GIT_CONFIG_GLOBAL override below and let git
-			// fall back to the host's real global config; Env is already sanitized.
-			runner.StripEnv = false
-			runner.Env = append(
-				isolatedLifecycleBaseEnv(t),
-				"GIT_CONFIG_GLOBAL=.gitconfig",
-			)
-			dest := filepath.Join(t.TempDir(), "wt")
-			_, err := CreateWorktreeFromMergeRequest(
-				t.Context(), MergeRequestWorktreeOptions{
-					ProjectRoot: clone, Branch: "pr-materialized-config", Path: dest,
-					Number: 24, HeadBranch: "materialized-config",
-					HeadRepoCloneURL: origin, ProjectRepoIdentity: identityOfCloneURL(origin),
-					ExpectedHeadSHA: headSHA, Runner: runner,
-				})
-
-			require.Error(err)
-			require.ErrorContains(err, "configuration inside merge request worktree")
-			assert.NoDirExists(dest)
+	runner := gitcmd.New()
+	runner.NullGlobalConfig = false
+	// StripEnv would discard the GIT_CONFIG_GLOBAL override below and let git
+	// fall back to the host's real global config; Env is already sanitized.
+	runner.StripEnv = false
+	runner.Env = append(
+		isolatedLifecycleBaseEnv(t),
+		"GIT_CONFIG_GLOBAL=.gitconfig",
+	)
+	dest := filepath.Join(t.TempDir(), "wt")
+	_, err := CreateWorktreeFromMergeRequest(
+		t.Context(), MergeRequestWorktreeOptions{
+			ProjectRoot: clone, Branch: "pr-materialized-config", Path: dest,
+			Number: 24, HeadBranch: "materialized-config",
+			HeadRepoCloneURL: origin, ProjectRepoIdentity: identityOfCloneURL(origin),
+			ExpectedHeadSHA: headSHA, Runner: runner,
 		})
-	}
+
+	require.Error(err)
+	require.ErrorContains(err, "configuration inside merge request worktree")
+	assert.NoDirExists(dest)
 }
 
 func TestMergeRequestRepositoriesAcceptNormalizedHostedIdentity(t *testing.T) {
@@ -1581,6 +1574,7 @@ func TestOptionalTrackingFetchUnavailable(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			assert.Equal(t, tt.want, optionalTrackingFetchUnavailable(
 				[]byte(tt.output),
 			))

@@ -1263,6 +1263,7 @@ func TestDirtyChecksOverrideConfiguredSubmoduleIgnore(t *testing.T) {
 	for _, detector := range detectors {
 		for _, state := range states {
 			t.Run(detector.name+"/"+state.name, func(t *testing.T) {
+				t.Parallel()
 				require := require.New(t)
 				assert := assert.New(t)
 				moduleOrigin := initLifecycleRepo(t)
