@@ -549,10 +549,21 @@ func TestCreateWorktreeOnDiskRunsSetupHook(t *testing.T) {
 	assert.True(result.HookRan)
 	assert.Equal(inRepo, result.HookScript)
 
-	assert.FileExists(outFile)
+	recorded, err := os.ReadFile(outFile)
+	require.NoError(err)
+	lines := strings.Split(strings.TrimSpace(string(recorded)), "\n")
+	require.Len(lines, 5)
+	canonicalDest, err := filepath.EvalSymlinks(dest)
+	require.NoError(err)
 	if runtime.GOOS == "windows" {
 		assert.Equal(dest, hookDir, "hook runner receives the native worktree directory")
+	} else {
+		assert.Equal(canonicalDest, lines[0], "hook runs in the worktree directory")
 	}
+	assert.Equal("name=Feature Work", lines[1])
+	assert.Equal("path="+dest, lines[2])
+	assert.Equal("root="+repo, lines[3])
+	assert.Equal("branch=feature", lines[4])
 }
 
 func TestLifecycleHookStripsRepositoryBindingEnvironment(t *testing.T) {
