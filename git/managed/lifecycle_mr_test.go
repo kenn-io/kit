@@ -1241,6 +1241,10 @@ func TestCreateWorktreeFromMergeRequestRejectsConfigFromMaterializedTree(t *test
 
 func TestMergeRequestRepositoriesAcceptNormalizedHostedIdentity(t *testing.T) {
 	t.Parallel()
+	assert.True(t, mergeRequestRepositoriesEqual(
+		"https://EXAMPLE.COM/Owner/Widget.git",
+		"https://example.com/Owner/Widget.git",
+	))
 	assert.False(t, mergeRequestRepositoriesEqual(
 		"https://example.com/Owner/Widget.git",
 		"https://example.com/owner/widget.git",
