@@ -55,7 +55,7 @@ jobs:
   test:
     name: Go tests (${{ matrix.os }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 25 || 20 }}
     strategy:
       fail-fast: false
       matrix:
