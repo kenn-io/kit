@@ -74,7 +74,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Windows Go directories
-        if: runner.os == 'Windows'
+        if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
           # Go defaults to C: for cache and scratch; runner temp uses D: alongside the checkout.
@@ -97,7 +97,7 @@ jobs:
         run: go build ./...
 
       - name: Run tests
-        run: go tool gotestsum --format pkgname-and-test-fails --jsonfile=test-output-${{ matrix.os }}.json -- -timeout=${{ runner.os == 'Windows' && '15m' || '10m' }} ./...
+        run: go tool gotestsum --format pkgname-and-test-fails --jsonfile=test-output-${{ matrix.os }}.json -- -timeout=${{ matrix.os == 'windows-latest' && '15m' || '10m' }} ./...
 
       - name: Run go vet
         run: go vet ./...
