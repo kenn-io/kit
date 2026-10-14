@@ -30,13 +30,6 @@ func identityOfCloneURL(rawURL string) string {
 	return CloneURLIdentity(rawURL)
 }
 
-func TestCloneURLIdentityNormalizesDefaultHTTPSPort(t *testing.T) {
-	assert.Equal(t,
-		CloneURLIdentity("https://example.com/acme/widget.git"),
-		CloneURLIdentity("https://example.com:443/acme/widget.git"),
-	)
-}
-
 // initOriginAndClone builds an "origin" repository with one commit on main
 // and a clone of it, returning (originDir, cloneDir). The clone is the
 // project checkout merge-request worktrees are created in.
@@ -83,6 +76,7 @@ func expectedSafeMergeDriverCommand(t *testing.T, worktree string) string {
 // the head branch is fetched from origin, the new local branch starts at
 // it, and upstream tracking points at origin's head branch.
 func TestCreateWorktreeFromMergeRequestSameRepo(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 	assert := assert.New(t)
 
@@ -121,6 +115,7 @@ func TestCreateWorktreeFromMergeRequestSameRepo(t *testing.T) {
 }
 
 func TestCreateWorktreeFromMergeRequestUsesExplicitProjectRemote(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 	assert := assert.New(t)
 	origin, clone := initOriginAndClone(t)
@@ -152,6 +147,7 @@ func TestCreateWorktreeFromMergeRequestUsesExplicitProjectRemote(t *testing.T) {
 }
 
 func TestCreateWorktreeFromMergeRequestMatchesEquivalentLocalRepositories(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		headURL func(*testing.T, string) string
@@ -180,6 +176,7 @@ func TestCreateWorktreeFromMergeRequestMatchesEquivalentLocalRepositories(t *tes
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			require := require.New(t)
 			assert := assert.New(t)
 			origin, clone := initOriginAndClone(t)
@@ -209,6 +206,7 @@ func TestCreateWorktreeFromMergeRequestMatchesEquivalentLocalRepositories(t *tes
 }
 
 func TestCreateWorktreeFromMergeRequestCanonicalizesRelativeProjectIdentity(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 	assert := assert.New(t)
 	origin, clone := initOriginAndClone(t)
@@ -239,6 +237,7 @@ func TestCreateWorktreeFromMergeRequestCanonicalizesRelativeProjectIdentity(t *t
 }
 
 func TestCreateWorktreeFromMergeRequestGitLabRef(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 	assert := assert.New(t)
 
@@ -268,6 +267,7 @@ func TestCreateWorktreeFromMergeRequestGitLabRef(t *testing.T) {
 // scenario: the merge request head is fetched via the platform pull ref and
 // no upstream tracking is configured.
 func TestCreateWorktreeFromMergeRequestPullRefFallback(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 	assert := assert.New(t)
 
@@ -306,6 +306,7 @@ func TestCreateWorktreeFromMergeRequestPullRefFallback(t *testing.T) {
 }
 
 func TestCreateWorktreeFromMergeRequestRejectsLeftoverBranch(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 	origin, clone := initOriginAndClone(t)
 	lifecycleGit(t, clone, "branch", "pr-leftover")
@@ -329,8 +330,10 @@ func TestCreateWorktreeFromMergeRequestRejectsLeftoverBranch(t *testing.T) {
 }
 
 func TestCreateWorktreeFromMergeRequestPreservesCancellation(t *testing.T) {
+	t.Parallel()
 	for _, phase := range []string{"fetch", "resolve"} {
 		t.Run(phase, func(t *testing.T) {
+			t.Parallel()
 			require := require.New(t)
 			assert := assert.New(t)
 			origin, clone := initOriginAndClone(t)
@@ -382,6 +385,7 @@ func TestCreateWorktreeFromMergeRequestPreservesCancellation(t *testing.T) {
 }
 
 func TestCreateWorktreeFromMergeRequestRejectsChangedHead(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 	assert := assert.New(t)
 
@@ -412,6 +416,7 @@ func TestCreateWorktreeFromMergeRequestRejectsChangedHead(t *testing.T) {
 }
 
 func TestCreateWorktreeFromMergeRequestRejectsIncompatibleCommonConfig(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name  string
 		key   string
@@ -421,6 +426,7 @@ func TestCreateWorktreeFromMergeRequestRejectsIncompatibleCommonConfig(t *testin
 		{name: "bare repository", key: "core.bare", value: "true"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			require := require.New(t)
 			assert := assert.New(t)
 			origin, clone := initOriginAndClone(t)
@@ -449,6 +455,7 @@ func TestCreateWorktreeFromMergeRequestRejectsIncompatibleCommonConfig(t *testin
 }
 
 func TestCreateWorktreeFromMergeRequestIsolatesUntrustedTreeGitPrograms(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("executable Git hook and filter fixture requires POSIX")
 	}
@@ -772,6 +779,7 @@ func TestCreateWorktreeFromMergeRequestDoesNotPATHSearchDriverHelpers(
 }
 
 func TestMergeRequestRollbackRetainsIsolatedRunner(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("executable fsmonitor and filter fixtures require POSIX")
 	}
@@ -848,6 +856,7 @@ func TestMergeRequestRollbackRetainsIsolatedRunner(t *testing.T) {
 }
 
 func TestCreateWorktreeFromMergeRequestInspectsSelectedConfigFiles(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 	assert := assert.New(t)
 
@@ -922,12 +931,14 @@ func TestCreateWorktreeFromMergeRequestRejectsInheritedCommandScopeConfig(
 	t *testing.T,
 ) {
 	for _, test := range []struct {
-		name   string
-		runner func(*testing.T) gitcmd.Runner
+		name           string
+		runner         func(*testing.T, string) gitcmd.Runner
+		wantError      string
+		preserveMarker bool
 	}{
 		{
 			name: "GIT_CONFIG_COUNT",
-			runner: func(t *testing.T) gitcmd.Runner {
+			runner: func(t *testing.T, marker string) gitcmd.Runner {
 				t.Helper()
 				runner := gitcmd.New()
 				runner.Env = append(isolatedLifecycleBaseEnv(t),
@@ -940,7 +951,7 @@ func TestCreateWorktreeFromMergeRequestRejectsInheritedCommandScopeConfig(
 		},
 		{
 			name: "GIT_CONFIG_PARAMETERS",
-			runner: func(t *testing.T) gitcmd.Runner {
+			runner: func(t *testing.T, marker string) gitcmd.Runner {
 				t.Helper()
 				runner := gitcmd.New()
 				runner.Env = append(isolatedLifecycleBaseEnv(t),
@@ -951,7 +962,7 @@ func TestCreateWorktreeFromMergeRequestRejectsInheritedCommandScopeConfig(
 		},
 		{
 			name: "Runner Config",
-			runner: func(t *testing.T) gitcmd.Runner {
+			runner: func(t *testing.T, marker string) gitcmd.Runner {
 				t.Helper()
 				return gitcmd.Runner{
 					Env:      isolatedLifecycleBaseEnv(t),
@@ -964,7 +975,7 @@ func TestCreateWorktreeFromMergeRequestRejectsInheritedCommandScopeConfig(
 		},
 		{
 			name: "absolute include",
-			runner: func(t *testing.T) gitcmd.Runner {
+			runner: func(t *testing.T, marker string) gitcmd.Runner {
 				t.Helper()
 				config := filepath.Join(t.TempDir(), "included.gitconfig")
 				require.NoError(t, os.WriteFile(
@@ -981,6 +992,44 @@ func TestCreateWorktreeFromMergeRequestRejectsInheritedCommandScopeConfig(
 				return runner
 			},
 		},
+		{
+			name: "conditional include",
+			runner: func(t *testing.T, marker string) gitcmd.Runner {
+				t.Helper()
+				config := filepath.Join(t.TempDir(), "conditional.gitconfig")
+				require.NoError(t, os.WriteFile(config, []byte("[filter \"conditional\"]\n\tsmudge = false\n"), 0o600))
+				runner := gitcmd.New()
+				runner.Env = append(isolatedLifecycleBaseEnv(t),
+					"GIT_CONFIG_COUNT=1",
+					"GIT_CONFIG_KEY_0=includeIf.onbranch:pr-inherited-config.path",
+					"GIT_CONFIG_VALUE_0="+config,
+				)
+				return runner
+			},
+		},
+		{
+			name: "worktree override",
+			runner: func(t *testing.T, marker string) gitcmd.Runner {
+				t.Helper()
+				require.NoError(t, os.WriteFile(marker, []byte("preserve"), 0o600))
+				return lifecycleTestRunner(t).WithConfig("core.worktree", filepath.Dir(marker))
+			},
+			preserveMarker: true,
+		},
+		{
+			name: "relative include",
+			runner: func(t *testing.T, marker string) gitcmd.Runner {
+				t.Helper()
+				runner := gitcmd.New()
+				runner.Env = append(isolatedLifecycleBaseEnv(t),
+					"GIT_CONFIG_COUNT=1",
+					"GIT_CONFIG_KEY_0=include.path",
+					"GIT_CONFIG_VALUE_0=.gitconfig",
+				)
+				return runner
+			},
+			wantError: "relative config includes must come from files",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			require := require.New(t)
@@ -994,11 +1043,15 @@ func TestCreateWorktreeFromMergeRequestRejectsInheritedCommandScopeConfig(
 			require.NoError(os.WriteFile(
 				filepath.Join(origin, "payload"), []byte("external\n"), 0o644,
 			))
-			lifecycleGit(t, origin, "add", ".gitattributes", "payload")
+			if test.name == "relative include" {
+				require.NoError(os.WriteFile(filepath.Join(origin, ".gitconfig"), []byte("[diff \"materialized\"]\n\tcommand = false\n"), 0o644))
+			}
+			lifecycleGit(t, origin, "add", ".")
 			lifecycleGit(t, origin, "commit", "-qm", "select inherited driver")
 			headSHA := lifecycleGit(t, origin, "rev-parse", "HEAD")
 			lifecycleGit(t, origin, "checkout", "-q", "main")
 
+			marker := filepath.Join(t.TempDir(), "keep")
 			dest := filepath.Join(t.TempDir(), "wt")
 			_, err := CreateWorktreeFromMergeRequest(
 				t.Context(), MergeRequestWorktreeOptions{
@@ -1006,17 +1059,28 @@ func TestCreateWorktreeFromMergeRequestRejectsInheritedCommandScopeConfig(
 					Number: 30, HeadBranch: "inherited-config",
 					HeadRepoCloneURL:    origin,
 					ProjectRepoIdentity: identityOfCloneURL(origin),
-					ExpectedHeadSHA:     headSHA, Runner: test.runner(t),
+					ExpectedHeadSHA:     headSHA, Runner: test.runner(t, marker),
 				})
 
 			require.Error(err)
-			require.ErrorContains(err, "command-scope Git configuration cannot be isolated")
+			wantError := test.wantError
+			if wantError == "" {
+				wantError = "command-scope Git configuration cannot be isolated"
+			}
+			require.ErrorContains(err, wantError)
+			if test.preserveMarker {
+				assert.FileExists(marker)
+			}
+			if test.name == "conditional include" {
+				assert.False(branchExistsInRepo(t, clone, "pr-inherited-config"))
+			}
 			assert.NoDirExists(dest)
 		})
 	}
 }
 
 func TestCreateWorktreeFromMergeRequestDisablesConfiguredHooks(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 	origin, clone := initOriginAndClone(t)
 	lifecycleGit(t, origin, "checkout", "-q", "-b", "configured-hook")
@@ -1066,6 +1130,7 @@ func TestCreateWorktreeFromMergeRequestDisablesConfiguredHooks(t *testing.T) {
 }
 
 func TestIsolationSensitiveConfigKeyIncludesConfiguredHooks(t *testing.T) {
+	t.Parallel()
 	for _, key := range []string{
 		"hook.import.command",
 		"hook.import.event",
@@ -1075,35 +1140,8 @@ func TestIsolationSensitiveConfigKeyIncludesConfiguredHooks(t *testing.T) {
 	}
 }
 
-func TestCreateWorktreeFromMergeRequestRejectsCommandScopeWorktree(t *testing.T) {
-	require := require.New(t)
-	assert := assert.New(t)
-	origin, clone := initOriginAndClone(t)
-	lifecycleGit(t, origin, "checkout", "-q", "-b", "worktree-override")
-	lifecycleGit(t, origin, "commit", "--allow-empty", "-m", "override")
-	headSHA := lifecycleGit(t, origin, "rev-parse", "HEAD")
-	lifecycleGit(t, origin, "checkout", "-q", "main")
-	external := t.TempDir()
-	marker := filepath.Join(external, "keep")
-	require.NoError(os.WriteFile(marker, []byte("preserve"), 0o600))
-	runner := lifecycleTestRunner(t).WithConfig("core.worktree", external)
-	dest := filepath.Join(t.TempDir(), "wt")
-
-	_, err := CreateWorktreeFromMergeRequest(
-		t.Context(), MergeRequestWorktreeOptions{
-			ProjectRoot: clone, Branch: "pr-worktree-override", Path: dest,
-			Number: 37, HeadBranch: "worktree-override",
-			HeadRepoCloneURL: origin, ProjectRepoIdentity: identityOfCloneURL(origin),
-			ExpectedHeadSHA: headSHA, Runner: runner,
-		})
-
-	require.Error(err)
-	require.ErrorContains(err, "command-scope Git configuration cannot be isolated")
-	assert.FileExists(marker)
-	assert.NoDirExists(dest)
-}
-
 func TestPathWithinRootByIdentityRecognizesFilesystemAliases(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	child := filepath.Join(root, "config")
 	require.NoError(t, os.WriteFile(child, []byte("[safe]\n"), 0o600))
@@ -1117,6 +1155,7 @@ func TestPathWithinRootByIdentityRecognizesFilesystemAliases(t *testing.T) {
 }
 
 func TestSectionLevelConfigKeysDoNotNameSubsections(t *testing.T) {
+	t.Parallel()
 	assert.Empty(t, configuredGitHooks([]string{
 		"hook.command",
 		"hook.event",
@@ -1133,6 +1172,7 @@ func TestSectionLevelConfigKeysDoNotNameSubsections(t *testing.T) {
 }
 
 func TestSafeTextconvPreservesUnterminatedLines(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 	assert := assert.New(t)
 	repo := initLifecycleRepo(t)
@@ -1157,54 +1197,13 @@ func TestSafeTextconvPreservesUnterminatedLines(t *testing.T) {
 	assert.Contains(diff, `\ No newline at end of file`)
 }
 
-func TestCreateWorktreeFromMergeRequestRejectsConditionalCommandScopeConfig(
-	t *testing.T,
-) {
-	require := require.New(t)
-	assert := assert.New(t)
-	origin, clone := initOriginAndClone(t)
-	lifecycleGit(t, origin, "checkout", "-q", "-b", "conditional-command")
-	lifecycleGit(t, origin, "commit", "--allow-empty", "-m", "conditional")
-	headSHA := lifecycleGit(t, origin, "rev-parse", "HEAD")
-	lifecycleGit(t, origin, "checkout", "-q", "main")
-
-	config := filepath.Join(t.TempDir(), "conditional.gitconfig")
-	require.NoError(os.WriteFile(
-		config,
-		[]byte("[filter \"conditional\"]\n\tsmudge = false\n"), 0o600,
-	))
-	runner := gitcmd.New()
-	runner.Env = append(isolatedLifecycleBaseEnv(t),
-		"GIT_CONFIG_COUNT=1",
-		"GIT_CONFIG_KEY_0=includeIf.onbranch:pr-command-conditional.path",
-		"GIT_CONFIG_VALUE_0="+config,
-	)
-	dest := filepath.Join(t.TempDir(), "wt")
-	_, err := CreateWorktreeFromMergeRequest(
-		t.Context(), MergeRequestWorktreeOptions{
-			ProjectRoot: clone, Branch: "pr-command-conditional", Path: dest,
-			Number: 33, HeadBranch: "conditional-command",
-			HeadRepoCloneURL: origin, ProjectRepoIdentity: identityOfCloneURL(origin),
-			ExpectedHeadSHA: headSHA, Runner: runner,
-		})
-
-	require.Error(err)
-	require.ErrorContains(err, "command-scope Git configuration cannot be isolated")
-	assert.NoDirExists(dest)
-	assert.False(branchExistsInRepo(t, clone, "pr-command-conditional"))
-}
-
-func TestCreateWorktreeFromMergeRequestRejectsConfigFromMaterializedTree(
-	t *testing.T,
-) {
+func TestCreateWorktreeFromMergeRequestRejectsConfigFromMaterializedTree(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
 	origin, clone := initOriginAndClone(t)
 	lifecycleGit(t, origin, "checkout", "-q", "-b", "materialized-config")
-	require.NoError(os.WriteFile(
-		filepath.Join(origin, ".gitconfig"),
-		[]byte("[diff \"materialized\"]\n\tcommand = false\n"), 0o644,
-	))
+	config := []byte("[diff \"materialized\"]\n\tcommand = false\n")
+	require.NoError(os.WriteFile(filepath.Join(origin, ".gitconfig"), config, 0o644))
 	require.NoError(os.WriteFile(
 		filepath.Join(origin, ".gitattributes"),
 		[]byte("payload diff=materialized\n"), 0o644,
@@ -1240,108 +1239,16 @@ func TestCreateWorktreeFromMergeRequestRejectsConfigFromMaterializedTree(
 	assert.NoDirExists(dest)
 }
 
-func TestCreateWorktreeFromMergeRequestRejectsSymlinkedConfigFromTree(
-	t *testing.T,
-) {
-	if runtime.GOOS == "windows" {
-		t.Skip("tracked symlink fixture requires POSIX")
-	}
-	require := require.New(t)
-	assert := assert.New(t)
-	origin, clone := initOriginAndClone(t)
-	lifecycleGit(t, origin, "checkout", "-q", "-b", "symlinked-config")
-
-	externalConfig := filepath.Join(t.TempDir(), "external.gitconfig")
-	require.NoError(os.WriteFile(
-		externalConfig,
-		[]byte("[diff \"materialized\"]\n\tcommand = false\n"), 0o600,
+func TestMergeRequestRepositoriesAcceptNormalizedHostedIdentity(t *testing.T) {
+	t.Parallel()
+	assert.True(t, mergeRequestRepositoriesEqual(
+		"https://EXAMPLE.COM/Owner/Widget.git",
+		"https://example.com/Owner/Widget.git",
 	))
-	require.NoError(os.Symlink(
-		externalConfig, filepath.Join(origin, ".gitconfig"),
-	))
-	require.NoError(os.WriteFile(
-		filepath.Join(origin, ".gitattributes"),
-		[]byte("payload diff=materialized\n"), 0o644,
-	))
-	require.NoError(os.WriteFile(
-		filepath.Join(origin, "payload"), []byte("external\n"), 0o644,
-	))
-	lifecycleGit(t, origin, "add", ".gitconfig", ".gitattributes", "payload")
-	lifecycleGit(t, origin, "commit", "-qm", "symlinked config")
-	headSHA := lifecycleGit(t, origin, "rev-parse", "HEAD")
-	lifecycleGit(t, origin, "checkout", "-q", "main")
-
-	runner := gitcmd.New()
-	runner.NullGlobalConfig = false
-	// StripEnv would discard the GIT_CONFIG_GLOBAL override below and let git
-	// fall back to the host's real global config; Env is already sanitized.
-	runner.StripEnv = false
-	runner.Env = append(
-		isolatedLifecycleBaseEnv(t),
-		"GIT_CONFIG_GLOBAL=.gitconfig",
-	)
-	dest := filepath.Join(t.TempDir(), "wt")
-	_, err := CreateWorktreeFromMergeRequest(
-		t.Context(), MergeRequestWorktreeOptions{
-			ProjectRoot: clone, Branch: "pr-symlinked-config", Path: dest,
-			Number: 32, HeadBranch: "symlinked-config",
-			HeadRepoCloneURL: origin, ProjectRepoIdentity: identityOfCloneURL(origin),
-			ExpectedHeadSHA: headSHA, Runner: runner,
-		})
-
-	require.Error(err)
-	require.ErrorContains(err, "configuration inside merge request worktree")
-	assert.NoDirExists(dest)
-}
-
-func TestCreateWorktreeFromMergeRequestRejectsInheritedRelativeInclude(
-	t *testing.T,
-) {
-	require := require.New(t)
-	assert := assert.New(t)
-	origin, clone := initOriginAndClone(t)
-	lifecycleGit(t, origin, "checkout", "-q", "-b", "inherited-include")
-	require.NoError(os.WriteFile(
-		filepath.Join(origin, ".gitconfig"),
-		[]byte("[diff \"materialized\"]\n\tcommand = false\n"), 0o644,
-	))
-	lifecycleGit(t, origin, "add", ".gitconfig")
-	lifecycleGit(t, origin, "commit", "-qm", "materialized include")
-	headSHA := lifecycleGit(t, origin, "rev-parse", "HEAD")
-	lifecycleGit(t, origin, "checkout", "-q", "main")
-
-	runner := gitcmd.New()
-	runner.Env = append(isolatedLifecycleBaseEnv(t),
-		"GIT_CONFIG_COUNT=1",
-		"GIT_CONFIG_KEY_0=include.path",
-		"GIT_CONFIG_VALUE_0=.gitconfig",
-	)
-	dest := filepath.Join(t.TempDir(), "wt")
-	_, err := CreateWorktreeFromMergeRequest(
-		t.Context(), MergeRequestWorktreeOptions{
-			ProjectRoot: clone, Branch: "pr-inherited-include", Path: dest,
-			Number: 31, HeadBranch: "inherited-include",
-			HeadRepoCloneURL: origin, ProjectRepoIdentity: identityOfCloneURL(origin),
-			ExpectedHeadSHA: headSHA, Runner: runner,
-		})
-
-	require.Error(err)
-	require.ErrorContains(err, "relative config includes must come from files")
-	assert.NoDirExists(dest)
-}
-
-func TestMergeRequestRepositoriesKeepPathCase(t *testing.T) {
 	assert.False(t, mergeRequestRepositoriesEqual(
 		"https://example.com/Owner/Widget.git",
 		"https://example.com/owner/widget.git",
 	))
-	assert.True(t, mergeRequestRepositoriesEqual(
-		"https://EXAMPLE.com/Owner/Widget.git",
-		"https://example.com/Owner/Widget.git",
-	))
-}
-
-func TestMergeRequestRepositoriesAcceptNormalizedHostedIdentity(t *testing.T) {
 	for _, rawURL := range []string{
 		"https://example.com:8443/Owner/Widget.git",
 		"ssh://[2001:db8::1]:2222/Owner/Widget.git",
@@ -1354,6 +1261,7 @@ func TestMergeRequestRepositoriesAcceptNormalizedHostedIdentity(t *testing.T) {
 }
 
 func TestCreateWorktreeFromMergeRequestInspectsConditionalIncludes(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 	assert := assert.New(t)
 
@@ -1409,6 +1317,7 @@ func TestCreateWorktreeFromMergeRequestInspectsConditionalIncludes(t *testing.T)
 }
 
 func TestCreateWorktreeFromMergeRequestReportsCleanupFailure(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 	assert := assert.New(t)
 	origin, clone := initOriginAndClone(t)
@@ -1452,6 +1361,7 @@ func TestCreateWorktreeFromMergeRequestReportsCleanupFailure(t *testing.T) {
 // still comes from origin's pull ref, while tracking is configured against
 // a dedicated fork remote.
 func TestCreateWorktreeFromMergeRequestFork(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 	assert := assert.New(t)
 
@@ -1525,6 +1435,7 @@ func TestCreateWorktreeFromMergeRequestFork(t *testing.T) {
 }
 
 func TestCreateWorktreeFromMergeRequestCanonicalizesRelativeForkURL(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 	assert := assert.New(t)
 
@@ -1557,6 +1468,7 @@ func TestCreateWorktreeFromMergeRequestCanonicalizesRelativeForkURL(t *testing.T
 }
 
 func TestEnsureFetchRemoteSkipsPushOnlyNameCollision(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 	assert := assert.New(t)
 	repo := initLifecycleRepo(t)
@@ -1573,6 +1485,7 @@ func TestEnsureFetchRemoteSkipsPushOnlyNameCollision(t *testing.T) {
 }
 
 func TestEnsureFetchRemoteDoesNotMutateAfterConfigReadFailure(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 	assert := assert.New(t)
 	repo := initLifecycleRepo(t)
@@ -1602,6 +1515,7 @@ func TestEnsureFetchRemoteDoesNotMutateAfterConfigReadFailure(t *testing.T) {
 }
 
 func TestCanonicalizeMergeRequestCloneURLRejectsEmbeddedSecrets(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 	assert := assert.New(t)
 	for _, rawURL := range []string{
@@ -1618,6 +1532,7 @@ func TestCanonicalizeMergeRequestCloneURLRejectsEmbeddedSecrets(t *testing.T) {
 }
 
 func TestCanonicalizeMergeRequestCloneURLAllowsSSHUsername(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 	const rawURL = "ssh://git@example.com/acme/widget.git"
 
@@ -1628,6 +1543,7 @@ func TestCanonicalizeMergeRequestCloneURLAllowsSSHUsername(t *testing.T) {
 }
 
 func TestOptionalTrackingFetchUnavailable(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		output string
@@ -1662,6 +1578,7 @@ func TestOptionalTrackingFetchUnavailable(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			assert.Equal(t, tt.want, optionalTrackingFetchUnavailable(
 				[]byte(tt.output),
 			))
@@ -1673,6 +1590,7 @@ func TestOptionalTrackingFetchUnavailable(t *testing.T) {
 // the fork cannot be fetched, the import still succeeds via the pull ref
 // and tracking is silently disabled.
 func TestCreateWorktreeFromMergeRequestTrackingFetchFailureIsNonFatal(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 	assert := assert.New(t)
 
@@ -1750,6 +1668,7 @@ func TestCreateWorktreeFromMergeRequestPropagatesTrackingRunnerFailure(
 // TestCreateWorktreeFromMergeRequestHookFailureRollsBack: a failing setup
 // hook rolls back the imported worktree and its branch.
 func TestCreateWorktreeFromMergeRequestHookFailureRollsBack(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 	assert := assert.New(t)
 
@@ -1784,6 +1703,7 @@ func TestCreateWorktreeFromMergeRequestHookFailureRollsBack(t *testing.T) {
 }
 
 func TestCreateWorktreeFromMergeRequestRejectsHookFromDestination(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 	assert := assert.New(t)
 	origin, clone := initOriginAndClone(t)

@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -20,6 +20,7 @@ import (
 func TestConfiguredPushUsesSelectedUpstream(t *testing.T) {
 	for _, scope := range []UpstreamScope{UpstreamWorktree, UpstreamRepository} {
 		t.Run(map[UpstreamScope]string{UpstreamWorktree: "worktree", UpstreamRepository: "repository"}[scope], func(t *testing.T) {
+			isolateLifecycleGitConfig(t)
 			_, clone := initOriginAndClone(t)
 			created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
 				ProjectRoot: clone, Path: filepath.Join(t.TempDir(), "checkout"), Branch: "topic", Runner: lifecycleTestRunner(t),
@@ -52,8 +53,10 @@ func TestConfiguredPushUsesSelectedUpstream(t *testing.T) {
 }
 
 func TestConfiguredPushRejectsCommandOverrideBeforeChangingRouting(t *testing.T) {
+	t.Parallel()
 	for _, source := range []string{"runner", "environment"} {
 		t.Run(source, func(t *testing.T) {
+			t.Parallel()
 			_, clone := initOriginAndClone(t)
 			created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
 				ProjectRoot: clone, Path: filepath.Join(t.TempDir(), "checkout"), Branch: "topic", Runner: lifecycleTestRunner(t),
@@ -79,20 +82,11 @@ func TestConfiguredPushRejectsCommandOverrideBeforeChangingRouting(t *testing.T)
 	}
 }
 
+// t.Setenv changes process-wide Git config, so this test stays serial.
 func TestLifecycleExecutionOptionsPreserveInheritedConfig(t *testing.T) {
-	if os.Getenv("KIT_TEST_INHERITED_CONFIG") != "1" {
-		// A nil runner environment must inherit the process environment. Use a
-		// child with fixture-only Git settings so host bindings cannot escape.
-		isolateLifecycleGitConfig(t)
-		executable, err := os.Executable()
-		require.NoError(t, err)
-		cmd := exec.CommandContext(t.Context(), executable, "-test.run=^TestLifecycleExecutionOptionsPreserveInheritedConfig$")
-		cmd.Env = append(lifecycleGitEnv(t), "KIT_TEST_INHERITED_CONFIG=1",
-			"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=fixture.value", "GIT_CONFIG_VALUE_0=inherited")
-		out, err := cmd.CombinedOutput()
-		require.NoError(t, err, "%s", out)
-		return
-	}
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "fixture.value")
+	t.Setenv("GIT_CONFIG_VALUE_0", "inherited")
 	for _, tc := range []struct {
 		name   string
 		runner gitcmd.Runner
@@ -125,8 +119,10 @@ func TestLifecycleExecutionOptionsPreserveInheritedConfig(t *testing.T) {
 }
 
 func TestCreateExplicitCheckoutModes(t *testing.T) {
+	t.Parallel()
 	for _, bare := range []bool{false, true} {
 		t.Run(map[bool]string{false: "checkout", true: "bare"}[bare], func(t *testing.T) {
+			t.Parallel()
 			root := initLifecycleRepo(t)
 			require.NoError(t, os.WriteFile(filepath.Join(root, "tracked.txt"), []byte("original\n"), 0o600))
 			lifecycleGit(t, root, "add", "tracked.txt")
@@ -173,6 +169,7 @@ func TestCreateExplicitCheckoutModes(t *testing.T) {
 	}
 }
 
+// Serialize worktree-add and snapshot failures around five-second acquisition capture.
 func TestCreateDeferredFailureReportsAcquisition(t *testing.T) {
 	for _, phase := range []string{"add", "snapshot", "checkout", "tracking", "hook"} {
 		t.Run(phase, func(t *testing.T) {
@@ -214,13 +211,15 @@ func TestCreateDeferredFailureReportsAcquisition(t *testing.T) {
 }
 
 func TestPreparedHookRetainsValidationAndEnvironment(t *testing.T) {
+	t.Parallel()
 	root := initLifecycleRepo(t)
 	path := filepath.Join(t.TempDir(), "worktree")
 	output := filepath.Join(t.TempDir(), "hook-output")
 	script := writeHookScript(t, root, output, 0)
+	var hookDir string
 	prepared, err := PrepareWorktreeHook(t.Context(), WorktreeHookOptions{
 		ProjectRoot: root, Path: path, Branch: "topic", Script: script,
-		WorktreeName: "display-name", RunHook: testHookRunner(),
+		WorktreeName: "display-name", RunHook: testHookRunnerRecordingDir(&hookDir),
 	})
 	require.NoError(t, err)
 	assert.NoFileExists(t, output)
@@ -231,8 +230,19 @@ func TestPreparedHookRetainsValidationAndEnvironment(t *testing.T) {
 	require.NoError(t, prepared.Run(t.Context()))
 	contents, err := os.ReadFile(output)
 	require.NoError(t, err)
-	assert.Contains(t, string(contents), "name=display-name")
-	assert.Contains(t, string(contents), "branch=topic")
+	lines := strings.Split(strings.TrimSpace(string(contents)), "\n")
+	require.Len(t, lines, 5)
+	canonicalPath, err := filepath.EvalSymlinks(path)
+	require.NoError(t, err)
+	if runtime.GOOS == "windows" {
+		assert.Equal(t, path, hookDir, "hook runner receives the native worktree directory")
+	} else {
+		assert.Equal(t, canonicalPath, lines[0], "hook runs in the worktree directory")
+	}
+	assert.Equal(t, "name=display-name", lines[1])
+	assert.Equal(t, "path="+path, lines[2])
+	assert.Equal(t, "root="+root, lines[3])
+	assert.Equal(t, "branch=topic", lines[4])
 	_, err = PrepareWorktreeHook(t.Context(), WorktreeHookOptions{
 		ProjectRoot: root, Path: path, Script: filepath.Join(filepath.Dir(root), "outside"),
 	})
@@ -244,8 +254,10 @@ func TestPreparedHookRetainsValidationAndEnvironment(t *testing.T) {
 }
 
 func TestPreparedHookUsesCreationDestination(t *testing.T) {
+	t.Parallel()
 	for _, derived := range []bool{false, true} {
 		t.Run(strconv.FormatBool(derived), func(t *testing.T) {
+			t.Parallel()
 			require := require.New(t)
 			root := initLifecycleRepo(t)
 			base := filepath.Join(t.TempDir(), "checkouts")
@@ -277,8 +289,10 @@ func TestPreparedHookUsesCreationDestination(t *testing.T) {
 }
 
 func TestImportExplicitUpstreamPolicy(t *testing.T) {
+	t.Parallel()
 	for _, action := range []UpstreamAction{UpstreamLeave, UpstreamClear, UpstreamTrack} {
 		t.Run(map[UpstreamAction]string{UpstreamLeave: "leave", UpstreamClear: "clear", UpstreamTrack: "track"}[action], func(t *testing.T) {
+			t.Parallel()
 			origin, clone := initOriginAndClone(t)
 			lifecycleGit(t, clone, "remote", "add", "selected", origin)
 			lifecycleGit(t, clone, "fetch", "selected")
@@ -311,6 +325,7 @@ func TestImportExplicitUpstreamPolicy(t *testing.T) {
 }
 
 func TestIsolatedCreationPreservesDefaultTracking(t *testing.T) {
+	t.Parallel()
 	origin, clone := initOriginAndClone(t)
 	created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
 		ProjectRoot: clone, Path: filepath.Join(t.TempDir(), "checkout"), Branch: "topic",
@@ -325,8 +340,10 @@ func TestIsolatedCreationPreservesDefaultTracking(t *testing.T) {
 }
 
 func TestUpstreamUsesWorktreeRemote(t *testing.T) {
+	t.Parallel()
 	for _, condition := range []TrackingCondition{TrackingExplicit, TrackingIfHeadMatches} {
 		t.Run(map[TrackingCondition]string{TrackingExplicit: "explicit", TrackingIfHeadMatches: "matching"}[condition], func(t *testing.T) {
+			t.Parallel()
 			origin, clone := initOriginAndClone(t)
 			created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
 				ProjectRoot: clone, Path: filepath.Join(t.TempDir(), "checkout"), Branch: "topic", Runner: lifecycleTestRunner(t),
@@ -351,8 +368,10 @@ func TestUpstreamUsesWorktreeRemote(t *testing.T) {
 }
 
 func TestExplicitUpstreamScopeAndHeadCondition(t *testing.T) {
+	t.Parallel()
 	for _, condition := range []TrackingCondition{TrackingExplicit, TrackingIfHeadMatches} {
 		t.Run(map[TrackingCondition]string{TrackingExplicit: "explicit", TrackingIfHeadMatches: "matching"}[condition], func(t *testing.T) {
+			t.Parallel()
 			origin, clone := initOriginAndClone(t)
 			lifecycleGit(t, clone, "remote", "add", "selected", origin)
 			lifecycleGit(t, clone, "config", "remote.selected.fetch", "+refs/heads/*:refs/tracked/selected/*")
@@ -388,8 +407,10 @@ func TestExplicitUpstreamScopeAndHeadCondition(t *testing.T) {
 }
 
 func TestImportExplicitCheckoutModes(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []CheckoutMode{CheckoutExistingBranch, CheckoutDetached} {
 		t.Run(map[CheckoutMode]string{CheckoutExistingBranch: "attach", CheckoutDetached: "detached"}[mode], func(t *testing.T) {
+			t.Parallel()
 			origin, clone := initOriginAndClone(t)
 			require.NoError(t, os.WriteFile(filepath.Join(origin, "tracked"), []byte("content"), 0o600))
 			lifecycleGit(t, origin, "add", "tracked")
@@ -415,8 +436,10 @@ func TestImportExplicitCheckoutModes(t *testing.T) {
 }
 
 func TestUpstreamScopeControlsSharedRouting(t *testing.T) {
+	t.Parallel()
 	for _, scope := range []UpstreamScope{UpstreamWorktree, UpstreamRepository} {
 		t.Run(map[UpstreamScope]string{UpstreamWorktree: "worktree", UpstreamRepository: "repository"}[scope], func(t *testing.T) {
+			t.Parallel()
 			origin, clone := initOriginAndClone(t)
 			lifecycleGit(t, origin, "checkout", "-b", "other")
 			lifecycleGit(t, origin, "commit", "--allow-empty", "-m", "other work")
@@ -449,8 +472,10 @@ func TestUpstreamScopeControlsSharedRouting(t *testing.T) {
 }
 
 func TestConditionalTrackingUsesRequestedTarget(t *testing.T) {
+	t.Parallel()
 	for _, matches := range []bool{false, true} {
 		t.Run(map[bool]string{false: "mismatch", true: "match"}[matches], func(t *testing.T) {
+			t.Parallel()
 			origin, clone := initOriginAndClone(t)
 			lifecycleGit(t, origin, "checkout", "-b", "other")
 			lifecycleGit(t, origin, "commit", "--allow-empty", "-m", "other work")
@@ -479,6 +504,7 @@ func TestConditionalTrackingUsesRequestedTarget(t *testing.T) {
 }
 
 func TestWorktreeUpstreamClearPreservesInheritedRouting(t *testing.T) {
+	t.Parallel()
 	origin, clone := initOriginAndClone(t)
 	created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
 		ProjectRoot: clone, Path: filepath.Join(t.TempDir(), "checkout"), Branch: "topic", Runner: lifecycleTestRunner(t),
@@ -494,9 +520,11 @@ func TestWorktreeUpstreamClearPreservesInheritedRouting(t *testing.T) {
 }
 
 func TestUpstreamRefusesRoutingFromOtherConfigFiles(t *testing.T) {
+	t.Parallel()
 	for _, source := range []string{"global", "include", "command"} {
 		for _, action := range []UpstreamAction{UpstreamTrack, UpstreamClear} {
 			t.Run(source+"/"+map[UpstreamAction]string{UpstreamTrack: "track", UpstreamClear: "clear"}[action], func(t *testing.T) {
+				t.Parallel()
 				_, clone := initOriginAndClone(t)
 				external := filepath.Join(t.TempDir(), "external.gitconfig")
 				contents := []byte("[branch \"topic\"]\nremote = origin\nmerge = refs/heads/main\n")
@@ -533,38 +561,8 @@ func TestUpstreamRefusesRoutingFromOtherConfigFiles(t *testing.T) {
 	}
 }
 
-func TestCreateOutputLimitRetainsCleanupEvidence(t *testing.T) {
-	for _, cleanup := range []FailureCleanup{CleanupAutomatic, CleanupDeferred} {
-		t.Run(map[FailureCleanup]string{CleanupAutomatic: "automatic", CleanupDeferred: "deferred"}[cleanup], func(t *testing.T) {
-			root := initLifecycleRepo(t)
-			hook := filepath.Join(root, ".git", "hooks", "post-checkout")
-			require.NoError(t, os.WriteFile(hook, []byte("#!/bin/sh\nprintf '%s' '"+strings.Repeat("x", 200000)+"' >&2\n"), 0o700))
-			runner := lifecycleTestRunner(t)
-			runner.StderrLimit = 4096
-			path := filepath.Join(t.TempDir(), "checkout")
-			created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
-				ProjectRoot: root, Path: path, Branch: "topic", Runner: runner, FailureCleanup: cleanup,
-			})
-			require.ErrorIs(t, err, gitcmd.ErrStderrLimitExceeded)
-			require.NotErrorIs(t, err, ErrWorktreeCleanupIncomplete)
-			if cleanup == CleanupDeferred {
-				require.DirExists(t, path)
-				_, err = created.Rollback(t.Context())
-				require.NoError(t, err)
-			}
-			assert.NoDirExists(t, path)
-			_, _, err = runner.Run(t.Context(), root, nil, "show-ref", "--verify", "--quiet", "refs/heads/topic")
-			require.True(t, gitcmd.IsExitCode(err, 1))
-			require.NoError(t, os.Remove(hook))
-			_, err = CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
-				ProjectRoot: root, Path: path, Branch: "topic", Runner: runner,
-			})
-			require.NoError(t, err, "the same creation can be retried after cleanup")
-		})
-	}
-}
-
 func TestWorktreeTrackingPreservesExistingBranchUpstream(t *testing.T) {
+	t.Parallel()
 	_, clone := initOriginAndClone(t)
 	lifecycleGit(t, clone, "branch", "--track", "topic", "origin/main")
 	created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
@@ -582,8 +580,10 @@ func TestWorktreeTrackingPreservesExistingBranchUpstream(t *testing.T) {
 }
 
 func TestForkImportFetchesExplicitConditionalUpstream(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []string{"matching", "stale", "mismatched", "leave", "clear", "branch config", "branch config deferred"} {
 		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
 			origin, clone := initOriginAndClone(t)
 			fork := filepath.Join(t.TempDir(), "fork")
 			lifecycleGit(t, clone, "clone", "-q", origin, fork)
@@ -644,33 +644,44 @@ func TestForkImportFetchesExplicitConditionalUpstream(t *testing.T) {
 	}
 }
 
-func TestCreateCancellationRetainsCleanupEvidence(t *testing.T) {
-	for _, timing := range []string{"after add", "during snapshot"} {
+// Serialize output truncation and cancellation around acquisition capture.
+func TestCreateAcquisitionFailureRetainsCleanupEvidence(t *testing.T) {
+	for _, failure := range []string{"output limit", "after add", "during snapshot"} {
 		for _, cleanup := range []FailureCleanup{CleanupAutomatic, CleanupDeferred} {
-			t.Run(timing+"/"+map[FailureCleanup]string{CleanupAutomatic: "automatic", CleanupDeferred: "deferred"}[cleanup], func(t *testing.T) {
+			t.Run(failure+"/"+map[FailureCleanup]string{CleanupAutomatic: "automatic", CleanupDeferred: "deferred"}[cleanup], func(t *testing.T) {
 				root := initLifecycleRepo(t)
 				path := filepath.Join(t.TempDir(), "checkout")
 				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
+				runner := lifecycleTestRunner(t)
+				hook := filepath.Join(root, ".git", "hooks", "post-checkout")
+				if failure == "output limit" {
+					require.NoError(t, os.WriteFile(hook, []byte("#!/bin/sh\nprintf '%s' '"+strings.Repeat("x", 200000)+"' >&2\n"), 0o700))
+					runner.StderrLimit = 4096
+				}
 				added := false
 				created, err := CreateWorktreeOnDisk(ctx, CreateWorktreeOptions{
-					ProjectRoot: root, Path: path, Branch: "topic", Runner: lifecycleTestRunner(t), FailureCleanup: cleanup,
+					ProjectRoot: root, Path: path, Branch: "topic", Runner: runner, FailureCleanup: cleanup,
 					RunGit: func(commandCtx context.Context, runner gitcmd.Runner, dir string, args ...string) ([]byte, error) {
-						if added && timing == "during snapshot" {
+						if added && failure == "during snapshot" {
 							cancel()
 						}
 						out, stderr, err := runner.Run(commandCtx, dir, nil, args...)
 						if err == nil && len(args) > 1 && args[0] == "worktree" && args[1] == "add" {
 							added = true
-							if timing == "after add" {
+							if failure == "after add" {
 								cancel()
 							}
 						}
 						return append(out, stderr...), err
 					},
 				})
-				require.True(t, added)
-				require.ErrorIs(t, err, context.Canceled)
+				if failure == "output limit" {
+					require.ErrorIs(t, err, gitcmd.ErrStderrLimitExceeded)
+				} else {
+					require.True(t, added)
+					require.ErrorIs(t, err, context.Canceled)
+				}
 				require.NotErrorIs(t, err, ErrWorktreeCleanupIncomplete)
 				if cleanup == CleanupDeferred {
 					require.DirExists(t, path)
@@ -678,20 +689,25 @@ func TestCreateCancellationRetainsCleanupEvidence(t *testing.T) {
 					require.NoError(t, err)
 				}
 				assert.NoDirExists(t, path)
-				_, _, err = lifecycleTestRunner(t).Run(t.Context(), root, nil, "show-ref", "--verify", "--quiet", "refs/heads/topic")
+				_, _, err = runner.Run(t.Context(), root, nil, "show-ref", "--verify", "--quiet", "refs/heads/topic")
 				require.True(t, gitcmd.IsExitCode(err, 1))
+				if failure == "output limit" {
+					require.NoError(t, os.Remove(hook))
+				}
 				_, err = CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
-					ProjectRoot: root, Path: path, Branch: "topic", Runner: lifecycleTestRunner(t),
+					ProjectRoot: root, Path: path, Branch: "topic", Runner: runner,
 				})
-				require.NoError(t, err, "creation can be retried after canceled acquisition is cleaned up")
+				require.NoError(t, err, "creation can be retried after failed acquisition is cleaned up")
 			})
 		}
 	}
 }
 
 func TestConditionalImportFetchFailureUsesCleanupPolicy(t *testing.T) {
+	t.Parallel()
 	for _, cleanup := range []FailureCleanup{CleanupAutomatic, CleanupDeferred} {
 		t.Run(map[FailureCleanup]string{CleanupAutomatic: "automatic", CleanupDeferred: "deferred"}[cleanup], func(t *testing.T) {
+			t.Parallel()
 			origin, clone := initOriginAndClone(t)
 			path := filepath.Join(t.TempDir(), "checkout")
 			created, err := CreateWorktreeFromMergeRequest(t.Context(), MergeRequestWorktreeOptions{

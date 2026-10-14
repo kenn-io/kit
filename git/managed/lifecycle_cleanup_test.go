@@ -16,9 +16,11 @@ import (
 )
 
 func TestDeferredCheckoutRollbackPreservesChanges(t *testing.T) {
+	t.Parallel()
 	for _, checkout := range []CheckoutPolicy{CheckoutTrusted, CheckoutIsolated} {
 		for _, state := range []string{"untouched", "inspected", "untracked", "ignored", "empty-directory", "staged-only", "staged-deletion", "materialized", "edited"} {
 			t.Run(map[CheckoutPolicy]string{CheckoutTrusted: "native", CheckoutIsolated: "isolated"}[checkout]+"/"+state, func(t *testing.T) {
+				t.Parallel()
 				root := initLifecycleRepo(t)
 				require.NoError(t, os.WriteFile(filepath.Join(root, "tracked"), []byte("original\n"), 0o600))
 				lifecycleGit(t, root, "add", ".")
@@ -86,6 +88,7 @@ func TestDeferredCheckoutRollbackPreservesChanges(t *testing.T) {
 	}
 }
 
+// Serialize branch-existence inspection after canceled or output-limited deletion.
 func TestCleanupReportsBranchDeletedBeforeExecutionError(t *testing.T) {
 	for _, failure := range []string{"output-limit", "cancellation"} {
 		for _, rollback := range []bool{false, true} {
@@ -137,6 +140,7 @@ func TestCleanupReportsBranchDeletedBeforeExecutionError(t *testing.T) {
 }
 
 func TestRemoveMissingWorktreeThroughLinkedParent(t *testing.T) {
+	t.Parallel()
 	root := initLifecycleRepo(t)
 	base := t.TempDir()
 	actual := filepath.Join(base, "actual")
@@ -158,9 +162,11 @@ func TestRemoveMissingWorktreeThroughLinkedParent(t *testing.T) {
 }
 
 func TestRollbackPoliciesPreserveUnownedArtifacts(t *testing.T) {
+	t.Parallel()
 	for _, policy := range []RollbackPolicy{RollbackUnchanged, RollbackFreshOwned} {
 		for _, replacement := range []string{"directory", "repository", "registration", "unverified"} {
 			t.Run(map[RollbackPolicy]string{RollbackUnchanged: "unchanged", RollbackFreshOwned: "fresh"}[policy]+"/"+replacement, func(t *testing.T) {
+				t.Parallel()
 				root := initLifecycleRepo(t)
 				path := filepath.Join(t.TempDir(), "checkout")
 				result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
@@ -205,6 +211,7 @@ func TestRollbackPoliciesPreserveUnownedArtifacts(t *testing.T) {
 }
 
 func TestFreshRollbackDeletesOnlyAcquiredBranch(t *testing.T) {
+	t.Parallel()
 	root := initLifecycleRepo(t)
 	lifecycleGit(t, root, "branch", "keep")
 	result, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
@@ -225,6 +232,7 @@ func TestFreshRollbackDeletesOnlyAcquiredBranch(t *testing.T) {
 }
 
 func TestBranchCleanupWaitsForCheckoutRemoval(t *testing.T) {
+	t.Parallel()
 	root := initLifecycleRepo(t)
 	created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
 		ProjectRoot: root, Path: filepath.Join(t.TempDir(), "checkout"), Branch: "topic", Runner: lifecycleTestRunner(t),
@@ -251,6 +259,7 @@ func TestBranchCleanupWaitsForCheckoutRemoval(t *testing.T) {
 }
 
 func TestRemovalReportsPartialArtifacts(t *testing.T) {
+	t.Parallel()
 	root := initLifecycleRepo(t)
 	created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
 		ProjectRoot: root, Path: filepath.Join(t.TempDir(), "checkout"), Branch: "topic", Runner: lifecycleTestRunner(t),
@@ -280,8 +289,10 @@ func TestRemovalReportsPartialArtifacts(t *testing.T) {
 }
 
 func TestRemovalBranchPolicy(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"merged-only", "force", "changed-oid"} {
 		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
 			root := initLifecycleRepo(t)
 			created, err := CreateWorktreeOnDisk(t.Context(), CreateWorktreeOptions{
 				ProjectRoot: root, Path: filepath.Join(t.TempDir(), "checkout"), Branch: "topic", Runner: lifecycleTestRunner(t),
@@ -314,9 +325,14 @@ func TestRemovalBranchPolicy(t *testing.T) {
 }
 
 func TestRollbackPoliciesAfterHeadChanges(t *testing.T) {
-	for _, kind := range []string{"staged", "advanced-branch", "detached", "attached"} {
+	t.Parallel()
+	for _, kind := range []string{"unstaged", "staged", "advanced-branch", "detached", "attached"} {
 		for _, policy := range []RollbackPolicy{RollbackUnchanged, RollbackFreshOwned} {
+			if kind == "unstaged" && policy == RollbackFreshOwned {
+				continue
+			}
 			t.Run(kind+"/"+map[RollbackPolicy]string{RollbackUnchanged: "unchanged", RollbackFreshOwned: "fresh"}[policy], func(t *testing.T) {
+				t.Parallel()
 				root := initLifecycleRepo(t)
 				if kind == "attached" {
 					lifecycleGit(t, root, "branch", "topic")
@@ -326,20 +342,34 @@ func TestRollbackPoliciesAfterHeadChanges(t *testing.T) {
 				})
 				require.NoError(t, err)
 				switch kind {
-				case "staged":
+				case "unstaged", "staged":
 					require.NoError(t, os.WriteFile(filepath.Join(created.Path, "staged"), []byte("work"), 0o600))
-					lifecycleGit(t, created.Path, "add", "staged")
+					if kind == "staged" {
+						lifecycleGit(t, created.Path, "add", "staged")
+					}
 				case "advanced-branch":
-					lifecycleGit(t, created.Path, "commit", "--allow-empty", "-m", "work")
+					require.NoError(t, os.WriteFile(filepath.Join(created.Path, "review.txt"), []byte("keep\n"), 0o644))
+					lifecycleGit(t, created.Path, "add", "review.txt")
+					lifecycleGit(t, created.Path, "commit", "-m", "work")
 				case "detached":
 					lifecycleGit(t, created.Path, "checkout", "--detach")
 					lifecycleGit(t, created.Path, "commit", "--allow-empty", "-m", "detached work")
 				}
 				head := lifecycleGit(t, root, "rev-parse", "topic")
+				checkoutHead := lifecycleGit(t, created.Path, "rev-parse", "HEAD")
+				registration := filepath.Clean(lifecycleGit(t, created.Path, "rev-parse", "--absolute-git-dir"))
 				remaining, err := created.Rollback(t.Context(), policy)
 				if policy == RollbackUnchanged && kind != "attached" {
 					require.ErrorIs(t, err, ErrWorktreeCleanupIncomplete)
-					assert.DirExists(t, remaining.Path)
+					assert.Equal(t, RollbackResult{Path: created.Path, Branch: created.Branch, Registration: registration}, remaining)
+					assert.Equal(t, checkoutHead, lifecycleGit(t, created.Path, "rev-parse", "HEAD"))
+					assert.Equal(t, head, lifecycleGit(t, root, "rev-parse", "topic"))
+					if kind == "advanced-branch" {
+						assert.FileExists(t, filepath.Join(created.Path, "review.txt"))
+					}
+					if kind == "unstaged" || kind == "staged" {
+						assert.FileExists(t, filepath.Join(created.Path, "staged"))
+					}
 				} else if kind == "advanced-branch" {
 					require.ErrorIs(t, err, ErrWorktreeCleanupIncomplete)
 					assert.Empty(t, remaining.Path)
@@ -357,6 +387,7 @@ func TestRollbackPoliciesAfterHeadChanges(t *testing.T) {
 }
 
 func TestPreparedHookRetainsExitCause(t *testing.T) {
+	t.Parallel()
 	root := initLifecycleRepo(t)
 	script := writeHookScript(t, root, filepath.Join(t.TempDir(), "hook-output"), 7)
 	hook, err := PrepareWorktreeHook(t.Context(), WorktreeHookOptions{
@@ -373,6 +404,7 @@ func TestPreparedHookRetainsExitCause(t *testing.T) {
 }
 
 func TestRollbackKeepsEvidenceWhenRemovalPreflightFails(t *testing.T) {
+	t.Parallel()
 	root := initLifecycleRepo(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -401,6 +433,7 @@ func TestRollbackKeepsEvidenceWhenRemovalPreflightFails(t *testing.T) {
 	assert.True(t, branchExistsInRepo(t, root, "topic"))
 }
 
+// Serialize branch-existence inspection after Git rejects deleting a checked-out branch.
 func TestRemoveBranchAfterRegistrationCleanup(t *testing.T) {
 	for _, state := range []string{"unused", "checked-out", "changed"} {
 		t.Run(state, func(t *testing.T) {
