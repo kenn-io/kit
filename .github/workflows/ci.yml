@@ -77,7 +77,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          foreach ($name in 'GOCACHE', 'GOMODCACHE', 'GOTMPDIR') {
+          # Go defaults to C: for cache and scratch; runner temp uses D: alongside the checkout.
+          foreach ($name in 'GOCACHE', 'GOMODCACHE', 'GOTMPDIR', 'TEMP', 'TMP') {
             $path = Join-Path $env:RUNNER_TEMP $name
             New-Item -ItemType Directory -Force -Path $path | Out-Null
             "$name=$path" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -96,7 +97,7 @@ jobs:
         run: go build ./...
 
       - name: Run tests
-        run: go tool gotestsum --format pkgname-and-test-fails --jsonfile=test-output-${{ matrix.os }}.json -- ./...
+        run: go tool gotestsum --format pkgname-and-test-fails --jsonfile=test-output-${{ matrix.os }}.json -- -timeout=15m ./...
 
       - name: Run go vet
         run: go vet ./...
