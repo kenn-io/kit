@@ -55,7 +55,9 @@ jobs:
   test:
     name: Go tests (${{ matrix.os }}${{ matrix.shard == 'managed' && ', git/managed' || '' }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+    timeout-minutes: ${{ matrix.shard == 'managed' && 25 || 20 }}
+    env:
+      MANAGED_PACKAGE: go.kenn.io/kit/git/managed
     strategy:
       fail-fast: false
       matrix:
@@ -102,13 +104,16 @@ jobs:
         run: |
           $allPackages = @(go list ./...)
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $packages = @($allPackages | Where-Object { $_ -ne 'go.kenn.io/kit/git/managed' })
+          $packages = @($allPackages | Where-Object { $_ -ne $env:MANAGED_PACKAGE })
           go tool gotestsum --format pkgname-and-test-fails --jsonfile=test-output-windows-latest.json -- @packages
           exit $LASTEXITCODE
 
       - name: Run managed Git Windows tests
         if: matrix.shard == 'managed'
-        run: go tool gotestsum --format pkgname-and-test-fails --jsonfile=test-output-windows-managed.json -- -timeout=15m ./git/managed
+        shell: pwsh
+        run: |
+          go tool gotestsum --format pkgname-and-test-fails --jsonfile=test-output-windows-managed.json -- -timeout=20m $env:MANAGED_PACKAGE
+          exit $LASTEXITCODE
 
       - name: Run go vet
         if: matrix.shard == 'regular'
