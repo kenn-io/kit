@@ -53,36 +53,31 @@ jobs:
         run: ./custom-gcl run ./...
 
   test:
-    name: Go tests (${{ matrix.os }})
+    name: Go tests (${{ matrix.os }}${{ matrix.shard == 'managed' && ', git/managed' || '' }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 25 || 20 }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             runner: namespace-profile-linux-8cpu
+            shard: regular
           - os: macos-latest
             runner: namespace-profile-mac-6cpu
+            shard: regular
           - os: windows-latest
             runner: windows-latest
+            shard: regular
+          - os: windows-latest
+            runner: windows-latest
+            shard: managed
 
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-
-      - name: Set up Windows Go directories
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          # Go defaults to C: for cache and scratch; runner temp uses D: alongside the checkout.
-          foreach ($name in 'GOCACHE', 'GOMODCACHE', 'GOTMPDIR', 'TEMP', 'TMP') {
-            $path = Join-Path $env:RUNNER_TEMP $name
-            New-Item -ItemType Directory -Force -Path $path | Out-Null
-            "$name=$path" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          }
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
@@ -94,12 +89,32 @@ jobs:
         run: go mod download
 
       - name: Build
+        if: matrix.shard == 'regular'
         run: go build ./...
 
       - name: Run tests
-        run: go tool gotestsum --format pkgname-and-test-fails --jsonfile=test-output-${{ matrix.os }}.json -- -timeout=${{ matrix.os == 'windows-latest' && '15m' || '10m' }} ./...
+        if: matrix.os != 'windows-latest'
+        run: go tool gotestsum --format pkgname-and-test-fails --jsonfile=test-output-${{ matrix.os }}.json -- ./...
+
+      - name: Run regular Windows tests
+        if: matrix.os == 'windows-latest' && matrix.shard == 'regular'
+        shell: pwsh
+        run: |
+          $allPackages = @(go list ./...)
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $packages = @($allPackages | Where-Object { $_ -ne 'go.kenn.io/kit/git/managed' })
+          if ($packages.Count -eq 0 -or $allPackages.Count -ne $packages.Count + 1) {
+            throw 'Expected exactly one git/managed package and at least one regular package'
+          }
+          go tool gotestsum --format pkgname-and-test-fails --jsonfile=test-output-windows-latest.json -- @packages
+          exit $LASTEXITCODE
+
+      - name: Run managed Git Windows tests
+        if: matrix.shard == 'managed'
+        run: go tool gotestsum --format pkgname-and-test-fails --jsonfile=test-output-windows-managed.json -- -timeout=15m ./git/managed
 
       - name: Run go vet
+        if: matrix.shard == 'regular'
         run: go vet ./...
 
   streaming-gates:
