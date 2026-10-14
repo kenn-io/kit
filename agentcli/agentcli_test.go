@@ -19,7 +19,7 @@ func mustAgent(t *testing.T, name agentcli.Name, command agentcli.Command) agent
 func TestSupportedAgents(t *testing.T) {
 	t.Parallel()
 	assert := assert.New(t)
-	want := []agentcli.Name{agentcli.Codex, agentcli.Claude, agentcli.Gemini, agentcli.Copilot, agentcli.OpenCode, agentcli.Cursor, agentcli.Kiro, agentcli.Kilo, agentcli.Droid, agentcli.Pi, agentcli.Hermes, agentcli.Qwen}
+	want := []agentcli.Name{agentcli.Codex, agentcli.Claude, agentcli.Gemini, agentcli.Copilot, agentcli.OpenCode, agentcli.Cursor, agentcli.Kiro, agentcli.Kilo, agentcli.Droid, agentcli.Pi, agentcli.Hermes, agentcli.Qwen, agentcli.Muse}
 	assert.Equal(want, agentcli.Names())
 	for _, name := range want {
 		assert.Equal(name, mustAgent(t, name, agentcli.Command{}).Name())
@@ -49,6 +49,7 @@ func TestInvocationContracts(t *testing.T) {
 		{agentcli.Kiro, "session-1", agentcli.Request{Mode: agentcli.NonInteractive, Prompt: agentcli.Prompt{Text: prompt}, Reasoning: agentcli.ReasoningXHigh, Approval: agentcli.ApprovalBypass}, []string{"kiro-cli", "chat", "--no-interactive", "--resume-id", "session-1", "--effort", "xhigh", "--trust-all-tools", "--", prompt}},
 		{agentcli.Kilo, "session-1", agentcli.Request{Mode: agentcli.NonInteractive, Prompt: agentcli.Prompt{Text: prompt}, Model: "provider/model", Reasoning: agentcli.ReasoningXHigh, OutputFormat: agentcli.OutputJSONL, Approval: agentcli.ApprovalBypass}, []string{"kilo", "run", "--format", "json", "--session", "session-1", "--model", "provider/model", "--auto", "--variant", "xhigh"}},
 		{agentcli.Droid, "session-1", agentcli.Request{Mode: agentcli.NonInteractive, Prompt: agentcli.Prompt{Text: prompt}, Model: "droid-test", Reasoning: agentcli.ReasoningXHigh, OutputFormat: agentcli.OutputJSONL, Autonomy: agentcli.AutonomyMedium, DeniedTools: []string{"execute-cli"}, DisableSkills: true}, []string{"droid", "exec", "--session-id", "session-1", "--model", "droid-test", "--reasoning-effort", "xhigh", "--auto", "medium", "--disabled-tools", "execute-cli", "--disable-builtin-skills", "--output-format", "stream-json"}},
+		{agentcli.Muse, "session-1", agentcli.Request{Mode: agentcli.NonInteractive, Prompt: agentcli.Prompt{Text: "--classify"}, Provider: "meta", Model: "muse-test", Reasoning: agentcli.ReasoningMaximum, OutputFormat: agentcli.OutputJSONL, Schema: agentcli.JSONSchema{Path: "schema.json"}, Sandbox: agentcli.SandboxDangerFullAccess, Approval: agentcli.ApprovalNever, DisableSessionStorage: true, ConfigOverrides: []string{"session_retention_days=3"}}, []string{"muse", "exec", "--session-id", "session-1", "-c", "session_retention_days=3", "--provider", "meta", "--model", "muse-test", "--reasoning-effort", "max", "--approval-mode", "never", "--disable-sandbox", "--no-session-log", "--json", "--output-schema", "schema.json", "--", "--classify"}},
 		{agentcli.Pi, "", agentcli.Request{Mode: agentcli.NonInteractive, Prompt: agentcli.Prompt{Text: "--classify", Files: []string{"prompt.md"}}, Provider: "test-provider", Model: "test-model", Reasoning: agentcli.ReasoningMaximum, Schema: agentcli.JSONSchema{Inline: `{"type":"object"}`, Extension: "schema-extension", OutputPath: "result.json"}, DisableBuiltInTools: true, DisableSkills: true, DisableHooks: true, DisablePromptTemplates: true, DisableThemes: true, DisableContextFiles: true, DisableSessionStorage: true}, []string{"pi", "--no-session", "--no-extensions", "--no-builtin-tools", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--extension", "schema-extension", "--json-schema", `{"type":"object"}`, "--json-output", "result.json", "--json-fallback", "none", "--print", "--provider", "test-provider", "--model", "test-model", "--thinking", "max", "--", "@prompt.md", "--classify"}},
 	}
 	for _, test := range tests {
@@ -94,6 +95,7 @@ func TestInteractiveResumePreservesConfiguredOptions(t *testing.T) {
 		{agentcli.Qwen, agentcli.Command{Executable: "qwen-custom", Options: []string{"--sandbox"}}, agentcli.Request{}, []string{"qwen-custom", "--sandbox", "--resume", "session-1"}},
 		{agentcli.Hermes, agentcli.Command{Executable: "hermes-custom", Options: []string{"--tui"}}, agentcli.Request{}, []string{"hermes-custom", "--tui", "--resume", "session-1"}},
 		{agentcli.OpenCode, agentcli.Command{Executable: "opencode-custom", Options: []string{"--auto"}}, agentcli.Request{}, []string{"opencode-custom", "--auto", "--session", "session-1"}},
+		{agentcli.Muse, agentcli.Command{Executable: "muse-custom", Options: []string{"--trust-workspace"}}, agentcli.Request{Approval: agentcli.ApprovalBypass}, []string{"muse-custom", "--trust-workspace", "--yolo", "resume", "session-1"}},
 	}
 	for _, test := range tests {
 		got, err := mustAgent(t, test.name, test.command).Resume("session-1", test.request)
@@ -130,6 +132,8 @@ func TestUnsupportedRequestsReturnTypedErrors(t *testing.T) {
 		{agentcli.Qwen, agentcli.Request{Mode: agentcli.NonInteractive}, "mode"},
 		{agentcli.OpenCode, agentcli.Request{Prompt: agentcli.Prompt{Text: "review"}}, "prompt"},
 		{agentcli.OpenCode, agentcli.Request{Model: "provider/model"}, "model"},
+		{agentcli.Muse, agentcli.Request{Schema: agentcli.JSONSchema{Path: "schema.json"}}, "JSON schema path"},
+		{agentcli.Muse, agentcli.Request{Sandbox: agentcli.SandboxReadOnly}, "sandbox"},
 	}
 	for _, test := range tests {
 		_, err := mustAgent(t, test.name, agentcli.Command{}).Start(test.request)
@@ -141,6 +145,23 @@ func TestUnsupportedRequestsReturnTypedErrors(t *testing.T) {
 	}
 	_, err := mustAgent(t, agentcli.Codex, agentcli.Command{}).Resume("--last", agentcli.Request{})
 	require.Error(err)
+}
+
+func TestMuseInteractivePrompt(t *testing.T) {
+	t.Parallel()
+	assert := assert.New(t)
+	require := require.New(t)
+	agent := mustAgent(t, agentcli.Muse, agentcli.Command{})
+	request := agentcli.Request{Prompt: agentcli.Prompt{Text: "-fix the build"}}
+
+	got, err := agent.Start(request)
+	require.NoError(err)
+	assert.Equal([]string{"muse", "--", "-fix the build"}, got.Argv)
+
+	_, err = agent.Resume("session-1", request)
+	var unsupported *agentcli.UnsupportedOptionError
+	require.ErrorAs(err, &unsupported)
+	assert.Equal("prompt", unsupported.Option)
 }
 
 func TestCapabilitiesAreExplicitAndIndependent(t *testing.T) {
@@ -186,7 +207,7 @@ func TestConfiguredArgumentsPassThrough(t *testing.T) {
 				require.NoError(err)
 				assert.Equal("custom-worker", got.Argv[0])
 				start := 1
-				if name == agentcli.Kiro || name == agentcli.Droid {
+				if name == agentcli.Kiro || name == agentcli.Droid || name == agentcli.Muse {
 					start++ // These CLIs put configured arguments after their subcommand.
 				}
 				assert.Equal(options, got.Argv[start:start+len(options)])

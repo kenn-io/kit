@@ -66,6 +66,10 @@
   in `args`. Install validation and removal must both match the marker against
   `command` and `args` joined by single spaces; changing one join without the
   other leaves installed hooks that uninstall cannot find.
+- A profile whose harness refuses to start without certain top-level config
+  fields declares them in `newConfigFields`; install seeds them only when it
+  creates the config or finds it empty. Muse Code needs `schema_version`, and
+  it rejects Claude's exec form, so its Windows commands use `commandWindows`.
 - Do not silently enable an agent's hook auto-approval setting. Installation
   writes registrations; the harness remains responsible for user consent.
 - JSON and YAML writes must preserve symlinked config paths and existing file

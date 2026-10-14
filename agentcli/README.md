@@ -9,9 +9,10 @@ or manage terminals and persistent state.
 parse these arguments, restrict them to known flags, or reject overlap with
 `Request` fields. Callers own explicitly supplied arguments; the CLI interprets
 them. Configured arguments precede request-generated arguments, after the fixed
-subcommand for Kiro and noninteractive Droid. Droid's REPL and `exec` read
-some flags differently, such as `-r`, so Droid options must suit both commands
-when a caller uses one `Command` for both modes.
+subcommand for Kiro and noninteractive Droid and Muse Code. Droid's REPL and
+`exec` read some flags differently, such as `-r`, so Droid options must suit
+both commands when a caller uses one `Command` for both modes. Muse Code
+rejects its root options before `exec`, so the same applies to Muse options.
 
 Use `Request.Prompt` for kit-managed prompt delivery; its zero value means no
 prompt. The adapter chooses the CLI's normal argument or stdin transport. Use
@@ -60,13 +61,15 @@ of those typed request checks.
 
 ## Supported agents
 
-`Names` returns twelve concrete CLI adapters. The modes below describe this
+`Names` returns thirteen concrete CLI adapters. The modes below describe this
 package, not every mode offered by the underlying command. Interactive mode
 opens the agent's own terminal UI and takes no prompt for Gemini, GitHub
 Copilot, OpenCode, Cursor Agent, Factory Droid, Hermes, and Qwen Code.
 Interactive Droid accepts only autonomy and the built-in skills control;
 its other controls are `exec` flags. This package passes no prompt or model
 to interactive OpenCode, though OpenCode itself accepts `--prompt`.
+Interactive Muse Code takes a prompt only when starting a session, because
+`muse resume` accepts none.
 
 | Agent | Modes | Prompt | Resume | Output | Reasoning |
 | --- | --- | --- | --- | --- | --- |
@@ -82,6 +85,7 @@ to interactive OpenCode, though OpenCode itself accepts `--prompt`.
 | Pi | interactive, noninteractive | argument and `@file` | `--session ID` | text, JSONL | low, medium, high, xhigh, maximum |
 | Hermes | interactive | none | `--resume ID` | text | none |
 | Qwen Code | interactive | none | `--resume ID` | text | none |
+| Muse Code | interactive, noninteractive | argument, start only when interactive | `resume ID`, `exec --session-id ID` | text, JSONL | low, medium, high, xhigh, maximum |
 
 `ReasoningXHigh` and `ReasoningMaximum` are distinct. Adapters with a native
 `max` value, including Codex, map only `ReasoningMaximum` to it. Droid accepts
@@ -105,6 +109,7 @@ The remaining controls are intentionally uneven:
 | Pi | inline schema through an explicit extension and output file | allow, deny, or disable built-in tools | skill paths; disable skills, extensions, prompt templates, themes, context files, hooks through extension discovery, or session storage |
 | Hermes | none | none | none |
 | Qwen Code | none | none | none |
+| Muse Code | schema file, noninteractive only | approval modes; full-access sandbox; `--yolo` bypass | disable session storage; config overrides |
 
 The adapters reflect these CLI contracts:
 
@@ -121,6 +126,8 @@ The adapters reflect these CLI contracts:
 - [Pi README](https://github.com/earendil-works/pi/tree/main/packages/coding-agent)
 - [Hermes CLI source](https://github.com/NousResearch/hermes-agent)
 - [Qwen Code source](https://github.com/QwenLM/qwen-code)
+- [Muse Code headless mode](https://dev.meta.ai/docs/muse-code/extending#headless-and-ci)
+- [Muse Code launch flags](https://dev.meta.ai/docs/muse-code/configuration#launch-flags)
 
 The first consumer migrations should replace Forge's temporary command-option
 validator together with its interactive resume switch; Forge should pass its
