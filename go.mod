@@ -10,24 +10,24 @@ require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.48.0
 	github.com/asg017/sqlite-vec-go-bindings v0.1.6
 	github.com/aws/aws-sdk-go-v2 v1.47.1
-	github.com/aws/aws-sdk-go-v2/config v1.33.6
-	github.com/aws/aws-sdk-go-v2/credentials v1.20.6
-	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.0
-	github.com/aws/smithy-go v1.28.2
+	github.com/aws/aws-sdk-go-v2/config v1.33.7
+	github.com/aws/aws-sdk-go-v2/credentials v1.20.7
+	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.1
+	github.com/aws/smithy-go v1.28.4
 	github.com/cenkalti/backoff/v7 v7.0.1
 	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/creachadair/tomledit v0.0.29
 	github.com/ebitengine/purego v0.11.1
 	github.com/gofrs/flock v0.13.1
 	github.com/golangci/plugin-module-register v0.1.2
-	github.com/golangci/rowserrcheck v0.0.0-20260419091836-c5f79b8a11ba
+	github.com/golangci/rowserrcheck v0.0.0-20261005233414-e0740d52dee8
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/klauspost/compress v1.20.1
 	github.com/leanovate/gopter v0.2.11
 	github.com/mattn/go-runewidth v0.0.30
 	github.com/mattn/go-sqlite3 v1.14.52
 	github.com/oklog/ulid/v2 v2.1.2
-	github.com/posthog/posthog-go v1.32.0
+	github.com/posthog/posthog-go v1.33.0
 	github.com/ryanrolds/sqlclosecheck v0.6.0
 	github.com/shirou/gopsutil/v4 v4.26.9
 	github.com/spf13/pathologize v1.1.0
@@ -45,7 +45,7 @@ require (
 	golang.org/x/mod v0.41.0
 	golang.org/x/perf v0.0.0-20260615155930-9e4b9ddef5b6
 	golang.org/x/sync v0.24.0
-	golang.org/x/sys v0.48.0
+	golang.org/x/sys v0.49.0
 	golang.org/x/term v0.46.0
 	golang.org/x/text v0.42.0
 	golang.org/x/tools v0.51.0
@@ -66,10 +66,10 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.11.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.14.4 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.20.4 // indirect
-	github.com/aws/aws-sdk-go-v2/service/signin v1.10.1 // indirect
-	github.com/aws/aws-sdk-go-v2/service/sso v1.38.1 // indirect
-	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.43.1 // indirect
-	github.com/aws/aws-sdk-go-v2/service/sts v1.51.1 // indirect
+	github.com/aws/aws-sdk-go-v2/service/signin v1.10.2 // indirect
+	github.com/aws/aws-sdk-go-v2/service/sso v1.38.2 // indirect
+	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.43.2 // indirect
+	github.com/aws/aws-sdk-go-v2/service/sts v1.51.2 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bitfield/gotestdox v0.2.2 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
