@@ -21,6 +21,7 @@ const (
 	AgentDroid    Agent = "droid"
 	AgentGemini   Agent = "gemini"
 	AgentHermes   Agent = "hermes"
+	AgentMuse     Agent = "muse"
 	AgentOpenCode Agent = "opencode"
 	AgentPi       Agent = "pi"
 	AgentQwen     Agent = "qwen"
@@ -44,7 +45,8 @@ const (
 
 // ToolBash is the Claude Code tool name for shell execution. Profiles map this
 // exact matcher to the corresponding native tool name, such as terminal in
-// Hermes, Execute in Factory Droid, and run_shell_command in Gemini and Qwen.
+// Hermes, Execute in Factory Droid, bash in Muse Code, and run_shell_command
+// in Gemini and Qwen.
 const ToolBash = "Bash"
 
 // Profile describes the stable, user-visible properties of an agent hook
@@ -106,6 +108,7 @@ type profileSpec struct {
 	defaultDir                  func() (string, error)
 	configEnvSubdir             string
 	configEnvDir                func(string) (string, error)
+	newConfigFields             map[string]any
 	eventName                   func(Event) string
 	timeoutUnit                 time.Duration
 	timeoutField                string
@@ -127,6 +130,7 @@ var profileOrder = []Agent{
 	AgentDroid,
 	AgentGemini,
 	AgentHermes,
+	AgentMuse,
 	AgentOpenCode,
 	AgentPi,
 	AgentQwen,
@@ -140,6 +144,7 @@ var profiles = map[Agent]profileSpec{
 	AgentDroid:    droidProfile(),
 	AgentGemini:   geminiProfile(),
 	AgentHermes:   hermesProfile(),
+	AgentMuse:     museProfile(),
 	AgentOpenCode: openCodeProfile(),
 	AgentPi:       piProfile(),
 	AgentQwen:     qwenProfile(),

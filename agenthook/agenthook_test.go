@@ -28,10 +28,12 @@ const testMarker = "--source shared-agent-hook-test"
 func TestProfilesExposeClaudeStyleEvents(t *testing.T) {
 	t.Parallel()
 	assert := assert.New(t)
-	require := require.New(t)
 
 	profiles := Profiles()
-	require.Len(profiles, 10)
+	agents := make([]Agent, 0, len(profiles))
+	for _, profile := range profiles {
+		agents = append(agents, profile.Agent)
+	}
 	assert.Equal([]Agent{
 		AgentClaude,
 		AgentCodex,
@@ -40,30 +42,20 @@ func TestProfilesExposeClaudeStyleEvents(t *testing.T) {
 		AgentDroid,
 		AgentGemini,
 		AgentHermes,
+		AgentMuse,
 		AgentOpenCode,
 		AgentPi,
 		AgentQwen,
-	}, []Agent{
-		profiles[0].Agent,
-		profiles[1].Agent,
-		profiles[2].Agent,
-		profiles[3].Agent,
-		profiles[4].Agent,
-		profiles[5].Agent,
-		profiles[6].Agent,
-		profiles[7].Agent,
-		profiles[8].Agent,
-		profiles[9].Agent,
-	})
+	}, agents)
 	assert.Contains(profiles[6].SupportedEvents, EventPreToolUse)
 	assert.NotContains(profiles[6].SupportedEvents, EventNotification)
-	for _, profile := range profiles[7:9] {
+	for _, profile := range profiles[8:10] {
 		assert.Equal(
 			[]Event{EventSessionStart, EventUserPromptSubmit, EventStop, EventSessionEnd},
 			profile.SupportedEvents,
 		)
 	}
-	assert.Contains(profiles[9].SupportedEvents, EventPermissionRequest)
+	assert.Contains(profiles[10].SupportedEvents, EventPermissionRequest)
 }
 
 func TestPlanInstallDefaultsToEveryProfileEvent(t *testing.T) {
@@ -203,6 +195,7 @@ func TestConfigPathHonorsAgentHomes(t *testing.T) {
 		{agent: AgentCopilot, env: "COPILOT_HOME", path: filepath.Join("hooks", "agenthook.json")},
 		{agent: AgentGemini, env: "GEMINI_CLI_HOME", path: filepath.Join(".gemini", "settings.json")},
 		{agent: AgentHermes, env: "HERMES_HOME", path: "config.yaml"},
+		{agent: AgentMuse, env: "XDG_CONFIG_HOME", path: filepath.Join("muse", "settings.json")},
 		{agent: AgentOpenCode, env: "OPENCODE_CONFIG_DIR", path: filepath.Join("plugins", "agenthook", "tui.js")},
 		{agent: AgentOpenCode, env: "XDG_CONFIG_HOME", path: filepath.Join("opencode", "plugins", "agenthook", "tui.js")},
 		{agent: AgentQwen, env: "QWEN_HOME", path: "settings.json"},
@@ -333,6 +326,66 @@ func TestPlanInstallQwenUsesClaudeEventsAndMillisecondTimeouts(t *testing.T) {
 	handlers := entry["hooks"].([]any)
 	handler := handlers[0].(map[string]any)
 	assert.InDelta(float64(2000), handler["timeout"], 0)
+}
+
+func TestInstallMuseCreatesStartableSettings(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	path := filepath.Join(t.TempDir(), "settings.json")
+	opts := InstallOptions{
+		ConfigPath:     path,
+		Command:        "/opt/hook " + testMarker,
+		CommandWindows: `C:\hook.exe ` + testMarker,
+		Marker:         testMarker,
+		Hooks: []Hook{{
+			Event: EventPreToolUse, Matcher: ToolBash, Timeout: 2 * time.Second,
+		}},
+	}
+
+	_, err := Install(AgentMuse, opts)
+
+	require.NoError(err)
+	data, err := os.ReadFile(path)
+	require.NoError(err)
+	assert.JSONEq(`{
+  "schema_version": 1,
+  "hooks": {
+    "PreToolUse": [{
+      "matcher": "bash",
+      "hooks": [{
+        "type": "command",
+        "command": "/opt/hook `+testMarker+`",
+        "commandWindows": "C:\\hook.exe `+testMarker+`",
+        "timeout": 2
+      }]
+    }]
+  }
+}`, string(data))
+
+	_, err = Uninstall(AgentMuse, path, testMarker)
+	require.NoError(err)
+	data, err = os.ReadFile(path)
+	require.NoError(err)
+	assert.JSONEq(`{"schema_version": 1, "hooks": {}}`, string(data))
+}
+
+func TestInstallMuseKeepsExistingSettingsFields(t *testing.T) {
+	require := require.New(t)
+	path := filepath.Join(t.TempDir(), "settings.json")
+	require.NoError(os.WriteFile(path, []byte(`{"schema_version": 1, "model": "keep"}`), 0o600))
+
+	result, err := PlanInstall(AgentMuse, InstallOptions{
+		ConfigPath: path,
+		Command:    "/opt/hook " + testMarker,
+		Marker:     testMarker,
+		Hooks:      []Hook{{Event: EventStop}},
+	})
+
+	require.NoError(err)
+	var root map[string]any
+	require.NoError(json.Unmarshal(result.Data, &root))
+	assert.Equal(t, "keep", root["model"])
+	assert.InDelta(t, float64(1), root["schema_version"], 0)
 }
 
 func TestPlanInstallAcceptsWholeMillisecondTimeouts(t *testing.T) {
@@ -805,6 +858,14 @@ func TestNormalizeConvertsNativePayloadToClaudeShape(t *testing.T) {
 			agent: AgentPi,
 			input: `{"session_id":"p1","hook_event_name":"before_agent_start","prompt":"fix it"}`,
 			want:  map[string]any{"session_id": "p1", "hook_event_name": "UserPromptSubmit", "prompt": "fix it"},
+		},
+		{
+			name:  "muse shell tool",
+			agent: AgentMuse,
+			input: `{"session_id":"m1","hook_event_name":"PreToolUse","tool_name":"bash"}`,
+			want: map[string]any{
+				"session_id": "m1", "hook_event_name": "PreToolUse", "tool_name": "Bash",
+			},
 		},
 		{
 			name:  "qwen shell tool",

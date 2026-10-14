@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"strings"
 )
 
 func planNestedJSONConfig(
+	spec profileSpec,
 	path, marker, command, commandWindows string,
 	argv []string,
 	hooks []nativeHook,
@@ -23,6 +25,9 @@ func planNestedJSONConfig(
 	before, err := marshalJSONConfig(root)
 	if err != nil {
 		return nil, false, fmt.Errorf("encode existing agent hook config %s: %w", path, err)
+	}
+	if !uninstall && len(root) == 0 {
+		maps.Copy(root, spec.newConfigFields)
 	}
 	if err := applyNestedJSONHooks(
 		root, path, marker, command, commandWindows, argv, hooks, uninstall,

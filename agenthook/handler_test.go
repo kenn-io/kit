@@ -70,6 +70,46 @@ func TestHandleNormalizesAndDispatchesTypedPostToolUse(t *testing.T) {
 	assert.JSONEq(`{}`, output.String())
 }
 
+func TestHandleDispatchesMusePostToolUse(t *testing.T) {
+	assert := assert.New(t)
+	require := require.New(t)
+	handler := &selectiveHandler{postOutput: PostToolUseOutput{
+		Decision: DecisionBlock, Reason: "output rejected",
+	}}
+	var output bytes.Buffer
+
+	// Captured from Muse Code 1.4.7.
+	err := Handle(
+		t.Context(),
+		AgentMuse,
+		strings.NewReader(`{
+  "cwd":"/work",
+  "hook_event_name":"PostToolUse",
+  "model":"muse-spark-1.2",
+  "model_provider":"meta",
+  "permission_mode":"bypassPermissions",
+  "session_id":"01a13a7d-6d3f-7723-befd-b8d654f1e738",
+  "tool_input":{"command":"echo hookprobe","description":"Echo hookprobe text","workdir":"/work"},
+  "tool_name":"bash",
+  "tool_response":"{\n  \"exit_code\": 0,\n  \"output\": \"hookprobe\\n\"\n}",
+  "tool_use_id":"call_01a13a7d86c576e5803275c90658e469",
+  "transcript_path":null,
+  "turn_id":"9cf6732f-d150-43e5-b962-cb4ca4d72b3b"
+}`),
+		&output,
+		handler,
+	)
+
+	require.NoError(err)
+	require.NotNil(handler.postToolUse)
+	input := handler.postToolUse
+	assert.Equal(ToolBash, input.ToolName)
+	assert.Equal(PermissionModeBypassPermissions, input.PermissionMode)
+	assert.Equal("9cf6732f-d150-43e5-b962-cb4ca4d72b3b", input.TurnID)
+	assert.Contains(string(input.Raw), `"model_provider":"meta"`)
+	assert.JSONEq(`{"decision":"block","reason":"output rejected"}`, output.String())
+}
+
 func TestHandleDispatchesTypedStop(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)

@@ -6,7 +6,8 @@
 // and file format used by each harness. This lets applications describe one set
 // of lifecycle hooks while support for new agents stays centralized in kit.
 // Profiles are provided for Claude Code, Codex, GitHub Copilot CLI, Cursor,
-// Factory Droid, Gemini CLI, Hermes Agent, OpenCode, Pi, and Qwen Code. Pi and
+// Factory Droid, Gemini CLI, Hermes Agent, Muse Code, OpenCode, Pi, and Qwen
+// Code. Pi and
 // OpenCode have no command-hook config, so their profiles write a kit-owned
 // module that runs the registered commands. The Pi module reports only from
 // Pi's interactive terminal, so print, json, and rpc runs, subagents included,
