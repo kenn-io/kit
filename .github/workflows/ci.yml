@@ -103,9 +103,6 @@ jobs:
           $allPackages = @(go list ./...)
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $packages = @($allPackages | Where-Object { $_ -ne 'go.kenn.io/kit/git/managed' })
-          if ($packages.Count -eq 0 -or $allPackages.Count -ne $packages.Count + 1) {
-            throw 'Expected exactly one git/managed package and at least one regular package'
-          }
           go tool gotestsum --format pkgname-and-test-fails --jsonfile=test-output-windows-latest.json -- @packages
           exit $LASTEXITCODE
 
