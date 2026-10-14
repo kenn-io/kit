@@ -98,21 +98,20 @@ jobs:
         if: matrix.os != 'windows-latest'
         run: go tool gotestsum --format pkgname-and-test-fails --jsonfile=test-output-${{ matrix.os }}.json -- ./...
 
-      - name: Run regular Windows tests
-        if: matrix.os == 'windows-latest' && matrix.shard == 'regular'
+      - name: Run Windows tests (${{ matrix.shard }})
+        if: matrix.os == 'windows-latest'
         shell: pwsh
+        env:
+          TEST_SHARD: ${{ matrix.shard }}
         run: |
-          $allPackages = @(go list ./...)
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $packages = @($allPackages | Where-Object { $_ -ne $env:MANAGED_PACKAGE })
-          go tool gotestsum --format pkgname-and-test-fails --jsonfile=test-output-windows-latest.json -- @packages
-          exit $LASTEXITCODE
-
-      - name: Run managed Git Windows tests
-        if: matrix.shard == 'managed'
-        shell: pwsh
-        run: |
-          go tool gotestsum --format pkgname-and-test-fails --jsonfile=test-output-windows-managed.json -- -timeout=20m $env:MANAGED_PACKAGE
+          if ($env:TEST_SHARD -eq 'managed') {
+            $testArgs = @('-timeout=20m', $env:MANAGED_PACKAGE)
+          } else {
+            $allPackages = @(go list ./...)
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $testArgs = @($allPackages | Where-Object { $_ -ne $env:MANAGED_PACKAGE })
+          }
+          go tool gotestsum --format pkgname-and-test-fails --jsonfile="test-output-windows-$env:TEST_SHARD.json" -- @testArgs
           exit $LASTEXITCODE
 
       - name: Run go vet
