@@ -13,8 +13,10 @@ import (
 )
 
 func TestMoveWorktreeReturnsRollbackEvidence(t *testing.T) {
+	t.Parallel()
 	for _, branch := range []string{"", "topic"} {
 		t.Run("branch="+branch, func(t *testing.T) {
+			t.Parallel()
 			root := initLifecycleRepo(t)
 			source := filepath.Join(t.TempDir(), "prepared")
 			destination := filepath.Join(t.TempDir(), "workspace")
@@ -49,6 +51,7 @@ func TestMoveWorktreeReturnsRollbackEvidence(t *testing.T) {
 	}
 }
 
+// Serialize acquisition capture after cancellation of a successful worktree move.
 func TestMoveWorktreeCapturesSuccessfulMoveAfterCancellation(t *testing.T) {
 	root := initLifecycleRepo(t)
 	source := filepath.Join(t.TempDir(), "prepared")
@@ -72,12 +75,14 @@ func TestMoveWorktreeCapturesSuccessfulMoveAfterCancellation(t *testing.T) {
 }
 
 func TestMoveWorktreeRejectsForeignPrimaryAndOccupiedTargets(t *testing.T) {
-	root := initLifecycleRepo(t)
-	source := filepath.Join(t.TempDir(), "prepared")
-	destination := filepath.Join(t.TempDir(), "workspace")
-	lifecycleGit(t, root, "worktree", "add", "--detach", source, "HEAD")
+	t.Parallel()
 	for _, name := range []string{"primary", "foreign", "occupied", "failed move"} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			root := initLifecycleRepo(t)
+			source := filepath.Join(t.TempDir(), "prepared")
+			destination := filepath.Join(t.TempDir(), "workspace")
+			lifecycleGit(t, root, "worktree", "add", "--detach", source, "HEAD")
 			opts := MoveWorktreeOptions{ProjectRoot: root, Source: source, Path: destination, Runner: lifecycleTestRunner(t)}
 			switch name {
 			case "primary":
@@ -97,6 +102,9 @@ func TestMoveWorktreeRejectsForeignPrimaryAndOccupiedTargets(t *testing.T) {
 			}
 			result, err := MoveWorktreeOnDisk(t.Context(), opts)
 			require.Error(t, err)
+			if name == "failed move" {
+				require.ErrorContains(t, err, "move unavailable")
+			}
 			_, err = result.Rollback(t.Context(), RollbackFreshOwned)
 			require.ErrorIs(t, err, ErrWorktreeCleanupIncomplete)
 			require.DirExists(t, source)
@@ -105,30 +113,9 @@ func TestMoveWorktreeRejectsForeignPrimaryAndOccupiedTargets(t *testing.T) {
 	}
 }
 
-func TestMoveWorktreeUnknownOutcomePreservesDestination(t *testing.T) {
-	root := initLifecycleRepo(t)
-	source := filepath.Join(t.TempDir(), "prepared")
-	destination := filepath.Join(t.TempDir(), "workspace")
-	lifecycleGit(t, root, "worktree", "add", "--detach", source, "HEAD")
-	failure := errors.New("unknown process outcome")
-	result, err := MoveWorktreeOnDisk(t.Context(), MoveWorktreeOptions{ProjectRoot: root, Source: source, Path: destination, Runner: lifecycleTestRunner(t), RunGit: func(ctx context.Context, r gitcmd.Runner, dir string, args ...string) ([]byte, error) {
-		out, err := r.Output(ctx, dir, args...)
-		if err == nil && len(args) > 1 && args[0] == "worktree" && args[1] == "move" {
-			return out, failure
-		}
-		return out, err
-	}})
-	require.ErrorIs(t, err, failure)
-	require.Equal(t, destination, result.Path)
-	remaining, err := result.Rollback(t.Context(), RollbackFreshOwned)
-	require.ErrorIs(t, err, ErrWorktreeCleanupIncomplete)
-	require.True(t, remaining.Unverified)
-	require.Equal(t, destination, remaining.Path)
-	require.DirExists(t, destination)
-}
-
+// Serialize new-branch capture and post-failure acquisition verification.
 func TestMovePreparedWorktreeCreatesOwnedBranch(t *testing.T) {
-	for _, outcome := range []string{"success", "move failure", "unknown move", "branch exists"} {
+	for _, outcome := range []string{"success", "move failure", "unknown move", "unknown move without new branch", "branch exists"} {
 		t.Run(outcome, func(t *testing.T) {
 			root := initLifecycleRepo(t)
 			source := filepath.Join(t.TempDir(), "prepared")
@@ -141,15 +128,19 @@ func TestMovePreparedWorktreeCreatesOwnedBranch(t *testing.T) {
 			if outcome == "branch exists" {
 				lifecycleGit(t, root, "branch", "topic")
 			}
+			newBranch, baseRef := "topic", "HEAD"
+			if outcome == "unknown move without new branch" {
+				newBranch, baseRef = "", ""
+			}
 			result, err := MoveWorktreeOnDisk(t.Context(), MoveWorktreeOptions{
-				ProjectRoot: root, Source: source, Path: destination, NewBranch: "topic", BaseRef: "HEAD", Runner: lifecycleTestRunner(t),
+				ProjectRoot: root, Source: source, Path: destination, NewBranch: newBranch, BaseRef: baseRef, Runner: lifecycleTestRunner(t),
 				RunGit: func(ctx context.Context, runner gitcmd.Runner, dir string, args ...string) ([]byte, error) {
 					moving := len(args) > 1 && args[0] == "worktree" && args[1] == "move"
 					if moving && outcome == "move failure" {
 						return nil, failure
 					}
 					out, err := runner.Output(ctx, dir, args...)
-					if moving && err == nil && outcome == "unknown move" {
+					if moving && err == nil && strings.HasPrefix(outcome, "unknown move") {
 						return out, failure
 					}
 					return out, err
@@ -166,20 +157,26 @@ func TestMovePreparedWorktreeCreatesOwnedBranch(t *testing.T) {
 			} else {
 				require.ErrorIs(t, err, failure)
 			}
-			require.True(t, result.BranchCreated)
+			require.Equal(t, newBranch != "", result.BranchCreated)
 			path := destination
 			if outcome == "move failure" {
 				path = source
 			}
+			require.Equal(t, path, result.Path)
 			after, err := os.Stat(path)
 			require.NoError(t, err)
 			require.True(t, os.SameFile(before, after))
-			remaining, err := result.Rollback(t.Context(), RollbackUnchanged)
-			if outcome == "unknown move" {
+			policy := RollbackUnchanged
+			if newBranch == "" {
+				policy = RollbackFreshOwned
+			}
+			remaining, err := result.Rollback(t.Context(), policy)
+			if strings.HasPrefix(outcome, "unknown move") {
 				require.ErrorIs(t, err, ErrWorktreeCleanupIncomplete)
 				require.True(t, remaining.Unverified)
 				require.DirExists(t, path)
-				require.True(t, branchExistsInRepo(t, root, "topic"))
+				require.Equal(t, newBranch != "", branchExistsInRepo(t, root, "topic"))
+				require.Equal(t, destination, remaining.Path)
 			} else {
 				require.NoError(t, err)
 				require.NoDirExists(t, path)
@@ -192,8 +189,10 @@ func TestMovePreparedWorktreeCreatesOwnedBranch(t *testing.T) {
 // The project root must survive the move: Git runs from it to capture rollback
 // evidence and later to roll back the moved checkout.
 func TestMoveWorktreeRejectsProjectRootThatMovesWithSource(t *testing.T) {
+	t.Parallel()
 	for _, spelling := range []string{"same", "symlink"} {
 		t.Run(spelling, func(t *testing.T) {
+			t.Parallel()
 			root := initLifecycleRepo(t)
 			source := filepath.Join(t.TempDir(), "prepared")
 			lifecycleGit(t, root, "worktree", "add", "--detach", source, "HEAD")
@@ -216,6 +215,7 @@ func TestMoveWorktreeRejectsProjectRootThatMovesWithSource(t *testing.T) {
 }
 
 func TestMoveDeferredWorktreeRollsBackUntouchedCheckout(t *testing.T) {
+	t.Parallel()
 	root := initLifecycleRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(root, "tracked"), []byte("tracked\n"), 0o600))
 	lifecycleGit(t, root, "add", "tracked")

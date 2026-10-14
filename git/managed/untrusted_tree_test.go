@@ -15,6 +15,7 @@ import (
 )
 
 func TestSupportsUntrustedTreeCheckoutGitVersion(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		output string
 		goos   string
@@ -42,6 +43,7 @@ func TestSupportsUntrustedTreeCheckoutGitVersion(t *testing.T) {
 }
 
 func TestMaterializeUntrustedTreePinsWorktree(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 	assert := assert.New(t)
 	repo := initLifecycleRepo(t)
@@ -79,8 +81,10 @@ func TestMaterializeUntrustedTreePinsWorktree(t *testing.T) {
 }
 
 func TestDeferredCheckoutRejectsFutureTreeConfig(t *testing.T) {
+	t.Parallel()
 	for _, source := range []string{"global", "system", "include", "conditional-include", "global-link", "include-link", "directory-link", "parent-link", "parent-include", "future-link", "future-include", "external", "external-link"} {
 		t.Run(source, func(t *testing.T) {
+			t.Parallel()
 			root := initLifecycleRepo(t)
 			require.NoError(t, os.WriteFile(filepath.Join(root, ".gitconfig"), []byte("[diff \"deferred\"]\ncommand = echo executed > driver-ran\n"), 0o600))
 			require.NoError(t, os.WriteFile(filepath.Join(root, ".gitattributes"), []byte("payload diff=deferred\n"), 0o600))
@@ -182,8 +186,10 @@ func TestDeferredCheckoutRejectsFutureTreeConfig(t *testing.T) {
 }
 
 func TestIsolatedCheckoutRejectsConfigCaseAliasBeforeMaterializing(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"immediate", "deferred"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			base := t.TempDir()
 			probe := filepath.Join(base, "probe")
 			require.NoError(t, os.Mkdir(probe, 0o755))
@@ -219,6 +225,7 @@ func TestIsolatedCheckoutRejectsConfigCaseAliasBeforeMaterializing(t *testing.T)
 }
 
 func TestDeferredCheckoutChecksDefaultConfigPaths(t *testing.T) {
+	t.Parallel()
 	for _, source := range []string{"home", "xdg", "home-xdg"} {
 		for _, override := range []bool{false, true} {
 			name := source
@@ -226,6 +233,7 @@ func TestDeferredCheckoutChecksDefaultConfigPaths(t *testing.T) {
 				name += "/explicit-global"
 			}
 			t.Run(name, func(t *testing.T) {
+				t.Parallel()
 				root := initLifecycleRepo(t)
 				for _, config := range []string{".gitconfig", "git/config", ".config/git/config"} {
 					path := filepath.Join(root, config)

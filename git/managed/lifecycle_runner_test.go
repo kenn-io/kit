@@ -12,6 +12,7 @@ import (
 )
 
 func TestCreateWorktreeReusesTrustAfterChangingLocale(t *testing.T) {
+	t.Parallel()
 	root := initLifecycleRepo(t)
 	trace := filepath.Join(t.TempDir(), "trace")
 	runner := gitcmd.New()
