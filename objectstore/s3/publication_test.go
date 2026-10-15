@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"io"
+	"net"
 	"testing"
+	"time"
 
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/objectstore"
@@ -194,4 +198,45 @@ func TestLostCompletionBody(t *testing.T) {
 	assert.Equal(t, sum, receipt.SHA256)
 	assert.Equal(t, "readback-sha256", receipt.Verification)
 	assert.Positive(t, f.heads)
+}
+
+func TestCanceledDuringTLSBeforeDispatch(t *testing.T) {
+	listener, err := new(net.ListenConfig).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	stop := context.AfterFunc(ctx, func() { _ = listener.Close() })
+	defer stop()
+	type helloResult struct {
+		header [6]byte
+		err    error
+	}
+	observed := make(chan helloResult, 1)
+	go func() {
+		var result helloResult
+		conn, err := listener.Accept()
+		if err == nil {
+			defer func() { _ = conn.Close() }()
+			err = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			if err == nil {
+				_, err = io.ReadFull(conn, result.header[:])
+			}
+		}
+		result.err = err
+		// The server sends zero bytes: TLS cannot finish, so HTTP cannot start.
+		cancel()
+		observed <- result
+	}()
+	store, err := New(ctx, Config{Bucket: "bucket", Region: "us-east-1", Endpoint: "https://" + listener.Addr().String(), ForcePathStyle: true, Credentials: credentials.NewStaticCredentialsProvider("test", "test-secret", "")})
+	require.NoError(t, err)
+	data := []byte("canceled before HTTP dispatch")
+	receipt, err := store.Publish(ctx, "key", bytes.NewReader(data), int64(len(data)), sha256.Sum256(data))
+	result := <-observed
+	require.NoError(t, result.err)
+	assert.Equal(t, byte(22), result.header[0], "TLS handshake record")
+	assert.Equal(t, byte(1), result.header[5], "ClientHello handshake")
+	require.ErrorIs(t, err, context.Canceled)
+	require.NotErrorIs(t, err, objectstore.ErrOutcomeUnknown)
+	assert.Zero(t, receipt)
 }

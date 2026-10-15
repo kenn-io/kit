@@ -10,6 +10,7 @@ import (
 	"hash/crc32"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"sync/atomic"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -35,14 +36,24 @@ func (c *dispatchClient) Do(r *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	state, _ := r.Context().Value(dispatchKey{}).(*dispatchState)
+	var wroteHeaders atomic.Bool
 	if state != nil {
-		state.sent.Store(true)
+		// Connection acquisition and TLS happen before request headers. Entering
+		// Do alone does not mean publication could have reached the service.
+		trace := &httptrace.ClientTrace{WroteHeaders: func() {
+			wroteHeaders.Store(true)
+			state.sent.Store(true)
+		}}
+		r = r.WithContext(httptrace.WithClientTrace(r.Context(), trace))
 	}
 	response, err := c.client.Do(r)
 	// A 2xx header may precede a truncated completion body. Preserve that
 	// possible commit even when SDK decoding or a later attempt fails.
-	if state != nil && (err != nil || response.StatusCode/100 == 2 || (response.StatusCode >= 500 && response.StatusCode != http.StatusNotImplemented && response.StatusCode != http.StatusHTTPVersionNotSupported)) {
-		state.uncertain.Store(true)
+	if state != nil {
+		possibleCommitResponse := response != nil && (response.StatusCode/100 == 2 || (response.StatusCode >= 500 && response.StatusCode != http.StatusNotImplemented && response.StatusCode != http.StatusHTTPVersionNotSupported))
+		if (wroteHeaders.Load() && err != nil) || possibleCommitResponse {
+			state.uncertain.Store(true)
+		}
 	}
 	return response, err
 }
