@@ -179,9 +179,23 @@ func (f *gcsFixture) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Path == "/bucket-a" || r.URL.Path == "/bucket-a/" {
+		if r.URL.Query().Get("list-type") != "2" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		marker := ""
+		if token := r.URL.Query().Get("continuation-token"); token != "" {
+			encoded, ok := strings.CutPrefix(token, "cursor%+/")
+			decoded, err := base64.RawStdEncoding.DecodeString(encoded)
+			if !ok || err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			marker = string(decoded)
+		}
 		keys := []string{}
 		for k := range f.objects {
-			if strings.HasPrefix(k, r.URL.Query().Get("prefix")) && k > r.URL.Query().Get("marker") {
+			if strings.HasPrefix(k, r.URL.Query().Get("prefix")) && k > marker {
 				keys = append(keys, k)
 			}
 		}
@@ -199,19 +213,22 @@ func (f *gcsFixture) serve(w http.ResponseWriter, r *http.Request) {
 			LastModified string
 		}
 		response := struct {
-			XMLName      xml.Name `xml:"ListBucketResult"`
-			Contents     []item
-			IsTruncated  bool
-			NextMarker   string
-			EncodingType string
-		}{IsTruncated: next != "", NextMarker: next}
-		if r.URL.Query().Get("encoding-type") == "url" {
+			XMLName               xml.Name `xml:"ListBucketResult"`
+			Contents              []item
+			IsTruncated           bool
+			NextContinuationToken string `xml:",omitempty"`
+			EncodingType          string `xml:",omitempty"`
+		}{IsTruncated: next != ""}
+		encodedNames := r.URL.Query().Get("encoding-type") == "url"
+		if encodedNames {
 			response.EncodingType = "url"
-			response.NextMarker = url.PathEscape(next)
+		}
+		if next != "" {
+			response.NextContinuationToken = "cursor%+/" + base64.RawStdEncoding.EncodeToString([]byte(next))
 		}
 		for _, k := range keys {
 			o := f.objects[k]
-			if response.EncodingType == "url" {
+			if encodedNames {
 				k = url.PathEscape(k)
 			}
 			response.Contents = append(response.Contents, item{Key: k, Size: len(o.Data), Generation: o.Generation, LastModified: "2026-10-15T12:00:00Z"})

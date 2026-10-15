@@ -15,7 +15,7 @@ import (
 )
 
 // ListPage preserves every entry under prefix, including foreign names. Its
-// opaque marker is only for continuation, never permission to remove objects.
+// opaque token is only for continuation, never permission to remove objects.
 func (s *Store) ListPage(ctx context.Context, prefix, token string, size int) (objectstore.Page, error) {
 	if err := objectstore.ValidatePrefix(prefix); err != nil {
 		return objectstore.Page{}, err
@@ -31,8 +31,9 @@ func (s *Store) ListPage(ctx context.Context, prefix, token string, size int) (o
 	q.Set("prefix", s.prefix+prefix)
 	q.Set("max-keys", strconv.Itoa(size))
 	q.Set("encoding-type", "url")
+	q.Set("list-type", "2")
 	if token != "" {
-		q.Set("marker", token)
+		q.Set("continuation-token", token)
 	}
 	u.RawQuery = q.Encode()
 	response, _, err := s.request(ctx, http.MethodGet, u, nil, 0, nil)
@@ -49,9 +50,8 @@ func (s *Store) ListPage(ctx context.Context, prefix, token string, size int) (o
 			Generation   string
 			LastModified time.Time
 		}
-		IsTruncated  bool
-		NextMarker   string
-		EncodingType string
+		IsTruncated           bool
+		NextContinuationToken string
 	}
 	decodeErr := xml.NewDecoder(io.LimitReader(response.Body, 4<<20)).Decode(&result)
 	if err := errors.Join(decodeErr, response.Body.Close()); err != nil {
@@ -61,35 +61,21 @@ func (s *Store) ListPage(ctx context.Context, prefix, token string, size int) (o
 		return objectstore.Page{}, errors.New("gcs: inventory exceeds page size")
 	}
 	page := objectstore.Page{}
-	for i := range result.Contents {
-		item := &result.Contents[i]
-		if result.EncodingType == "url" {
-			key, err := url.PathUnescape(item.Key)
-			if err != nil {
-				return objectstore.Page{}, errors.New("gcs: invalid inventory key encoding")
-			}
-			item.Key = key
+	for _, item := range result.Contents {
+		key, err := url.PathUnescape(item.Key)
+		if err != nil {
+			return objectstore.Page{}, errors.New("gcs: invalid inventory key encoding")
 		}
+		item.Key = key
 		if !strings.HasPrefix(item.Key, s.prefix+prefix) || item.Size < 0 {
 			return objectstore.Page{}, errors.New("gcs: invalid inventory entry")
 		}
 		page.Objects = append(page.Objects, objectstore.Metadata{Key: strings.TrimPrefix(item.Key, s.prefix), Size: item.Size, Revision: item.Generation, LastModified: item.LastModified.UTC()})
 	}
 	if result.IsTruncated {
-		page.NextToken = result.NextMarker
-		if result.EncodingType == "url" {
-			marker, err := url.PathUnescape(page.NextToken)
-			if err != nil {
-				return objectstore.Page{}, errors.New("gcs: invalid inventory marker encoding")
-			}
-			page.NextToken = marker
-		}
-		// XML listings may omit NextMarker when no delimiter is used.
-		if page.NextToken == "" && len(result.Contents) > 0 {
-			page.NextToken = result.Contents[len(result.Contents)-1].Key
-		}
+		page.NextToken = result.NextContinuationToken
 		if page.NextToken == "" || page.NextToken == token {
-			return objectstore.Page{}, errors.New("gcs: truncated inventory has no advancing marker")
+			return objectstore.Page{}, errors.New("gcs: truncated inventory has no advancing token")
 		}
 	}
 	return page, nil

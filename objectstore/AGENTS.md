@@ -38,3 +38,5 @@
   never abort a possibly completed publication to resolve uncertainty.
 - Live GCS contract tests require separate authorization and explicit disposable
   bucket/prefix, endpoint, and HMAC settings. Ordinary tests use loopback only.
+- GCS inventory uses XML list V2. Decode requested URL-encoded object names
+  once and preserve opaque continuation tokens unchanged.
