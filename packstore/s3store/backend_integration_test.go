@@ -8,14 +8,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.kenn.io/kit/internal/s3test"
 	"go.kenn.io/kit/pack"
 	"go.kenn.io/kit/packstore"
 )
@@ -23,28 +22,13 @@ import (
 func TestS3BackendConformance(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
-	endpoint := os.Getenv("KIT_S3_TEST_ENDPOINT")
-	if endpoint == "" {
-		t.Skip("KIT_S3_TEST_ENDPOINT is not configured")
-	}
+	fixture := s3test.Load(t)
 	ctx := t.Context()
-	prefix := "kit-conformance/" + pack.NewPackID()
-	config := Config{
-		Endpoint: endpoint, Region: "us-east-1",
-		Bucket: envOr("KIT_S3_TEST_BUCKET", "kit-conformance"),
-		Prefix: prefix, ForcePathStyle: true,
-		AllowInsecureTransport: strings.HasPrefix(endpoint, "http://"),
-		Credentials: credentials.NewStaticCredentialsProvider(
-			envOr("KIT_S3_TEST_ACCESS_KEY", "kit-test"),
-			envOr("KIT_S3_TEST_SECRET_KEY", "kit-test-secret"),
-			"",
-		),
-		InventoryPageSize: 1,
-	}
+	config := Config{Endpoint: fixture.Endpoint, Region: "us-east-1", Bucket: fixture.Bucket, Prefix: fixture.Prefix, ForcePathStyle: true, AllowInsecureTransport: true, Credentials: fixture.Credentials, InventoryPageSize: 1}
+
 	backend, err := New(ctx, config)
 	require.NoError(err)
-	ensureBucket(t, ctx, backend)
-	t.Cleanup(func() { cleanPrefix(t, context.WithoutCancel(ctx), backend) })
+	s3test.Prepare(t, backend.client, fixture)
 	empty, err := backend.NamespaceEmpty(ctx)
 	require.NoError(err)
 	assert.True(empty)
@@ -173,49 +157,6 @@ func TestS3BackendConformance(t *testing.T) {
 	require.NoError(backend.Retire(ctx, packstore.ObjectRef{PackID: packID}))
 	_, _, err = backend.OpenPack(ctx, hash, indexed)
 	assert.ErrorIs(err, packstore.ErrPhysicalMissing)
-}
-
-func envOr(name string, fallback string) string {
-	if value := os.Getenv(name); value != "" {
-		return value
-	}
-	return fallback
-}
-
-func ensureBucket(t *testing.T, ctx context.Context, backend *Backend) {
-	t.Helper()
-	_, err := backend.client.CreateBucket(ctx, &s3.CreateBucketInput{
-		Bucket: aws.String(backend.bucket),
-	})
-	if err != nil {
-		_, headErr := backend.client.HeadBucket(ctx, &s3.HeadBucketInput{
-			Bucket: aws.String(backend.bucket),
-		})
-		require.NoError(t, headErr, "create bucket: %v", err)
-	}
-}
-
-func cleanPrefix(t *testing.T, ctx context.Context, backend *Backend) {
-	t.Helper()
-	var cursor *string
-	for {
-		output, err := backend.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
-			Bucket:            aws.String(backend.bucket),
-			Prefix:            aws.String(backend.keys.join("")),
-			ContinuationToken: cursor,
-		})
-		require.NoError(t, err)
-		for _, object := range output.Contents {
-			_, err := backend.client.DeleteObject(ctx, &s3.DeleteObjectInput{
-				Bucket: aws.String(backend.bucket), Key: object.Key,
-			})
-			require.NoError(t, err)
-		}
-		if output.IsTruncated == nil || !*output.IsTruncated {
-			break
-		}
-		cursor = output.NextContinuationToken
-	}
 }
 
 func collectInventory(

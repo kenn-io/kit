@@ -212,7 +212,7 @@ jobs:
           KIT_S3_TEST_ACCESS_KEY: kit-test
           KIT_S3_TEST_SECRET_KEY: kit-test-secret
           KIT_S3_TEST_BUCKET: kit-conformance
-        run: go test -race ./packstore/s3store
+        run: go test -race -shuffle=on ./objectstore/s3 ./packstore/s3store
 
   search-backends:
     name: Search backend conformance

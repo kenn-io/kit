@@ -18,3 +18,15 @@
 - Listing preserves foreign entries and grants no deletion authority.
   Ordinary tests use temporary files or loopback fixtures, never ambient
   credentials, provider endpoints, or application state.
+- S3 credentials and custom endpoints are explicit. Construction performs no
+  mutating probes. Conditional PUT and multipart completion never fall back to
+  overwrite. Reconcile SDK retries as well as the initial completion attempt.
+- S3 conflict reconciliation uses full-object SHA-256 or revision-guarded full
+  readback. CRC32C and composite digests cannot establish an existing key's
+  identity. `AllowReadback` controls routine upload fallback only.
+- S3 inspection, readback, SDK retries, and multipart abort share the caller's
+  remaining context. Preserve uncertainty across SDK attempts; an exhausted
+  context after final dispatch returns outcome-unknown with its cause.
+- S3 revisions use ETags only as conditional operation tokens, never as content
+  identity. Provider support needs live contract validation; loopback fixtures
+  and RustFS conformance do not establish AWS or other provider support.

@@ -12,6 +12,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"go.kenn.io/kit/internal/s3io"
 	"go.kenn.io/kit/pack"
 	"go.kenn.io/kit/packstore"
 	"go.kenn.io/kit/packstore/internal/packvalidate"
@@ -174,15 +175,12 @@ func (b *Backend) downloadPackRanges(
 	}()
 	for start := int64(0); start < *head.ContentLength; start += rangeChunkBytes {
 		end := min(start+rangeChunkBytes, *head.ContentLength) - 1
-		output, err := b.client.GetObject(ctx, &s3.GetObjectInput{
-			Bucket: aws.String(b.bucket), Key: aws.String(b.keys.pack(packID)),
-			Range: aws.String(fmt.Sprintf("bytes=%d-%d", start, end)),
-		})
+		body, err := s3io.OpenRange(ctx, b.client, b.bucket, b.keys.pack(packID), "", start, end-start+1)
 		if err != nil {
 			return nil, "", classifyError("read pack range", err)
 		}
-		written, copyErr := io.CopyN(staged, output.Body, end-start+1)
-		closeErr := output.Body.Close()
+		written, copyErr := io.CopyN(staged, body, end-start+1)
+		closeErr := body.Close()
 		if copyErr != nil || closeErr != nil || written != end-start+1 {
 			rangeErr := errors.Join(copyErr, closeErr)
 			if ctxErr := ctx.Err(); ctxErr != nil {
