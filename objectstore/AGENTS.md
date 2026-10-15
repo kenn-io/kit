@@ -11,6 +11,10 @@
   Preserve atomicfile's supported-platform semantics and no-copy behavior.
 - Local roots and their ancestors are caller-owned, stable directories.
   Local revisions are unsupported; do not invent file identity guarantees.
+- Local key components beginning with `.objectstore-` are reserved
+  case-insensitively for staging. Reject them in all public point operations,
+  while preserving their inventory visibility; a staging file cannot receive
+  an immutable receipt or be removed through Delete.
 - Listing preserves foreign entries and grants no deletion authority.
   Ordinary tests use temporary files or loopback fixtures, never ambient
   credentials, provider endpoints, or application state.

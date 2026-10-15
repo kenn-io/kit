@@ -4,6 +4,8 @@
 // stable and prevent other writers from changing published bytes. Operations
 // reject links in key paths; these checks do not protect against a writer who
 // can swap directory entries concurrently. Local revisions are unsupported.
+// Key components beginning with ".objectstore-" (case-insensitive) are reserved
+// for staging and rejected by point operations. Inventory preserves them.
 //
 // Publication uses atomicfile's platform durability semantics: file sync and
 // directory sync on Unix, file sync and write-through rename on Windows.
@@ -30,6 +32,8 @@ import (
 	"go.kenn.io/kit/atomicfile"
 	"go.kenn.io/kit/objectstore"
 )
+
+const stagingPrefix = ".objectstore-"
 
 // Store is an immutable local namespace. Use New to construct it.
 // Independent operations may run concurrently; callers must coordinate Delete
@@ -82,7 +86,7 @@ func (s *Store) Publish(ctx context.Context, key string, source io.ReadSeeker, s
 	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return receipt, fmt.Errorf("objectstore local: create parent: %w", err)
 	}
-	staged, err := os.CreateTemp(parent, ".objectstore-*")
+	staged, err := os.CreateTemp(parent, stagingPrefix+"*")
 	if err != nil {
 		return receipt, fmt.Errorf("objectstore local: stage: %w", err)
 	}
@@ -400,6 +404,11 @@ func (s *Store) path(ctx context.Context, key string) (string, error) {
 	}
 	path := s.root
 	parts := strings.Split(key, "/")
+	for _, part := range parts {
+		if strings.HasPrefix(strings.ToLower(part), stagingPrefix) {
+			return "", fmt.Errorf("objectstore local: key %q uses a reserved staging name", key)
+		}
+	}
 	for _, part := range parts[:len(parts)-1] {
 		path = filepath.Join(path, part)
 		info, err := os.Lstat(path)

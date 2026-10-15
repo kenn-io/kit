@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 
@@ -385,4 +386,104 @@ func TestListPageAcrossDirectoryBatches(t *testing.T) {
 	assert.Equal(t, "000", page.Objects[0].Key)
 	assert.Equal(t, "259", page.Objects[259].Key)
 	assert.Empty(t, page.NextToken)
+}
+
+func TestPublishRejectsStagingKeys(t *testing.T) {
+	for _, key := range []string{"final", "nested/final"} {
+		t.Run(key, func(t *testing.T) {
+			root := t.TempDir()
+			store, err := New(root)
+			require.NoError(t, err)
+			otherStore, err := New(root)
+			require.NoError(t, err)
+			data := []byte("original")
+			digest := sha256.Sum256(data)
+			source := &stagingPausedSource{Reader: bytes.NewReader(data), ready: make(chan struct{}), resume: make(chan struct{})}
+			type result struct {
+				receipt objectstore.Receipt
+				err     error
+			}
+			done := make(chan result, 1)
+			resume := sync.OnceFunc(func() { close(source.resume) })
+			var wg sync.WaitGroup
+			wg.Go(func() {
+				receipt, err := store.Publish(t.Context(), key, source, 8, digest)
+				done <- result{receipt: receipt, err: err}
+			})
+			defer func() { resume(); wg.Wait() }()
+			select {
+			case <-source.ready:
+			case result := <-done:
+				require.NoError(t, result.err)
+				require.FailNow(t, "publication finished before source reached its pause")
+			}
+			page, err := store.ListPage(t.Context(), "", "", 10)
+			require.NoError(t, err)
+			require.Len(t, page.Objects, 1)
+			stagingKey := page.Objects[0].Key
+			require.True(t, strings.HasPrefix(filepath.Base(stagingKey), ".objectstore-"))
+			retryReceipt, retryErr := otherStore.Publish(t.Context(), stagingKey, bytes.NewReader(data), 8, digest)
+			resume()
+			original := <-done
+			require.NoError(t, original.err)
+			assert.Equal(t, digest, original.receipt.SHA256)
+			stored, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(key)))
+			require.NoError(t, err)
+			assert.Equal(t, data, stored)
+			require.Error(t, retryErr)
+			assert.Zero(t, retryReceipt)
+			page, err = store.ListPage(t.Context(), "", "", 10)
+			require.NoError(t, err)
+			require.Len(t, page.Objects, 1)
+			assert.Equal(t, key, page.Objects[0].Key)
+		})
+	}
+}
+
+type stagingPausedSource struct {
+	*bytes.Reader
+	ready, resume chan struct{}
+}
+
+func (source *stagingPausedSource) Read(p []byte) (int, error) {
+	if source.Len() == 0 {
+		close(source.ready)
+		<-source.resume
+		return 0, io.EOF
+	}
+	return source.Reader.Read(p)
+}
+
+func TestReservedStagingPaths(t *testing.T) {
+	for _, key := range []string{".objectstore-foreign", "nested/.objectstore-foreign", ".objectstore-dir/key", "nested/.objectstore-dir/key", "nested/.OBJECTSTORE-foreign"} {
+		t.Run(key, func(t *testing.T) {
+			root := t.TempDir()
+			store, err := New(root)
+			require.NoError(t, err)
+			require.NoError(t, objectstore.ValidateKey(key))
+			path := filepath.Join(root, filepath.FromSlash(key))
+			require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+			data := []byte("foreign")
+			require.NoError(t, os.WriteFile(path, data, 0o600))
+			_, err = store.Inspect(t.Context(), key)
+			require.Error(t, err)
+			reader, err := store.OpenRange(t.Context(), key, "", 0, 7)
+			if reader != nil {
+				require.NoError(t, reader.Close())
+			}
+			require.Error(t, err)
+			assert.Nil(t, reader)
+			require.Error(t, store.Delete(t.Context(), key, ""))
+			receipt, err := store.Publish(t.Context(), key, bytes.NewReader(data), 7, sha256.Sum256(data))
+			require.Error(t, err)
+			assert.Zero(t, receipt)
+			stored, err := os.ReadFile(path)
+			require.NoError(t, err)
+			assert.Equal(t, data, stored)
+			page, err := store.ListPage(t.Context(), "", "", 10)
+			require.NoError(t, err)
+			require.Len(t, page.Objects, 1)
+			assert.Equal(t, key, page.Objects[0].Key)
+		})
+	}
 }
