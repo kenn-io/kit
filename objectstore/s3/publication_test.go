@@ -15,6 +15,34 @@ import (
 	"go.kenn.io/kit/objectstore"
 )
 
+func TestPublishRejectsInvalidSourceBeforeRequest(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		src  io.ReadSeeker
+		size int64
+	}{
+		{name: "nil source", size: 0},
+		{name: "negative size", src: bytes.NewReader(nil), size: -1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f, s := newFixture(t)
+			receipt, err := s.Publish(t.Context(), "key", tt.src, tt.size, sha256.Sum256(nil))
+			require.ErrorIs(t, err, objectstore.ErrChecksumMismatch)
+			assert.Zero(t, receipt)
+			assert.Zero(t, f.requests)
+		})
+	}
+}
+
+func TestPublishRejectsPartCapacityBeforeRequest(t *testing.T) {
+	f, s := newFixture(t)
+	receipt, err := s.Publish(t.Context(), "key", bytes.NewReader(nil), 10000*s.part+1, sha256.Sum256(nil))
+	require.Error(t, err)
+	require.NotErrorIs(t, err, objectstore.ErrChecksumMismatch)
+	assert.Zero(t, receipt)
+	assert.Zero(t, f.requests)
+}
+
 func TestMultipartFullChecksum(t *testing.T) {
 	f, s := newFixture(t)
 	data := bytes.Repeat([]byte("m"), (5<<20)+17)

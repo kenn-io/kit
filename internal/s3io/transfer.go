@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net/url"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 // ErrRangeResponse identifies a provider response outside the requested interval.
@@ -21,7 +23,7 @@ func List(ctx context.Context, client *s3.Client, bucket, prefix, token string, 
 	if size < 1 || size > 1000 {
 		return nil, errors.New("s3: page size must be between 1 and 1000")
 	}
-	input := &s3.ListObjectsV2Input{Bucket: aws.String(bucket), Prefix: aws.String(prefix), MaxKeys: aws.Int32(size)}
+	input := &s3.ListObjectsV2Input{Bucket: aws.String(bucket), Prefix: aws.String(prefix), MaxKeys: aws.Int32(size), EncodingType: types.EncodingTypeUrl}
 	if token != "" {
 		input.ContinuationToken = aws.String(token)
 	}
@@ -34,6 +36,14 @@ func List(ctx context.Context, client *s3.Client, bucket, prefix, token string, 
 	}
 	if aws.ToBool(output.IsTruncated) && (aws.ToString(output.NextContinuationToken) == "" || aws.ToString(output.NextContinuationToken) == token) {
 		return nil, errors.New("s3: truncated inventory has no advancing token")
+	}
+	// The SDK retains URL escapes in names. Decode once, leaving tokens opaque.
+	for i := range output.Contents {
+		key, err := url.PathUnescape(aws.ToString(output.Contents[i].Key))
+		if err != nil {
+			return nil, fmt.Errorf("s3: decode inventory key: %w", err)
+		}
+		output.Contents[i].Key = aws.String(key)
 	}
 	return output, nil
 }

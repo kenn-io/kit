@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/stretchr/testify/require"
+	"go.kenn.io/kit/internal/s3io"
 )
 
 // Namespace is unique to a test; the bucket and service are caller-owned.
@@ -61,9 +62,9 @@ func Prepare(t *testing.T, client *s3.Client, n Namespace) {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 30*time.Second)
 		defer cancel()
-		var token *string
+		token := ""
 		for {
-			out, err := client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{Bucket: aws.String(n.Bucket), Prefix: aws.String(n.Prefix + "/"), ContinuationToken: token})
+			out, err := s3io.List(ctx, client, n.Bucket, n.Prefix+"/", token, 1000)
 			require.NoError(t, err)
 			for _, o := range out.Contents {
 				require.True(t, strings.HasPrefix(aws.ToString(o.Key), n.Prefix+"/"))
@@ -74,8 +75,8 @@ func Prepare(t *testing.T, client *s3.Client, n Namespace) {
 				return
 			}
 			require.NotEmpty(t, aws.ToString(out.NextContinuationToken))
-			require.NotEqual(t, aws.ToString(token), aws.ToString(out.NextContinuationToken))
-			token = out.NextContinuationToken
+			require.NotEqual(t, token, aws.ToString(out.NextContinuationToken))
+			token = aws.ToString(out.NextContinuationToken)
 		}
 	})
 }

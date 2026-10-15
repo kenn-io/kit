@@ -129,15 +129,20 @@ func TestS3BackendConformance(t *testing.T) {
 	assert.Equal(content, got)
 	assert.True(packed.Verified())
 
-	_, err = backend.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket: aws.String(backend.bucket),
-		Key:    aws.String(backend.keys.join("operator-note.txt")),
-		Body:   bytes.NewReader([]byte("preserve me")),
-	})
-	require.NoError(err)
+	var foreign []string
+	for _, name := range []string{"operator-note.txt", "foreign/\x01+entry", "foreign/literal%2F+name/nested", "loose%2F" + hash.String()[:2] + "%2F" + hash.String()} {
+		key := backend.keys.join(name)
+		_, err = backend.client.PutObject(ctx, &s3.PutObjectInput{
+			Bucket: aws.String(backend.bucket),
+			Key:    aws.String(key),
+			Body:   bytes.NewReader([]byte("preserve me")),
+		})
+		require.NoError(err)
+		foreign = append(foreign, key)
+	}
 	objects, unknown := collectInventory(t, ctx, backend)
 	assert.Len(objects, 2)
-	assert.Contains(unknown, backend.keys.join("operator-note.txt"))
+	assert.ElementsMatch(foreign, unknown)
 
 	oldBackend, err := New(ctx, Config{
 		Endpoint: config.Endpoint, Region: config.Region, Bucket: config.Bucket,

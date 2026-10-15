@@ -16,6 +16,9 @@
   while preserving their inventory visibility; a staging file cannot receive
   an immutable receipt or be removed through Delete.
 - Listing preserves foreign entries and grants no deletion authority.
+  S3 inventory requests URL-encoded object names and decodes them once in
+  the shared listing boundary before namespace or pack-name classification.
+  Continuation tokens remain opaque and unchanged.
   Ordinary tests use temporary files or loopback fixtures, never ambient
   credentials, provider endpoints, or application state.
 - S3 credentials and custom endpoints are explicit. Construction performs no

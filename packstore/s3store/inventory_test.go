@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,6 +15,61 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/packstore"
 )
+
+func TestInventoryEncodedKeysAcrossPages(t *testing.T) {
+	const hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const packID = "01arz3ndektsv4rrffq69g5fav"
+	keys := []string{
+		"namespace/.kit-store.json",
+		"namespace/loose/aa/" + hash,
+		"namespace/packs/01/" + packID + ".pack",
+		"namespace/foreign/\x01+entry",
+		"namespace/foreign/literal%2F+name/nested",
+		"namespace/loose%2Faa%2F" + hash,
+	}
+	requests := 0
+	backend := newHTTPBackend(packstore.DefaultLimits(), func(r *http.Request) (*http.Response, error) {
+		query := r.URL.Query()
+		assert.Equal(t, "namespace/", query.Get("prefix"))
+		assert.Equal(t, "1", query.Get("max-keys"))
+		if requests > 0 {
+			assert.Equal(t, fmt.Sprintf("page/%%2B+%d", requests), query.Get("continuation-token"))
+		}
+		key := keys[requests]
+		if query.Get("encoding-type") == "url" {
+			key = url.PathEscape(key)
+		}
+		requests++
+		next := "<IsTruncated>false</IsTruncated>"
+		if requests < len(keys) {
+			next = fmt.Sprintf("<IsTruncated>true</IsTruncated><NextContinuationToken>page/%%2B+%d</NextContinuationToken>", requests)
+		}
+		return xmlResponse(r, http.StatusOK, "<ListBucketResult><Contents><Key>"+key+"</Key><Size>6</Size></Contents>"+next+"</ListBucketResult>"), nil
+	})
+	backend.keys = keyspace{prefix: "namespace"}
+	backend.page = 1
+	var objects []packstore.InventoryObject
+	var unknown []string
+	var cursor packstore.InventoryCursor
+	for i := range keys {
+		page, err := backend.Inventory(t.Context(), cursor)
+		require.NoError(t, err)
+		objects = append(objects, page.Objects...)
+		unknown = append(unknown, page.Unknown...)
+		if i+1 < len(keys) {
+			assert.Equal(t, packstore.InventoryCursor(fmt.Sprintf("page/%%2B+%d", i+1)), page.NextCursor)
+		} else {
+			assert.Empty(t, page.NextCursor)
+		}
+		cursor = page.NextCursor
+	}
+	assert.Equal(t, []packstore.InventoryObject{
+		{Ref: packstore.ObjectRef{LooseHash: hash, LooseEncoding: packstore.LooseEncodingRaw}, StoredSize: 6},
+		{Ref: packstore.ObjectRef{PackID: packID}, StoredSize: 6},
+	}, objects)
+	assert.Equal(t, keys[3:], unknown)
+	assert.Equal(t, len(keys), requests)
+}
 
 func TestProbeDisarmsCleanupAfterExplicitDelete(t *testing.T) {
 	assert := assert.New(t)

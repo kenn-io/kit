@@ -47,8 +47,11 @@ func TestS3ObjectConformance(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, int64(size), meta.Size)
 	}
-	_, err = store.client.PutObject(t.Context(), &awss3.PutObjectInput{Bucket: aws.String(store.bucket), Key: aws.String(store.prefix + "foreign-object"), Body: bytes.NewReader([]byte("foreign"))})
-	require.NoError(t, err)
+	foreign := []string{"foreign-object", "foreign/\x01+entry", "foreign/literal%2F+name/nested"}
+	for _, key := range foreign {
+		_, err = store.client.PutObject(t.Context(), &awss3.PutObjectInput{Bucket: aws.String(store.bucket), Key: aws.String(store.prefix + key), Body: bytes.NewReader([]byte("foreign"))})
+		require.NoError(t, err)
+	}
 	keys := []string{}
 	token := ""
 	for {
@@ -62,7 +65,7 @@ func TestS3ObjectConformance(t *testing.T) {
 		}
 		token = page.NextToken
 	}
-	assert.Contains(t, keys, "foreign-object")
+	assert.ElementsMatch(t, append([]string{"empty", "small", "large"}, foreign...), keys)
 	require.NoError(t, store.Delete(t.Context(), "small", ""))
 	require.NoError(t, store.Delete(t.Context(), "small", ""))
 }

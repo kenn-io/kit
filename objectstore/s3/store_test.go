@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -36,6 +37,7 @@ type fixture struct {
 	putError                                                                    int
 	afterPut                                                                    func()
 	puts, heads, aborts, deletes                                                int
+	requests                                                                    int
 }
 
 func newFixture(t *testing.T) (*fixture, *Store) {
@@ -51,6 +53,7 @@ func newFixture(t *testing.T) (*fixture, *Store) {
 func (f *fixture) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.requests++
 	key := strings.TrimPrefix(r.URL.Path, "/bucket/")
 	q := r.URL.Query()
 	fail := func(code int, name string) {
@@ -72,14 +75,18 @@ func (f *fixture) serve(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		sort.Strings(keys)
-		start, _ := strconv.Atoi(q.Get("continuation-token"))
+		start, _ := strconv.Atoi(strings.TrimPrefix(q.Get("continuation-token"), "page/%2B+"))
 		end := min(start+1, len(keys))
 		_, _ = io.WriteString(w, "<ListBucketResult>")
 		for _, k := range keys[start:end] {
-			_, _ = fmt.Fprintf(w, "<Contents><Key>%s</Key><Size>%d</Size><ETag>&quot;revision&quot;</ETag></Contents>", k, len(f.objects[k]))
+			wireKey := k
+			if q.Get("encoding-type") == "url" {
+				wireKey = url.PathEscape(k)
+			}
+			_, _ = fmt.Fprintf(w, "<Contents><Key>%s</Key><Size>%d</Size><ETag>&quot;revision&quot;</ETag></Contents>", wireKey, len(f.objects[k]))
 		}
 		if end < len(keys) {
-			_, _ = fmt.Fprintf(w, "<IsTruncated>true</IsTruncated><NextContinuationToken>%d</NextContinuationToken>", end)
+			_, _ = fmt.Fprintf(w, "<IsTruncated>true</IsTruncated><NextContinuationToken>page/%%2B+%d</NextContinuationToken>", end)
 		}
 		_, _ = io.WriteString(w, "</ListBucketResult>")
 	case r.Method == http.MethodPost && q.Has("uploads"):
@@ -346,6 +353,31 @@ func TestInventoryForeignKeys(t *testing.T) {
 	next, err := s.ListPage(t.Context(), "", page.NextToken, 1)
 	require.NoError(t, err)
 	assert.Contains(t, []string{page.Objects[0].Key, next.Objects[0].Key}, "foreign-object")
+	assert.Zero(t, f.deletes)
+}
+
+func TestInventoryEncodedKeysAcrossPages(t *testing.T) {
+	f, s := newFixture(t)
+	want := []string{"foreign/\x01+entry", "foreign/literal%2F+name/nested", "foreign/slash/name"}
+	for _, key := range want {
+		_, err := s.Publish(t.Context(), key, bytes.NewReader([]byte("stored")), 6, sha256.Sum256([]byte("stored")))
+		require.NoError(t, err)
+	}
+	var got []string
+	token := ""
+	for i := range want {
+		page, err := s.ListPage(t.Context(), "foreign/", token, 1)
+		require.NoError(t, err)
+		require.Len(t, page.Objects, 1)
+		got = append(got, page.Objects[0].Key)
+		if i+1 < len(want) {
+			assert.Equal(t, fmt.Sprintf("page/%%2B+%d", i+1), page.NextToken)
+		} else {
+			assert.Empty(t, page.NextToken)
+		}
+		token = page.NextToken
+	}
+	assert.Equal(t, want, got)
 	assert.Zero(t, f.deletes)
 }
 

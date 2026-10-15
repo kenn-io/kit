@@ -66,8 +66,11 @@ func (s *Store) Publish(ctx context.Context, key string, src io.ReadSeeker, size
 	if err != nil {
 		return objectstore.Receipt{}, err
 	}
-	if src == nil || size < 0 || size/s.part > 10000 || (size/s.part == 10000 && size%s.part != 0) {
-		return objectstore.Receipt{}, errors.New("s3: invalid source or size exceeds 10000 parts")
+	if src == nil || size < 0 {
+		return objectstore.Receipt{}, fmt.Errorf("s3: invalid source or size: %w", objectstore.ErrChecksumMismatch)
+	}
+	if size/s.part > 10000 || (size/s.part == 10000 && size%s.part != 0) {
+		return objectstore.Receipt{}, errors.New("s3: size exceeds 10000 parts")
 	}
 	crc, err := validateSource(ctx, src, size, digest)
 	if err != nil {

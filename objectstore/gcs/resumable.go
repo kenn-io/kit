@@ -28,7 +28,7 @@ func (s *Store) Publish(ctx context.Context, key string, src io.ReadSeeker, size
 		return objectstore.Receipt{}, err
 	}
 	if src == nil || size < 0 {
-		return objectstore.Receipt{}, errors.New("gcs: invalid source or size")
+		return objectstore.Receipt{}, fmt.Errorf("gcs: invalid source or size: %w", objectstore.ErrChecksumMismatch)
 	}
 	crc, err := validateSource(ctx, src, size, digest)
 	if err != nil {

@@ -41,6 +41,7 @@ type gcsFixture struct {
 	next                                       int
 	mode                                       string
 	statuses, reads, starts, aborts, conflicts int
+	requests                                   int
 	final                                      chan struct{}
 	release                                    chan struct{}
 	server                                     *httptest.Server
@@ -60,9 +61,29 @@ func crcValue(data []byte) string {
 	return base64.StdEncoding.EncodeToString(binary.BigEndian.AppendUint32(nil, crc32.Checksum(data, crc32.MakeTable(crc32.Castagnoli))))
 }
 
+func TestPublishRejectsInvalidSourceBeforeRequest(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		src  io.ReadSeeker
+		size int64
+	}{
+		{name: "nil source", size: 0},
+		{name: "negative size", src: bytes.NewReader(nil), size: -1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f, s := newFixture(t, "")
+			receipt, err := s.Publish(t.Context(), "key", tt.src, tt.size, sha256.Sum256(nil))
+			require.ErrorIs(t, err, objectstore.ErrChecksumMismatch)
+			assert.Zero(t, receipt)
+			assert.Zero(t, f.requests)
+		})
+	}
+}
+
 func (f *gcsFixture) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.requests++
 	if !strings.HasPrefix(r.Header.Get("Authorization"), "AWS4-HMAC-SHA256 Credential=test-key-id/") {
 		w.WriteHeader(http.StatusForbidden)
 		return
