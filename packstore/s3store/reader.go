@@ -177,6 +177,9 @@ func (b *Backend) downloadPackRanges(
 		end := min(start+rangeChunkBytes, *head.ContentLength) - 1
 		body, err := s3io.OpenRange(ctx, b.client, b.bucket, b.keys.pack(packID), "", start, end-start+1)
 		if err != nil {
+			if errors.Is(err, s3io.ErrRangeResponse) {
+				return nil, "", errors.Join(packstore.ErrPhysicalCorrupt, err)
+			}
 			return nil, "", classifyError("read pack range", err)
 		}
 		written, copyErr := io.CopyN(staged, body, end-start+1)

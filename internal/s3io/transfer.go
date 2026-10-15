@@ -13,6 +13,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
+// ErrRangeResponse identifies a provider response outside the requested interval.
+var ErrRangeResponse = errors.New("s3: response does not match requested range")
+
 // List retrieves one bounded page and rejects unusable continuation metadata.
 func List(ctx context.Context, client *s3.Client, bucket, prefix, token string, size int32) (*s3.ListObjectsV2Output, error) {
 	if size < 1 || size > 1000 {
@@ -56,7 +59,7 @@ func OpenRange(ctx context.Context, client *s3.Client, bucket, key, revision str
 	var start, end, total int64
 	_, parseErr := fmt.Sscanf(aws.ToString(output.ContentRange), "bytes %d-%d/%d", &start, &end, &total)
 	if parseErr != nil || start != offset || end != offset+length-1 || total <= end || output.ContentLength == nil || *output.ContentLength != length {
-		return nil, errors.Join(errors.New("s3: response does not match requested range"), output.Body.Close())
+		return nil, errors.Join(ErrRangeResponse, output.Body.Close())
 	}
 	if revision != "" && aws.ToString(output.ETag) != revision {
 		return nil, errors.Join(errors.New("s3: range revision differs"), output.Body.Close())
