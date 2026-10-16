@@ -133,7 +133,7 @@ func validateSource(ctx context.Context, src io.ReadSeeker, size int64, digest [
 		return "", fmt.Errorf("s3: validate source: %w", err)
 	}
 	var extra [1]byte
-	more, readErr := (&contextio.Reader{Context: ctx, Reader: src}).Read(extra[:])
+	more, readErr := io.ReadFull(&contextio.Reader{Context: ctx, Reader: src}, extra[:])
 	if readErr != nil && !errors.Is(readErr, io.EOF) {
 		return "", readErr
 	}
@@ -195,7 +195,7 @@ func (s *Store) multipart(ctx context.Context, key string, src io.ReadSeeker, si
 	// Only the final conditional request can make the object visible. Earlier
 	// part errors are ordinary failures even after a part dispatch.
 	var extra [1]byte
-	more, readErr := (&contextio.Reader{Context: ctx, Reader: src}).Read(extra[:])
+	more, readErr := io.ReadFull(&contextio.Reader{Context: ctx, Reader: src}, extra[:])
 	if readErr != nil && !errors.Is(readErr, io.EOF) {
 		return readErr
 	}

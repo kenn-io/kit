@@ -95,6 +95,9 @@ func TestPublishWrongDigest(t *testing.T) {
 
 func TestPublishUncertainDurability(t *testing.T) {
 	root := t.TempDir()
+	// New resolves links and platform-specific path spelling before syncing.
+	root, err := filepath.EvalSymlinks(root)
+	require.NoError(t, err)
 	store, err := New(root)
 	require.NoError(t, err)
 	syncErr := errors.New("directory sync failed")

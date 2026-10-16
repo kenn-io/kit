@@ -80,6 +80,42 @@ func TestPublishRejectsInvalidSourceBeforeRequest(t *testing.T) {
 	}
 }
 
+type emptyReadSource struct {
+	*bytes.Reader
+	pauseAt int64
+	paused  bool
+}
+
+func (s *emptyReadSource) Read(p []byte) (int, error) {
+	if !s.paused && s.Size()-int64(s.Len()) == s.pauseAt {
+		s.paused = true
+		return 0, nil
+	}
+	return s.Reader.Read(p)
+}
+
+func TestPublishSourceLengthAfterEmptyRead(t *testing.T) {
+	for _, prefix := range []string{"", "prefix"} {
+		for _, suffix := range []string{"", "x"} {
+			t.Run(fmt.Sprintf("prefix=%q/suffix=%q", prefix, suffix), func(t *testing.T) {
+				f, s := newFixture(t, "")
+				source := &emptyReadSource{Reader: bytes.NewReader([]byte(prefix + suffix)), pauseAt: int64(len(prefix))}
+				receipt, err := s.Publish(t.Context(), "key", source, int64(len(prefix)), sha256.Sum256([]byte(prefix)))
+				if suffix != "" {
+					require.ErrorIs(t, err, objectstore.ErrChecksumMismatch)
+					assert.Zero(t, receipt)
+					assert.Zero(t, f.requests)
+					assert.Empty(t, f.objects)
+					return
+				}
+				require.NoError(t, err)
+				assert.Equal(t, "key", receipt.Object.Key)
+				assert.Equal(t, prefix, string(f.objects["namespace/key"].Data))
+			})
+		}
+	}
+}
+
 func (f *gcsFixture) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

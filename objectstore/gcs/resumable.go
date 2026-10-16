@@ -81,7 +81,7 @@ func validateSource(ctx context.Context, src io.ReadSeeker, size int64, digest [
 		return "", err
 	}
 	var tail [1]byte
-	more, tailErr := reader.Read(tail[:])
+	more, tailErr := io.ReadFull(reader, tail[:])
 	if tailErr != nil && !errors.Is(tailErr, io.EOF) {
 		return "", tailErr
 	}

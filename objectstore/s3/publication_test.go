@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"fmt"
 	"io"
 	"net"
 	"testing"
@@ -30,6 +31,65 @@ func TestPublishRejectsInvalidSourceBeforeRequest(t *testing.T) {
 			require.ErrorIs(t, err, objectstore.ErrChecksumMismatch)
 			assert.Zero(t, receipt)
 			assert.Zero(t, f.requests)
+		})
+	}
+}
+
+type emptyReadSource struct {
+	*bytes.Reader
+	pauseAt int64
+	paused  bool
+}
+
+func (s *emptyReadSource) Read(p []byte) (int, error) {
+	if !s.paused && s.Size()-int64(s.Len()) == s.pauseAt {
+		s.paused = true
+		return 0, nil
+	}
+	return s.Reader.Read(p)
+}
+
+func TestPublishSourceLengthAfterEmptyRead(t *testing.T) {
+	for _, prefix := range []string{"", "prefix"} {
+		for _, suffix := range []string{"", "x"} {
+			t.Run(fmt.Sprintf("prefix=%q/suffix=%q", prefix, suffix), func(t *testing.T) {
+				f, s := newFixture(t)
+				source := &emptyReadSource{Reader: bytes.NewReader([]byte(prefix + suffix)), pauseAt: int64(len(prefix))}
+				receipt, err := s.Publish(t.Context(), "key", source, int64(len(prefix)), sha256.Sum256([]byte(prefix)))
+				if suffix != "" {
+					require.ErrorIs(t, err, objectstore.ErrChecksumMismatch)
+					assert.Zero(t, receipt)
+					assert.Zero(t, f.requests)
+					assert.Empty(t, f.objects)
+					return
+				}
+				require.NoError(t, err)
+				assert.Equal(t, "key", receipt.Object.Key)
+				assert.Equal(t, prefix, string(f.objects["namespace/key"]))
+			})
+		}
+	}
+}
+
+func TestMultipartSourceLengthAfterEmptyRead(t *testing.T) {
+	for _, suffix := range []string{"", "x"} {
+		t.Run(fmt.Sprintf("suffix=%q", suffix), func(t *testing.T) {
+			f, s := newFixture(t)
+			data := bytes.Repeat([]byte("m"), (5<<20)+17)
+			source := &emptyReadSource{Reader: bytes.NewReader(append(bytes.Clone(data), suffix...)), pauseAt: int64(len(data))}
+			// Exercise the finalization guard independently of pre-upload validation.
+			var state dispatchState
+			err := s.multipart(t.Context(), "namespace/key", source, int64(len(data)), sha256.Sum256(data), crcValue(data), &state)
+			if suffix != "" {
+				require.ErrorIs(t, err, objectstore.ErrChecksumMismatch)
+				assert.False(t, state.sent.Load())
+				assert.Equal(t, 1, f.aborts)
+				assert.Empty(t, f.objects)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, data, f.objects["namespace/key"])
+			assert.Zero(t, f.aborts)
 		})
 	}
 }
