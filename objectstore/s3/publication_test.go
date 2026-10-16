@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/smithy-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/objectstore"
@@ -77,18 +80,18 @@ func TestMultipartSourceLengthAfterEmptyRead(t *testing.T) {
 			f, s := newFixture(t)
 			data := bytes.Repeat([]byte("m"), (5<<20)+17)
 			source := &emptyReadSource{Reader: bytes.NewReader(append(bytes.Clone(data), suffix...)), pauseAt: int64(len(data))}
-			// Exercise the finalization guard independently of pre-upload validation.
-			var state dispatchState
-			err := s.multipart(t.Context(), "namespace/key", source, int64(len(data)), sha256.Sum256(data), crcValue(data), &state)
+			receipt, err := s.Publish(t.Context(), "key", source, int64(len(data)), sha256.Sum256(data))
 			if suffix != "" {
 				require.ErrorIs(t, err, objectstore.ErrChecksumMismatch)
-				assert.False(t, state.sent.Load())
-				assert.Equal(t, 1, f.aborts)
+				assert.Zero(t, receipt)
+				assert.Zero(t, f.requests)
 				assert.Empty(t, f.objects)
 				return
 			}
 			require.NoError(t, err)
 			assert.Equal(t, data, f.objects["namespace/key"])
+			assert.Len(t, f.parts, 2)
+			assert.Equal(t, "provider-crc32c", receipt.Verification)
 			assert.Zero(t, f.aborts)
 		})
 	}
@@ -130,6 +133,61 @@ func TestMultipartFullChecksum(t *testing.T) {
 	receipt, err = s.Publish(t.Context(), "large", bytes.NewReader(data), int64(len(data)), sum)
 	require.NoError(t, err)
 	assert.Equal(t, "readback-sha256", receipt.Verification)
+}
+
+func TestMultipartReceiptRequiresCompletedRevision(t *testing.T) {
+	for _, scenario := range []string{"replaced", "missing completion revision", "missing inspection revision"} {
+		t.Run(scenario, func(t *testing.T) {
+			f, s := newFixture(t)
+			// These equal-length suffixes collide under CRC32C, not SHA-256.
+			data := append(bytes.Repeat([]byte("m"), 5<<20), []byte("\x6c\x7f\xd5\xe4\x6c\xf4\x81\x84")...)
+			replacement := append(bytes.Repeat([]byte("m"), 5<<20), []byte("\x5f\x47\x9a\xfd\xe2\xb0\xd7\x01")...)
+			require.Equal(t, crcValue(data), crcValue(replacement))
+			require.NotEqual(t, sha256.Sum256(data), sha256.Sum256(replacement))
+			switch scenario {
+			case "replaced":
+				f.afterComplete = func() {
+					f.objects["namespace/key"] = replacement
+					f.crc = crcValue(replacement)
+					f.revision = "\"replacement\""
+				}
+			case "missing completion revision":
+				f.omitCompletionRevision = true
+			case "missing inspection revision":
+				f.omitRevision = true
+			}
+			receipt, err := s.Publish(t.Context(), "key", bytes.NewReader(data), int64(len(data)), sha256.Sum256(data))
+			require.ErrorIs(t, err, objectstore.ErrOutcomeUnknown)
+			assert.Zero(t, receipt)
+			assert.Len(t, f.parts, 2)
+			assert.Equal(t, 1, f.heads)
+			assert.Zero(t, f.aborts)
+			if scenario == "replaced" {
+				assert.Equal(t, replacement, f.objects["namespace/key"])
+			} else {
+				assert.Equal(t, data, f.objects["namespace/key"])
+			}
+		})
+	}
+}
+
+func TestPublishConflictHasNoRevisionError(t *testing.T) {
+	for _, size := range []int{7, (5 << 20) + 17} {
+		t.Run(strconv.Itoa(size), func(t *testing.T) {
+			f, s := newFixture(t)
+			existing := bytes.Repeat([]byte("a"), size)
+			data := bytes.Repeat([]byte("b"), size)
+			f.objects["namespace/key"] = existing
+			receipt, err := s.Publish(t.Context(), "key", bytes.NewReader(data), int64(len(data)), sha256.Sum256(data))
+			require.ErrorIs(t, err, objectstore.ErrExists)
+			require.NotErrorIs(t, err, objectstore.ErrRevisionChanged)
+			providerErr, ok := errors.AsType[smithy.APIError](err)
+			require.True(t, ok)
+			assert.Equal(t, "PreconditionFailed", providerErr.ErrorCode())
+			assert.Zero(t, receipt)
+			assert.Equal(t, existing, f.objects["namespace/key"])
+		})
+	}
 }
 
 func TestLostCompletionResponse(t *testing.T) {

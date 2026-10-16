@@ -69,6 +69,14 @@ type statusError struct {
 
 func (e *statusError) Error() string { return fmt.Sprintf("gcs: HTTP %d (%s)", e.status, e.code) }
 func responseError(response *http.Response) error {
+	if err := responseStatusError(response); err != nil {
+		return errors.Join(err, response.Body.Close())
+	}
+	return nil
+}
+
+// responseStatusError consumes an error body; the caller closes it.
+func responseStatusError(response *http.Response) error {
 	if response.StatusCode/100 == 2 {
 		return nil
 	}
@@ -79,7 +87,12 @@ func responseError(response *http.Response) error {
 	var sentinel error
 	switch response.StatusCode {
 	case http.StatusNotFound:
-		sentinel = objectstore.ErrNotFound
+		switch result.Code {
+		case "", "NoSuchKey", "NotFound":
+			sentinel = objectstore.ErrNotFound
+		case "NoSuchBucket":
+			code = "bucket not found"
+		}
 	case http.StatusPreconditionFailed:
 		sentinel = objectstore.ErrRevisionChanged
 	}
@@ -87,5 +100,5 @@ func responseError(response *http.Response) error {
 		code = "invalid checksum"
 		sentinel = objectstore.ErrChecksumMismatch
 	}
-	return errors.Join(sentinel, &statusError{status: response.StatusCode, code: code}, response.Body.Close())
+	return errors.Join(sentinel, &statusError{status: response.StatusCode, code: code})
 }

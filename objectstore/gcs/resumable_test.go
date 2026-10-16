@@ -127,6 +127,15 @@ func (f *gcsFixture) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
+	if f.mode == "missing-bucket" || f.mode == "missing-key" {
+		code := "NoSuchBucket"
+		if f.mode == "missing-key" {
+			code = "NoSuchKey"
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = fmt.Fprintf(w, "<Error><Code>%s</Code></Error>", code)
+		return
+	}
 	key := strings.TrimPrefix(r.URL.Path, "/bucket-a/")
 	if id := r.URL.Query().Get("upload_id"); id != "" {
 		session, ok := f.sessions[id]
@@ -391,6 +400,42 @@ func TestResumableConditionalPublish(t *testing.T) {
 	assert.Equal(t, data, f.objects["namespace/object"].Data)
 	require.NoError(t, s.Delete(t.Context(), "object", receipt.Object.Revision))
 	require.NoError(t, s.Delete(t.Context(), "object", receipt.Object.Revision))
+}
+
+func TestMissingBucketIsNotMissingObject(t *testing.T) {
+	for _, operation := range []string{"delete", "read", "list", "publish"} {
+		t.Run(operation, func(t *testing.T) {
+			_, s := newFixture(t, "missing-bucket")
+			var err error
+			switch operation {
+			case "delete":
+				err = s.Delete(t.Context(), "object", "")
+			case "read":
+				var body io.ReadCloser
+				body, err = s.OpenRange(t.Context(), "object", "", 0, 1)
+				assert.Nil(t, body)
+			case "list":
+				_, err = s.ListPage(t.Context(), "", "", 1)
+			case "publish":
+				var receipt objectstore.Receipt
+				receipt, err = s.Publish(t.Context(), "object", bytes.NewReader([]byte("x")), 1, sha256.Sum256([]byte("x")))
+				assert.Zero(t, receipt)
+			}
+			require.Error(t, err)
+			require.NotErrorIs(t, err, objectstore.ErrNotFound)
+			require.ErrorContains(t, err, "bucket not found")
+		})
+	}
+}
+
+func TestMissingObjectRemainsIdempotent(t *testing.T) {
+	_, s := newFixture(t, "missing-key")
+	require.NoError(t, s.Delete(t.Context(), "object", ""))
+	body, err := s.OpenRange(t.Context(), "object", "", 0, 1)
+	require.ErrorIs(t, err, objectstore.ErrNotFound)
+	assert.Nil(t, body)
+	_, err = s.Inspect(t.Context(), "object")
+	require.ErrorIs(t, err, objectstore.ErrNotFound)
 }
 
 func TestGenerationChanged(t *testing.T) {

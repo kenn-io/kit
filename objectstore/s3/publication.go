@@ -81,22 +81,28 @@ func (s *Store) Publish(ctx context.Context, key string, src io.ReadSeeker, size
 	}
 	multipart := size > s.part
 	var state dispatchState
+	var completionRevision string
 	uploadCtx := context.WithValue(ctx, dispatchKey{}, &state)
 	if multipart {
-		err = s.multipart(ctx, full, src, size, digest, crc, &state)
+		completionRevision, err = s.multipart(ctx, full, src, size, digest, crc, &state)
 	} else {
 		_, err = s.client.PutObject(uploadCtx, &awss3.PutObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(full), Body: &seekSource{ctx: ctx, ReadSeeker: src}, ContentLength: aws.Int64(size), IfNoneMatch: aws.String("*"), ChecksumSHA256: aws.String(base64.StdEncoding.EncodeToString(digest[:]))})
 	}
 	if err != nil {
+		code := statusCode(err)
 		classified := classify("publish", err)
+		if code == http.StatusPreconditionFailed {
+			// Publication has no revision precondition; verification determines
+			// whether the stored bytes conflict with this source.
+			classified = fmt.Errorf("s3: publish: %w", err)
+		}
 		if !state.uncertain.Load() && errors.Is(classified, objectstore.ErrChecksumMismatch) {
 			return objectstore.Receipt{}, classified
 		}
 		// A finalization dispatch may have stored bytes despite transport failure.
 		// 412 also covers an SDK retry of our own successful, unanswered attempt.
-		code := statusCode(err)
 		if code == 412 || state.uncertain.Load() || (state.sent.Load() && (code == 0 || code == http.StatusConflict)) {
-			receipt, inspectErr := s.verify(ctx, key, size, digest, crc, true, multipart)
+			receipt, inspectErr := s.verify(ctx, key, size, digest, crc, true, multipart, "")
 			if inspectErr != nil {
 				return objectstore.Receipt{}, errors.Join(inspectErr, classified)
 			}
@@ -104,7 +110,7 @@ func (s *Store) Publish(ctx context.Context, key string, src io.ReadSeeker, size
 		}
 		return objectstore.Receipt{}, classified
 	}
-	return s.verify(ctx, key, size, digest, crc, false, multipart)
+	return s.verify(ctx, key, size, digest, crc, false, multipart, completionRevision)
 }
 
 type seekSource struct {
@@ -146,14 +152,14 @@ func validateSource(ctx context.Context, src io.ReadSeeker, size int64, digest [
 	return base64.StdEncoding.EncodeToString(crc.Sum(nil)), nil
 }
 
-func (s *Store) multipart(ctx context.Context, key string, src io.ReadSeeker, size int64, digest [32]byte, crc string, state *dispatchState) (resultErr error) {
+func (s *Store) multipart(ctx context.Context, key string, src io.ReadSeeker, size int64, digest [32]byte, crc string, state *dispatchState) (revision string, resultErr error) {
 	created, err := s.client.CreateMultipartUpload(ctx, &awss3.CreateMultipartUploadInput{Bucket: aws.String(s.bucket), Key: aws.String(key), ChecksumAlgorithm: types.ChecksumAlgorithmCrc32c, ChecksumType: types.ChecksumTypeFullObject})
 	if err != nil {
-		return err
+		return "", err
 	}
 	id := aws.ToString(created.UploadId)
 	if id == "" {
-		return errors.New("s3: missing multipart upload ID")
+		return "", errors.New("s3: missing multipart upload ID")
 	}
 	completed := false
 	defer func() {
@@ -171,47 +177,48 @@ func (s *Store) multipart(ctx context.Context, key string, src io.ReadSeeker, si
 		length := min(s.part, size-offset)
 		n, err := io.ReadFull(&contextio.Reader{Context: ctx, Reader: src}, buffer[:length])
 		if err != nil {
-			return err
+			return "", err
 		}
 		_, _ = hasher.Write(buffer[:n])
 		part := int32(len(parts) + 1)
 		checksum := base64.StdEncoding.EncodeToString(binary.BigEndian.AppendUint32(nil, crc32.Checksum(buffer[:n], crc32.MakeTable(crc32.Castagnoli))))
 		out, err := s3io.UploadPart(ctx, s.client, s.bucket, key, id, part, buffer[:n], aws.String(checksum))
 		if err != nil {
-			return err
+			return "", err
 		}
 		if aws.ToString(out.ETag) == "" {
-			return errors.New("s3: multipart part has no ETag")
+			return "", errors.New("s3: multipart part has no ETag")
 		}
 		if out.ChecksumCRC32C != nil && *out.ChecksumCRC32C != checksum {
-			return objectstore.ErrChecksumMismatch
+			return "", objectstore.ErrChecksumMismatch
 		}
 		parts = append(parts, types.CompletedPart{PartNumber: aws.Int32(part), ETag: out.ETag, ChecksumCRC32C: aws.String(checksum)})
 		offset += int64(n)
 	}
 	if string(hasher.Sum(nil)) != string(digest[:]) {
-		return objectstore.ErrChecksumMismatch
+		return "", objectstore.ErrChecksumMismatch
 	}
 	// Only the final conditional request can make the object visible. Earlier
 	// part errors are ordinary failures even after a part dispatch.
 	var extra [1]byte
 	more, readErr := io.ReadFull(&contextio.Reader{Context: ctx, Reader: src}, extra[:])
 	if readErr != nil && !errors.Is(readErr, io.EOF) {
-		return readErr
+		return "", readErr
 	}
 	if more != 0 {
-		return objectstore.ErrChecksumMismatch
+		return "", objectstore.ErrChecksumMismatch
 	}
 	finalCtx := context.WithValue(ctx, dispatchKey{}, state)
-	_, err = s.client.CompleteMultipartUpload(finalCtx, &awss3.CompleteMultipartUploadInput{Bucket: aws.String(s.bucket), Key: aws.String(key), UploadId: aws.String(id), IfNoneMatch: aws.String("*"), MultipartUpload: &types.CompletedMultipartUpload{Parts: parts}, ChecksumType: types.ChecksumTypeFullObject, ChecksumCRC32C: aws.String(crc), MpuObjectSize: aws.Int64(size)})
-	if err == nil {
-		completed = true
+	out, err := s.client.CompleteMultipartUpload(finalCtx, &awss3.CompleteMultipartUploadInput{Bucket: aws.String(s.bucket), Key: aws.String(key), UploadId: aws.String(id), IfNoneMatch: aws.String("*"), MultipartUpload: &types.CompletedMultipartUpload{Parts: parts}, ChecksumType: types.ChecksumTypeFullObject, ChecksumCRC32C: aws.String(crc), MpuObjectSize: aws.Int64(size)})
+	if err != nil {
+		return "", err
 	}
-	return err
+	completed = true
+	return aws.ToString(out.ETag), nil
 }
 
 func unknown(err error) error { return errors.Join(objectstore.ErrOutcomeUnknown, err) }
-func (s *Store) verify(ctx context.Context, key string, size int64, digest [32]byte, crc string, reconcile, multipart bool) (objectstore.Receipt, error) {
+func (s *Store) verify(ctx context.Context, key string, size int64, digest [32]byte, crc string, reconcile, multipart bool, completionRevision string) (objectstore.Receipt, error) {
 	if err := ctx.Err(); err != nil {
 		return objectstore.Receipt{}, unknown(err)
 	}
@@ -241,6 +248,11 @@ func (s *Store) verify(ctx context.Context, key string, size int64, digest [32]b
 		method = "provider-sha256"
 	}
 	if method == "" && !reconcile && multipart {
+		// CRC32C proves transfer integrity only for the object we completed.
+		// It cannot identify different bytes that replaced that object.
+		if completionRevision == "" || m.Revision != completionRevision {
+			return objectstore.Receipt{}, unknown(errors.New("s3: inspection cannot identify the completed multipart object"))
+		}
 		for _, c := range m.Checksums {
 			if c.Algorithm == "crc32c" && c.Scope == "full" {
 				decoded, err := base64.StdEncoding.DecodeString(c.Value)

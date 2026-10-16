@@ -220,11 +220,9 @@ func (s *Store) Delete(ctx context.Context, key, revision string) error {
 	if err != nil {
 		return err
 	}
-	if response.StatusCode == http.StatusNotFound {
-		return response.Body.Close()
+	err = responseStatusError(response)
+	if errors.Is(err, objectstore.ErrNotFound) {
+		err = nil
 	}
-	if err := responseError(response); err != nil {
-		return err
-	}
-	return response.Body.Close()
+	return errors.Join(err, response.Body.Close())
 }

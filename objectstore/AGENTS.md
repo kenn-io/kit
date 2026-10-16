@@ -38,9 +38,11 @@
 - S3 inspection, readback, SDK retries, and multipart abort share the caller's
   remaining context. Preserve uncertainty across SDK attempts; an exhausted
   context after final dispatch returns outcome-unknown with its cause.
-- S3 revisions use ETags only as conditional operation tokens, never as content
-  identity. Provider support needs live contract validation; loopback fixtures
-  and RustFS conformance do not establish AWS or other provider support.
+- S3 revisions use ETags to bind inspection to multipart completion before
+  accepting CRC32C, and as conditional operation tokens, never as content
+  identity. Publication conflicts do not imply a caller revision changed.
+  Provider support needs live contract validation; loopback fixtures and RustFS
+  conformance do not establish AWS or other provider support.
 - GCS uses explicit HMAC credentials with XML resumable uploads and generation
   preconditions. A routine CRC32C receipt proves upload integrity; reconciliation
   always binds a full SHA-256 readback to the observed generation.
@@ -54,3 +56,5 @@
   bucket/prefix, endpoint, and HMAC settings. Ordinary tests use loopback only.
 - GCS inventory uses XML list V2. Decode requested URL-encoded object names
   once and preserve opaque continuation tokens unchanged.
+- Preserve explicit NoSuchBucket failures; they are not missing objects and do
+  not make deletion successful. A generic HEAD 404 lacks this distinction.

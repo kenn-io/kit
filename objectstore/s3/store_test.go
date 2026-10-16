@@ -30,6 +30,9 @@ type fixture struct {
 	objects                                                                     map[string][]byte
 	parts                                                                       map[int][]byte
 	sha, crc, scope                                                             string
+	revision                                                                    string
+	afterComplete                                                               func()
+	omitCompletionRevision                                                      bool
 	lossCompleteHeaders                                                         bool
 	retryDenied                                                                 bool
 	lossPut, lossComplete, denyHead, truncate, failPart                         bool
@@ -43,7 +46,7 @@ type fixture struct {
 
 func newFixture(t *testing.T) (*fixture, *Store) {
 	t.Helper()
-	f := &fixture{objects: map[string][]byte{}, parts: map[int][]byte{}, scope: "FULL_OBJECT"}
+	f := &fixture{objects: map[string][]byte{}, parts: map[int][]byte{}, scope: "FULL_OBJECT", revision: "\"revision\""}
 	server := httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(server.Close)
 	store, err := New(t.Context(), Config{Bucket: "bucket", Prefix: "namespace", Region: "us-east-1", Endpoint: server.URL, ForcePathStyle: true, AllowInsecureTransport: true, Credentials: credentials.NewStaticCredentialsProvider("test", "test-secret", ""), PartBytes: 5 << 20, PageSize: 1, AllowReadback: true})
@@ -165,7 +168,14 @@ func (f *fixture) serve(w http.ResponseWriter, r *http.Request) {
 			lose()
 			return
 		}
-		_, _ = fmt.Fprintf(w, "<CompleteMultipartUploadResult><ETag>&quot;revision&quot;</ETag><ChecksumCRC32C>%s</ChecksumCRC32C><ChecksumType>%s</ChecksumType></CompleteMultipartUploadResult>", f.crc, f.scope)
+		revision := f.revision
+		if f.omitCompletionRevision {
+			revision = ""
+		}
+		_, _ = fmt.Fprintf(w, "<CompleteMultipartUploadResult><ETag>%s</ETag><ChecksumCRC32C>%s</ChecksumCRC32C><ChecksumType>%s</ChecksumType></CompleteMultipartUploadResult>", revision, f.crc, f.scope)
+		if f.afterComplete != nil {
+			f.afterComplete()
+		}
 	case r.Method == http.MethodDelete && q.Get("uploadId") != "":
 		f.aborts++
 		w.WriteHeader(http.StatusNoContent)
@@ -204,7 +214,7 @@ func (f *fixture) serve(w http.ResponseWriter, r *http.Request) {
 			lose()
 			return
 		}
-		w.Header().Set("ETag", "\"revision\"")
+		w.Header().Set("ETag", f.revision)
 		w.Header().Set("X-Amz-Checksum-Sha256", f.sha)
 	case r.Method == http.MethodHead:
 		f.heads++
@@ -222,7 +232,7 @@ func (f *fixture) serve(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Length", strconv.Itoa(len(data)+1))
 		}
 		if !f.omitRevision {
-			w.Header().Set("ETag", "\"revision\"")
+			w.Header().Set("ETag", f.revision)
 		}
 		w.Header().Set("X-Amz-Checksum-Type", f.scope)
 		if f.sha != "" && !f.omitChecksums {
@@ -244,11 +254,11 @@ func (f *fixture) serve(w http.ResponseWriter, r *http.Request) {
 			fail(404, "NoSuchKey")
 			return
 		}
-		if rev := r.Header.Get("If-Match"); rev != "" && rev != "\"revision\"" {
+		if rev := r.Header.Get("If-Match"); rev != "" && rev != f.revision {
 			fail(412, "PreconditionFailed")
 			return
 		}
-		w.Header().Set("ETag", "\"revision\"")
+		w.Header().Set("ETag", f.revision)
 		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 		if rng := r.Header.Get("Range"); rng != "" {
 			var start, end int
@@ -260,7 +270,7 @@ func (f *fixture) serve(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(data)))
 			data = data[start : end+1]
 			w.Header().Set("Content-Length", strconv.Itoa(len(data)))
-			w.Header().Set("ETag", "\"revision\"")
+			w.Header().Set("ETag", f.revision)
 			w.WriteHeader(http.StatusPartialContent)
 		}
 		if f.truncate && len(data) > 0 {
@@ -269,7 +279,7 @@ func (f *fixture) serve(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(data)
 	case r.Method == http.MethodDelete:
 		f.deletes++
-		if rev := r.Header.Get("If-Match"); rev != "" && rev != "\"revision\"" {
+		if rev := r.Header.Get("If-Match"); rev != "" && rev != f.revision {
 			fail(412, "PreconditionFailed")
 			return
 		}
