@@ -1,5 +1,9 @@
 // Package s3 stores verified immutable objects through the S3 API.
 // Provider contracts require validation against each intended endpoint.
+// Multipart cleanup uses the caller's remaining context. Configure the bucket's
+// incomplete-multipart lifecycle rule to reclaim parts after cancellation or a
+// process crash. A generic HEAD 404 cannot distinguish a missing key from a
+// missing bucket; callers must validate their configured namespace separately.
 package s3
 
 import (
@@ -105,14 +109,16 @@ func classify(op string, err error) error {
 		return nil
 	}
 	var sentinel error
+	api, hasAPIError := errors.AsType[smithy.APIError](err)
 	switch statusCode(err) {
 	case 404:
-		sentinel = objectstore.ErrNotFound
+		if !hasAPIError || api.ErrorCode() == "NoSuchKey" || api.ErrorCode() == "NotFound" {
+			sentinel = objectstore.ErrNotFound
+		}
 	case 412:
 		sentinel = objectstore.ErrRevisionChanged
 	}
-	api, ok := errors.AsType[smithy.APIError](err)
-	if ok && api.ErrorCode() == "BadDigest" {
+	if hasAPIError && api.ErrorCode() == "BadDigest" {
 		sentinel = objectstore.ErrChecksumMismatch
 	}
 	return fmt.Errorf("s3: %s: %w", op, errors.Join(sentinel, err))

@@ -12,6 +12,9 @@
 // caller to retain its intent and reconcile; it does not authorize deletion.
 // Source readers remain caller-owned and must stay stable until Publish returns.
 // All recovery and session cleanup share the caller's context.
+// Upload recovery allows three attempts between confirmed progress responses;
+// a new chunk gets a fresh budget. Metadata reads also allow three attempts.
+// HTTP 408, 429, and 5xx responses are retried, with bounded exponential delays.
 //
 // Revision is the object's opaque generation. OpenRange and Delete honor a
 // supplied generation precondition. Inventory includes foreign names and grants

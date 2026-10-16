@@ -163,6 +163,76 @@ func TestRangeErrors(t *testing.T) {
 	require.NoError(t, reader.Close())
 }
 
+func TestPublishDirectoryConflict(t *testing.T) {
+	root := t.TempDir()
+	store, err := New(root)
+	require.NoError(t, err)
+	require.NoError(t, os.Mkdir(filepath.Join(root, "key"), 0o700))
+	receipt, err := store.Publish(t.Context(), "key", bytes.NewReader(nil), 0, sha256.Sum256(nil))
+	require.Error(t, err)
+	require.NotErrorIs(t, err, objectstore.ErrOutcomeUnknown)
+	assert.Zero(t, receipt)
+}
+
+func TestDeleteRetrySyncsMissingEntry(t *testing.T) {
+	root := t.TempDir()
+	store, err := New(root)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "key"), []byte("bytes"), 0o600))
+	syncErr := errors.New("sync failed")
+	syncs := 0
+	store.syncDir = func(dir string) error {
+		syncs++
+		if syncs == 1 {
+			return syncErr
+		}
+		return atomicfile.SyncDir(dir)
+	}
+	require.ErrorIs(t, store.Delete(t.Context(), "key", ""), syncErr)
+	_, err = os.Stat(filepath.Join(root, "key"))
+	require.ErrorIs(t, err, fs.ErrNotExist)
+	require.NoError(t, store.Delete(t.Context(), "key", ""))
+	assert.Equal(t, 2, syncs)
+	require.NoError(t, store.Delete(t.Context(), "absent/nested/key", ""))
+}
+
+func TestKeyUnderRegularFileIsAbsent(t *testing.T) {
+	root := t.TempDir()
+	store, err := New(root)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "parent"), []byte("bytes"), 0o600))
+	_, err = store.Inspect(t.Context(), "parent/key")
+	require.ErrorIs(t, err, objectstore.ErrNotFound)
+	body, err := store.OpenRange(t.Context(), "parent/key", "", 0, 1)
+	require.ErrorIs(t, err, objectstore.ErrNotFound)
+	assert.Nil(t, body)
+	require.NoError(t, store.Delete(t.Context(), "parent/key", ""))
+	data, err := os.ReadFile(filepath.Join(root, "parent"))
+	require.NoError(t, err)
+	assert.Equal(t, "bytes", string(data))
+}
+
+func TestScanContinuesAfterEntryDisappears(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"vanishes", "kept"} {
+		require.NoError(t, os.WriteFile(filepath.Join(root, name), nil, 0o600))
+	}
+	var names []string
+	err := scanFiles(t.Context(), root, func(path string, entry fs.DirEntry) error {
+		if entry.Name() == "vanishes" {
+			require.NoError(t, os.Remove(path))
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		names = append(names, info.Name())
+		return nil
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"kept"}, names)
+}
+
 func TestListPages(t *testing.T) {
 	root := t.TempDir()
 	store, err := New(root)
@@ -337,7 +407,8 @@ func TestRejectPathsAndLinks(t *testing.T) {
 	require.ErrorIs(t, err, fs.ErrNotExist)
 	require.NoError(t, os.Symlink(filepath.Join(outside, "absent"), filepath.Join(root, "dangling")))
 	receipt, err := store.Publish(t.Context(), "dangling", bytes.NewReader(nil), 0, sha256.Sum256(nil))
-	require.ErrorIs(t, err, objectstore.ErrOutcomeUnknown)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, objectstore.ErrOutcomeUnknown)
 	assert.Zero(t, receipt)
 	_, err = store.Inspect(t.Context(), "dangling")
 	require.Error(t, err)

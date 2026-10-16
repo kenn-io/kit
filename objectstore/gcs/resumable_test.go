@@ -45,6 +45,9 @@ type gcsFixture struct {
 	final                                      chan struct{}
 	release                                    chan struct{}
 	server                                     *httptest.Server
+	chunkFailures                              map[int64]int
+	chunkStatus, headFailures, headRequests    int
+	noProgress                                 int
 }
 
 func newFixture(t *testing.T, mode string) (*gcsFixture, *Store) {
@@ -163,6 +166,22 @@ func (f *gcsFixture) serve(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
+		if f.mode == "unexpected-chunk" {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		if f.noProgress > 0 {
+			f.noProgress--
+			w.WriteHeader(http.StatusPermanentRedirect)
+			return
+		}
+		var chunkStart int64
+		_, _ = fmt.Sscanf(cr, "bytes %d-", &chunkStart)
+		if f.chunkFailures[chunkStart] > 0 {
+			f.chunkFailures[chunkStart]--
+			w.WriteHeader(f.chunkStatus)
+			return
+		}
 		data, _ := io.ReadAll(r.Body)
 		if _, exists := f.objects[session.Key]; exists {
 			f.conflicts++
@@ -276,7 +295,7 @@ func (f *gcsFixture) serve(w http.ResponseWriter, r *http.Request) {
 			NextContinuationToken string `xml:",omitempty"`
 			EncodingType          string `xml:",omitempty"`
 		}{IsTruncated: next != ""}
-		encodedNames := r.URL.Query().Get("encoding-type") == "url"
+		encodedNames := r.URL.Query().Get("encoding-type") == "url" && f.mode != "unencoded-listing"
 		if encodedNames {
 			response.EncodingType = "url"
 		}
@@ -294,6 +313,14 @@ func (f *gcsFixture) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	obj, ok := f.objects[key]
+	if r.Method == http.MethodHead {
+		f.headRequests++
+		if f.headFailures > 0 {
+			f.headFailures--
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+	}
 	if r.Method == http.MethodHead && f.mode == "uninspectable" {
 		w.WriteHeader(http.StatusForbidden)
 		return
@@ -373,6 +400,119 @@ func TestGenerationChanged(t *testing.T) {
 	require.ErrorIs(t, changedErr, objectstore.ErrRevisionChanged)
 	require.ErrorIs(t, s.Delete(t.Context(), "object", "1"), objectstore.ErrRevisionChanged)
 	assert.Equal(t, "2", f.objects["namespace/object"].Generation)
+}
+
+func TestResumableRetriesEachChunk(t *testing.T) {
+	for _, status := range []int{http.StatusRequestTimeout, http.StatusTooManyRequests, http.StatusServiceUnavailable} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			f, s := newFixture(t, "")
+			f.chunkStatus = status
+			f.chunkFailures = map[int64]int{0: 1, 8 << 20: 1, 16 << 20: 1}
+			data := bytes.Repeat([]byte("x"), (16<<20)+1)
+			receipt, err := s.Publish(t.Context(), "object", bytes.NewReader(data), int64(len(data)), sha256.Sum256(data))
+			require.NoError(t, err)
+			assert.Equal(t, sha256.Sum256(data), receipt.SHA256)
+			assert.Equal(t, data, f.objects["namespace/object"].Data)
+			assert.Equal(t, 3, f.statuses)
+			assert.Zero(t, f.aborts)
+		})
+	}
+}
+
+func TestResumableRetriesNoProgress(t *testing.T) {
+	for _, replies := range []int{1, 10} {
+		t.Run(strconv.Itoa(replies), func(t *testing.T) {
+			f, s := newFixture(t, "")
+			f.noProgress = replies
+			data := []byte("bytes")
+			receipt, err := s.Publish(t.Context(), "object", bytes.NewReader(data), 5, sha256.Sum256(data))
+			if replies > 1 {
+				require.Error(t, err)
+				assert.Zero(t, receipt)
+				assert.Empty(t, f.objects)
+				assert.Equal(t, 1, f.aborts)
+				assert.Equal(t, 7, f.noProgress)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, data, f.objects["namespace/object"].Data)
+		})
+	}
+}
+
+func TestVerificationRetriesTransientHead(t *testing.T) {
+	f, s := newFixture(t, "")
+	f.headFailures = 1
+	data := []byte("stored")
+	receipt, err := s.Publish(t.Context(), "object", bytes.NewReader(data), 6, sha256.Sum256(data))
+	require.NoError(t, err)
+	assert.Equal(t, "provider-crc32c", receipt.Verification)
+	assert.Equal(t, 2, f.headRequests)
+	assert.Equal(t, 1, f.starts)
+}
+
+type observedCloseBody struct {
+	io.ReadCloser
+	onClose func()
+}
+
+func (b *observedCloseBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.onClose()
+	return err
+}
+
+func TestInspectionCancellationStopsRetries(t *testing.T) {
+	f, s := newFixture(t, "")
+	f.headFailures = 10
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	transport := f.server.Client().Transport
+	s.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		response, err := transport.RoundTrip(r)
+		if err == nil {
+			response.Body = &observedCloseBody{ReadCloser: response.Body, onClose: cancel}
+		}
+		return response, err
+	})
+	_, err := s.Inspect(ctx, "object")
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 1, f.headRequests)
+}
+
+func TestUnexpectedChunkStatusClosesBody(t *testing.T) {
+	f, s := newFixture(t, "unexpected-chunk")
+	closed := false
+	transport := f.server.Client().Transport
+	s.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		response, err := transport.RoundTrip(r)
+		if err == nil && r.Method == http.MethodPut {
+			response.Body = &observedCloseBody{ReadCloser: response.Body, onClose: func() { closed = true }}
+		}
+		return response, err
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	data := bytes.Repeat([]byte("x"), (8<<20)+1)
+	receipt, err := s.Publish(ctx, "object", bytes.NewReader(data), int64(len(data)), sha256.Sum256(data))
+	require.Error(t, err)
+	require.NotErrorIs(t, err, context.DeadlineExceeded)
+	assert.Zero(t, receipt)
+	assert.True(t, closed)
+	assert.Empty(t, f.objects)
+	assert.Equal(t, 1, f.aborts)
+}
+
+func TestCreateRaceHasOnlyConflictIdentity(t *testing.T) {
+	f, s := newFixture(t, "")
+	f.objects["namespace/object"] = fixtureObject{Data: []byte("different"), Generation: "7"}
+	data := []byte("source")
+	receipt, err := s.Publish(t.Context(), "object", bytes.NewReader(data), 6, sha256.Sum256(data))
+	require.ErrorIs(t, err, objectstore.ErrExists)
+	require.NotErrorIs(t, err, objectstore.ErrRevisionChanged)
+	require.NotErrorIs(t, err, objectstore.ErrNotFound)
+	assert.Zero(t, receipt)
+	assert.Equal(t, "different", string(f.objects["namespace/object"].Data))
 }
 
 func TestStoredChecksumMismatch(t *testing.T) {

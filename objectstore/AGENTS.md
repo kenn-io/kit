@@ -9,15 +9,23 @@
   Never overwrite or delete a key to resolve uncertainty.
 - Local retries verify bytes and repeat file and ancestor directory sync.
   Preserve atomicfile's supported-platform semantics and no-copy behavior.
+  Delete retries sync the parent even when the entry is already absent.
 - Local roots and their ancestors are caller-owned, stable directories.
   Local revisions are unsupported; do not invent file identity guarantees.
 - Local key components beginning with `.objectstore-` are reserved
   case-insensitively for staging. Reject them in all public point operations,
   while preserving their inventory visibility; a staging file cannot receive
   an immutable receipt or be removed through Delete.
+  Reject Windows 8.3 aliases with fsname.CheckPath before accessing key paths.
+  Remove crash-left staging files only while all publishers are stopped;
+  timestamps alone cannot establish that another writer has abandoned a file.
+- Shared key validation is host-independent. Local stores apply filesystem
+  restrictions; cloud stores do not inherit Windows device-name restrictions.
 - Listing preserves foreign entries and grants no deletion authority.
   S3 inventory requests URL-encoded object names and decodes them once in
-  the shared listing boundary before namespace or pack-name classification.
+  the shared listing boundary before namespace or pack-name classification,
+  and only when the response declares URL encoding. Decode plus as space and
+  escaped plus as a literal plus.
   Continuation tokens remain opaque and unchanged.
   Ordinary tests use temporary files or loopback fixtures, never ambient
   credentials, provider endpoints, or application state.
@@ -36,6 +44,9 @@
 - GCS uses explicit HMAC credentials with XML resumable uploads and generation
   preconditions. A routine CRC32C receipt proves upload integrity; reconciliation
   always binds a full SHA-256 readback to the observed generation.
+  Keep Accept-Encoding out of signed headers because the front end can rewrite
+  it. Bound retries by the caller's context and three attempts per persisted
+  progress step or metadata request; retry 408, 429, and 5xx responses.
 - GCS session URLs are capabilities and must stay out of public errors. Abort
   only the current operation's incomplete session with the caller's context;
   never abort a possibly completed publication to resolve uncertainty.

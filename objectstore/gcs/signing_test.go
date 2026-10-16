@@ -23,6 +23,8 @@ func TestXMLSigning(t *testing.T) {
 		t.Run(method, func(t *testing.T) {
 			observed := make(chan string, 1)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Model the front end adding its accepted encoding before verification.
+				r.Header.Set("Accept-Encoding", r.Header.Get("Accept-Encoding")+",gzip(gfe)")
 				authorization := r.Header.Get("Authorization")
 				fields := strings.Split(strings.TrimPrefix(authorization, "AWS4-HMAC-SHA256 "), ", ")
 				if len(fields) != 3 {

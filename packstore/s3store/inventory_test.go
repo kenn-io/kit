@@ -20,33 +20,33 @@ func TestInventoryEncodedKeysAcrossPages(t *testing.T) {
 	const hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	const packID = "01arz3ndektsv4rrffq69g5fav"
 	keys := []string{
-		"namespace/.kit-store.json",
-		"namespace/loose/aa/" + hash,
-		"namespace/packs/01/" + packID + ".pack",
-		"namespace/foreign/\x01+entry",
-		"namespace/foreign/literal%2F+name/nested",
-		"namespace/loose%2Faa%2F" + hash,
+		"name space/.kit-store.json",
+		"name space/loose/aa/" + hash,
+		"name space/packs/01/" + packID + ".pack",
+		"name space/foreign/\x01+entry",
+		"name space/foreign/literal%2F+name/nested",
+		"name space/loose%2Faa%2F" + hash,
 	}
 	requests := 0
 	backend := newHTTPBackend(packstore.DefaultLimits(), func(r *http.Request) (*http.Response, error) {
 		query := r.URL.Query()
-		assert.Equal(t, "namespace/", query.Get("prefix"))
+		assert.Equal(t, "name space/", query.Get("prefix"))
 		assert.Equal(t, "1", query.Get("max-keys"))
 		if requests > 0 {
 			assert.Equal(t, fmt.Sprintf("page/%%2B+%d", requests), query.Get("continuation-token"))
 		}
 		key := keys[requests]
 		if query.Get("encoding-type") == "url" {
-			key = url.PathEscape(key)
+			key = url.QueryEscape(key)
 		}
 		requests++
 		next := "<IsTruncated>false</IsTruncated>"
 		if requests < len(keys) {
 			next = fmt.Sprintf("<IsTruncated>true</IsTruncated><NextContinuationToken>page/%%2B+%d</NextContinuationToken>", requests)
 		}
-		return xmlResponse(r, http.StatusOK, "<ListBucketResult><Contents><Key>"+key+"</Key><Size>6</Size></Contents>"+next+"</ListBucketResult>"), nil
+		return xmlResponse(r, http.StatusOK, "<ListBucketResult><EncodingType>url</EncodingType><Contents><Key>"+key+"</Key><Size>6</Size></Contents>"+next+"</ListBucketResult>"), nil
 	})
-	backend.keys = keyspace{prefix: "namespace"}
+	backend.keys = keyspace{prefix: "name space"}
 	backend.page = 1
 	var objects []packstore.InventoryObject
 	var unknown []string

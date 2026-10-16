@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/smithy-go/encoding/httpbinding"
+	"github.com/cenkalti/backoff/v7"
 	"go.kenn.io/kit/objectstore"
 )
 
@@ -180,18 +181,28 @@ func (s *Store) inspect(ctx context.Context, key, generation string) (objectstor
 	if generation != "" {
 		headers.Set("x-goog-if-generation-match", generation)
 	}
-	response, _, err := s.request(ctx, http.MethodHead, s.objectURL(full), nil, 0, headers)
-	if err != nil {
-		return objectstore.Metadata{}, err
-	}
-	if err := responseError(response); err != nil {
-		return objectstore.Metadata{}, err
-	}
-	m, err := metadata(key, response)
-	if err == nil && generation != "" && m.Revision != generation {
-		err = objectstore.ErrRevisionChanged
-	}
-	return m, errors.Join(err, response.Body.Close())
+	var m objectstore.Metadata
+	err = retryOperation(ctx, func() (bool, error) {
+		response, _, err := s.request(ctx, http.MethodHead, s.objectURL(full), nil, 0, headers)
+		if err != nil {
+			return false, err
+		}
+		if err := responseError(response); err != nil {
+			if retryableStatus(response.StatusCode) {
+				return false, err
+			}
+			return false, backoff.Permanent(err)
+		}
+		m, err = metadata(key, response)
+		if err == nil && generation != "" && m.Revision != generation {
+			err = objectstore.ErrRevisionChanged
+		}
+		if err := errors.Join(err, response.Body.Close()); err != nil {
+			return false, backoff.Permanent(err)
+		}
+		return true, nil
+	})
+	return m, err
 }
 
 // Delete removes the current object only if revision matches when supplied.

@@ -4,8 +4,12 @@
 // stable and prevent other writers from changing published bytes. Operations
 // reject links in key paths; these checks do not protect against a writer who
 // can swap directory entries concurrently. Local revisions are unsupported.
+// Keys retain the filesystem's case sensitivity; callers must use one spelling
+// per object. On Windows, nonportable names and 8.3 aliases are rejected.
 // Key components beginning with ".objectstore-" (case-insensitive) are reserved
 // for staging and rejected by point operations. Inventory preserves them.
+// After a crash, stop all publishers sharing the root before removing leftover
+// .objectstore- files directly from disk. Age alone does not prove abandonment.
 //
 // Publication uses atomicfile's platform durability semantics: file sync and
 // directory sync on Unix, file sync and write-through rename on Windows.
@@ -30,6 +34,7 @@ import (
 	"strings"
 
 	"go.kenn.io/kit/atomicfile"
+	"go.kenn.io/kit/fsname"
 	"go.kenn.io/kit/objectstore"
 )
 
@@ -160,6 +165,9 @@ func (s *Store) verify(ctx context.Context, key, path string, size int64, digest
 	}
 	file, info, err := openRegular(path, flags)
 	if err != nil {
+		if existing && info != nil && !info.Mode().IsRegular() {
+			return objectstore.Receipt{}, err
+		}
 		return fail(err)
 	}
 	hash := sha256.New()
@@ -330,6 +338,9 @@ func (s *Store) ListPage(ctx context.Context, prefix, token string, limit int) (
 func (s *Store) Delete(ctx context.Context, key, revision string) error {
 	path, err := s.path(ctx, key)
 	if err != nil {
+		if errors.Is(err, objectstore.ErrNotFound) && revision == "" {
+			return nil
+		}
 		return err
 	}
 	if revision != "" {
@@ -337,7 +348,8 @@ func (s *Store) Delete(ctx context.Context, key, revision string) error {
 	}
 	info, err := os.Lstat(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil
+		// A previous removal may have succeeded while its directory sync failed.
+		return s.syncDeletion(ctx, path)
 	}
 	if err != nil {
 		return objectError("delete", key, err)
@@ -354,7 +366,19 @@ func (s *Store) Delete(ctx context.Context, key, revision string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return s.syncDir(filepath.Dir(path))
+	return s.syncDeletion(ctx, path)
+}
+
+func (s *Store) syncDeletion(ctx context.Context, path string) error {
+	for parent := filepath.Dir(path); ; parent = filepath.Dir(parent) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := s.syncDir(parent)
+		if !errors.Is(err, fs.ErrNotExist) || parent == s.root {
+			return err
+		}
+	}
 }
 
 // Read directory entries in batches rather than materializing the inventory.
@@ -379,10 +403,10 @@ func scanFiles(ctx context.Context, directory string, visit func(string, fs.DirE
 			}
 			path := filepath.Join(directory, entry.Name())
 			if entry.IsDir() {
-				if err := scanFiles(ctx, path, visit); err != nil {
+				if err := scanFiles(ctx, path, visit); err != nil && !errors.Is(err, fs.ErrNotExist) {
 					return err
 				}
-			} else if err := visit(path, entry); err != nil {
+			} else if err := visit(path, entry); err != nil && !errors.Is(err, fs.ErrNotExist) {
 				return err
 			}
 		}
@@ -402,6 +426,11 @@ func (s *Store) path(ctx context.Context, key string) (string, error) {
 	if err := objectstore.ValidateKey(key); err != nil {
 		return "", err
 	}
+	if runtime.GOOS == "windows" {
+		if err := fsname.CheckPath(key); err != nil {
+			return "", err
+		}
+	}
 	path := s.root
 	parts := strings.Split(key, "/")
 	for _, part := range parts {
@@ -419,6 +448,9 @@ func (s *Store) path(ctx context.Context, key string) (string, error) {
 			return "", fmt.Errorf("objectstore local: inspect parent: %w", err)
 		}
 		if !info.IsDir() {
+			if info.Mode().IsRegular() {
+				return "", fmt.Errorf("%w: parent %q is a file", objectstore.ErrNotFound, part)
+			}
 			return "", fmt.Errorf("objectstore local: parent %q is not a directory", part)
 		}
 	}
@@ -431,7 +463,7 @@ func openRegular(path string, flags int) (*os.File, fs.FileInfo, error) {
 		return nil, nil, err
 	}
 	if !info.Mode().IsRegular() {
-		return nil, nil, errors.New("objectstore local: not a regular file")
+		return nil, info, errors.New("objectstore local: not a regular file")
 	}
 	file, err := os.OpenFile(path, flags, 0)
 	if err != nil {

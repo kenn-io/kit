@@ -38,6 +38,7 @@ type fixture struct {
 	afterPut                                                                    func()
 	puts, heads, aborts, deletes                                                int
 	requests                                                                    int
+	missingBucket                                                               bool
 }
 
 func newFixture(t *testing.T) (*fixture, *Store) {
@@ -60,6 +61,10 @@ func (f *fixture) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(code)
 		_, _ = fmt.Fprintf(w, "<Error><Code>%s</Code></Error>", name)
 	}
+	if f.missingBucket {
+		fail(http.StatusNotFound, "NoSuchBucket")
+		return
+	}
 	lose := func() {
 		conn, _, err := w.(http.Hijacker).Hijack()
 		if err == nil {
@@ -77,11 +82,11 @@ func (f *fixture) serve(w http.ResponseWriter, r *http.Request) {
 		sort.Strings(keys)
 		start, _ := strconv.Atoi(strings.TrimPrefix(q.Get("continuation-token"), "page/%2B+"))
 		end := min(start+1, len(keys))
-		_, _ = io.WriteString(w, "<ListBucketResult>")
+		_, _ = io.WriteString(w, "<ListBucketResult><EncodingType>url</EncodingType>")
 		for _, k := range keys[start:end] {
 			wireKey := k
 			if q.Get("encoding-type") == "url" {
-				wireKey = url.PathEscape(k)
+				wireKey = url.QueryEscape(k)
 			}
 			_, _ = fmt.Fprintf(w, "<Contents><Key>%s</Key><Size>%d</Size><ETag>&quot;revision&quot;</ETag></Contents>", wireKey, len(f.objects[k]))
 		}

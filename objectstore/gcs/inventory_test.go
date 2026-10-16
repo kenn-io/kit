@@ -47,3 +47,12 @@ func TestListPagePreservesEncodedNames(t *testing.T) {
 	assert.Empty(t, second.NextToken)
 	assert.Len(t, f.objects, 2)
 }
+
+func TestListPageLeavesUnencodedNamesIntact(t *testing.T) {
+	f, s := newFixture(t, "unencoded-listing")
+	f.objects["namespace/literal+%2F%zz"] = fixtureObject{Data: []byte("bytes"), Generation: "1"}
+	page, err := s.ListPage(t.Context(), "", "", 1)
+	require.NoError(t, err)
+	require.Len(t, page.Objects, 1)
+	assert.Equal(t, "literal+%2F%zz", page.Objects[0].Key)
+}

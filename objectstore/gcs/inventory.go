@@ -52,6 +52,7 @@ func (s *Store) ListPage(ctx context.Context, prefix, token string, size int) (o
 		}
 		IsTruncated           bool
 		NextContinuationToken string
+		EncodingType          string
 	}
 	decodeErr := xml.NewDecoder(io.LimitReader(response.Body, 4<<20)).Decode(&result)
 	if err := errors.Join(decodeErr, response.Body.Close()); err != nil {
@@ -62,11 +63,13 @@ func (s *Store) ListPage(ctx context.Context, prefix, token string, size int) (o
 	}
 	page := objectstore.Page{}
 	for _, item := range result.Contents {
-		key, err := url.PathUnescape(item.Key)
-		if err != nil {
-			return objectstore.Page{}, errors.New("gcs: invalid inventory key encoding")
+		if result.EncodingType == "url" {
+			key, err := url.PathUnescape(item.Key)
+			if err != nil {
+				return objectstore.Page{}, errors.New("gcs: invalid inventory key encoding")
+			}
+			item.Key = key
 		}
-		item.Key = key
 		if !strings.HasPrefix(item.Key, s.prefix+prefix) || item.Size < 0 {
 			return objectstore.Page{}, errors.New("gcs: invalid inventory entry")
 		}

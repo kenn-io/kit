@@ -1,6 +1,7 @@
 package gcs
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -104,7 +105,7 @@ func (s *Store) upload(ctx context.Context, session *url.URL, src io.ReadSeeker,
 		// Only this operation's session is eligible for abort. No background budget.
 		response, _, err := s.request(ctx, http.MethodDelete, session, nil, 0, nil)
 		if err == nil {
-			if response.StatusCode == http.StatusNoContent {
+			if response.StatusCode == http.StatusNoContent || response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusGone {
 				err = response.Body.Close()
 			} else {
 				err = responseError(response)
@@ -112,92 +113,124 @@ func (s *Store) upload(ctx context.Context, session *url.URL, src io.ReadSeeker,
 		}
 		resultErr = errors.Join(resultErr, err)
 	}()
+	for !complete {
+		err := retryOperation(ctx, func() (bool, error) {
+			for {
+				if err := ctx.Err(); err != nil {
+					return false, backoff.Permanent(err)
+				}
+				var body io.Reader
+				length := min(int64(8<<20), size-offset)
+				final := offset+length == size
+				headers := http.Header{}
+				if recovery {
+					headers.Set("Content-Range", fmt.Sprintf("bytes */%d", size))
+					length = 0
+				} else {
+					if _, err := src.Seek(offset, io.SeekStart); err != nil {
+						return false, backoff.Permanent(err)
+					}
+					// An early response can precede the transport finishing its reads.
+					// Give each request its own bounded bytes before seeking again.
+					chunk := make([]byte, int(length))
+					if _, err := io.ReadFull(&contextio.Reader{Context: ctx, Reader: src}, chunk); err != nil {
+						return false, backoff.Permanent(err)
+					}
+					body = bytes.NewReader(chunk)
+					if size > 0 {
+						headers.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", offset, offset+length-1, size))
+					}
+				}
+				response, sent, requestErr := s.request(ctx, http.MethodPut, session, body, length, headers)
+				if requestErr != nil {
+					if !recovery && final && sent {
+						uncertain = true
+					}
+					recovery = true
+					return false, requestErr
+				}
+				status := response.StatusCode
+				if status == http.StatusOK || status == http.StatusCreated {
+					complete = true
+					generation = response.Header.Get("x-goog-generation")
+					recovered := recovery || uncertain || generation == ""
+					if !recovery && !final {
+						uncertain = true
+						return false, backoff.Permanent(errors.Join(errors.New("gcs: premature resumable completion"), response.Body.Close()))
+					}
+					if err := response.Body.Close(); err != nil {
+						uncertain = true
+						return false, backoff.Permanent(err)
+					}
+					reconcile = recovered
+					return true, nil
+				}
+				if status == http.StatusPermanentRedirect {
+					next, progressErr := resumeOffset(response.Header.Get("Range"), size)
+					closeErr := response.Body.Close()
+					if progressErr != nil || closeErr != nil {
+						return false, backoff.Permanent(errors.Join(progressErr, closeErr))
+					}
+					if (next < offset && response.Header.Get("Range") != "") || (!recovery && next > offset+length) {
+						return false, backoff.Permanent(errors.New("gcs: invalid resumable progress"))
+					}
+					if !recovery && next <= offset {
+						offset = next
+						return false, errors.New("gcs: resumable upload made no progress")
+					}
+					if next == size && size > 0 {
+						return false, backoff.Permanent(errors.New("gcs: resumable upload lacks completion status"))
+					}
+					advanced := next > offset
+					offset = next
+					recovery = false
+					if advanced {
+						// Only persisted progress earns a fresh retry budget.
+						return true, nil
+					}
+					continue
+				}
+				if status == http.StatusPreconditionFailed {
+					reconcile = true
+					// Reconciliation determines the key's identity; this is not a
+					// revision-guarded read or delete failure.
+					return false, backoff.Permanent(errors.Join(&statusError{status: status, code: "publication precondition failed"}, response.Body.Close()))
+				}
+				if status/100 == 2 {
+					uncertain = uncertain || (!recovery && final)
+					return false, backoff.Permanent(errors.Join(errors.New("gcs: unexpected resumable status"), response.Body.Close()))
+				}
+				responseErr := responseError(response)
+				if retryableStatus(status) {
+					if !recovery && final {
+						uncertain = true
+					}
+					recovery = true
+					return false, responseErr
+				}
+				return false, backoff.Permanent(responseErr)
+			}
+		})
+		if err != nil {
+			return generation, reconcile || uncertain, err
+		}
+	}
+	return generation, reconcile || uncertain, nil
+}
+
+func retryableStatus(status int) bool {
+	return status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status >= 500
+}
+
+func retryOperation(ctx context.Context, operation func() (bool, error)) error {
 	retryBackoff := backoff.NewExponentialBackOff()
 	retryBackoff.InitialInterval = 10 * time.Millisecond
 	retryBackoff.MaxInterval = 100 * time.Millisecond
-	_, err := backoff.Retry(ctx, func() (bool, error) {
-		for {
-			if err := ctx.Err(); err != nil {
-				return false, backoff.Permanent(err)
-			}
-			var body io.Reader
-			length := min(int64(8<<20), size-offset)
-			final := offset+length == size
-			headers := http.Header{}
-			if recovery {
-				headers.Set("Content-Range", fmt.Sprintf("bytes */%d", size))
-				length = 0
-			} else {
-				if _, err := src.Seek(offset, io.SeekStart); err != nil {
-					return false, backoff.Permanent(err)
-				}
-				body = io.LimitReader(&contextio.Reader{Context: ctx, Reader: src}, length)
-				if size > 0 {
-					headers.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", offset, offset+length-1, size))
-				}
-			}
-			response, sent, requestErr := s.request(ctx, http.MethodPut, session, body, length, headers)
-			if requestErr != nil {
-				if !recovery && final && sent {
-					uncertain = true
-				}
-				recovery = true
-				return false, requestErr
-			}
-			status := response.StatusCode
-			if status == http.StatusOK || status == http.StatusCreated {
-				complete = true
-				generation = response.Header.Get("x-goog-generation")
-				recovered := recovery || uncertain || generation == ""
-				if !recovery && !final {
-					uncertain = true
-					return false, backoff.Permanent(errors.Join(errors.New("gcs: premature resumable completion"), response.Body.Close()))
-				}
-				if err := response.Body.Close(); err != nil {
-					uncertain = true
-					return false, backoff.Permanent(err)
-				}
-				reconcile = recovered
-				return true, nil
-			}
-			if status == http.StatusPermanentRedirect {
-				next, progressErr := resumeOffset(response.Header.Get("Range"), size)
-				closeErr := response.Body.Close()
-				if progressErr != nil || closeErr != nil {
-					return false, backoff.Permanent(errors.Join(progressErr, closeErr))
-				}
-				if next < offset || (!recovery && next > offset+length) {
-					return false, backoff.Permanent(errors.New("gcs: invalid resumable progress"))
-				}
-				if !recovery && next == offset {
-					return false, backoff.Permanent(errors.New("gcs: resumable upload made no progress"))
-				}
-				if next == size && size > 0 {
-					return false, backoff.Permanent(errors.New("gcs: resumable upload lacks completion status"))
-				}
-				offset = next
-				recovery = false
-				continue
-			}
-			responseErr := responseError(response)
-			if status == http.StatusPreconditionFailed {
-				reconcile = true
-				return false, backoff.Permanent(responseErr)
-			}
-			if status >= 500 {
-				if !recovery && final {
-					uncertain = true
-				}
-				recovery = true
-				return false, responseErr
-			}
-			return false, backoff.Permanent(responseErr)
-		}
-	}, backoff.WithBackOff(retryBackoff), backoff.WithMaxTries(3), backoff.WithMaxElapsedTime(0))
+	_, err := backoff.Retry(ctx, operation, backoff.WithBackOff(retryBackoff), backoff.WithMaxTries(3), backoff.WithMaxElapsedTime(0))
 	if err != nil {
-		err = backoff.AsRetryError(err).LastErr
+		return errors.Join(backoff.AsRetryError(err).LastErr, ctx.Err())
 	}
-	return generation, reconcile || uncertain, err
+	return nil
 }
 
 func resumeOffset(value string, size int64) (int64, error) {

@@ -38,7 +38,6 @@ func (s *Store) request(ctx context.Context, method string, u *url.URL, body io.
 	if headers != nil {
 		request.Header = headers.Clone()
 	}
-	request.Header.Set("Accept-Encoding", "identity")
 	// GCS accepts UNSIGNED-PAYLOAD for XML signed headers. Byte integrity is
 	// independently checked against the stored generation after completion.
 	payload := "UNSIGNED-PAYLOAD"
@@ -50,6 +49,8 @@ func (s *Store) request(ctx context.Context, method string, u *url.URL, body io.
 	if err := s.signer.SignHTTP(ctx, s.credentials, request, payload, "s3", "auto", time.Now().UTC(), func(o *v4.SignerOptions) { o.DisableURIPathEscaping = true }); err != nil {
 		return nil, false, errors.New("gcs: cannot sign request")
 	}
+	// Google's front end may rewrite this header before signature verification.
+	request.Header.Set("Accept-Encoding", "identity")
 	response, err := s.client.Do(request)
 	if err != nil {
 		// url.Error includes the session URL; unwrap only that envelope.

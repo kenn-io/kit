@@ -75,7 +75,7 @@ func TestGCSLiveContract(t *testing.T) {
 			require.ErrorIs(t, s.Delete(t.Context(), item.key, "0"), objectstore.ErrRevisionChanged)
 		})
 	}
-	keys := []string{"inventory/a", "inventory/b"}
+	keys := []string{"inventory/a +%/first", "inventory/b%2F+ last"}
 	for _, key := range keys {
 		data := []byte(key)
 		receipt, err := s.Publish(t.Context(), key, bytes.NewReader(data), int64(len(data)), sha256.Sum256(data))
@@ -93,8 +93,8 @@ func TestGCSLiveContract(t *testing.T) {
 	second, err := s.ListPage(t.Context(), "inventory/", first.NextToken, 1)
 	require.NoError(t, err)
 	require.Len(t, second.Objects, 1)
-	assert.Equal(t, "inventory/a", first.Objects[0].Key)
-	assert.Equal(t, "inventory/b", second.Objects[0].Key)
+	assert.Equal(t, keys[0], first.Objects[0].Key)
+	assert.Equal(t, keys[1], second.Objects[0].Key)
 	assert.Empty(t, second.NextToken)
 	t.Run("lost-completion", func(t *testing.T) {
 		transport := http.DefaultTransport.(*http.Transport).Clone()

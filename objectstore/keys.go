@@ -3,16 +3,15 @@ package objectstore
 import (
 	"fmt"
 	"io/fs"
-	"path/filepath"
 	"strings"
 )
 
 // ValidateKey accepts slash-separated, relative object names without empty,
-// dot, or parent segments. Backslashes, colons, NULs, and platform-reserved
-// paths are rejected so a key cannot select an absolute path or alternate
-// stream when mapped to disk. Validation does not resolve filesystem links.
+// dot, or parent segments. Backslashes, colons, and NULs are rejected. These
+// rules do not depend on the host OS; local stores additionally enforce their
+// filesystem's name restrictions. Validation does not resolve filesystem links.
 func ValidateKey(key string) error {
-	if !fs.ValidPath(key) || key == "." || strings.ContainsAny(key, "\\:\x00") || !filepath.IsLocal(filepath.FromSlash(key)) {
+	if !fs.ValidPath(key) || key == "." || strings.ContainsAny(key, "\\:\x00") {
 		return fmt.Errorf("objectstore: invalid key %q", key)
 	}
 	return nil

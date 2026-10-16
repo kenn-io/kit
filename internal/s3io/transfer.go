@@ -38,8 +38,11 @@ func List(ctx context.Context, client *s3.Client, bucket, prefix, token string, 
 		return nil, errors.New("s3: truncated inventory has no advancing token")
 	}
 	// The SDK retains URL escapes in names. Decode once, leaving tokens opaque.
+	if output.EncodingType != types.EncodingTypeUrl {
+		return output, nil
+	}
 	for i := range output.Contents {
-		key, err := url.PathUnescape(aws.ToString(output.Contents[i].Key))
+		key, err := url.QueryUnescape(aws.ToString(output.Contents[i].Key))
 		if err != nil {
 			return nil, fmt.Errorf("s3: decode inventory key: %w", err)
 		}

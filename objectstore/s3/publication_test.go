@@ -103,6 +103,21 @@ func TestPublishRejectsPartCapacityBeforeRequest(t *testing.T) {
 	assert.Zero(t, f.requests)
 }
 
+func TestMissingBucketIsNotMissingObject(t *testing.T) {
+	f, s := newFixture(t)
+	f.missingBucket = true
+	err := s.Delete(t.Context(), "key", "")
+	require.Error(t, err)
+	require.NotErrorIs(t, err, objectstore.ErrNotFound)
+	_, err = s.ListPage(t.Context(), "", "", 1)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, objectstore.ErrNotFound)
+	body, err := s.OpenRange(t.Context(), "key", "", 0, 1)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, objectstore.ErrNotFound)
+	assert.Nil(t, body)
+}
+
 func TestMultipartFullChecksum(t *testing.T) {
 	f, s := newFixture(t)
 	data := bytes.Repeat([]byte("m"), (5<<20)+17)

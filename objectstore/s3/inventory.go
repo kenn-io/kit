@@ -98,8 +98,9 @@ func (s *Store) Delete(ctx context.Context, key, revision string) error {
 		input.IfMatch = aws.String(revision)
 	}
 	_, err = s.client.DeleteObject(ctx, input)
-	if statusCode(err) == 404 {
+	err = classify("delete", err)
+	if errors.Is(err, objectstore.ErrNotFound) {
 		return nil
 	}
-	return classify("delete", err)
+	return err
 }
