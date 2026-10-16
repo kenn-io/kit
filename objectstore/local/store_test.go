@@ -222,7 +222,8 @@ func TestScanContinuesAfterEntryDisappears(t *testing.T) {
 		if entry.Name() == "vanishes" {
 			require.NoError(t, os.Remove(path))
 		}
-		info, err := entry.Info()
+		// Windows DirEntry.Info returns cached metadata, even after removal.
+		info, err := os.Stat(path)
 		if err != nil {
 			return err
 		}
