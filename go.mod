@@ -27,7 +27,7 @@ require (
 	github.com/mattn/go-runewidth v0.0.31
 	github.com/mattn/go-sqlite3 v1.14.52
 	github.com/oklog/ulid/v2 v2.1.2
-	github.com/posthog/posthog-go v1.33.0
+	github.com/posthog/posthog-go v1.34.0
 	github.com/ryanrolds/sqlclosecheck v0.6.0
 	github.com/shirou/gopsutil/v4 v4.26.9
 	github.com/spf13/pathologize v1.1.0
@@ -41,13 +41,13 @@ require (
 	go.opentelemetry.io/otel/sdk v1.47.0
 	go.opentelemetry.io/otel/sdk/metric v1.47.0
 	go.opentelemetry.io/otel/trace v1.47.0
-	golang.org/x/crypto v0.57.0
+	golang.org/x/crypto v0.58.0
 	golang.org/x/mod v0.41.0
 	golang.org/x/perf v0.0.0-20260615155930-9e4b9ddef5b6
 	golang.org/x/sync v0.24.0
 	golang.org/x/sys v0.49.0
-	golang.org/x/term v0.46.0
-	golang.org/x/text v0.42.0
+	golang.org/x/term v0.47.0
+	golang.org/x/text v0.43.0
 	golang.org/x/tools v0.51.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.60.1
