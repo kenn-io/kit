@@ -66,7 +66,7 @@ type Client interface {
 
 // Options configures a PostHog telemetry reporter.
 type Options struct {
-	// Logger receives SDK logs. Nil uses slog.Default().
+	// Logger receives SDK and daily-claim housekeeping logs. Nil uses slog.Default().
 	Logger *slog.Logger
 	// APIKey is the PostHog project API key. It is a public ingest identifier,
 	// but callers must still pass it explicitly so kit never embeds app keys.
@@ -96,6 +96,7 @@ type Options struct {
 type Reporter struct {
 	mu             sync.Mutex
 	client         postHogEnqueueCloser
+	logger         *slog.Logger
 	distinctID     string
 	version        string
 	commit         string
@@ -325,6 +326,7 @@ func newPostHogReporter(opts Options, newClient postHogClientFactory, options ..
 
 	return &Reporter{
 		client:         client,
+		logger:         logger,
 		distinctID:     strings.TrimSpace(opts.DistinctID),
 		version:        opts.Version,
 		commit:         opts.Commit,
@@ -441,7 +443,7 @@ func (r *Reporter) Report(ctx context.Context, event string, properties map[stri
 		return StatusQueued, nil
 	}
 	if limited {
-		return daily.claims.report(ctx, r.distinctID, event, key, r.clock, send)
+		return daily.claims.report(ctx, r.logger, r.distinctID, event, key, r.clock, send)
 	}
 	return send(r.clock())
 }

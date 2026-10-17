@@ -1,9 +1,11 @@
 package posthog
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -95,7 +97,7 @@ func TestDailyReportConcurrentCaptures(t *testing.T) {
 			first := make(chan error, 1)
 			rejection := errors.New("queue rejected")
 			go func() {
-				_, err := claims.report(t.Context(), "id", "screen", "queue", clock, func(time.Time) (Status, error) {
+				_, err := claims.report(t.Context(), nil, "id", "screen", "queue", clock, func(time.Time) (Status, error) {
 					mark("first entered")
 					pending := claims.pending
 					assert.NotNil(t, pending)
@@ -139,7 +141,7 @@ func TestDailyReportConcurrentCaptures(t *testing.T) {
 			second := make(chan result, 1)
 			entered := make(chan struct{}, 1)
 			go func() {
-				status, err := secondClaims.report(waitContext, "id", "screen", secondKey, clock, func(time.Time) (Status, error) {
+				status, err := secondClaims.report(waitContext, nil, "id", "screen", secondKey, clock, func(time.Time) (Status, error) {
 					mark("second entered")
 					entered <- struct{}{}
 					return StatusQueued, nil
@@ -183,7 +185,7 @@ func TestDailyReportConcurrentCaptures(t *testing.T) {
 			assert.Equal(t, StatusQueued, got.status)
 			assert.Equal(t, []string{"first entered", "first returning", "second entered"}, markers)
 			for _, key := range []string{"queue", secondKey} {
-				status, err := claims.report(t.Context(), "id", "screen", key, clock, func(time.Time) (Status, error) {
+				status, err := claims.report(t.Context(), nil, "id", "screen", key, clock, func(time.Time) (Status, error) {
 					assert.Fail(t, "accepted claim must skip capture")
 					return StatusQueued, nil
 				})
@@ -201,9 +203,9 @@ func TestDailyClaimsRecoveryAndIsolation(t *testing.T) {
 	sends := 0
 	send := func(time.Time) (Status, error) { sends++; return StatusQueued, nil }
 	report := func(c *DailyClaims, id, event, key string) (Status, error) {
-		return c.report(t.Context(), id, event, key, clock.Now, send)
+		return c.report(t.Context(), nil, id, event, key, clock.Now, send)
 	}
-	_, err := claims.report(t.Context(), "install", "screen", "queue", clock.Now, func(time.Time) (Status, error) { return "", errors.New("queue rejected") })
+	_, err := claims.report(t.Context(), nil, "install", "screen", "queue", clock.Now, func(time.Time) (Status, error) { return "", errors.New("queue rejected") })
 	require.Error(t, err)
 	status, err := report(claims, "install", "screen", "queue")
 	require.NoError(t, err)
@@ -255,7 +257,7 @@ func TestDailyClaimsClockAfterLock(t *testing.T) {
 	timestamp.Store(postHogTestStart.Unix())
 	clock := func() time.Time { return time.Unix(timestamp.Load(), 0) }
 	send := func(time.Time) (Status, error) { return StatusQueued, nil }
-	_, err := claims.report(t.Context(), "id", "screen", "queue", clock, send)
+	_, err := claims.report(t.Context(), nil, "id", "screen", "queue", clock, send)
 	require.NoError(t, err)
 	lock := flock.New(path + ".lock")
 	require.NoError(t, lock.Lock())
@@ -271,7 +273,7 @@ func TestDailyClaimsClockAfterLock(t *testing.T) {
 	result := make(chan Status, 1)
 	failures := make(chan error, 1)
 	go func() {
-		status, err := claims.report(waitContext, "id", "screen", "queue", clock, send)
+		status, err := claims.report(waitContext, nil, "id", "screen", "queue", clock, send)
 		result <- status
 		failures <- err
 	}()
@@ -297,7 +299,7 @@ func TestDailyClaimsInvalidStateAndCancellation(t *testing.T) {
 	} {
 		require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 		sends := 0
-		status, err := NewDailyClaims(path).report(t.Context(), "id", "screen", "queue", clock.Now, func(time.Time) (Status, error) { sends++; return StatusQueued, nil })
+		status, err := NewDailyClaims(path).report(t.Context(), nil, "id", "screen", "queue", clock.Now, func(time.Time) (Status, error) { sends++; return StatusQueued, nil })
 		require.NoError(t, err, body)
 		assert.Equal(t, StatusQueued, status, body)
 		assert.Equal(t, 1, sends, body)
@@ -307,7 +309,7 @@ func TestDailyClaimsInvalidStateAndCancellation(t *testing.T) {
 		require.NoError(t, json.Unmarshal(data, &state))
 		assert.Equal(t, 1, state.Version)
 		assert.Len(t, state.Days, 1)
-		status, err = NewDailyClaims(path).report(t.Context(), "id", "screen", "queue", clock.Now, func(time.Time) (Status, error) { sends++; return StatusQueued, nil })
+		status, err = NewDailyClaims(path).report(t.Context(), nil, "id", "screen", "queue", clock.Now, func(time.Time) (Status, error) { sends++; return StatusQueued, nil })
 		require.NoError(t, err)
 		assert.Equal(t, StatusSkipped, status)
 		assert.Equal(t, 1, sends)
@@ -320,7 +322,7 @@ func TestDailyClaimsInvalidStateAndCancellation(t *testing.T) {
 	} {
 		require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 		sends := 0
-		_, err := NewDailyClaims(path).report(t.Context(), "id", "screen", "queue", time.Now, func(time.Time) (Status, error) {
+		_, err := NewDailyClaims(path).report(t.Context(), nil, "id", "screen", "queue", time.Now, func(time.Time) (Status, error) {
 			sends++
 			return StatusQueued, nil
 		})
@@ -338,7 +340,7 @@ func TestDailyClaimsInvalidStateAndCancellation(t *testing.T) {
 	waitContext := &dailyWaitContext{Context: ctx, doneCalled: make(chan struct{}), skipDoneCalls: 1}
 	result := make(chan error, 1)
 	go func() {
-		_, err := NewDailyClaims(path).report(waitContext, "id", "screen", "queue", time.Now, func(time.Time) (Status, error) { return StatusQueued, nil })
+		_, err := NewDailyClaims(path).report(waitContext, nil, "id", "screen", "queue", time.Now, func(time.Time) (Status, error) { return StatusQueued, nil })
 		result <- err
 	}()
 	select {
@@ -367,14 +369,14 @@ func TestDailyClaimsCleanupPreservesNewerAcceptedDay(t *testing.T) {
 		}
 		return atomicfile.WriteFile(p, b, o...)
 	}
-	_, err := claims.report(t.Context(), "id", "screen", "queue", clock.Now, func(time.Time) (Status, error) { return "", errors.New("rejected") })
+	_, err := claims.report(t.Context(), nil, "id", "screen", "queue", clock.Now, func(time.Time) (Status, error) { return "", errors.New("rejected") })
 	require.Error(t, err)
 	clock.Advance(24 * time.Hour)
 	send := func(time.Time) (Status, error) { return StatusQueued, nil }
-	status, err := NewDailyClaims(path).report(t.Context(), "id", "screen", "queue", clock.Now, send)
+	status, err := NewDailyClaims(path).report(t.Context(), nil, "id", "screen", "queue", clock.Now, send)
 	require.NoError(t, err)
 	assert.Equal(t, StatusQueued, status)
-	status, err = claims.report(t.Context(), "id", "screen", "queue", clock.Now, func(time.Time) (Status, error) { assert.Fail(t, "newer day was erased"); return StatusQueued, nil })
+	status, err = claims.report(t.Context(), nil, "id", "screen", "queue", clock.Now, func(time.Time) (Status, error) { assert.Fail(t, "newer day was erased"); return StatusQueued, nil })
 	require.NoError(t, err)
 	assert.Equal(t, StatusSkipped, status)
 	assert.Nil(t, claims.pending)
@@ -498,7 +500,7 @@ func TestDailyClaimsPublicationRecovery(t *testing.T) {
 			}
 			send := func(time.Time) (Status, error) { accepted++; return StatusQueued, nil }
 			report := func(c *DailyClaims, callback func(time.Time) (Status, error)) (Status, error) {
-				return c.report(t.Context(), "id", "screen", "queue", clock.Now, callback)
+				return c.report(t.Context(), nil, "id", "screen", "queue", clock.Now, callback)
 			}
 			_, err := report(claims, func(time.Time) (Status, error) {
 				if tc.errors[0] != nil {
@@ -593,81 +595,191 @@ func TestDailyReportSerializationFailureThenSameDayRetry(t *testing.T) {
 	assert.Equal(t, "corrected", events[0].Properties["value"])
 }
 
-func TestDailyClaimsPrunesOnSkippedReport(t *testing.T) {
+func seedDailyCapacity(t *testing.T) (string, []string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "days.json")
+	days := make([]string, 35)
+	for i := range days {
+		days[i] = time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC).AddDate(0, 0, i).Format(time.DateOnly)
+	}
+	data, err := json.Marshal(dailyState{Version: 1, Days: map[string][]string{`["install","screen","queue"]`: days}})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, data, 0o600))
+	return path, days
+}
+
+func TestDailyClaimsCompactsSkippedReports(t *testing.T) {
 	for _, failWrite := range []bool{false, true} {
 		t.Run(strconv.FormatBool(failWrite), func(t *testing.T) {
+			enablePostHogTelemetryForTest()
+			t.Cleanup(enablePostHogTelemetryForTest)
+			t.Setenv(GenericEnabledEnv, "1")
+			t.Setenv("TEST_TELEMETRY_ENABLED", "1")
 			path := filepath.Join(t.TempDir(), "days.json")
-			state := dailyState{Version: 1, Days: map[string][]string{"expired": {"2025-10-17"}}}
+			state := dailyState{Version: 1, Days: map[string][]string{"sparse": {"1970-01-01"}, "empty": {}}}
 			for key := range 10 {
 				claim, err := json.Marshal([]string{"install", "screen", strconv.Itoa(key)})
 				require.NoError(t, err)
-				for day := range 366 {
+				for day := 365; day >= 0; day-- {
 					state.Days[string(claim)] = append(state.Days[string(claim)], time.Date(2026, 10, 17, 0, 0, 0, 0, time.UTC).AddDate(0, 0, -day).Format(time.DateOnly))
 				}
+				state.Days[string(claim)] = append(state.Days[string(claim)], "2026-10-17")
 			}
 			data, err := json.Marshal(state)
 			require.NoError(t, err)
 			require.NoError(t, os.WriteFile(path, data, 0o600))
 			claims := NewDailyClaims(path)
-			writeErr := errors.New("storage unavailable")
 			if failWrite {
-				claims.write = func(string, []byte, ...atomicfile.Option) error { return writeErr }
+				claims.write = func(string, []byte, ...atomicfile.Option) error { return errors.New("storage unavailable") }
 			}
-			sends := 0
-			report := func(c *DailyClaims) (Status, error) {
-				return c.report(t.Context(), "install", "screen", "0", func() time.Time { return time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC) }, func(time.Time) (Status, error) { sends++; return StatusQueued, nil })
-			}
-			status, err := report(claims)
-			assert.Zero(t, sends)
-			if failWrite {
-				require.ErrorIs(t, err, writeErr)
-				return
-			}
+			var logs bytes.Buffer
+			client := &recordingPostHogClient{}
+			reporter, err := newPostHogReporter(Options{
+				APIKey: "test", Application: "test", EnvPrefix: "TEST", DistinctID: "install",
+				Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+			}, func(string, phsdk.Config) (postHogEnqueueCloser, error) { return client, nil },
+				WithAllowedEvent("screen", AllowProperty("screen", AllowStringValues("0"))),
+				WithDailyEvent("screen", "screen", claims),
+				postHogOptionFunc(func(c *postHogReporterConfig) {
+					c.now = func() time.Time { return time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC) }
+				}))
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, reporter.Close()) })
+			status, err := reporter.Report(t.Context(), "screen", map[string]any{"screen": "0"})
 			require.NoError(t, err)
 			assert.Equal(t, StatusSkipped, status)
+			assert.Empty(t, client.messages)
+			if failWrite {
+				assert.Contains(t, logs.String(), "level=WARN")
+				assert.Contains(t, logs.String(), "storage unavailable")
+				unchanged, err := os.ReadFile(path)
+				require.NoError(t, err)
+				assert.Equal(t, string(data), string(unchanged))
+				claims.write = nil
+				status, err = reporter.Report(t.Context(), "screen", map[string]any{"screen": "0"})
+				require.NoError(t, err)
+				assert.Equal(t, StatusSkipped, status)
+			}
 			data, err = os.ReadFile(path)
 			require.NoError(t, err)
 			state = dailyState{}
 			require.NoError(t, json.Unmarshal(data, &state))
-			assert.Len(t, state.Days, 10)
-			assert.NotContains(t, state.Days, "expired")
+			require.Len(t, state.Days, 11)
+			assert.NotContains(t, state.Days, "empty")
+			assert.Equal(t, []string{"1970-01-01"}, state.Days["sparse"])
+			delete(state.Days, "sparse")
 			for _, days := range state.Days {
-				assert.Len(t, days, 36)
-				assert.Contains(t, days, "2026-09-12")
-				for _, day := range days {
-					assert.GreaterOrEqual(t, day, "2026-09-12")
-					assert.LessOrEqual(t, day, "2026-10-17")
-				}
+				require.Len(t, days, 35)
+				assert.Equal(t, "2026-09-13", days[0])
+				assert.Equal(t, "2026-10-17", days[34])
 			}
-			status, err = report(NewDailyClaims(path))
+			claims.write = func(string, []byte, ...atomicfile.Option) error { return errors.New("unchanged skip must not save") }
+			status, err = reporter.Report(t.Context(), "screen", map[string]any{"screen": "0"})
 			require.NoError(t, err)
 			assert.Equal(t, StatusSkipped, status)
-			claims.write = func(string, []byte, ...atomicfile.Option) error { return writeErr }
-			_, err = report(claims)
-			require.NoError(t, err, "unchanged skipped claims must not write")
-			assert.Zero(t, sends)
+			assert.NotContains(t, logs.String(), "unchanged skip must not save")
+			status, err = NewDailyClaims(path).report(t.Context(), nil, "install", "screen", "0", func() time.Time { return time.Date(2026, 10, 17, 0, 0, 0, 0, time.UTC) }, func(time.Time) (Status, error) { assert.Fail(t, "accepted date was erased"); return StatusQueued, nil })
+			require.NoError(t, err)
+			assert.Equal(t, StatusSkipped, status)
+			assert.Empty(t, client.messages)
 		})
 	}
 }
 
-func TestDailyClaimsRollbackWindow(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "days.json")
-	clock := &fakePostHogClock{now: time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)}
+func TestDailyClaimsWrongClockKeepsRecentAcceptedDate(t *testing.T) {
+	path, days := seedDailyCapacity(t)
+	clock := &fakePostHogClock{now: time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC)}
 	sends := 0
 	report := func(want Status) {
-		status, err := NewDailyClaims(path).report(t.Context(), "install", "screen", "queue", clock.Now, func(time.Time) (Status, error) { sends++; return StatusQueued, nil })
+		status, err := NewDailyClaims(path).report(t.Context(), nil, "install", "screen", "queue", clock.Now, func(time.Time) (Status, error) { sends++; return StatusQueued, nil })
 		require.NoError(t, err)
 		assert.Equal(t, want, status)
 	}
 	report(StatusQueued)
-	clock.Advance(24 * time.Hour)
-	report(StatusQueued)
-	clock.Advance(35 * 24 * time.Hour)
-	report(StatusQueued)
-	clock.Advance(-35 * 24 * time.Hour)
+	clock.now = time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
 	report(StatusSkipped)
-	clock.Advance(-24 * time.Hour)
-	report(StatusQueued)
+	clock.now = time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC)
 	report(StatusSkipped)
-	assert.Equal(t, 4, sends)
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var state dailyState
+	require.NoError(t, json.Unmarshal(data, &state))
+	assert.Equal(t, append(days[1:], "1970-01-01"), state.Days[`["install","screen","queue"]`])
+	assert.Equal(t, 1, sends)
+}
+
+func TestDailyClaimsEvictionRollback(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		published   bool
+		intervening int
+	}{
+		{name: "rejected enqueue"},
+		{name: "published reservation", published: true},
+		{name: "deferred rejection", intervening: 1},
+		{name: "deferred published reservation", published: true, intervening: 1},
+		{name: "deferred cleanup after full replacement", intervening: 35},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path, original := seedDailyCapacity(t)
+			claims := NewDailyClaims(path)
+			clock := &fakePostHogClock{now: time.Date(2026, 10, 6, 0, 0, 0, 0, time.UTC)}
+			writes := 0
+			claims.write = func(p string, b []byte, o ...atomicfile.Option) error {
+				writes++
+				if writes == 2 && tc.intervening > 0 {
+					return errors.New("cleanup unavailable")
+				}
+				if err := atomicfile.WriteFile(p, b, o...); err != nil {
+					return err
+				}
+				if writes == 1 && tc.published {
+					return atomicfile.ErrNotDurable
+				}
+				return nil
+			}
+			_, err := claims.report(t.Context(), nil, "install", "screen", "queue", clock.Now, func(time.Time) (Status, error) {
+				assert.False(t, tc.published, "a failed reservation must not enqueue")
+				return "", errors.New("rejected")
+			})
+			require.Error(t, err)
+			want := original
+			if tc.intervening > 0 {
+				var newer []string
+				for range tc.intervening {
+					clock.Advance(24 * time.Hour)
+					status, err := NewDailyClaims(path).report(t.Context(), nil, "install", "screen", "queue", clock.Now, func(time.Time) (Status, error) { return StatusQueued, nil })
+					require.NoError(t, err)
+					assert.Equal(t, StatusQueued, status)
+					newer = append(newer, clock.Now().Format(time.DateOnly))
+				}
+				status, err := claims.report(t.Context(), nil, "install", "screen", "queue", clock.Now, func(time.Time) (Status, error) {
+					assert.Fail(t, "newer accepted date was erased")
+					return StatusQueued, nil
+				})
+				require.NoError(t, err)
+				assert.Equal(t, StatusSkipped, status)
+				want = append([]string{original[0]}, original[2:]...)
+				want = append(want, "2026-10-07")
+				if tc.intervening == 35 {
+					want = newer
+				}
+			}
+			data, err := os.ReadFile(path)
+			require.NoError(t, err)
+			var state dailyState
+			require.NoError(t, json.Unmarshal(data, &state))
+			assert.Equal(t, want, state.Days[`["install","screen","queue"]`])
+			if tc.intervening == 35 {
+				return
+			}
+			clock.now = time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+			status, err := NewDailyClaims(path).report(t.Context(), nil, "install", "screen", "queue", clock.Now, func(time.Time) (Status, error) {
+				assert.Fail(t, "evicted accepted date was lost")
+				return StatusQueued, nil
+			})
+			require.NoError(t, err)
+			assert.Equal(t, StatusSkipped, status)
+		})
+	}
 }

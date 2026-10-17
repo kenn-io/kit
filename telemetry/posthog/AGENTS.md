@@ -21,11 +21,11 @@ the supplied slog logger (or slog.Default), preserving levels and the applicatio
 
 Daily claims take a context-aware instance semaphore and file lock and hold
 both through queue acceptance and rollback. Reserve durably before enqueue;
-retain accepted dates in a 35-day UTC age window per key and deduplicate by
-membership. The inclusive cutoff can retain 36 dates. A clock correction beyond
-the window resets it around today and may repeat a count. Reservation and enqueue
-use one time sampled under the lock.
-Rejected captures release their reservation; storage failures return errors.
+retain the 35 most recently accepted UTC dates per key in acceptance order and
+deduplicate by membership. Reservation and enqueue use one time sampled under
+the lock. Rollback restores displaced dates when space remains, preserving
+newer accepted dates. Skipped-report compaction is best effort and logs failures;
+reservation and rollback storage failures return errors.
 Failed reservation saves release published claims under the same lock.
 Pending cleanup follows visible publication, including durability failures.
 Version 1 is read. A numeric version that may be 1 or more but isn't written as

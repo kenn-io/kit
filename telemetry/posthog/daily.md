@@ -27,13 +27,16 @@ published claim under the same locks. Storage failures return errors for a
 later retry; if release fails before publication, the error includes both
 failures. If release publishes despite an error, only the reservation error
 returns.
-Each key retains accepted UTC dates within a 35-day age window ending at today
-or its newest accepted date, whichever is later. The inclusive cutoff can keep
-36 date labels. Returning to an accepted date within that window skips it.
-A clock correction beyond the window resets it around today and may count a
-previously accepted day again; same-day retries still skip. Reports prune all
-keys and remove empty keys under the claim lock. A skipped report saves only
-when pruning changed the state, and storage failures return errors.
+Each key retains its 35 most recently accepted UTC dates in acceptance order.
+Returning to a retained date skips it, even after a wrong-clock report. Sparse
+activity can retain dates older than 35 calendar days. A previously accepted
+date outside this set may count again after a clock correction.
+A rejected reservation restores its displaced accepted date when space remains,
+preserving dates accepted by other writers before deferred cleanup.
+Reports compact all keys and remove empty keys under the claim lock. A skipped
+report saves only when compaction changed the state. If that housekeeping save
+fails, the reporter logs a warning, returns `skipped`, and retries compaction
+on a later report. Reservation and rollback storage failures return errors.
 Reservation, event timestamp and installation age use one time sampled under
 the claim lock.
 

@@ -33,6 +33,12 @@ func (c *heartbeatClient) Capture(event string, _ map[string]any) error {
 func (c *heartbeatClient) Close() error  { return nil }
 func (c *heartbeatClient) Enabled() bool { return !c.disabled.Load() }
 
+func (c *heartbeatClient) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.events)
+}
+
 func TestRunHeartbeatStopsWhenDisabled(t *testing.T) {
 	for _, initiallyDisabled := range []bool{true, false} {
 		t.Run(strconv.FormatBool(initiallyDisabled), func(t *testing.T) {
@@ -60,12 +66,6 @@ func TestRunHeartbeatStopsWhenDisabled(t *testing.T) {
 			})
 		})
 	}
-}
-
-func (c *heartbeatClient) count() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return len(c.events)
 }
 
 func TestRunHeartbeatFollowsUTCDays(t *testing.T) {

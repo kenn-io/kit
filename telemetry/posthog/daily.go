@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"slices"
@@ -35,7 +36,9 @@ type DailyClaims struct {
 	write   func(string, []byte, ...atomicfile.Option) error
 }
 
-type dailyReservation struct{ key, day string }
+type dailyReservation struct{ key, day, displaced string }
+
+const dailyClaimLimit = 35
 
 // NewDailyClaims uses path and its adjacent lock file; its parent must exist.
 func NewDailyClaims(path string) *DailyClaims {
@@ -106,7 +109,7 @@ func jsonNumber(value json.RawMessage) (json.Number, bool) {
 	return number, ok
 }
 
-func (d *DailyClaims) report(ctx context.Context, identity, event, key string, now func() time.Time, send func(time.Time) (Status, error)) (Status, error) {
+func (d *DailyClaims) report(ctx context.Context, logger *slog.Logger, identity, event, key string, now func() time.Time, send func(time.Time) (Status, error)) (Status, error) {
 	if err := d.sem.Acquire(ctx, 1); err != nil {
 		return "", fmt.Errorf("lock daily telemetry: %w", err)
 	}
@@ -143,6 +146,23 @@ func (d *DailyClaims) report(ctx context.Context, identity, event, key string, n
 	if state.Days == nil {
 		state = dailyState{Version: 1, Days: make(map[string][]string)}
 	}
+	compacted := false
+	for key, days := range state.Days {
+		kept := make([]string, 0, min(len(days), dailyClaimLimit))
+		for i := len(days) - 1; i >= 0 && len(kept) < dailyClaimLimit; i-- {
+			if !slices.Contains(kept, days[i]) {
+				kept = append(kept, days[i])
+			}
+		}
+		slices.Reverse(kept)
+		compacted = compacted || !slices.Equal(days, kept) || len(kept) == 0
+		if len(kept) == 0 {
+			delete(state.Days, key)
+		} else {
+			state.Days[key] = kept
+		}
+	}
+
 	save := func() error {
 		data, err := json.Marshal(state)
 		if err != nil {
@@ -155,8 +175,13 @@ func (d *DailyClaims) report(ctx context.Context, identity, event, key string, n
 		return write(d.path, data, atomicfile.WithPrivate())
 	}
 	release := func(reservation dailyReservation) {
-		state.Days[reservation.key] = slices.DeleteFunc(state.Days[reservation.key], func(day string) bool { return day == reservation.day })
-		if len(state.Days[reservation.key]) == 0 {
+		days := slices.DeleteFunc(state.Days[reservation.key], func(day string) bool { return day == reservation.day })
+		// Restore the older claim only when it won't displace a newer writer's dates.
+		if reservation.displaced != "" && len(days) < dailyClaimLimit && !slices.Contains(days, reservation.displaced) {
+			days = append([]string{reservation.displaced}, days...)
+		}
+		state.Days[reservation.key] = days
+		if len(days) == 0 {
 			delete(state.Days, reservation.key)
 		}
 	}
@@ -165,6 +190,7 @@ func (d *DailyClaims) report(ctx context.Context, identity, event, key string, n
 		err := save()
 		if err == nil || errors.Is(err, atomicfile.ErrPublished) {
 			d.pending = nil
+			compacted = false
 		}
 		return err
 	}
@@ -180,38 +206,22 @@ func (d *DailyClaims) report(ctx context.Context, identity, event, key string, n
 	claim := string(encoded)
 	timestamp := now().UTC()
 	day := timestamp.Format(time.DateOnly)
-	pruned := false
-	for key, days := range state.Days {
-		newest := day
-		for _, accepted := range days {
-			newest = max(newest, accepted)
-		}
-		anchor, _ := time.Parse(time.DateOnly, newest) // Dates were validated on load.
-		cutoff := anchor.AddDate(0, 0, -35).Format(time.DateOnly)
-		if day < cutoff {
-			// A large clock correction starts a new window around today.
-			newest = day
-			cutoff = timestamp.AddDate(0, 0, -35).Format(time.DateOnly)
-		}
-		kept := slices.DeleteFunc(days, func(accepted string) bool { return accepted < cutoff || accepted > newest })
-		if len(kept) != len(days) || len(kept) == 0 {
-			pruned = true
-		}
-		if len(kept) == 0 {
-			delete(state.Days, key)
-		} else {
-			state.Days[key] = kept
-		}
-	}
 	if slices.Contains(state.Days[claim], day) {
-		if pruned {
+		if compacted {
 			if err := save(); err != nil {
-				return "", fmt.Errorf("prune daily telemetry: %w", err)
+				if logger == nil {
+					logger = slog.Default()
+				}
+				logger.WarnContext(ctx, "compact daily telemetry failed", "error", err)
 			}
 		}
 		return StatusSkipped, nil
 	}
 	d.pending = &dailyReservation{key: claim, day: day}
+	if len(state.Days[claim]) == dailyClaimLimit {
+		d.pending.displaced = state.Days[claim][0]
+		state.Days[claim] = state.Days[claim][1:]
+	}
 	state.Days[claim] = append(state.Days[claim], day)
 	if err := save(); err != nil {
 		if errors.Is(err, atomicfile.ErrPublished) {
