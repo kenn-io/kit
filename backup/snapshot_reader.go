@@ -204,7 +204,7 @@ func (s *SnapshotReader) CopyObject(ctx context.Context, id pack.BlobID, dst io.
 	if copyErr == nil && (n != object.Bytes || !stream.Verified()) {
 		copyErr = fmt.Errorf("backup: object %s copy not completely verified", id)
 	}
-	return n, errors.Join(copyErr, stream.Close())
+	return n, errors.Join(copyErr, stream.Close(), ctx.Err())
 }
 
 // CopyExtra copies an extra with the same verification and failure contract as CopyObject.
