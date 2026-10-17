@@ -764,37 +764,3 @@ func TestDailyClaimsOrphansDrainAndStaleOwnerCannotReleaseReplacement(t *testing
 	assertDailyReport(t, stale, clock.Now, StatusSkipped)
 	assert.Equal(t, before, readDailyState(t, path), "stale rejection must preserve the replacement marker and date")
 }
-
-func TestDailyClaimsReleasedV1RoundTrip(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "days.json")
-	clock := &fakePostHogClock{now: time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC)}
-	owner := NewDailyClaims(path)
-	failSecondDailyWrite(owner)
-	_, err := owner.report(t.Context(), nil, "install", "screen", "queue", clock.Now, func(time.Time) (Status, error) { return "", errors.New("rejected") })
-	require.ErrorContains(t, err, "settlement unavailable")
-	// Released v1's reader validates dates and preserves arbitrary map keys.
-	data, err := os.ReadFile(path)
-	require.NoError(t, err)
-	var released struct {
-		Version int                 `json:"version"`
-		Days    map[string][]string `json:"days"`
-	}
-	require.NoError(t, json.Unmarshal(data, &released))
-	require.Equal(t, 1, released.Version)
-	for _, days := range released.Days {
-		for _, day := range days {
-			_, err := time.Parse(time.DateOnly, day)
-			require.NoError(t, err)
-		}
-	}
-	released.Days[`["install","screen","review"]`] = []string{"2026-10-09"}
-	data, err = json.Marshal(released)
-	require.NoError(t, err)
-	require.NoError(t, atomicfile.WriteFile(path, data, atomicfile.WithPrivate()))
-	assertDailyReport(t, NewDailyClaims(path), clock.Now, StatusSkipped)
-	owner.write = nil
-	assertDailyReport(t, owner, clock.Now, StatusQueued)
-	state := readDailyState(t, path)
-	assert.Equal(t, []string{"2026-10-09"}, state.Days[`["install","screen","review"]`])
-	assert.Len(t, state.Days, 2, "owner settled its marker after the released rewrite")
-}

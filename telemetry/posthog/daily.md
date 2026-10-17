@@ -40,10 +40,13 @@ sampled under the claim lock.
 Use `Report` with a caller context. Reports on the same `DailyClaims` instance
 wait on an in-process semaphore before the file lock. Both waits honor the
 caller's context; `Capture` bounds them with `ShutdownTimeout`. Version 1 date
-lists remain readable and writable by released readers. Upgrade writers sharing
-a path together: after 35 later acceptances retire a date and a clock rollback
-reuses it, a released writer's late cleanup can delete that retained date,
-allowing it to count again.
+lists remain readable and writable by released readers.
+
+Upgrade all writers sharing a claims path together. If an old writer's rejected
+report leaves cleanup pending, 35 later acceptances can retire its date. After a
+clock rollback reuses that date, the old cleanup can delete the new claim and
+allow another count.
+
 A numeric version that may be 1 or more but isn't written as `1`, for example
 `2` or `1.0`, is refused unchanged. Other unreadable content resets to empty
 claims. Read errors other than a missing file are returned.
