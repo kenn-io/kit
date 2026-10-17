@@ -32,16 +32,12 @@ type captureOptions struct {
 // RejectEvents rejects the named events through this handler, even when the
 // reporter allows them. Direct calls to Report keep the reporter's allowlist.
 func RejectEvents(events ...string) CaptureOption {
-	rejected := make(map[string]struct{}, len(events))
-	for _, event := range events {
-		rejected[strings.TrimSpace(event)] = struct{}{}
-	}
 	return func(options *captureOptions) {
 		if options.rejectedEvents == nil {
-			options.rejectedEvents = make(map[string]struct{})
+			options.rejectedEvents = make(map[string]struct{}, len(events))
 		}
-		for event := range rejected {
-			options.rejectedEvents[event] = struct{}{}
+		for _, event := range events {
+			options.rejectedEvents[strings.TrimSpace(event)] = struct{}{}
 		}
 	}
 }
@@ -60,7 +56,8 @@ func RejectEvents(events ...string) CaptureOption {
 // 202 {"status":"disabled"} when the event is allowed but telemetry is opted
 // out, disabled for the process or the reporter is closed, so nothing is sent;
 // 400 for a malformed body, data after the JSON object, a blank event or an
-// event the allowlist omits, RejectEvents rejects, or a required property is invalid, in every reporter state; 405 for other methods;
+// event the allowlist omits, RejectEvents rejects, or a required property is
+// invalid, in every reporter state; 405 for other methods;
 // 413 for a body over 64 KiB; 415 for a content type other than
 // application/json; 500 when reservation storage or capture fails.
 //

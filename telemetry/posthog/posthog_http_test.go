@@ -179,7 +179,7 @@ func TestPostHogCaptureHandlerRejectEventsPreservesRequestValidation(t *testing.
 	}
 }
 
-func TestPostHogCaptureHandlerRejectsUnknownEventInEveryState(t *testing.T) {
+func TestPostHogCaptureHandlerRejectsEventsInEveryState(t *testing.T) {
 	states := []captureHandlerTestState{
 		{name: "enabled", build: func(t *testing.T) (*Reporter, func() int, func() int) {
 			t.Helper()
@@ -206,10 +206,15 @@ func TestPostHogCaptureHandlerRejectsUnknownEventInEveryState(t *testing.T) {
 	for _, state := range states {
 		t.Run(state.name, func(t *testing.T) {
 			reporter, sent, factoryCalls := state.build(t)
-			handler := NewCaptureHandler(reporter)
 			for _, body := range bodies {
+				rec := postCapture(t, NewCaptureHandler(reporter), http.MethodPost, body)
+				assert.Equal(t, http.StatusBadRequest, rec.Code, body)
+			}
+			handler := NewCaptureHandler(reporter, RejectEvents(" app_opened "))
+			for _, body := range []string{`{"event":"app_opened"}`, `{"event":" app_opened "}`} {
 				rec := postCapture(t, handler, http.MethodPost, body)
 				assert.Equal(t, http.StatusBadRequest, rec.Code, body)
+				assert.Equal(t, ErrUnsupportedEvent.Error()+"\n", rec.Body.String(), body)
 			}
 			assert.Zero(t, sent())
 			if factoryCalls != nil {
@@ -217,6 +222,24 @@ func TestPostHogCaptureHandlerRejectsUnknownEventInEveryState(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPostHogCaptureHandlerRejectEventsPrecedesRequiredProperties(t *testing.T) {
+	reporter, client, _ := newInstallAgeTestReporter(t, postHogTestStart,
+		WithAllowedEvent("app_opened", RequireProperty("view", AllowStringValues("sessions"))))
+	for _, body := range []string{
+		`{"event":"app_opened"}`,
+		`{"event":"app_opened","properties":{"view":"invalid"}}`,
+	} {
+		rec := postCapture(t, NewCaptureHandler(reporter), http.MethodPost, body)
+		require.Equal(t, http.StatusBadRequest, rec.Code)
+		assert.Contains(t, rec.Body.String(), ErrInvalidProperty.Error())
+
+		rec = postCapture(t, NewCaptureHandler(reporter, RejectEvents("app_opened")), http.MethodPost, body)
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+		assert.Equal(t, ErrUnsupportedEvent.Error()+"\n", rec.Body.String())
+	}
+	assert.Empty(t, client.messages)
 }
 
 func TestPostHogCaptureHandlerDisabledReporterAnswersDisabled(t *testing.T) {
