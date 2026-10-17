@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"go.kenn.io/kit/internal/contextio"
+	"go.kenn.io/kit/internal/s3io"
 	"go.kenn.io/kit/pack"
 	"go.kenn.io/kit/packstore"
 	"go.kenn.io/kit/packstore/internal/packvalidate"
@@ -441,11 +442,7 @@ func (b *Backend) multipartPublish(
 			)
 		}
 		_, _ = hasher.Write(buffer[:n])
-		uploaded, err := b.client.UploadPart(ctx, &s3.UploadPartInput{
-			Bucket: aws.String(b.bucket), Key: aws.String(key),
-			UploadId: aws.String(uploadID), PartNumber: aws.Int32(partNumber),
-			Body: bytes.NewReader(buffer[:n]), ContentLength: aws.Int64(int64(n)),
-		})
+		uploaded, err := s3io.UploadPart(ctx, b.client, b.bucket, key, uploadID, partNumber, buffer[:n], nil)
 		if err != nil {
 			return publicationResult{}, classifyError("upload multipart part", err)
 		}

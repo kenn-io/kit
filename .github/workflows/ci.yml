@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      gcs_live:
+        description: Run live GCS contract tests in the configured test bucket
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -212,7 +217,36 @@ jobs:
           KIT_S3_TEST_ACCESS_KEY: kit-test
           KIT_S3_TEST_SECRET_KEY: kit-test-secret
           KIT_S3_TEST_BUCKET: kit-conformance
-        run: go test -race ./packstore/s3store
+        run: go test -race -shuffle=on ./objectstore/s3 ./packstore/s3store
+
+  gcs-conformance:
+    name: Live GCS contract
+    if: github.event_name == 'workflow_dispatch' && inputs.gcs_live
+    environment: objectstore-gcs
+    runs-on: namespace-profile-linux-4cpu
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run live GCS contract tests
+        env:
+          KIT_GCS_TEST_LIVE: "1"
+          KIT_GCS_TEST_BUCKET: ${{ vars.KIT_GCS_TEST_BUCKET }}
+          KIT_GCS_TEST_PREFIX: ci/${{ github.run_id }}/${{ github.run_attempt }}
+          KIT_GCS_TEST_ENDPOINT: https://storage.googleapis.com
+          KIT_GCS_TEST_KEY_ID: ${{ secrets.KIT_GCS_TEST_KEY_ID }}
+          KIT_GCS_TEST_SECRET: ${{ secrets.KIT_GCS_TEST_SECRET }}
+        run: go test -race -json -tags=gcslive -shuffle=on -timeout=10m ./objectstore/gcs -run '^TestGCSLiveContract$'
 
   search-backends:
     name: Search backend conformance

@@ -18,6 +18,10 @@ verification records belong in kata and pull request discussion.
 
 - [Backup repository and pack format](../backup/FORMAT.md)
 
+## Maintainers
+
+- [Live object storage tests](objectstore-live-tests.md)
+
 ## Releases
 
 - [Kit v0.8.0](releases/v0.8.0.md)
