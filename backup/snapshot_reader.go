@@ -105,12 +105,10 @@ func (s *SnapshotReader) loadMembership(ctx context.Context, m *Manifest, known 
 	if err := json.Unmarshal(raw, &tree); err != nil {
 		return fmt.Errorf("backup: snapshot extras tree: %w", err)
 	}
-	entries := make(map[string]ExtrasEntry, len(tree.Entries))
+	if err := checkExtrasCollisions(tree.Entries); err != nil {
+		return err
+	}
 	for _, entry := range tree.Entries {
-		if old, exists := entries[entry.Path]; exists && old != entry {
-			return fmt.Errorf("backup: conflicting extras entries for %q", entry.Path)
-		}
-		entries[entry.Path] = entry
 		object, err := s.addObject(entry.Blob, entry.Size, known)
 		if err != nil {
 			return fmt.Errorf("backup: snapshot extra %q: %w", entry.Path, err)

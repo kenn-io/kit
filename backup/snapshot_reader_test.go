@@ -67,7 +67,8 @@ func TestSnapshotReaderRejectsUnselectedObjects(t *testing.T) {
 func TestSnapshotReaderRejectsDamagedObjects(t *testing.T) {
 	for _, fault := range []string{
 		"reordered", "missing chunk", "chunk size", "recipe size", "conflicting sizes",
-		"conflicting extras", "footer size", "index footer", "payload", "new reader", "valid",
+		"conflicting extras", "duplicate extras", "case-folded extras",
+		"footer size", "index footer", "payload", "new reader", "valid",
 	} {
 		t.Run(fault, func(t *testing.T) {
 			require := require.New(t)
@@ -112,8 +113,13 @@ func TestSnapshotReaderRejectsDamagedObjects(t *testing.T) {
 			require.NoError(err)
 			listID := add(list)
 			tree := ExtrasTree{Entries: []ExtrasEntry{{Path: "recovery.db", Blob: a.String(), Size: 1}}}
-			if fault == "conflicting extras" {
+			switch fault {
+			case "conflicting extras":
 				tree.Entries = append(tree.Entries, ExtrasEntry{Path: "recovery.db", Blob: b.String(), Size: 1})
+			case "duplicate extras":
+				tree.Entries = append(tree.Entries, tree.Entries[0])
+			case "case-folded extras":
+				tree.Entries = append(tree.Entries, ExtrasEntry{Path: "Recovery.db", Blob: a.String(), Size: 1})
 			}
 			raw, err = json.Marshal(tree)
 			require.NoError(err)
@@ -147,6 +153,15 @@ func TestSnapshotReaderRejectsDamagedObjects(t *testing.T) {
 			snapshotID, err := repo.WriteManifest(m)
 			require.NoError(err)
 			reader, err := repo.OpenSnapshot(t.Context(), snapshotID, testPackExt)
+			if reader != nil {
+				t.Cleanup(func() { assert.NoError(reader.Close()) })
+			}
+			switch fault {
+			case "conflicting extras", "duplicate extras":
+				require.ErrorContains(err, `lists path "recovery.db" twice`)
+			case "case-folded extras":
+				require.ErrorContains(err, "collide under case-folded key")
+			}
 			if err == nil {
 				id, parseErr := pack.ParseBlobID(ref.Hash)
 				require.NoError(parseErr)

@@ -291,6 +291,10 @@ Objects found only in another snapshot or an orphaned pack are not members.
 Recipe records, chunks, and portable metadata are not separate members unless
 an attachment list or extras tree also lists them as files.
 
+Opening a reader loads the repository-wide blob index, the snapshot's complete
+file lists, and all chunk recipes, even when copying one file. Each new reader
+repeats this metadata work.
+
 `CopyObject` and `CopyExtra` stream and verify the complete file, including every
 chunk and the whole-file hash and length. A failure can leave partial bytes in
 the destination: discard all output unless the copy and destination close
@@ -305,8 +309,10 @@ placement because prune can relocate objects between reads.
 Backups and ordinary maintenance need an exclusive lease. Opening a reader
 during either operation returns `ErrRepoLocked`; retry later. A backup waits up
 to 60 seconds for existing readers, then returns the same retryable error.
-Forced maintenance can invalidate reader leases; missing or damaged files fail
-the copy. Never switch snapshots or force access in response to a read failure.
+Forced maintenance can invalidate reader leases. A lease also becomes stale
+after 30 minutes without a heartbeat, for example while the machine sleeps,
+allowing backups and maintenance to proceed. Missing or damaged files fail the
+copy. Never switch snapshots or force access in response to a read failure.
 Lease heartbeat files require a writable repository even when only reading
 archive payloads. Attaching a reader does not retain a snapshot against future
 forget operations.

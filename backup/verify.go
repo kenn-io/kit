@@ -182,8 +182,8 @@ func selectManifests(r *Repo, opts VerifyOptions) ([]*Manifest, error) {
 // maxOpenPackReaders bounds how many pack.Readers Verify or a SnapshotReader keeps open at once.
 // A repository can reference thousands of packs; without a bound the reader
 // cache would exhaust the process file-descriptor limit (macOS defaults to
-// 256). It is a var, not a const, only so tests can lower it. Reader errors
-// stay cached forever regardless of eviction.
+// 256). It is a var, not a const, only so tests can lower it. Verify keeps
+// reader errors cached for the rest of its run, regardless of eviction.
 var maxOpenPackReaders = 64
 
 // verifyState holds the cross-manifest resources a Verify run shares: the
