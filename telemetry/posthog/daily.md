@@ -27,15 +27,17 @@ releases any published reservation under the same locks. If that release fails
 before publication, the error includes both failures. If release publishes
 despite an error, only the reservation error returns.
 After queue acceptance, the reporter marks the reservation accepted and saves
-again. If that save fails, `Report` returns an error and an empty status even
-though the SDK accepted the event. The same `DailyClaims` instance retries
+again. If that save fails, `Report` returns `queued` and logs a warning through
+the configured logger. The same `DailyClaims` instance retries unpublished
 settlement as accepted on its next call. The persisted pending record keeps
 other instances from enqueueing the same date during recovery.
 Each key retains its 35 most recently accepted UTC dates in acceptance order.
 Returning to a retained date skips it, even after a wrong-clock report. Sparse
 activity can retain dates older than 35 calendar days. A previously accepted
 date outside this set may count again after a clock correction.
-Pending reservations do not evict accepted dates. Accepted settlement keeps
+Each key also retains at most 35 pending reservations. A new distinct date at
+that limit returns an error before enqueue and keeps every existing claim.
+Accepted settlement keeps
 the reservation's original order, including when another writer accepts later
 dates before cleanup retries.
 Reports compact all keys and remove empty keys under the claim lock. A skipped
@@ -54,6 +56,8 @@ records omit `pending`. Numeric versions other than the exact literals `1` and
 `2` that may be at least 1 are refused unchanged. Other unreadable content
 resets to empty claims. Read errors other than a missing file are returned.
 Request lock waits follow caller cancellation and deadlines; HTTP owners should bound request contexts as needed.
+Every writer sharing the claims path must support version 2. Older readers
+refuse the upgraded file and stop reporting daily events.
 A report racing `Close` can hold the in-process semaphore and daily file lock
 while waiting for SDK shutdown, up to `ShutdownTimeout`. Other reports on the
 same instance wait on the semaphore with the same context bound, so they and
@@ -62,8 +66,9 @@ Recovering damaged state forgets accepted dates and can count them again.
 
 Accepted reports mean SDK queue acceptance. A crash between reservation and
 acceptance can lose a count. Process exit before settlement can leave a pending
-record, which stays outside the 35 accepted-date limit until its owner retries.
-Unresolved reservations can accumulate if their owners exit before recovery.
+record until its owner retries. With 35 abandoned reservations, that key cannot
+report a new date until owners settle them or the caller replaces the state
+file. Replacing it forgets all deduplication history and can count dates again.
 The SDK can also fail network delivery after acceptance.
 
 Report screens on later focus, navigation or terminal interaction,

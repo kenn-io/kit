@@ -149,6 +149,9 @@ func jsonNumber(value json.RawMessage) (json.Number, bool) {
 }
 
 func (d *DailyClaims) report(ctx context.Context, logger *slog.Logger, identity, event, key string, now func() time.Time, send func(time.Time) (Status, error)) (Status, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	if err := d.sem.Acquire(ctx, 1); err != nil {
 		return "", fmt.Errorf("lock daily telemetry: %w", err)
 	}
@@ -247,13 +250,19 @@ func (d *DailyClaims) report(ctx context.Context, logger *slog.Logger, identity,
 	if slices.ContainsFunc(state.Days[claim], func(c dailyClaim) bool { return c.Day == day }) {
 		if compacted {
 			if err := save(); err != nil {
-				if logger == nil {
-					logger = slog.Default()
-				}
 				logger.WarnContext(ctx, "compact daily telemetry failed", "error", err)
 			}
 		}
 		return StatusSkipped, nil
+	}
+	pending := 0
+	for _, c := range state.Days[claim] {
+		if c.Pending {
+			pending++
+		}
+	}
+	if pending >= dailyClaimLimit {
+		return "", fmt.Errorf("pending daily telemetry limit reached (%d); settle reservations or replace the claims file", dailyClaimLimit)
 	}
 	d.pending = &dailyReservation{key: claim, day: day}
 	state.Days[claim] = append(state.Days[claim], dailyClaim{Day: day, Pending: true})
@@ -275,7 +284,7 @@ func (d *DailyClaims) report(ctx context.Context, logger *slog.Logger, identity,
 	if captureErr == nil && status == StatusQueued {
 		d.pending.accepted = true
 		if err := settle(); err != nil {
-			return "", fmt.Errorf("accept daily telemetry: %w", err)
+			logger.WarnContext(ctx, "accept daily telemetry failed", "error", err)
 		}
 		return status, nil
 	}
