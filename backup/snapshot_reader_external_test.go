@@ -89,6 +89,10 @@ func TestSnapshotReaderCopiesSelectedObjects(t *testing.T) {
 	cancel()
 	_, err = reader.CopyObject(ctx, ids[3], io.Discard)
 	require.ErrorIs(err, context.Canceled)
+	ctx, cancel = context.WithCancel(t.Context())
+	defer cancel()
+	_, err = reader.CopyObject(ctx, ids[3], snapshotCancelWriter{cancel})
+	require.ErrorIs(err, context.Canceled, "cancellation during output must fail the copy")
 	writeErr := errors.New("destination full")
 	_, err = reader.CopyObject(t.Context(), ids[3], snapshotFailWriter{writeErr})
 	require.ErrorIs(err, writeErr)
@@ -102,3 +106,10 @@ func TestSnapshotReaderCopiesSelectedObjects(t *testing.T) {
 type snapshotFailWriter struct{ err error }
 
 func (w snapshotFailWriter) Write([]byte) (int, error) { return 0, w.err }
+
+type snapshotCancelWriter struct{ cancel context.CancelFunc }
+
+func (w snapshotCancelWriter) Write(p []byte) (int, error) {
+	w.cancel()
+	return len(p), nil
+}

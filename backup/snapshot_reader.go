@@ -31,7 +31,7 @@ type SnapshotReader struct {
 	objects  map[pack.BlobID]SnapshotObject
 	extras   map[string]SnapshotObject
 	recipes  map[pack.BlobID]objectRecipe
-	open     blobOpener
+	packs    *packReaders
 	lease    *RepoLock
 	closed   bool
 	closeErr error
@@ -67,10 +67,8 @@ func (r *Repo) OpenSnapshot(ctx context.Context, snapshotID, packExtension strin
 		return nil, err
 	}
 	s.info = SnapshotInfo{RepositoryID: r.cfg.RepoID, SnapshotID: manifest.SnapshotID, MinReaderVersion: manifest.MinReaderVersion}
-	s.open = func(ctx context.Context, id pack.BlobID) (*BlobStream, error) {
-		return r.OpenBlob(ctx, known, id, nil, packExtension)
-	}
-	s.recipes, err = loadObjectRecipesWith(ctx, known, manifest, s.open)
+	s.packs = &packReaders{repo: r, known: known, ext: packExtension, readers: make(map[string]*cachedPack)}
+	s.recipes, err = loadObjectRecipesWith(ctx, known, manifest, s.packs.open)
 	if err != nil {
 		return nil, err
 	}
@@ -127,7 +125,7 @@ func (s *SnapshotReader) readMetadata(ctx context.Context, encoded string) ([]by
 	if err != nil {
 		return nil, fmt.Errorf("backup: snapshot metadata identity: %w", err)
 	}
-	stream, err := s.open(ctx, id)
+	stream, err := s.packs.open(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -195,7 +193,7 @@ func (s *SnapshotReader) CopyObject(ctx context.Context, id pack.BlobID, dst io.
 	if err != nil {
 		return 0, err
 	}
-	stream, err := openObjectWith(ctx, id, s.recipes, s.open)
+	stream, err := openObjectWith(ctx, id, s.recipes, s.packs.open)
 	if err != nil {
 		return 0, err
 	}
@@ -218,11 +216,15 @@ func (s *SnapshotReader) CopyExtra(ctx context.Context, name string, dst io.Writ
 	return s.CopyObject(ctx, object.ID, dst)
 }
 
-// Close releases the repository lease. Repeated calls return the first close result.
+// Close closes pack descriptors before releasing the repository lease.
+// Repeated calls return the first close result.
 func (s *SnapshotReader) Close() error {
 	if !s.closed {
 		s.closed = true
-		s.closeErr = s.lease.Release()
+		if s.packs != nil {
+			s.closeErr = s.packs.close()
+		}
+		s.closeErr = errors.Join(s.closeErr, s.lease.Release())
 	}
 	return s.closeErr
 }

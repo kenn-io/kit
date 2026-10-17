@@ -50,17 +50,25 @@ func (r *Repo) OpenBlob(
 			fmt.Errorf("backup: blob %s not found in pack %s (index inconsistency)", id, indexed.PackID),
 			reader.Close())
 	}
-	if authoritative.Offset != indexed.Offset || authoritative.StoredLen != indexed.StoredLen ||
-		authoritative.Flags != indexed.Flags {
-		return nil, errors.Join(
-			fmt.Errorf("backup: blob %s index metadata disagrees with pack %s footer", id, indexed.PackID),
-			reader.Close())
-	}
-	blob, err := reader.OpenBlob(ctx, *authoritative)
+	stream, err := openIndexedBlob(ctx, reader, *authoritative, indexed)
 	if err != nil {
 		return nil, errors.Join(err, reader.Close())
 	}
-	return &BlobStream{blob: blob, reader: reader, size: int64(authoritative.RawLen)}, nil
+	stream.reader = reader
+	return stream, nil
+}
+
+// The caller owns the pack; BlobStream owns only this entry's decoder.
+func openIndexedBlob(ctx context.Context, reader *pack.Reader, authoritative pack.Entry, indexed IndexEntry) (*BlobStream, error) {
+	if authoritative.Offset != indexed.Offset || authoritative.StoredLen != indexed.StoredLen ||
+		authoritative.Flags != indexed.Flags {
+		return nil, fmt.Errorf("backup: blob %s index metadata disagrees with pack %s footer", authoritative.ID, indexed.PackID)
+	}
+	blob, err := reader.OpenBlob(ctx, authoritative)
+	if err != nil {
+		return nil, err
+	}
+	return &BlobStream{blob: blob, size: int64(authoritative.RawLen)}, nil
 }
 
 // Read implements io.Reader.
@@ -81,7 +89,10 @@ func (s *BlobStream) Close() error {
 		return s.closeErr
 	}
 	s.closed = true
-	s.closeErr = errors.Join(s.blob.Close(), s.reader.Close())
+	s.closeErr = s.blob.Close()
+	if s.reader != nil {
+		s.closeErr = errors.Join(s.closeErr, s.reader.Close())
+	}
 	return s.closeErr
 }
 

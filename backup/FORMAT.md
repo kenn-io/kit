@@ -282,6 +282,57 @@ SHA-256 trailer
 
 A snapshot's manifest references one or more list blobs whose union is exactly the attachment population of that snapshot. In the common append-only case, a snapshot inherits its parent's list blobs and adds one new segment; when the live set has shrunk (attachments were deleted), the snapshot writes one fresh full list instead, so the union invariant holds in both directions. Attachment content is re-read and re-hashed at every capture — from the attachments directory, or from an application-supplied `ContentSource` when `CreateOptions.ContentSource` is set — and content whose bytes no longer match the recorded hash fails the backup rather than being stored wrong. The wire format is identical either way; the source only changes where capture acquires bytes.
 
+## Reading selected snapshot files
+
+`Repo.OpenSnapshot(ctx, snapshotID, packExtension)` reads an exact snapshot
+without restoring its database or content store. `Object(hash)` and
+`Extra(name)` return the logical hash and size of files listed in that snapshot.
+Objects found only in another snapshot or an orphaned pack are not members.
+Recipe records, chunks, and portable metadata are not separate members unless
+an attachment list or extras tree also lists them as files.
+
+`CopyObject` and `CopyExtra` stream and verify the complete file, including every
+chunk and the whole-file hash and length. A failure can leave partial bytes in
+the destination: discard all output unless the copy and destination close
+succeed. These methods do not publish or remove the caller's output files.
+
+A reader holds a shared repository lease and caches at most 64 open packs and
+their verified footers. Use it sequentially and close it promptly, preferably
+after copying one group of files and before parsing them. Metadata lookups still
+work after close; copying requires an open reader. A fresh reader reloads pack
+placement because prune can relocate objects between reads.
+
+Backups and ordinary maintenance need an exclusive lease. Opening a reader
+during either operation returns `ErrRepoLocked`; retry later. A backup waits up
+to 60 seconds for existing readers, then returns the same retryable error.
+Forced maintenance can invalidate reader leases; missing or damaged files fail
+the copy. Never switch snapshots or force access in response to a read failure.
+Lease heartbeat files require a writable repository even when only reading
+archive payloads. Attaching a reader does not retain a snapshot against future
+forget operations.
+
+For example, copy one extra to a private temporary file, release the lease,
+then pass that file to the application for inspection:
+
+```go
+func copyExtra(ctx context.Context, repo *backup.Repo, snapshotID, ext, name string) (string, error) {
+    reader, err := repo.OpenSnapshot(ctx, snapshotID, ext)
+    if err != nil {
+        return "", err
+    }
+    file, err := os.CreateTemp("", "snapshot-extra-*")
+    if err != nil {
+        return "", errors.Join(err, reader.Close())
+    }
+    _, copyErr := reader.CopyExtra(ctx, name, file)
+    if err := errors.Join(copyErr, file.Close(), reader.Close()); err != nil {
+        return "", errors.Join(err, os.Remove(file.Name()))
+    }
+    // The caller can inspect the verified file now, then remove it.
+    return file.Name(), nil
+}
+```
+
 ## Snapshot Manifests
 
 A manifest is indented JSON with a fixed field set: format versions, `snapshot_id`, `parent_id`, `created_at` (RFC 3339 UTC), capture options, database geometry and page-map/hash-map chain heads, attachment lists and totals, extras tree, exclusions, stats, the packs and index added, duration, and bytes added.
