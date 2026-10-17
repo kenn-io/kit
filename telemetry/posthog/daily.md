@@ -22,43 +22,31 @@ Daily keys must be caller-owned properties; reporter defaults cannot identify a 
 
 The state file reserves each installation, event and screen before SDK enqueue.
 The in-process semaphore and file lock cover reservation, enqueue and settlement.
-A rejected enqueue releases only its pending record. A failed reservation save
-releases any published reservation under the same locks. If that release fails
-before publication, the error includes both failures. If release publishes
-despite an error, only the reservation error returns.
-After queue acceptance, the reporter marks the reservation accepted and saves
-again. If that save fails, `Report` returns `queued` and logs a warning through
-the configured logger. The same `DailyClaims` instance retries
-settlement as accepted on its next call. The persisted pending record keeps
-other instances from enqueueing the same date during recovery.
-Each key retains its 35 most recently accepted UTC dates in acceptance order.
-Returning to a retained date skips it, even after a wrong-clock report. Sparse
-activity can retain dates older than 35 calendar days. A previously accepted
-date outside this set may count again after a clock correction.
-Unresolved reservations keep their date in the normal list and add a separate
-four-part JSON key containing the installation, event, screen, and an instance
-owner token. Its value is a one-date list. Settlement removes that owner's
-marker, so an old owner cannot release a replacement claim for a retired date.
-Accepted settlement keeps
-the reservation's original order, including when another writer accepts later
-dates before cleanup retries.
-Reports compact all keys and remove empty keys under the claim lock. A skipped
-report saves only when compaction changed the state. If that housekeeping save
-fails, the reporter logs a warning, returns `skipped`, and retries compaction
-on a later report. Other storage failures return errors.
-Reservation, event timestamp and installation age use one time sampled under
-the claim lock.
+Rejected enqueues release their reservation. Failed reservation saves release
+published claims; errors include both failures if cleanup fails before publication.
+After acceptance, settlement saves again. A failed save warns and returns `queued`;
+the same `DailyClaims` instance retries settlement on its next call.
+Each key keeps its 35 most recently accepted UTC dates in reservation order,
+even when another writer accepts later dates before settlement retries. Retained
+dates skip after clock corrections; older dates can count again. Sparse activity
+can retain dates older than 35 calendar days. Unresolved reservations add a
+four-string JSON key containing the installation, event, screen, and owner token,
+with a one-date list as its value. Tokens protect replacement claims from stale
+cleanup by token-aware writers. Reports compact every key, including on skips;
+a failed skip-path save warns and returns `skipped`. Other storage failures
+return errors. Reservation, event timestamp and installation age use one time
+sampled under the claim lock.
 
 Use `Report` with a caller context. Reports on the same `DailyClaims` instance
 wait on an in-process semaphore before the file lock. Both waits honor the
-caller's context; `Capture` bounds them with `ShutdownTimeout`. The file keeps
-version 1 and date-string lists. Released v1 readers preserve unresolved
-metadata while reading and rewriting the file. Upgrade all writers sharing a
-path together: a released writer cannot mark its own reservation unresolved
-or distinguish it from a replacement during stale cleanup.
-Numeric versions other than the exact literal `1` that may be at least 1 are
-refused unchanged. Other unreadable content resets to empty claims. Read
-errors other than a missing file are returned.
+caller's context; `Capture` bounds them with `ShutdownTimeout`. Version 1 date
+lists remain readable and writable by released readers. Upgrade writers sharing
+a path together: after 35 later acceptances retire a date and a clock rollback
+reuses it, a released writer's late cleanup can delete that retained date,
+allowing it to count again.
+A numeric version that may be 1 or more but isn't written as `1`, for example
+`2` or `1.0`, is refused unchanged. Other unreadable content resets to empty
+claims. Read errors other than a missing file are returned.
 Request lock waits follow caller cancellation and deadlines; HTTP owners should bound request contexts as needed.
 A report racing `Close` can hold the in-process semaphore and daily file lock
 while waiting for SDK shutdown, up to `ShutdownTimeout`. Other reports on the
@@ -66,14 +54,11 @@ same instance wait on the semaphore with the same context bound, so they and
 other writers can time out and retry.
 Recovering damaged state forgets accepted dates and can count them again.
 
-Accepted reports mean SDK queue acceptance. A crash between reservation and
-acceptance can lose a count. Process exit before settlement can leave a pending
-record until its owner retries or 35 later known acceptances retire it. New
-dates can report while old reservations remain unresolved. Repeated failures
-can grow this uncertain history until those later acceptances drain it; the
-35-date bound applies to known accepted dates. Replacing the file forgets all
-deduplication history and can count dates again.
-The SDK can also fail network delivery after acceptance.
+Accepted reports mean SDK queue acceptance; crashes before acceptance or failed
+network delivery can lose a count. Unresolved reservations dedupe until their
+owner retries or 35 later known acceptances retire them. New dates can report
+throughout recovery. Repeated failures can grow unresolved history; the 35-date
+bound applies to known accepted dates. Replacing the file forgets all claims.
 
 Report screens on later focus, navigation or terminal interaction,
 independently of app-open reporting. Use delivery results to detect failures

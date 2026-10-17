@@ -20,25 +20,17 @@ running heartbeats stop at the next hourly check after disabling. SDK logs use
 the supplied slog logger (or slog.Default), preserving levels and the
 application's log sink.
 
-Daily claims take a context-aware instance semaphore and file lock and hold
-both through queue acceptance and rollback. Reserve durably before enqueue;
-retain the 35 most recently accepted UTC dates per key in acceptance order.
-Track unresolved reservations with owner tokens in v1-compatible metadata.
-Retire older uncertainty after 35 later known acceptances; stale owners
-cannot settle a replacement reservation. Settlement
-preserves reservation order across writers. Reservation and enqueue use one
-time sampled under the lock. Skipped-report compaction is best effort and logs
-failures. After queue acceptance, settlement storage failures warn through the
-configured logger and return StatusQueued; retry settlement on the
-next call. Other storage failures return errors.
-Failed reservation saves release published claims under the same lock.
-Pending cleanup follows visible publication, including durability failures.
-Keep version 1 date-string lists; unresolved metadata uses four-part JSON keys
-with the normal claim's three strings and an instance owner token. Upgrade
-writers sharing a path together because released writers cannot identify their
-own reservations during stale cleanup. Numeric versions other than the exact
-literal `1` that may be at least 1 are refused unchanged.
-Other unreadable content resets to empty claims. Read errors other than a
-missing file are returned.
-Applications own finite property enums and client retries. Queue acceptance does
-not guarantee eventual network delivery.
+Daily claims hold a context-aware instance semaphore and file lock through durable
+reservation, enqueue, and settlement. Retain the 35 most recently accepted UTC
+dates per key in reservation order. Keep v1-compatible owner markers; retire
+uncertainty after 35 later known acceptances. Tokens protect replacement claims
+from stale cleanup by token-aware writers. Upgrade shared-path writers together:
+a released writer's late cleanup can delete a reused retained date and count it
+again. Sample time under the lock. Failed skip compaction warns and returns
+StatusSkipped; failed acceptance settlement warns and returns StatusQueued, then
+retries on the same instance's next call. Other storage failures return errors.
+Release published reservations under the same lock, including durability errors.
+Refuse numeric versions that may be at least 1 except literal `1`; reset damaged
+content and return read errors other than a missing file. See daily.md for the
+persisted format and recovery rules. Applications own finite property enums and
+client retries. Queue acceptance does not guarantee network delivery.
