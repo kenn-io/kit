@@ -163,6 +163,14 @@ func decodeObjectRecipe(raw []byte) (objectRecipe, error) {
 }
 
 func loadObjectRecipes(ctx context.Context, repo *Repo, known map[pack.BlobID]IndexEntry, manifest *Manifest, ext string) (map[pack.BlobID]objectRecipe, error) {
+	return loadObjectRecipesWith(ctx, known, manifest, func(ctx context.Context, id pack.BlobID) (*BlobStream, error) {
+		return repo.OpenBlob(ctx, known, id, nil, ext)
+	})
+}
+
+type blobOpener func(context.Context, pack.BlobID) (*BlobStream, error)
+
+func loadObjectRecipesWith(ctx context.Context, known map[pack.BlobID]IndexEntry, manifest *Manifest, open blobOpener) (map[pack.BlobID]objectRecipe, error) {
 	ids := append([]string(nil), manifest.Attachments.Recipes...)
 	ids = append(ids, manifest.Extras.Recipes...)
 	if manifest.Metadata != nil && manifest.Metadata.Recipe != "" {
@@ -174,7 +182,7 @@ func loadObjectRecipes(ctx context.Context, repo *Repo, known map[pack.BlobID]In
 		if err != nil {
 			return nil, fmt.Errorf("backup: recipe identity: %w", err)
 		}
-		stream, err := repo.OpenBlob(ctx, known, id, nil, ext)
+		stream, err := open(ctx, id)
 		if err != nil {
 			return nil, err
 		}
@@ -265,19 +273,23 @@ type verifiedObjectStream interface {
 }
 
 func openObject(ctx context.Context, repo *Repo, known map[pack.BlobID]IndexEntry, id pack.BlobID, recipes map[pack.BlobID]objectRecipe, ext string) (verifiedObjectStream, error) {
+	return openObjectWith(ctx, id, recipes, func(ctx context.Context, id pack.BlobID) (*BlobStream, error) {
+		return repo.OpenBlob(ctx, known, id, nil, ext)
+	})
+}
+
+func openObjectWith(ctx context.Context, id pack.BlobID, recipes map[pack.BlobID]objectRecipe, open blobOpener) (verifiedObjectStream, error) {
 	recipe, found := recipes[id]
 	if !found {
-		return repo.OpenBlob(ctx, known, id, nil, ext)
+		return open(ctx, id)
 	}
-	return &recipeStream{ctx: ctx, repo: repo, known: known, recipe: recipe, ext: ext, digest: sha256.New()}, nil
+	return &recipeStream{ctx: ctx, open: open, recipe: recipe, digest: sha256.New()}, nil
 }
 
 type recipeStream struct {
 	ctx      context.Context
-	repo     *Repo
-	known    map[pack.BlobID]IndexEntry
+	open     blobOpener
 	recipe   objectRecipe
-	ext      string
 	digest   hash.Hash
 	next     int
 	current  *BlobStream
@@ -318,7 +330,7 @@ func (s *recipeStream) Read(p []byte) (int, error) {
 			}
 			chunk := s.recipe.Chunks[s.next]
 			id, _ := pack.ParseBlobID(chunk.Blob)
-			stream, err := s.repo.OpenBlob(s.ctx, s.known, id, nil, s.ext)
+			stream, err := s.open(s.ctx, id)
 			if err != nil {
 				s.err = err
 				return 0, err
