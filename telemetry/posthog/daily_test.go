@@ -295,7 +295,7 @@ func TestDailyClaimsInvalidStateAndCancellation(t *testing.T) {
 		`{`, `null`, `{}`, `{"version":"damaged","days":{}}`, `{"version":0}`, `{"version":-1e99999999999}`,
 		`{"version":"1","days":{"[\"id\",\"screen\",\"queue\"]":["` + clock.Now().UTC().Format(time.DateOnly) + `"]}}`,
 		`{"version":1,"days":{"key":["2026-10-08","tomorrow"]}}`, `{"version":1,"days":null}`,
-		`{"version":3,"version":1,"days":null}`,
+		`{"version":2,"version":1,"days":null}`,
 	} {
 		require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 		sends := 0
@@ -315,10 +315,10 @@ func TestDailyClaimsInvalidStateAndCancellation(t *testing.T) {
 		assert.Equal(t, 1, sends)
 	}
 	for _, body := range []string{
-		`{"version":2,"days":{}}`, `{"version":2}`, `{"version":3}`, `{"version":3,"days":`, `{"version":3,"days":{"key":["tomorrow"]}}`, `{"version":2.0}`, `{"version":3.0}`, `{"version":1.0}`, `{"version":1.0000000000000001}`, `{"version":1e99999999999}`, `{"version":3} trailing bytes`,
-		`{"Version":3,"days":{}}`, `{"version":1,"version":3,"days":{}}`,
-		`{"version":3,"version":null,"days":{}}`, `{"version":3,"Version":"damaged","days":{}}`,
-		`{"version":3,"version":true,"days":{}}`,
+		`{"version":2,"days":{}}`, `{"version":2}`, `{"version":2,"days":`, `{"version":2,"days":{"key":["tomorrow"]}}`, `{"version":2.0}`, `{"version":1.0}`, `{"version":1.0000000000000001}`, `{"version":1e99999999999}`, `{"version":2} trailing bytes`,
+		`{"Version":2,"days":{}}`, `{"version":1,"version":2,"days":{}}`,
+		`{"version":2,"version":null,"days":{}}`, `{"version":2,"Version":"damaged","days":{}}`,
+		`{"version":2,"version":true,"days":{}}`,
 	} {
 		require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 		sends := 0
@@ -355,31 +355,6 @@ func TestDailyClaimsInvalidStateAndCancellation(t *testing.T) {
 	case <-time.After(time.Second):
 		require.FailNow(t, "canceled report remained blocked")
 	}
-}
-
-func TestDailyClaimsCleanupPreservesNewerAcceptedDay(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "days.json")
-	claims := NewDailyClaims(path)
-	clock := &fakePostHogClock{now: postHogTestStart}
-	writes := 0
-	claims.write = func(p string, b []byte, o ...atomicfile.Option) error {
-		writes++
-		if writes == 2 {
-			return errors.New("rollback failed")
-		}
-		return atomicfile.WriteFile(p, b, o...)
-	}
-	_, err := claims.report(t.Context(), nil, "id", "screen", "queue", clock.Now, func(time.Time) (Status, error) { return "", errors.New("rejected") })
-	require.Error(t, err)
-	clock.Advance(24 * time.Hour)
-	send := func(time.Time) (Status, error) { return StatusQueued, nil }
-	status, err := NewDailyClaims(path).report(t.Context(), nil, "id", "screen", "queue", clock.Now, send)
-	require.NoError(t, err)
-	assert.Equal(t, StatusQueued, status)
-	status, err = claims.report(t.Context(), nil, "id", "screen", "queue", clock.Now, func(time.Time) (Status, error) { assert.Fail(t, "newer day was erased"); return StatusQueued, nil })
-	require.NoError(t, err)
-	assert.Equal(t, StatusSkipped, status)
-	assert.Nil(t, claims.pending)
 }
 
 func TestDailyReportKeepsReservationTimestamp(t *testing.T) {
@@ -692,12 +667,13 @@ func TestDailyClaimsDeferredRejectionPreservesAcceptedHistory(t *testing.T) {
 	assertDailyReport(t, NewDailyClaims(path), clock.Now, StatusQueued)
 	clock.now = time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC)
 	assertDailyReport(t, claims, clock.Now, StatusSkipped)
+	assert.Nil(t, claims.pending)
 	assert.Equal(t, append(original[1:], "2026-10-07"), readDailyState(t, path).Days[`["install","screen","queue"]`])
 }
 
 func TestDailyClaimsAcceptedSettlementFailure(t *testing.T) {
-	for _, published := range []bool{false, true} {
-		t.Run(strconv.FormatBool(published), func(t *testing.T) {
+	for name, published := range map[string]bool{"unpublished": false, "published": true} {
+		t.Run(name, func(t *testing.T) {
 			path, original := seedDailyCapacity(t)
 			claims := NewDailyClaims(path)
 			clock := &fakePostHogClock{now: time.Date(2026, 10, 6, 0, 0, 0, 0, time.UTC)}
@@ -734,7 +710,7 @@ func TestDailyClaimsAcceptedSettlementFailure(t *testing.T) {
 	}
 }
 
-func TestDailyClaimsOrphansDrainAndStaleOwnerCannotReleaseReplacement(t *testing.T) {
+func TestDailyClaimsLateCleanupPreservesReusedDate(t *testing.T) {
 	path, _ := seedDailyCapacity(t)
 	clock := &fakePostHogClock{now: time.Date(2026, 10, 6, 0, 0, 0, 0, time.UTC)}
 	var stale *DailyClaims

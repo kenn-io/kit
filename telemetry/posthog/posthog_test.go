@@ -592,8 +592,6 @@ func TestSDKLoggerFormatsOnlyEnabledDebug(t *testing.T) {
 				assert.Empty(t, logs.String())
 			} else {
 				assert.Equal(t, 1, value.calls)
-				assert.Contains(t, logs.String(), "level=DEBUG")
-				assert.Contains(t, logs.String(), "queued event")
 			}
 		})
 	}

@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -40,8 +39,8 @@ func (c *heartbeatClient) count() int {
 }
 
 func TestRunHeartbeatStopsWhenDisabled(t *testing.T) {
-	for _, initiallyDisabled := range []bool{true, false} {
-		t.Run(strconv.FormatBool(initiallyDisabled), func(t *testing.T) {
+	for name, initiallyDisabled := range map[string]bool{"initially disabled": true, "disabled after first send": false} {
+		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				client := &heartbeatClient{}
 				client.disabled.Store(initiallyDisabled)
