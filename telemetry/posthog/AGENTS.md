@@ -2,10 +2,12 @@
 
 The reporter owns event admission, property filtering, identity and default
 properties; HTTP and direct capture share Report. HTTP validates required
-properties before enabled state. The handler requires application/json so
-browsers preflight cross-origin posts, and it bounds the body itself rather
-than trusting the caller's router. Opted-out construction keeps the configured
-allowlist without creating a client. Close waits at most ShutdownTimeout.
+properties before enabled state. Capture-specific event rejection follows
+method, content-type, bounded decoding and trailing-data checks, before Report.
+The handler requires application/json so browsers preflight cross-origin posts,
+and it bounds the body itself rather than trusting the caller's router.
+Opted-out construction keeps the configured allowlist without creating a client.
+Close waits at most ShutdownTimeout.
 
 The package imports no OpenTelemetry, so products that only report events stay
 small; TestPackageLinksNoOpenTelemetry guards this. Applications own route

@@ -122,7 +122,61 @@ func TestPostHogCaptureHandlerCapturesAllowedEventWithAllowedProperties(t *testi
 	assert.Equal(t, reporter.application, message.Properties["application"])
 }
 
-func TestPostHogCaptureHandlerRejectsUnknownEventInEveryState(t *testing.T) {
+func TestPostHogCaptureHandlerRejectEventsOnlyRestrictsConfiguredHandler(t *testing.T) {
+	reporter, client, _ := newInstallAgeTestReporter(t, postHogTestStart,
+		captureHandlerTestOption(), WithAllowedEvent("background_ready"), WithAllowedEvent("archive_ready"))
+	handler := NewCaptureHandler(reporter, RejectEvents("background_ready"), RejectEvents("archive_ready"))
+	for _, event := range []string{"background_ready", " background_ready ", "archive_ready"} {
+		rec := postCapture(t, handler, http.MethodPost, `{"event":"`+event+`"}`)
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+		assert.Equal(t, ErrUnsupportedEvent.Error()+"\n", rec.Body.String())
+	}
+	assert.Empty(t, client.messages)
+
+	rec := postCapture(t, handler, http.MethodPost, `{"event":"app_opened"}`)
+	require.Equal(t, http.StatusAccepted, rec.Code)
+	assert.Equal(t, "queued", decodeStatus(t, rec))
+
+	rec = postCapture(t, NewCaptureHandler(reporter), http.MethodPost, `{"event":"background_ready"}`)
+	require.Equal(t, http.StatusAccepted, rec.Code)
+	assert.Equal(t, "queued", decodeStatus(t, rec))
+
+	status, err := reporter.Report(t.Context(), "archive_ready", nil)
+	require.NoError(t, err)
+	assert.Equal(t, StatusQueued, status)
+	require.Len(t, client.messages, 3)
+	assert.Equal(t, "app_opened", client.messages[0].Event)
+	assert.Equal(t, "background_ready", client.messages[1].Event)
+	assert.Equal(t, "archive_ready", client.messages[2].Event)
+}
+
+func TestPostHogCaptureHandlerRejectEventsPreservesRequestValidation(t *testing.T) {
+	tests := []struct {
+		name        string
+		method      string
+		contentType string
+		body        string
+		code        int
+		message     string
+	}{
+		{"method", http.MethodGet, "text/plain", `{"event":"app_opened"}`, http.StatusMethodNotAllowed, "method not allowed\n"},
+		{"content_type", http.MethodPost, "text/plain", `{"event":"app_opened"}`, http.StatusUnsupportedMediaType, "telemetry request must be application/json\n"},
+		{"oversized_trailing_space", http.MethodPost, "application/json", `{"event":"app_opened"}` + strings.Repeat(" ", 64<<10), http.StatusRequestEntityTooLarge, "telemetry request too large\n"},
+		{"trailing_data", http.MethodPost, "application/json", `{"event":"app_opened"} trailing`, http.StatusBadRequest, "invalid telemetry request\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reporter, client, _ := newInstallAgeTestReporter(t, postHogTestStart, captureHandlerTestOption())
+			handler := NewCaptureHandler(reporter, RejectEvents("app_opened"))
+			rec := postCaptureAs(t, handler, tt.method, tt.contentType, tt.body)
+			assert.Equal(t, tt.code, rec.Code)
+			assert.Equal(t, tt.message, rec.Body.String())
+			assert.Empty(t, client.messages)
+		})
+	}
+}
+
+func TestPostHogCaptureHandlerRejectsEventsInEveryState(t *testing.T) {
 	states := []captureHandlerTestState{
 		{name: "enabled", build: func(t *testing.T) (*Reporter, func() int, func() int) {
 			t.Helper()
@@ -149,10 +203,15 @@ func TestPostHogCaptureHandlerRejectsUnknownEventInEveryState(t *testing.T) {
 	for _, state := range states {
 		t.Run(state.name, func(t *testing.T) {
 			reporter, sent, factoryCalls := state.build(t)
-			handler := NewCaptureHandler(reporter)
 			for _, body := range bodies {
+				rec := postCapture(t, NewCaptureHandler(reporter), http.MethodPost, body)
+				assert.Equal(t, http.StatusBadRequest, rec.Code, body)
+			}
+			handler := NewCaptureHandler(reporter, RejectEvents(" app_opened "))
+			for _, body := range []string{`{"event":"app_opened"}`} {
 				rec := postCapture(t, handler, http.MethodPost, body)
 				assert.Equal(t, http.StatusBadRequest, rec.Code, body)
+				assert.Equal(t, ErrUnsupportedEvent.Error()+"\n", rec.Body.String(), body)
 			}
 			assert.Zero(t, sent())
 			if factoryCalls != nil {
