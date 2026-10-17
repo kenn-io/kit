@@ -592,3 +592,82 @@ func TestDailyReportSerializationFailureThenSameDayRetry(t *testing.T) {
 	assert.Equal(t, "screen_viewed", events[0].Event)
 	assert.Equal(t, "corrected", events[0].Properties["value"])
 }
+
+func TestDailyClaimsPrunesOnSkippedReport(t *testing.T) {
+	for _, failWrite := range []bool{false, true} {
+		t.Run(strconv.FormatBool(failWrite), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "days.json")
+			state := dailyState{Version: 1, Days: map[string][]string{"expired": {"2025-10-17"}}}
+			for key := range 10 {
+				claim, err := json.Marshal([]string{"install", "screen", strconv.Itoa(key)})
+				require.NoError(t, err)
+				for day := range 366 {
+					state.Days[string(claim)] = append(state.Days[string(claim)], time.Date(2026, 10, 17, 0, 0, 0, 0, time.UTC).AddDate(0, 0, -day).Format(time.DateOnly))
+				}
+			}
+			data, err := json.Marshal(state)
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(path, data, 0o600))
+			claims := NewDailyClaims(path)
+			writeErr := errors.New("storage unavailable")
+			if failWrite {
+				claims.write = func(string, []byte, ...atomicfile.Option) error { return writeErr }
+			}
+			sends := 0
+			report := func(c *DailyClaims) (Status, error) {
+				return c.report(t.Context(), "install", "screen", "0", func() time.Time { return time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC) }, func(time.Time) (Status, error) { sends++; return StatusQueued, nil })
+			}
+			status, err := report(claims)
+			assert.Zero(t, sends)
+			if failWrite {
+				require.ErrorIs(t, err, writeErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, StatusSkipped, status)
+			data, err = os.ReadFile(path)
+			require.NoError(t, err)
+			state = dailyState{}
+			require.NoError(t, json.Unmarshal(data, &state))
+			assert.Len(t, state.Days, 10)
+			assert.NotContains(t, state.Days, "expired")
+			for _, days := range state.Days {
+				assert.Len(t, days, 36)
+				assert.Contains(t, days, "2026-09-12")
+				for _, day := range days {
+					assert.GreaterOrEqual(t, day, "2026-09-12")
+					assert.LessOrEqual(t, day, "2026-10-17")
+				}
+			}
+			status, err = report(NewDailyClaims(path))
+			require.NoError(t, err)
+			assert.Equal(t, StatusSkipped, status)
+			claims.write = func(string, []byte, ...atomicfile.Option) error { return writeErr }
+			_, err = report(claims)
+			require.NoError(t, err, "unchanged skipped claims must not write")
+			assert.Zero(t, sends)
+		})
+	}
+}
+
+func TestDailyClaimsRollbackWindow(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "days.json")
+	clock := &fakePostHogClock{now: time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)}
+	sends := 0
+	report := func(want Status) {
+		status, err := NewDailyClaims(path).report(t.Context(), "install", "screen", "queue", clock.Now, func(time.Time) (Status, error) { sends++; return StatusQueued, nil })
+		require.NoError(t, err)
+		assert.Equal(t, want, status)
+	}
+	report(StatusQueued)
+	clock.Advance(24 * time.Hour)
+	report(StatusQueued)
+	clock.Advance(35 * 24 * time.Hour)
+	report(StatusQueued)
+	clock.Advance(-35 * 24 * time.Hour)
+	report(StatusSkipped)
+	clock.Advance(-24 * time.Hour)
+	report(StatusQueued)
+	report(StatusSkipped)
+	assert.Equal(t, 4, sends)
+}

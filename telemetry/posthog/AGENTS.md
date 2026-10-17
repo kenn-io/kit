@@ -15,12 +15,15 @@ registration, authentication, where the install file lives, when the
 heartbeat runs and reporter shutdown.
 
 The heartbeat checks wall-clock UTC dates hourly so system sleep does not turn
-daily activity into a count of awake hours. SDK logs use the supplied slog
-logger (or slog.Default), preserving levels and the application's log sink.
+daily activity into a count of awake hours. Disabled clients start no ticker;
+running heartbeats stop at the next hourly check after disabling. SDK logs use
+the supplied slog logger (or slog.Default), preserving levels and the application's log sink.
 
 Daily claims take a context-aware instance semaphore and file lock and hold
 both through queue acceptance and rollback. Reserve durably before enqueue;
-retain accepted dates and deduplicate by membership. Reservation and enqueue
+retain accepted dates in a 35-day UTC age window per key and deduplicate by
+membership. The inclusive cutoff can retain 36 dates. A clock correction beyond
+the window resets it around today and may repeat a count. Reservation and enqueue
 use one time sampled under the lock.
 Rejected captures release their reservation; storage failures return errors.
 Failed reservation saves release published claims under the same lock.

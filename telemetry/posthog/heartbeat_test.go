@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -15,9 +17,10 @@ import (
 )
 
 type heartbeatClient struct {
-	mu     sync.Mutex
-	events []string
-	err    error
+	mu       sync.Mutex
+	events   []string
+	err      error
+	disabled atomic.Bool
 }
 
 func (c *heartbeatClient) Capture(event string, _ map[string]any) error {
@@ -28,7 +31,36 @@ func (c *heartbeatClient) Capture(event string, _ map[string]any) error {
 }
 
 func (c *heartbeatClient) Close() error  { return nil }
-func (c *heartbeatClient) Enabled() bool { return true }
+func (c *heartbeatClient) Enabled() bool { return !c.disabled.Load() }
+
+func TestRunHeartbeatStopsWhenDisabled(t *testing.T) {
+	for _, initiallyDisabled := range []bool{true, false} {
+		t.Run(strconv.FormatBool(initiallyDisabled), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				client := &heartbeatClient{}
+				client.disabled.Store(initiallyDisabled)
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				done := make(chan struct{})
+				go func() { RunHeartbeat(ctx, client, nil); close(done) }()
+				synctest.Wait()
+				want := 0
+				if !initiallyDisabled {
+					want = 1
+					client.disabled.Store(true)
+					time.Sleep(time.Hour)
+					synctest.Wait()
+				}
+				select {
+				case <-done:
+				default:
+					assert.Fail(t, "disabled heartbeat must return while context is active")
+				}
+				assert.Equal(t, want, client.count())
+			})
+		})
+	}
+}
 
 func (c *heartbeatClient) count() int {
 	c.mu.Lock()

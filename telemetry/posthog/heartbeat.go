@@ -17,6 +17,9 @@ const (
 // first hourly check of a later UTC day until ctx ends. The client must allow the event. Capture
 // errors are logged to logger, or slog.Default when logger is nil.
 func RunHeartbeat(ctx context.Context, client Client, logger *slog.Logger) {
+	if !client.Enabled() {
+		return
+	}
 	ticker := time.NewTicker(HeartbeatInterval)
 	defer ticker.Stop()
 	runHeartbeat(ctx, client, ticker.C, time.Now, logger)
@@ -28,6 +31,9 @@ func runHeartbeat(ctx context.Context, client Client, ticks <-chan time.Time, no
 	}
 	var lastDay time.Time
 	for ctx.Err() == nil {
+		if !client.Enabled() {
+			return
+		}
 		// Read wall time afresh: a ticker may carry an old timestamp after sleep.
 		day := now().UTC().Truncate(24 * time.Hour)
 		if day.After(lastDay) {

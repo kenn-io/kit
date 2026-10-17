@@ -180,7 +180,35 @@ func (d *DailyClaims) report(ctx context.Context, identity, event, key string, n
 	claim := string(encoded)
 	timestamp := now().UTC()
 	day := timestamp.Format(time.DateOnly)
+	pruned := false
+	for key, days := range state.Days {
+		newest := day
+		for _, accepted := range days {
+			newest = max(newest, accepted)
+		}
+		anchor, _ := time.Parse(time.DateOnly, newest) // Dates were validated on load.
+		cutoff := anchor.AddDate(0, 0, -35).Format(time.DateOnly)
+		if day < cutoff {
+			// A large clock correction starts a new window around today.
+			newest = day
+			cutoff = timestamp.AddDate(0, 0, -35).Format(time.DateOnly)
+		}
+		kept := slices.DeleteFunc(days, func(accepted string) bool { return accepted < cutoff || accepted > newest })
+		if len(kept) != len(days) || len(kept) == 0 {
+			pruned = true
+		}
+		if len(kept) == 0 {
+			delete(state.Days, key)
+		} else {
+			state.Days[key] = kept
+		}
+	}
 	if slices.Contains(state.Days[claim], day) {
+		if pruned {
+			if err := save(); err != nil {
+				return "", fmt.Errorf("prune daily telemetry: %w", err)
+			}
+		}
 		return StatusSkipped, nil
 	}
 	d.pending = &dailyReservation{key: claim, day: day}

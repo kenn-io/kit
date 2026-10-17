@@ -27,11 +27,15 @@ published claim under the same locks. Storage failures return errors for a
 later retry; if release fails before publication, the error includes both
 failures. If release publishes despite an error, only the reservation error
 returns.
-Claims retain accepted UTC dates, so correcting a future clock permits an
-unreported date and returning to a counted date skips it. Dates remain in the
-file because pruning could repeat a count after clock correction. The file
-grows by one date per accepted installation, event, key and day. Reservation,
-event timestamp and installation age use one time sampled under the claim lock.
+Each key retains accepted UTC dates within a 35-day age window ending at today
+or its newest accepted date, whichever is later. The inclusive cutoff can keep
+36 date labels. Returning to an accepted date within that window skips it.
+A clock correction beyond the window resets it around today and may count a
+previously accepted day again; same-day retries still skip. Reports prune all
+keys and remove empty keys under the claim lock. A skipped report saves only
+when pruning changed the state, and storage failures return errors.
+Reservation, event timestamp and installation age use one time sampled under
+the claim lock.
 
 Use `Report` with a caller context. Reports on the same `DailyClaims` instance
 wait on an in-process semaphore before the file lock. Both waits honor the
