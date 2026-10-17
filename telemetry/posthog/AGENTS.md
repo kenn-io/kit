@@ -30,7 +30,7 @@ file, which forgets all deduplication history. Settlement
 preserves reservation order across writers. Reservation and enqueue use one
 time sampled under the lock. Skipped-report compaction is best effort and logs
 failures. After queue acceptance, settlement storage failures warn through the
-configured logger and return StatusQueued; retry unpublished settlement on the
+configured logger and return StatusQueued; retry settlement on the
 next call. Other storage failures return errors.
 Failed reservation saves release published claims under the same lock.
 Pending cleanup follows visible publication, including durability failures.

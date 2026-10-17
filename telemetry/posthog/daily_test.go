@@ -814,6 +814,48 @@ func TestDailyClaimsPendingLimit(t *testing.T) {
 	assert.Equal(t, 36, sends)
 }
 
+func TestDailyClaimsPendingLimitPersistsCompaction(t *testing.T) {
+	for _, failSave := range []bool{false, true} {
+		t.Run(strconv.FormatBool(failSave), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "days.json")
+			key := `["install","screen","queue"]`
+			claims := make([]dailyClaim, 75)
+			for i := range claims {
+				claims[i] = dailyClaim{Day: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).AddDate(0, 0, i).Format(time.DateOnly), Pending: i >= 40}
+			}
+			data, err := json.Marshal(dailyState{Version: 2, Days: map[string][]dailyClaim{key: claims}})
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(path, data, 0o600))
+			owner := NewDailyClaims(path)
+			storageErr := errors.New("compaction save failed")
+			if failSave {
+				owner.write = func(string, []byte, ...atomicfile.Option) error { return storageErr }
+			}
+			report := func() {
+				status, err := owner.report(t.Context(), nil, "install", "screen", "queue", func() time.Time { return time.Date(2026, 10, 6, 0, 0, 0, 0, time.UTC) }, func(time.Time) (Status, error) {
+					assert.Fail(t, "full pending history must reject before enqueue")
+					return StatusQueued, nil
+				})
+				require.ErrorContains(t, err, "pending daily telemetry limit")
+				assert.Empty(t, status)
+				if owner.write != nil {
+					require.ErrorIs(t, err, storageErr)
+				}
+			}
+			report()
+			if failSave {
+				owner.write = nil
+				report()
+			}
+			data, err = os.ReadFile(path)
+			require.NoError(t, err)
+			var saved dailyState
+			require.NoError(t, json.Unmarshal(data, &saved))
+			assert.Equal(t, claims[5:], saved.Days[key], "retain the latest 35 accepted dates and all 35 pending dates")
+		})
+	}
+}
+
 func acceptedDailyDates(t *testing.T, claims []dailyClaim) []string {
 	t.Helper()
 	days := make([]string, 0, len(claims))

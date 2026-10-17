@@ -262,7 +262,13 @@ func (d *DailyClaims) report(ctx context.Context, logger *slog.Logger, identity,
 		}
 	}
 	if pending >= dailyClaimLimit {
-		return "", fmt.Errorf("pending daily telemetry limit reached (%d); settle reservations or replace the claims file", dailyClaimLimit)
+		limitErr := fmt.Errorf("pending daily telemetry limit reached (%d); settle reservations or replace the claims file", dailyClaimLimit)
+		if compacted {
+			if err := save(); err != nil {
+				return "", errors.Join(limitErr, fmt.Errorf("compact daily telemetry: %w", err))
+			}
+		}
+		return "", limitErr
 	}
 	d.pending = &dailyReservation{key: claim, day: day}
 	state.Days[claim] = append(state.Days[claim], dailyClaim{Day: day, Pending: true})

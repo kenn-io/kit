@@ -28,7 +28,7 @@ before publication, the error includes both failures. If release publishes
 despite an error, only the reservation error returns.
 After queue acceptance, the reporter marks the reservation accepted and saves
 again. If that save fails, `Report` returns `queued` and logs a warning through
-the configured logger. The same `DailyClaims` instance retries unpublished
+the configured logger. The same `DailyClaims` instance retries
 settlement as accepted on its next call. The persisted pending record keeps
 other instances from enqueueing the same date during recovery.
 Each key retains its 35 most recently accepted UTC dates in acceptance order.
