@@ -17,20 +17,21 @@ heartbeat runs and reporter shutdown.
 The heartbeat checks wall-clock UTC dates hourly so system sleep does not turn
 daily activity into a count of awake hours. Disabled clients start no ticker;
 running heartbeats stop at the next hourly check after disabling. SDK logs use
-the supplied slog logger (or slog.Default), preserving levels and the application's log sink.
+the supplied slog logger (or slog.Default), preserving levels and the
+application's log sink.
 
 Daily claims take a context-aware instance semaphore and file lock and hold
 both through queue acceptance and rollback. Reserve durably before enqueue;
-retain the 35 most recently accepted UTC dates per key in acceptance order and
-deduplicate by membership. Reservation and enqueue use one time sampled under
-the lock. Rollback restores displaced dates when space remains, preserving
-newer accepted dates. Skipped-report compaction is best effort and logs failures;
-reservation and rollback storage failures return errors.
+retain the 35 most recently accepted UTC dates per key in acceptance order.
+Pending reservations stay separate and never evict accepted dates. Settlement
+preserves reservation order across writers. Reservation and enqueue use one
+time sampled under the lock. Skipped-report compaction is best effort and logs
+failures; other storage failures return errors, including after queue acceptance.
 Failed reservation saves release published claims under the same lock.
 Pending cleanup follows visible publication, including durability failures.
-Version 1 is read. A numeric version that may be 1 or more but isn't written as
-`1`, for example `2` or `1.0`, is refused and the file left unchanged. Any other
-unreadable content resets to empty claims. Read errors other than a missing file
-are returned.
+Version 1 dates migrate as accepted records to version 2. Numeric versions other
+than the exact literals `1` and `2` that may be at least 1 are refused unchanged.
+Other unreadable content resets to empty claims. Read errors other than a
+missing file are returned.
 Applications own finite property enums and client retries. Queue acceptance does
 not guarantee eventual network delivery.

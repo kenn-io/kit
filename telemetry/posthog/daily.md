@@ -21,32 +21,38 @@ for blank events.
 Daily keys must be caller-owned properties; reporter defaults cannot identify a daily claim.
 
 The state file reserves each installation, event and screen before SDK enqueue.
-The in-process semaphore and file lock cover reservation, enqueue and rollback.
-A rejected enqueue releases its claim. A failed reservation save releases any
-published claim under the same locks. Storage failures return errors for a
-later retry; if release fails before publication, the error includes both
-failures. If release publishes despite an error, only the reservation error
-returns.
+The in-process semaphore and file lock cover reservation, enqueue and settlement.
+A rejected enqueue releases only its pending record. A failed reservation save
+releases any published reservation under the same locks. If that release fails
+before publication, the error includes both failures. If release publishes
+despite an error, only the reservation error returns.
+After queue acceptance, the reporter marks the reservation accepted and saves
+again. If that save fails, `Report` returns an error and an empty status even
+though the SDK accepted the event. The same `DailyClaims` instance retries
+settlement as accepted on its next call. The persisted pending record keeps
+other instances from enqueueing the same date during recovery.
 Each key retains its 35 most recently accepted UTC dates in acceptance order.
 Returning to a retained date skips it, even after a wrong-clock report. Sparse
 activity can retain dates older than 35 calendar days. A previously accepted
 date outside this set may count again after a clock correction.
-A rejected reservation restores its displaced accepted date when space remains,
-preserving dates accepted by other writers before deferred cleanup.
+Pending reservations do not evict accepted dates. Accepted settlement keeps
+the reservation's original order, including when another writer accepts later
+dates before cleanup retries.
 Reports compact all keys and remove empty keys under the claim lock. A skipped
 report saves only when compaction changed the state. If that housekeeping save
 fails, the reporter logs a warning, returns `skipped`, and retries compaction
-on a later report. Reservation and rollback storage failures return errors.
+on a later report. Other storage failures return errors.
 Reservation, event timestamp and installation age use one time sampled under
 the claim lock.
 
 Use `Report` with a caller context. Reports on the same `DailyClaims` instance
 wait on an in-process semaphore before the file lock. Both waits honor the
-caller's context; `Capture` bounds them with `ShutdownTimeout`. Version 1 is
-read. A numeric version that may be 1 or more but isn't written as `1`, for
-example `2` or `1.0`, is refused and the file left unchanged. Any other
-unreadable content resets to empty claims. Read errors other than a missing
-file are returned.
+caller's context; `Capture` bounds them with `ShutdownTimeout`. Version 1 date
+strings migrate as accepted records to version 2. Version 2 stores ordered
+records such as `{"day":"2026-10-06","pending":true}` until settlement; accepted
+records omit `pending`. Numeric versions other than the exact literals `1` and
+`2` that may be at least 1 are refused unchanged. Other unreadable content
+resets to empty claims. Read errors other than a missing file are returned.
 Request lock waits follow caller cancellation and deadlines; HTTP owners should bound request contexts as needed.
 A report racing `Close` can hold the in-process semaphore and daily file lock
 while waiting for SDK shutdown, up to `ShutdownTimeout`. Other reports on the
@@ -55,10 +61,10 @@ other writers can time out and retry.
 Recovering damaged state forgets accepted dates and can count them again.
 
 Accepted reports mean SDK queue acceptance. A crash between reservation and
-acceptance can lose a count. If release fails before publication, the same
-`DailyClaims` object retries cleanup on its next call; process exit before that
-cleanup can leave a reservation. The SDK can also fail network delivery after
-acceptance.
+acceptance can lose a count. Process exit before settlement can leave a pending
+record, which stays outside the 35 accepted-date limit until its owner retries.
+Unresolved reservations can accumulate if their owners exit before recovery.
+The SDK can also fail network delivery after acceptance.
 
 Report screens on later focus, navigation or terminal interaction,
 independently of app-open reporting. Use delivery results to detect failures

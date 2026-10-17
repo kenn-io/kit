@@ -13,9 +13,10 @@ const (
 	HeartbeatInterval = time.Hour
 )
 
-// RunHeartbeat sends EventDaemonActive through client at once, then on the
-// first hourly check of a later UTC day until ctx ends. The client must allow the event. Capture
-// errors are logged to logger, or slog.Default when logger is nil.
+// RunHeartbeat sends EventDaemonActive through an enabled client at once, then
+// on the first hourly check of a later UTC day until ctx ends or client becomes
+// disabled. A disabled client starts no ticker. The client must allow the event.
+// Capture errors are logged to logger, or slog.Default when logger is nil.
 func RunHeartbeat(ctx context.Context, client Client, logger *slog.Logger) {
 	if !client.Enabled() {
 		return
