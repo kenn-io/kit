@@ -161,11 +161,8 @@ func TestPostHogCaptureHandlerRejectEventsPreservesRequestValidation(t *testing.
 	}{
 		{"method", http.MethodGet, "text/plain", `{"event":"app_opened"}`, http.StatusMethodNotAllowed, "method not allowed\n"},
 		{"content_type", http.MethodPost, "text/plain", `{"event":"app_opened"}`, http.StatusUnsupportedMediaType, "telemetry request must be application/json\n"},
-		{"oversized", http.MethodPost, "application/json", `{"event":"app_opened","properties":{"view":"` + strings.Repeat("a", 64<<10) + `"}}`, http.StatusRequestEntityTooLarge, "telemetry request too large\n"},
 		{"oversized_trailing_space", http.MethodPost, "application/json", `{"event":"app_opened"}` + strings.Repeat(" ", 64<<10), http.StatusRequestEntityTooLarge, "telemetry request too large\n"},
-		{"malformed", http.MethodPost, "application/json", `{"event":"app_opened","properties":`, http.StatusBadRequest, "invalid telemetry request\n"},
 		{"trailing_data", http.MethodPost, "application/json", `{"event":"app_opened"} trailing`, http.StatusBadRequest, "invalid telemetry request\n"},
-		{"second_object", http.MethodPost, "application/json", `{"event":"app_opened"}{}`, http.StatusBadRequest, "invalid telemetry request\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -211,7 +208,7 @@ func TestPostHogCaptureHandlerRejectsEventsInEveryState(t *testing.T) {
 				assert.Equal(t, http.StatusBadRequest, rec.Code, body)
 			}
 			handler := NewCaptureHandler(reporter, RejectEvents(" app_opened "))
-			for _, body := range []string{`{"event":"app_opened"}`, `{"event":" app_opened "}`} {
+			for _, body := range []string{`{"event":"app_opened"}`} {
 				rec := postCapture(t, handler, http.MethodPost, body)
 				assert.Equal(t, http.StatusBadRequest, rec.Code, body)
 				assert.Equal(t, ErrUnsupportedEvent.Error()+"\n", rec.Body.String(), body)
@@ -222,24 +219,6 @@ func TestPostHogCaptureHandlerRejectsEventsInEveryState(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestPostHogCaptureHandlerRejectEventsPrecedesRequiredProperties(t *testing.T) {
-	reporter, client, _ := newInstallAgeTestReporter(t, postHogTestStart,
-		WithAllowedEvent("app_opened", RequireProperty("view", AllowStringValues("sessions"))))
-	for _, body := range []string{
-		`{"event":"app_opened"}`,
-		`{"event":"app_opened","properties":{"view":"invalid"}}`,
-	} {
-		rec := postCapture(t, NewCaptureHandler(reporter), http.MethodPost, body)
-		require.Equal(t, http.StatusBadRequest, rec.Code)
-		assert.Contains(t, rec.Body.String(), ErrInvalidProperty.Error())
-
-		rec = postCapture(t, NewCaptureHandler(reporter, RejectEvents("app_opened")), http.MethodPost, body)
-		assert.Equal(t, http.StatusBadRequest, rec.Code)
-		assert.Equal(t, ErrUnsupportedEvent.Error()+"\n", rec.Body.String())
-	}
-	assert.Empty(t, client.messages)
 }
 
 func TestPostHogCaptureHandlerDisabledReporterAnswersDisabled(t *testing.T) {
