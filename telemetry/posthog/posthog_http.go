@@ -6,6 +6,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"strings"
 )
 
 // maxPostHogCaptureBodyBytes bounds a capture request body. UI events carry a
@@ -21,20 +22,45 @@ type postHogCaptureResponse struct {
 	Status string `json:"status"`
 }
 
+// CaptureOption configures admission for an HTTP capture handler.
+type CaptureOption func(*captureOptions)
+
+type captureOptions struct {
+	rejectedEvents map[string]struct{}
+}
+
+// RejectEvents rejects the named events through this handler, even when the
+// reporter allows them. Direct calls to Report keep the reporter's allowlist.
+func RejectEvents(events ...string) CaptureOption {
+	rejected := make(map[string]struct{}, len(events))
+	for _, event := range events {
+		rejected[strings.TrimSpace(event)] = struct{}{}
+	}
+	return func(options *captureOptions) {
+		if options.rejectedEvents == nil {
+			options.rejectedEvents = make(map[string]struct{})
+		}
+		for event := range rejected {
+			options.rejectedEvents[event] = struct{}{}
+		}
+	}
+}
+
 // NewCaptureHandler returns a handler that lets an application's own UI
 // report events through reporter, so the browser holds no analytics key and
 // loads no provider script. It accepts POST {"event": "...", "properties": {...}}
 // as application/json, which makes browsers preflight cross-origin posts. The
 // reporter's allowlist decides whether the event is accepted, its filters
 // decide which properties are sent, and it stamps identity, version and install
-// age. JSON numbers arrive as float64.
+// age. RejectEvents can further restrict events for this handler after request
+// validation. JSON numbers arrive as float64.
 //
 // Responses: 202 {"status":"queued"} when the reporter accepted the capture;
 // 202 {"status":"skipped"} when the installation already reported that key today;
 // 202 {"status":"disabled"} when the event is allowed but telemetry is opted
 // out, disabled for the process or the reporter is closed, so nothing is sent;
 // 400 for a malformed body, data after the JSON object, a blank event or an
-// event the allowlist omits or a required property is invalid, in every reporter state; 405 for other methods;
+// event the allowlist omits, RejectEvents rejects, or a required property is invalid, in every reporter state; 405 for other methods;
 // 413 for a body over 64 KiB; 415 for a content type other than
 // application/json; 500 when reservation storage or capture fails.
 //
@@ -42,7 +68,11 @@ type postHogCaptureResponse struct {
 // opted-out reporter with the same WithAllowedEvent options as an enabled one.
 // Callers mount the handler on their own router, inside the authentication
 // that router already applies to UI routes.
-func NewCaptureHandler(reporter *Reporter) http.Handler {
+func NewCaptureHandler(reporter *Reporter, opts ...CaptureOption) http.Handler {
+	var options captureOptions
+	for _, opt := range opts {
+		opt(&options)
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
@@ -61,6 +91,10 @@ func NewCaptureHandler(reporter *Reporter) http.Handler {
 		}
 		if err != nil {
 			http.Error(w, "invalid telemetry request", http.StatusBadRequest)
+			return
+		}
+		if _, rejected := options.rejectedEvents[strings.TrimSpace(req.Event)]; rejected {
+			http.Error(w, ErrUnsupportedEvent.Error(), http.StatusBadRequest)
 			return
 		}
 		status, err := reporter.Report(r.Context(), req.Event, req.Properties)
