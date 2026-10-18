@@ -202,9 +202,6 @@ func TestReporterRequiresReleaseVersion(t *testing.T) {
 				return
 			}
 			assert.Zero(t, calls)
-			disabled, err := newPostHogReporter(Options{EnvPrefix: "KATA", Version: tt.version}, nil)
-			require.NoError(t, err)
-			assert.False(t, disabled.Enabled())
 		})
 	}
 }
@@ -264,17 +261,21 @@ func TestNewPostHogReporterRequiresCallerOwnedConfigurationWhenEnabled(t *testin
 	t.Setenv(GenericEnabledEnv, "1")
 	t.Setenv("KATA_TELEMETRY_ENABLED", "1")
 
-	_, err := newPostHogReporter(Options{
-		Application: "kata",
-		EnvPrefix:   "KATA",
-		DistinctID:  "anonymous-instance-id",
-		Version:     "v1.2.3",
-	}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
-		return &fakePostHogClient{}, nil
-	}, testAllowedTelemetryOptions()...)
+	for _, version := range []string{"v1.2.3", "dev"} {
+		t.Run(version, func(t *testing.T) {
+			_, err := newPostHogReporter(Options{
+				Application: "kata",
+				EnvPrefix:   "KATA",
+				DistinctID:  "anonymous-instance-id",
+				Version:     version,
+			}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
+				return &fakePostHogClient{}, nil
+			}, testAllowedTelemetryOptions()...)
 
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "api key")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "api key")
+		})
+	}
 }
 
 func TestNewPostHogReporterPassesMandatoryAPIKeyAndEndpointToPostHog(t *testing.T) {

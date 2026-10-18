@@ -92,8 +92,9 @@ type Options struct {
 	EnvPrefix string
 	// DistinctID must be an anonymous stable installation or instance ID.
 	DistinctID string
-	Version    string
-	Commit     string
+	// Version must be a plain vX.Y.Z or X.Y.Z release for reporting to be enabled.
+	Version string
+	Commit  string
 	// Source defaults to "daemon" when empty.
 	Source string
 	// InstalledAt is when DistinctID was first created, usually persisted
@@ -319,11 +320,8 @@ func newPostHogReporter(opts Options, newClient postHogClientFactory, options ..
 			}
 		}
 	}
-	if !EnabledFromEnv(opts.EnvPrefix) || !releaseVersion.MatchString(opts.Version) {
+	if !EnabledFromEnv(opts.EnvPrefix) {
 		return &Reporter{allowedEvents: allowedEvents, requiredEvents: config.requiredEvents, dailyEvents: config.dailyEvents}, nil
-	}
-	if newClient == nil {
-		return nil, errors.New("posthog client factory is required")
 	}
 	if strings.TrimSpace(opts.APIKey) == "" {
 		return nil, errors.New("posthog api key is required")
@@ -340,6 +338,12 @@ func newPostHogReporter(opts Options, newClient postHogClientFactory, options ..
 
 	if len(allowedEvents) == 0 {
 		return nil, errors.New("telemetry allowed events are required")
+	}
+	if !releaseVersion.MatchString(opts.Version) {
+		return &Reporter{allowedEvents: allowedEvents, requiredEvents: config.requiredEvents, dailyEvents: config.dailyEvents}, nil
+	}
+	if newClient == nil {
+		return nil, errors.New("posthog client factory is required")
 	}
 
 	endpoint := strings.TrimSpace(opts.Endpoint)
