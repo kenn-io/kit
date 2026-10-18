@@ -24,8 +24,8 @@ import (
 const (
 	// DefaultEndpoint is PostHog's US ingest endpoint.
 	DefaultEndpoint = "https://us.i.posthog.com"
-	// GenericEnabledEnv disables telemetry for callers that honor the
-	// conventional unprefixed variable.
+	// GenericEnabledEnv is the unprefixed telemetry consent variable.
+	// See EnabledFromEnv for accepted values and vetoes.
 	GenericEnabledEnv = "TELEMETRY_ENABLED"
 
 	// ShutdownTimeout bounds how long Reporter.Close waits for queued events,
@@ -87,12 +87,13 @@ type Options struct {
 	Endpoint string
 	// Application is included on every event and cannot be overridden by Capture.
 	Application string
-	// EnvPrefix enables PREFIX_TELEMETRY_ENABLED opt-out handling. The generic
-	// TELEMETRY_ENABLED variable is also honored. See EnabledFromEnv.
+	// EnvPrefix names the PREFIX_TELEMETRY_ENABLED consent variable.
+	// NewReporter samples it and TELEMETRY_ENABLED once. See EnabledFromEnv.
 	EnvPrefix string
 	// DistinctID must be an anonymous stable installation or instance ID.
 	DistinctID string
-	// Version must be a plain vX.Y.Z or X.Y.Z release for reporting to be enabled.
+	// Version must match plain vX.Y.Z or X.Y.Z numeric components exactly.
+	// Reporting also requires consent through EnabledFromEnv.
 	Version string
 	Commit  string
 	// Source defaults to "daemon" when empty.
@@ -199,12 +200,16 @@ func WithAllowedEvent(event string, properties ...AllowedProperty) Option {
 	})
 }
 
-// EnabledFromEnv reports whether telemetry is enabled for envPrefix. Setting
-// TELEMETRY_ENABLED or PREFIX_TELEMETRY_ENABLED to 0, false, no or off, in any
-// case, turns it off. Any present CI also turns it off. A present DO_NOT_TRACK
-// turns it off unless its trimmed, case-insensitive value is 0 or false.
+// EnabledFromEnv reports whether the current environment grants telemetry consent.
+// TELEMETRY_ENABLED or PREFIX_TELEMETRY_ENABLED must contain 1, true, yes, or on.
+// Values are trimmed and case-insensitive. An explicit 0, false, no, or off in
+// either variable vetoes consent. Absent, empty, and unknown values grant none.
+// Process disable and any present CI veto reporting. A present DO_NOT_TRACK
+// vetoes reporting unless its trimmed, case-insensitive value is 0 or false;
+// those exceptions grant no consent. NewReporter samples the environment once,
+// while DisableProcess also stops reporting after construction.
 func EnabledFromEnv(envPrefix string) bool {
-	if ProcessDisabled() || optedOut(GenericEnabledEnv) {
+	if ProcessDisabled() {
 		return false
 	}
 	if _, present := os.LookupEnv("CI"); present {
@@ -217,22 +222,22 @@ func EnabledFromEnv(envPrefix string) bool {
 			return false
 		}
 	}
-	if env := PrefixedEnabledEnv(envPrefix); env != "" {
-		return !optedOut(env)
+	consent := false
+	for _, env := range []string{GenericEnabledEnv, PrefixedEnabledEnv(envPrefix)} {
+		if env == "" {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(os.Getenv(env))) {
+		case "0", "false", "no", "off":
+			return false
+		case "1", "true", "yes", "on":
+			consent = true
+		}
 	}
-	return true
+	return consent
 }
 
-func optedOut(env string) bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(env))) {
-	case "0", "false", "no", "off":
-		return true
-	default:
-		return false
-	}
-}
-
-// PrefixedEnabledEnv returns the telemetry opt-out environment variable
+// PrefixedEnabledEnv returns the telemetry consent environment variable
 // for prefix, such as KATA_TELEMETRY_ENABLED.
 func PrefixedEnabledEnv(prefix string) string {
 	prefix = strings.Trim(strings.ToUpper(strings.TrimSpace(prefix)), "_")
@@ -263,11 +268,11 @@ func ProcessDisabled() bool {
 	return postHogTelemetryDisabled.Load()
 }
 
-// NewReporter builds an enabled reporter or returns a disabled reporter
-// when telemetry is opted out by build tag or environment variable, or when
-// Version is not a plain vX.Y.Z or X.Y.Z release with numeric components. The
-// disabled reporter keeps its configured events, so a capture handler can still
-// reject unknown ones.
+// NewReporter builds a reporter after sampling EnabledFromEnv and requiring a
+// plain vX.Y.Z or X.Y.Z release version. Disabled construction skips client
+// configuration validation and client creation, preserving configured events
+// for handler validation. Invalid event declarations still return errors.
+// Later environment changes have no effect; DisableProcess stops reporting at runtime.
 func NewReporter(opts Options, options ...Option) (*Reporter, error) {
 	return newPostHogReporter(opts, func(apiKey string, config phsdk.Config) (postHogEnqueueCloser, error) {
 		return phsdk.NewWithConfig(apiKey, config)
@@ -320,7 +325,7 @@ func newPostHogReporter(opts Options, newClient postHogClientFactory, options ..
 			}
 		}
 	}
-	if !EnabledFromEnv(opts.EnvPrefix) {
+	if !EnabledFromEnv(opts.EnvPrefix) || !releaseVersion.MatchString(opts.Version) {
 		return &Reporter{allowedEvents: allowedEvents, requiredEvents: config.requiredEvents, dailyEvents: config.dailyEvents}, nil
 	}
 	if strings.TrimSpace(opts.APIKey) == "" {
@@ -338,9 +343,6 @@ func newPostHogReporter(opts Options, newClient postHogClientFactory, options ..
 
 	if len(allowedEvents) == 0 {
 		return nil, errors.New("telemetry allowed events are required")
-	}
-	if !releaseVersion.MatchString(opts.Version) {
-		return &Reporter{allowedEvents: allowedEvents, requiredEvents: config.requiredEvents, dailyEvents: config.dailyEvents}, nil
 	}
 	if newClient == nil {
 		return nil, errors.New("posthog client factory is required")
