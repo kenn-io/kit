@@ -740,3 +740,25 @@ func TestDailyClaimsLateCleanupPreservesReusedDate(t *testing.T) {
 	assertDailyReport(t, stale, clock.Now, StatusSkipped)
 	assert.Equal(t, before, readDailyState(t, path), "stale rejection must preserve the replacement marker and date")
 }
+
+func TestDailyClaimWarningsUseReporterComponent(t *testing.T) {
+	enablePostHogTelemetryForTest()
+	t.Cleanup(enablePostHogTelemetryForTest)
+	t.Setenv(GenericEnabledEnv, "1")
+	t.Setenv("TEST_TELEMETRY_ENABLED", "1")
+	claims := NewDailyClaims(filepath.Join(t.TempDir(), "days.json"))
+	failSecondDailyWrite(claims)
+	var logs bytes.Buffer
+	reporter, err := newPostHogReporter(Options{
+		APIKey: "phc_test", Application: "test", EnvPrefix: "TEST", DistinctID: "synthetic-install",
+		Logger: slog.New(slog.NewJSONHandler(&logs, nil)),
+	}, func(string, phsdk.Config) (postHogEnqueueCloser, error) { return &fakePostHogClient{}, nil },
+		WithAllowedEvent("screen_viewed", RequireProperty("screen", AllowStringValues("queue"))),
+		WithDailyEvent("screen_viewed", "screen", claims))
+	require.NoError(t, err)
+	status, err := reporter.Report(t.Context(), "screen_viewed", map[string]any{"screen": "queue"})
+	require.NoError(t, err)
+	assert.Equal(t, StatusQueued, status)
+	assert.Contains(t, logs.String(), `"msg":"accept daily telemetry failed"`)
+	assert.Contains(t, logs.String(), `"component":"posthog"`)
+}

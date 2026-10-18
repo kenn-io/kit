@@ -61,6 +61,8 @@ type Option interface {
 type Client interface {
 	Capture(event string, properties map[string]any) error
 	Close() error
+	// Enabled reports whether events can be sent. Once it returns false it must
+	// stay false; RunHeartbeat stops at the first disabled check.
 	Enabled() bool
 }
 
@@ -311,8 +313,9 @@ func newPostHogReporter(opts Options, newClient postHogClientFactory, options ..
 	if logger == nil {
 		logger = slog.Default()
 	}
+	logger = logger.With("component", "posthog")
 	client, err := newClient(strings.TrimSpace(opts.APIKey), phsdk.Config{
-		Logger:       sdkLogger{logger.With("component", "posthog")},
+		Logger:       sdkLogger{logger},
 		Endpoint:     endpoint,
 		DisableGeoIP: &disableGeoIP,
 		// Reporters run in CLIs and daemons on user machines, not servers.

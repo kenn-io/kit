@@ -25,7 +25,8 @@ The in-process semaphore and file lock cover reservation, enqueue and settlement
 Rejected enqueues release their reservation. Failed reservation saves release
 published claims; errors include both failures if cleanup fails before publication.
 After acceptance, settlement saves again. A failed save warns and returns `queued`;
-the same `DailyClaims` instance retries settlement on its next call.
+the same `DailyClaims` instance retries settlement on its next call, which
+returns an error without reporting if settlement fails again.
 Each key keeps its 35 most recently accepted UTC dates in reservation order,
 even when another writer accepts later dates before settlement retries. Retained
 dates skip after clock corrections; older dates can count again. Sparse activity
@@ -40,7 +41,7 @@ sampled under the claim lock.
 Use `Report` with a caller context. Reports on the same `DailyClaims` instance
 wait on an in-process semaphore before the file lock. Both waits honor the
 caller's context; `Capture` bounds them with `ShutdownTimeout`. Version 1 date
-lists remain readable and writable by released readers.
+lists remain readable and writable by released writers.
 
 Upgrade all writers sharing a claims path together. If an old writer's rejected
 report leaves cleanup pending, 35 later acceptances can retire its date. After a
