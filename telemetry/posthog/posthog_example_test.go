@@ -4,38 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"time"
 	"uuid"
 
 	"go.kenn.io/kit/telemetry/posthog"
 )
-
-func ExampleSendGroup() {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusAccepted)
-		_, _ = fmt.Fprintln(w, `{"status":"queued"}`)
-	}))
-	defer server.Close()
-
-	var sends posthog.SendGroup
-	sends.Go(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_, err := posthog.PostEvent(ctx, server.Client(), server.URL, "screen_viewed", nil)
-		if err != nil {
-			slog.Debug("telemetry report failed", "error", err)
-		}
-	})
-
-	// Run command work here, then bound the remaining wait at exit.
-	sends.Wait(50 * time.Millisecond)
-	// Output:
-}
 
 //nolint:testableexamples // Compile-only usage with a caller-configured reporter and persisted identity.
 func ExampleReporter_CaptureConfirmed() {
