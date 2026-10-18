@@ -32,3 +32,9 @@ the instance's next call retries it. Other storage failures return errors.
 See daily.md for the persisted format, version handling, recovery rules and the
 mixed-writer upgrade caveat. Applications own finite property enums and client
 retries. Queue acceptance does not guarantee network delivery.
+CaptureConfirmed confirms non-daily events only on (StatusDelivered, nil);
+(StatusDisabled, nil) leaves completion pending. Callers persist and reuse the
+delivery UUID, timestamp, event and distinct ID. Callbacks match all four, and
+Close resolves every pending delivery after its drain, so a flush refused by
+Close still waits for the drained result. The context bounds the wait, not SDK
+retries; flush may send other queued events.

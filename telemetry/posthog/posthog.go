@@ -110,10 +110,12 @@ type Reporter struct {
 	enabled        bool
 	now            func() time.Time
 	installedAt    time.Time
+	deliveries     *deliveryCallbacks
 }
 
 type postHogEnqueueCloser interface {
 	Enqueue(phsdk.Message) error
+	FlushWithContext(context.Context) error
 	Close() error
 }
 
@@ -314,7 +316,9 @@ func newPostHogReporter(opts Options, newClient postHogClientFactory, options ..
 		logger = slog.Default()
 	}
 	logger = logger.With("component", "posthog")
+	deliveries := &deliveryCallbacks{pending: make(map[chan error]deliveryKey)}
 	client, err := newClient(strings.TrimSpace(opts.APIKey), phsdk.Config{
+		Callback:     deliveries,
 		Logger:       sdkLogger{logger},
 		Endpoint:     endpoint,
 		DisableGeoIP: &disableGeoIP,
@@ -341,6 +345,7 @@ func newPostHogReporter(opts Options, newClient postHogClientFactory, options ..
 		enabled:        true,
 		now:            config.now,
 		installedAt:    opts.InstalledAt,
+		deliveries:     deliveries,
 	}, nil
 }
 
@@ -428,22 +433,12 @@ func (r *Reporter) Report(ctx context.Context, event string, properties map[stri
 	if !r.Enabled() {
 		return StatusDisabled, nil
 	}
-	if _, err := json.Marshal(props); err != nil {
-		return "", fmt.Errorf("encode telemetry properties: %w", err)
+	if err := checkEncodable(props); err != nil {
+		return "", err
 	}
 	send := func(now time.Time) (Status, error) {
-		r.mu.Lock()
-		defer r.mu.Unlock()
-		if !r.activeLocked() || ProcessDisabled() {
-			return StatusDisabled, nil
-		}
-		if err := ctx.Err(); err != nil {
-			return "", err
-		}
-		if err := r.enqueue(event, props, now); err != nil {
-			return "", err
-		}
-		return StatusQueued, nil
+		status, _, err := r.queue(ctx, event, props, now, "")
+		return status, err
 	}
 	if limited {
 		return daily.claims.report(ctx, r.logger, r.distinctID, event, key, r.clock, send)
@@ -451,17 +446,37 @@ func (r *Reporter) Report(ctx context.Context, event string, properties map[stri
 	return send(r.clock())
 }
 
-func (r *Reporter) enqueue(event string, props map[string]any, now time.Time) error {
+func checkEncodable(props map[string]any) error {
+	if _, err := json.Marshal(props); err != nil {
+		return fmt.Errorf("encode telemetry properties: %w", err)
+	}
+	return nil
+}
+
+func (r *Reporter) queue(ctx context.Context, event string, props map[string]any, now time.Time, id string) (Status, postHogEnqueueCloser, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.activeLocked() || ProcessDisabled() {
+		return StatusDisabled, nil, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return "", nil, err
+	}
 	if !r.installedAt.IsZero() {
 		// A future InstalledAt means the clock moved back; count the install as new.
 		props[postHogInstallAgeProperty] = int64(max(now.Sub(r.installedAt), 0) / time.Hour)
 	}
-	return r.client.Enqueue(phsdk.Capture{
+	err := r.client.Enqueue(phsdk.Capture{
+		Uuid:       id,
 		DistinctId: r.distinctID,
 		Event:      event,
 		Timestamp:  now.UTC(),
 		Properties: phsdk.Properties(props),
 	})
+	if err != nil {
+		return "", nil, err
+	}
+	return StatusQueued, r.client, nil
 }
 
 // Close stops the underlying telemetry client when the reporter is enabled.
@@ -481,6 +496,7 @@ func (r *Reporter) Close() error {
 	// The SDK refuses a second Close, so a timed-out reporter is done too.
 	err := r.client.Close()
 	r.deactivateLocked()
+	r.deliveries.closeAll(phsdk.ErrClosed)
 	return err
 }
 

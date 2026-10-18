@@ -1,13 +1,26 @@
 package posthog_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"time"
+	"uuid"
 
 	"go.kenn.io/kit/telemetry/posthog"
 )
+
+//nolint:testableexamples // Compile-only usage with a caller-configured reporter and persisted identity.
+func ExampleReporter_CaptureConfirmed() {
+	var reporter *posthog.Reporter                                 // Construct with a stable DistinctID and event allowlist.
+	delivery := posthog.Delivery{ID: uuid.New(), Time: time.Now()} // Persist before sending; reload on retry.
+	status, err := reporter.CaptureConfirmed(context.Background(), "milestone", nil, delivery)
+	if err == nil && status == posthog.StatusDelivered {
+		// Persist completion; other results leave the tuple pending for retry.
+		fmt.Println("delivered")
+	}
+}
 
 func ExampleReporter_Capture_daemonActive() {
 	if err := captureDaemonActive(); err != nil {
