@@ -486,29 +486,33 @@ func (m *PersistentManager) cleanupFailedStartMaster(
 	target Target,
 	runSSH RunSSH,
 ) error {
+	present, err := m.observeFailedStartSocket(ctx, socketPath)
+	if err != nil || !present {
+		return err
+	}
+	// Observation may spend the cleanup window, so give verified teardown its
+	// own bounded window to stop and drain the master.
+	return m.stopMaster(context.Background(), socketPath, target, runSSH)
+}
+
+// observeFailedStartSocket reports whether a control socket appears before ctx
+// ends, ending with an ownership and type inspection once ctx expires.
+func (m *PersistentManager) observeFailedStartSocket(ctx context.Context, socketPath string) (bool, error) {
 	ticker := time.NewTicker(m.config.EstablishPollInterval)
 	defer ticker.Stop()
 	for {
 		dialState, err := inspectControlSocket(ctx, socketPath)
-		if err != nil {
-			return err
+		if err == nil && dialState != socketAbsent {
+			return true, nil
 		}
-		if dialState != socketAbsent {
-			return m.stopMaster(ctx, socketPath, target, runSSH)
+		// A dial cut short by the expiring window still gets the final
+		// inspection, so a master that already bound is not left running.
+		if err != nil && ctx.Err() == nil {
+			return false, err
 		}
-
 		select {
 		case <-ctx.Done():
-			exists, err := validateControlSocket(socketPath)
-			if err != nil {
-				return err
-			}
-			if !exists {
-				return nil
-			}
-			// The observation context has expired, so give verified teardown
-			// its own bounded window to stop and drain the late master.
-			return m.stopMaster(context.Background(), socketPath, target, runSSH)
+			return validateControlSocket(socketPath)
 		case <-ticker.C:
 		}
 	}

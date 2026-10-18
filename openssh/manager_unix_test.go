@@ -954,7 +954,7 @@ func TestEstablishTimeoutUsesBoundedCleanupAndKeepsOriginalError(t *testing.T) {
 		RunSSH:                  fake.run,
 		EstablishTimeout:        5 * time.Millisecond,
 		EstablishPollInterval:   time.Millisecond,
-		CleanupTimeout:          10 * time.Millisecond,
+		CleanupTimeout:          100 * time.Millisecond,
 		MaximumControlPathBytes: 1_000,
 	})
 	require.NoError(err)
@@ -963,8 +963,37 @@ func TestEstablishTimeoutUsesBoundedCleanupAndKeepsOriginalError(t *testing.T) {
 
 	require.Error(err)
 	assert.Contains(err.Error(), "timeout waiting for control master")
-	assert.True(<-cleanupDeadline)
+	select {
+	case bounded := <-cleanupDeadline:
+		assert.True(bounded)
+	default:
+		require.Fail("failed-start cleanup did not send the exit command", "error: %v", err)
+	}
 	require.ErrorIs(err, context.DeadlineExceeded)
+}
+
+func TestFailedStartCleanupStopsMasterAfterObservationExpires(t *testing.T) {
+	require := require.New(t)
+	exitStarted := make(chan struct{}, 1)
+	fake := newFakeSSH()
+	fake.exitStarted = exitStarted
+	manager, err := NewPersistentManager(newSocketDir(t), PersistentConfig{
+		RunSSH:                  fake.run,
+		CleanupTimeout:          time.Minute,
+		MaximumControlPathBytes: 1_000,
+	})
+	require.NoError(err)
+	target := testTarget("wes@studio")
+	socketPath := manager.SocketPath("studio", target)
+	require.NoError(fake.openSocket(socketPath))
+	t.Cleanup(fake.closeAll)
+	// An expired observation window makes the socket dial fail before it starts.
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	require.NoError(manager.cleanupFailedStartMaster(ctx, socketPath, target, fake.run))
+	require.Len(exitStarted, 1, "late master was not sent the exit command")
+	require.NoFileExists(socketPath)
 }
 
 func TestCanceledEstablishKeepsCancellationWhenCleanupFails(t *testing.T) {
