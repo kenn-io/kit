@@ -3,12 +3,18 @@ package posthog
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	phsdk "github.com/posthog/posthog-go"
@@ -238,6 +244,7 @@ func TestNewPostHogReporterPassesMandatoryAPIKeyAndEndpointToPostHog(t *testing.
 	require.True(reporter.Enabled())
 	assert.Equal("caller-owned-key", gotAPIKey)
 	assert.Equal("https://posthog.example.test", gotConfig.Endpoint)
+	assert.Equal(phsdk.CaptureModeLegacy, gotConfig.CaptureMode)
 	require.NotNil(gotConfig.DisableGeoIP)
 	assert.True(*gotConfig.DisableGeoIP)
 }
@@ -422,6 +429,201 @@ func TestPostHogDisableTransportNoOpsRequestsAfterProcessDisable(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(http.StatusNoContent, resp.StatusCode)
 	assert.False(baseCalled)
+}
+
+func TestReporterWarnsOnceForSDKProperty(t *testing.T) {
+	enablePostHogTelemetryForTest()
+	t.Cleanup(enablePostHogTelemetryForTest)
+	t.Setenv(GenericEnabledEnv, "1")
+	t.Setenv("TEST_TELEMETRY_ENABLED", "1")
+	var logs bytes.Buffer
+	reporter, err := newPostHogReporter(Options{
+		APIKey: "phc_test", Application: "test", EnvPrefix: "TEST", DistinctID: "synthetic-install",
+		Logger: slog.New(slog.NewJSONHandler(&logs, nil)),
+	}, func(string, phsdk.Config) (postHogEnqueueCloser, error) { return &fakePostHogClient{}, nil },
+		WithAllowedEvent("screen", AllowProperty("$os", AllowStringValues("one", "two"))),
+		WithAllowedEvent("other", AllowProperty("$os", AllowStringValues("one", "two"))))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = reporter.Close() })
+	assert.Equal(t, 1, strings.Count(logs.String(), `"property":"$os"`))
+	assert.Contains(t, logs.String(), `"level":"WARN"`)
+	assert.Contains(t, logs.String(), `"component":"posthog"`)
+}
+
+func TestPostHogTransportAllowsOnlyDocumentedBatchFields(t *testing.T) {
+	enablePostHogTelemetryForTest()
+	t.Cleanup(enablePostHogTelemetryForTest)
+	for _, tc := range []struct{ name, payload, want string }{
+		{"future fields", `{"api_key":"phc_test","future_envelope":true,"batch":[{"event":"screen","future_event":true,"properties":{"application":"test","goos":"linux","$lib":"posthog-go","count":9007199254740993,"other_event_only":true,"$os":"redacted","$machine_class":"workstation"}}]}`, `{"api_key":"phc_test","batch":[{"event":"screen","properties":{"application":"test","goos":"linux","$lib":"posthog-go","count":9007199254740993}}]}`},
+		{"missing properties", `{"api_key":"phc_test","batch":[{"event":"screen","future_event":true},{"event":"screen","properties":{"count":9007199254740993,"$machine_class":"workstation"}}]}`, `{"api_key":"phc_test","batch":[{"event":"screen"},{"event":"screen","properties":{"count":9007199254740993}}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			transport := postHogDisableTransport{
+				allowedEvents: map[string]map[string]PropertyFilter{
+					"screen": {"count": AllowNumber, "$os": AllowStringValues("redacted")},
+					"other":  {"other_event_only": AllowBool},
+				},
+				base: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					called = true
+					defer req.Body.Close()
+					body, err := io.ReadAll(req.Body)
+					require.NoError(t, err)
+					assert.JSONEq(t, tc.want, string(body))
+					assert.Contains(t, string(body), "9007199254740993")
+					return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
+				}),
+			}
+			resp, err := transport.RoundTrip(httptest.NewRequestWithContext(t.Context(), http.MethodPost, "https://posthog.example.test/batch/", strings.NewReader(tc.payload)))
+			require.NoError(t, err)
+			defer resp.Body.Close()
+			assert.True(t, called)
+		})
+	}
+}
+
+func TestPostHogTransportPassesNonBatchRequestsThrough(t *testing.T) {
+	enablePostHogTelemetryForTest()
+	t.Cleanup(enablePostHogTelemetryForTest)
+	for _, tc := range []struct{ name, payload string }{
+		{name: "nil body"},
+		{name: "non-batch JSON", payload: `{"api_key":"phc_test", "distinct_id":"synthetic-install"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			transport := postHogDisableTransport{base: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				called = true
+				if tc.payload == "" {
+					assert.Nil(t, req.Body)
+				} else {
+					defer req.Body.Close()
+					body, err := io.ReadAll(req.Body)
+					require.NoError(t, err)
+					assert.Equal(t, tc.payload, string(body))
+				}
+				return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
+			})}
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "https://posthog.example.test/flags/", strings.NewReader(tc.payload))
+			if tc.payload == "" {
+				req.Body = nil
+			}
+			resp, err := transport.RoundTrip(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+			assert.True(t, called)
+		})
+	}
+}
+
+func TestPostHogTransportRejectsInvalidBatchBeforeSending(t *testing.T) {
+	enablePostHogTelemetryForTest()
+	t.Cleanup(enablePostHogTelemetryForTest)
+	for _, tc := range []struct {
+		name, payload string
+		readErr       error
+	}{
+		{name: "malformed", payload: `{"batch":`},
+		{name: "invalid batch", payload: `{"batch":{}}`},
+		{name: "unreadable", readErr: io.ErrUnexpectedEOF},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			transport := postHogDisableTransport{base: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				called = true
+				return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
+			})}
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "https://posthog.example.test/collect", strings.NewReader(tc.payload))
+			if tc.readErr != nil {
+				req.Body = io.NopCloser(iotest.ErrReader(tc.readErr))
+			}
+			resp, err := transport.RoundTrip(req)
+			if resp != nil {
+				defer resp.Body.Close()
+			}
+			require.Error(t, err)
+			if tc.readErr != nil {
+				require.ErrorIs(t, err, tc.readErr)
+			}
+			assert.Nil(t, resp)
+			assert.False(t, called)
+		})
+	}
+}
+
+func TestReporterSerializedPayloadMatchesDocumentedFields(t *testing.T) {
+	enablePostHogTelemetryForTest()
+	t.Cleanup(enablePostHogTelemetryForTest)
+	t.Setenv(GenericEnabledEnv, "1")
+	t.Setenv("TEST_TELEMETRY_ENABLED", "1")
+	for _, tc := range []struct {
+		name     string
+		redirect int
+		paths    []string
+	}{
+		{name: "direct", paths: []string{"/ingest/batch/"}},
+		{name: "redirect 307", redirect: http.StatusTemporaryRedirect, paths: []string{"/ingest/batch/", "/collect"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			type receivedBatch struct {
+				path string
+				body []byte
+			}
+			bodies := make(chan receivedBatch, 2)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				assert.Equal(t, http.MethodPost, req.Method)
+				body, err := io.ReadAll(req.Body)
+				assert.NoError(t, err)
+				bodies <- receivedBatch{req.URL.Path, body}
+				if tc.redirect != 0 && req.URL.Path != "/collect" {
+					http.Redirect(w, req, "/collect", tc.redirect)
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
+			now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+			reporter, err := NewReporter(Options{
+				APIKey: "phc_test", Endpoint: server.URL + "/ingest", Application: "test", EnvPrefix: "TEST",
+				DistinctID: "synthetic-install", Version: "v1.2.3", Commit: "abc123", Source: "cli",
+				InstalledAt: now.Add(-48 * time.Hour),
+			}, WithAllowedEvent("screen_view", AllowProperty("screen", AllowStringValues("home")), AllowProperty("count", AllowNumber), AllowProperty("$os", AllowStringValues("redacted")), AllowProperty("$os_version", AllowStringValues("redacted")), AllowProperty("$os_distro", AllowStringValues("redacted")), AllowProperty("$go_version", AllowStringValues("redacted"))),
+				postHogOptionFunc(func(config *postHogReporterConfig) { config.now = func() time.Time { return now } }))
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = reporter.Close() })
+			require.NoError(t, reporter.Capture("screen_view", map[string]any{"screen": "home", "count": int64(9007199254740993), "$os": "redacted", "$os_version": "redacted", "$os_distro": "redacted", "$go_version": "redacted"}))
+			require.NoError(t, reporter.Close())
+			require.Len(t, bodies, len(tc.paths))
+			for _, path := range tc.paths {
+				received := <-bodies
+				assert.Equal(t, path, received.path)
+				var envelope struct {
+					APIKey string                       `json:"api_key"`
+					Batch  []map[string]json.RawMessage `json:"batch"`
+				}
+				require.NoError(t, json.Unmarshal(received.body, &envelope))
+				assert.Equal(t, "phc_test", envelope.APIKey)
+				require.Len(t, envelope.Batch, 1)
+				event := envelope.Batch[0]
+				assert.ElementsMatch(t, []string{"event", "distinct_id", "uuid", "timestamp", "properties"}, slices.Collect(maps.Keys(event)))
+				assert.Equal(t, `"screen_view"`, string(event["event"]))
+				assert.Equal(t, `"synthetic-install"`, string(event["distinct_id"]))
+				assert.Equal(t, `"2026-01-02T03:04:05Z"`, string(event["timestamp"]))
+				assert.NotEmpty(t, event["uuid"])
+				var properties map[string]json.RawMessage
+				require.NoError(t, json.Unmarshal(event["properties"], &properties))
+				assert.ElementsMatch(t, []string{"application", "source", "version", "commit", "goos", "goarch", "install_age_hours", "$lib", "$lib_version", "$process_person_profile", "$geoip_disable", "screen", "count"}, slices.Collect(maps.Keys(properties)))
+				for key, want := range map[string]string{
+					"application": `"test"`, "source": `"cli"`, "version": `"v1.2.3"`, "commit": `"abc123"`,
+					"goos": `"` + runtime.GOOS + `"`, "goarch": `"` + runtime.GOARCH + `"`,
+					"install_age_hours": "48", "$lib": `"posthog-go"`, "$process_person_profile": "false", "$geoip_disable": "true",
+					"screen": `"home"`, "count": "9007199254740993",
+				} {
+					assert.Equal(t, want, string(properties[key]), key)
+				}
+				assert.NotEmpty(t, properties["$lib_version"])
+			}
+		})
+	}
 }
 
 func TestPostHogReporterCloseAfterProcessDisableDoesNotFlushQueuedEvent(t *testing.T) {
