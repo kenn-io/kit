@@ -3,9 +3,11 @@ package posthog
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"slices"
@@ -31,15 +33,21 @@ const (
 type DailyClaims struct {
 	sem     *semaphore.Weighted
 	path    string
+	owner   string
 	pending *dailyReservation
 	write   func(string, []byte, ...atomicfile.Option) error
 }
 
-type dailyReservation struct{ key, day string }
+type dailyReservation struct {
+	key, day, marker string
+	accepted         bool
+}
+
+const dailyClaimLimit = 35
 
 // NewDailyClaims uses path and its adjacent lock file; its parent must exist.
 func NewDailyClaims(path string) *DailyClaims {
-	return &DailyClaims{path: path, sem: semaphore.NewWeighted(1)}
+	return &DailyClaims{path: path, owner: rand.Text(), sem: semaphore.NewWeighted(1)}
 }
 
 type dailyEvent struct {
@@ -60,6 +68,54 @@ func WithDailyEvent(event, keyProperty string, claims *DailyClaims) Option {
 type dailyState struct {
 	Version int                 `json:"version"`
 	Days    map[string][]string `json:"days"`
+}
+
+func (s *dailyState) compact() bool {
+	// Four-part keys mark unresolved reservations; released readers preserve them.
+	markers := make(map[string]struct{ claim, day string })
+	unresolved := make(map[string]map[string]bool)
+	for marker, days := range s.Days {
+		var parts []string
+		if json.Unmarshal([]byte(marker), &parts) != nil || len(parts) != 4 || len(days) != 1 {
+			continue
+		}
+		encoded, _ := json.Marshal(parts[:3]) //nolint:errchkjson // strings always encode as JSON
+		claim := string(encoded)
+		markers[marker] = struct{ claim, day string }{claim, days[0]}
+		if unresolved[claim] == nil {
+			unresolved[claim] = make(map[string]bool)
+		}
+		unresolved[claim][days[0]] = true
+	}
+	changed := false
+	for key, days := range s.Days {
+		if _, marker := markers[key]; marker {
+			continue
+		}
+		start, accepted := 0, 0
+		for i, day := range slices.Backward(days) {
+			if !unresolved[key][day] {
+				accepted++
+				if accepted == dailyClaimLimit {
+					start = i
+					break
+				}
+			}
+		}
+		changed = changed || start > 0 || len(days) == 0
+		if len(days) == 0 {
+			delete(s.Days, key)
+		} else {
+			s.Days[key] = days[start:]
+		}
+	}
+	for marker, reservation := range markers {
+		if !slices.Contains(s.Days[reservation.claim], reservation.day) {
+			delete(s.Days, marker)
+			changed = true
+		}
+	}
+	return changed
 }
 
 func newerDailyVersion(data []byte) (json.Number, bool) {
@@ -87,7 +143,7 @@ func newerDailyVersion(data []byte) (json.Number, bool) {
 	}
 	if number != "" && number != "1" {
 		version, parseErr := strconv.ParseFloat(string(number), 64)
-		// Refuse numeric literals that may be above 1; strings and other shapes are damage.
+		// Refuse unsupported numeric literals that may be at least 1; other shapes are damage.
 		atLeastOne := parseErr == nil && version >= 1
 		overflowed := errors.Is(parseErr, strconv.ErrRange) && math.IsInf(version, 1)
 		return number, atLeastOne || overflowed
@@ -106,7 +162,10 @@ func jsonNumber(value json.RawMessage) (json.Number, bool) {
 	return number, ok
 }
 
-func (d *DailyClaims) report(ctx context.Context, identity, event, key string, now func() time.Time, send func(time.Time) (Status, error)) (Status, error) {
+func (d *DailyClaims) report(ctx context.Context, logger *slog.Logger, identity, event, key string, now func() time.Time, send func(time.Time) (Status, error)) (Status, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	if err := d.sem.Acquire(ctx, 1); err != nil {
 		return "", fmt.Errorf("lock daily telemetry: %w", err)
 	}
@@ -143,6 +202,8 @@ func (d *DailyClaims) report(ctx context.Context, identity, event, key string, n
 	if state.Days == nil {
 		state = dailyState{Version: 1, Days: make(map[string][]string)}
 	}
+	compacted := state.compact()
+
 	save := func() error {
 		data, err := json.Marshal(state)
 		if err != nil {
@@ -154,23 +215,27 @@ func (d *DailyClaims) report(ctx context.Context, identity, event, key string, n
 		}
 		return write(d.path, data, atomicfile.WithPrivate())
 	}
-	release := func(reservation dailyReservation) {
-		state.Days[reservation.key] = slices.DeleteFunc(state.Days[reservation.key], func(day string) bool { return day == reservation.day })
-		if len(state.Days[reservation.key]) == 0 {
-			delete(state.Days, reservation.key)
+	settle := func() error {
+		reservation := d.pending
+		if !slices.Contains(state.Days[reservation.marker], reservation.day) {
+			d.pending = nil
+			return nil
 		}
-	}
-	rollback := func() error {
-		release(*d.pending)
+		delete(state.Days, reservation.marker)
+		if !reservation.accepted {
+			state.Days[reservation.key] = slices.DeleteFunc(state.Days[reservation.key], func(day string) bool { return day == reservation.day })
+		}
+		state.compact()
 		err := save()
 		if err == nil || errors.Is(err, atomicfile.ErrPublished) {
 			d.pending = nil
+			compacted = false
 		}
 		return err
 	}
 	if d.pending != nil {
-		if err := rollback(); err != nil {
-			return "", fmt.Errorf("release daily telemetry: %w", err)
+		if err := settle(); err != nil {
+			return "", fmt.Errorf("settle daily telemetry: %w", err)
 		}
 	}
 	if err := ctx.Err(); err != nil {
@@ -181,13 +246,20 @@ func (d *DailyClaims) report(ctx context.Context, identity, event, key string, n
 	timestamp := now().UTC()
 	day := timestamp.Format(time.DateOnly)
 	if slices.Contains(state.Days[claim], day) {
+		if compacted {
+			if err := save(); err != nil {
+				logger.WarnContext(ctx, "compact daily telemetry failed", "error", err)
+			}
+		}
 		return StatusSkipped, nil
 	}
-	d.pending = &dailyReservation{key: claim, day: day}
+	marker, _ := json.Marshal([]string{identity, event, key, d.owner}) //nolint:errchkjson // strings always encode as JSON
+	d.pending = &dailyReservation{key: claim, day: day, marker: string(marker)}
 	state.Days[claim] = append(state.Days[claim], day)
+	state.Days[string(marker)] = []string{day}
 	if err := save(); err != nil {
 		if errors.Is(err, atomicfile.ErrPublished) {
-			releaseErr := rollback()
+			releaseErr := settle()
 			if d.pending != nil {
 				return "", errors.Join(
 					fmt.Errorf("reserve daily telemetry: %w", err),
@@ -201,10 +273,13 @@ func (d *DailyClaims) report(ctx context.Context, identity, event, key string, n
 	}
 	status, captureErr := send(timestamp)
 	if captureErr == nil && status == StatusQueued {
-		d.pending = nil
+		d.pending.accepted = true
+		if err := settle(); err != nil {
+			logger.WarnContext(ctx, "accept daily telemetry failed", "error", err)
+		}
 		return status, nil
 	}
-	if err := rollback(); err != nil {
+	if err := settle(); err != nil {
 		return "", errors.Join(captureErr, fmt.Errorf("release daily telemetry: %w", err))
 	}
 	return status, captureErr

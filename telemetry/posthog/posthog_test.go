@@ -575,3 +575,24 @@ func TestReporterPreservesSDKLogLevelsWithCustomLogger(t *testing.T) {
 		assert.Contains(t, logs.String(), `"level":"`+pair[0]+`","msg":"`+pair[1]+`","component":"posthog"`)
 	}
 }
+
+type countingLogStringer struct{ calls int }
+
+func (s *countingLogStringer) String() string { s.calls++; return "queued event" }
+
+func TestSDKLoggerFormatsOnlyEnabledDebug(t *testing.T) {
+	for _, level := range []slog.Level{slog.LevelInfo, slog.LevelDebug} {
+		t.Run(level.String(), func(t *testing.T) {
+			var logs bytes.Buffer
+			value := &countingLogStringer{}
+			logger := sdkLogger{slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: level}))}
+			logger.Debugf("%s", value)
+			if level == slog.LevelInfo {
+				assert.Zero(t, value.calls)
+				assert.Empty(t, logs.String())
+			} else {
+				assert.Equal(t, 1, value.calls)
+			}
+		})
+	}
+}

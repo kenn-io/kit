@@ -61,12 +61,14 @@ type Option interface {
 type Client interface {
 	Capture(event string, properties map[string]any) error
 	Close() error
+	// Enabled reports whether events can be sent. Once it returns false it must
+	// stay false; RunHeartbeat stops at the first disabled check.
 	Enabled() bool
 }
 
 // Options configures a PostHog telemetry reporter.
 type Options struct {
-	// Logger receives SDK logs. Nil uses slog.Default().
+	// Logger receives SDK and daily-claim housekeeping logs. Nil uses slog.Default().
 	Logger *slog.Logger
 	// APIKey is the PostHog project API key. It is a public ingest identifier,
 	// but callers must still pass it explicitly so kit never embeds app keys.
@@ -96,6 +98,7 @@ type Options struct {
 type Reporter struct {
 	mu             sync.Mutex
 	client         postHogEnqueueCloser
+	logger         *slog.Logger
 	distinctID     string
 	version        string
 	commit         string
@@ -310,8 +313,9 @@ func newPostHogReporter(opts Options, newClient postHogClientFactory, options ..
 	if logger == nil {
 		logger = slog.Default()
 	}
+	logger = logger.With("component", "posthog")
 	client, err := newClient(strings.TrimSpace(opts.APIKey), phsdk.Config{
-		Logger:       sdkLogger{logger.With("component", "posthog")},
+		Logger:       sdkLogger{logger},
 		Endpoint:     endpoint,
 		DisableGeoIP: &disableGeoIP,
 		// Reporters run in CLIs and daemons on user machines, not servers.
@@ -325,6 +329,7 @@ func newPostHogReporter(opts Options, newClient postHogClientFactory, options ..
 
 	return &Reporter{
 		client:         client,
+		logger:         logger,
 		distinctID:     strings.TrimSpace(opts.DistinctID),
 		version:        opts.Version,
 		commit:         opts.Commit,
@@ -441,7 +446,7 @@ func (r *Reporter) Report(ctx context.Context, event string, properties map[stri
 		return StatusQueued, nil
 	}
 	if limited {
-		return daily.claims.report(ctx, r.distinctID, event, key, r.clock, send)
+		return daily.claims.report(ctx, r.logger, r.distinctID, event, key, r.clock, send)
 	}
 	return send(r.clock())
 }

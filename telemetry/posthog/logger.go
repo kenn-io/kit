@@ -1,6 +1,7 @@
 package posthog
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 )
@@ -8,7 +9,11 @@ import (
 // sdkLogger preserves the SDK's log levels in the application's slog output.
 type sdkLogger struct{ logger *slog.Logger }
 
-func (l sdkLogger) Debugf(format string, args ...any) { l.logger.Debug(fmt.Sprintf(format, args...)) }
+func (l sdkLogger) Debugf(format string, args ...any) {
+	if l.logger.Enabled(context.Background(), slog.LevelDebug) {
+		l.logger.Debug(fmt.Sprintf(format, args...))
+	}
+}
 
 func (l sdkLogger) Logf(format string, args ...any) { l.logger.Info(fmt.Sprintf(format, args...)) }
 
