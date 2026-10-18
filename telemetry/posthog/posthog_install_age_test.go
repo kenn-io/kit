@@ -1,6 +1,7 @@
 package posthog
 
 import (
+	"context"
 	"errors"
 	"math"
 	"runtime"
@@ -25,6 +26,8 @@ func (c *recordingPostHogClient) Enqueue(message phsdk.Message) error {
 	c.messages = append(c.messages, message.(phsdk.Capture))
 	return nil
 }
+
+func (*recordingPostHogClient) FlushWithContext(context.Context) error { return nil }
 
 func (c *recordingPostHogClient) Close() error {
 	c.mu.Lock()
@@ -283,10 +286,13 @@ func TestPostHogReporterInstalledAtHonorsOptOut(t *testing.T) {
 
 type failingPostHogClient struct {
 	enqueueErr error
+	flushErr   error
 	closeErr   error
 }
 
 func (c failingPostHogClient) Enqueue(phsdk.Message) error { return c.enqueueErr }
+
+func (c failingPostHogClient) FlushWithContext(context.Context) error { return c.flushErr }
 
 func (c failingPostHogClient) Close() error { return c.closeErr }
 

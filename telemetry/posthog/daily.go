@@ -20,13 +20,15 @@ import (
 	"golang.org/x/sync/semaphore"
 )
 
-// Status describes SDK queue acceptance, daily deduplication, or disabled telemetry.
+// Status describes queue acceptance, confirmed delivery, daily deduplication, or disabled telemetry.
 type Status string
 
 const (
-	StatusQueued   Status = "queued"
-	StatusSkipped  Status = "skipped"
-	StatusDisabled Status = "disabled"
+	// StatusDelivered means PostHog accepted the matching event.
+	StatusDelivered Status = "delivered"
+	StatusQueued    Status = "queued"
+	StatusSkipped   Status = "skipped"
+	StatusDisabled  Status = "disabled"
 )
 
 // DailyClaims persists installation-scoped UTC daily claims at a caller-owned path.

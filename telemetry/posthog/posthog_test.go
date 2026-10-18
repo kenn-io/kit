@@ -2,6 +2,7 @@ package posthog
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -25,6 +26,8 @@ func (f *fakePostHogClient) Enqueue(message phsdk.Message) error {
 	return nil
 }
 
+func (*fakePostHogClient) FlushWithContext(context.Context) error { return nil }
+
 func (f *fakePostHogClient) Close() error {
 	f.closed = true
 	return nil
@@ -43,6 +46,8 @@ func (b *blockingPostHogClient) Enqueue(message phsdk.Message) error {
 	<-b.unblockEnqueue
 	return nil
 }
+
+func (*blockingPostHogClient) FlushWithContext(context.Context) error { return nil }
 
 func (b *blockingPostHogClient) Close() error {
 	b.closeCalled.Store(true)
@@ -372,6 +377,7 @@ func TestPostHogReporterCaptureHonorsProcessDisableAfterCreation(t *testing.T) {
 	client := &fakePostHogClient{}
 	reporter := &Reporter{
 		client:        client,
+		deliveries:    &deliveryCallbacks{},
 		distinctID:    "anonymous-instance-id",
 		application:   "kata",
 		allowedEvents: testAllowedTelemetryEvents(),
@@ -425,6 +431,7 @@ func TestPostHogReporterCloseAfterProcessDisableDoesNotFlushQueuedEvent(t *testi
 	client := &fakePostHogClient{}
 	reporter := &Reporter{
 		client:        client,
+		deliveries:    &deliveryCallbacks{},
 		distinctID:    "anonymous-instance-id",
 		application:   "kata",
 		allowedEvents: testAllowedTelemetryEvents(),
@@ -452,6 +459,7 @@ func TestPostHogReporterCloseWaitsForInFlightCapture(t *testing.T) {
 	}
 	reporter := &Reporter{
 		client:        client,
+		deliveries:    &deliveryCallbacks{},
 		distinctID:    "anonymous-instance-id",
 		application:   "kata",
 		allowedEvents: testAllowedTelemetryEvents(),
