@@ -7,7 +7,8 @@ import (
 
 // SendGroup runs sends in the background and bounds the wait for completion.
 // Its zero value is ready to use. A SendGroup must not be copied after first use.
-// Callers can wrap PostEvent in Go with their own request timeout, then call Wait(50 * time.Millisecond) at exit by convention.
+// Callers can wrap PostEvent in Go with their own request timeout, then call
+// Wait(50 * time.Millisecond) at exit by convention.
 type SendGroup struct {
 	mu       sync.Mutex
 	inFlight int
