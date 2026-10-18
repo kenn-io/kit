@@ -40,13 +40,11 @@ func (c *heartbeatClient) count() int {
 	return len(c.events)
 }
 
-func TestRunHeartbeatHonorsReporterConsent(t *testing.T) {
-	for _, consent := range []bool{false, true} {
-		t.Run(strconv.FormatBool(consent), func(t *testing.T) {
-			t.Setenv(GenericEnabledEnv, "")
-			t.Setenv("KATA_TELEMETRY_ENABLED", "")
-			if consent {
-				t.Setenv(GenericEnabledEnv, "1")
+func TestRunHeartbeatHonorsReporterOptOut(t *testing.T) {
+	for _, optOut := range []bool{false, true} {
+		t.Run(strconv.FormatBool(optOut), func(t *testing.T) {
+			if optOut {
+				t.Setenv(GenericEnabledEnv, "0")
 			}
 			synctest.Test(t, func(t *testing.T) {
 				client := &recordingPostHogClient{}
@@ -62,7 +60,7 @@ func TestRunHeartbeatHonorsReporterConsent(t *testing.T) {
 				defer cancel()
 				go RunHeartbeat(ctx, reporter, nil)
 				synctest.Wait()
-				if consent {
+				if !optOut {
 					require.Len(t, client.messages, 1)
 					assert.Equal(t, EventDaemonActive, client.messages[0].Event)
 				} else {

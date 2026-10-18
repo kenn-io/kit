@@ -24,7 +24,7 @@ import (
 const (
 	// DefaultEndpoint is PostHog's US ingest endpoint.
 	DefaultEndpoint = "https://us.i.posthog.com"
-	// GenericEnabledEnv is the unprefixed telemetry consent variable.
+	// GenericEnabledEnv is the unprefixed telemetry opt-out variable.
 	// See EnabledFromEnv for accepted values and vetoes.
 	GenericEnabledEnv = "TELEMETRY_ENABLED"
 
@@ -87,13 +87,13 @@ type Options struct {
 	Endpoint string
 	// Application is included on every event and cannot be overridden by Capture.
 	Application string
-	// EnvPrefix names the PREFIX_TELEMETRY_ENABLED consent variable.
+	// EnvPrefix names the PREFIX_TELEMETRY_ENABLED opt-out variable.
 	// NewReporter samples it and TELEMETRY_ENABLED once. See EnabledFromEnv.
 	EnvPrefix string
 	// DistinctID must be an anonymous stable installation or instance ID.
 	DistinctID string
 	// Version must match plain vX.Y.Z or X.Y.Z numeric components exactly.
-	// Reporting also requires consent through EnabledFromEnv.
+	// Reporting also requires EnabledFromEnv to return true.
 	Version string
 	Commit  string
 	// Source defaults to "daemon" when empty.
@@ -200,14 +200,13 @@ func WithAllowedEvent(event string, properties ...AllowedProperty) Option {
 	})
 }
 
-// EnabledFromEnv reports whether the current environment grants telemetry consent.
-// TELEMETRY_ENABLED or PREFIX_TELEMETRY_ENABLED must contain 1, true, yes, or on.
-// Values are trimmed and case-insensitive. An explicit 0, false, no, or off in
-// either variable vetoes consent. Absent, empty, and unknown values grant none.
-// Process disable and any present CI veto reporting. A present DO_NOT_TRACK
-// vetoes reporting unless its trimmed, case-insensitive value is 0 or false;
-// those exceptions grant no consent. NewReporter samples the environment once,
-// while DisableProcess also stops reporting after construction.
+// EnabledFromEnv reports whether telemetry is enabled for envPrefix.
+// Reporting defaults to on. An explicit 0, false, no, or off in TELEMETRY_ENABLED
+// or PREFIX_TELEMETRY_ENABLED turns it off. Values are trimmed and case-insensitive.
+// Process disable and any present CI turn reporting off. A present DO_NOT_TRACK
+// turns reporting off unless its trimmed, case-insensitive value is 0 or false.
+// NewReporter samples the environment once, while DisableProcess also stops
+// reporting after construction.
 func EnabledFromEnv(envPrefix string) bool {
 	if ProcessDisabled() {
 		return false
@@ -222,7 +221,6 @@ func EnabledFromEnv(envPrefix string) bool {
 			return false
 		}
 	}
-	consent := false
 	for _, env := range []string{GenericEnabledEnv, PrefixedEnabledEnv(envPrefix)} {
 		if env == "" {
 			continue
@@ -230,14 +228,12 @@ func EnabledFromEnv(envPrefix string) bool {
 		switch strings.ToLower(strings.TrimSpace(os.Getenv(env))) {
 		case "0", "false", "no", "off":
 			return false
-		case "1", "true", "yes", "on":
-			consent = true
 		}
 	}
-	return consent
+	return true
 }
 
-// PrefixedEnabledEnv returns the telemetry consent environment variable
+// PrefixedEnabledEnv returns the telemetry opt-out environment variable
 // for prefix, such as KATA_TELEMETRY_ENABLED.
 func PrefixedEnabledEnv(prefix string) string {
 	prefix = strings.Trim(strings.ToUpper(strings.TrimSpace(prefix)), "_")

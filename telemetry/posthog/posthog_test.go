@@ -76,34 +76,41 @@ func TestPrefixedTelemetryEnabledEnv(t *testing.T) {
 	assert.Empty(t, PrefixedEnabledEnv(""))
 }
 
-func TestReporterConsent(t *testing.T) {
-	type consentCase struct {
+func TestReporterAdmission(t *testing.T) {
+	type admissionCase struct {
 		name, generic, prefixed string
 		absent                  bool
 		veto, value             string
+		version                 string
 		processDisabled         bool
 		enabled                 bool
 	}
-	tests := []consentCase{
-		{name: "absent", absent: true},
-		{name: "empty"},
-		{name: "unknown", generic: "enabled", prefixed: "2"},
-		{name: "tracking zero without consent", veto: "DO_NOT_TRACK", value: "0"},
-		{name: "tracking false without consent", veto: "DO_NOT_TRACK", value: "false"},
-		{name: "tracking zero", generic: "1", veto: "DO_NOT_TRACK", value: " 0 ", enabled: true},
-		{name: "tracking false", prefixed: "1", veto: "DO_NOT_TRACK", value: " FALSE ", enabled: true},
-		{name: "tracking set", generic: "1", veto: "DO_NOT_TRACK", value: "1"},
-		{name: "tracking empty", generic: "1", veto: "DO_NOT_TRACK"},
+	tests := []admissionCase{
+		{name: "absent", absent: true, enabled: true},
+		{name: "empty", enabled: true},
+		{name: "unknown", generic: "enabled", prefixed: "2", enabled: true},
+		{name: "tracking zero", absent: true, veto: "DO_NOT_TRACK", value: "0", enabled: true},
+		{name: "tracking false", absent: true, veto: "DO_NOT_TRACK", value: " FALSE ", enabled: true},
+		{name: "tracking padded zero", absent: true, veto: "DO_NOT_TRACK", value: " 0 ", enabled: true},
+		{name: "tracking set", absent: true, veto: "DO_NOT_TRACK", value: "1"},
+		{name: "tracking empty", absent: true, veto: "DO_NOT_TRACK"},
 		{name: "tracking other", generic: "1", veto: "DO_NOT_TRACK", value: "off"},
-		{name: "ci set", generic: "1", veto: "CI", value: "true"},
+		{name: "ci set", absent: true, veto: "CI", value: "true"},
 		{name: "ci empty", generic: "1", veto: "CI"},
 		{name: "ci false", generic: "1", veto: "CI", value: "false"},
 		{name: "process disable", generic: "1", processDisabled: true},
+		{name: "development", absent: true, version: "dev"},
+		{name: "fork", absent: true, version: "v1.2.3-fork.1"},
 	}
 	for _, value := range []string{"1", "true", "yes", "on", " TRUE ", " YeS ", " ON ", " 1 "} {
 		tests = append(tests,
-			consentCase{name: "generic " + value, generic: value, enabled: true},
-			consentCase{name: "prefixed " + value, prefixed: value, enabled: true})
+			admissionCase{name: "generic " + value, generic: value, enabled: true},
+			admissionCase{name: "prefixed " + value, prefixed: value, enabled: true})
+	}
+	for _, value := range []string{"0", "false", "no", "off", " FALSE ", "Off"} {
+		tests = append(tests,
+			admissionCase{name: "generic " + value, generic: value, prefixed: "1"},
+			admissionCase{name: "prefixed " + value, generic: "1", prefixed: value})
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -119,15 +126,28 @@ func TestReporterConsent(t *testing.T) {
 			if tt.processDisabled {
 				DisableProcess()
 			}
-			assert.Equal(t, tt.enabled, EnabledFromEnv("kata"))
-			calls := 0
-			client := &recordingPostHogClient{}
-			reporter, err := newPostHogReporter(Options{
+			version := tt.version
+			if version == "" {
+				version = "v1.2.3"
+			}
+			events := make(chan string, 16)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				var payload struct {
+					Batch []postHogCaptureRequest `json:"batch"`
+				}
+				if err := json.NewDecoder(request.Body).Decode(&payload); !assert.NoError(t, err) {
+					http.Error(w, "invalid batch", http.StatusBadRequest)
+					return
+				}
+				for _, event := range payload.Batch {
+					events <- event.Event
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(server.Close)
+			reporter, err := NewReporter(Options{
 				APIKey: "caller-owned-key", Application: "kata", EnvPrefix: "KATA",
-				DistinctID: "anonymous-instance-id", Version: "v1.2.3",
-			}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
-				calls++
-				return client, nil
+				DistinctID: "anonymous-instance-id", Version: version, Endpoint: server.URL,
 			}, WithAllowedEvent(EventDaemonActive), WithAllowedEvent("screen", RequireProperty("name", AllowStringValues("queue"))))
 			require.NoError(t, err)
 			t.Cleanup(func() { require.NoError(t, reporter.Close()) })
@@ -136,31 +156,14 @@ func TestReporterConsent(t *testing.T) {
 			_, err = reporter.SanitizeProperties("screen", nil)
 			require.ErrorIs(t, err, ErrInvalidProperty)
 			require.NoError(t, reporter.Capture(EventDaemonActive, nil))
+			require.NoError(t, reporter.Close())
 			if tt.enabled {
-				assert.Equal(t, 1, calls)
-				require.Len(t, client.messages, 1)
-				assert.Equal(t, EventDaemonActive, client.messages[0].Event)
+				require.Len(t, events, 1)
+				assert.Equal(t, EventDaemonActive, <-events)
 			} else {
-				assert.Zero(t, calls)
-				assert.Empty(t, client.messages)
+				assert.Empty(t, events)
 			}
 		})
-	}
-}
-
-func TestEnabledFromEnvOptOutSpellings(t *testing.T) {
-	for _, value := range []string{"0", "false", "no", "off", " FALSE ", "Off"} {
-		for _, env := range []string{GenericEnabledEnv, "KATA_TELEMETRY_ENABLED"} {
-			t.Run(env+"="+value, func(t *testing.T) {
-				t.Setenv(GenericEnabledEnv, "1")
-				t.Setenv("KATA_TELEMETRY_ENABLED", "1")
-				t.Setenv(env, value)
-				assert.False(t, EnabledFromEnv("kata"))
-				reporter, err := newPostHogReporter(Options{EnvPrefix: "KATA", Version: "v1.2.3"}, nil)
-				require.NoError(t, err)
-				assert.False(t, reporter.Enabled())
-			})
-		}
 	}
 }
 
