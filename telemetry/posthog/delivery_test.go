@@ -41,7 +41,7 @@ func newConfirmedTestReporter(t *testing.T, handler http.HandlerFunc, configure 
 	t.Setenv("TEST_TELEMETRY_ENABLED", "1")
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
-	r, err := newPostHogReporter(Options{APIKey: "test-key", Application: "test", EnvPrefix: "TEST", DistinctID: "test-install", Endpoint: server.URL, InstalledAt: postHogTestStart.Add(-time.Hour)}, func(key string, config phsdk.Config) (postHogEnqueueCloser, error) {
+	r, err := newPostHogReporter(Options{APIKey: "test-key", Application: "test", EnvPrefix: "TEST", DistinctID: "test-install", Version: "v1.2.3", Endpoint: server.URL, InstalledAt: postHogTestStart.Add(-time.Hour)}, func(key string, config phsdk.Config) (postHogEnqueueCloser, error) {
 		config.Compression = phsdk.CompressionNone
 		configure(&config)
 		return phsdk.NewWithConfig(key, config)
