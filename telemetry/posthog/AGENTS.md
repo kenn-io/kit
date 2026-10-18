@@ -18,6 +18,9 @@ small; TestPackageLinksNoOpenTelemetry guards this. Applications own route
 registration, authentication, where the install file lives, when the
 heartbeat runs and reporter shutdown.
 
+Callers own send timeouts and choose where to wait during shutdown. SendGroup
+bounds that wait while unfinished sends continue until completion or process exit.
+
 The heartbeat checks wall-clock UTC dates hourly so system sleep does not turn
 daily activity into a count of awake hours. Disabled clients start no ticker;
 running heartbeats stop at the next hourly check after disabling, so
