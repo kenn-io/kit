@@ -53,16 +53,16 @@ func RejectEvents(events ...string) CaptureOption {
 //
 // Responses: 202 {"status":"queued"} when the reporter accepted the capture;
 // 202 {"status":"skipped"} when the installation already reported that key today;
-// 202 {"status":"disabled"} when the event is allowed but telemetry is opted
-// out, disabled for the process or the reporter is closed, so nothing is sent;
+// 202 {"status":"disabled"} when the event is allowed but the reporter is
+// disabled, so nothing is sent;
 // 400 for a malformed body, data after the JSON object, a blank event or an
 // event the allowlist omits, RejectEvents rejects, or a required property is
 // invalid, in every reporter state; 405 for other methods;
 // 413 for a body over 64 KiB; 415 for a content type other than
 // application/json; 500 when reservation storage or capture fails.
 //
-// A nil reporter or DisabledReporter admits no event. Construct an
-// opted-out reporter with the same WithAllowedEvent options as an enabled one.
+// A nil reporter or DisabledReporter admits no event. Construct a
+// disabled reporter with the same WithAllowedEvent options as an enabled one.
 // Callers mount the handler on their own router, inside the authentication
 // that router already applies to UI routes.
 func NewCaptureHandler(reporter *Reporter, opts ...CaptureOption) http.Handler {
