@@ -328,6 +328,9 @@ func newPostHogReporter(opts Options, newClient postHogClientFactory, options ..
 	if !EnabledFromEnv(opts.EnvPrefix) || !releaseVersion.MatchString(opts.Version) {
 		return &Reporter{allowedEvents: allowedEvents, requiredEvents: config.requiredEvents, dailyEvents: config.dailyEvents}, nil
 	}
+	if newClient == nil {
+		return nil, errors.New("posthog client factory is required")
+	}
 	if strings.TrimSpace(opts.APIKey) == "" {
 		return nil, errors.New("posthog api key is required")
 	}
@@ -343,9 +346,6 @@ func newPostHogReporter(opts Options, newClient postHogClientFactory, options ..
 
 	if len(allowedEvents) == 0 {
 		return nil, errors.New("telemetry allowed events are required")
-	}
-	if newClient == nil {
-		return nil, errors.New("posthog client factory is required")
 	}
 
 	endpoint := strings.TrimSpace(opts.Endpoint)
