@@ -22,6 +22,22 @@ func TestSendGroupWaitCompletesEarly(t *testing.T) {
 	})
 }
 
+func TestSendGroupWaitAfterReuse(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var group SendGroup
+		group.Go(func() {})
+		synctest.Wait()
+		group.Go(func() {
+			time.Sleep(5 * time.Millisecond)
+		})
+
+		start := time.Now()
+		group.Wait(50 * time.Millisecond)
+
+		assert.Equal(t, 5*time.Millisecond, time.Since(start))
+	})
+}
+
 func TestSendGroupWaitSharesLimit(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var group SendGroup
