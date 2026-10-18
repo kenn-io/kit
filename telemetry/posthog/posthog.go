@@ -11,6 +11,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -43,6 +44,8 @@ var ErrUnsupportedEvent = errors.New("unsupported telemetry event")
 var ErrInvalidProperty = errors.New("invalid telemetry property")
 
 var postHogTelemetryDisabled atomic.Bool
+
+var releaseVersion = regexp.MustCompile(`^v?[0-9]+[.][0-9]+[.][0-9]+$`)
 
 // Remove the same SDK system properties on every OS.
 var postHogSDKPropertyNames = map[string]struct{}{
@@ -197,10 +200,21 @@ func WithAllowedEvent(event string, properties ...AllowedProperty) Option {
 
 // EnabledFromEnv reports whether telemetry is enabled for envPrefix. Setting
 // TELEMETRY_ENABLED or PREFIX_TELEMETRY_ENABLED to 0, false, no or off, in any
-// case, turns it off.
+// case, turns it off. Any present CI also turns it off. A present DO_NOT_TRACK
+// turns it off unless its trimmed, case-insensitive value is 0 or false.
 func EnabledFromEnv(envPrefix string) bool {
 	if ProcessDisabled() || optedOut(GenericEnabledEnv) {
 		return false
+	}
+	if _, present := os.LookupEnv("CI"); present {
+		return false
+	}
+	if value, present := os.LookupEnv("DO_NOT_TRACK"); present {
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "0", "false":
+		default:
+			return false
+		}
 	}
 	if env := PrefixedEnabledEnv(envPrefix); env != "" {
 		return !optedOut(env)
@@ -249,7 +263,8 @@ func ProcessDisabled() bool {
 }
 
 // NewReporter builds an enabled reporter or returns a disabled reporter
-// when telemetry is opted out by build tag or environment variable. The
+// when telemetry is opted out by build tag or environment variable, or when
+// Version is not a plain vX.Y.Z or X.Y.Z release with numeric components. The
 // disabled reporter keeps its configured events, so a capture handler can still
 // reject unknown ones.
 func NewReporter(opts Options, options ...Option) (*Reporter, error) {
@@ -304,7 +319,7 @@ func newPostHogReporter(opts Options, newClient postHogClientFactory, options ..
 			}
 		}
 	}
-	if !EnabledFromEnv(opts.EnvPrefix) {
+	if !EnabledFromEnv(opts.EnvPrefix) || !releaseVersion.MatchString(opts.Version) {
 		return &Reporter{allowedEvents: allowedEvents, requiredEvents: config.requiredEvents, dailyEvents: config.dailyEvents}, nil
 	}
 	if newClient == nil {

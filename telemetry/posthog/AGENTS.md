@@ -7,6 +7,9 @@ method, content-type, bounded decoding and trailing-data checks, before Report.
 The handler requires application/json so browsers preflight cross-origin posts,
 and it bounds the body itself rather than trusting the caller's router.
 Opted-out construction keeps the configured allowlist without creating a client.
+Reporting requires a plain vX.Y.Z or X.Y.Z release version. Any present CI
+disables reporting; a present DO_NOT_TRACK disables it unless its trimmed,
+case-insensitive value is 0 or false. Empty values disable reporting too.
 Close waits at most ShutdownTimeout.
 
 The transport removes `$os`, `$os_version`, `$os_distro`, and `$go_version`

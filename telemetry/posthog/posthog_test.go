@@ -9,6 +9,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"runtime"
 	"slices"
 	"strings"
@@ -21,6 +22,15 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestMain(m *testing.M) {
+	for _, env := range []string{"CI", "DO_NOT_TRACK"} {
+		if err := os.Unsetenv(env); err != nil {
+			panic(err)
+		}
+	}
+	os.Exit(m.Run())
+}
 
 type fakePostHogClient struct {
 	message phsdk.Message
@@ -90,7 +100,7 @@ func TestEnabledFromEnvOptOutSpellings(t *testing.T) {
 				t.Setenv("KATA_TELEMETRY_ENABLED", "1")
 				t.Setenv(env, value)
 
-				reporter, err := NewReporter(Options{EnvPrefix: "KATA"}, WithAllowedEvent("daemon_active"))
+				reporter, err := NewReporter(Options{EnvPrefix: "KATA", Version: "v1.2.3"}, WithAllowedEvent("daemon_active"))
 				require.NoError(t, err)
 				assert.False(t, reporter.Enabled())
 				assert.True(t, reporter.EventAllowed("daemon_active"))
@@ -116,7 +126,7 @@ func TestReporterCloseGivesUpAfterShutdownTimeout(t *testing.T) {
 	t.Cleanup(func() { close(release) })
 	reporter, err := NewReporter(Options{
 		APIKey: "phc_test", Endpoint: server.URL, Application: "kata",
-		EnvPrefix: "KATA", DistinctID: "anonymous-instance-id",
+		EnvPrefix: "KATA", DistinctID: "anonymous-instance-id", Version: "v1.2.3",
 	}, WithAllowedEvent("daemon_active"))
 	require.NoError(t, err)
 	require.NoError(t, reporter.Capture("daemon_active", nil))
@@ -144,10 +154,79 @@ func TestNewPostHogReporterDisabledByEnvSkipsRequiredFields(t *testing.T) {
 	t.Cleanup(enablePostHogTelemetryForTest)
 	t.Setenv(GenericEnabledEnv, "0")
 
-	reporter, err := NewReporter(Options{})
+	reporter, err := NewReporter(Options{Version: "v1.2.3"})
 
 	require.NoError(t, err)
 	assert.False(t, reporter.Enabled())
+}
+
+func TestReporterRequiresReleaseAndEnvironmentConsent(t *testing.T) {
+	enablePostHogTelemetryForTest()
+	t.Cleanup(enablePostHogTelemetryForTest)
+	t.Setenv(GenericEnabledEnv, "1")
+	t.Setenv("KATA_TELEMETRY_ENABLED", "1")
+	for _, tt := range []struct {
+		name    string
+		version string
+		env     string
+		value   string
+		enabled bool
+	}{
+		{name: "release", version: "v1.2.3", enabled: true},
+		{name: "release without v", version: "1.2.3", enabled: true},
+		{name: "do not track", version: "v1.2.3", env: "DO_NOT_TRACK", value: "1"},
+		{name: "empty do not track", version: "v1.2.3", env: "DO_NOT_TRACK"},
+		{name: "zero exception", version: "v1.2.3", env: "DO_NOT_TRACK", value: "0", enabled: true},
+		{name: "false exception", version: "v1.2.3", env: "DO_NOT_TRACK", value: "false", enabled: true},
+		{name: "normalized zero", version: "v1.2.3", env: "DO_NOT_TRACK", value: " 0 ", enabled: true},
+		{name: "normalized false", version: "v1.2.3", env: "DO_NOT_TRACK", value: " FALSE ", enabled: true},
+		{name: "other do not track value", version: "v1.2.3", env: "DO_NOT_TRACK", value: "off"},
+		{name: "ci", version: "v1.2.3", env: "CI", value: "true"},
+		{name: "empty ci", version: "v1.2.3", env: "CI"},
+		{name: "false ci", version: "v1.2.3", env: "CI", value: "false"},
+		{name: "development", version: "dev"},
+		{name: "fork", version: "v1.2.3-fork.1"},
+		{name: "empty version"},
+		{name: "partial version", version: "v1.2"},
+		{name: "build metadata", version: "v1.2.3+build.1"},
+		{name: "leading space", version: " v1.2.3"},
+		{name: "trailing newline", version: "v1.2.3\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.env != "" {
+				t.Setenv(tt.env, tt.value)
+				assert.Equal(t, tt.enabled, EnabledFromEnv("KATA"))
+			}
+			client := &recordingPostHogClient{}
+			calls := 0
+			reporter, err := newPostHogReporter(Options{
+				APIKey: "caller-owned-key", Application: "kata", EnvPrefix: "KATA",
+				DistinctID: "anonymous-instance-id", Version: tt.version,
+			}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
+				calls++
+				return client, nil
+			}, WithAllowedEvent(EventDaemonActive))
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, reporter.Close()) })
+			assert.Equal(t, tt.enabled, reporter.Enabled())
+			require.NoError(t, reporter.Capture(EventDaemonActive, nil))
+			if tt.enabled {
+				assert.Equal(t, 1, calls)
+				require.Len(t, client.messages, 1)
+				assert.Equal(t, EventDaemonActive, client.messages[0].Event)
+				assert.Equal(t, tt.version, client.messages[0].Properties["version"])
+				return
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			defer cancel()
+			RunHeartbeat(ctx, reporter, nil)
+			assert.Zero(t, calls)
+			assert.Empty(t, client.messages)
+			disabled, err := newPostHogReporter(Options{EnvPrefix: "KATA", Version: tt.version}, nil)
+			require.NoError(t, err)
+			assert.False(t, disabled.Enabled())
+		})
+	}
 }
 
 func TestNewPostHogReporterDisabledRetainsAllowlist(t *testing.T) {
@@ -179,12 +258,12 @@ func TestNewPostHogReporterDisabledRetainsAllowlist(t *testing.T) {
 			tt.disable(t)
 			options := []Option{nil, WithAllowedEvent("app_opened")}
 
-			nilFactoryReporter, err := newPostHogReporter(Options{EnvPrefix: "KATA"}, nil, options...)
+			nilFactoryReporter, err := newPostHogReporter(Options{EnvPrefix: "KATA", Version: "v1.2.3"}, nil, options...)
 			require.NoError(t, err)
 			assert.True(t, nilFactoryReporter.EventAllowed("app_opened"))
 
 			factoryCalls := 0
-			reporter, err := newPostHogReporter(Options{EnvPrefix: "KATA"}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
+			reporter, err := newPostHogReporter(Options{EnvPrefix: "KATA", Version: "v1.2.3"}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
 				factoryCalls++
 				return &recordingPostHogClient{}, nil
 			}, options...)
@@ -209,6 +288,7 @@ func TestNewPostHogReporterRequiresCallerOwnedConfigurationWhenEnabled(t *testin
 		Application: "kata",
 		EnvPrefix:   "KATA",
 		DistinctID:  "anonymous-instance-id",
+		Version:     "v1.2.3",
 	}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
 		return &fakePostHogClient{}, nil
 	}, testAllowedTelemetryOptions()...)
@@ -234,6 +314,7 @@ func TestNewPostHogReporterPassesMandatoryAPIKeyAndEndpointToPostHog(t *testing.
 		Application: "kata",
 		EnvPrefix:   "KATA",
 		DistinctID:  "anonymous-instance-id",
+		Version:     "v1.2.3",
 	}, func(apiKey string, config phsdk.Config) (postHogEnqueueCloser, error) {
 		gotAPIKey = apiKey
 		gotConfig = config
@@ -353,7 +434,7 @@ func TestPostHogReporterAllowsDefaultPropertiesOnlyEvents(t *testing.T) {
 		Application: "kata",
 		EnvPrefix:   "KATA",
 		DistinctID:  "anonymous-instance-id",
-		Version:     "v-test",
+		Version:     "v1.2.3",
 		Commit:      "abc123",
 	}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
 		return client, nil
@@ -371,7 +452,7 @@ func TestPostHogReporterAllowsDefaultPropertiesOnlyEvents(t *testing.T) {
 	assert.NotContains(capture.Properties, "private_path")
 	assert.Equal("kata", capture.Properties["application"])
 	assert.Equal("daemon", capture.Properties["source"])
-	assert.Equal("v-test", capture.Properties["version"])
+	assert.Equal("v1.2.3", capture.Properties["version"])
 	assert.Equal("abc123", capture.Properties["commit"])
 	assert.False(capture.Properties["$process_person_profile"].(bool))
 	assert.True(capture.Properties["$geoip_disable"].(bool))
@@ -752,7 +833,7 @@ func TestReporterRoutesSDKLogsToSlog(t *testing.T) {
 	defer server.Close()
 	reporter, err := NewReporter(Options{
 		APIKey: "phc_test", Endpoint: server.URL, Application: "test",
-		EnvPrefix: "TEST", DistinctID: "synthetic-install",
+		EnvPrefix: "TEST", DistinctID: "synthetic-install", Version: "v1.2.3",
 	}, WithAllowedEvent(EventDaemonActive))
 	require.NoError(t, err)
 	require.NoError(t, reporter.Capture(EventDaemonActive, nil))
@@ -770,7 +851,7 @@ func TestReporterPreservesSDKLogLevelsWithCustomLogger(t *testing.T) {
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	reporter, err := newPostHogReporter(Options{
-		APIKey: "phc_test", Application: "test", EnvPrefix: "TEST", DistinctID: "synthetic-install", Logger: logger,
+		APIKey: "phc_test", Application: "test", EnvPrefix: "TEST", DistinctID: "synthetic-install", Version: "v1.2.3", Logger: logger,
 	}, func(_ string, config phsdk.Config) (postHogEnqueueCloser, error) {
 		require.NotNil(t, config.Logger)
 		config.Logger.Debugf("debug %d", 1)
