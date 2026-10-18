@@ -1,10 +1,12 @@
 package posthog
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"net/http"
@@ -37,10 +39,15 @@ const (
 // event allowlist.
 var ErrUnsupportedEvent = errors.New("unsupported telemetry event")
 
-// ErrInvalidProperty marks a missing or rejected required event property.
+// ErrInvalidProperty marks a missing or rejected event property.
 var ErrInvalidProperty = errors.New("invalid telemetry property")
 
 var postHogTelemetryDisabled atomic.Bool
+
+// Remove the same SDK system properties on every OS.
+var postHogSDKPropertyNames = map[string]struct{}{
+	"$os": {}, "$os_version": {}, "$os_distro": {}, "$go_version": {},
+}
 
 // PropertyFilter validates and returns a safe event property value.
 type PropertyFilter func(any) (any, bool)
@@ -283,6 +290,20 @@ func newPostHogReporter(opts Options, newClient postHogClientFactory, options ..
 			return nil, errors.New("daily telemetry state path is required")
 		}
 	}
+	logger := opts.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger = logger.With("component", "posthog")
+	warned := make(map[string]bool)
+	for _, properties := range allowedEvents {
+		for key := range properties {
+			if _, sdkOwned := postHogSDKPropertyNames[key]; sdkOwned && !warned[key] {
+				logger.Warn("telemetry property is removed from uploads", "property", key)
+				warned[key] = true
+			}
+		}
+	}
 	if !EnabledFromEnv(opts.EnvPrefix) {
 		return &Reporter{allowedEvents: allowedEvents, requiredEvents: config.requiredEvents, dailyEvents: config.dailyEvents}, nil
 	}
@@ -311,11 +332,6 @@ func newPostHogReporter(opts Options, newClient postHogClientFactory, options ..
 		endpoint = DefaultEndpoint
 	}
 	disableGeoIP := true
-	logger := opts.Logger
-	if logger == nil {
-		logger = slog.Default()
-	}
-	logger = logger.With("component", "posthog")
 	deliveries := &deliveryCallbacks{pending: make(map[chan error]deliveryKey)}
 	client, err := newClient(strings.TrimSpace(opts.APIKey), phsdk.Config{
 		Callback:     deliveries,
@@ -323,8 +339,10 @@ func newPostHogReporter(opts Options, newClient postHogClientFactory, options ..
 		Endpoint:     endpoint,
 		DisableGeoIP: &disableGeoIP,
 		// Reporters run in CLIs and daemons on user machines, not servers.
-		IsServer:        new(false),
-		Transport:       postHogDisableTransport{},
+		IsServer: new(false),
+		// The transport parses legacy, uncompressed batches.
+		CaptureMode:     phsdk.CaptureModeLegacy,
+		Transport:       postHogDisableTransport{allowedEvents: allowedEvents},
 		ShutdownTimeout: ShutdownTimeout,
 	})
 	if err != nil {
@@ -517,7 +535,8 @@ func (r *Reporter) clock() time.Time {
 }
 
 type postHogDisableTransport struct {
-	base http.RoundTripper
+	base          http.RoundTripper
+	allowedEvents map[string]map[string]PropertyFilter
 }
 
 func (t postHogDisableTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -530,11 +549,85 @@ func (t postHogDisableTransport) RoundTrip(req *http.Request) (*http.Response, e
 			Request:    req,
 		}, nil
 	}
+	if req.Method == http.MethodPost && req.Body != nil {
+		defer req.Body.Close()
+		body, err := t.rewriteBatch(req.Body)
+		if err != nil {
+			return nil, fmt.Errorf("filter telemetry batch: %w", err)
+		}
+		req = req.Clone(req.Context())
+		req.Body = io.NopCloser(bytes.NewReader(body))
+		req.ContentLength = int64(len(body))
+		req.Header.Del("Content-Length")
+		req.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(body)), nil
+		}
+	}
 	base := t.base
 	if base == nil {
 		base = http.DefaultTransport
 	}
 	return base.RoundTrip(req)
+}
+
+// rewriteBatch filters after APIfy, which adds SDK properties after BeforeSend.
+func (t postHogDisableTransport) rewriteBatch(body io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(body)
+	if err != nil {
+		return nil, err
+	}
+	envelope := make(map[string]json.RawMessage)
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return nil, err
+	}
+	batch, ok := envelope["batch"]
+	if !ok {
+		return data, nil
+	}
+	var events []map[string]json.RawMessage
+	if err := json.Unmarshal(batch, &events); err != nil {
+		return nil, err
+	}
+	shared := make(map[string]any)
+	(&Reporter{}).addDefaultProperties(shared)
+	shared[postHogInstallAgeProperty], shared["$lib"], shared["$lib_version"] = nil, nil, nil
+	for _, event := range events {
+		if raw, present := event["properties"]; present {
+			var name string
+			if err := json.Unmarshal(event["event"], &name); err != nil {
+				return nil, err
+			}
+			var properties map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &properties); err != nil {
+				return nil, err
+			}
+			for key := range properties {
+				_, sdkOwned := postHogSDKPropertyNames[key]
+				if _, fixed := shared[key]; sdkOwned || (!fixed && t.allowedEvents[name][key] == nil) {
+					delete(properties, key)
+				}
+			}
+			if event["properties"], err = json.Marshal(properties); err != nil {
+				return nil, err
+			}
+		}
+		for key := range event {
+			switch key {
+			case "event", "distinct_id", "uuid", "timestamp", "properties":
+			default:
+				delete(event, key)
+			}
+		}
+	}
+	if envelope["batch"], err = json.Marshal(events); err != nil {
+		return nil, err
+	}
+	for key := range envelope {
+		if key != "api_key" && key != "batch" {
+			delete(envelope, key)
+		}
+	}
+	return json.Marshal(envelope)
 }
 
 func (r *Reporter) addDefaultProperties(props map[string]any) {

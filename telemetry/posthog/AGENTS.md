@@ -9,6 +9,10 @@ and it bounds the body itself rather than trusting the caller's router.
 Opted-out construction keeps the configured allowlist without creating a client.
 Close waits at most ShutdownTimeout.
 
+The transport removes `$os`, `$os_version`, `$os_distro`, and `$go_version`
+after serialization on every upload, including redirect replays. Keep fields.md
+and the serialized-payload test in sync with that contract.
+
 The package imports no OpenTelemetry, so products that only report events stay
 small; TestPackageLinksNoOpenTelemetry guards this. Applications own route
 registration, authentication, where the install file lives, when the
