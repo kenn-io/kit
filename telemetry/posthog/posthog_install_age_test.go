@@ -70,6 +70,7 @@ func newInstallAgeTestReporterWithClient(t *testing.T, client postHogEnqueueClos
 		Application: "kata",
 		EnvPrefix:   "KATA",
 		DistinctID:  "anonymous-instance-id",
+		Version:     "v1.2.3",
 		InstalledAt: installedAt,
 	}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
 		return client, nil
@@ -156,7 +157,7 @@ func TestPostHogReporterZeroInstalledAtOmitsInstallAge(t *testing.T) {
 		"$geoip_disable":          true,
 		"application":             "kata",
 		"source":                  "daemon",
-		"version":                 "",
+		"version":                 "v1.2.3",
 		"commit":                  "",
 		"goos":                    runtime.GOOS,
 		"goarch":                  runtime.GOARCH,
@@ -261,6 +262,7 @@ func TestPostHogReporterInstalledAtHonorsOptOut(t *testing.T) {
 				Application: "kata",
 				EnvPrefix:   "KATA",
 				DistinctID:  "anonymous-instance-id",
+				Version:     "v1.2.3",
 				InstalledAt: postHogTestStart.Add(-7 * time.Minute),
 			}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
 				assert.Fail(t, "client factory called despite opt-out")

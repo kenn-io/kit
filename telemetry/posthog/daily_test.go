@@ -418,7 +418,7 @@ func TestReporterConfigurationValidation(t *testing.T) {
 					t.Setenv("KATA_TELEMETRY_ENABLED", "0")
 				}
 				calls := 0
-				r, err := newPostHogReporter(Options{APIKey: "caller-owned-key", Application: "kata", EnvPrefix: "KATA", DistinctID: "id"}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
+				r, err := newPostHogReporter(Options{APIKey: "caller-owned-key", Application: "kata", EnvPrefix: "KATA", DistinctID: "id", Version: "v1.2.3"}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
 					calls++
 					return &recordingPostHogClient{}, nil
 				}, tc.options...)
@@ -544,7 +544,7 @@ func TestDailyReportSerializationFailureThenSameDayRetry(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	path := filepath.Join(t.TempDir(), "days.json")
-	reporter, err := NewReporter(Options{APIKey: "caller-owned-key", Application: "kata", EnvPrefix: "KATA", DistinctID: "id", Endpoint: server.URL},
+	reporter, err := NewReporter(Options{APIKey: "caller-owned-key", Application: "kata", EnvPrefix: "KATA", DistinctID: "id", Version: "v1.2.3", Endpoint: server.URL},
 		WithAllowedEvent("screen_viewed", RequireProperty("screen", AllowStringValues("queue")), AllowProperty("value", allowAnyTelemetryValue)),
 		WithDailyEvent("screen_viewed", "screen", NewDailyClaims(path)),
 		postHogOptionFunc(func(config *postHogReporterConfig) { config.now = func() time.Time { return postHogTestStart } }))
@@ -750,7 +750,7 @@ func TestDailyClaimWarningsUseReporterComponent(t *testing.T) {
 	failSecondDailyWrite(claims)
 	var logs bytes.Buffer
 	reporter, err := newPostHogReporter(Options{
-		APIKey: "phc_test", Application: "test", EnvPrefix: "TEST", DistinctID: "synthetic-install",
+		APIKey: "phc_test", Application: "test", EnvPrefix: "TEST", DistinctID: "synthetic-install", Version: "v1.2.3",
 		Logger: slog.New(slog.NewJSONHandler(&logs, nil)),
 	}, func(string, phsdk.Config) (postHogEnqueueCloser, error) { return &fakePostHogClient{}, nil },
 		WithAllowedEvent("screen_viewed", RequireProperty("screen", AllowStringValues("queue"))),
