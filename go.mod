@@ -17,7 +17,7 @@ require (
 	github.com/cenkalti/backoff/v7 v7.0.1
 	github.com/charmbracelet/x/ansi v0.11.9
 	github.com/creachadair/tomledit v0.0.29
-	github.com/ebitengine/purego v0.11.1
+	github.com/ebitengine/purego v0.11.2
 	github.com/gofrs/flock v0.13.1
 	github.com/golangci/plugin-module-register v0.1.2
 	github.com/golangci/rowserrcheck v0.0.0-20261005233414-e0740d52dee8
@@ -27,7 +27,7 @@ require (
 	github.com/mattn/go-runewidth v0.0.31
 	github.com/mattn/go-sqlite3 v1.14.52
 	github.com/oklog/ulid/v2 v2.1.2
-	github.com/posthog/posthog-go v1.34.0
+	github.com/posthog/posthog-go v1.35.1
 	github.com/ryanrolds/sqlclosecheck v0.6.0
 	github.com/shirou/gopsutil/v4 v4.26.9
 	github.com/spf13/pathologize v1.1.0
