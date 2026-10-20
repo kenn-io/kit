@@ -92,8 +92,8 @@ type Options struct {
 	EnvPrefix string
 	// DistinctID must be an anonymous stable installation or instance ID.
 	DistinctID string
-	// Version must match plain vX.Y.Z or X.Y.Z numeric components exactly.
-	// Reporting also requires EnabledFromEnv to return true.
+	// Version is the application version. Reporting requires
+	// Eligible(EnvPrefix, Version) to return true.
 	Version string
 	Commit  string
 	// Source defaults to "daemon" when empty.
@@ -200,7 +200,8 @@ func WithAllowedEvent(event string, properties ...AllowedProperty) Option {
 	})
 }
 
-// EnabledFromEnv reports whether telemetry is enabled for envPrefix.
+// EnabledFromEnv checks the environment and process telemetry vetoes for envPrefix.
+// See Eligible for the full reporting decision, including the release version.
 // Reporting defaults to on. An explicit 0, false, no, or off in TELEMETRY_ENABLED
 // or PREFIX_TELEMETRY_ENABLED turns it off. Values are trimmed and case-insensitive.
 // Process disable and any present CI turn reporting off. A present DO_NOT_TRACK
@@ -231,6 +232,14 @@ func EnabledFromEnv(envPrefix string) bool {
 		}
 	}
 	return true
+}
+
+// Eligible reports the decision NewReporter makes at construction for envPrefix
+// and version. A process forwarding events to another process's reporter should
+// call it with its own prefix and version before sending. The version must match
+// plain vX.Y.Z or X.Y.Z numeric components exactly, without trimming.
+func Eligible(envPrefix, version string) bool {
+	return EnabledFromEnv(envPrefix) && releaseVersion.MatchString(version)
 }
 
 // PrefixedEnabledEnv returns the telemetry opt-out environment variable
@@ -264,8 +273,8 @@ func ProcessDisabled() bool {
 	return postHogTelemetryDisabled.Load()
 }
 
-// NewReporter builds a reporter after sampling EnabledFromEnv and requiring a
-// plain vX.Y.Z or X.Y.Z release version. Disabled construction skips client
+// NewReporter builds a reporter after sampling Eligible(opts.EnvPrefix, opts.Version).
+// Reporting requires Eligible to return true. Disabled construction skips client
 // configuration validation and client creation, preserving configured events
 // for handler validation. Invalid event declarations still return errors.
 // Later environment changes have no effect; DisableProcess stops reporting at runtime.
@@ -321,7 +330,7 @@ func newPostHogReporter(opts Options, newClient postHogClientFactory, options ..
 			}
 		}
 	}
-	if !EnabledFromEnv(opts.EnvPrefix) || !releaseVersion.MatchString(opts.Version) {
+	if !Eligible(opts.EnvPrefix, opts.Version) {
 		return &Reporter{allowedEvents: allowedEvents, requiredEvents: config.requiredEvents, dailyEvents: config.dailyEvents}, nil
 	}
 	if newClient == nil {

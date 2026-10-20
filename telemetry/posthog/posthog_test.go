@@ -152,6 +152,7 @@ func TestReporterAdmission(t *testing.T) {
 			require.NoError(t, err)
 			t.Cleanup(func() { require.NoError(t, reporter.Close()) })
 			assert.Equal(t, tt.enabled, reporter.Enabled())
+			assert.Equal(t, tt.enabled, Eligible("KATA", version))
 			assert.True(t, reporter.EventAllowed("screen"))
 			_, err = reporter.SanitizeProperties("screen", nil)
 			require.ErrorIs(t, err, ErrInvalidProperty)
@@ -246,6 +247,7 @@ func TestReporterRequiresReleaseVersion(t *testing.T) {
 			require.NoError(t, err)
 			t.Cleanup(func() { require.NoError(t, reporter.Close()) })
 			assert.Equal(t, tt.enabled, reporter.Enabled())
+			assert.Equal(t, tt.enabled, Eligible("KATA", tt.version))
 			require.NoError(t, reporter.Capture(EventDaemonActive, nil))
 			assert.True(t, reporter.EventAllowed(EventDaemonActive))
 			if tt.enabled {
