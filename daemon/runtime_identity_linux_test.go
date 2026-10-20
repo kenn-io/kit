@@ -5,6 +5,7 @@ package daemon_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -62,6 +63,16 @@ func foreignNamespaceRecord(t *testing.T, pid int, address string) daemon.Runtim
 		StartedAt:         time.Now(),
 		ProcessIdentityV2: daemon.ProcessIdentity(strings.Join(fields, ":")),
 	}
+}
+
+// earlierBootRecord is foreignNamespaceRecord left over from a previous boot.
+func earlierBootRecord(t *testing.T, pid int, address string) daemon.RuntimeRecord {
+	t.Helper()
+	rec := foreignNamespaceRecord(t, pid, address)
+	fields := strings.Split(string(rec.ProcessIdentityV2), ":")
+	fields[1] = "11111111-2222-3333-4444-555555555555"
+	rec.ProcessIdentityV2 = daemon.ProcessIdentity(strings.Join(fields, ":"))
+	return rec
 }
 
 func TestCleanupDeadKeepsRecordFromAnotherPIDNamespace(t *testing.T) {
@@ -140,5 +151,46 @@ func TestDiscoverProbesRecordFromAnotherPIDNamespace(t *testing.T) {
 		_, _, err = manager.Ensure(t.Context(), time.Second)
 		require.ErrorIs(t, err, daemon.ErrDaemonUnreachable)
 		assert.Zero(t, starts)
+	})
+}
+
+func TestRecordFromAnEarlierBootIsDead(t *testing.T) {
+	pid := deadPID(t)
+
+	t.Run("CleanupDead removes it", func(t *testing.T) {
+		store := daemon.RuntimeStore{Dir: t.TempDir()}
+		path, err := store.Write(earlierBootRecord(t, pid, "127.0.0.1:7474"))
+		require.NoError(t, err)
+
+		removed, err := store.CleanupDead()
+		require.NoError(t, err)
+		assert.Equal(t, 1, removed)
+		assert.NoFileExists(t, path)
+	})
+
+	t.Run("Ensure starts a server", func(t *testing.T) {
+		server := httptest.NewServer(http.NotFoundHandler())
+		addr := listenerAddr(t, server)
+		server.Close()
+		store := daemon.RuntimeStore{Dir: t.TempDir()}
+		_, err := store.Write(earlierBootRecord(t, pid, addr))
+		require.NoError(t, err)
+
+		var starts int
+		manager := daemon.Manager{
+			Store: store,
+			Discover: daemon.DiscoverOptions{
+				Probe:           daemon.ProbeOptions{ExpectedService: "tool"},
+				RequirePIDAlive: true,
+			},
+			Start: func(context.Context) error {
+				starts++
+				return errors.New("start called")
+			},
+		}
+		_, _, err = manager.Ensure(t.Context(), time.Second)
+		require.EqualError(t, err, "start called")
+		require.NotErrorIs(t, err, daemon.ErrDaemonUnreachable)
+		assert.Equal(t, 1, starts)
 	})
 }

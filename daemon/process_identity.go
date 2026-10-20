@@ -14,19 +14,28 @@ const (
 )
 
 // CompareProcessIdentity compares a recorded creation identity with the live
-// process currently holding pid. Unknown never authorizes destructive action.
-// An identity from another PID namespace is Unknown: its PID names nothing here.
+// process currently holding pid. Unknown never authorizes destructive action,
+// and an identity from another PID namespace is Unknown unless it matches the
+// live process exactly (see AGENTS.md).
 func CompareProcessIdentity(pid int, recorded ProcessIdentity) ProcessIdentityStatus {
-	if recorded == "" || !processIdentityCompatible(recorded) ||
-		processIdentityForeign(recorded) {
+	return compareProcessIdentity(pid, recorded, ReadProcessIdentity, processIdentityForeign)
+}
+
+func compareProcessIdentity(
+	pid int,
+	recorded ProcessIdentity,
+	read func(int) (ProcessIdentity, bool),
+	foreign func(ProcessIdentity) bool,
+) ProcessIdentityStatus {
+	if recorded == "" || !processIdentityCompatible(recorded) {
 		return ProcessIdentityUnknown
 	}
-	live, ok := ReadProcessIdentity(pid)
-	if !ok {
-		return ProcessIdentityUnknown
-	}
-	if live == recorded {
+	live, ok := read(pid)
+	if ok && live == recorded {
 		return ProcessIdentityMatch
+	}
+	if !ok || foreign(recorded) {
+		return ProcessIdentityUnknown
 	}
 	return ProcessIdentityMismatch
 }
@@ -41,15 +50,27 @@ func CompareRuntimeProcessIdentity(rec RuntimeRecord) ProcessIdentityStatus {
 	return CompareProcessIdentity(rec.PID, rec.ProcessIdentity)
 }
 
-// RuntimeProcessAlive reports whether rec may still have a live process. It
-// is true when rec.PID is alive here, or when rec's versioned identity is one
-// this caller can't judge: it names another PID namespace, or is nonempty and
-// unreadable (malformed or from a newer version). Use it in place of
-// ProcessAlive(rec.PID) wherever a record is skipped or deleted.
+// RuntimeProcessAlive reports whether rec may still have a live process: its
+// PID is alive here, or its versioned identity is one this caller can't judge
+// (see AGENTS.md). Use it in place of ProcessAlive(rec.PID) wherever a record
+// is skipped or deleted.
 func RuntimeProcessAlive(rec RuntimeRecord) bool {
-	if ProcessAlive(rec.PID) {
-		return true
-	}
+	return ProcessAlive(rec.PID) || runtimeIdentityUnjudged(rec)
+}
+
+// runtimeIdentityUnjudged reports whether rec's versioned identity is nonempty
+// and either unreadable or from another PID namespace.
+func runtimeIdentityUnjudged(rec RuntimeRecord) bool {
 	id := rec.ProcessIdentityV2
 	return id != "" && (!processIdentityCompatible(id) || processIdentityForeign(id))
+}
+
+// runtimeRecordLive is RuntimeProcessAlive without a definite identity
+// mismatch, and checks the identity once. Discover uses it to pick records
+// worth probing.
+func runtimeRecordLive(rec RuntimeRecord) bool {
+	if !ProcessAlive(rec.PID) {
+		return runtimeIdentityUnjudged(rec)
+	}
+	return CompareRuntimeProcessIdentity(rec) != ProcessIdentityMismatch
 }

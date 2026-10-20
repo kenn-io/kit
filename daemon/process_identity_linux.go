@@ -24,23 +24,34 @@ func processIdentityCompatible(identity ProcessIdentity) bool {
 	return validateLinuxProcessIdentity(identity)
 }
 
-// processIdentityForeign reports whether identity names a PID namespace other
-// than the caller's, so its PID means nothing here.
+// processIdentityForeign reports whether identity names another PID namespace
+// on this boot, so its PID means nothing here.
 func processIdentityForeign(identity ProcessIdentity) bool {
 	return linuxProcessIdentityForeign("/proc", identity)
 }
 
-// linuxProcessIdentityForeign is true when identity's namespace differs from
-// procRoot's self namespace, or when that namespace can't be read. Callers
-// must pass an identity that processIdentityCompatible accepted. The boot ID
-// is ignored: the init PID namespace keeps its inode across reboots.
+// linuxProcessIdentityForeign is true when identity has procRoot's boot ID and
+// a PID namespace other than procRoot's self namespace. An identity from an
+// earlier boot names a process that is gone, and when procRoot's boot ID or
+// namespace can't be read the identity can't be judged: both are false. Callers
+// must pass an identity that processIdentityCompatible accepted.
 func linuxProcessIdentityForeign(procRoot string, identity ProcessIdentity) bool {
+	bootID, ok := readLinuxBootID(procRoot)
+	if !ok {
+		return false
+	}
 	own, err := readLinuxPIDNamespaceAt(procRoot, "self")
 	if err != nil {
-		return true
+		return false
 	}
 	fields := strings.Split(strings.TrimPrefix(string(identity), linuxProcessIdentityPrefix), ":")
-	return fields[1] != own
+	return fields[0] == bootID && fields[1] != own
+}
+
+func readLinuxBootID(procRoot string) (string, bool) {
+	raw, err := os.ReadFile(filepath.Join(procRoot, "sys/kernel/random/boot_id"))
+	bootID := strings.TrimSpace(string(raw))
+	return bootID, err == nil && validLinuxBootID(bootID)
 }
 
 func validateLinuxProcessIdentity(identity ProcessIdentity) bool {
@@ -99,9 +110,8 @@ func readLinuxProcessIdentity(procRoot string, pid int) (ProcessIdentity, bool) 
 	if pid <= 0 {
 		return "", false
 	}
-	bootID, err := os.ReadFile(filepath.Join(procRoot, "sys/kernel/random/boot_id"))
-	bootIdentity := strings.TrimSpace(string(bootID))
-	if err != nil || !validLinuxBootID(bootIdentity) {
+	bootIdentity, ok := readLinuxBootID(procRoot)
+	if !ok {
 		return "", false
 	}
 	namespace, err := readLinuxPIDNamespace(procRoot, pid)

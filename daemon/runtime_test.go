@@ -3,6 +3,7 @@ package daemon_test
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -225,10 +226,15 @@ func TestRuntimeStorePrefixReservesPortableStagingSuffix(t *testing.T) {
 
 func TestRuntimeStoreCleanupDeadKeepsUnreadableVersionedIdentity(t *testing.T) {
 	pid := deadPID(t)
-	for name, identity := range map[string]daemon.ProcessIdentity{
+	identities := map[string]daemon.ProcessIdentity{
 		"malformed":     "malformed",
 		"newer version": "future-v1:12345",
-	} {
+	}
+	if runtime.GOOS != "linux" {
+		// Well formed on Linux, where it names an earlier boot instead.
+		identities["linux identity"] = "linux-v1:b08745a1-625b-4f8b-8ab9-0123456789ab:4026532448:202"
+	}
+	for name, identity := range identities {
 		t.Run(name, func(t *testing.T) {
 			store := daemon.RuntimeStore{Dir: t.TempDir()}
 			path, err := store.Write(daemon.RuntimeRecord{

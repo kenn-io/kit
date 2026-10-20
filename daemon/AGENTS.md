@@ -15,13 +15,19 @@ databases, command parsing, and shutdown policy belong to the caller.
   reachable record wins. Absence is a definite result, not a fallback for an
   endpoint that could not be probed.
 - Treat process-creation identity as opaque and exact-match only. An unknown
-  identity never authorizes destructive action against a process or record. A
-  record from another PID namespace is unknown: it stays and is probed. kit
-  keeps it, and `Discover` reports a failed probe as `UnreachableError`. A
-  caller that can prove the server gone by its own means (for example an
-  application-level ownership lock it can acquire) removes the record.
-  Otherwise it stays until a process in its own namespace removes it or it's
-  deleted by hand.
+  identity never authorizes destructive action against a process or record.
+- A record whose identity this caller can't judge is kept until removed: a
+  versioned identity from another PID namespace on this boot, or a nonempty one
+  this build can't read (malformed, or from a newer version). `CleanupDead`
+  keeps it, `Discover` probes it, and a failed probe is an `UnreachableError`
+  that blocks `Ensure`. It leaves when a caller that can prove the server gone
+  by its own means (for example an application-level ownership lock it can
+  acquire) removes it, when a process in the server's namespace cleans up, or
+  when it's deleted by hand. After a downgrade, a dead newer server's record
+  blocks `Ensure` this way.
+- An identity from an earlier boot names a process that is gone, so PID checks
+  alone apply to it. A live container with its own boot ID therefore reads as
+  an earlier boot, and its record is not kept.
 - Never send a bearer credential to a runtime-record endpoint before it proves
   possession of the daemon token and its recorded service, version, PID,
   network, and address. Use the package proof ping and probe contract for this

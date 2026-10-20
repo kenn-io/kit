@@ -79,32 +79,81 @@ func TestParseLinuxProcessStartTicksRejectsMalformedStat(t *testing.T) {
 	require.Error(t, err)
 }
 
+const (
+	fixtureBootID      = "b08745a1-625b-4f8b-8ab9-0123456789ab"
+	fixtureOtherBootID = "11111111-2222-3333-4444-555555555555"
+)
+
+// linuxProcFixture builds a proc root whose self namespace is ownNamespace and
+// whose pid 42 runs in pidNamespace. An empty bootID or ownNamespace leaves
+// that file unreadable.
+func linuxProcFixture(t *testing.T, bootID, ownNamespace, pidNamespace string) string {
+	t.Helper()
+	proc := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(proc, "sys/kernel/random"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(proc, "self/ns"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(proc, "42/ns"), 0o755))
+	if bootID != "" {
+		require.NoError(t, os.WriteFile(
+			filepath.Join(proc, "sys/kernel/random/boot_id"),
+			[]byte(bootID+"\n"),
+			0o644,
+		))
+	}
+	if ownNamespace != "" {
+		require.NoError(t, os.Symlink("pid:["+ownNamespace+"]", filepath.Join(proc, "self/ns/pid")))
+	}
+	require.NoError(t, os.WriteFile(
+		filepath.Join(proc, "42/stat"),
+		[]byte(linuxStatFixture(42, "daemon", "202")),
+		0o644,
+	))
+	require.NoError(t, os.Symlink("pid:["+pidNamespace+"]", filepath.Join(proc, "42/ns/pid")))
+	return proc
+}
+
 func TestLinuxProcessIdentityForeign(t *testing.T) {
-	const bootID = "b08745a1-625b-4f8b-8ab9-0123456789ab"
-	withNamespace := func(inode string) ProcessIdentity {
-		return ProcessIdentity("linux-v1:" + bootID + ":" + inode + ":202")
+	identity := func(bootID, namespace string) ProcessIdentity {
+		return ProcessIdentity("linux-v1:" + bootID + ":" + namespace + ":202")
 	}
 	tests := []struct {
-		name     string
-		own      string // self ns/pid link target; empty leaves it unreadable
-		identity ProcessIdentity
-		want     bool
+		name         string
+		bootID       string // caller's boot ID; empty leaves it unreadable
+		ownNamespace string // caller's PID namespace inode; empty leaves it unreadable
+		identity     ProcessIdentity
+		want         bool
 	}{
-		{"own namespace", "pid:[4026532448]", withNamespace("4026532448"), false},
-		{"other namespace", "pid:[4026532448]", withNamespace("4026531836"), true},
-		{"other boot, own namespace", "pid:[4026532448]", ProcessIdentity("linux-v1:11111111-2222-3333-4444-555555555555:4026532448:202"), false},
-		{"unreadable own namespace", "", withNamespace("4026532448"), true},
+		{"own namespace", fixtureBootID, "4026532448", identity(fixtureBootID, "4026532448"), false},
+		{"other namespace", fixtureBootID, "4026532448", identity(fixtureBootID, "4026531836"), true},
+		{"other boot, own namespace", fixtureBootID, "4026532448", identity(fixtureOtherBootID, "4026532448"), false},
+		{"other boot, other namespace", fixtureBootID, "4026532448", identity(fixtureOtherBootID, "4026531836"), false},
+		{"unreadable own namespace", fixtureBootID, "", identity(fixtureBootID, "4026531836"), false},
+		{"unreadable own boot ID", "", "4026532448", identity(fixtureBootID, "4026531836"), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			proc := t.TempDir()
-			if tt.own != "" {
-				require.NoError(t, os.MkdirAll(filepath.Join(proc, "self/ns"), 0o755))
-				require.NoError(t, os.Symlink(tt.own, filepath.Join(proc, "self/ns/pid")))
-			}
+			proc := linuxProcFixture(t, tt.bootID, tt.ownNamespace, "4026532448")
 			assert.Equal(t, tt.want, linuxProcessIdentityForeign(proc, tt.identity))
 		})
 	}
+}
+
+func TestCompareProcessIdentityMatchesBeforeJudgingNamespace(t *testing.T) {
+	// pid 42 runs in a child namespace the caller can see from outside.
+	proc := linuxProcFixture(t, fixtureBootID, "4026532448", "4026531836")
+	read := func(pid int) (ProcessIdentity, bool) { return readLinuxProcessIdentity(proc, pid) }
+	foreign := func(identity ProcessIdentity) bool { return linuxProcessIdentityForeign(proc, identity) }
+	live, ok := read(42)
+	require.True(t, ok)
+	require.True(t, foreign(live))
+
+	assert.Equal(t, ProcessIdentityMatch, compareProcessIdentity(42, live, read, foreign))
+
+	mismatched := ProcessIdentity("linux-v1:" + fixtureBootID + ":4026531836:203")
+	assert.Equal(t, ProcessIdentityUnknown, compareProcessIdentity(42, mismatched, read, foreign))
+
+	earlierBoot := ProcessIdentity("linux-v1:" + fixtureOtherBootID + ":4026531836:202")
+	assert.Equal(t, ProcessIdentityMismatch, compareProcessIdentity(42, earlierBoot, read, foreign))
 }
 
 func linuxStatFixture(pid int, command, startTicks string) string {
