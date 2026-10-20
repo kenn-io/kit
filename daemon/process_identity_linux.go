@@ -6,10 +6,12 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 const linuxProcessIdentityPrefix = "linux-v1:"
@@ -24,28 +26,75 @@ func processIdentityCompatible(identity ProcessIdentity) bool {
 	return validateLinuxProcessIdentity(identity)
 }
 
-// processIdentityForeign reports whether identity names another PID namespace
-// on this boot, so its PID means nothing here.
+// processIdentityForeign reports whether this caller can't judge identity's
+// PID: it names another PID namespace on this boot, or the caller can't read
+// its own boot ID or namespace.
 func processIdentityForeign(identity ProcessIdentity) bool {
 	return linuxProcessIdentityForeign("/proc", identity)
 }
 
-// linuxProcessIdentityForeign is true when identity has procRoot's boot ID and
-// a PID namespace other than procRoot's self namespace. An identity from an
-// earlier boot names a process that is gone, and when procRoot's boot ID or
-// namespace can't be read the identity can't be judged: both are false. Callers
-// must pass an identity that processIdentityCompatible accepted.
+// linuxProcessIdentityForeign is true when procRoot's boot ID or self
+// namespace is unreadable, or when identity has procRoot's boot ID and a PID
+// namespace other than procRoot's self namespace. An identity from an earlier
+// boot names a process that is gone, so it is false. Callers must pass an
+// identity that processIdentityCompatible accepted.
 func linuxProcessIdentityForeign(procRoot string, identity ProcessIdentity) bool {
-	bootID, ok := readLinuxBootID(procRoot)
+	ownBootID, ok := readLinuxBootID(procRoot)
 	if !ok {
-		return false
+		return true
 	}
 	own, err := readLinuxPIDNamespaceAt(procRoot, "self")
 	if err != nil {
+		return true
+	}
+	bootID, namespace, _ := parseLinuxProcessIdentity(identity)
+	return bootID == ownBootID && linuxPIDNamespaceForeign(procRoot, own, namespace)
+}
+
+// initPIDNamespace is the inode of the kernel's initial PID namespace.
+const initPIDNamespace = "4026531836"
+
+// linuxPIDNamespaceForeign is true when namespace differs from own and isn't
+// provably gone. Only a caller in the initial PID namespace can see every
+// process, so only it can prove a namespace is gone.
+func linuxPIDNamespaceForeign(procRoot, own, namespace string) bool {
+	return namespace != own && (own != initPIDNamespace || !linuxPIDNamespaceGone(procRoot, namespace))
+}
+
+// linuxPIDNamespaceGone is true when no process owned by the caller's user is
+// in the PID namespace with the given inode. A process that exits during the
+// walk doesn't count; any other read failure means the answer is unknown, so
+// it is false.
+func linuxPIDNamespaceGone(procRoot, inode string) bool {
+	entries, err := os.ReadDir(procRoot)
+	if err != nil {
 		return false
 	}
-	fields := strings.Split(strings.TrimPrefix(string(identity), linuxProcessIdentityPrefix), ":")
-	return fields[0] == bootID && fields[1] != own
+	want := "pid:[" + inode + "]"
+	for _, entry := range entries {
+		if _, err := strconv.Atoi(entry.Name()); err != nil {
+			continue
+		}
+		dir := filepath.Join(procRoot, entry.Name())
+		info, err := os.Stat(dir)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return false
+		}
+		if stat, ok := info.Sys().(*syscall.Stat_t); !ok || int(stat.Uid) != os.Getuid() {
+			continue
+		}
+		target, err := os.Readlink(filepath.Join(dir, "ns/pid"))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil || target == want {
+			return false
+		}
+	}
+	return true
 }
 
 func readLinuxBootID(procRoot string) (string, bool) {
@@ -55,20 +104,27 @@ func readLinuxBootID(procRoot string) (string, bool) {
 }
 
 func validateLinuxProcessIdentity(identity ProcessIdentity) bool {
+	_, _, ok := parseLinuxProcessIdentity(identity)
+	return ok
+}
+
+// parseLinuxProcessIdentity returns the boot ID and PID namespace of a
+// well-formed linux-v1 identity.
+func parseLinuxProcessIdentity(identity ProcessIdentity) (bootID, namespace string, ok bool) {
 	encoded := string(identity)
 	if !strings.HasPrefix(encoded, linuxProcessIdentityPrefix) {
-		return false
+		return "", "", false
 	}
 	fields := strings.Split(strings.TrimPrefix(encoded, linuxProcessIdentityPrefix), ":")
 	if len(fields) != 3 || !validLinuxBootID(fields[0]) {
-		return false
+		return "", "", false
 	}
 	for _, field := range fields[1:] {
-		if _, ok := parseCanonicalLinuxIdentityUint(field); !ok {
-			return false
+		if _, valid := parseCanonicalLinuxIdentityUint(field); !valid {
+			return "", "", false
 		}
 	}
-	return true
+	return fields[0], fields[1], true
 }
 
 func validLinuxBootID(value string) bool {

@@ -17,14 +17,18 @@ databases, command parsing, and shutdown policy belong to the caller.
 - Treat process-creation identity as opaque and exact-match only. An unknown
   identity never authorizes destructive action against a process or record.
 - A record whose identity this caller can't judge is kept until removed: a
-  versioned identity from another PID namespace on this boot, or a nonempty one
-  this build can't read (malformed, or from a newer version). `CleanupDead`
-  keeps it, `Discover` probes it, and a failed probe is an `UnreachableError`
-  that blocks `Ensure`. It leaves when a caller that can prove the server gone
-  by its own means (for example an application-level ownership lock it can
-  acquire) removes it, when a process in the server's namespace cleans up, or
-  when it's deleted by hand. After a downgrade, a dead newer server's record
-  blocks `Ensure` this way.
+  versioned identity from another PID namespace on this boot, a nonempty one
+  this build can't read (malformed, or from a newer version), or a well-formed
+  Linux one when the caller can't read its own boot ID or PID namespace.
+  `CleanupDead` keeps it, `Discover` probes it, and a failed probe is an
+  `UnreachableError` that blocks `Ensure`. It leaves when a caller that can
+  prove the server gone by its own means (for example an application-level
+  ownership lock it can acquire) removes it, when a process in the server's
+  namespace cleans up, or when it's deleted by hand. After a downgrade, a dead
+  newer server's record blocks `Ensure` this way.
+- A caller in the initial PID namespace (inode 4026531836) treats a same-boot
+  foreign namespace that no process of its user is in as gone, if every `/proc`
+  read succeeded, and the record then takes the plain PID check.
 - An identity from an earlier boot names a process that is gone, so PID checks
   alone apply to it. A live container with its own boot ID therefore reads as
   an earlier boot, and its record is not kept.

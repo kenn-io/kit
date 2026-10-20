@@ -59,18 +59,15 @@ func RuntimeProcessAlive(rec RuntimeRecord) bool {
 }
 
 // runtimeIdentityUnjudged reports whether rec's versioned identity is nonempty
-// and either unreadable or from another PID namespace.
+// and either unreadable, from another PID namespace, or one this caller can't
+// compare because its own identity is unreadable.
 func runtimeIdentityUnjudged(rec RuntimeRecord) bool {
 	id := rec.ProcessIdentityV2
 	return id != "" && (!processIdentityCompatible(id) || processIdentityForeign(id))
 }
 
 // runtimeRecordLive is RuntimeProcessAlive without a definite identity
-// mismatch, and checks the identity once. Discover uses it to pick records
-// worth probing.
+// mismatch. Discover uses it to pick records worth probing.
 func runtimeRecordLive(rec RuntimeRecord) bool {
-	if !ProcessAlive(rec.PID) {
-		return runtimeIdentityUnjudged(rec)
-	}
-	return CompareRuntimeProcessIdentity(rec) != ProcessIdentityMismatch
+	return RuntimeProcessAlive(rec) && CompareRuntimeProcessIdentity(rec) != ProcessIdentityMismatch
 }
