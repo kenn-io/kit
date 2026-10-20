@@ -234,10 +234,11 @@ func EnabledFromEnv(envPrefix string) bool {
 	return true
 }
 
-// Eligible reports the decision NewReporter makes at construction for envPrefix
-// and version. A process forwarding events to another process's reporter should
-// call it with its own prefix and version before sending. The version must match
-// plain vX.Y.Z or X.Y.Z numeric components exactly, without trimming.
+// Eligible reports whether the admission gate allows envPrefix and version at
+// the time of the call. It reads the current environment and process-disable
+// state each time. A forwarding client should call it before each send with its
+// own prefix and version. The version must match plain vX.Y.Z or X.Y.Z numeric
+// components exactly, without trimming.
 func Eligible(envPrefix, version string) bool {
 	return EnabledFromEnv(envPrefix) && releaseVersion.MatchString(version)
 }

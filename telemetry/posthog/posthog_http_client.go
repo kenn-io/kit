@@ -11,8 +11,8 @@ import (
 )
 
 // PostEvent reports through an application's capture route and returns acceptance.
-// Callers check Eligible with their own prefix and version before sending,
-// because the receiving reporter checks only its own process.
+// Call Eligible before each send with the forwarding process's prefix and
+// version, because the receiving reporter checks only its own process.
 // The caller supplies a nonnil HTTP client and owns its timeouts.
 // Callers retry errors on later interaction; the server owns daily deduplication.
 func PostEvent(ctx context.Context, client *http.Client, url, event string, properties map[string]any) (Status, error) {

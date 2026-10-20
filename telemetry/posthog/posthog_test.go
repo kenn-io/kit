@@ -81,7 +81,6 @@ func TestReporterAdmission(t *testing.T) {
 		name, generic, prefixed string
 		absent                  bool
 		veto, value             string
-		version                 string
 		processDisabled         bool
 		enabled                 bool
 	}
@@ -124,10 +123,6 @@ func TestReporterAdmission(t *testing.T) {
 			if tt.processDisabled {
 				DisableProcess()
 			}
-			version := tt.version
-			if version == "" {
-				version = "v1.2.3"
-			}
 			events := make(chan string, 16)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 				var payload struct {
@@ -145,12 +140,12 @@ func TestReporterAdmission(t *testing.T) {
 			t.Cleanup(server.Close)
 			reporter, err := NewReporter(Options{
 				APIKey: "caller-owned-key", Application: "kata", EnvPrefix: "KATA",
-				DistinctID: "anonymous-instance-id", Version: version, Endpoint: server.URL,
+				DistinctID: "anonymous-instance-id", Version: "v1.2.3", Endpoint: server.URL,
 			}, WithAllowedEvent(EventDaemonActive), WithAllowedEvent("screen", RequireProperty("name", AllowStringValues("queue"))))
 			require.NoError(t, err)
 			t.Cleanup(func() { require.NoError(t, reporter.Close()) })
 			assert.Equal(t, tt.enabled, reporter.Enabled())
-			assert.Equal(t, tt.enabled, Eligible("KATA", version))
+			assert.Equal(t, tt.enabled, Eligible("KATA", "v1.2.3"))
 			assert.True(t, reporter.EventAllowed("screen"))
 			_, err = reporter.SanitizeProperties("screen", nil)
 			require.ErrorIs(t, err, ErrInvalidProperty)
