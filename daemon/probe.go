@@ -135,9 +135,13 @@ type DiscoverOptions struct {
 	// Proof enables proof-of-possession probing for each runtime record.
 	Proof *Proof
 	// RequirePIDAlive rejects dead processes and definite process-identity
-	// mismatches. A record from another PID namespace is neither: it is probed,
-	// and a failed probe stays unreachable. It also makes failed probes
-	// indeterminate: Discover returns an UnreachableError when no later record
+	// mismatches. A record from another PID namespace, or one this build can't
+	// read, is neither: kit keeps it and probes it, and a failed probe is an
+	// UnreachableError. A caller that can prove the server gone by its own means
+	// (for example an application-level ownership lock it can acquire) removes
+	// the record. Otherwise it stays until a process in its own namespace
+	// removes it or it's deleted by hand. RequirePIDAlive also makes failed
+	// probes indeterminate: Discover returns an UnreachableError when no later record
 	// succeeds. The false zero value keeps
 	// the earlier compatibility behavior, where failed probes are skipped and
 	// discovery can report definite absence.

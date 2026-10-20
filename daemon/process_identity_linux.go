@@ -30,14 +30,11 @@ func processIdentityForeign(identity ProcessIdentity) bool {
 	return linuxProcessIdentityForeign("/proc", identity)
 }
 
-// linuxProcessIdentityForeign is true for a well-formed identity whose
-// namespace differs from procRoot's self namespace, or when that namespace
-// can't be read. Malformed identities are not foreign. The boot ID is ignored:
-// the init PID namespace keeps its inode across reboots.
+// linuxProcessIdentityForeign is true when identity's namespace differs from
+// procRoot's self namespace, or when that namespace can't be read. Callers
+// must pass an identity that processIdentityCompatible accepted. The boot ID
+// is ignored: the init PID namespace keeps its inode across reboots.
 func linuxProcessIdentityForeign(procRoot string, identity ProcessIdentity) bool {
-	if !validateLinuxProcessIdentity(identity) {
-		return false
-	}
 	own, err := readLinuxPIDNamespaceAt(procRoot, "self")
 	if err != nil {
 		return true

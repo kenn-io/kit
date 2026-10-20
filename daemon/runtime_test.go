@@ -224,19 +224,15 @@ func TestRuntimeStorePrefixReservesPortableStagingSuffix(t *testing.T) {
 }
 
 func TestRuntimeStoreCleanupDeadKeepsUnreadableVersionedIdentity(t *testing.T) {
-	deadPID := 999999
-	if daemon.ProcessAlive(deadPID) {
-		t.Skipf("pid %d is alive on this host", deadPID)
-	}
+	pid := deadPID(t)
 	for name, identity := range map[string]daemon.ProcessIdentity{
 		"malformed":     "malformed",
 		"newer version": "future-v1:12345",
-		"linux identity from another namespace or platform": "linux-v1:b08745a1-625b-4f8b-8ab9-0123456789ab:1:202",
 	} {
 		t.Run(name, func(t *testing.T) {
 			store := daemon.RuntimeStore{Dir: t.TempDir()}
 			path, err := store.Write(daemon.RuntimeRecord{
-				PID:               deadPID,
+				PID:               pid,
 				Network:           daemon.NetworkTCP,
 				Address:           "127.0.0.1:7474",
 				ProcessIdentityV2: identity,
@@ -249,4 +245,14 @@ func TestRuntimeStoreCleanupDeadKeepsUnreadableVersionedIdentity(t *testing.T) {
 			assert.FileExists(t, path)
 		})
 	}
+}
+
+// deadPID returns a PID that names no live process, or skips the test.
+func deadPID(t *testing.T) int {
+	t.Helper()
+	const pid = 999999
+	if daemon.ProcessAlive(pid) {
+		t.Skipf("pid %d is alive on this host", pid)
+	}
+	return pid
 }

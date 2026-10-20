@@ -280,7 +280,11 @@ func (s RuntimeStore) List() ([]RuntimeRecord, error) {
 // CleanupDead removes runtime files whose filename PID matches the record PID
 // and whose process is no longer alive (see RuntimeProcessAlive). Records from
 // another PID namespace, malformed files, and PID-mismatched files are left in
-// place.
+// place. kit keeps a record from another PID namespace, or one this build
+// can't read, and Discover reports it as UnreachableError. A caller that can prove the server gone by
+// its own means (for example an application-level ownership lock it can
+// acquire) removes the record. Otherwise it stays until a process in its own
+// namespace removes it or it's deleted by hand.
 func (s RuntimeStore) CleanupDead() (int, error) {
 	prefix, err := s.validatePrefix()
 	if err != nil {

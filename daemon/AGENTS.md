@@ -16,7 +16,12 @@ databases, command parsing, and shutdown policy belong to the caller.
   endpoint that could not be probed.
 - Treat process-creation identity as opaque and exact-match only. An unknown
   identity never authorizes destructive action against a process or record. A
-  record from another PID namespace is unknown: it stays and is probed.
+  record from another PID namespace is unknown: it stays and is probed. kit
+  keeps it, and `Discover` reports a failed probe as `UnreachableError`. A
+  caller that can prove the server gone by its own means (for example an
+  application-level ownership lock it can acquire) removes the record.
+  Otherwise it stays until a process in its own namespace removes it or it's
+  deleted by hand.
 - Never send a bearer credential to a runtime-record endpoint before it proves
   possession of the daemon token and its recorded service, version, PID,
   network, and address. Use the package proof ping and probe contract for this

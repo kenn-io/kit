@@ -5,7 +5,6 @@ package daemon_test
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -65,15 +64,6 @@ func foreignNamespaceRecord(t *testing.T, pid int, address string) daemon.Runtim
 	}
 }
 
-func deadPID(t *testing.T) int {
-	t.Helper()
-	const pid = 999999
-	if daemon.ProcessAlive(pid) {
-		t.Skipf("pid %d is alive on this host", pid)
-	}
-	return pid
-}
-
 func TestCleanupDeadKeepsRecordFromAnotherPIDNamespace(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
@@ -109,8 +99,9 @@ func TestDiscoverProbesRecordFromAnotherPIDNamespace(t *testing.T) {
 	pid := deadPID(t)
 
 	t.Run("live server is found", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_, _ = fmt.Fprintf(w, `{"ok":true,"service":"tool","pid":%d}`, pid)
+		server := httptest.NewServer(daemon.NewPingHandler(daemon.PingHandlerOptions{
+			Service: "tool",
+			PID:     pid,
 		}))
 		defer server.Close()
 		store := daemon.RuntimeStore{Dir: t.TempDir()}

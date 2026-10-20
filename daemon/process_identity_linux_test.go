@@ -93,10 +93,7 @@ func TestLinuxProcessIdentityForeign(t *testing.T) {
 		{"own namespace", "pid:[4026532448]", withNamespace("4026532448"), false},
 		{"other namespace", "pid:[4026532448]", withNamespace("4026531836"), true},
 		{"other boot, own namespace", "pid:[4026532448]", ProcessIdentity("linux-v1:11111111-2222-3333-4444-555555555555:4026532448:202"), false},
-		{"malformed", "pid:[4026532448]", "linux-v1:nonsense", false},
-		{"unsupported version", "pid:[4026532448]", "linux-v2:" + bootID + ":4026531836:202", false},
 		{"unreadable own namespace", "", withNamespace("4026532448"), true},
-		{"unreadable own namespace, malformed", "", "linux-v1:nonsense", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
