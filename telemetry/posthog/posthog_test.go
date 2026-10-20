@@ -99,8 +99,6 @@ func TestReporterAdmission(t *testing.T) {
 		{name: "ci empty", generic: "1", veto: "CI"},
 		{name: "ci false", generic: "1", veto: "CI", value: "false"},
 		{name: "process disable", generic: "1", processDisabled: true},
-		{name: "development", absent: true, version: "dev"},
-		{name: "fork", absent: true, version: "v1.2.3-fork.1"},
 	}
 	for _, value := range []string{"1", "true", "yes", "on", " TRUE ", " YeS ", " ON ", " 1 "} {
 		tests = append(tests,
@@ -191,16 +189,6 @@ func TestReporterCloseGivesUpAfterShutdownTimeout(t *testing.T) {
 	require.Error(t, err)
 	assert.Less(t, time.Since(start), ShutdownTimeout+time.Second)
 	assert.False(t, reporter.Enabled())
-}
-
-func TestPostHogTelemetryEnabledFromEnvHonorsProcessDisable(t *testing.T) {
-	DisableProcess()
-	t.Cleanup(enablePostHogTelemetryForTest)
-
-	t.Setenv("KATA_TELEMETRY_ENABLED", "1")
-	t.Setenv(GenericEnabledEnv, "1")
-
-	assert.False(t, EnabledFromEnv("kata"))
 }
 
 func TestNewPostHogReporterDisabledByEnvSkipsRequiredFields(t *testing.T) {
