@@ -1,6 +1,7 @@
 package daemon_test
 
 import (
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -225,6 +226,51 @@ func TestRuntimeProcessAliveKeepsRecordWithUnreadableVersionedIdentity(t *testin
 		ProcessIdentityV2: "future-v1:12345",
 	}
 	assert.True(t, daemon.RuntimeProcessAlive(rec))
+}
+
+func TestCleanupDeadKeepsRecordWithUnjudgedIdentity(t *testing.T) {
+	store := daemon.RuntimeStore{Dir: t.TempDir()}
+	path, err := store.Write(daemon.RuntimeRecord{
+		PID:               deadPID(t),
+		Network:           daemon.NetworkTCP,
+		Address:           "127.0.0.1:7474",
+		Service:           "tool",
+		StartedAt:         time.Now(),
+		ProcessIdentityV2: "future-v1:12345",
+	})
+	require.NoError(t, err)
+
+	removed, err := store.CleanupDead()
+	require.NoError(t, err)
+	assert.Zero(t, removed)
+	assert.FileExists(t, path)
+}
+
+func TestDiscoverProbesRecordWithUnjudgedIdentity(t *testing.T) {
+	pid := deadPID(t)
+	server := httptest.NewServer(daemon.NewPingHandler(daemon.PingHandlerOptions{
+		Service: "tool",
+		PID:     pid,
+	}))
+	defer server.Close()
+	store := daemon.RuntimeStore{Dir: t.TempDir()}
+	_, err := store.Write(daemon.RuntimeRecord{
+		PID:               pid,
+		Network:           daemon.NetworkTCP,
+		Address:           listenerAddr(t, server),
+		Service:           "tool",
+		StartedAt:         time.Now(),
+		ProcessIdentityV2: "future-v1:12345",
+	})
+	require.NoError(t, err)
+
+	rec, _, ok, err := daemon.Discover(t.Context(), store, daemon.DiscoverOptions{
+		Probe:           daemon.ProbeOptions{ExpectedService: "tool"},
+		RequirePIDAlive: true,
+	})
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.Equal(t, pid, rec.PID)
 }
 
 // deadPID returns a PID that names no live process, or skips the test.

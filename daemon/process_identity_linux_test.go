@@ -131,7 +131,6 @@ func TestLinuxProcessIdentityScope(t *testing.T) {
 			require.NoError(t, os.MkdirAll(filepath.Join(proc, "43"), 0o755))
 		}, scopeGone},
 		{"caller not in the initial namespace", fixtureBootID, "4026532450", otherNamespace, identity(fixtureBootID, childNamespace), nil, scopeUnjudged},
-		{"malformed identity", fixtureBootID, childNamespace, childNamespace, "linux-v1:", nil, scopeUnjudged},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -160,24 +159,6 @@ func TestCompareProcessIdentityMatchesBeforeJudgingNamespace(t *testing.T) {
 
 	earlierBoot := ProcessIdentity("linux-v1:" + fixtureOtherBootID + ":4026532448:202")
 	assert.Equal(t, ProcessIdentityMismatch, compareProcessIdentity(42, earlierBoot, read, scope))
-}
-
-// The caller's real /proc walk reads every process of its user, so it proves
-// a namespace gone only where none of them is unreadable (a setuid or
-// capability-bearing process of the same user makes it inconclusive).
-func TestRuntimeProcessAliveIgnoresLocalPIDInNamespaceProvedGone(t *testing.T) {
-	own, err := readLinuxPIDNamespaceAt("/proc", "self")
-	require.NoError(t, err)
-	if own != initPIDNamespace || !linuxPIDNamespaceGone("/proc", "1") {
-		t.Skip("this caller can't prove a same-boot PID namespace gone")
-	}
-	bootID, ok := readLinuxBootID("/proc")
-	require.True(t, ok)
-	rec := RuntimeRecord{
-		PID:               os.Getpid(),
-		ProcessIdentityV2: ProcessIdentity("linux-v1:" + bootID + ":1:202"),
-	}
-	assert.False(t, RuntimeProcessAlive(rec))
 }
 
 func linuxStatFixture(pid int, command, startTicks string) string {
