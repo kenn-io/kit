@@ -48,9 +48,6 @@ const (
 	// scopeLocal means the PID names a process this caller can see, so a PID
 	// check applies.
 	scopeLocal identityScope = iota
-	// scopeGone means the identity proves the process gone: it is from an
-	// earlier boot, or from a same-boot namespace the caller proved empty.
-	scopeGone
 	// scopeUnjudged means this caller can't tell: the identity is unreadable,
 	// names another PID namespace, or the caller can't read its own.
 	scopeUnjudged

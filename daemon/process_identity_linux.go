@@ -22,6 +22,11 @@ func ReadProcessIdentity(pid int) (ProcessIdentity, bool) {
 	return readLinuxProcessIdentity("/proc", pid)
 }
 
+// scopeGone means the identity proves the process gone: it is from an
+// earlier boot, or from a same-boot namespace the caller proved empty. Only
+// Linux identities carry the boot ID and namespace that can prove this.
+const scopeGone = scopeUnjudged + 1
+
 // processIdentityScope judges identity for the caller's own /proc.
 func processIdentityScope(identity ProcessIdentity) identityScope {
 	return linuxProcessIdentityScope("/proc", identity)
