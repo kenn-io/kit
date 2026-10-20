@@ -200,7 +200,7 @@ func WithAllowedEvent(event string, properties ...AllowedProperty) Option {
 	})
 }
 
-// EnabledFromEnv checks the environment and process telemetry vetoes for envPrefix.
+// EnabledFromEnv reports whether telemetry is enabled for envPrefix.
 // See Eligible for the full reporting decision, including the release version.
 // Reporting defaults to on. An explicit 0, false, no, or off in TELEMETRY_ENABLED
 // or PREFIX_TELEMETRY_ENABLED turns it off. Values are trimmed and case-insensitive.
@@ -236,9 +236,10 @@ func EnabledFromEnv(envPrefix string) bool {
 
 // Eligible reports whether the admission gate allows envPrefix and version at
 // the time of the call. It reads the current environment and process-disable
-// state each time. A forwarding client should call it before each send with its
-// own prefix and version. The version must match plain vX.Y.Z or X.Y.Z numeric
-// components exactly, without trimming.
+// state each time. NewReporter samples the environment at construction, so a
+// forwarding client should call Eligible before each send with its own prefix
+// and version. The version must match plain vX.Y.Z or X.Y.Z numeric components
+// exactly, without trimming.
 func Eligible(envPrefix, version string) bool {
 	return EnabledFromEnv(envPrefix) && releaseVersion.MatchString(version)
 }
@@ -275,9 +276,9 @@ func ProcessDisabled() bool {
 }
 
 // NewReporter builds a reporter after sampling Eligible(opts.EnvPrefix, opts.Version).
-// Reporting requires Eligible to return true. Disabled construction skips client
-// configuration validation and client creation, preserving configured events
-// for handler validation. Invalid event declarations still return errors.
+// Disabled construction skips client configuration validation and client creation,
+// preserving configured events for handler validation. Invalid event declarations
+// still return errors.
 // Later environment changes have no effect; DisableProcess stops reporting at runtime.
 func NewReporter(opts Options, options ...Option) (*Reporter, error) {
 	return newPostHogReporter(opts, func(apiKey string, config phsdk.Config) (postHogEnqueueCloser, error) {
