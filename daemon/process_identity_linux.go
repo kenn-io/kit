@@ -22,43 +22,39 @@ func ReadProcessIdentity(pid int) (ProcessIdentity, bool) {
 	return readLinuxProcessIdentity("/proc", pid)
 }
 
-func processIdentityCompatible(identity ProcessIdentity) bool {
-	return validateLinuxProcessIdentity(identity)
+// processIdentityScope judges identity for the caller's own /proc.
+func processIdentityScope(identity ProcessIdentity) identityScope {
+	return linuxProcessIdentityScope("/proc", identity)
 }
 
-// processIdentityForeign reports whether this caller can't judge identity's
-// PID: it names another PID namespace on this boot, or the caller can't read
-// its own boot ID or namespace.
-func processIdentityForeign(identity ProcessIdentity) bool {
-	return linuxProcessIdentityForeign("/proc", identity)
-}
-
-// linuxProcessIdentityForeign is true when procRoot's boot ID or self
-// namespace is unreadable, or when identity has procRoot's boot ID and a PID
-// namespace other than procRoot's self namespace. An identity from an earlier
-// boot names a process that is gone, so it is false. Callers must pass an
-// identity that processIdentityCompatible accepted.
-func linuxProcessIdentityForeign(procRoot string, identity ProcessIdentity) bool {
-	ownBootID, ok := readLinuxBootID(procRoot)
-	if !ok {
-		return true
-	}
+// linuxProcessIdentityScope is scopeUnjudged when identity is malformed or
+// procRoot's boot ID or self namespace is unreadable. Otherwise it is
+// scopeGone for an identity from an earlier boot or a provably empty
+// namespace, scopeLocal for procRoot's own namespace, and scopeUnjudged for
+// any other.
+func linuxProcessIdentityScope(procRoot string, identity ProcessIdentity) identityScope {
+	bootID, namespace, ok := parseLinuxProcessIdentity(identity)
+	ownBootID, bootOK := readLinuxBootID(procRoot)
 	own, err := readLinuxPIDNamespaceAt(procRoot, "self")
-	if err != nil {
-		return true
+	switch {
+	case !ok || !bootOK || err != nil:
+		return scopeUnjudged
+	case bootID != ownBootID || linuxPIDNamespaceProvedGone(procRoot, own, namespace):
+		return scopeGone
+	case namespace == own:
+		return scopeLocal
 	}
-	bootID, namespace, _ := parseLinuxProcessIdentity(identity)
-	return bootID == ownBootID && linuxPIDNamespaceForeign(procRoot, own, namespace)
+	return scopeUnjudged
 }
 
 // initPIDNamespace is the inode of the kernel's initial PID namespace.
 const initPIDNamespace = "4026531836"
 
-// linuxPIDNamespaceForeign is true when namespace differs from own and isn't
-// provably gone. Only a caller in the initial PID namespace can see every
-// process, so only it can prove a namespace is gone.
-func linuxPIDNamespaceForeign(procRoot, own, namespace string) bool {
-	return namespace != own && (own != initPIDNamespace || !linuxPIDNamespaceGone(procRoot, namespace))
+// linuxPIDNamespaceProvedGone is true when namespace differs from own and no
+// process of the caller's user is in it. Only a caller in the initial PID
+// namespace can see every process, so only it can prove a namespace is gone.
+func linuxPIDNamespaceProvedGone(procRoot, own, namespace string) bool {
+	return namespace != own && own == initPIDNamespace && linuxPIDNamespaceGone(procRoot, namespace)
 }
 
 // linuxPIDNamespaceGone is true when no process owned by the caller's user is
@@ -101,11 +97,6 @@ func readLinuxBootID(procRoot string) (string, bool) {
 	raw, err := os.ReadFile(filepath.Join(procRoot, "sys/kernel/random/boot_id"))
 	bootID := strings.TrimSpace(string(raw))
 	return bootID, err == nil && validLinuxBootID(bootID)
-}
-
-func validateLinuxProcessIdentity(identity ProcessIdentity) bool {
-	_, _, ok := parseLinuxProcessIdentity(identity)
-	return ok
 }
 
 // parseLinuxProcessIdentity returns the boot ID and PID namespace of a

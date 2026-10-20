@@ -14,8 +14,10 @@ databases, command parsing, and shutdown policy belong to the caller.
 - With PID-aware discovery, retain a live record's probe failure until another
   reachable record wins. Absence is a definite result, not a fallback for an
   endpoint that could not be probed.
-- Treat process-creation identity as opaque and exact-match only. An unknown
-  identity never authorizes destructive action against a process or record.
+- Treat process-creation identity as exact-match only, except that the Linux
+  identity's boot ID and PID namespace are read to place the process. An
+  unknown identity never authorizes destructive action against a process or
+  record.
 - A record whose identity this caller can't judge is kept until removed: a
   versioned identity from another PID namespace on this boot, a nonempty one
   this build can't read (malformed, or from a newer version), or a well-formed
@@ -28,10 +30,14 @@ databases, command parsing, and shutdown policy belong to the caller.
   newer server's record blocks `Ensure` this way.
 - A caller in the initial PID namespace (inode 4026531836) treats a same-boot
   foreign namespace that no process of its user is in as gone, if every `/proc`
-  read succeeded, and the record then takes the plain PID check.
-- An identity from an earlier boot names a process that is gone, so PID checks
-  alone apply to it. A live container with its own boot ID therefore reads as
-  an earlier boot, and its record is not kept.
+  read succeeded. That walk sees only the caller's uid, so a server running
+  under another host uid in that namespace is missed.
+- An identity that proves the process gone, whether from an earlier boot or a
+  gone namespace, ends the liveness question: `RuntimeProcessAlive` is false
+  even if the record's PID is alive here. A live container with its own boot ID
+  therefore reads as an earlier boot, and its record is not kept. Only a
+  same-namespace identity or a record with no versioned identity takes the
+  plain PID check.
 - Never send a bearer credential to a runtime-record endpoint before it proves
   possession of the daemon token and its recorded service, version, PID,
   network, and address. Use the package proof ping and probe contract for this

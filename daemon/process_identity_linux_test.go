@@ -44,7 +44,7 @@ func TestLinuxProcessIdentityCompatibilityRejectsMalformedValues(t *testing.T) {
 		"linux-v1:b08745a1-625b-4f8b-8ab9-0123456789ab:4026532448:202:extra",
 	}
 	for _, identity := range tests {
-		assert.False(t, processIdentityCompatible(identity), string(identity))
+		assert.Equal(t, scopeUnjudged, processIdentityScope(identity), string(identity))
 		assert.Equal(t, ProcessIdentityUnknown, CompareProcessIdentity(os.Getpid(), identity), string(identity))
 	}
 }
@@ -87,7 +87,7 @@ func linuxProcFixture(t *testing.T, bootID, ownNamespace, pidNamespace string) s
 	return proc
 }
 
-func TestLinuxProcessIdentityForeign(t *testing.T) {
+func TestLinuxProcessIdentityScope(t *testing.T) {
 	const (
 		initNamespace  = "4026531836"
 		childNamespace = "4026532448"
@@ -103,16 +103,16 @@ func TestLinuxProcessIdentityForeign(t *testing.T) {
 		liveIn       string // PID namespace of the one live process in the proc root
 		identity     ProcessIdentity
 		tamper       func(t *testing.T, proc string)
-		want         bool
+		want         identityScope
 	}{
-		{"own namespace", fixtureBootID, childNamespace, childNamespace, identity(fixtureBootID, childNamespace), nil, false},
-		{"other namespace", fixtureBootID, childNamespace, childNamespace, identity(fixtureBootID, initNamespace), nil, true},
-		{"other boot, own namespace", fixtureBootID, childNamespace, childNamespace, identity(fixtureOtherBootID, childNamespace), nil, false},
-		{"other boot, other namespace", fixtureBootID, childNamespace, childNamespace, identity(fixtureOtherBootID, initNamespace), nil, false},
-		{"unreadable own namespace", fixtureBootID, "", childNamespace, identity(fixtureBootID, initNamespace), nil, true},
-		{"unreadable own boot ID", "", childNamespace, childNamespace, identity(fixtureBootID, initNamespace), nil, true},
-		{"namespace present", fixtureBootID, initNamespace, childNamespace, identity(fixtureBootID, childNamespace), nil, true},
-		{"namespace absent", fixtureBootID, initNamespace, otherNamespace, identity(fixtureBootID, childNamespace), nil, false},
+		{"own namespace", fixtureBootID, childNamespace, childNamespace, identity(fixtureBootID, childNamespace), nil, scopeLocal},
+		{"other namespace", fixtureBootID, childNamespace, childNamespace, identity(fixtureBootID, initNamespace), nil, scopeUnjudged},
+		{"other boot, own namespace", fixtureBootID, childNamespace, childNamespace, identity(fixtureOtherBootID, childNamespace), nil, scopeGone},
+		{"other boot, other namespace", fixtureBootID, childNamespace, childNamespace, identity(fixtureOtherBootID, initNamespace), nil, scopeGone},
+		{"unreadable own namespace", fixtureBootID, "", childNamespace, identity(fixtureBootID, initNamespace), nil, scopeUnjudged},
+		{"unreadable own boot ID", "", childNamespace, childNamespace, identity(fixtureBootID, initNamespace), nil, scopeUnjudged},
+		{"namespace present", fixtureBootID, initNamespace, childNamespace, identity(fixtureBootID, childNamespace), nil, scopeUnjudged},
+		{"namespace absent", fixtureBootID, initNamespace, otherNamespace, identity(fixtureBootID, childNamespace), nil, scopeGone},
 		{"unreadable link", fixtureBootID, initNamespace, otherNamespace, identity(fixtureBootID, childNamespace), func(t *testing.T, proc string) {
 			t.Helper()
 			if os.Geteuid() == 0 {
@@ -124,13 +124,14 @@ func TestLinuxProcessIdentityForeign(t *testing.T) {
 			require.NoError(t, os.Symlink("pid:[4026532451]", filepath.Join(ns, "pid")))
 			require.NoError(t, os.Chmod(ns, 0))
 			t.Cleanup(func() { _ = os.Chmod(ns, 0o755) })
-		}, true},
+		}, scopeUnjudged},
 		{"process exited mid-walk", fixtureBootID, initNamespace, otherNamespace, identity(fixtureBootID, childNamespace), func(t *testing.T, proc string) {
 			t.Helper()
 			// A process directory without ns/pid, as when it exits during the walk.
 			require.NoError(t, os.MkdirAll(filepath.Join(proc, "43"), 0o755))
-		}, false},
-		{"caller not in the initial namespace", fixtureBootID, "4026532450", otherNamespace, identity(fixtureBootID, childNamespace), nil, true},
+		}, scopeGone},
+		{"caller not in the initial namespace", fixtureBootID, "4026532450", otherNamespace, identity(fixtureBootID, childNamespace), nil, scopeUnjudged},
+		{"malformed identity", fixtureBootID, childNamespace, childNamespace, "linux-v1:", nil, scopeUnjudged},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -138,7 +139,7 @@ func TestLinuxProcessIdentityForeign(t *testing.T) {
 			if tt.tamper != nil {
 				tt.tamper(t, proc)
 			}
-			assert.Equal(t, tt.want, linuxProcessIdentityForeign(proc, tt.identity))
+			assert.Equal(t, tt.want, linuxProcessIdentityScope(proc, tt.identity))
 		})
 	}
 }
@@ -147,18 +148,36 @@ func TestCompareProcessIdentityMatchesBeforeJudgingNamespace(t *testing.T) {
 	// The caller is in the initial namespace; pid 42 runs in a child namespace it sees from outside.
 	proc := linuxProcFixture(t, fixtureBootID, "4026531836", "4026532448")
 	read := func(pid int) (ProcessIdentity, bool) { return readLinuxProcessIdentity(proc, pid) }
-	foreign := func(identity ProcessIdentity) bool { return linuxProcessIdentityForeign(proc, identity) }
+	scope := func(identity ProcessIdentity) identityScope { return linuxProcessIdentityScope(proc, identity) }
 	live, ok := read(42)
 	require.True(t, ok)
-	require.True(t, foreign(live))
+	require.Equal(t, scopeUnjudged, scope(live))
 
-	assert.Equal(t, ProcessIdentityMatch, compareProcessIdentity(42, live, read, foreign))
+	assert.Equal(t, ProcessIdentityMatch, compareProcessIdentity(42, live, read, scope))
 
 	mismatched := ProcessIdentity("linux-v1:" + fixtureBootID + ":4026532448:203")
-	assert.Equal(t, ProcessIdentityUnknown, compareProcessIdentity(42, mismatched, read, foreign))
+	assert.Equal(t, ProcessIdentityUnknown, compareProcessIdentity(42, mismatched, read, scope))
 
 	earlierBoot := ProcessIdentity("linux-v1:" + fixtureOtherBootID + ":4026532448:202")
-	assert.Equal(t, ProcessIdentityMismatch, compareProcessIdentity(42, earlierBoot, read, foreign))
+	assert.Equal(t, ProcessIdentityMismatch, compareProcessIdentity(42, earlierBoot, read, scope))
+}
+
+// The caller's real /proc walk reads every process of its user, so it proves
+// a namespace gone only where none of them is unreadable (a setuid or
+// capability-bearing process of the same user makes it inconclusive).
+func TestRuntimeProcessAliveIgnoresLocalPIDInNamespaceProvedGone(t *testing.T) {
+	own, err := readLinuxPIDNamespaceAt("/proc", "self")
+	require.NoError(t, err)
+	if own != initPIDNamespace || !linuxPIDNamespaceGone("/proc", "1") {
+		t.Skip("this caller can't prove a same-boot PID namespace gone")
+	}
+	bootID, ok := readLinuxBootID("/proc")
+	require.True(t, ok)
+	rec := RuntimeRecord{
+		PID:               os.Getpid(),
+		ProcessIdentityV2: ProcessIdentity("linux-v1:" + bootID + ":1:202"),
+	}
+	assert.False(t, RuntimeProcessAlive(rec))
 }
 
 func linuxStatFixture(pid int, command, startTicks string) string {
