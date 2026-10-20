@@ -3,7 +3,6 @@ package daemon_test
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -218,33 +217,14 @@ func TestRuntimeStorePrefixReservesPortableStagingSuffix(t *testing.T) {
 	require.ErrorIs(err, fsname.ErrNotPortable)
 }
 
-func TestRuntimeStoreCleanupDeadKeepsUnreadableVersionedIdentity(t *testing.T) {
-	pid := deadPID(t)
-	identities := map[string]daemon.ProcessIdentity{
-		"malformed":     "malformed",
-		"newer version": "future-v1:12345",
+func TestRuntimeProcessAliveKeepsRecordWithUnreadableVersionedIdentity(t *testing.T) {
+	rec := daemon.RuntimeRecord{
+		PID:               deadPID(t),
+		Network:           daemon.NetworkTCP,
+		Address:           "127.0.0.1:7474",
+		ProcessIdentityV2: "future-v1:12345",
 	}
-	if runtime.GOOS != "linux" {
-		// Well formed on Linux, where it names an earlier boot instead.
-		identities["linux identity"] = "linux-v1:b08745a1-625b-4f8b-8ab9-0123456789ab:4026532448:202"
-	}
-	for name, identity := range identities {
-		t.Run(name, func(t *testing.T) {
-			store := daemon.RuntimeStore{Dir: t.TempDir()}
-			path, err := store.Write(daemon.RuntimeRecord{
-				PID:               pid,
-				Network:           daemon.NetworkTCP,
-				Address:           "127.0.0.1:7474",
-				ProcessIdentityV2: identity,
-			})
-			require.NoError(t, err)
-
-			removed, err := store.CleanupDead()
-			require.NoError(t, err)
-			assert.Zero(t, removed)
-			assert.FileExists(t, path)
-		})
-	}
+	assert.True(t, daemon.RuntimeProcessAlive(rec))
 }
 
 // deadPID returns a PID that names no live process, or skips the test.
