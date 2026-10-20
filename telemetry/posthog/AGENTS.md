@@ -11,8 +11,9 @@ Reporting starts on. A trimmed, case-insensitive 0, false, no, or off in
 either TELEMETRY_ENABLED or its prefixed equivalent disables reporting.
 The version must be plain vX.Y.Z or X.Y.Z. Process disable, any present
 CI, and a present DO_NOT_TRACK except trimmed, case-insensitive 0 or false
-veto reporting. Forwarding clients call Eligible(envPrefix, version) before sending. Admission runs before
-client configuration validation; invalid event declarations still return errors.
+veto reporting. Forwarding clients call Eligible(envPrefix, version).
+Admission runs before client configuration validation; invalid event declarations
+still return errors.
 Close waits at most ShutdownTimeout.
 
 The transport removes `$os`, `$os_version`, `$os_distro`, and `$go_version`
