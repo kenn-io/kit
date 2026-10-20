@@ -222,3 +222,31 @@ func TestRuntimeStorePrefixReservesPortableStagingSuffix(t *testing.T) {
 	_, err = store.Path(1)
 	require.ErrorIs(err, fsname.ErrNotPortable)
 }
+
+func TestRuntimeStoreCleanupDeadKeepsUnreadableVersionedIdentity(t *testing.T) {
+	deadPID := 999999
+	if daemon.ProcessAlive(deadPID) {
+		t.Skipf("pid %d is alive on this host", deadPID)
+	}
+	for name, identity := range map[string]daemon.ProcessIdentity{
+		"malformed":     "malformed",
+		"newer version": "future-v1:12345",
+		"linux identity from another namespace or platform": "linux-v1:b08745a1-625b-4f8b-8ab9-0123456789ab:1:202",
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := daemon.RuntimeStore{Dir: t.TempDir()}
+			path, err := store.Write(daemon.RuntimeRecord{
+				PID:               deadPID,
+				Network:           daemon.NetworkTCP,
+				Address:           "127.0.0.1:7474",
+				ProcessIdentityV2: identity,
+			})
+			require.NoError(t, err)
+
+			removed, err := store.CleanupDead()
+			require.NoError(t, err)
+			assert.Zero(t, removed)
+			assert.FileExists(t, path)
+		})
+	}
+}

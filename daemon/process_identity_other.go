@@ -31,6 +31,9 @@ func processIdentityCompatible(identity ProcessIdentity) bool {
 	return err == nil && value > 0 && strconv.FormatInt(value, 10) == encoded
 }
 
+// processIdentityForeign is false: non-Linux identities carry no namespace.
+func processIdentityForeign(ProcessIdentity) bool { return false }
+
 func runtimeProcessIdentities(pid int) (ProcessIdentity, ProcessIdentity) {
 	identity, _ := ReadProcessIdentity(pid)
 	return identity, ""

@@ -79,6 +79,37 @@ func TestParseLinuxProcessStartTicksRejectsMalformedStat(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestLinuxProcessIdentityForeign(t *testing.T) {
+	const bootID = "b08745a1-625b-4f8b-8ab9-0123456789ab"
+	withNamespace := func(inode string) ProcessIdentity {
+		return ProcessIdentity("linux-v1:" + bootID + ":" + inode + ":202")
+	}
+	tests := []struct {
+		name     string
+		own      string // self ns/pid link target; empty leaves it unreadable
+		identity ProcessIdentity
+		want     bool
+	}{
+		{"own namespace", "pid:[4026532448]", withNamespace("4026532448"), false},
+		{"other namespace", "pid:[4026532448]", withNamespace("4026531836"), true},
+		{"other boot, own namespace", "pid:[4026532448]", ProcessIdentity("linux-v1:11111111-2222-3333-4444-555555555555:4026532448:202"), false},
+		{"malformed", "pid:[4026532448]", "linux-v1:nonsense", false},
+		{"unsupported version", "pid:[4026532448]", "linux-v2:" + bootID + ":4026531836:202", false},
+		{"unreadable own namespace", "", withNamespace("4026532448"), true},
+		{"unreadable own namespace, malformed", "", "linux-v1:nonsense", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proc := t.TempDir()
+			if tt.own != "" {
+				require.NoError(t, os.MkdirAll(filepath.Join(proc, "self/ns"), 0o755))
+				require.NoError(t, os.Symlink(tt.own, filepath.Join(proc, "self/ns/pid")))
+			}
+			assert.Equal(t, tt.want, linuxProcessIdentityForeign(proc, tt.identity))
+		})
+	}
+}
+
 func linuxStatFixture(pid int, command, startTicks string) string {
 	return fmt.Sprintf(
 		"%d (%s) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 %s 20",

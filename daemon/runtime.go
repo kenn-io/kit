@@ -278,8 +278,9 @@ func (s RuntimeStore) List() ([]RuntimeRecord, error) {
 }
 
 // CleanupDead removes runtime files whose filename PID matches the record PID
-// and the process is no longer alive. Malformed and PID-mismatched files are
-// left in place for human inspection.
+// and whose process is no longer alive (see RuntimeProcessAlive). Records from
+// another PID namespace, malformed files, and PID-mismatched files are left in
+// place.
 func (s RuntimeStore) CleanupDead() (int, error) {
 	prefix, err := s.validatePrefix()
 	if err != nil {
@@ -307,7 +308,7 @@ func (s RuntimeStore) CleanupDead() (int, error) {
 		}
 		path := filepath.Join(s.Dir, name)
 		rec, err := s.readPrepared(path)
-		if err != nil || rec.PID != filenamePID || ProcessAlive(filenamePID) {
+		if err != nil || rec.PID != filenamePID || RuntimeProcessAlive(rec) {
 			continue
 		}
 		if err := os.Remove(path); err == nil {

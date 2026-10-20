@@ -135,8 +135,10 @@ type DiscoverOptions struct {
 	// Proof enables proof-of-possession probing for each runtime record.
 	Proof *Proof
 	// RequirePIDAlive rejects dead processes and definite process-identity
-	// mismatches. It also makes failed probes indeterminate: Discover returns an
-	// UnreachableError when no later record succeeds. The false zero value keeps
+	// mismatches. A record from another PID namespace is neither: it is probed,
+	// and a failed probe stays unreachable. It also makes failed probes
+	// indeterminate: Discover returns an UnreachableError when no later record
+	// succeeds. The false zero value keeps
 	// the earlier compatibility behavior, where failed probes are skipped and
 	// discovery can report definite absence.
 	RequirePIDAlive bool
@@ -185,7 +187,7 @@ func Discover(ctx context.Context, store RuntimeStore, opts DiscoverOptions) (Ru
 			return RuntimeRecord{}, PingInfo{}, false, err
 		}
 		if opts.RequirePIDAlive {
-			if !ProcessAlive(rec.PID) ||
+			if !RuntimeProcessAlive(rec) ||
 				CompareRuntimeProcessIdentity(rec) == ProcessIdentityMismatch {
 				continue
 			}

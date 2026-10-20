@@ -24,6 +24,28 @@ func processIdentityCompatible(identity ProcessIdentity) bool {
 	return validateLinuxProcessIdentity(identity)
 }
 
+// processIdentityForeign reports whether identity names a PID namespace other
+// than the caller's, so its PID means nothing here.
+func processIdentityForeign(identity ProcessIdentity) bool {
+	return linuxProcessIdentityForeign("/proc", identity)
+}
+
+// linuxProcessIdentityForeign is true for a well-formed identity whose
+// namespace differs from procRoot's self namespace, or when that namespace
+// can't be read. Malformed identities are not foreign. The boot ID is ignored:
+// the init PID namespace keeps its inode across reboots.
+func linuxProcessIdentityForeign(procRoot string, identity ProcessIdentity) bool {
+	if !validateLinuxProcessIdentity(identity) {
+		return false
+	}
+	own, err := readLinuxPIDNamespaceAt(procRoot, "self")
+	if err != nil {
+		return true
+	}
+	fields := strings.Split(strings.TrimPrefix(string(identity), linuxProcessIdentityPrefix), ":")
+	return fields[1] != own
+}
+
 func validateLinuxProcessIdentity(identity ProcessIdentity) bool {
 	encoded := string(identity)
 	if !strings.HasPrefix(encoded, linuxProcessIdentityPrefix) {
@@ -103,7 +125,11 @@ func readLinuxProcessIdentity(procRoot string, pid int) (ProcessIdentity, bool) 
 }
 
 func readLinuxPIDNamespace(procRoot string, pid int) (string, error) {
-	target, err := os.Readlink(filepath.Join(procRoot, strconv.Itoa(pid), "ns/pid"))
+	return readLinuxPIDNamespaceAt(procRoot, strconv.Itoa(pid))
+}
+
+func readLinuxPIDNamespaceAt(procRoot, process string) (string, error) {
+	target, err := os.Readlink(filepath.Join(procRoot, process, "ns/pid"))
 	if err != nil {
 		return "", err
 	}
