@@ -118,7 +118,6 @@ jobs:
           TEST_PART: ${{ matrix.part }}
           TEST_PARTS: ${{ matrix.parts }}
         run: |
-          $outputName = $env:TEST_SHARD
           if ($env:TEST_SHARD -eq 'managed') {
             $listed = @(go test -list '^(Test|Example|Fuzz)' $env:MANAGED_PACKAGE)
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -131,13 +130,12 @@ jobs:
             Write-Host "Managed test part $env:TEST_PART/$env:TEST_PARTS selected $($selected.Count) of $($names.Count) tests"
             $pattern = '^(' + (($selected | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')$'
             $testArgs = @('-timeout=20m', '-run', $pattern, $env:MANAGED_PACKAGE)
-            $outputName = "managed-$env:TEST_PART-of-$env:TEST_PARTS"
           } else {
             $allPackages = @(go list ./...)
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             $testArgs = @($allPackages | Where-Object { $_ -ne $env:MANAGED_PACKAGE })
           }
-          go tool gotestsum --format pkgname-and-test-fails --jsonfile="test-output-windows-$outputName.json" -- @testArgs
+          go tool gotestsum --format pkgname-and-test-fails --jsonfile="test-output-windows-$env:TEST_SHARD.json" -- @testArgs
           exit $LASTEXITCODE
 
       - name: Run go vet
