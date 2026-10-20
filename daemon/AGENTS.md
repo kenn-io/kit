@@ -15,9 +15,9 @@ databases, command parsing, and shutdown policy belong to the caller.
   reachable record wins. Absence is a definite result, not a fallback for an
   endpoint that could not be probed.
 - Treat process-creation identity as exact-match only, except that the Linux
-  identity's boot ID and PID namespace are read to place the process. An
-  unknown identity never authorizes destructive action against a process or
-  record.
+  identity's boot ID, PID namespace, and start ticks are read to place the
+  process. An unknown identity never authorizes destructive action against a
+  process or record.
 - A record whose identity this caller can't judge is kept until removed: a
   versioned identity from another PID namespace on this boot, a nonempty one
   this build can't read (malformed, or from a newer version), or a well-formed
@@ -29,14 +29,21 @@ databases, command parsing, and shutdown policy belong to the caller.
   namespace cleans up, or when it's deleted by hand. After a downgrade, a dead
   newer server's record blocks `Ensure` this way.
 - A caller in the initial PID namespace (inode 4026531836) treats a same-boot
-  foreign namespace that no process of its user is in as gone, if every `/proc`
-  read succeeded. That walk sees only the caller's uid, so a server running
-  under another host uid in that namespace is missed.
+  record from a foreign namespace as gone when no process in a nested PID
+  namespace has the record's PID as its innermost `NSpid` entry and the
+  identity's start ticks. The walk reads only `/proc/<pid>/status` and `stat`,
+  which every uid can read, so it sees servers under any host uid. Any read
+  failure other than an exited process, or a `/proc` that hides pid 1
+  (`hidepid`), leaves the record unjudged. Don't narrow the walk to the
+  caller's uid or to files that need ptrace access, such as `ns/pid`: a missed
+  live server reads as gone and its record is deleted. A server in a time
+  namespace with a boot-time offset reports shifted start ticks and reads as
+  gone.
 - An identity that proves the process gone, whether from an earlier boot or a
-  gone namespace, ends the liveness question: `RuntimeProcessAlive` is false
-  even if the record's PID is alive here. A live container with its own boot ID
-  therefore reads as an earlier boot, and its record is not kept. Only a
-  same-namespace identity or a record with no versioned identity takes the
+  gone nested process, ends the liveness question: `RuntimeProcessAlive` is
+  false even if the record's PID is alive here. A live container with its own
+  boot ID therefore reads as an earlier boot, and its record is not kept. Only
+  a same-namespace identity or a record with no versioned identity takes the
   plain PID check.
 - Never send a bearer credential to a runtime-record endpoint before it proves
   possession of the daemon token and its recorded service, version, PID,

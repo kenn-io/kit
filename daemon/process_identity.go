@@ -25,7 +25,7 @@ func compareProcessIdentity(
 	pid int,
 	recorded ProcessIdentity,
 	read func(int) (ProcessIdentity, bool),
-	scope func(ProcessIdentity) identityScope,
+	scope func(int, ProcessIdentity) identityScope,
 ) ProcessIdentityStatus {
 	if recorded == "" {
 		return ProcessIdentityUnknown
@@ -34,7 +34,7 @@ func compareProcessIdentity(
 	if ok && live == recorded {
 		return ProcessIdentityMatch
 	}
-	if !ok || scope(recorded) == scopeUnjudged {
+	if !ok || scope(pid, recorded) == scopeUnjudged {
 		return ProcessIdentityUnknown
 	}
 	return ProcessIdentityMismatch
@@ -78,7 +78,7 @@ func runtimeIdentityScope(rec RuntimeRecord) identityScope {
 	if rec.ProcessIdentityV2 == "" {
 		return scopeLocal
 	}
-	return processIdentityScope(rec.ProcessIdentityV2)
+	return processIdentityScope(rec.PID, rec.ProcessIdentityV2)
 }
 
 // runtimeRecordLive is RuntimeProcessAlive without a definite identity
