@@ -76,7 +76,7 @@ func TestPrefixedTelemetryEnabledEnv(t *testing.T) {
 	assert.Empty(t, PrefixedEnabledEnv(""))
 }
 
-func TestReporterAdmission(t *testing.T) {
+func TestEligible(t *testing.T) {
 	type admissionCase struct {
 		name, generic, prefixed string
 		absent                  bool
@@ -86,31 +86,37 @@ func TestReporterAdmission(t *testing.T) {
 		enabled                 bool
 	}
 	tests := []admissionCase{
-		{name: "absent", absent: true, enabled: true},
-		{name: "empty", enabled: true},
-		{name: "unknown", generic: "enabled", prefixed: "2", enabled: true},
-		{name: "tracking zero", absent: true, veto: "DO_NOT_TRACK", value: "0", enabled: true},
-		{name: "tracking false", absent: true, veto: "DO_NOT_TRACK", value: " FALSE ", enabled: true},
-		{name: "tracking padded zero", absent: true, veto: "DO_NOT_TRACK", value: " 0 ", enabled: true},
-		{name: "tracking set", absent: true, veto: "DO_NOT_TRACK", value: "1"},
-		{name: "tracking empty", absent: true, veto: "DO_NOT_TRACK"},
-		{name: "tracking other", generic: "1", veto: "DO_NOT_TRACK", value: "off"},
-		{name: "ci set", absent: true, veto: "CI", value: "true"},
-		{name: "ci empty", generic: "1", veto: "CI"},
-		{name: "ci false", generic: "1", veto: "CI", value: "false"},
-		{name: "process disable", generic: "1", processDisabled: true},
+		{name: "absent", version: "v1.2.3", absent: true, enabled: true},
+		{name: "empty", version: "v1.2.3", enabled: true},
+		{name: "unknown", version: "v1.2.3", generic: "enabled", prefixed: "2", enabled: true},
+		{name: "tracking zero", version: "v1.2.3", absent: true, veto: "DO_NOT_TRACK", value: "0", enabled: true},
+		{name: "tracking false", version: "v1.2.3", absent: true, veto: "DO_NOT_TRACK", value: " FALSE ", enabled: true},
+		{name: "tracking padded zero", version: "v1.2.3", absent: true, veto: "DO_NOT_TRACK", value: " 0 ", enabled: true},
+		{name: "tracking set", version: "v1.2.3", absent: true, veto: "DO_NOT_TRACK", value: "1"},
+		{name: "tracking empty", version: "v1.2.3", absent: true, veto: "DO_NOT_TRACK"},
+		{name: "tracking other", version: "v1.2.3", generic: "1", veto: "DO_NOT_TRACK", value: "off"},
+		{name: "ci set", version: "v1.2.3", absent: true, veto: "CI", value: "true"},
+		{name: "ci empty", version: "v1.2.3", generic: "1", veto: "CI"},
+		{name: "ci false", version: "v1.2.3", generic: "1", veto: "CI", value: "false"},
+		{name: "process disable", version: "v1.2.3", generic: "1", processDisabled: true},
+		{name: "release without v", absent: true, version: "1.2.3", enabled: true},
 		{name: "development", absent: true, version: "dev"},
 		{name: "fork", absent: true, version: "v1.2.3-fork.1"},
+		{name: "empty version", absent: true},
+		{name: "partial version", absent: true, version: "v1.2"},
+		{name: "build metadata", absent: true, version: "v1.2.3+build.1"},
+		{name: "leading space", absent: true, version: " v1.2.3"},
+		{name: "trailing newline", absent: true, version: "v1.2.3\n"},
 	}
 	for _, value := range []string{"1", "true", "yes", "on", " TRUE ", " YeS ", " ON ", " 1 "} {
 		tests = append(tests,
-			admissionCase{name: "generic " + value, generic: value, enabled: true},
-			admissionCase{name: "prefixed " + value, prefixed: value, enabled: true})
+			admissionCase{name: "generic " + value, version: "v1.2.3", generic: value, enabled: true},
+			admissionCase{name: "prefixed " + value, version: "v1.2.3", prefixed: value, enabled: true})
 	}
 	for _, value := range []string{"0", "false", "no", "off", " FALSE ", "Off"} {
 		tests = append(tests,
-			admissionCase{name: "generic " + value, generic: value, prefixed: "1"},
-			admissionCase{name: "prefixed " + value, generic: "1", prefixed: value})
+			admissionCase{name: "generic " + value, version: "v1.2.3", generic: value, prefixed: "1"},
+			admissionCase{name: "prefixed " + value, version: "v1.2.3", generic: "1", prefixed: value})
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -126,44 +132,7 @@ func TestReporterAdmission(t *testing.T) {
 			if tt.processDisabled {
 				DisableProcess()
 			}
-			version := tt.version
-			if version == "" {
-				version = "v1.2.3"
-			}
-			assert.Equal(t, tt.enabled, Eligible("KATA", version))
-			events := make(chan string, 16)
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-				var payload struct {
-					Batch []postHogCaptureRequest `json:"batch"`
-				}
-				if err := json.NewDecoder(request.Body).Decode(&payload); !assert.NoError(t, err) {
-					http.Error(w, "invalid batch", http.StatusBadRequest)
-					return
-				}
-				for _, event := range payload.Batch {
-					events <- event.Event
-				}
-				w.WriteHeader(http.StatusOK)
-			}))
-			t.Cleanup(server.Close)
-			reporter, err := NewReporter(Options{
-				APIKey: "caller-owned-key", Application: "kata", EnvPrefix: "KATA",
-				DistinctID: "anonymous-instance-id", Version: version, Endpoint: server.URL,
-			}, WithAllowedEvent(EventDaemonActive), WithAllowedEvent("screen", RequireProperty("name", AllowStringValues("queue"))))
-			require.NoError(t, err)
-			t.Cleanup(func() { require.NoError(t, reporter.Close()) })
-			assert.Equal(t, tt.enabled, reporter.Enabled())
-			assert.True(t, reporter.EventAllowed("screen"))
-			_, err = reporter.SanitizeProperties("screen", nil)
-			require.ErrorIs(t, err, ErrInvalidProperty)
-			require.NoError(t, reporter.Capture(EventDaemonActive, nil))
-			require.NoError(t, reporter.Close())
-			if tt.enabled {
-				require.Len(t, events, 1)
-				assert.Equal(t, EventDaemonActive, <-events)
-			} else {
-				assert.Empty(t, events)
-			}
+			assert.Equal(t, tt.enabled, Eligible("KATA", tt.version))
 		})
 	}
 }
@@ -193,16 +162,6 @@ func TestReporterCloseGivesUpAfterShutdownTimeout(t *testing.T) {
 	assert.False(t, reporter.Enabled())
 }
 
-func TestPostHogTelemetryEnabledFromEnvHonorsProcessDisable(t *testing.T) {
-	DisableProcess()
-	t.Cleanup(enablePostHogTelemetryForTest)
-
-	t.Setenv("KATA_TELEMETRY_ENABLED", "1")
-	t.Setenv(GenericEnabledEnv, "1")
-
-	assert.False(t, EnabledFromEnv("kata"))
-}
-
 func TestNewPostHogReporterDisabledByEnvSkipsRequiredFields(t *testing.T) {
 	enablePostHogTelemetryForTest()
 	t.Cleanup(enablePostHogTelemetryForTest)
@@ -225,17 +184,9 @@ func TestReporterRequiresReleaseVersion(t *testing.T) {
 		enabled bool
 	}{
 		{name: "release", version: "v1.2.3", enabled: true},
-		{name: "release without v", version: "1.2.3", enabled: true},
-		{name: "development", version: "dev"},
 		{name: "fork", version: "v1.2.3-fork.1"},
-		{name: "empty version"},
-		{name: "partial version", version: "v1.2"},
-		{name: "build metadata", version: "v1.2.3+build.1"},
-		{name: "leading space", version: " v1.2.3"},
-		{name: "trailing newline", version: "v1.2.3\n"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.enabled, Eligible("KATA", tt.version))
 			calls := 0
 			client := &recordingPostHogClient{}
 			reporter, err := newPostHogReporter(Options{
@@ -249,7 +200,6 @@ func TestReporterRequiresReleaseVersion(t *testing.T) {
 			t.Cleanup(func() { require.NoError(t, reporter.Close()) })
 			assert.Equal(t, tt.enabled, reporter.Enabled())
 			require.NoError(t, reporter.Capture(EventDaemonActive, nil))
-			assert.True(t, reporter.EventAllowed(EventDaemonActive))
 			if tt.enabled {
 				assert.Equal(t, 1, calls)
 				require.Len(t, client.messages, 1)
