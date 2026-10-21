@@ -31,6 +31,15 @@ func processIdentityCompatible(identity ProcessIdentity) bool {
 	return err == nil && value > 0 && strconv.FormatInt(value, 10) == encoded
 }
 
+// processIdentityScope is scopeLocal for a readable identity whatever pid:
+// non-Linux identities carry no boot ID or namespace.
+func processIdentityScope(_ int, identity ProcessIdentity) identityScope {
+	if !processIdentityCompatible(identity) {
+		return scopeUnjudged
+	}
+	return scopeLocal
+}
+
 func runtimeProcessIdentities(pid int) (ProcessIdentity, ProcessIdentity) {
 	identity, _ := ReadProcessIdentity(pid)
 	return identity, ""
