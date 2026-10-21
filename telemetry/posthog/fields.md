@@ -25,4 +25,4 @@ The batch envelope keeps only `api_key` and `batch`. Each event keeps only `even
 
 Shared properties belong to kit and override product values with the same names. Products document their own event names, property names, and allowed values.
 
-The public project key supplied as `Options.APIKey` appears as `api_key` in the batch envelope, outside the events. `$geoip_disable` turns off GeoIP lookup. PostHog project settings control IP address retention; this flag does not configure retention.
+The public project key, from `Options.APIKey` or set at link time, appears as `api_key` in the batch envelope, outside the events. `$geoip_disable` turns off GeoIP lookup. PostHog project settings control IP address retention; this flag does not configure retention.

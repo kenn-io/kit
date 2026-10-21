@@ -45,6 +45,13 @@ var ErrInvalidProperty = errors.New("invalid telemetry property")
 
 var postHogTelemetryDisabled atomic.Bool
 
+// projectKey is the PostHog project API key used when Options.APIKey is
+// empty. Source builds leave it empty, so they report nothing; release builds
+// set it at link time:
+//
+//	-X go.kenn.io/kit/telemetry/posthog.projectKey=<key>
+var projectKey string
+
 var releaseVersion = regexp.MustCompile(`^v?[0-9]+[.][0-9]+[.][0-9]+$`)
 
 // Remove the same SDK system properties on every OS.
@@ -80,8 +87,9 @@ type Client interface {
 type Options struct {
 	// Logger receives SDK and daily-claim housekeeping logs. Nil uses slog.Default().
 	Logger *slog.Logger
-	// APIKey is the PostHog project API key. It is a public ingest identifier,
-	// but callers must still pass it explicitly so kit never embeds app keys.
+	// APIKey is the PostHog project API key. It is a public ingest identifier.
+	// Empty uses the key set at link time; with neither, the reporter is
+	// disabled. Kit's source never embeds a key.
 	APIKey string
 	// Endpoint defaults to DefaultEndpoint when empty.
 	Endpoint string
@@ -275,7 +283,8 @@ func ProcessDisabled() bool {
 	return postHogTelemetryDisabled.Load()
 }
 
-// NewReporter builds a reporter after sampling Eligible(opts.EnvPrefix, opts.Version).
+// NewReporter builds a reporter after sampling Eligible(opts.EnvPrefix, opts.Version)
+// and requiring a project key, from Options.APIKey or set at link time.
 // Disabled construction skips client configuration validation and client creation,
 // preserving configured events for handler validation. Invalid event declarations
 // still return errors.
@@ -332,14 +341,12 @@ func newPostHogReporter(opts Options, newClient postHogClientFactory, options ..
 			}
 		}
 	}
-	if !Eligible(opts.EnvPrefix, opts.Version) {
+	apiKey := defaultString(strings.TrimSpace(opts.APIKey), strings.TrimSpace(projectKey))
+	if apiKey == "" || !Eligible(opts.EnvPrefix, opts.Version) {
 		return &Reporter{allowedEvents: allowedEvents, requiredEvents: config.requiredEvents, dailyEvents: config.dailyEvents}, nil
 	}
 	if newClient == nil {
 		return nil, errors.New("posthog client factory is required")
-	}
-	if strings.TrimSpace(opts.APIKey) == "" {
-		return nil, errors.New("posthog api key is required")
 	}
 	if strings.TrimSpace(opts.Application) == "" {
 		return nil, errors.New("telemetry application is required")
@@ -361,7 +368,7 @@ func newPostHogReporter(opts Options, newClient postHogClientFactory, options ..
 	}
 	disableGeoIP := true
 	deliveries := &deliveryCallbacks{pending: make(map[chan error]deliveryKey)}
-	client, err := newClient(strings.TrimSpace(opts.APIKey), phsdk.Config{
+	client, err := newClient(apiKey, phsdk.Config{
 		Callback:     deliveries,
 		Logger:       sdkLogger{logger},
 		Endpoint:     endpoint,
