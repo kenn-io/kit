@@ -88,7 +88,7 @@ provider workflows to this repo unless the package already owns that concern.
 
 ## CI runners
 
-Windows tests use GitHub-hosted runners, with `git/managed` in a separate job.
+Windows tests use GitHub-hosted runners, with `git/managed` in three separate jobs.
 Linux and macOS jobs use Namespace's
 [Restricted access level](https://namespace.so/docs/solutions/github-actions/runner-controls/access-levels),
 which disables workload access to Namespace features and APIs. GitHub fork

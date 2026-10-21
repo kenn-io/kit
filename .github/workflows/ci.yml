@@ -53,7 +53,7 @@ jobs:
         run: ./custom-gcl run ./...
 
   test:
-    name: Go tests (${{ matrix.os }}${{ matrix.shard == 'managed' && ', git/managed' || '' }})
+    name: Go tests (${{ matrix.os }}${{ matrix.shard == 'managed' && format(', git/managed {0}/{1}', matrix.part, matrix.parts) || '' }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.shard == 'managed' && 25 || 20 }}
     env:
@@ -74,6 +74,18 @@ jobs:
           - os: windows-latest
             runner: windows-latest
             shard: managed
+            part: 1
+            parts: 3
+          - os: windows-latest
+            runner: windows-latest
+            shard: managed
+            part: 2
+            parts: 3
+          - os: windows-latest
+            runner: windows-latest
+            shard: managed
+            part: 3
+            parts: 3
 
     steps:
       - name: Check out repository
@@ -103,9 +115,21 @@ jobs:
         shell: pwsh
         env:
           TEST_SHARD: ${{ matrix.shard }}
+          TEST_PART: ${{ matrix.part }}
+          TEST_PARTS: ${{ matrix.parts }}
         run: |
           if ($env:TEST_SHARD -eq 'managed') {
-            $testArgs = @('-timeout=20m', $env:MANAGED_PACKAGE)
+            $listed = @(go test -list '^(Test|Example|Fuzz)' $env:MANAGED_PACKAGE)
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            [string[]]$names = @($listed | Where-Object { $_ -match '^(Test|Example|Fuzz)\S*$' })
+            [Array]::Sort($names, [StringComparer]::Ordinal)
+            $selected = @(for ($i = 0; $i -lt $names.Count; $i++) {
+              if ($i % [int]$env:TEST_PARTS -eq [int]$env:TEST_PART - 1) { $names[$i] }
+            })
+            if ($selected.Count -eq 0) { throw "Managed test part $env:TEST_PART has no tests" }
+            Write-Host "Managed test part $env:TEST_PART/$env:TEST_PARTS selected $($selected.Count) of $($names.Count) tests"
+            $pattern = '^(' + (($selected | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')$'
+            $testArgs = @('-timeout=20m', '-run', $pattern, $env:MANAGED_PACKAGE)
           } else {
             $allPackages = @(go list ./...)
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
