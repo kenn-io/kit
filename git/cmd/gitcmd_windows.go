@@ -7,18 +7,15 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
-	"syscall"
 
 	"golang.org/x/sys/windows"
+
+	"go.kenn.io/kit/consolewindow"
 )
 
 func prepareGitCommand(cmd *exec.Cmd, hideConsoleWindow bool) {
 	if hideConsoleWindow {
-		if cmd.SysProcAttr == nil {
-			cmd.SysProcAttr = &syscall.SysProcAttr{}
-		}
-		// Console-less callers otherwise cause git.exe to allocate a visible window.
-		cmd.SysProcAttr.CreationFlags |= windows.CREATE_NO_WINDOW
+		consolewindow.Hide(cmd)
 	}
 	cmd.Cancel = func() error {
 		systemDir, err := windows.GetSystemDirectory()
@@ -27,7 +24,7 @@ func prepareGitCommand(cmd *exec.Cmd, hideConsoleWindow bool) {
 			defer cancel()
 			kill := exec.CommandContext(killCtx, filepath.Join(systemDir, "taskkill.exe"),
 				"/PID", strconv.Itoa(cmd.Process.Pid), "/T", "/F")
-			kill.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
+			consolewindow.Hide(kill)
 			if err = kill.Run(); err == nil {
 				return nil
 			}
