@@ -9,6 +9,7 @@ import (
 // Its zero value is ready to use. A SendGroup must not be copied after first use.
 // Callers can wrap PostEvent in Go with their own request timeout, then call
 // Wait(50 * time.Millisecond) at exit by convention.
+// Before each PostEvent send, check Eligible(prefix, version) with the forwarding process's prefix and version.
 type SendGroup struct {
 	mu       sync.Mutex
 	inFlight int
