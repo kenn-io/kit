@@ -241,6 +241,51 @@ func TestPostHogReporterYoungInstallSendsEveryCapture(t *testing.T) {
 	assert.False(reporter.Enabled())
 }
 
+func TestPostHogReporterInstalledAtHonorsOptOut(t *testing.T) {
+	envTests := []struct {
+		name     string
+		generic  string
+		prefixed string
+	}{
+		{name: "generic", generic: " 0 ", prefixed: "1"},
+		{name: "prefixed", generic: "1", prefixed: "0"},
+	}
+	for _, tt := range envTests {
+		t.Run(tt.name, func(t *testing.T) {
+			enablePostHogTelemetryForTest()
+			t.Cleanup(enablePostHogTelemetryForTest)
+			t.Setenv(GenericEnabledEnv, tt.generic)
+			t.Setenv("KATA_TELEMETRY_ENABLED", tt.prefixed)
+
+			reporter, err := newPostHogReporter(Options{
+				APIKey:      "caller-owned-key",
+				Application: "kata",
+				EnvPrefix:   "KATA",
+				DistinctID:  "anonymous-instance-id",
+				Version:     "v1.2.3",
+				InstalledAt: postHogTestStart.Add(-7 * time.Minute),
+			}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
+				assert.Fail(t, "client factory called despite opt-out")
+				return nil, errors.New("client factory called")
+			}, testAllowedTelemetryOptions()...)
+
+			require.NoError(t, err)
+			assert.False(t, reporter.Enabled())
+			require.NoError(t, reporter.Capture("daemon_active", nil))
+		})
+	}
+
+	t.Run("process_disable", func(t *testing.T) {
+		reporter, client, _ := newInstallAgeTestReporter(t, postHogTestStart.Add(-61*time.Minute))
+
+		DisableProcess()
+
+		require.NoError(t, reporter.Capture("daemon_active", map[string]any{"project_count": 1}))
+		assert.Empty(t, client.messages)
+		assert.False(t, reporter.Enabled())
+	})
+}
+
 type failingPostHogClient struct {
 	enqueueErr error
 	flushErr   error

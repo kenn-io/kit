@@ -234,7 +234,7 @@ func TestCaptureConfirmedValidationAndDisable(t *testing.T) {
 	require.ErrorContains(t, err, "encode telemetry properties")
 	assert.Empty(t, client.messages)
 	t.Setenv(GenericEnabledEnv, "0")
-	disabled, err := NewReporter(Options{Version: "v1.2.3"}, WithAllowedEvent("milestone"))
+	disabled, err := NewReporter(Options{}, WithAllowedEvent("milestone"))
 	require.NoError(t, err)
 	status, err := disabled.CaptureConfirmed(t.Context(), "milestone", nil, valid)
 	require.NoError(t, err)

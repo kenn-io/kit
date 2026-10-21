@@ -61,7 +61,6 @@ func newOptedOutCaptureTestReporter(t *testing.T) (*Reporter, *int) {
 		Application: "kata",
 		EnvPrefix:   "KATA",
 		DistinctID:  "anonymous-instance-id",
-		Version:     "v1.2.3",
 	}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
 		factoryCalls++
 		return &recordingPostHogClient{}, nil

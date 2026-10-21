@@ -24,7 +24,7 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	for _, env := range []string{"CI", "DO_NOT_TRACK", GenericEnabledEnv, "KATA_TELEMETRY_ENABLED", "ROBOREV_TELEMETRY_ENABLED", "TEST_TELEMETRY_ENABLED"} {
+	for _, env := range []string{"CI", "DO_NOT_TRACK", GenericEnabledEnv, "KATA_TELEMETRY_ENABLED", "TEST_TELEMETRY_ENABLED"} {
 		if err := os.Unsetenv(env); err != nil {
 			panic(err)
 		}
@@ -76,12 +76,13 @@ func TestPrefixedTelemetryEnabledEnv(t *testing.T) {
 	assert.Empty(t, PrefixedEnabledEnv(""))
 }
 
-func TestEnabledFromEnv(t *testing.T) {
+func TestReporterAdmission(t *testing.T) {
 	type admissionCase struct {
 		name, generic, prefixed string
-		prefix                  string
 		absent                  bool
 		veto, value             string
+		version                 string
+		processDisabled         bool
 		enabled                 bool
 	}
 	tests := []admissionCase{
@@ -97,7 +98,9 @@ func TestEnabledFromEnv(t *testing.T) {
 		{name: "ci set", absent: true, veto: "CI", value: "true"},
 		{name: "ci empty", generic: "1", veto: "CI"},
 		{name: "ci false", generic: "1", veto: "CI", value: "false"},
-		{name: "unrelated prefix opt-out", generic: "1", prefixed: "0", prefix: "ROBOREV", enabled: true},
+		{name: "process disable", generic: "1", processDisabled: true},
+		{name: "development", absent: true, version: "dev"},
+		{name: "fork", absent: true, version: "v1.2.3-fork.1"},
 	}
 	for _, value := range []string{"1", "true", "yes", "on", " TRUE ", " YeS ", " ON ", " 1 "} {
 		tests = append(tests,
@@ -120,11 +123,47 @@ func TestEnabledFromEnv(t *testing.T) {
 			if tt.veto != "" {
 				t.Setenv(tt.veto, tt.value)
 			}
-			prefix := tt.prefix
-			if prefix == "" {
-				prefix = "KATA"
+			if tt.processDisabled {
+				DisableProcess()
 			}
-			assert.Equal(t, tt.enabled, EnabledFromEnv(prefix))
+			version := tt.version
+			if version == "" {
+				version = "v1.2.3"
+			}
+			assert.Equal(t, tt.enabled, Eligible("KATA", version))
+			events := make(chan string, 16)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				var payload struct {
+					Batch []postHogCaptureRequest `json:"batch"`
+				}
+				if err := json.NewDecoder(request.Body).Decode(&payload); !assert.NoError(t, err) {
+					http.Error(w, "invalid batch", http.StatusBadRequest)
+					return
+				}
+				for _, event := range payload.Batch {
+					events <- event.Event
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(server.Close)
+			reporter, err := NewReporter(Options{
+				APIKey: "caller-owned-key", Application: "kata", EnvPrefix: "KATA",
+				DistinctID: "anonymous-instance-id", Version: version, Endpoint: server.URL,
+			}, WithAllowedEvent(EventDaemonActive), WithAllowedEvent("screen", RequireProperty("name", AllowStringValues("queue"))))
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, reporter.Close()) })
+			assert.Equal(t, tt.enabled, reporter.Enabled())
+			assert.True(t, reporter.EventAllowed("screen"))
+			_, err = reporter.SanitizeProperties("screen", nil)
+			require.ErrorIs(t, err, ErrInvalidProperty)
+			require.NoError(t, reporter.Capture(EventDaemonActive, nil))
+			require.NoError(t, reporter.Close())
+			if tt.enabled {
+				require.Len(t, events, 1)
+				assert.Equal(t, EventDaemonActive, <-events)
+			} else {
+				assert.Empty(t, events)
+			}
 		})
 	}
 }
@@ -154,16 +193,39 @@ func TestReporterCloseGivesUpAfterShutdownTimeout(t *testing.T) {
 	assert.False(t, reporter.Enabled())
 }
 
-func TestEligibleRequiresReleaseVersion(t *testing.T) {
+func TestPostHogTelemetryEnabledFromEnvHonorsProcessDisable(t *testing.T) {
+	DisableProcess()
+	t.Cleanup(enablePostHogTelemetryForTest)
+
+	t.Setenv("KATA_TELEMETRY_ENABLED", "1")
+	t.Setenv(GenericEnabledEnv, "1")
+
+	assert.False(t, EnabledFromEnv("kata"))
+}
+
+func TestNewPostHogReporterDisabledByEnvSkipsRequiredFields(t *testing.T) {
+	enablePostHogTelemetryForTest()
+	t.Cleanup(enablePostHogTelemetryForTest)
+	t.Setenv(GenericEnabledEnv, "0")
+
+	reporter, err := NewReporter(Options{Version: "v1.2.3"})
+
+	require.NoError(t, err)
+	assert.False(t, reporter.Enabled())
+}
+
+func TestReporterRequiresReleaseVersion(t *testing.T) {
+	enablePostHogTelemetryForTest()
+	t.Cleanup(enablePostHogTelemetryForTest)
+	t.Setenv(GenericEnabledEnv, "1")
+	t.Setenv("KATA_TELEMETRY_ENABLED", "1")
 	for _, tt := range []struct {
-		name            string
-		version         string
-		enabled         bool
-		processDisabled bool
+		name    string
+		version string
+		enabled bool
 	}{
 		{name: "release", version: "v1.2.3", enabled: true},
 		{name: "release without v", version: "1.2.3", enabled: true},
-		{name: "process disable", version: "v1.2.3", processDisabled: true},
 		{name: "development", version: "dev"},
 		{name: "fork", version: "v1.2.3-fork.1"},
 		{name: "empty version"},
@@ -173,37 +235,66 @@ func TestEligibleRequiresReleaseVersion(t *testing.T) {
 		{name: "trailing newline", version: "v1.2.3\n"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			enablePostHogTelemetryForTest()
-			t.Cleanup(enablePostHogTelemetryForTest)
-			t.Setenv(GenericEnabledEnv, "1")
-			t.Setenv("KATA_TELEMETRY_ENABLED", "1")
-			if tt.processDisabled {
-				DisableProcess()
-			}
 			assert.Equal(t, tt.enabled, Eligible("KATA", tt.version))
+			calls := 0
+			client := &recordingPostHogClient{}
+			reporter, err := newPostHogReporter(Options{
+				APIKey: "caller-owned-key", Application: "kata", EnvPrefix: "KATA",
+				DistinctID: "anonymous-instance-id", Version: tt.version,
+			}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
+				calls++
+				return client, nil
+			}, WithAllowedEvent(EventDaemonActive))
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, reporter.Close()) })
+			assert.Equal(t, tt.enabled, reporter.Enabled())
+			require.NoError(t, reporter.Capture(EventDaemonActive, nil))
+			assert.True(t, reporter.EventAllowed(EventDaemonActive))
+			if tt.enabled {
+				assert.Equal(t, 1, calls)
+				require.Len(t, client.messages, 1)
+				assert.Equal(t, EventDaemonActive, client.messages[0].Event)
+				return
+			}
+			assert.Zero(t, calls)
+			assert.Empty(t, client.messages)
 		})
 	}
 }
 
 func TestNewPostHogReporterDisabledRetainsAllowlist(t *testing.T) {
 	tests := []struct {
-		name              string
-		generic, prefixed string
-		processDisabled   bool
+		name    string
+		disable func(t *testing.T)
 	}{
-		{name: "prefixed env", generic: "1", prefixed: " 0 "},
-		{name: "process disable", generic: "1", prefixed: "1", processDisabled: true},
+		{name: "generic_env", disable: func(t *testing.T) {
+			t.Helper()
+			t.Setenv(GenericEnabledEnv, " 0 ")
+			t.Setenv("KATA_TELEMETRY_ENABLED", "1")
+		}},
+		{name: "prefixed_env", disable: func(t *testing.T) {
+			t.Helper()
+			t.Setenv(GenericEnabledEnv, "1")
+			t.Setenv("KATA_TELEMETRY_ENABLED", " 0")
+		}},
+		{name: "process_disable", disable: func(t *testing.T) {
+			t.Helper()
+			t.Setenv(GenericEnabledEnv, "1")
+			t.Setenv("KATA_TELEMETRY_ENABLED", "1")
+			DisableProcess()
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			enablePostHogTelemetryForTest()
 			t.Cleanup(enablePostHogTelemetryForTest)
-			t.Setenv(GenericEnabledEnv, tt.generic)
-			t.Setenv("KATA_TELEMETRY_ENABLED", tt.prefixed)
-			if tt.processDisabled {
-				DisableProcess()
-			}
+			tt.disable(t)
 			options := []Option{nil, WithAllowedEvent("app_opened")}
+
+			nilFactoryReporter, err := newPostHogReporter(Options{EnvPrefix: "KATA", Version: "v1.2.3"}, nil, options...)
+			require.NoError(t, err)
+			assert.True(t, nilFactoryReporter.EventAllowed("app_opened"))
+
 			factoryCalls := 0
 			reporter, err := newPostHogReporter(Options{EnvPrefix: "KATA", Version: "v1.2.3"}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
 				factoryCalls++
@@ -220,35 +311,27 @@ func TestNewPostHogReporterDisabledRetainsAllowlist(t *testing.T) {
 	}
 }
 
-func TestNewPostHogReporterValidatesConfigurationOnlyWhenEnabled(t *testing.T) {
-	tests := []struct {
-		name     string
-		version  string
-		disabled bool
-	}{
-		{name: "release", version: "v1.2.3"},
-		{name: "development", version: "dev", disabled: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			enablePostHogTelemetryForTest()
-			t.Cleanup(enablePostHogTelemetryForTest)
-			t.Setenv(GenericEnabledEnv, "1")
-			t.Setenv("KATA_TELEMETRY_ENABLED", "1")
+func TestNewPostHogReporterRequiresCallerOwnedConfigurationWhenEnabled(t *testing.T) {
+	enablePostHogTelemetryForTest()
+	t.Cleanup(enablePostHogTelemetryForTest)
+	t.Setenv(GenericEnabledEnv, "1")
+	t.Setenv("KATA_TELEMETRY_ENABLED", "1")
 
+	for _, version := range []string{"v1.2.3", "dev"} {
+		t.Run(version, func(t *testing.T) {
 			calls := 0
 			reporter, err := newPostHogReporter(Options{
 				Application: "kata",
 				EnvPrefix:   "KATA",
 				DistinctID:  "anonymous-instance-id",
-				Version:     tt.version,
+				Version:     version,
 			}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
 				calls++
 				return &fakePostHogClient{}, nil
 			}, testAllowedTelemetryOptions()...)
 
 			assert.Zero(t, calls)
-			if tt.disabled {
+			if version == "dev" {
 				require.NoError(t, err)
 				assert.False(t, reporter.Enabled())
 				return
