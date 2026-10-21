@@ -64,8 +64,8 @@ databases, command parsing, and shutdown policy belong to the caller.
 - Windows detached children use `DETACHED_PROCESS`, not `CREATE_NO_WINDOW`.
   Hidden consoles expose `CONIN$`, which can make terminal-probing libraries
   block forever at daemon startup. Non-interactive console-subsystem
-  descendants that must avoid visible windows should set `CREATE_NO_WINDOW` at
-  their own spawn site.
+  descendants that must avoid visible windows should call `consolewindow.Hide`
+  at their own spawn site.
 
 ## Tests
 
