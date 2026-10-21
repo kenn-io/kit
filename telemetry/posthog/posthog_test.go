@@ -24,7 +24,7 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	for _, env := range []string{"CI", "DO_NOT_TRACK", GenericEnabledEnv, "KATA_TELEMETRY_ENABLED", "TEST_TELEMETRY_ENABLED"} {
+	for _, env := range []string{"CI", "DO_NOT_TRACK", GenericEnabledEnv, "KATA_TELEMETRY_ENABLED", "ROBOREV_TELEMETRY_ENABLED", "TEST_TELEMETRY_ENABLED"} {
 		if err := os.Unsetenv(env); err != nil {
 			panic(err)
 		}
