@@ -92,8 +92,8 @@ type Options struct {
 	EnvPrefix string
 	// DistinctID must be an anonymous stable installation or instance ID.
 	DistinctID string
-	// Version is the application version in plain vX.Y.Z or X.Y.Z format. Reporting requires
-	// Eligible(EnvPrefix, Version) to return true.
+	// Version is the application version in plain vX.Y.Z or X.Y.Z format.
+	// Reporting requires Eligible(EnvPrefix, Version) to return true.
 	Version string
 	Commit  string
 	// Source defaults to "daemon" when empty.

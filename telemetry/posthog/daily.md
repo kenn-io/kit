@@ -73,7 +73,9 @@ and review reports both screen keys. Daily deduplication belongs to the server.
 
 When adopting this API, remove copied daily gates, use `Report` or `PostEvent`
 results for retries, and transfer existing same-day claims if upgrade continuity
-is required. Before each `PostEvent` send, check `Eligible(prefix, version)` with the forwarding process's prefix and version. Product adoption belongs in each application's own change.
+is required. Before each `PostEvent` send, check `Eligible(prefix, version)` with
+the forwarding process's prefix and version. Product adoption belongs in each
+application's own change.
 
 Require a session duration through the existing caller-owned filter:
 
