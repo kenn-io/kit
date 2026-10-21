@@ -88,7 +88,7 @@ type Options struct {
 	// Application is included on every event and cannot be overridden by Capture.
 	Application string
 	// EnvPrefix names the PREFIX_TELEMETRY_ENABLED opt-out variable.
-	// NewReporter samples it and TELEMETRY_ENABLED once. See EnabledFromEnv.
+	// NewReporter samples it and TELEMETRY_ENABLED once through Eligible.
 	EnvPrefix string
 	// DistinctID must be an anonymous stable installation or instance ID.
 	DistinctID string
