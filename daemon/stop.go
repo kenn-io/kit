@@ -1,0 +1,119 @@
+package daemon
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+)
+
+// StopOptions configures a shutdown request and the wait for daemon exit.
+type StopOptions struct {
+	Probe ProbeOptions
+	Proof *Proof
+	// Request asks the verified daemon to shut down.
+	// Its error ends Stop and is returned wrapped. Treat a connection dropped
+	// during daemon shutdown as success so Stop can wait for exit.
+	Request func(context.Context, RuntimeRecord) error
+	// Exited supplies the caller's exit proof. When set, only a true result
+	// confirms exit; a refused connection or another answering PID keeps waiting.
+	// Without Exited, connection refusal ends the wait even if the process is
+	// still draining. Set Exited when the caller needs to wait for process exit.
+	Exited func(context.Context, RuntimeRecord) (bool, error)
+	// Timeout bounds the whole call. Zero or negative values use 30 seconds.
+	Timeout time.Duration
+}
+
+// Stop verifies rec's endpoint, requests shutdown, and waits for exit.
+// When rec's process is proven gone, Stop checks exit evidence without a request.
+// A record with no versioned identity is judged local, as in Discover.
+// Without Exited, a refused connection or a replacement PID ends the wait.
+// Connection refusal doesn't prove process exit; the process may still be
+// draining. Callers that need process exit supply Exited.
+// A replacement answering with the recorded PID looks like the original, so
+// the wait ends at its bound. Two PID namespaces can each have a daemon at PID 2.
+// Callers that need to distinguish these replacements supply Exited.
+// Stop sends no signals and removes no files.
+func Stop(ctx context.Context, rec RuntimeRecord, opts StopOptions) error {
+	if opts.Request == nil {
+		return errors.New("daemon stop request is required")
+	}
+	timeout := opts.Timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ep := rec.Endpoint()
+	if !runtimeRecordLive(rec) {
+		exited, err := stopExitConfirmed(ctx, rec, opts)
+		if err != nil {
+			return err
+		}
+		if exited {
+			return nil
+		}
+		return &UnreachableError{Record: rec, Endpoint: ep, Err: errors.New("daemon exit is unconfirmed")}
+	}
+	if RuntimeProcessScope(rec) != ProcessScopeLocal && ep.Network != NetworkUnix && opts.Proof == nil {
+		return &UnreachableError{Record: rec, Endpoint: ep, Err: errors.New("daemon stop requires endpoint proof")}
+	}
+	var err error
+	if opts.Proof != nil {
+		_, err = opts.Proof.Probe(ctx, rec, opts.Probe)
+	} else {
+		var info PingInfo
+		info, err = Probe(ctx, ep, opts.Probe)
+		if err == nil && info.PID != rec.PID {
+			err = fmt.Errorf("daemon ping returned PID %d", info.PID)
+		}
+	}
+	if err != nil {
+		if opts.Exited != nil {
+			exited, exitErr := stopExitConfirmed(ctx, rec, opts)
+			if exitErr != nil {
+				return exitErr
+			}
+			if exited {
+				return nil
+			}
+		}
+		return &UnreachableError{Record: rec, Endpoint: ep, Err: err}
+	}
+	if err := opts.Request(ctx, rec); err != nil {
+		return fmt.Errorf("request daemon shutdown: %w", err)
+	}
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("wait for daemon exit: %w", err)
+		}
+		exited, err := stopExitConfirmed(ctx, rec, opts)
+		if err != nil {
+			return err
+		}
+		if exited {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait for daemon exit: %w", ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func stopExitConfirmed(ctx context.Context, rec RuntimeRecord, opts StopOptions) (bool, error) {
+	if opts.Exited != nil {
+		exited, err := opts.Exited(ctx, rec)
+		if err != nil {
+			return false, fmt.Errorf("check daemon exit: %w", err)
+		}
+		return exited, nil
+	}
+	// A replacement with another service must also confirm exit.
+	opts.Probe.ExpectedService = ""
+	info, err := Probe(ctx, rec.Endpoint(), opts.Probe)
+	return (err == nil && info.PID > 0 && info.PID != rec.PID) || isStaleUnixSocketDialError(err), nil
+}

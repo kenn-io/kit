@@ -61,6 +61,13 @@ databases, command parsing, and shutdown policy belong to the caller.
   ordering.
 - Default network behavior stays local. Do not add public listen addresses or
   broad bind behavior without an explicit caller option.
+- `Stop` runs the shutdown request only after `runtimeRecordLive` and the
+  endpoint verify. Records in the caller's own namespace get a plain PID ping.
+  `Proof` is required only for non-Unix records from another namespace or one
+  kit can't judge.
+  When set, only `Exited` confirms exit; otherwise, a refused connection or
+  another PID answering ends the wait.
+  It removes no files.
 - Unix sockets and runtime records must live under private current-user
   directories.
 - Runtime records are written with `atomicfile.WriteFile` (mode 0644, fsynced).
