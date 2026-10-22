@@ -100,6 +100,7 @@ approvals, token permissions, and secrets are separate controls.
 - Do not amend commits unless the user explicitly asks.
 - Pull requests must have a user-facing benefit or improve the developer
   experience, and the body must say which one.
+- Write issues and pull requests in English.
 - Do not poll or watch CI or pull request checks after pushing unless the user
   explicitly asks. A one-time status lookup is allowed when diagnosing a
   user-identified CI failure.
