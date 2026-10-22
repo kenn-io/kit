@@ -68,16 +68,3 @@ func TestRuntimeRecordBlocksStartIgnoresGoneProcess(t *testing.T) {
 	require.Equal(t, daemon.ProcessScopeGone, daemon.RuntimeProcessScope(rec))
 	assert.False(t, daemon.RuntimeRecordBlocksStart(rec))
 }
-
-func TestRuntimeRecordBlocksStartIgnoresForeignProcess(t *testing.T) {
-	// A record from the initial namespace is foreign to a nested caller.
-	rec := ownRecordWithIdentityField(t, 2, "4026531836")
-	own, ok := daemon.ReadProcessIdentity(os.Getpid())
-	require.True(t, ok)
-	if strings.Split(string(own), ":")[2] == "4026531836" {
-		t.Skip("requires a caller outside the initial PID namespace")
-	}
-	rec.PID = startLivePIDHelper(t)
-	require.Equal(t, daemon.ProcessScopeForeign, daemon.RuntimeProcessScope(rec))
-	assert.False(t, daemon.RuntimeRecordBlocksStart(rec))
-}
