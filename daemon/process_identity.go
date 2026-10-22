@@ -97,26 +97,16 @@ func RuntimeProcessScope(rec RuntimeRecord) ProcessScope {
 	return processIdentityScope(rec.PID, rec.ProcessIdentityV2)
 }
 
-// RuntimeRecordBlocksStart reports whether rec may claim another live local process
-// whose identity has not been disproved. Callers still hold the start lock and
-// probe the endpoint; this only answers whether the PID is a local claim.
+// RuntimeRecordBlocksStart reports whether rec names a live PID in this namespace,
+// or one kit can't rule out, whose identity isn't a mismatch. It never blocks for
+// the caller's own PID. Callers still hold the start lock and probe the endpoint.
 func RuntimeRecordBlocksStart(rec RuntimeRecord) bool {
-	return runtimeRecordBlocksStart(rec, RuntimeProcessScope)
-}
-
-func runtimeRecordBlocksStart(rec RuntimeRecord, scope func(RuntimeRecord) ProcessScope) bool {
 	if rec.PID == os.Getpid() {
 		return false
 	}
-	recordScope := scope(rec)
-	switch recordScope {
+	switch RuntimeProcessScope(rec) {
 	case ProcessScopeLocal, ProcessScopeUnknown:
-		if rec.ProcessIdentityV2 == "" {
-			return ProcessAlive(rec.PID) && CompareRuntimeProcessIdentity(rec) != ProcessIdentityMismatch
-		}
-		return ProcessAlive(rec.PID) && compareProcessIdentity(rec.PID, rec.ProcessIdentityV2, ReadProcessIdentity, func(int, ProcessIdentity) ProcessScope {
-			return recordScope
-		}) != ProcessIdentityMismatch
+		return ProcessAlive(rec.PID) && CompareRuntimeProcessIdentity(rec) != ProcessIdentityMismatch
 	default:
 		return false
 	}
