@@ -12,25 +12,33 @@ import (
 )
 
 func TestRuntimeRecordBlocksStartScope(t *testing.T) {
-	cmd := exec.CommandContext(context.WithoutCancel(t.Context()), os.Args[0], "-test.run=^TestLivePIDHelper$")
-	cmd.Env = append(os.Environ(), "KIT_DAEMON_LIVE_PID_HELPER=1")
-	stdin, err := cmd.StdinPipe()
-	require.NoError(t, err)
-	stdout, err := cmd.StdoutPipe()
-	require.NoError(t, err)
-	require.NoError(t, cmd.Start())
-	t.Cleanup(func() {
-		assert.NoError(t, stdin.Close())
-		assert.NoError(t, cmd.Wait())
-	})
-
-	ready, err := bufio.NewReader(stdout).ReadString('\n')
-	require.NoError(t, err)
-	require.Equal(t, "ready\n", ready)
-	identity, ok := ReadProcessIdentity(cmd.Process.Pid)
+	pid := startLivePIDHelper(t)
+	identity, ok := ReadProcessIdentity(pid)
 	require.True(t, ok)
-	rec := RuntimeRecord{PID: cmd.Process.Pid, ProcessIdentityV2: identity}
+	rec := RuntimeRecord{PID: pid, ProcessIdentityV2: identity}
 
 	assert.False(t, runtimeRecordBlocksStart(rec, ProcessScopeForeign))
 	assert.True(t, runtimeRecordBlocksStart(rec, ProcessScopeLocal))
+}
+
+func startLivePIDHelper(t *testing.T) int {
+	t.Helper()
+	require := require.New(t)
+
+	cmd := exec.CommandContext(context.WithoutCancel(t.Context()), os.Args[0], "-test.run=^TestLivePIDHelper$")
+	cmd.Env = append(os.Environ(), "KIT_DAEMON_LIVE_PID_HELPER=1")
+	stdin, err := cmd.StdinPipe()
+	require.NoError(err)
+	stdout, err := cmd.StdoutPipe()
+	require.NoError(err)
+	require.NoError(cmd.Start())
+	t.Cleanup(func() {
+		require.NoError(stdin.Close())
+		require.NoError(cmd.Wait())
+	})
+
+	ready, err := bufio.NewReader(stdout).ReadString('\n')
+	require.NoError(err)
+	require.Equal("ready\n", ready)
+	return cmd.Process.Pid
 }

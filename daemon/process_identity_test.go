@@ -79,7 +79,7 @@ func TestRuntimeProcessScope(t *testing.T) {
 }
 
 func TestRuntimeRecordBlocksStart(t *testing.T) {
-	childPID := startLivePIDHelper(t)
+	childPID := daemon.StartLivePIDHelperForTest(t)
 	identity, ok := daemon.ReadProcessIdentity(childPID)
 	require.True(t, ok)
 	type testCase struct {
