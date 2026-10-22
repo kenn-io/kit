@@ -28,9 +28,10 @@ databases, command parsing, and shutdown policy belong to the caller.
   ownership lock it can acquire) removes it, when a process in the server's
   namespace cleans up, or when it's deleted by hand. After a downgrade, a dead
   newer server's record blocks `Ensure` this way.
-  `RuntimeProcessScope` reports Foreign for another namespace on this boot
-  and Unknown otherwise; neither authorizes deleting the record or signaling
-  its PID.
+  For these unjudged records, `RuntimeProcessScope` reports Foreign for
+  another namespace on this boot and Unknown for the other cases; neither
+  authorizes deleting the record or signaling its PID.
+- `RuntimeRecordBlocksStart` blocks only for a live Local or Unknown PID whose identity isn't a mismatch, and never for the caller's own PID.
 - A caller in the initial PID namespace (inode 4026531836) treats a same-boot
   record from a foreign namespace as gone when no process in a nested PID
   namespace has the record's PID as its innermost `NSpid` entry and the

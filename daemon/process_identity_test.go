@@ -82,14 +82,24 @@ func TestRuntimeRecordBlocksStart(t *testing.T) {
 	childPID := startLivePIDHelper(t)
 	identity, ok := daemon.ReadProcessIdentity(childPID)
 	require.True(t, ok)
-	tests := []struct {
+	type testCase struct {
 		name string
 		rec  daemon.RuntimeRecord
 		want bool
-	}{
+	}
+	tests := []testCase{
 		{"self", daemon.NewRuntimeRecord("tool", "v1", daemon.Endpoint{}), false},
 		{"live child", daemon.RuntimeRecord{PID: childPID, ProcessIdentityV2: identity}, true},
 		{"unknown live child", daemon.RuntimeRecord{PID: childPID, ProcessIdentityV2: "future-v1:12345"}, true},
+		{"unknown dead PID", daemon.RuntimeRecord{PID: deadPID(t), ProcessIdentityV2: "future-v1:12345"}, false},
+	}
+	if runtime.GOOS == "linux" {
+		fields := strings.Split(string(identity), ":")
+		require.Len(t, fields, 4)
+		startTicks, err := strconv.ParseUint(fields[3], 10, 64)
+		require.NoError(t, err)
+		fields[3] = strconv.FormatUint(startTicks+1, 10)
+		tests = append(tests, testCase{"live child with mismatched start ticks", daemon.RuntimeRecord{PID: childPID, ProcessIdentityV2: daemon.ProcessIdentity(strings.Join(fields, ":"))}, false})
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
