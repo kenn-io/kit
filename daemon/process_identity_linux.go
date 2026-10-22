@@ -22,36 +22,30 @@ func ReadProcessIdentity(pid int) (ProcessIdentity, bool) {
 	return readLinuxProcessIdentity("/proc", pid)
 }
 
-// scopeGone means the identity proves the process gone: it is from an
-// earlier boot, or from a same-boot nested namespace where the caller proved
-// no process holds its PID and start time. Only Linux identities carry the
-// boot ID and namespace that can prove this.
-const scopeGone = scopeUnjudged + 1
-
 // processIdentityScope judges identity, recorded for pid, for the caller's own
 // /proc.
-func processIdentityScope(pid int, identity ProcessIdentity) identityScope {
+func processIdentityScope(pid int, identity ProcessIdentity) ProcessScope {
 	return linuxProcessIdentityScope("/proc", pid, identity)
 }
 
-// linuxProcessIdentityScope is scopeUnjudged when identity is malformed or
+// linuxProcessIdentityScope is ProcessScopeUnknown when identity is malformed or
 // procRoot's boot ID or self namespace is unreadable. Otherwise it is
-// scopeGone for an identity from an earlier boot or a provably gone nested
-// process, scopeLocal for procRoot's own namespace, and scopeUnjudged for any
+// ProcessScopeGone for an identity from an earlier boot or a provably gone nested
+// process, ProcessScopeLocal for procRoot's own namespace, and ProcessScopeForeign for any
 // other. pid is the record's PID in the identity's namespace.
-func linuxProcessIdentityScope(procRoot string, pid int, identity ProcessIdentity) identityScope {
+func linuxProcessIdentityScope(procRoot string, pid int, identity ProcessIdentity) ProcessScope {
 	bootID, namespace, ticks, ok := parseLinuxProcessIdentity(identity)
 	ownBootID, bootOK := readLinuxBootID(procRoot)
 	own, err := readLinuxPIDNamespaceAt(procRoot, "self")
 	switch {
 	case !ok || !bootOK || err != nil:
-		return scopeUnjudged
+		return ProcessScopeUnknown
 	case bootID != ownBootID || linuxNestedProcessProvedGone(procRoot, own, namespace, pid, ticks):
-		return scopeGone
+		return ProcessScopeGone
 	case namespace == own:
-		return scopeLocal
+		return ProcessScopeLocal
 	}
-	return scopeUnjudged
+	return ProcessScopeForeign
 }
 
 // initPIDNamespace is the inode of the kernel's initial PID namespace.

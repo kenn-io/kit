@@ -58,5 +58,26 @@ func ownRecordWithIdentityField(t *testing.T, i int, value string) daemon.Runtim
 
 func TestRuntimeProcessAliveIgnoresLocalPIDWhenIdentityProvesProcessGone(t *testing.T) {
 	rec := ownRecordWithIdentityField(t, 1, "11111111-2222-3333-4444-555555555555")
+	assert.Equal(t, daemon.ProcessScopeGone, daemon.RuntimeProcessScope(rec))
 	assert.False(t, daemon.RuntimeProcessAlive(rec))
+}
+
+func TestRuntimeRecordBlocksStartIgnoresGoneProcess(t *testing.T) {
+	rec := ownRecordWithIdentityField(t, 1, "11111111-2222-3333-4444-555555555555")
+	rec.PID = startLivePIDHelper(t)
+	require.Equal(t, daemon.ProcessScopeGone, daemon.RuntimeProcessScope(rec))
+	assert.False(t, daemon.RuntimeRecordBlocksStart(rec))
+}
+
+func TestRuntimeRecordBlocksStartIgnoresForeignProcess(t *testing.T) {
+	// A record from the initial namespace is foreign to a nested caller.
+	rec := ownRecordWithIdentityField(t, 2, "4026531836")
+	own, ok := daemon.ReadProcessIdentity(os.Getpid())
+	require.True(t, ok)
+	if strings.Split(string(own), ":")[2] == "4026531836" {
+		t.Skip("requires a caller outside the initial PID namespace")
+	}
+	rec.PID = startLivePIDHelper(t)
+	require.Equal(t, daemon.ProcessScopeForeign, daemon.RuntimeProcessScope(rec))
+	assert.False(t, daemon.RuntimeRecordBlocksStart(rec))
 }

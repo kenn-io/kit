@@ -1,5 +1,7 @@
 package daemon
 
+import "os"
+
 // ProcessIdentity is an opaque OS process-creation identity. Values are only
 // meaningful for exact comparison against the live process holding a PID.
 type ProcessIdentity string
@@ -25,7 +27,7 @@ func compareProcessIdentity(
 	pid int,
 	recorded ProcessIdentity,
 	read func(int) (ProcessIdentity, bool),
-	scope func(int, ProcessIdentity) identityScope,
+	scope func(int, ProcessIdentity) ProcessScope,
 ) ProcessIdentityStatus {
 	if recorded == "" {
 		return ProcessIdentityUnknown
@@ -34,23 +36,30 @@ func compareProcessIdentity(
 	if ok && live == recorded {
 		return ProcessIdentityMatch
 	}
-	if !ok || scope(pid, recorded) == scopeUnjudged {
+	if !ok {
 		return ProcessIdentityUnknown
 	}
-	return ProcessIdentityMismatch
+	switch scope(pid, recorded) {
+	case ProcessScopeLocal, ProcessScopeGone:
+		return ProcessIdentityMismatch
+	default:
+		return ProcessIdentityUnknown
+	}
 }
 
-// identityScope is what a caller can conclude from an identity alone about
+// ProcessScope is what a caller can conclude from an identity alone about
 // the process it names.
-type identityScope uint8
+type ProcessScope uint8
 
 const (
-	// scopeLocal means the PID names a process this caller can see, so a PID
-	// check applies.
-	scopeLocal identityScope = iota
-	// scopeUnjudged means this caller can't tell: the identity is unreadable,
-	// names another PID namespace, or the caller can't read its own.
-	scopeUnjudged
+	// ProcessScopeUnknown means the identity or the caller's boot ID or namespace is unreadable.
+	ProcessScopeUnknown ProcessScope = iota
+	// ProcessScopeLocal means the PID names a process this caller can check.
+	ProcessScopeLocal
+	// ProcessScopeForeign means another PID namespace on this boot; its PID means nothing here.
+	ProcessScopeForeign
+	// ProcessScopeGone means the identity proves the process gone.
+	ProcessScopeGone
 )
 
 // CompareRuntimeProcessIdentity compares the strongest process identity stored
@@ -69,16 +78,38 @@ func CompareRuntimeProcessIdentity(rec RuntimeRecord) ProcessIdentityStatus {
 // whatever the local PID holds (see AGENTS.md). Use it in place of
 // ProcessAlive(rec.PID) wherever a record is skipped or deleted.
 func RuntimeProcessAlive(rec RuntimeRecord) bool {
-	scope := runtimeIdentityScope(rec)
-	return scope == scopeUnjudged || scope == scopeLocal && ProcessAlive(rec.PID)
+	switch RuntimeProcessScope(rec) {
+	case ProcessScopeLocal:
+		return ProcessAlive(rec.PID)
+	case ProcessScopeGone:
+		return false
+	default:
+		return true
+	}
 }
 
-// runtimeIdentityScope is scopeLocal for a record with no versioned identity.
-func runtimeIdentityScope(rec RuntimeRecord) identityScope {
+// RuntimeProcessScope classifies the process named by rec's versioned identity.
+// A record with no versioned identity is ProcessScopeLocal.
+func RuntimeProcessScope(rec RuntimeRecord) ProcessScope {
 	if rec.ProcessIdentityV2 == "" {
-		return scopeLocal
+		return ProcessScopeLocal
 	}
 	return processIdentityScope(rec.PID, rec.ProcessIdentityV2)
+}
+
+// RuntimeRecordBlocksStart reports whether rec may claim another live local process
+// whose identity has not been disproved. Callers still hold the start lock and
+// probe the endpoint; this only answers whether the PID is a local claim.
+func RuntimeRecordBlocksStart(rec RuntimeRecord) bool {
+	if rec.PID == os.Getpid() {
+		return false
+	}
+	switch RuntimeProcessScope(rec) {
+	case ProcessScopeLocal, ProcessScopeUnknown:
+		return ProcessAlive(rec.PID) && CompareRuntimeProcessIdentity(rec) != ProcessIdentityMismatch
+	default:
+		return false
+	}
 }
 
 // runtimeRecordLive is RuntimeProcessAlive without a definite identity
