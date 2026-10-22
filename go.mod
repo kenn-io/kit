@@ -1,8 +1,6 @@
 module go.kenn.io/kit
 
-go 1.27.0
-
-toolchain go1.27.3
+go 1.27.3
 
 require (
 	charm.land/lipgloss/v2 v2.0.6
