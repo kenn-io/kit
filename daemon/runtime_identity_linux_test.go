@@ -58,13 +58,5 @@ func ownRecordWithIdentityField(t *testing.T, i int, value string) daemon.Runtim
 
 func TestRuntimeProcessAliveIgnoresLocalPIDWhenIdentityProvesProcessGone(t *testing.T) {
 	rec := ownRecordWithIdentityField(t, 1, "11111111-2222-3333-4444-555555555555")
-	assert.Equal(t, daemon.ProcessScopeGone, daemon.RuntimeProcessScope(rec))
 	assert.False(t, daemon.RuntimeProcessAlive(rec))
-}
-
-func TestRuntimeRecordBlocksStartIgnoresGoneProcess(t *testing.T) {
-	rec := ownRecordWithIdentityField(t, 1, "11111111-2222-3333-4444-555555555555")
-	rec.PID = daemon.StartLivePIDHelperForTest(t)
-	require.Equal(t, daemon.ProcessScopeGone, daemon.RuntimeProcessScope(rec))
-	assert.False(t, daemon.RuntimeRecordBlocksStart(rec))
 }

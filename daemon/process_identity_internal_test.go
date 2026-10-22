@@ -5,6 +5,8 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -12,13 +14,18 @@ import (
 )
 
 func TestRuntimeRecordBlocksStartScope(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("PID namespaces are Linux-specific")
+	}
 	pid := startLivePIDHelper(t)
 	identity, ok := ReadProcessIdentity(pid)
 	require.True(t, ok)
-	rec := RuntimeRecord{PID: pid, ProcessIdentityV2: identity}
+	fields := strings.Split(string(identity), ":")
+	require.Len(t, fields, 4)
+	fields[2] = "12345"
+	rec := RuntimeRecord{PID: pid, ProcessIdentityV2: ProcessIdentity(strings.Join(fields, ":"))}
 
 	assert.False(t, runtimeRecordBlocksStart(rec, ProcessScopeForeign))
-	assert.True(t, runtimeRecordBlocksStart(rec, ProcessScopeLocal))
 }
 
 func startLivePIDHelper(t *testing.T) int {

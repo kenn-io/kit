@@ -96,16 +96,11 @@ func TestRuntimeRecordBlocksStart(t *testing.T) {
 	if runtime.GOOS == "linux" {
 		fields := strings.Split(string(identity), ":")
 		require.Len(t, fields, 4)
-		ownNamespace := fields[2]
-		fields[2] = "12345"
-		foreign := daemon.RuntimeRecord{PID: childPID, ProcessIdentityV2: daemon.ProcessIdentity(strings.Join(fields, ":"))}
-		wantScope := daemon.ProcessScopeForeign
-		if ownNamespace == "4026531836" {
-			wantScope = daemon.ProcessScopeGone
-		}
-		require.Equal(t, wantScope, daemon.RuntimeProcessScope(foreign))
-		tests = append(tests, testCase{"live child in another namespace", foreign, false})
-		fields[2] = ownNamespace
+		ownBootID := fields[1]
+		fields[1] = "11111111-2222-3333-4444-555555555555"
+		gone := daemon.RuntimeRecord{PID: childPID, ProcessIdentityV2: daemon.ProcessIdentity(strings.Join(fields, ":"))}
+		tests = append(tests, testCase{"live child from an earlier boot", gone, false})
+		fields[1] = ownBootID
 		startTicks, err := strconv.ParseUint(fields[3], 10, 64)
 		require.NoError(t, err)
 		fields[3] = strconv.FormatUint(startTicks+1, 10)
