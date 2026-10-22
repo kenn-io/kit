@@ -99,7 +99,11 @@ func TestRuntimeRecordBlocksStart(t *testing.T) {
 		ownNamespace := fields[2]
 		fields[2] = "12345"
 		foreign := daemon.RuntimeRecord{PID: childPID, ProcessIdentityV2: daemon.ProcessIdentity(strings.Join(fields, ":"))}
-		require.Contains(t, []daemon.ProcessScope{daemon.ProcessScopeForeign, daemon.ProcessScopeGone}, daemon.RuntimeProcessScope(foreign))
+		wantScope := daemon.ProcessScopeForeign
+		if ownNamespace == "4026531836" {
+			wantScope = daemon.ProcessScopeGone
+		}
+		require.Equal(t, wantScope, daemon.RuntimeProcessScope(foreign))
 		tests = append(tests, testCase{"live child in another namespace", foreign, false})
 		fields[2] = ownNamespace
 		startTicks, err := strconv.ParseUint(fields[3], 10, 64)

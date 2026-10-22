@@ -32,8 +32,10 @@ databases, command parsing, and shutdown policy belong to the caller.
     applies; Foreign for another namespace on this boot; Unknown for an
     unreadable identity or boot ID; and Gone for a proven dead process.
     Neither Foreign nor Unknown authorizes deleting the record or signaling
-    its PID. `RuntimeRecordBlocksStart` blocks only for a live Local or Unknown
-    PID whose identity isn't a mismatch, never for the caller's own PID.
+    its PID. For Foreign records, `RuntimeProcessAlive` stays true to keep the
+    record, while `RuntimeRecordBlocksStart` is false because its PID makes no
+    local claim. `RuntimeRecordBlocksStart` blocks only for a live Local or
+    Unknown PID whose identity isn't a mismatch, never for the caller's own PID.
 - A caller in the initial PID namespace (inode 4026531836) treats a same-boot
   record from a foreign namespace as gone when no process in a nested PID
   namespace has the record's PID as its innermost `NSpid` entry and the
