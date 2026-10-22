@@ -441,14 +441,6 @@ func TestProofFormattingDoesNotDiscloseKey(t *testing.T) {
 	}
 }
 
-func TestLivePIDHelper(t *testing.T) {
-	if os.Getenv("KIT_DAEMON_LIVE_PID_HELPER") != "1" {
-		return
-	}
-	_, _ = fmt.Fprintln(os.Stdout, "ready")
-	_, _ = io.Copy(io.Discard, os.Stdin)
-}
-
 func TestDiscoverPropagatesContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()

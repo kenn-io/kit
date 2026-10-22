@@ -30,9 +30,9 @@ databases, command parsing, and shutdown policy belong to the caller.
   newer server's record blocks `Ensure` this way.
   - `RuntimeProcessScope` reports Local for this namespace, where a PID check
     applies; Foreign for another namespace on this boot; Unknown for an
-    unreadable identity or boot ID; and Gone for a proven dead process.
-    Neither Foreign nor Unknown authorizes deleting the record or signaling
-    its PID. For Foreign records, `RuntimeProcessAlive` stays true to keep the
+    unreadable identity, boot ID, or own PID namespace; and Gone for a proven
+    dead process. Neither Foreign nor Unknown authorizes deleting the record
+    or signaling its PID. For Foreign records, `RuntimeProcessAlive` stays true to keep the
     record, while `RuntimeRecordBlocksStart` is false because its PID makes no
     local claim. `RuntimeRecordBlocksStart` blocks only for a live Local or
     Unknown PID whose identity isn't a mismatch, never for the caller's own PID.
