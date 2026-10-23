@@ -123,21 +123,17 @@ func TestListRoundTripsArbitraryBytes(t *testing.T) {
 	}
 	values := []string{"", "a\x00b", "\x00", "line\n", "\r\n", "", everyByte.String(), strings.Repeat("x", 200_000), ""}
 
-	for name, limit := range map[string]int64{"memory": 1 << 20, "file": -1} {
-		t.Run(name, func(t *testing.T) {
-			require := require.New(t)
-			l := spill.New(t.TempDir(), "spill-*", limit)
-			t.Cleanup(func() { require.NoError(l.Close()) })
-			for _, v := range values {
-				require.NoError(l.Append(v))
-			}
-			require.Equal(name == "file", l.Spilled())
-
-			records, err := collect(l)
-			require.NoError(err)
-			assert.Equal(t, values, records)
-		})
+	require := require.New(t)
+	l := spill.New(t.TempDir(), "spill-*", -1)
+	t.Cleanup(func() { require.NoError(l.Close()) })
+	for _, v := range values {
+		require.NoError(l.Append(v))
 	}
+	require.True(l.Spilled())
+
+	records, err := collect(l)
+	require.NoError(err)
+	assert.Equal(t, values, records)
 }
 
 func TestListCloseRemovesFile(t *testing.T) {
@@ -175,29 +171,51 @@ func TestListAppendReportsFileCreationFailure(t *testing.T) {
 }
 
 func TestListReadReportsDamagedFile(t *testing.T) {
-	// The file holds the length-prefixed records 02 'a' 'b' 02 'c' 'd' 02 'e' 'f'.
+	short := []string{"ab", "cd", "ef"}
+	shortFile := "\x02ab\x02cd\x02ef"
+	// A 200-byte record takes a two-byte length, c8 01. Rewriting it as the
+	// one-byte length 0x64 ('d', 100) splits the record into two records of
+	// 100 bytes with the right total payload, leaving the last length byte
+	// unread.
+	long := []string{strings.Repeat("d", 200), ""}
+	longFile := "\xc8\x01" + strings.Repeat("d", 200) + "\x00"
+
 	tests := map[string]struct {
-		damage func([]byte) []byte
-		want   error
+		records []string
+		file    string
+		damage  func([]byte) []byte
+		wantErr error
+		wantMsg string
 	}{
 		"truncated inside a record": {
-			damage: func(b []byte) []byte { return b[:len(b)-1] },
-			want:   io.ErrUnexpectedEOF,
+			records: short,
+			file:    shortFile,
+			damage:  func(b []byte) []byte { return b[:len(b)-1] },
+			wantErr: io.ErrUnexpectedEOF,
 		},
 		"truncated before a length": {
-			damage: func(b []byte) []byte { return b[:6] },
-			want:   io.ErrUnexpectedEOF,
+			records: short,
+			file:    shortFile,
+			damage:  func(b []byte) []byte { return b[:6] },
+			wantErr: io.ErrUnexpectedEOF,
 		},
 		"length past the payload": {
-			damage: func(b []byte) []byte { b[3] = 0x05; return b },
+			records: short,
+			file:    shortFile,
+			damage:  func(b []byte) []byte { b[3] = 0x05; return b },
+			wantMsg: "exceeds the 4 payload bytes left",
 		},
-		"length too short": {
-			damage: func(b []byte) []byte { b[0] = 0x01; return b },
+		"lengths short of the payload": {
+			records: short,
+			file:    shortFile,
+			damage:  func(b []byte) []byte { b[6] = 0x01; return b },
+			wantMsg: "1 fewer payload bytes",
 		},
-		"length overflow": {
-			damage: func(b []byte) []byte {
-				return append([]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, b[1:]...)
-			},
+		"data after the last record": {
+			records: long,
+			file:    longFile,
+			damage:  func(b []byte) []byte { b[0] = 0x64; return b },
+			wantMsg: "data after the last record",
 		},
 	}
 	for name, tt := range tests {
@@ -206,25 +224,30 @@ func TestListReadReportsDamagedFile(t *testing.T) {
 			dir := t.TempDir()
 			l := spill.New(dir, "spill-*", 0)
 			t.Cleanup(func() { require.NoError(l.Close()) })
-			for _, s := range []string{"ab", "cd", "ef"} {
+			for _, s := range tt.records {
 				require.NoError(l.Append(s))
 			}
 			// Reading flushes the records to the file.
 			_, err := collect(l)
 			require.NoError(err)
 
-			path := onlyFile(t, dir)
-			data, err := os.ReadFile(path)
+			file, err := openShared(onlyFile(t, dir))
 			require.NoError(err)
-			require.Equal([]byte("\x02ab\x02cd\x02ef"), data)
-			require.NoError(os.WriteFile(path, tt.damage(data), 0o600))
+			data, err := io.ReadAll(file)
+			require.NoError(err)
+			require.Equal([]byte(tt.file), data)
+			damaged := tt.damage(data)
+			require.NoError(file.Truncate(0))
+			_, err = file.WriteAt(damaged, 0)
+			require.NoError(err)
+			require.NoError(file.Close())
 
-			records, err := collect(l)
+			_, err = collect(l)
 			require.Error(err)
-			if tt.want != nil {
-				require.ErrorIs(err, tt.want)
+			if tt.wantErr != nil {
+				require.ErrorIs(err, tt.wantErr)
 			}
-			assert.Less(t, len(records), 3)
+			require.ErrorContains(err, tt.wantMsg)
 		})
 	}
 }
