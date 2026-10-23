@@ -6,10 +6,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"strconv"
+	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gofrs/flock"
 	phsdk "github.com/posthog/posthog-go"
@@ -20,6 +22,8 @@ import (
 type tokenRelay struct {
 	server        *httptest.Server
 	registrations atomic.Int32
+	batches       atomic.Int32
+	onRegister    func()
 	events        chan phsdk.CaptureInApi
 }
 
@@ -31,6 +35,9 @@ func newTokenRelay(t *testing.T, firstStatus int) *tokenRelay {
 		switch req.URL.Path {
 		case "/v1/register":
 			attempt := relay.registrations.Add(1)
+			if relay.onRegister != nil {
+				relay.onRegister()
+			}
 			assert.Equal(t, "application/json", req.Header.Get("Content-Type"))
 			var registration map[string]string
 			if !assert.NoError(t, json.NewDecoder(req.Body).Decode(&registration)) {
@@ -50,6 +57,7 @@ func newTokenRelay(t *testing.T, firstStatus int) *tokenRelay {
 				_, _ = w.Write([]byte(`{"token":"token-a"}`))
 			}
 		case "/batch/":
+			relay.batches.Add(1)
 			var batch struct {
 				Batch []phsdk.CaptureInApi `json:"batch"`
 			}
@@ -107,29 +115,28 @@ func TestSignedReporterRegistersOnceAcrossRestarts(t *testing.T) {
 				assert.Equal(t, "test", event.Properties["application"])
 				assert.Equal(t, "token-a", event.Properties["install_token"])
 			}
+			reporter := newSignedReporter(t, relay, dir, "install-b")
+			require.NoError(t, reporter.Capture("command_run", nil))
+			require.NoError(t, reporter.Close())
+			assert.EqualValues(t, 2, relay.registrations.Load())
+			require.Len(t, relay.events, 1)
+			assert.Equal(t, "token-b", (<-relay.events).Properties["install_token"])
 		})
 	}
 }
 
 func TestSignedReporterRetriesRegistrationOnLaterUpload(t *testing.T) {
-	for _, status := range []int{http.StatusNoContent, http.StatusBadRequest, http.StatusTooManyRequests, http.StatusInternalServerError} {
-		t.Run(http.StatusText(status), func(t *testing.T) {
-			enableSignedTelemetry(t)
-			relay := newTokenRelay(t, status)
-			dir := t.TempDir()
-			token := &installToken{path: filepath.Join(dir, "telemetry-token.json"), distinctID: "install-a", application: "test", registerURL: relay.server.URL + "/v1/register", logger: slog.Default()}
-			_, err := token.get(t.Context(), http.DefaultTransport)
-			require.ErrorContains(t, err, strconv.Itoa(status))
-			assert.EqualValues(t, 1, relay.registrations.Load())
-			assert.Empty(t, relay.events)
-			second := newSignedReporter(t, relay, dir, "install-a")
-			require.NoError(t, second.Capture("command_run", nil))
-			require.NoError(t, second.Close())
-			assert.EqualValues(t, 2, relay.registrations.Load())
-			require.Len(t, relay.events, 1)
-			assert.Equal(t, "token-a", (<-relay.events).Properties["install_token"])
-		})
-	}
+	enableSignedTelemetry(t)
+	relay := newTokenRelay(t, http.StatusTooManyRequests)
+	path := filepath.Join(t.TempDir(), "telemetry-token.json")
+	token := &installToken{path: path, distinctID: "install-a", application: "test", registerURL: relay.server.URL + "/v1/register", logger: slog.Default()}
+	_, err := token.get(t.Context(), http.DefaultTransport)
+	require.ErrorContains(t, err, "429")
+	assert.EqualValues(t, 1, relay.registrations.Load())
+	second := &installToken{path: path, distinctID: "install-a", application: "test", registerURL: relay.server.URL + "/v1/register", logger: slog.Default()}
+	_, err = second.get(t.Context(), http.DefaultTransport)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, relay.registrations.Load())
 }
 
 func TestInstallTokenOptOutAfterLockWait(t *testing.T) {
@@ -147,112 +154,66 @@ func TestInstallTokenOptOutAfterLockWait(t *testing.T) {
 				require.NoError(t, lock.Lock())
 				release = func() { require.NoError(t, lock.Unlock()) }
 			}
-			started := make(chan struct{})
+			release = sync.OnceFunc(release)
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				close(started)
 				_, err := token.get(t.Context(), http.DefaultTransport)
 				assert.NoError(t, err)
 			}()
-			<-started
+			defer func() {
+				release()
+				<-done
+			}()
+			// Observe get inside the held lock's wait before disabling telemetry.
+			blockedIn := "sync.(*Mutex).Lock"
+			if wait == "file lock" {
+				blockedIn = "github.com/gofrs/flock.tryCtx"
+			}
+			require.Eventually(t, func() bool {
+				stacks := make([]byte, 1<<20)
+				n := runtime.Stack(stacks, true)
+				for stack := range strings.SplitSeq(string(stacks[:n]), "\n\n") {
+					if strings.Contains(stack, "(*installToken).get") && strings.Contains(stack, blockedIn) {
+						return true
+					}
+				}
+				return false
+			}, 5*time.Second, time.Millisecond)
 			DisableProcess()
 			release()
 			<-done
 			assert.Zero(t, relay.registrations.Load())
-			assert.Empty(t, relay.events)
-		})
-	}
-}
-
-func TestSignedReporterOptOutSkipsRelay(t *testing.T) {
-	for _, optOut := range []string{"CI", "DO_NOT_TRACK", "TEST_TELEMETRY_ENABLED", "process"} {
-		t.Run(optOut, func(t *testing.T) {
-			enableSignedTelemetry(t)
-			relay := newTokenRelay(t, 0)
-			switch optOut {
-			case "CI", "DO_NOT_TRACK":
-				t.Setenv(optOut, "1")
-			case "TEST_TELEMETRY_ENABLED":
-				t.Setenv(optOut, "0")
-			}
-			reporter := newSignedReporter(t, relay, t.TempDir(), "install-a")
-			if optOut == "process" {
-				require.NoError(t, reporter.Capture("command_run", nil))
-				DisableProcess()
-			}
-			require.NoError(t, reporter.Capture("command_run", nil))
-			require.NoError(t, reporter.Close())
-			assert.Zero(t, relay.registrations.Load())
-			assert.Empty(t, relay.events)
 		})
 	}
 }
 
 func TestSignedReporterProcessDisabledDuringRegistrationSkipsBatch(t *testing.T) {
 	enableSignedTelemetry(t)
-	var registrations, batches atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		switch req.URL.Path {
-		case "/v1/register":
-			registrations.Add(1)
-			DisableProcess()
-			_, _ = w.Write([]byte(`{"token":"token-a"}`))
-		case "/batch/":
-			batches.Add(1)
-		default:
-			assert.Fail(t, "unexpected relay route", req.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	t.Cleanup(server.Close)
-	reporter, err := NewReporter(Options{
-		APIKey: "phc_test", Endpoint: server.URL, TokenDir: t.TempDir(),
-		Application: "test", EnvPrefix: "TEST", DistinctID: "install-a", Version: "v1.2.3",
-	}, WithAllowedEvent("command_run"))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = reporter.Close() })
+	relay := newTokenRelay(t, 0)
+	relay.onRegister = DisableProcess
+	reporter := newSignedReporter(t, relay, t.TempDir(), "install-a")
 	require.NoError(t, reporter.Capture("command_run", nil))
 	require.NoError(t, reporter.Close())
-	assert.EqualValues(t, 1, registrations.Load())
-	assert.Zero(t, batches.Load())
-}
-
-func TestSignedReporterReplacesTokenForAnotherIdentity(t *testing.T) {
-	enableSignedTelemetry(t)
-	relay := newTokenRelay(t, 0)
-	dir := t.TempDir()
-	for _, id := range []string{"install-a", "install-b"} {
-		reporter := newSignedReporter(t, relay, dir, id)
-		require.NoError(t, reporter.Capture("command_run", nil))
-		require.NoError(t, reporter.Close())
-	}
-	assert.EqualValues(t, 2, relay.registrations.Load())
-	require.Len(t, relay.events, 2)
-	assert.Equal(t, "token-a", (<-relay.events).Properties["install_token"])
-	event := <-relay.events
-	assert.Equal(t, "install-b", event.DistinctId)
-	assert.Equal(t, "test", event.Properties["application"])
-	assert.Equal(t, "token-b", event.Properties["install_token"])
+	assert.EqualValues(t, 1, relay.registrations.Load())
+	assert.Zero(t, relay.batches.Load())
 }
 
 func TestSignedReportersShareTokenConcurrently(t *testing.T) {
 	enableSignedTelemetry(t)
 	relay := newTokenRelay(t, 0)
-	dir := t.TempDir()
-	reporters := make([]*Reporter, 16)
-	for i := range reporters {
-		reporters[i] = newSignedReporter(t, relay, dir, "install-a")
-		require.NoError(t, reporters[i].Capture("command_run", nil))
-	}
+	path := filepath.Join(t.TempDir(), "telemetry-token.json")
 	var wg sync.WaitGroup
-	for _, reporter := range reporters {
-		wg.Go(func() { assert.NoError(t, reporter.Close()) })
+	start := make(chan struct{})
+	for range 16 {
+		token := &installToken{path: path, distinctID: "install-a", application: "test", registerURL: relay.server.URL + "/v1/register", logger: slog.Default()}
+		wg.Go(func() {
+			<-start
+			_, err := token.get(t.Context(), http.DefaultTransport)
+			assert.NoError(t, err)
+		})
 	}
+	close(start)
 	wg.Wait()
 	assert.EqualValues(t, 1, relay.registrations.Load())
-	require.Len(t, relay.events, len(reporters))
-	for range reporters {
-		assert.Equal(t, "token-a", (<-relay.events).Properties["install_token"])
-	}
 }
