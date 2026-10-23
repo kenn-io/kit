@@ -71,15 +71,9 @@ func Stop(ctx context.Context, rec RuntimeRecord, opts StopOptions) error {
 	if ep.Network != NetworkUnix && opts.Proof == nil {
 		return stopErrorUnlessExited(ctx, rec, opts, fmt.Errorf("stop daemon at %s: %w", ep.Address, ErrStopProofRequired))
 	}
-	var err error
-	if opts.Proof != nil {
-		_, err = opts.Proof.Probe(ctx, rec, opts.Probe)
-	} else {
-		var info PingInfo
-		info, err = Probe(ctx, ep, opts.Probe)
-		if err == nil && info.PID != rec.PID {
-			err = fmt.Errorf("daemon ping returned PID %d", info.PID)
-		}
+	info, err := probeRecordEndpoint(ctx, rec, opts.Proof, opts.Probe)
+	if err == nil && opts.Proof == nil && info.PID != rec.PID {
+		err = fmt.Errorf("daemon ping returned PID %d", info.PID)
 	}
 	if err != nil {
 		return stopErrorUnlessExited(ctx, rec, opts, &UnreachableError{Record: rec, Endpoint: ep, Err: err})
@@ -112,7 +106,7 @@ func stopErrorUnlessExited(ctx context.Context, rec RuntimeRecord, opts StopOpti
 	if opts.Exited != nil {
 		exited, err := stopExitConfirmed(ctx, rec, opts)
 		if err != nil {
-			return err
+			return errors.Join(stopErr, err)
 		}
 		if exited {
 			return nil

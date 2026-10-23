@@ -86,6 +86,13 @@ func Probe(ctx context.Context, ep Endpoint, opts ProbeOptions) (PingInfo, error
 	return ProbeHTTP(ctx, client, ep.BaseURL(), opts)
 }
 
+func probeRecordEndpoint(ctx context.Context, rec RuntimeRecord, proof *Proof, opts ProbeOptions) (PingInfo, error) {
+	if proof != nil {
+		return proof.Probe(ctx, rec, opts)
+	}
+	return Probe(ctx, rec.Endpoint(), opts)
+}
+
 // ProbeHTTP checks that baseURL answers its ping endpoint.
 func ProbeHTTP(ctx context.Context, client *http.Client, baseURL string, opts ProbeOptions) (PingInfo, error) {
 	info, _, err := probeHTTP(ctx, client, baseURL, opts, "")
@@ -191,12 +198,7 @@ func Discover(ctx context.Context, store RuntimeStore, opts DiscoverOptions) (Ru
 			}
 		}
 		ep := rec.Endpoint()
-		var info PingInfo
-		if opts.Proof == nil {
-			info, err = Probe(ctx, ep, opts.Probe)
-		} else {
-			info, err = opts.Proof.Probe(ctx, rec, opts.Probe)
-		}
+		info, err := probeRecordEndpoint(ctx, rec, opts.Proof, opts.Probe)
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return RuntimeRecord{}, PingInfo{}, false, ctxErr
