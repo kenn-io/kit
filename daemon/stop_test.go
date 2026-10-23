@@ -49,7 +49,11 @@ func TestStopInvalidPID(t *testing.T) {
 
 func TestStopListenerReplacement(t *testing.T) {
 	for _, proven := range []bool{false, true} {
-		t.Run(map[bool]string{false: "replacement without proof", true: "real endpoint with proof"}[proven], func(t *testing.T) {
+		name := "replacement without proof"
+		if proven {
+			name = "real endpoint with proof"
+		}
+		t.Run(name, func(t *testing.T) {
 			const secret = "stop-test-secret"
 			proof := newDaemonProof(t, []byte(secret))
 			server, rec := startProofServer(t, daemon.RuntimeRecord{PID: os.Getpid(), Service: "test"}, proof)

@@ -68,16 +68,7 @@ func Stop(ctx context.Context, rec RuntimeRecord, opts StopOptions) error {
 		return fmt.Errorf("stop daemon at %s: %w", ep.Address, ErrExitUnconfirmed)
 	}
 	if ep.Network != NetworkUnix && opts.Proof == nil {
-		if opts.Exited != nil {
-			exited, err := stopExitConfirmed(ctx, rec, opts)
-			if err != nil {
-				return err
-			}
-			if exited {
-				return nil
-			}
-		}
-		return fmt.Errorf("stop daemon at %s: %w", ep.Address, ErrStopProofRequired)
+		return stopErrorUnlessExited(ctx, rec, opts, fmt.Errorf("stop daemon at %s: %w", ep.Address, ErrStopProofRequired))
 	}
 	var err error
 	if opts.Proof != nil {
@@ -90,16 +81,7 @@ func Stop(ctx context.Context, rec RuntimeRecord, opts StopOptions) error {
 		}
 	}
 	if err != nil {
-		if opts.Exited != nil {
-			exited, exitErr := stopExitConfirmed(ctx, rec, opts)
-			if exitErr != nil {
-				return exitErr
-			}
-			if exited {
-				return nil
-			}
-		}
-		return &UnreachableError{Record: rec, Endpoint: ep, Err: err}
+		return stopErrorUnlessExited(ctx, rec, opts, &UnreachableError{Record: rec, Endpoint: ep, Err: err})
 	}
 	if err := opts.Request(ctx, rec); err != nil {
 		return fmt.Errorf("request daemon shutdown: %w", err)
@@ -123,6 +105,19 @@ func Stop(ctx context.Context, rec RuntimeRecord, opts StopOptions) error {
 		case <-ticker.C:
 		}
 	}
+}
+
+func stopErrorUnlessExited(ctx context.Context, rec RuntimeRecord, opts StopOptions, stopErr error) error {
+	if opts.Exited != nil {
+		exited, err := stopExitConfirmed(ctx, rec, opts)
+		if err != nil {
+			return err
+		}
+		if exited {
+			return nil
+		}
+	}
+	return stopErr
 }
 
 func stopExitConfirmed(ctx context.Context, rec RuntimeRecord, opts StopOptions) (bool, error) {
