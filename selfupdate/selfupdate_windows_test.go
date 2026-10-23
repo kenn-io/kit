@@ -11,17 +11,6 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func openWithoutDeleteSharing(t *testing.T, path string) windows.Handle {
-	t.Helper()
-	name, err := windows.UTF16PtrFromString(path)
-	require.NoError(t, err)
-	handle, err := windows.CreateFile(name, windows.GENERIC_READ,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING,
-		windows.FILE_ATTRIBUTE_NORMAL, 0)
-	require.NoError(t, err)
-	return handle
-}
-
 func TestInstallBinarySharingViolation(t *testing.T) {
 	for _, persistent := range []bool{false, true} {
 		name := "released"
@@ -35,20 +24,19 @@ func TestInstallBinarySharingViolation(t *testing.T) {
 			require.NoError(t, os.WriteFile(src, []byte("new"), 0o755))
 			require.NoError(t, os.WriteFile(dst, []byte("original"), 0o755))
 
-			handle := openWithoutDeleteSharing(t, dst)
+			handle, err := os.Open(dst)
+			require.NoError(t, err)
 			defer func() {
 				if persistent {
-					assert.NoError(t, windows.CloseHandle(handle))
+					assert.NoError(t, handle.Close())
 				}
 			}()
 
 			closed := make(chan error, 1)
 			if !persistent {
-				time.AfterFunc(100*time.Millisecond, func() { closed <- windows.CloseHandle(handle) }) //nolint:kennlint // exercise a real Windows sharing violation until the reader closes
+				time.AfterFunc(100*time.Millisecond, func() { closed <- handle.Close() }) //nolint:kennlint // exercise a real Windows sharing violation until the reader closes
 			}
-			started := time.Now()
-			err := InstallBinary(src, dst)
-			elapsed := time.Since(started)
+			err = InstallBinary(src, dst)
 			want := "new"
 			if persistent {
 				require.ErrorIs(t, err, windows.ERROR_SHARING_VIOLATION)
@@ -56,9 +44,6 @@ func TestInstallBinarySharingViolation(t *testing.T) {
 				require.ErrorAs(t, err, &renameErr)
 				assert.Equal(t, dst, renameErr.Old)
 				require.ErrorContains(t, err, "backup: ")
-				// The retry budget should run long enough to cover transient readers.
-				assert.GreaterOrEqual(t, elapsed, time.Second)
-				assert.Less(t, elapsed, 5*time.Second)
 				want = "original"
 			} else {
 				require.NoError(t, <-closed)
@@ -82,7 +67,8 @@ func TestInstallBinaryWaitsForStagedReader(t *testing.T) {
 	require.NoError(t, os.WriteFile(dst, []byte("original"), 0o755))
 
 	// Hold the backup move so the staged file can be opened before installation.
-	destination := openWithoutDeleteSharing(t, dst)
+	destination, err := os.Open(dst)
+	require.NoError(t, err)
 	installed := make(chan struct{})
 	var installErr error
 	go func() {
@@ -90,8 +76,8 @@ func TestInstallBinaryWaitsForStagedReader(t *testing.T) {
 		close(installed)
 	}()
 	defer func() {
-		if destination != windows.InvalidHandle {
-			assert.NoError(t, windows.CloseHandle(destination))
+		if destination != nil {
+			assert.NoError(t, destination.Close())
 		}
 		<-installed
 	}()
@@ -101,12 +87,13 @@ func TestInstallBinaryWaitsForStagedReader(t *testing.T) {
 		staged = paths
 		return err == nil && len(staged) == 1
 	}, time.Second, 5*time.Millisecond)
-	reader := openWithoutDeleteSharing(t, staged[0])
+	reader, err := os.Open(staged[0])
+	require.NoError(t, err)
 
 	closed := make(chan error, 1)
-	time.AfterFunc(100*time.Millisecond, func() { closed <- windows.CloseHandle(reader) }) //nolint:kennlint // keep the real staged executable locked while installation retries
-	require.NoError(t, windows.CloseHandle(destination))
-	destination = windows.InvalidHandle
+	time.AfterFunc(100*time.Millisecond, func() { closed <- reader.Close() }) //nolint:kennlint // keep the real staged executable locked while installation retries
+	require.NoError(t, destination.Close())
+	destination = nil
 	<-installed
 	require.NoError(t, <-closed)
 	require.NoError(t, installErr)

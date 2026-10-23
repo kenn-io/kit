@@ -11,27 +11,17 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func openWithoutDeleteSharing(t *testing.T, path string) windows.Handle {
-	t.Helper()
-	name, err := windows.UTF16PtrFromString(path)
-	require.NoError(t, err)
-	handle, err := windows.CreateFile(name, windows.GENERIC_READ,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING,
-		windows.FILE_ATTRIBUTE_NORMAL, 0)
-	require.NoError(t, err)
-	return handle
-}
-
 func TestReplaceStopsBeforeDelayExceedsBudget(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "source")
 	dst := filepath.Join(dir, "destination")
 	require.NoError(t, os.WriteFile(src, []byte("original"), 0o600))
-	handle := openWithoutDeleteSharing(t, src)
-	defer func() { assert.NoError(t, windows.CloseHandle(handle)) }()
+	handle, err := os.Open(src)
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, handle.Close()) }()
 
 	started := time.Now()
-	err := Replace(src, dst, 20*time.Millisecond)
+	err = Replace(src, dst, 20*time.Millisecond)
 	elapsed := time.Since(started)
 	require.ErrorIs(t, err, windows.ERROR_SHARING_VIOLATION)
 	var renameErr *os.LinkError
@@ -50,9 +40,10 @@ func TestReplaceRetriesSharingViolation(t *testing.T) {
 	src := filepath.Join(dir, "source")
 	dst := filepath.Join(dir, "destination")
 	require.NoError(t, os.WriteFile(src, []byte("original"), 0o600))
-	handle := openWithoutDeleteSharing(t, src)
+	handle, err := os.Open(src)
+	require.NoError(t, err)
 	closed := make(chan error, 1)
-	time.AfterFunc(100*time.Millisecond, func() { closed <- windows.CloseHandle(handle) }) //nolint:kennlint // exercise a real Windows sharing violation until the reader closes
+	time.AfterFunc(100*time.Millisecond, func() { closed <- handle.Close() }) //nolint:kennlint // exercise a real Windows sharing violation until the reader closes
 
 	require.NoError(t, Replace(src, dst, DefaultTimeout))
 	require.NoError(t, <-closed)

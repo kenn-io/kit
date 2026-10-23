@@ -416,9 +416,8 @@ func HashFile(path string) (string, error) {
 }
 
 // InstallBinary replaces dstPath with srcPath using a staged sibling file.
-// On Windows, backup, installation, and rollback renames can each wait up to
-// two seconds for a sharing violation to clear. If all three renames spend
-// their full budget, a failed installation can take up to six seconds.
+// On Windows, each backup, installation, and rollback rename can wait up to
+// two seconds for a sharing violation to clear.
 func InstallBinary(srcPath, dstPath string) error {
 	dstDir := filepath.Dir(dstPath)
 	dstBase := filepath.Base(dstPath)
