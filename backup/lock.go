@@ -12,9 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cenkalti/backoff/v7"
-
-	"go.kenn.io/kit/atomicfile"
+	"go.kenn.io/kit/internal/renamebusy"
 	"go.kenn.io/kit/pack"
 )
 
@@ -26,8 +24,7 @@ var (
 	lockHeartbeatInterval = 30 * time.Second
 	sharedWaitTimeout     = 60 * time.Second
 	sharedWaitPoll        = 200 * time.Millisecond
-	claimBusyTimeout      = 2 * time.Second
-	claimBusyPoll         = 5 * time.Millisecond
+	claimBusyTimeout      = renamebusy.DefaultTimeout
 )
 
 const exclusiveLockName = "exclusive.json"
@@ -257,22 +254,10 @@ func claimLockFile(path string) (string, error) {
 	)
 	// A reader elsewhere holds the file only for the length of one read, so a
 	// busy file is retried briefly instead of leaving a released lock in place.
-	deadline := time.Now().Add(claimBusyTimeout)
-	claimed, err := backoff.Retry(context.Background(), func() (string, error) {
-		err := atomicfile.Replace(path, claim)
-		if err == nil {
-			return claim, nil
-		}
-		if !lockFileBusy(err) || time.Now().After(deadline) {
-			return "", backoff.Permanent(err)
-		}
+	if err := renamebusy.Replace(path, claim, claimBusyTimeout); err != nil {
 		return "", err
-	}, backoff.WithBackOff(backoff.NewConstantBackOff(claimBusyPoll)),
-		backoff.WithMaxTries(0), backoff.WithMaxElapsedTime(0))
-	if err != nil {
-		return "", backoff.AsRetryError(err).LastErr
 	}
-	return claimed, nil
+	return claim, nil
 }
 
 // returnClaimedLock puts a claimed lock file back at path without clobbering a
