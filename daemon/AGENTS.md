@@ -62,9 +62,8 @@ databases, command parsing, and shutdown policy belong to the caller.
 - Default network behavior stays local. Do not add public listen addresses or
   broad bind behavior without an explicit caller option.
 - `Stop` runs the shutdown request only after `runtimeRecordLive` and the
-  endpoint verify. Records in the caller's own namespace get a plain PID ping.
-  `Proof` is required only for non-Unix records from another namespace or one
-  kit can't judge.
+  endpoint verify. TCP records require `Proof` in every process scope.
+  Unix records may use a plain PID ping.
   When set, only `Exited` confirms exit; otherwise, a refused connection or
   another PID answering ends the wait.
   It removes no files.

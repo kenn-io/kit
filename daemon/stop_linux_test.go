@@ -48,8 +48,8 @@ func TestStopIdentityAndProof(t *testing.T) {
 			case "proven":
 				require.NoError(t, err)
 			case "no proof":
-				var unreachable *daemon.UnreachableError
-				require.ErrorAs(t, err, &unreachable)
+				require.ErrorIs(t, err, daemon.ErrStopProofRequired)
+				require.NotErrorIs(t, err, daemon.ErrDaemonUnreachable)
 			default:
 				require.ErrorIs(t, err, daemon.ErrDaemonUnreachable)
 			}

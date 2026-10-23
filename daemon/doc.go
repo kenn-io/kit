@@ -35,7 +35,7 @@
 //
 // Stop verifies a recorded endpoint, runs the caller's shutdown request, and
 // waits for exit with a timeout. StopOptions.Proof is required for TCP records
-// outside the local namespace; StopOptions.Exited alone decides exit when set.
+// in every process scope; StopOptions.Exited alone decides exit when set.
 //
 // Application-specific server setup, database wiring, auth policy, CLI
 // commands, and shutdown behavior remain in the owning tool.

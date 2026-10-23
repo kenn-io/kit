@@ -7,9 +7,16 @@ import (
 	"time"
 )
 
+// ErrStopProofRequired means a TCP shutdown request needs endpoint proof.
+var ErrStopProofRequired = errors.New("daemon stop requires endpoint proof")
+
+// ErrExitUnconfirmed means the recorded process is gone but exit evidence is inconclusive.
+var ErrExitUnconfirmed = errors.New("daemon exit is unconfirmed")
+
 // StopOptions configures a shutdown request and the wait for daemon exit.
 type StopOptions struct {
 	Probe ProbeOptions
+	// Proof is required for TCP records in every process scope.
 	Proof *Proof
 	// Request asks the verified daemon to shut down.
 	// Its error ends Stop and is returned wrapped. Treat a connection dropped
@@ -25,6 +32,7 @@ type StopOptions struct {
 }
 
 // Stop verifies rec's endpoint, requests shutdown, and waits for exit.
+// TCP records require Proof in every process scope; Unix records may use a PID ping.
 // When rec's process is proven gone, Stop checks exit evidence without a request.
 // A record with no versioned identity is judged local, as in Discover.
 // Without Exited, a refused connection or a replacement PID ends the wait.
@@ -53,10 +61,19 @@ func Stop(ctx context.Context, rec RuntimeRecord, opts StopOptions) error {
 		if exited {
 			return nil
 		}
-		return &UnreachableError{Record: rec, Endpoint: ep, Err: errors.New("daemon exit is unconfirmed")}
+		return fmt.Errorf("stop daemon at %s: %w", ep.Address, ErrExitUnconfirmed)
 	}
-	if RuntimeProcessScope(rec) != ProcessScopeLocal && ep.Network != NetworkUnix && opts.Proof == nil {
-		return &UnreachableError{Record: rec, Endpoint: ep, Err: errors.New("daemon stop requires endpoint proof")}
+	if ep.Network != NetworkUnix && opts.Proof == nil {
+		if opts.Exited != nil {
+			exited, err := stopExitConfirmed(ctx, rec, opts)
+			if err != nil {
+				return err
+			}
+			if exited {
+				return nil
+			}
+		}
+		return fmt.Errorf("stop daemon at %s: %w", ep.Address, ErrStopProofRequired)
 	}
 	var err error
 	if opts.Proof != nil {
