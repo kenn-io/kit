@@ -17,7 +17,8 @@ record formats, sorting, or caller policy.
   no longer matches the records appended.
 - Frame records as a uvarint length followed by the bytes so no byte value is
   reserved.
-- Reading checks the file against the record count and payload size written.
+- Reading checks the file against the record count, payload size, and byte
+  count written: the last record must end exactly where the writes did.
   A short, truncated, or inconsistent file is an error, never a shorter list,
   and a length is checked against the payload left before allocating.
 - Read with `ReadAt` through a section bounded to the bytes written, so an

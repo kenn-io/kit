@@ -149,7 +149,8 @@ func (l *List) All() iter.Seq2[string, error] {
 // must hold exactly payload bytes of record data. It returns nil when yield
 // stops the iteration.
 func readFile(file *os.File, size int64, count int, payload int64, yield func(string, error) bool) error {
-	r := bufio.NewReaderSize(io.NewSectionReader(file, 0, size), bufferSize)
+	section := io.NewSectionReader(file, 0, size)
+	r := bufio.NewReaderSize(section, bufferSize)
 	var buf []byte
 	for i := range count {
 		n, err := binary.ReadUvarint(r)
@@ -171,11 +172,14 @@ func readFile(file *os.File, size int64, count int, payload int64, yield func(st
 	if payload != 0 {
 		return fmt.Errorf("spill: records hold %d fewer payload bytes than were written", payload)
 	}
-	if _, err := r.ReadByte(); !errors.Is(err, io.EOF) {
-		if err != nil {
-			return fmt.Errorf("spill: reading file end: %w", err)
-		}
-		return errors.New("spill: file has data after the last record")
+	// The records must end exactly where the writes did. A file cut short
+	// can still decode count records when damaged lengths shrank them.
+	read, err := section.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return fmt.Errorf("spill: finding the end of the records: %w", err)
+	}
+	if end := read - int64(r.Buffered()); end != size {
+		return fmt.Errorf("spill: records end at byte %d of the %d bytes written", end, size)
 	}
 	return nil
 }

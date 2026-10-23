@@ -175,8 +175,8 @@ func TestListReadReportsDamagedFile(t *testing.T) {
 	shortFile := "\x02ab\x02cd\x02ef"
 	// A 200-byte record takes a two-byte length, c8 01. Rewriting it as the
 	// one-byte length 0x64 ('d', 100) splits the record into two records of
-	// 100 bytes with the right total payload, leaving the last length byte
-	// unread.
+	// 100 bytes with the right total payload. The records then end one byte
+	// before the data does, whether or not that last byte is still there.
 	long := []string{strings.Repeat("d", 200), ""}
 	longFile := "\xc8\x01" + strings.Repeat("d", 200) + "\x00"
 
@@ -211,11 +211,17 @@ func TestListReadReportsDamagedFile(t *testing.T) {
 			damage:  func(b []byte) []byte { b[6] = 0x01; return b },
 			wantMsg: "1 fewer payload bytes",
 		},
-		"data after the last record": {
+		"records end before the data": {
 			records: long,
 			file:    longFile,
 			damage:  func(b []byte) []byte { b[0] = 0x64; return b },
-			wantMsg: "data after the last record",
+			wantMsg: "records end at byte 202 of the 203 bytes written",
+		},
+		"records end at a truncated end": {
+			records: long,
+			file:    longFile,
+			damage:  func(b []byte) []byte { b[0] = 0x64; return b[:len(b)-1] },
+			wantMsg: "records end at byte 202 of the 203 bytes written",
 		},
 	}
 	for name, tt := range tests {
@@ -243,7 +249,6 @@ func TestListReadReportsDamagedFile(t *testing.T) {
 			require.NoError(file.Close())
 
 			_, err = collect(l)
-			require.Error(err)
 			if tt.wantErr != nil {
 				require.ErrorIs(err, tt.wantErr)
 			}
