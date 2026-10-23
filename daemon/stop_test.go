@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"runtime"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -73,8 +75,36 @@ func TestStopMissingProofExitEvidence(t *testing.T) {
 	}
 }
 
+func TestStopStaleEndpointWithoutExited(t *testing.T) {
+	for _, network := range []string{daemon.NetworkUnix, daemon.NetworkTCP} {
+		t.Run(network, func(t *testing.T) {
+			rec := daemon.RuntimeRecord{PID: os.Getpid(), Service: "test", Network: network}
+			opts := daemon.StopOptions{}
+			if network == daemon.NetworkUnix {
+				rec.Address = staleUnixSocket(t)
+			} else {
+				var lc net.ListenConfig
+				listener, err := lc.Listen(t.Context(), daemon.NetworkTCP, "127.0.0.1:0")
+				require.NoError(t, err)
+				rec.Address = listener.Addr().String()
+				require.NoError(t, listener.Close())
+				opts.Proof = newDaemonProof(t, []byte("stop-stale-key"))
+			}
+			rec = storedStopRecord(t, rec)
+			requests := 0
+			opts.Request = func(context.Context, daemon.RuntimeRecord) error { requests++; return nil }
+			err := daemon.Stop(t.Context(), rec, opts)
+			assert.Zero(t, requests)
+			if network == daemon.NetworkUnix {
+				require.NoError(t, err)
+			} else {
+				require.ErrorIs(t, err, daemon.ErrDaemonUnreachable)
+			}
+		})
+	}
+}
+
 func TestStopEndpointWait(t *testing.T) {
-	ping := daemon.NewPingHandler(daemon.PingHandlerOptions{PID: os.Getpid(), Service: "original"})
 	busy := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "busy", http.StatusServiceUnavailable) })
 	for _, tc := range []struct {
 		name           string
@@ -85,24 +115,26 @@ func TestStopEndpointWait(t *testing.T) {
 		callerDeadline bool
 		wantErr        error
 	}{
-		{name: "tcp silence", network: daemon.NetworkTCP, after: ping, closeListener: true, timeout: time.Second},
-		{name: "unix socket removed", network: daemon.NetworkUnix, after: ping, closeListener: true, timeout: time.Second},
+		{name: "tcp silence", network: daemon.NetworkTCP, closeListener: true, timeout: time.Second},
+		{name: "unix socket removed", network: daemon.NetworkUnix, closeListener: true, timeout: time.Second},
 		{name: "503 then silence", network: daemon.NetworkTCP, after: busy, closeListener: true, timeout: time.Second},
-		{name: "replacement", network: daemon.NetworkTCP, after: daemon.NewPingHandler(daemon.PingHandlerOptions{PID: os.Getpid() + 1, Service: "original"}), timeout: time.Second},
+		{name: "replacement", network: daemon.NetworkTCP, after: daemon.NewPingHandler(daemon.PingHandlerOptions{PID: os.Getpid() + 1, Service: "replacement"}), timeout: time.Second},
 		{name: "missing PID after shutdown request", network: daemon.NetworkTCP, after: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = w.Write([]byte(`{"ok":true}`))
 		}), timeout: 150 * time.Millisecond, wantErr: context.DeadlineExceeded},
-		{name: "negative PID after shutdown request", network: daemon.NetworkTCP, after: daemon.NewPingHandler(daemon.PingHandlerOptions{PID: -1}), timeout: 150 * time.Millisecond, wantErr: context.DeadlineExceeded},
-		{name: "context with live endpoint", network: daemon.NetworkTCP, after: ping, callerDeadline: true, wantErr: context.DeadlineExceeded},
+		{name: "context with live endpoint", network: daemon.NetworkTCP, callerDeadline: true, wantErr: context.DeadlineExceeded},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			var ping http.Handler
 			var requested atomic.Bool
 			var probes atomic.Int32
 			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if requested.Load() {
 					probes.Add(1)
-					tc.after.ServeHTTP(w, r)
-					return
+					if tc.after != nil {
+						tc.after.ServeHTTP(w, r)
+						return
+					}
 				}
 				ping.ServeHTTP(w, r)
 			}))
@@ -163,19 +195,14 @@ func TestStopEndpointWait(t *testing.T) {
 
 func TestStopExitProofAndErrors(t *testing.T) {
 	failure := errors.New("shutdown failed")
-	for _, mode := range []string{"closed", "exited with live endpoint", "replacement", "exit error", "request error"} {
+	for _, mode := range []string{"closed", "exited with live endpoint", "running with live endpoint", "exit error", "request error"} {
 		t.Run(mode, func(t *testing.T) {
 			var requested atomic.Bool
 			var probes atomic.Int32
 			ping := daemon.NewPingHandler(daemon.PingHandlerOptions{PID: os.Getpid()})
-			replacement := daemon.NewPingHandler(daemon.PingHandlerOptions{PID: os.Getpid() + 1})
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if requested.Load() {
 					probes.Add(1)
-					if mode == "replacement" {
-						replacement.ServeHTTP(w, r)
-						return
-					}
 				}
 				ping.ServeHTTP(w, r)
 			}))
@@ -206,7 +233,7 @@ func TestStopExitProofAndErrors(t *testing.T) {
 					if mode == "exit error" {
 						return false, failure
 					}
-					return mode != "replacement" && (mode != "closed" || checks == 2), nil
+					return mode != "running with live endpoint" && (mode != "closed" || checks == 2), nil
 				},
 			}
 			if mode == "request error" {
@@ -214,7 +241,7 @@ func TestStopExitProofAndErrors(t *testing.T) {
 			}
 			err = daemon.Stop(t.Context(), rec, opts)
 			switch mode {
-			case "replacement":
+			case "running with live endpoint":
 				require.ErrorIs(t, err, context.DeadlineExceeded)
 			case "request error", "exit error":
 				require.ErrorIs(t, err, failure)
@@ -232,7 +259,7 @@ func TestStopExitProofAndErrors(t *testing.T) {
 
 func TestStopPreflightExitProof(t *testing.T) {
 	failure := errors.New("exit proof failed")
-	for _, endpoint := range []string{"another PID", "gone process"} {
+	for _, endpoint := range []string{"unproofed responder", "gone process"} {
 		for _, result := range []string{"exited", "running", "error"} {
 			t.Run(endpoint+"/"+result, func(t *testing.T) {
 				var probes atomic.Int32
@@ -254,7 +281,7 @@ func TestStopPreflightExitProof(t *testing.T) {
 					Exited: func(_ context.Context, got daemon.RuntimeRecord) (bool, error) {
 						checks++
 						assert.Equal(t, rec, got)
-						if endpoint == "another PID" {
+						if endpoint == "unproofed responder" {
 							assert.Positive(t, probes.Load(), "preflight must precede exit proof")
 						}
 						if result == "error" {
@@ -330,9 +357,20 @@ func TestStopGoneProcessEvidence(t *testing.T) {
 	}{
 		{name: "recorded PID answering", samePID: true, wantErr: true},
 		{name: "gone"},
+		{name: "reused PID", samePID: true, wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := daemon.RuntimeRecord{PID: pid, Service: "test"}
+			if tc.name == "reused PID" {
+				if runtime.GOOS != "linux" {
+					t.Skip("requires Linux process identity")
+				}
+				rec = daemon.NewRuntimeRecord("test", "", daemon.Endpoint{})
+				fields := strings.Split(string(rec.ProcessIdentityV2), ":")
+				require.Len(t, fields, 4)
+				fields[3] = "1"
+				rec.ProcessIdentityV2 = daemon.ProcessIdentity(strings.Join(fields, ":"))
+			}
 			answerPID := os.Getpid() + 1
 			if tc.samePID {
 				answerPID = rec.PID
