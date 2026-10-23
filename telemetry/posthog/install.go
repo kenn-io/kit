@@ -35,54 +35,57 @@ type storedInstallToken struct {
 	Token       string `json:"token,omitempty"`
 }
 
-func (t *installToken) get(ctx context.Context, base http.RoundTripper) (string, *http.Response, error) {
+func (t *installToken) get(ctx context.Context, base http.RoundTripper) (string, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.cached != "" {
-		return t.cached, nil, nil
+		return t.cached, nil
 	}
 	lock := flock.New(t.path + ".lock")
 	_, err := lock.TryLockContext(ctx, 10*time.Millisecond)
 	if err != nil {
-		return "", nil, fmt.Errorf("lock telemetry token: %w", err)
+		return "", fmt.Errorf("lock telemetry token: %w", err)
 	}
 	defer func() { _ = lock.Unlock() }()
 	data, err := os.ReadFile(t.path)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return "", nil, fmt.Errorf("read telemetry token: %w", err)
+		return "", fmt.Errorf("read telemetry token: %w", err)
 	}
 	var stored storedInstallToken
 	if err == nil && json.Unmarshal(data, &stored) == nil && stored.DistinctID == t.distinctID && stored.Application == t.application && strings.TrimSpace(stored.Token) != "" {
 		t.cached = stored.Token
-		return t.cached, nil, nil
+		return t.cached, nil
 	}
 	stored = storedInstallToken{DistinctID: t.distinctID, Application: t.application}
 	data, _ = json.Marshal(stored) //nolint:errchkjson // all fields are strings
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.registerURL, bytes.NewReader(data))
 	if err != nil {
-		return "", nil, fmt.Errorf("create telemetry registration: %w", err)
+		return "", fmt.Errorf("create telemetry registration: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if ProcessDisabled() {
+		return "", nil
+	}
 	response, err := base.RoundTrip(req)
 	if err != nil {
-		return "", nil, fmt.Errorf("register telemetry install: %w", err)
-	}
-	if response.StatusCode != http.StatusOK {
-		return "", response, nil
+		return "", fmt.Errorf("register telemetry install: %w", err)
 	}
 	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("register telemetry install: HTTP %d %s", response.StatusCode, http.StatusText(response.StatusCode))
+	}
 	data, err = io.ReadAll(io.LimitReader(response.Body, 4*1024))
 	if err != nil {
-		return "", nil, fmt.Errorf("read telemetry registration: %w", err)
+		return "", fmt.Errorf("read telemetry registration: %w", err)
 	}
 	var result struct {
 		Token string `json:"token"`
 	}
 	if err := json.Unmarshal(data, &result); err != nil {
-		return "", nil, fmt.Errorf("decode telemetry registration: %w", err)
+		return "", fmt.Errorf("decode telemetry registration: %w", err)
 	}
 	if strings.TrimSpace(result.Token) == "" {
-		return "", nil, errors.New("telemetry registration returned an empty token")
+		return "", errors.New("telemetry registration returned an empty token")
 	}
 	stored.Token = result.Token
 	data, _ = json.Marshal(stored) //nolint:errchkjson // all fields are strings
@@ -90,7 +93,7 @@ func (t *installToken) get(ctx context.Context, base http.RoundTripper) (string,
 	if err := atomicfile.WriteFile(t.path, data, atomicfile.WithPrivate()); err != nil {
 		t.logger.WarnContext(ctx, "write telemetry token failed", "error", err)
 	}
-	return t.cached, nil, nil
+	return t.cached, nil
 }
 
 // InstallFileName is the file LoadOrCreateInstall keeps in its directory.

@@ -24,9 +24,11 @@ The transport removes `$os`, `$os_version`, `$os_distro`, and `$go_version`
 after serialization on every upload, including redirect replays. Keep fields.md
 and the serialized-payload test in sync with that contract.
 
-Options.TokenDir enables signed install tokens. Registration runs in the upload transport after opt-out gates, never in
-Capture or Report. A failed registration fails the batch with the relay's
-response. Stored tokens are keyed to distinct ID and application.
+Options.TokenDir enables signed install tokens. Registration runs in the upload
+transport after opt-out gates, including after lock waits, never in Capture or
+Report. A failed registration returns an error to the SDK. Stored tokens are
+keyed to distinct ID and application. Confirmed delivery means the relay received
+the batch.
 
 The package imports no OpenTelemetry, so products that only report events stay
 small; TestPackageLinksNoOpenTelemetry guards this. Applications own route

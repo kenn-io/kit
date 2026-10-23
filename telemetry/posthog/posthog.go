@@ -371,13 +371,14 @@ func newPostHogReporter(opts Options, newClient postHogClientFactory, options ..
 	if endpoint == "" {
 		endpoint = DefaultEndpoint
 	}
+	endpoint = strings.TrimRight(endpoint, "/")
 	disableGeoIP := true
 	var token *installToken
 	if strings.TrimSpace(opts.TokenDir) != "" {
 		token = &installToken{
 			path:       filepath.Join(opts.TokenDir, "telemetry-token.json"),
 			distinctID: strings.TrimSpace(opts.DistinctID), application: strings.TrimSpace(opts.Application),
-			registerURL: strings.TrimRight(endpoint, "/") + "/v1/register", logger: logger,
+			registerURL: endpoint + "/v1/register", logger: logger,
 		}
 	}
 	deliveries := &deliveryCallbacks{pending: make(map[chan error]deliveryKey)}
@@ -590,13 +591,7 @@ type postHogDisableTransport struct {
 
 func (t postHogDisableTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if ProcessDisabled() {
-		return &http.Response{
-			StatusCode: http.StatusNoContent,
-			Status:     "204 " + http.StatusText(http.StatusNoContent),
-			Header:     make(http.Header),
-			Body:       http.NoBody,
-			Request:    req,
-		}, nil
+		return disabledPostHogResponse(req), nil
 	}
 	base := t.base
 	if base == nil {
@@ -607,9 +602,9 @@ func (t postHogDisableTransport) RoundTrip(req *http.Request) (*http.Response, e
 	}
 	var token string
 	if t.token != nil {
-		value, response, err := t.token.get(req.Context(), base)
-		if err != nil || response != nil {
-			return response, err
+		value, err := t.token.get(req.Context(), base)
+		if err != nil {
+			return nil, err
 		}
 		token = value
 	}
@@ -627,15 +622,19 @@ func (t postHogDisableTransport) RoundTrip(req *http.Request) (*http.Response, e
 		}
 	}
 	if ProcessDisabled() {
-		return &http.Response{
-			StatusCode: http.StatusNoContent,
-			Status:     "204 " + http.StatusText(http.StatusNoContent),
-			Header:     make(http.Header),
-			Body:       http.NoBody,
-			Request:    req,
-		}, nil
+		return disabledPostHogResponse(req), nil
 	}
 	return base.RoundTrip(req)
+}
+
+func disabledPostHogResponse(req *http.Request) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusNoContent,
+		Status:     "204 " + http.StatusText(http.StatusNoContent),
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+		Request:    req,
+	}
 }
 
 // rewriteBatch filters after APIfy, which adds SDK properties after BeforeSend.

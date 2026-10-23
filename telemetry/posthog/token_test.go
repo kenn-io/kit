@@ -2,12 +2,16 @@ package posthog
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
 
+	"github.com/gofrs/flock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -26,7 +30,7 @@ type tokenRelay struct {
 	events        chan tokenEvent
 }
 
-func newTokenRelay(t *testing.T, failFirst bool) *tokenRelay {
+func newTokenRelay(t *testing.T, firstStatus int) *tokenRelay {
 	t.Helper()
 	relay := &tokenRelay{events: make(chan tokenEvent, 64)}
 	relay.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -42,8 +46,8 @@ func newTokenRelay(t *testing.T, failFirst bool) *tokenRelay {
 			}
 			assert.Len(t, registration, 2)
 			assert.Equal(t, "test", registration["application"])
-			if failFirst && attempt == 1 {
-				w.WriteHeader(http.StatusBadRequest)
+			if firstStatus != 0 && attempt == 1 {
+				w.WriteHeader(firstStatus)
 				return
 			}
 			if registration["distinct_id"] == "install-b" {
@@ -90,47 +94,89 @@ func newSignedReporter(t *testing.T, relay *tokenRelay, dir, id string) *Reporte
 }
 
 func TestSignedReporterRegistersOnceAcrossRestarts(t *testing.T) {
-	enableSignedTelemetry(t)
-	relay := newTokenRelay(t, false)
-	dir := t.TempDir()
-	for range 2 {
-		reporter := newSignedReporter(t, relay, dir, "install-a")
-		require.NoError(t, reporter.Capture("command_run", nil))
-		require.NoError(t, reporter.Capture("command_run", nil))
-		require.NoError(t, reporter.Close())
-	}
-	assert.EqualValues(t, 1, relay.registrations.Load())
-	require.Len(t, relay.events, 4)
-	for range 4 {
-		event := <-relay.events
-		assert.Equal(t, "install-a", event.DistinctID)
-		assert.Equal(t, "test", event.Properties.Application)
-		assert.Equal(t, "token-a", event.Properties.Token)
+	for _, suffix := range []string{"", "/"} {
+		t.Run("endpoint="+suffix, func(t *testing.T) {
+			enableSignedTelemetry(t)
+			relay := newTokenRelay(t, 0)
+			relay.server.URL += suffix
+			dir := t.TempDir()
+			for range 2 {
+				reporter := newSignedReporter(t, relay, dir, "install-a")
+				require.NoError(t, reporter.Capture("command_run", nil))
+				require.NoError(t, reporter.Capture("command_run", nil))
+				require.NoError(t, reporter.Close())
+			}
+			assert.EqualValues(t, 1, relay.registrations.Load())
+			require.Len(t, relay.events, 4)
+			for range 4 {
+				event := <-relay.events
+				assert.Equal(t, "install-a", event.DistinctID)
+				assert.Equal(t, "test", event.Properties.Application)
+				assert.Equal(t, "token-a", event.Properties.Token)
+			}
+		})
 	}
 }
 
 func TestSignedReporterRetriesRegistrationOnLaterUpload(t *testing.T) {
-	enableSignedTelemetry(t)
-	relay := newTokenRelay(t, true)
-	dir := t.TempDir()
-	first := newSignedReporter(t, relay, dir, "install-a")
-	require.NoError(t, first.Capture("command_run", nil))
-	require.NoError(t, first.Close())
-	assert.EqualValues(t, 1, relay.registrations.Load())
-	assert.Empty(t, relay.events)
-	second := newSignedReporter(t, relay, dir, "install-a")
-	require.NoError(t, second.Capture("command_run", nil))
-	require.NoError(t, second.Close())
-	assert.EqualValues(t, 2, relay.registrations.Load())
-	require.Len(t, relay.events, 1)
-	assert.Equal(t, "token-a", (<-relay.events).Properties.Token)
+	for _, status := range []int{http.StatusNoContent, http.StatusBadRequest, http.StatusTooManyRequests, http.StatusInternalServerError} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			enableSignedTelemetry(t)
+			relay := newTokenRelay(t, status)
+			dir := t.TempDir()
+			token := &installToken{path: filepath.Join(dir, "telemetry-token.json"), distinctID: "install-a", application: "test", registerURL: relay.server.URL + "/v1/register", logger: slog.Default()}
+			_, err := token.get(t.Context(), http.DefaultTransport)
+			require.ErrorContains(t, err, strconv.Itoa(status))
+			assert.EqualValues(t, 1, relay.registrations.Load())
+			assert.Empty(t, relay.events)
+			second := newSignedReporter(t, relay, dir, "install-a")
+			require.NoError(t, second.Capture("command_run", nil))
+			require.NoError(t, second.Close())
+			assert.EqualValues(t, 2, relay.registrations.Load())
+			require.Len(t, relay.events, 1)
+			assert.Equal(t, "token-a", (<-relay.events).Properties.Token)
+		})
+	}
+}
+
+func TestInstallTokenOptOutAfterLockWait(t *testing.T) {
+	for _, wait := range []string{"mutex", "file lock"} {
+		t.Run(wait, func(t *testing.T) {
+			enableSignedTelemetry(t)
+			relay := newTokenRelay(t, 0)
+			token := &installToken{path: filepath.Join(t.TempDir(), "telemetry-token.json"), distinctID: "install-a", application: "test", registerURL: relay.server.URL + "/v1/register", logger: slog.Default()}
+			var release func()
+			if wait == "mutex" {
+				token.mu.Lock()
+				release = token.mu.Unlock
+			} else {
+				lock := flock.New(token.path + ".lock")
+				require.NoError(t, lock.Lock())
+				release = func() { require.NoError(t, lock.Unlock()) }
+			}
+			started := make(chan struct{})
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				close(started)
+				_, err := token.get(t.Context(), http.DefaultTransport)
+				assert.NoError(t, err)
+			}()
+			<-started
+			DisableProcess()
+			release()
+			<-done
+			assert.Zero(t, relay.registrations.Load())
+			assert.Empty(t, relay.events)
+		})
+	}
 }
 
 func TestSignedReporterOptOutSkipsRelay(t *testing.T) {
 	for _, optOut := range []string{"CI", "DO_NOT_TRACK", "TEST_TELEMETRY_ENABLED", "process"} {
 		t.Run(optOut, func(t *testing.T) {
 			enableSignedTelemetry(t)
-			relay := newTokenRelay(t, false)
+			relay := newTokenRelay(t, 0)
 			switch optOut {
 			case "CI", "DO_NOT_TRACK":
 				t.Setenv(optOut, "1")
@@ -181,7 +227,7 @@ func TestSignedReporterProcessDisabledDuringRegistrationSkipsBatch(t *testing.T)
 
 func TestSignedReporterReplacesTokenForAnotherIdentity(t *testing.T) {
 	enableSignedTelemetry(t)
-	relay := newTokenRelay(t, false)
+	relay := newTokenRelay(t, 0)
 	dir := t.TempDir()
 	for _, id := range []string{"install-a", "install-b"} {
 		reporter := newSignedReporter(t, relay, dir, id)
@@ -199,7 +245,7 @@ func TestSignedReporterReplacesTokenForAnotherIdentity(t *testing.T) {
 
 func TestSignedReportersShareTokenConcurrently(t *testing.T) {
 	enableSignedTelemetry(t)
-	relay := newTokenRelay(t, false)
+	relay := newTokenRelay(t, 0)
 	dir := t.TempDir()
 	reporters := make([]*Reporter, 16)
 	for i := range reporters {
