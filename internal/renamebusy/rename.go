@@ -26,9 +26,18 @@ func Replace(oldpath, newpath string, timeout time.Duration) error {
 		}
 		return struct{}{}, err
 	}, backoff.WithBackOff(backoff.NewConstantBackOff(defaultPoll)),
-		backoff.WithMaxTries(0), backoff.WithMaxElapsedTime(timeout))
+		backoff.WithMaxTries(maxTries(timeout)), backoff.WithMaxElapsedTime(timeout))
 	if err != nil {
 		return backoff.AsRetryError(err).LastErr
 	}
 	return nil
+}
+
+// maxTries allows one attempt when timeout leaves no retry budget, because
+// backoff treats a nonpositive elapsed-time limit as unlimited.
+func maxTries(timeout time.Duration) uint {
+	if timeout > 0 {
+		return 0
+	}
+	return 1
 }

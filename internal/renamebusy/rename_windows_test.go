@@ -27,6 +27,35 @@ func TestReplaceStopsBeforeDelayExceedsBudget(t *testing.T) {
 	assert.Less(t, elapsed, time.Second)
 }
 
+func TestReplaceDoesNotRetryForNonpositiveTimeout(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		timeout time.Duration
+	}{
+		{name: "zero", timeout: 0},
+		{name: "negative", timeout: -time.Millisecond},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			src := filepath.Join(dir, "source")
+			dst := filepath.Join(dir, "destination")
+			require.NoError(t, os.WriteFile(src, []byte("original"), 0o600))
+			handle, err := os.Open(src)
+			require.NoError(t, err)
+
+			closed := make(chan error, 1)
+			timer := time.AfterFunc(100*time.Millisecond, func() { closed <- handle.Close() })
+			err = Replace(src, dst, tt.timeout)
+			if timer.Stop() {
+				require.NoError(t, handle.Close())
+			} else {
+				require.NoError(t, <-closed)
+			}
+			require.ErrorIs(t, err, windows.ERROR_SHARING_VIOLATION)
+		})
+	}
+}
+
 func TestReplaceRetriesSharingViolation(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "source")
