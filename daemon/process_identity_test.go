@@ -75,3 +75,23 @@ func TestRuntimeProcessScope(t *testing.T) {
 		})
 	}
 }
+
+func TestRuntimeRecordBlocksStart(t *testing.T) {
+	pid := daemon.StartLivePIDHelperForTest(t)
+	identity, ok := daemon.ReadProcessIdentity(pid)
+	require.True(t, ok)
+	tests := []struct {
+		name string
+		rec  daemon.RuntimeRecord
+		want bool
+	}{
+		{"self", daemon.NewRuntimeRecord("tool", "v1", daemon.Endpoint{}), false},
+		{"live child", daemon.RuntimeRecord{PID: pid, ProcessIdentityV2: identity}, true},
+		{"unknown dead PID", daemon.RuntimeRecord{PID: deadPID(t), ProcessIdentityV2: "future-v1:12345"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, daemon.RuntimeRecordBlocksStart(tt.rec))
+		})
+	}
+}
