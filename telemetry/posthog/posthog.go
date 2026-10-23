@@ -675,9 +675,6 @@ func (t postHogDisableTransport) rewriteBatch(body io.Reader, token string) ([]b
 				}
 			}
 			if token != "" {
-				if properties == nil {
-					properties = make(map[string]json.RawMessage)
-				}
 				properties["install_token"], _ = json.Marshal(token) //nolint:errchkjson // strings always encode as JSON
 			}
 			if event["properties"], err = json.Marshal(properties); err != nil {

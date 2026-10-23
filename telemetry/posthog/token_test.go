@@ -12,27 +12,20 @@ import (
 	"testing"
 
 	"github.com/gofrs/flock"
+	phsdk "github.com/posthog/posthog-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-type tokenEvent struct {
-	DistinctID string `json:"distinct_id"`
-	Properties struct {
-		Application string `json:"application"`
-		Token       string `json:"install_token"`
-	} `json:"properties"`
-}
-
 type tokenRelay struct {
 	server        *httptest.Server
 	registrations atomic.Int32
-	events        chan tokenEvent
+	events        chan phsdk.CaptureInApi
 }
 
 func newTokenRelay(t *testing.T, firstStatus int) *tokenRelay {
 	t.Helper()
-	relay := &tokenRelay{events: make(chan tokenEvent, 64)}
+	relay := &tokenRelay{events: make(chan phsdk.CaptureInApi, 64)}
 	relay.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		assert.Equal(t, http.MethodPost, req.Method)
 		switch req.URL.Path {
@@ -58,7 +51,7 @@ func newTokenRelay(t *testing.T, firstStatus int) *tokenRelay {
 			}
 		case "/batch/":
 			var batch struct {
-				Batch []tokenEvent `json:"batch"`
+				Batch []phsdk.CaptureInApi `json:"batch"`
 			}
 			if assert.NoError(t, json.NewDecoder(req.Body).Decode(&batch)) {
 				for _, event := range batch.Batch {
@@ -110,9 +103,9 @@ func TestSignedReporterRegistersOnceAcrossRestarts(t *testing.T) {
 			require.Len(t, relay.events, 4)
 			for range 4 {
 				event := <-relay.events
-				assert.Equal(t, "install-a", event.DistinctID)
-				assert.Equal(t, "test", event.Properties.Application)
-				assert.Equal(t, "token-a", event.Properties.Token)
+				assert.Equal(t, "install-a", event.DistinctId)
+				assert.Equal(t, "test", event.Properties["application"])
+				assert.Equal(t, "token-a", event.Properties["install_token"])
 			}
 		})
 	}
@@ -134,7 +127,7 @@ func TestSignedReporterRetriesRegistrationOnLaterUpload(t *testing.T) {
 			require.NoError(t, second.Close())
 			assert.EqualValues(t, 2, relay.registrations.Load())
 			require.Len(t, relay.events, 1)
-			assert.Equal(t, "token-a", (<-relay.events).Properties.Token)
+			assert.Equal(t, "token-a", (<-relay.events).Properties["install_token"])
 		})
 	}
 }
@@ -236,11 +229,11 @@ func TestSignedReporterReplacesTokenForAnotherIdentity(t *testing.T) {
 	}
 	assert.EqualValues(t, 2, relay.registrations.Load())
 	require.Len(t, relay.events, 2)
-	assert.Equal(t, "token-a", (<-relay.events).Properties.Token)
+	assert.Equal(t, "token-a", (<-relay.events).Properties["install_token"])
 	event := <-relay.events
-	assert.Equal(t, "install-b", event.DistinctID)
-	assert.Equal(t, "test", event.Properties.Application)
-	assert.Equal(t, "token-b", event.Properties.Token)
+	assert.Equal(t, "install-b", event.DistinctId)
+	assert.Equal(t, "test", event.Properties["application"])
+	assert.Equal(t, "token-b", event.Properties["install_token"])
 }
 
 func TestSignedReportersShareTokenConcurrently(t *testing.T) {
@@ -260,6 +253,6 @@ func TestSignedReportersShareTokenConcurrently(t *testing.T) {
 	assert.EqualValues(t, 1, relay.registrations.Load())
 	require.Len(t, relay.events, len(reporters))
 	for range reporters {
-		assert.Equal(t, "token-a", (<-relay.events).Properties.Token)
+		assert.Equal(t, "token-a", (<-relay.events).Properties["install_token"])
 	}
 }
