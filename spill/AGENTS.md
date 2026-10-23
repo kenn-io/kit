@@ -22,7 +22,9 @@ record formats, sorting, or caller policy.
 - Reading checks the file against the record count, payload size, and byte
   count written: the last record must end exactly where the writes did.
   A short, truncated, or inconsistent file is an error, never a shorter list,
-  and a length is checked against the payload left before allocating.
+  and a length is checked against the payload left and `math.MaxInt` before
+  allocating. On 32-bit platforms a file can pass 2 GiB, so the second check
+  is what keeps a damaged length from panicking.
 - Read with `ReadAt` through a section bounded to the bytes written, so an
   iteration sees the records present when it started and appends during or
   after a read keep writing at the end of the file.

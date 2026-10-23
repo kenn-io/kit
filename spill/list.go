@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"iter"
+	"math"
 	"os"
 	"slices"
 
@@ -164,6 +165,9 @@ func readFile(file *os.File, size int64, count int, payload int64, yield func(st
 		}
 		if n > uint64(payload) {
 			return fmt.Errorf("spill: record %d of %d: length %d exceeds the %d payload bytes left", i+1, count, n, payload)
+		}
+		if n > math.MaxInt {
+			return fmt.Errorf("spill: record %d of %d: length %d does not fit in an int", i+1, count, n)
 		}
 		payload -= int64(n)
 		buf = slices.Grow(buf[:0], int(n))[:n]
