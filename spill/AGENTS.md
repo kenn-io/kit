@@ -9,7 +9,9 @@ record formats, sorting, or caller policy.
 ## Invariants
 
 - A list at or under its limit never touches the disk. The limit counts
-  payload bytes (the sum of record lengths) only.
+  each in-memory record's length plus 16 bytes for its string header, so a
+  list of short or empty records still moves to disk. `Size` reports payload
+  bytes only.
 - Create the file only with `safefileio.CreatePrivateTemp` in the caller's
   directory, and remove it on `Close` and when the move to disk fails.
 - A failed move to disk leaves the list unchanged. A write failure after the

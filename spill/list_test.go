@@ -38,10 +38,11 @@ func onlyFile(t *testing.T, dir string) string {
 func TestListUnderLimitStaysInMemory(t *testing.T) {
 	require := require.New(t)
 	dir := t.TempDir()
-	l := spill.New(dir, "spill-*", 10)
+	// 10 payload bytes plus 16 bytes for each of the 4 records.
+	l := spill.New(dir, "spill-*", 74)
 	t.Cleanup(func() { require.NoError(l.Close()) })
 
-	// The payload reaches the limit exactly, which still fits in memory.
+	// The records reach the limit exactly, which still fits in memory.
 	for _, s := range []string{"abc", "", "defg", "hij"} {
 		require.NoError(l.Append(s))
 	}
@@ -60,7 +61,8 @@ func TestListUnderLimitStaysInMemory(t *testing.T) {
 func TestListOverLimitMovesToPrivateFile(t *testing.T) {
 	require := require.New(t)
 	dir := t.TempDir()
-	l := spill.New(dir, "spill-*.tmp", 4)
+	// Two records of 2 bytes fill the limit with their 16-byte overhead.
+	l := spill.New(dir, "spill-*.tmp", 36)
 	t.Cleanup(func() { require.NoError(l.Close()) })
 
 	require.NoError(l.Append("ab"))
@@ -93,7 +95,7 @@ func TestListOverLimitMovesToPrivateFile(t *testing.T) {
 
 func TestListIterationYieldsRecordsAppendedBeforeItStarted(t *testing.T) {
 	require := require.New(t)
-	l := spill.New(t.TempDir(), "spill-*", 3)
+	l := spill.New(t.TempDir(), "spill-*", 34)
 	t.Cleanup(func() { require.NoError(l.Close()) })
 	require.NoError(l.Append("a"))
 	require.NoError(l.Append("b"))
@@ -114,6 +116,23 @@ func TestListIterationYieldsRecordsAppendedBeforeItStarted(t *testing.T) {
 	records, err := collect(l)
 	require.NoError(err)
 	assert.Equal(t, []string{"a", "b", "aa", "bb", "aa", "bb", "aaaa", "bbbb"}, records)
+}
+
+func TestListCountsEmptyRecordsTowardLimit(t *testing.T) {
+	require := require.New(t)
+	l := spill.New(t.TempDir(), "spill-*", 32)
+	t.Cleanup(func() { require.NoError(l.Close()) })
+
+	require.NoError(l.Append(""))
+	require.NoError(l.Append(""))
+	require.False(l.Spilled())
+	require.NoError(l.Append(""))
+	require.True(l.Spilled())
+	assert.Equal(t, int64(0), l.Size())
+
+	records, err := collect(l)
+	require.NoError(err)
+	assert.Equal(t, []string{"", "", ""}, records)
 }
 
 func TestListRoundTripsArbitraryBytes(t *testing.T) {
@@ -156,7 +175,7 @@ func TestListCloseRemovesFile(t *testing.T) {
 
 func TestListAppendReportsFileCreationFailure(t *testing.T) {
 	require := require.New(t)
-	l := spill.New(filepath.Join(t.TempDir(), "missing"), "spill-*", 1)
+	l := spill.New(filepath.Join(t.TempDir(), "missing"), "spill-*", 17)
 	t.Cleanup(func() { require.NoError(l.Close()) })
 	require.NoError(l.Append("a"))
 

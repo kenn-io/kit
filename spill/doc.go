@@ -4,13 +4,13 @@
 // of it in memory.
 //
 // New takes the directory for the file, a file name pattern, and the limit.
-// Records stay in memory while their total payload, the sum of their
-// lengths, is at or under the limit, and no file is created. The Append that
-// would pass the limit creates the file with safefileio.CreatePrivateTemp,
-// writes the buffered records to it, drops them from memory, and appends
-// that record and every later one through a buffered writer. After the
-// switch, memory is bounded by the writer buffer, not the list size. The
-// limit counts payload bytes only, not per-record overhead.
+// Records stay in memory while their lengths plus 16 bytes per record, the
+// size of a string header, total at most the limit, and no file is created.
+// The Append that would pass the limit creates the file with
+// safefileio.CreatePrivateTemp, writes the buffered records to it, drops
+// them from memory, and appends that record and every later one through a
+// buffered writer. After the switch, memory is bounded by the writer buffer,
+// not the list size.
 //
 // Records are opaque: any bytes are allowed, including NUL, newlines, and
 // the empty string. The file stores each record as a uvarint length followed

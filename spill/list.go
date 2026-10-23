@@ -18,8 +18,13 @@ import (
 // the memory a List uses after it moves to disk.
 const bufferSize = 64 << 10
 
+// recordOverhead is the size of a string header on 64-bit platforms. Each
+// record held in memory counts it toward the limit, so a list of short
+// records cannot hold far more memory than the limit says.
+const recordOverhead = 16
+
 // List is an append-only list of strings that moves from memory to a private
-// temporary file once its payload passes a limit. Create one with New.
+// temporary file once it passes a byte limit. Create one with New.
 type List struct {
 	dir     string
 	pattern string
@@ -40,16 +45,16 @@ type List struct {
 	closed bool
 }
 
-// New returns an empty List that keeps records in memory while their total
-// payload is at or under limit bytes, and otherwise moves them to a file
-// created in dir with a name built from pattern, as in os.CreateTemp. An
-// empty dir means os.TempDir. A negative limit sends every record to the
-// file. New creates no file.
+// New returns an empty List that keeps records in memory while their lengths
+// plus 16 bytes per record total at most limit bytes, and otherwise moves
+// them to a file created in dir with a name built from pattern, as in
+// os.CreateTemp. An empty dir means os.TempDir. A negative limit sends every
+// record to the file. New creates no file.
 func New(dir, pattern string, limit int64) *List {
 	return &List{dir: dir, pattern: pattern, limit: limit}
 }
 
-// Append adds s to the end of the list. When s would take the payload past
+// Append adds s to the end of the list. When s would take the list past
 // the limit, Append first moves the list to the file; if that fails, the
 // list is unchanged and s is not added. A failed write after the move is
 // returned by every later Append and All.
@@ -61,7 +66,7 @@ func (l *List) Append(s string) error {
 		return l.err
 	}
 	if l.file == nil {
-		if l.size+int64(len(s)) <= l.limit {
+		if l.size+int64(l.count+1)*recordOverhead+int64(len(s)) <= l.limit {
 			l.records = append(l.records, s)
 			l.count++
 			l.size += int64(len(s))
