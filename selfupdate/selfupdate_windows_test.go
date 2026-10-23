@@ -107,10 +107,10 @@ func TestInstallBinaryWaitsForStagedReader(t *testing.T) {
 		windows.FILE_ATTRIBUTE_NORMAL, 0)
 	require.NoError(t, err)
 
-	require.NoError(t, windows.CloseHandle(destination))
-	destination = windows.InvalidHandle
 	closed := make(chan error, 1)
 	time.AfterFunc(100*time.Millisecond, func() { closed <- windows.CloseHandle(reader) }) //nolint:kennlint // keep the real staged executable locked while installation retries
+	require.NoError(t, windows.CloseHandle(destination))
+	destination = windows.InvalidHandle
 	<-installed
 	require.NoError(t, <-closed)
 	require.NoError(t, installErr)
