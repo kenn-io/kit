@@ -39,8 +39,6 @@ const (
 	maxChecksumBytes        = 1 << 20
 	maxSignatureBytes       = 64 << 10
 	legacyTarRegularType    = byte(0)
-	installBusyTimeout      = 2 * time.Second
-	installBusyPoll         = 5 * time.Millisecond
 )
 
 var (
@@ -473,9 +471,9 @@ func InstallBinary(srcPath, dstPath string) error {
 		movedAside = aside
 	}
 
-	if err := renamebusy.Replace(tmpPath, dstPath, installBusyTimeout, installBusyPoll); err != nil {
+	if err := renamebusy.Replace(tmpPath, dstPath, renamebusy.DefaultTimeout, renamebusy.DefaultPoll); err != nil {
 		if movedAside {
-			if rbErr := renamebusy.Replace(backupPath, dstPath, installBusyTimeout, installBusyPoll); rbErr != nil {
+			if rbErr := renamebusy.Replace(backupPath, dstPath, renamebusy.DefaultTimeout, renamebusy.DefaultPoll); rbErr != nil {
 				return fmt.Errorf("install: %w (rollback also failed: %w)", err, rbErr)
 			}
 		}
@@ -1485,7 +1483,7 @@ func movePreviousAside(dstPath, backupPath string) (bool, error) {
 		return false, nil //nolint:nilerr // an unreadable or absent destination means there is nothing to move aside
 	}
 	// Readers can briefly prevent Windows from renaming the old binary.
-	if err := renamebusy.Replace(dstPath, backupPath, installBusyTimeout, installBusyPoll); err != nil {
+	if err := renamebusy.Replace(dstPath, backupPath, renamebusy.DefaultTimeout, renamebusy.DefaultPoll); err != nil {
 		return false, fmt.Errorf("backup: %w", err)
 	}
 	return true, nil

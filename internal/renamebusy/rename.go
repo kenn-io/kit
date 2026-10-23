@@ -10,6 +10,13 @@ import (
 	"go.kenn.io/kit/atomicfile"
 )
 
+const (
+	// DefaultTimeout bounds retries for one rename.
+	DefaultTimeout = 2 * time.Second
+	// DefaultPoll is the delay between retry attempts.
+	DefaultPoll = 5 * time.Millisecond
+)
+
 // Replace calls atomicfile.Replace, retrying Windows sharing violations for
 // timeout with poll between attempts. It returns the last filesystem error.
 func Replace(oldpath, newpath string, timeout, poll time.Duration) error {
