@@ -19,13 +19,21 @@ func TestReplaceStopsBeforeDelayExceedsBudget(t *testing.T) {
 	require.NoError(t, os.WriteFile(src, []byte("original"), 0o600))
 	handle, err := os.Open(src)
 	require.NoError(t, err)
-	defer func() { assert.NoError(t, handle.Close()) }()
 
-	started := time.Now()
-	err = Replace(src, dst, 20*time.Millisecond)
-	elapsed := time.Since(started)
-	require.ErrorIs(t, err, windows.ERROR_SHARING_VIOLATION)
-	assert.Less(t, elapsed, time.Second)
+	synctest.Test(t, func(t *testing.T) {
+		closed := make(chan error, 1)
+		timer := time.AfterFunc(100*time.Millisecond, func() { closed <- handle.Close() })
+		started := time.Now()
+		err = Replace(src, dst, 20*time.Millisecond)
+		elapsed := time.Since(started)
+		if timer.Stop() {
+			require.NoError(t, handle.Close())
+		} else {
+			require.NoError(t, <-closed)
+		}
+		require.ErrorIs(t, err, windows.ERROR_SHARING_VIOLATION)
+		assert.LessOrEqual(t, elapsed, 20*time.Millisecond)
+	})
 }
 
 func TestReplaceDoesNotRetryForNonpositiveTimeout(t *testing.T) {
