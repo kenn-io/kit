@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -104,4 +105,60 @@ func TestInstallBinaryWaitsForStagedReader(t *testing.T) {
 	staging, err := filepath.Glob(filepath.Join(dir, ".tool.exe.*"))
 	require.NoError(t, err)
 	assert.Empty(t, staging)
+}
+
+func TestInstallBinaryWaitsForRollbackReader(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		dir := t.TempDir()
+		src := filepath.Join(dir, "source.exe")
+		dst := filepath.Join(dir, "tool.exe")
+		require.NoError(t, os.WriteFile(src, []byte("new"), 0o755))
+		require.NoError(t, os.WriteFile(dst, []byte("original"), 0o755))
+
+		// Block the backup move until the staged file has a reader.
+		destination, err := os.Open(dst)
+		require.NoError(t, err)
+		defer func() { _ = destination.Close() }()
+		installed := make(chan error, 1)
+		go func() { installed <- InstallBinary(src, dst) }()
+		synctest.Wait()
+		staged, err := filepath.Glob(filepath.Join(dir, ".tool.exe.*.new"))
+		require.NoError(t, err)
+		require.Len(t, staged, 1)
+		reader, err := os.Open(staged[0])
+		require.NoError(t, err)
+		defer func() { _ = reader.Close() }()
+		require.NoError(t, destination.Close())
+
+		var backups []string
+		require.Eventually(t, func() bool {
+			paths, err := filepath.Glob(filepath.Join(dir, ".tool.exe.*.old"))
+			backups = paths
+			_, statErr := os.Stat(dst)
+			return err == nil && len(backups) == 1 && os.IsNotExist(statErr)
+		}, time.Second, 5*time.Millisecond)
+		backup, err := os.Open(backups[0])
+		require.NoError(t, err)
+		defer func() { _ = backup.Close() }()
+
+		// Keep installation blocked past its budget, then let rollback finish.
+		closed := make(chan error, 2)
+		time.AfterFunc(2300*time.Millisecond, func() {
+			closed <- reader.Close()
+			closed <- backup.Close()
+		})
+		err = <-installed
+		require.NoError(t, <-closed)
+		require.NoError(t, <-closed)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, windows.ERROR_SHARING_VIOLATION)
+		assert.ErrorContains(t, err, "install: ")
+		assert.NotContains(t, err.Error(), "rollback also failed")
+		data, err := os.ReadFile(dst)
+		require.NoError(t, err)
+		assert.Equal(t, "original", string(data))
+		staging, err := filepath.Glob(filepath.Join(dir, ".tool.exe.*"))
+		require.NoError(t, err)
+		assert.Empty(t, staging)
+	})
 }

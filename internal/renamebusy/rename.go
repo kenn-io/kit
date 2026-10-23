@@ -17,7 +17,8 @@ const (
 )
 
 // Replace retries Windows sharing violations for timeout. It returns the last
-// filesystem error.
+// filesystem error. timeout must be positive; a nonpositive elapsed limit
+// permits unlimited retries.
 func Replace(oldpath, newpath string, timeout time.Duration) error {
 	_, err := backoff.Retry(context.Background(), func() (struct{}, error) {
 		err := atomicfile.Replace(oldpath, newpath)
@@ -26,18 +27,9 @@ func Replace(oldpath, newpath string, timeout time.Duration) error {
 		}
 		return struct{}{}, err
 	}, backoff.WithBackOff(backoff.NewConstantBackOff(defaultPoll)),
-		backoff.WithMaxTries(maxTries(timeout)), backoff.WithMaxElapsedTime(timeout))
+		backoff.WithMaxElapsedTime(timeout))
 	if err != nil {
 		return backoff.AsRetryError(err).LastErr
 	}
 	return nil
-}
-
-// maxTries allows one attempt when timeout leaves no retry budget, because
-// backoff treats a nonpositive elapsed-time limit as unlimited.
-func maxTries(timeout time.Duration) uint {
-	if timeout > 0 {
-		return 0
-	}
-	return 1
 }
