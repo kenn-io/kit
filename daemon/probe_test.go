@@ -1,7 +1,6 @@
 package daemon_test
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -12,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -174,7 +172,7 @@ func TestDiscoverSkipsMismatchedProcessIdentityWithoutProbing(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
 
-	livePID := startLivePIDHelper(t)
+	livePID := daemon.StartLivePIDHelperForTest(t)
 	recordedIdentity, ok := daemon.ReadProcessIdentity(os.Getpid())
 	require.True(ok)
 	require.Equal(daemon.ProcessIdentityMismatch,
@@ -275,7 +273,7 @@ func TestDiscoverScansPastUnreachableLiveRuntime(t *testing.T) {
 	}))
 	defer reachableServer.Close()
 
-	livePID := startLivePIDHelper(t)
+	livePID := daemon.StartLivePIDHelperForTest(t)
 	identity, ok := daemon.ReadProcessIdentity(livePID)
 	require.True(ok)
 	store := daemon.RuntimeStore{Dir: t.TempDir()}
@@ -309,7 +307,7 @@ func TestManagerFindDoesNotDiscloseCredentialBeforeProof(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
 
-	livePID := startLivePIDHelper(t)
+	livePID := daemon.StartLivePIDHelperForTest(t)
 	assert.NotEqual(os.Getpid(), livePID)
 	token := []byte("persistent-daemon-token")
 	proof := newDaemonProof(t, token)
@@ -443,14 +441,6 @@ func TestProofFormattingDoesNotDiscloseKey(t *testing.T) {
 	}
 }
 
-func TestLivePIDHelper(t *testing.T) {
-	if os.Getenv("KIT_DAEMON_LIVE_PID_HELPER") != "1" {
-		return
-	}
-	_, _ = fmt.Fprintln(os.Stdout, "ready")
-	_, _ = io.Copy(io.Discard, os.Stdin)
-}
-
 func TestDiscoverPropagatesContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -532,28 +522,6 @@ func listenerAddr(t *testing.T, server *httptest.Server) string {
 		return err
 	}(), "server address %q", addr)
 	return addr
-}
-
-func startLivePIDHelper(t *testing.T) int {
-	t.Helper()
-	require := require.New(t)
-
-	cmd := exec.CommandContext(context.WithoutCancel(t.Context()), os.Args[0], "-test.run=^TestLivePIDHelper$")
-	cmd.Env = append(os.Environ(), "KIT_DAEMON_LIVE_PID_HELPER=1")
-	stdin, err := cmd.StdinPipe()
-	require.NoError(err)
-	stdout, err := cmd.StdoutPipe()
-	require.NoError(err)
-	require.NoError(cmd.Start())
-	t.Cleanup(func() {
-		require.NoError(stdin.Close())
-		require.NoError(cmd.Wait())
-	})
-
-	ready, err := bufio.NewReader(stdout).ReadString('\n')
-	require.NoError(err)
-	require.Equal("ready\n", ready)
-	return cmd.Process.Pid
 }
 
 func requestContainsSecret(r *http.Request, body, secret []byte) bool {
