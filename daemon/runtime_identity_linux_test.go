@@ -4,6 +4,7 @@ package daemon_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -43,4 +44,13 @@ func TestRuntimeProcessAliveIgnoresLocalPIDWhenIdentityProvesProcessGone(t *test
 	own := daemon.NewRuntimeRecord("tool", "v1", daemon.Endpoint{})
 	rec := withLinuxIdentityField(t, own, 1, "11111111-2222-3333-4444-555555555555")
 	assert.False(t, daemon.RuntimeProcessAlive(rec))
+}
+
+func withLinuxIdentityField(t *testing.T, rec daemon.RuntimeRecord, field int, value string) daemon.RuntimeRecord {
+	t.Helper()
+	fields := strings.Split(string(rec.ProcessIdentityV2), ":")
+	require.Len(t, fields, 4)
+	fields[field] = value
+	rec.ProcessIdentityV2 = daemon.ProcessIdentity(strings.Join(fields, ":"))
+	return rec
 }
