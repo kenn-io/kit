@@ -33,3 +33,16 @@ func TestReadFileRejectsLengthPastMaxInt(t *testing.T) {
 	err = readFile(file, size, 1, int64(length), func(string, error) bool { return true })
 	require.ErrorContains(err, "length 2147483648 does not fit in an int")
 }
+
+func TestAppendRejectsRecordPastMaxIntCount(t *testing.T) {
+	require := require.New(t)
+	l := New(t.TempDir(), "spill-*", 0)
+	t.Cleanup(func() { require.NoError(l.Close()) })
+	// 2^31 appends are too slow for a test on 32-bit platforms, so start the
+	// count at the boundary.
+	l.count = math.MaxInt
+
+	require.ErrorContains(l.Append("a"), "already holds")
+	require.Equal(math.MaxInt, l.Len())
+	require.False(l.Spilled())
+}

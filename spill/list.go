@@ -66,6 +66,11 @@ func (l *List) Append(s string) error {
 	if l.err != nil {
 		return l.err
 	}
+	// On 32-bit platforms the count can reach math.MaxInt; one more record
+	// would wrap Len negative.
+	if l.count == math.MaxInt {
+		return fmt.Errorf("spill: append: list already holds %d records", l.count)
+	}
 	if l.file == nil {
 		if l.size+int64(l.count+1)*recordOverhead+int64(len(s)) <= l.limit {
 			l.records = append(l.records, s)
@@ -114,7 +119,7 @@ func (l *List) write(s string) error {
 	if _, err := l.w.WriteString(s); err != nil {
 		return fmt.Errorf("spill: writing record: %w", err)
 	}
-	l.written += int64(n + len(s))
+	l.written += int64(n) + int64(len(s))
 	return nil
 }
 

@@ -28,5 +28,8 @@ record formats, sorting, or caller policy.
 - Read with `ReadAt` through a section bounded to the bytes written, so an
   iteration sees the records present when it started and appends during or
   after a read keep writing at the end of the file.
+- Keep counts from wrapping on 32-bit platforms: `Append` refuses a record
+  once the list holds `math.MaxInt` records, and byte counts widen to
+  `int64` before adding.
 - `Close` is idempotent and reports flush, close, and remove errors joined.
   A `List` is not safe for concurrent use.
