@@ -16,12 +16,9 @@ const (
 	defaultPoll    = 5 * time.Millisecond
 )
 
-// Replace retries Windows sharing violations for timeout. A non-positive
-// timeout makes one attempt. It returns the last filesystem error.
+// Replace retries Windows sharing violations for timeout. It returns the last
+// filesystem error.
 func Replace(oldpath, newpath string, timeout time.Duration) error {
-	if timeout <= 0 {
-		return atomicfile.Replace(oldpath, newpath)
-	}
 	_, err := backoff.Retry(context.Background(), func() (struct{}, error) {
 		err := atomicfile.Replace(oldpath, newpath)
 		if err != nil && !fileBusy(err) {

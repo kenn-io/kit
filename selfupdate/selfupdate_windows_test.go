@@ -11,6 +11,17 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+func openWithoutDeleteSharing(t *testing.T, path string) windows.Handle {
+	t.Helper()
+	name, err := windows.UTF16PtrFromString(path)
+	require.NoError(t, err)
+	handle, err := windows.CreateFile(name, windows.GENERIC_READ,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING,
+		windows.FILE_ATTRIBUTE_NORMAL, 0)
+	require.NoError(t, err)
+	return handle
+}
+
 func TestInstallBinarySharingViolation(t *testing.T) {
 	for _, persistent := range []bool{false, true} {
 		name := "released"
@@ -24,13 +35,7 @@ func TestInstallBinarySharingViolation(t *testing.T) {
 			require.NoError(t, os.WriteFile(src, []byte("new"), 0o755))
 			require.NoError(t, os.WriteFile(dst, []byte("original"), 0o755))
 
-			// Match a reader that allows reads and writes but prevents renaming.
-			path, err := windows.UTF16PtrFromString(dst)
-			require.NoError(t, err)
-			handle, err := windows.CreateFile(path, windows.GENERIC_READ,
-				windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING,
-				windows.FILE_ATTRIBUTE_NORMAL, 0)
-			require.NoError(t, err)
+			handle := openWithoutDeleteSharing(t, dst)
 			defer func() {
 				if persistent {
 					assert.NoError(t, windows.CloseHandle(handle))
@@ -42,7 +47,7 @@ func TestInstallBinarySharingViolation(t *testing.T) {
 				time.AfterFunc(100*time.Millisecond, func() { closed <- windows.CloseHandle(handle) }) //nolint:kennlint // exercise a real Windows sharing violation until the reader closes
 			}
 			started := time.Now()
-			err = InstallBinary(src, dst)
+			err := InstallBinary(src, dst)
 			elapsed := time.Since(started)
 			want := "new"
 			if persistent {
@@ -77,12 +82,7 @@ func TestInstallBinaryWaitsForStagedReader(t *testing.T) {
 	require.NoError(t, os.WriteFile(dst, []byte("original"), 0o755))
 
 	// Hold the backup move so the staged file can be opened before installation.
-	path, err := windows.UTF16PtrFromString(dst)
-	require.NoError(t, err)
-	destination, err := windows.CreateFile(path, windows.GENERIC_READ,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING,
-		windows.FILE_ATTRIBUTE_NORMAL, 0)
-	require.NoError(t, err)
+	destination := openWithoutDeleteSharing(t, dst)
 	installed := make(chan struct{})
 	var installErr error
 	go func() {
@@ -97,15 +97,11 @@ func TestInstallBinaryWaitsForStagedReader(t *testing.T) {
 	}()
 	var staged []string
 	require.Eventually(t, func() bool {
-		staged, err = filepath.Glob(filepath.Join(dir, ".tool.exe.*.new"))
+		paths, err := filepath.Glob(filepath.Join(dir, ".tool.exe.*.new"))
+		staged = paths
 		return err == nil && len(staged) == 1
 	}, time.Second, 5*time.Millisecond)
-	path, err = windows.UTF16PtrFromString(staged[0])
-	require.NoError(t, err)
-	reader, err := windows.CreateFile(path, windows.GENERIC_READ,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING,
-		windows.FILE_ATTRIBUTE_NORMAL, 0)
-	require.NoError(t, err)
+	reader := openWithoutDeleteSharing(t, staged[0])
 
 	closed := make(chan error, 1)
 	time.AfterFunc(100*time.Millisecond, func() { closed <- windows.CloseHandle(reader) }) //nolint:kennlint // keep the real staged executable locked while installation retries
