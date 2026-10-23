@@ -66,14 +66,8 @@ const (
 // in rec with the live process. Versioned identities take precedence; legacy
 // identities remain readable only on platforms where they are reliable.
 func CompareRuntimeProcessIdentity(rec RuntimeRecord) ProcessIdentityStatus {
-	return compareRuntimeProcessIdentity(rec, processIdentityScope)
-}
-
-// compareRuntimeProcessIdentity lets callers reuse a versioned identity's scope.
-// Legacy identities still need their own compatibility check.
-func compareRuntimeProcessIdentity(rec RuntimeRecord, scope func(int, ProcessIdentity) ProcessScope) ProcessIdentityStatus {
 	if rec.ProcessIdentityV2 != "" {
-		return compareProcessIdentity(rec.PID, rec.ProcessIdentityV2, ReadProcessIdentity, scope)
+		return CompareProcessIdentity(rec.PID, rec.ProcessIdentityV2)
 	}
 	return CompareProcessIdentity(rec.PID, rec.ProcessIdentity)
 }
@@ -110,15 +104,9 @@ func RuntimeRecordBlocksStart(rec RuntimeRecord) bool {
 	if rec.PID == os.Getpid() || !ProcessAlive(rec.PID) {
 		return false
 	}
-	return runtimeRecordBlocksStart(rec, RuntimeProcessScope(rec))
-}
-
-func runtimeRecordBlocksStart(rec RuntimeRecord, scope ProcessScope) bool {
-	switch scope {
+	switch RuntimeProcessScope(rec) {
 	case ProcessScopeLocal:
-		return compareRuntimeProcessIdentity(rec, func(int, ProcessIdentity) ProcessScope {
-			return scope
-		}) != ProcessIdentityMismatch
+		return CompareRuntimeProcessIdentity(rec) != ProcessIdentityMismatch
 	case ProcessScopeUnknown:
 		return true
 	default:

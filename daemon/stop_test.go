@@ -9,7 +9,6 @@ import (
 	"os"
 	"runtime"
 	"strconv"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -51,15 +50,19 @@ func TestStopInputValidation(t *testing.T) {
 }
 
 func TestStopMissingProofExitEvidence(t *testing.T) {
-	for _, result := range []string{"exited", "running"} {
+	for _, result := range []string{"exited", "running", "error"} {
 		t.Run(result, func(t *testing.T) {
 			rec := storedStopRecord(t, daemon.RuntimeRecord{PID: os.Getpid(), Network: daemon.NetworkTCP, Address: "127.0.0.1:1"})
 			requests, checks := 0, 0
+			failure := errors.New("exit proof failed")
 			err := daemon.Stop(t.Context(), rec, daemon.StopOptions{
 				Request: func(context.Context, daemon.RuntimeRecord) error { requests++; return nil },
 				Exited: func(_ context.Context, got daemon.RuntimeRecord) (bool, error) {
 					checks++
 					assert.Equal(t, rec, got)
+					if result == "error" {
+						return false, failure
+					}
 					return result == "exited", nil
 				},
 			})
@@ -70,6 +73,9 @@ func TestStopMissingProofExitEvidence(t *testing.T) {
 			} else {
 				require.ErrorIs(t, err, daemon.ErrStopProofRequired)
 				require.NotErrorIs(t, err, daemon.ErrDaemonUnreachable)
+				if result == "error" {
+					assert.ErrorIs(t, err, failure)
+				}
 			}
 		})
 	}
@@ -263,13 +269,13 @@ func TestStopPreflightExitProof(t *testing.T) {
 		for _, result := range []string{"exited", "running", "error"} {
 			t.Run(endpoint+"/"+result, func(t *testing.T) {
 				var probes atomic.Int32
-				ping := daemon.NewPingHandler(daemon.PingHandlerOptions{PID: os.Getpid() + 1})
+				ping := daemon.NewPingHandler(daemon.PingHandlerOptions{PID: os.Getpid(), Service: "test", Version: "v1"})
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					probes.Add(1)
 					ping.ServeHTTP(w, r)
 				}))
 				defer server.Close()
-				rec := daemon.RuntimeRecord{PID: os.Getpid(), Service: "test", Address: listenerAddr(t, server)}
+				rec := daemon.RuntimeRecord{PID: os.Getpid(), Service: "test", Version: "v1", Address: listenerAddr(t, server)}
 				if endpoint == "gone process" {
 					rec.PID = deadPID(t)
 				}
@@ -307,6 +313,9 @@ func TestStopPreflightExitProof(t *testing.T) {
 					}
 				case "error":
 					require.ErrorIs(t, err, failure)
+					if endpoint == "unproofed responder" {
+						require.ErrorIs(t, err, daemon.ErrDaemonUnreachable)
+					}
 					assert.NotEqual(t, failure, err, "exit proof errors must be wrapped")
 				}
 			})
@@ -366,10 +375,7 @@ func TestStopGoneProcessEvidence(t *testing.T) {
 					t.Skip("requires Linux process identity")
 				}
 				rec = daemon.NewRuntimeRecord("test", "", daemon.Endpoint{})
-				fields := strings.Split(string(rec.ProcessIdentityV2), ":")
-				require.Len(t, fields, 4)
-				fields[3] = "1"
-				rec.ProcessIdentityV2 = daemon.ProcessIdentity(strings.Join(fields, ":"))
+				rec = withLinuxIdentityField(t, rec, 3, "1")
 			}
 			answerPID := os.Getpid() + 1
 			if tc.samePID {
