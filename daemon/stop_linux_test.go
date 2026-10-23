@@ -4,6 +4,7 @@ package daemon_test
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +17,35 @@ import (
 
 	"go.kenn.io/kit/daemon"
 )
+
+func TestStopUnjudgedIdentityWithStaleEndpoint(t *testing.T) {
+	for _, network := range []string{daemon.NetworkUnix, daemon.NetworkTCP} {
+		t.Run(network, func(t *testing.T) {
+			rec := daemon.RuntimeRecord{PID: os.Getpid(), Service: "test", Network: network, ProcessIdentityV2: "future-v1:12345"}
+			opts := daemon.StopOptions{}
+			if network == daemon.NetworkUnix {
+				rec.Address = staleUnixSocket(t)
+			} else {
+				var lc net.ListenConfig
+				listener, err := lc.Listen(t.Context(), daemon.NetworkTCP, "127.0.0.1:0")
+				require.NoError(t, err)
+				rec.Address = listener.Addr().String()
+				require.NoError(t, listener.Close())
+				opts.Proof = newDaemonProof(t, []byte("stop-stale-key"))
+			}
+			rec = storedStopRecord(t, rec)
+			requests := 0
+			opts.Request = func(context.Context, daemon.RuntimeRecord) error { requests++; return nil }
+			err := daemon.Stop(t.Context(), rec, opts)
+			assert.Zero(t, requests)
+			if network == daemon.NetworkUnix {
+				require.NoError(t, err)
+			} else {
+				require.ErrorIs(t, err, daemon.ErrDaemonUnreachable)
+			}
+		})
+	}
+}
 
 func TestStopUnjudgedIdentityWithDeadLocalPID(t *testing.T) {
 	pid := deadPID(t)

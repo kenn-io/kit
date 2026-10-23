@@ -34,6 +34,7 @@ type StopOptions struct {
 // Stop verifies rec's endpoint, requests shutdown, and waits for exit.
 // TCP records require Proof in every process scope; Unix records may use a PID ping.
 // When rec's process is proven gone, Stop checks exit evidence without a request.
+// Without Exited, a stale Unix socket also confirms exit before any request.
 // A record with no versioned identity is judged local, as in Discover.
 // Without Exited, a refused connection or a replacement answering with a positive
 // PID other than the recorded one ends the wait.
@@ -116,6 +117,8 @@ func stopErrorUnlessExited(ctx context.Context, rec RuntimeRecord, opts StopOpti
 		if exited {
 			return nil
 		}
+	} else if rec.Endpoint().Network == NetworkUnix && isStaleUnixSocketDialError(stopErr) {
+		return nil
 	}
 	return stopErr
 }
