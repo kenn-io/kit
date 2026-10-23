@@ -172,7 +172,7 @@ func TestDiscoverSkipsMismatchedProcessIdentityWithoutProbing(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
 
-	livePID := startLivePIDHelper(t)
+	livePID := daemon.StartLivePIDHelperForTest(t)
 	recordedIdentity, ok := daemon.ReadProcessIdentity(os.Getpid())
 	require.True(ok)
 	require.Equal(daemon.ProcessIdentityMismatch,
@@ -273,7 +273,7 @@ func TestDiscoverScansPastUnreachableLiveRuntime(t *testing.T) {
 	}))
 	defer reachableServer.Close()
 
-	livePID := startLivePIDHelper(t)
+	livePID := daemon.StartLivePIDHelperForTest(t)
 	identity, ok := daemon.ReadProcessIdentity(livePID)
 	require.True(ok)
 	store := daemon.RuntimeStore{Dir: t.TempDir()}
@@ -307,7 +307,7 @@ func TestManagerFindDoesNotDiscloseCredentialBeforeProof(t *testing.T) {
 	assert := assert.New(t)
 	require := require.New(t)
 
-	livePID := startLivePIDHelper(t)
+	livePID := daemon.StartLivePIDHelperForTest(t)
 	assert.NotEqual(os.Getpid(), livePID)
 	token := []byte("persistent-daemon-token")
 	proof := newDaemonProof(t, token)

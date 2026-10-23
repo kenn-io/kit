@@ -1,4 +1,4 @@
-package daemon_test
+package daemon
 
 import (
 	"bufio"

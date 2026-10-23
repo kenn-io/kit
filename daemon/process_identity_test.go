@@ -73,7 +73,7 @@ func TestRuntimeProcessScope(t *testing.T) {
 		{"unsupported identity", daemon.RuntimeRecord{PID: os.Getpid(), ProcessIdentityV2: "future-v1:12345"}, daemon.ProcessScopeUnknown},
 	}
 	if runtime.GOOS == "linux" {
-		childPID := startLivePIDHelper(t)
+		childPID := daemon.StartLivePIDHelperForTest(t)
 		identity, ok := daemon.ReadProcessIdentity(childPID)
 		require.True(t, ok)
 		rec := daemon.RuntimeRecord{PID: childPID, ProcessIdentityV2: identity}
@@ -96,7 +96,7 @@ func TestRuntimeProcessScope(t *testing.T) {
 }
 
 func TestRuntimeRecordBlocksStart(t *testing.T) {
-	childPID := startLivePIDHelper(t)
+	childPID := daemon.StartLivePIDHelperForTest(t)
 	identity, ok := daemon.ReadProcessIdentity(childPID)
 	require.True(t, ok)
 	rec := daemon.RuntimeRecord{PID: childPID, ProcessIdentityV2: identity}
@@ -117,6 +117,7 @@ func TestRuntimeRecordBlocksStart(t *testing.T) {
 		startTicks, err := strconv.ParseUint(fields[3], 10, 64)
 		require.NoError(t, err)
 		tests = append(tests,
+			testCase{"self from another namespace", withLinuxIdentityField(t, daemon.NewRuntimeRecord("tool", "v1", daemon.Endpoint{}), 2, "999999999"), false},
 			testCase{"live child from an earlier boot", withLinuxIdentityField(t, rec, 1, "11111111-2222-3333-4444-555555555555"), false},
 			testCase{"live child from another namespace", withLinuxIdentityField(t, rec, 2, "999999999"), false},
 			testCase{"live child with mismatched start ticks", withLinuxIdentityField(t, rec, 3, strconv.FormatUint(startTicks+1, 10)), false},
