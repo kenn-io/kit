@@ -11,6 +11,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -93,6 +94,10 @@ type Options struct {
 	APIKey string
 	// Endpoint defaults to DefaultEndpoint when empty.
 	Endpoint string
+	// TokenDir enables registration of DistinctID and Application at
+	// Endpoint + "/v1/register" on the first upload. The directory must exist.
+	// The reporter stores the token there and adds install_token to every event.
+	TokenDir string
 	// Application is included on every event and cannot be overridden by Capture.
 	Application string
 	// EnvPrefix names the PREFIX_TELEMETRY_ENABLED opt-out variable.
@@ -367,6 +372,14 @@ func newPostHogReporter(opts Options, newClient postHogClientFactory, options ..
 		endpoint = DefaultEndpoint
 	}
 	disableGeoIP := true
+	var token *installToken
+	if strings.TrimSpace(opts.TokenDir) != "" {
+		token = &installToken{
+			path:       filepath.Join(opts.TokenDir, "telemetry-token.json"),
+			distinctID: strings.TrimSpace(opts.DistinctID), application: strings.TrimSpace(opts.Application),
+			registerURL: strings.TrimRight(endpoint, "/") + "/v1/register", logger: logger,
+		}
+	}
 	deliveries := &deliveryCallbacks{pending: make(map[chan error]deliveryKey)}
 	client, err := newClient(apiKey, phsdk.Config{
 		Callback:     deliveries,
@@ -377,7 +390,7 @@ func newPostHogReporter(opts Options, newClient postHogClientFactory, options ..
 		IsServer: new(false),
 		// The transport parses legacy, uncompressed batches.
 		CaptureMode:     phsdk.CaptureModeLegacy,
-		Transport:       postHogDisableTransport{allowedEvents: allowedEvents},
+		Transport:       postHogDisableTransport{allowedEvents: allowedEvents, token: token},
 		ShutdownTimeout: ShutdownTimeout,
 	})
 	if err != nil {
@@ -572,6 +585,7 @@ func (r *Reporter) clock() time.Time {
 type postHogDisableTransport struct {
 	base          http.RoundTripper
 	allowedEvents map[string]map[string]PropertyFilter
+	token         *installToken
 }
 
 func (t postHogDisableTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -584,9 +598,23 @@ func (t postHogDisableTransport) RoundTrip(req *http.Request) (*http.Response, e
 			Request:    req,
 		}, nil
 	}
-	if req.Method == http.MethodPost && req.Body != nil {
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	if req.Body != nil {
 		defer req.Body.Close()
-		body, err := t.rewriteBatch(req.Body)
+	}
+	var token string
+	if t.token != nil {
+		value, response, err := t.token.get(req.Context(), base)
+		if err != nil || response != nil {
+			return response, err
+		}
+		token = value
+	}
+	if req.Method == http.MethodPost && req.Body != nil {
+		body, err := t.rewriteBatch(req.Body, token)
 		if err != nil {
 			return nil, fmt.Errorf("filter telemetry batch: %w", err)
 		}
@@ -598,15 +626,11 @@ func (t postHogDisableTransport) RoundTrip(req *http.Request) (*http.Response, e
 			return io.NopCloser(bytes.NewReader(body)), nil
 		}
 	}
-	base := t.base
-	if base == nil {
-		base = http.DefaultTransport
-	}
 	return base.RoundTrip(req)
 }
 
 // rewriteBatch filters after APIfy, which adds SDK properties after BeforeSend.
-func (t postHogDisableTransport) rewriteBatch(body io.Reader) ([]byte, error) {
+func (t postHogDisableTransport) rewriteBatch(body io.Reader, token string) ([]byte, error) {
 	data, err := io.ReadAll(body)
 	if err != nil {
 		return nil, err
@@ -641,6 +665,12 @@ func (t postHogDisableTransport) rewriteBatch(body io.Reader) ([]byte, error) {
 				if _, fixed := shared[key]; sdkOwned || (!fixed && t.allowedEvents[name][key] == nil) {
 					delete(properties, key)
 				}
+			}
+			if token != "" {
+				if properties == nil {
+					properties = make(map[string]json.RawMessage)
+				}
+				properties["install_token"], _ = json.Marshal(token) //nolint:errchkjson // strings always encode as JSON
 			}
 			if event["properties"], err = json.Marshal(properties); err != nil {
 				return nil, err

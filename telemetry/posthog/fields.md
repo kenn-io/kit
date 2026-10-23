@@ -17,6 +17,7 @@ The batch envelope keeps only `api_key` and `batch`. Each event keeps only `even
 | `properties.goos` | Go's `runtime.GOOS` | Every event |
 | `properties.goarch` | Go's `runtime.GOARCH` | Every event |
 | `properties.install_age_hours` | Whole hours since `Options.InstalledAt`, with a minimum of zero | When `InstalledAt` is set |
+| `properties.install_token` | Signed token registered and stored by the reporter | When `Options.TokenDir` is set |
 | `properties.$lib` | Library name supplied by posthog-go, `posthog-go` | Every event |
 | `properties.$lib_version` | Version of the posthog-go SDK in the application | Every event |
 | `properties.$process_person_profile` | Kit sets `false` to disable person profile processing | Every event |
@@ -25,4 +26,4 @@ The batch envelope keeps only `api_key` and `batch`. Each event keeps only `even
 
 Shared properties belong to kit and override product values with the same names. Products document their own event names, property names, and allowed values.
 
-The public project key, from `Options.APIKey` or set at link time, appears as `api_key` in the batch envelope, outside the events. `$geoip_disable` turns off GeoIP lookup. PostHog project settings control IP address retention; this flag does not configure retention.
+The public project key, from `Options.APIKey` or set at link time, appears as `api_key` in the batch envelope, outside the events. The relay ignores `api_key`. `$geoip_disable` turns off GeoIP lookup. PostHog project settings control IP address retention; this flag does not configure retention.
