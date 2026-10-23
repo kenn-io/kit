@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cenkalti/backoff/v7"
 	"golang.org/x/mod/semver"
 
 	"go.kenn.io/kit/atomicfile"
@@ -1482,8 +1483,18 @@ func movePreviousAside(dstPath, backupPath string) (bool, error) {
 	if _, err := os.Stat(dstPath); err != nil {
 		return false, nil //nolint:nilerr // an unreadable or absent destination means there is nothing to move aside
 	}
-	if err := atomicfile.Replace(dstPath, backupPath); err != nil {
-		return false, fmt.Errorf("backup: %w", err)
+	// Readers can briefly prevent Windows from renaming the old binary.
+	deadline := time.Now().Add(2 * time.Second)
+	_, err := backoff.Retry(context.Background(), func() (struct{}, error) {
+		err := atomicfile.Replace(dstPath, backupPath)
+		if err != nil && (!backupFileBusy(err) || time.Now().After(deadline)) {
+			return struct{}{}, backoff.Permanent(err)
+		}
+		return struct{}{}, err
+	}, backoff.WithBackOff(backoff.NewConstantBackOff(5*time.Millisecond)),
+		backoff.WithMaxTries(0), backoff.WithMaxElapsedTime(0))
+	if err != nil {
+		return false, fmt.Errorf("backup: %w", backoff.AsRetryError(err).LastErr)
 	}
 	return true, nil
 }
