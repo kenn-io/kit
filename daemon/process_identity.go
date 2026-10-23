@@ -101,10 +101,14 @@ func RuntimeProcessScope(rec RuntimeRecord) ProcessScope {
 // or one kit can't rule out, whose identity isn't a mismatch. It never blocks for
 // the caller's own PID. Callers still hold the start lock and probe the endpoint.
 func RuntimeRecordBlocksStart(rec RuntimeRecord) bool {
+	return runtimeRecordBlocksStart(rec, RuntimeProcessScope(rec))
+}
+
+func runtimeRecordBlocksStart(rec RuntimeRecord, scope ProcessScope) bool {
 	if rec.PID == os.Getpid() || !ProcessAlive(rec.PID) {
 		return false
 	}
-	switch RuntimeProcessScope(rec) {
+	switch scope {
 	case ProcessScopeLocal:
 		return CompareRuntimeProcessIdentity(rec) != ProcessIdentityMismatch
 	case ProcessScopeUnknown:

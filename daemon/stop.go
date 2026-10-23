@@ -72,7 +72,7 @@ func Stop(ctx context.Context, rec RuntimeRecord, opts StopOptions) error {
 		return stopErrorUnlessExited(ctx, rec, opts, fmt.Errorf("stop daemon at %s: %w", ep.Address, ErrStopProofRequired))
 	}
 	info, err := probeRecordEndpoint(ctx, rec, opts.Proof, opts.Probe)
-	if err == nil && info.PID != rec.PID {
+	if err == nil && opts.Proof == nil && info.PID != rec.PID {
 		err = fmt.Errorf("daemon ping returned PID %d", info.PID)
 	}
 	if err != nil {

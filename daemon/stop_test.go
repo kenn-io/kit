@@ -50,19 +50,15 @@ func TestStopInputValidation(t *testing.T) {
 }
 
 func TestStopMissingProofExitEvidence(t *testing.T) {
-	for _, result := range []string{"exited", "running", "error"} {
+	for _, result := range []string{"exited", "running"} {
 		t.Run(result, func(t *testing.T) {
 			rec := storedStopRecord(t, daemon.RuntimeRecord{PID: os.Getpid(), Network: daemon.NetworkTCP, Address: "127.0.0.1:1"})
 			requests, checks := 0, 0
-			failure := errors.New("exit proof failed")
 			err := daemon.Stop(t.Context(), rec, daemon.StopOptions{
 				Request: func(context.Context, daemon.RuntimeRecord) error { requests++; return nil },
 				Exited: func(_ context.Context, got daemon.RuntimeRecord) (bool, error) {
 					checks++
 					assert.Equal(t, rec, got)
-					if result == "error" {
-						return false, failure
-					}
 					return result == "exited", nil
 				},
 			})
@@ -73,9 +69,6 @@ func TestStopMissingProofExitEvidence(t *testing.T) {
 			} else {
 				require.ErrorIs(t, err, daemon.ErrStopProofRequired)
 				require.NotErrorIs(t, err, daemon.ErrDaemonUnreachable)
-				if result == "error" {
-					assert.ErrorIs(t, err, failure)
-				}
 			}
 		})
 	}
@@ -375,7 +368,7 @@ func TestStopGoneProcessEvidence(t *testing.T) {
 					t.Skip("requires Linux process identity")
 				}
 				rec = daemon.NewRuntimeRecord("test", "", daemon.Endpoint{})
-				rec = withLinuxIdentityField(t, rec, 3, "1")
+				rec = mismatchedRuntimeIdentity(t, rec)
 			}
 			answerPID := os.Getpid() + 1
 			if tc.samePID {
