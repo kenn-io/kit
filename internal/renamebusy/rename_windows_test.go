@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -43,15 +44,17 @@ func TestReplaceDoesNotRetryForNonpositiveTimeout(t *testing.T) {
 			handle, err := os.Open(src)
 			require.NoError(t, err)
 
-			closed := make(chan error, 1)
-			timer := time.AfterFunc(100*time.Millisecond, func() { closed <- handle.Close() })
-			err = Replace(src, dst, tt.timeout)
-			if timer.Stop() {
-				require.NoError(t, handle.Close())
-			} else {
-				require.NoError(t, <-closed)
-			}
-			require.ErrorIs(t, err, windows.ERROR_SHARING_VIOLATION)
+			synctest.Test(t, func(t *testing.T) {
+				closed := make(chan error, 1)
+				timer := time.AfterFunc(100*time.Millisecond, func() { closed <- handle.Close() })
+				err = Replace(src, dst, tt.timeout)
+				if timer.Stop() {
+					require.NoError(t, handle.Close())
+				} else {
+					require.NoError(t, <-closed)
+				}
+				require.ErrorIs(t, err, windows.ERROR_SHARING_VIOLATION)
+			})
 		})
 	}
 }
