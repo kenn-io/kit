@@ -50,7 +50,8 @@ func TestStopInputValidation(t *testing.T) {
 }
 
 func TestStopMissingProofExitEvidence(t *testing.T) {
-	for _, result := range []string{"exited", "running"} {
+	exitErr := errors.New("exit check failed")
+	for _, result := range []string{"exited", "running", "error"} {
 		t.Run(result, func(t *testing.T) {
 			rec := storedStopRecord(t, daemon.RuntimeRecord{PID: os.Getpid(), Network: daemon.NetworkTCP, Address: "127.0.0.1:1"})
 			requests, checks := 0, 0
@@ -59,6 +60,9 @@ func TestStopMissingProofExitEvidence(t *testing.T) {
 				Exited: func(_ context.Context, got daemon.RuntimeRecord) (bool, error) {
 					checks++
 					assert.Equal(t, rec, got)
+					if result == "error" {
+						return false, exitErr
+					}
 					return result == "exited", nil
 				},
 			})
@@ -69,6 +73,9 @@ func TestStopMissingProofExitEvidence(t *testing.T) {
 			} else {
 				require.ErrorIs(t, err, daemon.ErrStopProofRequired)
 				require.NotErrorIs(t, err, daemon.ErrDaemonUnreachable)
+			}
+			if result == "error" {
+				assert.ErrorIs(t, err, exitErr)
 			}
 		})
 	}

@@ -66,8 +66,14 @@ const (
 // in rec with the live process. Versioned identities take precedence; legacy
 // identities remain readable only on platforms where they are reliable.
 func CompareRuntimeProcessIdentity(rec RuntimeRecord) ProcessIdentityStatus {
+	return compareRuntimeProcessIdentity(rec, processIdentityScope)
+}
+
+// compareRuntimeProcessIdentity lets callers reuse a versioned identity's scope.
+// Legacy identities still need their own compatibility check.
+func compareRuntimeProcessIdentity(rec RuntimeRecord, scope func(int, ProcessIdentity) ProcessScope) ProcessIdentityStatus {
 	if rec.ProcessIdentityV2 != "" {
-		return CompareProcessIdentity(rec.PID, rec.ProcessIdentityV2)
+		return compareProcessIdentity(rec.PID, rec.ProcessIdentityV2, ReadProcessIdentity, scope)
 	}
 	return CompareProcessIdentity(rec.PID, rec.ProcessIdentity)
 }
@@ -101,16 +107,18 @@ func RuntimeProcessScope(rec RuntimeRecord) ProcessScope {
 // or one kit can't rule out, whose identity isn't a mismatch. It never blocks for
 // the caller's own PID. Callers still hold the start lock and probe the endpoint.
 func RuntimeRecordBlocksStart(rec RuntimeRecord) bool {
+	if rec.PID == os.Getpid() || !ProcessAlive(rec.PID) {
+		return false
+	}
 	return runtimeRecordBlocksStart(rec, RuntimeProcessScope(rec))
 }
 
 func runtimeRecordBlocksStart(rec RuntimeRecord, scope ProcessScope) bool {
-	if rec.PID == os.Getpid() || !ProcessAlive(rec.PID) {
-		return false
-	}
 	switch scope {
 	case ProcessScopeLocal:
-		return CompareRuntimeProcessIdentity(rec) != ProcessIdentityMismatch
+		return compareRuntimeProcessIdentity(rec, func(int, ProcessIdentity) ProcessScope {
+			return scope
+		}) != ProcessIdentityMismatch
 	case ProcessScopeUnknown:
 		return true
 	default:

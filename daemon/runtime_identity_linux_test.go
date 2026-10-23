@@ -41,6 +41,6 @@ func TestLinuxLegacyWallClockIdentityFailsClosed(t *testing.T) {
 
 func TestRuntimeProcessAliveIgnoresLocalPIDWhenIdentityProvesProcessGone(t *testing.T) {
 	own := daemon.NewRuntimeRecord("tool", "v1", daemon.Endpoint{})
-	rec := withLinuxIdentity(t, own, "11111111-2222-3333-4444-555555555555", 0)
+	rec := withLinuxIdentityField(t, own, 1, "11111111-2222-3333-4444-555555555555")
 	assert.False(t, daemon.RuntimeProcessAlive(rec))
 }

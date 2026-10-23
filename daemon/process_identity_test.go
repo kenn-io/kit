@@ -32,7 +32,10 @@ func mismatchedRuntimeIdentity(t *testing.T, rec daemon.RuntimeRecord) daemon.Ru
 	t.Helper()
 	identity := string(rec.ProcessIdentityV2)
 	if runtime.GOOS == "linux" {
-		return withLinuxIdentity(t, rec, "", 1)
+		fields := linuxIdentityFields(t, rec)
+		startTicks, err := strconv.ParseUint(fields[3], 10, 64)
+		require.NoError(t, err)
+		return withLinuxIdentityField(t, rec, 3, strconv.FormatUint(startTicks+1, 10))
 	}
 	created, err := strconv.ParseUint(identity, 10, 64)
 	require.NoError(t, err)
@@ -40,16 +43,17 @@ func mismatchedRuntimeIdentity(t *testing.T, rec daemon.RuntimeRecord) daemon.Ru
 	return rec
 }
 
-func withLinuxIdentity(t *testing.T, rec daemon.RuntimeRecord, bootID string, startTicksDelta uint64) daemon.RuntimeRecord {
+func linuxIdentityFields(t *testing.T, rec daemon.RuntimeRecord) []string {
 	t.Helper()
 	fields := strings.Split(string(rec.ProcessIdentityV2), ":")
 	require.Len(t, fields, 4)
-	startTicks, err := strconv.ParseUint(fields[3], 10, 64)
-	require.NoError(t, err)
-	fields[3] = strconv.FormatUint(startTicks+startTicksDelta, 10)
-	if bootID != "" {
-		fields[1] = bootID
-	}
+	return fields
+}
+
+func withLinuxIdentityField(t *testing.T, rec daemon.RuntimeRecord, field int, value string) daemon.RuntimeRecord {
+	t.Helper()
+	fields := linuxIdentityFields(t, rec)
+	fields[field] = value
 	rec.ProcessIdentityV2 = daemon.ProcessIdentity(strings.Join(fields, ":"))
 	return rec
 }
@@ -74,13 +78,18 @@ func TestProcessIdentityTreatsMissingIdentityAsUnknown(t *testing.T) {
 }
 
 func TestRuntimeProcessScope(t *testing.T) {
-	tests := []struct {
+	type testCase struct {
 		name string
 		rec  daemon.RuntimeRecord
 		want daemon.ProcessScope
-	}{
+	}
+	tests := []testCase{
 		{"no versioned identity", daemon.RuntimeRecord{PID: os.Getpid()}, daemon.ProcessScopeLocal},
 		{"unsupported identity", daemon.RuntimeRecord{PID: os.Getpid(), ProcessIdentityV2: "future-v1:12345"}, daemon.ProcessScopeUnknown},
+	}
+	if runtime.GOOS == "linux" {
+		rec := daemon.NewRuntimeRecord("tool", "v1", daemon.Endpoint{})
+		tests = append(tests, testCase{"earlier boot", withLinuxIdentityField(t, rec, 1, "11111111-2222-3333-4444-555555555555"), daemon.ProcessScopeGone})
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -107,13 +116,10 @@ func TestRuntimeRecordBlocksStart(t *testing.T) {
 		{"unknown dead PID", daemon.RuntimeRecord{PID: deadPID(t), ProcessIdentityV2: "future-v1:12345"}, false},
 	}
 	if runtime.GOOS == "linux" {
-		tests = append(tests, testCase{"earlier boot live child", withLinuxIdentity(t, rec, "11111111-2222-3333-4444-555555555555", 0), false})
+		tests = append(tests, testCase{"earlier boot live child", withLinuxIdentityField(t, rec, 1, "11111111-2222-3333-4444-555555555555"), false})
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.name == "earlier boot live child" {
-				assert.Equal(t, daemon.ProcessScopeGone, daemon.RuntimeProcessScope(tt.rec))
-			}
 			assert.Equal(t, tt.want, daemon.RuntimeRecordBlocksStart(tt.rec))
 		})
 	}
