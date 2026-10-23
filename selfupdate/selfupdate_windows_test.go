@@ -51,7 +51,8 @@ func TestInstallBinarySharingViolation(t *testing.T) {
 				require.ErrorAs(t, err, &renameErr)
 				assert.Equal(t, dst, renameErr.Old)
 				require.ErrorContains(t, err, "backup: ")
-				assert.GreaterOrEqual(t, elapsed, 2*time.Second)
+				// Stop before the next 5 ms wait would exceed the two-second budget.
+				assert.GreaterOrEqual(t, elapsed, 1995*time.Millisecond)
 				assert.Less(t, elapsed, 5*time.Second)
 				want = "original"
 			} else {

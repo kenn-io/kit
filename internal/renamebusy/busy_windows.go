@@ -1,4 +1,4 @@
-package selfupdate
+package renamebusy
 
 import (
 	"errors"
@@ -6,6 +6,6 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func backupFileBusy(err error) bool {
+func fileBusy(err error) bool {
 	return errors.Is(err, windows.ERROR_SHARING_VIOLATION)
 }
