@@ -25,11 +25,11 @@ func TestInstallBinaryBackupSharingViolationPersists(t *testing.T) {
 		defer func() { assert.NoError(t, handle.Close()) }()
 
 		err = InstallBinary(src, dst)
-		assert.ErrorIs(t, err, windows.ERROR_SHARING_VIOLATION)
+		require.ErrorIs(t, err, windows.ERROR_SHARING_VIOLATION)
 		var renameErr *os.LinkError
 		require.ErrorAs(t, err, &renameErr)
 		assert.Equal(t, dst, renameErr.Old)
-		assert.ErrorContains(t, err, "backup: ")
+		require.ErrorContains(t, err, "backup: ")
 		data, err := os.ReadFile(dst)
 		require.NoError(t, err)
 		assert.Equal(t, "original", string(data))
@@ -95,11 +95,11 @@ func TestInstallBinaryWaitsForRollbackReader(t *testing.T) {
 				err = <-installed
 				if tt.rollback {
 					require.Error(t, err)
-					assert.ErrorIs(t, err, windows.ERROR_SHARING_VIOLATION)
-					assert.ErrorContains(t, err, "install: ")
+					require.ErrorIs(t, err, windows.ERROR_SHARING_VIOLATION)
+					require.ErrorContains(t, err, "install: ")
 					assert.NotContains(t, err.Error(), "rollback also failed")
 				} else {
-					assert.NoError(t, err)
+					require.NoError(t, err)
 				}
 				data, err := os.ReadFile(dst)
 				require.NoError(t, err)
