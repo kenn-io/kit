@@ -32,12 +32,14 @@ func storedStopRecord(t *testing.T, rec daemon.RuntimeRecord) daemon.RuntimeReco
 func TestStopInputValidation(t *testing.T) {
 	for _, pid := range []int{0, -1} {
 		t.Run(strconv.Itoa(pid), func(t *testing.T) {
-			requests := 0
+			requests, checks := 0, 0
 			err := daemon.Stop(t.Context(), daemon.RuntimeRecord{PID: pid}, daemon.StopOptions{
 				Request: func(context.Context, daemon.RuntimeRecord) error { requests++; return nil },
+				Exited:  func(context.Context, daemon.RuntimeRecord) (bool, error) { checks++; return true, nil },
 			})
-			require.Error(t, err)
 			assert.Zero(t, requests)
+			assert.Zero(t, checks)
+			require.EqualError(t, err, "daemon stop requires a positive PID: "+strconv.Itoa(pid))
 		})
 	}
 	t.Run("missing request", func(t *testing.T) {
