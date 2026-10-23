@@ -25,7 +25,6 @@ import (
 
 	"golang.org/x/mod/semver"
 
-	"go.kenn.io/kit/atomicfile"
 	"go.kenn.io/kit/internal/renamebusy"
 	"go.kenn.io/kit/pathresolve"
 )
@@ -40,8 +39,8 @@ const (
 	maxChecksumBytes        = 1 << 20
 	maxSignatureBytes       = 64 << 10
 	legacyTarRegularType    = byte(0)
-	backupBusyTimeout       = 2 * time.Second
-	backupBusyPoll          = 5 * time.Millisecond
+	installBusyTimeout      = 2 * time.Second
+	installBusyPoll         = 5 * time.Millisecond
 )
 
 var (
@@ -474,9 +473,9 @@ func InstallBinary(srcPath, dstPath string) error {
 		movedAside = aside
 	}
 
-	if err := atomicfile.Replace(tmpPath, dstPath); err != nil {
+	if err := renamebusy.Replace(tmpPath, dstPath, installBusyTimeout, installBusyPoll); err != nil {
 		if movedAside {
-			if rbErr := atomicfile.Replace(backupPath, dstPath); rbErr != nil {
+			if rbErr := renamebusy.Replace(backupPath, dstPath, installBusyTimeout, installBusyPoll); rbErr != nil {
 				return fmt.Errorf("install: %w (rollback also failed: %w)", err, rbErr)
 			}
 		}
@@ -1486,7 +1485,7 @@ func movePreviousAside(dstPath, backupPath string) (bool, error) {
 		return false, nil //nolint:nilerr // an unreadable or absent destination means there is nothing to move aside
 	}
 	// Readers can briefly prevent Windows from renaming the old binary.
-	if err := renamebusy.Replace(dstPath, backupPath, backupBusyTimeout, backupBusyPoll); err != nil {
+	if err := renamebusy.Replace(dstPath, backupPath, installBusyTimeout, installBusyPoll); err != nil {
 		return false, fmt.Errorf("backup: %w", err)
 	}
 	return true, nil

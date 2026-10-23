@@ -68,3 +68,56 @@ func TestInstallBinarySharingViolation(t *testing.T) {
 		})
 	}
 }
+
+func TestInstallBinaryWaitsForStagedReader(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "source.exe")
+	dst := filepath.Join(dir, "tool.exe")
+	require.NoError(t, os.WriteFile(src, []byte("new"), 0o755))
+	require.NoError(t, os.WriteFile(dst, []byte("original"), 0o755))
+
+	// Hold the backup move so the staged file can be opened before installation.
+	path, err := windows.UTF16PtrFromString(dst)
+	require.NoError(t, err)
+	destination, err := windows.CreateFile(path, windows.GENERIC_READ,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING,
+		windows.FILE_ATTRIBUTE_NORMAL, 0)
+	require.NoError(t, err)
+	installed := make(chan struct{})
+	var installErr error
+	go func() {
+		installErr = InstallBinary(src, dst)
+		close(installed)
+	}()
+	defer func() {
+		if destination != windows.InvalidHandle {
+			assert.NoError(t, windows.CloseHandle(destination))
+		}
+		<-installed
+	}()
+	var staged []string
+	require.Eventually(t, func() bool {
+		staged, err = filepath.Glob(filepath.Join(dir, ".tool.exe.*.new"))
+		return err == nil && len(staged) == 1
+	}, time.Second, 5*time.Millisecond)
+	path, err = windows.UTF16PtrFromString(staged[0])
+	require.NoError(t, err)
+	reader, err := windows.CreateFile(path, windows.GENERIC_READ,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING,
+		windows.FILE_ATTRIBUTE_NORMAL, 0)
+	require.NoError(t, err)
+
+	require.NoError(t, windows.CloseHandle(destination))
+	destination = windows.InvalidHandle
+	closed := make(chan error, 1)
+	time.AfterFunc(100*time.Millisecond, func() { closed <- windows.CloseHandle(reader) }) //nolint:kennlint // keep the real staged executable locked while installation retries
+	<-installed
+	require.NoError(t, <-closed)
+	require.NoError(t, installErr)
+	data, err := os.ReadFile(dst)
+	require.NoError(t, err)
+	assert.Equal(t, "new", string(data))
+	staging, err := filepath.Glob(filepath.Join(dir, ".tool.exe.*"))
+	require.NoError(t, err)
+	assert.Empty(t, staging)
+}
