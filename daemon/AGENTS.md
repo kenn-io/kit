@@ -28,9 +28,10 @@ databases, command parsing, and shutdown policy belong to the caller.
   ownership lock it can acquire) removes it, when a process in the server's
   namespace cleans up, or when it's deleted by hand. After a downgrade, a dead
   newer server's record blocks `Ensure` this way.
-  - `RuntimeProcessScope` reports Local for this namespace, where a PID check
-    applies; Foreign for another namespace on this boot; Unknown for an
-    unreadable identity, boot ID, or own PID namespace; and Gone for a proven
+  - `RuntimeProcessScope` reports Local for this namespace or absent
+    `ProcessIdentityV2` (all non-Linux records), where a PID check applies;
+    Foreign for another namespace on this boot; Unknown for an unreadable
+    versioned identity, boot ID, or own PID namespace; and Gone for a proven
     dead process. Neither Foreign nor Unknown authorizes deleting the record
     or signaling its PID. For Foreign records, `RuntimeProcessAlive` stays true
     to keep the record, while `RuntimeRecordBlocksStart` is false because its
