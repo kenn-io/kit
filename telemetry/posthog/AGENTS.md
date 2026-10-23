@@ -7,6 +7,9 @@ method, content-type, bounded decoding and trailing-data checks, before Report.
 The handler requires application/json so browsers preflight cross-origin posts,
 and it bounds the body itself rather than trusting the caller's router.
 Disabled construction keeps the configured allowlist without creating a client.
+Kit's source never embeds a project key. Options.APIKey wins; when it is empty
+the reporter uses projectKey, which release builds set at link time. With
+neither, construction is disabled, so source builds and tests report nothing.
 Reporting starts on. A trimmed, case-insensitive 0, false, no, or off in
 either TELEMETRY_ENABLED or its prefixed equivalent disables reporting.
 The version must be plain vX.Y.Z or X.Y.Z. Process disable, any present

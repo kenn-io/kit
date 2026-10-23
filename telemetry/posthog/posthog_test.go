@@ -261,33 +261,53 @@ func TestNewPostHogReporterDisabledRetainsAllowlist(t *testing.T) {
 	}
 }
 
-func TestNewPostHogReporterRequiresCallerOwnedConfigurationWhenEnabled(t *testing.T) {
+func TestNewPostHogReporterProjectKey(t *testing.T) {
 	enablePostHogTelemetryForTest()
 	t.Cleanup(enablePostHogTelemetryForTest)
 	t.Setenv(GenericEnabledEnv, "1")
 	t.Setenv("KATA_TELEMETRY_ENABLED", "1")
 
-	for _, version := range []string{"v1.2.3", "dev"} {
-		t.Run(version, func(t *testing.T) {
-			calls := 0
+	for _, tt := range []struct {
+		name       string
+		apiKey     string
+		linkKey    string
+		wantAPIKey string
+	}{
+		{name: "no key disables reporting"},
+		{name: "blank keys disable reporting", apiKey: " ", linkKey: " "},
+		{name: "link-time key", linkKey: "link-time-key", wantAPIKey: "link-time-key"},
+		{name: "caller key wins", apiKey: "caller-owned-key", linkKey: "link-time-key", wantAPIKey: "caller-owned-key"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			previous := projectKey
+			projectKey = tt.linkKey
+			t.Cleanup(func() { projectKey = previous })
+
+			var gotAPIKeys []string
+			client := &recordingPostHogClient{}
 			reporter, err := newPostHogReporter(Options{
+				APIKey:      tt.apiKey,
 				Application: "kata",
 				EnvPrefix:   "KATA",
 				DistinctID:  "anonymous-instance-id",
-				Version:     version,
-			}, func(string, phsdk.Config) (postHogEnqueueCloser, error) {
-				calls++
-				return &fakePostHogClient{}, nil
-			}, testAllowedTelemetryOptions()...)
+				Version:     "v1.2.3",
+			}, func(apiKey string, _ phsdk.Config) (postHogEnqueueCloser, error) {
+				gotAPIKeys = append(gotAPIKeys, apiKey)
+				return client, nil
+			}, WithAllowedEvent(EventDaemonActive))
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, reporter.Close()) })
+			require.NoError(t, reporter.Capture(EventDaemonActive, nil))
 
-			assert.Zero(t, calls)
-			if version == "dev" {
-				require.NoError(t, err)
+			if tt.wantAPIKey == "" {
 				assert.False(t, reporter.Enabled())
+				assert.Empty(t, gotAPIKeys)
+				assert.Empty(t, client.messages)
 				return
 			}
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), "api key")
+			assert.True(t, reporter.Enabled())
+			assert.Equal(t, []string{tt.wantAPIKey}, gotAPIKeys)
+			assert.Len(t, client.messages, 1)
 		})
 	}
 }
