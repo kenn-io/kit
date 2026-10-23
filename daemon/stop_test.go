@@ -381,6 +381,42 @@ func TestStopPreflightExitProof(t *testing.T) {
 	}
 }
 
+func TestStopGoneProcessProbeContext(t *testing.T) {
+	pid := deadPID(t)
+	for _, mode := range []string{"canceled", "timeout"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var probes atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				probes.Add(1)
+				if mode == "canceled" {
+					cancel()
+				}
+				<-r.Context().Done()
+			}))
+			defer server.Close()
+			rec := daemon.RuntimeRecord{PID: pid, Address: listenerAddr(t, server)}
+			require.Equal(t, daemon.ProcessScopeLocal, daemon.RuntimeProcessScope(rec))
+			require.False(t, daemon.RuntimeProcessAlive(rec))
+			requests := 0
+			err := daemon.Stop(ctx, rec, daemon.StopOptions{
+				Timeout: 100 * time.Millisecond,
+				Probe:   daemon.ProbeOptions{Timeout: time.Second},
+				Request: func(context.Context, daemon.RuntimeRecord) error { requests++; return nil },
+			})
+			assert.EqualValues(t, 1, probes.Load())
+			assert.Zero(t, requests)
+			want := context.Canceled
+			if mode == "timeout" {
+				want = context.DeadlineExceeded
+			}
+			require.ErrorIs(t, err, want)
+			assert.NotErrorIs(t, err, daemon.ErrExitUnconfirmed)
+		})
+	}
+}
+
 func TestStopGoneProcessEvidence(t *testing.T) {
 	pid := deadPID(t)
 	for _, tc := range []struct {

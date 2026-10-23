@@ -17,11 +17,7 @@ import (
 )
 
 func TestStopUnjudgedIdentityWithDeadLocalPID(t *testing.T) {
-	var pid int
-	t.Run("child", func(t *testing.T) {
-		pid = daemon.StartLivePIDHelperForTest(t)
-	})
-	require.False(t, daemon.ProcessAlive(pid))
+	pid := deadPID(t)
 	proof := newDaemonProof(t, []byte("stop-secret-key"))
 	rec := daemon.RuntimeRecord{PID: pid, Service: "test", ProcessIdentityV2: "future-v1:12345"}
 	server, rec := startProofServer(t, rec, proof)

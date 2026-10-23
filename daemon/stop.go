@@ -131,5 +131,8 @@ func stopExitConfirmed(ctx context.Context, rec RuntimeRecord, opts StopOptions)
 	// A replacement with another service must also confirm exit.
 	opts.Probe.ExpectedService = ""
 	info, err := Probe(ctx, rec.Endpoint(), opts.Probe)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return false, fmt.Errorf("check daemon exit: %w", ctxErr)
+	}
 	return (err == nil && info.PID > 0 && info.PID != rec.PID) || isStaleUnixSocketDialError(err), nil
 }
