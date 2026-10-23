@@ -12,6 +12,8 @@ if err == nil && status == posthog.StatusDelivered {
 }
 ```
 
+With `Options.TokenDir` set, delivery confirms relay acceptance of the batch.
+
 Only `(StatusDelivered, nil)` confirms completion. `(StatusDisabled, nil)` and
 every error leave the milestone pending. On the next attempt, reuse the
 persisted `Delivery` with the same event and `Options.DistinctID`: a timed-out

@@ -626,6 +626,15 @@ func (t postHogDisableTransport) RoundTrip(req *http.Request) (*http.Response, e
 			return io.NopCloser(bytes.NewReader(body)), nil
 		}
 	}
+	if ProcessDisabled() {
+		return &http.Response{
+			StatusCode: http.StatusNoContent,
+			Status:     "204 " + http.StatusText(http.StatusNoContent),
+			Header:     make(http.Header),
+			Body:       http.NoBody,
+			Request:    req,
+		}, nil
+	}
 	return base.RoundTrip(req)
 }
 

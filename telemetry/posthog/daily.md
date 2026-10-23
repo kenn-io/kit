@@ -64,6 +64,8 @@ owner retries or 35 later known acceptances retire them. New dates can report
 throughout recovery. Repeated failures can grow unresolved history; the 35-date
 bound applies to known accepted dates. Replacing the file forgets all claims.
 
+With `Options.TokenDir` set, confirmed delivery means the relay accepted the batch.
+
 Report screens on later focus, navigation or terminal interaction,
 independently of app-open reporting. Use delivery results to detect failures
 and retry on later interaction. Report the initial terminal queue and use its

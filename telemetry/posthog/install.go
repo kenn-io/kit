@@ -42,12 +42,9 @@ func (t *installToken) get(ctx context.Context, base http.RoundTripper) (string,
 		return t.cached, nil, nil
 	}
 	lock := flock.New(t.path + ".lock")
-	locked, err := lock.TryLockContext(ctx, 10*time.Millisecond)
+	_, err := lock.TryLockContext(ctx, 10*time.Millisecond)
 	if err != nil {
 		return "", nil, fmt.Errorf("lock telemetry token: %w", err)
-	}
-	if !locked {
-		return "", nil, errors.New("lock telemetry token: lock not acquired")
 	}
 	defer func() { _ = lock.Unlock() }()
 	data, err := os.ReadFile(t.path)
@@ -60,10 +57,7 @@ func (t *installToken) get(ctx context.Context, base http.RoundTripper) (string,
 		return t.cached, nil, nil
 	}
 	stored = storedInstallToken{DistinctID: t.distinctID, Application: t.application}
-	data, err = json.Marshal(stored)
-	if err != nil {
-		return "", nil, fmt.Errorf("encode telemetry registration: %w", err)
-	}
+	data, _ = json.Marshal(stored) //nolint:errchkjson // all fields are strings
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.registerURL, bytes.NewReader(data))
 	if err != nil {
 		return "", nil, fmt.Errorf("create telemetry registration: %w", err)
@@ -91,10 +85,7 @@ func (t *installToken) get(ctx context.Context, base http.RoundTripper) (string,
 		return "", nil, errors.New("telemetry registration returned an empty token")
 	}
 	stored.Token = result.Token
-	data, err = json.Marshal(stored)
-	if err != nil {
-		return "", nil, fmt.Errorf("encode telemetry token: %w", err)
-	}
+	data, _ = json.Marshal(stored) //nolint:errchkjson // all fields are strings
 	t.cached = result.Token
 	if err := atomicfile.WriteFile(t.path, data, atomicfile.WithPrivate()); err != nil {
 		t.logger.WarnContext(ctx, "write telemetry token failed", "error", err)

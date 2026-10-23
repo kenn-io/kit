@@ -150,6 +150,35 @@ func TestSignedReporterOptOutSkipsRelay(t *testing.T) {
 	}
 }
 
+func TestSignedReporterProcessDisabledDuringRegistrationSkipsBatch(t *testing.T) {
+	enableSignedTelemetry(t)
+	var registrations, batches atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/v1/register":
+			registrations.Add(1)
+			DisableProcess()
+			_, _ = w.Write([]byte(`{"token":"token-a"}`))
+		case "/batch/":
+			batches.Add(1)
+		default:
+			assert.Fail(t, "unexpected relay route", req.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+	reporter, err := NewReporter(Options{
+		APIKey: "phc_test", Endpoint: server.URL, TokenDir: t.TempDir(),
+		Application: "test", EnvPrefix: "TEST", DistinctID: "install-a", Version: "v1.2.3",
+	}, WithAllowedEvent("command_run"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = reporter.Close() })
+	require.NoError(t, reporter.Capture("command_run", nil))
+	require.NoError(t, reporter.Close())
+	assert.EqualValues(t, 1, registrations.Load())
+	assert.Zero(t, batches.Load())
+}
+
 func TestSignedReporterReplacesTokenForAnotherIdentity(t *testing.T) {
 	enableSignedTelemetry(t)
 	relay := newTokenRelay(t, false)

@@ -24,7 +24,7 @@ The transport removes `$os`, `$os_version`, `$os_distro`, and `$go_version`
 after serialization on every upload, including redirect replays. Keep fields.md
 and the serialized-payload test in sync with that contract.
 
-Registration runs in the upload transport after opt-out gates, never in
+Options.TokenDir enables signed install tokens. Registration runs in the upload transport after opt-out gates, never in
 Capture or Report. A failed registration fails the batch with the relay's
 response. Stored tokens are keyed to distinct ID and application.
 
