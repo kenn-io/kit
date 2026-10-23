@@ -13,20 +13,22 @@ import (
 const (
 	// DefaultTimeout bounds retries for one rename.
 	DefaultTimeout = 2 * time.Second
-	// DefaultPoll is the delay between retry attempts.
-	DefaultPoll = 5 * time.Millisecond
+	defaultPoll    = 5 * time.Millisecond
 )
 
-// Replace calls atomicfile.Replace, retrying Windows sharing violations for
-// timeout with poll between attempts. It returns the last filesystem error.
-func Replace(oldpath, newpath string, timeout, poll time.Duration) error {
+// Replace retries Windows sharing violations for timeout. A non-positive
+// timeout makes one attempt. It returns the last filesystem error.
+func Replace(oldpath, newpath string, timeout time.Duration) error {
+	if timeout <= 0 {
+		return atomicfile.Replace(oldpath, newpath)
+	}
 	_, err := backoff.Retry(context.Background(), func() (struct{}, error) {
 		err := atomicfile.Replace(oldpath, newpath)
 		if err != nil && !fileBusy(err) {
 			return struct{}{}, backoff.Permanent(err)
 		}
 		return struct{}{}, err
-	}, backoff.WithBackOff(backoff.NewConstantBackOff(poll)),
+	}, backoff.WithBackOff(backoff.NewConstantBackOff(defaultPoll)),
 		backoff.WithMaxTries(0), backoff.WithMaxElapsedTime(timeout))
 	if err != nil {
 		return backoff.AsRetryError(err).LastErr

@@ -254,7 +254,7 @@ func claimLockFile(path string) (string, error) {
 	)
 	// A reader elsewhere holds the file only for the length of one read, so a
 	// busy file is retried briefly instead of leaving a released lock in place.
-	if err := renamebusy.Replace(path, claim, claimBusyTimeout, renamebusy.DefaultPoll); err != nil {
+	if err := renamebusy.Replace(path, claim, claimBusyTimeout); err != nil {
 		return "", err
 	}
 	return claim, nil

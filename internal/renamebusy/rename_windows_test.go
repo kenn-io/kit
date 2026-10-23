@@ -25,7 +25,7 @@ func TestReplaceStopsBeforeDelayExceedsBudget(t *testing.T) {
 	defer func() { assert.NoError(t, windows.CloseHandle(handle)) }()
 
 	started := time.Now()
-	err = Replace(src, dst, 20*time.Millisecond, time.Second)
+	err = Replace(src, dst, 20*time.Millisecond)
 	elapsed := time.Since(started)
 	require.ErrorIs(t, err, windows.ERROR_SHARING_VIOLATION)
 	var renameErr *os.LinkError
@@ -53,10 +53,33 @@ func TestReplaceRetriesSharingViolation(t *testing.T) {
 	closed := make(chan error, 1)
 	time.AfterFunc(100*time.Millisecond, func() { closed <- windows.CloseHandle(handle) }) //nolint:kennlint // exercise a real Windows sharing violation until the reader closes
 
-	require.NoError(t, Replace(src, dst, DefaultTimeout, DefaultPoll))
+	require.NoError(t, Replace(src, dst, DefaultTimeout))
 	require.NoError(t, <-closed)
 	data, err := os.ReadFile(dst)
 	require.NoError(t, err)
 	assert.Equal(t, "original", string(data))
 	assert.NoFileExists(t, src)
+}
+
+func TestReplaceDoesNotRetryWithZeroTimeout(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "source")
+	dst := filepath.Join(dir, "destination")
+	require.NoError(t, os.WriteFile(src, []byte("original"), 0o600))
+	path, err := windows.UTF16PtrFromString(src)
+	require.NoError(t, err)
+	handle, err := windows.CreateFile(path, windows.GENERIC_READ,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING,
+		windows.FILE_ATTRIBUTE_NORMAL, 0)
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, windows.CloseHandle(handle)) }()
+
+	done := make(chan error, 1)
+	go func() { done <- Replace(src, dst, 0) }()
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, windows.ERROR_SHARING_VIOLATION)
+	case <-time.After(time.Second):
+		t.Fatal("zero timeout did not stop sharing-violation retries")
+	}
 }

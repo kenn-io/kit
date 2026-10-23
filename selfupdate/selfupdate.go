@@ -416,6 +416,9 @@ func HashFile(path string) (string, error) {
 }
 
 // InstallBinary replaces dstPath with srcPath using a staged sibling file.
+// On Windows, backup, installation, and rollback renames can each wait up to
+// two seconds for a sharing violation to clear. A failed install can wait up
+// to six seconds across those three attempts.
 func InstallBinary(srcPath, dstPath string) error {
 	dstDir := filepath.Dir(dstPath)
 	dstBase := filepath.Base(dstPath)
@@ -471,9 +474,9 @@ func InstallBinary(srcPath, dstPath string) error {
 		movedAside = aside
 	}
 
-	if err := renamebusy.Replace(tmpPath, dstPath, renamebusy.DefaultTimeout, renamebusy.DefaultPoll); err != nil {
+	if err := renamebusy.Replace(tmpPath, dstPath, renamebusy.DefaultTimeout); err != nil {
 		if movedAside {
-			if rbErr := renamebusy.Replace(backupPath, dstPath, renamebusy.DefaultTimeout, renamebusy.DefaultPoll); rbErr != nil {
+			if rbErr := renamebusy.Replace(backupPath, dstPath, renamebusy.DefaultTimeout); rbErr != nil {
 				return fmt.Errorf("install: %w (rollback also failed: %w)", err, rbErr)
 			}
 		}
@@ -1483,7 +1486,7 @@ func movePreviousAside(dstPath, backupPath string) (bool, error) {
 		return false, nil //nolint:nilerr // an unreadable or absent destination means there is nothing to move aside
 	}
 	// Readers can briefly prevent Windows from renaming the old binary.
-	if err := renamebusy.Replace(dstPath, backupPath, renamebusy.DefaultTimeout, renamebusy.DefaultPoll); err != nil {
+	if err := renamebusy.Replace(dstPath, backupPath, renamebusy.DefaultTimeout); err != nil {
 		return false, fmt.Errorf("backup: %w", err)
 	}
 	return true, nil
