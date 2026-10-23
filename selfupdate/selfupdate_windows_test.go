@@ -12,12 +12,15 @@ import (
 )
 
 func TestInstallBinarySharingViolation(t *testing.T) {
-	for _, persistent := range []bool{false, true} {
-		name := "released"
-		if persistent {
-			name = "persistent"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		wantErr bool
+		want    string
+	}{
+		{name: "released", want: "new"},
+		{name: "persistent", wantErr: true, want: "original"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
 			src := filepath.Join(dir, "source.exe")
 			dst := filepath.Join(dir, "tool.exe")
@@ -27,31 +30,29 @@ func TestInstallBinarySharingViolation(t *testing.T) {
 			handle, err := os.Open(dst)
 			require.NoError(t, err)
 			defer func() {
-				if persistent {
+				if tt.wantErr {
 					assert.NoError(t, handle.Close())
 				}
 			}()
 
 			closed := make(chan error, 1)
-			if !persistent {
+			if !tt.wantErr {
 				time.AfterFunc(100*time.Millisecond, func() { closed <- handle.Close() }) //nolint:kennlint // exercise a real Windows sharing violation until the reader closes
 			}
 			err = InstallBinary(src, dst)
-			want := "new"
-			if persistent {
+			if tt.wantErr {
 				require.ErrorIs(t, err, windows.ERROR_SHARING_VIOLATION)
 				var renameErr *os.LinkError
 				require.ErrorAs(t, err, &renameErr)
 				assert.Equal(t, dst, renameErr.Old)
 				require.ErrorContains(t, err, "backup: ")
-				want = "original"
 			} else {
 				require.NoError(t, <-closed)
 				require.NoError(t, err)
 			}
 			data, err := os.ReadFile(dst)
 			require.NoError(t, err)
-			assert.Equal(t, want, string(data))
+			assert.Equal(t, tt.want, string(data))
 			staging, err := filepath.Glob(filepath.Join(dir, ".tool.exe.*"))
 			require.NoError(t, err)
 			assert.Empty(t, staging)
