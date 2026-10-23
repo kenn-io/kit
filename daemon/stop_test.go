@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -29,6 +30,21 @@ func storedStopRecord(t *testing.T, rec daemon.RuntimeRecord) daemon.RuntimeReco
 	require.Len(t, records, 1)
 	t.Cleanup(func() { assert.FileExists(t, path) })
 	return records[0]
+}
+
+func TestStopInvalidPID(t *testing.T) {
+	for _, pid := range []int{0, -1} {
+		t.Run(strconv.Itoa(pid), func(t *testing.T) {
+			server := httptest.NewServer(daemon.NewPingHandler(daemon.PingHandlerOptions{PID: os.Getpid()}))
+			defer server.Close()
+			requests := 0
+			err := daemon.Stop(t.Context(), daemon.RuntimeRecord{PID: pid, Address: listenerAddr(t, server)}, daemon.StopOptions{
+				Request: func(context.Context, daemon.RuntimeRecord) error { requests++; return nil },
+			})
+			require.Error(t, err)
+			assert.Zero(t, requests)
+		})
+	}
 }
 
 func TestStopListenerReplacement(t *testing.T) {

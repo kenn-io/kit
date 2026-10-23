@@ -16,6 +16,33 @@ import (
 	"go.kenn.io/kit/daemon"
 )
 
+func TestStopUnjudgedIdentityWithDeadLocalPID(t *testing.T) {
+	var pid int
+	t.Run("child", func(t *testing.T) {
+		pid = daemon.StartLivePIDHelperForTest(t)
+	})
+	require.False(t, daemon.ProcessAlive(pid))
+	proof := newDaemonProof(t, []byte("stop-secret-key"))
+	rec := daemon.RuntimeRecord{PID: pid, Service: "test", ProcessIdentityV2: "future-v1:12345"}
+	server, rec := startProofServer(t, rec, proof)
+	defer server.Close()
+	rec = storedStopRecord(t, rec)
+	require.Equal(t, daemon.ProcessScopeUnknown, daemon.RuntimeProcessScope(rec))
+	requests := 0
+	err := daemon.Stop(t.Context(), rec, daemon.StopOptions{
+		Proof:   proof,
+		Timeout: time.Second,
+		Request: func(_ context.Context, got daemon.RuntimeRecord) error {
+			assert.Equal(t, rec, got)
+			requests++
+			server.Close()
+			return nil
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, requests)
+}
+
 func TestStopIdentityAndProof(t *testing.T) {
 	for _, mode := range []string{"no proof", "impostor", "proven"} {
 		t.Run(mode, func(t *testing.T) {

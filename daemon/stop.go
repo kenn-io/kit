@@ -35,7 +35,8 @@ type StopOptions struct {
 // TCP records require Proof in every process scope; Unix records may use a PID ping.
 // When rec's process is proven gone, Stop checks exit evidence without a request.
 // A record with no versioned identity is judged local, as in Discover.
-// Without Exited, a refused connection or a replacement PID ends the wait.
+// Without Exited, a refused connection or a replacement answering with a positive
+// PID other than the recorded one ends the wait.
 // Connection refusal doesn't prove process exit; the process may still be
 // draining. Callers that need process exit supply Exited.
 // A replacement answering with the recorded PID looks like the original, so
@@ -43,6 +44,9 @@ type StopOptions struct {
 // Callers that need to distinguish these replacements supply Exited.
 // Stop sends no signals and removes no files.
 func Stop(ctx context.Context, rec RuntimeRecord, opts StopOptions) error {
+	if rec.PID <= 0 {
+		return fmt.Errorf("daemon stop requires a positive PID: %d", rec.PID)
+	}
 	if opts.Request == nil {
 		return errors.New("daemon stop request is required")
 	}
