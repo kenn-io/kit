@@ -61,6 +61,13 @@ databases, command parsing, and shutdown policy belong to the caller.
   ordering.
 - Default network behavior stays local. Do not add public listen addresses or
   broad bind behavior without an explicit caller option.
+- `Stop` runs the shutdown request only after `runtimeRecordLive` and the
+  endpoint verify.
+  - TCP records require `Proof` in every process scope.
+  - Unix records may use a plain PID ping.
+  - When set, only `Exited` confirms exit.
+  - Otherwise, a refused connection or another PID answering ends the wait.
+  - `Stop` removes no files.
 - Unix sockets and runtime records must live under private current-user
   directories.
 - Runtime records are written with `atomicfile.WriteFile` (mode 0644, fsynced).
