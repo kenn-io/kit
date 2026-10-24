@@ -58,8 +58,9 @@ const (
 	// deliberately distinct from FormatVersion ("what we write"): a future
 	// release may read formats newer than the one it writes, or vice versa.
 	// Repo.Open and LoadManifest refuse anything whose min_reader_version
-	// exceeds this.
-	SupportedReaderVersion = 6
+	// exceeds this. Version 7 is a repository gate an application can raise
+	// with Repo.RequireReaderVersion; it changes no layout.
+	SupportedReaderVersion = 7
 
 	// dbPathManifestVersion marks snapshots whose attachment population
 	// records storage paths beyond the canonical loose "<aa>/<hash>"
@@ -223,6 +224,36 @@ func (r *Repo) SetPageSize(pageSize int) error {
 		return nil
 	}
 	r.cfg.PageSize = pageSize
+	return r.writeConfig()
+}
+
+// RequireReaderVersion raises the repository's min_reader_version to v so
+// that builds whose SupportedReaderVersion is below v refuse the repository
+// at Open. It never lowers the value and returns nil when the recorded one is
+// already at least v. It errors when v exceeds SupportedReaderVersion, since
+// this build could not open the repository afterwards. The caller must hold
+// the exclusive repo lock.
+func (r *Repo) RequireReaderVersion(v int) error {
+	if v > SupportedReaderVersion {
+		return fmt.Errorf(
+			"backup: cannot require reader version %d: this reader "+
+				"supports %d", v, SupportedReaderVersion)
+	}
+	// Re-read the config so a field another writer recorded since Open (for
+	// example page_size) is not overwritten by this handle's copy.
+	data, err := os.ReadFile(r.Path(repoConfigName))
+	if err != nil {
+		return fmt.Errorf("backup: reading repository config: %w", err)
+	}
+	var cfg RepoConfig
+	if err := toml.Unmarshal(data, &cfg); err != nil {
+		return fmt.Errorf("backup: parsing repository config: %w", err)
+	}
+	if cfg.MinReaderVersion >= v {
+		return nil
+	}
+	cfg.MinReaderVersion = v
+	r.cfg = cfg
 	return r.writeConfig()
 }
 

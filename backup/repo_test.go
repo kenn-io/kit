@@ -67,6 +67,56 @@ func TestOpenRejectsFutureRepo(t *testing.T) {
 	require.ErrorContains(err, "upgrade the reader")
 }
 
+func TestRequireReaderVersion(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	root := filepath.Join(t.TempDir(), "repo")
+	repo, err := Init(root)
+	require.NoError(err)
+
+	require.NoError(repo.RequireReaderVersion(7))
+	opened, err := Open(root)
+	require.NoError(err)
+	assert.Equal(7, opened.Config().MinReaderVersion)
+
+	require.NoError(repo.RequireReaderVersion(3))
+	opened, err = Open(root)
+	require.NoError(err)
+	assert.Equal(7, opened.Config().MinReaderVersion, "never lowers")
+
+	path := filepath.Join(root, "config.toml")
+	data, err := os.ReadFile(path)
+	require.NoError(err)
+	require.NoError(os.WriteFile(path, []byte(
+		replaceInTOML(string(data), "min_reader_version", "8")), 0o600))
+	before, err := os.ReadFile(path)
+	require.NoError(err)
+
+	require.ErrorContains(opened.RequireReaderVersion(8), "supports 7")
+	after, err := os.ReadFile(path)
+	require.NoError(err)
+	assert.Equal(string(before), string(after))
+}
+
+func TestRequireReaderVersionKeepsPageSizeFromOtherHandle(t *testing.T) {
+	require := require.New(t)
+	root := filepath.Join(t.TempDir(), "repo")
+	_, err := Init(root)
+	require.NoError(err)
+	first, err := Open(root)
+	require.NoError(err)
+	second, err := Open(root)
+	require.NoError(err)
+
+	require.NoError(second.SetPageSize(4096))
+	require.NoError(first.RequireReaderVersion(7))
+
+	reopened, err := Open(root)
+	require.NoError(err)
+	require.Equal(4096, reopened.Config().PageSize)
+	require.Equal(7, reopened.Config().MinReaderVersion)
+}
+
 func replaceInTOML(content, key, value string) string {
 	re := regexp.MustCompile(key + ` = \d+`)
 	return re.ReplaceAllString(content, key+` = `+value)
