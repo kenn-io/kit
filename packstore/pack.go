@@ -28,13 +28,16 @@ type PackOptions struct {
 	// MaxVerifyBytes bounds existing packed-content checks by the larger of
 	// raw and stored bytes, allowing one entry to exceed the remaining budget.
 	// Zero checks the full inventory. Positive values resume across calls on
-	// this Maintainer; a new Maintainer starts a fresh sweep.
+	// this Maintainer, up to the last entry present when the sweep started.
+	// A new Maintainer starts a fresh sweep.
 	MaxVerifyBytes int64
 }
 
 // PackStats summarizes committed and repair outcomes.
 type PackStats struct {
-	BlobsChecked               int
+	BlobsChecked int
+	// VerificationPending reports an unfinished sweep. Entries beyond its
+	// captured end wait for the next one.
 	VerificationPending        bool
 	PacksSealed                int
 	BlobsPacked                int
@@ -71,11 +74,11 @@ func (m *Maintainer) Pack(ctx context.Context, opts PackOptions) (PackStats, err
 	}
 	defer func() { _ = lease.Release() }()
 	// A failed pass must revisit any repair candidates that were not committed.
-	previous := m.verifiedThrough
+	previous, previousEnd := m.verifiedThrough, m.verificationEnd
 	completed := false
 	defer func() {
 		if !completed {
-			m.verifiedThrough = previous
+			m.verifiedThrough, m.verificationEnd = previous, previousEnd
 		}
 	}()
 	if err := pack.MkdirAllSynced(m.layout.PacksDir()); err != nil {
@@ -105,7 +108,7 @@ func (m *Maintainer) Pack(ctx context.Context, opts PackOptions) (PackStats, err
 	}
 	// A packing budget can defer some verified repair candidates as well.
 	if stats.BudgetExhausted {
-		m.verifiedThrough = previous
+		m.verifiedThrough, m.verificationEnd = previous, previousEnd
 	}
 	pruned, err := m.catalog.PruneUnreferenced(ctx)
 	if err != nil {
@@ -173,14 +176,23 @@ func (m *Maintainer) dropDangling(
 	}
 	// Physical ordering avoids reopening packs for hash-interleaved entries.
 	slices.SortFunc(indexed, compareVerificationEntry)
+	if maxVerifyBytes > 0 && m.verificationEnd == (IndexEntry{}) && len(indexed) > 0 {
+		// New packs must not keep a sweep from returning to older entries.
+		m.verificationEnd = indexed[len(indexed)-1]
+	}
 	var recoveries []Candidate
 	remaining := maxVerifyBytes
 	for _, entry := range indexed {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if maxVerifyBytes > 0 && compareVerificationEntry(entry, m.verifiedThrough) <= 0 {
-			continue
+		if maxVerifyBytes > 0 {
+			if compareVerificationEntry(entry, m.verificationEnd) > 0 {
+				break
+			}
+			if compareVerificationEntry(entry, m.verifiedThrough) <= 0 {
+				continue
+			}
 		}
 		if maxVerifyBytes > 0 && remaining == 0 {
 			stats.VerificationPending = true
@@ -200,6 +212,7 @@ func (m *Maintainer) dropDangling(
 		}
 	}
 	m.verifiedThrough = IndexEntry{}
+	m.verificationEnd = IndexEntry{}
 	return recoveries, nil
 }
 

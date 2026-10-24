@@ -48,5 +48,7 @@
 - A positive `PackOptions.MaxVerifyBytes` bounds existing packed-entry checks,
   continues in physical order across successful calls on the same maintainer,
   and leaves packing and required deletion checks active. Zero remains a full
-  inventory check. A failed pass retains its previous cursor so uncommitted
+  inventory check. Capture the last indexed entry at the start of each sweep
+  so continued ingestion cannot postpone revisiting older entries. A failed
+  pass or deferred repair retains both previous sweep bounds so uncommitted
   repairs are revisited; a new maintainer starts a fresh sweep.
