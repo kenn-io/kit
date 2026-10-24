@@ -138,9 +138,9 @@ func TestStopEndpointWait(t *testing.T) {
 			closing := make(chan struct{})
 			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if requested.Load() {
-					if probes.Add(1) == 1 && tc.closeListener {
-						// Complete a post-request response before refusing later probes.
-						// This orders the 503 and shutdown without racing a timer.
+					if probes.Add(1) == 2 && tc.closeListener {
+						// Keep the listener open after the first response. Reaching
+						// this retry proves that a 503 was not accepted as exit.
 						defer func() {
 							close(closing)
 							assert.NoError(t, listener.Close())
@@ -195,6 +195,7 @@ func TestStopEndpointWait(t *testing.T) {
 				default:
 					assert.Fail(t, "Stop returned before listener closure began")
 				}
+				assert.EqualValues(t, 2, probes.Load())
 			}
 			assert.Equal(t, 1, calls)
 			assert.Positive(t, probes.Load())
