@@ -11,6 +11,8 @@ type MaintainerOptions struct {
 
 // Maintainer owns physical repair, pack, unpack, and repack lifecycle work.
 type Maintainer struct {
+	// Protected by the maintenance lease; valid only for this process lifetime.
+	verifiedThrough      IndexEntry
 	catalog              Catalog
 	layout               Layout
 	limits               Limits
