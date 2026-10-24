@@ -218,7 +218,8 @@ func validatePackExtension(ext string) error {
 	return nil
 }
 
-// SetPageSize records the DB page size after the first backup.
+// SetPageSize records the DB page size after the first backup. It re-reads
+// config.toml first, so it fails on a repository this build cannot open.
 func (r *Repo) SetPageSize(pageSize int) error {
 	return r.updateConfig(func(cfg *RepoConfig) bool {
 		if cfg.PageSize == pageSize {
@@ -234,7 +235,8 @@ func (r *Repo) SetPageSize(pageSize int) error {
 // at Open. It never lowers the value and returns nil when the recorded one is
 // already at least v. It errors when v exceeds SupportedReaderVersion, since
 // this build could not open the repository afterwards. The caller must hold
-// the exclusive repo lock.
+// the exclusive repo lock. It re-reads config.toml first, so it fails on a
+// repository this build cannot open.
 func (r *Repo) RequireReaderVersion(v int) error {
 	if v > SupportedReaderVersion {
 		return fmt.Errorf(

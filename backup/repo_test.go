@@ -85,71 +85,66 @@ func TestRequireReaderVersion(t *testing.T) {
 	assert.Equal(7, opened.Config().MinReaderVersion, "never lowers")
 
 	path := filepath.Join(root, "config.toml")
-	data, err := os.ReadFile(path)
-	require.NoError(err)
-	require.NoError(os.WriteFile(path, []byte(
-		replaceInTOML(string(data), "min_reader_version", "8")), 0o600))
 	before, err := os.ReadFile(path)
 	require.NoError(err)
 
-	require.ErrorContains(opened.RequireReaderVersion(8), "supports 7")
+	require.ErrorContains(
+		repo.RequireReaderVersion(SupportedReaderVersion+1), "supports 7")
 	after, err := os.ReadFile(path)
 	require.NoError(err)
 	assert.Equal(string(before), string(after))
 }
 
-func TestSetPageSizeKeepsReaderVersionFromOtherHandle(t *testing.T) {
-	require := require.New(t)
-	root := filepath.Join(t.TempDir(), "repo")
-	_, err := Init(root)
-	require.NoError(err)
-	stale, err := Open(root)
-	require.NoError(err)
-	other, err := Open(root)
-	require.NoError(err)
+func TestConfigUpdatesKeepOtherHandleChanges(t *testing.T) {
+	// newHandles returns two handles opened before either changes anything,
+	// so the second is stale once the first writes.
+	newHandles := func(t *testing.T) (root string, stale, other *Repo) {
+		t.Helper()
+		root = filepath.Join(t.TempDir(), "repo")
+		_, err := Init(root)
+		require.NoError(t, err)
+		stale, err = Open(root)
+		require.NoError(t, err)
+		other, err = Open(root)
+		require.NoError(t, err)
+		return root, stale, other
+	}
 
-	require.NoError(other.RequireReaderVersion(7))
-	require.NoError(stale.SetPageSize(4096))
+	t.Run("SetPageSize keeps reader version", func(t *testing.T) {
+		root, stale, other := newHandles(t)
 
-	reopened, err := Open(root)
-	require.NoError(err)
-	require.Equal(7, reopened.Config().MinReaderVersion)
-	require.Equal(4096, reopened.Config().PageSize)
-}
+		require.NoError(t, other.RequireReaderVersion(7))
+		require.NoError(t, stale.SetPageSize(4096))
 
-func TestRequireReaderVersionRefreshesStaleHandle(t *testing.T) {
-	require := require.New(t)
-	root := filepath.Join(t.TempDir(), "repo")
-	_, err := Init(root)
-	require.NoError(err)
-	stale, err := Open(root)
-	require.NoError(err)
-	other, err := Open(root)
-	require.NoError(err)
+		reopened, err := Open(root)
+		require.NoError(t, err)
+		require.Equal(t, 7, reopened.Config().MinReaderVersion)
+		require.Equal(t, 4096, reopened.Config().PageSize)
+	})
 
-	require.NoError(other.RequireReaderVersion(7))
-	require.NoError(stale.RequireReaderVersion(7))
+	t.Run("RequireReaderVersion keeps page size", func(t *testing.T) {
+		root, stale, other := newHandles(t)
 
-	require.Equal(7, stale.Config().MinReaderVersion)
-}
+		require.NoError(t, other.SetPageSize(4096))
+		require.NoError(t, stale.RequireReaderVersion(7))
 
-func TestRequireReaderVersionKeepsPageSizeFromOtherHandle(t *testing.T) {
-	require := require.New(t)
-	root := filepath.Join(t.TempDir(), "repo")
-	_, err := Init(root)
-	require.NoError(err)
-	first, err := Open(root)
-	require.NoError(err)
-	second, err := Open(root)
-	require.NoError(err)
+		reopened, err := Open(root)
+		require.NoError(t, err)
+		require.Equal(t, 4096, reopened.Config().PageSize)
+		require.Equal(t, 7, reopened.Config().MinReaderVersion)
+	})
 
-	require.NoError(second.SetPageSize(4096))
-	require.NoError(first.RequireReaderVersion(7))
+	t.Run("lower requirement keeps higher one", func(t *testing.T) {
+		root, stale, other := newHandles(t)
 
-	reopened, err := Open(root)
-	require.NoError(err)
-	require.Equal(4096, reopened.Config().PageSize)
-	require.Equal(7, reopened.Config().MinReaderVersion)
+		require.NoError(t, other.RequireReaderVersion(7))
+		require.NoError(t, stale.RequireReaderVersion(3))
+
+		reopened, err := Open(root)
+		require.NoError(t, err)
+		require.Equal(t, 7, reopened.Config().MinReaderVersion)
+		require.Equal(t, 7, stale.Config().MinReaderVersion)
+	})
 }
 
 func replaceInTOML(content, key, value string) string {
