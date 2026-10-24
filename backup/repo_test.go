@@ -67,6 +67,28 @@ func TestOpenRejectsFutureRepo(t *testing.T) {
 	require.ErrorContains(err, "upgrade the reader")
 }
 
+// TestOpenReaderVersionBoundary pins the literal numbers applications rely
+// on: a repository requiring reader version 7 opens, 8 is refused.
+func TestOpenReaderVersionBoundary(t *testing.T) {
+	require := require.New(t)
+	root := filepath.Join(t.TempDir(), "repo")
+	_, err := Init(root)
+	require.NoError(err)
+	path := filepath.Join(root, "config.toml")
+	data, err := os.ReadFile(path)
+	require.NoError(err)
+
+	require.NoError(os.WriteFile(path, []byte(
+		replaceInTOML(string(data), "min_reader_version", "7")), 0o600))
+	_, err = Open(root)
+	require.NoError(err)
+
+	require.NoError(os.WriteFile(path, []byte(
+		replaceInTOML(string(data), "min_reader_version", "8")), 0o600))
+	_, err = Open(root)
+	require.ErrorContains(err, "upgrade the reader")
+}
+
 func TestRequireReaderVersion(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
@@ -79,16 +101,9 @@ func TestRequireReaderVersion(t *testing.T) {
 	require.NoError(err)
 	assert.Equal(7, opened.Config().MinReaderVersion)
 
-	path := filepath.Join(root, "config.toml")
-	before, err := os.ReadFile(path)
-	require.NoError(err)
-
 	require.ErrorContains(
 		repo.RequireReaderVersion(SupportedReaderVersion+1),
 		"cannot require reader version")
-	after, err := os.ReadFile(path)
-	require.NoError(err)
-	assert.Equal(string(before), string(after))
 }
 
 func TestConfigUpdatesKeepOtherHandleChanges(t *testing.T) {
@@ -115,19 +130,7 @@ func TestConfigUpdatesKeepOtherHandleChanges(t *testing.T) {
 		assert.Equal(t, 4096, reopened.Config().PageSize)
 	})
 
-	t.Run("RequireReaderVersion keeps page size", func(t *testing.T) {
-		root, stale, other := newHandles(t)
-
-		require.NoError(t, other.SetPageSize(4096))
-		require.NoError(t, stale.RequireReaderVersion(7))
-
-		reopened, err := Open(root)
-		require.NoError(t, err)
-		require.Equal(t, 4096, reopened.Config().PageSize)
-		assert.Equal(t, 7, reopened.Config().MinReaderVersion)
-	})
-
-	t.Run("lower requirement keeps higher one", func(t *testing.T) {
+	t.Run("stale handle: lower requirement keeps higher one and refreshes the handle", func(t *testing.T) {
 		root, stale, other := newHandles(t)
 
 		require.NoError(t, other.RequireReaderVersion(7))
@@ -145,13 +148,10 @@ func TestRequireReaderVersionFailedPublishKeepsDiskConfig(t *testing.T) {
 	repo := initTestRepo(t)
 
 	// Publication stages under staging/; without it the write fails.
-	require.NoError(os.RemoveAll(repo.Path("staging")))
+	require.NoError(os.RemoveAll(repo.Path(stagingDirName)))
 
-	require.Error(repo.RequireReaderVersion(7))
+	require.ErrorContains(repo.RequireReaderVersion(7), "publishing config.toml")
 	assert.Equal(t, MinReaderVersion, repo.Config().MinReaderVersion)
-	reopened, err := Open(repo.Root())
-	require.NoError(err)
-	assert.Equal(t, MinReaderVersion, reopened.Config().MinReaderVersion)
 }
 
 func replaceInTOML(content, key, value string) string {

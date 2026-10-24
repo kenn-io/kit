@@ -218,8 +218,9 @@ func validatePackExtension(ext string) error {
 	return nil
 }
 
-// SetPageSize records the DB page size after the first backup. It re-reads
-// config.toml first, so it fails on a repository this build cannot open.
+// SetPageSize records the DB page size after the first backup. The caller
+// must hold the exclusive repo lock. It re-reads config.toml first, so it
+// fails on a repository this build cannot open.
 func (r *Repo) SetPageSize(pageSize int) error {
 	return r.updateConfig(func(cfg *RepoConfig) bool {
 		if cfg.PageSize == pageSize {
@@ -255,8 +256,9 @@ func (r *Repo) RequireReaderVersion(v int) error {
 // updateConfig reloads the config from disk, so a field another handle
 // changed since this one was opened is not written back from a stale copy,
 // then applies change and publishes the result when change reports true. The
-// handle ends up holding the config on disk: the new one after a successful
-// publish, the freshly loaded one otherwise.
+// handle ends up holding the config on disk. After a failed write it reloads
+// from disk, because the write may still have published the file (a failed
+// directory sync reports an error after the rename).
 func (r *Repo) updateConfig(change func(*RepoConfig) bool) error {
 	fresh, err := Open(r.root)
 	if err != nil {
@@ -267,9 +269,13 @@ func (r *Repo) updateConfig(change func(*RepoConfig) bool) error {
 		return nil
 	}
 	if err := r.writeConfig(); err != nil {
-		// Config must report what is on disk, not the change that failed to
-		// publish.
-		r.cfg = fresh.cfg
+		// Config must report what is on disk, which a failed write may or
+		// may not have changed.
+		if reloaded, openErr := Open(r.root); openErr == nil {
+			r.cfg = reloaded.cfg
+		} else {
+			r.cfg = fresh.cfg
+		}
 		return err
 	}
 	return nil
