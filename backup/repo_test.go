@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -51,26 +50,19 @@ func TestOpenRoundTrip(t *testing.T) {
 	assert.Equal(t, created.Config().RepoID, opened.Config().RepoID)
 }
 
-// TestOpenRejectsFutureRepo pins the literal number applications rely on: a
-// repository requiring reader version 7 opens, one above what this build
-// supports is refused.
 func TestOpenRejectsFutureRepo(t *testing.T) {
 	require := require.New(t)
 	root := filepath.Join(t.TempDir(), "repo")
 	_, err := Init(root)
 	require.NoError(err)
-	path := filepath.Join(root, "config.toml")
-	data, err := os.ReadFile(path)
+
+	data, err := os.ReadFile(filepath.Join(root, "config.toml"))
 	require.NoError(err)
 
-	require.NoError(os.WriteFile(path, []byte(
-		replaceInTOML(string(data), "min_reader_version", "7")), 0o600))
-	_, err = Open(root)
-	require.NoError(err)
+	munged := replaceInTOML(string(data), "min_reader_version", "99")
+	require.NoError(os.WriteFile(filepath.Join(root, "config.toml"), []byte(
+		munged), 0o600))
 
-	require.NoError(os.WriteFile(path, []byte(replaceInTOML(
-		string(data), "min_reader_version",
-		strconv.Itoa(SupportedReaderVersion+1))), 0o600))
 	_, err = Open(root)
 	require.ErrorContains(err, "upgrade the reader")
 }
@@ -88,6 +80,7 @@ func TestRequireReaderVersion(t *testing.T) {
 
 	require.NoError(repo.RequireReaderVersion(7))
 	require.NoError(repo.RequireReaderVersion(3))
+	assert.Equal(7, repo.Config().MinReaderVersion)
 	opened, err := Open(root)
 	require.NoError(err)
 	assert.Equal(7, opened.Config().MinReaderVersion)
@@ -127,7 +120,7 @@ func TestConfigUpdatesKeepOtherHandleChanges(t *testing.T) {
 	})
 }
 
-func TestRequireReaderVersionFailedPublishKeepsDiskConfig(t *testing.T) {
+func TestRequireReaderVersionFailedPublishKeepsHandleOnDiskConfig(t *testing.T) {
 	require := require.New(t)
 	repo := initTestRepo(t)
 
@@ -136,6 +129,10 @@ func TestRequireReaderVersionFailedPublishKeepsDiskConfig(t *testing.T) {
 
 	require.ErrorContains(repo.RequireReaderVersion(7), "publishing config.toml")
 	assert.Equal(t, MinReaderVersion, repo.Config().MinReaderVersion)
+
+	reopened, err := Open(repo.Root())
+	require.NoError(err)
+	assert.Equal(t, MinReaderVersion, reopened.Config().MinReaderVersion)
 }
 
 func replaceInTOML(content, key, value string) string {
