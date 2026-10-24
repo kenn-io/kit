@@ -16,7 +16,9 @@ import (
 
 func TestDiscardCreatedFileRemovesCreatedFile(t *testing.T) {
 	require := require.New(t)
-	path := filepath.Join(t.TempDir(), "record.json")
+	dir := t.TempDir()
+	require.NoError(os.Chmod(dir, 0o700))
+	path := filepath.Join(dir, "record.json")
 	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	require.NoError(err)
 
