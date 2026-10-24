@@ -121,10 +121,10 @@ func TestStopEndpointWait(t *testing.T) {
 		callerDeadline bool
 		wantErr        error
 	}{
-		{name: "tcp silence", network: daemon.NetworkTCP, closeListener: true, timeout: time.Second},
-		{name: "unix socket removed", network: daemon.NetworkUnix, closeListener: true, timeout: time.Second},
-		{name: "503 then silence", network: daemon.NetworkTCP, after: busy, closeListener: true, timeout: time.Second},
-		{name: "replacement", network: daemon.NetworkTCP, after: daemon.NewPingHandler(daemon.PingHandlerOptions{PID: os.Getpid() + 1, Service: "replacement"}), timeout: time.Second},
+		{name: "tcp silence", network: daemon.NetworkTCP, closeListener: true},
+		{name: "unix socket removed", network: daemon.NetworkUnix, closeListener: true},
+		{name: "503 then silence", network: daemon.NetworkTCP, after: busy, closeListener: true},
+		{name: "replacement", network: daemon.NetworkTCP, after: daemon.NewPingHandler(daemon.PingHandlerOptions{PID: os.Getpid() + 1, Service: "replacement"})},
 		{name: "missing PID after shutdown request", network: daemon.NetworkTCP, after: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = w.Write([]byte(`{"ok":true}`))
 		}), timeout: 150 * time.Millisecond, wantErr: context.DeadlineExceeded},
@@ -134,9 +134,18 @@ func TestStopEndpointWait(t *testing.T) {
 			var ping http.Handler
 			var requested atomic.Bool
 			var probes atomic.Int32
+			var listener net.Listener
+			closing := make(chan struct{})
 			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if requested.Load() {
-					probes.Add(1)
+					if probes.Add(1) == 2 && tc.closeListener {
+						// Keep the listener open after the first response. Reaching
+						// this retry proves that a 503 was not accepted as exit.
+						defer func() {
+							close(closing)
+							assert.NoError(t, listener.Close())
+						}()
+					}
 					if tc.after != nil {
 						tc.after.ServeHTTP(w, r)
 						return
@@ -150,6 +159,7 @@ func TestStopEndpointWait(t *testing.T) {
 				require.NoError(t, err)
 				server.Listener = listener
 			}
+			listener = server.Listener
 			server.Start()
 			defer server.Close()
 			rec := storedStopRecord(t, daemon.RuntimeRecord{PID: os.Getpid(), Service: "original", Network: tc.network, Address: server.Listener.Addr().String()})
@@ -157,7 +167,6 @@ func TestStopEndpointWait(t *testing.T) {
 			initialPing, err := proof.NewPingHandler(rec)
 			require.NoError(t, err)
 			ping = initialPing
-			closing := make(chan struct{})
 			calls := 0
 			opts := daemon.StopOptions{
 				Proof:   proof,
@@ -166,12 +175,6 @@ func TestStopEndpointWait(t *testing.T) {
 					assert.Equal(t, rec, got)
 					calls++
 					requested.Store(true)
-					if tc.closeListener {
-						time.AfterFunc(100*time.Millisecond, func() { //nolint:kennlint // models delayed shutdown on a real socket, rather than a test deadline
-							close(closing)
-							_ = server.Listener.Close()
-						})
-					}
 					return nil
 				},
 			}
@@ -192,6 +195,7 @@ func TestStopEndpointWait(t *testing.T) {
 				default:
 					assert.Fail(t, "Stop returned before listener closure began")
 				}
+				assert.EqualValues(t, 2, probes.Load())
 			}
 			assert.Equal(t, 1, calls)
 			assert.Positive(t, probes.Load())
