@@ -98,6 +98,41 @@ func TestRequireReaderVersion(t *testing.T) {
 	assert.Equal(string(before), string(after))
 }
 
+func TestSetPageSizeKeepsReaderVersionFromOtherHandle(t *testing.T) {
+	require := require.New(t)
+	root := filepath.Join(t.TempDir(), "repo")
+	_, err := Init(root)
+	require.NoError(err)
+	stale, err := Open(root)
+	require.NoError(err)
+	other, err := Open(root)
+	require.NoError(err)
+
+	require.NoError(other.RequireReaderVersion(7))
+	require.NoError(stale.SetPageSize(4096))
+
+	reopened, err := Open(root)
+	require.NoError(err)
+	require.Equal(7, reopened.Config().MinReaderVersion)
+	require.Equal(4096, reopened.Config().PageSize)
+}
+
+func TestRequireReaderVersionRefreshesStaleHandle(t *testing.T) {
+	require := require.New(t)
+	root := filepath.Join(t.TempDir(), "repo")
+	_, err := Init(root)
+	require.NoError(err)
+	stale, err := Open(root)
+	require.NoError(err)
+	other, err := Open(root)
+	require.NoError(err)
+
+	require.NoError(other.RequireReaderVersion(7))
+	require.NoError(stale.RequireReaderVersion(7))
+
+	require.Equal(7, stale.Config().MinReaderVersion)
+}
+
 func TestRequireReaderVersionKeepsPageSizeFromOtherHandle(t *testing.T) {
 	require := require.New(t)
 	root := filepath.Join(t.TempDir(), "repo")

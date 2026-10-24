@@ -220,11 +220,13 @@ func validatePackExtension(ext string) error {
 
 // SetPageSize records the DB page size after the first backup.
 func (r *Repo) SetPageSize(pageSize int) error {
-	if r.cfg.PageSize == pageSize {
-		return nil
-	}
-	r.cfg.PageSize = pageSize
-	return r.writeConfig()
+	return r.updateConfig(func(cfg *RepoConfig) bool {
+		if cfg.PageSize == pageSize {
+			return false
+		}
+		cfg.PageSize = pageSize
+		return true
+	})
 }
 
 // RequireReaderVersion raises the repository's min_reader_version to v so
@@ -239,21 +241,28 @@ func (r *Repo) RequireReaderVersion(v int) error {
 			"backup: cannot require reader version %d: this reader "+
 				"supports %d", v, SupportedReaderVersion)
 	}
-	// Re-read the config so a field another writer recorded since Open (for
-	// example page_size) is not overwritten by this handle's copy.
-	data, err := os.ReadFile(r.Path(repoConfigName))
+	return r.updateConfig(func(cfg *RepoConfig) bool {
+		if cfg.MinReaderVersion >= v {
+			return false
+		}
+		cfg.MinReaderVersion = v
+		return true
+	})
+}
+
+// updateConfig reloads the config from disk, so a field another handle
+// changed since this one was opened is not written back from a stale copy,
+// then applies change and publishes the result when change reports true. The
+// handle ends up holding the freshly loaded config either way.
+func (r *Repo) updateConfig(change func(*RepoConfig) bool) error {
+	fresh, err := Open(r.root)
 	if err != nil {
-		return fmt.Errorf("backup: reading repository config: %w", err)
+		return err
 	}
-	var cfg RepoConfig
-	if err := toml.Unmarshal(data, &cfg); err != nil {
-		return fmt.Errorf("backup: parsing repository config: %w", err)
-	}
-	if cfg.MinReaderVersion >= v {
+	r.cfg = fresh.cfg
+	if !change(&r.cfg) {
 		return nil
 	}
-	cfg.MinReaderVersion = v
-	r.cfg = cfg
 	return r.writeConfig()
 }
 
