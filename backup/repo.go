@@ -255,7 +255,8 @@ func (r *Repo) RequireReaderVersion(v int) error {
 // updateConfig reloads the config from disk, so a field another handle
 // changed since this one was opened is not written back from a stale copy,
 // then applies change and publishes the result when change reports true. The
-// handle ends up holding the freshly loaded config either way.
+// handle ends up holding the config on disk: the new one after a successful
+// publish, the freshly loaded one otherwise.
 func (r *Repo) updateConfig(change func(*RepoConfig) bool) error {
 	fresh, err := Open(r.root)
 	if err != nil {
@@ -265,7 +266,13 @@ func (r *Repo) updateConfig(change func(*RepoConfig) bool) error {
 	if !change(&r.cfg) {
 		return nil
 	}
-	return r.writeConfig()
+	if err := r.writeConfig(); err != nil {
+		// Config must report what is on disk, not the change that failed to
+		// publish.
+		r.cfg = fresh.cfg
+		return err
+	}
+	return nil
 }
 
 func (r *Repo) writeConfig() error {

@@ -79,17 +79,13 @@ func TestRequireReaderVersion(t *testing.T) {
 	require.NoError(err)
 	assert.Equal(7, opened.Config().MinReaderVersion)
 
-	require.NoError(repo.RequireReaderVersion(3))
-	opened, err = Open(root)
-	require.NoError(err)
-	assert.Equal(7, opened.Config().MinReaderVersion, "never lowers")
-
 	path := filepath.Join(root, "config.toml")
 	before, err := os.ReadFile(path)
 	require.NoError(err)
 
 	require.ErrorContains(
-		repo.RequireReaderVersion(SupportedReaderVersion+1), "supports 7")
+		repo.RequireReaderVersion(SupportedReaderVersion+1),
+		"cannot require reader version")
 	after, err := os.ReadFile(path)
 	require.NoError(err)
 	assert.Equal(string(before), string(after))
@@ -100,12 +96,9 @@ func TestConfigUpdatesKeepOtherHandleChanges(t *testing.T) {
 	// so the second is stale once the first writes.
 	newHandles := func(t *testing.T) (root string, stale, other *Repo) {
 		t.Helper()
-		root = filepath.Join(t.TempDir(), "repo")
-		_, err := Init(root)
-		require.NoError(t, err)
-		stale, err = Open(root)
-		require.NoError(t, err)
-		other, err = Open(root)
+		other = initTestRepo(t)
+		root = other.Root()
+		stale, err := Open(root)
 		require.NoError(t, err)
 		return root, stale, other
 	}
@@ -119,7 +112,7 @@ func TestConfigUpdatesKeepOtherHandleChanges(t *testing.T) {
 		reopened, err := Open(root)
 		require.NoError(t, err)
 		require.Equal(t, 7, reopened.Config().MinReaderVersion)
-		require.Equal(t, 4096, reopened.Config().PageSize)
+		assert.Equal(t, 4096, reopened.Config().PageSize)
 	})
 
 	t.Run("RequireReaderVersion keeps page size", func(t *testing.T) {
@@ -131,7 +124,7 @@ func TestConfigUpdatesKeepOtherHandleChanges(t *testing.T) {
 		reopened, err := Open(root)
 		require.NoError(t, err)
 		require.Equal(t, 4096, reopened.Config().PageSize)
-		require.Equal(t, 7, reopened.Config().MinReaderVersion)
+		assert.Equal(t, 7, reopened.Config().MinReaderVersion)
 	})
 
 	t.Run("lower requirement keeps higher one", func(t *testing.T) {
@@ -143,8 +136,22 @@ func TestConfigUpdatesKeepOtherHandleChanges(t *testing.T) {
 		reopened, err := Open(root)
 		require.NoError(t, err)
 		require.Equal(t, 7, reopened.Config().MinReaderVersion)
-		require.Equal(t, 7, stale.Config().MinReaderVersion)
+		assert.Equal(t, 7, stale.Config().MinReaderVersion)
 	})
+}
+
+func TestRequireReaderVersionFailedPublishKeepsDiskConfig(t *testing.T) {
+	require := require.New(t)
+	repo := initTestRepo(t)
+
+	// Publication stages under staging/; without it the write fails.
+	require.NoError(os.RemoveAll(repo.Path("staging")))
+
+	require.Error(repo.RequireReaderVersion(7))
+	assert.Equal(t, MinReaderVersion, repo.Config().MinReaderVersion)
+	reopened, err := Open(repo.Root())
+	require.NoError(err)
+	assert.Equal(t, MinReaderVersion, reopened.Config().MinReaderVersion)
 }
 
 func replaceInTOML(content, key, value string) string {
