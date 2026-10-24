@@ -67,6 +67,74 @@ func TestOpenRejectsFutureRepo(t *testing.T) {
 	require.ErrorContains(err, "upgrade the reader")
 }
 
+func TestRequireReaderVersion(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	root := filepath.Join(t.TempDir(), "repo")
+	repo, err := Init(root)
+	require.NoError(err)
+
+	require.ErrorContains(
+		repo.RequireReaderVersion(SupportedReaderVersion+1),
+		"cannot require reader version")
+
+	require.NoError(repo.RequireReaderVersion(7))
+	require.NoError(repo.RequireReaderVersion(3))
+	assert.Equal(7, repo.Config().MinReaderVersion)
+	opened, err := Open(root)
+	require.NoError(err)
+	assert.Equal(7, opened.Config().MinReaderVersion)
+}
+
+func TestConfigUpdatesKeepOtherHandleChanges(t *testing.T) {
+	// newHandles returns two handles opened before either changes anything,
+	// so the second is stale once the first writes.
+	newHandles := func(t *testing.T) (root string, stale, other *Repo) {
+		t.Helper()
+		other = initTestRepo(t)
+		root = other.Root()
+		stale, err := Open(root)
+		require.NoError(t, err)
+		return root, stale, other
+	}
+
+	t.Run("SetPageSize keeps reader version", func(t *testing.T) {
+		root, stale, other := newHandles(t)
+
+		require.NoError(t, other.RequireReaderVersion(7))
+		require.NoError(t, stale.SetPageSize(4096))
+
+		reopened, err := Open(root)
+		require.NoError(t, err)
+		require.Equal(t, 7, reopened.Config().MinReaderVersion)
+		assert.Equal(t, 4096, reopened.Config().PageSize)
+	})
+
+	t.Run("stale handle refreshes to the requirement another handle wrote", func(t *testing.T) {
+		_, stale, other := newHandles(t)
+
+		require.NoError(t, other.RequireReaderVersion(7))
+		require.NoError(t, stale.RequireReaderVersion(7))
+
+		assert.Equal(t, 7, stale.Config().MinReaderVersion)
+	})
+}
+
+func TestRequireReaderVersionFailedPublishKeepsHandleOnDiskConfig(t *testing.T) {
+	require := require.New(t)
+	repo := initTestRepo(t)
+
+	// Publication stages under staging/; without it the write fails.
+	require.NoError(os.RemoveAll(repo.Path(stagingDirName)))
+
+	require.ErrorContains(repo.RequireReaderVersion(7), "publishing config.toml")
+	assert.Equal(t, MinReaderVersion, repo.Config().MinReaderVersion)
+
+	reopened, err := Open(repo.Root())
+	require.NoError(err)
+	assert.Equal(t, MinReaderVersion, reopened.Config().MinReaderVersion)
+}
+
 func replaceInTOML(content, key, value string) string {
 	re := regexp.MustCompile(key + ` = \d+`)
 	return re.ReplaceAllString(content, key+` = `+value)
