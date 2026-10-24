@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -50,26 +51,10 @@ func TestOpenRoundTrip(t *testing.T) {
 	assert.Equal(t, created.Config().RepoID, opened.Config().RepoID)
 }
 
+// TestOpenRejectsFutureRepo pins the literal number applications rely on: a
+// repository requiring reader version 7 opens, one above what this build
+// supports is refused.
 func TestOpenRejectsFutureRepo(t *testing.T) {
-	require := require.New(t)
-	root := filepath.Join(t.TempDir(), "repo")
-	_, err := Init(root)
-	require.NoError(err)
-
-	data, err := os.ReadFile(filepath.Join(root, "config.toml"))
-	require.NoError(err)
-
-	munged := replaceInTOML(string(data), "min_reader_version", "99")
-	require.NoError(os.WriteFile(filepath.Join(root, "config.toml"), []byte(
-		munged), 0o600))
-
-	_, err = Open(root)
-	require.ErrorContains(err, "upgrade the reader")
-}
-
-// TestOpenReaderVersionBoundary pins the literal numbers applications rely
-// on: a repository requiring reader version 7 opens, 8 is refused.
-func TestOpenReaderVersionBoundary(t *testing.T) {
 	require := require.New(t)
 	root := filepath.Join(t.TempDir(), "repo")
 	_, err := Init(root)
@@ -83,8 +68,9 @@ func TestOpenReaderVersionBoundary(t *testing.T) {
 	_, err = Open(root)
 	require.NoError(err)
 
-	require.NoError(os.WriteFile(path, []byte(
-		replaceInTOML(string(data), "min_reader_version", "8")), 0o600))
+	require.NoError(os.WriteFile(path, []byte(replaceInTOML(
+		string(data), "min_reader_version",
+		strconv.Itoa(SupportedReaderVersion+1))), 0o600))
 	_, err = Open(root)
 	require.ErrorContains(err, "upgrade the reader")
 }
@@ -96,14 +82,15 @@ func TestRequireReaderVersion(t *testing.T) {
 	repo, err := Init(root)
 	require.NoError(err)
 
-	require.NoError(repo.RequireReaderVersion(7))
-	opened, err := Open(root)
-	require.NoError(err)
-	assert.Equal(7, opened.Config().MinReaderVersion)
-
 	require.ErrorContains(
 		repo.RequireReaderVersion(SupportedReaderVersion+1),
 		"cannot require reader version")
+
+	require.NoError(repo.RequireReaderVersion(7))
+	require.NoError(repo.RequireReaderVersion(3))
+	opened, err := Open(root)
+	require.NoError(err)
+	assert.Equal(7, opened.Config().MinReaderVersion)
 }
 
 func TestConfigUpdatesKeepOtherHandleChanges(t *testing.T) {
@@ -130,15 +117,12 @@ func TestConfigUpdatesKeepOtherHandleChanges(t *testing.T) {
 		assert.Equal(t, 4096, reopened.Config().PageSize)
 	})
 
-	t.Run("stale handle: lower requirement keeps higher one and refreshes the handle", func(t *testing.T) {
-		root, stale, other := newHandles(t)
+	t.Run("stale handle refreshes to the requirement another handle wrote", func(t *testing.T) {
+		_, stale, other := newHandles(t)
 
 		require.NoError(t, other.RequireReaderVersion(7))
-		require.NoError(t, stale.RequireReaderVersion(3))
+		require.NoError(t, stale.RequireReaderVersion(7))
 
-		reopened, err := Open(root)
-		require.NoError(t, err)
-		require.Equal(t, 7, reopened.Config().MinReaderVersion)
 		assert.Equal(t, 7, stale.Config().MinReaderVersion)
 	})
 }

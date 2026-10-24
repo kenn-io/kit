@@ -136,7 +136,7 @@ func Init(root string) (*Repo, error) {
 		CreatedAt:        time.Now().UTC().Format(time.RFC3339),
 	}
 	r := &Repo{root: root, cfg: cfg}
-	if err := r.writeConfig(); err != nil {
+	if err := r.writeConfig(r.cfg); err != nil {
 		return nil, err
 	}
 	return r, nil
@@ -255,35 +255,29 @@ func (r *Repo) RequireReaderVersion(v int) error {
 
 // updateConfig reloads the config from disk, so a field another handle
 // changed since this one was opened is not written back from a stale copy,
-// then applies change and publishes the result when change reports true. The
-// handle ends up holding the config on disk. After a failed write it reloads
-// from disk, because the write may still have published the file (a failed
-// directory sync reports an error after the rename).
+// then applies change to a copy and publishes it when change reports true.
+// The handle takes the changed config only after the write succeeds, so a
+// failed write leaves it at what was last read from disk.
 func (r *Repo) updateConfig(change func(*RepoConfig) bool) error {
 	fresh, err := Open(r.root)
 	if err != nil {
 		return err
 	}
 	r.cfg = fresh.cfg
-	if !change(&r.cfg) {
+	next := r.cfg
+	if !change(&next) {
 		return nil
 	}
-	if err := r.writeConfig(); err != nil {
-		// Config must report what is on disk, which a failed write may or
-		// may not have changed.
-		if reloaded, openErr := Open(r.root); openErr == nil {
-			r.cfg = reloaded.cfg
-		} else {
-			r.cfg = fresh.cfg
-		}
+	if err := r.writeConfig(next); err != nil {
 		return err
 	}
+	r.cfg = next
 	return nil
 }
 
-func (r *Repo) writeConfig() error {
+func (r *Repo) writeConfig(cfg RepoConfig) error {
 	var buf bytes.Buffer
-	if err := toml.NewEncoder(&buf).Encode(r.cfg); err != nil {
+	if err := toml.NewEncoder(&buf).Encode(cfg); err != nil {
 		return fmt.Errorf("backup: encoding repository config: %w", err)
 	}
 	return writeFileAtomic(r, repoConfigName, buf.Bytes())
