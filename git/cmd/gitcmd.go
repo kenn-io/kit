@@ -49,10 +49,9 @@ type Runner struct {
 	StripEnv bool
 	// TerminalPrompt allows interactive git prompts when true.
 	TerminalPrompt bool
-	// NullGlobalConfig makes git read an empty global config when true, by
-	// pointing GIT_CONFIG_GLOBAL at os.DevNull, or on Windows at a shared empty
-	// file in the user's cache directory (os.DevNull is the unreadable "NUL"
-	// device on some Windows builds).
+	// NullGlobalConfig makes git read no global config and refuse global
+	// config writes when true, by pointing GIT_CONFIG_GLOBAL at a path that
+	// cannot exist.
 	NullGlobalConfig bool
 	// NoSystemConfig sets GIT_CONFIG_NOSYSTEM=1 when true.
 	NoSystemConfig bool
@@ -284,30 +283,31 @@ var (
 
 var safeDirectoryProbeTimeout = 2 * time.Second
 
-// nullGlobalConfigPath returns a path suitable for GIT_CONFIG_GLOBAL that makes
-// git read an empty (no-op) global config.
+// nullGlobalConfigPath returns a GIT_CONFIG_GLOBAL value that makes git read
+// no global config and refuse to write one.
 //
-// Outside Windows this is os.DevNull, which needs no file on disk. Windows
-// cannot use os.DevNull: it is "NUL", the null device, and some Git for Windows
-// builds — notably on ARM64 — fail with "fatal: unable to access 'NUL': Invalid
-// argument" when told to read their global config from that device, which
-// breaks every git invocation. There the path is one empty regular file in the
-// user's cache directory that every process reuses, so short-lived processes
-// do not leave a file behind each. A temporary file is created only when the
-// cache directory is unusable, and os.DevNull is the last resort.
+// The value is a path beneath a file that is not a directory, so the path can
+// never exist. git treats a global config it cannot find as absent, and a
+// "git config --global" write fails because git cannot create its lock file
+// there. No file is created, so short-lived processes leave nothing behind.
+//
+// Pointing at the null device itself is not safe: git writes config by
+// renaming "<path>.lock" over "<path>", so a write run as root would replace
+// /dev/null. Outside Windows the parent is os.DevNull. On Windows os.DevNull is
+// "NUL", and some Git for Windows builds — notably on ARM64 — fail with
+// "fatal: unable to access 'NUL': Invalid argument", so the parent is the
+// running executable instead. If the executable path is unknown, a
+// process-private empty temporary file is used.
 func nullGlobalConfigPath() string {
 	if runtime.GOOS != "windows" {
-		return os.DevNull
+		return filepath.Join(os.DevNull, "gitconfig")
 	}
 	emptyGlobalConfigOnce.Do(func() {
-		emptyGlobalConfigPath = os.DevNull
-		if cacheDir, err := os.UserCacheDir(); err == nil {
-			path := sharedEmptyConfigPath(cacheDir)
-			if ensureEmptyFile(path) == nil {
-				emptyGlobalConfigPath = path
-				return
-			}
+		if executable, err := os.Executable(); err == nil {
+			emptyGlobalConfigPath = filepath.Join(executable, "gitconfig")
+			return
 		}
+		emptyGlobalConfigPath = os.DevNull
 		f, err := os.CreateTemp("", "gitcmd-empty-global-*.gitconfig")
 		if err != nil {
 			return
@@ -316,28 +316,6 @@ func nullGlobalConfigPath() string {
 		_ = f.Close()
 	})
 	return emptyGlobalConfigPath
-}
-
-func sharedEmptyConfigPath(cacheDir string) string {
-	return filepath.Join(cacheDir, "go.kenn.io", "kit", "gitcmd-empty-global.gitconfig")
-}
-
-// ensureEmptyFile creates path as an empty file, or empties it if a git
-// command run with this global config wrote to it, so that write does not
-// leak into every later process sharing the file.
-func ensureEmptyFile(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o600)
-	if err != nil {
-		return err
-	}
-	info, err := f.Stat()
-	if err == nil && info.Size() != 0 {
-		err = f.Truncate(0)
-	}
-	return errors.Join(err, f.Close())
 }
 
 // readSafeDirectories reads safe.directory entries from system and global git
