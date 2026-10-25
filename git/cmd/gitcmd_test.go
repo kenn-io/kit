@@ -190,22 +190,65 @@ func TestEnvValueForGOOSHonorsPlatformKeyCasing(t *testing.T) {
 	assert.False(ok)
 }
 
-func TestNullGlobalConfigPathIsReadableEmptyFile(t *testing.T) {
-	// Regression test: GIT_CONFIG_GLOBAL must point at a real, readable, empty
-	// file rather than os.DevNull. On Windows os.DevNull is "NUL", which some
-	// Git for Windows builds (notably ARM64) refuse to read as global config,
-	// failing every git command with "unable to access 'NUL'".
-	p := nullGlobalConfigPath()
-	info, err := os.Stat(p)
-	if err != nil {
-		require.FailNow(t, fmt.Sprintf("GIT_CONFIG_GLOBAL path %q must be accessible: %v", p, err))
+func TestNullGlobalConfigHidesGlobalConfig(t *testing.T) {
+	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
+	require.NoError(t, os.WriteFile(globalConfig, []byte("[fixture]\n\tkey = from-global\n"), 0o600))
+	runner := Runner{Env: safeDirectoryTestEnv(t, globalConfig), DisableSafeDirectoryForward: true}
+	dir := t.TempDir()
+
+	out, err := runner.Output(t.Context(), dir, "config", "--get", "fixture.key")
+	require.NoError(t, err, "the fixture global config must be visible without NullGlobalConfig")
+	require.Equal(t, "from-global", strings.TrimSpace(string(out)))
+
+	runner.NullGlobalConfig = true
+	out, err = runner.Output(t.Context(), dir, "config", "--list")
+	require.NoError(t, err)
+	assert.NotContains(t, string(out), "fixture.key")
+}
+
+func TestNullGlobalConfigRejectsGlobalWrites(t *testing.T) {
+	path := nullGlobalConfigPath()
+	// git writes config by renaming "<path>.lock" over "<path>". Only attempt
+	// the write when the parent cannot hold either file.
+	info, err := os.Stat(filepath.Dir(path))
+	require.NoError(t, err)
+	require.False(t, info.IsDir(), "GIT_CONFIG_GLOBAL %q must not be creatable", path)
+
+	runner := New()
+	runner.DisableSafeDirectoryForward = true
+	dir := t.TempDir()
+	_, _, err = runner.Run(t.Context(), dir, nil, "config", "--global", "fixture.key", "written")
+	require.Error(t, err)
+	out, _ := runner.Output(t.Context(), dir, "config", "--list")
+	assert.NotContains(t, string(out), "fixture.key")
+}
+
+func TestNullGlobalConfigLeavesNoTempFilePerProcess(t *testing.T) {
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	tempDir := t.TempDir()
+	env := append(os.Environ(),
+		"GITCMD_NULL_GLOBAL_HELPER=1", "TMPDIR="+tempDir, "TMP="+tempDir, "TEMP="+tempDir,
+	)
+	for range 3 {
+		cmd := exec.CommandContext(t.Context(), executable, "-test.run=^TestNullGlobalConfigHelper$")
+		cmd.Env = env
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, string(out))
 	}
-	if !info.Mode().IsRegular() {
-		require.FailNow(t, fmt.Sprintf("GIT_CONFIG_GLOBAL path %q must be a regular file, not a device: %v", p, info.Mode()))
+	entries, err := os.ReadDir(tempDir)
+	require.NoError(t, err)
+	assert.Empty(t, entries, "each process must not leave a global config file behind")
+}
+
+func TestNullGlobalConfigHelper(t *testing.T) {
+	if os.Getenv("GITCMD_NULL_GLOBAL_HELPER") == "" {
+		return
 	}
-	if info.Size() != 0 {
-		require.FailNow(t, fmt.Sprintf("GIT_CONFIG_GLOBAL file %q should be empty, got %d bytes", p, info.Size()))
-	}
+	runner := New()
+	runner.DisableSafeDirectoryForward = true
+	_, err := runner.Output(t.Context(), "", "version")
+	require.NoError(t, err)
 }
 
 // safeDirectoryTestEnv builds a hermetic environment for safe.directory

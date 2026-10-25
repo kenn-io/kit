@@ -19,6 +19,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strconv"
@@ -48,9 +49,9 @@ type Runner struct {
 	StripEnv bool
 	// TerminalPrompt allows interactive git prompts when true.
 	TerminalPrompt bool
-	// NullGlobalConfig makes git read an empty global config when true, by
-	// pointing GIT_CONFIG_GLOBAL at an empty file (not os.DevNull, which is the
-	// unreadable "NUL" device on some Windows builds).
+	// NullGlobalConfig makes git read no global config and refuse global
+	// config writes when true, by pointing GIT_CONFIG_GLOBAL at a path that
+	// cannot exist.
 	NullGlobalConfig bool
 	// NoSystemConfig sets GIT_CONFIG_NOSYSTEM=1 when true.
 	NoSystemConfig bool
@@ -282,23 +283,33 @@ var (
 
 var safeDirectoryProbeTimeout = 2 * time.Second
 
-// nullGlobalConfigPath returns a path suitable for GIT_CONFIG_GLOBAL that makes
-// git read an empty (no-op) global config.
+// nullGlobalConfigPath returns a GIT_CONFIG_GLOBAL value that makes git read
+// no global config and refuse to write one.
 //
-// It must not be os.DevNull. On Windows os.DevNull is "NUL", the null device,
-// and some Git for Windows builds — notably on ARM64 — fail with
-// "fatal: unable to access 'NUL': Invalid argument" when told to read their
-// global config from that device, which breaks every git invocation. An empty
-// regular file is an equivalent no-op global config on every platform. The file
-// is created once per process and reused; it is intentionally not removed so the
-// path stays valid for the process lifetime (the OS reclaims the temp dir). If
-// the file cannot be created, fall back to os.DevNull, which still works on
-// platforms where the device is readable.
+// The value is a path beneath a file that is not a directory, so the path can
+// never exist. git treats a global config it cannot find as absent, and a
+// "git config --global" write fails because git cannot create its lock file
+// there. No file is created, so short-lived processes leave nothing behind.
+//
+// Pointing at the null device itself is not safe: git writes config by
+// renaming "<path>.lock" over "<path>", so a write run as root would replace
+// /dev/null. Outside Windows the parent is os.DevNull. On Windows os.DevNull is
+// "NUL", and some Git for Windows builds — notably on ARM64 — fail with
+// "fatal: unable to access 'NUL': Invalid argument", so the parent is the
+// running executable instead. If the executable path is unknown, a
+// process-private empty temporary file is used.
 func nullGlobalConfigPath() string {
+	if runtime.GOOS != "windows" {
+		return filepath.Join(os.DevNull, "gitconfig")
+	}
 	emptyGlobalConfigOnce.Do(func() {
+		if executable, err := os.Executable(); err == nil {
+			emptyGlobalConfigPath = filepath.Join(executable, "gitconfig")
+			return
+		}
+		emptyGlobalConfigPath = os.DevNull
 		f, err := os.CreateTemp("", "gitcmd-empty-global-*.gitconfig")
 		if err != nil {
-			emptyGlobalConfigPath = os.DevNull
 			return
 		}
 		emptyGlobalConfigPath = f.Name()
