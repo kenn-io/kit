@@ -1,6 +1,7 @@
 package packstore
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -23,10 +25,20 @@ import (
 type PackOptions struct {
 	TargetSize int64
 	MaxBytes   int64
+	// MaxVerifyBytes bounds existing packed-content checks by the larger of
+	// raw and stored bytes, allowing one entry to exceed the remaining budget.
+	// Zero checks the full inventory. Positive values resume across calls on
+	// this Maintainer, up to the last entry present when the sweep started.
+	// A new Maintainer starts a fresh sweep.
+	MaxVerifyBytes int64
 }
 
 // PackStats summarizes committed and repair outcomes.
 type PackStats struct {
+	BlobsChecked int
+	// VerificationPending reports an unfinished sweep. Entries beyond its
+	// captured end wait for the next one.
+	VerificationPending        bool
 	PacksSealed                int
 	BlobsPacked                int
 	BytesPacked                int64
@@ -53,7 +65,7 @@ func (m *Maintainer) Pack(ctx context.Context, opts PackOptions) (PackStats, err
 	if err := ctx.Err(); err != nil {
 		return stats, err
 	}
-	if opts.TargetSize < 0 || opts.MaxBytes < 0 {
+	if opts.TargetSize < 0 || opts.MaxBytes < 0 || opts.MaxVerifyBytes < 0 {
 		return stats, ErrInvalidPolicy
 	}
 	lease, err := m.coordinator.AcquireMaintenance(ctx)
@@ -61,6 +73,14 @@ func (m *Maintainer) Pack(ctx context.Context, opts PackOptions) (PackStats, err
 		return stats, err
 	}
 	defer func() { _ = lease.Release() }()
+	// A failed pass must revisit any repair candidates that were not committed.
+	previous, previousEnd := m.verifiedThrough, m.verificationEnd
+	completed := false
+	defer func() {
+		if !completed {
+			m.verifiedThrough, m.verificationEnd = previous, previousEnd
+		}
+	}()
 	if err := pack.MkdirAllSynced(m.layout.PacksDir()); err != nil {
 		return stats, err
 	}
@@ -75,7 +95,7 @@ func (m *Maintainer) Pack(ctx context.Context, opts PackOptions) (PackStats, err
 	for _, reference := range inventory.References {
 		refs[reference.Hash] = reference
 	}
-	recoveries, err := m.dropDangling(ctx, &stats, refs)
+	recoveries, err := m.dropDangling(ctx, &stats, refs, opts.MaxVerifyBytes)
 	if err != nil {
 		return stats, err
 	}
@@ -85,6 +105,10 @@ func (m *Maintainer) Pack(ctx context.Context, opts PackOptions) (PackStats, err
 		replaceMappings: true,
 	}); err != nil {
 		return stats, err
+	}
+	// A packing budget can defer some verified repair candidates as well.
+	if stats.BudgetExhausted {
+		m.verifiedThrough, m.verificationEnd = previous, previousEnd
 	}
 	pruned, err := m.catalog.PruneUnreferenced(ctx)
 	if err != nil {
@@ -104,6 +128,7 @@ func (m *Maintainer) Pack(ctx context.Context, opts PackOptions) (PackStats, err
 	if err := m.sweepLoose(ctx, refs, inventory.Complete, &stats); err != nil {
 		return stats, err
 	}
+	completed = true
 	return stats, nil
 }
 
@@ -126,7 +151,7 @@ func (m *Maintainer) cleanPackStaging(ctx context.Context) error {
 }
 
 func (m *Maintainer) dropDangling(
-	ctx context.Context, stats *PackStats, refs map[Hash]Reference,
+	ctx context.Context, stats *PackStats, refs map[Hash]Reference, maxVerifyBytes int64,
 ) ([]Candidate, error) {
 	records, err := m.catalog.ListPackRecords(ctx)
 	if err != nil {
@@ -149,49 +174,90 @@ func (m *Maintainer) dropDangling(
 	if err != nil {
 		return nil, err
 	}
+	// Physical ordering avoids reopening packs for hash-interleaved entries.
+	slices.SortFunc(indexed, compareVerificationEntry)
+	if maxVerifyBytes > 0 && m.verificationEnd == (IndexEntry{}) && len(indexed) > 0 {
+		// New packs must not keep a sweep from returning to older entries.
+		m.verificationEnd = indexed[len(indexed)-1]
+	}
 	var recoveries []Candidate
+	remaining := maxVerifyBytes
 	for _, entry := range indexed {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if _, err := os.Stat(m.layout.PackPath(entry.PackID)); errors.Is(err, fs.ErrNotExist) {
-			if err := m.catalog.DeleteIndexEntry(ctx, entry.Hash); err != nil {
-				return nil, err
+		if maxVerifyBytes > 0 {
+			if compareVerificationEntry(entry, m.verificationEnd) > 0 {
+				break
 			}
-			stats.MappingsPruned++
-		} else if err != nil {
+			if compareVerificationEntry(entry, m.verifiedThrough) <= 0 {
+				continue
+			}
+		}
+		if maxVerifyBytes > 0 && remaining == 0 {
+			stats.VerificationPending = true
+			return recoveries, nil
+		}
+		recovery, err := m.repairIndexed(ctx, stats, refs, entry)
+		if err != nil {
 			return nil, err
-		} else {
-			if _, _, err := m.store.readPackedBounded(ctx, entry.Hash, &entry, m.limits.BlobBytes); err == nil {
-				continue
-			}
-			logicalSize, valid, err := m.findAnyValidCanonicalLoose(ctx, entry.Hash)
-			if err != nil {
-				return nil, err
-			}
-			if !valid {
-				continue
-			}
-			reference, live := refs[entry.Hash]
-			if !live {
-				continue
-			}
-			// Keep the unreadable mapping authoritative until a replacement pack
-			// is fully sealed and AdoptPack atomically advances the catalog. The
-			// valid alternate is only recovery input; it is not yet readable loose
-			// authority when a corrupt preferred compressed name exists.
-			recoveries = append(recoveries, Candidate{
-				Hash:           entry.Hash,
-				OriginalHashes: append([]string(nil), reference.OriginalHashes...),
-				Paths: []string{
-					m.layout.CompressedLoosePath(entry.Hash),
-					m.layout.LoosePath(entry.Hash),
-				},
-				Size: logicalSize,
-			})
+		}
+		if recovery != nil {
+			recoveries = append(recoveries, *recovery)
+		}
+		stats.BlobsChecked++
+		if maxVerifyBytes > 0 {
+			remaining = max(0, remaining-max(1, entry.RawLen, entry.StoredLen))
+			m.verifiedThrough = entry
 		}
 	}
+	m.verifiedThrough = IndexEntry{}
+	m.verificationEnd = IndexEntry{}
 	return recoveries, nil
+}
+
+func compareVerificationEntry(a, b IndexEntry) int {
+	return cmp.Or(cmp.Compare(a.PackID, b.PackID), cmp.Compare(a.Offset, b.Offset), cmp.Compare(a.Hash, b.Hash))
+}
+
+func (m *Maintainer) repairIndexed(ctx context.Context, stats *PackStats, refs map[Hash]Reference, entry IndexEntry) (*Candidate, error) {
+	if _, err := os.Stat(m.layout.PackPath(entry.PackID)); errors.Is(err, fs.ErrNotExist) {
+		if err := m.catalog.DeleteIndexEntry(ctx, entry.Hash); err != nil {
+			return nil, err
+		}
+		stats.MappingsPruned++
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	stream, _, err := m.store.openPackedStream(ctx, entry.Hash, &entry)
+	if err == nil {
+		_, err = io.Copy(io.Discard, stream)
+		err = errors.Join(err, stream.Close())
+	}
+	if err == nil {
+		return nil, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	logicalSize, valid, err := m.findAnyValidCanonicalLoose(ctx, entry.Hash)
+	if err != nil {
+		return nil, err
+	}
+	if !valid {
+		return nil, nil
+	}
+	reference, live := refs[entry.Hash]
+	if !live {
+		return nil, nil
+	}
+	// Keep the unreadable mapping authoritative until the verified replacement
+	// is sealed and AdoptPack atomically advances the catalog.
+	return &Candidate{
+		Hash: entry.Hash, OriginalHashes: append([]string(nil), reference.OriginalHashes...),
+		Paths: []string{m.layout.CompressedLoosePath(entry.Hash), m.layout.LoosePath(entry.Hash)}, Size: logicalSize,
+	}, nil
 }
 
 func (m *Maintainer) reconcileOrphans(ctx context.Context, refs map[Hash]Reference, stats *PackStats) error {
