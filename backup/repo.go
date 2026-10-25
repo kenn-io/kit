@@ -235,7 +235,10 @@ func (r *Repo) SetPageSize(pageSize int) error {
 // that builds whose SupportedReaderVersion is below v refuse the repository
 // at Open. It never lowers the value and returns nil when the recorded one is
 // already at least v. It errors when v exceeds SupportedReaderVersion, since
-// this build could not open the repository afterwards. The caller must hold
+// this build could not open the repository afterwards. The gate applies at
+// Open only: a build that already holds a handle keeps using it, and an
+// older build's SetPageSize may write its cached, lower value back. The
+// caller must hold
 // the exclusive repo lock. It re-reads config.toml first, so it fails on a
 // repository this build cannot open.
 func (r *Repo) RequireReaderVersion(v int) error {
@@ -257,13 +260,24 @@ func (r *Repo) RequireReaderVersion(v int) error {
 // changed since this one was opened is not written back from a stale copy,
 // then applies change to a copy and publishes it when change reports true.
 // The handle takes the changed config only after the write succeeds, so a
-// failed write leaves it at what was last read from disk.
+// failed write leaves it at what was last read from disk. It refuses a config
+// whose repo_id differs from the handle's: the directory now holds another
+// repository, and adopting its ID would key local caches to the wrong one.
 func (r *Repo) updateConfig(change func(*RepoConfig) bool) error {
 	fresh, err := Open(r.root)
 	if err != nil {
 		return err
 	}
-	r.cfg = fresh.cfg
+	if fresh.cfg.RepoID != r.cfg.RepoID {
+		return fmt.Errorf(
+			"backup: repository at %s is now %s, not %s; reopen it",
+			r.root, fresh.cfg.RepoID, r.cfg.RepoID)
+	}
+	// Assign only on change so an unchanged config, the common case on
+	// every Create, does not write the handle.
+	if fresh.cfg != r.cfg {
+		r.cfg = fresh.cfg
+	}
 	next := r.cfg
 	if !change(&next) {
 		return nil

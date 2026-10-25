@@ -78,12 +78,47 @@ func TestRequireReaderVersion(t *testing.T) {
 		repo.RequireReaderVersion(SupportedReaderVersion+1),
 		"cannot require reader version")
 
-	require.NoError(repo.RequireReaderVersion(7))
+	require.NoError(repo.RequireReaderVersion(SupportedReaderVersion))
 	require.NoError(repo.RequireReaderVersion(3))
-	assert.Equal(7, repo.Config().MinReaderVersion)
+	assert.Equal(SupportedReaderVersion, repo.Config().MinReaderVersion)
 	opened, err := Open(root)
 	require.NoError(err)
-	assert.Equal(7, opened.Config().MinReaderVersion)
+	assert.Equal(SupportedReaderVersion, opened.Config().MinReaderVersion)
+}
+
+func TestConfigUpdatesRefuseRepoThisReaderCannotOpen(t *testing.T) {
+	require := require.New(t)
+	repo := initTestRepo(t)
+	path := repo.Path(repoConfigName)
+	data, err := os.ReadFile(path)
+	require.NoError(err)
+	require.NoError(os.WriteFile(path, []byte(replaceInTOML(string(data),
+		"min_reader_version", "99")), 0o600))
+
+	// An unchanged page size still checks the repository on disk.
+	require.ErrorContains(repo.SetPageSize(repo.Config().PageSize),
+		"upgrade the reader")
+	require.ErrorContains(repo.RequireReaderVersion(SupportedReaderVersion),
+		"upgrade the reader")
+
+	data, err = os.ReadFile(path)
+	require.NoError(err)
+	assert.Contains(t, string(data), "min_reader_version = 99")
+}
+
+func TestConfigUpdatesRefuseReplacedRepo(t *testing.T) {
+	require := require.New(t)
+	repo := initTestRepo(t)
+	original := repo.Config()
+	require.NoError(os.RemoveAll(repo.Root()))
+	replacement, err := Init(repo.Root())
+	require.NoError(err)
+
+	require.ErrorContains(repo.SetPageSize(4096), "reopen it")
+	assert.Equal(t, original, repo.Config())
+	reopened, err := Open(repo.Root())
+	require.NoError(err)
+	assert.Equal(t, replacement.Config(), reopened.Config())
 }
 
 func TestConfigUpdatesKeepOtherHandleChanges(t *testing.T) {
