@@ -80,6 +80,18 @@ func TestRunnerPreservesInheritedCommandScopeConfig(t *testing.T) {
 
 func TestRunnerCancellationStopsGitHTTPSubprocesses(t *testing.T) {
 	require := require.New(t)
+	dir := t.TempDir()
+	tracePath := filepath.Join(dir, "git-trace.json")
+	runner := New()
+	runner.DisableSafeDirectoryForward = true
+	runner.StripEnv = false
+	runner.Env = append(gitenv.StripAll(os.Environ()), "GIT_TRACE2_EVENT="+tracePath)
+	t.Cleanup(func() {
+		if t.Failed() {
+			trace, err := os.ReadFile(tracePath)
+			t.Logf("Git process trace (read error: %v):\n%s", err, trace)
+		}
+	})
 	requestStarted := make(chan struct{})
 	requestDone := make(chan struct{})
 	release := make(chan struct{})
@@ -99,33 +111,36 @@ func TestRunnerCancellationStopsGitHTTPSubprocesses(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 	result := make(chan error, 1)
-	dir := t.TempDir()
+	defer func() {
+		cancel()
+		close(release)
+		<-result
+	}()
 	go func() {
-		_, _, err := New().Run(ctx, dir, nil, "ls-remote", server.URL+"/repo.git")
+		defer close(result)
+		_, _, err := runner.Run(ctx, dir, nil, "ls-remote", server.URL+"/repo.git")
 		result <- err
 	}()
 
 	select {
 	case <-requestStarted:
 	case <-time.After(5 * time.Second):
-		close(release)
 		require.FailNow("git did not start its HTTP request")
 	}
+	canceledAt := time.Now()
 	cancel()
 
 	select {
 	case err := <-result:
+		t.Logf("Git returned %s after cancellation: %v", time.Since(canceledAt), err)
 		require.ErrorIs(err, context.Canceled)
 	case <-time.After(3 * time.Second):
-		close(release)
-		require.Error(<-result)
 		require.FailNow("git did not stop after context cancellation")
 	}
 
 	select {
 	case <-requestDone:
 	case <-time.After(time.Second):
-		close(release)
 		require.FailNow("git HTTP subprocess remained connected after cancellation")
 	}
 }
