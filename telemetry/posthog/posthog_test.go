@@ -651,6 +651,9 @@ func TestReporterSerializedPayloadMatchesDocumentedFields(t *testing.T) {
 	t.Cleanup(enablePostHogTelemetryForTest)
 	t.Setenv(GenericEnabledEnv, "1")
 	t.Setenv("TEST_TELEMETRY_ENABLED", "1")
+	previousDistribution := distribution
+	distribution = "homebrew"
+	t.Cleanup(func() { distribution = previousDistribution })
 	for _, tc := range []struct {
 		name     string
 		redirect int
@@ -707,9 +710,9 @@ func TestReporterSerializedPayloadMatchesDocumentedFields(t *testing.T) {
 				assert.NotEmpty(t, event["uuid"])
 				var properties map[string]json.RawMessage
 				require.NoError(t, json.Unmarshal(event["properties"], &properties))
-				assert.ElementsMatch(t, []string{"application", "source", "version", "commit", "goos", "goarch", "install_age_hours", "$lib", "$lib_version", "$process_person_profile", "$geoip_disable", "screen", "count"}, slices.Collect(maps.Keys(properties)))
+				assert.ElementsMatch(t, []string{"application", "source", "version", "commit", "distribution", "goos", "goarch", "install_age_hours", "$lib", "$lib_version", "$process_person_profile", "$geoip_disable", "screen", "count"}, slices.Collect(maps.Keys(properties)))
 				for key, want := range map[string]string{
-					"application": `"test"`, "source": `"cli"`, "version": `"v1.2.3"`, "commit": `"abc123"`,
+					"application": `"test"`, "source": `"cli"`, "version": `"v1.2.3"`, "commit": `"abc123"`, "distribution": `"homebrew"`,
 					"goos": `"` + runtime.GOOS + `"`, "goarch": `"` + runtime.GOARCH + `"`,
 					"install_age_hours": "48", "$lib": `"posthog-go"`, "$process_person_profile": "false", "$geoip_disable": "true",
 					"screen": `"home"`, "count": "9007199254740993",
