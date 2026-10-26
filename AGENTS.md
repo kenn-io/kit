@@ -88,6 +88,10 @@ provider workflows to this repo unless the package already owns that concern.
 - Never locate files from a path returned by `runtime.Caller` or a stack
   trace; builds use `-trimpath`, so those paths are module-relative. Tests run
   from their package directory, so use paths relative to it.
+- Trimmed binaries cannot find Go's bundled time zone database, so
+  `time.LoadLocation` relies on the host's. A test package that loads a named
+  zone and runs on Windows, which has no host database, or uses a legacy name
+  such as `US/Central` must add `import _ "time/tzdata"` in a `_test.go` file.
 
 ## CI runners
 
