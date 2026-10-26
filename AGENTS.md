@@ -85,6 +85,9 @@ provider workflows to this repo unless the package already owns that concern.
   needs a fixed OS temp path to exercise permissions or runtime-dir behavior.
 - Tests must not depend on the user's git config, global credentials, real
   repositories, home directory state, or live provider availability.
+- Never locate files from a path returned by `runtime.Caller` or a stack
+  trace; builds use `-trimpath`, so those paths are module-relative. Tests run
+  from their package directory, so use paths relative to it.
 
 ## CI runners
 
