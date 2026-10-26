@@ -14,6 +14,7 @@ The batch envelope keeps only `api_key` and `batch`. Each event keeps only `even
 | `properties.source` | `Options.Source`, defaulting to `daemon` | Every event |
 | `properties.version` | `Options.Version` | Every event, empty if unspecified |
 | `properties.commit` | `Options.Commit` | Every event, empty if unspecified |
+| `properties.distribution` | Build channel set at link time with `-X go.kenn.io/kit/telemetry/posthog.distribution=<channel>`, such as `homebrew` | Every event, empty for source builds |
 | `properties.goos` | Go's `runtime.GOOS` | Every event |
 | `properties.goarch` | Go's `runtime.GOARCH` | Every event |
 | `properties.install_age_hours` | Whole hours since `Options.InstalledAt`, with a minimum of zero | When `InstalledAt` is set |

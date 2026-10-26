@@ -52,6 +52,13 @@ var postHogTelemetryDisabled atomic.Bool
 //	-X go.kenn.io/kit/telemetry/posthog.projectKey=<key>
 var projectKey string
 
+// distribution names the channel that built this binary, such as homebrew,
+// and is sent as the distribution property on every event. Source builds
+// leave it empty; release builds set it at link time:
+//
+//	-X go.kenn.io/kit/telemetry/posthog.distribution=<channel>
+var distribution string
+
 var releaseVersion = regexp.MustCompile(`^v?[0-9]+[.][0-9]+[.][0-9]+$`)
 
 // Remove the same SDK system properties on every OS.
@@ -672,6 +679,7 @@ func (r *Reporter) addDefaultProperties(props map[string]any) {
 	props["source"] = r.source
 	props["version"] = r.version
 	props["commit"] = r.commit
+	props["distribution"] = distribution
 	props["goos"] = runtime.GOOS
 	props["goarch"] = runtime.GOARCH
 	// The install age is reporter-owned; Capture sets it from InstalledAt.

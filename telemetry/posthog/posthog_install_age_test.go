@@ -159,6 +159,7 @@ func TestPostHogReporterZeroInstalledAtOmitsInstallAge(t *testing.T) {
 		"source":                  "daemon",
 		"version":                 "v1.2.3",
 		"commit":                  "",
+		"distribution":            "",
 		"goos":                    runtime.GOOS,
 		"goarch":                  runtime.GOARCH,
 		"sync_enabled":            true,
