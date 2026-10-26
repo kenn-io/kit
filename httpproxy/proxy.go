@@ -47,7 +47,6 @@ type Proxy struct {
 	server   *http.Server
 	allow    map[string]bool
 	dial     func(ctx context.Context, network, address string) (net.Conn, error)
-	forward  *httputil.ReverseProxy
 	serving  chan error
 	tunnels  sync.WaitGroup
 
@@ -62,16 +61,24 @@ type Client struct {
 	proxy    *Proxy
 	username string
 	password string
+	// The Client's own upstream pool, so its idle plain-HTTP connections
+	// close with the Client.
+	transport *http.Transport
+	forward   *httputil.ReverseProxy
 
 	// Guarded by proxy.mu.
-	closed  bool
-	binding *binding
-	conns   map[net.Conn]struct{}
+	closed      bool
+	binding     *binding
+	generations uint64
+	// conns maps each connection to the generation of the latest binding
+	// that used it.
+	conns map[net.Conn]uint64
 }
 
 type binding struct {
-	ctx  context.Context
-	stop func() bool
+	ctx        context.Context
+	generation uint64
+	stop       func() bool
 }
 
 type connKey struct{}
@@ -97,15 +104,6 @@ func Listen(cfg Config) (*Proxy, error) {
 		serving:  make(chan error, 1),
 		clients:  make(map[string]*Client),
 		owners:   make(map[net.Conn]*Client),
-	}
-	p.forward = &httputil.ReverseProxy{
-		// The inbound request already carries the absolute upstream URL.
-		Rewrite:   func(*httputil.ProxyRequest) {},
-		Transport: &http.Transport{DialContext: dial},
-		// Stream each upstream read at once; a slow response must reach the
-		// client as it arrives, not when a buffer fills.
-		FlushInterval: -1,
-		ErrorHandler:  forwardError,
 	}
 	p.server = &http.Server{
 		Handler:           http.HandlerFunc(p.serveHTTP),
@@ -148,7 +146,23 @@ func (p *Proxy) NewClient() (*Client, error) {
 	if p.closed {
 		return nil, ErrClosed
 	}
-	c := &Client{proxy: p, username: rand.Text(), password: rand.Text(), conns: make(map[net.Conn]struct{})}
+	transport := &http.Transport{DialContext: p.dial, IdleConnTimeout: 90 * time.Second}
+	c := &Client{
+		proxy:     p,
+		username:  rand.Text(),
+		password:  rand.Text(),
+		transport: transport,
+		forward: &httputil.ReverseProxy{
+			// The inbound request already carries the absolute upstream URL.
+			Rewrite:   func(*httputil.ProxyRequest) {},
+			Transport: transport,
+			// Stream each upstream read at once; a slow response must reach
+			// the client as it arrives, not when a buffer fills.
+			FlushInterval: -1,
+			ErrorHandler:  forwardError,
+		},
+		conns: make(map[net.Conn]uint64),
+	}
 	p.clients[c.username] = c
 	return c, nil
 }
@@ -163,12 +177,17 @@ func (p *Proxy) Close() error {
 	}
 	p.closed = true
 	var conns []net.Conn
+	clients := make([]*Client, 0, len(p.clients))
 	for _, c := range p.clients {
 		conns = append(conns, c.release()...)
+		clients = append(clients, c)
 	}
 	p.mu.Unlock()
 	closeAll(conns)
 	err := p.server.Close()
+	for _, c := range clients {
+		c.transport.CloseIdleConnections()
+	}
 	p.tunnels.Wait()
 	if serveErr := <-p.serving; !errors.Is(serveErr, http.ErrServerClosed) {
 		err = errors.Join(err, serveErr)
@@ -183,9 +202,10 @@ func (c *Client) URL() *url.URL {
 }
 
 // Bind lets the Client send requests until ctx ends or stop is called. When
-// ctx ends first, the proxy closes every connection the Client holds. stop
-// keeps idle connections open for reuse by a later Bind, but no new request
-// or tunnel starts until then. A Client has at most one binding at a time.
+// ctx ends first, the proxy closes every connection the Client holds, except
+// connections a later binding has since used. stop keeps idle connections
+// open for reuse by a later Bind, but no new request or tunnel starts until
+// then. A Client has at most one binding at a time.
 func (c *Client) Bind(ctx context.Context) (stop func(), err error) {
 	p := c.proxy
 	p.mu.Lock()
@@ -199,7 +219,8 @@ func (c *Client) Bind(ctx context.Context) (stop func(), err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	b := &binding{ctx: ctx}
+	c.generations++
+	b := &binding{ctx: ctx, generation: c.generations}
 	c.binding = b
 	b.stop = context.AfterFunc(ctx, func() { c.cutOff(b) })
 	return sync.OnceFunc(func() {
@@ -224,6 +245,7 @@ func (c *Client) Close() error {
 	conns := c.release()
 	p.mu.Unlock()
 	closeAll(conns)
+	c.transport.CloseIdleConnections()
 	return nil
 }
 
@@ -234,29 +256,36 @@ func (c *Client) release() []net.Conn {
 		c.binding.stop()
 		c.binding = nil
 	}
-	return c.detachConns()
+	return c.detachConns(c.generations)
 }
 
-// detachConns removes c's connections from tracking. p.mu must be held.
-func (c *Client) detachConns() []net.Conn {
-	conns := make([]net.Conn, 0, len(c.conns))
-	for conn := range c.conns {
-		conns = append(conns, conn)
-		delete(c.proxy.owners, conn)
+// detachConns removes from tracking, and returns, the connections last used
+// by binding generation through. p.mu must be held.
+func (c *Client) detachConns(through uint64) []net.Conn {
+	var conns []net.Conn
+	for conn, generation := range c.conns {
+		if generation <= through {
+			conns = append(conns, conn)
+			delete(c.conns, conn)
+			delete(c.proxy.owners, conn)
+		}
 	}
-	clear(c.conns)
 	return conns
 }
 
+// cutOff closes the connections of binding b and of earlier bindings. A
+// callback that started before stop and a new Bind therefore leaves the new
+// binding's connections open.
 func (c *Client) cutOff(b *binding) {
 	p := c.proxy
 	p.mu.Lock()
 	if c.binding == b {
 		c.binding = nil
 	}
-	conns := c.detachConns()
+	conns := c.detachConns(b.generation)
 	p.mu.Unlock()
 	closeAll(conns)
+	c.transport.CloseIdleConnections()
 }
 
 // track records conn as c's while b is still c's live binding. It reports
@@ -272,7 +301,7 @@ func (c *Client) track(b *binding, conn net.Conn) bool {
 	if owner, ok := p.owners[conn]; ok && owner != c {
 		return false
 	}
-	c.conns[conn] = struct{}{}
+	c.conns[conn] = b.generation
 	p.owners[conn] = c
 	return true
 }
@@ -318,7 +347,7 @@ func (p *Proxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		p.tunnel(ctx, w, r, c, b)
 		return
 	}
-	p.forward.ServeHTTP(w, r.WithContext(ctx))
+	c.forward.ServeHTTP(w, r.WithContext(ctx))
 }
 
 // refusal is the HTTP status the proxy answers a refused request with.

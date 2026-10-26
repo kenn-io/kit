@@ -11,9 +11,15 @@
   and upstream connection under the binding that admitted it, and refuse to
   track once that binding has ended, so a cutoff cannot miss a connection
   opened during the cutoff.
-- When a binding's context ends, close all of that Client's connections. This
-  is the package's purpose: it stops transfers in code the caller cannot
-  cancel. `stop` ends a binding without closing idle connections.
+- When a binding's context ends, close the Client's connections last used by
+  that binding or an earlier one. This is the package's purpose: it stops
+  transfers in code the caller cannot cancel. Scope the cutoff by binding
+  generation: a cutoff callback can run after `stop` and a new `Bind`, and
+  must not close the newer binding's connections. `stop` ends a binding
+  without closing idle connections.
+- Each Client owns its plain-HTTP upstream transport. Close its idle
+  connections on cutoff, `Client.Close`, and `Proxy.Close`; in-flight
+  upstream requests end through their request context.
 - Forwarded responses flush every upstream read immediately. Buffering would
   hold a slow response's headers until the cutoff.
 - `Proxy.Close` waits for every tunnel goroutine; start tunnels under the

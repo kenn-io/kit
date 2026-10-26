@@ -296,3 +296,86 @@ func TestListenRejectsAllowlist(t *testing.T) {
 		assert.Error(t, err, "%q", allow)
 	}
 }
+
+// A cutoff callback that started before stop and a new Bind runs late; it
+// must leave the new binding's transfers open.
+func TestStaleCutoffSparesNewerBinding(t *testing.T) {
+	more := make(chan struct{})
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "2")
+		controller := http.NewResponseController(w)
+		if _, err := w.Write([]byte{'a'}); err != nil || controller.Flush() != nil {
+			return
+		}
+		select {
+		case <-more:
+			_, _ = w.Write([]byte{'b'})
+		case <-r.Context().Done():
+		}
+	})
+	plain := httptest.NewServer(handler)
+	defer plain.Close()
+	secure := httptest.NewTLSServer(handler)
+	defer secure.Close()
+	p := listen(t, Config{Allow: []string{host(plain), host(secure)}})
+	defer close(more)
+
+	for _, server := range []*httptest.Server{plain, secure} {
+		t.Run(server.URL, func(t *testing.T) {
+			c := newClient(t, p)
+			stop, err := c.Bind(t.Context())
+			require.NoError(t, err)
+			p.mu.Lock()
+			stale := c.binding
+			p.mu.Unlock()
+			stop()
+			bind(t, c, t.Context())
+
+			resp, err := send(t, httpClient(server, c.URL()), server.URL)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+			first := make([]byte, 1)
+			_, err = io.ReadFull(resp.Body, first)
+			require.NoError(t, err)
+			c.cutOff(stale)
+			more <- struct{}{}
+			rest, err := io.ReadAll(resp.Body)
+			require.NoError(t, err, "the stale cutoff closed the newer binding's transfer")
+			assert.Equal(t, "ab", string(first)+string(rest))
+		})
+	}
+}
+
+func TestShutdownClosesUpstreamConnections(t *testing.T) {
+	tests := []struct {
+		name     string
+		shutdown func(p *Proxy, c *Client, cancel context.CancelFunc)
+	}{
+		{"binding ends", func(_ *Proxy, _ *Client, cancel context.CancelFunc) { cancel() }},
+		{"client closes", func(_ *Proxy, c *Client, _ context.CancelFunc) { assert.NoError(t, c.Close()) }},
+		{"proxy closes", func(p *Proxy, _ *Client, _ context.CancelFunc) { assert.NoError(t, p.Close()) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			closed := make(chan struct{}, 4)
+			upstream := httptest.NewUnstartedServer(http.HandlerFunc(reply))
+			upstream.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+				if state == http.StateClosed {
+					closed <- struct{}{}
+				}
+			}
+			upstream.Start()
+			defer upstream.Close()
+			p := listen(t, Config{Allow: []string{host(upstream)}})
+			c := newClient(t, p)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			bind(t, c, ctx)
+			status, _ := get(t, httpClient(upstream, c.URL()), upstream.URL)
+			require.Equal(t, http.StatusOK, status)
+
+			tt.shutdown(p, c, cancel)
+			<-closed
+		})
+	}
+}
