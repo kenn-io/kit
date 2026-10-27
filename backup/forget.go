@@ -24,6 +24,11 @@ type ForgetOptions struct {
 	DryRun      bool     // validate and report the selection without deleting manifests
 	AllowEmpty  bool     // explicitly allow deleting the last recovery point
 	ForceUnlock bool     // only controls repository lock recovery, not AllowEmpty
+	// Precondition, when set, runs while Forget holds the exclusive repository
+	// lock and before it reads or removes any manifest. An error aborts the
+	// forget with nothing removed. Callers use it to recheck state that the
+	// lock protects, such as which application may manage the repository.
+	Precondition func() error
 }
 
 // ForgetResult reports a dependency-safe removal order. Forgotten may be
@@ -54,6 +59,11 @@ func Forget(ctx context.Context, r *Repo, opts ForgetOptions) (_ *ForgetResult, 
 		return nil, err
 	}
 	defer func() { retErr = errors.Join(retErr, lock.Release()) }()
+	if opts.Precondition != nil {
+		if err := opts.Precondition(); err != nil {
+			return nil, fmt.Errorf("backup: forget precondition: %w", err)
+		}
+	}
 
 	snapshots, err := r.openRepositoryDir(snapshotsDirName)
 	if err != nil {

@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -116,6 +117,30 @@ func TestForgetUsesRepositoryLock(t *testing.T) {
 	require.ErrorIs(err, ErrRepoLocked)
 	_, err = r.LoadManifest(id)
 	require.NoError(err)
+}
+
+func TestForgetPreconditionRunsUnderLockBeforeDeletion(t *testing.T) {
+	require := require.New(t)
+	r := initTestRepo(t)
+	id, err := r.WriteManifest(testManifest("2026-07-01T00:00:00Z", "", 0))
+	require.NoError(err)
+	refused := errors.New("repository changed hands")
+	calls := 0
+	_, err = Forget(t.Context(), r, ForgetOptions{SnapshotIDs: []string{id}, AllowEmpty: true, Precondition: func() error {
+		calls++
+		// Another writer cannot take the repository while the check runs.
+		_, lockErr := r.AcquireExclusiveLock("claim", false)
+		require.ErrorIs(lockErr, ErrRepoLocked)
+		return refused
+	}})
+	require.ErrorIs(err, refused)
+	require.Equal(1, calls)
+	_, err = r.LoadManifest(id)
+	require.NoError(err)
+
+	result, err := Forget(t.Context(), r, ForgetOptions{SnapshotIDs: []string{id}, AllowEmpty: true, Precondition: func() error { return nil }})
+	require.NoError(err)
+	require.Equal([]string{id}, result.Forgotten)
 }
 
 func TestForgetRejectsSymlinkedSnapshots(t *testing.T) {
