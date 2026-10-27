@@ -30,9 +30,11 @@ func DefaultDir() (string, error) {
 // Serve prints its loopback URL to stderr after loading the model and publishing
 // its runtime record. Cancellation closes connections and waits for active
 // inference before native cleanup.
-func Serve(ctx context.Context, opts Options) error { return serve(ctx, opts, loadModel) }
+func Serve(ctx context.Context, opts Options) error {
+	return serve(ctx, opts, loadModel, daemon.Endpoint.ListenContext)
+}
 
-func serve(ctx context.Context, opts Options, load func(context.Context, string, string) (engine, error)) (err error) {
+func serve(ctx context.Context, opts Options, load func(context.Context, string, string) (engine, error), listen func(daemon.Endpoint, context.Context) (net.Listener, error)) (err error) {
 	if opts.DataDir == "" {
 		opts.DataDir, err = DefaultDir()
 		if err != nil {
@@ -69,7 +71,7 @@ func serve(ctx context.Context, opts Options, load func(context.Context, string,
 			err = errors.Join(err, os.Remove(path))
 		}
 	}()
-	listener, err := ep.ListenContext(ctx)
+	listener, err := listen(ep, ctx)
 	if err != nil {
 		return err
 	}

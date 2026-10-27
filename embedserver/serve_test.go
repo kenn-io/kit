@@ -1,16 +1,15 @@
 package embedserver
 
 import (
-	"bufio"
 	"context"
-	json "encoding/json/v2"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -27,21 +26,27 @@ func TestServeDiscoveryAndCancellation(t *testing.T) {
 	defer func() { os.Stderr = stderr; writer.Close(); reader.Close() }()
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	entered, finished := make(chan struct{}), make(chan struct{})
+	entered, canceled, finished, release := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
+	finish := sync.OnceFunc(func() { close(release) })
+	defer finish()
+	closed := make(chan struct{})
 	closedAfterInference := false
 	e := &fakeEngine{run: func(ctx context.Context, _ string) ([]float32, int, error) {
 		close(entered)
 		<-ctx.Done()
+		close(canceled)
+		<-release
 		close(finished)
 		return nil, 0, ctx.Err()
 	}, onClose: func() {
+		close(closed)
 		select {
 		case <-finished:
 			closedAfterInference = true
 		default:
 		}
 	}}
-	store, record, done := startServe(t, ctx, e)
+	store, record, done := startServe(t, ctx, e, daemon.Endpoint.ListenContext)
 	requestCtx, stopRequest := context.WithCancel(t.Context())
 	defer stopRequest()
 	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, record.Endpoint().BaseURL()+"/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text","input":"x"}`))
@@ -60,6 +65,14 @@ func TestServeDiscoveryAndCancellation(t *testing.T) {
 		require.FailNow(t, "inference did not start")
 	}
 	cancel()
+	require.ErrorIs(t, <-requestDone, io.EOF)
+	<-canceled
+	select {
+	case <-closed:
+		require.FailNow(t, "model closed before inference returned")
+	default:
+	}
+	finish()
 	select {
 	case err := <-done:
 		require.NoError(t, err)
@@ -67,7 +80,6 @@ func TestServeDiscoveryAndCancellation(t *testing.T) {
 		require.FailNow(t, "cancellation did not drain inference")
 	}
 	assert.True(t, closedAfterInference)
-	<-requestDone
 	require.NoError(t, writer.Close())
 	printed, err := io.ReadAll(reader)
 	require.NoError(t, err)
@@ -77,78 +89,112 @@ func TestServeDiscoveryAndCancellation(t *testing.T) {
 	assert.Empty(t, records)
 }
 
-func TestServeStartupFailure(t *testing.T) {
-	load := func(context.Context, string, string) (engine, error) {
-		return nil, errors.New("model unavailable")
+func TestServeRejectsStartup(t *testing.T) {
+	for _, tc := range []struct {
+		name, listen, message string
+		loaded                bool
+	}{
+		{"load failure", "", "model unavailable", true},
+		{"non-loopback", "0.0.0.0:0", "not loopback", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			err := serve(t.Context(), Options{DataDir: t.TempDir(), Listen: tc.listen}, func(context.Context, string, string) (engine, error) {
+				called = true
+				return nil, errors.New("model unavailable")
+			}, daemon.Endpoint.ListenContext)
+			require.ErrorContains(t, err, tc.message)
+			assert.Equal(t, tc.loaded, called)
+		})
 	}
-	require.EqualError(t, serve(t.Context(), Options{DataDir: t.TempDir()}, load), "model unavailable")
-}
-
-func TestServeLoopbackOnly(t *testing.T) {
-	called := false
-	err := serve(t.Context(), Options{DataDir: t.TempDir(), Listen: "0.0.0.0:0"}, func(context.Context, string, string) (engine, error) {
-		called = true
-		return nil, errors.New("loader reached")
-	})
-	require.ErrorContains(t, err, "not loopback")
-	assert.False(t, called)
 }
 
 func TestServeCancellationInterruptsResponse(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	e := &fakeEngine{run: func(context.Context, string) ([]float32, int, error) {
-		vector := make([]float32, 768)
-		for i := range vector {
-			vector[i] = float32(i + 1)
+	var block atomic.Bool
+	writing := make(chan *blockedConn, 1)
+	listen := func(ep daemon.Endpoint, ctx context.Context) (net.Listener, error) {
+		listener, err := ep.ListenContext(ctx)
+		return &blockedListener{Listener: listener, block: &block, writing: writing}, err
+	}
+	_, record, done := startServe(t, ctx, new(fakeEngine), listen)
+	block.Store(true)
+	requestCtx, stopRequest := context.WithCancel(t.Context())
+	defer stopRequest()
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, record.Endpoint().BaseURL()+"/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text","input":"x"}`))
+	require.NoError(t, err)
+	requestDone := make(chan error, 1)
+	go func() {
+		res, err := http.DefaultClient.Do(req)
+		if err == nil {
+			res.Body.Close()
 		}
-		return vector, 7, nil
-	}}
-	_, record, done := startServe(t, ctx, e)
-	address, err := net.ResolveTCPAddr("tcp", record.Address)
-	require.NoError(t, err)
-	conn, err := net.DialTCP("tcp", nil, address)
-	require.NoError(t, err)
-	defer conn.Close()
-	require.NoError(t, conn.SetReadBuffer(1024))
-	require.NoError(t, conn.SetDeadline(time.Now().Add(10*time.Second)))
-	// Read only the headers of a multi-megabyte response through a small
-	// receive buffer, leaving the server writing to a stalled reader.
-	body, err := json.Marshal(map[string]any{"model": "nomic-embed-text", "input": make([]string, 256)})
-	require.NoError(t, err)
-	_, err = fmt.Fprintf(conn, "POST /v1/embeddings HTTP/1.1\r\nHost: example.com\r\nContent-Length: %d\r\n\r\n%s", len(body), body)
-	require.NoError(t, err)
-	res, err := http.ReadResponse(bufio.NewReader(conn), nil)
-	require.NoError(t, err)
-	defer func() { conn.Close(); res.Body.Close() }()
-	require.Equal(t, http.StatusOK, res.StatusCode)
-	// The stalled response must not retain the inference gate.
-	requestCtx, stop := context.WithTimeout(t.Context(), 5*time.Second)
-	defer stop()
-	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, record.Endpoint().BaseURL()+"/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text","input":"next"}`))
-	require.NoError(t, err)
-	next, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	next.Body.Close()
-	assert.Equal(t, http.StatusOK, next.StatusCode)
+		requestDone <- err
+	}()
+	var conn *blockedConn
+	select {
+	case conn = <-writing:
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "response did not reach blocked Write")
+	}
 	cancel()
 	select {
 	case err := <-done:
 		require.NoError(t, err)
 	case <-time.After(5 * time.Second):
-		require.FailNow(t, "stalled response prevented shutdown")
+		require.FailNow(t, "blocked response prevented shutdown")
 	}
-	require.NoError(t, conn.SetReadBuffer(1<<20))
-	_, err = io.Copy(io.Discard, conn)
-	assert.NotErrorIs(t, err, os.ErrDeadlineExceeded, "shutdown left the stalled connection open")
+	select {
+	case <-conn.closed:
+	default:
+		assert.Fail(t, "shutdown did not close the connection blocked in Write")
+	}
+	require.ErrorIs(t, <-requestDone, io.EOF)
 }
 
-func startServe(t *testing.T, ctx context.Context, e engine) (daemon.RuntimeStore, daemon.RuntimeRecord, <-chan error) {
+type blockedListener struct {
+	net.Listener
+	block   *atomic.Bool
+	writing chan *blockedConn
+}
+
+func (l *blockedListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	return &blockedConn{Conn: conn, block: l.block, writing: l.writing, closed: make(chan struct{})}, nil
+}
+
+type blockedConn struct {
+	net.Conn
+	block   *atomic.Bool
+	writing chan *blockedConn
+	closed  chan struct{}
+	once    sync.Once
+}
+
+func (c *blockedConn) Write(p []byte) (int, error) {
+	if c.block.Load() {
+		c.writing <- c
+		<-c.closed
+		return 0, net.ErrClosed
+	}
+	return c.Conn.Write(p)
+}
+
+func (c *blockedConn) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return c.Conn.Close()
+}
+
+func startServe(t *testing.T, ctx context.Context, e engine, listen func(daemon.Endpoint, context.Context) (net.Listener, error)) (daemon.RuntimeStore, daemon.RuntimeRecord, <-chan error) {
 	t.Helper()
 	dir := t.TempDir()
 	done := make(chan error, 1)
 	go func() {
-		done <- serve(ctx, Options{DataDir: dir}, func(context.Context, string, string) (engine, error) { return e, nil })
+		done <- serve(ctx, Options{DataDir: dir}, func(context.Context, string, string) (engine, error) { return e, nil }, listen)
 	}()
 	store := daemon.RuntimeStore{Dir: dir, Prefix: "kit-embed"}
 	var record daemon.RuntimeRecord

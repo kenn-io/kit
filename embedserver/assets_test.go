@@ -48,11 +48,6 @@ func TestCacheRejectsBadDownloads(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(tc.body)) }))
 			defer server.Close()
 			a := asset{"model", server.URL, hex.EncodeToString(digest[:]), tc.size}
-			if tc.name == "too long" {
-				reader := strings.NewReader("valid trailing")
-				require.Error(t, verify(reader, io.Discard, a))
-				assert.Equal(t, 9, reader.Len())
-			}
 			require.Error(t, cacheAsset(t.Context(), server.Client(), dir, a))
 			got, err := os.ReadFile(path)
 			require.NoError(t, err)
@@ -62,6 +57,12 @@ func TestCacheRejectsBadDownloads(t *testing.T) {
 			assert.Len(t, entries, 1)
 		})
 	}
+}
+
+func TestVerifyStopsAfterSizeLimit(t *testing.T) {
+	reader := strings.NewReader("valid trailing")
+	require.Error(t, verify(reader, io.Discard, asset{size: 4}))
+	assert.Equal(t, 9, reader.Len())
 }
 
 func TestCacheInterrupted(t *testing.T) {
@@ -87,7 +88,7 @@ func TestCacheInterrupted(t *testing.T) {
 	assert.Empty(t, entries)
 }
 
-func TestCacheModelWithCustomDefaultTransport(t *testing.T) {
+func TestCacheModelUsesPinnedURLAndCacheLayout(t *testing.T) {
 	previousTransport, previousAssets := http.DefaultTransport, modelAssets
 	called := false
 	http.DefaultTransport = transportFunc(func(req *http.Request) (*http.Response, error) {

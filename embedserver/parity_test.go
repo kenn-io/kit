@@ -39,6 +39,7 @@ func TestNativeParity(t *testing.T) {
 	server := httptest.NewServer(&handler{engine: e, gate: make(chan struct{}, 1)})
 	defer server.Close()
 	for _, sample := range fixture.Samples {
+		require.Len(t, sample.Vector, 768)
 		if len(sample.IDs) > 0 {
 			assert.Equal(t, sample.IDs, e.(*model).tokenizer.encode(sample.Input), sample.Input)
 		}

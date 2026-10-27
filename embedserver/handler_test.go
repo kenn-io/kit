@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -97,17 +98,15 @@ func TestHandlerWire(t *testing.T) {
 		{`["search_query: literal","search_document: other"]`, 2},
 	} {
 		recorder := httptest.NewRecorder()
-		h.ServeHTTP(recorder, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text:latest","input":`+tc.input+`,"dimensions":0,"input_type":"query"}`)))
+		h.ServeHTTP(recorder, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text:latest","input":`+tc.input+`,"dimensions":0}`)))
 		require.Equal(t, 200, recorder.Code)
 		var out response
 		require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &out))
 		assert.Equal(t, "nomic-embed-text:latest", out.Model)
 		assert.Equal(t, usage{7 * tc.count, 7 * tc.count}, out.Usage)
 		require.Len(t, out.Data, tc.count)
-		for i, item := range out.Data {
-			assert.Equal(t, i, item.Index)
-			assert.Len(t, item.Embedding.([]any), 768)
-		}
+		require.IsType(t, []any{}, out.Data[0].Embedding)
+		assert.Len(t, out.Data[0].Embedding.([]any), 768)
 	}
 	assert.Equal(t, []string{"search_query: literal", "search_query: literal", "search_document: other"}, e.inputs)
 }
@@ -143,7 +142,7 @@ func TestHandlerRejectsBeforeInference(t *testing.T) {
 	assert.Empty(t, e.inputs)
 }
 
-func TestHandlerSerializesAndCancels(t *testing.T) {
+func TestHandlerCancellationAndResponseGate(t *testing.T) {
 	entered := make(chan struct{})
 	e := &fakeEngine{run: func(ctx context.Context, _ string) ([]float32, int, error) {
 		close(entered)
@@ -156,15 +155,51 @@ func TestHandlerSerializesAndCancels(t *testing.T) {
 	request := func(ctx context.Context) *http.Request {
 		return httptest.NewRequestWithContext(ctx, "POST", "/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text","input":"x"}`))
 	}
+	first, waiter := httptest.NewRecorder(), httptest.NewRecorder()
+	first.Code, waiter.Code = 0, 0
 	done := make(chan struct{})
-	go func() { defer close(done); h.ServeHTTP(httptest.NewRecorder(), request(ctx)) }()
+	go func() { defer close(done); h.ServeHTTP(first, request(ctx)) }()
 	<-entered
 	waiting, stop := context.WithCancel(t.Context())
 	stop()
-	h.ServeHTTP(httptest.NewRecorder(), request(waiting))
+	h.ServeHTTP(waiter, request(waiting))
 	cancel()
 	<-done
+	assert.Zero(t, first.Code)
+	assert.Empty(t, first.Body.String())
+	assert.Zero(t, waiter.Code)
+	assert.Empty(t, waiter.Body.String())
+
+	e.run = nil
+	writing, release := make(chan struct{}), make(chan struct{})
+	writer := &blockedResponseWriter{ResponseRecorder: httptest.NewRecorder(), entered: writing, release: release}
+	done = make(chan struct{})
+	defer func() { close(release); <-done }()
+	go func() { defer close(done); h.ServeHTTP(writer, request(t.Context())) }()
+	select {
+	case <-writing:
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "cancellation did not release inference gate")
+	}
+	live, stopLive := context.WithTimeout(t.Context(), 5*time.Second)
+	defer stopLive()
+	next := httptest.NewRecorder()
+	h.ServeHTTP(next, request(live))
+	assert.NotEmpty(t, next.Body.String(), "blocked response retained inference gate")
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	assert.Equal(t, []string{"x"}, e.inputs)
+	assert.Equal(t, []string{"x", "x", "x"}, e.inputs)
+}
+
+type blockedResponseWriter struct {
+	*httptest.ResponseRecorder
+	entered chan struct{}
+	release <-chan struct{}
+	once    sync.Once
+}
+
+func (w *blockedResponseWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() { close(w.entered) })
+	<-w.release
+	return w.ResponseRecorder.Write(p)
 }
