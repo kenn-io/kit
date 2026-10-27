@@ -5,7 +5,6 @@ import (
 	"deadlineother"
 	"net/http"
 	"testing"
-	"testing/synctest"
 	"time"
 )
 
@@ -46,10 +45,4 @@ func TestHandoffs(t *testing.T) {
 	c.Timeout += shortWait
 	c.RetryWait = 20
 	deadlineother.Wait(shortWait)
-	synctest.Test(t, func(t *testing.T) {
-		_ = []*config{{Timeout: shortWait}}
-		c.Timeout = shortWait
-		helper.Wait(shortWait)
-		_ = time.Now().Add(shortWait)
-	})
 }

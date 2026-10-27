@@ -2,6 +2,7 @@ package deadline
 
 import (
 	"context"
+	"deadline/helper"
 	"errors"
 	"testing"
 	"testing/synctest"
@@ -56,6 +57,11 @@ func TestShortBudgetsInsideBubble(t *testing.T) {
 		<-time.After(75 * time.Millisecond)
 		time.NewTimer(20 * time.Millisecond).Stop()
 		require.Eventually(t, ready, 300*time.Millisecond, time.Millisecond)
+		_ = []*config{{Timeout: shortWait}}
+		c := config{}
+		c.Timeout = shortWait
+		helper.Wait(shortWait)
+		_ = time.Now().Add(shortWait)
 	})
 }
 
