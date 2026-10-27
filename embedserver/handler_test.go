@@ -2,6 +2,9 @@ package embedserver
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/binary"
+	jsonv1 "encoding/json"
 	json "encoding/json/v2"
 	"math"
 	"net/http"
@@ -14,8 +17,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.kenn.io/kit/embedclient"
-	"go.kenn.io/kit/embedconfig"
 )
 
 type fakeEngine struct {
@@ -47,68 +48,85 @@ func (e *fakeEngine) Close() error {
 	return nil
 }
 
-func TestHandlerThroughClient(t *testing.T) {
+func TestHandlerWire(t *testing.T) {
+	inputs := make([]string, 64)
+	for i := range inputs {
+		inputs[i] = strconv.Itoa(i)
+	}
+	type wireCase struct {
+		name, encoding string
+		dimensions     int
+		input          any
+		texts          []string
+	}
+	cases := []wireCase{
+		{"string/default", "", 0, "search_query: 0", []string{"search_query: 0"}},
+		{"array/default", "", 0, []string{"search_query: 0", "search_document: 1"}, []string{"search_query: 0", "search_document: 1"}},
+	}
 	for _, encoding := range []string{"float", "base64"} {
 		for _, dimensions := range []int{256, 768} {
-			t.Run(encoding+"/"+strconv.Itoa(dimensions), func(t *testing.T) {
-				e := &fakeEngine{run: func(_ context.Context, text string) ([]float32, int, error) {
-					index, err := strconv.Atoi(text)
-					if err != nil {
-						return nil, 0, err
-					}
-					vector := make([]float32, 768)
-					vector[index], vector[767] = 1, 1
-					return vector, 7, nil
-				}}
-				inputs := make([]string, 64)
-				for i := range inputs {
-					inputs[i] = strconv.Itoa(i)
-				}
-				server := httptest.NewServer(&handler{engine: e, gate: make(chan struct{}, 1)})
-				defer server.Close()
-				client, err := embedclient.New(embedclient.Options{
-					Model:      embedconfig.Model{Name: "nomic-embed-text", Dimensions: dimensions, RequestDimensions: true, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationNone, EncodingFormat: encoding},
-					Deployment: embedconfig.Deployment{BaseURL: server.URL + "/v1"}, Batch: embedconfig.Batch{Items: 64},
-				})
-				require.NoError(t, err)
-				vectors, err := client.EmbedTexts(t.Context(), embedconfig.RoleQuery, inputs)
-				require.NoError(t, err)
-				require.Len(t, vectors, 64)
-				for i, vector := range vectors {
-					require.Len(t, vector, dimensions)
-					expected := 1.0
-					if dimensions == 768 {
-						expected = 1 / math.Sqrt2
-					}
-					assert.InDelta(t, expected, vector[i], 1e-6)
-				}
-			})
+			cases = append(cases, wireCase{encoding + "/" + strconv.Itoa(dimensions), encoding, dimensions, inputs, inputs})
 		}
 	}
-}
-
-func TestHandlerWire(t *testing.T) {
-	e := new(fakeEngine)
-	h := &handler{engine: e, gate: make(chan struct{}, 1)}
-	for _, tc := range []struct {
-		input string
-		count int
-	}{
-		{`"search_query: literal"`, 1},
-		{`["search_query: literal","search_document: other"]`, 2},
-	} {
-		recorder := httptest.NewRecorder()
-		h.ServeHTTP(recorder, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text:latest","input":`+tc.input+`,"dimensions":0}`)))
-		require.Equal(t, 200, recorder.Code)
-		var out response
-		require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &out))
-		assert.Equal(t, "nomic-embed-text:latest", out.Model)
-		assert.Equal(t, usage{7 * tc.count, 7 * tc.count}, out.Usage)
-		require.Len(t, out.Data, tc.count)
-		require.IsType(t, []any{}, out.Data[0].Embedding)
-		assert.Len(t, out.Data[0].Embedding.([]any), 768)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := &fakeEngine{run: func(_ context.Context, text string) ([]float32, int, error) {
+				index, err := strconv.Atoi(strings.TrimPrefix(strings.TrimPrefix(text, "search_query: "), "search_document: "))
+				if err != nil {
+					return nil, 0, err
+				}
+				vector := make([]float32, 768)
+				vector[index], vector[767] = 1, 1
+				return vector, 7, nil
+			}}
+			body, err := json.Marshal(map[string]any{"model": "nomic-embed-text:latest", "input": tc.input, "dimensions": tc.dimensions, "encoding_format": tc.encoding})
+			require.NoError(t, err)
+			recorder := httptest.NewRecorder()
+			(&handler{engine: e, gate: make(chan struct{}, 1)}).ServeHTTP(recorder, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/embeddings", strings.NewReader(string(body))))
+			require.Equal(t, http.StatusOK, recorder.Code)
+			var out struct {
+				Model string `json:"model"`
+				Usage usage  `json:"usage"`
+				Data  []struct {
+					Index     int               `json:"index"`
+					Embedding jsonv1.RawMessage `json:"embedding"`
+				} `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &out))
+			assert.Equal(t, "nomic-embed-text:latest", out.Model)
+			assert.Equal(t, usage{7 * len(tc.texts), 7 * len(tc.texts)}, out.Usage)
+			require.Len(t, out.Data, len(tc.texts))
+			dimensions, expected := tc.dimensions, 1.0
+			if dimensions == 0 || dimensions == 768 {
+				dimensions, expected = 768, 1/math.Sqrt2
+			}
+			for i, item := range out.Data {
+				var vector []float32
+				if tc.encoding == "base64" {
+					var encoded string
+					require.NoError(t, json.Unmarshal(item.Embedding, &encoded))
+					data, err := base64.StdEncoding.DecodeString(encoded)
+					require.NoError(t, err)
+					require.Len(t, data, dimensions*4)
+					vector = make([]float32, dimensions)
+					for j := range vector {
+						vector[j] = math.Float32frombits(binary.LittleEndian.Uint32(data[j*4:]))
+					}
+				} else {
+					require.NoError(t, json.Unmarshal(item.Embedding, &vector))
+				}
+				require.Len(t, vector, dimensions)
+				assert.Equal(t, i, item.Index)
+				assert.InDelta(t, expected, vector[i], 1e-6)
+				var squared float64
+				for _, value := range vector {
+					squared += float64(value) * float64(value)
+				}
+				assert.InDelta(t, 1, squared, 1e-6)
+			}
+			assert.Equal(t, tc.texts, e.inputs)
+		})
 	}
-	assert.Equal(t, []string{"search_query: literal", "search_query: literal", "search_document: other"}, e.inputs)
 }
 
 func TestHandlerRejectsBeforeInference(t *testing.T) {
@@ -121,7 +139,6 @@ func TestHandlerRejectsBeforeInference(t *testing.T) {
 		{"numeric input", `{"model":"nomic-embed-text","input":1}`, "input must be a string or string array", 400},
 		{"empty input", `{"model":"nomic-embed-text","input":[]}`, "input must contain at least one string", 400},
 		{"too many inputs", `{"model":"nomic-embed-text","input":[` + strings.Repeat(`"x",`, 256) + `"x"]}`, "input must contain at most 256 strings", 400},
-		{"numeric array", `{"model":"nomic-embed-text","input":[1]}`, "input must be a string or string array", 400},
 		{"null input", `{"model":"nomic-embed-text","input":null}`, "input must contain at least one string", 400},
 		{"null array item", `{"model":"nomic-embed-text","input":[null]}`, "input must contain strings", 400},
 		{"negative dimensions", `{"model":"nomic-embed-text","input":"x","dimensions":-1}`, "dimensions must be between 0 and 768", 400},

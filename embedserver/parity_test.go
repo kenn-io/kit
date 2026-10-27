@@ -1,11 +1,8 @@
 package embedserver
 
 import (
-	"bytes"
 	json "encoding/json/v2"
 	"math"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"testing"
 
@@ -36,32 +33,14 @@ func TestNativeParity(t *testing.T) {
 	e, err := loadModel(t.Context(), dir, library)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, e.Close()) }()
-	server := httptest.NewServer(&handler{engine: e, gate: make(chan struct{}, 1)})
-	defer server.Close()
 	for _, sample := range fixture.Samples {
 		require.Len(t, sample.Vector, 768)
 		if len(sample.IDs) > 0 {
 			assert.Equal(t, sample.IDs, e.(*model).tokenizer.encode(sample.Input), sample.Input)
 		}
-		body, err := json.Marshal(map[string]any{"model": "nomic-embed-text", "input": sample.Input})
+		actual, tokens, err := e.embed(t.Context(), sample.Input)
 		require.NoError(t, err)
-		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL+"/v1/embeddings", bytes.NewReader(body))
-		require.NoError(t, err)
-		res, err := server.Client().Do(req)
-		require.NoError(t, err)
-		require.Equal(t, http.StatusOK, res.StatusCode)
-		var out struct {
-			Data []struct {
-				Embedding []float32 `json:"embedding"`
-			} `json:"data"`
-			Usage usage `json:"usage"`
-		}
-		err = json.UnmarshalRead(res.Body, &out)
-		res.Body.Close()
-		require.NoError(t, err)
-		assert.Equal(t, usage{sample.Tokens, sample.Tokens}, out.Usage)
-		require.Len(t, out.Data, 1)
-		actual := out.Data[0].Embedding
+		assert.Equal(t, sample.Tokens, tokens)
 		require.Len(t, actual, 768)
 
 		var dot, left, right float64
