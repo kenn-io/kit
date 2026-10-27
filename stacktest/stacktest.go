@@ -22,6 +22,7 @@ import (
 //
 // Fail the test after Dump so the test runner shows the log.
 // Call Dump while the test is still running; logging after completion panics.
+// The log can be large when many goroutines are running.
 func Dump(tb testing.TB) {
 	tb.Helper()
 	var stacks bytes.Buffer

@@ -14,6 +14,39 @@ import (
 
 func blockedWorker(release <-chan struct{}) { <-release }
 
+type blockingTB struct {
+	testing.TB
+	logging chan<- struct{}
+	release <-chan struct{}
+}
+
+func (tb *blockingTB) Logf(string, ...any) {
+	close(tb.logging)
+	<-tb.release
+}
+
+func TestDumpWaitsForLogging(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		logging := make(chan struct{})
+		release := make(chan struct{})
+		tb := &blockingTB{TB: t, logging: logging, release: release}
+		returned := make(chan struct{})
+		go func() {
+			stacktest.Dump(tb)
+			close(returned)
+		}()
+		<-logging
+		synctest.Wait()
+		select {
+		case <-returned:
+			assert.Fail(t, "Dump returned while Logf was blocked")
+		default:
+		}
+		close(release)
+		<-returned
+	})
+}
+
 func TestDumpFailureOutput(t *testing.T) {
 	if os.Getenv("STACKTEST_FAILURE_HELPER") == "1" {
 		synctest.Test(t, func(t *testing.T) {
