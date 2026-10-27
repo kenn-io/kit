@@ -54,21 +54,21 @@ func TestHandlerWire(t *testing.T) {
 		inputs[i] = strconv.Itoa(i)
 	}
 	type wireCase struct {
-		name, encoding string
-		dimensions     int
-		input          any
-		texts          []string
+		name, model, encoding string
+		dimensions            int
+		input                 any
+		texts                 []string
 	}
 	cases := []wireCase{
-		{"string/default", "", 0, "search_query: 0", []string{"search_query: 0"}},
-		{"array/default", "", 0, []string{"search_query: 0", "search_document: 1"}, []string{"search_query: 0", "search_document: 1"}},
+		{"string/default", "nomic-embed-text:v1.5", "", 0, "search_query: 0", []string{"search_query: 0"}},
+		{"array/default", "nomic-embed-text:latest", "", 0, []string{"search_query: 0", "search_document: 1"}, []string{"search_query: 0", "search_document: 1"}},
 	}
 	for _, encoding := range []string{"float", "base64"} {
 		for _, dimensions := range []int{256, 768} {
 			if encoding == "float" && dimensions == 768 {
 				continue
 			}
-			cases = append(cases, wireCase{encoding + "/" + strconv.Itoa(dimensions), encoding, dimensions, inputs, inputs})
+			cases = append(cases, wireCase{encoding + "/" + strconv.Itoa(dimensions), "nomic-embed-text:latest", encoding, dimensions, inputs, inputs})
 		}
 	}
 	for _, tc := range cases {
@@ -82,7 +82,7 @@ func TestHandlerWire(t *testing.T) {
 				vector[index], vector[767] = 1, 1
 				return vector, 7, nil
 			}}
-			body, err := json.Marshal(map[string]any{"model": "nomic-embed-text:latest", "input": tc.input, "dimensions": tc.dimensions, "encoding_format": tc.encoding})
+			body, err := json.Marshal(map[string]any{"model": tc.model, "input": tc.input, "dimensions": tc.dimensions, "encoding_format": tc.encoding})
 			require.NoError(t, err)
 			recorder := httptest.NewRecorder()
 			(&handler{engine: e, gate: make(chan struct{}, 1)}).ServeHTTP(recorder, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/embeddings", strings.NewReader(string(body))))
@@ -96,7 +96,7 @@ func TestHandlerWire(t *testing.T) {
 				} `json:"data"`
 			}
 			require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &out))
-			assert.Equal(t, "nomic-embed-text:latest", out.Model)
+			assert.Equal(t, tc.model, out.Model)
 			assert.Equal(t, usage{7 * len(tc.texts), 7 * len(tc.texts)}, out.Usage)
 			require.Len(t, out.Data, len(tc.texts))
 			dimensions, expected := tc.dimensions, 1.0
@@ -130,14 +130,6 @@ func TestHandlerWire(t *testing.T) {
 			assert.Equal(t, tc.texts, e.inputs)
 		})
 	}
-}
-
-func TestHandlerVersionedModel(t *testing.T) {
-	e := new(fakeEngine)
-	recorder := httptest.NewRecorder()
-	(&handler{engine: e, gate: make(chan struct{}, 1)}).ServeHTTP(recorder, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text:v1.5","input":"x"}`)))
-	require.Equal(t, http.StatusOK, recorder.Code)
-	assert.Equal(t, []string{"x"}, e.inputs)
 }
 
 func TestHandlerRejectsBeforeInference(t *testing.T) {

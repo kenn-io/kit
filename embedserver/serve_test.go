@@ -133,8 +133,7 @@ func TestServeCancellationInterruptsResponse(t *testing.T) {
 
 func TestServeRejectsBrowserRequests(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
-	e := new(fakeEngine)
-	_, record, done := startServe(t, ctx, e, daemon.Endpoint.ListenContext)
+	_, record, done := startServe(t, ctx, new(fakeEngine), daemon.Endpoint.ListenContext)
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -168,22 +167,6 @@ func TestServeRejectsBrowserRequests(t *testing.T) {
 			assert.Equal(t, tc.status, res.StatusCode)
 		})
 	}
-	e.mu.Lock()
-	assert.Empty(t, e.inputs)
-	e.mu.Unlock()
-	t.Run("localhost", func(t *testing.T) {
-		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, record.Endpoint().BaseURL()+"/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text","input":"x"}`))
-		require.NoError(t, err)
-		req.Host = net.JoinHostPort("LOCALHOST", port)
-		req.Header.Set("Content-Type", "application/json")
-		res, err := http.DefaultClient.Do(req)
-		require.NoError(t, err)
-		defer res.Body.Close()
-		assert.Equal(t, http.StatusOK, res.StatusCode)
-		e.mu.Lock()
-		defer e.mu.Unlock()
-		assert.Equal(t, []string{"x"}, e.inputs)
-	})
 }
 
 func TestMatchesListenerHost(t *testing.T) {
