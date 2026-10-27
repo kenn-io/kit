@@ -60,6 +60,9 @@ func serve(ctx context.Context, opts Options, load func(context.Context, string,
 		}
 		opts.Library = filepath.Join(filepath.Dir(executable), libraryName())
 	}
+	if _, err := fmt.Fprintln(os.Stderr, "Loading nomic-embed-text model..."); err != nil {
+		return err
+	}
 	engine, err := load(ctx, opts.DataDir, opts.Library)
 	if err != nil {
 		return err

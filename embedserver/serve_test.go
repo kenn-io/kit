@@ -72,7 +72,7 @@ func TestServeDiscoveryAndCancellation(t *testing.T) {
 	require.NoError(t, writer.Close())
 	printed, err := io.ReadAll(reader)
 	require.NoError(t, err)
-	assert.Equal(t, record.Endpoint().BaseURL()+"/v1\n", string(printed))
+	assert.Equal(t, "Loading nomic-embed-text model...\n"+record.Endpoint().BaseURL()+"/v1\n", string(printed))
 	records, err := store.List()
 	require.NoError(t, err)
 	assert.Empty(t, records)
