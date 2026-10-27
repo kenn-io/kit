@@ -98,8 +98,13 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "inference failed", http.StatusInternalServerError)
 		return
 	}
+	data, err := jsonv2.Marshal(out)
+	if err != nil {
+		http.Error(w, "encode failed", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = jsonv2.MarshalWrite(w, out)
+	_, _ = w.Write(data)
 }
 
 func (h *handler) embeddings(ctx context.Context, req request, inputs []string) (response, error) {

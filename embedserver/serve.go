@@ -56,6 +56,13 @@ func serve(ctx context.Context, opts Options, load func(context.Context, string,
 		return errors.New("embeddings requires a loopback TCP endpoint")
 	}
 	store := daemon.RuntimeStore{Dir: opts.DataDir, Prefix: "kit-embed"}
+	lockCtx, cancelLock := context.WithTimeout(ctx, time.Second)
+	release, err := store.AcquireOwnerLock(lockCtx)
+	cancelLock()
+	if err != nil {
+		return fmt.Errorf("cannot own %s, another kennembed may be running: %w", opts.DataDir, err)
+	}
+	defer release()
 	if opts.Library == "" {
 		executable, e := os.Executable()
 		if e != nil {

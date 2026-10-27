@@ -98,6 +98,24 @@ func TestServeRejectsStartup(t *testing.T) {
 	}
 }
 
+func TestServeRejectsSecondOwner(t *testing.T) {
+	store := daemon.RuntimeStore{Dir: t.TempDir(), Prefix: "kit-embed"}
+	release, err := store.AcquireOwnerLock(t.Context())
+	require.NoError(t, err)
+	defer release()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	loaded := false
+	err = serve(ctx, Options{DataDir: store.Dir}, func(context.Context, string, string) (engine, error) {
+		loaded = true
+		return nil, errors.New("model must not load")
+	}, daemon.Endpoint.ListenContext)
+	require.ErrorContains(t, err, "cannot own "+store.Dir+", another kennembed may be running")
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.NoError(t, ctx.Err(), "owner lock wait exceeded its startup timeout")
+	assert.False(t, loaded)
+}
+
 func TestServeCancellationInterruptsResponse(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()

@@ -160,6 +160,19 @@ func TestHandlerRejectsBeforeInference(t *testing.T) {
 	assert.Empty(t, e.inputs)
 }
 
+func TestHandlerEncodeFailure(t *testing.T) {
+	e := &fakeEngine{run: func(context.Context, string) ([]float32, int, error) {
+		vector := make([]float32, 768)
+		vector[0] = float32(math.NaN())
+		return vector, 7, nil
+	}}
+	recorder := httptest.NewRecorder()
+	h := &handler{engine: e, gate: make(chan struct{}, 1)}
+	h.ServeHTTP(recorder, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text","input":"x"}`)))
+	assert.Equal(t, http.StatusInternalServerError, recorder.Code)
+	assert.Equal(t, "encode failed\n", recorder.Body.String())
+}
+
 func TestHandlerLargeBatch(t *testing.T) {
 	inputs := make([]string, 300)
 	for i := range inputs {
