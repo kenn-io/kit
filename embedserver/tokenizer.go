@@ -118,7 +118,9 @@ next:
 			word.WriteRune(r)
 			continue
 		}
-		r, _ = utf8.DecodeRuneInString(norm.NFD.String(string(r)))
+		if unicode.Is(wordPieceAssigned, r) {
+			r, _ = utf8.DecodeRuneInString(norm.NFD.String(string(r)))
+		}
 		if unicode.IsSpace(r) {
 			flush()
 			continue
