@@ -40,6 +40,7 @@ func (e *fakeEngine) embed(ctx context.Context, text string) ([]float32, int, er
 	v[1] = 4
 	return v, 7, nil
 }
+
 func (e *fakeEngine) Close() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -74,19 +75,21 @@ func TestHandlerThroughClient(t *testing.T) {
 func TestHandlerWire(t *testing.T) {
 	e := new(fakeEngine)
 	h := &handler{engine: e, gate: make(chan struct{}, 1)}
-	for _, input := range []string{`"search_query: literal"`, `["search_query: literal","search_document: other"]`} {
+	for _, tc := range []struct {
+		input string
+		count int
+	}{
+		{`"search_query: literal"`, 1},
+		{`["search_query: literal","search_document: other"]`, 2},
+	} {
 		recorder := httptest.NewRecorder()
-		h.ServeHTTP(recorder, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text:latest","input":`+input+`,"dimensions":0,"input_type":"query"}`)))
+		h.ServeHTTP(recorder, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text:latest","input":`+tc.input+`,"dimensions":0,"input_type":"query"}`)))
 		require.Equal(t, 200, recorder.Code)
 		var out response
 		require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &out))
 		assert.Equal(t, "nomic-embed-text:latest", out.Model)
-		count := 1
-		if strings.HasPrefix(input, "[") {
-			count = 2
-		}
-		assert.Equal(t, usage{7 * count, 7 * count}, out.Usage)
-		require.Len(t, out.Data, count)
+		assert.Equal(t, usage{7 * tc.count, 7 * tc.count}, out.Usage)
+		require.Len(t, out.Data, tc.count)
 		for i, item := range out.Data {
 			assert.Equal(t, i, item.Index)
 			assert.Len(t, item.Embedding.([]any), 768)

@@ -183,10 +183,11 @@ func (o *ort) infer(ctx context.Context, ids []int) ([]float32, error) {
 	var output uintptr
 	status := o.run(o.session, options, pointers[:3], values, 3, pointers[3:], 1, &output)
 	defer o.releaseValue(output)
-	if err := o.check(status); err != nil {
+	err := o.check(status)
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err := ctx.Err(); err != nil {
+	if err != nil {
 		return nil, err
 	}
 	var data unsafe.Pointer

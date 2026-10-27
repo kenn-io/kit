@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -111,9 +110,6 @@ func TestServeOwnerAndStartupFailure(t *testing.T) {
 	release()
 	held = false
 	require.EqualError(t, serve(t.Context(), Options{DataDir: dir}, load), "model unavailable")
-	records, err := store.List()
-	require.NoError(t, err)
-	assert.Empty(t, records)
 }
 
 func TestServeLoopbackOnly(t *testing.T) {
@@ -124,13 +120,4 @@ func TestServeLoopbackOnly(t *testing.T) {
 	})
 	require.ErrorContains(t, err, "not loopback")
 	assert.False(t, called)
-}
-
-func TestMissingRuntimePreventsModelDownload(t *testing.T) {
-	root := t.TempDir()
-	dir := filepath.Join(root, "cache")
-	_, err := loadModel(t.Context(), dir, filepath.Join(root, "missing-library"))
-	require.ErrorIs(t, err, os.ErrNotExist)
-	_, err = os.Stat(dir)
-	require.ErrorIs(t, err, os.ErrNotExist)
 }

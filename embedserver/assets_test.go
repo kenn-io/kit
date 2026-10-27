@@ -31,14 +31,21 @@ func TestCacheVerifiedAndOffline(t *testing.T) {
 
 func TestCacheRejectsBadDownloads(t *testing.T) {
 	digest := sha256.Sum256([]byte("valid"))
-	for _, body := range []string{"wrong", "short data", "va"} {
-		t.Run(body, func(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		size       int64
+	}{
+		{"digest mismatch", "wrong", 5},
+		{"too long", "valid", 4},
+		{"too short", "valid", 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			path := filepath.Join(dir, "model")
 			require.NoError(t, os.WriteFile(path, []byte("old corrupt cache"), 0o600))
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(body)) }))
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(tc.body)) }))
 			defer server.Close()
-			a := asset{"model", server.URL, hex.EncodeToString(digest[:]), 5}
+			a := asset{"model", server.URL, hex.EncodeToString(digest[:]), tc.size}
 			require.Error(t, cacheAsset(t.Context(), server.Client(), dir, a))
 			got, err := os.ReadFile(path)
 			require.NoError(t, err)

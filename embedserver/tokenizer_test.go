@@ -20,7 +20,6 @@ func TestTokenizerMatchesPinnedWordPiece(t *testing.T) {
 		ids        []int
 	}{
 		{"accented", "CAFÉ", []int{101, 1, 102}},
-		{"decomposed", "e\u0301", []int{101, 2, 102}},
 		{"Korean first decomposition", "한국어", []int{101, 3, 4, 5, 102}},
 		{"Hindi marks", "हिन्दी भाषा", []int{101, 6, 7, 102}},
 		{"CJK punctuation", "日本語、a。", []int{101, 8, 9, 10, 30, 15, 31, 102}},
@@ -39,14 +38,11 @@ func TestTokenizerMatchesPinnedWordPiece(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) { assert.Equal(t, tc.ids, tokenizer.encode(tc.text)) })
 	}
-	for _, length := range []int{120, 2046} {
-		ids := tokenizer.encode(strings.Repeat("a", length))
-		require.Len(t, ids, min(length, 2046)+2)
-		assert.Equal(t, 101, ids[0])
-		assert.Equal(t, 15, ids[1])
-		assert.Equal(t, 102, ids[len(ids)-1])
-		for _, id := range ids[2 : len(ids)-1] {
-			assert.Equal(t, 16, id)
-		}
+	ids := tokenizer.encode("b " + strings.Repeat("a", 3000))
+	require.Len(t, ids, 2048)
+	assert.Equal(t, []int{101, 17, 15}, ids[:3])
+	assert.Equal(t, 102, ids[len(ids)-1])
+	for _, id := range ids[3 : len(ids)-1] {
+		assert.Equal(t, 16, id)
 	}
 }

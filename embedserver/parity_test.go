@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,11 +35,17 @@ func TestNativeParity(t *testing.T) {
 	e, err := loadModel(t.Context(), dir, library)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, e.Close()) }()
+	var longInput string
+	var longDuration time.Duration
 	for _, sample := range fixture.Samples {
 		if len(sample.IDs) > 0 {
 			assert.Equal(t, sample.IDs, e.(*model).tokenizer.encode(sample.Input), sample.Input)
 		}
+		started := time.Now()
 		actual, tokens, err := e.embed(t.Context(), sample.Input)
+		if sample.Tokens == 2048 {
+			longInput, longDuration = sample.Input, time.Since(started)
+		}
 		require.NoError(t, err)
 		assert.Equal(t, sample.Tokens, tokens)
 		require.Len(t, actual, 768)
@@ -52,7 +59,13 @@ func TestNativeParity(t *testing.T) {
 		assert.GreaterOrEqual(t, dot/math.Sqrt(left*right), 0.999)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	_, _, err = e.embed(ctx, "search_query: cancelled")
+	defer cancel()
+	require.NotEmpty(t, longInput)
+	timer := time.AfterFunc(100*time.Millisecond, cancel)
+	defer timer.Stop()
+	started := time.Now()
+	vector, _, err := e.embed(ctx, longInput)
 	require.ErrorIs(t, err, context.Canceled)
+	assert.Nil(t, vector)
+	assert.Less(t, time.Since(started), longDuration/2, "cancellation must interrupt native inference")
 }
