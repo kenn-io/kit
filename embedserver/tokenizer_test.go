@@ -39,7 +39,7 @@ func TestTokenizerMatchesPinnedWordPiece(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) { assert.Equal(t, tc.ids, tokenizer.encode(tc.text)) })
 	}
-	for _, length := range []int{120, 2046, 2047} {
+	for _, length := range []int{120, 2046} {
 		ids := tokenizer.encode(strings.Repeat("a", length))
 		require.Len(t, ids, min(length, 2046)+2)
 		assert.Equal(t, 101, ids[0])

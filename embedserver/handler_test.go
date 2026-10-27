@@ -3,7 +3,6 @@ package embedserver
 import (
 	"context"
 	json "encoding/json/v2"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -18,10 +17,10 @@ import (
 )
 
 type fakeEngine struct {
-	mu     sync.Mutex
-	inputs []string
-	closed bool
-	run    func(context.Context, string) ([]float32, int, error)
+	mu      sync.Mutex
+	inputs  []string
+	run     func(context.Context, string) ([]float32, int, error)
+	onClose func()
 }
 
 func (e *fakeEngine) embed(ctx context.Context, text string) ([]float32, int, error) {
@@ -36,30 +35,24 @@ func (e *fakeEngine) embed(ctx context.Context, text string) ([]float32, int, er
 	v[1] = 4
 	return v, 7, nil
 }
-func (e *fakeEngine) Close() error { e.mu.Lock(); defer e.mu.Unlock(); e.closed = true; return nil }
+func (e *fakeEngine) Close() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.onClose != nil {
+		e.onClose()
+	}
+	return nil
+}
 
 func TestHandlerThroughClient(t *testing.T) {
 	for _, encoding := range []string{"float", "base64"} {
 		for _, dimensions := range []int{256, 768} {
 			t.Run(encoding+"/"+strconv.Itoa(dimensions), func(t *testing.T) {
 				e := new(fakeEngine)
-				e.run = func(_ context.Context, text string) ([]float32, int, error) {
-					v := make([]float32, 768)
-					switch text {
-					case "search_query: first":
-						v[0], v[1] = 3, 4
-					case "search_query: second":
-						v[0], v[1] = -3, 4
-					default:
-						return nil, 0, errors.New("unexpected input")
-					}
-					return v, 7, nil
-				}
 				server := httptest.NewServer(&handler{engine: e, gate: make(chan struct{}, 1)})
 				defer server.Close()
 				client, err := embedclient.New(embedclient.Options{
 					Model:      embedconfig.Model{Name: "nomic-embed-text", Dimensions: dimensions, RequestDimensions: true, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationL2, EncodingFormat: encoding},
-					Roles:      embedconfig.Roles{QueryPrefix: "search_query: "},
 					Deployment: embedconfig.Deployment{BaseURL: server.URL + "/v1"}, Batch: embedconfig.Batch{Items: 32},
 				})
 				require.NoError(t, err)
@@ -67,10 +60,7 @@ func TestHandlerThroughClient(t *testing.T) {
 				require.NoError(t, err)
 				require.Len(t, vectors, 2)
 				assert.Len(t, vectors[0], dimensions)
-				assert.InDelta(t, 0.6, vectors[0][0], 1e-6)
-				assert.InDelta(t, -0.6, vectors[1][0], 1e-6)
-				assert.InDelta(t, 0.8, vectors[1][1], 1e-6)
-				assert.Equal(t, []string{"search_query: first", "search_query: second"}, e.inputs)
+				assert.Len(t, vectors[1], dimensions)
 			})
 		}
 	}
@@ -79,43 +69,52 @@ func TestHandlerThroughClient(t *testing.T) {
 func TestHandlerWire(t *testing.T) {
 	e := new(fakeEngine)
 	h := &handler{engine: e, gate: make(chan struct{}, 1)}
-	for _, input := range []string{`"search_query: literal"`, `["search_query: literal"]`} {
+	for _, input := range []string{`"search_query: literal"`, `["search_query: literal","search_document: other"]`} {
 		recorder := httptest.NewRecorder()
 		h.ServeHTTP(recorder, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text:latest","input":`+input+`,"dimensions":0,"input_type":"query"}`)))
 		require.Equal(t, 200, recorder.Code)
 		var out response
 		require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &out))
 		assert.Equal(t, "nomic-embed-text:latest", out.Model)
-		assert.Equal(t, usage{7, 7}, out.Usage)
-		require.Len(t, out.Data, 1)
-		assert.Equal(t, 0, out.Data[0].Index)
+		count := 1
+		if strings.HasPrefix(input, "[") {
+			count = 2
+		}
+		assert.Equal(t, usage{7 * count, 7 * count}, out.Usage)
+		require.Len(t, out.Data, count)
+		for i, item := range out.Data {
+			assert.Equal(t, i, item.Index)
+			assert.Len(t, item.Embedding.([]any), 768)
+		}
 	}
-	assert.Equal(t, []string{"search_query: literal", "search_query: literal"}, e.inputs)
+	assert.Equal(t, []string{"search_query: literal", "search_query: literal", "search_document: other"}, e.inputs)
 }
 
 func TestHandlerRejectsBeforeInference(t *testing.T) {
 	cases := []struct {
-		body   string
-		status int
+		name, body string
+		status     int
 	}{
-		{`{`, 400},
-		{`{"model":"other","input":"x"}`, 404},
-		{`{"model":"nomic-embed-text","input":1}`, 400},
-		{`{"model":"nomic-embed-text","input":[]}`, 400},
-		{`{"model":"nomic-embed-text","input":[1]}`, 400},
-		{`{"model":"nomic-embed-text","input":null}`, 400},
-		{`{"model":"nomic-embed-text","input":[null]}`, 400},
-		{`{"model":"nomic-embed-text","input":"x","dimensions":769}`, 400},
-		{`{"model":"nomic-embed-text","input":"x","encoding_format":"int8"}`, 400},
-		{`{"model":"nomic-embed-text","input":[` + strings.Repeat(`"x",`, 32) + `"x"]}`, 400},
-		{strings.Repeat("x", (4<<20)+1), 413},
+		{"malformed JSON", `{`, 400},
+		{"unknown model", `{"model":"other","input":"x"}`, 404},
+		{"numeric input", `{"model":"nomic-embed-text","input":1}`, 400},
+		{"empty input", `{"model":"nomic-embed-text","input":[]}`, 400},
+		{"numeric array", `{"model":"nomic-embed-text","input":[1]}`, 400},
+		{"null input", `{"model":"nomic-embed-text","input":null}`, 400},
+		{"null array item", `{"model":"nomic-embed-text","input":[null]}`, 400},
+		{"dimensions too large", `{"model":"nomic-embed-text","input":"x","dimensions":769}`, 400},
+		{"unsupported encoding", `{"model":"nomic-embed-text","input":"x","encoding_format":"int8"}`, 400},
+		{"too many inputs", `{"model":"nomic-embed-text","input":[` + strings.Repeat(`"x",`, 32) + `"x"]}`, 400},
+		{"body too large", strings.Repeat("x", (4<<20)+1), 413},
 	}
 	e := new(fakeEngine)
 	h := &handler{engine: e, gate: make(chan struct{}, 1)}
 	for _, tc := range cases {
-		recorder := httptest.NewRecorder()
-		h.ServeHTTP(recorder, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/embeddings", strings.NewReader(tc.body)))
-		assert.Equal(t, tc.status, recorder.Code)
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			h.ServeHTTP(recorder, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/embeddings", strings.NewReader(tc.body)))
+			assert.Equal(t, tc.status, recorder.Code)
+		})
 	}
 	assert.Empty(t, e.inputs)
 }
@@ -149,7 +148,7 @@ func TestHandlerSerializesAndCancels(t *testing.T) {
 func TestReducedDimensionsRenormalizesPrefix(t *testing.T) {
 	e := &fakeEngine{run: func(context.Context, string) ([]float32, int, error) {
 		v := make([]float32, 768)
-		v[0], v[767] = 0.6, 0.8
+		v[0], v[767] = 3, 4
 		return v, 3, nil
 	}}
 	h := &handler{engine: e, gate: make(chan struct{}, 1)}

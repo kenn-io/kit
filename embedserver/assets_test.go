@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -54,13 +55,19 @@ func TestCacheInterrupted(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("partial"))
 		w.(http.Flusher).Flush()
-		cancel()
 		<-r.Context().Done()
 	}))
-	defer server.Close()
+	defer func() { cancel(); server.Close() }()
 	dir := t.TempDir()
 	a := asset{"model", server.URL, "unused", 100}
-	require.Error(t, cacheAsset(ctx, server.Client(), dir, a))
+	done := make(chan error, 1)
+	go func() { done <- cacheAsset(ctx, server.Client(), dir, a) }()
+	require.Eventually(t, func() bool {
+		entries, err := os.ReadDir(dir)
+		return err == nil && len(entries) == 1 && entries[0].Name() != "model"
+	}, 5*time.Second, time.Millisecond)
+	cancel()
+	require.ErrorIs(t, <-done, context.Canceled)
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
 	assert.Empty(t, entries)
