@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	jsonv1 "encoding/json"
 	json "encoding/json/v2"
+	"errors"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -158,6 +160,66 @@ func TestHandlerRejectsBeforeInference(t *testing.T) {
 		})
 	}
 	assert.Empty(t, e.inputs)
+}
+
+func TestHandlerAcceptsOllamaRequestBodies(t *testing.T) {
+	for _, tc := range []struct{ name, body, text string }{
+		{"lone surrogate", `{"model":"nomic-embed-text","input":"cut \ud83d"}`, "cut \ufffd"},
+		{"lone surrogate in array", `{"model":"nomic-embed-text","input":["cut \ud83d"]}`, "cut \ufffd"},
+		{"invalid UTF-8", "{\"model\":\"nomic-embed-text\",\"input\":\"bad \xff\"}", "bad \ufffd"},
+		{"duplicate member", `{"model":"nomic-embed-text","input":"first","input":"last"}`, "last"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := new(fakeEngine)
+			recorder := httptest.NewRecorder()
+			(&handler{engine: e, gate: make(chan struct{}, 1)}).ServeHTTP(recorder, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/embeddings", strings.NewReader(tc.body)))
+			assert.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+			assert.Equal(t, []string{tc.text}, e.inputs)
+		})
+	}
+}
+
+func TestHandlerReportsInferenceFailure(t *testing.T) {
+	e := &fakeEngine{run: func(context.Context, string) ([]float32, int, error) {
+		return nil, 0, errors.New("ONNX Runtime: out of memory")
+	}}
+	var log strings.Builder
+	recorder := httptest.NewRecorder()
+	h := &handler{engine: e, gate: make(chan struct{}, 1), log: &log}
+	h.ServeHTTP(recorder, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text","input":"x"}`)))
+	assert.Equal(t, http.StatusInternalServerError, recorder.Code)
+	assert.Equal(t, "inference failed\n", recorder.Body.String())
+	assert.Equal(t, "inference failed: ONNX Runtime: out of memory\n", log.String())
+}
+
+func TestHandlerRunsRequestsBetweenBatchItems(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		e := &fakeEngine{run: func(_ context.Context, text string) ([]float32, int, error) {
+			if text == "batch 0" {
+				<-release
+			}
+			v := make([]float32, 768)
+			v[0] = 1
+			return v, 1, nil
+		}}
+		h := &handler{engine: e, gate: make(chan struct{}, 1)}
+		var wg sync.WaitGroup
+		post := func(body string) {
+			wg.Go(func() {
+				recorder := httptest.NewRecorder()
+				h.ServeHTTP(recorder, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/embeddings", strings.NewReader(body)))
+				assert.Equal(t, http.StatusOK, recorder.Code)
+			})
+		}
+		post(`{"model":"nomic-embed-text","input":["batch 0","batch 1"]}`)
+		synctest.Wait()
+		post(`{"model":"nomic-embed-text","input":"query"}`)
+		synctest.Wait()
+		close(release)
+		wg.Wait()
+		assert.Equal(t, []string{"batch 0", "query", "batch 1"}, e.inputs)
+	})
 }
 
 func TestHandlerEncodeFailure(t *testing.T) {

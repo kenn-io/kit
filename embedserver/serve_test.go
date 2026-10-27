@@ -45,7 +45,7 @@ func TestServeDiscoveryAndCancellation(t *testing.T) {
 		default:
 		}
 	}}
-	store, record, done := startServe(t, ctx, e, daemon.Endpoint.ListenContext)
+	store, record, done := startServe(t, ctx, t.TempDir(), e, daemon.Endpoint.ListenContext)
 	requestDone := startEmbeddingRequest(t, record)
 	select {
 	case <-entered:
@@ -118,9 +118,28 @@ func TestServeRejectsSecondOwner(t *testing.T) {
 	assert.False(t, loaded)
 }
 
-func startServe(t *testing.T, ctx context.Context, e engine, listen func(daemon.Endpoint, context.Context) (net.Listener, error)) (daemon.RuntimeStore, daemon.RuntimeRecord, <-chan error) {
-	t.Helper()
+func TestServeRemovesStaleRecords(t *testing.T) {
+	const stalePID = 999999
+	if daemon.ProcessAlive(stalePID) {
+		t.Skipf("pid %d is alive on this host", stalePID)
+	}
 	dir := t.TempDir()
+	stale, err := daemon.RuntimeStore{Dir: dir, Prefix: "kit-embed"}.Write(daemon.RuntimeRecord{PID: stalePID, Network: daemon.NetworkTCP, Address: "127.0.0.1:9"})
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	store, record, done := startServe(t, ctx, dir, new(fakeEngine), daemon.Endpoint.ListenContext)
+	records, err := store.List()
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	assert.Equal(t, record.PID, records[0].PID)
+	assert.NoFileExists(t, stale)
+	cancel()
+	require.NoError(t, <-done)
+}
+
+func startServe(t *testing.T, ctx context.Context, dir string, e engine, listen func(daemon.Endpoint, context.Context) (net.Listener, error)) (daemon.RuntimeStore, daemon.RuntimeRecord, <-chan error) {
+	t.Helper()
 	done := make(chan error, 1)
 	go func() {
 		done <- serve(ctx, Options{DataDir: dir}, func(context.Context, string, string) (engine, error) { return e, nil }, listen)

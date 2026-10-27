@@ -5,16 +5,23 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
 )
 
+// Ollama decodes requests with v1 semantics, replacing invalid UTF-8 and lone
+// surrogates with U+FFFD and keeping the last duplicate member.
+var decodeOptions = jsonv2.JoinOptions(jsontext.AllowInvalidUTF8(true), jsontext.AllowDuplicateNames(true))
+
 type handler struct {
 	engine engine
 	gate   chan struct{}
+	log    io.Writer
 }
 type request struct {
 	Model      string          `json:"model"`
@@ -49,7 +56,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req request
-	if err := jsonv2.Unmarshal(body, &req); err != nil {
+	if err := jsonv2.Unmarshal(body, &req, decodeOptions); err != nil {
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
@@ -59,11 +66,11 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	var inputs []string
 	var text *string
-	if jsonv2.Unmarshal(req.Input, &text) == nil && text != nil {
+	if jsonv2.Unmarshal(req.Input, &text, decodeOptions) == nil && text != nil {
 		inputs = []string{*text}
 	} else {
 		var texts []*string
-		if err := jsonv2.Unmarshal(req.Input, &texts); err != nil {
+		if err := jsonv2.Unmarshal(req.Input, &texts, decodeOptions); err != nil {
 			http.Error(w, "input must be a string or string array", http.StatusBadRequest)
 			return
 		}
@@ -95,6 +102,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, context.Canceled) {
 			return
 		}
+		_, _ = fmt.Fprintf(h.log, "inference failed: %v\n", err)
 		http.Error(w, "inference failed", http.StatusInternalServerError)
 		return
 	}
@@ -108,15 +116,9 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) embeddings(ctx context.Context, req request, inputs []string) (response, error) {
-	select {
-	case h.gate <- struct{}{}:
-	case <-ctx.Done():
-		return response{}, ctx.Err()
-	}
-	defer func() { <-h.gate }()
 	out := response{Object: "list", Model: req.Model, Data: make([]item, len(inputs))}
 	for i, text := range inputs {
-		vector, tokens, err := h.engine.embed(ctx, text)
+		vector, tokens, err := h.embed(ctx, text)
 		if err != nil {
 			return out, err
 		}
@@ -143,4 +145,15 @@ func (h *handler) embeddings(ctx context.Context, req request, inputs []string) 
 		out.Usage.Total += tokens
 	}
 	return out, nil
+}
+
+// embed holds the gate for one input, so other requests run between batch items.
+func (h *handler) embed(ctx context.Context, text string) ([]float32, int, error) {
+	select {
+	case h.gate <- struct{}{}:
+	case <-ctx.Done():
+		return nil, 0, ctx.Err()
+	}
+	defer func() { <-h.gate }()
+	return h.engine.embed(ctx, text)
 }
