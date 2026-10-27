@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -167,8 +168,14 @@ func (p *Proxy) NewClient() (*Client, error) {
 		// The inbound request already carries the absolute upstream URL.
 		// Restore the raw query, which ReverseProxy would otherwise strip
 		// of parameters it cannot parse.
-		Rewrite:   func(r *httputil.ProxyRequest) { r.Out.URL.RawQuery = r.In.URL.RawQuery },
-		Transport: &http.Transport{DialContext: c.dialBound},
+		Rewrite: func(r *httputil.ProxyRequest) { r.Out.URL.RawQuery = r.In.URL.RawQuery },
+		Transport: &http.Transport{
+			DialContext: c.dialBound,
+			// Keep every idle connection. The client's own concurrency bounds
+			// the pool, and a cutoff or Close ends its connections; Go's
+			// default of two per host would redial for each concurrent burst.
+			MaxIdleConnsPerHost: math.MaxInt,
+		},
 		// Stream each upstream read at once; a slow response must reach the
 		// client as it arrives, not when a buffer fills.
 		FlushInterval: -1,

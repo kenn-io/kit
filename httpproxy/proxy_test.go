@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -455,4 +456,57 @@ func TestShutdownCancelsPendingDials(t *testing.T) {
 			})
 		}
 	}
+}
+
+// Concurrent plain-HTTP requests reuse the client's pooled upstream
+// connections instead of redialing for each burst.
+func TestConcurrentRequestsReuseUpstreamConnections(t *testing.T) {
+	const concurrency, bursts = 8, 20
+	var opened atomic.Int64
+	var gate atomic.Pointer[chan struct{}]
+	arrived := make(chan struct{})
+	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		arrived <- struct{}{}
+		<-*gate.Load()
+		_, _ = io.WriteString(w, "ok")
+	}))
+	upstream.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			opened.Add(1)
+		}
+	}
+	upstream.Start()
+	defer upstream.Close()
+	p := listen(t, Config{Allow: []string{host(upstream)}})
+	c := newClient(t, p)
+	bind(t, c, t.Context())
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(c.URL()), MaxIdleConnsPerHost: concurrency}}
+
+	for range bursts {
+		open := make(chan struct{})
+		gate.Store(&open)
+		results := make(chan error, concurrency)
+		for range concurrency {
+			request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, upstream.URL, nil)
+			require.NoError(t, err)
+			go func() {
+				resp, err := client.Do(request)
+				if err == nil {
+					_, err = io.Copy(io.Discard, resp.Body)
+					err = errors.Join(err, resp.Body.Close())
+				}
+				results <- err
+			}()
+		}
+		for range concurrency {
+			<-arrived
+		}
+		close(open)
+		for range concurrency {
+			require.NoError(t, <-results)
+		}
+	}
+	// Two idle connections per host would open about (bursts-1)*6+8 = 122.
+	// Allow a few redials where a connection returns to the pool late.
+	assert.LessOrEqual(t, opened.Load(), int64(2*concurrency))
 }

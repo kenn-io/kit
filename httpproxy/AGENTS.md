@@ -27,6 +27,9 @@
   upstream dial ends when its binding ends or the Client or Proxy closes. Pool connections are tracked like any
   other and untrack themselves on Close; never call their Close with the
   proxy lock held.
+- A Client's plain-HTTP pool keeps every idle connection. Its own
+  concurrency bounds the pool and a cutoff or Close ends it; Go's default of
+  two idle connections per host redials for each concurrent burst.
 - Preserve the inbound raw query. `ReverseProxy` would drop parameters it
   cannot parse.
 - Forwarded responses flush every upstream read immediately. Buffering would
