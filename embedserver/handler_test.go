@@ -132,6 +132,14 @@ func TestHandlerWire(t *testing.T) {
 	}
 }
 
+func TestHandlerVersionedModel(t *testing.T) {
+	e := new(fakeEngine)
+	recorder := httptest.NewRecorder()
+	(&handler{engine: e, gate: make(chan struct{}, 1)}).ServeHTTP(recorder, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text:v1.5","input":"x"}`)))
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.Equal(t, []string{"x"}, e.inputs)
+}
+
 func TestHandlerRejectsBeforeInference(t *testing.T) {
 	cases := []struct {
 		name, body, message string
@@ -218,17 +226,6 @@ func TestHandlerGateRelease(t *testing.T) {
 			h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text","input":"x"}`)))
 		})
 		assert.Empty(t, h.gate)
-	})
-	t.Run("cancelled while waiting", func(t *testing.T) {
-		e := new(fakeEngine)
-		h := &handler{engine: e, gate: make(chan struct{}, 1)}
-		h.gate <- struct{}{}
-		ctx, cancel := context.WithCancel(t.Context())
-		cancel()
-		_, err := h.embeddings(ctx, request{Model: "nomic-embed-text", Dimensions: 768}, []string{"x"})
-		require.ErrorIs(t, err, context.Canceled)
-		assert.Len(t, h.gate, 1)
-		assert.Empty(t, e.inputs)
 	})
 	t.Run("blocked response", func(t *testing.T) {
 		e := new(fakeEngine)

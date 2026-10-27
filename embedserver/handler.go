@@ -53,7 +53,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
-	if req.Model != "nomic-embed-text" && req.Model != "nomic-embed-text:latest" {
+	if req.Model != "nomic-embed-text" && req.Model != "nomic-embed-text:latest" && req.Model != "nomic-embed-text:v1.5" {
 		http.Error(w, "model not found", http.StatusNotFound)
 		return
 	}

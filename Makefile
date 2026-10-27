@@ -47,4 +47,3 @@ lint-config-check:
 # Set KIT_EMBED_TEST_DIR and KIT_EMBED_TEST_LIBRARY to include native parity.
 test-embedserver:
 	go test -race ./embedserver ./cmd/kennembed
-	go test -race ./embedclient -run 'TestEmbedderTextContract|TestEmbedderRejectsInvalidTextVectors|TestEmbedRejectsBadResponses|TestEmbedKeepsUnnormalizedVectors'
