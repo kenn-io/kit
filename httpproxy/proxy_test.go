@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -90,7 +91,7 @@ func TestForwardsPlainHTTPAndTunnelsTLS(t *testing.T) {
 		if r.Header.Get("Proxy-Authorization") != "" {
 			sawProxyAuth.Store(true)
 		}
-		reply(w, r)
+		_, _ = io.WriteString(w, r.URL.Path+"?"+r.URL.RawQuery)
 	})
 	plain := httptest.NewServer(handler)
 	defer plain.Close()
@@ -101,9 +102,9 @@ func TestForwardsPlainHTTPAndTunnelsTLS(t *testing.T) {
 	bind(t, c, t.Context())
 
 	for _, server := range []*httptest.Server{plain, secure} {
-		status, body := get(t, httpClient(server, c.URL()), server.URL+"/object")
+		status, body := get(t, httpClient(server, c.URL()), server.URL+"/object?prefix=a;b&version=3")
 		assert.Equal(t, http.StatusOK, status)
-		assert.Equal(t, "hello /object", body)
+		assert.Equal(t, "/object?prefix=a;b&version=3", body, "the proxy forwards the query unchanged")
 	}
 	assert.False(t, sawProxyAuth.Load(), "proxy credentials must not reach the upstream")
 }
@@ -212,7 +213,9 @@ func TestBindingEndCutsOffTransfers(t *testing.T) {
 				require.NoError(t, resp.Body.Close())
 			}
 
-			client.CloseIdleConnections()
+			_, err = c.Bind(t.Context())
+			require.Error(t, err, "an ended binding stays until stop")
+			stop()
 			ctx, cancel = context.WithCancel(t.Context())
 			defer cancel()
 			stop, err = c.Bind(ctx)
@@ -268,6 +271,9 @@ func TestStopRefusesNewRequests(t *testing.T) {
 	stop()
 	status, _ = get(t, client, upstream.URL)
 	assert.Equal(t, http.StatusServiceUnavailable, status)
+	status, err = connect(t, p, c.URL(), host(upstream))
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusServiceUnavailable, status)
 }
 
 func TestCloseEndsTunnels(t *testing.T) {
@@ -294,55 +300,6 @@ func TestListenRejectsAllowlist(t *testing.T) {
 	for _, allow := range [][]string{nil, {"example.com"}, {":443"}, {"example.com:"}} {
 		_, err := Listen(Config{Allow: allow})
 		assert.Error(t, err, "%q", allow)
-	}
-}
-
-// A cutoff callback that started before stop and a new Bind runs late; it
-// must leave the new binding's transfers open.
-func TestStaleCutoffSparesNewerBinding(t *testing.T) {
-	more := make(chan struct{})
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Length", "2")
-		controller := http.NewResponseController(w)
-		if _, err := w.Write([]byte{'a'}); err != nil || controller.Flush() != nil {
-			return
-		}
-		select {
-		case <-more:
-			_, _ = w.Write([]byte{'b'})
-		case <-r.Context().Done():
-		}
-	})
-	plain := httptest.NewServer(handler)
-	defer plain.Close()
-	secure := httptest.NewTLSServer(handler)
-	defer secure.Close()
-	p := listen(t, Config{Allow: []string{host(plain), host(secure)}})
-	defer close(more)
-
-	for _, server := range []*httptest.Server{plain, secure} {
-		t.Run(server.URL, func(t *testing.T) {
-			c := newClient(t, p)
-			stop, err := c.Bind(t.Context())
-			require.NoError(t, err)
-			p.mu.Lock()
-			stale := c.binding
-			p.mu.Unlock()
-			stop()
-			bind(t, c, t.Context())
-
-			resp, err := send(t, httpClient(server, c.URL()), server.URL)
-			require.NoError(t, err)
-			defer resp.Body.Close()
-			first := make([]byte, 1)
-			_, err = io.ReadFull(resp.Body, first)
-			require.NoError(t, err)
-			c.cutOff(stale)
-			more <- struct{}{}
-			rest, err := io.ReadAll(resp.Body)
-			require.NoError(t, err, "the stale cutoff closed the newer binding's transfer")
-			assert.Equal(t, "ab", string(first)+string(rest))
-		})
 	}
 }
 
@@ -378,4 +335,126 @@ func TestShutdownClosesUpstreamConnections(t *testing.T) {
 			<-closed
 		})
 	}
+}
+
+// blockingConn holds a cutoff inside Close until the test releases it.
+type blockingConn struct {
+	net.Conn
+	release chan struct{}
+}
+
+func (b *blockingConn) Close() error {
+	<-b.release
+	return nil
+}
+
+func TestStopWaitsForStartedCutoff(t *testing.T) {
+	p := listen(t, Config{Allow: []string{"192.0.2.1:443"}})
+	c := newClient(t, p)
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		stop, err := c.Bind(ctx)
+		require.NoError(t, err)
+		b, err := c.liveBinding()
+		require.NoError(t, err)
+		held := &blockingConn{release: make(chan struct{})}
+		require.True(t, c.track(b, held))
+
+		cancel()
+		stopped := make(chan struct{})
+		go func() {
+			stop()
+			close(stopped)
+		}()
+		synctest.Wait()
+		select {
+		case <-stopped:
+			require.FailNow(t, "stop returned while the cutoff was still closing connections")
+		default:
+		}
+		_, err = c.Bind(t.Context())
+		require.Error(t, err, "a new binding must wait for the cutoff")
+
+		close(held.release)
+		<-stopped
+		stop, err = c.Bind(t.Context())
+		require.NoError(t, err)
+		stop()
+	})
+}
+
+// After a cutoff, a new binding's request over the same pooled client must
+// complete, even though the earlier binding's tunnel was cut.
+func TestRebindReusesPooledClient(t *testing.T) {
+	more := make(chan struct{})
+	secure := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "2")
+		controller := http.NewResponseController(w)
+		if _, err := w.Write([]byte{'a'}); err != nil || controller.Flush() != nil {
+			return
+		}
+		select {
+		case <-more:
+			_, _ = w.Write([]byte{'b'})
+		case <-r.Context().Done():
+		}
+	}))
+	defer secure.Close()
+	p := listen(t, Config{Allow: []string{host(secure)}})
+	c := newClient(t, p)
+	client := httpClient(secure, c.URL())
+	fetch := func() string {
+		resp, err := send(t, client, secure.URL)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		first := make([]byte, 1)
+		_, err = io.ReadFull(resp.Body, first)
+		require.NoError(t, err)
+		more <- struct{}{}
+		rest, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		return string(first) + string(rest)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	stop, err := c.Bind(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "ab", fetch())
+	cancel()
+	stop()
+
+	bind(t, c, t.Context())
+	assert.Equal(t, "ab", fetch())
+	assert.Equal(t, "ab", fetch())
+}
+
+func TestBindingEndCancelsPlainDial(t *testing.T) {
+	const target = "192.0.2.1:80"
+	dialing := make(chan struct{})
+	dialEnded := make(chan struct{})
+	p := listen(t, Config{
+		Allow: []string{target},
+		Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			close(dialing)
+			<-ctx.Done()
+			close(dialEnded)
+			return nil, ctx.Err()
+		},
+	})
+	c := newClient(t, p)
+	ctx, cancel := context.WithCancel(t.Context())
+	bind(t, c, ctx)
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(c.URL())}}
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+target, nil)
+	require.NoError(t, err)
+	go func() {
+		// The request fails once the binding ends; only the dial matters.
+		if resp, err := client.Do(request); err == nil {
+			_ = resp.Body.Close()
+		}
+	}()
+
+	<-dialing
+	cancel()
+	<-dialEnded
 }

@@ -2,12 +2,12 @@
 // bound the network traffic of code it cannot cancel directly, such as an
 // embedded C library or a child process that only accepts a proxy setting.
 //
-// Each Client has its own random proxy credentials. A Client opens new
-// requests and tunnels only while it is bound to a context. When that context
-// ends, the proxy closes every connection the Client holds, which stops
-// transfers already in flight, and refuses new requests until the next Bind.
-// Only allowlisted upstream addresses are reachable, so other local processes
-// cannot use the proxy as a relay.
+// Each Client has its own random proxy credentials. A Client starts new
+// requests, tunnels, and upstream dials only while it is bound to a context.
+// When that context ends, the proxy closes every connection the Client holds,
+// which stops transfers already in flight, including traffic inside
+// established tunnels. Only allowlisted upstream addresses are reachable, so
+// other local processes cannot use the proxy as a relay.
 package httpproxy
 
 import (
@@ -31,6 +31,8 @@ import (
 // ErrClosed reports use of a closed Proxy or Client.
 var ErrClosed = errors.New("httpproxy: closed")
 
+var errUnbound = errors.New("httpproxy: client is not bound")
+
 // Config configures a Proxy.
 type Config struct {
 	// Allow lists the upstream "host:port" addresses that clients may reach,
@@ -47,6 +49,7 @@ type Proxy struct {
 	server   *http.Server
 	allow    map[string]bool
 	dial     func(ctx context.Context, network, address string) (net.Conn, error)
+	buffers  *bufferPool
 	serving  chan error
 	tunnels  sync.WaitGroup
 
@@ -61,24 +64,25 @@ type Client struct {
 	proxy    *Proxy
 	username string
 	password string
-	// The Client's own upstream pool, so its idle plain-HTTP connections
-	// close with the Client.
-	transport *http.Transport
-	forward   *httputil.ReverseProxy
+	// forward has the Client's own upstream pool, whose connections are
+	// dialed and tracked under the Client's binding.
+	forward *httputil.ReverseProxy
 
 	// Guarded by proxy.mu.
-	closed      bool
-	binding     *binding
-	generations uint64
-	// conns maps each connection to the generation of the latest binding
-	// that used it.
-	conns map[net.Conn]uint64
+	closed  bool
+	binding *binding
+	conns   map[net.Conn]struct{}
 }
 
+// binding stays the Client's binding after its context ends, until stop. No
+// newer binding can exist while a cutoff runs, so a cutoff may close every
+// connection the Client holds.
 type binding struct {
-	ctx        context.Context
-	generation uint64
-	stop       func() bool
+	ctx context.Context
+	// cancelCutoff reports true when it prevented the cutoff from starting.
+	cancelCutoff func() bool
+	// ended is closed once no cutoff for this binding can still run.
+	ended chan struct{}
 }
 
 type connKey struct{}
@@ -101,6 +105,7 @@ func Listen(cfg Config) (*Proxy, error) {
 		listener: listener,
 		allow:    allow,
 		dial:     dial,
+		buffers:  &bufferPool{},
 		serving:  make(chan error, 1),
 		clients:  make(map[string]*Client),
 		owners:   make(map[net.Conn]*Client),
@@ -146,22 +151,18 @@ func (p *Proxy) NewClient() (*Client, error) {
 	if p.closed {
 		return nil, ErrClosed
 	}
-	transport := &http.Transport{DialContext: p.dial, IdleConnTimeout: 90 * time.Second}
-	c := &Client{
-		proxy:     p,
-		username:  rand.Text(),
-		password:  rand.Text(),
-		transport: transport,
-		forward: &httputil.ReverseProxy{
-			// The inbound request already carries the absolute upstream URL.
-			Rewrite:   func(*httputil.ProxyRequest) {},
-			Transport: transport,
-			// Stream each upstream read at once; a slow response must reach
-			// the client as it arrives, not when a buffer fills.
-			FlushInterval: -1,
-			ErrorHandler:  forwardError,
-		},
-		conns: make(map[net.Conn]uint64),
+	c := &Client{proxy: p, username: rand.Text(), password: rand.Text(), conns: make(map[net.Conn]struct{})}
+	c.forward = &httputil.ReverseProxy{
+		// The inbound request already carries the absolute upstream URL.
+		// Restore the raw query, which ReverseProxy would otherwise strip
+		// of parameters it cannot parse.
+		Rewrite:   func(r *httputil.ProxyRequest) { r.Out.URL.RawQuery = r.In.URL.RawQuery },
+		Transport: &http.Transport{DialContext: c.dialBound},
+		// Stream each upstream read at once; a slow response must reach the
+		// client as it arrives, not when a buffer fills.
+		FlushInterval: -1,
+		BufferPool:    p.buffers,
+		ErrorHandler:  forwardError,
 	}
 	p.clients[c.username] = c
 	return c, nil
@@ -177,17 +178,12 @@ func (p *Proxy) Close() error {
 	}
 	p.closed = true
 	var conns []net.Conn
-	clients := make([]*Client, 0, len(p.clients))
 	for _, c := range p.clients {
 		conns = append(conns, c.release()...)
-		clients = append(clients, c)
 	}
 	p.mu.Unlock()
 	closeAll(conns)
 	err := p.server.Close()
-	for _, c := range clients {
-		c.transport.CloseIdleConnections()
-	}
 	p.tunnels.Wait()
 	if serveErr := <-p.serving; !errors.Is(serveErr, http.ErrServerClosed) {
 		err = errors.Join(err, serveErr)
@@ -201,11 +197,16 @@ func (c *Client) URL() *url.URL {
 	return &url.URL{Scheme: "http", User: url.UserPassword(c.username, c.password), Host: c.proxy.Addr()}
 }
 
-// Bind lets the Client send requests until ctx ends or stop is called. When
-// ctx ends first, the proxy closes every connection the Client holds, except
-// connections a later binding has since used. stop keeps idle connections
-// open for reuse by a later Bind, but no new request or tunnel starts until
-// then. A Client has at most one binding at a time.
+// Bind lets the Client start requests, tunnels, and upstream dials until ctx
+// ends or stop is called. When ctx ends first, the proxy closes every
+// connection the Client holds.
+//
+// stop refuses new requests, tunnels, and dials, and keeps idle connections
+// for reuse by a later Bind. The proxy cannot see inside a tunnel, so traffic
+// over an established tunnel continues after stop until a later binding's
+// context ends or the Client or Proxy closes. If a cutoff has started, stop
+// waits for it to finish. A Client has one binding at a time: call stop,
+// even after ctx ends, before binding again.
 func (c *Client) Bind(ctx context.Context) (stop func(), err error) {
 	p := c.proxy
 	p.mu.Lock()
@@ -214,17 +215,22 @@ func (c *Client) Bind(ctx context.Context) (stop func(), err error) {
 		return nil, ErrClosed
 	}
 	if c.binding != nil {
-		return nil, errors.New("httpproxy: client is already bound")
+		return nil, errors.New("httpproxy: client is already bound; call stop first")
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	c.generations++
-	b := &binding{ctx: ctx, generation: c.generations}
+	b := &binding{ctx: ctx, ended: make(chan struct{})}
 	c.binding = b
-	b.stop = context.AfterFunc(ctx, func() { c.cutOff(b) })
+	b.cancelCutoff = context.AfterFunc(ctx, func() {
+		c.cutOff()
+		close(b.ended)
+	})
 	return sync.OnceFunc(func() {
-		b.stop()
+		if b.cancelCutoff() {
+			close(b.ended)
+		}
+		<-b.ended
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		if c.binding == b {
@@ -245,52 +251,55 @@ func (c *Client) Close() error {
 	conns := c.release()
 	p.mu.Unlock()
 	closeAll(conns)
-	c.transport.CloseIdleConnections()
 	return nil
 }
 
 // release marks c closed and detaches its connections. p.mu must be held.
 func (c *Client) release() []net.Conn {
 	c.closed = true
-	if c.binding != nil {
-		c.binding.stop()
+	if b := c.binding; b != nil {
+		if b.cancelCutoff() {
+			close(b.ended)
+		}
 		c.binding = nil
 	}
-	return c.detachConns(c.generations)
+	return c.detachConns()
 }
 
-// detachConns removes from tracking, and returns, the connections last used
-// by binding generation through. p.mu must be held.
-func (c *Client) detachConns(through uint64) []net.Conn {
-	var conns []net.Conn
-	for conn, generation := range c.conns {
-		if generation <= through {
-			conns = append(conns, conn)
-			delete(c.conns, conn)
-			delete(c.proxy.owners, conn)
-		}
+// detachConns removes c's connections from tracking. p.mu must be held.
+func (c *Client) detachConns() []net.Conn {
+	conns := make([]net.Conn, 0, len(c.conns))
+	for conn := range c.conns {
+		conns = append(conns, conn)
+		delete(c.proxy.owners, conn)
 	}
+	clear(c.conns)
 	return conns
 }
 
-// cutOff closes the connections of binding b and of earlier bindings. A
-// callback that started before stop and a new Bind therefore leaves the new
-// binding's connections open.
-func (c *Client) cutOff(b *binding) {
+func (c *Client) cutOff() {
 	p := c.proxy
 	p.mu.Lock()
-	if c.binding == b {
-		c.binding = nil
-	}
-	conns := c.detachConns(b.generation)
+	conns := c.detachConns()
 	p.mu.Unlock()
 	closeAll(conns)
-	c.transport.CloseIdleConnections()
 }
 
-// track records conn as c's while b is still c's live binding. It reports
-// false when the binding ended or another Client owns conn, so the caller
-// must not use conn.
+// liveBinding returns c's binding if its context has not ended.
+func (c *Client) liveBinding() (*binding, error) {
+	p := c.proxy
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if c.binding == nil || c.binding.ctx.Err() != nil {
+		return nil, errUnbound
+	}
+	return c.binding, nil
+}
+
+// track records conn as c's while b is c's live binding. It reports false
+// when the binding ended or another Client owns conn, so the caller must not
+// use conn. A binding's context ends before its cutoff runs, so every
+// connection tracked under b is closed by b's cutoff.
 func (c *Client) track(b *binding, conn net.Conn) bool {
 	p := c.proxy
 	p.mu.Lock()
@@ -301,7 +310,7 @@ func (c *Client) track(b *binding, conn net.Conn) bool {
 	if owner, ok := p.owners[conn]; ok && owner != c {
 		return false
 	}
-	c.conns[conn] = b.generation
+	c.conns[conn] = struct{}{}
 	p.owners[conn] = c
 	return true
 }
@@ -315,11 +324,53 @@ func (p *Proxy) untrack(conn net.Conn) {
 	}
 }
 
+// closeAll closes connections. p.mu must not be held: a tracked upstream
+// connection untracks itself on close.
 func closeAll(conns []net.Conn) {
 	for _, conn := range conns {
 		// The connection is being abandoned; its close result changes nothing.
 		_ = conn.Close()
 	}
+}
+
+// dial opens an upstream connection that lives no longer than binding b. The
+// dial stops when b's context ends, and the connection is tracked under b.
+func (c *Client) dial(ctx context.Context, b *binding, network, address string) (net.Conn, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	defer context.AfterFunc(b.ctx, cancel)()
+	raw, err := c.proxy.dial(ctx, network, address)
+	if err != nil {
+		return nil, err
+	}
+	conn := &upstreamConn{Conn: raw, proxy: c.proxy}
+	if !c.track(b, conn) {
+		_ = raw.Close()
+		return nil, errUnbound
+	}
+	return conn, nil
+}
+
+// dialBound dials for the Client's upstream pool under its current binding.
+// The pool keeps dialing after a request is cancelled, so the binding, not
+// the request, must bound the dial.
+func (c *Client) dialBound(ctx context.Context, network, address string) (net.Conn, error) {
+	b, err := c.liveBinding()
+	if err != nil {
+		return nil, err
+	}
+	return c.dial(ctx, b, network, address)
+}
+
+// upstreamConn stops being tracked when closed, whoever closes it.
+type upstreamConn struct {
+	net.Conn
+	proxy *Proxy
+}
+
+func (u *upstreamConn) Close() error {
+	u.proxy.untrack(u)
+	return u.Conn.Close()
 }
 
 func (p *Proxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
@@ -371,7 +422,7 @@ func (p *Proxy) authorize(r *http.Request) (*Client, *binding, error) {
 	if !ok || !p.allow[address] {
 		return nil, nil, refusal(http.StatusForbidden)
 	}
-	if c.binding == nil {
+	if c.binding == nil || c.binding.ctx.Err() != nil {
 		return nil, nil, refusal(http.StatusServiceUnavailable)
 	}
 	return c, c.binding, nil
@@ -410,19 +461,13 @@ func upstreamAddress(r *http.Request) (string, bool) {
 
 func (p *Proxy) tunnel(ctx context.Context, w http.ResponseWriter, r *http.Request, c *Client, b *binding) {
 	address, _ := upstreamAddress(r)
-	upstream, err := p.dial(ctx, "tcp", address)
+	upstream, err := c.dial(ctx, b, "tcp", address)
 	if err != nil {
 		http.Error(w, "dial upstream: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	if !c.track(b, upstream) {
-		_ = upstream.Close()
-		http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
-		return
-	}
 	inbound, buffered, err := http.NewResponseController(w).Hijack()
 	if err != nil {
-		p.untrack(upstream)
 		_ = upstream.Close()
 		http.Error(w, "hijack: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -430,22 +475,23 @@ func (p *Proxy) tunnel(ctx context.Context, w http.ResponseWriter, r *http.Reque
 	// Hijacking hides the connection from the server, so the tunnel owns it.
 	// Starting under p.mu orders the start before Close waits for tunnels.
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.closed {
+	started := !p.closed
+	if started {
+		p.tunnels.Go(func() {
+			defer p.untrack(inbound)
+			defer inbound.Close()
+			defer upstream.Close()
+			if _, err := io.WriteString(inbound, "HTTP/1.1 200 Connection established\r\n\r\n"); err != nil {
+				return
+			}
+			splice(inbound, buffered.Reader, upstream)
+		})
+	}
+	p.mu.Unlock()
+	if !started {
 		_ = inbound.Close()
 		_ = upstream.Close()
-		return
 	}
-	p.tunnels.Go(func() {
-		defer p.untrack(inbound)
-		defer p.untrack(upstream)
-		defer inbound.Close()
-		defer upstream.Close()
-		if _, err := io.WriteString(inbound, "HTTP/1.1 200 Connection established\r\n\r\n"); err != nil {
-			return
-		}
-		splice(inbound, buffered.Reader, upstream)
-	})
 }
 
 // splice copies both directions until either side ends, then closes both.
@@ -472,3 +518,15 @@ func forwardError(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	http.Error(w, err.Error(), status)
 }
+
+// bufferPool reuses ReverseProxy copy buffers across responses.
+type bufferPool struct{ pool sync.Pool }
+
+func (b *bufferPool) Get() []byte {
+	if buf, ok := b.pool.Get().(*[]byte); ok {
+		return *buf
+	}
+	return make([]byte, 32<<10)
+}
+
+func (b *bufferPool) Put(buf []byte) { b.pool.Put(&buf) }

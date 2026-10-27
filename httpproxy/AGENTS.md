@@ -7,19 +7,27 @@
   in constant time. Never forward `Proxy-Authorization` upstream.
 - TLS goes through `CONNECT` tunnels; the proxy never terminates TLS or sees
   upstream credentials. Plain HTTP uses absolute-form requests.
-- A Client starts requests and tunnels only while bound. Track every inbound
-  and upstream connection under the binding that admitted it, and refuse to
-  track once that binding has ended, so a cutoff cannot miss a connection
-  opened during the cutoff.
-- When a binding's context ends, close the Client's connections last used by
-  that binding or an earlier one. This is the package's purpose: it stops
-  transfers in code the caller cannot cancel. Scope the cutoff by binding
-  generation: a cutoff callback can run after `stop` and a new `Bind`, and
-  must not close the newer binding's connections. `stop` ends a binding
-  without closing idle connections.
-- Each Client owns its plain-HTTP upstream transport. Close its idle
-  connections on cutoff, `Client.Close`, and `Proxy.Close`; in-flight
-  upstream requests end through their request context.
+- A Client starts requests, tunnels, and upstream dials only while bound.
+  Track every inbound and upstream connection under the binding that
+  admitted it, and refuse to track once that binding's context has ended. A
+  context ends before its cutoff runs, so every tracked connection is closed
+  by the cutoff.
+- An ended binding stays the Client's binding until `stop`, and `stop` waits
+  for a cutoff that has started. No newer binding can exist while a cutoff
+  runs, so the cutoff closes every connection the Client holds. Do not let
+  `Bind` replace an ended binding before `stop`.
+- When a binding's context ends, close all of the Client's connections. This
+  is the package's purpose: it stops transfers in code the caller cannot
+  cancel. `stop` refuses new requests, tunnels, and dials but keeps idle
+  connections; traffic inside an established tunnel is invisible to the
+  proxy and continues until a cutoff or Close.
+- Each Client's plain-HTTP pool dials through the Client's binding. Go's
+  transport keeps dialing after a request is cancelled, so the binding, not
+  the request, must cancel the dial. Pool connections are tracked like any
+  other and untrack themselves on Close; never call their Close with the
+  proxy lock held.
+- Preserve the inbound raw query. `ReverseProxy` would drop parameters it
+  cannot parse.
 - Forwarded responses flush every upstream read immediately. Buffering would
   hold a slow response's headers until the cutoff.
 - `Proxy.Close` waits for every tunnel goroutine; start tunnels under the
