@@ -1,0 +1,44 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"go.kenn.io/kit/embedserver"
+)
+
+func TestRun(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		args      []string
+		serveErr  error
+		wantCode  int
+		wantCalls int
+		wantOpts  embedserver.Options
+	}{
+		{name: "help", args: []string{"-h"}},
+		{name: "unknown flag", args: []string{"-unknown"}, wantCode: 2},
+		{name: "positional argument", args: []string{"model"}, wantCode: 2},
+		{
+			name:      "configured options",
+			args:      []string{"-listen", "127.0.0.1:8080", "-data-dir", "data", "-library", "runtime.so"},
+			wantCalls: 1,
+			wantOpts:  embedserver.Options{Listen: "127.0.0.1:8080", DataDir: "data", Library: "runtime.so"},
+		},
+		{name: "defaults", wantCalls: 1},
+		{name: "serve error", serveErr: errors.New("serve failed"), wantCode: 1, wantCalls: 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := 0
+			code := run(tt.args, func(_ context.Context, opts embedserver.Options) error {
+				calls++
+				assert.Equal(t, tt.wantOpts, opts)
+				return tt.serveErr
+			})
+			assert.Equal(t, tt.wantCode, code)
+			assert.Equal(t, tt.wantCalls, calls)
+		})
+	}
+}
