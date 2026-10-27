@@ -31,17 +31,28 @@ func loadTokenizer(path string) (*tokenizer, error) {
 		Added []struct {
 			Content string `json:"content"`
 			ID      int    `json:"id"`
+			Special bool   `json:"special"`
 		} `json:"added_tokens"`
 	}
 	if err := json.Unmarshal(data, &file); err != nil {
 		return nil, err
 	}
-	t := &tokenizer{vocab: file.Model.Vocab, specials: make(map[string]int)}
-	for piece := range t.vocab {
-		t.maxPiece = max(t.maxPiece, len(strings.TrimPrefix(piece, "##")))
-	}
+	t := &tokenizer{vocab: make(map[string]int), specials: make(map[string]int)}
 	for _, special := range file.Added {
-		t.specials[special.Content] = special.ID
+		if special.Special {
+			t.specials[special.Content] = special.ID
+		}
+	}
+	for piece, id := range file.Model.Vocab {
+		if _, control := t.specials[piece]; !control {
+			if rest, continuation := strings.CutPrefix(piece, "##"); continuation {
+				piece = rest
+			} else {
+				piece = "▁" + piece
+			}
+		}
+		t.vocab[piece] = id
+		t.maxPiece = max(t.maxPiece, len(piece))
 	}
 	return t, nil
 }
@@ -51,11 +62,11 @@ func (t *tokenizer) wordPieces(word string) []int {
 		return []int{id}
 	}
 	var pieces []int
-	prefix := ""
+	word = "▁" + word
 	for len(word) > 0 {
 		matched := 0
 		for end := min(len(word), t.maxPiece); end > 0; end-- {
-			if id, ok := t.vocab[prefix+word[:end]]; ok {
+			if id, ok := t.vocab[word[:end]]; ok {
 				// Finish the word even after the cap: a later unmatched suffix must
 				// replace the entire word with UNK, rather than retaining its prefix.
 				if len(pieces) < 2046 {
@@ -69,7 +80,6 @@ func (t *tokenizer) wordPieces(word string) []int {
 			return []int{t.vocab["[UNK]"]}
 		}
 		word = word[matched:]
-		prefix = "##"
 	}
 	return pieces
 }
@@ -100,7 +110,7 @@ next:
 		r, size := utf8.DecodeRuneInString(text)
 		text = text[size:]
 		r, _ = utf8.DecodeRuneInString(norm.NFD.String(string(r)))
-		if unicode.IsSpace(r) || r == '▁' {
+		if unicode.IsSpace(r) {
 			flush()
 			continue
 		}

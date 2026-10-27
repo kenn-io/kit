@@ -2,14 +2,12 @@ package embedserver
 
 import (
 	"bytes"
-	"context"
 	json "encoding/json/v2"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -38,7 +36,6 @@ func TestNativeParity(t *testing.T) {
 	e, err := loadModel(t.Context(), dir, library)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, e.Close()) }()
-	var longInput string
 	server := httptest.NewServer(&handler{engine: e, gate: make(chan struct{}, 1)})
 	defer server.Close()
 	for _, sample := range fixture.Samples {
@@ -65,9 +62,6 @@ func TestNativeParity(t *testing.T) {
 		require.Len(t, out.Data, 1)
 		actual := out.Data[0].Embedding
 		require.Len(t, actual, 768)
-		if sample.Tokens == 2048 {
-			longInput = sample.Input
-		}
 
 		var dot, left, right float64
 		for i, v := range actual {
@@ -78,29 +72,4 @@ func TestNativeParity(t *testing.T) {
 		}
 		assert.GreaterOrEqual(t, dot/math.Sqrt(left*right), 0.999)
 	}
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	require.NotEmpty(t, longInput)
-	o := e.(*model).ort
-	run, terminate := o.run, o.terminate
-	terminated := make(chan struct{})
-	o.terminate = func(options uintptr) uintptr {
-		status := terminate(options)
-		close(terminated)
-		return status
-	}
-	// Cancel at the native-run boundary, after options and the cancellation
-	// callback exist. Wait for ORT's termination flag without a timing race.
-	o.run = func(session, options uintptr, names []*byte, values []uintptr, count uintptr, outputs []*byte, outputCount uintptr, output *uintptr) uintptr {
-		cancel()
-		select {
-		case <-terminated:
-		case <-time.After(5 * time.Second):
-			assert.Fail(t, "native cancellation was not delivered")
-		}
-		return run(session, options, names, values, count, outputs, outputCount, output)
-	}
-	vector, _, err := e.embed(ctx, longInput)
-	require.ErrorIs(t, err, context.Canceled)
-	assert.Nil(t, vector)
 }

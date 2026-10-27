@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -81,7 +82,7 @@ func TestServeDiscoveryAndCancellation(t *testing.T) {
 		require.FailNow(t, "cancellation did not drain inference")
 	}
 	assert.True(t, closedAfterInference)
-	require.NoError(t, <-requestDone)
+	<-requestDone
 	require.NoError(t, writer.Close())
 	printed, err := io.ReadAll(reader)
 	require.NoError(t, err)
@@ -91,29 +92,11 @@ func TestServeDiscoveryAndCancellation(t *testing.T) {
 	assert.Empty(t, records)
 }
 
-func TestServeOwnerAndStartupFailure(t *testing.T) {
-	dir := t.TempDir()
-	store := daemon.RuntimeStore{Dir: dir, Prefix: "kit-embed"}
-	release, err := store.AcquireOwnerLock(t.Context())
-	require.NoError(t, err)
-	held := true
-	defer func() {
-		if held {
-			release()
-		}
-	}()
-	called := false
+func TestServeStartupFailure(t *testing.T) {
 	load := func(context.Context, string, string) (engine, error) {
-		called = true
 		return nil, errors.New("model unavailable")
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	require.ErrorContains(t, serve(ctx, Options{DataDir: dir}, load), "already running")
-	assert.False(t, called)
-	release()
-	held = false
-	require.EqualError(t, serve(t.Context(), Options{DataDir: dir}, load), "model unavailable")
+	require.EqualError(t, serve(t.Context(), Options{DataDir: t.TempDir()}, load), "model unavailable")
 }
 
 func TestServeLoopbackOnly(t *testing.T) {
@@ -130,13 +113,20 @@ func TestServeCancellationInterruptsResponse(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	dir := t.TempDir()
-	e := &fakeEngine{run: func(context.Context, string) ([]float32, int, error) {
+	entered, release, closed := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	finish := sync.OnceFunc(func() { close(release) })
+	defer finish()
+	e := &fakeEngine{run: func(_ context.Context, text string) ([]float32, int, error) {
+		if text == "hold" {
+			close(entered)
+			<-release
+		}
 		vector := make([]float32, 768)
 		for i := range vector {
 			vector[i] = float32(i + 1)
 		}
 		return vector, 7, nil
-	}}
+	}, onClose: func() { close(closed) }}
 	done := make(chan error, 1)
 	go func() {
 		done <- serve(ctx, Options{DataDir: dir}, func(context.Context, string, string) (engine, error) { return e, nil })
@@ -174,15 +164,41 @@ func TestServeCancellationInterruptsResponse(t *testing.T) {
 	require.NoError(t, err)
 	next.Body.Close()
 	assert.Equal(t, http.StatusOK, next.StatusCode)
+	req, err = http.NewRequestWithContext(requestCtx, http.MethodPost, record.Endpoint().BaseURL()+"/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text","input":"hold"}`))
+	require.NoError(t, err)
+	requestDone := make(chan error, 1)
+	go func() {
+		res, err := http.DefaultClient.Do(req)
+		if err == nil {
+			res.Body.Close()
+		}
+		requestDone <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "inference did not start")
+	}
 	cancel()
+	select {
+	case err := <-requestDone:
+		require.Error(t, err)
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "shutdown did not close the response connection")
+	}
+	select {
+	case <-closed:
+		require.FailNow(t, "model closed during inference")
+	default:
+	}
+	finish()
 	select {
 	case err := <-done:
 		require.NoError(t, err)
 	case <-time.After(5 * time.Second):
 		require.FailNow(t, "stalled response prevented shutdown")
 	}
-	release, acquired, err := store.TryAcquireOwnerLock(t.Context())
+	records, err := store.List()
 	require.NoError(t, err)
-	require.True(t, acquired)
-	release()
+	assert.Empty(t, records)
 }

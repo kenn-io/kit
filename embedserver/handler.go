@@ -10,7 +10,6 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"time"
 
 	"go.kenn.io/kit/internal/embedvec"
 )
@@ -107,18 +106,6 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "inference failed", http.StatusInternalServerError)
 		return
 	}
-	writer := http.NewResponseController(w)
-	_ = writer.SetWriteDeadline(time.Now().Add(30 * time.Second))
-	done := make(chan struct{})
-	stop := context.AfterFunc(r.Context(), func() {
-		_ = writer.SetWriteDeadline(time.Now())
-		close(done)
-	})
-	defer func() {
-		if !stop() {
-			<-done
-		}
-	}()
 	w.Header().Set("Content-Type", "application/json")
 	_ = jsonv2.MarshalWrite(w, out)
 }

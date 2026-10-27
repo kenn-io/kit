@@ -247,11 +247,6 @@ func TestRuntimeStoreOwnerLockExcludesASecondOwner(t *testing.T) {
 	require.NoError(t, err)
 	defer release()
 
-	again, acquired, err := store.TryAcquireOwnerLock(t.Context())
-	require.NoError(t, err)
-	assert.False(t, acquired)
-	assert.Nil(t, again)
-
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond) //nolint:kennlint // the deadline is the expected result; the first owner's file lock blocks the second acquire until it fires
 	defer cancel()
 	_, err = store.AcquireOwnerLock(ctx)

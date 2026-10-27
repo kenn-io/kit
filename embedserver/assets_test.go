@@ -89,18 +89,26 @@ func TestCacheInterrupted(t *testing.T) {
 
 func TestCacheModelWithCustomDefaultTransport(t *testing.T) {
 	previousTransport, previousAssets := http.DefaultTransport, modelAssets
-	// Hosting applications commonly wrap the default transport for tracing.
-	http.DefaultTransport = transportWrapper{previousTransport}
+	called := false
+	http.DefaultTransport = transportFunc(func(req *http.Request) (*http.Response, error) {
+		called = true
+		assert.Equal(t, "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/"+revision+"/unused", req.URL.String())
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("valid")), Header: make(http.Header)}, nil
+	})
 	digest := sha256.Sum256([]byte("valid"))
 	modelAssets = []asset{{"model.onnx", "unused", hex.EncodeToString(digest[:]), 5}}
 	defer func() { http.DefaultTransport, modelAssets = previousTransport, previousAssets }()
 	dir := t.TempDir()
 	cached := filepath.Join(dir, "nomic-embed-text-v1.5", revision)
-	require.NoError(t, os.MkdirAll(cached, 0o700))
-	require.NoError(t, os.WriteFile(filepath.Join(cached, "model.onnx"), []byte("valid"), 0o600))
 	got, err := cacheModel(t.Context(), dir)
 	require.NoError(t, err)
+	assert.True(t, called)
 	assert.Equal(t, cached, got)
+	data, err := os.ReadFile(filepath.Join(cached, "model.onnx"))
+	require.NoError(t, err)
+	assert.Equal(t, "valid", string(data))
 }
 
-type transportWrapper struct{ http.RoundTripper }
+type transportFunc func(*http.Request) (*http.Response, error)
+
+func (f transportFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }

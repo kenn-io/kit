@@ -33,13 +33,13 @@ func cacheModel(ctx context.Context, dir string) (string, error) {
 	if err := safefileio.EnsurePrivateDir(dir); err != nil {
 		return "", err
 	}
-	transport := &http.Transport{Proxy: http.ProxyFromEnvironment}
+	client := &http.Client{}
 	if defaults, ok := http.DefaultTransport.(*http.Transport); ok {
-		transport = defaults.Clone()
+		transport := defaults.Clone()
+		transport.ResponseHeaderTimeout = 30 * time.Second
+		defer transport.CloseIdleConnections()
+		client.Transport = transport
 	}
-	transport.ResponseHeaderTimeout = 30 * time.Second
-	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: transport}
 	for _, a := range modelAssets {
 		a.url = "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/" + revision + "/" + a.url
 		if err := cacheAsset(ctx, client, dir, a); err != nil {

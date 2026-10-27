@@ -12,7 +12,7 @@ import (
 
 // OrtApi indices follow the append-only ONNX Runtime 1.23.2 C API table.
 type ort struct {
-	createOptions, createRun, getAllocator func(*uintptr) uintptr
+	createOptions, getAllocator func(*uintptr) uintptr
 
 	library, env, session, allocator uintptr
 	errorMessage                     func(uintptr) string
@@ -20,11 +20,10 @@ type ort struct {
 	createSession                    func(uintptr, unsafe.Pointer, uintptr, *uintptr) uintptr
 	run                              func(uintptr, uintptr, []*byte, []uintptr, uintptr, []*byte, uintptr, *uintptr) uintptr
 	setOptimization                  func(uintptr, int32) uintptr
-	terminate                        func(uintptr) uintptr
 	createTensor                     func(uintptr, []int64, uintptr, int32, *uintptr) uintptr
 	tensorData                       func(uintptr, *unsafe.Pointer) uintptr
 
-	releaseEnv, releaseStatus, releaseSession, releaseValue, releaseRun, releaseOptions func(uintptr)
+	releaseEnv, releaseStatus, releaseSession, releaseValue, releaseOptions func(uintptr)
 }
 
 func openORT(library, model string) (_ *ort, err error) {
@@ -63,8 +62,6 @@ func openORT(library, model string) (_ *ort, err error) {
 	purego.RegisterFunc(&o.run, api[9])
 	purego.RegisterFunc(&o.createOptions, api[10])
 	purego.RegisterFunc(&o.setOptimization, api[23])
-	purego.RegisterFunc(&o.createRun, api[39])
-	purego.RegisterFunc(&o.terminate, api[46])
 	purego.RegisterFunc(&o.createTensor, api[48])
 	purego.RegisterFunc(&o.tensorData, api[51])
 	purego.RegisterFunc(&o.getAllocator, api[78])
@@ -72,7 +69,6 @@ func openORT(library, model string) (_ *ort, err error) {
 	purego.RegisterFunc(&o.releaseStatus, api[93])
 	purego.RegisterFunc(&o.releaseSession, api[95])
 	purego.RegisterFunc(&o.releaseValue, api[96])
-	purego.RegisterFunc(&o.releaseRun, api[97])
 	purego.RegisterFunc(&o.releaseOptions, api[100])
 	if err := o.check(o.createEnv(3, "kit-embed", &o.env)); err != nil {
 		return nil, err
@@ -160,18 +156,6 @@ func (o *ort) infer(ctx context.Context, ids []int) ([]float32, error) {
 		}
 		values = append(values, value)
 	}
-	var options uintptr
-	if err := o.check(o.createRun(&options)); err != nil {
-		return nil, err
-	}
-	defer o.releaseRun(options)
-	done := make(chan struct{})
-	stop := context.AfterFunc(ctx, func() { _ = o.check(o.terminate(options)); close(done) })
-	defer func() {
-		if !stop() {
-			<-done
-		}
-	}()
 	names := [][]byte{[]byte("input_ids\x00"), []byte("attention_mask\x00"), []byte("token_type_ids\x00"), []byte("last_hidden_state\x00")}
 	var pin runtime.Pinner
 	defer pin.Unpin()
@@ -182,7 +166,7 @@ func (o *ort) infer(ctx context.Context, ids []int) ([]float32, error) {
 	}
 	pin.Pin(&pointers[0])
 	var output uintptr
-	status := o.run(o.session, options, pointers[:3], values, 3, pointers[3:], 1, &output)
+	status := o.run(o.session, 0, pointers[:3], values, 3, pointers[3:], 1, &output)
 	defer o.releaseValue(output)
 	err := o.check(status)
 	if err := ctx.Err(); err != nil {

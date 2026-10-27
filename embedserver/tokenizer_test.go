@@ -33,6 +33,13 @@ func TestTokenizerMatchesPinnedWordPiece(t *testing.T) {
 		{"CJK gap", "a\U0002b820b", []int{101, 100, 102}},
 		{"CJK boundary", "a\U0002b920b", []int{101, 15, 100, 17, 102}},
 		{"whole word fallback", "aaa☃", []int{101, 100, 102}},
+		{"separator before unknown", "a▁☃", []int{101, 100, 102}},
+		{"separator after unknown", "☃▁a", []int{101, 100, 102}},
+		{"leading separator", "▁ab", []int{101, 100, 102}},
+		{"trailing separator", "ab▁", []int{101, 100, 102}},
+		{"internal separator", "a▁b", []int{101, 15, 17, 102}},
+		{"repeated separator", "a▁▁b", []int{101, 100, 102}},
+		{"separator alone", "▁", []int{101, 100, 102}},
 		{"fallback after cap", strings.Repeat("a", 2047) + "☃", []int{101, 100, 102}},
 	}
 	for _, tc := range cases {

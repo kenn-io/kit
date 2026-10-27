@@ -55,10 +55,6 @@ func (s RuntimeStore) TryAcquireStartLock(ctx context.Context) (release func(), 
 	if err != nil {
 		return nil, false, err
 	}
-	return tryAcquireDaemonLock(ctx, path, action)
-}
-
-func tryAcquireDaemonLock(ctx context.Context, path, action string) (release func(), acquired bool, err error) {
 	lock, err := getDaemonLock(path, action)
 	if err != nil {
 		return nil, false, err
@@ -84,37 +80,15 @@ func tryAcquireDaemonLock(ctx context.Context, path, action string) (release fun
 // AcquireOwnerLock grants exclusive writable ownership for the lifetime of a
 // daemon. The caller must retain the lock until server teardown is complete.
 func (s RuntimeStore) AcquireOwnerLock(ctx context.Context) (func(), error) {
-	path, err := s.ownerLockPath()
+	prefix, err := s.validatePrefix()
 	if err != nil {
 		return nil, err
 	}
-	return acquireDaemonLock(ctx, path, "acquire daemon owner lock")
-}
-
-// TryAcquireOwnerLock grants exclusive writable ownership without waiting.
-// Like TryAcquireStartLock, contention returns nil, false, nil. On success,
-// retain release until server teardown is complete, and call it exactly once.
-func (s RuntimeStore) TryAcquireOwnerLock(ctx context.Context) (release func(), acquired bool, err error) {
-	const action = "try acquire daemon owner lock"
-	if err := ctx.Err(); err != nil {
-		return nil, false, fmt.Errorf("%s: %w", action, err)
-	}
-	path, err := s.ownerLockPath()
-	if err != nil {
-		return nil, false, err
-	}
-	return tryAcquireDaemonLock(ctx, path, action)
-}
-
-func (s RuntimeStore) ownerLockPath() (string, error) {
-	prefix, err := s.validatePrefix()
-	if err != nil {
-		return "", err
-	}
 	if err := s.prepareDir(); err != nil {
-		return "", err
+		return nil, err
 	}
-	return filepath.Join(s.Dir, prefix+".lock.owner"), nil
+	path := filepath.Join(s.Dir, prefix+".lock.owner")
+	return acquireDaemonLock(ctx, path, "acquire daemon owner lock")
 }
 
 func getDaemonLock(lockPath, action string) (*daemonLock, error) {

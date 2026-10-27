@@ -28,7 +28,8 @@ func DefaultDir() (string, error) {
 }
 
 // Serve prints its loopback URL to stderr after loading the model and publishing
-// its runtime record. Cancellation drains requests before native cleanup.
+// its runtime record. Cancellation closes connections and waits for active
+// inference before native cleanup.
 func Serve(ctx context.Context, opts Options) error { return serve(ctx, opts, loadModel) }
 
 func serve(ctx context.Context, opts Options, load func(context.Context, string, string) (engine, error)) (err error) {
@@ -50,14 +51,6 @@ func serve(ctx context.Context, opts Options, load func(context.Context, string,
 		return errors.New("embeddings requires a loopback TCP endpoint")
 	}
 	store := daemon.RuntimeStore{Dir: opts.DataDir, Prefix: "kit-embed"}
-	release, acquired, err := store.TryAcquireOwnerLock(ctx)
-	if err != nil {
-		return err
-	}
-	if !acquired {
-		return errors.New("embeddings server is already running for this data directory")
-	}
-	defer release()
 	if opts.Library == "" {
 		executable, e := os.Executable()
 		if e != nil {
@@ -113,11 +106,15 @@ func serve(ctx context.Context, opts Options, load func(context.Context, string,
 		return err
 	}
 	shutdown := make(chan error, 1)
-	go func() { <-ctx.Done(); shutdown <- server.Shutdown(context.Background()) }()
+	go func() { <-ctx.Done(); shutdown <- server.Close() }()
 	err = server.Serve(listener)
 	cancel()
 	if errors.Is(err, http.ErrServerClosed) {
 		err = nil
 	}
-	return errors.Join(err, <-shutdown)
+	err = errors.Join(err, <-shutdown)
+	// A synchronous native call owns the model until it returns, even after
+	// Close has interrupted its HTTP connection. Hold the gate through cleanup.
+	embeddings.gate <- struct{}{}
+	return err
 }
