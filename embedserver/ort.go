@@ -132,8 +132,9 @@ func (o *ort) tensor(values []int) (uintptr, error) {
 		o.releaseValue(value)
 		return 0, err
 	}
+	tensor := unsafe.Slice((*int64)(data), len(values))
 	for i := range values {
-		unsafe.Slice((*int64)(data), len(values))[i] = int64(values[i])
+		tensor[i] = int64(values[i])
 	}
 	return value, nil
 }
