@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,6 +48,11 @@ func TestCacheRejectsBadDownloads(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(tc.body)) }))
 			defer server.Close()
 			a := asset{"model", server.URL, hex.EncodeToString(digest[:]), tc.size}
+			if tc.name == "too long" {
+				reader := strings.NewReader("valid trailing")
+				require.Error(t, verify(reader, io.Discard, a))
+				assert.Equal(t, 9, reader.Len())
+			}
 			require.Error(t, cacheAsset(t.Context(), server.Client(), dir, a))
 			got, err := os.ReadFile(path)
 			require.NoError(t, err)
