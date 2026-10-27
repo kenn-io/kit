@@ -131,6 +131,46 @@ func TestServeCancellationInterruptsResponse(t *testing.T) {
 	require.ErrorIs(t, <-requestDone, io.EOF)
 }
 
+func TestServeRejectsBrowserRequests(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	e := new(fakeEngine)
+	_, record, done := startServe(t, ctx, e, daemon.Endpoint.ListenContext)
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-done:
+			require.NoError(t, err)
+		case <-time.After(5 * time.Second):
+			require.FailNow(t, "server did not stop")
+		}
+	})
+	for _, tc := range []struct {
+		name, contentType, host string
+		status                  int
+		inputs                  []string
+	}{
+		{"simple request", "text/plain", "", http.StatusUnsupportedMediaType, nil},
+		{"attacker host", "application/json", "attacker.example", http.StatusForbidden, nil},
+		{"discovered endpoint", "application/json", "", http.StatusOK, []string{"x"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, record.Endpoint().BaseURL()+"/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text","input":"x"}`))
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", tc.contentType)
+			if tc.host != "" {
+				req.Host = tc.host
+			}
+			res, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			defer res.Body.Close()
+			assert.Equal(t, tc.status, res.StatusCode)
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			assert.Equal(t, tc.inputs, e.inputs)
+		})
+	}
+}
+
 type blockedListener struct {
 	net.Listener
 	block   *atomic.Bool
@@ -193,6 +233,7 @@ func startEmbeddingRequest(t *testing.T, record daemon.RuntimeRecord) <-chan err
 	t.Cleanup(cancel)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, record.Endpoint().BaseURL()+"/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text","input":"x"}`))
 	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
 	done := make(chan error, 1)
 	go func() {
 		res, err := http.DefaultClient.Do(req)

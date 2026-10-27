@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"mime"
 	"net"
 	"net/http"
 	"os"
@@ -92,9 +93,17 @@ func serve(ctx context.Context, opts Options, load func(context.Context, string,
 			case "/api/ping":
 				ping.ServeHTTP(w, r)
 			case "/v1/embeddings":
+				if r.Host != ep.Address {
+					http.Error(w, "invalid Host", http.StatusForbidden)
+					return
+				}
 				if r.Method != http.MethodPost {
 					w.Header().Set("Allow", "POST")
 					http.Error(w, "POST required", http.StatusMethodNotAllowed)
+					return
+				}
+				if mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mediaType != "application/json" {
+					http.Error(w, "application/json required", http.StatusUnsupportedMediaType)
 					return
 				}
 				embeddings.ServeHTTP(w, r)
