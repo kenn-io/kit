@@ -3,6 +3,19 @@ GOLANGCI_LINT_VERSION ?= $(shell sed -n 's/^version: //p' .custom-gcl.yml)
 CUSTOM_GCL_DIR ?= .
 CUSTOM_GCL := $(CUSTOM_GCL_DIR)/custom-gcl
 
+# Compile without absolute source paths so every checkout and worktree shares
+# one Go build cache instead of each compiling its own copy of every package.
+# Read `go env` first so flags saved with `go env -w GOFLAGS=...` survive the
+# export. GOFLAGS=-trimpath=false opts out. Debuggers need a source mapping:
+# docs/development.md#debugging-trimmed-builds.
+ifeq ($(origin GOFLAGS),undefined)
+GOFLAGS := $(shell go env GOFLAGS)
+endif
+ifeq ($(filter -trimpath -trimpath=%,$(GOFLAGS)),)
+override GOFLAGS += -trimpath
+endif
+export GOFLAGS
+
 .PHONY: lint lint-golangci lint-config lint-config-check custom-gcl nilaway
 
 # lint is the repository lint gate: shared config drift, golangci-lint with the

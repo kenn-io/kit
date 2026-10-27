@@ -4,6 +4,10 @@ Architecture documents capture durable design decisions, invariants, and
 tradeoffs. Package APIs belong in Go documentation; implementation plans and
 verification records belong in kata and pull request discussion.
 
+## Development
+
+- [Developing kit](development.md)
+
 ## Adoption
 
 - [Adopting packed content storage](adopting-packstore.md)
