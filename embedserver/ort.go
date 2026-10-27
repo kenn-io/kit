@@ -10,7 +10,7 @@ import (
 	"github.com/ebitengine/purego"
 )
 
-// OrtApi indices follow the append-only ONNX Runtime 1.23.2 C API table.
+// OrtApi indices require a runtime providing API 23 or newer, tested with 1.23.2.
 type ort struct {
 	createOptions, getAllocator func(*uintptr) uintptr
 
@@ -43,14 +43,9 @@ func openORT(library, model string) (_ *ort, err error) {
 	}
 	var base func() unsafe.Pointer
 	purego.RegisterFunc(&base, symbol)
-	b := unsafe.Slice((*uintptr)(base()), 2)
+	b := (*uintptr)(base())
 	var getAPI func(uint32) unsafe.Pointer
-	var version func() string
-	purego.RegisterFunc(&getAPI, b[0])
-	purego.RegisterFunc(&version, b[1])
-	if v := version(); v != "1.23.2" {
-		return nil, fmt.Errorf("ONNX Runtime %s: require 1.23.2", v)
-	}
+	purego.RegisterFunc(&getAPI, *b)
 	table := getAPI(23)
 	if table == nil {
 		return nil, errors.New("ONNX Runtime API 23 unavailable")

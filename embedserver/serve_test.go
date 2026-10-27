@@ -111,8 +111,8 @@ func TestServeRejectsSecondOwner(t *testing.T) {
 		return nil, errors.New("model must not load")
 	}, daemon.Endpoint.ListenContext)
 	require.ErrorContains(t, err, "cannot own "+store.Dir+", another kennembed may be running")
-	assert.ErrorIs(t, err, context.DeadlineExceeded)
-	assert.NoError(t, ctx.Err(), "owner lock wait exceeded its startup timeout")
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.NoError(t, ctx.Err(), "owner lock wait exceeded its startup timeout")
 	assert.False(t, loaded)
 }
 

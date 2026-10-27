@@ -6,8 +6,9 @@
 // Serve prints its ready URL to stderr. Cancellation closes connections and waits
 // for active inference before releasing native resources and removing its record.
 // kennembed runs in the foreground until Ctrl-C or SIGTERM with the default
-// data dir, listen address, and ONNX Runtime 1.23.2, API 23, library. The caller
-// installs that library beside the executable or supplies Options.Library.
+// data dir and listen address. ONNX Runtime must provide API 23 or newer,
+// tested with 1.23.2. The caller installs that library beside the executable
+// or supplies Options.Library.
 // The -listen, -data-dir, and -library flags override those defaults.
 // Model downloads last until completion or context cancellation.
 package embedserver
