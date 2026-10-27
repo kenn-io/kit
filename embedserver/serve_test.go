@@ -144,17 +144,21 @@ func TestServeRejectsBrowserRequests(t *testing.T) {
 			require.FailNow(t, "server did not stop")
 		}
 	})
+	_, port, err := net.SplitHostPort(record.Endpoint().Address)
+	require.NoError(t, err)
+	attackerHost := net.JoinHostPort("attacker.example", port)
 	for _, tc := range []struct {
-		name, contentType, host string
-		status                  int
-		inputs                  []string
+		name, method, path, contentType, host string
+		status                                int
+		inputs                                []string
 	}{
-		{"simple request", "text/plain", "", http.StatusUnsupportedMediaType, nil},
-		{"attacker host", "application/json", "attacker.example", http.StatusForbidden, nil},
-		{"discovered endpoint", "application/json", "", http.StatusOK, []string{"x"}},
+		{"simple request", http.MethodPost, "/v1/embeddings", "text/plain", "", http.StatusUnsupportedMediaType, nil},
+		{"attacker host", http.MethodPost, "/v1/embeddings", "application/json", attackerHost, http.StatusForbidden, nil},
+		{"attacker ping host", http.MethodGet, "/api/ping", "", attackerHost, http.StatusForbidden, nil},
+		{"discovered endpoint", http.MethodPost, "/v1/embeddings", "application/json", "", http.StatusOK, []string{"x"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, record.Endpoint().BaseURL()+"/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text","input":"x"}`))
+			req, err := http.NewRequestWithContext(t.Context(), tc.method, record.Endpoint().BaseURL()+tc.path, strings.NewReader(`{"model":"nomic-embed-text","input":"x"}`))
 			require.NoError(t, err)
 			req.Header.Set("Content-Type", tc.contentType)
 			if tc.host != "" {

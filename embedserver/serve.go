@@ -89,14 +89,14 @@ func serve(ctx context.Context, opts Options, load func(context.Context, string,
 	server := &http.Server{
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: time.Minute, BaseContext: func(net.Listener) context.Context { return ctx },
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Host != ep.Address {
+				http.Error(w, "invalid Host", http.StatusForbidden)
+				return
+			}
 			switch r.URL.Path {
 			case "/api/ping":
 				ping.ServeHTTP(w, r)
 			case "/v1/embeddings":
-				if r.Host != ep.Address {
-					http.Error(w, "invalid Host", http.StatusForbidden)
-					return
-				}
 				if r.Method != http.MethodPost {
 					w.Header().Set("Allow", "POST")
 					http.Error(w, "POST required", http.StatusMethodNotAllowed)
