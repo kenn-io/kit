@@ -8,5 +8,6 @@
 // kennembed runs in the foreground until Ctrl-C or SIGTERM with the default
 // data dir, listen address, and ONNX Runtime 1.23.2, API 23, library. The caller
 // installs that library beside the executable or supplies Options.Library.
+// The -listen, -data-dir, and -library flags override those defaults.
 // Model downloads last until completion or context cancellation.
 package embedserver
