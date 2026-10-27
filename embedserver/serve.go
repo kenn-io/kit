@@ -7,8 +7,10 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"go.kenn.io/kit/daemon"
@@ -89,7 +91,7 @@ func serve(ctx context.Context, opts Options, load func(context.Context, string,
 	server := &http.Server{
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: time.Minute, BaseContext: func(net.Listener) context.Context { return ctx },
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Host != ep.Address {
+			if !matchesListenerHost(r.Host, ep.Address) {
 				http.Error(w, "invalid Host", http.StatusForbidden)
 				return
 			}
@@ -131,4 +133,15 @@ func serve(ctx context.Context, opts Options, load func(context.Context, string,
 	// Close has interrupted its HTTP connection. Hold the gate through cleanup.
 	embeddings.gate <- struct{}{}
 	return err
+}
+
+func matchesListenerHost(authority, address string) bool {
+	request := url.URL{Host: authority}
+	port := request.Port()
+	if port == "" {
+		port = "80"
+	}
+	host, listenerPort, err := net.SplitHostPort(address)
+	return err == nil && port == listenerPort &&
+		(net.ParseIP(request.Hostname()).Equal(net.ParseIP(host)) || strings.EqualFold(request.Hostname(), "localhost"))
 }

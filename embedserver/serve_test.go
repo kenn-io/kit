@@ -154,6 +154,7 @@ func TestServeRejectsBrowserRequests(t *testing.T) {
 		{"simple request", http.MethodPost, "/v1/embeddings", "text/plain", "", http.StatusUnsupportedMediaType},
 		{"attacker host", http.MethodPost, "/v1/embeddings", "application/json", attackerHost, http.StatusForbidden},
 		{"attacker ping host", http.MethodGet, "/api/ping", "", attackerHost, http.StatusForbidden},
+		{"wrong port", http.MethodPost, "/v1/embeddings", "application/json", "LOCALHOST:0", http.StatusForbidden},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req, err := http.NewRequestWithContext(t.Context(), tc.method, record.Endpoint().BaseURL()+tc.path, strings.NewReader(`{"model":"nomic-embed-text","input":"x"}`))
@@ -169,8 +170,25 @@ func TestServeRejectsBrowserRequests(t *testing.T) {
 		})
 	}
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	assert.Empty(t, e.inputs)
+	e.mu.Unlock()
+	t.Run("localhost", func(t *testing.T) {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, record.Endpoint().BaseURL()+"/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text","input":"x"}`))
+		require.NoError(t, err)
+		req.Host = net.JoinHostPort("LOCALHOST", port)
+		req.Header.Set("Content-Type", "application/json")
+		res, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer res.Body.Close()
+		assert.Equal(t, http.StatusOK, res.StatusCode)
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		assert.Equal(t, []string{"x"}, e.inputs)
+	})
+}
+
+func TestMatchesListenerHostDefaultHTTPPort(t *testing.T) {
+	assert.True(t, matchesListenerHost("127.0.0.1", "127.0.0.1:80"))
 }
 
 type blockedListener struct {
