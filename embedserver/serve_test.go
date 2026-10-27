@@ -3,6 +3,7 @@ package embedserver
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -15,8 +16,13 @@ import (
 	"go.kenn.io/kit/daemon"
 )
 
-func TestServeDiscoveryAndStop(t *testing.T) {
+func TestServeDiscoveryAndCancellation(t *testing.T) {
 	dir := t.TempDir()
+	reader, writer, err := os.Pipe()
+	require.NoError(t, err)
+	stderr := os.Stderr
+	os.Stderr = writer
+	defer func() { os.Stderr = stderr; writer.Close(); reader.Close() }()
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	e := new(fakeEngine)
@@ -26,47 +32,20 @@ func TestServeDiscoveryAndStop(t *testing.T) {
 	}()
 	store := daemon.RuntimeStore{Dir: dir, Prefix: "kit-embed"}
 	var record daemon.RuntimeRecord
-	var proof *daemon.Proof
 	require.Eventually(t, func() bool {
-		var err error
-		proof, err = LoadProof(dir)
-		if err != nil {
+		found, _, ok, err := daemon.Discover(t.Context(), store, daemon.DiscoverOptions{})
+		if err != nil || !ok {
 			return false
 		}
-		records, err := store.List()
-		if err != nil || len(records) != 1 {
-			return false
-		}
-		record = records[0]
-		_, err = proof.Probe(t.Context(), record, daemon.ProbeOptions{})
-		return err == nil
+		record = found
+		return true
 	}, 5*time.Second, 10*time.Millisecond)
-	discovered, _, found, err := daemon.Discover(t.Context(), store, daemon.DiscoverOptions{Proof: proof})
-	require.NoError(t, err)
-	require.True(t, found)
-	assert.Equal(t, record.Address, discovered.Address)
-	wrong, err := daemon.NewProof([]byte("different proof"))
-	require.NoError(t, err)
-	_, err = wrong.Probe(t.Context(), record, daemon.ProbeOptions{})
-	require.Error(t, err)
-	key, err := os.Stat(filepath.Join(dir, "proof.key"))
-	require.NoError(t, err)
-	assert.NotZero(t, key.Size())
-	err = daemon.Stop(t.Context(), record, daemon.StopOptions{Proof: proof, Request: func(ctx context.Context, r daemon.RuntimeRecord) error {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.Endpoint().BaseURL()+"/api/shutdown", nil)
-		if err != nil {
-			return err
-		}
-		res, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
-		if err != nil {
-			return err
-		}
-		defer res.Body.Close()
-		assert.Equal(t, http.StatusAccepted, res.StatusCode)
-		return nil
-	}})
-	require.NoError(t, err)
+	cancel()
 	require.NoError(t, <-done)
+	require.NoError(t, writer.Close())
+	printed, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	assert.Equal(t, record.Endpoint().BaseURL()+"\n", string(printed))
 	records, err := store.List()
 	require.NoError(t, err)
 	assert.Empty(t, records)
@@ -95,8 +74,6 @@ func TestServeOwnerAndStartupFailure(t *testing.T) {
 	cancel()
 	require.ErrorIs(t, serve(ctx, Options{DataDir: dir}, load), context.Canceled)
 	assert.False(t, called)
-	_, err = os.Stat(filepath.Join(dir, "proof.key"))
-	require.ErrorIs(t, err, os.ErrNotExist)
 	release()
 	held = false
 	require.EqualError(t, serve(t.Context(), Options{DataDir: dir}, load), "model unavailable")
@@ -157,4 +134,13 @@ func TestServeCancellationDrainsInference(t *testing.T) {
 
 func TestServeLoopbackOnly(t *testing.T) {
 	require.Error(t, Serve(t.Context(), Options{DataDir: t.TempDir(), Listen: "0.0.0.0:0"}))
+}
+
+func TestMissingRuntimePreventsModelDownload(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "cache")
+	_, err := loadModel(t.Context(), dir, filepath.Join(root, "missing-library"))
+	require.ErrorIs(t, err, os.ErrNotExist)
+	_, err = os.Stat(dir)
+	require.ErrorIs(t, err, os.ErrNotExist)
 }

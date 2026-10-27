@@ -3,6 +3,7 @@ package embedserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -26,8 +27,8 @@ func DefaultDir() (string, error) {
 	return filepath.Join(home, ".kenn", "embeddings"), nil
 }
 
-// Serve downloads and verifies the model, then serves until cancellation or
-// POST /api/shutdown. All requests drain before native resources are released.
+// Serve prints its loopback URL to stderr after loading the model and publishing
+// its runtime record. Cancellation drains requests before native cleanup.
 func Serve(ctx context.Context, opts Options) error { return serve(ctx, opts, loadModel) }
 
 func serve(ctx context.Context, opts Options, load func(context.Context, string, string) (engine, error)) (err error) {
@@ -54,20 +55,12 @@ func serve(ctx context.Context, opts Options, load func(context.Context, string,
 		return err
 	}
 	defer release()
-	proof, err := ensureProof(opts.DataDir)
-	if err != nil {
-		return err
-	}
 	if opts.Library == "" {
 		executable, e := os.Executable()
 		if e != nil {
 			return e
 		}
 		opts.Library = filepath.Join(filepath.Dir(executable), libraryName())
-	}
-	opts.Library, err = filepath.Abs(opts.Library)
-	if err != nil {
-		return err
 	}
 	engine, err := load(ctx, opts.DataDir, opts.Library)
 	if err != nil {
@@ -87,10 +80,7 @@ func serve(ctx context.Context, opts Options, load func(context.Context, string,
 	defer listener.Close()
 	ep.Address = listener.Addr().String()
 	record := daemon.NewRuntimeRecord("kit-embed", "1", ep)
-	ping, err := proof.NewPingHandler(record)
-	if err != nil {
-		return err
-	}
+	ping := daemon.NewPingHandler(daemon.PingHandlerOptions{Service: record.Service, Version: record.Version, PID: record.PID})
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	embeddings := &handler{engine: engine, gate: make(chan struct{}, 1)}
@@ -100,18 +90,13 @@ func serve(ctx context.Context, opts Options, load func(context.Context, string,
 			switch r.URL.Path {
 			case "/api/ping":
 				ping.ServeHTTP(w, r)
-			case "/api/shutdown", "/v1/embeddings":
+			case "/v1/embeddings":
 				if r.Method != http.MethodPost {
 					w.Header().Set("Allow", "POST")
 					http.Error(w, "POST required", http.StatusMethodNotAllowed)
 					return
 				}
-				if r.URL.Path == "/api/shutdown" {
-					w.WriteHeader(http.StatusAccepted)
-					cancel()
-				} else {
-					embeddings.ServeHTTP(w, r)
-				}
+				embeddings.ServeHTTP(w, r)
 			default:
 				http.NotFound(w, r)
 			}
@@ -119,6 +104,9 @@ func serve(ctx context.Context, opts Options, load func(context.Context, string,
 	}
 	path, err = store.Write(record)
 	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(os.Stderr, ep.BaseURL()); err != nil {
 		return err
 	}
 	shutdown := make(chan error, 1)

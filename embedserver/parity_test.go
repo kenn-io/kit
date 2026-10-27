@@ -23,16 +23,21 @@ func TestNativeParity(t *testing.T) {
 	require.NoError(t, err)
 	var fixture struct {
 		Samples []struct {
-			Input  string
-			Tokens int
-			Vector []float32
-		}
+			Input  string    `json:"input"`
+			Tokens int       `json:"tokens"`
+			Vector []float32 `json:"vector"`
+			IDs    []int     `json:"ids"`
+		} `json:"samples"`
 	}
 	require.NoError(t, json.Unmarshal(data, &fixture))
+	require.NotEmpty(t, fixture.Samples)
 	e, err := loadModel(t.Context(), dir, library)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, e.Close()) }()
 	for _, sample := range fixture.Samples {
+		if len(sample.IDs) > 0 {
+			assert.Equal(t, sample.IDs, e.(*model).tokenizer.encode(sample.Input), sample.Input)
+		}
 		actual, tokens, err := e.embed(t.Context(), sample.Input)
 		require.NoError(t, err)
 		assert.Equal(t, sample.Tokens, tokens)

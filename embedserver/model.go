@@ -2,11 +2,10 @@ package embedserver
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"math"
+	"os"
 	"path/filepath"
-
-	"github.com/sugarme/tokenizer"
 )
 
 type engine interface {
@@ -15,10 +14,17 @@ type engine interface {
 }
 type model struct {
 	ort       *ort
-	tokenizer *tokenizer.Tokenizer
+	tokenizer *tokenizer
 }
 
 func loadModel(ctx context.Context, dir, library string) (engine, error) {
+	library, err := filepath.Abs(library)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.Stat(library); err != nil {
+		return nil, fmt.Errorf("ONNX Runtime library: %w", err)
+	}
 	cached, err := cacheModel(ctx, dir)
 	if err != nil {
 		return nil, err
@@ -35,15 +41,9 @@ func loadModel(ctx context.Context, dir, library string) (engine, error) {
 }
 func (m *model) Close() error { return m.ort.Close() }
 func (m *model) embed(ctx context.Context, text string) ([]float32, int, error) {
-	encoded, err := m.tokenizer.EncodeSingle(text, true)
-	if err != nil {
-		return nil, 0, err
-	}
-	if len(encoded.Ids) == 0 {
-		return nil, 0, errors.New("tokenizer returned no tokens")
-	}
-	vector, err := m.ort.infer(ctx, encoded.Ids, encoded.AttentionMask, encoded.TypeIds)
-	return vector, len(encoded.Ids), err
+	ids := m.tokenizer.encode(text)
+	vector, err := m.ort.infer(ctx, ids)
+	return vector, len(ids), err
 }
 
 func normalize(vector []float32) {

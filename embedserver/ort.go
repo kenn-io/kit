@@ -10,32 +10,21 @@ import (
 	"github.com/ebitengine/purego"
 )
 
-// The indices below are the append-only OrtApi table in the v1.23.2 C header.
-// Native handles and buffers never escape this adapter. Run owns its cancellation
-// callback and waits for it before releasing the run options.
+// OrtApi indices follow the append-only ONNX Runtime 1.23.2 C API table.
 type ort struct {
+	createOptions, createRun, getAllocator func(*uintptr) uintptr
+
 	library, env, session, allocator uintptr
 	errorMessage                     func(uintptr) string
 	createEnv                        func(int32, string, *uintptr) uintptr
 	createSession                    func(uintptr, unsafe.Pointer, uintptr, *uintptr) uintptr
 	run                              func(uintptr, uintptr, []*byte, []uintptr, uintptr, []*byte, uintptr, *uintptr) uintptr
-	createOptions                    func(*uintptr) uintptr
 	setOptimization                  func(uintptr, int32) uintptr
-	createRun                        func(*uintptr) uintptr
 	terminate                        func(uintptr) uintptr
 	createTensor                     func(uintptr, []int64, uintptr, int32, *uintptr) uintptr
 	tensorData                       func(uintptr, *unsafe.Pointer) uintptr
-	tensorShape                      func(uintptr, *uintptr) uintptr
-	elementType                      func(uintptr, *int32) uintptr
-	elementCount                     func(uintptr, *uintptr) uintptr
-	getAllocator                     func(*uintptr) uintptr
-	releaseEnv                       func(uintptr)
-	releaseStatus                    func(uintptr)
-	releaseSession                   func(uintptr)
-	releaseValue                     func(uintptr)
-	releaseRun                       func(uintptr)
-	releaseShape                     func(uintptr)
-	releaseOptions                   func(uintptr)
+
+	releaseEnv, releaseStatus, releaseSession, releaseValue, releaseRun, releaseOptions func(uintptr)
 }
 
 func openORT(library, model string) (_ *ort, err error) {
@@ -68,34 +57,23 @@ func openORT(library, model string) (_ *ort, err error) {
 		return nil, errors.New("ONNX Runtime API 23 unavailable")
 	}
 	api := unsafe.Slice((*uintptr)(table), 101)
-	for _, binding := range []struct {
-		fn    any
-		index int
-	}{
-		{&o.errorMessage, 2},
-		{&o.createEnv, 3},
-		{&o.createSession, 7},
-		{&o.run, 9},
-		{&o.createOptions, 10},
-		{&o.setOptimization, 23},
-		{&o.createRun, 39},
-		{&o.terminate, 46},
-		{&o.createTensor, 48},
-		{&o.tensorData, 51},
-		{&o.elementType, 60},
-		{&o.elementCount, 64},
-		{&o.tensorShape, 65},
-		{&o.getAllocator, 78},
-		{&o.releaseEnv, 92},
-		{&o.releaseStatus, 93},
-		{&o.releaseSession, 95},
-		{&o.releaseValue, 96},
-		{&o.releaseRun, 97},
-		{&o.releaseShape, 99},
-		{&o.releaseOptions, 100},
-	} {
-		purego.RegisterFunc(binding.fn, api[binding.index])
-	}
+	purego.RegisterFunc(&o.errorMessage, api[2])
+	purego.RegisterFunc(&o.createEnv, api[3])
+	purego.RegisterFunc(&o.createSession, api[7])
+	purego.RegisterFunc(&o.run, api[9])
+	purego.RegisterFunc(&o.createOptions, api[10])
+	purego.RegisterFunc(&o.setOptimization, api[23])
+	purego.RegisterFunc(&o.createRun, api[39])
+	purego.RegisterFunc(&o.terminate, api[46])
+	purego.RegisterFunc(&o.createTensor, api[48])
+	purego.RegisterFunc(&o.tensorData, api[51])
+	purego.RegisterFunc(&o.getAllocator, api[78])
+	purego.RegisterFunc(&o.releaseEnv, api[92])
+	purego.RegisterFunc(&o.releaseStatus, api[93])
+	purego.RegisterFunc(&o.releaseSession, api[95])
+	purego.RegisterFunc(&o.releaseValue, api[96])
+	purego.RegisterFunc(&o.releaseRun, api[97])
+	purego.RegisterFunc(&o.releaseOptions, api[100])
 	if err := o.check(o.createEnv(3, "kit-embed", &o.env)); err != nil {
 		return nil, err
 	}
@@ -116,8 +94,7 @@ func openORT(library, model string) (_ *ort, err error) {
 	var pin runtime.Pinner
 	pin.Pin(path)
 	defer pin.Unpin()
-	status := o.createSession(o.env, path, options, &o.session)
-	if err := o.check(status); err != nil {
+	if err := o.check(o.createSession(o.env, path, options, &o.session)); err != nil {
 		return nil, err
 	}
 	if err := o.check(o.getAllocator(&o.allocator)); err != nil {
@@ -147,8 +124,7 @@ func (o *ort) Close() error {
 
 func (o *ort) tensor(values []int) (uintptr, error) {
 	var value uintptr
-	shape := []int64{1, int64(len(values))}
-	if err := o.check(o.createTensor(o.allocator, shape, 2, 7, &value)); err != nil {
+	if err := o.check(o.createTensor(o.allocator, []int64{1, int64(len(values))}, 2, 7, &value)); err != nil {
 		return 0, err
 	}
 	var data unsafe.Pointer
@@ -162,7 +138,7 @@ func (o *ort) tensor(values []int) (uintptr, error) {
 	return value, nil
 }
 
-func (o *ort) infer(ctx context.Context, ids, mask, types []int) ([]float32, error) {
+func (o *ort) infer(ctx context.Context, ids []int) ([]float32, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -172,7 +148,11 @@ func (o *ort) infer(ctx context.Context, ids, mask, types []int) ([]float32, err
 			o.releaseValue(v)
 		}
 	}()
-	for _, input := range [][]int{ids, mask, types} {
+	mask := make([]int, len(ids))
+	for i := range mask {
+		mask[i] = 1
+	}
+	for _, input := range [][]int{ids, mask, make([]int, len(ids))} {
 		value, err := o.tensor(input)
 		if err != nil {
 			return nil, err
@@ -202,43 +182,23 @@ func (o *ort) infer(ctx context.Context, ids, mask, types []int) ([]float32, err
 	pin.Pin(&pointers[0])
 	var output uintptr
 	status := o.run(o.session, options, pointers[:3], values, 3, pointers[3:], 1, &output)
-	if output != 0 {
-		defer o.releaseValue(output)
-	}
+	defer o.releaseValue(output)
 	if err := o.check(status); err != nil {
 		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	var shape, count uintptr
-	var dtype int32
-	if err := o.check(o.tensorShape(output, &shape)); err != nil {
-		return nil, err
-	}
-	defer o.releaseShape(shape)
-	if err := o.check(o.elementType(shape, &dtype)); err != nil {
-		return nil, err
-	}
-	if err := o.check(o.elementCount(shape, &count)); err != nil {
-		return nil, err
-	}
-	if dtype != 1 || count != uintptr(len(ids)*768) {
-		return nil, errors.New("unexpected ONNX output shape or type")
-	}
 	var data unsafe.Pointer
 	if err := o.check(o.tensorData(output, &data)); err != nil {
 		return nil, err
 	}
-	hidden := unsafe.Slice((*float32)(data), int(count))
+	hidden := unsafe.Slice((*float32)(data), len(ids)*768)
 	pooled := make([]float32, 768)
-	for i, attended := range mask {
-		if attended != 0 {
-			for j := range pooled {
-				pooled[j] += hidden[i*768+j]
-			}
+	for i := range ids {
+		for j := range pooled {
+			pooled[j] += hidden[i*768+j] / float32(len(ids))
 		}
 	}
-	normalize(pooled)
 	return pooled, nil
 }
