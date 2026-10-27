@@ -100,7 +100,7 @@ next:
 		r, size := utf8.DecodeRuneInString(text)
 		text = text[size:]
 		r, _ = utf8.DecodeRuneInString(norm.NFD.String(string(r)))
-		if unicode.IsSpace(r) {
+		if unicode.IsSpace(r) || r == '▁' {
 			flush()
 			continue
 		}

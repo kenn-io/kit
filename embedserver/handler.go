@@ -10,6 +10,9 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"time"
+
+	"go.kenn.io/kit/internal/embedvec"
 )
 
 type handler struct {
@@ -41,8 +44,7 @@ type response struct {
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<20))
 	if err != nil {
-		var limit *http.MaxBytesError
-		if errors.As(err, &limit) {
+		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 			http.Error(w, "request exceeds 4 MiB", http.StatusRequestEntityTooLarge)
 		} else {
 			http.Error(w, "could not read request body", http.StatusBadRequest)
@@ -76,8 +78,16 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			inputs = append(inputs, *text)
 		}
 	}
-	if len(inputs) == 0 || len(inputs) > 32 || req.Dimensions > 768 || (req.Encoding != "" && req.Encoding != "float" && req.Encoding != "base64") {
-		http.Error(w, "invalid input count, dimensions, or encoding_format", http.StatusBadRequest)
+	if len(inputs) == 0 {
+		http.Error(w, "input must contain at least one string", http.StatusBadRequest)
+		return
+	}
+	if req.Dimensions > 768 {
+		http.Error(w, "dimensions must be at most 768", http.StatusBadRequest)
+		return
+	}
+	if req.Encoding != "" && req.Encoding != "float" && req.Encoding != "base64" {
+		http.Error(w, "encoding_format must be float or base64", http.StatusBadRequest)
 		return
 	}
 	if req.Dimensions <= 0 {
@@ -85,11 +95,11 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	select {
 	case h.gate <- struct{}{}:
-		defer func() { <-h.gate }()
 	case <-r.Context().Done():
 		return
 	}
 	out, err := h.embeddings(r.Context(), req, inputs)
+	<-h.gate
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return
@@ -97,6 +107,18 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "inference failed", http.StatusInternalServerError)
 		return
 	}
+	writer := http.NewResponseController(w)
+	_ = writer.SetWriteDeadline(time.Now().Add(30 * time.Second))
+	done := make(chan struct{})
+	stop := context.AfterFunc(r.Context(), func() {
+		_ = writer.SetWriteDeadline(time.Now())
+		close(done)
+	})
+	defer func() {
+		if !stop() {
+			<-done
+		}
+	}()
 	w.Header().Set("Content-Type", "application/json")
 	_ = jsonv2.MarshalWrite(w, out)
 }
@@ -109,7 +131,7 @@ func (h *handler) embeddings(ctx context.Context, req request, inputs []string) 
 			return out, err
 		}
 		vector = vector[:req.Dimensions]
-		normalize(vector)
+		embedvec.NormalizeL2(vector)
 		var embedding any = vector
 		if req.Encoding == "base64" {
 			data := make([]byte, len(vector)*4)

@@ -11,6 +11,7 @@ import (
 	jsonv2 "encoding/json/v2"
 
 	"go.kenn.io/kit/embedconfig"
+	"go.kenn.io/kit/internal/embedvec"
 )
 
 type wireRequest struct {
@@ -166,23 +167,20 @@ func decodeVector(raw wireEmbedding, dims int, normalization embedconfig.Normali
 		return nil, fmt.Errorf("has %d dimensions, expected %d", len(raw.values), dims)
 	}
 	out := make([]float32, len(raw.values))
-	var sumSquares float64
+	nonzero := false
 	for i, value := range raw.values {
 		if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {
 			return nil, fmt.Errorf("component %d is not finite", i)
 		}
 		out[i] = value
-		sumSquares += float64(value) * float64(value)
+		nonzero = nonzero || value != 0
 	}
-	if sumSquares == 0 {
+	if !nonzero {
 		return nil, errors.New("has zero norm")
 	}
 	if normalization != embedconfig.NormalizationL2 {
 		return out, nil
 	}
-	norm := math.Sqrt(sumSquares)
-	for i, value := range out {
-		out[i] = float32(float64(value) / norm)
-	}
+	embedvec.NormalizeL2(out)
 	return out, nil
 }

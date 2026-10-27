@@ -50,9 +50,12 @@ func serve(ctx context.Context, opts Options, load func(context.Context, string,
 		return errors.New("embeddings requires a loopback TCP endpoint")
 	}
 	store := daemon.RuntimeStore{Dir: opts.DataDir, Prefix: "kit-embed"}
-	release, err := store.AcquireOwnerLock(ctx)
+	release, acquired, err := store.TryAcquireOwnerLock(ctx)
 	if err != nil {
 		return err
+	}
+	if !acquired {
+		return errors.New("embeddings server is already running for this data directory")
 	}
 	defer release()
 	if opts.Library == "" {

@@ -1,9 +1,13 @@
 package embedserver
 
 import (
+	"bufio"
 	"context"
+	json "encoding/json/v2"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -103,9 +107,9 @@ func TestServeOwnerAndStartupFailure(t *testing.T) {
 		called = true
 		return nil, errors.New("model unavailable")
 	}
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	require.ErrorIs(t, serve(ctx, Options{DataDir: dir}, load), context.Canceled)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	require.ErrorContains(t, serve(ctx, Options{DataDir: dir}, load), "already running")
 	assert.False(t, called)
 	release()
 	held = false
@@ -120,4 +124,65 @@ func TestServeLoopbackOnly(t *testing.T) {
 	})
 	require.ErrorContains(t, err, "not loopback")
 	assert.False(t, called)
+}
+
+func TestServeCancellationInterruptsResponse(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	dir := t.TempDir()
+	e := &fakeEngine{run: func(context.Context, string) ([]float32, int, error) {
+		vector := make([]float32, 768)
+		for i := range vector {
+			vector[i] = float32(i + 1)
+		}
+		return vector, 7, nil
+	}}
+	done := make(chan error, 1)
+	go func() {
+		done <- serve(ctx, Options{DataDir: dir}, func(context.Context, string, string) (engine, error) { return e, nil })
+	}()
+	store := daemon.RuntimeStore{Dir: dir, Prefix: "kit-embed"}
+	var record daemon.RuntimeRecord
+	require.Eventually(t, func() bool {
+		found, _, ok, err := daemon.Discover(t.Context(), store, daemon.DiscoverOptions{})
+		record = found
+		return ok && err == nil
+	}, 5*time.Second, 10*time.Millisecond)
+	address, err := net.ResolveTCPAddr("tcp", record.Address)
+	require.NoError(t, err)
+	conn, err := net.DialTCP("tcp", nil, address)
+	require.NoError(t, err)
+	defer conn.Close()
+	require.NoError(t, conn.SetReadBuffer(1024))
+	require.NoError(t, conn.SetDeadline(time.Now().Add(10*time.Second)))
+	// A multi-megabyte response exceeds both ends' socket buffers. Read only
+	// its headers so the server must handle a reader that stops making progress.
+	body, err := json.Marshal(map[string]any{"model": "nomic-embed-text", "input": make([]string, 2048)})
+	require.NoError(t, err)
+	_, err = fmt.Fprintf(conn, "POST /v1/embeddings HTTP/1.1\r\nHost: example.com\r\nContent-Length: %d\r\n\r\n%s", len(body), body)
+	require.NoError(t, err)
+	res, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	require.NoError(t, err)
+	defer func() { conn.Close(); res.Body.Close() }()
+	require.Equal(t, http.StatusOK, res.StatusCode)
+	// The stalled response must not retain the inference gate.
+	requestCtx, stop := context.WithTimeout(t.Context(), 5*time.Second)
+	defer stop()
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, record.Endpoint().BaseURL()+"/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text","input":"next"}`))
+	require.NoError(t, err)
+	next, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	next.Body.Close()
+	assert.Equal(t, http.StatusOK, next.StatusCode)
+	cancel()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "stalled response prevented shutdown")
+	}
+	release, acquired, err := store.TryAcquireOwnerLock(t.Context())
+	require.NoError(t, err)
+	require.True(t, acquired)
+	release()
 }

@@ -3,7 +3,6 @@ package embedserver
 import (
 	"context"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 )
@@ -44,17 +43,4 @@ func (m *model) embed(ctx context.Context, text string) ([]float32, int, error) 
 	ids := m.tokenizer.encode(text)
 	vector, err := m.ort.infer(ctx, ids)
 	return vector, len(ids), err
-}
-
-func normalize(vector []float32) {
-	var squared float64
-	for _, v := range vector {
-		squared += float64(v) * float64(v)
-	}
-	if squared > 0 {
-		scale := math.Sqrt(squared)
-		for i := range vector {
-			vector[i] = float32(float64(vector[i]) / scale)
-		}
-	}
 }

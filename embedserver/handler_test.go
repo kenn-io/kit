@@ -54,19 +54,33 @@ func TestHandlerThroughClient(t *testing.T) {
 	for _, encoding := range []string{"float", "base64"} {
 		for _, dimensions := range []int{256, 768} {
 			t.Run(encoding+"/"+strconv.Itoa(dimensions), func(t *testing.T) {
-				e := new(fakeEngine)
+				e := &fakeEngine{run: func(_ context.Context, text string) ([]float32, int, error) {
+					index, err := strconv.Atoi(text)
+					if err != nil {
+						return nil, 0, err
+					}
+					vector := make([]float32, 768)
+					vector[index] = 1
+					return vector, 7, nil
+				}}
+				inputs := make([]string, 64)
+				for i := range inputs {
+					inputs[i] = strconv.Itoa(i)
+				}
 				server := httptest.NewServer(&handler{engine: e, gate: make(chan struct{}, 1)})
 				defer server.Close()
 				client, err := embedclient.New(embedclient.Options{
 					Model:      embedconfig.Model{Name: "nomic-embed-text", Dimensions: dimensions, RequestDimensions: true, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationL2, EncodingFormat: encoding},
-					Deployment: embedconfig.Deployment{BaseURL: server.URL + "/v1"}, Batch: embedconfig.Batch{Items: 32},
+					Deployment: embedconfig.Deployment{BaseURL: server.URL + "/v1"}, Batch: embedconfig.Batch{Items: 64},
 				})
 				require.NoError(t, err)
-				vectors, err := client.EmbedTexts(t.Context(), embedconfig.RoleQuery, []string{"first", "second"})
+				vectors, err := client.EmbedTexts(t.Context(), embedconfig.RoleQuery, inputs)
 				require.NoError(t, err)
-				require.Len(t, vectors, 2)
-				assert.Len(t, vectors[0], dimensions)
-				assert.Len(t, vectors[1], dimensions)
+				require.Len(t, vectors, 64)
+				for i, vector := range vectors {
+					require.Len(t, vector, dimensions)
+					assert.InDelta(t, 1, vector[i], 1e-6)
+				}
 			})
 		}
 	}
@@ -100,20 +114,19 @@ func TestHandlerWire(t *testing.T) {
 
 func TestHandlerRejectsBeforeInference(t *testing.T) {
 	cases := []struct {
-		name, body string
-		status     int
+		name, body, message string
+		status              int
 	}{
-		{"malformed JSON", `{`, 400},
-		{"unknown model", `{"model":"other","input":"x"}`, 404},
-		{"numeric input", `{"model":"nomic-embed-text","input":1}`, 400},
-		{"empty input", `{"model":"nomic-embed-text","input":[]}`, 400},
-		{"numeric array", `{"model":"nomic-embed-text","input":[1]}`, 400},
-		{"null input", `{"model":"nomic-embed-text","input":null}`, 400},
-		{"null array item", `{"model":"nomic-embed-text","input":[null]}`, 400},
-		{"dimensions too large", `{"model":"nomic-embed-text","input":"x","dimensions":769}`, 400},
-		{"unsupported encoding", `{"model":"nomic-embed-text","input":"x","encoding_format":"int8"}`, 400},
-		{"too many inputs", `{"model":"nomic-embed-text","input":[` + strings.Repeat(`"x",`, 32) + `"x"]}`, 400},
-		{"body too large", strings.Repeat("x", (4<<20)+1), 413},
+		{"malformed JSON", `{`, "invalid request", 400},
+		{"unknown model", `{"model":"other","input":"x"}`, "model not found", 404},
+		{"numeric input", `{"model":"nomic-embed-text","input":1}`, "input must be a string or string array", 400},
+		{"empty input", `{"model":"nomic-embed-text","input":[]}`, "input must contain at least one string", 400},
+		{"numeric array", `{"model":"nomic-embed-text","input":[1]}`, "input must be a string or string array", 400},
+		{"null input", `{"model":"nomic-embed-text","input":null}`, "input must contain at least one string", 400},
+		{"null array item", `{"model":"nomic-embed-text","input":[null]}`, "input must contain strings", 400},
+		{"dimensions too large", `{"model":"nomic-embed-text","input":"x","dimensions":769}`, "dimensions must be at most 768", 400},
+		{"unsupported encoding", `{"model":"nomic-embed-text","input":"x","encoding_format":"int8"}`, "encoding_format must be float or base64", 400},
+		{"body too large", strings.Repeat("x", (4<<20)+1), "request exceeds 4 MiB", 413},
 	}
 	e := new(fakeEngine)
 	h := &handler{engine: e, gate: make(chan struct{}, 1)}
@@ -122,6 +135,7 @@ func TestHandlerRejectsBeforeInference(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			h.ServeHTTP(recorder, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/embeddings", strings.NewReader(tc.body)))
 			assert.Equal(t, tc.status, recorder.Code)
+			assert.Equal(t, tc.message+"\n", recorder.Body.String())
 		})
 	}
 	assert.Empty(t, e.inputs)

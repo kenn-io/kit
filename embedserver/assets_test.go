@@ -86,3 +86,21 @@ func TestCacheInterrupted(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, entries)
 }
+
+func TestCacheModelWithCustomDefaultTransport(t *testing.T) {
+	previousTransport, previousAssets := http.DefaultTransport, modelAssets
+	// Hosting applications commonly wrap the default transport for tracing.
+	http.DefaultTransport = transportWrapper{previousTransport}
+	digest := sha256.Sum256([]byte("valid"))
+	modelAssets = []asset{{"model.onnx", "unused", hex.EncodeToString(digest[:]), 5}}
+	defer func() { http.DefaultTransport, modelAssets = previousTransport, previousAssets }()
+	dir := t.TempDir()
+	cached := filepath.Join(dir, "nomic-embed-text-v1.5", revision)
+	require.NoError(t, os.MkdirAll(cached, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(cached, "model.onnx"), []byte("valid"), 0o600))
+	got, err := cacheModel(t.Context(), dir)
+	require.NoError(t, err)
+	assert.Equal(t, cached, got)
+}
+
+type transportWrapper struct{ http.RoundTripper }

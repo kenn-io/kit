@@ -33,7 +33,10 @@ func cacheModel(ctx context.Context, dir string) (string, error) {
 	if err := safefileio.EnsurePrivateDir(dir); err != nil {
 		return "", err
 	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport := &http.Transport{Proxy: http.ProxyFromEnvironment}
+	if defaults, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport = defaults.Clone()
+	}
 	transport.ResponseHeaderTimeout = 30 * time.Second
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport}

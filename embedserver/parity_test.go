@@ -1,9 +1,12 @@
 package embedserver
 
 import (
+	"bytes"
 	"context"
 	json "encoding/json/v2"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
@@ -36,19 +39,36 @@ func TestNativeParity(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { require.NoError(t, e.Close()) }()
 	var longInput string
-	var longDuration time.Duration
+	server := httptest.NewServer(&handler{engine: e, gate: make(chan struct{}, 1)})
+	defer server.Close()
 	for _, sample := range fixture.Samples {
 		if len(sample.IDs) > 0 {
 			assert.Equal(t, sample.IDs, e.(*model).tokenizer.encode(sample.Input), sample.Input)
 		}
-		started := time.Now()
-		actual, tokens, err := e.embed(t.Context(), sample.Input)
-		if sample.Tokens == 2048 {
-			longInput, longDuration = sample.Input, time.Since(started)
-		}
+		body, err := json.Marshal(map[string]any{"model": "nomic-embed-text", "input": sample.Input})
 		require.NoError(t, err)
-		assert.Equal(t, sample.Tokens, tokens)
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL+"/v1/embeddings", bytes.NewReader(body))
+		require.NoError(t, err)
+		res, err := server.Client().Do(req)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, res.StatusCode)
+		var out struct {
+			Data []struct {
+				Embedding []float32 `json:"embedding"`
+			} `json:"data"`
+			Usage usage `json:"usage"`
+		}
+		err = json.UnmarshalRead(res.Body, &out)
+		res.Body.Close()
+		require.NoError(t, err)
+		assert.Equal(t, usage{sample.Tokens, sample.Tokens}, out.Usage)
+		require.Len(t, out.Data, 1)
+		actual := out.Data[0].Embedding
 		require.Len(t, actual, 768)
+		if sample.Tokens == 2048 {
+			longInput = sample.Input
+		}
+
 		var dot, left, right float64
 		for i, v := range actual {
 			x, y := float64(v), float64(sample.Vector[i])
@@ -61,11 +81,26 @@ func TestNativeParity(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	require.NotEmpty(t, longInput)
-	timer := time.AfterFunc(100*time.Millisecond, cancel)
-	defer timer.Stop()
-	started := time.Now()
+	o := e.(*model).ort
+	run, terminate := o.run, o.terminate
+	terminated := make(chan struct{})
+	o.terminate = func(options uintptr) uintptr {
+		status := terminate(options)
+		close(terminated)
+		return status
+	}
+	// Cancel at the native-run boundary, after options and the cancellation
+	// callback exist. Wait for ORT's termination flag without a timing race.
+	o.run = func(session, options uintptr, names []*byte, values []uintptr, count uintptr, outputs []*byte, outputCount uintptr, output *uintptr) uintptr {
+		cancel()
+		select {
+		case <-terminated:
+		case <-time.After(5 * time.Second):
+			assert.Fail(t, "native cancellation was not delivered")
+		}
+		return run(session, options, names, values, count, outputs, outputCount, output)
+	}
 	vector, _, err := e.embed(ctx, longInput)
 	require.ErrorIs(t, err, context.Canceled)
 	assert.Nil(t, vector)
-	assert.Less(t, time.Since(started), longDuration/2, "cancellation must interrupt native inference")
 }
