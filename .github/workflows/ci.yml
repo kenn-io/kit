@@ -292,3 +292,76 @@ jobs:
           KIT_POSTGRES_TEST_DSN: postgres://postgres:postgres@127.0.0.1:5432/kit?sslmode=disable
           KIT_CLICKHOUSE_TEST_ADDR: 127.0.0.1:9000
         run: go test -count=1 ./search/postgres ./search/clickhouse
+
+  embedserver:
+    name: Local embedding parity (${{ matrix.os }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            runner: namespace-profile-linux-4cpu
+          - os: macos
+            runner: namespace-profile-mac-6cpu
+          - os: windows
+            runner: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Cache verified model and runtime
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/embedserver
+          key: embedserver-${{ runner.os }}-${{ runner.arch }}-ort-1.23.2-nomic-cf5b5a86-d241a60d
+      - name: Stage ONNX Runtime 1.23.2
+        shell: python
+        run: |
+          import hashlib, os, pathlib, platform, tarfile, urllib.request, zipfile
+          arch = 'arm64' if platform.machine().lower() in ('arm64', 'aarch64') else 'amd64'
+          targets = {
+              ('Linux', 'amd64'): ('linux-x64', 'tgz', '1fa4dcaef22f6f7d5cd81b28c2800414350c10116f5fdd46a2160082551c5f9b'),
+              ('Linux', 'arm64'): ('linux-aarch64', 'tgz', '7c63c73560ed76b1fac6cff8204ffe34fe180e70d6582b5332ec094810241e5c'),
+              ('Darwin', 'amd64'): ('osx-x86_64', 'tgz', 'd10359e16347b57d9959f7e80a225a5b4a66ed7d7e007274a15cae86836485a6'),
+              ('Darwin', 'arm64'): ('osx-arm64', 'tgz', 'b4d513ab2b26f088c66891dbbc1408166708773d7cc4163de7bdca0e9bbb7856'),
+              ('Windows', 'amd64'): ('win-x64', 'zip', '0b38df9af21834e41e73d602d90db5cb06dbd1ca618948b8f1d66d607ac9f3cd'),
+              ('Windows', 'arm64'): ('win-arm64', 'zip', '1cfe88b6435df3b5fb0e9f6bd7d6f5df1e887b6174de7f6e2a47bab956f3f168'),
+          }
+          target, suffix, digest = targets[(platform.system(), arch)]
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'embedserver'
+          root.mkdir(exist_ok=True)
+          name = 'onnxruntime-' + target + '-1.23.2'
+          archive = root / (name + '.' + suffix)
+          if not archive.exists():
+              urllib.request.urlretrieve('https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/' + archive.name, archive)
+          if hashlib.sha256(archive.read_bytes()).hexdigest() != digest:
+              raise RuntimeError('ONNX Runtime SHA-256 mismatch')
+          if suffix == 'zip':
+              with zipfile.ZipFile(archive) as source:
+                  source.extractall(root)
+              library = root / name / 'lib' / 'onnxruntime.dll'
+          else:
+              with tarfile.open(archive) as source:
+                  source.extractall(root, filter='data')
+              library = root / name / 'lib' / ('libonnxruntime.1.23.2.dylib' if platform.system() == 'Darwin' else 'libonnxruntime.so.1.23.2')
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write('KIT_EMBED_TEST_DIR=' + str(root / 'model') + '\n')
+              env.write('KIT_EMBED_TEST_LIBRARY=' + str(library) + '\n')
+      - name: Run focused tests and native parity
+        run: make test-embedserver
+      - name: Compile six targets without CGo
+        if: matrix.os == 'linux'
+        shell: python
+        run: |
+          import os, pathlib, subprocess
+          output = pathlib.Path(os.environ['RUNNER_TEMP']) / 'kennembed-build'
+          for target in ('linux', 'darwin', 'windows'):
+              for arch in ('amd64', 'arm64'):
+                  env = dict(os.environ, GOOS=target, GOARCH=arch, CGO_ENABLED='0')
+                  subprocess.run(['go', 'build', '-o', str(output), './cmd/kennembed'], env=env, check=True)
