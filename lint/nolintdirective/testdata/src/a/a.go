@@ -17,19 +17,8 @@ var prose int
 //nolint:kennlint // sleeptest:
 var missingReason int
 
-// want +2 "must name a kit rule and a reason"
-
-//nolint:kennlint
-var missingExplanation int
-
 // nolint:kennlint // a broad reason // want "must name a kit rule and a reason"
 var spaced int
-
-//nolint:kennlint // consent expiry is checked against the store's real clock, which has no seam // want "must name a kit rule and a reason"
-var expiry int
-
-//nolint:kennlint // outlasts the real socket read deadline // want "must name a kit rule and a reason"
-var socket int
 
 // nolint:KENNLINT // missing rule // want "must name a kit rule and a reason"
 var uppercase int

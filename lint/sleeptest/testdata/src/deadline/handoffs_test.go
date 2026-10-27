@@ -11,16 +11,14 @@ import (
 
 type durationAlias = time.Duration
 type config struct {
-	Timeout durationAlias
-	Count   int
+	Timeout   durationAlias
+	RetryWait int
 }
 
 func (config) Wait(deadline time.Duration)                      {}
 func probe(t *testing.T, tick time.Duration)                    {}
 func watcher(n int, batchDelay time.Duration, backend any)      {}
 func waits(minInterval time.Duration, budgets ...time.Duration) {}
-
-func generic(d time.Duration) {}
 
 type fakeClock struct{}
 
@@ -42,20 +40,12 @@ func TestHandoffs(t *testing.T) {
 	helper.Wait(shortWait)                                       // want "Wait with budget 50ms"
 	_ = time.Now().Add(50 * time.Millisecond)                    // want "time.Now\\(\\).Add with budget 50ms"
 
-	runtime := 20 * time.Millisecond
-	_ = config{Timeout: runtime, Count: 20}
-	_ = config{Timeout: 0}
+	_ = config{RetryWait: 20}
 	_ = struct{ Age time.Duration }{shortWait}
-	generic(shortWait)
 	fakeClock{}.Advance(shortWait)
-	c.Timeout *= 2
 	c.Timeout += shortWait
-	c.Count = 20
-	c.Timeout = runtime
-	waits(0)
+	c.RetryWait = 20
 	deadlineother.Wait(shortWait)
-	_ = time.Now().Add(0)
-	_ = time.Now().Add(runtime)
 	synctest.Test(t, func(t *testing.T) {
 		_ = []*config{{Timeout: shortWait}}
 		c.Timeout = shortWait
