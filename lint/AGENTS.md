@@ -63,7 +63,8 @@ See `docs/adopting-kennlint.md` for the consumer workflow.
   the kit `Makefile`, and `kennlint config` must render it without warnings.
   Adding a linter to the canonical config affects every consuming repository;
   measure the finding count on at least two consumers before adding one.
-- Keep `deadlinetest` in the `kennlint` group. Enable `kennnolint` through
+- Kit itself lints clean with the rendered configuration.
+  Keep `deadlinetest` in the `kennlint` group. Enable `kennnolint` through
   kit's overlay while consumers adopt rule labels and reasons.
 - `testifyhelper` requires canonical `assert` and `require` import and helper
   names. Requiring local helpers is opt-in through `require-helpers`, off
