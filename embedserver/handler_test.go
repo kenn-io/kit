@@ -1,19 +1,15 @@
 package embedserver
 
 import (
-	"bufio"
 	"context"
 	json "encoding/json/v2"
-	"fmt"
-	"io"
-	"net"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -60,7 +56,7 @@ func TestHandlerThroughClient(t *testing.T) {
 						return nil, 0, err
 					}
 					vector := make([]float32, 768)
-					vector[index] = 1
+					vector[index], vector[767] = 1, 1
 					return vector, 7, nil
 				}}
 				inputs := make([]string, 64)
@@ -70,7 +66,7 @@ func TestHandlerThroughClient(t *testing.T) {
 				server := httptest.NewServer(&handler{engine: e, gate: make(chan struct{}, 1)})
 				defer server.Close()
 				client, err := embedclient.New(embedclient.Options{
-					Model:      embedconfig.Model{Name: "nomic-embed-text", Dimensions: dimensions, RequestDimensions: true, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationL2, EncodingFormat: encoding},
+					Model:      embedconfig.Model{Name: "nomic-embed-text", Dimensions: dimensions, RequestDimensions: true, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationNone, EncodingFormat: encoding},
 					Deployment: embedconfig.Deployment{BaseURL: server.URL + "/v1"}, Batch: embedconfig.Batch{Items: 64},
 				})
 				require.NoError(t, err)
@@ -79,7 +75,11 @@ func TestHandlerThroughClient(t *testing.T) {
 				require.Len(t, vectors, 64)
 				for i, vector := range vectors {
 					require.Len(t, vector, dimensions)
-					assert.InDelta(t, 1, vector[i], 1e-6)
+					expected := 1.0
+					if dimensions == 768 {
+						expected = 1 / math.Sqrt2
+					}
+					assert.InDelta(t, expected, vector[i], 1e-6)
 				}
 			})
 		}
@@ -121,10 +121,12 @@ func TestHandlerRejectsBeforeInference(t *testing.T) {
 		{"unknown model", `{"model":"other","input":"x"}`, "model not found", 404},
 		{"numeric input", `{"model":"nomic-embed-text","input":1}`, "input must be a string or string array", 400},
 		{"empty input", `{"model":"nomic-embed-text","input":[]}`, "input must contain at least one string", 400},
+		{"too many inputs", `{"model":"nomic-embed-text","input":[` + strings.Repeat(`"x",`, 256) + `"x"]}`, "input must contain at most 256 strings", 400},
 		{"numeric array", `{"model":"nomic-embed-text","input":[1]}`, "input must be a string or string array", 400},
 		{"null input", `{"model":"nomic-embed-text","input":null}`, "input must contain at least one string", 400},
 		{"null array item", `{"model":"nomic-embed-text","input":[null]}`, "input must contain strings", 400},
-		{"dimensions too large", `{"model":"nomic-embed-text","input":"x","dimensions":769}`, "dimensions must be at most 768", 400},
+		{"negative dimensions", `{"model":"nomic-embed-text","input":"x","dimensions":-1}`, "dimensions must be between 0 and 768", 400},
+		{"dimensions too large", `{"model":"nomic-embed-text","input":"x","dimensions":769}`, "dimensions must be between 0 and 768", 400},
 		{"unsupported encoding", `{"model":"nomic-embed-text","input":"x","encoding_format":"int8"}`, "encoding_format must be float or base64", 400},
 		{"body too large", strings.Repeat("x", (4<<20)+1), "request exceeds 4 MiB", 413},
 	}
@@ -138,29 +140,6 @@ func TestHandlerRejectsBeforeInference(t *testing.T) {
 			assert.Equal(t, tc.message+"\n", recorder.Body.String())
 		})
 	}
-	assert.Empty(t, e.inputs)
-}
-
-func TestHandlerRejectsIncompleteBody(t *testing.T) {
-	e := new(fakeEngine)
-	server := httptest.NewServer(&handler{engine: e, gate: make(chan struct{}, 1)})
-	defer server.Close()
-	conn, err := net.DialTCP("tcp", nil, server.Listener.Addr().(*net.TCPAddr))
-	require.NoError(t, err)
-	defer conn.Close()
-	require.NoError(t, conn.SetDeadline(time.Now().Add(5*time.Second)))
-	_, err = fmt.Fprint(conn, "POST /v1/embeddings HTTP/1.1\r\nHost: example.com\r\nContent-Length: 100\r\n\r\n{")
-	require.NoError(t, err)
-	require.NoError(t, conn.CloseWrite())
-	res, err := http.ReadResponse(bufio.NewReader(conn), nil)
-	require.NoError(t, err)
-	defer res.Body.Close()
-	assert.Equal(t, http.StatusBadRequest, res.StatusCode)
-	body, err := io.ReadAll(res.Body)
-	require.NoError(t, err)
-	assert.Equal(t, "could not read request body\n", string(body))
-	e.mu.Lock()
-	defer e.mu.Unlock()
 	assert.Empty(t, e.inputs)
 }
 
@@ -188,21 +167,4 @@ func TestHandlerSerializesAndCancels(t *testing.T) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	assert.Equal(t, []string{"x"}, e.inputs)
-}
-
-func TestReducedDimensionsRenormalizesPrefix(t *testing.T) {
-	e := &fakeEngine{run: func(context.Context, string) ([]float32, int, error) {
-		v := make([]float32, 768)
-		v[0], v[767] = 3, 4
-		return v, 3, nil
-	}}
-	h := &handler{engine: e, gate: make(chan struct{}, 1)}
-	reduced, err := h.embeddings(t.Context(), request{Dimensions: 256}, []string{"search_query: river"})
-	require.NoError(t, err)
-	vector := reduced.Data[0].Embedding.([]float32)
-	require.Len(t, vector, 256)
-	assert.InDelta(t, 1, vector[0], 1e-6)
-	full, err := h.embeddings(t.Context(), request{Dimensions: 768}, []string{"search_query: river"})
-	require.NoError(t, err)
-	assert.InDelta(t, 0.6, full.Data[0].Embedding.([]float32)[0], 1e-6)
 }

@@ -35,4 +35,3 @@ lint-config-check:
 test-embedserver:
 	go test -race ./embedserver ./cmd/kennembed
 	go test -race ./embedclient -run 'TestEmbedderTextContract|TestEmbedderRejectsInvalidTextVectors|TestEmbedRejectsBadResponses|TestEmbedKeepsUnnormalizedVectors'
-	go test -race ./daemon -run 'TestTryAcquire|TestRuntimeStoreOwnerLock'

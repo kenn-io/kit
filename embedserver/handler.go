@@ -10,9 +10,9 @@ import (
 	"io"
 	"math"
 	"net/http"
-
-	"go.kenn.io/kit/internal/embedvec"
 )
+
+const maxInputs = 256
 
 type handler struct {
 	engine engine
@@ -81,15 +81,19 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "input must contain at least one string", http.StatusBadRequest)
 		return
 	}
-	if req.Dimensions > 768 {
-		http.Error(w, "dimensions must be at most 768", http.StatusBadRequest)
+	if len(inputs) > maxInputs {
+		http.Error(w, "input must contain at most 256 strings", http.StatusBadRequest)
+		return
+	}
+	if req.Dimensions < 0 || req.Dimensions > 768 {
+		http.Error(w, "dimensions must be between 0 and 768", http.StatusBadRequest)
 		return
 	}
 	if req.Encoding != "" && req.Encoding != "float" && req.Encoding != "base64" {
 		http.Error(w, "encoding_format must be float or base64", http.StatusBadRequest)
 		return
 	}
-	if req.Dimensions <= 0 {
+	if req.Dimensions == 0 {
 		req.Dimensions = 768
 	}
 	select {
@@ -118,7 +122,15 @@ func (h *handler) embeddings(ctx context.Context, req request, inputs []string) 
 			return out, err
 		}
 		vector = vector[:req.Dimensions]
-		embedvec.NormalizeL2(vector)
+		var squared float64
+		for _, v := range vector {
+			squared += float64(v) * float64(v)
+		}
+		if norm := math.Sqrt(squared); norm > 0 {
+			for j, v := range vector {
+				vector[j] = float32(float64(v) / norm)
+			}
+		}
 		var embedding any = vector
 		if req.Encoding == "base64" {
 			data := make([]byte, len(vector)*4)

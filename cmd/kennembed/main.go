@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -12,18 +11,9 @@ import (
 )
 
 func main() {
-	var opts embedserver.Options
-	flag.StringVar(&opts.DataDir, "data-dir", "", "Model cache and runtime directory")
-	flag.StringVar(&opts.Listen, "listen", "127.0.0.1:0", "Loopback listen address")
-	flag.StringVar(&opts.Library, "runtime-library", "", "ONNX Runtime 1.23.2 library path")
-	flag.Parse()
-	if flag.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "unexpected arguments:", flag.Args())
-		os.Exit(2)
-	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 
-	err := embedserver.Serve(ctx, opts)
+	err := embedserver.Serve(ctx, embedserver.Options{})
 	stop()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
