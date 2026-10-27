@@ -8,7 +8,9 @@ import (
 )
 
 // Dump synchronously logs every goroutine's stack to tb. Call it in a test's
-// timeout branch before failing the test or canceling its blocked work:
+// timeout branch before failing the test or canceling its blocked work.
+//
+// Illustrative example:
 //
 //	select {
 //	case result := <-results:
@@ -19,6 +21,7 @@ import (
 //	}
 //
 // Fail the test after Dump so the test runner shows the log.
+// Call Dump while the test is still running; logging after completion panics.
 func Dump(tb testing.TB) {
 	tb.Helper()
 	var stacks bytes.Buffer
