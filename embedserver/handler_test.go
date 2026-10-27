@@ -179,18 +179,7 @@ func TestHandlerLargeBatch(t *testing.T) {
 	assert.Len(t, out.Data, 300)
 }
 
-func TestHandlerPanicReleasesGate(t *testing.T) {
-	e := &fakeEngine{run: func(context.Context, string) ([]float32, int, error) {
-		panic("inference panic")
-	}}
-	h := &handler{engine: e, gate: make(chan struct{}, 1)}
-	assert.PanicsWithValue(t, "inference panic", func() {
-		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text","input":"x"}`)))
-	})
-	assert.Empty(t, h.gate)
-}
-
-func TestHandlerCancellationAndResponseGate(t *testing.T) {
+func TestHandlerCancellation(t *testing.T) {
 	entered := make(chan struct{})
 	e := &fakeEngine{run: func(ctx context.Context, _ string) ([]float32, int, error) {
 		close(entered)
@@ -217,26 +206,55 @@ func TestHandlerCancellationAndResponseGate(t *testing.T) {
 	assert.Empty(t, first.Body.String())
 	assert.Zero(t, waiter.Code)
 	assert.Empty(t, waiter.Body.String())
+}
 
-	e.run = nil
-	writing, release := make(chan struct{}), make(chan struct{})
-	writer := &blockedResponseWriter{ResponseRecorder: httptest.NewRecorder(), entered: writing, release: release}
-	done = make(chan struct{})
-	defer func() { close(release); <-done }()
-	go func() { defer close(done); h.ServeHTTP(writer, request(t.Context())) }()
-	select {
-	case <-writing:
-	case <-time.After(5 * time.Second):
-		require.FailNow(t, "response did not reach blocked Write")
-	}
-	live, stopLive := context.WithTimeout(t.Context(), 5*time.Second)
-	defer stopLive()
-	next := httptest.NewRecorder()
-	h.ServeHTTP(next, request(live))
-	assert.NotEmpty(t, next.Body.String(), "blocked response retained inference gate")
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	assert.Equal(t, []string{"x", "x", "x"}, e.inputs)
+func TestHandlerGateRelease(t *testing.T) {
+	t.Run("panic", func(t *testing.T) {
+		e := &fakeEngine{run: func(context.Context, string) ([]float32, int, error) {
+			panic("inference panic")
+		}}
+		h := &handler{engine: e, gate: make(chan struct{}, 1)}
+		assert.PanicsWithValue(t, "inference panic", func() {
+			h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text","input":"x"}`)))
+		})
+		assert.Empty(t, h.gate)
+	})
+	t.Run("cancelled while waiting", func(t *testing.T) {
+		e := new(fakeEngine)
+		h := &handler{engine: e, gate: make(chan struct{}, 1)}
+		h.gate <- struct{}{}
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		_, err := h.embeddings(ctx, request{Model: "nomic-embed-text", Dimensions: 768}, []string{"x"})
+		require.ErrorIs(t, err, context.Canceled)
+		assert.Len(t, h.gate, 1)
+		assert.Empty(t, e.inputs)
+	})
+	t.Run("blocked response", func(t *testing.T) {
+		e := new(fakeEngine)
+		h := &handler{engine: e, gate: make(chan struct{}, 1)}
+		request := func(ctx context.Context) *http.Request {
+			return httptest.NewRequestWithContext(ctx, "POST", "/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text","input":"x"}`))
+		}
+		writing, release := make(chan struct{}), make(chan struct{})
+		writer := &blockedResponseWriter{ResponseRecorder: httptest.NewRecorder(), entered: writing, release: release}
+		done := make(chan struct{})
+		defer func() { close(release); <-done }()
+		go func() { defer close(done); h.ServeHTTP(writer, request(t.Context())) }()
+		select {
+		case <-writing:
+		case <-time.After(5 * time.Second):
+			require.FailNow(t, "response did not reach blocked Write")
+		}
+		live, stopLive := context.WithTimeout(t.Context(), 5*time.Second)
+		defer stopLive()
+		next := httptest.NewRecorder()
+		h.ServeHTTP(next, request(live))
+		assert.NotEmpty(t, next.Body.String(), "blocked response retained inference gate")
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		assert.Equal(t, []string{"x", "x"}, e.inputs)
+	})
 }
 
 type blockedResponseWriter struct {

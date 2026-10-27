@@ -154,7 +154,6 @@ func TestServeRejectsBrowserRequests(t *testing.T) {
 		{"simple request", http.MethodPost, "/v1/embeddings", "text/plain", "", http.StatusUnsupportedMediaType},
 		{"attacker host", http.MethodPost, "/v1/embeddings", "application/json", attackerHost, http.StatusForbidden},
 		{"attacker ping host", http.MethodGet, "/api/ping", "", attackerHost, http.StatusForbidden},
-		{"wrong port", http.MethodPost, "/v1/embeddings", "application/json", "LOCALHOST:0", http.StatusForbidden},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req, err := http.NewRequestWithContext(t.Context(), tc.method, record.Endpoint().BaseURL()+tc.path, strings.NewReader(`{"model":"nomic-embed-text","input":"x"}`))
@@ -187,8 +186,19 @@ func TestServeRejectsBrowserRequests(t *testing.T) {
 	})
 }
 
-func TestMatchesListenerHostDefaultHTTPPort(t *testing.T) {
-	assert.True(t, matchesListenerHost("127.0.0.1", "127.0.0.1:80"))
+func TestMatchesListenerHost(t *testing.T) {
+	for _, tc := range []struct {
+		name, authority, listener string
+		matches                   bool
+	}{
+		{"default HTTP port", "127.0.0.1", "127.0.0.1:80", true},
+		{"localhost", "LOCALHOST:9000", "127.0.0.1:9000", true},
+		{"wrong port", "LOCALHOST:0", "127.0.0.1:9000", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.matches, matchesListenerHost(tc.authority, tc.listener))
+		})
+	}
 }
 
 type blockedListener struct {

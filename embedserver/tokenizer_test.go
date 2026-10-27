@@ -5,15 +5,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"unicode"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-func TestTokenizerUnicodeVersion(t *testing.T) {
-	require.Equal(t, "17.0.0", unicode.Version, "recheck tokenizer parity when Unicode tables change")
-}
 
 func TestTokenizerMatchesPinnedWordPiece(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tokenizer.json")

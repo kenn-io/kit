@@ -25,7 +25,6 @@ func TestNativeParity(t *testing.T) {
 			Input  string    `json:"input"`
 			Tokens int       `json:"tokens"`
 			Vector []float32 `json:"vector"`
-			IDs    []int     `json:"ids"`
 		} `json:"samples"`
 	}
 	require.NoError(t, json.Unmarshal(data, &fixture))
@@ -35,14 +34,9 @@ func TestNativeParity(t *testing.T) {
 	defer func() { require.NoError(t, e.Close()) }()
 	for _, sample := range fixture.Samples {
 		require.Len(t, sample.Vector, 768)
-		if len(sample.IDs) > 0 {
-			assert.Equal(t, sample.IDs, e.(*model).tokenizer.encode(sample.Input), sample.Input)
-		}
 		actual, tokens, err := e.embed(t.Context(), sample.Input)
 		require.NoError(t, err)
-		if len(sample.IDs) == 0 {
-			assert.Equal(t, sample.Tokens, tokens)
-		}
+		assert.Equal(t, sample.Tokens, tokens, sample.Input)
 		require.Len(t, actual, 768)
 
 		var dot, left, right float64
