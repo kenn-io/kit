@@ -141,13 +141,11 @@ func TestHandlerRejectsBeforeInference(t *testing.T) {
 		{"unknown model", `{"model":"other","input":"x"}`, "model not found", 404},
 		{"numeric input", `{"model":"nomic-embed-text","input":1}`, "input must be a string or string array", 400},
 		{"empty input", `{"model":"nomic-embed-text","input":[]}`, "input must contain at least one string", 400},
-		{"too many inputs", `{"model":"nomic-embed-text","input":[` + strings.Repeat(`"x",`, 256) + `"x"]}`, "input must contain at most 256 strings", 400},
 		{"null input", `{"model":"nomic-embed-text","input":null}`, "input must contain at least one string", 400},
 		{"null array item", `{"model":"nomic-embed-text","input":[null]}`, "input must contain strings", 400},
 		{"negative dimensions", `{"model":"nomic-embed-text","input":"x","dimensions":-1}`, "dimensions must be between 0 and 768", 400},
 		{"dimensions too large", `{"model":"nomic-embed-text","input":"x","dimensions":769}`, "dimensions must be between 0 and 768", 400},
 		{"unsupported encoding", `{"model":"nomic-embed-text","input":"x","encoding_format":"int8"}`, "encoding_format must be float or base64", 400},
-		{"body too large", strings.Repeat("x", (4<<20)+1), "request exceeds 4 MiB", 413},
 	}
 	e := new(fakeEngine)
 	h := &handler{engine: e, gate: make(chan struct{}, 1)}
@@ -160,6 +158,36 @@ func TestHandlerRejectsBeforeInference(t *testing.T) {
 		})
 	}
 	assert.Empty(t, e.inputs)
+}
+
+func TestHandlerLargeBatch(t *testing.T) {
+	inputs := make([]string, 300)
+	for i := range inputs {
+		inputs[i] = strings.Repeat("x", 16<<10)
+	}
+	body, err := json.Marshal(map[string]any{"model": "nomic-embed-text", "input": inputs})
+	require.NoError(t, err)
+	require.Greater(t, len(body), 4<<20)
+	recorder := httptest.NewRecorder()
+	h := &handler{engine: new(fakeEngine), gate: make(chan struct{}, 1)}
+	h.ServeHTTP(recorder, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/embeddings", strings.NewReader(string(body))))
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var out struct {
+		Data []jsonv1.RawMessage `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &out))
+	assert.Len(t, out.Data, 300)
+}
+
+func TestHandlerPanicReleasesGate(t *testing.T) {
+	e := &fakeEngine{run: func(context.Context, string) ([]float32, int, error) {
+		panic("inference panic")
+	}}
+	h := &handler{engine: e, gate: make(chan struct{}, 1)}
+	assert.PanicsWithValue(t, "inference panic", func() {
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text","input":"x"}`)))
+	})
+	assert.Empty(t, h.gate)
 }
 
 func TestHandlerCancellationAndResponseGate(t *testing.T) {

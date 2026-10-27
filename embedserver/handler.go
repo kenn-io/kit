@@ -12,8 +12,6 @@ import (
 	"net/http"
 )
 
-const maxInputs = 256
-
 type handler struct {
 	engine engine
 	gate   chan struct{}
@@ -41,10 +39,10 @@ type response struct {
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<20))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<20))
 	if err != nil {
 		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
-			http.Error(w, "request exceeds 4 MiB", http.StatusRequestEntityTooLarge)
+			http.Error(w, "request exceeds 64 MiB", http.StatusRequestEntityTooLarge)
 		} else {
 			http.Error(w, "could not read request body", http.StatusBadRequest)
 		}
@@ -81,10 +79,6 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "input must contain at least one string", http.StatusBadRequest)
 		return
 	}
-	if len(inputs) > maxInputs {
-		http.Error(w, "input must contain at most 256 strings", http.StatusBadRequest)
-		return
-	}
 	if req.Dimensions < 0 || req.Dimensions > 768 {
 		http.Error(w, "dimensions must be between 0 and 768", http.StatusBadRequest)
 		return
@@ -96,13 +90,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if req.Dimensions == 0 {
 		req.Dimensions = 768
 	}
-	select {
-	case h.gate <- struct{}{}:
-	case <-r.Context().Done():
-		return
-	}
 	out, err := h.embeddings(r.Context(), req, inputs)
-	<-h.gate
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return
@@ -115,6 +103,12 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) embeddings(ctx context.Context, req request, inputs []string) (response, error) {
+	select {
+	case h.gate <- struct{}{}:
+	case <-ctx.Done():
+		return response{}, ctx.Err()
+	}
+	defer func() { <-h.gate }()
 	out := response{Object: "list", Model: req.Model, Data: make([]item, len(inputs))}
 	for i, text := range inputs {
 		vector, tokens, err := h.engine.embed(ctx, text)

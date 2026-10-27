@@ -1,5 +1,5 @@
 // Package embedserver serves nomic-embed-text v1.5 on loopback. Callers supply
-// role prefixes. Requests accept at most 256 strings. Each string truncates at 2,048 WordPiece tokens
+// role prefixes. Each string truncates at 2,048 WordPiece tokens
 // including CLS and SEP. Indexed float or base64 float32 vectors use mean pooling
 // and L2 normalization after selecting the requested dimensions.
 //
