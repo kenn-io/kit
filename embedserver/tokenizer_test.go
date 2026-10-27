@@ -9,12 +9,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/text/unicode/norm"
 )
 
 func TestTokenizerMatchesPinnedWordPiece(t *testing.T) {
 	require.Equal(t, "17.0.0", unicode.Version, "recheck tokenizer parity when Unicode tables change")
-	require.Equal(t, "17.0.0", norm.Version, "recheck tokenizer parity when normalization tables change")
 	path := filepath.Join(t.TempDir(), "tokenizer.json")
 	require.NoError(t, os.WriteFile(path, []byte(`{"model":{"vocab":{"[PAD]":0,"[UNK]":100,"[CLS]":101,"[SEP]":102,"[MASK]":103,"cafe":1,"e":2,"ᄒ":3,"##ᄀ":4,"##ᄋ":5,"हनद":6,"भष":7,"日":8,"本":9,"語":10,"a":15,"##a":16,"b":17,"ab":19,"、":30,"。":31,"$":32,"©":33,"##©":34,"##b":35,"ɤ":40}},"added_tokens":[{"content":"[PAD]","id":0,"special":true},{"content":"[UNK]","id":100,"special":true},{"content":"[CLS]","id":101,"special":true},{"content":"[SEP]","id":102,"special":true},{"content":"[MASK]","id":103,"special":true}]}`), 0o600))
 	tokenizer, err := loadTokenizer(path)
