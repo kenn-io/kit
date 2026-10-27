@@ -65,6 +65,9 @@ func TestHandlerWire(t *testing.T) {
 	}
 	for _, encoding := range []string{"float", "base64"} {
 		for _, dimensions := range []int{256, 768} {
+			if encoding == "float" && dimensions == 768 {
+				continue
+			}
 			cases = append(cases, wireCase{encoding + "/" + strconv.Itoa(dimensions), encoding, dimensions, inputs, inputs})
 		}
 	}

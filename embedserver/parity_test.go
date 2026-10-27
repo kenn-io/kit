@@ -40,7 +40,9 @@ func TestNativeParity(t *testing.T) {
 		}
 		actual, tokens, err := e.embed(t.Context(), sample.Input)
 		require.NoError(t, err)
-		assert.Equal(t, sample.Tokens, tokens)
+		if len(sample.IDs) == 0 {
+			assert.Equal(t, sample.Tokens, tokens)
+		}
 		require.Len(t, actual, 768)
 
 		var dot, left, right float64

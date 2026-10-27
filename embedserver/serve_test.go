@@ -31,7 +31,16 @@ func TestServeDiscoveryAndCancellation(t *testing.T) {
 	defer finish()
 	closed := make(chan struct{})
 	closedAfterInference := false
-	e := &fakeEngine{run: func(ctx context.Context, _ string) ([]float32, int, error) {
+	var block atomic.Bool
+	writing := make(chan *blockedConn, 1)
+	listen := func(ep daemon.Endpoint, ctx context.Context) (net.Listener, error) {
+		listener, err := ep.ListenContext(ctx)
+		return &blockedListener{Listener: listener, block: &block, writing: writing}, err
+	}
+	e := &fakeEngine{run: func(ctx context.Context, text string) ([]float32, int, error) {
+		if text == "response" {
+			return new(fakeEngine).embed(ctx, text)
+		}
 		close(entered)
 		<-ctx.Done()
 		close(canceled)
@@ -46,26 +55,44 @@ func TestServeDiscoveryAndCancellation(t *testing.T) {
 		default:
 		}
 	}}
-	store, record, done := startServe(t, ctx, e, daemon.Endpoint.ListenContext)
+	store, record, done := startServe(t, ctx, e, listen)
+	block.Store(true)
 	requestCtx, stopRequest := context.WithCancel(t.Context())
 	defer stopRequest()
-	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, record.Endpoint().BaseURL()+"/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text","input":"x"}`))
-	require.NoError(t, err)
-	requestDone := make(chan error, 1)
-	go func() {
-		res, err := http.DefaultClient.Do(req)
-		if err == nil {
-			res.Body.Close()
+	requestDone := make(chan error, 2)
+	var conn *blockedConn
+	for _, text := range []string{"response", "inference"} {
+		req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, record.Endpoint().BaseURL()+"/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text","input":"`+text+`"}`))
+		require.NoError(t, err)
+		go func() {
+			res, err := http.DefaultClient.Do(req)
+			if err == nil {
+				res.Body.Close()
+			}
+			requestDone <- err
+		}()
+		if text == "response" {
+			select {
+			case conn = <-writing:
+			case <-time.After(5 * time.Second):
+				require.FailNow(t, "response did not reach blocked Write")
+			}
 		}
-		requestDone <- err
-	}()
+	}
 	select {
 	case <-entered:
 	case <-time.After(5 * time.Second):
 		require.FailNow(t, "inference did not start")
 	}
 	cancel()
-	require.ErrorIs(t, <-requestDone, io.EOF)
+	for range 2 {
+		require.ErrorIs(t, <-requestDone, io.EOF)
+	}
+	select {
+	case <-conn.closed:
+	default:
+		assert.Fail(t, "shutdown did not close the connection blocked in Write")
+	}
 	<-canceled
 	select {
 	case <-closed:
@@ -107,50 +134,6 @@ func TestServeRejectsStartup(t *testing.T) {
 			assert.Equal(t, tc.loaded, called)
 		})
 	}
-}
-
-func TestServeCancellationInterruptsResponse(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	var block atomic.Bool
-	writing := make(chan *blockedConn, 1)
-	listen := func(ep daemon.Endpoint, ctx context.Context) (net.Listener, error) {
-		listener, err := ep.ListenContext(ctx)
-		return &blockedListener{Listener: listener, block: &block, writing: writing}, err
-	}
-	_, record, done := startServe(t, ctx, new(fakeEngine), listen)
-	block.Store(true)
-	requestCtx, stopRequest := context.WithCancel(t.Context())
-	defer stopRequest()
-	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, record.Endpoint().BaseURL()+"/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text","input":"x"}`))
-	require.NoError(t, err)
-	requestDone := make(chan error, 1)
-	go func() {
-		res, err := http.DefaultClient.Do(req)
-		if err == nil {
-			res.Body.Close()
-		}
-		requestDone <- err
-	}()
-	var conn *blockedConn
-	select {
-	case conn = <-writing:
-	case <-time.After(5 * time.Second):
-		require.FailNow(t, "response did not reach blocked Write")
-	}
-	cancel()
-	select {
-	case err := <-done:
-		require.NoError(t, err)
-	case <-time.After(5 * time.Second):
-		require.FailNow(t, "blocked response prevented shutdown")
-	}
-	select {
-	case <-conn.closed:
-	default:
-		assert.Fail(t, "shutdown did not close the connection blocked in Write")
-	}
-	require.ErrorIs(t, <-requestDone, io.EOF)
 }
 
 type blockedListener struct {

@@ -5,11 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -92,12 +94,20 @@ func TestCacheInterrupted(t *testing.T) {
 
 func TestCacheModelUsesPinnedURLAndCacheLayout(t *testing.T) {
 	previousTransport, previousAssets := http.DefaultTransport, modelAssets
-	called := false
-	http.DefaultTransport = transportFunc(func(req *http.Request) (*http.Response, error) {
-		called = true
-		assert.Equal(t, "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/"+revision+"/unused", req.URL.String())
-		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("valid")), Header: make(http.Header)}, nil
-	})
+	var called atomic.Bool
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		called.Store(true)
+		assert.Equal(t, "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/"+revision+"/unused", "https://"+req.Host+req.URL.RequestURI())
+		_, _ = w.Write([]byte("valid"))
+	}))
+	defer server.Close()
+	transport := server.Client().Transport.(*http.Transport).Clone()
+	transport.TLSClientConfig.ServerName = "example.com"
+	transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
+	}
+	defer transport.CloseIdleConnections()
+	http.DefaultTransport = transport
 	digest := sha256.Sum256([]byte("valid"))
 	modelAssets = []asset{{"model.onnx", "unused", hex.EncodeToString(digest[:]), 5}}
 	defer func() { http.DefaultTransport, modelAssets = previousTransport, previousAssets }()
@@ -105,13 +115,9 @@ func TestCacheModelUsesPinnedURLAndCacheLayout(t *testing.T) {
 	cached := filepath.Join(dir, "nomic-embed-text-v1.5", revision)
 	got, err := cacheModel(t.Context(), dir)
 	require.NoError(t, err)
-	assert.True(t, called)
+	assert.True(t, called.Load())
 	assert.Equal(t, cached, got)
 	data, err := os.ReadFile(filepath.Join(cached, "model.onnx"))
 	require.NoError(t, err)
 	assert.Equal(t, "valid", string(data))
 }
-
-type transportFunc func(*http.Request) (*http.Response, error)
-
-func (f transportFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
