@@ -199,7 +199,7 @@ func TestHandlerCancellationAndResponseGate(t *testing.T) {
 	select {
 	case <-writing:
 	case <-time.After(5 * time.Second):
-		require.FailNow(t, "cancellation did not release inference gate")
+		require.FailNow(t, "response did not reach blocked Write")
 	}
 	live, stopLive := context.WithTimeout(t.Context(), 5*time.Second)
 	defer stopLive()

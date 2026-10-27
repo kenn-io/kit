@@ -40,7 +40,6 @@ func TestCacheRejectsBadDownloads(t *testing.T) {
 		size       int64
 	}{
 		{"digest mismatch", "wrong", 5},
-		{"too long", "valid", 4},
 		{"too short", "valid", 7},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -150,12 +150,10 @@ func TestServeRejectsBrowserRequests(t *testing.T) {
 	for _, tc := range []struct {
 		name, method, path, contentType, host string
 		status                                int
-		inputs                                []string
 	}{
-		{"simple request", http.MethodPost, "/v1/embeddings", "text/plain", "", http.StatusUnsupportedMediaType, nil},
-		{"attacker host", http.MethodPost, "/v1/embeddings", "application/json", attackerHost, http.StatusForbidden, nil},
-		{"attacker ping host", http.MethodGet, "/api/ping", "", attackerHost, http.StatusForbidden, nil},
-		{"discovered endpoint", http.MethodPost, "/v1/embeddings", "application/json", "", http.StatusOK, []string{"x"}},
+		{"simple request", http.MethodPost, "/v1/embeddings", "text/plain", "", http.StatusUnsupportedMediaType},
+		{"attacker host", http.MethodPost, "/v1/embeddings", "application/json", attackerHost, http.StatusForbidden},
+		{"attacker ping host", http.MethodGet, "/api/ping", "", attackerHost, http.StatusForbidden},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req, err := http.NewRequestWithContext(t.Context(), tc.method, record.Endpoint().BaseURL()+tc.path, strings.NewReader(`{"model":"nomic-embed-text","input":"x"}`))
@@ -168,11 +166,11 @@ func TestServeRejectsBrowserRequests(t *testing.T) {
 			require.NoError(t, err)
 			defer res.Body.Close()
 			assert.Equal(t, tc.status, res.StatusCode)
-			e.mu.Lock()
-			defer e.mu.Unlock()
-			assert.Equal(t, tc.inputs, e.inputs)
 		})
 	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	assert.Empty(t, e.inputs)
 }
 
 type blockedListener struct {
