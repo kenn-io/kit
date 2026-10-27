@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -149,21 +150,17 @@ func TestRefusesRequests(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			status, _ := get(t, httpClient(tt.target, tt.proxy), tt.target.URL)
 			assert.Equal(t, tt.want, status)
-			status, err := connect(t, p, tt.proxy, host(tt.target))
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, status)
+			assert.Equal(t, tt.want, connect(t, p, tt.proxy, host(tt.target)))
 		})
 	}
 	assert.Zero(t, dials.Load(), "a refused request must not reach an upstream")
 }
 
-// connect sends one CONNECT request and returns the proxy's status, or the
-// error reading it.
-func connect(t *testing.T, p *Proxy, proxy *url.URL, target string) (int, error) {
+// sendConnect opens a connection to the proxy and sends one CONNECT request.
+func sendConnect(t *testing.T, p *Proxy, proxy *url.URL, target string) net.Conn {
 	t.Helper()
 	conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", p.Addr())
 	require.NoError(t, err)
-	defer conn.Close()
 	request := "CONNECT " + target + " HTTP/1.1\r\nHost: " + target + "\r\n"
 	if proxy.User != nil {
 		password, _ := proxy.User.Password()
@@ -172,12 +169,18 @@ func connect(t *testing.T, p *Proxy, proxy *url.URL, target string) (int, error)
 	}
 	_, err = io.WriteString(conn, request+"\r\n")
 	require.NoError(t, err)
+	return conn
+}
+
+// connect sends one CONNECT request and returns the proxy's status.
+func connect(t *testing.T, p *Proxy, proxy *url.URL, target string) int {
+	t.Helper()
+	conn := sendConnect(t, p, proxy, target)
+	defer conn.Close()
 	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
-	if err != nil {
-		return 0, err
-	}
+	require.NoError(t, err)
 	defer resp.Body.Close()
-	return resp.StatusCode, nil
+	return resp.StatusCode
 }
 
 // A stalled transfer would block these tests forever if the cutoff failed.
@@ -229,31 +232,6 @@ func TestBindingEndCutsOffTransfers(t *testing.T) {
 	}
 }
 
-func TestBindingEndCutsOffDial(t *testing.T) {
-	const target = "192.0.2.1:443"
-	dialing := make(chan struct{})
-	p := listen(t, Config{
-		Allow: []string{target},
-		Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			close(dialing)
-			<-ctx.Done()
-			return nil, ctx.Err()
-		},
-	})
-	c := newClient(t, p)
-	ctx, cancel := context.WithCancel(t.Context())
-	bind(t, c, ctx)
-	go func() {
-		<-dialing
-		cancel()
-	}()
-
-	status, err := connect(t, p, c.URL(), target)
-	if err == nil {
-		assert.Equal(t, http.StatusBadGateway, status, "the tunnel must not open")
-	}
-}
-
 func TestStopRefusesNewRequests(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(reply))
 	defer upstream.Close()
@@ -271,9 +249,7 @@ func TestStopRefusesNewRequests(t *testing.T) {
 	stop()
 	status, _ = get(t, client, upstream.URL)
 	assert.Equal(t, http.StatusServiceUnavailable, status)
-	status, err = connect(t, p, c.URL(), host(upstream))
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusServiceUnavailable, status)
+	assert.Equal(t, http.StatusServiceUnavailable, connect(t, p, c.URL(), host(upstream)))
 }
 
 func TestCloseEndsTunnels(t *testing.T) {
@@ -428,33 +404,55 @@ func TestRebindReusesPooledClient(t *testing.T) {
 	assert.Equal(t, "ab", fetch())
 }
 
-func TestBindingEndCancelsPlainDial(t *testing.T) {
+// Every pending upstream dial, for plain HTTP and for CONNECT, ends when the
+// binding ends or the Client or Proxy closes.
+func TestShutdownCancelsPendingDials(t *testing.T) {
 	const target = "192.0.2.1:80"
-	dialing := make(chan struct{})
-	dialEnded := make(chan struct{})
-	p := listen(t, Config{
-		Allow: []string{target},
-		Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			close(dialing)
-			<-ctx.Done()
-			close(dialEnded)
-			return nil, ctx.Err()
-		},
-	})
-	c := newClient(t, p)
-	ctx, cancel := context.WithCancel(t.Context())
-	bind(t, c, ctx)
-	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(c.URL())}}
-	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+target, nil)
-	require.NoError(t, err)
-	go func() {
-		// The request fails once the binding ends; only the dial matters.
-		if resp, err := client.Do(request); err == nil {
-			_ = resp.Body.Close()
-		}
-	}()
+	shutdowns := []struct {
+		name     string
+		shutdown func(p *Proxy, c *Client, cancel context.CancelFunc)
+	}{
+		{"binding ends", func(_ *Proxy, _ *Client, cancel context.CancelFunc) { cancel() }},
+		{"client closes", func(_ *Proxy, c *Client, _ context.CancelFunc) { assert.NoError(t, c.Close()) }},
+		{"proxy closes", func(p *Proxy, _ *Client, _ context.CancelFunc) { assert.NoError(t, p.Close()) }},
+	}
+	for _, tunnel := range []bool{false, true} {
+		for _, tt := range shutdowns {
+			t.Run(fmt.Sprintf("tunnel=%t/%s", tunnel, tt.name), func(t *testing.T) {
+				dialing := make(chan struct{})
+				dialEnded := make(chan struct{})
+				p := listen(t, Config{
+					Allow: []string{target},
+					Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+						close(dialing)
+						<-ctx.Done()
+						close(dialEnded)
+						return nil, ctx.Err()
+					},
+				})
+				c := newClient(t, p)
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				bind(t, c, ctx)
+				if tunnel {
+					conn := sendConnect(t, p, c.URL(), target)
+					defer conn.Close()
+				} else {
+					client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(c.URL())}}
+					request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+target, nil)
+					require.NoError(t, err)
+					go func() {
+						// The request fails once the dial ends; only the dial matters.
+						if resp, err := client.Do(request); err == nil {
+							_ = resp.Body.Close()
+						}
+					}()
+				}
 
-	<-dialing
-	cancel()
-	<-dialEnded
+				<-dialing
+				tt.shutdown(p, c, cancel)
+				<-dialEnded
+			})
+		}
+	}
 }

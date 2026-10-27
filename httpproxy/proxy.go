@@ -67,6 +67,9 @@ type Client struct {
 	// forward has the Client's own upstream pool, whose connections are
 	// dialed and tracked under the Client's binding.
 	forward *httputil.ReverseProxy
+	// life ends when the Client closes, cancelling its pending dials.
+	life    context.Context
+	endLife context.CancelFunc
 
 	// Guarded by proxy.mu.
 	closed  bool
@@ -151,7 +154,15 @@ func (p *Proxy) NewClient() (*Client, error) {
 	if p.closed {
 		return nil, ErrClosed
 	}
-	c := &Client{proxy: p, username: rand.Text(), password: rand.Text(), conns: make(map[net.Conn]struct{})}
+	life, endLife := context.WithCancel(context.Background())
+	c := &Client{
+		proxy:    p,
+		username: rand.Text(),
+		password: rand.Text(),
+		life:     life,
+		endLife:  endLife,
+		conns:    make(map[net.Conn]struct{}),
+	}
 	c.forward = &httputil.ReverseProxy{
 		// The inbound request already carries the absolute upstream URL.
 		// Restore the raw query, which ReverseProxy would otherwise strip
@@ -254,9 +265,11 @@ func (c *Client) Close() error {
 	return nil
 }
 
-// release marks c closed and detaches its connections. p.mu must be held.
+// release marks c closed, cancels its pending dials, and detaches its
+// connections. p.mu must be held.
 func (c *Client) release() []net.Conn {
 	c.closed = true
+	c.endLife()
 	if b := c.binding; b != nil {
 		if b.cancelCutoff() {
 			close(b.ended)
@@ -333,12 +346,14 @@ func closeAll(conns []net.Conn) {
 	}
 }
 
-// dial opens an upstream connection that lives no longer than binding b. The
-// dial stops when b's context ends, and the connection is tracked under b.
+// dial opens an upstream connection that lives no longer than binding b or
+// the Client. The dial stops when either ends, and the connection is tracked
+// under b.
 func (c *Client) dial(ctx context.Context, b *binding, network, address string) (net.Conn, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer context.AfterFunc(b.ctx, cancel)()
+	defer context.AfterFunc(c.life, cancel)()
 	raw, err := c.proxy.dial(ctx, network, address)
 	if err != nil {
 		return nil, err

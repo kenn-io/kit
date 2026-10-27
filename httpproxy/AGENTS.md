@@ -22,8 +22,9 @@
   connections; traffic inside an established tunnel is invisible to the
   proxy and continues until a cutoff or Close.
 - Each Client's plain-HTTP pool dials through the Client's binding. Go's
-  transport keeps dialing after a request is cancelled, so the binding, not
-  the request, must cancel the dial. Pool connections are tracked like any
+  transport keeps dialing after a request is cancelled, so the binding and
+  the Client's lifetime, not the request, must cancel the dial. Every
+  upstream dial ends when its binding ends or the Client or Proxy closes. Pool connections are tracked like any
   other and untrack themselves on Close; never call their Close with the
   proxy lock held.
 - Preserve the inbound raw query. `ReverseProxy` would drop parameters it
