@@ -62,7 +62,8 @@ func TestCacheRejectsBadDownloads(t *testing.T) {
 
 func TestVerifyStopsAfterSizeLimit(t *testing.T) {
 	reader := strings.NewReader("valid trailing")
-	require.Error(t, verify(reader, io.Discard, asset{size: 4}))
+	digest := sha256.Sum256([]byte("vali"))
+	require.Error(t, verify(reader, io.Discard, asset{size: 4, digest: hex.EncodeToString(digest[:])}))
 	assert.Equal(t, 9, reader.Len())
 }
 
