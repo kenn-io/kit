@@ -21,7 +21,9 @@
 // _test.go files outside a bubble: context.WithTimeout, WithTimeoutCause,
 // WithDeadline, and WithDeadlineCause, time.After, NewTimer, and AfterFunc,
 // and the waitFor argument of testify's Eventually and EventuallyWithT and
-// their f variants; a short budget fails on a loaded CI runner even when the
+// their f variants. It also checks duration fields in literals and assignments,
+// duration arguments to statically resolved same-module functions and methods,
+// and standalone time.Now().Add deadlines. A short budget fails on a loaded CI runner even when the
 // code is correct. Only constant budgets are reported. Zero and negative
 // budgets are reported only for polling assertions, and Never and Neverf
 // budgets only when zero or negative: a short Never checks fewer times under

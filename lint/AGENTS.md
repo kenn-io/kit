@@ -39,6 +39,9 @@ See `docs/adopting-kennlint.md` for the consumer workflow.
   consumers opt in per repository. `deadlinetest` checks testify `waitFor`
   budgets by default, but reports `Never` and `Neverf` only for zero or
   negative budgets: a short positive window cannot fail under load.
+- `deadlinetest` also checks duration fields, same-module helper arguments,
+  and standalone `time.Now().Add` deadlines. `kennnolint` independently
+  requires `//nolint:kennlint // <rule>: <reason>`.
 - An analyzer that declares facts runs, with everything it requires, on every
   dependency: the standard library and third-party modules included. Fact
   analyzers must not require `buildssa` or other heavy passes; build what

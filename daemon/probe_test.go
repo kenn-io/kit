@@ -102,13 +102,13 @@ func TestProbeHTTPRejectsOKFalse(t *testing.T) {
 
 func TestProbeHTTPAppliesTimeoutOption(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(50 * time.Millisecond) //nolint:kennlint // server-side delay drives the real HTTP client timeout
+		time.Sleep(50 * time.Millisecond) //nolint:kennlint // sleeptest: server-side delay drives the real HTTP client timeout
 		_, _ = fmt.Fprint(w, `{"ok":true,"service":"kata"}`)
 	}))
 	defer server.Close()
 
 	_, err := daemon.ProbeHTTP(t.Context(), server.Client(), server.URL, daemon.ProbeOptions{
-		Timeout: time.Millisecond,
+		Timeout: time.Millisecond, //nolint:kennlint // deadlinetest: the stalled HTTP response must trigger the probe timeout
 	})
 	require.Error(t, err)
 }
@@ -480,7 +480,7 @@ func TestDiscoverSkipsPerProbeTimeouts(t *testing.T) {
 	require.NoError(err)
 
 	_, info, ok, err := daemon.Discover(t.Context(), store, daemon.DiscoverOptions{
-		Probe: daemon.ProbeOptions{ExpectedService: "kata", Timeout: 100 * time.Millisecond},
+		Probe: daemon.ProbeOptions{ExpectedService: "kata", Timeout: 100 * time.Millisecond}, //nolint:kennlint // deadlinetest: the first HTTP endpoint stalls until its probe times out
 	})
 	require.NoError(err)
 	require.True(ok)

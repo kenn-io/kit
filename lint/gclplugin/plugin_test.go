@@ -90,3 +90,16 @@ func TestTestifyHelperSettings(t *testing.T) {
 		})
 	}
 }
+
+func TestDirectivePluginIsRegistered(t *testing.T) {
+	newPlugin, err := register.GetPlugin("kennnolint")
+	require.NoError(t, err)
+	p, err := newPlugin(nil)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"kennnolint"}, analyzerNames(t, p))
+	fixtures, err := filepath.Abs(filepath.Join("..", "nolintdirective", "testdata"))
+	require.NoError(t, err)
+	analyzers, err := p.BuildAnalyzers()
+	require.NoError(t, err)
+	analysistest.Run(t, fixtures, analyzers[0], "a")
+}

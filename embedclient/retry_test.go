@@ -31,7 +31,7 @@ func retryClient(t *testing.T, retry embedclient.Retry, handler http.HandlerFunc
 
 func TestRetryRecoversFromTransientFailures(t *testing.T) {
 	var calls atomic.Int32
-	client := retryClient(t, embedclient.Retry{MaxAttempts: 6, InitialBackoff: time.Millisecond, MaxRetryAfter: time.Millisecond},
+	client := retryClient(t, embedclient.Retry{MaxAttempts: 6, InitialBackoff: time.Millisecond, MaxRetryAfter: time.Millisecond}, //nolint:kennlint // deadlinetest: only retry counts and responses are asserted; the backoff has no timing upper bound
 		func(w http.ResponseWriter, _ *http.Request) {
 			if calls.Add(1) < 6 {
 				w.Header().Set("Retry-After", "3600")
@@ -48,7 +48,7 @@ func TestRetryRecoversFromTransientFailures(t *testing.T) {
 
 func TestRetryStopsOnAnInputRejection(t *testing.T) {
 	var calls atomic.Int32
-	client := retryClient(t, embedclient.Retry{MaxAttempts: 5, InitialBackoff: time.Millisecond},
+	client := retryClient(t, embedclient.Retry{MaxAttempts: 5, InitialBackoff: time.Millisecond}, //nolint:kennlint // deadlinetest: only retry counts and responses are asserted; the backoff has no timing upper bound
 		func(w http.ResponseWriter, _ *http.Request) {
 			calls.Add(1)
 			w.WriteHeader(http.StatusBadRequest)
@@ -63,7 +63,7 @@ func TestRetryStopsOnAnInputRejection(t *testing.T) {
 
 func TestRetryGivesUpAfterMaxAttempts(t *testing.T) {
 	var calls atomic.Int32
-	client := retryClient(t, embedclient.Retry{MaxAttempts: 3, InitialBackoff: time.Millisecond},
+	client := retryClient(t, embedclient.Retry{MaxAttempts: 3, InitialBackoff: time.Millisecond}, //nolint:kennlint // deadlinetest: only retry counts and responses are asserted; the backoff has no timing upper bound
 		func(w http.ResponseWriter, _ *http.Request) {
 			calls.Add(1)
 			w.WriteHeader(http.StatusBadGateway)
@@ -80,7 +80,7 @@ func TestRetryWaitEndsWithTheContext(t *testing.T) {
 		func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		})
-	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond) //nolint:kennlint // the deadline is the expected result; the hour-long backoff ends only when the context does
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond) //nolint:kennlint // deadlinetest: the deadline is the expected result; the hour-long backoff ends only when the context does
 	defer cancel()
 	_, err := client.Embed(ctx, oneText())
 	require.ErrorIs(t, err, context.DeadlineExceeded)

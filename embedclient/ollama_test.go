@@ -208,7 +208,7 @@ func TestOllamaRecoveryWaitHonorsTheCallerContext(t *testing.T) {
 	}()
 	<-entered // the first recovery holds the gate
 
-	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond) //nolint:kennlint // the deadline is the expected result; the waiter queues behind a recovery gate the test holds
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond) //nolint:kennlint // deadlinetest: the deadline is the expected result; the waiter queues behind a recovery gate the test holds
 	defer cancel()
 	start := time.Now()
 	_, err = client.Embed(ctx, oneText())
@@ -228,7 +228,7 @@ func TestOllamaRecoveryIsNotBoundByTheRequestTimeout(t *testing.T) {
 			// A slow reload or CPU pass: answer well after the 50ms
 			// request timeout, unless the client gives up first.
 			select {
-			case <-time.After(300 * time.Millisecond): //nolint:kennlint // simulated slow reload on a real HTTP server that must outlast the client's 50ms request timeout
+			case <-time.After(300 * time.Millisecond): //nolint:kennlint // deadlinetest: simulated slow reload on a real HTTP server that must outlast the client's 50ms request timeout
 			case <-r.Context().Done():
 				return
 			}
@@ -243,7 +243,7 @@ func TestOllamaRecoveryIsNotBoundByTheRequestTimeout(t *testing.T) {
 	client, err := embedclient.New(embedclient.Options{
 		Model:               unitModel(),
 		Deployment:          embedconfig.Deployment{BaseURL: srv.URL + "/v1"},
-		Transport:           embedconfig.Transport{Timeout: 50 * time.Millisecond},
+		Transport:           embedconfig.Transport{Timeout: 50 * time.Millisecond}, //nolint:kennlint // deadlinetest: the deliberately slow recovery must outlast the normal HTTP request timeout
 		OllamaMetalRecovery: true,
 	})
 	require.NoError(t, err)

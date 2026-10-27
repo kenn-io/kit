@@ -214,7 +214,7 @@ func TestManagerEnsureSerializesConcurrentStarts(t *testing.T) {
 		Discover: daemon.DiscoverOptions{Probe: daemon.ProbeOptions{ExpectedService: "tool"}},
 		Start: func(context.Context) error {
 			starts.Add(1)
-			time.Sleep(20 * time.Millisecond) //nolint:kennlint // simulates a slow start hook the manager must wait on
+			time.Sleep(20 * time.Millisecond) //nolint:kennlint // sleeptest: simulates a slow start hook the manager must wait on
 			_, err := store.Write(daemon.RuntimeRecord{
 				PID:       os.Getpid(),
 				Network:   daemon.NetworkTCP,
@@ -247,7 +247,7 @@ func TestRuntimeStoreOwnerLockExcludesASecondOwner(t *testing.T) {
 	require.NoError(t, err)
 	defer release()
 
-	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond) //nolint:kennlint // the deadline is the expected result; the first owner's file lock blocks the second acquire until it fires
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond) //nolint:kennlint // deadlinetest: the deadline is the expected result; the first owner's file lock blocks the second acquire until it fires
 	defer cancel()
 	_, err = store.AcquireOwnerLock(ctx)
 	require.Error(t, err)
@@ -383,7 +383,7 @@ func TestManagerEnsureAppliesTimeoutToStartLock(t *testing.T) {
 	}
 
 	startedAt := time.Now()
-	_, _, err = manager.Ensure(t.Context(), 50*time.Millisecond)
+	_, _, err = manager.Ensure(t.Context(), 50*time.Millisecond) //nolint:kennlint // deadlinetest: the held start lock forces the timeout being asserted
 	require.Error(err)
 	assert.Less(t, time.Since(startedAt), 500*time.Millisecond)
 }

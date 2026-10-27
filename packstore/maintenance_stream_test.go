@@ -128,7 +128,7 @@ func TestRepackStreamsAboveFormerCeiling(t *testing.T) {
 	maintainer := newMaintainerForTest(t, catalog, layout, limits)
 
 	stats, err := maintainer.Repack(t.Context(), RepackOptions{
-		Now: time.Now(), Selection: RepackSelection{MinAge: time.Nanosecond, MinDeadStored: 1},
+		Now: time.Now(), Selection: RepackSelection{MinAge: time.Second, MinDeadStored: 1},
 	})
 	require.NoError(err)
 	assert.Equal(1, stats.BlobsRepacked)
