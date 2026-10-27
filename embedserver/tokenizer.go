@@ -8,7 +8,12 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/text/unicode/norm"
+	"golang.org/x/text/unicode/rangetable"
 )
+
+// b11845's Unicode 15.1 additions need no transforms beyond isCJK.
+// Preserve later assignments instead of applying Go's newer Unicode tables.
+var wordPieceAssigned = rangetable.Assigned("15.0.0")
 
 // Match llama.cpp b11845 WPM, including per-rune first-code-point NFD
 // and unrestricted word length. Normalization and splitting follow:
@@ -109,6 +114,10 @@ next:
 		}
 		r, size := utf8.DecodeRuneInString(text)
 		text = text[size:]
+		if !unicode.Is(wordPieceAssigned, r) && !isCJK(r) {
+			word.WriteRune(r)
+			continue
+		}
 		r, _ = utf8.DecodeRuneInString(norm.NFD.String(string(r)))
 		if unicode.IsSpace(r) {
 			flush()
