@@ -83,6 +83,10 @@ type Client struct {
 // connection the Client holds.
 type binding struct {
 	ctx context.Context
+	// active ends with ctx or at stop, cancelling the binding's pending dials
+	// without touching its established connections.
+	active     context.Context
+	deactivate context.CancelFunc
 	// cancelCutoff reports true when it prevented the cutoff from starting.
 	cancelCutoff func() bool
 	// ended is closed once no cutoff for this binding can still run.
@@ -219,8 +223,8 @@ func (c *Client) URL() *url.URL {
 // ends or stop is called. When ctx ends first, the proxy closes every
 // connection the Client holds.
 //
-// stop refuses new requests, tunnels, and dials, and keeps idle connections
-// for reuse by a later Bind. The proxy cannot see inside a tunnel, so traffic
+// stop refuses new requests, tunnels, and dials, cancels pending dials, and
+// keeps established connections for reuse by a later Bind. The proxy cannot see inside a tunnel, so traffic
 // over an established tunnel continues after stop until a later binding's
 // context ends or the Client or Proxy closes. If a cutoff has started, stop
 // waits for it to finish. A Client has one binding at a time: call stop,
@@ -238,13 +242,15 @@ func (c *Client) Bind(ctx context.Context) (stop func(), err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	b := &binding{ctx: ctx, ended: make(chan struct{})}
+	active, deactivate := context.WithCancel(ctx)
+	b := &binding{ctx: ctx, active: active, deactivate: deactivate, ended: make(chan struct{})}
 	c.binding = b
 	b.cancelCutoff = context.AfterFunc(ctx, func() {
 		c.cutOff()
 		close(b.ended)
 	})
 	return sync.OnceFunc(func() {
+		b.deactivate()
 		if b.cancelCutoff() {
 			close(b.ended)
 		}
@@ -278,6 +284,7 @@ func (c *Client) release() []net.Conn {
 	c.closed = true
 	c.endLife()
 	if b := c.binding; b != nil {
+		b.deactivate()
 		if b.cancelCutoff() {
 			close(b.ended)
 		}
@@ -353,13 +360,12 @@ func closeAll(conns []net.Conn) {
 	}
 }
 
-// dial opens an upstream connection that lives no longer than binding b or
-// the Client. The dial stops when either ends, and the connection is tracked
-// under b.
+// dial opens an upstream connection under binding b. The dial stops when b
+// ends or stops, or the Client closes, and the connection is tracked under b.
 func (c *Client) dial(ctx context.Context, b *binding, network, address string) (net.Conn, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	defer context.AfterFunc(b.ctx, cancel)()
+	defer context.AfterFunc(b.active, cancel)()
 	defer context.AfterFunc(c.life, cancel)()
 	raw, err := c.proxy.dial(ctx, network, address)
 	if err != nil {

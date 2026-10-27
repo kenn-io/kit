@@ -406,16 +406,21 @@ func TestRebindReusesPooledClient(t *testing.T) {
 }
 
 // Every pending upstream dial, for plain HTTP and for CONNECT, ends when the
-// binding ends or the Client or Proxy closes.
+// binding ends or stops, or the Client or Proxy closes.
 func TestShutdownCancelsPendingDials(t *testing.T) {
 	const target = "192.0.2.1:80"
+	type binding struct {
+		cancel context.CancelFunc
+		stop   func()
+	}
 	shutdowns := []struct {
 		name     string
-		shutdown func(p *Proxy, c *Client, cancel context.CancelFunc)
+		shutdown func(p *Proxy, c *Client, b binding)
 	}{
-		{"binding ends", func(_ *Proxy, _ *Client, cancel context.CancelFunc) { cancel() }},
-		{"client closes", func(_ *Proxy, c *Client, _ context.CancelFunc) { assert.NoError(t, c.Close()) }},
-		{"proxy closes", func(p *Proxy, _ *Client, _ context.CancelFunc) { assert.NoError(t, p.Close()) }},
+		{"binding ends", func(_ *Proxy, _ *Client, b binding) { b.cancel() }},
+		{"binding stops", func(_ *Proxy, _ *Client, b binding) { b.stop() }},
+		{"client closes", func(_ *Proxy, c *Client, _ binding) { assert.NoError(t, c.Close()) }},
+		{"proxy closes", func(p *Proxy, _ *Client, _ binding) { assert.NoError(t, p.Close()) }},
 	}
 	for _, tunnel := range []bool{false, true} {
 		for _, tt := range shutdowns {
@@ -434,7 +439,9 @@ func TestShutdownCancelsPendingDials(t *testing.T) {
 				c := newClient(t, p)
 				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
-				bind(t, c, ctx)
+				stop, err := c.Bind(ctx)
+				require.NoError(t, err)
+				defer stop()
 				if tunnel {
 					conn := sendConnect(t, p, c.URL(), target)
 					defer conn.Close()
@@ -451,7 +458,7 @@ func TestShutdownCancelsPendingDials(t *testing.T) {
 				}
 
 				<-dialing
-				tt.shutdown(p, c, cancel)
+				tt.shutdown(p, c, binding{cancel: cancel, stop: stop})
 				<-dialEnded
 			})
 		}

@@ -24,7 +24,8 @@
 - Each Client's plain-HTTP pool dials through the Client's binding. Go's
   transport keeps dialing after a request is cancelled, so the binding and
   the Client's lifetime, not the request, must cancel the dial. Every
-  upstream dial ends when its binding ends or the Client or Proxy closes. Pool connections are tracked like any
+  upstream dial ends when its binding ends or stops, or the Client or Proxy
+  closes. `stop` cancels dials but leaves established connections open. Pool connections are tracked like any
   other and untrack themselves on Close; never call their Close with the
   proxy lock held.
 - A Client's plain-HTTP pool keeps every idle connection. Its own
