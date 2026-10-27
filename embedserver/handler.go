@@ -41,7 +41,12 @@ type response struct {
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<20))
 	if err != nil {
-		http.Error(w, "request exceeds 4 MiB", http.StatusRequestEntityTooLarge)
+		var limit *http.MaxBytesError
+		if errors.As(err, &limit) {
+			http.Error(w, "request exceeds 4 MiB", http.StatusRequestEntityTooLarge)
+		} else {
+			http.Error(w, "could not read request body", http.StatusBadRequest)
+		}
 		return
 	}
 	var req request

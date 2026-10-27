@@ -1,14 +1,19 @@
 package embedserver
 
 import (
+	"bufio"
 	"context"
 	json "encoding/json/v2"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -116,6 +121,29 @@ func TestHandlerRejectsBeforeInference(t *testing.T) {
 			assert.Equal(t, tc.status, recorder.Code)
 		})
 	}
+	assert.Empty(t, e.inputs)
+}
+
+func TestHandlerRejectsIncompleteBody(t *testing.T) {
+	e := new(fakeEngine)
+	server := httptest.NewServer(&handler{engine: e, gate: make(chan struct{}, 1)})
+	defer server.Close()
+	conn, err := net.DialTCP("tcp", nil, server.Listener.Addr().(*net.TCPAddr))
+	require.NoError(t, err)
+	defer conn.Close()
+	require.NoError(t, conn.SetDeadline(time.Now().Add(5*time.Second)))
+	_, err = fmt.Fprint(conn, "POST /v1/embeddings HTTP/1.1\r\nHost: example.com\r\nContent-Length: 100\r\n\r\n{")
+	require.NoError(t, err)
+	require.NoError(t, conn.CloseWrite())
+	res, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	require.NoError(t, err)
+	defer res.Body.Close()
+	assert.Equal(t, http.StatusBadRequest, res.StatusCode)
+	body, err := io.ReadAll(res.Body)
+	require.NoError(t, err)
+	assert.Equal(t, "could not read request body\n", string(body))
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	assert.Empty(t, e.inputs)
 }
 
