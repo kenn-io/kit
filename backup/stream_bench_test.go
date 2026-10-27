@@ -35,7 +35,7 @@ func BenchmarkCaptureUnknownThumbnails(b *testing.B) {
 	}
 	delayed := captureSourceFunc(func(ctx context.Context, ref ContentRef) (io.ReadCloser, error) {
 		select {
-		case <-time.After(10 * time.Millisecond): //nolint:deadlinetest // simulated per-open source latency that the benchmark measures, not a wait on test state
+		case <-time.After(10 * time.Millisecond): //nolint:kennlint // deadlinetest: simulated per-open source latency that the benchmark measures, not a wait on test state
 			return src.Open(ctx, ref)
 		case <-ctx.Done():
 			return nil, ctx.Err()

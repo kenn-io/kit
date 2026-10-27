@@ -30,7 +30,7 @@ func TestPluginIsRegistered(t *testing.T) {
 	require.NoError(t, err)
 	p, err := newPlugin(nil)
 	require.NoError(t, err)
-	assert.Equal([]string{"errtext", "nohttpmux", "sleeptest", "sqlcheck", "sqlclosecheck", "rowserrcheck", "testifyhelper"}, analyzerNames(t, p))
+	assert.Equal([]string{"errtext", "nohttpmux", "sleeptest", "deadlinetest", "sqlcheck", "sqlclosecheck", "rowserrcheck", "testifyhelper"}, analyzerNames(t, p))
 	assert.Equal(register.LoadModeTypesInfo, p.GetLoadMode())
 	assert.False(errtext.IncludeTests)
 	assert.True(sleeptest.HelperPackages)
@@ -45,7 +45,7 @@ func TestPluginSettings(t *testing.T) {
 		sleeptest.Eventually = false
 	})
 	p, err := New(map[string]any{
-		"disable":   []any{"sleeptest", "nohttpmux"},
+		"disable":   []any{"sleeptest", "nohttpmux", "deadlinetest"},
 		"errtext":   map[string]any{"include-tests": true},
 		"sleeptest": map[string]any{"helper-packages": false, "eventually": true},
 	})
@@ -60,9 +60,6 @@ func TestPluginRejectsUnknownSettings(t *testing.T) {
 	assert := assert.New(t)
 	_, err := New(map[string]any{"disable": []any{"nope"}})
 	require.ErrorContains(t, err, `unknown analyzer "nope"`)
-
-	_, err = New(map[string]any{"disable": []any{"deadlinetest"}})
-	require.ErrorContains(t, err, `unknown analyzer "deadlinetest"`)
 
 	_, err = New(map[string]any{"bogus": true})
 	assert.ErrorContains(err, "kennlint settings")
@@ -105,12 +102,4 @@ func TestDirectivePluginIsRegistered(t *testing.T) {
 	analyzers, err := p.BuildAnalyzers()
 	require.NoError(t, err)
 	analysistest.Run(t, fixtures, analyzers[0], "a")
-}
-
-func TestDeadlinePluginIsRegistered(t *testing.T) {
-	newPlugin, err := register.GetPlugin("deadlinetest")
-	require.NoError(t, err)
-	p, err := newPlugin(nil)
-	require.NoError(t, err)
-	assert.Equal(t, []string{"deadlinetest"}, analyzerNames(t, p))
 }

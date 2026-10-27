@@ -23,13 +23,16 @@
 // and the waitFor argument of testify's Eventually and EventuallyWithT and
 // their f variants. It also checks duration fields in literals and assignments,
 // duration arguments to statically resolved same-module functions and methods,
-// and standalone time.Now().Add deadlines. Field and parameter names must
-// contain timeout, deadline, budget, wait, interval, tick, or delay.
-// Duration elements in maps and slices, closures, interface calls, and helper
-// packages are out of scope. A short budget fails on a loaded CI runner even
-// when the code is correct. Only constant budgets are reported. Zero and negative
-// budgets are reported only for polling assertions, and Never and Neverf
-// budgets only when zero or negative: a short Never checks fewer times under
+// and standalone time.Now().Add deadlines. Duration fields and helper
+// parameters must contain timeout, deadline, budget, wait, interval, tick,
+// or delay in their names. Standalone Add checks apply regardless of the
+// destination name. Duration elements in maps and slices, closures, and
+// interface calls are out of scope. Same-module helper calls from _test.go files are checked;
+// helper package source files themselves are not scanned. A short budget
+// fails on a loaded CI runner even when the code is correct. Only constant
+// budgets are reported. Zero and negative budgets are reported only for
+// polling assertions, and Never and Neverf budgets only when zero or
+// negative: a short Never checks fewer times under
 // load but cannot fail, while one with no budget passes vacuously.
 package sleeptest
 

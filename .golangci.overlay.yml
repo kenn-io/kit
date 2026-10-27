@@ -1,7 +1,6 @@
 # Repository additions merged into the canonical kit config by `kennlint config`.
 linters:
   enable:
-    - deadlinetest
     - kennnolint
   settings:
     importas:

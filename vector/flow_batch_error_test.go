@@ -394,7 +394,7 @@ func TestFillRejectedProbeBackpressuresAndCancelsWorkers(t *testing.T) {
 	select {
 	case <-thirdStarted:
 		require.FailNow("failed-result worker started a third job during collection")
-	case <-time.After(100 * time.Millisecond): //nolint:deadlinetest // shows the failed-result worker starts no third job while the probe is held; an absence has no event to wait on
+	case <-time.After(100 * time.Millisecond): //nolint:kennlint // deadlinetest: shows the failed-result worker starts no third job while the probe is held; an absence has no event to wait on
 	}
 	release()
 	select {

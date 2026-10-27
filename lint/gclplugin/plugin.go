@@ -13,7 +13,7 @@
 // type "module". Settings:
 //
 //	settings:
-//	  disable: [nohttpmux]        # analyzer names to leave out
+//	  disable: [deadlinetest]     # analyzer names to leave out
 //	  errtext:
 //	    include-tests: true       # also report err.Error() matching in tests
 //	  sleeptest:
@@ -76,7 +76,6 @@ type SleeptestSettings struct {
 
 func init() {
 	register.Plugin(Name, New)
-	register.Plugin("deadlinetest", func(any) (register.LinterPlugin, error) { return &deadlinePlugin{}, nil })
 	register.Plugin("kennnolint", func(any) (register.LinterPlugin, error) { return &directivePlugin{}, nil })
 }
 
@@ -86,7 +85,7 @@ func New(conf any) (register.LinterPlugin, error) {
 	if err != nil {
 		return nil, fmt.Errorf("kennlint settings: %w", err)
 	}
-	known := groupedAnalyzers()
+	known := lint.Analyzers()
 	for _, name := range settings.Disable {
 		if !slices.ContainsFunc(known, func(a *analysis.Analyzer) bool { return a.Name == name }) {
 			return nil, fmt.Errorf("kennlint settings: unknown analyzer %q in disable", name)
@@ -104,7 +103,7 @@ func (p *plugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 	sleeptest.HelperPackages = p.settings.Sleeptest.HelperPackages == nil || *p.settings.Sleeptest.HelperPackages
 	sleeptest.Eventually = p.settings.Sleeptest.Eventually
 	var analyzers []*analysis.Analyzer
-	for _, a := range groupedAnalyzers() {
+	for _, a := range lint.Analyzers() {
 		if slices.Contains(p.settings.Disable, a.Name) {
 			continue
 		}
@@ -124,23 +123,10 @@ type directivePlugin struct{}
 
 func (*directivePlugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 	var names []string
-	for _, a := range groupedAnalyzers() {
+	for _, a := range lint.Analyzers() {
 		names = append(names, a.Name)
 	}
 	return []*analysis.Analyzer{nolintdirective.New(names)}, nil
 }
 
 func (*directivePlugin) GetLoadMode() string { return register.LoadModeTypesInfo }
-
-// groupedAnalyzers leaves deadline exceptions under their own linter name.
-func groupedAnalyzers() []*analysis.Analyzer {
-	return slices.DeleteFunc(lint.Analyzers(), func(a *analysis.Analyzer) bool { return a == sleeptest.DeadlineAnalyzer })
-}
-
-type deadlinePlugin struct{}
-
-func (*deadlinePlugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
-	return []*analysis.Analyzer{sleeptest.DeadlineAnalyzer}, nil
-}
-
-func (*deadlinePlugin) GetLoadMode() string { return register.LoadModeTypesInfo }

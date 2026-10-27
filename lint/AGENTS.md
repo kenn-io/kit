@@ -41,7 +41,8 @@ See `docs/adopting-kennlint.md` for the consumer workflow.
   negative budgets: a short positive window cannot fail under load.
 - `deadlinetest` checks duration fields and same-module parameters whose names
   contain timeout, deadline, budget, wait, interval, tick, or delay, plus
-  standalone `time.Now().Add` deadlines. It runs under its own linter name.
+  standalone `time.Now().Add` deadlines. Same-module helper calls from test
+  files are covered; helper package source files aren't scanned.
   `kennnolint` requires grouped kit suppressions to name their rules and reason.
 - An analyzer that declares facts runs, with everything it requires, on every
   dependency: the standard library and third-party modules included. Fact
@@ -62,8 +63,8 @@ See `docs/adopting-kennlint.md` for the consumer workflow.
   the kit `Makefile`, and `kennlint config` must render it without warnings.
   Adding a linter to the canonical config affects every consuming repository;
   measure the finding count on at least two consumers before adding one.
-- Kit's overlay enables `deadlinetest` and `kennnolint` while consumer
-  adoption migrates suppressions. Keep both out of the canonical enable list.
+- Keep `deadlinetest` in the `kennlint` group. Enable `kennnolint` through
+  kit's overlay while consumers adopt rule labels and reasons.
 - `testifyhelper` requires canonical `assert` and `require` import and helper
   names. Requiring local helpers is opt-in through `require-helpers`, off
   by default for both libraries. Parent scopes retain package calls when local helpers would shadow

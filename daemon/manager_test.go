@@ -247,7 +247,7 @@ func TestRuntimeStoreOwnerLockExcludesASecondOwner(t *testing.T) {
 	require.NoError(t, err)
 	defer release()
 
-	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond) //nolint:deadlinetest // the deadline is the expected result; the first owner's file lock blocks the second acquire until it fires
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond) //nolint:kennlint // deadlinetest: the deadline is the expected result; the first owner's file lock blocks the second acquire until it fires
 	defer cancel()
 	_, err = store.AcquireOwnerLock(ctx)
 	require.Error(t, err)
@@ -383,7 +383,7 @@ func TestManagerEnsureAppliesTimeoutToStartLock(t *testing.T) {
 	}
 
 	startedAt := time.Now()
-	_, _, err = manager.Ensure(t.Context(), 50*time.Millisecond) //nolint:deadlinetest // the held start lock forces the timeout being asserted
+	_, _, err = manager.Ensure(t.Context(), 50*time.Millisecond) //nolint:kennlint // deadlinetest: the held start lock forces the timeout being asserted
 	require.Error(err)
 	assert.Less(t, time.Since(startedAt), 500*time.Millisecond)
 }

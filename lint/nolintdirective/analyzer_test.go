@@ -7,5 +7,5 @@ import (
 )
 
 func TestAnalyzer(t *testing.T) {
-	analysistest.Run(t, analysistest.TestData(), New([]string{"sleeptest", "errtext"}), "a")
+	analysistest.Run(t, analysistest.TestData(), New([]string{"sleeptest", "errtext", "deadlinetest"}), "a")
 }

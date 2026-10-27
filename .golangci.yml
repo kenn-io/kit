@@ -53,7 +53,6 @@ linters:
     - gocheckcompilerdirectives
     # kit analyzers (requires a custom golangci-lint build, see docs)
     - kennlint
-    - deadlinetest
     - kennnolint
   settings:
     errcheck:
@@ -133,10 +132,6 @@ linters:
         - pattern: '^os\.Rename$'
           msg: Use atomicfile.Replace from go.kenn.io/kit, or atomicfile.RenameNoReplace when the target must not exist, so a Windows reader that opened the target with share-delete can't block the rename.
     custom:
-      deadlinetest:
-        type: module
-        description: Subsecond test deadlines and named time budgets.
-        original-url: go.kenn.io/kit/lint/sleeptest
       kennnolint:
         type: module
         description: Require a kit analyzer and reason in suppressions.

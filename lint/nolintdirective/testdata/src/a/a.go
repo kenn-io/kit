@@ -34,7 +34,7 @@ var socket int
 // nolint:KENNLINT // missing rule // want "must name a kit rule and a reason"
 var uppercase int
 
-//nolint:kennlint // sleeptest,errtext: stderr describes a real process wait
+//nolint:kennlint // sleeptest,deadlinetest: expiry is asserted against a real server
 var combined int
 
 //nolint:kennlint // sleeptest,unknown: a reason // want "must name a kit rule and a reason"
@@ -42,6 +42,3 @@ var unknownMember int
 
 //nolint:kennlint // sleeptest,: a reason // want "must name a kit rule and a reason"
 var emptyMember int
-
-//nolint:kennlint // deadlinetest: expiry is asserted // want "must name a kit rule and a reason"
-var separateDeadline int

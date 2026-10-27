@@ -56,7 +56,6 @@ func TestRenderWithoutOverlayIsCanonical(t *testing.T) {
 	assert.Equal(canonical, got)
 	assert.Contains(got.Linters.Enable, "kennlint")
 	assert.NotContains(got.Linters.Enable, "kennnolint")
-	assert.NotContains(got.Linters.Enable, "deadlinetest")
 	assert.Contains(got.Linters.Enable, "testifylint")
 	assert.Equal([]string{"gofmt", "gofumpt"}, got.Formatters.Enable)
 }

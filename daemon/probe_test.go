@@ -108,7 +108,7 @@ func TestProbeHTTPAppliesTimeoutOption(t *testing.T) {
 	defer server.Close()
 
 	_, err := daemon.ProbeHTTP(t.Context(), server.Client(), server.URL, daemon.ProbeOptions{
-		Timeout: time.Millisecond, //nolint:deadlinetest // the stalled HTTP response must trigger the probe timeout
+		Timeout: time.Millisecond, //nolint:kennlint // deadlinetest: the stalled HTTP response must trigger the probe timeout
 	})
 	require.Error(t, err)
 }
@@ -480,7 +480,7 @@ func TestDiscoverSkipsPerProbeTimeouts(t *testing.T) {
 	require.NoError(err)
 
 	_, info, ok, err := daemon.Discover(t.Context(), store, daemon.DiscoverOptions{
-		Probe: daemon.ProbeOptions{ExpectedService: "kata", Timeout: 100 * time.Millisecond}, //nolint:deadlinetest // the first HTTP endpoint stalls until its probe times out
+		Probe: daemon.ProbeOptions{ExpectedService: "kata", Timeout: 100 * time.Millisecond}, //nolint:kennlint // deadlinetest: the first HTTP endpoint stalls until its probe times out
 	})
 	require.NoError(err)
 	require.True(ok)
