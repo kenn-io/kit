@@ -31,16 +31,7 @@ func TestServeDiscoveryAndCancellation(t *testing.T) {
 	defer finish()
 	closed := make(chan struct{})
 	closedAfterInference := false
-	var block atomic.Bool
-	writing := make(chan *blockedConn, 1)
-	listen := func(ep daemon.Endpoint, ctx context.Context) (net.Listener, error) {
-		listener, err := ep.ListenContext(ctx)
-		return &blockedListener{Listener: listener, block: &block, writing: writing}, err
-	}
-	e := &fakeEngine{run: func(ctx context.Context, text string) ([]float32, int, error) {
-		if text == "response" {
-			return new(fakeEngine).embed(ctx, text)
-		}
+	e := &fakeEngine{run: func(ctx context.Context, _ string) ([]float32, int, error) {
 		close(entered)
 		<-ctx.Done()
 		close(canceled)
@@ -55,44 +46,15 @@ func TestServeDiscoveryAndCancellation(t *testing.T) {
 		default:
 		}
 	}}
-	store, record, done := startServe(t, ctx, e, listen)
-	block.Store(true)
-	requestCtx, stopRequest := context.WithCancel(t.Context())
-	defer stopRequest()
-	requestDone := make(chan error, 2)
-	var conn *blockedConn
-	for _, text := range []string{"response", "inference"} {
-		req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, record.Endpoint().BaseURL()+"/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text","input":"`+text+`"}`))
-		require.NoError(t, err)
-		go func() {
-			res, err := http.DefaultClient.Do(req)
-			if err == nil {
-				res.Body.Close()
-			}
-			requestDone <- err
-		}()
-		if text == "response" {
-			select {
-			case conn = <-writing:
-			case <-time.After(5 * time.Second):
-				require.FailNow(t, "response did not reach blocked Write")
-			}
-		}
-	}
+	store, record, done := startServe(t, ctx, e, daemon.Endpoint.ListenContext)
+	requestDone := startEmbeddingRequest(t, record)
 	select {
 	case <-entered:
 	case <-time.After(5 * time.Second):
 		require.FailNow(t, "inference did not start")
 	}
 	cancel()
-	for range 2 {
-		require.ErrorIs(t, <-requestDone, io.EOF)
-	}
-	select {
-	case <-conn.closed:
-	default:
-		assert.Fail(t, "shutdown did not close the connection blocked in Write")
-	}
+	require.ErrorIs(t, <-requestDone, io.EOF)
 	<-canceled
 	select {
 	case <-closed:
@@ -110,7 +72,7 @@ func TestServeDiscoveryAndCancellation(t *testing.T) {
 	require.NoError(t, writer.Close())
 	printed, err := io.ReadAll(reader)
 	require.NoError(t, err)
-	assert.Equal(t, record.Endpoint().BaseURL()+"\n", string(printed))
+	assert.Equal(t, record.Endpoint().BaseURL()+"/v1\n", string(printed))
 	records, err := store.List()
 	require.NoError(t, err)
 	assert.Empty(t, records)
@@ -134,6 +96,39 @@ func TestServeRejectsStartup(t *testing.T) {
 			assert.Equal(t, tc.loaded, called)
 		})
 	}
+}
+
+func TestServeCancellationInterruptsResponse(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var block atomic.Bool
+	writing := make(chan *blockedConn, 1)
+	listen := func(ep daemon.Endpoint, ctx context.Context) (net.Listener, error) {
+		listener, err := ep.ListenContext(ctx)
+		return &blockedListener{Listener: listener, block: &block, writing: writing}, err
+	}
+	_, record, done := startServe(t, ctx, new(fakeEngine), listen)
+	block.Store(true)
+	requestDone := startEmbeddingRequest(t, record)
+	var conn *blockedConn
+	select {
+	case conn = <-writing:
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "response did not reach blocked Write")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "blocked response prevented shutdown")
+	}
+	select {
+	case <-conn.closed:
+	default:
+		assert.Fail(t, "shutdown did not close the connection blocked in Write")
+	}
+	require.ErrorIs(t, <-requestDone, io.EOF)
 }
 
 type blockedListener struct {
@@ -190,4 +185,21 @@ func startServe(t *testing.T, ctx context.Context, e engine, listen func(daemon.
 		return true
 	}, 5*time.Second, 10*time.Millisecond)
 	return store, record, done
+}
+
+func startEmbeddingRequest(t *testing.T, record daemon.RuntimeRecord) <-chan error {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, record.Endpoint().BaseURL()+"/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text","input":"x"}`))
+	require.NoError(t, err)
+	done := make(chan error, 1)
+	go func() {
+		res, err := http.DefaultClient.Do(req)
+		if err == nil {
+			res.Body.Close()
+		}
+		done <- err
+	}()
+	return done
 }

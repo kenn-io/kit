@@ -104,7 +104,7 @@ func serve(ctx context.Context, opts Options, load func(context.Context, string,
 	if err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintln(os.Stderr, ep.BaseURL()); err != nil {
+	if _, err := fmt.Fprintln(os.Stderr, ep.BaseURL()+"/v1"); err != nil {
 		return err
 	}
 	shutdown := make(chan error, 1)
