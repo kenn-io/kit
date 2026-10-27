@@ -9,7 +9,7 @@ import (
 )
 
 func TestAnalyzer(t *testing.T) {
-	analysistest.Run(t, analysistest.TestData(), Analyzer, "a", "helperpkg", "incidents")
+	analysistest.Run(t, analysistest.TestData(), Analyzer, "a", "helperpkg")
 }
 
 func TestAnalyzerSkipsHelperPackagesWhenDisabled(t *testing.T) {

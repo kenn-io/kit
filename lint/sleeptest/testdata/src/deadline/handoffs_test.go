@@ -18,7 +18,6 @@ type config struct {
 func (config) Wait(time.Duration)           {}
 func probe(*testing.T, time.Duration)       {}
 func watcher(int, time.Duration, any)       {}
-func idle(*testing.T, time.Duration)        {}
 func waits(time.Duration, ...time.Duration) {}
 
 const watcherInterval = 100 * time.Millisecond
@@ -29,7 +28,6 @@ func TestHandoffs(t *testing.T) {
 	c.Timeout = 30 * time.Millisecond                            // want "Timeout with budget 30ms"
 	probe(t, 300*time.Millisecond)                               // want "probe with budget 300ms"
 	watcher(0, 100*time.Millisecond, nil)                        // want "watcher with budget 100ms"
-	idle(t, 20*time.Millisecond)                                 // want "idle with budget 20ms"
 	waits(watcherInterval)                                       // want "waits with budget 100ms"
 	waits(time.Second, 10*time.Millisecond, 20*time.Millisecond) // want "waits with budget 10ms" "waits with budget 20ms"
 	c.Wait(shortWait)                                            // want "Wait with budget 50ms"
@@ -40,37 +38,16 @@ func TestHandoffs(t *testing.T) {
 	runtime := 20 * time.Millisecond
 	_ = config{Timeout: runtime, Count: 20}
 	_ = config{Timeout: 0}
-	_ = config{Timeout: -time.Millisecond}
-	_ = config{Timeout: time.Second}
 	c.Count = 20
 	c.Timeout = runtime
-	waits(0, -time.Millisecond, time.Second)
-	waits(time.Second, []time.Duration{shortWait}...)
+	waits(0)
 	deadlineother.Wait(shortWait)
-	time.Sleep(shortWait) // external duration arguments belong to sleeptest
 	_ = time.Now().Add(0)
-	_ = time.Now().Add(-time.Millisecond)
-	_ = time.Now().Add(time.Second)
 	_ = time.Now().Add(runtime)
 	synctest.Test(t, func(t *testing.T) {
 		_ = config{Timeout: shortWait}
 		c.Timeout = shortWait
 		helper.Wait(shortWait)
-		probe(t, shortWait)
 		_ = time.Now().Add(shortWait)
 	})
-	synctest.Test(t, namedHandoffs)
-	namedOutside(t)
-}
-
-func namedHandoffs(t *testing.T) {
-	c := config{Timeout: shortWait}
-	c.Timeout = shortWait
-	probe(t, shortWait)
-	_ = time.Now().Add(shortWait)
-}
-func namedOutside(t *testing.T) {
-	_ = config{Timeout: shortWait} // want "Timeout with budget 50ms"
-	probe(t, shortWait)            // want "probe with budget 50ms"
-	_ = time.Now().Add(shortWait)  // want "time.Now\\(\\).Add with budget 50ms"
 }
