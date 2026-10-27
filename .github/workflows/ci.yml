@@ -20,6 +20,8 @@ concurrency:
 env:
   # "|" falls back to the source repo on any proxy error, including HTTP/2 stream resets mid-download.
   GOPROXY: https://proxy.golang.org|direct
+  # Module-relative source paths let every checkout share Go build cache entries.
+  GOFLAGS: -trimpath
 
 jobs:
   hygiene:
