@@ -20,17 +20,23 @@ an overlay with its local additions, and `kennlint config` renders the merged
 `.golangci.yml` from the canonical file plus the overlay. A `-check` mode fails
 CI when the committed file is stale.
 
-**Eight analyzers** that off-the-shelf linters do not cover. They ship as the
-`kennlint` linter inside a custom golangci-lint build. The separate
-`kennnolint` linter checks that each kit suppression names one or more known analyzers
-and gives a reason: `//nolint:kennlint // <rule>[,<rule>...]: <reason>`.
+**Eight analyzers** cover checks that off-the-shelf linters miss. Seven run
+under `kennlint`; `deadlinetest` runs under its own linter name so a grouped
+suppression cannot hide a deadline finding. The separate `kennnolint` linter
+requires grouped suppressions to name known rules and give a reason:
+`//nolint:kennlint // <rule>[,<rule>...]: <reason>`.
+
+`deadlinetest` and `kennnolint` have custom definitions in the canonical
+configuration but remain disabled there during consumer migration. Kit enables
+both in its overlay. Consumers enable them when adopting the new plugin and
+suppression formats below.
 
 | Analyzer | Reports |
 | --- | --- |
 | `sqlclosecheck`, `rowserrcheck` | SQL resource closure and iteration errors, including returned ownership and shared scanners across packages. The kit versions extend the upstream checks; do not enable the duplicate built-in checks. |
 | `testifyhelper` | Imports and assertion objects must be named `assert` or `require`. Set `testifyhelper.require-helpers: true` in plugin settings to also require local helpers for repeated package calls; the default is false for both libraries. Parent scopes retain package calls when nested functions need package access. Run with `--fix` to apply object-aware renames and, when enabled, local-helper conversions. |
 | `sleeptest` | `time.Sleep` in a `_test.go` file outside a `synctest.Test` bubble. Wall-clock sleeps make tests slow and timing-dependent. A bubble is the body of the function passed to `synctest.Test`, inline or by name, at any nesting depth including goroutines. A helper that sleeps and is only called from inside a bubble is still reported: give it a channel to wait on instead. Dot-imported and parenthesized `time.Sleep` calls match too. Packages named `testutil` or ending in `test` are checked too (`helper-packages`, default on). Set `eventually: true` to also report testify `Eventually`, `EventuallyWithT`, and `Never`, and their `f` variants, outside bubbles; that is off by default because some repositories endorse `Eventually` for awaiting a fake's channel. |
-| `deadlinetest` | Sub-second wall-clock budgets in `_test.go` files outside a `synctest.Test` bubble: `context.WithTimeout` and `WithTimeoutCause`, `context.WithDeadline` and `WithDeadlineCause` written as `time.Now().Add(d)`, `time.After`, `time.NewTimer`, `time.AfterFunc`, and the `waitFor` of testify's `Eventually` and `EventuallyWithT` and their `f` variants. A budget under 1s fails on a loaded CI runner even when the code is right; wait on a real event or run the test in a bubble. Duration fields in keyed and positional struct literals and assignments, duration arguments to statically resolved same-module functions and methods, and standalone `time.Now().Add(d)` deadlines are also checked. Only constant budgets are reported, and zero and negative ones only for polling assertions, which still pass or fail by timing. Testify's `Never` and `Neverf` are reported only with a zero or negative budget, which passes vacuously: a short positive window checks fewer times on a loaded runner but cannot fail. Only `_test.go` files are checked: helper packages are out of scope. Two cases are legitimate `//nolint:kennlint` exemptions: a test whose asserted result is the deadline expiring, and a `select` on `time.After` that shows an event does not happen. With sleeptest's `eventually: true`, a sub-second `Eventually` or `EventuallyWithT` call gets one diagnostic from each analyzer, and `//nolint:kennlint // sleeptest,deadlinetest: <reason>` covers both. A repository with a backlog can list `deadlinetest` under `disable` while it burns it down. |
+| `deadlinetest` | Sub-second wall-clock budgets in `_test.go` files outside a `synctest.Test` bubble: `context.WithTimeout` and `WithTimeoutCause`, `context.WithDeadline` and `WithDeadlineCause` written as `time.Now().Add(d)`, `time.After`, `time.NewTimer`, `time.AfterFunc`, and the `waitFor` of testify's `Eventually` and `EventuallyWithT` and their `f` variants. A budget under 1s fails on a loaded CI runner even when the code is right; wait on a real event or run the test in a bubble. Duration fields in keyed and positional struct literals, including implicit pointer literals, plain `=` field assignments, duration arguments to statically resolved same-module functions and methods, and standalone `time.Now().Add(d)` deadlines are also checked. Field and formal parameter names must contain timeout, deadline, budget, wait, interval, tick, or delay, ignoring case. Record ages and generic durations are outside this vocabulary. Duration elements in maps and slices, closures, interface calls, and helper packages are outside the statically resolved scope. Only constant budgets are reported, and zero and negative ones only for polling assertions, which still pass or fail by timing. Testify's `Never` and `Neverf` are reported only with a zero or negative budget, which passes vacuously: a short positive window checks fewer times on a loaded runner but cannot fail. Only `_test.go` files are checked: helper packages are out of scope. Two cases are legitimate `//nolint:deadlinetest // <reason>` exemptions: a test whose asserted result is the deadline expiring, and a `select` on `time.After` that shows an event does not happen. With sleeptest's `eventually: true`, a sub-second `Eventually` or `EventuallyWithT` call gets one diagnostic from each analyzer, so suppressing both requires `//nolint:kennlint,deadlinetest // sleeptest: <reason>`. A repository with a backlog can put `deadlinetest` in its overlay's `linters.disable` list while it burns it down. |
 | `errtext` | Deciding on error identity by matching `err.Error()` text: `strings.Contains(err.Error(), …)`, `err.Error() == …`, and similar. Use `errors.Is` or `errors.AsType`. Test files are skipped unless `errtext.include-tests` is set. |
 | `sqlcheck` | SQL `CHECK` constraints and `CREATE TYPE ... AS ENUM` in Go string literals outside tests. A CHECK locks a validation rule into the schema, so every change to the rule (most often a new allowed value for a status-like column) needs a migration that rewrites the constraint. Validate in application code or keep allowed values in a lookup table. `kennlint sql` applies the same check to `.sql` migration files. |
 | `nohttpmux` | `Handle`/`HandleFunc` on `*http.ServeMux` or the default mux outside tests, for repositories that route every operation through a typed API layer such as Huma. Disable it in repositories that serve plain `net/http`. |
@@ -54,9 +60,23 @@ and gives a reason: `//nolint:kennlint // <rule>[,<rule>...]: <reason>`.
    custom build resolves the same module graph. Repositories that already use
    the nilaway plugin keep it in the same list.
 
-2. Write the overlay, `.golangci.overlay.yml`, with only the repository's own
+2. Write the overlay, `.golangci.overlay.yml`, with the repository's own
    additions: `importas` aliases, extra `forbidigo` patterns, exclusion rules
-   for known carve-outs. Leave it out entirely if there are none.
+   for known carve-outs. To adopt the separate checks, enable them in the overlay:
+
+   ```yaml
+   linters:
+     enable:
+       - deadlinetest
+       - kennnolint
+   ```
+
+   Migrate deadline exceptions to `//nolint:deadlinetest // <reason>` and
+   grouped exceptions to `//nolint:kennlint // <rule>: <reason>`. `deadlinetest`
+   is no longer accepted in the grouped plugin's `disable` settings or in
+   `kennnolint` rule labels. Use the overlay's `linters.disable` list to disable
+   it. Existing consumers migrate their plugin version, rendered config, and
+   suppressions together in the adoption slice.
 
 3. Render and commit the configuration:
 
@@ -125,8 +145,9 @@ existing findings. Two staged approaches work:
   This needs full history in CI checkouts.
 
 Either way, suppress individual findings with `//nolint:<linter> // reason`.
-For kit findings, name the analyzer: `//nolint:kennlint // deadlinetest: deadline expiry is the asserted result`.
-Keep `kennnolint` enabled alongside `kennlint` when adopting the plugin.
+For grouped kit findings, name the analyzer, for example `//nolint:kennlint // sleeptest: waits for a real process`.
+For deadline findings, use `//nolint:deadlinetest // deadline expiry is the asserted result`.
+Keep `kennnolint` enabled when adopting grouped suppression checks.
 Two rules that trip existing tests: `t.Context()` is already canceled inside
 `t.Cleanup`, so derive `context.WithoutCancel(t.Context())` there, and helper
 subprocesses started with `exec.CommandContext(t.Context(), …)` are killed at

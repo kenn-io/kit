@@ -127,7 +127,7 @@ func TestStopEndpointWait(t *testing.T) {
 		{name: "replacement", network: daemon.NetworkTCP, after: daemon.NewPingHandler(daemon.PingHandlerOptions{PID: os.Getpid() + 1, Service: "replacement"})},
 		{name: "missing PID after shutdown request", network: daemon.NetworkTCP, after: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = w.Write([]byte(`{"ok":true}`))
-		}), timeout: 150 * time.Millisecond, wantErr: context.DeadlineExceeded}, //nolint:kennlint // deadlinetest: the live endpoint omits its PID; deadline expiry is the asserted result
+		}), timeout: 150 * time.Millisecond, wantErr: context.DeadlineExceeded}, //nolint:deadlinetest // the live endpoint omits its PID; deadline expiry is the asserted result
 		{name: "context with live endpoint", network: daemon.NetworkTCP, callerDeadline: true, wantErr: context.DeadlineExceeded},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -184,7 +184,7 @@ func TestStopEndpointWait(t *testing.T) {
 			ctx := t.Context()
 			if tc.callerDeadline {
 				var cancel context.CancelFunc
-				ctx, cancel = context.WithTimeout(ctx, 150*time.Millisecond) //nolint:kennlint // deadlinetest: exercises the caller's deadline while the real endpoint remains live
+				ctx, cancel = context.WithTimeout(ctx, 150*time.Millisecond) //nolint:deadlinetest // exercises the caller's deadline while the real endpoint remains live
 				defer cancel()
 			}
 			err = daemon.Stop(ctx, rec, opts)
@@ -225,7 +225,7 @@ func TestStopExitProofAndErrors(t *testing.T) {
 			checks := 0
 			opts := daemon.StopOptions{
 				Proof:   proof,
-				Timeout: 150 * time.Millisecond, //nolint:kennlint // deadlinetest: deadline expiry is asserted when the exit callback keeps reporting a live process
+				Timeout: 150 * time.Millisecond, //nolint:deadlinetest // deadline expiry is asserted when the exit callback keeps reporting a live process
 				Request: func(context.Context, daemon.RuntimeRecord) error {
 					requested.Store(true)
 					if mode == "closed" {
@@ -345,7 +345,7 @@ func TestStopGoneProcessProbeContext(t *testing.T) {
 			rec := daemon.RuntimeRecord{PID: pid, Address: listenerAddr(t, server)}
 			requests := 0
 			err := daemon.Stop(ctx, rec, daemon.StopOptions{
-				Timeout: 100 * time.Millisecond, //nolint:kennlint // deadlinetest: the stalled HTTP probe must stop at this deadline
+				Timeout: 100 * time.Millisecond, //nolint:deadlinetest // the stalled HTTP probe must stop at this deadline
 				Probe:   daemon.ProbeOptions{Timeout: time.Second},
 				Request: func(context.Context, daemon.RuntimeRecord) error { requests++; return nil },
 			})

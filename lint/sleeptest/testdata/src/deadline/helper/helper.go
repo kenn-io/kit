@@ -2,4 +2,4 @@ package helper
 
 import "time"
 
-func Wait(time.Duration) {}
+func Wait(wait time.Duration) {}

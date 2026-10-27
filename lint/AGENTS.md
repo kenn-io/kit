@@ -39,9 +39,10 @@ See `docs/adopting-kennlint.md` for the consumer workflow.
   consumers opt in per repository. `deadlinetest` checks testify `waitFor`
   budgets by default, but reports `Never` and `Neverf` only for zero or
   negative budgets: a short positive window cannot fail under load.
-- `deadlinetest` also checks duration fields, same-module helper arguments,
-  and standalone `time.Now().Add` deadlines. `kennnolint` independently
-  requires `//nolint:kennlint // <rule>[,<rule>...]: <reason>`.
+- `deadlinetest` checks duration fields and same-module parameters whose names
+  contain timeout, deadline, budget, wait, interval, tick, or delay, plus
+  standalone `time.Now().Add` deadlines. It runs under its own linter name.
+  `kennnolint` requires grouped kit suppressions to name their rules and reason.
 - An analyzer that declares facts runs, with everything it requires, on every
   dependency: the standard library and third-party modules included. Fact
   analyzers must not require `buildssa` or other heavy passes; build what
@@ -61,9 +62,8 @@ See `docs/adopting-kennlint.md` for the consumer workflow.
   the kit `Makefile`, and `kennlint config` must render it without warnings.
   Adding a linter to the canonical config affects every consuming repository;
   measure the finding count on at least two consumers before adding one.
-- Kit itself lints clean with the rendered configuration. Its overlay in
-  `.golangci.overlay.yml` carries only import aliases and two documented
-  carve-outs; do not add disables to it.
+- Kit's overlay enables `deadlinetest` and `kennnolint` while consumer
+  adoption migrates suppressions. Keep both out of the canonical enable list.
 - `testifyhelper` requires canonical `assert` and `require` import and helper
   names. Requiring local helpers is opt-in through `require-helpers`, off
   by default for both libraries. Parent scopes retain package calls when local helpers would shadow

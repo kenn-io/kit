@@ -33,7 +33,7 @@ func TestRepackRetiresZeroLiveBeforeRewritingSparsePack(t *testing.T) {
 	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
 
 	stats, err := maintainer.Repack(t.Context(), RepackOptions{
-		Now: time.Now(), MaxBytes: 1, Selection: RepackSelection{MinAge: time.Second, MinDeadStored: 1},
+		Now: time.Now(), MaxBytes: 1, Selection: RepackSelection{MinAge: time.Nanosecond, MinDeadStored: 1},
 	})
 	require.NoError(err)
 	assert.Equal(2, stats.PacksSelected)
@@ -64,7 +64,7 @@ func TestRepackDefersPackWithOversizedLiveEntry(t *testing.T) {
 	maintainer := newMaintainerForTest(t, catalog, layout, limits)
 
 	stats, err := maintainer.Repack(t.Context(), RepackOptions{
-		Selection: RepackSelection{MinAge: time.Second, MinDeadStored: 1},
+		Selection: RepackSelection{MinAge: time.Nanosecond, MinDeadStored: 1},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, 1, stats.PacksDeferredOversized)
@@ -92,7 +92,7 @@ func TestAutomaticRepackContinuesPastCorruptSource(t *testing.T) {
 	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
 
 	stats, err := maintainer.Repack(t.Context(), RepackOptions{
-		MaxBytes: 1 << 20, Selection: RepackSelection{MinAge: time.Second, MinDeadStored: 1},
+		MaxBytes: 1 << 20, Selection: RepackSelection{MinAge: time.Nanosecond, MinDeadStored: 1},
 	})
 	require.Error(err)
 	require.ErrorContains(err, badLive.PackID, "aggregate errors identify the corrupt source pack")
@@ -119,7 +119,7 @@ func TestRepackCatalogCASFailureKeepsSourceAuthority(t *testing.T) {
 	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
 
 	_, err := maintainer.Repack(t.Context(), RepackOptions{
-		Selection: RepackSelection{MinAge: time.Second, MinDeadStored: 1},
+		Selection: RepackSelection{MinAge: time.Nanosecond, MinDeadStored: 1},
 	})
 	require.ErrorContains(t, err, "exact-set failure")
 	entries, _ := catalog.snapshot()

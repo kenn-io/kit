@@ -84,7 +84,7 @@ func newFixture(t *testing.T, wrap func(next http.RoundTripper) http.RoundTrippe
 	}
 	s, err := newStore(t.Context(), Config{Bucket: testBucket, Prefix: "namespace"}, option.WithHTTPClient(&http.Client{Transport: transport}))
 	require.NoError(t, err)
-	s.bucket = s.bucket.Retryer(storage.WithBackoff(gax.Backoff{Initial: time.Millisecond, Max: 5 * time.Millisecond})) //nolint:kennlint // deadlinetest: retry delays only; fake responses determine success with no sub-second assertion window
+	s.bucket = s.bucket.Retryer(storage.WithBackoff(gax.Backoff{Initial: time.Millisecond, Max: 5 * time.Millisecond}))
 	t.Cleanup(func() { require.NoError(t, s.Close()) })
 	return f, s
 }

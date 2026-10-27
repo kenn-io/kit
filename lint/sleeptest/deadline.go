@@ -3,6 +3,7 @@ package sleeptest
 import (
 	"go/ast"
 	"go/constant"
+	"go/token"
 	"go/types"
 	"strings"
 	"time"
@@ -17,7 +18,7 @@ import (
 // outside synctest bubbles.
 var DeadlineAnalyzer = &analysis.Analyzer{
 	Name:     "deadlinetest",
-	Doc:      "reports sub-second duration fields, local helper arguments, deadlines, timers, and testify polling budgets in test files outside a testing/synctest bubble",
+	Doc:      "reports sub-second named time budgets, deadlines, timers, and testify polling budgets in test files outside a testing/synctest bubble",
 	Requires: []*analysis.Analyzer{inspect.Analyzer},
 	Run:      runDeadline,
 }
@@ -75,10 +76,10 @@ func runDeadline(pass *analysis.Pass) (any, error) {
 						break
 					}
 					param = sig.Params().Len() - 1
-					if isDuration(sig.Params().At(param).Type().(*types.Slice).Elem()) {
+					if budgetName(sig.Params().At(param).Name()) && isDuration(sig.Params().At(param).Type().(*types.Slice).Elem()) {
 						report(arg, arg, fn.Name(), timerBudget)
 					}
-				} else if param < sig.Params().Len() && isDuration(sig.Params().At(param).Type()) {
+				} else if param < sig.Params().Len() && budgetName(sig.Params().At(param).Name()) && isDuration(sig.Params().At(param).Type()) {
 					report(arg, arg, fn.Name(), timerBudget)
 				}
 			}
@@ -86,6 +87,9 @@ func runDeadline(pass *analysis.Pass) (any, error) {
 			typ := pass.TypesInfo.TypeOf(n)
 			if typ == nil {
 				return
+			}
+			if ptr, ok := typ.Underlying().(*types.Pointer); ok {
+				typ = ptr.Elem()
 			}
 			fields, ok := typ.Underlying().(*types.Struct)
 			if !ok {
@@ -104,12 +108,12 @@ func runDeadline(pass *analysis.Pass) (any, error) {
 				} else if i < fields.NumFields() {
 					field = fields.Field(i)
 				}
-				if field != nil && isDuration(field.Type()) {
+				if field != nil && budgetName(field.Name()) && isDuration(field.Type()) {
 					report(value, value, field.Name(), timerBudget)
 				}
 			}
 		case *ast.AssignStmt:
-			if len(n.Lhs) != len(n.Rhs) {
+			if n.Tok != token.ASSIGN || len(n.Lhs) != len(n.Rhs) {
 				return
 			}
 			for i, lhs := range n.Lhs {
@@ -118,7 +122,7 @@ func runDeadline(pass *analysis.Pass) (any, error) {
 					continue
 				}
 				field, ok := pass.TypesInfo.Uses[sel.Sel].(*types.Var)
-				if ok && field.IsField() && isDuration(field.Type()) {
+				if ok && field.IsField() && budgetName(field.Name()) && isDuration(field.Type()) {
 					report(n.Rhs[i], n.Rhs[i], field.Name(), timerBudget)
 				}
 			}
@@ -215,6 +219,17 @@ func argAt(call *ast.CallExpr, i int) ast.Expr {
 		return nil
 	}
 	return call.Args[i]
+}
+
+// budgetName limits handoffs to names that describe timing behavior.
+func budgetName(name string) bool {
+	name = strings.ToLower(name)
+	for _, word := range []string{"timeout", "deadline", "budget", "wait", "interval", "tick", "delay"} {
+		if strings.Contains(name, word) {
+			return true
+		}
+	}
+	return false
 }
 
 func isDuration(typ types.Type) bool {

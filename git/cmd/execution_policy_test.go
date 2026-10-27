@@ -121,7 +121,7 @@ func TestRunnerWaitDelayWithInheritedPipe(t *testing.T) {
 			runner := New().WithConfig("alias.hold-pipe", "!"+shellquote.Single(executable)+" -test.run=^TestRunnerHeldPipeHelper$ &")
 			runner.DisableSafeDirectoryForward = true
 			runner.Env = append(runner.Env, "GITCMD_PIPE_HELPER_URL="+server.URL)
-			runner.WaitDelay = 100 * time.Millisecond //nolint:kennlint // deadlinetest: the held pipe must trigger exec.ErrWaitDelay before the helper is released
+			runner.WaitDelay = 100 * time.Millisecond //nolint:deadlinetest // the held pipe must trigger exec.ErrWaitDelay before the helper is released
 			runner.AcceptSuccessfulWaitDelay = accept
 			require.Equal(t, 100*time.Millisecond, runner.Command(t.Context(), t.TempDir(), "version").WaitDelay)
 			result := make(chan error, 1)

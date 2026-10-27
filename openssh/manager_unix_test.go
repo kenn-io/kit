@@ -56,7 +56,7 @@ func newTestManager(t *testing.T, directory string, fake *fakeSSH) *PersistentMa
 	manager, err := NewPersistentManager(directory, PersistentConfig{
 		RunSSH:                  fake.run,
 		MaximumControlPathBytes: 1_000,
-		EstablishPollInterval:   time.Millisecond, //nolint:kennlint // deadlinetest: polling cadence only; completion is observed through socket state and signals
+		EstablishPollInterval:   time.Millisecond, //nolint:deadlinetest // polling cadence only; completion is observed through socket state and signals
 		EstablishTimeout:        time.Second,
 	})
 	require.NoError(t, err)
@@ -487,7 +487,7 @@ func TestDisconnectWaitsForSocketDrainAfterExitReturns(t *testing.T) {
 	select {
 	case <-disconnectResult:
 		returnedEarly = true
-	case <-time.After(50 * time.Millisecond): //nolint:kennlint // deadlinetest: shows Disconnect stays blocked while the fake still holds the socket; an absence has no event to wait on
+	case <-time.After(50 * time.Millisecond): //nolint:deadlinetest // shows Disconnect stays blocked while the fake still holds the socket; an absence has no event to wait on
 	}
 	close(releaseSocket)
 	if !returnedEarly {
@@ -504,8 +504,8 @@ func TestDisconnectBoundsSocketDrainAndPreservesListener(t *testing.T) {
 	fake := newFakeSSH()
 	manager, err := NewPersistentManager(newSocketDir(t), PersistentConfig{
 		RunSSH:                  fake.run,
-		CleanupTimeout:          5 * time.Millisecond, //nolint:kennlint // deadlinetest: deadline expiry is asserted while the real Unix socket remains open
-		EstablishPollInterval:   time.Millisecond,     //nolint:kennlint // deadlinetest: polling cadence only; completion is observed through socket state and signals
+		CleanupTimeout:          5 * time.Millisecond, //nolint:deadlinetest // deadline expiry is asserted while the real Unix socket remains open
+		EstablishPollInterval:   time.Millisecond,     //nolint:deadlinetest // polling cadence only; completion is observed through socket state and signals
 		MaximumControlPathBytes: 1_000,
 	})
 	require.NoError(err)
@@ -565,8 +565,8 @@ func TestDisconnectBoundsExitCommand(t *testing.T) {
 	fake := newFakeSSH()
 	manager, err := NewPersistentManager(newSocketDir(t), PersistentConfig{
 		RunSSH:                  fake.run,
-		CleanupTimeout:          10 * time.Millisecond, //nolint:kennlint // deadlinetest: the fake exit command waits for its context deadline
-		EstablishPollInterval:   time.Millisecond,      //nolint:kennlint // deadlinetest: polling cadence only; completion is observed through socket state and signals
+		CleanupTimeout:          10 * time.Millisecond, //nolint:deadlinetest // the fake exit command waits for its context deadline
+		EstablishPollInterval:   time.Millisecond,      //nolint:deadlinetest // polling cadence only; completion is observed through socket state and signals
 		MaximumControlPathBytes: 1_000,
 	})
 	require.NoError(err)
@@ -595,8 +595,8 @@ func TestPersistentManagerReportsTypedSpawnFailure(t *testing.T) {
 	fake.spawnExitCode, fake.spawnErr = 255, sentinel
 	manager, err := NewPersistentManager(newSocketDir(t), PersistentConfig{
 		RunSSH:                  fake.run,
-		CleanupTimeout:          5 * time.Millisecond, //nolint:kennlint // deadlinetest: bounds observation of a socket the fake never creates; the spawn error is asserted
-		EstablishPollInterval:   time.Millisecond,     //nolint:kennlint // deadlinetest: polling cadence only; completion is observed through socket state and signals
+		CleanupTimeout:          5 * time.Millisecond, //nolint:deadlinetest // bounds observation of a socket the fake never creates; the spawn error is asserted
+		EstablishPollInterval:   time.Millisecond,     //nolint:deadlinetest // polling cadence only; completion is observed through socket state and signals
 		MaximumControlPathBytes: 1_000,
 	})
 	require.NoError(err)
@@ -638,8 +638,8 @@ func TestPersistentManagerFailedStartCleansLateSocket(t *testing.T) {
 		RunSSH:                  fake.run,
 		MaximumControlPathBytes: 1_000,
 		EstablishPollInterval:   time.Second,
-		EstablishTimeout:        5 * time.Millisecond,   //nolint:kennlint // deadlinetest: establish deadline expiry is asserted while the fake withholds a ready socket
-		CleanupTimeout:          100 * time.Millisecond, //nolint:kennlint // deadlinetest: the real Unix socket appears during failed-start cleanup after establish expiry
+		EstablishTimeout:        5 * time.Millisecond,   //nolint:deadlinetest // establish deadline expiry is asserted while the fake withholds a ready socket
+		CleanupTimeout:          100 * time.Millisecond, //nolint:deadlinetest // the real Unix socket appears during failed-start cleanup after establish expiry
 	})
 	require.NoError(err)
 	t.Cleanup(fake.closeAll)
@@ -647,7 +647,7 @@ func TestPersistentManagerFailedStartCleansLateSocket(t *testing.T) {
 	path := manager.SocketPath("studio", target)
 	lateSocketErr := make(chan error, 1)
 	go func() {
-		timer := time.NewTimer(20 * time.Millisecond) //nolint:kennlint // deadlinetest: lands the fake socket after the 5ms establish timeout so Connect must clean up a late socket
+		timer := time.NewTimer(20 * time.Millisecond) //nolint:deadlinetest // lands the fake socket after the 5ms establish timeout so Connect must clean up a late socket
 		defer timer.Stop()
 		<-timer.C
 		lateSocketErr <- fake.openSocket(path)
@@ -674,7 +674,7 @@ func TestFailedStartDrainTimeoutQuarantinesSocket(t *testing.T) {
 	manager, err := NewPersistentManager(newSocketDir(t), PersistentConfig{
 		RunSSH:                  fake.run,
 		CleanupTimeout:          time.Second,
-		EstablishPollInterval:   time.Millisecond, //nolint:kennlint // deadlinetest: polling cadence only; completion is observed through socket state and signals
+		EstablishPollInterval:   time.Millisecond, //nolint:deadlinetest // polling cadence only; completion is observed through socket state and signals
 		MaximumControlPathBytes: 1_000,
 		OnEvent: func(event Event) {
 			events <- event
@@ -886,7 +886,7 @@ func TestIdleTeardownFailureEmitsErrorAndPreservesConnection(t *testing.T) {
 	fake := newFakeSSH()
 	manager, err := NewPersistentManager(newSocketDir(t), PersistentConfig{
 		RunSSH:                  fake.run,
-		EstablishPollInterval:   time.Millisecond, //nolint:kennlint // deadlinetest: polling cadence only; completion is observed through socket state and signals
+		EstablishPollInterval:   time.Millisecond, //nolint:deadlinetest // polling cadence only; completion is observed through socket state and signals
 		MaximumControlPathBytes: 1_000,
 		OnEvent: func(event Event) {
 			events <- event
@@ -952,9 +952,9 @@ func TestEstablishTimeoutUsesBoundedCleanupAndKeepsOriginalError(t *testing.T) {
 	}
 	manager, err := NewPersistentManager(newSocketDir(t), PersistentConfig{
 		RunSSH:                  fake.run,
-		EstablishTimeout:        5 * time.Millisecond,   //nolint:kennlint // deadlinetest: establish deadline expiry is asserted while the fake withholds a ready socket
-		EstablishPollInterval:   time.Millisecond,       //nolint:kennlint // deadlinetest: polling cadence only; completion is observed through socket state and signals
-		CleanupTimeout:          100 * time.Millisecond, //nolint:kennlint // deadlinetest: the fake exit command waits for the cleanup deadline
+		EstablishTimeout:        5 * time.Millisecond,   //nolint:deadlinetest // establish deadline expiry is asserted while the fake withholds a ready socket
+		EstablishPollInterval:   time.Millisecond,       //nolint:deadlinetest // polling cadence only; completion is observed through socket state and signals
+		CleanupTimeout:          100 * time.Millisecond, //nolint:deadlinetest // the fake exit command waits for the cleanup deadline
 		MaximumControlPathBytes: 1_000,
 	})
 	require.NoError(err)
@@ -1008,7 +1008,7 @@ func TestCanceledEstablishKeepsCancellationWhenCleanupFails(t *testing.T) {
 	}
 	manager, err := NewPersistentManager(newSocketDir(t), PersistentConfig{
 		RunSSH:                  fake.run,
-		CleanupTimeout:          10 * time.Millisecond, //nolint:kennlint // deadlinetest: the fake exit command fails immediately; the asserted result is caller cancellation
+		CleanupTimeout:          10 * time.Millisecond, //nolint:deadlinetest // the fake exit command fails immediately; the asserted result is caller cancellation
 		MaximumControlPathBytes: 1_000,
 	})
 	require.NoError(t, err)
@@ -1048,7 +1048,7 @@ func TestEventsCarryGenerationAndSuppressStaleState(t *testing.T) {
 	manager, err := NewPersistentManager(newSocketDir(t), PersistentConfig{
 		RunSSH:                  fake.run,
 		MaximumControlPathBytes: 1_000,
-		EstablishPollInterval:   time.Millisecond, //nolint:kennlint // deadlinetest: polling cadence only; completion is observed through socket state and signals
+		EstablishPollInterval:   time.Millisecond, //nolint:deadlinetest // polling cadence only; completion is observed through socket state and signals
 		OnEvent: func(event Event) {
 			events <- event
 		},
@@ -1091,7 +1091,7 @@ func TestEventQueueCoalescesWhileCallbackIsBlocked(t *testing.T) {
 	manager, err := NewPersistentManager(newSocketDir(t), PersistentConfig{
 		RunSSH:                  fake.run,
 		MaximumControlPathBytes: 1_000,
-		EstablishPollInterval:   time.Millisecond, //nolint:kennlint // deadlinetest: polling cadence only; completion is observed through socket state and signals
+		EstablishPollInterval:   time.Millisecond, //nolint:deadlinetest // polling cadence only; completion is observed through socket state and signals
 		OnEvent: func(event Event) {
 			blockOnce.Do(func() {
 				close(callbackStarted)
@@ -1148,7 +1148,7 @@ func TestConnectEmitsConnectedEventWhenProbeFailureRecovers(t *testing.T) {
 	manager, err := NewPersistentManager(newSocketDir(t), PersistentConfig{
 		RunSSH:                  fake.run,
 		MaximumControlPathBytes: 1_000,
-		EstablishPollInterval:   time.Millisecond, //nolint:kennlint // deadlinetest: polling cadence only; completion is observed through socket state and signals
+		EstablishPollInterval:   time.Millisecond, //nolint:deadlinetest // polling cadence only; completion is observed through socket state and signals
 		OnEvent: func(event Event) {
 			events <- event
 		},
@@ -1200,7 +1200,7 @@ func TestPersistentManagerEventCallbackCanDisconnectReentrantly(t *testing.T) {
 	manager, err = NewPersistentManager(newSocketDir(t), PersistentConfig{
 		RunSSH:                  fake.run,
 		MaximumControlPathBytes: 1_000,
-		EstablishPollInterval:   time.Millisecond, //nolint:kennlint // deadlinetest: polling cadence only; completion is observed through socket state and signals
+		EstablishPollInterval:   time.Millisecond, //nolint:deadlinetest // polling cadence only; completion is observed through socket state and signals
 		OnEvent: func(event Event) {
 			if event.State != StateConnecting {
 				return
@@ -1233,7 +1233,7 @@ func TestPersistentManagerAcceptsExplicitConnectionOptions(t *testing.T) {
 		RunSSH:                  fake.run,
 		ConnectionOptions:       &options,
 		MaximumControlPathBytes: 1_000,
-		EstablishPollInterval:   time.Millisecond, //nolint:kennlint // deadlinetest: polling cadence only; completion is observed through socket state and signals
+		EstablishPollInterval:   time.Millisecond, //nolint:deadlinetest // polling cadence only; completion is observed through socket state and signals
 	})
 	require.NoError(err)
 
@@ -1257,7 +1257,7 @@ func TestPersistentManagerResolvesSocketDirectoryAtConstruction(t *testing.T) {
 	manager, err := NewPersistentManager("control", PersistentConfig{
 		RunSSH:                  fake.run,
 		MaximumControlPathBytes: 1_000,
-		EstablishPollInterval:   time.Millisecond, //nolint:kennlint // deadlinetest: polling cadence only; completion is observed through socket state and signals
+		EstablishPollInterval:   time.Millisecond, //nolint:deadlinetest // polling cadence only; completion is observed through socket state and signals
 	})
 	require.NoError(err)
 	t.Chdir(t.TempDir())

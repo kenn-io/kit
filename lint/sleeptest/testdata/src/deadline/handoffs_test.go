@@ -15,16 +15,23 @@ type config struct {
 	Count   int
 }
 
-func (config) Wait(time.Duration)           {}
-func probe(*testing.T, time.Duration)       {}
-func watcher(int, time.Duration, any)       {}
-func waits(time.Duration, ...time.Duration) {}
+func (config) Wait(deadline time.Duration)                      {}
+func probe(t *testing.T, tick time.Duration)                    {}
+func watcher(n int, batchDelay time.Duration, backend any)      {}
+func waits(minInterval time.Duration, budgets ...time.Duration) {}
+
+func generic(d time.Duration) {}
+
+type fakeClock struct{}
+
+func (fakeClock) Advance(d time.Duration) {}
 
 const watcherInterval = 100 * time.Millisecond
 
 func TestHandoffs(t *testing.T) {
 	_ = http.Client{Timeout: 20 * time.Millisecond}              // want "Timeout with budget 20ms"
 	c := config{20 * time.Millisecond, 20}                       // want "Timeout with budget 20ms"
+	_ = []*config{{Timeout: shortWait}}                          // want "Timeout with budget 50ms"
 	c.Timeout = 30 * time.Millisecond                            // want "Timeout with budget 30ms"
 	probe(t, 300*time.Millisecond)                               // want "probe with budget 300ms"
 	watcher(0, 100*time.Millisecond, nil)                        // want "watcher with budget 100ms"
@@ -38,6 +45,11 @@ func TestHandoffs(t *testing.T) {
 	runtime := 20 * time.Millisecond
 	_ = config{Timeout: runtime, Count: 20}
 	_ = config{Timeout: 0}
+	_ = struct{ Age time.Duration }{shortWait}
+	generic(shortWait)
+	fakeClock{}.Advance(shortWait)
+	c.Timeout *= 2
+	c.Timeout += shortWait
 	c.Count = 20
 	c.Timeout = runtime
 	waits(0)
@@ -45,7 +57,7 @@ func TestHandoffs(t *testing.T) {
 	_ = time.Now().Add(0)
 	_ = time.Now().Add(runtime)
 	synctest.Test(t, func(t *testing.T) {
-		_ = config{Timeout: shortWait}
+		_ = []*config{{Timeout: shortWait}}
 		c.Timeout = shortWait
 		helper.Wait(shortWait)
 		_ = time.Now().Add(shortWait)
