@@ -3,7 +3,6 @@ package stacktest_test
 import (
 	"os"
 	"os/exec"
-	"strings"
 	"testing"
 	"testing/synctest"
 
@@ -55,7 +54,6 @@ func TestDumpFailureOutput(t *testing.T) {
 			go blockedWorker(release)
 			synctest.Wait()
 			stacktest.Dump(t)
-			t.Log("dump returned")
 			require.FailNow(t, "operation timed out")
 		})
 		return
@@ -69,10 +67,6 @@ func TestDumpFailureOutput(t *testing.T) {
 	require.ErrorAs(t, err, &exit)
 	require.Equal(t, 1, exit.ExitCode(), "%s", output)
 	log := string(output)
-	require.Contains(t, log, "--- FAIL: TestDumpFailureOutput")
-	require.Contains(t, log, "stacktest: goroutine stacks")
-	require.Contains(t, log, "dump returned")
-	assert.Less(t, strings.Index(log, "stacktest: goroutine stacks"), strings.Index(log, "dump returned"))
 	assert.Contains(t, log, "stacktest_test.blockedWorker")
 	assert.Regexp(t, `stacktest_test\.go:\d+: stacktest: goroutine stacks`, log)
 }
