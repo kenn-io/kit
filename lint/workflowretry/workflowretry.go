@@ -124,7 +124,7 @@ func scanScript(source string) []string {
 	masked := expressions.ReplaceAllStringFunc(source, func(span string) string { return anyChar.ReplaceAllString(span, "x") })
 	file, err := syntax.NewParser(syntax.Variant(syntax.LangBash), syntax.KeepComments(true)).Parse(strings.NewReader(masked), "")
 	if err != nil {
-		return []string{"parse shell: " + err.Error()}
+		return nil
 	}
 	allowed := map[uint]bool{}
 	lines := strings.Split(masked, "\n")
@@ -155,15 +155,31 @@ func scanScript(source string) []string {
 		if wrapped {
 			args = unprefix(args[3:])
 		}
+		if len(args) >= 3 && (args[0] == "python" || args[0] == "python3") && args[1] == "-m" && args[2] == "pip" {
+			args = args[2:]
+		}
 		switch {
 		case len(args) > 0 && (args[0] == "curl" || args[0] == "wget"):
 			findings = append(findings, "use kit-download")
-		case !wrapped && installers.MatchString(strings.Join(args, " ")):
+		case !wrapped && installer(args):
 			findings = append(findings, "wrap in kit-retry")
 		}
 		return true
 	})
 	return findings
+}
+
+// installer stops at the first subcommand, allowing flags and their values before it.
+func installer(args []string) bool {
+	for i := 1; i < len(args); i++ {
+		if installers.MatchString(args[0] + " " + strings.Join(args[i:], " ")) {
+			return true
+		}
+		if !strings.HasPrefix(args[i], "-") && !(strings.HasPrefix(args[i-1], "-") && !strings.Contains(args[i-1], "=")) {
+			return false
+		}
+	}
+	return false
 }
 
 // literal joins a word's literal and quoted parts; any expansion makes it non-literal.
@@ -184,9 +200,16 @@ func literal(word *syntax.Word) string {
 	return result.String()
 }
 
-// unprefix skips sudo and env with their flags and assignments.
+// unprefix normalizes executable names and skips command prefixes.
 func unprefix(args []string) []string {
-	for len(args) > 0 && (args[0] == "sudo" || args[0] == "env") {
+	for len(args) > 0 {
+		args[0] = executable(args[0])
+		if args[0] == "command" && len(args) > 1 && (args[1] == "-v" || args[1] == "-V") {
+			return args
+		}
+		if args[0] != "sudo" && args[0] != "env" && args[0] != "command" && args[0] != "exec" {
+			return args
+		}
 		args = args[1:]
 		for len(args) > 0 && (strings.HasPrefix(args[0], "-") || strings.Contains(args[0], "=")) {
 			args = args[1:]

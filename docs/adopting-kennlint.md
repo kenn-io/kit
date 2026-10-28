@@ -216,7 +216,8 @@ prefer additive changes and describe the rationale in the pull request.
 
 `kennlint workflow-retries [path ...]` scans workflow and composite-action YAML,
 defaulting to `.github`. It checks Bash and sh `run:` steps, including steps
-without an explicit shell. Every `curl` or `wget` call must use `kit-download`.
+without an explicit shell. Steps that don't parse as Bash are skipped.
+Every `curl` or `wget` call must use `kit-download`.
 Package installers must run under `kit-retry`, including APT, Go, npm, pnpm,
 yarn, bun, pip, Docker pulls, apk, brew, cargo, pipx, and dnf.
 
