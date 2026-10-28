@@ -3,10 +3,8 @@ package main
 import (
 	"bufio"
 	"context"
-	json "encoding/json/v2"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +18,7 @@ import (
 	"go.kenn.io/kit/embedclient"
 	"go.kenn.io/kit/embedconfig"
 	"go.kenn.io/kit/internal/embedassets"
+	"go.kenn.io/kit/internal/embedtest"
 )
 
 // CI supplies a staged native bundle. This catches missing companion
@@ -54,29 +53,11 @@ func TestBundleNativeParity(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	data, err := os.ReadFile("../../embedserver/testdata/ollama.json")
-	require.NoError(t, err)
-	var fixture struct {
-		Samples []struct {
-			Input  string    `json:"input"`
-			Vector []float32 `json:"vector"`
-		} `json:"samples"`
-	}
-	require.NoError(t, json.Unmarshal(data, &fixture))
-	require.NotEmpty(t, fixture.Samples)
-	sample := fixture.Samples[0]
+	sample := embedtest.Load(t, "../../embedserver/testdata/ollama.json")[0]
 	actual, err := client.EncodeFunc(embedconfig.RoleQuery)(ctx, []string{sample.Input})
 	require.NoError(t, err)
 	require.Len(t, actual, 1)
-	require.Len(t, actual[0], len(sample.Vector))
-	var dot, left, right float64
-	for i, value := range actual[0] {
-		x, y := float64(value), float64(sample.Vector[i])
-		dot += x * y
-		left += x * x
-		right += y * y
-	}
-	assert.GreaterOrEqual(t, dot/math.Sqrt(left*right), 0.999, sample.Input)
+	sample.AssertParity(t, actual[0])
 	if runtime.GOOS == "windows" {
 		// Inspect the live process, so installed system copies cannot mask a missing
 		// app-local dependency in the bundle under test.
