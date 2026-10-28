@@ -22,11 +22,10 @@ import (
 
 func TestEndpointOllamaPrecedesDiscovery(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/api/version", r.URL.Path)
-		fmt.Fprint(w, `{"version":"0.20.0"}`)
+		assert.Equal(t, "/api/tags", r.URL.Path)
+		fmt.Fprint(w, `{"models":[{"name":"nomic-embed-text:latest"}]}`)
 	}))
 	defer server.Close()
-	// A file cannot be a runtime directory. Success proves discovery was bypassed.
 	path := filepath.Join(t.TempDir(), "file")
 	require.NoError(t, os.WriteFile(path, nil, 0o600))
 	got, err := endpoint(t.Context(), Options{DataDir: path}, server.URL)
@@ -39,11 +38,11 @@ func TestEndpointOllamaFallback(t *testing.T) {
 		name, body string
 		status     int
 	}{
-		{"status", `{"version":"0.20.0"}`, 503},
-		{"malformed", `{`, 200},
-		{"empty version", `{"version":""}`, 200},
-		{"oversized", `{"padding":"` + strings.Repeat("x", 4096) + `","version":"0.20.0"}`, 200},
-		{"trailing data", `{"version":"0.20.0"}garbage`, 200},
+		{"status", `{"models":[{"name":"nomic-embed-text:latest"}]}`, 503},
+		{"chat only", `{"version":"0.20.0","models":[{"name":"llama3.2:latest"}]}`, 200},
+		{"custom tag", `{"models":[{"name":"nomic-embed-text:v1.5"}]}`, 200},
+		{"oversized", `{"padding":"` + strings.Repeat("x", 1<<20) + `","version":"0.20.0"}`, 200},
+		{"trailing data", `{"models":[{"name":"nomic-embed-text"}]}garbage`, 200},
 		{"transport", "", 200},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -70,38 +69,13 @@ func TestEndpointMissingAndUnreachable(t *testing.T) {
 	dir := t.TempDir()
 	_, err := endpoint(t.Context(), Options{DataDir: dir}, ollama.URL)
 	require.ErrorIs(t, err, ErrNotFound)
+	localServer(t, dir, "2")
+	_, err = endpoint(t.Context(), Options{DataDir: dir}, ollama.URL)
+	require.ErrorIs(t, err, ErrNotFound)
 	local := localServer(t, dir, "1")
 	local.Close()
 	_, err = endpoint(t.Context(), Options{DataDir: dir, Executable: "must-not-start"}, ollama.URL)
 	require.ErrorIs(t, err, daemon.ErrDaemonUnreachable)
-}
-
-func TestEndpointRejectsIncompatibleServer(t *testing.T) {
-	ollama := httptest.NewServer(http.NotFoundHandler())
-	defer ollama.Close()
-	dir := t.TempDir()
-	localServer(t, dir, "2")
-	_, err := endpoint(t.Context(), Options{DataDir: dir}, ollama.URL)
-	require.ErrorIs(t, err, ErrNotFound)
-}
-
-func TestEndpointCancellation(t *testing.T) {
-	entered := make(chan struct{})
-	ollama := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		close(entered)
-		<-r.Context().Done()
-	}))
-	defer ollama.Close()
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	done := make(chan error, 1)
-	go func() {
-		_, err := endpoint(ctx, Options{DataDir: t.TempDir()}, ollama.URL)
-		done <- err
-	}()
-	<-entered
-	cancel()
-	require.ErrorIs(t, <-done, context.Canceled)
 }
 
 func localServer(t *testing.T, dir, version string) *httptest.Server {
@@ -119,9 +93,14 @@ func TestEndpointStartup(t *testing.T) {
 	ollama := httptest.NewServer(http.NotFoundHandler())
 	defer ollama.Close()
 	dir := t.TempDir()
+	entered, release := make(chan struct{}), make(chan struct{})
+	openGate := sync.OnceFunc(func() { close(release) })
+	gate := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { close(entered); <-release }))
+	defer gate.Close()
+	defer openGate()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "gate"), []byte(gate.URL), 0o600))
 	executable, err := os.Executable()
 	require.NoError(t, err)
-	// Relative directories must reach the child as absolute paths.
 	cwd, err := os.Getwd()
 	require.NoError(t, err)
 	relative, err := filepath.Rel(cwd, dir)
@@ -131,9 +110,12 @@ func TestEndpointStartup(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	t.Cleanup(func() {
-		records, err := (daemon.RuntimeStore{Dir: dir, Prefix: Service}).List()
-		require.NoError(t, err)
-		require.Len(t, records, 1)
+		var records []daemon.RuntimeRecord
+		var err error
+		require.Eventually(t, func() bool {
+			records, err = (daemon.RuntimeStore{Dir: dir, Prefix: Service}).List()
+			return err == nil && len(records) == 1
+		}, 5*time.Second, 10*time.Millisecond)
 		req, err := http.NewRequestWithContext(context.WithoutCancel(t.Context()), http.MethodPost, records[0].Endpoint().BaseURL()+"/stop", nil)
 		require.NoError(t, err)
 		client := &http.Client{Timeout: 5 * time.Second}
@@ -142,22 +124,44 @@ func TestEndpointStartup(t *testing.T) {
 		resp.Body.Close()
 		require.Eventually(t, func() bool { return !daemon.ProcessAlive(records[0].PID) }, 5*time.Second, 10*time.Millisecond)
 	})
+	first := make(chan error, 1)
+	go func() {
+		_, err := endpoint(ctx, Options{DataDir: relative, Executable: executable}, ollama.URL)
+		first <- err
+	}()
+	<-entered
+	cancel()
+	require.ErrorIs(t, <-first, context.Canceled)
 	for i := range results {
 		wg.Go(func() {
-			value, err := endpoint(ctx, Options{DataDir: relative, Executable: executable}, ollama.URL)
+			value, err := endpoint(t.Context(), Options{DataDir: relative, Executable: executable}, ollama.URL)
 			assert.NoError(t, err)
 			results[i] = value
 		})
 	}
+	store := daemon.RuntimeStore{Dir: dir, Prefix: Service}
+	require.Eventually(t, func() bool {
+		unlock, acquired, err := store.TryAcquireStartLock(t.Context())
+		if acquired {
+			unlock()
+		}
+		return err == nil && !acquired
+	}, 5*time.Second, time.Millisecond)
+	waiting, stopWaiting := context.WithTimeout(t.Context(), 3*time.Second)
+	unlock, err := store.AcquireStartLock(waiting)
+	stopWaiting()
+	if unlock != nil {
+		unlock()
+	}
+	require.ErrorIs(t, err, context.DeadlineExceeded, "callers must keep waiting while the owner loads")
+	openGate()
 	wg.Wait()
-	require.NotEmpty(t, results[0])
 	for _, result := range results {
 		assert.Equal(t, results[0], result)
 	}
 	launches, err := os.ReadFile(filepath.Join(dir, "launches"))
 	require.NoError(t, err)
 	assert.Equal(t, "launch\n", string(launches))
-	cancel()
 	_, err = daemon.Probe(t.Context(), daemon.Endpoint{Network: daemon.NetworkTCP, Address: strings.TrimPrefix(strings.TrimSuffix(results[0], "/v1"), "http://")}, daemon.ProbeOptions{ExpectedService: Service})
 	require.NoError(t, err, "successful startup must survive request cancellation")
 }
@@ -172,7 +176,8 @@ func TestEndpointEarlyExit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	_, err = endpoint(ctx, Options{DataDir: dir, Executable: executable}, ollama.URL)
-	require.ErrorContains(t, err, "embeddings server exited")
+	require.ErrorContains(t, err, "ONNX Runtime library missing")
+	require.ErrorContains(t, err, filepath.Join(dir, "kennembed.log"))
 	assert.NoError(t, ctx.Err(), "child exit should end startup before its timeout")
 }
 
@@ -183,8 +188,6 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// runServer implements only the executable boundary: flags, runtime publication,
-// ping, and a graceful shutdown used by cleanup. It never loads native inference.
 func runServer(args []string) int {
 	flags := flag.NewFlagSet("server", flag.ContinueOnError)
 	dir := flags.String("data-dir", "", "")
@@ -192,7 +195,17 @@ func runServer(args []string) int {
 	if flags.Parse(args) != nil || !filepath.IsAbs(*dir) || *listen != "127.0.0.1:0" {
 		return 2
 	}
+	store := daemon.RuntimeStore{Dir: *dir, Prefix: Service}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	release, err := store.AcquireOwnerLock(ctx)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 11
+	}
+	defer release()
 	if _, err := os.Stat(filepath.Join(*dir, "exit")); err == nil {
+		fmt.Fprintln(os.Stderr, "ONNX Runtime library missing")
 		return 12
 	}
 	file, err := os.OpenFile(filepath.Join(*dir, "launches"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
@@ -202,6 +215,18 @@ func runServer(args []string) int {
 	_, err = fmt.Fprintln(file, "launch")
 	if errors.Join(err, file.Close()) != nil {
 		return 4
+	}
+	if gate, err := os.ReadFile(filepath.Join(*dir, "gate")); err == nil {
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, string(gate), nil)
+		if err != nil {
+			return 7
+		}
+		client := &http.Client{Timeout: 20 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return 8
+		}
+		resp.Body.Close()
 	}
 	listener, err := new(net.ListenConfig).Listen(context.Background(), "tcp", *listen)
 	if err != nil {
