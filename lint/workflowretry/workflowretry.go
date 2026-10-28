@@ -177,7 +177,7 @@ func installer(args []string) bool {
 		if installers.MatchString(args[0] + " " + strings.Join(args[i:], " ")) {
 			return true
 		}
-		if !strings.HasPrefix(args[i], "-") && !(strings.HasPrefix(args[i-1], "-") && !strings.Contains(args[i-1], "=")) {
+		if !strings.HasPrefix(args[i], "-") && (!strings.HasPrefix(args[i-1], "-") || strings.Contains(args[i-1], "=")) {
 			return false
 		}
 	}
