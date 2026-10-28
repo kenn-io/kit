@@ -79,7 +79,7 @@ func TestEndpointStartup(t *testing.T) {
 		status int
 		delay  time.Duration
 	}{
-		{"reuse", 200, 0}, {"failed", 503, 0}, {"early", 0, 0}, {"slow", 200, 200 * time.Millisecond},
+		{"reuse", 200, 0}, {"failed", 503, 0}, {"early", 0, 0}, {"slow", 200, 200 * time.Millisecond}, {"default", 200, 200 * time.Millisecond},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ollama := httptest.NewServer(http.NotFoundHandler())
@@ -109,8 +109,13 @@ func TestEndpointStartup(t *testing.T) {
 				err error
 			}
 			results := make([]result, 4)
-			budget := 5 * time.Second
-			ctx, cancel := context.WithTimeout(t.Context(), budget)
+			var ctx context.Context
+			var cancel context.CancelFunc
+			if tc.name == "default" {
+				ctx, cancel = context.WithCancel(context.WithoutCancel(t.Context()))
+			} else {
+				ctx, cancel = context.WithTimeout(t.Context(), 5*time.Second)
+			}
 			defer cancel()
 			var childPID int
 			t.Cleanup(func() {
@@ -156,10 +161,15 @@ func TestEndpointStartup(t *testing.T) {
 			}
 			childPID = <-entered
 			if tc.delay > 0 {
-				time.Sleep(tc.delay) //nolint:kennlint // holds child readiness beyond the injected default startup wait
+				time.Sleep(tc.delay) //nolint:kennlint // separates the default budget from a longer caller deadline across the child process
 				openGate()
 				results = []result{<-first}
-				require.NoError(t, ctx.Err(), "the caller allows a longer download")
+				require.NoError(t, ctx.Err(), "the caller remains uncanceled")
+				if tc.name == "default" {
+					require.ErrorIs(t, results[0].err, context.DeadlineExceeded)
+					require.ErrorContains(t, results[0].err, filepath.Join(dir, "kennembed.log"))
+					return
+				}
 			} else {
 				cancel()
 				firstErr := (<-first).err
