@@ -1,6 +1,6 @@
 # Installing the local embedding server
 
-Apps share one verified server and pinned model under `~/.kenn/embeddings`. Confirmation belongs to each app. Completed installations work offline; repairs ask only for the missing download amount. The installer serializes callers and reserves `.install-*` directories for temporary downloads.
+Apps share one verified server and pinned model under `~/.kenn/embeddings`. Confirmation belongs to each app. Completed installations work offline. Downloading missing files asks for their remaining download size. The installer serializes callers and reserves `.install-*` directories for temporary downloads.
 
 ## Publishing bundles
 
