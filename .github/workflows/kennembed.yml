@@ -52,13 +52,10 @@ jobs:
               metadata = subprocess.check_output(['go', 'version', '-m', str(executable)], text=True)
               if 'vcs.revision=' + revision not in metadata or 'vcs.modified=false' not in metadata:
                   raise RuntimeError('bundle source does not match the selected tag')
-              print(metadata)
               if arch == native_arch:
                   with open(os.environ['GITHUB_ENV'], 'a') as env:
                       env.write('KIT_EMBED_TEST_EXECUTABLE=' + str(executable) + '\n')
                       env.write('KIT_EMBED_TEST_DIR=' + str(bundle.parent / 'model') + '\n')
-                      library = {'linux': 'libonnxruntime.so.1.23.2', 'darwin': 'libonnxruntime.1.23.2.dylib', 'windows': 'onnxruntime.dll'}[target]
-                      env.write('KIT_EMBED_TEST_LIBRARY=' + str(bundle / library) + '\n')
               # selfupdate.ExtractTarGz and ExtractZip require these archive formats.
               name = output / ('kennembed_' + version + '_' + target + '_' + arch)
               shutil.make_archive(str(name), 'zip' if target == 'windows' else 'gztar', bundle)

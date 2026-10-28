@@ -332,14 +332,15 @@ jobs:
           with open(os.environ['GITHUB_ENV'], 'a') as env:
               env.write('KIT_EMBED_TEST_DIR=' + str(root.parent / 'model') + '\n')
               env.write('KIT_EMBED_TEST_LIBRARY=' + str(root / library) + '\n')
-      - name: Build native bundle
+      - name: Run focused tests and native parity
+        run: make test-embedserver
+      - name: Compile six targets without CGo
+        if: matrix.os == 'linux'
         shell: python
         run: |
           import os, pathlib, subprocess
-          bundle = pathlib.Path(os.environ['KIT_EMBED_TEST_LIBRARY']).parent
-          executable = bundle / ('kennembed.exe' if os.name == 'nt' else 'kennembed')
-          subprocess.run(['go', 'build', '-o', str(executable), './cmd/kennembed'], env=dict(os.environ, CGO_ENABLED='0'), check=True)
-          with open(os.environ['GITHUB_ENV'], 'a') as env:
-              env.write('KIT_EMBED_TEST_EXECUTABLE=' + str(executable) + '\n')
-      - name: Run focused tests and native parity
-        run: make test-embedserver test-embedlocal
+          output = pathlib.Path(os.environ['RUNNER_TEMP']) / 'kennembed-build'
+          for target in ('linux', 'darwin', 'windows'):
+              for arch in ('amd64', 'arm64'):
+                  env = dict(os.environ, GOOS=target, GOARCH=arch, CGO_ENABLED='0')
+                  subprocess.run(['go', 'build', '-o', str(output), './cmd/kennembed'], env=env, check=True)

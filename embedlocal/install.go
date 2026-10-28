@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"time"
 
 	"go.kenn.io/kit/atomicfile"
 	"go.kenn.io/kit/daemon"
@@ -70,7 +69,7 @@ func install(ctx context.Context, opts InstallOptions, client *http.Client, asse
 	result := Installation{filepath.Join(bundle, embedassets.ExecutableName()), dir}
 	ready := checkBundle(bundle) == nil
 	modelDir := embedassets.ModelDir(dir)
-	missing, err := embedassets.MissingModel(ctx, modelDir, assets)
+	missing, err := embedassets.MissingModel(modelDir, assets)
 	if err != nil {
 		return Installation{}, err
 	}
@@ -94,9 +93,6 @@ func install(ctx context.Context, opts InstallOptions, client *http.Client, asse
 	if !approved {
 		return Installation{}, errors.New("embedding download declined; approve installation to use local embeddings")
 	}
-	if err := ctx.Err(); err != nil {
-		return Installation{}, err
-	}
 	if !ready {
 		if err := os.RemoveAll(bundle); err != nil {
 			return Installation{}, err
@@ -108,10 +104,11 @@ func install(ctx context.Context, opts InstallOptions, client *http.Client, asse
 	}
 	defer os.RemoveAll(stage)
 	stagedBundle := filepath.Join(stage, "bin")
-	httpClient := cmp.Or(client, &http.Client{Timeout: 15 * time.Minute})
+	httpClient := cmp.Or(client, embedassets.DownloadClient())
+	defer httpClient.CloseIdleConnections()
 	if !ready {
 		releaseClient := selfupdate.Client{
-			Owner: "kenn-io", Repo: "kit", BinaryName: "kennembed", HTTPClient: client, CacheDir: dir, AllowUnsignedChecksums: true,
+			Owner: "kenn-io", Repo: "kit", BinaryName: "kennembed", HTTPClient: client, AllowUnsignedChecksums: true,
 			ReleaseManifestURL: "https://api.github.com/repos/kenn-io/kit/releases/tags/" + embedassets.BundleTag,
 		}
 		info, err := releaseClient.Check(ctx, selfupdate.CheckOptions{Force: true})

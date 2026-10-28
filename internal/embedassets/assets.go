@@ -36,13 +36,8 @@ func CacheModel(ctx context.Context, dir string) (string, error) {
 	if err := safefileio.EnsurePrivateDir(dir); err != nil {
 		return "", err
 	}
-	client := &http.Client{}
-	if defaults, ok := http.DefaultTransport.(*http.Transport); ok {
-		transport := defaults.Clone()
-		transport.ResponseHeaderTimeout = 30 * time.Second
-		defer transport.CloseIdleConnections()
-		client.Transport = transport
-	}
+	client := DownloadClient()
+	defer client.CloseIdleConnections()
 	for _, a := range ModelAssets() {
 		if err := CacheAsset(ctx, client, dir, a); err != nil {
 			return "", fmt.Errorf("cache %s: %w", a.Name, err)
@@ -63,18 +58,34 @@ func verify(r io.Reader, w io.Writer, a Asset) error {
 	return nil
 }
 
+// DownloadClient bounds response headers while the caller controls download lifetime.
+func DownloadClient() *http.Client {
+	client := &http.Client{}
+	if defaults, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport := defaults.Clone()
+		transport.ResponseHeaderTimeout = 30 * time.Second
+		client.Transport = transport
+	}
+	return client
+}
+
+func valid(path string, a Asset) (bool, error) {
+	file, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	verified := verify(file, io.Discard, a) == nil
+	return verified, file.Close()
+}
+
 // CacheAsset reuses a verified file or atomically replaces it with a verified download.
 func CacheAsset(ctx context.Context, client *http.Client, dir string, a Asset, opts ...atomicfile.Option) (err error) {
 	path := filepath.Join(dir, a.Name)
-	cached, openErr := os.Open(path)
-	if openErr == nil {
-		valid := verify(cached, io.Discard, a)
-		closeErr := cached.Close()
-		if valid == nil {
-			return closeErr
-		}
-	} else if !errors.Is(openErr, os.ErrNotExist) {
-		return openErr
+	if verified, err := valid(path, a); err != nil || verified {
+		return err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.URL, nil)
 	if err != nil {
@@ -113,27 +124,16 @@ func ModelAssets() []Asset {
 
 // MissingModel inspects files once without writing or making network requests.
 // It returns the assets whose cached bytes need replacement.
-func MissingModel(ctx context.Context, dir string, assets []Asset) ([]Asset, error) {
+func MissingModel(dir string, assets []Asset) ([]Asset, error) {
 	var missing []Asset
 	for _, a := range assets {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		f, err := os.Open(filepath.Join(dir, a.Name))
-		if errors.Is(err, os.ErrNotExist) {
-			missing = append(missing, a)
-			continue
-		}
+		verified, err := valid(filepath.Join(dir, a.Name), a)
 		if err != nil {
 			return nil, err
 		}
-		valid := verify(f, io.Discard, a)
-		if err := f.Close(); err != nil {
-			return nil, err
-		}
-		if valid != nil {
+		if !verified {
 			missing = append(missing, a)
 		}
 	}
-	return missing, ctx.Err()
+	return missing, nil
 }

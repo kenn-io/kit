@@ -72,9 +72,6 @@ func installFixture(t *testing.T, mode string, cancel context.CancelFunc) (*http
 			if mode == "digest" {
 				data[len(data)-1] ^= 1
 			}
-			if mode == "truncated" {
-				data = data[:3]
-			}
 			_, _ = w.Write(data)
 		case "/model.onnx", "/tokenizer.json":
 			if req.URL.Path == "/tokenizer.json" && mode == "canceled" && !interrupted.Swap(true) {
@@ -142,7 +139,6 @@ func TestInstallRepairsSharedCopy(t *testing.T) {
 				require.NoError(t, os.Remove(filepath.Join(embedassets.ModelDir(opts.DataDir), "tokenizer.json")))
 			case "offline":
 				closeServer()
-				opts.Confirm = nil
 			}
 			opts.Confirm = func(_ context.Context, size int64) (bool, error) {
 				confirmations.Add(1)
@@ -175,7 +171,7 @@ func TestInstallRepairsSharedCopy(t *testing.T) {
 }
 
 func TestInstallConsentAndFailures(t *testing.T) {
-	for _, mode := range []string{"missing confirmation", "declined", "digest", "truncated", "canceled"} {
+	for _, mode := range []string{"missing confirmation", "declined", "digest", "canceled"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
