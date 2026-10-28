@@ -32,7 +32,7 @@ var modelAssets = []Asset{
 
 // CacheModel fetches missing or corrupt pinned files and returns their directory.
 func CacheModel(ctx context.Context, dir string) (string, error) {
-	dir = filepath.Join(dir, "nomic-embed-text-v1.5", revision)
+	dir = ModelDir(dir)
 	if err := safefileio.EnsurePrivateDir(dir); err != nil {
 		return "", err
 	}
@@ -43,8 +43,7 @@ func CacheModel(ctx context.Context, dir string) (string, error) {
 		defer transport.CloseIdleConnections()
 		client.Transport = transport
 	}
-	for _, a := range modelAssets {
-		a.URL = "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/" + revision + "/" + a.URL
+	for _, a := range ModelAssets() {
 		if err := CacheAsset(ctx, client, dir, a); err != nil {
 			return "", fmt.Errorf("cache %s: %w", a.Name, err)
 		}
@@ -65,7 +64,7 @@ func verify(r io.Reader, w io.Writer, a Asset) error {
 }
 
 // CacheAsset reuses a verified file or atomically replaces it with a verified download.
-func CacheAsset(ctx context.Context, client *http.Client, dir string, a Asset) (err error) {
+func CacheAsset(ctx context.Context, client *http.Client, dir string, a Asset, opts ...atomicfile.Option) (err error) {
 	path := filepath.Join(dir, a.Name)
 	cached, openErr := os.Open(path)
 	if openErr == nil {
@@ -89,7 +88,7 @@ func CacheAsset(ctx context.Context, client *http.Client, dir string, a Asset) (
 	if res.StatusCode != http.StatusOK {
 		return fmt.Errorf("download: HTTP %d", res.StatusCode)
 	}
-	file, err := atomicfile.Create(path, atomicfile.WithPrivate())
+	file, err := atomicfile.Create(path, append(opts, atomicfile.WithPrivate())...)
 	if err != nil {
 		return err
 	}
@@ -100,18 +99,41 @@ func CacheAsset(ctx context.Context, client *http.Client, dir string, a Asset) (
 	return file.Commit()
 }
 
-// CachedModel checks the pinned files without creating files or using the network.
-func CachedModel(dir string) error {
-	dir = filepath.Join(dir, "nomic-embed-text-v1.5", revision)
-	for _, a := range modelAssets {
-		f, err := os.Open(filepath.Join(dir, a.Name))
-		if err != nil {
-			return err
+// ModelDir is the revision-specific cache directory shared with the server.
+func ModelDir(dir string) string { return filepath.Join(dir, "nomic-embed-text-v1.5", revision) }
+
+// ModelAssets returns the pinned downloads with their absolute URLs.
+func ModelAssets() []Asset {
+	assets := append([]Asset(nil), modelAssets...)
+	for i := range assets {
+		assets[i].URL = "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/" + revision + "/" + assets[i].URL
+	}
+	return assets
+}
+
+// MissingModel inspects files once without writing or making network requests.
+// It returns the assets whose cached bytes need replacement.
+func MissingModel(ctx context.Context, dir string, assets []Asset) ([]Asset, error) {
+	var missing []Asset
+	for _, a := range assets {
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-		err = verify(f, io.Discard, a)
-		if err = errors.Join(err, f.Close()); err != nil {
-			return err
+		f, err := os.Open(filepath.Join(dir, a.Name))
+		if errors.Is(err, os.ErrNotExist) {
+			missing = append(missing, a)
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		valid := verify(f, io.Discard, a)
+		if err := f.Close(); err != nil {
+			return nil, err
+		}
+		if valid != nil {
+			missing = append(missing, a)
 		}
 	}
-	return nil
+	return missing, ctx.Err()
 }

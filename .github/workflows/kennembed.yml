@@ -1,7 +1,6 @@
 name: kennembed release bundles
 on:
-  release:
-    types: [published]
+  pull_request:
   workflow_dispatch:
     inputs:
       tag:
@@ -23,12 +22,11 @@ jobs:
             runner: windows-latest
     runs-on: ${{ matrix.runner }}
     env:
-      RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+      RELEASE_TAG: ${{ inputs.tag }}
       TARGET_OS: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.workflow_sha }}
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -36,26 +34,42 @@ jobs:
       - name: Build both architectures and package runtime dependencies
         shell: python
         run: |
-          import os, pathlib, shutil, subprocess
-          version = os.environ['RELEASE_TAG'].removeprefix('v')
+          import os, pathlib, platform, re, shutil, subprocess
+          tag = os.environ['RELEASE_TAG'] or re.search(r'const BundleTag = "([^"]+)"', pathlib.Path('internal/embedassets/bundle.go').read_text()).group(1)
+          version = tag.removeprefix('v')
           target = os.environ['TARGET_OS']
-          subprocess.run(['git', 'fetch', '--depth=1', 'origin', 'tag', os.environ['RELEASE_TAG']], check=True)
-          subprocess.run(['git', 'worktree', 'add', '--detach', 'release-source', os.environ['RELEASE_TAG']], check=True)
+          subprocess.run(['git', 'fetch', '--depth=1', 'origin', 'tag', tag], check=True)
+          subprocess.run(['git', 'worktree', 'add', '--detach', 'release-source', tag], check=True)
+          revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd='release-source', text=True).strip()
+          native_arch = 'arm64' if platform.machine().lower() in ('arm64', 'aarch64') else 'amd64'
           output = pathlib.Path('dist')
           output.mkdir()
           for arch in ('amd64', 'arm64'):
               bundle = pathlib.Path(os.environ['RUNNER_TEMP']) / ('kennembed-' + arch) / 'bundle'
               subprocess.run(['python', '.github/scripts/stage-onnx.py', '--os', target, '--arch', arch, '--output', str(bundle)], check=True)
               executable = bundle / ('kennembed.exe' if target == 'windows' else 'kennembed')
-              subprocess.run(['go', 'build', '-o', str(executable), './cmd/kennembed'], env=dict(os.environ, GOOS=target, GOARCH=arch, CGO_ENABLED='0'), cwd='release-source', check=True)
+              subprocess.run(['go', 'build', '-trimpath', '-buildvcs=true', '-o', str(executable), './cmd/kennembed'], env=dict(os.environ, GOOS=target, GOARCH=arch, CGO_ENABLED='0'), cwd='release-source', check=True)
+              metadata = subprocess.check_output(['go', 'version', '-m', str(executable)], text=True)
+              if 'vcs.revision=' + revision not in metadata or 'vcs.modified=false' not in metadata:
+                  raise RuntimeError('bundle source does not match the selected tag')
+              print(metadata)
+              if arch == native_arch:
+                  with open(os.environ['GITHUB_ENV'], 'a') as env:
+                      env.write('KIT_EMBED_TEST_EXECUTABLE=' + str(executable) + '\n')
+                      env.write('KIT_EMBED_TEST_DIR=' + str(bundle.parent / 'model') + '\n')
+                      library = {'linux': 'libonnxruntime.so.1.23.2', 'darwin': 'libonnxruntime.1.23.2.dylib', 'windows': 'onnxruntime.dll'}[target]
+                      env.write('KIT_EMBED_TEST_LIBRARY=' + str(bundle / library) + '\n')
               # selfupdate.ExtractTarGz and ExtractZip require these archive formats.
               name = output / ('kennembed_' + version + '_' + target + '_' + arch)
               shutil.make_archive(str(name), 'zip' if target == 'windows' else 'gztar', bundle)
+      - name: Exercise the pinned native server and model
+        run: make test-embedserver
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: kennembed-${{ matrix.os }}
           path: dist/*
   publish:
+    if: github.event_name == 'workflow_dispatch'
     needs: bundle
     runs-on: namespace-profile-linux-4cpu
     permissions:
@@ -71,7 +85,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
           sha256sum kennembed_* > SHA256SUMS
           gh release upload "$RELEASE_TAG" kennembed_* SHA256SUMS --clobber

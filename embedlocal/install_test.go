@@ -9,8 +9,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	json "encoding/json/v2"
-	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -26,172 +26,190 @@ import (
 	"go.kenn.io/kit/selfupdate"
 )
 
-// The model boundary uses a tiny verified HTTP asset in place of the 274 MB model.
-func installFixture(t *testing.T, suffix, bodyOverride string) (selfupdate.Client, func(context.Context, string, bool) error, *atomic.Int64, func()) {
+func installFixture(t *testing.T, mode string, cancel context.CancelFunc) (*http.Client, []embedassets.Asset, *sync.Map, func()) {
 	t.Helper()
-	files := map[string]string{"kennembed": "fixture executable", "libonnxruntime.so.1.23.2": "runtime", "libonnxruntime.1.23.2.dylib": "runtime", "kennembed.exe": "fixture executable", "onnxruntime.dll": "runtime", "msvcp140.dll": "runtime", "msvcp140_1.dll": "runtime", "vcruntime140.dll": "runtime", "vcruntime140_1.dll": "runtime"}
 	var archive bytes.Buffer
-	if suffix == ".zip" {
+	names := append(embedassets.NativeFiles(), embedassets.ExecutableName())
+	suffix := ".tar.gz"
+	if runtime.GOOS == "windows" {
+		suffix = ".zip"
 		writer := zip.NewWriter(&archive)
-		for name, content := range files {
-			header := &zip.FileHeader{Name: name, Method: zip.Deflate}
-			header.SetMode(0o755)
-			out, err := writer.CreateHeader(header)
+		for _, name := range names {
+			out, err := writer.Create(name)
 			require.NoError(t, err)
-			_, err = out.Write([]byte(content))
+			_, err = out.Write([]byte("fixture"))
 			require.NoError(t, err)
 		}
 		require.NoError(t, writer.Close())
 	} else {
 		compressor := gzip.NewWriter(&archive)
 		writer := tar.NewWriter(compressor)
-		for name, content := range files {
-			require.NoError(t, writer.WriteHeader(&tar.Header{Name: name, Size: int64(len(content)), Mode: 0o755}))
-			_, err := writer.Write([]byte(content))
+		for _, name := range names {
+			require.NoError(t, writer.WriteHeader(&tar.Header{Name: name, Size: 7, Mode: 0o755}))
+			_, err := writer.Write([]byte("fixture"))
 			require.NoError(t, err)
 		}
 		require.NoError(t, writer.Close())
 		require.NoError(t, compressor.Close())
 	}
-	name := "kennembed_1.2.3_" + runtime.GOOS + "_" + runtime.GOARCH + suffix
+	name := "kennembed_0.47.1_" + runtime.GOOS + "_" + runtime.GOARCH + suffix
 	digest := sha256.Sum256(archive.Bytes())
-	var requests atomic.Int64
+	calls := new(sync.Map)
+	var interrupted atomic.Bool
 	var server *httptest.Server
 	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		requests.Add(1)
+		count, _ := calls.LoadOrStore(req.URL.Path, new(atomic.Int64))
+		count.(*atomic.Int64).Add(1)
 		switch req.URL.Path {
-		case "/manifest":
-			_ = json.MarshalWrite(w, selfupdate.Release{TagName: "v1.2.3", Assets: []selfupdate.Asset{{Name: name, Size: int64(archive.Len()), BrowserDownloadURL: server.URL + "/archive"}, {Name: "SHA256SUMS", BrowserDownloadURL: server.URL + "/checksums"}}})
+		case "/repos/kenn-io/kit/releases/tags/v0.47.1":
+			_ = json.MarshalWrite(w, selfupdate.Release{TagName: "v0.47.1", Assets: []selfupdate.Asset{{Name: name, Size: int64(archive.Len()), BrowserDownloadURL: server.URL + "/archive"}, {Name: "SHA256SUMS", BrowserDownloadURL: server.URL + "/checksums"}}})
+		case "/repos/kenn-io/kit/releases/latest":
+			_ = json.MarshalWrite(w, selfupdate.Release{TagName: "v99.0.0"})
 		case "/checksums":
 			_, _ = fmt.Fprintf(w, "%x  %s\n", digest, name)
 		case "/archive":
-			switch bodyOverride {
-			case "wrong digest":
-				bad := bytes.Clone(archive.Bytes())
-				bad[len(bad)-1] ^= 1
-				_, _ = w.Write(bad)
-			case "short":
-				_, _ = w.Write([]byte(bodyOverride))
-			default:
-				_, _ = w.Write(archive.Bytes())
+			data := bytes.Clone(archive.Bytes())
+			if mode == "digest" {
+				data[len(data)-1] ^= 1
 			}
-		case "/model", "/tokenizer":
+			if mode == "truncated" {
+				data = data[:3]
+			}
+			_, _ = w.Write(data)
+		case "/model.onnx", "/tokenizer.json":
+			if req.URL.Path == "/tokenizer.json" && mode == "canceled" && !interrupted.Swap(true) {
+				cancel()
+				return
+			}
 			_, _ = w.Write([]byte("model fixture"))
 		default:
 			http.NotFound(w, req)
 		}
 	}))
 	t.Cleanup(server.Close)
-	model := func(ctx context.Context, dir string, download bool) error {
-		sum := sha256.Sum256([]byte("model fixture"))
-		for _, name := range []string{"model", "tokenizer"} {
-			if download {
-				if err := embedassets.CacheAsset(ctx, server.Client(), dir, embedassets.Asset{Name: name, URL: server.URL + "/" + name, Digest: hex.EncodeToString(sum[:]), Size: 13}); err != nil {
-					return err
-				}
-			} else {
-				data, err := os.ReadFile(filepath.Join(dir, name))
-				if err != nil {
-					return err
-				}
-				if sha256.Sum256(data) != sum {
-					return errors.New("invalid model cache")
-				}
-			}
-		}
-		return nil
+	transport := server.Client().Transport.(*http.Transport).Clone()
+	transport.TLSClientConfig.ServerName = "example.com"
+	transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
 	}
-	client := selfupdate.Client{
-		Owner: "example", Repo: "example", BinaryName: "kennembed",
-		HTTPClient: server.Client(), ReleaseManifestURL: server.URL + "/manifest", AllowUnsignedChecksums: true,
-		AssetName: func(req selfupdate.AssetRequest) string { return name },
+	t.Cleanup(transport.CloseIdleConnections)
+	sum := sha256.Sum256([]byte("model fixture"))
+	var assets []embedassets.Asset
+	for _, name := range []string{"model.onnx", "tokenizer.json"} {
+		assets = append(assets, embedassets.Asset{Name: name, URL: server.URL + "/" + name, Digest: hex.EncodeToString(sum[:]), Size: 13})
 	}
-	return client, model, &requests, server.Close
+	return &http.Client{Transport: transport}, assets, calls, server.Close
 }
 
-func TestInstallVerifiedOfflineAndConcurrent(t *testing.T) {
-	for _, suffix := range []string{".tar.gz", ".zip"} {
-		t.Run(suffix, func(t *testing.T) {
-			client, model, requests, closeServer := installFixture(t, suffix, "")
-			dir := t.TempDir()
+func requestCount(calls *sync.Map, path string) int64 {
+	value, ok := calls.Load(path)
+	if !ok {
+		return 0
+	}
+	return value.(*atomic.Int64).Load()
+}
+
+func TestInstallRepairsSharedCopy(t *testing.T) {
+	// The first case reproduces the incomplete-destination failure from review.
+	for _, repair := range []string{"missing runtime", "execute permission", "model only", "offline"} {
+		t.Run(repair, func(t *testing.T) {
+			client, assets, calls, closeServer := installFixture(t, "", nil)
 			var confirmations atomic.Int64
-			options := InstallOptions{DataDir: dir, Confirm: func(ctx context.Context, size int64) (bool, error) {
-				assert.Zero(t, requests.Load())
-				assert.Equal(t, int64(290_000_000), size)
-				confirmations.Add(1)
-				return true, nil
-			}}
+			opts := InstallOptions{DataDir: t.TempDir(), Confirm: func(context.Context, int64) (bool, error) { confirmations.Add(1); return true, nil }}
 			var wg sync.WaitGroup
-			results := make([]Installation, 2)
-			errs := make([]error, 2)
+			results, errs := make([]Installation, 2), make([]error, 2)
 			for i := range results {
-				wg.Go(func() { results[i], errs[i] = install(t.Context(), options, client, model) })
+				wg.Go(func() { results[i], errs[i] = install(t.Context(), opts, client, assets) })
 			}
 			wg.Wait()
-			for i := range errs {
-				require.NoError(t, errs[i])
+			for _, err := range errs {
+				require.NoError(t, err)
 			}
+			require.Equal(t, results[0], results[1])
 			assert.Equal(t, int64(1), confirmations.Load())
-			assert.Equal(t, results[0], results[1])
-			assert.Equal(t, dir, results[0].DataDir)
-			assert.True(t, filepath.IsAbs(results[0].Executable))
-			content, err := os.ReadFile(results[0].Executable)
+			result := results[0]
+			require.Equal(t, filepath.Join(opts.DataDir, "bin", "v0.47.1", embedassets.ExecutableName()), result.Executable)
+			before := requestCount(calls, "/archive")
+			switch repair {
+			case "missing runtime":
+				require.NoError(t, os.Remove(filepath.Join(filepath.Dir(result.Executable), embedassets.LibraryName())))
+			case "execute permission":
+				if runtime.GOOS == "windows" {
+					t.Skip("Unix execute permissions")
+				}
+				require.NoError(t, os.Chmod(result.Executable, 0o600))
+			case "model only":
+				require.NoError(t, os.Remove(filepath.Join(embedassets.ModelDir(opts.DataDir), "tokenizer.json")))
+			case "offline":
+				closeServer()
+				opts.Confirm = nil
+			}
+			opts.Confirm = func(_ context.Context, size int64) (bool, error) {
+				confirmations.Add(1)
+				if repair == "offline" {
+					require.FailNow(t, "offline reuse asked for confirmation")
+				}
+				if repair == "model only" {
+					assert.Equal(t, int64(13), size)
+					assert.Equal(t, int64(1), requestCount(calls, "/tokenizer.json"))
+				} else {
+					assert.Equal(t, int64(20_000_000), size)
+				}
+				return true, nil
+			}
+			again, err := install(t.Context(), opts, client, assets)
 			require.NoError(t, err)
-			assert.Equal(t, "fixture executable", string(content))
-			closeServer()
-			count := requests.Load()
-			options.Confirm = nil
-			again, err := install(t.Context(), options, client, model)
-			require.NoError(t, err)
-			assert.Equal(t, results[0], again)
-			assert.Equal(t, count, requests.Load())
+			assert.Equal(t, result, again)
+			require.NoError(t, checkBundle(filepath.Dir(again.Executable)))
+			expectedConfirmations := int64(2)
+			if repair == "offline" {
+				expectedConfirmations = 1
+			}
+			assert.Equal(t, expectedConfirmations, confirmations.Load())
+			if repair == "model only" || repair == "offline" {
+				assert.Equal(t, before, requestCount(calls, "/archive"))
+			}
+			assert.Zero(t, requestCount(calls, "/repos/kenn-io/kit/releases/latest"))
 		})
 	}
 }
 
-func TestInstallDeclinedOrCanceled(t *testing.T) {
-	client, model, requests, _ := installFixture(t, ".tar.gz", "")
-	for _, tc := range []struct {
-		name    string
-		confirm func(context.Context, int64) (bool, error)
-	}{
-		{"missing", nil},
-		{"declined", func(context.Context, int64) (bool, error) { return false, nil }},
-		{"callback error", func(context.Context, int64) (bool, error) { return false, context.Canceled }},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			_, err := install(t.Context(), InstallOptions{DataDir: dir, Confirm: tc.confirm}, client, model)
-			require.Error(t, err)
-			assert.NoDirExists(t, filepath.Join(dir, "bin"))
-		})
-	}
-	assert.Zero(t, requests.Load())
-}
-
-func TestInstallRejectsBadOrTruncatedBundle(t *testing.T) {
-	for _, body := range []string{"wrong digest", "short", "model canceled"} {
-		t.Run(body, func(t *testing.T) {
-			client, model, _, _ := installFixture(t, ".tar.gz", body)
-			if body == "model canceled" {
-				cached := model
-				model = func(ctx context.Context, dir string, download bool) error {
-					if download {
-						return context.Canceled
-					}
-					return cached(ctx, dir, false)
+func TestInstallConsentAndFailures(t *testing.T) {
+	for _, mode := range []string{"missing confirmation", "declined", "digest", "truncated", "canceled"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			client, assets, calls, _ := installFixture(t, mode, cancel)
+			opts := InstallOptions{DataDir: t.TempDir()}
+			stale := filepath.Join(opts.DataDir, ".install-interrupted")
+			require.NoError(t, os.Mkdir(stale, 0o700))
+			require.NoError(t, os.WriteFile(filepath.Join(stale, "partial"), []byte("partial"), 0o600))
+			if mode != "missing confirmation" {
+				opts.Confirm = func(_ context.Context, size int64) (bool, error) {
+					assert.Equal(t, int64(20_000_026), size)
+					assert.Zero(t, requestCount(calls, "/archive"))
+					return mode != "declined", nil
 				}
 			}
-			dir := t.TempDir()
-			_, err := install(t.Context(), InstallOptions{DataDir: dir, Confirm: func(context.Context, int64) (bool, error) { return true, nil }}, client, model)
+			_, err := install(ctx, opts, client, assets)
 			require.Error(t, err)
-			if body == "model canceled" {
+			if mode == "canceled" {
 				require.ErrorIs(t, err, context.Canceled)
 			}
-			assert.NoDirExists(t, filepath.Join(dir, "bin"))
-			entries, err := filepath.Glob(filepath.Join(dir, ".install-*"))
+			assert.NoDirExists(t, filepath.Join(opts.DataDir, "bin", "v0.47.1"))
+			assert.NoDirExists(t, stale)
+			leftovers, err := filepath.Glob(filepath.Join(opts.DataDir, ".install-*"))
 			require.NoError(t, err)
-			assert.Empty(t, entries)
+			assert.Empty(t, leftovers)
+			if mode == "missing confirmation" || mode == "declined" {
+				calls.Range(func(_, value any) bool { assert.Zero(t, value.(*atomic.Int64).Load()); return true })
+			}
+			if mode == "canceled" {
+				opts.Confirm = func(context.Context, int64) (bool, error) { return true, nil }
+				_, err = install(t.Context(), opts, client, assets)
+				require.NoError(t, err)
+				assert.Equal(t, int64(1), requestCount(calls, "/model.onnx"))
+			}
 		})
 	}
 }

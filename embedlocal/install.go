@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"go.kenn.io/kit/atomicfile"
 	"go.kenn.io/kit/daemon"
@@ -19,37 +20,29 @@ import (
 	"go.kenn.io/kit/selfupdate"
 )
 
-// InstallOptions controls a first installation. Apps own confirmation and should
-// share DataDir, conventionally ~/.kenn/embeddings, across callers.
+// InstallOptions controls installation and repair. Apps share DataDir,
+// conventionally ~/.kenn/embeddings, and own the confirmation prompt.
 type InstallOptions struct {
 	DataDir string
-	// Confirm runs before any network request and receives an approximate byte
-	// count. A missing callback or declined confirmation leaves downloads unstarted.
+	// Confirm runs once before any network request with the approximate missing
+	// download bytes. A missing callback or refusal prevents downloads.
 	Confirm func(context.Context, int64) (bool, error)
 }
 
 // Installation contains absolute paths to pass to the server launcher.
-type Installation struct {
-	Executable string
-	DataDir    string
-}
+type Installation struct{ Executable, DataDir string }
 
-// Install downloads the server, native runtime, and pinned model after consent.
-// A completed installation is reused offline without asking again. Concurrent
-// callers share one installation. The install lock is released before returning,
-// so callers can immediately start the returned Executable with DataDir.
+// Bundle downloads include a platform-dependent native runtime and executable.
+const bundleDownloadBytes = 20_000_000
+
+// Install reuses the pinned server offline or confirms before downloading missing
+// files. Concurrent callers share one installation. Pass the returned Executable
+// and DataDir to the launcher; the installation lock is released before return.
 func Install(ctx context.Context, opts InstallOptions) (Installation, error) {
-	client := selfupdate.Client{Owner: "kenn-io", Repo: "kit", BinaryName: "kennembed", AllowUnsignedChecksums: true}
-	return install(ctx, opts, client, func(ctx context.Context, dir string, download bool) error {
-		if !download {
-			return embedassets.CachedModel(dir)
-		}
-		_, err := embedassets.CacheModel(ctx, dir)
-		return err
-	})
+	return install(ctx, opts, nil, embedassets.ModelAssets())
 }
 
-func install(ctx context.Context, opts InstallOptions, client selfupdate.Client, model func(context.Context, string, bool) error) (Installation, error) {
+func install(ctx context.Context, opts InstallOptions, client *http.Client, assets []embedassets.Asset) (Installation, error) {
 	if opts.DataDir == "" {
 		return Installation{}, errors.New("install embeddings: DataDir is required")
 	}
@@ -57,96 +50,123 @@ func install(ctx context.Context, opts InstallOptions, client selfupdate.Client,
 	if err != nil {
 		return Installation{}, err
 	}
-	executable := "kennembed"
-	if runtime.GOOS == "windows" {
-		executable += ".exe"
-	}
-	result := Installation{filepath.Join(dir, "bin", executable), dir}
-	complete := func() bool {
-		return checkBundle(filepath.Join(dir, "bin"), executable) == nil && model(ctx, dir, false) == nil
-	}
-	if complete() {
-		return result, nil
-	}
 	release, err := (daemon.RuntimeStore{Dir: dir, Prefix: "kit-embed-install"}).AcquireStartLock(ctx)
 	if err != nil {
 		return Installation{}, err
 	}
 	defer release()
-	if complete() {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return Installation{}, err
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".install-") {
+			if err := os.RemoveAll(filepath.Join(dir, entry.Name())); err != nil {
+				return Installation{}, err
+			}
+		}
+	}
+	bundle := filepath.Join(dir, "bin", embedassets.BundleTag)
+	result := Installation{filepath.Join(bundle, embedassets.ExecutableName()), dir}
+	ready := checkBundle(bundle) == nil
+	modelDir := embedassets.ModelDir(dir)
+	missing, err := embedassets.MissingModel(ctx, modelDir, assets)
+	if err != nil {
+		return Installation{}, err
+	}
+	var size int64
+	for _, a := range missing {
+		size += a.Size
+	}
+	if ready && len(missing) == 0 {
 		return result, nil
 	}
-	if opts.Confirm == nil {
-		return Installation{}, errors.New("install embeddings: provide Confirm to approve the approximately 290 MB download")
+	if !ready {
+		size += bundleDownloadBytes
 	}
-	approved, err := opts.Confirm(ctx, 290_000_000)
+	if opts.Confirm == nil {
+		return Installation{}, fmt.Errorf("install embeddings: provide Confirm to approve approximately %d download bytes", size)
+	}
+	approved, err := opts.Confirm(ctx, size)
 	if err != nil {
 		return Installation{}, err
 	}
 	if !approved {
 		return Installation{}, errors.New("embedding download declined; approve installation to use local embeddings")
 	}
-	info, err := client.Check(ctx, selfupdate.CheckOptions{Force: true})
-	if err != nil {
+	if err := ctx.Err(); err != nil {
 		return Installation{}, err
 	}
-	if info == nil {
-		return Installation{}, errors.New("no kennembed release is available")
-	}
-	if err := safefileio.EnsurePrivateDir(dir); err != nil {
-		return Installation{}, err
+	if !ready {
+		if err := os.RemoveAll(bundle); err != nil {
+			return Installation{}, err
+		}
 	}
 	stage, err := os.MkdirTemp(dir, ".install-*")
 	if err != nil {
 		return Installation{}, err
 	}
 	defer os.RemoveAll(stage)
-	archive := filepath.Join(stage, "archive")
-	err = embedassets.CacheAsset(ctx, cmp.Or(client.HTTPClient, &http.Client{}), stage, embedassets.Asset{Name: "archive", URL: info.DownloadURL, Digest: info.Checksum, Size: info.Size})
-	if err != nil {
-		return Installation{}, fmt.Errorf("download kennembed: %w", err)
+	stagedBundle := filepath.Join(stage, "bin")
+	httpClient := cmp.Or(client, &http.Client{Timeout: 15 * time.Minute})
+	if !ready {
+		releaseClient := selfupdate.Client{
+			Owner: "kenn-io", Repo: "kit", BinaryName: "kennembed", HTTPClient: client, CacheDir: dir, AllowUnsignedChecksums: true,
+			ReleaseManifestURL: "https://api.github.com/repos/kenn-io/kit/releases/tags/" + embedassets.BundleTag,
+		}
+		info, err := releaseClient.Check(ctx, selfupdate.CheckOptions{Force: true})
+		if err != nil {
+			return Installation{}, err
+		}
+		if info == nil {
+			return Installation{}, errors.New("no kennembed bundle is available")
+		}
+		if err := embedassets.CacheAsset(ctx, httpClient, stage, embedassets.Asset{Name: "archive", URL: info.DownloadURL, Digest: info.Checksum, Size: info.Size}); err != nil {
+			return Installation{}, fmt.Errorf("download kennembed: %w", err)
+		}
+		archive := filepath.Join(stage, "archive")
+		if strings.HasSuffix(info.AssetName, ".zip") {
+			err = selfupdate.ExtractZip(archive, stagedBundle)
+		} else {
+			err = selfupdate.ExtractTarGz(archive, stagedBundle)
+		}
+		if err != nil {
+			return Installation{}, err
+		}
+		if err := checkBundle(stagedBundle); err != nil {
+			return Installation{}, err
+		}
 	}
-	bundle := filepath.Join(stage, "bin")
-	if strings.HasSuffix(info.AssetName, ".zip") {
-		err = selfupdate.ExtractZip(archive, bundle)
-	} else {
-		err = selfupdate.ExtractTarGz(archive, bundle)
-	}
-	if err != nil {
+	if err := safefileio.EnsurePrivateDir(modelDir); err != nil {
 		return Installation{}, err
 	}
-	if err := checkBundle(bundle, executable); err != nil {
-		return Installation{}, err
+	for _, a := range missing {
+		if err := embedassets.CacheAsset(ctx, httpClient, modelDir, a, atomicfile.WithStagingDir(stage)); err != nil {
+			return Installation{}, err
+		}
 	}
-	if err := model(ctx, dir, true); err != nil {
-		return Installation{}, err
-	}
-	// A published bundle remains when only the model cache was removed.
-	if err := checkBundle(filepath.Join(dir, "bin"), executable); err == nil {
-		return result, nil
-	}
-	if err := atomicfile.RenameNoReplace(bundle, filepath.Join(dir, "bin")); err != nil {
-		return Installation{}, fmt.Errorf("publish kennembed: %w", err)
+	if !ready {
+		if err := os.MkdirAll(filepath.Dir(bundle), 0o700); err != nil {
+			return Installation{}, err
+		}
+		if err := atomicfile.Replace(stagedBundle, bundle); err != nil {
+			return Installation{}, fmt.Errorf("publish kennembed: %w", err)
+		}
 	}
 	return result, nil
 }
 
-func checkBundle(dir, executable string) error {
-	library := "libonnxruntime.so.1.23.2"
-	if runtime.GOOS == "darwin" {
-		library = "libonnxruntime.1.23.2.dylib"
-	}
-	if runtime.GOOS == "windows" {
-		library = "onnxruntime.dll"
-	}
-	names := []string{executable, library}
-	if runtime.GOOS == "windows" {
-		names = append(names, "msvcp140.dll", "msvcp140_1.dll", "vcruntime140.dll", "vcruntime140_1.dll")
-	}
-	for _, name := range names {
-		_, err := os.Stat(filepath.Join(dir, name))
+func checkBundle(dir string) error {
+	for _, name := range append(embedassets.NativeFiles(), embedassets.ExecutableName()) {
+		info, err := os.Stat(filepath.Join(dir, name))
 		if err != nil {
 			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("bundle file is not regular: %s", name)
+		}
+		if name == embedassets.ExecutableName() && runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
+			return errors.New("kennembed has no execute permission")
 		}
 	}
 	return nil

@@ -343,13 +343,3 @@ jobs:
               env.write('KIT_EMBED_TEST_EXECUTABLE=' + str(executable) + '\n')
       - name: Run focused tests and native parity
         run: make test-embedserver test-embedlocal
-      - name: Compile six targets without CGo
-        if: matrix.os == 'linux'
-        shell: python
-        run: |
-          import os, pathlib, subprocess
-          output = pathlib.Path(os.environ['RUNNER_TEMP']) / 'kennembed-build'
-          for target in ('linux', 'darwin', 'windows'):
-              for arch in ('amd64', 'arm64'):
-                  env = dict(os.environ, GOOS=target, GOARCH=arch, CGO_ENABLED='0')
-                  subprocess.run(['go', 'build', '-o', str(output), './cmd/kennembed'], env=env, check=True)

@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/embedclient"
 	"go.kenn.io/kit/embedconfig"
+	"go.kenn.io/kit/internal/embedassets"
 )
 
 // CI supplies a staged native bundle. This catches missing companion
@@ -61,7 +62,7 @@ func TestBundleNativeParity(t *testing.T) {
 		script := fmt.Sprintf("(Get-Process -Id %d).Modules | ForEach-Object { $_.FileName }", command.Process.Pid)
 		output, err := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-Command", script).CombinedOutput()
 		require.NoError(t, err, string(output))
-		for _, name := range []string{"onnxruntime.dll", "msvcp140.dll", "msvcp140_1.dll", "vcruntime140.dll", "vcruntime140_1.dll"} {
+		for _, name := range embedassets.NativeFiles() {
 			assert.Contains(t, strings.ToLower(string(output)), strings.ToLower(filepath.Join(filepath.Dir(executable), name)))
 		}
 	}
