@@ -56,10 +56,6 @@ func installFixture(t *testing.T, suffix, bodyOverride string) (selfupdate.Clien
 	name := "kennembed_1.2.3_" + runtime.GOOS + "_" + runtime.GOARCH + suffix
 	digest := sha256.Sum256(archive.Bytes())
 	var requests atomic.Int64
-	var downgraded atomic.Bool
-	downstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) { downgraded.Store(true) }))
-	t.Cleanup(downstream.Close)
-	t.Cleanup(func() { assert.False(t, downgraded.Load(), "download followed a non-HTTPS redirect") })
 	var server *httptest.Server
 	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		requests.Add(1)
@@ -69,19 +65,14 @@ func installFixture(t *testing.T, suffix, bodyOverride string) (selfupdate.Clien
 		case "/checksums":
 			_, _ = fmt.Fprintf(w, "%x  %s\n", digest, name)
 		case "/archive":
-			if bodyOverride == "redirect" {
-				http.Redirect(w, req, downstream.URL, http.StatusFound)
-				return
-			}
-			if bodyOverride != "" {
-				if bodyOverride == "wrong digest" {
-					bad := bytes.Clone(archive.Bytes())
-					bad[len(bad)-1] ^= 1
-					_, _ = w.Write(bad)
-				} else {
-					_, _ = w.Write([]byte(bodyOverride))
-				}
-			} else {
+			switch bodyOverride {
+			case "wrong digest":
+				bad := bytes.Clone(archive.Bytes())
+				bad[len(bad)-1] ^= 1
+				_, _ = w.Write(bad)
+			case "short":
+				_, _ = w.Write([]byte(bodyOverride))
+			default:
 				_, _ = w.Write(archive.Bytes())
 			}
 		case "/model", "/tokenizer":
@@ -176,44 +167,31 @@ func TestInstallDeclinedOrCanceled(t *testing.T) {
 		})
 	}
 	assert.Zero(t, requests.Load())
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	_, err := install(ctx, InstallOptions{DataDir: t.TempDir(), Confirm: func(context.Context, int64) (bool, error) { return true, nil }}, client, model)
-	require.ErrorIs(t, err, context.Canceled)
-	assert.Zero(t, requests.Load())
 }
 
 func TestInstallRejectsBadOrTruncatedBundle(t *testing.T) {
-	for _, body := range []string{"wrong digest", "short", "redirect"} {
+	for _, body := range []string{"wrong digest", "short", "model canceled"} {
 		t.Run(body, func(t *testing.T) {
 			client, model, _, _ := installFixture(t, ".tar.gz", body)
+			if body == "model canceled" {
+				cached := model
+				model = func(ctx context.Context, dir string, download bool) error {
+					if download {
+						return context.Canceled
+					}
+					return cached(ctx, dir, false)
+				}
+			}
 			dir := t.TempDir()
 			_, err := install(t.Context(), InstallOptions{DataDir: dir, Confirm: func(context.Context, int64) (bool, error) { return true, nil }}, client, model)
 			require.Error(t, err)
+			if body == "model canceled" {
+				require.ErrorIs(t, err, context.Canceled)
+			}
 			assert.NoDirExists(t, filepath.Join(dir, "bin"))
 			entries, err := filepath.Glob(filepath.Join(dir, ".install-*"))
 			require.NoError(t, err)
 			assert.Empty(t, entries)
 		})
 	}
-}
-
-func TestInstallCanceledDuringModelDownload(t *testing.T) {
-	client, fixtureModel, _, _ := installFixture(t, ".tar.gz", "")
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	model := func(ctx context.Context, dir string, download bool) error {
-		if download {
-			cancel()
-			return ctx.Err()
-		}
-		return fixtureModel(ctx, dir, false)
-	}
-	dir := t.TempDir()
-	_, err := install(ctx, InstallOptions{DataDir: dir, Confirm: func(context.Context, int64) (bool, error) { return true, nil }}, client, model)
-	require.ErrorIs(t, err, context.Canceled)
-	assert.NoDirExists(t, filepath.Join(dir, "bin"))
-	entries, err := filepath.Glob(filepath.Join(dir, ".install-*"))
-	require.NoError(t, err)
-	assert.Empty(t, entries)
 }

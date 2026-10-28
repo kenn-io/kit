@@ -57,8 +57,3 @@ if args.os == 'windows':
     for dll in ('msvcp140.dll', 'msvcp140_1.dll', 'vcruntime140.dll', 'vcruntime140_1.dll'):
         shutil.copy2(candidates[-1] / dll, root / dll)
     urllib.request.urlretrieve('https://aka.ms/VCRedistLicense', root / 'Visual-C++-Runtime-License.html')
-if os.environ.get('GITHUB_ENV'):
-    library = {'windows': 'onnxruntime.dll', 'darwin': 'libonnxruntime.1.23.2.dylib', 'linux': 'libonnxruntime.so.1.23.2'}[args.os]
-    with open(os.environ['GITHUB_ENV'], 'a') as env:
-        env.write('KIT_EMBED_TEST_DIR=' + str(root.parent / 'model') + '\n')
-        env.write('KIT_EMBED_TEST_LIBRARY=' + str(root / library) + '\n')

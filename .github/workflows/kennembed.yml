@@ -74,5 +74,4 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
         run: |
           sha256sum kennembed_* > SHA256SUMS
-          gh release view "$RELEASE_TAG"
           gh release upload "$RELEASE_TAG" kennembed_* SHA256SUMS --clobber

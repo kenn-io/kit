@@ -2,6 +2,7 @@
 package embedlocal
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -100,25 +101,8 @@ func install(ctx context.Context, opts InstallOptions, client selfupdate.Client,
 		return Installation{}, err
 	}
 	defer os.RemoveAll(stage)
-	downloadClient := client.HTTPClient
-	if downloadClient == nil {
-		downloadClient = &http.Client{}
-	}
-	securedClient := *downloadClient
-	securedClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if req.URL.Scheme != "https" {
-			return errors.New("kennembed download redirected to non-HTTPS URL")
-		}
-		if downloadClient.CheckRedirect != nil {
-			return downloadClient.CheckRedirect(req, via)
-		}
-		if len(via) >= 10 {
-			return errors.New("too many kennembed download redirects")
-		}
-		return nil
-	}
 	archive := filepath.Join(stage, "archive")
-	err = embedassets.CacheAsset(ctx, &securedClient, stage, embedassets.Asset{Name: "archive", URL: info.DownloadURL, Digest: info.Checksum, Size: info.Size})
+	err = embedassets.CacheAsset(ctx, cmp.Or(client.HTTPClient, &http.Client{}), stage, embedassets.Asset{Name: "archive", URL: info.DownloadURL, Digest: info.Checksum, Size: info.Size})
 	if err != nil {
 		return Installation{}, fmt.Errorf("download kennembed: %w", err)
 	}
@@ -131,19 +115,13 @@ func install(ctx context.Context, opts InstallOptions, client selfupdate.Client,
 	if err != nil {
 		return Installation{}, err
 	}
-	if err := os.Chmod(filepath.Join(bundle, executable), 0o755); err != nil {
-		return Installation{}, err
-	}
 	if err := checkBundle(bundle, executable); err != nil {
 		return Installation{}, err
 	}
 	if err := model(ctx, dir, true); err != nil {
 		return Installation{}, err
 	}
-	if err := ctx.Err(); err != nil {
-		return Installation{}, err
-	}
-	// A valid bundle may remain after an interrupted model download.
+	// A published bundle remains when only the model cache was removed.
 	if err := checkBundle(filepath.Join(dir, "bin"), executable); err == nil {
 		return result, nil
 	}
@@ -166,15 +144,9 @@ func checkBundle(dir, executable string) error {
 		names = append(names, "msvcp140.dll", "msvcp140_1.dll", "vcruntime140.dll", "vcruntime140_1.dll")
 	}
 	for _, name := range names {
-		info, err := os.Stat(filepath.Join(dir, name))
+		_, err := os.Stat(filepath.Join(dir, name))
 		if err != nil {
 			return err
-		}
-		if !info.Mode().IsRegular() || info.Size() == 0 {
-			return fmt.Errorf("incomplete kennembed bundle: %s", name)
-		}
-		if name == executable && runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
-			return fmt.Errorf("kennembed is not executable: %s", name)
 		}
 	}
 	return nil

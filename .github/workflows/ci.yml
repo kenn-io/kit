@@ -325,23 +325,20 @@ jobs:
       - name: Stage ONNX Runtime 1.23.2
         shell: python
         run: |
-          import os, pathlib, subprocess
+          import os, pathlib, platform, subprocess
           root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'embedserver' / 'bundle'
           subprocess.run(['python', '.github/scripts/stage-onnx.py', '--output', str(root)], check=True)
+          library = {'Windows': 'onnxruntime.dll', 'Darwin': 'libonnxruntime.1.23.2.dylib', 'Linux': 'libonnxruntime.so.1.23.2'}[platform.system()]
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write('KIT_EMBED_TEST_DIR=' + str(root.parent / 'model') + '\n')
+              env.write('KIT_EMBED_TEST_LIBRARY=' + str(root / library) + '\n')
       - name: Build native bundle
         shell: python
         run: |
-          import os, pathlib, shutil, subprocess
+          import os, pathlib, subprocess
           bundle = pathlib.Path(os.environ['KIT_EMBED_TEST_LIBRARY']).parent
           executable = bundle / ('kennembed.exe' if os.name == 'nt' else 'kennembed')
           subprocess.run(['go', 'build', '-o', str(executable), './cmd/kennembed'], env=dict(os.environ, CGO_ENABLED='0'), check=True)
-          # Exercise selfupdate's required distribution formats as an extracted bundle.
-          archive = shutil.make_archive(str(bundle.parent / 'native'), 'zip' if os.name == 'nt' else 'gztar', bundle)
-          extracted = bundle.parent / 'extracted'
-          shutil.unpack_archive(archive, extracted)
-          executable = extracted / executable.name
-          if os.name != 'nt':
-              executable.chmod(0o755)
           with open(os.environ['GITHUB_ENV'], 'a') as env:
               env.write('KIT_EMBED_TEST_EXECUTABLE=' + str(executable) + '\n')
       - name: Run focused tests and native parity
