@@ -23,17 +23,16 @@ func TestKitDownload(t *testing.T) {
 			t.Skip(err)
 		}
 	}
-	for _, tt := range []struct{ name, want string }{{"cut short then complete", "complete body"}, {"always fails", "original"}} {
+	for _, tt := range []struct {
+		name, want     string
+		alwaysCutShort bool
+	}{{"cut short then complete", "complete body", false}, {"always fails", "original", true}} {
 		t.Run(tt.name, func(t *testing.T) {
 			var attempts atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if tt.want == "original" {
-					w.WriteHeader(http.StatusInternalServerError)
-					return
-				}
 				w.Header().Set("Content-Length", "13")
 				body := "complete body"
-				if attempts.Add(1) == 1 {
+				if attempts.Add(1) == 1 || tt.alwaysCutShort {
 					body = "partial"
 				}
 				_, _ = w.Write([]byte(body))
@@ -46,7 +45,7 @@ func TestKitDownload(t *testing.T) {
 			cmd := exec.CommandContext(t.Context(), "../../.github/actions/kit-retry/kit-download", server.URL, dest)
 			cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 			out, err := cmd.CombinedOutput()
-			assert.Equal(t, tt.want == "original", err != nil, "%s", out)
+			assert.Equal(t, tt.alwaysCutShort, err != nil, "%s", out)
 			body, err := os.ReadFile(dest)
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, string(body))
