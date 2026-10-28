@@ -46,4 +46,8 @@ lint-config-check:
 .PHONY: test-embedserver
 # Set KIT_EMBED_TEST_DIR and KIT_EMBED_TEST_LIBRARY to include native parity.
 test-embedserver:
-	go test -race ./embedserver ./cmd/kennembed
+	go test -race ./embedserver ./cmd/kennembed ./internal/embedassets
+
+.PHONY: test-embedlocal
+test-embedlocal:
+	go test -race ./embedlocal

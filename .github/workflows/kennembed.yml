@@ -1,0 +1,78 @@
+name: kennembed release bundles
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to receive kennembed bundles
+        required: true
+permissions:
+  contents: read
+jobs:
+  bundle:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            runner: namespace-profile-linux-4cpu
+          - os: darwin
+            runner: namespace-profile-mac-6cpu
+          - os: windows
+            runner: windows-latest
+    runs-on: ${{ matrix.runner }}
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+      TARGET_OS: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Build both architectures and package runtime dependencies
+        shell: python
+        run: |
+          import os, pathlib, shutil, subprocess
+          version = os.environ['RELEASE_TAG'].removeprefix('v')
+          target = os.environ['TARGET_OS']
+          subprocess.run(['git', 'fetch', '--depth=1', 'origin', 'tag', os.environ['RELEASE_TAG']], check=True)
+          subprocess.run(['git', 'worktree', 'add', '--detach', 'release-source', os.environ['RELEASE_TAG']], check=True)
+          output = pathlib.Path('dist')
+          output.mkdir()
+          for arch in ('amd64', 'arm64'):
+              bundle = pathlib.Path(os.environ['RUNNER_TEMP']) / ('kennembed-' + arch) / 'bundle'
+              subprocess.run(['python', '.github/scripts/stage-onnx.py', '--os', target, '--arch', arch, '--output', str(bundle)], check=True)
+              executable = bundle / ('kennembed.exe' if target == 'windows' else 'kennembed')
+              subprocess.run(['go', 'build', '-o', str(executable), './cmd/kennembed'], env=dict(os.environ, GOOS=target, GOARCH=arch, CGO_ENABLED='0'), cwd='release-source', check=True)
+              # selfupdate.ExtractTarGz and ExtractZip require these archive formats.
+              name = output / ('kennembed_' + version + '_' + target + '_' + arch)
+              shutil.make_archive(str(name), 'zip' if target == 'windows' else 'gztar', bundle)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: kennembed-${{ matrix.os }}
+          path: dist/*
+  publish:
+    needs: bundle
+    runs-on: namespace-profile-linux-4cpu
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: kennembed-*
+          merge-multiple: true
+          path: dist
+      - name: Attach verified bundles to the existing release
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+        run: |
+          sha256sum kennembed_* > SHA256SUMS
+          gh release view "$RELEASE_TAG"
+          gh release upload "$RELEASE_TAG" kennembed_* SHA256SUMS --clobber
