@@ -108,13 +108,12 @@ func requestCount(calls *sync.Map, path string) int64 {
 
 func TestInstallRepairsSharedCopy(t *testing.T) {
 	// The first case reproduces the incomplete-destination failure from review.
-	for _, repair := range []string{"missing runtime", "execute permission", "model only", "offline"} {
+	for _, repair := range []string{"missing runtime", "execute permission", "model only", "offline", "concurrent callers"} {
 		t.Run(repair, func(t *testing.T) {
 			client, assets, calls, closeServer := installFixture(t, "", nil)
 			var confirmations atomic.Int64
 			opts := InstallOptions{DataDir: t.TempDir(), Confirm: func(context.Context, int64) (bool, error) { confirmations.Add(1); return true, nil }}
-			var result Installation
-			if repair == "missing runtime" {
+			if repair == "concurrent callers" {
 				var wg sync.WaitGroup
 				results, errs := make([]Installation, 2), make([]error, 2)
 				for i := range results {
@@ -126,14 +125,12 @@ func TestInstallRepairsSharedCopy(t *testing.T) {
 				}
 				require.Equal(t, results[0], results[1])
 				assert.Equal(t, int64(1), confirmations.Load())
-				result = results[0]
-				require.Equal(t, filepath.Join(opts.DataDir, "bin", "v0.47.1", embedassets.ExecutableName()), result.Executable)
+				require.Equal(t, filepath.Join(opts.DataDir, "bin", "v0.47.1", embedassets.ExecutableName()), results[0].Executable)
 				assert.Zero(t, requestCount(calls, "/repos/kenn-io/kit/releases/latest"))
-			} else {
-				var err error
-				result, err = install(t.Context(), opts, client, assets)
-				require.NoError(t, err)
+				return
 			}
+			result, err := install(t.Context(), opts, client, assets)
+			require.NoError(t, err)
 			before := requestCount(calls, "/archive")
 			switch repair {
 			case "missing runtime":
@@ -178,13 +175,13 @@ func TestInstallRepairsSharedCopy(t *testing.T) {
 }
 
 func TestInstallConsentAndFailures(t *testing.T) {
-	for _, mode := range []string{"missing confirmation", "declined", "digest", "canceled"} {
+	for _, mode := range []string{"missing confirmation", "declined", "stale staging", "digest", "canceled"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			client, assets, calls, _ := installFixture(t, mode, cancel)
 			opts := InstallOptions{DataDir: t.TempDir()}
-			if mode == "declined" {
+			if mode == "stale staging" {
 				stale := filepath.Join(opts.DataDir, ".install-interrupted")
 				require.NoError(t, os.Mkdir(stale, 0o700))
 				require.NoError(t, os.WriteFile(filepath.Join(stale, "partial"), []byte("partial"), 0o600))
@@ -193,23 +190,24 @@ func TestInstallConsentAndFailures(t *testing.T) {
 				opts.Confirm = func(_ context.Context, size int64) (bool, error) {
 					assert.Equal(t, int64(20_000_026), size)
 					assert.Zero(t, requestCount(calls, "/archive"))
-					return mode != "declined", nil
+					return mode != "declined" && mode != "stale staging", nil
 				}
 			}
 			_, err := install(ctx, opts, client, assets)
 			require.Error(t, err)
 			if mode == "canceled" {
 				require.ErrorIs(t, err, context.Canceled)
-			}
-			if mode == "canceled" {
 				require.NoError(t, checkBundle(filepath.Join(opts.DataDir, "bin", "v0.47.1")))
 			} else {
 				assert.NoDirExists(t, filepath.Join(opts.DataDir, "bin", "v0.47.1"))
 			}
+			if mode == "digest" {
+				require.EqualError(t, err, "download kennembed: asset size or SHA-256 mismatch")
+			}
 			leftovers, err := filepath.Glob(filepath.Join(opts.DataDir, ".install-*"))
 			require.NoError(t, err)
 			assert.Empty(t, leftovers)
-			if mode == "missing confirmation" || mode == "declined" {
+			if mode == "missing confirmation" || mode == "declined" || mode == "stale staging" {
 				calls.Range(func(_, value any) bool { assert.Zero(t, value.(*atomic.Int64).Load()); return true })
 			}
 			if mode == "canceled" {
