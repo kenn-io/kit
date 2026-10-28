@@ -83,3 +83,26 @@ func TestScanShellsAndComposite(t *testing.T) {
 	require.Len(t, findings, 1)
 	assert.Equal(t, "composite", findings[0].Job)
 }
+
+func TestScanRunnerShells(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		src      string
+		findings int
+	}{
+		{"windows default", "jobs: {test: {runs-on: windows-latest, steps: [{run: 'curl https://example.com/x'}]}}", 0},
+		{"windows explicit bash", "jobs: {test: {runs-on: windows-latest, steps: [{shell: bash, run: 'curl https://example.com/x'}]}}", 1},
+		{"windows labels", "jobs: {test: {runs-on: [self-hosted, windows, x64], steps: [{run: 'curl https://example.com/x'}]}}", 0},
+		{"windows job bash default", "jobs: {test: {runs-on: windows-latest, defaults: {run: {shell: bash}}, steps: [{run: 'curl https://example.com/x'}]}}", 1},
+		{"windows workflow bash default", "defaults: {run: {shell: bash}}\njobs: {test: {runs-on: windows-latest, steps: [{run: 'curl https://example.com/x'}]}}", 1},
+		{"runner expression", "jobs: {test: {runs-on: '${{ matrix.windows }}', steps: [{run: 'curl https://example.com/x'}]}}", 1},
+		{"label expression", "jobs: {test: {runs-on: [windows, '${{ matrix.runner }}'], steps: [{run: 'curl https://example.com/x'}]}}", 1},
+		{"linux default", "jobs: {test: {runs-on: ubuntu-latest, steps: [{run: 'curl https://example.com/x'}]}}", 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			findings, err := Scan([]byte(tt.src))
+			require.NoError(t, err)
+			assert.Len(t, findings, tt.findings)
+		})
+	}
+}
