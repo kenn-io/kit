@@ -79,3 +79,8 @@ actions-lock-check-local: gh-actions-lock-install
 # Network check that the lockfile is complete and every locked commit is still valid
 actions-lock-check: gh-actions-lock-install
 	gh actions-lock --verify
+
+.PHONY: test-embedlocal
+test-embedlocal:
+	go test -race ./embedlocal
+	go test -race ./embedserver -run '^TestServeDiscoveryAndCancellation$$'

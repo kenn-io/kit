@@ -12,6 +12,7 @@ import (
 
 	"go.kenn.io/kit/daemon"
 	"go.kenn.io/kit/internal/embedassets"
+	"go.kenn.io/kit/embedlocal"
 )
 
 // Options configures the foreground server. DataDir defaults to DefaultDir,
@@ -21,11 +22,7 @@ type Options struct{ DataDir, Listen, Library string }
 
 // DefaultDir returns the shared per-user embeddings data directory.
 func DefaultDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".kenn", "embeddings"), nil
+	return embedlocal.DefaultDir()
 }
 
 // Serve prints its loopback URL to stderr after loading the model and publishing
@@ -53,7 +50,7 @@ func serve(ctx context.Context, opts Options, load func(context.Context, string,
 	if ep.IsUnix() {
 		return errors.New("embeddings requires a loopback TCP endpoint")
 	}
-	store := daemon.RuntimeStore{Dir: opts.DataDir, Prefix: "kit-embed"}
+	store := daemon.RuntimeStore{Dir: opts.DataDir, Prefix: embedlocal.Service}
 	lockCtx, cancelLock := context.WithTimeout(ctx, time.Second)
 	release, err := store.AcquireOwnerLock(lockCtx)
 	cancelLock()
@@ -92,7 +89,7 @@ func serve(ctx context.Context, opts Options, load func(context.Context, string,
 	}
 	defer listener.Close()
 	ep.Address = listener.Addr().String()
-	record := daemon.NewRuntimeRecord("kit-embed", "1", ep)
+	record := daemon.NewRuntimeRecord(embedlocal.Service, "1", ep)
 	ping := daemon.NewPingHandler(daemon.PingHandlerOptions{Service: record.Service, Version: record.Version, PID: record.PID})
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
