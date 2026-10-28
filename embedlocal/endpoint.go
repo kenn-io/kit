@@ -39,7 +39,8 @@ func DefaultDir() (string, error) {
 }
 
 // Endpoint returns a /v1 base URL, preferring a running Ollama to kennembed.
-// Startup waits at most two minutes. A started server outlives ctx.
+// Startup follows ctx's deadline, or waits at most two minutes without one.
+// A started server continues loading after ctx is canceled.
 func Endpoint(ctx context.Context, opts Options) (string, error) {
 	return endpoint(ctx, opts, "http://127.0.0.1:11434")
 }
@@ -135,7 +136,17 @@ func endpoint(ctx context.Context, opts Options, ollama string) (string, error) 
 		})
 		return errors.Join(err, log.Close())
 	}
-	rec, _, err := manager.Ensure(ctx, 2*time.Minute)
+	timeout := 2 * time.Minute
+	if deadline, ok := ctx.Deadline(); ok {
+		timeout = time.Until(deadline)
+		if timeout <= 0 {
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+			return "", context.DeadlineExceeded
+		}
+	}
+	rec, _, err := manager.Ensure(ctx, timeout)
 	if err != nil {
 		if cause := context.Cause(ctx); cause != nil {
 			err = cause
@@ -197,6 +208,9 @@ func ownerHeld(ctx context.Context, store daemon.RuntimeStore) (bool, error) {
 func startupError(path string, cause error) error {
 	failure := fmt.Errorf("%w; log %s", cause, path)
 	log, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return cause
+	}
 	if err != nil {
 		return errors.Join(failure, err)
 	}
