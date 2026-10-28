@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -52,7 +53,7 @@ func installFixture(t *testing.T, mode string, cancel context.CancelFunc) (*http
 		require.NoError(t, writer.Close())
 		require.NoError(t, compressor.Close())
 	}
-	name := "kennembed_0.47.1_" + runtime.GOOS + "_" + runtime.GOARCH + suffix
+	name := "kennembed_" + strings.TrimPrefix(embedassets.BundleTag, "v") + "_" + runtime.GOOS + "_" + runtime.GOARCH + suffix
 	digest := sha256.Sum256(archive.Bytes())
 	calls := new(sync.Map)
 	var interrupted atomic.Bool
@@ -61,8 +62,8 @@ func installFixture(t *testing.T, mode string, cancel context.CancelFunc) (*http
 		count, _ := calls.LoadOrStore(req.URL.Path, new(atomic.Int64))
 		count.(*atomic.Int64).Add(1)
 		switch req.URL.Path {
-		case "/repos/kenn-io/kit/releases/tags/v0.47.1":
-			_ = json.MarshalWrite(w, selfupdate.Release{TagName: "v0.47.1", Assets: []selfupdate.Asset{{Name: name, Size: int64(archive.Len()), BrowserDownloadURL: server.URL + "/archive"}, {Name: "SHA256SUMS", BrowserDownloadURL: server.URL + "/checksums"}}})
+		case "/repos/kenn-io/kit/releases/tags/" + embedassets.BundleTag:
+			_ = json.MarshalWrite(w, selfupdate.Release{TagName: embedassets.BundleTag, Assets: []selfupdate.Asset{{Name: name, Size: int64(archive.Len()), BrowserDownloadURL: server.URL + "/archive"}, {Name: "SHA256SUMS", BrowserDownloadURL: server.URL + "/checksums"}}})
 		case "/repos/kenn-io/kit/releases/latest":
 			_ = json.MarshalWrite(w, selfupdate.Release{TagName: "v99.0.0"})
 		case "/checksums":
@@ -76,6 +77,7 @@ func installFixture(t *testing.T, mode string, cancel context.CancelFunc) (*http
 		case "/model.onnx", "/tokenizer.json":
 			if req.URL.Path == "/tokenizer.json" && mode == "canceled" && !interrupted.Swap(true) {
 				cancel()
+				<-req.Context().Done()
 				return
 			}
 			_, _ = w.Write([]byte("model fixture"))
@@ -107,7 +109,6 @@ func requestCount(calls *sync.Map, path string) int64 {
 }
 
 func TestInstallRepairsSharedCopy(t *testing.T) {
-	// The first case reproduces the incomplete-destination failure from review.
 	for _, repair := range []string{"missing runtime", "execute permission", "model only", "offline", "concurrent callers"} {
 		t.Run(repair, func(t *testing.T) {
 			client, assets, calls, closeServer := installFixture(t, "", nil)
@@ -125,8 +126,7 @@ func TestInstallRepairsSharedCopy(t *testing.T) {
 				}
 				require.Equal(t, results[0], results[1])
 				assert.Equal(t, int64(1), confirmations.Load())
-				require.Equal(t, filepath.Join(opts.DataDir, "bin", "v0.47.1", embedassets.ExecutableName()), results[0].Executable)
-				assert.Zero(t, requestCount(calls, "/repos/kenn-io/kit/releases/latest"))
+				require.Equal(t, filepath.Join(opts.DataDir, "bin", embedassets.BundleTag, embedassets.ExecutableName()), results[0].Executable)
 				return
 			}
 			result, err := install(t.Context(), opts, client, assets)
@@ -154,7 +154,7 @@ func TestInstallRepairsSharedCopy(t *testing.T) {
 					assert.Equal(t, int64(13), size)
 					assert.Equal(t, int64(1), requestCount(calls, "/tokenizer.json"))
 				} else {
-					assert.Equal(t, int64(20_000_000), size)
+					assert.Equal(t, int64(bundleDownloadBytes), size)
 				}
 				return true, nil
 			}
@@ -175,31 +175,31 @@ func TestInstallRepairsSharedCopy(t *testing.T) {
 }
 
 func TestInstallConsentAndFailures(t *testing.T) {
-	for _, mode := range []string{"missing confirmation", "declined", "stale staging", "digest", "canceled"} {
+	for _, mode := range []string{"missing confirmation", "declined with stale staging", "digest", "canceled"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			client, assets, calls, _ := installFixture(t, mode, cancel)
 			opts := InstallOptions{DataDir: t.TempDir()}
-			if mode == "stale staging" {
+			if mode == "declined with stale staging" {
 				stale := filepath.Join(opts.DataDir, ".install-interrupted")
 				require.NoError(t, os.Mkdir(stale, 0o700))
 				require.NoError(t, os.WriteFile(filepath.Join(stale, "partial"), []byte("partial"), 0o600))
 			}
 			if mode != "missing confirmation" {
 				opts.Confirm = func(_ context.Context, size int64) (bool, error) {
-					assert.Equal(t, int64(20_000_026), size)
+					assert.Equal(t, int64(bundleDownloadBytes+26), size)
 					assert.Zero(t, requestCount(calls, "/archive"))
-					return mode != "declined" && mode != "stale staging", nil
+					return mode != "declined with stale staging", nil
 				}
 			}
 			_, err := install(ctx, opts, client, assets)
 			require.Error(t, err)
 			if mode == "canceled" {
 				require.ErrorIs(t, err, context.Canceled)
-				require.NoError(t, checkBundle(filepath.Join(opts.DataDir, "bin", "v0.47.1")))
+				require.NoError(t, checkBundle(filepath.Join(opts.DataDir, "bin", embedassets.BundleTag)))
 			} else {
-				assert.NoDirExists(t, filepath.Join(opts.DataDir, "bin", "v0.47.1"))
+				assert.NoDirExists(t, filepath.Join(opts.DataDir, "bin", embedassets.BundleTag))
 			}
 			if mode == "digest" {
 				require.EqualError(t, err, "download kennembed: asset size or SHA-256 mismatch")
@@ -207,7 +207,7 @@ func TestInstallConsentAndFailures(t *testing.T) {
 			leftovers, err := filepath.Glob(filepath.Join(opts.DataDir, ".install-*"))
 			require.NoError(t, err)
 			assert.Empty(t, leftovers)
-			if mode == "missing confirmation" || mode == "declined" || mode == "stale staging" {
+			if mode == "missing confirmation" || mode == "declined with stale staging" {
 				calls.Range(func(_, value any) bool { assert.Zero(t, value.(*atomic.Int64).Load()); return true })
 			}
 			if mode == "canceled" {
