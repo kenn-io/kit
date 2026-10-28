@@ -278,7 +278,11 @@ func runServer(args []string) int {
 	mux := http.NewServeMux()
 	mux.Handle("/api/ping", daemon.NewPingHandler(daemon.PingHandlerOptions{Service: Service, Version: Version}))
 	stop := make(chan struct{})
-	mux.HandleFunc("POST /stop", func(http.ResponseWriter, *http.Request) { close(stop) })
+	mux.HandleFunc("POST /stop", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+		w.(http.Flusher).Flush()
+		close(stop)
+	})
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: time.Second}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
