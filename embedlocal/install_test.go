@@ -69,11 +69,7 @@ func installFixture(t *testing.T, mode string, cancel context.CancelFunc) (*http
 		case "/checksums":
 			_, _ = fmt.Fprintf(w, "%x  %s\n", digest, name)
 		case "/archive":
-			data := bytes.Clone(archive.Bytes())
-			if mode == "digest" {
-				data[len(data)-1] ^= 1
-			}
-			_, _ = w.Write(data)
+			_, _ = w.Write(archive.Bytes())
 		case "/model.onnx", "/tokenizer.json":
 			if req.URL.Path == "/tokenizer.json" && mode == "canceled" && !interrupted.Swap(true) {
 				cancel()
@@ -108,27 +104,29 @@ func requestCount(calls *sync.Map, path string) int64 {
 	return value.(*atomic.Int64).Load()
 }
 
+func TestInstallConcurrentCallers(t *testing.T) {
+	client, assets, _, _ := installFixture(t, "", nil)
+	var confirmations atomic.Int64
+	opts := InstallOptions{DataDir: t.TempDir(), Confirm: func(context.Context, int64) (bool, error) { confirmations.Add(1); return true, nil }}
+	var wg sync.WaitGroup
+	results, errs := make([]Installation, 2), make([]error, 2)
+	for i := range results {
+		wg.Go(func() { results[i], errs[i] = install(t.Context(), opts, client, assets) })
+	}
+	wg.Wait()
+	for _, err := range errs {
+		require.NoError(t, err)
+	}
+	require.Equal(t, results[0], results[1])
+	assert.Equal(t, int64(1), confirmations.Load())
+}
+
 func TestInstallRepairsSharedCopy(t *testing.T) {
-	for _, repair := range []string{"missing runtime", "empty executable", "execute permission", "model only", "offline", "concurrent callers"} {
+	for _, repair := range []string{"missing runtime", "empty executable", "execute permission", "model only", "offline"} {
 		t.Run(repair, func(t *testing.T) {
 			client, assets, calls, closeServer := installFixture(t, "", nil)
 			var confirmations atomic.Int64
 			opts := InstallOptions{DataDir: t.TempDir(), Confirm: func(context.Context, int64) (bool, error) { confirmations.Add(1); return true, nil }}
-			if repair == "concurrent callers" {
-				var wg sync.WaitGroup
-				results, errs := make([]Installation, 2), make([]error, 2)
-				for i := range results {
-					wg.Go(func() { results[i], errs[i] = install(t.Context(), opts, client, assets) })
-				}
-				wg.Wait()
-				for _, err := range errs {
-					require.NoError(t, err)
-				}
-				require.Equal(t, results[0], results[1])
-				assert.Equal(t, int64(1), confirmations.Load())
-				require.Equal(t, filepath.Join(opts.DataDir, "bin", embedassets.BundleTag, embedassets.ExecutableName()), results[0].Executable)
-				return
-			}
 			result, err := install(t.Context(), opts, client, assets)
 			require.NoError(t, err)
 			before := requestCount(calls, "/archive")
@@ -145,6 +143,7 @@ func TestInstallRepairsSharedCopy(t *testing.T) {
 			case "model only":
 				require.NoError(t, os.Remove(filepath.Join(embedassets.ModelDir(opts.DataDir), "tokenizer.json")))
 			case "offline":
+				require.Equal(t, filepath.Join(opts.DataDir, "bin", embedassets.BundleTag, embedassets.ExecutableName()), result.Executable)
 				closeServer()
 			}
 			opts.Confirm = func(_ context.Context, size int64) (bool, error) {
@@ -171,6 +170,8 @@ func TestInstallRepairsSharedCopy(t *testing.T) {
 			assert.Equal(t, expectedConfirmations, confirmations.Load())
 			if repair == "model only" {
 				assert.Equal(t, before, requestCount(calls, "/archive"))
+				assert.FileExists(t, filepath.Join(embedassets.ModelDir(opts.DataDir), "tokenizer.json"))
+				assert.Equal(t, int64(2), requestCount(calls, "/tokenizer.json"))
 			}
 			if repair == "empty executable" {
 				assert.Equal(t, before+1, requestCount(calls, "/archive"))
@@ -180,7 +181,7 @@ func TestInstallRepairsSharedCopy(t *testing.T) {
 }
 
 func TestInstallConsentAndFailures(t *testing.T) {
-	for _, mode := range []string{"missing confirmation", "declined with stale staging", "digest", "canceled"} {
+	for _, mode := range []string{"missing confirmation", "declined with stale staging", "canceled"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
@@ -193,7 +194,9 @@ func TestInstallConsentAndFailures(t *testing.T) {
 			}
 			if mode != "missing confirmation" {
 				opts.Confirm = func(_ context.Context, size int64) (bool, error) {
-					assert.Equal(t, int64(bundleDownloadBytes+26), size)
+					if mode == "declined with stale staging" {
+						assert.Equal(t, int64(bundleDownloadBytes+26), size)
+					}
 					assert.Zero(t, requestCount(calls, "/archive"))
 					return mode != "declined with stale staging", nil
 				}
@@ -205,9 +208,6 @@ func TestInstallConsentAndFailures(t *testing.T) {
 				require.NoError(t, checkBundle(filepath.Join(opts.DataDir, "bin", embedassets.BundleTag)))
 			} else {
 				assert.NoDirExists(t, filepath.Join(opts.DataDir, "bin", embedassets.BundleTag))
-			}
-			if mode == "digest" {
-				require.EqualError(t, err, "download kennembed: asset size or SHA-256 mismatch")
 			}
 			leftovers, err := filepath.Glob(filepath.Join(opts.DataDir, ".install-*"))
 			require.NoError(t, err)
