@@ -192,7 +192,11 @@ func TestInstallConsentAndFailures(t *testing.T) {
 			if mode == "canceled" {
 				require.ErrorIs(t, err, context.Canceled)
 			}
-			assert.NoDirExists(t, filepath.Join(opts.DataDir, "bin", "v0.47.1"))
+			if mode == "canceled" {
+				require.NoError(t, checkBundle(filepath.Join(opts.DataDir, "bin", "v0.47.1")))
+			} else {
+				assert.NoDirExists(t, filepath.Join(opts.DataDir, "bin", "v0.47.1"))
+			}
 			assert.NoDirExists(t, stale)
 			leftovers, err := filepath.Glob(filepath.Join(opts.DataDir, ".install-*"))
 			require.NoError(t, err)
@@ -201,10 +205,11 @@ func TestInstallConsentAndFailures(t *testing.T) {
 				calls.Range(func(_, value any) bool { assert.Zero(t, value.(*atomic.Int64).Load()); return true })
 			}
 			if mode == "canceled" {
-				opts.Confirm = func(context.Context, int64) (bool, error) { return true, nil }
+				opts.Confirm = func(_ context.Context, size int64) (bool, error) { assert.Equal(t, int64(13), size); return true, nil }
 				_, err = install(t.Context(), opts, client, assets)
 				require.NoError(t, err)
 				assert.Equal(t, int64(1), requestCount(calls, "/model.onnx"))
+				assert.Equal(t, int64(1), requestCount(calls, "/archive"))
 			}
 		})
 	}

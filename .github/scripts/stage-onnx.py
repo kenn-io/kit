@@ -57,3 +57,4 @@ if args.os == 'windows':
     for dll in ('msvcp140.dll', 'msvcp140_1.dll', 'vcruntime140.dll', 'vcruntime140_1.dll'):
         shutil.copy2(candidates[-1] / dll, root / dll)
     urllib.request.urlretrieve('https://aka.ms/VCRedistLicense', root / 'Visual-C++-Runtime-License.html')
+print(next(path for path in root.iterdir() if path.name.startswith(('onnxruntime.', 'libonnxruntime.'))))

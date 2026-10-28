@@ -325,13 +325,12 @@ jobs:
       - name: Stage ONNX Runtime 1.23.2
         shell: python
         run: |
-          import os, pathlib, platform, subprocess
+          import os, pathlib, subprocess
           root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'embedserver' / 'bundle'
-          subprocess.run(['python', '.github/scripts/stage-onnx.py', '--output', str(root)], check=True)
-          library = {'Windows': 'onnxruntime.dll', 'Darwin': 'libonnxruntime.1.23.2.dylib', 'Linux': 'libonnxruntime.so.1.23.2'}[platform.system()]
+          library = subprocess.check_output(['python', '.github/scripts/stage-onnx.py', '--output', str(root)], text=True).strip()
           with open(os.environ['GITHUB_ENV'], 'a') as env:
               env.write('KIT_EMBED_TEST_DIR=' + str(root.parent / 'model') + '\n')
-              env.write('KIT_EMBED_TEST_LIBRARY=' + str(root / library) + '\n')
+              env.write('KIT_EMBED_TEST_LIBRARY=' + library + '\n')
       - name: Run focused tests and native parity
         run: make test-embedserver
       - name: Compile six targets without CGo

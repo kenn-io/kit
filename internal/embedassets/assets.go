@@ -87,6 +87,12 @@ func CacheAsset(ctx context.Context, client *http.Client, dir string, a Asset, o
 	if verified, err := valid(path, a); err != nil || verified {
 		return err
 	}
+	return DownloadAsset(ctx, client, dir, a, opts...)
+}
+
+// DownloadAsset verifies and publishes a download after the caller inspected the cache.
+func DownloadAsset(ctx context.Context, client *http.Client, dir string, a Asset, opts ...atomicfile.Option) (err error) {
+	path := filepath.Join(dir, a.Name)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.URL, nil)
 	if err != nil {
 		return err

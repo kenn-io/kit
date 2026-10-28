@@ -1,8 +1,6 @@
 # Installing the local embedding server
 
-Call `embedlocal.Install` with the shared embeddings directory, conventionally `~/.kenn/embeddings`, and an app-owned `Confirm` callback. The callback receives approximate missing download bytes before any network access. A fresh installation needs about 275 MB of model files plus a 20 MB allowance for the executable and native runtime. Repairs count only the missing files. A missing callback, refusal, or cancellation returns an error.
-
-Pass `Installation.Executable` to the launcher with `--data-dir Installation.DataDir`. Both paths are absolute. Apps sharing the directory reuse `bin/v0.47.1/kennembed` or `kennembed.exe` on Windows, plus the same pinned model cache. Completed installations work offline. The installer serializes callers, repairs missing files or Unix execute permission, and reserves `.install-*` directories for temporary downloads.
+Apps share one verified server and pinned model under `~/.kenn/embeddings`. Confirmation belongs to each app. Completed installations work offline; repairs ask only for the missing download amount. The installer serializes callers and reserves `.install-*` directories for temporary downloads.
 
 ## Publishing bundles
 

@@ -1,4 +1,11 @@
 // Package embedlocal installs a shared local embedding server without loading ONNX Runtime.
+//
+// Call Install with a shared directory, conventionally ~/.kenn/embeddings, and
+// an app-owned Confirm callback. The callback receives approximate missing bytes
+// before network access. A fresh install needs about 275 MB of model files plus
+// a 20 MB bundle allowance. Refusal, cancellation, or a missing callback returns
+// an error. Launch Installation.Executable with --data-dir Installation.DataDir;
+// both paths are absolute.
 package embedlocal
 
 import (
@@ -113,12 +120,12 @@ func install(ctx context.Context, opts InstallOptions, client *http.Client, asse
 		}
 		info, err := releaseClient.Check(ctx, selfupdate.CheckOptions{Force: true})
 		if err != nil {
-			return Installation{}, err
+			return Installation{}, fmt.Errorf("resolve kennembed bundle: %w", err)
 		}
 		if info == nil {
 			return Installation{}, errors.New("no kennembed bundle is available")
 		}
-		if err := embedassets.CacheAsset(ctx, httpClient, stage, embedassets.Asset{Name: "archive", URL: info.DownloadURL, Digest: info.Checksum, Size: info.Size}); err != nil {
+		if err := embedassets.DownloadAsset(ctx, httpClient, stage, embedassets.Asset{Name: "archive", URL: info.DownloadURL, Digest: info.Checksum, Size: info.Size}); err != nil {
 			return Installation{}, fmt.Errorf("download kennembed: %w", err)
 		}
 		archive := filepath.Join(stage, "archive")
@@ -133,21 +140,19 @@ func install(ctx context.Context, opts InstallOptions, client *http.Client, asse
 		if err := checkBundle(stagedBundle); err != nil {
 			return Installation{}, err
 		}
-	}
-	if err := safefileio.EnsurePrivateDir(modelDir); err != nil {
-		return Installation{}, err
-	}
-	for _, a := range missing {
-		if err := embedassets.CacheAsset(ctx, httpClient, modelDir, a, atomicfile.WithStagingDir(stage)); err != nil {
-			return Installation{}, err
-		}
-	}
-	if !ready {
 		if err := os.MkdirAll(filepath.Dir(bundle), 0o700); err != nil {
 			return Installation{}, err
 		}
 		if err := atomicfile.Replace(stagedBundle, bundle); err != nil {
 			return Installation{}, fmt.Errorf("publish kennembed: %w", err)
+		}
+	}
+	if err := safefileio.EnsurePrivateDir(modelDir); err != nil {
+		return Installation{}, err
+	}
+	for _, a := range missing {
+		if err := embedassets.DownloadAsset(ctx, httpClient, modelDir, a, atomicfile.WithStagingDir(stage)); err != nil {
+			return Installation{}, err
 		}
 	}
 	return result, nil
