@@ -9,6 +9,7 @@ import (
 
 	"go.kenn.io/kit/lint/internal/yamlnode"
 	"gopkg.in/yaml.v3"
+	"mvdan.cc/sh/v3/expand"
 	"mvdan.cc/sh/v3/syntax"
 )
 
@@ -182,22 +183,24 @@ func installer(args []string) bool {
 	return false
 }
 
-// literal joins a word's literal and quoted parts; any expansion makes it non-literal.
+// literal decodes a word's literal and quoted parts; any expansion makes it non-literal.
 func literal(word *syntax.Word) string {
-	var result strings.Builder
 	for _, part := range word.Parts {
 		switch part := part.(type) {
-		case *syntax.Lit:
-			result.WriteString(part.Value)
-		case *syntax.SglQuoted:
-			result.WriteString(part.Value)
+		case *syntax.Lit, *syntax.SglQuoted:
 		case *syntax.DblQuoted:
-			result.WriteString(literal(&syntax.Word{Parts: part.Parts}))
+			if literal(&syntax.Word{Parts: part.Parts}) == "\x00" {
+				return "\x00"
+			}
 		default:
 			return "\x00"
 		}
 	}
-	return result.String()
+	fields, err := expand.Fields(nil, word)
+	if err != nil || len(fields) != 1 {
+		return "\x00"
+	}
+	return fields[0]
 }
 
 // unprefix normalizes executable names and skips command prefixes.

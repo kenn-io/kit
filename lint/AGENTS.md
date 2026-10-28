@@ -15,7 +15,8 @@
   rules do not live in the schema.
 - `lint/gclplugin` registers the analyzers as the `kennlint` golangci-lint
   module plugin.
-- `cmd/kennlint` runs analyzers, renders or checks configuration, and scans workflow downloads with `kennlint workflow-retries`.
+- `cmd/kennlint` runs analyzers, renders or checks configuration, and scans
+  workflow downloads with `kennlint workflow-retries`.
 
 See `docs/adopting-kennlint.md` for the consumer workflow.
 

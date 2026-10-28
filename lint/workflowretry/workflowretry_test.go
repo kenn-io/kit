@@ -11,6 +11,7 @@ import (
 func TestScan(t *testing.T) {
 	for _, tt := range []struct{ script, message string }{
 		{"curl URL", "use kit-download"},
+		{`c\url https://example.com/x`, "use kit-download"},
 		{"wget URL", "use kit-download"},
 		{"kit-retry 3 5 curl URL", "use kit-download"},
 		{">log curl URL", "use kit-download"},
