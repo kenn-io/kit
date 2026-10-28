@@ -75,4 +75,5 @@
   not make deletion successful. An S3 HEAD 404 lacks this distinction.
   A GCS JSON API 404 does not say which is missing, so object operations
   confirm a 404 with a one-item listing, which reports a missing bucket
-  distinctly.
+  distinctly. A failed confirmation preserves the listing failure without
+  reporting object absence or resolving publication uncertainty.
