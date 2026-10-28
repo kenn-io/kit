@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"slices"
 
+	"go.kenn.io/kit/lint/internal/yamlnode"
 	"gopkg.in/yaml.v3"
 )
 
@@ -77,11 +78,11 @@ func parse(src []byte) (*yaml.Node, error) {
 // from <section>.enable in base, then drops the disable key from the overlay.
 func applyDisables(base, over *yaml.Node) error {
 	for _, section := range []string{"linters", "formatters"} {
-		overSection := mappingValue(over, section)
+		overSection := yamlnode.MappingValue(over, section)
 		if overSection == nil {
 			continue
 		}
-		disable := mappingValue(overSection, "disable")
+		disable := yamlnode.MappingValue(overSection, "disable")
 		if disable == nil {
 			continue
 		}
@@ -92,7 +93,7 @@ func applyDisables(base, over *yaml.Node) error {
 		for _, item := range disable.Content {
 			names = append(names, item.Value)
 		}
-		if enable := mappingValue(mappingValue(base, section), "enable"); enable != nil {
+		if enable := yamlnode.MappingValue(yamlnode.MappingValue(base, section), "enable"); enable != nil {
 			enable.Content = slices.DeleteFunc(enable.Content, func(n *yaml.Node) bool {
 				return slices.Contains(names, n.Value)
 			})
@@ -107,7 +108,7 @@ func mergeNodes(base, over *yaml.Node) {
 	case base.Kind == yaml.MappingNode && over.Kind == yaml.MappingNode:
 		for i := 0; i+1 < len(over.Content); i += 2 {
 			key, value := over.Content[i], over.Content[i+1]
-			if existing := mappingValue(base, key.Value); existing != nil {
+			if existing := yamlnode.MappingValue(base, key.Value); existing != nil {
 				if existing.Kind == value.Kind && (value.Kind == yaml.MappingNode || value.Kind == yaml.SequenceNode) {
 					mergeNodes(existing, value)
 					continue
@@ -167,18 +168,6 @@ func equalNodes(a, b *yaml.Node) bool {
 		}
 	}
 	return true
-}
-
-func mappingValue(m *yaml.Node, key string) *yaml.Node {
-	if m == nil || m.Kind != yaml.MappingNode {
-		return nil
-	}
-	for i := 0; i+1 < len(m.Content); i += 2 {
-		if m.Content[i].Value == key {
-			return m.Content[i+1]
-		}
-	}
-	return nil
 }
 
 func deleteKey(m *yaml.Node, key string) {

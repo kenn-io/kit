@@ -211,3 +211,36 @@ The canonical configuration is `lint/config/golangci.yml`. Analyzers live in
 `lint/<name>/` with `analysistest` fixtures under `testdata/`. Changes there
 land in every repository on its next kit upgrade and `kennlint config` run, so
 prefer additive changes and describe the rationale in the pull request.
+
+## Retrying workflow downloads
+
+`kennlint workflow-retries [path ...]` scans workflow and composite-action YAML,
+defaulting to `.github`. It checks Bash and sh `run:` steps, including steps
+without an explicit shell. Every `curl` or `wget` call must use `kit-download`.
+Package installers must run under `kit-retry`, including APT, Go, npm, pnpm,
+yarn, bun, pip, Docker pulls, apk, brew, cargo, pipx, and dnf.
+
+Add the action after checkout to put both commands on PATH. Copy the action
+into your repository, or reference the Kit action at a pinned commit.
+
+```yaml
+- uses: ./.github/actions/kit-retry
+- shell: bash
+  run: |
+    kit-download https://example.com/tool.tgz tool.tgz
+    kit-retry 3 5 sudo apt-get -o APT::Update::Error-Mode=any update
+    kit-retry 3 5 sudo apt-get install -y tool
+```
+
+`kit-retry ATTEMPTS BASE_DELAY COMMAND [ARG...]` waits BASE_DELAY seconds,
+then twice that delay, between attempts. The example makes three attempts
+with waits of five and ten seconds. APT's error mode makes a failed mirror
+fetch return an error; plain `apt-get update` can exit successfully.
+
+`kit-download URL DEST` replaces DEST only after a successful download and
+removes its temporary file on failure. It retries three times with waits of
+five and ten seconds, a 30-second connection timeout, and a low-speed timeout.
+For `curl | sh` installers, download a file first, then run it. Downloads with
+authentication headers need a custom download command with an allow comment. Put `# workflowretry: allow <reason>` on the command's line or
+alone on the line above. Local readiness probes that already poll can use it.
+On Windows, `shell: bash` is the tested path for the action's PATH setup.
