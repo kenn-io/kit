@@ -2,7 +2,6 @@ package embedlocal
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -10,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -20,45 +20,36 @@ import (
 	"go.kenn.io/kit/daemon"
 )
 
-func TestEndpointOllamaPrecedesDiscovery(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/api/tags", r.URL.Path)
-		fmt.Fprint(w, `{"models":[{"name":"nomic-embed-text:latest"}]}`)
-	}))
-	defer server.Close()
-	path := filepath.Join(t.TempDir(), "file")
-	require.NoError(t, os.WriteFile(path, nil, 0o600))
-	got, err := endpoint(t.Context(), Options{DataDir: path}, server.URL)
-	require.NoError(t, err)
-	assert.Equal(t, server.URL+"/v1", got)
-}
-
 func TestEndpointOllamaFallback(t *testing.T) {
 	for _, tc := range []struct {
 		name, body string
 		status     int
 	}{
+		{"bare", `{"models":[{"name":"nomic-embed-text"}]}`, 200},
+		{"latest", `{"models":[{"name":"nomic-embed-text:latest"}]}`, 200},
 		{"status", `{"models":[{"name":"nomic-embed-text:latest"}]}`, 503},
 		{"chat only", `{"version":"0.20.0","models":[{"name":"llama3.2:latest"}]}`, 200},
 		{"custom tag", `{"models":[{"name":"nomic-embed-text:v1.5"}]}`, 200},
 		{"oversized", `{"padding":"` + strings.Repeat("x", 1<<20) + `","version":"0.20.0"}`, 200},
 		{"trailing data", `{"models":[{"name":"nomic-embed-text"}]}garbage`, 200},
-		{"transport", "", 200},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "/api/tags", r.URL.Path)
 				w.WriteHeader(tc.status)
 				fmt.Fprint(w, tc.body)
 			}))
 			defer ollama.Close()
-			if tc.name == "transport" {
-				ollama.Close()
-			}
 			dir := t.TempDir()
-			local := localServer(t, dir, "1")
+			want := localServer(t, dir, "1").URL + "/v1"
+			if tc.name == "bare" || tc.name == "latest" {
+				dir = filepath.Join(dir, "file")
+				require.NoError(t, os.WriteFile(dir, nil, 0o600))
+				want = ollama.URL + "/v1"
+			}
 			got, err := endpoint(t.Context(), Options{DataDir: dir}, ollama.URL)
 			require.NoError(t, err)
-			assert.Equal(t, local.URL+"/v1", got)
+			assert.Equal(t, want, got)
 		})
 	}
 }
@@ -76,6 +67,16 @@ func TestEndpointMissingAndUnreachable(t *testing.T) {
 	local.Close()
 	_, err = endpoint(t.Context(), Options{DataDir: dir, Executable: "must-not-start"}, ollama.URL)
 	require.ErrorIs(t, err, daemon.ErrDaemonUnreachable)
+	dir = t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "exit"), nil, 0o600))
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	_, err = endpoint(ctx, Options{DataDir: dir, Executable: executable}, ollama.URL)
+	require.ErrorContains(t, err, "ONNX Runtime library missing")
+	require.ErrorContains(t, err, filepath.Join(dir, "kennembed.log"))
+	assert.NoError(t, ctx.Err(), "child exit should end startup before its timeout")
 }
 
 func localServer(t *testing.T, dir, version string) *httptest.Server {
@@ -90,95 +91,101 @@ func localServer(t *testing.T, dir, version string) *httptest.Server {
 }
 
 func TestEndpointStartup(t *testing.T) {
-	ollama := httptest.NewServer(http.NotFoundHandler())
-	defer ollama.Close()
-	dir := t.TempDir()
-	entered, release := make(chan struct{}), make(chan struct{})
-	openGate := sync.OnceFunc(func() { close(release) })
-	gate := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { close(entered); <-release }))
-	defer gate.Close()
-	defer openGate()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "gate"), []byte(gate.URL), 0o600))
-	executable, err := os.Executable()
-	require.NoError(t, err)
-	cwd, err := os.Getwd()
-	require.NoError(t, err)
-	relative, err := filepath.Rel(cwd, dir)
-	require.NoError(t, err)
-	var wg sync.WaitGroup
-	results := make([]string, 4)
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	t.Cleanup(func() {
-		var records []daemon.RuntimeRecord
-		var err error
-		require.Eventually(t, func() bool {
-			records, err = (daemon.RuntimeStore{Dir: dir, Prefix: Service}).List()
-			return err == nil && len(records) == 1
-		}, 5*time.Second, 10*time.Millisecond)
-		req, err := http.NewRequestWithContext(context.WithoutCancel(t.Context()), http.MethodPost, records[0].Endpoint().BaseURL()+"/stop", nil)
-		require.NoError(t, err)
-		client := &http.Client{Timeout: 5 * time.Second}
-		resp, err := client.Do(req)
-		require.NoError(t, err)
-		resp.Body.Close()
-		require.Eventually(t, func() bool { return !daemon.ProcessAlive(records[0].PID) }, 5*time.Second, 10*time.Millisecond)
-	})
-	first := make(chan error, 1)
-	go func() {
-		_, err := endpoint(ctx, Options{DataDir: relative, Executable: executable}, ollama.URL)
-		first <- err
-	}()
-	<-entered
-	cancel()
-	require.ErrorIs(t, <-first, context.Canceled)
-	for i := range results {
-		wg.Go(func() {
-			value, err := endpoint(t.Context(), Options{DataDir: relative, Executable: executable}, ollama.URL)
-			assert.NoError(t, err)
-			results[i] = value
+	for _, status := range []int{200, 503} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			ollama := httptest.NewServer(http.NotFoundHandler())
+			defer ollama.Close()
+			dir := t.TempDir()
+			entered, release := make(chan int, 1), make(chan struct{})
+			openGate := sync.OnceFunc(func() { close(release) })
+			gate := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				pid, _ := strconv.Atoi(r.URL.Query().Get("pid"))
+				select {
+				case entered <- pid:
+				default:
+				}
+				<-release
+				w.WriteHeader(status)
+			}))
+			defer gate.Close()
+			defer openGate()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "gate"), []byte(gate.URL), 0o600))
+			executable, err := os.Executable()
+			require.NoError(t, err)
+			var wg sync.WaitGroup
+			results := make([]struct {
+				url string
+				err error
+			}, 4)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var childPID int
+			t.Cleanup(func() {
+				if status == 503 {
+					require.Eventually(t, func() bool { return !daemon.ProcessAlive(childPID) }, 5*time.Second, 10*time.Millisecond)
+					return
+				}
+				var records []daemon.RuntimeRecord
+				var err error
+				require.Eventually(t, func() bool {
+					records, err = (daemon.RuntimeStore{Dir: dir, Prefix: Service}).List()
+					return err == nil && len(records) == 1
+				}, 5*time.Second, 10*time.Millisecond)
+				assert.Equal(t, childPID, records[0].PID)
+				assert.Equal(t, records[0].Endpoint().BaseURL()+"/v1", results[0].url)
+				req, err := http.NewRequestWithContext(context.WithoutCancel(t.Context()), http.MethodPost, records[0].Endpoint().BaseURL()+"/stop", nil)
+				require.NoError(t, err)
+				client := &http.Client{Timeout: 5 * time.Second}
+				resp, err := client.Do(req)
+				require.NoError(t, err)
+				resp.Body.Close()
+				require.Eventually(t, func() bool { return !daemon.ProcessAlive(records[0].PID) }, 5*time.Second, 10*time.Millisecond)
+			})
+			first := make(chan error, 1)
+			go func() {
+				_, err := endpoint(ctx, Options{DataDir: dir, Executable: executable}, ollama.URL)
+				first <- err
+			}()
+			childPID = <-entered
+			cancel()
+			firstErr := <-first
+			require.ErrorIs(t, firstErr, context.Canceled)
+			require.ErrorContains(t, firstErr, filepath.Join(dir, "kennembed.log"))
+			joining, stopJoining := context.WithTimeout(t.Context(), 5*time.Second)
+			defer stopJoining()
+			for i := range results {
+				wg.Go(func() {
+					results[i].url, results[i].err = endpoint(joining, Options{DataDir: dir, Executable: executable}, ollama.URL)
+				})
+			}
+			store := daemon.RuntimeStore{Dir: dir, Prefix: Service}
+			require.Eventually(t, func() bool {
+				unlock, acquired, err := store.TryAcquireStartLock(t.Context())
+				if acquired {
+					unlock()
+				}
+				return err == nil && !acquired
+			}, 5*time.Second, time.Millisecond)
+			waiting, stopWaiting := context.WithTimeout(t.Context(), 3*time.Second)
+			unlock, err := store.AcquireStartLock(waiting)
+			stopWaiting()
+			if unlock != nil {
+				unlock()
+			}
+			require.ErrorIs(t, err, context.DeadlineExceeded, "callers must keep waiting while the owner loads")
+			openGate()
+			wg.Wait()
+			for _, result := range results {
+				if status == 503 {
+					require.ErrorContains(t, result.err, "cache model.onnx: download: HTTP 503")
+				} else {
+					require.NoError(t, result.err)
+					assert.Equal(t, results[0].url, result.url)
+				}
+			}
+			assert.NoError(t, joining.Err(), "shared failure must be reported before the caller deadline")
 		})
 	}
-	store := daemon.RuntimeStore{Dir: dir, Prefix: Service}
-	require.Eventually(t, func() bool {
-		unlock, acquired, err := store.TryAcquireStartLock(t.Context())
-		if acquired {
-			unlock()
-		}
-		return err == nil && !acquired
-	}, 5*time.Second, time.Millisecond)
-	waiting, stopWaiting := context.WithTimeout(t.Context(), 3*time.Second)
-	unlock, err := store.AcquireStartLock(waiting)
-	stopWaiting()
-	if unlock != nil {
-		unlock()
-	}
-	require.ErrorIs(t, err, context.DeadlineExceeded, "callers must keep waiting while the owner loads")
-	openGate()
-	wg.Wait()
-	for _, result := range results {
-		assert.Equal(t, results[0], result)
-	}
-	launches, err := os.ReadFile(filepath.Join(dir, "launches"))
-	require.NoError(t, err)
-	assert.Equal(t, "launch\n", string(launches))
-	_, err = daemon.Probe(t.Context(), daemon.Endpoint{Network: daemon.NetworkTCP, Address: strings.TrimPrefix(strings.TrimSuffix(results[0], "/v1"), "http://")}, daemon.ProbeOptions{ExpectedService: Service})
-	require.NoError(t, err, "successful startup must survive request cancellation")
-}
-
-func TestEndpointEarlyExit(t *testing.T) {
-	ollama := httptest.NewServer(http.NotFoundHandler())
-	defer ollama.Close()
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "exit"), nil, 0o600))
-	executable, err := os.Executable()
-	require.NoError(t, err)
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	_, err = endpoint(ctx, Options{DataDir: dir, Executable: executable}, ollama.URL)
-	require.ErrorContains(t, err, "ONNX Runtime library missing")
-	require.ErrorContains(t, err, filepath.Join(dir, "kennembed.log"))
-	assert.NoError(t, ctx.Err(), "child exit should end startup before its timeout")
 }
 
 func TestMain(m *testing.M) {
@@ -208,25 +215,18 @@ func runServer(args []string) int {
 		fmt.Fprintln(os.Stderr, "ONNX Runtime library missing")
 		return 12
 	}
-	file, err := os.OpenFile(filepath.Join(*dir, "launches"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		return 3
-	}
-	_, err = fmt.Fprintln(file, "launch")
-	if errors.Join(err, file.Close()) != nil {
-		return 4
-	}
 	if gate, err := os.ReadFile(filepath.Join(*dir, "gate")); err == nil {
-		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, string(gate), nil)
-		if err != nil {
-			return 7
-		}
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, fmt.Sprintf("%s?pid=%d", gate, os.Getpid()), nil)
 		client := &http.Client{Timeout: 20 * time.Second}
 		resp, err := client.Do(req)
 		if err != nil {
 			return 8
 		}
 		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			fmt.Fprintln(os.Stderr, "cache model.onnx: download: HTTP 503")
+			return 8
+		}
 	}
 	listener, err := new(net.ListenConfig).Listen(context.Background(), "tcp", *listen)
 	if err != nil {

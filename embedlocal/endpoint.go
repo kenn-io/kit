@@ -68,8 +68,8 @@ func endpoint(ctx context.Context, opts Options, ollama string) (string, error) 
 			RequirePIDAlive: true,
 			Probe:           daemon.ProbeOptions{ExpectedService: Service},
 		},
-		Compatible: func(rec daemon.RuntimeRecord, info daemon.PingInfo) bool {
-			return rec.Service == Service && rec.Version == Version && info.Version == Version
+		Compatible: func(_ daemon.RuntimeRecord, info daemon.PingInfo) bool {
+			return info.Version == Version
 		},
 	}
 	if opts.Executable == "" {
@@ -84,12 +84,29 @@ func endpoint(ctx context.Context, opts Options, ollama string) (string, error) 
 	}
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
+	path := filepath.Join(opts.DataDir, "kennembed.log")
+	discovery := manager
+	joining := false
+	manager.FindFunc = func(ctx context.Context) (daemon.RuntimeRecord, daemon.PingInfo, bool, error) {
+		rec, info, ok, err := discovery.Find(ctx)
+		if err == nil && !ok {
+			held, probeErr := ownerHeld(ctx, manager.Store)
+			if probeErr != nil {
+				err = probeErr
+			} else if held {
+				joining = true
+			} else if joining {
+				err = startupError(path, errors.New("embeddings startup owner released before readiness"))
+				cancel(err)
+			}
+		}
+		return rec, info, ok, err
+	}
 	manager.Start = func(ctx context.Context) error {
 		held, err := ownerHeld(ctx, manager.Store)
 		if err != nil || held {
 			return err
 		}
-		path := filepath.Join(opts.DataDir, "kennembed.log")
 		log, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 		if err != nil {
 			return fmt.Errorf("open embeddings log: %w", err)
@@ -113,7 +130,7 @@ func endpoint(ctx context.Context, opts Options, ollama string) (string, error) 
 				if err == nil {
 					err = errors.New("server exited before readiness")
 				}
-				cancel(startupError(path, err))
+				cancel(startupError(path, fmt.Errorf("embeddings server exited: %w", err)))
 			},
 		})
 		return errors.Join(err, log.Close())
@@ -121,7 +138,10 @@ func endpoint(ctx context.Context, opts Options, ollama string) (string, error) 
 	rec, _, err := manager.Ensure(ctx, 2*time.Minute)
 	if err != nil {
 		if cause := context.Cause(ctx); cause != nil {
-			return "", cause
+			err = cause
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			err = startupError(path, fmt.Errorf("waiting for embeddings server readiness: %w", err))
 		}
 		return "", err
 	}
@@ -174,8 +194,8 @@ func ownerHeld(ctx context.Context, store daemon.RuntimeStore) (bool, error) {
 	return false, err
 }
 
-func startupError(path string, exit error) error {
-	failure := fmt.Errorf("embeddings server exited: %w; log %s", exit, path)
+func startupError(path string, cause error) error {
+	failure := fmt.Errorf("%w; log %s", cause, path)
 	log, err := os.Open(path)
 	if err != nil {
 		return errors.Join(failure, err)
