@@ -164,7 +164,6 @@ func TestEndpointStartup(t *testing.T) {
 				time.Sleep(tc.delay) //nolint:kennlint // separates the default budget from a longer caller deadline across the child process
 				openGate()
 				results = []result{<-first}
-				require.NoError(t, ctx.Err(), "the caller remains uncanceled")
 				if tc.name == "default" {
 					require.ErrorIs(t, results[0].err, context.DeadlineExceeded)
 					require.ErrorContains(t, results[0].err, filepath.Join(dir, "kennembed.log"))

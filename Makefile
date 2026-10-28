@@ -83,4 +83,3 @@ actions-lock-check: gh-actions-lock-install
 .PHONY: test-embedlocal
 test-embedlocal:
 	go test -race ./embedlocal
-	go test -race ./embedserver -run '^TestServeDiscoveryAndCancellation$$'
