@@ -2,6 +2,7 @@
 package workflowretry
 
 import (
+	"fmt"
 	"path"
 	"regexp"
 	"strconv"
@@ -161,9 +162,9 @@ func scanScript(source string) []string {
 		}
 		switch {
 		case len(args) > 0 && (args[0] == "curl" || args[0] == "wget"):
-			findings = append(findings, "use kit-download")
+			findings = append(findings, fmt.Sprintf("%s on script line %d: use kit-download", args[0], call.Pos().Line()))
 		case !wrapped && installer(args):
-			findings = append(findings, "wrap in kit-retry")
+			findings = append(findings, fmt.Sprintf("%s on script line %d: wrap in kit-retry", args[0], call.Pos().Line()))
 		}
 		return true
 	})

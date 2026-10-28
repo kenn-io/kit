@@ -223,7 +223,7 @@ yarn, bun, pip, Docker pulls, apk, brew, cargo, pipx, and dnf.
 The check does not follow other launchers (`timeout`, `xargs`, `bash -c`, or
 value-taking options of `sudo`, `env`, and `exec`), and does not flag unlisted
 commands that fetch, such as `docker run`, `go run module@version`, or
-`go mod tidy`.
+`go mod tidy`, or installers outside the list, such as `gem`, `uv`, or `choco`.
 
 Add the action after checkout to put both commands on PATH. Copy the action
 into your repository, or reference the Kit action at a pinned commit.
@@ -247,6 +247,6 @@ removes its temporary file on failure. It retries three times with waits of
 five and ten seconds, a 30-second connection timeout, and a low-speed timeout.
 For `curl | sh` installers, download a file first, then run it. Downloads with
 authentication headers need a custom download command with an allow comment.
-Put `# workflowretry: allow <reason>` on the command's line or alone on the
-line above. Local readiness probes that already poll can use it.
+Put `# workflowretry: allow <reason>` on the line where the command starts,
+or alone on the line above. Local readiness probes that already poll can use it.
 On Windows, `shell: bash` is the tested path for the action's PATH setup.

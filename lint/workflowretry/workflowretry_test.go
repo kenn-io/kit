@@ -65,6 +65,29 @@ func TestScan(t *testing.T) {
 	}
 }
 
+func TestScanDistinguishesCommandsInOneStep(t *testing.T) {
+	for _, tt := range []struct {
+		script   string
+		messages []string
+	}{
+		{"apt-get update\napt-get install -y jq", []string{"apt-get on script line 1: wrap in kit-retry", "apt-get on script line 2: wrap in kit-retry"}},
+		{"curl URL\nwget URL", []string{"curl on script line 1: use kit-download", "wget on script line 2: use kit-download"}},
+	} {
+		t.Run(tt.script, func(t *testing.T) {
+			src := "jobs:\n  test:\n    steps:\n      - run: |\n          " + strings.ReplaceAll(tt.script, "\n", "\n          ") + "\n"
+			findings, err := Scan([]byte(src))
+			require.NoError(t, err)
+			require.Len(t, findings, 2)
+			assert.NotEqual(t, findings[0].Message, findings[1].Message)
+			for i, finding := range findings {
+				assert.Equal(t, tt.messages[i], finding.Message)
+				assert.Equal(t, 4, finding.Line)
+				assert.Equal(t, 9, finding.Column)
+			}
+		})
+	}
+}
+
 func TestScanShellsAndComposite(t *testing.T) {
 	for _, src := range []string{
 		"defaults: {run: {shell: pwsh}}\njobs: {test: {steps: [{run: curl URL}]}}",
