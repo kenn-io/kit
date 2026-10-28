@@ -101,9 +101,8 @@ func endpoint(ctx context.Context, opts Options, ollama string, timeout time.Dur
 		return rec, info, ok, err
 	}
 	manager.Start = func(ctx context.Context) error {
-		held, err := ownerHeld(ctx, manager.Store)
-		if err != nil || held {
-			return err
+		if joining {
+			return nil
 		}
 		log, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_APPEND, 0o600)
 		if err != nil {

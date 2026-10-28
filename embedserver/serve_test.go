@@ -1,8 +1,10 @@
 package embedserver
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -173,4 +175,46 @@ func startEmbeddingRequest(t *testing.T, record daemon.RuntimeRecord) <-chan err
 		done <- err
 	}()
 	return done
+}
+
+func TestServePrintsFailureBeforeOwnerRelease(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	require.NoError(t, err)
+	defer reader.Close()
+	stderr := os.Stderr
+	os.Stderr = writer
+	defer func() { os.Stderr = stderr }()
+	store := daemon.RuntimeStore{Dir: t.TempDir(), Prefix: "kit-embed"}
+	// Hold the diagnostic write open while checking the actual server's owner lock.
+	failure := errors.New("model unavailable: " + strings.Repeat("x", 1<<20))
+	done := make(chan error, 1)
+	go func() {
+		err := serve(t.Context(), Options{DataDir: store.Dir}, func(context.Context, string, string) (engine, error) { return nil, failure }, daemon.Endpoint.ListenContext)
+		// The CLI prints returned errors after Serve returns.
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
+		writer.Close()
+		done <- err
+	}()
+	defer func() {
+		_, err := io.Copy(io.Discard, reader)
+		require.NoError(t, err)
+		require.ErrorIs(t, <-done, failure)
+	}()
+	output := bufio.NewReader(reader)
+	loading, err := output.ReadString('\n')
+	require.NoError(t, err)
+	require.Equal(t, "Loading nomic-embed-text model...\n", loading)
+	prefix := make([]byte, len("model unavailable:"))
+	_, err = io.ReadFull(output, prefix)
+	require.NoError(t, err)
+	require.Equal(t, "model unavailable:", string(prefix))
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond) //nolint:kennlint // probes the OS lock while the stderr pipe holds the diagnostic write open
+	defer cancel()
+	release, err := store.AcquireOwnerLock(ctx)
+	if release != nil {
+		release()
+	}
+	require.ErrorIs(t, err, context.DeadlineExceeded, "failure must be visible before ownership is released")
 }

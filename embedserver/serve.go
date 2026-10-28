@@ -57,7 +57,12 @@ func serve(ctx context.Context, opts Options, load func(context.Context, string,
 	if err != nil {
 		return fmt.Errorf("cannot own %s, another kennembed may be running: %w", opts.DataDir, err)
 	}
-	defer release()
+	defer func() {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
+		release()
+	}()
 	// The owner lock proves that servers which left records are gone.
 	if _, err := store.CleanupDead(); err != nil {
 		return fmt.Errorf("remove stale runtime records: %w", err)
