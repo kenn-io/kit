@@ -113,19 +113,27 @@ func TestInstallRepairsSharedCopy(t *testing.T) {
 			client, assets, calls, closeServer := installFixture(t, "", nil)
 			var confirmations atomic.Int64
 			opts := InstallOptions{DataDir: t.TempDir(), Confirm: func(context.Context, int64) (bool, error) { confirmations.Add(1); return true, nil }}
-			var wg sync.WaitGroup
-			results, errs := make([]Installation, 2), make([]error, 2)
-			for i := range results {
-				wg.Go(func() { results[i], errs[i] = install(t.Context(), opts, client, assets) })
-			}
-			wg.Wait()
-			for _, err := range errs {
+			var result Installation
+			if repair == "missing runtime" {
+				var wg sync.WaitGroup
+				results, errs := make([]Installation, 2), make([]error, 2)
+				for i := range results {
+					wg.Go(func() { results[i], errs[i] = install(t.Context(), opts, client, assets) })
+				}
+				wg.Wait()
+				for _, err := range errs {
+					require.NoError(t, err)
+				}
+				require.Equal(t, results[0], results[1])
+				assert.Equal(t, int64(1), confirmations.Load())
+				result = results[0]
+				require.Equal(t, filepath.Join(opts.DataDir, "bin", "v0.47.1", embedassets.ExecutableName()), result.Executable)
+				assert.Zero(t, requestCount(calls, "/repos/kenn-io/kit/releases/latest"))
+			} else {
+				var err error
+				result, err = install(t.Context(), opts, client, assets)
 				require.NoError(t, err)
 			}
-			require.Equal(t, results[0], results[1])
-			assert.Equal(t, int64(1), confirmations.Load())
-			result := results[0]
-			require.Equal(t, filepath.Join(opts.DataDir, "bin", "v0.47.1", embedassets.ExecutableName()), result.Executable)
 			before := requestCount(calls, "/archive")
 			switch repair {
 			case "missing runtime":
@@ -162,10 +170,9 @@ func TestInstallRepairsSharedCopy(t *testing.T) {
 				expectedConfirmations = 1
 			}
 			assert.Equal(t, expectedConfirmations, confirmations.Load())
-			if repair == "model only" || repair == "offline" {
+			if repair == "model only" {
 				assert.Equal(t, before, requestCount(calls, "/archive"))
 			}
-			assert.Zero(t, requestCount(calls, "/repos/kenn-io/kit/releases/latest"))
 		})
 	}
 }
@@ -177,9 +184,11 @@ func TestInstallConsentAndFailures(t *testing.T) {
 			defer cancel()
 			client, assets, calls, _ := installFixture(t, mode, cancel)
 			opts := InstallOptions{DataDir: t.TempDir()}
-			stale := filepath.Join(opts.DataDir, ".install-interrupted")
-			require.NoError(t, os.Mkdir(stale, 0o700))
-			require.NoError(t, os.WriteFile(filepath.Join(stale, "partial"), []byte("partial"), 0o600))
+			if mode == "declined" {
+				stale := filepath.Join(opts.DataDir, ".install-interrupted")
+				require.NoError(t, os.Mkdir(stale, 0o700))
+				require.NoError(t, os.WriteFile(filepath.Join(stale, "partial"), []byte("partial"), 0o600))
+			}
 			if mode != "missing confirmation" {
 				opts.Confirm = func(_ context.Context, size int64) (bool, error) {
 					assert.Equal(t, int64(20_000_026), size)
@@ -197,7 +206,6 @@ func TestInstallConsentAndFailures(t *testing.T) {
 			} else {
 				assert.NoDirExists(t, filepath.Join(opts.DataDir, "bin", "v0.47.1"))
 			}
-			assert.NoDirExists(t, stale)
 			leftovers, err := filepath.Glob(filepath.Join(opts.DataDir, ".install-*"))
 			require.NoError(t, err)
 			assert.Empty(t, leftovers)

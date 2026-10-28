@@ -120,13 +120,20 @@ func TestCacheModelUsesPinnedURLAndCacheLayout(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(cached, "model.onnx"))
 	require.NoError(t, err)
 	assert.Equal(t, "valid", string(data))
-	server.Close()
-	missing, err := MissingModel(cached, ModelAssets())
+}
+
+func TestMissingModel(t *testing.T) {
+	dir := t.TempDir()
+	digest := sha256.Sum256([]byte("valid"))
+	assets := []Asset{{Name: "model.onnx", Digest: hex.EncodeToString(digest[:]), Size: 5}}
+	path := filepath.Join(dir, "model.onnx")
+	require.NoError(t, os.WriteFile(path, []byte("valid"), 0o600))
+	missing, err := MissingModel(dir, assets)
 	require.NoError(t, err)
 	assert.Empty(t, missing)
-	require.NoError(t, os.WriteFile(filepath.Join(cached, "model.onnx"), []byte("wrong"), 0o600))
-	missing, err = MissingModel(cached, ModelAssets())
+	require.NoError(t, os.WriteFile(path, []byte("wrong"), 0o600))
+	missing, err = MissingModel(dir, assets)
 	require.NoError(t, err)
-	assert.Len(t, missing, 1)
-	assert.FileExists(t, filepath.Join(cached, "model.onnx"))
+	assert.Equal(t, assets, missing)
+	assert.FileExists(t, path)
 }

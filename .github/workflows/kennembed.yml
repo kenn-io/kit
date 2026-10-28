@@ -1,6 +1,18 @@
 name: kennembed release bundles
 on:
   pull_request:
+    paths:
+      - '.github/workflows/kennembed.yml'
+      - '.github/workflows/ci.yml'
+      - '.github/scripts/stage-onnx.py'
+      - 'cmd/kennembed/**'
+      - 'embedserver/**'
+      - 'embedlocal/**'
+      - 'embedclient/**'
+      - 'internal/embedassets/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
   workflow_dispatch:
     inputs:
       tag:
@@ -85,4 +97,4 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
           sha256sum kennembed_* > SHA256SUMS
-          gh release upload "$RELEASE_TAG" kennembed_* SHA256SUMS --clobber
+          gh release upload "$RELEASE_TAG" kennembed_* SHA256SUMS

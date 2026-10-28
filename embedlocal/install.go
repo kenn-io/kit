@@ -1,7 +1,7 @@
 // Package embedlocal installs a shared local embedding server without loading ONNX Runtime.
 //
-// Call Install with a shared directory, conventionally ~/.kenn/embeddings, and
-// an app-owned Confirm callback. The callback receives approximate missing bytes
+// Call Install with the shared directory chosen by server discovery and startup
+// and an app-owned Confirm callback. The callback receives approximate missing bytes
 // before network access. A fresh install needs about 275 MB of model files plus
 // a 20 MB bundle allowance. Refusal, cancellation, or a missing callback returns
 // an error. Launch Installation.Executable with --data-dir Installation.DataDir;
@@ -42,8 +42,9 @@ type Installation struct{ Executable, DataDir string }
 const bundleDownloadBytes = 20_000_000
 
 // Install reuses the pinned server offline or confirms before downloading missing
-// files. Concurrent callers share one installation. Pass the returned Executable
-// and DataDir to the launcher; the installation lock is released before return.
+// files. Concurrent callers share one installation. Use the shared DataDir from
+// the caller's server discovery and startup integration. Pass the returned paths
+// to the launcher; the installation lock is released before return.
 func Install(ctx context.Context, opts InstallOptions) (Installation, error) {
 	return install(ctx, opts, nil, embedassets.ModelAssets())
 }
