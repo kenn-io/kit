@@ -40,7 +40,7 @@ func TestEndpointOllamaFallback(t *testing.T) {
 			defer ollama.Close()
 			dir := t.TempDir()
 			backends := map[string]string{"local": localServer(t, dir, Version).URL + "/v1", "ollama": ollama.URL + "/v1"}
-			got, err := endpoint(t.Context(), Options{DataDir: dir}, ollama.URL)
+			got, err := endpoint(t.Context(), Options{DataDir: dir}, ollama.URL, 2*time.Minute)
 			require.NoError(t, err)
 			assert.Equal(t, backends[tc.backend], got)
 		})
@@ -51,14 +51,14 @@ func TestEndpointMissingAndUnreachable(t *testing.T) {
 	ollama := httptest.NewServer(http.NotFoundHandler())
 	defer ollama.Close()
 	dir := t.TempDir()
-	_, err := endpoint(t.Context(), Options{DataDir: dir}, ollama.URL)
+	_, err := endpoint(t.Context(), Options{DataDir: dir}, ollama.URL, 2*time.Minute)
 	require.ErrorIs(t, err, ErrNotFound)
 	localServer(t, dir, "2")
-	_, err = endpoint(t.Context(), Options{DataDir: dir}, ollama.URL)
+	_, err = endpoint(t.Context(), Options{DataDir: dir}, ollama.URL, 2*time.Minute)
 	require.ErrorIs(t, err, ErrNotFound)
 	local := localServer(t, dir, Version)
 	local.Close()
-	_, err = endpoint(t.Context(), Options{DataDir: dir, Executable: "must-not-start"}, ollama.URL)
+	_, err = endpoint(t.Context(), Options{DataDir: dir, Executable: "must-not-start"}, ollama.URL, 2*time.Minute)
 	require.ErrorIs(t, err, daemon.ErrDaemonUnreachable)
 }
 
@@ -79,12 +79,9 @@ func TestEndpointStartup(t *testing.T) {
 		status int
 		delay  time.Duration
 	}{
-		{"reuse", 200, 0}, {"failed", 503, 0}, {"early", 0, 0}, {"slow", 200, 125 * time.Second},
+		{"reuse", 200, 0}, {"failed", 503, 0}, {"early", 0, 0}, {"slow", 200, 200 * time.Millisecond},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.delay > 0 && testing.Short() {
-				t.Skip("slow startup crosses the real two-minute boundary")
-			}
 			ollama := httptest.NewServer(http.NotFoundHandler())
 			defer ollama.Close()
 			dir := t.TempDir()
@@ -113,9 +110,6 @@ func TestEndpointStartup(t *testing.T) {
 			}
 			results := make([]result, 4)
 			budget := 5 * time.Second
-			if tc.delay > 0 {
-				budget = 3 * time.Minute
-			}
 			ctx, cancel := context.WithTimeout(t.Context(), budget)
 			defer cancel()
 			var childPID int
@@ -150,7 +144,7 @@ func TestEndpointStartup(t *testing.T) {
 			})
 			first := make(chan result, 1)
 			go func() {
-				url, err := endpoint(ctx, Options{DataDir: dir, Executable: executable}, ollama.URL)
+				url, err := endpoint(ctx, Options{DataDir: dir, Executable: executable}, ollama.URL, 100*time.Millisecond)
 				first <- result{url, err}
 			}()
 			if tc.name == "early" {
@@ -162,7 +156,7 @@ func TestEndpointStartup(t *testing.T) {
 			}
 			childPID = <-entered
 			if tc.delay > 0 {
-				time.Sleep(tc.delay) //nolint:kennlint // exercises the real two-minute startup boundary across a child process
+				time.Sleep(tc.delay) //nolint:kennlint // holds child readiness beyond the injected default startup wait
 				openGate()
 				results = []result{<-first}
 				require.NoError(t, ctx.Err(), "the caller allows a longer download")
@@ -176,7 +170,7 @@ func TestEndpointStartup(t *testing.T) {
 				var wg sync.WaitGroup
 				for i := range results {
 					wg.Go(func() {
-						results[i].url, results[i].err = endpoint(joining, Options{DataDir: dir, Executable: executable}, ollama.URL)
+						results[i].url, results[i].err = endpoint(joining, Options{DataDir: dir, Executable: executable}, ollama.URL, 100*time.Millisecond)
 					})
 				}
 				store := daemon.RuntimeStore{Dir: dir, Prefix: Service}

@@ -42,15 +42,12 @@ func DefaultDir() (string, error) {
 // Startup follows ctx's deadline, or waits at most two minutes without one.
 // A started server continues loading after ctx is canceled.
 func Endpoint(ctx context.Context, opts Options) (string, error) {
-	return endpoint(ctx, opts, "http://127.0.0.1:11434")
+	return endpoint(ctx, opts, "http://127.0.0.1:11434", 2*time.Minute)
 }
 
-func endpoint(ctx context.Context, opts Options, ollama string) (string, error) {
+func endpoint(ctx context.Context, opts Options, ollama string, timeout time.Duration) (string, error) {
 	if probeOllama(ctx, ollama) {
 		return ollama + "/v1", nil
-	}
-	if err := ctx.Err(); err != nil {
-		return "", err
 	}
 	var err error
 	if opts.DataDir == "" {
@@ -136,15 +133,8 @@ func endpoint(ctx context.Context, opts Options, ollama string) (string, error) 
 		})
 		return errors.Join(err, log.Close())
 	}
-	timeout := 2 * time.Minute
 	if deadline, ok := ctx.Deadline(); ok {
 		timeout = time.Until(deadline)
-		if timeout <= 0 {
-			if err := ctx.Err(); err != nil {
-				return "", err
-			}
-			return "", context.DeadlineExceeded
-		}
 	}
 	rec, _, err := manager.Ensure(ctx, timeout)
 	if err != nil {
