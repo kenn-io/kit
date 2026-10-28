@@ -109,7 +109,7 @@ func requestCount(calls *sync.Map, path string) int64 {
 }
 
 func TestInstallRepairsSharedCopy(t *testing.T) {
-	for _, repair := range []string{"missing runtime", "execute permission", "model only", "offline", "concurrent callers"} {
+	for _, repair := range []string{"missing runtime", "empty executable", "execute permission", "model only", "offline", "concurrent callers"} {
 		t.Run(repair, func(t *testing.T) {
 			client, assets, calls, closeServer := installFixture(t, "", nil)
 			var confirmations atomic.Int64
@@ -135,6 +135,8 @@ func TestInstallRepairsSharedCopy(t *testing.T) {
 			switch repair {
 			case "missing runtime":
 				require.NoError(t, os.Remove(filepath.Join(filepath.Dir(result.Executable), embedassets.LibraryName())))
+			case "empty executable":
+				require.NoError(t, os.Truncate(result.Executable, 0))
 			case "execute permission":
 				if runtime.GOOS == "windows" {
 					t.Skip("Unix execute permissions")
@@ -169,6 +171,9 @@ func TestInstallRepairsSharedCopy(t *testing.T) {
 			assert.Equal(t, expectedConfirmations, confirmations.Load())
 			if repair == "model only" {
 				assert.Equal(t, before, requestCount(calls, "/archive"))
+			}
+			if repair == "empty executable" {
+				assert.Equal(t, before+1, requestCount(calls, "/archive"))
 			}
 		})
 	}

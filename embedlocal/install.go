@@ -165,8 +165,8 @@ func checkBundle(dir string) error {
 		if err != nil {
 			return err
 		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("bundle file is not regular: %s", name)
+		if !info.Mode().IsRegular() || info.Size() == 0 {
+			return fmt.Errorf("bundle file is not regular or is empty: %s", name)
 		}
 		if name == embedassets.ExecutableName() && runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
 			return errors.New("kennembed has no execute permission")
