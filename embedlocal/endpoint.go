@@ -184,7 +184,7 @@ func probeOllama(ctx context.Context, origin string) bool {
 		return false
 	}
 	for _, model := range tags.Models {
-		if model.Name == "nomic-embed-text" || model.Name == "nomic-embed-text:latest" {
+		if model.Name == "nomic-embed-text:latest" {
 			return true
 		}
 	}
@@ -208,9 +208,6 @@ func ownerHeld(ctx context.Context, store daemon.RuntimeStore) (bool, error) {
 func startupError(path string, cause error) error {
 	failure := fmt.Errorf("%w; log %s", cause, path)
 	log, err := os.Open(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return cause
-	}
 	if err != nil {
 		return errors.Join(failure, err)
 	}

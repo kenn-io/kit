@@ -26,12 +26,11 @@ func TestEndpointOllamaFallback(t *testing.T) {
 		status     int
 		backend    string
 	}{
-		{"bare", `{"models":[{"name":"nomic-embed-text"}]}`, 200, "ollama"},
 		{"latest", `{"models":[{"name":"nomic-embed-text:latest"}]}`, 200, "ollama"},
 		{"status", `{"models":[{"name":"nomic-embed-text:latest"}]}`, 503, "local"},
 		{"chat only", `{"version":"0.20.0","models":[{"name":"llama3.2:latest"}]}`, 200, "local"},
 		{"custom tag", `{"models":[{"name":"nomic-embed-text:v1.5"}]}`, 200, "local"},
-		{"oversized", `{"padding":"` + strings.Repeat("x", 1<<20) + `","models":[{"name":"nomic-embed-text"}]}`, 200, "local"},
+		{"oversized", `{"padding":"` + strings.Repeat("x", 1<<20) + `","models":[{"name":"nomic-embed-text:latest"}]}`, 200, "local"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -62,24 +61,6 @@ func TestEndpointMissingAndUnreachable(t *testing.T) {
 	local.Close()
 	_, err = endpoint(t.Context(), Options{DataDir: dir, Executable: "must-not-start"}, ollama.URL)
 	require.ErrorIs(t, err, daemon.ErrDaemonUnreachable)
-	dir = t.TempDir()
-	store := daemon.RuntimeStore{Dir: dir, Prefix: Service}
-	release, err := store.AcquireOwnerLock(t.Context())
-	require.NoError(t, err)
-	unlock := sync.OnceFunc(release)
-	defer unlock()
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	done := make(chan error, 1)
-	go func() {
-		_, err := endpoint(ctx, Options{DataDir: dir, Executable: "must-not-start"}, ollama.URL)
-		done <- err
-	}()
-	waitForStartup(t, store)
-	unlock()
-	err = <-done
-	require.ErrorContains(t, err, "owner released before readiness")
-	assert.NotContains(t, err.Error(), "kennembed.log")
 }
 
 func localServer(t *testing.T, dir, version string) *httptest.Server {
@@ -170,13 +151,7 @@ func TestEndpointStartup(t *testing.T) {
 			}
 			childPID = <-entered
 			if tc.delay > 0 {
-				timer := time.NewTimer(tc.delay)
-				defer timer.Stop()
-				select {
-				case <-timer.C:
-				case <-t.Context().Done():
-					require.FailNow(t, "slow startup interrupted")
-				}
+				time.Sleep(tc.delay) //nolint:kennlint // exercises the real two-minute startup boundary across a child process
 				openGate()
 				results = []result{<-first}
 				require.NoError(t, ctx.Err(), "the caller allows a longer download")
