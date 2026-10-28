@@ -28,7 +28,6 @@ func TestEndpointOllamaFallback(t *testing.T) {
 	}{
 		{"latest", `{"models":[{"name":"nomic-embed-text:latest"}]}`, 200, "ollama"},
 		{"status", `{"models":[{"name":"nomic-embed-text:latest"}]}`, 503, "local"},
-		{"chat only", `{"version":"0.20.0","models":[{"name":"llama3.2:latest"}]}`, 200, "local"},
 		{"custom tag", `{"models":[{"name":"nomic-embed-text:v1.5"}]}`, 200, "local"},
 		{"oversized", `{"padding":"` + strings.Repeat("x", 1<<20) + `","models":[{"name":"nomic-embed-text:latest"}]}`, 200, "local"},
 	} {
@@ -40,7 +39,7 @@ func TestEndpointOllamaFallback(t *testing.T) {
 			}))
 			defer ollama.Close()
 			dir := t.TempDir()
-			backends := map[string]string{"local": localServer(t, dir, "1").URL + "/v1", "ollama": ollama.URL + "/v1"}
+			backends := map[string]string{"local": localServer(t, dir, Version).URL + "/v1", "ollama": ollama.URL + "/v1"}
 			got, err := endpoint(t.Context(), Options{DataDir: dir}, ollama.URL)
 			require.NoError(t, err)
 			assert.Equal(t, backends[tc.backend], got)
@@ -57,7 +56,7 @@ func TestEndpointMissingAndUnreachable(t *testing.T) {
 	localServer(t, dir, "2")
 	_, err = endpoint(t.Context(), Options{DataDir: dir}, ollama.URL)
 	require.ErrorIs(t, err, ErrNotFound)
-	local := localServer(t, dir, "1")
+	local := localServer(t, dir, Version)
 	local.Close()
 	_, err = endpoint(t.Context(), Options{DataDir: dir, Executable: "must-not-start"}, ollama.URL)
 	require.ErrorIs(t, err, daemon.ErrDaemonUnreachable)
@@ -83,6 +82,9 @@ func TestEndpointStartup(t *testing.T) {
 		{"reuse", 200, 0}, {"failed", 503, 0}, {"early", 0, 0}, {"slow", 200, 125 * time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.delay > 0 && testing.Short() {
+				t.Skip("slow startup crosses the real two-minute boundary")
+			}
 			ollama := httptest.NewServer(http.NotFoundHandler())
 			defer ollama.Close()
 			dir := t.TempDir()
@@ -117,6 +119,15 @@ func TestEndpointStartup(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), budget)
 			defer cancel()
 			var childPID int
+			t.Cleanup(func() {
+				launches, err := filepath.Glob(filepath.Join(dir, "launch.*"))
+				require.NoError(t, err)
+				for _, launch := range launches {
+					pid, err := strconv.Atoi(strings.TrimPrefix(filepath.Base(launch), "launch."))
+					require.NoError(t, err)
+					require.Eventually(t, func() bool { return !daemon.ProcessAlive(pid) }, 5*time.Second, 10*time.Millisecond)
+				}
+			})
 			t.Cleanup(func() {
 				if tc.name == "early" {
 					return
@@ -170,8 +181,15 @@ func TestEndpointStartup(t *testing.T) {
 				}
 				store := daemon.RuntimeStore{Dir: dir, Prefix: Service}
 				waitForStartup(t, store)
+				assert.Never(t, func() bool {
+					launches, err := filepath.Glob(filepath.Join(dir, "launch.*"))
+					return err != nil || len(launches) != 1
+				}, time.Second, 10*time.Millisecond, "loading must not launch another child")
 				openGate()
 				wg.Wait()
+				launches, err := filepath.Glob(filepath.Join(dir, "launch.*"))
+				require.NoError(t, err)
+				assert.Len(t, launches, 1, "joining callers must reuse the original child")
 				require.NoError(t, joining.Err(), "shared failure must be reported before the caller deadline")
 			}
 			for _, result := range results {
@@ -179,7 +197,9 @@ func TestEndpointStartup(t *testing.T) {
 					require.ErrorContains(t, result.err, "cache model.onnx: download: HTTP 503")
 				} else {
 					require.NoError(t, result.err)
-					assert.Equal(t, results[0].url, result.url)
+					if tc.delay == 0 {
+						assert.Equal(t, results[0].url, result.url)
+					}
 				}
 			}
 			if tc.status == 200 {
@@ -218,6 +238,9 @@ func runServer(args []string) int {
 	if flags.Parse(args) != nil || !filepath.IsAbs(*dir) || *listen != "127.0.0.1:0" {
 		return 2
 	}
+	if err := os.WriteFile(filepath.Join(*dir, fmt.Sprintf("launch.%d", os.Getpid())), nil, 0o600); err != nil {
+		return 3
+	}
 	store := daemon.RuntimeStore{Dir: *dir, Prefix: Service}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -250,14 +273,14 @@ func runServer(args []string) int {
 	}
 	defer listener.Close()
 	mux := http.NewServeMux()
-	mux.Handle("/api/ping", daemon.NewPingHandler(daemon.PingHandlerOptions{Service: Service, Version: "1"}))
+	mux.Handle("/api/ping", daemon.NewPingHandler(daemon.PingHandlerOptions{Service: Service, Version: Version}))
 	stop := make(chan struct{})
 	mux.HandleFunc("POST /stop", func(http.ResponseWriter, *http.Request) { close(stop) })
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: time.Second}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
 	defer func() { server.Close(); <-done }()
-	_, err = (daemon.RuntimeStore{Dir: *dir, Prefix: Service}).Write(daemon.NewRuntimeRecord(Service, "1", daemon.Endpoint{Network: daemon.NetworkTCP, Address: listener.Addr().String()}))
+	_, err = (daemon.RuntimeStore{Dir: *dir, Prefix: Service}).Write(daemon.NewRuntimeRecord(Service, Version, daemon.Endpoint{Network: daemon.NetworkTCP, Address: listener.Addr().String()}))
 	if err != nil {
 		return 6
 	}

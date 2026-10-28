@@ -108,7 +108,7 @@ func endpoint(ctx context.Context, opts Options, ollama string) (string, error) 
 		if err != nil || held {
 			return err
 		}
-		log, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		log, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_APPEND, 0o600)
 		if err != nil {
 			return fmt.Errorf("open embeddings log: %w", err)
 		}
