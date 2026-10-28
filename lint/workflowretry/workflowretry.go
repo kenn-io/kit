@@ -4,7 +4,6 @@ package workflowretry
 import (
 	"path"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -112,25 +111,23 @@ func executable(name string) string {
 	return strings.TrimSuffix(path.Base(strings.ReplaceAll(name, `\`, "/")), ".exe")
 }
 
-var expressions = regexp.MustCompile(`(?s)\$\{\{.*?\}\}`)
+var (
+	expressions = regexp.MustCompile(`(?s)\$\{\{.*?\}\}`)
+	anyChar     = regexp.MustCompile(`.`)
+	// installers matches the command words that must run under kit-retry.
+	installers = regexp.MustCompile(`^(?:(?:apt|apt-get) (?:install|update|upgrade|dist-upgrade)|go (?:install|get|mod download)|(?:npm|pnpm|yarn|bun) (?:install|ci|i|add)|(?:pip|pip3) install|docker pull|apk (?:add|update)|(?:brew|cargo|pipx|dnf) install)(?: |$)`)
+)
 
 // scanScript applies the download and installer rules to executable shell calls.
 func scanScript(source string) []string {
-	masked := expressions.ReplaceAllStringFunc(source, func(span string) string {
-		masked := []byte(span)
-		for i, c := range masked {
-			if c != '\n' {
-				masked[i] = 'x'
-			}
-		}
-		return string(masked)
-	})
+	// Filler keeps the parser away from Actions expressions and keeps line numbers.
+	masked := expressions.ReplaceAllStringFunc(source, func(span string) string { return anyChar.ReplaceAllString(span, "x") })
 	file, err := syntax.NewParser(syntax.Variant(syntax.LangBash), syntax.KeepComments(true)).Parse(strings.NewReader(masked), "")
 	if err != nil {
 		return []string{"parse shell: " + err.Error()}
 	}
 	allowed := map[uint]bool{}
-	lines := strings.Split(source, "\n")
+	lines := strings.Split(masked, "\n")
 	syntax.Walk(file, func(node syntax.Node) bool {
 		if c, ok := node.(*syntax.Comment); ok {
 			if reason, ok := strings.CutPrefix(c.Text, " workflowretry: allow "); ok && strings.TrimSpace(reason) != "" {
@@ -154,30 +151,22 @@ func scanScript(source string) []string {
 			args = append(args, literal(word))
 		}
 		args = unprefix(args)
-		wrapped := len(args) >= 4 && executable(args[0]) == "kit-retry"
+		wrapped := len(args) >= 4 && args[0] == "kit-retry"
 		if wrapped {
 			args = unprefix(args[3:])
 		}
-		if len(args) == 0 {
-			return true
-		}
-		tool := executable(args[0])
-		if tool == "curl" || tool == "wget" {
+		switch {
+		case len(args) > 0 && (args[0] == "curl" || args[0] == "wget"):
 			findings = append(findings, "use kit-download")
-		} else if !wrapped {
-			words := append([]string{tool}, skipOptions(args[1:], optionValues[tool])...)
-			for _, row := range installerCommands {
-				if len(words) >= len(row) && slices.Equal(words[:len(row)], row) {
-					findings = append(findings, "wrap in kit-retry")
-					break
-				}
-			}
+		case !wrapped && installers.MatchString(strings.Join(args, " ")):
+			findings = append(findings, "wrap in kit-retry")
 		}
 		return true
 	})
 	return findings
 }
 
+// literal joins a word's literal and quoted parts; any expansion makes it non-literal.
 func literal(word *syntax.Word) string {
 	var result strings.Builder
 	for _, part := range word.Parts {
@@ -195,45 +184,13 @@ func literal(word *syntax.Word) string {
 	return result.String()
 }
 
+// unprefix skips sudo and env with their flags and assignments.
 func unprefix(args []string) []string {
-	for len(args) > 0 && (executable(args[0]) == "sudo" || executable(args[0]) == "env") {
-		args = skipOptions(args[1:], optionValues[executable(args[0])])
-		for len(args) > 0 && strings.Contains(args[0], "=") {
-			args = args[1:]
-		}
-	}
-	return args
-}
-
-func skipOptions(args, values []string) []string {
-	for len(args) > 0 && strings.HasPrefix(args[0], "-") {
-		option := args[0]
+	for len(args) > 0 && (args[0] == "sudo" || args[0] == "env") {
 		args = args[1:]
-		if option == "--" {
-			break
-		}
-		if slices.Contains(values, option) && len(args) > 0 {
+		for len(args) > 0 && (strings.HasPrefix(args[0], "-") || strings.Contains(args[0], "=")) {
 			args = args[1:]
 		}
 	}
 	return args
 }
-
-var optionValues = map[string][]string{
-	"sudo": {"-u", "-g", "--user", "--group"}, "env": {"-u", "--unset", "-C", "--chdir"},
-	"apt": {"-o", "--option", "-c", "--config-file"}, "apt-get": {"-o", "--option", "-c", "--config-file"},
-	"go": {"-C"},
-}
-
-var installerCommands = func() [][]string {
-	var rows [][]string
-	for _, family := range []string{"apt|apt-get install|update|upgrade|dist-upgrade", "go install|get", "go mod download", "npm|pnpm|yarn|bun install|ci|i|add", "pip|pip3 install", "docker pull", "apk add|update", "brew|cargo|pipx|dnf install"} {
-		fields := strings.Fields(family)
-		for tool := range strings.SplitSeq(fields[0], "|") {
-			for command := range strings.SplitSeq(fields[len(fields)-1], "|") {
-				rows = append(rows, append(append([]string{tool}, fields[1:len(fields)-1]...), command))
-			}
-		}
-	}
-	return rows
-}()

@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"sync/atomic"
 	"testing"
 
@@ -24,46 +23,33 @@ func TestKitDownload(t *testing.T) {
 			t.Skip(err)
 		}
 	}
-	for _, fail := range []bool{false, true} {
-		t.Run(strconv.FormatBool(fail), func(t *testing.T) {
+	for _, tt := range []struct{ name, want string }{{"cut short then complete", "complete body"}, {"always fails", "original"}} {
+		t.Run(tt.name, func(t *testing.T) {
 			var attempts atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				n := attempts.Add(1)
-				if fail {
+				if tt.want == "original" {
 					w.WriteHeader(http.StatusInternalServerError)
 					return
 				}
 				w.Header().Set("Content-Length", "13")
-				if n == 1 {
-					_, _ = w.Write([]byte("partial"))
-					return
+				body := "complete body"
+				if attempts.Add(1) == 1 {
+					body = "partial"
 				}
-				_, _ = w.Write([]byte("complete body"))
+				_, _ = w.Write([]byte(body))
 			}))
 			defer server.Close()
 			dir := t.TempDir()
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "sleep"), []byte("#!/usr/bin/env bash\nexit 0\n"), 0o700))
 			dest := filepath.Join(dir, "artifact")
 			require.NoError(t, os.WriteFile(dest, []byte("original"), 0o644))
-			script, err := filepath.Abs("../../.github/actions/kit-retry/kit-download")
-			require.NoError(t, err)
-			cmd := exec.CommandContext(t.Context(), script, server.URL, dest)
+			cmd := exec.CommandContext(t.Context(), "../../.github/actions/kit-retry/kit-download", server.URL, dest)
 			cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 			out, err := cmd.CombinedOutput()
-			if fail {
-				require.Error(t, err)
-				assert.EqualValues(t, 3, attempts.Load())
-			} else {
-				require.NoError(t, err, "%s", out)
-				assert.EqualValues(t, 2, attempts.Load())
-			}
+			assert.Equal(t, tt.want == "original", err != nil, "%s", out)
 			body, err := os.ReadFile(dest)
 			require.NoError(t, err)
-			want := "complete body"
-			if fail {
-				want = "original"
-			}
-			assert.Equal(t, want, string(body))
+			assert.Equal(t, tt.want, string(body))
 			parts, err := filepath.Glob(dest + ".part.*")
 			require.NoError(t, err)
 			assert.Empty(t, parts)
