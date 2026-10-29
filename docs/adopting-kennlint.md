@@ -215,9 +215,11 @@ prefer additive changes and describe the rationale in the pull request.
 ## Retrying workflow downloads
 
 `kennlint workflow-retries [path ...]` scans workflow and composite-action YAML,
-defaulting to `.github`. It checks Bash and sh `run:` steps, including steps
-without an explicit shell. Steps that don't parse as Bash are skipped.
-Steps without an explicit shell are checked as Bash on every runner; on Windows, set `shell: pwsh` on the step or in `defaults.run` to skip PowerShell steps.
+defaulting to `.github`. It checks Bash and sh `run:` steps. Steps without an
+explicit shell are checked as Bash on every runner, even though Windows runs
+them in PowerShell. Steps that don't parse as Bash are skipped.
+`kit-retry` and `kit-download` only run under Bash, so Windows steps that call
+them need `shell: bash`. Set `shell: pwsh` on PowerShell-only steps to skip them.
 Every `curl` or `wget` call must use `kit-download`.
 Package installers must run under `kit-retry`, including APT, Go, npm, pnpm,
 yarn, bun, pip, Docker pulls, apk, brew, cargo, pipx, and dnf.
