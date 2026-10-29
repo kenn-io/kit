@@ -85,6 +85,7 @@ func endpoint(ctx context.Context, opts Options, ollama string, timeout time.Dur
 	path := filepath.Join(opts.DataDir, "kennembed.log")
 	discovery := manager
 	joining := false
+	exited := make(chan error, 1)
 	manager.FindFunc = func(ctx context.Context) (daemon.RuntimeRecord, daemon.PingInfo, bool, error) {
 		rec, info, ok, err := discovery.Find(ctx)
 		if err == nil && !ok {
@@ -93,8 +94,7 @@ func endpoint(ctx context.Context, opts Options, ollama string, timeout time.Dur
 				err = probeErr
 			} else if held {
 				joining = true
-			} else if joining {
-				err = startupError(path, errors.New("embeddings startup owner released before readiness"))
+			} else if err = startupFailure(path, joining, exited); err != nil {
 				cancel(err)
 			}
 		}
@@ -112,23 +112,7 @@ func endpoint(ctx context.Context, opts Options, ollama string, timeout time.Dur
 			Executable: opts.Executable,
 			Args:       []string{"-data-dir", opts.DataDir, "-listen", "127.0.0.1:0"},
 			Stderr:     log,
-			Exited: func(err error) {
-				if ctx.Err() != nil {
-					return
-				}
-				held, probeErr := ownerHeld(ctx, manager.Store)
-				if probeErr != nil {
-					cancel(probeErr)
-					return
-				}
-				if held {
-					return
-				}
-				if err == nil {
-					err = errors.New("server exited before readiness")
-				}
-				cancel(startupError(path, fmt.Errorf("embeddings server exited: %w", err)))
-			},
+			Exited:     func(err error) { exited <- err },
 		})
 		return errors.Join(err, log.Close())
 	}
@@ -192,6 +176,21 @@ func ownerHeld(ctx context.Context, store daemon.RuntimeStore) (bool, error) {
 		return true, nil
 	}
 	return false, err
+}
+
+func startupFailure(path string, joining bool, exited <-chan error) error {
+	select {
+	case err := <-exited:
+		if err == nil {
+			err = errors.New("server exited before readiness")
+		}
+		return startupError(path, fmt.Errorf("embeddings server exited: %w", err))
+	default:
+	}
+	if joining {
+		return startupError(path, errors.New("embeddings startup owner released before readiness"))
+	}
+	return nil
 }
 
 func startupError(path string, cause error) error {
