@@ -197,7 +197,7 @@ func startupError(path string, cause error) error {
 	failure := fmt.Errorf("%w; log %s", cause, path)
 	log, err := os.Open(path)
 	if err != nil {
-		return errors.Join(failure, err)
+		return failure
 	}
 	defer log.Close()
 	info, err := log.Stat()

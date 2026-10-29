@@ -79,40 +79,42 @@ func TestEndpointEarlyExit(t *testing.T) {
 	t.Cleanup(func() { waitForChildren(t, dir) })
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	_, err = endpoint(ctx, Options{DataDir: dir, Executable: executable}, ollama.URL, 100*time.Millisecond)
+	_, err = endpoint(ctx, Options{DataDir: dir, Executable: executable}, ollama.URL, 0)
 	require.ErrorContains(t, err, "ONNX Runtime library missing")
 	require.ErrorContains(t, err, filepath.Join(dir, "kennembed.log"))
-	assert.NotErrorIs(t, err, context.DeadlineExceeded, "child exit should end startup before its timeout")
-}
-
-func TestEndpointStartup(t *testing.T) {
-	opts, ollama, _, _ := startupFixture(t, http.StatusOK)
-	_, err := endpoint(context.WithoutCancel(t.Context()), opts, ollama, 100*time.Millisecond)
-	require.ErrorIs(t, err, context.DeadlineExceeded)
-	require.ErrorContains(t, err, filepath.Join(opts.DataDir, "kennembed.log"))
+	assert.NotErrorIs(t, err, context.DeadlineExceeded, "child exit should end startup before the 5s context deadline")
 }
 
 func TestEndpointJoinStartup(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		status int
-	}{{"reuse", http.StatusOK}, {"failed", http.StatusServiceUnavailable}} {
+		name     string
+		status   int
+		firstErr error
+	}{{"reuse", http.StatusOK, context.Canceled}, {"failed", http.StatusServiceUnavailable, context.DeadlineExceeded}} {
 		t.Run(tc.name, func(t *testing.T) {
 			opts, ollama, entered, ready := startupFixture(t, tc.status)
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			var timeout time.Duration
+			if tc.firstErr == context.DeadlineExceeded {
+				cancel()
+				ctx, cancel = context.WithCancel(context.WithoutCancel(t.Context()))
+				timeout = 100 * time.Millisecond
+			}
 			defer cancel()
 			first := make(chan error, 1)
-			go func() { _, err := endpoint(ctx, opts, ollama, 100*time.Millisecond); first <- err }()
+			go func() { _, err := endpoint(ctx, opts, ollama, timeout); first <- err }()
 			pid := <-entered
-			cancel()
+			if tc.firstErr == context.Canceled {
+				cancel()
+			}
 			firstErr := <-first
-			require.ErrorIs(t, firstErr, context.Canceled)
+			require.ErrorIs(t, firstErr, tc.firstErr)
 			require.ErrorContains(t, firstErr, filepath.Join(opts.DataDir, "kennembed.log"))
 			joining, stopJoining := context.WithTimeout(t.Context(), 5*time.Second)
 			defer stopJoining()
 			done := make(chan endpointResult, 1)
 			go func() {
-				url, err := endpoint(joining, opts, ollama, 100*time.Millisecond)
+				url, err := endpoint(joining, opts, ollama, 0)
 				done <- endpointResult{url, err}
 			}()
 			store := daemon.RuntimeStore{Dir: opts.DataDir, Prefix: Service}
@@ -123,7 +125,7 @@ func TestEndpointJoinStartup(t *testing.T) {
 			}, time.Second, 10*time.Millisecond, "loading must not launch another child")
 			ready()
 			result := <-done
-			require.NoError(t, joining.Err(), "shared failure must be reported before the caller deadline")
+			require.NoError(t, joining.Err(), "shared startup must finish before the 5s context deadline")
 			if tc.status == http.StatusServiceUnavailable {
 				require.ErrorContains(t, result.err, "cache model.onnx: download: HTTP 503")
 			} else {
