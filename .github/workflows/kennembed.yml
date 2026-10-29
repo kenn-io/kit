@@ -1,11 +1,24 @@
 name: kennembed release bundles
 on:
-  workflow_call:
+  pull_request:
+    paths:
+      - '.github/workflows/kennembed.yml'
+      - '.github/workflows/ci.yml'
+      - '.github/scripts/stage-onnx.py'
+      - 'cmd/kennembed/**'
+      - 'embedserver/**'
+      - 'embedlocal/**'
+      - 'embedclient/**'
+      - 'internal/embedassets/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
   workflow_dispatch:
     inputs:
       tag:
         description: Existing release tag to receive kennembed bundles
         required: true
+cache-mode: read
 permissions:
   contents: read
 jobs:
