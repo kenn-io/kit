@@ -94,6 +94,27 @@ func TestEndpointEarlyExit(t *testing.T) {
 	assert.NotErrorIs(t, err, context.DeadlineExceeded, "child exit should end startup before the 5s context deadline")
 }
 
+func TestEndpointStartLockTimeoutExcludesStaleLog(t *testing.T) {
+	ollama := httptest.NewServer(http.NotFoundHandler())
+	defer ollama.Close()
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "kennembed.log")
+	require.NoError(t, os.WriteFile(logPath, []byte("OLD FAILURE FROM LAST WEEK\n"), 0o600))
+	store := daemon.RuntimeStore{Dir: dir, Prefix: Service}
+	release, acquired, err := store.TryAcquireStartLock(t.Context())
+	require.NoError(t, err)
+	require.True(t, acquired)
+	defer release()
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond) //nolint:kennlint // the held start lock makes the caller deadline the expected result
+	defer cancel()
+	_, err = endpoint(ctx, Options{DataDir: dir, Executable: executable}, ollama.URL, 0)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.ErrorContains(t, err, logPath)
+	assert.NotContains(t, err.Error(), "OLD FAILURE")
+}
+
 func TestEndpointJoinStartup(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

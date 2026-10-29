@@ -83,7 +83,7 @@ func endpoint(ctx context.Context, opts Options, ollama string, timeout time.Dur
 	defer cancel(nil)
 	path := filepath.Join(opts.DataDir, "kennembed.log")
 	discovery := manager
-	joining := false
+	joining, current := false, false
 	exited := make(chan error, 1)
 	manager.FindFunc = func(ctx context.Context) (daemon.RuntimeRecord, daemon.PingInfo, bool, error) {
 		rec, info, ok, err := discovery.Find(ctx)
@@ -92,7 +92,7 @@ func endpoint(ctx context.Context, opts Options, ollama string, timeout time.Dur
 			if probeErr != nil {
 				err = probeErr
 			} else if held {
-				joining = true
+				joining, current = true, true
 			} else if err = startupFailure(joining, exited); err != nil {
 				cancel(err)
 			}
@@ -104,7 +104,7 @@ func endpoint(ctx context.Context, opts Options, ollama string, timeout time.Dur
 			return nil
 		}
 		log, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_APPEND, 0o600)
-		if err != nil {
+		if current = err == nil; !current {
 			return fmt.Errorf("open embeddings log: %w", err)
 		}
 		err = daemon.StartDetached(ctx, daemon.StartDetachedOptions{
@@ -126,7 +126,7 @@ func endpoint(ctx context.Context, opts Options, ollama string, timeout time.Dur
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			err = fmt.Errorf("waiting for embeddings server readiness: %w", err)
 		}
-		return "", startupError(path, err)
+		return "", startupError(path, err, current)
 	}
 	return rec.Endpoint().BaseURL() + "/v1", nil
 }
@@ -177,8 +177,11 @@ func startupFailure(joining bool, exited <-chan error) error {
 	return nil
 }
 
-func startupError(path string, cause error) error {
+func startupError(path string, cause error, current bool) error {
 	failure := fmt.Errorf("%w; log %s", cause, path)
+	if !current {
+		return failure
+	}
 	log, err := os.Open(path)
 	if err != nil {
 		return failure
@@ -188,10 +191,6 @@ func startupError(path string, cause error) error {
 	if err != nil {
 		return errors.Join(failure, err)
 	}
-	tail := make([]byte, min(info.Size(), 2048))
-	n, err := log.ReadAt(tail, max(0, info.Size()-2048))
-	if err != nil && !errors.Is(err, io.EOF) {
-		return errors.Join(failure, err)
-	}
-	return fmt.Errorf("%w:\n%s", failure, strings.TrimSpace(string(tail[:n])))
+	tail, err := io.ReadAll(io.NewSectionReader(log, max(0, info.Size()-2048), 2048))
+	return errors.Join(fmt.Errorf("%w:\n%s", failure, strings.TrimSpace(string(tail))), err)
 }
