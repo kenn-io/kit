@@ -94,7 +94,7 @@ func endpoint(ctx context.Context, opts Options, ollama string, timeout time.Dur
 				err = probeErr
 			} else if held {
 				joining = true
-			} else if err = startupFailure(path, joining, exited); err != nil {
+			} else if err = startupFailure(joining, exited); err != nil {
 				cancel(err)
 			}
 		}
@@ -125,9 +125,9 @@ func endpoint(ctx context.Context, opts Options, ollama string, timeout time.Dur
 			err = cause
 		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			err = startupError(path, fmt.Errorf("waiting for embeddings server readiness: %w", err))
+			err = fmt.Errorf("waiting for embeddings server readiness: %w", err)
 		}
-		return "", err
+		return "", startupError(path, err)
 	}
 	return rec.Endpoint().BaseURL() + "/v1", nil
 }
@@ -178,17 +178,17 @@ func ownerHeld(ctx context.Context, store daemon.RuntimeStore) (bool, error) {
 	return false, err
 }
 
-func startupFailure(path string, joining bool, exited <-chan error) error {
+func startupFailure(joining bool, exited <-chan error) error {
 	select {
 	case err := <-exited:
 		if err == nil {
 			err = errors.New("server exited before readiness")
 		}
-		return startupError(path, fmt.Errorf("embeddings server exited: %w", err))
+		return fmt.Errorf("embeddings server exited: %w", err)
 	default:
 	}
 	if joining {
-		return startupError(path, errors.New("embeddings startup owner released before readiness"))
+		return errors.New("embeddings startup owner released before readiness")
 	}
 	return nil
 }
