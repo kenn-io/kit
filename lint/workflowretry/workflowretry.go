@@ -73,15 +73,6 @@ func Scan(src []byte) ([]Finding, error) {
 			if shell == "" {
 				shell = text(value(value(root, "defaults"), "run"), "shell")
 			}
-			if shell == "" {
-				runner, err := yaml.Marshal(value(job, "runs-on"))
-				if err != nil {
-					return nil, err
-				}
-				if strings.Contains(strings.ToLower(string(runner)), "windows") && !strings.Contains(string(runner), "${{") {
-					shell = "pwsh"
-				}
-			}
 			check(value(job, "steps"), jobs.Content[i].Value, shell)
 		}
 	}
