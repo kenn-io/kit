@@ -378,7 +378,7 @@ func TestUnconfirmedMissingObjectKeepsListingFailure(t *testing.T) {
 	require.ErrorIs(t, s.Delete(t.Context(), "absent", ""), errListing)
 	_, err := s.Inspect(t.Context(), "absent")
 	require.ErrorIs(t, err, errListing)
-	require.ErrorIs(t, err, objectstore.ErrNotFound)
+	require.NotErrorIs(t, err, objectstore.ErrNotFound)
 	_, err = s.OpenRange(t.Context(), "absent", "", 0, 1)
 	require.ErrorIs(t, err, errListing)
 }

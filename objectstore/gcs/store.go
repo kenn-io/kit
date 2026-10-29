@@ -207,7 +207,8 @@ func (s *Store) Delete(ctx context.Context, key, revision string) error {
 // API 404 does not say whether the object or the bucket is missing, but a
 // one-item listing reports a missing bucket distinctly. absent reports that
 // the listing succeeded, so only the object is missing. Otherwise the listing
-// failure, such as a missing bucket or cancellation, is joined to err.
+// failure, such as a missing bucket or cancellation, is returned without the
+// unconfirmed object-not-found error.
 func (s *Store) confirmMissing(ctx context.Context, full string, err error) (absent bool, _ error) {
 	if !errors.Is(err, storage.ErrObjectNotExist) {
 		return false, err
@@ -215,7 +216,7 @@ func (s *Store) confirmMissing(ctx context.Context, full string, err error) (abs
 	var page []*storage.ObjectAttrs
 	_, listErr := iterator.NewPager(s.bucket.Objects(ctx, &storage.Query{Prefix: full}), 1, "").NextPage(&page)
 	if listErr != nil {
-		return false, errors.Join(listErr, err)
+		return false, fmt.Errorf("confirm missing object: %w", listErr)
 	}
 	return true, err
 }
