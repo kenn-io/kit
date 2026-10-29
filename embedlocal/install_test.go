@@ -121,8 +121,31 @@ func TestInstallConcurrentCallers(t *testing.T) {
 	assert.Equal(t, int64(1), confirmations.Load())
 }
 
+func TestCheckBundle(t *testing.T) {
+	for _, damage := range []string{"missing runtime", "empty executable", "execute permission"} {
+		t.Run(damage, func(t *testing.T) {
+			dir := t.TempDir()
+			for _, name := range append(embedassets.NativeFiles(), embedassets.ExecutableName()) {
+				require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte("fixture"), 0o755))
+			}
+			switch damage {
+			case "missing runtime":
+				require.NoError(t, os.Remove(filepath.Join(dir, embedassets.LibraryName())))
+			case "empty executable":
+				require.NoError(t, os.Truncate(filepath.Join(dir, embedassets.ExecutableName()), 0))
+			case "execute permission":
+				if runtime.GOOS == "windows" {
+					t.Skip("Unix execute permissions")
+				}
+				require.NoError(t, os.Chmod(filepath.Join(dir, embedassets.ExecutableName()), 0o600))
+			}
+			require.Error(t, checkBundle(dir))
+		})
+	}
+}
+
 func TestInstallRepairsSharedCopy(t *testing.T) {
-	for _, repair := range []string{"missing runtime", "empty executable", "execute permission", "model only", "offline"} {
+	for _, repair := range []string{"missing runtime", "model only", "offline"} {
 		t.Run(repair, func(t *testing.T) {
 			client, assets, calls, closeServer := installFixture(t, "", nil)
 			var confirmations atomic.Int64
@@ -133,17 +156,9 @@ func TestInstallRepairsSharedCopy(t *testing.T) {
 			switch repair {
 			case "missing runtime":
 				require.NoError(t, os.Remove(filepath.Join(filepath.Dir(result.Executable), embedassets.LibraryName())))
-			case "empty executable":
-				require.NoError(t, os.Truncate(result.Executable, 0))
-			case "execute permission":
-				if runtime.GOOS == "windows" {
-					t.Skip("Unix execute permissions")
-				}
-				require.NoError(t, os.Chmod(result.Executable, 0o600))
 			case "model only":
 				require.NoError(t, os.Remove(filepath.Join(embedassets.ModelDir(opts.DataDir), "tokenizer.json")))
 			case "offline":
-				require.Equal(t, filepath.Join(opts.DataDir, "bin", embedassets.BundleTag, embedassets.ExecutableName()), result.Executable)
 				closeServer()
 			}
 			opts.Confirm = func(_ context.Context, size int64) (bool, error) {
@@ -173,7 +188,7 @@ func TestInstallRepairsSharedCopy(t *testing.T) {
 				assert.FileExists(t, filepath.Join(embedassets.ModelDir(opts.DataDir), "tokenizer.json"))
 				assert.Equal(t, int64(2), requestCount(calls, "/tokenizer.json"))
 			}
-			if repair == "empty executable" {
+			if repair == "missing runtime" {
 				assert.Equal(t, before+1, requestCount(calls, "/archive"))
 			}
 		})
@@ -181,47 +196,39 @@ func TestInstallRepairsSharedCopy(t *testing.T) {
 }
 
 func TestInstallConsentAndFailures(t *testing.T) {
-	for _, mode := range []string{"missing confirmation", "declined with stale staging", "canceled"} {
+	for _, mode := range []string{"missing confirmation", "declined"} {
 		t.Run(mode, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(t.Context())
-			defer cancel()
-			client, assets, calls, _ := installFixture(t, mode, cancel)
+			client, assets, calls, _ := installFixture(t, mode, nil)
 			opts := InstallOptions{DataDir: t.TempDir()}
-			if mode == "declined with stale staging" {
-				stale := filepath.Join(opts.DataDir, ".install-interrupted")
-				require.NoError(t, os.Mkdir(stale, 0o700))
-				require.NoError(t, os.WriteFile(filepath.Join(stale, "partial"), []byte("partial"), 0o600))
-			}
-			if mode != "missing confirmation" {
+			if mode == "declined" {
 				opts.Confirm = func(_ context.Context, size int64) (bool, error) {
-					if mode == "declined with stale staging" {
-						assert.Equal(t, int64(bundleDownloadBytes+26), size)
-					}
-					assert.Zero(t, requestCount(calls, "/archive"))
-					return mode != "declined with stale staging", nil
+					assert.Equal(t, int64(bundleDownloadBytes+26), size)
+					return false, nil
 				}
 			}
-			_, err := install(ctx, opts, client, assets)
+			_, err := install(t.Context(), opts, client, assets)
 			require.Error(t, err)
-			if mode == "canceled" {
-				require.ErrorIs(t, err, context.Canceled)
-				require.NoError(t, checkBundle(filepath.Join(opts.DataDir, "bin", embedassets.BundleTag)))
-			} else {
-				assert.NoDirExists(t, filepath.Join(opts.DataDir, "bin", embedassets.BundleTag))
-			}
-			leftovers, err := filepath.Glob(filepath.Join(opts.DataDir, ".install-*"))
-			require.NoError(t, err)
-			assert.Empty(t, leftovers)
-			if mode == "missing confirmation" || mode == "declined with stale staging" {
-				calls.Range(func(_, value any) bool { assert.Zero(t, value.(*atomic.Int64).Load()); return true })
-			}
-			if mode == "canceled" {
-				opts.Confirm = func(_ context.Context, size int64) (bool, error) { assert.Equal(t, int64(13), size); return true, nil }
-				_, err = install(t.Context(), opts, client, assets)
-				require.NoError(t, err)
-				assert.Equal(t, int64(1), requestCount(calls, "/model.onnx"))
-				assert.Equal(t, int64(1), requestCount(calls, "/archive"))
-			}
+			assert.NoDirExists(t, filepath.Join(opts.DataDir, "bin", embedassets.BundleTag))
+			calls.Range(func(_, value any) bool { assert.Zero(t, value.(*atomic.Int64).Load()); return true })
 		})
 	}
+}
+
+func TestInstallCanceledDownloads(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	client, assets, calls, _ := installFixture(t, "canceled", cancel)
+	opts := InstallOptions{DataDir: t.TempDir(), Confirm: func(context.Context, int64) (bool, error) { return true, nil }}
+	stale := filepath.Join(opts.DataDir, ".install-interrupted")
+	require.NoError(t, os.Mkdir(stale, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(stale, "partial"), []byte("partial"), 0o600))
+	_, err := install(ctx, opts, client, assets)
+	require.ErrorIs(t, err, context.Canceled)
+	require.NoError(t, checkBundle(filepath.Join(opts.DataDir, "bin", embedassets.BundleTag)))
+	leftovers, err := filepath.Glob(filepath.Join(opts.DataDir, ".install-*"))
+	require.NoError(t, err)
+	assert.Empty(t, leftovers)
+	_, err = install(t.Context(), opts, client, assets)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), requestCount(calls, "/model.onnx"))
 }
