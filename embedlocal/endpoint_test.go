@@ -2,7 +2,6 @@ package embedlocal
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -88,29 +87,32 @@ func TestEndpointEarlyExit(t *testing.T) {
 
 func TestEndpointJoinStartup(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		status   int
-		firstErr error
-	}{{"reuse", http.StatusOK, context.Canceled}, {"failed", http.StatusServiceUnavailable, context.DeadlineExceeded}} {
+		name   string
+		status int
+	}{{"reuse", http.StatusOK}, {"failed", http.StatusServiceUnavailable}} {
 		t.Run(tc.name, func(t *testing.T) {
 			opts, ollama, entered, ready := startupFixture(t, tc.status)
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-			var timeout time.Duration
-			if errors.Is(tc.firstErr, context.DeadlineExceeded) {
-				cancel()
-				ctx, cancel = context.WithCancel(context.WithoutCancel(t.Context()))
-				timeout = 100 * time.Millisecond
-			}
 			defer cancel()
 			first := make(chan error, 1)
-			go func() { _, err := endpoint(ctx, opts, ollama, timeout); first <- err }()
-			pid := <-entered
-			if errors.Is(tc.firstErr, context.Canceled) {
-				cancel()
+			go func() { _, err := endpoint(ctx, opts, ollama, 0); first <- err }()
+			var pid int
+			select {
+			case pid = <-entered:
+			case err := <-first:
+				require.FailNow(t, "initial caller returned before child registration", "%v", err)
+			case <-ctx.Done():
+				require.FailNow(t, "child did not register before the 5s context deadline", "%v", ctx.Err())
 			}
+			cancel()
 			firstErr := <-first
-			require.ErrorIs(t, firstErr, tc.firstErr)
+			require.ErrorIs(t, firstErr, context.Canceled)
 			require.ErrorContains(t, firstErr, filepath.Join(opts.DataDir, "kennembed.log"))
+			if tc.status == http.StatusServiceUnavailable {
+				_, err := endpoint(context.WithoutCancel(t.Context()), opts, ollama, 100*time.Millisecond)
+				require.ErrorIs(t, err, context.DeadlineExceeded)
+				require.ErrorContains(t, err, filepath.Join(opts.DataDir, "kennembed.log"))
+			}
 			joining, stopJoining := context.WithTimeout(t.Context(), 5*time.Second)
 			defer stopJoining()
 			done := make(chan endpointResult, 1)
