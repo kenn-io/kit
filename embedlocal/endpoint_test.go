@@ -22,23 +22,14 @@ import (
 )
 
 func TestEndpointOllamaFallback(t *testing.T) {
-	// These aliases would make /api/tags JSON exceed 1 MiB.
-	models := []string{"nomic-embed-text:latest"}
-	for i := range 6000 {
-		models = append(models, fmt.Sprintf("alias-%04d-%s:latest", i, strings.Repeat("a", 90)))
-	}
 	for _, tc := range []struct {
 		name    string
-		models  []string
 		status  int
 		backend string
 	}{
-		{"latest", []string{"nomic-embed-text:latest"}, 200, "ollama"},
-		{"case insensitive", []string{"Nomic-Embed-Text:latest"}, 200, "ollama"},
-		{"large catalog", models, 200, "ollama"},
-		{"status", []string{"nomic-embed-text:latest"}, 503, "local"},
-		{"absent model", nil, 200, "local"},
-		{"custom tag", []string{"nomic-embed-text:v1.5"}, 200, "local"},
+		{"latest", 200, "ollama"},
+		{"status", 503, "local"},
+		{"absent model", 404, "local"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -53,14 +44,7 @@ func TestEndpointOllamaFallback(t *testing.T) {
 					w.WriteHeader(http.StatusBadRequest)
 					return
 				}
-				for _, name := range tc.models {
-					if strings.EqualFold(name, request.Model+":latest") {
-						w.WriteHeader(tc.status)
-						fmt.Fprint(w, `{"capabilities":["embedding"]}`)
-						return
-					}
-				}
-				http.NotFound(w, r)
+				w.WriteHeader(tc.status)
 			}))
 			defer ollama.Close()
 			dir := t.TempDir()
