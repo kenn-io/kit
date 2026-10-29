@@ -41,6 +41,11 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - uses: ./.github/actions/kit-retry
+
+      - name: Download modules
+        run: kit-retry 3 5 go mod download
+
       - name: Check go.mod is tidy
         run: |
           go mod tidy

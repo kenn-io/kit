@@ -9,5 +9,5 @@ URL=$1
 DEST=$2
 tmp="$DEST.part.$$"
 trap 'rm -f "$tmp"' EXIT
-"${BASH_SOURCE[0]%/*}/kit-retry" 3 5 curl --silent --show-error --fail --location --connect-timeout 30 --speed-limit 1 --speed-time 60 -o "$tmp" "$URL"
+"$(dirname -- "${BASH_SOURCE[0]}")/kit-retry" 3 5 curl --silent --show-error --fail --location --connect-timeout 30 --speed-limit 1 --speed-time 60 -o "$tmp" "$URL"
 mv -f "$tmp" "$DEST"

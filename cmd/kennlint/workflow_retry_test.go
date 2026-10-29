@@ -21,7 +21,7 @@ func TestWorkflowRetries(t *testing.T) {
 	n, err := runWorkflowRetries(nil, &output)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n)
-	assert.True(t, strings.HasPrefix(output.String(), filepath.ToSlash(file)+":6:9: job test, step Download: "))
+	assert.True(t, strings.HasPrefix(output.String(), filepath.ToSlash(file)+":6:14: job test, step Download: npm: wrap in kit-retry\n"))
 	require.NoError(t, os.WriteFile(file, []byte("jobs: ["), 0o600))
 	_, err = runWorkflowRetries([]string{dir}, &output)
 	assert.ErrorContains(t, err, "ci.yml")

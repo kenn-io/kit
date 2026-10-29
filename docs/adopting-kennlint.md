@@ -223,6 +223,9 @@ them need `shell: bash`. Set `shell: pwsh` on PowerShell-only steps to skip them
 Every `curl` or `wget` call must use `kit-download`.
 Package installers must run under `kit-retry`, including APT, Go, npm, pnpm,
 yarn, bun, pip, Docker pulls, apk, brew, cargo, pipx, and dnf.
+A bare `yarn`, with only options, counts as an install.
+Findings point at the command in `run: |` blocks and single-line plain values,
+and at the `run:` key otherwise.
 The check does not follow other launchers (`timeout`, `xargs`, `bash -c`, or
 value-taking options of `sudo`, `env`, and `exec`), and does not flag unlisted
 commands that fetch, such as `docker run`, `go run module@version`, or

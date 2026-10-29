@@ -2,9 +2,9 @@
 package workflowretry
 
 import (
-	"fmt"
 	"path"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -14,7 +14,8 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 )
 
-// Finding identifies a download and its owning run field.
+// Finding identifies a download. Line and Column locate the command in a
+// literal block or single-line plain run value, and the run key otherwise.
 type Finding struct {
 	Line, Column       int
 	Job, Step, Message string
@@ -30,6 +31,7 @@ func Scan(src []byte) ([]Finding, error) {
 		return nil, nil
 	}
 	root := doc.Content[0]
+	lines := strings.Split(string(src), "\n")
 	var findings []Finding
 	check := func(steps *yaml.Node, job, shell string) {
 		if steps == nil {
@@ -54,15 +56,26 @@ func Scan(src []byte) ([]Finding, error) {
 			if name == "" {
 				name = strconv.Itoa(i + 1)
 			}
-			for _, message := range scanScript(run.Value) {
-				line, column := run.Line, run.Column
-				for i := 0; i+1 < len(step.Content); i += 2 {
-					if step.Content[i].Value == "run" {
-						line, column = step.Content[i].Line, step.Content[i].Column
-						break
-					}
+			key := run
+			for k := 0; k+1 < len(step.Content); k += 2 {
+				if step.Content[k].Value == "run" {
+					key = step.Content[k]
+					break
 				}
-				findings = append(findings, Finding{line, column, job, name, message})
+			}
+			script := strings.Split(run.Value, "\n")
+			for _, hit := range scanScript(run.Value) {
+				line, column := key.Line, key.Column
+				switch {
+				case run.Style == yaml.LiteralStyle && run.Line+hit.line <= len(lines):
+					// A literal block keeps each line verbatim after its indentation.
+					line = run.Line + hit.line
+					indent := len(strings.TrimSuffix(lines[line-1], "\r")) - len(script[hit.line-1])
+					column = indent + hit.column
+				case run.Style == 0 && len(script) == 1:
+					line, column = run.Line, run.Column+hit.column-1
+				}
+				findings = append(findings, Finding{line, column, job, name, hit.message})
 			}
 		}
 	}
@@ -115,15 +128,28 @@ func executable(name string) string {
 
 var (
 	expressions = regexp.MustCompile(`(?s)\$\{\{.*?\}\}`)
-	anyChar     = regexp.MustCompile(`.`)
 	// installers matches the command words that must run under kit-retry.
 	installers = regexp.MustCompile(`^(?:(?:apt|apt-get) (?:install|update|upgrade|dist-upgrade)|go (?:install|get|mod download)|(?:npm|pnpm|yarn|bun) (?:install|ci|i|add)|(?:pip|pip3) install|docker pull|apk (?:add|update)|(?:brew|cargo|pipx|dnf) install)(?: |$)`)
 )
 
+// hit is a reported call, positioned by script line and byte column.
+type hit struct {
+	line, column int
+	message      string
+}
+
 // scanScript applies the download and installer rules to executable shell calls.
-func scanScript(source string) []string {
-	// Filler keeps the parser away from Actions expressions and keeps line numbers.
-	masked := expressions.ReplaceAllStringFunc(source, func(span string) string { return anyChar.ReplaceAllString(span, "x") })
+func scanScript(source string) []hit {
+	// Filler keeps the parser away from Actions expressions and keeps byte positions.
+	masked := expressions.ReplaceAllStringFunc(source, func(span string) string {
+		filler := []byte(span)
+		for i, c := range filler {
+			if c != '\n' {
+				filler[i] = 'x'
+			}
+		}
+		return string(filler)
+	})
 	file, err := syntax.NewParser(syntax.Variant(syntax.LangBash), syntax.KeepComments(true)).Parse(strings.NewReader(masked), "")
 	if err != nil {
 		return nil
@@ -142,7 +168,7 @@ func scanScript(source string) []string {
 		}
 		return true
 	})
-	var findings []string
+	var findings []hit
 	syntax.Walk(file, func(node syntax.Node) bool {
 		call, ok := node.(*syntax.CallExpr)
 		if !ok || allowed[call.Pos().Line()] {
@@ -160,18 +186,23 @@ func scanScript(source string) []string {
 		if len(args) >= 3 && (args[0] == "python" || args[0] == "python3") && args[1] == "-m" && args[2] == "pip" {
 			args = args[2:]
 		}
+		var message string
 		switch {
 		case len(args) > 0 && (args[0] == "curl" || args[0] == "wget"):
-			findings = append(findings, fmt.Sprintf("%s on script line %d: use kit-download", args[0], call.Pos().Line()))
+			message = args[0] + ": use kit-download"
 		case !wrapped && installer(args):
-			findings = append(findings, fmt.Sprintf("%s on script line %d: wrap in kit-retry", args[0], call.Pos().Line()))
+			message = args[0] + ": wrap in kit-retry"
+		default:
+			return true
 		}
+		findings = append(findings, hit{int(call.Pos().Line()), int(call.Pos().Col()), message})
 		return true
 	})
 	return findings
 }
 
-// installer stops at the first subcommand, allowing flags and their values before it.
+// installer stops at the first subcommand, allowing flags and their values
+// before it. Yarn installs when no subcommand follows.
 func installer(args []string) bool {
 	for i := 1; i < len(args); i++ {
 		if installers.MatchString(args[0] + " " + strings.Join(args[i:], " ")) {
@@ -181,7 +212,9 @@ func installer(args []string) bool {
 			return false
 		}
 	}
-	return false
+	return len(args) > 0 && args[0] == "yarn" && !slices.ContainsFunc(args[1:], func(arg string) bool {
+		return arg == "-v" || arg == "--version" || arg == "-h" || arg == "--help"
+	})
 }
 
 // literal decodes a word's literal and quoted parts; any expansion makes it non-literal.
