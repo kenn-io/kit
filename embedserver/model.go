@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"go.kenn.io/kit/internal/embedassets"
 )
 
 type engine interface {
@@ -24,7 +26,7 @@ func loadModel(ctx context.Context, dir, library string) (engine, error) {
 	if _, err := os.Stat(library); err != nil {
 		return nil, fmt.Errorf("ONNX Runtime library: %w", err)
 	}
-	cached, err := cacheModel(ctx, dir)
+	cached, err := embedassets.CacheModel(ctx, dir)
 	if err != nil {
 		return nil, err
 	}

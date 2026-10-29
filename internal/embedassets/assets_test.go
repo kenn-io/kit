@@ -1,4 +1,4 @@
-package embedserver
+package embedassets
 
 import (
 	"context"
@@ -23,11 +23,11 @@ func TestCacheVerifiedAndOffline(t *testing.T) {
 	data := "public model fixture"
 	digest := sha256.Sum256([]byte(data))
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(data)) }))
-	a := asset{"model", server.URL, hex.EncodeToString(digest[:]), int64(len(data))}
+	a := Asset{"model", server.URL, hex.EncodeToString(digest[:]), int64(len(data))}
 	dir := t.TempDir()
-	require.NoError(t, cacheAsset(t.Context(), server.Client(), dir, a))
+	require.NoError(t, CacheAsset(t.Context(), server.Client(), dir, a))
 	server.Close()
-	require.NoError(t, cacheAsset(t.Context(), server.Client(), dir, a))
+	require.NoError(t, CacheAsset(t.Context(), server.Client(), dir, a))
 	got, err := os.ReadFile(filepath.Join(dir, "model"))
 	require.NoError(t, err)
 	assert.Equal(t, data, string(got))
@@ -48,8 +48,8 @@ func TestCacheRejectsBadDownloads(t *testing.T) {
 			require.NoError(t, os.WriteFile(path, []byte("old corrupt cache"), 0o600))
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(tc.body)) }))
 			defer server.Close()
-			a := asset{"model", server.URL, hex.EncodeToString(digest[:]), tc.size}
-			require.Error(t, cacheAsset(t.Context(), server.Client(), dir, a))
+			a := Asset{"model", server.URL, hex.EncodeToString(digest[:]), tc.size}
+			require.Error(t, CacheAsset(t.Context(), server.Client(), dir, a))
 			got, err := os.ReadFile(path)
 			require.NoError(t, err)
 			assert.Equal(t, "old corrupt cache", string(got))
@@ -63,7 +63,7 @@ func TestCacheRejectsBadDownloads(t *testing.T) {
 func TestVerifyStopsAfterSizeLimit(t *testing.T) {
 	reader := strings.NewReader("valid trailing")
 	digest := sha256.Sum256([]byte("vali"))
-	require.Error(t, verify(reader, io.Discard, asset{size: 4, digest: hex.EncodeToString(digest[:])}))
+	require.Error(t, verify(reader, io.Discard, Asset{Size: 4, Digest: hex.EncodeToString(digest[:])}))
 	assert.Equal(t, 9, reader.Len())
 }
 
@@ -76,9 +76,9 @@ func TestCacheInterrupted(t *testing.T) {
 	}))
 	defer func() { cancel(); server.CloseClientConnections(); server.Close() }()
 	dir := t.TempDir()
-	a := asset{"model", server.URL, "unused", 100}
+	a := Asset{"model", server.URL, "unused", 100}
 	done := make(chan error, 1)
-	go func() { done <- cacheAsset(ctx, server.Client(), dir, a) }()
+	go func() { done <- CacheAsset(ctx, server.Client(), dir, a) }()
 	require.Eventually(t, func() bool {
 		entries, err := os.ReadDir(dir)
 		return err == nil && len(entries) == 1 && entries[0].Name() != "model"
@@ -109,15 +109,27 @@ func TestCacheModelUsesPinnedURLAndCacheLayout(t *testing.T) {
 	defer transport.CloseIdleConnections()
 	http.DefaultTransport = transport
 	digest := sha256.Sum256([]byte("valid"))
-	modelAssets = []asset{{"model.onnx", "unused", hex.EncodeToString(digest[:]), 5}}
+	modelAssets = []Asset{{"model.onnx", "unused", hex.EncodeToString(digest[:]), 5}}
 	defer func() { http.DefaultTransport, modelAssets = previousTransport, previousAssets }()
 	dir := t.TempDir()
 	cached := filepath.Join(dir, "nomic-embed-text-v1.5", revision)
-	got, err := cacheModel(t.Context(), dir)
+	got, err := CacheModel(t.Context(), dir)
 	require.NoError(t, err)
 	assert.True(t, called.Load())
 	assert.Equal(t, cached, got)
 	data, err := os.ReadFile(filepath.Join(cached, "model.onnx"))
 	require.NoError(t, err)
 	assert.Equal(t, "valid", string(data))
+}
+
+func TestMissingModel(t *testing.T) {
+	dir := t.TempDir()
+	digest := sha256.Sum256([]byte("valid"))
+	assets := []Asset{{Name: "model.onnx", Digest: hex.EncodeToString(digest[:]), Size: 5}}
+	path := filepath.Join(dir, "model.onnx")
+	require.NoError(t, os.WriteFile(path, []byte("wrong"), 0o600))
+	missing, err := MissingModel(dir, assets)
+	require.NoError(t, err)
+	assert.Equal(t, assets, missing)
+	assert.FileExists(t, path)
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"go.kenn.io/kit/daemon"
+	"go.kenn.io/kit/internal/embedassets"
 )
 
 // Options configures the foreground server. DataDir defaults to DefaultDir,
@@ -69,7 +70,7 @@ func serve(ctx context.Context, opts Options, load func(context.Context, string,
 		if e != nil {
 			return e
 		}
-		opts.Library = filepath.Join(filepath.Dir(executable), libraryName())
+		opts.Library = filepath.Join(filepath.Dir(executable), embedassets.LibraryName())
 	}
 	if _, err := fmt.Fprintln(os.Stderr, "Loading nomic-embed-text model..."); err != nil {
 		return err
