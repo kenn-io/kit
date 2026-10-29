@@ -175,7 +175,7 @@ func ListSubmodulePaths(ctx context.Context, runner gitcmd.Runner, repoPath stri
 
 // IsFileProtocolError reports git's file transport denial.
 func IsFileProtocolError(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "transport 'file' not allowed") //nolint:kennlint // git stderr text is the only signal for this denial
+	return err != nil && strings.Contains(err.Error(), "transport 'file' not allowed") //nolint:kennlint // errtext: git stderr text is the only signal for this denial
 }
 
 // CapturePatch stages all changes and returns a binary patch against BaseSHA.

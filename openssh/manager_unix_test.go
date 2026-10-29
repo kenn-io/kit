@@ -487,7 +487,7 @@ func TestDisconnectWaitsForSocketDrainAfterExitReturns(t *testing.T) {
 	select {
 	case <-disconnectResult:
 		returnedEarly = true
-	case <-time.After(50 * time.Millisecond): //nolint:kennlint // shows Disconnect stays blocked while the fake still holds the socket; an absence has no event to wait on
+	case <-time.After(50 * time.Millisecond): //nolint:kennlint // deadlinetest: shows Disconnect stays blocked while the fake still holds the socket; an absence has no event to wait on
 	}
 	close(releaseSocket)
 	if !returnedEarly {
@@ -504,7 +504,7 @@ func TestDisconnectBoundsSocketDrainAndPreservesListener(t *testing.T) {
 	fake := newFakeSSH()
 	manager, err := NewPersistentManager(newSocketDir(t), PersistentConfig{
 		RunSSH:                  fake.run,
-		CleanupTimeout:          5 * time.Millisecond,
+		CleanupTimeout:          5 * time.Millisecond, //nolint:kennlint // deadlinetest: deadline expiry is asserted while the real Unix socket remains open
 		EstablishPollInterval:   time.Millisecond,
 		MaximumControlPathBytes: 1_000,
 	})
@@ -565,7 +565,7 @@ func TestDisconnectBoundsExitCommand(t *testing.T) {
 	fake := newFakeSSH()
 	manager, err := NewPersistentManager(newSocketDir(t), PersistentConfig{
 		RunSSH:                  fake.run,
-		CleanupTimeout:          10 * time.Millisecond,
+		CleanupTimeout:          10 * time.Millisecond, //nolint:kennlint // deadlinetest: the fake exit command waits for its context deadline
 		EstablishPollInterval:   time.Millisecond,
 		MaximumControlPathBytes: 1_000,
 	})
@@ -595,7 +595,7 @@ func TestPersistentManagerReportsTypedSpawnFailure(t *testing.T) {
 	fake.spawnExitCode, fake.spawnErr = 255, sentinel
 	manager, err := NewPersistentManager(newSocketDir(t), PersistentConfig{
 		RunSSH:                  fake.run,
-		CleanupTimeout:          5 * time.Millisecond,
+		CleanupTimeout:          5 * time.Millisecond, //nolint:kennlint // deadlinetest: bounds observation of a socket the fake never creates; the spawn error is asserted
 		EstablishPollInterval:   time.Millisecond,
 		MaximumControlPathBytes: 1_000,
 	})
@@ -638,8 +638,8 @@ func TestPersistentManagerFailedStartCleansLateSocket(t *testing.T) {
 		RunSSH:                  fake.run,
 		MaximumControlPathBytes: 1_000,
 		EstablishPollInterval:   time.Second,
-		EstablishTimeout:        5 * time.Millisecond,
-		CleanupTimeout:          100 * time.Millisecond,
+		EstablishTimeout:        5 * time.Millisecond,   //nolint:kennlint // deadlinetest: establish deadline expiry is asserted while the fake withholds a ready socket
+		CleanupTimeout:          100 * time.Millisecond, //nolint:kennlint // deadlinetest: the real Unix socket appears during failed-start cleanup after establish expiry
 	})
 	require.NoError(err)
 	t.Cleanup(fake.closeAll)
@@ -647,7 +647,7 @@ func TestPersistentManagerFailedStartCleansLateSocket(t *testing.T) {
 	path := manager.SocketPath("studio", target)
 	lateSocketErr := make(chan error, 1)
 	go func() {
-		timer := time.NewTimer(20 * time.Millisecond) //nolint:kennlint // lands the fake socket after the 5ms establish timeout so Connect must clean up a late socket
+		timer := time.NewTimer(20 * time.Millisecond) //nolint:kennlint // deadlinetest: lands the fake socket after the 5ms establish timeout so Connect must clean up a late socket
 		defer timer.Stop()
 		<-timer.C
 		lateSocketErr <- fake.openSocket(path)
@@ -952,9 +952,9 @@ func TestEstablishTimeoutUsesBoundedCleanupAndKeepsOriginalError(t *testing.T) {
 	}
 	manager, err := NewPersistentManager(newSocketDir(t), PersistentConfig{
 		RunSSH:                  fake.run,
-		EstablishTimeout:        5 * time.Millisecond,
+		EstablishTimeout:        5 * time.Millisecond, //nolint:kennlint // deadlinetest: establish deadline expiry is asserted while the fake withholds a ready socket
 		EstablishPollInterval:   time.Millisecond,
-		CleanupTimeout:          100 * time.Millisecond,
+		CleanupTimeout:          100 * time.Millisecond, //nolint:kennlint // deadlinetest: the fake exit command waits for the cleanup deadline
 		MaximumControlPathBytes: 1_000,
 	})
 	require.NoError(err)
@@ -1008,7 +1008,7 @@ func TestCanceledEstablishKeepsCancellationWhenCleanupFails(t *testing.T) {
 	}
 	manager, err := NewPersistentManager(newSocketDir(t), PersistentConfig{
 		RunSSH:                  fake.run,
-		CleanupTimeout:          10 * time.Millisecond,
+		CleanupTimeout:          10 * time.Millisecond, //nolint:kennlint // deadlinetest: the fake exit command fails immediately; the asserted result is caller cancellation
 		MaximumControlPathBytes: 1_000,
 	})
 	require.NoError(t, err)

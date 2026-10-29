@@ -1,5 +1,7 @@
 # Repository additions merged into the canonical kit config by `kennlint config`.
 linters:
+  enable:
+    - kennnolint
   settings:
     importas:
       alias:

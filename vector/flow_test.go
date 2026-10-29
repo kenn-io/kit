@@ -845,7 +845,7 @@ func TestFillDefaultConcurrencyIsSequential(t *testing.T) {
 	}
 	hooked := &saveHookStore{memStore: store, hook: func() {
 		inSave.Store(true)
-		time.Sleep(5 * time.Millisecond) //nolint:kennlint // widens the save window a concurrent reader must observe
+		time.Sleep(5 * time.Millisecond) //nolint:kennlint // sleeptest: widens the save window a concurrent reader must observe
 		inSave.Store(false)
 	}}
 
