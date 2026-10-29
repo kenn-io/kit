@@ -85,19 +85,20 @@ func TestEndpointEarlyExit(t *testing.T) {
 	assert.NotErrorIs(t, err, context.DeadlineExceeded, "child exit should end startup before its timeout")
 }
 
+func TestEndpointStartup(t *testing.T) {
+	opts, ollama, _, _ := startupFixture(t, http.StatusOK)
+	_, err := endpoint(context.WithoutCancel(t.Context()), opts, ollama, 100*time.Millisecond)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.ErrorContains(t, err, filepath.Join(opts.DataDir, "kennembed.log"))
+}
+
 func TestEndpointJoinStartup(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		status int
-	}{{"default", http.StatusOK}, {"reuse", http.StatusOK}, {"failed", http.StatusServiceUnavailable}} {
+	}{{"reuse", http.StatusOK}, {"failed", http.StatusServiceUnavailable}} {
 		t.Run(tc.name, func(t *testing.T) {
 			opts, ollama, entered, ready := startupFixture(t, tc.status)
-			if tc.name == "default" {
-				_, err := endpoint(context.WithoutCancel(t.Context()), opts, ollama, 100*time.Millisecond)
-				require.ErrorIs(t, err, context.DeadlineExceeded)
-				require.ErrorContains(t, err, filepath.Join(opts.DataDir, "kennembed.log"))
-				return
-			}
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
 			first := make(chan error, 1)
@@ -105,10 +106,8 @@ func TestEndpointJoinStartup(t *testing.T) {
 			pid := <-entered
 			cancel()
 			firstErr := <-first
-			if tc.status == http.StatusOK {
-				require.ErrorIs(t, firstErr, context.Canceled)
-				require.ErrorContains(t, firstErr, filepath.Join(opts.DataDir, "kennembed.log"))
-			}
+			require.ErrorIs(t, firstErr, context.Canceled)
+			require.ErrorContains(t, firstErr, filepath.Join(opts.DataDir, "kennembed.log"))
 			joining, stopJoining := context.WithTimeout(t.Context(), 5*time.Second)
 			defer stopJoining()
 			done := make(chan endpointResult, 1)
