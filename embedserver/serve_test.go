@@ -83,7 +83,7 @@ func TestServeRejectsStartup(t *testing.T) {
 		called = true
 		return nil, errors.New("model must not load")
 	}, daemon.Endpoint.ListenContext)
-	require.Error(t, err)
+	require.ErrorContains(t, err, "loopback")
 	assert.False(t, called)
 }
 
@@ -165,10 +165,11 @@ func startEmbeddingRequest(t *testing.T, record daemon.RuntimeRecord) <-chan err
 type pausedError struct {
 	formatting chan struct{}
 	resume     chan struct{}
+	once       sync.Once
 }
 
 func (e *pausedError) Error() string {
-	close(e.formatting)
+	e.once.Do(func() { close(e.formatting) })
 	<-e.resume
 	return "model unavailable"
 }
@@ -181,7 +182,7 @@ func TestServePrintsFailureBeforeOwnerRelease(t *testing.T) {
 	os.Stderr = output
 	defer func() { os.Stderr = stderr }()
 	store := daemon.RuntimeStore{Dir: t.TempDir(), Prefix: "kit-embed"}
-	failure := &pausedError{make(chan struct{}), make(chan struct{})}
+	failure := &pausedError{formatting: make(chan struct{}), resume: make(chan struct{})}
 	done := make(chan error, 1)
 	go func() {
 		done <- serve(t.Context(), Options{DataDir: store.Dir}, func(context.Context, string, string) (engine, error) { return nil, failure }, daemon.Endpoint.ListenContext)
