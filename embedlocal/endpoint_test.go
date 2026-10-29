@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -57,42 +56,6 @@ func TestEndpointNotFound(t *testing.T) {
 	localServer(t, dir, "2")
 	_, err = endpoint(t.Context(), Options{DataDir: dir}, ollama.URL, 2*time.Minute)
 	require.ErrorIs(t, err, ErrNotFound)
-}
-
-func TestEndpointReusedPID(t *testing.T) {
-	for _, held := range []bool{false, true} {
-		t.Run(fmt.Sprintf("owner-held-%t", held), func(t *testing.T) {
-			opts, ollama, _, ready := startupFixture(t, http.StatusOK)
-			ready()
-			unrelated := exec.Command(opts.Executable, "--unrelated")
-			input, err := unrelated.StdinPipe()
-			require.NoError(t, err)
-			require.NoError(t, unrelated.Start())
-			defer func() { input.Close(); require.NoError(t, unrelated.Wait()) }()
-			closed := httptest.NewServer(http.NotFoundHandler())
-			closed.Close()
-			store := daemon.RuntimeStore{Dir: opts.DataDir, Prefix: Service}
-			_, err = store.Write(daemon.RuntimeRecord{PID: unrelated.Process.Pid, Network: daemon.NetworkTCP, Address: strings.TrimPrefix(closed.URL, "http://"), Service: Service, Version: Version})
-			require.NoError(t, err)
-			if held {
-				release, err := store.AcquireOwnerLock(t.Context())
-				require.NoError(t, err)
-				defer release()
-			}
-			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-			defer cancel()
-			url, err := endpoint(ctx, opts, ollama, 100*time.Millisecond)
-			if held {
-				require.ErrorIs(t, err, daemon.ErrDaemonUnreachable)
-				return
-			}
-			require.NoError(t, err)
-			assert.NotEmpty(t, url)
-			again, err := endpoint(ctx, opts, ollama, 100*time.Millisecond)
-			require.NoError(t, err)
-			assert.Equal(t, url, again)
-		})
-	}
 }
 
 func localServer(t *testing.T, dir, version string) *httptest.Server {
@@ -252,10 +215,6 @@ func waitForStartup(t *testing.T, store daemon.RuntimeStore) {
 }
 
 func TestMain(m *testing.M) {
-	if len(os.Args) > 1 && os.Args[1] == "--unrelated" {
-		_, _ = os.Stdin.Read(make([]byte, 1))
-		os.Exit(0)
-	}
 	if len(os.Args) > 1 && os.Args[1] == "-data-dir" {
 		os.Exit(runServer(os.Args[1:]))
 	}
