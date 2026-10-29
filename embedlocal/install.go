@@ -123,9 +123,6 @@ func install(ctx context.Context, opts InstallOptions, client *http.Client, asse
 		if err != nil {
 			return Installation{}, fmt.Errorf("resolve kennembed bundle: %w", err)
 		}
-		if info == nil {
-			return Installation{}, errors.New("no kennembed bundle is available")
-		}
 		if err := embedassets.DownloadAsset(ctx, httpClient, stage, embedassets.Asset{Name: "archive", URL: info.DownloadURL, Digest: info.Checksum, Size: info.Size}); err != nil {
 			return Installation{}, fmt.Errorf("download kennembed: %w", err)
 		}
