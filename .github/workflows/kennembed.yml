@@ -1,10 +1,6 @@
 name: kennembed release bundles
 on:
   workflow_call:
-    inputs:
-      tag:
-        type: string
-        default: ''
   workflow_dispatch:
     inputs:
       tag:
