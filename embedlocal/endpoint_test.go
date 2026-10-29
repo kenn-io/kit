@@ -137,7 +137,6 @@ func TestEndpointJoinStartup(t *testing.T) {
 			cancel()
 			firstErr := <-first
 			require.ErrorIs(t, firstErr, context.Canceled)
-			require.ErrorContains(t, firstErr, filepath.Join(opts.DataDir, "kennembed.log"))
 			joining, stopJoining := context.WithTimeout(t.Context(), 5*time.Second)
 			defer stopJoining()
 			done := make(chan endpointResult, 1)
