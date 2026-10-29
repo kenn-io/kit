@@ -3,11 +3,37 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/embedserver"
 )
+
+func TestRunReportsFailureOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name, flag, value, message string
+	}{
+		{"owned", "-library", filepath.Join(t.TempDir(), "missing"), "ONNX Runtime library"},
+		{"before ownership", "-listen", "0.0.0.0:1", "loopback"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output, err := os.CreateTemp(t.TempDir(), "stderr")
+			require.NoError(t, err)
+			defer output.Close()
+			stderr := os.Stderr
+			os.Stderr = output
+			defer func() { os.Stderr = stderr }()
+			assert.Equal(t, 1, run([]string{"-data-dir", t.TempDir(), tc.flag, tc.value}, embedserver.Serve))
+			printed, err := os.ReadFile(output.Name())
+			require.NoError(t, err)
+			assert.Equal(t, 1, strings.Count(string(printed), tc.message), string(printed))
+		})
+	}
+}
 
 func TestRun(t *testing.T) {
 	for _, tt := range []struct {

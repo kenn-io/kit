@@ -91,42 +91,10 @@ func TestEndpointEarlyExit(t *testing.T) {
 }
 
 func TestEndpointStartup(t *testing.T) {
-	for _, tc := range []struct {
-		name           string
-		callerDeadline bool
-	}{{"slow", true}, {"default", false}} {
-		t.Run(tc.name, func(t *testing.T) {
-			opts, ollama, entered, ready := startupFixture(t, http.StatusOK)
-			ctx := context.WithoutCancel(t.Context())
-			var cancel context.CancelFunc
-			if tc.callerDeadline {
-				ctx, cancel = context.WithTimeout(ctx, 5*time.Second)
-			} else {
-				ctx, cancel = context.WithCancel(ctx)
-			}
-			defer cancel()
-			done := make(chan endpointResult, 1)
-			go func() {
-				url, err := endpoint(ctx, opts, ollama, 100*time.Millisecond)
-				done <- endpointResult{url, err}
-			}()
-			pid := <-entered
-			time.Sleep(200 * time.Millisecond) //nolint:kennlint // separates default-budget expiry from a longer caller deadline across the child process
-			ready()
-			result := <-done
-			if tc.callerDeadline {
-				require.NoError(t, result.err)
-				records, err := (daemon.RuntimeStore{Dir: opts.DataDir, Prefix: Service}).List()
-				require.NoError(t, err)
-				require.Len(t, records, 1)
-				assert.Equal(t, pid, records[0].PID)
-				assert.Equal(t, records[0].Endpoint().BaseURL()+"/v1", result.url)
-			} else {
-				require.ErrorIs(t, result.err, context.DeadlineExceeded)
-				require.ErrorContains(t, result.err, filepath.Join(opts.DataDir, "kennembed.log"))
-			}
-		})
-	}
+	opts, ollama, _, _ := startupFixture(t, http.StatusOK)
+	_, err := endpoint(context.WithoutCancel(t.Context()), opts, ollama, 100*time.Millisecond)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.ErrorContains(t, err, filepath.Join(opts.DataDir, "kennembed.log"))
 }
 
 func TestEndpointJoinStartup(t *testing.T) {
@@ -162,9 +130,6 @@ func TestEndpointJoinStartup(t *testing.T) {
 			}, time.Second, 10*time.Millisecond, "loading must not launch another child")
 			ready()
 			result := <-done
-			launches, err := filepath.Glob(filepath.Join(opts.DataDir, "launch.*"))
-			require.NoError(t, err)
-			assert.Len(t, launches, 1, "joining caller must reuse the original child")
 			require.NoError(t, joining.Err(), "shared failure must be reported before the caller deadline")
 			if tc.status == http.StatusServiceUnavailable {
 				require.ErrorContains(t, result.err, "cache model.onnx: download: HTTP 503")

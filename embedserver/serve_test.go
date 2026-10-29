@@ -1,10 +1,8 @@
 package embedserver
 
 import (
-	"bufio"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -80,26 +78,13 @@ func TestServeDiscoveryAndCancellation(t *testing.T) {
 }
 
 func TestServeRejectsStartup(t *testing.T) {
-	for _, tc := range []struct {
-		name, listen, message string
-		loaded                bool
-	}{
-		{"load failure", "", "model unavailable", true},
-		{"non-loopback", "0.0.0.0:0", "", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			called := false
-			err := serve(t.Context(), Options{DataDir: t.TempDir(), Listen: tc.listen}, func(context.Context, string, string) (engine, error) {
-				called = true
-				return nil, errors.New("model unavailable")
-			}, daemon.Endpoint.ListenContext)
-			require.Error(t, err)
-			if tc.message != "" {
-				require.ErrorContains(t, err, tc.message)
-			}
-			assert.Equal(t, tc.loaded, called)
-		})
-	}
+	called := false
+	err := serve(t.Context(), Options{DataDir: t.TempDir(), Listen: "0.0.0.0:0"}, func(context.Context, string, string) (engine, error) {
+		called = true
+		return nil, errors.New("model must not load")
+	}, daemon.Endpoint.ListenContext)
+	require.Error(t, err)
+	assert.False(t, called)
 }
 
 func TestServeRejectsSecondOwner(t *testing.T) {
@@ -177,44 +162,48 @@ func startEmbeddingRequest(t *testing.T, record daemon.RuntimeRecord) <-chan err
 	return done
 }
 
+type pausedError struct {
+	formatting chan struct{}
+	resume     chan struct{}
+}
+
+func (e *pausedError) Error() string {
+	close(e.formatting)
+	<-e.resume
+	return "model unavailable"
+}
+
 func TestServePrintsFailureBeforeOwnerRelease(t *testing.T) {
-	reader, writer, err := os.Pipe()
+	output, err := os.CreateTemp(t.TempDir(), "stderr")
 	require.NoError(t, err)
-	defer reader.Close()
+	defer output.Close()
 	stderr := os.Stderr
-	os.Stderr = writer
+	os.Stderr = output
 	defer func() { os.Stderr = stderr }()
 	store := daemon.RuntimeStore{Dir: t.TempDir(), Prefix: "kit-embed"}
-	// Hold the diagnostic write open while checking the actual server's owner lock.
-	failure := errors.New("model unavailable: " + strings.Repeat("x", 1<<20))
+	failure := &pausedError{make(chan struct{}), make(chan struct{})}
 	done := make(chan error, 1)
 	go func() {
-		err := serve(t.Context(), Options{DataDir: store.Dir}, func(context.Context, string, string) (engine, error) { return nil, failure }, daemon.Endpoint.ListenContext)
-		// The CLI prints returned errors after Serve returns.
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-		}
-		writer.Close()
-		done <- err
+		done <- serve(t.Context(), Options{DataDir: store.Dir}, func(context.Context, string, string) (engine, error) { return nil, failure }, daemon.Endpoint.ListenContext)
 	}()
 	defer func() {
-		_, err := io.Copy(io.Discard, reader)
-		require.NoError(t, err)
+		close(failure.resume)
 		require.ErrorIs(t, <-done, failure)
+		printed, err := os.ReadFile(output.Name())
+		require.NoError(t, err)
+		require.Contains(t, string(printed), "model unavailable")
 	}()
-	output := bufio.NewReader(reader)
-	loading, err := output.ReadString('\n')
-	require.NoError(t, err)
-	require.Equal(t, "Loading nomic-embed-text model...\n", loading)
-	prefix := make([]byte, len("model unavailable:"))
-	_, err = io.ReadFull(output, prefix)
-	require.NoError(t, err)
-	require.Equal(t, "model unavailable:", string(prefix))
-	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond) //nolint:kennlint // probes the OS lock while the stderr pipe holds the diagnostic write open
+	select {
+	case <-failure.formatting:
+	case err := <-done:
+		done <- err
+		require.FailNow(t, "Serve returned before printing its error")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond) //nolint:kennlint // probes the OS lock while error formatting is paused
 	defer cancel()
 	release, err := store.AcquireOwnerLock(ctx)
 	if release != nil {
 		release()
 	}
-	require.ErrorIs(t, err, context.DeadlineExceeded, "failure must be visible before ownership is released")
+	require.ErrorIs(t, err, context.DeadlineExceeded, "failure must be published before ownership is released")
 }

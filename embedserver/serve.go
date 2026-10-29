@@ -27,12 +27,21 @@ func DefaultDir() (string, error) {
 
 // Serve prints its loopback URL to stderr after loading the model and publishing
 // its runtime record. Cancellation closes connections and waits for active
-// inference before native cleanup.
+// inference before native cleanup. Serve prints any returned error to stderr.
 func Serve(ctx context.Context, opts Options) error {
 	return serve(ctx, opts, loadModel, daemon.Endpoint.ListenContext)
 }
 
 func serve(ctx context.Context, opts Options, load func(context.Context, string, string) (engine, error), listen func(daemon.Endpoint, context.Context) (net.Listener, error)) (err error) {
+	var release func()
+	defer func() {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
+		if release != nil {
+			release()
+		}
+	}()
 	if opts.DataDir == "" {
 		opts.DataDir, err = DefaultDir()
 		if err != nil {
@@ -52,17 +61,11 @@ func serve(ctx context.Context, opts Options, load func(context.Context, string,
 	}
 	store := daemon.RuntimeStore{Dir: opts.DataDir, Prefix: embedlocal.Service}
 	lockCtx, cancelLock := context.WithTimeout(ctx, time.Second)
-	release, err := store.AcquireOwnerLock(lockCtx)
+	release, err = store.AcquireOwnerLock(lockCtx)
 	cancelLock()
 	if err != nil {
 		return fmt.Errorf("cannot own %s, another kennembed may be running: %w", opts.DataDir, err)
 	}
-	defer func() {
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-		}
-		release()
-	}()
 	// The owner lock proves that servers which left records are gone.
 	if _, err := store.CleanupDead(); err != nil {
 		return fmt.Errorf("remove stale runtime records: %w", err)
