@@ -40,9 +40,11 @@ See `docs/adopting-kennlint.md` for the consumer workflow.
   budgets by default, but reports `Never` and `Neverf` only for zero or
   negative budgets: a short positive window cannot fail under load.
 - `deadlinetest` checks duration fields and same-module parameters whose names
-  contain timeout, deadline, budget, wait, interval, tick, or delay, plus
+  have timeout, deadline, budget, or wait as a camelCase word, plus
   standalone `time.Now().Add` deadlines. Same-module helper calls from test
   files are covered; helper package source files aren't scanned.
+  Intervals, ticks, and delays are cadences: a short one speeds a test up
+  and cannot fail it, so they stay out of the vocabulary.
   `kennnolint` requires grouped kit suppressions to name their rules and reason.
 - An analyzer that declares facts runs, with everything it requires, on every
   dependency: the standard library and third-party modules included. Fact

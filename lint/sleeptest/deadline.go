@@ -7,6 +7,7 @@ import (
 	"go/types"
 	"strings"
 	"time"
+	"unicode"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
@@ -221,13 +222,39 @@ func argAt(call *ast.CallExpr, i int) ast.Expr {
 	return call.Args[i]
 }
 
-// budgetName limits handoffs to names that describe timing behavior.
+// budgetName limits handoffs to names with a camelCase or snake_case word,
+// singular or plural, that names a time budget. Polling intervals, ticks,
+// and retry delays are cadences: a short one speeds a test up and cannot
+// fail it.
 func budgetName(name string) bool {
-	name = strings.ToLower(name)
-	for _, word := range []string{"timeout", "deadline", "budget", "wait", "interval", "tick", "delay"} {
-		if strings.Contains(name, word) {
+	runes := []rune(name)
+	start := 0
+	for i := 1; i <= len(runes); i++ {
+		if i < len(runes) && !wordBoundary(runes, i) {
+			continue
+		}
+		word := strings.ToLower(strings.Trim(string(runes[start:i]), "_"))
+		switch strings.TrimSuffix(word, "s") {
+		case "timeout", "deadline", "budget", "wait":
 			return true
 		}
+		start = i
+	}
+	return false
+}
+
+// wordBoundary reports whether a new word starts at runes[i]: after an
+// underscore, at a lower-to-upper change, or at the last capital of an
+// acronym followed by a lowercase letter, as in HTTPTimeout.
+func wordBoundary(runes []rune, i int) bool {
+	prev, cur := runes[i-1], runes[i]
+	switch {
+	case prev == '_' || cur == '_':
+		return true
+	case unicode.IsUpper(cur) && !unicode.IsUpper(prev):
+		return true
+	case unicode.IsUpper(cur) && i+1 < len(runes) && unicode.IsLower(runes[i+1]):
+		return true
 	}
 	return false
 }

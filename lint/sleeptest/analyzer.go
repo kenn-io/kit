@@ -24,8 +24,9 @@
 // their f variants. It also checks duration fields in literals and assignments,
 // duration arguments to statically resolved same-module functions and methods,
 // and standalone time.Now().Add deadlines. Duration fields and helper
-// parameters must contain timeout, deadline, budget, wait, interval, tick,
-// or delay in their names. Standalone Add checks apply regardless of the
+// parameters must have timeout, deadline, budget, or wait as a camelCase
+// word in their names; intervals, ticks, and delays are cadences, not
+// budgets. Standalone Add checks apply regardless of the
 // destination name. Duration elements in maps and slices, closures, and
 // interface calls are out of scope. Same-module helper calls from _test.go files are checked;
 // helper package source files themselves are not scanned. A short budget
