@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -47,7 +48,7 @@ func TestEndpointOllamaFallback(t *testing.T) {
 	}
 }
 
-func TestEndpointMissingAndUnreachable(t *testing.T) {
+func TestEndpointNotFound(t *testing.T) {
 	ollama := httptest.NewServer(http.NotFoundHandler())
 	defer ollama.Close()
 	dir := t.TempDir()
@@ -56,10 +57,42 @@ func TestEndpointMissingAndUnreachable(t *testing.T) {
 	localServer(t, dir, "2")
 	_, err = endpoint(t.Context(), Options{DataDir: dir}, ollama.URL, 2*time.Minute)
 	require.ErrorIs(t, err, ErrNotFound)
-	local := localServer(t, dir, Version)
-	local.Close()
-	_, err = endpoint(t.Context(), Options{DataDir: dir, Executable: "must-not-start"}, ollama.URL, 2*time.Minute)
-	require.ErrorIs(t, err, daemon.ErrDaemonUnreachable)
+}
+
+func TestEndpointReusedPID(t *testing.T) {
+	for _, held := range []bool{false, true} {
+		t.Run(fmt.Sprintf("owner-held-%t", held), func(t *testing.T) {
+			opts, ollama, _, ready := startupFixture(t, http.StatusOK)
+			ready()
+			unrelated := exec.Command(opts.Executable, "--unrelated")
+			input, err := unrelated.StdinPipe()
+			require.NoError(t, err)
+			require.NoError(t, unrelated.Start())
+			defer func() { input.Close(); require.NoError(t, unrelated.Wait()) }()
+			closed := httptest.NewServer(http.NotFoundHandler())
+			closed.Close()
+			store := daemon.RuntimeStore{Dir: opts.DataDir, Prefix: Service}
+			_, err = store.Write(daemon.RuntimeRecord{PID: unrelated.Process.Pid, Network: daemon.NetworkTCP, Address: strings.TrimPrefix(closed.URL, "http://"), Service: Service, Version: Version})
+			require.NoError(t, err)
+			if held {
+				release, err := store.AcquireOwnerLock(t.Context())
+				require.NoError(t, err)
+				defer release()
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			url, err := endpoint(ctx, opts, ollama, 100*time.Millisecond)
+			if held {
+				require.ErrorIs(t, err, daemon.ErrDaemonUnreachable)
+				return
+			}
+			require.NoError(t, err)
+			assert.NotEmpty(t, url)
+			again, err := endpoint(ctx, opts, ollama, 100*time.Millisecond)
+			require.NoError(t, err)
+			assert.Equal(t, url, again)
+		})
+	}
 }
 
 func localServer(t *testing.T, dir, version string) *httptest.Server {
@@ -86,24 +119,22 @@ func TestEndpointEarlyExit(t *testing.T) {
 	_, err = endpoint(ctx, Options{DataDir: dir, Executable: executable}, ollama.URL, 100*time.Millisecond)
 	require.ErrorContains(t, err, "ONNX Runtime library missing")
 	require.ErrorContains(t, err, filepath.Join(dir, "kennembed.log"))
-	// The log also appears on timeout; a live caller proves the child exit ended startup.
-	assert.NoError(t, ctx.Err(), "child exit should end startup before its timeout")
-}
-
-func TestEndpointStartup(t *testing.T) {
-	opts, ollama, _, _ := startupFixture(t, http.StatusOK)
-	_, err := endpoint(context.WithoutCancel(t.Context()), opts, ollama, 100*time.Millisecond)
-	require.ErrorIs(t, err, context.DeadlineExceeded)
-	require.ErrorContains(t, err, filepath.Join(opts.DataDir, "kennembed.log"))
+	assert.NotErrorIs(t, err, context.DeadlineExceeded, "child exit should end startup before its timeout")
 }
 
 func TestEndpointJoinStartup(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		status int
-	}{{"reuse", http.StatusOK}, {"failed", http.StatusServiceUnavailable}} {
+	}{{"default", http.StatusOK}, {"reuse", http.StatusOK}, {"failed", http.StatusServiceUnavailable}} {
 		t.Run(tc.name, func(t *testing.T) {
 			opts, ollama, entered, ready := startupFixture(t, tc.status)
+			if tc.name == "default" {
+				_, err := endpoint(context.WithoutCancel(t.Context()), opts, ollama, 100*time.Millisecond)
+				require.ErrorIs(t, err, context.DeadlineExceeded)
+				require.ErrorContains(t, err, filepath.Join(opts.DataDir, "kennembed.log"))
+				return
+			}
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
 			first := make(chan error, 1)
@@ -221,6 +252,10 @@ func waitForStartup(t *testing.T, store daemon.RuntimeStore) {
 }
 
 func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && os.Args[1] == "--unrelated" {
+		_, _ = os.Stdin.Read(make([]byte, 1))
+		os.Exit(0)
+	}
 	if len(os.Args) > 1 && os.Args[1] == "-data-dir" {
 		os.Exit(runServer(os.Args[1:]))
 	}
