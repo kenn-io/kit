@@ -122,9 +122,12 @@ func TestRunnerCancellationStopsGitHTTPSubprocesses(t *testing.T) {
 		result <- err
 	}()
 
+	// Git's HTTP helper can take several seconds to start on busy Windows runners.
 	select {
 	case <-requestStarted:
-	case <-time.After(5 * time.Second):
+	case err := <-result:
+		require.FailNow("git exited before starting its HTTP request", "git result: %v", err)
+	case <-time.After(30 * time.Second):
 		require.FailNow("git did not start its HTTP request")
 	}
 	canceledAt := time.Now()
