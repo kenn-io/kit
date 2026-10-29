@@ -2,7 +2,6 @@ package embedlocal
 
 import (
 	"context"
-	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -135,33 +134,18 @@ func endpoint(ctx context.Context, opts Options, ollama string, timeout time.Dur
 func probeOllama(ctx context.Context, origin string) bool {
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, origin+"/api/tags", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, origin+"/api/show", strings.NewReader(`{"model":"nomic-embed-text"}`))
 	if err != nil {
 		return false
 	}
+	req.Header.Set("Content-Type", "application/json")
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
 		return false
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return false
-	}
-	var tags struct {
-		Models []struct {
-			Name string `json:"name"`
-		} `json:"models"`
-	}
-	if json.UnmarshalRead(io.LimitReader(resp.Body, 1<<20), &tags) != nil {
-		return false
-	}
-	for _, model := range tags.Models {
-		if model.Name == "nomic-embed-text:latest" {
-			return true
-		}
-	}
-	return false
+	return resp.StatusCode == http.StatusOK
 }
 
 func ownerHeld(ctx context.Context, store daemon.RuntimeStore) (bool, error) {

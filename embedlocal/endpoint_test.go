@@ -2,6 +2,7 @@ package embedlocal
 
 import (
 	"context"
+	"encoding/json/v2"
 	"flag"
 	"fmt"
 	"net"
@@ -21,21 +22,45 @@ import (
 )
 
 func TestEndpointOllamaFallback(t *testing.T) {
+	// These aliases would make /api/tags JSON exceed 1 MiB.
+	models := []string{"nomic-embed-text:latest"}
+	for i := range 6000 {
+		models = append(models, fmt.Sprintf("alias-%04d-%s:latest", i, strings.Repeat("a", 90)))
+	}
 	for _, tc := range []struct {
-		name, body string
-		status     int
-		backend    string
+		name    string
+		models  []string
+		status  int
+		backend string
 	}{
-		{"latest", `{"models":[{"name":"nomic-embed-text:latest"}]}`, 200, "ollama"},
-		{"status", `{"models":[{"name":"nomic-embed-text:latest"}]}`, 503, "local"},
-		{"custom tag", `{"models":[{"name":"nomic-embed-text:v1.5"}]}`, 200, "local"},
-		{"oversized", `{"padding":"` + strings.Repeat("x", 1<<20) + `","models":[{"name":"nomic-embed-text:latest"}]}`, 200, "local"},
+		{"latest", []string{"nomic-embed-text:latest"}, 200, "ollama"},
+		{"case insensitive", []string{"Nomic-Embed-Text:latest"}, 200, "ollama"},
+		{"large catalog", models, 200, "ollama"},
+		{"status", []string{"nomic-embed-text:latest"}, 503, "local"},
+		{"absent model", nil, 200, "local"},
+		{"custom tag", []string{"nomic-embed-text:v1.5"}, 200, "local"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				assert.Equal(t, "/api/tags", r.URL.Path)
-				w.WriteHeader(tc.status)
-				fmt.Fprint(w, tc.body)
+				if !assert.Equal(t, http.MethodPost, r.Method) || !assert.Equal(t, "/api/show", r.URL.Path) {
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				var request struct {
+					Model string `json:"model"`
+				}
+				if !assert.NoError(t, json.UnmarshalRead(r.Body, &request)) || !assert.Equal(t, "nomic-embed-text", request.Model) {
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				for _, name := range tc.models {
+					if strings.EqualFold(name, request.Model+":latest") {
+						w.WriteHeader(tc.status)
+						fmt.Fprint(w, `{"capabilities":["embedding"]}`)
+						return
+					}
+				}
+				http.NotFound(w, r)
 			}))
 			defer ollama.Close()
 			dir := t.TempDir()
