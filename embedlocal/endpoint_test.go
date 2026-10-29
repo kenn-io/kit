@@ -2,6 +2,7 @@ package embedlocal
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -95,7 +96,7 @@ func TestEndpointJoinStartup(t *testing.T) {
 			opts, ollama, entered, ready := startupFixture(t, tc.status)
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			var timeout time.Duration
-			if tc.firstErr == context.DeadlineExceeded {
+			if errors.Is(tc.firstErr, context.DeadlineExceeded) {
 				cancel()
 				ctx, cancel = context.WithCancel(context.WithoutCancel(t.Context()))
 				timeout = 100 * time.Millisecond
@@ -104,7 +105,7 @@ func TestEndpointJoinStartup(t *testing.T) {
 			first := make(chan error, 1)
 			go func() { _, err := endpoint(ctx, opts, ollama, timeout); first <- err }()
 			pid := <-entered
-			if tc.firstErr == context.Canceled {
+			if errors.Is(tc.firstErr, context.Canceled) {
 				cancel()
 			}
 			firstErr := <-first
