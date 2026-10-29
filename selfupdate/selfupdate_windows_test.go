@@ -81,6 +81,9 @@ func TestInstallBinaryWaitsForRollbackReader(t *testing.T) {
 						_, statErr := os.Stat(dst)
 						return err == nil && len(backups) == 1 && os.IsNotExist(statErr)
 					}, time.Second, 5*time.Millisecond)
+					// The renamed path is visible before Replace closes its handle.
+					// Wait for the installer to reach its next retry before opening it.
+					synctest.Wait()
 					backup, err = os.Open(backups[0])
 					require.NoError(t, err)
 					defer func() { _ = backup.Close() }()
