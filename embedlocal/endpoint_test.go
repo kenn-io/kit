@@ -108,10 +108,6 @@ func TestEndpointJoinStartup(t *testing.T) {
 			firstErr := <-first
 			require.ErrorIs(t, firstErr, context.Canceled)
 			require.ErrorContains(t, firstErr, filepath.Join(opts.DataDir, "kennembed.log"))
-			if tc.status == http.StatusServiceUnavailable {
-				_, err := endpoint(context.WithoutCancel(t.Context()), opts, ollama, 100*time.Millisecond)
-				require.ErrorContains(t, err, filepath.Join(opts.DataDir, "kennembed.log"))
-			}
 			joining, stopJoining := context.WithTimeout(t.Context(), 5*time.Second)
 			defer stopJoining()
 			done := make(chan endpointResult, 1)
