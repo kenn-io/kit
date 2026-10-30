@@ -200,7 +200,7 @@ func TestServePrintsFailureBeforeOwnerRelease(t *testing.T) {
 		done <- err
 		require.FailNow(t, "Serve returned before printing its error")
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond) //nolint:kennlint // probes the OS lock while error formatting is paused
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond) //nolint:kennlint // deadlinetest: probes the OS lock while error formatting is paused
 	defer cancel()
 	release, err := store.AcquireOwnerLock(ctx)
 	if release != nil {

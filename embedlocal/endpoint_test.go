@@ -107,7 +107,7 @@ func TestEndpointStartLockTimeoutExcludesStaleLog(t *testing.T) {
 	defer release()
 	executable, err := os.Executable()
 	require.NoError(t, err)
-	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond) //nolint:kennlint // the held start lock makes the caller deadline the expected result
+	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond) //nolint:kennlint // deadlinetest: the held start lock makes the caller deadline the expected result
 	defer cancel()
 	_, err = endpoint(ctx, Options{DataDir: dir, Executable: executable}, ollama.URL, 0)
 	require.ErrorIs(t, err, context.DeadlineExceeded)

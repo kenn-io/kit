@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"go.kenn.io/kit/daemon"
-	"go.kenn.io/kit/internal/embedassets"
 	"go.kenn.io/kit/embedlocal"
+	"go.kenn.io/kit/internal/embedassets"
 )
 
 // Options configures the foreground server. DataDir defaults to DefaultDir,
