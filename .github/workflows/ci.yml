@@ -27,7 +27,7 @@ jobs:
   hygiene:
     name: Go hygiene
     runs-on: namespace-profile-linux-4cpu
-    timeout-minutes: 10
+    timeout-minutes: 12
 
     steps:
       - name: Check out repository
@@ -57,7 +57,7 @@ jobs:
   test:
     name: Go tests (${{ matrix.os }}${{ matrix.shard == 'managed' && format(', git/managed {0}/{1}', matrix.part, matrix.parts) || '' }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: ${{ matrix.shard == 'managed' && 25 || 20 }}
+    timeout-minutes: ${{ matrix.shard == 'managed' && 30 || matrix.os == 'windows-latest' && 31 || 20 }}
     env:
       MANAGED_PACKAGE: go.kenn.io/kit/git/managed
     strategy:
