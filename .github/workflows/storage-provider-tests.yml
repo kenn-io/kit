@@ -2,11 +2,11 @@ name: Storage provider tests
 
 # Live S3 and GCS conformance for objectstore. The cloud identities trust only
 # this workflow on main, in the storage-tests environment, so it runs on
-# demand and weekly rather than on pull requests.
+# demand and daily rather than on pull requests.
 on:
   workflow_dispatch:
   schedule:
-    - cron: "23 7 * * 1"
+    - cron: "23 7 * * *"
 
 permissions:
   contents: read
@@ -55,6 +55,7 @@ jobs:
           KIT_GCS_LIVE_URL: gs://${{ vars.STORAGE_TESTS_GCS_BUCKET }}/kit
         # A skipped test means the provider was never reached, so it fails.
         run: |
+          set -o pipefail
           go test -race -shuffle=on -v -run 'LiveConformance$' ./objectstore/s3 ./objectstore/gcs | tee live.log
           for test in TestS3LiveConformance TestGCSLiveConformance; do
             grep -q -- "--- PASS: ${test} " live.log || { echo "${test} did not run and pass" >&2; exit 1; }
