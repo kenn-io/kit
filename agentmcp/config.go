@@ -30,8 +30,9 @@ type Result struct {
 	Data       []byte
 }
 
-// MarshalConfig returns a standalone client configuration containing one named
-// server. It reads and writes no client files. Data can include credentials.
+// MarshalConfig returns a complete standalone client configuration document
+// containing one named server for the caller to save or merge. It reads and
+// writes no client files. Data can include credentials.
 func MarshalConfig(agent Agent, name string, server Server) ([]byte, error) {
 	entry, err := prepareConfig(agent, name, server)
 	if err != nil {

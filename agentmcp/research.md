@@ -90,6 +90,7 @@ without reading its value. For Claude, it emits `headers.Authorization` as
 For Codex, it emits the native [`bearer_token_env_var` field](https://github.com/openai/codex/blob/main/codex-rs/config/src/mcp_types.rs).
 This field supports Claude and Codex remote servers and rejects stdio,
 conflicting Authorization headers, and other clients.
+The referenced variable must be present in the client's environment.
 
 ## Optional additions
 
