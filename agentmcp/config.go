@@ -30,6 +30,28 @@ type Result struct {
 	Data       []byte
 }
 
+// MarshalConfig returns a standalone client configuration containing one named
+// server. It reads and writes no client files. Data can include credentials.
+func MarshalConfig(agent Agent, name string, server Server) ([]byte, error) {
+	if _, ok := LookupProfile(agent); !ok {
+		return nil, fmt.Errorf("unsupported MCP agent %q", agent)
+	}
+	if strings.TrimSpace(name) == "" {
+		return nil, errors.New("MCP server name is required")
+	}
+	entry, err := server.native(agent)
+	if err != nil {
+		return nil, err
+	}
+	var data []byte
+	if agent == AgentCodex || agent == AgentHermes {
+		data, _, err = planDocument(agent, nil, name, entry)
+	} else {
+		data, _, err = planJSON(agent, nil, name, entry)
+	}
+	return data, err
+}
+
 // PlanInstall computes a registration without writing files. Other server
 // entries, settings, and comments are retained. Comments on replaced fields
 // remain next to the replacement. Formatting may change; unchanged files retain
