@@ -41,6 +41,11 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - uses: ./.github/actions/kit-retry
+
+      - name: Download modules
+        run: kit-retry 3 5 go mod download
+
       - name: Check go.mod is tidy
         run: |
           go mod tidy
@@ -101,8 +106,11 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - uses: ./.github/actions/kit-retry
+
       - name: Download modules
-        run: go mod download
+        shell: bash
+        run: kit-retry 3 5 go mod download
 
       - name: Build
         if: matrix.shard == 'regular'
@@ -230,6 +238,7 @@ jobs:
           endpoint="http://$(docker port kit-s3-conformance 9000/tcp)"
           echo "KIT_S3_TEST_ENDPOINT=${endpoint}" >> "${GITHUB_ENV}"
           for attempt in $(seq 1 30); do
+            # workflowretry: allow local container readiness already retries
             if curl --fail --silent --show-error \
               "${endpoint}/health" >/dev/null; then
               exit 0

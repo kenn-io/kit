@@ -16,17 +16,17 @@ override GOFLAGS += -trimpath
 endif
 export GOFLAGS
 
-.PHONY: lint lint-golangci lint-config lint-config-check custom-gcl nilaway
+.PHONY: lint lint-golangci lint-config lint-config-check custom-gcl nilaway lint-workflow-retries
 
 # lint is the repository lint gate: shared config drift, golangci-lint with the
 # kit analyzers, and nilaway.
-lint: lint-config-check lint-golangci nilaway
+lint: lint-config-check lint-golangci nilaway lint-workflow-retries
 
 # custom-gcl builds golangci-lint with the plugins in .custom-gcl.yml
 # (the kit analyzers from ./lint/gclplugin and nilaway). golangci-lint keeps
 # the build cached and skips it when nothing changed.
 custom-gcl:
-	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) custom \
+	.github/actions/kit-retry/kit-retry 3 5 go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) custom \
 		--destination $(CUSTOM_GCL_DIR) --name custom-gcl --version $(GOLANGCI_LINT_VERSION)
 
 lint-golangci: custom-gcl
@@ -47,3 +47,6 @@ lint-config-check:
 # Set KIT_EMBED_TEST_DIR and KIT_EMBED_TEST_LIBRARY to include native parity.
 test-embedserver:
 	go test -race ./embedserver ./cmd/kennembed ./internal/embedassets ./embedlocal
+
+lint-workflow-retries:
+	go run ./cmd/kennlint workflow-retries
