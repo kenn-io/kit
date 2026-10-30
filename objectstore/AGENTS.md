@@ -52,7 +52,9 @@
   echoed SHA-256 when inspection finds that PUT's ETag; some endpoints omit
   the checksum type on inspection, and an untyped checksum stays composite. Publication conflicts do not imply a caller revision changed.
   Provider support needs live contract validation; loopback fixtures and RustFS
-  conformance do not establish AWS or other provider support.
+  conformance do not establish AWS or other provider support. The live tests
+  run only when `KIT_S3_LIVE_URL` or `KIT_GCS_LIVE_URL` is set; see
+  `docs/development.md`.
 - GCS uses the official `cloud.google.com/go/storage` client with JSON reads.
   Config takes explicit OAuth credentials; the store never falls back to
   Application Default Credentials. HMAC login is not supported; add it only as

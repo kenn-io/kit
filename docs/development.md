@@ -26,3 +26,36 @@ cannot find them without help.
   repository root and run `config substitute-path -guess` (Delve 1.24 or
   later). It maps the module path to your checkout, the standard library to
   `GOROOT`, and dependencies to the module cache.
+
+## Object storage conformance
+
+The `objectstore` S3 and GCS stores have unit tests against in-process fakes.
+Two opt-in conformance tests go further. Each writes under its own random
+prefix, removes what it wrote, and never creates or deletes a bucket.
+
+**Loopback S3.** `TestS3ObjectConformance` runs against a disposable
+S3-compatible service on localhost, as CI does with RustFS. Set
+`KIT_S3_TEST_ENDPOINT` to the service URL; `KIT_S3_TEST_BUCKET`,
+`KIT_S3_TEST_ACCESS_KEY`, and `KIT_S3_TEST_SECRET_KEY` override the defaults.
+It refuses any endpoint that is not loopback.
+
+**Live providers.** Only these tests show that real AWS S3 and Google Cloud
+Storage behave as the stores expect; loopback services and fakes cannot.
+Setting a variable is the consent to run against that provider:
+
+| Test                     | Variable                              | Credentials                     |
+| ------------------------ | ------------------------------------- | ------------------------------- |
+| `TestS3LiveConformance`  | `KIT_S3_LIVE_URL=s3://bucket/prefix`  | AWS SDK default chain           |
+| `TestGCSLiveConformance` | `KIT_GCS_LIVE_URL=gs://bucket/prefix` | Application Default Credentials |
+
+S3 also needs the bucket's region in `KIT_S3_LIVE_REGION` or `AWS_REGION`. The
+identity needs object create, read, delete, and list on the bucket, plus
+aborting multipart uploads on S3. Give the bucket a lifecycle rule that removes
+objects after a day, so an interrupted run leaves nothing behind.
+
+```sh
+KIT_S3_LIVE_URL=s3://example-bucket/kit AWS_REGION=us-east-2 \
+  go test -run TestS3LiveConformance ./objectstore/s3
+KIT_GCS_LIVE_URL=gs://example-bucket/kit \
+  go test -run TestGCSLiveConformance ./objectstore/gcs
+```

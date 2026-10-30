@@ -19,6 +19,21 @@ func TestS3ObjectConformance(t *testing.T) {
 	store, err := New(t.Context(), Config{Bucket: fixture.Bucket, Prefix: fixture.Prefix, Endpoint: fixture.Endpoint, Region: "us-east-1", Credentials: fixture.Credentials, ForcePathStyle: true, AllowInsecureTransport: true, PartBytes: 5 << 20, PageSize: 1})
 	require.NoError(t, err)
 	s3test.Prepare(t, store.client, fixture)
+	checkObjectConformance(t, store)
+}
+
+// TestS3LiveConformance runs the same contract against a real S3 bucket. It
+// is the evidence of provider support that loopback services cannot give.
+func TestS3LiveConformance(t *testing.T) {
+	fixture := s3test.LoadLive(t)
+	store, err := New(t.Context(), Config{Bucket: fixture.Bucket, Prefix: fixture.Prefix, Region: fixture.Region, Credentials: fixture.Credentials, PartBytes: 5 << 20, PageSize: 1})
+	require.NoError(t, err)
+	s3test.Prepare(t, store.client, fixture)
+	checkObjectConformance(t, store)
+}
+
+func checkObjectConformance(t *testing.T, store *Store) {
+	t.Helper()
 	// Readback stays off, so each upload must verify from provider checksums.
 	verification := []string{"provider-sha256", "provider-sha256", "provider-crc32c"}
 	for i, size := range []int{0, 17, (5 << 20) + 123} {
@@ -51,7 +66,7 @@ func TestS3ObjectConformance(t *testing.T) {
 	}
 	foreign := []string{"foreign-object", "foreign/\x01+entry", "foreign/literal%2F+name/nested"}
 	for _, key := range foreign {
-		_, err = store.client.PutObject(t.Context(), &awss3.PutObjectInput{Bucket: aws.String(store.bucket), Key: aws.String(store.prefix + key), Body: bytes.NewReader([]byte("foreign"))})
+		_, err := store.client.PutObject(t.Context(), &awss3.PutObjectInput{Bucket: aws.String(store.bucket), Key: aws.String(store.prefix + key), Body: bytes.NewReader([]byte("foreign"))})
 		require.NoError(t, err)
 	}
 	keys := []string{}

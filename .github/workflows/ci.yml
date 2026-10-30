@@ -3,7 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
-  pull_request:
+  workflow_call:
   workflow_dispatch:
 
 permissions:
@@ -27,7 +27,7 @@ jobs:
   hygiene:
     name: Go hygiene
     runs-on: namespace-profile-linux-4cpu
-    timeout-minutes: 10
+    timeout-minutes: 12
 
     steps:
       - name: Check out repository
@@ -62,7 +62,7 @@ jobs:
   test:
     name: Go tests (${{ matrix.os }}${{ matrix.shard == 'managed' && format(', git/managed {0}/{1}', matrix.part, matrix.parts) || '' }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: ${{ matrix.shard == 'managed' && 25 || 20 }}
+    timeout-minutes: ${{ matrix.shard == 'managed' && 30 || matrix.os == 'windows-latest' && 31 || 14 }}
     env:
       MANAGED_PACKAGE: go.kenn.io/kit/git/managed
     strategy:
@@ -155,7 +155,7 @@ jobs:
   streaming-gates:
     name: Streaming race and portability gates
     runs-on: namespace-profile-linux-8cpu
-    timeout-minutes: 25
+    timeout-minutes: 14
 
     steps:
       - name: Check out repository
@@ -211,7 +211,7 @@ jobs:
   s3-conformance:
     name: S3-compatible backend conformance
     runs-on: namespace-profile-linux-4cpu
-    timeout-minutes: 15
+    timeout-minutes: 14
 
     steps:
       - name: Check out repository
@@ -258,7 +258,7 @@ jobs:
   search-backends:
     name: Search backend conformance
     runs-on: namespace-profile-linux-4cpu
-    timeout-minutes: 20
+    timeout-minutes: 12
 
     steps:
       - name: Check out repository
@@ -307,7 +307,7 @@ jobs:
   embedserver:
     name: Local embedding parity (${{ matrix.os }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+    timeout-minutes: 14
     strategy:
       fail-fast: false
       matrix:
