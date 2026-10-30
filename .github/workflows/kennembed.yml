@@ -21,6 +21,7 @@ jobs:
           - os: windows
             runner: windows-latest
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 13
     env:
       RELEASE_TAG: ${{ inputs.tag }}
       TARGET_OS: ${{ matrix.os }}
@@ -69,6 +70,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     needs: bundle
     runs-on: namespace-profile-linux-4cpu
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
