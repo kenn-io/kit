@@ -1,7 +1,9 @@
 {
   $schema: 'https://docs.renovatebot.com/renovate-schema.json',
 
-  extends: ['config:recommended'],
+  // Routine updates open once a week, early Monday New York time.
+  extends: ['config:recommended', 'schedule:weekly'],
+  timezone: 'America/New_York',
   dependencyDashboard: true,
 
   // A human reviews and merges every Renovate PR.
@@ -18,12 +20,18 @@
   // checks.
   prCreation: 'immediate',
   internalChecksFilter: 'strict',
+  // Renovate regenerates .github/workflows/actions.lock with this
+  // gh-actions-lock release when it bumps an action.
+  constraints: {
+    ghActionsLock: 'v0.3.0',
+  },
   osvVulnerabilityAlerts: true,
   // Security fixes share one PR. They skip the wait, so they cannot ride in
   // the routine ecosystem PRs below.
   vulnerabilityAlerts: {
     minimumReleaseAge: null,
     prCreation: 'immediate',
+    schedule: ['at any time'],
     groupName: 'security fixes',
     groupSlug: 'security-fixes',
   },
@@ -46,6 +54,15 @@
     {
       matchManagers: ['npm'],
       groupName: 'npm packages',
+    },
+    {
+      // kenn-io releases open right away: no release-age wait and no
+      // weekly window.
+      matchPackageNames: ['kenn-io/**', 'github.com/kenn-io/**', 'go.kenn.io/**', '@kenn-io/**'],
+      groupName: 'kenn-io dependencies',
+      groupSlug: 'kenn-io-dependencies',
+      minimumReleaseAge: null,
+      schedule: ['at any time'],
     },
   ],
 
