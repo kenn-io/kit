@@ -41,7 +41,7 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - uses: ./.github/actions/kit-retry
+      - uses: $/.github/actions/kit-retry
 
       - name: Download modules
         run: kit-retry 3 5 go mod download
@@ -106,7 +106,7 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - uses: ./.github/actions/kit-retry
+      - uses: $/.github/actions/kit-retry
 
       - name: Download modules
         shell: bash
@@ -327,7 +327,7 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Cache verified model and runtime
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/embedserver
           key: embedserver-${{ runner.os }}-${{ runner.arch }}-ort-1.23.2-nomic-cf5b5a86-d241a60d
