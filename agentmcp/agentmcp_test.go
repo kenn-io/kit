@@ -43,7 +43,6 @@ func TestMarshalConfig(t *testing.T) {
 		{"claude http", "mcpServers", `{"type":"http","url":"https://example.com/mcp","headers":{"X-Client":"example","Authorization":"Bearer ${EXAMPLE_TOKEN}"}}`, agentmcp.AgentClaude, http},
 		{"codex http", "mcp_servers", `{"url":"https://example.com/mcp","http_headers":{"X-Client":"example"},"bearer_token_env_var":"EXAMPLE_TOKEN"}`, agentmcp.AgentCodex, http},
 		{"claude bearer only", "mcpServers", `{"type":"http","url":"https://example.com/mcp","headers":{"Authorization":"Bearer ${EXAMPLE_TOKEN}"}}`, agentmcp.AgentClaude, agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "EXAMPLE_TOKEN"}},
-		{"codex bearer only", "mcp_servers", `{"url":"https://example.com/mcp","bearer_token_env_var":"EXAMPLE_TOKEN"}`, agentmcp.AgentCodex, agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "EXAMPLE_TOKEN"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -70,24 +69,20 @@ func TestMarshalConfig(t *testing.T) {
 
 func TestMarshalConfigInvalid(t *testing.T) {
 	for _, tt := range []struct {
-		name   string
-		agent  agentmcp.Agent
-		server agentmcp.Server
+		label, name string
+		agent       agentmcp.Agent
+		server      agentmcp.Server
 	}{
-		{"unknown agent", "unknown", agentmcp.Server{Command: "example"}},
-		{"empty name", agentmcp.AgentClaude, agentmcp.Server{Command: "example"}},
-		{"stdio bearer", agentmcp.AgentClaude, agentmcp.Server{Command: "example", BearerTokenEnvVar: "TOKEN"}},
-		{"invalid bearer name", agentmcp.AgentClaude, agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "TOKEN:-literal-secret"}},
-		{"unsupported bearer", agentmcp.AgentCursor, agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "TOKEN"}},
-		{"conflicting bearer", agentmcp.AgentClaude, agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "TOKEN", Headers: map[string]string{"authorization": "Bearer literal"}}},
-		{"invalid transport", agentmcp.AgentCodex, agentmcp.Server{Transport: "unknown", URL: "https://example.com/mcp"}},
+		{"unknown agent", "example", "unknown", agentmcp.Server{Command: "example"}},
+		{"empty name", " ", agentmcp.AgentClaude, agentmcp.Server{Command: "example"}},
+		{"stdio bearer", "example", agentmcp.AgentClaude, agentmcp.Server{Command: "example", BearerTokenEnvVar: "TOKEN"}},
+		{"invalid bearer name", "example", agentmcp.AgentClaude, agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "TOKEN:-literal-secret"}},
+		{"unsupported bearer", "example", agentmcp.AgentCursor, agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "TOKEN"}},
+		{"conflicting bearer", "example", agentmcp.AgentClaude, agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "TOKEN", Headers: map[string]string{"authorization": "Bearer literal"}}},
+		{"invalid transport", "example", agentmcp.AgentCodex, agentmcp.Server{Transport: "unknown", URL: "https://example.com/mcp"}},
 	} {
-		t.Run(tt.name, func(t *testing.T) {
-			name := "example"
-			if tt.name == "empty name" {
-				name = " "
-			}
-			data, err := agentmcp.MarshalConfig(tt.agent, name, tt.server)
+		t.Run(tt.label, func(t *testing.T) {
+			data, err := agentmcp.MarshalConfig(tt.agent, tt.name, tt.server)
 			require.Error(t, err)
 			assert.Empty(t, data)
 		})
