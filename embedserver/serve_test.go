@@ -78,26 +78,13 @@ func TestServeDiscoveryAndCancellation(t *testing.T) {
 }
 
 func TestServeRejectsStartup(t *testing.T) {
-	for _, tc := range []struct {
-		name, listen, message string
-		loaded                bool
-	}{
-		{"load failure", "", "model unavailable", true},
-		{"non-loopback", "0.0.0.0:0", "", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			called := false
-			err := serve(t.Context(), Options{DataDir: t.TempDir(), Listen: tc.listen}, func(context.Context, string, string) (engine, error) {
-				called = true
-				return nil, errors.New("model unavailable")
-			}, daemon.Endpoint.ListenContext)
-			require.Error(t, err)
-			if tc.message != "" {
-				require.ErrorContains(t, err, tc.message)
-			}
-			assert.Equal(t, tc.loaded, called)
-		})
-	}
+	called := false
+	err := serve(t.Context(), Options{DataDir: t.TempDir(), Listen: "0.0.0.0:0"}, func(context.Context, string, string) (engine, error) {
+		called = true
+		return nil, errors.New("model must not load")
+	}, daemon.Endpoint.ListenContext)
+	require.ErrorContains(t, err, "loopback")
+	assert.False(t, called)
 }
 
 func TestServeRejectsSecondOwner(t *testing.T) {
@@ -173,4 +160,51 @@ func startEmbeddingRequest(t *testing.T, record daemon.RuntimeRecord) <-chan err
 		done <- err
 	}()
 	return done
+}
+
+type pausedError struct {
+	formatting chan struct{}
+	resume     chan struct{}
+	once       sync.Once
+}
+
+func (e *pausedError) Error() string {
+	e.once.Do(func() { close(e.formatting) })
+	<-e.resume
+	return "model unavailable"
+}
+
+func TestServePrintsFailureBeforeOwnerRelease(t *testing.T) {
+	output, err := os.CreateTemp(t.TempDir(), "stderr")
+	require.NoError(t, err)
+	defer output.Close()
+	stderr := os.Stderr
+	os.Stderr = output
+	defer func() { os.Stderr = stderr }()
+	store := daemon.RuntimeStore{Dir: t.TempDir(), Prefix: "kit-embed"}
+	failure := &pausedError{formatting: make(chan struct{}), resume: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() {
+		done <- serve(t.Context(), Options{DataDir: store.Dir}, func(context.Context, string, string) (engine, error) { return nil, failure }, daemon.Endpoint.ListenContext)
+	}()
+	defer func() {
+		close(failure.resume)
+		require.ErrorIs(t, <-done, failure)
+		printed, err := os.ReadFile(output.Name())
+		require.NoError(t, err)
+		require.Contains(t, string(printed), "model unavailable")
+	}()
+	select {
+	case <-failure.formatting:
+	case err := <-done:
+		done <- err
+		require.FailNow(t, "Serve returned before printing its error")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond) //nolint:kennlint // deadlinetest: probes the OS lock while error formatting is paused
+	defer cancel()
+	release, err := store.AcquireOwnerLock(ctx)
+	if release != nil {
+		release()
+	}
+	require.ErrorIs(t, err, context.DeadlineExceeded, "failure must be published before ownership is released")
 }

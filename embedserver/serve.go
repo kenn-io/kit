@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"go.kenn.io/kit/daemon"
+	"go.kenn.io/kit/embedlocal"
 	"go.kenn.io/kit/internal/embedassets"
 )
 
@@ -21,21 +22,26 @@ type Options struct{ DataDir, Listen, Library string }
 
 // DefaultDir returns the shared per-user embeddings data directory.
 func DefaultDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".kenn", "embeddings"), nil
+	return embedlocal.DefaultDir()
 }
 
 // Serve prints its loopback URL to stderr after loading the model and publishing
 // its runtime record. Cancellation closes connections and waits for active
-// inference before native cleanup.
+// inference before native cleanup. Serve prints any returned error to stderr.
 func Serve(ctx context.Context, opts Options) error {
 	return serve(ctx, opts, loadModel, daemon.Endpoint.ListenContext)
 }
 
 func serve(ctx context.Context, opts Options, load func(context.Context, string, string) (engine, error), listen func(daemon.Endpoint, context.Context) (net.Listener, error)) (err error) {
+	var release func()
+	defer func() {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
+		if release != nil {
+			release()
+		}
+	}()
 	if opts.DataDir == "" {
 		opts.DataDir, err = DefaultDir()
 		if err != nil {
@@ -53,14 +59,13 @@ func serve(ctx context.Context, opts Options, load func(context.Context, string,
 	if ep.IsUnix() {
 		return errors.New("embeddings requires a loopback TCP endpoint")
 	}
-	store := daemon.RuntimeStore{Dir: opts.DataDir, Prefix: "kit-embed"}
+	store := daemon.RuntimeStore{Dir: opts.DataDir, Prefix: embedlocal.Service}
 	lockCtx, cancelLock := context.WithTimeout(ctx, time.Second)
-	release, err := store.AcquireOwnerLock(lockCtx)
+	release, err = store.AcquireOwnerLock(lockCtx)
 	cancelLock()
 	if err != nil {
 		return fmt.Errorf("cannot own %s, another kennembed may be running: %w", opts.DataDir, err)
 	}
-	defer release()
 	// The owner lock proves that servers which left records are gone.
 	if _, err := store.CleanupDead(); err != nil {
 		return fmt.Errorf("remove stale runtime records: %w", err)
@@ -92,7 +97,7 @@ func serve(ctx context.Context, opts Options, load func(context.Context, string,
 	}
 	defer listener.Close()
 	ep.Address = listener.Addr().String()
-	record := daemon.NewRuntimeRecord("kit-embed", "1", ep)
+	record := daemon.NewRuntimeRecord(embedlocal.Service, embedlocal.Version, ep)
 	ping := daemon.NewPingHandler(daemon.PingHandlerOptions{Service: record.Service, Version: record.Version, PID: record.PID})
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

@@ -38,7 +38,6 @@ func run(args []string, serve func(context.Context, embedserver.Options) error) 
 	defer stop()
 
 	if err := serve(ctx, opts); err != nil {
-		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
 	return 0

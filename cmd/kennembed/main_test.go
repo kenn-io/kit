@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/embedserver"
 )
 
@@ -31,6 +33,16 @@ func TestRun(t *testing.T) {
 		{name: "serve error", serveErr: errors.New("serve failed"), wantCode: 1, wantCalls: 1},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			var output *os.File
+			if tt.serveErr != nil {
+				var err error
+				output, err = os.CreateTemp(t.TempDir(), "stderr")
+				require.NoError(t, err)
+				defer output.Close()
+				stderr := os.Stderr
+				os.Stderr = output
+				defer func() { os.Stderr = stderr }()
+			}
 			calls := 0
 			code := run(tt.args, func(_ context.Context, opts embedserver.Options) error {
 				calls++
@@ -39,6 +51,11 @@ func TestRun(t *testing.T) {
 			})
 			assert.Equal(t, tt.wantCode, code)
 			assert.Equal(t, tt.wantCalls, calls)
+			if tt.serveErr != nil {
+				printed, err := os.ReadFile(output.Name())
+				require.NoError(t, err)
+				assert.Empty(t, printed, "Serve owns returned-error printing")
+			}
 		})
 	}
 }

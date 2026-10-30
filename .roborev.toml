@@ -104,4 +104,8 @@ anyone who controls the process environment already controls git itself). Do
 not flag the forwarding as a bypass of the isolation flags, suggest skipping
 the system scope when `NoSystemConfig` is set, or suggest sanitizing the
 environment the entries are read from.
+
+## Local embeddings endpoint trust
+
+Local embeddings discovery trusts Ollama's standard unauthenticated API on 127.0.0.1:11434. Ollama can run under another service account. Listener authentication and isolation from other local accounts belong to deployment policy.
 """
