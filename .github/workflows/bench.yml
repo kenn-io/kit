@@ -8,6 +8,8 @@ on:
       - "go.sum"
       - ".github/workflows/bench.yml"
 
+cache-mode: read
+
 concurrency:
   group: benchmark-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
