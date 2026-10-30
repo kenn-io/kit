@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"net/url"
+	"regexp"
 	"strings"
 )
 
@@ -30,8 +31,11 @@ type Server struct {
 	Headers   map[string]string
 	// BearerTokenEnvVar references a client environment variable for Claude or
 	// Codex remote servers. It cannot accompany an Authorization header.
+	// Names must match [A-Za-z_][A-Za-z0-9_]*.
 	BearerTokenEnvVar string
 }
+
+var bearerEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func validateURL(value string) error {
 	u, err := url.Parse(value)
@@ -57,6 +61,9 @@ func (server Server) native(agent Agent) (map[string]any, error) {
 		return nil, errors.New("the Codex profile requires streamable HTTP or stdio")
 	}
 	if server.BearerTokenEnvVar != "" {
+		if !bearerEnvName.MatchString(server.BearerTokenEnvVar) {
+			return nil, errors.New("MCP bearer token environment variable must be a valid identifier")
+		}
 		if transport == TransportStdio {
 			return nil, errors.New("MCP stdio server cannot include a bearer token environment variable")
 		}

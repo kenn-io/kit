@@ -82,9 +82,18 @@ formatting can change. It contains no custom parser.
 Explicit SSE uses the mappings below. Project files can be selected by path;
 automatic scope discovery and alternate nested layouts remain outside this API.
 
+## Authentication
+
+Literal headers remain supported. `BearerTokenEnvVar` references a variable
+without reading its value. For Claude, it emits `headers.Authorization` as
+`Bearer ${NAME}`, using [Claude's environment expansion](https://code.claude.com/docs/en/mcp#environment-variable-expansion-in-mcpjson).
+For Codex, it emits the native [`bearer_token_env_var` field](https://github.com/openai/codex/blob/main/codex-rs/config/src/mcp_types.rs).
+This field supports Claude and Codex remote servers and rejects stdio,
+conflicting Authorization headers, and other clients.
+
 ## Optional additions
 
-- Authentication can use literal headers today. [Claude](https://code.claude.com/docs/en/mcp#use-dynamic-headers-for-custom-authentication)
+- [Claude](https://code.claude.com/docs/en/mcp#use-dynamic-headers-for-custom-authentication)
   also supports dynamic `headersHelper`; [Droid](https://docs.factory.ai/cli/configuration/mcp#add-servers-from-the-cli)
   supports `oauth: false` for header-authenticated servers. These are distinct
   capabilities, not fields that should be copied to every client. Token-file
