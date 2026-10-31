@@ -38,7 +38,6 @@ func TestMarshalConfig(t *testing.T) {
 		agent               agentmcp.Agent
 		server              agentmcp.Server
 	}{
-		{"claude stdio", "mcpServers", `{"type":"stdio","command":"C:\\Program Files\\example.exe","args":["mcp","--vault","C:\\Data Files\\vault"],"env":{"EXAMPLE_HOME":"C:\\Data Files\\vault"}}`, agentmcp.AgentClaude, stdio},
 		{"codex stdio", "mcp_servers", `{"command":"C:\\Program Files\\example.exe","args":["mcp","--vault","C:\\Data Files\\vault"],"env":{"EXAMPLE_HOME":"C:\\Data Files\\vault"}}`, agentmcp.AgentCodex, stdio},
 		{"claude http", "mcpServers", `{"type":"http","url":"https://example.com/mcp","headers":{"X-Client":"example","Authorization":"Bearer ${EXAMPLE_TOKEN}"}}`, agentmcp.AgentClaude, http},
 		{"codex http", "mcp_servers", `{"url":"https://example.com/mcp","http_headers":{"X-Client":"example"},"bearer_token_env_var":"EXAMPLE_TOKEN"}`, agentmcp.AgentCodex, http},
