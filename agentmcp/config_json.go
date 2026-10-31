@@ -79,7 +79,7 @@ func planJSON(agent Agent, original []byte, name string, entry map[string]any) (
 		}
 		target.Value = replacement.Value
 	} else {
-		patch, err := json.Marshal([]map[string]any{{"op": "add", "path": pointer, "value": entry}})
+		patch, err := json.Marshal([]map[string]any{{"op": "add", "path": pointer, "value": entry}}, json.Deterministic(true))
 		if err != nil {
 			return nil, false, err
 		}

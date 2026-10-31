@@ -29,6 +29,78 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+func TestMarshalConfig(t *testing.T) {
+	stdio := agentmcp.Server{Command: `C:\Program Files\example.exe`, Args: []string{"mcp", "--vault", `C:\Data Files\vault`}, Env: map[string]string{"EXAMPLE_HOME": `C:\Data Files\vault`}}
+	headers := map[string]string{"X-Client": "example"}
+	http := agentmcp.Server{URL: "https://example.com/mcp", Headers: headers, BearerTokenEnvVar: "EXAMPLE_TOKEN"}
+	for _, tt := range []struct {
+		name, key, expected string
+		agent               agentmcp.Agent
+		server              agentmcp.Server
+	}{
+		{"codex stdio", "mcp_servers", `{"command":"C:\\Program Files\\example.exe","args":["mcp","--vault","C:\\Data Files\\vault"],"env":{"EXAMPLE_HOME":"C:\\Data Files\\vault"}}`, agentmcp.AgentCodex, stdio},
+		{"claude http", "mcpServers", `{"type":"http","url":"https://example.com/mcp","headers":{"X-Client":"example","Authorization":"Bearer ${EXAMPLE_TOKEN}"}}`, agentmcp.AgentClaude, http},
+		{"codex http", "mcp_servers", `{"url":"https://example.com/mcp","http_headers":{"X-Client":"example"},"bearer_token_env_var":"EXAMPLE_TOKEN"}`, agentmcp.AgentCodex, http},
+		{"claude bearer only", "mcpServers", `{"type":"http","url":"https://example.com/mcp","headers":{"Authorization":"Bearer ${EXAMPLE_TOKEN}"}}`, agentmcp.AgentClaude, agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "EXAMPLE_TOKEN"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("CLAUDE_CONFIG_DIR", dir)
+			t.Setenv("CODEX_HOME", dir)
+			t.Setenv("EXAMPLE_TOKEN", "test-token-value")
+			path, err := agentmcp.ConfigPath(tt.agent)
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(path, []byte("invalid client config"), 0o600))
+			data, err := agentmcp.MarshalConfig(tt.agent, "example.with.dot", tt.server)
+			require.NoError(t, err)
+			doc := decodeConfig(t, tt.agent, data)
+			servers, ok := doc[tt.key].(map[string]any)
+			require.True(t, ok)
+			entry, err := json.Marshal(servers["example.with.dot"])
+			require.NoError(t, err)
+			assert.JSONEq(t, tt.expected, string(entry))
+			assert.Len(t, doc, 1)
+			original, err := os.ReadFile(path)
+			require.NoError(t, err)
+			assert.Equal(t, "invalid client config", string(original))
+		})
+	}
+	assert.Equal(t, map[string]string{"X-Client": "example"}, headers)
+}
+
+func TestMarshalConfigDeterministicJSON(t *testing.T) {
+	server := agentmcp.Server{URL: "https://example.com/mcp", Headers: map[string]string{"X-Client": "example", "Authorization": "Bearer example"}}
+	expected, err := agentmcp.MarshalConfig(agentmcp.AgentClaude, "example", server)
+	require.NoError(t, err)
+	for range 20 {
+		data, err := agentmcp.MarshalConfig(agentmcp.AgentClaude, "example", server)
+		require.NoError(t, err)
+		require.Equal(t, string(expected), string(data))
+	}
+}
+
+func TestMarshalConfigInvalid(t *testing.T) {
+	for _, tt := range []struct {
+		label, name string
+		agent       agentmcp.Agent
+		server      agentmcp.Server
+	}{
+		{"unknown agent", "example", "unknown", agentmcp.Server{Command: "example"}},
+		{"empty name", " ", agentmcp.AgentClaude, agentmcp.Server{Command: "example"}},
+		{"stdio bearer", "example", agentmcp.AgentClaude, agentmcp.Server{Command: "example", BearerTokenEnvVar: "TOKEN"}},
+		{"invalid bearer name", "example", agentmcp.AgentClaude, agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "TOKEN:-literal-secret"}},
+		{"unsupported bearer", "example", agentmcp.AgentCursor, agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "TOKEN"}},
+		{"conflicting bearer", "example", agentmcp.AgentClaude, agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "TOKEN", Headers: map[string]string{"authorization": "Bearer literal"}}},
+		{"invalid transport", "example", agentmcp.AgentCodex, agentmcp.Server{Transport: "unknown", URL: "https://example.com/mcp"}},
+	} {
+		t.Run(tt.label, func(t *testing.T) {
+			data, err := agentmcp.MarshalConfig(tt.agent, tt.name, tt.server)
+			require.Error(t, err)
+			assert.Empty(t, data)
+		})
+	}
+}
+
 func TestInstall(t *testing.T) {
 	for _, tt := range []struct {
 		agent   agentmcp.Agent

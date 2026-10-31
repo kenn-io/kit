@@ -30,18 +30,41 @@ type Result struct {
 	Data       []byte
 }
 
+// MarshalConfig returns a complete standalone client configuration document
+// containing one named server for the caller to save or merge. It reads and
+// writes no client files. Data can include credentials.
+func MarshalConfig(agent Agent, name string, server Server) ([]byte, error) {
+	entry, err := prepareConfig(agent, name, server)
+	if err != nil {
+		return nil, err
+	}
+	data, _, err := planConfig(agent, nil, name, entry)
+	return data, err
+}
+
+func prepareConfig(agent Agent, name string, server Server) (map[string]any, error) {
+	if _, ok := LookupProfile(agent); !ok {
+		return nil, fmt.Errorf("unsupported MCP agent %q", agent)
+	}
+	if strings.TrimSpace(name) == "" {
+		return nil, errors.New("MCP server name is required")
+	}
+	return server.native(agent)
+}
+
+func planConfig(agent Agent, original []byte, name string, entry map[string]any) ([]byte, bool, error) {
+	if agent == AgentCodex || agent == AgentHermes {
+		return planDocument(agent, original, name, entry)
+	}
+	return planJSON(agent, original, name, entry)
+}
+
 // PlanInstall computes a registration without writing files. Other server
 // entries, settings, and comments are retained. Comments on replaced fields
 // remain next to the replacement. Formatting may change; unchanged files retain
 // all bytes.
 func PlanInstall(agent Agent, opts InstallOptions) (Result, error) {
-	if _, ok := LookupProfile(agent); !ok {
-		return Result{}, fmt.Errorf("unsupported MCP agent %q", agent)
-	}
-	if strings.TrimSpace(opts.Name) == "" {
-		return Result{}, errors.New("MCP server name is required")
-	}
-	entry, err := opts.Server.native(agent)
+	entry, err := prepareConfig(agent, opts.Name, opts.Server)
 	if err != nil {
 		return Result{}, err
 	}
@@ -56,13 +79,7 @@ func PlanInstall(agent Agent, opts InstallOptions) (Result, error) {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return Result{}, fmt.Errorf("read MCP config %s: %w", path, err)
 	}
-	var data []byte
-	var changed bool
-	if agent == AgentCodex || agent == AgentHermes {
-		data, changed, err = planDocument(agent, original, opts.Name, entry)
-	} else {
-		data, changed, err = planJSON(agent, original, opts.Name, entry)
-	}
+	data, changed, err := planConfig(agent, original, opts.Name, entry)
 	if err != nil {
 		return Result{}, fmt.Errorf("plan MCP config %s: %w", path, err)
 	}

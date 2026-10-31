@@ -3,7 +3,9 @@ package agentmcp
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
+	"regexp"
 	"strings"
 )
 
@@ -27,7 +29,13 @@ type Server struct {
 	Env       map[string]string
 	URL       string
 	Headers   map[string]string
+	// BearerTokenEnvVar references a client environment variable for Claude or
+	// Codex remote servers. It cannot accompany an Authorization header.
+	// Names must match [A-Za-z_][A-Za-z0-9_]*.
+	BearerTokenEnvVar string
 }
+
+var bearerEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func validateURL(value string) error {
 	u, err := url.Parse(value)
@@ -52,6 +60,22 @@ func (server Server) native(agent Agent) (map[string]any, error) {
 	if transport == TransportSSE && agent == AgentCodex {
 		return nil, errors.New("the Codex profile requires streamable HTTP or stdio")
 	}
+	if server.BearerTokenEnvVar != "" {
+		if !bearerEnvName.MatchString(server.BearerTokenEnvVar) {
+			return nil, errors.New("MCP bearer token environment variable must be a valid identifier")
+		}
+		if transport == TransportStdio {
+			return nil, errors.New("MCP stdio server cannot include a bearer token environment variable")
+		}
+		if agent != AgentClaude && agent != AgentCodex {
+			return nil, fmt.Errorf("bearer token environment references are unsupported for MCP agent %q", agent)
+		}
+		for header := range server.Headers {
+			if strings.EqualFold(header, "Authorization") {
+				return nil, errors.New("MCP bearer token environment variable conflicts with Authorization header")
+			}
+		}
+	}
 	if server.URL != "" {
 		if transport == TransportStdio {
 			return nil, errors.New("MCP stdio server cannot include a URL")
@@ -72,6 +96,18 @@ func (server Server) native(agent Agent) (map[string]any, error) {
 		entry[urlKey] = server.URL
 		if len(server.Headers) != 0 {
 			entry[headerKey] = server.Headers
+		}
+		if server.BearerTokenEnvVar != "" {
+			if agent == AgentCodex {
+				entry["bearer_token_env_var"] = server.BearerTokenEnvVar
+			} else {
+				headers := maps.Clone(server.Headers)
+				if headers == nil {
+					headers = map[string]string{}
+				}
+				headers["Authorization"] = "Bearer ${" + server.BearerTokenEnvVar + "}"
+				entry[headerKey] = headers
+			}
 		}
 		if agent == AgentClaude || agent == AgentDroid || agent == AgentCopilot {
 			entry["type"] = string(transport)
