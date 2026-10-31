@@ -69,6 +69,17 @@ func TestMarshalConfig(t *testing.T) {
 	assert.Equal(t, map[string]string{"X-Client": "example"}, headers)
 }
 
+func TestMarshalConfigDeterministicJSON(t *testing.T) {
+	server := agentmcp.Server{URL: "https://example.com/mcp", Headers: map[string]string{"X-Client": "example", "Authorization": "Bearer example"}}
+	expected, err := agentmcp.MarshalConfig(agentmcp.AgentClaude, "example", server)
+	require.NoError(t, err)
+	for range 20 {
+		data, err := agentmcp.MarshalConfig(agentmcp.AgentClaude, "example", server)
+		require.NoError(t, err)
+		require.Equal(t, string(expected), string(data))
+	}
+}
+
 func TestMarshalConfigInvalid(t *testing.T) {
 	for _, tt := range []struct {
 		label, name string
