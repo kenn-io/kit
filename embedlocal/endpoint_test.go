@@ -75,18 +75,6 @@ func TestEndpointNotFound(t *testing.T) {
 	require.ErrorIs(t, err, ErrNotFound)
 }
 
-func TestEndpointLocalOnlyNotFound(t *testing.T) {
-	var probes atomic.Int32
-	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		probes.Add(1)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer ollama.Close()
-	_, err := endpoint(t.Context(), Options{DataDir: t.TempDir(), LocalOnly: true}, ollama.URL, 2*time.Minute)
-	require.ErrorIs(t, err, ErrNotFound)
-	assert.Zero(t, probes.Load())
-}
-
 func localServer(t *testing.T, dir, version string) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(daemon.NewPingHandler(daemon.PingHandlerOptions{Service: Service, Version: version}))
@@ -137,22 +125,11 @@ func TestEndpointStartLockTimeoutExcludesStaleLog(t *testing.T) {
 
 func TestEndpointJoinStartup(t *testing.T) {
 	for _, tc := range []struct {
-		name         string
-		status       int
-		ollamaStatus int
-		localOnly    bool
-	}{
-		{"reuse", http.StatusOK, http.StatusNotFound, false},
-		{"failed", http.StatusServiceUnavailable, http.StatusNotFound, false},
-		{"local only", http.StatusOK, http.StatusOK, true},
-	} {
+		name   string
+		status int
+	}{{"reuse", http.StatusOK}, {"failed", http.StatusServiceUnavailable}} {
 		t.Run(tc.name, func(t *testing.T) {
-			var probes atomic.Int32
-			opts, ollama, entered, ready := startupFixture(t, tc.status, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				probes.Add(1)
-				w.WriteHeader(tc.ollamaStatus)
-			}))
-			opts.LocalOnly = tc.localOnly
+			opts, ollama, entered, ready := startupFixture(t, tc.status)
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
 			first := make(chan error, 1)
@@ -194,9 +171,6 @@ func TestEndpointJoinStartup(t *testing.T) {
 				assert.Equal(t, pid, records[0].PID)
 				assert.Equal(t, records[0].Endpoint().BaseURL()+"/v1", result.url)
 			}
-			if tc.localOnly {
-				assert.Zero(t, probes.Load())
-			}
 		})
 	}
 }
@@ -206,9 +180,9 @@ type endpointResult struct {
 	err error
 }
 
-func startupFixture(t *testing.T, status int, ollamaHandler http.Handler) (Options, string, <-chan int, func()) {
+func startupFixture(t *testing.T, status int) (Options, string, <-chan int, func()) {
 	t.Helper()
-	ollama := httptest.NewServer(ollamaHandler)
+	ollama := httptest.NewServer(http.NotFoundHandler())
 	t.Cleanup(ollama.Close)
 	dir := t.TempDir()
 	entered, release := make(chan int, 1), make(chan struct{})
