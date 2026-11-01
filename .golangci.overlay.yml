@@ -2,6 +2,9 @@
 linters:
   enable:
     - kennnolint
+    # Contexts derived inside loops and closures must not nest across
+    # iterations.
+    - fatcontext
   settings:
     importas:
       alias:

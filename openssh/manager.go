@@ -417,7 +417,7 @@ func (m *PersistentManager) startMaster(
 		if ctx.Err() != nil {
 			primary.Err = errors.Join(ctx.Err(), runErr)
 		}
-		return m.cleanupFailedStart(socketPath, target, runSSH, primary)
+		return m.cleanupFailedStart(ctx, socketPath, target, runSSH, primary)
 	}
 
 	establishCtx, cancel := context.WithTimeout(ctx, m.config.EstablishTimeout)
@@ -433,7 +433,7 @@ func (m *PersistentManager) startMaster(
 			if establishCtx.Err() != nil {
 				primary = establishmentContextError(ctx, probeErr)
 			}
-			return m.cleanupFailedStart(socketPath, target, runSSH, primary)
+			return m.cleanupFailedStart(ctx, socketPath, target, runSSH, primary)
 		}
 		if probeState == probeAlive {
 			return nil
@@ -441,6 +441,7 @@ func (m *PersistentManager) startMaster(
 		select {
 		case <-establishCtx.Done():
 			return m.cleanupFailedStart(
+				ctx,
 				socketPath,
 				target,
 				runSSH,
@@ -459,14 +460,17 @@ func establishmentContextError(ctx context.Context, probeErr error) error {
 	return errors.Join(timeoutErr, probeErr)
 }
 
+// cleanupFailedStart runs after start failed, often because ctx ended, so the
+// cleanup keeps ctx's values but not its cancellation.
 func (m *PersistentManager) cleanupFailedStart(
+	ctx context.Context,
 	socketPath string,
 	target Target,
 	runSSH RunSSH,
 	primary error,
 ) error {
 	cleanupCtx, cancel := context.WithTimeout(
-		context.Background(),
+		context.WithoutCancel(ctx),
 		m.config.CleanupTimeout,
 	)
 	defer cancel()
@@ -492,7 +496,7 @@ func (m *PersistentManager) cleanupFailedStartMaster(
 	}
 	// Observation may spend the cleanup window, so give verified teardown its
 	// own bounded window to stop and drain the master.
-	return m.stopMaster(context.Background(), socketPath, target, runSSH)
+	return m.stopMaster(context.WithoutCancel(ctx), socketPath, target, runSSH)
 }
 
 // observeFailedStartSocket reports whether a control socket appears before ctx

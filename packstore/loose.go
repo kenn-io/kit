@@ -757,7 +757,7 @@ func shouldCompressLoose(logicalSize, storedSize int64, opts LooseCompressionOpt
 
 // Verify checks whether the canonical loose object exists and satisfies the
 // requested identity, deduplication, and durability policy.
-func (s *filesystemLooseStore) Verify(hash Hash, size int64, verification DedupVerification, durability Durability) (WriteResult, bool, error) {
+func (s *filesystemLooseStore) Verify(ctx context.Context, hash Hash, size int64, verification DedupVerification, durability Durability) (WriteResult, bool, error) {
 	if err := hash.Validate(); err != nil {
 		return WriteResult{}, false, err
 	}
@@ -771,7 +771,7 @@ func (s *filesystemLooseStore) Verify(hash Hash, size int64, verification DedupV
 	if err := validateWriteOptions(opts); err != nil {
 		return WriteResult{}, false, err
 	}
-	return s.existing(context.Background(), hash, size, verification, durability)
+	return s.existing(ctx, hash, size, verification, durability)
 }
 
 // Remove deletes both canonical physical representations of a loose object.

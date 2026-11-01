@@ -33,8 +33,8 @@ const (
 	checkpointBackoff = 100 * time.Millisecond
 
 	// freezeEndTimeout bounds the FreezeCoordinator.End call made when
-	// closing out the freeze window. It runs against a fresh context
-	// (context.Background(), not the caller's request context) because the
+	// closing out the freeze window. End runs without the caller's
+	// cancellation (context.WithoutCancel keeps its values) because the
 	// gate must still be released — and released promptly — even when the
 	// caller's context is already canceled or openPinnedSession itself
 	// failed; a short, independent bound keeps that release from hanging.
@@ -90,7 +90,7 @@ func openWhileFrozen[T any](
 		return zero, fmt.Errorf("backup: freeze begin: %w", err)
 	}
 	resource, openErr := open()
-	endCtx, cancel := context.WithTimeout(context.Background(), freezeEndTimeout)
+	endCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), freezeEndTimeout)
 	endErr := fc.End(endCtx)
 	cancel()
 	if openErr != nil {

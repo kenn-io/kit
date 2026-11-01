@@ -20,6 +20,7 @@ func newTestVerifyState(t *testing.T, r *Repo, quick bool) *verifyState {
 	known, err := r.LoadBlobIndex()
 	require.NoError(t, err)
 	st := &verifyState{
+		ctx:              t.Context(),
 		app:              newTestApp(),
 		repo:             r,
 		known:            known,

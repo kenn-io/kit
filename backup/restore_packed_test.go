@@ -263,8 +263,9 @@ type maintenanceQueueContext struct {
 	errCalls int
 }
 
-func newMaintenanceQueueContext() *maintenanceQueueContext {
-	return &maintenanceQueueContext{Context: context.Background(), queued: make(chan struct{})}
+func newMaintenanceQueueContext(t *testing.T) *maintenanceQueueContext {
+	t.Helper()
+	return &maintenanceQueueContext{Context: t.Context(), queued: make(chan struct{})}
 }
 
 func (c *maintenanceQueueContext) Err() error {
@@ -301,7 +302,7 @@ func TestRestorePackedTargetHoldsLeaseThroughCatalogProofPublicationAndFinalSync
 	target := filepath.Join(t.TempDir(), "restore")
 	coordinator := packstore.NewCoordinator()
 	maintenance := make(chan leaseResult, 1)
-	maintenanceCtx := newMaintenanceQueueContext()
+	maintenanceCtx := newMaintenanceQueueContext(t)
 	openChecked := false
 	replaceChecked := false
 	proofChecked := false

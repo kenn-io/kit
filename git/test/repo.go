@@ -110,7 +110,7 @@ func (r *Repo) Run(args ...string) string {
 // RunRaw runs git in the repo and returns stdout, stderr, and error.
 func (r *Repo) RunRaw(args ...string) ([]byte, []byte, error) {
 	r.T.Helper()
-	return r.Runner.Run(context.Background(), r.Root, nil, args...)
+	return r.Runner.Run(r.T.Context(), r.Root, nil, args...)
 }
 
 // Config sets a local git config value.
@@ -157,6 +157,7 @@ func (r *Repo) AddWorktree(branch string) string {
 	}
 	r.Run("worktree", "add", dir, "-b", branch)
 	r.T.Cleanup(func() {
+		// T.Context is already canceled when cleanup runs.
 		_, _, _ = r.Runner.Run(context.Background(), r.Root, nil, "worktree", "remove", "--force", dir)
 	})
 	return dir

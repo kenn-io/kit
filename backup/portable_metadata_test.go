@@ -684,6 +684,42 @@ func TestPortableMetadataCreateVerifyRestoreAndSQLiteSuccessor(t *testing.T) {
 	assert.Zero(legacyManifest.DB.MapChainDepth)
 }
 
+func TestPortableMetadataCreateCancelsWhileWaitingForSharedLock(t *testing.T) {
+	require := require.New(t)
+	repo, err := backup.Init(filepath.Join(t.TempDir(), "repo"))
+	require.NoError(err)
+	shared, err := repo.AcquireSharedLock("verify", false)
+	require.NoError(err)
+	defer func() { require.NoError(shared.Release()) }()
+	exclusive := repo.Path("locks", "exclusive.json")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := backup.Create(ctx, repo, portableApp{}, backup.CreateOptions{
+			MetadataSource: &portableSource{
+				raw:   []byte(`{"notes":["snapshot"],"files":[]}`),
+				stats: []byte(`{"notes":1,"files":0}`), info: &backup.ContentInfo{},
+			},
+		})
+		done <- err
+	}()
+	require.Eventually(func() bool {
+		_, err := os.Stat(exclusive)
+		return err == nil
+	}, 5*time.Second, 5*time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		require.ErrorIs(err, context.Canceled)
+	case <-time.After(2 * time.Second):
+		require.FailNow("create did not cancel while the shared lock remained held")
+	}
+	_, err = os.Stat(exclusive)
+	require.ErrorIs(err, os.ErrNotExist, "the canceled create must release its exclusive claim")
+}
+
 func TestPortableMetadataCaptureClosesPartialResourcesOnce(t *testing.T) {
 	ctx := t.Context()
 

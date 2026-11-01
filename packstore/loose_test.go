@@ -91,6 +91,27 @@ func TestLooseWriteBytesChecksExpectedMetadata(t *testing.T) {
 	require.ErrorIs(err, ErrContentMismatch)
 }
 
+func TestLooseVerifyContextStopsWhenCanceled(t *testing.T) {
+	require := require.New(t)
+	content := []byte("verified-content")
+	store := newLooseStoreForTest(t, StagingSameDirectory)
+	written, err := store.WriteBytes(t.Context(), content, WriteOptions{
+		Durability: AtomicPublication,
+		Dedup:      VerifyFullHash,
+	})
+	require.NoError(err)
+
+	_, exists, err := store.VerifyContext(t.Context(), written.Hash, written.Size, VerifyFullHash, AtomicPublication)
+	require.NoError(err)
+	require.True(exists)
+
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, exists, err = store.VerifyContext(canceled, written.Hash, written.Size, VerifyFullHash, AtomicPublication)
+	require.ErrorIs(err, context.Canceled)
+	require.False(exists)
+}
+
 func TestLooseWriteRejectsHashAndSizeMismatch(t *testing.T) {
 	require := require.New(t)
 	store := newLooseStoreForTest(t, StagingSameDirectory)

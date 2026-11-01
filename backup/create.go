@@ -74,7 +74,7 @@ func Create(ctx context.Context, r *Repo, app App, opts CreateOptions) (*Manifes
 		opts.Freezer = NoopFreezeCoordinator{}
 	}
 
-	lock, err := r.AcquireExclusiveLock("create", opts.ForceUnlock)
+	lock, err := r.AcquireExclusiveLockContext(ctx, "create", opts.ForceUnlock)
 	if err != nil {
 		return nil, err
 	}

@@ -20,6 +20,8 @@ func prepareGitCommand(cmd *exec.Cmd, hideConsoleWindow bool) {
 	cmd.Cancel = func() error {
 		systemDir, err := windows.GetSystemDirectory()
 		if err == nil {
+			// Cancel runs after the command's context ended, so taskkill gets
+			// its own bounded context.
 			killCtx, cancel := context.WithTimeout(context.Background(), gitCommandWaitDelay)
 			defer cancel()
 			kill := exec.CommandContext(killCtx, filepath.Join(systemDir, "taskkill.exe"),
