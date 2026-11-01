@@ -90,7 +90,7 @@ func TestSnapshotReaderCopiesSelectedObjects(t *testing.T) {
 	_, err = reader.CopyObject(ctx, ids[3], io.Discard)
 	require.ErrorIs(err, context.Canceled)
 	for _, id := range []pack.BlobID{ids[1], ids[3]} {
-		ctx, cancel = context.WithCancel(t.Context())
+		ctx, cancel := context.WithCancel(t.Context())
 		_, err = reader.CopyObject(ctx, id, snapshotCancelWriter{cancel})
 		cancel()
 		require.ErrorIs(err, context.Canceled, "cancellation during output must fail the copy")

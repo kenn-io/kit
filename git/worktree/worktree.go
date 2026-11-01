@@ -66,7 +66,8 @@ func Create(ctx context.Context, repoPath, ref string, opts Options) (_ *Worktre
 	wt := &Worktree{Dir: worktreeDir, Repo: repoPath, runner: runner}
 	defer func() {
 		if err != nil {
-			_ = wt.cleanup(context.Background())
+			// Remove the partial worktree even when ctx ended the creation.
+			_ = wt.cleanup(context.WithoutCancel(ctx))
 		}
 	}()
 

@@ -20,6 +20,8 @@ const (
 // filesystem error. timeout must be positive; a nonpositive elapsed limit
 // permits unlimited retries.
 func Replace(oldpath, newpath string, timeout time.Duration) error {
+	// No caller context: lock release and stale-lock reaping run this after
+	// their caller is canceled, and timeout bounds the wait.
 	_, err := backoff.Retry(context.Background(), func() (struct{}, error) {
 		err := atomicfile.Replace(oldpath, newpath)
 		if err != nil && !fileBusy(err) {

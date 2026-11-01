@@ -727,6 +727,36 @@ func TestCreateHoldsExclusiveLock(t *testing.T) {
 	require.ErrorIs(err, ErrRepoLocked)
 }
 
+func TestCreateCancelsWhileWaitingForSharedLock(t *testing.T) {
+	require := require.New(t)
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, _ := seedBackupFixture(t)
+	shared, err := r.AcquireSharedLock("verify", false)
+	require.NoError(err)
+	defer func() { require.NoError(shared.Release()) }()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := Create(ctx, r, newTestApp(), createOpts(dbPath, attachmentsDir, dataDir, t.TempDir()))
+		done <- err
+	}()
+	require.Eventually(func() bool {
+		_, err := os.Stat(r.Path(locksDirName, exclusiveLockName))
+		return err == nil
+	}, 5*time.Second, 5*time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		require.ErrorIs(err, context.Canceled)
+	case <-time.After(2 * time.Second):
+		require.FailNow("create did not cancel while the shared lock remained held")
+	}
+	_, err = os.Stat(r.Path(locksDirName, exclusiveLockName))
+	require.ErrorIs(err, os.ErrNotExist, "the canceled create must release its exclusive claim")
+}
+
 // TestCreatePhasesHonorCancellation pins that the long capture phases
 // observe context cancellation instead of running to completion: an
 // already-canceled context must surface ctx.Err() from each phase without

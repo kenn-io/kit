@@ -59,6 +59,23 @@ provider workflows to this repo unless the package already owns that concern.
   failures into success-shaped fallbacks.
 - Use `context.Context` for subprocesses, network calls, update checks, probes,
   and other work that can block.
+- Exported functions that block take the caller's context as their first
+  parameter. When a released API lacks one, add a `...Context` variant and keep
+  the old name as a wrapper so consumers keep compiling
+  (`AcquireExclusiveLockContext`, `ListenContext`, `LooseStore.VerifyContext`).
+  Inside kit, call the context variant whenever a context is in scope.
+- Store a context only in a value that lives for one call, such as an
+  `io.Reader` or per-operation state whose methods cannot take a context, or in
+  a type whose lifetime owns its context (`httpproxy.Client`).
+- Cleanup that must outlive a canceled caller (failed-start teardown,
+  freeze-gate release, partial worktree removal) uses
+  `context.WithoutCancel(ctx)`, a timeout where the work can hang, and a
+  comment saying why. `context.Background()` is for `main`, compatibility
+  wrappers, bounded release paths that receive no context, and callbacks the
+  platform gives no context.
+- Tests use `t.Context()`. `t.Cleanup` functions run after it is canceled, so
+  they use `context.Background()` with a comment. `usetesting`, `noctx`,
+  `fatcontext`, and govet's `lostcancel` enforce the mechanical rules.
 - Avoid broad cleanup or mutation. Operate on exact paths, runtime records, and
   repositories that the caller supplied or the test created.
 

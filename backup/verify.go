@@ -587,11 +587,7 @@ func (s *verifyState) verifyGroupBlob(
 			return
 		}
 	} else {
-		ctx := s.ctx
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		stream, err := pr.OpenBlob(ctx, *entry)
+		stream, err := pr.OpenBlob(s.ctx, *entry)
 		if err != nil {
 			fail(fmt.Sprintf("opening blob %s from pack %s: %v", rd.id, packID, err))
 			return

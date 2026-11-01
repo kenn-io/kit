@@ -54,6 +54,9 @@ linters:
     # kit analyzers (requires a custom golangci-lint build, see docs)
     - kennlint
     - kennnolint
+    # Contexts derived inside loops and closures must not nest across
+    # iterations.
+    - fatcontext
   settings:
     errcheck:
       check-type-assertions: false
