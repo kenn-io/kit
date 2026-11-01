@@ -87,7 +87,11 @@ func localServer(t *testing.T, dir, version string) *httptest.Server {
 }
 
 func TestEndpointEarlyExit(t *testing.T) {
-	ollama := httptest.NewServer(http.NotFoundHandler())
+	var probes atomic.Int32
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		probes.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
 	defer ollama.Close()
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "exit"), nil, 0o600))
@@ -96,10 +100,11 @@ func TestEndpointEarlyExit(t *testing.T) {
 	t.Cleanup(func() { waitForChildren(t, dir) })
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	_, err = endpoint(ctx, Options{DataDir: dir, Executable: executable}, ollama.URL, 0)
+	_, err = endpoint(ctx, Options{DataDir: dir, Executable: executable, LocalOnly: true}, ollama.URL, 0)
 	require.ErrorContains(t, err, "ONNX Runtime library missing")
 	require.ErrorContains(t, err, filepath.Join(dir, "kennembed.log"))
 	assert.NotErrorIs(t, err, context.DeadlineExceeded, "child exit should end startup before the 5s context deadline")
+	assert.Zero(t, probes.Load())
 }
 
 func TestEndpointStartLockTimeoutExcludesStaleLog(t *testing.T) {
