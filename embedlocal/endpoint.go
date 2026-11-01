@@ -44,6 +44,8 @@ func DefaultDir() (string, error) {
 
 // Endpoint returns a /v1 base URL, preferring a running Ollama to kennembed
 // unless SkipOllama is set.
+// With SkipOllama set, an empty Executable and no running kennembed return
+// ErrNotFound.
 // Startup follows ctx's deadline, or waits at most two minutes without one.
 // A started server continues loading after ctx is canceled.
 func Endpoint(ctx context.Context, opts Options) (string, error) {
