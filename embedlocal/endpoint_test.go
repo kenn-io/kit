@@ -65,23 +65,29 @@ func TestEndpointOllamaFallback(t *testing.T) {
 }
 
 func TestEndpointNotFound(t *testing.T) {
-	ollama := httptest.NewServer(http.NotFoundHandler())
-	defer ollama.Close()
-	dir := t.TempDir()
-	_, err := endpoint(t.Context(), Options{DataDir: dir}, ollama.URL, 2*time.Minute)
-	require.ErrorIs(t, err, ErrNotFound)
-	localServer(t, dir, "2")
-	_, err = endpoint(t.Context(), Options{DataDir: dir}, ollama.URL, 2*time.Minute)
-	require.ErrorIs(t, err, ErrNotFound)
-}
-
-func TestEndpointSkipOllamaNotFound(t *testing.T) {
-	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer ollama.Close()
-	_, err := endpoint(t.Context(), Options{DataDir: t.TempDir(), SkipOllama: true}, ollama.URL, 2*time.Minute)
-	require.ErrorIs(t, err, ErrNotFound)
+	for _, tc := range []struct {
+		name       string
+		status     int
+		version    string
+		skipOllama bool
+	}{
+		{"missing", http.StatusNotFound, "", false},
+		{"incompatible", http.StatusNotFound, "2", false},
+		{"skip Ollama", http.StatusOK, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+			}))
+			defer ollama.Close()
+			dir := t.TempDir()
+			if tc.version != "" {
+				localServer(t, dir, tc.version)
+			}
+			_, err := endpoint(t.Context(), Options{DataDir: dir, SkipOllama: tc.skipOllama}, ollama.URL, 2*time.Minute)
+			require.ErrorIs(t, err, ErrNotFound)
+		})
+	}
 }
 
 func localServer(t *testing.T, dir, version string) *httptest.Server {
@@ -96,11 +102,7 @@ func localServer(t *testing.T, dir, version string) *httptest.Server {
 }
 
 func TestEndpointEarlyExit(t *testing.T) {
-	var probes atomic.Int32
-	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		probes.Add(1)
-		w.WriteHeader(http.StatusOK)
-	}))
+	ollama := httptest.NewServer(http.NotFoundHandler())
 	defer ollama.Close()
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "exit"), nil, 0o600))
@@ -109,11 +111,10 @@ func TestEndpointEarlyExit(t *testing.T) {
 	t.Cleanup(func() { waitForChildren(t, dir) })
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	_, err = endpoint(ctx, Options{DataDir: dir, Executable: executable, SkipOllama: true}, ollama.URL, 0)
+	_, err = endpoint(ctx, Options{DataDir: dir, Executable: executable}, ollama.URL, 0)
 	require.ErrorContains(t, err, "ONNX Runtime library missing")
 	require.ErrorContains(t, err, filepath.Join(dir, "kennembed.log"))
 	assert.NotErrorIs(t, err, context.DeadlineExceeded, "child exit should end startup before the 5s context deadline")
-	assert.Zero(t, probes.Load())
 }
 
 func TestEndpointStartLockTimeoutExcludesStaleLog(t *testing.T) {
