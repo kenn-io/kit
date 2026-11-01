@@ -26,7 +26,6 @@ var ErrNotFound = errors.New("local embeddings server not found")
 // Options configures discovery and optional startup. DataDir defaults to
 // DefaultDir. Executable is the installed kennembed binary; leaving it empty
 // permits discovery without starting a server.
-// LocalOnly skips Ollama when the caller explicitly chooses kennembed.
 type Options struct {
 	DataDir, Executable string
 	// LocalOnly skips Ollama and discovers kennembed, starting it only when
