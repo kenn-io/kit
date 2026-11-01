@@ -24,15 +24,15 @@ import (
 
 func TestEndpointOllamaFallback(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		status    int
-		backend   string
-		localOnly bool
+		name       string
+		status     int
+		backend    string
+		skipOllama bool
 	}{
 		{"latest", 200, "ollama", false},
 		{"status", 503, "local", false},
 		{"absent model", 404, "local", false},
-		{"local only", 200, "local", true},
+		{"skip Ollama", 200, "local", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var probes atomic.Int32
@@ -54,10 +54,10 @@ func TestEndpointOllamaFallback(t *testing.T) {
 			defer ollama.Close()
 			dir := t.TempDir()
 			backends := map[string]string{"local": localServer(t, dir, Version).URL + "/v1", "ollama": ollama.URL + "/v1"}
-			got, err := endpoint(t.Context(), Options{DataDir: dir, LocalOnly: tc.localOnly}, ollama.URL, 2*time.Minute)
+			got, err := endpoint(t.Context(), Options{DataDir: dir, SkipOllama: tc.skipOllama}, ollama.URL, 2*time.Minute)
 			require.NoError(t, err)
 			assert.Equal(t, backends[tc.backend], got)
-			if tc.localOnly {
+			if tc.skipOllama {
 				assert.Zero(t, probes.Load())
 			}
 		})
@@ -75,12 +75,12 @@ func TestEndpointNotFound(t *testing.T) {
 	require.ErrorIs(t, err, ErrNotFound)
 }
 
-func TestEndpointLocalOnlyNotFound(t *testing.T) {
+func TestEndpointSkipOllamaNotFound(t *testing.T) {
 	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer ollama.Close()
-	_, err := endpoint(t.Context(), Options{DataDir: t.TempDir(), LocalOnly: true}, ollama.URL, 2*time.Minute)
+	_, err := endpoint(t.Context(), Options{DataDir: t.TempDir(), SkipOllama: true}, ollama.URL, 2*time.Minute)
 	require.ErrorIs(t, err, ErrNotFound)
 }
 
@@ -109,7 +109,7 @@ func TestEndpointEarlyExit(t *testing.T) {
 	t.Cleanup(func() { waitForChildren(t, dir) })
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	_, err = endpoint(ctx, Options{DataDir: dir, Executable: executable, LocalOnly: true}, ollama.URL, 0)
+	_, err = endpoint(ctx, Options{DataDir: dir, Executable: executable, SkipOllama: true}, ollama.URL, 0)
 	require.ErrorContains(t, err, "ONNX Runtime library missing")
 	require.ErrorContains(t, err, filepath.Join(dir, "kennembed.log"))
 	assert.NotErrorIs(t, err, context.DeadlineExceeded, "child exit should end startup before the 5s context deadline")
