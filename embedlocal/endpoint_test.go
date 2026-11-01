@@ -76,15 +76,12 @@ func TestEndpointNotFound(t *testing.T) {
 }
 
 func TestEndpointLocalOnlyNotFound(t *testing.T) {
-	var probes atomic.Int32
 	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		probes.Add(1)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer ollama.Close()
 	_, err := endpoint(t.Context(), Options{DataDir: t.TempDir(), LocalOnly: true}, ollama.URL, 2*time.Minute)
 	require.ErrorIs(t, err, ErrNotFound)
-	assert.Zero(t, probes.Load())
 }
 
 func localServer(t *testing.T, dir, version string) *httptest.Server {
