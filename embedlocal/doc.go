@@ -1,6 +1,7 @@
 // Package embedlocal finds or starts a local embeddings server.
 // Call Endpoint only when the app has no configured endpoint. It prefers Ollama
 // on its usual loopback port when nomic-embed-text:latest is installed.
+// Set Options.LocalOnly to skip Ollama and select kennembed.
 // The returned /v1 base URL leaves model names and input recipes to the caller.
 // Obtain download consent before supplying an executable when model assets may
 // be fetched. Allow time for the first model download with a context deadline.

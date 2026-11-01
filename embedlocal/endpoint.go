@@ -28,7 +28,8 @@ var ErrNotFound = errors.New("local embeddings server not found")
 // permits discovery without starting a server.
 type Options struct {
 	DataDir, Executable string
-	// LocalOnly skips Ollama and discovers or starts kennembed.
+	// LocalOnly skips Ollama and discovers kennembed, starting it only when
+	// Executable is supplied.
 	LocalOnly bool
 }
 
