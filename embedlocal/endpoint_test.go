@@ -63,6 +63,19 @@ func TestEndpointOllamaFallback(t *testing.T) {
 	}
 }
 
+func TestEndpointManagedOnlyNotFound(t *testing.T) {
+	var probes atomic.Int64
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		probes.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ollama.Close()
+
+	_, err := endpoint(t.Context(), Options{DataDir: t.TempDir(), ManagedOnly: true}, ollama.URL, 2*time.Minute)
+	require.ErrorIs(t, err, ErrNotFound)
+	assert.Zero(t, probes.Load())
+}
+
 func TestEndpointNotFound(t *testing.T) {
 	ollama := httptest.NewServer(http.NotFoundHandler())
 	defer ollama.Close()

@@ -27,8 +27,11 @@ var ErrNotFound = errors.New("local embeddings server not found")
 // DefaultDir. Executable is the installed kennembed binary; leaving it empty
 // permits discovery without starting a server.
 type Options struct {
-	DataDir, Executable string
+	DataDir    string
+	Executable string
+
 	// ManagedOnly skips Ollama and uses the shared kennembed server.
+	// Callers must retain this choice and set it on each call to Endpoint.
 	ManagedOnly bool
 }
 
