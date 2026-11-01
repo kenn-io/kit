@@ -137,11 +137,22 @@ func TestEndpointStartLockTimeoutExcludesStaleLog(t *testing.T) {
 
 func TestEndpointJoinStartup(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		status int
-	}{{"reuse", http.StatusOK}, {"failed", http.StatusServiceUnavailable}} {
+		name         string
+		status       int
+		ollamaStatus int
+		localOnly    bool
+	}{
+		{"reuse", http.StatusOK, http.StatusNotFound, false},
+		{"failed", http.StatusServiceUnavailable, http.StatusNotFound, false},
+		{"local only", http.StatusOK, http.StatusOK, true},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
-			opts, ollama, entered, ready := startupFixture(t, tc.status)
+			var probes atomic.Int32
+			opts, ollama, entered, ready := startupFixture(t, tc.status, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				probes.Add(1)
+				w.WriteHeader(tc.ollamaStatus)
+			}))
+			opts.LocalOnly = tc.localOnly
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
 			first := make(chan error, 1)
@@ -183,6 +194,9 @@ func TestEndpointJoinStartup(t *testing.T) {
 				assert.Equal(t, pid, records[0].PID)
 				assert.Equal(t, records[0].Endpoint().BaseURL()+"/v1", result.url)
 			}
+			if tc.localOnly {
+				assert.Zero(t, probes.Load())
+			}
 		})
 	}
 }
@@ -192,9 +206,9 @@ type endpointResult struct {
 	err error
 }
 
-func startupFixture(t *testing.T, status int) (Options, string, <-chan int, func()) {
+func startupFixture(t *testing.T, status int, ollamaHandler http.Handler) (Options, string, <-chan int, func()) {
 	t.Helper()
-	ollama := httptest.NewServer(http.NotFoundHandler())
+	ollama := httptest.NewServer(ollamaHandler)
 	t.Cleanup(ollama.Close)
 	dir := t.TempDir()
 	entered, release := make(chan int, 1), make(chan struct{})
