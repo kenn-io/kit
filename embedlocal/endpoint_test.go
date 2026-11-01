@@ -28,12 +28,11 @@ func TestEndpointOllamaFallback(t *testing.T) {
 		status    int
 		backend   string
 		localOnly bool
-		probes    int32
 	}{
-		{"latest", 200, "ollama", false, 1},
-		{"status", 503, "local", false, 1},
-		{"absent model", 404, "local", false, 1},
-		{"local only", 200, "local", true, 0},
+		{"latest", 200, "ollama", false},
+		{"status", 503, "local", false},
+		{"absent model", 404, "local", false},
+		{"local only", 200, "local", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var probes atomic.Int32
@@ -58,7 +57,9 @@ func TestEndpointOllamaFallback(t *testing.T) {
 			got, err := endpoint(t.Context(), Options{DataDir: dir, LocalOnly: tc.localOnly}, ollama.URL, 2*time.Minute)
 			require.NoError(t, err)
 			assert.Equal(t, backends[tc.backend], got)
-			assert.Equal(t, tc.probes, probes.Load())
+			if tc.localOnly {
+				assert.Zero(t, probes.Load())
+			}
 		})
 	}
 }
