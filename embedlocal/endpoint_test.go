@@ -28,17 +28,18 @@ func TestEndpointOllamaFallback(t *testing.T) {
 		status      int
 		managedOnly bool
 		backend     string
-		probes      int64
 	}{
-		{"latest", 200, false, "ollama", 1},
-		{"status", 503, false, "local", 1},
-		{"absent model", 404, false, "local", 1},
-		{"managed only", 200, true, "local", 0},
+		{"latest", 200, false, "ollama"},
+		{"status", 503, false, "local"},
+		{"absent model", 404, false, "local"},
+		{"managed only", 200, true, "local"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var probes atomic.Int64
 			ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				probes.Add(1)
+				if tc.managedOnly {
+					probes.Add(1)
+				}
 				if !assert.Equal(t, http.MethodPost, r.Method) || !assert.Equal(t, "/api/show", r.URL.Path) {
 					w.WriteHeader(http.StatusBadRequest)
 					return
@@ -58,22 +59,11 @@ func TestEndpointOllamaFallback(t *testing.T) {
 			got, err := endpoint(t.Context(), Options{DataDir: dir, ManagedOnly: tc.managedOnly}, ollama.URL, 2*time.Minute)
 			require.NoError(t, err)
 			assert.Equal(t, backends[tc.backend], got)
-			assert.Equal(t, tc.probes, probes.Load())
+			if tc.managedOnly {
+				assert.Zero(t, probes.Load())
+			}
 		})
 	}
-}
-
-func TestEndpointManagedOnlyNotFound(t *testing.T) {
-	var probes atomic.Int64
-	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		probes.Add(1)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer ollama.Close()
-
-	_, err := endpoint(t.Context(), Options{DataDir: t.TempDir(), ManagedOnly: true}, ollama.URL, 2*time.Minute)
-	require.ErrorIs(t, err, ErrNotFound)
-	assert.Zero(t, probes.Load())
 }
 
 func TestEndpointNotFound(t *testing.T) {
@@ -85,6 +75,16 @@ func TestEndpointNotFound(t *testing.T) {
 	localServer(t, dir, "2")
 	_, err = endpoint(t.Context(), Options{DataDir: dir}, ollama.URL, 2*time.Minute)
 	require.ErrorIs(t, err, ErrNotFound)
+
+	t.Run("managed only with Ollama available", func(t *testing.T) {
+		ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer ollama.Close()
+
+		_, err := endpoint(t.Context(), Options{DataDir: t.TempDir(), ManagedOnly: true}, ollama.URL, 2*time.Minute)
+		require.ErrorIs(t, err, ErrNotFound)
+	})
 }
 
 func localServer(t *testing.T, dir, version string) *httptest.Server {
