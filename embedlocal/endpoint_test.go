@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,16 +24,21 @@ import (
 
 func TestEndpointOllamaFallback(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		status  int
-		backend string
+		name      string
+		status    int
+		backend   string
+		localOnly bool
+		probes    int32
 	}{
-		{"latest", 200, "ollama"},
-		{"status", 503, "local"},
-		{"absent model", 404, "local"},
+		{"latest", 200, "ollama", false, 1},
+		{"status", 503, "local", false, 1},
+		{"absent model", 404, "local", false, 1},
+		{"local only", 200, "local", true, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			var probes atomic.Int32
 			ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				probes.Add(1)
 				if !assert.Equal(t, http.MethodPost, r.Method) || !assert.Equal(t, "/api/show", r.URL.Path) {
 					w.WriteHeader(http.StatusBadRequest)
 					return
@@ -49,9 +55,10 @@ func TestEndpointOllamaFallback(t *testing.T) {
 			defer ollama.Close()
 			dir := t.TempDir()
 			backends := map[string]string{"local": localServer(t, dir, Version).URL + "/v1", "ollama": ollama.URL + "/v1"}
-			got, err := endpoint(t.Context(), Options{DataDir: dir}, ollama.URL, 2*time.Minute)
+			got, err := endpoint(t.Context(), Options{DataDir: dir, LocalOnly: tc.localOnly}, ollama.URL, 2*time.Minute)
 			require.NoError(t, err)
 			assert.Equal(t, backends[tc.backend], got)
+			assert.Equal(t, tc.probes, probes.Load())
 		})
 	}
 }

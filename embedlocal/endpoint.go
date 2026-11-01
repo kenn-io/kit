@@ -26,7 +26,11 @@ var ErrNotFound = errors.New("local embeddings server not found")
 // Options configures discovery and optional startup. DataDir defaults to
 // DefaultDir. Executable is the installed kennembed binary; leaving it empty
 // permits discovery without starting a server.
-type Options struct{ DataDir, Executable string }
+type Options struct {
+	DataDir, Executable string
+	// LocalOnly skips Ollama and discovers or starts kennembed.
+	LocalOnly bool
+}
 
 // DefaultDir returns the shared per-user embeddings data directory.
 func DefaultDir() (string, error) {
@@ -37,7 +41,8 @@ func DefaultDir() (string, error) {
 	return filepath.Join(home, ".kenn", "embeddings"), nil
 }
 
-// Endpoint returns a /v1 base URL, preferring a running Ollama to kennembed.
+// Endpoint returns a /v1 base URL, preferring a running Ollama to kennembed
+// unless LocalOnly is set.
 // Startup follows ctx's deadline, or waits at most two minutes without one.
 // A started server continues loading after ctx is canceled.
 func Endpoint(ctx context.Context, opts Options) (string, error) {
@@ -45,7 +50,7 @@ func Endpoint(ctx context.Context, opts Options) (string, error) {
 }
 
 func endpoint(ctx context.Context, opts Options, ollama string, timeout time.Duration) (string, error) {
-	if probeOllama(ctx, ollama) {
+	if !opts.LocalOnly && probeOllama(ctx, ollama) {
 		return ollama + "/v1", nil
 	}
 	var err error
