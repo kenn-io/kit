@@ -14,6 +14,15 @@ code actually does not compile, the toolchain will fail before the PR can land.
 Focus reviews on logic, architecture, behavior, security boundaries, and test
 coverage for behavior. Trust the build for compilability.
 
+## Supported environments
+
+Kit targets the latest releases of its libraries, runtimes, and external
+services (databases, search engines, embedding servers) running with their
+default settings, at most one to two years old. A finding that applies only to
+an older version, a legacy compatibility mode, or a deprecated or non-default
+setting (for example PostgreSQL's `standard_conforming_strings=off`) is not an
+issue. Do not request code, tests, or documentation for those environments.
+
 ## External CLI argument grammars
 
 Do not guess how an external command parses options, option values,
@@ -47,10 +56,11 @@ CLI and mode shows the constructed command cannot produce the requested
 schema-conforming result.
 
 The `agentcli` package intentionally owns the supported Codex, Claude Code,
-Gemini, GitHub Copilot, OpenCode, Cursor Agent, Kiro, Kilo, Factory Droid, and
-Pi command shapes. Review its internal consistency and its behavior against
-supplied authoritative evidence. Do not infer that a listed option or arity is
-wrong only because roborev-ci did not execute the external CLI.
+Gemini, GitHub Copilot, OpenCode, Cursor Agent, Kiro, Kilo, Factory Droid, Pi,
+Hermes, Qwen Code, and Muse Code command shapes. Review its internal
+consistency and its behavior against supplied authoritative evidence. Do not
+infer that a listed option or arity is wrong only because roborev-ci did not
+execute the external CLI.
 
 ## Managed Git trust boundary
 
