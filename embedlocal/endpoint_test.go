@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,16 +24,20 @@ import (
 
 func TestEndpointOllamaFallback(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		status  int
-		backend string
+		name       string
+		status     int
+		backend    string
+		skipOllama bool
 	}{
-		{"latest", 200, "ollama"},
-		{"status", 503, "local"},
-		{"absent model", 404, "local"},
+		{"latest", 200, "ollama", false},
+		{"status", 503, "local", false},
+		{"absent model", 404, "local", false},
+		{"skip Ollama", 200, "local", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			var probes atomic.Int32
 			ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				probes.Add(1)
 				if !assert.Equal(t, http.MethodPost, r.Method) || !assert.Equal(t, "/api/show", r.URL.Path) {
 					w.WriteHeader(http.StatusBadRequest)
 					return
@@ -49,22 +54,40 @@ func TestEndpointOllamaFallback(t *testing.T) {
 			defer ollama.Close()
 			dir := t.TempDir()
 			backends := map[string]string{"local": localServer(t, dir, Version).URL + "/v1", "ollama": ollama.URL + "/v1"}
-			got, err := endpoint(t.Context(), Options{DataDir: dir}, ollama.URL, 2*time.Minute)
+			got, err := endpoint(t.Context(), Options{DataDir: dir, SkipOllama: tc.skipOllama}, ollama.URL, 2*time.Minute)
 			require.NoError(t, err)
 			assert.Equal(t, backends[tc.backend], got)
+			if tc.skipOllama {
+				assert.Zero(t, probes.Load())
+			}
 		})
 	}
 }
 
 func TestEndpointNotFound(t *testing.T) {
-	ollama := httptest.NewServer(http.NotFoundHandler())
-	defer ollama.Close()
-	dir := t.TempDir()
-	_, err := endpoint(t.Context(), Options{DataDir: dir}, ollama.URL, 2*time.Minute)
-	require.ErrorIs(t, err, ErrNotFound)
-	localServer(t, dir, "2")
-	_, err = endpoint(t.Context(), Options{DataDir: dir}, ollama.URL, 2*time.Minute)
-	require.ErrorIs(t, err, ErrNotFound)
+	for _, tc := range []struct {
+		name       string
+		status     int
+		version    string
+		skipOllama bool
+	}{
+		{"missing", http.StatusNotFound, "", false},
+		{"incompatible", http.StatusNotFound, "2", false},
+		{"skip Ollama", http.StatusOK, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+			}))
+			defer ollama.Close()
+			dir := t.TempDir()
+			if tc.version != "" {
+				localServer(t, dir, tc.version)
+			}
+			_, err := endpoint(t.Context(), Options{DataDir: dir, SkipOllama: tc.skipOllama}, ollama.URL, 2*time.Minute)
+			require.ErrorIs(t, err, ErrNotFound)
+		})
+	}
 }
 
 func localServer(t *testing.T, dir, version string) *httptest.Server {
