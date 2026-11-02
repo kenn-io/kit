@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -294,6 +295,54 @@ func TestNewCreatesChunkLookupIndexes(t *testing.T) {
 	assert.Equal([]string{"ordinal", "vec_rowid"}, indexColumns(t, db, "message_vectors_chunks_by_vector"))
 	assert.Equal([]string{"doc_key", "ordinal", "vec_rowid"}, indexColumns(t, db, "message_vectors_chunks_by_doc"))
 	assert.Equal([]string{"doc_key", "revision"}, indexColumns(t, db, "message_vectors_stamps_by_doc_revision"))
+}
+
+func TestNewReadOnlyWithoutNumericIndexes(t *testing.T) {
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "vec.db")
+	db, err := openSQLiteTestDB(t, path)
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	_, err = db.ExecContext(ctx, `CREATE TABLE messages (id INTEGER PRIMARY KEY, body TEXT, embed_gen INTEGER);
+INSERT INTO messages (id, body) VALUES (1, 'cat')`)
+	require.NoError(t, err)
+	schema := sqlitevec.Schema{
+		DocsTable: "messages", IDColumn: "id", ContentColumn: "body", EmbedGenColumn: "embed_gen", VectorsPrefix: "message_vectors",
+	}
+	store, err := sqlitevec.New[int64, int64](ctx, db, schema)
+	require.NoError(t, err)
+	require.NoError(t, store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
+	_, err = vector.Fill(ctx, store, 1, topicEncoder())
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `DROP INDEX message_vectors_stamps_by_doc_numeric; DROP INDEX message_vectors_chunks_by_doc_numeric`)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+
+	for _, mode := range []string{"mode_ro", "query_only"} {
+		t.Run(mode, func(t *testing.T) {
+			dsn := path
+			if mode == "mode_ro" {
+				uriPath := filepath.ToSlash(path)
+				if !strings.HasPrefix(uriPath, "/") {
+					uriPath = "/" + uriPath
+				}
+				dsn = (&url.URL{Scheme: "file", Path: uriPath, RawQuery: "mode=ro"}).String()
+			}
+			reader, err := openSQLiteTestDB(t, dsn)
+			require.NoError(t, err)
+			defer func() { require.NoError(t, reader.Close()) }()
+			reader.SetMaxOpenConns(1)
+			if mode == "query_only" {
+				_, err = reader.ExecContext(ctx, `PRAGMA query_only = ON`)
+				require.NoError(t, err)
+			}
+			readStore, err := sqlitevec.New[int64, int64](ctx, reader, schema)
+			require.NoError(t, err)
+			coverage, err := readStore.Coverage(ctx, 1, "")
+			require.NoError(t, err)
+			assert.Equal(t, sqlitevec.Coverage{Embedded: 1}, coverage)
+		})
+	}
 }
 
 func indexColumns(t *testing.T, db *sql.DB, index string) []string {

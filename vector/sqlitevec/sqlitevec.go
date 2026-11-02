@@ -29,6 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 
 	"go.kenn.io/kit/vector"
 )
@@ -95,7 +96,7 @@ type Store[K, G comparable] struct {
 // New returns a Store bound to db. The caller retains ownership of db. New
 // creates the generations and chunks bookkeeping tables if they do not
 // exist; per-generation vec0 tables are created by EnsureGeneration.
-// The first New after upgrading builds two indexes on existing stamps and chunks.
+// The first writable New after upgrading builds two indexes on existing stamps and chunks.
 func New[K, G comparable](ctx context.Context, db *sql.DB, schema Schema) (*Store[K, G], error) {
 	if err := schema.validate(); err != nil {
 		return nil, err
@@ -134,11 +135,14 @@ CREATE INDEX IF NOT EXISTS %s ON %s (doc_key, revision);`,
 		s.stampsByDocRevisionIndex(), s.stampsTable())); err != nil {
 		return nil, fmt.Errorf("create bookkeeping tables: %w", err)
 	}
+	// Existing databases can still serve reads without these indexes. Both
+	// supported test drivers report this message for read-only connections.
 	if _, err := db.ExecContext(ctx, fmt.Sprintf(`
 CREATE INDEX IF NOT EXISTS %s ON %s (ordinal, %s, doc_key);
 CREATE INDEX IF NOT EXISTS %s ON %s (ordinal, %s, doc_key);`,
 		s.stampsByDocNumericIndex(), s.stampsTable(), numericDocKey("doc_key"),
-		s.chunksByDocNumericIndex(), s.chunksTable(), numericDocKey("doc_key"))); err != nil {
+		s.chunksByDocNumericIndex(), s.chunksTable(), numericDocKey("doc_key"))); err != nil &&
+		!strings.HasPrefix(err.Error(), "attempt to write a readonly database") {
 		return nil, fmt.Errorf("create numeric document key indexes: %w", err)
 	}
 	return s, nil
