@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -43,40 +44,61 @@ type restoreTargetLeaseFunc func() error
 
 func (f restoreTargetLeaseFunc) Release() error { return f() }
 
+type largeFixtureKey struct {
+	size         int64
+	compressible bool
+}
+
+var largeFixtures = struct {
+	sync.Mutex
+	refs map[largeFixtureKey]ContentRef
+}{refs: make(map[largeFixtureKey]ContentRef)}
+
+// writeLargeAttachment creates a hard link to a fixture shared across tests.
+// Callers must not write to the linked file.
 func writeLargeAttachment(t *testing.T, dir string, size int64, compressible bool) ContentRef {
 	t.Helper()
 	require := require.New(t)
 	require.Positive(size)
-	tmp, err := os.CreateTemp(t.TempDir(), "large-attachment-*")
-	require.NoError(err)
-	digest := sha256.New()
-	chunk := make([]byte, 96<<10)
-	if compressible {
-		copy(chunk, bytes.Repeat([]byte("streaming backup content "), len(chunk)/25+1))
-	}
-	var state uint32 = 1
-	dst := io.MultiWriter(tmp, digest)
-	remaining := size
-	for remaining > 0 {
-		if !compressible {
-			for i := range chunk {
-				state ^= state << 13
-				state ^= state >> 17
-				state ^= state << 5
-				chunk[i] = byte(state)
-			}
-		}
-		n := min(int64(len(chunk)), remaining)
-		_, err = dst.Write(chunk[:n])
+	largeFixtures.Lock()
+	defer largeFixtures.Unlock()
+	key := largeFixtureKey{size, compressible}
+	ref, ok := largeFixtures.refs[key]
+	if !ok {
+		tmp, err := os.CreateTemp(largeFixtureDir, "large-attachment-*")
 		require.NoError(err)
-		remaining -= n
+		digest := sha256.New()
+		chunk := make([]byte, 96<<10)
+		if compressible {
+			copy(chunk, bytes.Repeat([]byte("streaming backup content "), len(chunk)/25+1))
+		}
+		var state uint32 = 1
+		dst := io.MultiWriter(tmp, digest)
+		remaining := size
+		for remaining > 0 {
+			if !compressible {
+				for i := range chunk {
+					state ^= state << 13
+					state ^= state >> 17
+					state ^= state << 5
+					chunk[i] = byte(state)
+				}
+			}
+			n := min(int64(len(chunk)), remaining)
+			_, err = dst.Write(chunk[:n])
+			require.NoError(err)
+			remaining -= n
+		}
+		require.NoError(tmp.Close())
+		hash := hex.EncodeToString(digest.Sum(nil))
+		rel := filepath.Join(hash[:2], hash)
+		require.NoError(os.Rename(tmp.Name(), filepath.Join(largeFixtureDir, hash)))
+		ref = ContentRef{Hash: hash, Size: size, StoragePath: filepath.ToSlash(rel)}
+		largeFixtures.refs[key] = ref
 	}
-	require.NoError(tmp.Close())
-	hash := hex.EncodeToString(digest.Sum(nil))
-	rel := filepath.Join(hash[:2], hash)
-	require.NoError(os.MkdirAll(filepath.Join(dir, hash[:2]), 0o700))
-	require.NoError(os.Rename(tmp.Name(), filepath.Join(dir, rel)))
-	return ContentRef{Hash: hash, Size: size, StoragePath: filepath.ToSlash(rel)}
+	require.NoError(os.MkdirAll(filepath.Join(dir, ref.Hash[:2]), 0o700))
+	require.NoError(os.Link(filepath.Join(largeFixtureDir, ref.Hash), filepath.Join(dir, ref.StoragePath)))
+	return ref
 }
 
 func hashFileStream(t *testing.T, path string) (int64, string) {
