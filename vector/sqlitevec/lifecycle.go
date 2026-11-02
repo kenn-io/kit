@@ -72,8 +72,8 @@ func (s *Store[K, G]) coverageOn(ctx context.Context, q rowQueryer, ordinal int6
 
 func (s *Store[K, G]) coverageQuery(where string) string {
 	covered := s.coveredPredicate("d", "stamp")
-	hasChunks := fmt.Sprintf(`EXISTS (SELECT 1 FROM %s c WHERE c.ordinal = stamp.ordinal AND c.doc_key = d.%s)`,
-		s.chunksTable(), s.schema.IDColumn)
+	hasChunks := fmt.Sprintf(`EXISTS (SELECT 1 FROM %s c WHERE c.ordinal = stamp.ordinal AND %s)`,
+		s.chunksTable(), s.docKeyMatch("c", "d"))
 	filter := ""
 	if where != "" {
 		filter = " WHERE (" + where + ")"
@@ -84,8 +84,8 @@ SELECT
   COALESCE(SUM(CASE WHEN %[1]s AND NOT %[2]s THEN 1 ELSE 0 END), 0),
   COALESCE(SUM(CASE WHEN NOT %[1]s THEN 1 ELSE 0 END), 0)
   FROM %[3]s d
-  LEFT JOIN %[4]s stamp ON stamp.ordinal = ? AND stamp.doc_key = d.%[5]s%[6]s`,
-		covered, hasChunks, s.schema.DocsTable, s.stampsTable(), s.schema.IDColumn, filter)
+  LEFT JOIN %[4]s stamp ON stamp.ordinal = ? AND %[5]s%[6]s`,
+		covered, hasChunks, s.schema.DocsTable, s.stampsTable(), s.docKeyMatch("stamp", "d"), filter)
 }
 
 // Activate publishes gen as the active generation when every document is

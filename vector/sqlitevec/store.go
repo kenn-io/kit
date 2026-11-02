@@ -70,14 +70,31 @@ func (s *Store[K, G]) coveredPredicate(docAlias, stampAlias string) string {
 	return "(" + predicate + ")"
 }
 
+func numericDocKey(key string) string {
+	return fmt.Sprintf("CASE WHEN typeof(%[1]s)='text' AND CAST(%[1]s AS NUMERIC)=%[1]s THEN CAST(%[1]s AS NUMERIC) ELSE %[1]s END", key)
+}
+
+// docKeyMatch preserves the bare comparison's matches. Numeric document IDs
+// apply NUMERIC affinity to doc_key, so convert only numeric text keys and
+// remove the ID's affinity with unary + to probe the matching expression index.
+// Other ID affinities keep the original comparison.
+func (s *Store[K, G]) docKeyMatch(alias, docAlias string) string {
+	key := alias + ".doc_key"
+	id := docAlias + "." + s.schema.IDColumn
+	if s.numericDocID {
+		return numericDocKey(key) + " = +" + id
+	}
+	return key + " = " + id
+}
+
 func (s *Store[K, G]) pendingQuery(columns string) string {
 	return fmt.Sprintf(`
 SELECT %s
   FROM %s d
-  LEFT JOIN %s stamp ON stamp.ordinal = ? AND stamp.doc_key = d.%s
+  LEFT JOIN %s stamp ON stamp.ordinal = ? AND %s
  WHERE NOT %s
  ORDER BY d.%s LIMIT ?`,
-		columns, s.schema.DocsTable, s.stampsTable(), s.schema.IDColumn,
+		columns, s.schema.DocsTable, s.stampsTable(), s.docKeyMatch("stamp", "d"),
 		s.coveredPredicate("d", "stamp"), s.schema.IDColumn)
 }
 
@@ -225,11 +242,11 @@ func (s *Store[K, G]) docInvalidated(ctx context.Context, tx *sql.Tx, doc K) (bo
 SELECT CASE WHEN %s THEN 0 ELSE 1 END
   FROM %s d
   LEFT JOIN %s gen ON gen.gen_key = d.%s
-  LEFT JOIN %s stamp ON stamp.ordinal = gen.ordinal AND stamp.doc_key = d.%s
+  LEFT JOIN %s stamp ON stamp.ordinal = gen.ordinal AND %s
  WHERE d.%s = ?`,
 		s.coveredPredicate("d", "stamp"),
 		s.schema.DocsTable, s.generationsTable(), s.schema.EmbedGenColumn,
-		s.stampsTable(), s.schema.IDColumn, s.schema.IDColumn)
+		s.stampsTable(), s.docKeyMatch("stamp", "d"), s.schema.IDColumn)
 	var invalidated int
 	err := tx.QueryRowContext(ctx, query, doc).Scan(&invalidated)
 	if err == sql.ErrNoRows {

@@ -58,8 +58,8 @@ func (rowsErrConn) ExecContext(_ context.Context, query string, _ []driver.Named
 	return driver.RowsAffected(0), nil
 }
 
-func (rowsErrConn) QueryContext(_ context.Context, _ string, _ []driver.NamedValue) (driver.Rows, error) {
-	return &rowsErrRows{}, nil
+func (rowsErrConn) QueryContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
+	return &rowsErrRows{documentType: strings.Contains(query, "pragma_table_xinfo")}, nil
 }
 
 type rowsErrTx struct{}
@@ -73,10 +73,14 @@ func (rowsErrTx) Rollback() error {
 }
 
 type rowsErrRows struct {
-	returned bool
+	returned     bool
+	documentType bool
 }
 
 func (rows *rowsErrRows) Columns() []string {
+	if rows.documentType {
+		return []string{"type"}
+	}
 	return []string{"ordinal", "vec_rowid"}
 }
 
@@ -87,6 +91,10 @@ func (rows *rowsErrRows) Close() error {
 func (rows *rowsErrRows) Next(dest []driver.Value) error {
 	if !rows.returned {
 		rows.returned = true
+		if rows.documentType {
+			dest[0] = "INTEGER"
+			return nil
+		}
 		dest[0] = int64(1)
 		dest[1] = int64(42)
 		return nil
@@ -294,6 +302,19 @@ func TestNewCreatesChunkLookupIndexes(t *testing.T) {
 	assert.Equal([]string{"ordinal", "vec_rowid"}, indexColumns(t, db, "message_vectors_chunks_by_vector"))
 	assert.Equal([]string{"doc_key", "ordinal", "vec_rowid"}, indexColumns(t, db, "message_vectors_chunks_by_doc"))
 	assert.Equal([]string{"doc_key", "revision"}, indexColumns(t, db, "message_vectors_stamps_by_doc_revision"))
+	for _, table := range []string{"stamps", "chunks"} {
+		assert.Equal([]string{"ordinal", "", "doc_key"}, indexColumns(t, db, "message_vectors_"+table+"_by_doc_numeric"))
+	}
+
+	_, err := db.ExecContext(t.Context(), `CREATE TABLE text_docs (id TEXT PRIMARY KEY, body TEXT, embed_gen INTEGER)`)
+	require.NoError(t, err)
+	_, err = sqlitevec.New[string, int64](t.Context(), db, sqlitevec.Schema{
+		DocsTable: "text_docs", IDColumn: "id", ContentColumn: "body", EmbedGenColumn: "embed_gen", VectorsPrefix: "text_vectors",
+	})
+	require.NoError(t, err)
+	for _, table := range []string{"stamps", "chunks"} {
+		assert.Empty(indexColumns(t, db, "text_vectors_"+table+"_by_doc_numeric"))
+	}
 }
 
 func indexColumns(t *testing.T, db *sql.DB, index string) []string {
@@ -307,12 +328,113 @@ func indexColumns(t *testing.T, db *sql.DB, index string) []string {
 	var columns []string
 	for rows.Next() {
 		var seqno, cid int
-		var name string
+		var name sql.NullString
 		require.NoError(rows.Scan(&seqno, &cid, &name))
-		columns = append(columns, name)
+		columns = append(columns, name.String)
 	}
 	require.NoError(rows.Err())
 	return columns
+}
+
+func TestNumericDocumentIDsMatchTextStampKeys(t *testing.T) {
+	ctx := t.Context()
+	db, _ := setup(t)
+	store, err := sqlitevec.New[string, int64](ctx, db, sqlitevec.Schema{
+		DocsTable: "messages", IDColumn: "id", ContentColumn: "body", EmbedGenColumn: "embed_gen", VectorsPrefix: "message_vectors",
+	})
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (1, 'a cat sat'), (2, 'a dog ran')`)
+	require.NoError(t, err)
+	require.NoError(t, store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
+	vectors := []vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{1, 0, 0}}}
+	for _, key := range []string{"1", " 2"} {
+		require.NoError(t, store.SaveVectors(ctx, 1, key, nil, vectors))
+	}
+	pending, err := store.PendingForGeneration(ctx, 1, 10)
+	require.NoError(t, err)
+	assert.Empty(t, pending)
+	coverage, err := store.Coverage(ctx, 1, "")
+	require.NoError(t, err)
+	assert.Equal(t, sqlitevec.Coverage{Embedded: 2}, coverage)
+
+	snapshot, err := store.Snapshot(ctx, 1)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, snapshot.Close()) }()
+	rows, err := snapshot.CoveredDocs(ctx, sqlitevec.DocQuery{})
+	require.NoError(t, err)
+	var docs []string
+	for rows.Next() {
+		var doc string
+		require.NoError(t, rows.Scan(&doc))
+		docs = append(docs, doc)
+	}
+	require.NoError(t, rows.Err())
+	require.NoError(t, rows.Close())
+	assert.Equal(t, []string{"1", "2"}, docs)
+	uncovered, err := snapshot.UncoveredCount(ctx, "")
+	require.NoError(t, err)
+	assert.Zero(t, uncovered)
+	require.NoError(t, snapshot.Close())
+
+	require.NoError(t, store.EnsureGeneration(ctx, 2, vector.Generation{Model: "m2", Dimensions: 3}, sqlitevec.StateBuilding))
+	for _, key := range []string{"1", " 2"} {
+		require.NoError(t, store.SaveVectors(ctx, 2, key, nil, vectors))
+	}
+	coverage, err = store.Coverage(ctx, 1, "")
+	require.NoError(t, err)
+	assert.Equal(t, sqlitevec.Coverage{Embedded: 2}, coverage, "saving again preserves the earlier generation's vectors and stamps")
+}
+
+func TestDocKeyMatchPreservesSQLiteAffinityMatches(t *testing.T) {
+	for _, declaredType := range []string{"INTEGER PRIMARY KEY", "TEXT", "REAL", "NUMERIC", ""} {
+		t.Run(declaredType, func(t *testing.T) {
+			ctx := t.Context()
+			db, _ := setup(t)
+			_, err := db.ExecContext(ctx, fmt.Sprintf(`CREATE TABLE docs (id %s, body TEXT, embed_gen INTEGER)`, declaredType))
+			require.NoError(t, err)
+			store, err := sqlitevec.New[string, int64](ctx, db, sqlitevec.Schema{
+				DocsTable: "docs", IDColumn: "id", ContentColumn: "body", EmbedGenColumn: "embed_gen", VectorsPrefix: "test_vectors",
+			})
+			require.NoError(t, err)
+			keys := []any{int64(1), "1", " 1", "01", "1.0", float64(4), "abc", []byte{5}, int64(-9223372036854775808), int64(9223372036854775807), "-9223372036854775808", "9223372036854775807"}
+			ids := keys
+			if declaredType == "INTEGER PRIMARY KEY" {
+				ids = []any{int64(1), int64(4), int64(-9223372036854775808), int64(9223372036854775807)}
+			}
+			for _, id := range ids {
+				_, err := db.ExecContext(ctx, `INSERT INTO docs (id) VALUES (?)`, id)
+				require.NoError(t, err)
+			}
+			for _, key := range keys {
+				_, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO test_vectors_stamps (ordinal, doc_key) VALUES (1, ?)`, key)
+				require.NoError(t, err)
+			}
+			var pairs [2][][2]int64
+			for i, query := range []string{
+				`SELECT d.rowid, stamp.rowid FROM docs d LEFT JOIN test_vectors_stamps stamp ON stamp.ordinal = ? AND stamp.doc_key = d.id`,
+				store.PendingQueryForTest("d.rowid, stamp.rowid"),
+			} {
+				args := []any{1}
+				if i == 1 {
+					args = append(args, -1)
+				}
+				rows, err := db.QueryContext(ctx, query, args...)
+				require.NoError(t, err)
+				for rows.Next() {
+					var doc int64
+					var stamp sql.NullInt64
+					require.NoError(t, rows.Scan(&doc, &stamp))
+					if stamp.Valid {
+						pairs[i] = append(pairs[i], [2]int64{doc, stamp.Int64})
+					}
+				}
+				require.NoError(t, rows.Err())
+				require.NoError(t, rows.Close())
+			}
+			require.NotEmpty(t, pairs[0])
+			assert.ElementsMatch(t, pairs[0], pairs[1])
+		})
+	}
 }
 
 func TestStoreSaveVectorsRejectsMissingDocument(t *testing.T) {
