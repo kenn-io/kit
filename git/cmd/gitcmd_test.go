@@ -638,6 +638,8 @@ func forwardGit() {
 }
 `
 
+var testGitDir string
+
 var sharedTestGit = sync.OnceValues(func() (string, error) {
 	var err error
 	testGitDir, err = os.MkdirTemp("", "kit-gitcmd-")
@@ -653,15 +655,17 @@ var sharedTestGit = sync.OnceValues(func() (string, error) {
 		return "", err
 	}
 	// The shared build belongs to the whole test run, rather than one test.
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "go", "build", "-o", filepath.Join(testGitDir, exeName), srcPath)
+	cmd := exec.CommandContext(context.Background(), "go", "build", "-o", filepath.Join(testGitDir, exeName), srcPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("build test git: %w: %s", err, out)
 	}
 	return testGitDir, nil
 })
+
+func cleanupTestGit() error {
+	return os.RemoveAll(testGitDir)
+}
 
 func buildTestGit(t *testing.T) string {
 	t.Helper()

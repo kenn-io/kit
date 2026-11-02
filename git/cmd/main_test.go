@@ -1,18 +1,15 @@
 package gitcmd
 
 import (
+	"fmt"
 	"os"
 	"testing"
 )
 
-var testGitDir string
-
 func TestMain(m *testing.M) {
 	code := m.Run()
-	if testGitDir != "" {
-		if err := os.RemoveAll(testGitDir); err != nil {
-			panic(err)
-		}
+	if err := cleanupTestGit(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 	}
 	os.Exit(code)
 }
