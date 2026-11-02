@@ -57,7 +57,9 @@ jobs:
       - name: Run golangci-lint for Windows
         env:
           GOOS: windows
-        run: ./custom-gcl run ./...
+        run: |
+          ./custom-gcl run ./...
+          go build ./...
 
   test:
     name: Go tests (${{ matrix.os }}${{ matrix.shard == 'managed' && format(', git/managed {0}/{1}', matrix.part, matrix.parts) || '' }})
@@ -113,7 +115,7 @@ jobs:
         run: kit-retry 3 5 go mod download
 
       - name: Build
-        if: matrix.shard == 'regular'
+        if: matrix.os != 'windows-latest'
         run: go build ./...
 
       - name: Run tests
@@ -149,7 +151,7 @@ jobs:
           exit $LASTEXITCODE
 
       - name: Run go vet
-        if: matrix.shard == 'regular'
+        if: matrix.os != 'windows-latest'
         run: go vet ./...
 
   streaming-gates:
