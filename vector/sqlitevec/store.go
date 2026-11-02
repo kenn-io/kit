@@ -74,17 +74,12 @@ func numericDocKey(key string) string {
 	return fmt.Sprintf("CASE WHEN typeof(%[1]s)='text' AND CAST(%[1]s AS NUMERIC)=%[1]s THEN CAST(%[1]s AS NUMERIC) ELSE %[1]s END", key)
 }
 
-// docKeyMatch preserves the bare comparison's matches. Numeric document IDs
-// apply NUMERIC affinity to doc_key, so convert only numeric text keys and
-// remove the ID's affinity with unary + to probe the matching expression index.
-// Other ID affinities keep the original comparison.
+// docKeyMatch probes the expression index and retains the original comparison
+// for SQLite's affinity and collation rules.
 func (s *Store[K, G]) docKeyMatch(alias, docAlias string) string {
 	key := alias + ".doc_key"
 	id := docAlias + "." + s.schema.IDColumn
-	if s.numericDocID {
-		return numericDocKey(key) + " = +" + id
-	}
-	return key + " = " + id
+	return "(" + numericDocKey(key) + " = " + numericDocKey(id) + " AND " + key + " = " + id + ")"
 }
 
 func (s *Store[K, G]) pendingQuery(columns string) string {

@@ -58,8 +58,8 @@ func (rowsErrConn) ExecContext(_ context.Context, query string, _ []driver.Named
 	return driver.RowsAffected(0), nil
 }
 
-func (rowsErrConn) QueryContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
-	return &rowsErrRows{documentType: strings.Contains(query, "pragma_table_xinfo")}, nil
+func (rowsErrConn) QueryContext(_ context.Context, _ string, _ []driver.NamedValue) (driver.Rows, error) {
+	return &rowsErrRows{}, nil
 }
 
 type rowsErrTx struct{}
@@ -73,14 +73,10 @@ func (rowsErrTx) Rollback() error {
 }
 
 type rowsErrRows struct {
-	returned     bool
-	documentType bool
+	returned bool
 }
 
 func (rows *rowsErrRows) Columns() []string {
-	if rows.documentType {
-		return []string{"type"}
-	}
 	return []string{"ordinal", "vec_rowid"}
 }
 
@@ -91,10 +87,6 @@ func (rows *rowsErrRows) Close() error {
 func (rows *rowsErrRows) Next(dest []driver.Value) error {
 	if !rows.returned {
 		rows.returned = true
-		if rows.documentType {
-			dest[0] = "INTEGER"
-			return nil
-		}
 		dest[0] = int64(1)
 		dest[1] = int64(42)
 		return nil
@@ -313,7 +305,7 @@ func TestNewCreatesChunkLookupIndexes(t *testing.T) {
 	})
 	require.NoError(t, err)
 	for _, table := range []string{"stamps", "chunks"} {
-		assert.Empty(indexColumns(t, db, "text_vectors_"+table+"_by_doc_numeric"))
+		assert.Equal([]string{"ordinal", "", "doc_key"}, indexColumns(t, db, "text_vectors_"+table+"_by_doc_numeric"))
 	}
 }
 
@@ -386,19 +378,23 @@ func TestNumericDocumentIDsMatchTextStampKeys(t *testing.T) {
 }
 
 func TestDocKeyMatchPreservesSQLiteAffinityMatches(t *testing.T) {
-	for _, declaredType := range []string{"INTEGER PRIMARY KEY", "TEXT", "REAL", "NUMERIC", ""} {
-		t.Run(declaredType, func(t *testing.T) {
+	for _, tc := range []struct{ name, declaration, suffix string }{
+		{"integer", "INTEGER PRIMARY KEY", ""}, {"text", "TEXT", ""},
+		{"real", "REAL", ""}, {"numeric", "NUMERIC", ""}, {"untyped", "", ""},
+		{"strict_any", "ANY", "STRICT"}, {"nocase", "NUMERIC COLLATE NOCASE", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			ctx := t.Context()
 			db, _ := setup(t)
-			_, err := db.ExecContext(ctx, fmt.Sprintf(`CREATE TABLE docs (id %s, body TEXT, embed_gen INTEGER)`, declaredType))
+			_, err := db.ExecContext(ctx, fmt.Sprintf(`CREATE TABLE docs (id %s, body TEXT, embed_gen INTEGER) %s`, tc.declaration, tc.suffix))
 			require.NoError(t, err)
 			store, err := sqlitevec.New[string, int64](ctx, db, sqlitevec.Schema{
 				DocsTable: "docs", IDColumn: "id", ContentColumn: "body", EmbedGenColumn: "embed_gen", VectorsPrefix: "test_vectors",
 			})
 			require.NoError(t, err)
-			keys := []any{int64(1), "1", " 1", "01", "1.0", float64(4), "abc", []byte{5}, int64(-9223372036854775808), int64(9223372036854775807), "-9223372036854775808", "9223372036854775807"}
+			keys := []any{int64(1), "1", " 1", "01", "001", "1.0", float64(4), "abc", "ABC", []byte{5}, int64(-9223372036854775808), int64(9223372036854775807), "-9223372036854775808", "9223372036854775807"}
 			ids := keys
-			if declaredType == "INTEGER PRIMARY KEY" {
+			if tc.name == "integer" {
 				ids = []any{int64(1), int64(4), int64(-9223372036854775808), int64(9223372036854775807)}
 			}
 			for _, id := range ids {
@@ -433,6 +429,102 @@ func TestDocKeyMatchPreservesSQLiteAffinityMatches(t *testing.T) {
 			}
 			require.NotEmpty(t, pairs[0])
 			assert.ElementsMatch(t, pairs[0], pairs[1])
+		})
+	}
+}
+
+func TestNewBeforeDocumentsTable(t *testing.T) {
+	ctx := t.Context()
+	db, err := openSQLiteTestDB(t, filepath.Join(t.TempDir(), "vec.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	store, err := sqlitevec.New[string, int64](ctx, db, sqlitevec.Schema{
+		DocsTable: "docs", IDColumn: "id", ContentColumn: "body", EmbedGenColumn: "embed_gen", VectorsPrefix: "vectors",
+	})
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `CREATE TABLE docs (id TEXT PRIMARY KEY, body TEXT, embed_gen INTEGER); INSERT INTO docs (id, body) VALUES ('a', 'cat')`)
+	require.NoError(t, err)
+	require.NoError(t, store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateBuilding))
+	_, err = vector.Fill(ctx, store, 1, topicEncoder())
+	require.NoError(t, err)
+	coverage, err := store.Coverage(ctx, 1, "")
+	require.NoError(t, err)
+	assert.Equal(t, sqlitevec.Coverage{Embedded: 1}, coverage)
+}
+
+func TestTextDocumentIDDoesNotMatchIntegerKey(t *testing.T) {
+	ctx := t.Context()
+	db, _ := setup(t)
+	_, err := db.ExecContext(ctx, `CREATE TABLE docs (id TEXT PRIMARY KEY, body TEXT, embed_gen INTEGER); INSERT INTO docs (id, body) VALUES ('1', 'cat')`)
+	require.NoError(t, err)
+	store, err := sqlitevec.New[int64, int64](ctx, db, sqlitevec.Schema{
+		DocsTable: "docs", IDColumn: "id", ContentColumn: "body", EmbedGenColumn: "embed_gen", VectorsPrefix: "test_vectors",
+	})
+	require.NoError(t, err)
+	require.NoError(t, store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateBuilding))
+	require.NoError(t, store.SaveVectors(ctx, 1, 1, nil, []vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{1, 0, 0}}}))
+	pending, err := store.PendingForGeneration(ctx, 1, 10)
+	require.NoError(t, err)
+	require.Len(t, pending, 1)
+	var matches int
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT COUNT(*) FROM docs d JOIN test_vectors_stamps stamp ON stamp.doc_key = d.id`).Scan(&matches))
+	assert.Zero(t, matches)
+}
+
+func TestDocumentKeyAffinityAndCollation(t *testing.T) {
+	for _, tc := range []struct {
+		name, schema, doc, key string
+		covered                bool
+	}{
+		{"strict_any", `CREATE TABLE docs (id ANY PRIMARY KEY, body TEXT, embed_gen INTEGER) STRICT`, "001", "001", true},
+		{"numeric_nocase", `CREATE TABLE docs (id NUMERIC COLLATE NOCASE PRIMARY KEY, body TEXT, embed_gen INTEGER)`, "abc", "ABC", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			db, _ := setup(t)
+			_, err := db.ExecContext(ctx, tc.schema)
+			require.NoError(t, err)
+			_, err = db.ExecContext(ctx, `INSERT INTO docs (id, body) VALUES (?, 'cat')`, tc.doc)
+			require.NoError(t, err)
+			store, err := sqlitevec.New[string, int64](ctx, db, sqlitevec.Schema{
+				DocsTable: "docs", IDColumn: "id", ContentColumn: "body", EmbedGenColumn: "embed_gen", VectorsPrefix: "test_vectors",
+			})
+			require.NoError(t, err)
+			require.NoError(t, store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateBuilding))
+			require.NoError(t, store.SaveVectors(ctx, 1, tc.key, nil, []vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{1, 0, 0}}}))
+			pending, err := store.PendingForGeneration(ctx, 1, 10)
+			require.NoError(t, err)
+			coverage, err := store.Coverage(ctx, 1, "")
+			require.NoError(t, err)
+			snapshot, err := store.Snapshot(ctx, 1)
+			require.NoError(t, err)
+			rows, err := snapshot.CoveredDocs(ctx, sqlitevec.DocQuery{})
+			require.NoError(t, err)
+			var docs []string
+			for rows.Next() {
+				var doc string
+				require.NoError(t, rows.Scan(&doc))
+				docs = append(docs, doc)
+			}
+			require.NoError(t, rows.Err())
+			require.NoError(t, rows.Close())
+			uncovered, err := snapshot.UncoveredCount(ctx, "")
+			require.NoError(t, err)
+			require.NoError(t, snapshot.Close())
+			if tc.covered {
+				assert.Empty(t, pending)
+				assert.Equal(t, sqlitevec.Coverage{Embedded: 1}, coverage)
+				assert.Equal(t, []string{tc.doc}, docs)
+				assert.Zero(t, uncovered)
+				require.NoError(t, store.Activate(ctx, 1))
+			} else {
+				require.Len(t, pending, 1)
+				assert.Equal(t, tc.doc, pending[0].Doc)
+				assert.Equal(t, sqlitevec.Coverage{Backlog: 1}, coverage)
+				assert.Empty(t, docs)
+				assert.EqualValues(t, 1, uncovered)
+				require.ErrorIs(t, store.Activate(ctx, 1), sqlitevec.ErrUncovered)
+			}
 		})
 	}
 }

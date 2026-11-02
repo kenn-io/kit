@@ -29,7 +29,6 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"strings"
 
 	"go.kenn.io/kit/vector"
 )
@@ -89,14 +88,14 @@ func (s Schema) validate() error {
 // caller's document key type and G its generation key type; both must be
 // types database/sql can bind and scan (for example int64 or string).
 type Store[K, G comparable] struct {
-	db           *sql.DB
-	schema       Schema
-	numericDocID bool
+	db     *sql.DB
+	schema Schema
 }
 
 // New returns a Store bound to db. The caller retains ownership of db. New
 // creates the generations and chunks bookkeeping tables if they do not
 // exist; per-generation vec0 tables are created by EnsureGeneration.
+// The first New after upgrading builds two indexes on existing stamps and chunks.
 func New[K, G comparable](ctx context.Context, db *sql.DB, schema Schema) (*Store[K, G], error) {
 	if err := schema.validate(); err != nil {
 		return nil, err
@@ -105,23 +104,6 @@ func New[K, G comparable](ctx context.Context, db *sql.DB, schema Schema) (*Stor
 		return nil, errors.New("db is nil")
 	}
 	s := &Store[K, G]{db: db, schema: schema}
-	var declaredType string
-	if err := db.QueryRowContext(ctx, `SELECT type FROM pragma_table_xinfo(?) WHERE name = ? COLLATE NOCASE`,
-		schema.DocsTable, schema.IDColumn).Scan(&declaredType); err != nil {
-		return nil, fmt.Errorf("read document id type: %w", err)
-	}
-	// SQLite's declared-type rules apply in this order.
-	declaredType = strings.ToUpper(declaredType)
-	switch {
-	case strings.Contains(declaredType, "INT"):
-		s.numericDocID = true
-	case strings.Contains(declaredType, "CHAR"), strings.Contains(declaredType, "CLOB"), strings.Contains(declaredType, "TEXT"):
-	case declaredType == "", strings.Contains(declaredType, "BLOB"):
-	case strings.Contains(declaredType, "REAL"), strings.Contains(declaredType, "FLOA"), strings.Contains(declaredType, "DOUB"):
-		s.numericDocID = true
-	default:
-		s.numericDocID = true
-	}
 	if _, err := db.ExecContext(ctx, fmt.Sprintf(`
 CREATE TABLE IF NOT EXISTS %s (
     ordinal     INTEGER PRIMARY KEY,
@@ -152,14 +134,12 @@ CREATE INDEX IF NOT EXISTS %s ON %s (doc_key, revision);`,
 		s.stampsByDocRevisionIndex(), s.stampsTable())); err != nil {
 		return nil, fmt.Errorf("create bookkeeping tables: %w", err)
 	}
-	if s.numericDocID {
-		if _, err := db.ExecContext(ctx, fmt.Sprintf(`
+	if _, err := db.ExecContext(ctx, fmt.Sprintf(`
 CREATE INDEX IF NOT EXISTS %s ON %s (ordinal, %s, doc_key);
 CREATE INDEX IF NOT EXISTS %s ON %s (ordinal, %s, doc_key);`,
-			s.stampsByDocNumericIndex(), s.stampsTable(), numericDocKey("doc_key"),
-			s.chunksByDocNumericIndex(), s.chunksTable(), numericDocKey("doc_key"))); err != nil {
-			return nil, fmt.Errorf("create numeric document key indexes: %w", err)
-		}
+		s.stampsByDocNumericIndex(), s.stampsTable(), numericDocKey("doc_key"),
+		s.chunksByDocNumericIndex(), s.chunksTable(), numericDocKey("doc_key"))); err != nil {
+		return nil, fmt.Errorf("create numeric document key indexes: %w", err)
 	}
 	return s, nil
 }
