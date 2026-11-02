@@ -14,7 +14,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.12
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.6
 	github.com/aws/smithy-go v1.28.7
-	github.com/cenkalti/backoff/v7 v7.0.1
+	github.com/cenkalti/backoff/v7 v7.0.2
 	github.com/charmbracelet/x/ansi v0.11.9
 	github.com/creachadair/tomledit v0.0.29
 	github.com/ebitengine/purego v0.11.2
