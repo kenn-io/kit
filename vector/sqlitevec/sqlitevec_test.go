@@ -59,8 +59,8 @@ func (rowsErrConn) ExecContext(_ context.Context, query string, _ []driver.Named
 	return driver.RowsAffected(0), nil
 }
 
-func (rowsErrConn) QueryContext(_ context.Context, _ string, _ []driver.NamedValue) (driver.Rows, error) {
-	return &rowsErrRows{}, nil
+func (rowsErrConn) QueryContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
+	return &rowsErrRows{indexCheck: strings.Contains(query, "sqlite_master")}, nil
 }
 
 type rowsErrTx struct{}
@@ -74,10 +74,14 @@ func (rowsErrTx) Rollback() error {
 }
 
 type rowsErrRows struct {
-	returned bool
+	returned   bool
+	indexCheck bool
 }
 
 func (rows *rowsErrRows) Columns() []string {
+	if rows.indexCheck {
+		return []string{"indexes_exist"}
+	}
 	return []string{"ordinal", "vec_rowid"}
 }
 
@@ -88,6 +92,10 @@ func (rows *rowsErrRows) Close() error {
 func (rows *rowsErrRows) Next(dest []driver.Value) error {
 	if !rows.returned {
 		rows.returned = true
+		if rows.indexCheck {
+			dest[0] = int64(1)
+			return nil
+		}
 		dest[0] = int64(1)
 		dest[1] = int64(42)
 		return nil
@@ -303,20 +311,6 @@ func TestNewCreatesChunkLookupIndexes(t *testing.T) {
 	assert.Equal([]string{"ordinal", "", "doc_key"}, indexColumns(t, db, "message_vectors_chunks_by_doc_numeric"))
 }
 
-func TestSaveVectorsBuildsIndexesForExistingStamps(t *testing.T) {
-	ctx := t.Context()
-	db, store := setup(t)
-	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (1, 'cat')`)
-	require.NoError(t, err)
-	require.NoError(t, store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
-	require.NoError(t, store.SaveVectors(ctx, 1, 1, nil, nil))
-	_, err = db.ExecContext(ctx, `DROP INDEX message_vectors_stamps_by_doc_numeric; DROP INDEX message_vectors_chunks_by_doc_numeric`)
-	require.NoError(t, err)
-	require.NoError(t, store.SaveVectors(ctx, 1, 1, nil, nil))
-	assert.Equal(t, []string{"ordinal", "", "doc_key"}, indexColumns(t, db, "message_vectors_stamps_by_doc_numeric"))
-	assert.Equal(t, []string{"ordinal", "", "doc_key"}, indexColumns(t, db, "message_vectors_chunks_by_doc_numeric"))
-}
-
 func TestNewReadOnlyWithoutNumericIndexes(t *testing.T) {
 	ctx := t.Context()
 	path := filepath.Join(t.TempDir(), "vec.db")
@@ -369,10 +363,7 @@ INSERT INTO messages (id, body) VALUES (1, 'cat')`)
 	defer func() { require.NoError(t, writer.Close()) }()
 	upgraded, err := sqlitevec.New[int64, int64](ctx, writer, schema)
 	require.NoError(t, err)
-	assert.Empty(t, indexColumns(t, writer, "message_vectors_stamps_by_doc_numeric"))
-	assert.Empty(t, indexColumns(t, writer, "message_vectors_chunks_by_doc_numeric"))
 	require.NoError(t, upgraded.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
-	require.NoError(t, upgraded.SaveVectors(ctx, 1, 1, nil, nil))
 	assert.Equal(t, []string{"ordinal", "", "doc_key"}, indexColumns(t, writer, "message_vectors_stamps_by_doc_numeric"))
 	assert.Equal(t, []string{"ordinal", "", "doc_key"}, indexColumns(t, writer, "message_vectors_chunks_by_doc_numeric"))
 }

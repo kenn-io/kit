@@ -101,8 +101,9 @@ pipeline. Preserve these invariants when changing it.
 
 ## Keys and generations are opaque
 
-- In `sqlitevec`, use `docKeyMatch` to look up stamps or chunks by document ID.
-  Bare comparisons lose index lookups for numeric IDs.
+- In `sqlitevec`, use `docKeyMatch` for joins between documents and stamps or
+  chunks that look up a stamp or chunk by document ID. Bare comparisons lose
+  index lookups for numeric IDs.
 - Document identity is the caller's type `K` and generation identity its
   type `G`. msgvault uses `int64`; kata uses UUIDs. Compare them for
   equality only; never assume a type, a single id namespace, or an

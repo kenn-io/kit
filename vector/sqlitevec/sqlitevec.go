@@ -95,6 +95,7 @@ type Store[K, G comparable] struct {
 // New returns a Store bound to db. The caller retains ownership of db. New
 // creates the generations and chunks bookkeeping tables if they do not
 // exist; per-generation vec0 tables are created by EnsureGeneration.
+// New attempts to build missing document-key lookup indexes on existing data.
 func New[K, G comparable](ctx context.Context, db *sql.DB, schema Schema) (*Store[K, G], error) {
 	if err := schema.validate(); err != nil {
 		return nil, err
@@ -132,6 +133,20 @@ CREATE INDEX IF NOT EXISTS %s ON %s (doc_key, revision);`,
 		s.chunksByDocIndex(), s.chunksTable(),
 		s.stampsByDocRevisionIndex(), s.stampsTable())); err != nil {
 		return nil, fmt.Errorf("create bookkeeping tables: %w", err)
+	}
+	var indexesExist bool
+	if err := db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?) AND EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?)`,
+		s.stampsByDocNumericIndex(), s.chunksByDocNumericIndex()).Scan(&indexesExist); err != nil {
+		return nil, fmt.Errorf("check numeric document key indexes: %w", err)
+	}
+	if !indexesExist {
+		// Queries stay correct without these indexes. A read-only handle or a
+		// writer holding the lock must not stop New.
+		_, _ = db.ExecContext(ctx, fmt.Sprintf(`
+CREATE INDEX IF NOT EXISTS %s ON %s (ordinal, %s, doc_key);
+CREATE INDEX IF NOT EXISTS %s ON %s (ordinal, %s, doc_key);`,
+			s.stampsByDocNumericIndex(), s.stampsTable(), numericDocKey("doc_key"),
+			s.chunksByDocNumericIndex(), s.chunksTable(), numericDocKey("doc_key")))
 	}
 	return s, nil
 }
