@@ -598,8 +598,11 @@ func TestFrontmatterChangedThroughAbsoluteSymlinkPlaceholder(t *testing.T) {
 
 func TestFrontmatterWindowsRootedTargetAnchoring(t *testing.T) {
 	for _, target := range []string{`\repository\target.md`, "/repository/target.md"} {
+		assert.True(t, frontmatterIsAbsoluteTarget(target, true))
+		assert.True(t, frontmatterWindowsRootedWithoutVolume(target))
 		assert.Equal(t, "C:/repository/target.md", frontmatterWindowsRootedTarget("C:", target))
 	}
+	assert.False(t, frontmatterWindowsRootedWithoutVolume(`\\server\share\target.md`))
 	assert.Equal(t, `\\server\share\target.md`, frontmatterWindowsRootedTarget("C:", `\\server\share\target.md`))
 	assert.Equal(t, `D:\outside\target.md`, frontmatterWindowsRootedTarget("C:", `D:\outside\target.md`))
 }
@@ -659,6 +662,35 @@ func TestFrontmatterChainedPlaceholderCaseInsensitiveIndexMode(t *testing.T) {
 	resolved, err := frontmatterWorkingPathWithCaseSemantics(repo.Root, "outer.md", indexModes, true, true)
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(repo.Root, "document.md"), resolved)
+}
+
+func TestFrontmatterChangedThroughCaseInsensitiveHistoricalAliases(t *testing.T) {
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	original := goodFrontmatter + "Original content.\n"
+	repo.CommitFile("document.txt", original, "add document")
+	repo.CommitFile("docs/guide.txt", original, "add guide")
+	addFrontmatterSymlink(t, repo, "file-alias.md", "DOCUMENT.TXT")
+	addFrontmatterSymlink(t, repo, "directory-alias.md", "DOCS/GUIDE.TXT")
+	repo.Run("commit", "-m", "add aliases")
+	repo.Config("core.symlinks", "false")
+	repo.Config("core.ignoreCase", "true")
+	repo.WriteFile("file-alias.md", "DOCUMENT.TXT")
+	repo.WriteFile("directory-alias.md", "DOCS/GUIDE.TXT")
+	repo.Run("branch", "base")
+	updated := goodFrontmatter + "Updated content.\n"
+	for _, file := range []string{"document.txt", "DOCUMENT.TXT", "docs/guide.txt", "DOCS/GUIDE.TXT"} {
+		repo.WriteFile(file, updated)
+	}
+
+	var stdout, stderr bytes.Buffer
+	n, err := runFrontmatter(t.Context(), []string{"-changed", "base", "file-alias.md", "directory-alias.md"}, &stdout, &stderr)
+	require.NoError(t, err)
+	assert.Equal(t, 2, n)
+	assert.Empty(t, stdout.String())
+	assert.Contains(t, stderr.String(), "file-alias.md: content changed without changing last_edited")
+	assert.Contains(t, stderr.String(), "directory-alias.md: content changed without changing last_edited")
 }
 
 func TestFrontmatterChangedAfterRepairingHistoricalExternalSymlink(t *testing.T) {
