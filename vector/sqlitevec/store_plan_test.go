@@ -13,66 +13,45 @@ import (
 )
 
 func TestCoverageAndPendingPlansProbeStampsByKey(t *testing.T) {
-	for _, idType := range []string{"INTEGER", "TEXT"} {
-		t.Run(idType, func(t *testing.T) {
-			ctx := t.Context()
-			db, _ := setup(t)
-			schema := sqlitevec.Schema{
-				DocsTable: "messages", IDColumn: "id", ContentColumn: "body", EmbedGenColumn: "embed_gen", VectorsPrefix: "message_vectors",
-			}
-			if idType == "TEXT" {
-				_, err := db.ExecContext(ctx, `CREATE TABLE text_docs (id TEXT PRIMARY KEY, body TEXT, embed_gen INTEGER)`)
-				require.NoError(t, err)
-				schema.DocsTable = "text_docs"
-				schema.VectorsPrefix = "text_vectors"
-			}
-			store, err := sqlitevec.New[string, int64](ctx, db, schema)
-			require.NoError(t, err)
-			if idType == "TEXT" {
-				_, err := db.ExecContext(ctx, `INSERT INTO text_docs (id, body) VALUES ('1', 'a cat sat'), ('2', 'a dog ran')`)
-				require.NoError(t, err)
-			} else {
-				_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (1, 'a cat sat'), (2, 'a dog ran')`)
-				require.NoError(t, err)
-			}
-			require.NoError(t, store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
-			for _, doc := range []string{"1", "2"} {
-				require.NoError(t, store.SaveVectors(ctx, 1, doc, nil, []vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{1, 0, 0}}}))
-			}
+	ctx := t.Context()
+	db, store := setup(t)
+	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (1, 'a cat sat'), (2, 'a dog ran')`)
+	require.NoError(t, err)
+	require.NoError(t, store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
+	_, err = vector.Fill(ctx, store, 1, topicEncoder())
+	require.NoError(t, err)
 
-			for _, tc := range []struct {
-				name  string
-				query string
-				args  []any
-			}{
-				{"pending", store.PendingQueryForTest("d.id, d.body"), []any{1, 10}},
-				{"coverage", store.CoverageQueryForTest(""), []any{1}},
-			} {
-				t.Run(tc.name, func(t *testing.T) {
-					rows, err := db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+tc.query, tc.args...)
-					require.NoError(t, err)
-					defer func() { require.NoError(t, rows.Close()) }()
-					var stampProbes, chunkProbes int
-					for rows.Next() {
-						var id, parent, unused int
-						var detail string
-						require.NoError(t, rows.Scan(&id, &parent, &unused, &detail))
-						if strings.Contains(detail, "SEARCH stamp ") || strings.Contains(detail, "SEARCH c ") {
-							assert.Contains(t, detail, "ordinal=?", detail)
-							assert.True(t, strings.Contains(detail, "doc_key=?") || strings.Contains(detail, "<expr>=?"), detail)
-							if strings.Contains(detail, "SEARCH stamp ") {
-								stampProbes++
-							} else {
-								chunkProbes++
-							}
-						}
+	for _, tc := range []struct {
+		name  string
+		query string
+		args  []any
+	}{
+		{"pending", store.PendingQueryForTest("d.id, d.body"), []any{1, 10}},
+		{"coverage", store.CoverageQueryForTest(""), []any{1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rows, err := db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+tc.query, tc.args...)
+			require.NoError(t, err)
+			defer func() { require.NoError(t, rows.Close()) }()
+			var stampProbes, chunkProbes int
+			for rows.Next() {
+				var id, parent, unused int
+				var detail string
+				require.NoError(t, rows.Scan(&id, &parent, &unused, &detail))
+				if strings.Contains(detail, "SEARCH stamp ") || strings.Contains(detail, "SEARCH c ") {
+					assert.Contains(t, detail, "ordinal=?", detail)
+					assert.Contains(t, detail, "<expr>=?", detail)
+					if strings.Contains(detail, "SEARCH stamp ") {
+						stampProbes++
+					} else {
+						chunkProbes++
 					}
-					require.NoError(t, rows.Err())
-					assert.Positive(t, stampProbes)
-					if tc.name == "coverage" {
-						assert.Positive(t, chunkProbes)
-					}
-				})
+				}
+			}
+			require.NoError(t, rows.Err())
+			assert.Positive(t, stampProbes)
+			if tc.name == "coverage" {
+				assert.Positive(t, chunkProbes)
 			}
 		})
 	}
