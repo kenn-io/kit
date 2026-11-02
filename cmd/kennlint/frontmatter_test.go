@@ -583,7 +583,7 @@ func TestFrontmatterChangedThroughAbsoluteSymlinkPlaceholder(t *testing.T) {
 	tree, err := frontmatterTree(t.Context(), repo.Root, "base")
 	require.NoError(t, err)
 	_, _, err = frontmatterPrevious(t.Context(), repo.Root, "links/outside.md", tree)
-	require.ErrorContains(t, err, "escapes the repository")
+	require.ErrorIs(t, err, errFrontmatterHistoricalTargetUnavailable)
 
 	stdout.Reset()
 	stderr.Reset()
@@ -594,6 +594,127 @@ func TestFrontmatterChangedThroughAbsoluteSymlinkPlaceholder(t *testing.T) {
 	unchanged, err := os.ReadFile(outside)
 	require.NoError(t, err)
 	assert.Equal(t, outsideBody, string(unchanged), "fixing an external alias must not write outside the repository")
+}
+
+func TestFrontmatterWindowsRootedTargetAnchoring(t *testing.T) {
+	for _, target := range []string{`\repository\target.md`, "/repository/target.md"} {
+		assert.Equal(t, "C:/repository/target.md", frontmatterWindowsRootedTarget("C:", target))
+	}
+	assert.Equal(t, `\\server\share\target.md`, frontmatterWindowsRootedTarget("C:", `\\server\share\target.md`))
+	assert.Equal(t, `D:\outside\target.md`, frontmatterWindowsRootedTarget("C:", `D:\outside\target.md`))
+}
+
+func TestFrontmatterWindowsRootedPlaceholderTargets(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows rooted paths require Windows semantics")
+	}
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	invalid := strings.ReplaceAll(goodFrontmatter, "2026-11-01", "'2026-11-01'")
+	repo.CommitFile("target.md", invalid, "add target")
+	volume := filepath.VolumeName(repo.Root)
+	rootedTarget := strings.TrimPrefix(filepath.ToSlash(filepath.Join(repo.Root, "target.md")), filepath.ToSlash(volume))
+	targets := map[string]string{
+		"backslash-alias.md": strings.ReplaceAll(rootedTarget, "/", `\`),
+		"slash-alias.md":     rootedTarget,
+	}
+	for alias, target := range targets {
+		addFrontmatterSymlink(t, repo, alias, target)
+	}
+	repo.Run("commit", "-m", "add volume-less rooted aliases")
+	repo.Config("core.symlinks", "false")
+	for alias, target := range targets {
+		repo.WriteFile(alias, target)
+	}
+
+	for alias, target := range targets {
+		var stdout, stderr bytes.Buffer
+		n, err := runFrontmatter(t.Context(), []string{"-fix", alias}, &stdout, &stderr)
+		require.NoError(t, err)
+		assert.Zero(t, n)
+		assert.Empty(t, stderr.String())
+		placeholder, err := os.ReadFile(alias)
+		require.NoError(t, err)
+		assert.Equal(t, target, string(placeholder), "fixing an alias must preserve its placeholder")
+	}
+	target, err := os.ReadFile("target.md")
+	require.NoError(t, err)
+	assert.Equal(t, goodFrontmatter, string(target))
+}
+
+func TestFrontmatterChainedPlaceholderCaseInsensitiveIndexMode(t *testing.T) {
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	repo.CommitFile("document.md", goodFrontmatter, "add document")
+	addFrontmatterSymlink(t, repo, "link.md", "document.md")
+	addFrontmatterSymlink(t, repo, "outer.md", "LINK.md")
+	repo.Run("commit", "-m", "add chained aliases")
+	repo.WriteFile("outer.md", "LINK.md")
+	repo.WriteFile("LINK.md", "document.md")
+
+	indexModes, err := frontmatterIndexModes(t.Context(), repo.Root)
+	require.NoError(t, err)
+	resolved, err := frontmatterWorkingPathWithCaseSemantics(repo.Root, "outer.md", indexModes, true, true)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(repo.Root, "document.md"), resolved)
+}
+
+func TestFrontmatterChangedAfterRepairingHistoricalExternalSymlink(t *testing.T) {
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	repo.CommitFile("target.md", goodFrontmatter, "add internal target")
+
+	outside := filepath.Join(t.TempDir(), "outside.md")
+	require.NoError(t, os.WriteFile(outside, []byte(goodFrontmatter), 0o600))
+	addFrontmatterSymlink(t, repo, "alias.md", outside)
+	addFrontmatterSymlink(t, repo, "relative-alias.md", "../outside.md")
+	repo.Run("commit", "-m", "add external aliases")
+	repo.Config("core.symlinks", "false")
+	repo.WriteFile("alias.md", outside)
+	repo.WriteFile("relative-alias.md", "../outside.md")
+	repo.Run("branch", "base")
+	repo.WriteFile("alias.md", "target.md")
+	repo.WriteFile("relative-alias.md", "target.md")
+
+	var stdout, stderr bytes.Buffer
+	n, err := runFrontmatter(t.Context(), []string{"-changed", "base", "alias.md", "relative-alias.md"}, &stdout, &stderr)
+	require.NoError(t, err)
+	assert.Zero(t, n)
+	assert.Equal(t, "frontmatter: checked 2 Markdown files (0 fixed)\n", stdout.String())
+	assert.Empty(t, stderr.String())
+}
+
+func TestFrontmatterChangedAfterReplacingHistoricalRepositoryDirectorySymlink(t *testing.T) {
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	repo.Config("core.symlinks", "true")
+	repo.CommitFile("target.md", goodFrontmatter, "add target")
+	addFrontmatterSymlink(t, repo, "alias.md", ".")
+	repo.Run("commit", "-m", "add repository-directory alias")
+	repo.Run("branch", "base")
+	repo.WriteFile("alias.md", goodFrontmatter)
+
+	var stdout, stderr bytes.Buffer
+	n, err := runFrontmatter(t.Context(), []string{"-changed", "base", "alias.md"}, &stdout, &stderr)
+	require.NoError(t, err)
+	assert.Zero(t, n)
+	assert.Equal(t, "frontmatter: checked 1 Markdown files (0 fixed)\n", stdout.String())
+	assert.Empty(t, stderr.String())
+}
+
+func TestFrontmatterPreviousPreservesGitFailures(t *testing.T) {
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	entry := frontmatterTreeEntry{mode: "120000", hash: "not-a-git-object"}
+	_, _, err := frontmatterPrevious(t.Context(), repo.Root, "alias.md", map[string]frontmatterTreeEntry{
+		"alias.md": entry,
+	})
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, errFrontmatterHistoricalTargetUnavailable)
 }
 
 func TestFrontmatterChangedThroughHistoricalDirectorySymlink(t *testing.T) {

@@ -387,6 +387,9 @@ func frontmatterRepositoryTarget(root, target string) (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
+	if filepath.Separator == '\\' && filepath.VolumeName(target) == "" {
+		target = frontmatterWindowsRootedTarget(filepath.VolumeName(rootAbs), target)
+	}
 	rootPath := filepath.ToSlash(filepath.Clean(rootAbs))
 	absolute := filepath.ToSlash(target)
 	if rootPath == "/" {
@@ -416,10 +419,38 @@ func frontmatterRepositoryTarget(root, target string) (string, bool, error) {
 	return relative, true, nil
 }
 
+// A Windows path rooted at the current drive's root has no volume of its own.
+// Anchor that root to the repository volume before checking containment.
+func frontmatterWindowsRootedTarget(rootVolume, target string) string {
+	slashed := strings.ReplaceAll(target, `\`, "/")
+	if rootVolume == "" || !strings.HasPrefix(slashed, "/") || strings.HasPrefix(slashed, "//") {
+		return target
+	}
+	return rootVolume + slashed
+}
+
+func frontmatterIndexMode(indexModes map[string]string, name string, caseInsensitiveFilesystem bool) string {
+	if mode, ok := indexModes[name]; ok {
+		return mode
+	}
+	if caseInsensitiveFilesystem {
+		for indexedName, mode := range indexModes {
+			if strings.EqualFold(indexedName, name) {
+				return mode
+			}
+		}
+	}
+	return ""
+}
+
 // Resolve the working path component-by-component so symlinks and .. retain
 // filesystem order. Git records symlink targets as regular files when
 // core.symlinks=false, so use index modes to identify those placeholders too.
 func frontmatterWorkingPath(root, file string, indexModes map[string]string, symlinkPlaceholders bool) (string, error) {
+	return frontmatterWorkingPathWithCaseSemantics(root, file, indexModes, symlinkPlaceholders, filepath.Separator == '\\')
+}
+
+func frontmatterWorkingPathWithCaseSemantics(root, file string, indexModes map[string]string, symlinkPlaceholders, caseInsensitiveFilesystem bool) (string, error) {
 	var resolved []string
 	pending := strings.Split(filepath.ToSlash(file), "/")
 	links := 0
@@ -445,7 +476,7 @@ func frontmatterWorkingPath(root, file string, indexModes map[string]string, sym
 			return "", err
 		}
 		isSymlink := info.Mode()&os.ModeSymlink != 0
-		isPlaceholder := symlinkPlaceholders && !isSymlink && indexModes[candidate] == "120000"
+		isPlaceholder := symlinkPlaceholders && !isSymlink && frontmatterIndexMode(indexModes, candidate, caseInsensitiveFilesystem) == "120000"
 		if isSymlink || isPlaceholder {
 			links++
 			if links > 40 {
@@ -508,7 +539,7 @@ func frontmatterPrevious(ctx context.Context, root, name string, tree map[string
 			continue
 		case "..":
 			if len(resolved) == 0 {
-				return nil, false, fmt.Errorf("historical symlink %s escapes the repository", name)
+				return nil, false, fmt.Errorf("%w: historical symlink %s escapes the repository", errFrontmatterHistoricalTargetUnavailable, name)
 			}
 			resolved = resolved[:len(resolved)-1]
 			continue
@@ -536,7 +567,7 @@ func frontmatterPrevious(ctx context.Context, root, name string, tree map[string
 			}
 			targetName, absolute, err := frontmatterRepositoryTarget(root, string(target))
 			if errors.Is(err, errFrontmatterSymlinkOutside) {
-				return nil, false, fmt.Errorf("historical symlink %s escapes the repository", candidate)
+				return nil, false, fmt.Errorf("%w: historical symlink %s escapes the repository", errFrontmatterHistoricalTargetUnavailable, candidate)
 			}
 			if err != nil {
 				return nil, false, err
@@ -556,7 +587,7 @@ func frontmatterPrevious(ctx context.Context, root, name string, tree map[string
 		data, err := frontmatterGit(ctx, root, "cat-file", "blob", entry.hash)
 		return data, changed, err
 	}
-	return nil, false, fmt.Errorf("missing historical symlink target %s", name)
+	return nil, false, fmt.Errorf("%w: missing historical symlink target %s", errFrontmatterHistoricalTargetUnavailable, name)
 }
 
 func frontmatterTreeHasDirectory(tree map[string]frontmatterTreeEntry, dir string) bool {
