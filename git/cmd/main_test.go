@@ -8,7 +8,7 @@ import (
 
 func TestMain(m *testing.M) {
 	code := m.Run()
-	if err := cleanupTestGit(); err != nil {
+	if err := os.RemoveAll(testGitDir); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 	}
 	os.Exit(code)

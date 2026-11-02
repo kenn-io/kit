@@ -663,10 +663,6 @@ var sharedTestGit = sync.OnceValues(func() (string, error) {
 	return testGitDir, nil
 })
 
-func cleanupTestGit() error {
-	return os.RemoveAll(testGitDir)
-}
-
 func buildTestGit(t *testing.T) string {
 	t.Helper()
 	binDir, err := sharedTestGit()
