@@ -54,12 +54,13 @@ jobs:
       - name: Run golangci-lint
         run: make lint
 
-      - name: Run golangci-lint for Windows
+      - name: Run lint, build, and vet for Windows
         env:
           GOOS: windows
         run: |
           ./custom-gcl run ./...
           go build ./...
+          go vet ./...
 
   test:
     name: Go tests (${{ matrix.os }}${{ matrix.shard == 'managed' && format(', git/managed {0}/{1}', matrix.part, matrix.parts) || '' }})
