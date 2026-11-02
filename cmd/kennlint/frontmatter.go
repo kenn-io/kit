@@ -580,9 +580,19 @@ func frontmatterWorkingPathWithSemantics(root, file string, indexModes map[strin
 			if _, _, err := frontmatterRepositoryTargetWithSemantics(root, target, windows, caseInsensitiveFilesystem); err != nil {
 				return "", err
 			}
-			// Keep the lexical path for Windows normalization and let the final
-			// canonicalization resolve the junction itself.
-			resolved = candidateParts
+			canonical, err := pathresolve.EvalSymlinks(full)
+			if err != nil {
+				return "", err
+			}
+			canonicalPath, err := frontmatterPaths(root, []string{canonical})
+			if err != nil || len(canonicalPath) != 1 {
+				return "", errFrontmatterSymlinkOutside
+			}
+			if canonicalPath[0] == "." {
+				resolved = nil
+			} else {
+				resolved = strings.Split(canonicalPath[0], "/")
+			}
 			continue
 		}
 		if isSymlink || isPlaceholder {

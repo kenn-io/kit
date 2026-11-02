@@ -698,6 +698,51 @@ func TestFrontmatterWindowsInternalJunction(t *testing.T) {
 	assert.Equal(t, filepath.Join(repo.Root, "target", "document.md"), resolved)
 }
 
+func TestFrontmatterWindowsJunctionToSymlinkPlaceholder(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("NTFS junctions require Windows")
+	}
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	invalid := strings.ReplaceAll(goodFrontmatter, "2026-11-01", "'2026-11-01'")
+	repo.CommitFile("target/document.md", invalid, "add junction target")
+	addFrontmatterSymlink(t, repo, "target/link.md", "document.md")
+	addFrontmatterSymlink(t, repo, "alias.md", "junction/link.md")
+	repo.Run("commit", "-m", "add aliases through junction")
+	repo.Config("core.symlinks", "false")
+	repo.WriteFile("target/link.md", "document.md")
+	repo.WriteFile("alias.md", "junction/link.md")
+	require.NoError(t, fslink.CreateJunction(filepath.Join(repo.Root, "target"), filepath.Join(repo.Root, "junction")))
+
+	var stdout, stderr bytes.Buffer
+	n, err := runFrontmatter(t.Context(), []string{"alias.md"}, &stdout, &stderr)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+	assert.Contains(t, stderr.String(), "alias.md: last_edited")
+	assert.Contains(t, stderr.String(), "bare YYYY-MM-DD")
+
+	stdout.Reset()
+	stderr.Reset()
+	n, err = runFrontmatter(t.Context(), []string{"-fix", "alias.md"}, &stdout, &stderr)
+	require.NoError(t, err)
+	assert.Zero(t, n)
+	assert.Empty(t, stderr.String())
+	assert.Contains(t, stdout.String(), "1 fixed")
+
+	for name, target := range map[string]string{
+		"alias.md":       "junction/link.md",
+		"target/link.md": "document.md",
+	} {
+		placeholder, err := os.ReadFile(name)
+		require.NoError(t, err)
+		assert.Equal(t, target, string(placeholder), "fixing through a junction must preserve the symlink placeholder")
+	}
+	document, err := os.ReadFile("target/document.md")
+	require.NoError(t, err)
+	assert.Equal(t, goodFrontmatter, string(document), "fixing through a junction must update the resolved Markdown target")
+}
+
 func TestFrontmatterFixChangedComparesFinalGitContent(t *testing.T) {
 	isolateFrontmatterGit(t)
 	repo := gittest.NewRepoWithCommit(t)
