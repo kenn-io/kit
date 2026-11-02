@@ -117,14 +117,39 @@ it after adding rule labels and reasons to their suppressions.
    go run go.kenn.io/kit/cmd/kennlint@<kit version> frontmatter
    ```
 
-   The command checks every git-tracked `*.md` file for a YAML frontmatter
-   mapping with non-empty string `title` and `description` values and a bare
-   `last_edited: YYYY-MM-DD` date. Quoted dates, datetimes and invalid dates
-   fail. Markdown symlinks are checked through their targets.
+   The command checks git-tracked Markdown for frontmatter. Ordinary documents
+   need a YAML mapping with non-empty string `title` and `description` values
+   and a bare `last_edited: YYYY-MM-DD` date. Quoted dates, datetimes and
+   invalid dates fail. Markdown symlinks are checked through their targets.
 
    Defaults exclude only the root `README.md`, `AGENTS.md`, and `CLAUDE.md`,
-   plus `.github/**`, `**/testdata/**`, `vendor/**`, `node_modules/**`, and
-   `docs/releases/**`. Nested README and agent-instruction files are checked.
+   plus `.github/**`, `**/testdata/**`, `vendor/**`, `node_modules/**`,
+   `docs/releases/**`, and repository-wide `CHANGELOG*.md` and `changelog*.md`
+   files. Nested README and agent-instruction files are checked.
+
+   A tracked `SKILL.md` is checked against the portable [Agent Skills
+   specification](https://agentskills.io/specification): it requires `name`
+   and `description`, validates the skill name against its directory, and
+   checks optional standard fields when present. Put each `SKILL.md` inside a
+   named skill directory. It does not require generic
+   `title` or `last_edited` fields. `metadata` is an optional map of custom
+   string keys and values; no metadata key, including `last_edited`, is
+   required. Other Markdown files in a skill bundle, such as reference and
+   example files, do not need frontmatter.
+
+   The portable format documents the manifest as `SKILL.md`. OpenAI's [API
+   skills guide](https://developers.openai.com/api/docs/guides/tools-skills)
+   additionally specifies case-insensitive file matching. This check uses the
+   portable spelling for repository classification, so a lowercase `skill.md`
+   follows the ordinary Markdown rules.
+
+   Claude Code has a more permissive local fallback: it can derive an omitted
+   skill name from the directory and an omitted description from the first
+   non-empty body line. This check targets the portable profile and still
+   requires both fields. See the [Claude Code skill frontmatter
+   reference](https://code.claude.com/docs/en/skills#frontmatter-reference)
+   for client-specific behavior.
+
    Add repeatable repository-relative `-exclude <glob>` flags for other
    exceptions; `**` matches zero or more directory components. Path arguments
    limit checks to tracked files under those paths, with the same excludes.
@@ -146,14 +171,15 @@ it after adding rule labels and reasons to their suppressions.
    On pull requests, also run:
 
    ```sh
-   go run go.kenn.io/kit/cmd/kennlint@<kit version> frontmatter -changed origin/main
+   go run go.kenn.io/kit/cmd/kennlint@<kit version> frontmatter -changed "$FRONTMATTER_BASE"
    ```
 
-   Use a checkout with full history and `origin/main` available. Existing
-   files whose content differs from the merge base must change their
-   `last_edited` value, including edits within the same day; `-fix` never
-   bumps an existing date. New files only need valid metadata. Deletions
-   are skipped. Findings print as `path: problem` on stderr and return a
+   Set `FRONTMATTER_BASE` to the actual pull request base commit (for GitHub
+   Actions, `github.event.pull_request.base.sha`) and use a checkout with full
+   history. Existing files whose content differs from the merge base must
+   change their `last_edited` value, including edits within the same day;
+   `-fix` never bumps an existing date. New files only need valid metadata.
+   Deletions are skipped. Findings print as `path: problem` on stderr and return a
    nonzero exit status; success prints a short summary.
 
 ## Overlay semantics

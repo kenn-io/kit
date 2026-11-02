@@ -54,13 +54,17 @@ provider workflows to this repo unless the package already owns that concern.
 - Never name private downstream projects or other private codebases in public
   artifacts. Describe reusable requirements generically and scrub public
   surfaces before publishing.
-- Tracked Markdown requires frontmatter with non-empty `title` and
-  `description` strings and a bare `last_edited: YYYY-MM-DD` date. The root
+- Tracked Markdown outside skill bundles requires frontmatter with non-empty
+  `title` and `description` strings and a bare `last_edited: YYYY-MM-DD` date. The root
   files `README.md`, `AGENTS.md`, and `CLAUDE.md`, plus `.github/`,
   `testdata/`, `vendor/`, `node_modules/`, and `docs/releases/`, are excluded
-  by the frontmatter check. Nested README and agent-instruction files are
-  checked. Change the date when editing existing content; CI compares it with
-  the merge base.
+  by the frontmatter check, as are repository-wide `CHANGELOG*.md` and
+  `changelog*.md` files. Tracked `SKILL.md` files use the portable Agent Skills
+  profile, which requires `name` and `description` but no `last_edited`; other
+  Markdown within a skill bundle, including references, needs no frontmatter.
+  Nested README and agent-instruction files outside skill bundles are checked.
+  Change the date when editing existing content; CI compares it with the
+  actual pull request base.
 
 ## Go Conventions
 

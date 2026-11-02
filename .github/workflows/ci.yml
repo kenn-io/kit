@@ -57,6 +57,8 @@ jobs:
 
       - name: Check Markdown edit dates
         if: github.event_name == 'pull_request'
+        env:
+          FRONTMATTER_BASE: ${{ github.event.pull_request.base.sha }}
         run: make lint-frontmatter-changed
 
       - name: Run lint, build, and vet for Windows

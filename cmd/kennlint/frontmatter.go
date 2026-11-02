@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 
@@ -121,6 +122,149 @@ func parseFrontmatter(src []byte) (*frontmatterBlock, error) {
 		b.fields[content[i].Value] = content[i+1]
 	}
 	return b, nil
+}
+
+var portableSkillFields = map[string]struct{}{
+	"name": {}, "description": {}, "license": {}, "compatibility": {}, "metadata": {}, "allowed-tools": {},
+}
+
+// skillFrontmatterProblems enforces the portable Agent Skills profile. In
+// particular, Claude Code's local defaults for omitted name and description
+// do not satisfy the portable format.
+func skillFrontmatterProblems(b *frontmatterBlock, file string) []string {
+	var problems []string
+	skillDir := path.Dir(file)
+	if skillDir == "." {
+		problems = append(problems, "SKILL.md must be inside a named skill directory")
+	}
+	for i := 0; i+1 < len(b.doc.Content[0].Content); i += 2 {
+		key := b.doc.Content[0].Content[i]
+		if _, ok := portableSkillFields[key.Value]; !ok {
+			problems = append(problems, fmt.Sprintf("field %q is not part of portable Agent Skills frontmatter; put vendor-specific data under metadata", key.Value))
+		}
+	}
+
+	nameNode := b.fields["name"]
+	if nameNode == nil {
+		problems = append(problems, "name must be a non-empty string")
+	} else if nameNode.Kind != yaml.ScalarNode || nameNode.Tag != "!!str" || strings.TrimSpace(nameNode.Value) == "" {
+		problems = append(problems, "name must be a non-empty string")
+	} else {
+		name := nameNode.Value
+		if !validSkillName(name) {
+			problems = append(problems, "name must be 1-64 lowercase letters, digits, or hyphens, with no leading, trailing, or consecutive hyphens")
+		} else if skillDir != "." && name != path.Base(skillDir) {
+			problems = append(problems, fmt.Sprintf("name must match skill directory %q", path.Base(skillDir)))
+		}
+	}
+
+	description := b.fields["description"]
+	if description == nil {
+		problems = append(problems, "description must be a non-empty string")
+	} else if description.Kind != yaml.ScalarNode || description.Tag != "!!str" || strings.TrimSpace(description.Value) == "" {
+		problems = append(problems, "description must be a non-empty string")
+	} else if length := utf8.RuneCountInString(description.Value); length > 1024 {
+		problems = append(problems, "description must be at most 1024 characters")
+	}
+
+	if license := b.fields["license"]; license != nil && (!skillString(license) || strings.TrimSpace(license.Value) == "") {
+		problems = append(problems, "license must be a non-empty string")
+	}
+	if compatibility := b.fields["compatibility"]; compatibility != nil {
+		if !skillString(compatibility) || strings.TrimSpace(compatibility.Value) == "" {
+			problems = append(problems, "compatibility must be a non-empty string")
+		} else if length := utf8.RuneCountInString(compatibility.Value); length > 500 {
+			problems = append(problems, "compatibility must be at most 500 characters")
+		}
+	}
+	if metadata := b.fields["metadata"]; metadata != nil {
+		if metadata.Kind != yaml.MappingNode {
+			problems = append(problems, "metadata must be a mapping of string keys to string values")
+		} else {
+			for i := 0; i+1 < len(metadata.Content); i += 2 {
+				key, value := metadata.Content[i], metadata.Content[i+1]
+				if !skillString(key) {
+					problems = append(problems, "metadata keys must be strings")
+				}
+				if !skillString(value) {
+					problems = append(problems, "metadata values must be strings")
+				}
+			}
+		}
+	}
+	if allowedTools := b.fields["allowed-tools"]; allowedTools != nil {
+		if !skillString(allowedTools) {
+			problems = append(problems, "allowed-tools must be a space-separated string")
+		}
+	}
+	return problems
+}
+
+func skillString(n *yaml.Node) bool {
+	return n != nil && n.Kind == yaml.ScalarNode && n.Tag == "!!str"
+}
+
+func validSkillName(name string) bool {
+	if len(name) == 0 || len(name) > 64 || name[0] == '-' || name[len(name)-1] == '-' || strings.Contains(name, "--") {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func checkSkillFrontmatterFile(root, file string) ([]string, error) {
+	full := filepath.Join(root, filepath.FromSlash(file))
+	if _, err := os.Lstat(full); errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	resolved, err := filepath.EvalSymlinks(full)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := frontmatterPaths(root, []string{resolved}); err != nil {
+		return []string{"Markdown symlink target is outside the repository"}, nil //nolint:nilerr // Report validation findings and continue scanning other files.
+	}
+	src, err := os.ReadFile(full)
+	if err != nil {
+		return nil, err
+	}
+	b, err := parseFrontmatter(src)
+	if err != nil {
+		return []string{err.Error()}, nil //nolint:nilerr // Report validation findings and continue scanning other files.
+	}
+	return skillFrontmatterProblems(b, file), nil
+}
+
+func frontmatterSkillDirectories(tracked []byte) map[string]struct{} {
+	dirs := make(map[string]struct{})
+	for name := range bytes.SplitSeq(bytes.TrimSuffix(tracked, []byte{0}), []byte{0}) {
+		file := string(name)
+		if path.Base(file) == "SKILL.md" {
+			if dir := path.Dir(file); dir != "." {
+				dirs[dir] = struct{}{}
+			}
+		}
+	}
+	return dirs
+}
+
+func frontmatterInSkillDirectory(file string, skillDirs map[string]struct{}) bool {
+	for dir := path.Dir(file); ; dir = path.Dir(dir) {
+		if _, ok := skillDirs[dir]; ok {
+			return true
+		}
+		if dir == "." {
+			return false
+		}
+	}
 }
 
 func frontmatterDate(n *yaml.Node) bool {
@@ -281,9 +425,11 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	fix := flags.Bool("fix", false, "unquote dates and add missing last_edited using the last commit date (or today)")
 	excludes := frontmatterExcludes{
 		"README.md", "AGENTS.md", "CLAUDE.md", "docs/releases/**",
+		"**/CHANGELOG*.md", "**/changelog*.md",
 		".github/**", "**/testdata/**", "vendor/**", "node_modules/**",
 	}
-	flags.Var(&excludes, "exclude", "additional repository-relative glob to skip; ** matches directories (repeatable)")
+	var customExcludes frontmatterExcludes
+	flags.Var(&customExcludes, "exclude", "additional repository-relative glob to skip; ** matches directories (repeatable)")
 	if err := flags.Parse(args); err != nil {
 		return 0, err
 	}
@@ -292,11 +438,13 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 		return 0, err
 	}
 	root := strings.TrimSpace(string(rootBytes))
-	selected, err := frontmatterPaths(root, flags.Args())
+	tracked, err := frontmatterGit(ctx, root, "ls-files", "-z", "--cached", "--deduplicate", "--", "*.md")
 	if err != nil {
 		return 0, err
 	}
-	tracked, err := frontmatterGit(ctx, root, "ls-files", "-z", "--cached", "--deduplicate", "--", "*.md")
+	skillDirs := frontmatterSkillDirectories(tracked)
+	excludes = append(excludes, customExcludes...)
+	selected, err := frontmatterPaths(root, flags.Args())
 	if err != nil {
 		return 0, err
 	}
@@ -315,6 +463,21 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	for name := range bytes.SplitSeq(bytes.TrimSuffix(tracked, []byte{0}), []byte{0}) {
 		file := string(name)
 		if file == "" || !frontmatterSelected(file, selected, excludes) {
+			continue
+		}
+		if path.Base(file) == "SKILL.md" {
+			problems, err := checkSkillFrontmatterFile(root, file)
+			if err != nil {
+				return total, fmt.Errorf("%s: %w", file, err)
+			}
+			checked++
+			for _, problem := range problems {
+				fmt.Fprintf(stderr, "%s: %s\n", file, strings.ReplaceAll(problem, "\n", "; "))
+				total++
+			}
+			continue
+		}
+		if frontmatterInSkillDirectory(file, skillDirs) {
 			continue
 		}
 		problems, didFix, err := checkFrontmatterFile(ctx, root, file, *fix, tree)

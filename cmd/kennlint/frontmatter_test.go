@@ -79,6 +79,74 @@ func TestFrontmatterValidation(t *testing.T) {
 	}
 }
 
+func TestSkillFrontmatterValidation(t *testing.T) {
+	base := "name: example-skill\ndescription: An example skill.\n"
+	maxName := strings.Repeat("a", 64)
+	maxDescription := strings.Repeat("é", 1024)
+	maxCompatibility := strings.Repeat("x", 500)
+	tests := []struct {
+		name    string
+		fields  string
+		file    string
+		problem string
+	}{
+		{"minimal portable profile", base, "skills/example-skill/SKILL.md", ""},
+		{"root SKILL.md needs a named directory", base, "SKILL.md", "must be inside a named skill directory"},
+		{"maximum name length", "name: " + maxName + "\ndescription: Example skill.\n", "skills/" + maxName + "/SKILL.md", ""},
+		{"maximum Unicode description length", "name: example-skill\ndescription: " + maxDescription + "\n", "skills/example-skill/SKILL.md", ""},
+		{"optional fields and vendor metadata", base + "license: MIT\ncompatibility: " + maxCompatibility + "\nmetadata:\n  vendor.version: \"can be any custom string\"\n  last_edited: \"not a required date\"\nallowed-tools: Read Grep\n", "skills/example-skill/SKILL.md", ""},
+		{"empty custom metadata key is still a string", base + "metadata:\n  \"\": value\n", "skills/example-skill/SKILL.md", ""},
+		{"missing name", "description: An example skill.\n", "skills/example-skill/SKILL.md", "name must be a non-empty string"},
+		{"missing description", "name: example-skill\n", "skills/example-skill/SKILL.md", "description must be a non-empty string"},
+		{"empty name", "name: '  '\ndescription: An example skill.\n", "skills/example-skill/SKILL.md", "name must be a non-empty string"},
+		{"non-string name", "name: 42\ndescription: An example skill.\n", "skills/example-skill/SKILL.md", "name must be a non-empty string"},
+		{"uppercase name", "name: Example-skill\ndescription: An example skill.\n", "skills/example-skill/SKILL.md", "name must be 1-64 lowercase letters"},
+		{"name starts with hyphen", "name: -example\ndescription: An example skill.\n", "skills/-example/SKILL.md", "name must be 1-64 lowercase letters"},
+		{"name ends with hyphen", "name: example-\ndescription: An example skill.\n", "skills/example-/SKILL.md", "name must be 1-64 lowercase letters"},
+		{"consecutive hyphens", "name: example--skill\ndescription: An example skill.\n", "skills/example--skill/SKILL.md", "name must be 1-64 lowercase letters"},
+		{"name too long", "name: " + strings.Repeat("a", 65) + "\ndescription: An example skill.\n", "skills/" + strings.Repeat("a", 65) + "/SKILL.md", "name must be 1-64 lowercase letters"},
+		{"name differs from directory", base, "skills/other-skill/SKILL.md", "name must match skill directory"},
+		{"empty description", "name: example-skill\ndescription: '  '\n", "skills/example-skill/SKILL.md", "description must be a non-empty string"},
+		{"non-string description", "name: example-skill\ndescription: false\n", "skills/example-skill/SKILL.md", "description must be a non-empty string"},
+		{"description too long", "name: example-skill\ndescription: " + strings.Repeat("x", 1025) + "\n", "skills/example-skill/SKILL.md", "description must be at most 1024 characters"},
+		{"empty license", base + "license: ''\n", "skills/example-skill/SKILL.md", "license must be a non-empty string"},
+		{"non-string license", base + "license: false\n", "skills/example-skill/SKILL.md", "license must be a non-empty string"},
+		{"compatibility too long", base + "compatibility: " + strings.Repeat("x", 501) + "\n", "skills/example-skill/SKILL.md", "compatibility must be at most 500 characters"},
+		{"non-string compatibility", base + "compatibility: 42\n", "skills/example-skill/SKILL.md", "compatibility must be a non-empty string"},
+		{"metadata is not a mapping", base + "metadata: vendor\n", "skills/example-skill/SKILL.md", "metadata must be a mapping of string keys to string values"},
+		{"metadata key is not a string", base + "metadata:\n  7: vendor\n", "skills/example-skill/SKILL.md", "metadata keys must be strings"},
+		{"metadata value is not a string", base + "metadata:\n  vendor: 42\n", "skills/example-skill/SKILL.md", "metadata values must be strings"},
+		{"allowed-tools must use the portable string form", base + "allowed-tools: [Read, Grep]\n", "skills/example-skill/SKILL.md", "allowed-tools must be a space-separated string"},
+		{"Claude Code-only field is not portable", base + "user-invocable: false\n", "skills/example-skill/SKILL.md", "is not part of portable Agent Skills frontmatter"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src := []byte("---\n" + tt.fields + "---\n# Instructions\n")
+			b, err := parseFrontmatter(src)
+			require.NoError(t, err)
+			problems := skillFrontmatterProblems(b, tt.file)
+			if tt.problem == "" {
+				assert.Empty(t, problems)
+				return
+			}
+			assert.Contains(t, strings.Join(problems, "\n"), tt.problem)
+		})
+	}
+}
+
+func FuzzValidSkillName(f *testing.F) {
+	for _, seed := range []string{"example-skill", "a", strings.Repeat("a", 64), "-example", "example-", "example--skill", "Example", "résumé"} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, name string) {
+		if validSkillName(name) {
+			require.GreaterOrEqual(t, len(name), 1)
+			require.LessOrEqual(t, len(name), 64)
+			require.Regexp(t, `^[a-z0-9]+(-[a-z0-9]+)*$`, name)
+		}
+	})
+}
+
 func TestFrontmatterSelection(t *testing.T) {
 	isolateFrontmatterGit(t)
 	repo := gittest.NewRepoWithCommit(t)
@@ -86,7 +154,7 @@ func TestFrontmatterSelection(t *testing.T) {
 	for _, name := range []string{
 		"README.md", "AGENTS.md", "CLAUDE.md", ".github/PULL_REQUEST_TEMPLATE.md", "testdata/page.md", "pkg/testdata/deep/page.md",
 		"vendor/page.md", "node_modules/pkg/page.md", "generated/page.md", "docs/README.md", "docs/AGENTS.md", "docs/CLAUDE.md",
-		"docs/releases/v0.37.1.md", "docs/page with spaces.md",
+		"docs/releases/v0.37.1.md", "CHANGELOG.md", "CHANGELOG-2026.md", "docs/CHANGELOG.md", "docs/changelog-2026.md", "docs/page with spaces.md",
 	} {
 		repo.WriteFile(name, "# Missing metadata\n")
 		repo.Run("add", "-f", "--", name)
@@ -115,7 +183,7 @@ func TestFrontmatterSelection(t *testing.T) {
 	assert.Contains(t, stderr.String(), "docs/README.md:")
 
 	t.Chdir(repo.Root)
-	for _, name := range []string{"README.md", "AGENTS.md", "CLAUDE.md"} {
+	for _, name := range []string{"README.md", "AGENTS.md", "CLAUDE.md", "CHANGELOG.md", "docs/CHANGELOG.md", "docs/changelog-2026.md"} {
 		stdout.Reset()
 		stderr.Reset()
 		n, err = runFrontmatter(t.Context(), []string{name}, &stdout, &stderr)
@@ -130,6 +198,70 @@ func TestFrontmatterSelection(t *testing.T) {
 	assert.ErrorContains(t, err, "outside the repository")
 }
 
+func TestFrontmatterSkillBundleFiles(t *testing.T) {
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	repo.WriteFile("skills/example-skill/SKILL.md", "---\nname: example-skill\ndescription: A portable example skill.\n---\n# Instructions\n")
+	repo.WriteFile("skills/example-skill/references/api.md", "# Reference without required frontmatter\n")
+	repo.WriteFile("skills/example-skill/examples/usage.md", "# Example without required frontmatter\n")
+	repo.WriteFile("skills/unrelated/page.md", "# Not a skill bundle\n")
+	repo.Run("add", "skills/example-skill/SKILL.md", "skills/example-skill/references/api.md", "skills/example-skill/examples/usage.md", "skills/unrelated/page.md")
+
+	var stdout, stderr bytes.Buffer
+	n, err := runFrontmatter(t.Context(), nil, &stdout, &stderr)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+	assert.Equal(t, "skills/unrelated/page.md: missing opening --- frontmatter delimiter\n", stderr.String())
+
+	stdout.Reset()
+	stderr.Reset()
+	n, err = runFrontmatter(t.Context(), []string{"skills/example-skill/references/api.md"}, &stdout, &stderr)
+	require.NoError(t, err)
+	assert.Zero(t, n)
+	assert.Equal(t, "frontmatter: checked 0 Markdown files (0 fixed)\n", stdout.String())
+	assert.Empty(t, stderr.String())
+
+	stdout.Reset()
+	stderr.Reset()
+	n, err = runFrontmatter(t.Context(), []string{"skills/example-skill/SKILL.md"}, &stdout, &stderr)
+	require.NoError(t, err)
+	assert.Zero(t, n)
+	assert.Equal(t, "frontmatter: checked 1 Markdown files (0 fixed)\n", stdout.String())
+	assert.Empty(t, stderr.String())
+}
+
+func TestFrontmatterLowercaseSkillMarkdownIsOrdinary(t *testing.T) {
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	repo.WriteFile("docs/skill.md", "---\ntitle: Skill notes\ndescription: Ordinary Markdown with a lowercase filename.\nlast_edited: 2026-11-02\n---\n# Skill notes\n")
+	repo.WriteFile("docs/child.md", "# Ordinary child without frontmatter\n")
+	repo.Run("add", "docs/skill.md", "docs/child.md")
+
+	var stdout, stderr bytes.Buffer
+	n, err := runFrontmatter(t.Context(), nil, &stdout, &stderr)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+	assert.Equal(t, "docs/child.md: missing opening --- frontmatter delimiter\n", stderr.String())
+}
+
+func TestFrontmatterRootSkillDoesNotExemptRepositoryMarkdown(t *testing.T) {
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	repo.WriteFile("SKILL.md", "---\nname: example-skill\ndescription: A portable example skill.\n---\n# Instructions\n")
+	repo.WriteFile("page.md", "# Ordinary repository document\n")
+	repo.Run("add", "SKILL.md", "page.md")
+
+	var stdout, stderr bytes.Buffer
+	n, err := runFrontmatter(t.Context(), nil, &stdout, &stderr)
+	require.NoError(t, err)
+	assert.Equal(t, 2, n)
+	assert.Contains(t, stderr.String(), "SKILL.md: SKILL.md must be inside a named skill directory")
+	assert.Contains(t, stderr.String(), "page.md: missing opening --- frontmatter delimiter")
+}
+
 func TestFrontmatterGlob(t *testing.T) {
 	for _, tt := range []struct {
 		pattern, file string
@@ -140,6 +272,10 @@ func TestFrontmatterGlob(t *testing.T) {
 		{"**/testdata/**", "a/testdatabase/c.md", false},
 		{"docs/releases/**", "docs/releases/v0.8.0.md", true},
 		{"docs/releases/**", "docs/releases/archive/v0.8.0.md", true},
+		{"**/CHANGELOG*.md", "CHANGELOG.md", true},
+		{"**/CHANGELOG*.md", "CHANGELOG-2026.md", true},
+		{"**/CHANGELOG*.md", "docs/CHANGELOG.md", true},
+		{"**/changelog*.md", "docs/changelog-2026.md", true},
 		{"docs/*.md", "docs/a/b.md", false},
 		{"docs/**/*.md", "docs/a.md", true},
 		{"docs/**/*.md", "docs/a/b.md", true},
