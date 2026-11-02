@@ -521,22 +521,29 @@ func TestStoreRejectsForgedPackIndexMetadata(t *testing.T) {
 	require.ErrorContains(t, err, "metadata mismatch")
 }
 
-func TestStoreRoundRobinPastSlotsKeepsHits(t *testing.T) {
+func TestStoreSharesBoundedAndOrdinaryCacheSlotsAndEvicts(t *testing.T) {
 	require := require.New(t)
 	layout := layoutForStoreTest(t)
 	resolver := &mapResolver{locations: map[Hash]Location{}}
-	store, err := NewStore(resolver, layout, StoreOptions{ReaderSlots: 16})
-	require.NoError(err)
-	t.Cleanup(func() { require.NoError(store.Close()) })
+	store := newStoreForTest(t, resolver, layout)
+
 	var entries []IndexEntry
-	for i := range 17 {
-		entry := buildStoreTestPack(t, layout, []byte{byte(i)})
-		resolver.locations[entry.Hash] = Location{Member: true, Pack: &entry}
+	for i := range 65 {
+		content := []byte{byte(i), byte(i >> 8)}
+		entry := buildStoreTestPack(t, layout, content)
 		entries = append(entries, entry)
-		_, _, err := store.ReadBounded(t.Context(), entry.Hash, entry.RawLen)
+		resolver.locations[entry.Hash] = Location{Member: true, Pack: &entry}
+		r, _, err := store.Open(t.Context(), entry.Hash)
 		require.NoError(err)
+		require.NoError(r.Close())
+		_, _, err = store.ReadBounded(t.Context(), entry.Hash, int64(len(content)))
+		require.NoError(err)
+		require.LessOrEqual(len(store.packReaders), 64)
 	}
-	const reads = 340
+	require.Len(store.order, 64)
+
+	// Rotating one pack beyond the default capacity should still keep cache hits.
+	const reads = 65 * 20
 	misses := 0
 	for i := range reads {
 		entry := entries[i%len(entries)]
@@ -550,26 +557,6 @@ func TestStoreRoundRobinPastSlotsKeepsHits(t *testing.T) {
 		require.NoError(err)
 	}
 	assert.Less(t, misses, reads/2)
-}
-
-func TestStoreSharesBoundedAndOrdinaryCacheSlotsAndEvicts(t *testing.T) {
-	require := require.New(t)
-	layout := layoutForStoreTest(t)
-	resolver := &mapResolver{locations: map[Hash]Location{}}
-	store := newStoreForTest(t, resolver, layout)
-
-	for i := range maxOpenReaders + 1 {
-		content := []byte{byte(i), byte(i >> 8)}
-		entry := buildStoreTestPack(t, layout, content)
-		resolver.locations[entry.Hash] = Location{Member: true, Pack: &entry}
-		r, _, err := store.Open(t.Context(), entry.Hash)
-		require.NoError(err)
-		require.NoError(r.Close())
-		_, _, err = store.ReadBounded(t.Context(), entry.Hash, int64(len(content)))
-		require.NoError(err)
-		require.LessOrEqual(len(store.packReaders), maxOpenReaders)
-	}
-	assert.Len(t, store.order, maxOpenReaders)
 	require.NoError(store.Close())
 	assert.Empty(t, store.order)
 }
