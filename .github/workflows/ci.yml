@@ -148,6 +148,18 @@ jobs:
           go tool gotestsum --format pkgname-and-test-fails --jsonfile="test-output-windows-$env:TEST_SHARD.json" -- @testArgs
           exit $LASTEXITCODE
 
+      - name: Print slowest tests
+        if: always() && hashFiles('test-output-*.json') != ''
+        shell: bash
+        run: go tool gotestsum tool slowest --jsonfile test-output-*.json --num 10
+
+      - name: Upload test times
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: test-times-${{ matrix.os }}-${{ matrix.shard }}-${{ matrix.part || 'all' }}
+          path: test-output-*.json
+
       - name: Run go vet
         if: matrix.shard == 'regular'
         run: go vet ./...
