@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -295,10 +296,10 @@ func TestReadSafeDirectoriesBoundsProbeRuntime(t *testing.T) {
 	safeDirectoryProbeTimeout = 50 * time.Millisecond
 	t.Cleanup(func() { safeDirectoryProbeTimeout = origTimeout })
 
-	binDir := buildSleepingGit(t)
+	binDir := buildTestGit(t)
 	pathEnv := binDir + string(os.PathListSeparator) + os.Getenv("PATH")
 	t.Setenv("PATH", pathEnv)
-	env := append(os.Environ(), "PATH="+pathEnv, "GIT_CONFIG_NOSYSTEM=0")
+	env := append(os.Environ(), "PATH="+pathEnv, "GIT_CONFIG_NOSYSTEM=0", "TRUST_TEST_SLEEP=1")
 
 	start := time.Now()
 	got := readSafeDirectories(t.Context(), env, "")
@@ -614,27 +615,58 @@ func captureGitEnv(t *testing.T, runner Runner) string {
 	return string(envBytes)
 }
 
-func buildSleepingGit(t *testing.T) string {
-	t.Helper()
-	return buildTestGit(t, `package main
-import "time"
-func main() { time.Sleep(10 * time.Second) }
-`)
+const testGitSource = `package main
+import ("net/http"; "os"; "os/exec"; "time")
+func main() {
+ if os.Getenv("TRUST_TEST_SLEEP") == "1" { time.Sleep(10 * time.Second); return }
+ if trace := os.Getenv("TRUST_TEST_TRACE"); trace != "" {
+  file, err := os.OpenFile(trace, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+  if err != nil { os.Exit(2) }; file.WriteString("start\n"); file.Close()
+ }
+ if os.Getenv("TRUST_TEST_URL") != "" && len(os.Args) > 1 && (os.Args[1] == "config" || os.Args[1] == "var" && os.Getenv("TRUST_TEST_BLOCK_VAR") == "1") { coordinate() }
+ forwardGit()
+ if len(os.Args) > 1 && (os.Args[1] == "config" && os.Getenv("TRUST_TEST_BLOCK_AFTER") == "1" || os.Args[1] == "var" && os.Getenv("TRUST_TEST_BLOCK_VAR_AFTER") == "1") { coordinate() }
 }
+func coordinate() {
+ response, err := http.Get(os.Getenv("TRUST_TEST_URL"))
+ if err != nil { os.Exit(2) }; response.Body.Close()
+}
+func forwardGit() {
+ cmd := exec.Command(os.Getenv("TRUST_TEST_GIT"), os.Args[1:]...)
+ cmd.Stdin, cmd.Stdout, cmd.Stderr, cmd.Env = os.Stdin, os.Stdout, os.Stderr, os.Environ()
+ if err := cmd.Run(); err != nil { if exit, ok := err.(*exec.ExitError); ok { os.Exit(exit.ExitCode()) }; os.Exit(2) }
+}
+`
 
-func buildTestGit(t *testing.T, source string) string {
-	t.Helper()
-	binDir := t.TempDir()
+var sharedTestGit = sync.OnceValues(func() (string, error) {
+	var err error
+	testGitDir, err = os.MkdirTemp("", "kit-gitcmd-")
+	if err != nil {
+		return "", err
+	}
 	exeName := "git"
 	if runtime.GOOS == "windows" {
 		exeName += ".exe"
 	}
-	exePath := filepath.Join(binDir, exeName)
-	srcPath := filepath.Join(t.TempDir(), "main.go")
-	require.NoError(t, os.WriteFile(srcPath, []byte(source), 0o600))
-	cmd := exec.CommandContext(t.Context(), "go", "build", "-o", exePath, srcPath)
+	srcPath := filepath.Join(testGitDir, "main.go")
+	if err := os.WriteFile(srcPath, []byte(testGitSource), 0o600); err != nil {
+		return "", err
+	}
+	// The shared build belongs to the whole test run, rather than one test.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "go", "build", "-o", filepath.Join(testGitDir, exeName), srcPath)
 	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, string(out))
+	if err != nil {
+		return "", fmt.Errorf("build test git: %w: %s", err, out)
+	}
+	return testGitDir, nil
+})
+
+func buildTestGit(t *testing.T) string {
+	t.Helper()
+	binDir, err := sharedTestGit()
+	require.NoError(t, err)
 	return binDir
 }
 
