@@ -290,11 +290,14 @@ func TestStoreEnsureGenerationRejectsChangedFingerprint(t *testing.T) {
 
 func TestNewCreatesChunkLookupIndexes(t *testing.T) {
 	assert := assert.New(t)
-	db, _ := setup(t)
+	db, store := setup(t)
+	require.NoError(t, store.EnsureGeneration(t.Context(), 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
 
 	assert.Equal([]string{"ordinal", "vec_rowid"}, indexColumns(t, db, "message_vectors_chunks_by_vector"))
 	assert.Equal([]string{"doc_key", "ordinal", "vec_rowid"}, indexColumns(t, db, "message_vectors_chunks_by_doc"))
 	assert.Equal([]string{"doc_key", "revision"}, indexColumns(t, db, "message_vectors_stamps_by_doc_revision"))
+	assert.Equal([]string{"ordinal", "", "doc_key"}, indexColumns(t, db, "message_vectors_stamps_by_doc_numeric"))
+	assert.Equal([]string{"ordinal", "", "doc_key"}, indexColumns(t, db, "message_vectors_chunks_by_doc_numeric"))
 }
 
 func TestNewReadOnlyWithoutNumericIndexes(t *testing.T) {
@@ -343,6 +346,17 @@ INSERT INTO messages (id, body) VALUES (1, 'cat')`)
 			assert.Equal(t, sqlitevec.Coverage{Embedded: 1}, coverage)
 		})
 	}
+
+	writer, err := openSQLiteTestDB(t, path)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, writer.Close()) }()
+	upgraded, err := sqlitevec.New[int64, int64](ctx, writer, schema)
+	require.NoError(t, err)
+	assert.Empty(t, indexColumns(t, writer, "message_vectors_stamps_by_doc_numeric"))
+	assert.Empty(t, indexColumns(t, writer, "message_vectors_chunks_by_doc_numeric"))
+	require.NoError(t, upgraded.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
+	assert.Equal(t, []string{"ordinal", "", "doc_key"}, indexColumns(t, writer, "message_vectors_stamps_by_doc_numeric"))
+	assert.Equal(t, []string{"ordinal", "", "doc_key"}, indexColumns(t, writer, "message_vectors_chunks_by_doc_numeric"))
 }
 
 func indexColumns(t *testing.T, db *sql.DB, index string) []string {
@@ -356,9 +370,9 @@ func indexColumns(t *testing.T, db *sql.DB, index string) []string {
 	var columns []string
 	for rows.Next() {
 		var seqno, cid int
-		var name string
+		var name sql.NullString
 		require.NoError(rows.Scan(&seqno, &cid, &name))
-		columns = append(columns, name)
+		columns = append(columns, name.String)
 	}
 	require.NoError(rows.Err())
 	return columns
