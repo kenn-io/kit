@@ -69,9 +69,9 @@ var lifecycleFixture = struct {
 	path string
 }{}
 
-// initLifecycleRepo creates a private copy of a git repository with one commit on a stable
-// default branch named "main" so tests do not depend on the host git's
-// init.defaultBranch setting.
+// initLifecycleRepo returns a private copy of a template built once per test run.
+// The repository has one commit on a stable default branch named "main" so tests
+// do not depend on the host git's init.defaultBranch setting.
 func initLifecycleRepo(t *testing.T) string {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
