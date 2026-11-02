@@ -42,8 +42,10 @@ func TestCoverageAndPendingPlansProbeStampsByKey(t *testing.T) {
 					assert.Contains(t, detail, "ordinal=?", detail)
 					assert.Contains(t, detail, "<expr>=?", detail)
 					if strings.Contains(detail, "SEARCH stamp ") {
+						assert.Contains(t, detail, "message_vectors_stamps_by_doc_numeric", detail)
 						stampProbes++
 					} else {
+						assert.Contains(t, detail, "message_vectors_chunks_by_doc_numeric", detail)
 						chunkProbes++
 					}
 				}

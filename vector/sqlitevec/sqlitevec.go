@@ -165,7 +165,6 @@ func (s *Store[K, G]) vecTable(ordinal int64) string {
 // fixed once created. A retired generation stays retired: ensuring it as
 // retired is a no-op that does not recreate reclaimed storage, and any other
 // state is an error. Use Activate to publish a covered generation.
-// The first successful EnsureGeneration after upgrading builds the document-key lookup indexes; until then queries remain correct without them.
 func (s *Store[K, G]) EnsureGeneration(ctx context.Context, gen G, model vector.Generation, state State) error {
 	if model.Dimensions <= 0 {
 		return fmt.Errorf("generation dimension must be positive, got %d", model.Dimensions)
@@ -210,13 +209,6 @@ WHERE fingerprint = excluded.fingerprint AND dimension = excluded.dimension`, s.
 		`CREATE VIRTUAL TABLE IF NOT EXISTS %s USING vec0(embedding float[%d] distance_metric=cosine)`,
 		s.vecTable(ordinal), dimension)); err != nil {
 		return fmt.Errorf("create vec0 table: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
-CREATE INDEX IF NOT EXISTS %s ON %s (ordinal, %s, doc_key);
-CREATE INDEX IF NOT EXISTS %s ON %s (ordinal, %s, doc_key);`,
-		s.stampsByDocNumericIndex(), s.stampsTable(), numericDocKey("doc_key"),
-		s.chunksByDocNumericIndex(), s.chunksTable(), numericDocKey("doc_key"))); err != nil {
-		return fmt.Errorf("create numeric document key indexes: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit ensure generation: %w", err)

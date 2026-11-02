@@ -98,6 +98,8 @@ SELECT %s
 // revision column, the stamp is conditional on revision still matching the
 // document's current value; on a mismatch nothing is persisted and the
 // returned error wraps vector.ErrStale.
+// The first save after upgrading builds the document-key lookup indexes once,
+// holding the write lock while they are built.
 func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision any, vectors []vector.ChunkVector) error {
 	if revision != nil && s.schema.RevisionColumn == "" {
 		return fmt.Errorf("revision given for document %v but schema names no revision column", doc)
@@ -205,6 +207,13 @@ func (s *Store[K, G]) SaveVectors(ctx context.Context, gen G, doc K, revision an
 ON CONFLICT(ordinal, doc_key) DO UPDATE SET revision = excluded.revision`, s.stampsTable()),
 		ordinal, doc, stampRevision); err != nil {
 		return fmt.Errorf("stamp revision: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+CREATE INDEX IF NOT EXISTS %s ON %s (ordinal, %s, doc_key);
+CREATE INDEX IF NOT EXISTS %s ON %s (ordinal, %s, doc_key);`,
+		s.stampsByDocNumericIndex(), s.stampsTable(), numericDocKey("doc_key"),
+		s.chunksByDocNumericIndex(), s.chunksTable(), numericDocKey("doc_key"))); err != nil {
+		return fmt.Errorf("create numeric document key indexes: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit save vectors: %w", err)

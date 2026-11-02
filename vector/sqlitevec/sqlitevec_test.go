@@ -291,13 +291,30 @@ func TestStoreEnsureGenerationRejectsChangedFingerprint(t *testing.T) {
 func TestNewCreatesChunkLookupIndexes(t *testing.T) {
 	assert := assert.New(t)
 	db, store := setup(t)
+	_, err := db.ExecContext(t.Context(), `INSERT INTO messages (id, body) VALUES (1, 'cat')`)
+	require.NoError(t, err)
 	require.NoError(t, store.EnsureGeneration(t.Context(), 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
+	require.NoError(t, store.SaveVectors(t.Context(), 1, 1, nil, nil))
 
 	assert.Equal([]string{"ordinal", "vec_rowid"}, indexColumns(t, db, "message_vectors_chunks_by_vector"))
 	assert.Equal([]string{"doc_key", "ordinal", "vec_rowid"}, indexColumns(t, db, "message_vectors_chunks_by_doc"))
 	assert.Equal([]string{"doc_key", "revision"}, indexColumns(t, db, "message_vectors_stamps_by_doc_revision"))
 	assert.Equal([]string{"ordinal", "", "doc_key"}, indexColumns(t, db, "message_vectors_stamps_by_doc_numeric"))
 	assert.Equal([]string{"ordinal", "", "doc_key"}, indexColumns(t, db, "message_vectors_chunks_by_doc_numeric"))
+}
+
+func TestSaveVectorsBuildsIndexesForExistingStamps(t *testing.T) {
+	ctx := t.Context()
+	db, store := setup(t)
+	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (1, 'cat')`)
+	require.NoError(t, err)
+	require.NoError(t, store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
+	require.NoError(t, store.SaveVectors(ctx, 1, 1, nil, nil))
+	_, err = db.ExecContext(ctx, `DROP INDEX message_vectors_stamps_by_doc_numeric; DROP INDEX message_vectors_chunks_by_doc_numeric`)
+	require.NoError(t, err)
+	require.NoError(t, store.SaveVectors(ctx, 1, 1, nil, nil))
+	assert.Equal(t, []string{"ordinal", "", "doc_key"}, indexColumns(t, db, "message_vectors_stamps_by_doc_numeric"))
+	assert.Equal(t, []string{"ordinal", "", "doc_key"}, indexColumns(t, db, "message_vectors_chunks_by_doc_numeric"))
 }
 
 func TestNewReadOnlyWithoutNumericIndexes(t *testing.T) {
@@ -355,6 +372,7 @@ INSERT INTO messages (id, body) VALUES (1, 'cat')`)
 	assert.Empty(t, indexColumns(t, writer, "message_vectors_stamps_by_doc_numeric"))
 	assert.Empty(t, indexColumns(t, writer, "message_vectors_chunks_by_doc_numeric"))
 	require.NoError(t, upgraded.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
+	require.NoError(t, upgraded.SaveVectors(ctx, 1, 1, nil, nil))
 	assert.Equal(t, []string{"ordinal", "", "doc_key"}, indexColumns(t, writer, "message_vectors_stamps_by_doc_numeric"))
 	assert.Equal(t, []string{"ordinal", "", "doc_key"}, indexColumns(t, writer, "message_vectors_chunks_by_doc_numeric"))
 }
