@@ -503,6 +503,58 @@ func TestFrontmatterCoreSymlinksFalsePlaceholder(t *testing.T) {
 	assert.Equal(t, goodFrontmatter, string(fixed))
 }
 
+func TestFrontmatterTrackedSymlinkReplacedWithRegularFile(t *testing.T) {
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	repo.CommitFile("target.md", goodFrontmatter, "add target")
+	addFrontmatterSymlink(t, repo, "alias.md", "target.md")
+	repo.Run("commit", "-m", "add symlink alias")
+	repo.Config("core.symlinks", "true")
+	repo.WriteFile("alias.md", goodFrontmatter)
+
+	var stdout, stderr bytes.Buffer
+	n, err := runFrontmatter(t.Context(), []string{"alias.md"}, &stdout, &stderr)
+	require.NoError(t, err)
+	assert.Zero(t, n)
+	assert.Equal(t, "frontmatter: checked 1 Markdown files (0 fixed)\n", stdout.String())
+	assert.Empty(t, stderr.String())
+
+	replaced := strings.ReplaceAll(goodFrontmatter, "2026-11-01", "'2026-11-01'")
+	repo.WriteFile("alias.md", replaced)
+	stdout.Reset()
+	stderr.Reset()
+	n, err = runFrontmatter(t.Context(), []string{"-fix", "alias.md"}, &stdout, &stderr)
+	require.NoError(t, err)
+	assert.Zero(t, n)
+	assert.Empty(t, stderr.String())
+	fixed, err := os.ReadFile("alias.md")
+	require.NoError(t, err)
+	assert.Equal(t, goodFrontmatter, string(fixed))
+	target, err := os.ReadFile("target.md")
+	require.NoError(t, err)
+	assert.Equal(t, goodFrontmatter, string(target), "fixing a regular replacement must not modify the symlink's former target")
+}
+
+func TestFrontmatterChangedThroughRepairedDanglingSymlink(t *testing.T) {
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	addFrontmatterSymlink(t, repo, "alias.md", "target.md")
+	repo.Run("commit", "-m", "add dangling symlink alias")
+	repo.Config("core.symlinks", "false")
+	repo.WriteFile("alias.md", "target.md")
+	repo.Run("branch", "base")
+	repo.WriteFile("target.md", goodFrontmatter)
+
+	var stdout, stderr bytes.Buffer
+	n, err := runFrontmatter(t.Context(), []string{"-changed", "base", "alias.md"}, &stdout, &stderr)
+	require.NoError(t, err)
+	assert.Zero(t, n)
+	assert.Equal(t, "frontmatter: checked 1 Markdown files (0 fixed)\n", stdout.String())
+	assert.Empty(t, stderr.String())
+}
+
 func TestFrontmatterChangedThroughAbsoluteSymlinkPlaceholder(t *testing.T) {
 	isolateFrontmatterGit(t)
 	repo := gittest.NewRepoWithCommit(t)
