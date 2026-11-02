@@ -218,21 +218,21 @@ func validSkillName(name string) bool {
 	return true
 }
 
-func checkSkillFrontmatterFile(root, file string) ([]string, error) {
+func checkSkillFrontmatterFile(root, file string, indexModes map[string]string) ([]string, error) {
 	full := filepath.Join(root, filepath.FromSlash(file))
 	if _, err := os.Lstat(full); errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	} else if err != nil {
 		return nil, err
 	}
-	resolved, err := filepath.EvalSymlinks(full)
+	resolved, err := frontmatterWorkingPath(root, file, indexModes)
+	if errors.Is(err, errFrontmatterSymlinkOutside) {
+		return []string{"Markdown symlink target is outside the repository"}, nil
+	}
 	if err != nil {
 		return nil, err
 	}
-	if _, err := frontmatterPaths(root, []string{resolved}); err != nil {
-		return []string{"Markdown symlink target is outside the repository"}, nil //nolint:nilerr // Report validation findings and continue scanning other files.
-	}
-	src, err := os.ReadFile(full)
+	src, err := os.ReadFile(resolved)
 	if err != nil {
 		return nil, err
 	}
@@ -350,9 +350,140 @@ func frontmatterTree(ctx context.Context, root, base string) (map[string]frontma
 	return tree, nil
 }
 
+func frontmatterIndexModes(ctx context.Context, root string) (map[string]string, error) {
+	data, err := frontmatterGit(ctx, root, "ls-files", "--stage", "-z", "--cached", "--deduplicate")
+	if err != nil {
+		return nil, err
+	}
+	modes := make(map[string]string)
+	for record := range bytes.SplitSeq(bytes.TrimSuffix(data, []byte{0}), []byte{0}) {
+		metadata, name, ok := strings.Cut(string(record), "\t")
+		fields := strings.Fields(metadata)
+		if ok && len(fields) == 3 && fields[2] == "0" {
+			modes[name] = fields[0]
+		}
+	}
+	return modes, nil
+}
+
+var errFrontmatterSymlinkOutside = errors.New("markdown symlink target is outside the repository")
+
+func frontmatterRepositoryTarget(root, target string) (string, bool, error) {
+	if !filepath.IsAbs(target) && !path.IsAbs(target) {
+		return filepath.ToSlash(target), false, nil
+	}
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return "", false, err
+	}
+	rootPath := filepath.ToSlash(filepath.Clean(rootAbs))
+	absolute := filepath.ToSlash(target)
+	if rootPath == "/" {
+		relative := strings.TrimPrefix(absolute, "/")
+		if relative == "" {
+			relative = "."
+		}
+		return relative, true, nil
+	}
+	rootParts, targetParts := strings.Split(rootPath, "/"), strings.Split(absolute, "/")
+	if len(targetParts) < len(rootParts) {
+		return "", false, errFrontmatterSymlinkOutside
+	}
+	for i, part := range rootParts {
+		equal := targetParts[i] == part
+		if filepath.Separator == '\\' {
+			equal = strings.EqualFold(targetParts[i], part)
+		}
+		if !equal {
+			return "", false, errFrontmatterSymlinkOutside
+		}
+	}
+	relative := strings.Join(targetParts[len(rootParts):], "/")
+	if relative == "" {
+		relative = "."
+	}
+	return relative, true, nil
+}
+
+// Resolve the working path component-by-component so symlinks and .. retain
+// filesystem order. Git records symlink targets as regular files when
+// core.symlinks=false, so use index modes to identify those placeholders too.
+func frontmatterWorkingPath(root, file string, indexModes map[string]string) (string, error) {
+	var resolved []string
+	pending := strings.Split(filepath.ToSlash(file), "/")
+	links := 0
+	for len(pending) > 0 {
+		component := pending[0]
+		pending = pending[1:]
+		switch component {
+		case "", ".":
+			continue
+		case "..":
+			if len(resolved) == 0 {
+				return "", errFrontmatterSymlinkOutside
+			}
+			resolved = resolved[:len(resolved)-1]
+			continue
+		}
+
+		candidateParts := append(append([]string(nil), resolved...), component)
+		candidate := strings.Join(candidateParts, "/")
+		full := filepath.Join(root, filepath.FromSlash(candidate))
+		info, err := os.Lstat(full)
+		if err != nil {
+			return "", err
+		}
+		isSymlink := info.Mode()&os.ModeSymlink != 0
+		isPlaceholder := !isSymlink && indexModes[candidate] == "120000"
+		if isSymlink || isPlaceholder {
+			links++
+			if links > 40 {
+				return "", errors.New("too many working-tree symlinks")
+			}
+			var target string
+			if isSymlink {
+				target, err = os.Readlink(full)
+			} else {
+				var data []byte
+				data, err = os.ReadFile(full)
+				target = string(data)
+			}
+			if err != nil {
+				return "", err
+			}
+			target, absolute, err := frontmatterRepositoryTarget(root, target)
+			if err != nil {
+				return "", err
+			}
+			if absolute {
+				resolved = nil
+			} else {
+				resolved = candidateParts[:len(candidateParts)-1]
+			}
+			pending = append(strings.Split(target, "/"), pending...)
+			continue
+		}
+		if len(pending) > 0 && !info.IsDir() {
+			return "", fmt.Errorf("working path component %s is not a directory", candidate)
+		}
+		resolved = candidateParts
+	}
+	if len(resolved) == 0 {
+		return "", errors.New("markdown path resolves to the repository directory")
+	}
+	full := filepath.Join(root, filepath.FromSlash(strings.Join(resolved, "/")))
+	full, err := filepath.EvalSymlinks(full)
+	if err != nil {
+		return "", err
+	}
+	if _, err := frontmatterPaths(root, []string{full}); err != nil {
+		return "", errFrontmatterSymlinkOutside
+	}
+	return full, nil
+}
+
 // Resolve historical paths component-by-component so intermediate symlinks
-// and following .. components match filesystem order. Working-tree links are
-// read by os.ReadFile.
+// and following .. components match filesystem order.
 func frontmatterPrevious(ctx context.Context, root, name string, tree map[string]frontmatterTreeEntry) ([]byte, bool, error) {
 	changed := false
 	var resolved []string
@@ -392,11 +523,20 @@ func frontmatterPrevious(ctx context.Context, root, name string, tree map[string
 			if err != nil {
 				return nil, false, err
 			}
-			if path.IsAbs(string(target)) {
-				return nil, false, fmt.Errorf("historical symlink %s has an absolute target", candidate)
+			targetName, absolute, err := frontmatterRepositoryTarget(root, string(target))
+			if errors.Is(err, errFrontmatterSymlinkOutside) {
+				return nil, false, fmt.Errorf("historical symlink %s escapes the repository", candidate)
 			}
-			resolved = candidateParts[:len(candidateParts)-1]
-			pending = append(strings.Split(string(target), "/"), pending...)
+			if err != nil {
+				return nil, false, err
+			}
+			// Preserve . and .. traversal after an absolute repository prefix.
+			if absolute {
+				resolved = nil
+			} else {
+				resolved = candidateParts[:len(candidateParts)-1]
+			}
+			pending = append(strings.Split(targetName, "/"), pending...)
 			continue
 		}
 		if len(pending) > 0 {
@@ -442,6 +582,10 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	if err != nil {
 		return 0, err
 	}
+	indexModes, err := frontmatterIndexModes(ctx, root)
+	if err != nil {
+		return 0, err
+	}
 	skillDirs := frontmatterSkillDirectories(tracked)
 	excludes = append(excludes, customExcludes...)
 	selected, err := frontmatterPaths(root, flags.Args())
@@ -466,7 +610,7 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 			continue
 		}
 		if path.Base(file) == "SKILL.md" {
-			problems, err := checkSkillFrontmatterFile(root, file)
+			problems, err := checkSkillFrontmatterFile(root, file, indexModes)
 			if err != nil {
 				return total, fmt.Errorf("%s: %w", file, err)
 			}
@@ -480,7 +624,7 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 		if frontmatterInSkillDirectory(file, skillDirs) {
 			continue
 		}
-		problems, didFix, err := checkFrontmatterFile(ctx, root, file, *fix, tree)
+		problems, didFix, err := checkFrontmatterFile(ctx, root, file, *fix, tree, indexModes)
 		if err != nil {
 			return total, fmt.Errorf("%s: %w", file, err)
 		}
@@ -524,23 +668,23 @@ func frontmatterSelected(file string, selected []string, excludes []string) bool
 	})
 }
 
-func checkFrontmatterFile(ctx context.Context, root, file string, fix bool, tree map[string]frontmatterTreeEntry) ([]string, bool, error) {
+func checkFrontmatterFile(ctx context.Context, root, file string, fix bool, tree map[string]frontmatterTreeEntry, indexModes map[string]string) ([]string, bool, error) {
 	full := filepath.Join(root, filepath.FromSlash(file))
-	info, err := os.Lstat(full)
+	_, err := os.Lstat(full)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, false, nil // A tracked file deleted in the working tree needs no metadata.
 	}
 	if err != nil {
 		return nil, false, err
 	}
-	resolved, err := filepath.EvalSymlinks(full)
+	targetPath, err := frontmatterWorkingPath(root, file, indexModes)
+	if errors.Is(err, errFrontmatterSymlinkOutside) {
+		return []string{"Markdown symlink target is outside the repository"}, false, nil
+	}
 	if err != nil {
 		return nil, false, err
 	}
-	if _, err := frontmatterPaths(root, []string{resolved}); err != nil {
-		return []string{"Markdown symlink target is outside the repository"}, false, nil //nolint:nilerr // A validation finding lets the scan report other invalid files too.
-	}
-	src, err := os.ReadFile(full)
+	src, err := os.ReadFile(targetPath)
 	if err != nil {
 		return nil, false, err
 	}
@@ -580,10 +724,9 @@ func checkFrontmatterFile(ctx context.Context, root, file string, fix bool, tree
 		}
 		if changed {
 			opts := []atomicfile.Option{atomicfile.WithPreserveMode()}
-			if info.Mode()&os.ModeSymlink != 0 {
-				opts = append(opts, atomicfile.WithFollowLink())
-			}
-			if err := atomicfile.WriteFile(full, updated, opts...); err != nil {
+			// Write the resolved file directly, preserving every alias and any
+			// regular-file placeholders Git created for symlinks.
+			if err := atomicfile.WriteFile(targetPath, updated, opts...); err != nil {
 				return nil, false, err
 			}
 			didFix = true
