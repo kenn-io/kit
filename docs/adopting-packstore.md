@@ -52,7 +52,6 @@ coordinator := packstore.NewCoordinator()
 maintainer, err := packstore.NewMaintainer(catalog, layout, packstore.MaintainerOptions{
 	Limits:      limits,
 	Coordinator: coordinator,
-	Store:       packstore.StoreOptions{ReaderSlots: 16},
 })
 if err != nil {
 	return err

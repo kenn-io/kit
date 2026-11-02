@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	maxOpenReaders          = 16
+	maxOpenReaders          = 64
 	seekableDirectPackBytes = int64(1 << 20)
 )
 
@@ -67,7 +67,7 @@ type StoreOptions struct {
 	// Limits applies to ReadBounded and packed OpenStream calls. Store.Open
 	// retains its buffered compatibility behavior and does not enforce it.
 	Limits Limits
-	// ReaderSlots bounds cached pack descriptors. A stream whose slot is
+	// ReaderSlots bounds cached pack descriptors. Zero selects 64. A stream whose slot is
 	// evicted keeps its descriptor leased until terminal read or Close, so total
 	// live descriptors are bounded by cached slots plus active streams.
 	ReaderSlots int

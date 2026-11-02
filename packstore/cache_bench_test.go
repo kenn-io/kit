@@ -1,0 +1,77 @@
+package packstore
+
+import (
+	"encoding/binary"
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+	"go.kenn.io/kit/pack"
+)
+
+func BenchmarkStoreReaderRotation(b *testing.B) {
+	for _, n := range []int{16, 17, 32, 64} {
+		b.Run(fmt.Sprintf("packs=%d", n), func(b *testing.B) {
+			store, packs := buildReaderRotationPacks(b, n, 1000)
+			for _, p := range packs {
+				_, _, err := store.ReadBounded(b.Context(), p.Hash, 1<<20)
+				require.NoError(b, err)
+			}
+			misses := 0
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := range b.N {
+				p := packs[i%n]
+				store.mu.Lock()
+				_, hit := store.packReaders[p.PackID]
+				store.mu.Unlock()
+				if !hit {
+					misses++
+				}
+				_, _, err := store.ReadBounded(b.Context(), p.Hash, 1<<20)
+				require.NoError(b, err)
+			}
+			b.ReportMetric(float64(misses)/float64(b.N), "miss/op")
+		})
+	}
+}
+
+// buildReaderRotationPacks writes one target blob and unique fillers per pack.
+func buildReaderRotationPacks(b *testing.B, nPacks, entries int) (*Store, []IndexEntry) {
+	b.Helper()
+	layout, err := NewLayout(b.TempDir(), LayoutOptions{Staging: StagingStoreDirectory, StagingDir: "tmp"})
+	require.NoError(b, err)
+	locations := map[Hash]Location{}
+	var packs []IndexEntry
+	for p := range nPacks {
+		w, err := pack.NewWriter(b.TempDir(), pack.WriterOptions{})
+		require.NoError(b, err)
+		var target pack.Entry
+		for e := range entries {
+			buf := make([]byte, 24)
+			binary.BigEndian.PutUint64(buf, uint64(p))
+			binary.BigEndian.PutUint64(buf[8:], uint64(e))
+			copy(buf[16:], "rotation")
+			entry, err := w.Append(buf)
+			require.NoError(b, err)
+			if e == 0 {
+				target = entry
+			}
+		}
+		id := w.ID()
+		require.NoError(b, os.MkdirAll(filepath.Dir(layout.PackPath(id)), 0o700))
+		_, err = w.Seal(layout.PackPath(id))
+		require.NoError(b, err)
+		hash, err := ParseHash(target.ID.String())
+		require.NoError(b, err)
+		indexed := IndexEntry{Hash: hash, PackID: id, Offset: int64(target.Offset), StoredLen: int64(target.StoredLen), RawLen: int64(target.RawLen), Flags: uint8(target.Flags), CRC32C: target.CRC32C}
+		locations[hash] = Location{Member: true, Pack: &indexed}
+		packs = append(packs, indexed)
+	}
+	store, err := NewStore(&mapResolver{locations: locations}, layout, StoreOptions{})
+	require.NoError(b, err)
+	b.Cleanup(func() { require.NoError(b, store.Close()) })
+	return store, packs
+}

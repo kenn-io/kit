@@ -521,6 +521,37 @@ func TestStoreRejectsForgedPackIndexMetadata(t *testing.T) {
 	require.ErrorContains(t, err, "metadata mismatch")
 }
 
+func TestStoreRoundRobinPastSlotsKeepsHits(t *testing.T) {
+	require := require.New(t)
+	layout := layoutForStoreTest(t)
+	resolver := &mapResolver{locations: map[Hash]Location{}}
+	store, err := NewStore(resolver, layout, StoreOptions{ReaderSlots: 16})
+	require.NoError(err)
+	t.Cleanup(func() { require.NoError(store.Close()) })
+	var entries []IndexEntry
+	for i := range 17 {
+		entry := buildStoreTestPack(t, layout, []byte{byte(i)})
+		resolver.locations[entry.Hash] = Location{Member: true, Pack: &entry}
+		entries = append(entries, entry)
+		_, _, err := store.ReadBounded(t.Context(), entry.Hash, entry.RawLen)
+		require.NoError(err)
+	}
+	const reads = 340
+	misses := 0
+	for i := range reads {
+		entry := entries[i%len(entries)]
+		store.mu.Lock()
+		_, hit := store.packReaders[entry.PackID]
+		store.mu.Unlock()
+		if !hit {
+			misses++
+		}
+		_, _, err := store.ReadBounded(t.Context(), entry.Hash, entry.RawLen)
+		require.NoError(err)
+	}
+	assert.Less(t, misses, reads/2)
+}
+
 func TestStoreSharesBoundedAndOrdinaryCacheSlotsAndEvicts(t *testing.T) {
 	require := require.New(t)
 	layout := layoutForStoreTest(t)
