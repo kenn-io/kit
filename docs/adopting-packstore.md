@@ -259,9 +259,10 @@ overhead. Scratch use and codec buffers multiply with concurrent preparation.
 Place scratch on storage with an explicit capacity policy and include cleanup
 of exact-owned staging files in recovery.
 
-`ReaderSlots` bounds idle cached descriptors, not all live descriptors. Each
-active stream holds a lease even after eviction, so budget file descriptors as
-`ReaderSlots + maximum concurrent streams`, plus unrelated application use.
+`ReaderSlots` defaults to 64 and bounds idle cached descriptors, not all live
+descriptors. Each active stream holds a lease even after eviction, so budget
+file descriptors as `ReaderSlots + maximum concurrent streams`, plus unrelated
+application use.
 Packed `OpenStream` and `ReadBounded` reads also enforce a decoder-window limit
 derived from the blob policy. A legacy format-v1 frame whose declared window
 exceeds that limit fails with a typed limit error. Direct `pack` readers with

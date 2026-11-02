@@ -12,7 +12,8 @@ import (
 )
 
 func BenchmarkStoreReaderRotation(b *testing.B) {
-	for _, n := range []int{16, 17, 32, 64} {
+	const readsPerOp = 1024
+	for _, n := range []int{maxOpenReaders / 4, maxOpenReaders/4 + 1, maxOpenReaders / 2, maxOpenReaders, maxOpenReaders + 1} {
 		b.Run(fmt.Sprintf("packs=%d", n), func(b *testing.B) {
 			store, packs := buildReaderRotationPacks(b, n, 1000)
 			for _, p := range packs {
@@ -23,17 +24,20 @@ func BenchmarkStoreReaderRotation(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := range b.N {
-				p := packs[i%n]
-				store.mu.Lock()
-				_, hit := store.packReaders[p.PackID]
-				store.mu.Unlock()
-				if !hit {
-					misses++
+				// Average random eviction over a batch even with CI's five operations.
+				for j := range readsPerOp {
+					p := packs[(i*readsPerOp+j)%n]
+					store.mu.Lock()
+					_, hit := store.packReaders[p.PackID]
+					store.mu.Unlock()
+					if !hit {
+						misses++
+					}
+					_, _, err := store.ReadBounded(b.Context(), p.Hash, 1<<20)
+					require.NoError(b, err)
 				}
-				_, _, err := store.ReadBounded(b.Context(), p.Hash, 1<<20)
-				require.NoError(b, err)
 			}
-			b.ReportMetric(float64(misses)/float64(b.N), "miss/op")
+			b.ReportMetric(float64(misses)/float64(b.N*readsPerOp), "miss/read")
 		})
 	}
 }
