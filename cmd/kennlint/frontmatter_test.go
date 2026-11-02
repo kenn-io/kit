@@ -84,8 +84,9 @@ func TestFrontmatterSelection(t *testing.T) {
 	repo := gittest.NewRepoWithCommit(t)
 	t.Chdir(repo.Root)
 	for _, name := range []string{
-		"README.md", ".github/PULL_REQUEST_TEMPLATE.md", "testdata/page.md", "pkg/testdata/deep/page.md",
-		"vendor/page.md", "node_modules/pkg/page.md", "generated/page.md", "docs/README.md", "docs/page with spaces.md",
+		"README.md", "AGENTS.md", "CLAUDE.md", ".github/PULL_REQUEST_TEMPLATE.md", "testdata/page.md", "pkg/testdata/deep/page.md",
+		"vendor/page.md", "node_modules/pkg/page.md", "generated/page.md", "docs/README.md", "docs/AGENTS.md", "docs/CLAUDE.md",
+		"docs/releases/v0.37.1.md", "docs/page with spaces.md",
 	} {
 		repo.WriteFile(name, "# Missing metadata\n")
 		repo.Run("add", "-f", "--", name)
@@ -96,9 +97,9 @@ func TestFrontmatterSelection(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	n, err := runFrontmatter(t.Context(), []string{"-exclude", "generated/**"}, &stdout, &stderr)
 	require.NoError(t, err)
-	assert.Equal(t, 2, n)
+	assert.Equal(t, 4, n)
 	assert.Empty(t, stdout.String())
-	assert.Equal(t, "docs/README.md: missing opening --- frontmatter delimiter\ndocs/page with spaces.md: missing opening --- frontmatter delimiter\n", stderr.String())
+	assert.Equal(t, "docs/AGENTS.md: missing opening --- frontmatter delimiter\ndocs/CLAUDE.md: missing opening --- frontmatter delimiter\ndocs/README.md: missing opening --- frontmatter delimiter\ndocs/page with spaces.md: missing opening --- frontmatter delimiter\n", stderr.String())
 
 	stderr.Reset()
 	n, err = runFrontmatter(t.Context(), []string{"docs/README.md"}, &stdout, &stderr)
@@ -112,6 +113,16 @@ func TestFrontmatterSelection(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, n)
 	assert.Contains(t, stderr.String(), "docs/README.md:")
+
+	t.Chdir(repo.Root)
+	for _, name := range []string{"README.md", "AGENTS.md", "CLAUDE.md"} {
+		stdout.Reset()
+		stderr.Reset()
+		n, err = runFrontmatter(t.Context(), []string{name}, &stdout, &stderr)
+		require.NoError(t, err)
+		assert.Zero(t, n, "%s is excluded even when selected explicitly", name)
+		assert.Empty(t, stderr.String())
+	}
 
 	_, err = runFrontmatter(t.Context(), []string{"-exclude", "["}, &stdout, &stderr)
 	require.ErrorContains(t, err, "invalid exclude")
@@ -127,6 +138,8 @@ func TestFrontmatterGlob(t *testing.T) {
 		{"**/testdata/**", "testdata/a.md", true},
 		{"**/testdata/**", "a/testdata/b/c.md", true},
 		{"**/testdata/**", "a/testdatabase/c.md", false},
+		{"docs/releases/**", "docs/releases/v0.8.0.md", true},
+		{"docs/releases/**", "docs/releases/archive/v0.8.0.md", true},
 		{"docs/*.md", "docs/a/b.md", false},
 		{"docs/**/*.md", "docs/a.md", true},
 		{"docs/**/*.md", "docs/a/b.md", true},
@@ -271,24 +284,28 @@ func TestFrontmatterSymlinks(t *testing.T) {
 	isolateFrontmatterGit(t)
 	repo := gittest.NewRepoWithCommit(t)
 	t.Chdir(repo.Root)
-	repo.WriteFile("AGENTS.md", goodFrontmatter)
-	require.NoError(t, os.Symlink("AGENTS.md", "CLAUDE.md"))
-	repo.Run("add", "AGENTS.md", "CLAUDE.md")
-	repo.Run("commit", "-m", "add instructions and alias")
+	repo.WriteFile("target.md", goodFrontmatter)
+	require.NoError(t, os.Symlink("target.md", "alias.md"))
+	repo.Run("add", "target.md", "alias.md")
+	repo.Run("commit", "-m", "add file and alias")
 	repo.Run("branch", "base")
-	repo.WriteFile("AGENTS.md", goodFrontmatter+"Updated.\n")
+	repo.WriteFile("target.md", goodFrontmatter+"Updated.\n")
 	var stdout, stderr bytes.Buffer
 	n, err := runFrontmatter(t.Context(), []string{"-changed", "base"}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Equal(t, 2, n)
-	assert.Contains(t, stderr.String(), "CLAUDE.md: content changed without changing last_edited")
-	repo.WriteFile("AGENTS.md", strings.ReplaceAll(goodFrontmatter, "2026-11-01", "'2026-11-02'"))
-	n, err = runFrontmatter(t.Context(), []string{"-fix", "-changed", "base"}, &stdout, &stderr)
+	assert.Contains(t, stderr.String(), "alias.md: content changed without changing last_edited")
+	repo.WriteFile("target.md", strings.ReplaceAll(goodFrontmatter, "2026-11-01", "'2026-11-02'"))
+	stderr.Reset()
+	n, err = runFrontmatter(t.Context(), []string{"-fix", "-changed", "base", "alias.md"}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Zero(t, n)
-	info, err := os.Lstat("CLAUDE.md")
+	info, err := os.Lstat("alias.md")
 	require.NoError(t, err)
 	assert.NotZero(t, info.Mode()&os.ModeSymlink)
+	fixed, err := os.ReadFile("target.md")
+	require.NoError(t, err)
+	assert.Equal(t, strings.ReplaceAll(goodFrontmatter, "2026-11-01", "2026-11-02"), string(fixed), "fixing the selected symlink updates its target")
 
 	outside := filepath.Join(t.TempDir(), "outside.md")
 	const outsideBody = "# Outside the repository\n"
@@ -308,4 +325,53 @@ func TestFrontmatterSymlinks(t *testing.T) {
 	repo.Run("add", "dangling.md")
 	_, err = runFrontmatter(t.Context(), []string{"dangling.md"}, &stdout, &stderr)
 	assert.ErrorContains(t, err, "dangling.md")
+}
+
+func TestFrontmatterChangedThroughHistoricalDirectorySymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks require privileges on Windows")
+	}
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	repo.WriteFile("docs/guide.md", goodFrontmatter+"Original guide.\n")
+	repo.WriteFile("docs-v2/guide.md", goodFrontmatter+"Replacement guide.\n")
+	require.NoError(t, os.Symlink("docs", "docs-alias"))
+	require.NoError(t, os.Symlink("docs-alias/guide.md", "guide-link.md"))
+	repo.Run("add", "docs/guide.md", "docs-v2/guide.md", "docs-alias", "guide-link.md")
+	repo.Run("commit", "-m", "add directory symlink")
+	repo.Run("branch", "base")
+	require.NoError(t, os.Remove("docs-alias"))
+	require.NoError(t, os.Symlink("docs-v2", "docs-alias"))
+
+	var stdout, stderr bytes.Buffer
+	n, err := runFrontmatter(t.Context(), []string{"-changed", "base"}, &stdout, &stderr)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+	assert.Equal(t, "guide-link.md: content changed without changing last_edited\n", stderr.String())
+}
+
+func TestFrontmatterSymlinkParentResolutionPreservesOrder(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks require privileges on Windows")
+	}
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	repo.WriteFile("nested/guide.md", goodFrontmatter+"Original nested guide.\n")
+	repo.WriteFile("nested/dir/marker.md", goodFrontmatter)
+	repo.WriteFile("guide.md", strings.ReplaceAll(goodFrontmatter, "2026-11-01", "2026-10-31")+"Root guide.\n")
+	require.NoError(t, os.Symlink("nested/dir", "dir-alias"))
+	require.NoError(t, os.Symlink("dir-alias/../guide.md", "guide-link.md"))
+	repo.Run("add", "nested/guide.md", "nested/dir/marker.md", "guide.md", "dir-alias", "guide-link.md")
+	repo.Run("commit", "-m", "add ordered symlink path")
+	repo.Run("branch", "base")
+	repo.WriteFile("nested/guide.md", goodFrontmatter+"Updated nested guide.\n")
+
+	var stdout, stderr bytes.Buffer
+	n, err := runFrontmatter(t.Context(), []string{"-changed", "base"}, &stdout, &stderr)
+	require.NoError(t, err)
+	assert.Equal(t, 2, n)
+	assert.Contains(t, stderr.String(), "nested/guide.md: content changed without changing last_edited")
+	assert.Contains(t, stderr.String(), "guide-link.md: content changed without changing last_edited")
 }

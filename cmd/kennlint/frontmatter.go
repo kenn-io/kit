@@ -206,26 +206,72 @@ func frontmatterTree(ctx context.Context, root, base string) (map[string]frontma
 	return tree, nil
 }
 
-// Resolve historical symlinks against the historical tree, including targets
-// whose extension is not .md. Working-tree links are read by os.ReadFile.
+// Resolve historical paths component-by-component so intermediate symlinks
+// and following .. components match filesystem order. Working-tree links are
+// read by os.ReadFile.
 func frontmatterPrevious(ctx context.Context, root, name string, tree map[string]frontmatterTreeEntry) ([]byte, bool, error) {
 	changed := false
-	for range 40 {
-		entry, ok := tree[name]
+	var resolved []string
+	pending := strings.Split(name, "/")
+	links := 0
+	for len(pending) > 0 {
+		component := pending[0]
+		pending = pending[1:]
+		switch component {
+		case "", ".":
+			continue
+		case "..":
+			if len(resolved) == 0 {
+				return nil, false, fmt.Errorf("historical symlink %s escapes the repository", name)
+			}
+			resolved = resolved[:len(resolved)-1]
+			continue
+		}
+
+		candidateParts := append(append([]string(nil), resolved...), component)
+		candidate := strings.Join(candidateParts, "/")
+		entry, ok := tree[candidate]
 		if !ok {
-			return nil, false, fmt.Errorf("missing historical symlink target %s", name)
+			if len(pending) > 0 && frontmatterTreeHasDirectory(tree, candidate) {
+				resolved = candidateParts
+				continue
+			}
+			return nil, false, fmt.Errorf("missing historical symlink target %s", candidate)
 		}
 		changed = changed || entry.changed
+		if entry.mode == "120000" {
+			links++
+			if links > 40 {
+				return nil, false, errors.New("too many historical symlinks")
+			}
+			target, err := frontmatterGit(ctx, root, "cat-file", "blob", entry.hash)
+			if err != nil {
+				return nil, false, err
+			}
+			if path.IsAbs(string(target)) {
+				return nil, false, fmt.Errorf("historical symlink %s has an absolute target", candidate)
+			}
+			resolved = candidateParts[:len(candidateParts)-1]
+			pending = append(strings.Split(string(target), "/"), pending...)
+			continue
+		}
+		if len(pending) > 0 {
+			return nil, false, fmt.Errorf("historical path component %s is not a directory", candidate)
+		}
 		data, err := frontmatterGit(ctx, root, "cat-file", "blob", entry.hash)
-		if err != nil || entry.mode != "120000" {
-			return data, changed, err
-		}
-		if path.IsAbs(string(data)) {
-			return nil, false, fmt.Errorf("historical symlink %s has an absolute target", name)
-		}
-		name = path.Join(path.Dir(name), string(data))
+		return data, changed, err
 	}
-	return nil, false, errors.New("too many historical symlinks")
+	return nil, false, fmt.Errorf("missing historical symlink target %s", name)
+}
+
+func frontmatterTreeHasDirectory(tree map[string]frontmatterTreeEntry, dir string) bool {
+	prefix := dir + "/"
+	for name := range tree {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer) (int, error) {
@@ -233,7 +279,10 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	flags.SetOutput(stderr)
 	changed := flags.String("changed", "", "require a last_edited change since the merge base with this ref")
 	fix := flags.Bool("fix", false, "unquote dates and add missing last_edited using the last commit date (or today)")
-	excludes := frontmatterExcludes{"README.md", ".github/**", "**/testdata/**", "vendor/**", "node_modules/**"}
+	excludes := frontmatterExcludes{
+		"README.md", "AGENTS.md", "CLAUDE.md", "docs/releases/**",
+		".github/**", "**/testdata/**", "vendor/**", "node_modules/**",
+	}
 	flags.Var(&excludes, "exclude", "additional repository-relative glob to skip; ** matches directories (repeatable)")
 	if err := flags.Parse(args); err != nil {
 		return 0, err

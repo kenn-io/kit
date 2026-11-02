@@ -1,7 +1,7 @@
 ---
 title: "Adopting the shared Go lint policy (kennlint)"
 description: "Adopt the shared Go lint policy, workflow checks, and Markdown frontmatter validation."
-last_edited: 2026-10-29
+last_edited: 2026-11-02
 ---
 
 # Adopting the shared Go lint policy (kennlint)
@@ -122,12 +122,13 @@ it after adding rule labels and reasons to their suppressions.
    `last_edited: YYYY-MM-DD` date. Quoted dates, datetimes and invalid dates
    fail. Markdown symlinks are checked through their targets.
 
-   Defaults exclude only the root `README.md`, `.github/**`,
-   `**/testdata/**`, `vendor/**` and `node_modules/**`. Nested READMEs are
-   checked. Add repeatable repository-relative `-exclude <glob>` flags for
-   other exceptions; `**` matches zero or more directory components. Path
-   arguments limit checks to tracked files under those paths, with the same
-   excludes. Put flags before paths.
+   Defaults exclude only the root `README.md`, `AGENTS.md`, and `CLAUDE.md`,
+   plus `.github/**`, `**/testdata/**`, `vendor/**`, `node_modules/**`, and
+   `docs/releases/**`. Nested README and agent-instruction files are checked.
+   Add repeatable repository-relative `-exclude <glob>` flags for other
+   exceptions; `**` matches zero or more directory components. Path arguments
+   limit checks to tracked files under those paths, with the same excludes.
+   Put flags before paths.
 
    For a backfill, run:
 

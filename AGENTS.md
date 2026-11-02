@@ -1,7 +1,7 @@
 ---
 title: "Agent Instructions"
 description: "Repository scope, development conventions, and contribution rules for kit."
-last_edited: 2026-11-01
+last_edited: 2026-11-02
 ---
 
 # Agent Instructions
@@ -56,9 +56,11 @@ provider workflows to this repo unless the package already owns that concern.
   surfaces before publishing.
 - Tracked Markdown requires frontmatter with non-empty `title` and
   `description` strings and a bare `last_edited: YYYY-MM-DD` date. The root
-  `README.md`, `.github/`, `testdata/`, `vendor/`, and `node_modules/` are
-  excluded by the frontmatter check. Change the date when editing existing
-  content; CI compares it with the merge base.
+  files `README.md`, `AGENTS.md`, and `CLAUDE.md`, plus `.github/`,
+  `testdata/`, `vendor/`, `node_modules/`, and `docs/releases/`, are excluded
+  by the frontmatter check. Nested README and agent-instruction files are
+  checked. Change the date when editing existing content; CI compares it with
+  the merge base.
 
 ## Go Conventions
 
