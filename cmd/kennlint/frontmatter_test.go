@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"go.kenn.io/kit/fslink"
 	gittest "go.kenn.io/kit/git/test"
 )
 
@@ -605,6 +606,118 @@ func TestFrontmatterWindowsRootedTargetAnchoring(t *testing.T) {
 	assert.False(t, frontmatterWindowsRootedWithoutVolume(`\\server\share\target.md`))
 	assert.Equal(t, `\\server\share\target.md`, frontmatterWindowsRootedTarget("C:", `\\server\share\target.md`))
 	assert.Equal(t, `D:\outside\target.md`, frontmatterWindowsRootedTarget("C:", `D:\outside\target.md`))
+	assert.Equal(t, "C:/repository/target.md", frontmatterNormalizeLinkTarget(`C:\repository\dir\..\target.md`, true))
+	assert.Equal(t, "C:/repository/target.md", frontmatterNormalizeLinkTarget("C:/repository/dir/../../repository/target.md", true))
+	assert.Equal(t, "//server/share/target.md", frontmatterNormalizeLinkTarget(`\\server\share\dir\..\target.md`, true))
+}
+
+func TestFrontmatterRepositoryTargetUsesCaseInsensitiveSemantics(t *testing.T) {
+	root := t.TempDir()
+	target := strings.ToUpper(root) + "/target.md"
+
+	got, absolute, err := frontmatterRepositoryTargetWithSemantics(root, target, false, true)
+	require.NoError(t, err)
+	assert.True(t, absolute)
+	assert.Equal(t, "target.md", got)
+
+	_, _, err = frontmatterRepositoryTargetWithSemantics(root, target, false, false)
+	assert.ErrorIs(t, err, errFrontmatterSymlinkOutside)
+}
+
+func TestFrontmatterWindowsParentComponentsNormalizeBeforeTraversal(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	for _, dir := range []string{"links", "trees/primary", "detour/inner"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(root, dir), 0o755))
+	}
+	files := map[string]string{
+		"links/alias.md":           "../switch/child/../doc.md",
+		"switch":                   "trees/primary",
+		"trees/primary/child":      "../../detour/inner",
+		"trees/primary/doc.md":     goodFrontmatter,
+		"detour/doc.md":            strings.ReplaceAll(goodFrontmatter, "A page", "A different page"),
+		"detour/inner/present.txt": "directory marker\n",
+	}
+	for name, content := range files {
+		require.NoError(t, os.WriteFile(filepath.Join(root, name), []byte(content), 0o600))
+	}
+	indexModes := map[string]string{
+		"links/alias.md":      "120000",
+		"switch":              "120000",
+		"trees/primary/child": "120000",
+	}
+
+	windowsPath, err := frontmatterWorkingPathWithSemantics(root, "links/alias.md", indexModes, true, true, false)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(root, "trees/primary/doc.md"), windowsPath)
+
+	unixPath, err := frontmatterWorkingPathWithSemantics(root, "links/alias.md", indexModes, true, false, false)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(root, "detour/doc.md"), unixPath)
+}
+
+func TestFrontmatterPreviousWindowsParentComponentsNormalizeBeforeTraversal(t *testing.T) {
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	primary := goodFrontmatter + "Primary destination.\n"
+	detour := strings.ReplaceAll(goodFrontmatter, "A page", "A different page") + "Detour destination.\n"
+	repo.CommitFile("trees/primary/doc.md", primary, "add primary destination")
+	repo.CommitFile("detour/doc.md", detour, "add detour destination")
+	repo.CommitFile("detour/inner/present.txt", "directory marker\n", "add detour directory marker")
+	addFrontmatterSymlink(t, repo, "links/alias.md", "../switch/child/../doc.md")
+	addFrontmatterSymlink(t, repo, "switch", "trees/primary")
+	addFrontmatterSymlink(t, repo, "trees/primary/child", "../../detour/inner")
+	repo.Run("commit", "-m", "add parent-component aliases")
+
+	tree, err := frontmatterTree(t.Context(), repo.Root, "HEAD")
+	require.NoError(t, err)
+	previous, _, err := frontmatterPreviousWithSemantics(t.Context(), repo.Root, "links/alias.md", tree, true, false)
+	require.NoError(t, err)
+	assert.Equal(t, primary, string(previous))
+
+	previous, _, err = frontmatterPreviousWithSemantics(t.Context(), repo.Root, "links/alias.md", tree, false, false)
+	require.NoError(t, err)
+	assert.Equal(t, detour, string(previous))
+}
+
+func TestFrontmatterWindowsInternalJunction(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("NTFS junctions require Windows")
+	}
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	repo.CommitFile("target/document.md", goodFrontmatter, "add junction target")
+	junction := filepath.Join(repo.Root, "junction")
+	require.NoError(t, fslink.CreateJunction(filepath.Join(repo.Root, "target"), junction))
+	repo.WriteFile("alias.md", "junction/document.md")
+
+	resolved, err := frontmatterWorkingPathWithSemantics(repo.Root, "alias.md", map[string]string{"alias.md": "120000"}, true, true, true)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(repo.Root, "target", "document.md"), resolved)
+}
+
+func TestFrontmatterFixChangedComparesFinalGitContent(t *testing.T) {
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	repo.WriteFile(".gitattributes", "*.md text eol=lf\n")
+	repo.WriteFile("document.md", goodFrontmatter)
+	repo.Run("add", ".gitattributes", "document.md")
+	repo.Run("commit", "-m", "add document with canonical date")
+	repo.Run("branch", "base")
+
+	quoted := strings.ReplaceAll(goodFrontmatter, "2026-11-01", `"2026-11-01"`)
+	repo.WriteFile("document.md", strings.ReplaceAll(quoted, "\n", "\r\n"))
+
+	var stdout, stderr bytes.Buffer
+	n, err := runFrontmatter(t.Context(), []string{"-fix", "-changed", "base", "document.md"}, &stdout, &stderr)
+	require.NoError(t, err)
+	assert.Zero(t, n)
+	assert.Empty(t, stderr.String())
+	assert.Contains(t, stdout.String(), "1 fixed")
+	repo.Run("diff", "--quiet", "base", "--", "document.md")
 }
 
 func TestFrontmatterWindowsRootedPlaceholderTargets(t *testing.T) {

@@ -20,7 +20,9 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"go.kenn.io/kit/atomicfile"
+	"go.kenn.io/kit/fslink"
 	gitenv "go.kenn.io/kit/git/env"
+	"go.kenn.io/kit/pathresolve"
 )
 
 type frontmatterExcludes []string
@@ -71,6 +73,40 @@ func frontmatterGit(ctx context.Context, dir string, args ...string) ([]byte, er
 		return nil, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
 	return out, nil
+}
+
+func frontmatterGitHashContent(ctx context.Context, root string, content []byte, path string) (string, error) {
+	args := []string{"hash-object", "--stdin"}
+	if path != "" {
+		args = []string{"hash-object", "--path=" + filepath.ToSlash(path), "--stdin"}
+	}
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = root
+	cmd.Env = gitenv.StripInherited(os.Environ())
+	cmd.Stdin = bytes.NewReader(content)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func frontmatterGitContentDiffers(ctx context.Context, root, currentPath string, previous, current []byte) (bool, error) {
+	previousHash, err := frontmatterGitHashContent(ctx, root, previous, "")
+	if err != nil {
+		return false, err
+	}
+	relative, err := filepath.Rel(root, currentPath)
+	if err != nil {
+		return false, err
+	}
+	currentHash, err := frontmatterGitHashContent(ctx, root, current, relative)
+	if err != nil {
+		return false, err
+	}
+	return previousHash != currentHash, nil
 }
 
 type frontmatterBlock struct {
@@ -387,10 +423,10 @@ func frontmatterCaseInsensitiveFilesystem(ctx context.Context, root string) (boo
 
 var errFrontmatterSymlinkOutside = errors.New("markdown symlink target is outside the repository")
 
-func frontmatterRepositoryTarget(root, target string) (string, bool, error) {
-	windows := filepath.Separator == '\\'
+func frontmatterRepositoryTargetWithSemantics(root, target string, windows, caseInsensitiveFilesystem bool) (string, bool, error) {
+	target = frontmatterNormalizeLinkTarget(target, windows)
 	if !frontmatterIsAbsoluteTarget(target, windows) {
-		return filepath.ToSlash(target), false, nil
+		return target, false, nil
 	}
 	rootAbs, err := filepath.Abs(root)
 	if err != nil {
@@ -414,7 +450,7 @@ func frontmatterRepositoryTarget(root, target string) (string, bool, error) {
 	}
 	for i, part := range rootParts {
 		equal := targetParts[i] == part
-		if filepath.Separator == '\\' {
+		if caseInsensitiveFilesystem {
 			equal = strings.EqualFold(targetParts[i], part)
 		}
 		if !equal {
@@ -426,6 +462,33 @@ func frontmatterRepositoryTarget(root, target string) (string, bool, error) {
 		relative = "."
 	}
 	return relative, true, nil
+}
+
+func frontmatterNormalizeLinkTarget(target string, windows bool) string {
+	if !windows {
+		return target
+	}
+	slashed := strings.ReplaceAll(target, `\`, "/")
+	if unc, ok := strings.CutPrefix(slashed, "//"); ok {
+		parts := strings.Split(unc, "/")
+		if len(parts) < 2 {
+			return slashed
+		}
+		prefix := "//" + parts[0] + "/" + parts[1]
+		if len(parts) == 2 {
+			return prefix
+		}
+		cleaned := path.Clean(strings.Join(parts[2:], "/"))
+		if cleaned == "." {
+			return prefix
+		}
+		return prefix + "/" + cleaned
+	}
+	if len(slashed) >= 2 && slashed[1] == ':' {
+		volume, rest := slashed[:2], slashed[2:]
+		return volume + path.Clean(rest)
+	}
+	return path.Clean(slashed)
 }
 
 func frontmatterIsAbsoluteTarget(target string, windows bool) bool {
@@ -462,9 +525,15 @@ func frontmatterIndexMode(indexModes map[string]string, name string, caseInsensi
 }
 
 // Resolve the working path component-by-component so symlinks and .. retain
-// filesystem order. Git records symlink targets as regular files when
-// core.symlinks=false, so use index modes to identify those placeholders too.
+// Unix filesystem order. Windows normalizes each destination before following
+// links. Git records symlink targets as regular files when core.symlinks=false,
+// so use index modes to identify those placeholders too.
 func frontmatterWorkingPathWithCaseSemantics(root, file string, indexModes map[string]string, symlinkPlaceholders, caseInsensitiveFilesystem bool) (string, error) {
+	windows := filepath.Separator == '\\'
+	return frontmatterWorkingPathWithSemantics(root, file, indexModes, symlinkPlaceholders, windows, caseInsensitiveFilesystem)
+}
+
+func frontmatterWorkingPathWithSemantics(root, file string, indexModes map[string]string, symlinkPlaceholders, windows, caseInsensitiveFilesystem bool) (string, error) {
 	var resolved []string
 	pending := strings.Split(filepath.ToSlash(file), "/")
 	links := 0
@@ -490,7 +559,32 @@ func frontmatterWorkingPathWithCaseSemantics(root, file string, indexModes map[s
 			return "", err
 		}
 		isSymlink := info.Mode()&os.ModeSymlink != 0
-		isPlaceholder := symlinkPlaceholders && !isSymlink && frontmatterIndexMode(indexModes, candidate, caseInsensitiveFilesystem) == "120000"
+		isJunction := false
+		if windows && !isSymlink {
+			kind, classifyErr := fslink.Classify(full)
+			if classifyErr != nil {
+				return "", classifyErr
+			}
+			isJunction = kind == fslink.Junction
+		}
+		isPlaceholder := symlinkPlaceholders && !isSymlink && !isJunction && frontmatterIndexMode(indexModes, candidate, caseInsensitiveFilesystem) == "120000"
+		if isJunction {
+			links++
+			if links > 40 {
+				return "", errors.New("too many working-tree symlinks")
+			}
+			target, err := fslink.Readlink(full)
+			if err != nil {
+				return "", err
+			}
+			if _, _, err := frontmatterRepositoryTargetWithSemantics(root, target, windows, caseInsensitiveFilesystem); err != nil {
+				return "", err
+			}
+			// Keep the lexical path for Windows normalization and let the final
+			// canonicalization resolve the junction itself.
+			resolved = candidateParts
+			continue
+		}
 		if isSymlink || isPlaceholder {
 			links++
 			if links > 40 {
@@ -507,7 +601,7 @@ func frontmatterWorkingPathWithCaseSemantics(root, file string, indexModes map[s
 			if err != nil {
 				return "", err
 			}
-			target, absolute, err := frontmatterRepositoryTarget(root, target)
+			target, absolute, err := frontmatterRepositoryTargetWithSemantics(root, target, windows, caseInsensitiveFilesystem)
 			if err != nil {
 				return "", err
 			}
@@ -528,7 +622,7 @@ func frontmatterWorkingPathWithCaseSemantics(root, file string, indexModes map[s
 		return "", errors.New("markdown path resolves to the repository directory")
 	}
 	full := filepath.Join(root, filepath.FromSlash(strings.Join(resolved, "/")))
-	full, err := filepath.EvalSymlinks(full)
+	full, err := pathresolve.EvalSymlinks(full)
 	if err != nil {
 		return "", err
 	}
@@ -539,12 +633,18 @@ func frontmatterWorkingPathWithCaseSemantics(root, file string, indexModes map[s
 }
 
 // Resolve historical paths component-by-component so intermediate symlinks
-// and following .. components match filesystem order.
+// retain Unix traversal order; Windows targets are normalized before traversal.
 func frontmatterPrevious(ctx context.Context, root, name string, tree map[string]frontmatterTreeEntry) ([]byte, bool, error) {
-	return frontmatterPreviousWithCaseSemantics(ctx, root, name, tree, filepath.Separator == '\\')
+	windows := filepath.Separator == '\\'
+	return frontmatterPreviousWithSemantics(ctx, root, name, tree, windows, windows)
 }
 
 func frontmatterPreviousWithCaseSemantics(ctx context.Context, root, name string, tree map[string]frontmatterTreeEntry, caseInsensitiveFilesystem bool) ([]byte, bool, error) {
+	windows := filepath.Separator == '\\'
+	return frontmatterPreviousWithSemantics(ctx, root, name, tree, windows, caseInsensitiveFilesystem)
+}
+
+func frontmatterPreviousWithSemantics(ctx context.Context, root, name string, tree map[string]frontmatterTreeEntry, windows, caseInsensitiveFilesystem bool) ([]byte, bool, error) {
 	changed := false
 	var resolved []string
 	pending := strings.Split(name, "/")
@@ -583,7 +683,7 @@ func frontmatterPreviousWithCaseSemantics(ctx context.Context, root, name string
 			if err != nil {
 				return nil, false, err
 			}
-			targetName, absolute, err := frontmatterRepositoryTarget(root, string(target))
+			targetName, absolute, err := frontmatterRepositoryTargetWithSemantics(root, string(target), windows, caseInsensitiveFilesystem)
 			if errors.Is(err, errFrontmatterSymlinkOutside) {
 				return nil, false, fmt.Errorf("%w: historical symlink %s escapes the repository", errFrontmatterHistoricalTargetUnavailable, candidate)
 			}
@@ -803,6 +903,7 @@ func checkFrontmatterFileWithCaseSemantics(ctx context.Context, root, file strin
 		return []string{err.Error()}, false, nil //nolint:nilerr // Count invalid metadata as a finding so scanning continues.
 	}
 	didFix := false
+	finalContent := src
 	if fix {
 		date := time.Now().UTC().Format(time.DateOnly)
 		if b.fields["last_edited"] == nil {
@@ -834,6 +935,7 @@ func checkFrontmatterFileWithCaseSemantics(ctx context.Context, root, file strin
 				return nil, false, err
 			}
 			didFix = true
+			finalContent = updated
 		}
 	}
 	problems := b.problems()
@@ -846,7 +948,14 @@ func checkFrontmatterFileWithCaseSemantics(ctx context.Context, root, file strin
 			return nil, didFix, err
 		}
 		old, err := parseFrontmatter(previous)
-		if err == nil && ((previousChanged && !bytes.Equal(previous, src)) || didFix) {
+		if err == nil && (previousChanged || didFix) {
+			differs, err := frontmatterGitContentDiffers(ctx, root, targetPath, previous, finalContent)
+			if err != nil {
+				return nil, didFix, err
+			}
+			if !differs {
+				return problems, didFix, nil
+			}
 			before, after := old.fields["last_edited"], b.fields["last_edited"]
 			if before != nil && after != nil && before.Value == after.Value {
 				problems = append(problems, "content changed without changing last_edited")
