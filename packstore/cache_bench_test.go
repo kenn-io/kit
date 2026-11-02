@@ -68,10 +68,9 @@ func buildReaderRotationPacks(b *testing.B, nPacks, entries int) (*Store, []Inde
 		require.NoError(b, os.MkdirAll(filepath.Dir(layout.PackPath(id)), 0o700))
 		_, err = w.Seal(layout.PackPath(id))
 		require.NoError(b, err)
-		hash, err := ParseHash(target.ID.String())
+		indexed, err := indexEntryFromPack(target, id)
 		require.NoError(b, err)
-		indexed := IndexEntry{Hash: hash, PackID: id, Offset: int64(target.Offset), StoredLen: int64(target.StoredLen), RawLen: int64(target.RawLen), Flags: uint8(target.Flags), CRC32C: target.CRC32C}
-		locations[hash] = Location{Member: true, Pack: &indexed}
+		locations[indexed.Hash] = Location{Member: true, Pack: &indexed}
 		packs = append(packs, indexed)
 	}
 	store, err := NewStore(&mapResolver{locations: locations}, layout, StoreOptions{})
