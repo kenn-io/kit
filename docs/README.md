@@ -17,6 +17,10 @@ verification records belong in kata and pull request discussion.
 - [Confirmed milestone delivery](https://github.com/kenn-io/kit/blob/main/telemetry/posthog/delivery.md)
 - [PostHog event fields](https://github.com/kenn-io/kit/blob/main/telemetry/posthog/fields.md)
 
+## Guidance
+
+- [Shared CLI design guidance](cli-design.md)
+
 ## Architecture
 
 - [Streaming pack I/O](architecture/streaming-pack-io.md)
