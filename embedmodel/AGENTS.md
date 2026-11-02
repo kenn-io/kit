@@ -1,3 +1,9 @@
+---
+title: "embedmodel invariants"
+description: "Invariants for embedding model identity, metadata, and asset resolution."
+last_edited: 2026-09-25
+---
+
 # embedmodel invariants
 
 - Keep vector-space and input-recipe identities separate.

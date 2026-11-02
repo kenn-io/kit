@@ -1,3 +1,9 @@
+---
+title: "Daily screen reports"
+description: "Define and send daily screen reports through PostHog."
+last_edited: 2026-10-21
+---
+
 # Daily screen reports
 
 Configure a reporter with the application's screen names and a private state

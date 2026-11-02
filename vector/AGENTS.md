@@ -1,3 +1,9 @@
+---
+title: "vector package invariants"
+description: "Invariants for backend-neutral vector search, embedding flows, and storage generations."
+last_edited: 2026-10-09
+---
+
 # vector package invariants
 
 `go.kenn.io/kit/vector` owns the backend-neutral parts of an embedding

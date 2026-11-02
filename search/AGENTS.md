@@ -1,3 +1,9 @@
+---
+title: "search package invariants"
+description: "Invariants for reusable search interfaces, queries, and backend boundaries."
+last_edited: 2026-09-26
+---
+
 # search package invariants
 
 Shared query construction lives under `search/`. Callers own database handles,

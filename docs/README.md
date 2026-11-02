@@ -1,3 +1,9 @@
+---
+title: "Documentation"
+description: "An index of kit adoption guides, development notes, architecture, and releases."
+last_edited: 2026-10-29
+---
+
 # Documentation
 
 Architecture documents capture durable design decisions, invariants, and

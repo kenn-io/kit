@@ -34,6 +34,7 @@ jobs:
         uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v7.0.0
@@ -53,6 +54,10 @@ jobs:
 
       - name: Run golangci-lint
         run: make lint
+
+      - name: Check Markdown edit dates
+        if: github.event_name == 'pull_request'
+        run: make lint-frontmatter-changed
 
       - name: Run lint, build, and vet for Windows
         env:

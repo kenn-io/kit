@@ -1,3 +1,9 @@
+---
+title: "embedclient invariants"
+description: "Invariants for embedding client transports, requests, and error handling."
+last_edited: 2026-10-01
+---
+
 # embedclient invariants
 
 - Accept a caller-owned `*http.Client` without modifying it. A nil client

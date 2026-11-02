@@ -1,3 +1,9 @@
+---
+title: "Confirmed milestone delivery"
+description: "Track confirmed milestone delivery through PostHog."
+last_edited: 2026-10-18
+---
+
 # Confirmed milestone delivery
 
 Use `CaptureConfirmed` for a one-time, non-daily milestone that the application

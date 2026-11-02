@@ -1,3 +1,9 @@
+---
+title: "Embedserver invariants"
+description: "Invariants for embedding server requests, scheduling, and lifecycle behavior."
+last_edited: 2026-10-27
+---
+
 # Embedserver invariants
 
 - Keep the pinned assets, tokenizer, and Ollama parity fixture in sync.

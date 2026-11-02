@@ -1,3 +1,9 @@
+---
+title: "Immutable object storage"
+description: "Invariants for immutable object storage, verification, and publication."
+last_edited: 2026-10-30
+---
+
 # Immutable object storage
 
 - Keep shared values and errors provider-neutral. Consumers own store

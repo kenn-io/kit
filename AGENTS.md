@@ -1,3 +1,9 @@
+---
+title: "Agent Instructions"
+description: "Repository scope, development conventions, and contribution rules for kit."
+last_edited: 2026-11-01
+---
+
 # Agent Instructions
 
 ## Project Overview
@@ -48,6 +54,11 @@ provider workflows to this repo unless the package already owns that concern.
 - Never name private downstream projects or other private codebases in public
   artifacts. Describe reusable requirements generically and scrub public
   surfaces before publishing.
+- Tracked Markdown requires frontmatter with non-empty `title` and
+  `description` strings and a bare `last_edited: YYYY-MM-DD` date. The root
+  `README.md`, `.github/`, `testdata/`, `vendor/`, and `node_modules/` are
+  excluded by the frontmatter check. Change the date when editing existing
+  content; CI compares it with the merge base.
 
 ## Go Conventions
 

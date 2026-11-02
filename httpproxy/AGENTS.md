@@ -1,3 +1,9 @@
+---
+title: "httpproxy invariants"
+description: "Invariants for HTTP proxy client lifetimes, requests, and transport behavior."
+last_edited: 2026-10-27
+---
+
 # httpproxy invariants
 
 - The proxy listens only on loopback and reaches only `Config.Allow`

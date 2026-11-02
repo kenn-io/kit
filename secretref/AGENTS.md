@@ -1,3 +1,9 @@
+---
+title: "secretref invariants"
+description: "Invariants for secret references, resolution, and credential handling."
+last_edited: 2026-09-30
+---
+
 # secretref invariants
 
 - One configuration value holds a secret or names its source. A string is

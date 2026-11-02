@@ -4,6 +4,7 @@
 //	kennlint run [analysis flags] ./...
 //	kennlint workflow-retries [path ...]
 //	kennlint sql [path ...]
+//	kennlint frontmatter [-changed REF] [-fix] [-exclude GLOB] [path ...]
 //	kennlint config [-overlay FILE] [-out FILE] [-check]
 //	kennlint profile [-tags LIST] [-disable LIST] [-parallel] [-cpuprofile FILE] [packages]
 //	kennlint analyzers
@@ -11,12 +12,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -32,6 +35,7 @@ const usage = `usage:
   kennlint run [analysis flags] [packages]   run the kit analyzers (go vet style)
   kennlint workflow-retries [path ...]       report downloads missing retries in workflow YAML (default: .github)
   kennlint sql [path ...]                    report CHECK constraints and enum types in .sql files (default: .)
+  kennlint frontmatter [flags] [path ...]     check tracked Markdown metadata and last_edited dates
   kennlint config [flags]                    render .golangci.yml from the canonical config and an overlay
   kennlint profile [flags] [packages]        time each analyzer, split between packages and dependencies
   kennlint analyzers                         list the analyzers and their documentation
@@ -65,6 +69,17 @@ func main() {
 		if n > 0 {
 			os.Exit(1)
 		}
+	case "frontmatter":
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		n, err := runFrontmatter(ctx, os.Args[2:], os.Stdout, os.Stderr)
+		stop()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "kennlint frontmatter: %v\n", err)
+			os.Exit(2)
+		}
+		if n > 0 {
+			os.Exit(1)
+		}
 	case "config":
 		if err := runConfig(os.Args[2:], os.Stdout, os.Stderr); err != nil {
 			fmt.Fprintf(os.Stderr, "kennlint config: %v\n", err)
@@ -79,6 +94,7 @@ func main() {
 		for _, a := range lint.Analyzers() {
 			fmt.Printf("%-14s %s\n", a.Name, a.Doc)
 		}
+		fmt.Printf("%-14s %s\n", "frontmatter", "Check tracked Markdown title, description, and bare last_edited dates; -changed requires date updates.")
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)

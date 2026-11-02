@@ -1,3 +1,9 @@
+---
+title: "Installing the local embedding server"
+description: "Install and operate the local embedding server and its model assets."
+last_edited: 2026-10-29
+---
+
 # Installing the local embedding server
 
 Apps share one verified server and pinned model under `~/.kenn/embeddings`. Confirmation belongs to each app. Completed installations work offline. Downloading missing files asks for their remaining download size. An optional `Progress` callback reports bytes downloaded against the exact total as data arrives, so apps can draw a progress bar. The installer serializes callers and reserves `.install-*` directories for temporary downloads.

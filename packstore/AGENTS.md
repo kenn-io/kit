@@ -1,3 +1,9 @@
+---
+title: "packstore"
+description: "Invariants for packed object storage, indexing, recovery, and concurrency."
+last_edited: 2026-10-24
+---
+
 # packstore
 
 ## Loose publication

@@ -1,3 +1,9 @@
+---
+title: "atomicfile Instructions"
+description: "Invariants for atomic file publication, permissions, links, and durability."
+last_edited: 2026-09-30
+---
+
 # atomicfile Instructions
 
 ## Scope

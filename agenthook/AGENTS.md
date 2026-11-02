@@ -1,3 +1,9 @@
+---
+title: "Agent Hook Package Invariants"
+description: "Invariants for agent hook vocabulary, profiles, configuration, and lifecycle reporting."
+last_edited: 2026-10-14
+---
+
 # Agent Hook Package Invariants
 
 - The exported event and tool vocabulary follows Claude Code. Agent-specific

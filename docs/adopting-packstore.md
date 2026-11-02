@@ -1,3 +1,9 @@
+---
+title: "Adopting packed content storage"
+description: "Integrate packed content storage and maintain its publication and recovery guarantees."
+last_edited: 2026-10-07
+---
+
 # Adopting packed content storage
 
 This guide is for applications moving a content-addressed file tree onto

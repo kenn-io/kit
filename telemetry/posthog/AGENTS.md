@@ -1,3 +1,9 @@
+---
+title: "PostHog"
+description: "Invariants for PostHog event fields, batching, and delivery."
+last_edited: 2026-10-23
+---
+
 # PostHog
 
 The reporter owns event admission, property filtering, identity and default

@@ -1,3 +1,9 @@
+---
+title: "Safe File I/O Instructions"
+description: "Invariants for private file creation, permissions, and safe filesystem operations."
+last_edited: 2026-10-13
+---
+
 # Safe File I/O Instructions
 
 ## Scope

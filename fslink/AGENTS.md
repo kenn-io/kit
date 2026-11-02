@@ -1,3 +1,9 @@
+---
+title: "fslink Instructions"
+description: "Invariants for filesystem link classification and platform-specific resolution."
+last_edited: 2026-09-27
+---
+
 # fslink Instructions
 
 ## Scope

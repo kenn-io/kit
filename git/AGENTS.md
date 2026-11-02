@@ -1,3 +1,9 @@
+---
+title: "Git Package Instructions"
+description: "Invariants for shared Git commands, repositories, worktrees, and process isolation."
+last_edited: 2026-10-11
+---
+
 # Git Package Instructions
 
 ## Scope

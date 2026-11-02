@@ -1,3 +1,9 @@
+---
+title: "OpenSSH Package Threat Model"
+description: "Trust boundaries, attacker capabilities, and security guarantees for OpenSSH helpers."
+last_edited: 2026-08-13
+---
+
 # OpenSSH Package Threat Model
 
 This package constructs OpenSSH commands, resolves effective configuration,
