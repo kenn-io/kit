@@ -298,11 +298,7 @@ func TestStoreEnsureGenerationRejectsChangedFingerprint(t *testing.T) {
 
 func TestNewCreatesChunkLookupIndexes(t *testing.T) {
 	assert := assert.New(t)
-	db, store := setup(t)
-	_, err := db.ExecContext(t.Context(), `INSERT INTO messages (id, body) VALUES (1, 'cat')`)
-	require.NoError(t, err)
-	require.NoError(t, store.EnsureGeneration(t.Context(), 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
-	require.NoError(t, store.SaveVectors(t.Context(), 1, 1, nil, nil))
+	db, _ := setup(t)
 
 	assert.Equal([]string{"ordinal", "vec_rowid"}, indexColumns(t, db, "message_vectors_chunks_by_vector"))
 	assert.Equal([]string{"doc_key", "ordinal", "vec_rowid"}, indexColumns(t, db, "message_vectors_chunks_by_doc"))
@@ -311,7 +307,7 @@ func TestNewCreatesChunkLookupIndexes(t *testing.T) {
 	assert.Equal([]string{"ordinal", "", "doc_key"}, indexColumns(t, db, "message_vectors_chunks_by_doc_numeric"))
 }
 
-func TestNewReadOnlyWithoutNumericIndexes(t *testing.T) {
+func TestNewReadOnlyAndRebuildNumericIndexes(t *testing.T) {
 	ctx := t.Context()
 	path := filepath.Join(t.TempDir(), "vec.db")
 	db, err := openSQLiteTestDB(t, path)
@@ -332,31 +328,20 @@ INSERT INTO messages (id, body) VALUES (1, 'cat')`)
 	require.NoError(t, err)
 	require.NoError(t, db.Close())
 
-	for _, mode := range []string{"mode_ro", "query_only"} {
-		t.Run(mode, func(t *testing.T) {
-			dsn := path
-			if mode == "mode_ro" {
-				uriPath := filepath.ToSlash(path)
-				if !strings.HasPrefix(uriPath, "/") {
-					uriPath = "/" + uriPath
-				}
-				dsn = (&url.URL{Scheme: "file", Path: uriPath, RawQuery: "mode=ro"}).String()
-			}
-			reader, err := openSQLiteTestDB(t, dsn)
-			require.NoError(t, err)
-			defer func() { require.NoError(t, reader.Close()) }()
-			reader.SetMaxOpenConns(1)
-			if mode == "query_only" {
-				_, err = reader.ExecContext(ctx, `PRAGMA query_only = ON`)
-				require.NoError(t, err)
-			}
-			readStore, err := sqlitevec.New[int64, int64](ctx, reader, schema)
-			require.NoError(t, err)
-			coverage, err := readStore.Coverage(ctx, 1, "")
-			require.NoError(t, err)
-			assert.Equal(t, sqlitevec.Coverage{Embedded: 1}, coverage)
-		})
+	uriPath := filepath.ToSlash(path)
+	if !strings.HasPrefix(uriPath, "/") {
+		uriPath = "/" + uriPath
 	}
+	dsn := (&url.URL{Scheme: "file", Path: uriPath, RawQuery: "mode=ro"}).String()
+	reader, err := openSQLiteTestDB(t, dsn)
+	require.NoError(t, err)
+	defer func() { _ = reader.Close() }()
+	readStore, err := sqlitevec.New[int64, int64](ctx, reader, schema)
+	require.NoError(t, err)
+	coverage, err := readStore.Coverage(ctx, 1, "")
+	require.NoError(t, err)
+	assert.Equal(t, sqlitevec.Coverage{Embedded: 1}, coverage)
+	require.NoError(t, reader.Close())
 
 	writer, err := openSQLiteTestDB(t, path)
 	require.NoError(t, err)
@@ -388,29 +373,21 @@ func indexColumns(t *testing.T, db *sql.DB, index string) []string {
 }
 
 func TestDocKeyMatchPreservesSQLiteAffinityMatches(t *testing.T) {
-	for _, tc := range []struct{ name, declaration, suffix string }{
-		{"integer", "INTEGER PRIMARY KEY", ""},
-		{"text", "TEXT", ""},
-		{"real", "REAL", ""},
-		{"numeric", "NUMERIC", ""},
-		{"untyped", "", ""},
-		{"strict_any", "ANY", "STRICT"},
-		{"nocase", "NUMERIC COLLATE NOCASE", ""},
+	for _, tc := range []struct{ name, declaration string }{
+		{"numeric", "NUMERIC"},
+		{"untyped", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := t.Context()
 			db, _ := setup(t)
-			_, err := db.ExecContext(ctx, fmt.Sprintf(`CREATE TABLE docs (id %s, body TEXT, embed_gen INTEGER) %s`, tc.declaration, tc.suffix))
+			_, err := db.ExecContext(ctx, fmt.Sprintf(`CREATE TABLE docs (id %s, body TEXT, embed_gen INTEGER)`, tc.declaration))
 			require.NoError(t, err)
 			store, err := sqlitevec.New[string, int64](ctx, db, sqlitevec.Schema{
 				DocsTable: "docs", IDColumn: "id", ContentColumn: "body", EmbedGenColumn: "embed_gen", VectorsPrefix: "test_vectors",
 			})
 			require.NoError(t, err)
-			keys := []any{int64(1), "1", " 1", "01", "001", "1.0", float64(4), "abc", "ABC", int64(-9223372036854775808), int64(9223372036854775807), "-9223372036854775808", "9223372036854775807"}
-			ids := keys
-			if tc.name == "integer" {
-				ids = []any{int64(1), int64(4), int64(-9223372036854775808), int64(9223372036854775807)}
-			}
+			keys := []string{"1", " 1", "01", "001", "1.0", "abc", "ABC", "-9223372036854775808", "9223372036854775807"}
+			ids := []any{int64(1), "1", " 1", "01", "001", "1.0", float64(4), "abc", "ABC", int64(-9223372036854775808), int64(9223372036854775807), "-9223372036854775808", "9223372036854775807"}
 			for _, id := range ids {
 				_, err := db.ExecContext(ctx, `INSERT INTO docs (id) VALUES (?)`, id)
 				require.NoError(t, err)

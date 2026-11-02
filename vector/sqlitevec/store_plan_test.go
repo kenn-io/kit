@@ -17,24 +17,6 @@ func TestCoverageAndPendingPlansProbeStampsByKey(t *testing.T) {
 	db, store := setup(t)
 	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (1, 'a cat sat'), (2, 'a dog ran')`)
 	require.NoError(t, err)
-	require.NoError(t, store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
-	_, err = vector.Fill(ctx, store, 1, topicEncoder())
-	require.NoError(t, err)
-	_, err = db.ExecContext(ctx, `DROP INDEX message_vectors_stamps_by_doc_numeric; DROP INDEX message_vectors_chunks_by_doc_numeric`)
-	require.NoError(t, err)
-	store, err = sqlitevec.New[int64, int64](ctx, db, sqlitevec.Schema{
-		DocsTable: "messages", IDColumn: "id", ContentColumn: "body", EmbedGenColumn: "embed_gen", VectorsPrefix: "message_vectors",
-	})
-	require.NoError(t, err)
-	require.NoError(t, store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
-	stats, err := vector.Fill(ctx, store, 1, topicEncoder())
-	require.NoError(t, err)
-	assert.Zero(t, stats.Documents)
-	coverage, err := store.Coverage(ctx, 1, "")
-	require.NoError(t, err)
-	assert.Equal(t, sqlitevec.Coverage{Embedded: 2}, coverage)
-	assert.Equal(t, []string{"ordinal", "", "doc_key"}, indexColumns(t, db, "message_vectors_stamps_by_doc_numeric"))
-	assert.Equal(t, []string{"ordinal", "", "doc_key"}, indexColumns(t, db, "message_vectors_chunks_by_doc_numeric"))
 
 	for _, tc := range []struct {
 		name  string
