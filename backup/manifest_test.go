@@ -90,6 +90,38 @@ func TestWriteListLoadLatest(t *testing.T) {
 	require.NoError(statErr)
 }
 
+func TestLatestSnapshotReadsOnlyNewest(t *testing.T) {
+	require := require.New(t)
+	r := initTestRepo(t)
+
+	oldestID, err := r.WriteManifest(testManifest("2026-07-01T00:00:00Z", "", 0))
+	require.NoError(err)
+	_, err = r.WriteManifest(testManifest("2026-07-02T00:00:00Z", "", 0))
+	require.NoError(err)
+	newest := testManifest("2026-07-03T00:00:00Z", "", 0)
+	newestID, err := r.WriteManifest(newest)
+	require.NoError(err)
+
+	require.NoError(os.WriteFile(r.Path(snapshotsDirName, oldestID+manifestExt), []byte("garbage"), 0o600))
+	latest, err := r.LatestSnapshot()
+	require.NoError(err)
+	require.NotNil(latest)
+	assert.Equal(t, newestID, latest.SnapshotID)
+	_, err = r.ListSnapshots()
+	require.Error(err)
+
+	newest.Stats = json.RawMessage(`{"notes":1}`)
+	data, err := json.Marshal(newest)
+	require.NoError(err)
+	require.NoError(os.WriteFile(r.Path(snapshotsDirName, newestID+manifestExt), data, 0o600))
+	_, err = r.LatestSnapshot()
+	require.ErrorContains(err, "content-derived ID check")
+
+	require.NoError(os.WriteFile(r.Path(snapshotsDirName, "zz"+manifestExt), []byte("garbage"), 0o600))
+	_, err = r.LatestSnapshot()
+	require.ErrorContains(err, "not a valid snapshot ID")
+}
+
 func TestChains(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
