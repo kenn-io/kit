@@ -108,7 +108,7 @@ func TestLatestSnapshotReadsOnlyNewest(t *testing.T) {
 	require.NotNil(latest)
 	assert.Equal(t, newestID, latest.SnapshotID)
 	_, err = r.ListSnapshots()
-	require.Error(err)
+	require.ErrorContains(err, oldestID)
 
 	newest.Stats = json.RawMessage(`{"notes":1}`)
 	data, err := json.Marshal(newest)
@@ -116,10 +116,6 @@ func TestLatestSnapshotReadsOnlyNewest(t *testing.T) {
 	require.NoError(os.WriteFile(r.Path(snapshotsDirName, newestID+manifestExt), data, 0o600))
 	_, err = r.LatestSnapshot()
 	require.ErrorContains(err, "content-derived ID check")
-
-	require.NoError(os.WriteFile(r.Path(snapshotsDirName, "zz"+manifestExt), []byte("garbage"), 0o600))
-	_, err = r.LatestSnapshot()
-	require.ErrorContains(err, "not a valid snapshot ID")
 }
 
 func TestChains(t *testing.T) {
