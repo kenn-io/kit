@@ -56,5 +56,5 @@ if args.os == 'windows':
         raise RuntimeError('Visual C++ redistribution files are missing for ' + architecture)
     for dll in ('msvcp140.dll', 'msvcp140_1.dll', 'vcruntime140.dll', 'vcruntime140_1.dll'):
         shutil.copy2(candidates[-1] / dll, root / dll)
-    urllib.request.urlretrieve('https://aka.ms/VCRedistLicense', root / 'Visual-C++-Runtime-License.html')
+    subprocess.run(['bash', '.github/actions/kit-retry/kit-download', 'https://aka.ms/VCRedistLicense', str(root / 'Visual-C++-Runtime-License.html')], check=True)
 print(next(path for path in root.iterdir() if path.name.startswith(('onnxruntime.', 'libonnxruntime.'))))
