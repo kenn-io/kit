@@ -68,6 +68,7 @@ func createPackedRestoreFixture(t *testing.T) (*Repo, App, *Manifest, string) {
 }
 
 func TestRestorePackedTargetKeepsChunkedContentLoose(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	repo := initTestRepo(t)
 	app := packedExtensionApp{App: newTestApp()}

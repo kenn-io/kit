@@ -158,10 +158,12 @@ func TestCaptureChunkedSource(t *testing.T) {
 }
 
 func TestCaptureExactlyOneChunk(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	ref := writeLargeAttachment(t, dir, 64<<20, true)
 	for _, mode := range []string{"content", "metadata"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			appender, repo, known := newTestAppenderForSource(t)
 			defer appender.Abort()
 			id, err := pack.ParseBlobID(ref.Hash)

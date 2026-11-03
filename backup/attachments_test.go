@@ -430,6 +430,7 @@ func TestCaptureAttachmentsRefusesSymlinkEscape(t *testing.T) {
 }
 
 func TestCaptureLargeAttachmentKeepsOpenedRoot(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows does not allow renaming an open root directory")
 	}
