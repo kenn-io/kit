@@ -7,8 +7,9 @@ import platform
 import shutil
 import subprocess
 import tarfile
-import urllib.request
 import zipfile
+
+download = pathlib.Path(__file__).resolve().parents[1] / 'actions/kit-retry/kit-download'
 
 targets = {
     ('linux', 'amd64'): ('linux-x64', 'tgz', '1fa4dcaef22f6f7d5cd81b28c2800414350c10116f5fdd46a2160082551c5f9b'),
@@ -29,7 +30,7 @@ root.mkdir(parents=True, exist_ok=True)
 name = 'onnxruntime-' + target + '-1.23.2'
 archive = root.parent / (name + '.' + suffix)
 if not archive.exists():
-    urllib.request.urlretrieve('https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/' + archive.name, archive)
+    subprocess.run(['bash', str(download), 'https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/' + archive.name, str(archive)], check=True)
 if hashlib.sha256(archive.read_bytes()).hexdigest() != digest:
     raise RuntimeError('ONNX Runtime SHA-256 mismatch')
 # Copy regular library bytes, including versioned files, rather than archive symlinks.
@@ -56,5 +57,5 @@ if args.os == 'windows':
         raise RuntimeError('Visual C++ redistribution files are missing for ' + architecture)
     for dll in ('msvcp140.dll', 'msvcp140_1.dll', 'vcruntime140.dll', 'vcruntime140_1.dll'):
         shutil.copy2(candidates[-1] / dll, root / dll)
-    subprocess.run(['bash', '.github/actions/kit-retry/kit-download', 'https://aka.ms/VCRedistLicense', str(root / 'Visual-C++-Runtime-License.html')], check=True)
+    subprocess.run(['bash', str(download), 'https://aka.ms/VCRedistLicense', str(root / 'Visual-C++-Runtime-License.html')], check=True)
 print(next(path for path in root.iterdir() if path.name.startswith(('onnxruntime.', 'libonnxruntime.'))))
