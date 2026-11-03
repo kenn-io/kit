@@ -14,6 +14,15 @@ type cachedPack struct {
 	entries map[pack.BlobID]pack.Entry
 }
 
+func newCachedPack(reader *pack.Reader) *cachedPack {
+	entries := reader.Entries()
+	cached := &cachedPack{reader: reader, entries: make(map[pack.BlobID]pack.Entry, len(entries))}
+	for _, entry := range entries {
+		cached.entries[entry.ID] = entry
+	}
+	return cached
+}
+
 // packReaders owns descriptors for sequential copies. No stream may remain
 // open when another blob is opened, so eviction cannot interrupt a copy.
 type packReaders struct {
@@ -63,10 +72,7 @@ func (p *packReaders) reader(id string) (*cachedPack, error) {
 	if err != nil {
 		return nil, err
 	}
-	cached := &cachedPack{reader: reader, entries: make(map[pack.BlobID]pack.Entry)}
-	for _, entry := range reader.Entries() {
-		cached.entries[entry.ID] = entry
-	}
+	cached := newCachedPack(reader)
 	p.readers[id] = cached
 	p.order = append(p.order, id)
 	return cached, nil
