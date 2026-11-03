@@ -68,6 +68,7 @@ jobs:
     timeout-minutes: ${{ matrix.shard == 'managed' && 30 || matrix.os == 'windows-latest' && 31 || 14 }}
     env:
       MANAGED_PACKAGE: go.kenn.io/kit/git/managed
+      GOTESTSUM_SUITE: go-${{ matrix.os }}-${{ matrix.shard }}-${{ matrix.part || 'all' }}
     strategy:
       fail-fast: false
       matrix:
@@ -121,7 +122,7 @@ jobs:
 
       - name: Run tests
         if: matrix.os != 'windows-latest'
-        run: go tool gotestsum --format pkgname-and-test-fails --jsonfile=test-output-${{ matrix.os }}.json -- ./...
+        run: go tool gotestsum --format pkgname-and-test-fails --format-icons text --jsonfile "gotestsum/${GOTESTSUM_SUITE}.json" --rerun-fails=2 --rerun-fails-report "gotestsum/${GOTESTSUM_SUITE}-reruns.txt" --packages "./..."
 
       - name: Run Windows tests (${{ matrix.shard }})
         if: matrix.os == 'windows-latest'
@@ -142,26 +143,37 @@ jobs:
             if ($selected.Count -eq 0) { throw "Managed test part $env:TEST_PART has no tests" }
             Write-Host "Managed test part $env:TEST_PART/$env:TEST_PARTS selected $($selected.Count) of $($names.Count) tests"
             $pattern = '^(' + (($selected | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')$'
-            $testArgs = @('-timeout=20m', '-run', $pattern, $env:MANAGED_PACKAGE)
+            $packages = $env:MANAGED_PACKAGE
+            $testArgs = @('-timeout=20m', '-run', $pattern)
           } else {
             $allPackages = @(go list ./...)
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            $testArgs = @($allPackages | Where-Object { $_ -ne $env:MANAGED_PACKAGE })
+            $packages = @($allPackages | Where-Object { $_ -ne $env:MANAGED_PACKAGE }) -join ' '
+            $testArgs = @()
           }
-          go tool gotestsum --format pkgname-and-test-fails --jsonfile="test-output-windows-$env:TEST_SHARD.json" -- @testArgs
+          go tool gotestsum --format pkgname-and-test-fails --format-icons text --jsonfile "gotestsum/$($env:GOTESTSUM_SUITE).json" --rerun-fails=2 --rerun-fails-report "gotestsum/$($env:GOTESTSUM_SUITE)-reruns.txt" --packages $packages -- @testArgs
           exit $LASTEXITCODE
 
+      - name: Upload gotestsum results
+        if: failure() || hashFiles('gotestsum/*-reruns.txt') != ''
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: gotestsum-${{ env.GOTESTSUM_SUITE }}-attempt-${{ github.run_attempt }}
+          path: gotestsum/*.json
+          retention-days: 14
+          if-no-files-found: ignore
+
       - name: Print slowest tests
-        if: always() && hashFiles('test-output-*.json') != ''
+        if: always() && hashFiles('gotestsum/*.json') != ''
         shell: bash
-        run: go tool gotestsum tool slowest --jsonfile test-output-*.json --num 10
+        run: go tool gotestsum tool slowest --jsonfile "gotestsum/${GOTESTSUM_SUITE}.json" --num 10
 
       - name: Upload test times
         if: always()
         uses: actions/upload-artifact@v7.0.2
         with:
           name: test-times-${{ matrix.os }}-${{ matrix.shard }}-${{ matrix.part || 'all' }}
-          path: test-output-*.json
+          path: gotestsum/*.json
 
       - name: Run go vet
         if: matrix.os != 'windows-latest'
@@ -185,7 +197,16 @@ jobs:
           cache: true
 
       - name: Run storage and PostHog race tests
-        run: go test -race ./pack ./packstore ./backup ./telemetry/posthog/...
+        run: go tool gotestsum --format pkgname-and-test-fails --format-icons text --jsonfile gotestsum/streaming-race.json --rerun-fails=2 --rerun-fails-report gotestsum/streaming-race-reruns.txt --packages "./pack ./packstore ./backup ./telemetry/posthog/..." -- -race
+
+      - name: Upload gotestsum results
+        if: failure() || hashFiles('gotestsum/streaming-race-reruns.txt') != ''
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: gotestsum-streaming-race-attempt-${{ github.run_attempt }}
+          path: gotestsum/streaming-race.json
+          retention-days: 14
+          if-no-files-found: ignore
 
       - name: Compile streaming packages for Linux 386
         env:
@@ -201,7 +222,16 @@ jobs:
         env:
           CGO_ENABLED: "0"
           GOARCH: "386"
-        run: go test ./spill
+        run: go tool gotestsum --format pkgname-and-test-fails --format-icons text --jsonfile gotestsum/spill-linux386.json --rerun-fails=2 --rerun-fails-report gotestsum/spill-linux386-reruns.txt --packages "./spill"
+
+      - name: Upload gotestsum results
+        if: failure() || hashFiles('gotestsum/spill-linux386-reruns.txt') != ''
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: gotestsum-spill-linux386-attempt-${{ github.run_attempt }}
+          path: gotestsum/spill-linux386.json
+          retention-days: 14
+          if-no-files-found: ignore
 
       - name: Compile fail-closed storage packages for Plan 9
         env:
@@ -268,7 +298,16 @@ jobs:
           KIT_S3_TEST_ACCESS_KEY: kit-test
           KIT_S3_TEST_SECRET_KEY: kit-test-secret
           KIT_S3_TEST_BUCKET: kit-conformance
-        run: go test -race -shuffle=on ./objectstore/s3 ./packstore/s3store
+        run: go tool gotestsum --format pkgname-and-test-fails --format-icons text --jsonfile gotestsum/s3-conformance.json --rerun-fails=2 --rerun-fails-report gotestsum/s3-conformance-reruns.txt --packages "./objectstore/s3 ./packstore/s3store" -- -race -shuffle=on
+
+      - name: Upload gotestsum results
+        if: failure() || hashFiles('gotestsum/*-reruns.txt') != ''
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: gotestsum-s3-conformance-attempt-${{ github.run_attempt }}
+          path: gotestsum/*.json
+          retention-days: 14
+          if-no-files-found: ignore
 
   search-backends:
     name: Search backend conformance
@@ -317,7 +356,16 @@ jobs:
         env:
           KIT_POSTGRES_TEST_DSN: postgres://postgres:postgres@127.0.0.1:5432/kit?sslmode=disable
           KIT_CLICKHOUSE_TEST_ADDR: 127.0.0.1:9000
-        run: go test -count=1 ./search/postgres ./search/clickhouse
+        run: go tool gotestsum --format pkgname-and-test-fails --format-icons text --jsonfile gotestsum/search-backends.json --rerun-fails=2 --rerun-fails-report gotestsum/search-backends-reruns.txt --packages "./search/postgres ./search/clickhouse" -- -count=1
+
+      - name: Upload gotestsum results
+        if: failure() || hashFiles('gotestsum/*-reruns.txt') != ''
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: gotestsum-search-backends-attempt-${{ github.run_attempt }}
+          path: gotestsum/*.json
+          retention-days: 14
+          if-no-files-found: ignore
 
   embedserver:
     name: Local embedding parity (${{ matrix.os }})
@@ -356,7 +404,15 @@ jobs:
               env.write('KIT_EMBED_TEST_DIR=' + str(root.parent / 'model') + '\n')
               env.write('KIT_EMBED_TEST_LIBRARY=' + library + '\n')
       - name: Run focused tests and native parity
-        run: make test-embedserver
+        run: make test-embedserver GOTESTSUM_SUITE=embedserver-${{ matrix.os }}
+      - name: Upload gotestsum results
+        if: failure() || hashFiles('gotestsum/*-reruns.txt') != ''
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: gotestsum-embedserver-${{ matrix.os }}-attempt-${{ github.run_attempt }}
+          path: gotestsum/*.json
+          retention-days: 14
+          if-no-files-found: ignore
       - name: Compile six targets without CGo
         if: matrix.os == 'linux'
         shell: python

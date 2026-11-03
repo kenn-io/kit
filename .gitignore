@@ -2,3 +2,4 @@
 # roborev snapshots
 /.roborev/
 /custom-gcl
+/gotestsum/

@@ -61,7 +61,15 @@ jobs:
               name = output / ('kennembed_' + version + '_' + target + '_' + arch)
               shutil.make_archive(str(name), 'zip' if target == 'windows' else 'gztar', bundle)
       - name: Exercise the pinned native server and model
-        run: make test-embedserver
+        run: make test-embedserver GOTESTSUM_SUITE=kennembed-${{ matrix.os }}
+      - name: Upload gotestsum results
+        if: failure() || hashFiles('gotestsum/*-reruns.txt') != ''
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: gotestsum-kennembed-${{ matrix.os }}-attempt-${{ github.run_attempt }}
+          path: gotestsum/*.json
+          retention-days: 14
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: kennembed-${{ matrix.os }}
