@@ -140,8 +140,16 @@ jobs:
       - uses: $/.github/actions/kit-retry
 
       - name: Download modules
+        if: matrix.shard != 'managed'
         shell: bash
         run: kit-retry 3 5 go mod download
+
+      - name: Download managed test modules
+        if: matrix.shard == 'managed'
+        shell: bash
+        run: |
+          kit-retry 3 5 go list -deps -test "$MANAGED_PACKAGE" > /dev/null
+          kit-retry 3 5 go list -deps gotest.tools/gotestsum > /dev/null
 
       - name: Build
         if: matrix.os != 'windows-latest'
