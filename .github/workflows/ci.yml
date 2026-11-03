@@ -126,8 +126,7 @@ jobs:
 
       - name: Restore Go cache
         if: matrix.own-go-cache
-        id: go-cache
-        uses: actions/cache/restore@v6.1.0
+        uses: actions/cache@v6.1.0
         with:
           path: ${{ steps.go-cache-key.outputs.paths }}
           key: go-windows-regular-${{ hashFiles('go.mod', 'go.sum') }}-${{ steps.go-cache-key.outputs.day }}
@@ -176,13 +175,6 @@ jobs:
           }
           go tool gotestsum --format pkgname-and-test-fails --format-icons text --jsonfile "gotestsum/$($env:GOTESTSUM_SUITE).json" --rerun-fails=2 --rerun-fails-report "gotestsum/$($env:GOTESTSUM_SUITE)-reruns.txt" --packages $packages -- @testArgs
           exit $LASTEXITCODE
-
-      - name: Save Go cache
-        if: matrix.own-go-cache && github.ref == 'refs/heads/main' && steps.go-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6.1.0
-        with:
-          path: ${{ steps.go-cache-key.outputs.paths }}
-          key: go-windows-regular-${{ hashFiles('go.mod', 'go.sum') }}-${{ steps.go-cache-key.outputs.day }}
 
       - name: Upload gotestsum results
         if: failure() || hashFiles('gotestsum/*-reruns.txt') != ''
