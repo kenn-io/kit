@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 
@@ -294,7 +293,6 @@ func listSnapshots(snapshots fs.FS) ([]*Manifest, error) {
 		}
 		out = append(out, m)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].SnapshotID < out[j].SnapshotID })
 	return out, nil
 }
 
