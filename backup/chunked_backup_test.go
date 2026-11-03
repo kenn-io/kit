@@ -19,7 +19,8 @@ import (
 	"go.kenn.io/kit/packstore"
 )
 
-func TestChunkedBackupRestoreAndPrune(t *testing.T) {
+func TestChunkedBackupRestoreAndPrune(t *testing.T) { //nolint:tparallel // Fault subtests mutate the shared repository and captured err.
+	t.Parallel()
 	ctx := t.Context()
 	base := t.TempDir()
 	repo, err := backup.Init(filepath.Join(base, "repo"))

@@ -16,12 +16,14 @@ import (
 )
 
 func TestCaptureReusesStoredWholeBlob(t *testing.T) {
+	t.Parallel()
 	for _, source := range []bool{false, true} {
 		name := "directory"
 		if source {
 			name = "source"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			repo := initTestRepo(t)
 			db, dir, data, writer := seedBackupFixture(t)
 			ref := writeLargeAttachment(t, dir, 64<<20+1, true)
@@ -109,10 +111,12 @@ func TestChunkedCaptureLetsSmallSourcesStart(t *testing.T) {
 }
 
 func TestCaptureChunkedSource(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	ref := writeLargeAttachment(t, dir, 64<<20+1, false)
 	for _, mode := range []string{"declared size", "size hint", "wrong hash"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			input := ref
 			switch mode {
 			case "size hint":
