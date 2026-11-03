@@ -116,12 +116,16 @@ jobs:
         if: matrix.own-go-cache
         id: go-cache-key
         shell: bash
+        env:
+          GO_SUM: ${{ hashFiles('go.sum') }}
         run: |
+          # A go.sum change starts a new chain, so modules it drops leave the cache.
           {
             echo 'paths<<EOF'
             go env GOCACHE GOMODCACHE
             echo 'EOF'
-            echo "key=go-windows-regular-$(date -u +%F)"
+            echo "prefix=go-windows-regular-$GO_SUM-"
+            echo "key=go-windows-regular-$GO_SUM-$(date -u +%F)"
           } >> "$GITHUB_OUTPUT"
 
       - name: Restore Go cache
@@ -131,7 +135,7 @@ jobs:
         with:
           path: ${{ steps.go-cache-key.outputs.paths }}
           key: ${{ steps.go-cache-key.outputs.key }}
-          restore-keys: go-windows-regular-
+          restore-keys: ${{ steps.go-cache-key.outputs.prefix }}
 
       - uses: $/.github/actions/kit-retry
 
