@@ -13,6 +13,7 @@ import (
 
 // KIT_STREAM_TEST_BYTES can exercise the same path above the pack frame limit.
 func TestLargeExtrasCaptureVerifyPruneRestore(t *testing.T) {
+	t.Parallel()
 	r := initTestRepo(t)
 	dbPath, contentDir, dataDir, _ := seedBackupFixture(t)
 	size := largeBackupStreamTestBytes(t, 64<<20+1)

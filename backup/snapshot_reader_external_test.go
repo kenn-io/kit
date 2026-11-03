@@ -18,6 +18,7 @@ import (
 )
 
 func TestSnapshotReaderCopiesSelectedObjects(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 	assert := assert.New(t)
 	repo, err := backup.Init(filepath.Join(t.TempDir(), "repo"))

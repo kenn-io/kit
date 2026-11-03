@@ -15,6 +15,7 @@ import (
 )
 
 func TestRestoreLooseCompression(t *testing.T) {
+	t.Parallel()
 	repo := initTestRepo(t)
 	app := packedExtensionApp{App: newTestApp()}
 	dbPath, contentDir, dataDir, writer := seedBackupFixture(t)
@@ -34,6 +35,7 @@ func TestRestoreLooseCompression(t *testing.T) {
 	require.NotEmpty(t, manifest.Attachments.Recipes)
 	for _, mode := range []string{"loose", "packed", "publication failure"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			target := filepath.Join(t.TempDir(), "restored")
 			var receipts []packstore.WriteResult
 			publicationErr := errors.New("reject staged catalog")

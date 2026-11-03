@@ -54,50 +54,58 @@ var largeFixtures = struct {
 	refs map[largeFixtureKey]ContentRef
 }{refs: make(map[largeFixtureKey]ContentRef)}
 
-// writeLargeAttachment creates a hard link to a fixture shared across tests.
-// Callers must not write to the linked file.
+// writeLargeAttachment gives each caller its own copy of a cached fixture.
 func writeLargeAttachment(t *testing.T, dir string, size int64, compressible bool) ContentRef {
 	t.Helper()
 	require := require.New(t)
 	require.Positive(size)
-	largeFixtures.Lock()
-	defer largeFixtures.Unlock()
-	key := largeFixtureKey{size, compressible}
-	ref, ok := largeFixtures.refs[key]
-	if !ok {
-		tmp, err := os.CreateTemp(largeFixtureDir, "large-attachment-*")
-		require.NoError(err)
-		digest := sha256.New()
-		chunk := make([]byte, 96<<10)
-		if compressible {
-			copy(chunk, bytes.Repeat([]byte("streaming backup content "), len(chunk)/25+1))
-		}
-		var state uint32 = 1
-		dst := io.MultiWriter(tmp, digest)
-		remaining := size
-		for remaining > 0 {
-			if !compressible {
-				for i := range chunk {
-					state ^= state << 13
-					state ^= state >> 17
-					state ^= state << 5
-					chunk[i] = byte(state)
-				}
-			}
-			n := min(int64(len(chunk)), remaining)
-			_, err = dst.Write(chunk[:n])
+	ref := func() ContentRef {
+		largeFixtures.Lock()
+		defer largeFixtures.Unlock()
+		key := largeFixtureKey{size, compressible}
+		ref, ok := largeFixtures.refs[key]
+		if !ok {
+			tmp, err := os.CreateTemp(largeFixtureDir, "large-attachment-*")
 			require.NoError(err)
-			remaining -= n
+			digest := sha256.New()
+			chunk := make([]byte, 96<<10)
+			if compressible {
+				copy(chunk, bytes.Repeat([]byte("streaming backup content "), len(chunk)/25+1))
+			}
+			var state uint32 = 1
+			dst := io.MultiWriter(tmp, digest)
+			remaining := size
+			for remaining > 0 {
+				if !compressible {
+					for i := range chunk {
+						state ^= state << 13
+						state ^= state >> 17
+						state ^= state << 5
+						chunk[i] = byte(state)
+					}
+				}
+				n := min(int64(len(chunk)), remaining)
+				_, err = dst.Write(chunk[:n])
+				require.NoError(err)
+				remaining -= n
+			}
+			require.NoError(tmp.Close())
+			hash := hex.EncodeToString(digest.Sum(nil))
+			rel := filepath.Join(hash[:2], hash)
+			require.NoError(os.Rename(tmp.Name(), filepath.Join(largeFixtureDir, hash)))
+			ref = ContentRef{Hash: hash, Size: size, StoragePath: filepath.ToSlash(rel)}
+			largeFixtures.refs[key] = ref
 		}
-		require.NoError(tmp.Close())
-		hash := hex.EncodeToString(digest.Sum(nil))
-		rel := filepath.Join(hash[:2], hash)
-		require.NoError(os.Rename(tmp.Name(), filepath.Join(largeFixtureDir, hash)))
-		ref = ContentRef{Hash: hash, Size: size, StoragePath: filepath.ToSlash(rel)}
-		largeFixtures.refs[key] = ref
-	}
+		return ref
+	}()
 	require.NoError(os.MkdirAll(filepath.Join(dir, ref.Hash[:2]), 0o700))
-	require.NoError(os.Link(filepath.Join(largeFixtureDir, ref.Hash), filepath.Join(dir, ref.StoragePath)))
+	src, err := os.Open(filepath.Join(largeFixtureDir, ref.Hash))
+	require.NoError(err)
+	defer func() { require.NoError(src.Close()) }()
+	dst, err := os.OpenFile(filepath.Join(dir, ref.StoragePath), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	require.NoError(err)
+	_, copyErr := io.Copy(dst, src)
+	require.NoError(errors.Join(copyErr, dst.Close()))
 	return ref
 }
 
@@ -428,6 +436,7 @@ func (a badContentPathApp) RestoredContentPaths(ctx context.Context, db *sql.DB)
 // snapshot exercises the incremental known-blob path, which must still stream
 // and verify live content before reusing repository authority.
 func TestLargePlainAttachmentCaptureVerifyRestore(t *testing.T) {
+	t.Parallel()
 	largeBytes := largeBackupStreamTestBytes(t, 64<<20+1)
 	for _, tc := range []struct {
 		name         string
@@ -438,6 +447,7 @@ func TestLargePlainAttachmentCaptureVerifyRestore(t *testing.T) {
 		{name: "raw", compressible: false, wantFlag: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			require := require.New(t)
 			ctx := t.Context()
 			r := initTestRepo(t)
@@ -514,6 +524,7 @@ func largeBackupStreamTestBytes(t *testing.T, fallback int64) int64 {
 // must never write as a file. All are rejected on every platform before any
 // write.
 func TestRestoreRejectsBadAttachmentPaths(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 	ctx := t.Context()
 	r := initTestRepo(t)
@@ -1793,6 +1804,7 @@ func (a droppedPathApp) RestoredContentPaths(ctx context.Context, db *sql.DB) (m
 // restore before a single content file lands in the target, not from inside
 // a worker whose siblings have already published their blobs.
 func TestRestoreRejectsListedRefWithoutPathBeforeWriting(t *testing.T) {
+	t.Parallel()
 	require := require.New(t)
 	ctx := t.Context()
 	r := initTestRepo(t)
