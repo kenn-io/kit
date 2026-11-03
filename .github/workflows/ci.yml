@@ -142,11 +142,11 @@ jobs:
             if ($selected.Count -eq 0) { throw "Managed test part $env:TEST_PART has no tests" }
             Write-Host "Managed test part $env:TEST_PART/$env:TEST_PARTS selected $($selected.Count) of $($names.Count) tests"
             $pattern = '^(' + (($selected | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')$'
-            $testArgs = @('-timeout=20m', '-run', $pattern, $env:MANAGED_PACKAGE)
+            $testArgs = @('-count=1', '-timeout=20m', '-run', $pattern, $env:MANAGED_PACKAGE)
           } else {
             $allPackages = @(go list ./...)
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            $testArgs = @($allPackages | Where-Object { $_ -ne $env:MANAGED_PACKAGE })
+            $testArgs = @('-count=1') + @($allPackages | Where-Object { $_ -ne $env:MANAGED_PACKAGE })
           }
           go tool gotestsum --format pkgname-and-test-fails --jsonfile="test-output-windows-$env:TEST_SHARD.json" -- @testArgs
           exit $LASTEXITCODE
