@@ -12,6 +12,50 @@ import (
 	"go.kenn.io/kit/vector/sqlitevec"
 )
 
+func TestCoverageAndPendingPlansProbeStampsByKey(t *testing.T) {
+	ctx := t.Context()
+	db, store := setup(t)
+	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (1, 'a cat sat'), (2, 'a dog ran')`)
+	require.NoError(t, err)
+
+	for _, tc := range []struct {
+		name  string
+		query string
+		args  []any
+	}{
+		{"pending", store.PendingQueryForTest("d.id, d.body"), []any{1, 10}},
+		{"coverage", store.CoverageQueryForTest(""), []any{1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rows, err := db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+tc.query, tc.args...)
+			require.NoError(t, err)
+			defer func() { require.NoError(t, rows.Close()) }()
+			var stampProbes, chunkProbes int
+			for rows.Next() {
+				var id, parent, unused int
+				var detail string
+				require.NoError(t, rows.Scan(&id, &parent, &unused, &detail))
+				if strings.Contains(detail, "SEARCH stamp ") || strings.Contains(detail, "SEARCH c ") {
+					assert.Contains(t, detail, "ordinal=?", detail)
+					assert.Contains(t, detail, "<expr>=?", detail)
+					if strings.Contains(detail, "SEARCH stamp ") {
+						assert.Contains(t, detail, "message_vectors_stamps_by_doc_numeric", detail)
+						stampProbes++
+					} else {
+						assert.Contains(t, detail, "message_vectors_chunks_by_doc_numeric", detail)
+						chunkProbes++
+					}
+				}
+			}
+			require.NoError(t, rows.Err())
+			assert.Positive(t, stampProbes)
+			if tc.name == "coverage" {
+				assert.Positive(t, chunkProbes)
+			}
+		})
+	}
+}
+
 // TestQueryGenerationPlanScansKNNOnce pins QueryGeneration's join order:
 // the knn CTE must be materialized and drive the join as the outermost
 // loop, so the brute-force vec0 scan runs exactly once per query. When
