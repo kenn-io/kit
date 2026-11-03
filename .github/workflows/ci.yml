@@ -155,7 +155,7 @@ jobs:
           exit $LASTEXITCODE
 
       - name: Upload gotestsum results
-        if: failure() || hashFiles('gotestsum/*-reruns.txt') != ''
+        if: failure() || github.run_attempt > 1 || hashFiles(format('gotestsum/{0}-reruns.txt', env.GOTESTSUM_SUITE)) != ''
         uses: actions/upload-artifact@v7.0.2
         with:
           name: gotestsum-${{ env.GOTESTSUM_SUITE }}-attempt-${{ github.run_attempt }}
@@ -200,7 +200,7 @@ jobs:
         run: go tool gotestsum --format pkgname-and-test-fails --format-icons text --jsonfile gotestsum/streaming-race.json --rerun-fails=2 --rerun-fails-report gotestsum/streaming-race-reruns.txt --packages "./pack ./packstore ./backup ./telemetry/posthog/..." -- -race
 
       - name: Upload gotestsum results
-        if: failure() || hashFiles('gotestsum/streaming-race-reruns.txt') != ''
+        if: failure() || github.run_attempt > 1 || hashFiles('gotestsum/streaming-race-reruns.txt') != ''
         uses: actions/upload-artifact@v7.0.2
         with:
           name: gotestsum-streaming-race-attempt-${{ github.run_attempt }}
@@ -225,7 +225,7 @@ jobs:
         run: go tool gotestsum --format pkgname-and-test-fails --format-icons text --jsonfile gotestsum/spill-linux386.json --rerun-fails=2 --rerun-fails-report gotestsum/spill-linux386-reruns.txt --packages "./spill"
 
       - name: Upload gotestsum results
-        if: failure() || hashFiles('gotestsum/spill-linux386-reruns.txt') != ''
+        if: failure() || github.run_attempt > 1 || hashFiles('gotestsum/spill-linux386-reruns.txt') != ''
         uses: actions/upload-artifact@v7.0.2
         with:
           name: gotestsum-spill-linux386-attempt-${{ github.run_attempt }}
@@ -301,7 +301,7 @@ jobs:
         run: go tool gotestsum --format pkgname-and-test-fails --format-icons text --jsonfile gotestsum/s3-conformance.json --rerun-fails=2 --rerun-fails-report gotestsum/s3-conformance-reruns.txt --packages "./objectstore/s3 ./packstore/s3store" -- -race -shuffle=on
 
       - name: Upload gotestsum results
-        if: failure() || hashFiles('gotestsum/*-reruns.txt') != ''
+        if: failure() || github.run_attempt > 1 || hashFiles('gotestsum/s3-conformance-reruns.txt') != ''
         uses: actions/upload-artifact@v7.0.2
         with:
           name: gotestsum-s3-conformance-attempt-${{ github.run_attempt }}
@@ -359,7 +359,7 @@ jobs:
         run: go tool gotestsum --format pkgname-and-test-fails --format-icons text --jsonfile gotestsum/search-backends.json --rerun-fails=2 --rerun-fails-report gotestsum/search-backends-reruns.txt --packages "./search/postgres ./search/clickhouse" -- -count=1
 
       - name: Upload gotestsum results
-        if: failure() || hashFiles('gotestsum/*-reruns.txt') != ''
+        if: failure() || github.run_attempt > 1 || hashFiles('gotestsum/search-backends-reruns.txt') != ''
         uses: actions/upload-artifact@v7.0.2
         with:
           name: gotestsum-search-backends-attempt-${{ github.run_attempt }}
@@ -406,7 +406,7 @@ jobs:
       - name: Run focused tests and native parity
         run: make test-embedserver GOTESTSUM_SUITE=embedserver-${{ matrix.os }}
       - name: Upload gotestsum results
-        if: failure() || hashFiles('gotestsum/*-reruns.txt') != ''
+        if: failure() || github.run_attempt > 1 || hashFiles(format('gotestsum/embedserver-{0}-reruns.txt', matrix.os)) != ''
         uses: actions/upload-artifact@v7.0.2
         with:
           name: gotestsum-embedserver-${{ matrix.os }}-attempt-${{ github.run_attempt }}
