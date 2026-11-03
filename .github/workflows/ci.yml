@@ -171,12 +171,12 @@ jobs:
             Write-Host "Managed test part $env:TEST_PART/$env:TEST_PARTS selected $($selected.Count) of $($names.Count) tests"
             $pattern = '^(' + (($selected | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')$'
             $packages = $env:MANAGED_PACKAGE
-            $testArgs = @('-timeout=20m', '-run', $pattern)
+            $testArgs = @('-count=1', '-timeout=20m', '-run', $pattern)
           } else {
             $allPackages = @(go list ./...)
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             $packages = @($allPackages | Where-Object { $_ -ne $env:MANAGED_PACKAGE }) -join ' '
-            $testArgs = @()
+            $testArgs = @('-count=1')
           }
           go tool gotestsum --format pkgname-and-test-fails --format-icons text --jsonfile "gotestsum/$($env:GOTESTSUM_SUITE).json" --rerun-fails=2 --rerun-fails-report "gotestsum/$($env:GOTESTSUM_SUITE)-reruns.txt" --packages $packages -- @testArgs
           exit $LASTEXITCODE
