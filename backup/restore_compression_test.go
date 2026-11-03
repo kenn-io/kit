@@ -3,6 +3,7 @@ package backup
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -32,7 +33,7 @@ func TestRestoreLooseCompression(t *testing.T) {
 	manifest, err := Create(t.Context(), repo, app, createOpts(dbPath, contentDir, dataDir, t.TempDir()))
 	require.NoError(t, err)
 	require.NotEmpty(t, manifest.Attachments.Recipes)
-	for _, mode := range []string{"loose", "publication failure"} {
+	for _, mode := range []string{"loose", "packed", "publication failure"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
 			target := filepath.Join(t.TempDir(), "restored")
@@ -52,6 +53,16 @@ func TestRestoreLooseCompression(t *testing.T) {
 					return nil
 				},
 			}
+			if mode == "packed" {
+				opts.PackedContent = testPackedTarget{
+					limits: packstore.DefaultLimits(),
+					open: func(context.Context, *sql.DB) (packstore.RestoreCatalog, error) {
+						return restoreCatalogFunc(func(context.Context, []packstore.PackRecord, []packstore.Adoption) error {
+							return nil
+						}), nil
+					},
+				}
+			}
 			_, err := Restore(t.Context(), repo, app, opts)
 			if mode == "publication failure" {
 				require.ErrorIs(t, err, publicationErr)
@@ -59,7 +70,11 @@ func TestRestoreLooseCompression(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 			}
-			require.Len(t, receipts, int(manifest.Attachments.Blobs))
+			if mode == "packed" {
+				require.Len(t, receipts, 2)
+			} else {
+				require.Len(t, receipts, int(manifest.Attachments.Blobs))
+			}
 			layout, err := packstore.NewLayout(filepath.Join(target, "content"), packstore.LayoutOptions{Staging: packstore.StagingSameDirectory})
 			require.NoError(t, err)
 			loose, err := packstore.NewLooseStore(layout)
