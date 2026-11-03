@@ -256,6 +256,40 @@ CLI should start from Kata's numbering and add its own codes after 8, so an
 agent that knows one kenn-io CLI can read another. Print the map in root help
 and repeat it as `exit_code` in the JSON envelope.
 
+### Crashes
+
+An unrecovered Go panic exits 2, the same status this map gives usage errors.
+The [runtime hardcodes that status](https://go.dev/src/runtime/panic.go#L1510);
+no setting remaps it to exit 1. In `main`, defer a recover that emits the normal
+error envelope to stderr in the active output mode: `kind: "internal"`, a hint
+to report the bug, and `exit_code: 1`. Then exit 1:
+
+```go
+func main() {
+	mode := humanMode
+	defer func() {
+		if recover() != nil {
+			emitError(mode, Error{
+				Kind: "internal", Message: "internal error",
+				Hint: "report this bug", ExitCode: 1,
+			})
+			os.Exit(1)
+		}
+	}()
+	os.Exit(run(&mode))
+}
+```
+
+Here `run` records the selected mode before executing the command, and
+`emitError` is the CLI's existing human, agent, or JSON error renderer. Keep
+panic values and request data out of the public message.
+
+[`recover` only covers the goroutine that panicked](https://go.dev/ref/spec#Handling_panics).
+Goroutines a command starts should recover and return an internal error to the
+caller for the same rendering, or the CLI must document that those crashes
+still exit 2. For agents, the envelope's `kind` is the contract; the exit code
+is a coarse hint. Exit 2 with no envelope means a crash, not a usage error.
+
 ## Migrate released commands deliberately
 
 Roborev #1589 and Docbank #1191 moved dozens of commands without breaking

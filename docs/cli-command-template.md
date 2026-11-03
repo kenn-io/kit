@@ -83,6 +83,9 @@ spellings use separate constructors so flag state stays independent.
       fixtures, including create, update, retry, and dependency cases.
 - [ ] Each expected error has the right exit code and the same hint in human,
       agent, and JSON modes; stdout is empty on failure.
+- [ ] A panic in `main`'s goroutine emits `kind: "internal"`, a report-bug hint,
+      and `exit_code: 1` in the active mode, then exits 1. Command goroutines
+      return recovered errors to the caller, or document crashes that exit 2.
 - [ ] A mistyped group action exits 2.
 - [ ] Old and new spellings match on output, exit codes, wire calls, help, and
       completion; the notice goes to stderr per the recorded rule.
