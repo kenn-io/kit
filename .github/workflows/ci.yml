@@ -190,6 +190,38 @@ jobs:
           go tool gotestsum --format pkgname-and-test-fails --format-icons text --jsonfile "gotestsum/$($env:GOTESTSUM_SUITE).json" --rerun-fails=2 --rerun-fails-report "gotestsum/$($env:GOTESTSUM_SUITE)-reruns.txt" --packages $packages -- @testArgs
           exit $LASTEXITCODE
 
+      - name: Measure Go cache pruning
+        if: matrix.own-go-cache && github.event_name == 'pull_request'
+        shell: bash
+        env:
+          STARTED: ${{ steps.go-cache-key.outputs.started }}
+        run: |
+          measurement=$(mktemp -d "$(cygpath -u "$RUNNER_TEMP")/go-cache-measurement.XXXXXX")
+          trap 'rm -rf "$measurement"' EXIT
+          cache=$(cygpath -u "$(go env GOCACHE)")
+          modules=$(cygpath -u "$(go env GOMODCACHE)")
+          # Relative archive paths let extraction stay in the measurement directory.
+          printf '%s\n' "${cache#/}" "${modules#/}" > "$measurement/manifest.txt"
+          for phase in unpruned pruned; do
+            if [ "$phase" = pruned ]; then
+              deleted=$(find "$cache"/[0-9a-f][0-9a-f] -mindepth 1 -maxdepth 1 \( -name '*-a' -o -name '*-d' \) ! -newermt "@$((STARTED - 3600))" -printf '.\n' -exec rm -rf {} + | wc -l)
+              echo "Deleted build cache entries: $deleted"
+            fi
+            /usr/bin/tar --posix -cf "$measurement/$phase.tzst" --exclude "$measurement/$phase.tzst" -P -C / --files-from "$measurement/manifest.txt" --force-local --use-compress-program "zstd -T0"
+          done
+          unpruned_bytes=$(stat -c %s "$measurement/unpruned.tzst")
+          pruned_bytes=$(stat -c %s "$measurement/pruned.tzst")
+          echo "Unpruned compressed bytes: $unpruned_bytes"
+          echo "Pruned compressed bytes: $pruned_bytes"
+          awk -v before="$unpruned_bytes" -v after="$pruned_bytes" 'BEGIN { printf "Estimated restore saving against 69s baseline: %.2fs (%.2f%%)\n", 69 * (1 - after / before), 100 * (1 - after / before) }'
+          for phase in unpruned pruned; do
+            mkdir "$measurement/$phase"
+            started_ms=$(date -u +%s%3N)
+            /usr/bin/tar -xf "$measurement/$phase.tzst" -P -C "$measurement/$phase" --force-local --use-compress-program "zstd -d"
+            elapsed_ms=$(( $(date -u +%s%3N) - started_ms ))
+            echo "$phase extract milliseconds: $elapsed_ms"
+          done
+
       - name: Prune unused Go build cache entries
         if: matrix.own-go-cache && github.ref == 'refs/heads/main' && steps.go-cache.outputs.cache-hit != 'true'
         shell: bash
