@@ -36,6 +36,7 @@ type PackOptions struct {
 
 // PackStats summarizes committed and repair outcomes.
 type PackStats struct {
+	// BlobsChecked counts indexed entries examined, including those whose packed bytes are skipped.
 	BlobsChecked int
 	// VerificationPending reports an unfinished sweep. Entries beyond its
 	// captured end wait for the next one.
