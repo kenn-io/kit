@@ -13,6 +13,8 @@ import (
 	gitenv "go.kenn.io/kit/git/env"
 )
 
+var lifecycleFixtureDir string
+
 func TestMain(m *testing.M) {
 	if os.Getenv("KIT_TEST_HOOK_EXIT") == "1" {
 		os.Exit(m.Run())
@@ -47,6 +49,7 @@ func runManagedTests(m *testing.M) int {
 		panic(err)
 	}
 	defer os.RemoveAll(home)
+	lifecycleFixtureDir = home
 	globalConfig := filepath.Join(home, "global.gitconfig")
 	if err := os.WriteFile(globalConfig, nil, 0o600); err != nil {
 		panic(err)
