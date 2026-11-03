@@ -46,7 +46,7 @@ lint-config-check:
 .PHONY: test-embedserver
 # Set KIT_EMBED_TEST_DIR and KIT_EMBED_TEST_LIBRARY to include native parity.
 test-embedserver:
-	go test -race ./embedserver ./cmd/kennembed ./internal/embedassets ./embedlocal
+	go test -v -race ./embedserver ./cmd/kennembed ./internal/embedassets ./embedlocal
 
 lint-workflow-retries:
 	go run ./cmd/kennlint workflow-retries
