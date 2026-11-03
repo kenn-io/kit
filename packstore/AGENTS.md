@@ -45,6 +45,7 @@
 
 ## Background verification
 
+- Existing-entry checks read packed content only for live entries with a canonical loose candidate; the preflight must stay at least as permissive as `findAnyValidCanonicalLoose`.
 - A positive `PackOptions.MaxVerifyBytes` bounds existing packed-entry checks,
   continues in physical order across successful calls on the same maintainer,
   and leaves packing and required deletion checks active. Zero remains a full

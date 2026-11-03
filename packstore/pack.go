@@ -27,7 +27,8 @@ type PackOptions struct {
 	MaxBytes   int64
 	// MaxVerifyBytes bounds existing packed-content checks by the larger of
 	// raw and stored bytes, allowing one entry to exceed the remaining budget.
-	// Zero checks the full inventory. Positive values resume across calls on
+	// Zero examines every indexed entry, reading packed bytes for entries with
+	// a loose repair source. Positive values resume across calls on
 	// this Maintainer, up to the last entry present when the sweep started.
 	// A new Maintainer starts a fresh sweep.
 	MaxVerifyBytes int64
@@ -230,6 +231,14 @@ func (m *Maintainer) repairIndexed(ctx context.Context, stats *PackStats, refs m
 	} else if err != nil {
 		return nil, err
 	}
+	reference, live := refs[entry.Hash]
+	if !live {
+		return nil, nil
+	}
+	// A damaged entry without a loose copy has nothing to repair from.
+	if candidate, err := m.hasCanonicalLooseCandidate(ctx, entry.Hash); err == nil && !candidate {
+		return nil, nil
+	}
 	stream, _, err := m.store.openPackedStream(ctx, entry.Hash, &entry)
 	if err == nil {
 		_, err = io.Copy(io.Discard, stream)
@@ -246,10 +255,6 @@ func (m *Maintainer) repairIndexed(ctx context.Context, stats *PackStats, refs m
 		return nil, err
 	}
 	if !valid {
-		return nil, nil
-	}
-	reference, live := refs[entry.Hash]
-	if !live {
 		return nil, nil
 	}
 	// Keep the unreadable mapping authoritative until the verified replacement
