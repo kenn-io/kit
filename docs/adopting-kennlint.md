@@ -122,10 +122,10 @@ it after adding rule labels and reasons to their suppressions.
    and a bare `last_edited: YYYY-MM-DD` date. Quoted dates, datetimes and
    invalid dates fail. Markdown symlinks are checked through their targets.
 
-   Defaults exclude only the root `README.md`, `AGENTS.md`, and `CLAUDE.md`,
+   Defaults exclude `README.md`, `AGENTS.md`, and `CLAUDE.md` at every depth,
    plus `.github/**`, `**/testdata/**`, `vendor/**`, `node_modules/**`,
    `docs/releases/**`, and repository-wide `CHANGELOG*.md` and `changelog*.md`
-   files. Nested README and agent-instruction files are checked.
+   files.
 
    A tracked `SKILL.md` is checked against the portable [Agent Skills
    specification](https://agentskills.io/specification): it requires `name`

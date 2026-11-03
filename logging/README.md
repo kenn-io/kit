@@ -1,9 +1,3 @@
----
-title: "logging"
-description: "Configure structured logging with loggers scoped to a context."
-last_edited: 2026-09-29
----
-
 # logging
 
 Package `logging` centralizes the shared `slog` setup used by kenn-io Go CLIs

@@ -1,9 +1,3 @@
----
-title: "embedconfig invariants"
-description: "Invariants for embedding configuration, defaults, and validation."
-last_edited: 2026-09-30
----
-
 # embedconfig invariants
 
 - Keep model, role, and input settings in their own types. Do not collapse

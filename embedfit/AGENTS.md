@@ -1,9 +1,3 @@
----
-title: "embedfit invariants"
-description: "Invariants for fitting embedding workloads within model and resource limits."
-last_edited: 2026-09-26
----
-
 # embedfit invariants
 
 - Count tokens on the formatted string: prefix, source slice, suffix.

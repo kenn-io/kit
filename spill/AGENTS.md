@@ -1,9 +1,3 @@
----
-title: "spill Instructions"
-description: "Invariants for bounded-memory buffers that spill data to disk."
-last_edited: 2026-10-23
----
-
 # spill Instructions
 
 ## Scope

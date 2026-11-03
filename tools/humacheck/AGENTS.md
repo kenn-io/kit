@@ -1,9 +1,3 @@
----
-title: "Huma Checker Instructions"
-description: "Invariants for Huma API checks, repository rules, and staged-source analysis."
-last_edited: 2026-10-07
----
-
 # Huma Checker Instructions
 
 ## Scope

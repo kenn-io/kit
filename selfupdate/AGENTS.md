@@ -1,9 +1,3 @@
----
-title: "Self-Update Instructions"
-description: "Invariants for update discovery, downloads, verification, and installation."
-last_edited: 2026-10-23
----
-
 # Self-Update Instructions
 
 ## Scope

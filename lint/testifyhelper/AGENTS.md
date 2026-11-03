@@ -1,9 +1,3 @@
----
-title: "Testify Helper Analyzer Instructions"
-description: "Invariants for type-aware testify naming checks and suggested fixes."
-last_edited: 2026-09-17
----
-
 # Testify Helper Analyzer Instructions
 
 ## Scope

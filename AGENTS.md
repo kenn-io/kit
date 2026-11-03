@@ -1,9 +1,3 @@
----
-title: "Agent Instructions"
-description: "Repository scope, development conventions, and contribution rules for kit."
-last_edited: 2026-11-02
----
-
 # Agent Instructions
 
 ## Project Overview
@@ -55,14 +49,13 @@ provider workflows to this repo unless the package already owns that concern.
   artifacts. Describe reusable requirements generically and scrub public
   surfaces before publishing.
 - Tracked Markdown outside skill bundles requires frontmatter with non-empty
-  `title` and `description` strings and a bare `last_edited: YYYY-MM-DD` date. The root
-  files `README.md`, `AGENTS.md`, and `CLAUDE.md`, plus `.github/`,
-  `testdata/`, `vendor/`, `node_modules/`, and `docs/releases/`, are excluded
-  by the frontmatter check, as are repository-wide `CHANGELOG*.md` and
+  `title` and `description` strings and a bare `last_edited: YYYY-MM-DD` date.
+  `README.md`, `AGENTS.md`, and `CLAUDE.md` files never take frontmatter, at
+  any depth. The check also excludes `.github/`, `testdata/`, `vendor/`,
+  `node_modules/`, `docs/releases/`, and repository-wide `CHANGELOG*.md` and
   `changelog*.md` files. Tracked `SKILL.md` files use the portable Agent Skills
   profile, which requires `name` and `description` but no `last_edited`; other
   Markdown within a skill bundle, including references, needs no frontmatter.
-  Nested README and agent-instruction files outside skill bundles are checked.
   Change the date when editing existing content; CI compares it with the
   actual pull request base.
 

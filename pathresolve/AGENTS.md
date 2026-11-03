@@ -1,9 +1,3 @@
----
-title: "Path Resolution Instructions"
-description: "Invariants for explicit and portable path expansion and resolution."
-last_edited: 2026-10-09
----
-
 # Path Resolution Instructions
 
 ## Scope

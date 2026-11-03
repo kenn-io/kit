@@ -1,9 +1,3 @@
----
-title: "Lint Package Instructions"
-description: "Invariants for the shared lint policy, custom analyzers, and repository checks."
-last_edited: 2026-10-29
----
-
 # Lint Package Instructions
 
 ## Scope

@@ -1,9 +1,3 @@
----
-title: "fsname Instructions"
-description: "Invariants for portable filesystem component validation."
-last_edited: 2026-09-23
----
-
 # fsname Instructions
 
 ## Scope

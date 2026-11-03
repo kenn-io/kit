@@ -1,9 +1,3 @@
----
-title: "OpenSSH Package Invariants"
-description: "Invariants for OpenSSH configuration, keys, processes, and trust boundaries."
-last_edited: 2026-10-19
----
-
 # OpenSSH Package Invariants
 
 - This package orchestrates the caller's OpenSSH executable. Do not replace

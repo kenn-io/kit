@@ -770,7 +770,7 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	changed := flags.String("changed", "", "require a last_edited change since the merge base with this ref")
 	fix := flags.Bool("fix", false, "unquote dates and add missing last_edited using the last commit date (or today)")
 	excludes := frontmatterExcludes{
-		"README.md", "AGENTS.md", "CLAUDE.md", "docs/releases/**",
+		"**/README.md", "**/AGENTS.md", "**/CLAUDE.md", "docs/releases/**",
 		"**/CHANGELOG*.md", "**/changelog*.md",
 		".github/**", "**/testdata/**", "vendor/**", "node_modules/**",
 	}

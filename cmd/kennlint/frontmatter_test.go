@@ -174,25 +174,25 @@ func TestFrontmatterSelection(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	n, err := runFrontmatter(t.Context(), []string{"-exclude", "generated/**"}, &stdout, &stderr)
 	require.NoError(t, err)
-	assert.Equal(t, 4, n)
+	assert.Equal(t, 1, n)
 	assert.Empty(t, stdout.String())
-	assert.Equal(t, "docs/AGENTS.md: missing opening --- frontmatter delimiter\ndocs/CLAUDE.md: missing opening --- frontmatter delimiter\ndocs/README.md: missing opening --- frontmatter delimiter\ndocs/page with spaces.md: missing opening --- frontmatter delimiter\n", stderr.String())
+	assert.Equal(t, "docs/page with spaces.md: missing opening --- frontmatter delimiter\n", stderr.String())
 
 	stderr.Reset()
 	n, err = runFrontmatter(t.Context(), []string{"docs/README.md"}, &stdout, &stderr)
 	require.NoError(t, err)
-	assert.Equal(t, 1, n)
-	assert.Equal(t, "docs/README.md: missing opening --- frontmatter delimiter\n", stderr.String())
+	assert.Zero(t, n, "nested README.md is excluded even when selected explicitly")
+	assert.Empty(t, stderr.String())
 
 	t.Chdir(filepath.Join(repo.Root, "docs"))
 	stderr.Reset()
 	n, err = runFrontmatter(t.Context(), []string{"README.md"}, &stdout, &stderr)
 	require.NoError(t, err)
-	assert.Equal(t, 1, n)
-	assert.Contains(t, stderr.String(), "docs/README.md:")
+	assert.Zero(t, n)
+	assert.Empty(t, stderr.String())
 
 	t.Chdir(repo.Root)
-	for _, name := range []string{"README.md", "AGENTS.md", "CLAUDE.md", "CHANGELOG.md", "docs/CHANGELOG.md", "docs/changelog-2026.md"} {
+	for _, name := range []string{"README.md", "AGENTS.md", "CLAUDE.md", "docs/README.md", "docs/AGENTS.md", "docs/CLAUDE.md", "CHANGELOG.md", "docs/CHANGELOG.md", "docs/changelog-2026.md"} {
 		stdout.Reset()
 		stderr.Reset()
 		n, err = runFrontmatter(t.Context(), []string{name}, &stdout, &stderr)
@@ -290,10 +290,39 @@ func TestFrontmatterGlob(t *testing.T) {
 		{"docs/**/*.md", "docs/a/b.md", true},
 		{"docs/page?.md", "docs/page1.md", true},
 		{"README.md", "docs/README.md", false},
+		{"**/README.md", "README.md", true},
+		{"**/README.md", "docs/deep/README.md", true},
 	} {
 		t.Run(tt.pattern+"/"+tt.file, func(t *testing.T) {
 			assert.Equal(t, tt.want, frontmatterGlob(tt.pattern, tt.file))
 		})
+	}
+}
+
+func TestFrontmatterSkipsInstructionFilesAtEveryDepth(t *testing.T) {
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	names := []string{"pkg/README.md", "pkg/AGENTS.md", "pkg/deep/CLAUDE.md"}
+	for _, name := range names {
+		repo.WriteFile(name, "# No metadata\n")
+	}
+	repo.WriteFile("pkg/notes.md", "# No metadata\n")
+	repo.Run("add", ".")
+	repo.Run("commit", "-m", "add files")
+	repo.Run("branch", "base")
+	for _, name := range names {
+		repo.WriteFile(name, "# Edited without metadata\n")
+	}
+	var stdout, stderr bytes.Buffer
+	n, err := runFrontmatter(t.Context(), []string{"-fix", "-changed", "base"}, &stdout, &stderr)
+	require.NoError(t, err)
+	assert.Equal(t, 2, n, "only the ordinary nested document is checked")
+	assert.Equal(t, "pkg/notes.md: title must be a non-empty string\npkg/notes.md: description must be a non-empty string\n", stderr.String())
+	for _, name := range names {
+		data, err := os.ReadFile(name)
+		require.NoError(t, err)
+		assert.Equal(t, "# Edited without metadata\n", string(data), "%s is left untouched by -fix", name)
 	}
 }
 

@@ -1,9 +1,3 @@
----
-title: "Daemon Package Instructions"
-description: "Invariants for daemon discovery, runtime records, ownership, and lifecycle control."
-last_edited: 2026-10-23
----
-
 # Daemon Package Instructions
 
 ## Scope
