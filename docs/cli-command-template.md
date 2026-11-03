@@ -1,80 +1,90 @@
 # CLI command design template
 
 Copy this worksheet for a command or command family. Replace bracketed prompts
-with real application syntax and contracts; mark unsupported surfaces “not
-applicable.” Use [Shared CLI design guidance](cli-design.md) for rationale.
-Keep the completed design with the adopting application's maintained docs.
+with the real syntax and contracts, and mark unsupported surfaces "not
+applicable." [Shared CLI design guidance](cli-design.md) explains each section
+and links to Kata, Roborev, and Docbank code that implements it. Keep the
+completed worksheet with the adopting application's docs.
 
 ## Purpose and grammar
 
 - User task and expected result: [one sentence]
 - Canonical command paths: [root, group, leaf]
-- Grouping decision: [related resource actions; any primary-root exceptions]
-- Inputs and scope: [arguments, required flags/defaults, target/state selection]
-- Identifier rules: [names/IDs/UIDs/revisions, scope, ambiguity resolution]
-- Side effects and prerequisites: [what changes; what must already exist]
+- Help group or noun: [the root help heading this command belongs to, or the
+  noun it sits under; why a primary workflow command stays at root]
+- Inputs and scope: [arguments, required flags, defaults, how the target
+  project, vault, repository, or daemon is selected]
+- Identifiers: [every accepted form (short ID, qualified ID, ULID, path, name,
+  revision), its scope, and which forms are rejected]
+- Side effects, retries, and conflicts: [what changes; idempotency key or UID
+  behavior; the exit code for each conflict]
 
-## Discovery and examples
+## Help
 
-| Surface | Help content or link |
+| Surface | Content |
 | --- | --- |
-| Root | [purpose, common workflow, scope, output/status/environment overview] |
-| Group | [domain, available actions, shared scope, next-step example] |
-| Leaf | [exact usage, required inputs/defaults, side effects, local flags] |
-| Longer guidance | [quickstart/reference/schema location, when useful] |
+| Root | [purpose and target; numbered workflow; identifiers; target selection; output modes; exit codes; environment] |
+| Group | [domain in `Long`; actions; a next-step example] |
+| Leaf | [side effects and retry semantics; where the result ID appears in each mode; 2 to 4 examples that use this command] |
+| Longer guidance | [quickstart, reference doc, or schema command, linked from help] |
 
-Include the following as copyable examples beside the accepting command:
+For JSON, file, or stdin input, put a complete minimal body beside the
+command that accepts it:
 
 ```text
-[minimal actual invocation]
-[complete minimal accepted request body, if applicable]
-[expected result and process status]
-[follow-up invocation using an identifier returned above]
+[complete minimal request body]
+[invocation that submits it]
+[result and exit status]
+[follow-up invocation that uses the returned identifier]
 ```
 
-For JSON/file/stdin inputs, state [required fields, defaults, schema discovery,
-and fields provided by flags]. For workflows, include [complete body, dependency
-keys, and resource creation order]. For updates/retries, explain [identifier
-substitution, expected revision retrieval, conflict recovery, and idempotency].
-All example values must be synthetic and internally consistent.
+State [required fields, defaults, fields supplied by flags, dependency keys and
+creation order for workflows, and how to retry an uncertain create or a stale
+update]. Use synthetic, internally consistent values.
 
-## Output and recovery contract
+## Output and errors
 
-List only supported modes and their actual selectors; agent text is optional.
-
-| Mode/selector and scope | Success stdout/stderr/status | Failure stdout/stderr/status |
+| Mode and selector | Success | Failure |
 | --- | --- | --- |
-| [human] | [result and diagnostics] | [message and useful next action] |
-| [JSON] | [fields/types or stream framing] | [envelope fields/types and status] |
-| [other, if supported] | [contract] | [contract] |
+| Human (default) | [stdout result] | [stderr message, then `hint:` line] |
+| JSON (`--json` / `--format json`) | [stdout envelope and version field] | [stderr envelope, empty stdout] |
+| Agent (`--agent` / `--format agent`), optional | [`OK <command> ...` on stdout] | [`ERR <command> <kind>: ...`, then `Hint:` line] |
 
-For a new CLI, use the guide's recommended stderr JSON error envelope:
-`error.code` (stable string), `message` (human string), optional `hint`
-(actionable string), and `exit_code` (actual numeric process status).
-For released commands, record the existing contract and any migration instead.
-Document [exit categories/numbers, quiet behavior, progress/warnings/color,
-partial-stream failures, callback exceptions, and recovery in each mode].
+- JSON error envelope for a new CLI: `error.kind` (category), optional
+  `error.code` (specific reason), `error.message`, `error.hint` (omitted when
+  empty), `error.exit_code`, optional `error.data`. A released CLI records
+  its existing envelope instead.
+- Exit codes: [the map; a new CLI starts from Kata's 0 to 8 and adds codes
+  after 8].
+- Recovery hints: [each expected failure, its exit code, and the real command
+  or flag the hint names; failures with no useful hint].
+- Agent mode, if offered: [field order, omitted values, format version].
+- Stderr rules: [progress, warnings, color, quiet behavior, partial output on
+  a failed stream, and hook-callback exceptions].
 
-## Compatibility decision
+## Compatibility
 
-Record [affected callers, compatibility window, canonical discovery/completion,
-old spellings/flags, removal policy, and warning channel/suppression rules].
-Include [stable telemetry/analytics identity, config selectors, permission/policy
-keys, hooks/callbacks, daemon routes, and MCP names]. Name deliberate identity
-changes and their consumer migrations. Check actual framework notice behavior;
-if old/new commands use separate constructors, keep flag state independent.
+Record [affected callers: scripts, completions, installed hooks, bundled
+skills, daemon routes, MCP names], [old spellings and flags, and the release
+that removes them], [whether the deprecation notice prints before parsing or
+after success, and when it is suppressed], and [stable identities for
+telemetry, hooks, config selectors, and permission keys]. Old and new
+spellings use separate constructors so flag state stays independent.
 
 ## Review checklist
 
-- [ ] Grammar and help make the common workflow discoverable; exceptions have reasons.
-- [ ] Every visible command has an intended help group where grouping is used.
-- [ ] Rendered help/quickstart commands parse; a stale example fails the check.
-- [ ] Rendered request/workflow bodies pass real validation with synthetic fixtures;
-      relevant create/update, dependency, identifier, and stale-revision cases pass.
-- [ ] Success/error channels, fields/types, statuses, streams, and supported modes
-      match the contract; quiet/callback rules and actual recovery syntax are checked.
-- [ ] Affected callers and identity consumers are inventoried; old/new grammar,
-      output, notices, flag state, callbacks, wire behavior, and completion are checked.
-- [ ] Links, schema references, and synthetic values are current and consistent.
+- [ ] Every visible top-level command has a help group; primary workflow
+      commands at root have a stated reason.
+- [ ] Root help covers purpose, workflow, identifiers, target selection, output
+      modes, exit codes, and environment, within the help byte budget.
+- [ ] Every command in help, examples, quickstart, and emitted hints parses,
+      and a known-stale example fails the check.
+- [ ] Request bodies shown in help pass real validation with synthetic
+      fixtures, including create, update, retry, and dependency cases.
+- [ ] Each expected error has the right exit code and the same hint in human,
+      agent, and JSON modes; stdout is empty on failure.
+- [ ] A mistyped group action exits 2.
+- [ ] Old and new spellings match on output, exit codes, wire calls, help, and
+      completion; the notice goes to stderr per the recorded rule.
 
-Evidence: [applicable checks and results; explain any not-applicable surfaces].
+Evidence: [checks run and results; why any surface is not applicable].
