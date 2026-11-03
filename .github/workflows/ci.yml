@@ -121,6 +121,7 @@ jobs:
         run: |
           # A go.sum change starts a new chain, so modules it drops leave the cache.
           {
+            echo "started=$(date -u +%s)"
             echo 'paths<<EOF'
             go env GOCACHE GOMODCACHE
             echo 'EOF'
@@ -188,6 +189,15 @@ jobs:
           }
           go tool gotestsum --format pkgname-and-test-fails --format-icons text --jsonfile "gotestsum/$($env:GOTESTSUM_SUITE).json" --rerun-fails=2 --rerun-fails-report "gotestsum/$($env:GOTESTSUM_SUITE)-reruns.txt" --packages $packages -- @testArgs
           exit $LASTEXITCODE
+
+      - name: Prune unused Go build cache entries
+        if: matrix.own-go-cache && github.ref == 'refs/heads/main' && steps.go-cache.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          STARTED: ${{ steps.go-cache-key.outputs.started }}
+        run: |
+          # Go touches used entries at most once per hour.
+          find "$(cygpath -u "$(go env GOCACHE)")"/[0-9a-f][0-9a-f] -mindepth 1 -maxdepth 1 \( -name '*-a' -o -name '*-d' \) ! -newermt "@$((STARTED - 3600))" -exec rm -rf {} +
 
       - name: Save Go cache
         if: matrix.own-go-cache && github.ref == 'refs/heads/main' && steps.go-cache.outputs.cache-hit != 'true'
