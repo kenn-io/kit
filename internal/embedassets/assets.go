@@ -87,11 +87,12 @@ func CacheAsset(ctx context.Context, client *http.Client, dir string, a Asset, o
 	if verified, err := valid(path, a); err != nil || verified {
 		return err
 	}
-	return DownloadAsset(ctx, client, dir, a, opts...)
+	return DownloadAsset(ctx, client, dir, a, nil, opts...)
 }
 
 // DownloadAsset verifies and publishes a download after the caller inspected the cache.
-func DownloadAsset(ctx context.Context, client *http.Client, dir string, a Asset, opts ...atomicfile.Option) (err error) {
+// A non-nil progress writer receives response bytes as they arrive, before verification.
+func DownloadAsset(ctx context.Context, client *http.Client, dir string, a Asset, progress io.Writer, opts ...atomicfile.Option) (err error) {
 	path := filepath.Join(dir, a.Name)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.URL, nil)
 	if err != nil {
@@ -110,7 +111,11 @@ func DownloadAsset(ctx context.Context, client *http.Client, dir string, a Asset
 		return err
 	}
 	defer func() { err = errors.Join(err, file.Abort()) }()
-	if err := verify(res.Body, file, a); err != nil {
+	var body io.Reader = res.Body
+	if progress != nil {
+		body = io.TeeReader(body, progress)
+	}
+	if err := verify(body, file, a); err != nil {
 		return err
 	}
 	return file.Commit()

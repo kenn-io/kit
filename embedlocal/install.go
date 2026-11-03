@@ -4,8 +4,9 @@
 // and an app-owned Confirm callback. The callback receives approximate missing bytes
 // before network access. A fresh install needs about 275 MB of model files plus
 // a 20 MB bundle allowance. Refusal, cancellation, or a missing callback returns
-// an error. Launch Installation.Executable with --data-dir Installation.DataDir;
-// both paths are absolute.
+// an error. Set Progress to draw a progress bar while files download. Launch
+// Installation.Executable with --data-dir Installation.DataDir; both paths are
+// absolute.
 package embedlocal
 
 import (
@@ -13,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -33,6 +35,24 @@ type InstallOptions struct {
 	// Confirm runs once before any network request with the approximate missing
 	// download bytes. A missing callback or refusal prevents downloads.
 	Confirm func(context.Context, int64) (bool, error)
+	// Progress, when set, receives the bytes downloaded so far and the exact
+	// total across the bundle and every missing model file. The first call
+	// reports zero once the bundle's release size is known, and later calls
+	// follow each chunk read from the network. Progress runs on the installing
+	// goroutine and should return quickly.
+	Progress func(downloaded, total int64)
+}
+
+// downloadProgress reports bytes written through it to an app's callback.
+type downloadProgress struct {
+	report            func(downloaded, total int64)
+	downloaded, total int64
+}
+
+func (p *downloadProgress) Write(b []byte) (int, error) {
+	p.downloaded += int64(len(b))
+	p.report(p.downloaded, p.total)
+	return len(b), nil
 }
 
 // Installation contains absolute paths to pass to the server launcher.
@@ -81,13 +101,14 @@ func install(ctx context.Context, opts InstallOptions, client *http.Client, asse
 	if err != nil {
 		return Installation{}, err
 	}
-	var size int64
+	var modelBytes int64
 	for _, a := range missing {
-		size += a.Size
+		modelBytes += a.Size
 	}
 	if ready && len(missing) == 0 {
 		return result, nil
 	}
+	size := modelBytes
 	if !ready {
 		size += bundleDownloadBytes
 	}
@@ -114,19 +135,31 @@ func install(ctx context.Context, opts InstallOptions, client *http.Client, asse
 	stagedBundle := filepath.Join(stage, "bin")
 	httpClient := cmp.Or(client, embedassets.DownloadClient())
 	defer httpClient.CloseIdleConnections()
+	var info *selfupdate.Info
 	if !ready {
 		releaseClient := selfupdate.Client{
 			Owner: "kenn-io", Repo: "kit", BinaryName: "kennembed", HTTPClient: client, AllowUnsignedChecksums: true,
 			ReleaseManifestURL: "https://api.github.com/repos/kenn-io/kit/releases/tags/" + embedassets.BundleTag,
 		}
-		info, err := releaseClient.Check(ctx, selfupdate.CheckOptions{Force: true})
+		info, err = releaseClient.Check(ctx, selfupdate.CheckOptions{Force: true})
 		if err != nil {
 			return Installation{}, fmt.Errorf("resolve kennembed bundle: %w", err)
 		}
 		if info == nil {
 			return Installation{}, errors.New("no kennembed bundle is available")
 		}
-		if err := embedassets.DownloadAsset(ctx, httpClient, stage, embedassets.Asset{Name: "archive", URL: info.DownloadURL, Digest: info.Checksum, Size: info.Size}); err != nil {
+	}
+	var progress io.Writer
+	if opts.Progress != nil {
+		counter := &downloadProgress{report: opts.Progress, total: modelBytes}
+		if info != nil {
+			counter.total += info.Size
+		}
+		opts.Progress(0, counter.total)
+		progress = counter
+	}
+	if info != nil {
+		if err := embedassets.DownloadAsset(ctx, httpClient, stage, embedassets.Asset{Name: "archive", URL: info.DownloadURL, Digest: info.Checksum, Size: info.Size}, progress); err != nil {
 			return Installation{}, fmt.Errorf("download kennembed: %w", err)
 		}
 		archive := filepath.Join(stage, "archive")
@@ -152,7 +185,7 @@ func install(ctx context.Context, opts InstallOptions, client *http.Client, asse
 		return Installation{}, err
 	}
 	for _, a := range missing {
-		if err := embedassets.DownloadAsset(ctx, httpClient, modelDir, a, atomicfile.WithStagingDir(stage)); err != nil {
+		if err := embedassets.DownloadAsset(ctx, httpClient, modelDir, a, progress, atomicfile.WithStagingDir(stage)); err != nil {
 			return Installation{}, err
 		}
 	}

@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -26,6 +27,9 @@ import (
 	"go.kenn.io/kit/internal/embedassets"
 	"go.kenn.io/kit/selfupdate"
 )
+
+// modelFixture spans several network reads so progress arrives within a file.
+var modelFixture = bytes.Repeat([]byte("model fixture "), 5000)
 
 func installFixture(t *testing.T, mode string, cancel context.CancelFunc) (*http.Client, []embedassets.Asset, *sync.Map, func()) {
 	t.Helper()
@@ -76,7 +80,7 @@ func installFixture(t *testing.T, mode string, cancel context.CancelFunc) (*http
 				<-req.Context().Done()
 				return
 			}
-			_, _ = w.Write([]byte("model fixture"))
+			_, _ = w.Write(modelFixture)
 		default:
 			http.NotFound(w, req)
 		}
@@ -88,10 +92,10 @@ func installFixture(t *testing.T, mode string, cancel context.CancelFunc) (*http
 		return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
 	}
 	t.Cleanup(transport.CloseIdleConnections)
-	sum := sha256.Sum256([]byte("model fixture"))
+	sum := sha256.Sum256(modelFixture)
 	var assets []embedassets.Asset
 	for _, name := range []string{"model.onnx", "tokenizer.json"} {
-		assets = append(assets, embedassets.Asset{Name: name, URL: server.URL + "/" + name, Digest: hex.EncodeToString(sum[:]), Size: 13})
+		assets = append(assets, embedassets.Asset{Name: name, URL: server.URL + "/" + name, Digest: hex.EncodeToString(sum[:]), Size: int64(len(modelFixture))})
 	}
 	return &http.Client{Transport: transport}, assets, calls, server.Close
 }
@@ -167,7 +171,7 @@ func TestInstallRepairsSharedCopy(t *testing.T) {
 					require.FailNow(t, "offline reuse asked for confirmation")
 				}
 				if repair == "model only" {
-					assert.Equal(t, int64(13), size)
+					assert.Equal(t, int64(70_000), size)
 					assert.Equal(t, int64(1), requestCount(calls, "/tokenizer.json"))
 				} else {
 					assert.Equal(t, int64(bundleDownloadBytes), size)
@@ -202,7 +206,7 @@ func TestInstallConsentAndFailures(t *testing.T) {
 			opts := InstallOptions{DataDir: t.TempDir()}
 			if mode == "declined" {
 				opts.Confirm = func(_ context.Context, size int64) (bool, error) {
-					assert.Equal(t, int64(bundleDownloadBytes+26), size)
+					assert.Equal(t, int64(bundleDownloadBytes+140_000), size)
 					return false, nil
 				}
 			}
@@ -231,4 +235,39 @@ func TestInstallCanceledDownloads(t *testing.T) {
 	_, err = install(t.Context(), opts, client, assets)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), requestCount(calls, "/model.onnx"))
+}
+
+func TestInstallReportsProgress(t *testing.T) {
+	for _, kind := range []string{"fresh", "model only"} {
+		t.Run(kind, func(t *testing.T) {
+			client, assets, _, _ := installFixture(t, "", nil)
+			opts := InstallOptions{DataDir: t.TempDir(), Confirm: func(context.Context, int64) (bool, error) { return true, nil }}
+			if kind == "model only" {
+				_, err := install(t.Context(), opts, client, assets)
+				require.NoError(t, err)
+				require.NoError(t, os.Remove(filepath.Join(embedassets.ModelDir(opts.DataDir), "tokenizer.json")))
+			}
+			type update struct{ downloaded, total int64 }
+			var updates []update
+			opts.Progress = func(downloaded, total int64) { updates = append(updates, update{downloaded, total}) }
+			_, err := install(t.Context(), opts, client, assets)
+			require.NoError(t, err)
+
+			require.NotEmpty(t, updates)
+			total := updates[0].total
+			assert.Equal(t, update{0, total}, updates[0])
+			assert.Equal(t, update{total, total}, updates[len(updates)-1], "the total must equal the bytes downloaded, so it uses the release size of the bundle")
+			if kind == "model only" {
+				assert.Equal(t, int64(70_000), total)
+			} else {
+				assert.Greater(t, total, int64(140_000), "a fresh install counts the bundle")
+			}
+			for i := 1; i < len(updates); i++ {
+				assert.Equal(t, total, updates[i].total)
+				assert.Greater(t, updates[i].downloaded, updates[i-1].downloaded)
+			}
+			assert.True(t, slices.ContainsFunc(updates, func(u update) bool { return u.downloaded > total-70_000 && u.downloaded < total }),
+				"progress must arrive while the last file downloads, not only when it finishes")
+		})
+	}
 }
