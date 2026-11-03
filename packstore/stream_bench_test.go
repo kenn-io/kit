@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"io"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -35,22 +33,11 @@ func BenchmarkStorePackedReadsLargeRaw(b *testing.B) {
 
 func benchmarkStorePackedReads(b *testing.B, content []byte) {
 	b.Helper()
-
-	b.Helper()
 	root := b.TempDir()
 	layout, err := NewLayout(root, LayoutOptions{Staging: StagingStoreDirectory, StagingDir: "tmp"})
 	require.NoError(b, err)
-	w, err := pack.NewWriter(b.TempDir(), pack.WriterOptions{})
-	require.NoError(b, err)
-	entry, err := w.Append(content)
-	require.NoError(b, err)
-	packID := w.ID()
-	require.NoError(b, os.MkdirAll(filepath.Dir(layout.PackPath(packID)), 0o700))
-	_, err = w.Seal(layout.PackPath(packID))
-	require.NoError(b, err)
-	hash, err := ParseHash(entry.ID.String())
-	require.NoError(b, err)
-	indexed := IndexEntry{Hash: hash, PackID: packID, Offset: int64(entry.Offset), StoredLen: int64(entry.StoredLen), RawLen: int64(entry.RawLen), Flags: uint8(entry.Flags), CRC32C: entry.CRC32C}
+	indexed := buildStoreBenchmarkPack(b, layout, [][]byte{content})
+	hash := indexed.Hash
 	store, err := NewStore(&mapResolver{locations: map[Hash]Location{
 		hash: {Member: true, Pack: &indexed},
 	}}, layout, StoreOptions{})
@@ -78,6 +65,27 @@ func benchmarkStorePackedReads(b *testing.B, content []byte) {
 			}
 		})
 	}
+}
+
+// buildStoreBenchmarkPack seals a pack and returns its first entry for reads.
+func buildStoreBenchmarkPack(b *testing.B, layout Layout, contents [][]byte) IndexEntry {
+	b.Helper()
+	w, err := pack.NewWriter(b.TempDir(), pack.WriterOptions{})
+	require.NoError(b, err)
+	var target pack.Entry
+	for i, content := range contents {
+		entry, err := w.Append(content)
+		require.NoError(b, err)
+		if i == 0 {
+			target = entry
+		}
+	}
+	id := w.ID()
+	_, err = w.Seal(layout.PackPath(id))
+	require.NoError(b, err)
+	indexed, err := indexEntryFromPack(target, id)
+	require.NoError(b, err)
+	return indexed
 }
 
 func BenchmarkMaintenancePackUnpack(b *testing.B) {

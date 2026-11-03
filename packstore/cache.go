@@ -3,6 +3,7 @@ package packstore
 import (
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"slices"
 	"sync"
 
@@ -87,7 +88,8 @@ func (s *Store) addPackSlotLocked(packID string) error {
 		return nil
 	}
 	if len(s.order) >= s.slots {
-		if err := s.retirePackSlotLocked(s.order[0]); err != nil {
+		// FIFO and LRU both evict the next-needed pack in a rotation.
+		if err := s.retirePackSlotLocked(s.order[rand.IntN(len(s.order))]); err != nil {
 			return err
 		}
 	}

@@ -45,8 +45,10 @@ lint-config-check:
 
 .PHONY: test-embedserver
 # Set KIT_EMBED_TEST_DIR and KIT_EMBED_TEST_LIBRARY to include native parity.
+# CI sets GOTESTSUM_SUITE so each job writes its own gotestsum/<suite>.json.
+GOTESTSUM_SUITE ?= embedserver
 test-embedserver:
-	go test -race ./embedserver ./cmd/kennembed ./internal/embedassets ./embedlocal
+	go tool gotestsum --format pkgname-and-test-fails --format-icons text --jsonfile gotestsum/$(GOTESTSUM_SUITE).json --rerun-fails=2 --rerun-fails-report gotestsum/$(GOTESTSUM_SUITE)-reruns.txt --packages "./embedserver ./cmd/kennembed ./internal/embedassets ./embedlocal" -- -race
 
 lint-workflow-retries:
 	go run ./cmd/kennlint workflow-retries

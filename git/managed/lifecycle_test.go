@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -63,21 +64,37 @@ func lifecycleTestRunner(t *testing.T) gitcmd.Runner {
 	return gitcmd.Runner{Env: lifecycleGitEnv(t)}
 }
 
-// initLifecycleRepo creates a git repository with one commit on a stable
-// default branch named "main" so tests do not depend on the host git's
-// init.defaultBranch setting.
+var lifecycleFixture = struct {
+	sync.Mutex
+	path string
+}{}
+
+// initLifecycleRepo returns a private copy of a template built once per test run.
+// The repository has one commit on a stable default branch named "main" so tests
+// do not depend on the host git's init.defaultBranch setting.
 func initLifecycleRepo(t *testing.T) string {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
+	template := func() string {
+		lifecycleFixture.Lock()
+		defer lifecycleFixture.Unlock()
+		if lifecycleFixture.path == "" {
+			require.NotEmpty(t, lifecycleFixtureDir)
+			dir, err := os.MkdirTemp(lifecycleFixtureDir, "repo-template-*") //nolint:usetesting // TestMain owns the template so it outlives the first test.
+			require.NoError(t, err)
+			lifecycleGit(t, dir, "init", "-q", "-b", "main")
+			lifecycleGit(t, dir, "config", "user.email", "t@e.st")
+			lifecycleGit(t, dir, "config", "user.name", "Tester")
+			lifecycleGit(t, dir, "config", "commit.gpgsign", "false")
+			lifecycleGit(t, dir, "commit", "--allow-empty", "-m", "initial")
+			lifecycleFixture.path = dir
+		}
+		return lifecycleFixture.path
+	}()
 	dir := filepath.Join(t.TempDir(), "repo")
-	require.NoError(t, os.MkdirAll(dir, 0o755))
-	lifecycleGit(t, dir, "init", "-q", "-b", "main")
-	lifecycleGit(t, dir, "config", "user.email", "t@e.st")
-	lifecycleGit(t, dir, "config", "user.name", "Tester")
-	lifecycleGit(t, dir, "config", "commit.gpgsign", "false")
-	lifecycleGit(t, dir, "commit", "--allow-empty", "-m", "initial")
+	require.NoError(t, os.CopyFS(dir, os.DirFS(template)))
 	return dir
 }
 

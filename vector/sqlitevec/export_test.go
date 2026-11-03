@@ -1,5 +1,13 @@
 package sqlitevec
 
+func (s *Store[K, G]) PendingQueryForTest(columns string) string {
+	return s.pendingQuery(columns)
+}
+
+func (s *Store[K, G]) CoverageQueryForTest(where string) string {
+	return s.coverageQuery(where)
+}
+
 // QueryGenerationSQLForTest builds the exact statement QueryGeneration
 // executes plus its bind arguments, so external tests can EXPLAIN its query
 // plan against a real database.
