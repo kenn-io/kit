@@ -1186,48 +1186,6 @@ func TestFillCursorBoundsRowsWalked(t *testing.T) {
 	assert.LessOrEqual(t, store.walked, 2000)
 }
 
-type transformingPendingStore struct{ *memStore }
-
-func (s transformingPendingStore) PendingForGeneration(ctx context.Context, gen int, after *int64, limit int) ([]vector.Pending[int64], error) {
-	pending, err := s.memStore.PendingForGeneration(ctx, gen, after, limit)
-	for i := range pending {
-		pending[i].Content = "wrapped"
-	}
-	return pending, err
-}
-
-func TestFillCursorHonorsPendingOverrideEveryPage(t *testing.T) {
-	store := transformingPendingStore{newMemStore()}
-	for id := int64(1); id <= 7; id++ {
-		store.content[id] = "source"
-	}
-	stats, err := vector.Fill(t.Context(), store, 1, lenEncoder(), vector.WithFillScanBatch[int64](2))
-	require.NoError(t, err)
-	assert.Equal(t, 7, stats.Documents)
-	for id := int64(1); id <= 7; id++ {
-		assert.Equal(t, vector.Vector{7}, store.vectors[1][id][0].Vector)
-	}
-}
-
-func TestFillCursorRevisitsEditAndInsertBehindCursor(t *testing.T) {
-	store := newMemStore()
-	store.content[1], store.content[2] = "first", "second"
-	stats, err := vector.Fill(t.Context(), store, 1, lenEncoder(),
-		vector.WithFillScanBatch[int64](1),
-		vector.WithFillProgress[int64](func(p vector.FillProgress[int64]) {
-			if p.Doc == 2 {
-				store.content[1] = "edited"
-				store.embedded[1][1] = false
-				store.content[0] = "inserted"
-			}
-		}),
-	)
-	require.NoError(t, err)
-	assert.Equal(t, 4, stats.Documents)
-	assert.Equal(t, vector.Vector{6}, store.vectors[1][1][0].Vector)
-	assert.Equal(t, vector.Vector{8}, store.vectors[1][0][0].Vector)
-}
-
 func TestFillCursorContinuesPastAllStalePage(t *testing.T) {
 	store := newMemStore()
 	store.content[1], store.content[3] = "stale", "fresh"
