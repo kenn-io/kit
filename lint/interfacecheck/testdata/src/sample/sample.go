@@ -42,3 +42,20 @@ type Evidence struct{} // want "type Evidence must declare a package-level inter
 
 func (*Evidence) ID() string          { return "" }
 func (*Evidence) ReadEvidence() error { return nil }
+
+// Private methods in different packages have distinct identities.
+type PrivateMethod struct{}
+
+func (PrivateMethod) ID() string { return "" }
+func (PrivateMethod) optional()  {}
+
+type GenericCorrect struct{}
+
+func (GenericCorrect) ID() string    { return "" }
+func (GenericCorrect) Value() string { return "" }
+
+var _ contracts.Generic[string] = GenericCorrect{}
+
+type GenericDrift struct{}        // want "type GenericDrift must declare a package-level interface assertion for contracts.Generic"
+func (GenericDrift) ID() string   { return "" }
+func (GenericDrift) Value() error { return nil }

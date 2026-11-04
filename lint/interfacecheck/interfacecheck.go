@@ -4,12 +4,17 @@
 package interfacecheck
 
 import (
+	"bytes"
+	"context"
+	"fmt"
 	"go/ast"
 	"go/token"
 	"go/types"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
+	"golang.org/x/tools/go/gcexportdata"
+	"golang.org/x/tools/go/packages"
 )
 
 // Analyzer checks interfaces selected through its flags.
@@ -24,7 +29,8 @@ func New(bases, packages []string) *analysis.Analyzer {
 		Name: "interfacecheck",
 		Doc:  "requires explicit interface assertions for types implementing configured base interfaces",
 		Run: func(pass *analysis.Pass) (any, error) {
-			return run(pass, strings.Split(baseFlag, ","), strings.Split(packageFlag, ","))
+			// go/analysis does not supply a caller context for a pass.
+			return run(context.Background(), pass, strings.Split(baseFlag, ","), strings.Split(packageFlag, ","))
 		},
 	}
 	a.Flags.StringVar(&baseFlag, "base-interfaces", baseFlag, "comma-separated fully qualified base interface names")
@@ -38,8 +44,8 @@ type contract struct {
 	name  string
 }
 
-func run(pass *analysis.Pass, bases, packages []string) (any, error) {
-	if len(bases) == 1 && bases[0] == "" {
+func run(ctx context.Context, pass *analysis.Pass, bases, paths []string) (any, error) {
+	if len(pass.Files) == 0 || len(bases) == 1 && bases[0] == "" {
 		return nil, nil
 	}
 	// The type graph includes transitive imports, including a base inherited
@@ -56,6 +62,48 @@ func run(pass *analysis.Pass, bases, packages []string) (any, error) {
 		}
 	}
 	visit(pass.Pkg)
+	// Load configured packages even when a candidate does not import them.
+	missing := map[string]bool{}
+	for _, name := range bases {
+		if path, _, ok := splitName(name); ok && loaded[path] == nil {
+			missing[path] = true
+		}
+	}
+	for _, path := range paths {
+		if path != "" && loaded[path] == nil {
+			missing[path] = true
+		}
+	}
+	if len(missing) > 0 {
+		patterns := make([]string, 0, len(missing))
+		for path := range missing {
+			patterns = append(patterns, path)
+		}
+		pkgs, err := packages.Load(&packages.Config{
+			Context: ctx,
+			Mode:    packages.NeedName | packages.NeedTypes | packages.NeedImports | packages.NeedDeps,
+		}, patterns...)
+		if err != nil {
+			return nil, fmt.Errorf("interfacecheck: load configured packages: %w", err)
+		}
+		for _, pkg := range pkgs {
+			if len(pkg.Errors) > 0 {
+				return nil, fmt.Errorf("interfacecheck: load %s: %w", pkg.PkgPath, pkg.Errors[0])
+			}
+			if existing := loaded[pkg.PkgPath]; existing != nil && existing.Complete() {
+				continue
+			}
+			// Reuse the pass's package identities, including shared named types in
+			// method signatures, when importing the independently loaded contracts.
+			var data bytes.Buffer
+			if err := gcexportdata.Write(&data, pkg.Fset, pkg.Types); err != nil {
+				return nil, fmt.Errorf("interfacecheck: export %s: %w", pkg.PkgPath, err)
+			}
+			if _, err := gcexportdata.Read(&data, pass.Fset, loaded, pkg.PkgPath); err != nil {
+				return nil, fmt.Errorf("interfacecheck: import %s: %w", pkg.PkgPath, err)
+			}
+		}
+	}
 	var baseInterfaces []*types.Interface
 	isBase := map[types.Type]bool{}
 	for _, name := range bases {
@@ -73,7 +121,7 @@ func run(pass *analysis.Pass, bases, packages []string) (any, error) {
 		}
 	}
 	var contracts []contract
-	for _, path := range packages {
+	for _, path := range paths {
 		pkg := loaded[path]
 		if pkg == nil {
 			continue
@@ -83,7 +131,7 @@ func run(pass *analysis.Pass, bases, packages []string) (any, error) {
 			if !ok || !obj.Exported() || isBase[types.Unalias(obj.Type())] {
 				continue
 			}
-			if iface, ok := obj.Type().Underlying().(*types.Interface); ok {
+			if iface, ok := obj.Type().Underlying().(*types.Interface); ok && iface.Complete().IsMethodSet() {
 				contracts = append(contracts, contract{obj.Type(), iface.Complete(), pkg.Name() + "." + name})
 			}
 		}
@@ -143,7 +191,7 @@ func run(pass *analysis.Pass, bases, packages []string) (any, error) {
 				shared := false
 				for method := range named.Methods() {
 					for explicit := range c.iface.ExplicitMethods() {
-						if method.Name() == explicit.Name() {
+						if method.Id() == explicit.Id() {
 							shared = true
 						}
 					}
@@ -153,7 +201,7 @@ func run(pass *analysis.Pass, bases, packages []string) (any, error) {
 				}
 				asserted := false
 				for _, target := range assertions[named.Origin()] {
-					if types.Identical(target, c.typ) {
+					if types.Identical(target, c.typ) || concrete(target) != nil && concrete(target) == concrete(c.typ) {
 						asserted = true
 						break
 					}
