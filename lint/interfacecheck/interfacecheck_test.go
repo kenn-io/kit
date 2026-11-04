@@ -36,3 +36,7 @@ func TestFixedGenericAliases(t *testing.T) {
 func TestModuleOutsideWorkingDirectory(t *testing.T) {
 	analysistest.Run(t, filepath.Join(analysistest.TestData(), "modules", "outside"), New([]string{"example.org/contracts.Provider"}, []string{"example.org/contracts"}), "./candidate")
 }
+
+func TestGenericAliases(t *testing.T) {
+	analysistest.Run(t, analysistest.TestData(), New([]string{"aliascontracts.Provider"}, []string{"aliascontracts"}), "aliasassertions")
+}

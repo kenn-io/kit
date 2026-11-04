@@ -45,6 +45,8 @@ it after adding rule labels and reasons to their suppressions.
 
 `kennlint analyzers` prints this list from the binary.
 
+For `interfacecheck` contracts loaded outside the import graph, package resolution uses the analyzed module, `GOFLAGS`, `GOWORK`, and the default Go build context. Drivers with private build flags or workspace selections must expose those through the Go environment; `go/analysis.Pass` does not carry that loader configuration.
+
 ## Adopting a repository
 
 1. Add the plugin to `.custom-gcl.yml` (create the file if the repository does
