@@ -529,40 +529,32 @@ func TestQuickVerifyReusesCheckedListsManifestsAndBlobs(t *testing.T) {
 			case "manifests":
 				require.NoError(t, os.WriteFile(r.Path(snapshotsDirName, m1.SnapshotID+manifestExt), []byte("broken"), 0o600))
 			case "blobs":
-				refs := st.checkAttachmentLists(m1, true)
+				listID, err := pack.ParseBlobID(m1.Attachments.Lists[0])
+				require.NoError(t, err)
+				refs := st.attachmentLists[listID]
 				require.NotEmpty(t, refs)
 				id, err := pack.ParseBlobID(refs[0].Hash)
 				require.NoError(t, err)
 				delete(st.known, id)
+				st.verifySnapshot(m2)
+				assert.Empty(t, st.result.Problems)
+
+				// Start a fresh run with the shared content missing before its first check.
+				st = newTestVerifyState(t, r, true)
+				delete(st.known, id)
+				st.verifySnapshot(m1)
+				st.verifySnapshot(m2)
+				assert.Equal(t, []Problem{
+					{SnapshotID: m1.SnapshotID, Detail: fmt.Sprintf("blob %s not present in any index", id)},
+					{SnapshotID: m2.SnapshotID, Detail: fmt.Sprintf("blob %s not present in any index", id)},
+				}, st.result.Problems)
+				return
 			}
 
 			st.verifySnapshot(m2)
 			assert.Empty(t, st.result.Problems)
 		})
 	}
-}
-
-func TestQuickVerifyReportsSharedFailureForEverySnapshot(t *testing.T) {
-	r := buildMultiPackRepo(t, 2)
-	manifests, err := r.ListSnapshots()
-	require.NoError(t, err)
-	require.GreaterOrEqual(t, len(manifests), 2)
-	m1, m2 := manifests[0], manifests[1]
-	st := newTestVerifyState(t, r, true)
-	refs := st.checkAttachmentLists(m1, true)
-	require.Empty(t, st.result.Problems)
-	require.NotEmpty(t, refs)
-	id, err := pack.ParseBlobID(refs[0].Hash)
-	require.NoError(t, err)
-	// Start a fresh run with the shared content missing before its first check.
-	st = newTestVerifyState(t, r, true)
-	delete(st.known, id)
-	st.verifySnapshot(m1)
-	st.verifySnapshot(m2)
-	assert.Equal(t, []Problem{
-		{SnapshotID: m1.SnapshotID, Detail: fmt.Sprintf("blob %s not present in any index", id)},
-		{SnapshotID: m2.SnapshotID, Detail: fmt.Sprintf("blob %s not present in any index", id)},
-	}, st.result.Problems)
 }
 
 // TestVerifyFlagsForgedAttachmentListSize pins that full verify compares each
