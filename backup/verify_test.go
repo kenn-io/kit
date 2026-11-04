@@ -25,6 +25,7 @@ func newTestVerifyState(t *testing.T, r *Repo, quick bool) *verifyState {
 		app:              newTestApp(),
 		repo:             r,
 		known:            known,
+		manifests:        map[string]*Manifest{},
 		quick:            quick,
 		jobs:             2,
 		readers:          map[string]*cachedPack{},
@@ -502,6 +503,58 @@ func TestVerifyMemoizesSharedContentReads(t *testing.T) {
 	require.Empty(st2.result.Problems)
 	assert.Equal(st1.contentReads, st2.contentReads,
 		"snapshot 2 shares all content, so memoization adds no new full reads")
+}
+
+func TestQuickVerifyReusesCheckedListsManifestsAndBlobs(t *testing.T) {
+	for _, mechanism := range []string{"lists", "manifests", "blobs"} {
+		t.Run(mechanism, func(t *testing.T) {
+			r := buildMultiPackRepo(t, 2)
+			manifests, err := r.ListSnapshots()
+			require.NoError(t, err)
+			require.GreaterOrEqual(t, len(manifests), 2)
+			m1, m2 := manifests[0], manifests[1]
+			require.Equal(t, m1.SnapshotID, m2.ParentID)
+			require.Positive(t, m2.DB.MapChainDepth)
+			require.NotEmpty(t, m1.Attachments.Lists)
+			require.Subset(t, m2.Attachments.Lists, m1.Attachments.Lists)
+			st := newTestVerifyState(t, r, true)
+			st.verifySnapshot(m1)
+			require.Empty(t, st.result.Problems)
+
+			switch mechanism {
+			case "lists":
+				id, err := pack.ParseBlobID(m1.Attachments.Lists[0])
+				require.NoError(t, err)
+				corruptStoredBlob(t, r, st.known, id)
+			case "manifests":
+				require.NoError(t, os.WriteFile(r.Path(snapshotsDirName, m1.SnapshotID+manifestExt), []byte("broken"), 0o600))
+			case "blobs":
+				listID, err := pack.ParseBlobID(m1.Attachments.Lists[0])
+				require.NoError(t, err)
+				refs := st.attachmentLists[listID]
+				require.NotEmpty(t, refs)
+				id, err := pack.ParseBlobID(refs[0].Hash)
+				require.NoError(t, err)
+				delete(st.known, id)
+				st.verifySnapshot(m2)
+				assert.Empty(t, st.result.Problems)
+
+				// Start a fresh run with the shared content missing before its first check.
+				st = newTestVerifyState(t, r, true)
+				delete(st.known, id)
+				st.verifySnapshot(m1)
+				st.verifySnapshot(m2)
+				assert.Equal(t, []Problem{
+					{SnapshotID: m1.SnapshotID, Detail: fmt.Sprintf("blob %s not present in any index", id)},
+					{SnapshotID: m2.SnapshotID, Detail: fmt.Sprintf("blob %s not present in any index", id)},
+				}, st.result.Problems)
+				return
+			}
+
+			st.verifySnapshot(m2)
+			assert.Empty(t, st.result.Problems)
+		})
+	}
 }
 
 // TestVerifyFlagsForgedAttachmentListSize pins that full verify compares each

@@ -95,6 +95,7 @@ func Verify(ctx context.Context, r *Repo, app App, opts VerifyOptions) (*VerifyR
 		app:              app,
 		repo:             r,
 		known:            known,
+		manifests:        map[string]*Manifest{},
 		quick:            opts.Quick,
 		jobs:             jobs,
 		readers:          map[string]*cachedPack{},
@@ -188,8 +189,9 @@ var maxOpenPackReaders = 64
 
 // verifyState holds the cross-manifest resources a Verify run shares: the
 // index map, a bounded LRU open-pack.Reader cache (closed before Verify
-// returns), the set of already-checked blobs, and per-blob full-read verdicts
-// so a content blob shared by several snapshots is read and hashed only once.
+// returns), successful per-blob quick checks, and per-blob full-read verdicts.
+// Manifests are loaded once, and clean attachment lists from the previous
+// snapshot are reused. Shared content is read and hashed only once.
 //
 // Concurrency model: each snapshot's structural walk (chains, lists, extras,
 // metadata reads) runs serially and enqueues its content blobs into
@@ -199,6 +201,9 @@ var maxOpenPackReaders = 64
 // readVerdict, readerErrs, contentReads, progress emission); the serial
 // phases run alone and need no locking.
 type verifyState struct {
+	manifests       map[string]*Manifest
+	attachmentLists map[pack.BlobID][]ContentRef
+
 	recipes        map[pack.BlobID]objectRecipe
 	recipeVerdicts map[pack.BlobID]error
 	ctx            context.Context
@@ -344,6 +349,9 @@ func (s *verifyState) evictOldestReader() {
 // snapshot, blob, and pack, and returns ok=false so the caller can skip any
 // references that blob would otherwise have named.
 func (s *verifyState) blob(id pack.BlobID, snapshotID string, readContent bool) ([]byte, bool) {
+	if !readContent && s.checked[id] {
+		return nil, true
+	}
 	ie, ok := s.known[id]
 	if !ok {
 		s.problem(snapshotID, fmt.Sprintf("blob %s not present in any index", id))
@@ -389,8 +397,8 @@ func (s *verifyState) blob(id pack.BlobID, snapshotID string, readContent bool) 
 // read-and-hash verdict across snapshots: the first snapshot that references a
 // blob reads and hashes it, and later snapshots reuse the verdict. A cached
 // failure is still re-reported as a Problem naming the referencing snapshot,
-// so per-snapshot attribution is preserved. Quick mode does the per-snapshot
-// structural check only and never memoizes.
+// so per-snapshot attribution is preserved. Quick mode reuses successful
+// structural checks per blob; failures are reported for every snapshot.
 //
 // In full mode the read itself is deferred: the blob is queued for
 // drainContentReads, which runs after the snapshot's structural walk with a
@@ -755,11 +763,24 @@ func (s *verifyState) fetcher(snapshotID string) func(pack.BlobID) ([]byte, erro
 	}
 }
 
+func (s *verifyState) manifest(id string) (*Manifest, error) {
+	if m, ok := s.manifests[id]; ok {
+		return m, nil
+	}
+	m, err := s.repo.LoadManifest(id)
+	if err != nil {
+		return nil, err
+	}
+	s.manifests[id] = m
+	return m, nil
+}
+
 // verifySnapshot enumerates and checks every blob one manifest references
 // (FORMAT.md, Verification Model): the page-hash-map and page-map chains, the materialized page
 // map's blob table, attachment lists and the content blobs they name, and
 // the extras tree and the blobs it names.
 func (s *verifyState) verifySnapshot(m *Manifest) {
+	s.manifests[m.SnapshotID] = m
 	recipesOK := s.checkObjectRecipes(m)
 	if m.Metadata == nil {
 		hashMap := s.checkHashMapChain(m)
@@ -830,7 +851,7 @@ func (s *verifyState) checkPortableMetadata(m *Manifest) {
 // chain, returning the materialized map so queuePageRunChecks can compare page
 // blob bytes against it, or nil when the chain failed.
 func (s *verifyState) checkHashMapChain(m *Manifest) *PageHashMap {
-	chain, err := s.repo.HashMapChain(m)
+	chain, err := mapChainWith(m, s.manifest, manifestPageHashMap)
 	if err != nil {
 		s.problem(m.SnapshotID, fmt.Sprintf("page-hash-map chain: %v", err))
 		return nil
@@ -861,7 +882,7 @@ func (s *verifyState) checkHashMapChain(m *Manifest) *PageHashMap {
 // mode, its coverage). It returns nil when the chain or any of its blobs
 // failed, since downstream checks have nothing usable to work from.
 func (s *verifyState) checkPageMapChain(m *Manifest) *PageMap {
-	chain, err := s.repo.PageMapChain(m)
+	chain, err := mapChainWith(m, s.manifest, manifestPageMap)
 	if err != nil {
 		s.problem(m.SnapshotID, fmt.Sprintf("page-map chain: %v", err))
 		return nil
@@ -903,21 +924,26 @@ func (s *verifyState) checkPageMapCoverage(m *Manifest, pm *PageMap) {
 // refs for the full-mode consistency check even when content cannot be resolved.
 func (s *verifyState) checkAttachmentLists(m *Manifest, recipesOK bool) []ContentRef {
 	var refs []ContentRef
+	lists := make(map[pack.BlobID][]ContentRef, len(m.Attachments.Lists))
 	for _, listBlob := range m.Attachments.Lists {
 		id, err := pack.ParseBlobID(listBlob)
 		if err != nil {
 			s.problem(m.SnapshotID, fmt.Sprintf("attachment list blob id %q: %v", listBlob, err))
 			continue
 		}
-		raw, ok := s.blob(id, m.SnapshotID, true)
+		segment, ok := s.attachmentLists[id]
 		if !ok {
-			continue
+			raw, ok := s.blob(id, m.SnapshotID, true)
+			if !ok {
+				continue
+			}
+			segment, err = DecodeAttachmentList(raw)
+			if err != nil {
+				s.problem(m.SnapshotID, fmt.Sprintf("attachment list %s: %v", id, err))
+				continue
+			}
 		}
-		segment, err := DecodeAttachmentList(raw)
-		if err != nil {
-			s.problem(m.SnapshotID, fmt.Sprintf("attachment list %s: %v", id, err))
-			continue
-		}
+		lists[id] = segment
 		for _, ref := range segment {
 			refs = append(refs, ref)
 			contentID, err := pack.ParseBlobID(ref.Hash)
@@ -941,6 +967,8 @@ func (s *verifyState) checkAttachmentLists(m *Manifest, recipesOK bool) []Conten
 			}
 		}
 	}
+	// Keep only this snapshot's decoded lists, bounding the memo to adjacent snapshots.
+	s.attachmentLists = lists
 	return refs
 }
 

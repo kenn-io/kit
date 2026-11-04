@@ -19,26 +19,26 @@ import (
 // seedBackupFixture builds a WAL sqlite DB (frozenTestSchema from
 // frozen_test.go) plus a matching loose attachments dir, and returns
 // (dbPath, attachmentsDir, dataDir, writer).
-func seedBackupFixture(t *testing.T) (string, string, string, *sql.DB) {
-	t.Helper()
-	require := require.New(t)
-	t.Helper()
-	dataDir := t.TempDir()
+func seedBackupFixture(tb testing.TB) (string, string, string, *sql.DB) {
+	tb.Helper()
+	require := require.New(tb)
+	tb.Helper()
+	dataDir := tb.TempDir()
 	attachmentsDir := filepath.Join(dataDir, "content")
 	contentA := []byte("first attachment content")
 	contentB := []byte("second attachment content, longer")
-	refA := writeLooseAttachment(t, attachmentsDir, contentA)
-	refB := writeLooseAttachment(t, attachmentsDir, contentB)
+	refA := writeLooseAttachment(tb, attachmentsDir, contentA)
+	refB := writeLooseAttachment(tb, attachmentsDir, contentB)
 
 	dbPath := filepath.Join(dataDir, "app.db")
 	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
 	require.NoError(err)
-	t.Cleanup(func() { _ = db.Close() })
-	_, err = db.ExecContext(t.Context(), frozenTestSchema)
+	tb.Cleanup(func() { _ = db.Close() })
+	_, err = db.ExecContext(tb.Context(), frozenTestSchema)
 	require.NoError(err)
-	_, err = db.ExecContext(t.Context(), `INSERT INTO notes (created_at) VALUES ('2026-01-01T00:00:00Z')`)
+	_, err = db.ExecContext(tb.Context(), `INSERT INTO notes (created_at) VALUES ('2026-01-01T00:00:00Z')`)
 	require.NoError(err)
-	_, err = db.ExecContext(t.Context(),
+	_, err = db.ExecContext(tb.Context(),
 		`INSERT INTO blobs (content_hash, storage_path, size, preview_hash, preview_path)
 		 VALUES (?, ?, ?, '', ''), (?, ?, ?, '', '')`,
 		refA.Hash, refA.Hash[:2]+"/"+refA.Hash, refA.Size,
