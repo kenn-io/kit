@@ -429,11 +429,13 @@ func parentCacheAuthentic(cached *PageHashMap, parent *Manifest) bool {
 	return pack.ComputeBlobID(EncodeHashKeyframe(cached)).String() == parent.DB.PageHashMap
 }
 
+// attachmentListSegmentsMax bounds the list segments a snapshot names.
+const attachmentListSegmentsMax = 30
+
 // parentUnionShrank reports whether any hash the parent's attachment lists
 // enumerate is missing from the current frozen ref set. When true, the
 // append-only list inheritance would leave the manifest's list union a strict
-// superset of the current population, so Create writes a fresh full list
-// instead.
+// superset of the current population.
 func parentUnionShrank(parentSeen map[string]bool, refs []ContentRef) bool {
 	if len(parentSeen) == 0 {
 		return false

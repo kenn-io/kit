@@ -50,12 +50,12 @@ func captureSnapshotFiles(
 			}
 		}
 	}
-	// Inherit lists only while the parent union remains a subset of the
-	// current references. After shrinkage, one fresh full list must replace
-	// the inherited union or Verify's population invariant would fail.
-	shrunk := parentUnionShrank(parentSeen, info.Refs)
+	// Write a fresh full list after deletions to preserve the union invariant,
+	// or at the segment bound to keep list reads independent of history length.
+	fresh := parentUnionShrank(parentSeen, info.Refs) ||
+		(parent != nil && len(parent.Attachments.Lists) >= attachmentListSegmentsMax)
 	captureSeen := parentSeen
-	if shrunk {
+	if fresh {
 		captureSeen = map[string]bool{}
 	}
 	capture, err := CaptureAttachments(
@@ -77,7 +77,7 @@ func captureSnapshotFiles(
 		BytesDone: capture.BlobBytes, BytesTotal: capture.BlobBytes, Final: true,
 	})
 	var lists []string
-	if shrunk {
+	if fresh {
 		if capture.HasNewList {
 			lists = []string{capture.NewListBlob.String()}
 		}
