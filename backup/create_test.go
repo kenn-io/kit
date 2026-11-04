@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -436,39 +437,84 @@ func TestCreateAttachmentDeletionKeepsVerifyClean(t *testing.T) {
 	assert.Empty(res.Problems, "both snapshots verify cleanly after a deletion")
 }
 
-func TestCreateCompactsLongAttachmentListChain(t *testing.T) {
+func TestKeptListSegments(t *testing.T) {
+	thousands := func(n int) []int {
+		sizes := make([]int, n)
+		for i := range sizes {
+			sizes[i] = 1000
+		}
+		return sizes
+	}
+	tests := []struct {
+		name    string
+		sizes   []int
+		newRefs int
+		want    int
+	}{
+		{"first snapshot", nil, 5, 0},
+		{"small growth keeps a large list", []int{100}, 1, 1},
+		{"equal sizes carry", []int{2, 1}, 1, 0},
+		{"carry stops at a larger segment", []int{8, 2, 1}, 1, 1},
+		{"no new refs keeps every segment", []int{8, 4}, 0, 2},
+		{"no new refs at the bound keeps every segment", thousands(30), 0, 30},
+		{"bound forces a merge without a carry", append(thousands(29), 5), 1, 29},
+		{
+			"over-bound parent merges its small tail",
+			append([]int{1000}, slices.Repeat([]int{1}, 39)...), 0, 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, keptListSegments(tt.sizes, tt.newRefs))
+		})
+	}
+}
+
+func TestCreateMergesAttachmentListSegments(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
 	ctx := t.Context()
 	r := initTestRepo(t)
 	dbPath, attachmentsDir, dataDir, db := seedBackupFixture(t)
 	opts := createOpts(dbPath, attachmentsDir, dataDir, t.TempDir())
-
-	parent, err := Create(ctx, r, newTestApp(), opts)
-	require.NoError(err)
-	expected := listUnion(t, r, parent)
-
-	for i := range attachmentListSegmentsMax + 2 {
-		ref := writeLooseAttachment(t, attachmentsDir, []byte(fmt.Sprintf("attachment %d", i)))
-		_, err = db.ExecContext(ctx,
+	addAttachment := func(content string) ContentRef {
+		ref := writeLooseAttachment(t, attachmentsDir, []byte(content))
+		_, err := db.ExecContext(ctx,
 			`INSERT INTO blobs (content_hash, storage_path, size, preview_hash, preview_path)
 			 VALUES (?, ?, ?, '', '')`,
 			ref.Hash, ref.Hash[:2]+"/"+ref.Hash, ref.Size)
 		require.NoError(err)
-		expected = append(expected, ref)
+		return ref
+	}
 
+	// The fixture's two attachments plus 62 more make a 64-entry base list.
+	for i := range 62 {
+		addAttachment(fmt.Sprintf("base attachment %d", i))
+	}
+	first, err := Create(ctx, r, newTestApp(), opts)
+	require.NoError(err)
+	require.Len(first.Attachments.Lists, 1)
+	base := first.Attachments.Lists[0]
+	expected := listUnion(t, r, first)
+	require.Len(expected, 64)
+
+	// Segment counts after n one-attachment snapshots: the base plus one
+	// segment per set bit of n, until n reaches the base size.
+	wantSegments := map[int]int{1: 2, 2: 2, 3: 3, 31: 6, 32: 2, 63: 7}
+	for n := 1; n <= 64; n++ {
+		expected = append(expected, addAttachment(fmt.Sprintf("attachment %d", n)))
 		m, err := Create(ctx, r, newTestApp(), opts)
 		require.NoError(err)
-		require.LessOrEqual(len(m.Attachments.Lists), attachmentListSegmentsMax, "incremental snapshot %d", i+1)
-		if i == attachmentListSegmentsMax-1 {
-			assert.Len(m.Attachments.Lists, 1, "compaction replaces inherited segments")
-			assert.ElementsMatch(expected, listUnion(t, r, m))
+		require.ElementsMatch(expected, listUnion(t, r, m), "snapshot %d union", n)
+		if n < 64 {
+			require.Equal(base, m.Attachments.Lists[0], "snapshot %d rewrote the base list", n)
 		}
-		if i == attachmentListSegmentsMax {
-			assert.Len(m.Attachments.Lists, 2, "inheritance resumes after compaction")
-			assert.Equal(parent.Attachments.Lists[0], m.Attachments.Lists[0])
+		if want, ok := wantSegments[n]; ok {
+			assert.Len(m.Attachments.Lists, want, "snapshot %d segments", n)
 		}
-		parent = m
+		if n == 64 {
+			assert.Len(m.Attachments.Lists, 1, "growth equal to the base merges into one list")
+		}
 	}
 
 	res, err := Verify(ctx, r, newTestApp(), VerifyOptions{All: true})

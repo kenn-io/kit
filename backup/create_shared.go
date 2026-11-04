@@ -26,20 +26,32 @@ func captureSnapshotFiles(
 	progress *progressEmitter,
 ) (*AttachmentCapture, []string, ManifestExtras, error) {
 	parentSeen := map[string]bool{}
+	type listSegment struct {
+		blob string
+		refs []ContentRef
+	}
+	var segments []listSegment
+	var segmentSizes []int
 	if parent != nil {
-		var err error
-		var parentRefs []ContentRef
-		parentRefs, parentSeen, err = LoadListRefs(
-			r, known, parent.Attachments.Lists, nil, app.PackFileExtension())
-		if err != nil {
-			return nil, nil, ManifestExtras{}, err
+		for _, list := range parent.Attachments.Lists {
+			segment, _, err := LoadListRefs(r, known, []string{list}, nil, app.PackFileExtension())
+			if err != nil {
+				return nil, nil, ManifestExtras{}, err
+			}
+			segments = append(segments, listSegment{blob: list, refs: segment})
+			segmentSizes = append(segmentSizes, len(segment))
+			for _, ref := range segment {
+				parentSeen[ref.Hash] = true
+			}
 		}
 		if opts.ContentSource != nil {
 			// Reuse recorded sizes to keep unchanged chunked objects on the
 			// same capture path. Capture still reads and verifies their bytes.
-			sizes := make(map[string]int64, len(parentRefs))
-			for _, ref := range parentRefs {
-				sizes[ref.Hash] = ref.Size
+			sizes := make(map[string]int64, len(parentSeen))
+			for _, segment := range segments {
+				for _, ref := range segment.refs {
+					sizes[ref.Hash] = ref.Size
+				}
 			}
 			for i := range info.Refs {
 				if info.Refs[i].Size == -1 {
@@ -50,13 +62,35 @@ func captureSnapshotFiles(
 			}
 		}
 	}
-	// Write a fresh full list after deletions to preserve the union invariant,
-	// or at the segment bound to keep list reads independent of history length.
-	fresh := parentUnionShrank(parentSeen, info.Refs) ||
-		(parent != nil && len(parent.Attachments.Lists) >= attachmentListSegmentsMax)
+	// Keep a prefix of the parent's segments and write every other current ref
+	// as one new segment. The union stays exact because a kept prefix is a
+	// subset of the current refs unless the parent union shrank, in which case
+	// nothing is kept and the new segment is a fresh full list.
+	keep := 0
+	if !parentUnionShrank(parentSeen, info.Refs) {
+		newRefs := 0
+		for _, ref := range info.Refs {
+			if !parentSeen[ref.Hash] {
+				newRefs++
+			}
+		}
+		keep = keptListSegments(segmentSizes, newRefs)
+	}
+	var lists []string
 	captureSeen := parentSeen
-	if fresh {
+	if keep < len(segments) {
 		captureSeen = map[string]bool{}
+	}
+	for i, segment := range segments {
+		if i == keep {
+			break
+		}
+		lists = append(lists, segment.blob)
+		if keep < len(segments) {
+			for _, ref := range segment.refs {
+				captureSeen[ref.Hash] = true
+			}
+		}
 	}
 	capture, err := CaptureAttachments(
 		ctx, opts.ContentDir, info.Refs, captureSeen, appender, CaptureOptions{
@@ -76,18 +110,8 @@ func captureSnapshotFiles(
 		Stage: ProgressStageAttachments, Done: capture.Blobs, Total: capture.Blobs,
 		BytesDone: capture.BlobBytes, BytesTotal: capture.BlobBytes, Final: true,
 	})
-	var lists []string
-	if fresh {
-		if capture.HasNewList {
-			lists = []string{capture.NewListBlob.String()}
-		}
-	} else {
-		if parent != nil {
-			lists = append(lists, parent.Attachments.Lists...)
-		}
-		if capture.HasNewList {
-			lists = append(lists, capture.NewListBlob.String())
-		}
+	if capture.HasNewList {
+		lists = append(lists, capture.NewListBlob.String())
 	}
 
 	extras, err := CaptureExtras(ctx, ExtrasOptions{
