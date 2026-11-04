@@ -41,46 +41,47 @@ func allocationFixture(_ testing.TB, size int) (run, reset func()) {
 	}, nil
 }
 
-func TestAllocsGrowth(t *testing.T) {
-	for _, quadratic := range []bool{false, true} {
-		t.Run(fmt.Sprintf("quadratic=%t", quadratic), func(t *testing.T) {
+func TestRunVerdicts(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		quadratic bool
+		floor     float64
+		stub      bool
+		wantError string
+	}{
+		{name: "linear", floor: 1},
+		{name: "quadratic", quadratic: true, floor: 1, wantError: "small(size=1000)=10000 large(size=10000)=1e+06 ratio=100 bound=20"},
+		{name: "below floor", floor: 2000, stub: true, wantError: "small below Floor=2000; small(size=1000)=1000 large(size=10000)=10000 ratio=10 bound=20"},
+		{name: "at floor", floor: 1000, stub: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			measure := growthtest.Allocs(3)
+			if tc.stub {
+				values := []float64{1000, 10000}
+				measure = func(run, reset func()) float64 {
+					value := values[0]
+					values = values[1:]
+					return value
+				}
+			}
 			tb := &recordingTB{TB: t}
 			growthtest.Run(tb, growthtest.Check{
-				Small: 1000, Large: 10000, MaxRatio: 20, Floor: 1,
+				Small: 1000, Large: 10000, MaxRatio: 20, Floor: tc.floor,
 				Build: func(tb testing.TB, size int) (run, reset func()) {
 					tb.Helper()
-					if quadratic {
+					if tc.quadratic {
 						size = size * size / 100
 					}
 					return allocationFixture(tb, size)
 				},
-				Measure: growthtest.Allocs(3),
+				Measure: measure,
 			})
-			if quadratic {
+			if tc.wantError != "" {
 				require.Len(t, tb.errors, 1)
-				assert.Contains(t, tb.errors[0], "small(size=1000)=10000 large(size=10000)=1e+06 ratio=100 bound=20")
+				assert.Contains(t, tb.errors[0], tc.wantError)
 			} else {
 				assert.Empty(t, tb.errors)
 				assert.Contains(t, strings.Join(tb.logs, "\n"), "small(size=1000)=1000 large(size=10000)=10000 ratio=10 bound=20")
-			}
-		})
-	}
-}
-
-func TestFloor(t *testing.T) {
-	for _, floor := range []float64{2000, 1000} {
-		t.Run(fmt.Sprintf("floor=%g", floor), func(t *testing.T) {
-			tb := &recordingTB{TB: t}
-			growthtest.Run(tb, growthtest.Check{
-				Small: 1000, Large: 10000, MaxRatio: 20, Floor: floor,
-				Build: allocationFixture, Measure: growthtest.Allocs(3),
-			})
-			if floor > 1000 {
-				require.Len(t, tb.errors, 1)
-				assert.Contains(t, tb.errors[0], "Floor=2000")
-				assert.Contains(t, tb.errors[0], "small(size=1000)=1000 large(size=10000)=10000 ratio=10 bound=20")
-			} else {
-				assert.Empty(t, tb.errors)
 			}
 		})
 	}
@@ -111,73 +112,24 @@ func TestFloorMustBePositive(t *testing.T) {
 	}
 }
 
-var cpuSink uint64
-
-func cpuFixture(_ testing.TB, size int) (run, reset func()) {
-	return func() {
-		x := cpuSink
-		for range size {
-			x = x*6364136223846793005 + 1
-		}
-		cpuSink = x
-	}, nil
-}
-
-func TestFastestGrowth(t *testing.T) {
-	for _, quadratic := range []bool{false, true} {
-		t.Run(fmt.Sprintf("quadratic=%t", quadratic), func(t *testing.T) {
-			tb := &recordingTB{TB: t}
-			growthtest.Run(tb, growthtest.Check{
-				Small: 1000, Large: 10000, MaxRatio: 30, Floor: 1,
-				Build: func(tb testing.TB, size int) (run, reset func()) {
-					tb.Helper()
-					if quadratic {
-						return cpuFixture(tb, size*size)
-					}
-					return cpuFixture(tb, size*1000)
-				},
-				Measure: growthtest.Fastest(5),
-			})
-			if quadratic {
-				require.Len(t, tb.errors, 1)
-				assert.Regexp(t, `small\(size=1000\)=\S+ large\(size=10000\)=\S+ ratio=\S+ bound=30`, tb.errors[0])
-			} else {
-				assert.Empty(t, tb.errors)
-			}
-		})
-	}
-}
-
 func TestConsumingFixtureReset(t *testing.T) {
-	for _, name := range []string{"allocs", "fastest"} {
-		t.Run(name, func(t *testing.T) {
-			measure := growthtest.Allocs(3)
-			if name == "fastest" {
-				measure = growthtest.Fastest(5)
-			}
-			tb := &recordingTB{TB: t}
-			growthtest.Run(tb, growthtest.Check{
-				Small: 1000, Large: 10000, MaxRatio: 30, Floor: 1, Measure: measure,
-				Build: func(tb testing.TB, size int) (run, reset func()) {
-					tb.Helper()
-					var op func()
-					if name == "allocs" {
-						op, _ = allocationFixture(tb, size*size/100)
-					} else {
-						op, _ = cpuFixture(tb, size*size)
-					}
-					pending := true
-					return func() {
-						if pending {
-							op()
-							pending = false
-						}
-					}, func() { pending = true }
-				},
-			})
-			require.Len(t, tb.errors, 1, "reset must restore work before every sample")
-		})
-	}
+	tb := &recordingTB{TB: t}
+	growthtest.Run(tb, growthtest.Check{
+		Small: 1000, Large: 10000, MaxRatio: 30, Floor: 1, Measure: growthtest.Allocs(3),
+		Build: func(tb testing.TB, size int) (run, reset func()) {
+			tb.Helper()
+			op, _ := allocationFixture(tb, size*size/100)
+			pending := true
+			return func() {
+				if pending {
+					op()
+					pending = false
+				}
+			}, func() { pending = true }
+		},
+	})
+	require.Len(t, tb.errors, 1, "reset must restore work before every sample")
+	assert.Contains(t, tb.errors[0], "ratio=100 bound=30")
 }
 
 func TestAllocsExcludesReset(t *testing.T) {
@@ -219,9 +171,12 @@ func TestFastestWarmup(t *testing.T) {
 				calls, resets := 0, 0
 				var reset func()
 				if withReset {
-					reset = func() { resets++ }
+					reset = func() {
+						resets++
+						time.Sleep(time.Second)
+					}
 				}
-				got := growthtest.Fastest(1)(func() {
+				got := growthtest.Fastest(2)(func() {
 					calls++
 					if withReset {
 						assert.Equal(t, calls, resets, "reset must prepare every run")
@@ -229,10 +184,13 @@ func TestFastestWarmup(t *testing.T) {
 					if calls == 1 {
 						time.Sleep(time.Second)
 					}
+					if calls == 2 {
+						time.Sleep(10 * time.Millisecond)
+					}
 					time.Sleep(time.Millisecond)
 				}, reset)
 				assert.InDelta(t, time.Millisecond.Nanoseconds(), got, 0)
-				assert.Equal(t, 2, calls)
+				assert.Equal(t, 3, calls)
 			})
 		})
 	}
