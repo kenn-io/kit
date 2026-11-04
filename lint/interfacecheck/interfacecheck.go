@@ -233,13 +233,22 @@ func run(ctx context.Context, pass *analysis.Pass, bases, paths []string) (any, 
 				}
 				asserted := false
 				for _, target := range assertions[named.Origin()] {
-					generic, _ := c.typ.(*types.Named)
-					alias, _ := c.typ.(*types.Alias)
-					targetAlias, _ := target.(*types.Alias)
-					if types.Identical(target, c.typ) ||
-						generic != nil && generic.TypeParams().Len() > 0 && concrete(target) == generic ||
-						alias != nil && alias.TypeParams().Len() > 0 && targetAlias != nil && targetAlias.Origin() == alias {
-						asserted = true
+					for {
+						generic, _ := c.typ.(*types.Named)
+						alias, _ := c.typ.(*types.Alias)
+						targetAlias, _ := target.(*types.Alias)
+						if types.Identical(target, c.typ) ||
+							generic != nil && generic.TypeParams().Len() > 0 && concrete(target) == generic ||
+							alias != nil && alias.TypeParams().Len() > 0 && targetAlias != nil && targetAlias.Origin() == alias {
+							asserted = true
+							break
+						}
+						if targetAlias == nil {
+							break
+						}
+						target = targetAlias.Rhs()
+					}
+					if asserted {
 						break
 					}
 				}

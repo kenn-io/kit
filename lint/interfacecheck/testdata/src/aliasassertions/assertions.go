@@ -19,3 +19,12 @@ var _ interface {
 	Key() int
 	Value() int
 } = WrongKey{}
+
+type localValue = aliascontracts.Value[int]
+type ViaAlias struct{}
+
+func (ViaAlias) ID() string  { return "" }
+func (ViaAlias) Key() string { return "" }
+func (ViaAlias) Value() int  { return 0 }
+
+var _ localValue = (*ViaAlias)(nil)
