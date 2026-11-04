@@ -367,13 +367,19 @@ func frontmatterStaleDates(ctx context.Context, root, ref string, files []string
 		return nil, err
 	}
 	base := strings.TrimSpace(string(baseBytes))
-	diff, err := frontmatterGit(ctx, root, "diff", "--name-only", "-z", "--no-renames", "--diff-filter=M", base, "--", "*.md")
+	diff, err := frontmatterGit(ctx, root, "diff", "--numstat", "-z", "--no-renames", "--diff-filter=M", base, "--", "*.md")
 	if err != nil {
 		return nil, err
 	}
 	modified := make(map[string]bool)
-	for name := range bytes.SplitSeq(diff, []byte{0}) {
-		modified[string(name)] = true
+	for record := range bytes.SplitSeq(diff, []byte{0}) {
+		// A mode-only change, such as setting the executable bit, is listed
+		// as modified with zero added and deleted lines.
+		added, rest, _ := strings.Cut(string(record), "\t")
+		deleted, name, _ := strings.Cut(rest, "\t")
+		if added != "0" || deleted != "0" {
+			modified[name] = true
+		}
 	}
 	var stale []string
 	for _, file := range files {

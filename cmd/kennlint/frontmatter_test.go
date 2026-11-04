@@ -253,6 +253,15 @@ func TestFrontmatterChanged(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, n)
 
+	// Unix reads the executable bit from the file; Windows reads it from the index.
+	require.NoError(t, os.Chmod("page.md", 0o755))
+	repo.Run("update-index", "--chmod=+x", "page.md")
+	n, err = runFrontmatter(t.Context(), []string{"-changed", "base", "page.md"}, &stdout, &stderr)
+	require.NoError(t, err)
+	assert.Zero(t, n, "a mode-only change is not a content edit")
+	require.NoError(t, os.Chmod("page.md", 0o644))
+	repo.Run("update-index", "--chmod=-x", "page.md")
+
 	_, err = runFrontmatter(t.Context(), []string{"-changed", "missing-ref"}, &stdout, &stderr)
 	require.ErrorContains(t, err, "merge-base")
 
@@ -369,6 +378,35 @@ func TestFrontmatterSkipsSymlinks(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, want, string(data), "-fix must not write through a symlink to %s", name)
 	}
+}
+
+func TestFrontmatterSkipsUnstagedSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks require privileges on Windows")
+	}
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	repo.WriteFile("page.md", goodFrontmatter)
+	repo.Run("add", "page.md")
+	outside := filepath.Join(t.TempDir(), "outside.md")
+	const outsideBody = "# Outside the repository\n"
+	require.NoError(t, os.WriteFile(outside, []byte(outsideBody), 0o600))
+	// The index still records a regular file; only the working tree has a link.
+	require.NoError(t, os.Remove("page.md"))
+	require.NoError(t, os.Symlink(outside, "page.md"))
+
+	var stdout, stderr bytes.Buffer
+	n, err := runFrontmatter(t.Context(), []string{"-fix"}, &stdout, &stderr)
+	require.NoError(t, err)
+	assert.Zero(t, n)
+	assert.Equal(t, "frontmatter: checked 0 Markdown files (0 fixed)\n", stdout.String())
+	info, err := os.Lstat("page.md")
+	require.NoError(t, err)
+	assert.NotZero(t, info.Mode()&os.ModeSymlink, "-fix must leave the link in place")
+	data, err := os.ReadFile(outside)
+	require.NoError(t, err)
+	assert.Equal(t, outsideBody, string(data))
 }
 
 func TestFrontmatterSkipsSymlinkPlaceholders(t *testing.T) {
