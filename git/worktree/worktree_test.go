@@ -214,11 +214,24 @@ func TestCreateLFS(t *testing.T) {
 				t.Skip("Git for Windows adds bundled git-lfs to PATH")
 			}
 			repo := gittest.NewRepoWithCommit(t)
-			repo.CommitFile(".gitattributes", "*.bin filter=lfs\n", "add LFS attributes")
+			_, _, lfsErr := repo.RunRaw("lfs", "version")
+			if name == "tracked file" && lfsErr == nil {
+				repo.Run("lfs", "install", "--local")
+				repo.Run("lfs", "track", "*.bin")
+				repo.Run("add", ".gitattributes")
+				repo.Run("commit", "-m", "add LFS attributes")
+			} else {
+				repo.CommitFile(".gitattributes", "*.bin filter=lfs\n", "add LFS attributes")
+			}
 			if name != "unmatched attributes" {
 				repo.CommitFile("data.bin", "ordinary data\n", "add matching file")
+				if name == "tracked file" && lfsErr == nil {
+					require.Contains(t, repo.Run("show", "HEAD:data.bin"), "version https://git-lfs.github.com/spec/v1\n")
+				}
 			}
 			runner, starts := traceRunner(t)
+			// Leave pointers during checkout so PullLFS must hydrate the file.
+			runner = runner.WithEnv(append(runner.Env, "GIT_LFS_SKIP_SMUDGE=1"))
 			if name == "missing git-lfs" {
 				runner = runner.WithEnv(append(runner.Env, "PATH="+t.TempDir()))
 			}
@@ -243,8 +256,30 @@ func TestCreateLFS(t *testing.T) {
 			}
 			require.Equal(t, name != "unmatched attributes", env)
 			require.Equal(t, name != "unmatched attributes" && versionErr == nil, pull)
+			if name == "tracked file" && versionErr == nil {
+				data, readErr := os.ReadFile(filepath.Join(wt.Dir, "data.bin"))
+				require.NoError(t, readErr)
+				require.Equal(t, "ordinary data\n", string(data))
+			}
 		})
 	}
+}
+
+func TestCreateResolvedBaseAfterRefMoves(t *testing.T) {
+	t.Parallel()
+	repo := gittest.NewRepoWithCommit(t)
+	sha := repo.Head()
+	repo.CommitFile("base.txt", "advanced\n", "advance main after resolution")
+
+	wt, err := Create(t.Context(), repo.Root, "main", Options{ParentDir: t.TempDir(), BaseSHA: sha})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, wt.Close(context.Background())) //nolint:usetesting // Cleanup runs after the test context is canceled.
+	})
+	patch, err := wt.CapturePatch(t.Context())
+	require.NoError(t, err)
+	require.Empty(t, patch)
+	require.Equal(t, sha, wt.ResolveBaseSHA(t.Context()))
 }
 
 func TestCreateResolvesSymbolicRefs(t *testing.T) {

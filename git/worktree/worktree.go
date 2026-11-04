@@ -26,7 +26,8 @@ type Worktree struct {
 	Dir string
 	// Repo is the parent repository used for git worktree removal.
 	Repo string
-	// BaseSHA is the HEAD SHA resolved immediately after creation.
+	// BaseSHA is the commit checked out at creation, supplied by the caller
+	// or resolved from the worktree HEAD.
 	BaseSHA string
 	runner  gitcmd.Runner
 }
@@ -44,17 +45,21 @@ type Options struct {
 	// Create skips the pull when no tracked files have the filter=lfs attribute.
 	PullLFS bool
 	// BaseSHA is the commit the caller already resolved ref to. When set,
-	// Create uses it instead of resolving the worktree HEAD.
+	// Create checks out this commit instead of ref and skips resolving HEAD.
 	BaseSHA string
 	// Runner overrides the git runner. When zero, gitcmd.New is used.
 	Runner gitcmd.Runner
 }
 
-// Create creates a detached worktree at ref. Hooks are disabled for the
-// worktree add so user hooks do not run in internal automation checkouts.
+// Create creates a detached worktree at ref, or Options.BaseSHA when set.
+// Hooks are disabled for worktree add so user hooks do not run in internal
+// automation checkouts.
 func Create(ctx context.Context, repoPath, ref string, opts Options) (_ *Worktree, err error) {
 	if ref == "" {
 		return nil, errors.New("ref must not be empty")
+	}
+	if opts.BaseSHA != "" {
+		ref = opts.BaseSHA
 	}
 	runner := opts.Runner
 	if runner.Env == nil {
