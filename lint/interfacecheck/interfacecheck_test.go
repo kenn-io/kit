@@ -7,5 +7,5 @@ import (
 )
 
 func TestAssertions(t *testing.T) {
-	analysistest.Run(t, analysistest.TestData(), Analyzer, "sample", "unmarked", "transitive")
+	analysistest.Run(t, analysistest.TestData(), Analyzer, "sample", "unmarked", "transitive", "multiplebases")
 }

@@ -45,7 +45,7 @@ it after adding rule labels and reasons to their suppressions.
 
 `kennlint analyzers` prints this list from the binary.
 
-For `interfacecheck` contracts loaded outside the import graph, package resolution uses the analyzed module, `GOFLAGS`, `GOWORK`, and the default Go build context. Drivers with private build flags or workspace selections must expose those through the Go environment; `go/analysis.Pass` does not carry that loader configuration.
+`interfacecheck` discovers marked bases in the analyzed package and its transitive imports through analysis facts.
 
 ## Adopting a repository
 

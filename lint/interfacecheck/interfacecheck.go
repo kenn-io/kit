@@ -27,7 +27,7 @@ type contract struct {
 	typ   types.Type
 	iface *types.Interface
 	name  string
-	base  *types.Interface
+	bases []*types.Interface
 }
 
 func run(pass *analysis.Pass) (any, error) {
@@ -60,7 +60,6 @@ func run(pass *analysis.Pass) (any, error) {
 			}
 		}
 	}
-	var contracts []contract
 	visited := map[*types.Package]bool{}
 	var visit func(*types.Package)
 	visit = func(pkg *types.Package) {
@@ -70,21 +69,8 @@ func run(pass *analysis.Pass) (any, error) {
 		visited[pkg] = true
 		for _, name := range pkg.Scope().Names() {
 			obj, ok := pkg.Scope().Lookup(name).(*types.TypeName)
-			if !ok {
-				continue
-			}
-			base := interfaceType(obj)
-			if base == nil || !marked[obj] && (pkg == pass.Pkg || !pass.ImportObjectFact(obj, new(baseFact))) {
-				continue
-			}
-			for _, name := range pkg.Scope().Names() {
-				optional, ok := pkg.Scope().Lookup(name).(*types.TypeName)
-				if !ok || !optional.Exported() || optional == obj {
-					continue
-				}
-				if iface := interfaceType(optional); iface != nil {
-					contracts = append(contracts, contract{optional.Type(), iface, pkg.Name() + "." + name, base})
-				}
+			if ok && pkg != pass.Pkg && interfaceType(obj) != nil && pass.ImportObjectFact(obj, new(baseFact)) {
+				marked[obj] = true
 			}
 		}
 		for _, imported := range pkg.Imports() {
@@ -94,6 +80,27 @@ func run(pass *analysis.Pass) (any, error) {
 	// A package that does not transitively import the marked package cannot
 	// satisfy its base: the base methods use types from that package.
 	visit(pass.Pkg)
+	var contracts []contract
+	for pkg := range visited {
+		var bases []*types.Interface
+		for obj := range marked {
+			if obj.Pkg() == pkg {
+				bases = append(bases, interfaceType(obj))
+			}
+		}
+		if len(bases) == 0 {
+			continue
+		}
+		for _, name := range pkg.Scope().Names() {
+			obj, ok := pkg.Scope().Lookup(name).(*types.TypeName)
+			if !ok || !obj.Exported() || marked[obj] {
+				continue
+			}
+			if iface := interfaceType(obj); iface != nil {
+				contracts = append(contracts, contract{obj.Type(), iface, pkg.Name() + "." + name, bases})
+			}
+		}
+	}
 	if len(contracts) == 0 {
 		return nil, nil
 	}
@@ -161,7 +168,14 @@ func run(pass *analysis.Pass) (any, error) {
 				return true
 			}
 			for _, c := range contracts {
-				if !types.Implements(named, c.base) && !types.Implements(types.NewPointer(named), c.base) {
+				candidate := false
+				for _, base := range c.bases {
+					if types.Implements(named, base) || types.Implements(types.NewPointer(named), base) {
+						candidate = true
+						break
+					}
+				}
+				if !candidate {
 					continue
 				}
 				shared := false

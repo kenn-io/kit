@@ -51,15 +51,15 @@ func (PrivateMethod) optional()  {}
 
 type GenericCorrect struct{}
 
-func (GenericCorrect) ID() string    { return "" }
-func (GenericCorrect) Value() string { return "" }
+func (GenericCorrect) ID() string           { return "" }
+func (GenericCorrect) GenericValue() string { return "" }
 
 var _ contracts.Generic[string] = GenericCorrect{}
 
 type GenericDrift struct{}
 
-func (GenericDrift) ID() string   { return "" }
-func (GenericDrift) Value() error { return nil }
+func (GenericDrift) ID() string          { return "" }
+func (GenericDrift) GenericValue() error { return nil }
 
 // Interface conversions are compile-time assertions too.
 type Converted struct{}
@@ -67,14 +67,14 @@ type Converted struct{}
 func (Converted) ID() string    { return "" }
 func (Converted) Value() string { return "" }
 
-var _ = contracts.Generic[string](Converted{})
+var _ = contracts.ValueReader(Converted{})
 
 type NestedConversion struct{}
 
 func (NestedConversion) ID() string    { return "" }
 func (NestedConversion) Value() string { return "" }
 
-var _ contracts.Generic[string] = contracts.Generic[string]((*NestedConversion)(nil))
+var _ contracts.ValueReader = contracts.ValueReader((*NestedConversion)(nil))
 
 // A multi-valued initializer asserts both concrete result types.
 type TupleFirst struct{}
@@ -88,7 +88,7 @@ func (TupleSecond) ID() string          { return "" }
 func (TupleSecond) Value() string       { return "" }
 func tuple() (TupleFirst, *TupleSecond) { return TupleFirst{}, nil }
 
-var _, _ contracts.Generic[string] = tuple()
+var _, _ contracts.ValueReader = tuple()
 
 // Widening a checked interface to any retains the compile-time assertion.
 type Widened struct{}
@@ -96,4 +96,4 @@ type Widened struct{}
 func (Widened) ID() string    { return "" }
 func (Widened) Value() string { return "" }
 
-var _ = any(contracts.Generic[string](Widened{}))
+var _ = any(contracts.ValueReader(Widened{}))

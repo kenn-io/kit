@@ -27,7 +27,9 @@ type NumericProvider interface {
 }
 
 type PrivateOptional interface{ optional() }
-type Generic[T any] interface{ Value() T }
+type Generic[T any] interface{ GenericValue() T }
 
 type TypedProvider interface{ Kind() shared.Kind }
 type TypedOptional interface{ UseKind(shared.Kind) }
+
+type ValueReader interface{ Value() string }
