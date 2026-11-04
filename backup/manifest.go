@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 
@@ -266,36 +265,49 @@ func (r *Repo) ListSnapshots() ([]*Manifest, error) {
 	return listSnapshots(os.DirFS(r.Path(snapshotsDirName)))
 }
 
-func listSnapshots(snapshots fs.FS) ([]*Manifest, error) {
+func snapshotIDs(snapshots fs.FS) ([]string, error) {
 	entries, err := fs.ReadDir(snapshots, ".")
 	if err != nil {
 		return nil, fmt.Errorf("backup: reading snapshots dir: %w", err)
 	}
-	var out []*Manifest
+	var ids []string
 	for _, e := range entries {
 		if !strings.HasSuffix(e.Name(), manifestExt) {
 			continue
 		}
-		m, err := loadManifest(snapshots, strings.TrimSuffix(e.Name(), manifestExt))
+		ids = append(ids, strings.TrimSuffix(e.Name(), manifestExt))
+	}
+	return ids, nil
+}
+
+func listSnapshots(snapshots fs.FS) ([]*Manifest, error) {
+	ids, err := snapshotIDs(snapshots)
+	if err != nil {
+		return nil, err
+	}
+	var out []*Manifest
+	for _, id := range ids {
+		m, err := loadManifest(snapshots, id)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, m)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].SnapshotID < out[j].SnapshotID })
 	return out, nil
 }
 
 // LatestSnapshot returns the newest manifest, or nil for an empty repo.
+// It reads only the newest manifest; ListSnapshots checks the whole history.
 func (r *Repo) LatestSnapshot() (*Manifest, error) {
-	list, err := r.ListSnapshots()
+	snapshots := os.DirFS(r.Path(snapshotsDirName))
+	ids, err := snapshotIDs(snapshots)
 	if err != nil {
 		return nil, err
 	}
-	if len(list) == 0 {
+	if len(ids) == 0 {
 		return nil, nil
 	}
-	return list[len(list)-1], nil
+	return loadManifest(snapshots, ids[len(ids)-1])
 }
 
 // HashMapChain collects the newest-to-oldest page-hash-map blob chain from
