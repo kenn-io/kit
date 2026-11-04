@@ -2,6 +2,7 @@
 // MaxRatio is expected growth times a margin: linear growth from 1k to 10k
 // with a 2x margin uses 20; flat growth with a 2x margin uses 2.
 // Floor is the smallest small-side value the check trusts, in the measure's units.
+// It must be positive.
 package growthtest
 
 import (
@@ -17,7 +18,7 @@ import (
 // and excludes reset from the cost so operations can consume their fixtures.
 type Measure func(run, reset func()) float64
 
-// Allocs measures mean allocations over runs samples after one warm-up run.
+// Allocs returns the fewest allocations over runs samples after one warm-up run.
 // It excludes reset's allocations and temporarily sets GOMAXPROCS to 1.
 // Tests using it must not run in parallel: allocation counts are process-wide.
 // It panics if runs is less than 1.
@@ -32,7 +33,7 @@ func Allocs(runs int) Measure {
 		}
 		run()
 		var stats runtime.MemStats
-		var total uint64
+		fewest := ^uint64(0)
 		for range runs {
 			if reset != nil {
 				reset()
@@ -41,13 +42,14 @@ func Allocs(runs int) Measure {
 			before := stats.Mallocs
 			run()
 			runtime.ReadMemStats(&stats)
-			total += stats.Mallocs - before
+			fewest = min(fewest, stats.Mallocs-before)
 		}
-		return float64(total) / float64(runs)
+		return float64(fewest)
 	}
 }
 
-// Fastest returns the minimum run time in nanoseconds over runs samples.
+// Fastest returns the minimum run time in nanoseconds over runs samples
+// after one untimed warm-up run, preceded by reset when set.
 // Each sample calls reset, when set, then runtime.GC before starting the timer.
 // It panics if runs is less than 1.
 func Fastest(runs int) Measure {
@@ -55,6 +57,10 @@ func Fastest(runs int) Measure {
 		panic("growthtest: Fastest requires positive runs")
 	}
 	return func(run, reset func()) float64 {
+		if reset != nil {
+			reset()
+		}
+		run()
 		fastest := time.Duration(1<<63 - 1)
 		for range runs {
 			if reset != nil {
@@ -75,7 +81,7 @@ type Check struct {
 	// Build prepares one size and returns its operation and optional reset.
 	Build   func(tb testing.TB, size int) (run, reset func())
 	Measure Measure
-	// MaxRatio bounds large/small; Floor is the minimum trusted small value.
+	// MaxRatio bounds large/small; Floor is the positive minimum trusted small value.
 	MaxRatio, Floor float64
 }
 
@@ -90,7 +96,7 @@ func Run(tb testing.TB, c Check) {
 	require.Positive(tb, c.Small, "Small must be positive")
 	require.Greater(tb, c.Large, c.Small, "Large must exceed Small")
 	require.Positive(tb, c.MaxRatio, "MaxRatio must be positive")
-	require.GreaterOrEqual(tb, c.Floor, float64(0), "Floor must be nonnegative")
+	require.Positive(tb, c.Floor, "Floor must be positive")
 	require.NotNil(tb, c.Build, "Build must be set")
 	require.NotNil(tb, c.Measure, "Measure must be set")
 	run, reset := c.Build(tb, c.Small)

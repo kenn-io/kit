@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -26,6 +28,10 @@ func (tb *recordingTB) Logf(format string, args ...any) {
 	tb.logs = append(tb.logs, fmt.Sprintf(format, args...))
 }
 
+func (tb *recordingTB) FailNow() {
+	panic("growth check stopped")
+}
+
 func allocationFixture(_ testing.TB, size int) (run, reset func()) {
 	items := make([]*[32]byte, size)
 	return func() {
@@ -40,7 +46,7 @@ func TestAllocsGrowth(t *testing.T) {
 		t.Run(fmt.Sprintf("quadratic=%t", quadratic), func(t *testing.T) {
 			tb := &recordingTB{TB: t}
 			growthtest.Run(tb, growthtest.Check{
-				Small: 1000, Large: 10000, MaxRatio: 20,
+				Small: 1000, Large: 10000, MaxRatio: 20, Floor: 1,
 				Build: func(tb testing.TB, size int) (run, reset func()) {
 					tb.Helper()
 					if quadratic {
@@ -62,20 +68,45 @@ func TestAllocsGrowth(t *testing.T) {
 }
 
 func TestFloor(t *testing.T) {
-	for _, floor := range []float64{2000, 0} {
+	for _, floor := range []float64{2000, 1000} {
 		t.Run(fmt.Sprintf("floor=%g", floor), func(t *testing.T) {
 			tb := &recordingTB{TB: t}
 			growthtest.Run(tb, growthtest.Check{
 				Small: 1000, Large: 10000, MaxRatio: 20, Floor: floor,
 				Build: allocationFixture, Measure: growthtest.Allocs(3),
 			})
-			if floor > 0 {
+			if floor > 1000 {
 				require.Len(t, tb.errors, 1)
 				assert.Contains(t, tb.errors[0], "Floor=2000")
 				assert.Contains(t, tb.errors[0], "small(size=1000)=1000 large(size=10000)=10000 ratio=10 bound=20")
 			} else {
 				assert.Empty(t, tb.errors)
 			}
+		})
+	}
+}
+
+func TestFloorMustBePositive(t *testing.T) {
+	for _, floor := range []float64{0, -1} {
+		t.Run(fmt.Sprintf("floor=%g", floor), func(t *testing.T) {
+			if testing.Short() {
+				t.Skip("growth checks skip under -short")
+			}
+			tb := &recordingTB{TB: t}
+			built := false
+			assert.PanicsWithValue(t, "growth check stopped", func() {
+				growthtest.Run(tb, growthtest.Check{
+					Small: 1, Large: 2, MaxRatio: 2, Floor: floor,
+					Build: func(testing.TB, int) (run, reset func()) {
+						built = true
+						return func() {}, nil
+					},
+					Measure: growthtest.Allocs(1),
+				})
+			})
+			require.Len(t, tb.errors, 1)
+			assert.Contains(t, tb.errors[0], "Floor must be positive")
+			assert.False(t, built)
 		})
 	}
 }
@@ -97,7 +128,7 @@ func TestFastestGrowth(t *testing.T) {
 		t.Run(fmt.Sprintf("quadratic=%t", quadratic), func(t *testing.T) {
 			tb := &recordingTB{TB: t}
 			growthtest.Run(tb, growthtest.Check{
-				Small: 1000, Large: 10000, MaxRatio: 30,
+				Small: 1000, Large: 10000, MaxRatio: 30, Floor: 1,
 				Build: func(tb testing.TB, size int) (run, reset func()) {
 					tb.Helper()
 					if quadratic {
@@ -126,7 +157,7 @@ func TestConsumingFixtureReset(t *testing.T) {
 			}
 			tb := &recordingTB{TB: t}
 			growthtest.Run(tb, growthtest.Check{
-				Small: 1000, Large: 10000, MaxRatio: 30, Measure: measure,
+				Small: 1000, Large: 10000, MaxRatio: 30, Floor: 1, Measure: measure,
 				Build: func(tb testing.TB, size int) (run, reset func()) {
 					tb.Helper()
 					var op func()
@@ -163,6 +194,48 @@ func TestAllocsExcludesReset(t *testing.T) {
 	})
 	assert.InDelta(t, 1, got, 0)
 	assert.Equal(t, 4, resets, "reset also prepares the warm-up run")
+}
+
+func TestAllocsMinimum(t *testing.T) {
+	items := make([]*[32]byte, 100)
+	calls := 0
+	got := growthtest.Allocs(3)(func() {
+		calls++
+		count := 1
+		if calls == 2 {
+			count = 100
+		}
+		for i := range count {
+			items[i] = new([32]byte)
+		}
+	}, nil)
+	assert.InDelta(t, 1, got, 0)
+}
+
+func TestFastestWarmup(t *testing.T) {
+	for _, withReset := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reset=%t", withReset), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				calls, resets := 0, 0
+				var reset func()
+				if withReset {
+					reset = func() { resets++ }
+				}
+				got := growthtest.Fastest(1)(func() {
+					calls++
+					if withReset {
+						assert.Equal(t, calls, resets, "reset must prepare every run")
+					}
+					if calls == 1 {
+						time.Sleep(time.Second)
+					}
+					time.Sleep(time.Millisecond)
+				}, reset)
+				assert.InDelta(t, time.Millisecond.Nanoseconds(), got, 0)
+				assert.Equal(t, 2, calls)
+			})
+		})
+	}
 }
 
 func TestShortSkipsBuild(t *testing.T) {
