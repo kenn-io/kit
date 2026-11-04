@@ -8,6 +8,7 @@ import (
 	"os"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/gofrs/flock"
@@ -17,42 +18,36 @@ import (
 )
 
 func TestManagerEnsureStartsAndPollsForCompatibleDaemon(t *testing.T) {
-	assert := assert.New(t)
+	synctest.Test(t, func(t *testing.T) {
+		var started bool
+		var readyAt time.Time
+		var polls int
+		manager := daemon.Manager{
+			Store: daemon.RuntimeStore{Dir: t.TempDir()},
+			FindFunc: func(context.Context) (daemon.RuntimeRecord, daemon.PingInfo, bool, error) {
+				if !started {
+					return daemon.RuntimeRecord{}, daemon.PingInfo{}, false, nil
+				}
+				polls++
+				if time.Now().Before(readyAt) {
+					return daemon.RuntimeRecord{}, daemon.PingInfo{}, false, nil
+				}
+				return daemon.RuntimeRecord{Service: "tool"}, daemon.PingInfo{Version: "v2"}, true, nil
+			},
+			Start: func(context.Context) error {
+				started = true
+				readyAt = time.Now().Add(100 * time.Millisecond)
+				return nil
+			},
+		}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = fmt.Fprint(w, `{"ok":true,"service":"tool","version":"v2"}`)
-	}))
-	defer server.Close()
-
-	store := daemon.RuntimeStore{Dir: t.TempDir()}
-	started := false
-	manager := daemon.Manager{
-		Store: store,
-		Discover: daemon.DiscoverOptions{
-			Probe: daemon.ProbeOptions{ExpectedService: "tool"},
-		},
-		Compatible: func(_ daemon.RuntimeRecord, info daemon.PingInfo) bool {
-			return info.Version == "v2"
-		},
-		Start: func(context.Context) error {
-			started = true
-			_, err := store.Write(daemon.RuntimeRecord{
-				PID:       os.Getpid(),
-				Network:   daemon.NetworkTCP,
-				Address:   listenerAddr(t, server),
-				Service:   "tool",
-				Version:   "v2",
-				StartedAt: time.Now(),
-			})
-			return err
-		},
-	}
-
-	rec, info, err := manager.Ensure(t.Context(), time.Second)
-	require.NoError(t, err)
-	assert.True(started)
-	assert.Equal("tool", rec.Service)
-	assert.Equal("v2", info.Version)
+		rec, info, err := manager.Ensure(t.Context(), time.Second)
+		require.NoError(t, err)
+		assert.True(t, started)
+		assert.GreaterOrEqual(t, polls, 2)
+		assert.Equal(t, "tool", rec.Service)
+		assert.Equal(t, "v2", info.Version)
+	})
 }
 
 func TestManagerFindSkipsIncompatibleDaemon(t *testing.T) {
