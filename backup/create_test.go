@@ -406,6 +406,46 @@ func TestCreateAttachmentDeletionKeepsVerifyClean(t *testing.T) {
 	assert.Empty(res.Problems, "both snapshots verify cleanly after a deletion")
 }
 
+func TestCreateCompactsLongAttachmentListChain(t *testing.T) {
+	require := require.New(t)
+	assert := assert.New(t)
+	ctx := t.Context()
+	r := initTestRepo(t)
+	dbPath, attachmentsDir, dataDir, db := seedBackupFixture(t)
+	opts := createOpts(dbPath, attachmentsDir, dataDir, t.TempDir())
+
+	parent, err := Create(ctx, r, newTestApp(), opts)
+	require.NoError(err)
+	expected := listUnion(t, r, parent)
+
+	for i := range attachmentListSegmentsMax + 2 {
+		ref := writeLooseAttachment(t, attachmentsDir, []byte(fmt.Sprintf("attachment %d", i)))
+		_, err = db.ExecContext(ctx,
+			`INSERT INTO blobs (content_hash, storage_path, size, preview_hash, preview_path)
+			 VALUES (?, ?, ?, '', '')`,
+			ref.Hash, ref.Hash[:2]+"/"+ref.Hash, ref.Size)
+		require.NoError(err)
+		expected = append(expected, ref)
+
+		m, err := Create(ctx, r, newTestApp(), opts)
+		require.NoError(err)
+		require.LessOrEqual(len(m.Attachments.Lists), attachmentListSegmentsMax, "incremental snapshot %d", i+1)
+		if i == attachmentListSegmentsMax-1 {
+			assert.Len(m.Attachments.Lists, 1, "compaction replaces inherited segments")
+			assert.ElementsMatch(expected, listUnion(t, r, m))
+		}
+		if i == attachmentListSegmentsMax {
+			assert.Len(m.Attachments.Lists, 2, "inheritance resumes after compaction")
+			assert.Equal(parent.Attachments.Lists[0], m.Attachments.Lists[0])
+		}
+		parent = m
+	}
+
+	res, err := Verify(ctx, r, newTestApp(), VerifyOptions{All: true})
+	require.NoError(err)
+	assert.Empty(res.Problems)
+}
+
 func TestNextCreatedAt(t *testing.T) {
 	t.Run("no parent returns now unchanged", func(t *testing.T) {
 		require := require.New(t)
