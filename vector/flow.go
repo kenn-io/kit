@@ -156,7 +156,9 @@ type FillStats struct {
 // saves the resulting vectors, repeating until no documents remain. It is
 // the generic scan-and-fill loop; the store decides what counts as
 // pending and persists the results.
-// A store-owned cursor advances each page, with a restart to catch new pending work behind it.
+//
+// A store-owned cursor advances each page, with a restart to catch new
+// pending work behind it.
 //
 // A document that changes mid-run (ErrStale from SaveVectors) is left
 // pending and not retried until the next Fill call, so an actively edited
@@ -218,7 +220,7 @@ func Fill[K, G comparable](
 		}
 
 		if len(pending) == 0 {
-			if after == nil || !progressed {
+			if !progressed {
 				return stats, nil
 			}
 			after = nil
