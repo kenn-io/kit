@@ -431,7 +431,7 @@ func TestCreateCompactsLongAttachmentListChain(t *testing.T) {
 		m, err := Create(ctx, r, newTestApp(), opts)
 		require.NoError(err)
 		require.LessOrEqual(len(m.Attachments.Lists), attachmentListSegmentsMax, "incremental snapshot %d", i+1)
-		if len(parent.Attachments.Lists) == attachmentListSegmentsMax {
+		if i == attachmentListSegmentsMax-1 {
 			assert.Len(m.Attachments.Lists, 1, "compaction replaces inherited segments")
 			assert.ElementsMatch(expected, listUnion(t, r, m))
 		}
