@@ -3,6 +3,7 @@
 // with a 2x margin uses 20; flat growth with a 2x margin uses 2.
 // Floor is the smallest small-side value the check trusts, in the measure's units.
 // It must be positive.
+// Set Floor well below the small value on the fastest expected runner; if the small value falls below Floor, increase Small.
 package growthtest
 
 import (
