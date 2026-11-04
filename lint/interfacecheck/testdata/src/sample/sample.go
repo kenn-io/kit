@@ -88,3 +88,11 @@ func (TupleSecond) Value() string       { return "" }
 func tuple() (TupleFirst, *TupleSecond) { return TupleFirst{}, nil }
 
 var _, _ contracts.Generic[string] = tuple()
+
+// Widening a checked interface to any retains the compile-time assertion.
+type Widened struct{}
+
+func (Widened) ID() string    { return "" }
+func (Widened) Value() string { return "" }
+
+var _ = any(contracts.Generic[string](Widened{}))

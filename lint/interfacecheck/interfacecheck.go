@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"go/ast"
+	"go/build"
 	"go/token"
 	"go/types"
 	"strings"
@@ -79,10 +80,19 @@ func run(ctx context.Context, pass *analysis.Pass, bases, paths []string) (any, 
 		for path := range missing {
 			patterns = append(patterns, path)
 		}
-		pkgs, err := packages.Load(&packages.Config{
+		cfg := &packages.Config{
 			Context: ctx,
 			Mode:    packages.NeedName | packages.NeedTypes | packages.NeedImports | packages.NeedDeps,
-		}, patterns...)
+		}
+		if pass.Module != nil {
+			cfg.Dir = pass.Module.Dir
+		}
+		// golangci-lint records its selected tags in the default build context.
+		// GOFLAGS is inherited when the driver supplies tags through the environment.
+		if len(build.Default.BuildTags) > 0 {
+			cfg.BuildFlags = []string{"-tags=" + strings.Join(build.Default.BuildTags, ",")}
+		}
+		pkgs, err := packages.Load(cfg, patterns...)
 		if err != nil {
 			return nil, fmt.Errorf("interfacecheck: load configured packages: %w", err)
 		}
@@ -146,6 +156,7 @@ func run(ctx context.Context, pass *analysis.Pass, bases, paths []string) (any, 
 			for _, spec := range gen.Specs {
 				value := spec.(*ast.ValueSpec)
 				var sources []types.Type
+				conversions := map[int][]types.Type{}
 				for _, expr := range value.Values {
 					if tuple, ok := pass.TypesInfo.TypeOf(expr).(*types.Tuple); ok {
 						for variable := range tuple.Variables() {
@@ -163,6 +174,7 @@ func run(ctx context.Context, pass *analysis.Pass, bases, paths []string) (any, 
 						if _, ok := pass.TypesInfo.TypeOf(call.Fun).Underlying().(*types.Interface); !ok {
 							break
 						}
+						conversions[len(sources)] = append(conversions[len(sources)], pass.TypesInfo.TypeOf(call.Fun))
 						expr = call.Args[0]
 					}
 					sources = append(sources, pass.TypesInfo.TypeOf(expr))
@@ -177,6 +189,7 @@ func run(ctx context.Context, pass *analysis.Pass, bases, paths []string) (any, 
 					}
 					if named := concrete(sources[i]); named != nil {
 						assertions[named] = append(assertions[named], target)
+						assertions[named] = append(assertions[named], conversions[i]...)
 					}
 				}
 			}
@@ -220,7 +233,8 @@ func run(ctx context.Context, pass *analysis.Pass, bases, paths []string) (any, 
 				}
 				asserted := false
 				for _, target := range assertions[named.Origin()] {
-					if types.Identical(target, c.typ) || concrete(target) != nil && concrete(target) == concrete(c.typ) {
+					generic, _ := types.Unalias(c.typ).(*types.Named)
+					if types.Identical(target, c.typ) || generic != nil && generic.TypeParams().Len() > 0 && generic.TypeArgs().Len() == 0 && concrete(target) == generic {
 						asserted = true
 						break
 					}
