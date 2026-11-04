@@ -97,3 +97,9 @@ func (Widened) ID() string    { return "" }
 func (Widened) Value() string { return "" }
 
 var _ = any(contracts.ValueReader(Widened{}))
+
+// Generic types are unsupported, so this drifted type is not reported.
+type GenericType[T any] struct{}
+
+func (*GenericType[T]) ID() string             { return "" }
+func (*GenericType[T]) EnableAutoMerge() error { return nil }

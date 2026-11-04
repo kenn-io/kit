@@ -149,7 +149,7 @@ func run(pass *analysis.Pass) (any, error) {
 			}
 			obj := pass.TypesInfo.Defs[spec.Name].(*types.TypeName)
 			named, ok := obj.Type().(*types.Named)
-			if !ok {
+			if !ok || named.TypeParams().Len() != 0 {
 				return true
 			}
 			if _, ok := named.Underlying().(*types.Interface); ok {
