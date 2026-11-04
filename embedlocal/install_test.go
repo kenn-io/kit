@@ -78,7 +78,8 @@ func installFixture(t *testing.T, mode string, cancel context.CancelFunc) (*http
 			if req.URL.Path == "/tokenizer.json" && mode == "canceled" && !interrupted.Swap(true) {
 				cancel()
 				<-req.Context().Done()
-				return
+				// Abort so a successful empty response cannot race with cancellation.
+				panic(http.ErrAbortHandler)
 			}
 			_, _ = w.Write(modelFixture)
 		default:
