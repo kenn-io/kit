@@ -233,6 +233,8 @@ func (s *physicalVerifiedStream) Close() error {
 	return classifyPhysicalError(s.stream.Close())
 }
 
+// OpenSeekableLoose returns raw loose files directly without hash verification.
+// Zstd locations are verified and materialized into temporary storage.
 func (b *FilesystemBackend) OpenSeekableLoose(
 	ctx context.Context,
 	hash Hash,
@@ -242,19 +244,15 @@ func (b *FilesystemBackend) OpenSeekableLoose(
 		return nil, 0, err
 	}
 	if location.Encoding == LooseEncodingRaw {
-		object, err := b.reader.openLooseObjectAt(hash, location.Encoding)
+		if err := ctx.Err(); err != nil {
+			return nil, 0, err
+		}
+		object, err := b.reader.openLooseObjectAtLocation(hash, location)
 		if err != nil {
 			return nil, 0, classifyPhysicalError(err)
 		}
-		if object.logicalSize != location.LogicalSize || object.storedSize != location.StoredSize {
-			return nil, 0, errors.Join(
-				ErrPhysicalCorrupt,
-				fmt.Errorf(
-					"packstore: loose authority is logical=%d stored=%d, found logical=%d stored=%d",
-					location.LogicalSize, location.StoredSize, object.logicalSize, object.storedSize,
-				),
-				object.file.Close(),
-			)
+		if err := ctx.Err(); err != nil {
+			return nil, 0, errors.Join(err, object.file.Close())
 		}
 		return object.file, object.logicalSize, nil
 	}

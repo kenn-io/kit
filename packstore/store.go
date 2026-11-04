@@ -227,7 +227,8 @@ func (s *Store) openMultiSeekable(
 	if err != nil {
 		return nil, 0, err
 	}
-	if s.observeStreams {
+	// Raw loose seekable opens bypass verification, so they cannot clear health.
+	if s.observeStreams && (location.Loose == nil || location.Loose.Encoding != LooseEncodingRaw) {
 		s.health.Clear(hash, location)
 	}
 	return reader, size, nil
@@ -479,6 +480,31 @@ func (s *Store) openLooseObject(hash Hash) (*looseObject, error) {
 		return nil, err
 	}
 	return s.openLooseObjectAt(hash, LooseEncodingRaw)
+}
+
+func (s *Store) openLooseObjectAtLocation(
+	contentHash Hash,
+	location LooseLocation,
+) (*looseObject, error) {
+	object, err := s.openLooseObjectAt(contentHash, location.Encoding)
+	if err != nil {
+		return nil, err
+	}
+	if object.logicalSize != location.LogicalSize ||
+		object.storedSize != location.StoredSize {
+		return nil, errors.Join(
+			ErrPhysicalCorrupt,
+			fmt.Errorf(
+				"packstore: loose authority is logical=%d stored=%d, found logical=%d stored=%d",
+				location.LogicalSize,
+				location.StoredSize,
+				object.logicalSize,
+				object.storedSize,
+			),
+			object.file.Close(),
+		)
+	}
+	return object, nil
 }
 
 func (s *Store) openLooseObjectAt(
