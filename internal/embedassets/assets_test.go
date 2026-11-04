@@ -73,6 +73,8 @@ func TestCacheInterrupted(t *testing.T) {
 		_, _ = w.Write([]byte("partial"))
 		w.(http.Flusher).Flush()
 		<-r.Context().Done()
+		// Abort so a completed partial response cannot race with cancellation.
+		panic(http.ErrAbortHandler)
 	}))
 	defer func() { cancel(); server.CloseClientConnections(); server.Close() }()
 	dir := t.TempDir()
