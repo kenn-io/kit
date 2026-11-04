@@ -46,18 +46,21 @@ func TestRunVerdicts(t *testing.T) {
 		name      string
 		quadratic bool
 		floor     float64
-		stub      bool
+		stub      []float64
 		wantError string
+		wantLog   string
 	}{
-		{name: "linear", floor: 1},
+		{name: "linear", floor: 1, wantLog: "small(size=1000)=1000 large(size=10000)=10000 ratio=10 bound=20"},
 		{name: "quadratic", quadratic: true, floor: 1, wantError: "small(size=1000)=10000 large(size=10000)=1e+06 ratio=100 bound=20"},
-		{name: "below floor", floor: 2000, stub: true, wantError: "small below Floor=2000; small(size=1000)=1000 large(size=10000)=10000 ratio=10 bound=20"},
-		{name: "at floor", floor: 1000, stub: true},
+		{name: "at bound", floor: 1, stub: []float64{1000, 20000}, wantLog: "small(size=1000)=1000 large(size=10000)=20000 ratio=20 bound=20"},
+		{name: "below floor", floor: 2000, stub: []float64{1000, 10000}, wantError: "small below Floor=2000; small(size=1000)=1000 large(size=10000)=10000 ratio=10 bound=20"},
+		{name: "below floor hides ratio", floor: 1, stub: []float64{0, 5}, wantError: "small below Floor=1; small(size=1000)=0 large(size=10000)=5 ratio=+Inf bound=20"},
+		{name: "at floor", floor: 1000, stub: []float64{1000, 10000}, wantLog: "small(size=1000)=1000 large(size=10000)=10000 ratio=10 bound=20"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			measure := growthtest.Allocs(3)
-			if tc.stub {
-				values := []float64{1000, 10000}
+			if tc.stub != nil {
+				values := tc.stub
 				measure = func(run, reset func()) float64 {
 					value := values[0]
 					values = values[1:]
@@ -81,32 +84,41 @@ func TestRunVerdicts(t *testing.T) {
 				assert.Contains(t, tb.errors[0], tc.wantError)
 			} else {
 				assert.Empty(t, tb.errors)
-				assert.Contains(t, strings.Join(tb.logs, "\n"), "small(size=1000)=1000 large(size=10000)=10000 ratio=10 bound=20")
+				assert.Contains(t, strings.Join(tb.logs, "\n"), tc.wantLog)
 			}
 		})
 	}
 }
 
-func TestFloorMustBePositive(t *testing.T) {
-	for _, floor := range []float64{0, -1} {
-		t.Run(fmt.Sprintf("floor=%g", floor), func(t *testing.T) {
-			if testing.Short() {
-				t.Skip("growth checks skip under -short")
-			}
-			tb := &recordingTB{TB: t}
+func TestRunRejectsInvalidCheck(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		edit      func(*growthtest.Check)
+		wantError string
+	}{
+		{name: "zero small", edit: func(c *growthtest.Check) { c.Small = 0 }, wantError: "Small must be positive"},
+		{name: "large equals small", edit: func(c *growthtest.Check) { c.Large = c.Small }, wantError: "Large must exceed Small"},
+		{name: "zero max ratio", edit: func(c *growthtest.Check) { c.MaxRatio = 0 }, wantError: "MaxRatio must be positive"},
+		{name: "zero floor", edit: func(c *growthtest.Check) { c.Floor = 0 }, wantError: "Floor must be positive"},
+		{name: "negative floor", edit: func(c *growthtest.Check) { c.Floor = -1 }, wantError: "Floor must be positive"},
+		{name: "nil build", edit: func(c *growthtest.Check) { c.Build = nil }, wantError: "Build must be set"},
+		{name: "nil measure", edit: func(c *growthtest.Check) { c.Measure = nil }, wantError: "Measure must be set"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			built := false
-			assert.PanicsWithValue(t, "growth check stopped", func() {
-				growthtest.Run(tb, growthtest.Check{
-					Small: 1, Large: 2, MaxRatio: 2, Floor: floor,
-					Build: func(testing.TB, int) (run, reset func()) {
-						built = true
-						return func() {}, nil
-					},
-					Measure: growthtest.Allocs(1),
-				})
-			})
+			check := growthtest.Check{
+				Small: 1, Large: 2, MaxRatio: 2, Floor: 1,
+				Build: func(testing.TB, int) (run, reset func()) {
+					built = true
+					return func() {}, nil
+				},
+				Measure: growthtest.Allocs(1),
+			}
+			tc.edit(&check)
+			tb := &recordingTB{TB: t}
+			assert.PanicsWithValue(t, "growth check stopped", func() { growthtest.Run(tb, check) })
 			require.Len(t, tb.errors, 1)
-			assert.Contains(t, tb.errors[0], "Floor must be positive")
+			assert.Contains(t, tb.errors[0], tc.wantError)
 			assert.False(t, built)
 		})
 	}
@@ -148,20 +160,33 @@ func TestAllocsExcludesReset(t *testing.T) {
 	assert.Equal(t, 4, resets, "reset also prepares the warm-up run")
 }
 
-func TestAllocsMinimum(t *testing.T) {
-	items := make([]*[32]byte, 100)
-	calls := 0
-	got := growthtest.Allocs(3)(func() {
-		calls++
-		count := 1
-		if calls == 2 {
-			count = 100
-		}
-		for i := range count {
-			items[i] = new([32]byte)
-		}
-	}, nil)
-	assert.InDelta(t, 1, got, 0)
+func TestAllocsSampling(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		runs      int
+		heavyCall int
+		wantCalls int
+	}{
+		{name: "warm-up is not sampled", runs: 1, heavyCall: 1, wantCalls: 2},
+		{name: "fewest sample wins", runs: 3, heavyCall: 2, wantCalls: 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			items := make([]*[32]byte, 100)
+			calls := 0
+			got := growthtest.Allocs(tc.runs)(func() {
+				calls++
+				count := 1
+				if calls == tc.heavyCall {
+					count = 100
+				}
+				for i := range count {
+					items[i] = new([32]byte)
+				}
+			}, nil)
+			assert.InDelta(t, 1, got, 0)
+			assert.Equal(t, tc.wantCalls, calls)
+		})
+	}
 }
 
 func TestFastestWarmup(t *testing.T) {
