@@ -814,6 +814,78 @@ func TestFilesystemBackendUsesAndRetiresExactLooseRepresentation(t *testing.T) {
 	require.NoError(stream.Close())
 }
 
+func TestFilesystemBackendOpenSeekableLoose(t *testing.T) {
+	for _, compressed := range []bool{false, true} {
+		name := "raw"
+		if compressed {
+			name = "zstd"
+		}
+		t.Run(name, func(t *testing.T) {
+			assert := assert.New(t)
+			require := require.New(t)
+			backend := attachedFilesystemBackend(t, "archive", "epoch-1")
+			content := bytes.Repeat([]byte("seekable loose content "), 4096)
+			hash := hashForTest(content)
+			receipt, err := backend.PublishLoose(
+				t.Context(), hash, bytes.NewReader(content),
+				PublishOptions{
+					ExpectedSize: int64(len(content)), SizeKnown: true,
+					Compression: LooseCompressionOptions{Enabled: compressed},
+				},
+			)
+			require.NoError(err)
+			if compressed {
+				require.Equal(LooseEncodingZstd, receipt.Location.Encoding)
+			} else {
+				require.Equal(LooseEncodingRaw, receipt.Location.Encoding)
+				originalCreate := createSeekableLooseTemp
+				createSeekableLooseTemp = func() (*os.File, error) {
+					return nil, errors.New("temporary storage unavailable")
+				}
+				t.Cleanup(func() { createSeekableLooseTemp = originalCreate })
+			}
+
+			reader, size, err := backend.OpenSeekableLoose(t.Context(), hash, receipt.Location)
+			require.NoError(err)
+			t.Cleanup(func() { require.NoError(reader.Close()) })
+			assert.Equal(int64(len(content)), size)
+			offset, err := reader.Seek(23, io.SeekStart)
+			require.NoError(err)
+			assert.Equal(int64(23), offset)
+			window := make([]byte, 8)
+			_, err = io.ReadFull(reader, window)
+			require.NoError(err)
+			assert.Equal("seekable", string(window))
+		})
+	}
+}
+
+func TestFilesystemBackendOpenSeekableRawLooseRejectsSizeMismatch(t *testing.T) {
+	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
+	content := []byte("raw size authority")
+	hash := hashForTest(content)
+	receipt, err := backend.PublishLoose(
+		t.Context(), hash, bytes.NewReader(content),
+		PublishOptions{ExpectedSize: int64(len(content)), SizeKnown: true},
+	)
+	require.NoError(t, err)
+	for _, field := range []string{"logical", "stored"} {
+		t.Run(field, func(t *testing.T) {
+			location := receipt.Location
+			if field == "logical" {
+				location.LogicalSize++
+			} else {
+				location.StoredSize++
+			}
+			reader, _, err := backend.OpenSeekableLoose(t.Context(), hash, location)
+			if reader != nil {
+				t.Cleanup(func() { require.NoError(t, reader.Close()) })
+			}
+			require.ErrorIs(t, err, ErrPhysicalCorrupt)
+		})
+	}
+}
+
 func TestFilesystemBackendRejectsAmbiguousLooseLocation(t *testing.T) {
 	ctx := t.Context()
 	backend := attachedFilesystemBackend(t, "archive", "epoch-1")

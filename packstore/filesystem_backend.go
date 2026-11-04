@@ -241,6 +241,23 @@ func (b *FilesystemBackend) OpenSeekableLoose(
 	if err := location.validate(); err != nil {
 		return nil, 0, err
 	}
+	if location.Encoding == LooseEncodingRaw {
+		object, err := b.reader.openLooseObjectAt(hash, location.Encoding)
+		if err != nil {
+			return nil, 0, classifyPhysicalError(err)
+		}
+		if object.logicalSize != location.LogicalSize || object.storedSize != location.StoredSize {
+			return nil, 0, errors.Join(
+				ErrPhysicalCorrupt,
+				fmt.Errorf(
+					"packstore: loose authority is logical=%d stored=%d, found logical=%d stored=%d",
+					location.LogicalSize, location.StoredSize, object.logicalSize, object.storedSize,
+				),
+				object.file.Close(),
+			)
+		}
+		return object.file, object.logicalSize, nil
+	}
 	if location.Encoding != 0 {
 		stream, size, err := b.OpenLoose(ctx, hash, location)
 		if err != nil {
