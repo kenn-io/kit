@@ -284,6 +284,10 @@ Here `run` records the selected mode before executing the command, and
 `emitError` is the CLI's existing human, agent, or JSON error renderer. Keep
 panic values and request data out of the public message.
 
+Kata [#819](https://github.com/kenn-io/kata/pull/819) implements this rule for
+the CLI's main goroutine, with tests for human, agent, and JSON output; the
+foreground daemon keeps its existing panic diagnostics.
+
 [`recover` only covers the goroutine that panicked](https://go.dev/ref/spec#Handling_panics).
 Goroutines a command starts should recover and return an internal error to the
 caller for the same rendering, or the CLI must document that those crashes
