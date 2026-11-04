@@ -19,7 +19,7 @@ func (*internalFillCompanionError) Error() string { return "companion provider e
 
 type noOpFillStore struct{}
 
-func (noOpFillStore) PendingForGeneration(context.Context, int, int) ([]Pending[int64], error) {
+func (noOpFillStore) PendingForGeneration(context.Context, int, *int64, int) ([]Pending[int64], error) {
 	return nil, nil
 }
 

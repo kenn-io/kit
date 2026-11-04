@@ -23,7 +23,8 @@ func TestCoverageAndPendingPlansProbeStampsByKey(t *testing.T) {
 		query string
 		args  []any
 	}{
-		{"pending", store.PendingQueryForTest("d.id, d.body"), []any{1, 10}},
+		{"pending", store.PendingQueryForTest("d.id, d.body", false), []any{1, 10}},
+		{"pending cursor", store.PendingQueryForTest("d.id, d.body", true), []any{1, 0, 10}},
 		{"coverage", store.CoverageQueryForTest(""), []any{1}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -31,10 +32,14 @@ func TestCoverageAndPendingPlansProbeStampsByKey(t *testing.T) {
 			require.NoError(t, err)
 			defer func() { require.NoError(t, rows.Close()) }()
 			var stampProbes, chunkProbes int
+			var rangeSeek bool
 			for rows.Next() {
 				var id, parent, unused int
 				var detail string
 				require.NoError(t, rows.Scan(&id, &parent, &unused, &detail))
+				if strings.Contains(detail, "SEARCH d USING INTEGER PRIMARY KEY (rowid>?)") {
+					rangeSeek = true
+				}
 				if strings.Contains(detail, "SEARCH stamp ") || strings.Contains(detail, "SEARCH c ") {
 					assert.Contains(t, detail, "ordinal=?", detail)
 					assert.Contains(t, detail, "<expr>=?", detail)
@@ -49,6 +54,9 @@ func TestCoverageAndPendingPlansProbeStampsByKey(t *testing.T) {
 			}
 			require.NoError(t, rows.Err())
 			assert.Positive(t, stampProbes)
+			if tc.name == "pending cursor" {
+				assert.True(t, rangeSeek)
+			}
 			if tc.name == "coverage" {
 				assert.Positive(t, chunkProbes)
 			}

@@ -1,7 +1,7 @@
 package sqlitevec
 
-func (s *Store[K, G]) PendingQueryForTest(columns string) string {
-	return s.pendingQuery(columns)
+func (s *Store[K, G]) PendingQueryForTest(columns string, cursor bool) string {
+	return s.pendingQuery(columns, cursor)
 }
 
 func (s *Store[K, G]) CoverageQueryForTest(where string) string {

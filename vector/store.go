@@ -40,11 +40,13 @@ type ChunkVector struct {
 // package compares both for equality but never interprets them.
 type Store[K, G comparable] interface {
 	// PendingForGeneration returns up to limit documents that are not yet
-	// embedded for gen, in a stable order. Implementations typically scan
-	// for "embed_gen IS NULL OR embed_gen <> gen". A document must stop
-	// being reported once SaveVectors has persisted it for gen, so that a
-	// fill loop terminates.
-	PendingForGeneration(ctx context.Context, gen G, limit int) ([]Pending[K], error)
+	// embedded for gen. A nil after starts at the first document; otherwise
+	// only keys strictly after *after are returned. The store owns a stable
+	// total order on unique keys, consistent across calls. Implementations
+	// typically scan for "embed_gen IS NULL OR embed_gen <> gen". A document
+	// must stop being reported once SaveVectors has persisted it for gen,
+	// so that a fill loop terminates.
+	PendingForGeneration(ctx context.Context, gen G, after *K, limit int) ([]Pending[K], error)
 
 	// SaveVectors persists every chunk vector for doc under gen and marks
 	// doc as embedded for gen (the scan-and-fill stamp), atomically.
