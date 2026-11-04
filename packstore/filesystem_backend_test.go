@@ -960,7 +960,7 @@ func TestFilesystemBackendOpenSeekableRawLooseCancellation(t *testing.T) {
 			if duringOpen {
 				assert.Equal(t, 1, openCalls)
 				require.NotNil(t, opened)
-				_, err = opened.Stat()
+				_, err = opened.Read(make([]byte, 1))
 				require.ErrorIs(t, err, os.ErrClosed)
 			} else {
 				assert.Zero(t, openCalls)
