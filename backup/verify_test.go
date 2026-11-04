@@ -25,6 +25,7 @@ func newTestVerifyState(t *testing.T, r *Repo, quick bool) *verifyState {
 		app:              newTestApp(),
 		repo:             r,
 		known:            known,
+		manifests:        map[string]*Manifest{},
 		quick:            quick,
 		jobs:             2,
 		readers:          map[string]*cachedPack{},

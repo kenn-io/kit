@@ -116,7 +116,8 @@ func collectPruneReferences(ctx context.Context, r *Repo, app App, known map[pac
 	// buffering content. Any incomplete walk aborts cleanup before publication.
 	st := &verifyState{
 		ctx: ctx, repo: r, app: app, known: known, quick: true,
-		readers: map[string]*cachedPack{}, readerErrs: map[string]error{},
+		manifests: map[string]*Manifest{},
+		readers:   map[string]*cachedPack{}, readerErrs: map[string]error{},
 		checked: map[pack.BlobID]bool{}, readDone: map[pack.BlobID]bool{},
 		result: &VerifyResult{},
 	}

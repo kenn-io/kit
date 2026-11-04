@@ -64,7 +64,9 @@ func BenchmarkQuickVerifyBlobLookup(b *testing.B) {
 			b.Cleanup(st.closeReaders)
 			b.ReportAllocs()
 			for b.Loop() {
+				b.StopTimer()
 				st.checked = make(map[pack.BlobID]bool, count)
+				b.StartTimer()
 				for _, id := range ids {
 					_, ok := st.blob(id, "snapshot", false)
 					require.Truef(b, ok, "blob %s: %v", id, st.result.Problems)

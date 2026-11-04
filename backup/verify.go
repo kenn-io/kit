@@ -95,6 +95,7 @@ func Verify(ctx context.Context, r *Repo, app App, opts VerifyOptions) (*VerifyR
 		app:              app,
 		repo:             r,
 		known:            known,
+		manifests:        map[string]*Manifest{},
 		quick:            opts.Quick,
 		jobs:             jobs,
 		readers:          map[string]*cachedPack{},
@@ -779,9 +780,6 @@ func (s *verifyState) manifest(id string) (*Manifest, error) {
 // map's blob table, attachment lists and the content blobs they name, and
 // the extras tree and the blobs it names.
 func (s *verifyState) verifySnapshot(m *Manifest) {
-	if s.manifests == nil {
-		s.manifests = make(map[string]*Manifest)
-	}
 	s.manifests[m.SnapshotID] = m
 	recipesOK := s.checkObjectRecipes(m)
 	if m.Metadata == nil {
@@ -969,7 +967,7 @@ func (s *verifyState) checkAttachmentLists(m *Manifest, recipesOK bool) []Conten
 			}
 		}
 	}
-	// Keep only this snapshot's clean lists, bounding the memo to adjacent snapshots.
+	// Keep only this snapshot's decoded lists, bounding the memo to adjacent snapshots.
 	s.attachmentLists = lists
 	return refs
 }
