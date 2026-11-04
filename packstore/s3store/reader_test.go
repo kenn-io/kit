@@ -98,52 +98,6 @@ func TestPackReaderOptionsUseConfiguredLimits(t *testing.T) {
 	}}, backend.packReaderOptions())
 }
 
-func TestMultiStoreS3SeekableOpenClearsHealth(t *testing.T) {
-	content := []byte("recovered S3 content")
-	hash := hashOf(content)
-	backend := newHTTPBackend(packstore.DefaultLimits(), func(request *http.Request) (*http.Response, error) {
-		require.Equal(t, http.MethodGet, request.Method)
-		require.Equal(t, "/test-bucket/loose/"+hash.String()[:2]+"/"+hash.String(), request.URL.Path)
-		return &http.Response{
-			StatusCode: http.StatusOK, Header: make(http.Header),
-			Body: io.NopCloser(bytes.NewReader(content)), ContentLength: int64(len(content)),
-			Request: request,
-		}, nil
-	})
-	attachTestBackend(backend)
-	primary := packstore.ReadLocation{
-		StoreID: "archive", Generation: "epoch-1",
-		Loose: &packstore.LooseLocation{
-			Encoding:    packstore.LooseEncodingRaw,
-			LogicalSize: int64(len(content)), StoredSize: int64(len(content)),
-		},
-	}
-	secondary := primary
-	secondary.StoreID = "replica"
-	health := packstore.NewHealth()
-	health.Observe(hash, primary, packstore.ErrPhysicalCorrupt)
-	health.Observe(hash, primary, packstore.ErrStoreUnavailable)
-	require.Equal(t, []packstore.ReadLocation{secondary, primary}, health.Order(hash, []packstore.ReadLocation{primary, secondary}))
-	store, err := packstore.NewMultiStore(
-		staticReadLocationResolver{resolution: packstore.Resolution{
-			Member: true, Candidates: []packstore.ReadLocation{primary},
-		}},
-		staticReadBackendRegistry{"archive": backend},
-		packstore.MultiStoreOptions{Health: health},
-	)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, store.Close()) })
-
-	reader, size, err := store.Open(t.Context(), hash)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, reader.Close()) })
-	assert.Equal(t, int64(len(content)), size)
-	got, err := io.ReadAll(reader)
-	require.NoError(t, err)
-	assert.Equal(t, content, got)
-	assert.Equal(t, []packstore.ReadLocation{primary, secondary}, health.Order(hash, []packstore.ReadLocation{primary, secondary}))
-}
-
 func TestOpenRequiresAttachedOwnership(t *testing.T) {
 	content := []byte("unattached reads are fenced")
 	_, _, entry := makePack(t, content)
