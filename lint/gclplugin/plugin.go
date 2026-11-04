@@ -110,6 +110,7 @@ func (p *plugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 		if a.Name == testifyhelper.Analyzer.Name {
 			a = testifyhelper.New(p.settings.Testifyhelper.RequireHelpers)
 		}
+
 		analyzers = append(analyzers, a)
 	}
 	return analyzers, nil

@@ -11,6 +11,7 @@ import (
 	"golang.org/x/tools/go/analysis"
 
 	"go.kenn.io/kit/lint/errtext"
+	"go.kenn.io/kit/lint/interfacecheck"
 	"go.kenn.io/kit/lint/nohttpmux"
 	"go.kenn.io/kit/lint/sleeptest"
 	"go.kenn.io/kit/lint/sqlcheck"
@@ -22,6 +23,7 @@ import (
 func Analyzers() []*analysis.Analyzer {
 	return []*analysis.Analyzer{
 		errtext.Analyzer,
+		interfacecheck.Analyzer,
 		nohttpmux.Analyzer,
 		sleeptest.Analyzer,
 		sleeptest.DeadlineAnalyzer,
