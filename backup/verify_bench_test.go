@@ -11,6 +11,33 @@ import (
 	"go.kenn.io/kit/pack"
 )
 
+func BenchmarkQuickVerifyAll(b *testing.B) {
+	for _, count := range []int{25, 100} {
+		b.Run(fmt.Sprintf("snapshots=%d", count), func(b *testing.B) {
+			r, err := Init(filepath.Join(b.TempDir(), "repo"))
+			require.NoError(b, err)
+			dbPath, attachmentsDir, dataDir, db := seedBackupFixture(b)
+			opts := createOpts(dbPath, attachmentsDir, dataDir, b.TempDir())
+			for i := range count {
+				ref := writeLooseAttachment(b, attachmentsDir, []byte(fmt.Sprintf("attachment %d", i)))
+				_, err := db.ExecContext(b.Context(),
+					`INSERT INTO blobs (content_hash, storage_path, size, preview_hash, preview_path) VALUES (?, ?, ?, '', '')`,
+					ref.Hash, ref.Hash[:2]+"/"+ref.Hash, ref.Size)
+				require.NoError(b, err)
+				_, err = Create(b.Context(), r, newTestApp(), opts)
+				require.NoError(b, err)
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				result, err := Verify(b.Context(), r, newTestApp(), VerifyOptions{All: true, Quick: true})
+				require.NoError(b, err)
+				require.Empty(b, result.Problems)
+			}
+			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N)/float64(count), "ns/snapshot")
+		})
+	}
+}
+
 func BenchmarkQuickVerifyBlobLookup(b *testing.B) {
 	for _, count := range []int{100, 1000, 10000} {
 		b.Run(fmt.Sprintf("entries=%d", count), func(b *testing.B) {

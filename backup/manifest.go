@@ -313,16 +313,16 @@ func (r *Repo) LatestSnapshot() (*Manifest, error) {
 // HashMapChain collects the newest-to-oldest page-hash-map blob chain from
 // head down to (and including) its keyframe manifest.
 func (r *Repo) HashMapChain(head *Manifest) ([]pack.BlobID, error) {
-	return r.mapChain(head, func(m *Manifest) string { return m.DB.PageHashMap })
+	return mapChainWith(head, r.LoadManifest, func(m *Manifest) string { return m.DB.PageHashMap })
 }
 
 // PageMapChain collects the newest-to-oldest page-map blob chain.
 func (r *Repo) PageMapChain(head *Manifest) ([]pack.BlobID, error) {
-	return r.mapChain(head, func(m *Manifest) string { return m.DB.PageMap })
+	return mapChainWith(head, r.LoadManifest, func(m *Manifest) string { return m.DB.PageMap })
 }
 
-func (r *Repo) mapChain(head *Manifest, field func(*Manifest) string) ([]pack.BlobID, error) {
-	manifests, err := r.manifestChain(head)
+func mapChainWith(head *Manifest, load func(string) (*Manifest, error), field func(*Manifest) string) ([]pack.BlobID, error) {
+	manifests, err := walkManifestChain(head, load)
 	if err != nil {
 		return nil, err
 	}
@@ -337,12 +337,8 @@ func (r *Repo) mapChain(head *Manifest, field func(*Manifest) string) ([]pack.Bl
 	return chain, nil
 }
 
-// manifestChain is the recovery dependency chain, newest to keyframe.
+// walkManifestChain is the recovery dependency chain, newest to keyframe.
 // Portable metadata is self-contained; its ParentID is informational.
-func (r *Repo) manifestChain(head *Manifest) ([]*Manifest, error) {
-	return walkManifestChain(head, r.LoadManifest)
-}
-
 func walkManifestChain(head *Manifest, load func(string) (*Manifest, error)) ([]*Manifest, error) {
 	var chain []*Manifest
 	m := head

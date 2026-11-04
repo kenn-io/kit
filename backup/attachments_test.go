@@ -19,13 +19,13 @@ import (
 	"go.kenn.io/kit/pack"
 )
 
-func writeLooseAttachment(t *testing.T, dir string, content []byte) ContentRef {
-	t.Helper()
+func writeLooseAttachment(tb testing.TB, dir string, content []byte) ContentRef {
+	tb.Helper()
 	sum := sha256.Sum256(content)
 	hash := hex.EncodeToString(sum[:])
 	sub := filepath.Join(dir, hash[:2])
-	require.NoError(t, os.MkdirAll(sub, 0o700))
-	require.NoError(t, os.WriteFile(filepath.Join(sub, hash), content, 0o600))
+	require.NoError(tb, os.MkdirAll(sub, 0o700))
+	require.NoError(tb, os.WriteFile(filepath.Join(sub, hash), content, 0o600))
 	return ContentRef{Hash: hash, Size: int64(len(content))}
 }
 
