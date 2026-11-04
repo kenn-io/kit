@@ -88,8 +88,10 @@ func (s *Store[K, G]) BuildCandidateQuery(ctx context.Context, db sqlquery.Query
 		text += " LIMIT ?"
 		args = append(args, q.ResultLimit)
 	}
-	rawSQL := fmt.Sprintf(`SELECT count(*) FROM (SELECT rowid FROM %s WHERE embedding MATCH %s ORDER BY distance LIMIT ?)`, s.vecTable(ordinal), expr)
-	rawArgs := []any{value, q.CandidateLimit}
+	// Chunk-map rows are written with vec0 rows, so a bounded count gives the
+	// raw KNN window size without repeating the vector scan or filtering hits.
+	rawSQL := fmt.Sprintf(`SELECT count(*) FROM (SELECT 1 FROM %s WHERE ordinal = ? LIMIT ?)`, s.chunksTable())
+	rawArgs := []any{ordinal, q.CandidateLimit}
 	limit := q.CandidateLimit
 	return sqlquery.Query{
 		SQL: text, Args: args,
