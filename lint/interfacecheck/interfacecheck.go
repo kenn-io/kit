@@ -60,37 +60,20 @@ func run(pass *analysis.Pass) (any, error) {
 			}
 		}
 	}
-	visited := map[*types.Package]bool{}
-	var visit func(*types.Package)
-	visit = func(pkg *types.Package) {
-		if visited[pkg] {
-			return
-		}
-		visited[pkg] = true
-		for _, name := range pkg.Scope().Names() {
-			obj, ok := pkg.Scope().Lookup(name).(*types.TypeName)
-			if ok && pkg != pass.Pkg && interfaceType(obj) != nil && pass.ImportObjectFact(obj, new(baseFact)) {
-				marked[obj] = true
-			}
-		}
-		for _, imported := range pkg.Imports() {
-			visit(imported)
+	// Facts reach a pass only from its dependencies. A package that does not
+	// import a marked package cannot satisfy its base, whose methods use that
+	// package's types.
+	for _, fact := range pass.AllObjectFacts() {
+		if obj, ok := fact.Object.(*types.TypeName); ok {
+			marked[obj] = true
 		}
 	}
-	// A package that does not transitively import the marked package cannot
-	// satisfy its base: the base methods use types from that package.
-	visit(pass.Pkg)
+	basesByPkg := map[*types.Package][]*types.Interface{}
+	for obj := range marked {
+		basesByPkg[obj.Pkg()] = append(basesByPkg[obj.Pkg()], interfaceType(obj))
+	}
 	var contracts []contract
-	for pkg := range visited {
-		var bases []*types.Interface
-		for obj := range marked {
-			if obj.Pkg() == pkg {
-				bases = append(bases, interfaceType(obj))
-			}
-		}
-		if len(bases) == 0 {
-			continue
-		}
+	for pkg, bases := range basesByPkg {
 		for _, name := range pkg.Scope().Names() {
 			obj, ok := pkg.Scope().Lookup(name).(*types.TypeName)
 			if !ok || !obj.Exported() || marked[obj] {
