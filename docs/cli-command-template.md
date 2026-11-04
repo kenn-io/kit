@@ -68,8 +68,8 @@ Record [affected callers: scripts, completions, installed hooks, bundled
 skills, daemon routes, MCP names], [old spellings and flags, and the release
 that removes them], [whether the deprecation notice prints before parsing or
 after success, and when it is suppressed], and [stable identities for
-telemetry, hooks, config selectors, and permission keys]. Old and new
-spellings use separate constructors so flag state stays independent.
+telemetry, hooks, config selectors, and permission keys]. Record whether
+old and new spellings share flag values or use separate constructors.
 
 ## Review checklist
 

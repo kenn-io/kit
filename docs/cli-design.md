@@ -34,10 +34,10 @@ An agent's first move is `<tool> --help`. Kata's root help
 1. **What the tool is and what it acts on.** One sentence, then where commands
    send their work: "Commands talk to a kata daemon ... and act on the project
    bound to the current directory."
-2. **The workflow, as numbered, copyable commands.** Each line is a real
-   invocation with placeholders, with a short comment on why that step comes
-   next. The workflow ends by pointing to the full contract
-   (`kata quickstart --format contract`).
+2. **The workflow, as copyable commands in the order an agent runs them.**
+   Each line is a real invocation with placeholders; numbered comments mark
+   the steps that must come first. The workflow ends by pointing to the full
+   contract (`kata quickstart --format contract`).
 3. **Identifiers.** Every accepted form and its scope: `abc4` in the bound
    project, `project#abc4` in any project, or the ULID. It also says what is
    rejected (legacy issue numbers).
@@ -49,16 +49,18 @@ An agent's first move is `<tool> --help`. Kata's root help
 7. **Environment variables.** Each one with its effect.
 
 Roborev ([source][roborev-root-help]) and Docbank ([source][docbank-root-help],
-[golden][docbank-root-golden]) follow the same order. Docbank adds a short
-`Concepts:` block for vocabulary its commands share (`path-or-id`, `version`,
-`rendition`). Roborev adds `Repository and server:` because commands can target
+[golden][docbank-root-golden]) cover the same items. Docbank moves vault
+selection ahead of the workflow and adds a short `Concepts:` block for
+vocabulary its commands share (`path-or-id`, `version`, `rendition`, and
+others). Roborev adds `Repository and server:` because commands can target
 another checkout or a remote daemon. Add a block only when commands depend on
 it.
 
 Keep root help small. Docbank's help lint caps root help at 6,500 bytes and
 leaf help at 2,500 ([lint][docbank-help-lint]); grouping in #1191 cut its root
-from 4,635 to 3,521 bytes. Long references belong in `quickstart`, a reference
-doc, or a schema command, linked from help.
+from 4,635 to 3,521 bytes, and it has since grown back to about 4,800. Long
+references belong in `quickstart`, a reference doc, or a schema command,
+linked from help.
 
 ## Group commands by task
 
@@ -114,8 +116,8 @@ Copy these properties:
 - **Meanings, not only names.** `kata meta --help` lists the keys that carry
   meaning (`work.attention`, `work.branch`, `someday`) and their values.
 - **Compact inherited flags.** Kata and Roborev replace Cobra's
-  inherited-flags block with one line (`Global: --agent, --json, ... Details:
-  kata --help`), so leaf help stays short ([template][kata-usage-template],
+  inherited-flags block with one line (`Global: <flags>. Details: kata
+  --help`), so leaf help stays short ([template][kata-usage-template],
   [Roborev test][roborev-help-tests]).
 
 Docbank's lint also enforces the house style: `Short` is imperative, at most 80
@@ -139,7 +141,8 @@ It also explains retries: reuse the same `--uid` after an uncertain response,
 and inspect `kata cron job show` first, because a create that already
 succeeded conflicts instead of turning into an update. The test extracts every
 body from rendered help and the reference doc and submits it through the real
-CLI and daemon validation ([help][kata-cron-help], [test][kata-cron-tests]).
+CLI and daemon validation ([bodies][kata-cron-help],
+[retry help][kata-cron-retry], [test][kata-cron-tests]).
 A parse check alone would miss a body the daemon rejects.
 
 ## Output modes
@@ -259,7 +262,7 @@ and repeat it as `exit_code` in the JSON envelope.
 ### Crashes
 
 An unrecovered Go panic exits 2, the same status this map gives usage errors.
-The [runtime hardcodes that status](https://go.dev/src/runtime/panic.go#L1510);
+The [runtime hardcodes that status](https://github.com/golang/go/blob/go1.27.3/src/runtime/panic.go#L1508);
 no setting remaps it to exit 1. In `main`, defer a recover that emits the normal
 error envelope to stderr in the active output mode: `kind: "internal"`, a hint
 to report the bug, and `exit_code: 1`. Then exit 1:
@@ -292,7 +295,8 @@ foreground daemon keeps its existing panic diagnostics.
 Goroutines a command starts should recover and return an internal error to the
 caller for the same rendering, or the CLI must document that those crashes
 still exit 2. For agents, the envelope's `kind` is the contract; the exit code
-is a coarse hint. Exit 2 with no envelope means a crash, not a usage error.
+is a coarse hint. In JSON or agent mode, exit 2 with no error record means a
+crash, not a usage error.
 
 ## Migrate released commands deliberately
 
@@ -305,21 +309,29 @@ callers. The shared approach:
   bundled skills, and docs show only the new path.
 - Flags, JSON records, exit codes, HTTP routes, and MCP tool names keep their
   contracts.
-- The deprecation notice goes to stderr. Cobra's `Deprecated` field writes to
-  stdout by default here, which corrupts JSON and streamed output, so both
-  projects print their own notice ([Roborev][roborev-legacy-warning],
-  [Docbank][docbank-legacy-warning]).
-- Old and new spellings are built from separate constructors so their flag
-  values and completion state stay independent ([Roborev][roborev-moves]).
+- The deprecation notice goes to stderr, never into JSON or streamed output.
+  Both projects print their own notice instead of using Cobra's `Deprecated`
+  field ([Roborev][roborev-legacy-warning],
+  [Docbank][docbank-legacy-warning]). That field prints through the command's
+  output writer, which is stdout once a CLI calls `SetOut(stdout)`, as Docbank
+  does; Roborev also needs control over when the notice appears.
 - Telemetry and hook behavior key on a stable command identity, not the
   spelling the caller typed ([Roborev][roborev-stable-path]). Check config
   selectors and permission keys that embed command paths the same way.
 
-They differ on when to warn. Roborev warns after success, and skips the notice
-for `--quiet` and installed hook callbacks. Docbank warns before parsing, so
-the notice also appears on argument errors and `--help`. Choose one, write it
-down, and test it. Inventory callers before moving anything: scripts, shell
-completions, installed hooks, bundled skills, daemon routes, and MCP names.
+They differ on when to warn. Roborev warns after the command succeeds,
+including `--help`, and skips the notice for `--quiet` and installed hook
+callbacks. Docbank warns before parsing, so the notice also appears on
+argument and flag errors. Choose one, write it down, and test it.
+
+They also differ on flag state. Roborev builds old and new spellings from
+separate constructors, so their flag values and completion state stay
+independent ([Roborev][roborev-moves]). Docbank clones each legacy command and
+deliberately shares flag values with the new handler. Either works; record
+which one you use.
+
+Inventory callers before moving anything: scripts, shell completions,
+installed hooks, bundled skills, daemon routes, and MCP names.
 
 ## Test the help, not just the code
 
@@ -332,7 +344,7 @@ are cheap and catch real regressions:
 | The parser rejects known-stale examples, so the check cannot pass vacuously. | [Kata][kata-stale-test] |
 | Every visible top-level command has a help group. | [Kata][kata-help-tests], [Docbank][docbank-help-lint] |
 | Request bodies in help pass real daemon validation. | [Kata][kata-cron-tests] |
-| Each error hint appears in human, agent, and JSON modes. | [Kata][kata-hint-tests], [Roborev][roborev-errors-tests] |
+| Error hints appear in human, agent, and JSON modes. | [Kata][kata-hint-tests], [Roborev][roborev-errors-tests] |
 | Recovery commands quoted in hints parse. | [Docbank][docbank-hint-check] |
 | Root help matches a golden file; help stays within byte and line budgets. | [Docbank][docbank-help-lint] |
 | Old and new spellings match on output, exit codes, wire calls, help, and completion. | [Roborev][roborev-grammar-tests], [Docbank][docbank-groups-tests] |
@@ -360,25 +372,26 @@ against real accounts or data.
 [kata-json-error]: https://github.com/kenn-io/kata/blob/585e82c078893bbfad4114d429cbd694e335617a/cmd/kata/main.go#L273-L301
 [kata-hint-tests]: https://github.com/kenn-io/kata/blob/585e82c078893bbfad4114d429cbd694e335617a/cmd/kata/error_hints_test.go
 [kata-cron-help]: https://github.com/kenn-io/kata/blob/585e82c078893bbfad4114d429cbd694e335617a/cmd/kata/cron_help.go
+[kata-cron-retry]: https://github.com/kenn-io/kata/blob/585e82c078893bbfad4114d429cbd694e335617a/cmd/kata/cron.go#L155-L166
 [kata-cron-tests]: https://github.com/kenn-io/kata/blob/585e82c078893bbfad4114d429cbd694e335617a/cmd/kata/cron_help_test.go
 
 <!-- Roborev at 09e5809a3f6f9cffb1959b0e888c9646cf50b9dd -->
 [roborev-root-help]: https://github.com/kenn-io/roborev/blob/09e5809a3f6f9cffb1959b0e888c9646cf50b9dd/cmd/roborev/help_root.go#L116-L170
-[roborev-errors]: https://github.com/kenn-io/roborev/blob/09e5809a3f6f9cffb1959b0e888c9646cf50b9dd/cmd/roborev/errors.go#L165-L220
+[roborev-errors]: https://github.com/kenn-io/roborev/blob/09e5809a3f6f9cffb1959b0e888c9646cf50b9dd/cmd/roborev/errors.go#L165-L218
 [roborev-errors-tests]: https://github.com/kenn-io/roborev/blob/09e5809a3f6f9cffb1959b0e888c9646cf50b9dd/cmd/roborev/errors_test.go
 [roborev-json-buffer]: https://github.com/kenn-io/roborev/blob/09e5809a3f6f9cffb1959b0e888c9646cf50b9dd/cmd/roborev/errors_test.go#L158
 [roborev-help-tests]: https://github.com/kenn-io/roborev/blob/09e5809a3f6f9cffb1959b0e888c9646cf50b9dd/cmd/roborev/help_commands_test.go
 [roborev-moves]: https://github.com/kenn-io/roborev/blob/09e5809a3f6f9cffb1959b0e888c9646cf50b9dd/cmd/roborev/grammar.go#L15-L47
 [roborev-stable-path]: https://github.com/kenn-io/roborev/blob/09e5809a3f6f9cffb1959b0e888c9646cf50b9dd/cmd/roborev/grammar.go#L113-L122
-[roborev-legacy-warning]: https://github.com/kenn-io/roborev/blob/09e5809a3f6f9cffb1959b0e888c9646cf50b9dd/cmd/roborev/grammar.go#L124-L140
+[roborev-legacy-warning]: https://github.com/kenn-io/roborev/blob/09e5809a3f6f9cffb1959b0e888c9646cf50b9dd/cmd/roborev/grammar.go#L124-L138
 [roborev-grammar-tests]: https://github.com/kenn-io/roborev/blob/09e5809a3f6f9cffb1959b0e888c9646cf50b9dd/cmd/roborev/grammar_test.go
 [roborev-migration]: https://github.com/kenn-io/roborev/blob/09e5809a3f6f9cffb1959b0e888c9646cf50b9dd/docs/commands.md?plain=1#L53
 
 <!-- Docbank at de5bcd5c543513e1bbd04c8fbd015ac961ebce12 -->
 [docbank-root-help]: https://github.com/kenn-io/docbank/blob/de5bcd5c543513e1bbd04c8fbd015ac961ebce12/cmd/docbank/root.go#L25-L68
-[docbank-json-error]: https://github.com/kenn-io/docbank/blob/de5bcd5c543513e1bbd04c8fbd015ac961ebce12/cmd/docbank/main.go#L83-L89
+[docbank-json-error]: https://github.com/kenn-io/docbank/blob/de5bcd5c543513e1bbd04c8fbd015ac961ebce12/cmd/docbank/main.go#L83-L88
 [docbank-root-golden]: https://github.com/kenn-io/docbank/blob/de5bcd5c543513e1bbd04c8fbd015ac961ebce12/cmd/docbank/testdata/help/root.golden
-[docbank-help-lint]: https://github.com/kenn-io/docbank/blob/de5bcd5c543513e1bbd04c8fbd015ac961ebce12/cmd/docbank/help_lint_test.go#L35-L136
+[docbank-help-lint]: https://github.com/kenn-io/docbank/blob/de5bcd5c543513e1bbd04c8fbd015ac961ebce12/cmd/docbank/help_lint_test.go
 [docbank-hint-check]: https://github.com/kenn-io/docbank/blob/de5bcd5c543513e1bbd04c8fbd015ac961ebce12/cmd/docbank/help_lint_test.go#L481-L489
 [docbank-legacy-warning]: https://github.com/kenn-io/docbank/blob/de5bcd5c543513e1bbd04c8fbd015ac961ebce12/cmd/docbank/command_groups.go#L13-L36
 [docbank-groups-tests]: https://github.com/kenn-io/docbank/blob/de5bcd5c543513e1bbd04c8fbd015ac961ebce12/cmd/docbank/command_groups_test.go
