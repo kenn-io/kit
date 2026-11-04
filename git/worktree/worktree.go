@@ -38,9 +38,14 @@ type Options struct {
 	// Prefix is passed to os.MkdirTemp. A package default is used when empty.
 	Prefix string
 	// InitSubmodules initializes submodules after worktree creation.
+	// Create skips initialization when the checkout has no .gitmodules or gitlinks.
 	InitSubmodules bool
 	// PullLFS runs git lfs pull when git-lfs is installed for the checkout.
+	// Create skips the pull when no tracked files have the filter=lfs attribute.
 	PullLFS bool
+	// BaseSHA is the commit the caller already resolved ref to. When set,
+	// Create uses it instead of resolving the worktree HEAD.
+	BaseSHA string
 	// Runner overrides the git runner. When zero, gitcmd.New is used.
 	Runner gitcmd.Runner
 }
@@ -76,16 +81,40 @@ func Create(ctx context.Context, repoPath, ref string, opts Options) (_ *Worktre
 		_ = os.RemoveAll(worktreeDir)
 		return nil, fmt.Errorf("git worktree add: %w", err)
 	}
-	if opts.InitSubmodules {
+	if opts.InitSubmodules && wt.hasSubmodules(ctx) {
 		if err := wt.InitSubmodules(ctx); err != nil {
 			return nil, err
 		}
 	}
-	if opts.PullLFS {
+	if opts.PullLFS && wt.hasLFSFiles(ctx) {
 		wt.PullLFS(ctx)
 	}
-	wt.BaseSHA = wt.ResolveBaseSHA(ctx)
+	wt.BaseSHA = opts.BaseSHA
+	if wt.BaseSHA == "" {
+		wt.BaseSHA = wt.ResolveBaseSHA(ctx)
+	}
 	return wt, nil
+}
+
+func (w *Worktree) hasSubmodules(ctx context.Context) bool {
+	if _, err := os.Lstat(filepath.Join(w.Dir, ".gitmodules")); !errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+	out, err := w.runner.Output(ctx, w.Dir, "ls-files", "-z", "--format=%(objectmode)")
+	if err != nil {
+		return true
+	}
+	for mode := range strings.SplitSeq(string(out), "\x00") {
+		if mode == "160000" {
+			return true
+		}
+	}
+	return false
+}
+
+func (w *Worktree) hasLFSFiles(ctx context.Context) bool {
+	out, err := w.runner.Output(ctx, w.Dir, "ls-files", "-z", "--", ":(attr:filter=lfs)")
+	return err != nil || len(out) > 0
 }
 
 // Close removes the linked worktree and its directory.
