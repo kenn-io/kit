@@ -770,9 +770,6 @@ func (s *verifyState) manifest(id string) (*Manifest, error) {
 	if err != nil {
 		return nil, err
 	}
-	if s.manifests == nil {
-		s.manifests = make(map[string]*Manifest)
-	}
 	s.manifests[id] = m
 	return m, nil
 }
@@ -856,7 +853,7 @@ func (s *verifyState) checkPortableMetadata(m *Manifest) {
 // chain, returning the materialized map so queuePageRunChecks can compare page
 // blob bytes against it, or nil when the chain failed.
 func (s *verifyState) checkHashMapChain(m *Manifest) *PageHashMap {
-	chain, err := mapChainWith(m, s.manifest, func(m *Manifest) string { return m.DB.PageHashMap })
+	chain, err := mapChainWith(m, s.manifest, manifestPageHashMap)
 	if err != nil {
 		s.problem(m.SnapshotID, fmt.Sprintf("page-hash-map chain: %v", err))
 		return nil
@@ -887,7 +884,7 @@ func (s *verifyState) checkHashMapChain(m *Manifest) *PageHashMap {
 // mode, its coverage). It returns nil when the chain or any of its blobs
 // failed, since downstream checks have nothing usable to work from.
 func (s *verifyState) checkPageMapChain(m *Manifest) *PageMap {
-	chain, err := mapChainWith(m, s.manifest, func(m *Manifest) string { return m.DB.PageMap })
+	chain, err := mapChainWith(m, s.manifest, manifestPageMap)
 	if err != nil {
 		s.problem(m.SnapshotID, fmt.Sprintf("page-map chain: %v", err))
 		return nil

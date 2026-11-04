@@ -313,12 +313,20 @@ func (r *Repo) LatestSnapshot() (*Manifest, error) {
 // HashMapChain collects the newest-to-oldest page-hash-map blob chain from
 // head down to (and including) its keyframe manifest.
 func (r *Repo) HashMapChain(head *Manifest) ([]pack.BlobID, error) {
-	return mapChainWith(head, r.LoadManifest, func(m *Manifest) string { return m.DB.PageHashMap })
+	return mapChainWith(head, r.LoadManifest, manifestPageHashMap)
 }
 
 // PageMapChain collects the newest-to-oldest page-map blob chain.
 func (r *Repo) PageMapChain(head *Manifest) ([]pack.BlobID, error) {
-	return mapChainWith(head, r.LoadManifest, func(m *Manifest) string { return m.DB.PageMap })
+	return mapChainWith(head, r.LoadManifest, manifestPageMap)
+}
+
+func manifestPageHashMap(m *Manifest) string {
+	return m.DB.PageHashMap
+}
+
+func manifestPageMap(m *Manifest) string {
+	return m.DB.PageMap
 }
 
 func mapChainWith(head *Manifest, load func(string) (*Manifest, error), field func(*Manifest) string) ([]pack.BlobID, error) {
