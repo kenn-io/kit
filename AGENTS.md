@@ -52,12 +52,10 @@ provider workflows to this repo unless the package already owns that concern.
   `title` and `description` strings and a bare `last_edited: YYYY-MM-DD` date.
   `README.md`, `AGENTS.md`, and `CLAUDE.md` files never take frontmatter, at
   any depth. The check also excludes `.github/`, `testdata/`, `vendor/`,
-  `node_modules/`, `docs/releases/`, and repository-wide `CHANGELOG*.md` and
-  `changelog*.md` files. Tracked `SKILL.md` files use the portable Agent Skills
-  profile, which requires `name` and `description` but no `last_edited`; other
-  Markdown within a skill bundle, including references, needs no frontmatter.
-  Change the date when editing existing content; CI compares it with the
-  actual pull request base.
+  `node_modules/`, `docs/releases/`, `CHANGELOG*.md` and `changelog*.md`
+  files, Markdown symlinks, and skill bundles (`SKILL.md` and everything under
+  a directory that contains one). Change the date when editing existing
+  content; CI compares it with the actual pull request base.
 
 ## Go Conventions
 

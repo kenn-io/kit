@@ -80,17 +80,6 @@ require_serial = true
 priority = 5
 
 [[repos.hooks]]
-id = "kennlint-frontmatter-changed"
-name = "kennlint Markdown edit dates"
-language = "system"
-entry = "make lint-frontmatter-changed"
-stages = ["pre-push"]
-files = "\\.md$"
-pass_filenames = false
-require_serial = true
-priority = 5
-
-[[repos.hooks]]
 id = "nilaway"
 name = "nilaway"
 language = "system"

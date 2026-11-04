@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path"
@@ -15,14 +14,11 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 
 	"go.kenn.io/kit/atomicfile"
-	"go.kenn.io/kit/fslink"
 	gitenv "go.kenn.io/kit/git/env"
-	"go.kenn.io/kit/pathresolve"
 )
 
 type frontmatterExcludes []string
@@ -73,40 +69,6 @@ func frontmatterGit(ctx context.Context, dir string, args ...string) ([]byte, er
 		return nil, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
 	return out, nil
-}
-
-func frontmatterGitHashContent(ctx context.Context, root string, content []byte, path string) (string, error) {
-	args := []string{"hash-object", "--stdin"}
-	if path != "" {
-		args = []string{"hash-object", "--path=" + filepath.ToSlash(path), "--stdin"}
-	}
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = root
-	cmd.Env = gitenv.StripInherited(os.Environ())
-	cmd.Stdin = bytes.NewReader(content)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
-	}
-	return strings.TrimSpace(string(out)), nil
-}
-
-func frontmatterGitContentDiffers(ctx context.Context, root, currentPath string, previous, current []byte) (bool, error) {
-	previousHash, err := frontmatterGitHashContent(ctx, root, previous, "")
-	if err != nil {
-		return false, err
-	}
-	relative, err := filepath.Rel(root, currentPath)
-	if err != nil {
-		return false, err
-	}
-	currentHash, err := frontmatterGitHashContent(ctx, root, current, relative)
-	if err != nil {
-		return false, err
-	}
-	return previousHash != currentHash, nil
 }
 
 type frontmatterBlock struct {
@@ -160,147 +122,13 @@ func parseFrontmatter(src []byte) (*frontmatterBlock, error) {
 	return b, nil
 }
 
-var portableSkillFields = map[string]struct{}{
-	"name": {}, "description": {}, "license": {}, "compatibility": {}, "metadata": {}, "allowed-tools": {},
-}
-
-// skillFrontmatterProblems enforces the portable Agent Skills profile. In
-// particular, Claude Code's local defaults for omitted name and description
-// do not satisfy the portable format.
-func skillFrontmatterProblems(b *frontmatterBlock, file string) []string {
-	var problems []string
-	skillDir := path.Dir(file)
-	if skillDir == "." {
-		problems = append(problems, "SKILL.md must be inside a named skill directory")
-	}
-	for i := 0; i+1 < len(b.doc.Content[0].Content); i += 2 {
-		key := b.doc.Content[0].Content[i]
-		if _, ok := portableSkillFields[key.Value]; !ok {
-			problems = append(problems, fmt.Sprintf("field %q is not part of portable Agent Skills frontmatter; put vendor-specific data under metadata", key.Value))
-		}
-	}
-
-	nameNode := b.fields["name"]
-	if nameNode == nil {
-		problems = append(problems, "name must be a non-empty string")
-	} else if nameNode.Kind != yaml.ScalarNode || nameNode.Tag != "!!str" || strings.TrimSpace(nameNode.Value) == "" {
-		problems = append(problems, "name must be a non-empty string")
-	} else {
-		name := nameNode.Value
-		if !validSkillName(name) {
-			problems = append(problems, "name must be 1-64 lowercase letters, digits, or hyphens, with no leading, trailing, or consecutive hyphens")
-		} else if skillDir != "." && name != path.Base(skillDir) {
-			problems = append(problems, fmt.Sprintf("name must match skill directory %q", path.Base(skillDir)))
-		}
-	}
-
-	description := b.fields["description"]
-	if description == nil {
-		problems = append(problems, "description must be a non-empty string")
-	} else if description.Kind != yaml.ScalarNode || description.Tag != "!!str" || strings.TrimSpace(description.Value) == "" {
-		problems = append(problems, "description must be a non-empty string")
-	} else if length := utf8.RuneCountInString(description.Value); length > 1024 {
-		problems = append(problems, "description must be at most 1024 characters")
-	}
-
-	if license := b.fields["license"]; license != nil && (!skillString(license) || strings.TrimSpace(license.Value) == "") {
-		problems = append(problems, "license must be a non-empty string")
-	}
-	if compatibility := b.fields["compatibility"]; compatibility != nil {
-		if !skillString(compatibility) || strings.TrimSpace(compatibility.Value) == "" {
-			problems = append(problems, "compatibility must be a non-empty string")
-		} else if length := utf8.RuneCountInString(compatibility.Value); length > 500 {
-			problems = append(problems, "compatibility must be at most 500 characters")
-		}
-	}
-	if metadata := b.fields["metadata"]; metadata != nil {
-		if metadata.Kind != yaml.MappingNode {
-			problems = append(problems, "metadata must be a mapping of string keys to string values")
-		} else {
-			for i := 0; i+1 < len(metadata.Content); i += 2 {
-				key, value := metadata.Content[i], metadata.Content[i+1]
-				if !skillString(key) {
-					problems = append(problems, "metadata keys must be strings")
-				}
-				if !skillString(value) {
-					problems = append(problems, "metadata values must be strings")
-				}
-			}
-		}
-	}
-	if allowedTools := b.fields["allowed-tools"]; allowedTools != nil {
-		if !skillString(allowedTools) {
-			problems = append(problems, "allowed-tools must be a space-separated string")
-		}
-	}
-	return problems
-}
-
-func skillString(n *yaml.Node) bool {
-	return n != nil && n.Kind == yaml.ScalarNode && n.Tag == "!!str"
-}
-
-func validSkillName(name string) bool {
-	if len(name) == 0 || len(name) > 64 || name[0] == '-' || name[len(name)-1] == '-' || strings.Contains(name, "--") {
-		return false
-	}
-	for _, r := range name {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
-		default:
-			return false
-		}
-	}
-	return true
-}
-
-func checkSkillFrontmatterFileWithCaseSemantics(root, file string, indexModes map[string]string, symlinkPlaceholders, caseInsensitiveFilesystem bool) ([]string, error) {
-	full := filepath.Join(root, filepath.FromSlash(file))
-	if _, err := os.Lstat(full); errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	} else if err != nil {
-		return nil, err
-	}
-	resolved, err := frontmatterWorkingPathWithCaseSemantics(root, file, indexModes, symlinkPlaceholders, caseInsensitiveFilesystem)
-	if errors.Is(err, errFrontmatterSymlinkOutside) {
-		return []string{"Markdown symlink target is outside the repository"}, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	src, err := os.ReadFile(resolved)
-	if err != nil {
-		return nil, err
-	}
-	b, err := parseFrontmatter(src)
-	if err != nil {
-		return []string{err.Error()}, nil //nolint:nilerr // Report validation findings and continue scanning other files.
-	}
-	return skillFrontmatterProblems(b, file), nil
-}
-
-func frontmatterSkillDirectories(tracked []byte) map[string]struct{} {
-	dirs := make(map[string]struct{})
-	for name := range bytes.SplitSeq(bytes.TrimSuffix(tracked, []byte{0}), []byte{0}) {
-		file := string(name)
-		if path.Base(file) == "SKILL.md" {
-			if dir := path.Dir(file); dir != "." {
-				dirs[dir] = struct{}{}
-			}
-		}
-	}
-	return dirs
-}
-
 func frontmatterInSkillDirectory(file string, skillDirs map[string]struct{}) bool {
-	for dir := path.Dir(file); ; dir = path.Dir(dir) {
+	for dir := path.Dir(file); dir != "."; dir = path.Dir(dir) {
 		if _, ok := skillDirs[dir]; ok {
 			return true
 		}
-		if dir == "." {
-			return false
-		}
 	}
+	return false
 }
 
 func frontmatterDate(n *yaml.Node) bool {
@@ -352,417 +180,33 @@ func (b *frontmatterBlock) fix(date string) ([]byte, bool, error) {
 	return append(result, b.body...), true, nil
 }
 
-type frontmatterTreeEntry struct {
-	mode    string
-	hash    string
-	changed bool
-}
-
-func frontmatterTree(ctx context.Context, root, base string) (map[string]frontmatterTreeEntry, error) {
-	data, err := frontmatterGit(ctx, root, "ls-tree", "-rz", "--full-tree", base)
+// frontmatterTracked lists tracked regular Markdown files and the directories
+// that hold a SKILL.md. Symlinks (mode 120000) are skipped: a target inside the
+// repository is tracked and checked under its own name, and Git records the
+// mode even when core.symlinks=false checks links out as plain files.
+func frontmatterTracked(ctx context.Context, root string) ([]string, map[string]struct{}, error) {
+	data, err := frontmatterGit(ctx, root, "ls-files", "-z", "--stage", "--", "*.md")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	tree := make(map[string]frontmatterTreeEntry)
+	var files []string
+	skillDirs := make(map[string]struct{})
 	for record := range bytes.SplitSeq(bytes.TrimSuffix(data, []byte{0}), []byte{0}) {
 		metadata, name, ok := strings.Cut(string(record), "\t")
 		fields := strings.Fields(metadata)
-		if ok && len(fields) == 3 {
-			tree[name] = frontmatterTreeEntry{mode: fields[0], hash: fields[2]}
-		}
-	}
-	// Let Git apply its attributes and line-ending rules when deciding whether
-	// content changed. Raw blob comparisons would flag every CRLF checkout.
-	diff, err := frontmatterGit(ctx, root, "diff", "--name-only", "-z", base, "--")
-	if err != nil {
-		return nil, err
-	}
-	for name := range bytes.SplitSeq(diff, []byte{0}) {
-		if entry, ok := tree[string(name)]; ok {
-			entry.changed = true
-			tree[string(name)] = entry
-		}
-	}
-	return tree, nil
-}
-
-func frontmatterIndexModes(ctx context.Context, root string) (map[string]string, error) {
-	data, err := frontmatterGit(ctx, root, "ls-files", "--stage", "-z", "--cached", "--deduplicate")
-	if err != nil {
-		return nil, err
-	}
-	modes := make(map[string]string)
-	for record := range bytes.SplitSeq(bytes.TrimSuffix(data, []byte{0}), []byte{0}) {
-		metadata, name, ok := strings.Cut(string(record), "\t")
-		fields := strings.Fields(metadata)
-		if ok && len(fields) == 3 && fields[2] == "0" {
-			modes[name] = fields[0]
-		}
-	}
-	return modes, nil
-}
-
-func frontmatterSymlinkPlaceholders(ctx context.Context, root string) (bool, error) {
-	// A regular file with symlink index mode is a placeholder only when Git
-	// materializes symlinks as files; with core.symlinks=true it can be a real
-	// working-tree replacement.
-	value, err := frontmatterGit(ctx, root, "config", "--bool", "--get", "--default=true", "core.symlinks")
-	if err != nil {
-		return false, err
-	}
-	return strings.TrimSpace(string(value)) == "false", nil
-}
-
-func frontmatterCaseInsensitiveFilesystem(ctx context.Context, root string) (bool, error) {
-	value, err := frontmatterGit(ctx, root, "config", "--bool", "--get", "--default=false", "core.ignoreCase")
-	if err != nil {
-		return false, err
-	}
-	return strings.TrimSpace(string(value)) == "true", nil
-}
-
-var errFrontmatterSymlinkOutside = errors.New("markdown symlink target is outside the repository")
-
-func frontmatterRepositoryTargetWithSemantics(root, target string, windows, caseInsensitiveFilesystem bool) (string, bool, error) {
-	target = frontmatterNormalizeLinkTarget(target, windows)
-	if !frontmatterIsAbsoluteTarget(target, windows) {
-		return target, false, nil
-	}
-	rootAbs, err := filepath.Abs(root)
-	if err != nil {
-		return "", false, err
-	}
-	if windows && filepath.VolumeName(target) == "" && frontmatterWindowsRootedWithoutVolume(target) {
-		target = frontmatterWindowsRootedTarget(filepath.VolumeName(rootAbs), target)
-	}
-	rootPath := filepath.ToSlash(filepath.Clean(rootAbs))
-	absolute := filepath.ToSlash(target)
-	if rootPath == "/" {
-		relative := strings.TrimPrefix(absolute, "/")
-		if relative == "" {
-			relative = "."
-		}
-		return relative, true, nil
-	}
-	rootParts, targetParts := strings.Split(rootPath, "/"), strings.Split(absolute, "/")
-	if len(targetParts) < len(rootParts) {
-		return "", false, errFrontmatterSymlinkOutside
-	}
-	for i, part := range rootParts {
-		equal := targetParts[i] == part
-		if caseInsensitiveFilesystem {
-			equal = strings.EqualFold(targetParts[i], part)
-		}
-		if !equal {
-			return "", false, errFrontmatterSymlinkOutside
-		}
-	}
-	relative := strings.Join(targetParts[len(rootParts):], "/")
-	if relative == "" {
-		relative = "."
-	}
-	return relative, true, nil
-}
-
-func frontmatterNormalizeLinkTarget(target string, windows bool) string {
-	if !windows {
-		return target
-	}
-	slashed := strings.ReplaceAll(target, `\`, "/")
-	if unc, ok := strings.CutPrefix(slashed, "//"); ok {
-		parts := strings.Split(unc, "/")
-		if len(parts) < 2 {
-			return slashed
-		}
-		prefix := "//" + parts[0] + "/" + parts[1]
-		if len(parts) == 2 {
-			return prefix
-		}
-		cleaned := path.Clean(strings.Join(parts[2:], "/"))
-		if cleaned == "." {
-			return prefix
-		}
-		return prefix + "/" + cleaned
-	}
-	if len(slashed) >= 2 && slashed[1] == ':' {
-		volume, rest := slashed[:2], slashed[2:]
-		return volume + path.Clean(rest)
-	}
-	return path.Clean(slashed)
-}
-
-func frontmatterIsAbsoluteTarget(target string, windows bool) bool {
-	return filepath.IsAbs(target) || path.IsAbs(target) || (windows && filepath.VolumeName(target) == "" && frontmatterWindowsRootedWithoutVolume(target))
-}
-
-func frontmatterWindowsRootedWithoutVolume(target string) bool {
-	slashed := strings.ReplaceAll(target, `\`, "/")
-	return strings.HasPrefix(slashed, "/") && !strings.HasPrefix(slashed, "//")
-}
-
-// A Windows path rooted at the current drive's root has no volume of its own.
-// Anchor that root to the repository volume before checking containment.
-func frontmatterWindowsRootedTarget(rootVolume, target string) string {
-	if rootVolume == "" || !frontmatterWindowsRootedWithoutVolume(target) {
-		return target
-	}
-	slashed := strings.ReplaceAll(target, `\`, "/")
-	return rootVolume + slashed
-}
-
-func frontmatterIndexMode(indexModes map[string]string, name string, caseInsensitiveFilesystem bool) string {
-	if mode, ok := indexModes[name]; ok {
-		return mode
-	}
-	if caseInsensitiveFilesystem {
-		for indexedName, mode := range indexModes {
-			if strings.EqualFold(indexedName, name) {
-				return mode
-			}
-		}
-	}
-	return ""
-}
-
-// Resolve the working path component-by-component so symlinks and .. retain
-// Unix filesystem order. Windows normalizes each destination before following
-// links. Git records symlink targets as regular files when core.symlinks=false,
-// so use index modes to identify those placeholders too.
-func frontmatterWorkingPathWithCaseSemantics(root, file string, indexModes map[string]string, symlinkPlaceholders, caseInsensitiveFilesystem bool) (string, error) {
-	windows := filepath.Separator == '\\'
-	return frontmatterWorkingPathWithSemantics(root, file, indexModes, symlinkPlaceholders, windows, caseInsensitiveFilesystem)
-}
-
-func frontmatterWorkingPathWithSemantics(root, file string, indexModes map[string]string, symlinkPlaceholders, windows, caseInsensitiveFilesystem bool) (string, error) {
-	var resolved []string
-	pending := strings.Split(filepath.ToSlash(file), "/")
-	links := 0
-	for len(pending) > 0 {
-		component := pending[0]
-		pending = pending[1:]
-		switch component {
-		case "", ".":
-			continue
-		case "..":
-			if len(resolved) == 0 {
-				return "", errFrontmatterSymlinkOutside
-			}
-			resolved = resolved[:len(resolved)-1]
+		if !ok || len(fields) != 3 {
 			continue
 		}
-
-		candidateParts := append(append([]string(nil), resolved...), component)
-		candidate := strings.Join(candidateParts, "/")
-		full := filepath.Join(root, filepath.FromSlash(candidate))
-		info, err := os.Lstat(full)
-		if err != nil {
-			return "", err
+		if path.Base(name) == "SKILL.md" && path.Dir(name) != "." {
+			skillDirs[path.Dir(name)] = struct{}{}
 		}
-		isSymlink := info.Mode()&os.ModeSymlink != 0
-		isJunction := false
-		if windows && !isSymlink {
-			kind, classifyErr := fslink.Classify(full)
-			if classifyErr != nil {
-				return "", classifyErr
-			}
-			isJunction = kind == fslink.Junction
+		// Unmerged files appear once per stage, adjacently; check them once.
+		if (fields[0] == "100644" || fields[0] == "100755") && (len(files) == 0 || files[len(files)-1] != name) {
+			files = append(files, name)
 		}
-		isPlaceholder := symlinkPlaceholders && !isSymlink && !isJunction && frontmatterIndexMode(indexModes, candidate, caseInsensitiveFilesystem) == "120000"
-		if isJunction {
-			links++
-			if links > 40 {
-				return "", errors.New("too many working-tree symlinks")
-			}
-			target, err := fslink.Readlink(full)
-			if err != nil {
-				return "", err
-			}
-			if _, _, err := frontmatterRepositoryTargetWithSemantics(root, target, windows, caseInsensitiveFilesystem); err != nil {
-				return "", err
-			}
-			canonical, err := pathresolve.EvalSymlinks(full)
-			if err != nil {
-				return "", err
-			}
-			canonicalPath, err := frontmatterPaths(root, []string{canonical})
-			if err != nil || len(canonicalPath) != 1 {
-				return "", errFrontmatterSymlinkOutside
-			}
-			if canonicalPath[0] == "." {
-				resolved = nil
-			} else {
-				resolved = strings.Split(canonicalPath[0], "/")
-			}
-			continue
-		}
-		if isSymlink || isPlaceholder {
-			links++
-			if links > 40 {
-				return "", errors.New("too many working-tree symlinks")
-			}
-			var target string
-			if isSymlink {
-				target, err = os.Readlink(full)
-			} else {
-				var data []byte
-				data, err = os.ReadFile(full)
-				target = string(data)
-			}
-			if err != nil {
-				return "", err
-			}
-			target, absolute, err := frontmatterRepositoryTargetWithSemantics(root, target, windows, caseInsensitiveFilesystem)
-			if err != nil {
-				return "", err
-			}
-			if absolute {
-				resolved = nil
-			} else {
-				resolved = candidateParts[:len(candidateParts)-1]
-			}
-			pending = append(strings.Split(target, "/"), pending...)
-			continue
-		}
-		if len(pending) > 0 && !info.IsDir() {
-			return "", fmt.Errorf("working path component %s is not a directory", candidate)
-		}
-		resolved = candidateParts
 	}
-	if len(resolved) == 0 {
-		return "", errors.New("markdown path resolves to the repository directory")
-	}
-	full := filepath.Join(root, filepath.FromSlash(strings.Join(resolved, "/")))
-	full, err := pathresolve.EvalSymlinks(full)
-	if err != nil {
-		return "", err
-	}
-	if _, err := frontmatterPaths(root, []string{full}); err != nil {
-		return "", errFrontmatterSymlinkOutside
-	}
-	return full, nil
+	return files, skillDirs, nil
 }
-
-// Resolve historical paths component-by-component so intermediate symlinks
-// retain Unix traversal order; Windows targets are normalized before traversal.
-func frontmatterPrevious(ctx context.Context, root, name string, tree map[string]frontmatterTreeEntry) ([]byte, bool, error) {
-	windows := filepath.Separator == '\\'
-	return frontmatterPreviousWithSemantics(ctx, root, name, tree, windows, windows)
-}
-
-func frontmatterPreviousWithCaseSemantics(ctx context.Context, root, name string, tree map[string]frontmatterTreeEntry, caseInsensitiveFilesystem bool) ([]byte, bool, error) {
-	windows := filepath.Separator == '\\'
-	return frontmatterPreviousWithSemantics(ctx, root, name, tree, windows, caseInsensitiveFilesystem)
-}
-
-func frontmatterPreviousWithSemantics(ctx context.Context, root, name string, tree map[string]frontmatterTreeEntry, windows, caseInsensitiveFilesystem bool) ([]byte, bool, error) {
-	changed := false
-	var resolved []string
-	pending := strings.Split(name, "/")
-	links := 0
-	for len(pending) > 0 {
-		component := pending[0]
-		pending = pending[1:]
-		switch component {
-		case "", ".":
-			continue
-		case "..":
-			if len(resolved) == 0 {
-				return nil, false, fmt.Errorf("%w: historical symlink %s escapes the repository", errFrontmatterHistoricalTargetUnavailable, name)
-			}
-			resolved = resolved[:len(resolved)-1]
-			continue
-		}
-
-		candidateParts := append(append([]string(nil), resolved...), component)
-		candidate := strings.Join(candidateParts, "/")
-		entry, ok := frontmatterTreeLookup(tree, candidate, caseInsensitiveFilesystem)
-		if !ok {
-			if len(pending) > 0 && frontmatterTreeHasDirectoryWithCaseSemantics(tree, candidate, caseInsensitiveFilesystem) {
-				resolved = candidateParts
-				continue
-			}
-			return nil, false, fmt.Errorf("%w: missing historical symlink target %s", errFrontmatterHistoricalTargetUnavailable, candidate)
-		}
-		changed = changed || entry.changed
-		if entry.mode == "120000" {
-			links++
-			if links > 40 {
-				return nil, false, fmt.Errorf("%w: too many historical symlinks", errFrontmatterHistoricalTargetUnavailable)
-			}
-			target, err := frontmatterGit(ctx, root, "cat-file", "blob", entry.hash)
-			if err != nil {
-				return nil, false, err
-			}
-			targetName, absolute, err := frontmatterRepositoryTargetWithSemantics(root, string(target), windows, caseInsensitiveFilesystem)
-			if errors.Is(err, errFrontmatterSymlinkOutside) {
-				return nil, false, fmt.Errorf("%w: historical symlink %s escapes the repository", errFrontmatterHistoricalTargetUnavailable, candidate)
-			}
-			if err != nil {
-				return nil, false, err
-			}
-			// Preserve . and .. traversal after an absolute repository prefix.
-			if absolute {
-				resolved = nil
-			} else {
-				resolved = candidateParts[:len(candidateParts)-1]
-			}
-			pending = append(strings.Split(targetName, "/"), pending...)
-			continue
-		}
-		if len(pending) > 0 {
-			return nil, false, fmt.Errorf("%w: historical path component %s is not a directory", errFrontmatterHistoricalTargetUnavailable, candidate)
-		}
-		data, err := frontmatterGit(ctx, root, "cat-file", "blob", entry.hash)
-		return data, changed, err
-	}
-	return nil, false, fmt.Errorf("%w: missing historical symlink target %s", errFrontmatterHistoricalTargetUnavailable, name)
-}
-
-func frontmatterTreeLookup(tree map[string]frontmatterTreeEntry, name string, caseInsensitiveFilesystem bool) (frontmatterTreeEntry, bool) {
-	if entry, ok := tree[name]; ok {
-		return entry, true
-	}
-	if caseInsensitiveFilesystem {
-		for indexedName, entry := range tree {
-			if strings.EqualFold(indexedName, name) {
-				return entry, true
-			}
-		}
-	}
-	return frontmatterTreeEntry{}, false
-}
-
-func frontmatterTreeHasDirectoryWithCaseSemantics(tree map[string]frontmatterTreeEntry, dir string, caseInsensitiveFilesystem bool) bool {
-	prefix := dir + "/"
-	if !caseInsensitiveFilesystem {
-		for name := range tree {
-			if strings.HasPrefix(name, prefix) {
-				return true
-			}
-		}
-		return false
-	}
-	dirParts := strings.Split(dir, "/")
-	for name := range tree {
-		parts := strings.Split(name, "/")
-		if len(parts) <= len(dirParts) {
-			continue
-		}
-		matches := true
-		for i, part := range dirParts {
-			if !strings.EqualFold(parts[i], part) {
-				matches = false
-				break
-			}
-		}
-		if matches {
-			return true
-		}
-	}
-	return false
-}
-
-var errFrontmatterHistoricalTargetUnavailable = errors.New("historical symlink target unavailable")
 
 func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer) (int, error) {
 	flags := flag.NewFlagSet("kennlint frontmatter", flag.ContinueOnError)
@@ -770,7 +214,7 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	changed := flags.String("changed", "", "require a last_edited change since the merge base with this ref")
 	fix := flags.Bool("fix", false, "unquote dates and add missing last_edited using the last commit date (or today)")
 	excludes := frontmatterExcludes{
-		"**/README.md", "**/AGENTS.md", "**/CLAUDE.md", "docs/releases/**",
+		"**/README.md", "**/AGENTS.md", "**/CLAUDE.md", "**/SKILL.md", "docs/releases/**",
 		"**/CHANGELOG*.md", "**/changelog*.md",
 		".github/**", "**/testdata/**", "vendor/**", "node_modules/**",
 	}
@@ -779,80 +223,72 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 	if err := flags.Parse(args); err != nil {
 		return 0, err
 	}
+	excludes = append(excludes, customExcludes...)
 	rootBytes, err := frontmatterGit(ctx, "", "rev-parse", "--show-toplevel")
 	if err != nil {
 		return 0, err
 	}
 	root := strings.TrimSpace(string(rootBytes))
-	tracked, err := frontmatterGit(ctx, root, "ls-files", "-z", "--cached", "--deduplicate", "--", "*.md")
-	if err != nil {
-		return 0, err
-	}
-	indexModes, err := frontmatterIndexModes(ctx, root)
-	if err != nil {
-		return 0, err
-	}
-	symlinkPlaceholders, err := frontmatterSymlinkPlaceholders(ctx, root)
-	if err != nil {
-		return 0, err
-	}
-	caseInsensitiveFilesystem, err := frontmatterCaseInsensitiveFilesystem(ctx, root)
-	if err != nil {
-		return 0, err
-	}
-	skillDirs := frontmatterSkillDirectories(tracked)
-	excludes = append(excludes, customExcludes...)
 	selected, err := frontmatterPaths(root, flags.Args())
 	if err != nil {
 		return 0, err
 	}
-	var tree map[string]frontmatterTreeEntry
-	if *changed != "" {
-		base, err := frontmatterGit(ctx, root, "merge-base", "HEAD", *changed)
-		if err != nil {
-			return 0, err
-		}
-		tree, err = frontmatterTree(ctx, root, strings.TrimSpace(string(base)))
-		if err != nil {
-			return 0, err
-		}
+	files, skillDirs, err := frontmatterTracked(ctx, root)
+	if err != nil {
+		return 0, err
 	}
-	total, checked, fixed := 0, 0, 0
-	for name := range bytes.SplitSeq(bytes.TrimSuffix(tracked, []byte{0}), []byte{0}) {
-		file := string(name)
-		if file == "" || !frontmatterSelected(file, selected, excludes) {
-			continue
-		}
-		if path.Base(file) == "SKILL.md" {
-			problems, err := checkSkillFrontmatterFileWithCaseSemantics(root, file, indexModes, symlinkPlaceholders, caseInsensitiveFilesystem)
-			if err != nil {
-				return total, fmt.Errorf("%s: %w", file, err)
-			}
-			checked++
-			for _, problem := range problems {
-				fmt.Fprintf(stderr, "%s: %s\n", file, strings.ReplaceAll(problem, "\n", "; "))
-				total++
-			}
-			continue
-		}
-		if frontmatterInSkillDirectory(file, skillDirs) {
-			continue
-		}
-		problems, didFix, err := checkFrontmatterFileWithCaseSemantics(ctx, root, file, *fix, tree, indexModes, symlinkPlaceholders, caseInsensitiveFilesystem)
-		if err != nil {
-			return total, fmt.Errorf("%s: %w", file, err)
-		}
-		checked++
-		if didFix {
-			fixed++
-		}
+	// rev-parse --revs-only returns no revisions for an unborn HEAD, which has
+	// no commit dates for -fix to use.
+	head, err := frontmatterGit(ctx, root, "rev-parse", "--revs-only", "HEAD")
+	if err != nil {
+		return 0, err
+	}
+	hasHead := len(bytes.TrimSpace(head)) != 0
+
+	total, fixed := 0, 0
+	report := func(file string, problems []string) {
 		for _, problem := range problems {
 			fmt.Fprintf(stderr, "%s: %s\n", file, strings.ReplaceAll(problem, "\n", "; "))
 			total++
 		}
 	}
+	var checked []string
+	for _, file := range files {
+		if !frontmatterSelected(file, selected, excludes) || frontmatterInSkillDirectory(file, skillDirs) {
+			continue
+		}
+		full := filepath.Join(root, filepath.FromSlash(file))
+		info, err := os.Lstat(full)
+		if errors.Is(err, os.ErrNotExist) {
+			continue // A tracked file deleted in the working tree needs no metadata.
+		}
+		if err != nil {
+			return total, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			continue // An uncommitted symlink; writing through it could reach anywhere.
+		}
+		problems, didFix, err := checkFrontmatterFile(ctx, root, file, *fix, hasHead)
+		if err != nil {
+			return total, fmt.Errorf("%s: %w", file, err)
+		}
+		checked = append(checked, file)
+		if didFix {
+			fixed++
+		}
+		report(file, problems)
+	}
+	if *changed != "" {
+		stale, err := frontmatterStaleDates(ctx, root, *changed, checked)
+		if err != nil {
+			return total, err
+		}
+		for _, file := range stale {
+			report(file, []string{"content changed without changing last_edited"})
+		}
+	}
 	if total == 0 {
-		fmt.Fprintf(stdout, "frontmatter: checked %d Markdown files (%d fixed)\n", checked, fixed)
+		fmt.Fprintf(stdout, "frontmatter: checked %d Markdown files (%d fixed)\n", len(checked), fixed)
 	}
 	return total, nil
 }
@@ -882,23 +318,9 @@ func frontmatterSelected(file string, selected []string, excludes []string) bool
 	})
 }
 
-func checkFrontmatterFileWithCaseSemantics(ctx context.Context, root, file string, fix bool, tree map[string]frontmatterTreeEntry, indexModes map[string]string, symlinkPlaceholders, caseInsensitiveFilesystem bool) ([]string, bool, error) {
+func checkFrontmatterFile(ctx context.Context, root, file string, fix, hasHead bool) ([]string, bool, error) {
 	full := filepath.Join(root, filepath.FromSlash(file))
-	_, err := os.Lstat(full)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, false, nil // A tracked file deleted in the working tree needs no metadata.
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	targetPath, err := frontmatterWorkingPathWithCaseSemantics(root, file, indexModes, symlinkPlaceholders, caseInsensitiveFilesystem)
-	if errors.Is(err, errFrontmatterSymlinkOutside) {
-		return []string{"Markdown symlink target is outside the repository"}, false, nil
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	src, err := os.ReadFile(targetPath)
+	src, err := os.ReadFile(full)
 	if err != nil {
 		return nil, false, err
 	}
@@ -912,65 +334,68 @@ func checkFrontmatterFileWithCaseSemantics(ctx context.Context, root, file strin
 	if err != nil {
 		return []string{err.Error()}, false, nil //nolint:nilerr // Count invalid metadata as a finding so scanning continues.
 	}
-	didFix := false
-	finalContent := src
-	if fix {
-		date := time.Now().UTC().Format(time.DateOnly)
-		if b.fields["last_edited"] == nil {
-			// rev-parse --revs-only returns no revisions for an unborn HEAD.
-			// Such a repository has no last commit date to ask git log for.
-			head, err := frontmatterGit(ctx, root, "rev-parse", "--revs-only", "HEAD")
-			if err != nil {
-				return nil, false, err
-			}
-			if len(bytes.TrimSpace(head)) != 0 {
-				committed, err := frontmatterGit(ctx, root, "log", "-1", "--format=%cs", "--", file)
-				if err != nil {
-					return nil, false, err
-				}
-				if value := strings.TrimSpace(string(committed)); value != "" {
-					date = value
-				}
-			}
-		}
-		updated, changed, err := b.fix(date)
+	if !fix {
+		return b.problems(), false, nil
+	}
+	date := time.Now().UTC().Format(time.DateOnly)
+	if b.fields["last_edited"] == nil && hasHead {
+		committed, err := frontmatterGit(ctx, root, "log", "-1", "--format=%cs", "--", file)
 		if err != nil {
 			return nil, false, err
 		}
-		if changed {
-			opts := []atomicfile.Option{atomicfile.WithPreserveMode()}
-			// Write the resolved file directly, preserving every alias and any
-			// regular-file placeholders Git created for symlinks.
-			if err := atomicfile.WriteFile(targetPath, updated, opts...); err != nil {
-				return nil, false, err
-			}
-			didFix = true
-			finalContent = updated
+		if value := strings.TrimSpace(string(committed)); value != "" {
+			date = value
 		}
 	}
-	problems := b.problems()
-	if _, exists := tree[file]; exists {
-		previous, previousChanged, err := frontmatterPreviousWithCaseSemantics(ctx, root, file, tree, caseInsensitiveFilesystem)
-		if errors.Is(err, errFrontmatterHistoricalTargetUnavailable) {
-			return problems, didFix, nil
+	updated, changed, err := b.fix(date)
+	if err != nil || !changed {
+		return b.problems(), false, err
+	}
+	if err := atomicfile.WriteFile(full, updated, atomicfile.WithPreserveMode()); err != nil {
+		return nil, false, err
+	}
+	return b.problems(), true, nil
+}
+
+// frontmatterStaleDates returns the files whose content differs from the merge
+// base with ref while last_edited still matches. It runs after -fix so a fix
+// that restores the base content does not count as an edit, and it lets Git
+// apply attributes and line-ending rules so CRLF checkouts are not edits.
+func frontmatterStaleDates(ctx context.Context, root, ref string, files []string) ([]string, error) {
+	baseBytes, err := frontmatterGit(ctx, root, "merge-base", "HEAD", ref)
+	if err != nil {
+		return nil, err
+	}
+	base := strings.TrimSpace(string(baseBytes))
+	diff, err := frontmatterGit(ctx, root, "diff", "--name-only", "-z", "--no-renames", "--diff-filter=M", base, "--", "*.md")
+	if err != nil {
+		return nil, err
+	}
+	modified := make(map[string]bool)
+	for name := range bytes.SplitSeq(diff, []byte{0}) {
+		modified[string(name)] = true
+	}
+	var stale []string
+	for _, file := range files {
+		if !modified[file] {
+			continue
 		}
+		previous, err := frontmatterGit(ctx, root, "cat-file", "blob", base+":"+file)
 		if err != nil {
-			return nil, didFix, err
+			return nil, err
 		}
-		old, err := parseFrontmatter(previous)
-		if err == nil && (previousChanged || didFix) {
-			differs, err := frontmatterGitContentDiffers(ctx, root, targetPath, previous, finalContent)
-			if err != nil {
-				return nil, didFix, err
-			}
-			if !differs {
-				return problems, didFix, nil
-			}
-			before, after := old.fields["last_edited"], b.fields["last_edited"]
-			if before != nil && after != nil && before.Value == after.Value {
-				problems = append(problems, "content changed without changing last_edited")
-			}
+		current, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(file)))
+		if err != nil {
+			return nil, err
+		}
+		before, errBefore := parseFrontmatter(previous)
+		after, errAfter := parseFrontmatter(current)
+		if errBefore != nil || errAfter != nil {
+			continue // Missing or invalid metadata is reported, or was adopted in this change.
+		}
+		if b, a := before.fields["last_edited"], after.fields["last_edited"]; b != nil && a != nil && b.Value == a.Value {
+			stale = append(stale, file)
 		}
 	}
-	return problems, didFix, nil
+	return stale, nil
 }

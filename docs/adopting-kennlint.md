@@ -1,7 +1,7 @@
 ---
 title: "Adopting the shared Go lint policy (kennlint)"
 description: "Adopt the shared Go lint policy, workflow checks, and Markdown frontmatter validation."
-last_edited: 2026-11-02
+last_edited: 2026-11-04
 ---
 
 # Adopting the shared Go lint policy (kennlint)
@@ -120,35 +120,14 @@ it after adding rule labels and reasons to their suppressions.
    The command checks git-tracked Markdown for frontmatter. Ordinary documents
    need a YAML mapping with non-empty string `title` and `description` values
    and a bare `last_edited: YYYY-MM-DD` date. Quoted dates, datetimes and
-   invalid dates fail. Markdown symlinks are checked through their targets.
+   invalid dates fail.
 
-   Defaults exclude `README.md`, `AGENTS.md`, and `CLAUDE.md` at every depth,
-   plus `.github/**`, `**/testdata/**`, `vendor/**`, `node_modules/**`,
-   `docs/releases/**`, and repository-wide `CHANGELOG*.md` and `changelog*.md`
-   files.
-
-   A tracked `SKILL.md` is checked against the portable [Agent Skills
-   specification](https://agentskills.io/specification): it requires `name`
-   and `description`, validates the skill name against its directory, and
-   checks optional standard fields when present. Put each `SKILL.md` inside a
-   named skill directory. It does not require generic
-   `title` or `last_edited` fields. `metadata` is an optional map of custom
-   string keys and values; no metadata key, including `last_edited`, is
-   required. Other Markdown files in a skill bundle, such as reference and
-   example files, do not need frontmatter.
-
-   The portable format documents the manifest as `SKILL.md`. OpenAI's [API
-   skills guide](https://developers.openai.com/api/docs/guides/tools-skills)
-   additionally specifies case-insensitive file matching. This check uses the
-   portable spelling for repository classification, so a lowercase `skill.md`
-   follows the ordinary Markdown rules.
-
-   Claude Code has a more permissive local fallback: it can derive an omitted
-   skill name from the directory and an omitted description from the first
-   non-empty body line. This check targets the portable profile and still
-   requires both fields. See the [Claude Code skill frontmatter
-   reference](https://code.claude.com/docs/en/skills#frontmatter-reference)
-   for client-specific behavior.
+   Defaults exclude `README.md`, `AGENTS.md`, `CLAUDE.md`, and `SKILL.md` at
+   every depth, plus `.github/**`, `**/testdata/**`, `vendor/**`,
+   `node_modules/**`, `docs/releases/**`, and `CHANGELOG*.md` and
+   `changelog*.md` files. Markdown inside a skill bundle (any directory with
+   a `SKILL.md`) needs no frontmatter. Markdown symlinks are skipped; a target
+   inside the repository is checked under its own path.
 
    Add repeatable repository-relative `-exclude <glob>` flags for other
    exceptions; `**` matches zero or more directory components. Path arguments

@@ -35,7 +35,7 @@ const usage = `usage:
   kennlint run [analysis flags] [packages]   run the kit analyzers (go vet style)
   kennlint workflow-retries [path ...]       report downloads missing retries in workflow YAML (default: .github)
   kennlint sql [path ...]                    report CHECK constraints and enum types in .sql files (default: .)
-  kennlint frontmatter [flags] [path ...]     check tracked Markdown frontmatter (portable SKILL.md rules)
+  kennlint frontmatter [flags] [path ...]    check tracked Markdown frontmatter and last_edited dates
   kennlint config [flags]                    render .golangci.yml from the canonical config and an overlay
   kennlint profile [flags] [packages]        time each analyzer, split between packages and dependencies
   kennlint analyzers                         list the analyzers and their documentation
@@ -94,7 +94,6 @@ func main() {
 		for _, a := range lint.Analyzers() {
 			fmt.Printf("%-14s %s\n", a.Name, a.Doc)
 		}
-		fmt.Printf("%-14s %s\n", "frontmatter", "Check tracked Markdown frontmatter (portable Agent Skills profile for SKILL.md); -changed requires last_edited updates for ordinary documents.")
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
