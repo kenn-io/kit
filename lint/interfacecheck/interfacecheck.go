@@ -145,18 +145,37 @@ func run(ctx context.Context, pass *analysis.Pass, bases, paths []string) (any, 
 			}
 			for _, spec := range gen.Specs {
 				value := spec.(*ast.ValueSpec)
-				if value.Type == nil || len(value.Values) != len(value.Names) {
-					continue
-				}
-				target := pass.TypesInfo.TypeOf(value.Type)
-				if _, ok := target.Underlying().(*types.Interface); !ok {
-					continue
-				}
-				for i, name := range value.Names {
-					if name.Name != "_" {
+				var sources []types.Type
+				for _, expr := range value.Values {
+					if tuple, ok := pass.TypesInfo.TypeOf(expr).(*types.Tuple); ok {
+						for variable := range tuple.Variables() {
+							sources = append(sources, variable.Type())
+						}
 						continue
 					}
-					if named := concrete(pass.TypesInfo.TypeOf(value.Values[i])); named != nil {
+					// Interface conversions also ask the compiler to check
+					// the concrete operand, even with an inferred var type.
+					for {
+						call, ok := ast.Unparen(expr).(*ast.CallExpr)
+						if !ok || len(call.Args) != 1 || !pass.TypesInfo.Types[call.Fun].IsType() {
+							break
+						}
+						if _, ok := pass.TypesInfo.TypeOf(call.Fun).Underlying().(*types.Interface); !ok {
+							break
+						}
+						expr = call.Args[0]
+					}
+					sources = append(sources, pass.TypesInfo.TypeOf(expr))
+				}
+				for i, name := range value.Names {
+					if name.Name != "_" || i >= len(sources) {
+						continue
+					}
+					target := pass.TypesInfo.Defs[name].(*types.Var).Type()
+					if _, ok := target.Underlying().(*types.Interface); !ok {
+						continue
+					}
+					if named := concrete(sources[i]); named != nil {
 						assertions[named] = append(assertions[named], target)
 					}
 				}

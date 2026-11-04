@@ -59,3 +59,32 @@ var _ contracts.Generic[string] = GenericCorrect{}
 type GenericDrift struct{}        // want "type GenericDrift must declare a package-level interface assertion for contracts.Generic"
 func (GenericDrift) ID() string   { return "" }
 func (GenericDrift) Value() error { return nil }
+
+// Interface conversions are compile-time assertions too.
+type Converted struct{}
+
+func (Converted) ID() string    { return "" }
+func (Converted) Value() string { return "" }
+
+var _ = contracts.Generic[string](Converted{})
+
+type NestedConversion struct{}
+
+func (NestedConversion) ID() string    { return "" }
+func (NestedConversion) Value() string { return "" }
+
+var _ contracts.Generic[string] = contracts.Generic[string]((*NestedConversion)(nil))
+
+// A multi-valued initializer asserts both concrete result types.
+type TupleFirst struct{}
+
+func (TupleFirst) ID() string    { return "" }
+func (TupleFirst) Value() string { return "" }
+
+type TupleSecond struct{}
+
+func (TupleSecond) ID() string          { return "" }
+func (TupleSecond) Value() string       { return "" }
+func tuple() (TupleFirst, *TupleSecond) { return TupleFirst{}, nil }
+
+var _, _ contracts.Generic[string] = tuple()
