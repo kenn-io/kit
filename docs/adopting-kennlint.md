@@ -1,7 +1,7 @@
 # Adopting the shared Go lint policy (kennlint)
 
 `go.kenn.io/kit/lint` owns the Go lint policy for kenn-io repositories: a
-canonical golangci-lint configuration, eight custom analyzers, and a
+canonical golangci-lint configuration, nine custom analyzers, and a
 golangci-lint module plugin that runs them. This document explains how to put a
 repository on the shared policy and how to keep it there.
 
@@ -20,7 +20,7 @@ an overlay with its local additions, and `kennlint config` renders the merged
 `.golangci.yml` from the canonical file plus the overlay. A `-check` mode fails
 CI when the committed file is stale.
 
-**Eight analyzers** cover checks that off-the-shelf linters miss. They run
+**Nine analyzers** cover checks that off-the-shelf linters miss. They run
 under `kennlint`. The separate `kennnolint` linter requires kit suppressions
 to name known rules and give a reason:
 `//nolint:kennlint // <rule>[,<rule>...]: <reason>`. The label documents the
@@ -35,6 +35,7 @@ it after adding rule labels and reasons to their suppressions.
 | Analyzer | Reports |
 | --- | --- |
 | `sqlclosecheck`, `rowserrcheck` | SQL resource closure and iteration errors, including returned ownership and shared scanners across packages. The kit versions extend the upstream checks; do not enable the duplicate built-in checks. |
+| `interfacecheck` | On types implementing a configured base interface, declared method names that overlap the explicitly declared methods of an exported interface require a package-level `var _ I = (*T)(nil)` assertion for that interface. Checks test and production files, even when the overlapping method signature has drifted. Configure `interfacecheck.base-interfaces` with fully qualified names and `interfacecheck.interface-packages` with import paths. Both default to empty, so consumers opt in. |
 | `testifyhelper` | Imports and assertion objects must be named `assert` or `require`. Set `testifyhelper.require-helpers: true` in plugin settings to also require local helpers for repeated package calls; the default is false for both libraries. Parent scopes retain package calls when nested functions need package access. Run with `--fix` to apply object-aware renames and, when enabled, local-helper conversions. |
 | `sleeptest` | `time.Sleep` in a `_test.go` file outside a `synctest.Test` bubble. Wall-clock sleeps make tests slow and timing-dependent. A bubble is the body of the function passed to `synctest.Test`, inline or by name, at any nesting depth including goroutines. A helper that sleeps and is only called from inside a bubble is still reported: give it a channel to wait on instead. Dot-imported and parenthesized `time.Sleep` calls match too. Packages named `testutil` or ending in `test` are checked too (`helper-packages`, default on). Set `eventually: true` to also report testify `Eventually`, `EventuallyWithT`, and `Never`, and their `f` variants, outside bubbles; that is off by default because some repositories endorse `Eventually` for awaiting a fake's channel. |
 | `deadlinetest` | Sub-second wall-clock budgets in `_test.go` files outside a `synctest.Test` bubble: `context.WithTimeout` and `WithTimeoutCause`, `context.WithDeadline` and `WithDeadlineCause` written as `time.Now().Add(d)`, `time.After`, `time.NewTimer`, `time.AfterFunc`, and the `waitFor` of testify's `Eventually` and `EventuallyWithT` and their `f` variants. A budget under 1s fails on a loaded CI runner even when the code is right; wait on a real event or run the test in a bubble. Duration fields in keyed and positional struct literals, including implicit pointer literals, plain `=` field assignments, duration arguments to statically resolved same-module functions and methods, and standalone `time.Now().Add(d)` deadlines are also checked. For duration fields and helper arguments, field and formal parameter names must have timeout, deadline, budget, or wait as a camelCase or snake_case word, singular or plural, ignoring case. Polling intervals, ticks, and retry delays are not checked: a short cadence speeds a test up and cannot fail it. Standalone `time.Now().Add(d)` checks apply regardless of the destination name. Record ages and generic durations are outside this vocabulary. Duration elements in maps and slices, closures, and interface calls are outside the statically resolved scope. Only constant budgets are reported, and zero and negative ones only for polling assertions, which still pass or fail by timing. Testify's `Never` and `Neverf` are reported only with a zero or negative budget, which passes vacuously: a short positive window checks fewer times on a loaded runner but cannot fail. Same-module helper calls from `_test.go` files are checked, including calls into helper packages; helper package source files themselves are not scanned. Two cases are legitimate `//nolint:kennlint // deadlinetest: <reason>` exemptions: a test whose asserted result is the deadline expiring, and a `select` on `time.After` that shows an event does not happen. With sleeptest's `eventually: true`, a sub-second `Eventually` or `EventuallyWithT` call gets one diagnostic from each analyzer; `//nolint:kennlint // sleeptest,deadlinetest: <reason>` covers both. A repository with a backlog can list `deadlinetest` under the `kennlint` plugin's `disable` settings while it burns it down. |
@@ -184,7 +185,7 @@ its only extension points are the module plugin used here, which needs the
 `golangci-lint custom` build, and Go `.so` plugins. Repositories that already
 build a custom binary for nilaway pay nothing extra for the plugin.
 
-Without a custom binary, `kennlint run ./...` runs the eight analyzers directly
+Without a custom binary, `kennlint run ./...` runs the nine analyzers directly
 through the standard `go/analysis` multichecker, with the usual `-json`,
 `-fix`, and per-analyzer flags such as `-errtext.include-tests` or
 `-sleeptest.eventually` or `-testifyhelper.require-helpers`; `go vet -vettool=$(command -v kennlint) ./...` works
