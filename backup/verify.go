@@ -97,7 +97,7 @@ func Verify(ctx context.Context, r *Repo, app App, opts VerifyOptions) (*VerifyR
 		known:            known,
 		quick:            opts.Quick,
 		jobs:             jobs,
-		readers:          map[string]*pack.Reader{},
+		readers:          map[string]*cachedPack{},
 		readerErrs:       map[string]error{},
 		checked:          map[pack.BlobID]bool{},
 		readDone:         map[pack.BlobID]bool{},
@@ -207,7 +207,7 @@ type verifyState struct {
 	known          map[pack.BlobID]IndexEntry
 	quick          bool
 	jobs           int
-	readers        map[string]*pack.Reader
+	readers        map[string]*cachedPack
 	readerOrder    []string // LRU order, least-recently-used first
 	readerErrs     map[string]error
 	checked        map[pack.BlobID]bool
@@ -279,7 +279,7 @@ type pageRunCheck struct {
 
 func (s *verifyState) closeReaders() {
 	for _, pr := range s.readers {
-		_ = pr.Close()
+		_ = pr.reader.Close()
 	}
 }
 
@@ -290,7 +290,7 @@ func (s *verifyState) problem(snapshotID, detail string) {
 // reader opens (or reuses) a cached pack.Reader for packID. OpenReader
 // validates the footer checksum, so a damaged footer is caught here; failures
 // are cached too, so a pack broken beyond repair is only opened once.
-func (s *verifyState) reader(packID string) (*pack.Reader, error) {
+func (s *verifyState) reader(packID string) (*cachedPack, error) {
 	if pr, ok := s.readers[packID]; ok {
 		s.touchReader(packID)
 		return pr, nil
@@ -306,9 +306,10 @@ func (s *verifyState) reader(packID string) (*pack.Reader, error) {
 	if len(s.readers) >= maxOpenPackReaders {
 		s.evictOldestReader()
 	}
-	s.readers[packID] = pr
+	cached := newCachedPack(pr)
+	s.readers[packID] = cached
 	s.readerOrder = append(s.readerOrder, packID)
-	return pr, nil
+	return cached, nil
 }
 
 // touchReader moves packID to the most-recently-used end of the LRU order.
@@ -330,7 +331,7 @@ func (s *verifyState) evictOldestReader() {
 	oldest := s.readerOrder[0]
 	s.readerOrder = s.readerOrder[1:]
 	if pr, ok := s.readers[oldest]; ok {
-		_ = pr.Close()
+		_ = pr.reader.Close()
 		delete(s.readers, oldest)
 	}
 }
@@ -353,15 +354,8 @@ func (s *verifyState) blob(id pack.BlobID, snapshotID string, readContent bool) 
 		s.problem(snapshotID, fmt.Sprintf("opening pack %s for blob %s: %v", ie.PackID, id, err))
 		return nil, false
 	}
-	entries := pr.Entries()
-	var entry *pack.Entry
-	for i := range entries {
-		if entries[i].ID == id {
-			entry = &entries[i]
-			break
-		}
-	}
-	if entry == nil {
+	entry, ok := pr.entries[id]
+	if !ok {
 		s.problem(snapshotID, fmt.Sprintf("blob %s missing from pack %s footer", id, ie.PackID))
 		return nil, false
 	}
@@ -378,7 +372,7 @@ func (s *verifyState) blob(id pack.BlobID, snapshotID string, readContent bool) 
 	if !readContent {
 		return nil, true
 	}
-	raw, err := pr.ReadBlob(*entry)
+	raw, err := pr.reader.ReadBlob(entry)
 	if err != nil {
 		s.problem(snapshotID, fmt.Sprintf("reading blob %s from pack %s: %v", id, ie.PackID, err))
 		return nil, false
@@ -512,11 +506,7 @@ func (s *verifyState) verifyPackGroup(packID string, reads []pendingRead) {
 		return
 	}
 	defer func() { _ = pr.Close() }()
-	entries := pr.Entries()
-	entryByID := make(map[pack.BlobID]*pack.Entry, len(entries))
-	for i := range entries {
-		entryByID[entries[i].ID] = &entries[i]
-	}
+	entryByID := newCachedPack(pr).entries
 	for _, rd := range reads {
 		s.verifyGroupBlob(pr, packID, entryByID, rd)
 	}
@@ -548,7 +538,7 @@ func (s *verifyState) openGroupReader(packID string) (*pack.Reader, error) {
 // consistency, then a full read whose decode path verifies CRC and the
 // content hash against the blob ID.
 func (s *verifyState) verifyGroupBlob(
-	pr *pack.Reader, packID string, entryByID map[pack.BlobID]*pack.Entry, rd pendingRead,
+	pr *pack.Reader, packID string, entryByID map[pack.BlobID]pack.Entry, rd pendingRead,
 ) {
 	fail := func(detail string) {
 		s.mu.Lock()
@@ -581,13 +571,13 @@ func (s *verifyState) verifyGroupBlob(
 	var raw []byte
 	if len(checks) != 0 {
 		var err error
-		raw, err = pr.ReadBlob(*entry)
+		raw, err = pr.ReadBlob(entry)
 		if err != nil {
 			fail(fmt.Sprintf("reading blob %s from pack %s: %v", rd.id, packID, err))
 			return
 		}
 	} else {
-		stream, err := pr.OpenBlob(s.ctx, *entry)
+		stream, err := pr.OpenBlob(s.ctx, entry)
 		if err != nil {
 			fail(fmt.Sprintf("opening blob %s from pack %s: %v", rd.id, packID, err))
 			return
