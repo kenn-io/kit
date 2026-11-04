@@ -48,9 +48,9 @@ func Allocs(runs int) Measure {
 	}
 }
 
-// Fastest returns the minimum run time in nanoseconds over runs samples
-// after one untimed warm-up run, preceded by reset when set.
-// Each sample calls reset, when set, then runtime.GC before starting the timer.
+// Fastest returns the minimum time in nanoseconds over runs samples after
+// one untimed warm-up. Before warm-up and each sample, reset, when set,
+// runs outside the timer. Samples call runtime.GC before timing.
 // It panics if runs is less than 1.
 func Fastest(runs int) Measure {
 	if runs < 1 {
