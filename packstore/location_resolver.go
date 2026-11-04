@@ -93,6 +93,8 @@ type ReadBackend interface {
 	OpenPack(context.Context, Hash, IndexEntry) (VerifiedReadCloser, int64, error)
 }
 
+// seekableReadBackend verifies packed and explicitly compressed loose content
+// before returning it. Raw loose opens may skip verification.
 type seekableReadBackend interface {
 	OpenSeekableLoose(context.Context, Hash, LooseLocation) (io.ReadSeekCloser, int64, error)
 	OpenSeekablePack(context.Context, Hash, IndexEntry) (io.ReadSeekCloser, int64, error)

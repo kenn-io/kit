@@ -933,16 +933,31 @@ func TestFilesystemBackendOpenSeekableRawLooseCancellation(t *testing.T) {
 	}
 }
 
+type seekableReaderShapeBackend struct {
+	*FilesystemBackend
+}
+
+func (b seekableReaderShapeBackend) OpenSeekableLoose(ctx context.Context, hash Hash, location LooseLocation) (io.ReadSeekCloser, int64, error) {
+	reader, size, err := b.FilesystemBackend.OpenSeekableLoose(ctx, hash, location)
+	if err != nil {
+		return nil, 0, err
+	}
+	if temporary, ok := reader.(*temporarySeekCloser); ok {
+		return temporary.File, size, nil
+	}
+	return struct{ io.ReadSeekCloser }{reader}, size, nil
+}
+
 func TestMultiStoreSeekableLooseHealth(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		compressed bool
-		legacy     bool
+		reshape    bool
 	}{
 		{name: "raw"},
-		{name: "legacy raw", legacy: true},
+		{name: "wrapped raw", reshape: true},
 		{name: "zstd", compressed: true},
-		{name: "legacy zstd", compressed: true, legacy: true},
+		{name: "verified file", compressed: true, reshape: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			backend := attachedFilesystemBackend(t, "primary", "epoch-1")
@@ -961,8 +976,9 @@ func TestMultiStoreSeekableLooseHealth(t *testing.T) {
 			if !tc.compressed {
 				require.NoError(t, os.WriteFile(backend.Layout().LoosePath(hash), corrupt, 0o600))
 			}
-			if tc.legacy {
-				receipt.Location = LooseLocation{legacy: true}
+			var readBackend ReadBackend = backend
+			if tc.reshape {
+				readBackend = seekableReaderShapeBackend{backend}
 			}
 			primary := ReadLocation{StoreID: "primary", Generation: "epoch-1", Loose: &receipt.Location}
 			secondary := ReadLocation{StoreID: "secondary", Generation: "epoch-1", Loose: &receipt.Location}
@@ -970,7 +986,7 @@ func TestMultiStoreSeekableLooseHealth(t *testing.T) {
 			health.Observe(hash, primary, ErrPhysicalCorrupt)
 			store, err := NewMultiStore(
 				staticLocationResolver{resolution: Resolution{Member: true, Candidates: []ReadLocation{primary}}},
-				staticBackendRegistry{"primary": backend},
+				staticBackendRegistry{"primary": readBackend},
 				MultiStoreOptions{Health: health},
 			)
 			require.NoError(t, err)
