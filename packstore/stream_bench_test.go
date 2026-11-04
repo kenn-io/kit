@@ -124,6 +124,57 @@ func BenchmarkMaintenancePackUnpack(b *testing.B) {
 	}
 }
 
+func BenchmarkMaintenancePackIntoPackedStore(b *testing.B) {
+	for _, tt := range []struct {
+		name string
+		size int64
+	}{
+		{name: "4MiB", size: 64 << 10},
+		{name: "64MiB", size: 1 << 20},
+		{name: "256MiB", size: 4 << 20},
+	} {
+		b.Run(tt.name, func(b *testing.B) {
+			require := require.New(b)
+			layout, err := NewLayout(b.TempDir(), LayoutOptions{Staging: StagingStoreDirectory, StagingDir: "tmp"})
+			require.NoError(err)
+			loose, err := NewLooseStore(layout)
+			require.NoError(err)
+			catalog := newMaintenanceCatalog()
+			noise := &maintenanceBenchNoiseReader{state: 1}
+			for range 64 {
+				written, err := loose.Write(b.Context(), io.LimitReader(noise, tt.size), WriteOptions{
+					Durability: AtomicPublication, Dedup: VerifyFullHash, MaxBytes: tt.size,
+				})
+				require.NoError(err)
+				catalog.addLoose(written.Hash, written.Path)
+			}
+			setup := newMaintainerForTest(b, catalog, layout, DefaultLimits())
+			stats, err := setup.Pack(b.Context(), PackOptions{})
+			require.NoError(err)
+			require.Equal(64, stats.BlobsPacked)
+			require.NoError(setup.Close())
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				b.StopTimer()
+				written, err := loose.Write(b.Context(), io.LimitReader(noise, 4<<10), WriteOptions{
+					Durability: AtomicPublication, Dedup: VerifyFullHash, MaxBytes: 4 << 10,
+				})
+				require.NoError(err)
+				catalog.addLoose(written.Hash, written.Path)
+				maintainer := newMaintainerForTest(b, catalog, layout, DefaultLimits())
+				b.StartTimer()
+				stats, err := maintainer.Pack(b.Context(), PackOptions{MaxBytes: 1 << 20})
+				b.StopTimer()
+				require.NoError(err)
+				require.Equal(1, stats.BlobsPacked)
+				require.NoError(maintainer.Close())
+			}
+		})
+	}
+}
+
 type maintenanceBenchNoiseReader struct{ state uint32 }
 
 func (r *maintenanceBenchNoiseReader) Read(p []byte) (int, error) {
