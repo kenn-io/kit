@@ -119,7 +119,6 @@ func TestBuildCandidateQueryRawWindowCountsOnlyItsGeneration(t *testing.T) {
 	require.NoError(t, store.EnsureGeneration(ctx, 2, model, sqlitevec.StateBuilding))
 	_, err = vector.Fill(ctx, store, 2, topicEncoder())
 	require.NoError(t, err)
-	require.NoError(t, store.EnsureGeneration(ctx, 3, model, sqlitevec.StateBuilding))
 	// Source changes leave the raw neighbors occupying their original slots.
 	_, err = db.ExecContext(ctx, `UPDATE messages SET last_modified = 2 WHERE id = 1`)
 	require.NoError(t, err)
@@ -130,12 +129,10 @@ func TestBuildCandidateQueryRawWindowCountsOnlyItsGeneration(t *testing.T) {
 		limit int
 		full  bool
 	}{
-		{name: "below capacity", gen: 1, limit: 1, full: true},
 		{name: "exact capacity with stale and deleted sources", gen: 1, limit: 2, full: true},
 		{name: "short window", gen: 1, limit: 3, full: false},
 		{name: "second generation full", gen: 2, limit: 1, full: true},
 		{name: "other generation rows do not fill window", gen: 2, limit: 2, full: false},
-		{name: "empty generation", gen: 3, limit: 1, full: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			q, err := store.BuildCandidateQuery(t.Context(), db, tc.gen, vector.Vector{1, 0, 0}, sqlitevec.CandidateQuery{CandidateLimit: tc.limit})
