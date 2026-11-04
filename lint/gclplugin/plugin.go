@@ -32,7 +32,6 @@ import (
 
 	"go.kenn.io/kit/lint"
 	"go.kenn.io/kit/lint/errtext"
-	"go.kenn.io/kit/lint/interfacecheck"
 	"go.kenn.io/kit/lint/nolintdirective"
 	"go.kenn.io/kit/lint/sleeptest"
 	"go.kenn.io/kit/lint/testifyhelper"
@@ -45,20 +44,12 @@ const Name = "kennlint"
 type Settings struct {
 	// Disable lists analyzer names that should not run.
 	Disable []string `json:"disable"`
-	// Interfacecheck selects base interfaces and interface packages.
-	Interfacecheck InterfacecheckSettings `json:"interfacecheck"`
 	// Errtext configures the errtext analyzer.
 	Errtext ErrtextSettings `json:"errtext"`
 	// Sleeptest configures the sleeptest analyzer.
 	Sleeptest SleeptestSettings `json:"sleeptest"`
 	// Testifyhelper configures the testifyhelper analyzer.
 	Testifyhelper TestifyhelperSettings `json:"testifyhelper"`
-}
-
-// InterfacecheckSettings configures explicit interface assertions.
-type InterfacecheckSettings struct {
-	BaseInterfaces    []string `json:"base-interfaces"`
-	InterfacePackages []string `json:"interface-packages"`
 }
 
 // TestifyhelperSettings configures the testifyhelper analyzer.
@@ -119,9 +110,7 @@ func (p *plugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 		if a.Name == testifyhelper.Analyzer.Name {
 			a = testifyhelper.New(p.settings.Testifyhelper.RequireHelpers)
 		}
-		if a.Name == interfacecheck.Analyzer.Name {
-			a = interfacecheck.New(p.settings.Interfacecheck.BaseInterfaces, p.settings.Interfacecheck.InterfacePackages)
-		}
+
 		analyzers = append(analyzers, a)
 	}
 	return analyzers, nil

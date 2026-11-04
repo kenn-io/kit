@@ -1,150 +1,101 @@
 // Package interfacecheck requires explicit interface assertions on types that
-// implement a configured base interface and declare an optional interface method.
-// It checks production and test files. Without configuration it reports nothing.
+// implement a marked base interface and declare an optional interface method.
+// It checks production and test files.
 package interfacecheck
 
 import (
-	"bytes"
-	"context"
-	"fmt"
 	"go/ast"
-	"go/build"
 	"go/token"
 	"go/types"
-	"strings"
 
 	"golang.org/x/tools/go/analysis"
-	"golang.org/x/tools/go/gcexportdata"
-	"golang.org/x/tools/go/packages"
 )
 
-// Analyzer checks interfaces selected through its flags.
-var Analyzer = New(nil, nil)
-
-// New creates an analyzer. Bases are fully qualified interface names, such as
-// example.org/project/platform.Provider. Packages are full import paths whose
-// exported interfaces require assertions. Base interfaces themselves are excluded.
-func New(bases, packages []string) *analysis.Analyzer {
-	baseFlag, packageFlag := strings.Join(bases, ","), strings.Join(packages, ",")
-	a := &analysis.Analyzer{
-		Name: "interfacecheck",
-		Doc:  "requires explicit interface assertions for types implementing configured base interfaces",
-		Run: func(pass *analysis.Pass) (any, error) {
-			// go/analysis does not supply a caller context for a pass.
-			return run(context.Background(), pass, strings.Split(baseFlag, ","), strings.Split(packageFlag, ","))
-		},
-	}
-	a.Flags.StringVar(&baseFlag, "base-interfaces", baseFlag, "comma-separated fully qualified base interface names")
-	a.Flags.StringVar(&packageFlag, "interface-packages", packageFlag, "comma-separated import paths containing exported interfaces")
-	return a
+// Analyzer checks interfaces in packages declaring a //kit:interfacecheck base.
+var Analyzer = &analysis.Analyzer{
+	Name:      "interfacecheck",
+	Doc:       "requires explicit interface assertions for types implementing marked base interfaces",
+	Run:       run,
+	FactTypes: []analysis.Fact{new(baseFact)},
 }
+
+type baseFact struct{}
+
+func (*baseFact) AFact() {}
 
 type contract struct {
 	typ   types.Type
 	iface *types.Interface
 	name  string
+	base  *types.Interface
 }
 
-func run(ctx context.Context, pass *analysis.Pass, bases, paths []string) (any, error) {
-	if len(pass.Files) == 0 || len(bases) == 1 && bases[0] == "" {
-		return nil, nil
+func run(pass *analysis.Pass) (any, error) {
+	marked := map[*types.TypeName]bool{}
+	for _, file := range pass.Files {
+		for _, decl := range file.Decls {
+			gen, ok := decl.(*ast.GenDecl)
+			if !ok || gen.Tok != token.TYPE {
+				continue
+			}
+			for _, spec := range gen.Specs {
+				spec := spec.(*ast.TypeSpec)
+				doc := spec.Doc
+				if doc == nil && len(gen.Specs) == 1 {
+					doc = gen.Doc
+				}
+				if doc == nil {
+					continue
+				}
+				for _, comment := range doc.List {
+					if comment.Text != "//kit:interfacecheck" {
+						continue
+					}
+					obj := pass.TypesInfo.Defs[spec.Name].(*types.TypeName)
+					if interfaceType(obj) != nil {
+						marked[obj] = true
+						pass.ExportObjectFact(obj, new(baseFact))
+					}
+				}
+			}
+		}
 	}
-	// The type graph includes transitive imports, including a base inherited
-	// through an embedded type from another package.
-	loaded := map[string]*types.Package{}
+	var contracts []contract
+	visited := map[*types.Package]bool{}
 	var visit func(*types.Package)
 	visit = func(pkg *types.Package) {
-		if loaded[pkg.Path()] != nil {
+		if visited[pkg] {
 			return
 		}
-		loaded[pkg.Path()] = pkg
+		visited[pkg] = true
+		for _, name := range pkg.Scope().Names() {
+			obj, ok := pkg.Scope().Lookup(name).(*types.TypeName)
+			if !ok {
+				continue
+			}
+			base := interfaceType(obj)
+			if base == nil || !marked[obj] && (pkg == pass.Pkg || !pass.ImportObjectFact(obj, new(baseFact))) {
+				continue
+			}
+			for _, name := range pkg.Scope().Names() {
+				optional, ok := pkg.Scope().Lookup(name).(*types.TypeName)
+				if !ok || !optional.Exported() || optional == obj {
+					continue
+				}
+				if iface := interfaceType(optional); iface != nil {
+					contracts = append(contracts, contract{optional.Type(), iface, pkg.Name() + "." + name, base})
+				}
+			}
+		}
 		for _, imported := range pkg.Imports() {
 			visit(imported)
 		}
 	}
+	// A package that does not transitively import the marked package cannot
+	// satisfy its base: the base methods use types from that package.
 	visit(pass.Pkg)
-	// Load configured packages even when a candidate does not import them.
-	missing := map[string]bool{}
-	for _, name := range bases {
-		if path, _, ok := splitName(name); ok && loaded[path] == nil {
-			missing[path] = true
-		}
-	}
-	for _, path := range paths {
-		if path != "" && loaded[path] == nil {
-			missing[path] = true
-		}
-	}
-	if len(missing) > 0 {
-		patterns := make([]string, 0, len(missing))
-		for path := range missing {
-			patterns = append(patterns, path)
-		}
-		cfg := &packages.Config{
-			Context: ctx,
-			Mode:    packages.NeedName | packages.NeedTypes | packages.NeedImports | packages.NeedDeps,
-		}
-		if pass.Module != nil {
-			cfg.Dir = pass.Module.Dir
-		}
-		// golangci-lint records its selected tags in the default build context.
-		// GOFLAGS is inherited when the driver supplies tags through the environment.
-		if len(build.Default.BuildTags) > 0 {
-			cfg.BuildFlags = []string{"-tags=" + strings.Join(build.Default.BuildTags, ",")}
-		}
-		pkgs, err := packages.Load(cfg, patterns...)
-		if err != nil {
-			return nil, fmt.Errorf("interfacecheck: load configured packages: %w", err)
-		}
-		for _, pkg := range pkgs {
-			if len(pkg.Errors) > 0 {
-				return nil, fmt.Errorf("interfacecheck: load %s: %w", pkg.PkgPath, pkg.Errors[0])
-			}
-			if existing := loaded[pkg.PkgPath]; existing != nil && existing.Complete() {
-				continue
-			}
-			// Reuse the pass's package identities, including shared named types in
-			// method signatures, when importing the independently loaded contracts.
-			var data bytes.Buffer
-			if err := gcexportdata.Write(&data, pkg.Fset, pkg.Types); err != nil {
-				return nil, fmt.Errorf("interfacecheck: export %s: %w", pkg.PkgPath, err)
-			}
-			if _, err := gcexportdata.Read(&data, pass.Fset, loaded, pkg.PkgPath); err != nil {
-				return nil, fmt.Errorf("interfacecheck: import %s: %w", pkg.PkgPath, err)
-			}
-		}
-	}
-	var baseInterfaces []*types.Interface
-	isBase := map[types.Type]bool{}
-	for _, name := range bases {
-		path, ident, ok := splitName(name)
-		if !ok || loaded[path] == nil {
-			continue
-		}
-		obj, ok := loaded[path].Scope().Lookup(ident).(*types.TypeName)
-		if !ok {
-			continue
-		}
-		if iface, ok := obj.Type().Underlying().(*types.Interface); ok {
-			baseInterfaces = append(baseInterfaces, iface.Complete())
-			isBase[types.Unalias(obj.Type())] = true
-		}
-	}
-	var contracts []contract
-	for _, path := range paths {
-		pkg := loaded[path]
-		if pkg == nil {
-			continue
-		}
-		for _, name := range pkg.Scope().Names() {
-			obj, ok := pkg.Scope().Lookup(name).(*types.TypeName)
-			if !ok || !obj.Exported() || isBase[types.Unalias(obj.Type())] {
-				continue
-			}
-			if iface, ok := obj.Type().Underlying().(*types.Interface); ok && iface.Complete().IsMethodSet() {
-				contracts = append(contracts, contract{obj.Type(), iface.Complete(), pkg.Name() + "." + name})
-			}
-		}
+	if len(contracts) == 0 {
+		return nil, nil
 	}
 	assertions := map[*types.Named][]types.Type{}
 	for _, file := range pass.Files {
@@ -209,17 +160,10 @@ func run(ctx context.Context, pass *analysis.Pass, bases, paths []string) (any, 
 			if _, ok := named.Underlying().(*types.Interface); ok {
 				return true
 			}
-			candidate := false
-			for _, base := range baseInterfaces {
-				if types.Implements(named, base) || types.Implements(types.NewPointer(named), base) {
-					candidate = true
-					break
-				}
-			}
-			if !candidate {
-				return true
-			}
 			for _, c := range contracts {
+				if !types.Implements(named, c.base) && !types.Implements(types.NewPointer(named), c.base) {
+					continue
+				}
 				shared := false
 				for method := range named.Methods() {
 					for explicit := range c.iface.ExplicitMethods() {
@@ -233,20 +177,8 @@ func run(ctx context.Context, pass *analysis.Pass, bases, paths []string) (any, 
 				}
 				asserted := false
 				for _, target := range assertions[named.Origin()] {
-					for {
-						generic, _ := c.typ.(*types.Named)
-						alias, _ := c.typ.(*types.Alias)
-						targetAlias, _ := target.(*types.Alias)
-						if types.Identical(target, c.typ) ||
-							generic != nil && generic.TypeParams().Len() > 0 && concrete(target) == generic ||
-							alias != nil && alias.TypeParams().Len() > 0 && targetAlias != nil && targetAlias.Origin() == alias {
-							asserted = true
-							break
-						}
-						if targetAlias == nil {
-							break
-						}
-						target = targetAlias.Rhs()
+					if types.Identical(target, c.typ) {
+						asserted = true
 					}
 					if asserted {
 						break
@@ -262,12 +194,20 @@ func run(ctx context.Context, pass *analysis.Pass, bases, paths []string) (any, 
 	return nil, nil
 }
 
-func splitName(name string) (string, string, bool) {
-	i := strings.LastIndexByte(name, '.')
-	if i < 1 || i == len(name)-1 {
-		return "", "", false
+// Generic interfaces and aliases are outside the assertion rule.
+func interfaceType(obj *types.TypeName) *types.Interface {
+	if obj.IsAlias() {
+		return nil
 	}
-	return name[:i], name[i+1:], true
+	named, ok := obj.Type().(*types.Named)
+	if !ok || named.TypeParams().Len() != 0 {
+		return nil
+	}
+	iface, ok := named.Underlying().(*types.Interface)
+	if !ok || !iface.Complete().IsMethodSet() {
+		return nil
+	}
+	return iface
 }
 
 func concrete(typ types.Type) *types.Named {

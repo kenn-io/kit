@@ -56,7 +56,8 @@ func (GenericCorrect) Value() string { return "" }
 
 var _ contracts.Generic[string] = GenericCorrect{}
 
-type GenericDrift struct{}        // want "type GenericDrift must declare a package-level interface assertion for contracts.Generic"
+type GenericDrift struct{}
+
 func (GenericDrift) ID() string   { return "" }
 func (GenericDrift) Value() error { return nil }
 

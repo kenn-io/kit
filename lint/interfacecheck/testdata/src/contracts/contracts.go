@@ -5,7 +5,8 @@ import (
 	"time"
 )
 
-type Provider interface{ ID() string }
+//kit:interfacecheck
+type Provider interface{ ID() string } // want Provider:".*"
 type AutoMerge interface{ EnableAutoMerge() (time.Time, error) }
 type OtherMerge interface {
 	EnableAutoMerge() (time.Time, error)

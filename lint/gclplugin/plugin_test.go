@@ -99,15 +99,10 @@ func TestDirectivePluginIsRegistered(t *testing.T) {
 	assert.Equal(t, []string{"kennnolint"}, analyzerNames(t, p))
 }
 
-func TestInterfacecheckSettings(t *testing.T) {
+func TestInterfacecheckMarkers(t *testing.T) {
 	testdata, err := filepath.Abs(filepath.Join("..", "interfacecheck", "testdata"))
 	require.NoError(t, err)
-	p, err := New(map[string]any{
-		"interfacecheck": map[string]any{
-			"base-interfaces":    []any{"contracts.Provider"},
-			"interface-packages": []any{"contracts"},
-		},
-	})
+	p, err := New(nil)
 	require.NoError(t, err)
 	analyzers, err := p.BuildAnalyzers()
 	require.NoError(t, err)
