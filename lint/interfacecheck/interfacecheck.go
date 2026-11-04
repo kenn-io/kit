@@ -1,6 +1,11 @@
 // Package interfacecheck requires explicit interface assertions on types that
 // implement a marked base interface and declare an optional interface method.
 // It checks production and test files.
+//
+// Generics and aliases are intentionally unsupported: generic interfaces,
+// interface aliases, constraint interfaces, and generic types, whose
+// conformance depends on type arguments, are skipped. Do not extend the rule
+// to them; write the assertion for a concrete instantiation by hand.
 package interfacecheck
 
 import (
