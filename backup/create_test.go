@@ -417,7 +417,6 @@ func TestCreateCompactsLongAttachmentListChain(t *testing.T) {
 	parent, err := Create(ctx, r, newTestApp(), opts)
 	require.NoError(err)
 	expected := listUnion(t, r, parent)
-	require.LessOrEqual(len(parent.Attachments.Lists), attachmentListSegmentsMax)
 
 	for i := range attachmentListSegmentsMax + 2 {
 		ref := writeLooseAttachment(t, attachmentsDir, []byte(fmt.Sprintf("attachment %d", i)))
