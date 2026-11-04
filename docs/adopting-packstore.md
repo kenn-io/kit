@@ -140,8 +140,7 @@ objects the same ceiling.
 ## Buffered and streaming reads
 
 Existing callers can retain `Store.Open` when they need a seekable result, or
-`Store.ReadBounded` when they need an all-or-nothing byte slice. Those APIs
-verify complete packed content before returning it.
+`Store.ReadBounded` when they need an all-or-nothing byte slice. Both APIs verify complete packed content before returning it.
 
 Use `Store.OpenStream` for incremental consumption. A successful read of a
 prefix is not verification. Trust the complete object only after terminal

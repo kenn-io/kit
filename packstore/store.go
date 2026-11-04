@@ -140,8 +140,8 @@ func newStoreOptions(limits Limits, readerSlots int) (*Store, error) {
 }
 
 // Open returns seekable catalog-authorized content and its logical size.
-// Compressed loose objects are verified into a private temporary file to
-// preserve this compatibility API; streaming callers should prefer OpenStream.
+// See the package documentation for its verification contract. Streaming
+// callers should prefer OpenStream.
 // Resolution is retried once when a concurrent migration removes the initially
 // selected physical source.
 func (s *Store) Open(ctx context.Context, hash Hash) (io.ReadSeekCloser, int64, error) {
@@ -206,28 +206,34 @@ func (s *Store) openMultiSeekable(
 	ctx context.Context,
 	hash Hash,
 ) (io.ReadSeekCloser, int64, error) {
+	verified := false
 	reader, size, location, err := resolveCandidates(
 		ctx,
 		s,
 		hash,
 		func(backend ReadBackend, location ReadLocation) (io.ReadSeekCloser, int64, error) {
+			verified = false
 			if seekable, ok := backend.(seekableReadBackend); ok {
 				if location.Loose != nil {
+					verified = location.Loose.Encoding == LooseEncodingZstd
 					return seekable.OpenSeekableLoose(ctx, hash, *location.Loose)
 				}
+				verified = true
 				return seekable.OpenSeekablePack(ctx, hash, *location.Pack)
 			}
 			stream, streamSize, err := openBackendStream(ctx, backend, hash, location)
 			if err != nil {
 				return nil, 0, err
 			}
-			return materializeSeekable(stream, streamSize)
+			reader, size, err := materializeSeekable(stream, streamSize)
+			verified = err == nil
+			return reader, size, err
 		},
 	)
 	if err != nil {
 		return nil, 0, err
 	}
-	if s.observeStreams {
+	if s.observeStreams && verified {
 		s.health.Clear(hash, location)
 	}
 	return reader, size, nil
@@ -479,6 +485,31 @@ func (s *Store) openLooseObject(hash Hash) (*looseObject, error) {
 		return nil, err
 	}
 	return s.openLooseObjectAt(hash, LooseEncodingRaw)
+}
+
+func (s *Store) openLooseObjectAtLocation(
+	contentHash Hash,
+	location LooseLocation,
+) (*looseObject, error) {
+	object, err := s.openLooseObjectAt(contentHash, location.Encoding)
+	if err != nil {
+		return nil, err
+	}
+	if object.logicalSize != location.LogicalSize ||
+		object.storedSize != location.StoredSize {
+		return nil, errors.Join(
+			ErrPhysicalCorrupt,
+			fmt.Errorf(
+				"packstore: loose authority is logical=%d stored=%d, found logical=%d stored=%d",
+				location.LogicalSize,
+				location.StoredSize,
+				object.logicalSize,
+				object.storedSize,
+			),
+			object.file.Close(),
+		)
+	}
+	return object, nil
 }
 
 func (s *Store) openLooseObjectAt(
