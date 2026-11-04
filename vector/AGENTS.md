@@ -110,6 +110,9 @@ pipeline. Preserve these invariants when changing it.
   ordering. Backends additionally require `K`/`G` to be types
   `database/sql` can bind and scan.
 
+- Stores own a stable total order on unique document keys and apply the
+  `PendingForGeneration` cursor in that order.
+
 ## The stamp is conditional
 
 - `SaveVectors` receives the `Pending.Revision` token read with the
@@ -119,8 +122,7 @@ pipeline. Preserve these invariants when changing it.
   document stays pending and the next fill re-reads it.
 - `Fill` treats `ErrStale` as "leave it for the next run", not a failure:
   the document is excluded for the rest of the run so an actively edited
-  document cannot starve the loop, and the scan limit is widened past
-  excluded documents so fresh work stays visible.
+  document cannot starve the loop. The cursor passes excluded documents.
 - An empty vectors slice is a stamp-only save: the document is marked
   handled for the generation without storing vectors. Fill relies on this
   both for empty content and for documents `OnEncodeError` elects to

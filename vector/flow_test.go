@@ -28,7 +28,8 @@ type memStore struct {
 	revision map[int64]int                          // nil disables revision tracking
 	embedded map[int64]map[int]bool                 // doc -> gen -> done
 	vectors  map[int]map[int64][]vector.ChunkVector // gen -> doc -> chunks
-	live     []int                                  // descending preference
+	walked   int
+	live     []int // descending preference
 }
 
 func newMemStore() *memStore {
@@ -39,17 +40,26 @@ func newMemStore() *memStore {
 	}
 }
 
-func (m *memStore) PendingForGeneration(_ context.Context, gen int, limit int) ([]vector.Pending[int64], error) {
-	keys := make([]int64, 0, len(m.content))
-	for doc := range m.content {
+func (m *memStore) PendingForGeneration(_ context.Context, gen int, after *int64, limit int) ([]vector.Pending[int64], error) {
+	keys := slices.Sorted(maps.Keys(m.content))
+	if after != nil {
+		start, found := slices.BinarySearch(keys, *after)
+		if found {
+			start++
+		}
+		keys = keys[start:]
+	}
+	pending := make([]int64, 0)
+	for _, doc := range keys {
+		m.walked++
 		if !m.embedded[doc][gen] {
-			keys = append(keys, doc)
+			pending = append(pending, doc)
+			if limit > 0 && len(pending) == limit {
+				break
+			}
 		}
 	}
-	slices.Sort(keys)
-	if limit > 0 && len(keys) > limit {
-		keys = keys[:limit]
-	}
+	keys = pending
 	out := make([]vector.Pending[int64], len(keys))
 	for i, doc := range keys {
 		out[i] = vector.Pending[int64]{Doc: doc, Content: m.content[doc]}
@@ -1163,4 +1173,86 @@ func TestSearchErrorsWhenNoEncoderForGeneration(t *testing.T) {
 
 	_, err := vector.Search(ctx, store, "q", func(int) vector.EncodeFunc { return nil }, vector.SearchOptions{})
 	assert.ErrorContains(t, err, "no encoder")
+}
+
+func TestFillCursorBoundsRowsWalked(t *testing.T) {
+	store := newMemStore()
+	for id := int64(1); id <= 1000; id++ {
+		store.content[id] = "doc"
+	}
+	stats, err := vector.Fill(t.Context(), store, 1, lenEncoder(), vector.WithFillScanBatch[int64](128))
+	require.NoError(t, err)
+	assert.Equal(t, 1000, stats.Documents)
+	assert.LessOrEqual(t, store.walked, 2000)
+}
+
+type transformingPendingStore struct{ *memStore }
+
+func (s transformingPendingStore) PendingForGeneration(ctx context.Context, gen int, after *int64, limit int) ([]vector.Pending[int64], error) {
+	pending, err := s.memStore.PendingForGeneration(ctx, gen, after, limit)
+	for i := range pending {
+		pending[i].Content = "wrapped"
+	}
+	return pending, err
+}
+
+func TestFillCursorHonorsPendingOverrideEveryPage(t *testing.T) {
+	store := transformingPendingStore{newMemStore()}
+	for id := int64(1); id <= 7; id++ {
+		store.content[id] = "source"
+	}
+	stats, err := vector.Fill(t.Context(), store, 1, lenEncoder(), vector.WithFillScanBatch[int64](2))
+	require.NoError(t, err)
+	assert.Equal(t, 7, stats.Documents)
+	for id := int64(1); id <= 7; id++ {
+		assert.Equal(t, vector.Vector{7}, store.vectors[1][id][0].Vector)
+	}
+}
+
+func TestFillCursorRevisitsEditAndInsertBehindCursor(t *testing.T) {
+	store := newMemStore()
+	store.content[1], store.content[2] = "first", "second"
+	stats, err := vector.Fill(t.Context(), store, 1, lenEncoder(),
+		vector.WithFillScanBatch[int64](1),
+		vector.WithFillProgress[int64](func(p vector.FillProgress[int64]) {
+			if p.Doc == 2 {
+				store.content[1] = "edited"
+				store.embedded[1][1] = false
+				store.content[0] = "inserted"
+			}
+		}),
+	)
+	require.NoError(t, err)
+	assert.Equal(t, 4, stats.Documents)
+	assert.Equal(t, vector.Vector{6}, store.vectors[1][1][0].Vector)
+	assert.Equal(t, vector.Vector{8}, store.vectors[1][0][0].Vector)
+}
+
+func TestFillCursorContinuesPastAllStalePage(t *testing.T) {
+	store := newMemStore()
+	store.content[1], store.content[3] = "stale", "fresh"
+	store.revision = map[int64]int{1: 1, 3: 1}
+	stats, err := vector.Fill(t.Context(), store, 1, lenEncoder(),
+		vector.WithFillScanBatch[int64](1),
+		vector.WithFillProgress[int64](func(p vector.FillProgress[int64]) {
+			if p.Doc == 3 {
+				store.content[2] = "inserted"
+			}
+		}),
+		vector.WithFillPrepared[int64](func(_ context.Context, p vector.Pending[int64]) ([]vector.PreparedChunk, error) {
+			if p.Doc == 1 {
+				store.revision[1]++
+			}
+			return []vector.PreparedChunk{{Text: p.Content}}, nil
+		}),
+	)
+	require.NoError(t, err)
+	assert.Equal(t, 2, stats.Documents)
+	assert.Equal(t, 1, stats.Stale)
+	pending, err := store.PendingForGeneration(t.Context(), 1, nil, 10)
+	require.NoError(t, err)
+	require.Len(t, pending, 1)
+	assert.Equal(t, int64(1), pending[0].Doc)
+	assert.True(t, store.embedded[2][1])
+	assert.True(t, store.embedded[3][1])
 }

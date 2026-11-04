@@ -158,7 +158,7 @@ func TestStoreFillThenSearch(t *testing.T) {
 	require.NoError(err)
 	assert.Equal(2, stats.Documents)
 
-	pending, err := store.PendingForGeneration(ctx, 1, 10)
+	pending, err := store.PendingForGeneration(ctx, 1, nil, 10)
 	require.NoError(err)
 	assert.Empty(pending, "nothing pending once every document is stamped")
 
@@ -234,7 +234,7 @@ func TestStorePendingForGenerationUsesPerGenerationStampCoverage(t *testing.T) {
 	require.NoError(store.SaveVectors(ctx, 1, 1, nil, []vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{1, 0, 0}}}))
 	require.NoError(store.SaveVectors(ctx, 2, 1, nil, []vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{1, 0, 0}}}))
 
-	pending, err := store.PendingForGeneration(ctx, 1, 10)
+	pending, err := store.PendingForGeneration(ctx, 1, nil, 10)
 	require.NoError(err)
 	assert.Empty(pending, "an older live generation with its own stamp is not refilled after the doc is stamped for a newer generation")
 }
@@ -254,13 +254,13 @@ func TestStoreSaveVectorsClearsAllGenerationsAfterNonRevisionInvalidation(t *tes
 
 	_, err = db.ExecContext(ctx, `UPDATE messages SET body = 'a dog', embed_gen = NULL WHERE id = 1`)
 	require.NoError(err)
-	pending, err := store.PendingForGeneration(ctx, 2, 10)
+	pending, err := store.PendingForGeneration(ctx, 2, nil, 10)
 	require.NoError(err)
 	require.Len(pending, 1)
 	require.NoError(store.SaveVectors(ctx, 2, pending[0].Doc, nil,
 		[]vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{0, 1, 0}}}))
 
-	pending, err = store.PendingForGeneration(ctx, 1, 10)
+	pending, err = store.PendingForGeneration(ctx, 1, nil, 10)
 	require.NoError(err)
 	require.Len(pending, 1, "the older generation stays pending after another generation refreshes an invalidated row")
 	assert.Equal("a dog", pending[0].Content)
@@ -399,7 +399,7 @@ func TestDocKeyMatchPreservesSQLiteAffinityMatches(t *testing.T) {
 			var pairs [2][][2]int64
 			for i, query := range []string{
 				`SELECT d.rowid, stamp.rowid FROM docs d LEFT JOIN test_vectors_stamps stamp ON stamp.ordinal = ? AND stamp.doc_key = d.id`,
-				store.PendingQueryForTest("d.rowid, stamp.rowid"),
+				store.PendingQueryForTest("d.rowid, stamp.rowid", false),
 			} {
 				args := []any{1}
 				if i == 1 {
@@ -479,7 +479,7 @@ func TestStoreStaleRevisionLeavesDocumentPending(t *testing.T) {
 	require.NoError(err)
 	require.NoError(store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
 
-	pending, err := store.PendingForGeneration(ctx, 1, 10)
+	pending, err := store.PendingForGeneration(ctx, 1, nil, 10)
 	require.NoError(err)
 	require.Len(pending, 1)
 
@@ -495,14 +495,14 @@ func TestStoreStaleRevisionLeavesDocumentPending(t *testing.T) {
 	require.NoError(err)
 	assert.Empty(hits, "a stale save commits no vectors")
 
-	pending, err = store.PendingForGeneration(ctx, 1, 10)
+	pending, err = store.PendingForGeneration(ctx, 1, nil, 10)
 	require.NoError(err)
 	require.Len(pending, 1, "the changed document stays pending")
 
 	// A retry with the fresh revision succeeds and drains pending.
 	require.NoError(store.SaveVectors(ctx, 1, pending[0].Doc, pending[0].Revision,
 		[]vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{1, 0, 0}}}))
-	pending, err = store.PendingForGeneration(ctx, 1, 10)
+	pending, err = store.PendingForGeneration(ctx, 1, nil, 10)
 	require.NoError(err)
 	assert.Empty(pending)
 }
@@ -517,20 +517,20 @@ func TestStorePendingForGenerationDetectsRevisionEditAfterStamp(t *testing.T) {
 	require.NoError(err)
 	require.NoError(store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
 
-	pending, err := store.PendingForGeneration(ctx, 1, 10)
+	pending, err := store.PendingForGeneration(ctx, 1, nil, 10)
 	require.NoError(err)
 	require.Len(pending, 1)
 	require.NoError(store.SaveVectors(ctx, 1, pending[0].Doc, pending[0].Revision,
 		[]vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{1, 0, 0}}}))
 
-	pending, err = store.PendingForGeneration(ctx, 1, 10)
+	pending, err = store.PendingForGeneration(ctx, 1, nil, 10)
 	require.NoError(err)
 	require.Empty(pending)
 
 	_, err = db.ExecContext(ctx, `UPDATE messages SET body = 'a cat jumped', last_modified = 2 WHERE id = 1`)
 	require.NoError(err)
 
-	pending, err = store.PendingForGeneration(ctx, 1, 10)
+	pending, err = store.PendingForGeneration(ctx, 1, nil, 10)
 	require.NoError(err)
 	require.Len(pending, 1, "a revision-only edit makes the document pending again")
 	assert.Equal(int64(1), pending[0].Doc)
@@ -553,13 +553,13 @@ INSERT INTO messages (id, body, last_modified) VALUES (1, 'a cat sat', 1);`)
 	require.NoError(err)
 	require.NoError(store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
 
-	pending, err := store.PendingForGeneration(ctx, 1, 10)
+	pending, err := store.PendingForGeneration(ctx, 1, nil, 10)
 	require.NoError(err)
 	require.Len(pending, 1)
 	require.NoError(store.SaveVectors(ctx, 1, pending[0].Doc, pending[0].Revision,
 		[]vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{1, 0, 0}}}))
 
-	pending, err = store.PendingForGeneration(ctx, 1, 10)
+	pending, err = store.PendingForGeneration(ctx, 1, nil, 10)
 	require.NoError(err)
 	require.Empty(pending, "the stamp stores the revision after embed_gen triggers run")
 }
@@ -580,19 +580,19 @@ INSERT INTO messages (id, body, last_modified) VALUES (1, 'a cat sat', 1);`)
 	require.NoError(store.EnsureGeneration(ctx, 1, vector.Generation{Model: "v1", Dimensions: 3}, sqlitevec.StateActive))
 	require.NoError(store.EnsureGeneration(ctx, 2, vector.Generation{Model: "v2", Dimensions: 3}, sqlitevec.StateBuilding))
 
-	pending, err := store.PendingForGeneration(ctx, 1, 10)
+	pending, err := store.PendingForGeneration(ctx, 1, nil, 10)
 	require.NoError(err)
 	require.Len(pending, 1)
 	require.NoError(store.SaveVectors(ctx, 1, pending[0].Doc, pending[0].Revision,
 		[]vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{1, 0, 0}}}))
 
-	pending, err = store.PendingForGeneration(ctx, 2, 10)
+	pending, err = store.PendingForGeneration(ctx, 2, nil, 10)
 	require.NoError(err)
 	require.Len(pending, 1)
 	require.NoError(store.SaveVectors(ctx, 2, pending[0].Doc, pending[0].Revision,
 		[]vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{1, 0, 0}}}))
 
-	pending, err = store.PendingForGeneration(ctx, 1, 10)
+	pending, err = store.PendingForGeneration(ctx, 1, nil, 10)
 	require.NoError(err)
 	require.Empty(pending, "saving another generation with a stamp-only revision bump does not stale covered generations")
 }
@@ -612,13 +612,13 @@ func TestStoreSaveVectorsClearsAllGenerationsAfterRevisionInvalidation(t *testin
 
 	_, err = db.ExecContext(ctx, `UPDATE messages SET body = 'a dog', last_modified = 2, embed_gen = NULL WHERE id = 1`)
 	require.NoError(err)
-	pending, err := store.PendingForGeneration(ctx, 2, 10)
+	pending, err := store.PendingForGeneration(ctx, 2, nil, 10)
 	require.NoError(err)
 	require.Len(pending, 1)
 	require.NoError(store.SaveVectors(ctx, 2, pending[0].Doc, pending[0].Revision,
 		[]vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{0, 1, 0}}}))
 
-	pending, err = store.PendingForGeneration(ctx, 1, 10)
+	pending, err = store.PendingForGeneration(ctx, 1, nil, 10)
 	require.NoError(err)
 	require.Len(pending, 1, "the older generation stays pending after another generation refreshes an invalidated revisioned row")
 	assert.Equal("a dog", pending[0].Content)
@@ -649,13 +649,13 @@ func TestStoreSaveVectorsClearsAllGenerationsAfterRevisionOnlyEdit(t *testing.T)
 
 	_, err = db.ExecContext(ctx, `UPDATE messages SET body = 'a dog', last_modified = 2 WHERE id = 1`)
 	require.NoError(err)
-	pending, err := store.PendingForGeneration(ctx, 2, 10)
+	pending, err := store.PendingForGeneration(ctx, 2, nil, 10)
 	require.NoError(err)
 	require.Len(pending, 1)
 	require.NoError(store.SaveVectors(ctx, 2, pending[0].Doc, pending[0].Revision,
 		[]vector.ChunkVector{{ChunkIndex: 0, Vector: vector.Vector{0, 1, 0}}}))
 
-	pending, err = store.PendingForGeneration(ctx, 1, 10)
+	pending, err = store.PendingForGeneration(ctx, 1, nil, 10)
 	require.NoError(err)
 	require.Len(pending, 1, "the older generation stays pending after another generation refreshes a changed row")
 	assert.Equal("a dog", pending[0].Content)
@@ -685,7 +685,7 @@ func TestStoreFillWithRevisionColumn(t *testing.T) {
 	require.NoError(err)
 	assert.Equal(2, stats.Documents)
 
-	pending, err := store.PendingForGeneration(ctx, 1, 10)
+	pending, err := store.PendingForGeneration(ctx, 1, nil, 10)
 	require.NoError(err)
 	assert.Empty(pending)
 }
@@ -700,7 +700,7 @@ func TestStorePendingForGenerationTreatsNullContentAsEmpty(t *testing.T) {
 	require.NoError(err)
 	require.NoError(store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateActive))
 
-	pending, err := store.PendingForGeneration(ctx, 1, 10)
+	pending, err := store.PendingForGeneration(ctx, 1, nil, 10)
 	require.NoError(err)
 	require.Len(pending, 1)
 	assert.Equal(int64(1), pending[0].Doc)
@@ -733,7 +733,7 @@ func TestStoreStampOnlySaveDropsDocumentFromPending(t *testing.T) {
 
 	require.NoError(store.SaveVectors(ctx, 1, 1, nil, nil), "an empty save stamps without vectors")
 
-	pending, err := store.PendingForGeneration(ctx, 1, 10)
+	pending, err := store.PendingForGeneration(ctx, 1, nil, 10)
 	require.NoError(err)
 	assert.Empty(pending, "a stamp-only document stops being pending")
 
@@ -881,4 +881,51 @@ func TestNewRejectsUnsafeIdentifiers(t *testing.T) {
 		DocsTable: "messages; DROP TABLE messages",
 	})
 	require.Error(t, err)
+}
+
+func TestStorePendingCursorIntegerKeys(t *testing.T) {
+	ctx := t.Context()
+	db, store := setup(t)
+	_, err := db.ExecContext(ctx, `INSERT INTO messages (id, body) VALUES (-2, 'a'), (-1, 'b'), (0, 'c'), (1, 'd'), (2, 'e')`)
+	require.NoError(t, err)
+	require.NoError(t, store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateBuilding))
+	require.NoError(t, store.SaveVectors(ctx, 1, 1, nil, nil))
+	for _, tc := range []struct {
+		after *int64
+		want  []int64
+	}{
+		{nil, []int64{-2, -1}},
+		{new(int64(-2)), []int64{-1, 0}},
+		{new(int64(0)), []int64{2}},
+		{new(int64(2)), nil},
+	} {
+		pending, err := store.PendingForGeneration(ctx, 1, tc.after, 2)
+		require.NoError(t, err)
+		var keys []int64
+		for _, p := range pending {
+			keys = append(keys, p.Doc)
+		}
+		assert.Equal(t, tc.want, keys)
+	}
+}
+
+func TestStorePendingCursorTextKeys(t *testing.T) {
+	ctx := t.Context()
+	db, _ := setup(t)
+	_, err := db.ExecContext(ctx, `CREATE TABLE docs (id TEXT PRIMARY KEY, body TEXT, embed_gen INTEGER); INSERT INTO docs (id, body) VALUES ('a', 'a'), ('b', 'b'), ('c', 'c'), ('d', 'd')`)
+	require.NoError(t, err)
+	store, err := sqlitevec.New[string, int64](ctx, db, sqlitevec.Schema{
+		DocsTable: "docs", IDColumn: "id", ContentColumn: "body", EmbedGenColumn: "embed_gen", VectorsPrefix: "text_vectors",
+	})
+	require.NoError(t, err)
+	require.NoError(t, store.EnsureGeneration(ctx, 1, vector.Generation{Model: "m", Dimensions: 3}, sqlitevec.StateBuilding))
+	require.NoError(t, store.SaveVectors(ctx, 1, "b", nil, nil))
+	pending, err := store.PendingForGeneration(ctx, 1, nil, 2)
+	require.NoError(t, err)
+	require.Len(t, pending, 2)
+	assert.Equal(t, "a", pending[0].Doc)
+	assert.Equal(t, "c", pending[1].Doc)
+	pending, err = store.PendingForGeneration(ctx, 1, new("c"), 2)
+	require.NoError(t, err)
+	assert.Equal(t, []vector.Pending[string]{{Doc: "d", Content: "d"}}, pending)
 }

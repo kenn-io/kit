@@ -156,6 +156,7 @@ type FillStats struct {
 // saves the resulting vectors, repeating until no documents remain. It is
 // the generic scan-and-fill loop; the store decides what counts as
 // pending and persists the results.
+// A store-owned cursor advances each page, with a restart to catch new pending work behind it.
 //
 // A document that changes mid-run (ErrStale from SaveVectors) is left
 // pending and not retried until the next Fill call, so an actively edited
@@ -198,6 +199,8 @@ func Fill[K, G comparable](
 	var stats FillStats
 	stale := make(map[K]struct{})
 	started := 0
+	var after *K
+	progressed := false
 	for {
 		if err := ctx.Err(); err != nil {
 			return stats, err
@@ -209,12 +212,20 @@ func Fill[K, G comparable](
 		if o.documentLimit > 0 && o.documentLimit-started < fetch {
 			fetch = o.documentLimit - started
 		}
-		// Stale documents remain pending and occupy scan slots; widening
-		// the limit keeps fresh documents visible past them.
-		pending, err := store.PendingForGeneration(ctx, gen, fetch+len(stale))
+		pending, err := store.PendingForGeneration(ctx, gen, after, fetch)
 		if err != nil {
 			return stats, fmt.Errorf("scan pending: %w", err)
 		}
+
+		if len(pending) == 0 {
+			if after == nil || !progressed {
+				return stats, nil
+			}
+			after = nil
+			progressed = false
+			continue
+		}
+		after = new(pending[len(pending)-1].Doc)
 
 		docs := make([]Pending[K], 0, len(pending))
 		for _, p := range pending {
@@ -226,14 +237,13 @@ func Fill[K, G comparable](
 			docs = docs[:o.documentLimit-started]
 		}
 		if len(docs) == 0 {
-			// Nothing left, or only stale documents remain pending; either
-			// way this run is done.
-			return stats, nil
+			continue
 		}
 		started += len(docs)
 		if err := fillPage(ctx, store, gen, enc, o, docs, stale, &stats); err != nil {
 			return stats, err
 		}
+		progressed = true
 	}
 }
 
