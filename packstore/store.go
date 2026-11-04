@@ -140,6 +140,7 @@ func newStoreOptions(limits Limits, readerSlots int) (*Store, error) {
 }
 
 // Open returns seekable catalog-authorized content and its logical size.
+// Raw loose files are returned directly without hash verification, including multi-store reads.
 // Compressed loose objects are verified into a private temporary file to
 // preserve this compatibility API; streaming callers should prefer OpenStream.
 // Resolution is retried once when a concurrent migration removes the initially
@@ -227,8 +228,10 @@ func (s *Store) openMultiSeekable(
 	if err != nil {
 		return nil, 0, err
 	}
-	// Raw loose seekable opens bypass verification, so they cannot clear health.
-	if s.observeStreams && (location.Loose == nil || location.Loose.Encoding != LooseEncodingRaw) {
+	// Only native raw opens return *os.File; verified materializations wrap their
+	// temporary files. This also distinguishes raw files found by legacy discovery.
+	_, nativeRaw := reader.(*os.File)
+	if s.observeStreams && !nativeRaw {
 		s.health.Clear(hash, location)
 	}
 	return reader, size, nil

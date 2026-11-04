@@ -49,6 +49,7 @@
 // Store.Open remains a seekable compatibility API. Opening compressed loose
 // content through it decodes and verifies the entire object into a private
 // temporary file before exposure, so streaming callers should use OpenStream.
+// Raw loose files are returned directly without hash verification, including multi-store reads.
 // Applications should retain WriteResult receipts or cataloged physical paths
 // for indexed statistics and scheduling. Scanning loose directories to infer
 // representation or size is maintenance work, not a hot-path lookup strategy.

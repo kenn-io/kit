@@ -142,6 +142,7 @@ objects the same ceiling.
 Existing callers can retain `Store.Open` when they need a seekable result, or
 `Store.ReadBounded` when they need an all-or-nothing byte slice. Those APIs
 verify complete packed content before returning it.
+`Store.Open` returns raw loose files directly without hash verification, including multi-store reads.
 
 Use `Store.OpenStream` for incremental consumption. A successful read of a
 prefix is not verification. Trust the complete object only after terminal

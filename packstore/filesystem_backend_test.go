@@ -892,6 +892,137 @@ func TestFilesystemBackendOpenSeekableRawLooseRejectsSizeMismatch(t *testing.T) 
 	}
 }
 
+func TestFilesystemBackendOpenSeekableRawLooseCancellation(t *testing.T) {
+	for _, duringOpen := range []bool{false, true} {
+		name := "before open"
+		if duringOpen {
+			name = "during open"
+		}
+		t.Run(name, func(t *testing.T) {
+			backend := attachedFilesystemBackend(t, "archive", "epoch-1")
+			content := []byte("cancel raw seek")
+			hash := hashForTest(content)
+			receipt, err := backend.PublishLoose(t.Context(), hash, bytes.NewReader(content), PublishOptions{})
+			require.NoError(t, err)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var opened *os.File
+			if duringOpen {
+				originalOpen := backend.reader.openLooseFile
+				backend.reader.openLooseFile = func(path string) (*os.File, os.FileInfo, error) {
+					file, info, err := originalOpen(path)
+					opened = file
+					cancel()
+					return file, info, err
+				}
+			} else {
+				cancel()
+			}
+			reader, _, err := backend.OpenSeekableLoose(ctx, hash, receipt.Location)
+			if reader != nil {
+				t.Cleanup(func() { require.NoError(t, reader.Close()) })
+			}
+			require.ErrorIs(t, err, context.Canceled)
+			assert.Nil(t, reader)
+			if duringOpen {
+				require.NotNil(t, opened)
+				_, err = opened.Stat()
+				require.ErrorIs(t, err, os.ErrClosed)
+			}
+		})
+	}
+}
+
+func TestMultiStoreSeekableLooseHealth(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		compressed bool
+		legacy     bool
+	}{
+		{name: "raw"},
+		{name: "legacy raw", legacy: true},
+		{name: "zstd", compressed: true},
+		{name: "legacy zstd", compressed: true, legacy: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			backend := attachedFilesystemBackend(t, "primary", "epoch-1")
+			content := bytes.Repeat([]byte("original content"), 4096)
+			corrupt := bytes.Repeat([]byte("tampered content"), 4096)
+			hash := hashForTest(content)
+			receipt, err := backend.PublishLoose(t.Context(), hash, bytes.NewReader(content), PublishOptions{
+				Compression: LooseCompressionOptions{Enabled: tc.compressed},
+			})
+			require.NoError(t, err)
+			if tc.compressed {
+				require.Equal(t, LooseEncodingZstd, receipt.Location.Encoding)
+			} else {
+				require.Equal(t, LooseEncodingRaw, receipt.Location.Encoding)
+			}
+			if !tc.compressed {
+				require.NoError(t, os.WriteFile(backend.Layout().LoosePath(hash), corrupt, 0o600))
+			}
+			if tc.legacy {
+				receipt.Location = LooseLocation{legacy: true}
+			}
+			primary := ReadLocation{StoreID: "primary", Generation: "epoch-1", Loose: &receipt.Location}
+			secondary := ReadLocation{StoreID: "secondary", Generation: "epoch-1", Loose: &receipt.Location}
+			health := NewHealth()
+			health.Observe(hash, primary, ErrPhysicalCorrupt)
+			store, err := NewMultiStore(
+				staticLocationResolver{resolution: Resolution{Member: true, Candidates: []ReadLocation{primary}}},
+				staticBackendRegistry{"primary": backend},
+				MultiStoreOptions{Health: health},
+			)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, store.Close()) })
+			reader, size, err := store.Open(t.Context(), hash)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, reader.Close()) })
+			assert.Equal(t, int64(len(content)), size)
+			got, err := io.ReadAll(reader)
+			require.NoError(t, err)
+			if tc.compressed {
+				assert.Equal(t, content, got)
+				assert.Equal(t, []ReadLocation{primary, secondary}, health.Order(hash, []ReadLocation{primary, secondary}))
+			} else {
+				assert.Equal(t, corrupt, got)
+				assert.Equal(t, []ReadLocation{secondary, primary}, health.Order(hash, []ReadLocation{primary, secondary}))
+			}
+		})
+	}
+}
+
+func TestFilesystemBackendOpenSeekableZstdLooseRejectsCorruption(t *testing.T) {
+	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
+	content := bytes.Repeat([]byte("verified compressed content "), 4096)
+	hash := hashForTest(content)
+	receipt, err := backend.PublishLoose(t.Context(), hash, bytes.NewReader(content), PublishOptions{
+		Compression: LooseCompressionOptions{Enabled: true},
+	})
+	require.NoError(t, err)
+	require.Equal(t, LooseEncodingZstd, receipt.Location.Encoding)
+	path := backend.Layout().CompressedLoosePath(hash)
+	stored, err := os.ReadFile(path)
+	require.NoError(t, err)
+	stored[len(stored)-1] ^= 0xff
+	require.NoError(t, os.WriteFile(path, stored, 0o600))
+	reader, _, err := backend.OpenSeekableLoose(t.Context(), hash, receipt.Location)
+	if reader != nil {
+		t.Cleanup(func() { require.NoError(t, reader.Close()) })
+	}
+	require.ErrorIs(t, err, ErrPhysicalCorrupt)
+}
+
+func TestFilesystemBackendOpenSeekableRawLooseMissing(t *testing.T) {
+	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
+	reader, _, err := backend.OpenSeekableLoose(t.Context(), hashForTest([]byte("missing")), LooseLocation{
+		Encoding: LooseEncodingRaw, LogicalSize: 7, StoredSize: 7,
+	})
+	require.ErrorIs(t, err, ErrPhysicalMissing)
+	require.ErrorIs(t, err, fs.ErrNotExist)
+	assert.Nil(t, reader)
+}
+
 func TestFilesystemBackendRejectsAmbiguousLooseLocation(t *testing.T) {
 	ctx := t.Context()
 	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
@@ -1460,105 +1591,4 @@ func indexEntryFromPack(entry pack.Entry, packID string) (IndexEntry, error) {
 		StoredLen: int64(entry.StoredLen), RawLen: int64(entry.RawLen),
 		Flags: uint8(entry.Flags), CRC32C: entry.CRC32C,
 	}, nil
-}
-
-func TestFilesystemBackendOpenSeekableRawLooseCancellation(t *testing.T) {
-	for _, duringOpen := range []bool{false, true} {
-		name := "before open"
-		if duringOpen {
-			name = "during open"
-		}
-		t.Run(name, func(t *testing.T) {
-			backend := attachedFilesystemBackend(t, "archive", "epoch-1")
-			content := []byte("cancel raw seek")
-			hash := hashForTest(content)
-			receipt, err := backend.PublishLoose(t.Context(), hash, bytes.NewReader(content), PublishOptions{})
-			require.NoError(t, err)
-			ctx, cancel := context.WithCancel(t.Context())
-			defer cancel()
-			var opened *os.File
-			if duringOpen {
-				originalOpen := backend.reader.openLooseFile
-				backend.reader.openLooseFile = func(path string) (*os.File, os.FileInfo, error) {
-					file, info, err := originalOpen(path)
-					opened = file
-					cancel()
-					return file, info, err
-				}
-			} else {
-				cancel()
-			}
-			reader, _, err := backend.OpenSeekableLoose(ctx, hash, receipt.Location)
-			if reader != nil {
-				t.Cleanup(func() { require.NoError(t, reader.Close()) })
-			}
-			require.ErrorIs(t, err, context.Canceled)
-			assert.Nil(t, reader)
-			if duringOpen {
-				require.NotNil(t, opened)
-				_, err = opened.Stat()
-				require.ErrorIs(t, err, os.ErrClosed)
-			}
-		})
-	}
-}
-
-func TestMultiStoreRawSeekableOpenPreservesHealth(t *testing.T) {
-	backend := attachedFilesystemBackend(t, "primary", "epoch-1")
-	content := []byte("original content")
-	corrupt := []byte("tampered content")
-	hash := hashForTest(content)
-	receipt, err := backend.PublishLoose(t.Context(), hash, bytes.NewReader(content), PublishOptions{})
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(backend.Layout().LoosePath(hash), corrupt, 0o600))
-	primary := ReadLocation{StoreID: "primary", Generation: "epoch-1", Loose: &receipt.Location}
-	secondary := ReadLocation{StoreID: "secondary", Generation: "epoch-1", Loose: &receipt.Location}
-	health := NewHealth()
-	health.Observe(hash, primary, ErrPhysicalCorrupt)
-	store, err := NewMultiStore(
-		staticLocationResolver{resolution: Resolution{Member: true, Candidates: []ReadLocation{primary}}},
-		staticBackendRegistry{"primary": backend},
-		MultiStoreOptions{Health: health},
-	)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, store.Close()) })
-	reader, size, err := store.Open(t.Context(), hash)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, reader.Close()) })
-	assert.Equal(t, int64(len(content)), size)
-	got, err := io.ReadAll(reader)
-	require.NoError(t, err)
-	assert.Equal(t, corrupt, got)
-	assert.Equal(t, []ReadLocation{secondary, primary}, health.Order(hash, []ReadLocation{primary, secondary}))
-}
-
-func TestFilesystemBackendOpenSeekableZstdLooseRejectsCorruption(t *testing.T) {
-	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
-	content := bytes.Repeat([]byte("verified compressed content "), 4096)
-	hash := hashForTest(content)
-	receipt, err := backend.PublishLoose(t.Context(), hash, bytes.NewReader(content), PublishOptions{
-		Compression: LooseCompressionOptions{Enabled: true},
-	})
-	require.NoError(t, err)
-	require.Equal(t, LooseEncodingZstd, receipt.Location.Encoding)
-	path := backend.Layout().CompressedLoosePath(hash)
-	stored, err := os.ReadFile(path)
-	require.NoError(t, err)
-	stored[len(stored)-1] ^= 0xff
-	require.NoError(t, os.WriteFile(path, stored, 0o600))
-	reader, _, err := backend.OpenSeekableLoose(t.Context(), hash, receipt.Location)
-	if reader != nil {
-		t.Cleanup(func() { require.NoError(t, reader.Close()) })
-	}
-	require.ErrorIs(t, err, ErrPhysicalCorrupt)
-}
-
-func TestFilesystemBackendOpenSeekableRawLooseMissing(t *testing.T) {
-	backend := attachedFilesystemBackend(t, "archive", "epoch-1")
-	reader, _, err := backend.OpenSeekableLoose(t.Context(), hashForTest([]byte("missing")), LooseLocation{
-		Encoding: LooseEncodingRaw, LogicalSize: 7, StoredSize: 7,
-	})
-	require.ErrorIs(t, err, ErrPhysicalMissing)
-	require.ErrorIs(t, err, fs.ErrNotExist)
-	assert.Nil(t, reader)
 }
