@@ -111,11 +111,15 @@ func traceRunner(t *testing.T) (gitcmd.Runner, func() [][]string) {
 	}
 }
 
-func TestCreatePlainRepoGitStarts(t *testing.T) { //nolint:tparallel // Later cases compare their counts to the first case.
+func TestCreatePlainRepoGitStarts(t *testing.T) { //nolint:tparallel // Subtests share a repository.
 	t.Parallel()
 	repo := gittest.NewRepoWithCommit(t)
 	sha := repo.Head()
-	baseline := 0
+	runner, starts := traceRunner(t)
+	wt, err := Create(t.Context(), repo.Root, "HEAD", Options{ParentDir: t.TempDir(), Runner: runner})
+	require.NoError(t, err)
+	baseline := len(starts())
+	require.NoError(t, wt.Close(t.Context()))
 	for _, tc := range []struct {
 		name  string
 		setup bool
@@ -142,11 +146,7 @@ func TestCreatePlainRepoGitStarts(t *testing.T) { //nolint:tparallel // Later ca
 					require.NotContains(t, args, "rev-parse")
 				}
 			}
-			if !tc.setup {
-				baseline = len(commands)
-			} else {
-				require.LessOrEqual(t, len(commands), baseline+2)
-			}
+			require.LessOrEqual(t, len(commands), baseline+2)
 		})
 	}
 }

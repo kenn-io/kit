@@ -44,7 +44,7 @@ type Options struct {
 	// PullLFS runs git lfs pull when git-lfs is installed for the checkout.
 	// Create skips the pull when no tracked files have the filter=lfs attribute.
 	PullLFS bool
-	// BaseSHA is the commit the caller already resolved ref to. When set,
+	// BaseSHA is the full commit ID the caller already resolved ref to. When set,
 	// Create checks out this commit instead of ref and skips resolving HEAD.
 	BaseSHA string
 	// Runner overrides the git runner. When zero, gitcmd.New is used.
