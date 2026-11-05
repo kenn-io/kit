@@ -58,7 +58,7 @@ func inspect(ctx context.Context, opts Options, ollama string) (Status, error) {
 			return Status{}, err
 		}
 		for _, entry := range entries {
-			if entry.IsDir() && strings.HasPrefix(entry.Name(), ".install-") {
+			if entry.IsDir() && strings.HasPrefix(entry.Name(), installStagePrefix) {
 				status.Installing = true
 				break
 			}

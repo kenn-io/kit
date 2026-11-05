@@ -62,6 +62,7 @@ type Installation struct{ Executable, DataDir string }
 const bundleDownloadBytes = 20_000_000
 
 const installLockPrefix = "kit-embed-install"
+const installStagePrefix = ".install-"
 
 // Install reuses the pinned server offline or confirms before downloading missing
 // files. Concurrent callers share one installation. Use the shared DataDir from
@@ -89,7 +90,7 @@ func install(ctx context.Context, opts InstallOptions, client *http.Client, asse
 		return Installation{}, err
 	}
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), ".install-") {
+		if strings.HasPrefix(entry.Name(), installStagePrefix) {
 			if err := os.RemoveAll(filepath.Join(dir, entry.Name())); err != nil {
 				return Installation{}, err
 			}
@@ -129,7 +130,7 @@ func install(ctx context.Context, opts InstallOptions, client *http.Client, asse
 			return Installation{}, err
 		}
 	}
-	stage, err := os.MkdirTemp(dir, ".install-*")
+	stage, err := os.MkdirTemp(dir, installStagePrefix+"*")
 	if err != nil {
 		return Installation{}, err
 	}
