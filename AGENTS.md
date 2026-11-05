@@ -53,8 +53,8 @@ provider workflows to this repo unless the package already owns that concern.
   `README.md`, `AGENTS.md`, and `CLAUDE.md` files never take frontmatter, at
   any depth. The check also excludes `.github/`, `testdata/`, `vendor/`,
   `node_modules/`, `docs/releases/`, `CHANGELOG*.md` and `changelog*.md`
-  files, Markdown symlinks, and skill bundles (`SKILL.md` and everything under
-  a directory that contains one). Change the date when editing existing
+  files, and skill bundles (`SKILL.md` and everything under a directory that
+  contains one). Change the date when editing existing
   content; CI compares it with the actual pull request base.
 
 ## Go Conventions

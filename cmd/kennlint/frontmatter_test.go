@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -25,14 +24,6 @@ func isolateFrontmatterGit(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", home)
-}
-
-func addFrontmatterSymlink(t *testing.T, repo *gittest.Repo, name, target string) {
-	t.Helper()
-	linkTarget := filepath.Join(t.TempDir(), "link-target")
-	require.NoError(t, os.WriteFile(linkTarget, []byte(target), 0o600))
-	object := repo.Run("hash-object", "-w", linkTarget)
-	repo.Run("update-index", "--add", "--cacheinfo", "120000,"+object+","+name)
 }
 
 func TestFrontmatterValidation(t *testing.T) {
@@ -346,88 +337,6 @@ func TestFrontmatterFix(t *testing.T) {
 	quoted, err := os.ReadFile("quoted.md")
 	require.NoError(t, err)
 	assert.Contains(t, string(quoted), "last_edited: 2026-11-01 # keep comment")
-}
-
-func TestFrontmatterSkipsSymlinks(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlinks require privileges on Windows")
-	}
-	isolateFrontmatterGit(t)
-	repo := gittest.NewRepoWithCommit(t)
-	t.Chdir(repo.Root)
-	const readme = "# Excluded README\n"
-	repo.WriteFile("README.md", readme)
-	repo.WriteFile("target.md", goodFrontmatter)
-	outside := filepath.Join(t.TempDir(), "outside.md")
-	const outsideBody = "# Outside the repository\n"
-	require.NoError(t, os.WriteFile(outside, []byte(outsideBody), 0o600))
-	for link, target := range map[string]string{
-		"readme-alias.md": "README.md", "target-alias.md": "target.md", "outside.md": outside, "dangling.md": "missing.md",
-	} {
-		require.NoError(t, os.Symlink(target, link))
-	}
-	repo.Run("add", ".")
-
-	var stdout, stderr bytes.Buffer
-	n, err := runFrontmatter(t.Context(), []string{"-fix"}, &stdout, &stderr)
-	require.NoError(t, err)
-	assert.Zero(t, n)
-	assert.Equal(t, "frontmatter: checked 1 Markdown files (0 fixed)\n", stdout.String())
-	for name, want := range map[string]string{"README.md": readme, outside: outsideBody} {
-		data, err := os.ReadFile(name)
-		require.NoError(t, err)
-		assert.Equal(t, want, string(data), "-fix must not write through a symlink to %s", name)
-	}
-}
-
-func TestFrontmatterSkipsUnstagedSymlink(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlinks require privileges on Windows")
-	}
-	isolateFrontmatterGit(t)
-	repo := gittest.NewRepoWithCommit(t)
-	t.Chdir(repo.Root)
-	repo.WriteFile("page.md", goodFrontmatter)
-	repo.Run("add", "page.md")
-	outside := filepath.Join(t.TempDir(), "outside.md")
-	const outsideBody = "# Outside the repository\n"
-	require.NoError(t, os.WriteFile(outside, []byte(outsideBody), 0o600))
-	// The index still records a regular file; only the working tree has a link.
-	require.NoError(t, os.Remove("page.md"))
-	require.NoError(t, os.Symlink(outside, "page.md"))
-
-	var stdout, stderr bytes.Buffer
-	n, err := runFrontmatter(t.Context(), []string{"-fix"}, &stdout, &stderr)
-	require.NoError(t, err)
-	assert.Zero(t, n)
-	assert.Equal(t, "frontmatter: checked 0 Markdown files (0 fixed)\n", stdout.String())
-	info, err := os.Lstat("page.md")
-	require.NoError(t, err)
-	assert.NotZero(t, info.Mode()&os.ModeSymlink, "-fix must leave the link in place")
-	data, err := os.ReadFile(outside)
-	require.NoError(t, err)
-	assert.Equal(t, outsideBody, string(data))
-}
-
-func TestFrontmatterSkipsSymlinkPlaceholders(t *testing.T) {
-	isolateFrontmatterGit(t)
-	repo := gittest.NewRepoWithCommit(t)
-	t.Chdir(repo.Root)
-	repo.Config("core.symlinks", "false")
-	repo.WriteFile("target.md", goodFrontmatter)
-	repo.Run("add", "target.md")
-	// With core.symlinks=false, Git checks a link out as a file holding its target.
-	addFrontmatterSymlink(t, repo, "alias.md", "target.md")
-	repo.WriteFile("alias.md", "target.md")
-
-	var stdout, stderr bytes.Buffer
-	n, err := runFrontmatter(t.Context(), []string{"-fix"}, &stdout, &stderr)
-	require.NoError(t, err)
-	assert.Zero(t, n)
-	assert.Equal(t, "frontmatter: checked 1 Markdown files (0 fixed)\n", stdout.String())
-	data, err := os.ReadFile("alias.md")
-	require.NoError(t, err)
-	assert.Equal(t, "target.md", string(data))
 }
 
 func TestFrontmatterFixChangedComparesFinalGitContent(t *testing.T) {

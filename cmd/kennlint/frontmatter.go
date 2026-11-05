@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path"
@@ -180,29 +181,21 @@ func (b *frontmatterBlock) fix(date string) ([]byte, bool, error) {
 	return append(result, b.body...), true, nil
 }
 
-// frontmatterTracked lists tracked regular Markdown files and the directories
-// that hold a SKILL.md. Symlinks (mode 120000) are skipped: a target inside the
-// repository is tracked and checked under its own name, and Git records the
-// mode even when core.symlinks=false checks links out as plain files.
+// frontmatterTracked lists tracked Markdown files and the directories that
+// hold a SKILL.md.
 func frontmatterTracked(ctx context.Context, root string) ([]string, map[string]struct{}, error) {
-	data, err := frontmatterGit(ctx, root, "ls-files", "-z", "--stage", "--", "*.md")
+	data, err := frontmatterGit(ctx, root, "ls-files", "-z", "--cached", "--deduplicate", "--", "*.md")
 	if err != nil {
 		return nil, nil, err
 	}
-	var files []string
+	files := strings.Split(strings.TrimSuffix(string(data), "\x00"), "\x00")
+	if len(files) == 1 && files[0] == "" {
+		files = nil
+	}
 	skillDirs := make(map[string]struct{})
-	for record := range bytes.SplitSeq(bytes.TrimSuffix(data, []byte{0}), []byte{0}) {
-		metadata, name, ok := strings.Cut(string(record), "\t")
-		fields := strings.Fields(metadata)
-		if !ok || len(fields) != 3 {
-			continue
-		}
+	for _, name := range files {
 		if path.Base(name) == "SKILL.md" && path.Dir(name) != "." {
 			skillDirs[path.Dir(name)] = struct{}{}
-		}
-		// Unmerged files appear once per stage, adjacently; check them once.
-		if (fields[0] == "100644" || fields[0] == "100755") && (len(files) == 0 || files[len(files)-1] != name) {
-			files = append(files, name)
 		}
 	}
 	return files, skillDirs, nil
@@ -257,18 +250,10 @@ func runFrontmatter(ctx context.Context, args []string, stdout, stderr io.Writer
 		if !frontmatterSelected(file, selected, excludes) || frontmatterInSkillDirectory(file, skillDirs) {
 			continue
 		}
-		full := filepath.Join(root, filepath.FromSlash(file))
-		info, err := os.Lstat(full)
-		if errors.Is(err, os.ErrNotExist) {
+		problems, didFix, err := checkFrontmatterFile(ctx, root, file, *fix, hasHead)
+		if errors.Is(err, fs.ErrNotExist) {
 			continue // A tracked file deleted in the working tree needs no metadata.
 		}
-		if err != nil {
-			return total, err
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			continue // An uncommitted symlink; writing through it could reach anywhere.
-		}
-		problems, didFix, err := checkFrontmatterFile(ctx, root, file, *fix, hasHead)
 		if err != nil {
 			return total, fmt.Errorf("%s: %w", file, err)
 		}

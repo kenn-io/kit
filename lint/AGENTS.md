@@ -19,10 +19,8 @@
   workflow downloads with `kennlint workflow-retries`. Its `frontmatter`
   command checks git-tracked Markdown metadata; it inspects YAML node tags
   and styles so dates must be bare, and compares content and date values
-  against a merge base when `-changed` is set. It skips Markdown symlinks
-  rather than resolving them, so `-fix` never writes through a link. Fixes
-  preserve Markdown bodies and never invent titles or descriptions or bump
-  existing dates.
+  against a merge base when `-changed` is set. Fixes preserve Markdown bodies
+  and never invent titles or descriptions or bump existing dates.
 
 See `docs/adopting-kennlint.md` for the consumer workflow.
 

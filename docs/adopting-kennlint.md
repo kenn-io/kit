@@ -1,7 +1,7 @@
 ---
 title: "Adopting the shared Go lint policy (kennlint)"
 description: "Adopt the shared Go lint policy, workflow checks, and Markdown frontmatter validation."
-last_edited: 2026-11-04
+last_edited: 2026-11-05
 ---
 
 # Adopting the shared Go lint policy (kennlint)
@@ -126,8 +126,7 @@ it after adding rule labels and reasons to their suppressions.
    every depth, plus `.github/**`, `**/testdata/**`, `vendor/**`,
    `node_modules/**`, `docs/releases/**`, and `CHANGELOG*.md` and
    `changelog*.md` files. Markdown inside a skill bundle (any directory with
-   a `SKILL.md`) needs no frontmatter. Markdown symlinks are skipped; a target
-   inside the repository is checked under its own path.
+   a `SKILL.md`) needs no frontmatter.
 
    Add repeatable repository-relative `-exclude <glob>` flags for other
    exceptions; `**` matches zero or more directory components. Path arguments
