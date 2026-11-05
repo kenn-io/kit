@@ -54,3 +54,12 @@
   so continued ingestion cannot postpone revisiting older entries. A failed
   pass or deferred repair retains both previous sweep bounds so uncommitted
   repairs are revisited; a new maintainer starts a fresh sweep.
+
+## Orphan removal
+
+- `Pack` removes unreferenced canonical loose files only at its end, after
+  verification and packing. `SweepOrphans` runs that removal alone so a caller
+  with a short time budget can reclaim space before `Pack`. Both hold the
+  maintenance lease, because a write publishes its file before the catalog
+  references it, and both remove nothing when the reference inventory is
+  incomplete.

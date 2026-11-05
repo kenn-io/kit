@@ -1159,13 +1159,19 @@ func (m *Maintainer) sweepLoose(ctx context.Context, refs map[Hash]Reference, al
 			stats.BlobsCorrupt++
 		}
 	}
-	entries, err := os.ReadDir(m.layout.Root())
-	if err != nil {
-		return err
-	}
 	if !allowOrphanRemoval {
 		stats.LooseOrphanSweepSuppressed = true
 		return nil
+	}
+	return m.removeLooseOrphans(ctx, refs, &stats.LooseOrphansRemoved)
+}
+
+// removeLooseOrphans removes canonical loose files absent from a complete reference
+// inventory. The caller holds the maintenance lease.
+func (m *Maintainer) removeLooseOrphans(ctx context.Context, refs map[Hash]Reference, removedCount *int) error {
+	entries, err := os.ReadDir(m.layout.Root())
+	if err != nil {
+		return err
 	}
 	for _, shard := range entries {
 		if err := ctx.Err(); err != nil {
@@ -1204,11 +1210,49 @@ func (m *Maintainer) sweepLoose(ctx context.Context, refs map[Hash]Reference, al
 				return err
 			}
 			if removed {
-				stats.LooseOrphansRemoved++
+				*removedCount++
 			}
 		}
 	}
 	return nil
+}
+
+// SweepStats summarizes an orphan sweep.
+type SweepStats struct {
+	LooseOrphansRemoved int
+	// Suppressed reports an incomplete reference inventory, so nothing was removed.
+	Suppressed bool
+}
+
+// SweepOrphans removes canonical loose files the catalog does not reference,
+// without verifying, packing or repacking. Like Pack it holds the maintenance
+// lease, so it waits for in-flight writes, and it removes nothing when the
+// reference inventory is incomplete. A caller with a short time budget can
+// run it before Pack so unreferenced space is reclaimed even when Pack does
+// not finish.
+func (m *Maintainer) SweepOrphans(ctx context.Context) (SweepStats, error) {
+	var stats SweepStats
+	if err := ctx.Err(); err != nil {
+		return stats, err
+	}
+	lease, err := m.coordinator.AcquireMaintenance(ctx)
+	if err != nil {
+		return stats, err
+	}
+	defer func() { _ = lease.Release() }()
+	inventory, err := m.catalog.ListReferences(ctx)
+	if err != nil {
+		return stats, err
+	}
+	if !inventory.Complete {
+		stats.Suppressed = true
+		return stats, nil
+	}
+	refs := make(map[Hash]Reference, len(inventory.References))
+	for _, reference := range inventory.References {
+		refs[reference.Hash] = reference
+	}
+	return stats, m.removeLooseOrphans(ctx, refs, &stats.LooseOrphansRemoved)
 }
 
 // hasCanonicalLooseCandidate is an authorization-free, no-follow preflight.
