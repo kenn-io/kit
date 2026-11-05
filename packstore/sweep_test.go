@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -43,6 +45,42 @@ func TestSweepOrphansKeepsEverythingWhenReferencesAreIncomplete(t *testing.T) {
 	assert.True(t, stats.Suppressed)
 	assert.Zero(t, stats.LooseOrphansRemoved)
 	assert.FileExists(t, layout.LoosePath(orphan))
+}
+
+func TestSweepOrphansSucceedsBeforeTheStoreRootExists(t *testing.T) {
+	layout, err := NewLayout(filepath.Join(t.TempDir(), "not-yet-written"), LayoutOptions{
+		Staging: StagingStoreDirectory, StagingDir: "tmp",
+	})
+	require.NoError(t, err)
+	maintainer := newMaintainerForTest(t, newMaintenanceCatalog(), layout, DefaultLimits())
+
+	stats, err := maintainer.SweepOrphans(t.Context())
+
+	require.NoError(t, err)
+	assert.Equal(t, OrphanSweepStats{}, stats)
+}
+
+func TestSweepOrphansContinuesPastAnOrphanItCannotRemove(t *testing.T) {
+	layout := layoutForStoreTest(t)
+	blocked := writeMaintenanceLoose(t, layout, []byte("orphan without removal permission"))
+	removable := writeMaintenanceLoose(t, layout, []byte("orphan the sweep can remove"))
+	blockedName := filepath.Base(layout.LoosePath(blocked))
+	originalCreate := createLooseRemovalAside
+	createLooseRemovalAside = func(path string) error {
+		if strings.HasPrefix(filepath.Base(path), "."+blockedName+".remove-") {
+			return fs.ErrPermission
+		}
+		return originalCreate(path)
+	}
+	t.Cleanup(func() { createLooseRemovalAside = originalCreate })
+	maintainer := newMaintainerForTest(t, newMaintenanceCatalog(), layout, DefaultLimits())
+
+	stats, err := maintainer.SweepOrphans(t.Context())
+
+	require.NoError(t, err)
+	assert.Equal(t, OrphanSweepStats{LooseOrphansRemoved: 1, LooseOrphansDeferred: 1}, stats)
+	assert.FileExists(t, layout.LoosePath(blocked))
+	assert.NoFileExists(t, layout.LoosePath(removable))
 }
 
 func TestSweepOrphansWaitsForInFlightWrites(t *testing.T) {

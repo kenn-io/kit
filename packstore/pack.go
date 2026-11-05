@@ -56,6 +56,7 @@ type PackStats struct {
 	PacksDeferredOversized     int
 	LooseSwept                 int
 	LooseOrphansRemoved        int
+	LooseOrphansDeferred       int
 	LooseOrphanSweepSuppressed bool
 	BudgetExhausted            bool
 }
@@ -1163,30 +1164,35 @@ func (m *Maintainer) sweepLoose(ctx context.Context, refs map[Hash]Reference, al
 		stats.LooseOrphanSweepSuppressed = true
 		return nil
 	}
-	return m.removeLooseOrphans(ctx, refs, &stats.LooseOrphansRemoved)
+	stats.LooseOrphansRemoved, stats.LooseOrphansDeferred, err = m.removeLooseOrphans(ctx, refs)
+	return err
 }
 
 // removeLooseOrphans removes canonical loose files absent from a complete reference
-// inventory. The caller holds the maintenance lease.
-func (m *Maintainer) removeLooseOrphans(ctx context.Context, refs map[Hash]Reference, removedCount *int) error {
+// inventory and counts those it removed and those it lacked permission to remove.
+// A missing root holds no files. The caller holds the maintenance lease.
+func (m *Maintainer) removeLooseOrphans(ctx context.Context, refs map[Hash]Reference) (removed, deferred int, err error) {
 	entries, err := os.ReadDir(m.layout.Root())
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0, 0, nil
+	}
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	for _, shard := range entries {
 		if err := ctx.Err(); err != nil {
-			return err
+			return removed, deferred, err
 		}
 		if !shard.IsDir() || len(shard.Name()) != 2 || shard.Name() == "pa" {
 			continue
 		}
 		files, err := os.ReadDir(filepath.Join(m.layout.Root(), shard.Name()))
 		if err != nil {
-			return err
+			return removed, deferred, err
 		}
 		for _, file := range files {
 			if err := ctx.Err(); err != nil {
-				return err
+				return removed, deferred, err
 			}
 			hash, encoding, ok := parseCanonicalLooseName(file.Name())
 			if !ok || hash.String()[:2] != shard.Name() || !file.Type().IsRegular() {
@@ -1202,27 +1208,35 @@ func (m *Maintainer) removeLooseOrphans(ctx context.Context, refs map[Hash]Refer
 			if filepath.Clean(path) != filepath.Clean(filepath.Join(m.layout.Root(), shard.Name(), file.Name())) {
 				continue
 			}
-			removed, err := removeLoosePath(path, m.openIdentityPin)
+			fileRemoved, err := removeLoosePath(path, m.openIdentityPin)
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
 			if errors.Is(err, ErrContentMismatch) {
 				continue
 			}
-			if err != nil {
-				return err
+			// One file without removal permission must not block reclaiming the rest.
+			if errors.Is(err, errLooseRemovalUnavailable) {
+				deferred++
+				continue
 			}
-			if removed {
-				*removedCount++
+			if err != nil {
+				return removed, deferred, err
+			}
+			if fileRemoved {
+				removed++
 			}
 		}
 	}
-	return nil
+	return removed, deferred, nil
 }
 
-// SweepStats summarizes an orphan sweep.
-type SweepStats struct {
+// OrphanSweepStats summarizes an orphan sweep.
+type OrphanSweepStats struct {
 	LooseOrphansRemoved int
+	// LooseOrphansDeferred counts orphans left in place because the store
+	// lacked permission to remove them. Later sweeps retry them.
+	LooseOrphansDeferred int
 	// Suppressed reports an incomplete reference inventory, so nothing was removed.
 	Suppressed bool
 }
@@ -1233,8 +1247,8 @@ type SweepStats struct {
 // reference inventory is incomplete. A caller with a short time budget can
 // run it before Pack so unreferenced space is reclaimed even when Pack does
 // not finish.
-func (m *Maintainer) SweepOrphans(ctx context.Context) (SweepStats, error) {
-	var stats SweepStats
+func (m *Maintainer) SweepOrphans(ctx context.Context) (OrphanSweepStats, error) {
+	var stats OrphanSweepStats
 	if err := ctx.Err(); err != nil {
 		return stats, err
 	}
@@ -1255,7 +1269,8 @@ func (m *Maintainer) SweepOrphans(ctx context.Context) (SweepStats, error) {
 	for _, reference := range inventory.References {
 		refs[reference.Hash] = reference
 	}
-	return stats, m.removeLooseOrphans(ctx, refs, &stats.LooseOrphansRemoved)
+	stats.LooseOrphansRemoved, stats.LooseOrphansDeferred, err = m.removeLooseOrphans(ctx, refs)
+	return stats, err
 }
 
 // hasCanonicalLooseCandidate is an authorization-free, no-follow preflight.

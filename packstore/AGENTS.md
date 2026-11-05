@@ -62,4 +62,5 @@
   with a short time budget can reclaim space before `Pack`. Both hold the
   maintenance lease, because a write publishes its file before the catalog
   references it, and both remove nothing when the reference inventory is
-  incomplete.
+  incomplete. An orphan without removal permission is counted as deferred and
+  skipped, so it cannot block reclaiming the orphans after it.
