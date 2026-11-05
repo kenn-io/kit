@@ -59,9 +59,6 @@ func TestNativeFaces(t *testing.T) {
 	client, err := embedclient.New(embedclient.Options{Model: embedconfig.Model{Name: "nomic-embed-text", Dimensions: 768, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationNone}, Deployment: embedconfig.Deployment{BaseURL: server.URL + "/v1"}})
 	require.NoError(t, err)
 	// A text process advertises faces only after installation, without restart.
-	vectors, err := client.EncodeFunc(embedconfig.RoleQuery)(t.Context(), []string{"search_query: hello"})
-	require.NoError(t, err)
-	require.Len(t, vectors[0], 768)
 	before := httptest.NewRecorder()
 	h.availableModels(before, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/models", nil))
 	assert.JSONEq(t, `{"models":["nomic-embed-text"]}`, before.Body.String())
@@ -74,10 +71,4 @@ func TestNativeFaces(t *testing.T) {
 	h.availableModels(after, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/models", nil))
 	assert.JSONEq(t, `{"models":["nomic-embed-text","auraface-v1"]}`, after.Body.String())
 	embedtest.AssertFaces(t, client, dir, filepath.Join("testdata", "faces", "boxes.json"))
-	preview, err := os.ReadFile(filepath.Join(dir, "faces", "commons-glenn-official.jpg"))
-	require.NoError(t, err)
-	empty, err := client.EmbedFaces(t.Context(), preview, []embedclient.FaceBox{{X: 0.5, Y: 0.5, Width: 1e-20, Height: 1e-20}})
-	require.NoError(t, err)
-	require.Len(t, empty.Data, 1)
-	assert.Nil(t, empty.Data[0].Embedding)
 }

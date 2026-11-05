@@ -1,14 +1,10 @@
 package embedclient
 
 import (
-	"bytes"
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
-	"image"
-	_ "image/jpeg"
-	_ "image/png"
 	"math"
 	"strings"
 
@@ -39,7 +35,7 @@ func (b FaceBox) Validate() error {
 			return errors.New("face box must be finite")
 		}
 	}
-	if b.X < 0 || b.Y < 0 || b.Width <= 0 || b.Height <= 0 || b.X+b.Width > 1 || b.Y+b.Height > 1 {
+	if b.X < -1e-6 || b.Y < -1e-6 || b.Width <= 0 || b.Height <= 0 || b.X+b.Width > 1+1e-6 || b.Y+b.Height > 1+1e-6 {
 		return errors.New("face box must fit within the preview")
 	}
 	return nil
@@ -79,10 +75,6 @@ func (c *Client) EmbedFaces(ctx context.Context, preview []byte, boxes []FaceBox
 			return result, err
 		}
 	}
-	config, _, err := image.DecodeConfig(bytes.NewReader(preview))
-	if err != nil || config.Width <= 0 || config.Height <= 0 || config.Width > MaxPreviewPixels/config.Height {
-		return result, errors.New("invalid preview or too many pixels")
-	}
 	body, err := json.Marshal(FaceRequest{Image: preview, Boxes: boxes})
 	if err != nil {
 		return result, err
@@ -95,7 +87,7 @@ func (c *Client) EmbedFaces(ctx context.Context, preview []byte, boxes []FaceBox
 	if err != nil {
 		return result, err
 	}
-	// Pointer components distinguish a null vector from an invalid null component.
+	// Raw values distinguish an unmatched face from a missing embedding.
 	var wire struct {
 		Model    string `json:"model"`
 		Revision string `json:"revision"`
@@ -129,14 +121,11 @@ func (c *Client) EmbedFaces(ctx context.Context, preview []byte, boxes []FaceBox
 		if string(item.Embedding) == "null" {
 			continue
 		}
-		var components []*float64
-		if err := json.Unmarshal(item.Embedding, &components); err != nil {
+		var raw wireEmbedding
+		if err := json.Unmarshal(item.Embedding, &raw); err != nil {
 			return FaceResponse{}, &VectorError{Index: i, Err: err}
 		}
-		values, err := finiteFloat32s(components)
-		if err == nil {
-			values, err = decodeVector(wireEmbedding{values: values}, 512, embedconfig.NormalizationNone)
-		}
+		values, err := decodeVector(raw, 512, embedconfig.NormalizationNone)
 		if err != nil {
 			return FaceResponse{}, &VectorError{Index: i, Err: err}
 		}

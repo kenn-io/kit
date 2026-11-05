@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/csv"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -26,8 +27,10 @@ func stage() error {
 	if dir == "" {
 		return fmt.Errorf("KIT_EMBED_TEST_DIR is required")
 	}
-	client := embedassets.DownloadClient()
-	defer client.CloseIdleConnections()
+	base := embedassets.DownloadClient()
+	defer base.CloseIdleConnections()
+	client := *base
+	client.Transport = fixtureTransport{base.Transport}
 	for _, model := range []string{embedassets.TextModel, embedassets.FaceModel} {
 		path, assets, err := embedassets.SelectedModel(dir, model)
 		if err != nil {
@@ -37,7 +40,7 @@ func stage() error {
 			return err
 		}
 		for _, asset := range assets {
-			if err := embedassets.CacheAsset(context.Background(), client, path, asset); err != nil {
+			if err := embedassets.CacheAsset(context.Background(), &client, path, asset); err != nil {
 				return err
 			}
 		}
@@ -64,10 +67,19 @@ func stage() error {
 			return err
 		}
 		asset := embedassets.Asset{Name: row[0], URL: row[1], Digest: row[2], Size: size}
-		if err := embedassets.CacheAsset(context.Background(), client, photos, asset); err != nil {
+		if err := embedassets.CacheAsset(context.Background(), &client, photos, asset); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+// Wikimedia requires an identifying agent for automated fixture downloads.
+type fixtureTransport struct{ http.RoundTripper }
+
+func (t fixtureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req = req.Clone(req.Context())
+	req.Header.Set("User-Agent", "kit-embedserver-tests/1.0 (+https://github.com/kenn-io/kit)")
+	return t.RoundTripper.RoundTrip(req)
 }

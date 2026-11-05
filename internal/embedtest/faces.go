@@ -21,12 +21,14 @@ func AssertFaces(t *testing.T, client *embedclient.Client, dir, annotations stri
 		File      string              `json:"file"`
 		Person    string              `json:"person"`
 		Box       embedclient.FaceBox `json:"box"`
+		Extra     bool                `json:"extra"`
 		Unmatched bool                `json:"unmatched"`
 	}
 	require.NoError(t, json.Unmarshal(data, &samples))
 	type embedded struct {
 		person, file string
 		vector       []float32
+		extra        bool
 	}
 	var vectors []embedded
 	for start := 0; start < len(samples); {
@@ -56,11 +58,12 @@ func AssertFaces(t *testing.T, client *embedclient.Client, dir, annotations stri
 				norm += float64(v) * float64(v)
 			}
 			assert.InDelta(t, 1, norm, 1e-5)
-			vectors = append(vectors, embedded{sample.Person, sample.File, item.Embedding})
+			vectors = append(vectors, embedded{sample.Person, sample.File, item.Embedding, sample.Extra})
 		}
 		start = end
 	}
 	maxSame, minDifferent := 0.0, math.Inf(1)
+	originalSame, originalDifferent := 0.0, math.Inf(1)
 	for i, a := range vectors {
 		for _, b := range vectors[:i] {
 			var sum float64
@@ -72,15 +75,25 @@ func AssertFaces(t *testing.T, client *embedclient.Client, dir, annotations stri
 			t.Logf("%s (%s) / %s (%s): %.6f", a.file, a.person, b.file, b.person, distance)
 			if a.person == b.person {
 				maxSame = max(maxSame, distance)
+				if !a.extra && !b.extra {
+					originalSame = max(originalSame, distance)
+				}
 			} else {
 				minDifferent = min(minDifferent, distance)
+				if !a.extra && !b.extra {
+					originalDifferent = min(originalDifferent, distance)
+				}
 			}
 		}
 	}
-	require.Less(t, maxSame, minDifferent, "the corpus must separate by identity")
-	threshold := 1.23
-	if maxSame >= threshold || minDifferent <= threshold {
-		threshold = (maxSame + minDifferent) / 2
+	report := func(name string, same, different float64) {
+		require.Less(t, same, different, "the corpus must separate by identity")
+		threshold := 1.23
+		if same >= threshold || different <= threshold {
+			threshold = (same + different) / 2
+		}
+		t.Logf("%s: maximum same-person %.6f; minimum different-person %.6f; separating distance %.6f", name, same, different, threshold)
 	}
-	t.Logf("maximum same-person %.6f; minimum different-person %.6f; separating distance %.6f", maxSame, minDifferent, threshold)
+	report("original manifest", originalSame, originalDifferent)
+	report("with extra annotations", maxSame, minDifferent)
 }

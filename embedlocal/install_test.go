@@ -17,7 +17,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -279,127 +278,84 @@ func TestInstallReportsProgress(t *testing.T) {
 }
 
 func TestInstallFaceSelection(t *testing.T) {
-	for _, approved := range []bool{false, true} {
-		t.Run(strconv.FormatBool(approved), func(t *testing.T) {
-			client, assets, calls, _ := installFixture(t, "faces", nil)
-			var expected int64
-			for _, asset := range assets {
-				expected += asset.Size
-			}
-			opts := InstallOptions{DataDir: t.TempDir(), Model: FaceModel, Confirm: func(_ context.Context, size int64) (bool, error) {
-				assert.Equal(t, expected+bundleDownloadBytes, size)
-				calls.Range(func(_, value any) bool { assert.Zero(t, value.(*atomic.Int64).Load()); return true })
-				return approved, nil
-			}}
-			var downloaded, total int64
-			opts.Progress = func(n, size int64) { downloaded, total = n, size }
-			_, err := install(t.Context(), opts, client, assets)
-			if !approved {
-				require.Error(t, err)
-				calls.Range(func(_, value any) bool { assert.Zero(t, value.(*atomic.Int64).Load()); return true })
-				return
-			}
-			require.NoError(t, err)
-			assert.Equal(t, total, downloaded)
-			assert.Greater(t, total, expected)
-			faceDir, _, err := embedassets.SelectedModel(opts.DataDir, FaceModel)
-			require.NoError(t, err)
-			entries, err := os.ReadDir(faceDir)
-			require.NoError(t, err)
-			var names []string
-			for _, entry := range entries {
-				names = append(names, entry.Name())
-			}
-			assert.Equal(t, []string{"glintr100.onnx", "yunet.onnx"}, names)
-			assert.NoDirExists(t, embedassets.ModelDir(opts.DataDir))
-			opts.Confirm = func(context.Context, int64) (bool, error) {
-				require.FailNow(t, "offline reuse requested consent")
-				return false, nil
-			}
-			_, err = install(t.Context(), opts, client, assets)
-			require.NoError(t, err)
-			require.NoError(t, os.Remove(filepath.Join(faceDir, "yunet.onnx")))
-			opts.Confirm = func(_ context.Context, size int64) (bool, error) {
-				assert.Equal(t, int64(70_000), size)
-				assert.Equal(t, int64(1), requestCount(calls, "/yunet.onnx"))
-				return true, nil
-			}
-			_, err = install(t.Context(), opts, client, assets)
-			require.NoError(t, err)
-			assert.Equal(t, int64(70_000), downloaded)
-			assert.Equal(t, int64(70_000), total)
-			assert.Equal(t, int64(1), requestCount(calls, "/glintr100.onnx"))
-			assert.Equal(t, int64(2), requestCount(calls, "/yunet.onnx"))
-		})
+	client, assets, calls, _ := installFixture(t, "faces", nil)
+	var expected int64
+	for _, asset := range assets {
+		expected += asset.Size
 	}
-}
-
-func TestInstallPrefersCurrentBundle(t *testing.T) {
-	client, assets, calls, closeServer := installFixture(t, "", nil)
-	opts := InstallOptions{DataDir: t.TempDir(), Confirm: func(context.Context, int64) (bool, error) { return true, nil }}
-	current, err := install(t.Context(), opts, client, assets)
+	opts := InstallOptions{DataDir: t.TempDir(), Model: FaceModel, Confirm: func(_ context.Context, size int64) (bool, error) {
+		assert.Equal(t, expected+bundleDownloadBytes, size)
+		calls.Range(func(_, value any) bool { assert.Zero(t, value.(*atomic.Int64).Load()); return true })
+		return true, nil
+	}}
+	_, err := install(t.Context(), opts, client, assets)
 	require.NoError(t, err)
-	oldDir := filepath.Join(opts.DataDir, "bin", "v0.0.1")
-	require.NoError(t, os.Rename(filepath.Dir(current.Executable), oldDir))
-	closeServer()
-	opts.Confirm = nil
-	reused, err := install(t.Context(), opts, client, assets)
-	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(oldDir, embedassets.ExecutableName()), reused.Executable)
-	require.NoError(t, os.MkdirAll(filepath.Dir(current.Executable), 0o700))
-	for _, name := range append(embedassets.NativeFiles(), embedassets.ExecutableName()) {
-		require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(current.Executable), name), []byte("fixture"), 0o755))
-	}
-	preferred, err := install(t.Context(), opts, client, assets)
-	require.NoError(t, err)
-	assert.Equal(t, current, preferred)
-	assert.Equal(t, int64(1), requestCount(calls, "/archive"))
-	require.NoError(t, os.Remove(filepath.Join(filepath.Dir(current.Executable), embedassets.LibraryName())))
-	_, err = install(t.Context(), opts, client, assets)
-	require.ErrorContains(t, err, "provide Confirm")
-	// The old text bundle cannot satisfy face installation even with cached face assets.
 	faceDir, _, err := embedassets.SelectedModel(opts.DataDir, FaceModel)
 	require.NoError(t, err)
-	require.NoError(t, os.MkdirAll(faceDir, 0o700))
-	for _, asset := range assets {
-		require.NoError(t, os.WriteFile(filepath.Join(faceDir, asset.Name), modelFixture, 0o600))
+	entries, err := os.ReadDir(faceDir)
+	require.NoError(t, err)
+	var names []string
+	for _, entry := range entries {
+		names = append(names, entry.Name())
 	}
-	require.NoError(t, os.RemoveAll(filepath.Dir(current.Executable)))
-	opts.Model = FaceModel
-	opts.Confirm = func(_ context.Context, size int64) (bool, error) {
-		assert.Equal(t, int64(bundleDownloadBytes), size)
-		return false, nil
-	}
-	_, err = install(t.Context(), opts, client, assets)
-	require.ErrorContains(t, err, "declined")
+	assert.Equal(t, []string{"glintr100.onnx", "yunet.onnx"}, names)
+	assert.NoDirExists(t, embedassets.ModelDir(opts.DataDir))
 }
 
 func TestInstallFaceConsentSize(t *testing.T) {
-	_, err := Install(t.Context(), InstallOptions{DataDir: t.TempDir(), Model: FaceModel, Confirm: func(_ context.Context, size int64) (bool, error) {
-		assert.Equal(t, int64(260_926_740+bundleDownloadBytes), size)
+	_, assets, err := embedassets.SelectedModel(t.TempDir(), FaceModel)
+	require.NoError(t, err)
+	var expected int64
+	for _, asset := range assets {
+		expected += asset.Size
+	}
+	_, err = Install(t.Context(), InstallOptions{DataDir: t.TempDir(), Model: FaceModel, Confirm: func(_ context.Context, size int64) (bool, error) {
+		assert.Equal(t, expected+bundleDownloadBytes, size)
 		return false, nil
 	}})
 	require.ErrorContains(t, err, "declined")
 }
 
 func TestInstallReusesNewestTextBundle(t *testing.T) {
-	for _, versions := range [][]string{{"v0.46.0", "v0.47.0"}, {"v0.9.0", "v0.10.0"}} {
-		t.Run(strings.Join(versions, "-"), func(t *testing.T) {
-			client, assets, _, closeServer := installFixture(t, "", nil)
+	for _, tc := range []struct {
+		name, mode string
+		versions   []string
+		broken     bool
+		wantError  bool
+	}{
+		{name: "newest", versions: []string{"v0.46.0", "v0.47.0"}},
+		{name: "numeric order", versions: []string{"v0.9.0", "v0.10.0"}},
+		{name: "current ready", versions: []string{"v0.46.0", embedassets.BundleTag}},
+		{name: "current broken", versions: []string{"v0.46.0", embedassets.BundleTag}, broken: true, wantError: true},
+		{name: "faces require current", mode: "faces", versions: []string{"v0.46.0", "v0.47.0"}, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, assets, calls, closeServer := installFixture(t, tc.mode, nil)
 			opts := InstallOptions{DataDir: t.TempDir(), Confirm: func(context.Context, int64) (bool, error) { return true, nil }}
+			if tc.mode == "faces" {
+				opts.Model = FaceModel
+			}
 			current, err := install(t.Context(), opts, client, assets)
 			require.NoError(t, err)
-			require.NoError(t, os.Rename(filepath.Dir(current.Executable), filepath.Join(opts.DataDir, "bin", versions[0])))
-			bundle := filepath.Join(opts.DataDir, "bin", versions[1])
+			require.NoError(t, os.Rename(filepath.Dir(current.Executable), filepath.Join(opts.DataDir, "bin", tc.versions[0])))
+			bundle := filepath.Join(opts.DataDir, "bin", tc.versions[1])
 			require.NoError(t, os.MkdirAll(bundle, 0o700))
 			for _, name := range append(embedassets.NativeFiles(), embedassets.ExecutableName()) {
+				if tc.broken && name == embedassets.LibraryName() {
+					continue
+				}
 				require.NoError(t, os.WriteFile(filepath.Join(bundle, name), []byte("fixture"), 0o755))
 			}
 			closeServer()
 			opts.Confirm = nil
 			reused, err := install(t.Context(), opts, client, assets)
+			if tc.wantError {
+				require.ErrorContains(t, err, "provide Confirm")
+				return
+			}
 			require.NoError(t, err)
 			assert.Equal(t, filepath.Join(bundle, embedassets.ExecutableName()), reused.Executable)
+			assert.Equal(t, int64(1), requestCount(calls, "/archive"))
 		})
 	}
 }

@@ -67,6 +67,11 @@ jobs:
               # selfupdate.ExtractTarGz and ExtractZip require these archive formats.
               name = output / ('kennembed_' + version + '_' + target + '_' + arch)
               shutil.make_archive(str(name), 'zip' if target == 'windows' else 'gztar', bundle)
+      - name: Cache verified model and photograph fixtures
+        uses: actions/cache@v6.1.0
+        with:
+          path: ${{ env.KIT_EMBED_TEST_DIR }}
+          key: kennembed-models-${{ runner.os }}-${{ runner.arch }}-nomic-cf5b5a86-d241a60d-faces-af6d057c-f12e1279-${{ hashFiles('embedserver/testdata/faces/*') }}
       - name: Stage verified model and photograph fixtures
         run: go run .github/scripts/stage-embed-test.go
       - name: Exercise the native server and models

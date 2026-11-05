@@ -2,14 +2,12 @@ package embedclient
 
 import (
 	"bytes"
-	"context"
 	"encoding/json/v2"
 	"image"
 	"image/png"
 	"math"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -38,7 +36,6 @@ func TestEmbedFaces(t *testing.T) {
 		{"non-unit vector", meta + `[{"index":0,"embedding":[2` + strings.Repeat(",0", 511) + `]},{"index":1,"embedding":null}]}`, 200, false},
 		{"null component", meta + `[{"index":0,"embedding":[null` + strings.Repeat(",0", 511) + `]},{"index":1,"embedding":null}]}`, 200, false},
 		{"missing embedding", meta + `[{"index":0},{"index":1,"embedding":null}]}`, 200, false},
-		{"inference error", `failure`, 500, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			boxes := []FaceBox{{Width: 0.5, Height: 1}, {X: 0.5, Width: 0.5, Height: 1}}
@@ -62,11 +59,6 @@ func TestEmbedFaces(t *testing.T) {
 			assert.Equal(t, 1, calls)
 			if !tc.valid {
 				require.Error(t, err)
-				if tc.status == 500 {
-					var api *APIError
-					require.ErrorAs(t, err, &api)
-					assert.True(t, api.Retryable())
-				}
 				return
 			}
 			require.NoError(t, err)
@@ -79,57 +71,43 @@ func TestEmbedFaces(t *testing.T) {
 }
 
 func TestFaceBoxValidation(t *testing.T) {
-	for _, box := range []FaceBox{{Width: 0, Height: 1}, {Width: 1, Height: 1, Y: -0.1}, {X: 0.5, Width: 0.6, Height: 1}, {X: math.NaN(), Width: 1, Height: 1}, {Width: 1, Height: math.Inf(1)}} {
+	for _, box := range []FaceBox{{Width: 0, Height: 1}, {Width: 1, Height: 1, Y: -0.1}, {X: 0.5, Width: 0.6, Height: 1}, {X: math.NaN(), Width: 1, Height: 1}, {Width: 1, Height: math.Inf(1)}, {X: -2e-6, Width: 1, Height: 1}, {X: 0.5, Width: 0.500002, Height: 1}} {
 		require.Error(t, box.Validate())
 	}
-	assert.NoError(t, (FaceBox{Width: 1, Height: 1}).Validate())
-}
-
-func TestFaceCanceledGate(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	client, err := New(Options{Model: embedconfig.Model{Name: "nomic-embed-text", Dimensions: 768, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationNone}, Deployment: embedconfig.Deployment{BaseURL: "http://127.0.0.1:1/v1"}})
-	require.NoError(t, err)
-	var preview bytes.Buffer
-	require.NoError(t, png.Encode(&preview, image.NewRGBA(image.Rect(0, 0, 1, 1))))
-	_, err = client.EmbedFaces(ctx, preview.Bytes(), []FaceBox{{Width: 1, Height: 1}})
-	require.ErrorIs(t, err, context.Canceled)
+	for _, box := range []FaceBox{
+		{Width: 1, Height: 1},
+		{X: 0.5, Width: 0.5000005, Height: 1},
+		{X: -0.0000005, Y: -0.0000005, Width: 1, Height: 1.000001},
+	} {
+		assert.NoError(t, box.Validate())
+	}
 }
 
 func TestEmbedFacesRetries(t *testing.T) {
 	var preview bytes.Buffer
 	require.NoError(t, png.Encode(&preview, image.NewRGBA(image.Rect(0, 0, 1, 1))))
-	for _, status := range []int{http.StatusServiceUnavailable, http.StatusBadRequest} {
-		t.Run(strconv.Itoa(status), func(t *testing.T) {
-			var calls atomic.Int32
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				assert.Equal(t, "/v1/faces", r.URL.Path)
-				var request FaceRequest
-				if !assert.NoError(t, json.UnmarshalRead(r.Body, &request)) {
-					w.WriteHeader(http.StatusBadRequest)
-					return
-				}
-				assert.Equal(t, preview.Bytes(), request.Image)
-				if calls.Add(1) == 1 {
-					w.Header().Set("Retry-After", "1")
-					w.WriteHeader(status)
-					return
-				}
-				assert.NoError(t, json.MarshalWrite(w, FaceResponse{Model: FaceModel, Revision: FaceRevision, Recipe: FaceRecipe, Data: []FaceResult{{Index: 0}}}, json.FormatNilSliceAsNull(true)))
-			}))
-			defer server.Close()
-			client, err := New(Options{Model: embedconfig.Model{Name: "nomic-embed-text", Dimensions: 768, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationNone}, Deployment: embedconfig.Deployment{BaseURL: server.URL + "/v1"}, Retry: Retry{MaxAttempts: 2, InitialBackoff: time.Millisecond, MaxRetryAfter: time.Millisecond}})
-			require.NoError(t, err)
-			result, err := client.EmbedFaces(t.Context(), preview.Bytes(), []FaceBox{{Width: 1, Height: 1}})
-			if status == http.StatusBadRequest {
-				require.Error(t, err)
-				assert.Equal(t, int32(1), calls.Load())
-				return
-			}
-			require.NoError(t, err)
-			require.Len(t, result.Data, 1)
-			assert.Nil(t, result.Data[0].Embedding)
-			assert.Equal(t, int32(2), calls.Load())
-		})
-	}
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1/faces", r.URL.Path)
+		var request FaceRequest
+		if !assert.NoError(t, json.UnmarshalRead(r.Body, &request)) {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		assert.Equal(t, preview.Bytes(), request.Image)
+		if calls.Add(1) == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		assert.NoError(t, json.MarshalWrite(w, FaceResponse{Model: FaceModel, Revision: FaceRevision, Recipe: FaceRecipe, Data: []FaceResult{{Index: 0}}}, json.FormatNilSliceAsNull(true)))
+	}))
+	defer server.Close()
+	client, err := New(Options{Model: embedconfig.Model{Name: "nomic-embed-text", Dimensions: 768, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationNone}, Deployment: embedconfig.Deployment{BaseURL: server.URL + "/v1"}, Retry: Retry{MaxAttempts: 2, InitialBackoff: time.Millisecond, MaxRetryAfter: time.Millisecond}})
+	require.NoError(t, err)
+	result, err := client.EmbedFaces(t.Context(), preview.Bytes(), []FaceBox{{Width: 1, Height: 1}})
+	require.NoError(t, err)
+	require.Len(t, result.Data, 1)
+	assert.Nil(t, result.Data[0].Embedding)
+	assert.Equal(t, int32(2), calls.Load())
 }

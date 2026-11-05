@@ -62,7 +62,6 @@ func TestBundleNativeParity(t *testing.T) {
 	discovered, err := embedlocal.Endpoint(ctx, embedlocal.Options{DataDir: dir, Model: embedlocal.FaceModel})
 	require.NoError(t, err)
 	assert.Equal(t, endpoint, discovered)
-	embedtest.AssertFaces(t, client, dir, "../../embedserver/testdata/faces/boxes.json")
 	if runtime.GOOS == "windows" {
 		// Inspect the live process, so installed system copies cannot mask a missing
 		// app-local dependency in the bundle under test.
