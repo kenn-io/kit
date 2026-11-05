@@ -8,10 +8,12 @@
   Deduplicate nearest stored Flag.Name definitions before filtering hidden/
   deprecated flags. Parser-equivalent shadowing requires consistently normalized
   registration throughout the tree; never evaluate custom normalizers.
-- Built-in skips prune subtrees: hidden and deprecated commands at any depth,
-  help, completion and cli only as root children. Options.Skip excludes a
-  node only. Root and
-  non-runnable groups are never results. Consumers own environment-specific skips.
+- Built-in skips prune subtrees: hidden and deprecated commands and the
+  annotated NewCommand group at any depth, help and completion only as root
+  children. Options.Skip excludes a node only. Root and non-runnable groups are
+  never results. Consumers own environment-specific skips.
+- Index parent paths below the searched root, so the tool's own name does not
+  match every command.
 - Preserve the exported API and JSON tags. NewCommand owns only --limit;
   callers own JSON selectors, error types and configuration-free lifecycle gates.
   Nil UsageError must preserve inherited flag-error handling.

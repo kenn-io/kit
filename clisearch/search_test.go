@@ -94,7 +94,7 @@ func TestSearchFields(t *testing.T) {
 
 func TestSearchExclusions(t *testing.T) {
 	root := runnable("tool", "needle")
-	for _, name := range []string{"help", "completion", "cli", "hidden", "deprecated"} {
+	for _, name := range []string{"help", "completion", "hidden", "deprecated"} {
 		cmd := runnable(name, "needle")
 		if name == "hidden" {
 			cmd.Hidden = true
@@ -124,6 +124,26 @@ func TestSearchKeepsNestedReservedNames(t *testing.T) {
 	root.AddCommand(report, admin)
 	results := clisearch.Search(root, "needle", 20, clisearch.Options{})
 	assert.Equal(t, []string{"tool admin cli tokens", "tool report completion"}, paths(results))
+}
+
+func TestSearchExcludesAdapterByIdentity(t *testing.T) {
+	root := &cobra.Command{Use: "tool"}
+	cli := &cobra.Command{Use: "cli"}
+	cli.AddCommand(runnable("install", "Install the command finder"))
+	admin := &cobra.Command{Use: "admin"}
+	admin.AddCommand(clisearch.NewCommand(root, clisearch.Options{}))
+	root.AddCommand(cli, admin, clisearch.NewCommand(root, clisearch.Options{}))
+	assert.Equal(t, []string{"tool cli install"}, paths(clisearch.Search(root, "find commands install", 20, clisearch.Options{})))
+}
+
+func TestSearchRootNameMatchesNothing(t *testing.T) {
+	root := &cobra.Command{Use: "tool"}
+	issue := &cobra.Command{Use: "issue"}
+	issue.AddCommand(runnable("close", "Close an issue"))
+	root.AddCommand(runnable("comment <ref>", "Add a comment"), runnable("version", "Print the version"), issue)
+	assert.Empty(t, clisearch.Search(root, "use tool to frobnicate widgets", 5, clisearch.Options{}))
+	assert.Equal(t, []string{"tool comment"}, paths(clisearch.Search(root, "tool comment", 5, clisearch.Options{})))
+	assert.Equal(t, []string{"tool issue close"}, paths(clisearch.Search(root, "tool issue", 5, clisearch.Options{})))
 }
 
 func TestSearchIgnoredTextAndFlags(t *testing.T) {

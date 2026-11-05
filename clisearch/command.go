@@ -24,10 +24,11 @@ func NewCommand(root *cobra.Command, opts Options) *cobra.Command {
 		return err
 	}
 	group := &cobra.Command{
-		Use:   "cli",
-		Short: "Discover commands for a task",
-		Args:  func(cmd *cobra.Command, args []string) error { return usageError(cobra.NoArgs(cmd, args)) },
-		RunE:  func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
+		Use:         "cli",
+		Short:       "Discover commands for a task",
+		Annotations: map[string]string{adapterAnnotation: "true"},
+		Args:        func(cmd *cobra.Command, args []string) error { return usageError(cobra.NoArgs(cmd, args)) },
+		RunE:        func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
 	}
 	limit := 5
 	search := &cobra.Command{

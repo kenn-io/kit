@@ -32,7 +32,6 @@ func execute(t *testing.T, opts clisearch.Options, args ...string) (string, erro
 }
 
 func TestCommandDefaultText(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
 	output, err := execute(t, clisearch.Options{}, "cli", "search", "add", "comment")
 	require.NoError(t, err)
 	assert.Equal(t, "tool comment  Add a comment\nRun 'tool comment --help' for flags and examples.\n", output)

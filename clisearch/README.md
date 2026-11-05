@@ -67,7 +67,8 @@ opts.Synonyms = map[string][]string{"ticket": {"issue"}}
 clisearch.SetKeywords(commentCmd, "log a note", "annotate")
 ```
 
-Hidden and deprecated commands, their descendants, and the root-level `help`,
-`completion` and `cli` commands never appear. `Options.Skip` excludes one
+Hidden and deprecated commands, their descendants, the adapter's own `cli`
+group, and the root-level `help` and `completion` commands never appear. Naming
+the tool in a task does not match every command. `Options.Skip` excludes one
 command but still searches its children. Cobra trees are mutable, so do not run
 searches concurrently with each other, command execution or tree changes.

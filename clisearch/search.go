@@ -29,7 +29,8 @@ type document struct {
 // normalization callbacks are never evaluated.
 //
 // The root and non-runnable groups are not results. Hidden and deprecated
-// subtrees are excluded, as are help, completion and cli under the root. Options.Skip excludes only a node.
+// subtrees are excluded, as are NewCommand's group and help and completion
+// under the root. The parent path field omits the root's own name. Options.Skip excludes only a node.
 // Nonpositive limits, nil roots and empty queries return a non-nil empty slice;
 // limits above 20 are capped at 20. Ties sort by canonical command path.
 func Search(root *cobra.Command, query string, limit int, opts Options) []Result {
@@ -72,16 +73,16 @@ func documents(root *cobra.Command, skip func(*cobra.Command) bool) []document {
 			return
 		}
 		if cmd != root {
-			// Cobra adds help and completion, and NewCommand's cli group is
-			// attached, only at the root. Deeper commands may reuse those names.
-			if cmd.Parent() == root {
-				switch cmd.Name() {
-				case "help", "completion", "cli":
-					return
-				}
+			if cmd.Annotations[adapterAnnotation] != "" {
+				return
+			}
+			// Cobra adds help and completion only at the root. Deeper commands
+			// may reuse those names.
+			if cmd.Parent() == root && (cmd.Name() == "help" || cmd.Name() == "completion") {
+				return
 			}
 			if cmd.Runnable() && (skip == nil || !skip(cmd)) {
-				docs = append(docs, indexCommand(cmd))
+				docs = append(docs, indexCommand(root, cmd))
 			}
 		}
 		// Commands may sort its internal slice; never change Cobra's global sorting
@@ -94,7 +95,7 @@ func documents(root *cobra.Command, skip func(*cobra.Command) bool) []document {
 	return docs
 }
 
-func indexCommand(cmd *cobra.Command) document {
+func indexCommand(root, cmd *cobra.Command) document {
 	usage := *cmd
 	usage.DisableFlagsInUseLine = true
 	doc := document{result: Result{
@@ -103,7 +104,10 @@ func indexCommand(cmd *cobra.Command) document {
 	}}
 	texts := [5]string{
 		cmd.Name() + " " + strings.Join(cmd.Aliases, " "),
-		cmd.Parent().CommandPath(), cmd.Annotations[keywordsAnnotation], cmd.Short, flagText(cmd),
+		// Every path starts with the root, so naming the tool must not match
+		// every command. Index only the path below the searched root.
+		strings.TrimPrefix(cmd.Parent().CommandPath(), root.CommandPath()),
+		cmd.Annotations[keywordsAnnotation], cmd.Short, flagText(cmd),
 	}
 	for i, text := range texts {
 		words := tokens(text)
