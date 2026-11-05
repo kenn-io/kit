@@ -164,14 +164,14 @@ func endpoint(ctx context.Context, opts Options, ollama string, timeout time.Dur
 }
 
 func probeOllama(ctx context.Context, origin string) bool {
-	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, origin+"/api/show", strings.NewReader(`{"model":"nomic-embed-text"}`))
 	if err != nil {
 		return false
 	}
 	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{}
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := client.Do(req)
 	if err != nil {
 		return false

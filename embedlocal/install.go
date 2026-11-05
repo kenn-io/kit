@@ -63,6 +63,11 @@ type Installation struct{ Executable, DataDir string }
 // Bundle downloads include a platform-dependent native runtime and executable.
 const bundleDownloadBytes = 20_000_000
 
+const (
+	installLockPrefix  = "kit-embed-install"
+	installStagePrefix = ".install-"
+)
+
 // Install reuses the pinned server offline or confirms before downloading missing
 // files. Concurrent callers share one installation. Use the shared DataDir from
 // the caller's server discovery and startup integration. Pass the returned paths
@@ -83,7 +88,7 @@ func install(ctx context.Context, opts InstallOptions, client *http.Client, asse
 	if err != nil {
 		return Installation{}, err
 	}
-	release, err := (daemon.RuntimeStore{Dir: dir, Prefix: "kit-embed-install"}).AcquireStartLock(ctx)
+	release, err := (daemon.RuntimeStore{Dir: dir, Prefix: installLockPrefix}).AcquireStartLock(ctx)
 	if err != nil {
 		return Installation{}, err
 	}
@@ -93,7 +98,7 @@ func install(ctx context.Context, opts InstallOptions, client *http.Client, asse
 		return Installation{}, err
 	}
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), ".install-") {
+		if strings.HasPrefix(entry.Name(), installStagePrefix) {
 			if err := os.RemoveAll(filepath.Join(dir, entry.Name())); err != nil {
 				return Installation{}, err
 			}
@@ -119,7 +124,7 @@ func install(ctx context.Context, opts InstallOptions, client *http.Client, asse
 	if err != nil {
 		return Installation{}, err
 	}
-	missing, err := embedassets.MissingModel(modelDir, assets)
+	missing, err := embedassets.MissingModel(modelDir, assets, true)
 	if err != nil {
 		return Installation{}, err
 	}
@@ -149,7 +154,7 @@ func install(ctx context.Context, opts InstallOptions, client *http.Client, asse
 			return Installation{}, err
 		}
 	}
-	stage, err := os.MkdirTemp(dir, ".install-*")
+	stage, err := os.MkdirTemp(dir, installStagePrefix+"*")
 	if err != nil {
 		return Installation{}, err
 	}

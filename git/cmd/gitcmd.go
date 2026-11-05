@@ -216,7 +216,7 @@ func (b *outputBuffer) Write(p []byte) (int, error) {
 }
 
 func gitCommand(ctx context.Context, hideConsoleWindow bool, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := exec.CommandContext(ctx, "git", args...) //nolint:forbidigo // prepareGitCommand hides it unless a credential prompt needs the console
 	cmd.WaitDelay = gitCommandWaitDelay
 	prepareGitCommand(cmd, hideConsoleWindow)
 	return cmd

@@ -24,20 +24,27 @@ import (
 
 func TestEndpointOllamaFallback(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		status     int
-		backend    string
-		skipOllama bool
+		name            string
+		status          int
+		backend         string
+		skipOllama      bool
+		stall, redirect bool
 	}{
-		{"latest", 200, "ollama", false},
-		{"status", 503, "local", false},
-		{"absent model", 404, "local", false},
-		{"skip Ollama", 200, "local", true},
+		{name: "latest", status: 200, backend: "ollama"},
+		{name: "status", status: 503, backend: "local"},
+		{name: "absent model", status: 404, backend: "local"},
+		{name: "skip Ollama", status: 200, backend: "local", skipOllama: true},
+		{name: "stalled", backend: "local", stall: true},
+		{name: "redirect", backend: "local", redirect: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var probes atomic.Int32
+			release := make(chan struct{})
 			ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				probes.Add(1)
+				if r.URL.Path == "/redirected" {
+					return
+				}
 				if !assert.Equal(t, http.MethodPost, r.Method) || !assert.Equal(t, "/api/show", r.URL.Path) {
 					w.WriteHeader(http.StatusBadRequest)
 					return
@@ -49,14 +56,26 @@ func TestEndpointOllamaFallback(t *testing.T) {
 					w.WriteHeader(http.StatusBadRequest)
 					return
 				}
+				if tc.stall {
+					<-release
+					return
+				}
+				if tc.redirect {
+					http.Redirect(w, r, "/redirected", http.StatusTemporaryRedirect)
+					return
+				}
 				w.WriteHeader(tc.status)
 			}))
-			defer ollama.Close()
+			defer func() { close(release); ollama.Close() }()
 			dir := t.TempDir()
 			backends := map[string]string{"local": localServer(t, dir, Version).URL + "/v1", "ollama": ollama.URL + "/v1"}
+			start := time.Now()
 			got, err := endpoint(t.Context(), Options{DataDir: dir, SkipOllama: tc.skipOllama}, ollama.URL, 2*time.Minute)
 			require.NoError(t, err)
 			assert.Equal(t, backends[tc.backend], got)
+			if tc.stall {
+				assert.Less(t, time.Since(start), time.Second)
+			}
 			if tc.skipOllama {
 				assert.Zero(t, probes.Load())
 			}

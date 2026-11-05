@@ -20,6 +20,10 @@ On the expanded corpus, InsightFace's RGB `(value - 127.5) / 127.5` recipe produ
 
 The client sends at most eight boxes per HTTP request and preserves their original indices. Each request holds the shared inference gate through preview decoding and inference, then releases it before writing the response. Text requests can run between those batches. Missing or corrupt model assets return HTTP 424 with the installation error; clients can install the requested model and retry.
 
+Call `embedlocal.Inspect(ctx, embedlocal.Options{DataDir: dir})` before offering a download. It reports `OllamaAvailable`, `Installing`, and approximate `DownloadBytes` independently. The byte count adds each incomplete model file's pinned size and a 20 MB allowance when the server bundle needs replacement. Zero means the pinned files are present by type and size; `Install` still verifies model contents, including same-size corruption.
+
+Inspection checks the install lock with a shared reader that coexists with other inspections. `Installing` means an installer holds the exclusive lock and has a staging directory for approved work. Waiting for confirmation and leftover staging from an interrupted install report idle. Inspection leaves missing directories absent and existing files untouched. The snapshot is advisory because another installer may publish files afterward. The only network request probes local Ollama for `nomic-embed-text`, with a 500 millisecond deadline and redirects refused. Set `SkipOllama` to inspect files alone. Caller cancellation returns an error. Apps keep ownership of their enabled setting, configured endpoint, provider labels, and indexing progress.
+
 ## Publishing bundles
 
 `internal/embedassets.BundleTag` pins the server independently of ordinary kit updates. The current pin is [v0.48.2-face.5](https://github.com/kenn-io/kit/releases/tag/v0.48.2-face.5), which includes face inference and all six platform archives with `SHA256SUMS`. For future updates, dispatch `kennembed.yml` with the reviewed release tag and update `BundleTag` after all archives and checksums are attached. The following ordinary kit release carries that pin for consumers.

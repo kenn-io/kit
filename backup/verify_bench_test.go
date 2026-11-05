@@ -14,19 +14,7 @@ import (
 func BenchmarkQuickVerifyAll(b *testing.B) {
 	for _, count := range []int{25, 100} {
 		b.Run(fmt.Sprintf("snapshots=%d", count), func(b *testing.B) {
-			r, err := Init(filepath.Join(b.TempDir(), "repo"))
-			require.NoError(b, err)
-			dbPath, attachmentsDir, dataDir, db := seedBackupFixture(b)
-			opts := createOpts(dbPath, attachmentsDir, dataDir, b.TempDir())
-			for i := range count {
-				ref := writeLooseAttachment(b, attachmentsDir, []byte(fmt.Sprintf("attachment %d", i)))
-				_, err := db.ExecContext(b.Context(),
-					`INSERT INTO blobs (content_hash, storage_path, size, preview_hash, preview_path) VALUES (?, ?, ?, '', '')`,
-					ref.Hash, ref.Hash[:2]+"/"+ref.Hash, ref.Size)
-				require.NoError(b, err)
-				_, err = Create(b.Context(), r, newTestApp(), opts)
-				require.NoError(b, err)
-			}
+			r, _, _ := buildAttachmentHistory(b, 0, count)
 			b.ReportAllocs()
 			for b.Loop() {
 				result, err := Verify(b.Context(), r, newTestApp(), VerifyOptions{All: true, Quick: true})

@@ -2,7 +2,6 @@ package embedassets
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 )
 
@@ -35,7 +34,7 @@ func InstalledModel(dir, model string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	missing, err := MissingModel(path, assets)
+	missing, err := MissingModel(path, assets, true)
 	if err != nil {
 		return "", err
 	}
@@ -51,11 +50,6 @@ func ModelAvailable(dir, model string) bool {
 	if err != nil {
 		return false
 	}
-	for _, asset := range assets {
-		info, err := os.Stat(filepath.Join(path, asset.Name))
-		if err != nil || !info.Mode().IsRegular() || info.Size() != asset.Size {
-			return false
-		}
-	}
-	return true
+	missing, err := MissingModel(path, assets, false)
+	return err == nil && len(missing) == 0
 }
