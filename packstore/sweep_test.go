@@ -94,8 +94,12 @@ func TestSweepOrphansContinuesPastAnOrphanItCannotRemove(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			layout := layoutForStoreTest(t)
-			blocked := writeMaintenanceLoose(t, layout, []byte("orphan without removal permission"))
-			removable := writeMaintenanceLoose(t, layout, []byte("orphan the sweep can remove"))
+			blocked := writeMaintenanceLoose(t, layout, []byte("first orphan"))
+			removable := writeMaintenanceLoose(t, layout, []byte("second orphan"))
+			// The sweep visits names in order; deny the first so success proves it continued.
+			if removable.String() < blocked.String() {
+				blocked, removable = removable, blocked
+			}
 			maintainer := newMaintainerForTest(t, newMaintenanceCatalog(), layout, DefaultLimits())
 			tt.deny(t, maintainer, layout.LoosePath(blocked))
 
