@@ -25,11 +25,12 @@ func DefaultDir() (string, error) {
 	return embedlocal.DefaultDir()
 }
 
-// Serve prints its loopback URL to stderr after loading the model and publishing
-// its runtime record. Cancellation closes connections and waits for active
-// inference before native cleanup. Serve prints any returned error to stderr.
+// Serve prints its loopback URL to stderr after publishing its runtime record.
+// Models load on demand from installed assets. Cancellation closes connections
+// and waits for active inference before native cleanup. Serve prints any
+// returned error to stderr.
 func Serve(ctx context.Context, opts Options) error {
-	return serve(ctx, opts, loadModel, daemon.Endpoint.ListenContext)
+	return serve(ctx, opts, loadModels, daemon.Endpoint.ListenContext)
 }
 
 func serve(ctx context.Context, opts Options, load func(context.Context, string, string) (engine, error), listen func(daemon.Endpoint, context.Context) (net.Listener, error)) (err error) {
@@ -77,7 +78,7 @@ func serve(ctx context.Context, opts Options, load func(context.Context, string,
 		}
 		opts.Library = filepath.Join(filepath.Dir(executable), embedassets.LibraryName())
 	}
-	if _, err := fmt.Fprintln(os.Stderr, "Loading nomic-embed-text model..."); err != nil {
+	if _, err := fmt.Fprintln(os.Stderr, "Starting local embeddings server..."); err != nil {
 		return err
 	}
 	engine, err := load(ctx, opts.DataDir, opts.Library)
@@ -108,6 +109,20 @@ func serve(ctx context.Context, opts Options, load func(context.Context, string,
 			switch r.URL.Path {
 			case "/api/ping":
 				ping.ServeHTTP(w, r)
+			case "/v1/models":
+				if r.Method != http.MethodGet {
+					w.Header().Set("Allow", "GET")
+					http.Error(w, "GET required", http.StatusMethodNotAllowed)
+					return
+				}
+				embeddings.availableModels(w, r)
+			case "/v1/faces":
+				if r.Method != http.MethodPost {
+					w.Header().Set("Allow", "POST")
+					http.Error(w, "POST required", http.StatusMethodNotAllowed)
+					return
+				}
+				embeddings.faces(w, r)
 			case "/v1/embeddings":
 				if r.Method != http.MethodPost {
 					w.Header().Set("Allow", "POST")

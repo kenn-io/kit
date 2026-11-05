@@ -92,7 +92,9 @@ func TestEndpointNotFound(t *testing.T) {
 
 func localServer(t *testing.T, dir, version string) *httptest.Server {
 	t.Helper()
-	server := httptest.NewServer(daemon.NewPingHandler(daemon.PingHandlerOptions{Service: Service, Version: version}))
+	mux := http.NewServeMux()
+	mux.Handle("/api/ping", daemon.NewPingHandler(daemon.PingHandlerOptions{Service: Service, Version: version}))
+	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	ep, err := daemon.ParseEndpoint(server.URL, daemon.ParseEndpointOptions{TCPPolicy: daemon.RequireLoopback})
 	require.NoError(t, err)
@@ -331,4 +333,58 @@ func runServer(args []string) int {
 	}
 	<-stop
 	return 0
+}
+
+func TestEndpointRequestedModel(t *testing.T) {
+	for _, tc := range []struct {
+		name, model         string
+		models              []string
+		old, found, restart bool
+	}{
+		{name: "text missing from face server", model: TextModel, models: []string{FaceModel}},
+		{name: "face missing from text server", model: FaceModel, models: []string{TextModel}},
+		{name: "face installed later", model: FaceModel, models: []string{TextModel, FaceModel}, found: true},
+		{name: "text on old server", model: TextModel, old: true, found: true},
+		{name: "face on old server", model: FaceModel, old: true, restart: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			ping := daemon.NewPingHandler(daemon.PingHandlerOptions{Service: Service, Version: Version})
+			available := tc.models
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/ping":
+					ping.ServeHTTP(w, r)
+				case "/v1/models":
+					if tc.old {
+						http.NotFound(w, r)
+						return
+					}
+					assert.NoError(t, json.MarshalWrite(w, struct {
+						Models []string `json:"models"`
+					}{available}))
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			ep, err := daemon.ParseEndpoint(server.URL, daemon.ParseEndpointOptions{TCPPolicy: daemon.RequireLoopback})
+			require.NoError(t, err)
+			record := daemon.NewRuntimeRecord(Service, Version, ep)
+			_, err = (daemon.RuntimeStore{Dir: dir, Prefix: Service}).Write(record)
+			require.NoError(t, err)
+			// Probe a face-only server even when Ollama could supply text.
+			result, err := endpoint(t.Context(), Options{DataDir: dir, Model: tc.model, SkipOllama: true}, "", time.Second)
+			if tc.restart {
+				var restart *RestartRequiredError
+				require.ErrorAs(t, err, &restart)
+				assert.Equal(t, record.PID, restart.PID)
+			} else if tc.found {
+				require.NoError(t, err)
+				assert.Equal(t, server.URL+"/v1", result)
+			} else {
+				require.ErrorIs(t, err, ErrNotFound)
+			}
+		})
+	}
 }

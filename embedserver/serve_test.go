@@ -1,12 +1,17 @@
 package embedserver
 
 import (
+	"bytes"
 	"context"
+	"encoding/json/v2"
 	"errors"
+	"image"
+	"image/png"
 	"io"
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -15,66 +20,84 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/daemon"
+	"go.kenn.io/kit/embedclient"
 )
 
 func TestServeDiscoveryAndCancellation(t *testing.T) {
-	reader, writer, err := os.Pipe()
-	require.NoError(t, err)
-	stderr := os.Stderr
-	os.Stderr = writer
-	defer func() { os.Stderr = stderr; writer.Close(); reader.Close() }()
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	entered, canceled, finished, release := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
-	finish := sync.OnceFunc(func() { close(release) })
-	defer finish()
-	closed := make(chan struct{})
-	closedAfterInference := false
-	e := &fakeEngine{run: func(ctx context.Context, _ string) ([]float32, int, error) {
-		close(entered)
-		<-ctx.Done()
-		close(canceled)
-		<-release
-		close(finished)
-		return nil, 0, ctx.Err()
-	}, onClose: func() {
-		close(closed)
-		select {
-		case <-finished:
-			closedAfterInference = true
-		default:
-		}
-	}}
-	store, record, done := startServe(t, ctx, t.TempDir(), e, daemon.Endpoint.ListenContext)
-	requestDone := startEmbeddingRequest(t, record)
-	select {
-	case <-entered:
-	case <-time.After(5 * time.Second):
-		require.FailNow(t, "inference did not start")
+	for _, faces := range []bool{false, true} {
+		t.Run(strconv.FormatBool(faces), func(t *testing.T) {
+			reader, writer, err := os.Pipe()
+			require.NoError(t, err)
+			stderr := os.Stderr
+			os.Stderr = writer
+			defer func() { os.Stderr = stderr; writer.Close(); reader.Close() }()
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			entered, canceled, finished, release := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
+			finish := sync.OnceFunc(func() { close(release) })
+			defer finish()
+			closed := make(chan struct{})
+			closedAfterInference := false
+			e := &fakeEngine{run: func(ctx context.Context, _ string) ([]float32, int, error) {
+				close(entered)
+				<-ctx.Done()
+				close(canceled)
+				<-release
+				close(finished)
+				return nil, 0, ctx.Err()
+			}, onClose: func() {
+				close(closed)
+				select {
+				case <-finished:
+					closedAfterInference = true
+				default:
+				}
+			}}
+			var active engine = e
+			path, body := "/v1/embeddings", `{"model":"nomic-embed-text","input":"x"}`
+			if faces {
+				active = &faceEngine{fakeEngine: e, runFace: func(ctx context.Context, _ image.Image, _ embedclient.FaceBox) ([]float32, error) {
+					v, _, err := e.embed(ctx, "")
+					return v, err
+				}}
+				var preview bytes.Buffer
+				require.NoError(t, png.Encode(&preview, image.NewRGBA(image.Rect(0, 0, 1, 1))))
+				encoded, err := json.Marshal(embedclient.FaceRequest{Image: preview.Bytes(), Boxes: []embedclient.FaceBox{{Width: 1, Height: 1}}})
+				require.NoError(t, err)
+				path, body = "/v1/faces", string(encoded)
+			}
+			store, record, done := startServe(t, ctx, t.TempDir(), active, daemon.Endpoint.ListenContext)
+			requestDone := startEmbeddingRequest(t, record, path, body)
+			select {
+			case <-entered:
+			case <-time.After(5 * time.Second):
+				require.FailNow(t, "inference did not start")
+			}
+			cancel()
+			require.ErrorIs(t, <-requestDone, io.EOF)
+			<-canceled
+			select {
+			case <-closed:
+				require.FailNow(t, "model closed before inference returned")
+			default:
+			}
+			finish()
+			select {
+			case err := <-done:
+				require.NoError(t, err)
+			case <-time.After(5 * time.Second):
+				require.FailNow(t, "cancellation did not drain inference")
+			}
+			assert.True(t, closedAfterInference)
+			require.NoError(t, writer.Close())
+			printed, err := io.ReadAll(reader)
+			require.NoError(t, err)
+			assert.Equal(t, "Starting local embeddings server...\n"+record.Endpoint().BaseURL()+"/v1\n", string(printed))
+			records, err := store.List()
+			require.NoError(t, err)
+			assert.Empty(t, records)
+		})
 	}
-	cancel()
-	require.ErrorIs(t, <-requestDone, io.EOF)
-	<-canceled
-	select {
-	case <-closed:
-		require.FailNow(t, "model closed before inference returned")
-	default:
-	}
-	finish()
-	select {
-	case err := <-done:
-		require.NoError(t, err)
-	case <-time.After(5 * time.Second):
-		require.FailNow(t, "cancellation did not drain inference")
-	}
-	assert.True(t, closedAfterInference)
-	require.NoError(t, writer.Close())
-	printed, err := io.ReadAll(reader)
-	require.NoError(t, err)
-	assert.Equal(t, "Loading nomic-embed-text model...\n"+record.Endpoint().BaseURL()+"/v1\n", string(printed))
-	records, err := store.List()
-	require.NoError(t, err)
-	assert.Empty(t, records)
 }
 
 func TestServeRejectsStartup(t *testing.T) {
@@ -144,11 +167,11 @@ func startServe(t *testing.T, ctx context.Context, dir string, e engine, listen 
 	return store, record, done
 }
 
-func startEmbeddingRequest(t *testing.T, record daemon.RuntimeRecord) <-chan error {
+func startEmbeddingRequest(t *testing.T, record daemon.RuntimeRecord, path, body string) <-chan error {
 	t.Helper()
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, record.Endpoint().BaseURL()+"/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text","input":"x"}`))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, record.Endpoint().BaseURL()+path, strings.NewReader(body))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	done := make(chan error, 1)

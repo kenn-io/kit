@@ -2,16 +2,19 @@ package embedlocal
 
 import (
 	"context"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	"go.kenn.io/kit/daemon"
+	"go.kenn.io/kit/internal/embedassets"
 )
 
 // Service identifies the shared embeddings server and its runtime records.
@@ -19,6 +22,19 @@ const Service = "kit-embed"
 
 // Version identifies the server runtime protocol.
 const Version = "1"
+
+// TextModel and FaceModel select installed model assets and server capabilities.
+const (
+	TextModel = embedassets.TextModel
+	FaceModel = embedassets.FaceModel
+)
+
+// RestartRequiredError identifies a running server predating face support.
+type RestartRequiredError struct{ PID int }
+
+func (e *RestartRequiredError) Error() string {
+	return fmt.Sprintf("restart kennembed PID %d to enable face embeddings", e.PID)
+}
 
 // ErrNotFound means no local server was found and no executable was supplied.
 var ErrNotFound = errors.New("local embeddings server not found")
@@ -28,6 +44,8 @@ var ErrNotFound = errors.New("local embeddings server not found")
 // permits discovery without starting a server.
 type Options struct {
 	DataDir, Executable string
+	// Model selects TextModel (the default) or FaceModel.
+	Model string
 	// SkipOllama skips Ollama and discovers kennembed, starting it only when
 	// Executable is supplied.
 	SkipOllama bool
@@ -53,7 +71,13 @@ func Endpoint(ctx context.Context, opts Options) (string, error) {
 }
 
 func endpoint(ctx context.Context, opts Options, ollama string, timeout time.Duration) (string, error) {
-	if !opts.SkipOllama && probeOllama(ctx, ollama) {
+	if _, _, err := embedassets.SelectedModel(opts.DataDir, opts.Model); err != nil {
+		return "", err
+	}
+	if opts.Model == "" {
+		opts.Model = TextModel
+	}
+	if opts.Model == TextModel && !opts.SkipOllama && probeOllama(ctx, ollama) {
 		return ollama + "/v1", nil
 	}
 	var err error
@@ -85,7 +109,7 @@ func endpoint(ctx context.Context, opts Options, ollama string, timeout time.Dur
 		if !ok {
 			return "", ErrNotFound
 		}
-		return rec.Endpoint().BaseURL() + "/v1", nil
+		return modelEndpoint(ctx, rec, opts.Model)
 	}
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
@@ -136,7 +160,7 @@ func endpoint(ctx context.Context, opts Options, ollama string, timeout time.Dur
 		}
 		return "", startupError(path, err, current)
 	}
-	return rec.Endpoint().BaseURL() + "/v1", nil
+	return modelEndpoint(ctx, rec, opts.Model)
 }
 
 func probeOllama(ctx context.Context, origin string) bool {
@@ -201,4 +225,39 @@ func startupError(path string, cause error, current bool) error {
 	}
 	tail, err := io.ReadAll(io.NewSectionReader(log, max(0, info.Size()-2048), 2048))
 	return errors.Join(fmt.Errorf("%w:\n%s", failure, strings.TrimSpace(string(tail))), err)
+}
+
+// Old text servers retain their existing contract; faces require capability discovery.
+func modelEndpoint(ctx context.Context, rec daemon.RuntimeRecord, model string) (string, error) {
+	base := rec.Endpoint().BaseURL() + "/v1"
+	ctx, cancel := context.WithTimeout(ctx, time.Second*5)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/models", nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		if model == TextModel {
+			return base, nil
+		}
+		return "", &RestartRequiredError{PID: rec.PID}
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("model discovery: HTTP %d", resp.StatusCode)
+	}
+	var available struct {
+		Models []string `json:"models"`
+	}
+	if err := json.UnmarshalRead(io.LimitReader(resp.Body, 4096), &available); err != nil {
+		return "", fmt.Errorf("model discovery: %w", err)
+	}
+	if !slices.Contains(available.Models, model) {
+		return "", ErrNotFound
+	}
+	return base, nil
 }

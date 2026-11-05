@@ -32,6 +32,8 @@ import (
 // conventionally ~/.kenn/embeddings, and own the confirmation prompt.
 type InstallOptions struct {
 	DataDir string
+	// Model selects TextModel (the default) or FaceModel.
+	Model string
 	// Confirm runs once before any network request with the approximate missing
 	// download bytes. A missing callback or refusal prevents downloads.
 	Confirm func(context.Context, int64) (bool, error)
@@ -66,7 +68,11 @@ const bundleDownloadBytes = 20_000_000
 // the caller's server discovery and startup integration. Pass the returned paths
 // to the launcher; the installation lock is released before return.
 func Install(ctx context.Context, opts InstallOptions) (Installation, error) {
-	return install(ctx, opts, nil, embedassets.ModelAssets())
+	_, assets, err := embedassets.SelectedModel(opts.DataDir, opts.Model)
+	if err != nil {
+		return Installation{}, err
+	}
+	return install(ctx, opts, nil, assets)
 }
 
 func install(ctx context.Context, opts InstallOptions, client *http.Client, assets []embedassets.Asset) (Installation, error) {
@@ -96,7 +102,24 @@ func install(ctx context.Context, opts InstallOptions, client *http.Client, asse
 	bundle := filepath.Join(dir, "bin", embedassets.BundleTag)
 	result := Installation{filepath.Join(bundle, embedassets.ExecutableName()), dir}
 	ready := checkBundle(bundle) == nil
-	modelDir := embedassets.ModelDir(dir)
+	if _, err := os.Stat(bundle); !ready && errors.Is(err, os.ErrNotExist) && (opts.Model == "" || opts.Model == TextModel) {
+		older, err := os.ReadDir(filepath.Join(dir, "bin"))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return Installation{}, err
+		}
+		for _, entry := range older {
+			candidate := filepath.Join(dir, "bin", entry.Name())
+			if entry.IsDir() && checkBundle(candidate) == nil {
+				bundle, ready = candidate, true
+				result.Executable = filepath.Join(bundle, embedassets.ExecutableName())
+				break
+			}
+		}
+	}
+	modelDir, _, err := embedassets.SelectedModel(dir, opts.Model)
+	if err != nil {
+		return Installation{}, err
+	}
 	missing, err := embedassets.MissingModel(modelDir, assets)
 	if err != nil {
 		return Installation{}, err

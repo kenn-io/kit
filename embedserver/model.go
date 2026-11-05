@@ -26,7 +26,7 @@ func loadModel(ctx context.Context, dir, library string) (engine, error) {
 	if _, err := os.Stat(library); err != nil {
 		return nil, fmt.Errorf("ONNX Runtime library: %w", err)
 	}
-	cached, err := embedassets.CacheModel(ctx, dir)
+	cached, err := embedassets.InstalledModel(dir, embedassets.TextModel)
 	if err != nil {
 		return nil, err
 	}
