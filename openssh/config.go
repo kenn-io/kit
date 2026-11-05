@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"go.kenn.io/kit/consolewindow"
 )
 
 // Option is one normalized entry from ssh -G output. Names are lowercase;
@@ -169,7 +171,7 @@ func runOutput(
 	if len(argv) == 0 {
 		return nil, nil, -1, errors.New("empty command")
 	}
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd := consolewindow.CommandContext(ctx, argv[0], argv[1:]...)
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

@@ -36,3 +36,11 @@ func TestHide(t *testing.T) {
 		})
 	}
 }
+
+func TestCommandContextHidesConsole(t *testing.T) {
+	cmd := CommandContext(t.Context(), "unused", "arg")
+
+	require.NotNil(t, cmd.SysProcAttr)
+	assert.Equal(t, uint32(windows.CREATE_NO_WINDOW), cmd.SysProcAttr.CreationFlags)
+	assert.Equal(t, []string{"unused", "arg"}, cmd.Args)
+}

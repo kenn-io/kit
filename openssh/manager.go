@@ -1021,7 +1021,7 @@ func runSSHCommand(
 	executable string,
 	arguments []string,
 ) (int, error) {
-	cmd := exec.CommandContext(ctx, executable, arguments...)
+	cmd := exec.CommandContext(ctx, executable, arguments...) //nolint:forbidigo // interactive: BatchMode=no connections prompt on the console
 	err := cmd.Run()
 	if err == nil {
 		return 0, nil

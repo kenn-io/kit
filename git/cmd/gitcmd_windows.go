@@ -24,9 +24,8 @@ func prepareGitCommand(cmd *exec.Cmd, hideConsoleWindow bool) {
 			// its own bounded context.
 			killCtx, cancel := context.WithTimeout(context.Background(), gitCommandWaitDelay)
 			defer cancel()
-			kill := exec.CommandContext(killCtx, filepath.Join(systemDir, "taskkill.exe"),
+			kill := consolewindow.CommandContext(killCtx, filepath.Join(systemDir, "taskkill.exe"),
 				"/PID", strconv.Itoa(cmd.Process.Pid), "/T", "/F")
-			consolewindow.Hide(kill)
 			if err = kill.Run(); err == nil {
 				return nil
 			}
