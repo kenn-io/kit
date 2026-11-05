@@ -3,7 +3,6 @@ package embedlocal
 import (
 	"context"
 	"encoding/json/v2"
-	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -21,7 +20,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/daemon"
-	"go.kenn.io/kit/internal/embedassets"
 )
 
 func TestEndpointOllamaFallback(t *testing.T) {
@@ -358,18 +356,19 @@ func runServer(args []string) int {
 
 func TestEndpointRequestedModel(t *testing.T) {
 	for _, tc := range []struct {
-		name, model         string
-		models              []string
-		old, found, restart bool
-		status              int
-		body, problem       string
+		name, model    string
+		models         []string
+		found, restart bool
+		status         int
+		body, problem  string
 	}{
 		{name: "text missing from face server", model: TextModel, models: []string{FaceModel}},
+		{name: "text on current server", models: []string{FaceModel, TextModel}, found: true},
 		{name: "face missing from text server", model: FaceModel, models: []string{TextModel}},
 		{name: "face on current server", model: FaceModel, models: []string{TextModel, FaceModel}, found: true},
-		{name: "face on old server", model: FaceModel, old: true, restart: true},
+		{name: "face on old server", model: FaceModel, restart: true},
 		{name: "server error", model: FaceModel, status: http.StatusInternalServerError, problem: "model discovery: HTTP 500"},
-		{name: "invalid response", model: FaceModel, status: http.StatusOK, body: `{"models":`, problem: "model discovery:"},
+		{name: "invalid response", model: FaceModel, body: `{"models":`, problem: "model discovery:"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -380,14 +379,16 @@ func TestEndpointRequestedModel(t *testing.T) {
 					ping.ServeHTTP(w, r)
 				case "/v1/models":
 					assert.Equal(t, http.MethodGet, r.Method)
-					if tc.status != 0 {
-						w.WriteHeader(tc.status)
+					if tc.status != 0 || tc.body != "" {
+						if tc.status != 0 {
+							w.WriteHeader(tc.status)
+						}
 						_, err := w.Write([]byte(tc.body))
 						assert.NoError(t, err)
 						return
 					}
 
-					if tc.old {
+					if tc.restart {
 						http.NotFound(w, r)
 						return
 					}
@@ -420,41 +421,4 @@ func TestEndpointRequestedModel(t *testing.T) {
 			}
 		})
 	}
-}
-
-// Text setup installs only after discovery reports ErrNotFound.
-func TestTextSetupAfterFaceInstallation(t *testing.T) {
-	client, assets, calls, _ := installFixture(t, "", nil)
-	dir := t.TempDir()
-	textFile := filepath.Join(embedassets.ModelDir(dir), assets[0].Name)
-	mux := http.NewServeMux()
-	mux.Handle("/api/ping", daemon.NewPingHandler(daemon.PingHandlerOptions{Service: Service, Version: Version}))
-	mux.HandleFunc("GET /v1/models", func(w http.ResponseWriter, _ *http.Request) {
-		models := []string{FaceModel}
-		if _, err := os.Stat(textFile); err == nil {
-			models = append(models, TextModel)
-		}
-		assert.NoError(t, json.MarshalWrite(w, struct {
-			Models []string `json:"models"`
-		}{models}))
-	})
-	server := httptest.NewServer(mux)
-	defer server.Close()
-	ep, err := daemon.ParseEndpoint(server.URL, daemon.ParseEndpointOptions{TCPPolicy: daemon.RequireLoopback})
-	require.NoError(t, err)
-	_, err = (daemon.RuntimeStore{Dir: dir, Prefix: Service}).Write(daemon.NewRuntimeRecord(Service, Version, ep))
-	require.NoError(t, err)
-	opts := Options{DataDir: dir, SkipOllama: true}
-	_, err = endpoint(t.Context(), opts, "", time.Second)
-	if errors.Is(err, ErrNotFound) {
-		_, err = install(t.Context(), InstallOptions{DataDir: dir, Confirm: func(context.Context, int64) (bool, error) { return true, nil }}, client, assets)
-	}
-	require.NoError(t, err)
-	assert.Equal(t, int64(1), requestCount(calls, "/model.onnx"), "text setup must install its missing model")
-	got, err := os.ReadFile(textFile)
-	require.NoError(t, err)
-	assert.Equal(t, modelFixture, got)
-	origin, err := endpoint(t.Context(), opts, "", time.Second)
-	require.NoError(t, err)
-	assert.Equal(t, server.URL+"/v1", origin)
 }

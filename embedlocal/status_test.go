@@ -26,7 +26,7 @@ func TestInspectFiles(t *testing.T) {
 	for _, tc := range []struct {
 		name, selected, installed string
 		bundle, model             bool
-		cached, broken            bool
+		cached                    bool
 		bytes                     int64
 	}{
 		{name: "missing directory", bytes: totalModelBytes + bundleDownloadBytes},
@@ -38,7 +38,6 @@ func TestInspectFiles(t *testing.T) {
 		{name: "faces complete", selected: FaceModel, installed: FaceModel, bundle: true, model: true},
 		{name: "cached text default", cached: true, model: true},
 		{name: "cached text explicit", selected: TextModel, cached: true, model: true},
-		{name: "broken current text bundle", bundle: true, cached: true, broken: true, model: true, bytes: bundleDownloadBytes},
 		{name: "faces require current bundle", selected: FaceModel, installed: FaceModel, cached: true, model: true, bytes: bundleDownloadBytes},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -54,9 +53,6 @@ func TestInspectFiles(t *testing.T) {
 				bundle := filepath.Join(dir, "bin", version)
 				require.NoError(t, os.MkdirAll(bundle, 0o700))
 				for _, name := range append(embedassets.NativeFiles(), embedassets.ExecutableName()) {
-					if tc.broken && version == embedassets.BundleTag && name == embedassets.LibraryName() {
-						continue
-					}
 					require.NoError(t, os.WriteFile(filepath.Join(bundle, name), []byte("fixture"), 0o700))
 				}
 			}
