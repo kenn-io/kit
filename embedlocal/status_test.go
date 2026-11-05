@@ -24,14 +24,17 @@ func TestInspectFiles(t *testing.T) {
 		totalModelBytes += asset.Size
 	}
 	for _, tc := range []struct {
-		name          string
-		bundle, model bool
-		bytes         int64
+		name, selected, installed string
+		bundle, model             bool
+		bytes                     int64
 	}{
 		{name: "missing directory", bytes: totalModelBytes + bundleDownloadBytes},
 		{name: "complete", bundle: true, model: true},
 		{name: "model missing", bundle: true, bytes: totalModelBytes},
 		{name: "bundle missing", model: true, bytes: bundleDownloadBytes},
+		{name: "faces missing from text installation", selected: FaceModel, bundle: true, model: true, bytes: 260_926_740},
+		{name: "text missing from face installation", selected: TextModel, installed: FaceModel, bundle: true, model: true, bytes: totalModelBytes},
+		{name: "faces complete", selected: FaceModel, installed: FaceModel, bundle: true, model: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "shared")
@@ -43,16 +46,17 @@ func TestInspectFiles(t *testing.T) {
 				}
 			}
 			if tc.model {
-				model := embedassets.ModelDir(dir)
+				model, assets, err := embedassets.SelectedModel(dir, tc.installed)
+				require.NoError(t, err)
 				require.NoError(t, os.MkdirAll(model, 0o700))
-				for _, a := range embedassets.ModelAssets() {
+				for _, a := range assets {
 					f, err := os.Create(filepath.Join(model, a.Name))
 					require.NoError(t, err)
 					require.NoError(t, f.Truncate(a.Size))
 					require.NoError(t, f.Close())
 				}
 			}
-			got, err := Inspect(t.Context(), Options{DataDir: dir, SkipOllama: true})
+			got, err := Inspect(t.Context(), Options{DataDir: dir, Model: tc.selected, SkipOllama: true})
 			require.NoError(t, err)
 			assert.Equal(t, Status{DownloadBytes: tc.bytes}, got)
 			if tc.name == "missing directory" {
@@ -64,23 +68,24 @@ func TestInspectFiles(t *testing.T) {
 
 func TestInspectOllama(t *testing.T) {
 	for _, tc := range []struct {
-		name            string
+		name, model     string
 		status          int
 		skip, available bool
 	}{
 		{name: "supported", status: http.StatusOK, available: true},
 		{name: "skipped", status: http.StatusOK, skip: true},
 		{name: "unavailable", status: http.StatusServiceUnavailable},
+		{name: "faces skip text provider", model: FaceModel, status: http.StatusOK},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var probes atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { probes.Add(1); w.WriteHeader(tc.status) }))
 			defer server.Close()
-			got, err := inspect(t.Context(), Options{DataDir: t.TempDir(), SkipOllama: tc.skip}, server.URL)
+			got, err := inspect(t.Context(), Options{DataDir: t.TempDir(), Model: tc.model, SkipOllama: tc.skip}, server.URL)
 			require.NoError(t, err)
 			assert.Equal(t, tc.available, got.OllamaAvailable)
 			want := int32(1)
-			if tc.skip {
+			if tc.skip || tc.model == FaceModel {
 				want = 0
 			}
 			assert.Equal(t, want, probes.Load())
