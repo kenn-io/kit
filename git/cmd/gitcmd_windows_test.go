@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,8 +64,19 @@ func TestRunnerCancellationAfterIntermediateExit(t *testing.T) {
 		}
 	}
 	require.NotZero(t, rootCreated)
-	require.Len(t, children[rootPID], 1)
-	middle := children[rootPID][0]
+	// CREATE_NO_WINDOW gives Git its own console, whose host process Windows
+	// parents to Git. The shell is Git's only other child.
+	var intermediates []gitWindowsProcess
+	images := make([]string, 0, len(children[rootPID]))
+	for _, child := range children[rootPID] {
+		image := testProcessImageName(t, child.pid)
+		images = append(images, image)
+		if !strings.EqualFold(image, "conhost.exe") {
+			intermediates = append(intermediates, child)
+		}
+	}
+	require.Len(t, intermediates, 1, "Git's child processes: %v", images)
+	middle := intermediates[0]
 	require.NotEmpty(t, children[middle.pid], "the shell must have a live HTTP helper")
 	handle, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_TERMINATE, false, middle.pid)
 	require.NoError(t, err)
@@ -96,6 +109,17 @@ func TestRunnerCancellationAfterIntermediateExit(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		require.FailNow(t, "HTTP helper survived its intermediate process")
 	}
+}
+
+func testProcessImageName(t *testing.T, pid uint32) string {
+	t.Helper()
+	process, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	require.NoError(t, err)
+	defer func() { _ = windows.CloseHandle(process) }()
+	buffer := make([]uint16, windows.MAX_LONG_PATH)
+	size := uint32(len(buffer))
+	require.NoError(t, windows.QueryFullProcessImageName(process, 0, &buffer[0], &size))
+	return filepath.Base(windows.UTF16ToString(buffer[:size]))
 }
 
 func TestRunnerCommandHidesGitConsoleWindow(t *testing.T) {
