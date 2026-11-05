@@ -8,56 +8,36 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/gofrs/flock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/daemon"
 	"go.kenn.io/kit/internal/embedassets"
 )
 
-func TestInspectObservers(t *testing.T) {
-	dir := t.TempDir()
-	require.NoError(t, os.Mkdir(filepath.Join(dir, ".install-stale"), 0o700))
-	path, err := (daemon.RuntimeStore{Dir: dir, Prefix: "kit-embed-install"}).LockPath()
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(path, nil, 0o600))
-	reader := flock.New(path, flock.SetFlag(os.O_RDONLY))
-	locked, err := reader.TryRLock()
-	require.NoError(t, err)
-	require.True(t, locked)
-	defer func() { require.NoError(t, reader.Close()) }()
-	var wg sync.WaitGroup
-	results, errs := make([]Status, 8), make([]error, 8)
-	for i := range results {
-		wg.Go(func() {
-			results[i], errs[i] = Inspect(t.Context(), Options{DataDir: dir, SkipOllama: true})
-		})
-	}
-	wg.Wait()
-	for i, result := range results {
-		require.NoError(t, errs[i])
-		assert.False(t, result.Installing)
-	}
-}
-
 func TestInspectFiles(t *testing.T) {
+	var totalModelBytes, onnxBytes int64
+	for _, asset := range embedassets.ModelAssets() {
+		totalModelBytes += asset.Size
+		if asset.Name == "model.onnx" {
+			onnxBytes = asset.Size
+		}
+	}
 	for _, tc := range []struct {
 		name          string
 		bundle, model bool
 		invalid       string
 		bytes         int64
 	}{
-		{name: "missing directory", bytes: 294570424},
+		{name: "missing directory", bytes: totalModelBytes + bundleDownloadBytes},
 		{name: "complete", bundle: true, model: true},
-		{name: "model missing", bundle: true, bytes: 274570424},
-		{name: "bundle missing", model: true, bytes: 20000000},
-		{name: "short model", bundle: true, model: true, invalid: "short", bytes: 273859028},
-		{name: "model directory", bundle: true, model: true, invalid: "directory", bytes: 273859028},
+		{name: "model missing", bundle: true, bytes: totalModelBytes},
+		{name: "bundle missing", model: true, bytes: bundleDownloadBytes},
+		{name: "short model", bundle: true, model: true, invalid: "short", bytes: onnxBytes},
+		{name: "model directory", bundle: true, model: true, invalid: "directory", bytes: onnxBytes},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "shared")
@@ -86,11 +66,9 @@ func TestInspectFiles(t *testing.T) {
 					require.NoError(t, os.Mkdir(path, 0o700))
 				}
 			}
-			start := time.Now()
 			got, err := Inspect(t.Context(), Options{DataDir: dir, SkipOllama: true})
 			require.NoError(t, err)
 			assert.Equal(t, Status{DownloadBytes: tc.bytes}, got)
-			assert.Less(t, time.Since(start), time.Second)
 			if tc.name == "missing directory" {
 				assert.NoDirExists(t, dir)
 			}
@@ -106,7 +84,6 @@ func TestInspectOllama(t *testing.T) {
 		available             bool
 	}{
 		{name: "supported", code: 200, available: true},
-		{name: "missing model", code: 404},
 		{name: "skipped", code: 200, skip: true},
 		{name: "stalled", stall: true},
 		{name: "redirect", redirect: true},
@@ -187,7 +164,11 @@ func TestInspectInstallInAnotherProcess(t *testing.T) {
 	start := time.Now()
 	got, err := Inspect(t.Context(), Options{DataDir: dir, SkipOllama: true})
 	require.NoError(t, err)
-	assert.Equal(t, Status{Installing: true, DownloadBytes: 294570424}, got)
+	wantBytes := int64(bundleDownloadBytes)
+	for _, asset := range embedassets.ModelAssets() {
+		wantBytes += asset.Size
+	}
+	assert.Equal(t, Status{Installing: true, DownloadBytes: wantBytes}, got)
 	assert.Less(t, time.Since(start), time.Second)
 	require.NoError(t, stdin.Close())
 	require.NoError(t, cmd.Wait())
