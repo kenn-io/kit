@@ -9,4 +9,10 @@
 // Without a caller deadline, startup waits at most two minutes. A detached
 // startup continues loading after cancellation, and later callers can join it.
 // Startup diagnostics live in kennembed.log in the shared data directory.
+//
+// Call Inspect to check the shared installation and Ollama before presenting
+// download choices. Its approximate DownloadBytes uses file types and sizes,
+// without hashing model contents. Install still verifies cached model contents.
+// Installing includes an installer waiting for confirmation. The snapshot is
+// advisory and leaves enabled settings, endpoints, and indexing progress to apps.
 package embedlocal

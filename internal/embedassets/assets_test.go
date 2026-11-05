@@ -130,8 +130,44 @@ func TestMissingModel(t *testing.T) {
 	assets := []Asset{{Name: "model.onnx", Digest: hex.EncodeToString(digest[:]), Size: 5}}
 	path := filepath.Join(dir, "model.onnx")
 	require.NoError(t, os.WriteFile(path, []byte("wrong"), 0o600))
-	missing, err := MissingModel(dir, assets)
+	missing, err := MissingModel(dir, assets, true)
 	require.NoError(t, err)
 	assert.Equal(t, assets, missing)
 	assert.FileExists(t, path)
+}
+
+func TestMissingModelMetadata(t *testing.T) {
+	dir := t.TempDir()
+	assets := []Asset{{Name: "model", Size: 5}}
+	path := filepath.Join(dir, "model")
+	for _, tc := range []struct {
+		name               string
+		size               int64
+		directory, present bool
+	}{
+		{name: "absent", size: -1},
+		{name: "correct size", size: 5, present: true},
+		{name: "short", size: 4},
+		{name: "long", size: 6},
+		{name: "empty"},
+		{name: "directory", directory: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.directory {
+				require.NoError(t, os.Mkdir(path, 0o700))
+			} else if tc.size >= 0 {
+				require.NoError(t, os.WriteFile(path, []byte(strings.Repeat("x", int(tc.size))), 0o600))
+			}
+			missing, err := MissingModel(dir, assets, false)
+			require.NoError(t, err)
+			if tc.present {
+				assert.Empty(t, missing)
+			} else {
+				assert.Equal(t, assets, missing)
+			}
+			if tc.size >= 0 || tc.directory {
+				require.NoError(t, os.Remove(path))
+			}
+		})
+	}
 }

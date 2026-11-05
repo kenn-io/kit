@@ -61,6 +61,10 @@ type Installation struct{ Executable, DataDir string }
 // Bundle downloads include a platform-dependent native runtime and executable.
 const bundleDownloadBytes = 20_000_000
 
+const installLockPrefix = "kit-embed-install"
+
+var errIncompleteBundle = errors.New("incomplete embedding bundle")
+
 // Install reuses the pinned server offline or confirms before downloading missing
 // files. Concurrent callers share one installation. Use the shared DataDir from
 // the caller's server discovery and startup integration. Pass the returned paths
@@ -77,7 +81,7 @@ func install(ctx context.Context, opts InstallOptions, client *http.Client, asse
 	if err != nil {
 		return Installation{}, err
 	}
-	release, err := (daemon.RuntimeStore{Dir: dir, Prefix: "kit-embed-install"}).AcquireStartLock(ctx)
+	release, err := (daemon.RuntimeStore{Dir: dir, Prefix: installLockPrefix}).AcquireStartLock(ctx)
 	if err != nil {
 		return Installation{}, err
 	}
@@ -97,7 +101,7 @@ func install(ctx context.Context, opts InstallOptions, client *http.Client, asse
 	result := Installation{filepath.Join(bundle, embedassets.ExecutableName()), dir}
 	ready := checkBundle(bundle) == nil
 	modelDir := embedassets.ModelDir(dir)
-	missing, err := embedassets.MissingModel(modelDir, assets)
+	missing, err := embedassets.MissingModel(modelDir, assets, true)
 	if err != nil {
 		return Installation{}, err
 	}
@@ -199,10 +203,10 @@ func checkBundle(dir string) error {
 			return err
 		}
 		if !info.Mode().IsRegular() || info.Size() == 0 {
-			return fmt.Errorf("bundle file is not regular or is empty: %s", name)
+			return fmt.Errorf("%w: bundle file is not regular or is empty: %s", errIncompleteBundle, name)
 		}
 		if name == embedassets.ExecutableName() && runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
-			return errors.New("kennembed has no execute permission")
+			return fmt.Errorf("%w: kennembed has no execute permission", errIncompleteBundle)
 		}
 	}
 	return nil

@@ -134,13 +134,26 @@ func ModelAssets() []Asset {
 }
 
 // MissingModel inspects files once without writing or making network requests.
-// It returns the assets whose cached bytes need replacement.
-func MissingModel(dir string, assets []Asset) ([]Asset, error) {
+// It returns assets that are missing, nonregular, or incorrectly sized.
+// With verifyContent, it also checks SHA-256 before reusing cached bytes.
+func MissingModel(dir string, assets []Asset, verifyContent bool) ([]Asset, error) {
 	var missing []Asset
 	for _, a := range assets {
-		verified, err := valid(filepath.Join(dir, a.Name), a)
+		path := filepath.Join(dir, a.Name)
+		info, err := os.Stat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			missing = append(missing, a)
+			continue
+		}
 		if err != nil {
 			return nil, err
+		}
+		verified := info.Mode().IsRegular() && info.Size() == a.Size
+		if verified && verifyContent {
+			verified, err = valid(path, a)
+			if err != nil {
+				return nil, err
+			}
 		}
 		if !verified {
 			missing = append(missing, a)
