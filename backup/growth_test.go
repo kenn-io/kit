@@ -30,11 +30,12 @@ func TestAttachmentHistoryGrowth(t *testing.T) {
 		})
 	})
 	t.Run("create", func(t *testing.T) {
+		const large = 1000
 		growthtest.Run(t, growthtest.Check{
-			Small: 100, Large: 1000,
+			Small: 100, Large: large,
 			Build: func(tb testing.TB, size int) (run, reset func()) {
 				tb.Helper()
-				r, opts, add := buildAttachmentHistory(tb, 1000-size, size)
+				r, opts, add := buildAttachmentHistory(tb, large-size, size)
 				return func() {
 					_, err := Create(tb.Context(), r, newTestApp(), opts)
 					require.NoError(tb, err)
