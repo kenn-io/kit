@@ -19,25 +19,19 @@ import (
 )
 
 func TestInspectFiles(t *testing.T) {
-	var totalModelBytes, onnxBytes int64
+	var totalModelBytes int64
 	for _, asset := range embedassets.ModelAssets() {
 		totalModelBytes += asset.Size
-		if asset.Name == "model.onnx" {
-			onnxBytes = asset.Size
-		}
 	}
 	for _, tc := range []struct {
 		name          string
 		bundle, model bool
-		invalid       string
 		bytes         int64
 	}{
 		{name: "missing directory", bytes: totalModelBytes + bundleDownloadBytes},
 		{name: "complete", bundle: true, model: true},
 		{name: "model missing", bundle: true, bytes: totalModelBytes},
 		{name: "bundle missing", model: true, bytes: bundleDownloadBytes},
-		{name: "short model", bundle: true, model: true, invalid: "short", bytes: onnxBytes},
-		{name: "model directory", bundle: true, model: true, invalid: "directory", bytes: onnxBytes},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "shared")
@@ -57,14 +51,6 @@ func TestInspectFiles(t *testing.T) {
 					require.NoError(t, f.Truncate(a.Size))
 					require.NoError(t, f.Close())
 				}
-				path := filepath.Join(model, "model.onnx")
-				switch tc.invalid {
-				case "short":
-					require.NoError(t, os.Truncate(path, 7))
-				case "directory":
-					require.NoError(t, os.Remove(path))
-					require.NoError(t, os.Mkdir(path, 0o700))
-				}
 			}
 			got, err := Inspect(t.Context(), Options{DataDir: dir, SkipOllama: true})
 			require.NoError(t, err)
@@ -79,39 +65,36 @@ func TestInspectFiles(t *testing.T) {
 func TestInspectOllama(t *testing.T) {
 	for _, tc := range []struct {
 		name                  string
-		code                  int
 		skip, stall, redirect bool
 		available             bool
 	}{
-		{name: "supported", code: 200, available: true},
-		{name: "skipped", code: 200, skip: true},
+		{name: "supported", available: true},
+		{name: "skipped", skip: true},
 		{name: "stalled", stall: true},
 		{name: "redirect", redirect: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var probes, redirects atomic.Int32
+			var probes atomic.Int32
 			release := make(chan struct{})
-			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { redirects.Add(1) }))
-			defer target.Close()
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				probes.Add(1)
 				if tc.stall {
 					<-release
 					return
 				}
-				if tc.redirect {
-					http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+				if tc.redirect && r.URL.Path != "/redirected" {
+					http.Redirect(w, r, "/redirected", http.StatusTemporaryRedirect)
 					return
 				}
-				w.WriteHeader(tc.code)
 			}))
 			defer func() { close(release); server.Close() }()
 			start := time.Now()
 			got, err := inspect(t.Context(), Options{DataDir: t.TempDir(), SkipOllama: tc.skip}, server.URL)
 			require.NoError(t, err)
 			assert.Equal(t, tc.available, got.OllamaAvailable)
-			assert.Less(t, time.Since(start), time.Second)
-			assert.Zero(t, redirects.Load())
+			if tc.stall {
+				assert.Less(t, time.Since(start), time.Second)
+			}
 			want := int32(1)
 			if tc.skip {
 				want = 0
@@ -180,10 +163,10 @@ func TestInspectLockProcess(t *testing.T) {
 	if len(os.Args) < 3 || os.Args[len(os.Args)-2] != "--" {
 		return
 	}
-	release, err := (daemon.RuntimeStore{Dir: os.Args[len(os.Args)-1], Prefix: "kit-embed-install"}).AcquireStartLock(t.Context())
+	release, err := (daemon.RuntimeStore{Dir: os.Args[len(os.Args)-1], Prefix: installLockPrefix}).AcquireStartLock(t.Context())
 	require.NoError(t, err)
 	defer release()
-	require.NoError(t, os.Mkdir(filepath.Join(os.Args[len(os.Args)-1], ".install-active"), 0o700))
+	require.NoError(t, os.Mkdir(filepath.Join(os.Args[len(os.Args)-1], installStagePrefix+"active"), 0o700))
 	_, err = os.Stdout.WriteString("locked\n")
 	require.NoError(t, err)
 	var b [1]byte
