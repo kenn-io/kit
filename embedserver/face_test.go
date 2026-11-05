@@ -106,19 +106,19 @@ func TestFaceHTTP(t *testing.T) {
 	binary.BigEndian.PutUint32(oversized[20:24], 6400)
 	binary.BigEndian.PutUint32(oversized[29:33], crc32.ChecksumIEEE(oversized[12:29]))
 	for _, tc := range []struct {
-		name          string
+		name, message string
 		boxes         []embedclient.FaceBox
 		image         []byte
 		fail          bool
 		status, calls int
 	}{
-		{"ordered results", []embedclient.FaceBox{{X: 0, Width: 0.5, Height: 1}, {X: 0.5, Width: 0.5, Height: 1}}, encoded.Bytes(), false, 200, 2},
-		{"bad box", []embedclient.FaceBox{{Width: 2, Height: 1}}, encoded.Bytes(), false, 400, 0},
-		{"empty box list", nil, encoded.Bytes(), false, 400, 0},
-		{"pixel limit", []embedclient.FaceBox{{Width: 1, Height: 1}}, oversized, false, 400, 0},
-		{"box count limit", make([]embedclient.FaceBox, 129), encoded.Bytes(), false, 400, 0},
-		{"invalid image", []embedclient.FaceBox{{Width: 1, Height: 1}}, []byte("broken"), false, 400, 0},
-		{"inference failure", []embedclient.FaceBox{{Width: 1, Height: 1}}, encoded.Bytes(), true, 500, 1},
+		{"ordered results", "", []embedclient.FaceBox{{X: 0, Width: 0.5, Height: 1}, {X: 0.5, Width: 0.5, Height: 1}}, encoded.Bytes(), false, 200, 2},
+		{"bad box", "", []embedclient.FaceBox{{Width: 2, Height: 1}}, encoded.Bytes(), false, 400, 0},
+		{"empty box list", "", nil, encoded.Bytes(), false, 400, 0},
+		{"pixel limit", "too many pixels", []embedclient.FaceBox{{Width: 1, Height: 1}}, oversized, false, 400, 0},
+		{"box count limit", "box count", make([]embedclient.FaceBox, 129), encoded.Bytes(), false, 400, 0},
+		{"invalid image", "", []embedclient.FaceBox{{Width: 1, Height: 1}}, []byte("broken"), false, 400, 0},
+		{"inference failure", "", []embedclient.FaceBox{{Width: 1, Height: 1}}, encoded.Bytes(), true, 500, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0
@@ -143,11 +143,8 @@ func TestFaceHTTP(t *testing.T) {
 			h.faces(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/faces", bytes.NewReader(body)))
 			assert.Equal(t, tc.status, w.Code)
 			assert.Equal(t, tc.calls, calls)
-			if tc.name == "pixel limit" {
-				assert.Contains(t, w.Body.String(), "too many pixels")
-			}
-			if tc.name == "box count limit" {
-				assert.Contains(t, w.Body.String(), "box count")
+			if tc.message != "" {
+				assert.Contains(t, w.Body.String(), tc.message)
 			}
 			if tc.status == 200 {
 				var result embedclient.FaceResponse
@@ -192,10 +189,6 @@ func TestFaceDecodeWaitsForInferenceGate(t *testing.T) {
 	// can reject this truncated image or allocate the decoded preview.
 	require.Empty(t, w.Body.String())
 	<-h.gate
-	h.faces(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/faces", bytes.NewReader(body)))
-	require.Equal(t, http.StatusBadRequest, w.Code)
-	require.Contains(t, w.Body.String(), "invalid preview")
-	require.Empty(t, h.gate)
 }
 
 func TestFaceResponseReleasesInferenceGate(t *testing.T) {
@@ -203,12 +196,14 @@ func TestFaceResponseReleasesInferenceGate(t *testing.T) {
 	require.NoError(t, png.Encode(&encoded, image.NewRGBA(image.Rect(0, 0, 2, 1))))
 	for _, tc := range []struct {
 		name      string
+		status    int
+		message   string
 		preview   []byte
 		inference error
 	}{
-		{name: "success", preview: encoded.Bytes()},
-		{name: "decode error", preview: encoded.Bytes()[:33]},
-		{name: "inference error", preview: encoded.Bytes(), inference: errors.New("native failure")},
+		{name: "success", status: http.StatusOK, preview: encoded.Bytes()},
+		{name: "decode error", status: http.StatusBadRequest, message: "invalid preview", preview: encoded.Bytes()[:33]},
+		{name: "inference error", status: http.StatusInternalServerError, preview: encoded.Bytes(), inference: errors.New("native failure")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := &faceEngine{fakeEngine: new(fakeEngine), runFace: func(context.Context, image.Image, embedclient.FaceBox) ([]float32, error) { return nil, tc.inference }}
@@ -218,7 +213,14 @@ func TestFaceResponseReleasesInferenceGate(t *testing.T) {
 			writing, release := make(chan struct{}), make(chan struct{})
 			writer := &blockedResponseWriter{ResponseRecorder: httptest.NewRecorder(), entered: writing, release: release}
 			done := make(chan struct{})
-			defer func() { close(release); <-done }()
+			defer func() {
+				close(release)
+				<-done
+				assert.Empty(t, h.gate)
+				if tc.message != "" {
+					assert.Contains(t, writer.Body.String(), tc.message)
+				}
+			}()
 			go func() {
 				defer close(done)
 				h.faces(writer, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/faces", bytes.NewReader(body)))
@@ -228,6 +230,7 @@ func TestFaceResponseReleasesInferenceGate(t *testing.T) {
 			case <-time.After(5 * time.Second):
 				require.FailNow(t, "face response did not reach blocked Write")
 			}
+			assert.Equal(t, tc.status, writer.Code)
 			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 			defer cancel()
 			text := httptest.NewRecorder()

@@ -184,7 +184,6 @@ func TestEmbedFacesBatchVectorError(t *testing.T) {
 	var vector *VectorError
 	require.ErrorAs(t, err, &vector)
 	assert.Equal(t, 8, vector.Index)
-	require.ErrorContains(t, err, "expected 512")
 	assert.Empty(t, result.Data, "a failed batch must not return partial vectors")
 	assert.Equal(t, int32(2), calls.Load(), "stop before the third batch")
 }

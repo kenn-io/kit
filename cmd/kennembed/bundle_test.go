@@ -62,6 +62,18 @@ func TestBundleNativeParity(t *testing.T) {
 	discovered, err := embedlocal.Endpoint(ctx, embedlocal.Options{DataDir: dir, Model: embedlocal.FaceModel})
 	require.NoError(t, err)
 	assert.Equal(t, endpoint, discovered)
+	photo, err := os.ReadFile(filepath.Join(dir, "faces", "commons-armstrong-gemini8.jpg"))
+	require.NoError(t, err)
+	faces, err := client.EmbedFaces(ctx, photo, []embedclient.FaceBox{
+		{X: .58, Y: 0, Width: .36, Height: .27},
+		{X: .28, Y: .23, Width: .22, Height: .19},
+	})
+	require.NoError(t, err)
+	require.Len(t, faces.Data, 2)
+	for i, face := range faces.Data {
+		assert.Equal(t, i, face.Index)
+		require.Len(t, face.Embedding, 512)
+	}
 	if runtime.GOOS == "windows" {
 		// Inspect the live process, so installed system copies cannot mask a missing
 		// app-local dependency in the bundle under test.
