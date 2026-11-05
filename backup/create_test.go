@@ -57,6 +57,36 @@ func createOpts(dbPath, attachmentsDir, dataDir string, cacheDir string) CreateO
 	}
 }
 
+func buildAttachmentHistory(tb testing.TB, base, count int) (*Repo, CreateOptions, func()) {
+	tb.Helper()
+	r, err := Init(filepath.Join(tb.TempDir(), "repo"))
+	require.NoError(tb, err)
+	dbPath, attachmentsDir, dataDir, db := seedBackupFixture(tb)
+	opts := createOpts(dbPath, attachmentsDir, dataDir, tb.TempDir())
+	next := 0
+	add := func() {
+		ref := writeLooseAttachment(tb, attachmentsDir, []byte(fmt.Sprintf("attachment %d", next)))
+		next++
+		_, err := db.ExecContext(tb.Context(),
+			`INSERT INTO blobs (content_hash, storage_path, size, preview_hash, preview_path) VALUES (?, ?, ?, '', '')`,
+			ref.Hash, ref.Hash[:2]+"/"+ref.Hash, ref.Size)
+		require.NoError(tb, err)
+	}
+	if base > 0 {
+		for range base {
+			add()
+		}
+		_, err := Create(tb.Context(), r, newTestApp(), opts)
+		require.NoError(tb, err)
+	}
+	for range count {
+		add()
+		_, err := Create(tb.Context(), r, newTestApp(), opts)
+		require.NoError(tb, err)
+	}
+	return r, opts, add
+}
+
 // TestCreateManifestReaderVersionTracksStoragePaths pins the compatibility
 // gate for namespaced attachment paths: a snapshot restorable by placing
 // every blob at the canonical "<aa>/<hash>" path stays at reader version 1,
