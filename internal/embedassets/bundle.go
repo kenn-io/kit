@@ -4,7 +4,7 @@ import "runtime"
 
 // BundleTag selects a published server with the pinned model and runtime.
 // Publish all six bundles before changing this tag.
-const BundleTag = "v0.48.2-face.5"
+const BundleTag = "v0.48.2-face.6"
 
 // ExecutableName is the bundle's platform executable.
 func ExecutableName() string {
