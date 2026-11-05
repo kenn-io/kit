@@ -61,26 +61,52 @@ func TestSweepOrphansSucceedsBeforeTheStoreRootExists(t *testing.T) {
 }
 
 func TestSweepOrphansContinuesPastAnOrphanItCannotRemove(t *testing.T) {
-	layout := layoutForStoreTest(t)
-	blocked := writeMaintenanceLoose(t, layout, []byte("orphan without removal permission"))
-	removable := writeMaintenanceLoose(t, layout, []byte("orphan the sweep can remove"))
-	blockedName := filepath.Base(layout.LoosePath(blocked))
-	originalCreate := createLooseRemovalAside
-	createLooseRemovalAside = func(path string) error {
-		if strings.HasPrefix(filepath.Base(path), "."+blockedName+".remove-") {
-			return fs.ErrPermission
-		}
-		return originalCreate(path)
+	tests := []struct {
+		name string
+		deny func(t *testing.T, maintainer *Maintainer, blockedPath string)
+	}{
+		{
+			name: "pin acquisition denied",
+			deny: func(_ *testing.T, maintainer *Maintainer, blockedPath string) {
+				maintainer.openIdentityPin = func(path string) (identityPin, fs.FileInfo, error) {
+					if path == blockedPath {
+						return nil, nil, fs.ErrPermission
+					}
+					return openLooseIdentityPin(path)
+				}
+			},
+		},
+		{
+			name: "removal claim denied",
+			deny: func(t *testing.T, _ *Maintainer, blockedPath string) {
+				t.Helper()
+				originalCreate := createLooseRemovalAside
+				createLooseRemovalAside = func(path string) error {
+					if strings.HasPrefix(filepath.Base(path), "."+filepath.Base(blockedPath)+".remove-") {
+						return fs.ErrPermission
+					}
+					return originalCreate(path)
+				}
+				t.Cleanup(func() { createLooseRemovalAside = originalCreate })
+			},
+		},
 	}
-	t.Cleanup(func() { createLooseRemovalAside = originalCreate })
-	maintainer := newMaintainerForTest(t, newMaintenanceCatalog(), layout, DefaultLimits())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			layout := layoutForStoreTest(t)
+			blocked := writeMaintenanceLoose(t, layout, []byte("orphan without removal permission"))
+			removable := writeMaintenanceLoose(t, layout, []byte("orphan the sweep can remove"))
+			maintainer := newMaintainerForTest(t, newMaintenanceCatalog(), layout, DefaultLimits())
+			tt.deny(t, maintainer, layout.LoosePath(blocked))
 
-	stats, err := maintainer.SweepOrphans(t.Context())
+			stats, err := maintainer.SweepOrphans(t.Context())
 
-	require.NoError(t, err)
-	assert.Equal(t, OrphanSweepStats{LooseOrphansRemoved: 1, LooseOrphansDeferred: 1}, stats)
-	assert.FileExists(t, layout.LoosePath(blocked))
-	assert.NoFileExists(t, layout.LoosePath(removable))
+			require.NoError(t, err)
+			assert.Equal(t, OrphanSweepStats{LooseOrphansRemoved: 1, LooseOrphansDeferred: 1}, stats)
+			assert.FileExists(t, layout.LoosePath(blocked))
+			assert.NoFileExists(t, layout.LoosePath(removable))
+		})
+	}
 }
 
 func TestSweepOrphansWaitsForInFlightWrites(t *testing.T) {

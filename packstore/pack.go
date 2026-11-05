@@ -1208,14 +1208,24 @@ func (m *Maintainer) removeLooseOrphans(ctx context.Context, refs map[Hash]Refer
 			if filepath.Clean(path) != filepath.Clean(filepath.Join(m.layout.Root(), shard.Name(), file.Name())) {
 				continue
 			}
-			fileRemoved, err := removeLoosePath(path, m.openIdentityPin)
+			// One file without removal permission must not block reclaiming the rest.
+			// Permission is classified only at pin acquisition: later permission
+			// failures that left cleanup undone stay fatal.
+			pin, _, err := m.openIdentityPin(path)
+			if errors.Is(err, fs.ErrPermission) {
+				deferred++
+				continue
+			}
+			var fileRemoved bool
+			if err == nil {
+				fileRemoved, err = removeLoosePathPinned(path, pin)
+			}
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
 			if errors.Is(err, ErrContentMismatch) {
 				continue
 			}
-			// One file without removal permission must not block reclaiming the rest.
 			if errors.Is(err, errLooseRemovalUnavailable) {
 				deferred++
 				continue
