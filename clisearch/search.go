@@ -30,7 +30,8 @@ type document struct {
 //
 // The root and non-runnable groups are not results. Hidden and deprecated
 // subtrees are excluded, as are NewCommand's group and help and completion
-// under the root. The parent path field omits the root's own name. Options.Skip excludes only a node.
+// under the root. Options.Skip excludes only a node. The parent path field
+// omits the searched root's command path.
 // Nonpositive limits, nil roots and empty queries return a non-nil empty slice;
 // limits above 20 are capped at 20. Ties sort by canonical command path.
 func Search(root *cobra.Command, query string, limit int, opts Options) []Result {
