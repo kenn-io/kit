@@ -3,11 +3,9 @@ package embedlocal
 import (
 	"context"
 	"errors"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"go.kenn.io/kit/daemon"
 	"go.kenn.io/kit/internal/embedassets"
@@ -75,10 +73,7 @@ func inspect(ctx context.Context, opts Options, ollama string) (Status, error) {
 		status.DownloadBytes += asset.Size
 	}
 	if !opts.SkipOllama {
-		probe, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
-		defer cancel()
-		client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-		status.OllamaAvailable = probeOllama(probe, ollama, client)
+		status.OllamaAvailable = probeOllama(ctx, ollama)
 	}
 	if err := ctx.Err(); err != nil {
 		return Status{}, err

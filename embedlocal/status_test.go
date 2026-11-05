@@ -100,6 +100,17 @@ func TestInspectOllama(t *testing.T) {
 				want = 0
 			}
 			assert.Equal(t, want, probes.Load())
+			start = time.Now()
+			url, err := endpoint(t.Context(), Options{DataDir: t.TempDir(), SkipOllama: tc.skip}, server.URL, 0)
+			if tc.available {
+				require.NoError(t, err)
+				assert.Equal(t, server.URL+"/v1", url)
+			} else {
+				require.ErrorIs(t, err, ErrNotFound)
+			}
+			if tc.stall {
+				assert.Less(t, time.Since(start), time.Second)
+			}
 		})
 	}
 }

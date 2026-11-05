@@ -3,6 +3,7 @@
 // kennembed. By default, it prefers Ollama on its usual loopback port when
 // nomic-embed-text:latest is installed.
 // Set Options.SkipOllama to skip Ollama and select kennembed.
+// Endpoint and Inspect probe Ollama for at most 500 milliseconds and refuse redirects.
 // The returned /v1 base URL leaves model names and input recipes to the caller.
 // Obtain download consent before supplying an executable when model assets may
 // be fetched. Allow time for the first model download with a context deadline.
