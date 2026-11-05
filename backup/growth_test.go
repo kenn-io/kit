@@ -9,34 +9,15 @@ import (
 )
 
 func TestAttachmentHistoryGrowth(t *testing.T) {
-	// Allocate with the parent so fixtures outlive both checks. Allocs measures
-	// process-wide allocations, so these checks must run sequentially.
-	// Create reuses prune's 1,000-snapshot repo after its index consolidation;
-	// prune's warm-up excludes that one-time work from its samples.
-	type history struct {
-		repo *Repo
-		opts CreateOptions
-		add  func()
-	}
-	histories := map[[2]int]history{}
-	build := func(base, count int) history {
-		key := [2]int{base, count}
-		if h, ok := histories[key]; ok {
-			return h
-		}
-		r, opts, add := buildAttachmentHistory(t, base, count)
-		h := history{repo: r, opts: opts, add: add}
-		histories[key] = h
-		return h
-	}
+	// Allocs measures process-wide allocations, so run these checks sequentially.
 	t.Run("prune", func(t *testing.T) {
 		growthtest.Run(t, growthtest.Check{
 			Small: 100, Large: 1000,
 			Build: func(tb testing.TB, size int) (run, reset func()) {
 				tb.Helper()
-				h := build(0, size)
+				r, _, _ := buildAttachmentHistory(tb, 0, size)
 				return func() {
-					_, err := Prune(tb.Context(), h.repo, newTestApp(), PruneOptions{})
+					_, err := Prune(tb.Context(), r, newTestApp(), PruneOptions{})
 					require.NoError(tb, err)
 				}, nil
 			},
@@ -53,11 +34,11 @@ func TestAttachmentHistoryGrowth(t *testing.T) {
 			Small: 100, Large: 1000,
 			Build: func(tb testing.TB, size int) (run, reset func()) {
 				tb.Helper()
-				h := build(1000-size, size)
+				r, opts, add := buildAttachmentHistory(tb, 1000-size, size)
 				return func() {
-					_, err := Create(tb.Context(), h.repo, newTestApp(), h.opts)
+					_, err := Create(tb.Context(), r, newTestApp(), opts)
 					require.NoError(tb, err)
-				}, h.add
+				}, add
 			},
 			Measure: growthtest.Allocs(3),
 			// Equal live attachment counts and capped list segments should
