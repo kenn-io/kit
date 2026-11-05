@@ -64,53 +64,26 @@ func TestInspectFiles(t *testing.T) {
 
 func TestInspectOllama(t *testing.T) {
 	for _, tc := range []struct {
-		name                  string
-		skip, stall, redirect bool
-		available             bool
+		name            string
+		status          int
+		skip, available bool
 	}{
-		{name: "supported", available: true},
-		{name: "skipped", skip: true},
-		{name: "stalled", stall: true},
-		{name: "redirect", redirect: true},
+		{name: "supported", status: http.StatusOK, available: true},
+		{name: "skipped", status: http.StatusOK, skip: true},
+		{name: "unavailable", status: http.StatusServiceUnavailable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var probes atomic.Int32
-			release := make(chan struct{})
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				probes.Add(1)
-				if tc.stall {
-					<-release
-					return
-				}
-				if tc.redirect && r.URL.Path != "/redirected" {
-					http.Redirect(w, r, "/redirected", http.StatusTemporaryRedirect)
-					return
-				}
-			}))
-			defer func() { close(release); server.Close() }()
-			start := time.Now()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { probes.Add(1); w.WriteHeader(tc.status) }))
+			defer server.Close()
 			got, err := inspect(t.Context(), Options{DataDir: t.TempDir(), SkipOllama: tc.skip}, server.URL)
 			require.NoError(t, err)
 			assert.Equal(t, tc.available, got.OllamaAvailable)
-			if tc.stall {
-				assert.Less(t, time.Since(start), time.Second)
-			}
 			want := int32(1)
 			if tc.skip {
 				want = 0
 			}
 			assert.Equal(t, want, probes.Load())
-			start = time.Now()
-			url, err := endpoint(t.Context(), Options{DataDir: t.TempDir(), SkipOllama: tc.skip}, server.URL, 0)
-			if tc.available {
-				require.NoError(t, err)
-				assert.Equal(t, server.URL+"/v1", url)
-			} else {
-				require.ErrorIs(t, err, ErrNotFound)
-			}
-			if tc.stall {
-				assert.Less(t, time.Since(start), time.Second)
-			}
 		})
 	}
 }

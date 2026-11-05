@@ -127,29 +127,27 @@ func TestCacheModelUsesPinnedURLAndCacheLayout(t *testing.T) {
 func TestMissingModel(t *testing.T) {
 	digest := sha256.Sum256([]byte("valid"))
 	for _, tc := range []struct {
-		name                   string
+		name, data             string
+		directory, absent      bool
 		verifyContent, missing bool
 	}{
-		{name: "wrong bytes verified", verifyContent: true, missing: true},
-		{name: "wrong bytes metadata"},
-		{name: "short model", missing: true},
-		{name: "model directory", missing: true},
+		{name: "wrong bytes verified", data: "wrong", verifyContent: true, missing: true},
+		{name: "wrong bytes metadata", data: "wrong"},
+		{name: "short model", data: "tiny", missing: true},
+		{name: "model directory", directory: true, missing: true},
+		{name: "missing file", absent: true, missing: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			asset := Asset{Name: "model.onnx", Digest: hex.EncodeToString(digest[:]), Size: 5}
 			path := filepath.Join(dir, asset.Name)
-			if tc.name == "model directory" {
+			if tc.directory {
 				require.NoError(t, os.Mkdir(path, 0o700))
 				info, err := os.Stat(path)
 				require.NoError(t, err)
 				asset.Size = info.Size()
-			} else {
-				data := "wrong"
-				if tc.name == "short model" {
-					data = "tiny"
-				}
-				require.NoError(t, os.WriteFile(path, []byte(data), 0o600))
+			} else if !tc.absent {
+				require.NoError(t, os.WriteFile(path, []byte(tc.data), 0o600))
 			}
 			missing, err := MissingModel(dir, []Asset{asset}, tc.verifyContent)
 			require.NoError(t, err)
@@ -158,7 +156,7 @@ func TestMissingModel(t *testing.T) {
 			} else {
 				assert.Empty(t, missing)
 			}
-			if tc.name != "model directory" {
+			if !tc.directory && !tc.absent {
 				assert.FileExists(t, path)
 			}
 		})
