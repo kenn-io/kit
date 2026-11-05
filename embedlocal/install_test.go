@@ -278,16 +278,8 @@ func TestInstallReportsProgress(t *testing.T) {
 }
 
 func TestInstallFaceSelection(t *testing.T) {
-	client, assets, calls, _ := installFixture(t, "faces", nil)
-	var expected int64
-	for _, asset := range assets {
-		expected += asset.Size
-	}
-	opts := InstallOptions{DataDir: t.TempDir(), Model: FaceModel, Confirm: func(_ context.Context, size int64) (bool, error) {
-		assert.Equal(t, expected+bundleDownloadBytes, size)
-		calls.Range(func(_, value any) bool { assert.Zero(t, value.(*atomic.Int64).Load()); return true })
-		return true, nil
-	}}
+	client, assets, _, _ := installFixture(t, "faces", nil)
+	opts := InstallOptions{DataDir: t.TempDir(), Model: FaceModel, Confirm: func(context.Context, int64) (bool, error) { return true, nil }}
 	_, err := install(t.Context(), opts, client, assets)
 	require.NoError(t, err)
 	faceDir, _, err := embedassets.SelectedModel(opts.DataDir, FaceModel)

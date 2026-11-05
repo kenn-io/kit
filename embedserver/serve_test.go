@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -25,7 +24,11 @@ import (
 
 func TestServeDiscoveryAndCancellation(t *testing.T) {
 	for _, faces := range []bool{false, true} {
-		t.Run(strconv.FormatBool(faces), func(t *testing.T) {
+		name := "embeddings"
+		if faces {
+			name = "faces"
+		}
+		t.Run(name, func(t *testing.T) {
 			reader, writer, err := os.Pipe()
 			require.NoError(t, err)
 			stderr := os.Stderr

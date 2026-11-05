@@ -340,29 +340,40 @@ func TestEndpointRequestedModel(t *testing.T) {
 		name, model         string
 		models              []string
 		old, found, restart bool
+		status              int
+		body, problem       string
 	}{
 		{name: "text missing from face server", model: TextModel, models: []string{FaceModel}},
 		{name: "face missing from text server", model: FaceModel, models: []string{TextModel}},
-		{name: "face installed later", model: FaceModel, models: []string{TextModel, FaceModel}, found: true},
+		{name: "face on current server", model: FaceModel, models: []string{TextModel, FaceModel}, found: true},
 		{name: "text on old server", model: TextModel, old: true, found: true},
 		{name: "face on old server", model: FaceModel, old: true, restart: true},
+		{name: "server error", model: FaceModel, status: http.StatusInternalServerError, problem: "model discovery: HTTP 500"},
+		{name: "invalid response", model: FaceModel, status: http.StatusOK, body: `{"models":`, problem: "model discovery:"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			ping := daemon.NewPingHandler(daemon.PingHandlerOptions{Service: Service, Version: Version})
-			available := tc.models
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/api/ping":
 					ping.ServeHTTP(w, r)
 				case "/v1/models":
+					assert.Equal(t, http.MethodGet, r.Method)
+					if tc.status != 0 {
+						w.WriteHeader(tc.status)
+						_, err := w.Write([]byte(tc.body))
+						assert.NoError(t, err)
+						return
+					}
+
 					if tc.old {
 						http.NotFound(w, r)
 						return
 					}
 					assert.NoError(t, json.MarshalWrite(w, struct {
 						Models []string `json:"models"`
-					}{available}))
+					}{tc.models}))
 				default:
 					http.NotFound(w, r)
 				}
@@ -373,9 +384,11 @@ func TestEndpointRequestedModel(t *testing.T) {
 			record := daemon.NewRuntimeRecord(Service, Version, ep)
 			_, err = (daemon.RuntimeStore{Dir: dir, Prefix: Service}).Write(record)
 			require.NoError(t, err)
-			// Probe a face-only server even when Ollama could supply text.
 			result, err := endpoint(t.Context(), Options{DataDir: dir, Model: tc.model, SkipOllama: true}, "", time.Second)
-			if tc.restart {
+			if tc.problem != "" {
+				require.ErrorContains(t, err, tc.problem)
+				assert.NotErrorIs(t, err, ErrNotFound)
+			} else if tc.restart {
 				var restart *RestartRequiredError
 				require.ErrorAs(t, err, &restart)
 				assert.Equal(t, record.PID, restart.PID)
@@ -385,33 +398,6 @@ func TestEndpointRequestedModel(t *testing.T) {
 			} else {
 				require.ErrorIs(t, err, ErrNotFound)
 			}
-		})
-	}
-}
-
-func TestModelEndpointReportsDiscoveryFailures(t *testing.T) {
-	for _, tc := range []struct {
-		name          string
-		status        int
-		body, problem string
-	}{
-		{"server error", http.StatusInternalServerError, "", "model discovery: HTTP 500"},
-		{"invalid response", http.StatusOK, `{"models":`, "model discovery:"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				assert.Equal(t, "/v1/models", r.URL.Path)
-				assert.Equal(t, http.MethodGet, r.Method)
-				w.WriteHeader(tc.status)
-				_, err := w.Write([]byte(tc.body))
-				assert.NoError(t, err)
-			}))
-			defer server.Close()
-			ep, err := daemon.ParseEndpoint(server.URL, daemon.ParseEndpointOptions{TCPPolicy: daemon.RequireLoopback})
-			require.NoError(t, err)
-			_, err = modelEndpoint(t.Context(), daemon.NewRuntimeRecord(Service, Version, ep), FaceModel)
-			require.ErrorContains(t, err, tc.problem)
-			assert.NotErrorIs(t, err, ErrNotFound)
 		})
 	}
 }
