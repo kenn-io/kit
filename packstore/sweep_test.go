@@ -2,6 +2,9 @@ package packstore
 
 import (
 	"context"
+	"fmt"
+	"io/fs"
+	"os"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -62,4 +65,46 @@ func TestSweepOrphansWaitsForInFlightWrites(t *testing.T) {
 		assert.FileExists(t, layout.LoosePath(unreferenced))
 		require.NoError(t, write.Release())
 	})
+}
+
+func TestSweepOrphansStopsWithinAShardWhenCanceled(t *testing.T) {
+	layout := layoutForStoreTest(t)
+	first, second := sameShardContents(t)
+	orphans := []Hash{writeMaintenanceLoose(t, layout, first), writeMaintenanceLoose(t, layout, second)}
+	maintainer := newMaintainerForTest(t, newMaintenanceCatalog(), layout, DefaultLimits())
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	opened := 0
+	maintainer.openIdentityPin = func(path string) (identityPin, fs.FileInfo, error) {
+		opened++
+		cancel()
+		return openLooseIdentityPin(path)
+	}
+
+	stats, err := maintainer.SweepOrphans(ctx)
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 1, opened)
+	assert.Equal(t, 1, stats.LooseOrphansRemoved)
+	remaining := 0
+	for _, orphan := range orphans {
+		if _, statErr := os.Stat(layout.LoosePath(orphan)); statErr == nil {
+			remaining++
+		}
+	}
+	assert.Equal(t, 1, remaining, "the orphan after cancellation stays in place")
+}
+
+// sameShardContents returns two contents whose hashes share a shard directory.
+func sameShardContents(t *testing.T) ([]byte, []byte) {
+	t.Helper()
+	seen := map[string][]byte{}
+	for i := 0; ; i++ {
+		content := []byte(fmt.Sprintf("orphan %d", i))
+		shard := hashForTest(content).String()[:2]
+		if earlier, ok := seen[shard]; ok {
+			return earlier, content
+		}
+		seen[shard] = content
+	}
 }

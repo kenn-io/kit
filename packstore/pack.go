@@ -1185,6 +1185,9 @@ func (m *Maintainer) removeLooseOrphans(ctx context.Context, refs map[Hash]Refer
 			return err
 		}
 		for _, file := range files {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			hash, encoding, ok := parseCanonicalLooseName(file.Name())
 			if !ok || hash.String()[:2] != shard.Name() || !file.Type().IsRegular() {
 				continue
@@ -1199,7 +1202,7 @@ func (m *Maintainer) removeLooseOrphans(ctx context.Context, refs map[Hash]Refer
 			if filepath.Clean(path) != filepath.Clean(filepath.Join(m.layout.Root(), shard.Name(), file.Name())) {
 				continue
 			}
-			removed, err := removeLoosePath(path, openLooseIdentityPin)
+			removed, err := removeLoosePath(path, m.openIdentityPin)
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
