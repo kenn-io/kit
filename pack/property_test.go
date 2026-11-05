@@ -2,36 +2,19 @@ package pack
 
 import (
 	"bytes"
+	"math/rand"
 	"path/filepath"
+	"reflect"
 	"testing"
+	"testing/quick"
 
-	"github.com/leanovate/gopter"
-	"github.com/leanovate/gopter/gen"
-	"github.com/leanovate/gopter/prop"
 	"github.com/stretchr/testify/require"
 )
-
-// genBlob produces byte slices spanning the interesting shapes: empty, tiny,
-// compressible (repeated pattern), and incompressible (arbitrary bytes).
-func genBlob() gopter.Gen {
-	return gen.OneGenOf(
-		gen.Const([]byte{}),
-		gen.SliceOfN(1, gen.UInt8()).Map(func(b []uint8) []byte { return b }),
-		gen.IntRange(1, 2048).Map(func(n int) []byte {
-			return bytes.Repeat([]byte("pattern!"), n)
-		}),
-		gen.SliceOf(gen.UInt8()).Map(func(b []uint8) []byte { return b }),
-	)
-}
 
 func TestPackRoundTripProperty(t *testing.T) {
 	key := testKey(21)
 	crypter, err := NewCrypter(key)
 	require.NoError(t, err)
-
-	params := gopter.DefaultTestParameters()
-	params.MinSuccessfulTests = 40
-	properties := gopter.NewProperties(params)
 
 	roundTrip := func(c *Crypter) func(blobs [][]byte) bool {
 		return func(blobs [][]byte) bool {
@@ -75,10 +58,40 @@ func TestPackRoundTripProperty(t *testing.T) {
 		}
 	}
 
-	blobSets := gen.SliceOf(genBlob())
-	properties.Property("plain pack round-trips any blob set",
-		prop.ForAll(roundTrip(nil), blobSets))
-	properties.Property("encrypted pack round-trips any blob set",
-		prop.ForAll(roundTrip(crypter), blobSets))
-	properties.TestingRun(t)
+	config := &quick.Config{
+		MaxCount: 40,
+		Values: func(values []reflect.Value, rng *rand.Rand) {
+			// Keep the previous generator's size bound and blob shapes.
+			blobs := make([][]byte, rng.Intn(100))
+			for i := range blobs {
+				switch rng.Intn(4) {
+				case 0:
+					blobs[i] = []byte{}
+				case 1:
+					blobs[i] = []byte{byte(rng.Intn(256))}
+				case 2:
+					blobs[i] = bytes.Repeat([]byte("pattern!"), 1+rng.Intn(2048))
+				case 3:
+					blobs[i] = make([]byte, rng.Intn(100))
+					for j := range blobs[i] {
+						blobs[i][j] = byte(rng.Intn(256))
+					}
+				}
+			}
+			values[0] = reflect.ValueOf(blobs)
+		},
+	}
+	for _, tc := range []struct {
+		name    string
+		crypter *Crypter
+	}{
+		{name: "plain"},
+		{name: "encrypted", crypter: crypter},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			property := roundTrip(tc.crypter)
+			require.True(t, property(nil), "empty pack must round-trip")
+			require.NoError(t, quick.Check(property, config))
+		})
+	}
 }
