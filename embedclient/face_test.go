@@ -94,12 +94,12 @@ func TestEmbedFacesBatches(t *testing.T) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		if !assert.LessOrEqual(t, len(req.Boxes), 8, "face requests must stay within their inference budget") {
+		if !assert.LessOrEqual(t, len(req.Boxes), faceBatchItems, "face requests must stay within their inference budget") {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 		assert.Equal(t, preview.Bytes(), req.Image)
-		start := int(calls.Add(1)-1) * 8
+		start := int(calls.Add(1)-1) * faceBatchItems
 		if !assert.LessOrEqual(t, start+len(req.Boxes), len(boxes)) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
@@ -123,7 +123,7 @@ func TestEmbedFacesBatches(t *testing.T) {
 	result, err := client.EmbedFaces(t.Context(), preview.Bytes(), boxes)
 	require.NoError(t, err)
 	require.Len(t, result.Data, 128)
-	assert.Equal(t, int32(16), calls.Load())
+	assert.Equal(t, int32((len(boxes)+faceBatchItems-1)/faceBatchItems), calls.Load())
 	for i, item := range result.Data {
 		assert.Equal(t, i, item.Index)
 		if i%3 == 0 {
