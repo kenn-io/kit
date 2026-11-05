@@ -50,8 +50,7 @@ func TestStartLockHeld(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 	_, err = (daemon.RuntimeStore{Dir: "relative"}).StartLockHeld(t.Context())
 	require.Error(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(store.Dir, "file"), nil, 0o600))
-	_, err = (daemon.RuntimeStore{Dir: filepath.Join(store.Dir, "file", "nested")}).StartLockHeld(t.Context())
+	_, err = (daemon.RuntimeStore{Dir: store.Dir + "\x00"}).StartLockHeld(t.Context())
 	require.Error(t, err)
 }
 

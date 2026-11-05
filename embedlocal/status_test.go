@@ -133,9 +133,7 @@ func TestInspectCancellationAndErrors(t *testing.T) {
 	defer cancel()
 	_, err = inspect(ctx, Options{DataDir: t.TempDir()}, server.URL)
 	require.ErrorIs(t, err, context.Canceled)
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "nomic-embed-text-v1.5"), []byte("file"), 0o600))
-	_, err = Inspect(t.Context(), Options{DataDir: dir, SkipOllama: true})
+	_, err = Inspect(t.Context(), Options{DataDir: t.TempDir() + "\x00", SkipOllama: true})
 	require.Error(t, err)
 }
 

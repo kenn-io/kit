@@ -61,8 +61,10 @@ type Installation struct{ Executable, DataDir string }
 // Bundle downloads include a platform-dependent native runtime and executable.
 const bundleDownloadBytes = 20_000_000
 
-const installLockPrefix = "kit-embed-install"
-const installStagePrefix = ".install-"
+const (
+	installLockPrefix  = "kit-embed-install"
+	installStagePrefix = ".install-"
+)
 
 // Install reuses the pinned server offline or confirms before downloading missing
 // files. Concurrent callers share one installation. Use the shared DataDir from
