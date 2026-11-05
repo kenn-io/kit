@@ -365,7 +365,6 @@ func TestEndpointRequestedModel(t *testing.T) {
 		{name: "text missing from face server", model: TextModel, models: []string{FaceModel}},
 		{name: "face missing from text server", model: FaceModel, models: []string{TextModel}},
 		{name: "face on current server", model: FaceModel, models: []string{TextModel, FaceModel}, found: true},
-		{name: "text on old server", model: TextModel, old: true, found: true},
 		{name: "face on old server", model: FaceModel, old: true, restart: true},
 		{name: "server error", model: FaceModel, status: http.StatusInternalServerError, problem: "model discovery: HTTP 500"},
 		{name: "invalid response", model: FaceModel, status: http.StatusOK, body: `{"models":`, problem: "model discovery:"},

@@ -20,14 +20,10 @@ import (
 )
 
 func TestEmbedFaces(t *testing.T) {
-	var preview bytes.Buffer
-	require.NoError(t, png.Encode(&preview, image.NewRGBA(image.Rect(0, 0, 2, 1))))
-	unit := "[1" + strings.Repeat(",0", 511) + "]"
 	meta := `{"model":"` + FaceModel + `","revision":"` + FaceRevision + `","recipe":"` + FaceRecipe + `","data":`
 	for _, tc := range []struct {
 		name, body, problem string
 	}{
-		{"ordered mixed results", meta + `[{"index":1,"embedding":null},{"index":0,"embedding":` + unit + `}]}`, ""},
 		{"short response", meta + `[]}`, "face response result count differs"},
 		{"duplicate index", meta + `[{"index":0,"embedding":null},{"index":0,"embedding":null}]}`, "face response index is invalid"},
 		{"bad width", meta + `[{"index":0,"embedding":[1]},{"index":1,"embedding":null}]}`, "has 1 dimensions, expected 512"},
@@ -36,29 +32,15 @@ func TestEmbedFaces(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			boxes := []FaceBox{{Width: 0.5, Height: 1}, {X: 0.5, Width: 0.5, Height: 1}}
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				assert.Equal(t, http.MethodPost, r.Method)
-				assert.Equal(t, "/v1/faces", r.URL.Path)
-				var req FaceRequest
-				assert.NoError(t, json.UnmarshalRead(r.Body, &req))
-				assert.Equal(t, preview.Bytes(), req.Image)
-				assert.Equal(t, boxes, req.Boxes)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				_, err := w.Write([]byte(tc.body))
 				assert.NoError(t, err)
 			}))
 			defer server.Close()
 			client, err := New(Options{Model: embedconfig.Model{Name: "nomic-embed-text", Dimensions: 768, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationNone}, Deployment: embedconfig.Deployment{BaseURL: server.URL + "/v1"}})
 			require.NoError(t, err)
-			result, err := client.EmbedFaces(t.Context(), preview.Bytes(), boxes)
-			if tc.problem != "" {
-				require.ErrorContains(t, err, tc.problem)
-				return
-			}
-			require.NoError(t, err)
-			require.Len(t, result.Data, 2)
-			assert.InDelta(t, 1, result.Data[0].Embedding[0], 1e-6)
-			assert.Nil(t, result.Data[1].Embedding)
-			assert.Equal(t, 1, result.Data[1].Index)
+			_, err = client.EmbedFaces(t.Context(), []byte("preview"), boxes)
+			require.ErrorContains(t, err, tc.problem)
 		})
 	}
 }
@@ -114,6 +96,7 @@ func TestEmbedFacesBatches(t *testing.T) {
 	}
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
 		assert.Equal(t, "/v1/faces", r.URL.Path)
 		var req FaceRequest
 		if !assert.NoError(t, json.UnmarshalRead(r.Body, &req)) {
@@ -125,7 +108,12 @@ func TestEmbedFacesBatches(t *testing.T) {
 			return
 		}
 		assert.Equal(t, preview.Bytes(), req.Image)
-		calls.Add(1)
+		start := int(calls.Add(1)-1) * 8
+		if !assert.LessOrEqual(t, start+len(req.Boxes), len(boxes)) {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		assert.Equal(t, boxes[start:start+len(req.Boxes)], req.Boxes)
 		result := FaceResponse{Model: FaceModel, Revision: FaceRevision, Recipe: FaceRecipe}
 		for i, box := range slices.Backward(req.Boxes) {
 			global := int(math.Round(box.X * 256))

@@ -31,7 +31,7 @@ func TestMissingRuntime(t *testing.T) {
 	}
 }
 
-func TestModelsReportInstallationAndDiscoverCompleteFiles(t *testing.T) {
+func TestModelsReportInstallation(t *testing.T) {
 	var preview bytes.Buffer
 	require.NoError(t, png.Encode(&preview, image.NewRGBA(image.Rect(0, 0, 2, 1))))
 	for _, face := range []bool{false, true} {
@@ -41,28 +41,6 @@ func TestModelsReportInstallationAndDiscoverCompleteFiles(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
-			// Discovery checks file sizes. These sparse fixtures are never loaded for inference.
-			stageSizes := func(model string) {
-				dir, assets, err := embedassets.SelectedModel(root, model)
-				require.NoError(t, err)
-				require.NoError(t, os.MkdirAll(dir, 0o700))
-				for _, asset := range assets {
-					file, err := os.Create(filepath.Join(dir, asset.Name))
-					require.NoError(t, err)
-					err = file.Truncate(asset.Size)
-					require.NoError(t, file.Close())
-					require.NoError(t, err)
-				}
-			}
-			beforeJSON := `{"models":[]}`
-			afterJSON := `{"models":["nomic-embed-text"]}`
-			selected := embedassets.TextModel
-			if face {
-				stageSizes(embedassets.TextModel)
-				beforeJSON = afterJSON
-				afterJSON = `{"models":["nomic-embed-text","auraface-v1"]}`
-				selected = embedassets.FaceModel
-			}
 
 			library := filepath.Join(root, "runtime")
 			require.NoError(t, os.WriteFile(library, []byte("unused until models are installed"), 0o600))
@@ -82,13 +60,41 @@ func TestModelsReportInstallationAndDiscoverCompleteFiles(t *testing.T) {
 			require.Equal(t, http.StatusFailedDependency, recorder.Code)
 			require.Contains(t, recorder.Body.String(), "install ")
 			require.Contains(t, recorder.Body.String(), "missing or corrupt")
-			before := httptest.NewRecorder()
-			h.availableModels(before, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/models", nil))
-			assert.JSONEq(t, beforeJSON, before.Body.String())
-			stageSizes(selected)
-			after := httptest.NewRecorder()
-			h.availableModels(after, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/models", nil))
-			assert.JSONEq(t, afterJSON, after.Body.String())
 		})
+	}
+}
+
+func TestModelsDiscoverCompleteFiles(t *testing.T) {
+	root := t.TempDir()
+	library := filepath.Join(root, "runtime")
+	require.NoError(t, os.WriteFile(library, []byte("unused until models are installed"), 0o600))
+	e, err := loadModels(t.Context(), root, library)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, e.Close()) }()
+	var log bytes.Buffer
+	h := &handler{engine: e, gate: make(chan struct{}, 1), log: &log}
+	for _, tc := range []struct {
+		model, response string
+	}{
+		{"", `{"models":[]}`},
+		{embedassets.TextModel, `{"models":["nomic-embed-text"]}`},
+		{embedassets.FaceModel, `{"models":["nomic-embed-text","auraface-v1"]}`},
+	} {
+		if tc.model != "" {
+			// Discovery checks file sizes. These sparse fixtures are never loaded for inference.
+			dir, assets, err := embedassets.SelectedModel(root, tc.model)
+			require.NoError(t, err)
+			require.NoError(t, os.MkdirAll(dir, 0o700))
+			for _, asset := range assets {
+				file, err := os.Create(filepath.Join(dir, asset.Name))
+				require.NoError(t, err)
+				err = file.Truncate(asset.Size)
+				require.NoError(t, file.Close())
+				require.NoError(t, err)
+			}
+		}
+		recorder := httptest.NewRecorder()
+		h.availableModels(recorder, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/models", nil))
+		assert.JSONEq(t, tc.response, recorder.Body.String())
 	}
 }
