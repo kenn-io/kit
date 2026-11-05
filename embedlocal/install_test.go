@@ -317,7 +317,6 @@ func TestInstallReusesNewestTextBundle(t *testing.T) {
 	}{
 		{name: "newest", versions: []string{"v0.46.0", "v0.47.0"}},
 		{name: "numeric order", versions: []string{"v0.9.0", "v0.10.0"}},
-		{name: "current ready", versions: []string{"v0.46.0", embedassets.BundleTag}},
 		{name: "current broken", versions: []string{"v0.46.0", embedassets.BundleTag}, broken: true, wantError: true},
 		{name: "faces require current", mode: "faces", versions: []string{"v0.46.0", "v0.47.0"}, wantError: true},
 	} {

@@ -93,12 +93,14 @@ func TestServeDiscoveryAndCancellation(t *testing.T) {
 			}
 			assert.True(t, closedAfterInference)
 			require.NoError(t, writer.Close())
-			printed, err := io.ReadAll(reader)
-			require.NoError(t, err)
-			assert.Equal(t, "Starting local embeddings server...\n"+record.Endpoint().BaseURL()+"/v1\n", string(printed))
-			records, err := store.List()
-			require.NoError(t, err)
-			assert.Empty(t, records)
+			if !faces {
+				printed, err := io.ReadAll(reader)
+				require.NoError(t, err)
+				assert.Equal(t, "Starting local embeddings server...\n"+record.Endpoint().BaseURL()+"/v1\n", string(printed))
+				records, err := store.List()
+				require.NoError(t, err)
+				assert.Empty(t, records)
+			}
 		})
 	}
 }

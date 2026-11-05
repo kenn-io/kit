@@ -41,7 +41,7 @@ func TestMissingModelsReportInstallation(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
-			// Discovery checks completeness by size; loading rejects these placeholder bytes.
+			// Size the fixture files so the listing includes the installed model names.
 			stageSizes := func(model string) {
 				dir, assets, err := embedassets.SelectedModel(root, model)
 				require.NoError(t, err)

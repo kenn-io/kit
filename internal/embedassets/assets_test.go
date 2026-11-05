@@ -106,12 +106,12 @@ func TestMissingModel(t *testing.T) {
 
 func TestModelDiscoveryUsesSizesAndLoadingVerifiesDigests(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, "nomic-embed-text-v1.5", "e9b6763023c676ca8431644204f50c2b100d9aab")
+	dir := filepath.Join(root, "nomic-embed-text-v1.5", revision)
 	assert.Equal(t, dir, ModelDir(root))
 	assets := ModelAssets()
 	require.Len(t, assets, 2)
-	assert.Equal(t, "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/e9b6763023c676ca8431644204f50c2b100d9aab/onnx/model_fp16.onnx", assets[0].URL)
-	assert.Equal(t, "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/e9b6763023c676ca8431644204f50c2b100d9aab/tokenizer.json", assets[1].URL)
+	assert.Equal(t, "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/"+revision+"/onnx/model_fp16.onnx", assets[0].URL)
+	assert.Equal(t, "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/"+revision+"/tokenizer.json", assets[1].URL)
 
 	previous := modelAssets
 	digest := sha256.Sum256([]byte("valid"))

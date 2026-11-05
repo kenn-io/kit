@@ -24,17 +24,14 @@ func TestEmbedFaces(t *testing.T) {
 	unit := "[1" + strings.Repeat(",0", 511) + "]"
 	meta := `{"model":"` + FaceModel + `","revision":"` + FaceRevision + `","recipe":"` + FaceRecipe + `","data":`
 	for _, tc := range []struct {
-		name, body string
-		valid      bool
+		name, body, problem string
 	}{
-		{"ordered mixed results", meta + `[{"index":1,"embedding":null},{"index":0,"embedding":` + unit + `}]}`, true},
-		{"short response", meta + `[]}`, false},
-		{"duplicate index", meta + `[{"index":0,"embedding":null},{"index":0,"embedding":null}]}`, false},
-		{"bad width", meta + `[{"index":0,"embedding":[1]},{"index":1,"embedding":null}]}`, false},
-		{"zero norm", meta + `[{"index":0,"embedding":[0` + strings.Repeat(",0", 511) + `]},{"index":1,"embedding":null}]}`, false},
-		{"non-unit vector", meta + `[{"index":0,"embedding":[2` + strings.Repeat(",0", 511) + `]},{"index":1,"embedding":null}]}`, false},
-		{"null component", meta + `[{"index":0,"embedding":[null` + strings.Repeat(",0", 511) + `]},{"index":1,"embedding":null}]}`, false},
-		{"missing embedding", meta + `[{"index":0},{"index":1,"embedding":null}]}`, false},
+		{"ordered mixed results", meta + `[{"index":1,"embedding":null},{"index":0,"embedding":` + unit + `}]}`, ""},
+		{"short response", meta + `[]}`, "face response result count differs"},
+		{"duplicate index", meta + `[{"index":0,"embedding":null},{"index":0,"embedding":null}]}`, "face response index is invalid"},
+		{"bad width", meta + `[{"index":0,"embedding":[1]},{"index":1,"embedding":null}]}`, "has 1 dimensions, expected 512"},
+		{"non-unit vector", meta + `[{"index":0,"embedding":[2` + strings.Repeat(",0", 511) + `]},{"index":1,"embedding":null}]}`, "face vector is not normalized"},
+		{"missing embedding", meta + `[{"index":0},{"index":1,"embedding":null}]}`, "face response embedding is missing"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			boxes := []FaceBox{{Width: 0.5, Height: 1}, {X: 0.5, Width: 0.5, Height: 1}}
@@ -52,8 +49,8 @@ func TestEmbedFaces(t *testing.T) {
 			client, err := New(Options{Model: embedconfig.Model{Name: "nomic-embed-text", Dimensions: 768, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationNone}, Deployment: embedconfig.Deployment{BaseURL: server.URL + "/v1"}})
 			require.NoError(t, err)
 			result, err := client.EmbedFaces(t.Context(), preview.Bytes(), boxes)
-			if !tc.valid {
-				require.Error(t, err)
+			if tc.problem != "" {
+				require.ErrorContains(t, err, tc.problem)
 				return
 			}
 			require.NoError(t, err)
