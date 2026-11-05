@@ -32,7 +32,9 @@ require (
 	github.com/posthog/posthog-go v1.39.0
 	github.com/ryanrolds/sqlclosecheck v0.6.0
 	github.com/shirou/gopsutil/v4 v4.26.9
+	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pathologize v1.1.0
+	github.com/spf13/pflag v1.0.10
 	github.com/stretchr/testify v1.12.1
 	github.com/tailscale/hujson v0.0.0-20260727124030-b80ff77dac4f
 	github.com/yuin/goldmark/v2 v2.1.11
@@ -119,6 +121,7 @@ require (
 	github.com/gorilla/mux v1.8.1 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.31.0 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
+	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
