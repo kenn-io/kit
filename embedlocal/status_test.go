@@ -19,6 +19,12 @@ import (
 )
 
 func TestInspectFiles(t *testing.T) {
+	_, faces, err := embedassets.SelectedModel("", FaceModel)
+	require.NoError(t, err)
+	var totalFaceBytes int64
+	for _, asset := range faces {
+		totalFaceBytes += asset.Size
+	}
 	var totalModelBytes int64
 	for _, asset := range embedassets.ModelAssets() {
 		totalModelBytes += asset.Size
@@ -33,7 +39,7 @@ func TestInspectFiles(t *testing.T) {
 		{name: "complete", bundle: true, model: true},
 		{name: "model missing", bundle: true, bytes: totalModelBytes},
 		{name: "bundle missing", model: true, bytes: bundleDownloadBytes},
-		{name: "faces missing from text installation", selected: FaceModel, bundle: true, model: true, bytes: 260_926_740},
+		{name: "faces missing from text installation", selected: FaceModel, bundle: true, model: true, bytes: totalFaceBytes},
 		{name: "text missing from face installation", selected: TextModel, installed: FaceModel, bundle: true, model: true, bytes: totalModelBytes},
 		{name: "faces complete", selected: FaceModel, installed: FaceModel, bundle: true, model: true},
 		{name: "cached text default", cached: true, model: true},

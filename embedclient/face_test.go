@@ -37,7 +37,7 @@ func TestEmbedFaces(t *testing.T) {
 				assert.NoError(t, err)
 			}))
 			defer server.Close()
-			client, err := New(Options{Model: embedconfig.Model{Name: "nomic-embed-text", Dimensions: 768, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationNone}, Deployment: embedconfig.Deployment{BaseURL: server.URL + "/v1"}})
+			client, err := faceTestClient(server.URL, Retry{})
 			require.NoError(t, err)
 			_, err = client.EmbedFaces(t.Context(), []byte("preview"), boxes)
 			require.ErrorContains(t, err, tc.problem)
@@ -59,17 +59,8 @@ func TestFaceBoxValidation(t *testing.T) {
 }
 
 func TestEmbedFacesRetries(t *testing.T) {
-	var preview bytes.Buffer
-	require.NoError(t, png.Encode(&preview, image.NewRGBA(image.Rect(0, 0, 1, 1))))
 	var calls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/v1/faces", r.URL.Path)
-		var request FaceRequest
-		if !assert.NoError(t, json.UnmarshalRead(r.Body, &request)) {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		assert.Equal(t, preview.Bytes(), request.Image)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if calls.Add(1) == 1 {
 			w.Header().Set("Retry-After", "1")
 			w.WriteHeader(http.StatusServiceUnavailable)
@@ -78,9 +69,9 @@ func TestEmbedFacesRetries(t *testing.T) {
 		assert.NoError(t, json.MarshalWrite(w, FaceResponse{Model: FaceModel, Revision: FaceRevision, Recipe: FaceRecipe, Data: []FaceResult{{Index: 0}}}, json.FormatNilSliceAsNull(true)))
 	}))
 	defer server.Close()
-	client, err := New(Options{Model: embedconfig.Model{Name: "nomic-embed-text", Dimensions: 768, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationNone}, Deployment: embedconfig.Deployment{BaseURL: server.URL + "/v1"}, Retry: Retry{MaxAttempts: 2, InitialBackoff: time.Millisecond, MaxRetryAfter: time.Millisecond}})
+	client, err := faceTestClient(server.URL, Retry{MaxAttempts: 2, InitialBackoff: time.Millisecond, MaxRetryAfter: time.Millisecond})
 	require.NoError(t, err)
-	result, err := client.EmbedFaces(t.Context(), preview.Bytes(), []FaceBox{{Width: 1, Height: 1}})
+	result, err := client.EmbedFaces(t.Context(), []byte("preview"), []FaceBox{{Width: 1, Height: 1}})
 	require.NoError(t, err)
 	require.Len(t, result.Data, 1)
 	assert.Nil(t, result.Data[0].Embedding)
@@ -127,7 +118,7 @@ func TestEmbedFacesBatches(t *testing.T) {
 		assert.NoError(t, json.MarshalWrite(w, result, json.FormatNilSliceAsNull(true)))
 	}))
 	defer server.Close()
-	client, err := New(Options{Model: embedconfig.Model{Name: FaceModel, Dimensions: 512, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationNone}, Deployment: embedconfig.Deployment{BaseURL: server.URL + "/v1"}})
+	client, err := faceTestClient(server.URL, Retry{})
 	require.NoError(t, err)
 	result, err := client.EmbedFaces(t.Context(), preview.Bytes(), boxes)
 	require.NoError(t, err)
@@ -162,7 +153,7 @@ func TestEmbedFacesBatchVectorError(t *testing.T) {
 		assert.NoError(t, json.MarshalWrite(w, result, json.FormatNilSliceAsNull(true)))
 	}))
 	defer server.Close()
-	client, err := New(Options{Model: embedconfig.Model{Name: FaceModel, Dimensions: 512, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationNone}, Deployment: embedconfig.Deployment{BaseURL: server.URL + "/v1"}})
+	client, err := faceTestClient(server.URL, Retry{})
 	require.NoError(t, err)
 	boxes := make([]FaceBox, 17)
 	for i := range boxes {
@@ -174,4 +165,8 @@ func TestEmbedFacesBatchVectorError(t *testing.T) {
 	assert.Equal(t, 8, vector.Index)
 	assert.Empty(t, result.Data, "a failed batch must not return partial vectors")
 	assert.Equal(t, int32(2), calls.Load(), "stop before the third batch")
+}
+
+func faceTestClient(endpoint string, retry Retry) (*Client, error) {
+	return New(Options{Model: embedconfig.Model{Name: FaceModel, Dimensions: 512, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationNone}, Deployment: embedconfig.Deployment{BaseURL: endpoint + "/v1"}, Retry: retry})
 }

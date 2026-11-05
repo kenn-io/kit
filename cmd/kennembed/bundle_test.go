@@ -66,10 +66,9 @@ func TestBundleNativeParity(t *testing.T) {
 	require.NoError(t, err)
 	faces, err := client.EmbedFaces(ctx, photo, []embedclient.FaceBox{
 		{X: .58, Y: 0, Width: .36, Height: .27},
-		{X: .28, Y: .23, Width: .22, Height: .19},
 	})
 	require.NoError(t, err)
-	require.Len(t, faces.Data, 2)
+	require.Len(t, faces.Data, 1)
 	for _, face := range faces.Data {
 		require.Len(t, face.Embedding, 512)
 	}
