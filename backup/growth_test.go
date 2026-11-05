@@ -11,6 +11,8 @@ import (
 func TestAttachmentHistoryGrowth(t *testing.T) {
 	// Allocate with the parent so fixtures outlive both checks. Allocs measures
 	// process-wide allocations, so these checks must run sequentially.
+	// Create reuses prune's 1,000-snapshot repo after its index consolidation;
+	// prune's warm-up excludes that one-time work from its samples.
 	type history struct {
 		repo *Repo
 		opts CreateOptions
@@ -39,8 +41,9 @@ func TestAttachmentHistoryGrowth(t *testing.T) {
 				}, nil
 			},
 			Measure: growthtest.Allocs(3),
-			// Snapshot union checks visit all refs: between 10x and 100x
-			// growth, measured at 33x, with a 1.5x margin.
+			// Each snapshot visits its growing attachment union, totaling
+			// about N²/2 refs. Combined with linear work, this measures 33x
+			// growth from 100 to 1,000 snapshots; allow a 1.5x margin.
 			MaxRatio: 50,
 			Floor:    10_000,
 		})
