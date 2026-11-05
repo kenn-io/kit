@@ -22,6 +22,6 @@ The server holds the shared inference gate while decoding a face preview and pro
 
 ## Publishing bundles
 
-`internal/embedassets.BundleTag` pins the server independently of ordinary kit updates. The initial pin is [v0.47.1](https://github.com/kenn-io/kit/releases/tag/v0.47.1). Publish a new prerelease from the reviewed face implementation, then dispatch `kennembed.yml` with that existing release tag. Update `BundleTag` only after its six archives and `SHA256SUMS` are attached. The following ordinary kit release carries that pin for consumers.
+`internal/embedassets.BundleTag` pins the server independently of ordinary kit updates. The current pin is [v0.48.2-face.4](https://github.com/kenn-io/kit/releases/tag/v0.48.2-face.4), which includes face inference and all six platform archives with `SHA256SUMS`. For future updates, dispatch `kennembed.yml` with the reviewed release tag and update `BundleTag` after all archives and checksums are attached. The following ordinary kit release carries that pin for consumers.
 
 The workflow builds the selected tag's exact source, checks its embedded source revision, and exercises its native executable. It packages Linux, macOS, and Windows for amd64 and arm64 with runtime libraries and distribution notices. Pull requests build and exercise their checked-out candidate as workflow artifacts. No bundle workflow is required for unrelated kit releases.
