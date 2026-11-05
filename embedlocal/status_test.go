@@ -9,15 +9,42 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/gofrs/flock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/daemon"
 	"go.kenn.io/kit/internal/embedassets"
 )
+
+func TestInspectObservers(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(dir, ".install-stale"), 0o700))
+	path, err := (daemon.RuntimeStore{Dir: dir, Prefix: "kit-embed-install"}).LockPath()
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, nil, 0o600))
+	reader := flock.New(path, flock.SetFlag(os.O_RDONLY))
+	locked, err := reader.TryRLock()
+	require.NoError(t, err)
+	require.True(t, locked)
+	defer func() { require.NoError(t, reader.Close()) }()
+	var wg sync.WaitGroup
+	results, errs := make([]Status, 8), make([]error, 8)
+	for i := range results {
+		wg.Go(func() {
+			results[i], errs[i] = Inspect(t.Context(), Options{DataDir: dir, SkipOllama: true})
+		})
+	}
+	wg.Wait()
+	for i, result := range results {
+		require.NoError(t, errs[i])
+		assert.False(t, result.Installing)
+	}
+}
 
 func TestInspectFiles(t *testing.T) {
 	for _, tc := range []struct {
@@ -85,6 +112,8 @@ func TestInspectFiles(t *testing.T) {
 			assert.Less(t, time.Since(start), time.Second)
 			if tc.name != "missing directory" {
 				assert.DirExists(t, filepath.Join(dir, ".install-stale"))
+			} else {
+				assert.NoDirExists(t, dir)
 			}
 		})
 	}
@@ -154,6 +183,10 @@ func TestInspectCancellationAndErrors(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "bin"), []byte("file"), 0o600))
+	got, err := Inspect(t.Context(), Options{DataDir: dir, SkipOllama: true})
+	require.NoError(t, err)
+	assert.Equal(t, int64(294570424), got.DownloadBytes)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "nomic-embed-text-v1.5"), []byte("file"), 0o600))
 	_, err = Inspect(t.Context(), Options{DataDir: dir, SkipOllama: true})
 	require.Error(t, err)
 	_, err = Inspect(t.Context(), Options{DataDir: filepath.Join(dir, "bin", "nested"), SkipOllama: true})
@@ -172,7 +205,13 @@ func TestInspectInstallInAnotherProcess(t *testing.T) {
 	stdin, err := cmd.StdinPipe()
 	require.NoError(t, err)
 	require.NoError(t, cmd.Start())
-	defer func() { _ = stdin.Close(); require.NoError(t, cmd.Wait()) }()
+	waited := false
+	defer func() {
+		_ = stdin.Close()
+		if !waited {
+			_ = cmd.Wait()
+		}
+	}()
 	line, err := bufio.NewReader(stdout).ReadString('\n')
 	require.NoError(t, err)
 	require.Equal(t, "locked\n", line)
@@ -181,6 +220,12 @@ func TestInspectInstallInAnotherProcess(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, Status{Installing: true, DownloadBytes: 294570424}, got)
 	assert.Less(t, time.Since(start), time.Second)
+	require.NoError(t, stdin.Close())
+	require.NoError(t, cmd.Wait())
+	waited = true
+	got, err = Inspect(t.Context(), Options{DataDir: dir, SkipOllama: true})
+	require.NoError(t, err)
+	assert.False(t, got.Installing, "leftover staging is idle after the installer exits")
 }
 
 func TestInspectLockProcess(t *testing.T) {
@@ -190,8 +235,41 @@ func TestInspectLockProcess(t *testing.T) {
 	release, err := (daemon.RuntimeStore{Dir: os.Args[len(os.Args)-1], Prefix: "kit-embed-install"}).AcquireStartLock(t.Context())
 	require.NoError(t, err)
 	defer release()
+	require.NoError(t, os.Mkdir(filepath.Join(os.Args[len(os.Args)-1], ".install-active"), 0o700))
 	_, err = os.Stdout.WriteString("locked\n")
 	require.NoError(t, err)
 	var b [1]byte
 	_, _ = os.Stdin.Read(b[:])
+}
+
+func TestInspectInstallApproval(t *testing.T) {
+	client, assets, _, _ := installFixture(t, "", nil)
+	dir := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(dir, ".install-stale"), 0o700))
+	var confirmed, progressed bool
+	_, err := install(t.Context(), InstallOptions{
+		DataDir: dir,
+		Confirm: func(ctx context.Context, _ int64) (bool, error) {
+			got, err := Inspect(ctx, Options{DataDir: dir, SkipOllama: true})
+			require.NoError(t, err)
+			assert.False(t, got.Installing, "confirmation precedes approved installation")
+			confirmed = true
+			return true, nil
+		},
+		Progress: func(downloaded, _ int64) {
+			if downloaded != 0 {
+				return
+			}
+			got, err := Inspect(t.Context(), Options{DataDir: dir, SkipOllama: true})
+			require.NoError(t, err)
+			assert.True(t, got.Installing, "approved work owns the lock and staging directory")
+			progressed = true
+		},
+	}, client, assets)
+	require.NoError(t, err)
+	assert.True(t, confirmed)
+	assert.True(t, progressed)
+	got, err := Inspect(t.Context(), Options{DataDir: dir, SkipOllama: true})
+	require.NoError(t, err)
+	assert.False(t, got.Installing)
 }

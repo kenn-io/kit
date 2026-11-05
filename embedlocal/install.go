@@ -63,8 +63,6 @@ const bundleDownloadBytes = 20_000_000
 
 const installLockPrefix = "kit-embed-install"
 
-var errIncompleteBundle = errors.New("incomplete embedding bundle")
-
 // Install reuses the pinned server offline or confirms before downloading missing
 // files. Concurrent callers share one installation. Use the shared DataDir from
 // the caller's server discovery and startup integration. Pass the returned paths
@@ -203,10 +201,10 @@ func checkBundle(dir string) error {
 			return err
 		}
 		if !info.Mode().IsRegular() || info.Size() == 0 {
-			return fmt.Errorf("%w: bundle file is not regular or is empty: %s", errIncompleteBundle, name)
+			return fmt.Errorf("bundle file is not regular or is empty: %s", name)
 		}
 		if name == embedassets.ExecutableName() && runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
-			return fmt.Errorf("%w: kennembed has no execute permission", errIncompleteBundle)
+			return errors.New("kennembed has no execute permission")
 		}
 	}
 	return nil

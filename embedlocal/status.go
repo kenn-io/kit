@@ -3,8 +3,10 @@ package embedlocal
 import (
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"go.kenn.io/kit/daemon"
@@ -14,7 +16,7 @@ import (
 // Status describes shared local files and Ollama independently of app settings.
 type Status struct {
 	OllamaAvailable bool
-	// Installing means an installer holds the lock, including during confirmation.
+	// Installing means an installer holds the lock and has staged approved work.
 	Installing bool
 	// DownloadBytes estimates missing downloads. Zero means all pinned files are
 	// present by metadata; Install still verifies model contents before reuse.
@@ -45,37 +47,38 @@ func inspect(ctx context.Context, opts Options, ollama string) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	release, acquired, err := (daemon.RuntimeStore{Dir: dir, Prefix: installLockPrefix}).TryAcquireStartLock(ctx)
+	held, err := (daemon.RuntimeStore{Dir: dir, Prefix: installLockPrefix}).StartLockHeld(ctx)
 	if err != nil {
 		return Status{}, err
 	}
-	status := Status{Installing: !acquired}
-	err = func() error {
-		if acquired {
-			defer release()
+	var status Status
+	if held {
+		entries, err := os.ReadDir(dir)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return Status{}, err
 		}
-		if err := checkBundle(filepath.Join(dir, "bin", embedassets.BundleTag)); err != nil {
-			if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, errIncompleteBundle) {
-				return err
+		for _, entry := range entries {
+			if entry.IsDir() && strings.HasPrefix(entry.Name(), ".install-") {
+				status.Installing = true
+				break
 			}
-			status.DownloadBytes += bundleDownloadBytes
 		}
-		missing, err := embedassets.MissingModel(embedassets.ModelDir(dir), embedassets.ModelAssets(), false)
-		if err != nil {
-			return err
-		}
-		for _, asset := range missing {
-			status.DownloadBytes += asset.Size
-		}
-		return nil
-	}()
+	}
+	if checkBundle(filepath.Join(dir, "bin", embedassets.BundleTag)) != nil {
+		status.DownloadBytes += bundleDownloadBytes
+	}
+	missing, err := embedassets.MissingModel(embedassets.ModelDir(dir), embedassets.ModelAssets(), false)
 	if err != nil {
 		return Status{}, err
+	}
+	for _, asset := range missing {
+		status.DownloadBytes += asset.Size
 	}
 	if !opts.SkipOllama {
 		probe, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 		defer cancel()
-		status.OllamaAvailable = probeOllama(probe, ollama)
+		client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+		status.OllamaAvailable = probeOllama(probe, ollama, client)
 	}
 	if err := ctx.Err(); err != nil {
 		return Status{}, err

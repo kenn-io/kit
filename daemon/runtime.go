@@ -152,12 +152,26 @@ func (s RuntimeStore) Path(pid int) (string, error) {
 
 // LockPath returns the path used to serialize daemon auto-starts for the store.
 func (s RuntimeStore) LockPath() (string, error) {
-	prefix, err := s.validatePrefix()
+	path, err := s.startLockPath()
 	if err != nil {
 		return "", err
 	}
 	if err := s.prepareDir(); err != nil {
 		return "", err
+	}
+	return path, nil
+}
+
+func (s RuntimeStore) startLockPath() (string, error) {
+	prefix, err := s.validatePrefix()
+	if err != nil {
+		return "", err
+	}
+	if s.Dir == "" {
+		return "", errors.New("runtime dir is empty")
+	}
+	if !filepath.IsAbs(s.Dir) {
+		return "", fmt.Errorf("runtime dir %q must be absolute", s.Dir)
 	}
 	return filepath.Join(s.Dir, prefix+".lock"), nil
 }

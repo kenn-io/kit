@@ -13,6 +13,6 @@
 // Call Inspect to check the shared installation and Ollama before presenting
 // download choices. Its approximate DownloadBytes uses file types and sizes,
 // without hashing model contents. Install still verifies cached model contents.
-// Installing includes an installer waiting for confirmation. The snapshot is
-// advisory and leaves enabled settings, endpoints, and indexing progress to apps.
+// Installing means approved work holds the install lock and a staging directory.
+// The advisory snapshot leaves settings, endpoints, and indexing progress to apps.
 package embedlocal
