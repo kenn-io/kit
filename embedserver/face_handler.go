@@ -42,40 +42,52 @@ func (h *handler) faces(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid preview or too many pixels", http.StatusBadRequest)
 		return
 	}
-	// Hold the shared gate through decoding and all boxes so only one decoded
-	// preview is retained at a time. Text requests wait until this photo finishes.
-	select {
-	case h.gate <- struct{}{}:
-	case <-r.Context().Done():
-		return
-	}
-	defer func() { <-h.gate }()
-	preview, _, err := image.Decode(bytes.NewReader(req.Image))
+	result, status, err := h.faceVectors(r.Context(), req)
 	if err != nil {
-		http.Error(w, "invalid preview", http.StatusBadRequest)
-		return
-	}
-	result := embedclient.FaceResponse{Model: embedclient.FaceModel, Revision: embedclient.FaceRevision, Recipe: embedclient.FaceRecipe, Data: make([]embedclient.FaceResult, len(req.Boxes))}
-	for i, box := range req.Boxes {
-		vector, err := h.embedFace(r.Context(), preview, box)
-		if err != nil {
-			if errors.Is(err, context.Canceled) {
-				return
-			}
-			_, _ = fmt.Fprintf(h.log, "face inference failed: %v\n", err)
-			if load, ok := errors.AsType[*modelLoadError](err); ok {
-				http.Error(w, load.Error(), http.StatusFailedDependency)
-			} else {
-				http.Error(w, "face inference failed", http.StatusInternalServerError)
-			}
+		if errors.Is(err, context.Canceled) {
 			return
 		}
-		result.Data[i] = embedclient.FaceResult{Index: i, Embedding: vector}
+		if status == http.StatusBadRequest {
+			http.Error(w, "invalid preview", status)
+			return
+		}
+		_, _ = fmt.Fprintf(h.log, "face inference failed: %v\n", err)
+		if load, ok := errors.AsType[*modelLoadError](err); ok {
+			http.Error(w, load.Error(), http.StatusFailedDependency)
+		} else {
+			http.Error(w, "face inference failed", http.StatusInternalServerError)
+		}
+		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.MarshalWrite(w, result, json.FormatNilSliceAsNull(true)); err != nil {
 		_, _ = fmt.Fprintf(h.log, "encode faces: %v\n", err)
 	}
+}
+
+// faceVectors bounds decoded previews and native work, then releases the gate
+// before the caller writes any response bytes.
+func (h *handler) faceVectors(ctx context.Context, req embedclient.FaceRequest) (embedclient.FaceResponse, int, error) {
+	var result embedclient.FaceResponse
+	select {
+	case h.gate <- struct{}{}:
+	case <-ctx.Done():
+		return result, 0, ctx.Err()
+	}
+	defer func() { <-h.gate }()
+	preview, _, err := image.Decode(bytes.NewReader(req.Image))
+	if err != nil {
+		return result, http.StatusBadRequest, err
+	}
+	result = embedclient.FaceResponse{Model: embedclient.FaceModel, Revision: embedclient.FaceRevision, Recipe: embedclient.FaceRecipe, Data: make([]embedclient.FaceResult, len(req.Boxes))}
+	for i, box := range req.Boxes {
+		vector, err := h.embedFace(ctx, preview, box)
+		if err != nil {
+			return result, http.StatusInternalServerError, err
+		}
+		result.Data[i] = embedclient.FaceResult{Index: i, Embedding: vector}
+	}
+	return result, http.StatusOK, nil
 }
 
 func (h *handler) embedFace(ctx context.Context, preview image.Image, box embedclient.FaceBox) ([]float32, error) {

@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -102,4 +103,88 @@ func TestEmbedFacesRetries(t *testing.T) {
 	require.Len(t, result.Data, 1)
 	assert.Nil(t, result.Data[0].Embedding)
 	assert.Equal(t, int32(2), calls.Load())
+}
+
+func TestEmbedFacesBatches(t *testing.T) {
+	var preview bytes.Buffer
+	require.NoError(t, png.Encode(&preview, image.NewRGBA(image.Rect(0, 0, 2, 1))))
+	boxes := make([]FaceBox, 128)
+	for i := range boxes {
+		boxes[i] = FaceBox{X: float64(i) / 256, Width: 1.0 / 256, Height: 1}
+	}
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1/faces", r.URL.Path)
+		var req FaceRequest
+		if !assert.NoError(t, json.UnmarshalRead(r.Body, &req)) {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if !assert.LessOrEqual(t, len(req.Boxes), 8, "face requests must stay within their inference budget") {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		assert.Equal(t, preview.Bytes(), req.Image)
+		calls.Add(1)
+		result := FaceResponse{Model: FaceModel, Revision: FaceRevision, Recipe: FaceRecipe}
+		for i, box := range slices.Backward(req.Boxes) {
+			global := int(math.Round(box.X * 256))
+			item := FaceResult{Index: i}
+			if global%3 != 0 {
+				item.Embedding = make([]float32, 512)
+				item.Embedding[global] = 1
+			}
+			result.Data = append(result.Data, item)
+		}
+		assert.NoError(t, json.MarshalWrite(w, result, json.FormatNilSliceAsNull(true)))
+	}))
+	defer server.Close()
+	client, err := New(Options{Model: embedconfig.Model{Name: FaceModel, Dimensions: 512, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationNone}, Deployment: embedconfig.Deployment{BaseURL: server.URL + "/v1"}})
+	require.NoError(t, err)
+	result, err := client.EmbedFaces(t.Context(), preview.Bytes(), boxes)
+	require.NoError(t, err)
+	require.Len(t, result.Data, 128)
+	assert.Equal(t, int32(16), calls.Load())
+	for i, item := range result.Data {
+		assert.Equal(t, i, item.Index)
+		if i%3 == 0 {
+			assert.Nil(t, item.Embedding)
+			continue
+		}
+		require.Len(t, item.Embedding, 512)
+		assert.InDelta(t, 1, item.Embedding[i], 1e-7)
+	}
+}
+
+func TestEmbedFacesBatchVectorError(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req FaceRequest
+		if !assert.NoError(t, json.UnmarshalRead(r.Body, &req)) {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		result := FaceResponse{Model: FaceModel, Revision: FaceRevision, Recipe: FaceRecipe, Data: make([]FaceResult, len(req.Boxes))}
+		for i := range result.Data {
+			result.Data[i].Index = i
+		}
+		if calls.Add(1) == 2 {
+			result.Data[0].Embedding = []float32{1}
+		}
+		assert.NoError(t, json.MarshalWrite(w, result, json.FormatNilSliceAsNull(true)))
+	}))
+	defer server.Close()
+	client, err := New(Options{Model: embedconfig.Model{Name: FaceModel, Dimensions: 512, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationNone}, Deployment: embedconfig.Deployment{BaseURL: server.URL + "/v1"}})
+	require.NoError(t, err)
+	boxes := make([]FaceBox, 17)
+	for i := range boxes {
+		boxes[i] = FaceBox{Width: 1, Height: 1}
+	}
+	result, err := client.EmbedFaces(t.Context(), []byte("preview is validated by server"), boxes)
+	var vector *VectorError
+	require.ErrorAs(t, err, &vector)
+	assert.Equal(t, 8, vector.Index)
+	require.ErrorContains(t, err, "expected 512")
+	assert.Empty(t, result.Data, "a failed batch must not return partial vectors")
+	assert.Equal(t, int32(2), calls.Load(), "stop before the third batch")
 }

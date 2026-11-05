@@ -18,7 +18,7 @@ Native acceptance uses the public astronaut sources and explicit person boxes un
 
 On the expanded corpus, InsightFace's RGB `(value - 127.5) / 127.5` recipe produced a maximum same-person distance of 1.145075 and a minimum different-person distance of 1.148847. The BGR recipe retains the wider measured separation. These measurements characterize this corpus, not a general identity threshold.
 
-The server holds the shared inference gate while decoding a face preview and processing its boxes. Text requests wait until that photo finishes. Missing or corrupt model assets return HTTP 424 with the installation error; clients can install the requested model and retry.
+The client sends at most eight boxes per HTTP request and preserves their original indices. Each request holds the shared inference gate through preview decoding and inference, then releases it before writing the response. Text requests can run between those batches. Missing or corrupt model assets return HTTP 424 with the installation error; clients can install the requested model and retry.
 
 ## Publishing bundles
 

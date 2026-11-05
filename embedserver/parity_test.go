@@ -50,4 +50,19 @@ func TestNativeFaces(t *testing.T) {
 	client, err := embedclient.New(embedclient.Options{Model: embedconfig.Model{Name: "nomic-embed-text", Dimensions: 768, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationNone}, Deployment: embedconfig.Deployment{BaseURL: server.URL + "/v1"}})
 	require.NoError(t, err)
 	embedtest.AssertFaces(t, client, dir, filepath.Join("testdata", "faces", "boxes.json"))
+	t.Run("128 boxes with default transport", func(t *testing.T) {
+		photo, err := os.ReadFile(filepath.Join(dir, "faces", "commons-glenn-official.jpg"))
+		require.NoError(t, err)
+		boxes := make([]embedclient.FaceBox, 128)
+		for i := range boxes {
+			boxes[i] = embedclient.FaceBox{X: .12, Y: .01, Width: .57, Height: .61}
+		}
+		result, err := client.EmbedFaces(t.Context(), photo, boxes)
+		require.NoError(t, err)
+		require.Len(t, result.Data, 128)
+		for i, item := range result.Data {
+			assert.Equal(t, i, item.Index)
+			require.Len(t, item.Embedding, 512)
+		}
+	})
 }

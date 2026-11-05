@@ -18,6 +18,9 @@ const (
 	FaceRecipe       = embedassets.FaceRecipe
 	MaxFaceBoxes     = 128
 	MaxPreviewPixels = 40_000_000
+
+	// Bound native work per HTTP request and time spent holding the shared gate.
+	faceBatchItems = 8
 )
 
 // FaceBox uses normalized coordinates in the already oriented preview.
@@ -75,6 +78,25 @@ func (c *Client) EmbedFaces(ctx context.Context, preview []byte, boxes []FaceBox
 			return result, err
 		}
 	}
+	result = FaceResponse{Model: FaceModel, Revision: FaceRevision, Recipe: FaceRecipe, Data: make([]FaceResult, len(boxes))}
+	for start := 0; start < len(boxes); start += faceBatchItems {
+		if err := ctx.Err(); err != nil {
+			return FaceResponse{}, err
+		}
+		batch, err := c.embedFaceBatch(ctx, preview, boxes[start:min(start+faceBatchItems, len(boxes))])
+		if err != nil {
+			return FaceResponse{}, remapVectorIndex(err, func(i int) int { return start + i })
+		}
+		for i, item := range batch.Data {
+			item.Index += start
+			result.Data[start+i] = item
+		}
+	}
+	return result, nil
+}
+
+func (c *Client) embedFaceBatch(ctx context.Context, preview []byte, boxes []FaceBox) (FaceResponse, error) {
+	var result FaceResponse
 	body, err := json.Marshal(FaceRequest{Image: preview, Boxes: boxes})
 	if err != nil {
 		return result, err

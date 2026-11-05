@@ -14,7 +14,9 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -194,4 +196,47 @@ func TestFaceDecodeWaitsForInferenceGate(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, w.Code)
 	require.Contains(t, w.Body.String(), "invalid preview")
 	require.Empty(t, h.gate)
+}
+
+func TestFaceResponseReleasesInferenceGate(t *testing.T) {
+	var encoded bytes.Buffer
+	require.NoError(t, png.Encode(&encoded, image.NewRGBA(image.Rect(0, 0, 2, 1))))
+	for _, tc := range []struct {
+		name      string
+		preview   []byte
+		inference error
+	}{
+		{name: "success", preview: encoded.Bytes()},
+		{name: "decode error", preview: encoded.Bytes()[:33]},
+		{name: "inference error", preview: encoded.Bytes(), inference: errors.New("native failure")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := &faceEngine{fakeEngine: new(fakeEngine), runFace: func(context.Context, image.Image, embedclient.FaceBox) ([]float32, error) { return nil, tc.inference }}
+			h := &handler{engine: e, gate: make(chan struct{}, 1), log: io.Discard}
+			body, err := json.Marshal(embedclient.FaceRequest{Image: tc.preview, Boxes: []embedclient.FaceBox{{Width: 1, Height: 1}}})
+			require.NoError(t, err)
+			writing, release := make(chan struct{}), make(chan struct{})
+			writer := &blockedResponseWriter{ResponseRecorder: httptest.NewRecorder(), entered: writing, release: release}
+			done := make(chan struct{})
+			defer func() { close(release); <-done }()
+			go func() {
+				defer close(done)
+				h.faces(writer, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/faces", bytes.NewReader(body)))
+			}()
+			select {
+			case <-writing:
+			case <-time.After(5 * time.Second):
+				require.FailNow(t, "face response did not reach blocked Write")
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			defer cancel()
+			text := httptest.NewRecorder()
+			h.ServeHTTP(text, httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text","input":"x"}`)))
+			assert.Equal(t, http.StatusOK, text.Code)
+			assert.NotEmpty(t, text.Body.String(), "blocked face response retained inference gate")
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			assert.Equal(t, []string{"x"}, e.inputs)
+		})
+	}
 }
