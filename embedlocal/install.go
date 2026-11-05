@@ -24,6 +24,7 @@ import (
 	"go.kenn.io/kit/atomicfile"
 	"go.kenn.io/kit/daemon"
 	"go.kenn.io/kit/internal/embedassets"
+	"go.kenn.io/kit/internal/renamebusy"
 	"go.kenn.io/kit/safefileio"
 	"go.kenn.io/kit/selfupdate"
 )
@@ -182,7 +183,7 @@ func install(ctx context.Context, opts InstallOptions, client *http.Client, asse
 		if err := os.MkdirAll(filepath.Dir(bundle), 0o700); err != nil {
 			return Installation{}, err
 		}
-		if err := atomicfile.Replace(stagedBundle, bundle); err != nil {
+		if err := renamebusy.Replace(stagedBundle, bundle, renamebusy.DefaultTimeout); err != nil {
 			return Installation{}, fmt.Errorf("publish kennembed: %w", err)
 		}
 	}
