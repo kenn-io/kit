@@ -31,7 +31,7 @@ func TestMissingRuntime(t *testing.T) {
 	}
 }
 
-func TestMissingModelsReportInstallation(t *testing.T) {
+func TestModelsReportInstallationAndDiscoverCompleteFiles(t *testing.T) {
 	var preview bytes.Buffer
 	require.NoError(t, png.Encode(&preview, image.NewRGBA(image.Rect(0, 0, 2, 1))))
 	for _, face := range []bool{false, true} {
@@ -41,7 +41,7 @@ func TestMissingModelsReportInstallation(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
-			// Size the fixture files so the listing includes the installed model names.
+			// Discovery checks file sizes. These sparse fixtures are never loaded for inference.
 			stageSizes := func(model string) {
 				dir, assets, err := embedassets.SelectedModel(root, model)
 				require.NoError(t, err)

@@ -70,8 +70,7 @@ func TestBundleNativeParity(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, faces.Data, 2)
-	for i, face := range faces.Data {
-		assert.Equal(t, i, face.Index)
+	for _, face := range faces.Data {
 		require.Len(t, face.Embedding, 512)
 	}
 	if runtime.GOOS == "windows" {

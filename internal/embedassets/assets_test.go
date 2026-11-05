@@ -104,7 +104,7 @@ func TestMissingModel(t *testing.T) {
 	assert.FileExists(t, path)
 }
 
-func TestModelDiscoveryUsesSizesAndLoadingVerifiesDigests(t *testing.T) {
+func TestModelPinsDiscoveryAndLoading(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "nomic-embed-text-v1.5", revision)
 	assert.Equal(t, dir, ModelDir(root))
