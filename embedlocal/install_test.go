@@ -381,3 +381,25 @@ func TestInstallFaceConsentSize(t *testing.T) {
 	}})
 	require.ErrorContains(t, err, "declined")
 }
+
+func TestInstallReusesNewestTextBundle(t *testing.T) {
+	for _, versions := range [][]string{{"v0.46.0", "v0.47.0"}, {"v0.9.0", "v0.10.0"}} {
+		t.Run(strings.Join(versions, "-"), func(t *testing.T) {
+			client, assets, _, closeServer := installFixture(t, "", nil)
+			opts := InstallOptions{DataDir: t.TempDir(), Confirm: func(context.Context, int64) (bool, error) { return true, nil }}
+			current, err := install(t.Context(), opts, client, assets)
+			require.NoError(t, err)
+			require.NoError(t, os.Rename(filepath.Dir(current.Executable), filepath.Join(opts.DataDir, "bin", versions[0])))
+			bundle := filepath.Join(opts.DataDir, "bin", versions[1])
+			require.NoError(t, os.MkdirAll(bundle, 0o700))
+			for _, name := range append(embedassets.NativeFiles(), embedassets.ExecutableName()) {
+				require.NoError(t, os.WriteFile(filepath.Join(bundle, name), []byte("fixture"), 0o755))
+			}
+			closeServer()
+			opts.Confirm = nil
+			reused, err := install(t.Context(), opts, client, assets)
+			require.NoError(t, err)
+			assert.Equal(t, filepath.Join(bundle, embedassets.ExecutableName()), reused.Executable)
+		})
+	}
+}

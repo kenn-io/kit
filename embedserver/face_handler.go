@@ -86,7 +86,7 @@ func (h *handler) availableModels(w http.ResponseWriter, r *http.Request) {
 	available := []string{}
 	if m, ok := h.engine.(*models); ok {
 		for _, name := range []string{embedassets.TextModel, embedassets.FaceModel} {
-			if _, err := embedassets.InstalledModel(m.dir, name); err == nil {
+			if embedassets.ModelAvailable(m.dir, name) {
 				available = append(available, name)
 			}
 		}

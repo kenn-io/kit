@@ -388,3 +388,30 @@ func TestEndpointRequestedModel(t *testing.T) {
 		})
 	}
 }
+
+func TestModelEndpointReportsDiscoveryFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		status        int
+		body, problem string
+	}{
+		{"server error", http.StatusInternalServerError, "", "model discovery: HTTP 500"},
+		{"invalid response", http.StatusOK, `{"models":`, "model discovery:"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "/v1/models", r.URL.Path)
+				assert.Equal(t, http.MethodGet, r.Method)
+				w.WriteHeader(tc.status)
+				_, err := w.Write([]byte(tc.body))
+				assert.NoError(t, err)
+			}))
+			defer server.Close()
+			ep, err := daemon.ParseEndpoint(server.URL, daemon.ParseEndpointOptions{TCPPolicy: daemon.RequireLoopback})
+			require.NoError(t, err)
+			_, err = modelEndpoint(t.Context(), daemon.NewRuntimeRecord(Service, Version, ep), FaceModel)
+			require.ErrorContains(t, err, tc.problem)
+			assert.NotErrorIs(t, err, ErrNotFound)
+		})
+	}
+}

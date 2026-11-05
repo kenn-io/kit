@@ -9,9 +9,7 @@ import (
 	"image"
 	_ "image/jpeg"
 	_ "image/png"
-	"io"
 	"math"
-	"net/http"
 	"strings"
 
 	"go.kenn.io/kit/embedconfig"
@@ -93,25 +91,9 @@ func (c *Client) EmbedFaces(ctx context.Context, preview []byte, boxes []FaceBox
 		return result, errors.New("face request exceeds 64 MiB")
 	}
 	endpoint := strings.TrimSuffix(c.endpoint, "/embeddings") + "/faces"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	payload, err := retryCall(ctx, c.retry, func() ([]byte, error) { return c.postJSON(ctx, endpoint, body) })
 	if err != nil {
 		return result, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return result, classifyTransport(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return result, newAPIError(resp)
-	}
-	payload, err := io.ReadAll(io.LimitReader(resp.Body, c.maxResponse+1))
-	if err != nil {
-		return result, &TransportError{Err: err}
-	}
-	if int64(len(payload)) > c.maxResponse {
-		return result, ErrResponseTooLarge
 	}
 	// Pointer components distinguish a null vector from an invalid null component.
 	var wire struct {

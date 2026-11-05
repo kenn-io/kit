@@ -162,3 +162,9 @@ func TestFaceHTTP(t *testing.T) {
 		})
 	}
 }
+
+func TestFaceCropWithoutPixels(t *testing.T) {
+	vector, err := new(faceModel).embed(t.Context(), image.NewRGBA(image.Rect(0, 0, 8, 4)), embedclient.FaceBox{X: 0.5, Y: 0.5, Width: 1e-20, Height: 1e-20})
+	require.NoError(t, err)
+	assert.Nil(t, vector)
+}

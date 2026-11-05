@@ -2,6 +2,7 @@ package embedassets
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 )
 
@@ -10,7 +11,7 @@ const (
 	FaceModel        = "auraface-v1"
 	FaceRevision     = "af6d057c9b0ec4071d4c49c80e3539258798b609"
 	DetectorRevision = "f12e12798e8314f7c074a6656816c048dcc95b7a"
-	FaceRecipe       = "yunet-0.6-320-arcface5-bgr-127.5-128-v1"
+	FaceRecipe       = "yunet-" + DetectorRevision + "-0.6-320-arcface5-bgr-127.5-128-v1"
 )
 
 // SelectedModel returns the installed directory and exact downloads for a model.
@@ -42,4 +43,19 @@ func InstalledModel(dir, model string) (string, error) {
 		return "", fmt.Errorf("install %s: missing or corrupt %s", model, missing[0].Name)
 	}
 	return path, nil
+}
+
+// ModelAvailable checks installed file sizes for discovery. Loading still verifies digests.
+func ModelAvailable(dir, model string) bool {
+	path, assets, err := SelectedModel(dir, model)
+	if err != nil {
+		return false
+	}
+	for _, asset := range assets {
+		info, err := os.Stat(filepath.Join(path, asset.Name))
+		if err != nil || !info.Mode().IsRegular() || info.Size() != asset.Size {
+			return false
+		}
+	}
+	return true
 }

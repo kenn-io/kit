@@ -9,8 +9,11 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -91,4 +94,42 @@ func TestFaceCanceledGate(t *testing.T) {
 	require.NoError(t, png.Encode(&preview, image.NewRGBA(image.Rect(0, 0, 1, 1))))
 	_, err = client.EmbedFaces(ctx, preview.Bytes(), []FaceBox{{Width: 1, Height: 1}})
 	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestEmbedFacesRetries(t *testing.T) {
+	var preview bytes.Buffer
+	require.NoError(t, png.Encode(&preview, image.NewRGBA(image.Rect(0, 0, 1, 1))))
+	for _, status := range []int{http.StatusServiceUnavailable, http.StatusBadRequest} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "/v1/faces", r.URL.Path)
+				var request FaceRequest
+				if !assert.NoError(t, json.UnmarshalRead(r.Body, &request)) {
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				assert.Equal(t, preview.Bytes(), request.Image)
+				if calls.Add(1) == 1 {
+					w.Header().Set("Retry-After", "1")
+					w.WriteHeader(status)
+					return
+				}
+				assert.NoError(t, json.MarshalWrite(w, FaceResponse{Model: FaceModel, Revision: FaceRevision, Recipe: FaceRecipe, Data: []FaceResult{{Index: 0}}}, json.FormatNilSliceAsNull(true)))
+			}))
+			defer server.Close()
+			client, err := New(Options{Model: embedconfig.Model{Name: "nomic-embed-text", Dimensions: 768, Metric: embedconfig.MetricCosine, Normalization: embedconfig.NormalizationNone}, Deployment: embedconfig.Deployment{BaseURL: server.URL + "/v1"}, Retry: Retry{MaxAttempts: 2, InitialBackoff: time.Millisecond, MaxRetryAfter: time.Millisecond}})
+			require.NoError(t, err)
+			result, err := client.EmbedFaces(t.Context(), preview.Bytes(), []FaceBox{{Width: 1, Height: 1}})
+			if status == http.StatusBadRequest {
+				require.Error(t, err)
+				assert.Equal(t, int32(1), calls.Load())
+				return
+			}
+			require.NoError(t, err)
+			require.Len(t, result.Data, 1)
+			assert.Nil(t, result.Data[0].Embedding)
+			assert.Equal(t, int32(2), calls.Load())
+		})
+	}
 }

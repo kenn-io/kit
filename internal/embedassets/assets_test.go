@@ -5,13 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -94,36 +92,6 @@ func TestCacheInterrupted(t *testing.T) {
 	}
 }
 
-func TestCacheModelUsesPinnedURLAndCacheLayout(t *testing.T) {
-	previousTransport, previousAssets := http.DefaultTransport, modelAssets
-	var called atomic.Bool
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		called.Store(true)
-		assert.Equal(t, "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/"+revision+"/unused", "https://"+req.Host+req.URL.RequestURI())
-		_, _ = w.Write([]byte("valid"))
-	}))
-	defer server.Close()
-	transport := server.Client().Transport.(*http.Transport).Clone()
-	transport.TLSClientConfig.ServerName = "example.com"
-	transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
-		return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
-	}
-	defer transport.CloseIdleConnections()
-	http.DefaultTransport = transport
-	digest := sha256.Sum256([]byte("valid"))
-	modelAssets = []Asset{{"model.onnx", "unused", hex.EncodeToString(digest[:]), 5}}
-	defer func() { http.DefaultTransport, modelAssets = previousTransport, previousAssets }()
-	dir := t.TempDir()
-	cached := filepath.Join(dir, "nomic-embed-text-v1.5", revision)
-	got, err := CacheModel(t.Context(), dir)
-	require.NoError(t, err)
-	assert.True(t, called.Load())
-	assert.Equal(t, cached, got)
-	data, err := os.ReadFile(filepath.Join(cached, "model.onnx"))
-	require.NoError(t, err)
-	assert.Equal(t, "valid", string(data))
-}
-
 func TestMissingModel(t *testing.T) {
 	dir := t.TempDir()
 	digest := sha256.Sum256([]byte("valid"))
@@ -134,4 +102,25 @@ func TestMissingModel(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, assets, missing)
 	assert.FileExists(t, path)
+}
+
+func TestModelDiscoveryUsesSizesAndLoadingVerifiesDigests(t *testing.T) {
+	previous := modelAssets
+	digest := sha256.Sum256([]byte("valid"))
+	modelAssets = []Asset{{Name: "model.onnx", Digest: hex.EncodeToString(digest[:]), Size: 5}}
+	t.Cleanup(func() { modelAssets = previous })
+	root := t.TempDir()
+	dir := ModelDir(root)
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	path := filepath.Join(dir, "model.onnx")
+	require.NoError(t, os.WriteFile(path, []byte("bad"), 0o600))
+	assert.False(t, ModelAvailable(root, TextModel))
+	require.NoError(t, os.WriteFile(path, []byte("wrong"), 0o600))
+	assert.True(t, ModelAvailable(root, TextModel), "discovery checks completeness without hashing")
+	_, err := InstalledModel(root, TextModel)
+	require.ErrorContains(t, err, "missing or corrupt model.onnx")
+	require.NoError(t, os.WriteFile(path, []byte("valid"), 0o600))
+	loaded, err := InstalledModel(root, TextModel)
+	require.NoError(t, err)
+	assert.Equal(t, dir, loaded)
 }

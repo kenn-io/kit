@@ -16,6 +16,9 @@ type faceModel struct{ detector, recognizer *ort }
 func (m *faceModel) embed(ctx context.Context, preview image.Image, box embedclient.FaceBox) ([]float32, error) {
 	bounds := preview.Bounds()
 	crop := image.Rect(int(math.Floor(box.X*float64(bounds.Dx()))), int(math.Floor(box.Y*float64(bounds.Dy()))), int(math.Ceil((box.X+box.Width)*float64(bounds.Dx()))), int(math.Ceil((box.Y+box.Height)*float64(bounds.Dy())))).Intersect(bounds)
+	if crop.Empty() {
+		return nil, nil
+	}
 	scale := 320 / float64(max(crop.Dx(), crop.Dy()))
 	width, height := max(1, int(math.Round(float64(crop.Dx())*scale))), max(1, int(math.Round(float64(crop.Dy())*scale)))
 	resized := image.NewRGBA(image.Rect(0, 0, 640, 640))

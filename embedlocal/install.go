@@ -109,10 +109,9 @@ func install(ctx context.Context, opts InstallOptions, client *http.Client, asse
 		}
 		for _, entry := range older {
 			candidate := filepath.Join(dir, "bin", entry.Name())
-			if entry.IsDir() && checkBundle(candidate) == nil {
+			if entry.IsDir() && (!ready || selfupdate.IsNewer(entry.Name(), filepath.Base(bundle))) && checkBundle(candidate) == nil {
 				bundle, ready = candidate, true
 				result.Executable = filepath.Join(bundle, embedassets.ExecutableName())
-				break
 			}
 		}
 	}

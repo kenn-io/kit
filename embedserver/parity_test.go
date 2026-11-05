@@ -74,4 +74,10 @@ func TestNativeFaces(t *testing.T) {
 	h.availableModels(after, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/models", nil))
 	assert.JSONEq(t, `{"models":["nomic-embed-text","auraface-v1"]}`, after.Body.String())
 	embedtest.AssertFaces(t, client, dir, filepath.Join("testdata", "faces", "boxes.json"))
+	preview, err := os.ReadFile(filepath.Join(dir, "faces", "commons-glenn-official.jpg"))
+	require.NoError(t, err)
+	empty, err := client.EmbedFaces(t.Context(), preview, []embedclient.FaceBox{{X: 0.5, Y: 0.5, Width: 1e-20, Height: 1e-20}})
+	require.NoError(t, err)
+	require.Len(t, empty.Data, 1)
+	assert.Nil(t, empty.Data[0].Embedding)
 }
