@@ -26,8 +26,9 @@ type Options struct {
 	// Synonyms adds directed query expansions to the generic synonym groups.
 	// Keys and values are normalized like queries. Expansion is not recursive.
 	Synonyms map[string][]string
-	// Skip excludes a command, but still visits its children. Hidden,
-	// deprecated, help, completion and cli subtrees are always excluded.
+	// Skip excludes a command, but still visits its children. Hidden and
+	// deprecated subtrees, and help, completion and cli under the root, are
+	// always excluded.
 	// The predicate must be cheap and must not mutate the command tree.
 	Skip func(*cobra.Command) bool
 	// Render writes search output using the caller's existing output selectors.

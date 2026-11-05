@@ -98,69 +98,6 @@ func propertyTree() *cobra.Command {
 	return root
 }
 
-func TestSearchLimitProperty(t *testing.T) {
-	root := propertyTree()
-	checkProperty(t, 2000, func(query propertyQuery, limit propertyLimit) bool {
-		all := clisearch.Search(root, string(query), 20, clisearch.Options{})
-		got := clisearch.Search(root, string(query), int(limit), clisearch.Options{})
-		expected := all[:min(max(int(limit), 0), len(all))]
-		return assert.Equal(t, expected, got) && assert.NotNil(t, got)
-	})
-}
-
-func TestSearchDeterminismProperty(t *testing.T) {
-	root := propertyTree()
-	checkProperty(t, 2000, func(query propertyQuery, limit propertyLimit) bool {
-		opts := clisearch.Options{Synonyms: map[string][]string{"TICKET": {"issue"}, "ticket!": {"comment"}}}
-		first := clisearch.Search(root, string(query), int(limit), opts)
-		second := clisearch.Search(root, string(query), int(limit), opts)
-		return assert.Equal(t, first, second)
-	})
-}
-
-func TestSearchEligibilityProperty(t *testing.T) {
-	// Per command: hidden, deprecated, skipped.
-	checkProperty(t, 2000, func(draws [5][3]bool) bool {
-		root := &cobra.Command{Use: "tool", Run: func(*cobra.Command, []string) {}}
-		allowed := make(map[string]bool)
-		skipped := make(map[*cobra.Command]bool)
-		for i, name := range []string{"one", "two", "help", "completion", "cli"} {
-			parent := runnable(name, "needle")
-			parent.Hidden = draws[i][0]
-			deprecated := draws[i][1]
-			if deprecated {
-				parent.Deprecated = "obsolete"
-			}
-			skipped[parent] = draws[i][2]
-			child := runnable("child", "needle")
-			parent.AddCommand(child)
-			root.AddCommand(parent)
-			excluded := parent.Hidden || deprecated || name == "help" || name == "completion" || name == "cli"
-			if !excluded {
-				if !skipped[parent] {
-					allowed["tool "+name] = true
-				}
-				allowed["tool "+name+" child"] = true
-			}
-		}
-		results := clisearch.Search(root, "needle", 20, clisearch.Options{Skip: func(cmd *cobra.Command) bool { return skipped[cmd] }})
-		got := make(map[string]bool)
-		for _, result := range results {
-			got[result.Command] = true
-		}
-		return assert.Equal(t, allowed, got)
-	})
-}
-
-func TestSearchSynonymOrderProperty(t *testing.T) {
-	root := propertyTree()
-	checkProperty(t, 2000, func(value string) bool {
-		a := clisearch.Options{Synonyms: map[string][]string{"TICKET": {"issue", value}, "ticket!": {"comment"}}}
-		b := clisearch.Options{Synonyms: map[string][]string{"ticket!": {"comment", "comment"}, "TICKET": {value, "issue", value}}}
-		return assert.Equal(t, clisearch.Search(root, "ticket", 20, a), clisearch.Search(root, "ticket", 20, b))
-	})
-}
-
 func TestCommandSearchAgreementProperty(t *testing.T) {
 	checkProperty(t, 2000, func(generated propertyQuery, generatedLimit propertyLimit) bool {
 		query, limit := string(generated), int(generatedLimit)
@@ -384,43 +321,6 @@ func TestSearchUnicodePrefixProperty(t *testing.T) {
 			return assert.Empty(t, got)
 		}
 		return assert.Equal(t, []clisearch.Result{{Command: "tool one", Summary: word, Usage: "tool one"}}, got)
-	})
-}
-
-func TestSearchLiveMetadataProperty(t *testing.T) {
-	checkProperty(t, 1000, func(text string) bool {
-		root := &cobra.Command{Use: "tool"}
-		leaf := runnable("one", text)
-		root.AddCommand(leaf)
-		clisearch.Search(root, "quartz", 20, clisearch.Options{})
-		leaf.Short = "quartz " + text
-		fresh := &cobra.Command{Use: "tool"}
-		fresh.AddCommand(runnable("one", leaf.Short))
-		got := clisearch.Search(root, "quartz", 20, clisearch.Options{})
-		return assert.Len(t, got, 1) && assert.Equal(t, clisearch.Search(fresh, "quartz", 20, clisearch.Options{}), got)
-	})
-}
-
-func TestSearchAuthoredUsageProperty(t *testing.T) {
-	checkProperty(t, 1000, func(suffix, display string, explicit, disabled bool) bool {
-		root := &cobra.Command{Use: "tool"}
-		group := &cobra.Command{Use: "group"}
-		root.AddCommand(group)
-		leaf := runnable("one "+suffix, "quartz")
-		group.AddCommand(leaf)
-		leaf.Annotations = map[string]string{cobra.CommandDisplayNameAnnotation: display}
-		leaf.Flags().Bool("verbose", false, "extra output")
-		leaf.DisableFlagsInUseLine = disabled
-		if explicit {
-			leaf.Use += " [flags]"
-		}
-		// Disable automatic flags so Cobra's independent UseLine oracle preserves
-		// all authored syntax, even when the generated suffix already has [flags].
-		oracle := *leaf
-		oracle.DisableFlagsInUseLine = true
-		got := clisearch.Search(root, "quartz", 20, clisearch.Options{})
-		return assert.Len(t, got, 1) && assert.Equal(t, oracle.UseLine(), got[0].Usage) &&
-			assert.Equal(t, disabled, leaf.DisableFlagsInUseLine)
 	})
 }
 

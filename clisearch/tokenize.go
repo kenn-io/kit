@@ -54,7 +54,7 @@ func fold(word string) string {
 
 var genericSynonyms = func() map[string][]string {
 	result := make(map[string][]string)
-	for _, group := range []string{"remove delete rm", "list show ls", "create add new", "todo task", "find search lookup", "config settings"} {
+	for _, group := range []string{"remove delete rm", "list show ls", "create add new", "todo task", "find search lookup"} {
 		words := tokens(group)
 		for _, word := range words {
 			result[word] = words

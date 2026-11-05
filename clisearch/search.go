@@ -28,8 +28,8 @@ type document struct {
 // normalization throughout the tree for parser-equivalent shadowing; custom
 // normalization callbacks are never evaluated.
 //
-// The root and non-runnable groups are not results. Hidden, deprecated, help,
-// completion and cli subtrees are excluded. Options.Skip excludes only a node.
+// The root and non-runnable groups are not results. Hidden and deprecated
+// subtrees are excluded, as are help, completion and cli under the root. Options.Skip excludes only a node.
 // Nonpositive limits, nil roots and empty queries return a non-nil empty slice;
 // limits above 20 are capped at 20. Ties sort by canonical command path.
 func Search(root *cobra.Command, query string, limit int, opts Options) []Result {
@@ -72,9 +72,13 @@ func documents(root *cobra.Command, skip func(*cobra.Command) bool) []document {
 			return
 		}
 		if cmd != root {
-			switch cmd.Name() {
-			case "help", "completion", "cli":
-				return
+			// Cobra adds help and completion, and NewCommand's cli group is
+			// attached, only at the root. Deeper commands may reuse those names.
+			if cmd.Parent() == root {
+				switch cmd.Name() {
+				case "help", "completion", "cli":
+					return
+				}
 			}
 			if cmd.Runnable() && (skip == nil || !skip(cmd)) {
 				docs = append(docs, indexCommand(cmd))

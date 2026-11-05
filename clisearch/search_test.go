@@ -113,6 +113,19 @@ func TestSearchExclusions(t *testing.T) {
 	assert.Equal(t, []string{"tool skip child"}, paths(results))
 }
 
+func TestSearchKeepsNestedReservedNames(t *testing.T) {
+	root := &cobra.Command{Use: "tool"}
+	report := &cobra.Command{Use: "report"}
+	report.AddCommand(runnable("completion", "Show the needle completion rate"))
+	admin := &cobra.Command{Use: "admin"}
+	cli := &cobra.Command{Use: "cli"}
+	cli.AddCommand(runnable("tokens", "List needle tokens"))
+	admin.AddCommand(cli)
+	root.AddCommand(report, admin)
+	results := clisearch.Search(root, "needle", 20, clisearch.Options{})
+	assert.Equal(t, []string{"tool admin cli tokens", "tool report completion"}, paths(results))
+}
+
 func TestSearchIgnoredTextAndFlags(t *testing.T) {
 	for _, where := range []string{"long", "example", "hidden flag", "deprecated flag", "shadowed inherited", "global flag"} {
 		t.Run(where, func(t *testing.T) {
@@ -189,6 +202,15 @@ func TestSearchSynonyms(t *testing.T) {
 	assert.Equal(t, map[string][]string{"TICKET!": {"issues"}, "issue": {"delete"}}, opts.Synonyms)
 }
 
+func TestSearchConfigDoesNotMatchSet(t *testing.T) {
+	root := &cobra.Command{Use: "tool"}
+	config := &cobra.Command{Use: "config"}
+	config.AddCommand(runnable("get <key>", "Print a configuration value"))
+	root.AddCommand(config, runnable("set <id> <label>", "Assign a label to a record"), runnable("setup", "Install shell hooks"))
+	assert.Equal(t, []string{"tool config get"}, paths(clisearch.Search(root, "config", 5, clisearch.Options{})))
+	assert.Equal(t, []string{"tool set", "tool setup"}, paths(clisearch.Search(root, "set a label", 5, clisearch.Options{})))
+}
+
 func TestSearchExactBeatsRareExpansion(t *testing.T) {
 	for _, tc := range []struct {
 		name, query, expansion string
@@ -229,6 +251,7 @@ func TestSearchUsageAndSummary(t *testing.T) {
 	require.Len(t, result, 1)
 	assert.Equal(t, "tool display <ref>", result[0].Usage)
 	assert.Equal(t, "tool show", result[0].Command)
+	assert.False(t, cmd.DisableFlagsInUseLine, "usage must not mutate the live command")
 }
 
 func TestSearchDeterminismAndLimits(t *testing.T) {
