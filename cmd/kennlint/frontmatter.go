@@ -336,7 +336,9 @@ func checkFrontmatterFile(ctx context.Context, root, file string, fix, hasHead b
 	if err != nil || !changed {
 		return b.problems(), false, err
 	}
-	if err := atomicfile.WriteFile(full, updated, atomicfile.WithPreserveMode()); err != nil {
+	// A Markdown symlink is fixed like any path: the file it names changes and
+	// the link stays.
+	if err := atomicfile.WriteFile(full, updated, atomicfile.WithPreserveMode(), atomicfile.WithFollowLink()); err != nil {
 		return nil, false, err
 	}
 	return b.problems(), true, nil

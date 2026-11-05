@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -337,6 +338,31 @@ func TestFrontmatterFix(t *testing.T) {
 	quoted, err := os.ReadFile("quoted.md")
 	require.NoError(t, err)
 	assert.Contains(t, string(quoted), "last_edited: 2026-11-01 # keep comment")
+}
+
+func TestFrontmatterFixWritesThroughSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks require privileges on Windows")
+	}
+	isolateFrontmatterGit(t)
+	repo := gittest.NewRepoWithCommit(t)
+	t.Chdir(repo.Root)
+	withoutDate := strings.ReplaceAll(goodFrontmatter, "last_edited: 2026-11-01\n", "")
+	repo.WriteFile("target.md", withoutDate)
+	require.NoError(t, os.Symlink("target.md", "alias.md"))
+	repo.Run("add", "target.md", "alias.md")
+
+	var stdout, stderr bytes.Buffer
+	n, err := runFrontmatter(t.Context(), []string{"-fix"}, &stdout, &stderr)
+	require.NoError(t, err)
+	assert.Zero(t, n)
+	assert.Empty(t, stderr.String())
+	info, err := os.Lstat("alias.md")
+	require.NoError(t, err)
+	assert.NotZero(t, info.Mode()&os.ModeSymlink, "the link stays a link")
+	data, err := os.ReadFile("target.md")
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "last_edited: ")
 }
 
 func TestFrontmatterFixChangedComparesFinalGitContent(t *testing.T) {
