@@ -41,7 +41,7 @@ func stage() error {
 		}
 		for _, asset := range assets {
 			if err := embedassets.CacheAsset(context.Background(), &client, path, asset); err != nil {
-				return err
+				return fmt.Errorf("stage %s: %w", asset.Name, err)
 			}
 		}
 	}
@@ -68,7 +68,7 @@ func stage() error {
 		}
 		asset := embedassets.Asset{Name: row[0], URL: row[1], Digest: row[2], Size: size}
 		if err := embedassets.CacheAsset(context.Background(), &client, photos, asset); err != nil {
-			return err
+			return fmt.Errorf("stage %s: %w", asset.Name, err)
 		}
 	}
 

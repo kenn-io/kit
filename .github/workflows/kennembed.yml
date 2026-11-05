@@ -73,7 +73,8 @@ jobs:
           path: ${{ env.KIT_EMBED_TEST_DIR }}
           key: kennembed-models-${{ runner.os }}-${{ runner.arch }}-nomic-cf5b5a86-d241a60d-faces-af6d057c-f12e1279-${{ hashFiles('embedserver/testdata/faces/*') }}
       - name: Stage verified model and photograph fixtures
-        run: go run .github/scripts/stage-embed-test.go
+        shell: bash
+        run: .github/actions/kit-retry/kit-retry 3 5 go run .github/scripts/stage-embed-test.go
       - name: Exercise the native server and models
         run: make test-embedserver GOTESTSUM_SUITE=kennembed-${{ matrix.os }}
       - name: Upload gotestsum results
