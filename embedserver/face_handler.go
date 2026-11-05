@@ -42,6 +42,14 @@ func (h *handler) faces(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid preview or too many pixels", http.StatusBadRequest)
 		return
 	}
+	// Hold the shared gate through decoding and all boxes so only one decoded
+	// preview is retained at a time. Text requests wait until this photo finishes.
+	select {
+	case h.gate <- struct{}{}:
+	case <-r.Context().Done():
+		return
+	}
+	defer func() { <-h.gate }()
 	preview, _, err := image.Decode(bytes.NewReader(req.Image))
 	if err != nil {
 		http.Error(w, "invalid preview", http.StatusBadRequest)
@@ -55,7 +63,11 @@ func (h *handler) faces(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			_, _ = fmt.Fprintf(h.log, "face inference failed: %v\n", err)
-			http.Error(w, "face inference failed; install face models if missing", http.StatusInternalServerError)
+			if load, ok := errors.AsType[*modelLoadError](err); ok {
+				http.Error(w, load.Error(), http.StatusFailedDependency)
+			} else {
+				http.Error(w, "face inference failed", http.StatusInternalServerError)
+			}
 			return
 		}
 		result.Data[i] = embedclient.FaceResult{Index: i, Embedding: vector}
@@ -67,12 +79,6 @@ func (h *handler) faces(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) embedFace(ctx context.Context, preview image.Image, box embedclient.FaceBox) ([]float32, error) {
-	select {
-	case h.gate <- struct{}{}:
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-	defer func() { <-h.gate }()
 	m, ok := h.engine.(interface {
 		embedFace(context.Context, image.Image, embedclient.FaceBox) ([]float32, error)
 	})

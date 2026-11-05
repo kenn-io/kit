@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"image"
+	"os"
 	"path/filepath"
 
 	"go.kenn.io/kit/embedclient"
@@ -22,6 +23,9 @@ func loadModels(_ context.Context, dir, library string) (engine, error) {
 	if err != nil {
 		return nil, err
 	}
+	if _, err := os.Stat(path); err != nil {
+		return nil, err
+	}
 	return &models{dir: dir, library: path}, nil
 }
 
@@ -29,7 +33,7 @@ func (m *models) embed(ctx context.Context, text string) ([]float32, int, error)
 	if m.text == nil {
 		model, err := loadModel(ctx, m.dir, m.library)
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, &modelLoadError{err}
 		}
 		m.text = model
 	}
@@ -40,15 +44,15 @@ func (m *models) face(ctx context.Context) (*faceModel, error) {
 	if m.faces == nil {
 		dir, err := embedassets.InstalledModel(m.dir, embedassets.FaceModel)
 		if err != nil {
-			return nil, err
+			return nil, &modelLoadError{err}
 		}
 		detector, err := openORT(m.library, filepath.Join(dir, "yunet.onnx"))
 		if err != nil {
-			return nil, err
+			return nil, &modelLoadError{err}
 		}
 		recognizer, err := openORT(m.library, filepath.Join(dir, "glintr100.onnx"))
 		if err != nil {
-			return nil, errors.Join(err, detector.Close())
+			return nil, &modelLoadError{errors.Join(err, detector.Close())}
 		}
 		m.faces = &faceModel{detector: detector, recognizer: recognizer}
 	}
@@ -73,3 +77,8 @@ func (m *models) embedFace(ctx context.Context, preview image.Image, box embedcl
 	}
 	return face.embed(ctx, preview, box)
 }
+
+// modelLoadError requires an installation or runtime repair before retrying.
+type modelLoadError struct{ error }
+
+func (e *modelLoadError) Unwrap() error { return e.error }

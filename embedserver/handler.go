@@ -103,7 +103,11 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_, _ = fmt.Fprintf(h.log, "inference failed: %v\n", err)
-		http.Error(w, "inference failed", http.StatusInternalServerError)
+		if load, ok := errors.AsType[*modelLoadError](err); ok {
+			http.Error(w, load.Error(), http.StatusFailedDependency)
+		} else {
+			http.Error(w, "inference failed", http.StatusInternalServerError)
+		}
 		return
 	}
 	data, err := jsonv2.Marshal(out)

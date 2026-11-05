@@ -168,3 +168,30 @@ func TestFaceCropWithoutPixels(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, vector)
 }
+
+func TestFaceDecodeWaitsForInferenceGate(t *testing.T) {
+	var encoded bytes.Buffer
+	require.NoError(t, png.Encode(&encoded, image.NewRGBA(image.Rect(0, 0, 2, 1))))
+	// A PNG header passes DecodeConfig, but the missing pixel data fails Decode.
+	truncated := encoded.Bytes()[:33]
+	_, _, err := image.DecodeConfig(bytes.NewReader(truncated))
+	require.NoError(t, err)
+	_, _, err = image.Decode(bytes.NewReader(truncated))
+	require.Error(t, err)
+	body, err := json.Marshal(embedclient.FaceRequest{Image: truncated, Boxes: []embedclient.FaceBox{{Width: 1, Height: 1}}})
+	require.NoError(t, err)
+	h := &handler{gate: make(chan struct{}, 1)}
+	h.gate <- struct{}{}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	w := httptest.NewRecorder()
+	h.faces(w, httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/faces", bytes.NewReader(body)))
+	// Cancellation while another request holds the gate returns before Decode
+	// can reject this truncated image or allocate the decoded preview.
+	require.Empty(t, w.Body.String())
+	<-h.gate
+	h.faces(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/faces", bytes.NewReader(body)))
+	require.Equal(t, http.StatusBadRequest, w.Code)
+	require.Contains(t, w.Body.String(), "invalid preview")
+	require.Empty(t, h.gate)
+}

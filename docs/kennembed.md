@@ -16,6 +16,10 @@ AuraFace-v1 is pinned at `af6d057c9b0ec4071d4c49c80e3539258798b609`, and YuNet a
 
 Native acceptance uses the public astronaut sources and explicit person boxes under `embedserver/testdata/faces`. Fixture staging verifies source sizes and hashes before the server starts. The native and packaged tests report maximum same-person and minimum different-person Euclidean distances, and the distance that separates them. On Linux amd64, the maximum same-person distance was 1.182335, and the minimum different-person distance was 1.196469. Use 1.189402 for this corpus; 1.23 does not separate it. Both Gemini-8 faces return vectors. The obscured EVA-training face returns null.
 
+On the same corpus, InsightFace's RGB `(value - 127.5) / 127.5` recipe produced a maximum same-person distance of 1.145075 and a minimum different-person distance of 1.148847. The BGR recipe retains the wider measured separation. These measurements characterize this corpus, not a general identity threshold.
+
+The server holds the shared inference gate while decoding a face preview and processing its boxes. Text requests wait until that photo finishes. Missing or corrupt model assets return HTTP 424 with the installation error; clients can install the requested model and retry.
+
 ## Publishing bundles
 
 `internal/embedassets.BundleTag` pins the server independently of ordinary kit updates. The initial pin is [v0.47.1](https://github.com/kenn-io/kit/releases/tag/v0.47.1). Publish a new prerelease from the reviewed face implementation, then dispatch `kennembed.yml` with that existing release tag. Update `BundleTag` only after its six archives and `SHA256SUMS` are attached. The following ordinary kit release carries that pin for consumers.
