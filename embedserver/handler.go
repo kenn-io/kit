@@ -19,9 +19,10 @@ import (
 var decodeOptions = jsonv2.JoinOptions(jsontext.AllowInvalidUTF8(true), jsontext.AllowDuplicateNames(true))
 
 type handler struct {
-	engine engine
-	gate   chan struct{}
-	log    io.Writer
+	engine   engine
+	gate     chan struct{}
+	previews chan struct{}
+	log      io.Writer
 }
 type request struct {
 	Model      string          `json:"model"`

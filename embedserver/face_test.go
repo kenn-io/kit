@@ -15,7 +15,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -136,7 +138,7 @@ func TestFaceHTTP(t *testing.T) {
 				vector[0] = 1
 				return vector, nil
 			}}
-			h := &handler{engine: e, gate: make(chan struct{}, 1), log: io.Discard}
+			h := &handler{engine: e, gate: make(chan struct{}, 1), previews: make(chan struct{}, 1), log: io.Discard}
 			body, err := json.Marshal(embedclient.FaceRequest{Image: tc.image, Boxes: tc.boxes})
 			require.NoError(t, err)
 			w := httptest.NewRecorder()
@@ -168,7 +170,7 @@ func TestFaceCropWithoutPixels(t *testing.T) {
 	assert.Nil(t, vector)
 }
 
-func TestFaceDecodeWaitsForInferenceGate(t *testing.T) {
+func TestFaceDecodeWaitsForPreviewAdmission(t *testing.T) {
 	var encoded bytes.Buffer
 	require.NoError(t, png.Encode(&encoded, image.NewRGBA(image.Rect(0, 0, 2, 1))))
 	// A PNG header passes DecodeConfig, but the missing pixel data fails Decode.
@@ -179,16 +181,16 @@ func TestFaceDecodeWaitsForInferenceGate(t *testing.T) {
 	require.Error(t, err)
 	body, err := json.Marshal(embedclient.FaceRequest{Image: truncated, Boxes: []embedclient.FaceBox{{Width: 1, Height: 1}}})
 	require.NoError(t, err)
-	h := &handler{gate: make(chan struct{}, 1)}
-	h.gate <- struct{}{}
+	h := &handler{gate: make(chan struct{}, 1), previews: make(chan struct{}, 1)}
+	h.previews <- struct{}{}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	w := httptest.NewRecorder()
 	h.faces(w, httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/faces", bytes.NewReader(body)))
-	// Cancellation while another request holds the gate returns before Decode
+	// Cancellation while another preview holds admission returns before Decode
 	// can reject this truncated image or allocate the decoded preview.
 	require.Empty(t, w.Body.String())
-	<-h.gate
+	<-h.previews
 }
 
 func TestFaceResponseReleasesInferenceGate(t *testing.T) {
@@ -207,7 +209,7 @@ func TestFaceResponseReleasesInferenceGate(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := &faceEngine{fakeEngine: new(fakeEngine), runFace: func(context.Context, image.Image, embedclient.FaceBox) ([]float32, error) { return nil, tc.inference }}
-			h := &handler{engine: e, gate: make(chan struct{}, 1), log: io.Discard}
+			h := &handler{engine: e, gate: make(chan struct{}, 1), previews: make(chan struct{}, 1), log: io.Discard}
 			body, err := json.Marshal(embedclient.FaceRequest{Image: tc.preview, Boxes: []embedclient.FaceBox{{Width: 1, Height: 1}}})
 			require.NoError(t, err)
 			writing, release := make(chan struct{}), make(chan struct{})
@@ -217,6 +219,7 @@ func TestFaceResponseReleasesInferenceGate(t *testing.T) {
 				close(release)
 				<-done
 				assert.Empty(t, h.gate)
+				assert.Empty(t, h.previews)
 				if tc.message != "" {
 					assert.Contains(t, writer.Body.String(), tc.message)
 				}
@@ -242,4 +245,46 @@ func TestFaceResponseReleasesInferenceGate(t *testing.T) {
 			assert.Equal(t, []string{"x"}, e.inputs)
 		})
 	}
+}
+
+func TestFaceRunsTextBetweenItems(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var order []string
+		release := make(chan struct{})
+		e := &faceEngine{fakeEngine: &fakeEngine{run: func(_ context.Context, text string) ([]float32, int, error) {
+			order = append(order, text)
+			vector := make([]float32, 768)
+			vector[0] = 1
+			return vector, 1, nil
+		}}, runFace: func(_ context.Context, _ image.Image, box embedclient.FaceBox) ([]float32, error) {
+			if box.X == 0 {
+				order = append(order, "face 0")
+				<-release
+			} else {
+				order = append(order, "face 1")
+			}
+			return nil, nil
+		}}
+		h := &handler{engine: e, gate: make(chan struct{}, 1), previews: make(chan struct{}, 1), log: io.Discard}
+		var preview bytes.Buffer
+		require.NoError(t, png.Encode(&preview, image.NewRGBA(image.Rect(0, 0, 2, 1))))
+		body, err := json.Marshal(embedclient.FaceRequest{Image: preview.Bytes(), Boxes: []embedclient.FaceBox{{Width: .5, Height: 1}, {X: .5, Width: .5, Height: 1}}})
+		require.NoError(t, err)
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			w := httptest.NewRecorder()
+			h.faces(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/faces", bytes.NewReader(body)))
+			assert.Equal(t, http.StatusOK, w.Code)
+		})
+		synctest.Wait()
+		wg.Go(func() {
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/embeddings", strings.NewReader(`{"model":"nomic-embed-text","input":"query"}`)))
+			assert.Equal(t, http.StatusOK, w.Code)
+		})
+		synctest.Wait()
+		close(release)
+		wg.Wait()
+		assert.Equal(t, []string{"face 0", "query", "face 1"}, order)
+	})
 }

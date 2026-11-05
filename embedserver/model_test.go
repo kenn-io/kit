@@ -50,7 +50,7 @@ func TestModelInstallationAndDiscovery(t *testing.T) {
 			require.NoError(t, err)
 			defer func() { require.NoError(t, e.Close()) }()
 			var log bytes.Buffer
-			h := &handler{engine: e, gate: make(chan struct{}, 1), log: &log}
+			h := &handler{engine: e, gate: make(chan struct{}, 1), previews: make(chan struct{}, 1), log: &log}
 			if scenario.discovery {
 				for _, tc := range []struct {
 					model, response string

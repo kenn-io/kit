@@ -42,7 +42,7 @@ func TestNativeFaces(t *testing.T) {
 	e, err := loadModels(t.Context(), dir, library)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, e.Close()) }()
-	h := &handler{engine: e, gate: make(chan struct{}, 1), log: os.Stderr}
+	h := &handler{engine: e, gate: make(chan struct{}, 1), previews: make(chan struct{}, 1), log: os.Stderr}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/faces", h.faces)
 	server := httptest.NewServer(mux)

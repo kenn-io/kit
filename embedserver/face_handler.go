@@ -65,16 +65,16 @@ func (h *handler) faces(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// faceVectors bounds decoded previews and native work, then releases the gate
+// faceVectors retains at most one decoded preview and releases its admission
 // before the caller writes any response bytes.
 func (h *handler) faceVectors(ctx context.Context, req embedclient.FaceRequest) (embedclient.FaceResponse, int, error) {
 	var result embedclient.FaceResponse
 	select {
-	case h.gate <- struct{}{}:
+	case h.previews <- struct{}{}:
 	case <-ctx.Done():
 		return result, 0, ctx.Err()
 	}
-	defer func() { <-h.gate }()
+	defer func() { <-h.previews }()
 	preview, _, err := image.Decode(bytes.NewReader(req.Image))
 	if err != nil {
 		return result, http.StatusBadRequest, err
@@ -91,6 +91,12 @@ func (h *handler) faceVectors(ctx context.Context, req embedclient.FaceRequest) 
 }
 
 func (h *handler) embedFace(ctx context.Context, preview image.Image, box embedclient.FaceBox) ([]float32, error) {
+	select {
+	case h.gate <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	defer func() { <-h.gate }()
 	m, ok := h.engine.(interface {
 		embedFace(context.Context, image.Image, embedclient.FaceBox) ([]float32, error)
 	})

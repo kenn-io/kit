@@ -102,7 +102,7 @@ func serve(ctx context.Context, opts Options, load func(context.Context, string,
 	ping := daemon.NewPingHandler(daemon.PingHandlerOptions{Service: record.Service, Version: record.Version, PID: record.PID})
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	embeddings := &handler{engine: engine, gate: make(chan struct{}, 1), log: os.Stderr}
+	embeddings := &handler{engine: engine, gate: make(chan struct{}, 1), previews: make(chan struct{}, 1), log: os.Stderr}
 	server := &http.Server{
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: time.Minute, BaseContext: func(net.Listener) context.Context { return ctx },
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -150,8 +150,10 @@ func serve(ctx context.Context, opts Options, load func(context.Context, string,
 		err = nil
 	}
 	err = errors.Join(err, <-shutdown)
-	// A synchronous native call owns the model until it returns, even after
-	// Close has interrupted its HTTP connection. Hold the gate through cleanup.
+	// Drain decoded previews and synchronous native calls before closing models,
+	// even after Close has interrupted their HTTP connections. Hold both gates
+	// through cleanup.
+	embeddings.previews <- struct{}{}
 	embeddings.gate <- struct{}{}
 	return err
 }
