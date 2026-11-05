@@ -17,11 +17,12 @@ import (
 	"sync"
 	"time"
 
+	"go.kenn.io/kit/consolewindow"
 	gitenv "go.kenn.io/kit/git/env"
 )
 
 func gitCommand(ctx context.Context, dir string, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	cmd := consolewindow.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
 	// Bind git to dir rather than to a GIT_DIR/GIT_INDEX_FILE inherited from
 	// a parent hook, so the checker always judges the repository it was asked about.
 	cmd.Env = append(gitenv.StripInherited(os.Environ()), "GIT_TERMINAL_PROMPT=0")

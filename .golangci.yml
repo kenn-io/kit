@@ -120,6 +120,8 @@ linters:
           msg: Use testify assert/require helpers in tests.
         - pattern: '^exec\.Command$'
           msg: Use exec.CommandContext so subprocesses honor cancellation.
+        - pattern: '^exec\.CommandContext$'
+          msg: Use consolewindow.CommandContext from go.kenn.io/kit so a non-interactive child opens no console window on Windows; use exec.CommandContext with a nolint reason only when the child needs the console.
         - pattern: '^http\.(Get|Post|Head|PostForm)$'
           msg: Build the request with http.NewRequestWithContext and a client with timeouts.
         - pattern: '^http\.DefaultClient$'
@@ -172,7 +174,7 @@ linters:
       - linters:
           - forbidigo
         path: ^(cmd/|main\.go)
-        text: exec\.Command
+        text: use of `exec\.Command`
       - linters:
           - modernize
         text: "omitzero:"

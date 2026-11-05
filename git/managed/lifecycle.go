@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"go.kenn.io/kit/consolewindow"
 	gitcmd "go.kenn.io/kit/git/cmd"
 	gitworktree "go.kenn.io/kit/git/worktree"
 	"go.kenn.io/kit/pathresolve"
@@ -1152,7 +1153,7 @@ func executeLifecycleHook(
 	if run != nil {
 		err = run(ctx, command)
 	} else {
-		cmd := exec.CommandContext(ctx, command.Script)
+		cmd := consolewindow.CommandContext(ctx, command.Script)
 		cmd.Dir = command.Dir
 		cmd.Env = command.Env
 		cmd.Stdout = command.Stdout
