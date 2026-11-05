@@ -26,6 +26,7 @@ func TestInspectFiles(t *testing.T) {
 	for _, tc := range []struct {
 		name, selected, installed string
 		bundle, model             bool
+		cached, broken            bool
 		bytes                     int64
 	}{
 		{name: "missing directory", bytes: totalModelBytes + bundleDownloadBytes},
@@ -35,13 +36,27 @@ func TestInspectFiles(t *testing.T) {
 		{name: "faces missing from text installation", selected: FaceModel, bundle: true, model: true, bytes: 260_926_740},
 		{name: "text missing from face installation", selected: TextModel, installed: FaceModel, bundle: true, model: true, bytes: totalModelBytes},
 		{name: "faces complete", selected: FaceModel, installed: FaceModel, bundle: true, model: true},
+		{name: "cached text default", cached: true, model: true},
+		{name: "cached text explicit", selected: TextModel, cached: true, model: true},
+		{name: "broken current text bundle", bundle: true, cached: true, broken: true, model: true, bytes: bundleDownloadBytes},
+		{name: "faces require current bundle", selected: FaceModel, installed: FaceModel, cached: true, model: true, bytes: bundleDownloadBytes},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "shared")
+			var versions []string
 			if tc.bundle {
-				bundle := filepath.Join(dir, "bin", embedassets.BundleTag)
+				versions = append(versions, embedassets.BundleTag)
+			}
+			if tc.cached {
+				versions = append(versions, "v0.47.1")
+			}
+			for _, version := range versions {
+				bundle := filepath.Join(dir, "bin", version)
 				require.NoError(t, os.MkdirAll(bundle, 0o700))
 				for _, name := range append(embedassets.NativeFiles(), embedassets.ExecutableName()) {
+					if tc.broken && version == embedassets.BundleTag && name == embedassets.LibraryName() {
+						continue
+					}
 					require.NoError(t, os.WriteFile(filepath.Join(bundle, name), []byte("fixture"), 0o700))
 				}
 			}

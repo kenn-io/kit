@@ -104,22 +104,11 @@ func install(ctx context.Context, opts InstallOptions, client *http.Client, asse
 			}
 		}
 	}
-	bundle := filepath.Join(dir, "bin", embedassets.BundleTag)
-	result := Installation{filepath.Join(bundle, embedassets.ExecutableName()), dir}
-	ready := checkBundle(bundle) == nil
-	if _, err := os.Stat(bundle); !ready && errors.Is(err, os.ErrNotExist) && (opts.Model == "" || opts.Model == TextModel) {
-		older, err := os.ReadDir(filepath.Join(dir, "bin"))
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return Installation{}, err
-		}
-		for _, entry := range older {
-			candidate := filepath.Join(dir, "bin", entry.Name())
-			if entry.IsDir() && (!ready || selfupdate.IsNewer(entry.Name(), filepath.Base(bundle))) && checkBundle(candidate) == nil {
-				bundle, ready = candidate, true
-				result.Executable = filepath.Join(bundle, embedassets.ExecutableName())
-			}
-		}
+	bundle, ready, err := selectBundle(dir, opts.Model)
+	if err != nil {
+		return Installation{}, err
 	}
+	result := Installation{filepath.Join(bundle, embedassets.ExecutableName()), dir}
 	modelDir, _, err := embedassets.SelectedModel(dir, opts.Model)
 	if err != nil {
 		return Installation{}, err
@@ -217,6 +206,26 @@ func install(ctx context.Context, opts InstallOptions, client *http.Client, asse
 		}
 	}
 	return result, nil
+}
+
+// selectBundle prefers the pinned server, reusing complete cached bundles for text
+// only when the pinned directory is absent. An incomplete pinned bundle needs repair.
+func selectBundle(dir, model string) (string, bool, error) {
+	bundle := filepath.Join(dir, "bin", embedassets.BundleTag)
+	ready := checkBundle(bundle) == nil
+	if _, err := os.Stat(bundle); !ready && errors.Is(err, os.ErrNotExist) && (model == "" || model == TextModel) {
+		older, err := os.ReadDir(filepath.Join(dir, "bin"))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return "", false, err
+		}
+		for _, entry := range older {
+			candidate := filepath.Join(dir, "bin", entry.Name())
+			if entry.IsDir() && (!ready || selfupdate.IsNewer(entry.Name(), filepath.Base(bundle))) && checkBundle(candidate) == nil {
+				bundle, ready = candidate, true
+			}
+		}
+	}
+	return bundle, ready, nil
 }
 
 func checkBundle(dir string) error {

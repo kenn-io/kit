@@ -16,7 +16,7 @@ type Status struct {
 	OllamaAvailable bool
 	// Installing means an installer holds the lock and has staged approved work.
 	Installing bool
-	// DownloadBytes estimates missing downloads. Zero means all pinned files are
+	// DownloadBytes estimates missing downloads. Zero means all selected files are
 	// present by metadata; Install still verifies model contents before reuse.
 	DownloadBytes int64
 }
@@ -66,7 +66,11 @@ func inspect(ctx context.Context, opts Options, ollama string) (Status, error) {
 			}
 		}
 	}
-	if checkBundle(filepath.Join(dir, "bin", embedassets.BundleTag)) != nil {
+	_, ready, err := selectBundle(dir, opts.Model)
+	if err != nil {
+		return Status{}, err
+	}
+	if !ready {
 		status.DownloadBytes += bundleDownloadBytes
 	}
 	missing, err := embedassets.MissingModel(modelDir, assets, false)

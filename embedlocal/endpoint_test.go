@@ -3,6 +3,7 @@ package embedlocal
 import (
 	"context"
 	"encoding/json/v2"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -20,6 +21,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/daemon"
+	"go.kenn.io/kit/internal/embedassets"
 )
 
 func TestEndpointOllamaFallback(t *testing.T) {
@@ -418,4 +420,41 @@ func TestEndpointRequestedModel(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Text setup installs only after discovery reports ErrNotFound.
+func TestTextSetupAfterFaceInstallation(t *testing.T) {
+	client, assets, calls, _ := installFixture(t, "", nil)
+	dir := t.TempDir()
+	textFile := filepath.Join(embedassets.ModelDir(dir), assets[0].Name)
+	mux := http.NewServeMux()
+	mux.Handle("/api/ping", daemon.NewPingHandler(daemon.PingHandlerOptions{Service: Service, Version: Version}))
+	mux.HandleFunc("GET /v1/models", func(w http.ResponseWriter, _ *http.Request) {
+		models := []string{FaceModel}
+		if _, err := os.Stat(textFile); err == nil {
+			models = append(models, TextModel)
+		}
+		assert.NoError(t, json.MarshalWrite(w, struct {
+			Models []string `json:"models"`
+		}{models}))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	ep, err := daemon.ParseEndpoint(server.URL, daemon.ParseEndpointOptions{TCPPolicy: daemon.RequireLoopback})
+	require.NoError(t, err)
+	_, err = (daemon.RuntimeStore{Dir: dir, Prefix: Service}).Write(daemon.NewRuntimeRecord(Service, Version, ep))
+	require.NoError(t, err)
+	opts := Options{DataDir: dir, SkipOllama: true}
+	_, err = endpoint(t.Context(), opts, "", time.Second)
+	if errors.Is(err, ErrNotFound) {
+		_, err = install(t.Context(), InstallOptions{DataDir: dir, Confirm: func(context.Context, int64) (bool, error) { return true, nil }}, client, assets)
+	}
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), requestCount(calls, "/model.onnx"), "text setup must install its missing model")
+	got, err := os.ReadFile(textFile)
+	require.NoError(t, err)
+	assert.Equal(t, modelFixture, got)
+	origin, err := endpoint(t.Context(), opts, "", time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, server.URL+"/v1", origin)
 }
