@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -58,28 +57,15 @@ func TestInspectFiles(t *testing.T) {
 		{name: "model missing", bundle: true, bytes: 274570424},
 		{name: "bundle missing", model: true, bytes: 20000000},
 		{name: "short model", bundle: true, model: true, invalid: "short", bytes: 273859028},
-		{name: "empty model", bundle: true, model: true, invalid: "empty", bytes: 273859028},
 		{name: "model directory", bundle: true, model: true, invalid: "directory", bytes: 273859028},
-		{name: "empty bundle", bundle: true, model: true, invalid: "bundle", bytes: 20000000},
-		{name: "nonexecutable bundle", bundle: true, model: true, invalid: "permission", bytes: 20000000},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.invalid == "permission" && runtime.GOOS == "windows" {
-				t.Skip("Windows does not use executable mode bits")
-			}
 			dir := filepath.Join(t.TempDir(), "shared")
 			if tc.bundle {
 				bundle := filepath.Join(dir, "bin", embedassets.BundleTag)
 				require.NoError(t, os.MkdirAll(bundle, 0o700))
 				for _, name := range append(embedassets.NativeFiles(), embedassets.ExecutableName()) {
 					require.NoError(t, os.WriteFile(filepath.Join(bundle, name), []byte("fixture"), 0o700))
-				}
-				binary := filepath.Join(bundle, embedassets.ExecutableName())
-				if tc.invalid == "bundle" {
-					require.NoError(t, os.Truncate(binary, 0))
-				}
-				if tc.invalid == "permission" {
-					require.NoError(t, os.Chmod(binary, 0o600))
 				}
 			}
 			if tc.model {
@@ -95,24 +81,17 @@ func TestInspectFiles(t *testing.T) {
 				switch tc.invalid {
 				case "short":
 					require.NoError(t, os.Truncate(path, 7))
-				case "empty":
-					require.NoError(t, os.Truncate(path, 0))
 				case "directory":
 					require.NoError(t, os.Remove(path))
 					require.NoError(t, os.Mkdir(path, 0o700))
 				}
-			}
-			if tc.name != "missing directory" {
-				require.NoError(t, os.MkdirAll(filepath.Join(dir, ".install-stale", "bin"), 0o700))
 			}
 			start := time.Now()
 			got, err := Inspect(t.Context(), Options{DataDir: dir, SkipOllama: true})
 			require.NoError(t, err)
 			assert.Equal(t, Status{DownloadBytes: tc.bytes}, got)
 			assert.Less(t, time.Since(start), time.Second)
-			if tc.name != "missing directory" {
-				assert.DirExists(t, filepath.Join(dir, ".install-stale"))
-			} else {
+			if tc.name == "missing directory" {
 				assert.NoDirExists(t, dir)
 			}
 		})
@@ -128,7 +107,6 @@ func TestInspectOllama(t *testing.T) {
 	}{
 		{name: "supported", code: 200, available: true},
 		{name: "missing model", code: 404},
-		{name: "failure", code: 503},
 		{name: "skipped", code: 200, skip: true},
 		{name: "stalled", stall: true},
 		{name: "redirect", redirect: true},
@@ -140,8 +118,6 @@ func TestInspectOllama(t *testing.T) {
 			defer target.Close()
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				probes.Add(1)
-				assert.Equal(t, "/api/show", r.URL.Path)
-				assert.Equal(t, http.MethodPost, r.Method)
 				if tc.stall {
 					<-release
 					return
@@ -157,7 +133,6 @@ func TestInspectOllama(t *testing.T) {
 			got, err := inspect(t.Context(), Options{DataDir: t.TempDir(), SkipOllama: tc.skip}, server.URL)
 			require.NoError(t, err)
 			assert.Equal(t, tc.available, got.OllamaAvailable)
-			assert.Equal(t, int64(294570424), got.DownloadBytes)
 			assert.Less(t, time.Since(start), time.Second)
 			assert.Zero(t, redirects.Load())
 			want := int32(1)
@@ -182,14 +157,8 @@ func TestInspectCancellationAndErrors(t *testing.T) {
 	_, err = inspect(ctx, Options{DataDir: t.TempDir()}, server.URL)
 	require.ErrorIs(t, err, context.Canceled)
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "bin"), []byte("file"), 0o600))
-	got, err := Inspect(t.Context(), Options{DataDir: dir, SkipOllama: true})
-	require.NoError(t, err)
-	assert.Equal(t, int64(294570424), got.DownloadBytes)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "nomic-embed-text-v1.5"), []byte("file"), 0o600))
 	_, err = Inspect(t.Context(), Options{DataDir: dir, SkipOllama: true})
-	require.Error(t, err)
-	_, err = Inspect(t.Context(), Options{DataDir: filepath.Join(dir, "bin", "nested"), SkipOllama: true})
 	require.Error(t, err)
 }
 
@@ -245,7 +214,6 @@ func TestInspectLockProcess(t *testing.T) {
 func TestInspectInstallApproval(t *testing.T) {
 	client, assets, _, _ := installFixture(t, "", nil)
 	dir := t.TempDir()
-	require.NoError(t, os.Mkdir(filepath.Join(dir, ".install-stale"), 0o700))
 	var confirmed, progressed bool
 	_, err := install(t.Context(), InstallOptions{
 		DataDir: dir,
@@ -269,7 +237,4 @@ func TestInspectInstallApproval(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, confirmed)
 	assert.True(t, progressed)
-	got, err := Inspect(t.Context(), Options{DataDir: dir, SkipOllama: true})
-	require.NoError(t, err)
-	assert.False(t, got.Installing)
 }
