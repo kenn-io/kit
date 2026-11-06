@@ -56,6 +56,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.61.0
 	mvdan.cc/sh/v3 v3.14.1
+	pgregory.net/rapid v1.3.0
 )
 
 require (

@@ -2,19 +2,27 @@ package pack
 
 import (
 	"bytes"
-	"math/rand"
+	"flag"
 	"path/filepath"
-	"reflect"
 	"testing"
-	"testing/quick"
 
 	"github.com/stretchr/testify/require"
+	"pgregory.net/rapid"
 )
 
 func TestPackRoundTripProperty(t *testing.T) {
 	key := testKey(21)
 	crypter, err := NewCrypter(key)
 	require.NoError(t, err)
+
+	// Rapid configures the case count globally; restore it after this test.
+	previousChecks := flag.Lookup("rapid.checks").Value.String()
+	checks := "40"
+	if testing.Short() {
+		checks = "200" // Rapid divides the case count by five in short mode.
+	}
+	require.NoError(t, flag.Set("rapid.checks", checks))
+	t.Cleanup(func() { require.NoError(t, flag.Set("rapid.checks", previousChecks)) })
 
 	roundTrip := func(c *Crypter) func(blobs [][]byte) bool {
 		return func(blobs [][]byte) bool {
@@ -58,29 +66,16 @@ func TestPackRoundTripProperty(t *testing.T) {
 		}
 	}
 
-	config := &quick.Config{
-		MaxCount: 40,
-		Values: func(values []reflect.Value, rng *rand.Rand) {
-			// Keep the previous generator's size bound and blob shapes.
-			blobs := make([][]byte, rng.Intn(100))
-			for i := range blobs {
-				switch rng.Intn(4) {
-				case 0:
-					blobs[i] = []byte{}
-				case 1:
-					blobs[i] = []byte{byte(rng.Intn(256))}
-				case 2:
-					blobs[i] = bytes.Repeat([]byte("pattern!"), 1+rng.Intn(2048))
-				case 3:
-					blobs[i] = make([]byte, rng.Intn(100))
-					for j := range blobs[i] {
-						blobs[i][j] = byte(rng.Intn(256))
-					}
-				}
-			}
-			values[0] = reflect.ValueOf(blobs)
-		},
-	}
+	// Keep the original blob shapes and exclusive size bound of 100.
+	blob := rapid.OneOf(
+		rapid.Just([]byte{}),
+		rapid.SliceOfN(rapid.Byte(), 1, 1),
+		rapid.Map(rapid.IntRange(1, 2048), func(n int) []byte {
+			return bytes.Repeat([]byte("pattern!"), n)
+		}),
+		rapid.SliceOfN(rapid.Byte(), 0, 99),
+	)
+	blobSets := rapid.SliceOfN(blob, 0, 99)
 	for _, tc := range []struct {
 		name    string
 		crypter *Crypter
@@ -91,7 +86,9 @@ func TestPackRoundTripProperty(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			property := roundTrip(tc.crypter)
 			require.True(t, property(nil), "empty pack must round-trip")
-			require.NoError(t, quick.Check(property, config))
+			rapid.Check(t, func(t *rapid.T) {
+				require.True(t, property(blobSets.Draw(t, "blobs")))
+			})
 		})
 	}
 }
