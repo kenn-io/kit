@@ -2,6 +2,7 @@ package agenthook
 
 import (
 	"bufio"
+	"context"
 	"encoding/json/v2"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/stretchr/testify/assert"
@@ -45,6 +47,10 @@ func runHookCheckHelper(mode string) int {
 		return 6
 	}
 	if mode == "initialize-eof" {
+		return 0
+	}
+	if mode == "initialize-timeout" {
+		input.Scan()
 		return 0
 	}
 	fmt.Println(`{"id":1,"result":{}}`)
@@ -120,6 +126,7 @@ func TestCheckCodexNativeStates(t *testing.T) {
 		{"RPC error", "rpc-error", "", "", CheckUnknown, "native failure"},
 		{"EOF", "eof", "", "", CheckUnknown, ""},
 		{"initialization EOF", "initialize-eof", "", "", CheckUnknown, ""},
+		{"initialization timeout", "initialize-timeout", "", "", CheckUnknown, "context deadline exceeded"},
 		{"missing CLI on PATH", "missing-cli", "", "", CheckUnknown, "codex"},
 		{"explicit missing CLI", "missing-cli-path", "", "", CheckUnknown, "missing-codex"},
 		{"missing hooks without CLI", "missing-hooks-cli", "", "", CheckMissing, ""},
@@ -190,7 +197,13 @@ func TestCheckCodexNativeStates(t *testing.T) {
 					codexExecutable = filepath.Join(dir, "missing-codex")
 				}
 			}
-			result, err := Check(t.Context(), AgentCodex, CheckOptions{
+			ctx := t.Context()
+			if tc.mode == "initialize-timeout" {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, time.Second)
+				defer cancel()
+			}
+			result, err := Check(ctx, AgentCodex, CheckOptions{
 				InstallOptions:  InstallOptions{Command: commands.Native, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}},
 				CodexExecutable: codexExecutable,
 			})
@@ -198,6 +211,12 @@ func TestCheckCodexNativeStates(t *testing.T) {
 			assert.Equal(t, tc.want, result.State, result.Reason)
 			if tc.reason != "" {
 				assert.Contains(t, result.Reason, tc.reason)
+			}
+			if strings.HasPrefix(tc.mode, "initialize-") {
+				assert.Contains(t, result.NextStep, "retry")
+			}
+			if tc.mode == "missing-cli" || tc.mode == "missing-cli-path" {
+				assert.Contains(t, result.NextStep, "Install Codex")
 			}
 			if tc.want == CheckOK {
 				assert.Contains(t, result.Reason, "checking process environment")

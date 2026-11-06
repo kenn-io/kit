@@ -58,6 +58,9 @@ func Start(ctx context.Context, executable, cwd string) (*Client, error) {
 	}
 	c := &Client{input: input, output: jsontext.NewDecoder(output)}
 	if err := c.initialize(); err != nil {
+		if ctx.Err() != nil {
+			err = fmt.Errorf("codex initialize: %w", ctx.Err())
+		}
 		closeClient()
 		return nil, err
 	}

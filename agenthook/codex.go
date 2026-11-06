@@ -3,8 +3,10 @@ package agenthook
 import (
 	"context"
 	"encoding/json/jsontext"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 
 	"go.kenn.io/kit/internal/codexapp"
@@ -46,7 +48,17 @@ func checkCodex(ctx context.Context, path, executable string, owned []ownedRegis
 	}
 	client, err := codexapp.Start(ctx, executable, cwd)
 	if err != nil {
-		return CheckUnknown, err.Error(), "Install Codex and make it available on PATH"
+		step := "Check Codex app-server startup and retry"
+		var pathError *os.PathError
+		switch {
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			step = "Allow more time for Codex to start and retry"
+		case errors.Is(err, exec.ErrNotFound), errors.Is(err, os.ErrNotExist):
+			step = "Install Codex and make it available on PATH"
+		case errors.As(err, &pathError) && pathError.Op == "fork/exec":
+			step = "Check the Codex executable path and permissions and retry"
+		}
+		return CheckUnknown, err.Error(), step
 	}
 	defer client.Close()
 	var config struct {
