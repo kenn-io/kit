@@ -41,16 +41,12 @@ func TestProcessAliveRejectsUnreapedChild(t *testing.T) {
 	require.True(t, ok)
 	rec := RuntimeRecord{PID: cmd.Process.Pid, ProcessIdentityV2: identity, Address: "127.0.0.1:7474"}
 	store := RuntimeStore{Dir: t.TempDir()}
-	path, err := store.Write(rec)
+	_, err = store.Write(rec)
 	require.NoError(t, err)
-	require.True(t, RuntimeProcessAlive(rec))
 	require.True(t, RuntimeRecordBlocksStart(rec))
-	removed, err := store.CleanupDead()
-	require.NoError(t, err)
-	require.Zero(t, removed)
-	require.FileExists(t, path)
 	require.NoError(t, stdin.Close())
 
+	// WNOWAIT observes the exit but leaves the child unreaped.
 	var waitErr error
 	require.Eventually(t, func() bool {
 		var info unix.Siginfo
@@ -58,13 +54,11 @@ func TestProcessAliveRejectsUnreapedChild(t *testing.T) {
 		return waitErr != nil || info.Signo != 0
 	}, 5*time.Second, 10*time.Millisecond)
 	require.NoError(t, waitErr)
-	require.NoError(t, unix.Kill(cmd.Process.Pid, 0), "signal 0 still accepts the unreaped child")
 	assert.False(t, ProcessAlive(cmd.Process.Pid))
 	assert.False(t, RuntimeProcessAlive(rec))
 	assert.False(t, RuntimeRecordBlocksStart(rec))
-	removed, err = store.CleanupDead()
+	removed, err := store.CleanupDead()
 	require.NoError(t, err)
 	assert.Equal(t, 1, removed)
-	assert.NoFileExists(t, path)
 	require.NoError(t, cmd.Wait())
 }

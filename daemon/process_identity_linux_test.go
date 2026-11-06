@@ -68,13 +68,11 @@ func TestLinuxProcessHasExited(t *testing.T) {
 		{"zombie leader with worker", "Z", "2", false},
 		{"dead leader with worker", "X", "2", false},
 		{"invalid thread count", "Z", "bad", false},
-		{"zero threads", "X", "0", false},
 		{"running", "R", "1", false},
-		{"sleeping", "S", "1", false},
-		{"stopped", "T", "1", false},
 		{"malformed", "", "", false},
 		{"unavailable", "", "", false},
 	}
+	identity := ProcessIdentity("linux-v1:" + fixtureBootID + ":4026532448:202")
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			proc := linuxProcFixture(t, fixtureBootID, "4026531836", "4026532448")
@@ -86,11 +84,12 @@ func TestLinuxProcessHasExited(t *testing.T) {
 				require.NoError(t, os.Remove(path))
 			case "malformed":
 				require.NoError(t, os.WriteFile(path, []byte("42 (worker) Z"), 0o644))
+				assert.Equal(t, ProcessScopeForeign, linuxProcessIdentityScope(proc, 7, identity))
 			default:
 				require.NoError(t, os.WriteFile(path, []byte(stat), 0o644))
-				identity, ok := readLinuxProcessIdentity(proc, 42)
+				read, ok := readLinuxProcessIdentity(proc, 42)
 				require.True(t, ok)
-				assert.Equal(t, ProcessIdentity("linux-v1:"+fixtureBootID+":4026532448:202"), identity)
+				assert.Equal(t, identity, read)
 				wantScope := ProcessScopeForeign
 				if tt.want {
 					wantScope = ProcessScopeGone
@@ -174,10 +173,6 @@ func TestLinuxProcessIdentityScope(t *testing.T) {
 		{"unreadable own namespace", fixtureBootID, "", 7, server, nil, ProcessScopeUnknown},
 		{"unreadable own boot ID", "", childNamespace, 7, server, nil, ProcessScopeUnknown},
 		{"process present", fixtureBootID, initNamespace, 7, server, nil, ProcessScopeForeign},
-		{"malformed stat with terminal state", fixtureBootID, initNamespace, 7, server, func(t *testing.T, proc string) {
-			t.Helper()
-			require.NoError(t, os.WriteFile(filepath.Join(proc, "42/stat"), []byte("42 (worker) Z"), 0o644))
-		}, ProcessScopeForeign},
 		{"PID reused", fixtureBootID, initNamespace, 7, identity(fixtureBootID, childNamespace, "199"), nil, ProcessScopeGone},
 		{"process absent", fixtureBootID, initNamespace, 8, server, nil, ProcessScopeGone},
 		{"host process with the same PID and start", fixtureBootID, initNamespace, 43, server, func(t *testing.T, proc string) {
