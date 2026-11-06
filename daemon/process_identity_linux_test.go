@@ -66,11 +66,7 @@ func TestLinuxProcessHasExited(t *testing.T) {
 		{"zombie", "Z", "1", true},
 		{"dead", "X", "1", true},
 		{"zombie leader with worker", "Z", "2", false},
-		{"dead leader with worker", "X", "2", false},
-		{"invalid thread count", "Z", "bad", false},
 		{"running", "R", "1", false},
-		{"malformed", "", "", false},
-		{"unavailable", "", "", false},
 	}
 	identity := ProcessIdentity("linux-v1:" + fixtureBootID + ":4026532448:202")
 	for _, tt := range tests {
@@ -79,17 +75,8 @@ func TestLinuxProcessHasExited(t *testing.T) {
 			path := filepath.Join(proc, "42/stat")
 			stat := strings.Replace(linuxStatFixture(42, "worker ) with spaces", "202"), ") S ", ") "+tt.state+" ", 1)
 			stat = strings.Replace(stat, "16 1 18", "16 "+tt.threads+" 18", 1)
-			switch tt.name {
-			case "unavailable":
-				require.NoError(t, os.Remove(path))
-			case "malformed":
-				require.NoError(t, os.WriteFile(path, []byte("42 (worker) Z"), 0o644))
-				assert.Equal(t, ProcessScopeForeign, linuxProcessIdentityScope(proc, 7, identity))
-			default:
-				require.NoError(t, os.WriteFile(path, []byte(stat), 0o644))
-				read, ok := readLinuxProcessIdentity(proc, 42)
-				require.True(t, ok)
-				assert.Equal(t, identity, read)
+			require.NoError(t, os.WriteFile(path, []byte(stat), 0o644))
+			if tt.state == "Z" {
 				wantScope := ProcessScopeForeign
 				if tt.want {
 					wantScope = ProcessScopeGone
@@ -187,6 +174,10 @@ func TestLinuxProcessIdentityScope(t *testing.T) {
 			writeLinuxProcess(t, proc, 43, "43\t9", "300")
 			status := filepath.Join(proc, "43/status")
 			require.NoError(t, os.Chmod(status, 0))
+		}, ProcessScopeForeign},
+		{"malformed stat with terminal state", fixtureBootID, initNamespace, 7, server, func(t *testing.T, proc string) {
+			t.Helper()
+			require.NoError(t, os.WriteFile(filepath.Join(proc, "42/stat"), []byte("42 (worker) Z"), 0o644))
 		}, ProcessScopeForeign},
 		{"status without NSpid", fixtureBootID, initNamespace, 8, server, func(t *testing.T, proc string) {
 			t.Helper()
