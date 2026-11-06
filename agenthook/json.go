@@ -58,16 +58,9 @@ func applyNestedJSONHooks(
 	if err != nil {
 		return err
 	}
-	if hooksObject != nil {
-		if err := removeOwnedJSONHooks(hooksObject, marker, path); err != nil {
-			return err
-		}
-	}
+	desired := map[string][]map[string]any{}
 	if uninstall {
-		return nil
-	}
-	if hooksObject == nil {
-		return fmt.Errorf("agent hook config %s has no hooks object", path)
+		return reconcileOwnedJSONHooks(hooksObject, desired, marker, path)
 	}
 	for _, hook := range hooks {
 		entry := map[string]any{}
@@ -88,14 +81,9 @@ func applyNestedJSONHooks(
 			handler["timeout"] = hook.timeout
 		}
 		entry["hooks"] = []any{handler}
-		event := hook.name
-		entries, err := jsonEventEntries(hooksObject, event, path)
-		if err != nil {
-			return err
-		}
-		hooksObject[event] = append(entries, entry)
+		desired[hook.name] = append(desired[hook.name], entry)
 	}
-	return nil
+	return reconcileOwnedJSONHooks(hooksObject, desired, marker, path)
 }
 
 func readJSONConfig(path string) (map[string]any, bool, error) {
@@ -173,58 +161,124 @@ func jsonEventEntries(hooks map[string]any, event, path string) ([]any, error) {
 	return entries, nil
 }
 
-func removeOwnedJSONHooks(hooks map[string]any, marker, path string) error {
+// reconcileOwnedJSONHooks matches event/matcher registrations first, then uses
+// remaining owned slots for changed matchers before appending new registrations.
+func reconcileOwnedJSONHooks(hooks map[string]any, desired map[string][]map[string]any, marker, path string) error {
 	for event, raw := range hooks {
 		entries, ok := raw.([]any)
 		if !ok {
 			return fmt.Errorf("agent hook config %s event %q must be an array", path, event)
 		}
-		keptEntries := make([]any, 0, len(entries))
+		type slot struct {
+			entry    map[string]any
+			handlers []any
+			index    int
+			desired  int
+		}
+		var slots []slot
+		removed := new(struct{})
+		used := make([]bool, len(desired[event]))
 		for _, rawEntry := range entries {
 			entry, ok := rawEntry.(map[string]any)
-			if !ok {
-				keptEntries = append(keptEntries, rawEntry)
+			if !ok || entry["hooks"] == nil {
 				continue
 			}
-			rawHandlers, ok := entry["hooks"]
-			if !ok || rawHandlers == nil {
-				keptEntries = append(keptEntries, rawEntry)
-				continue
-			}
-			handlers, ok := rawHandlers.([]any)
+			handlers, ok := entry["hooks"].([]any)
 			if !ok {
 				return fmt.Errorf("agent hook config %s event %q entry hooks must be an array", path, event)
 			}
-			keptHandlers := make([]any, 0, len(handlers))
-			for _, rawHandler := range handlers {
-				handler, ok := rawHandler.(map[string]any)
-				command, _ := handler["command"].(string)
-				// Exec-form hooks keep their arguments in a separate array.
-				if args, isArray := handler["args"].([]any); isArray {
-					var joined strings.Builder
-					joined.WriteString(command)
-					for _, arg := range args {
-						text, _ := arg.(string)
-						joined.WriteString(" " + text)
-					}
-					command = joined.String()
-				}
-				if ok && strings.Contains(command, marker) {
+			for i, handler := range handlers {
+				if !ownsJSONHandler(handler, marker) {
 					continue
 				}
-				keptHandlers = append(keptHandlers, rawHandler)
+				owned := slot{entry: entry, handlers: handlers, index: i, desired: -1}
+				for j, hook := range desired[event] {
+					matcher, _ := hook["matcher"].(string)
+					existingMatcher, _ := entry["matcher"].(string)
+					if !used[j] && matcher == existingMatcher {
+						owned.desired = j
+						used[j] = true
+						break
+					}
+				}
+				slots = append(slots, owned)
 			}
-			if len(keptHandlers) == 0 {
-				continue
+		}
+		for _, owned := range slots {
+			if owned.desired < 0 {
+				for j := range used {
+					if !used[j] {
+						owned.desired = j
+						used[j] = true
+						break
+					}
+				}
 			}
-			entry["hooks"] = keptHandlers
-			keptEntries = append(keptEntries, entry)
+			owned.handlers[owned.index] = removed
+			if owned.desired >= 0 {
+				hook := desired[event][owned.desired]
+				if matcher, ok := hook["matcher"]; ok {
+					owned.entry["matcher"] = matcher
+				} else {
+					delete(owned.entry, "matcher")
+				}
+				owned.handlers[owned.index] = hook["hooks"].([]any)[0]
+			}
+		}
+		keptEntries := make([]any, 0, len(entries))
+		for _, rawEntry := range entries {
+			entry, ok := rawEntry.(map[string]any)
+			if ok && entry["hooks"] != nil {
+				handlers := entry["hooks"].([]any)
+				kept := make([]any, 0, len(handlers))
+				for _, handler := range handlers {
+					if handler != removed {
+						kept = append(kept, handler)
+					}
+				}
+				if len(kept) == 0 {
+					continue
+				}
+				entry["hooks"] = kept
+			}
+			keptEntries = append(keptEntries, rawEntry)
+		}
+		for i, hook := range desired[event] {
+			if !used[i] {
+				keptEntries = append(keptEntries, hook)
+			}
 		}
 		if len(keptEntries) == 0 {
 			delete(hooks, event)
 		} else {
 			hooks[event] = keptEntries
 		}
+		delete(desired, event)
+	}
+	for event, entries := range desired {
+		for _, entry := range entries {
+			current, _ := hooks[event].([]any)
+			hooks[event] = append(current, entry)
+		}
 	}
 	return nil
+}
+
+func ownsJSONHandler(raw any, marker string) bool {
+	handler, ok := raw.(map[string]any)
+	if !ok {
+		return false
+	}
+	command, _ := handler["command"].(string)
+	// Exec-form hooks keep their arguments in a separate array.
+	if args, ok := handler["args"].([]any); ok {
+		var joined strings.Builder
+		joined.WriteString(command)
+		for _, arg := range args {
+			text, _ := arg.(string)
+			joined.WriteString(" " + text)
+		}
+		command = joined.String()
+	}
+	return strings.Contains(command, marker)
 }
