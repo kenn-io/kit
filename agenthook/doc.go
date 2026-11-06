@@ -28,7 +28,13 @@
 //
 // Applications identify their hooks with a stable marker embedded in the
 // command. Reinstalling replaces commands carrying that marker even when the
-// executable path changed, and uninstalling removes only those commands:
+// executable path changed, and uninstalling removes only those commands.
+// Nested JSON reinstalls retain the group and handler positions of existing
+// event/matcher registrations. Changed matchers reuse single-handler groups
+// in the same event, and new registrations append after existing groups.
+// Removing registrations can renumber later hooks.
+//
+// For example, install an application's Hermes hooks with a stable marker:
 //
 //	result, err := agenthook.Install(agenthook.AgentHermes, agenthook.InstallOptions{
 //		Executable: "/opt/example",
