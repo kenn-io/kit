@@ -92,7 +92,7 @@ func linuxNestedProcessGone(procRoot string, pid int, ticks string) bool {
 		if !nested || innermost != want {
 			continue
 		}
-		started, err := readLinuxProcessStartTicks(procRoot, hostPID)
+		_, started, err := readLinuxProcessStat(procRoot, hostPID)
 		if linuxProcessExited(err) {
 			continue
 		}
@@ -199,7 +199,7 @@ func readLinuxProcessIdentity(procRoot string, pid int) (ProcessIdentity, bool) 
 	if err != nil {
 		return "", false
 	}
-	processTicks, err := readLinuxProcessStartTicks(procRoot, pid)
+	_, processTicks, err := readLinuxProcessStat(procRoot, pid)
 	if err != nil {
 		return "", false
 	}
@@ -233,27 +233,36 @@ func readLinuxPIDNamespaceAt(procRoot, process string) (string, error) {
 	return strconv.FormatUint(value, 10), nil
 }
 
-func readLinuxProcessStartTicks(procRoot string, pid int) (string, error) {
-	stat, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(pid), "stat"))
-	if err != nil {
-		return "", err
-	}
-	return parseLinuxProcessStartTicks(stat)
+func processHasExited(pid int) bool {
+	return linuxProcessHasExited("/proc", pid)
 }
 
-func parseLinuxProcessStartTicks(stat []byte) (string, error) {
+func linuxProcessHasExited(procRoot string, pid int) bool {
+	state, _, err := readLinuxProcessStat(procRoot, pid)
+	return err == nil && (state == "Z" || state == "X")
+}
+
+func readLinuxProcessStat(procRoot string, pid int) (state, startTicks string, err error) {
+	stat, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return "", "", err
+	}
+	return parseLinuxProcessStat(stat)
+}
+
+func parseLinuxProcessStat(stat []byte) (state, startTicks string, err error) {
 	closing := bytes.LastIndexByte(stat, ')')
 	if closing < 0 || closing+1 >= len(stat) {
-		return "", errors.New("linux process stat has no command terminator")
+		return "", "", errors.New("linux process stat has no command terminator")
 	}
 	fields := strings.Fields(string(stat[closing+1:]))
 	const startTimeIndex = 19 // Field 22 after PID and command.
 	if len(fields) <= startTimeIndex {
-		return "", errors.New("linux process stat has no start time")
+		return "", "", errors.New("linux process stat has no start time")
 	}
 	value, ok := parseCanonicalLinuxIdentityUint(fields[startTimeIndex])
 	if !ok {
-		return "", errors.New("linux process stat has an invalid start time")
+		return "", "", errors.New("linux process stat has an invalid start time")
 	}
-	return strconv.FormatUint(value, 10), nil
+	return fields[0], strconv.FormatUint(value, 10), nil
 }

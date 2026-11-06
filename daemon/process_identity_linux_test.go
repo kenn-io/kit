@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -50,9 +51,41 @@ func TestLinuxProcessIdentityCompatibilityRejectsMalformedValues(t *testing.T) {
 	}
 }
 
-func TestParseLinuxProcessStartTicksRejectsMalformedStat(t *testing.T) {
-	_, err := parseLinuxProcessStartTicks([]byte("42 malformed"))
+func TestParseLinuxProcessStatRejectsMalformedStat(t *testing.T) {
+	_, _, err := parseLinuxProcessStat([]byte("42 malformed"))
 	require.Error(t, err)
+}
+
+func TestLinuxProcessHasExited(t *testing.T) {
+	tests := []struct {
+		name  string
+		state string
+		want  bool
+	}{
+		{"zombie", "Z", true},
+		{"dead", "X", true},
+		{"running", "R", false},
+		{"sleeping", "S", false},
+		{"stopped", "T", false},
+		{"malformed", "", false},
+		{"unavailable", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proc := linuxProcFixture(t, fixtureBootID, "4026531836", "4026532448")
+			path := filepath.Join(proc, "42/stat")
+			stat := strings.Replace(linuxStatFixture(42, "worker ) with spaces", "202"), ") S ", ") "+tt.state+" ", 1)
+			switch tt.name {
+			case "unavailable":
+				require.NoError(t, os.Remove(path))
+			case "malformed":
+				require.NoError(t, os.WriteFile(path, []byte("42 (worker) Z"), 0o644))
+			default:
+				require.NoError(t, os.WriteFile(path, []byte(stat), 0o644))
+			}
+			assert.Equal(t, tt.want, linuxProcessHasExited(proc, 42))
+		})
+	}
 }
 
 const (

@@ -18,5 +18,5 @@ func ProcessAlive(pid int) bool {
 		return false
 	}
 	err = process.Signal(syscall.Signal(0))
-	return err == nil || errors.Is(err, syscall.EPERM)
+	return (err == nil || errors.Is(err, syscall.EPERM)) && !processHasExited(pid)
 }
