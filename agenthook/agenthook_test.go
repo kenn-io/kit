@@ -277,6 +277,79 @@ func TestInstallJSONPreservesOtherHooksAndReplacesOwnedHooks(t *testing.T) {
 	assert.NotContains(string(data), testMarker)
 }
 
+func TestInstallJSONUpdatesKeepOtherHooks(t *testing.T) {
+	const old = `{"type":"command","command":"/old/a --source a-hook"}`
+	const updated = `{"type":"command","command":"/moved/a --source a-hook","timeout":2}`
+	const foreign = `{"type":"command","command":"/opt/b --source b-hook"}`
+	tests := []struct {
+		name   string
+		before string
+		hooks  []Hook
+		after  string
+	}{
+		{
+			name:   "new matcher appends after other app",
+			before: `[{"matcher":"first","hooks":[` + old + `]},{"matcher":"other","hooks":[` + foreign + `]}]`,
+			hooks: []Hook{
+				{Event: EventPreToolUse, Matcher: "first", Timeout: 2 * time.Second},
+				{Event: EventPreToolUse, Matcher: "second", Timeout: 2 * time.Second},
+			},
+			after: `[{"matcher":"first","hooks":[` + updated + `]},{"matcher":"other","hooks":[` + foreign + `]},{"matcher":"second","hooks":[` + updated + `]}]`,
+		},
+		{
+			name:   "reordered exact match reserved before matcher reuse",
+			before: `[{"matcher":"first","hooks":[` + old + `]},{"matcher":"other","hooks":[` + foreign + `]},{"matcher":"second","hooks":[` + old + `]}]`,
+			hooks: []Hook{
+				{Event: EventPreToolUse, Matcher: "third", Timeout: 2 * time.Second},
+				{Event: EventPreToolUse, Matcher: "first", Timeout: 2 * time.Second},
+			},
+			after: `[{"matcher":"first","hooks":[` + updated + `]},{"matcher":"other","hooks":[` + foreign + `]},{"matcher":"third","hooks":[` + updated + `]}]`,
+		},
+		{
+			name:   "shared matcher preserves foreign handler",
+			before: `[{"matcher":"^Bash$","hooks":[` + old + `,` + foreign + `]}]`,
+			hooks:  []Hook{{Event: EventPreToolUse, Matcher: "Read", Timeout: 2 * time.Second}},
+			after:  `[{"matcher":"^Bash$","hooks":[` + foreign + `]},{"matcher":"Read","hooks":[` + updated + `]}]`,
+		},
+		{
+			// User edits can merge two owned registrations into one group.
+			name:   "shared owned handlers split matchers",
+			before: `[{"matcher":"^Bash$","hooks":[` + old + `,` + old + `]}]`,
+			hooks: []Hook{
+				{Event: EventPreToolUse, Matcher: ToolBash, Timeout: 2 * time.Second},
+				{Event: EventPreToolUse, Matcher: "Read", Timeout: 2 * time.Second},
+			},
+			after: `[{"matcher":"^Bash$","hooks":[` + updated + `]},{"matcher":"Read","hooks":[` + updated + `]}]`,
+		},
+		{
+			name:   "shared handler retains position and group fields",
+			before: `[{"custom":"keep","matcher":"first","hooks":[` + old + `,` + foreign + `]}]`,
+			hooks:  []Hook{{Event: EventPreToolUse, Matcher: "first", Timeout: 2 * time.Second}},
+			after:  `[{"custom":"keep","matcher":"first","hooks":[` + updated + `,` + foreign + `]}]`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "hooks.json")
+			require.NoError(t, os.WriteFile(path, []byte(`{"hooks":{"PreToolUse":`+tt.before+`}}`), 0o600))
+			opts := InstallOptions{
+				ConfigPath: path,
+				Command:    "/moved/a --source a-hook",
+				Marker:     "--source a-hook",
+				Hooks:      tt.hooks,
+			}
+			_, err := Install(AgentCodex, opts)
+			require.NoError(t, err)
+			data, err := os.ReadFile(path)
+			require.NoError(t, err)
+			assert.JSONEq(t, `{"hooks":{"PreToolUse":`+tt.after+`}}`, string(data))
+			result, err := Install(AgentCodex, opts)
+			require.NoError(t, err)
+			assert.False(t, result.Changed)
+		})
+	}
+}
+
 func TestInstallReturnsResultWhenConfigWasPublishedButNotDurable(t *testing.T) {
 	require := require.New(t)
 	path := filepath.Join(t.TempDir(), "hooks.json")
@@ -1131,8 +1204,8 @@ func TestInstallPiKeepsOtherApplicationsCommands(t *testing.T) {
 
 	install("/moved/a", "a-hook")
 	hooks := scriptHooks(t, path)
-	assert.Equal(
-		[]string{bCommand, "/moved/a agent-hook --source a-hook"},
+	assert.ElementsMatch(
+		[]string{"/moved/a agent-hook --source a-hook", bCommand},
 		scriptCommands(hooks, "agent_settled"),
 	)
 	assert.Len(scriptCommands(hooks, "before_agent_start"), 2)
