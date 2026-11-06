@@ -179,3 +179,50 @@ func (o *ort) infer(ctx context.Context, ids []int) ([]float32, error) {
 	}
 	return pooled, nil
 }
+
+// inferFloat reuses the runtime for image tensors and named detector outputs.
+func (o *ort) inferFloat(ctx context.Context, input string, shape []int64, pixels []float32, names []string, lengths []int) ([][]float32, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var value uintptr
+	if err := o.check(o.createTensor(o.allocator, shape, uintptr(len(shape)), 1, &value)); err != nil {
+		return nil, err
+	}
+	defer o.releaseValue(value)
+	var data unsafe.Pointer
+	if err := o.check(o.tensorData(value, &data)); err != nil {
+		return nil, err
+	}
+	copy(unsafe.Slice((*float32)(data), len(pixels)), pixels)
+	var pin runtime.Pinner
+	defer pin.Unpin()
+	pointers := make([]*byte, len(names)+1)
+	for i, name := range append([]string{input}, names...) {
+		bytes := append([]byte(name), 0)
+		pin.Pin(&bytes[0])
+		pointers[i] = &bytes[0]
+	}
+	pin.Pin(&pointers[0])
+	values := []uintptr{value}
+	outputs := make([]uintptr, len(names))
+	pin.Pin(&outputs[0])
+	defer func() {
+		for _, output := range outputs {
+			if output != 0 {
+				o.releaseValue(output)
+			}
+		}
+	}()
+	if err := o.check(o.run(o.session, 0, pointers[:1], values, 1, pointers[1:], uintptr(len(names)), &outputs[0])); err != nil {
+		return nil, err
+	}
+	out := make([][]float32, len(names))
+	for i, output := range outputs {
+		if err := o.check(o.tensorData(output, &data)); err != nil {
+			return nil, err
+		}
+		out[i] = append([]float32(nil), unsafe.Slice((*float32)(data), lengths[i])...)
+	}
+	return out, ctx.Err()
+}

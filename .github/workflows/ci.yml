@@ -34,6 +34,7 @@ jobs:
         uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v7.0.0
@@ -53,6 +54,12 @@ jobs:
 
       - name: Run golangci-lint
         run: make lint
+
+      - name: Check Markdown edit dates
+        if: github.event_name == 'pull_request'
+        env:
+          FRONTMATTER_BASE: ${{ github.event.pull_request.base.sha }}
+        run: make lint-frontmatter-changed
 
       - name: Run lint, build, and vet for Windows
         env:
@@ -435,7 +442,7 @@ jobs:
         uses: actions/cache@v6.1.0
         with:
           path: ${{ runner.temp }}/embedserver
-          key: embedserver-${{ runner.os }}-${{ runner.arch }}-ort-1.23.2-nomic-cf5b5a86-d241a60d
+          key: embedserver-${{ runner.os }}-${{ runner.arch }}-ort-1.23.2-nomic-cf5b5a86-d241a60d-faces-af6d057c-f12e1279-${{ hashFiles('embedserver/testdata/faces/*') }}
       - name: Stage ONNX Runtime 1.23.2
         shell: python
         run: |
@@ -445,6 +452,9 @@ jobs:
           with open(os.environ['GITHUB_ENV'], 'a') as env:
               env.write('KIT_EMBED_TEST_DIR=' + str(root.parent / 'model') + '\n')
               env.write('KIT_EMBED_TEST_LIBRARY=' + library + '\n')
+      - name: Stage verified model and photograph fixtures
+        shell: bash
+        run: .github/actions/kit-retry/kit-retry 3 5 go run .github/scripts/stage-embed-test.go
       - name: Run focused tests and native parity
         run: make test-embedserver GOTESTSUM_SUITE=embedserver-${{ matrix.os }}
       - name: Upload gotestsum results

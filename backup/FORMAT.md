@@ -1,3 +1,9 @@
+---
+title: "Backup Repository Format"
+description: "On-disk layout and interoperability rules for backup repositories."
+last_edited: 2026-10-25
+---
+
 # Backup Repository Format
 
 On-disk format reference for repositories created by the `backup` and `pack`

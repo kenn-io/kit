@@ -1,3 +1,9 @@
+---
+title: "MCP registration research"
+description: "Research on MCP server registration formats and discovery across agent tools."
+last_edited: 2026-10-30
+---
+
 # MCP registration research
 
 Checked primary sources on 2026-09-26. This note informs the eight clients already

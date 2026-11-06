@@ -1,3 +1,9 @@
+---
+title: "Developing kit"
+description: "Development tooling, build conventions, and debugging guidance for kit."
+last_edited: 2026-10-30
+---
+
 # Developing kit
 
 ## Shared Go build cache

@@ -1,3 +1,9 @@
+---
+title: "PostHog event fields"
+description: "Shared PostHog event fields and their meanings."
+last_edited: 2026-10-26
+---
+
 # PostHog event fields
 
 Kit sends the event fields below for each captured event. `Report` admits each event's configured product properties and adds the shared properties. After SDK serialization, the transport keeps only the shared properties and that event's configured product properties, including on redirect replays. It always removes `$os`, `$os_version`, `$os_distro`, and `$go_version`, even if allowed by product configuration. Construction accepts these declarations and logs one warning per name. Events that supply them still upload their other allowed properties. Use another name to send a product value. `goos` and `goarch` remain. Valid JSON objects without a `batch` field and POST requests with no body pass through unchanged. Malformed batch payloads return an error before sending.

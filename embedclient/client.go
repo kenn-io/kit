@@ -1,11 +1,9 @@
 package embedclient
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -151,7 +149,7 @@ func (c *Client) embed(ctx context.Context, inputs []embedmodel.Content, format 
 			texts[i-start] = prepared[i].text
 		}
 		role := prepared[start].role
-		vectors, err := c.retry.do(ctx, func() ([][]float32, error) {
+		vectors, err := retryCall(ctx, c.retry, func() ([][]float32, error) {
 			return c.post(ctx, role, texts)
 		})
 		if err != nil {
@@ -237,26 +235,9 @@ func (c *Client) post(ctx context.Context, role embedconfig.Role, texts []string
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
+	payload, err := c.postJSON(ctx, c.endpoint, body)
 	if err != nil {
-		return nil, errors.New("embed request failed")
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, classifyTransport(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, newAPIError(resp)
-	}
-	payload, err := io.ReadAll(io.LimitReader(resp.Body, c.maxResponse+1))
-	if err != nil {
-		return nil, &TransportError{Err: err}
-	}
-	if int64(len(payload)) > c.maxResponse {
-		return nil, ErrResponseTooLarge
+		return nil, err
 	}
 	vectors, problems, err := c.classify(payload, len(texts))
 	if err != nil {

@@ -48,6 +48,14 @@ provider workflows to this repo unless the package already owns that concern.
 - Never name private downstream projects or other private codebases in public
   artifacts. Describe reusable requirements generically and scrub public
   surfaces before publishing.
+- Tracked Markdown outside skill bundles requires frontmatter with non-empty
+  `title` and `description` strings and a bare `last_edited: YYYY-MM-DD` date.
+  `README.md`, `AGENTS.md`, and `CLAUDE.md` files never take frontmatter, at
+  any depth. The check also excludes `.github/`, `testdata/`, `vendor/`,
+  `node_modules/`, `docs/releases/`, `CHANGELOG*.md` and `changelog*.md`
+  files, and skill bundles (`SKILL.md` and everything under a directory that
+  contains one). Change the date when editing existing
+  content; CI compares it with the actual pull request base.
 
 ## Go Conventions
 

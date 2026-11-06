@@ -6,6 +6,8 @@ on:
       - '.github/workflows/kennembed.yml'
       - '.github/workflows/ci.yml'
       - '.github/scripts/stage-onnx.py'
+      - '.github/scripts/stage-embed-test.go'
+      - '.github/licenses/**'
       - 'cmd/kennembed/**'
       - 'embedserver/**'
       - 'embedlocal/**'

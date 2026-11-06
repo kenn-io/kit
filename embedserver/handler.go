@@ -19,9 +19,10 @@ import (
 var decodeOptions = jsonv2.JoinOptions(jsontext.AllowInvalidUTF8(true), jsontext.AllowDuplicateNames(true))
 
 type handler struct {
-	engine engine
-	gate   chan struct{}
-	log    io.Writer
+	engine   engine
+	gate     chan struct{}
+	previews chan struct{}
+	log      io.Writer
 }
 type request struct {
 	Model      string          `json:"model"`
@@ -103,7 +104,11 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_, _ = fmt.Fprintf(h.log, "inference failed: %v\n", err)
-		http.Error(w, "inference failed", http.StatusInternalServerError)
+		if load, ok := errors.AsType[*modelLoadError](err); ok {
+			http.Error(w, load.Error(), http.StatusFailedDependency)
+		} else {
+			http.Error(w, "inference failed", http.StatusInternalServerError)
+		}
 		return
 	}
 	data, err := jsonv2.Marshal(out)

@@ -1,3 +1,9 @@
+---
+title: "Migration Notes"
+description: "Migration guidance for consumers of the self-update package."
+last_edited: 2026-06-15
+---
+
 # Migration Notes
 
 `go.kenn.io/kit/selfupdate` is intended to replace the duplicated
