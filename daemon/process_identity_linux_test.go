@@ -160,6 +160,20 @@ func TestLinuxProcessIdentityScope(t *testing.T) {
 		{"unreadable own namespace", fixtureBootID, "", 7, server, nil, ProcessScopeUnknown},
 		{"unreadable own boot ID", "", childNamespace, 7, server, nil, ProcessScopeUnknown},
 		{"process present", fixtureBootID, initNamespace, 7, server, nil, ProcessScopeForeign},
+		{"zombie process", fixtureBootID, initNamespace, 7, server, func(t *testing.T, proc string) {
+			t.Helper()
+			stat := strings.Replace(linuxStatFixture(42, "kwt daemon (worker)", "202"), ") S ", ") Z ", 1)
+			require.NoError(t, os.WriteFile(filepath.Join(proc, "42/stat"), []byte(stat), 0o644))
+		}, ProcessScopeGone},
+		{"dead process", fixtureBootID, initNamespace, 7, server, func(t *testing.T, proc string) {
+			t.Helper()
+			stat := strings.Replace(linuxStatFixture(42, "kwt daemon (worker)", "202"), ") S ", ") X ", 1)
+			require.NoError(t, os.WriteFile(filepath.Join(proc, "42/stat"), []byte(stat), 0o644))
+		}, ProcessScopeGone},
+		{"malformed stat with terminal state", fixtureBootID, initNamespace, 7, server, func(t *testing.T, proc string) {
+			t.Helper()
+			require.NoError(t, os.WriteFile(filepath.Join(proc, "42/stat"), []byte("42 (worker) Z"), 0o644))
+		}, ProcessScopeForeign},
 		{"PID reused", fixtureBootID, initNamespace, 7, identity(fixtureBootID, childNamespace, "199"), nil, ProcessScopeGone},
 		{"process absent", fixtureBootID, initNamespace, 8, server, nil, ProcessScopeGone},
 		{"host process with the same PID and start", fixtureBootID, initNamespace, 43, server, func(t *testing.T, proc string) {

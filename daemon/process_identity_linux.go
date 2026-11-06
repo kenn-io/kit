@@ -92,8 +92,8 @@ func linuxNestedProcessGone(procRoot string, pid int, ticks string) bool {
 		if !nested || innermost != want {
 			continue
 		}
-		_, started, err := readLinuxProcessStat(procRoot, hostPID)
-		if linuxProcessExited(err) {
+		state, started, err := readLinuxProcessStat(procRoot, hostPID)
+		if linuxProcessExited(err) || (err == nil && (state == "Z" || state == "X")) {
 			continue
 		}
 		if err != nil || started == ticks {
