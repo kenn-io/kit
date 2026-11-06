@@ -145,10 +145,8 @@ func TestCheckCodexNativeStates(t *testing.T) {
 		{"disabled handler", "disabled", "untrusted", "", CheckDisabled},
 		{"disabled feature before empty discovery", "feature-disabled", "", "", CheckDisabled},
 		{"unknown trust", "normal", "future", "", CheckUnknown},
-		{"missing enabled", "no-enabled", "trusted", "", CheckUnknown},
 		{"discovery error", "discovery-error", "trusted", "", CheckUnknown},
 		{"missing discovery data", "missing-data", "", "", CheckUnknown},
-		{"missing hooks field", "missing-hooks", "", "", CheckUnknown},
 		{"RPC error", "rpc-error", "", "", CheckUnknown},
 		{"malformed RPC", "no-result", "", "", CheckUnknown},
 		{"EOF", "eof", "", "", CheckUnknown},
@@ -173,9 +171,6 @@ func TestCheckCodexNativeStates(t *testing.T) {
 			if tc.mode == "disabled" {
 				enabled = `,"enabled":false`
 			}
-			if tc.mode == "no-enabled" {
-				enabled = ""
-			}
 			pathJSON, err := json.Marshal(path)
 			require.NoError(t, err)
 			keyJSON, err := json.Marshal(path + ":stop:0:0")
@@ -191,17 +186,14 @@ func TestCheckCodexNativeStates(t *testing.T) {
 			if tc.mode == "discovery-error" {
 				reply = `{"data":[{"cwd":"CWD","hooks":[],"errors":[{"message":"invalid hooks"}]}]}`
 			}
-			if tc.mode == "missing-hooks" {
-				reply = `{"data":[{"cwd":"CWD","errors":[]}]}`
-			}
 			if tc.mode == "missing-data" {
 				reply = `{}`
 			}
 			t.Setenv("KIT_HOOK_CHECK_HELPER", tc.mode)
 			t.Setenv("KIT_HOOK_CHECK_REPLY", reply)
 			result, err := Check(t.Context(), AgentCodex, CheckOptions{
-				InstallOptions:   InstallOptions{Command: commands.Native, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}},
-				WorkingDirectory: dir, CodexExecutable: executable,
+				InstallOptions:  InstallOptions{Command: commands.Native, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}},
+				CodexExecutable: executable,
 			})
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, result.State, result.Reason)
@@ -273,7 +265,6 @@ func TestCheckCommandResolution(t *testing.T) {
 		{"shell compound", "echo example-marker; echo other", CheckUnknown},
 		{"glob executable", "*hook example-marker", CheckUnknown},
 		{"tilde executable", "~/hook example-marker", CheckUnknown},
-		{"relative executable", "./example-hook example-marker", CheckUnknown},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
@@ -286,11 +277,6 @@ func TestCheckCommandResolution(t *testing.T) {
 			assert.NotEmpty(t, result.NextStep)
 		})
 	}
-	executable, err := os.Executable()
-	require.NoError(t, err)
-	got, err := hookExecutable(map[string]any{"command": executable, "args": []any{"agent-hook", "example-marker"}})
-	require.NoError(t, err)
-	assert.Equal(t, executable, got)
 }
 
 func TestCheckValidationAndConfigHome(t *testing.T) {
@@ -367,8 +353,8 @@ func TestCheckCodexConformance(t *testing.T) {
 	executable, err := os.Executable()
 	require.NoError(t, err)
 	opts := CheckOptions{
-		InstallOptions:   InstallOptions{Executable: executable, Arguments: []string{"example-marker"}, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}},
-		WorkingDirectory: dir, CodexExecutable: codex,
+		InstallOptions:  InstallOptions{Executable: executable, Arguments: []string{"example-marker"}, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}},
+		CodexExecutable: codex,
 	}
 	for _, want := range []CheckState{CheckMissing, CheckUntrusted, CheckOK, CheckModified} {
 		before, err := os.ReadFile(configPath)

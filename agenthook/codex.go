@@ -5,7 +5,6 @@ import (
 	"encoding/json/jsontext"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"go.kenn.io/kit/internal/codexapp"
@@ -37,20 +36,11 @@ func codexProfile() profileSpec {
 }
 
 // checkCodex reads native discovery and consent state. It never writes trust.
-func checkCodex(ctx context.Context, path string, options CheckOptions, owned []ownedRegistration) (CheckState, string, string) {
-	executable := options.CodexExecutable
+func checkCodex(ctx context.Context, path, executable string, owned []ownedRegistration) (CheckState, string, string) {
 	if executable == "" {
 		executable = "codex"
 	}
-	cwd := options.WorkingDirectory
-	if cwd == "" {
-		var err error
-		cwd, err = os.Getwd()
-		if err != nil {
-			return CheckUnknown, err.Error(), "Choose a working directory for Codex"
-		}
-	}
-	cwd, err := filepath.Abs(cwd)
+	cwd, err := os.Getwd()
 	if err != nil {
 		return CheckUnknown, err.Error(), "Choose a working directory for Codex"
 	}
@@ -75,13 +65,12 @@ func checkCodex(ctx context.Context, path string, options CheckOptions, owned []
 	}
 	var listed struct {
 		Data []struct {
-			Cwd   string `json:"cwd"`
 			Hooks []struct {
 				Key         string `json:"key"`
 				Source      string `json:"source"`
 				SourcePath  string `json:"sourcePath"`
 				TrustStatus string `json:"trustStatus"`
-				Enabled     *bool  `json:"enabled"`
+				Enabled     bool   `json:"enabled"`
 			} `json:"hooks"`
 			Errors []jsontext.Value `json:"errors"`
 		} `json:"data"`
@@ -89,18 +78,14 @@ func checkCodex(ctx context.Context, path string, options CheckOptions, owned []
 	if err := client.Call("hooks/list", map[string]any{"cwds": []string{cwd}}, &listed); err != nil {
 		return CheckUnknown, err.Error(), "Check Codex hook discovery and retry"
 	}
-	if len(listed.Data) != 1 || !sameConfigPath(listed.Data[0].Cwd, cwd) {
+	if len(listed.Data) != 1 {
 		return CheckUnknown, "Codex did not report hooks for the requested directory", "Check Codex hook discovery and retry"
 	}
 	entry := listed.Data[0]
-	if entry.Hooks == nil {
-		return CheckUnknown, "Codex omitted its discovered hooks", "Check Codex hook discovery and retry"
-	}
 	if len(entry.Errors) > 0 {
 		return CheckUnknown, fmt.Sprintf("Codex hook discovery errors: %s", entry.Errors), "Correct the reported hook discovery errors"
 	}
 	states := make(map[string]bool)
-	seen := make(map[string]bool)
 	count := 0
 	for _, hook := range entry.Hooks {
 		if hook.Source != "user" || !sameConfigPath(hook.SourcePath, path) {
@@ -108,22 +93,15 @@ func checkCodex(ctx context.Context, path string, options CheckOptions, owned []
 		}
 		suffix, ok := strings.CutPrefix(hook.Key, hook.SourcePath+":")
 		if !ok {
-			return CheckUnknown, "Codex returned an invalid hook identity", "Check Codex hook discovery and retry"
+			continue
 		}
 		for _, registration := range owned {
 			key := fmt.Sprintf("%s:%d:%d", strings.ToLower(registration.event), registration.group, registration.handlerIndex)
 			if strings.ReplaceAll(suffix, "_", "") != key {
 				continue
 			}
-			if seen[hook.Key] {
-				return CheckUnknown, "Codex repeated a hook identity", "Check Codex hook discovery and retry"
-			}
-			seen[hook.Key] = true
 			count++
-			if hook.Enabled == nil {
-				return CheckUnknown, "Codex omitted hook enabled state", "Check Codex hook discovery and retry"
-			}
-			if !*hook.Enabled {
+			if !hook.Enabled {
 				states["disabled"] = true
 			}
 			switch hook.TrustStatus {

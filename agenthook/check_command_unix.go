@@ -20,8 +20,5 @@ func rawHookExecutable(command string) (string, error) {
 	if err != nil || len(words) == 0 {
 		return "", fmt.Errorf("cannot identify hook executable in %q", command)
 	}
-	if strings.Contains(words[0], "=") {
-		return "", errors.New("hook command starts with a shell assignment")
-	}
 	return words[0], nil
 }

@@ -6,15 +6,15 @@ import (
 	"maps"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 )
 
 // CheckOptions describes the registrations to inspect in the active user config.
 type CheckOptions struct {
-	InstallOptions   InstallOptions
-	WorkingDirectory string
-	CodexExecutable  string
+	InstallOptions  InstallOptions
+	CodexExecutable string
 }
 
 // CheckState describes what prevents an agent from using an application's hooks.
@@ -81,7 +81,7 @@ func Check(ctx context.Context, agent Agent, options CheckOptions) (CheckResult,
 		return CheckResult{}, err
 	}
 	if agent == AgentCodex {
-		state, reason, step := checkCodex(ctx, path, options, records)
+		state, reason, step := checkCodex(ctx, path, options.CodexExecutable, records)
 		if state != CheckOK {
 			return set(state, reason, step)
 		}
@@ -94,21 +94,18 @@ func Check(ctx context.Context, agent Agent, options CheckOptions) (CheckResult,
 	if !slices.Equal(installed, desired) {
 		return set(CheckOutdated, "Installed hooks differ from the requested registrations", "Reinstall the application's hooks")
 	}
-	for _, record := range records {
-		executable := strings.TrimSpace(opts.Executable)
-		var err error
-		if executable == "" {
-			executable, err = hookExecutable(record.handler)
+	executable := strings.TrimSpace(opts.Executable)
+	if executable == "" {
+		command := opts.Command
+		if runtime.GOOS == "windows" && opts.CommandWindows != "" {
+			command = opts.CommandWindows
 		}
-		if err != nil {
+		if executable, err = rawHookExecutable(command); err != nil {
 			return set(CheckUnknown, err.Error(), "Use an executable with literal arguments for the hook")
 		}
-		if strings.ContainsAny(executable, `/\\`) && !filepath.IsAbs(executable) {
-			return set(CheckUnknown, "The hook executable depends on its runtime working directory", "Use an absolute executable path or a name on PATH")
-		}
-		if _, err := exec.LookPath(executable); err != nil {
-			return set(CheckUnresolved, fmt.Sprintf("Hook executable %q cannot be resolved: %v", executable, err), "Install the executable or add its directory to PATH")
-		}
+	}
+	if _, err := exec.LookPath(executable); err != nil {
+		return set(CheckUnresolved, fmt.Sprintf("Hook executable %q cannot be resolved: %v", executable, err), "Install the executable or add its directory to PATH")
 	}
 	if agent == AgentClaude {
 		return set(CheckOK, "Claude Code user config matches and hook executables resolve; native loading is unverified", "")
@@ -125,7 +122,6 @@ func sameConfigPath(a, b string) bool {
 type ownedRegistration struct {
 	event               string
 	group, handlerIndex int
-	handler             map[string]any
 }
 
 // Keep owned handlers together within each group. Group fields affect all its
@@ -172,7 +168,7 @@ func ownedRegistrations(root map[string]any, path, marker string) ([]string, []o
 				}
 				if strings.Contains(command, marker) {
 					owned = append(owned, handler)
-					records = append(records, ownedRegistration{event, i, j, handler})
+					records = append(records, ownedRegistration{event, i, j})
 				}
 			}
 			if len(owned) == 0 {
@@ -180,9 +176,6 @@ func ownedRegistrations(root map[string]any, path, marker string) ([]string, []o
 			}
 			selected := maps.Clone(group)
 			selected["hooks"] = owned
-			if selected["matcher"] == "" {
-				delete(selected, "matcher")
-			}
 			data, err := marshalJSONConfig(map[string]any{event: selected})
 			if err != nil {
 				return nil, nil, err

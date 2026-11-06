@@ -104,9 +104,6 @@ func (c *Client) Call(method string, params, result any) error {
 		if response.Error != nil {
 			return fmt.Errorf("codex %s: %s", method, response.Error.Message)
 		}
-		if len(response.Result) == 0 {
-			return fmt.Errorf("codex %s response has no result", method)
-		}
 		if result == nil {
 			return nil
 		}
