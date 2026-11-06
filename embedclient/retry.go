@@ -29,9 +29,10 @@ type Retry struct {
 	MaxRetryAfter time.Duration
 }
 
-// do runs call until it succeeds, fails with an error that a retry cannot
+// retryCall runs call until it succeeds, fails with an error that a retry cannot
 // fix, runs out of attempts, or ctx ends.
-func (r Retry) do(ctx context.Context, call func() ([][]float32, error)) ([][]float32, error) {
+func retryCall[T any](ctx context.Context, r Retry, call func() (T, error)) (T, error) {
+	var zero T
 	if r.MaxAttempts <= 1 {
 		return call()
 	}
@@ -40,24 +41,24 @@ func (r Retry) do(ctx context.Context, call func() ([][]float32, error)) ([][]fl
 	policy.MaxInterval = cmp.Or(r.MaxBackoff, 30*time.Second)
 	maxRetryAfter := cmp.Or(r.MaxRetryAfter, 60*time.Second)
 
-	vectors, err := backoff.Retry(ctx, func() ([][]float32, error) {
-		vectors, err := call()
+	value, err := backoff.Retry(ctx, func() (T, error) {
+		value, err := call()
 		if err == nil {
-			return vectors, nil
+			return value, nil
 		}
 		if apiErr, ok := errors.AsType[*APIError](err); ok {
 			if !apiErr.Retryable() {
-				return nil, backoff.Permanent(err)
+				return zero, backoff.Permanent(err)
 			}
 			if apiErr.RetryAfter > 0 {
-				return nil, backoff.RetryAfter(min(apiErr.RetryAfter, maxRetryAfter), err)
+				return zero, backoff.RetryAfter(min(apiErr.RetryAfter, maxRetryAfter), err)
 			}
-			return nil, err
+			return zero, err
 		}
 		if _, ok := errors.AsType[*TransportError](err); ok {
-			return nil, err
+			return zero, err
 		}
-		return nil, backoff.Permanent(err)
+		return zero, backoff.Permanent(err)
 	},
 		backoff.WithBackOff(policy),
 		backoff.WithMaxTries(uint(r.MaxAttempts)),
@@ -67,9 +68,9 @@ func (r Retry) do(ctx context.Context, call func() ([][]float32, error)) ([][]fl
 	// with the context error when the context ended the retries.
 	if retryErr := backoff.AsRetryError(err); retryErr != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, errors.Join(retryErr.LastErr, ctxErr)
+			return zero, errors.Join(retryErr.LastErr, ctxErr)
 		}
-		return nil, retryErr.LastErr
+		return zero, retryErr.LastErr
 	}
-	return vectors, err
+	return value, err
 }

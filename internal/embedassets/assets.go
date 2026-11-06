@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"go.kenn.io/kit/atomicfile"
-	"go.kenn.io/kit/safefileio"
 )
 
 const revision = "e9b6763023c676ca8431644204f50c2b100d9aab"
@@ -28,22 +27,6 @@ type Asset struct {
 var modelAssets = []Asset{
 	{"model.onnx", "onnx/model_fp16.onnx", "cf5b5a86edb00f895561803cfc04729090a958340b8ca2ad76c143f565f6bb04", 273859028},
 	{"tokenizer.json", "tokenizer.json", "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66", 711396},
-}
-
-// CacheModel fetches missing or corrupt pinned files and returns their directory.
-func CacheModel(ctx context.Context, dir string) (string, error) {
-	dir = ModelDir(dir)
-	if err := safefileio.EnsurePrivateDir(dir); err != nil {
-		return "", err
-	}
-	client := DownloadClient()
-	defer client.CloseIdleConnections()
-	for _, a := range ModelAssets() {
-		if err := CacheAsset(ctx, client, dir, a); err != nil {
-			return "", fmt.Errorf("cache %s: %w", a.Name, err)
-		}
-	}
-	return dir, nil
 }
 
 func verify(r io.Reader, w io.Writer, a Asset) error {

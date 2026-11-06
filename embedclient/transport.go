@@ -1,7 +1,10 @@
 package embedclient
 
 import (
+	"bytes"
+	"context"
 	"errors"
+	"io"
 	"net/http"
 	"time"
 
@@ -41,4 +44,30 @@ func pinClient(caller *http.Client, origin, apiKey string, timeout time.Duration
 	clone := *caller
 	clone.Transport = &originTransport{base: caller.Transport, origin: origin, apiKey: apiKey}
 	return &clone
+}
+
+// postJSON owns the common bounded HTTP exchange for text and face requests.
+func (c *Client) postJSON(ctx context.Context, endpoint string, body []byte) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, errors.New("embed request failed")
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, classifyTransport(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, newAPIError(resp)
+	}
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, c.maxResponse+1))
+	if err != nil {
+		return nil, &TransportError{Err: err}
+	}
+	if int64(len(payload)) > c.maxResponse {
+		return nil, ErrResponseTooLarge
+	}
+	return payload, nil
 }

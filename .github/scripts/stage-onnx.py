@@ -59,4 +59,7 @@ if args.os == 'windows':
     for dll in ('msvcp140.dll', 'msvcp140_1.dll', 'vcruntime140.dll', 'vcruntime140_1.dll'):
         shutil.copy2(candidates[-1] / dll, root / dll)
     subprocess.run(curl + ['--output', str(root / 'Visual-C++-Runtime-License.html'), 'https://aka.ms/VCRedistLicense'], check=True)
+# The server's optional face models retain their distribution notices.
+for notice in ('AuraFace-LICENSE', 'YuNet-LICENSE'):
+    shutil.copy2(pathlib.Path('.github/licenses') / notice, root / notice)
 print(next(path for path in root.iterdir() if path.name.startswith(('onnxruntime.', 'libonnxruntime.'))))

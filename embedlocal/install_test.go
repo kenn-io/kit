@@ -74,7 +74,7 @@ func installFixture(t *testing.T, mode string, cancel context.CancelFunc) (*http
 			_, _ = fmt.Fprintf(w, "%x  %s\n", digest, name)
 		case "/archive":
 			_, _ = w.Write(archive.Bytes())
-		case "/model.onnx", "/tokenizer.json":
+		case "/model.onnx", "/tokenizer.json", "/glintr100.onnx", "/yunet.onnx":
 			if req.URL.Path == "/tokenizer.json" && mode == "canceled" && !interrupted.Swap(true) {
 				cancel()
 				<-req.Context().Done()
@@ -95,7 +95,11 @@ func installFixture(t *testing.T, mode string, cancel context.CancelFunc) (*http
 	t.Cleanup(transport.CloseIdleConnections)
 	sum := sha256.Sum256(modelFixture)
 	var assets []embedassets.Asset
-	for _, name := range []string{"model.onnx", "tokenizer.json"} {
+	modelNames := []string{"model.onnx", "tokenizer.json"}
+	if mode == "faces" {
+		modelNames = []string{"glintr100.onnx", "yunet.onnx"}
+	}
+	for _, name := range modelNames {
 		assets = append(assets, embedassets.Asset{Name: name, URL: server.URL + "/" + name, Digest: hex.EncodeToString(sum[:]), Size: int64(len(modelFixture))})
 	}
 	return &http.Client{Transport: transport}, assets, calls, server.Close
@@ -269,6 +273,80 @@ func TestInstallReportsProgress(t *testing.T) {
 			}
 			assert.True(t, slices.ContainsFunc(updates, func(u update) bool { return u.downloaded > total-70_000 && u.downloaded < total }),
 				"progress must arrive while the last file downloads, not only when it finishes")
+		})
+	}
+}
+
+func TestInstallFaceSelection(t *testing.T) {
+	client, assets, _, _ := installFixture(t, "faces", nil)
+	opts := InstallOptions{DataDir: t.TempDir(), Model: FaceModel, Confirm: func(context.Context, int64) (bool, error) { return true, nil }}
+	_, err := install(t.Context(), opts, client, assets)
+	require.NoError(t, err)
+	faceDir, _, err := embedassets.SelectedModel(opts.DataDir, FaceModel)
+	require.NoError(t, err)
+	entries, err := os.ReadDir(faceDir)
+	require.NoError(t, err)
+	var names []string
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	assert.Equal(t, []string{"glintr100.onnx", "yunet.onnx"}, names)
+	assert.NoDirExists(t, embedassets.ModelDir(opts.DataDir))
+}
+
+func TestInstallFaceConsentSize(t *testing.T) {
+	_, assets, err := embedassets.SelectedModel(t.TempDir(), FaceModel)
+	require.NoError(t, err)
+	var expected int64
+	for _, asset := range assets {
+		expected += asset.Size
+	}
+	_, err = Install(t.Context(), InstallOptions{DataDir: t.TempDir(), Model: FaceModel, Confirm: func(_ context.Context, size int64) (bool, error) {
+		assert.Equal(t, expected+bundleDownloadBytes, size)
+		return false, nil
+	}})
+	require.ErrorContains(t, err, "declined")
+}
+
+func TestInstallReusesNewestTextBundle(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode string
+		versions   []string
+		broken     bool
+		wantError  bool
+	}{
+		{name: "newest", versions: []string{"v0.46.0", "v0.47.0"}},
+		{name: "numeric order", versions: []string{"v0.9.0", "v0.10.0"}},
+		{name: "current broken", versions: []string{"v0.46.0", embedassets.BundleTag}, broken: true, wantError: true},
+		{name: "faces require current", mode: "faces", versions: []string{"v0.46.0", "v0.47.0"}, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, assets, calls, closeServer := installFixture(t, tc.mode, nil)
+			opts := InstallOptions{DataDir: t.TempDir(), Confirm: func(context.Context, int64) (bool, error) { return true, nil }}
+			if tc.mode == "faces" {
+				opts.Model = FaceModel
+			}
+			current, err := install(t.Context(), opts, client, assets)
+			require.NoError(t, err)
+			require.NoError(t, os.Rename(filepath.Dir(current.Executable), filepath.Join(opts.DataDir, "bin", tc.versions[0])))
+			bundle := filepath.Join(opts.DataDir, "bin", tc.versions[1])
+			require.NoError(t, os.MkdirAll(bundle, 0o700))
+			for _, name := range append(embedassets.NativeFiles(), embedassets.ExecutableName()) {
+				if tc.broken && name == embedassets.LibraryName() {
+					continue
+				}
+				require.NoError(t, os.WriteFile(filepath.Join(bundle, name), []byte("fixture"), 0o755))
+			}
+			closeServer()
+			opts.Confirm = nil
+			reused, err := install(t.Context(), opts, client, assets)
+			if tc.wantError {
+				require.ErrorContains(t, err, "provide Confirm")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, filepath.Join(bundle, embedassets.ExecutableName()), reused.Executable)
+			assert.Equal(t, int64(1), requestCount(calls, "/archive"))
 		})
 	}
 }

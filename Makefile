@@ -48,7 +48,7 @@ lint-config-check:
 # CI sets GOTESTSUM_SUITE so each job writes its own gotestsum/<suite>.json.
 GOTESTSUM_SUITE ?= embedserver
 test-embedserver:
-	go tool gotestsum --format pkgname-and-test-fails --format-icons text --jsonfile gotestsum/$(GOTESTSUM_SUITE).json --rerun-fails=2 --rerun-fails-report gotestsum/$(GOTESTSUM_SUITE)-reruns.txt --packages "./embedserver ./cmd/kennembed ./internal/embedassets ./embedlocal" -- -race
+	go tool gotestsum --format pkgname-and-test-fails --format-icons text --jsonfile gotestsum/$(GOTESTSUM_SUITE).json --rerun-fails=2 --rerun-fails-report gotestsum/$(GOTESTSUM_SUITE)-reruns.txt --packages "./embedserver ./cmd/kennembed ./internal/embedassets ./embedlocal ./embedclient" -- -race
 
 lint-workflow-retries:
 	go run ./cmd/kennlint workflow-retries

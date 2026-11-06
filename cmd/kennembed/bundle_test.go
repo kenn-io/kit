@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/embedclient"
 	"go.kenn.io/kit/embedconfig"
+	"go.kenn.io/kit/embedlocal"
 	"go.kenn.io/kit/internal/embedassets"
 	"go.kenn.io/kit/internal/embedtest"
 )
@@ -58,6 +59,17 @@ func TestBundleNativeParity(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, actual, 1)
 	sample.AssertParity(t, actual[0])
+	discovered, err := embedlocal.Endpoint(ctx, embedlocal.Options{DataDir: dir, Model: embedlocal.FaceModel})
+	require.NoError(t, err)
+	assert.Equal(t, endpoint, discovered)
+	photo, err := os.ReadFile(filepath.Join(dir, "faces", "commons-armstrong-gemini8.jpg"))
+	require.NoError(t, err)
+	faces, err := client.EmbedFaces(ctx, photo, []embedclient.FaceBox{
+		{X: .58, Y: 0, Width: .36, Height: .27},
+	})
+	require.NoError(t, err)
+	require.Len(t, faces.Data, 1)
+	require.NotNil(t, faces.Data[0].Embedding)
 	if runtime.GOOS == "windows" {
 		// Inspect the live process, so installed system copies cannot mask a missing
 		// app-local dependency in the bundle under test.

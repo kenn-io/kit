@@ -16,13 +16,13 @@ type Status struct {
 	OllamaAvailable bool
 	// Installing means an installer holds the lock and has staged approved work.
 	Installing bool
-	// DownloadBytes estimates missing downloads. Zero means all pinned files are
+	// DownloadBytes estimates missing downloads. Zero means all selected files are
 	// present by metadata; Install still verifies model contents before reuse.
 	DownloadBytes int64
 }
 
-// Inspect checks shared files without waiting for an installer or downloading.
-// It probes only local Ollama, for at most 500 milliseconds, unless SkipOllama
+// Inspect checks the selected model without waiting for an installer or downloading.
+// For text, it probes local Ollama for at most 500 milliseconds unless SkipOllama
 // is set. The snapshot is advisory; another installer can publish files later.
 // DataDir defaults to DefaultDir. Executable is ignored.
 func Inspect(ctx context.Context, opts Options) (Status, error) {
@@ -45,6 +45,10 @@ func inspect(ctx context.Context, opts Options, ollama string) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
+	modelDir, assets, err := embedassets.SelectedModel(dir, opts.Model)
+	if err != nil {
+		return Status{}, err
+	}
 	held, err := (daemon.RuntimeStore{Dir: dir, Prefix: installLockPrefix}).StartLockHeld(ctx)
 	if err != nil {
 		return Status{}, err
@@ -62,17 +66,21 @@ func inspect(ctx context.Context, opts Options, ollama string) (Status, error) {
 			}
 		}
 	}
-	if checkBundle(filepath.Join(dir, "bin", embedassets.BundleTag)) != nil {
+	_, ready, err := selectBundle(dir, opts.Model)
+	if err != nil {
+		return Status{}, err
+	}
+	if !ready {
 		status.DownloadBytes += bundleDownloadBytes
 	}
-	missing, err := embedassets.MissingModel(embedassets.ModelDir(dir), embedassets.ModelAssets(), false)
+	missing, err := embedassets.MissingModel(modelDir, assets, false)
 	if err != nil {
 		return Status{}, err
 	}
 	for _, asset := range missing {
 		status.DownloadBytes += asset.Size
 	}
-	if !opts.SkipOllama {
+	if (opts.Model == "" || opts.Model == TextModel) && !opts.SkipOllama {
 		status.OllamaAvailable = probeOllama(ctx, ollama)
 	}
 	if err := ctx.Err(); err != nil {

@@ -111,7 +111,9 @@ func TestEndpointNotFound(t *testing.T) {
 
 func localServer(t *testing.T, dir, version string) *httptest.Server {
 	t.Helper()
-	server := httptest.NewServer(daemon.NewPingHandler(daemon.PingHandlerOptions{Service: Service, Version: version}))
+	mux := http.NewServeMux()
+	mux.Handle("/api/ping", daemon.NewPingHandler(daemon.PingHandlerOptions{Service: Service, Version: version}))
+	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	ep, err := daemon.ParseEndpoint(server.URL, daemon.ParseEndpointOptions{TCPPolicy: daemon.RequireLoopback})
 	require.NoError(t, err)
@@ -350,4 +352,73 @@ func runServer(args []string) int {
 	}
 	<-stop
 	return 0
+}
+
+func TestEndpointRequestedModel(t *testing.T) {
+	for _, tc := range []struct {
+		name, model    string
+		models         []string
+		found, restart bool
+		status         int
+		body, problem  string
+	}{
+		{name: "text missing from face server", model: TextModel, models: []string{FaceModel}},
+		{name: "text on current server", models: []string{FaceModel, TextModel}, found: true},
+		{name: "face missing from text server", model: FaceModel, models: []string{TextModel}},
+		{name: "face on current server", model: FaceModel, models: []string{TextModel, FaceModel}, found: true},
+		{name: "face on old server", model: FaceModel, restart: true},
+		{name: "server error", model: FaceModel, status: http.StatusInternalServerError, problem: "model discovery: HTTP 500"},
+		{name: "invalid response", model: FaceModel, body: `{"models":`, problem: "model discovery:"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			ping := daemon.NewPingHandler(daemon.PingHandlerOptions{Service: Service, Version: Version})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/ping":
+					ping.ServeHTTP(w, r)
+				case "/v1/models":
+					assert.Equal(t, http.MethodGet, r.Method)
+					if tc.status != 0 || tc.body != "" {
+						if tc.status != 0 {
+							w.WriteHeader(tc.status)
+						}
+						_, err := w.Write([]byte(tc.body))
+						assert.NoError(t, err)
+						return
+					}
+
+					if tc.restart {
+						http.NotFound(w, r)
+						return
+					}
+					assert.NoError(t, json.MarshalWrite(w, struct {
+						Models []string `json:"models"`
+					}{tc.models}))
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			ep, err := daemon.ParseEndpoint(server.URL, daemon.ParseEndpointOptions{TCPPolicy: daemon.RequireLoopback})
+			require.NoError(t, err)
+			record := daemon.NewRuntimeRecord(Service, Version, ep)
+			_, err = (daemon.RuntimeStore{Dir: dir, Prefix: Service}).Write(record)
+			require.NoError(t, err)
+			result, err := endpoint(t.Context(), Options{DataDir: dir, Model: tc.model, SkipOllama: true}, "", time.Second)
+			if tc.problem != "" {
+				require.ErrorContains(t, err, tc.problem)
+				assert.NotErrorIs(t, err, ErrNotFound)
+			} else if tc.restart {
+				var restart *RestartRequiredError
+				require.ErrorAs(t, err, &restart)
+				assert.Equal(t, record.PID, restart.PID)
+			} else if tc.found {
+				require.NoError(t, err)
+				assert.Equal(t, server.URL+"/v1", result)
+			} else {
+				require.ErrorIs(t, err, ErrNotFound)
+			}
+		})
+	}
 }
