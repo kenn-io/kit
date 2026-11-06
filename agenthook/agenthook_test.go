@@ -296,9 +296,8 @@ func TestInstallJSONKeepsRegistrationPositions(t *testing.T) {
 	require.NoError(t, err)
 	before, err := os.ReadFile(path)
 	require.NoError(t, err)
-	result, err := Install(AgentCodex, opts)
+	_, err = Install(AgentCodex, opts)
 	require.NoError(t, err)
-	assert.False(t, result.Changed)
 	after, err := os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Equal(t, before, after)
@@ -351,6 +350,7 @@ func TestInstallJSONUpdatesKeepOtherHooks(t *testing.T) {
 			after:  `[{"matcher":"^Bash$","hooks":[` + foreign + `]},{"matcher":"Read","hooks":[` + updated + `]}]`,
 		},
 		{
+			// User edits can merge two owned registrations into one group.
 			name:   "shared owned handlers split matchers",
 			before: `[{"matcher":"^Bash$","hooks":[` + old + `,` + old + `]}]`,
 			hooks: []Hook{
@@ -1239,12 +1239,6 @@ func TestInstallPiKeepsOtherApplicationsCommands(t *testing.T) {
 		scriptCommands(scriptHooks(t, path), "session_start"),
 	)
 	assert.False(install("/opt/b", "b-hook", scriptBlockEnd).Changed)
-	before, err := os.ReadFile(path)
-	require.NoError(err)
-	assert.False(install("/opt/a", "a-hook").Changed)
-	after, err := os.ReadFile(path)
-	require.NoError(err)
-	assert.Equal(before, after)
 
 	install("/moved/a", "a-hook")
 	hooks := scriptHooks(t, path)

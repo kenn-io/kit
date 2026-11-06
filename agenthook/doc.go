@@ -32,7 +32,9 @@
 // Nested JSON reinstalls retain the group and handler positions of existing
 // event/matcher registrations. Changed matchers reuse single-handler groups
 // in the same event, and new registrations append after existing groups.
-// Removing registrations can renumber later hooks:
+// Removing registrations can renumber later hooks.
+//
+// For example, install an application's Hermes hooks with a stable marker:
 //
 //	result, err := agenthook.Install(agenthook.AgentHermes, agenthook.InstallOptions{
 //		Executable: "/opt/example",
