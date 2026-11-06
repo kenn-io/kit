@@ -46,9 +46,10 @@
 // or unknown; Reason and NextStep explain any action needed.
 // Executable lookup uses the checking process's environment and PATH.
 // Codex checks its current workspace's effective feature, discovery, enablement,
-// and trust through app-server. Only enabled trusted or managed hooks can be ok.
-// A modified hook takes precedence over an outdated registration. Review consent
-// remains with Codex's /hooks interface.
+// and trust through app-server. Missing registrations return missing before
+// starting Codex. For discovered hooks, states take precedence in this order:
+// disabled, modified, outdated, untrusted, ok. Only enabled trusted or managed
+// hooks can be ok. Review consent remains with Codex's /hooks interface.
 // Claude Code has no native hook probe here: ok covers only its active user
 // settings.json, disableAllHooks, expected registrations, and executable
 // resolution. Raw commands requiring shell interpretation and executable lookup

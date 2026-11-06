@@ -147,6 +147,7 @@ func TestCheckCodexNativeStates(t *testing.T) {
 		{"partial discovery", "partial", "trusted", "", CheckUnknown},
 		{"modified before outdated", "normal", "modified", ",\"async\":true", CheckModified},
 		{"reviewed but outdated", "normal", "trusted", ",\"async\":true", CheckOutdated},
+		{"outdated before untrusted", "normal", "untrusted", ",\"async\":true", CheckOutdated},
 		{"disabled handler", "disabled", "untrusted", "", CheckDisabled},
 		{"disabled feature before empty discovery", "feature-disabled", "", "", CheckDisabled},
 		{"unknown trust", "normal", "future", "", CheckUnknown},
@@ -202,6 +203,9 @@ func TestCheckCodexNativeStates(t *testing.T) {
 			})
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, result.State, result.Reason)
+			if tc.want == CheckOK {
+				assert.Contains(t, result.Reason, "checking process environment")
+			}
 			count := 1
 			if tc.mode == "partial" {
 				count = 2
@@ -252,6 +256,9 @@ func TestCheckClaudeRegistrations(t *testing.T) {
 			result, err := Check(t.Context(), AgentClaude, CheckOptions{InstallOptions: InstallOptions{Command: commands.Native, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}}})
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, result.State, result.Reason)
+			if tc.want == CheckOK {
+				assert.Contains(t, result.Reason, "checking process environment")
+			}
 			assert.Equal(t, tc.count, result.HookCount)
 			after, err := os.ReadFile(path)
 			require.NoError(t, err)
@@ -313,6 +320,12 @@ func TestCheckValidationAndConfigHome(t *testing.T) {
 	assert.Equal(t, CheckUnknown, result.State)
 	assert.Contains(t, result.NextStep, "config home")
 	options.InstallOptions.ConfigPath = ""
+	t.Setenv("PATH", t.TempDir())
+	result, err = Check(t.Context(), AgentCodex, options)
+	require.NoError(t, err)
+	assert.Equal(t, CheckMissing, result.State)
+	_, err = Install(AgentCodex, options.InstallOptions)
+	require.NoError(t, err)
 	options.CodexExecutable = filepath.Join(t.TempDir(), "missing-codex")
 	result, err = Check(t.Context(), AgentCodex, options)
 	require.NoError(t, err)
@@ -424,6 +437,8 @@ func TestCheckCodexConformance(t *testing.T) {
 		}
 	}
 
+	_, err = Install(AgentCodex, opts.InstallOptions)
+	require.NoError(t, err)
 	workspace := filepath.Join(dir, "workspace")
 	require.NoError(t, os.MkdirAll(filepath.Join(workspace, ".codex"), 0o700))
 	t.Chdir(workspace)
