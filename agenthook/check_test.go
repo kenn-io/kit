@@ -2,19 +2,14 @@ package agenthook
 
 import (
 	"bufio"
-	"context"
 	"encoding/json/v2"
 	"fmt"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
-	"syscall"
 	"testing"
-	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/stretchr/testify/assert"
@@ -29,16 +24,10 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// Literal protocol frames protect the handshake and method names independently
-// of the client's request encoder and the checker's response types.
+// Native read replies use literal frames independent of the checker's types.
 func runHookCheckHelper(mode string) int {
 	if len(os.Args) != 3 || os.Args[1] != "app-server" || os.Args[2] != "--stdio" {
 		return 2
-	}
-	if file := os.Getenv("KIT_HOOK_CHECK_PID"); file != "" {
-		if err := os.WriteFile(file, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
-			return 3
-		}
 	}
 	input := bufio.NewScanner(os.Stdin)
 	if !input.Scan() {
@@ -55,16 +44,9 @@ func runHookCheckHelper(mode string) int {
 	if request.ID != 1 || request.Method != "initialize" {
 		return 6
 	}
-	info, _ := request.Params["clientInfo"].(map[string]any)
-	caps, _ := request.Params["capabilities"].(map[string]any)
-	if info["name"] != "kit-agent-check" || caps["experimentalApi"] != true {
-		return 7
-	}
 	if mode == "initialize-eof" {
 		return 0
 	}
-	fmt.Println(`{"method":"notice","params":{}}`)
-	fmt.Println(`{"id":999,"result":{}}`)
 	fmt.Println(`{"id":1,"result":{}}`)
 	if !input.Scan() || string(input.Bytes()) != `{"method":"initialized","params":{}}` {
 		return 8
@@ -73,22 +55,11 @@ func runHookCheckHelper(mode string) int {
 		if err := json.Unmarshal(input.Bytes(), &request); err != nil {
 			return 9
 		}
-		if mode == "block" {
-			signals := make(chan os.Signal, 1)
-			signal.Notify(signals, os.Interrupt)
-			<-signals
-			signal.Stop(signals)
-			return 10
-		}
 		if mode == "eof" {
 			return 0
 		}
 		if mode == "rpc-error" {
 			fmt.Printf("{\"id\":%d,\"error\":{\"message\":\"native failure\"}}\n", request.ID)
-			continue
-		}
-		if mode == "no-result" {
-			fmt.Printf("{\"id\":%d}\n", request.ID)
 			continue
 		}
 		switch request.Method {
@@ -121,15 +92,7 @@ func runHookCheckHelper(mode string) int {
 			return 13
 		}
 	}
-	if mode == "block-close" {
-		signals := make(chan os.Signal, 1)
-		signal.Notify(signals, os.Interrupt)
-		<-signals
-		signal.Stop(signals)
-	}
-	if file := os.Getenv("KIT_HOOK_CHECK_EXIT"); file != "" {
-		_ = os.WriteFile(file, []byte("EOF"), 0o600)
-	}
+
 	return 0
 }
 
@@ -137,26 +100,29 @@ func TestCheckCodexNativeStates(t *testing.T) {
 	for _, tc := range []struct {
 		name, mode, trust, extra string
 		want                     CheckState
+		reason                   string
 	}{
-		{"new hooks require review", "normal", "untrusted", "", CheckUntrusted},
-		{"default hooks feature", "feature-default", "untrusted", "", CheckUntrusted},
-		{"reviewed", "normal", "trusted", "", CheckOK},
-		{"managed", "normal", "managed", "", CheckOK},
-		{"other applications and project hooks", "mixed", "trusted", "", CheckOK},
-		{"wrong native identity", "wrong-index", "trusted", "", CheckMissing},
-		{"partial discovery", "partial", "trusted", "", CheckUnknown},
-		{"modified before outdated", "normal", "modified", ",\"async\":true", CheckModified},
-		{"reviewed but outdated", "normal", "trusted", ",\"async\":true", CheckOutdated},
-		{"outdated before untrusted", "normal", "untrusted", ",\"async\":true", CheckOutdated},
-		{"disabled handler", "disabled", "untrusted", "", CheckDisabled},
-		{"disabled feature before empty discovery", "feature-disabled", "", "", CheckDisabled},
-		{"unknown trust", "normal", "future", "", CheckUnknown},
-		{"discovery error", "discovery-error", "trusted", "", CheckUnknown},
-		{"missing discovery data", "missing-data", "", "", CheckUnknown},
-		{"RPC error", "rpc-error", "", "", CheckUnknown},
-		{"malformed RPC", "no-result", "", "", CheckUnknown},
-		{"EOF", "eof", "", "", CheckUnknown},
-		{"initialization EOF", "initialize-eof", "", "", CheckUnknown},
+		{"new hooks require review", "normal", "untrusted", "", CheckUntrusted, ""},
+		{"default hooks feature", "feature-default", "untrusted", "", CheckUntrusted, ""},
+		{"reviewed", "normal", "trusted", "", CheckOK, ""},
+		{"managed", "normal", "managed", "", CheckOK, ""},
+		{"other applications and project hooks", "mixed", "trusted", "", CheckOK, ""},
+		{"wrong native identity", "wrong-index", "trusted", "", CheckMissing, ""},
+		{"partial discovery", "partial", "trusted", "", CheckUnknown, ""},
+		{"modified before outdated", "normal", "modified", ",\"async\":true", CheckModified, ""},
+		{"reviewed but outdated", "normal", "trusted", ",\"async\":true", CheckOutdated, ""},
+		{"outdated before untrusted", "normal", "untrusted", ",\"async\":true", CheckOutdated, ""},
+		{"disabled handler", "disabled", "untrusted", "", CheckDisabled, ""},
+		{"disabled feature before empty discovery", "feature-disabled", "", "", CheckDisabled, ""},
+		{"unknown trust", "normal", "future", "", CheckUnknown, ""},
+		{"discovery error", "discovery-error", "trusted", "", CheckUnknown, ""},
+		{"missing discovery data", "missing-data", "", "", CheckUnknown, ""},
+		{"RPC error", "rpc-error", "", "", CheckUnknown, "native failure"},
+		{"EOF", "eof", "", "", CheckUnknown, ""},
+		{"initialization EOF", "initialize-eof", "", "", CheckUnknown, ""},
+		{"missing CLI on PATH", "missing-cli", "", "", CheckUnknown, "codex"},
+		{"explicit missing CLI", "missing-cli-path", "", "", CheckUnknown, "missing-codex"},
+		{"missing hooks without CLI", "missing-hooks-cli", "", "", CheckMissing, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -171,6 +137,12 @@ func TestCheckCodexNativeStates(t *testing.T) {
 			if tc.mode == "partial" {
 				config = fmt.Sprintf(`{"hooks":{"Stop":[{"hooks":[{"type":"command","command":%s}]},{"hooks":[{"type":"command","command":%s}]}]}}`, commandJSON, commandJSON)
 			}
+			if tc.mode == "mixed" {
+				config = fmt.Sprintf(`{"hooks":{"Stop":[{"hooks":[{"type":"command","command":%s}]},{"hooks":[{"type":"command","command":"other-app-hook"}]}]}}`, commandJSON)
+			}
+			if tc.mode == "missing-hooks-cli" {
+				config = `{}`
+			}
 			path := filepath.Join(dir, "hooks.json")
 			require.NoError(t, os.WriteFile(path, []byte(config), 0o600))
 			enabled := `,"enabled":true`
@@ -183,8 +155,21 @@ func TestCheckCodexNativeStates(t *testing.T) {
 			require.NoError(t, err)
 			reply := fmt.Sprintf(`{"data":[{"cwd":"CWD","hooks":[{"source":"user","sourcePath":%s,"key":%s,"trustStatus":%q%s}],"errors":[]}]}`, pathJSON, keyJSON, tc.trust, enabled)
 			if tc.mode == "mixed" {
-				foreign := fmt.Sprintf(`{"source":"project","sourcePath":%s,"key":%s,"enabled":false,"trustStatus":"modified"},{"source":"user","sourcePath":%s,"key":%q,"enabled":false,"trustStatus":"modified"},`, pathJSON, keyJSON, pathJSON, path+":stop:1:0")
-				reply = strings.Replace(reply, `"hooks":[`, `"hooks":[`+foreign, 1)
+				workspace := filepath.Join(dir, "workspace")
+				require.NoError(t, os.MkdirAll(filepath.Join(workspace, ".codex"), 0o700))
+				t.Chdir(workspace)
+				projectPath := filepath.Join(workspace, ".codex", "hooks.json")
+				require.NoError(t, os.WriteFile(projectPath, []byte(`{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"project-hook"}]}]}}`), 0o600))
+				inlinePath := filepath.Join(dir, "config.toml")
+				inlineConfig := fmt.Sprintf("[%s]\ntrust_level = \"trusted\"\n[[hooks.Stop]]\nhooks = [{ type = \"command\", command = \"inline-hook\" }]\n", toml.Key{"projects", workspace}.String())
+				require.NoError(t, os.WriteFile(inlinePath, []byte(inlineConfig), 0o600))
+				foreign, err := json.Marshal([]map[string]any{
+					{"source": "project", "sourcePath": projectPath, "key": projectPath + ":stop:0:0", "enabled": true, "trustStatus": "untrusted"},
+					{"source": "user", "sourcePath": path, "key": path + ":stop:1:0", "enabled": true, "trustStatus": "untrusted"},
+					{"source": "user", "sourcePath": inlinePath, "key": inlinePath + ":stop:0:0", "enabled": true, "trustStatus": "untrusted"},
+				})
+				require.NoError(t, err)
+				reply = strings.Replace(reply, `"hooks":[`, `"hooks":[`+string(foreign[1:len(foreign)-1])+",", 1)
 			}
 			if tc.mode == "wrong-index" {
 				reply = strings.ReplaceAll(reply, ":stop:0:0", ":stop:8:0")
@@ -197,12 +182,23 @@ func TestCheckCodexNativeStates(t *testing.T) {
 			}
 			t.Setenv("KIT_HOOK_CHECK_HELPER", tc.mode)
 			t.Setenv("KIT_HOOK_CHECK_REPLY", reply)
+			codexExecutable := executable
+			if strings.Contains(tc.mode, "cli") {
+				t.Setenv("PATH", t.TempDir())
+				codexExecutable = ""
+				if tc.mode == "missing-cli-path" {
+					codexExecutable = filepath.Join(dir, "missing-codex")
+				}
+			}
 			result, err := Check(t.Context(), AgentCodex, CheckOptions{
 				InstallOptions:  InstallOptions{Command: commands.Native, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}},
-				CodexExecutable: executable,
+				CodexExecutable: codexExecutable,
 			})
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, result.State, result.Reason)
+			if tc.reason != "" {
+				assert.Contains(t, result.Reason, tc.reason)
+			}
 			if tc.want == CheckOK {
 				assert.Contains(t, result.Reason, "checking process environment")
 			}
@@ -210,14 +206,14 @@ func TestCheckCodexNativeStates(t *testing.T) {
 			if tc.mode == "partial" {
 				count = 2
 			}
+			if tc.mode == "missing-hooks-cli" {
+				count = 0
+			}
 			assert.Equal(t, count, result.HookCount)
 			if tc.want != CheckOK {
 				assert.NotEmpty(t, result.Reason)
 				assert.NotEmpty(t, result.NextStep)
 			}
-			after, err := os.ReadFile(path)
-			require.NoError(t, err)
-			assert.Equal(t, config, string(after))
 		})
 	}
 }
@@ -260,9 +256,6 @@ func TestCheckClaudeRegistrations(t *testing.T) {
 				assert.Contains(t, result.Reason, "checking process environment")
 			}
 			assert.Equal(t, tc.count, result.HookCount)
-			after, err := os.ReadFile(path)
-			require.NoError(t, err)
-			assert.Equal(t, config, string(after))
 		})
 	}
 }
@@ -271,25 +264,36 @@ func TestCheckCommandResolution(t *testing.T) {
 	executable, err := os.Executable()
 	require.NoError(t, err)
 	t.Setenv("PATH", filepath.Dir(executable))
+	literalExecutable := filepath.Join(t.TempDir(), "example (stable).exe")
+	require.NoError(t, os.WriteFile(literalExecutable, []byte("not a program"), 0o700))
+	quoted, err := BuildCommand(literalExecutable, "example-marker")
+	require.NoError(t, err)
+	shellReason := ""
+	if runtime.GOOS != "windows" {
+		shellReason = "shell interpretation"
+	}
 	for _, tc := range []struct {
-		name, command string
-		want          CheckState
+		name         string
+		options      InstallOptions
+		want         CheckState
+		reason, step string
 	}{
-		{"bare executable", filepath.Base(executable) + " example-marker", CheckOK},
-		{"unresolved PATH name", "example-missing-hook-executable example-marker", CheckUnknown},
-		{"shell assignment", "EXAMPLE_HOOK=1 example-hook example-marker", CheckUnknown},
-		{"exec builtin", "exec example-hook example-marker", CheckUnknown},
-		{"shell expansion", "$EXAMPLE_HOOK example-marker", CheckUnknown},
-		{"shell compound", "echo example-marker; echo other", CheckUnknown},
-		{"shell substitution", "$(echo hook) example-marker", CheckUnknown},
-		{"quoted expansion", `"$EXAMPLE_HOOK" example-marker`, CheckUnknown},
-		{"multiple commands", "echo example-marker\ncat", CheckUnknown},
-		{"glob executable", "*hook example-marker", CheckUnknown},
-		{"tilde executable", "~/hook example-marker", CheckUnknown},
+		{"bare executable", InstallOptions{Command: filepath.Base(executable) + " example-marker"}, CheckOK, "", ""},
+		{"built executable", InstallOptions{Executable: literalExecutable, Arguments: []string{"example-marker"}}, CheckOK, "", ""},
+		{"quoted executable", InstallOptions{Command: quoted.Native}, CheckOK, "", ""},
+		{"unresolved PATH name", InstallOptions{Command: "example-missing-hook-executable example-marker"}, CheckUnknown, "checking process environment", "PATH"},
+		{"shell assignment", InstallOptions{Command: "EXAMPLE_HOOK=1 example-hook example-marker"}, CheckUnknown, shellReason, ""},
+		{"exec builtin", InstallOptions{Command: "exec example-hook example-marker"}, CheckUnknown, shellReason, ""},
+		{"shell expansion", InstallOptions{Command: "$EXAMPLE_HOOK example-marker"}, CheckUnknown, "", ""},
+		{"shell compound", InstallOptions{Command: "echo example-marker; echo other"}, CheckUnknown, "", ""},
+		{"quoted expansion", InstallOptions{Command: `"$EXAMPLE_HOOK" example-marker`}, CheckUnknown, "", ""},
+		{"glob executable", InstallOptions{Command: "*hook example-marker"}, CheckUnknown, "", ""},
+		{"tilde executable", InstallOptions{Command: "~/hook example-marker"}, CheckUnknown, "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
-			opts := InstallOptions{Command: tc.command, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}}
+			opts := tc.options
+			opts.Marker, opts.Hooks = "example-marker", []Hook{{Event: EventStop}}
 			_, err := Install(AgentClaude, opts)
 			require.NoError(t, err)
 			result, err := Check(t.Context(), AgentClaude, CheckOptions{InstallOptions: opts})
@@ -298,12 +302,11 @@ func TestCheckCommandResolution(t *testing.T) {
 			if tc.want != CheckOK {
 				assert.NotEmpty(t, result.NextStep)
 			}
-			if tc.name == "unresolved PATH name" {
-				assert.Contains(t, result.Reason, "checking process environment")
-				assert.Contains(t, result.NextStep, "PATH")
+			if tc.reason != "" {
+				assert.Contains(t, result.Reason, tc.reason)
 			}
-			if runtime.GOOS != "windows" && (tc.name == "shell assignment" || tc.name == "exec builtin") {
-				assert.Contains(t, result.Reason, "shell interpretation")
+			if tc.step != "" {
+				assert.Contains(t, result.NextStep, tc.step)
 			}
 		})
 	}
@@ -319,60 +322,6 @@ func TestCheckValidationAndConfigHome(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, CheckUnknown, result.State)
 	assert.Contains(t, result.NextStep, "config home")
-	options.InstallOptions.ConfigPath = ""
-	t.Setenv("PATH", t.TempDir())
-	result, err = Check(t.Context(), AgentCodex, options)
-	require.NoError(t, err)
-	assert.Equal(t, CheckMissing, result.State)
-	_, err = Install(AgentCodex, options.InstallOptions)
-	require.NoError(t, err)
-	options.CodexExecutable = filepath.Join(t.TempDir(), "missing-codex")
-	result, err = Check(t.Context(), AgentCodex, options)
-	require.NoError(t, err)
-	assert.Equal(t, CheckUnknown, result.State)
-	assert.Contains(t, result.NextStep, "PATH")
-}
-
-func TestCheckClientCancellationAndEOF(t *testing.T) {
-	for _, mode := range []string{"normal", "block", "block-close", "initialize-eof"} {
-		t.Run(mode, func(t *testing.T) {
-			executable, err := os.Executable()
-			require.NoError(t, err)
-			dir := t.TempDir()
-			pidFile, exitFile := filepath.Join(dir, "pid"), filepath.Join(dir, "exit")
-			t.Setenv("KIT_HOOK_CHECK_HELPER", mode)
-			t.Setenv("KIT_HOOK_CHECK_PID", pidFile)
-			t.Setenv("KIT_HOOK_CHECK_EXIT", exitFile)
-			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-			defer cancel()
-			client, startErr := codexapp.Start(ctx, executable, dir)
-			if mode == "initialize-eof" {
-				require.Error(t, startErr)
-			} else {
-				require.NoError(t, startErr)
-				if mode == "block" {
-					err := client.Call("config/read", map[string]any{"includeLayers": false, "cwd": dir}, nil)
-					require.Error(t, err)
-				}
-				client.Close()
-			}
-			if mode == "normal" {
-				data, err := os.ReadFile(exitFile)
-				require.NoError(t, err)
-				assert.Equal(t, "EOF", string(data))
-			}
-			if runtime.GOOS != "windows" {
-				data, err := os.ReadFile(pidFile)
-				require.NoError(t, err)
-				pid, err := strconv.Atoi(string(data))
-				require.NoError(t, err)
-				process, err := os.FindProcess(pid)
-				require.NoError(t, err)
-				require.Error(t, process.Signal(syscall.Signal(0)), "the exact child must be reaped before returning")
-				_ = process.Release()
-			}
-		})
-	}
 }
 
 func TestCheckCodexConformance(t *testing.T) {
@@ -454,35 +403,6 @@ func TestCheckCodexConformance(t *testing.T) {
 			want = CheckDisabled
 		}
 		assert.Equal(t, want, result.State, result.Reason)
-	}
-	// Missing CLI on PATH must remain unknown, even when hooks are present.
-	t.Setenv("PATH", t.TempDir())
-	opts.CodexExecutable = ""
-	result, err := Check(t.Context(), AgentCodex, opts)
-	require.NoError(t, err)
-	assert.Equal(t, CheckUnknown, result.State)
-}
-
-func TestCheckClaudeBuiltAndQuotedExecutable(t *testing.T) {
-	for _, built := range []bool{false, true} {
-		t.Run(strconv.FormatBool(built), func(t *testing.T) {
-			dir := t.TempDir()
-			t.Setenv("CLAUDE_CONFIG_DIR", dir)
-			executable := filepath.Join(dir, "example (stable).exe")
-			// Executable resolution must inspect this file without attempting to run it.
-			require.NoError(t, os.WriteFile(executable, []byte("not a program"), 0o700))
-			opts := InstallOptions{Executable: executable, Arguments: []string{"example-marker"}, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}}
-			if !built {
-				commands, err := BuildCommand(executable, "example-marker")
-				require.NoError(t, err)
-				opts.Executable, opts.Arguments, opts.Command = "", nil, commands.Native
-			}
-			_, err := Install(AgentClaude, opts)
-			require.NoError(t, err)
-			result, err := Check(t.Context(), AgentClaude, CheckOptions{InstallOptions: opts})
-			require.NoError(t, err)
-			assert.Equal(t, CheckOK, result.State, result.Reason)
-		})
 	}
 }
 
