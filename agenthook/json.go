@@ -58,6 +58,9 @@ func applyNestedJSONHooks(
 	if err != nil {
 		return err
 	}
+	if hooksObject == nil {
+		return nil
+	}
 	desired := map[string][]map[string]any{}
 	if uninstall {
 		return reconcileOwnedJSONHooks(hooksObject, desired, marker, path)
@@ -173,7 +176,7 @@ func reconcileOwnedJSONHooks(hooks map[string]any, desired map[string][]map[stri
 			entry    map[string]any
 			handlers []any
 			index    int
-			desired  int
+			desired  map[string]any
 		}
 		var slots []slot
 		removed := new(struct{})
@@ -191,12 +194,12 @@ func reconcileOwnedJSONHooks(hooks map[string]any, desired map[string][]map[stri
 				if !ownsJSONHandler(handler, marker) {
 					continue
 				}
-				owned := slot{entry: entry, handlers: handlers, index: i, desired: -1}
+				owned := slot{entry: entry, handlers: handlers, index: i}
 				for j, hook := range desired[event] {
 					matcher, _ := hook["matcher"].(string)
 					existingMatcher, _ := entry["matcher"].(string)
 					if !used[j] && matcher == existingMatcher {
-						owned.desired = j
+						owned.desired = hook
 						used[j] = true
 						break
 					}
@@ -205,12 +208,12 @@ func reconcileOwnedJSONHooks(hooks map[string]any, desired map[string][]map[stri
 			}
 		}
 		for _, owned := range slots {
-			if owned.desired < 0 && len(owned.handlers) == 1 {
-				for j := range used {
+			if owned.desired == nil && len(owned.handlers) == 1 {
+				for j, hook := range desired[event] {
 					if !used[j] {
-						owned.desired = j
+						owned.desired = hook
 						used[j] = true
-						if matcher, ok := desired[event][j]["matcher"]; ok {
+						if matcher, ok := hook["matcher"]; ok {
 							owned.entry["matcher"] = matcher
 						} else {
 							delete(owned.entry, "matcher")
@@ -220,9 +223,8 @@ func reconcileOwnedJSONHooks(hooks map[string]any, desired map[string][]map[stri
 				}
 			}
 			owned.handlers[owned.index] = removed
-			if owned.desired >= 0 {
-				hook := desired[event][owned.desired]
-				owned.handlers[owned.index] = hook["hooks"].([]any)[0]
+			if owned.desired != nil {
+				owned.handlers[owned.index] = owned.desired["hooks"].([]any)[0]
 			}
 		}
 		keptEntries := make([]any, 0, len(entries))
