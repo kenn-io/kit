@@ -303,178 +303,89 @@ func TestInstallJSONKeepsRegistrationPositions(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, before, after)
 
+	var root map[string]any
+	require.NoError(t, json.Unmarshal(after, &root))
+	groups := root["hooks"].(map[string]any)["PreToolUse"].([]any)
+	require.Len(t, groups, 2)
+	assert.Equal(t, "other", groups[1].(map[string]any)["matcher"])
+}
+
+func TestInstallJSONUpdatesKeepOtherHooks(t *testing.T) {
+	const old = `{"type":"command","command":"/old/a","args":["--source","a-hook"]}`
+	const updated = `{"type":"command","command":"/moved/a --source a-hook","timeout":2}`
+	const foreign = `{"type":"command","command":"/opt/b --source b-hook"}`
 	tests := []struct {
-		name     string
-		command  string
-		hooks    []Hook
-		matchers []string
+		name   string
+		before string
+		hooks  []Hook
+		after  string
 	}{
 		{
-			name:     "command and timeout update",
-			command:  "/moved/a --source a-hook",
-			hooks:    []Hook{{Event: EventPreToolUse, Matcher: "first", Timeout: 2 * time.Second}},
-			matchers: []string{"first", "other"},
+			name:   "command and timeout update",
+			before: `[{"matcher":"first","hooks":[` + old + `]},{"matcher":"other","hooks":[` + foreign + `]}]`,
+			hooks:  []Hook{{Event: EventPreToolUse, Matcher: "first", Timeout: 2 * time.Second}},
+			after:  `[{"matcher":"first","hooks":[` + updated + `]},{"matcher":"other","hooks":[` + foreign + `]}]`,
 		},
 		{
-			name:    "new matcher appends",
-			command: "/moved/a --source a-hook",
+			name:   "new matcher appends after other app",
+			before: `[{"matcher":"first","hooks":[` + old + `]},{"matcher":"other","hooks":[` + foreign + `]}]`,
 			hooks: []Hook{
 				{Event: EventPreToolUse, Matcher: "first", Timeout: 2 * time.Second},
 				{Event: EventPreToolUse, Matcher: "second", Timeout: 2 * time.Second},
 			},
-			matchers: []string{"first", "other", "second"},
+			after: `[{"matcher":"first","hooks":[` + updated + `]},{"matcher":"other","hooks":[` + foreign + `]},{"matcher":"second","hooks":[` + updated + `]}]`,
 		},
 		{
-			name:    "reordered matchers retain slots",
-			command: "/moved/a --source a-hook",
-			hooks: []Hook{
-				{Event: EventPreToolUse, Matcher: "second", Timeout: 2 * time.Second},
-				{Event: EventPreToolUse, Matcher: "first", Timeout: 2 * time.Second},
-			},
-			matchers: []string{"first", "other", "second"},
-		},
-		{
-			name:    "changed matcher reuses slot after exact matches",
-			command: "/moved/a --source a-hook",
+			name:   "reordered exact match reserved before matcher reuse",
+			before: `[{"matcher":"first","hooks":[` + old + `]},{"matcher":"other","hooks":[` + foreign + `]},{"matcher":"second","hooks":[` + old + `]}]`,
 			hooks: []Hook{
 				{Event: EventPreToolUse, Matcher: "third", Timeout: 2 * time.Second},
 				{Event: EventPreToolUse, Matcher: "first", Timeout: 2 * time.Second},
 			},
-			matchers: []string{"first", "other", "third"},
+			after: `[{"matcher":"first","hooks":[` + updated + `]},{"matcher":"other","hooks":[` + foreign + `]},{"matcher":"third","hooks":[` + updated + `]}]`,
 		},
-		{
-			name:     "removed matcher removes its slot",
-			command:  "/moved/a --source a-hook",
-			hooks:    []Hook{{Event: EventPreToolUse, Matcher: "first", Timeout: 2 * time.Second}},
-			matchers: []string{"first", "other"},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			opts.Command, opts.Hooks = tt.command, tt.hooks
-			result, err := Install(AgentCodex, opts)
-			require.NoError(t, err)
-			var root map[string]any
-			require.NoError(t, json.Unmarshal(result.Data, &root))
-			groups := root["hooks"].(map[string]any)["PreToolUse"].([]any)
-			require.Len(t, groups, len(tt.matchers))
-			for i, matcher := range tt.matchers {
-				group := groups[i].(map[string]any)
-				assert.Equal(t, matcher, group["matcher"])
-				handlers := group["hooks"].([]any)
-				require.Len(t, handlers, 1)
-				handler := handlers[0].(map[string]any)
-				if i == 1 {
-					assert.Equal(t, "/opt/b --source b-hook", handler["command"])
-				} else {
-					assert.Equal(t, tt.command, handler["command"])
-					assert.InDelta(t, 2, handler["timeout"], 0)
-				}
-			}
-		})
-	}
-}
-
-func TestInstallJSONPreservesOtherHooksOnMatcherChanges(t *testing.T) {
-	const owned = `{"type":"command","command":"/opt/a --source a-hook"}`
-	const foreign = `{"type":"command","command":"/opt/b --source b-hook"}`
-	tests := []struct {
-		name      string
-		before    string
-		hooks     []Hook
-		after     string
-		wantError bool
-	}{
 		{
 			name:   "shared matcher preserves foreign handler",
-			before: `{"hooks":{"PreToolUse":[{"matcher":"^Bash$","hooks":[` + foreign + `,` + owned + `]}]}}`,
-			hooks:  []Hook{{Event: EventPreToolUse, Matcher: "Read"}},
-			after:  `{"hooks":{"PreToolUse":[{"matcher":"^Bash$","hooks":[` + foreign + `]},{"matcher":"Read","hooks":[` + owned + `]}]}}`,
+			before: `[{"matcher":"^Bash$","hooks":[` + old + `,` + foreign + `]}]`,
+			hooks:  []Hook{{Event: EventPreToolUse, Matcher: "Read", Timeout: 2 * time.Second}},
+			after:  `[{"matcher":"^Bash$","hooks":[` + foreign + `]},{"matcher":"Read","hooks":[` + updated + `]}]`,
 		},
 		{
 			name:   "shared owned handlers split matchers",
-			before: `{"hooks":{"PreToolUse":[{"matcher":"^Bash$","hooks":[` + owned + `,` + owned + `]}]}}`,
-			hooks:  []Hook{{Event: EventPreToolUse, Matcher: ToolBash}, {Event: EventPreToolUse, Matcher: "Read"}},
-			after:  `{"hooks":{"PreToolUse":[{"matcher":"^Bash$","hooks":[` + owned + `]},{"matcher":"Read","hooks":[` + owned + `]}]}}`,
+			before: `[{"matcher":"^Bash$","hooks":[` + old + `,` + old + `]}]`,
+			hooks: []Hook{
+				{Event: EventPreToolUse, Matcher: ToolBash, Timeout: 2 * time.Second},
+				{Event: EventPreToolUse, Matcher: "Read", Timeout: 2 * time.Second},
+			},
+			after: `[{"matcher":"^Bash$","hooks":[` + updated + `]},{"matcher":"Read","hooks":[` + updated + `]}]`,
 		},
 		{
-			name:      "shared matcher rejects foreign index shift",
-			before:    `{"hooks":{"PreToolUse":[{"matcher":"^Bash$","hooks":[` + owned + `,` + foreign + `]}]}}`,
-			hooks:     []Hook{{Event: EventPreToolUse, Matcher: "Read"}},
-			wantError: true,
-		},
-		{
-			name:      "removed group rejects foreign index shift",
-			before:    `{"hooks":{"PreToolUse":[{"matcher":"^Bash$","hooks":[` + owned + `]},{"matcher":"Read","hooks":[` + owned + `]},{"matcher":"Write","hooks":[` + foreign + `]}]}}`,
-			hooks:     []Hook{{Event: EventPreToolUse, Matcher: ToolBash}},
-			wantError: true,
+			name:   "shared handler retains position and group fields",
+			before: `[{"custom":"keep","matcher":"first","hooks":[` + old + `,` + foreign + `]}]`,
+			hooks:  []Hook{{Event: EventPreToolUse, Matcher: "first", Timeout: 2 * time.Second}},
+			after:  `[{"custom":"keep","matcher":"first","hooks":[` + updated + `,` + foreign + `]}]`,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "hooks.json")
-			require.NoError(t, os.WriteFile(path, []byte(tt.before), 0o600))
-			_, err := Install(AgentCodex, InstallOptions{
+			require.NoError(t, os.WriteFile(path, []byte(`{"hooks":{"PreToolUse":`+tt.before+`}}`), 0o600))
+			opts := InstallOptions{
 				ConfigPath: path,
-				Command:    "/opt/a --source a-hook",
+				Command:    "/moved/a --source a-hook",
 				Marker:     "--source a-hook",
 				Hooks:      tt.hooks,
-			})
-			if tt.wantError {
-				require.ErrorContains(t, err, "would shift existing hook positions")
-				data, readErr := os.ReadFile(path)
-				require.NoError(t, readErr)
-				assert.Equal(t, tt.before, string(data))
-				return
 			}
+			_, err := Install(AgentCodex, opts)
 			require.NoError(t, err)
 			data, err := os.ReadFile(path)
 			require.NoError(t, err)
-			assert.JSONEq(t, tt.after, string(data))
+			assert.JSONEq(t, `{"hooks":{"PreToolUse":`+tt.after+`}}`, string(data))
+			result, err := Install(AgentCodex, opts)
+			require.NoError(t, err)
+			assert.False(t, result.Changed)
 		})
 	}
-}
-
-func TestInstallJSONKeepsSharedGroupHandlerPositions(t *testing.T) {
-	require := require.New(t)
-	path := filepath.Join(t.TempDir(), "hooks.json")
-	require.NoError(os.WriteFile(path, []byte(`{"hooks":{"Stop":[{
-  "custom":"keep-group-field",
-  "hooks":[
-    {"type":"command","command":"/old/a","args":["--source","a-hook"]},
-    {"type":"command","command":"/opt/b --source b-hook"}
-  ]
-}]}}`), 0o600))
-	opts := InstallOptions{
-		ConfigPath: path,
-		Command:    "/moved/a --source a-hook",
-		Marker:     "--source a-hook",
-		Hooks:      []Hook{{Event: EventStop, Timeout: 3 * time.Second}},
-	}
-	result, err := Install(AgentCodex, opts)
-	require.NoError(err)
-	var root map[string]any
-	require.NoError(json.Unmarshal(result.Data, &root))
-	groups := root["hooks"].(map[string]any)["Stop"].([]any)
-	require.Len(groups, 1)
-	group := groups[0].(map[string]any)
-	assert.Equal(t, "keep-group-field", group["custom"])
-	handlers := group["hooks"].([]any)
-	require.Len(handlers, 2)
-	assert.Equal(t, map[string]any{
-		"type": "command", "command": "/moved/a --source a-hook", "timeout": float64(3),
-	}, handlers[0])
-	assert.Equal(t, map[string]any{
-		"type": "command", "command": "/opt/b --source b-hook",
-	}, handlers[1])
-	before, err := os.ReadFile(path)
-	require.NoError(err)
-	result, err = Install(AgentCodex, opts)
-	require.NoError(err)
-	assert.False(t, result.Changed)
-	after, err := os.ReadFile(path)
-	require.NoError(err)
-	assert.Equal(t, before, after)
 }
 
 func TestInstallReturnsResultWhenConfigWasPublishedButNotDurable(t *testing.T) {

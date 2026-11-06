@@ -60,7 +60,7 @@ func applyNestedJSONHooks(
 	}
 	desired := map[string][]map[string]any{}
 	if uninstall {
-		return reconcileOwnedJSONHooks(hooksObject, desired, marker, path, false)
+		return reconcileOwnedJSONHooks(hooksObject, desired, marker, path)
 	}
 	for _, hook := range hooks {
 		entry := map[string]any{}
@@ -83,7 +83,7 @@ func applyNestedJSONHooks(
 		entry["hooks"] = []any{handler}
 		desired[hook.name] = append(desired[hook.name], entry)
 	}
-	return reconcileOwnedJSONHooks(hooksObject, desired, marker, path, true)
+	return reconcileOwnedJSONHooks(hooksObject, desired, marker, path)
 }
 
 func readJSONConfig(path string) (map[string]any, bool, error) {
@@ -163,7 +163,7 @@ func jsonEventEntries(hooks map[string]any, event, path string) ([]any, error) {
 
 // reconcileOwnedJSONHooks matches event/matcher registrations first, then uses
 // owned single-handler groups for changed matchers before appending registrations.
-func reconcileOwnedJSONHooks(hooks map[string]any, desired map[string][]map[string]any, marker, path string, preservePositions bool) error {
+func reconcileOwnedJSONHooks(hooks map[string]any, desired map[string][]map[string]any, marker, path string) error {
 	for event, raw := range hooks {
 		entries, ok := raw.([]any)
 		if !ok {
@@ -210,6 +210,11 @@ func reconcileOwnedJSONHooks(hooks map[string]any, desired map[string][]map[stri
 					if !used[j] {
 						owned.desired = j
 						used[j] = true
+						if matcher, ok := desired[event][j]["matcher"]; ok {
+							owned.entry["matcher"] = matcher
+						} else {
+							delete(owned.entry, "matcher")
+						}
 						break
 					}
 				}
@@ -217,26 +222,17 @@ func reconcileOwnedJSONHooks(hooks map[string]any, desired map[string][]map[stri
 			owned.handlers[owned.index] = removed
 			if owned.desired >= 0 {
 				hook := desired[event][owned.desired]
-				if matcher, ok := hook["matcher"]; ok {
-					owned.entry["matcher"] = matcher
-				} else {
-					delete(owned.entry, "matcher")
-				}
 				owned.handlers[owned.index] = hook["hooks"].([]any)[0]
 			}
 		}
 		keptEntries := make([]any, 0, len(entries))
-		shiftError := fmt.Errorf("agent hook config %s event %q: reinstall would shift existing hook positions", path, event)
-		for entryIndex, rawEntry := range entries {
+		for _, rawEntry := range entries {
 			entry, ok := rawEntry.(map[string]any)
 			if ok && entry["hooks"] != nil {
 				handlers := entry["hooks"].([]any)
 				kept := make([]any, 0, len(handlers))
-				for handlerIndex, handler := range handlers {
+				for _, handler := range handlers {
 					if handler != removed {
-						if preservePositions && len(kept) != handlerIndex {
-							return shiftError
-						}
 						kept = append(kept, handler)
 					}
 				}
@@ -244,9 +240,6 @@ func reconcileOwnedJSONHooks(hooks map[string]any, desired map[string][]map[stri
 					continue
 				}
 				entry["hooks"] = kept
-			}
-			if preservePositions && len(keptEntries) != entryIndex {
-				return shiftError
 			}
 			keptEntries = append(keptEntries, rawEntry)
 		}
