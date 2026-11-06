@@ -92,8 +92,8 @@ func linuxNestedProcessGone(procRoot string, pid int, ticks string) bool {
 		if !nested || innermost != want {
 			continue
 		}
-		state, started, err := readLinuxProcessStat(procRoot, hostPID)
-		if linuxProcessExited(err) || (err == nil && (state == "Z" || state == "X")) {
+		exited, started, err := readLinuxProcessStat(procRoot, hostPID)
+		if linuxProcessExited(err) || (err == nil && exited) {
 			continue
 		}
 		if err != nil || started == ticks {
@@ -238,31 +238,33 @@ func processHasExited(pid int) bool {
 }
 
 func linuxProcessHasExited(procRoot string, pid int) bool {
-	state, _, err := readLinuxProcessStat(procRoot, pid)
-	return err == nil && (state == "Z" || state == "X")
+	exited, _, err := readLinuxProcessStat(procRoot, pid)
+	return err == nil && exited
 }
 
-func readLinuxProcessStat(procRoot string, pid int) (state, startTicks string, err error) {
+func readLinuxProcessStat(procRoot string, pid int) (exited bool, startTicks string, err error) {
 	stat, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(pid), "stat"))
 	if err != nil {
-		return "", "", err
+		return false, "", err
 	}
 	return parseLinuxProcessStat(stat)
 }
 
-func parseLinuxProcessStat(stat []byte) (state, startTicks string, err error) {
+func parseLinuxProcessStat(stat []byte) (exited bool, startTicks string, err error) {
 	closing := bytes.LastIndexByte(stat, ')')
 	if closing < 0 || closing+1 >= len(stat) {
-		return "", "", errors.New("linux process stat has no command terminator")
+		return false, "", errors.New("linux process stat has no command terminator")
 	}
 	fields := strings.Fields(string(stat[closing+1:]))
 	const startTimeIndex = 19 // Field 22 after PID and command.
 	if len(fields) <= startTimeIndex {
-		return "", "", errors.New("linux process stat has no start time")
+		return false, "", errors.New("linux process stat has no start time")
 	}
 	value, ok := parseCanonicalLinuxIdentityUint(fields[startTimeIndex])
 	if !ok {
-		return "", "", errors.New("linux process stat has an invalid start time")
+		return false, "", errors.New("linux process stat has an invalid start time")
 	}
-	return fields[0], strconv.FormatUint(value, 10), nil
+	// A terminal main thread can still have working threads in its process.
+	exited = (fields[0] == "Z" || fields[0] == "X") && fields[17] == "1"
+	return exited, strconv.FormatUint(value, 10), nil
 }

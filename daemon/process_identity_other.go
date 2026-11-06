@@ -8,10 +8,6 @@ import (
 	"github.com/shirou/gopsutil/v4/process"
 )
 
-func processHasExited(_ int) bool {
-	return false
-}
-
 // ReadProcessIdentity returns pid's OS-reported creation time as an opaque
 // identity. ok is false when pid is gone or the platform cannot inspect it.
 func ReadProcessIdentity(pid int) (ProcessIdentity, bool) {

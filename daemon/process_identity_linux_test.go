@@ -58,23 +58,29 @@ func TestParseLinuxProcessStatRejectsMalformedStat(t *testing.T) {
 
 func TestLinuxProcessHasExited(t *testing.T) {
 	tests := []struct {
-		name  string
-		state string
-		want  bool
+		name    string
+		state   string
+		threads string
+		want    bool
 	}{
-		{"zombie", "Z", true},
-		{"dead", "X", true},
-		{"running", "R", false},
-		{"sleeping", "S", false},
-		{"stopped", "T", false},
-		{"malformed", "", false},
-		{"unavailable", "", false},
+		{"zombie", "Z", "1", true},
+		{"dead", "X", "1", true},
+		{"zombie leader with worker", "Z", "2", false},
+		{"dead leader with worker", "X", "2", false},
+		{"invalid thread count", "Z", "bad", false},
+		{"zero threads", "X", "0", false},
+		{"running", "R", "1", false},
+		{"sleeping", "S", "1", false},
+		{"stopped", "T", "1", false},
+		{"malformed", "", "", false},
+		{"unavailable", "", "", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			proc := linuxProcFixture(t, fixtureBootID, "4026531836", "4026532448")
 			path := filepath.Join(proc, "42/stat")
 			stat := strings.Replace(linuxStatFixture(42, "worker ) with spaces", "202"), ") S ", ") "+tt.state+" ", 1)
+			stat = strings.Replace(stat, "16 1 18", "16 "+tt.threads+" 18", 1)
 			switch tt.name {
 			case "unavailable":
 				require.NoError(t, os.Remove(path))
@@ -82,6 +88,14 @@ func TestLinuxProcessHasExited(t *testing.T) {
 				require.NoError(t, os.WriteFile(path, []byte("42 (worker) Z"), 0o644))
 			default:
 				require.NoError(t, os.WriteFile(path, []byte(stat), 0o644))
+				identity, ok := readLinuxProcessIdentity(proc, 42)
+				require.True(t, ok)
+				assert.Equal(t, ProcessIdentity("linux-v1:"+fixtureBootID+":4026532448:202"), identity)
+				wantScope := ProcessScopeForeign
+				if tt.want {
+					wantScope = ProcessScopeGone
+				}
+				assert.Equal(t, wantScope, linuxProcessIdentityScope(proc, 7, identity))
 			}
 			assert.Equal(t, tt.want, linuxProcessHasExited(proc, 42))
 		})
@@ -160,16 +174,6 @@ func TestLinuxProcessIdentityScope(t *testing.T) {
 		{"unreadable own namespace", fixtureBootID, "", 7, server, nil, ProcessScopeUnknown},
 		{"unreadable own boot ID", "", childNamespace, 7, server, nil, ProcessScopeUnknown},
 		{"process present", fixtureBootID, initNamespace, 7, server, nil, ProcessScopeForeign},
-		{"zombie process", fixtureBootID, initNamespace, 7, server, func(t *testing.T, proc string) {
-			t.Helper()
-			stat := strings.Replace(linuxStatFixture(42, "kwt daemon (worker)", "202"), ") S ", ") Z ", 1)
-			require.NoError(t, os.WriteFile(filepath.Join(proc, "42/stat"), []byte(stat), 0o644))
-		}, ProcessScopeGone},
-		{"dead process", fixtureBootID, initNamespace, 7, server, func(t *testing.T, proc string) {
-			t.Helper()
-			stat := strings.Replace(linuxStatFixture(42, "kwt daemon (worker)", "202"), ") S ", ") X ", 1)
-			require.NoError(t, os.WriteFile(filepath.Join(proc, "42/stat"), []byte(stat), 0o644))
-		}, ProcessScopeGone},
 		{"malformed stat with terminal state", fixtureBootID, initNamespace, 7, server, func(t *testing.T, proc string) {
 			t.Helper()
 			require.NoError(t, os.WriteFile(filepath.Join(proc, "42/stat"), []byte("42 (worker) Z"), 0o644))
@@ -239,7 +243,7 @@ func TestCompareProcessIdentityMatchesBeforeJudgingNamespace(t *testing.T) {
 
 func linuxStatFixture(pid int, command, startTicks string) string {
 	return fmt.Sprintf(
-		"%d (%s) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 %s 20",
+		"%d (%s) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 1 18 %s 20",
 		pid,
 		command,
 		startTicks,

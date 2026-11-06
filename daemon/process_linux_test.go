@@ -37,6 +37,18 @@ func TestProcessAliveRejectsUnreapedChild(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "ready\n", ready)
 	require.True(t, ProcessAlive(cmd.Process.Pid))
+	identity, ok := ReadProcessIdentity(cmd.Process.Pid)
+	require.True(t, ok)
+	rec := RuntimeRecord{PID: cmd.Process.Pid, ProcessIdentityV2: identity, Address: "127.0.0.1:7474"}
+	store := RuntimeStore{Dir: t.TempDir()}
+	path, err := store.Write(rec)
+	require.NoError(t, err)
+	require.True(t, RuntimeProcessAlive(rec))
+	require.True(t, RuntimeRecordBlocksStart(rec))
+	removed, err := store.CleanupDead()
+	require.NoError(t, err)
+	require.Zero(t, removed)
+	require.FileExists(t, path)
 	require.NoError(t, stdin.Close())
 
 	var waitErr error
@@ -48,5 +60,11 @@ func TestProcessAliveRejectsUnreapedChild(t *testing.T) {
 	require.NoError(t, waitErr)
 	require.NoError(t, unix.Kill(cmd.Process.Pid, 0), "signal 0 still accepts the unreaped child")
 	assert.False(t, ProcessAlive(cmd.Process.Pid))
+	assert.False(t, RuntimeProcessAlive(rec))
+	assert.False(t, RuntimeRecordBlocksStart(rec))
+	removed, err = store.CleanupDead()
+	require.NoError(t, err)
+	assert.Equal(t, 1, removed)
+	assert.NoFileExists(t, path)
 	require.NoError(t, cmd.Wait())
 }
