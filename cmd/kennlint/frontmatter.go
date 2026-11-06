@@ -9,7 +9,6 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"slices"
@@ -19,6 +18,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"go.kenn.io/kit/atomicfile"
+	"go.kenn.io/kit/consolewindow"
 	gitenv "go.kenn.io/kit/git/env"
 )
 
@@ -60,7 +60,7 @@ func frontmatterGlob(pattern, name string) bool {
 }
 
 func frontmatterGit(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := consolewindow.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	cmd.Env = gitenv.StripInherited(os.Environ())
 	var stderr bytes.Buffer
