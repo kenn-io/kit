@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"maps"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
+
+	"go.kenn.io/kit/pathresolve"
 )
 
 // CheckOptions describes the registrations to inspect in the active user config.
@@ -114,8 +115,8 @@ func Check(ctx context.Context, agent Agent, options CheckOptions) (CheckResult,
 }
 
 func sameConfigPath(a, b string) bool {
-	a, errA := filepath.Abs(a)
-	b, errB := filepath.Abs(b)
+	a, errA := pathresolve.EvalSymlinksAllowMissing(a)
+	b, errB := pathresolve.EvalSymlinksAllowMissing(b)
 	return errA == nil && errB == nil && a == b
 }
 
@@ -153,19 +154,7 @@ func ownedRegistrations(root map[string]any, path, marker string) ([]string, []o
 				if !ok {
 					return nil, nil, fmt.Errorf("invalid hook handler for %s", event)
 				}
-				command, _ := handler["command"].(string)
-				switch args := handler["args"].(type) {
-				case []string:
-					command += " " + strings.Join(args, " ")
-				case []any:
-					var joined strings.Builder
-					joined.WriteString(command)
-					for _, arg := range args {
-						text, _ := arg.(string)
-						joined.WriteString(" " + text)
-					}
-					command = joined.String()
-				}
+				command := jsonHookCommand(handler)
 				if strings.Contains(command, marker) {
 					owned = append(owned, handler)
 					records = append(records, ownedRegistration{event, i, j})

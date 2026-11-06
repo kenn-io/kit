@@ -22,6 +22,7 @@ type Client struct {
 }
 
 // Start launches Codex and completes its initialization handshake.
+// The caller context and a ten-second ceiling bound the whole client lifetime.
 func Start(ctx context.Context, executable, cwd string) (*Client, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	cmd := consolewindow.CommandContext(ctx, executable, "app-server", "--stdio")
@@ -114,5 +115,5 @@ func (c *Client) Call(method string, params, result any) error {
 	}
 }
 
-// Close sends EOF and waits for the child, bounded by the startup context.
+// Close sends EOF and waits for the child, bounded by the client context.
 func (c *Client) Close() { c.close() }

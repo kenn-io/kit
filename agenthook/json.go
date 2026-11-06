@@ -198,17 +198,7 @@ func removeOwnedJSONHooks(hooks map[string]any, marker, path string) error {
 			keptHandlers := make([]any, 0, len(handlers))
 			for _, rawHandler := range handlers {
 				handler, ok := rawHandler.(map[string]any)
-				command, _ := handler["command"].(string)
-				// Exec-form hooks keep their arguments in a separate array.
-				if args, isArray := handler["args"].([]any); isArray {
-					var joined strings.Builder
-					joined.WriteString(command)
-					for _, arg := range args {
-						text, _ := arg.(string)
-						joined.WriteString(" " + text)
-					}
-					command = joined.String()
-				}
+				command := jsonHookCommand(handler)
 				if ok && strings.Contains(command, marker) {
 					continue
 				}
@@ -227,4 +217,23 @@ func removeOwnedJSONHooks(hooks map[string]any, marker, path string) error {
 		}
 	}
 	return nil
+}
+
+// jsonHookCommand matches ownership against the command and exec-form arguments.
+func jsonHookCommand(handler map[string]any) string {
+	command, _ := handler["command"].(string)
+	switch args := handler["args"].(type) {
+	case []string:
+		return command + " " + strings.Join(args, " ")
+	case []any:
+		var joined strings.Builder
+		joined.WriteString(command)
+		for _, arg := range args {
+			text, _ := arg.(string)
+			joined.WriteString(" " + text)
+		}
+		return joined.String()
+	default:
+		return command
+	}
 }

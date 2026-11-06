@@ -9,9 +9,21 @@ import (
 )
 
 func rawHookExecutable(command string) (string, error) {
-	if strings.ContainsAny(command, "$`;|&<>~*?{}[]()\n%") {
-		return "", errors.New("hook command requires shell interpretation")
+	quoted, backslashes := false, 0
+	for _, char := range command {
+		if char == '"' && backslashes%2 == 0 {
+			quoted = !quoted
+		}
+		if (!quoted && strings.ContainsRune(";|&<>~*?{}[]()\n", char)) || strings.ContainsRune("$`%", char) {
+			return "", errors.New("hook command requires shell interpretation")
+		}
+		if char == '\\' {
+			backslashes++
+		} else {
+			backslashes = 0
+		}
 	}
+
 	words, err := windows.DecomposeCommandLine(command)
 	if err != nil || len(words) == 0 {
 		return "", fmt.Errorf("cannot identify hook executable in %q", command)

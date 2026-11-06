@@ -96,11 +96,14 @@ func runHookCheckHelper(mode string) int {
 			if request.Params["includeLayers"] != false {
 				return 11
 			}
-			feature := "true"
+			feature := `"hooks":true`
 			if mode == "feature-disabled" {
-				feature = "false"
+				feature = `"hooks":false`
 			}
-			fmt.Printf("{\"id\":%d,\"result\":{\"config\":{\"features\":{\"hooks\":%s}}}}\n", request.ID, feature)
+			if mode == "feature-default" {
+				feature = ""
+			}
+			fmt.Printf("{\"id\":%d,\"result\":{\"config\":{\"features\":{%s}}}}\n", request.ID, feature)
 		case "hooks/list":
 			cwd, _ := os.Getwd()
 			args, _ := request.Params["cwds"].([]any)
@@ -135,6 +138,7 @@ func TestCheckCodexNativeStates(t *testing.T) {
 		want                     CheckState
 	}{
 		{"new hooks require review", "normal", "untrusted", "", CheckUntrusted},
+		{"default hooks feature", "feature-default", "untrusted", "", CheckUntrusted},
 		{"reviewed", "normal", "trusted", "", CheckOK},
 		{"managed", "normal", "managed", "", CheckOK},
 		{"other applications and project hooks", "mixed", "trusted", "", CheckOK},
@@ -263,6 +267,9 @@ func TestCheckCommandResolution(t *testing.T) {
 		{"unresolved PATH name", "example-missing-hook-executable example-marker", CheckUnresolved},
 		{"shell expansion", "$EXAMPLE_HOOK example-marker", CheckUnknown},
 		{"shell compound", "echo example-marker; echo other", CheckUnknown},
+		{"shell substitution", "$(echo hook) example-marker", CheckUnknown},
+		{"quoted expansion", `"$EXAMPLE_HOOK" example-marker`, CheckUnknown},
+		{"multiple commands", "echo example-marker\ncat", CheckUnknown},
 		{"glob executable", "*hook example-marker", CheckUnknown},
 		{"tilde executable", "~/hook example-marker", CheckUnknown},
 	} {
@@ -349,7 +356,7 @@ func TestCheckCodexConformance(t *testing.T) {
 		t.Setenv(key, dir)
 	}
 	configPath := filepath.Join(dir, "config.toml")
-	require.NoError(t, os.WriteFile(configPath, []byte("[features]\nhooks = true\nplugins = false\n"), 0o600))
+	require.NoError(t, os.WriteFile(configPath, []byte("[features]\nplugins = false\n"), 0o600))
 	executable, err := os.Executable()
 	require.NoError(t, err)
 	opts := CheckOptions{
@@ -413,7 +420,7 @@ func TestCheckClaudeBuiltAndQuotedExecutable(t *testing.T) {
 		t.Run(strconv.FormatBool(built), func(t *testing.T) {
 			dir := t.TempDir()
 			t.Setenv("CLAUDE_CONFIG_DIR", dir)
-			executable := filepath.Join(dir, "example hook.exe")
+			executable := filepath.Join(dir, "example (stable).exe")
 			// Executable resolution must inspect this file without attempting to run it.
 			require.NoError(t, os.WriteFile(executable, []byte("not a program"), 0o700))
 			opts := InstallOptions{Executable: executable, Arguments: []string{"example-marker"}, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}}
@@ -429,4 +436,33 @@ func TestCheckClaudeBuiltAndQuotedExecutable(t *testing.T) {
 			assert.Equal(t, CheckOK, result.State, result.Reason)
 		})
 	}
+}
+
+func TestCheckCodexSymlinkHome(t *testing.T) {
+	codex, err := exec.LookPath("codex")
+	if err != nil {
+		t.Skip("Codex CLI is required for native conformance")
+	}
+	dir := t.TempDir()
+	home, link := filepath.Join(dir, "home"), filepath.Join(dir, "linked-home")
+	require.NoError(t, os.Mkdir(home, 0o700))
+	if err := os.Symlink(home, link); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skip("symlink creation needs privileges")
+		}
+		require.NoError(t, err)
+	}
+	for _, key := range []string{"HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"} {
+		t.Setenv(key, home)
+	}
+	t.Setenv("CODEX_HOME", link)
+	require.NoError(t, os.WriteFile(filepath.Join(home, "config.toml"), []byte("[features]\nhooks = true\nplugins = false\n"), 0o600))
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	options := InstallOptions{Executable: executable, Arguments: []string{"example-marker"}, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}}
+	_, err = Install(AgentCodex, options)
+	require.NoError(t, err)
+	result, err := Check(t.Context(), AgentCodex, CheckOptions{InstallOptions: options, CodexExecutable: codex})
+	require.NoError(t, err)
+	assert.Equal(t, CheckUntrusted, result.State, result.Reason)
 }
