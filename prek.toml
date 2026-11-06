@@ -71,6 +71,15 @@ require_serial = true
 priority = 5
 
 [[repos.hooks]]
+id = "kennlint-frontmatter"
+name = "kennlint Markdown frontmatter"
+language = "system"
+entry = "go run ./cmd/kennlint frontmatter"
+files = "\\.md$"
+require_serial = true
+priority = 5
+
+[[repos.hooks]]
 id = "nilaway"
 name = "nilaway"
 language = "system"

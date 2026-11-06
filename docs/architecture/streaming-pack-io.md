@@ -1,3 +1,9 @@
+---
+title: "Streaming pack I/O"
+description: "Architecture and memory bounds for streaming pack reads and writes."
+last_edited: 2026-10-07
+---
+
 # Streaming pack I/O
 
 Kit streams format-v1 packs with memory bounded by buffers, decoder windows,

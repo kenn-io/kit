@@ -16,11 +16,11 @@ override GOFLAGS += -trimpath
 endif
 export GOFLAGS
 
-.PHONY: lint lint-golangci lint-config lint-config-check custom-gcl nilaway lint-workflow-retries
+.PHONY: lint lint-golangci lint-config lint-config-check custom-gcl nilaway lint-workflow-retries lint-frontmatter lint-frontmatter-changed
 
 # lint is the repository lint gate: shared config drift, golangci-lint with the
-# kit analyzers, and nilaway.
-lint: lint-config-check lint-golangci nilaway lint-workflow-retries
+# kit analyzers, nilaway, workflow downloads, and Markdown metadata.
+lint: lint-config-check lint-golangci nilaway lint-workflow-retries lint-frontmatter
 
 # custom-gcl builds golangci-lint with the plugins in .custom-gcl.yml
 # (the kit analyzers from ./lint/gclplugin and nilaway). golangci-lint keeps
@@ -52,6 +52,13 @@ test-embedserver:
 
 lint-workflow-retries:
 	go run ./cmd/kennlint workflow-retries
+
+lint-frontmatter:
+	go run ./cmd/kennlint frontmatter
+
+FRONTMATTER_BASE ?= origin/main
+lint-frontmatter-changed:
+	go run ./cmd/kennlint frontmatter -changed $(FRONTMATTER_BASE)
 
 # Workflow actions run at the commits in .github/workflows/actions.lock,
 # including actions that other actions call. The organization requires
