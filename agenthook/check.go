@@ -41,7 +41,8 @@ type CheckResult struct {
 	NextStep   string
 }
 
-// Check observes registrations without running hooks or changing config or trust.
+// Check inspects registrations without running hooks or changing hook config or trust.
+// Starting Codex app-server may create state files and install bundled skills.
 // Invalid install options return an error. Inspection failures return unknown.
 func Check(ctx context.Context, agent Agent, options CheckOptions) (CheckResult, error) {
 	_, path, hooks, opts, argv, err := prepareRegistration(agent, options.InstallOptions)

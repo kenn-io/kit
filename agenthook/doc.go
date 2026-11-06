@@ -41,7 +41,8 @@
 //	})
 //
 // Check inspects an application's registrations for Claude Code or Codex without
-// executing hooks or changing config or trust. Pass the desired InstallOptions
+// executing hooks or changing hook config or trust. Starting Codex app-server may
+// create state files and install bundled skills. Pass the desired InstallOptions
 // in CheckOptions. State is ok, missing, outdated, untrusted, modified, disabled,
 // or unknown; Reason and NextStep explain any action needed.
 // Executable lookup uses the checking process's environment and PATH.
