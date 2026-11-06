@@ -375,6 +375,66 @@ func TestInstallJSONKeepsRegistrationPositions(t *testing.T) {
 	}
 }
 
+func TestInstallJSONPreservesOtherHooksOnMatcherChanges(t *testing.T) {
+	const owned = `{"type":"command","command":"/opt/a --source a-hook"}`
+	const foreign = `{"type":"command","command":"/opt/b --source b-hook"}`
+	tests := []struct {
+		name      string
+		before    string
+		hooks     []Hook
+		after     string
+		wantError bool
+	}{
+		{
+			name:   "shared matcher preserves foreign handler",
+			before: `{"hooks":{"PreToolUse":[{"matcher":"^Bash$","hooks":[` + foreign + `,` + owned + `]}]}}`,
+			hooks:  []Hook{{Event: EventPreToolUse, Matcher: "Read"}},
+			after:  `{"hooks":{"PreToolUse":[{"matcher":"^Bash$","hooks":[` + foreign + `]},{"matcher":"Read","hooks":[` + owned + `]}]}}`,
+		},
+		{
+			name:   "shared owned handlers split matchers",
+			before: `{"hooks":{"PreToolUse":[{"matcher":"^Bash$","hooks":[` + owned + `,` + owned + `]}]}}`,
+			hooks:  []Hook{{Event: EventPreToolUse, Matcher: ToolBash}, {Event: EventPreToolUse, Matcher: "Read"}},
+			after:  `{"hooks":{"PreToolUse":[{"matcher":"^Bash$","hooks":[` + owned + `]},{"matcher":"Read","hooks":[` + owned + `]}]}}`,
+		},
+		{
+			name:      "shared matcher rejects foreign index shift",
+			before:    `{"hooks":{"PreToolUse":[{"matcher":"^Bash$","hooks":[` + owned + `,` + foreign + `]}]}}`,
+			hooks:     []Hook{{Event: EventPreToolUse, Matcher: "Read"}},
+			wantError: true,
+		},
+		{
+			name:      "removed group rejects foreign index shift",
+			before:    `{"hooks":{"PreToolUse":[{"matcher":"^Bash$","hooks":[` + owned + `]},{"matcher":"Read","hooks":[` + owned + `]},{"matcher":"Write","hooks":[` + foreign + `]}]}}`,
+			hooks:     []Hook{{Event: EventPreToolUse, Matcher: ToolBash}},
+			wantError: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "hooks.json")
+			require.NoError(t, os.WriteFile(path, []byte(tt.before), 0o600))
+			_, err := Install(AgentCodex, InstallOptions{
+				ConfigPath: path,
+				Command:    "/opt/a --source a-hook",
+				Marker:     "--source a-hook",
+				Hooks:      tt.hooks,
+			})
+			if tt.wantError {
+				require.ErrorContains(t, err, "would shift existing hook positions")
+				data, readErr := os.ReadFile(path)
+				require.NoError(t, readErr)
+				assert.Equal(t, tt.before, string(data))
+				return
+			}
+			require.NoError(t, err)
+			data, err := os.ReadFile(path)
+			require.NoError(t, err)
+			assert.JSONEq(t, tt.after, string(data))
+		})
+	}
+}
+
 func TestInstallJSONKeepsSharedGroupHandlerPositions(t *testing.T) {
 	require := require.New(t)
 	path := filepath.Join(t.TempDir(), "hooks.json")

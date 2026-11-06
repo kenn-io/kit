@@ -60,7 +60,7 @@ func applyNestedJSONHooks(
 	}
 	desired := map[string][]map[string]any{}
 	if uninstall {
-		return reconcileOwnedJSONHooks(hooksObject, desired, marker, path)
+		return reconcileOwnedJSONHooks(hooksObject, desired, marker, path, false)
 	}
 	for _, hook := range hooks {
 		entry := map[string]any{}
@@ -83,7 +83,7 @@ func applyNestedJSONHooks(
 		entry["hooks"] = []any{handler}
 		desired[hook.name] = append(desired[hook.name], entry)
 	}
-	return reconcileOwnedJSONHooks(hooksObject, desired, marker, path)
+	return reconcileOwnedJSONHooks(hooksObject, desired, marker, path, true)
 }
 
 func readJSONConfig(path string) (map[string]any, bool, error) {
@@ -162,8 +162,8 @@ func jsonEventEntries(hooks map[string]any, event, path string) ([]any, error) {
 }
 
 // reconcileOwnedJSONHooks matches event/matcher registrations first, then uses
-// remaining owned slots for changed matchers before appending new registrations.
-func reconcileOwnedJSONHooks(hooks map[string]any, desired map[string][]map[string]any, marker, path string) error {
+// owned single-handler groups for changed matchers before appending registrations.
+func reconcileOwnedJSONHooks(hooks map[string]any, desired map[string][]map[string]any, marker, path string, preservePositions bool) error {
 	for event, raw := range hooks {
 		entries, ok := raw.([]any)
 		if !ok {
@@ -205,7 +205,7 @@ func reconcileOwnedJSONHooks(hooks map[string]any, desired map[string][]map[stri
 			}
 		}
 		for _, owned := range slots {
-			if owned.desired < 0 {
+			if owned.desired < 0 && len(owned.handlers) == 1 {
 				for j := range used {
 					if !used[j] {
 						owned.desired = j
@@ -226,20 +226,27 @@ func reconcileOwnedJSONHooks(hooks map[string]any, desired map[string][]map[stri
 			}
 		}
 		keptEntries := make([]any, 0, len(entries))
-		for _, rawEntry := range entries {
+		shiftError := fmt.Errorf("agent hook config %s event %q: reinstall would shift existing hook positions", path, event)
+		for entryIndex, rawEntry := range entries {
 			entry, ok := rawEntry.(map[string]any)
 			if ok && entry["hooks"] != nil {
 				handlers := entry["hooks"].([]any)
 				kept := make([]any, 0, len(handlers))
-				for _, handler := range handlers {
+				for handlerIndex, handler := range handlers {
 					if handler != removed {
+						if preservePositions && len(kept) != handlerIndex {
+							return shiftError
+						}
 						kept = append(kept, handler)
 					}
 				}
-				if len(kept) == 0 {
+				if len(kept) == 0 && len(handlers) > 0 {
 					continue
 				}
 				entry["hooks"] = kept
+			}
+			if preservePositions && len(keptEntries) != entryIndex {
+				return shiftError
 			}
 			keptEntries = append(keptEntries, rawEntry)
 		}
