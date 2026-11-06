@@ -43,16 +43,19 @@
 // Check inspects an application's registrations for Claude Code or Codex without
 // executing hooks or changing config or trust. Pass the desired InstallOptions
 // in CheckOptions. State is ok, missing, outdated, untrusted, modified, disabled,
-// unresolved, or unknown; Reason and NextStep explain any action needed.
-// Codex checks its native effective feature, discovery, enabled state, and trust
-// through app-server. Only enabled trusted or managed hooks can be ok. A modified
-// hook takes precedence over an outdated registration. Review consent remains
-// with Codex's /hooks interface.
+// or unknown; Reason and NextStep explain any action needed.
+// Executable lookup uses the checking process's environment and PATH.
+// Codex checks its current workspace's effective feature, discovery, enablement,
+// and trust through app-server. Only enabled trusted or managed hooks can be ok.
+// A modified hook takes precedence over an outdated registration. Review consent
+// remains with Codex's /hooks interface.
 // Claude Code has no native hook probe here: ok covers only its active user
 // settings.json, disableAllHooks, expected registrations, and executable
-// resolution. Neither check establishes runtime permissions or successful hook
-// execution. A config outside the active user config returns unknown; set
-// CODEX_HOME or CLAUDE_CONFIG_DIR to inspect a separate user config.
+// resolution. Raw commands requiring shell interpretation and executable lookup
+// failures return unknown with the reason and a corrective step. Neither check
+// establishes runtime permissions or successful hook execution. A config outside
+// the active user config returns unknown; set CODEX_HOME or CLAUDE_CONFIG_DIR to
+// inspect a separate user config.
 //
 // Installing a Hermes profile does not enable hooks_auto_accept. Hermes retains
 // its first-use consent flow for every event and command pair.

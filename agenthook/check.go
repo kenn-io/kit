@@ -22,14 +22,13 @@ type CheckOptions struct {
 type CheckState string
 
 const (
-	CheckOK         CheckState = "ok"
-	CheckMissing    CheckState = "missing"
-	CheckOutdated   CheckState = "outdated"
-	CheckUntrusted  CheckState = "untrusted"
-	CheckModified   CheckState = "modified"
-	CheckDisabled   CheckState = "disabled"
-	CheckUnresolved CheckState = "unresolved"
-	CheckUnknown    CheckState = "unknown"
+	CheckOK        CheckState = "ok"
+	CheckMissing   CheckState = "missing"
+	CheckOutdated  CheckState = "outdated"
+	CheckUntrusted CheckState = "untrusted"
+	CheckModified  CheckState = "modified"
+	CheckDisabled  CheckState = "disabled"
+	CheckUnknown   CheckState = "unknown"
 )
 
 // CheckResult reports observed hooks, a reason, and a corrective step.
@@ -106,7 +105,7 @@ func Check(ctx context.Context, agent Agent, options CheckOptions) (CheckResult,
 		}
 	}
 	if _, err := exec.LookPath(executable); err != nil {
-		return set(CheckUnresolved, fmt.Sprintf("Hook executable %q cannot be resolved: %v", executable, err), "Install the executable or add its directory to PATH")
+		return set(CheckUnknown, fmt.Sprintf("Hook executable %q cannot be resolved in the checking process environment: %v", executable, err), "Install the executable or add its directory to PATH")
 	}
 	if agent == AgentClaude {
 		return set(CheckOK, "Claude Code user config matches and hook executables resolve; native loading is unverified", "")

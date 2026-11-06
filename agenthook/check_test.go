@@ -93,7 +93,8 @@ func runHookCheckHelper(mode string) int {
 		}
 		switch request.Method {
 		case "config/read":
-			if request.Params["includeLayers"] != false {
+			cwd, _ := os.Getwd()
+			if request.Params["includeLayers"] != false || request.Params["cwd"] != cwd {
 				return 11
 			}
 			feature := `"hooks":true`
@@ -260,11 +261,17 @@ func TestCheckClaudeRegistrations(t *testing.T) {
 }
 
 func TestCheckCommandResolution(t *testing.T) {
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	t.Setenv("PATH", filepath.Dir(executable))
 	for _, tc := range []struct {
 		name, command string
 		want          CheckState
 	}{
-		{"unresolved PATH name", "example-missing-hook-executable example-marker", CheckUnresolved},
+		{"bare executable", filepath.Base(executable) + " example-marker", CheckOK},
+		{"unresolved PATH name", "example-missing-hook-executable example-marker", CheckUnknown},
+		{"shell assignment", "EXAMPLE_HOOK=1 example-hook example-marker", CheckUnknown},
+		{"exec builtin", "exec example-hook example-marker", CheckUnknown},
 		{"shell expansion", "$EXAMPLE_HOOK example-marker", CheckUnknown},
 		{"shell compound", "echo example-marker; echo other", CheckUnknown},
 		{"shell substitution", "$(echo hook) example-marker", CheckUnknown},
@@ -281,7 +288,16 @@ func TestCheckCommandResolution(t *testing.T) {
 			result, err := Check(t.Context(), AgentClaude, CheckOptions{InstallOptions: opts})
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, result.State, result.Reason)
-			assert.NotEmpty(t, result.NextStep)
+			if tc.want != CheckOK {
+				assert.NotEmpty(t, result.NextStep)
+			}
+			if tc.name == "unresolved PATH name" {
+				assert.Contains(t, result.Reason, "checking process environment")
+				assert.Contains(t, result.NextStep, "PATH")
+			}
+			if runtime.GOOS != "windows" && (tc.name == "shell assignment" || tc.name == "exec builtin") {
+				assert.Contains(t, result.Reason, "shell interpretation")
+			}
 		})
 	}
 }
@@ -322,7 +338,7 @@ func TestCheckClientCancellationAndEOF(t *testing.T) {
 			} else {
 				require.NoError(t, startErr)
 				if mode == "block" {
-					err := client.Call("config/read", map[string]any{"includeLayers": false}, nil)
+					err := client.Call("config/read", map[string]any{"includeLayers": false, "cwd": dir}, nil)
 					require.Error(t, err)
 				}
 				client.Close()
@@ -406,6 +422,23 @@ func TestCheckCodexConformance(t *testing.T) {
 		default:
 			require.FailNow(t, "unexpected conformance transition", string(want))
 		}
+	}
+
+	workspace := filepath.Join(dir, "workspace")
+	require.NoError(t, os.MkdirAll(filepath.Join(workspace, ".codex"), 0o700))
+	t.Chdir(workspace)
+	for _, userEnabled := range []bool{true, false} {
+		config := fmt.Sprintf("[features]\nhooks = %t\nplugins = false\n[%s]\ntrust_level = \"trusted\"\n", userEnabled, toml.Key{"projects", workspace}.String())
+		require.NoError(t, os.WriteFile(configPath, []byte(config), 0o600))
+		workspaceConfig := fmt.Sprintf("[features]\nhooks = %t\n", !userEnabled)
+		require.NoError(t, os.WriteFile(filepath.Join(workspace, ".codex", "config.toml"), []byte(workspaceConfig), 0o600))
+		result, err := Check(t.Context(), AgentCodex, opts)
+		require.NoError(t, err)
+		want := CheckUntrusted
+		if userEnabled {
+			want = CheckDisabled
+		}
+		assert.Equal(t, want, result.State, result.Reason)
 	}
 	// Missing CLI on PATH must remain unknown, even when hooks are present.
 	t.Setenv("PATH", t.TempDir())

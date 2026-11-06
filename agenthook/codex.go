@@ -54,14 +54,14 @@ func checkCodex(ctx context.Context, path, executable string, owned []ownedRegis
 			Features map[string]*bool `json:"features"`
 		} `json:"config"`
 	}
-	if err := client.Call("config/read", map[string]any{"includeLayers": false}, &config); err != nil {
+	if err := client.Call("config/read", map[string]any{"includeLayers": false, "cwd": cwd}, &config); err != nil {
 		return CheckUnknown, err.Error(), "Check Codex config and retry"
 	}
 	if config.Config == nil {
 		return CheckUnknown, "Codex did not report its effective hooks feature", "Check Codex config and retry"
 	}
 	if enabled := config.Config.Features["hooks"]; enabled != nil && !*enabled {
-		return CheckDisabled, "Codex hooks feature is disabled", "Enable hooks in Codex with codex features enable hooks"
+		return CheckDisabled, "Codex hooks feature is disabled for this workspace", "Enable features.hooks in the effective Codex config for this workspace"
 	}
 	var listed struct {
 		Data []struct {
