@@ -275,8 +275,6 @@ func ownsJSONHandler(raw any, marker string) bool {
 func jsonHookCommand(handler map[string]any) string {
 	command, _ := handler["command"].(string)
 	switch args := handler["args"].(type) {
-	case []string:
-		return command + " " + strings.Join(args, " ")
 	case []any:
 		var joined strings.Builder
 		joined.WriteString(command)
