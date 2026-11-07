@@ -106,6 +106,8 @@ func TestCheckCodexNativeStates(t *testing.T) {
 		{"new hooks require review", "normal", "untrusted", "", CheckUntrusted, ""},
 		{"default hooks feature", "feature-default", "untrusted", "", CheckUntrusted, ""},
 		{"reviewed", "normal", "trusted", "", CheckOK, ""},
+		{"native source capitalization", "source-case", "trusted", "", CheckOK, ""},
+		{"explicit config capitalization", "config-case", "trusted", "", CheckOK, ""},
 		{"managed", "normal", "managed", "", CheckOK, ""},
 		{"other applications and source files", "mixed", "trusted", "", CheckOK, ""},
 		{"symlinked native source", "symlink", "untrusted", "", CheckUntrusted, ""},
@@ -175,9 +177,26 @@ func TestCheckCodexNativeStates(t *testing.T) {
 			if tc.mode == "disabled" {
 				enabled = `,"enabled":false`
 			}
-			pathJSON, err := json.Marshal(path)
+			source := path
+			if tc.mode == "source-case" || tc.mode == "config-case" {
+				alternate := filepath.Join(dir, "HOOKS.json")
+				originalInfo, err := os.Stat(path)
+				require.NoError(t, err)
+				alternateInfo, err := os.Stat(alternate)
+				if os.IsNotExist(err) {
+					t.Skip("filesystem treats capitalization as distinct")
+				}
+				require.NoError(t, err)
+				require.True(t, os.SameFile(originalInfo, alternateInfo))
+				if tc.mode == "source-case" {
+					source = alternate
+				} else {
+					opts.ConfigPath = alternate
+				}
+			}
+			pathJSON, err := json.Marshal(source)
 			require.NoError(t, err)
-			keyJSON, err := json.Marshal(path + ":stop:0:0")
+			keyJSON, err := json.Marshal(source + ":stop:0:0")
 			require.NoError(t, err)
 			reply := fmt.Sprintf(`{"data":[{"cwd":"CWD","hooks":[{"source":"user","sourcePath":%s,"key":%s,"trustStatus":%q%s}],"errors":[]}]}`, pathJSON, keyJSON, tc.trust, enabled)
 			if tc.mode == "mixed" {
@@ -403,6 +422,23 @@ func TestCheckValidationAndConfigHome(t *testing.T) {
 	t.Setenv("CODEX_HOME", t.TempDir())
 	options.ConfigPath = filepath.Join(t.TempDir(), "hooks.json")
 	result, err := Check(t.Context(), AgentCodex, options)
+	require.NoError(t, err)
+	assert.Equal(t, CheckUnknown, result.State)
+	assert.Contains(t, result.Reason, "outside the active user config")
+
+	dir := t.TempDir()
+	t.Setenv("CODEX_HOME", dir)
+	active := filepath.Join(dir, "hooks.json")
+	alternate := filepath.Join(dir, "HOOKS.json")
+	require.NoError(t, os.WriteFile(active, []byte(`{}`), 0o600))
+	file, err := os.OpenFile(alternate, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if os.IsExist(err) {
+		t.Skip("filesystem treats capitalization as the same file")
+	}
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
+	options.ConfigPath = alternate
+	result, err = Check(t.Context(), AgentCodex, options)
 	require.NoError(t, err)
 	assert.Equal(t, CheckUnknown, result.State)
 	assert.Contains(t, result.Reason, "outside the active user config")

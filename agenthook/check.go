@@ -3,6 +3,7 @@ package agenthook
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -109,6 +110,11 @@ func Check(ctx context.Context, agent Agent, opts InstallOptions) (CheckResult, 
 }
 
 func sameConfigPath(a, b string) bool {
+	infoA, statA := os.Stat(a)
+	infoB, statB := os.Stat(b)
+	if statA == nil && statB == nil {
+		return os.SameFile(infoA, infoB)
+	}
 	a, errA := pathresolve.EvalSymlinksAllowMissing(a)
 	b, errB := pathresolve.EvalSymlinksAllowMissing(b)
 	return errA == nil && errB == nil && a == b
