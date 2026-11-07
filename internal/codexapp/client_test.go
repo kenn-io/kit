@@ -99,6 +99,10 @@ func runClientHelper(mode string) int {
 		if request.ID != 2 || request.Method != "example/read" || request.Params["example"] != "value" {
 			return 11
 		}
+		if mode == "rpc-error" {
+			fmt.Println(`{"id":2,"error":{"message":"native failure"}}`)
+			continue
+		}
 		fmt.Println(`{"id":2,"result":{"ready":true}}`)
 	}
 	if mode == "block-close" {
@@ -114,7 +118,7 @@ func runClientHelper(mode string) int {
 }
 
 func TestClientCancellationAndEOF(t *testing.T) {
-	for _, mode := range []string{"normal", "block", "block-close", "initialize-eof"} {
+	for _, mode := range []string{"normal", "rpc-error", "block", "block-close", "initialize-eof"} {
 		t.Run(mode, func(t *testing.T) {
 			executable, err := os.Executable()
 			require.NoError(t, err)
@@ -151,7 +155,7 @@ func TestClientCancellationAndEOF(t *testing.T) {
 				}
 				var callErr error
 				started := time.Now()
-				if mode == "normal" || mode == "block" {
+				if mode == "normal" || mode == "rpc-error" || mode == "block" {
 					callErr = client.Call("example/read", map[string]any{"example": "value"}, &reply)
 				}
 				client.Close()
@@ -162,6 +166,9 @@ func TestClientCancellationAndEOF(t *testing.T) {
 				if mode == "normal" {
 					require.NoError(t, callErr)
 					assert.True(t, reply.Ready)
+				}
+				if mode == "rpc-error" {
+					require.ErrorContains(t, callErr, "native failure")
 				}
 			}
 			if mode == "normal" {

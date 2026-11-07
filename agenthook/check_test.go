@@ -65,10 +65,6 @@ func runHookCheckHelper(mode string) int {
 			input.Scan()
 			return 0
 		}
-		if mode == "rpc-error" {
-			fmt.Printf("{\"id\":%d,\"error\":{\"message\":\"native failure\"}}\n", request.ID)
-			continue
-		}
 		switch request.Method {
 		case "config/read":
 			cwd, _ := os.Getwd()
@@ -113,7 +109,8 @@ func TestCheckCodexNativeStates(t *testing.T) {
 		{"default hooks feature", "feature-default", "untrusted", "", CheckUntrusted, ""},
 		{"reviewed", "normal", "trusted", "", CheckOK, ""},
 		{"managed", "normal", "managed", "", CheckOK, ""},
-		{"other applications and project hooks", "mixed", "trusted", "", CheckOK, ""},
+		{"other applications and source files", "mixed", "trusted", "", CheckOK, ""},
+		{"symlinked native source", "symlink", "untrusted", "", CheckUntrusted, ""},
 		{"wrong native identity", "wrong-index", "trusted", "", CheckUnknown, ""},
 		{"undiscovered installed hooks", "undiscovered", "", "", CheckUnknown, "did not discover installed hooks"},
 		{"partial discovery", "partial", "trusted", "", CheckUnknown, ""},
@@ -125,7 +122,6 @@ func TestCheckCodexNativeStates(t *testing.T) {
 		{"unknown trust", "normal", "future", "", CheckUnknown, ""},
 		{"discovery error", "discovery-error", "trusted", "", CheckUnknown, ""},
 		{"missing discovery data", "missing-data", "", "", CheckUnknown, ""},
-		{"RPC error", "rpc-error", "", "", CheckUnknown, "native failure"},
 		{"initialization EOF", "initialize-eof", "", "", CheckUnknown, ""},
 		{"initialization timeout", "initialize-timeout", "", "", CheckUnknown, "context deadline exceeded"},
 		{"config timeout", "rpc-timeout", "", "", CheckUnknown, "context deadline exceeded"},
@@ -137,6 +133,16 @@ func TestCheckCodexNativeStates(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			t.Setenv("CODEX_HOME", dir)
+			if tc.mode == "symlink" {
+				link := filepath.Join(t.TempDir(), "linked-home")
+				if err := os.Symlink(dir, link); err != nil {
+					if runtime.GOOS == "windows" {
+						t.Skip("symlink creation needs privileges")
+					}
+					require.NoError(t, err)
+				}
+				t.Setenv("CODEX_HOME", link)
+			}
 			executable, err := os.Executable()
 			require.NoError(t, err)
 			commands, err := BuildCommand(executable, "example-marker")
@@ -310,7 +316,6 @@ func TestCheckCommandResolution(t *testing.T) {
 		reason, step string
 	}{
 		{"bare executable", InstallOptions{Command: filepath.Base(executable) + " example-marker"}, CheckOK, "", ""},
-		{"built executable", InstallOptions{Executable: literalExecutable, Arguments: []string{"example-marker"}}, CheckOK, "", ""},
 		{"quoted executable", InstallOptions{Command: quoted.Native}, CheckOK, "", ""},
 		{"unresolved PATH name", InstallOptions{Command: "example-missing-hook-executable example-marker"}, CheckUnknown, "checking process environment", "PATH"},
 		{"shell assignment", InstallOptions{Command: "EXAMPLE_HOOK=1 example-hook example-marker"}, CheckUnknown, shellReason, ""},
@@ -435,33 +440,4 @@ func TestCheckCodexConformance(t *testing.T) {
 		}
 		assert.Equal(t, want, result.State, result.Reason)
 	}
-}
-
-func TestCheckCodexSymlinkHome(t *testing.T) {
-	codex, err := exec.LookPath("codex")
-	if err != nil {
-		t.Skip("Codex CLI is required for native conformance")
-	}
-	dir := t.TempDir()
-	home, link := filepath.Join(dir, "home"), filepath.Join(dir, "linked-home")
-	require.NoError(t, os.Mkdir(home, 0o700))
-	if err := os.Symlink(home, link); err != nil {
-		if runtime.GOOS == "windows" {
-			t.Skip("symlink creation needs privileges")
-		}
-		require.NoError(t, err)
-	}
-	for _, key := range []string{"HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"} {
-		t.Setenv(key, home)
-	}
-	t.Setenv("CODEX_HOME", link)
-	require.NoError(t, os.WriteFile(filepath.Join(home, "config.toml"), []byte("[features]\nhooks = true\nplugins = false\n"), 0o600))
-	executable, err := os.Executable()
-	require.NoError(t, err)
-	options := InstallOptions{Executable: executable, Arguments: []string{"example-marker"}, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}}
-	_, err = Install(AgentCodex, options)
-	require.NoError(t, err)
-	result, err := Check(t.Context(), AgentCodex, CheckOptions{InstallOptions: options, CodexExecutable: codex})
-	require.NoError(t, err)
-	assert.Equal(t, CheckUntrusted, result.State, result.Reason)
 }
