@@ -8,7 +8,14 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func rawHookExecutable(command string) (string, error) {
+func rawHookExecutable(command, commandWindows string) (string, error) {
+	if commandWindows != "" {
+		return windowsHookExecutable(commandWindows)
+	}
+	return posixHookExecutable(command)
+}
+
+func windowsHookExecutable(command string) (string, error) {
 	quoted, backslashes := false, 0
 	for _, char := range command {
 		if char == '"' && backslashes%2 == 0 {

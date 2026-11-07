@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
-	"runtime"
 	"strings"
 
 	"go.kenn.io/kit/pathresolve"
@@ -12,8 +11,7 @@ import (
 
 // CheckOptions describes the registrations to inspect in the active user config.
 type CheckOptions struct {
-	InstallOptions  InstallOptions
-	CodexExecutable string
+	InstallOptions InstallOptions
 }
 
 // CheckState describes what prevents an agent from using an application's hooks.
@@ -79,7 +77,7 @@ func Check(ctx context.Context, agent Agent, options CheckOptions) (CheckResult,
 	}
 	state, reason, step := CheckOK, "", ""
 	if agent == AgentCodex {
-		state, reason, step = checkCodex(ctx, path, options.CodexExecutable, records)
+		state, reason, step = checkCodex(ctx, path, records)
 		if state != CheckOK && state != CheckUntrusted {
 			return set(state, reason, step)
 		}
@@ -96,11 +94,7 @@ func Check(ctx context.Context, agent Agent, options CheckOptions) (CheckResult,
 	}
 	executable := strings.TrimSpace(opts.Executable)
 	if executable == "" {
-		command := opts.Command
-		if runtime.GOOS == "windows" && opts.CommandWindows != "" {
-			command = opts.CommandWindows
-		}
-		if executable, err = rawHookExecutable(command); err != nil {
+		if executable, err = rawHookExecutable(opts.Command, opts.CommandWindows); err != nil {
 			return set(CheckUnknown, err.Error(), "Use an executable with literal arguments for the hook")
 		}
 	}

@@ -52,6 +52,8 @@
 // in CheckOptions. State is ok, missing, outdated, untrusted, modified, disabled,
 // or unknown; Reason and NextStep explain any action needed.
 // Executable lookup uses the checking process's environment and PATH.
+// Plain command strings use POSIX syntax on every platform. Codex's active
+// commandWindows override uses Win32 argument quoting on Windows.
 // Codex checks its current workspace's effective feature, discovery, enablement,
 // and trust through app-server. Missing registrations return missing before
 // starting Codex. For discovered hooks, states take precedence in this order:

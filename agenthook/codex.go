@@ -38,15 +38,12 @@ func codexProfile() profileSpec {
 }
 
 // checkCodex reads native discovery and consent state. It never writes trust.
-func checkCodex(ctx context.Context, path, executable string, owned []ownedRegistration) (CheckState, string, string) {
-	if executable == "" {
-		executable = "codex"
-	}
+func checkCodex(ctx context.Context, path string, owned []ownedRegistration) (CheckState, string, string) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return CheckUnknown, err.Error(), "Choose a working directory for Codex"
 	}
-	client, err := codexapp.Start(ctx, executable, cwd)
+	client, err := codexapp.Start(ctx, "codex", cwd)
 	if err != nil {
 		return codexFailure(err, "Check Codex app-server startup and retry")
 	}

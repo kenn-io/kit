@@ -268,22 +268,19 @@ func reconcileOwnedJSONHooks(hooks map[string]any, desired map[string][]map[stri
 
 func ownsJSONHandler(raw any, marker string) bool {
 	handler, ok := raw.(map[string]any)
-	return ok && strings.Contains(jsonHookCommand(handler), marker)
-}
-
-// jsonHookCommand matches ownership against the command and exec-form arguments.
-func jsonHookCommand(handler map[string]any) string {
+	if !ok {
+		return false
+	}
 	command, _ := handler["command"].(string)
-	switch args := handler["args"].(type) {
-	case []any:
+	// Exec-form hooks keep their arguments in a separate array.
+	if args, ok := handler["args"].([]any); ok {
 		var joined strings.Builder
 		joined.WriteString(command)
 		for _, arg := range args {
 			text, _ := arg.(string)
 			joined.WriteString(" " + text)
 		}
-		return joined.String()
-	default:
-		return command
+		command = joined.String()
 	}
+	return strings.Contains(command, marker)
 }
