@@ -1,7 +1,7 @@
 ---
 title: "Installing the local embedding server"
 description: "Install and operate the local embedding server and its model assets."
-last_edited: 2026-10-29
+last_edited: 2026-11-07
 ---
 
 # Installing the local embedding server
@@ -32,4 +32,6 @@ Inspection checks the install lock with a shared reader that coexists with other
 
 `internal/embedassets.BundleTag` pins the server independently of ordinary kit updates. The current pin is [v0.48.2-face.6](https://github.com/kenn-io/kit/releases/tag/v0.48.2-face.6), which includes face inference and all six platform archives with `SHA256SUMS`. For future updates, dispatch `kennembed.yml` with the reviewed release tag and update `BundleTag` after all archives and checksums are attached. The following ordinary kit release carries that pin for consumers.
 
-The workflow builds the selected tag's exact source, checks its embedded source revision, and exercises its native executable. It packages Linux, macOS, and Windows for amd64 and arm64 with runtime libraries and distribution notices. Pull requests build and exercise their checked-out candidate as workflow artifacts. No bundle workflow is required for unrelated kit releases.
+The workflow builds the selected tag's exact source and checks its embedded source revision. It packages Linux, macOS, and Windows for amd64 and arm64 with runtime libraries and distribution notices. The reviewed [artifact contract](../.github/kennembed-release.json) checks each OS pair, then requires all six final archives and one combined `SHA256SUMS` before upload. Pull requests run the same checks as workflow artifacts. No bundle workflow is required for unrelated kit releases.
+
+Native inference runs from an extracted final archive relocated away from staging, with loader injection variables cleared and separately verified model fixtures. Only the runner's native architecture executes; the other architecture receives header and dependency checks. Linux assumes current supported glibc, libstdc++, and libgcc; macOS assumes current supported system frameworks; Windows carries architecture-specific Visual C++ runtime companions and uses system UCRT/API sets. Exact policy is in the contract. These checks do not prove minimum OS or ABI compatibility. See [adopting the release contract](adopting-release-contract.md) for baseline smoke requirements and installer boundaries.

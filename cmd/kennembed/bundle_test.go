@@ -22,7 +22,7 @@ import (
 	"go.kenn.io/kit/internal/embedtest"
 )
 
-// CI supplies a staged native bundle. This catches missing companion
+// CI supplies an extracted, relocated final archive. This catches missing companion
 // libraries and executable-relative lookup failures that model-only parity misses.
 func TestBundleNativeParity(t *testing.T) {
 	executable, dir := os.Getenv("KIT_EMBED_TEST_EXECUTABLE"), os.Getenv("KIT_EMBED_TEST_DIR")
@@ -32,6 +32,8 @@ func TestBundleNativeParity(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
 	defer cancel()
 	command := exec.CommandContext(ctx, executable, "--data-dir", dir)
+	command.Dir = t.TempDir()
+	command.Env = bundleEnvironment(t.TempDir())
 	stderr, err := command.StderrPipe()
 	require.NoError(t, err)
 	require.NoError(t, command.Start())
@@ -80,4 +82,50 @@ func TestBundleNativeParity(t *testing.T) {
 			assert.Contains(t, strings.ToLower(string(output)), strings.ToLower(filepath.Join(filepath.Dir(executable), name)))
 		}
 	}
+}
+
+func TestBundleEnvironmentIsIsolated(t *testing.T) {
+	for _, name := range []string{"LD_LIBRARY_PATH", "LD_PRELOAD", "DYLD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "PI_CODING_AGENT_DIR"} {
+		t.Setenv(name, "must-not-reach-server")
+	}
+	t.Setenv("PATH", "must-not-reach-server")
+	home := t.TempDir()
+	values := map[string]string{}
+	for _, entry := range bundleEnvironment(home) {
+		name, value, ok := strings.Cut(entry, "=")
+		require.True(t, ok)
+		values[strings.ToUpper(name)] = value
+	}
+	assert.Equal(t, home, values["HOME"])
+	assert.Equal(t, home, values["USERPROFILE"])
+	assert.Equal(t, filepath.Join(home, "config"), values["XDG_CONFIG_HOME"])
+	assert.NotContains(t, values["PATH"], "must-not-reach-server")
+	for _, name := range []string{"LD_LIBRARY_PATH", "LD_PRELOAD", "DYLD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "PI_CODING_AGENT_DIR"} {
+		assert.NotContains(t, values, name)
+	}
+}
+
+func bundleEnvironment(home string) []string {
+	blocked := map[string]bool{
+		"HOME": true, "USERPROFILE": true, "PATH": true,
+		"XDG_CONFIG_HOME": true, "XDG_CACHE_HOME": true, "XDG_DATA_HOME": true, "XDG_STATE_HOME": true,
+		"CODEX_HOME": true, "CLAUDE_CONFIG_DIR": true, "PI_CODING_AGENT_DIR": true,
+		"LD_LIBRARY_PATH": true, "LD_PRELOAD": true, "LD_AUDIT": true,
+		"DYLD_LIBRARY_PATH": true, "DYLD_FRAMEWORK_PATH": true, "DYLD_INSERT_LIBRARIES": true,
+		"DYLD_FALLBACK_LIBRARY_PATH": true, "DYLD_FALLBACK_FRAMEWORK_PATH": true,
+	}
+	env := make([]string, 0, len(os.Environ()))
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if !blocked[strings.ToUpper(name)] {
+			env = append(env, entry)
+		}
+	}
+	path := "/usr/bin:/bin"
+	if runtime.GOOS == "windows" {
+		path = filepath.Join(os.Getenv("SystemRoot"), "System32")
+	}
+	return append(env, "HOME="+home, "USERPROFILE="+home, "PATH="+path,
+		"XDG_CONFIG_HOME="+filepath.Join(home, "config"), "XDG_CACHE_HOME="+filepath.Join(home, "cache"),
+		"XDG_DATA_HOME="+filepath.Join(home, "data"), "XDG_STATE_HOME="+filepath.Join(home, "state"))
 }

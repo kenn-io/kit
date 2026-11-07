@@ -28,9 +28,20 @@ func LibraryName() string {
 
 // NativeFiles lists required libraries, including Windows runtime dependencies.
 func NativeFiles() []string {
-	names := []string{LibraryName()}
-	if runtime.GOOS == "windows" {
-		names = append(names, "msvcp140.dll", "msvcp140_1.dll", "vcruntime140.dll", "vcruntime140_1.dll")
+	return nativeFiles(runtime.GOOS, runtime.GOARCH)
+}
+
+func nativeFiles(goos, goarch string) []string {
+	if goos == "windows" {
+		names := []string{"onnxruntime.dll", "msvcp140.dll", "msvcp140_1.dll", "vcruntime140.dll"}
+		// ARM64 ONNX and CRTs do not import this AMD64-only runtime.
+		if goarch == "amd64" {
+			names = append(names, "vcruntime140_1.dll")
+		}
+		return names
 	}
-	return names
+	if goos == "darwin" {
+		return []string{"libonnxruntime.1.23.2.dylib"}
+	}
+	return []string{"libonnxruntime.so.1.23.2"}
 }

@@ -24,6 +24,14 @@
 
 See `docs/adopting-kennlint.md` for the consumer workflow.
 
+`lint/releasecheck` is an opt-in final-artifact validator, not a Go analyzer.
+Its consumer contract defines the full target inventory, exact member paths,
+and baseline system imports. Never discover expectations from available files,
+execute archive payloads, or treat header/import checks as ABI or lazy-loader
+proof. OS subsets require a subsequent full-inventory check before publishing.
+Keep installer policy and feature smoke in consumers; see
+`docs/adopting-release-contract.md`.
+
 ## Invariants
 
 - Every analyzer is type-aware through `go/analysis` and proves its behavior

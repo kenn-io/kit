@@ -1,0 +1,211 @@
+{
+  "artifacts": [
+    {
+      "name": "kennembed_{version}_linux_amd64.tar.gz",
+      "os": "linux",
+      "arch": "amd64",
+      "executable": "kennembed",
+      "kind": "bundle",
+      "baseline": "Current supported glibc Linux with libstdc++ and libgcc; ONNX symbol floors GLIBC_2.27, GLIBCXX_3.4.22, CXXABI_1.3.11; native runner smoke, not a minimum-distribution claim",
+      "system_libraries": [
+        "/lib64/ld-linux-x86-64.so.2",
+        "ld-linux-x86-64.so.2",
+        "libc.so.6",
+        "libdl.so.2",
+        "libgcc_s.so.1",
+        "libm.so.6",
+        "libpthread.so.0",
+        "librt.so.1",
+        "libstdc++.so.6"
+      ],
+      "runtime_files": [
+        "libonnxruntime.so.1.23.2",
+        "libonnxruntime_providers_shared.so"
+      ],
+      "required_files": [
+        "LICENSE",
+        "ThirdPartyNotices.txt",
+        "AuraFace-LICENSE",
+        "YuNet-LICENSE"
+      ]
+    },
+    {
+      "name": "kennembed_{version}_linux_arm64.tar.gz",
+      "os": "linux",
+      "arch": "arm64",
+      "executable": "kennembed",
+      "kind": "bundle",
+      "baseline": "Current supported glibc Linux with libstdc++ and libgcc; ONNX symbol floors GLIBC_2.27, GLIBCXX_3.4.22, CXXABI_1.3.11; native runner smoke, not a minimum-distribution claim",
+      "system_libraries": [
+        "/lib/ld-linux-aarch64.so.1",
+        "ld-linux-aarch64.so.1",
+        "libc.so.6",
+        "libdl.so.2",
+        "libgcc_s.so.1",
+        "libm.so.6",
+        "libpthread.so.0",
+        "librt.so.1",
+        "libstdc++.so.6"
+      ],
+      "runtime_files": [
+        "libonnxruntime.so.1.23.2",
+        "libonnxruntime_providers_shared.so"
+      ],
+      "required_files": [
+        "LICENSE",
+        "ThirdPartyNotices.txt",
+        "AuraFace-LICENSE",
+        "YuNet-LICENSE"
+      ]
+    },
+    {
+      "name": "kennembed_{version}_darwin_amd64.tar.gz",
+      "os": "darwin",
+      "arch": "amd64",
+      "executable": "kennembed",
+      "kind": "bundle",
+      "baseline": "Current supported macOS; ONNX deployment target 13.4, actual Go/server OS floor and feature compatibility require native baseline smoke",
+      "system_libraries": [
+        "/System/Library/Frameworks/Cocoa.framework/Versions/A/Cocoa",
+        "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+        "/System/Library/Frameworks/CoreML.framework/Versions/A/CoreML",
+        "/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation",
+        "/System/Library/Frameworks/IOKit.framework/Versions/A/IOKit",
+        "/System/Library/Frameworks/IOSurface.framework/Versions/A/IOSurface",
+        "/System/Library/Frameworks/Metal.framework/Versions/A/Metal",
+        "/System/Library/Frameworks/QuartzCore.framework/Versions/A/QuartzCore",
+        "/System/Library/Frameworks/Security.framework/Versions/A/Security",
+        "/usr/lib/libSystem.B.dylib",
+        "/usr/lib/libc++.1.dylib",
+        "/usr/lib/libiconv.2.dylib",
+        "/usr/lib/libobjc.A.dylib",
+        "/usr/lib/libresolv.9.dylib"
+      ],
+      "runtime_files": [
+        "libonnxruntime.1.23.2.dylib"
+      ],
+      "required_files": [
+        "LICENSE",
+        "ThirdPartyNotices.txt",
+        "AuraFace-LICENSE",
+        "YuNet-LICENSE"
+      ]
+    },
+    {
+      "name": "kennembed_{version}_darwin_arm64.tar.gz",
+      "os": "darwin",
+      "arch": "arm64",
+      "executable": "kennembed",
+      "kind": "bundle",
+      "baseline": "Current supported macOS; ONNX deployment target 13.4, actual Go/server OS floor and feature compatibility require native baseline smoke",
+      "system_libraries": [
+        "/System/Library/Frameworks/Cocoa.framework/Versions/A/Cocoa",
+        "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+        "/System/Library/Frameworks/CoreML.framework/Versions/A/CoreML",
+        "/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation",
+        "/System/Library/Frameworks/IOKit.framework/Versions/A/IOKit",
+        "/System/Library/Frameworks/IOSurface.framework/Versions/A/IOSurface",
+        "/System/Library/Frameworks/Metal.framework/Versions/A/Metal",
+        "/System/Library/Frameworks/QuartzCore.framework/Versions/A/QuartzCore",
+        "/System/Library/Frameworks/Security.framework/Versions/A/Security",
+        "/usr/lib/libSystem.B.dylib",
+        "/usr/lib/libc++.1.dylib",
+        "/usr/lib/libiconv.2.dylib",
+        "/usr/lib/libobjc.A.dylib",
+        "/usr/lib/libresolv.9.dylib"
+      ],
+      "runtime_files": [
+        "libonnxruntime.1.23.2.dylib"
+      ],
+      "required_files": [
+        "LICENSE",
+        "ThirdPartyNotices.txt",
+        "AuraFace-LICENSE",
+        "YuNet-LICENSE"
+      ]
+    },
+    {
+      "name": "kennembed_{version}_windows_amd64.zip",
+      "os": "windows",
+      "arch": "amd64",
+      "executable": "kennembed.exe",
+      "kind": "bundle",
+      "baseline": "Current supported Windows with system UCRT and API sets; architecture-specific Visual C++ runtime DLLs supplied app-local, no installed developer runtime required",
+      "system_libraries": [
+        "advapi32.dll",
+        "api-ms-win-core-path-l1-1-0.dll",
+        "api-ms-win-crt-convert-l1-1-0.dll",
+        "api-ms-win-crt-filesystem-l1-1-0.dll",
+        "api-ms-win-crt-heap-l1-1-0.dll",
+        "api-ms-win-crt-locale-l1-1-0.dll",
+        "api-ms-win-crt-math-l1-1-0.dll",
+        "api-ms-win-crt-runtime-l1-1-0.dll",
+        "api-ms-win-crt-stdio-l1-1-0.dll",
+        "api-ms-win-crt-string-l1-1-0.dll",
+        "api-ms-win-crt-time-l1-1-0.dll",
+        "dbghelp.dll",
+        "dxgi.dll",
+        "kernel32.dll",
+        "setupapi.dll",
+        "api-ms-win-crt-environment-l1-1-0.dll",
+        "api-ms-win-crt-utility-l1-1-0.dll"
+      ],
+      "runtime_files": [
+        "onnxruntime.dll",
+        "onnxruntime_providers_shared.dll",
+        "msvcp140.dll",
+        "msvcp140_1.dll",
+        "vcruntime140.dll",
+        "vcruntime140_1.dll"
+      ],
+      "required_files": [
+        "LICENSE",
+        "ThirdPartyNotices.txt",
+        "AuraFace-LICENSE",
+        "YuNet-LICENSE",
+        "Visual-C++-Runtime-License.html"
+      ]
+    },
+    {
+      "name": "kennembed_{version}_windows_arm64.zip",
+      "os": "windows",
+      "arch": "arm64",
+      "executable": "kennembed.exe",
+      "kind": "bundle",
+      "baseline": "Current supported Windows with system UCRT and API sets; architecture-specific Visual C++ runtime DLLs supplied app-local, no installed developer runtime required",
+      "system_libraries": [
+        "advapi32.dll",
+        "api-ms-win-core-path-l1-1-0.dll",
+        "api-ms-win-crt-convert-l1-1-0.dll",
+        "api-ms-win-crt-filesystem-l1-1-0.dll",
+        "api-ms-win-crt-heap-l1-1-0.dll",
+        "api-ms-win-crt-locale-l1-1-0.dll",
+        "api-ms-win-crt-math-l1-1-0.dll",
+        "api-ms-win-crt-runtime-l1-1-0.dll",
+        "api-ms-win-crt-stdio-l1-1-0.dll",
+        "api-ms-win-crt-string-l1-1-0.dll",
+        "api-ms-win-crt-time-l1-1-0.dll",
+        "dbghelp.dll",
+        "dxgi.dll",
+        "kernel32.dll",
+        "setupapi.dll",
+        "api-ms-win-crt-environment-l1-1-0.dll",
+        "api-ms-win-crt-utility-l1-1-0.dll"
+      ],
+      "runtime_files": [
+        "onnxruntime.dll",
+        "onnxruntime_providers_shared.dll",
+        "msvcp140.dll",
+        "msvcp140_1.dll",
+        "vcruntime140.dll"
+      ],
+      "required_files": [
+        "LICENSE",
+        "ThirdPartyNotices.txt",
+        "AuraFace-LICENSE",
+        "YuNet-LICENSE",
+        "Visual-C++-Runtime-License.html"
+      ]
+    }
+  ]
+}

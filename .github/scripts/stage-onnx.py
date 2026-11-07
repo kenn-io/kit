@@ -56,7 +56,11 @@ if args.os == 'windows':
     candidates = sorted((pathlib.Path(installation) / 'VC/Redist/MSVC').glob('*/' + architecture + '/Microsoft.VC*.CRT'))
     if not candidates:
         raise RuntimeError('Visual C++ redistribution files are missing for ' + architecture)
-    for dll in ('msvcp140.dll', 'msvcp140_1.dll', 'vcruntime140.dll', 'vcruntime140_1.dll'):
+    dlls = ['msvcp140.dll', 'msvcp140_1.dll', 'vcruntime140.dll']
+    # ARM64 ONNX and CRTs do not import the AMD64-only vcruntime140_1.dll.
+    if args.arch == 'amd64':
+        dlls.append('vcruntime140_1.dll')
+    for dll in dlls:
         shutil.copy2(candidates[-1] / dll, root / dll)
     subprocess.run(curl + ['--output', str(root / 'Visual-C++-Runtime-License.html'), 'https://aka.ms/VCRedistLicense'], check=True)
 # The server's optional face models retain their distribution notices.
