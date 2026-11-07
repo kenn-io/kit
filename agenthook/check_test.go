@@ -302,6 +302,7 @@ func TestCheckClaudeSettingsPrecedence(t *testing.T) {
 		{"local disables", `{}`, `{"disableAllHooks":false}`, `{"disableAllHooks":true}`, CheckDisabled},
 		{"local enables", `{}`, `{"disableAllHooks":true}`, `{"disableAllHooks":false}`, CheckOK},
 		{"unset keeps user", `{"disableAllHooks":true}`, `{}`, `{}`, CheckDisabled},
+		{"invalid user", `{"disableAllHooks":"true"}`, `{}`, "", CheckUnknown},
 		{"invalid project", `{}`, `invalid`, "", CheckUnknown},
 		{"invalid local", `{}`, `{}`, `invalid`, CheckUnknown},
 	} {

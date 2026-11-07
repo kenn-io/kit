@@ -64,7 +64,10 @@ func claudeHooksDisabled(ctx context.Context, user map[string]any) (bool, error)
 			paths = append(paths, filepath.Join(root, ".claude", "settings.local.json"))
 		}
 	}
-	disabled, _ := user["disableAllHooks"].(bool)
+	disabled, valid := user["disableAllHooks"].(bool)
+	if _, exists := user["disableAllHooks"]; exists && !valid {
+		return false, errors.New("Claude Code setting disableAllHooks in user settings must be a boolean")
+	}
 	for _, path := range paths {
 		settings, _, err := readJSONConfig(path)
 		if err != nil {

@@ -55,13 +55,14 @@
 // Plain command strings use POSIX syntax on every platform. Codex's active
 // commandWindows override uses Win32 argument quoting on Windows.
 // Codex checks its current workspace's effective feature, discovery, enablement,
-// and trust through app-server. Missing registrations return missing before
+// and trust through app-server. Missing Codex registrations return missing before
 // starting Codex. For discovered hooks, states take precedence in this order:
 // disabled, modified, outdated, untrusted, ok. Only enabled trusted or managed
 // hooks can be ok. Review consent remains with Codex's /hooks interface.
 // Claude Code has no native hook probe here: ok covers its active user
 // registrations, disableAllHooks in user, project, and local settings for the
 // current directory, and executable resolution. Managed policy remains unverified.
+// Claude's disabled settings take precedence over missing registrations.
 // Raw commands requiring shell interpretation and executable lookup
 // failures return unknown with the reason and a corrective step. Neither check
 // establishes runtime permissions or successful hook execution. A config outside
