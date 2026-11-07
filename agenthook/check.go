@@ -43,7 +43,7 @@ type CheckResult struct {
 // Starting Codex app-server may create state files and install bundled skills.
 // Invalid install options return an error. Inspection failures return unknown.
 func Check(ctx context.Context, agent Agent, options CheckOptions) (CheckResult, error) {
-	_, path, _, opts, _, err := prepareRegistration(agent, options.InstallOptions)
+	spec, path, hooks, opts, argv, err := prepareRegistration(agent, options.InstallOptions)
 	if err != nil {
 		return CheckResult{}, err
 	}
@@ -84,11 +84,11 @@ func Check(ctx context.Context, agent Agent, options CheckOptions) (CheckResult,
 			return set(state, reason, step)
 		}
 	}
-	planned, err := PlanInstall(agent, options.InstallOptions)
+	_, changed, err := planConfig(spec, path, opts.Marker, opts.Command, opts.CommandWindows, argv, hooks, false)
 	if err != nil {
 		return set(CheckUnknown, err.Error(), "Correct the agent hook config")
 	}
-	if planned.Changed {
+	if changed {
 		return set(CheckOutdated, "Installed hooks differ from the requested registrations", "Reinstall the application's hooks")
 	}
 	if state == CheckUntrusted {
