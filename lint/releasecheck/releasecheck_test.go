@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"debug/macho"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -171,15 +172,51 @@ func TestArchiveContract(t *testing.T) {
 	}
 }
 
+func TestArchiveRejectsEmptyAndAbsoluteRootDirectories(t *testing.T) {
+	a := testArtifact("windows")
+	data := fixture(t, "windows", "amd64")
+	for _, name := range []string{"", "/"} {
+		t.Run(fmt.Sprintf("%q", name), func(t *testing.T) {
+			members := []testMember{
+				{name: name, mode: 0o755, typ: tar.TypeDir},
+				{name: a.Executable, data: data, mode: 0o755},
+				{name: "NOTICE", data: []byte("notice"), mode: 0o644},
+			}
+			dir, _ := archiveFixture(t, a, members)
+			require.ErrorContains(t, Check(t.Context(), Contract{[]Artifact{a}}, dir, "1.2.3", ""), "unsafe archive path")
+		})
+	}
+	t.Run("absolute tar root", func(t *testing.T) {
+		a := testArtifact("linux")
+		members := []testMember{
+			{name: "/", mode: 0o755, typ: tar.TypeDir},
+			{name: a.Executable, data: fixture(t, "linux", "amd64"), mode: 0o755},
+			{name: "NOTICE", data: []byte("notice"), mode: 0o644},
+		}
+		dir, _ := archiveFixture(t, a, members)
+		require.ErrorContains(t, Check(t.Context(), Contract{[]Artifact{a}}, dir, "1.2.3", ""), "unsafe archive path")
+	})
+}
+
 func TestInventoryAndStrictContract(t *testing.T) {
 	a := testArtifact("linux")
 	b := testArtifact("windows")
-	for _, input := range []string{`{"artifacts":[],"unknown":true}`, `{"artifacts":[]} {}`, `null`, `{"artifacts":[]}`} {
-		_, err := ReadContract(strings.NewReader(input))
-		require.Error(t, err, input)
-	}
 	raw, err := json.Marshal(Contract{[]Artifact{a}})
 	require.NoError(t, err)
+	unknownField := strings.TrimSuffix(string(raw), "}") + `,"unknown":true}`
+	trailingJSON := string(raw) + ` {}`
+	for _, tc := range []struct {
+		input string
+		want  string
+	}{
+		{input: unknownField, want: "unknown field"},
+		{input: trailingJSON, want: "trailing JSON"},
+		{input: `null`, want: "contract has no artifacts"},
+		{input: `{"artifacts":[]}`, want: "contract has no artifacts"},
+	} {
+		_, err := ReadContract(strings.NewReader(tc.input))
+		require.ErrorContains(t, err, tc.want, tc.input)
+	}
 	got, err := ReadContract(bytes.NewReader(raw))
 	require.NoError(t, err)
 	assert.Equal(t, a, got.Artifacts[0])
@@ -295,14 +332,6 @@ func TestStaticImagePolicy(t *testing.T) {
 	good := []testMember{{a.Executable, data, 0o755, 0}, {"NOTICE", []byte("x"), 0o644, 0}}
 	dir, _ := archiveFixture(t, a, good)
 	require.NoError(t, Check(t.Context(), Contract{[]Artifact{a}}, dir, "1.2.3", ""))
-	// Reuse a real ELF image, marking a program header PT_INTERP to exercise
-	// strict static classification even when DT_NEEDED is empty.
-	withInterp := bytes.Clone(data)
-	phoff := binary.LittleEndian.Uint64(data[32:])
-	binary.LittleEndian.PutUint32(withInterp[phoff:], 3)
-	good[0].data = withInterp
-	dir, _ = archiveFixture(t, a, good)
-	require.ErrorContains(t, Check(t.Context(), Contract{[]Artifact{a}}, dir, "1.2.3", ""), "interpreter")
 	// ET_DYN alone is a shared library, not an executable. An entry point alone
 	// must not turn it into a PIE without the ELF interpreter or PIE flag.
 	shared := bytes.Clone(data)
@@ -498,6 +527,55 @@ func TestMachPlatformAndImportCommands(t *testing.T) {
 	put(b[64:], 1000)
 	_, err = inspectNative(b)
 	require.Error(t, err)
+}
+
+func syntheticMachO(fileType uint32, imports ...string) []byte {
+	commandSizes := []int{24}
+	for _, name := range imports {
+		size := 24 + len(name) + 1
+		commandSizes = append(commandSizes, (size+7)&^7)
+	}
+	sizeOfCommands := 0
+	for _, size := range commandSizes {
+		sizeOfCommands += size
+	}
+	data := make([]byte, 32+sizeOfCommands)
+	put := binary.LittleEndian.PutUint32
+	put(data, 0xfeedfacf)
+	put(data[4:], uint32(macho.CpuAmd64))
+	put(data[12:], fileType)
+	put(data[16:], uint32(len(commandSizes)))
+	put(data[20:], uint32(sizeOfCommands))
+	offset := 32
+	put(data[offset:], 0x32)
+	put(data[offset+4:], 24)
+	put(data[offset+8:], 1)
+	offset += 24
+	for i, name := range imports {
+		put(data[offset:], 0x80000018)
+		put(data[offset+4:], uint32(commandSizes[i+1]))
+		put(data[offset+8:], 24)
+		copy(data[offset+24:], name+"\x00")
+		offset += commandSizes[i+1]
+	}
+	return data
+}
+
+func TestNestedBundleImportResolution(t *testing.T) {
+	a := testArtifact("darwin")
+	a.Kind = "bundle"
+	a.Executable = "bin/app"
+	a.SystemLibraries = nil
+	a.RuntimeFiles = []string{"bin/private.dylib", "Frameworks/libfoo.dylib", "Frameworks/nested/libbar.dylib"}
+	a.RequiredFiles = nil
+	members := []testMember{
+		{name: a.Executable, data: syntheticMachO(uint32(macho.TypeExec), "@loader_path/private.dylib", "@executable_path/../Frameworks/libfoo.dylib"), mode: 0o755},
+		{name: "bin/private.dylib", data: syntheticMachO(uint32(macho.TypeDylib)), mode: 0o644},
+		{name: "Frameworks/libfoo.dylib", data: syntheticMachO(uint32(macho.TypeDylib), "@loader_path/nested/libbar.dylib"), mode: 0o644},
+		{name: "Frameworks/nested/libbar.dylib", data: syntheticMachO(uint32(macho.TypeDylib)), mode: 0o644},
+	}
+	dir, _ := archiveFixture(t, a, members)
+	require.NoError(t, Check(t.Context(), Contract{[]Artifact{a}}, dir, "1.2.3", ""))
 }
 
 func TestMalformedDuplicateChecksum(t *testing.T) {

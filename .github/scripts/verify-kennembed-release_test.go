@@ -89,13 +89,39 @@ func writeReleaseContract(t *testing.T, dir string, bundle bool) string {
 	data, err := json.Marshal(map[string]any{"artifacts": []any{map[string]any{
 		"name": "fixture_{version}_" + runtime.GOOS + "_" + runtime.GOARCH + releaseArchiveSuffix(),
 		"os":   runtime.GOOS, "arch": runtime.GOARCH, "executable": releaseExecutableName(), "kind": kind,
-		"baseline": "native synthetic fixture", "system_libraries": []string{"/usr/lib/libSystem.B.dylib", "/usr/lib/libresolv.9.dylib", "kernel32.dll"},
+		"baseline": "native synthetic fixture", "system_libraries": releaseSystemLibraries(runtime.GOOS),
 		"runtime_files": companions, "required_files": []string{"NOTICE"},
 	}}})
 	require.NoError(t, err)
 	path := filepath.Join(dir, "contract.json")
 	require.NoError(t, os.WriteFile(path, data, 0o600))
 	return path
+}
+
+func releaseSystemLibraries(goos string) []string {
+	switch goos {
+	case "darwin":
+		return []string{"/usr/lib/libSystem.B.dylib", "/usr/lib/libresolv.9.dylib"}
+	case "windows":
+		return []string{"kernel32.dll"}
+	default:
+		return nil
+	}
+}
+
+func TestReleaseSystemLibrariesArePlatformSpecific(t *testing.T) {
+	for _, tc := range []struct {
+		goos string
+		want []string
+	}{
+		{goos: "linux"},
+		{goos: "darwin", want: []string{"/usr/lib/libSystem.B.dylib", "/usr/lib/libresolv.9.dylib"}},
+		{goos: "windows", want: []string{"kernel32.dll"}},
+	} {
+		t.Run(tc.goos, func(t *testing.T) {
+			assert.Equal(t, tc.want, releaseSystemLibraries(tc.goos))
+		})
+	}
 }
 
 func releaseExecutable(t *testing.T) []byte {

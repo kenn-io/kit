@@ -112,6 +112,9 @@ func (m *archiveMembers) add(name string, mode fs.FileMode, size int64, r io.Rea
 	if err := m.ctx.Err(); err != nil {
 		return err
 	}
+	if name == "" || path.IsAbs(name) {
+		return fmt.Errorf("unsafe archive path %q", name)
+	}
 	for strings.HasPrefix(name, "./") {
 		name = strings.TrimPrefix(name, "./")
 	}
@@ -317,7 +320,7 @@ func checkMembers(ctx context.Context, a Artifact, files map[string]member) erro
 			if a.Kind != "bundle" {
 				return fmt.Errorf("%s: import %q is not a declared baseline system library", name, lib)
 			}
-			candidate := bundledImport(a, lib)
+			candidate := bundledImport(a, name, lib)
 			found := false
 			for _, runtime := range a.RuntimeFiles {
 				if candidate != "" && key(candidate) == key(runtime) {
@@ -333,19 +336,42 @@ func checkMembers(ctx context.Context, a Artifact, files map[string]member) erro
 	return nil
 }
 
-func bundledImport(a Artifact, lib string) string {
-	// These explicit spellings identify members, without simulating search paths.
-	if strings.HasPrefix(lib, "/") || strings.Contains(lib, "\\") || strings.Contains(lib, ":") {
+func bundledImport(a Artifact, loader, lib string) string {
+	// Resolve explicit loader-relative spellings against the image that imports
+	// them, and executable-relative spellings against the main executable. @rpath
+	// and bare names remain direct archive-root member checks; this does not
+	// simulate loader search paths.
+	if strings.HasPrefix(lib, "/") || strings.ContainsAny(lib, "\\:\x00") {
 		return ""
 	}
-	for _, prefix := range []string{"@rpath/", "@loader_path/", "@executable_path/", "$ORIGIN/", "${ORIGIN}/"} {
-		if rest, ok := strings.CutPrefix(lib, prefix); ok {
-			lib = rest
-			break
-		}
+	base := "."
+	loaderRelative := false
+	switch {
+	case strings.HasPrefix(lib, "@rpath/"):
+		lib = strings.TrimPrefix(lib, "@rpath/")
+	case strings.HasPrefix(lib, "@loader_path/"):
+		base = path.Dir(loader)
+		loaderRelative = true
+		lib = strings.TrimPrefix(lib, "@loader_path/")
+	case strings.HasPrefix(lib, "@executable_path/"):
+		base = path.Dir(a.Executable)
+		loaderRelative = true
+		lib = strings.TrimPrefix(lib, "@executable_path/")
+	case strings.HasPrefix(lib, "$ORIGIN/"):
+		base = path.Dir(loader)
+		loaderRelative = true
+		lib = strings.TrimPrefix(lib, "$ORIGIN/")
+	case strings.HasPrefix(lib, "${ORIGIN}/"):
+		base = path.Dir(loader)
+		loaderRelative = true
+		lib = strings.TrimPrefix(lib, "${ORIGIN}/")
 	}
-	if !memberPath(lib) {
+	if lib == "" || strings.HasPrefix(lib, "/") || !loaderRelative && !memberPath(lib) {
 		return ""
 	}
-	return lib
+	candidate := path.Join(base, lib)
+	if !memberPath(candidate) {
+		return ""
+	}
+	return candidate
 }

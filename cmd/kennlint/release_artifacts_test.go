@@ -15,7 +15,7 @@ import (
 )
 
 func TestReleaseArtifactsArguments(t *testing.T) {
-	for _, args := range [][]string{nil, {"-version", "1"}, {"-contract", "missing"}, {"-contract", "missing", "-version", "1"}, {"-contract", "missing", "-version", "1", "extra"}, {"-unknown"}} {
+	for _, args := range [][]string{nil, {"-version", "1"}, {"-contract", "contract.json"}} {
 		var out, stderr bytes.Buffer
 		require.Error(t, runReleaseArtifacts(t.Context(), args, &out, &stderr))
 		require.Empty(t, out.String())
@@ -50,6 +50,21 @@ func TestReleaseArtifactsSuccessAndFailure(t *testing.T) {
 	var out, stderr bytes.Buffer
 	require.NoError(t, runReleaseArtifacts(t.Context(), args, &out, &stderr))
 	require.Equal(t, "checked 1 release artifacts\n", out.String())
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "positional argument", args: append(append([]string{}, args...), "extra"), want: "unexpected arguments"},
+		{name: "unknown flag", args: append(append([]string{}, args...), "-unknown"), want: "flag provided but not defined: -unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out.Reset()
+			err := runReleaseArtifacts(t.Context(), tc.args, &out, &stderr)
+			require.ErrorContains(t, err, tc.want)
+			require.Empty(t, out.String())
+		})
+	}
 	for _, selector := range []string{"", "windows", "unknown"} {
 		out.Reset()
 		require.Error(t, runReleaseArtifacts(t.Context(), append(append([]string{}, args...), "-os", selector), &out, &stderr))
