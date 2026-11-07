@@ -287,7 +287,7 @@ Here `run` records the selected mode before executing the command, and
 `emitError` is the CLI's existing human, agent, or JSON error renderer. Keep
 panic values and request data out of the public message.
 
-Kata [#819](https://github.com/kenn-io/kata/pull/819) implements this rule for
+Kata [#819](https://github.com/kenn-io/kata/blob/af584bf321abc89e95a2efb3233bf4ff01ba718d/cmd/kata/main.go#L182-L201) implements this rule for
 the CLI's main goroutine, with tests for human, agent, and JSON output; the
 foreground daemon keeps its existing panic diagnostics.
 
