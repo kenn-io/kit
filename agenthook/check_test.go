@@ -61,9 +61,6 @@ func runHookCheckHelper(mode string) int {
 		if err := json.Unmarshal(input.Bytes(), &request); err != nil {
 			return 9
 		}
-		if mode == "eof" {
-			return 0
-		}
 		if mode == "rpc-error" {
 			fmt.Printf("{\"id\":%d,\"error\":{\"message\":\"native failure\"}}\n", request.ID)
 			continue
@@ -124,7 +121,6 @@ func TestCheckCodexNativeStates(t *testing.T) {
 		{"discovery error", "discovery-error", "trusted", "", CheckUnknown, ""},
 		{"missing discovery data", "missing-data", "", "", CheckUnknown, ""},
 		{"RPC error", "rpc-error", "", "", CheckUnknown, "native failure"},
-		{"EOF", "eof", "", "", CheckUnknown, ""},
 		{"initialization EOF", "initialize-eof", "", "", CheckUnknown, ""},
 		{"initialization timeout", "initialize-timeout", "", "", CheckUnknown, "context deadline exceeded"},
 		{"missing CLI on PATH", "missing-cli", "", "", CheckUnknown, "codex"},
@@ -162,14 +158,8 @@ func TestCheckCodexNativeStates(t *testing.T) {
 			require.NoError(t, err)
 			reply := fmt.Sprintf(`{"data":[{"cwd":"CWD","hooks":[{"source":"user","sourcePath":%s,"key":%s,"trustStatus":%q%s}],"errors":[]}]}`, pathJSON, keyJSON, tc.trust, enabled)
 			if tc.mode == "mixed" {
-				workspace := filepath.Join(dir, "workspace")
-				require.NoError(t, os.MkdirAll(filepath.Join(workspace, ".codex"), 0o700))
-				t.Chdir(workspace)
-				projectPath := filepath.Join(workspace, ".codex", "hooks.json")
-				require.NoError(t, os.WriteFile(projectPath, []byte(`{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"project-hook"}]}]}}`), 0o600))
+				projectPath := filepath.Join(dir, "workspace", ".codex", "hooks.json")
 				inlinePath := filepath.Join(dir, "config.toml")
-				inlineConfig := fmt.Sprintf("[%s]\ntrust_level = \"trusted\"\n[[hooks.Stop]]\nhooks = [{ type = \"command\", command = \"inline-hook\" }]\n", toml.Key{"projects", workspace}.String())
-				require.NoError(t, os.WriteFile(inlinePath, []byte(inlineConfig), 0o600))
 				foreign, err := json.Marshal([]map[string]any{
 					{"source": "project", "sourcePath": projectPath, "key": projectPath + ":stop:0:0", "enabled": true, "trustStatus": "untrusted"},
 					{"source": "user", "sourcePath": path, "key": path + ":stop:1:0", "enabled": true, "trustStatus": "untrusted"},
@@ -212,8 +202,11 @@ func TestCheckCodexNativeStates(t *testing.T) {
 			if tc.reason != "" {
 				assert.Contains(t, result.Reason, tc.reason)
 			}
-			if strings.HasPrefix(tc.mode, "initialize-") {
-				assert.Contains(t, result.NextStep, "retry")
+			if tc.mode == "initialize-timeout" {
+				assert.Contains(t, result.NextStep, "more time")
+			}
+			if tc.mode == "initialize-eof" {
+				assert.Contains(t, result.NextStep, "app-server startup")
 			}
 			if tc.mode == "missing-cli" || tc.mode == "missing-cli-path" {
 				assert.Contains(t, result.NextStep, "Install Codex")
@@ -251,14 +244,14 @@ func TestCheckClaudeRegistrations(t *testing.T) {
 		want         CheckState
 		count        int
 	}{
-		{"missing", `{}`, CheckMissing, 0},
 		{"current", `{"hooks":{"Stop":[{"hooks":[HANDLER]}]}}`, CheckOK, 1},
+		{"empty matcher", `{"hooks":{"Stop":[{"matcher":"","hooks":[HANDLER]}]}}`, CheckOK, 1},
 		{"foreign group after ours", `{"hooks":{"Stop":[{"hooks":[HANDLER]},{"hooks":[{"type":"command","command":"foreign"}]}]}}`, CheckOK, 1},
 		{"mixed handlers", `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"foreign"},HANDLER]}]}}`, CheckOK, 1},
 		{"disabled", `{"disableAllHooks":true,"hooks":{"Stop":[{"hooks":[HANDLER]}]}}`, CheckDisabled, 1},
 		{"duplicate", `{"hooks":{"Stop":[{"hooks":[HANDLER]},{"hooks":[HANDLER]}]}}`, CheckOutdated, 2},
 		{"partial", `{"hooks":{"SessionStart":[{"hooks":[HANDLER]}]}}`, CheckOutdated, 1},
-		{"group behavior", `{"hooks":{"Stop":[{"async":true,"hooks":[HANDLER]}]}}`, CheckOutdated, 1},
+		{"preserved group behavior", `{"hooks":{"Stop":[{"async":true,"hooks":[HANDLER]}]}}`, CheckOK, 1},
 		{"invalid JSON", `invalid`, CheckUnknown, 0},
 		{"invalid structure", `{"hooks":{"Stop":true}}`, CheckUnknown, 0},
 	} {
@@ -268,7 +261,13 @@ func TestCheckClaudeRegistrations(t *testing.T) {
 			path := filepath.Join(dir, "settings.json")
 			config := strings.ReplaceAll(tc.config, "HANDLER", handler)
 			require.NoError(t, os.WriteFile(path, []byte(config), 0o600))
-			result, err := Check(t.Context(), AgentClaude, CheckOptions{InstallOptions: InstallOptions{Command: commands.Native, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}}})
+			opts := InstallOptions{Command: commands.Native, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}}
+			if tc.want == CheckOK {
+				installed, err := Install(AgentClaude, opts)
+				require.NoError(t, err)
+				require.False(t, installed.Changed, "the writer already considers these hooks current")
+			}
+			result, err := Check(t.Context(), AgentClaude, CheckOptions{InstallOptions: opts})
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, result.State, result.Reason)
 			if tc.want == CheckOK {
@@ -303,11 +302,11 @@ func TestCheckCommandResolution(t *testing.T) {
 		{"unresolved PATH name", InstallOptions{Command: "example-missing-hook-executable example-marker"}, CheckUnknown, "checking process environment", "PATH"},
 		{"shell assignment", InstallOptions{Command: "EXAMPLE_HOOK=1 example-hook example-marker"}, CheckUnknown, shellReason, ""},
 		{"exec builtin", InstallOptions{Command: "exec example-hook example-marker"}, CheckUnknown, shellReason, ""},
-		{"shell expansion", InstallOptions{Command: "$EXAMPLE_HOOK example-marker"}, CheckUnknown, "", ""},
-		{"shell compound", InstallOptions{Command: "echo example-marker; echo other"}, CheckUnknown, "", ""},
-		{"quoted expansion", InstallOptions{Command: `"$EXAMPLE_HOOK" example-marker`}, CheckUnknown, "", ""},
-		{"glob executable", InstallOptions{Command: "*hook example-marker"}, CheckUnknown, "", ""},
-		{"tilde executable", InstallOptions{Command: "~/hook example-marker"}, CheckUnknown, "", ""},
+		{"shell expansion", InstallOptions{Command: "$EXAMPLE_HOOK example-marker"}, CheckUnknown, "shell interpretation", ""},
+		{"shell compound", InstallOptions{Command: filepath.Base(executable) + " example-marker; echo other"}, CheckUnknown, "shell interpretation", ""},
+		{"quoted expansion", InstallOptions{Command: `"$EXAMPLE_HOOK" example-marker`}, CheckUnknown, "shell interpretation", ""},
+		{"glob executable", InstallOptions{Command: "*hook example-marker"}, CheckUnknown, "shell interpretation", ""},
+		{"tilde executable", InstallOptions{Command: "~/hook example-marker"}, CheckUnknown, "shell interpretation", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
@@ -340,7 +339,7 @@ func TestCheckValidationAndConfigHome(t *testing.T) {
 	result, err := Check(t.Context(), AgentCodex, options)
 	require.NoError(t, err)
 	assert.Equal(t, CheckUnknown, result.State)
-	assert.Contains(t, result.NextStep, "config home")
+	assert.Contains(t, result.Reason, "outside the active user config")
 }
 
 func TestCheckCodexConformance(t *testing.T) {

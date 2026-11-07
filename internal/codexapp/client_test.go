@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.kenn.io/kit/consolewindow"
 )
 
 func TestMain(m *testing.M) {
@@ -26,6 +28,10 @@ func TestMain(m *testing.M) {
 }
 
 func runClientHelper(mode string) int {
+	if mode == "hold-pipes" {
+		<-time.After(10 * time.Second)
+		return 0
+	}
 	if len(os.Args) != 3 || os.Args[1] != "app-server" || os.Args[2] != "--stdio" {
 		return 2
 	}
@@ -57,6 +63,22 @@ func runClientHelper(mode string) int {
 	if mode == "initialize-eof" {
 		return 0
 	}
+	if mode == "block" {
+		// A launcher can exit while a descendant retains its stdout pipe.
+		child := consolewindow.CommandContext(context.Background(), os.Args[0], "app-server", "--stdio")
+		child.Env = append(os.Environ(), "KIT_CODEXAPP_TEST_HELPER=hold-pipes")
+		child.Stdout = os.Stdout
+		if err := child.Start(); err != nil {
+			return 12
+		}
+		pid := []byte(strconv.Itoa(child.Process.Pid))
+		if err := os.WriteFile(os.Getenv("KIT_CODEXAPP_TEST_DESCENDANT"), pid, 0o600); err != nil {
+			_ = child.Process.Kill()
+			_ = child.Wait()
+			return 13
+		}
+		_ = child.Process.Release()
+	}
 	fmt.Println(`{"method":"notice","params":{}}`)
 	fmt.Println(`{"id":999,"result":{}}`)
 	fmt.Println(`{"id":1,"result":{}}`)
@@ -74,8 +96,7 @@ func runClientHelper(mode string) int {
 			signal.Stop(signals)
 			return 10
 		}
-		cwd, _ := os.Getwd()
-		if request.ID != 2 || request.Method != "config/read" || request.Params["includeLayers"] != false || request.Params["cwd"] != cwd {
+		if request.ID != 2 || request.Method != "example/read" || request.Params["example"] != "value" {
 			return 11
 		}
 		fmt.Println(`{"id":2,"result":{"ready":true}}`)
@@ -102,6 +123,22 @@ func TestClientCancellationAndEOF(t *testing.T) {
 			t.Setenv("KIT_CODEXAPP_TEST_HELPER", mode)
 			t.Setenv("KIT_CODEXAPP_TEST_PID", pidFile)
 			t.Setenv("KIT_CODEXAPP_TEST_EXIT", exitFile)
+			if mode == "block" {
+				descendantFile := filepath.Join(dir, "descendant")
+				t.Setenv("KIT_CODEXAPP_TEST_DESCENDANT", descendantFile)
+				t.Cleanup(func() {
+					data, err := os.ReadFile(descendantFile)
+					require.NoError(t, err)
+					pid, err := strconv.Atoi(string(data))
+					require.NoError(t, err)
+					child, err := os.FindProcess(pid)
+					require.NoError(t, err)
+					if err := child.Kill(); !errors.Is(err, os.ErrProcessDone) {
+						assert.NoError(t, err)
+					}
+					_ = child.Release()
+				})
+			}
 			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 			defer cancel()
 			client, startErr := Start(ctx, executable, dir)
@@ -113,12 +150,14 @@ func TestClientCancellationAndEOF(t *testing.T) {
 					Ready bool `json:"ready"`
 				}
 				var callErr error
+				started := time.Now()
 				if mode == "normal" || mode == "block" {
-					callErr = client.Call("config/read", map[string]any{"includeLayers": false, "cwd": dir}, &reply)
+					callErr = client.Call("example/read", map[string]any{"example": "value"}, &reply)
 				}
 				client.Close()
 				if mode == "block" {
 					require.Error(t, callErr)
+					assert.Less(t, time.Since(started), 3*time.Second, "cancellation must interrupt a read while the descendant holds stdout")
 				}
 				if mode == "normal" {
 					require.NoError(t, callErr)

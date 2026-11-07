@@ -3,10 +3,8 @@ package agenthook
 import (
 	"context"
 	"fmt"
-	"maps"
 	"os/exec"
 	"runtime"
-	"slices"
 	"strings"
 
 	"go.kenn.io/kit/pathresolve"
@@ -45,7 +43,7 @@ type CheckResult struct {
 // Starting Codex app-server may create state files and install bundled skills.
 // Invalid install options return an error. Inspection failures return unknown.
 func Check(ctx context.Context, agent Agent, options CheckOptions) (CheckResult, error) {
-	_, path, hooks, opts, argv, err := prepareRegistration(agent, options.InstallOptions)
+	_, path, _, opts, _, err := prepareRegistration(agent, options.InstallOptions)
 	if err != nil {
 		return CheckResult{}, err
 	}
@@ -68,7 +66,7 @@ func Check(ctx context.Context, agent Agent, options CheckOptions) (CheckResult,
 	if err != nil {
 		return set(CheckUnknown, err.Error(), "Correct the agent hook config")
 	}
-	installed, records, err := ownedRegistrations(root, path, opts.Marker)
+	records, err := ownedRegistrations(root, path, opts.Marker)
 	if err != nil {
 		return set(CheckUnknown, err.Error(), "Correct the agent hook config")
 	}
@@ -79,14 +77,6 @@ func Check(ctx context.Context, agent Agent, options CheckOptions) (CheckResult,
 	if len(records) == 0 {
 		return set(CheckMissing, "No hooks belonging to this marker are installed", "Install the application's hooks")
 	}
-	expected := map[string]any{}
-	if err := applyNestedJSONHooks(expected, path, opts.Marker, opts.Command, opts.CommandWindows, argv, hooks, false); err != nil {
-		return CheckResult{}, err
-	}
-	desired, _, err := ownedRegistrations(expected, path, opts.Marker)
-	if err != nil {
-		return CheckResult{}, err
-	}
 	state, reason, step := CheckOK, "", ""
 	if agent == AgentCodex {
 		state, reason, step = checkCodex(ctx, path, options.CodexExecutable, records)
@@ -94,7 +84,11 @@ func Check(ctx context.Context, agent Agent, options CheckOptions) (CheckResult,
 			return set(state, reason, step)
 		}
 	}
-	if !slices.Equal(installed, desired) {
+	planned, err := PlanInstall(agent, options.InstallOptions)
+	if err != nil {
+		return set(CheckUnknown, err.Error(), "Correct the agent hook config")
+	}
+	if planned.Changed {
 		return set(CheckOutdated, "Installed hooks differ from the requested registrations", "Reinstall the application's hooks")
 	}
 	if state == CheckUntrusted {
@@ -130,53 +124,36 @@ type ownedRegistration struct {
 	group, handlerIndex int
 }
 
-// Keep owned handlers together within each group. Group fields affect all its
-// handlers; unrelated commands and group positions do not affect freshness.
-func ownedRegistrations(root map[string]any, path, marker string) ([]string, []ownedRegistration, error) {
+func ownedRegistrations(root map[string]any, path, marker string) ([]ownedRegistration, error) {
 	hooks, err := jsonHooksObject(root, path, false)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	var groups []string
 	var records []ownedRegistration
 	for event := range hooks {
 		entries, err := jsonEventEntries(hooks, event, path)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		for i, raw := range entries {
 			group, ok := raw.(map[string]any)
 			if !ok {
-				return nil, nil, fmt.Errorf("invalid hook group for %s", event)
+				return nil, fmt.Errorf("invalid hook group for %s", event)
 			}
 			handlers, ok := group["hooks"].([]any)
 			if !ok {
-				return nil, nil, fmt.Errorf("invalid hook handlers for %s", event)
+				return nil, fmt.Errorf("invalid hook handlers for %s", event)
 			}
-			var owned []any
 			for j, raw := range handlers {
 				handler, ok := raw.(map[string]any)
 				if !ok {
-					return nil, nil, fmt.Errorf("invalid hook handler for %s", event)
+					return nil, fmt.Errorf("invalid hook handler for %s", event)
 				}
-				command := jsonHookCommand(handler)
-				if strings.Contains(command, marker) {
-					owned = append(owned, handler)
+				if ownsJSONHandler(handler, marker) {
 					records = append(records, ownedRegistration{event, i, j})
 				}
 			}
-			if len(owned) == 0 {
-				continue
-			}
-			selected := maps.Clone(group)
-			selected["hooks"] = owned
-			data, err := marshalJSONConfig(map[string]any{event: selected})
-			if err != nil {
-				return nil, nil, err
-			}
-			groups = append(groups, string(data))
 		}
 	}
-	slices.Sort(groups)
-	return groups, records, nil
+	return records, nil
 }

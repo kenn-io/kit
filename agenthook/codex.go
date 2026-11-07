@@ -49,13 +49,13 @@ func checkCodex(ctx context.Context, path, executable string, owned []ownedRegis
 	client, err := codexapp.Start(ctx, executable, cwd)
 	if err != nil {
 		step := "Check Codex app-server startup and retry"
-		var pathError *os.PathError
+		pathError, _ := errors.AsType[*os.PathError](err)
 		switch {
 		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 			step = "Allow more time for Codex to start and retry"
 		case errors.Is(err, exec.ErrNotFound), errors.Is(err, os.ErrNotExist):
 			step = "Install Codex and make it available on PATH"
-		case errors.As(err, &pathError) && pathError.Op == "fork/exec":
+		case pathError != nil && pathError.Op == "fork/exec":
 			step = "Check the Codex executable path and permissions and retry"
 		}
 		return CheckUnknown, err.Error(), step
