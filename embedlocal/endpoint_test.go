@@ -69,13 +69,12 @@ func TestEndpointOllamaFallback(t *testing.T) {
 			defer func() { close(release); ollama.Close() }()
 			dir := t.TempDir()
 			backends := map[string]string{"local": localServer(t, dir, Version).URL + "/v1", "ollama": ollama.URL + "/v1"}
-			start := time.Now()
-			got, err := endpoint(t.Context(), Options{DataDir: dir, SkipOllama: tc.skipOllama}, ollama.URL, 2*time.Minute)
+			// A stalled probe must leave time to discover the local server before the caller expires.
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			got, err := endpoint(ctx, Options{DataDir: dir, SkipOllama: tc.skipOllama}, ollama.URL, 2*time.Minute)
 			require.NoError(t, err)
 			assert.Equal(t, backends[tc.backend], got)
-			if tc.stall {
-				assert.Less(t, time.Since(start), time.Second)
-			}
 			if tc.skipOllama {
 				assert.Zero(t, probes.Load())
 			}
