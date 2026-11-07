@@ -1,5 +1,18 @@
 package agenthook
 
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+
+	gitcmd "go.kenn.io/kit/git/cmd"
+	gitrepo "go.kenn.io/kit/git/repo"
+)
+
 func claudeProfile() profileSpec {
 	spec := newProfileSpec(
 		Profile{
@@ -27,4 +40,43 @@ func claudeProfile() profileSpec {
 	// executable directly: https://code.claude.com/docs/en/hooks#command-hook-fields
 	spec.windowsCommandStyle = windowsCommandExec
 	return spec
+}
+
+// https://code.claude.com/docs/en/settings#settings-precedence
+func claudeHooksDisabled(ctx context.Context, user map[string]any) (bool, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return false, err
+	}
+	paths := []string{filepath.Join(cwd, ".claude", "settings.json"), filepath.Join(cwd, ".claude", "settings.local.json")}
+	if runtime.GOOS != "windows" {
+		// Claude keeps local settings at the main checkout root on Unix.
+		// https://code.claude.com/docs/en/settings#where-claude-code-keeps-the-local-file-in-a-git-repository
+		root, err := gitrepo.MainRoot(ctx, cwd)
+		if err != nil && !gitcmd.IsExitCode(err, 128) && !errors.Is(err, exec.ErrNotFound) {
+			return false, err
+		}
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return false, err
+		}
+		if root != "" && !sameConfigPath(root, cwd) && !sameConfigPath(root, home) {
+			paths = append(paths, filepath.Join(root, ".claude", "settings.local.json"))
+		}
+	}
+	disabled, _ := user["disableAllHooks"].(bool)
+	for _, path := range paths {
+		settings, _, err := readJSONConfig(path)
+		if err != nil {
+			return false, err
+		}
+		if value, exists := settings["disableAllHooks"]; exists {
+			var ok bool
+			disabled, ok = value.(bool)
+			if !ok {
+				return false, fmt.Errorf("Claude Code setting disableAllHooks in %s must be a boolean", path)
+			}
+		}
+	}
+	return disabled, nil
 }

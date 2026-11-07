@@ -16,6 +16,7 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	gittest "go.kenn.io/kit/git/test"
 	"go.kenn.io/kit/internal/codexapp"
 )
 
@@ -248,6 +249,7 @@ func TestCheckCodexNativeStates(t *testing.T) {
 }
 
 func TestCheckClaudeRegistrations(t *testing.T) {
+	t.Chdir(t.TempDir())
 	executable, err := os.Executable()
 	require.NoError(t, err)
 	commands, err := BuildCommand(executable, "example-marker")
@@ -288,7 +290,76 @@ func TestCheckClaudeRegistrations(t *testing.T) {
 	}
 }
 
+func TestCheckClaudeSettingsPrecedence(t *testing.T) {
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name, user, project, local string
+		want                       CheckState
+	}{
+		{"project disables", `{}`, `{"disableAllHooks":true}`, "", CheckDisabled},
+		{"project enables", `{"disableAllHooks":true}`, `{"disableAllHooks":false}`, "", CheckOK},
+		{"local disables", `{}`, `{"disableAllHooks":false}`, `{"disableAllHooks":true}`, CheckDisabled},
+		{"local enables", `{}`, `{"disableAllHooks":true}`, `{"disableAllHooks":false}`, CheckOK},
+		{"unset keeps user", `{"disableAllHooks":true}`, `{}`, `{}`, CheckDisabled},
+		{"invalid project", `{}`, `invalid`, "", CheckUnknown},
+		{"invalid local", `{}`, `{}`, `invalid`, CheckUnknown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, workspace := t.TempDir(), t.TempDir()
+			t.Setenv("CLAUDE_CONFIG_DIR", dir)
+			t.Chdir(workspace)
+			require.NoError(t, os.Mkdir(filepath.Join(workspace, ".claude"), 0o700))
+			for path, data := range map[string]string{
+				filepath.Join(dir, "settings.json"):                        tc.user,
+				filepath.Join(workspace, ".claude", "settings.json"):       tc.project,
+				filepath.Join(workspace, ".claude", "settings.local.json"): tc.local,
+			} {
+				if data != "" {
+					require.NoError(t, os.WriteFile(path, []byte(data), 0o600))
+				}
+			}
+			opts := InstallOptions{Executable: executable, Arguments: []string{"example-marker"}, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}}
+			_, err := Install(AgentClaude, opts)
+			require.NoError(t, err)
+			result, err := Check(t.Context(), AgentClaude, CheckOptions{InstallOptions: opts})
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, result.State, result.Reason)
+		})
+	}
+}
+
+func TestCheckClaudeLocalSettingsRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Claude keeps local settings in the starting directory on Windows")
+	}
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	for _, linked := range []bool{false, true} {
+		t.Run(fmt.Sprintf("linked=%t", linked), func(t *testing.T) {
+			repo := gittest.NewRepoWithCommit(t)
+			repo.WriteFile(".claude/settings.local.json", `{"disableAllHooks":true}`)
+			workspace := repo.Root
+			if linked {
+				workspace = repo.AddWorktree("example")
+			}
+			workspace = filepath.Join(workspace, "subdir")
+			require.NoError(t, os.MkdirAll(filepath.Join(workspace, ".claude"), 0o700))
+			require.NoError(t, os.WriteFile(filepath.Join(workspace, ".claude", "settings.local.json"), []byte(`{"disableAllHooks":false}`), 0o600))
+			t.Chdir(workspace)
+			t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+			opts := InstallOptions{Executable: executable, Arguments: []string{"example-marker"}, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}}
+			_, err := Install(AgentClaude, opts)
+			require.NoError(t, err)
+			result, err := Check(t.Context(), AgentClaude, CheckOptions{InstallOptions: opts})
+			require.NoError(t, err)
+			assert.Equal(t, CheckDisabled, result.State, result.Reason)
+		})
+	}
+}
+
 func TestCheckCommandResolution(t *testing.T) {
+	t.Chdir(t.TempDir())
 	executable, err := os.Executable()
 	require.NoError(t, err)
 	t.Setenv("PATH", filepath.Dir(executable))

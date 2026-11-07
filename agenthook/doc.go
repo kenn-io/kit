@@ -59,9 +59,10 @@
 // starting Codex. For discovered hooks, states take precedence in this order:
 // disabled, modified, outdated, untrusted, ok. Only enabled trusted or managed
 // hooks can be ok. Review consent remains with Codex's /hooks interface.
-// Claude Code has no native hook probe here: ok covers only its active user
-// settings.json, disableAllHooks, expected registrations, and executable
-// resolution. Raw commands requiring shell interpretation and executable lookup
+// Claude Code has no native hook probe here: ok covers its active user
+// registrations, disableAllHooks in user, project, and local settings for the
+// current directory, and executable resolution. Managed policy remains unverified.
+// Raw commands requiring shell interpretation and executable lookup
 // failures return unknown with the reason and a corrective step. Neither check
 // establishes runtime permissions or successful hook execution. A config outside
 // the active user config returns unknown; set CODEX_HOME or CLAUDE_CONFIG_DIR to

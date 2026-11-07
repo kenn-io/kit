@@ -69,8 +69,14 @@ func Check(ctx context.Context, agent Agent, options CheckOptions) (CheckResult,
 		return set(CheckUnknown, err.Error(), "Correct the agent hook config")
 	}
 	result.HookCount = len(records)
-	if disabled, _ := root["disableAllHooks"].(bool); agent == AgentClaude && disabled {
-		return set(CheckDisabled, "Claude Code disables all hooks", "Turn off disableAllHooks in Claude Code settings")
+	if agent == AgentClaude {
+		disabled, err := claudeHooksDisabled(ctx, root)
+		if err != nil {
+			return set(CheckUnknown, err.Error(), "Check Claude Code user, project, and local settings")
+		}
+		if disabled {
+			return set(CheckDisabled, "Claude Code settings disable all hooks", "Turn off disableAllHooks in the effective Claude Code settings")
+		}
 	}
 	if len(records) == 0 {
 		return set(CheckMissing, "No hooks belonging to this marker are installed", "Install the application's hooks")
@@ -102,7 +108,7 @@ func Check(ctx context.Context, agent Agent, options CheckOptions) (CheckResult,
 		return set(CheckUnknown, fmt.Sprintf("Hook executable %q cannot be resolved in the checking process environment: %v", executable, err), "Install the executable or add its directory to PATH")
 	}
 	if agent == AgentClaude {
-		return set(CheckOK, "Claude Code user config matches; executables resolve in the checking process environment; native loading is unverified", "")
+		return set(CheckOK, "Claude Code user registrations match and user, project, and local settings permit hooks; executables resolve in the checking process environment; managed policy and native loading are unverified", "")
 	}
 	return set(CheckOK, "Codex reports the hooks enabled and reviewed; executables resolve in the checking process environment", "")
 }
