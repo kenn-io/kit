@@ -59,7 +59,7 @@ func claudeHooksDisabled(ctx context.Context, user map[string]any) (bool, error)
 		if err != nil {
 			return false, err
 		}
-		if root != "" && !sameConfigPath(root, cwd) && !sameConfigPath(root, home) {
+		if root != "" && !sameConfigPath(root, cwd) && !sameConfigPath(root, home) && claudeRootSettingsOwned(root) {
 			paths = append(paths, filepath.Join(root, ".claude", "settings.local.json"))
 		}
 	}
