@@ -15,10 +15,24 @@ import (
 )
 
 func TestReleaseArtifactsArguments(t *testing.T) {
-	for _, args := range [][]string{nil, {"-version", "1"}, {"-contract", "contract.json"}} {
-		var out, stderr bytes.Buffer
-		require.Error(t, runReleaseArtifacts(t.Context(), args, &out, &stderr))
-		require.Empty(t, out.String())
+	dir := t.TempDir()
+	contractPath := filepath.Join(dir, "contract.json")
+	contract := `{"artifacts":[{"name":"app_{version}_linux_amd64.tar.gz","os":"linux","arch":"amd64","executable":"app","kind":"static","baseline":"Linux"}]}`
+	require.NoError(t, os.WriteFile(contractPath, []byte(contract), 0o600))
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "missing both"},
+		{name: "missing contract", args: []string{"-version", "1"}},
+		{name: "missing version", args: []string{"-contract", contractPath}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, stderr bytes.Buffer
+			err := runReleaseArtifacts(t.Context(), tc.args, &out, &stderr)
+			require.EqualError(t, err, "-contract and -version are required")
+			require.Empty(t, out.String())
+		})
 	}
 }
 

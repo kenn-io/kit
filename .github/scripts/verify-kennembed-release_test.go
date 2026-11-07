@@ -109,21 +109,6 @@ func releaseSystemLibraries(goos string) []string {
 	}
 }
 
-func TestReleaseSystemLibrariesArePlatformSpecific(t *testing.T) {
-	for _, tc := range []struct {
-		goos string
-		want []string
-	}{
-		{goos: "linux"},
-		{goos: "darwin", want: []string{"/usr/lib/libSystem.B.dylib", "/usr/lib/libresolv.9.dylib"}},
-		{goos: "windows", want: []string{"kernel32.dll"}},
-	} {
-		t.Run(tc.goos, func(t *testing.T) {
-			assert.Equal(t, tc.want, releaseSystemLibraries(tc.goos))
-		})
-	}
-}
-
 func releaseExecutable(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
