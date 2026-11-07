@@ -3,7 +3,6 @@ package agenthook
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,20 +63,21 @@ func claudeHooksDisabled(ctx context.Context, user map[string]any) (bool, error)
 			paths = append(paths, filepath.Join(root, ".claude", "settings.local.json"))
 		}
 	}
-	disabled, valid := user["disableAllHooks"].(bool)
-	if _, exists := user["disableAllHooks"]; exists && !valid {
-		return false, errors.New("Claude Code setting disableAllHooks in user settings must be a boolean")
-	}
+	layers := []map[string]any{user}
 	for _, path := range paths {
 		settings, _, err := readJSONConfig(path)
 		if err != nil {
 			return false, err
 		}
+		layers = append(layers, settings)
+	}
+	disabled := false
+	for _, settings := range layers {
 		if value, exists := settings["disableAllHooks"]; exists {
 			var ok bool
 			disabled, ok = value.(bool)
 			if !ok {
-				return false, fmt.Errorf("Claude Code setting disableAllHooks in %s must be a boolean", path)
+				return false, errors.New("Claude Code setting disableAllHooks must be a boolean")
 			}
 		}
 	}

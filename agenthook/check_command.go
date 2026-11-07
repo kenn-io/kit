@@ -24,29 +24,26 @@ func posixHookExecutable(command string) (string, error) {
 		return "", errors.New("hook command requires shell interpretation")
 	}
 	literal := true
-	for _, word := range call.Args {
-		syntax.SplitBraces(word)
-	}
-	syntax.Walk(call, func(node syntax.Node) bool {
+	word := call.Args[0]
+	syntax.SplitBraces(word)
+	syntax.Walk(word, func(node syntax.Node) bool {
 		switch node.(type) {
-		case *syntax.CallExpr, *syntax.Word, *syntax.Lit, *syntax.SglQuoted, *syntax.DblQuoted, nil:
+		case *syntax.Word, *syntax.Lit, *syntax.SglQuoted, *syntax.DblQuoted, nil:
 			return true
 		default:
 			literal = false
 			return false
 		}
 	})
-	for _, word := range call.Args {
-		for i, part := range word.Parts {
-			if text, ok := part.(*syntax.Lit); ok && (pattern.HasMeta(text.Value, 0) || (i == 0 && strings.HasPrefix(text.Value, "~"))) {
-				literal = false
-			}
+	for i, part := range word.Parts {
+		if text, ok := part.(*syntax.Lit); ok && (pattern.HasMeta(text.Value, 0) || (i == 0 && strings.HasPrefix(text.Value, "~"))) {
+			literal = false
 		}
 	}
 	if !literal {
 		return "", errors.New("hook command requires shell interpretation")
 	}
-	words, err := expand.Fields(nil, call.Args...)
+	words, err := expand.Fields(nil, word)
 	if err != nil || len(words) == 0 {
 		return "", fmt.Errorf("cannot identify hook executable in %q", command)
 	}

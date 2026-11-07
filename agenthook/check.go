@@ -9,11 +9,6 @@ import (
 	"go.kenn.io/kit/pathresolve"
 )
 
-// CheckOptions describes the registrations to inspect in the active user config.
-type CheckOptions struct {
-	InstallOptions InstallOptions
-}
-
 // CheckState describes what prevents an agent from using an application's hooks.
 type CheckState string
 
@@ -40,8 +35,8 @@ type CheckResult struct {
 // Check inspects registrations without running hooks or changing hook config or trust.
 // Starting Codex app-server may create state files and install bundled skills.
 // Invalid install options return an error. Inspection failures return unknown.
-func Check(ctx context.Context, agent Agent, options CheckOptions) (CheckResult, error) {
-	spec, path, hooks, opts, argv, err := prepareRegistration(agent, options.InstallOptions)
+func Check(ctx context.Context, agent Agent, opts InstallOptions) (CheckResult, error) {
+	spec, path, hooks, opts, argv, err := prepareRegistration(agent, opts)
 	if err != nil {
 		return CheckResult{}, err
 	}
@@ -69,6 +64,9 @@ func Check(ctx context.Context, agent Agent, options CheckOptions) (CheckResult,
 		return set(CheckUnknown, err.Error(), "Correct the agent hook config")
 	}
 	result.HookCount = len(records)
+	if len(records) == 0 {
+		return set(CheckMissing, "No hooks belonging to this marker are installed", "Install the application's hooks")
+	}
 	if agent == AgentClaude {
 		disabled, err := claudeHooksDisabled(ctx, root)
 		if err != nil {
@@ -77,9 +75,6 @@ func Check(ctx context.Context, agent Agent, options CheckOptions) (CheckResult,
 		if disabled {
 			return set(CheckDisabled, "Claude Code settings disable all hooks", "Turn off disableAllHooks in the effective Claude Code settings")
 		}
-	}
-	if len(records) == 0 {
-		return set(CheckMissing, "No hooks belonging to this marker are installed", "Install the application's hooks")
 	}
 	state, reason, step := CheckOK, "", ""
 	if agent == AgentCodex {
@@ -101,7 +96,7 @@ func Check(ctx context.Context, agent Agent, options CheckOptions) (CheckResult,
 	executable := strings.TrimSpace(opts.Executable)
 	if executable == "" {
 		if executable, err = rawHookExecutable(opts.Command, opts.CommandWindows); err != nil {
-			return set(CheckUnknown, err.Error(), "Use an executable with literal arguments for the hook")
+			return set(CheckUnknown, err.Error(), "Use a literal executable for the hook")
 		}
 	}
 	if _, err := exec.LookPath(executable); err != nil {

@@ -49,21 +49,22 @@
 // Check inspects an application's registrations for Claude Code or Codex without
 // executing hooks or changing hook config or trust. Starting Codex app-server may
 // create state files and install bundled skills. Pass the desired InstallOptions
-// in CheckOptions. State is ok, missing, outdated, untrusted, modified, disabled,
+// directly. State is ok, missing, outdated, untrusted, modified, disabled,
 // or unknown; Reason and NextStep explain any action needed.
 // Executable lookup uses the checking process's environment and PATH.
 // Plain command strings use POSIX syntax on every platform. Codex's active
 // commandWindows override uses Win32 argument quoting on Windows.
+// Missing registrations return missing before inspecting disablement or starting
+// Codex.
 // Codex checks its current workspace's effective feature, discovery, enablement,
-// and trust through app-server. Missing Codex registrations return missing before
-// starting Codex. For discovered hooks, states take precedence in this order:
+// and trust through app-server. For discovered hooks, states take precedence:
 // disabled, modified, outdated, untrusted, ok. Only enabled trusted or managed
 // hooks can be ok. Review consent remains with Codex's /hooks interface.
 // Claude Code has no native hook probe here: ok covers its active user
 // registrations, disableAllHooks in user, project, and local settings for the
 // current directory, and executable resolution. Managed policy remains unverified.
-// Claude's disabled settings take precedence over missing registrations.
-// Raw commands requiring shell interpretation and executable lookup
+// Raw POSIX commands inspect only the executable word; argument execution remains
+// unverified. Executable expansions, compound commands, and executable lookup
 // failures return unknown with the reason and a corrective step. Neither check
 // establishes runtime permissions or successful hook execution. A config outside
 // the active user config returns unknown; set CODEX_HOME or CLAUDE_CONFIG_DIR to

@@ -209,9 +209,7 @@ func TestCheckCodexNativeStates(t *testing.T) {
 				ctx, cancel = context.WithTimeout(ctx, time.Second)
 				defer cancel()
 			}
-			result, err := Check(ctx, AgentCodex, CheckOptions{
-				InstallOptions: opts,
-			})
+			result, err := Check(ctx, AgentCodex, opts)
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, result.State, result.Reason)
 			if tc.reason != "" {
@@ -268,6 +266,7 @@ func TestCheckClaudeRegistrations(t *testing.T) {
 		{"foreign group after ours", `{"hooks":{"Stop":[{"hooks":[HANDLER]},{"hooks":[{"type":"command","command":"foreign"}]}]}}`, CheckOK, 1},
 		{"mixed handlers", `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"foreign"},HANDLER]}]}}`, CheckOK, 1},
 		{"disabled", `{"disableAllHooks":true,"hooks":{"Stop":[{"hooks":[HANDLER]}]}}`, CheckDisabled, 1},
+		{"missing before disabled", `{"disableAllHooks":true}`, CheckMissing, 0},
 		{"duplicate", `{"hooks":{"Stop":[{"hooks":[HANDLER]},{"hooks":[HANDLER]}]}}`, CheckOutdated, 2},
 		{"invalid JSON", `invalid`, CheckUnknown, 0},
 		{"invalid structure", `{"hooks":{"Stop":true}}`, CheckUnknown, 0},
@@ -279,7 +278,7 @@ func TestCheckClaudeRegistrations(t *testing.T) {
 			config := strings.ReplaceAll(tc.config, "HANDLER", handler)
 			require.NoError(t, os.WriteFile(path, []byte(config), 0o600))
 			opts := InstallOptions{Command: commands.POSIX, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}}
-			result, err := Check(t.Context(), AgentClaude, CheckOptions{InstallOptions: opts})
+			result, err := Check(t.Context(), AgentClaude, opts)
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, result.State, result.Reason)
 			if tc.want == CheckOK {
@@ -302,7 +301,15 @@ func TestCheckClaudeSettingsPrecedence(t *testing.T) {
 		{"local disables", `{}`, `{"disableAllHooks":false}`, `{"disableAllHooks":true}`, CheckDisabled},
 		{"local enables", `{}`, `{"disableAllHooks":true}`, `{"disableAllHooks":false}`, CheckOK},
 		{"unset keeps user", `{"disableAllHooks":true}`, `{}`, `{}`, CheckDisabled},
-		{"invalid user", `{"disableAllHooks":"true"}`, `{}`, "", CheckUnknown},
+		{"user string", `{"disableAllHooks":"true"}`, `{}`, "", CheckUnknown},
+		{"user number", `{"disableAllHooks":1}`, `{}`, "", CheckUnknown},
+		{"user null", `{"disableAllHooks":null}`, `{}`, "", CheckUnknown},
+		{"project string", `{}`, `{"disableAllHooks":"true"}`, "", CheckUnknown},
+		{"project number", `{}`, `{"disableAllHooks":1}`, "", CheckUnknown},
+		{"project null", `{}`, `{"disableAllHooks":null}`, "", CheckUnknown},
+		{"local string", `{}`, `{}`, `{"disableAllHooks":"true"}`, CheckUnknown},
+		{"local number", `{}`, `{}`, `{"disableAllHooks":1}`, CheckUnknown},
+		{"local null", `{}`, `{}`, `{"disableAllHooks":null}`, CheckUnknown},
 		{"invalid project", `{}`, `invalid`, "", CheckUnknown},
 		{"invalid local", `{}`, `{}`, `invalid`, CheckUnknown},
 	} {
@@ -323,7 +330,7 @@ func TestCheckClaudeSettingsPrecedence(t *testing.T) {
 			opts := InstallOptions{Executable: executable, Arguments: []string{"example-marker"}, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}}
 			_, err := Install(AgentClaude, opts)
 			require.NoError(t, err)
-			result, err := Check(t.Context(), AgentClaude, CheckOptions{InstallOptions: opts})
+			result, err := Check(t.Context(), AgentClaude, opts)
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, result.State, result.Reason)
 		})
@@ -352,7 +359,7 @@ func TestCheckClaudeLocalSettingsRoot(t *testing.T) {
 			opts := InstallOptions{Executable: executable, Arguments: []string{"example-marker"}, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}}
 			_, err := Install(AgentClaude, opts)
 			require.NoError(t, err)
-			result, err := Check(t.Context(), AgentClaude, CheckOptions{InstallOptions: opts})
+			result, err := Check(t.Context(), AgentClaude, opts)
 			require.NoError(t, err)
 			assert.Equal(t, CheckDisabled, result.State, result.Reason)
 		})
@@ -378,9 +385,9 @@ func TestCheckCommandResolution(t *testing.T) {
 		reason, step string
 	}{
 		{"bare executable", InstallOptions{Command: filepath.Base(executable) + " example-marker"}, CheckOK, "", ""},
-		{"quoted executable", InstallOptions{Command: quoted.POSIX}, CheckOK, "", ""},
+		{"structured bare executable", InstallOptions{Executable: filepath.Base(executable), Arguments: []string{"example-marker"}}, CheckOK, "", ""},
+		{"quoted executable with arguments", InstallOptions{Command: quoted.POSIX + ` \* [literal] "$EXAMPLE_HOOK"`}, CheckOK, "", ""},
 		{"escaped executable", InstallOptions{Command: escaped + " example-marker"}, CheckOK, "", ""},
-		{"escaped arguments", InstallOptions{Command: quoted.POSIX + ` \* \~ \[stable\]`}, CheckOK, "", ""},
 		{"Windows command override", InstallOptions{Command: "example-missing-hook-executable example-marker", CommandWindows: quoted.Windows}, CheckOK, "", ""},
 		{"unresolved PATH name", InstallOptions{Command: "example-missing-hook-executable example-marker"}, CheckUnknown, "checking process environment", "PATH"},
 		{"shell assignment", InstallOptions{Command: "EXAMPLE_HOOK=1 example-hook example-marker"}, CheckUnknown, "shell interpretation", ""},
@@ -416,7 +423,7 @@ func TestCheckCommandResolution(t *testing.T) {
 			}
 			_, err := Install(agent, opts)
 			require.NoError(t, err)
-			result, err := Check(t.Context(), agent, CheckOptions{InstallOptions: opts})
+			result, err := Check(t.Context(), agent, opts)
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, result.State, result.Reason)
 			if tc.want != CheckOK {
@@ -433,11 +440,11 @@ func TestCheckCommandResolution(t *testing.T) {
 }
 
 func TestCheckValidationAndConfigHome(t *testing.T) {
-	_, err := Check(t.Context(), AgentCodex, CheckOptions{})
+	_, err := Check(t.Context(), AgentCodex, InstallOptions{})
 	require.Error(t, err)
-	options := CheckOptions{InstallOptions: InstallOptions{Command: "echo example-marker", Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}}}
+	options := InstallOptions{Command: "echo example-marker", Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}}
 	t.Setenv("CODEX_HOME", t.TempDir())
-	options.InstallOptions.ConfigPath = filepath.Join(t.TempDir(), "hooks.json")
+	options.ConfigPath = filepath.Join(t.TempDir(), "hooks.json")
 	result, err := Check(t.Context(), AgentCodex, options)
 	require.NoError(t, err)
 	assert.Equal(t, CheckUnknown, result.State)
@@ -453,13 +460,14 @@ func TestCheckCodexConformance(t *testing.T) {
 	for _, key := range []string{"HOME", "CODEX_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"} {
 		t.Setenv(key, dir)
 	}
+	t.Chdir(dir)
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(dir, "gitconfig"))
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	configPath := filepath.Join(dir, "config.toml")
 	require.NoError(t, os.WriteFile(configPath, []byte("[features]\nplugins = false\n"), 0o600))
 	executable, err := os.Executable()
 	require.NoError(t, err)
-	opts := CheckOptions{
-		InstallOptions: InstallOptions{Executable: executable, Arguments: []string{"example-marker"}, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}},
-	}
+	opts := InstallOptions{Executable: executable, Arguments: []string{"example-marker"}, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}}
 	for _, want := range []CheckState{CheckMissing, CheckUntrusted, CheckOK, CheckModified} {
 		before, err := os.ReadFile(configPath)
 		require.NoError(t, err)
@@ -471,7 +479,7 @@ func TestCheckCodexConformance(t *testing.T) {
 		require.Equal(t, want, result.State, result.Reason)
 		switch want {
 		case CheckMissing:
-			_, err := Install(AgentCodex, opts.InstallOptions)
+			_, err := Install(AgentCodex, opts)
 			require.NoError(t, err)
 		case CheckUntrusted:
 			// Only this fixture records trust, through Codex's reported native hash.
@@ -505,7 +513,7 @@ func TestCheckCodexConformance(t *testing.T) {
 		}
 	}
 
-	_, err = Install(AgentCodex, opts.InstallOptions)
+	_, err = Install(AgentCodex, opts)
 	require.NoError(t, err)
 	workspace := filepath.Join(dir, "workspace")
 	require.NoError(t, os.MkdirAll(filepath.Join(workspace, ".codex"), 0o700))
@@ -523,4 +531,10 @@ func TestCheckCodexConformance(t *testing.T) {
 		}
 		assert.Equal(t, want, result.State, result.Reason)
 	}
+
+	t.Setenv("PATH", t.TempDir())
+	result, err := Check(t.Context(), AgentCodex, opts)
+	require.NoError(t, err)
+	assert.Equal(t, CheckUnknown, result.State)
+	assert.Contains(t, result.NextStep, "Install Codex")
 }
