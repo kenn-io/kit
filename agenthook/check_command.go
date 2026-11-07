@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"mvdan.cc/sh/v3/expand"
+	"mvdan.cc/sh/v3/pattern"
 	"mvdan.cc/sh/v3/syntax"
 )
 
@@ -23,6 +24,9 @@ func posixHookExecutable(command string) (string, error) {
 		return "", errors.New("hook command requires shell interpretation")
 	}
 	literal := true
+	for _, word := range call.Args {
+		syntax.SplitBraces(word)
+	}
 	syntax.Walk(call, func(node syntax.Node) bool {
 		switch node.(type) {
 		case *syntax.CallExpr, *syntax.Word, *syntax.Lit, *syntax.SglQuoted, *syntax.DblQuoted, nil:
@@ -33,8 +37,8 @@ func posixHookExecutable(command string) (string, error) {
 		}
 	})
 	for _, word := range call.Args {
-		for _, part := range word.Parts {
-			if text, ok := part.(*syntax.Lit); ok && strings.ContainsAny(text.Value, "~*?{}[]") {
+		for i, part := range word.Parts {
+			if text, ok := part.(*syntax.Lit); ok && (pattern.HasMeta(text.Value, 0) || (i == 0 && strings.HasPrefix(text.Value, "~"))) {
 				literal = false
 			}
 		}

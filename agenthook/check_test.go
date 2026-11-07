@@ -296,6 +296,9 @@ func TestCheckCommandResolution(t *testing.T) {
 	require.NoError(t, os.WriteFile(literalExecutable, []byte("not a program"), 0o700))
 	quoted, err := BuildCommand(literalExecutable, "example-marker")
 	require.NoError(t, err)
+	escapedExecutable := filepath.Join(filepath.Dir(literalExecutable), "hook[stable].exe")
+	require.NoError(t, os.WriteFile(escapedExecutable, []byte("not a program"), 0o700))
+	escaped := strings.NewReplacer(`\`, `\\`, " ", `\ `, "[", `\[`, "]", `\]`).Replace(escapedExecutable)
 	for _, tc := range []struct {
 		name         string
 		options      InstallOptions
@@ -304,6 +307,8 @@ func TestCheckCommandResolution(t *testing.T) {
 	}{
 		{"bare executable", InstallOptions{Command: filepath.Base(executable) + " example-marker"}, CheckOK, "", ""},
 		{"quoted executable", InstallOptions{Command: quoted.POSIX}, CheckOK, "", ""},
+		{"escaped executable", InstallOptions{Command: escaped + " example-marker"}, CheckOK, "", ""},
+		{"escaped arguments", InstallOptions{Command: quoted.POSIX + ` \* \~ \[stable\]`}, CheckOK, "", ""},
 		{"Windows command override", InstallOptions{Command: "example-missing-hook-executable example-marker", CommandWindows: quoted.Windows}, CheckOK, "", ""},
 		{"unresolved PATH name", InstallOptions{Command: "example-missing-hook-executable example-marker"}, CheckUnknown, "checking process environment", "PATH"},
 		{"shell assignment", InstallOptions{Command: "EXAMPLE_HOOK=1 example-hook example-marker"}, CheckUnknown, "shell interpretation", ""},
