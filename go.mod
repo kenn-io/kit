@@ -25,7 +25,6 @@ require (
 	github.com/googleapis/gax-go/v2 v2.27.0
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/klauspost/compress v1.20.3
-	github.com/leanovate/gopter v0.2.11
 	github.com/mattn/go-runewidth v0.0.31
 	github.com/mattn/go-sqlite3 v1.14.52
 	github.com/oklog/ulid/v2 v2.1.2
@@ -58,6 +57,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.61.0
 	mvdan.cc/sh/v3 v3.14.1
+	pgregory.net/rapid v1.3.0
 )
 
 require (
