@@ -2,6 +2,7 @@
 // golangci-lint configuration.
 //
 //	kennlint run [analysis flags] ./...
+//	kennlint release-artifacts -contract FILE -dir DIR -version VERSION [-os OS]
 //	kennlint workflow-retries [path ...]
 //	kennlint sql [path ...]
 //	kennlint frontmatter [-changed REF] [-fix] [-exclude GLOB] [path ...]
@@ -33,6 +34,7 @@ import (
 
 const usage = `usage:
   kennlint run [analysis flags] [packages]   run the kit analyzers (go vet style)
+  kennlint release-artifacts [flags]         validate final archives against a consumer release contract
   kennlint workflow-retries [path ...]       report downloads missing retries in workflow YAML (default: .github)
   kennlint sql [path ...]                    report CHECK constraints and enum types in .sql files (default: .)
   kennlint frontmatter [flags] [path ...]    check tracked Markdown frontmatter and last_edited dates
@@ -51,6 +53,14 @@ func main() {
 		// multichecker parses os.Args itself; drop the subcommand.
 		os.Args = append(os.Args[:1], os.Args[2:]...)
 		multichecker.Main(lint.Analyzers()...)
+	case "release-artifacts":
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		err := runReleaseArtifacts(ctx, os.Args[2:], os.Stdout, os.Stderr)
+		stop()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "kennlint release-artifacts: %v\n", err)
+			os.Exit(1)
+		}
 	case "sql":
 		n, err := runSQL(os.Args[2:], os.Stdout)
 		if err != nil {
