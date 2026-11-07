@@ -647,8 +647,13 @@ func TestWindowsTrailingAliasProperty(t *testing.T) {
 		if len(stem) > 128 {
 			stem = stem[:128]
 		} // Bound fixture materialization, not the input domain.
+		stem = "payload-" + stem // Prefix keeps every generated stem non-reserved.
 		suffix := rapid.SampledFrom([]string{".", " "}).Draw(rt, "alias suffix")
-		dir, _ := archiveFixture(t, a, []testMember{{a.Executable, syntheticPE(true), 0o755, 0}, {stem, []byte("original"), 0o644, 0}, {stem + suffix, []byte("alias"), 0o644, 0}})
+		members := []testMember{{a.Executable, syntheticPE(true), 0o755, 0}, {stem, []byte("original"), 0o644, 0}}
+		dir, _ := archiveFixture(t, a, members)
+		require.NoError(rt, Check(t.Context(), Contract{[]Artifact{a}}, dir, "1.2.3", ""))
+		members = append(members, testMember{stem + suffix, []byte("alias"), 0o644, 0})
+		dir, _ = archiveFixture(t, a, members)
 		require.Error(rt, Check(t.Context(), Contract{[]Artifact{a}}, dir, "1.2.3", ""))
 	})
 }
