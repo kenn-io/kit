@@ -156,7 +156,7 @@ func TestClientCancellationAndEOF(t *testing.T) {
 				}
 				client.Close()
 				if mode == "block" {
-					require.Error(t, callErr)
+					require.ErrorIs(t, callErr, context.DeadlineExceeded)
 					assert.Less(t, time.Since(started), 3*time.Second, "cancellation must interrupt a read while the descendant holds stdout")
 				}
 				if mode == "normal" {

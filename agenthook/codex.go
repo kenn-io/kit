@@ -48,17 +48,7 @@ func checkCodex(ctx context.Context, path, executable string, owned []ownedRegis
 	}
 	client, err := codexapp.Start(ctx, executable, cwd)
 	if err != nil {
-		step := "Check Codex app-server startup and retry"
-		pathError, _ := errors.AsType[*os.PathError](err)
-		switch {
-		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-			step = "Allow more time for Codex to start and retry"
-		case errors.Is(err, exec.ErrNotFound), errors.Is(err, os.ErrNotExist):
-			step = "Install Codex and make it available on PATH"
-		case pathError != nil && pathError.Op == "fork/exec":
-			step = "Check the Codex executable path and permissions and retry"
-		}
-		return CheckUnknown, err.Error(), step
+		return codexFailure(err, "Check Codex app-server startup and retry")
 	}
 	defer client.Close()
 	var config struct {
@@ -67,7 +57,7 @@ func checkCodex(ctx context.Context, path, executable string, owned []ownedRegis
 		} `json:"config"`
 	}
 	if err := client.Call("config/read", map[string]any{"includeLayers": false, "cwd": cwd}, &config); err != nil {
-		return CheckUnknown, err.Error(), "Check Codex config and retry"
+		return codexFailure(err, "Check Codex config and retry")
 	}
 	if config.Config == nil {
 		return CheckUnknown, "Codex did not report its effective hooks feature", "Check Codex config and retry"
@@ -88,7 +78,7 @@ func checkCodex(ctx context.Context, path, executable string, owned []ownedRegis
 		} `json:"data"`
 	}
 	if err := client.Call("hooks/list", map[string]any{"cwds": []string{cwd}}, &listed); err != nil {
-		return CheckUnknown, err.Error(), "Check Codex hook discovery and retry"
+		return codexFailure(err, "Check Codex hook discovery and retry")
 	}
 	if len(listed.Data) != 1 {
 		return CheckUnknown, "Codex did not report hooks for the requested directory", "Check Codex hook discovery and retry"
@@ -125,7 +115,7 @@ func checkCodex(ctx context.Context, path, executable string, owned []ownedRegis
 		}
 	}
 	if count == 0 {
-		return CheckMissing, "Codex did not discover this application's hooks", "Install the application's hooks"
+		return CheckUnknown, "Codex did not discover installed hooks for this application", "Check Codex hook discovery and effective feature settings"
 	}
 	if count != len(owned) {
 		return CheckUnknown, "Codex discovered only some of the installed hooks", "Review Codex hook discovery with /hooks"
@@ -136,4 +126,17 @@ func checkCodex(ctx context.Context, path, executable string, owned []ownedRegis
 		}
 	}
 	return CheckOK, "", ""
+}
+
+func codexFailure(err error, step string) (CheckState, string, string) {
+	pathError, _ := errors.AsType[*os.PathError](err)
+	switch {
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		step = "Allow more time for Codex to respond and retry"
+	case errors.Is(err, exec.ErrNotFound), errors.Is(err, os.ErrNotExist):
+		step = "Install Codex and make it available on PATH"
+	case pathError != nil && pathError.Op == "fork/exec":
+		step = "Check the Codex executable path and permissions and retry"
+	}
+	return CheckUnknown, err.Error(), step
 }

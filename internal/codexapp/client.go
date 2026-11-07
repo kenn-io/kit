@@ -2,6 +2,7 @@
 package codexapp
 
 import (
+	"cmp"
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
@@ -15,6 +16,7 @@ import (
 // Client owns one app-server child. Calls must be serialized.
 // https://developers.openai.com/codex/app-server
 type Client struct {
+	ctx    context.Context
 	close  func()
 	input  io.Writer
 	output *jsontext.Decoder
@@ -56,11 +58,8 @@ func Start(ctx context.Context, executable, cwd string) (*Client, error) {
 		_ = cmd.Wait()
 		cancel()
 	}
-	c := &Client{input: input, output: jsontext.NewDecoder(output)}
+	c := &Client{ctx: ctx, input: input, output: jsontext.NewDecoder(output)}
 	if err := c.initialize(); err != nil {
-		if ctx.Err() != nil {
-			err = fmt.Errorf("codex initialize: %w", ctx.Err())
-		}
 		closeClient()
 		return nil, err
 	}
@@ -76,7 +75,7 @@ func (c *Client) initialize() error {
 		return err
 	}
 	if _, err := io.WriteString(c.input, "{\"method\":\"initialized\",\"params\":{}}\n"); err != nil {
-		return fmt.Errorf("codex initialized: %w", err)
+		return fmt.Errorf("codex initialized: %w", cmp.Or(c.ctx.Err(), err))
 	}
 	return nil
 }
@@ -89,7 +88,7 @@ func (c *Client) Call(method string, params, result any) error {
 		return err
 	}
 	if _, err := c.input.Write(append(request, '\n')); err != nil {
-		return err
+		return fmt.Errorf("codex %s: %w", method, cmp.Or(c.ctx.Err(), err))
 	}
 	for {
 		var response struct {
@@ -100,7 +99,7 @@ func (c *Client) Call(method string, params, result any) error {
 			} `json:"error"`
 		}
 		if err := json.UnmarshalDecode(c.output, &response); err != nil {
-			return fmt.Errorf("codex %s: %w", method, err)
+			return fmt.Errorf("codex %s: %w", method, cmp.Or(c.ctx.Err(), err))
 		}
 		if response.ID != c.id {
 			continue

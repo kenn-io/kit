@@ -61,6 +61,10 @@ func runHookCheckHelper(mode string) int {
 		if err := json.Unmarshal(input.Bytes(), &request); err != nil {
 			return 9
 		}
+		if mode == "rpc-timeout" || (mode == "discovery-timeout" && request.Method == "hooks/list") {
+			input.Scan()
+			return 0
+		}
 		if mode == "rpc-error" {
 			fmt.Printf("{\"id\":%d,\"error\":{\"message\":\"native failure\"}}\n", request.ID)
 			continue
@@ -110,7 +114,8 @@ func TestCheckCodexNativeStates(t *testing.T) {
 		{"reviewed", "normal", "trusted", "", CheckOK, ""},
 		{"managed", "normal", "managed", "", CheckOK, ""},
 		{"other applications and project hooks", "mixed", "trusted", "", CheckOK, ""},
-		{"wrong native identity", "wrong-index", "trusted", "", CheckMissing, ""},
+		{"wrong native identity", "wrong-index", "trusted", "", CheckUnknown, ""},
+		{"undiscovered installed hooks", "undiscovered", "", "", CheckUnknown, "did not discover installed hooks"},
 		{"partial discovery", "partial", "trusted", "", CheckUnknown, ""},
 		{"modified before outdated", "normal", "modified", ",\"async\":true", CheckModified, ""},
 		{"reviewed but outdated", "normal", "trusted", ",\"async\":true", CheckOutdated, ""},
@@ -123,6 +128,8 @@ func TestCheckCodexNativeStates(t *testing.T) {
 		{"RPC error", "rpc-error", "", "", CheckUnknown, "native failure"},
 		{"initialization EOF", "initialize-eof", "", "", CheckUnknown, ""},
 		{"initialization timeout", "initialize-timeout", "", "", CheckUnknown, "context deadline exceeded"},
+		{"config timeout", "rpc-timeout", "", "", CheckUnknown, "context deadline exceeded"},
+		{"discovery timeout", "discovery-timeout", "", "", CheckUnknown, "context deadline exceeded"},
 		{"missing CLI on PATH", "missing-cli", "", "", CheckUnknown, "codex"},
 		{"explicit missing CLI", "missing-cli-path", "", "", CheckUnknown, "missing-codex"},
 		{"missing hooks without CLI", "missing-hooks-cli", "", "", CheckMissing, ""},
@@ -177,6 +184,9 @@ func TestCheckCodexNativeStates(t *testing.T) {
 			if tc.mode == "missing-data" {
 				reply = `{}`
 			}
+			if tc.mode == "undiscovered" {
+				reply = `{"data":[{"cwd":"CWD","hooks":[],"errors":[]}]}`
+			}
 			t.Setenv("KIT_HOOK_CHECK_HELPER", tc.mode)
 			t.Setenv("KIT_HOOK_CHECK_REPLY", reply)
 			codexExecutable := executable
@@ -188,7 +198,7 @@ func TestCheckCodexNativeStates(t *testing.T) {
 				}
 			}
 			ctx := t.Context()
-			if tc.mode == "initialize-timeout" {
+			if strings.HasSuffix(tc.mode, "timeout") {
 				var cancel context.CancelFunc
 				ctx, cancel = context.WithTimeout(ctx, time.Second)
 				defer cancel()
@@ -202,11 +212,14 @@ func TestCheckCodexNativeStates(t *testing.T) {
 			if tc.reason != "" {
 				assert.Contains(t, result.Reason, tc.reason)
 			}
-			if tc.mode == "initialize-timeout" {
+			if strings.HasSuffix(tc.mode, "timeout") {
 				assert.Contains(t, result.NextStep, "more time")
 			}
 			if tc.mode == "initialize-eof" {
 				assert.Contains(t, result.NextStep, "app-server startup")
+			}
+			if tc.mode == "undiscovered" {
+				assert.Contains(t, result.NextStep, "effective feature settings")
 			}
 			if tc.mode == "missing-cli" || tc.mode == "missing-cli-path" {
 				assert.Contains(t, result.NextStep, "Install Codex")
