@@ -3,9 +3,9 @@ package codexapp
 import (
 	"bufio"
 	"context"
-	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/consolewindow"
+	"go.kenn.io/kit/internal/codexapp/testserver"
 )
 
 func TestMain(m *testing.M) {
@@ -32,35 +33,14 @@ func runClientHelper(mode string) int {
 		<-time.After(10 * time.Second)
 		return 0
 	}
-	if len(os.Args) != 3 || os.Args[1] != "app-server" || os.Args[2] != "--stdio" {
-		return 2
-	}
 	if file := os.Getenv("KIT_CODEXAPP_TEST_PID"); file != "" {
 		if err := os.WriteFile(file, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
 			return 3
 		}
 	}
 	input := bufio.NewScanner(os.Stdin)
-	if !input.Scan() {
-		return 4
-	}
-	var request struct {
-		ID     int            `json:"id"`
-		Method string         `json:"method"`
-		Params map[string]any `json:"params"`
-	}
-	if err := json.Unmarshal(input.Bytes(), &request); err != nil {
-		return 5
-	}
-	if request.ID != 1 || request.Method != "initialize" {
-		return 6
-	}
-	info, _ := request.Params["clientInfo"].(map[string]any)
-	caps, _ := request.Params["capabilities"].(map[string]any)
-	if info["name"] != "kit-agent-check" || caps["experimentalApi"] != true {
-		return 7
-	}
 	if mode == "initialize-eof" {
+		_, _ = testserver.Read(input)
 		return 0
 	}
 	if mode == "block" {
@@ -79,14 +59,15 @@ func runClientHelper(mode string) int {
 		}
 		_ = child.Process.Release()
 	}
-	fmt.Println(`{"method":"notice","params":{}}`)
-	fmt.Println(`{"id":999,"result":{}}`)
-	fmt.Println(`{"id":1,"result":{}}`)
-	if !input.Scan() || string(input.Bytes()) != `{"method":"initialized","params":{}}` {
-		return 8
+	if err := testserver.Handshake(input, os.Stdout); err != nil {
+		return 6
 	}
-	for input.Scan() {
-		if err := json.Unmarshal(input.Bytes(), &request); err != nil {
+	for {
+		request, err := testserver.Read(input)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
 			return 9
 		}
 		if mode == "block" {
