@@ -59,25 +59,7 @@ type Result struct {
 
 // PlanInstall computes an install without writing the config file.
 func PlanInstall(agent Agent, opts InstallOptions) (Result, error) {
-	opts.Marker = strings.TrimSpace(opts.Marker)
-	commands, err := resolveCommands(opts)
-	if err != nil {
-		return Result{}, err
-	}
-	spec, ok := profiles[agent]
-	if !ok {
-		return Result{}, fmt.Errorf("unsupported agent hook integration %q", agent)
-	}
-	opts.Command, opts.CommandWindows = profileCommands(spec, commands)
-	argv, err := execArgv(spec, opts)
-	if err != nil {
-		return Result{}, err
-	}
-	if argv != nil {
-		// Removal matches the written argv joined by spaces, so validate that.
-		opts.Command = strings.Join(argv, " ")
-	}
-	spec, path, hooks, err := prepareInstall(agent, opts)
+	spec, path, hooks, opts, argv, err := prepareRegistration(agent, opts)
 	if err != nil {
 		return Result{}, err
 	}
@@ -88,6 +70,32 @@ func PlanInstall(agent Agent, opts InstallOptions) (Result, error) {
 		return Result{}, err
 	}
 	return Result{Agent: agent, ConfigPath: path, Changed: changed, Data: data}, nil
+}
+
+func prepareRegistration(agent Agent, opts InstallOptions) (profileSpec, string, []nativeHook, InstallOptions, []string, error) {
+	opts.Marker = strings.TrimSpace(opts.Marker)
+	commands, err := resolveCommands(opts)
+	if err != nil {
+		return profileSpec{}, "", nil, opts, nil, err
+	}
+	spec, ok := profiles[agent]
+	if !ok {
+		return profileSpec{}, "", nil, opts, nil, fmt.Errorf("unsupported agent hook integration %q", agent)
+	}
+	opts.Command, opts.CommandWindows = profileCommands(spec, commands)
+	argv, err := execArgv(spec, opts)
+	if err != nil {
+		return profileSpec{}, "", nil, opts, nil, err
+	}
+	if argv != nil {
+		// Removal matches the written argv joined by spaces, so validate that.
+		opts.Command = strings.Join(argv, " ")
+	}
+	spec, path, hooks, err := prepareInstall(agent, opts)
+	if err != nil {
+		return profileSpec{}, "", nil, opts, nil, err
+	}
+	return spec, path, hooks, opts, argv, nil
 }
 
 // execArgv returns the argv to write in exec form, or nil when the profile

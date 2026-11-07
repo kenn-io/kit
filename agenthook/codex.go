@@ -1,5 +1,17 @@
 package agenthook
 
+import (
+	"context"
+	"encoding/json/jsontext"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+
+	"go.kenn.io/kit/internal/codexapp"
+)
+
 func codexProfile() profileSpec {
 	spec := newProfileSpec(
 		Profile{
@@ -23,4 +35,96 @@ func codexProfile() profileSpec {
 	spec.sessionSourceRequirement = inputRequired
 	spec.sessionEndReasonRequirement = inputRequired
 	return spec
+}
+
+// checkCodex reads native discovery and consent state. It never writes trust.
+func checkCodex(ctx context.Context, path string, owned []ownedRegistration) (CheckState, string, string) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return CheckUnknown, err.Error(), "Choose a working directory for Codex"
+	}
+	client, err := codexapp.Start(ctx, "codex", cwd)
+	if err != nil {
+		return codexFailure(err, "Check Codex app-server startup and retry")
+	}
+	defer client.Close()
+	var config struct {
+		Config *struct {
+			Features map[string]*bool `json:"features"`
+		} `json:"config"`
+	}
+	if err := client.Call("config/read", map[string]any{"includeLayers": false, "cwd": cwd}, &config); err != nil {
+		return codexFailure(err, "Check Codex config and retry")
+	}
+	if config.Config == nil {
+		return CheckUnknown, "Codex did not report its effective hooks feature", "Check Codex config and retry"
+	}
+	if enabled := config.Config.Features["hooks"]; enabled != nil && !*enabled {
+		return CheckDisabled, "Codex hooks feature is disabled for this workspace", "Enable features.hooks in the effective Codex config for this workspace"
+	}
+	var listed struct {
+		Data []struct {
+			Hooks []struct {
+				Key         string `json:"key"`
+				Source      string `json:"source"`
+				SourcePath  string `json:"sourcePath"`
+				TrustStatus string `json:"trustStatus"`
+				Enabled     bool   `json:"enabled"`
+			} `json:"hooks"`
+			Errors []jsontext.Value `json:"errors"`
+		} `json:"data"`
+	}
+	if err := client.Call("hooks/list", map[string]any{"cwds": []string{cwd}}, &listed); err != nil {
+		return codexFailure(err, "Check Codex hook discovery and retry")
+	}
+	if len(listed.Data) != 1 {
+		return CheckUnknown, "Codex did not report hooks for the requested directory", "Check Codex hook discovery and retry"
+	}
+	entry := listed.Data[0]
+	if len(entry.Errors) > 0 {
+		return CheckUnknown, fmt.Sprintf("Codex hook discovery errors: %s", entry.Errors), "Correct the reported hook discovery errors"
+	}
+	states := make(map[string]bool)
+	count := 0
+	for _, hook := range entry.Hooks {
+		if hook.Source != "user" || !sameConfigPath(hook.SourcePath, path) {
+			continue
+		}
+		suffix, ok := strings.CutPrefix(hook.Key, hook.SourcePath+":")
+		if !ok {
+			continue
+		}
+		for _, registration := range owned {
+			key := fmt.Sprintf("%s:%d:%d", strings.ToLower(registration.event), registration.group, registration.handlerIndex)
+			if strings.ReplaceAll(suffix, "_", "") != key {
+				continue
+			}
+			count++
+			if !hook.Enabled {
+				states["disabled"] = true
+			}
+			switch hook.TrustStatus {
+			case "trusted", "managed", "untrusted", "modified":
+				states[hook.TrustStatus] = true
+			default:
+				return CheckUnknown, "Codex reported unknown hook trust state: " + hook.TrustStatus, "Review hooks in Codex with /hooks"
+			}
+		}
+	}
+	if count != len(owned) {
+		return CheckUnknown, "Codex did not discover all of this application's installed hooks", "Review Codex hook discovery with /hooks"
+	}
+	for _, state := range []CheckState{CheckDisabled, CheckModified, CheckUntrusted} {
+		if states[string(state)] {
+			return state, "Codex reports this application's hooks as " + string(state), "Open Codex and run /hooks to review the hooks"
+		}
+	}
+	return CheckOK, "", ""
+}
+
+func codexFailure(err error, step string) (CheckState, string, string) {
+	if errors.Is(err, exec.ErrNotFound) {
+		step = "Install Codex and make it available on PATH"
+	}
+	return CheckUnknown, err.Error(), step
 }
