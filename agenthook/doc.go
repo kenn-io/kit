@@ -57,7 +57,7 @@
 // Missing registrations return missing before inspecting disablement or starting
 // Codex.
 // Codex checks its current workspace's effective feature, discovery, enablement,
-// and trust through app-server. For discovered hooks, states take precedence:
+// and trust through app-server. For discovered Codex hooks, states take precedence:
 // disabled, modified, outdated, untrusted, ok. Only enabled trusted or managed
 // hooks can be ok. Review consent remains with Codex's /hooks interface.
 // Claude Code has no native hook probe here: ok covers its active user
