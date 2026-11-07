@@ -107,7 +107,6 @@ func TestCheckCodexNativeStates(t *testing.T) {
 		{"default hooks feature", "feature-default", "untrusted", "", CheckUntrusted, ""},
 		{"reviewed", "normal", "trusted", "", CheckOK, ""},
 		{"native source capitalization", "source-case", "trusted", "", CheckOK, ""},
-		{"explicit config capitalization", "config-case", "trusted", "", CheckOK, ""},
 		{"managed", "normal", "managed", "", CheckOK, ""},
 		{"other applications and source files", "mixed", "trusted", "", CheckOK, ""},
 		{"symlinked native source", "symlink", "untrusted", "", CheckUntrusted, ""},
@@ -126,10 +125,9 @@ func TestCheckCodexNativeStates(t *testing.T) {
 		{"discovery timeout", "discovery-timeout", "", "", CheckUnknown, "context deadline exceeded"},
 		{"missing CLI on PATH", "missing-cli", "", "", CheckUnknown, "codex"},
 		{"Windows command override", "windows-command", "trusted", "", CheckOK, ""},
-		{"Windows compound command", "windows-compound", "trusted", "", CheckUnknown, "shell interpretation"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if strings.HasPrefix(tc.mode, "windows-") && runtime.GOOS != "windows" {
+			if tc.mode == "windows-command" && runtime.GOOS != "windows" {
 				t.Skip("CommandWindows is selected on Windows")
 			}
 			dir := t.TempDir()
@@ -148,16 +146,13 @@ func TestCheckCodexNativeStates(t *testing.T) {
 			require.NoError(t, err)
 			opts := InstallOptions{Command: commands.POSIX, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}}
 			extra := tc.extra
-			if strings.HasPrefix(tc.mode, "windows-") {
+			if tc.mode == "windows-command" {
 				literal := filepath.Join(dir, "example (stable).exe")
 				require.NoError(t, os.WriteFile(literal, []byte("not a program"), 0o700))
 				command, err := BuildCommand(literal, "example-marker")
 				require.NoError(t, err)
 				opts.Command = "example-missing-hook-executable example-marker"
 				opts.CommandWindows = command.Windows
-				if tc.mode == "windows-compound" {
-					opts.CommandWindows += " & example-missing-hook-executable"
-				}
 				encoded, err := json.Marshal(opts.CommandWindows)
 				require.NoError(t, err)
 				extra += `,"commandWindows":` + string(encoded)
@@ -178,7 +173,7 @@ func TestCheckCodexNativeStates(t *testing.T) {
 				enabled = `,"enabled":false`
 			}
 			source := path
-			if tc.mode == "source-case" || tc.mode == "config-case" {
+			if tc.mode == "source-case" {
 				alternate := filepath.Join(dir, "HOOKS.json")
 				originalInfo, err := os.Stat(path)
 				require.NoError(t, err)
@@ -188,11 +183,7 @@ func TestCheckCodexNativeStates(t *testing.T) {
 				}
 				require.NoError(t, err)
 				require.True(t, os.SameFile(originalInfo, alternateInfo))
-				if tc.mode == "source-case" {
-					source = alternate
-				} else {
-					opts.ConfigPath = alternate
-				}
+				source = alternate
 			}
 			pathJSON, err := json.Marshal(source)
 			require.NoError(t, err)
@@ -229,7 +220,11 @@ func TestCheckCodexNativeStates(t *testing.T) {
 				ctx, cancel = context.WithTimeout(ctx, time.Second)
 				defer cancel()
 			}
+			started := time.Now()
 			result, err := Check(ctx, AgentCodex, opts)
+			if strings.HasSuffix(tc.mode, "timeout") {
+				assert.Less(t, time.Since(started), 3*time.Second, "the caller deadline must bound the native check")
+			}
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, result.State, result.Reason)
 			if tc.reason != "" {
@@ -432,16 +427,23 @@ func TestCheckValidationAndConfigHome(t *testing.T) {
 	alternate := filepath.Join(dir, "HOOKS.json")
 	require.NoError(t, os.WriteFile(active, []byte(`{}`), 0o600))
 	file, err := os.OpenFile(alternate, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	want, reason := CheckUnknown, "outside the active user config"
 	if os.IsExist(err) {
-		t.Skip("filesystem treats capitalization as the same file")
+		originalInfo, err := os.Stat(active)
+		require.NoError(t, err)
+		alternateInfo, err := os.Stat(alternate)
+		require.NoError(t, err)
+		require.True(t, os.SameFile(originalInfo, alternateInfo))
+		want, reason = CheckMissing, "No hooks belonging to this marker"
+	} else {
+		require.NoError(t, err)
+		require.NoError(t, file.Close())
 	}
-	require.NoError(t, err)
-	require.NoError(t, file.Close())
 	options.ConfigPath = alternate
 	result, err = Check(t.Context(), AgentCodex, options)
 	require.NoError(t, err)
-	assert.Equal(t, CheckUnknown, result.State)
-	assert.Contains(t, result.Reason, "outside the active user config")
+	assert.Equal(t, want, result.State)
+	assert.Contains(t, result.Reason, reason)
 }
 
 func TestCheckCodexConformance(t *testing.T) {

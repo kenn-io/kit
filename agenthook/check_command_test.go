@@ -1,6 +1,7 @@
 package agenthook
 
 import (
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -27,4 +28,12 @@ func TestPosixHookExecutable(t *testing.T) {
 			assert.Equal(t, tc.want, got)
 		})
 	}
+}
+
+func TestRawHookExecutableWindowsCompound(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("CommandWindows is selected on Windows")
+	}
+	_, err := rawHookExecutable("example-missing-hook-executable example-marker", `"C:\example (stable).exe" example-marker & example-missing-hook-executable`)
+	require.ErrorContains(t, err, "shell interpretation")
 }
