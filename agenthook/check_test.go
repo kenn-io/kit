@@ -342,13 +342,27 @@ func TestCheckClaudeLocalSettingsRoot(t *testing.T) {
 	executable, err := os.Executable()
 	require.NoError(t, err)
 	for _, tc := range []struct {
-		name         string
-		linked, home bool
-		want         CheckState
-	}{{"subdirectory", false, false, CheckDisabled}, {"linked", true, false, CheckDisabled}, {"home", false, true, CheckOK}} {
+		name                  string
+		linked, home, foreign bool
+		want                  CheckState
+	}{{"subdirectory", false, false, false, CheckDisabled}, {"linked", true, false, false, CheckDisabled}, {"home", false, true, false, CheckOK}, {"foreign-owned", false, false, true, CheckDisabled}} {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := gittest.NewRepoWithCommit(t)
-			repo.WriteFile(".claude/settings.local.json", `{"disableAllHooks":true}`)
+			rootValue, localValue := `{"disableAllHooks":true}`, `{"disableAllHooks":false}`
+			if tc.foreign {
+				rootValue, localValue = localValue, rootValue
+			}
+			repo.WriteFile(".claude/settings.local.json", rootValue)
+			if tc.foreign {
+				rootSettings := filepath.Join(repo.Root, ".claude")
+				uid := os.Geteuid()
+				if err := os.Chown(rootSettings, uid+1, -1); os.IsPermission(err) {
+					t.Skip("changing fixture ownership needs privileges")
+				} else {
+					require.NoError(t, err)
+				}
+				t.Cleanup(func() { require.NoError(t, os.Chown(rootSettings, uid, -1)) })
+			}
 			workspace := repo.Root
 			if tc.linked {
 				workspace = repo.AddWorktree("example")
@@ -358,7 +372,7 @@ func TestCheckClaudeLocalSettingsRoot(t *testing.T) {
 			}
 			workspace = filepath.Join(workspace, "subdir")
 			require.NoError(t, os.MkdirAll(filepath.Join(workspace, ".claude"), 0o700))
-			require.NoError(t, os.WriteFile(filepath.Join(workspace, ".claude", "settings.local.json"), []byte(`{"disableAllHooks":false}`), 0o600))
+			require.NoError(t, os.WriteFile(filepath.Join(workspace, ".claude", "settings.local.json"), []byte(localValue), 0o600))
 			t.Chdir(workspace)
 			t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 			opts := InstallOptions{Executable: executable, Arguments: []string{"example-marker"}, Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}}
@@ -411,39 +425,46 @@ func TestCheckCommandResolution(t *testing.T) {
 }
 
 func TestCheckValidationAndConfigHome(t *testing.T) {
-	_, err := Check(t.Context(), AgentCodex, InstallOptions{})
-	require.Error(t, err)
+	t.Run("invalid options", func(t *testing.T) {
+		_, err := Check(t.Context(), AgentCodex, InstallOptions{})
+		require.ErrorContains(t, err, "agent hook command is required")
+	})
 	options := InstallOptions{Command: "echo example-marker", Marker: "example-marker", Hooks: []Hook{{Event: EventStop}}}
-	t.Setenv("CODEX_HOME", t.TempDir())
-	options.ConfigPath = filepath.Join(t.TempDir(), "hooks.json")
-	result, err := Check(t.Context(), AgentCodex, options)
-	require.NoError(t, err)
-	assert.Equal(t, CheckUnknown, result.State)
-	assert.Contains(t, result.Reason, "outside the active user config")
-
-	dir := t.TempDir()
-	t.Setenv("CODEX_HOME", dir)
-	active := filepath.Join(dir, "hooks.json")
-	alternate := filepath.Join(dir, "HOOKS.json")
-	require.NoError(t, os.WriteFile(active, []byte(`{}`), 0o600))
-	file, err := os.OpenFile(alternate, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	want, reason := CheckUnknown, "outside the active user config"
-	if os.IsExist(err) {
-		originalInfo, err := os.Stat(active)
+	t.Run("outside active config", func(t *testing.T) {
+		t.Setenv("CODEX_HOME", t.TempDir())
+		options := options
+		options.ConfigPath = filepath.Join(t.TempDir(), "hooks.json")
+		result, err := Check(t.Context(), AgentCodex, options)
 		require.NoError(t, err)
-		alternateInfo, err := os.Stat(alternate)
+		assert.Equal(t, CheckUnknown, result.State)
+		assert.Contains(t, result.Reason, "outside the active user config")
+	})
+	t.Run("capitalization", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("CODEX_HOME", dir)
+		active := filepath.Join(dir, "hooks.json")
+		alternate := filepath.Join(dir, "HOOKS.json")
+		require.NoError(t, os.WriteFile(active, []byte(`{}`), 0o600))
+		file, err := os.OpenFile(alternate, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		want, reason := CheckUnknown, "outside the active user config"
+		if os.IsExist(err) {
+			originalInfo, err := os.Stat(active)
+			require.NoError(t, err)
+			alternateInfo, err := os.Stat(alternate)
+			require.NoError(t, err)
+			require.True(t, os.SameFile(originalInfo, alternateInfo))
+			want, reason = CheckMissing, "No hooks belonging to this marker"
+		} else {
+			require.NoError(t, err)
+			require.NoError(t, file.Close())
+		}
+		options := options
+		options.ConfigPath = alternate
+		result, err := Check(t.Context(), AgentCodex, options)
 		require.NoError(t, err)
-		require.True(t, os.SameFile(originalInfo, alternateInfo))
-		want, reason = CheckMissing, "No hooks belonging to this marker"
-	} else {
-		require.NoError(t, err)
-		require.NoError(t, file.Close())
-	}
-	options.ConfigPath = alternate
-	result, err = Check(t.Context(), AgentCodex, options)
-	require.NoError(t, err)
-	assert.Equal(t, want, result.State)
-	assert.Contains(t, result.Reason, reason)
+		assert.Equal(t, want, result.State)
+		assert.Contains(t, result.Reason, reason)
+	})
 }
 
 func TestCheckCodexConformance(t *testing.T) {
