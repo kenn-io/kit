@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -50,9 +51,41 @@ func TestLinuxProcessIdentityCompatibilityRejectsMalformedValues(t *testing.T) {
 	}
 }
 
-func TestParseLinuxProcessStartTicksRejectsMalformedStat(t *testing.T) {
-	_, err := parseLinuxProcessStartTicks([]byte("42 malformed"))
+func TestParseLinuxProcessStatRejectsMalformedStat(t *testing.T) {
+	_, _, err := parseLinuxProcessStat([]byte("42 malformed"))
 	require.Error(t, err)
+}
+
+func TestLinuxProcessHasExited(t *testing.T) {
+	tests := []struct {
+		name    string
+		state   string
+		threads string
+		want    bool
+	}{
+		{"zombie", "Z", "1", true},
+		{"dead", "X", "1", true},
+		{"zombie leader with worker", "Z", "2", false},
+		{"running", "R", "1", false},
+	}
+	identity := ProcessIdentity("linux-v1:" + fixtureBootID + ":4026532448:202")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proc := linuxProcFixture(t, fixtureBootID, "4026531836", "4026532448")
+			path := filepath.Join(proc, "42/stat")
+			stat := strings.Replace(linuxStatFixture(42, "worker ) with spaces", "202"), ") S ", ") "+tt.state+" ", 1)
+			stat = strings.Replace(stat, "16 1 18", "16 "+tt.threads+" 18", 1)
+			require.NoError(t, os.WriteFile(path, []byte(stat), 0o644))
+			if tt.state == "Z" {
+				wantScope := ProcessScopeForeign
+				if tt.want {
+					wantScope = ProcessScopeGone
+				}
+				assert.Equal(t, wantScope, linuxProcessIdentityScope(proc, 7, identity))
+			}
+			assert.Equal(t, tt.want, linuxProcessHasExited(proc, 42))
+		})
+	}
 }
 
 const (
@@ -142,6 +175,10 @@ func TestLinuxProcessIdentityScope(t *testing.T) {
 			status := filepath.Join(proc, "43/status")
 			require.NoError(t, os.Chmod(status, 0))
 		}, ProcessScopeForeign},
+		{"malformed stat with terminal state", fixtureBootID, initNamespace, 7, server, func(t *testing.T, proc string) {
+			t.Helper()
+			require.NoError(t, os.WriteFile(filepath.Join(proc, "42/stat"), []byte("42 (worker) Z"), 0o644))
+		}, ProcessScopeForeign},
 		{"status without NSpid", fixtureBootID, initNamespace, 8, server, func(t *testing.T, proc string) {
 			t.Helper()
 			require.NoError(t, os.WriteFile(filepath.Join(proc, "1/status"), []byte("Name:\tinit\n"), 0o644))
@@ -192,7 +229,7 @@ func TestCompareProcessIdentityMatchesBeforeJudgingNamespace(t *testing.T) {
 
 func linuxStatFixture(pid int, command, startTicks string) string {
 	return fmt.Sprintf(
-		"%d (%s) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 %s 20",
+		"%d (%s) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 1 18 %s 20",
 		pid,
 		command,
 		startTicks,

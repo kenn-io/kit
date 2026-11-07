@@ -8,16 +8,19 @@ import (
 	"os"
 	"os/exec"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
 
 // startLivePIDHelper starts a child process that lives until test cleanup.
-func startLivePIDHelper(t *testing.T) int {
+func startLivePIDHelper(t *testing.T) (*exec.Cmd, io.WriteCloser) {
 	t.Helper()
 	require := require.New(t)
 
-	cmd := exec.CommandContext(context.WithoutCancel(t.Context()), os.Args[0], "-test.run=^TestLivePIDHelper$")
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 10*time.Second)
+	t.Cleanup(cancel)
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestLivePIDHelper$")
 	cmd.Env = append(os.Environ(), "KIT_DAEMON_LIVE_PID_HELPER=1")
 	stdin, err := cmd.StdinPipe()
 	require.NoError(err)
@@ -25,14 +28,16 @@ func startLivePIDHelper(t *testing.T) int {
 	require.NoError(err)
 	require.NoError(cmd.Start())
 	t.Cleanup(func() {
-		require.NoError(stdin.Close())
-		require.NoError(cmd.Wait())
+		if cmd.ProcessState == nil {
+			_ = stdin.Close()
+			require.NoError(cmd.Wait())
+		}
 	})
 
 	ready, err := bufio.NewReader(stdout).ReadString('\n')
 	require.NoError(err)
 	require.Equal("ready\n", ready)
-	return cmd.Process.Pid
+	return cmd, stdin
 }
 
 func TestLivePIDHelper(t *testing.T) {

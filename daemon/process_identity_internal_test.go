@@ -7,6 +7,7 @@ import (
 )
 
 func TestRuntimeRecordBlocksStartForeign(t *testing.T) {
-	pid := startLivePIDHelper(t)
+	cmd, _ := startLivePIDHelper(t)
+	pid := cmd.Process.Pid
 	assert.False(t, runtimeRecordBlocksStart(RuntimeRecord{PID: pid}, ProcessScopeForeign))
 }
