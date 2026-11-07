@@ -111,11 +111,8 @@ func checkCodex(ctx context.Context, path string, owned []ownedRegistration) (Ch
 			}
 		}
 	}
-	if count == 0 {
-		return CheckUnknown, "Codex did not discover installed hooks for this application", "Check Codex hook discovery and effective feature settings"
-	}
 	if count != len(owned) {
-		return CheckUnknown, "Codex discovered only some of the installed hooks", "Review Codex hook discovery with /hooks"
+		return CheckUnknown, "Codex did not discover all of this application's installed hooks", "Review Codex hook discovery with /hooks"
 	}
 	for _, state := range []CheckState{CheckDisabled, CheckModified, CheckUntrusted} {
 		if states[string(state)] {
@@ -126,14 +123,8 @@ func checkCodex(ctx context.Context, path string, owned []ownedRegistration) (Ch
 }
 
 func codexFailure(err error, step string) (CheckState, string, string) {
-	pathError, _ := errors.AsType[*os.PathError](err)
-	switch {
-	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-		step = "Allow more time for Codex to respond and retry"
-	case errors.Is(err, exec.ErrNotFound), errors.Is(err, os.ErrNotExist):
+	if errors.Is(err, exec.ErrNotFound) {
 		step = "Install Codex and make it available on PATH"
-	case pathError != nil && pathError.Op == "fork/exec":
-		step = "Check the Codex executable path and permissions and retry"
 	}
 	return CheckUnknown, err.Error(), step
 }

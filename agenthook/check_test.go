@@ -50,10 +50,6 @@ func runHookCheckHelper(mode string) int {
 	if mode == "initialize-eof" {
 		return 0
 	}
-	if mode == "initialize-timeout" {
-		input.Scan()
-		return 0
-	}
 	fmt.Println(`{"id":1,"result":{}}`)
 	if !input.Scan() || string(input.Bytes()) != `{"method":"initialized","params":{}}` {
 		return 8
@@ -123,7 +119,7 @@ func TestCheckCodexNativeStates(t *testing.T) {
 		{"managed", "normal", "managed", "", CheckOK, ""},
 		{"other applications and source files", "mixed", "trusted", "", CheckOK, ""},
 		{"symlinked native source", "symlink", "untrusted", "", CheckUntrusted, ""},
-		{"wrong native identity", "wrong-index", "trusted", "", CheckUnknown, "did not discover installed hooks"},
+		{"wrong native identity", "wrong-index", "trusted", "", CheckUnknown, "did not discover all"},
 		{"partial discovery", "partial", "trusted", "", CheckUnknown, ""},
 		{"modified before outdated", "normal", "modified", ",\"async\":true", CheckModified, ""},
 		{"reviewed but outdated", "normal", "trusted", ",\"async\":true", CheckOutdated, ""},
@@ -133,8 +129,7 @@ func TestCheckCodexNativeStates(t *testing.T) {
 		{"unknown trust", "normal", "future", "", CheckUnknown, ""},
 		{"discovery error", "discovery-error", "trusted", "", CheckUnknown, "invalid hooks"},
 		{"missing discovery data", "missing-data", "", "", CheckUnknown, ""},
-		{"initialization EOF", "initialize-eof", "", "", CheckUnknown, ""},
-		{"initialization timeout", "initialize-timeout", "", "", CheckUnknown, "context deadline exceeded"},
+		{"initialization EOF", "initialize-eof", "", "", CheckUnknown, "EOF"},
 		{"config timeout", "rpc-timeout", "", "", CheckUnknown, "context deadline exceeded"},
 		{"discovery timeout", "discovery-timeout", "", "", CheckUnknown, "context deadline exceeded"},
 		{"missing CLI on PATH", "missing-cli", "", "", CheckUnknown, "codex"},
@@ -215,14 +210,8 @@ func TestCheckCodexNativeStates(t *testing.T) {
 			if tc.reason != "" {
 				assert.Contains(t, result.Reason, tc.reason)
 			}
-			if strings.HasSuffix(tc.mode, "timeout") {
-				assert.Contains(t, result.NextStep, "more time")
-			}
 			if tc.mode == "initialize-eof" {
 				assert.Contains(t, result.NextStep, "app-server startup")
-			}
-			if tc.mode == "wrong-index" {
-				assert.Contains(t, result.NextStep, "effective feature settings")
 			}
 			if tc.mode == "missing-cli" {
 				assert.Contains(t, result.NextStep, "Install Codex")
@@ -343,13 +332,20 @@ func TestCheckClaudeLocalSettingsRoot(t *testing.T) {
 	}
 	executable, err := os.Executable()
 	require.NoError(t, err)
-	for _, linked := range []bool{false, true} {
-		t.Run(fmt.Sprintf("linked=%t", linked), func(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		linked, home bool
+		want         CheckState
+	}{{"subdirectory", false, false, CheckDisabled}, {"linked", true, false, CheckDisabled}, {"home", false, true, CheckOK}} {
+		t.Run(tc.name, func(t *testing.T) {
 			repo := gittest.NewRepoWithCommit(t)
 			repo.WriteFile(".claude/settings.local.json", `{"disableAllHooks":true}`)
 			workspace := repo.Root
-			if linked {
+			if tc.linked {
 				workspace = repo.AddWorktree("example")
+			}
+			if tc.home {
+				t.Setenv("HOME", repo.Root)
 			}
 			workspace = filepath.Join(workspace, "subdir")
 			require.NoError(t, os.MkdirAll(filepath.Join(workspace, ".claude"), 0o700))
@@ -361,7 +357,7 @@ func TestCheckClaudeLocalSettingsRoot(t *testing.T) {
 			require.NoError(t, err)
 			result, err := Check(t.Context(), AgentClaude, opts)
 			require.NoError(t, err)
-			assert.Equal(t, CheckDisabled, result.State, result.Reason)
+			assert.Equal(t, tc.want, result.State, result.Reason)
 		})
 	}
 }
@@ -389,9 +385,10 @@ func TestCheckCommandResolution(t *testing.T) {
 		{"quoted executable with arguments", InstallOptions{Command: quoted.POSIX + ` \* [literal] "$EXAMPLE_HOOK"`}, CheckOK, "", ""},
 		{"escaped executable", InstallOptions{Command: escaped + " example-marker"}, CheckOK, "", ""},
 		{"Windows command override", InstallOptions{Command: "example-missing-hook-executable example-marker", CommandWindows: quoted.Windows}, CheckOK, "", ""},
+		{"Windows compound command", InstallOptions{Command: "example-missing-hook-executable example-marker", CommandWindows: quoted.Windows + " & example-missing-hook-executable"}, CheckUnknown, "shell interpretation", ""},
 		{"unresolved PATH name", InstallOptions{Command: "example-missing-hook-executable example-marker"}, CheckUnknown, "checking process environment", "PATH"},
 		{"shell assignment", InstallOptions{Command: "EXAMPLE_HOOK=1 example-hook example-marker"}, CheckUnknown, "shell interpretation", ""},
-		{"shell expansion", InstallOptions{Command: "$EXAMPLE_HOOK example-marker"}, CheckUnknown, "shell interpretation", ""},
+		{"shell expansion", InstallOptions{Command: "${EXAMPLE_HOOK:-" + filepath.Base(executable) + "} example-marker"}, CheckUnknown, "shell interpretation", ""},
 		{"shell compound", InstallOptions{Command: filepath.Base(executable) + " example-marker; echo other"}, CheckUnknown, "shell interpretation", ""},
 		{"quoted expansion", InstallOptions{Command: `"$EXAMPLE_HOOK" example-marker`}, CheckUnknown, "shell interpretation", ""},
 		{"glob executable", InstallOptions{Command: "*hook example-marker"}, CheckUnknown, "shell interpretation", ""},

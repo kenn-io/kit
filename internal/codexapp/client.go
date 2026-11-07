@@ -110,10 +110,7 @@ func (c *Client) Call(method string, params, result any) error {
 		if result == nil {
 			return nil
 		}
-		if err := json.Unmarshal(response.Result, result); err != nil {
-			return fmt.Errorf("codex %s response: %w", method, err)
-		}
-		return nil
+		return json.Unmarshal(response.Result, result)
 	}
 }
 

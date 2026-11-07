@@ -9,15 +9,11 @@ import (
 )
 
 func rawHookExecutable(command, commandWindows string) (string, error) {
-	if commandWindows != "" {
-		return windowsHookExecutable(commandWindows)
+	if commandWindows == "" {
+		return posixHookExecutable(command)
 	}
-	return posixHookExecutable(command)
-}
-
-func windowsHookExecutable(command string) (string, error) {
 	quoted, backslashes := false, 0
-	for _, char := range command {
+	for _, char := range commandWindows {
 		if char == '"' && backslashes%2 == 0 {
 			quoted = !quoted
 		}
@@ -31,9 +27,9 @@ func windowsHookExecutable(command string) (string, error) {
 		}
 	}
 
-	words, err := windows.DecomposeCommandLine(command)
+	words, err := windows.DecomposeCommandLine(commandWindows)
 	if err != nil || len(words) == 0 {
-		return "", fmt.Errorf("cannot identify hook executable in %q", command)
+		return "", fmt.Errorf("cannot identify hook executable in %q", commandWindows)
 	}
 	return words[0], nil
 }
