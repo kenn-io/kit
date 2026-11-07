@@ -1,6 +1,8 @@
 package backup
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -9,13 +11,28 @@ import (
 )
 
 func TestAttachmentHistoryGrowth(t *testing.T) {
+	if testing.Short() {
+		t.Skip("growth checks skip under -short")
+	}
 	// Allocs measures process-wide allocations, so run these checks sequentially.
+	const large = 1000
+	largeRepo, largeOpts, addLarge := buildAttachmentHistory(t, 0, large)
 	t.Run("prune", func(t *testing.T) {
 		growthtest.Run(t, growthtest.Check{
-			Small: 100, Large: 1000,
+			Small: 100, Large: large,
 			Build: func(tb testing.TB, size int) (run, reset func()) {
 				tb.Helper()
-				r, _, _ := buildAttachmentHistory(tb, 0, size)
+				var r *Repo
+				if size == large {
+					// Copy before pruning so create measures the original index layout.
+					root := filepath.Join(tb.TempDir(), "repo")
+					require.NoError(tb, os.CopyFS(root, os.DirFS(largeRepo.Root())))
+					var err error
+					r, err = Open(root)
+					require.NoError(tb, err)
+				} else {
+					r, _, _ = buildAttachmentHistory(tb, 0, size)
+				}
 				return func() {
 					_, err := Prune(tb.Context(), r, newTestApp(), PruneOptions{})
 					require.NoError(tb, err)
@@ -30,12 +47,14 @@ func TestAttachmentHistoryGrowth(t *testing.T) {
 		})
 	})
 	t.Run("create", func(t *testing.T) {
-		const large = 1000
 		growthtest.Run(t, growthtest.Check{
 			Small: 100, Large: large,
 			Build: func(tb testing.TB, size int) (run, reset func()) {
 				tb.Helper()
-				r, opts, add := buildAttachmentHistory(tb, large-size, size)
+				r, opts, add := largeRepo, largeOpts, addLarge
+				if size != large {
+					r, opts, add = buildAttachmentHistory(tb, large-size, size)
+				}
 				return func() {
 					_, err := Create(tb.Context(), r, newTestApp(), opts)
 					require.NoError(tb, err)
