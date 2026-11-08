@@ -97,7 +97,7 @@ func (a Analyzer) PrepareNatural(text string) (Natural, error) {
 
 func inflections(word string) []string {
 	forms := []string{word}
-	if len(word) < 3 || IsStopWord(word) || strings.ContainsFunc(word, func(r rune) bool { return r < 'a' || r > 'z' }) {
+	if len(word) < 2 || IsStopWord(word) || strings.ContainsFunc(word, func(r rune) bool { return r < 'a' || r > 'z' }) {
 		return forms
 	}
 	bases := []string{word}
@@ -118,7 +118,7 @@ func inflections(word string) []string {
 		}
 	}
 	for _, base := range bases {
-		if len(base) < 3 || !strings.ContainsAny(base, "aeiouy") {
+		if len(base) < 2 || !strings.ContainsAny(base, "aeiouy") {
 			continue
 		}
 		variants := regular(base)

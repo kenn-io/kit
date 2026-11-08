@@ -157,13 +157,7 @@ func TestChineseSegmentsHanAndNotKana(t *testing.T) {
 }
 
 func TestCharacterPhraseMatchesRealFTS(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, db.Close()) })
-	_, err = db.ExecContext(t.Context(), `
-CREATE TABLE docs (id INTEGER PRIMARY KEY, body TEXT);
-CREATE VIRTUAL TABLE docs_fts USING fts5(body, tokenize='unicode61');`)
-	require.NoError(t, err)
+	db := ftsDB(t, nil)
 
 	a := lexical.CharacterPhrase()
 	docs := []string{

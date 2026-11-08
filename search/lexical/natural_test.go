@@ -26,7 +26,7 @@ func TestPrepareNatural(t *testing.T) {
 		match string
 	}{
 		{"the of", []string{"the", "of"}, `"the" OR "of"`},
-		{"café v2 go", []string{"café", "v2", "go"}, `"café" OR "v2" OR "go"`},
+		{"café v2", []string{"café", "v2"}, `"café" OR "v2"`},
 		{"The invoice", []string{"invoice"}, ""},
 		{`"connection reset" the`, nil, `"connection reset"`},
 		{"Invoice invoices", []string{"invoice"}, ""},
@@ -62,6 +62,8 @@ func TestPrepareNatural(t *testing.T) {
 func TestNaturalForms(t *testing.T) {
 	for _, family := range [][]string{
 		{"invoice", "invoices", "invoiced", "invoicing"},
+		{"ad", "ads"},
+		{"go", "goes"},
 		{"round", "rounds", "rounded", "rounding"},
 		{"stop", "stops", "stopped", "stopping"},
 		{"policy", "policies"},
@@ -101,7 +103,7 @@ func TestNaturalForms(t *testing.T) {
 		{"toe", "toes", "toed", "toeing"},
 	} {
 		t.Run(family[0], func(t *testing.T) {
-			db := naturalDB(t, family)
+			db := ftsDB(t, family)
 			for _, word := range family {
 				got, err := lexical.Literal().PrepareNatural(word)
 				require.NoError(t, err)
@@ -118,7 +120,7 @@ func TestNaturalForms(t *testing.T) {
 		{"caring", "car"}, {"filing", "filled"}, {"string", "str"}, {"https", "http"}, {"being", "bed"},
 	} {
 		t.Run(tc.query, func(t *testing.T) {
-			db := naturalDB(t, []string{tc.query, tc.miss})
+			db := ftsDB(t, []string{tc.query, tc.miss})
 			got, err := lexical.Literal().PrepareNatural(tc.query)
 			require.NoError(t, err)
 			assert.Equal(t, []string{tc.query}, matchBodies(t, db, got.Match))
@@ -131,7 +133,7 @@ func TestNaturalForms(t *testing.T) {
 
 func TestNaturalFTS(t *testing.T) {
 	bodies := []string{"rounding of invoices", "invoice rounding decision", "the invoiced total was rounded", "connection reset by peer", "reset the connection", "error-401 status 500 NOT", "the of", "thing"}
-	db := naturalDB(t, bodies)
+	db := ftsDB(t, bodies)
 	for _, tc := range []struct {
 		query string
 		want  []string
@@ -162,7 +164,7 @@ func TestNaturalFTS(t *testing.T) {
 }
 
 func TestNaturalCJK(t *testing.T) {
-	db := naturalDB(t, []string{"検 索", "索 検", "搜索 引擎", "引擎"})
+	db := ftsDB(t, []string{"検 索", "索 検", "搜索 引擎", "引擎"})
 	got, err := lexical.CharacterPhrase().PrepareNatural("SQLite 検索")
 	require.NoError(t, err)
 	require.Len(t, got.Words, 2)
@@ -190,7 +192,7 @@ func TestNaturalCJK(t *testing.T) {
 	require.ErrorIs(t, err, failure)
 }
 
-func naturalDB(t *testing.T, bodies []string) *sql.DB {
+func ftsDB(t *testing.T, bodies []string) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", ":memory:")
 	require.NoError(t, err)
