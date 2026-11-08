@@ -121,6 +121,7 @@ func TestNaturalForms(t *testing.T) {
 		{"https", "http"},
 		{"being", "bed"},
 		{"seed", "see"},
+		{"specked", "spec"},
 		{"feed", "fee"},
 		{"uses", "us"},
 		{"added", "ad"},

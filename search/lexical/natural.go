@@ -142,7 +142,7 @@ func regular(base string) []string {
 		plural = base + "es"
 	}
 	var extra []string
-	if strings.HasSuffix(base, "c") {
+	if strings.HasSuffix(base, "ic") {
 		extra = append(extra, past, present, base+"ked", base+"king")
 	}
 	if strings.HasSuffix(base, "ue") {
