@@ -53,10 +53,9 @@ func (a Analyzer) PrepareNatural(text string) (Natural, error) {
 	}
 	hasContent := len(result.Phrases) > 0 || slices.ContainsFunc(normalized, func(word string) bool { return !IsStopWord(word) })
 	for _, word := range normalized {
-		if hasContent && IsStopWord(word) || slices.ContainsFunc(result.Words, func(term Term) bool { return slices.Contains(term.Forms, word) }) {
-			continue
+		if !hasContent || !IsStopWord(word) {
+			result.Words = coalesce(result.Words, word)
 		}
-		result.Words = append(result.Words, Term{Text: word, Forms: inflections(word)})
 	}
 	var parts []string
 	join := " OR "
@@ -90,6 +89,21 @@ func (a Analyzer) PrepareNatural(text string) (Natural, error) {
 		return Natural{}, errors.New("lexical: query text or a quoted phrase is empty")
 	}
 	return result, nil
+}
+
+// coalesce merges word's forms into the term that already spells it, so
+// word order does not change matches.
+func coalesce(terms []Term, word string) []Term {
+	i := slices.IndexFunc(terms, func(term Term) bool { return slices.Contains(term.Forms, word) })
+	if i < 0 {
+		return append(terms, Term{Text: word, Forms: inflections(word)})
+	}
+	for _, form := range inflections(word) {
+		if !slices.Contains(terms[i].Forms, form) {
+			terms[i].Forms = append(terms[i].Forms, form)
+		}
+	}
+	return terms
 }
 
 // wordless reports runes that cannot make a word or phrase searchable on their own.
