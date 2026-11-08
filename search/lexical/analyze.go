@@ -296,7 +296,7 @@ func isCJK(r rune) bool {
 
 // IsStopWord reports whether word is a common English word omitted from search.
 func IsStopWord(word string) bool {
-	switch strings.ToLower(word) {
+	switch word {
 	case "a", "an", "the", "and", "or", "of", "to", "for", "from", "in", "on", "at", "by", "with", "as", "is", "are", "be", "i", "me", "my", "it", "this", "that", "how", "do", "does", "can", "please":
 		return true
 	}

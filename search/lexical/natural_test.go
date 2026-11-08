@@ -35,7 +35,6 @@ func TestPrepareNatural(t *testing.T) {
 		{", refund?!", []string{"refund"}, ""},
 		{`unclosed "quote`, []string{"unclosed", "quote"}, ""},
 		{`"first phrase" "second phrase"`, nil, `"first phrase" AND "second phrase"`},
-		{"?", []string{"?"}, `"?"`},
 	} {
 		t.Run(tc.query, func(t *testing.T) {
 			got, err := lexical.Literal().PrepareNatural(tc.query)
@@ -50,13 +49,13 @@ func TestPrepareNatural(t *testing.T) {
 			}
 		})
 	}
-	for _, query := range []string{"", "  ", `""`, `"  "`} {
+	for _, query := range []string{"", "  ", `""`, `"  "`, "?"} {
 		_, err := lexical.Literal().PrepareNatural(query)
 		require.Error(t, err, query)
 	}
 	_, err = (lexical.Analyzer{}).PrepareNatural("invoice")
 	require.Error(t, err)
-	assert.True(t, lexical.IsStopWord("The"))
+	assert.True(t, lexical.IsStopWord("the"))
 	assert.False(t, lexical.IsStopWord("invoice"))
 }
 
@@ -139,7 +138,6 @@ func TestNaturalFTS(t *testing.T) {
 		{`"connection reset" retry`, bodies[3:4]},
 		{`error-401 status:500 NOT`, bodies[5:6]},
 		{"the of", []string{bodies[0], bodies[2], bodies[4], bodies[6]}},
-		{"?", nil},
 	} {
 		t.Run(tc.query, func(t *testing.T) {
 			got, err := lexical.Literal().PrepareNatural(tc.query)

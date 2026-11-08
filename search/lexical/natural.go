@@ -54,9 +54,6 @@ func (a Analyzer) PrepareNatural(text string) (Natural, error) {
 			normalized = append(normalized, word)
 		}
 	}
-	if len(normalized) == 0 && len(result.Phrases) == 0 {
-		normalized = words
-	}
 	hasContent := len(result.Phrases) > 0 || slices.ContainsFunc(normalized, func(word string) bool { return !IsStopWord(word) })
 	for _, word := range normalized {
 		if hasContent && IsStopWord(word) || slices.ContainsFunc(result.Words, func(term Term) bool { return slices.Contains(term.Forms, word) }) {
