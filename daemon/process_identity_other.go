@@ -19,6 +19,11 @@ func ReadProcessIdentity(pid int) (ProcessIdentity, bool) {
 		return "", false
 	}
 	created, err := proc.CreateTime()
+	if err != nil {
+		// Another account's process can refuse to open, which would leave a
+		// reused PID unjudged. Some platforms list its creation time anyway.
+		created, err = listedProcessCreateTime(pid)
+	}
 	if err != nil || created <= 0 {
 		return "", false
 	}
