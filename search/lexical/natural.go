@@ -114,8 +114,8 @@ func inflections(word string) []string {
 		}
 	}
 	for _, base := range bases {
-		// Keep us/uses and new/news in separate word families.
-		if base == "us" || base == "new" || len(base) < 2 || !strings.ContainsAny(strings.TrimSuffix(base, "e"), "aeiouy") {
+		// Keep these tokens separate from unrelated words that look like plurals.
+		if base == "us" || base == "new" || base == "len" || len(base) < 2 || !strings.ContainsAny(strings.TrimSuffix(base, "e"), "aeiouy") {
 			continue
 		}
 		variants := regular(base)

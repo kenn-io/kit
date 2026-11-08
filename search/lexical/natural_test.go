@@ -129,6 +129,7 @@ func TestNaturalWordFamiliesStaySeparate(t *testing.T) {
 	}{
 		{[]string{"use", "uses", "used", "using"}, "us"},
 		{[]string{"news"}, "new"},
+		{[]string{"lens", "lenses"}, "len"},
 		{[]string{"add", "adds", "added", "adding"}, "ad"},
 	} {
 		t.Run(tc.family[0], func(t *testing.T) {
