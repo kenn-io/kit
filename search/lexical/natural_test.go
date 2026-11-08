@@ -32,6 +32,8 @@ func TestPrepareNatural(t *testing.T) {
 		{"cafe\u0301", []string{"cafe\u0301"}, ""},
 		{`unclosed "quote`, []string{"unclosed", "quote"}, ""},
 		{`"first phrase" "second phrase"`, nil, `"first phrase" AND "second phrase"`},
+		{"“invoice rounding”", nil, `"invoice rounding"`},
+		{"„invoice rounding“ retry", []string{"retry"}, `"invoice rounding"`},
 	} {
 		t.Run(tc.query, func(t *testing.T) {
 			got, err := lexical.Literal().PrepareNatural(tc.query)
@@ -148,6 +150,7 @@ func TestNaturalFTS(t *testing.T) {
 		{"ax axes", bodies[5:8]},
 		{"axes ax", bodies[5:8]},
 		{`"rounding of invoices"`, bodies[:1]},
+		{"“rounding of invoices”", bodies[:1]},
 		{`"connection reset" retry`, bodies[3:4]},
 	} {
 		t.Run(tc.query, func(t *testing.T) {

@@ -33,7 +33,7 @@ func (a Analyzer) PrepareNatural(text string) (Natural, error) {
 	segmentHan := a.Identity.Kind == KindChinese && !containsKanaOrHangul(text)
 	result := Natural{Identity: a.Identity}
 	var words []string
-	segments := strings.Split(text, `"`)
+	segments := strings.Split(strings.NewReplacer("“", `"`, "”", `"`, "„", `"`).Replace(text), `"`)
 	for i, segment := range segments {
 		if i%2 == 0 || i == len(segments)-1 {
 			words = append(words, strings.Fields(segment)...)
