@@ -157,6 +157,8 @@ func regular(base string) []string {
 	switch {
 	case strings.HasSuffix(base, "y") && !vowel(base[len(base)-2]):
 		plural, past = base[:len(base)-1]+"ies", base[:len(base)-1]+"ied"
+	case len(base) > 3 && strings.HasSuffix(base, "ie"):
+		return []string{base, plural}
 	case strings.HasSuffix(base, "ie"):
 		present = base[:len(base)-2] + "ying"
 	case len(base) == 3 && strings.HasSuffix(base, "ee"):
