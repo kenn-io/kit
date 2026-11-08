@@ -53,7 +53,7 @@ func (a Analyzer) PrepareNatural(text string) (Natural, error) {
 	}
 	hasContent := len(result.Phrases) > 0 || slices.ContainsFunc(normalized, func(word string) bool { return !IsStopWord(word) })
 	for _, word := range normalized {
-		if hasContent && IsStopWord(word) {
+		if hasContent && IsStopWord(word) || slices.ContainsFunc(result.Words, func(term Term) bool { return slices.Contains(term.Forms, word) }) {
 			continue
 		}
 		result.Words = append(result.Words, Term{Text: word, Forms: inflections(word)})
@@ -178,6 +178,8 @@ func regular(base string) []string {
 			}
 			if groups > 1 {
 				extra = append(extra, past, present)
+			} else if strings.HasSuffix(base, "z") {
+				plural = doubled + "es"
 			}
 			past, present = doubled+"ed", doubled+"ing"
 		}
