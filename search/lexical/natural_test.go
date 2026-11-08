@@ -69,6 +69,7 @@ func TestNaturalForms(t *testing.T) {
 		{"go", "goes"},
 		{"round", "rounds", "rounded", "rounding"},
 		{"stop", "stops", "stopped", "stopping"},
+		{"control", "controls", "controlled", "controlling"},
 		{"gym", "gyms", "gymmed", "gymming"},
 		{"policy", "policies"},
 		{"box", "boxes", "boxed", "boxing"},
@@ -122,6 +123,10 @@ func TestNaturalForms(t *testing.T) {
 		{"trie", "trying"},
 		{"aws", "awed"},
 		{"dos", "doing"},
+		{"passed", "pas"},
+		{"missing", "mis"},
+		{"calling", "cal"},
+		{"stuffed", "stuf"},
 	} {
 		t.Run(tc.query, func(t *testing.T) {
 			got, err := lexical.Literal().PrepareNatural(tc.query)

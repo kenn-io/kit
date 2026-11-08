@@ -185,14 +185,14 @@ func regular(base string) []string {
 	default:
 		sounds := strings.ReplaceAll(base, "qu", "q")
 		n := len(sounds)
-		if base != "ad" && n >= 2 && (n == 2 || !vowel(sounds[n-3])) && vowel(sounds[n-2]) && !vowel(sounds[n-1]) && !strings.ContainsRune("wxy", rune(sounds[n-1])) {
-			doubled := base + base[len(base)-1:]
-			groups := 0
-			for i := range len(sounds) {
-				if vowel(sounds[i]) && (i == 0 || !vowel(sounds[i-1])) {
-					groups++
-				}
+		groups := 0
+		for i := range len(sounds) {
+			if vowel(sounds[i]) && (i == 0 || !vowel(sounds[i-1])) {
+				groups++
 			}
+		}
+		if base != "ad" && n >= 2 && (n == 2 || !vowel(sounds[n-3])) && vowel(sounds[n-2]) && !vowel(sounds[n-1]) && !strings.ContainsRune("swxy", rune(sounds[n-1])) && (groups > 1 || !strings.ContainsRune("fl", rune(sounds[n-1]))) {
+			doubled := base + base[len(base)-1:]
 			if groups > 1 {
 				extra = append(extra, past, present)
 			} else if strings.HasSuffix(base, "z") {
