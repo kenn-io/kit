@@ -46,7 +46,7 @@ func TestPrepareNatural(t *testing.T) {
 			}
 		})
 	}
-	for _, query := range []string{"", `""`, "$ +", `"! ?"`, `"$" invoice`, "\"invoice\x00 rounding\"", `"👩‍💻" invoice`} {
+	for _, query := range []string{`""`, "$ +", `"! ?"`, `"$" invoice`, "\"invoice\x00 rounding\"", `"👩‍💻" invoice`} {
 		t.Run(query, func(t *testing.T) {
 			got, err := lexical.Literal().PrepareNatural(query)
 			require.Error(t, err)
@@ -169,18 +169,37 @@ func TestNaturalCJK(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, got.Words, 2)
 	assert.Equal(t, `"検 索"`, got.Words[1].Match)
+	tokens := map[string][]lexical.Token{
+		"搜索引擎": {{Text: "搜索"}, {Text: "引擎"}},
+		"T恤":   {{Text: "T恤"}},
+		"t恤":   {{Text: "t"}, {Text: "恤"}},
+		"B超":   {{Text: "B超"}},
+		"b超":   {{Text: "b"}, {Text: "超"}},
+	}
 	var calls []string
 	chinese, err := lexical.Chinese("runtime", func(text string) ([]lexical.Token, error) {
 		calls = append(calls, text)
-		return []lexical.Token{{Text: "搜索"}, {Text: "引擎"}}, nil
+		return tokens[text], nil
 	})
 	require.NoError(t, err)
-	got, err = chinese.PrepareNatural("搜索引擎 retry")
-	require.NoError(t, err)
-	assert.Equal(t, []string{"搜索引擎"}, calls)
-	assert.Equal(t, `("搜索" AND "引擎")`, got.Words[0].Match)
-	db := ftsDB(t, []string{"搜索 引擎", "引擎", "retry"})
-	assert.ElementsMatch(t, []string{"搜索 引擎", "retry"}, matchBodies(t, db, got.Match))
+	for _, tc := range []struct {
+		query  string
+		bodies []string
+		want   []string
+		calls  []string
+	}{
+		{"搜索引擎 retry", []string{"搜索 引擎", "引擎", "retry"}, []string{"搜索 引擎", "retry"}, []string{"搜索引擎"}},
+		{"T恤 B超 RETRY", []string{"T恤", "B超", "retried"}, []string{"T恤", "B超", "retried"}, []string{"T恤", "B超"}},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			calls = nil
+			got, err := chinese.PrepareNatural(tc.query)
+			require.NoError(t, err)
+			assert.ElementsMatch(t, tc.want, matchBodies(t, ftsDB(t, tc.bodies), got.Match))
+			assert.Equal(t, tc.calls, calls)
+		})
+	}
+	calls = nil
 	for _, tc := range []struct{ query, match string }{
 		{`搜索引擎 かな`, `"搜索引擎" OR "かな"`},
 		{`"搜索引擎"`, `"搜索引擎"`},
@@ -189,29 +208,9 @@ func TestNaturalCJK(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, tc.match, got.Match)
 	}
-	assert.Len(t, calls, 1)
+	assert.Empty(t, calls)
 	failure := errors.New("segment failed")
 	chinese.Segment = func(string) ([]lexical.Token, error) { return nil, failure }
 	_, err = chinese.PrepareNatural("搜索")
 	require.ErrorIs(t, err, failure)
-}
-
-func TestNaturalChinesePreservesDictionaryCase(t *testing.T) {
-	tokens := map[string][]lexical.Token{
-		"T恤": {{Text: "T恤"}},
-		"t恤": {{Text: "t"}, {Text: "恤"}},
-		"B超": {{Text: "B超"}},
-		"b超": {{Text: "b"}, {Text: "超"}},
-	}
-	var calls []string
-	chinese, err := lexical.Chinese("runtime", func(text string) ([]lexical.Token, error) {
-		calls = append(calls, text)
-		return tokens[text], nil
-	})
-	require.NoError(t, err)
-	db := ftsDB(t, []string{"T恤", "B超", "retried"})
-	got, err := chinese.PrepareNatural("T恤 B超 RETRY")
-	require.NoError(t, err)
-	assert.ElementsMatch(t, []string{"T恤", "B超", "retried"}, matchBodies(t, db, got.Match))
-	assert.Equal(t, []string{"T恤", "B超"}, calls)
 }

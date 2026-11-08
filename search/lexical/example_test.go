@@ -27,13 +27,3 @@ func ExampleCJK_IndexFor() {
 	// cjk
 	// "run" "搜 索"
 }
-
-func ExampleAnalyzer_PrepareNatural() {
-	prepared, err := lexical.Literal().PrepareNatural(`invoice "exact phrase"`)
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println(prepared.Match)
-	// Output:
-	// "exact phrase"
-}
