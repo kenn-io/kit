@@ -1,6 +1,7 @@
 package lexical
 
 import (
+	"cmp"
 	"errors"
 	"slices"
 	"strings"
@@ -26,8 +27,8 @@ type Natural struct {
 // PrepareNatural quotes words, expands regular English forms, and requires
 // quoted phrases. Callers count matches with each Word's Match expression.
 func (a Analyzer) PrepareNatural(text string) (Natural, error) {
-	if err := a.valid(); err != nil {
-		return Natural{}, err
+	if err := a.valid(); err != nil || strings.ContainsRune(text, 0) {
+		return Natural{}, cmp.Or(err, errors.New("lexical: query text contains a NUL byte"))
 	}
 	segmentHan := a.Identity.Kind == KindChinese && !containsKanaOrHangul(text)
 	result := Natural{Identity: a.Identity}

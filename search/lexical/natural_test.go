@@ -54,6 +54,25 @@ func TestPrepareNatural(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestNaturalRejectsNUL(t *testing.T) {
+	chinese, err := lexical.Chinese("runtime", func(text string) ([]lexical.Token, error) {
+		t.Errorf("NUL query reached segmenter: %q", text)
+		return []lexical.Token{{Text: "搜索"}}, nil
+	})
+	require.NoError(t, err)
+	for name, analyzer := range map[string]lexical.Analyzer{"literal": lexical.Literal(), "chinese": chinese} {
+		t.Run(name, func(t *testing.T) {
+			for _, query := range []string{"\x00", "invoice\x00 rounding", "\"invoice\x00 rounding\"", "搜索\x00 invoice"} {
+				t.Run(query, func(t *testing.T) {
+					got, err := analyzer.PrepareNatural(query)
+					require.Error(t, err)
+					assert.Equal(t, lexical.Natural{}, got)
+				})
+			}
+		})
+	}
+}
+
 func TestNaturalForms(t *testing.T) {
 	for _, family := range [][]string{
 		{"invoice", "invoices", "invoiced", "invoicing"},
