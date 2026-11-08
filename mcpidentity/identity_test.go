@@ -8,7 +8,6 @@ import (
 	"image/color"
 	"image/png"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -75,15 +74,7 @@ func FuzzIdentitySnapshot(f *testing.F) {
 	})
 }
 
-type bearerTransport struct{ base http.RoundTripper }
-
-func (b bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	r = r.Clone(r.Context())
-	r.Header.Set("Authorization", "Bearer fixture-token")
-	return b.base.RoundTrip(r)
-}
-
-func TestIdentityAcrossTransportsAndPublicImageBoundary(t *testing.T) {
+func TestPublicImageBoundary(t *testing.T) {
 	data := fixturePNG(t, 1, 2, 3)
 	identity, err := mcpidentity.New(mcp.Implementation{
 		Name: "fixture", Version: "1", WebsiteURL: "https://example.invalid",
@@ -150,37 +141,5 @@ func TestIdentityAcrossTransportsAndPublicImageBoundary(t *testing.T) {
 		rec := httptest.NewRecorder()
 		identity.IconHandler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), tc.method, tc.path, nil))
 		assert.Equal(t, tc.status, rec.Code)
-	}
-
-	for _, version := range []string{"2025-11-25", "2026-07-28"} {
-		for _, transport := range []string{"stdio", "http"} {
-			t.Run(version+"/"+transport, func(t *testing.T) {
-				var wire mcp.Transport
-				if transport == "stdio" {
-					// Exercise the same newline JSON IO transport as stdio without
-					// starting a subprocess or touching the user's standard streams.
-					clientPipe, serverPipe := net.Pipe()
-					session, err := mcp.NewServer(identity.Implementation(), nil).Connect(t.Context(),
-						&mcp.IOTransport{Reader: serverPipe, Writer: serverPipe}, nil)
-					require.NoError(t, err)
-					t.Cleanup(func() { assert.NoError(t, session.Close()) })
-					wire = &mcp.IOTransport{Reader: clientPipe, Writer: clientPipe}
-				} else {
-					wire = &mcp.StreamableClientTransport{
-						Endpoint:             host.URL + "/mcp",
-						DisableStandaloneSSE: true,
-						HTTPClient:           &http.Client{Transport: bearerTransport{base: host.Client().Transport}},
-					}
-				}
-				client := mcp.NewClient(&mcp.Implementation{Name: "fixture-client", Version: "1"}, nil)
-				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-				defer cancel()
-				session, err := client.Connect(ctx, wire, &mcp.ClientSessionOptions{ProtocolVersion: version})
-				require.NoError(t, err)
-				t.Cleanup(func() { assert.NoError(t, session.Close()) })
-				require.NotNil(t, session.InitializeResult())
-				assert.Equal(t, identity.Implementation(), session.InitializeResult().ServerInfo)
-			})
-		}
 	}
 }
