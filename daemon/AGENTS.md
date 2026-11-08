@@ -103,6 +103,9 @@ databases, command parsing, and shutdown policy belong to the caller.
 - On Windows, an openable process object is not proof that the process is still
   running; retained handles outlive termination, so liveness must check the
   process exit status for `STILL_ACTIVE`.
+- On Windows, read the creation time of a process this user can't open from
+  the system process list. A PID reused by another account's process then
+  reads as a mismatch instead of an unknown identity that blocks start.
 - Auto-start goes through the caller-provided `StartFunc`; this package must not
   invent application launch commands.
 - `StartDetached` reaps the child itself, so a caller cannot call `Wait`. A
