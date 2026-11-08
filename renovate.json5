@@ -3,24 +3,20 @@
 
   // Routine updates open once a week, early Monday New York time.
   addLabels: ['dependencies'],
-  extends: ['config:recommended', 'schedule:weekly'],
+  // The shared preset holds third-party releases for 7 days, exempts kenn-io
+  // releases and security fixes, and turns off the Dependency Dashboard.
+  extends: ['config:recommended', 'schedule:weekly', 'github>kenn-io/actions//renovate/release-age'],
   timezone: 'America/New_York',
-  dependencyDashboard: true,
 
   // A human reviews and merges every Renovate PR.
   automerge: false,
 
-  // Let a release age before adopting it, so a compromised fresh publish is
-  // less likely to land. Security fixes skip the wait. The age comes from the
-  // registry's timestamp. GitHub Actions tags use the tagged commit's date,
-  // which the publisher sets, so for Actions the PR review is the check.
-  minimumReleaseAge: '7 days',
-  minimumReleaseAgeBehaviour: 'timestamp-required',
-  // strict keeps Renovate from creating a branch until the wait has passed.
+  // The release age comes from the registry's timestamp. GitHub Actions
+  // tags use the tagged commit's date, which the publisher sets, so for
+  // Actions the PR review is the check.
   // CI runs only on pull requests, so the PR must open right away to get
   // checks.
   prCreation: 'immediate',
-  internalChecksFilter: 'strict',
   // Renovate regenerates .github/workflows/actions.lock with this
   // gh-actions-lock release when it bumps an action.
   constraints: {
@@ -30,9 +26,6 @@
   // Security fixes share one PR. They skip the wait, so they cannot ride in
   // the routine ecosystem PRs below.
   vulnerabilityAlerts: {
-    minimumReleaseAge: null,
-    prCreation: 'immediate',
-    schedule: ['at any time'],
     groupName: 'security fixes',
     groupSlug: 'security-fixes',
   },
@@ -57,13 +50,11 @@
       groupName: 'npm packages',
     },
     {
-      // kenn-io releases open right away: no release-age wait and no
-      // weekly window.
+      // Group kenn-io releases. The shared release-age preset lets them
+      // skip the wait and the weekly window.
       matchPackageNames: ['kenn-io/**', 'github.com/kenn-io/**', 'go.kenn.io/**', '@kenn-io/**'],
       groupName: 'kenn-io dependencies',
       groupSlug: 'kenn-io-dependencies',
-      minimumReleaseAge: null,
-      schedule: ['at any time'],
     },
   ],
 
