@@ -28,6 +28,8 @@ func TestPrepareNatural(t *testing.T) {
 		{"invoices, please", []string{"invoices"}, ""},
 		{", refund?!", []string{"refund"}, ""},
 		{"$ invoice +", []string{"invoice"}, ""},
+		{"⚠️ build failed", []string{"build", "failed"}, ""},
+		{"cafe\u0301", []string{"cafe\u0301"}, ""},
 		{`unclosed "quote`, []string{"unclosed", "quote"}, ""},
 		{`"first phrase" "second phrase"`, nil, `"first phrase" AND "second phrase"`},
 	} {
@@ -44,7 +46,7 @@ func TestPrepareNatural(t *testing.T) {
 			}
 		})
 	}
-	for _, query := range []string{"", `""`, "$ +", `"?!"`, `"! ?"`, `"?!" invoice`, `"$" invoice`, "\"invoice\x00 rounding\""} {
+	for _, query := range []string{"", `""`, "$ +", `"?!"`, `"! ?"`, `"?!" invoice`, `"$" invoice`, "\"invoice\x00 rounding\"", "❤️", `"❤️" invoice`, `"👩‍💻" invoice`} {
 		t.Run(query, func(t *testing.T) {
 			got, err := lexical.Literal().PrepareNatural(query)
 			require.Error(t, err)

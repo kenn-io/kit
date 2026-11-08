@@ -43,7 +43,7 @@ func (a Analyzer) PrepareNatural(text string) (Natural, error) {
 	}
 	var normalized []string
 	for _, word := range words {
-		if word = strings.TrimFunc(strings.ToLower(word), wordless); word != "" {
+		if word = strings.TrimFunc(strings.ToLower(word), wordless); hasLetterOrNumber(word) {
 			normalized = append(normalized, word)
 		}
 	}
@@ -82,7 +82,7 @@ func (a Analyzer) PrepareNatural(text string) (Natural, error) {
 		}
 	}
 	result.Match = strings.Join(parts, join)
-	if result.Match == "" || slices.ContainsFunc(result.Phrases, func(phrase string) bool { return strings.TrimFunc(phrase, wordless) == "" }) {
+	if result.Match == "" || slices.ContainsFunc(result.Phrases, func(phrase string) bool { return !hasLetterOrNumber(phrase) }) {
 		return Natural{}, errors.New("lexical: query text or a quoted phrase is empty")
 	}
 	return result, nil
@@ -90,6 +90,10 @@ func (a Analyzer) PrepareNatural(text string) (Natural, error) {
 
 // wordless reports runes that cannot make a word or phrase searchable on their own.
 func wordless(r rune) bool { return unicode.IsPunct(r) || unicode.IsSymbol(r) || unicode.IsSpace(r) }
+
+func hasLetterOrNumber(text string) bool {
+	return strings.ContainsFunc(text, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsNumber(r) })
+}
 
 func inflections(word string) []string {
 	forms := []string{word}
