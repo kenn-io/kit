@@ -57,11 +57,33 @@ its own Go documentation and package-level agent guidance.
 
 ## Documentation
 
-- [Documentation index](docs/README.md) for architecture decisions, adoption
-  guides, and release notes
 - [API reference](https://pkg.go.dev/go.kenn.io/kit) on pkg.go.dev
-- [Developing kit](docs/development.md) for local checks and conventions
-- [AGENTS.md](AGENTS.md) for how coding agents should work in this repository
+
+### Development
+
+- [Developing kit](docs/development.md)
+
+### Adoption
+
+- [Task-based command discovery](clisearch/README.md)
+- [Local embedding server installation](docs/kennembed.md)
+- [Adopting packed content storage](docs/adopting-packstore.md)
+- [Adopting the shared Go lint policy (kennlint)](docs/adopting-kennlint.md)
+- [Daily screen reports](telemetry/posthog/daily.md)
+- [Confirmed milestone delivery](telemetry/posthog/delivery.md)
+- [PostHog event fields](telemetry/posthog/fields.md)
+
+### Architecture
+
+- [Streaming pack I/O](docs/architecture/streaming-pack-io.md)
+
+### Formats
+
+- [Backup repository and pack format](backup/FORMAT.md)
+
+## Agent guide
+
+Coding agents working in this repository should read [AGENTS.md](AGENTS.md).
 
 ## License
 
