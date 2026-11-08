@@ -121,8 +121,8 @@ func inflections(word string) []string {
 		}
 	}
 	for _, base := range bases {
-		// Keep these tokens separate from unrelated words that look like plurals.
-		if base == "us" || base == "new" || base == "len" || len(base) < 2 || (len(base) == 2 && strings.ContainsRune("aiuy", rune(base[1]))) || !strings.ContainsAny(strings.TrimSuffix(base, "e"), "aeiouy") {
+		// Keep function words and ambiguous tokens literal.
+		if base == "her" || base == "his" || base == "these" || base == "us" || base == "new" || base == "len" || len(base) < 2 || (len(base) == 2 && strings.ContainsRune("aiuy", rune(base[1]))) || !strings.ContainsAny(strings.TrimSuffix(base, "e"), "aeiouy") {
 			continue
 		}
 		variants := regular(base)
@@ -145,23 +145,25 @@ func regular(base string) []string {
 		plural = base + "es"
 	}
 	var extra []string
-	if strings.HasSuffix(base, "ic") {
+	if (len(base) > 3 && strings.HasSuffix(base, "ic")) || base == "shellac" {
 		extra = append(extra, past, present, base+"ked", base+"king")
 	}
 	if strings.HasSuffix(base, "ue") {
 		extra = append(extra, base+"ing")
 	}
 	switch {
+	case base == "sing":
+		past = plural // sing has no regular -ed form
 	case strings.HasSuffix(base, "y") && !vowel(base[len(base)-2]):
 		plural, past = base[:len(base)-1]+"ies", base[:len(base)-1]+"ied"
 	case strings.HasSuffix(base, "ie"):
 		present = base[:len(base)-2] + "ying"
-	case len(base) == 3 && strings.HasSuffix(base, "ee"):
+	case len(base) == 3 && strings.HasSuffix(base, "ee") && base != "tee" && base != "pee":
 		past = plural // seed and feed are words of their own
-	case strings.HasSuffix(base, "e") && !strings.ContainsRune("eyo", rune(base[len(base)-2])):
+	case base != "singe" && strings.HasSuffix(base, "e") && !strings.ContainsRune("eyo", rune(base[len(base)-2])):
 		present = base[:len(base)-1] + "ing"
 	default:
-		sounds := strings.ReplaceAll(base, "qu", "q")
+		sounds := strings.ReplaceAll(strings.TrimPrefix(base, "y"), "qu", "q")
 		n := len(sounds)
 		if base != "ad" && n >= 2 && (n == 2 || !vowel(sounds[n-3])) && vowel(sounds[n-2]) && !vowel(sounds[n-1]) && !strings.ContainsRune("wxy", rune(sounds[n-1])) {
 			doubled := base + base[len(base)-1:]
@@ -174,7 +176,7 @@ func regular(base string) []string {
 			if groups == 1 && strings.HasSuffix(base, "z") {
 				plural = doubled + "es"
 			}
-			if groups > 1 {
+			if groups > 1 || base == "bus" {
 				extra = append(extra, past, present)
 			}
 			past, present = doubled+"ed", doubled+"ing"
