@@ -189,9 +189,13 @@ func TestNaturalCJK(t *testing.T) {
 	assert.Equal(t, `("搜索" AND "引擎")`, got.Words[0].Match)
 	db := ftsDB(t, []string{"搜索 引擎", "引擎", "retry"})
 	assert.ElementsMatch(t, []string{"搜索 引擎", "retry"}, matchBodies(t, db, got.Match))
-	for _, query := range []string{`搜索引擎 かな`, `"搜索引擎"`} {
-		_, err = chinese.PrepareNatural(query)
+	for _, tc := range []struct{ query, match string }{
+		{`搜索引擎 かな`, `"搜索引擎" OR "かな"`},
+		{`"搜索引擎"`, `"搜索引擎"`},
+	} {
+		got, err = chinese.PrepareNatural(tc.query)
 		require.NoError(t, err)
+		assert.Equal(t, tc.match, got.Match)
 	}
 	assert.Len(t, calls, 1)
 	failure := errors.New("segment failed")

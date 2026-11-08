@@ -26,6 +26,7 @@ type Natural struct {
 
 // PrepareNatural quotes words, expands regular English forms, and requires
 // quoted phrases. Callers count matches with each Word's Match expression.
+// Chinese phrases stay literal, as in PreparePhrase.
 func (a Analyzer) PrepareNatural(text string) (Natural, error) {
 	if err := a.valid(); err != nil || strings.ContainsRune(text, 0) {
 		return Natural{}, cmp.Or(err, errors.New("lexical: query text contains a NUL byte"))
@@ -95,6 +96,8 @@ func hasLetterOrNumber(text string) bool {
 	return strings.ContainsFunc(text, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsNumber(r) })
 }
 
+// inflections expands query forms against unchanged indexes.
+// clisearch's fold normalizes both query and command text.
 func inflections(word string) []string {
 	forms := []string{word}
 	if len(word) < 2 || IsStopWord(word) || strings.ContainsFunc(word, func(r rune) bool { return r < 'a' || r > 'z' }) {
