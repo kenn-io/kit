@@ -1,13 +1,11 @@
 package lexical_test
 
 import (
-	"database/sql"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/search/lexical"
-	_ "modernc.org/sqlite"
 )
 
 func TestLiteralKeepsIdentifiersPunctuationAndAccents(t *testing.T) {
@@ -240,15 +238,10 @@ func TestCharacterPhraseMatchesRealFTS(t *testing.T) {
 }
 
 func TestLiteralMatchDoesNotParsePunctuation(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, db.Close()) })
-	_, err = db.ExecContext(t.Context(), `CREATE VIRTUAL TABLE docs_fts USING fts5(body, tokenize='unicode61');
-INSERT INTO docs_fts (body) VALUES ('get_views failed with error-401'), ('status 500 elsewhere'), ('café menu');`)
-	require.NoError(t, err)
+	db := ftsDB(t, []string{"get_views failed with error-401", "status 500 elsewhere", "café menu"})
 	a := lexical.Literal()
 	raw := "status:500"
-	err = db.QueryRowContext(t.Context(), `SELECT count(*) FROM docs_fts WHERE docs_fts MATCH ?`, raw).Scan(new(int))
+	err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM docs_fts WHERE docs_fts MATCH ?`, raw).Scan(new(int))
 	require.Error(t, err, "unquoted colon is a column filter, not a literal term")
 	for _, query := range []string{"error-401", "get_views", "café", "status:500"} {
 		prepared, err := a.PrepareLiteral(query)
