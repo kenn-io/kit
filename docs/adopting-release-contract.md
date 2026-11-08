@@ -1,7 +1,7 @@
 ---
 title: "Checking standalone release archives"
 description: "Declare and verify final executable and runtime bundle artifacts before publishing."
-last_edited: 2026-11-07
+last_edited: 2026-11-08
 ---
 
 # Checking standalone release archives
@@ -83,8 +83,9 @@ transitive dependencies between declared companions. Recognized native files
 cannot silently appear as undeclared payloads. System imports are exact names,
 case insensitive on Windows, without wildcards. An ELF interpreter needs its
 exact absolute path in `system_libraries`. Loader-relative library references
-can match declared members; an absolute external dependency cannot be satisfied
-by shipping a file with the same basename.
+can match declared members, and bare Windows DLL names match members beside the
+executable; an absolute external dependency cannot be satisfied by shipping a
+file with the same basename.
 
 `baseline` records the reviewed OS/libc/runtime policy. It is required prose,
 not a compatibility solver. Import names do not establish symbol version floors,

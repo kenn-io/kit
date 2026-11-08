@@ -988,6 +988,77 @@ func TestWindowsMemberSafety(t *testing.T) {
 	}
 }
 
+func TestTarModeBitsCannotHideNativeMember(t *testing.T) {
+	a := testArtifact("linux")
+	data := fixture(t, "linux", "amd64")
+	dir, _ := archiveFixture(t, a, []testMember{
+		{name: a.Executable, data: data, mode: 0o755},
+		{name: "NOTICE", data: []byte("notice"), mode: 0o644},
+		{name: "hidden.so", data: data, mode: 0o40755},
+	})
+	require.ErrorContains(t, Check(t.Context(), Contract{[]Artifact{a}}, dir, "1.2.3", ""), "tar mode bits disagree with entry type: hidden.so")
+}
+
+func TestWindowsBareImportsResolveBesideExecutable(t *testing.T) {
+	dll := syntheticPE(false)
+	binary.LittleEndian.PutUint16(dll[0x84+18:], 0x2022) // Mark the image as a DLL.
+	binary.LittleEndian.PutUint64(dll[0x84+20+120:], 0)  // Clear its import directory.
+	for _, tc := range []struct {
+		name, library, wantErr string
+	}{
+		{name: "beside executable", library: "bin/private.dll"},
+		{name: "archive root", library: "private.dll", wantErr: "unresolved import"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := testArtifact("windows")
+			a.Kind = "bundle"
+			a.Executable = "bin/app.exe"
+			a.SystemLibraries = nil
+			a.RequiredFiles = nil
+			a.RuntimeFiles = []string{tc.library}
+			dir, _ := archiveFixture(t, a, []testMember{
+				{name: a.Executable, data: syntheticPE(false), mode: 0o755},
+				{name: tc.library, data: dll, mode: 0o644},
+			})
+			err := Check(t.Context(), Contract{[]Artifact{a}}, dir, "1.2.3", "")
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestOnlyPlausibleNativeHeadersCountAsNative(t *testing.T) {
+	executable := fixture(t, "linux", "amd64")
+	for _, tc := range []struct {
+		name    string
+		data    []byte
+		wantErr string
+	}{
+		{name: "MZ text", data: []byte("MZ is how this data asset starts")},
+		{name: "Java class", data: []byte{0xca, 0xfe, 0xba, 0xbe, 0, 0, 0, 65, 0, 1}},
+		{name: "PE image", data: syntheticPE(false), wantErr: "undeclared native companion: asset.bin"},
+		{name: "fat Mach-O", data: []byte{0xca, 0xfe, 0xba, 0xbe, 0, 0, 0, 2, 0, 0, 0, 7}, wantErr: "asset.bin: "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := testArtifact("linux")
+			a.RequiredFiles = []string{"asset.bin"}
+			dir, _ := archiveFixture(t, a, []testMember{
+				{name: a.Executable, data: executable, mode: 0o755},
+				{name: "asset.bin", data: tc.data, mode: 0o644},
+			})
+			err := Check(t.Context(), Contract{[]Artifact{a}}, dir, "1.2.3", "")
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestWindowsTrailingAliasProperty(t *testing.T) {
 	a := testArtifact("windows")
 	a.SystemLibraries = []string{"private.dll"}

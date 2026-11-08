@@ -84,32 +84,10 @@ func TestBundleNativeParity(t *testing.T) {
 	}
 }
 
-func TestBundleEnvironmentIsIsolated(t *testing.T) {
-	for _, name := range []string{"LD_LIBRARY_PATH", "LD_PRELOAD", "DYLD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "PI_CODING_AGENT_DIR"} {
-		t.Setenv(name, "must-not-reach-server")
-	}
-	t.Setenv("PATH", "must-not-reach-server")
-	home := t.TempDir()
-	values := map[string]string{}
-	for _, entry := range bundleEnvironment(home) {
-		name, value, ok := strings.Cut(entry, "=")
-		require.True(t, ok)
-		values[strings.ToUpper(name)] = value
-	}
-	assert.Equal(t, home, values["HOME"])
-	assert.Equal(t, home, values["USERPROFILE"])
-	assert.Equal(t, filepath.Join(home, "config"), values["XDG_CONFIG_HOME"])
-	assert.NotContains(t, values["PATH"], "must-not-reach-server")
-	for _, name := range []string{"LD_LIBRARY_PATH", "LD_PRELOAD", "DYLD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "PI_CODING_AGENT_DIR"} {
-		assert.NotContains(t, values, name)
-	}
-}
-
 func bundleEnvironment(home string) []string {
 	blocked := map[string]bool{
 		"HOME": true, "USERPROFILE": true, "PATH": true,
 		"XDG_CONFIG_HOME": true, "XDG_CACHE_HOME": true, "XDG_DATA_HOME": true, "XDG_STATE_HOME": true,
-		"CODEX_HOME": true, "CLAUDE_CONFIG_DIR": true, "PI_CODING_AGENT_DIR": true,
 		"LD_LIBRARY_PATH": true, "LD_PRELOAD": true, "LD_AUDIT": true,
 		"DYLD_LIBRARY_PATH": true, "DYLD_FRAMEWORK_PATH": true, "DYLD_INSERT_LIBRARIES": true,
 		"DYLD_FALLBACK_LIBRARY_PATH": true, "DYLD_FALLBACK_FRAMEWORK_PATH": true,

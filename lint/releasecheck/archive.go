@@ -152,13 +152,10 @@ func (m *archiveMembers) add(name string, mode fs.FileMode, size int64, r io.Rea
 		if isDir, ok := m.pathKinds[parent]; ok && !isDir {
 			return fmt.Errorf("file is also directory prefix: %s", name)
 		}
+		m.pathKinds[parent] = true
 	}
-	if !mode.IsDir() {
-		for existing := range m.seen {
-			if strings.HasPrefix(existing, canonical+"/") {
-				return fmt.Errorf("file is also directory prefix: %s", name)
-			}
-		}
+	if !mode.IsDir() && m.pathKinds[canonical] {
+		return fmt.Errorf("file is also directory prefix: %s", name)
 	}
 	m.pathKinds[canonical] = mode.IsDir()
 	fileKey := name
@@ -255,6 +252,11 @@ func checkArchive(ctx context.Context, dir string, a Artifact, sum string) error
 			mode := h.FileInfo().Mode()
 			if h.Typeflag != tar.TypeReg && h.Typeflag != tar.TypeDir {
 				return fmt.Errorf("links and special archive members are forbidden: %s", h.Name)
+			}
+			// Extraction follows Typeflag, so mode bits must not make a file look
+			// like a directory and skip payload inspection.
+			if mode.IsDir() != (h.Typeflag == tar.TypeDir) {
+				return fmt.Errorf("tar mode bits disagree with entry type: %s", h.Name)
 			}
 			if err := members.add(h.Name, mode, h.Size, tr); err != nil {
 				return err
@@ -357,7 +359,8 @@ func checkMembers(ctx context.Context, a Artifact, files map[string]member) erro
 func bundledImport(a Artifact, loader, lib string) string {
 	// Resolve target-specific loader-relative spellings against the image that
 	// imports them, and executable-relative spellings against the main
-	// executable. On Darwin, @rpath and bare names remain direct archive-root
+	// executable. Bare Windows DLL names resolve in the application directory.
+	// On Darwin and Linux, @rpath and bare names remain direct archive-root
 	// member checks; this does not simulate loader search paths.
 	if strings.HasPrefix(lib, "/") || strings.ContainsAny(lib, "\\:\x00") {
 		return ""
@@ -383,6 +386,8 @@ func bundledImport(a Artifact, loader, lib string) string {
 		base = path.Dir(loader)
 		loaderRelative = true
 		lib = strings.TrimPrefix(lib, "${ORIGIN}/")
+	case a.OS == "windows":
+		base = path.Dir(a.Executable)
 	}
 	if lib == "" || strings.HasPrefix(lib, "/") || !loaderRelative && !memberPath(lib) {
 		return ""

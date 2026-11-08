@@ -16,7 +16,11 @@ func ExecutableName() string {
 
 // LibraryName is the runtime loaded beside the server.
 func LibraryName() string {
-	switch runtime.GOOS {
+	return libraryName(runtime.GOOS)
+}
+
+func libraryName(goos string) string {
+	switch goos {
 	case "windows":
 		return "onnxruntime.dll"
 	case "darwin":
@@ -32,16 +36,13 @@ func NativeFiles() []string {
 }
 
 func nativeFiles(goos, goarch string) []string {
+	names := []string{libraryName(goos)}
 	if goos == "windows" {
-		names := []string{"onnxruntime.dll", "msvcp140.dll", "msvcp140_1.dll", "vcruntime140.dll"}
+		names = append(names, "msvcp140.dll", "msvcp140_1.dll", "vcruntime140.dll")
 		// ARM64 ONNX and CRTs do not import this AMD64-only runtime.
 		if goarch == "amd64" {
 			names = append(names, "vcruntime140_1.dll")
 		}
-		return names
 	}
-	if goos == "darwin" {
-		return []string{"libonnxruntime.1.23.2.dylib"}
-	}
-	return []string{"libonnxruntime.so.1.23.2"}
+	return names
 }

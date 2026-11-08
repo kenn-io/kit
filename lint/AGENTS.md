@@ -32,7 +32,9 @@ proof. OS subsets require a subsequent full-inventory check before publishing.
 Archive paths reject case-equivalent collisions and file/directory prefix
 conflicts on case-insensitive targets; contract and import matching stays exact
 on Darwin. Bundle imports must resolve to shared-library images, and Unix
-executable payloads require owner execute permission. Keep installer policy
+executable payloads require owner execute permission. Tar directory status
+comes from `Typeflag`, as in extraction; disagreeing mode bits fail. Bare
+Windows imports resolve beside the executable. Keep installer policy
 and feature smoke in consumers; see `docs/adopting-release-contract.md`.
 
 ## Invariants

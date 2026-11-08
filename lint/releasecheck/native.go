@@ -18,17 +18,44 @@ type nativeInfo struct {
 }
 
 func nativeMagic(data []byte) bool {
-	if bytes.HasPrefix(data, []byte("\x7fELF")) || bytes.HasPrefix(data, []byte("MZ")) {
+	if bytes.HasPrefix(data, []byte("\x7fELF")) {
 		return true
+	}
+	if bytes.HasPrefix(data, []byte("MZ")) {
+		return hasPESignature(data)
 	}
 	if len(data) < 4 {
 		return false
 	}
 	switch binary.BigEndian.Uint32(data) {
-	case 0xfeedface, 0xfeedfacf, 0xcefaedfe, 0xcffaedfe, 0xcafebabe, 0xbebafeca, 0xcafebabf, 0xbfbafeca:
+	case 0xfeedface, 0xfeedfacf, 0xcefaedfe, 0xcffaedfe:
 		return true
+	case 0xcafebabe, 0xcafebabf:
+		return plausibleFatHeader(data, binary.BigEndian)
+	case 0xbebafeca, 0xbfbafeca:
+		return plausibleFatHeader(data, binary.LittleEndian)
 	}
 	return false
+}
+
+// A two-byte MZ prefix also occurs in data files. Windows requires the PE
+// signature at the offset stored in the DOS header.
+func hasPESignature(data []byte) bool {
+	if len(data) < 0x40 {
+		return false
+	}
+	offset := uint64(binary.LittleEndian.Uint32(data[0x3c:]))
+	return offset+4 <= uint64(len(data)) && string(data[offset:offset+4]) == "PE\x00\x00"
+}
+
+// Java class files share the fat Mach-O magic, but their class-file version
+// occupies the architecture count and is at least 45.
+func plausibleFatHeader(data []byte, order binary.ByteOrder) bool {
+	if len(data) < 8 {
+		return false
+	}
+	count := order.Uint32(data[4:])
+	return count > 0 && count < 45
 }
 
 func inspectNative(data []byte) (nativeInfo, error) {
