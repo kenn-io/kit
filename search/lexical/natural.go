@@ -137,6 +137,9 @@ func inflections(word string) []string {
 // regular includes its base so suffix recovery uses the same spelling rules.
 func regular(base string) []string {
 	plural, past, present := base+"s", base+"ed", base+"ing"
+	if strings.HasSuffix(base, "s") || strings.HasSuffix(base, "x") || strings.HasSuffix(base, "z") || strings.HasSuffix(base, "ch") || strings.HasSuffix(base, "sh") {
+		plural = base + "es"
+	}
 	var extra []string
 	if strings.HasSuffix(base, "c") {
 		extra = append(extra, past, present, base+"ked", base+"king")
@@ -151,23 +154,24 @@ func regular(base string) []string {
 	case strings.HasSuffix(base, "e"):
 		past, present = base+"d", base[:len(base)-1]+"ing"
 	default:
-		n := len(base)
-		if !vowel(base[n-3]) && vowel(base[n-2]) && !vowel(base[n-1]) && !strings.ContainsRune("wxy", rune(base[n-1])) {
-			doubled := base + base[n-1:]
+		sounds := strings.ReplaceAll(base, "qu", "q")
+		n := len(sounds)
+		if n >= 3 && !vowel(sounds[n-3]) && vowel(sounds[n-2]) && !vowel(sounds[n-1]) && !strings.ContainsRune("wxy", rune(sounds[n-1])) {
+			doubled := base + base[len(base)-1:]
 			groups := 0
-			for i := range len(base) {
-				if vowel(base[i]) && (i == 0 || !vowel(base[i-1])) {
+			for i := range len(sounds) {
+				if vowel(sounds[i]) && (i == 0 || !vowel(sounds[i-1])) {
 					groups++
 				}
+			}
+			if groups == 1 && strings.HasSuffix(base, "z") {
+				plural = doubled + "es"
 			}
 			if groups > 1 {
 				extra = append(extra, past, present)
 			}
 			past, present = doubled+"ed", doubled+"ing"
 		}
-	}
-	if strings.HasSuffix(base, "s") || strings.HasSuffix(base, "x") || strings.HasSuffix(base, "z") || strings.HasSuffix(base, "ch") || strings.HasSuffix(base, "sh") {
-		plural = base + "es"
 	}
 	if strings.HasSuffix(base, "o") {
 		extra = append(extra, base+"es")
