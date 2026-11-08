@@ -36,13 +36,13 @@ func (a Analyzer) PrepareNatural(text string) (Natural, error) {
 	for i, segment := range segments {
 		if i%2 == 0 || i == len(segments)-1 {
 			words = append(words, strings.Fields(segment)...)
-		} else if phrase := strings.Join(strings.Fields(segment), " "); strings.TrimFunc(phrase, func(r rune) bool { return unicode.IsPunct(r) || unicode.IsSpace(r) }) != "" {
-			result.Phrases = append(result.Phrases, phrase)
+		} else {
+			result.Phrases = append(result.Phrases, strings.Join(strings.Fields(segment), " "))
 		}
 	}
 	var normalized []string
 	for _, word := range words {
-		if word = strings.TrimFunc(strings.ToLower(word), unicode.IsPunct); word != "" {
+		if word = strings.TrimFunc(strings.ToLower(word), wordless); word != "" {
 			normalized = append(normalized, word)
 		}
 	}
@@ -81,11 +81,14 @@ func (a Analyzer) PrepareNatural(text string) (Natural, error) {
 		}
 	}
 	result.Match = strings.Join(parts, join)
-	if result.Match == "" {
-		return Natural{}, errors.New("lexical: query text is empty")
+	if result.Match == "" || slices.ContainsFunc(result.Phrases, func(phrase string) bool { return strings.TrimFunc(phrase, wordless) == "" }) {
+		return Natural{}, errors.New("lexical: query text or a quoted phrase is empty")
 	}
 	return result, nil
 }
+
+// wordless reports runes that cannot make a word or phrase searchable on their own.
+func wordless(r rune) bool { return unicode.IsPunct(r) || unicode.IsSymbol(r) || unicode.IsSpace(r) }
 
 func inflections(word string) []string {
 	forms := []string{word}
