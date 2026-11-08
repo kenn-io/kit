@@ -125,7 +125,7 @@ func inflections(word string) []string {
 	}
 	for _, base := range bases {
 		// Keep function words and ambiguous tokens literal.
-		if base == "us" || base == "new" || base == "len" || len(base) < 2 || (len(base) == 2 && strings.ContainsRune("aiuy", rune(base[1]))) || !strings.ContainsAny(strings.TrimSuffix(base, "e"), "aeiouy") {
+		if IsStopWord(base) || base == "us" || base == "new" || base == "len" || len(base) < 2 || (len(base) == 2 && strings.ContainsRune("aiuyw", rune(base[1]))) || !strings.ContainsAny(strings.TrimSuffix(base, "e"), "aeiouy") {
 			continue
 		}
 		variants := regular(base)

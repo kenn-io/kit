@@ -128,6 +128,8 @@ func TestNaturalForms(t *testing.T) {
 		{"has", "ha"},
 		{"ties", "ty"},
 		{"trie", "trying"},
+		{"aws", "awed"},
+		{"dos", "doing"},
 	} {
 		t.Run(tc.query, func(t *testing.T) {
 			got, err := lexical.Literal().PrepareNatural(tc.query)
