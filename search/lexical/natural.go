@@ -91,19 +91,22 @@ func (a Analyzer) PrepareNatural(text string) (Natural, error) {
 	return result, nil
 }
 
-// coalesce merges word's forms into the term that already spells it, so
-// word order does not change matches.
+// coalesce merges overlapping forms so word order does not change matches or counts.
 func coalesce(terms []Term, word string) []Term {
-	i := slices.IndexFunc(terms, func(term Term) bool { return slices.Contains(term.Forms, word) })
-	if i < 0 {
-		return append(terms, Term{Text: word, Forms: inflections(word)})
-	}
-	for _, form := range inflections(word) {
-		if !slices.Contains(terms[i].Forms, form) {
-			terms[i].Forms = append(terms[i].Forms, form)
+	merged, at := Term{Text: word, Forms: inflections(word)}, len(terms)
+	for i := len(terms) - 1; i >= 0; i-- {
+		if !slices.ContainsFunc(terms[i].Forms, func(form string) bool { return slices.Contains(merged.Forms, form) }) {
+			continue
 		}
+		for _, form := range merged.Forms {
+			if !slices.Contains(terms[i].Forms, form) {
+				terms[i].Forms = append(terms[i].Forms, form)
+			}
+		}
+		merged, at = terms[i], i
+		terms = slices.Delete(terms, i, i+1)
 	}
-	return terms
+	return slices.Insert(terms, at, merged)
 }
 
 // wordless reports runes that cannot make a word or phrase searchable on their own.
