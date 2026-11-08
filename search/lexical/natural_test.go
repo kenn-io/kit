@@ -14,27 +14,30 @@ func TestPrepareNatural(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"exact phrase"}, got.Phrases)
 	assert.Equal(t, lexical.Literal().Identity, got.Identity)
+	bodies := []string{"try", "trie", "tried"}
+	db := ftsDB(t, bodies)
 	for _, tc := range []struct {
 		query string
 		words []string
 		match string
+		hits  []string
 	}{
-		{"the of", []string{"the", "of"}, `"the" OR "of"`},
-		{"café v2", []string{"café", "v2"}, `"café" OR "v2"`},
-		{"The invoice", []string{"invoice"}, ""},
-		{`"connection reset" the`, nil, `"connection reset"`},
-		{"invoices invoice test tests", []string{"invoices", "test"}, ""},
-		{"map mappings", []string{"map"}, ""},
-		{"try trie tries", []string{"try"}, ""},
-		{"trie try tries", []string{"trie"}, ""},
-		{"invoices, please", []string{"invoices"}, ""},
-		{"$ invoice +", []string{"invoice"}, ""},
-		{"⚠️ build failed", []string{"build", "failed"}, ""},
-		{"cafe\u0301", []string{"cafe\u0301"}, ""},
-		{`unclosed "quote`, []string{"unclosed", "quote"}, ""},
-		{`"first phrase" "second phrase"`, nil, `"first phrase" AND "second phrase"`},
-		{"“invoice rounding”", nil, `"invoice rounding"`},
-		{"„invoice rounding“ retry", []string{"retry"}, `"invoice rounding"`},
+		{"the of", []string{"the", "of"}, `"the" OR "of"`, nil},
+		{"café v2", []string{"café", "v2"}, `"café" OR "v2"`, nil},
+		{"The invoice", []string{"invoice"}, "", nil},
+		{`"connection reset" the`, nil, `"connection reset"`, nil},
+		{"invoices invoice test tests", []string{"invoices", "test"}, "", nil},
+		{"map mappings", []string{"map"}, "", nil},
+		{"try trie tries", []string{"try"}, "", bodies},
+		{"trie try tries", []string{"trie"}, "", bodies},
+		{"invoices, please", []string{"invoices"}, "", nil},
+		{"$ invoice +", []string{"invoice"}, "", nil},
+		{"⚠️ build failed", []string{"build", "failed"}, "", nil},
+		{"cafe\u0301", []string{"cafe\u0301"}, "", nil},
+		{`unclosed "quote`, []string{"unclosed", "quote"}, "", nil},
+		{`"first phrase" "second phrase"`, nil, `"first phrase" AND "second phrase"`, nil},
+		{"“invoice rounding”", nil, `"invoice rounding"`, nil},
+		{"„invoice rounding“ retry", []string{"retry"}, `"invoice rounding"`, nil},
 	} {
 		t.Run(tc.query, func(t *testing.T) {
 			got, err := lexical.Literal().PrepareNatural(tc.query)
@@ -46,6 +49,9 @@ func TestPrepareNatural(t *testing.T) {
 			assert.Equal(t, tc.words, words)
 			if tc.match != "" {
 				assert.Equal(t, tc.match, got.Match)
+			}
+			if tc.hits != nil {
+				assert.ElementsMatch(t, tc.hits, matchBodies(t, db, got.Match))
 			}
 		})
 	}
@@ -154,19 +160,6 @@ func TestNaturalFTS(t *testing.T) {
 	assert.Equal(t, 3, counts[bodies[1]])
 	assert.Equal(t, 2, counts[bodies[0]])
 	assert.Equal(t, 2, counts[bodies[2]])
-}
-
-func TestNaturalWordOrder(t *testing.T) {
-	bodies := []string{"try", "trie", "tried"}
-	db := ftsDB(t, bodies)
-	for _, query := range []string{"try tries", "tries try"} {
-		t.Run(query, func(t *testing.T) {
-			got, err := lexical.Literal().PrepareNatural(query)
-			require.NoError(t, err)
-			require.Len(t, got.Words, 1)
-			assert.ElementsMatch(t, bodies, matchBodies(t, db, got.Match))
-		})
-	}
 }
 
 func TestNaturalCJK(t *testing.T) {
