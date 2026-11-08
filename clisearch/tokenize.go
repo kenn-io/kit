@@ -4,6 +4,8 @@ import (
 	"slices"
 	"strings"
 	"unicode"
+
+	"go.kenn.io/kit/search/lexical"
 )
 
 // tokens keeps repetition for field term frequency. Query terms and expansion
@@ -15,8 +17,7 @@ func tokens(text string) []string {
 	})
 	out := make([]string, 0, len(words))
 	for _, word := range words {
-		switch word {
-		case "a", "an", "the", "and", "or", "of", "to", "for", "from", "in", "on", "at", "by", "with", "as", "is", "are", "be", "i", "me", "my", "it", "this", "that", "how", "do", "does", "can", "please":
+		if lexical.IsStopWord(word) {
 			continue
 		}
 		out = append(out, fold(word))

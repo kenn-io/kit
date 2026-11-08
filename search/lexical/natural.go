@@ -1,0 +1,181 @@
+package lexical
+
+import (
+	"errors"
+	"slices"
+	"strings"
+	"unicode"
+)
+
+// Term holds one word, its regular spellings, and its analyzer match expression.
+type Term struct {
+	Text  string
+	Forms []string
+	Match string
+}
+
+// Natural holds optional ranking words and required phrases for an analyzer.
+// With no phrases, any word can match.
+type Natural struct {
+	Match    string
+	Words    []Term
+	Phrases  []string
+	Identity Identity
+}
+
+// PrepareNatural quotes words, expands regular English forms, and requires
+// quoted phrases. Callers count matches with each Word's Match expression.
+func (a Analyzer) PrepareNatural(text string) (Natural, error) {
+	if err := a.valid(); err != nil {
+		return Natural{}, err
+	}
+	segmentHan := a.Identity.Kind == KindChinese && !containsKanaOrHangul(text)
+	result := Natural{Identity: a.Identity}
+	var words []string
+	for text != "" {
+		start := strings.IndexByte(text, '"')
+		end := -1
+		if start >= 0 {
+			end = strings.IndexByte(text[start+1:], '"')
+		}
+		if end < 0 {
+			words = append(words, strings.Fields(text)...)
+			break
+		}
+		words = append(words, strings.Fields(text[:start])...)
+		if phrase := strings.Join(strings.Fields(text[start+1:start+end+1]), " "); phrase != "" {
+			result.Phrases = append(result.Phrases, phrase)
+		}
+		text = text[start+end+2:]
+	}
+	var normalized []string
+	for _, word := range words {
+		if word = strings.TrimFunc(strings.ToLower(word), unicode.IsPunct); word != "" {
+			normalized = append(normalized, word)
+		}
+	}
+	if len(normalized) == 0 && len(result.Phrases) == 0 {
+		normalized = words
+	}
+	hasContent := len(result.Phrases) > 0 || slices.ContainsFunc(normalized, func(word string) bool { return !IsStopWord(word) })
+	for _, word := range normalized {
+		if hasContent && IsStopWord(word) || slices.ContainsFunc(result.Words, func(term Term) bool { return slices.Contains(term.Forms, word) }) {
+			continue
+		}
+		term := Term{Text: word, Forms: inflections(word)}
+		var parts []string
+		for _, form := range term.Forms {
+			parts = append(parts, a.renderTerm(form))
+		}
+		term.Match = strings.Join(parts, " OR ")
+		if len(parts) > 1 {
+			term.Match = "(" + term.Match + ")"
+		}
+		if segmentHan && containsHan(word) {
+			prepared, err := a.segmented(word)
+			if err != nil {
+				return Natural{}, err
+			}
+			term.Match = "(" + prepared.Match + ")"
+		}
+		result.Words = append(result.Words, term)
+	}
+	var parts []string
+	join := " OR "
+	for _, word := range result.Words {
+		parts = append(parts, word.Match)
+	}
+	if len(result.Phrases) > 0 {
+		parts, join = nil, " AND "
+		for _, phrase := range result.Phrases {
+			parts = append(parts, a.renderTerm(phrase))
+		}
+	}
+	result.Match = strings.Join(parts, join)
+	if result.Match == "" {
+		return Natural{}, errors.New("lexical: query text is empty")
+	}
+	return result, nil
+}
+
+func inflections(word string) []string {
+	forms := []string{word}
+	if len(word) < 3 || IsStopWord(word) || strings.ContainsFunc(word, func(r rune) bool { return r < 'a' || r > 'z' }) {
+		return forms
+	}
+	bases := []string{word}
+	for _, suffix := range []string{"s", "es", "ies", "ed", "ied", "ing"} {
+		stem, ok := strings.CutSuffix(word, suffix)
+		if !ok {
+			continue
+		}
+		bases = append(bases, stem, stem+"e", stem+"y")
+		if prefix, ok := strings.CutSuffix(stem, "y"); ok {
+			bases = append(bases, prefix+"ie")
+		}
+		if strings.HasSuffix(stem, "ck") {
+			bases = append(bases, strings.TrimSuffix(stem, "k"))
+		}
+		if len(stem) > 1 && stem[len(stem)-1] == stem[len(stem)-2] {
+			bases = append(bases, stem[:len(stem)-1])
+		}
+	}
+	for _, base := range bases {
+		if len(base) < 3 || !strings.ContainsAny(base, "aeiouy") {
+			continue
+		}
+		variants := regular(base)
+		if !slices.Contains(variants, word) {
+			continue
+		}
+		for _, form := range variants {
+			if !IsStopWord(form) && !slices.Contains(forms, form) {
+				forms = append(forms, form)
+			}
+		}
+	}
+	return forms
+}
+
+// regular includes its base so suffix recovery uses the same spelling rules.
+func regular(base string) []string {
+	plural, past, present := base+"s", base+"ed", base+"ing"
+	var extra []string
+	if strings.HasSuffix(base, "c") {
+		extra = append(extra, past, present, base+"ked", base+"king")
+	}
+	switch {
+	case strings.HasSuffix(base, "y") && !vowel(base[len(base)-2]):
+		plural, past = base[:len(base)-1]+"ies", base[:len(base)-1]+"ied"
+	case strings.HasSuffix(base, "ie"):
+		past, present = base+"d", base[:len(base)-2]+"ying"
+	case strings.HasSuffix(base, "ee") || strings.HasSuffix(base, "ye") || strings.HasSuffix(base, "oe"):
+		past = base + "d"
+	case strings.HasSuffix(base, "e"):
+		past, present = base+"d", base[:len(base)-1]+"ing"
+	default:
+		n := len(base)
+		if !vowel(base[n-3]) && vowel(base[n-2]) && !vowel(base[n-1]) && !strings.ContainsRune("wxy", rune(base[n-1])) {
+			doubled := base + base[n-1:]
+			groups := 0
+			for i := range len(base) {
+				if vowel(base[i]) && (i == 0 || !vowel(base[i-1])) {
+					groups++
+				}
+			}
+			if groups > 1 {
+				extra = append(extra, past, present)
+			}
+			past, present = doubled+"ed", doubled+"ing"
+		}
+	}
+	if strings.HasSuffix(base, "s") || strings.HasSuffix(base, "x") || strings.HasSuffix(base, "z") || strings.HasSuffix(base, "ch") || strings.HasSuffix(base, "sh") {
+		plural = base + "es"
+	}
+	if strings.HasSuffix(base, "o") {
+		extra = append(extra, base+"es")
+	}
+	return append([]string{base, plural, past, present}, extra...)
+}
+
+func vowel(c byte) bool { return strings.ContainsRune("aeiouy", rune(c)) }

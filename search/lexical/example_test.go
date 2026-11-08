@@ -27,3 +27,22 @@ func ExampleCJK_IndexFor() {
 	// cjk
 	// "run" "搜 索"
 }
+
+func ExampleAnalyzer_PrepareNatural() {
+	prepared, err := lexical.Literal().PrepareNatural(`invoice rounding "exact phrase" of`)
+	if err != nil {
+		panic(err)
+	}
+	for _, word := range prepared.Words {
+		fmt.Println(word.Text)
+	}
+	fmt.Println(prepared.Words[0].Forms)
+	fmt.Println(prepared.Phrases)
+	fmt.Println(prepared.Match)
+	// Output:
+	// invoice
+	// rounding
+	// [invoice invoices invoiced invoicing]
+	// [exact phrase]
+	// "exact phrase"
+}
