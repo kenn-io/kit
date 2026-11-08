@@ -132,7 +132,7 @@ func inflections(word string) []string {
 
 // regular includes its base so suffix recovery uses the same spelling rules.
 func regular(base string) []string {
-	plural, past, present := base+"s", base+"ed", base+"ing"
+	plural, past, present := base+"s", strings.TrimSuffix(base, "e")+"ed", base+"ing"
 	if strings.HasSuffix(base, "s") || strings.HasSuffix(base, "x") || strings.HasSuffix(base, "z") || strings.HasSuffix(base, "ch") || strings.HasSuffix(base, "sh") {
 		plural = base + "es"
 	}
@@ -144,11 +144,11 @@ func regular(base string) []string {
 	case strings.HasSuffix(base, "y") && !vowel(base[len(base)-2]):
 		plural, past = base[:len(base)-1]+"ies", base[:len(base)-1]+"ied"
 	case strings.HasSuffix(base, "ie"):
-		past, present = base+"d", base[:len(base)-2]+"ying"
-	case strings.HasSuffix(base, "ee") || strings.HasSuffix(base, "ye") || strings.HasSuffix(base, "oe"):
-		past = base + "d"
-	case strings.HasSuffix(base, "e"):
-		past, present = base+"d", base[:len(base)-1]+"ing"
+		present = base[:len(base)-2] + "ying"
+	case len(base) == 3 && strings.HasSuffix(base, "ee"):
+		past = plural // seed and feed are words of their own
+	case strings.HasSuffix(base, "e") && !strings.ContainsRune("eyo", rune(base[len(base)-2])):
+		present = base[:len(base)-1] + "ing"
 	default:
 		sounds := strings.ReplaceAll(base, "qu", "q")
 		n := len(sounds)

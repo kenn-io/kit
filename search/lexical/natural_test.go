@@ -109,7 +109,7 @@ func TestNaturalForms(t *testing.T) {
 		})
 	}
 	for _, tc := range []struct{ query, miss string }{
-		{"red", "ring"}, {"bring", "bred"}, {"spring", "spre"}, {"caring", "car"}, {"filing", "filled"}, {"string", "str"}, {"https", "http"}, {"being", "bed"},
+		{"red", "ring"}, {"bring", "bred"}, {"spring", "spre"}, {"caring", "car"}, {"filing", "filled"}, {"string", "str"}, {"https", "http"}, {"being", "bed"}, {"seed", "see"}, {"feed", "fee"},
 	} {
 		t.Run(tc.query, func(t *testing.T) {
 			got, err := lexical.Literal().PrepareNatural(tc.query)
