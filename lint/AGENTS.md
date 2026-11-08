@@ -29,8 +29,11 @@ Its consumer contract defines the full target inventory, exact member paths,
 and baseline system imports. Never discover expectations from available files,
 execute archive payloads, or treat header/import checks as ABI or lazy-loader
 proof. OS subsets require a subsequent full-inventory check before publishing.
-Keep installer policy and feature smoke in consumers; see
-`docs/adopting-release-contract.md`.
+Archive paths reject case-equivalent collisions and file/directory prefix
+conflicts on case-insensitive targets; contract and import matching stays exact
+on Darwin. Bundle imports must resolve to shared-library images, and Unix
+executable payloads require owner execute permission. Keep installer policy
+and feature smoke in consumers; see `docs/adopting-release-contract.md`.
 
 ## Invariants
 

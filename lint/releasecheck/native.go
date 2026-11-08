@@ -11,10 +11,10 @@ import (
 )
 
 type nativeInfo struct {
-	os, arch            string
-	executable, library bool
-	interp              string
-	imports             []string
+	os, arch                           string
+	executable, library, sharedLibrary bool
+	interp                             string
+	imports                            []string
 }
 
 func nativeMagic(data []byte) bool {
@@ -89,6 +89,7 @@ func inspectELF(data []byte) (nativeInfo, error) {
 		info.imports = append(info.imports, info.interp)
 	}
 	info.library = f.Type == elf.ET_DYN
+	info.sharedLibrary = f.Type == elf.ET_DYN && !pie && info.interp == ""
 	info.executable = (f.Type == elf.ET_EXEC || f.Type == elf.ET_DYN && (info.interp != "" || pie)) && f.Entry != 0 && !soname
 	if !info.library && !info.executable {
 		return info, errors.New("ELF is not an executable or shared library")
@@ -102,7 +103,12 @@ func inspectMachO(data []byte) (nativeInfo, error) {
 		return nativeInfo{}, err
 	}
 	defer f.Close()
-	info := nativeInfo{os: "darwin", executable: f.Type == macho.TypeExec, library: f.Type == macho.TypeDylib || f.Type == macho.TypeBundle}
+	info := nativeInfo{
+		os:            "darwin",
+		executable:    f.Type == macho.TypeExec,
+		library:       f.Type == macho.TypeDylib || f.Type == macho.TypeBundle,
+		sharedLibrary: f.Type == macho.TypeDylib,
+	}
 	switch f.Cpu {
 	case macho.CpuAmd64:
 		info.arch = "amd64"
@@ -173,6 +179,7 @@ func inspectPE(data []byte) (nativeInfo, error) {
 		return info, errors.New("PE is not an executable image")
 	}
 	info.library = f.Characteristics&pe.IMAGE_FILE_DLL != 0
+	info.sharedLibrary = info.library
 	info.executable = !info.library && optional.AddressOfEntryPoint != 0
 	if !info.library && !info.executable {
 		return info, errors.New("PE executable has no entry point")

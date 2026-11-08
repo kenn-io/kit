@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"debug/elf"
 	"debug/macho"
 	"encoding/binary"
 	"encoding/json"
@@ -576,6 +577,277 @@ func TestNestedBundleImportResolution(t *testing.T) {
 	}
 	dir, _ := archiveFixture(t, a, members)
 	require.NoError(t, Check(t.Context(), Contract{[]Artifact{a}}, dir, "1.2.3", ""))
+}
+
+func TestDarwinArchiveRejectsCaseEquivalentPaths(t *testing.T) {
+	a := testArtifact("darwin")
+	executable := syntheticMachO(uint32(macho.TypeExec))
+	valid := []testMember{
+		{name: a.Executable, data: executable, mode: 0o755},
+		{name: "NOTICE", data: []byte("notice"), mode: 0o644},
+	}
+	check := func(t *testing.T, artifact Artifact, members []testMember) error {
+		t.Helper()
+		dir, _ := archiveFixture(t, artifact, members)
+		return Check(t.Context(), Contract{[]Artifact{artifact}}, dir, "1.2.3", "")
+	}
+
+	t.Run("exact contract spelling passes", func(t *testing.T) {
+		require.NoError(t, check(t, a, valid))
+	})
+	t.Run("case alias cannot overwrite executable", func(t *testing.T) {
+		members := append(append([]testMember{}, valid...), testMember{name: "APP", data: []byte("not native"), mode: 0o644})
+		require.ErrorContains(t, check(t, a, members), "duplicate archive path")
+	})
+	t.Run("case alias cannot satisfy contract path", func(t *testing.T) {
+		artifact := a
+		artifact.Executable = "App"
+		require.ErrorContains(t, check(t, artifact, valid), "required regular nonempty member missing: App")
+	})
+	t.Run("case alias cannot satisfy import path", func(t *testing.T) {
+		artifact := a
+		artifact.Kind = "bundle"
+		artifact.Executable = "bin/app"
+		artifact.RuntimeFiles = []string{"bin/Private.dylib"}
+		artifact.RequiredFiles = nil
+		artifact.SystemLibraries = nil
+		members := []testMember{
+			{name: artifact.Executable, data: syntheticMachO(uint32(macho.TypeExec), "@loader_path/private.dylib"), mode: 0o755},
+			{name: "bin/Private.dylib", data: syntheticMachO(uint32(macho.TypeDylib)), mode: 0o644},
+		}
+		require.ErrorContains(t, check(t, artifact, members), "unresolved import")
+	})
+	for _, tc := range []struct {
+		name      string
+		conflicts []testMember
+	}{
+		{
+			name: "file before case-alias child",
+			conflicts: []testMember{
+				{name: "Data", data: []byte("file"), mode: 0o644},
+				{name: "data/item", data: []byte("child"), mode: 0o644},
+			},
+		},
+		{
+			name: "file after case-alias child",
+			conflicts: []testMember{
+				{name: "Data/item", data: []byte("child"), mode: 0o644},
+				{name: "data", data: []byte("file"), mode: 0o644},
+			},
+		},
+		{
+			name: "directory aliases",
+			conflicts: []testMember{
+				{name: "Frameworks", mode: 0o755, typ: tar.TypeDir},
+				{name: "frameworks", mode: 0o755, typ: tar.TypeDir},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			members := append(append([]testMember{}, valid...), tc.conflicts...)
+			err := check(t, a, members)
+			if tc.name == "directory aliases" {
+				require.ErrorContains(t, err, "duplicate archive path")
+				return
+			}
+			require.ErrorContains(t, err, "file is also directory prefix")
+		})
+	}
+}
+
+func TestBundleImportRequiresSharedLibraryImage(t *testing.T) {
+	a := testArtifact("darwin")
+	a.Kind = "bundle"
+	a.SystemLibraries = nil
+	a.RequiredFiles = nil
+	a.RuntimeFiles = []string{"private.dylib"}
+	app := syntheticMachO(uint32(macho.TypeExec), "@rpath/private.dylib")
+	dylib := syntheticMachO(uint32(macho.TypeDylib))
+	check := func(t *testing.T, artifact Artifact, members []testMember) error {
+		t.Helper()
+		dir, _ := archiveFixture(t, artifact, members)
+		return Check(t.Context(), Contract{[]Artifact{artifact}}, dir, "1.2.3", "")
+	}
+
+	t.Run("shared library satisfies import", func(t *testing.T) {
+		members := []testMember{
+			{name: a.Executable, data: app, mode: 0o755},
+			{name: "private.dylib", data: dylib, mode: 0o644},
+		}
+		require.NoError(t, check(t, a, members))
+	})
+	t.Run("executable cannot satisfy library import", func(t *testing.T) {
+		members := []testMember{
+			{name: a.Executable, data: app, mode: 0o755},
+			{name: "private.dylib", data: syntheticMachO(uint32(macho.TypeExec)), mode: 0o755},
+		}
+		require.ErrorContains(t, check(t, a, members), "not a shared-library image")
+	})
+	t.Run("Mach-O bundle cannot satisfy dylib import", func(t *testing.T) {
+		members := []testMember{
+			{name: a.Executable, data: app, mode: 0o755},
+			{name: "private.dylib", data: syntheticMachO(uint32(macho.TypeBundle)), mode: 0o644},
+		}
+		require.ErrorContains(t, check(t, a, members), "not a shared-library image")
+	})
+	t.Run("ELF PIE cannot satisfy shared object import", func(t *testing.T) {
+		artifact := testArtifact("linux")
+		artifact.Kind = "bundle"
+		artifact.RuntimeFiles = []string{"private.so"}
+		artifact.RequiredFiles = nil
+		artifact.SystemLibraries = []string{"libc.so.6"}
+		pie := syntheticELF("libc.so.6")
+		binary.LittleEndian.PutUint16(pie[16:], uint16(elf.ET_DYN))
+		binary.LittleEndian.PutUint64(pie[256+48:], uint64(elf.DT_FLAGS_1))
+		binary.LittleEndian.PutUint64(pie[256+56:], uint64(elf.DF_1_PIE))
+		binary.LittleEndian.PutUint64(pie[256+64:], uint64(elf.DT_NULL))
+		binary.LittleEndian.PutUint64(pie[256+72:], 0)
+		binary.LittleEndian.PutUint64(pie[120+32:], 80)
+		binary.LittleEndian.PutUint64(pie[120+40:], 80)
+		members := []testMember{
+			{name: artifact.Executable, data: syntheticELF("private.so"), mode: 0o755},
+			{name: "private.so", data: pie, mode: 0o755},
+		}
+		require.ErrorContains(t, check(t, artifact, members), "not a shared-library image")
+	})
+	t.Run("PE executable cannot satisfy DLL import", func(t *testing.T) {
+		artifact := testArtifact("windows")
+		artifact.Kind = "bundle"
+		artifact.RuntimeFiles = []string{"private.dll"}
+		artifact.RequiredFiles = nil
+		artifact.SystemLibraries = nil
+		members := []testMember{
+			{name: artifact.Executable, data: syntheticPE(true), mode: 0o755},
+			{name: "private.dll", data: syntheticPE(true), mode: 0o755},
+		}
+		require.ErrorContains(t, check(t, artifact, members), "not a shared-library image")
+	})
+	t.Run("standalone executable runtime helper remains valid", func(t *testing.T) {
+		artifact := a
+		artifact.RuntimeFiles = []string{"helper"}
+		members := []testMember{
+			{name: artifact.Executable, data: syntheticMachO(uint32(macho.TypeExec)), mode: 0o755},
+			{name: "helper", data: syntheticMachO(uint32(macho.TypeExec)), mode: 0o755},
+		}
+		require.NoError(t, check(t, artifact, members))
+	})
+}
+
+func TestBundledImportPrefixesAreTargetSpecific(t *testing.T) {
+	t.Run("Linux does not expand Darwin loader prefixes", func(t *testing.T) {
+		for _, prefix := range []string{"@rpath/", "@loader_path/", "@executable_path/"} {
+			t.Run(strings.TrimSuffix(prefix, "/"), func(t *testing.T) {
+				a := testArtifact("linux")
+				a.Kind = "bundle"
+				a.Executable = "app"
+				a.RuntimeFiles = []string{"private.so"}
+				a.RequiredFiles = nil
+				a.SystemLibraries = []string{"libc.so.6"}
+				library := syntheticELF("libc.so.6")
+				binary.LittleEndian.PutUint16(library[16:], uint16(elf.ET_DYN))
+				members := []testMember{
+					{name: a.Executable, data: syntheticELF(prefix + "private.so"), mode: 0o755},
+					{name: "private.so", data: library, mode: 0o644},
+				}
+				dir, _ := archiveFixture(t, a, members)
+				require.ErrorContains(t, Check(t.Context(), Contract{[]Artifact{a}}, dir, "1.2.3", ""), "unresolved import")
+			})
+		}
+	})
+	t.Run("Linux expands both ORIGIN forms from the importing member", func(t *testing.T) {
+		for _, prefix := range []string{"$ORIGIN/", "${ORIGIN}/"} {
+			t.Run(strings.TrimSuffix(prefix, "/"), func(t *testing.T) {
+				a := testArtifact("linux")
+				a.Kind = "bundle"
+				a.Executable = "bin/app"
+				a.RuntimeFiles = []string{"bin/private.so"}
+				a.RequiredFiles = nil
+				a.SystemLibraries = []string{"libc.so.6"}
+				library := syntheticELF("libc.so.6")
+				binary.LittleEndian.PutUint16(library[16:], uint16(elf.ET_DYN))
+				members := []testMember{
+					{name: a.Executable, data: syntheticELF(prefix + "private.so"), mode: 0o755},
+					{name: "bin/private.so", data: library, mode: 0o644},
+				}
+				dir, _ := archiveFixture(t, a, members)
+				require.NoError(t, Check(t.Context(), Contract{[]Artifact{a}}, dir, "1.2.3", ""))
+			})
+		}
+	})
+	t.Run("Darwin does not expand Linux ORIGIN forms", func(t *testing.T) {
+		for _, prefix := range []string{"$ORIGIN/", "${ORIGIN}/"} {
+			t.Run(strings.TrimSuffix(prefix, "/"), func(t *testing.T) {
+				a := testArtifact("darwin")
+				a.Kind = "bundle"
+				a.RuntimeFiles = []string{"private.dylib"}
+				a.RequiredFiles = nil
+				a.SystemLibraries = nil
+				members := []testMember{
+					{name: a.Executable, data: syntheticMachO(uint32(macho.TypeExec), prefix+"private.dylib"), mode: 0o755},
+					{name: "private.dylib", data: syntheticMachO(uint32(macho.TypeDylib)), mode: 0o644},
+				}
+				dir, _ := archiveFixture(t, a, members)
+				require.ErrorContains(t, Check(t.Context(), Contract{[]Artifact{a}}, dir, "1.2.3", ""), "unresolved import")
+			})
+		}
+	})
+}
+
+func TestUnixExecutableAndHelperRequireOwnerExecute(t *testing.T) {
+	for _, targetOS := range []string{"linux", "darwin"} {
+		t.Run(targetOS, func(t *testing.T) {
+			data := syntheticMachO(uint32(macho.TypeExec))
+			systemLibraries := []string(nil)
+			if targetOS == "linux" {
+				data = syntheticELF("libc.so.6")
+				systemLibraries = []string{"libc.so.6"}
+			}
+			for _, role := range []string{"executable", "helper"} {
+				t.Run(role, func(t *testing.T) {
+					for _, tc := range []struct {
+						name string
+						mode int64
+					}{
+						{name: "group execute only", mode: 0o654},
+						{name: "other execute only", mode: 0o645},
+					} {
+						t.Run(tc.name, func(t *testing.T) {
+							a := testArtifact(targetOS)
+							a.SystemLibraries = systemLibraries
+							members := []testMember{
+								{name: a.Executable, data: data, mode: 0o755},
+								{name: "NOTICE", data: []byte("notice"), mode: 0o644},
+							}
+							if role == "helper" {
+								a.Kind = "bundle"
+								a.RuntimeFiles = []string{"helper"}
+								members = append(members, testMember{name: "helper", data: data, mode: tc.mode})
+							} else {
+								members[0].mode = tc.mode
+							}
+							dir, _ := archiveFixture(t, a, members)
+							require.ErrorContains(t, Check(t.Context(), Contract{[]Artifact{a}}, dir, "1.2.3", ""), "lacks Unix owner execute permission")
+						})
+					}
+					t.Run("owner execute passes", func(t *testing.T) {
+						a := testArtifact(targetOS)
+						a.SystemLibraries = systemLibraries
+						members := []testMember{
+							{name: a.Executable, data: data, mode: 0o755},
+							{name: "NOTICE", data: []byte("notice"), mode: 0o644},
+						}
+						if role == "helper" {
+							a.Kind = "bundle"
+							a.RuntimeFiles = []string{"helper"}
+							members = append(members, testMember{name: "helper", data: data, mode: 0o755})
+						}
+						dir, _ := archiveFixture(t, a, members)
+						require.NoError(t, Check(t.Context(), Contract{[]Artifact{a}}, dir, "1.2.3", ""))
+					})
+				})
+			}
+		})
+	}
 }
 
 func TestMalformedDuplicateChecksum(t *testing.T) {

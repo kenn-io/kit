@@ -101,11 +101,13 @@ type member struct {
 }
 
 type archiveMembers struct {
-	ctx     context.Context
-	files   map[string]member
-	seen    map[string]bool
-	size    int64
-	windows bool
+	ctx             context.Context
+	files           map[string]member
+	seen            map[string]bool
+	pathKinds       map[string]bool
+	size            int64
+	windows         bool
+	caseInsensitive bool
 }
 
 func (m *archiveMembers) add(name string, mode fs.FileMode, size int64, r io.Reader) error {
@@ -131,14 +133,14 @@ func (m *archiveMembers) add(name string, mode fs.FileMode, size int64, r io.Rea
 	if !targetMemberPath(name, m.windows) {
 		return fmt.Errorf("unsafe archive path %q", name)
 	}
-	key := name
-	if m.windows {
-		key = strings.ToLower(name)
+	canonical := name
+	if m.caseInsensitive {
+		canonical = strings.ToLower(name)
 	}
-	if m.seen[key] {
+	if m.seen[canonical] {
 		return fmt.Errorf("duplicate archive path %q", name)
 	}
-	m.seen[key] = true
+	m.seen[canonical] = true
 	if len(m.seen) > maxEntries {
 		return errors.New("archive has too many entries")
 	}
@@ -146,20 +148,25 @@ func (m *archiveMembers) add(name string, mode fs.FileMode, size int64, r io.Rea
 		return fmt.Errorf("links and special archive members are forbidden: %s", name)
 	}
 	// A regular file cannot also be a directory prefix, even through case aliases.
-	for parent := path.Dir(key); parent != "."; parent = path.Dir(parent) {
-		if prev, ok := m.files[parent]; ok && !prev.mode.IsDir() {
+	for parent := path.Dir(canonical); parent != "."; parent = path.Dir(parent) {
+		if isDir, ok := m.pathKinds[parent]; ok && !isDir {
 			return fmt.Errorf("file is also directory prefix: %s", name)
 		}
 	}
 	if !mode.IsDir() {
 		for existing := range m.seen {
-			if strings.HasPrefix(existing, key+"/") {
+			if strings.HasPrefix(existing, canonical+"/") {
 				return fmt.Errorf("file is also directory prefix: %s", name)
 			}
 		}
 	}
+	m.pathKinds[canonical] = mode.IsDir()
+	fileKey := name
+	if m.windows {
+		fileKey = canonical
+	}
 	if mode.IsDir() {
-		m.files[key] = member{mode: mode}
+		m.files[fileKey] = member{mode: mode}
 		return nil
 	}
 	if size < 0 || size > maxMemberBytes || m.size+size > maxPayloadBytes {
@@ -173,7 +180,7 @@ func (m *archiveMembers) add(name string, mode fs.FileMode, size int64, r io.Rea
 		return fmt.Errorf("invalid size for %s", name)
 	}
 	m.size += size
-	m.files[key] = member{data: data, mode: mode}
+	m.files[fileKey] = member{data: data, mode: mode}
 	return nil
 }
 
@@ -193,7 +200,14 @@ func checkArchive(ctx context.Context, dir string, a Artifact, sum string) error
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
-	members := archiveMembers{ctx: ctx, files: map[string]member{}, seen: map[string]bool{}, windows: a.OS == "windows"}
+	members := archiveMembers{
+		ctx:             ctx,
+		files:           map[string]member{},
+		seen:            map[string]bool{},
+		pathKinds:       map[string]bool{},
+		windows:         a.OS == "windows",
+		caseInsensitive: a.OS == "windows" || a.OS == "darwin",
+	}
 	if a.OS == "windows" {
 		stat, err := f.Stat()
 		if err != nil {
@@ -300,8 +314,8 @@ func checkMembers(ctx context.Context, a Artifact, files map[string]member) erro
 		if name != key(a.Executable) && !info.executable && !info.library {
 			return fmt.Errorf("%s is not a native executable or library", name)
 		}
-		if a.OS != "windows" && (name == key(a.Executable) || info.executable) && m.mode.Perm()&0o111 == 0 {
-			return fmt.Errorf("%s lacks Unix executable permission", name)
+		if a.OS != "windows" && (name == key(a.Executable) || info.executable) && m.mode.Perm()&0o100 == 0 {
+			return fmt.Errorf("%s lacks Unix owner execute permission", name)
 		}
 		if a.Kind == "static" && (info.os != "linux" || info.interp != "" || len(info.imports) > 0) {
 			return errors.New("static executable has an interpreter or dynamic imports")
@@ -324,6 +338,10 @@ func checkMembers(ctx context.Context, a Artifact, files map[string]member) erro
 			found := false
 			for _, runtime := range a.RuntimeFiles {
 				if candidate != "" && key(candidate) == key(runtime) {
+					provider, ok := native[key(runtime)]
+					if !ok || !provider.sharedLibrary {
+						return fmt.Errorf("%s: import %q resolves to runtime member %s, which is not a shared-library image", name, lib, runtime)
+					}
 					found = true
 					break
 				}
@@ -337,31 +355,31 @@ func checkMembers(ctx context.Context, a Artifact, files map[string]member) erro
 }
 
 func bundledImport(a Artifact, loader, lib string) string {
-	// Resolve explicit loader-relative spellings against the image that imports
-	// them, and executable-relative spellings against the main executable. @rpath
-	// and bare names remain direct archive-root member checks; this does not
-	// simulate loader search paths.
+	// Resolve target-specific loader-relative spellings against the image that
+	// imports them, and executable-relative spellings against the main
+	// executable. On Darwin, @rpath and bare names remain direct archive-root
+	// member checks; this does not simulate loader search paths.
 	if strings.HasPrefix(lib, "/") || strings.ContainsAny(lib, "\\:\x00") {
 		return ""
 	}
 	base := "."
 	loaderRelative := false
 	switch {
-	case strings.HasPrefix(lib, "@rpath/"):
+	case a.OS == "darwin" && strings.HasPrefix(lib, "@rpath/"):
 		lib = strings.TrimPrefix(lib, "@rpath/")
-	case strings.HasPrefix(lib, "@loader_path/"):
+	case a.OS == "darwin" && strings.HasPrefix(lib, "@loader_path/"):
 		base = path.Dir(loader)
 		loaderRelative = true
 		lib = strings.TrimPrefix(lib, "@loader_path/")
-	case strings.HasPrefix(lib, "@executable_path/"):
+	case a.OS == "darwin" && strings.HasPrefix(lib, "@executable_path/"):
 		base = path.Dir(a.Executable)
 		loaderRelative = true
 		lib = strings.TrimPrefix(lib, "@executable_path/")
-	case strings.HasPrefix(lib, "$ORIGIN/"):
+	case a.OS == "linux" && strings.HasPrefix(lib, "$ORIGIN/"):
 		base = path.Dir(loader)
 		loaderRelative = true
 		lib = strings.TrimPrefix(lib, "$ORIGIN/")
-	case strings.HasPrefix(lib, "${ORIGIN}/"):
+	case a.OS == "linux" && strings.HasPrefix(lib, "${ORIGIN}/"):
 		base = path.Dir(loader)
 		loaderRelative = true
 		lib = strings.TrimPrefix(lib, "${ORIGIN}/")
