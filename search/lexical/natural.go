@@ -44,7 +44,10 @@ func (a Analyzer) PrepareNatural(text string) (Natural, error) {
 	}
 	var normalized []string
 	for _, word := range words {
-		if word = strings.TrimFunc(strings.ToLower(word), wordless); hasLetterOrNumber(word) {
+		if !segmentHan || !containsHan(word) {
+			word = strings.ToLower(word)
+		}
+		if word = strings.TrimFunc(word, wordless); hasLetterOrNumber(word) {
 			normalized = append(normalized, word)
 		}
 	}

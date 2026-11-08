@@ -207,3 +207,23 @@ func TestNaturalCJK(t *testing.T) {
 	_, err = chinese.PrepareNatural("搜索")
 	require.ErrorIs(t, err, failure)
 }
+
+func TestNaturalChinesePreservesDictionaryCase(t *testing.T) {
+	tokens := map[string][]lexical.Token{
+		"T恤": {{Text: "T恤"}},
+		"t恤": {{Text: "t"}, {Text: "恤"}},
+		"B超": {{Text: "B超"}},
+		"b超": {{Text: "b"}, {Text: "超"}},
+	}
+	var calls []string
+	chinese, err := lexical.Chinese("runtime", func(text string) ([]lexical.Token, error) {
+		calls = append(calls, text)
+		return tokens[text], nil
+	})
+	require.NoError(t, err)
+	db := ftsDB(t, []string{"T恤", "B超", "retried"})
+	got, err := chinese.PrepareNatural("T恤 B超 RETRY")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"T恤", "B超", "retried"}, matchBodies(t, db, got.Match))
+	assert.Equal(t, []string{"T恤", "B超"}, calls)
+}
