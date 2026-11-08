@@ -54,11 +54,19 @@ func (a Analyzer) PrepareNatural(text string) (Natural, error) {
 		if hasContent && IsStopWord(word) {
 			continue
 		}
-		if i := slices.IndexFunc(result.Words, func(term Term) bool { return slices.Contains(term.Forms, word) }); i >= 0 {
-			result.Words[i].Forms = slices.Compact(slices.Sorted(slices.Values(append(result.Words[i].Forms, inflections(word)...))))
-			continue
-		}
 		result.Words = append(result.Words, Term{Text: word, Forms: inflections(word)})
+	}
+	for i := 0; i < len(result.Words); i++ {
+		for j := i + 1; j < len(result.Words); {
+			first, next := &result.Words[i], result.Words[j]
+			if !slices.ContainsFunc(next.Forms, func(form string) bool { return slices.Contains(first.Forms, form) }) {
+				j++
+				continue
+			}
+			first.Forms = slices.Compact(slices.Sorted(slices.Values(append(first.Forms, next.Forms...))))
+			result.Words = slices.Delete(result.Words, j, j+1)
+			j = i + 1
+		}
 	}
 	var parts []string
 	join := " OR "
@@ -155,7 +163,7 @@ func regular(base string) []string {
 	default:
 		sounds := strings.ReplaceAll(base, "qu", "q")
 		n := len(sounds)
-		if n >= 3 && !vowel(sounds[n-3]) && vowel(sounds[n-2]) && !vowel(sounds[n-1]) && !strings.ContainsRune("wxy", rune(sounds[n-1])) {
+		if n >= 2 && (n == 2 || !vowel(sounds[n-3])) && vowel(sounds[n-2]) && !vowel(sounds[n-1]) && !strings.ContainsRune("wxy", rune(sounds[n-1])) {
 			doubled := base + base[len(base)-1:]
 			groups := 0
 			for i := range len(sounds) {
