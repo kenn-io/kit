@@ -1,6 +1,10 @@
 // Package lexical prepares literal, phrase, and analyzer-specific full-text
 // queries and records the analyzer identity that must match the index.
 //
+// PrepareNatural requires quoted phrases and uses unquoted words for ranking.
+// Without phrases, any word matches. Regular English forms expand the query
+// without changing index text or analyzer identities.
+//
 // Three identities stay distinct. Literal quoting does not segment text.
 // Character-phrase analysis preserves adjacency of Han, Hiragana, Katakana,
 // and Hangul characters; it is not morphological analysis. Chinese
