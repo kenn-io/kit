@@ -1,3 +1,9 @@
+---
+title: "CLI command design template"
+description: "Worksheet and review checklist for designing a CLI command or command family."
+last_edited: 2026-11-08
+---
+
 # CLI command design template
 
 Copy this worksheet for a command or command family. Replace bracketed prompts
@@ -84,7 +90,8 @@ old and new spellings share flag values or use separate constructors.
 - [ ] Each expected error has the right exit code and the same hint in human,
       agent, and JSON modes; stdout is empty on failure.
 - [ ] A panic in `main`'s goroutine emits `kind: "internal"`, a report-bug hint,
-      and `exit_code: 1` in the active mode, then exits 1. Command goroutines
+      and `exit_code: 1` in the mode the arguments select, even before flags
+      are parsed, then exits 1. Command goroutines
       return recovered errors to the caller, or document crashes that exit 2.
 - [ ] A mistyped group action exits 2.
 - [ ] Old and new spellings match on output, exit codes, wire calls, help, and

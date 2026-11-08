@@ -1,3 +1,9 @@
+---
+title: "Shared CLI design guidance"
+description: "Help, output, error, exit code, and migration conventions for kenn-io CLIs, grounded in Kata, Roborev, and Docbank."
+last_edited: 2026-11-08
+---
+
 # Shared CLI design guidance
 
 A kenn-io CLI should let a person or a coding agent find the next command, run
@@ -5,7 +11,8 @@ it, and recover from a failure using only the installed binary: no README, no
 skill pack, no repository checkout. Kata is the reference design. Roborev and
 Docbank applied the same pattern to larger command trees and added noun
 groups. This guide describes what the three share, where they differ, and what
-a new CLI should copy.
+a new CLI should copy. All three use Cobra, so examples name Cobra fields such
+as `Short`, `Long`, and `Deprecated`; the conventions do not depend on it.
 
 Start a design with the [command design template](cli-command-template.md).
 Its checklist doubles as the review guide. Preserve released contracts; the
@@ -120,8 +127,9 @@ Copy these properties:
   --help`), so leaf help stays short ([template][kata-usage-template],
   [Roborev test][roborev-help-tests]).
 
-Docbank's lint also enforces the house style: `Short` is imperative, at most 80
-characters, and has no trailing period; `Long` wraps at 80 columns; flag
+Docbank's lint also enforces the house style: `Short` is at most 80
+characters, has no trailing period, and avoids non-imperative openings such as
+"Status a"; `Long` wraps at 80 columns; flag
 descriptions start lowercase and have no trailing period; `--json` always reads
 "print JSON ..." ([lint][docbank-help-lint]).
 
@@ -269,23 +277,28 @@ to report the bug, and `exit_code: 1`. Then exit 1:
 
 ```go
 func main() {
-	mode := humanMode
 	defer func() {
 		if recover() != nil {
-			emitError(mode, Error{
+			emitError(outputModeFromArgs(os.Args[1:]), Error{
 				Kind: "internal", Message: "internal error",
 				Hint: "report this bug", ExitCode: 1,
 			})
 			os.Exit(1)
 		}
 	}()
-	os.Exit(run(&mode))
+	os.Exit(run())
 }
 ```
 
-Here `run` records the selected mode before executing the command, and
-`emitError` is the CLI's existing human, agent, or JSON error renderer. Keep
-panic values and request data out of the public message.
+`outputModeFromArgs` reads the output selectors from the raw arguments, because
+a panic can happen before flag parsing has chosen a mode. Kata tests a panic
+during Cobra initialization for this reason. `emitError` is the CLI's existing
+human, agent, or JSON error renderer.
+
+Keep the panic value and request data out of the error record: they can hold
+credentials. A bug report still needs the trace. If the CLI has a state or log
+directory, write `debug.Stack()` to a file there and name that file in the
+hint. Kata's CLI drops the trace.
 
 Kata [#819](https://github.com/kenn-io/kata/blob/af584bf321abc89e95a2efb3233bf4ff01ba718d/cmd/kata/main.go#L182-L201) implements this rule for
 the CLI's main goroutine, with tests for human, agent, and JSON output; the
