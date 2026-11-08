@@ -168,6 +168,20 @@ func TestNaturalFTS(t *testing.T) {
 	assert.Equal(t, 2, counts[bodies[0]])
 }
 
+func TestNaturalWordOrder(t *testing.T) {
+	bodies := []string{"try", "trie", "tried"}
+	db := ftsDB(t, bodies)
+	for _, query := range []string{"try tries", "tries try"} {
+		t.Run(query, func(t *testing.T) {
+			got, err := lexical.Literal().PrepareNatural(query)
+			require.NoError(t, err)
+			require.Len(t, got.Words, 1)
+			assert.ElementsMatch(t, bodies, matchBodies(t, db, got.Match))
+			assert.ElementsMatch(t, bodies, matchBodies(t, db, got.Words[0].Match))
+		})
+	}
+}
+
 func TestNaturalCJK(t *testing.T) {
 	got, err := lexical.CharacterPhrase().PrepareNatural("SQLite 検索")
 	require.NoError(t, err)
