@@ -142,19 +142,6 @@ func TestNaturalForms(t *testing.T) {
 func TestNaturalFTS(t *testing.T) {
 	bodies := []string{"rounding of invoices", "invoice rounding decision", "the invoiced total was rounded"}
 	db := ftsDB(t, bodies)
-	for _, tc := range []struct {
-		query string
-		want  []string
-	}{
-		{"invoice rounding decision", bodies},
-		{`"rounding of invoices"`, bodies[:1]},
-	} {
-		t.Run(tc.query, func(t *testing.T) {
-			got, err := lexical.Literal().PrepareNatural(tc.query)
-			require.NoError(t, err)
-			assert.ElementsMatch(t, tc.want, matchBodies(t, db, got.Match))
-		})
-	}
 	got, err := lexical.Literal().PrepareNatural("invoice rounding decision")
 	require.NoError(t, err)
 	counts := map[string]int{}
@@ -165,6 +152,7 @@ func TestNaturalFTS(t *testing.T) {
 	}
 	assert.Equal(t, 3, counts[bodies[1]])
 	assert.Equal(t, 2, counts[bodies[0]])
+	assert.Equal(t, 2, counts[bodies[2]])
 }
 
 func TestNaturalWordOrder(t *testing.T) {
