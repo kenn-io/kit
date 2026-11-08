@@ -118,7 +118,7 @@ func inflections(word string) []string {
 		}
 	}
 	for _, base := range bases {
-		if len(base) < 2 || !strings.ContainsAny(base, "aeiouy") {
+		if len(base) < 2 || !strings.ContainsAny(strings.TrimSuffix(base, "e"), "aeiouy") {
 			continue
 		}
 		variants := regular(base)

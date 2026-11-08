@@ -94,7 +94,7 @@ func TestNaturalForms(t *testing.T) {
 		})
 	}
 	for _, tc := range []struct{ query, miss string }{
-		{"caring", "car"}, {"filing", "filled"}, {"string", "str"}, {"https", "http"}, {"being", "bed"},
+		{"red", "ring"}, {"bring", "bred"}, {"spring", "spre"}, {"caring", "car"}, {"filing", "filled"}, {"string", "str"}, {"https", "http"}, {"being", "bed"},
 	} {
 		t.Run(tc.query, func(t *testing.T) {
 			db := ftsDB(t, []string{tc.query, tc.miss})
