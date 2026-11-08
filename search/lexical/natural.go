@@ -114,7 +114,8 @@ func inflections(word string) []string {
 		}
 	}
 	for _, base := range bases {
-		if len(base) < 2 || !strings.ContainsAny(strings.TrimSuffix(base, "e"), "aeiouy") {
+		// Keep us/uses and new/news in separate word families.
+		if base == "us" || base == "new" || len(base) < 2 || !strings.ContainsAny(strings.TrimSuffix(base, "e"), "aeiouy") {
 			continue
 		}
 		variants := regular(base)
@@ -152,7 +153,7 @@ func regular(base string) []string {
 	default:
 		sounds := strings.ReplaceAll(base, "qu", "q")
 		n := len(sounds)
-		if n >= 2 && (n == 2 || !vowel(sounds[n-3])) && vowel(sounds[n-2]) && !vowel(sounds[n-1]) && !strings.ContainsRune("wxy", rune(sounds[n-1])) {
+		if base != "ad" && n >= 2 && (n == 2 || !vowel(sounds[n-3])) && vowel(sounds[n-2]) && !vowel(sounds[n-1]) && !strings.ContainsRune("wxy", rune(sounds[n-1])) {
 			doubled := base + base[len(base)-1:]
 			groups := 0
 			for i := range len(sounds) {

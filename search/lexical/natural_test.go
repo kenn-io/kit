@@ -122,6 +122,29 @@ func TestNaturalForms(t *testing.T) {
 	}
 }
 
+func TestNaturalWordFamiliesStaySeparate(t *testing.T) {
+	for _, tc := range []struct {
+		family []string
+		other  string
+	}{
+		{[]string{"use", "uses", "used", "using"}, "us"},
+		{[]string{"news"}, "new"},
+		{[]string{"add", "adds", "added", "adding"}, "ad"},
+	} {
+		t.Run(tc.family[0], func(t *testing.T) {
+			db := ftsDB(t, append(tc.family, tc.other))
+			for _, query := range tc.family {
+				got, err := lexical.Literal().PrepareNatural(query)
+				require.NoError(t, err)
+				assert.ElementsMatch(t, tc.family, matchBodies(t, db, got.Match), query)
+			}
+			got, err := lexical.Literal().PrepareNatural(tc.other)
+			require.NoError(t, err)
+			assert.Equal(t, []string{tc.other}, matchBodies(t, db, got.Match))
+		})
+	}
+}
+
 func TestNaturalFTS(t *testing.T) {
 	bodies := []string{"rounding of invoices", "invoice rounding decision", "the invoiced total was rounded", "connection reset by peer", "reset the connection", "ax", "axe", "axes"}
 	db := ftsDB(t, bodies)
