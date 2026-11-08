@@ -119,7 +119,7 @@ func inflections(word string) []string {
 	}
 	for _, base := range bases {
 		// Keep these tokens separate from unrelated words that look like plurals.
-		if base == "us" || base == "new" || base == "len" || len(base) < 2 || !strings.ContainsAny(strings.TrimSuffix(base, "e"), "aeiouy") {
+		if base == "us" || base == "new" || base == "len" || len(base) < 2 || (len(base) == 2 && strings.ContainsRune("aiuy", rune(base[1]))) || !strings.ContainsAny(strings.TrimSuffix(base, "e"), "aeiouy") {
 			continue
 		}
 		variants := regular(base)
@@ -144,6 +144,9 @@ func regular(base string) []string {
 	var extra []string
 	if strings.HasSuffix(base, "c") {
 		extra = append(extra, past, present, base+"ked", base+"king")
+	}
+	if strings.HasSuffix(base, "ue") {
+		extra = append(extra, base+"ing")
 	}
 	switch {
 	case strings.HasSuffix(base, "y") && !vowel(base[len(base)-2]):
