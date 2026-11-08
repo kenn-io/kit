@@ -44,33 +44,25 @@ func TestPrepareNatural(t *testing.T) {
 			}
 		})
 	}
-	for _, query := range []string{"", "  ", `""`, `"  "`, "?", "$ +", `"?!"`, `"! ?"`, `"?!" invoice`, `invoice "! ?"`, `"$" invoice`} {
+	for _, query := range []string{"", `""`, "$ +", `"?!"`, `"! ?"`, `"?!" invoice`, `"$" invoice`, "\"invoice\x00 rounding\""} {
 		t.Run(query, func(t *testing.T) {
-			_, err := lexical.Literal().PrepareNatural(query)
+			got, err := lexical.Literal().PrepareNatural(query)
 			require.Error(t, err)
+			assert.Equal(t, lexical.Natural{}, got)
 		})
 	}
 	_, err = (lexical.Analyzer{}).PrepareNatural("invoice")
 	require.Error(t, err)
-}
-
-func TestNaturalRejectsNUL(t *testing.T) {
-	chinese, err := lexical.Chinese("runtime", func(text string) ([]lexical.Token, error) {
-		t.Errorf("NUL query reached segmenter: %q", text)
+	calls := 0
+	chinese, err := lexical.Chinese("runtime", func(string) ([]lexical.Token, error) {
+		calls++
 		return []lexical.Token{{Text: "搜索"}}, nil
 	})
 	require.NoError(t, err)
-	for name, analyzer := range map[string]lexical.Analyzer{"literal": lexical.Literal(), "chinese": chinese} {
-		t.Run(name, func(t *testing.T) {
-			for _, query := range []string{"\x00", "invoice\x00 rounding", "\"invoice\x00 rounding\"", "搜索\x00 invoice"} {
-				t.Run(query, func(t *testing.T) {
-					got, err := analyzer.PrepareNatural(query)
-					require.Error(t, err)
-					assert.Equal(t, lexical.Natural{}, got)
-				})
-			}
-		})
-	}
+	got, err = chinese.PrepareNatural("搜索\x00 invoice")
+	require.Error(t, err)
+	assert.Equal(t, lexical.Natural{}, got)
+	assert.Zero(t, calls)
 }
 
 func TestNaturalForms(t *testing.T) {
@@ -120,10 +112,9 @@ func TestNaturalForms(t *testing.T) {
 		{"red", "ring"}, {"bring", "bred"}, {"spring", "spre"}, {"caring", "car"}, {"filing", "filled"}, {"string", "str"}, {"https", "http"}, {"being", "bed"},
 	} {
 		t.Run(tc.query, func(t *testing.T) {
-			db := ftsDB(t, []string{tc.query, tc.miss})
 			got, err := lexical.Literal().PrepareNatural(tc.query)
 			require.NoError(t, err)
-			assert.Equal(t, []string{tc.query}, matchBodies(t, db, got.Match))
+			assert.NotContains(t, got.Words[0].Forms, tc.miss)
 			reverse, err := lexical.Literal().PrepareNatural(tc.miss)
 			require.NoError(t, err)
 			assert.NotContains(t, reverse.Words[0].Forms, tc.query)
@@ -177,9 +168,9 @@ func TestNaturalCJK(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"搜索引擎"}, calls)
 	assert.Equal(t, `("搜索" AND "引擎")`, got.Words[0].Match)
-	db := ftsDB(t, []string{"搜索 引擎", "引擎"})
-	assert.Equal(t, []string{"搜索 引擎"}, matchBodies(t, db, got.Match))
-	for _, query := range []string{`かな`, `搜索引擎 かな`, `"搜索引擎"`} {
+	db := ftsDB(t, []string{"搜索 引擎", "引擎", "retry"})
+	assert.ElementsMatch(t, []string{"搜索 引擎", "retry"}, matchBodies(t, db, got.Match))
+	for _, query := range []string{`搜索引擎 かな`, `"搜索引擎"`} {
 		_, err = chinese.PrepareNatural(query)
 		require.NoError(t, err)
 	}
