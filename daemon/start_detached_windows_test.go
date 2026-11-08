@@ -35,25 +35,25 @@ func TestStartDetachedDoesNotExposeConsoleInput(t *testing.T) {
 	exe, err := os.Executable()
 	require.NoError(t, err)
 	marker := filepath.Join(t.TempDir(), "console-marker")
+	exited := make(chan error, 1)
 
 	err = daemon.StartDetached(t.Context(), daemon.StartDetachedOptions{
 		Executable: exe,
 		Args:       []string{"-test.run", "^TestStartDetachedConsoleInputHelper$"},
 		Env:        append(os.Environ(), "KIT_DAEMON_TEST_CONSOLE_MARKER="+marker),
+		Exited:     func(err error) { exited <- err },
 	})
 	require.NoError(t, err)
 
-	got := waitForMarker(t, marker)
-	require.Equal(t, "console-input-unavailable", strings.TrimSpace(got))
-}
+	// File creation precedes the marker write, so wait for the child to finish.
+	select {
+	case err := <-exited:
+		require.NoError(t, err)
+	case <-time.After(10 * time.Second):
+		require.FailNow(t, "detached child never exited")
+	}
 
-func waitForMarker(t *testing.T, marker string) string {
-	t.Helper()
-	var data []byte
-	require.Eventually(t, func() bool {
-		var err error
-		data, err = os.ReadFile(marker)
-		return err == nil
-	}, 10*time.Second, 25*time.Millisecond, "detached child never wrote marker file")
-	return string(data)
+	got, err := os.ReadFile(marker)
+	require.NoError(t, err)
+	require.Equal(t, "console-input-unavailable", strings.TrimSpace(string(got)))
 }
