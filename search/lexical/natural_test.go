@@ -23,8 +23,8 @@ func TestPrepareNatural(t *testing.T) {
 		{"café v2", []string{"café", "v2"}, `"café" OR "v2"`},
 		{"The invoice", []string{"invoice"}, ""},
 		{`"connection reset" the`, nil, `"connection reset"`},
-		{"Invoice invoices", []string{"invoice"}, ""},
-		{"invoices invoice", []string{"invoices"}, ""},
+		{"Invoice invoices", []string{"invoice", "invoices"}, ""},
+		{"invoices invoice", []string{"invoices", "invoice"}, ""},
 		{"invoices, please", []string{"invoices"}, ""},
 		{", refund?!", []string{"refund"}, ""},
 		{`unclosed "quote`, []string{"unclosed", "quote"}, ""},
@@ -43,7 +43,7 @@ func TestPrepareNatural(t *testing.T) {
 			}
 		})
 	}
-	for _, query := range []string{"", "  ", `""`, `"  "`, "?", "\x00", "invoice\x00 rounding", "\"quoted\x00 phrase\""} {
+	for _, query := range []string{"", "  ", `""`, `"  "`, "?"} {
 		_, err := lexical.Literal().PrepareNatural(query)
 		require.Error(t, err, query)
 	}
@@ -166,24 +166,4 @@ func TestNaturalCJK(t *testing.T) {
 	chinese.Segment = func(string) ([]lexical.Token, error) { return nil, failure }
 	_, err = chinese.PrepareNatural("搜索")
 	require.ErrorIs(t, err, failure)
-}
-
-func TestNaturalWordGroups(t *testing.T) {
-	db := ftsDB(t, []string{"ax", "axe", "axes", "ax decision", "axe decision", "axes decision", "decision"})
-	for _, query := range []string{
-		"ax axe axes decision", "ax axes axe decision", "axe ax axes decision",
-		"axe axes ax decision", "axes ax axe decision", "axes axe ax decision",
-	} {
-		t.Run(query, func(t *testing.T) {
-			got, err := lexical.Literal().PrepareNatural(query)
-			require.NoError(t, err)
-			counts := map[string]int{}
-			for _, word := range got.Words {
-				for _, body := range matchBodies(t, db, word.Match) {
-					counts[body]++
-				}
-			}
-			assert.Equal(t, map[string]int{"ax": 1, "axe": 1, "axes": 1, "ax decision": 2, "axe decision": 2, "axes decision": 2, "decision": 1}, counts)
-		})
-	}
 }

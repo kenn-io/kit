@@ -29,9 +29,6 @@ func (a Analyzer) PrepareNatural(text string) (Natural, error) {
 	if err := a.valid(); err != nil {
 		return Natural{}, err
 	}
-	if strings.ContainsRune(text, 0) {
-		return Natural{}, errors.New("lexical: query text contains a NUL byte")
-	}
 	segmentHan := a.Identity.Kind == KindChinese && !containsKanaOrHangul(text)
 	result := Natural{Identity: a.Identity}
 	var words []string
@@ -55,18 +52,6 @@ func (a Analyzer) PrepareNatural(text string) (Natural, error) {
 			continue
 		}
 		result.Words = append(result.Words, Term{Text: word, Forms: inflections(word)})
-	}
-	for i := 0; i < len(result.Words); i++ {
-		for j := i + 1; j < len(result.Words); {
-			first, next := &result.Words[i], result.Words[j]
-			if !slices.ContainsFunc(next.Forms, func(form string) bool { return slices.Contains(first.Forms, form) }) {
-				j++
-				continue
-			}
-			first.Forms = slices.Compact(slices.Sorted(slices.Values(append(first.Forms, next.Forms...))))
-			result.Words = slices.Delete(result.Words, j, j+1)
-			j = i + 1
-		}
 	}
 	var parts []string
 	join := " OR "
