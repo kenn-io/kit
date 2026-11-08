@@ -177,7 +177,7 @@ func regular(base string) []string {
 	case base == "trie":
 		return []string{base, plural}
 	case strings.HasSuffix(base, "ie"):
-		present = base[:len(base)-2] + "ying"
+		extra = append(extra, base[:len(base)-2]+"ying")
 	case len(base) == 3 && strings.HasSuffix(base, "ee"):
 		past = plural // seed and feed are words of their own
 	case strings.HasSuffix(base, "e") && !strings.ContainsRune("eyo", rune(base[len(base)-2])):
@@ -191,7 +191,7 @@ func regular(base string) []string {
 				groups++
 			}
 		}
-		if base != "ad" && n >= 2 && (n == 2 || !vowel(sounds[n-3])) && vowel(sounds[n-2]) && !vowel(sounds[n-1]) && !strings.ContainsRune("swxy", rune(sounds[n-1])) && (base == "gel" || groups > 1 || !strings.ContainsRune("fl", rune(sounds[n-1]))) {
+		if base != "ad" && n >= 2 && (n == 2 || !vowel(sounds[n-3])) && vowel(sounds[n-2]) && !vowel(sounds[n-1]) && !strings.ContainsRune("swxy", rune(sounds[n-1])) && (groups > 1 || !strings.ContainsRune("fl", rune(sounds[n-1]))) {
 			doubled := base + base[len(base)-1:]
 			if groups > 1 {
 				extra = append(extra, past, present)
