@@ -29,24 +29,19 @@ func (a Analyzer) PrepareNatural(text string) (Natural, error) {
 	if err := a.valid(); err != nil {
 		return Natural{}, err
 	}
+	if strings.ContainsRune(text, 0) {
+		return Natural{}, errors.New("lexical: query text contains a NUL byte")
+	}
 	segmentHan := a.Identity.Kind == KindChinese && !containsKanaOrHangul(text)
 	result := Natural{Identity: a.Identity}
 	var words []string
-	for text != "" {
-		start := strings.IndexByte(text, '"')
-		end := -1
-		if start >= 0 {
-			end = strings.IndexByte(text[start+1:], '"')
-		}
-		if end < 0 {
-			words = append(words, strings.Fields(text)...)
-			break
-		}
-		words = append(words, strings.Fields(text[:start])...)
-		if phrase := strings.Join(strings.Fields(text[start+1:start+end+1]), " "); phrase != "" {
+	segments := strings.Split(text, `"`)
+	for i, segment := range segments {
+		if i%2 == 0 || i == len(segments)-1 {
+			words = append(words, strings.Fields(segment)...)
+		} else if phrase := strings.Join(strings.Fields(segment), " "); phrase != "" {
 			result.Phrases = append(result.Phrases, phrase)
 		}
-		text = text[start+end+2:]
 	}
 	var normalized []string
 	for _, word := range words {
@@ -56,31 +51,35 @@ func (a Analyzer) PrepareNatural(text string) (Natural, error) {
 	}
 	hasContent := len(result.Phrases) > 0 || slices.ContainsFunc(normalized, func(word string) bool { return !IsStopWord(word) })
 	for _, word := range normalized {
-		if hasContent && IsStopWord(word) || slices.ContainsFunc(result.Words, func(term Term) bool { return slices.Contains(term.Forms, word) }) {
+		if hasContent && IsStopWord(word) {
 			continue
 		}
-		term := Term{Text: word, Forms: inflections(word)}
-		var parts []string
-		for _, form := range term.Forms {
-			parts = append(parts, a.renderTerm(form))
+		if i := slices.IndexFunc(result.Words, func(term Term) bool { return slices.Contains(term.Forms, word) }); i >= 0 {
+			result.Words[i].Forms = slices.Compact(slices.Sorted(slices.Values(append(result.Words[i].Forms, inflections(word)...))))
+			continue
 		}
-		term.Match = strings.Join(parts, " OR ")
-		if len(parts) > 1 {
+		result.Words = append(result.Words, Term{Text: word, Forms: inflections(word)})
+	}
+	var parts []string
+	join := " OR "
+	for i, term := range result.Words {
+		var forms []string
+		for _, form := range term.Forms {
+			forms = append(forms, a.renderTerm(form))
+		}
+		term.Match = strings.Join(forms, " OR ")
+		if len(forms) > 1 {
 			term.Match = "(" + term.Match + ")"
 		}
-		if segmentHan && containsHan(word) {
-			prepared, err := a.segmented(word)
+		if segmentHan && containsHan(term.Text) {
+			prepared, err := a.segmented(term.Text)
 			if err != nil {
 				return Natural{}, err
 			}
 			term.Match = "(" + prepared.Match + ")"
 		}
-		result.Words = append(result.Words, term)
-	}
-	var parts []string
-	join := " OR "
-	for _, word := range result.Words {
-		parts = append(parts, word.Match)
+		result.Words[i] = term
+		parts = append(parts, term.Match)
 	}
 	if len(result.Phrases) > 0 {
 		parts, join = nil, " AND "

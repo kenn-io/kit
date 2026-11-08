@@ -43,7 +43,7 @@ func TestPrepareNatural(t *testing.T) {
 			}
 		})
 	}
-	for _, query := range []string{"", "  ", `""`, `"  "`, "?"} {
+	for _, query := range []string{"", "  ", `""`, `"  "`, "?", "\x00", "invoice\x00 rounding", "\"quoted\x00 phrase\""} {
 		_, err := lexical.Literal().PrepareNatural(query)
 		require.Error(t, err, query)
 	}
@@ -109,13 +109,15 @@ func TestNaturalForms(t *testing.T) {
 }
 
 func TestNaturalFTS(t *testing.T) {
-	bodies := []string{"rounding of invoices", "invoice rounding decision", "the invoiced total was rounded", "connection reset by peer", "reset the connection"}
+	bodies := []string{"rounding of invoices", "invoice rounding decision", "the invoiced total was rounded", "connection reset by peer", "reset the connection", "ax", "axe", "axes"}
 	db := ftsDB(t, bodies)
 	for _, tc := range []struct {
 		query string
 		want  []string
 	}{
 		{"invoice rounding decision", bodies[:3]},
+		{"ax axes", bodies[5:]},
+		{"axes ax", bodies[5:]},
 		{`"rounding of invoices"`, bodies[:1]},
 		{`"connection reset" retry`, bodies[3:4]},
 	} {
