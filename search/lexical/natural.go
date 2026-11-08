@@ -15,8 +15,8 @@ type Term struct {
 	Match string
 }
 
-// Natural holds optional ranking words and required phrases for an analyzer.
-// With no phrases, any word can match.
+// Natural holds required phrases and words for ranking.
+// Match requires all phrases when present, or any word otherwise.
 type Natural struct {
 	Match    string
 	Words    []Term
