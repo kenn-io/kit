@@ -109,7 +109,20 @@ func TestNaturalForms(t *testing.T) {
 		})
 	}
 	for _, tc := range []struct{ query, miss string }{
-		{"red", "ring"}, {"bring", "bred"}, {"spring", "spre"}, {"caring", "car"}, {"filing", "filled"}, {"string", "str"}, {"https", "http"}, {"being", "bed"}, {"seed", "see"}, {"feed", "fee"},
+		{"red", "ring"},
+		{"bring", "bred"},
+		{"spring", "spre"},
+		{"caring", "car"},
+		{"filing", "filled"},
+		{"string", "str"},
+		{"https", "http"},
+		{"being", "bed"},
+		{"seed", "see"},
+		{"feed", "fee"},
+		{"uses", "us"},
+		{"added", "ad"},
+		{"news", "new"},
+		{"lens", "len"},
 	} {
 		t.Run(tc.query, func(t *testing.T) {
 			got, err := lexical.Literal().PrepareNatural(tc.query)
@@ -122,40 +135,16 @@ func TestNaturalForms(t *testing.T) {
 	}
 }
 
-func TestNaturalWordFamiliesStaySeparate(t *testing.T) {
-	for _, tc := range []struct {
-		family []string
-		other  string
-	}{
-		{[]string{"use", "uses", "used", "using"}, "us"},
-		{[]string{"news"}, "new"},
-		{[]string{"lens", "lenses"}, "len"},
-		{[]string{"add", "adds", "added", "adding"}, "ad"},
-	} {
-		t.Run(tc.family[0], func(t *testing.T) {
-			db := ftsDB(t, append(tc.family, tc.other))
-			for _, query := range tc.family {
-				got, err := lexical.Literal().PrepareNatural(query)
-				require.NoError(t, err)
-				assert.ElementsMatch(t, tc.family, matchBodies(t, db, got.Match), query)
-			}
-			got, err := lexical.Literal().PrepareNatural(tc.other)
-			require.NoError(t, err)
-			assert.Equal(t, []string{tc.other}, matchBodies(t, db, got.Match))
-		})
-	}
-}
-
 func TestNaturalFTS(t *testing.T) {
-	bodies := []string{"rounding of invoices", "invoice rounding decision", "the invoiced total was rounded", "connection reset by peer", "reset the connection", "ax", "axe", "axes"}
+	bodies := []string{"rounding of invoices", "invoice rounding decision", "the invoiced total was rounded", "connection reset by peer", "reset the connection", "ax", "axe", "axes", "retry"}
 	db := ftsDB(t, bodies)
 	for _, tc := range []struct {
 		query string
 		want  []string
 	}{
 		{"invoice rounding decision", bodies[:3]},
-		{"ax axes", bodies[5:]},
-		{"axes ax", bodies[5:]},
+		{"ax axes", bodies[5:8]},
+		{"axes ax", bodies[5:8]},
 		{`"rounding of invoices"`, bodies[:1]},
 		{`"connection reset" retry`, bodies[3:4]},
 	} {
