@@ -91,6 +91,7 @@ func TestNaturalForms(t *testing.T) {
 		{"panic", "panics", "panicked", "panicking"},
 		{"dye", "dyed", "dyeing"},
 		{"die", "died", "dying"},
+		{"untie", "unties", "untied", "untying"},
 		{"deploy", "deploys", "deployed", "deploying"},
 		{"show", "shows", "showed"},
 		{"video", "videos"},
