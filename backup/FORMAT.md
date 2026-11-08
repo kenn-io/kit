@@ -1,7 +1,7 @@
 ---
 title: "Backup Repository Format"
 description: "On-disk layout and interoperability rules for backup repositories."
-last_edited: 2026-10-25
+last_edited: 2026-11-08
 ---
 
 # Backup Repository Format
