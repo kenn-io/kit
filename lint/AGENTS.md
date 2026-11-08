@@ -33,8 +33,10 @@ Archive paths reject case-equivalent collisions and file/directory prefix
 conflicts on case-insensitive targets; contract and import matching stays exact
 on Darwin. Bundle imports must resolve to shared-library images, and Unix
 executable payloads require owner execute permission. Tar directory status
-comes from `Typeflag`, as in extraction; disagreeing mode bits fail. Bare
-Windows imports resolve beside the executable. Keep installer policy
+comes from `Typeflag`, as in extraction; disagreeing mode bits fail. Declared
+Unix members need owner read. Executable-relative and bare Windows imports use
+the importing executable's directory, or any bundled executable's directory for
+a library; the check does not trace load graphs. Keep installer policy
 and feature smoke in consumers; see `docs/adopting-release-contract.md`.
 
 ## Invariants

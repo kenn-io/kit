@@ -15,6 +15,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -284,6 +285,10 @@ func checkMembers(ctx context.Context, a Artifact, files map[string]member) erro
 		if !ok || !m.mode.IsRegular() || len(m.data) == 0 {
 			return fmt.Errorf("required regular nonempty member missing: %s", name)
 		}
+		// Extraction preserves Unix modes, so an unreadable member stays unusable.
+		if a.OS != "windows" && m.mode.Perm()&0o400 == 0 {
+			return fmt.Errorf("%s lacks Unix owner read permission", name)
+		}
 	}
 	declared := map[string]bool{key(a.Executable): true}
 	for _, name := range a.RuntimeFiles {
@@ -328,7 +333,24 @@ func checkMembers(ctx context.Context, a Artifact, files map[string]member) erro
 	for _, lib := range a.SystemLibraries {
 		system[key(lib)] = true
 	}
+	runtimeMembers := map[string]bool{}
+	for _, runtime := range a.RuntimeFiles {
+		runtimeMembers[key(runtime)] = true
+	}
+	var executableDirs []string
 	for name, info := range native {
+		if info.executable {
+			executableDirs = append(executableDirs, path.Dir(name))
+		}
+	}
+	slices.Sort(executableDirs)
+	for name, info := range native {
+		// A helper runs as its own process. A library can load into any
+		// executable in the bundle; this does not trace which one loads it.
+		dirs := executableDirs
+		if info.executable {
+			dirs = []string{path.Dir(name)}
+		}
 		for _, lib := range info.imports {
 			if system[key(lib)] {
 				continue
@@ -336,17 +358,17 @@ func checkMembers(ctx context.Context, a Artifact, files map[string]member) erro
 			if a.Kind != "bundle" {
 				return fmt.Errorf("%s: import %q is not a declared baseline system library", name, lib)
 			}
-			candidate := bundledImport(a, name, lib)
 			found := false
-			for _, runtime := range a.RuntimeFiles {
-				if candidate != "" && key(candidate) == key(runtime) {
-					provider, ok := native[key(runtime)]
-					if !ok || !provider.sharedLibrary {
-						return fmt.Errorf("%s: import %q resolves to runtime member %s, which is not a shared-library image", name, lib, runtime)
-					}
-					found = true
-					break
+			for _, dir := range dirs {
+				candidate := key(bundledImport(a.OS, name, lib, dir))
+				if candidate == "" || !runtimeMembers[candidate] {
+					continue
 				}
+				if provider, ok := native[candidate]; !ok || !provider.sharedLibrary {
+					return fmt.Errorf("%s: import %q resolves to runtime member %s, which is not a shared-library image", name, lib, candidate)
+				}
+				found = true
+				break
 			}
 			if !found {
 				return fmt.Errorf("%s: unresolved import %q (declare an exact baseline import or runtime member)", name, lib)
@@ -356,10 +378,10 @@ func checkMembers(ctx context.Context, a Artifact, files map[string]member) erro
 	return nil
 }
 
-func bundledImport(a Artifact, loader, lib string) string {
+func bundledImport(goos, loader, lib, executableDir string) string {
 	// Resolve target-specific loader-relative spellings against the image that
-	// imports them, and executable-relative spellings against the main
-	// executable. Bare Windows DLL names resolve in the application directory.
+	// imports them, and executable-relative spellings against executableDir.
+	// Bare Windows DLL names resolve in the application directory.
 	// On Darwin and Linux, @rpath and bare names remain direct archive-root
 	// member checks; this does not simulate loader search paths.
 	if strings.HasPrefix(lib, "/") || strings.ContainsAny(lib, "\\:\x00") {
@@ -368,26 +390,26 @@ func bundledImport(a Artifact, loader, lib string) string {
 	base := "."
 	loaderRelative := false
 	switch {
-	case a.OS == "darwin" && strings.HasPrefix(lib, "@rpath/"):
+	case goos == "darwin" && strings.HasPrefix(lib, "@rpath/"):
 		lib = strings.TrimPrefix(lib, "@rpath/")
-	case a.OS == "darwin" && strings.HasPrefix(lib, "@loader_path/"):
+	case goos == "darwin" && strings.HasPrefix(lib, "@loader_path/"):
 		base = path.Dir(loader)
 		loaderRelative = true
 		lib = strings.TrimPrefix(lib, "@loader_path/")
-	case a.OS == "darwin" && strings.HasPrefix(lib, "@executable_path/"):
-		base = path.Dir(a.Executable)
+	case goos == "darwin" && strings.HasPrefix(lib, "@executable_path/"):
+		base = executableDir
 		loaderRelative = true
 		lib = strings.TrimPrefix(lib, "@executable_path/")
-	case a.OS == "linux" && strings.HasPrefix(lib, "$ORIGIN/"):
+	case goos == "linux" && strings.HasPrefix(lib, "$ORIGIN/"):
 		base = path.Dir(loader)
 		loaderRelative = true
 		lib = strings.TrimPrefix(lib, "$ORIGIN/")
-	case a.OS == "linux" && strings.HasPrefix(lib, "${ORIGIN}/"):
+	case goos == "linux" && strings.HasPrefix(lib, "${ORIGIN}/"):
 		base = path.Dir(loader)
 		loaderRelative = true
 		lib = strings.TrimPrefix(lib, "${ORIGIN}/")
-	case a.OS == "windows":
-		base = path.Dir(a.Executable)
+	case goos == "windows":
+		base = executableDir
 	}
 	if lib == "" || strings.HasPrefix(lib, "/") || !loaderRelative && !memberPath(lib) {
 		return ""

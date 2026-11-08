@@ -33,8 +33,9 @@ Choose the artifact kind for what an end user must install:
 Windows executable linked against OS libraries is `single`. Libraries loaded
 through `dlopen` or `LoadLibrary` belong in `runtime_files` even when ordinary
 import tables do not mention them. Put data assets and distribution notices in
-`required_files`. All declared members must be nonempty regular files; Unix
-executables and helpers must carry executable permission. Links, traversal,
+`required_files`. All declared members must be nonempty regular files, owner
+readable on Unix; Unix executables and helpers must carry executable permission.
+Links, traversal,
 duplicate paths, and ambiguous Windows member names fail validation.
 
 For example, a genuinely static Linux executable with a notice:
@@ -84,8 +85,9 @@ cannot silently appear as undeclared payloads. System imports are exact names,
 case insensitive on Windows, without wildcards. An ELF interpreter needs its
 exact absolute path in `system_libraries`. Loader-relative library references
 can match declared members, and bare Windows DLL names match members beside the
-executable; an absolute external dependency cannot be satisfied by shipping a
-file with the same basename.
+importing executable. Libraries may match beside any bundled executable, without
+tracing which one loads them. An absolute external dependency cannot be
+satisfied by shipping a file with the same basename.
 
 `baseline` records the reviewed OS/libc/runtime policy. It is required prose,
 not a compatibility solver. Import names do not establish symbol version floors,

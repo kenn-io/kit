@@ -1059,22 +1059,78 @@ func TestOnlyPlausibleNativeHeadersCountAsNative(t *testing.T) {
 	}
 }
 
-func TestWindowsTrailingAliasProperty(t *testing.T) {
-	a := testArtifact("windows")
-	a.SystemLibraries = []string{"private.dll"}
-	a.RequiredFiles = nil
-	rapid.Check(t, func(rt *rapid.T) {
-		stem := rapid.StringMatching(`[a-zA-Z0-9][a-zA-Z0-9_-]*`).Draw(rt, "stem")
-		if len(stem) > 128 {
-			stem = stem[:128]
-		} // Bound fixture materialization, not the input domain.
-		stem = "payload-" + stem // Prefix keeps every generated stem non-reserved.
-		suffix := rapid.SampledFrom([]string{".", " "}).Draw(rt, "alias suffix")
-		members := []testMember{{a.Executable, syntheticPE(true), 0o755, 0}, {stem, []byte("original"), 0o644, 0}}
+func TestHelperImportsResolveFromHelperDirectory(t *testing.T) {
+	check := func(t *testing.T, a Artifact, members []testMember) error {
+		t.Helper()
+		a.Kind = "bundle"
+		a.SystemLibraries = nil
+		a.RequiredFiles = nil
+		a.RuntimeFiles = nil
+		for _, m := range members {
+			if m.name != a.Executable {
+				a.RuntimeFiles = append(a.RuntimeFiles, m.name)
+			}
+		}
 		dir, _ := archiveFixture(t, a, members)
-		require.NoError(rt, Check(t.Context(), Contract{[]Artifact{a}}, dir, "1.2.3", ""))
-		members = append(members, testMember{stem + suffix, []byte("alias"), 0o644, 0})
-		dir, _ = archiveFixture(t, a, members)
-		require.Error(rt, Check(t.Context(), Contract{[]Artifact{a}}, dir, "1.2.3", ""))
+		return Check(t.Context(), Contract{[]Artifact{a}}, dir, "1.2.3", "")
+	}
+	t.Run("darwin", func(t *testing.T) {
+		a := testArtifact("darwin")
+		a.Executable = "bin/app"
+		app := testMember{name: a.Executable, data: syntheticMachO(uint32(macho.TypeExec)), mode: 0o755}
+		helper := testMember{name: "helpers/tool", data: syntheticMachO(uint32(macho.TypeExec), "@executable_path/private.dylib"), mode: 0o755}
+		private := testMember{name: "helpers/private.dylib", data: syntheticMachO(uint32(macho.TypeDylib), "@executable_path/dep.dylib"), mode: 0o644}
+		dep := testMember{name: "helpers/dep.dylib", data: syntheticMachO(uint32(macho.TypeDylib)), mode: 0o644}
+		require.NoError(t, check(t, a, []testMember{app, helper, private, dep}))
+
+		app.data = syntheticMachO(uint32(macho.TypeExec), "@executable_path/dep.dylib")
+		require.ErrorContains(t, check(t, a, []testMember{app, helper, private, dep}), "unresolved import")
 	})
+	t.Run("windows", func(t *testing.T) {
+		dll := syntheticPE(false)
+		binary.LittleEndian.PutUint16(dll[0x84+18:], 0x2022) // Mark the image as a DLL.
+		binary.LittleEndian.PutUint64(dll[0x84+20+120:], 0)  // Clear its import directory.
+		a := testArtifact("windows")
+		a.Executable = "bin/app.exe"
+		exe := syntheticPE(false)
+		members := []testMember{
+			{name: a.Executable, data: exe, mode: 0o755},
+			{name: "bin/private.dll", data: dll, mode: 0o644},
+			{name: "tools/tool.exe", data: exe, mode: 0o755},
+		}
+		require.ErrorContains(t, check(t, a, members), "unresolved import")
+		require.NoError(t, check(t, a, append(members, testMember{name: "tools/private.dll", data: dll, mode: 0o644})))
+	})
+}
+
+func TestUnixDeclaredMembersRequireOwnerRead(t *testing.T) {
+	library := syntheticELF("libc.so.6")
+	binary.LittleEndian.PutUint16(library[16:], uint16(elf.ET_DYN))
+	for _, tc := range []struct {
+		name                string
+		libraryMode, notice int64
+		wantErr             string
+	}{
+		{name: "readable", libraryMode: 0o644, notice: 0o644},
+		{name: "unreadable library", libraryMode: 0, notice: 0o644, wantErr: "private.so lacks Unix owner read permission"},
+		{name: "unreadable notice", libraryMode: 0o644, notice: 0o044, wantErr: "NOTICE lacks Unix owner read permission"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := testArtifact("linux")
+			a.Kind = "bundle"
+			a.SystemLibraries = []string{"libc.so.6"}
+			a.RuntimeFiles = []string{"private.so"}
+			dir, _ := archiveFixture(t, a, []testMember{
+				{name: a.Executable, data: syntheticELF("libc.so.6"), mode: 0o755},
+				{name: "private.so", data: library, mode: tc.libraryMode},
+				{name: "NOTICE", data: []byte("notice"), mode: tc.notice},
+			})
+			err := Check(t.Context(), Contract{[]Artifact{a}}, dir, "1.2.3", "")
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
 }
