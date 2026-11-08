@@ -191,7 +191,7 @@ func regular(base string) []string {
 				groups++
 			}
 		}
-		if base != "ad" && n >= 2 && (n == 2 || !vowel(sounds[n-3])) && vowel(sounds[n-2]) && !vowel(sounds[n-1]) && !strings.ContainsRune("swxy", rune(sounds[n-1])) && (groups > 1 || !strings.ContainsRune("fl", rune(sounds[n-1]))) {
+		if base != "ad" && n >= 2 && (n == 2 || !vowel(sounds[n-3])) && vowel(sounds[n-2]) && !vowel(sounds[n-1]) && !strings.ContainsRune("swxy", rune(sounds[n-1])) && (base == "gel" || groups > 1 || !strings.ContainsRune("fl", rune(sounds[n-1]))) {
 			doubled := base + base[len(base)-1:]
 			if groups > 1 {
 				extra = append(extra, past, present)

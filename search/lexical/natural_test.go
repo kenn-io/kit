@@ -70,6 +70,7 @@ func TestNaturalForms(t *testing.T) {
 		{"round", "rounds", "rounded", "rounding"},
 		{"stop", "stops", "stopped", "stopping"},
 		{"control", "controls", "controlled", "controlling"},
+		{"gel", "gels", "gelled", "gelling"},
 		{"gym", "gyms", "gymmed", "gymming"},
 		{"policy", "policies"},
 		{"box", "boxes", "boxed", "boxing"},
