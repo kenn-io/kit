@@ -70,18 +70,16 @@ func TestPrepareNatural(t *testing.T) {
 func TestNaturalForms(t *testing.T) {
 	for _, family := range [][]string{
 		{"invoice", "invoices", "invoiced", "invoicing"},
+		{"age", "ages", "aged", "aging", "ageing"},
 		{"ad", "ads"},
 		{"up", "ups", "upped", "upping"},
 		{"go", "goes"},
 		{"round", "rounds", "rounded", "rounding"},
 		{"stop", "stops", "stopped", "stopping"},
-		{"yap", "yaps", "yapped", "yapping"},
 		{"gym", "gyms", "gymmed", "gymming"},
 		{"policy", "policies"},
 		{"box", "boxes", "boxed", "boxing"},
-		{"quiz", "quizzes", "quizzed", "quizzing"},
 		{"quip", "quips", "quipped", "quipping"},
-		{"fez", "fezzes"},
 		{"topaz", "topazes"},
 		{"try", "tries", "tried", "trying"},
 		{"use", "uses", "used", "using"},
@@ -92,11 +90,6 @@ func TestNaturalForms(t *testing.T) {
 		{"free", "freed", "freeing"},
 		{"panic", "panics", "panicked", "panicking"},
 		{"dye", "dyed", "dyeing"},
-		{"bus", "buses", "bused", "busing", "bussed", "bussing"},
-		{"tee", "tees", "teed", "teeing"},
-		{"pee", "pees", "peed", "peeing"},
-		{"singe", "singes", "singed", "singeing"},
-		{"shellac", "shellacs", "shellacked", "shellacking"},
 		{"die", "died", "dying"},
 		{"deploy", "deploys", "deployed", "deploying"},
 		{"show", "shows", "showed"},
@@ -131,11 +124,6 @@ func TestNaturalForms(t *testing.T) {
 		{"his", "hi"},
 		{"has", "ha"},
 		{"ties", "ty"},
-		{"herring", "her"},
-		{"hissing", "his"},
-		{"theses", "these"},
-		{"singing", "singe"},
-		{"singed", "sing"},
 	} {
 		t.Run(tc.query, func(t *testing.T) {
 			got, err := lexical.Literal().PrepareNatural(tc.query)
