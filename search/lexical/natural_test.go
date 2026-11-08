@@ -43,7 +43,7 @@ func TestPrepareNatural(t *testing.T) {
 			}
 		})
 	}
-	for _, query := range []string{"", "  ", `""`, `"  "`, "?"} {
+	for _, query := range []string{"", "  ", `""`, `"  "`, "?", `"?!"`, `"! ?"`} {
 		_, err := lexical.Literal().PrepareNatural(query)
 		require.Error(t, err, query)
 	}

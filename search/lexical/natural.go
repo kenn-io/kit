@@ -36,7 +36,7 @@ func (a Analyzer) PrepareNatural(text string) (Natural, error) {
 	for i, segment := range segments {
 		if i%2 == 0 || i == len(segments)-1 {
 			words = append(words, strings.Fields(segment)...)
-		} else if phrase := strings.Join(strings.Fields(segment), " "); phrase != "" {
+		} else if phrase := strings.Join(strings.Fields(segment), " "); strings.TrimFunc(phrase, func(r rune) bool { return unicode.IsPunct(r) || unicode.IsSpace(r) }) != "" {
 			result.Phrases = append(result.Phrases, phrase)
 		}
 	}
