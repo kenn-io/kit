@@ -258,18 +258,3 @@ INSERT INTO docs_fts (body) VALUES ('get_views failed with error-401'), ('status
 		assert.Equal(t, 1, n, query)
 	}
 }
-
-func matchBodies(t *testing.T, db *sql.DB, match string) []string {
-	t.Helper()
-	rows, err := db.QueryContext(t.Context(), `SELECT d.body FROM docs_fts JOIN docs AS d ON d.id = docs_fts.rowid WHERE docs_fts MATCH ?`, match)
-	require.NoError(t, err)
-	defer func() { require.NoError(t, rows.Close()) }()
-	var hits []string
-	for rows.Next() {
-		var body string
-		require.NoError(t, rows.Scan(&body))
-		hits = append(hits, body)
-	}
-	require.NoError(t, rows.Err())
-	return hits
-}
