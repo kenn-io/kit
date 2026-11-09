@@ -108,6 +108,21 @@ func TestMarshalConfigInvalid(t *testing.T) {
 }
 
 func TestInstall(t *testing.T) {
+	t.Run("claude empty fields", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config")
+		original := []byte(`{"mcpServers":{"example":{"type":"stdio","command":"example","args":[ ],"env":{ }}}}`)
+		require.NoError(t, os.WriteFile(path, original, 0o600))
+		opts := agentmcp.InstallOptions{ConfigPath: path, Name: "example", Server: agentmcp.Server{Command: "example"}}
+		plan, err := agentmcp.PlanInstall(agentmcp.AgentClaude, opts)
+		require.NoError(t, err)
+		assert.False(t, plan.Changed)
+		result, err := agentmcp.Install(agentmcp.AgentClaude, opts)
+		require.NoError(t, err)
+		assert.False(t, result.Changed)
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		assert.Equal(t, original, data)
+	})
 	for _, tt := range []struct {
 		agent   agentmcp.Agent
 		initial string

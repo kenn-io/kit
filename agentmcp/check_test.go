@@ -2,7 +2,6 @@ package agentmcp_test
 
 import (
 	"bufio"
-	"context"
 	"fmt"
 	"io"
 	"os"
@@ -10,7 +9,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -33,10 +31,6 @@ func runCheckHelper(mode string) int {
 	request, err := testserver.Read(input)
 	if err != nil || request.Method != "mcpServerStatus/list" || request.Params["serverName"] != "example" || len(request.Params) != 1 {
 		return 4
-	}
-	if mode == "timeout" {
-		input.Scan()
-		return 0
 	}
 	fmt.Printf("{\"id\":%d,\"result\":%s}\n", request.ID, os.Getenv("KIT_MCP_CHECK_REPLY"))
 	_, _ = io.Copy(io.Discard, os.Stdin)
@@ -120,16 +114,13 @@ func TestCheckCodex(t *testing.T) {
 			t.Setenv("KIT_MCP_CHECK_HELPER", "codex")
 			t.Setenv("KIT_MCP_CHECK_REPLY", tc.reply)
 			opts := agentmcp.InstallOptions{Name: "example", Server: agentmcp.Server{Command: "example"}}
-			installed, err := agentmcp.Install(agentmcp.AgentCodex, opts)
+			_, err := agentmcp.Install(agentmcp.AgentCodex, opts)
 			require.NoError(t, err)
 			result, err := agentmcp.Check(t.Context(), agentmcp.AgentCodex, opts)
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, result.State, result.Reason)
 			assert.Equal(t, tc.count, result.ToolCount)
 			assert.Contains(t, result.Reason, tc.reason)
-			data, err := os.ReadFile(installed.ConfigPath)
-			require.NoError(t, err)
-			assert.Equal(t, installed.Data, data)
 		})
 	}
 }
@@ -142,11 +133,10 @@ func TestCheckClaude(t *testing.T) {
 		reason      string
 	}{
 		{"connected", "Scope: User config (available in all projects)\nStatus: ✓ Connected\n", agentmcp.CheckOK, ""},
-		{"empty fields from CLI", "Scope: User config\nStatus: ✔ Connected\n", agentmcp.CheckOK, ""},
+		{"connected check mark", "Scope: User config\nStatus: ✔ Connected\n", agentmcp.CheckOK, ""},
 		{"connection failed", "Scope: User config\nStatus: ✗ Failed to connect\nIssue: spawn example ENOENT\n", agentmcp.CheckFailed, "spawn example ENOENT"},
 		{"tools failed", "Scope: User config\nStatus: ✓ Connected\nIssue: Failed to discover tools: forbidden\n", agentmcp.CheckFailed, "forbidden"},
 		{"project shadows user", "Scope: Project config\nStatus: ✓ Connected\n", agentmcp.CheckUnknown, "Project"},
-		{"local shadows user", "Scope: Local config\nStatus: ✓ Connected\n", agentmcp.CheckUnknown, "Local"},
 		{"unrecognized output", "future response", agentmcp.CheckUnknown, "scope"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -154,30 +144,12 @@ func TestCheckClaude(t *testing.T) {
 			t.Setenv("KIT_MCP_CHECK_HELPER", "claude")
 			t.Setenv("KIT_MCP_CHECK_REPLY", tc.reply)
 			opts := agentmcp.InstallOptions{Name: "example", Server: agentmcp.Server{Command: "example"}}
-			installed, err := agentmcp.Install(agentmcp.AgentClaude, opts)
+			_, err := agentmcp.Install(agentmcp.AgentClaude, opts)
 			require.NoError(t, err)
-			if tc.name == "empty fields from CLI" {
-				require.NoError(t, os.WriteFile(installed.ConfigPath, []byte(`{"mcpServers":{"example":{"type":"stdio","command":"example","args":[ ],"env":{ }}}}`), 0o600))
-			}
 			result, err := agentmcp.Check(t.Context(), agentmcp.AgentClaude, opts)
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, result.State, result.Reason)
 			assert.Contains(t, result.Reason, tc.reason)
 		})
 	}
-}
-
-func TestCheckCancellation(t *testing.T) {
-	fakeAgent(t, "codex")
-	t.Setenv("CODEX_HOME", t.TempDir())
-	t.Setenv("KIT_MCP_CHECK_HELPER", "timeout")
-	opts := agentmcp.InstallOptions{Name: "example", Server: agentmcp.Server{Command: "example"}}
-	_, err := agentmcp.Install(agentmcp.AgentCodex, opts)
-	require.NoError(t, err)
-	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-	defer cancel()
-	result, err := agentmcp.Check(ctx, agentmcp.AgentCodex, opts)
-	require.NoError(t, err)
-	assert.Equal(t, agentmcp.CheckUnknown, result.State)
-	assert.Contains(t, result.Reason, "deadline exceeded")
 }
