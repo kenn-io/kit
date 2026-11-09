@@ -198,20 +198,17 @@ on its own stderr line in human and agent output, in the shape
 established `Hint:` or `hint:` prefix. Include a next command only when it
 exists and returns the missing results. Keep stdout bytes unchanged in human,
 agent, and bare-array JSON output, and keep existing JSON fields unchanged.
-Kata's `--quiet` suppresses stderr hints while preserving structured JSON hints.
 
 JSON objects carry a `hints` array with `code` and `message`, and `next` for
 the next command when applicable. Do not duplicate these hints on stderr. MCP
 results carry a `hints` array of objects with `code` and `message`, and
-`retry_with` only when the measured arguments return the missing result. The
-`retry_with` object contains only arguments to change. For
-example, merge `{"include_one_shot": true}` into the original tool arguments,
-keeping the original query and other arguments. Each `code` is a stable
+`retry_with` only when the measured arguments return the missing result. Merge
+its changed arguments into the original request. Each `code` is a stable
 snake_case reason identifier. A bare JSON array stays an array and carries its
 hints on stderr.
 
-Report only measured causes. Run extra counting queries only for empty results,
-and run no extra query for a complete page. Hints do not change search behavior.
+Report only measured causes. Run extra counts only for empty results; complete
+pages need no extra query. Hints do not change search behavior.
 These codes have shipped in the following changes:
 
 | Source | Codes |
@@ -223,13 +220,11 @@ These codes have shipped in the following changes:
 | [Kata][kata-973] | `every_word_required`, `excluded_closed`, `excluded_open` |
 | [Forge][forge-1869] | `excluded_drafts`, `excluded_closed`, `excluded_default_state`, `every_word_required`, `limit_lowered` |
 
-Add new structured success-hint codes to this catalog when their app change
-merges.
+Add new structured success-hint codes when their app change merges.
 
 MsgVault's `sender_name_requires_address` is historical: it shipped in
 [msgvault#1936][msgvault-1936] and was removed after sender matching changed
 in [msgvault#2022][msgvault-2022].
-Roborev's text-only notices and Kata's duplicate error add no success-hint codes.
 
 `clisearch.RenderText` currently writes its `--help` suggestion to stdout,
 contrary to the channel rule above.
