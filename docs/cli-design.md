@@ -1,7 +1,7 @@
 ---
 title: "Shared CLI design guidance"
-description: "Help, output, error, exit code, and migration conventions for kenn-io CLIs, grounded in Kata, Roborev, and Docbank."
-last_edited: 2026-11-08
+description: "Help, output, result hints, error, exit code, and migration conventions for kenn-io CLIs, grounded in Kata, Roborev, and Docbank."
+last_edited: 2026-11-09
 ---
 
 # Shared CLI design guidance
@@ -190,6 +190,43 @@ Do not give `--agent` a second meaning. In Roborev, most `--agent` flags pick
 an AI provider or hook profile, and root help has to explain that only
 `job search --agent` selects output.
 
+## Empty and partial results say why
+
+When a successful result is empty or incomplete, report each measured cause
+on its own stderr line in human and agent output, in the shape
+`Hint: <what was left out or missing>; <next command>`. Use the CLI's
+established `Hint:` or `hint:` prefix. Include a next command only when it
+exists and returns the missing results. Keep stdout bytes unchanged in human,
+agent, and bare-array JSON output, and keep existing JSON fields unchanged.
+
+JSON objects carry a `hints` array with `code` and `message`, and `next` for
+the next command when applicable. Do not duplicate these hints on stderr. MCP
+results carry a `hints` array of objects with `code` and `message`, and
+`retry_with` only when the measured arguments return the missing result. Merge
+its changed arguments into the original request. Each `code` is a stable
+snake_case reason identifier. A bare JSON array stays an array and carries its
+hints on stderr.
+
+Report only measured causes. Run extra counts only for empty results; complete
+pages need no extra query. Hints do not change search behavior.
+These codes have shipped in the following changes:
+
+| Source | Codes |
+| --- | --- |
+| [AgentsView][agentsview-2797] | `excluded_one_shot`, `excluded_automated`, `excluded_children`, `excluded_combined`, `try_fts` |
+| [MsgVault][msgvault-1941] vector/hybrid JSON | `more_available`, `ranking_limit_reached`, `candidate_limit_reached` |
+| [Docbank][docbank-1347] | `no_searchable_text`, `indexing_pending`, `every_word_required` |
+| [Roborev][roborev-1709] | `every_word_required` |
+| [Kata][kata-973] | `every_word_required`, `excluded_closed`, `excluded_open` |
+| [Forge][forge-1869] | `excluded_drafts`, `excluded_closed`, `excluded_default_state`, `every_word_required`, `limit_lowered` |
+
+MsgVault's `sender_name_requires_address` is historical: it shipped in
+[msgvault#1936][msgvault-1936] and was removed after sender matching changed
+in [msgvault#2022][msgvault-2022].
+
+`clisearch.RenderText` currently writes its `--help` suggestion to stdout,
+contrary to the channel rule above.
+
 ## Errors tell the agent what to run next
 
 A failure names the operation and its context, then gives at most one recovery
@@ -366,6 +403,14 @@ Use synthetic fixtures for every check. Never run documentation examples
 against real accounts or data.
 
 <!-- Pull requests -->
+[agentsview-2797]: https://github.com/kenn-io/agentsview/pull/2797
+[msgvault-1941]: https://github.com/kenn-io/msgvault/pull/1941
+[msgvault-1936]: https://github.com/kenn-io/msgvault/pull/1936
+[msgvault-2022]: https://github.com/kenn-io/msgvault/pull/2022
+[docbank-1347]: https://github.com/kenn-io/docbank/pull/1347
+[roborev-1709]: https://github.com/kenn-io/roborev/pull/1709
+[kata-973]: https://github.com/kenn-io/kata/pull/973
+[forge-1869]: https://github.com/kenn-io/forge/pull/1869
 [kata-530]: https://github.com/kenn-io/kata/pull/530
 [kata-531]: https://github.com/kenn-io/kata/pull/531
 [kata-631]: https://github.com/kenn-io/kata/pull/631
