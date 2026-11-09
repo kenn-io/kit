@@ -532,7 +532,11 @@ func (m *Maintainer) packLoose(ctx context.Context, opts PackOptions, stats *Pac
 	if len(candidates) == 0 {
 		return nil
 	}
-	if !looseReadyToSeal(m.layout.Root(), candidates, opts) {
+	ready, err := looseReadyToSeal(ctx, m.layout.Root(), candidates, opts)
+	if err != nil {
+		return err
+	}
+	if !ready {
 		stats.LooseSealDeferred = true
 		return nil
 	}
@@ -544,22 +548,20 @@ func (m *Maintainer) packLoose(ctx context.Context, opts PackOptions, stats *Pac
 }
 
 // looseReadyToSeal reports whether loose members justify a new pack under
-// opts. A candidate without any readable path is ready so that packing reports
-// it as missing instead of hiding it until the age limit.
-func looseReadyToSeal(root string, candidates []Candidate, opts PackOptions) bool {
+// opts. A logical candidate without any readable path is ready so that packing
+// reports it as missing instead of hiding it until the age limit.
+func looseReadyToSeal(ctx context.Context, root string, candidates []Candidate, opts PackOptions) (bool, error) {
 	if opts.MinSealBytes == 0 {
-		return true
+		return true, nil
 	}
-	seen := make(map[Hash]struct{}, len(candidates))
+	// Packing reads each hash from the union of its rows' paths, so judge
+	// readiness on the same merged view.
+	groups := mergeLogicalCandidates(candidates)
 	var total int64
-	for _, candidate := range candidates {
-		if _, duplicate := seen[candidate.Hash]; duplicate {
-			continue
-		}
-		seen[candidate.Hash] = struct{}{}
-		total += max(0, candidate.Size)
+	for _, group := range groups {
+		total += max(0, group.Size)
 		if total >= opts.MinSealBytes {
-			return true
+			return true, nil
 		}
 	}
 	maxAge := cmp.Or(opts.MaxLooseAge, defaultMaxLooseAge)
@@ -568,19 +570,22 @@ func looseReadyToSeal(root string, candidates []Candidate, opts PackOptions) boo
 		now = time.Now()
 	}
 	sealBefore := now.Add(-maxAge)
-	for _, candidate := range candidates {
+	for _, group := range groups {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
 		var modified time.Time
-		for _, path := range candidate.Paths {
+		for _, path := range group.Paths {
 			if info, err := os.Lstat(resolveCandidatePath(root, path)); err == nil {
 				modified = info.ModTime()
 				break
 			}
 		}
 		if modified.IsZero() || !modified.After(sealBefore) {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // resolveCandidatePath resolves a catalog candidate path, which may be

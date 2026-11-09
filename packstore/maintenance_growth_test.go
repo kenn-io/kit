@@ -183,6 +183,7 @@ func TestPackHoldsSmallYoungLooseContent(t *testing.T) {
 		age          time.Duration
 		removeLoose  bool
 		relative     bool
+		staleRow     bool
 		wantSealed   int
 		wantDeferred bool
 		wantMissing  int
@@ -192,6 +193,10 @@ func TestPackHoldsSmallYoungLooseContent(t *testing.T) {
 		{
 			name: "store-relative paths below threshold and young", minSealBytes: 4096, maxLooseAge: time.Hour,
 			age: time.Minute, relative: true, wantDeferred: true,
+		},
+		{
+			name: "stale duplicate row below threshold and young", minSealBytes: 4096, maxLooseAge: time.Hour,
+			age: time.Minute, staleRow: true, wantDeferred: true,
 		},
 		{name: "threshold reached", minSealBytes: 2048, maxLooseAge: time.Hour, wantSealed: 1},
 		{name: "oldest reaches age", minSealBytes: 4096, maxLooseAge: time.Hour, age: time.Hour, wantSealed: 1},
@@ -227,7 +232,13 @@ func TestPackHoldsSmallYoungLooseContent(t *testing.T) {
 			if tt.removeLoose {
 				require.NoError(t, os.Remove(layout.LoosePath(hashes[0])))
 			}
-			maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
+			var listing Catalog = catalog
+			if tt.staleRow {
+				listing = &staleRowCatalog{maintenanceCatalog: catalog, stale: Candidate{
+					Hash: hashes[0], Paths: []string{filepath.Join(layout.Root(), "missing-copy")}, Size: 1024,
+				}}
+			}
+			maintainer := newMaintainerForTest(t, listing, layout, DefaultLimits())
 
 			stats, err := maintainer.Pack(t.Context(), PackOptions{
 				MinSealBytes: tt.minSealBytes, MaxLooseAge: tt.maxLooseAge, Now: newest.Add(tt.age),
@@ -244,6 +255,30 @@ func TestPackHoldsSmallYoungLooseContent(t *testing.T) {
 			}
 		})
 	}
+}
+
+// staleRowCatalog lists one extra unpacked row whose only path is missing,
+// ahead of the row that names the readable copy of the same hash.
+type staleRowCatalog struct {
+	*maintenanceCatalog
+	stale Candidate
+}
+
+func (c *staleRowCatalog) ListUnpacked(ctx context.Context) ([]Candidate, error) {
+	candidates, err := c.maintenanceCatalog.ListUnpacked(ctx)
+	return append([]Candidate{c.stale}, candidates...), err
+}
+
+func TestLooseReadyToSealStopsWhenCanceled(t *testing.T) {
+	layout := layoutForStoreTest(t)
+	hash := writeMaintenanceLoose(t, layout, bytes.Repeat([]byte("a"), 1024))
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	_, err := looseReadyToSeal(ctx, layout.Root(), []Candidate{
+		{Hash: hash, Paths: []string{layout.LoosePath(hash)}, Size: 1024},
+	}, PackOptions{MinSealBytes: 4096, MaxLooseAge: time.Hour})
+	require.ErrorIs(t, err, context.Canceled)
 }
 
 func noiseContents(count int) [][]byte {

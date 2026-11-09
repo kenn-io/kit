@@ -61,8 +61,9 @@
 ## Pack growth
 
 - `PackOptions.MinSealBytes` and `MaxLooseAge` hold loose members so frequent
-  passes do not seal one small pack each. They never hold repairs, and a
-  candidate with no readable path counts as ready so packing reports it.
+  passes do not seal one small pack each. They never hold repairs. Readiness
+  merges rows of the same hash as packing does, and a hash with no readable
+  path in any row counts as ready so packing reports it.
 - `RepackSelection.MergeBelowStored` is opt-in: existing callers scope repack
   to chosen sources and count `PacksSelected`. Merges go through
   `CommitRepack` with every source of a group, and admit whole groups against
