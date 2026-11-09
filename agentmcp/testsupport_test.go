@@ -2,7 +2,6 @@ package agentmcp_test
 
 import (
 	"bufio"
-	"context"
 	"fmt"
 	"io"
 	"os"
@@ -10,36 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/agentmcp"
 	"go.kenn.io/kit/internal/codexapp/testserver"
 )
-
-func TestMain(m *testing.M) {
-	if len(os.Args) == 2 && os.Args[1] == "kit-mcp-stdio" {
-		server := mcp.NewServer(&mcp.Implementation{Name: "kit-test", Version: "1"}, nil)
-		mcp.AddTool(server, &mcp.Tool{Name: "ping", Description: "Test tool"}, func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, struct{}, error) {
-			return &mcp.CallToolResult{}, struct{}{}, nil
-		})
-		// This standalone fixture runs until the agent closes its input.
-		if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
-			os.Exit(1)
-		}
-		os.Exit(0)
-	}
-	if mode := os.Getenv("KIT_MCP_CHECK_HELPER"); mode != "" {
-		os.Exit(runCheckHelper(mode))
-	}
-	if response := os.Getenv("KIT_MCP_TEST_RESPONSE"); response != "" {
-		if len(os.Args) != 4 || os.Args[1] != "mcp" || os.Args[2] != "status" || os.Args[3] != "--json" {
-			os.Exit(2)
-		}
-		fmt.Print(response)
-		os.Exit(0)
-	}
-	os.Exit(m.Run())
-}
 
 func runCheckHelper(mode string) int {
 	if strings.HasPrefix(mode, "claude") {

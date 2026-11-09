@@ -32,7 +32,7 @@ func checkClaude(ctx context.Context, name string, result CheckResult) CheckResu
 		result.Reason = "Claude reported MCP scope: " + scope
 	case issue != "" || strings.TrimLeft(status, "✗✘ ") == "Failed to connect":
 		result.State, result.Reason, result.NextStep = CheckFailed, strings.TrimSpace(status+"\n"+issue), "Correct the server error and retry"
-	case strings.TrimLeft(status, "✓✔ ") == "Connected" && err == nil:
+	case strings.TrimLeft(status, "✓✔ ") == "Connected":
 		result.State, result.Reason, result.NextStep = CheckOK, "Claude reports the user server connected", ""
 	default:
 		result.Reason = "Claude reported MCP status: " + status
