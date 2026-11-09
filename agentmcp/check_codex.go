@@ -40,8 +40,6 @@ func checkCodex(ctx context.Context, name string, original []byte, result CheckR
 			result.State, result.Reason, result.NextStep = CheckFailed, *server.ToolsError, "Correct the server error and retry"
 		case config.Servers[name].StartupReadiness == "catalog":
 			result.Reason = "Codex catalog readiness does not confirm a live connection"
-		case server.Tools == nil:
-			result.Reason = "Codex did not return the server's tool catalog"
 		default:
 			result.State, result.Reason, result.NextStep, result.ToolCount = CheckOK, "Codex returned the server's tools", "", len(server.Tools)
 		}

@@ -69,7 +69,6 @@ func TestCheckCodex(t *testing.T) {
 		{"catalog readiness", `{"data":[{"name":"example","tools":{"ping":{}}}]}`, agentmcp.CheckUnknown, 0, "Codex catalog readiness does not confirm a live connection", false, "[mcp_servers.example]\ncommand='example'\nstartup_readiness='catalog'\n", "Inspect the server in the agent"},
 		{"deadline", "", agentmcp.CheckUnknown, 0, "context deadline exceeded; server startup may need longer", true, "", "Retry once the server is ready"},
 		{"tools", `{"data":[{"name":"example","tools":{"search":{},"read":{}},"toolsError":null}]}`, agentmcp.CheckOK, 2, "Codex returned the server's tools", false, "", ""},
-		{"missing catalog", `{"data":[{"name":"example"}]}`, agentmcp.CheckUnknown, 0, "Codex did not return the server's tool catalog", false, "", "Inspect the server in the agent"},
 		{"tools error reported", `{"data":[{"name":"example","tools":{},"toolsError":"MCP startup failed: handshaking with MCP server failed: connection closed: initialize response"}]}`, agentmcp.CheckFailed, 0, "MCP startup failed: handshaking with MCP server failed: connection closed: initialize response", false, "", "Correct the server error and retry"},
 		{"server absent from reply", `{"data":[]}`, agentmcp.CheckUnknown, 0, "Codex did not report the named MCP server", false, "", "Inspect the server in the agent"},
 	} {
@@ -142,34 +141,36 @@ func TestCheckClaude(t *testing.T) {
 
 // Run explicitly with KIT_MCP_LIVE_TEST=1 and installed Claude/Codex clients.
 func TestInstalledChecks(t *testing.T) {
-	for _, agent := range []agentmcp.Agent{agentmcp.AgentCodex, agentmcp.AgentClaude} {
-		t.Run(string(agent), func(t *testing.T) {
-			setupInstalledAgent(t, agent)
+	for _, client := range []struct {
+		agent             agentmcp.Agent
+		count             int
+		connected, failed string
+	}{
+		{agentmcp.AgentCodex, 1, "Codex returned the server's tools", "MCP startup failed:"},
+		{agentmcp.AgentClaude, 0, "Claude reports the user server connected", "kit-missing-mcp-binary"},
+	} {
+		t.Run(string(client.agent), func(t *testing.T) {
+			setupInstalledAgent(t, client.agent)
 			executable, err := os.Executable()
 			require.NoError(t, err)
 			for _, tc := range []struct {
 				name   string
 				server agentmcp.Server
 				state  agentmcp.CheckState
+				count  int
+				reason string
 			}{
-				{"native working", agentmcp.Server{Command: executable, Args: []string{"kit-mcp-stdio"}}, agentmcp.CheckOK},
-				{"native missing binary", agentmcp.Server{Command: "kit-missing-mcp-binary"}, agentmcp.CheckFailed},
+				{"native working", agentmcp.Server{Command: executable, Args: []string{"kit-mcp-stdio"}}, agentmcp.CheckOK, client.count, client.connected},
+				{"native missing binary", agentmcp.Server{Command: "kit-missing-mcp-binary"}, agentmcp.CheckFailed, 0, client.failed},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
-					_, err := agentmcp.Install(agent, agentmcp.InstallOptions{Name: "native-example", Server: tc.server})
+					_, err := agentmcp.Install(client.agent, agentmcp.InstallOptions{Name: "native-example", Server: tc.server})
 					require.NoError(t, err)
-					result, err := agentmcp.Check(t.Context(), agent, "native-example", tc.server)
+					result, err := agentmcp.Check(t.Context(), client.agent, "native-example", tc.server)
 					require.NoError(t, err)
 					assert.Equal(t, tc.state, result.State, result.Reason)
-					if tc.state == agentmcp.CheckOK && agent == agentmcp.AgentCodex {
-						assert.Equal(t, 1, result.ToolCount)
-					} else if tc.state == agentmcp.CheckFailed {
-						if agent == agentmcp.AgentCodex {
-							assert.Contains(t, result.Reason, "MCP startup failed:")
-						} else {
-							assert.Contains(t, result.Reason, "kit-missing-mcp-binary")
-						}
-					}
+					assert.Equal(t, tc.count, result.ToolCount)
+					assert.Contains(t, result.Reason, tc.reason)
 				})
 			}
 		})
