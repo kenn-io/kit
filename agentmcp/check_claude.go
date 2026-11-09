@@ -24,12 +24,13 @@ func checkClaude(ctx context.Context, name string, result CheckResult) CheckResu
 	}
 	scope, status, issue := fields["Scope"], fields["Status"], fields["Issue"]
 	connected := strings.TrimLeft(status, "✓✔ ") == "Connected"
+	failed := strings.TrimLeft(status, "✗✘ ") == "Failed to connect"
 	switch {
 	case scope == "" && err != nil:
 		result.Reason = strings.TrimSpace(err.Error() + "\n" + string(output))
 	case !strings.HasPrefix(scope, "User config"):
 		result.Reason = "Claude reported MCP scope: " + scope
-	case issue != "" || status != "" && !connected:
+	case issue != "" || failed:
 		result.State, result.Reason, result.NextStep = CheckFailed, strings.TrimSpace(status+"\n"+issue), "Correct the server error and retry"
 	case connected && err == nil:
 		result.State, result.Reason, result.NextStep = CheckOK, "Claude reports the user server connected", ""

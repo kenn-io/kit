@@ -133,6 +133,7 @@ func TestCheckClaude(t *testing.T) {
 		{"tools failed", "Scope: User config\nStatus: ✓ Connected\nIssue: Failed to discover tools: forbidden\n", agentmcp.CheckFailed, "forbidden", "claude", false},
 		{"project shadows user", "Scope: Project config\nStatus: ✓ Connected\n", agentmcp.CheckUnknown, "Project", "claude", false},
 		{"failed command", "native check refused", agentmcp.CheckUnknown, "native check refused", "claude-failed", false},
+		{"unrecognized status", "Scope: User config\nStatus: Waiting for approval\n", agentmcp.CheckUnknown, "Waiting for approval", "claude", false},
 		{"unrecognized output", "future response", agentmcp.CheckUnknown, "scope", "claude", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

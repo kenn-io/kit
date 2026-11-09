@@ -105,6 +105,22 @@ func TestMarshalConfigInvalid(t *testing.T) {
 }
 
 func TestInstall(t *testing.T) {
+	for _, config := range []string{
+		`mcp_servers = { example = { command = "old", env_vars = [{ name = "HOME", source = "local" }], tools = { search = { approval_mode = "auto" } } } }`,
+		`[mcp_servers]
+example = { command = "old", env_vars = [{ name = "HOME", source = "local" }], tools = { search = { approval_mode = "auto" } } }`,
+	} {
+		t.Run("codex inline settings", func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			require.NoError(t, os.WriteFile(path, []byte(config), 0o600))
+			result, err := agentmcp.Install(agentmcp.AgentCodex, agentmcp.InstallOptions{ConfigPath: path, Name: "example", Server: agentmcp.Server{Command: "replacement"}})
+			require.NoError(t, err)
+			doc := decodeConfig(t, agentmcp.AgentCodex, result.Data)
+			entry, err := json.Marshal(doc["mcp_servers"].(map[string]any)["example"])
+			require.NoError(t, err)
+			assert.JSONEq(t, `{"command":"replacement","env_vars":[{"name":"HOME","source":"local"}],"tools":{"search":{"approval_mode":"auto"}}}`, string(entry))
+		})
+	}
 	for _, tc := range []struct {
 		key, toml, json string
 		http, transport bool
