@@ -1,7 +1,7 @@
 ---
 title: "MCP registration research"
 description: "Research on MCP server registration formats and discovery across agent tools."
-last_edited: 2026-10-30
+last_edited: 2026-11-09
 ---
 
 # MCP registration research
@@ -148,3 +148,34 @@ reading `package/cli.js` without executing it. Its global config resolver joins
 `CLAUDE_CONFIG_DIR || homedir()` with `.claude${suffix}.json`. For the ordinary
 empty suffix, `CLAUDE_CONFIG_DIR/.claude.json` is correct. This is versioned
 implementation evidence, not a current public stability guarantee.
+
+## Native checks and manual commands
+
+`Check` compares the active user registration before asking the agent to start
+one named server. Missing and changed entries return `missing` and `outdated`
+without launching an agent. Other profiles, config paths outside the active
+user home, incomplete status replies, missing agents, and ten-second probe
+limits return `unknown`. The caller can retry or inspect the agent directly.
+Checks write no config through kit, but agents can launch server processes and
+update their own runtime state.
+
+Codex's [app-server contract](https://developers.openai.com/codex/app-server)
+provides `mcpServerStatus/list`, whose `serverName` parameter restricts
+discovery to the requested server. `toolsError` is the agent's failure reason;
+a tool catalog, including an empty catalog, reports success with its count.
+An entry with `enabled = false` differs from the requested one and is
+`outdated`. Status reads only user config, matching the active user config
+`Check` compares first.
+
+Claude's [`mcp get`](https://code.claude.com/docs/en/mcp) reports `Scope`,
+`Status`, and, when present, `Issue`. Only a connected user entry with no issue
+reports `ok`; a same-name project or local entry returns `unknown` with its
+scope. Claude Code 2.1.301's isolated `mcp get` and `mcp add` output confirms
+these fields and its empty `args` and `env` registration defaults.
+
+`Command` renders `claude mcp add --scope user` and `codex mcp add` for POSIX
+shells and PowerShell. Claude can express literal headers and bearer environment
+references. Codex 0.166.0's `mcp add --help` offers URL and bearer environment
+flags but no arbitrary-header flag; those configurations return a renderer
+error. Native checks still support them. Command strings can contain credentials
+and need the same care as config files.

@@ -19,6 +19,12 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	if len(os.Args) == 2 && os.Args[1] == "kit-mcp-stdio" {
+		os.Exit(runStdioFixture())
+	}
+	if mode := os.Getenv("KIT_MCP_CHECK_HELPER"); mode != "" {
+		os.Exit(runCheckHelper(mode))
+	}
 	if response := os.Getenv("KIT_MCP_TEST_RESPONSE"); response != "" {
 		if len(os.Args) != 4 || os.Args[1] != "mcp" || os.Args[2] != "status" || os.Args[3] != "--json" {
 			os.Exit(2)
