@@ -6,6 +6,7 @@ import (
 	"errors"
 	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -181,12 +182,17 @@ func TestPackHoldsSmallYoungLooseContent(t *testing.T) {
 		maxLooseAge  time.Duration
 		age          time.Duration
 		removeLoose  bool
+		relative     bool
 		wantSealed   int
 		wantDeferred bool
 		wantMissing  int
 	}{
 		{name: "zero threshold seals every pass", wantSealed: 1},
 		{name: "below threshold and young", minSealBytes: 4096, maxLooseAge: time.Hour, age: time.Minute, wantDeferred: true},
+		{
+			name: "store-relative paths below threshold and young", minSealBytes: 4096, maxLooseAge: time.Hour,
+			age: time.Minute, relative: true, wantDeferred: true,
+		},
 		{name: "threshold reached", minSealBytes: 2048, maxLooseAge: time.Hour, wantSealed: 1},
 		{name: "oldest reaches age", minSealBytes: 4096, maxLooseAge: time.Hour, age: time.Hour, wantSealed: 1},
 		{name: "default age not reached", minSealBytes: 4096, age: 23 * time.Hour, wantDeferred: true},
@@ -204,6 +210,13 @@ func TestPackHoldsSmallYoungLooseContent(t *testing.T) {
 			} {
 				hash := writeMaintenanceLoose(t, layout, content)
 				catalog.addLoose(hash, layout.LoosePath(hash))
+				if tt.relative {
+					relative, err := filepath.Rel(layout.Root(), layout.LoosePath(hash))
+					require.NoError(t, err)
+					candidate := catalog.candidates[hash]
+					candidate.Paths = []string{filepath.ToSlash(relative)}
+					catalog.candidates[hash] = candidate
+				}
 				info, err := os.Stat(layout.LoosePath(hash))
 				require.NoError(t, err)
 				if info.ModTime().After(newest) {
@@ -316,6 +329,44 @@ func TestRepackMergesOldSmallPacksWithinBudget(t *testing.T) {
 	assert.Equal(t, []int{2, 2}, slices.Sorted(maps.Values(merged)))
 	for _, content := range contents {
 		got, _ := readStoreTest(t, maintainer.store, hashForTest(content))
+		assert.Equal(t, content, got)
+	}
+}
+
+func TestRepackMergeLeavesOutSourceWithCorruptPayload(t *testing.T) {
+	layout := layoutForStoreTest(t)
+	catalog := newMaintenanceCatalog()
+	now := time.Now()
+	contents := noiseContents(3)
+	sources := seedOneEntryPacks(t, layout, catalog, contents, now.Add(-48*time.Hour))
+	damaged := sources[1]
+	// The footer stays intact, so only reading the payload finds the damage.
+	file, err := os.OpenFile(layout.PackPath(damaged.PackID), os.O_RDWR, 0)
+	require.NoError(t, err)
+	_, err = file.WriteAt([]byte{0xff}, damaged.Offset)
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
+	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
+
+	stats, err := maintainer.Repack(t.Context(), RepackOptions{
+		TargetSize: 4096, MaxBytes: 4096, Now: now, Selection: RepackSelection{MergeBelowStored: 2000},
+	})
+	require.Error(t, err)
+	require.True(t, isSourceContentError(err), "the run reports the damaged source: %v", err)
+	require.ErrorContains(t, err, damaged.PackID)
+	assert.Equal(t, 2, stats.PacksMerged)
+	assert.Equal(t, 1, stats.PacksSealed)
+	entries, packs := catalog.snapshot()
+	assert.Equal(t, damaged, entries[damaged.Hash])
+	assert.Contains(t, packs, damaged.PackID)
+	assert.FileExists(t, layout.PackPath(damaged.PackID))
+	merged := entries[sources[0].Hash].PackID
+	assert.NotEqual(t, sources[0].PackID, merged)
+	assert.Equal(t, merged, entries[sources[2].Hash].PackID)
+	for _, healthy := range []IndexEntry{sources[0], sources[2]} {
+		assert.NoFileExists(t, layout.PackPath(healthy.PackID))
+		content := contents[slices.IndexFunc(contents, func(c []byte) bool { return hashForTest(c) == healthy.Hash })]
+		got, _ := readStoreTest(t, maintainer.store, healthy.Hash)
 		assert.Equal(t, content, got)
 	}
 }

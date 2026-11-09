@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"slices"
 	"sort"
 	"time"
 
@@ -207,21 +208,33 @@ func (m *Maintainer) mergeGroup(
 		sourceIDs = append(sourceIDs, source.PackID)
 		entries = append(entries, live...)
 	}
-	if len(sourceIDs) < 2 {
-		return nil
-	}
-	result, err := m.rewriteSources(ctx, entries, opts.TargetSize)
-	if err != nil {
+	var result rewriteResult
+	for {
+		if len(sourceIDs) < 2 {
+			return nil
+		}
+		var err error
+		result, err = m.rewriteSources(ctx, entries, opts.TargetSize)
+		if err == nil {
+			break
+		}
 		err = fmt.Errorf("packstore: merge sources: %w", err)
 		if errors.Is(err, ErrBlobTooLarge) {
 			stats.PacksDeferredOversized += len(sourceIDs)
 			return nil
 		}
-		if automatic && isSourceContentError(err) {
-			*runErr = errors.Join(*runErr, err)
+		if !automatic || !isSourceContentError(err) {
+			return err
+		}
+		*runErr = errors.Join(*runErr, err)
+		// Merge the remaining sources so one damaged pack cannot block the
+		// rest of its group on every pass.
+		failed, ok := errors.AsType[*sourceReadError](err)
+		if !ok || !slices.Contains(sourceIDs, failed.packID) {
 			return nil
 		}
-		return err
+		sourceIDs = slices.DeleteFunc(sourceIDs, func(id string) bool { return id == failed.packID })
+		entries = slices.DeleteFunc(entries, func(entry IndexEntry) bool { return entry.PackID == failed.packID })
 	}
 	if err := m.catalog.CommitRepack(ctx, sourceIDs, result.records, result.moves); err != nil {
 		return err
@@ -378,6 +391,20 @@ type rewriteResult struct {
 	rawBytes int64
 }
 
+// sourceReadError reports a live entry that could not be read from its source
+// pack, so a merge can leave that source out.
+type sourceReadError struct {
+	packID string
+	hash   Hash
+	err    error
+}
+
+func (e *sourceReadError) Error() string {
+	return fmt.Sprintf("packstore: read source %s blob %s: %v", e.packID, e.hash, e.err)
+}
+
+func (e *sourceReadError) Unwrap() error { return e.err }
+
 type rewriteSourceEntry struct {
 	indexed IndexEntry
 	sealed  pack.Entry
@@ -431,11 +458,14 @@ func (m *Maintainer) rewriteSources(ctx context.Context, entries []IndexEntry, t
 		}
 		stream, size, err := m.store.OpenStream(ctx, indexed.Hash)
 		if err != nil {
-			return result, fmt.Errorf("packstore: read source %s blob %s: %w", indexed.PackID, indexed.Hash, err)
+			return result, &sourceReadError{packID: indexed.PackID, hash: indexed.Hash, err: err}
 		}
 		if size != indexed.RawLen {
 			_ = stream.Close()
-			return result, fmt.Errorf("%w: source length mismatch", ErrContentMismatch)
+			return result, &sourceReadError{
+				packID: indexed.PackID, hash: indexed.Hash,
+				err: fmt.Errorf("%w: source length mismatch", ErrContentMismatch),
+			}
 		}
 		id, err := pack.ParseBlobID(indexed.Hash.String())
 		if err != nil {
@@ -450,7 +480,7 @@ func (m *Maintainer) rewriteSources(ctx context.Context, entries []IndexEntry, t
 			if prepared != nil {
 				_ = prepared.Close()
 			}
-			return result, fmt.Errorf("packstore: read source %s blob %s: %w", indexed.PackID, indexed.Hash, err)
+			return result, &sourceReadError{packID: indexed.PackID, hash: indexed.Hash, err: err}
 		}
 		if prepared == nil {
 			return result, fmt.Errorf("packstore: prepare source %s blob %s returned no result", indexed.PackID, indexed.Hash)

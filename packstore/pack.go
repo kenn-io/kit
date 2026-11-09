@@ -532,7 +532,7 @@ func (m *Maintainer) packLoose(ctx context.Context, opts PackOptions, stats *Pac
 	if len(candidates) == 0 {
 		return nil
 	}
-	if !looseReadyToSeal(candidates, opts) {
+	if !looseReadyToSeal(m.layout.Root(), candidates, opts) {
 		stats.LooseSealDeferred = true
 		return nil
 	}
@@ -546,7 +546,7 @@ func (m *Maintainer) packLoose(ctx context.Context, opts PackOptions, stats *Pac
 // looseReadyToSeal reports whether loose members justify a new pack under
 // opts. A candidate without any readable path is ready so that packing reports
 // it as missing instead of hiding it until the age limit.
-func looseReadyToSeal(candidates []Candidate, opts PackOptions) bool {
+func looseReadyToSeal(root string, candidates []Candidate, opts PackOptions) bool {
 	if opts.MinSealBytes == 0 {
 		return true
 	}
@@ -571,7 +571,7 @@ func looseReadyToSeal(candidates []Candidate, opts PackOptions) bool {
 	for _, candidate := range candidates {
 		var modified time.Time
 		for _, path := range candidate.Paths {
-			if info, err := os.Lstat(path); err == nil {
+			if info, err := os.Lstat(resolveCandidatePath(root, path)); err == nil {
 				modified = info.ModTime()
 				break
 			}
@@ -581,6 +581,15 @@ func looseReadyToSeal(candidates []Candidate, opts PackOptions) bool {
 		}
 	}
 	return false
+}
+
+// resolveCandidatePath resolves a catalog candidate path, which may be
+// relative to the store root.
+func resolveCandidatePath(root, path string) string {
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(root, filepath.FromSlash(path))
+	}
+	return filepath.Clean(path)
 }
 
 type packCatalogCommit func(context.Context, PackRecord, []Adoption) error
@@ -738,11 +747,7 @@ func (m *Maintainer) prepareCandidate(
 			}
 			return nil, "", nil, false, err
 		}
-		path := candidatePath
-		if !filepath.IsAbs(path) {
-			path = filepath.Join(m.layout.Root(), filepath.FromSlash(path))
-		}
-		path = filepath.Clean(path)
+		path := resolveCandidatePath(m.layout.Root(), candidatePath)
 		if _, duplicate := seenPaths[path]; duplicate {
 			continue
 		}

@@ -66,7 +66,9 @@
 - `RepackSelection.MergeBelowStored` is opt-in: existing callers scope repack
   to chosen sources and count `PacksSelected`. Merges go through
   `CommitRepack` with every source of a group, and admit whole groups against
-  `MaxBytes` so outputs stay near the target size.
+  `MaxBytes` so outputs stay near the target size. An automatic merge leaves
+  out a source whose payload cannot be read and merges the rest, so one
+  damaged pack cannot block its group on every pass.
 - Orphan reconciliation lists pack records once per pass. Pack records change
   only under the maintenance lease or during a restore that already excludes
   maintenance.
