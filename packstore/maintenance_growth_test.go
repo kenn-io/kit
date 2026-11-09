@@ -319,6 +319,22 @@ func TestPackRemembersLooseContentItRejected(t *testing.T) {
 	}
 	entries, _ := catalog.snapshot()
 	assert.Empty(t, entries)
+
+	loose, err := NewLooseStore(layout)
+	require.NoError(t, err)
+	_, err = loose.Repair(t.Context(), bytes.NewReader(bytes.Repeat([]byte("a"), 1024)),
+		LooseIdentity{Hash: damaged, Size: 1024}, RepairOptions{Durability: DurablePublication})
+	require.NoError(t, err)
+	// Both members together now reach the threshold, but only if the repaired
+	// one counts again.
+	opts.MinSealBytes = 2048
+	stats, err = maintainer.Pack(t.Context(), opts)
+	require.NoError(t, err)
+	assert.False(t, stats.LooseSealDeferred, "the repair must make the member eligible again")
+	assert.Zero(t, stats.BlobsCorrupt)
+	assert.Equal(t, 2, stats.BlobsPacked)
+	got, _ := readStoreTest(t, maintainer.store, damaged)
+	assert.Equal(t, bytes.Repeat([]byte("a"), 1024), got)
 }
 
 // extraRowCatalog lists one extra unpacked row ahead of the catalog's own.
@@ -343,7 +359,9 @@ func TestLooseSealReadinessStopsWhenCanceled(t *testing.T) {
 		{Hash: hash, Paths: []string{layout.LoosePath(hash)}, Size: 1024},
 	}, PackOptions{MinSealBytes: 4096, MaxLooseAge: time.Hour}, &PackStats{})
 	require.ErrorIs(t, err, context.Canceled)
-	_, err = looseModTime(ctx, layout.Root(), []string{"missing-a", "missing-b", layout.LoosePath(hash)})
+	_, err = statLoose(ctx, layout.Root(), Candidate{
+		Hash: hash, Paths: []string{"missing-a", "missing-b", layout.LoosePath(hash)}, Size: 1024,
+	})
 	require.ErrorIs(t, err, context.Canceled)
 }
 

@@ -584,22 +584,35 @@ func (m *Maintainer) forgetPackedLooseSkips(candidates []Candidate) {
 	for _, candidate := range candidates {
 		loose[candidate.Hash] = struct{}{}
 	}
-	maps.DeleteFunc(m.looseSkips, func(hash Hash, _ looseSkip) bool {
+	maps.DeleteFunc(m.looseSkips, func(hash Hash, _ looseRejection) bool {
 		_, still := loose[hash]
 		return !still
 	})
 }
 
+// looseRejection is a member packing could not use, with what readiness saw
+// of it at the time. A later change, such as a repair, makes it eligible again.
+type looseRejection struct {
+	skip  looseSkip
+	stamp looseStamp
+}
+
 // noteLooseSkip remembers or forgets a loose member that packing examined.
-func (m *Maintainer) noteLooseSkip(hash Hash, skip looseSkip) {
+func (m *Maintainer) noteLooseSkip(ctx context.Context, candidate Candidate, skip looseSkip) {
 	if skip == looseUsable {
-		delete(m.looseSkips, hash)
+		delete(m.looseSkips, candidate.Hash)
+		return
+	}
+	stamp, err := statLoose(ctx, m.layout.Root(), candidate)
+	if err != nil {
+		// Without a stamp a repair could not be noticed, so do not remember it.
+		delete(m.looseSkips, candidate.Hash)
 		return
 	}
 	if m.looseSkips == nil {
-		m.looseSkips = make(map[Hash]looseSkip)
+		m.looseSkips = make(map[Hash]looseRejection)
 	}
-	m.looseSkips[hash] = skip
+	m.looseSkips[candidate.Hash] = looseRejection{skip: skip, stamp: stamp}
 }
 
 // looseReadyToSeal reports whether loose members justify a new pack under
@@ -627,11 +640,19 @@ func (m *Maintainer) looseReadyToSeal(
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
+		stamp, err := statLoose(ctx, m.layout.Root(), group.Candidate)
+		if err != nil {
+			return false, err
+		}
 		// Only packing reads loose content, so a damaged file that still
-		// exists is known as unusable once packing has rejected it.
-		if skip, known := m.looseSkips[group.Hash]; known {
-			skip.count(&skipped)
-			continue
+		// exists is known as unusable once packing has rejected it, until the
+		// member or its file changes.
+		if rejected, known := m.looseSkips[group.Hash]; known {
+			if rejected.stamp.equal(stamp) {
+				rejected.skip.count(&skipped)
+				continue
+			}
+			delete(m.looseSkips, group.Hash)
 		}
 		if group.err != nil || group.Size < 0 {
 			skipped.BlobsCorrupt++
@@ -641,16 +662,12 @@ func (m *Maintainer) looseReadyToSeal(
 			skipped.BlobsDeferredOversized++
 			continue
 		}
-		modified, err := looseModTime(ctx, m.layout.Root(), group.Paths)
-		if err != nil {
-			return false, err
-		}
-		if modified.IsZero() {
+		if stamp.path == "" {
 			skipped.BlobsMissing++
 			continue
 		}
 		total += group.Size
-		if total >= opts.MinSealBytes || !modified.After(sealBefore) {
+		if total >= opts.MinSealBytes || !stamp.modTime.After(sealBefore) {
 			return true, nil
 		}
 	}
@@ -660,18 +677,34 @@ func (m *Maintainer) looseReadyToSeal(
 	return false, nil
 }
 
-// looseModTime returns the modification time of the first existing path, or
-// the zero time when none exists.
-func looseModTime(ctx context.Context, root string, paths []string) (time.Time, error) {
-	for _, path := range paths {
+// looseStamp is what readiness sees of a loose member without reading it: the
+// cataloged size and the first existing file. An empty path means no file
+// exists.
+type looseStamp struct {
+	size    int64
+	path    string
+	fileLen int64
+	modTime time.Time
+}
+
+func (s looseStamp) equal(other looseStamp) bool {
+	return s.size == other.size && s.path == other.path && s.fileLen == other.fileLen &&
+		s.modTime.Equal(other.modTime)
+}
+
+func statLoose(ctx context.Context, root string, candidate Candidate) (looseStamp, error) {
+	stamp := looseStamp{size: candidate.Size}
+	for _, path := range candidate.Paths {
 		if err := ctx.Err(); err != nil {
-			return time.Time{}, err
+			return looseStamp{}, err
 		}
-		if info, err := os.Lstat(resolveCandidatePath(root, path)); err == nil {
-			return info.ModTime(), nil
+		resolved := resolveCandidatePath(root, path)
+		if info, err := os.Lstat(resolved); err == nil {
+			stamp.path, stamp.fileLen, stamp.modTime = resolved, info.Size(), info.ModTime()
+			return stamp, nil
 		}
 	}
-	return time.Time{}, nil
+	return stamp, nil
 }
 
 // resolveCandidatePath resolves a catalog candidate path, which may be
@@ -691,7 +724,7 @@ type packCandidatePolicy struct {
 	replaceMappings bool
 	removeSource    bool
 	// noteSkip, when set, learns which candidates packing could use.
-	noteSkip func(Hash, looseSkip)
+	noteSkip func(context.Context, Candidate, looseSkip)
 }
 
 func (m *Maintainer) packCandidates(
@@ -731,7 +764,7 @@ func (m *Maintainer) packCandidates(
 		}
 		note := func(skip looseSkip) {
 			if policy.noteSkip != nil {
-				policy.noteSkip(group.Hash, skip)
+				policy.noteSkip(ctx, group.Candidate, skip)
 			}
 		}
 		if group.err != nil {

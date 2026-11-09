@@ -16,7 +16,7 @@ type Maintainer struct {
 	verificationEnd IndexEntry
 	// looseSkips remembers loose members that packing could not use, so
 	// they cannot make later passes ready to seal. Same protection as above.
-	looseSkips           map[Hash]looseSkip
+	looseSkips           map[Hash]looseRejection
 	catalog              Catalog
 	layout               Layout
 	limits               Limits
