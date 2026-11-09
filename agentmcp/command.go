@@ -32,27 +32,24 @@ func Command(agent Agent, name string, server Server) (agenthook.Commands, error
 	if agent == AgentClaude {
 		args = append(args, "--scope", "user")
 	}
-	if server.URL != "" {
-		if agent == AgentCodex {
-			if len(server.Headers) != 0 {
-				return agenthook.Commands{}, errors.New("codex mcp add cannot express literal HTTP headers")
-			}
-			args = append(args, "--url", server.URL)
-			if server.BearerTokenEnvVar != "" {
-				args = append(args, "--bearer-token-env-var", server.BearerTokenEnvVar)
-			}
-		} else {
-			args = append(args, "--transport", entry["type"].(string))
-			headers, _ := entry["headers"].(map[string]string)
-			for _, key := range slices.Sorted(maps.Keys(headers)) {
-				args = append(args, "--header", key+": "+headers[key])
-			}
+	switch {
+	case server.URL != "" && agent == AgentCodex:
+		if len(server.Headers) != 0 {
+			return agenthook.Commands{}, errors.New("codex mcp add cannot express literal HTTP headers")
+		}
+		args = append(args, "--url", server.URL)
+		if server.BearerTokenEnvVar != "" {
+			args = append(args, "--bearer-token-env-var", server.BearerTokenEnvVar)
 		}
 		args = append(args, "--", name)
-		if agent == AgentClaude {
-			args = append(args, server.URL)
+	case server.URL != "":
+		args = append(args, "--transport", entry["type"].(string))
+		headers, _ := entry["headers"].(map[string]string)
+		for _, key := range slices.Sorted(maps.Keys(headers)) {
+			args = append(args, "--header", key+": "+headers[key])
 		}
-	} else {
+		args = append(args, "--", name, server.URL)
+	default:
 		for _, key := range slices.Sorted(maps.Keys(server.Env)) {
 			args = append(args, "--env", key+"="+server.Env[key])
 		}
