@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -257,7 +258,7 @@ func TestPackHoldsSmallYoungLooseContent(t *testing.T) {
 			}
 			var listing Catalog = catalog
 			if tt.extraRow != nil {
-				listing = &extraRowCatalog{maintenanceCatalog: catalog, extra: tt.extraRow(layout, hashes)}
+				listing = &extraRowCatalog{maintenanceCatalog: catalog, before: []Candidate{tt.extraRow(layout, hashes)}}
 			}
 			maintainer := newMaintainerForTest(t, listing, layout, DefaultLimits())
 			opts := PackOptions{MinSealBytes: tt.minSealBytes, MaxLooseAge: tt.maxLooseAge, Now: newest.Add(tt.age)}
@@ -337,15 +338,113 @@ func TestPackRemembersLooseContentItRejected(t *testing.T) {
 	assert.Equal(t, bytes.Repeat([]byte("a"), 1024), got)
 }
 
-// extraRowCatalog lists one extra unpacked row ahead of the catalog's own.
+// extraRowCatalog lists extra unpacked rows around the catalog's own.
 type extraRowCatalog struct {
 	*maintenanceCatalog
-	extra Candidate
+	before []Candidate
+	after  []Candidate
 }
 
 func (c *extraRowCatalog) ListUnpacked(ctx context.Context) ([]Candidate, error) {
 	candidates, err := c.maintenanceCatalog.ListUnpacked(ctx)
-	return append([]Candidate{c.extra}, candidates...), err
+	return slices.Concat(c.before, candidates, c.after), err
+}
+
+func TestPackRetriesLooseContentAfterOperationalFailure(t *testing.T) {
+	layout := layoutForStoreTest(t)
+	catalog := newMaintenanceCatalog()
+	now := time.Now()
+	old := now.Add(-48 * time.Hour)
+	first := writeMaintenanceLoose(t, layout, bytes.Repeat([]byte("a"), 1024))
+	require.NoError(t, os.Chtimes(layout.LoosePath(first), old, old))
+	catalog.addLoose(first, layout.LoosePath(first))
+	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
+	maintainer.openVerificationPin = func(string) (identityPin, fs.FileInfo, error) {
+		return nil, nil, errors.New("scratch disk full")
+	}
+	opts := PackOptions{MinSealBytes: 4096, MaxLooseAge: time.Hour, Now: now}
+
+	stats, err := maintainer.Pack(t.Context(), opts)
+	require.NoError(t, err)
+	require.Equal(t, 1, stats.BlobsCorrupt)
+	require.Zero(t, stats.PacksSealed)
+
+	maintainer.openVerificationPin = openLooseMaintenanceVerificationPin
+	second := writeMaintenanceLoose(t, layout, bytes.Repeat([]byte("b"), 1024))
+	require.NoError(t, os.Chtimes(layout.LoosePath(second), now, now))
+	catalog.addLoose(second, layout.LoosePath(second))
+	// Both members together reach the threshold only if the first still counts.
+	opts.MinSealBytes = 2048
+	stats, err = maintainer.Pack(t.Context(), opts)
+	require.NoError(t, err)
+	assert.False(t, stats.LooseSealDeferred, "a failure unrelated to the content must not hide the member")
+	assert.Equal(t, 2, stats.BlobsPacked)
+}
+
+func TestPackRechecksRejectedLooseContentWhenACopyAppears(t *testing.T) {
+	layout := layoutForStoreTest(t)
+	catalog := newMaintenanceCatalog()
+	now := time.Now()
+	old := now.Add(-48 * time.Hour)
+	content := bytes.Repeat([]byte("a"), 1024)
+	damaged := writeMaintenanceLoose(t, layout, content)
+	require.NoError(t, os.Truncate(layout.LoosePath(damaged), 512))
+	require.NoError(t, os.Chtimes(layout.LoosePath(damaged), old, old))
+	alternate := filepath.Join(layout.Root(), "alternate-copy")
+	catalog.addLoose(damaged, layout.LoosePath(damaged))
+	candidate := catalog.candidates[damaged]
+	candidate.Paths = append(candidate.Paths, alternate)
+	candidate.Size = 1024
+	catalog.candidates[damaged] = candidate
+	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
+	opts := PackOptions{MinSealBytes: 4096, MaxLooseAge: time.Hour, Now: now}
+
+	stats, err := maintainer.Pack(t.Context(), opts)
+	require.NoError(t, err)
+	require.Equal(t, 1, stats.BlobsCorrupt)
+
+	require.NoError(t, os.WriteFile(alternate, content, 0o600))
+	young := writeMaintenanceLoose(t, layout, bytes.Repeat([]byte("b"), 1024))
+	require.NoError(t, os.Chtimes(layout.LoosePath(young), now, now))
+	catalog.addLoose(young, layout.LoosePath(young))
+	opts.MinSealBytes = 2048
+	stats, err = maintainer.Pack(t.Context(), opts)
+	require.NoError(t, err)
+	assert.False(t, stats.LooseSealDeferred, "the new copy must make the member eligible again")
+	assert.Equal(t, 2, stats.BlobsPacked)
+	got, _ := readStoreTest(t, maintainer.store, damaged)
+	assert.Equal(t, content, got)
+}
+
+func TestPackRechecksConflictingRowsEachPass(t *testing.T) {
+	layout := layoutForStoreTest(t)
+	catalog := newMaintenanceCatalog()
+	now := time.Now()
+	old := now.Add(-48 * time.Hour)
+	conflicted := writeMaintenanceLoose(t, layout, bytes.Repeat([]byte("a"), 1024))
+	catalog.addLoose(conflicted, layout.LoosePath(conflicted))
+	trigger := writeMaintenanceLoose(t, layout, bytes.Repeat([]byte("c"), 1024))
+	require.NoError(t, os.Chtimes(layout.LoosePath(trigger), old, old))
+	catalog.addLoose(trigger, layout.LoosePath(trigger))
+	// The conflicting row comes after the real one, so the first size stays
+	// the same when it is removed.
+	listing := &extraRowCatalog{maintenanceCatalog: catalog, after: []Candidate{
+		{Hash: conflicted, Paths: []string{layout.LoosePath(conflicted)}, Size: 4096},
+	}}
+	maintainer := newMaintainerForTest(t, listing, layout, DefaultLimits())
+	opts := PackOptions{MinSealBytes: 4096, MaxLooseAge: time.Hour, Now: now}
+
+	stats, err := maintainer.Pack(t.Context(), opts)
+	require.NoError(t, err)
+	require.Equal(t, 1, stats.BlobsCorrupt, "packing runs for the old member and skips the conflict")
+	require.Equal(t, 1, stats.BlobsPacked)
+
+	listing.after = nil
+	opts.MinSealBytes = 1024
+	stats, err = maintainer.Pack(t.Context(), opts)
+	require.NoError(t, err)
+	assert.False(t, stats.LooseSealDeferred, "the catalog fix must make the member eligible again")
+	assert.Equal(t, 1, stats.BlobsPacked)
 }
 
 func TestLooseSealReadinessStopsWhenCanceled(t *testing.T) {
@@ -359,7 +458,7 @@ func TestLooseSealReadinessStopsWhenCanceled(t *testing.T) {
 		{Hash: hash, Paths: []string{layout.LoosePath(hash)}, Size: 1024},
 	}, PackOptions{MinSealBytes: 4096, MaxLooseAge: time.Hour}, &PackStats{})
 	require.ErrorIs(t, err, context.Canceled)
-	_, err = statLoose(ctx, layout.Root(), Candidate{
+	_, err = statLoose(ctx, layout.Root(), candidateGroup{
 		Hash: hash, Paths: []string{"missing-a", "missing-b", layout.LoosePath(hash)}, Size: 1024,
 	})
 	require.ErrorIs(t, err, context.Canceled)

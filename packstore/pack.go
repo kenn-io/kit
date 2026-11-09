@@ -559,7 +559,6 @@ type looseSkip uint8
 const (
 	looseUsable looseSkip = iota
 	looseCorrupt
-	looseMissing
 	looseOversized
 )
 
@@ -567,8 +566,6 @@ func (s looseSkip) count(stats *PackStats) {
 	switch s {
 	case looseCorrupt:
 		stats.BlobsCorrupt++
-	case looseMissing:
-		stats.BlobsMissing++
 	case looseOversized:
 		stats.BlobsDeferredOversized++
 	case looseUsable:
@@ -590,29 +587,30 @@ func (m *Maintainer) forgetPackedLooseSkips(candidates []Candidate) {
 	})
 }
 
-// looseRejection is a member packing could not use, with what readiness saw
-// of it at the time. A later change, such as a repair, makes it eligible again.
+// looseRejection is a member whose content packing read and could not use,
+// with what readiness saw of it at the time. A later change, such as a repair,
+// a new copy, or a catalog fix, makes it eligible again.
 type looseRejection struct {
 	skip  looseSkip
 	stamp looseStamp
 }
 
 // noteLooseSkip remembers or forgets a loose member that packing examined.
-func (m *Maintainer) noteLooseSkip(ctx context.Context, candidate Candidate, skip looseSkip) {
+func (m *Maintainer) noteLooseSkip(ctx context.Context, group candidateGroup, skip looseSkip) {
 	if skip == looseUsable {
-		delete(m.looseSkips, candidate.Hash)
+		delete(m.looseSkips, group.Hash)
 		return
 	}
-	stamp, err := statLoose(ctx, m.layout.Root(), candidate)
+	stamp, err := statLoose(ctx, m.layout.Root(), group)
 	if err != nil {
 		// Without a stamp a repair could not be noticed, so do not remember it.
-		delete(m.looseSkips, candidate.Hash)
+		delete(m.looseSkips, group.Hash)
 		return
 	}
 	if m.looseSkips == nil {
 		m.looseSkips = make(map[Hash]looseRejection)
 	}
-	m.looseSkips[candidate.Hash] = looseRejection{skip: skip, stamp: stamp}
+	m.looseSkips[group.Hash] = looseRejection{skip: skip, stamp: stamp}
 }
 
 // looseReadyToSeal reports whether loose members justify a new pack under
@@ -640,7 +638,7 @@ func (m *Maintainer) looseReadyToSeal(
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
-		stamp, err := statLoose(ctx, m.layout.Root(), group.Candidate)
+		stamp, err := statLoose(ctx, m.layout.Root(), group)
 		if err != nil {
 			return false, err
 		}
@@ -662,12 +660,13 @@ func (m *Maintainer) looseReadyToSeal(
 			skipped.BlobsDeferredOversized++
 			continue
 		}
-		if stamp.path == "" {
+		file, exists := stamp.firstFile()
+		if !exists {
 			skipped.BlobsMissing++
 			continue
 		}
 		total += group.Size
-		if total >= opts.MinSealBytes || !stamp.modTime.After(sealBefore) {
+		if total >= opts.MinSealBytes || !file.modTime.After(sealBefore) {
 			return true, nil
 		}
 	}
@@ -677,32 +676,48 @@ func (m *Maintainer) looseReadyToSeal(
 	return false, nil
 }
 
-// looseStamp is what readiness sees of a loose member without reading it: the
-// cataloged size and the first existing file. An empty path means no file
-// exists.
+// looseStamp is what readiness sees of a loose member without reading it: its
+// cataloged size, whether its rows conflict, and the state of every path.
 type looseStamp struct {
-	size    int64
+	size     int64
+	conflict bool
+	files    []looseFileState
+}
+
+type looseFileState struct {
 	path    string
-	fileLen int64
+	exists  bool
+	length  int64
 	modTime time.Time
 }
 
 func (s looseStamp) equal(other looseStamp) bool {
-	return s.size == other.size && s.path == other.path && s.fileLen == other.fileLen &&
-		s.modTime.Equal(other.modTime)
+	return s.size == other.size && s.conflict == other.conflict &&
+		slices.EqualFunc(s.files, other.files, func(a, b looseFileState) bool {
+			return a.path == b.path && a.exists == b.exists && a.length == b.length && a.modTime.Equal(b.modTime)
+		})
 }
 
-func statLoose(ctx context.Context, root string, candidate Candidate) (looseStamp, error) {
-	stamp := looseStamp{size: candidate.Size}
-	for _, path := range candidate.Paths {
+// firstFile returns the first existing file, which packing would read first.
+func (s looseStamp) firstFile() (looseFileState, bool) {
+	index := slices.IndexFunc(s.files, func(file looseFileState) bool { return file.exists })
+	if index < 0 {
+		return looseFileState{}, false
+	}
+	return s.files[index], true
+}
+
+func statLoose(ctx context.Context, root string, group candidateGroup) (looseStamp, error) {
+	stamp := looseStamp{size: group.Size, conflict: group.err != nil, files: make([]looseFileState, 0, len(group.Paths))}
+	for _, path := range group.Paths {
 		if err := ctx.Err(); err != nil {
 			return looseStamp{}, err
 		}
-		resolved := resolveCandidatePath(root, path)
-		if info, err := os.Lstat(resolved); err == nil {
-			stamp.path, stamp.fileLen, stamp.modTime = resolved, info.Size(), info.ModTime()
-			return stamp, nil
+		file := looseFileState{path: resolveCandidatePath(root, path)}
+		if info, err := os.Lstat(file.path); err == nil {
+			file.exists, file.length, file.modTime = true, info.Size(), info.ModTime()
 		}
+		stamp.files = append(stamp.files, file)
 	}
 	return stamp, nil
 }
@@ -724,7 +739,7 @@ type packCandidatePolicy struct {
 	replaceMappings bool
 	removeSource    bool
 	// noteSkip, when set, learns which candidates packing could use.
-	noteSkip func(context.Context, Candidate, looseSkip)
+	noteSkip func(context.Context, candidateGroup, looseSkip)
 }
 
 func (m *Maintainer) packCandidates(
@@ -764,18 +779,21 @@ func (m *Maintainer) packCandidates(
 		}
 		note := func(skip looseSkip) {
 			if policy.noteSkip != nil {
-				policy.noteSkip(ctx, group.Candidate, skip)
+				policy.noteSkip(ctx, group, skip)
 			}
 		}
+		// Readiness checks conflicting sizes, the size limit, and missing
+		// files itself on every pass, so packing remembers only what it learns
+		// by reading content.
 		if group.err != nil {
 			stats.BlobsCorrupt++
-			note(looseCorrupt)
+			note(looseUsable)
 			continue
 		}
 		candidate := group.Candidate
 		if candidate.Size > m.limits.BlobBytes {
 			stats.BlobsDeferredOversized++
-			note(looseOversized)
+			note(looseUsable)
 			continue
 		}
 		if writer != nil && len(sources) >= m.packedSourcePinLimit {
@@ -788,18 +806,25 @@ func (m *Maintainer) packCandidates(
 			if errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) {
 				return readErr
 			}
+			// A failure that may pass on a retry, such as a full scratch
+			// disk, must not hide the member from later readiness checks.
+			_, retryable := errors.AsType[*retryableLooseError](readErr)
+			skip := looseCorrupt
 			if errors.Is(readErr, ErrBlobTooLarge) {
 				stats.BlobsDeferredOversized++
-				note(looseOversized)
-				continue
+				skip = looseOversized
+			} else {
+				stats.BlobsCorrupt++
 			}
-			stats.BlobsCorrupt++
-			note(looseCorrupt)
+			if retryable {
+				skip = looseUsable
+			}
+			note(skip)
 			continue
 		}
 		if !found {
 			stats.BlobsMissing++
-			note(looseMissing)
+			note(looseUsable)
 			continue
 		}
 		if prepared == nil || sourcePin == nil {
@@ -899,7 +924,7 @@ func (m *Maintainer) prepareCandidate(
 			continue
 		}
 		if err != nil {
-			corrupt = errors.Join(corrupt, err)
+			corrupt = errors.Join(corrupt, classifyLooseFailure(err))
 			continue
 		}
 		if object.storedSize > m.limits.BlobBytes {
@@ -918,13 +943,13 @@ func (m *Maintainer) prepareCandidate(
 		if selected == nil {
 			pin, err = m.pinOpenCandidate(path, identity, openPin)
 			if err != nil {
-				corrupt = errors.Join(corrupt, err, object.file.Close())
+				corrupt = errors.Join(corrupt, classifyLooseFailure(err), object.file.Close())
 				continue
 			}
 		}
 		stream, err := newLooseVerifiedStream(ctx, candidate.Hash, object)
 		if err != nil {
-			corrupt = errors.Join(corrupt, err, closeIdentityPin(pin))
+			corrupt = errors.Join(corrupt, classifyLooseFailure(err), closeIdentityPin(pin))
 			continue
 		}
 		var prepared *pack.PreparedBlob
@@ -947,7 +972,7 @@ func (m *Maintainer) prepareCandidate(
 				}
 				return nil, "", nil, false, err
 			}
-			corrupt = errors.Join(corrupt, err)
+			corrupt = errors.Join(corrupt, classifyLooseFailure(err))
 			continue
 		}
 		if selected == nil && prepared == nil {
@@ -966,6 +991,25 @@ func (m *Maintainer) prepareCandidate(
 		return selected, selectedPath, selectedPin, true, nil
 	}
 	return nil, "", nil, false, corrupt
+}
+
+// retryableLooseError marks a loose read failure that does not prove the
+// content is bad, such as a permission error or a full scratch disk.
+type retryableLooseError struct {
+	err error
+}
+
+func (e *retryableLooseError) Error() string { return e.err.Error() }
+
+func (e *retryableLooseError) Unwrap() error { return e.err }
+
+// classifyLooseFailure marks err retryable unless reading showed that the
+// content does not match its hash or size.
+func classifyLooseFailure(err error) error {
+	if errors.Is(err, ErrContentMismatch) || errors.Is(err, pack.ErrBlobMismatch) {
+		return err
+	}
+	return &retryableLooseError{err: err}
 }
 
 func (m *Maintainer) pinOpenCandidate(
