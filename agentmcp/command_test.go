@@ -15,18 +15,21 @@ import (
 
 func TestCommand(t *testing.T) {
 	for _, tc := range []struct {
+		name   string
 		agent  agentmcp.Agent
 		server agentmcp.Server
 		want   string
 	}{
-		{agentmcp.AgentClaude, agentmcp.Server{Command: "example", Args: []string{"--serve"}, Env: map[string]string{"B": "two", "A": "one"}}, `claude mcp add --scope user --env 'A=one' --env 'B=two' -- example example --serve`},
-		{agentmcp.AgentCodex, agentmcp.Server{Command: "example", Args: []string{"--serve"}}, "codex mcp add -- example example --serve"},
-		{agentmcp.AgentCodex, agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "TOKEN"}, "codex mcp add --url https://example.com/mcp --bearer-token-env-var TOKEN -- example"},
-		{agentmcp.AgentClaude, agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "TOKEN"}, `claude mcp add --scope user --transport http --header 'Authorization: Bearer ${TOKEN}' -- example https://example.com/mcp`},
+		{"claude stdio", agentmcp.AgentClaude, agentmcp.Server{Command: "example", Args: []string{"--serve"}, Env: map[string]string{"B": "two", "A": "one"}}, `claude mcp add --scope user --env 'A=one' --env 'B=two' -- example example --serve`},
+		{"codex stdio", agentmcp.AgentCodex, agentmcp.Server{Command: "example", Args: []string{"--serve"}}, "codex mcp add -- example example --serve"},
+		{"codex bearer HTTP", agentmcp.AgentCodex, agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "TOKEN"}, "codex mcp add --url https://example.com/mcp --bearer-token-env-var TOKEN -- example"},
+		{"claude bearer HTTP", agentmcp.AgentClaude, agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "TOKEN"}, `claude mcp add --scope user --transport http --header 'Authorization: Bearer ${TOKEN}' -- example https://example.com/mcp`},
 	} {
-		command, err := agentmcp.Command(tc.agent, "example", tc.server)
-		require.NoError(t, err)
-		assert.Equal(t, tc.want, command.POSIX)
+		t.Run(tc.name, func(t *testing.T) {
+			command, err := agentmcp.Command(tc.agent, "example", tc.server)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, command.POSIX)
+		})
 	}
 	for _, tc := range []struct {
 		agent agentmcp.Agent
@@ -36,8 +39,10 @@ func TestCommand(t *testing.T) {
 		{agentmcp.AgentClaude, "café"},
 		{agentmcp.AgentCodex, "a#b"},
 	} {
-		_, err := agentmcp.Command(tc.agent, tc.name, agentmcp.Server{Command: "example"})
-		require.ErrorContains(t, err, "server name")
+		t.Run(string(tc.agent)+" rejects "+tc.name, func(t *testing.T) {
+			_, err := agentmcp.Command(tc.agent, tc.name, agentmcp.Server{Command: "example"})
+			require.ErrorContains(t, err, "server name")
+		})
 	}
 	_, err := agentmcp.Command(agentmcp.AgentCodex, "a.b@c:d/e", agentmcp.Server{Command: "example"})
 	require.NoError(t, err)
@@ -60,6 +65,7 @@ func TestInstalledClients(t *testing.T) {
 			t.Setenv("CODEX_HOME", dir)
 			t.Setenv("CLAUDE_CONFIG_DIR", dir)
 			t.Setenv("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
+			t.Setenv("CLAUDE_CODE_SAFE_MODE", "")
 			t.Setenv("KIT_MCP_TOKEN", "fixture-token")
 			t.Chdir(dir)
 			type testCase struct {
@@ -93,30 +99,32 @@ func TestInstalledClients(t *testing.T) {
 					require.False(t, planned.Changed, "the manual command must register the same server")
 				})
 			}
-			if agent == agentmcp.AgentCodex {
-				executable, err := os.Executable()
-				require.NoError(t, err)
-				for _, tc := range []struct {
-					name   string
-					server agentmcp.Server
-					state  agentmcp.CheckState
-				}{
-					{"native working", agentmcp.Server{Command: executable, Args: []string{"kit-mcp-stdio"}}, agentmcp.CheckOK},
-					{"native missing binary", agentmcp.Server{Command: "kit-missing-mcp-binary"}, agentmcp.CheckFailed},
-				} {
-					t.Run(tc.name, func(t *testing.T) {
-						_, err := agentmcp.Install(agent, agentmcp.InstallOptions{Name: "native-example", Server: tc.server})
-						require.NoError(t, err)
-						result, err := agentmcp.Check(t.Context(), agent, "native-example", tc.server)
-						require.NoError(t, err)
-						assert.Equal(t, tc.state, result.State, result.Reason)
-						if tc.state == agentmcp.CheckOK {
-							assert.Equal(t, 1, result.ToolCount)
-						} else {
+			executable, err := os.Executable()
+			require.NoError(t, err)
+			for _, tc := range []struct {
+				name   string
+				server agentmcp.Server
+				state  agentmcp.CheckState
+			}{
+				{"native working", agentmcp.Server{Command: executable, Args: []string{"kit-mcp-stdio"}}, agentmcp.CheckOK},
+				{"native missing binary", agentmcp.Server{Command: "kit-missing-mcp-binary"}, agentmcp.CheckFailed},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					_, err := agentmcp.Install(agent, agentmcp.InstallOptions{Name: "native-example", Server: tc.server})
+					require.NoError(t, err)
+					result, err := agentmcp.Check(t.Context(), agent, "native-example", tc.server)
+					require.NoError(t, err)
+					assert.Equal(t, tc.state, result.State, result.Reason)
+					if tc.state == agentmcp.CheckOK && agent == agentmcp.AgentCodex {
+						assert.Equal(t, 1, result.ToolCount)
+					} else if tc.state == agentmcp.CheckFailed {
+						if agent == agentmcp.AgentCodex {
 							assert.Contains(t, result.Reason, "MCP startup failed:")
+						} else {
+							assert.Contains(t, result.Reason, "kit-missing-mcp-binary")
 						}
-					})
-				}
+					}
+				})
 			}
 		})
 	}

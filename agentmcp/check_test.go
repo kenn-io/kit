@@ -85,20 +85,27 @@ func TestCheckCodex(t *testing.T) {
 		count       int
 		reason      string
 		expired     bool
+		config      string
 	}{
-		{"deadline", "", agentmcp.CheckUnknown, 0, "startup may need longer", true},
-		{"tools", `{"data":[{"name":"example","tools":{"search":{},"read":{}},"toolsError":null}]}`, agentmcp.CheckOK, 2, "", false},
-		{"missing catalog", `{"data":[{"name":"example"}]}`, agentmcp.CheckUnknown, 0, "did not return", false},
-		{"empty catalog", `{"data":[{"name":"example","tools":{}}]}`, agentmcp.CheckOK, 0, "", false},
-		{"handshake failure", `{"data":[{"name":"example","tools":{},"toolsError":"MCP startup failed: handshaking with MCP server failed: connection closed: initialize response"}]}`, agentmcp.CheckFailed, 0, "MCP startup failed: handshaking with MCP server failed: connection closed: initialize response", false},
-		{"different server only", `{"data":[{"name":"other","tools":{}}]}`, agentmcp.CheckUnknown, 0, "did not report", false},
+		{"user settings and effective defaults", `{"data":[{"name":"example","tools":{}}]}`, agentmcp.CheckOK, 0, "Codex returned the server's tools", false, "[mcp_servers.example]\ncommand='example'\nenabled=true\nargs=[]\nenv={}\nrequired=true\nstartup_timeout_sec=30\nenv_vars=[{name='HOME',source='local'}]\ntools={search={approval_mode='auto'}}\n"},
+		{"changed connection", "", agentmcp.CheckOutdated, 0, "differs from the requested server", false, "[mcp_servers.example]\ncommand='different'\nrequired=true\n"},
+		{"disabled", "", agentmcp.CheckOutdated, 0, "differs from the requested server", false, "[mcp_servers.example]\ncommand='example'\nenabled=false\n"},
+		{"deadline", "", agentmcp.CheckUnknown, 0, "startup may need longer", true, ""},
+		{"tools", `{"data":[{"name":"example","tools":{"search":{},"read":{}},"toolsError":null}]}`, agentmcp.CheckOK, 2, "Codex returned the server's tools", false, ""},
+		{"missing catalog", `{"data":[{"name":"example"}]}`, agentmcp.CheckUnknown, 0, "did not return", false, ""},
+		{"empty catalog", `{"data":[{"name":"example","tools":{}}]}`, agentmcp.CheckOK, 0, "Codex returned the server's tools", false, ""},
+		{"handshake failure", `{"data":[{"name":"example","tools":{},"toolsError":"MCP startup failed: handshaking with MCP server failed: connection closed: initialize response"}]}`, agentmcp.CheckFailed, 0, "MCP startup failed: handshaking with MCP server failed: connection closed: initialize response", false, ""},
+		{"different server only", `{"data":[{"name":"other","tools":{}}]}`, agentmcp.CheckUnknown, 0, "did not report", false, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("CODEX_HOME", t.TempDir())
 			t.Setenv("KIT_MCP_CHECK_HELPER", "codex")
 			t.Setenv("KIT_MCP_CHECK_REPLY", tc.reply)
-			_, err := agentmcp.Install(agentmcp.AgentCodex, agentmcp.InstallOptions{Name: "example", Server: agentmcp.Server{Command: "example"}})
+			installed, err := agentmcp.Install(agentmcp.AgentCodex, agentmcp.InstallOptions{Name: "example", Server: agentmcp.Server{Command: "example"}})
 			require.NoError(t, err)
+			if tc.config != "" {
+				require.NoError(t, os.WriteFile(installed.ConfigPath, []byte(tc.config), 0o600))
+			}
 			ctx := t.Context()
 			if tc.expired {
 				var cancel context.CancelFunc
@@ -109,7 +116,11 @@ func TestCheckCodex(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, result.State, result.Reason)
 			assert.Equal(t, tc.count, result.ToolCount)
-			assert.Contains(t, result.Reason, tc.reason)
+			if tc.want == agentmcp.CheckOK {
+				assert.Equal(t, tc.reason, result.Reason)
+			} else {
+				assert.Contains(t, result.Reason, tc.reason)
+			}
 			if tc.expired {
 				assert.Equal(t, "Retry once the server is ready", result.NextStep)
 			}
@@ -126,15 +137,15 @@ func TestCheckClaude(t *testing.T) {
 		mode        string
 		expired     bool
 	}{
-		{"deadline", "", agentmcp.CheckUnknown, "startup may need longer", "claude", true},
-		{"connected", "Scope: User config (available in all projects)\nStatus: ✓ Connected\n", agentmcp.CheckOK, "", "claude", false},
-		{"connected check mark", "Scope: User config\nStatus: ✔ Connected\n", agentmcp.CheckOK, "", "claude", false},
-		{"connection failed", "Scope: User config\nStatus: ✗ Failed to connect\n", agentmcp.CheckFailed, "Failed to connect", "claude", false},
-		{"tools failed", "Scope: User config\nStatus: ✓ Connected\nIssue: Failed to discover tools: forbidden\n", agentmcp.CheckFailed, "forbidden", "claude", false},
-		{"project shadows user", "Scope: Project config\nStatus: ✓ Connected\n", agentmcp.CheckUnknown, "Project", "claude", false},
-		{"failed command", "native check refused", agentmcp.CheckUnknown, "native check refused", "claude-failed", false},
-		{"unrecognized status", "Scope: User config\nStatus: Waiting for approval\n", agentmcp.CheckUnknown, "Waiting for approval", "claude", false},
-		{"unrecognized output", "future response", agentmcp.CheckUnknown, "scope", "claude", false},
+		{"deadline", "", agentmcp.CheckUnknown, "context deadline exceeded; server startup may need longer", "claude", true},
+		{"connected", "Scope: User config (available in all projects)\nStatus: ✓ Connected\n", agentmcp.CheckOK, "Claude reports the user server connected", "claude", false},
+		{"connected check mark", "Scope: User config\nStatus: ✔ Connected\n", agentmcp.CheckOK, "Claude reports the user server connected", "claude", false},
+		{"connection failed", "Scope: User config\nStatus: ✗ Failed to connect\n", agentmcp.CheckFailed, "✗ Failed to connect", "claude", false},
+		{"tools failed", "Scope: User config\nStatus: ✓ Connected\nIssue: Failed to discover tools: forbidden\n", agentmcp.CheckFailed, "✓ Connected\nFailed to discover tools: forbidden", "claude", false},
+		{"project shadows user", "Scope: Project config\nStatus: ✓ Connected\n", agentmcp.CheckUnknown, "Claude reported MCP scope: Project config", "claude", false},
+		{"failed command", "native check refused", agentmcp.CheckUnknown, "exit status 1\nnative check refused", "claude-failed", false},
+		{"unrecognized status", "Scope: User config\nStatus: Waiting for approval\n", agentmcp.CheckUnknown, "Claude reported MCP status: Waiting for approval", "claude", false},
+		{"unrecognized output", "future response", agentmcp.CheckUnknown, "Claude reported MCP scope: ", "claude", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
@@ -151,7 +162,7 @@ func TestCheckClaude(t *testing.T) {
 			result, err := agentmcp.Check(ctx, agentmcp.AgentClaude, "example", agentmcp.Server{Command: "example"})
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, result.State, result.Reason)
-			assert.Contains(t, result.Reason, tc.reason)
+			assert.Equal(t, tc.reason, result.Reason)
 			if tc.expired {
 				assert.Equal(t, "Retry once the server is ready", result.NextStep)
 			}

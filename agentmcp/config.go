@@ -12,8 +12,6 @@ import (
 
 // InstallOptions registers one caller-owned server name. An existing entry
 // with that exact name is replaced, including any transport-specific options.
-// Codex settings outside Server are retained, except enabled and connection
-// options for the previous transport when switching transports.
 // ConfigPath overrides the user config path with a file using the same top-level
 // schema. Nested Claude local-scope entries and Copilot bare server maps are not
 // handled by this option. Use a stable, application-namespaced Name.
@@ -56,7 +54,7 @@ func prepareConfig(agent Agent, name string, server Server) (map[string]any, err
 
 func planConfig(agent Agent, original []byte, name string, entry map[string]any) ([]byte, bool, bool, error) {
 	if agent == AgentCodex || agent == AgentHermes {
-		return planDocument(agent, original, name, entry)
+		return planDocument(agent, original, name, entry, false)
 	}
 	return planJSON(agent, original, name, entry)
 }

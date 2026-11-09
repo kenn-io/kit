@@ -166,20 +166,20 @@ a tool catalog, including an empty catalog, reports success with its count.
 An entry with `enabled = false` differs from the requested one and is
 `outdated`. Without a thread, status loads system, user, and runtime settings
 [without discovering a project](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/app-server/src/config_manager.rs#L245-L258).
-Codex's per-server settings outside kit's connection fields are retained when
-checking and reinstalling, including `required`, timeouts, and tool approval
-settings ([pinned config type](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/config/src/mcp_types.rs)). Switching between stdio and HTTP drops
-the previous transport's connection options. Codex 0.166.0's
-[transport validation](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/config/src/mcp_types.rs#L513-L543)
-rejects `oauth`, `oauth_resource`, `auth`, `http_headers_helper`, and HTTP
-headers on stdio entries. HTTP entries reject `args`, `env`, `env_vars`, and
-`cwd`; those options must be removed when switching transports.
+Check compares Codex's connection fields represented by `Server`, including an
+explicit disable. An explicit `enabled = true`, empty `args`, and empty `env`
+match their omitted defaults. Extra user settings do not make an entry outdated.
+`Install` replaces the named entry, including those extra settings.
 
 Claude's [`mcp get`](https://code.claude.com/docs/en/mcp) reports `Scope`,
 `Status`, and, when present, `Issue`. Only a connected user entry with no issue
 reports `ok`; a same-name project or local entry returns `unknown` with its
 scope. Claude Code 2.1.301's isolated `mcp get` and `mcp add` output confirms
-these fields and its empty `args` and `env` registration defaults.
+these fields and its empty `args` and `env` registration defaults. The probe
+inherits the caller's environment. Claude safe mode intentionally hides MCP
+registrations, so a check in that mode can return `unknown`. A server registered
+only in project or local scope returns `missing` because Check starts with the
+active user config.
 
 `Command` renders `claude mcp add --scope user` and `codex mcp add` for POSIX
 shells and PowerShell. Options precede `-- NAME`; stdio commands and arguments

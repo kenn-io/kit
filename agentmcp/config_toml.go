@@ -94,7 +94,7 @@ func editTOML(original []byte, name string, entry map[string]any) ([]byte, error
 	return out.Bytes(), nil
 }
 
-// Convert encoded table sections back into nested inline values.
+// The generated server contains scalars/arrays and one-level string maps.
 func tomlInline(doc *tomledit.Document) parser.Inline {
 	var inline parser.Inline
 	for _, item := range doc.Global.Items {
@@ -105,37 +105,7 @@ func tomlInline(doc *tomledit.Document) parser.Inline {
 		for _, item := range section.Items {
 			fields = append(fields, item.(*parser.KeyValue))
 		}
-		inline = tomlInlineSection(inline, section.Name, fields, section.IsArray)
-	}
-	return inline
-}
-
-func tomlInlineSection(inline parser.Inline, key parser.Key, fields parser.Inline, array bool) parser.Inline {
-	var target *parser.KeyValue
-	for _, field := range inline {
-		if field.Name.Equals(key[:1]) {
-			target = field
-			break
-		}
-	}
-	if target == nil {
-		target = &parser.KeyValue{Name: key[:1], Value: parser.Value{X: parser.Inline{}}}
-		inline = append(inline, target)
-	}
-	if len(key) == 1 {
-		if array {
-			values, _ := target.Value.X.(parser.Array)
-			values = append(values, parser.Value{X: fields})
-			target.Value.X = values
-		} else {
-			target.Value.X = append(target.Value.X.(parser.Inline), fields...)
-		}
-	} else if values, ok := target.Value.X.(parser.Array); ok {
-		last := values[len(values)-1].(parser.Value)
-		last.X = tomlInlineSection(last.X.(parser.Inline), key[1:], fields, array)
-		values[len(values)-1] = last
-	} else {
-		target.Value.X = tomlInlineSection(target.Value.X.(parser.Inline), key[1:], fields, array)
+		inline = append(inline, &parser.KeyValue{Name: section.Name, Value: parser.Value{X: fields}})
 	}
 	return inline
 }

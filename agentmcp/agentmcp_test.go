@@ -117,110 +117,6 @@ func TestMarshalConfigInvalid(t *testing.T) {
 }
 
 func TestInstall(t *testing.T) {
-	for _, config := range []string{
-		`mcp_servers = { example = { command = "old", env_vars = [{ name = "HOME", source = "local" }], tools = { search = { approval_mode = "auto" } } } }`,
-		`[mcp_servers]
-example = { command = "old", env_vars = [{ name = "HOME", source = "local" }], tools = { search = { approval_mode = "auto" } } }`,
-	} {
-		t.Run("codex inline settings", func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "config.toml")
-			require.NoError(t, os.WriteFile(path, []byte(config), 0o600))
-			result, err := agentmcp.Install(agentmcp.AgentCodex, agentmcp.InstallOptions{ConfigPath: path, Name: "example", Server: agentmcp.Server{Command: "replacement"}})
-			require.NoError(t, err)
-			doc := decodeConfig(t, agentmcp.AgentCodex, result.Data)
-			entry, err := json.Marshal(doc["mcp_servers"].(map[string]any)["example"])
-			require.NoError(t, err)
-			assert.JSONEq(t, `{"command":"replacement","env_vars":[{"name":"HOME","source":"local"}],"tools":{"search":{"approval_mode":"auto"}}}`, string(entry))
-		})
-	}
-	for _, tc := range []struct {
-		key, toml, json string
-		http, transport bool
-	}{
-		{"startup_timeout_sec", "30", "30", false, false},
-		{"enabled_tools", "['ping']", `["ping"]`, false, false},
-		{"required", "true", "true", false, false},
-		{"default_tools_approval_mode", "'approve'", `"approve"`, false, false},
-		{"cwd", "'/work'", `"/work"`, false, true},
-		{"oauth", "{client_id='example-client'}", `{"client_id":"example-client"}`, true, true},
-		{"oauth_resource", "'https://example.com/resource'", `"https://example.com/resource"`, true, true},
-		{"auth", "'oauth'", `"oauth"`, true, true},
-		{"http_headers_helper", "'helper'", `"helper"`, true, true},
-		{"env_http_headers", "{Authorization='TOKEN'}", `{"Authorization":"TOKEN"}`, true, true},
-	} {
-		t.Run("codex "+tc.key, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "config.toml")
-			connection := "command='example'"
-			server := agentmcp.Server{Command: "example"}
-			if tc.http {
-				connection = "url='https://example.com/mcp'"
-				server = agentmcp.Server{URL: "https://example.com/mcp"}
-			}
-			require.NoError(t, os.WriteFile(path, []byte("[mcp_servers.example]\n"+connection+"\n"+tc.key+"="+tc.toml+"\n"), 0o600))
-			opts := agentmcp.InstallOptions{ConfigPath: path, Name: "example", Server: server}
-			plan, err := agentmcp.PlanInstall(agentmcp.AgentCodex, opts)
-			require.NoError(t, err)
-			assert.False(t, plan.Changed)
-			if tc.http {
-				opts.Server.URL = "https://example.com/replacement"
-			} else {
-				opts.Server.Command = "replacement"
-			}
-			result, err := agentmcp.Install(agentmcp.AgentCodex, opts)
-			require.NoError(t, err)
-			doc := decodeConfig(t, agentmcp.AgentCodex, result.Data)
-			entry := doc["mcp_servers"].(map[string]any)["example"].(map[string]any)
-			if tc.http {
-				assert.Equal(t, "https://example.com/replacement", entry["url"])
-			} else {
-				assert.Equal(t, "replacement", entry["command"])
-			}
-			value, err := json.Marshal(entry[tc.key])
-			require.NoError(t, err)
-			assert.JSONEq(t, tc.json, string(value))
-			// Switching transport drops its old connection options, but keeps server policy.
-			opts.Server = agentmcp.Server{URL: "https://example.com/mcp"}
-			if tc.http {
-				opts.Server = agentmcp.Server{Command: "example"}
-			}
-			result, err = agentmcp.Install(agentmcp.AgentCodex, opts)
-			require.NoError(t, err)
-			doc = decodeConfig(t, agentmcp.AgentCodex, result.Data)
-			entry = doc["mcp_servers"].(map[string]any)["example"].(map[string]any)
-			if tc.transport {
-				assert.NotContains(t, entry, tc.key)
-			} else {
-				value, err = json.Marshal(entry[tc.key])
-				require.NoError(t, err)
-				assert.JSONEq(t, tc.json, string(value))
-			}
-		})
-	}
-	for _, tc := range []struct {
-		field       string
-		wantChanged bool
-	}{
-		{"enabled=true", false},
-		{"env={}", false},
-		{"args=[]", false},
-		{"enabled=false", true},
-	} {
-		t.Run("codex "+tc.field, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "config.toml")
-			require.NoError(t, os.WriteFile(path, []byte("[mcp_servers.example]\ncommand='example'\n"+tc.field+"\n"), 0o600))
-			opts := agentmcp.InstallOptions{ConfigPath: path, Name: "example", Server: agentmcp.Server{Command: "example"}}
-			plan, err := agentmcp.PlanInstall(agentmcp.AgentCodex, opts)
-			require.NoError(t, err)
-			assert.Equal(t, tc.wantChanged, plan.Changed)
-			if tc.wantChanged {
-				_, err = agentmcp.Install(agentmcp.AgentCodex, opts)
-				require.NoError(t, err)
-				plan, err = agentmcp.PlanInstall(agentmcp.AgentCodex, opts)
-				require.NoError(t, err)
-				assert.False(t, plan.Changed)
-			}
-		})
-	}
 	t.Run("claude empty fields", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "config")
 		original := []byte(`{"mcpServers":{"example":{"type":"stdio","command":"example","args":[],"env":{}}}}`)
@@ -238,7 +134,7 @@ example = { command = "old", env_vars = [{ name = "HOME", source = "local" }], t
 		stdio   string
 	}{
 		{agentmcp.AgentClaude, `{"keep":9007199254740993,"mcpServers":{"other":{"command":"other"}}}`, "mcpServers", `{"type":"http","url":"http://localhost:1234/mcp","headers":{"Authorization":"Bearer test"}}`, `{"type":"stdio","command":"example","args":["mcp","serve"],"env":{"EXAMPLE_MODE":"local"}}`},
-		{agentmcp.AgentCodex, "keep = 9007199254740993\n[mcp_servers.other]\ncommand = 'other'\n", "mcp_servers", `{"url":"http://localhost:1234/mcp","http_headers":{"Authorization":"Bearer test"}}`, `{"command":"example","args":["mcp","serve"],"env":{"EXAMPLE_MODE":"local"}}`},
+		{agentmcp.AgentCodex, "keep = 9007199254740993\n[mcp_servers.other]\ncommand = 'other'\n[mcp_servers.'example.with.dot']\ncommand='old'\nrequired=true\nenv_vars=[{name='HOME',source='local'}]\ntools={search={approval_mode='auto'}}\n", "mcp_servers", `{"url":"http://localhost:1234/mcp","http_headers":{"Authorization":"Bearer test"}}`, `{"command":"example","args":["mcp","serve"],"env":{"EXAMPLE_MODE":"local"}}`},
 		{agentmcp.AgentCopilot, `{"keep":9007199254740993,"mcpServers":{"other":{"command":"other"}}}`, "mcpServers", `{"type":"http","url":"http://localhost:1234/mcp","headers":{"Authorization":"Bearer test"},"tools":["*"]}`, `{"type":"local","command":"example","args":["mcp","serve"],"env":{"EXAMPLE_MODE":"local"},"tools":["*"]}`},
 		{agentmcp.AgentCursor, `{"keep":9007199254740993,"mcpServers":{"other":{"command":"other"}}}`, "mcpServers", `{"url":"http://localhost:1234/mcp","headers":{"Authorization":"Bearer test"}}`, `{"command":"example","args":["mcp","serve"],"env":{"EXAMPLE_MODE":"local"}}`},
 		{agentmcp.AgentDroid, `{"keep":9007199254740993,"mcpServers":{"other":{"command":"other"}}}`, "mcpServers", `{"type":"http","url":"http://localhost:1234/mcp","headers":{"Authorization":"Bearer test"}}`, `{"type":"stdio","command":"example","args":["mcp","serve"],"env":{"EXAMPLE_MODE":"local"}}`},

@@ -9,7 +9,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func planDocument(agent Agent, original []byte, name string, entry map[string]any) ([]byte, bool, bool, error) {
+func planDocument(agent Agent, original []byte, name string, entry map[string]any, checkOnly bool) ([]byte, bool, bool, error) {
 	doc := map[string]any{}
 	if len(original) > 0 {
 		if agent == AgentCodex {
@@ -42,8 +42,18 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 	}
 	previous, present := servers[name]
 	if present {
-		if fields, ok := previous.(map[string]any); agent == AgentCodex && ok {
-			mergeCodexFields(fields, entry)
+		if fields, ok := previous.(map[string]any); checkOnly && ok {
+			dropEmptyFields(fields)
+			if fields["enabled"] == true {
+				delete(fields, "enabled")
+			}
+			for key := range fields {
+				switch key {
+				case "command", "args", "env", "url", "http_headers", "bearer_token_env_var", "enabled":
+				default:
+					delete(fields, key)
+				}
+			}
 		}
 		before, err := encodeDocument(agent, previous)
 		if err != nil {
@@ -57,6 +67,9 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 			return original, false, true, nil
 		}
 	}
+	if checkOnly {
+		return nil, true, present, nil
+	}
 	var data []byte
 	var err error
 	if agent == AgentHermes {
@@ -65,29 +78,6 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 		data, err = editTOML(original, name, entry)
 	}
 	return data, true, present, err
-}
-
-// mergeCodexFields keeps user-owned Codex settings that still apply to entry.
-func mergeCodexFields(fields, entry map[string]any) {
-	dropEmptyFields(fields)
-	if fields["enabled"] == true {
-		delete(fields, "enabled")
-	}
-	for key, value := range fields {
-		switch key {
-		case "command", "args", "env", "url", "http_headers", "bearer_token_env_var", "enabled":
-			continue // Setup owns these fields.
-		case "cwd", "env_vars":
-			if entry["command"] == nil {
-				continue
-			}
-		case "env_http_headers", "auth", "oauth", "oauth_resource", "http_headers_helper":
-			if entry["url"] == nil {
-				continue
-			}
-		}
-		entry[key] = value
-	}
 }
 
 // dropEmptyFields removes the empty args and env written by agent add commands.
