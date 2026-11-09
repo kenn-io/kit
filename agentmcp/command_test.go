@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/shlex"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/agentmcp"
@@ -14,22 +15,23 @@ import (
 
 func TestCommand(t *testing.T) {
 	for _, tc := range []struct {
-		name          string
-		agent         agentmcp.Agent
-		serverName    string
-		server        agentmcp.Server
-		want, wantErr string
+		name       string
+		agent      agentmcp.Agent
+		serverName string
+		server     agentmcp.Server
+		want       []string
+		wantErr    string
 	}{
-		{"claude stdio", agentmcp.AgentClaude, "example", agentmcp.Server{Command: "example", Args: []string{"--serve"}, Env: map[string]string{"B": "two", "A": "one"}}, `claude mcp add --scope user --env 'A=one' --env 'B=two' -- example example --serve`, ""},
-		{"codex stdio", agentmcp.AgentCodex, "example", agentmcp.Server{Command: "example", Args: []string{"--serve"}}, "codex mcp add -- example example --serve", ""},
-		{"codex bearer HTTP", agentmcp.AgentCodex, "example", agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "TOKEN"}, "codex mcp add --url https://example.com/mcp --bearer-token-env-var TOKEN -- example", ""},
-		{"claude bearer HTTP", agentmcp.AgentClaude, "example", agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "TOKEN"}, `claude mcp add --scope user --transport http --header 'Authorization: Bearer ${TOKEN}' -- example https://example.com/mcp`, ""},
-		{"claude rejects dots", agentmcp.AgentClaude, "a.b", agentmcp.Server{Command: "example"}, "", "server name"},
-		{"claude rejects non-ASCII", agentmcp.AgentClaude, "café", agentmcp.Server{Command: "example"}, "", "server name"},
-		{"codex rejects hash", agentmcp.AgentCodex, "a#b", agentmcp.Server{Command: "example"}, "", "server name"},
-		{"codex accepts punctuation", agentmcp.AgentCodex, "a.b@c:d/e", agentmcp.Server{Command: "example"}, "codex mcp add -- 'a.b@c:d/e' example", ""},
-		{"codex rejects literal HTTP headers", agentmcp.AgentCodex, "example", agentmcp.Server{URL: "https://example.com/mcp", Headers: map[string]string{"X-Key": "secret"}}, "", "HTTP headers"},
-		{"cursor unavailable", agentmcp.AgentCursor, "example", agentmcp.Server{Command: "example"}, "", "unavailable"},
+		{"claude stdio", agentmcp.AgentClaude, "example", agentmcp.Server{Command: "example", Args: []string{"--serve"}, Env: map[string]string{"B": "two", "A": "one"}}, []string{"claude", "mcp", "add", "--scope", "user", "--env", "A=one", "--env", "B=two", "--", "example", "example", "--serve"}, ""},
+		{"codex stdio", agentmcp.AgentCodex, "example", agentmcp.Server{Command: "example", Args: []string{"--serve"}}, []string{"codex", "mcp", "add", "--", "example", "example", "--serve"}, ""},
+		{"codex bearer HTTP", agentmcp.AgentCodex, "example", agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "TOKEN"}, []string{"codex", "mcp", "add", "--url", "https://example.com/mcp", "--bearer-token-env-var", "TOKEN", "--", "example"}, ""},
+		{"claude bearer HTTP", agentmcp.AgentClaude, "example", agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "TOKEN"}, []string{"claude", "mcp", "add", "--scope", "user", "--transport", "http", "--header", "Authorization: Bearer ${TOKEN}", "--", "example", "https://example.com/mcp"}, ""},
+		{"claude rejects dots", agentmcp.AgentClaude, "a.b", agentmcp.Server{Command: "example"}, nil, "server name"},
+		{"claude rejects non-ASCII", agentmcp.AgentClaude, "café", agentmcp.Server{Command: "example"}, nil, "server name"},
+		{"codex rejects hash", agentmcp.AgentCodex, "a#b", agentmcp.Server{Command: "example"}, nil, "server name"},
+		{"codex accepts punctuation", agentmcp.AgentCodex, "a.b@c:d/e", agentmcp.Server{Command: "example"}, []string{"codex", "mcp", "add", "--", "a.b@c:d/e", "example"}, ""},
+		{"codex rejects literal HTTP headers", agentmcp.AgentCodex, "example", agentmcp.Server{URL: "https://example.com/mcp", Headers: map[string]string{"X-Key": "secret"}}, nil, "HTTP headers"},
+		{"cursor unavailable", agentmcp.AgentCursor, "example", agentmcp.Server{Command: "example"}, nil, "unavailable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			command, err := agentmcp.Command(tc.agent, tc.serverName, tc.server)
@@ -37,7 +39,9 @@ func TestCommand(t *testing.T) {
 				require.ErrorContains(t, err, tc.wantErr)
 			} else {
 				require.NoError(t, err)
-				assert.Equal(t, tc.want, command.POSIX)
+				argv, err := shlex.Split(command.POSIX)
+				require.NoError(t, err)
+				assert.Equal(t, tc.want, argv)
 			}
 		})
 	}
