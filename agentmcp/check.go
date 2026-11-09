@@ -51,12 +51,10 @@ func Check(ctx context.Context, agent Agent, name string, server Server) (CheckR
 		err = nil
 	}
 	var changed, present bool
-	if err == nil {
-		if agent == AgentCodex {
-			_, changed, present, err = planDocument(agent, original, name, entry, true)
-		} else {
-			_, changed, present, err = planConfig(agent, original, name, entry)
-		}
+	if err == nil && agent == AgentCodex {
+		_, changed, present, err = planDocument(agent, original, name, entry, true)
+	} else if err == nil {
+		_, changed, present, err = planConfig(agent, original, name, entry)
 	}
 	switch {
 	case err != nil:
