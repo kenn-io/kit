@@ -1,6 +1,6 @@
 ---
 title: "Shared CLI design guidance"
-description: "Help, output, result hint, error, exit code, and migration conventions for kenn-io CLIs."
+description: "Help, output, result hints, error, exit code, and migration conventions for kenn-io CLIs."
 last_edited: 2026-11-09
 ---
 
@@ -196,14 +196,15 @@ When a successful result is empty or incomplete, report each measured cause
 on its own stderr line in human and agent output, in the shape
 `Hint: <what was left out or missing>; <next command>`. Use the CLI's
 established `Hint:` or `hint:` prefix. Include a next command only when it
-returns the missing results. Keep results on stdout and preserve released JSON
-shapes.
+exists and returns the missing results. Keep results on stdout and existing
+JSON fields unchanged.
 
-JSON objects carry a `hints` array with `code` and `message`, and `next` when
-applicable. MCP hints carry `code` and `message`, and `retry_with` only when
-the measured arguments return the missing result. Each `code` is a stable
-snake_case reason identifier. A bare JSON array stays an array and carries its
-hints on stderr.
+JSON objects carry a `hints` array with `code` and `message`, and `next` only
+when the command exists and returns the missing results. Do not duplicate
+these hints on stderr. MCP hints carry `code` and `message`, and `retry_with`
+only when the measured arguments return the missing result. Each `code` is a
+stable snake_case reason identifier. A bare JSON array stays an array and
+carries its hints on stderr.
 
 Report only measured causes. Run extra counting queries only for empty results,
 and run no extra query for a complete page. Hints do not change search behavior.
