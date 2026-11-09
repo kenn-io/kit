@@ -48,6 +48,8 @@ func TestCheckConfigStates(t *testing.T) {
 				data, err := os.ReadFile(path)
 				require.NoError(t, err)
 				assert.Equal(t, tc.config, string(data))
+			} else {
+				assert.NoFileExists(t, path)
 			}
 		})
 	}
