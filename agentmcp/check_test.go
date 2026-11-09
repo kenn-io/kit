@@ -22,7 +22,7 @@ func TestCheckConfigStates(t *testing.T) {
 		{"missing file", "", agentmcp.AgentClaude, agentmcp.CheckMissing, "The named MCP server is missing", "Install the application's MCP server"},
 		{"missing name", `{"mcpServers":{"other":{"command":"other"}}}`, agentmcp.AgentClaude, agentmcp.CheckMissing, "The named MCP server is missing", "Install the application's MCP server"},
 		{"outdated Claude", `{"mcpServers":{"example":{"type":"stdio","command":"different"}}}`, agentmcp.AgentClaude, agentmcp.CheckOutdated, "The installed MCP server differs from the requested server", "Reinstall the application's MCP server"},
-		{"changed connection", "[mcp_servers.example]\ncommand='different'\nrequired=true\n", agentmcp.AgentCodex, agentmcp.CheckOutdated, "The installed MCP server differs from the requested server", "Reinstall the application's MCP server"},
+		{"changed connection", "[mcp_servers.example]\ncommand='different'\n", agentmcp.AgentCodex, agentmcp.CheckOutdated, "The installed MCP server differs from the requested server", "Reinstall the application's MCP server"},
 		{"disabled", "[mcp_servers.example]\ncommand='example'\nenabled=false\n", agentmcp.AgentCodex, agentmcp.CheckOutdated, "The installed MCP server differs from the requested server", "Reinstall the application's MCP server"},
 		{"malformed", `{"mcpServers":null}`, agentmcp.AgentClaude, agentmcp.CheckUnknown, "mcpServers must be an object", "Correct the agent MCP config"},
 		{"unsupported native check", "", agentmcp.AgentCopilot, agentmcp.CheckUnknown, "Native MCP inspection is unavailable for this agent", "Inspect the server in the agent"},
@@ -78,10 +78,13 @@ func TestCheckCodex(t *testing.T) {
 			t.Setenv("CODEX_HOME", t.TempDir())
 			t.Setenv("KIT_MCP_CHECK_HELPER", "codex")
 			t.Setenv("KIT_MCP_CHECK_REPLY", tc.reply)
-			installed, err := agentmcp.Install(agentmcp.AgentCodex, agentmcp.InstallOptions{Name: "example", Server: agentmcp.Server{Command: "example"}})
-			require.NoError(t, err)
 			if tc.config != "" {
-				require.NoError(t, os.WriteFile(installed.ConfigPath, []byte(tc.config), 0o600))
+				path, err := agentmcp.ConfigPath(agentmcp.AgentCodex)
+				require.NoError(t, err)
+				require.NoError(t, os.WriteFile(path, []byte(tc.config), 0o600))
+			} else {
+				_, err := agentmcp.Install(agentmcp.AgentCodex, agentmcp.InstallOptions{Name: "example", Server: agentmcp.Server{Command: "example"}})
+				require.NoError(t, err)
 			}
 			ctx := t.Context()
 			if tc.expired {
