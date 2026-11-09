@@ -61,7 +61,15 @@ func TestInstalledClients(t *testing.T) {
 	}
 	executable, err := os.Executable()
 	require.NoError(t, err)
-	remote := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return fixtureServer() }, nil))
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return fixtureServer() }, nil)
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/bearer" && r.Header.Get("Authorization") != "Bearer fixture-token" ||
+			r.URL.Path == "/header" && r.Header.Get("X-Test") != "fixture header" {
+			http.Error(w, "incorrect fixture credential", http.StatusForbidden)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	}))
 	defer remote.Close()
 	for _, agent := range []agentmcp.Agent{agentmcp.AgentCodex, agentmcp.AgentClaude} {
 		t.Run(string(agent), func(t *testing.T) {
@@ -72,6 +80,7 @@ func TestInstalledClients(t *testing.T) {
 			t.Setenv("CLAUDE_CONFIG_DIR", dir)
 			t.Setenv("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
 			t.Setenv("KIT_MCP_TOKEN", "fixture-token")
+			t.Setenv("KIT_MCP_WRONG_TOKEN", "incorrect-token")
 			t.Chdir(dir)
 			type testCase struct {
 				name   string
@@ -82,10 +91,13 @@ func TestInstalledClients(t *testing.T) {
 				{"working", agentmcp.Server{Command: executable, Args: []string{"kit-mcp-stdio"}, Env: map[string]string{"KIT_MCP_FIXTURE": "value with spaces"}}, agentmcp.CheckOK},
 				{"missing-binary", agentmcp.Server{Command: "kit-missing-mcp-binary"}, agentmcp.CheckFailed},
 				{"http", agentmcp.Server{URL: remote.URL}, agentmcp.CheckOK},
-				{"http-bearer", agentmcp.Server{URL: remote.URL, BearerTokenEnvVar: "KIT_MCP_TOKEN"}, agentmcp.CheckOK},
+				{"http-bearer", agentmcp.Server{URL: remote.URL + "/bearer", BearerTokenEnvVar: "KIT_MCP_TOKEN"}, agentmcp.CheckOK},
+				{"http-bearer-wrong", agentmcp.Server{URL: remote.URL + "/bearer", BearerTokenEnvVar: "KIT_MCP_WRONG_TOKEN"}, agentmcp.CheckFailed},
 			}
 			if agent == agentmcp.AgentClaude {
-				cases = append(cases, testCase{"http-header", agentmcp.Server{URL: remote.URL, Headers: map[string]string{"X-Test": "fixture header"}}, agentmcp.CheckOK})
+				cases = append(cases,
+					testCase{"http-header", agentmcp.Server{URL: remote.URL + "/header", Headers: map[string]string{"X-Test": "fixture header"}}, agentmcp.CheckOK},
+					testCase{"http-header-wrong", agentmcp.Server{URL: remote.URL + "/header", Headers: map[string]string{"X-Test": "incorrect header"}}, agentmcp.CheckFailed})
 			}
 			for _, tc := range cases {
 				t.Run(tc.name, func(t *testing.T) {
@@ -106,7 +118,7 @@ func TestInstalledClients(t *testing.T) {
 					result, err := agentmcp.Check(ctx, agent, opts)
 					require.NoError(t, err)
 					assert.Equal(t, tc.state, result.State, result.Reason)
-					if tc.state == agentmcp.CheckFailed {
+					if tc.name == "missing-binary" {
 						if agent == agentmcp.AgentCodex {
 							assert.Contains(t, result.Reason, "MCP startup failed:")
 						} else {

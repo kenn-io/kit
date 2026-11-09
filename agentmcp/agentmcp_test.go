@@ -108,19 +108,6 @@ func TestMarshalConfigInvalid(t *testing.T) {
 }
 
 func TestInstall(t *testing.T) {
-	t.Run("codex startup timeout", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "config.toml")
-		require.NoError(t, os.WriteFile(path, []byte("[mcp_servers.example]\ncommand='example'\nstartup_timeout_sec=30\n"), 0o600))
-		opts := agentmcp.InstallOptions{ConfigPath: path, Name: "example", Server: agentmcp.Server{Command: "example"}}
-		plan, err := agentmcp.PlanInstall(agentmcp.AgentCodex, opts)
-		require.NoError(t, err)
-		assert.False(t, plan.Changed)
-		opts.Server.Command = "replacement"
-		result, err := agentmcp.Install(agentmcp.AgentCodex, opts)
-		require.NoError(t, err)
-		doc := decodeConfig(t, agentmcp.AgentCodex, result.Data)
-		assert.Equal(t, map[string]any{"command": "replacement", "startup_timeout_sec": int64(30)}, doc["mcp_servers"].(map[string]any)["example"])
-	})
 	t.Run("claude empty fields", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "config")
 		original := []byte(`{"mcpServers":{"example":{"type":"stdio","command":"example","args":[ ],"env":{ }}}}`)

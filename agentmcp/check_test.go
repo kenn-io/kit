@@ -2,6 +2,7 @@ package agentmcp_test
 
 import (
 	"bufio"
+	"encoding/json/v2"
 	"fmt"
 	"io"
 	"os"
@@ -91,7 +92,6 @@ func TestCheckCodex(t *testing.T) {
 		reason      string
 	}{
 		{"tools", `{"data":[{"name":"example","tools":{"search":{},"read":{}},"toolsError":null}]}`, agentmcp.CheckOK, 2, ""},
-		{"startup timeout", `{"data":[{"name":"example","tools":{}}]}`, agentmcp.CheckOK, 0, ""},
 		{"empty catalog", `{"data":[{"name":"example","tools":{}}]}`, agentmcp.CheckOK, 0, ""},
 		{"handshake failure", `{"data":[{"name":"example","tools":{},"toolsError":"MCP startup failed: handshaking with MCP server failed: connection closed: initialize response"}]}`, agentmcp.CheckFailed, 0, "MCP startup failed: handshaking with MCP server failed: connection closed: initialize response"},
 		{"different server only", `{"data":[{"name":"other","tools":{}}]}`, agentmcp.CheckUnknown, 0, "did not report"},
@@ -103,16 +103,43 @@ func TestCheckCodex(t *testing.T) {
 			opts := agentmcp.InstallOptions{Name: "example", Server: agentmcp.Server{Command: "example"}}
 			_, err := agentmcp.Install(agentmcp.AgentCodex, opts)
 			require.NoError(t, err)
-			if tc.name == "startup timeout" {
-				path, err := agentmcp.ConfigPath(agentmcp.AgentCodex)
-				require.NoError(t, err)
-				require.NoError(t, os.WriteFile(path, []byte("[mcp_servers.example]\ncommand='example'\nstartup_timeout_sec=30\n"), 0o600))
-			}
 			result, err := agentmcp.Check(t.Context(), agentmcp.AgentCodex, opts)
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, result.State, result.Reason)
 			assert.Equal(t, tc.count, result.ToolCount)
 			assert.Contains(t, result.Reason, tc.reason)
+		})
+	}
+}
+
+func TestCheckCodexUserSettings(t *testing.T) {
+	testserver.InstallExecutable(t, "codex")
+	t.Setenv("KIT_MCP_CHECK_HELPER", "codex")
+	t.Setenv("KIT_MCP_CHECK_REPLY", `{"data":[{"name":"example","tools":{}}]}`)
+	for _, tc := range []struct{ key, toml, json string }{
+		{"startup_timeout_sec", "30", "30"},
+		{"tool_timeout_sec", "60", "60"},
+		{"enabled_tools", "['ping']", `["ping"]`},
+		{"disabled_tools", "['delete']", `["delete"]`},
+	} {
+		t.Run(tc.key, func(t *testing.T) {
+			t.Setenv("CODEX_HOME", t.TempDir())
+			path, err := agentmcp.ConfigPath(agentmcp.AgentCodex)
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(path, []byte("[mcp_servers.example]\ncommand='example'\n"+tc.key+"="+tc.toml+"\n"), 0o600))
+			opts := agentmcp.InstallOptions{Name: "example", Server: agentmcp.Server{Command: "example"}}
+			checked, err := agentmcp.Check(t.Context(), agentmcp.AgentCodex, opts)
+			require.NoError(t, err)
+			assert.Equal(t, agentmcp.CheckOK, checked.State, checked.Reason)
+			opts.Server.Command = "replacement"
+			result, err := agentmcp.Install(agentmcp.AgentCodex, opts)
+			require.NoError(t, err)
+			doc := decodeConfig(t, agentmcp.AgentCodex, result.Data)
+			server := doc["mcp_servers"].(map[string]any)["example"].(map[string]any)
+			assert.Equal(t, "replacement", server["command"])
+			value, err := json.Marshal(server[tc.key])
+			require.NoError(t, err)
+			assert.JSONEq(t, tc.json, string(value))
 		})
 	}
 }

@@ -12,7 +12,8 @@ import (
 
 // InstallOptions registers one caller-owned server name. An existing entry
 // with that exact name is replaced, including any transport-specific options.
-// Codex's startup_timeout_sec tuning is retained.
+// Codex's startup_timeout_sec, tool_timeout_sec, enabled_tools, and disabled_tools
+// settings are retained.
 // ConfigPath overrides the user config path with a file using the same top-level
 // schema. Nested Claude local-scope entries and Copilot bare server maps are not
 // handled by this option. Use a stable, application-namespaced Name.

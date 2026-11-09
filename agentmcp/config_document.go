@@ -43,8 +43,10 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 	previous, present := servers[name]
 	if present {
 		if fields, ok := previous.(map[string]any); agent == AgentCodex && ok {
-			if timeout, ok := fields["startup_timeout_sec"]; ok {
-				entry["startup_timeout_sec"] = timeout
+			for _, key := range []string{"startup_timeout_sec", "tool_timeout_sec", "enabled_tools", "disabled_tools"} {
+				if value, ok := fields[key]; ok {
+					entry[key] = value
+				}
 			}
 		}
 		before, err := encodeDocument(agent, previous)
