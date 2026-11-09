@@ -1,6 +1,6 @@
 ---
 title: "Shared CLI design guidance"
-description: "Help, output, result hints, error, exit code, and migration conventions for kenn-io CLIs."
+description: "Help, output, result hints, error, exit code, and migration conventions for kenn-io CLIs, grounded in Kata, Roborev, and Docbank."
 last_edited: 2026-11-09
 ---
 
@@ -200,11 +200,11 @@ exists and returns the missing results. Keep stdout bytes unchanged in human,
 agent, and bare-array JSON output, and keep existing JSON fields unchanged.
 Kata's `--quiet` suppresses stderr hints while preserving structured JSON hints.
 
-JSON objects carry a `hints` array with `code` and `message`, and `next` only
-when the command exists and returns the missing results. Do not duplicate
-these hints on stderr. MCP results carry a `hints` array of objects with `code`
-and `message`, and `retry_with` only when the measured arguments return the
-missing result. The `retry_with` object contains only arguments to change. For
+JSON objects carry a `hints` array with `code` and `message`, and `next` for
+the next command when applicable. Do not duplicate these hints on stderr. MCP
+results carry a `hints` array of objects with `code` and `message`, and
+`retry_with` only when the measured arguments return the missing result. The
+`retry_with` object contains only arguments to change. For
 example, merge `{"include_one_shot": true}` into the original tool arguments,
 keeping the original query and other arguments. Each `code` is a stable
 snake_case reason identifier. A bare JSON array stays an array and carries its
@@ -217,7 +217,7 @@ These codes have shipped in the following changes:
 | Source | Codes |
 | --- | --- |
 | [AgentsView][agentsview-2797] | `excluded_one_shot`, `excluded_automated`, `excluded_children`, `excluded_combined`, `try_fts` |
-| [MsgVault][msgvault-1941] | `more_available`, `ranking_limit_reached`, `candidate_limit_reached` |
+| [MsgVault][msgvault-1941] vector/hybrid JSON | `more_available`, `ranking_limit_reached`, `candidate_limit_reached` |
 | [Docbank][docbank-1347] | `no_searchable_text`, `indexing_pending`, `every_word_required` |
 | [Roborev][roborev-1709] | `every_word_required` |
 | [Kata][kata-973] | `every_word_required`, `excluded_closed`, `excluded_open` |
