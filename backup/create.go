@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -431,6 +432,29 @@ func parentCacheAuthentic(cached *PageHashMap, parent *Manifest) bool {
 
 // attachmentListSegmentsMax bounds the list segments a snapshot names.
 const attachmentListSegmentsMax = 30
+
+// keptListSegments returns how many leading parent list segments a snapshot
+// inherits unchanged; the rest merge with the newRefs new refs into one
+// segment. A segment merges once the segment that would follow it is at
+// least as large, like a binary counter carrying, so each merge at least
+// doubles the segment an entry sits in. Every entry is therefore rewritten at
+// most log2(population) times, and a large settled list is never rewritten
+// for small growth. Merging continues past that rule only to stay within
+// attachmentListSegmentsMax.
+func keptListSegments(sizes []int, newRefs int) int {
+	merged := newRefs
+	for i, size := range slices.Backward(sizes) {
+		count := i + 1
+		if merged > 0 {
+			count++
+		}
+		if size > merged && count <= attachmentListSegmentsMax {
+			return i + 1
+		}
+		merged += size
+	}
+	return 0
+}
 
 // parentUnionShrank reports whether any hash the parent's attachment lists
 // enumerate is missing from the current frozen ref set. When true, the
