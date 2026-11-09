@@ -30,10 +30,10 @@ type CheckResult struct {
 
 // Check inspects active user config and asks Claude or Codex about one server.
 // It writes no config, but the agent may launch the configured server and update
-// its own runtime state. A config override outside active user config, an
-// unsupported native check, or an inconclusive probe returns CheckUnknown.
-func Check(ctx context.Context, agent Agent, opts InstallOptions) (CheckResult, error) {
-	entry, err := prepareConfig(agent, opts.Name, opts.Server)
+// its own runtime state. An unsupported native check or an inconclusive probe
+// returns CheckUnknown.
+func Check(ctx context.Context, agent Agent, name string, server Server) (CheckResult, error) {
+	entry, err := prepareConfig(agent, name, server)
 	if err != nil {
 		return CheckResult{}, err
 	}
@@ -46,24 +46,13 @@ func Check(ctx context.Context, agent Agent, opts InstallOptions) (CheckResult, 
 		result.Reason = "Native MCP inspection is unavailable for this agent"
 		return result, nil
 	}
-	if opts.ConfigPath != "" && opts.ConfigPath != path {
-		active, activeErr := os.Stat(path)
-		override, overrideErr := os.Stat(opts.ConfigPath)
-		same := activeErr == nil && overrideErr == nil && os.SameFile(active, override)
-		if !same {
-			result.ConfigPath = opts.ConfigPath
-			result.Reason = "The requested config is outside the active user config"
-			result.NextStep = "Set the agent config home to the requested config directory"
-			return result, nil
-		}
-	}
 	original, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		err = nil
 	}
 	var changed, present bool
 	if err == nil {
-		_, changed, present, err = planConfig(agent, original, opts.Name, entry)
+		_, changed, present, err = planConfig(agent, original, name, entry)
 	}
 	switch {
 	case err != nil:
@@ -73,9 +62,9 @@ func Check(ctx context.Context, agent Agent, opts InstallOptions) (CheckResult, 
 	case changed:
 		result.State, result.Reason, result.NextStep = CheckOutdated, "The installed MCP server differs from the requested server", "Reinstall the application's MCP server"
 	case agent == AgentCodex:
-		result = checkCodex(ctx, opts.Name, result)
+		result = checkCodex(ctx, name, result)
 	default:
-		result = checkClaude(ctx, opts.Name, result)
+		result = checkClaude(ctx, name, result)
 	}
 	return result, nil
 }

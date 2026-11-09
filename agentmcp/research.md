@@ -153,9 +153,9 @@ implementation evidence, not a current public stability guarantee.
 
 `Check` compares the active user registration before asking the agent to start
 one named server. Missing and changed entries return `missing` and `outdated`
-without launching an agent. Other profiles, config paths outside the active
-user home, incomplete status replies, missing agents, and ten-second probe
-limits return `unknown`. The caller can retry or inspect the agent directly.
+without launching an agent. Other profiles, incomplete status replies,
+missing agents, and ten-second probe limits return `unknown`. The caller can
+retry or inspect the agent directly.
 Checks write no config through kit, but agents can launch server processes and
 update their own runtime state.
 
