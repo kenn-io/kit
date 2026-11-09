@@ -71,7 +71,7 @@ func TestCheckCodex(t *testing.T) {
 		{"tools", `{"data":[{"name":"example","tools":{"search":{},"read":{}},"toolsError":null}]}`, agentmcp.CheckOK, 2, "Codex returned the server's tools", false, "", ""},
 		{"missing catalog", `{"data":[{"name":"example"}]}`, agentmcp.CheckUnknown, 0, "Codex did not return the server's tool catalog", false, "", "Inspect the server in the agent"},
 		{"tools error reported", `{"data":[{"name":"example","tools":{},"toolsError":"MCP startup failed: handshaking with MCP server failed: connection closed: initialize response"}]}`, agentmcp.CheckFailed, 0, "MCP startup failed: handshaking with MCP server failed: connection closed: initialize response", false, "", "Correct the server error and retry"},
-		{"different server only", `{"data":[]}`, agentmcp.CheckUnknown, 0, "Codex did not report the named MCP server", false, "", "Inspect the server in the agent"},
+		{"server absent from reply", `{"data":[]}`, agentmcp.CheckUnknown, 0, "Codex did not report the named MCP server", false, "", "Inspect the server in the agent"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("CODEX_HOME", t.TempDir())
