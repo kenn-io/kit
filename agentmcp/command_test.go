@@ -44,7 +44,7 @@ func TestCommand(t *testing.T) {
 	_, err = agentmcp.Command(agentmcp.AgentCodex, "example", agentmcp.Server{URL: "https://example.com/mcp", Headers: map[string]string{"X-Key": "secret"}})
 	require.ErrorContains(t, err, "HTTP headers")
 	_, err = agentmcp.Command(agentmcp.AgentCursor, "example", agentmcp.Server{Command: "example"})
-	require.Error(t, err)
+	require.ErrorContains(t, err, "unavailable")
 }
 
 // Run explicitly with KIT_MCP_LIVE_TEST=1 and installed Claude/Codex clients.
