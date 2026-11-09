@@ -164,8 +164,8 @@ provides `mcpServerStatus/list`, whose `serverName` parameter restricts
 discovery to the requested server. `toolsError` is the agent's failure reason;
 a tool catalog, including an empty catalog, reports success with its count.
 An entry with `enabled = false` differs from the requested one and is
-`outdated`. Status reads only user config, matching the active user config
-`Check` compares first.
+`outdated`. Without a thread, status loads system, user, and runtime settings
+[without discovering a project](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/app-server/src/config_manager.rs#L245-L258).
 
 Claude's [`mcp get`](https://code.claude.com/docs/en/mcp) reports `Scope`,
 `Status`, and, when present, `Issue`. Only a connected user entry with no issue
