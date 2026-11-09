@@ -30,9 +30,24 @@ type PackOptions struct {
 	// Zero examines every indexed entry, reading packed bytes for entries with
 	// a loose repair source. Positive values resume across calls on
 	// this Maintainer, up to the last entry present when the sweep started.
+	// A pass that fails or is canceled keeps the progress it made, except
+	// that it resumes before any repair it found but did not commit.
 	// A new Maintainer starts a fresh sweep.
 	MaxVerifyBytes int64
+	// MinSealBytes holds loose members until their combined logical size
+	// reaches it or the oldest reaches MaxLooseAge, so frequent passes do not
+	// seal one small pack each. Zero packs whatever is loose on every pass.
+	// Repairs of damaged packed entries are never held.
+	MinSealBytes int64
+	// MaxLooseAge seals loose members below MinSealBytes once the oldest
+	// loose file was modified at least this long ago. It applies only when
+	// MinSealBytes is positive; zero then selects 24 hours.
+	MaxLooseAge time.Duration
+	// Now dates loose ages. Zero uses the current time.
+	Now time.Time
 }
+
+const defaultMaxLooseAge = 24 * time.Hour
 
 // PackStats summarizes committed and repair outcomes.
 type PackStats struct {
@@ -58,7 +73,10 @@ type PackStats struct {
 	LooseOrphansRemoved        int
 	LooseOrphansDeferred       int
 	LooseOrphanSweepSuppressed bool
-	BudgetExhausted            bool
+	// LooseSealDeferred reports loose members left for a later pass because
+	// they were below MinSealBytes and younger than MaxLooseAge.
+	LooseSealDeferred bool
+	BudgetExhausted   bool
 }
 
 // Pack repairs inventory, reconciles orphan packs, packs loose members, and
@@ -68,7 +86,8 @@ func (m *Maintainer) Pack(ctx context.Context, opts PackOptions) (PackStats, err
 	if err := ctx.Err(); err != nil {
 		return stats, err
 	}
-	if opts.TargetSize < 0 || opts.MaxBytes < 0 || opts.MaxVerifyBytes < 0 {
+	if opts.TargetSize < 0 || opts.MaxBytes < 0 || opts.MaxVerifyBytes < 0 ||
+		opts.MinSealBytes < 0 || opts.MaxLooseAge < 0 {
 		return stats, ErrInvalidPolicy
 	}
 	lease, err := m.coordinator.AcquireMaintenance(ctx)
@@ -76,14 +95,8 @@ func (m *Maintainer) Pack(ctx context.Context, opts PackOptions) (PackStats, err
 		return stats, err
 	}
 	defer func() { _ = lease.Release() }()
-	// A failed pass must revisit any repair candidates that were not committed.
-	previous, previousEnd := m.verifiedThrough, m.verificationEnd
-	completed := false
-	defer func() {
-		if !completed {
-			m.verifiedThrough, m.verificationEnd = previous, previousEnd
-		}
-	}()
+	progress := verificationProgress{through: m.verifiedThrough, safe: m.verifiedThrough, end: m.verificationEnd}
+	defer func() { m.verifiedThrough, m.verificationEnd = progress.resume() }()
 	if err := pack.MkdirAllSynced(m.layout.PacksDir()); err != nil {
 		return stats, err
 	}
@@ -98,7 +111,7 @@ func (m *Maintainer) Pack(ctx context.Context, opts PackOptions) (PackStats, err
 	for _, reference := range inventory.References {
 		refs[reference.Hash] = reference
 	}
-	recoveries, err := m.dropDangling(ctx, &stats, refs, opts.MaxVerifyBytes)
+	recoveries, err := m.dropDangling(ctx, &stats, refs, opts.MaxVerifyBytes, &progress)
 	if err != nil {
 		return stats, err
 	}
@@ -110,8 +123,8 @@ func (m *Maintainer) Pack(ctx context.Context, opts PackOptions) (PackStats, err
 		return stats, err
 	}
 	// A packing budget can defer some verified repair candidates as well.
-	if stats.BudgetExhausted {
-		m.verifiedThrough, m.verificationEnd = previous, previousEnd
+	if !stats.BudgetExhausted {
+		progress.repairPending = false
 	}
 	pruned, err := m.catalog.PruneUnreferenced(ctx)
 	if err != nil {
@@ -131,8 +144,31 @@ func (m *Maintainer) Pack(ctx context.Context, opts PackOptions) (PackStats, err
 	if err := m.sweepLoose(ctx, refs, inventory.Complete, &stats); err != nil {
 		return stats, err
 	}
-	completed = true
 	return stats, nil
+}
+
+// verificationProgress tracks one pass through a bounded verification sweep.
+// Entries at or before through were examined; safe is the last of them
+// examined before the first repair this pass found.
+type verificationProgress struct {
+	through       IndexEntry
+	safe          IndexEntry
+	end           IndexEntry
+	repairPending bool
+	finished      bool
+}
+
+// resume returns the sweep bounds for the next pass. A repair that was found
+// but not committed must be found again, so the next pass starts before it.
+func (p *verificationProgress) resume() (through, end IndexEntry) {
+	switch {
+	case p.repairPending:
+		return p.safe, p.end
+	case p.finished:
+		return IndexEntry{}, IndexEntry{}
+	default:
+		return p.through, p.end
+	}
 }
 
 func (m *Maintainer) cleanPackStaging(ctx context.Context) error {
@@ -154,7 +190,7 @@ func (m *Maintainer) cleanPackStaging(ctx context.Context) error {
 }
 
 func (m *Maintainer) dropDangling(
-	ctx context.Context, stats *PackStats, refs map[Hash]Reference, maxVerifyBytes int64,
+	ctx context.Context, stats *PackStats, refs map[Hash]Reference, maxVerifyBytes int64, progress *verificationProgress,
 ) ([]Candidate, error) {
 	records, err := m.catalog.ListPackRecords(ctx)
 	if err != nil {
@@ -179,9 +215,9 @@ func (m *Maintainer) dropDangling(
 	}
 	// Physical ordering avoids reopening packs for hash-interleaved entries.
 	slices.SortFunc(indexed, compareVerificationEntry)
-	if maxVerifyBytes > 0 && m.verificationEnd == (IndexEntry{}) && len(indexed) > 0 {
+	if maxVerifyBytes > 0 && progress.end == (IndexEntry{}) && len(indexed) > 0 {
 		// New packs must not keep a sweep from returning to older entries.
-		m.verificationEnd = indexed[len(indexed)-1]
+		progress.end = indexed[len(indexed)-1]
 	}
 	var recoveries []Candidate
 	remaining := maxVerifyBytes
@@ -190,10 +226,10 @@ func (m *Maintainer) dropDangling(
 			return nil, err
 		}
 		if maxVerifyBytes > 0 {
-			if compareVerificationEntry(entry, m.verificationEnd) > 0 {
+			if compareVerificationEntry(entry, progress.end) > 0 {
 				break
 			}
-			if compareVerificationEntry(entry, m.verifiedThrough) <= 0 {
+			if compareVerificationEntry(entry, progress.through) <= 0 {
 				continue
 			}
 		}
@@ -207,15 +243,18 @@ func (m *Maintainer) dropDangling(
 		}
 		if recovery != nil {
 			recoveries = append(recoveries, *recovery)
+			progress.repairPending = true
 		}
 		stats.BlobsChecked++
 		if maxVerifyBytes > 0 {
 			remaining = max(0, remaining-max(1, entry.RawLen, entry.StoredLen))
-			m.verifiedThrough = entry
+			progress.through = entry
+			if !progress.repairPending {
+				progress.safe = entry
+			}
 		}
 	}
-	m.verifiedThrough = IndexEntry{}
-	m.verificationEnd = IndexEntry{}
+	progress.finished = true
 	return recoveries, nil
 }
 
@@ -268,6 +307,17 @@ func (m *Maintainer) repairIndexed(ctx context.Context, stats *PackStats, refs m
 }
 
 func (m *Maintainer) reconcileOrphans(ctx context.Context, refs map[Hash]Reference, stats *PackStats) error {
+	// One snapshot answers for every file in the walk. Maintenance records
+	// packs only under the lease this pass holds, and a restore must already
+	// exclude maintenance because its packs are uncataloged until it commits.
+	records, err := m.catalog.ListPackRecords(ctx)
+	if err != nil {
+		return err
+	}
+	recorded := make(map[string]struct{}, len(records))
+	for _, record := range records {
+		recorded[record.PackID] = struct{}{}
+	}
 	return filepath.WalkDir(m.layout.PacksDir(), func(path string, entry fs.DirEntry, walkErr error) error {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -282,9 +332,8 @@ func (m *Maintainer) reconcileOrphans(ctx context.Context, refs map[Hash]Referen
 		if !pack.IsValidPackID(packID) || filepath.Clean(path) != filepath.Clean(m.layout.PackPath(packID)) {
 			return nil
 		}
-		hasRecord, err := m.catalog.HasPackRecord(ctx, packID)
-		if err != nil || hasRecord {
-			return err
+		if _, ok := recorded[packID]; ok {
+			return nil
 		}
 		return m.reconcileOne(ctx, path, packID, refs, stats)
 	})
@@ -480,11 +529,58 @@ func (m *Maintainer) packLoose(ctx context.Context, opts PackOptions, stats *Pac
 	if err != nil {
 		return err
 	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	if !looseReadyToSeal(candidates, opts) {
+		stats.LooseSealDeferred = true
+		return nil
+	}
 	return m.packCandidates(ctx, candidates, opts, stats, packCandidatePolicy{
 		commit:       m.catalog.RecordPack,
 		openPin:      m.openVerificationPin,
 		removeSource: true,
 	})
+}
+
+// looseReadyToSeal reports whether loose members justify a new pack under
+// opts. A candidate without any readable path is ready so that packing reports
+// it as missing instead of hiding it until the age limit.
+func looseReadyToSeal(candidates []Candidate, opts PackOptions) bool {
+	if opts.MinSealBytes == 0 {
+		return true
+	}
+	seen := make(map[Hash]struct{}, len(candidates))
+	var total int64
+	for _, candidate := range candidates {
+		if _, duplicate := seen[candidate.Hash]; duplicate {
+			continue
+		}
+		seen[candidate.Hash] = struct{}{}
+		total += max(0, candidate.Size)
+		if total >= opts.MinSealBytes {
+			return true
+		}
+	}
+	maxAge := cmp.Or(opts.MaxLooseAge, defaultMaxLooseAge)
+	now := opts.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	sealBefore := now.Add(-maxAge)
+	for _, candidate := range candidates {
+		var modified time.Time
+		for _, path := range candidate.Paths {
+			if info, err := os.Lstat(path); err == nil {
+				modified = info.ModTime()
+				break
+			}
+		}
+		if modified.IsZero() || !modified.After(sealBefore) {
+			return true
+		}
+	}
+	return false
 }
 
 type packCatalogCommit func(context.Context, PackRecord, []Adoption) error

@@ -127,7 +127,7 @@ func TestRepackCatalogCASFailureKeepsSourceAuthority(t *testing.T) {
 	assert.FileExists(t, layout.PackPath(live.PackID))
 }
 
-func TestRewriteSourceRotatesBeforeExceedingOutputEntryLimit(t *testing.T) {
+func TestRewriteSourcesRotatesBeforeExceedingOutputEntryLimit(t *testing.T) {
 	require := require.New(t)
 	assert := assert.New(t)
 	layout := layoutForStoreTest(t)
@@ -141,7 +141,7 @@ func TestRewriteSourceRotatesBeforeExceedingOutputEntryLimit(t *testing.T) {
 	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
 	maintainer.limits.PackEntries = 1
 
-	result, err := maintainer.rewriteSource(t.Context(), first.PackID, entries, 0)
+	result, err := maintainer.rewriteSources(t.Context(), entries, 0)
 	require.NoError(err)
 	require.Len(result.records, 3)
 	for _, record := range result.records {

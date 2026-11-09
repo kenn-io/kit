@@ -51,9 +51,25 @@
   and leaves packing and required deletion checks active. Zero examines every
   indexed entry, reading packed bytes only as described above.
   Capture the last indexed entry at the start of each sweep
-  so continued ingestion cannot postpone revisiting older entries. A failed
-  pass or deferred repair retains both previous sweep bounds so uncommitted
-  repairs are revisited; a new maintainer starts a fresh sweep.
+  so continued ingestion cannot postpone revisiting older entries. A failed or
+  canceled pass keeps the entries it examined, so a deadline that keeps
+  expiring cannot pin the sweep to one window. A repair found but not
+  committed, through failure or a packing budget, moves the resume point back
+  to just before that repair so it is found again; never advance past an
+  uncommitted repair. A new maintainer starts a fresh sweep.
+
+## Pack growth
+
+- `PackOptions.MinSealBytes` and `MaxLooseAge` hold loose members so frequent
+  passes do not seal one small pack each. They never hold repairs, and a
+  candidate with no readable path counts as ready so packing reports it.
+- `RepackSelection.MergeBelowStored` is opt-in: existing callers scope repack
+  to chosen sources and count `PacksSelected`. Merges go through
+  `CommitRepack` with every source of a group, and admit whole groups against
+  `MaxBytes` so outputs stay near the target size.
+- Orphan reconciliation lists pack records once per pass. Pack records change
+  only under the maintenance lease or during a restore that already excludes
+  maintenance.
 
 ## Orphan removal
 
