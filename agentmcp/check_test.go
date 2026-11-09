@@ -49,6 +49,8 @@ func TestCheckConfigStates(t *testing.T) {
 		{"missing file", "", agentmcp.AgentClaude, agentmcp.CheckMissing},
 		{"missing name", `{"mcpServers":{"other":{"command":"other"}}}`, agentmcp.AgentClaude, agentmcp.CheckMissing},
 		{"outdated Claude", `{"mcpServers":{"example":{"type":"stdio","command":"different"}}}`, agentmcp.AgentClaude, agentmcp.CheckOutdated},
+		{"changed connection", "[mcp_servers.example]\ncommand='different'\nrequired=true\n", agentmcp.AgentCodex, agentmcp.CheckOutdated},
+		{"disabled", "[mcp_servers.example]\ncommand='example'\nenabled=false\n", agentmcp.AgentCodex, agentmcp.CheckOutdated},
 		{"malformed", `{"mcpServers":null}`, agentmcp.AgentClaude, agentmcp.CheckUnknown},
 		{"unsupported native check", "", agentmcp.AgentCopilot, agentmcp.CheckUnknown},
 	} {
@@ -90,8 +92,6 @@ func TestCheckCodex(t *testing.T) {
 		next        *string
 	}{
 		{"user settings and effective defaults", `{"data":[{"name":"example","tools":{}}]}`, agentmcp.CheckOK, 0, "Codex returned the server's tools", false, "[mcp_servers.example]\ncommand='example'\nenabled=true\nargs=[]\nenv={}\nrequired=true\nstartup_timeout_sec=30\nenv_vars=[{name='HOME',source='local'}]\ntools={search={approval_mode='auto'}}\n", assert.Equal, new("")},
-		{"changed connection", "", agentmcp.CheckOutdated, 0, "The installed MCP server differs from the requested server", false, "[mcp_servers.example]\ncommand='different'\nrequired=true\n", assert.Equal, new("Reinstall the application's MCP server")},
-		{"disabled", "", agentmcp.CheckOutdated, 0, "The installed MCP server differs from the requested server", false, "[mcp_servers.example]\ncommand='example'\nenabled=false\n", assert.Equal, new("Reinstall the application's MCP server")},
 		{"catalog readiness", `{"data":[{"name":"example","tools":{"ping":{}}}]}`, agentmcp.CheckUnknown, 0, "Codex catalog readiness does not confirm a live connection", false, "[mcp_servers.example]\ncommand='example'\nstartup_readiness='catalog'\n", assert.Equal, new("Inspect the server in the agent")},
 		{"deadline", "", agentmcp.CheckUnknown, 0, "context deadline exceeded", true, "", assert.Contains, nil},
 		{"tools", `{"data":[{"name":"example","tools":{"search":{},"read":{}},"toolsError":null}]}`, agentmcp.CheckOK, 2, "Codex returned the server's tools", false, "", assert.Equal, new("")},
