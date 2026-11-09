@@ -37,7 +37,8 @@ type PackOptions struct {
 	// MinSealBytes holds loose members until their combined logical size
 	// reaches it or the oldest reaches MaxLooseAge, so frequent passes do not
 	// seal one small pack each. Zero packs whatever is loose on every pass.
-	// Repairs of damaged packed entries are never held.
+	// Members that packing skips, such as oversized or missing ones, count
+	// toward neither limit. Repairs of damaged packed entries are never held.
 	MinSealBytes int64
 	// MaxLooseAge seals loose members below MinSealBytes once the oldest
 	// loose file was modified at least this long ago. It applies only when
@@ -532,7 +533,7 @@ func (m *Maintainer) packLoose(ctx context.Context, opts PackOptions, stats *Pac
 	if len(candidates) == 0 {
 		return nil
 	}
-	ready, err := looseReadyToSeal(ctx, m.layout.Root(), candidates, opts)
+	ready, err := m.looseReadyToSeal(ctx, candidates, opts, stats)
 	if err != nil {
 		return err
 	}
@@ -548,21 +549,15 @@ func (m *Maintainer) packLoose(ctx context.Context, opts PackOptions, stats *Pac
 }
 
 // looseReadyToSeal reports whether loose members justify a new pack under
-// opts. A logical candidate without any readable path is ready so that packing
-// reports it as missing instead of hiding it until the age limit.
-func looseReadyToSeal(ctx context.Context, root string, candidates []Candidate, opts PackOptions) (bool, error) {
+// opts. Members that packing always skips (oversized, conflicting sizes, or
+// with no existing path) never make a pass ready, so they cannot force a small
+// pack on every pass. When it holds the pass, it counts them in stats as
+// packing would.
+func (m *Maintainer) looseReadyToSeal(
+	ctx context.Context, candidates []Candidate, opts PackOptions, stats *PackStats,
+) (bool, error) {
 	if opts.MinSealBytes == 0 {
 		return true, nil
-	}
-	// Packing reads each hash from the union of its rows' paths, so judge
-	// readiness on the same merged view.
-	groups := mergeLogicalCandidates(candidates)
-	var total int64
-	for _, group := range groups {
-		total += max(0, group.Size)
-		if total >= opts.MinSealBytes {
-			return true, nil
-		}
 	}
 	maxAge := cmp.Or(opts.MaxLooseAge, defaultMaxLooseAge)
 	now := opts.Now
@@ -570,22 +565,53 @@ func looseReadyToSeal(ctx context.Context, root string, candidates []Candidate, 
 		now = time.Now()
 	}
 	sealBefore := now.Add(-maxAge)
-	for _, group := range groups {
+	var skipped PackStats
+	var total int64
+	// Packing reads each hash from the union of its rows' paths, so judge
+	// readiness on the same merged view.
+	for _, group := range mergeLogicalCandidates(candidates) {
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
-		var modified time.Time
-		for _, path := range group.Paths {
-			if info, err := os.Lstat(resolveCandidatePath(root, path)); err == nil {
-				modified = info.ModTime()
-				break
-			}
+		if group.err != nil || group.Size < 0 {
+			skipped.BlobsCorrupt++
+			continue
 		}
-		if modified.IsZero() || !modified.After(sealBefore) {
+		if group.Size > m.limits.BlobBytes {
+			skipped.BlobsDeferredOversized++
+			continue
+		}
+		modified, err := looseModTime(ctx, m.layout.Root(), group.Paths)
+		if err != nil {
+			return false, err
+		}
+		if modified.IsZero() {
+			skipped.BlobsMissing++
+			continue
+		}
+		total += group.Size
+		if total >= opts.MinSealBytes || !modified.After(sealBefore) {
 			return true, nil
 		}
 	}
+	stats.BlobsCorrupt += skipped.BlobsCorrupt
+	stats.BlobsDeferredOversized += skipped.BlobsDeferredOversized
+	stats.BlobsMissing += skipped.BlobsMissing
 	return false, nil
+}
+
+// looseModTime returns the modification time of the first existing path, or
+// the zero time when none exists.
+func looseModTime(ctx context.Context, root string, paths []string) (time.Time, error) {
+	for _, path := range paths {
+		if err := ctx.Err(); err != nil {
+			return time.Time{}, err
+		}
+		if info, err := os.Lstat(resolveCandidatePath(root, path)); err == nil {
+			return info.ModTime(), nil
+		}
+	}
+	return time.Time{}, nil
 }
 
 // resolveCandidatePath resolves a catalog candidate path, which may be

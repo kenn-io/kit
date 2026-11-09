@@ -176,17 +176,29 @@ func TestPackReconcilesOrphansFromOneRecordListing(t *testing.T) {
 }
 
 func TestPackHoldsSmallYoungLooseContent(t *testing.T) {
+	missingRow := func(layout Layout, hashes []Hash) Candidate {
+		return Candidate{Hash: hashes[0], Paths: []string{filepath.Join(layout.Root(), "missing-copy")}, Size: 1024}
+	}
+	oversizedRow := func(layout Layout, _ []Hash) Candidate {
+		hash := hashForTest([]byte("larger than the blob limit"))
+		return Candidate{Hash: hash, Paths: []string{layout.LoosePath(hash)}, Size: 1 << 40}
+	}
+	conflictingRow := func(layout Layout, hashes []Hash) Candidate {
+		return Candidate{Hash: hashes[1], Paths: []string{layout.LoosePath(hashes[1])}, Size: 4096}
+	}
 	tests := []struct {
-		name         string
-		minSealBytes int64
-		maxLooseAge  time.Duration
-		age          time.Duration
-		removeLoose  bool
-		relative     bool
-		staleRow     bool
-		wantSealed   int
-		wantDeferred bool
-		wantMissing  int
+		name          string
+		minSealBytes  int64
+		maxLooseAge   time.Duration
+		age           time.Duration
+		removeLoose   bool
+		relative      bool
+		extraRow      func(Layout, []Hash) Candidate
+		wantSealed    int
+		wantDeferred  bool
+		wantMissing   int
+		wantOversized int
+		wantCorrupt   int
 	}{
 		{name: "zero threshold seals every pass", wantSealed: 1},
 		{name: "below threshold and young", minSealBytes: 4096, maxLooseAge: time.Hour, age: time.Minute, wantDeferred: true},
@@ -196,13 +208,24 @@ func TestPackHoldsSmallYoungLooseContent(t *testing.T) {
 		},
 		{
 			name: "stale duplicate row below threshold and young", minSealBytes: 4096, maxLooseAge: time.Hour,
-			age: time.Minute, staleRow: true, wantDeferred: true,
+			age: time.Minute, extraRow: missingRow, wantDeferred: true,
 		},
 		{name: "threshold reached", minSealBytes: 2048, maxLooseAge: time.Hour, wantSealed: 1},
 		{name: "oldest reaches age", minSealBytes: 4096, maxLooseAge: time.Hour, age: time.Hour, wantSealed: 1},
 		{name: "default age not reached", minSealBytes: 4096, age: 23 * time.Hour, wantDeferred: true},
 		{name: "default age reached", minSealBytes: 4096, age: 24 * time.Hour, wantSealed: 1},
-		{name: "missing loose content is reported", minSealBytes: 4096, removeLoose: true, wantSealed: 1, wantMissing: 1},
+		{
+			name: "missing loose content is held and reported", minSealBytes: 4096, removeLoose: true,
+			wantDeferred: true, wantMissing: 1,
+		},
+		{
+			name: "oversized member is held and reported", minSealBytes: 4096, extraRow: oversizedRow,
+			wantDeferred: true, wantOversized: 1,
+		},
+		{
+			name: "conflicting sizes are held and reported", minSealBytes: 4096, extraRow: conflictingRow,
+			wantDeferred: true, wantCorrupt: 1,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -233,51 +256,60 @@ func TestPackHoldsSmallYoungLooseContent(t *testing.T) {
 				require.NoError(t, os.Remove(layout.LoosePath(hashes[0])))
 			}
 			var listing Catalog = catalog
-			if tt.staleRow {
-				listing = &staleRowCatalog{maintenanceCatalog: catalog, stale: Candidate{
-					Hash: hashes[0], Paths: []string{filepath.Join(layout.Root(), "missing-copy")}, Size: 1024,
-				}}
+			if tt.extraRow != nil {
+				listing = &extraRowCatalog{maintenanceCatalog: catalog, extra: tt.extraRow(layout, hashes)}
 			}
 			maintainer := newMaintainerForTest(t, listing, layout, DefaultLimits())
+			opts := PackOptions{MinSealBytes: tt.minSealBytes, MaxLooseAge: tt.maxLooseAge, Now: newest.Add(tt.age)}
 
-			stats, err := maintainer.Pack(t.Context(), PackOptions{
-				MinSealBytes: tt.minSealBytes, MaxLooseAge: tt.maxLooseAge, Now: newest.Add(tt.age),
-			})
-			require.NoError(t, err)
-			assert.Equal(t, tt.wantSealed, stats.PacksSealed)
-			assert.Equal(t, tt.wantDeferred, stats.LooseSealDeferred)
-			assert.Equal(t, tt.wantMissing, stats.BlobsMissing)
+			// A held pass must stay held when nothing changes, so it cannot
+			// seal one small pack per pass.
+			passes := 1
+			if tt.wantDeferred {
+				passes = 2
+			}
+			for range passes {
+				stats, err := maintainer.Pack(t.Context(), opts)
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantSealed, stats.PacksSealed)
+				assert.Equal(t, tt.wantDeferred, stats.LooseSealDeferred)
+				assert.Equal(t, tt.wantMissing, stats.BlobsMissing)
+				assert.Equal(t, tt.wantOversized, stats.BlobsDeferredOversized)
+				assert.Equal(t, tt.wantCorrupt, stats.BlobsCorrupt)
+			}
 			entries, _ := catalog.snapshot()
 			if tt.wantDeferred {
 				assert.Empty(t, entries)
-				got, _ := readStoreTest(t, maintainer.store, hashes[0])
-				assert.Equal(t, bytes.Repeat([]byte("a"), 1024), got)
+				got, _ := readStoreTest(t, maintainer.store, hashes[1])
+				assert.Equal(t, bytes.Repeat([]byte("b"), 1024), got)
 			}
 		})
 	}
 }
 
-// staleRowCatalog lists one extra unpacked row whose only path is missing,
-// ahead of the row that names the readable copy of the same hash.
-type staleRowCatalog struct {
+// extraRowCatalog lists one extra unpacked row ahead of the catalog's own.
+type extraRowCatalog struct {
 	*maintenanceCatalog
-	stale Candidate
+	extra Candidate
 }
 
-func (c *staleRowCatalog) ListUnpacked(ctx context.Context) ([]Candidate, error) {
+func (c *extraRowCatalog) ListUnpacked(ctx context.Context) ([]Candidate, error) {
 	candidates, err := c.maintenanceCatalog.ListUnpacked(ctx)
-	return append([]Candidate{c.stale}, candidates...), err
+	return append([]Candidate{c.extra}, candidates...), err
 }
 
-func TestLooseReadyToSealStopsWhenCanceled(t *testing.T) {
+func TestLooseSealReadinessStopsWhenCanceled(t *testing.T) {
 	layout := layoutForStoreTest(t)
 	hash := writeMaintenanceLoose(t, layout, bytes.Repeat([]byte("a"), 1024))
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
+	maintainer := newMaintainerForTest(t, newMaintenanceCatalog(), layout, DefaultLimits())
 
-	_, err := looseReadyToSeal(ctx, layout.Root(), []Candidate{
+	_, err := maintainer.looseReadyToSeal(ctx, []Candidate{
 		{Hash: hash, Paths: []string{layout.LoosePath(hash)}, Size: 1024},
-	}, PackOptions{MinSealBytes: 4096, MaxLooseAge: time.Hour})
+	}, PackOptions{MinSealBytes: 4096, MaxLooseAge: time.Hour}, &PackStats{})
+	require.ErrorIs(t, err, context.Canceled)
+	_, err = looseModTime(ctx, layout.Root(), []string{"missing-a", "missing-b", layout.LoosePath(hash)})
 	require.ErrorIs(t, err, context.Canceled)
 }
 

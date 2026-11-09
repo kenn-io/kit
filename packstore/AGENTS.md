@@ -62,8 +62,10 @@
 
 - `PackOptions.MinSealBytes` and `MaxLooseAge` hold loose members so frequent
   passes do not seal one small pack each. They never hold repairs. Readiness
-  merges rows of the same hash as packing does, and a hash with no readable
-  path in any row counts as ready so packing reports it.
+  merges rows of the same hash as packing does. Members packing always skips
+  (oversized, conflicting sizes, no existing path) never make a pass ready,
+  or one stuck member would force a small pack every pass; a held pass
+  counts them in `PackStats` as packing would.
 - `RepackSelection.MergeBelowStored` is opt-in: existing callers scope repack
   to chosen sources and count `PacksSelected`. Merges go through
   `CommitRepack` with every source of a group, and admit whole groups against
