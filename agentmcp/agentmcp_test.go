@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/BurntSushi/toml"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tailscale/hujson"
@@ -19,6 +20,17 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	if len(os.Args) == 2 && os.Args[1] == "kit-mcp-stdio" {
+		server := mcp.NewServer(&mcp.Implementation{Name: "kit-test", Version: "1"}, nil)
+		mcp.AddTool(server, &mcp.Tool{Name: "ping", Description: "Test tool"}, func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, struct{}, error) {
+			return &mcp.CallToolResult{}, struct{}{}, nil
+		})
+		// This standalone fixture runs until the agent closes its input.
+		if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	if mode := os.Getenv("KIT_MCP_CHECK_HELPER"); mode != "" {
 		os.Exit(runCheckHelper(mode))
 	}

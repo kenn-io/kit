@@ -93,6 +93,31 @@ func TestInstalledClients(t *testing.T) {
 					require.False(t, planned.Changed, "the manual command must register the same server")
 				})
 			}
+			if agent == agentmcp.AgentCodex {
+				executable, err := os.Executable()
+				require.NoError(t, err)
+				for _, tc := range []struct {
+					name   string
+					server agentmcp.Server
+					state  agentmcp.CheckState
+				}{
+					{"native working", agentmcp.Server{Command: executable, Args: []string{"kit-mcp-stdio"}}, agentmcp.CheckOK},
+					{"native missing binary", agentmcp.Server{Command: "kit-missing-mcp-binary"}, agentmcp.CheckFailed},
+				} {
+					t.Run(tc.name, func(t *testing.T) {
+						_, err := agentmcp.Install(agent, agentmcp.InstallOptions{Name: "native-example", Server: tc.server})
+						require.NoError(t, err)
+						result, err := agentmcp.Check(t.Context(), agent, "native-example", tc.server)
+						require.NoError(t, err)
+						assert.Equal(t, tc.state, result.State, result.Reason)
+						if tc.state == agentmcp.CheckOK {
+							assert.Equal(t, 1, result.ToolCount)
+						} else {
+							assert.Contains(t, result.Reason, "MCP startup failed:")
+						}
+					})
+				}
+			}
 		})
 	}
 }
