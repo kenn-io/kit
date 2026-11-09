@@ -50,15 +50,9 @@ func planJSON(agent Agent, original []byte, name string, entry map[string]any) (
 	}
 	previous, present := servers[name]
 	if present {
-		// Claude's own add command writes empty args and env.
 		var fields map[string]any
 		if agent == AgentClaude && json.Unmarshal(previous, &fields) == nil {
-			if args, ok := fields["args"].([]any); ok && len(args) == 0 {
-				delete(fields, "args")
-			}
-			if env, ok := fields["env"].(map[string]any); ok && len(env) == 0 {
-				delete(fields, "env")
-			}
+			dropEmptyFields(fields)
 			previous, _ = json.Marshal(fields)
 		}
 		if err := previous.Canonicalize(); err != nil {

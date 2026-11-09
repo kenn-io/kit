@@ -20,8 +20,7 @@ import (
 
 func runCheckHelper(mode string) int {
 	if strings.HasPrefix(mode, "claude") {
-		name := os.Getenv("KIT_MCP_CHECK_NAME")
-		if len(os.Args) != 5 || strings.Join(os.Args[1:4], " ") != "mcp get --" || os.Args[4] != name {
+		if len(os.Args) != 5 || strings.Join(os.Args[1:4], " ") != "mcp get --" || os.Args[4] != "example" {
 			return 2
 		}
 		fmt.Print(os.Getenv("KIT_MCP_CHECK_REPLY"))
@@ -91,27 +90,35 @@ func TestCheckConfigStates(t *testing.T) {
 func TestCheckCodex(t *testing.T) {
 	testserver.InstallExecutable(t, "codex")
 	for _, tc := range []struct {
-		name, reply string
-		want        agentmcp.CheckState
-		count       int
-		reason      string
-		expired     bool
+		name, reply      string
+		want             agentmcp.CheckState
+		count            int
+		reason           string
+		expired, symlink bool
 	}{
-		{"deadline", "", agentmcp.CheckUnknown, 0, "startup may need longer", true},
-		{"tools", `{"data":[{"name":"example","tools":{"search":{},"read":{}},"toolsError":null}]}`, agentmcp.CheckOK, 2, "", false},
-		{"missing catalog", `{"data":[{"name":"example"}]}`, agentmcp.CheckUnknown, 0, "did not return", false},
-		{"null catalog", `{"data":[{"name":"example","tools":null}]}`, agentmcp.CheckUnknown, 0, "did not return", false},
-		{"empty catalog", `{"data":[{"name":"example","tools":{}}]}`, agentmcp.CheckOK, 0, "", false},
-		{"handshake failure", `{"data":[{"name":"example","tools":{},"toolsError":"MCP startup failed: handshaking with MCP server failed: connection closed: initialize response"}]}`, agentmcp.CheckFailed, 0, "MCP startup failed: handshaking with MCP server failed: connection closed: initialize response", false},
-		{"different server only", `{"data":[{"name":"other","tools":{}}]}`, agentmcp.CheckUnknown, 0, "did not report", false},
+		{"symlinked override", `{"data":[{"name":"example","tools":{}}]}`, agentmcp.CheckOK, 0, "", false, true},
+		{"deadline", "", agentmcp.CheckUnknown, 0, "startup may need longer", true, false},
+		{"tools", `{"data":[{"name":"example","tools":{"search":{},"read":{}},"toolsError":null}]}`, agentmcp.CheckOK, 2, "", false, false},
+		{"missing catalog", `{"data":[{"name":"example"}]}`, agentmcp.CheckUnknown, 0, "did not return", false, false},
+		{"empty catalog", `{"data":[{"name":"example","tools":{}}]}`, agentmcp.CheckOK, 0, "", false, false},
+		{"handshake failure", `{"data":[{"name":"example","tools":{},"toolsError":"MCP startup failed: handshaking with MCP server failed: connection closed: initialize response"}]}`, agentmcp.CheckFailed, 0, "MCP startup failed: handshaking with MCP server failed: connection closed: initialize response", false, false},
+		{"different server only", `{"data":[{"name":"other","tools":{}}]}`, agentmcp.CheckUnknown, 0, "did not report", false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("CODEX_HOME", t.TempDir())
 			t.Setenv("KIT_MCP_CHECK_HELPER", "codex")
 			t.Setenv("KIT_MCP_CHECK_REPLY", tc.reply)
 			opts := agentmcp.InstallOptions{Name: "example", Server: agentmcp.Server{Command: "example"}}
-			_, err := agentmcp.Install(agentmcp.AgentCodex, opts)
+			installed, err := agentmcp.Install(agentmcp.AgentCodex, opts)
 			require.NoError(t, err)
+			if tc.symlink {
+				opts.ConfigPath = filepath.Join(t.TempDir(), "config.toml")
+				if err := os.Symlink(installed.ConfigPath, opts.ConfigPath); runtime.GOOS == "windows" && err != nil {
+					t.Skip("symlink creation requires privileges on Windows")
+				} else {
+					require.NoError(t, err)
+				}
+			}
 			ctx := t.Context()
 			if tc.expired {
 				var cancel context.CancelFunc
@@ -128,25 +135,6 @@ func TestCheckCodex(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestCheckActiveConfig(t *testing.T) {
-	testserver.InstallExecutable(t, "codex")
-	t.Setenv("KIT_MCP_CHECK_HELPER", "codex")
-	t.Setenv("KIT_MCP_CHECK_REPLY", `{"data":[{"name":"example","tools":{}}]}`)
-	t.Setenv("CODEX_HOME", t.TempDir())
-	opts := agentmcp.InstallOptions{Name: "example", Server: agentmcp.Server{Command: "example"}}
-	installed, err := agentmcp.Install(agentmcp.AgentCodex, opts)
-	require.NoError(t, err)
-	opts.ConfigPath = filepath.Join(t.TempDir(), "config.toml")
-	if err := os.Symlink(installed.ConfigPath, opts.ConfigPath); runtime.GOOS == "windows" && err != nil {
-		t.Skip("symlink creation requires privileges on Windows")
-	} else {
-		require.NoError(t, err)
-	}
-	result, err := agentmcp.Check(t.Context(), agentmcp.AgentCodex, opts)
-	require.NoError(t, err)
-	assert.Equal(t, agentmcp.CheckOK, result.State, result.Reason)
 }
 
 func TestCheckClaude(t *testing.T) {
@@ -172,7 +160,6 @@ func TestCheckClaude(t *testing.T) {
 			t.Setenv("KIT_MCP_CHECK_HELPER", tc.mode)
 			t.Setenv("KIT_MCP_CHECK_REPLY", tc.reply)
 			opts := agentmcp.InstallOptions{Name: "example", Server: agentmcp.Server{Command: "example"}}
-			t.Setenv("KIT_MCP_CHECK_NAME", opts.Name)
 			_, err := agentmcp.Install(agentmcp.AgentClaude, opts)
 			require.NoError(t, err)
 			ctx := t.Context()

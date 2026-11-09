@@ -169,7 +169,11 @@ An entry with `enabled = false` differs from the requested one and is
 Codex's per-server settings outside kit's connection fields are retained when
 checking and reinstalling, including `required`, timeouts, and tool approval
 settings ([pinned config type](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/config/src/mcp_types.rs)). Switching between stdio and HTTP drops
-the previous transport's connection options.
+the previous transport's connection options. Codex 0.166.0's
+[transport validation](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/config/src/mcp_types.rs#L513-L543)
+rejects `oauth`, `oauth_resource`, `auth`, `http_headers_helper`, and HTTP
+headers on stdio entries. HTTP entries reject `args`, `env`, `env_vars`, and
+`cwd`; those options must be removed when switching transports.
 
 Claude's [`mcp get`](https://code.claude.com/docs/en/mcp) reports `Scope`,
 `Status`, and, when present, `Issue`. Only a connected user entry with no issue

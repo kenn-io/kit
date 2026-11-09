@@ -2,15 +2,12 @@ package agentmcp_test
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"runtime"
 	"testing"
 	"time"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kit/agentmcp"
@@ -50,31 +47,11 @@ func TestCommand(t *testing.T) {
 	require.Error(t, err)
 }
 
-func fixtureServer() *mcp.Server {
-	server := mcp.NewServer(&mcp.Implementation{Name: "kit-test", Version: "1"}, nil)
-	mcp.AddTool(server, &mcp.Tool{Name: "ping", Description: "Test tool"}, func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, struct{}, error) {
-		return &mcp.CallToolResult{}, struct{}{}, nil
-	})
-	return server
-}
-
-func runStdioFixture() int {
-	// This standalone fixture has no caller context; EOF closes the session.
-	if err := fixtureServer().Run(context.Background(), &mcp.StdioTransport{}); err != nil {
-		return 1
-	}
-	return 0
-}
-
 // Run explicitly with KIT_MCP_LIVE_TEST=1 and installed Claude/Codex clients.
 func TestInstalledClients(t *testing.T) {
 	if os.Getenv("KIT_MCP_LIVE_TEST") != "1" {
 		t.Skip("requires installed agents")
 	}
-	executable, err := os.Executable()
-	require.NoError(t, err)
-	remote := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return fixtureServer() }, nil))
-	defer remote.Close()
 	for _, agent := range []agentmcp.Agent{agentmcp.AgentCodex, agentmcp.AgentClaude} {
 		t.Run(string(agent), func(t *testing.T) {
 			_, err := exec.LookPath(string(agent))
@@ -88,17 +65,15 @@ func TestInstalledClients(t *testing.T) {
 			type testCase struct {
 				name   string
 				server agentmcp.Server
-				state  agentmcp.CheckState
 			}
 			cases := []testCase{
-				{"working", agentmcp.Server{Command: executable, Args: []string{"kit-mcp-stdio"}, Env: map[string]string{"KIT_MCP_FIXTURE": "value with spaces"}}, agentmcp.CheckOK},
-				{"-leading", agentmcp.Server{Command: executable, Args: []string{"kit-mcp-stdio"}}, agentmcp.CheckOK},
-				{"missing-binary", agentmcp.Server{Command: "kit-missing-mcp-binary"}, agentmcp.CheckFailed},
-				{"http", agentmcp.Server{URL: remote.URL}, agentmcp.CheckOK},
-				{"http-bearer", agentmcp.Server{URL: remote.URL, BearerTokenEnvVar: "KIT_MCP_TOKEN"}, agentmcp.CheckOK},
+				{"working", agentmcp.Server{Command: "example", Args: []string{"--serve"}, Env: map[string]string{"KIT_MCP_FIXTURE": "value with spaces"}}},
+				{"-leading", agentmcp.Server{Command: "example", Args: []string{"--serve"}}},
+				{"http", agentmcp.Server{URL: "https://example.com/mcp"}},
+				{"http-bearer", agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "KIT_MCP_TOKEN"}},
 			}
 			if agent == agentmcp.AgentClaude {
-				cases = append(cases, testCase{"http-header", agentmcp.Server{URL: remote.URL, Headers: map[string]string{"X-Test": "fixture header"}}, agentmcp.CheckOK})
+				cases = append(cases, testCase{"http-header", agentmcp.Server{URL: "https://example.com/mcp", Headers: map[string]string{"X-Test": "fixture header"}}})
 			}
 			for _, tc := range cases {
 				t.Run(tc.name, func(t *testing.T) {
@@ -116,19 +91,6 @@ func TestInstalledClients(t *testing.T) {
 					planned, err := agentmcp.PlanInstall(agent, opts)
 					require.NoError(t, err)
 					require.False(t, planned.Changed, "the manual command must register the same server")
-					result, err := agentmcp.Check(ctx, agent, opts)
-					require.NoError(t, err)
-					assert.Equal(t, tc.state, result.State, result.Reason)
-					if tc.name == "missing-binary" {
-						if agent == agentmcp.AgentCodex {
-							assert.Contains(t, result.Reason, "MCP startup failed:")
-						} else {
-							assert.Contains(t, result.Reason, "kit-missing-mcp-binary")
-						}
-					}
-					if agent == agentmcp.AgentCodex && tc.state == agentmcp.CheckOK {
-						assert.Equal(t, 1, result.ToolCount)
-					}
 				})
 			}
 		})

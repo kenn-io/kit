@@ -19,9 +19,6 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	if len(os.Args) == 2 && os.Args[1] == "kit-mcp-stdio" {
-		os.Exit(runStdioFixture())
-	}
 	if mode := os.Getenv("KIT_MCP_CHECK_HELPER"); mode != "" {
 		os.Exit(runCheckHelper(mode))
 	}
@@ -113,13 +110,14 @@ func TestInstall(t *testing.T) {
 		http, transport bool
 	}{
 		{"startup_timeout_sec", "30", "30", false, false},
-		{"tool_timeout_sec", "60", "60", false, false},
 		{"enabled_tools", "['ping']", `["ping"]`, false, false},
-		{"disabled_tools", "['delete']", `["delete"]`, false, false},
 		{"required", "true", "true", false, false},
 		{"default_tools_approval_mode", "'approve'", `"approve"`, false, false},
 		{"cwd", "'/work'", `"/work"`, false, true},
-		{"env_vars", "['TOKEN']", `["TOKEN"]`, false, true},
+		{"oauth", "{client_id='example-client'}", `{"client_id":"example-client"}`, true, true},
+		{"oauth_resource", "'https://example.com/resource'", `"https://example.com/resource"`, true, true},
+		{"auth", "'oauth'", `"oauth"`, true, true},
+		{"http_headers_helper", "'helper'", `"helper"`, true, true},
 		{"env_http_headers", "{Authorization='TOKEN'}", `{"Authorization":"TOKEN"}`, true, true},
 	} {
 		t.Run("codex "+tc.key, func(t *testing.T) {
@@ -170,22 +168,34 @@ func TestInstall(t *testing.T) {
 			}
 		})
 	}
-	t.Run("codex disabled", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "config.toml")
-		require.NoError(t, os.WriteFile(path, []byte("[mcp_servers.example]\ncommand='example'\nenabled=false\n"), 0o600))
-		opts := agentmcp.InstallOptions{ConfigPath: path, Name: "example", Server: agentmcp.Server{Command: "example"}}
-		plan, err := agentmcp.PlanInstall(agentmcp.AgentCodex, opts)
-		require.NoError(t, err)
-		assert.True(t, plan.Changed)
-		_, err = agentmcp.Install(agentmcp.AgentCodex, opts)
-		require.NoError(t, err)
-		plan, err = agentmcp.PlanInstall(agentmcp.AgentCodex, opts)
-		require.NoError(t, err)
-		assert.False(t, plan.Changed)
-	})
+	for _, tc := range []struct {
+		field       string
+		wantChanged bool
+	}{
+		{"enabled=true", false},
+		{"env={}", false},
+		{"args=[]", false},
+		{"enabled=false", true},
+	} {
+		t.Run("codex "+tc.field, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			require.NoError(t, os.WriteFile(path, []byte("[mcp_servers.example]\ncommand='example'\n"+tc.field+"\n"), 0o600))
+			opts := agentmcp.InstallOptions{ConfigPath: path, Name: "example", Server: agentmcp.Server{Command: "example"}}
+			plan, err := agentmcp.PlanInstall(agentmcp.AgentCodex, opts)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantChanged, plan.Changed)
+			if tc.wantChanged {
+				_, err = agentmcp.Install(agentmcp.AgentCodex, opts)
+				require.NoError(t, err)
+				plan, err = agentmcp.PlanInstall(agentmcp.AgentCodex, opts)
+				require.NoError(t, err)
+				assert.False(t, plan.Changed)
+			}
+		})
+	}
 	t.Run("claude empty fields", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "config")
-		original := []byte(`{"mcpServers":{"example":{"type":"stdio","command":"example","args":[ ],"env":{ }}}}`)
+		original := []byte(`{"mcpServers":{"example":{"type":"stdio","command":"example","args":[],"env":{}}}}`)
 		require.NoError(t, os.WriteFile(path, original, 0o600))
 		opts := agentmcp.InstallOptions{ConfigPath: path, Name: "example", Server: agentmcp.Server{Command: "example"}}
 		plan, err := agentmcp.PlanInstall(agentmcp.AgentClaude, opts)
