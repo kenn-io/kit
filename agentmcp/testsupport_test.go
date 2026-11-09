@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/stretchr/testify/require"
+	"go.kenn.io/kit/agentmcp"
 	"go.kenn.io/kit/internal/codexapp/testserver"
 )
 
@@ -60,4 +63,19 @@ func runCheckHelper(mode string) int {
 	fmt.Printf("{\"id\":%d,\"result\":%s}\n", request.ID, os.Getenv("KIT_MCP_CHECK_REPLY"))
 	_, _ = io.Copy(io.Discard, os.Stdin)
 	return 0
+}
+
+func setupInstalledAgent(t *testing.T, agent agentmcp.Agent) {
+	t.Helper()
+	if os.Getenv("KIT_MCP_LIVE_TEST") != "1" {
+		t.Skip("requires installed agents")
+	}
+	_, err := exec.LookPath(string(agent))
+	require.NoError(t, err)
+	dir := t.TempDir()
+	t.Setenv("CODEX_HOME", dir)
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+	t.Setenv("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
+	t.Setenv("CLAUDE_CODE_SAFE_MODE", "")
+	t.Chdir(dir)
 }
