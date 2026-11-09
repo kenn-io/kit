@@ -220,8 +220,6 @@ These codes have shipped in the following changes:
 | [Kata][kata-973] | `every_word_required`, `excluded_closed`, `excluded_open` |
 | [Forge][forge-1869] | `excluded_drafts`, `excluded_closed`, `excluded_default_state`, `every_word_required`, `limit_lowered` |
 
-Add new structured success-hint codes when their app change merges.
-
 MsgVault's `sender_name_requires_address` is historical: it shipped in
 [msgvault#1936][msgvault-1936] and was removed after sender matching changed
 in [msgvault#2022][msgvault-2022].
