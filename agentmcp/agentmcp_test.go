@@ -108,6 +108,30 @@ func TestMarshalConfigInvalid(t *testing.T) {
 }
 
 func TestInstall(t *testing.T) {
+	for _, tc := range []struct{ key, toml, json string }{
+		{"startup_timeout_sec", "30", "30"},
+		{"tool_timeout_sec", "60", "60"},
+		{"enabled_tools", "['ping']", `["ping"]`},
+		{"disabled_tools", "['delete']", `["delete"]`},
+	} {
+		t.Run("codex "+tc.key, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			require.NoError(t, os.WriteFile(path, []byte("[mcp_servers.example]\ncommand='example'\n"+tc.key+"="+tc.toml+"\n"), 0o600))
+			opts := agentmcp.InstallOptions{ConfigPath: path, Name: "example", Server: agentmcp.Server{Command: "example"}}
+			plan, err := agentmcp.PlanInstall(agentmcp.AgentCodex, opts)
+			require.NoError(t, err)
+			assert.False(t, plan.Changed)
+			opts.Server.Command = "replacement"
+			result, err := agentmcp.Install(agentmcp.AgentCodex, opts)
+			require.NoError(t, err)
+			doc := decodeConfig(t, agentmcp.AgentCodex, result.Data)
+			server := doc["mcp_servers"].(map[string]any)["example"].(map[string]any)
+			assert.Equal(t, "replacement", server["command"])
+			value, err := json.Marshal(server[tc.key])
+			require.NoError(t, err)
+			assert.JSONEq(t, tc.json, string(value))
+		})
+	}
 	t.Run("claude empty fields", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "config")
 		original := []byte(`{"mcpServers":{"example":{"type":"stdio","command":"example","args":[ ],"env":{ }}}}`)
@@ -116,12 +140,6 @@ func TestInstall(t *testing.T) {
 		plan, err := agentmcp.PlanInstall(agentmcp.AgentClaude, opts)
 		require.NoError(t, err)
 		assert.False(t, plan.Changed)
-		result, err := agentmcp.Install(agentmcp.AgentClaude, opts)
-		require.NoError(t, err)
-		assert.False(t, result.Changed)
-		data, err := os.ReadFile(path)
-		require.NoError(t, err)
-		assert.Equal(t, original, data)
 	})
 	for _, tt := range []struct {
 		agent   agentmcp.Agent

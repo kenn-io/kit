@@ -2,7 +2,6 @@ package agentmcp_test
 
 import (
 	"bufio"
-	"encoding/json/v2"
 	"fmt"
 	"io"
 	"os"
@@ -18,11 +17,15 @@ import (
 )
 
 func runCheckHelper(mode string) int {
-	if mode == "claude" {
-		if len(os.Args) != 4 || strings.Join(os.Args[1:], " ") != "mcp get example" {
+	if strings.HasPrefix(mode, "claude") {
+		name := os.Getenv("KIT_MCP_CHECK_NAME")
+		if len(os.Args) != 5 || strings.Join(os.Args[1:4], " ") != "mcp get --" || os.Args[4] != name {
 			return 2
 		}
 		fmt.Print(os.Getenv("KIT_MCP_CHECK_REPLY"))
+		if mode == "claude-failed" {
+			return 1
+		}
 		return 0
 	}
 	input := bufio.NewScanner(os.Stdin)
@@ -75,11 +78,7 @@ func TestCheckConfigStates(t *testing.T) {
 			}
 		})
 	}
-	result, err := agentmcp.Check(t.Context(), agentmcp.AgentCodex, agentmcp.InstallOptions{ConfigPath: filepath.Join(t.TempDir(), "config.toml"), Name: "example", Server: agentmcp.Server{Command: "example"}})
-	require.NoError(t, err)
-	assert.Equal(t, agentmcp.CheckUnknown, result.State)
-	assert.Contains(t, result.Reason, "outside the active")
-	_, err = agentmcp.Check(t.Context(), agentmcp.AgentClaude, agentmcp.InstallOptions{Name: "example"})
+	_, err := agentmcp.Check(t.Context(), agentmcp.AgentClaude, agentmcp.InstallOptions{Name: "example"})
 	require.Error(t, err)
 }
 
@@ -112,55 +111,38 @@ func TestCheckCodex(t *testing.T) {
 	}
 }
 
-func TestCheckCodexUserSettings(t *testing.T) {
+func TestCheckActiveConfig(t *testing.T) {
 	testserver.InstallExecutable(t, "codex")
 	t.Setenv("KIT_MCP_CHECK_HELPER", "codex")
 	t.Setenv("KIT_MCP_CHECK_REPLY", `{"data":[{"name":"example","tools":{}}]}`)
-	for _, tc := range []struct{ key, toml, json string }{
-		{"startup_timeout_sec", "30", "30"},
-		{"tool_timeout_sec", "60", "60"},
-		{"enabled_tools", "['ping']", `["ping"]`},
-		{"disabled_tools", "['delete']", `["delete"]`},
+	for _, tc := range []struct {
+		name    string
+		symlink bool
+		want    agentmcp.CheckState
+	}{
+		{"symlink", true, agentmcp.CheckOK},
+		{"outside", false, agentmcp.CheckUnknown},
 	} {
-		t.Run(tc.key, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("CODEX_HOME", t.TempDir())
-			path, err := agentmcp.ConfigPath(agentmcp.AgentCodex)
-			require.NoError(t, err)
-			require.NoError(t, os.WriteFile(path, []byte("[mcp_servers.example]\ncommand='example'\n"+tc.key+"="+tc.toml+"\n"), 0o600))
 			opts := agentmcp.InstallOptions{Name: "example", Server: agentmcp.Server{Command: "example"}}
-			checked, err := agentmcp.Check(t.Context(), agentmcp.AgentCodex, opts)
+			installed, err := agentmcp.Install(agentmcp.AgentCodex, opts)
 			require.NoError(t, err)
-			assert.Equal(t, agentmcp.CheckOK, checked.State, checked.Reason)
-			opts.Server.Command = "replacement"
-			result, err := agentmcp.Install(agentmcp.AgentCodex, opts)
+			opts.ConfigPath = filepath.Join(t.TempDir(), "config.toml")
+			if tc.symlink {
+				if err := os.Symlink(installed.ConfigPath, opts.ConfigPath); runtime.GOOS == "windows" && err != nil {
+					t.Skip("symlink creation requires privileges on Windows")
+				} else {
+					require.NoError(t, err)
+				}
+			} else {
+				require.NoError(t, os.WriteFile(opts.ConfigPath, installed.Data, 0o600))
+			}
+			result, err := agentmcp.Check(t.Context(), agentmcp.AgentCodex, opts)
 			require.NoError(t, err)
-			doc := decodeConfig(t, agentmcp.AgentCodex, result.Data)
-			server := doc["mcp_servers"].(map[string]any)["example"].(map[string]any)
-			assert.Equal(t, "replacement", server["command"])
-			value, err := json.Marshal(server[tc.key])
-			require.NoError(t, err)
-			assert.JSONEq(t, tc.json, string(value))
+			assert.Equal(t, tc.want, result.State, result.Reason)
 		})
 	}
-}
-
-func TestCheckActiveConfigSymlink(t *testing.T) {
-	testserver.InstallExecutable(t, "codex")
-	t.Setenv("CODEX_HOME", t.TempDir())
-	t.Setenv("KIT_MCP_CHECK_HELPER", "codex")
-	t.Setenv("KIT_MCP_CHECK_REPLY", `{"data":[{"name":"example","tools":{}}]}`)
-	opts := agentmcp.InstallOptions{Name: "example", Server: agentmcp.Server{Command: "example"}}
-	installed, err := agentmcp.Install(agentmcp.AgentCodex, opts)
-	require.NoError(t, err)
-	opts.ConfigPath = filepath.Join(t.TempDir(), "config-link.toml")
-	if err := os.Symlink(installed.ConfigPath, opts.ConfigPath); runtime.GOOS == "windows" && err != nil {
-		t.Skip("symlink creation requires privileges on Windows")
-	} else {
-		require.NoError(t, err)
-	}
-	result, err := agentmcp.Check(t.Context(), agentmcp.AgentCodex, opts)
-	require.NoError(t, err)
-	assert.Equal(t, agentmcp.CheckOK, result.State, result.Reason)
 }
 
 func TestCheckClaude(t *testing.T) {
@@ -172,9 +154,11 @@ func TestCheckClaude(t *testing.T) {
 	}{
 		{"connected", "Scope: User config (available in all projects)\nStatus: ✓ Connected\n", agentmcp.CheckOK, ""},
 		{"connected check mark", "Scope: User config\nStatus: ✔ Connected\n", agentmcp.CheckOK, ""},
-		{"connection failed", "Scope: User config\nStatus: ✗ Failed to connect\nIssue: spawn example ENOENT\n", agentmcp.CheckFailed, "spawn example ENOENT"},
+		{"connection failed", "Scope: User config\nStatus: ✗ Failed to connect\n", agentmcp.CheckFailed, "Failed to connect"},
 		{"tools failed", "Scope: User config\nStatus: ✓ Connected\nIssue: Failed to discover tools: forbidden\n", agentmcp.CheckFailed, "forbidden"},
 		{"project shadows user", "Scope: Project config\nStatus: ✓ Connected\n", agentmcp.CheckUnknown, "Project"},
+		{"leading hyphen", "Scope: User config\nStatus: ✓ Connected\n", agentmcp.CheckOK, ""},
+		{"failed command", "native check refused", agentmcp.CheckUnknown, "native check refused"},
 		{"unrecognized output", "future response", agentmcp.CheckUnknown, "scope"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -182,6 +166,13 @@ func TestCheckClaude(t *testing.T) {
 			t.Setenv("KIT_MCP_CHECK_HELPER", "claude")
 			t.Setenv("KIT_MCP_CHECK_REPLY", tc.reply)
 			opts := agentmcp.InstallOptions{Name: "example", Server: agentmcp.Server{Command: "example"}}
+			if tc.name == "leading hyphen" {
+				opts.Name = "-example"
+			}
+			if tc.name == "failed command" {
+				t.Setenv("KIT_MCP_CHECK_HELPER", "claude-failed")
+			}
+			t.Setenv("KIT_MCP_CHECK_NAME", opts.Name)
 			_, err := agentmcp.Install(agentmcp.AgentClaude, opts)
 			require.NoError(t, err)
 			result, err := agentmcp.Check(t.Context(), agentmcp.AgentClaude, opts)

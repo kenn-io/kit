@@ -176,11 +176,15 @@ Claude's [`mcp get`](https://code.claude.com/docs/en/mcp) reports `Scope`,
 reports `ok`; a same-name project or local entry returns `unknown` with its
 scope. Claude Code 2.1.301's isolated `mcp get` and `mcp add` output confirms
 these fields and its empty `args` and `env` registration defaults.
-With `CLAUDE_CODE_SAFE_MODE=1`, Claude hides configured MCP servers. The check
-preserves safe mode and returns `unknown` with a next step to retry outside it.
 
 `Command` renders `claude mcp add --scope user` and `codex mcp add` for POSIX
-shells and PowerShell. Claude can express literal headers and bearer environment
+shells and PowerShell. Options precede `-- NAME`; stdio commands and arguments
+follow the name directly, with a single `--` in the registration command.
+Claude CLI names accept ASCII letters, digits, underscores, and hyphens. Codex
+also accepts `.`, `:`, `@`, and `/`. These limits apply to command rendering;
+config writing and native checks keep their existing name handling. Claude's
+native check uses `mcp get -- NAME` for names beginning with a hyphen.
+Claude can express literal headers and bearer environment
 references. Codex 0.166.0's `mcp add --help` offers URL and bearer environment
 flags but no arbitrary-header flag; those configurations return a renderer
 error. Native checks still support them. Command strings can contain credentials

@@ -2,7 +2,6 @@ package agentmcp
 
 import (
 	"context"
-	"os"
 	"strings"
 	"time"
 
@@ -12,7 +11,7 @@ import (
 func checkClaude(ctx context.Context, name string, result CheckResult) CheckResult {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	cmd := consolewindow.CommandContext(ctx, "claude", "mcp", "get", name)
+	cmd := consolewindow.CommandContext(ctx, "claude", "mcp", "get", "--", name)
 	cmd.WaitDelay = 100 * time.Millisecond
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() != nil {
@@ -29,10 +28,6 @@ func checkClaude(ctx context.Context, name string, result CheckResult) CheckResu
 	switch {
 	case scope == "" && err != nil:
 		result.Reason = strings.TrimSpace(err.Error() + "\n" + string(output))
-		if os.Getenv("CLAUDE_CODE_SAFE_MODE") == "1" {
-			result.Reason += "\nClaude Code safe mode hides configured MCP servers"
-			result.NextStep = "Retry outside Claude Code safe mode"
-		}
 	case !strings.HasPrefix(scope, "User config"):
 		result.Reason = "Claude reported MCP scope: " + scope
 	case issue != "" || status != "" && !connected:

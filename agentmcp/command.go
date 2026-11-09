@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	"go.kenn.io/kit/agenthook"
 )
@@ -19,6 +20,13 @@ func Command(agent Agent, name string, server Server) (agenthook.Commands, error
 	}
 	if agent != AgentClaude && agent != AgentCodex {
 		return agenthook.Commands{}, fmt.Errorf("manual MCP command unavailable for agent %q", agent)
+	}
+	allowed := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+	if agent == AgentCodex {
+		allowed += ":@/."
+	}
+	if strings.ContainsFunc(name, func(r rune) bool { return !strings.ContainsRune(allowed, r) }) {
+		return agenthook.Commands{}, fmt.Errorf("%s mcp add rejects server name %q", agent, name)
 	}
 	args := []string{"mcp", "add"}
 	if agent == AgentClaude {
@@ -45,16 +53,10 @@ func Command(agent Agent, name string, server Server) (agenthook.Commands, error
 			args = append(args, server.URL)
 		}
 	} else {
-		if agent == AgentClaude {
-			args = append(args, name)
-		}
 		for _, key := range slices.Sorted(maps.Keys(server.Env)) {
 			args = append(args, "--env", key+"="+server.Env[key])
 		}
-		if agent == AgentCodex {
-			args = append(args, name)
-		}
-		args = append(args, "--", server.Command)
+		args = append(args, "--", name, server.Command)
 		args = append(args, server.Args...)
 	}
 	return agenthook.BuildCommand(string(agent), args...)
