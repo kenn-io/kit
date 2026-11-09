@@ -66,7 +66,7 @@ func Check(ctx context.Context, agent Agent, name string, server Server) (CheckR
 	case changed:
 		result.State, result.Reason, result.NextStep = CheckOutdated, "The installed MCP server differs from the requested server", "Reinstall the application's MCP server"
 	case agent == AgentCodex:
-		result = checkCodex(ctx, name, result)
+		result = checkCodex(ctx, name, codexReadinessReason(original, name), result)
 	default:
 		result = checkClaude(ctx, name, result)
 	}

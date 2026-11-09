@@ -163,6 +163,7 @@ Codex's [app-server contract](https://developers.openai.com/codex/app-server)
 provides `mcpServerStatus/list`, whose `serverName` parameter restricts
 discovery to the requested server. `toolsError` is the agent's failure reason;
 a tool catalog, including an empty catalog, reports success with its count.
+With [`startup_readiness = "catalog"`](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/config/src/mcp_types.rs#L247-L255), Codex may satisfy startup with a cached catalog, so Check returns `unknown` because live status is inconclusive.
 An entry with `enabled = false` differs from the requested one and is
 `outdated`. Without a thread, status loads system, user, and runtime settings
 [without discovering a project](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/app-server/src/config_manager.rs#L245-L258).

@@ -90,6 +90,7 @@ func TestCheckCodex(t *testing.T) {
 		{"user settings and effective defaults", `{"data":[{"name":"example","tools":{}}]}`, agentmcp.CheckOK, 0, "Codex returned the server's tools", false, "[mcp_servers.example]\ncommand='example'\nenabled=true\nargs=[]\nenv={}\nrequired=true\nstartup_timeout_sec=30\nenv_vars=[{name='HOME',source='local'}]\ntools={search={approval_mode='auto'}}\n"},
 		{"changed connection", "", agentmcp.CheckOutdated, 0, "differs from the requested server", false, "[mcp_servers.example]\ncommand='different'\nrequired=true\n"},
 		{"disabled", "", agentmcp.CheckOutdated, 0, "differs from the requested server", false, "[mcp_servers.example]\ncommand='example'\nenabled=false\n"},
+		{"catalog readiness", `{"data":[{"name":"example","tools":{"ping":{}}}]}`, agentmcp.CheckUnknown, 0, "Codex catalog readiness does not confirm a live connection", false, "[mcp_servers.example]\ncommand='example'\nstartup_readiness='catalog'\n"},
 		{"deadline", "", agentmcp.CheckUnknown, 0, "startup may need longer", true, ""},
 		{"tools", `{"data":[{"name":"example","tools":{"search":{},"read":{}},"toolsError":null}]}`, agentmcp.CheckOK, 2, "Codex returned the server's tools", false, ""},
 		{"missing catalog", `{"data":[{"name":"example"}]}`, agentmcp.CheckUnknown, 0, "did not return", false, ""},
@@ -144,6 +145,7 @@ func TestCheckClaude(t *testing.T) {
 		{"tools failed", "Scope: User config\nStatus: ✓ Connected\nIssue: Failed to discover tools: forbidden\n", agentmcp.CheckFailed, "✓ Connected\nFailed to discover tools: forbidden", "claude", false},
 		{"project shadows user", "Scope: Project config\nStatus: ✓ Connected\n", agentmcp.CheckUnknown, "Claude reported MCP scope: Project config", "claude", false},
 		{"failed command", "native check refused", agentmcp.CheckUnknown, "exit status 1\nnative check refused", "claude-failed", false},
+		{"hidden user config", "No MCP server named \"example\". Run `claude mcp add` to add one.", agentmcp.CheckUnknown, "exit status 1\nNo MCP server named \"example\". Run `claude mcp add` to add one.", "claude-failed", false},
 		{"unrecognized status", "Scope: User config\nStatus: Waiting for approval\n", agentmcp.CheckUnknown, "Claude reported MCP status: Waiting for approval", "claude", false},
 		{"unrecognized output", "future response", agentmcp.CheckUnknown, "Claude reported MCP scope: ", "claude", false},
 	} {
@@ -163,6 +165,9 @@ func TestCheckClaude(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, result.State, result.Reason)
 			assert.Equal(t, tc.reason, result.Reason)
+			if tc.name == "hidden user config" {
+				assert.Equal(t, "Check the user config or rerun outside Claude safe mode", result.NextStep)
+			}
 			if tc.expired {
 				assert.Equal(t, "Retry once the server is ready", result.NextStep)
 			}
