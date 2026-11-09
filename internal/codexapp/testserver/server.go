@@ -8,7 +8,29 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
+	"runtime"
+	"testing"
+
+	"github.com/stretchr/testify/require"
 )
+
+// InstallExecutable copies the current test process onto PATH under name and
+// returns its original path. TestMain owns the copied process's behavior.
+func InstallExecutable(tb testing.TB, name string) string {
+	tb.Helper()
+	executable, err := os.Executable()
+	require.NoError(tb, err)
+	program, err := os.ReadFile(executable)
+	require.NoError(tb, err)
+	dir := tb.TempDir()
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	require.NoError(tb, os.WriteFile(filepath.Join(dir, name), program, 0o700))
+	tb.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return executable
+}
 
 // Request is one request or notification from the client under test.
 type Request struct {

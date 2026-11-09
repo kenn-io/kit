@@ -2,6 +2,8 @@ package agentmcp_test
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"runtime"
@@ -20,7 +22,7 @@ func TestCommand(t *testing.T) {
 		server agentmcp.Server
 		want   string
 	}{
-		{agentmcp.AgentClaude, agentmcp.Server{Command: "/a path/example", Args: []string{"a'b", "$HOME"}, Env: map[string]string{"B": "two", "A": "one"}}, `claude mcp add --scope user --env 'A=one' --env 'B=two' example -- '/a path/example' 'a'\''b' '$HOME'`},
+		{agentmcp.AgentClaude, agentmcp.Server{Command: "/a path/example", Args: []string{"a'b", "$HOME"}, Env: map[string]string{"B": "two", "A": "one"}}, `claude mcp add --scope user example --env 'A=one' --env 'B=two' -- '/a path/example' 'a'\''b' '$HOME'`},
 		{agentmcp.AgentCodex, agentmcp.Server{Command: "example", Args: []string{"--serve"}}, "codex mcp add example -- example --serve"},
 		{agentmcp.AgentCodex, agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "TOKEN"}, "codex mcp add --url https://example.com/mcp --bearer-token-env-var TOKEN -- example"},
 		{agentmcp.AgentClaude, agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "TOKEN"}, `claude mcp add --scope user --transport http --header 'Authorization: Bearer ${TOKEN}' -- example https://example.com/mcp`},
@@ -36,13 +38,17 @@ func TestCommand(t *testing.T) {
 	require.Error(t, err)
 }
 
-func runStdioFixture() int {
+func fixtureServer() *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "kit-test", Version: "1"}, nil)
 	mcp.AddTool(server, &mcp.Tool{Name: "ping", Description: "Test tool"}, func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, struct{}, error) {
 		return &mcp.CallToolResult{}, struct{}{}, nil
 	})
+	return server
+}
+
+func runStdioFixture() int {
 	// This standalone fixture has no caller context; EOF closes the session.
-	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
+	if err := fixtureServer().Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		return 1
 	}
 	return 0
@@ -55,6 +61,8 @@ func TestInstalledClients(t *testing.T) {
 	}
 	executable, err := os.Executable()
 	require.NoError(t, err)
+	remote := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return fixtureServer() }, nil))
+	defer remote.Close()
 	for _, agent := range []agentmcp.Agent{agentmcp.AgentCodex, agentmcp.AgentClaude} {
 		t.Run(string(agent), func(t *testing.T) {
 			_, err := exec.LookPath(string(agent))
@@ -63,15 +71,23 @@ func TestInstalledClients(t *testing.T) {
 			t.Setenv("CODEX_HOME", dir)
 			t.Setenv("CLAUDE_CONFIG_DIR", dir)
 			t.Setenv("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
+			t.Setenv("KIT_MCP_TOKEN", "fixture-token")
 			t.Chdir(dir)
-			for _, tc := range []struct {
+			type testCase struct {
 				name   string
 				server agentmcp.Server
 				state  agentmcp.CheckState
-			}{
-				{"working", agentmcp.Server{Command: executable, Args: []string{"kit-mcp-stdio"}}, agentmcp.CheckOK},
+			}
+			cases := []testCase{
+				{"working", agentmcp.Server{Command: executable, Args: []string{"kit-mcp-stdio"}, Env: map[string]string{"KIT_MCP_FIXTURE": "value with spaces"}}, agentmcp.CheckOK},
 				{"missing-binary", agentmcp.Server{Command: "kit-missing-mcp-binary"}, agentmcp.CheckFailed},
-			} {
+				{"http", agentmcp.Server{URL: remote.URL}, agentmcp.CheckOK},
+				{"http-bearer", agentmcp.Server{URL: remote.URL, BearerTokenEnvVar: "KIT_MCP_TOKEN"}, agentmcp.CheckOK},
+			}
+			if agent == agentmcp.AgentClaude {
+				cases = append(cases, testCase{"http-header", agentmcp.Server{URL: remote.URL, Headers: map[string]string{"X-Test": "fixture header"}}, agentmcp.CheckOK})
+			}
+			for _, tc := range cases {
 				t.Run(tc.name, func(t *testing.T) {
 					opts := agentmcp.InstallOptions{Name: tc.name, Server: tc.server}
 					command, err := agentmcp.Command(agent, opts.Name, opts.Server)
@@ -99,6 +115,13 @@ func TestInstalledClients(t *testing.T) {
 					}
 					if agent == agentmcp.AgentCodex && tc.state == agentmcp.CheckOK {
 						assert.Equal(t, 1, result.ToolCount)
+					}
+					if agent == agentmcp.AgentClaude && tc.name == "working" {
+						t.Setenv("CLAUDE_CODE_SAFE_MODE", "1")
+						result, err = agentmcp.Check(ctx, agent, opts)
+						require.NoError(t, err)
+						assert.Equal(t, agentmcp.CheckUnknown, result.State)
+						assert.Contains(t, result.NextStep, "safe mode")
 					}
 				})
 			}

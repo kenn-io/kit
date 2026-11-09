@@ -45,10 +45,16 @@ func Command(agent Agent, name string, server Server) (agenthook.Commands, error
 			args = append(args, server.URL)
 		}
 	} else {
+		if agent == AgentClaude {
+			args = append(args, name)
+		}
 		for _, key := range slices.Sorted(maps.Keys(server.Env)) {
 			args = append(args, "--env", key+"="+server.Env[key])
 		}
-		args = append(args, name, "--", server.Command)
+		if agent == AgentCodex {
+			args = append(args, name)
+		}
+		args = append(args, "--", server.Command)
 		args = append(args, server.Args...)
 	}
 	return agenthook.BuildCommand(string(agent), args...)

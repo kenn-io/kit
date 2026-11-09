@@ -47,10 +47,15 @@ func Check(ctx context.Context, agent Agent, opts InstallOptions) (CheckResult, 
 		return result, nil
 	}
 	if opts.ConfigPath != "" && opts.ConfigPath != path {
-		result.ConfigPath = opts.ConfigPath
-		result.Reason = "The requested config is outside the active user config"
-		result.NextStep = "Set the agent config home to the requested config directory"
-		return result, nil
+		active, activeErr := os.Stat(path)
+		override, overrideErr := os.Stat(opts.ConfigPath)
+		same := activeErr == nil && overrideErr == nil && os.SameFile(active, override)
+		if !same {
+			result.ConfigPath = opts.ConfigPath
+			result.Reason = "The requested config is outside the active user config"
+			result.NextStep = "Set the agent config home to the requested config directory"
+			return result, nil
+		}
 	}
 	original, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {

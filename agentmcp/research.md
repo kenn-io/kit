@@ -166,12 +166,17 @@ a tool catalog, including an empty catalog, reports success with its count.
 An entry with `enabled = false` differs from the requested one and is
 `outdated`. Without a thread, status loads system, user, and runtime settings
 [without discovering a project](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/app-server/src/config_manager.rs#L245-L258).
+The user's `startup_timeout_sec` tuning is retained when checking and reinstalling
+a server. The check still has a ten-second ceiling and returns `unknown` if
+startup takes longer.
 
 Claude's [`mcp get`](https://code.claude.com/docs/en/mcp) reports `Scope`,
 `Status`, and, when present, `Issue`. Only a connected user entry with no issue
 reports `ok`; a same-name project or local entry returns `unknown` with its
 scope. Claude Code 2.1.301's isolated `mcp get` and `mcp add` output confirms
 these fields and its empty `args` and `env` registration defaults.
+With `CLAUDE_CODE_SAFE_MODE=1`, Claude hides configured MCP servers. The check
+preserves safe mode and returns `unknown` with a next step to retry outside it.
 
 `Command` renders `claude mcp add --scope user` and `codex mcp add` for POSIX
 shells and PowerShell. Claude can express literal headers and bearer environment

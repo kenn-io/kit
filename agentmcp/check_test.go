@@ -37,20 +37,6 @@ func runCheckHelper(mode string) int {
 	return 0
 }
 
-func fakeAgent(t *testing.T, agent string) {
-	t.Helper()
-	executable, err := os.Executable()
-	require.NoError(t, err)
-	program, err := os.ReadFile(executable)
-	require.NoError(t, err)
-	dir := t.TempDir()
-	if runtime.GOOS == "windows" {
-		agent += ".exe"
-	}
-	require.NoError(t, os.WriteFile(filepath.Join(dir, agent), program, 0o700))
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-}
-
 func TestCheckConfigStates(t *testing.T) {
 	for _, tc := range []struct {
 		name, config string
@@ -97,7 +83,7 @@ func TestCheckConfigStates(t *testing.T) {
 }
 
 func TestCheckCodex(t *testing.T) {
-	fakeAgent(t, "codex")
+	testserver.InstallExecutable(t, "codex")
 	for _, tc := range []struct {
 		name, reply string
 		want        agentmcp.CheckState
@@ -105,6 +91,7 @@ func TestCheckCodex(t *testing.T) {
 		reason      string
 	}{
 		{"tools", `{"data":[{"name":"example","tools":{"search":{},"read":{}},"toolsError":null}]}`, agentmcp.CheckOK, 2, ""},
+		{"startup timeout", `{"data":[{"name":"example","tools":{}}]}`, agentmcp.CheckOK, 0, ""},
 		{"empty catalog", `{"data":[{"name":"example","tools":{}}]}`, agentmcp.CheckOK, 0, ""},
 		{"handshake failure", `{"data":[{"name":"example","tools":{},"toolsError":"MCP startup failed: handshaking with MCP server failed: connection closed: initialize response"}]}`, agentmcp.CheckFailed, 0, "MCP startup failed: handshaking with MCP server failed: connection closed: initialize response"},
 		{"different server only", `{"data":[{"name":"other","tools":{}}]}`, agentmcp.CheckUnknown, 0, "did not report"},
@@ -116,6 +103,11 @@ func TestCheckCodex(t *testing.T) {
 			opts := agentmcp.InstallOptions{Name: "example", Server: agentmcp.Server{Command: "example"}}
 			_, err := agentmcp.Install(agentmcp.AgentCodex, opts)
 			require.NoError(t, err)
+			if tc.name == "startup timeout" {
+				path, err := agentmcp.ConfigPath(agentmcp.AgentCodex)
+				require.NoError(t, err)
+				require.NoError(t, os.WriteFile(path, []byte("[mcp_servers.example]\ncommand='example'\nstartup_timeout_sec=30\n"), 0o600))
+			}
 			result, err := agentmcp.Check(t.Context(), agentmcp.AgentCodex, opts)
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, result.State, result.Reason)
@@ -125,8 +117,27 @@ func TestCheckCodex(t *testing.T) {
 	}
 }
 
+func TestCheckActiveConfigSymlink(t *testing.T) {
+	testserver.InstallExecutable(t, "codex")
+	t.Setenv("CODEX_HOME", t.TempDir())
+	t.Setenv("KIT_MCP_CHECK_HELPER", "codex")
+	t.Setenv("KIT_MCP_CHECK_REPLY", `{"data":[{"name":"example","tools":{}}]}`)
+	opts := agentmcp.InstallOptions{Name: "example", Server: agentmcp.Server{Command: "example"}}
+	installed, err := agentmcp.Install(agentmcp.AgentCodex, opts)
+	require.NoError(t, err)
+	opts.ConfigPath = filepath.Join(t.TempDir(), "config-link.toml")
+	if err := os.Symlink(installed.ConfigPath, opts.ConfigPath); runtime.GOOS == "windows" && err != nil {
+		t.Skip("symlink creation requires privileges on Windows")
+	} else {
+		require.NoError(t, err)
+	}
+	result, err := agentmcp.Check(t.Context(), agentmcp.AgentCodex, opts)
+	require.NoError(t, err)
+	assert.Equal(t, agentmcp.CheckOK, result.State, result.Reason)
+}
+
 func TestCheckClaude(t *testing.T) {
-	fakeAgent(t, "claude")
+	testserver.InstallExecutable(t, "claude")
 	for _, tc := range []struct {
 		name, reply string
 		want        agentmcp.CheckState

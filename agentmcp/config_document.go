@@ -42,6 +42,11 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 	}
 	previous, present := servers[name]
 	if present {
+		if fields, ok := previous.(map[string]any); agent == AgentCodex && ok {
+			if timeout, ok := fields["startup_timeout_sec"]; ok {
+				entry["startup_timeout_sec"] = timeout
+			}
+		}
 		before, err := encodeDocument(agent, previous)
 		if err != nil {
 			return nil, false, false, err
