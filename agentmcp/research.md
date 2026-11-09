@@ -166,8 +166,10 @@ a tool catalog, including an empty catalog, reports success with its count.
 An entry with `enabled = false` differs from the requested one and is
 `outdated`. Without a thread, status loads system, user, and runtime settings
 [without discovering a project](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/app-server/src/config_manager.rs#L245-L258).
-The user's `startup_timeout_sec`, `tool_timeout_sec`, `enabled_tools`, and
-`disabled_tools` settings are retained when checking and reinstalling a server.
+Codex's per-server settings outside kit's connection fields are retained when
+checking and reinstalling, including `required`, timeouts, and tool approval
+settings ([pinned config type](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/config/src/mcp_types.rs)). Kit still compares `enabled` and drops the previous
+transport's connection options when switching between stdio and HTTP.
 The check still has a ten-second ceiling and returns `unknown` if startup takes
 longer.
 

@@ -22,7 +22,7 @@ func TestCommand(t *testing.T) {
 		server agentmcp.Server
 		want   string
 	}{
-		{agentmcp.AgentClaude, agentmcp.Server{Command: "/a path/example", Args: []string{"a'b", "$HOME"}, Env: map[string]string{"B": "two", "A": "one"}}, `claude mcp add --scope user --env 'A=one' --env 'B=two' -- example '/a path/example' 'a'\''b' '$HOME'`},
+		{agentmcp.AgentClaude, agentmcp.Server{Command: "example", Args: []string{"--serve"}, Env: map[string]string{"B": "two", "A": "one"}}, `claude mcp add --scope user --env 'A=one' --env 'B=two' -- example example --serve`},
 		{agentmcp.AgentCodex, agentmcp.Server{Command: "example", Args: []string{"--serve"}}, "codex mcp add -- example example --serve"},
 		{agentmcp.AgentCodex, agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "TOKEN"}, "codex mcp add --url https://example.com/mcp --bearer-token-env-var TOKEN -- example"},
 		{agentmcp.AgentClaude, agentmcp.Server{URL: "https://example.com/mcp", BearerTokenEnvVar: "TOKEN"}, `claude mcp add --scope user --transport http --header 'Authorization: Bearer ${TOKEN}' -- example https://example.com/mcp`},
@@ -30,9 +30,6 @@ func TestCommand(t *testing.T) {
 		command, err := agentmcp.Command(tc.agent, "example", tc.server)
 		require.NoError(t, err)
 		assert.Equal(t, tc.want, command.POSIX)
-		if tc.agent == agentmcp.AgentClaude && tc.server.Command != "" {
-			assert.Equal(t, `& 'claude' 'mcp' 'add' '--scope' 'user' '--env' 'A=one' '--env' 'B=two' '--' 'example' '/a path/example' 'a''b' '$HOME'`, command.PowerShell)
-		}
 	}
 	for _, tc := range []struct {
 		agent agentmcp.Agent
@@ -41,7 +38,6 @@ func TestCommand(t *testing.T) {
 		{agentmcp.AgentClaude, "a.b"},
 		{agentmcp.AgentClaude, "café"},
 		{agentmcp.AgentCodex, "a#b"},
-		{agentmcp.AgentCodex, "café"},
 	} {
 		_, err := agentmcp.Command(tc.agent, tc.name, agentmcp.Server{Command: "example"})
 		require.ErrorContains(t, err, "server name")

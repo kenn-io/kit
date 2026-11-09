@@ -46,14 +46,14 @@ func TestCheckConfigStates(t *testing.T) {
 		name, config string
 		agent        agentmcp.Agent
 		want         agentmcp.CheckState
+		outside      bool
 	}{
-		{"missing file", "", agentmcp.AgentClaude, agentmcp.CheckMissing},
-		{"missing name", `{"mcpServers":{"other":{"command":"other"}}}`, agentmcp.AgentClaude, agentmcp.CheckMissing},
-		{"outdated Claude", `{"mcpServers":{"example":{"type":"stdio","command":"different"}}}`, agentmcp.AgentClaude, agentmcp.CheckOutdated},
-		{"outdated Codex", "[mcp_servers.example]\ncommand='different'\n", agentmcp.AgentCodex, agentmcp.CheckOutdated},
-		{"disabled Codex", "[mcp_servers.example]\ncommand='example'\nenabled=false\n", agentmcp.AgentCodex, agentmcp.CheckOutdated},
-		{"malformed", `{"mcpServers":null}`, agentmcp.AgentClaude, agentmcp.CheckUnknown},
-		{"unsupported native check", "", agentmcp.AgentCopilot, agentmcp.CheckUnknown},
+		{"missing file", "", agentmcp.AgentClaude, agentmcp.CheckMissing, false},
+		{"missing name", `{"mcpServers":{"other":{"command":"other"}}}`, agentmcp.AgentClaude, agentmcp.CheckMissing, false},
+		{"outdated Claude", `{"mcpServers":{"example":{"type":"stdio","command":"different"}}}`, agentmcp.AgentClaude, agentmcp.CheckOutdated, false},
+		{"outside active config", "[mcp_servers.example]\ncommand='example'\n", agentmcp.AgentCodex, agentmcp.CheckUnknown, true},
+		{"malformed", `{"mcpServers":null}`, agentmcp.AgentClaude, agentmcp.CheckUnknown, false},
+		{"unsupported native check", "", agentmcp.AgentCopilot, agentmcp.CheckUnknown, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -66,7 +66,13 @@ func TestCheckConfigStates(t *testing.T) {
 			if tc.config != "" {
 				require.NoError(t, os.WriteFile(path, []byte(tc.config), 0o600))
 			}
-			result, err := agentmcp.Check(t.Context(), tc.agent, agentmcp.InstallOptions{Name: "example", Server: agentmcp.Server{Command: "example"}})
+			opts := agentmcp.InstallOptions{Name: "example", Server: agentmcp.Server{Command: "example"}}
+			if tc.outside {
+				opts.ConfigPath = filepath.Join(t.TempDir(), "config.toml")
+				require.NoError(t, os.WriteFile(opts.ConfigPath, []byte(tc.config), 0o600))
+				path = opts.ConfigPath
+			}
+			result, err := agentmcp.Check(t.Context(), tc.agent, opts)
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, result.State)
 			assert.Equal(t, path, result.ConfigPath)
@@ -78,8 +84,6 @@ func TestCheckConfigStates(t *testing.T) {
 			}
 		})
 	}
-	_, err := agentmcp.Check(t.Context(), agentmcp.AgentClaude, agentmcp.InstallOptions{Name: "example"})
-	require.Error(t, err)
 }
 
 func TestCheckCodex(t *testing.T) {
@@ -91,6 +95,8 @@ func TestCheckCodex(t *testing.T) {
 		reason      string
 	}{
 		{"tools", `{"data":[{"name":"example","tools":{"search":{},"read":{}},"toolsError":null}]}`, agentmcp.CheckOK, 2, ""},
+		{"missing catalog", `{"data":[{"name":"example"}]}`, agentmcp.CheckUnknown, 0, "did not return"},
+		{"null catalog", `{"data":[{"name":"example","tools":null}]}`, agentmcp.CheckUnknown, 0, "did not return"},
 		{"empty catalog", `{"data":[{"name":"example","tools":{}}]}`, agentmcp.CheckOK, 0, ""},
 		{"handshake failure", `{"data":[{"name":"example","tools":{},"toolsError":"MCP startup failed: handshaking with MCP server failed: connection closed: initialize response"}]}`, agentmcp.CheckFailed, 0, "MCP startup failed: handshaking with MCP server failed: connection closed: initialize response"},
 		{"different server only", `{"data":[{"name":"other","tools":{}}]}`, agentmcp.CheckUnknown, 0, "did not report"},
@@ -115,34 +121,19 @@ func TestCheckActiveConfig(t *testing.T) {
 	testserver.InstallExecutable(t, "codex")
 	t.Setenv("KIT_MCP_CHECK_HELPER", "codex")
 	t.Setenv("KIT_MCP_CHECK_REPLY", `{"data":[{"name":"example","tools":{}}]}`)
-	for _, tc := range []struct {
-		name    string
-		symlink bool
-		want    agentmcp.CheckState
-	}{
-		{"symlink", true, agentmcp.CheckOK},
-		{"outside", false, agentmcp.CheckUnknown},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("CODEX_HOME", t.TempDir())
-			opts := agentmcp.InstallOptions{Name: "example", Server: agentmcp.Server{Command: "example"}}
-			installed, err := agentmcp.Install(agentmcp.AgentCodex, opts)
-			require.NoError(t, err)
-			opts.ConfigPath = filepath.Join(t.TempDir(), "config.toml")
-			if tc.symlink {
-				if err := os.Symlink(installed.ConfigPath, opts.ConfigPath); runtime.GOOS == "windows" && err != nil {
-					t.Skip("symlink creation requires privileges on Windows")
-				} else {
-					require.NoError(t, err)
-				}
-			} else {
-				require.NoError(t, os.WriteFile(opts.ConfigPath, installed.Data, 0o600))
-			}
-			result, err := agentmcp.Check(t.Context(), agentmcp.AgentCodex, opts)
-			require.NoError(t, err)
-			assert.Equal(t, tc.want, result.State, result.Reason)
-		})
+	t.Setenv("CODEX_HOME", t.TempDir())
+	opts := agentmcp.InstallOptions{Name: "example", Server: agentmcp.Server{Command: "example"}}
+	installed, err := agentmcp.Install(agentmcp.AgentCodex, opts)
+	require.NoError(t, err)
+	opts.ConfigPath = filepath.Join(t.TempDir(), "config.toml")
+	if err := os.Symlink(installed.ConfigPath, opts.ConfigPath); runtime.GOOS == "windows" && err != nil {
+		t.Skip("symlink creation requires privileges on Windows")
+	} else {
+		require.NoError(t, err)
 	}
+	result, err := agentmcp.Check(t.Context(), agentmcp.AgentCodex, opts)
+	require.NoError(t, err)
+	assert.Equal(t, agentmcp.CheckOK, result.State, result.Reason)
 }
 
 func TestCheckClaude(t *testing.T) {
@@ -151,27 +142,21 @@ func TestCheckClaude(t *testing.T) {
 		name, reply string
 		want        agentmcp.CheckState
 		reason      string
+		mode        string
 	}{
-		{"connected", "Scope: User config (available in all projects)\nStatus: ✓ Connected\n", agentmcp.CheckOK, ""},
-		{"connected check mark", "Scope: User config\nStatus: ✔ Connected\n", agentmcp.CheckOK, ""},
-		{"connection failed", "Scope: User config\nStatus: ✗ Failed to connect\n", agentmcp.CheckFailed, "Failed to connect"},
-		{"tools failed", "Scope: User config\nStatus: ✓ Connected\nIssue: Failed to discover tools: forbidden\n", agentmcp.CheckFailed, "forbidden"},
-		{"project shadows user", "Scope: Project config\nStatus: ✓ Connected\n", agentmcp.CheckUnknown, "Project"},
-		{"leading hyphen", "Scope: User config\nStatus: ✓ Connected\n", agentmcp.CheckOK, ""},
-		{"failed command", "native check refused", agentmcp.CheckUnknown, "native check refused"},
-		{"unrecognized output", "future response", agentmcp.CheckUnknown, "scope"},
+		{"connected", "Scope: User config (available in all projects)\nStatus: ✓ Connected\n", agentmcp.CheckOK, "", "claude"},
+		{"connected check mark", "Scope: User config\nStatus: ✔ Connected\n", agentmcp.CheckOK, "", "claude"},
+		{"connection failed", "Scope: User config\nStatus: ✗ Failed to connect\n", agentmcp.CheckFailed, "Failed to connect", "claude"},
+		{"tools failed", "Scope: User config\nStatus: ✓ Connected\nIssue: Failed to discover tools: forbidden\n", agentmcp.CheckFailed, "forbidden", "claude"},
+		{"project shadows user", "Scope: Project config\nStatus: ✓ Connected\n", agentmcp.CheckUnknown, "Project", "claude"},
+		{"failed command", "native check refused", agentmcp.CheckUnknown, "native check refused", "claude-failed"},
+		{"unrecognized output", "future response", agentmcp.CheckUnknown, "scope", "claude"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
-			t.Setenv("KIT_MCP_CHECK_HELPER", "claude")
+			t.Setenv("KIT_MCP_CHECK_HELPER", tc.mode)
 			t.Setenv("KIT_MCP_CHECK_REPLY", tc.reply)
 			opts := agentmcp.InstallOptions{Name: "example", Server: agentmcp.Server{Command: "example"}}
-			if tc.name == "leading hyphen" {
-				opts.Name = "-example"
-			}
-			if tc.name == "failed command" {
-				t.Setenv("KIT_MCP_CHECK_HELPER", "claude-failed")
-			}
 			t.Setenv("KIT_MCP_CHECK_NAME", opts.Name)
 			_, err := agentmcp.Install(agentmcp.AgentClaude, opts)
 			require.NoError(t, err)

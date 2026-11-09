@@ -31,6 +31,8 @@ func checkCodex(ctx context.Context, name string, result CheckResult) CheckResul
 		}
 		if server.ToolsError != nil {
 			result.State, result.Reason, result.NextStep = CheckFailed, *server.ToolsError, "Correct the server error and retry"
+		} else if server.Tools == nil {
+			result.Reason = "Codex did not return the server's tool catalog"
 		} else {
 			result.State, result.Reason, result.NextStep, result.ToolCount = CheckOK, "Codex returned the server's tools", "", len(server.Tools)
 		}

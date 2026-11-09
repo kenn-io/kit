@@ -108,30 +108,81 @@ func TestMarshalConfigInvalid(t *testing.T) {
 }
 
 func TestInstall(t *testing.T) {
-	for _, tc := range []struct{ key, toml, json string }{
-		{"startup_timeout_sec", "30", "30"},
-		{"tool_timeout_sec", "60", "60"},
-		{"enabled_tools", "['ping']", `["ping"]`},
-		{"disabled_tools", "['delete']", `["delete"]`},
+	for _, tc := range []struct {
+		key, toml, json string
+		http, transport bool
+	}{
+		{"startup_timeout_sec", "30", "30", false, false},
+		{"tool_timeout_sec", "60", "60", false, false},
+		{"enabled_tools", "['ping']", `["ping"]`, false, false},
+		{"disabled_tools", "['delete']", `["delete"]`, false, false},
+		{"required", "true", "true", false, false},
+		{"default_tools_approval_mode", "'approve'", `"approve"`, false, false},
+		{"cwd", "'/work'", `"/work"`, false, true},
+		{"env_vars", "['TOKEN']", `["TOKEN"]`, false, true},
+		{"env_http_headers", "{Authorization='TOKEN'}", `{"Authorization":"TOKEN"}`, true, true},
 	} {
 		t.Run("codex "+tc.key, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.toml")
-			require.NoError(t, os.WriteFile(path, []byte("[mcp_servers.example]\ncommand='example'\n"+tc.key+"="+tc.toml+"\n"), 0o600))
-			opts := agentmcp.InstallOptions{ConfigPath: path, Name: "example", Server: agentmcp.Server{Command: "example"}}
+			connection := "command='example'"
+			server := agentmcp.Server{Command: "example"}
+			if tc.http {
+				connection = "url='https://example.com/mcp'"
+				server = agentmcp.Server{URL: "https://example.com/mcp"}
+			}
+			require.NoError(t, os.WriteFile(path, []byte("[mcp_servers.example]\n"+connection+"\n"+tc.key+"="+tc.toml+"\n"), 0o600))
+			opts := agentmcp.InstallOptions{ConfigPath: path, Name: "example", Server: server}
 			plan, err := agentmcp.PlanInstall(agentmcp.AgentCodex, opts)
 			require.NoError(t, err)
 			assert.False(t, plan.Changed)
-			opts.Server.Command = "replacement"
+			if tc.http {
+				opts.Server.URL = "https://example.com/replacement"
+			} else {
+				opts.Server.Command = "replacement"
+			}
 			result, err := agentmcp.Install(agentmcp.AgentCodex, opts)
 			require.NoError(t, err)
 			doc := decodeConfig(t, agentmcp.AgentCodex, result.Data)
-			server := doc["mcp_servers"].(map[string]any)["example"].(map[string]any)
-			assert.Equal(t, "replacement", server["command"])
-			value, err := json.Marshal(server[tc.key])
+			entry := doc["mcp_servers"].(map[string]any)["example"].(map[string]any)
+			if tc.http {
+				assert.Equal(t, "https://example.com/replacement", entry["url"])
+			} else {
+				assert.Equal(t, "replacement", entry["command"])
+			}
+			value, err := json.Marshal(entry[tc.key])
 			require.NoError(t, err)
 			assert.JSONEq(t, tc.json, string(value))
+			// Switching transport drops its old connection options, but keeps server policy.
+			opts.Server = agentmcp.Server{URL: "https://example.com/mcp"}
+			if tc.http {
+				opts.Server = agentmcp.Server{Command: "example"}
+			}
+			result, err = agentmcp.Install(agentmcp.AgentCodex, opts)
+			require.NoError(t, err)
+			doc = decodeConfig(t, agentmcp.AgentCodex, result.Data)
+			entry = doc["mcp_servers"].(map[string]any)["example"].(map[string]any)
+			if tc.transport {
+				assert.NotContains(t, entry, tc.key)
+			} else {
+				value, err = json.Marshal(entry[tc.key])
+				require.NoError(t, err)
+				assert.JSONEq(t, tc.json, string(value))
+			}
 		})
 	}
+	t.Run("codex disabled", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.toml")
+		require.NoError(t, os.WriteFile(path, []byte("[mcp_servers.example]\ncommand='example'\nenabled=false\n"), 0o600))
+		opts := agentmcp.InstallOptions{ConfigPath: path, Name: "example", Server: agentmcp.Server{Command: "example"}}
+		plan, err := agentmcp.PlanInstall(agentmcp.AgentCodex, opts)
+		require.NoError(t, err)
+		assert.True(t, plan.Changed)
+		_, err = agentmcp.Install(agentmcp.AgentCodex, opts)
+		require.NoError(t, err)
+		plan, err = agentmcp.PlanInstall(agentmcp.AgentCodex, opts)
+		require.NoError(t, err)
+		assert.False(t, plan.Changed)
+	})
 	t.Run("claude empty fields", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "config")
 		original := []byte(`{"mcpServers":{"example":{"type":"stdio","command":"example","args":[ ],"env":{ }}}}`)

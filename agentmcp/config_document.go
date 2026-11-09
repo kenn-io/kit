@@ -43,10 +43,20 @@ func planDocument(agent Agent, original []byte, name string, entry map[string]an
 	previous, present := servers[name]
 	if present {
 		if fields, ok := previous.(map[string]any); agent == AgentCodex && ok {
-			for _, key := range []string{"startup_timeout_sec", "tool_timeout_sec", "enabled_tools", "disabled_tools"} {
-				if value, ok := fields[key]; ok {
-					entry[key] = value
+			for key, value := range fields {
+				switch key {
+				case "command", "args", "env", "url", "http_headers", "bearer_token_env_var", "enabled":
+					continue // Setup owns these fields.
+				case "cwd", "env_vars":
+					if entry["command"] == nil {
+						continue
+					}
+				case "env_http_headers":
+					if entry["url"] == nil {
+						continue
+					}
 				}
+				entry[key] = value
 			}
 		}
 		before, err := encodeDocument(agent, previous)
