@@ -12,8 +12,11 @@ type MaintainerOptions struct {
 // Maintainer owns physical repair, pack, unpack, and repack lifecycle work.
 type Maintainer struct {
 	// Sweep bounds are protected by the maintenance lease and process-local.
-	verifiedThrough      IndexEntry
-	verificationEnd      IndexEntry
+	verifiedThrough IndexEntry
+	verificationEnd IndexEntry
+	// looseSkips remembers loose members that packing could not use, so
+	// they cannot make later passes ready to seal. Same protection as above.
+	looseSkips           map[Hash]looseSkip
 	catalog              Catalog
 	layout               Layout
 	limits               Limits

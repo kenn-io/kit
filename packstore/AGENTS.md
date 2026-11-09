@@ -65,7 +65,10 @@
   merges rows of the same hash as packing does. Members packing always skips
   (oversized, conflicting sizes, no existing path) never make a pass ready,
   or one stuck member would force a small pack every pass; a held pass
-  counts them in `PackStats` as packing would.
+  counts them in `PackStats` as packing would. Readiness never reads loose
+  content: the Maintainer remembers members packing rejected after reading
+  them (a damaged file that still exists) and leaves them out, so a new
+  Maintainer can seal once before it learns them.
 - `RepackSelection.MergeBelowStored` is opt-in: existing callers scope repack
   to chosen sources and count `PacksSelected`. Merges go through
   `CommitRepack` with every source of a group, and admit whole groups against

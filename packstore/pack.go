@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -38,7 +39,9 @@ type PackOptions struct {
 	// reaches it or the oldest reaches MaxLooseAge, so frequent passes do not
 	// seal one small pack each. Zero packs whatever is loose on every pass.
 	// Members that packing skips, such as oversized or missing ones, count
-	// toward neither limit. Repairs of damaged packed entries are never held.
+	// toward neither limit, nor do members an earlier pass of this
+	// Maintainer could not read. Repairs of damaged packed entries are never
+	// held.
 	MinSealBytes int64
 	// MaxLooseAge seals loose members below MinSealBytes once the oldest
 	// loose file was modified at least this long ago. It applies only when
@@ -530,6 +533,7 @@ func (m *Maintainer) packLoose(ctx context.Context, opts PackOptions, stats *Pac
 	if err != nil {
 		return err
 	}
+	m.forgetPackedLooseSkips(candidates)
 	if len(candidates) == 0 {
 		return nil
 	}
@@ -545,14 +549,64 @@ func (m *Maintainer) packLoose(ctx context.Context, opts PackOptions, stats *Pac
 		commit:       m.catalog.RecordPack,
 		openPin:      m.openVerificationPin,
 		removeSource: true,
+		noteSkip:     m.noteLooseSkip,
 	})
 }
 
+// looseSkip records why packing could not use a loose member.
+type looseSkip uint8
+
+const (
+	looseUsable looseSkip = iota
+	looseCorrupt
+	looseMissing
+	looseOversized
+)
+
+func (s looseSkip) count(stats *PackStats) {
+	switch s {
+	case looseCorrupt:
+		stats.BlobsCorrupt++
+	case looseMissing:
+		stats.BlobsMissing++
+	case looseOversized:
+		stats.BlobsDeferredOversized++
+	case looseUsable:
+	}
+}
+
+// forgetPackedLooseSkips drops remembered members that are no longer loose.
+func (m *Maintainer) forgetPackedLooseSkips(candidates []Candidate) {
+	if len(m.looseSkips) == 0 {
+		return
+	}
+	loose := make(map[Hash]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		loose[candidate.Hash] = struct{}{}
+	}
+	maps.DeleteFunc(m.looseSkips, func(hash Hash, _ looseSkip) bool {
+		_, still := loose[hash]
+		return !still
+	})
+}
+
+// noteLooseSkip remembers or forgets a loose member that packing examined.
+func (m *Maintainer) noteLooseSkip(hash Hash, skip looseSkip) {
+	if skip == looseUsable {
+		delete(m.looseSkips, hash)
+		return
+	}
+	if m.looseSkips == nil {
+		m.looseSkips = make(map[Hash]looseSkip)
+	}
+	m.looseSkips[hash] = skip
+}
+
 // looseReadyToSeal reports whether loose members justify a new pack under
-// opts. Members that packing always skips (oversized, conflicting sizes, or
-// with no existing path) never make a pass ready, so they cannot force a small
-// pack on every pass. When it holds the pass, it counts them in stats as
-// packing would.
+// opts. Members that packing always skips (oversized, conflicting sizes, with
+// no existing path, or rejected by an earlier pass of this Maintainer) never
+// make a pass ready, so they cannot force a small pack on every pass. When it
+// holds the pass, it counts them in stats as packing would.
 func (m *Maintainer) looseReadyToSeal(
 	ctx context.Context, candidates []Candidate, opts PackOptions, stats *PackStats,
 ) (bool, error) {
@@ -572,6 +626,12 @@ func (m *Maintainer) looseReadyToSeal(
 	for _, group := range mergeLogicalCandidates(candidates) {
 		if err := ctx.Err(); err != nil {
 			return false, err
+		}
+		// Only packing reads loose content, so a damaged file that still
+		// exists is known as unusable once packing has rejected it.
+		if skip, known := m.looseSkips[group.Hash]; known {
+			skip.count(&skipped)
+			continue
 		}
 		if group.err != nil || group.Size < 0 {
 			skipped.BlobsCorrupt++
@@ -630,6 +690,8 @@ type packCandidatePolicy struct {
 	openPin         identityPinOpener
 	replaceMappings bool
 	removeSource    bool
+	// noteSkip, when set, learns which candidates packing could use.
+	noteSkip func(Hash, looseSkip)
 }
 
 func (m *Maintainer) packCandidates(
@@ -667,13 +729,20 @@ func (m *Maintainer) packCandidates(
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		note := func(skip looseSkip) {
+			if policy.noteSkip != nil {
+				policy.noteSkip(group.Hash, skip)
+			}
+		}
 		if group.err != nil {
 			stats.BlobsCorrupt++
+			note(looseCorrupt)
 			continue
 		}
 		candidate := group.Candidate
 		if candidate.Size > m.limits.BlobBytes {
 			stats.BlobsDeferredOversized++
+			note(looseOversized)
 			continue
 		}
 		if writer != nil && len(sources) >= m.packedSourcePinLimit {
@@ -688,13 +757,16 @@ func (m *Maintainer) packCandidates(
 			}
 			if errors.Is(readErr, ErrBlobTooLarge) {
 				stats.BlobsDeferredOversized++
+				note(looseOversized)
 				continue
 			}
 			stats.BlobsCorrupt++
+			note(looseCorrupt)
 			continue
 		}
 		if !found {
 			stats.BlobsMissing++
+			note(looseMissing)
 			continue
 		}
 		if prepared == nil || sourcePin == nil {
@@ -713,8 +785,10 @@ func (m *Maintainer) packCandidates(
 				return closeErr
 			}
 			stats.BlobsDeferredOversized++
+			note(looseOversized)
 			continue
 		}
+		note(looseUsable)
 		if writer != nil {
 			if err := checkPlainOutput(m.limits, uint64(writer.StoredSize()), prepared.StoredLen(), len(sources)+1); err != nil {
 				if err := seal(); err != nil {

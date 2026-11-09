@@ -287,6 +287,40 @@ func TestPackHoldsSmallYoungLooseContent(t *testing.T) {
 	}
 }
 
+func TestPackRemembersLooseContentItRejected(t *testing.T) {
+	layout := layoutForStoreTest(t)
+	catalog := newMaintenanceCatalog()
+	now := time.Now()
+	damaged := writeMaintenanceLoose(t, layout, bytes.Repeat([]byte("a"), 1024))
+	catalog.addLoose(damaged, layout.LoosePath(damaged))
+	// The truncated file still exists and is old, so only reading it shows
+	// that packing cannot use it.
+	require.NoError(t, os.Truncate(layout.LoosePath(damaged), 512))
+	old := now.Add(-48 * time.Hour)
+	require.NoError(t, os.Chtimes(layout.LoosePath(damaged), old, old))
+	maintainer := newMaintainerForTest(t, catalog, layout, DefaultLimits())
+	opts := PackOptions{MinSealBytes: 4096, MaxLooseAge: time.Hour, Now: now}
+
+	stats, err := maintainer.Pack(t.Context(), opts)
+	require.NoError(t, err)
+	require.False(t, stats.LooseSealDeferred, "the old file makes the first pass ready")
+	require.Equal(t, 1, stats.BlobsCorrupt)
+	require.Zero(t, stats.PacksSealed)
+
+	young := writeMaintenanceLoose(t, layout, bytes.Repeat([]byte("b"), 1024))
+	require.NoError(t, os.Chtimes(layout.LoosePath(young), now, now))
+	catalog.addLoose(young, layout.LoosePath(young))
+	for range 2 {
+		stats, err = maintainer.Pack(t.Context(), opts)
+		require.NoError(t, err)
+		assert.True(t, stats.LooseSealDeferred, "the rejected file must not seal the young one")
+		assert.Zero(t, stats.PacksSealed)
+		assert.Equal(t, 1, stats.BlobsCorrupt)
+	}
+	entries, _ := catalog.snapshot()
+	assert.Empty(t, entries)
+}
+
 // extraRowCatalog lists one extra unpacked row ahead of the catalog's own.
 type extraRowCatalog struct {
 	*maintenanceCatalog
