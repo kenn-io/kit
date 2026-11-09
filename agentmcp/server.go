@@ -22,9 +22,6 @@ const (
 // URL selects streamable HTTP and Command selects stdio. Use TransportSSE
 // explicitly for SSE endpoints; this package never guesses from a URL suffix.
 // Command, Args, and Env belong to stdio; URL and Headers belong to HTTP.
-// Check asks Claude or Codex to connect and discover tools; successful config
-// registration alone does not establish that a server works. Command renders
-// manual registration for either client.
 type Server struct {
 	Transport Transport
 	Command   string
