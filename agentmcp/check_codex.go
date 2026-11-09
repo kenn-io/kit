@@ -10,8 +10,7 @@ import (
 func checkCodex(ctx context.Context, name string, result CheckResult) CheckResult {
 	client, err := codexapp.Start(ctx, "codex", "")
 	if err != nil {
-		result.Reason = err.Error()
-		return result
+		return checkProbeError(err, result)
 	}
 	defer client.Close()
 	var listed struct {
@@ -22,8 +21,7 @@ func checkCodex(ctx context.Context, name string, result CheckResult) CheckResul
 		} `json:"data"`
 	}
 	if err := client.Call("mcpServerStatus/list", map[string]any{"serverName": name}, &listed); err != nil {
-		result.Reason = err.Error()
-		return result
+		return checkProbeError(err, result)
 	}
 	for _, server := range listed.Data {
 		if server.Name != name {

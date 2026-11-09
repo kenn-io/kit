@@ -15,8 +15,7 @@ func checkClaude(ctx context.Context, name string, result CheckResult) CheckResu
 	cmd.WaitDelay = 100 * time.Millisecond
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() != nil {
-		result.Reason = ctx.Err().Error()
-		return result
+		return checkProbeError(ctx.Err(), result)
 	}
 	fields := map[string]string{}
 	for line := range strings.SplitSeq(string(output), "\n") {

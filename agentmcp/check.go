@@ -79,3 +79,12 @@ func Check(ctx context.Context, agent Agent, opts InstallOptions) (CheckResult, 
 	}
 	return result, nil
 }
+
+func checkProbeError(err error, result CheckResult) CheckResult {
+	result.Reason = err.Error()
+	if errors.Is(err, context.DeadlineExceeded) {
+		result.Reason += "; server startup may need longer"
+		result.NextStep = "Retry once the server is ready"
+	}
+	return result
+}
