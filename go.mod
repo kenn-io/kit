@@ -14,14 +14,14 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.13
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.6
 	github.com/aws/smithy-go v1.28.7
-	github.com/cenkalti/backoff/v7 v7.0.2
+	github.com/cenkalti/backoff/v7 v7.0.3
 	github.com/charmbracelet/x/ansi v0.11.9
 	github.com/creachadair/tomledit v0.0.29
 	github.com/ebitengine/purego v0.11.2
 	github.com/fsouza/fake-gcs-server v1.56.1
 	github.com/gofrs/flock v0.13.1
 	github.com/golangci/plugin-module-register v0.1.2
-	github.com/golangci/rowserrcheck v0.0.0-20261005233414-e0740d52dee8
+	github.com/golangci/rowserrcheck v0.0.0-20261101210309-7f680fea35ce
 	github.com/googleapis/gax-go/v2 v2.27.0
 	github.com/jackc/pgx/v5 v5.12.0
 	github.com/klauspost/compress v1.20.3
@@ -31,13 +31,13 @@ require (
 	github.com/oklog/ulid/v2 v2.1.2
 	github.com/posthog/posthog-go v1.39.0
 	github.com/ryanrolds/sqlclosecheck v0.6.0
-	github.com/shirou/gopsutil/v4 v4.26.9
+	github.com/shirou/gopsutil/v4 v4.26.10
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pathologize v1.1.0
 	github.com/spf13/pflag v1.0.10
 	github.com/stretchr/testify v1.12.1
 	github.com/tailscale/hujson v0.0.0-20260727124030-b80ff77dac4f
-	github.com/yuin/goldmark/v2 v2.1.12
+	github.com/yuin/goldmark/v2 v2.1.13
 	go.opentelemetry.io/contrib/exporters/autoexport v0.72.0
 	go.opentelemetry.io/contrib/propagators/autoprop v0.72.0
 	go.opentelemetry.io/otel v1.47.0
@@ -56,7 +56,7 @@ require (
 	golang.org/x/tools v0.52.0
 	google.golang.org/api v0.310.0
 	gopkg.in/yaml.v3 v3.0.1
-	modernc.org/sqlite v1.61.0
+	modernc.org/sqlite v1.61.1
 	mvdan.cc/sh/v3 v3.14.1
 	pgregory.net/rapid v1.3.0
 )
